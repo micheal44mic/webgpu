@@ -1,5 +1,6 @@
 export const brushShader = /* wgsl */ `
 const MAX_COUNT: u32 = 24u;
+const TAU: f32 = 6.283185307179586;
 
 struct BrushUniforms {
   layerSize: vec2<f32>,
@@ -29,6 +30,8 @@ struct VertexOutput {
 
 @group(0) @binding(0) var<uniform> brush: BrushUniforms;
 @group(0) @binding(1) var<storage, read> stamps: array<Stamp>;
+@group(0) @binding(2) var shapeMaskTexture: texture_2d<f32>;
+@group(0) @binding(3) var shapeMaskSampler: sampler;
 
 fn hash32(value: u32) -> u32 {
   var x = value;
@@ -149,6 +152,62 @@ fn vertexMain(
   return output;
 }
 
+@vertex
+fn shapeVertexMain(
+  @builtin(vertex_index) vertexIndex: u32,
+  @builtin(instance_index) instanceIndex: u32
+) -> VertexOutput {
+  let corners = array<vec2<f32>, 4>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>( 1.0, -1.0),
+    vec2<f32>(-1.0,  1.0),
+    vec2<f32>( 1.0,  1.0)
+  );
+
+  let copyCount = max(1u, min(brush.options.x, MAX_COUNT));
+  let stampIndex = instanceIndex / copyCount;
+  let copyIndex = instanceIndex % copyCount;
+  let stamp = stamps[stampIndex];
+  let localPosition = corners[vertexIndex];
+  let directionLength = length(stamp.direction);
+  let direction = select(vec2<f32>(1.0, 0.0), stamp.direction / directionLength, directionLength > 0.0001);
+  let copySeed = hash32(stamp.seed ^ (copyIndex * 0x85ebca6bu));
+  let linearOffset = (random01(copySeed, 5u) - 0.5) * 4.0 * stamp.radius * brush.positionJitter.x;
+  let lateralOffset = (random01(copySeed, 6u) - 0.5) * 4.0 * stamp.radius * brush.positionJitter.y;
+  let jitteredCenter = stamp.center
+    + direction * linearOffset
+    + vec2<f32>(-direction.y, direction.x) * lateralOffset;
+
+  var geometryPosition = localPosition;
+  let scatter = clamp(brush.positionJitter.z, 0.0, 1.0);
+  if (scatter > 0.00001) {
+    let angle = (random01(copySeed, 7u) - 0.5) * TAU * scatter;
+    let cosine = cos(angle);
+    let sine = sin(angle);
+    geometryPosition = vec2<f32>(
+      localPosition.x * cosine - localPosition.y * sine,
+      localPosition.x * sine + localPosition.y * cosine
+    );
+  }
+
+  let layerPosition = jitteredCenter + geometryPosition * stamp.radius;
+  let clipPosition = vec2<f32>(
+    layerPosition.x / brush.layerSize.x * 2.0 - 1.0,
+    1.0 - layerPosition.y / brush.layerSize.y * 2.0
+  );
+
+  var output: VertexOutput;
+  output.position = vec4<f32>(clipPosition, 0.0, 1.0);
+  output.localPosition = localPosition;
+  output.pressure = stamp.pressure;
+  var colorCopySeed = copySeed;
+  if (brush.options.y == 0u) {
+    colorCopySeed = hash32(stamp.seed);
+  }
+  output.pointColor = jitteredLinearColorFromCopySeed(colorCopySeed);
+  return output;
+}
+
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let radiusSquared = dot(input.localPosition, input.localPosition);
@@ -161,6 +220,28 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let hardness = clamp(brush.controls.y, 0.0, 1.0);
   let innerEdge = min(hardness * hardness, 1.0 - antialiasWidth);
   let coverage = 1.0 - smoothstep(innerEdge, 1.0 + antialiasWidth, radiusSquared);
+
+  if (coverage <= 0.0) {
+    discard;
+  }
+
+  let pressureInfluence = clamp(brush.controls.w, 0.0, 1.0);
+  let pressureAlpha = mix(1.0, clamp(input.pressure, 0.0, 1.0), pressureInfluence);
+  let alpha = clamp(
+    coverage * brush.controls.x * brush.baseHslAlpha.w * pressureAlpha * brush.controls.z,
+    0.0,
+    0.999999
+  );
+
+  return vec4<f32>(input.pointColor * alpha, alpha);
+}
+
+@fragment
+fn shapeFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  let uv = input.localPosition * 0.5 + vec2<f32>(0.5);
+  let sourceCoverage = textureSample(shapeMaskTexture, shapeMaskSampler, uv).r;
+  let hardness = clamp(brush.controls.y, 0.0, 1.0);
+  let coverage = mix(sourceCoverage * sourceCoverage, sourceCoverage, hardness);
 
   if (coverage <= 0.0) {
     discard;

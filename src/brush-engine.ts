@@ -3,8 +3,11 @@ import { brushShader, displayShader } from "./shaders";
 
 export type BlendMode = "normal" | "additive";
 export type LayerFormat = "rgba8unorm" | "rgba16float";
+export type BrushShape = "circle" | "shape";
 
 export interface BrushSettings {
+  shape: BrushShape;
+  shapeScatter: number;
   color: string;
   size: number;
   spacingPercent: number;
@@ -171,6 +174,7 @@ const STAMP_GEOMETRY = "quad" as const;
 const FRAGMENT_COVERAGE_STRATEGY = "generic-smoothstep" as const;
 const COLOR_SEED_STRATEGY = "reuse-position-copy-seed" as const;
 const DIRTY_RECT_STRATEGY = "directional-jitter-bounds" as const;
+const SHAPE_MASK_SIZE = 2048;
 const BRUSH_UNIFORM_BYTES = 96;
 const DISPLAY_UNIFORM_BYTES = 32;
 
@@ -194,6 +198,8 @@ function average(values: readonly number[]): number {
 }
 
 export const defaultBrushSettings: BrushSettings = {
+  shape: "circle",
+  shapeScatter: 0,
   color: "#ff5b35",
   size: 96,
   spacingPercent: 1,
@@ -233,6 +239,9 @@ export class BrushEngine {
   private displayUniformBuffer!: GPUBuffer;
   private instanceBuffer!: GPUBuffer;
   private sampler!: GPUSampler;
+  private shapeMaskTexture!: GPUTexture;
+  private shapeMaskView!: GPUTextureView;
+  private shapeMaskSampler!: GPUSampler;
 
   private brushBindGroupLayout!: GPUBindGroupLayout;
   private displayBindGroupLayout!: GPUBindGroupLayout;
@@ -243,6 +252,8 @@ export class BrushEngine {
   private displayShaderModule!: GPUShaderModule;
   private normalPipeline!: GPURenderPipeline;
   private additivePipeline!: GPURenderPipeline;
+  private shapeNormalPipeline!: GPURenderPipeline;
+  private shapeAdditivePipeline!: GPURenderPipeline;
   private displayPipeline!: GPURenderPipeline;
 
   private readonly instanceUpload = new ArrayBuffer(MAX_STAMPS_PER_BATCH * STAMP_STRIDE_BYTES);
@@ -339,6 +350,8 @@ export class BrushEngine {
     this.settings = {
       ...this.settings,
       ...next,
+      shape: next.shape === "shape" || next.shape === "circle" ? next.shape : this.settings.shape,
+      shapeScatter: clamp(next.shapeScatter ?? this.settings.shapeScatter, 0, 1),
       count: clamp(Math.round(next.count ?? this.settings.count), 1, 24),
       size: clamp(next.size ?? this.settings.size, 4, 1500),
       spacingPercent: clamp(next.spacingPercent ?? this.settings.spacingPercent, 0.25, 25),
@@ -525,7 +538,12 @@ export class BrushEngine {
       "1 draw instanziata",
       `${this.settings.count} copie fisiche GPU per stamp base`,
       "geometria quad triangle-strip (4 vertici)",
-      "coverage fragment smoothstep generica",
+      this.settings.shape === "shape"
+        ? "coverage da maschera alpha 2048²"
+        : "coverage fragment smoothstep generica",
+      this.settings.shape === "shape"
+        ? `scatter rotazione ${(this.settings.shapeScatter * 100).toFixed(0)}%`
+        : "orientamento circolare invariato",
       "riuso copySeed per jitter colore per copia",
       "dirty rect direzionale conservativo",
     ].join(" · ");
@@ -718,6 +736,17 @@ export class BrushEngine {
       addressModeV: "clamp-to-edge",
     });
 
+    this.shapeMaskSampler = this.device.createSampler({
+      label: "Shape 2K mask sampler",
+      magFilter: "linear",
+      minFilter: "linear",
+      mipmapFilter: "linear",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
+    });
+    this.shapeMaskTexture = await this.createShapeMaskTexture();
+    this.shapeMaskView = this.shapeMaskTexture.createView({ label: "Shape 2K mask view" });
+
     this.brushBindGroupLayout = this.device.createBindGroupLayout({
       label: "Brush bind group layout",
       entries: [
@@ -730,6 +759,16 @@ export class BrushEngine {
           binding: 1,
           visibility: GPUShaderStage.VERTEX,
           buffer: { type: "read-only-storage" },
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float", viewDimension: "2d" },
+        },
+        {
+          binding: 3,
+          visibility: GPUShaderStage.FRAGMENT,
+          sampler: { type: "filtering" },
         },
       ],
     });
@@ -761,6 +800,8 @@ export class BrushEngine {
       entries: [
         { binding: 0, resource: { buffer: this.brushUniformBuffer } },
         { binding: 1, resource: { buffer: this.instanceBuffer } },
+        { binding: 2, resource: this.shapeMaskView },
+        { binding: 3, resource: this.shapeMaskSampler },
       ],
     });
 
@@ -790,6 +831,106 @@ export class BrushEngine {
       },
       primitive: { topology: "triangle-list" },
     });
+  }
+
+  private async createShapeMaskTexture(): Promise<GPUTexture> {
+    const response = await fetch(new URL("../Shape.png", import.meta.url));
+    if (!response.ok) {
+      throw new Error(`Impossibile caricare Shape.png (${response.status}).`);
+    }
+
+    const bitmap = await createImageBitmap(await response.blob(), {
+      colorSpaceConversion: "none",
+      premultiplyAlpha: "none",
+    });
+    let baseMask: Uint8Array;
+
+    try {
+      if (bitmap.width !== SHAPE_MASK_SIZE || bitmap.height !== SHAPE_MASK_SIZE) {
+        throw new Error(
+          `Shape.png deve restare ${SHAPE_MASK_SIZE}×${SHAPE_MASK_SIZE}px; trovata ${bitmap.width}×${bitmap.height}px.`,
+        );
+      }
+
+      const sourceCanvas = document.createElement("canvas");
+      sourceCanvas.width = SHAPE_MASK_SIZE;
+      sourceCanvas.height = SHAPE_MASK_SIZE;
+      const sourceContext = sourceCanvas.getContext("2d", { willReadFrequently: true });
+      if (!sourceContext) {
+        throw new Error("Impossibile leggere la maschera Shape.png.");
+      }
+      sourceContext.drawImage(bitmap, 0, 0);
+      const rgba = sourceContext.getImageData(0, 0, SHAPE_MASK_SIZE, SHAPE_MASK_SIZE).data;
+      baseMask = new Uint8Array(SHAPE_MASK_SIZE * SHAPE_MASK_SIZE);
+
+      for (let pixelIndex = 0, rgbaIndex = 0; pixelIndex < baseMask.length; pixelIndex += 1, rgbaIndex += 4) {
+        const luminance = Math.round(
+          rgba[rgbaIndex] * 0.2126
+          + rgba[rgbaIndex + 1] * 0.7152
+          + rgba[rgbaIndex + 2] * 0.0722,
+        );
+        baseMask[pixelIndex] = Math.round((luminance * rgba[rgbaIndex + 3]) / 255);
+      }
+    } finally {
+      bitmap.close();
+    }
+
+    const mipLevelCount = Math.log2(SHAPE_MASK_SIZE) + 1;
+    const texture = this.device.createTexture({
+      label: "Shape 2K white-times-alpha mask",
+      size: {
+        width: SHAPE_MASK_SIZE,
+        height: SHAPE_MASK_SIZE,
+        depthOrArrayLayers: 1,
+      },
+      mipLevelCount,
+      format: "r8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+
+    let levelMask = baseMask;
+    let levelSize = SHAPE_MASK_SIZE;
+    for (let mipLevel = 0; mipLevel < mipLevelCount; mipLevel += 1) {
+      const bytesPerRow = Math.ceil(levelSize / 256) * 256;
+      let upload = levelMask;
+      if (bytesPerRow !== levelSize) {
+        upload = new Uint8Array(bytesPerRow * levelSize);
+        for (let row = 0; row < levelSize; row += 1) {
+          upload.set(levelMask.subarray(row * levelSize, (row + 1) * levelSize), row * bytesPerRow);
+        }
+      }
+
+      this.device.queue.writeTexture(
+        { texture, mipLevel },
+        upload,
+        { offset: 0, bytesPerRow, rowsPerImage: levelSize },
+        { width: levelSize, height: levelSize, depthOrArrayLayers: 1 },
+      );
+
+      if (levelSize === 1) {
+        continue;
+      }
+
+      const nextSize = levelSize / 2;
+      const nextMask = new Uint8Array(nextSize * nextSize);
+      for (let y = 0; y < nextSize; y += 1) {
+        for (let x = 0; x < nextSize; x += 1) {
+          const sourceIndex = y * 2 * levelSize + x * 2;
+          nextMask[y * nextSize + x] = Math.round(
+            (
+              levelMask[sourceIndex]
+              + levelMask[sourceIndex + 1]
+              + levelMask[sourceIndex + levelSize]
+              + levelMask[sourceIndex + levelSize + 1]
+            ) / 4,
+          );
+        }
+      }
+      levelMask = nextMask;
+      levelSize = nextSize;
+    }
+
+    return texture;
   }
 
   private async recreateLayerResources(format: LayerFormat): Promise<void> {
@@ -875,6 +1016,68 @@ export class BrushEngine {
       primitive: { topology: "triangle-strip" },
     });
 
+    const shapeNormalPipeline = this.device.createRenderPipeline({
+      label: `Brush shape 2K normal ${format}`,
+      layout: brushPipelineLayout,
+      vertex: {
+        module: this.brushShaderModule,
+        entryPoint: "shapeVertexMain",
+      },
+      fragment: {
+        module: this.brushShaderModule,
+        entryPoint: "shapeFragmentMain",
+        targets: [
+          {
+            format,
+            blend: {
+              color: {
+                operation: "add",
+                srcFactor: "one",
+                dstFactor: "one-minus-src-alpha",
+              },
+              alpha: {
+                operation: "add",
+                srcFactor: "one",
+                dstFactor: "one-minus-src-alpha",
+              },
+            },
+          },
+        ],
+      },
+      primitive: { topology: "triangle-strip" },
+    });
+
+    const shapeAdditivePipeline = this.device.createRenderPipeline({
+      label: `Brush shape 2K additive ${format}`,
+      layout: brushPipelineLayout,
+      vertex: {
+        module: this.brushShaderModule,
+        entryPoint: "shapeVertexMain",
+      },
+      fragment: {
+        module: this.brushShaderModule,
+        entryPoint: "shapeFragmentMain",
+        targets: [
+          {
+            format,
+            blend: {
+              color: {
+                operation: "add",
+                srcFactor: "one",
+                dstFactor: "one",
+              },
+              alpha: {
+                operation: "add",
+                srcFactor: "one",
+                dstFactor: "one-minus-src-alpha",
+              },
+            },
+          },
+        ],
+      },
+      primitive: { topology: "triangle-strip" },
+    });
+
     const validationError = await this.device.popErrorScope();
     if (validationError) {
       texture.destroy();
@@ -895,6 +1098,8 @@ export class BrushEngine {
     this.layerView = view;
     this.normalPipeline = normalPipeline;
     this.additivePipeline = additivePipeline;
+    this.shapeNormalPipeline = shapeNormalPipeline;
+    this.shapeAdditivePipeline = shapeAdditivePipeline;
     this.displayBindGroup = displayBindGroup;
     this.layerFormat = format;
 
@@ -925,6 +1130,7 @@ export class BrushEngine {
     floats[15] = this.settings.pressureOpacity;
     floats[16] = this.settings.positionJitterLinear;
     floats[17] = this.settings.positionJitterLateral;
+    floats[18] = this.settings.shapeScatter;
     unsigned[20] = this.settings.count >>> 0;
     unsigned[21] = this.settings.jitterPerCopy ? 1 : 0;
     unsigned[22] = this.settings.blendMode === "additive" ? 1 : 0;
@@ -1151,7 +1357,10 @@ export class BrushEngine {
 
       if (stamps.length > 0 && dirtyRect) {
         scissorPixels = dirtyRect.width * dirtyRect.height;
-        brushPass.setPipeline(this.settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline);
+        const pipeline = this.settings.shape === "shape"
+          ? this.settings.blendMode === "additive" ? this.shapeAdditivePipeline : this.shapeNormalPipeline
+          : this.settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline;
+        brushPass.setPipeline(pipeline);
         brushPass.setBindGroup(0, this.brushBindGroup);
         brushPass.setScissorRect(dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height);
         brushPass.draw(STAMP_VERTICES_PER_COPY, stamps.length * this.settings.count, 0, 0);
@@ -1198,6 +1407,12 @@ export class BrushEngine {
     let minimumY = LAYER_SIZE;
     let maximumX = 0;
     let maximumY = 0;
+    const maximumShapeAngle = Math.PI * this.settings.shapeScatter;
+    const shapeExtentFactor = this.settings.shape === "shape"
+      ? maximumShapeAngle >= Math.PI * 0.25
+        ? Math.SQRT2
+        : Math.cos(maximumShapeAngle) + Math.sin(maximumShapeAngle)
+      : 1;
 
     for (let index = 0; index < stamps.length; index += 1) {
       const stamp = stamps[index];
@@ -1219,22 +1434,23 @@ export class BrushEngine {
       const directionLength = Math.hypot(packedDirectionX, packedDirectionY);
       const linearReach = packedRadius * 2 * this.settings.positionJitterLinear;
       const lateralReach = packedRadius * 2 * this.settings.positionJitterLateral;
+      const brushReach = packedRadius * shapeExtentFactor;
       let reachX: number;
       let reachY: number;
 
       if (directionLength > 0.0002) {
         const directionX = packedDirectionX / directionLength;
         const directionY = packedDirectionY / directionLength;
-        reachX = packedRadius
+        reachX = brushReach
           + Math.abs(directionX) * linearReach
           + Math.abs(directionY) * lateralReach
           + 2;
-        reachY = packedRadius
+        reachY = brushReach
           + Math.abs(directionY) * linearReach
           + Math.abs(directionX) * lateralReach
           + 2;
       } else {
-        const isotropicReach = packedRadius + linearReach + lateralReach + 2;
+        const isotropicReach = brushReach + linearReach + lateralReach + 2;
         reachX = isotropicReach;
         reachY = isotropicReach;
       }

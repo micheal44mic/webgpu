@@ -25,6 +25,19 @@
         <section>
           <h2>Pennello</h2>
 
+          <label class="control">
+            <span>Forma</span>
+            <select id="brushShape">
+              <option value="circle">Cerchio</option>
+              <option value="shape">Shape 2K</option>
+            </select>
+          </label>
+
+          <label class="control">
+            <span>Scatter rotazione <output id="shapeScatterOut">0%</output></span>
+            <input id="shapeScatter" type="range" min="0" max="100" step="1" value="0" />
+          </label>
+
           <label class="control color-control">
             <span>Colore</span>
             <input id="brushColor" type="color" value="#ff5b35" />

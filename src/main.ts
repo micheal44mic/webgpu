@@ -135,6 +135,8 @@ let humanStrokeSaving = false;
 
 function readBrushSettings(): BrushSettings {
   return {
+    shape: element<HTMLSelectElement>("brushShape").value as BrushSettings["shape"],
+    shapeScatter: rangeValue("shapeScatter") / 100,
     color: element<HTMLInputElement>("brushColor").value,
     size: rangeValue("brushSize"),
     spacingPercent: rangeValue("spacing"),
@@ -157,6 +159,7 @@ function readBrushSettings(): BrushSettings {
 }
 
 function updateControlOutputs(): void {
+  element<HTMLOutputElement>("shapeScatterOut").value = `${rangeValue("shapeScatter").toFixed(0)}%`;
   element<HTMLOutputElement>("brushSizeOut").value = `${rangeValue("brushSize").toFixed(0)} px`;
   element<HTMLOutputElement>("spacingOut").value = `${rangeValue("spacing").toFixed(2)}%`;
   element<HTMLOutputElement>("countOut").value = rangeValue("count").toFixed(0);
@@ -292,7 +295,17 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
   if (parsed.version !== 1 || !parsed.settings || !Array.isArray(parsed.points) || parsed.points.length === 0) {
     return null;
   }
-  return parsed as HumanStrokeBenchmark;
+  const benchmark = parsed as HumanStrokeBenchmark;
+  return {
+    ...benchmark,
+    settings: {
+      ...benchmark.settings,
+      shape: benchmark.settings.shape === "shape" ? "shape" : "circle",
+      shapeScatter: Number.isFinite(benchmark.settings.shapeScatter)
+        ? Math.min(1, Math.max(0, benchmark.settings.shapeScatter))
+        : 0,
+    },
+  };
 }
 
 function loadLegacyHumanStrokeBenchmark(): HumanStrokeBenchmark | null {
@@ -382,6 +395,8 @@ function setControlValue(id: string, value: string | number): void {
 }
 
 function applySettingsToControls(settings: BrushSettings): void {
+  setControlValue("brushShape", settings.shape === "shape" ? "shape" : "circle");
+  setControlValue("shapeScatter", (settings.shapeScatter ?? 0) * 100);
   setControlValue("brushColor", settings.color);
   setControlValue("brushSize", settings.size);
   setControlValue("spacing", settings.spacingPercent);
@@ -404,6 +419,8 @@ function applySettingsToControls(settings: BrushSettings): void {
 }
 
 function applyHumanStrokePreset(): BrushSettings {
+  setControlValue("brushShape", "circle");
+  setControlValue("shapeScatter", 0);
   setControlValue("brushSize", 750);
   setControlValue("spacing", 1);
   setControlValue("count", 16);
@@ -443,6 +460,8 @@ function describeHumanStrokeBenchmark(benchmark: HumanStrokeBenchmark): string {
 }
 
 const brushControlIds = [
+  "brushShape",
+  "shapeScatter",
   "brushColor",
   "brushSize",
   "spacing",
