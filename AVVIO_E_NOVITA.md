@@ -74,3 +74,15 @@ La sezione **Benchmark** include un test ripetibile basato su una tua pennellata
 La registrazione applica il preset di confronto: dimensione `750 px`, spacing `1%`, Count `16`, Flow `100%`, Hardness `100%`, Blend intensity al massimo (`4×`), Hue al massimo (`180°`), Saturation `100%`, color jitter per copia e jitter Laterale/Lineare al `100%`. Pressure → size e Pressure → alpha sono entrambi a `0%`, quindi la pressione non influenza il test.
 
 La prima registrazione viene fissata come tratto di riferimento centrale dell'app: ogni PC, iPad e telefono scarica e riproduce gli stessi campioni, tempi, coordinate e seed. Alla fine di ogni Play compaiono durata, numero di campioni, stamps base, copie fisiche, tempo di coda GPU e ultimo CPU frame. Prima di ogni Play il seed del jitter viene resettato, quindi la casualità resta identica tra le ripetizioni.
+
+## Registro dei test
+
+Ogni **Play tratto registrato** salva una run con data/ora, browser e dispositivo, layer/canvas, timing dell'input, stamps/copie, tempi CPU (generazione, packing, upload, encoding e submit), intervalli di frame e coda GPU. Le run restano nel registro centrale dell'app.
+
+Per copiarle nel file del progetto esegui:
+
+```bash
+npm run benchmark:sync
+```
+
+Il comando aggiorna `benchmarks/results.json`. Il sito pubblicato non può scrivere nel filesystem locale del progetto, perciò la sincronizzazione è il passaggio sicuro che materializza il registro nel JSON modificabile e versionabile.

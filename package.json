@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build && node scripts/prepare-sites-build.mjs",
-    "preview": "vite preview --host 0.0.0.0"
+    "preview": "vite preview --host 0.0.0.0",
+    "benchmark:sync": "node scripts/sync-benchmark-runs.mjs"
   },
   "devDependencies": {
     "@webgpu/types": "0.1.71",

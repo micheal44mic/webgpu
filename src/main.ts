@@ -6,6 +6,7 @@ import {
   type LayerPoint,
   type LayerFormat,
   type PointerSample,
+  type StrokePerformanceProfile,
 } from "./brush-engine";
 
 function element<T extends HTMLElement>(id: string): T {
@@ -52,6 +53,55 @@ interface HumanStrokeRecording {
 
 const LEGACY_HUMAN_STROKE_STORAGE_KEY = "webgpu-brush-engine.human-stroke.v1";
 const HUMAN_STROKE_API_URL = "/api/human-stroke";
+const BENCHMARK_RUNS_API_URL = "/api/benchmark-runs";
+
+interface BenchmarkRun {
+  version: 1;
+  recordedAt: string;
+  benchmark: {
+    capturedAt: string;
+    traceFingerprint: string;
+    pointCount: number;
+    traceDurationMs: number;
+    pathLengthPx: number;
+    averageSpeedPxPerSecond: number;
+    peakSpeedPxPerSecond: number;
+    sampleGapP95Ms: number;
+    sampleGapMaxMs: number;
+    inputGapsOver33Ms: number;
+    settings: BrushSettings;
+  };
+  playback: {
+    inputDeliveryMs: number;
+    inputDelayP50Ms: number;
+    inputDelayP95Ms: number;
+    inputDelayMaxMs: number;
+    inputToGpuCompletionMs: number;
+    endToPresentedMs: number;
+  };
+  performance: StrokePerformanceProfile;
+  environment: {
+    userAgent: string;
+    platform: string;
+    language: string;
+    maxTouchPoints: number;
+    devicePixelRatio: number;
+    screenWidth: number;
+    screenHeight: number;
+    viewportWidth: number;
+    viewportHeight: number;
+    hardwareConcurrency: number | null;
+    deviceMemoryGiB: number | null;
+    connection: string | null;
+    canvasWidth: number;
+    canvasHeight: number;
+    layerSize: number;
+    layerFormat: LayerFormat;
+    layerMemoryMiB: number;
+    gpuLabel: string;
+    timestampQueriesSupported: boolean;
+  };
+}
 
 const engine = new BrushEngine(canvas, {
   onStatus(message, kind) {
@@ -120,6 +170,104 @@ function applyBrushControls(): void {
 
 function formatDuration(milliseconds: number): string {
   return `${(milliseconds / 1000).toFixed(2)} s`;
+}
+
+function percentile(values: readonly number[], ratio: number): number {
+  if (values.length === 0) {
+    return 0;
+  }
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * ratio) - 1))];
+}
+
+function nextAnimationFrame(): Promise<number> {
+  return new Promise((resolve) => requestAnimationFrame(resolve));
+}
+
+function fingerprintHumanStroke(points: readonly HumanStrokePoint[]): string {
+  let hash = 0x811c9dc5;
+  for (const point of points) {
+    for (const value of [
+      Math.round(point.x * 10),
+      Math.round(point.y * 10),
+      Math.round(point.pressure * 1_000),
+      Math.round(point.timeMs * 10),
+    ]) {
+      hash = Math.imul(hash ^ value, 0x01000193) >>> 0;
+    }
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+function summarizeHumanStrokeMotion(points: readonly HumanStrokePoint[]): {
+  pathLengthPx: number;
+  averageSpeedPxPerSecond: number;
+  peakSpeedPxPerSecond: number;
+  sampleGapP95Ms: number;
+  sampleGapMaxMs: number;
+  inputGapsOver33Ms: number;
+} {
+  let pathLengthPx = 0;
+  let peakSpeedPxPerSecond = 0;
+  const sampleGaps: number[] = [];
+
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const current = points[index];
+    const gapMs = Math.max(0, current.timeMs - previous.timeMs);
+    const distance = Math.hypot(current.x - previous.x, current.y - previous.y);
+    pathLengthPx += distance;
+    sampleGaps.push(gapMs);
+    if (gapMs > 0) {
+      peakSpeedPxPerSecond = Math.max(peakSpeedPxPerSecond, (distance / gapMs) * 1_000);
+    }
+  }
+
+  const traceDurationMs = points.at(-1)?.timeMs ?? 0;
+  return {
+    pathLengthPx,
+    averageSpeedPxPerSecond: traceDurationMs > 0 ? (pathLengthPx / traceDurationMs) * 1_000 : 0,
+    peakSpeedPxPerSecond,
+    sampleGapP95Ms: percentile(sampleGaps, 0.95),
+    sampleGapMaxMs: sampleGaps.length === 0 ? 0 : Math.max(...sampleGaps),
+    inputGapsOver33Ms: sampleGaps.filter((gapMs) => gapMs > 33).length,
+  };
+}
+
+function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
+  const navigatorWithMetrics = navigator as Navigator & {
+    deviceMemory?: number;
+    connection?: { effectiveType?: string; type?: string };
+  };
+  const engineEnvironment = engine.getBenchmarkEnvironment();
+  return {
+    userAgent: navigator.userAgent,
+    platform: navigator.platform,
+    language: navigator.language,
+    maxTouchPoints: navigator.maxTouchPoints,
+    devicePixelRatio: window.devicePixelRatio || 1,
+    screenWidth: window.screen.width,
+    screenHeight: window.screen.height,
+    viewportWidth: window.innerWidth,
+    viewportHeight: window.innerHeight,
+    hardwareConcurrency: navigator.hardwareConcurrency || null,
+    deviceMemoryGiB: navigatorWithMetrics.deviceMemory ?? null,
+    connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
+    ...engineEnvironment,
+  };
+}
+
+async function saveBenchmarkRun(run: BenchmarkRun): Promise<number> {
+  const response = await fetch(BENCHMARK_RUNS_API_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(run),
+  });
+  if (!response.ok) {
+    throw new Error("Il risultato è visibile, ma non è stato possibile aggiungerlo al registro.");
+  }
+  const payload = await response.json() as { id?: unknown };
+  return typeof payload.id === "number" ? payload.id : 0;
 }
 
 function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null {
@@ -455,8 +603,10 @@ async function replayHumanStroke(): Promise<void> {
     const before = engine.getStats();
     const replayStart = performance.now();
     const lastPoint = benchmark.points[benchmark.points.length - 1];
+    const inputDelays: number[] = [];
     let nextPointIndex = 1;
 
+    engine.startStrokePerformanceProfile();
     engine.beginStrokeAtLayer(benchmark.points[0]);
 
     await new Promise<void>((resolve) => {
@@ -468,6 +618,7 @@ async function replayHumanStroke(): Promise<void> {
           nextPointIndex < benchmark.points.length &&
           benchmark.points[nextPointIndex].timeMs <= elapsed
         ) {
+          inputDelays.push(Math.max(0, elapsed - benchmark.points[nextPointIndex].timeMs));
           duePoints.push(benchmark.points[nextPointIndex]);
           nextPointIndex += 1;
         }
@@ -491,20 +642,53 @@ async function replayHumanStroke(): Promise<void> {
 
     const inputFinishedAt = performance.now();
     await engine.waitForIdle();
-    const completedAt = performance.now();
+    const gpuCompletedAt = performance.now();
+    await nextAnimationFrame();
+    const presentedAt = performance.now();
+    const performanceProfile = engine.finishStrokePerformanceProfile();
+    if (!performanceProfile) {
+      throw new Error("Profilo del tratto non disponibile.");
+    }
     const after = engine.getStats();
     const baseStamps = Math.max(0, after.totalBaseStamps - before.totalBaseStamps);
     const copies = baseStamps * benchmark.settings.count;
+    const playback = {
+      inputDeliveryMs: inputFinishedAt - replayStart,
+      inputDelayP50Ms: percentile(inputDelays, 0.5),
+      inputDelayP95Ms: percentile(inputDelays, 0.95),
+      inputDelayMaxMs: inputDelays.length === 0 ? 0 : Math.max(...inputDelays),
+      inputToGpuCompletionMs: Math.max(0, gpuCompletedAt - inputFinishedAt),
+      endToPresentedMs: Math.max(0, presentedAt - replayStart),
+    };
+    const run: BenchmarkRun = {
+      version: 1,
+      recordedAt: new Date().toISOString(),
+      benchmark: {
+        capturedAt: benchmark.capturedAt,
+        traceFingerprint: fingerprintHumanStroke(benchmark.points),
+        pointCount: benchmark.points.length,
+        traceDurationMs: lastPoint.timeMs,
+        ...summarizeHumanStrokeMotion(benchmark.points),
+        settings: benchmark.settings,
+      },
+      playback,
+      performance: performanceProfile,
+      environment: collectBenchmarkEnvironment(),
+    };
+    const runId = await saveBenchmarkRun(run);
 
     humanStrokeResult.textContent = [
       `Tratto ${formatDuration(lastPoint.timeMs)}`,
       `${formatInteger(benchmark.points.length)} campioni`,
       `${formatInteger(baseStamps)} stamps base`,
       `${formatInteger(copies)} copie fisiche`,
-      `coda GPU ${Math.max(0, completedAt - inputFinishedAt).toFixed(2)} ms`,
-      `CPU frame ${after.lastCpuFrameMs.toFixed(2)} ms`,
+      `coda GPU ${playback.inputToGpuCompletionMs.toFixed(2)} ms`,
+      `CPU p95 ${performanceProfile.cpuFrameP95Ms.toFixed(2)} ms`,
+      `presentazione ${playback.endToPresentedMs.toFixed(2)} ms`,
+      runId > 0 ? `run #${runId} salvata` : "run salvata",
     ].join(" · ");
   } catch (error) {
+    engine.finishStrokePerformanceProfile();
     humanStrokeResult.textContent = error instanceof Error ? error.message : String(error);
   } finally {
     humanStrokeReplaying = false;

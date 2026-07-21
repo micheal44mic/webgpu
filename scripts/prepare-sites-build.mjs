@@ -37,6 +37,8 @@ await writeFile(
 const HUMAN_STROKE_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS human_stroke_benchmark (id TEXT PRIMARY KEY NOT NULL CHECK (id = 'canonical'), payload_json TEXT NOT NULL, captured_at TEXT NOT NULL)";
 const HUMAN_STROKE_ID = "canonical";
 const HUMAN_STROKE_PRESET_REVISION = 2;
+const BENCHMARK_RUNS_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS benchmark_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)";
+const BENCHMARK_RUNS_INDEX_SQL = "CREATE INDEX IF NOT EXISTS benchmark_runs_created_at_idx ON benchmark_runs (created_at DESC)";
 
 function jsonResponse(payload, status = 200) {
   return new Response(JSON.stringify(payload), {
@@ -50,6 +52,13 @@ function jsonResponse(payload, status = 200) {
 
 async function ensureHumanStrokeSchema(db) {
   await db.prepare(HUMAN_STROKE_SCHEMA_SQL).run();
+}
+
+async function ensureBenchmarkRunsSchema(db) {
+  await db.batch([
+    db.prepare(BENCHMARK_RUNS_SCHEMA_SQL),
+    db.prepare(BENCHMARK_RUNS_INDEX_SQL),
+  ]);
 }
 
 function normalizeHumanStrokeBenchmark(payload) {
@@ -158,12 +167,73 @@ async function handleHumanStroke(request, env) {
   return new Response(null, { status: 405, headers: { Allow: "GET, POST" } });
 }
 
+async function handleBenchmarkRuns(request, env) {
+  if (!env.DB) {
+    return jsonResponse({ error: "Benchmark storage non disponibile." }, 503);
+  }
+
+  await ensureBenchmarkRunsSchema(env.DB);
+
+  if (request.method === "POST") {
+    const contentLength = Number(request.headers.get("Content-Length") ?? "0");
+    if (contentLength > 100_000) {
+      return jsonResponse({ error: "Il risultato del benchmark è troppo grande." }, 413);
+    }
+
+    const payload = await request.json();
+    if (
+      !payload ||
+      payload.version !== 1 ||
+      !payload.benchmark ||
+      !payload.playback ||
+      !payload.performance ||
+      !payload.environment
+    ) {
+      return jsonResponse({ error: "Il risultato del benchmark non è valido." }, 400);
+    }
+
+    const payloadJson = JSON.stringify(payload);
+    if (payloadJson.length > 100_000) {
+      return jsonResponse({ error: "Il risultato del benchmark è troppo grande." }, 413);
+    }
+
+    const createdAt = new Date().toISOString();
+    const insert = await env.DB
+      .prepare("INSERT INTO benchmark_runs (created_at, payload_json) VALUES (?1, ?2)")
+      .bind(createdAt, payloadJson)
+      .run();
+    return jsonResponse({ id: Number(insert.meta?.last_row_id ?? 0), createdAt }, 201);
+  }
+
+  if (request.method === "GET") {
+    const url = new URL(request.url);
+    const requestedLimit = Number(url.searchParams.get("limit") ?? "1000");
+    const limit = Math.min(1000, Math.max(1, Number.isFinite(requestedLimit) ? Math.floor(requestedLimit) : 1000));
+    const result = await env.DB
+      .prepare("SELECT id, created_at, payload_json FROM benchmark_runs ORDER BY id ASC LIMIT ?1")
+      .bind(limit)
+      .all();
+    const runs = (result.results ?? []).map((record) => ({
+      id: Number(record.id),
+      createdAt: record.created_at,
+      ...JSON.parse(record.payload_json),
+    }));
+    return jsonResponse({ version: 1, exportedAt: new Date().toISOString(), runs });
+  }
+
+  return new Response(null, { status: 405, headers: { Allow: "GET, POST" } });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
     if (url.pathname === "/api/human-stroke") {
       return handleHumanStroke(request, env);
+    }
+
+    if (url.pathname === "/api/benchmark-runs") {
+      return handleBenchmarkRuns(request, env);
     }
 
     if (

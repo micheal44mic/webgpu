@@ -50,6 +50,28 @@ export interface BenchmarkResult {
   strategy: string;
 }
 
+export interface StrokePerformanceProfile {
+  baseStamps: number;
+  physicalCopies: number;
+  renderFrames: number;
+  brushBatches: number;
+  largestBatchStamps: number;
+  estimatedScissorPixels: number;
+  stampGenerationMs: number;
+  stampPackingMs: number;
+  instanceUploadMs: number;
+  brushEncodingMs: number;
+  displayEncodingMs: number;
+  commandSubmitMs: number;
+  cpuFrameP50Ms: number;
+  cpuFrameP95Ms: number;
+  cpuFrameMaxMs: number;
+  renderIntervalP50Ms: number;
+  renderIntervalP95Ms: number;
+  renderIntervalMaxMs: number;
+  delayedRenderFrames: number;
+}
+
 export interface EngineCallbacks {
   onStatus?: (message: string, kind: "working" | "ok" | "error") => void;
   onStats?: (stats: EngineStats) => void;
@@ -83,11 +105,52 @@ interface DirtyRect {
   height: number;
 }
 
+interface SubmitTiming {
+  totalCpuMs: number;
+  stampPackingMs: number;
+  instanceUploadMs: number;
+  brushEncodingMs: number;
+  displayEncodingMs: number;
+  commandSubmitMs: number;
+  scissorPixels: number;
+}
+
+interface MutableStrokePerformanceProfile {
+  baseStamps: number;
+  physicalCopies: number;
+  renderFrames: number;
+  brushBatches: number;
+  largestBatchStamps: number;
+  estimatedScissorPixels: number;
+  stampGenerationMs: number;
+  stampPackingMs: number;
+  instanceUploadMs: number;
+  brushEncodingMs: number;
+  displayEncodingMs: number;
+  commandSubmitMs: number;
+  cpuFrameMs: number[];
+  renderIntervalMs: number[];
+  previousFrameTimestamp: number | null;
+}
+
 const LAYER_SIZE = 4096;
 const STAMP_STRIDE_BYTES = 32;
 const MAX_STAMPS_PER_BATCH = 65_536;
 const BRUSH_UNIFORM_BYTES = 96;
 const DISPLAY_UNIFORM_BYTES = 32;
+
+function percentile(values: readonly number[], ratio: number): number {
+  if (values.length === 0) {
+    return 0;
+  }
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * ratio) - 1));
+  return sorted[index];
+}
+
+function maximum(values: readonly number[]): number {
+  return values.length === 0 ? 0 : Math.max(...values);
+}
 
 export const defaultBrushSettings: BrushSettings = {
   color: "#ff5b35",
@@ -167,6 +230,7 @@ export class BrushEngine {
   private lastCpuFrameMs = 0;
   private renderTimestamps: number[] = [];
   private gpuLabel = "GPU WebGPU";
+  private activeStrokeProfile: MutableStrokePerformanceProfile | null = null;
 
   constructor(canvas: HTMLCanvasElement, callbacks: EngineCallbacks = {}) {
     this.canvas = canvas;
@@ -401,7 +465,7 @@ export class BrushEngine {
     const stamps = this.generateBenchmarkStamps(count);
 
     const completionStart = performance.now();
-    const cpuSubmitMs = this.submitImmediate(stamps, true);
+    const cpuSubmitMs = this.submitImmediate(stamps, true).totalCpuMs;
     this.clearRequested = false;
     this.displayDirty = false;
     await this.device.queue.onSubmittedWorkDone();
@@ -468,6 +532,76 @@ export class BrushEngine {
 
   resetStrokeRandomSeed(): void {
     this.seedSequence = 1;
+  }
+
+  startStrokePerformanceProfile(): void {
+    this.activeStrokeProfile = {
+      baseStamps: 0,
+      physicalCopies: 0,
+      renderFrames: 0,
+      brushBatches: 0,
+      largestBatchStamps: 0,
+      estimatedScissorPixels: 0,
+      stampGenerationMs: 0,
+      stampPackingMs: 0,
+      instanceUploadMs: 0,
+      brushEncodingMs: 0,
+      displayEncodingMs: 0,
+      commandSubmitMs: 0,
+      cpuFrameMs: [],
+      renderIntervalMs: [],
+      previousFrameTimestamp: null,
+    };
+  }
+
+  finishStrokePerformanceProfile(): StrokePerformanceProfile | null {
+    const profile = this.activeStrokeProfile;
+    this.activeStrokeProfile = null;
+    if (!profile) {
+      return null;
+    }
+
+    return {
+      baseStamps: profile.baseStamps,
+      physicalCopies: profile.physicalCopies,
+      renderFrames: profile.renderFrames,
+      brushBatches: profile.brushBatches,
+      largestBatchStamps: profile.largestBatchStamps,
+      estimatedScissorPixels: profile.estimatedScissorPixels,
+      stampGenerationMs: profile.stampGenerationMs,
+      stampPackingMs: profile.stampPackingMs,
+      instanceUploadMs: profile.instanceUploadMs,
+      brushEncodingMs: profile.brushEncodingMs,
+      displayEncodingMs: profile.displayEncodingMs,
+      commandSubmitMs: profile.commandSubmitMs,
+      cpuFrameP50Ms: percentile(profile.cpuFrameMs, 0.5),
+      cpuFrameP95Ms: percentile(profile.cpuFrameMs, 0.95),
+      cpuFrameMaxMs: maximum(profile.cpuFrameMs),
+      renderIntervalP50Ms: percentile(profile.renderIntervalMs, 0.5),
+      renderIntervalP95Ms: percentile(profile.renderIntervalMs, 0.95),
+      renderIntervalMaxMs: maximum(profile.renderIntervalMs),
+      delayedRenderFrames: profile.renderIntervalMs.filter((duration) => duration > 20).length,
+    };
+  }
+
+  getBenchmarkEnvironment(): {
+    canvasWidth: number;
+    canvasHeight: number;
+    layerSize: number;
+    layerFormat: LayerFormat;
+    layerMemoryMiB: number;
+    gpuLabel: string;
+    timestampQueriesSupported: boolean;
+  } {
+    return {
+      canvasWidth: this.canvas.width,
+      canvasHeight: this.canvas.height,
+      layerSize: LAYER_SIZE,
+      layerFormat: this.layerFormat,
+      layerMemoryMiB: this.layerFormat === "rgba16float" ? 128 : 64,
+      gpuLabel: this.gpuLabel,
+      timestampQueriesSupported: this.device?.features.has("timestamp-query") ?? false,
+    };
   }
 
   private async createStaticResources(): Promise<void> {
@@ -751,6 +885,7 @@ export class BrushEngine {
   }
 
   private appendPoint(point: LayerPoint): void {
+    const generationStart = this.activeStrokeProfile ? performance.now() : 0;
     const stroke = this.activeStroke;
     if (!stroke) {
       return;
@@ -763,6 +898,7 @@ export class BrushEngine {
 
     if (segmentLength <= 0.0001) {
       stroke.lastInput = point;
+      this.recordStampGenerationTime(generationStart);
       return;
     }
 
@@ -793,6 +929,7 @@ export class BrushEngine {
     distanceSinceStamp += Math.max(0, segmentLength - distanceAlongSegment);
     stroke.lastInput = point;
     stroke.distanceSinceStamp = distanceSinceStamp;
+    this.recordStampGenerationTime(generationStart);
   }
 
   private emitStamp(point: LayerPoint, directionX: number, directionY: number): void {
@@ -821,6 +958,9 @@ export class BrushEngine {
       directionX,
       directionY,
     });
+    if (this.activeStrokeProfile) {
+      this.activeStrokeProfile.baseStamps += 1;
+    }
     this.displayDirty = true;
     this.requestRender();
   }
@@ -852,8 +992,9 @@ export class BrushEngine {
 
     const clearLayer = this.clearRequested;
     const start = performance.now();
-    this.submitImmediate(batch, clearLayer);
+    const timing = this.submitImmediate(batch, clearLayer);
     this.lastCpuFrameMs = performance.now() - start;
+    this.recordStrokeFrameTiming(timestamp, batch.length, timing);
 
     this.clearRequested = false;
     this.displayDirty = false;
@@ -867,14 +1008,23 @@ export class BrushEngine {
     }
   }
 
-  private submitImmediate(stamps: readonly Stamp[], clearLayer: boolean): number {
+  private submitImmediate(stamps: readonly Stamp[], clearLayer: boolean): SubmitTiming {
     const cpuStart = performance.now();
     const encoder = this.device.createCommandEncoder({ label: "Brush frame encoder" });
+    let stampPackingMs = 0;
+    let instanceUploadMs = 0;
+    let brushEncodingMs = 0;
+    let displayEncodingMs = 0;
+    let commandSubmitMs = 0;
+    let scissorPixels = 0;
 
     if (clearLayer || stamps.length > 0) {
       let dirtyRect: DirtyRect | null = null;
       if (stamps.length > 0) {
+        const packingStart = performance.now();
         dirtyRect = this.packStamps(stamps);
+        stampPackingMs = performance.now() - packingStart;
+        const uploadStart = performance.now();
         this.device.queue.writeBuffer(
           this.instanceBuffer,
           0,
@@ -882,8 +1032,10 @@ export class BrushEngine {
           0,
           stamps.length * STAMP_STRIDE_BYTES,
         );
+        instanceUploadMs = performance.now() - uploadStart;
       }
 
+      const brushEncodingStart = performance.now();
       const brushPass = encoder.beginRenderPass({
         label: "Paint into 4096² layer",
         colorAttachments: [
@@ -897,14 +1049,17 @@ export class BrushEngine {
       });
 
       if (stamps.length > 0 && dirtyRect) {
+        scissorPixels = dirtyRect.width * dirtyRect.height;
         brushPass.setPipeline(this.settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline);
         brushPass.setBindGroup(0, this.brushBindGroup);
         brushPass.setScissorRect(dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height);
         brushPass.draw(6, stamps.length * this.settings.count, 0, 0);
       }
       brushPass.end();
+      brushEncodingMs = performance.now() - brushEncodingStart;
     }
 
+    const displayEncodingStart = performance.now();
     this.writeDisplayUniforms();
     const displayPass = encoder.beginRenderPass({
       label: "Present paint layer",
@@ -921,9 +1076,20 @@ export class BrushEngine {
     displayPass.setBindGroup(0, this.displayBindGroup);
     displayPass.draw(3, 1, 0, 0);
     displayPass.end();
+    displayEncodingMs = performance.now() - displayEncodingStart;
 
+    const submitStart = performance.now();
     this.device.queue.submit([encoder.finish()]);
-    return performance.now() - cpuStart;
+    commandSubmitMs = performance.now() - submitStart;
+    return {
+      totalCpuMs: performance.now() - cpuStart,
+      stampPackingMs,
+      instanceUploadMs,
+      brushEncodingMs,
+      displayEncodingMs,
+      commandSubmitMs,
+      scissorPixels,
+    };
   }
 
   private packStamps(stamps: readonly Stamp[]): DirtyRect | null {
@@ -994,6 +1160,38 @@ export class BrushEngine {
     const cutoff = timestamp - 1000;
     while (this.renderTimestamps.length > 0 && this.renderTimestamps[0] < cutoff) {
       this.renderTimestamps.shift();
+    }
+  }
+
+  private recordStampGenerationTime(startTime: number): void {
+    if (startTime > 0 && this.activeStrokeProfile) {
+      this.activeStrokeProfile.stampGenerationMs += performance.now() - startTime;
+    }
+  }
+
+  private recordStrokeFrameTiming(timestamp: number, batchSize: number, timing: SubmitTiming): void {
+    const profile = this.activeStrokeProfile;
+    if (!profile) {
+      return;
+    }
+
+    if (profile.previousFrameTimestamp !== null) {
+      profile.renderIntervalMs.push(Math.max(0, timestamp - profile.previousFrameTimestamp));
+    }
+    profile.previousFrameTimestamp = timestamp;
+    profile.renderFrames += 1;
+    profile.cpuFrameMs.push(this.lastCpuFrameMs);
+    profile.stampPackingMs += timing.stampPackingMs;
+    profile.instanceUploadMs += timing.instanceUploadMs;
+    profile.brushEncodingMs += timing.brushEncodingMs;
+    profile.displayEncodingMs += timing.displayEncodingMs;
+    profile.commandSubmitMs += timing.commandSubmitMs;
+    profile.estimatedScissorPixels += timing.scissorPixels;
+
+    if (batchSize > 0) {
+      profile.brushBatches += 1;
+      profile.physicalCopies += batchSize * this.settings.count;
+      profile.largestBatchStamps = Math.max(profile.largestBatchStamps, batchSize);
     }
   }
 
