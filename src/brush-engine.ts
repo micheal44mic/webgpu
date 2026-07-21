@@ -65,6 +65,18 @@ export interface StrokePerformanceProfile {
   brushEncodingMs: number;
   displayEncodingMs: number;
   commandSubmitMs: number;
+  submitImmediateP50Ms: number;
+  submitImmediateP95Ms: number;
+  submitImmediateMaxMs: number;
+  renderFrameTotalP50Ms: number;
+  renderFrameTotalP95Ms: number;
+  renderFrameTotalMaxMs: number;
+  renderFrameOverheadP50Ms: number;
+  renderFrameOverheadP95Ms: number;
+  renderFrameOverheadMaxMs: number;
+  resizeCanvasTotalMs: number;
+  batchExtractionTotalMs: number;
+  statsPublishTotalMs: number;
   cpuFrameP50Ms: number;
   cpuFrameP95Ms: number;
   cpuFrameMaxMs: number;
@@ -118,6 +130,13 @@ interface SubmitTiming {
   scissorPixels: number;
 }
 
+interface RenderFrameTiming {
+  totalCpuMs: number;
+  resizeCanvasMs: number;
+  batchExtractionMs: number;
+  statsPublishMs: number;
+}
+
 interface MutableStrokePerformanceProfile {
   baseStamps: number;
   physicalCopies: number;
@@ -132,6 +151,11 @@ interface MutableStrokePerformanceProfile {
   displayEncodingMs: number;
   commandSubmitMs: number;
   cpuFrameMs: number[];
+  renderFrameTotalMs: number[];
+  renderFrameOverheadMs: number[];
+  resizeCanvasMs: number;
+  batchExtractionMs: number;
+  statsPublishMs: number;
   renderIntervalMs: number[];
   previousFrameTimestamp: number | null;
 }
@@ -564,6 +588,11 @@ export class BrushEngine {
       displayEncodingMs: 0,
       commandSubmitMs: 0,
       cpuFrameMs: [],
+      renderFrameTotalMs: [],
+      renderFrameOverheadMs: [],
+      resizeCanvasMs: 0,
+      batchExtractionMs: 0,
+      statsPublishMs: 0,
       renderIntervalMs: [],
       previousFrameTimestamp: null,
     };
@@ -592,6 +621,20 @@ export class BrushEngine {
       brushEncodingMs: profile.brushEncodingMs,
       displayEncodingMs: profile.displayEncodingMs,
       commandSubmitMs: profile.commandSubmitMs,
+      submitImmediateP50Ms: percentile(profile.cpuFrameMs, 0.5),
+      submitImmediateP95Ms: percentile(profile.cpuFrameMs, 0.95),
+      submitImmediateMaxMs: maximum(profile.cpuFrameMs),
+      renderFrameTotalP50Ms: percentile(profile.renderFrameTotalMs, 0.5),
+      renderFrameTotalP95Ms: percentile(profile.renderFrameTotalMs, 0.95),
+      renderFrameTotalMaxMs: maximum(profile.renderFrameTotalMs),
+      renderFrameOverheadP50Ms: percentile(profile.renderFrameOverheadMs, 0.5),
+      renderFrameOverheadP95Ms: percentile(profile.renderFrameOverheadMs, 0.95),
+      renderFrameOverheadMaxMs: maximum(profile.renderFrameOverheadMs),
+      resizeCanvasTotalMs: profile.resizeCanvasMs,
+      batchExtractionTotalMs: profile.batchExtractionMs,
+      statsPublishTotalMs: profile.statsPublishMs,
+      // Compatibilità con le run precedenti: questi tre campi continuano a
+      // rappresentare soltanto submitImmediate(), non l'intero renderFrame().
       cpuFrameP50Ms: percentile(profile.cpuFrameMs, 0.5),
       cpuFrameP95Ms: percentile(profile.cpuFrameMs, 0.95),
       cpuFrameMaxMs: maximum(profile.cpuFrameMs),
@@ -1001,14 +1044,20 @@ export class BrushEngine {
   }
 
   private renderFrame(timestamp: number): void {
+    const frameStart = performance.now();
     this.frameRequest = null;
     if (!this.initialized) {
       return;
     }
-    this.resizeCanvas();
 
+    const resizeStart = performance.now();
+    this.resizeCanvas();
+    const resizeCanvasMs = performance.now() - resizeStart;
+
+    const batchExtractionStart = performance.now();
     const batchSize = Math.min(this.pendingStamps.length, MAX_STAMPS_PER_BATCH);
     const batch = batchSize > 0 ? this.pendingStamps.splice(0, batchSize) : [];
+    const batchExtractionMs = performance.now() - batchExtractionStart;
     const shouldSubmit = this.clearRequested || batch.length > 0 || this.displayDirty;
 
     if (!shouldSubmit || this.canvas.width <= 0 || this.canvas.height <= 0) {
@@ -1019,18 +1068,27 @@ export class BrushEngine {
     const start = performance.now();
     const timing = this.submitImmediate(batch, clearLayer);
     this.lastCpuFrameMs = performance.now() - start;
-    this.recordStrokeFrameTiming(timestamp, batch.length, timing);
 
     this.clearRequested = false;
     this.displayDirty = false;
     this.totalBaseStamps += batch.length;
     this.avoidedLogicalDraws += batch.length * Math.max(0, this.settings.count - 1);
     this.recordRenderedFrame(timestamp);
+
+    const statsPublishStart = performance.now();
     this.publishStats();
+    const statsPublishMs = performance.now() - statsPublishStart;
 
     if (this.pendingStamps.length > 0 || this.displayDirty || this.clearRequested) {
       this.requestRender();
     }
+
+    this.recordStrokeFrameTiming(timestamp, batch.length, timing, {
+      totalCpuMs: performance.now() - frameStart,
+      resizeCanvasMs,
+      batchExtractionMs,
+      statsPublishMs,
+    });
   }
 
   private submitImmediate(stamps: readonly Stamp[], clearLayer: boolean): SubmitTiming {
@@ -1194,7 +1252,12 @@ export class BrushEngine {
     }
   }
 
-  private recordStrokeFrameTiming(timestamp: number, batchSize: number, timing: SubmitTiming): void {
+  private recordStrokeFrameTiming(
+    timestamp: number,
+    batchSize: number,
+    timing: SubmitTiming,
+    frameTiming: RenderFrameTiming,
+  ): void {
     const profile = this.activeStrokeProfile;
     if (!profile) {
       return;
@@ -1206,6 +1269,11 @@ export class BrushEngine {
     profile.previousFrameTimestamp = timestamp;
     profile.renderFrames += 1;
     profile.cpuFrameMs.push(this.lastCpuFrameMs);
+    profile.renderFrameTotalMs.push(frameTiming.totalCpuMs);
+    profile.renderFrameOverheadMs.push(Math.max(0, frameTiming.totalCpuMs - timing.totalCpuMs));
+    profile.resizeCanvasMs += frameTiming.resizeCanvasMs;
+    profile.batchExtractionMs += frameTiming.batchExtractionMs;
+    profile.statsPublishMs += frameTiming.statsPublishMs;
     profile.stampPackingMs += timing.stampPackingMs;
     profile.instanceUploadMs += timing.instanceUploadMs;
     profile.brushEncodingMs += timing.brushEncodingMs;

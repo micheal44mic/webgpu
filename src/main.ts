@@ -76,6 +76,12 @@ interface BenchmarkRun {
     inputDelayP50Ms: number;
     inputDelayP95Ms: number;
     inputDelayMaxMs: number;
+    layerInputDispatchTotalMs: number;
+    layerInputDispatchP50Ms: number;
+    layerInputDispatchP95Ms: number;
+    layerInputDispatchMaxMs: number;
+    inputDeliveryPath: "preconverted-layer-points";
+    pointerPipelineMeasured: false;
     inputToGpuCompletionMs: number;
     endToPresentedMs: number;
   };
@@ -102,6 +108,7 @@ interface BenchmarkRun {
     timestampQueriesSupported: boolean;
     stampGeometry: "quad";
     stampVerticesPerCopy: number;
+    performanceTelemetryRevision: 2;
   };
 }
 
@@ -255,6 +262,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     hardwareConcurrency: navigator.hardwareConcurrency || null,
     deviceMemoryGiB: navigatorWithMetrics.deviceMemory ?? null,
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
+    performanceTelemetryRevision: 2,
     ...engineEnvironment,
   };
 }
@@ -606,10 +614,13 @@ async function replayHumanStroke(): Promise<void> {
     const replayStart = performance.now();
     const lastPoint = benchmark.points[benchmark.points.length - 1];
     const inputDelays: number[] = [];
+    const layerInputDispatchMs: number[] = [];
     let nextPointIndex = 1;
 
     engine.startStrokePerformanceProfile();
+    const initialDispatchStart = performance.now();
     engine.beginStrokeAtLayer(benchmark.points[0]);
+    layerInputDispatchMs.push(performance.now() - initialDispatchStart);
 
     await new Promise<void>((resolve) => {
       const step = (timestamp: number) => {
@@ -626,7 +637,9 @@ async function replayHumanStroke(): Promise<void> {
         }
 
         if (duePoints.length > 0) {
+          const dispatchStart = performance.now();
           engine.extendStrokeAtLayer(duePoints);
+          layerInputDispatchMs.push(performance.now() - dispatchStart);
         }
 
         if (nextPointIndex < benchmark.points.length) {
@@ -659,6 +672,12 @@ async function replayHumanStroke(): Promise<void> {
       inputDelayP50Ms: percentile(inputDelays, 0.5),
       inputDelayP95Ms: percentile(inputDelays, 0.95),
       inputDelayMaxMs: inputDelays.length === 0 ? 0 : Math.max(...inputDelays),
+      layerInputDispatchTotalMs: layerInputDispatchMs.reduce((sum, duration) => sum + duration, 0),
+      layerInputDispatchP50Ms: percentile(layerInputDispatchMs, 0.5),
+      layerInputDispatchP95Ms: percentile(layerInputDispatchMs, 0.95),
+      layerInputDispatchMaxMs: layerInputDispatchMs.length === 0 ? 0 : Math.max(...layerInputDispatchMs),
+      inputDeliveryPath: "preconverted-layer-points" as const,
+      pointerPipelineMeasured: false as const,
       inputToGpuCompletionMs: Math.max(0, gpuCompletedAt - inputFinishedAt),
       endToPresentedMs: Math.max(0, presentedAt - replayStart),
     };
@@ -685,7 +704,8 @@ async function replayHumanStroke(): Promise<void> {
       `${formatInteger(baseStamps)} stamps base`,
       `${formatInteger(copies)} copie fisiche`,
       `coda GPU ${playback.inputToGpuCompletionMs.toFixed(2)} ms`,
-      `CPU p95 ${performanceProfile.cpuFrameP95Ms.toFixed(2)} ms`,
+      `CPU frame p95 ${performanceProfile.renderFrameTotalP95Ms.toFixed(2)} ms`,
+      `submit p95 ${performanceProfile.submitImmediateP95Ms.toFixed(2)} ms`,
       `FPS medi ${performanceProfile.averageRenderFps.toFixed(1)}`,
       `${formatInteger(performanceProfile.delayedRenderFrames)} frame >20 ms`,
       `presentazione ${playback.endToPresentedMs.toFixed(2)} ms`,

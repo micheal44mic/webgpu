@@ -160,3 +160,17 @@ Decisione: passo 3 promosso e mantenuto. Riduce le invocazioni vertex del `33,3%
 Il tentativo calcolava `jitteredLinearColor` soltanto sui vertici `0` e `2` del `triangle-strip`, cioè i primi vertici dei due triangoli, lasciando invariati geometria, stamp, parametri e blending. L'obiettivo era dimezzare i calcoli del colore per copia da `4` a `2`.
 
 L'utente ha richiesto il rollback prima di una run canonica comparabile. Non esiste quindi un risultato prestazionale valido e non va dedotto che l'intervento fosse più veloce o più lento. Shader e telemetria sperimentale sono stati rimossi; il motore è tornato integralmente al passo 3 della run `#11`, con il colore calcolato su tutti e quattro i vertici. Non reintrodurre questo tentativo senza una richiesta esplicita.
+
+## Passo preparatorio: telemetria CPU v2, nessuna ottimizzazione
+
+Prima del prossimo esperimento è stata estesa la telemetria senza cambiare shader, pipeline, geometria, generazione o ordine degli stamp, impostazioni, render pass, chiamate di resize o aggiornamenti DOM. La run successiva alla `#11` deve quindi essere considerata una misura di controllo dello stesso motore, non una variante prestazionale.
+
+`performanceTelemetryRevision: 2` identifica le nuove misure:
+
+- `submitImmediateP50/P95/MaxMs`: tempo della sola codifica e submission già rappresentato dai vecchi `cpuFrameP50/P95/MaxMs`; i campi vecchi restano per confrontare le run storiche;
+- `renderFrameTotalP50/P95/MaxMs`: percorso CPU dal principio di `renderFrame` fino alla pianificazione dell'eventuale frame successivo, inclusi resize, estrazione del batch, submission, contatori e callback DOM delle statistiche; esclude soltanto la registrazione della telemetria eseguita subito dopo la misura;
+- `renderFrameOverheadP50/P95/MaxMs`: differenza per frame tra tempo totale e `submitImmediate`;
+- `resizeCanvasTotalMs`, `batchExtractionTotalMs` e `statsPublishTotalMs`: somme sull'intero replay, utili per capire dove si trova l'overhead fuori dalla submission;
+- `layerInputDispatchTotal/P50/P95/MaxMs`: tempo impiegato da `beginStrokeAtLayer` e `extendStrokeAtLayer` per consegnare i punti già convertiti al motore.
+
+Il replay salva esplicitamente `inputDeliveryPath: "preconverted-layer-points"` e `pointerPipelineMeasured: false`: non misura `PointerEvent`, `getCoalescedEvents`, `getBoundingClientRect` o la conversione client→layer del disegno manuale. Non usare questa run per concludere che tale percorso sia gratuito. Dopo la misura di controllo, scegliere un solo intervento usando i dati; il candidato GPU isolato proposto è il fast path esatto della coverage nel fragment shader.
