@@ -224,3 +224,19 @@ Il vertex shader calcola già `copySeed = hash32(stamp.seed ^ (copyIndex * costa
 Con `jitterPerCopy: true` usa lo stesso `copySeed` e rimuove una chiamata `hash32` per invocazione vertex: nel benchmark canonico sono `774848` hash evitati. Con `jitterPerCopy: false` calcola esplicitamente `hash32(stamp.seed)`, identico al vecchio indice copia `0`; quindi il comportamento resta invariato anche per gli altri pennelli. Il ramo dipende da una uniform ed è uguale per tutte le invocazioni della draw.
 
 Sono ripristinati la coverage generica e tutti gli altri aspetti della run `#14`. La telemetria salva `fragmentCoverageStrategy: "generic-smoothstep"` e `colorSeedStrategy: "reuse-position-copy-seed"`. La prossima run va confrontata con la `#14`, non con la #15, e attribuisce l'eventuale differenza al solo riuso del seed.
+
+### Risultato preliminare del passo 6: run #16
+
+La run `#16` ha le firme previste ed è pienamente confrontabile con la `#14`: stesso fingerprint, preset, iPhone, canvas, `12107` stamp base, `193712` copie, quad strip da 4 vertici, coverage generica e telemetria v2.
+
+| Metrica | Run #14 | Run #16 copySeed |
+|---|---:|---:|
+| FPS medi | `56,04` | `56,33` |
+| intervallo frame p95 | `28 ms` | `28 ms` |
+| intervallo frame massimo | `67 ms` | `67 ms` |
+| frame oltre 20 ms | `35` | `33` |
+| coda GPU finale | `298 ms` | `292 ms` |
+| input delay p95 | `17 ms` | `16 ms` |
+| fine presentazione | `7149 ms` | `7142 ms` |
+
+La #16 migliora gli FPS di circa lo `0,5%`, mantiene p95 e massimo, riduce di `2` i frame lenti e di `6 ms` la coda finale. Tutte le direzioni sono favorevoli, ma la grandezza resta dentro la normale variabilità tra run. Non promuovere ancora il passo: eseguire una seconda Play sulla stessa build e decidere usando insieme #16 e #17 contro la #14.
