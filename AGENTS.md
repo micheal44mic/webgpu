@@ -339,16 +339,33 @@ I frame lenti diminuiscono di `3`, ma gli FPS calano leggermente, il p95 non cam
 
 Decisione: passo 9 bocciato. View sRGB, conversione hardware, costanti lineari e relativo marker sono stati rimossi. Il display è tornato esattamente alla conversione manuale della run `#19`. Non reintrodurre `viewFormats` senza nuove prove specifiche sulla GPU di destinazione.
 
-## Passo 10: compute prepass per copia fisica — in prova
+## Passo 10: compute prepass per copia fisica — bocciato e rimosso
 
-Il vecchio vertex shader calcolava direzione, seed, jitter di posizione e conversione colore per ognuno dei quattro vertici della stessa copia. Nel benchmark canonico erano `193712 × 4 = 774848` valutazioni quasi identiche.
+L'esperimento spostava direzione, seed, jitter di posizione e conversione colore dal vertex shader a un compute pass eseguito una volta per copia fisica. Una workgroup da `16` lane preparava un buffer `PhysicalCopy`; il vertex shader successivo leggeva centro, raggio, pressione e colore già calcolati. L'indice di uscita era `stampIndex * copyCount + copyIndex`, quindi ordine delle copie e blending restavano invariati. Il percorso supportava tutti i Count `1–24` e tutte le size.
 
-L'esperimento aggiunge un compute pass prima del render del pennello. Usa una workgroup da `16` lane per stamp base: la lane `0` carica lo stamp e normalizza la direzione una volta in memoria condivisa, poi ogni lane prepara una copia. Con Count da `17` a `24`, le prime lane elaborano anche la seconda tranche; da `1` a `15`, le lane eccedenti terminano senza scrivere. L'indice di uscita resta sempre `stampIndex * copyCount + copyIndex`, quindi il render successivo conserva esattamente l'ordine originale delle copie e del blending.
+La run `#22`, identificata da `copyPreparationStrategy: "compute-per-physical-copy"`, è direttamente confrontabile con la `#19`: stesso fingerprint `18982412`, preset, iPhone, GPU Apple, canvas `860×850`, `12107` stamp base e `193712` copie fisiche.
 
-Ogni record `PhysicalCopy` occupa `32 byte` e contiene centro jitterato, raggio, pressione e colore lineare. Il buffer persistente parte da `4096` copie (`128 KiB`), sufficiente per i batch osservati nel replay, e cresce a potenze di due soltanto quando necessario. Non viene allocato un buffer massimo da circa `48 MiB` all'avvio. Quando cresce, i bind group vengono ricreati e il vecchio buffer viene distrutto soltanto dopo il completamento del lavoro GPU già inviato.
+| Metrica | Run #19 vertex diretto | Run #22 compute prepass |
+|---|---:|---:|
+| FPS medi | `56,19` | `55,90` |
+| intervallo frame p95 | `28 ms` | `29 ms` |
+| intervallo frame massimo | `67 ms` | `67 ms` |
+| frame oltre 20 ms | `37` | `33` |
+| coda GPU finale | `282 ms` | `316 ms` |
+| input delay p95 | `17 ms` | `17 ms` |
+| fine presentazione | `7132 ms` | `7166 ms` |
+| encoding preparazione + brush | `20 ms` | `11 + 8 = 19 ms` |
 
-Il vertex shader continua a emettere lo stesso quad `triangle-strip` da quattro vertici, ma ora legge `PhysicalCopy` e calcola soltanto angolo, posizione layer e posizione clip. Nel benchmark canonico le valutazioni costose di jitter e colore scendono teoricamente da `774848` a `193712` (`-75%`); la normalizzazione della direzione avviene una volta per stamp base. In cambio vengono aggiunti un compute pass, scritture nel buffer fisico e successive letture vertex: il guadagno non è garantito.
+Il pass riduce di quattro i frame oltre `20 ms`, ma perde circa lo `0,5%` di FPS, porta il p95 da `28` a `29 ms` e aggiunge `34 ms` sia alla coda GPU sia alla fine della presentazione. Il risparmio CPU misurato nell'encoding è soltanto `1 ms` sull'intero replay; non compensa il pass aggiuntivo e il traffico scrittura/lettura del buffer.
 
-Restano invariati numero e ordine degli stamp e delle copie, seed e salt casuali, formule WGSL, Count, size, spacing, flow, hardness, pressione, blend intensity, geometria, fragment shader, blending, dirty rect, display e draw count. Il percorso supporta tutti i Count `1–24` e tutte le size. Spostare le stesse operazioni dal vertex al compute introduce comunque un passaggio esplicito attraverso memoria `f32` e può essere compilato diversamente dal driver; verificare visivamente bordi, colori e posizioni, senza dichiarare identità byte-per-byte prima di un pixel-diff.
+Decisione: passo 10 bocciato. Compute shader, pipeline, buffer `PhysicalCopy`, bind group, telemetria e marker sono stati rimossi. Il motore è tornato esattamente al percorso vertex diretto della run `#19`. Non reintrodurre il compute prepass senza una diagnosi nuova che elimini il passaggio intermedio di memoria.
 
-La telemetria salva `copyPreparationStrategy: "compute-per-physical-copy"`, workgroup size, capacità/MiB del buffer e `copyPreparationEncodingMs` CPU. Quest'ultimo misura soltanto la codifica del pass, non la sua durata GPU. La prima run valida attesa è la `#22` e va confrontata direttamente con la `#19`, perché le varianti Count 16 e sRGB delle `#20–#21` sono state rimosse. Servono stesso fingerprint, preset, iPhone, GPU Apple, canvas, stamp e copie; valutare FPS, p95, frame lenti, coda GPU, fine presentazione e sensazione di inseguimento del dito.
+## Handoff richiesto: prossimo salto architetturale
+
+L'utente non vuole altri esperimenti di micro-ottimizzazione. Il prossimo lavoro deve affrontare il **layer persistente `4096×4096` suddiviso in tile con binning degli stamp/copie**, cioè il cambiamento strutturale con il maggiore potenziale su GPU Apple tile-based. Non riprovare fast path fragment, specializzazione Count 16, sRGB, compute prepass, dodecagono o cap della coda: sono già stati misurati e bocciati.
+
+Prima di scrivere codice, progettare una prima fase isolabile e misurabile. Conservare rigorosamente ordine globale e relativo delle copie dentro ogni tile, formule WGSL, seed, jitter, Count `1–24`, tutte le size, spacing, pressione, alpha, blending premoltiplicato e risultato visivo. Gestire esplicitamente copie che attraversano più tile, antialiasing sui bordi, display/zoom e ricomposizione senza cuciture. Non ridurre la qualità e non dichiarare identità visiva senza una verifica pixel-diff.
+
+La baseline per il nuovo lavoro è il commit successivo al rollback del passo 10 e la run iPhone `#19`. Il benchmark canonico resta size `750`, Count `16`, spacing `1%`, blend `4×`, `193712` copie. Aggiungere telemetria che identifichi senza ambiguità tile size, tile attive, assegnazioni/binning e pass eseguiti; cambiare una sola fase architetturale per run e pubblicarla prima del test iPhone.
+
+Preferenza operativa esplicita dell'utente per la prossima chat: **lavorare senza agenti o subagenti; il modello principale deve leggere, progettare, implementare, revisionare e pubblicare da solo**.

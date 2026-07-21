@@ -111,10 +111,6 @@ interface BenchmarkRun {
     fragmentCoverageStrategy: "generic-smoothstep";
     colorSeedStrategy: "reuse-position-copy-seed";
     dirtyRectStrategy: "directional-jitter-bounds";
-    copyPreparationStrategy: "compute-per-physical-copy";
-    copyPreparationWorkgroupSize: 16;
-    physicalCopyBufferCapacity: number;
-    physicalCopyBufferMiB: number;
     performanceTelemetryRevision: 2;
   };
 }

@@ -1,5 +1,5 @@
 import { clamp, hexToHsl } from "./color";
-import { brushShader, copyPreparationShader, displayShader } from "./shaders";
+import { brushShader, displayShader } from "./shaders";
 
 export type BlendMode = "normal" | "additive";
 export type LayerFormat = "rgba8unorm" | "rgba16float";
@@ -56,7 +56,6 @@ export interface StrokePerformanceProfile {
   fragmentCoverageStrategy: "generic-smoothstep";
   colorSeedStrategy: "reuse-position-copy-seed";
   dirtyRectStrategy: "directional-jitter-bounds";
-  copyPreparationStrategy: "compute-per-physical-copy";
   baseStamps: number;
   physicalCopies: number;
   renderFrames: number;
@@ -66,7 +65,6 @@ export interface StrokePerformanceProfile {
   stampGenerationMs: number;
   stampPackingMs: number;
   instanceUploadMs: number;
-  copyPreparationEncodingMs: number;
   brushEncodingMs: number;
   displayEncodingMs: number;
   commandSubmitMs: number;
@@ -129,7 +127,6 @@ interface SubmitTiming {
   totalCpuMs: number;
   stampPackingMs: number;
   instanceUploadMs: number;
-  copyPreparationEncodingMs: number;
   brushEncodingMs: number;
   displayEncodingMs: number;
   commandSubmitMs: number;
@@ -153,7 +150,6 @@ interface MutableStrokePerformanceProfile {
   stampGenerationMs: number;
   stampPackingMs: number;
   instanceUploadMs: number;
-  copyPreparationEncodingMs: number;
   brushEncodingMs: number;
   displayEncodingMs: number;
   commandSubmitMs: number;
@@ -169,17 +165,12 @@ interface MutableStrokePerformanceProfile {
 
 const LAYER_SIZE = 4096;
 const STAMP_STRIDE_BYTES = 32;
-const PHYSICAL_COPY_STRIDE_BYTES = 32;
 const MAX_STAMPS_PER_BATCH = 65_536;
-const MAX_COPY_COUNT = 24;
-const COPY_WORKGROUP_SIZE = 16;
-const INITIAL_PHYSICAL_COPY_CAPACITY = 4_096;
 const STAMP_VERTICES_PER_COPY = 4;
 const STAMP_GEOMETRY = "quad" as const;
 const FRAGMENT_COVERAGE_STRATEGY = "generic-smoothstep" as const;
 const COLOR_SEED_STRATEGY = "reuse-position-copy-seed" as const;
 const DIRTY_RECT_STRATEGY = "directional-jitter-bounds" as const;
-const COPY_PREPARATION_STRATEGY = "compute-per-physical-copy" as const;
 const BRUSH_UNIFORM_BYTES = 96;
 const DISPLAY_UNIFORM_BYTES = 32;
 
@@ -241,21 +232,15 @@ export class BrushEngine {
   private brushUniformBuffer!: GPUBuffer;
   private displayUniformBuffer!: GPUBuffer;
   private instanceBuffer!: GPUBuffer;
-  private physicalCopyBuffer!: GPUBuffer;
-  private physicalCopyCapacity = 0;
   private sampler!: GPUSampler;
 
-  private copyPreparationBindGroupLayout!: GPUBindGroupLayout;
   private brushBindGroupLayout!: GPUBindGroupLayout;
   private displayBindGroupLayout!: GPUBindGroupLayout;
-  private copyPreparationBindGroup!: GPUBindGroup;
   private brushBindGroup!: GPUBindGroup;
   private displayBindGroup!: GPUBindGroup;
 
-  private copyPreparationShaderModule!: GPUShaderModule;
   private brushShaderModule!: GPUShaderModule;
   private displayShaderModule!: GPUShaderModule;
-  private copyPreparationPipeline!: GPUComputePipeline;
   private normalPipeline!: GPURenderPipeline;
   private additivePipeline!: GPURenderPipeline;
   private displayPipeline!: GPURenderPipeline;
@@ -354,7 +339,7 @@ export class BrushEngine {
     this.settings = {
       ...this.settings,
       ...next,
-      count: clamp(Math.round(next.count ?? this.settings.count), 1, MAX_COPY_COUNT),
+      count: clamp(Math.round(next.count ?? this.settings.count), 1, 24),
       size: clamp(next.size ?? this.settings.size, 4, 1500),
       spacingPercent: clamp(next.spacingPercent ?? this.settings.spacingPercent, 0.25, 25),
       flow: clamp(next.flow ?? this.settings.flow, 0.001, 1),
@@ -543,7 +528,6 @@ export class BrushEngine {
       "coverage fragment smoothstep generica",
       "riuso copySeed per jitter colore per copia",
       "dirty rect direzionale conservativo",
-      "compute colore e jitter una volta per copia fisica",
     ].join(" · ");
 
     return {
@@ -609,7 +593,6 @@ export class BrushEngine {
       stampGenerationMs: 0,
       stampPackingMs: 0,
       instanceUploadMs: 0,
-      copyPreparationEncodingMs: 0,
       brushEncodingMs: 0,
       displayEncodingMs: 0,
       commandSubmitMs: 0,
@@ -638,7 +621,6 @@ export class BrushEngine {
       fragmentCoverageStrategy: FRAGMENT_COVERAGE_STRATEGY,
       colorSeedStrategy: COLOR_SEED_STRATEGY,
       dirtyRectStrategy: DIRTY_RECT_STRATEGY,
-      copyPreparationStrategy: COPY_PREPARATION_STRATEGY,
       baseStamps: profile.baseStamps,
       physicalCopies: profile.physicalCopies,
       renderFrames: profile.renderFrames,
@@ -648,7 +630,6 @@ export class BrushEngine {
       stampGenerationMs: profile.stampGenerationMs,
       stampPackingMs: profile.stampPackingMs,
       instanceUploadMs: profile.instanceUploadMs,
-      copyPreparationEncodingMs: profile.copyPreparationEncodingMs,
       brushEncodingMs: profile.brushEncodingMs,
       displayEncodingMs: profile.displayEncodingMs,
       commandSubmitMs: profile.commandSubmitMs,
@@ -692,10 +673,6 @@ export class BrushEngine {
     fragmentCoverageStrategy: typeof FRAGMENT_COVERAGE_STRATEGY;
     colorSeedStrategy: typeof COLOR_SEED_STRATEGY;
     dirtyRectStrategy: typeof DIRTY_RECT_STRATEGY;
-    copyPreparationStrategy: typeof COPY_PREPARATION_STRATEGY;
-    copyPreparationWorkgroupSize: typeof COPY_WORKGROUP_SIZE;
-    physicalCopyBufferCapacity: number;
-    physicalCopyBufferMiB: number;
   } {
     return {
       canvasWidth: this.canvas.width,
@@ -710,10 +687,6 @@ export class BrushEngine {
       fragmentCoverageStrategy: FRAGMENT_COVERAGE_STRATEGY,
       colorSeedStrategy: COLOR_SEED_STRATEGY,
       dirtyRectStrategy: DIRTY_RECT_STRATEGY,
-      copyPreparationStrategy: COPY_PREPARATION_STRATEGY,
-      copyPreparationWorkgroupSize: COPY_WORKGROUP_SIZE,
-      physicalCopyBufferCapacity: this.physicalCopyCapacity,
-      physicalCopyBufferMiB: (this.physicalCopyCapacity * PHYSICAL_COPY_STRIDE_BYTES) / (1024 * 1024),
     };
   }
 
@@ -731,13 +704,10 @@ export class BrushEngine {
     });
 
     this.instanceBuffer = this.device.createBuffer({
-      label: "Base stamp storage",
+      label: "Stamp instance storage",
       size: MAX_STAMPS_PER_BATCH * STAMP_STRIDE_BYTES,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-
-    this.physicalCopyCapacity = INITIAL_PHYSICAL_COPY_CAPACITY;
-    this.physicalCopyBuffer = this.createPhysicalCopyBuffer(this.physicalCopyCapacity);
 
     this.sampler = this.device.createSampler({
       label: "Layer linear sampler",
@@ -746,27 +716,6 @@ export class BrushEngine {
       mipmapFilter: "nearest",
       addressModeU: "clamp-to-edge",
       addressModeV: "clamp-to-edge",
-    });
-
-    this.copyPreparationBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Copy preparation bind group layout",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "uniform" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "read-only-storage" },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "storage" },
-        },
-      ],
     });
 
     this.brushBindGroupLayout = this.device.createBindGroupLayout({
@@ -806,37 +755,21 @@ export class BrushEngine {
       ],
     });
 
-    this.rebuildPhysicalCopyBindGroups();
-
-    this.copyPreparationShaderModule = this.device.createShaderModule({
-      label: "Copy preparation WGSL",
-      code: copyPreparationShader,
+    this.brushBindGroup = this.device.createBindGroup({
+      label: "Brush bind group",
+      layout: this.brushBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.brushUniformBuffer } },
+        { binding: 1, resource: { buffer: this.instanceBuffer } },
+      ],
     });
+
     this.brushShaderModule = this.device.createShaderModule({ label: "Brush WGSL", code: brushShader });
     this.displayShaderModule = this.device.createShaderModule({ label: "Display WGSL", code: displayShader });
     await Promise.all([
-      this.assertShaderCompiled(this.copyPreparationShaderModule, "copy preparation"),
       this.assertShaderCompiled(this.brushShaderModule, "brush"),
       this.assertShaderCompiled(this.displayShaderModule, "display"),
     ]);
-
-    const copyPreparationPipelineLayout = this.device.createPipelineLayout({
-      label: "Copy preparation pipeline layout",
-      bindGroupLayouts: [this.copyPreparationBindGroupLayout],
-    });
-    this.device.pushErrorScope("validation");
-    this.copyPreparationPipeline = this.device.createComputePipeline({
-      label: "Prepare physical brush copies",
-      layout: copyPreparationPipelineLayout,
-      compute: {
-        module: this.copyPreparationShaderModule,
-        entryPoint: "prepareCopies",
-      },
-    });
-    const copyPreparationValidationError = await this.device.popErrorScope();
-    if (copyPreparationValidationError) {
-      throw new Error(copyPreparationValidationError.message);
-    }
 
     const displayPipelineLayout = this.device.createPipelineLayout({
       label: "Display pipeline layout",
@@ -857,76 +790,6 @@ export class BrushEngine {
       },
       primitive: { topology: "triangle-list" },
     });
-  }
-
-  private createPhysicalCopyBuffer(capacity: number): GPUBuffer {
-    const size = capacity * PHYSICAL_COPY_STRIDE_BYTES;
-    if (size > this.device.limits.maxStorageBufferBindingSize || size > this.device.limits.maxBufferSize) {
-      throw new Error(`Buffer copie fisiche da ${size} byte oltre i limiti della GPU.`);
-    }
-    return this.device.createBuffer({
-      label: `Physical copy storage (${capacity})`,
-      size,
-      usage: GPUBufferUsage.STORAGE,
-    });
-  }
-
-  private rebuildPhysicalCopyBindGroups(): void {
-    this.copyPreparationBindGroup = this.device.createBindGroup({
-      label: "Copy preparation bind group",
-      layout: this.copyPreparationBindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: this.brushUniformBuffer } },
-        { binding: 1, resource: { buffer: this.instanceBuffer } },
-        { binding: 2, resource: { buffer: this.physicalCopyBuffer } },
-      ],
-    });
-    this.brushBindGroup = this.device.createBindGroup({
-      label: "Brush bind group",
-      layout: this.brushBindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: this.brushUniformBuffer } },
-        { binding: 1, resource: { buffer: this.physicalCopyBuffer } },
-      ],
-    });
-  }
-
-  private ensurePhysicalCopyCapacity(requiredCapacity: number): void {
-    if (requiredCapacity <= this.physicalCopyCapacity) {
-      return;
-    }
-
-    const maximumCapacity = MAX_STAMPS_PER_BATCH * MAX_COPY_COUNT;
-    let nextCapacity = this.physicalCopyCapacity;
-    while (nextCapacity < requiredCapacity) {
-      nextCapacity = Math.min(maximumCapacity, nextCapacity * 2);
-      if (nextCapacity < requiredCapacity && nextCapacity === maximumCapacity) {
-        throw new Error("Numero di copie fisiche oltre il limite del batch.");
-      }
-    }
-
-    const previousBuffer = this.physicalCopyBuffer;
-    this.physicalCopyBuffer = this.createPhysicalCopyBuffer(nextCapacity);
-    this.physicalCopyCapacity = nextCapacity;
-    this.rebuildPhysicalCopyBindGroups();
-
-    const destroyPreviousBuffer = () => previousBuffer.destroy();
-    void this.device.queue.onSubmittedWorkDone().then(destroyPreviousBuffer, destroyPreviousBuffer);
-  }
-
-  private getCopyPreparationDispatch(stampCount: number): { width: number; height: number } {
-    const maximumDimension = this.device.limits.maxComputeWorkgroupsPerDimension;
-    if (stampCount <= maximumDimension) {
-      return { width: stampCount, height: 1 };
-    }
-
-    const maximumHeight = Math.min(maximumDimension, stampCount);
-    for (let height = 2; height <= maximumHeight; height += 1) {
-      if (stampCount % height === 0 && stampCount / height <= maximumDimension) {
-        return { width: stampCount / height, height };
-      }
-    }
-    throw new Error(`Impossibile distribuire ${stampCount} stamp nel limite compute della GPU.`);
   }
 
   private async recreateLayerResources(format: LayerFormat): Promise<void> {
@@ -1251,7 +1114,6 @@ export class BrushEngine {
     const encoder = this.device.createCommandEncoder({ label: "Brush frame encoder" });
     let stampPackingMs = 0;
     let instanceUploadMs = 0;
-    let copyPreparationEncodingMs = 0;
     let brushEncodingMs = 0;
     let displayEncodingMs = 0;
     let commandSubmitMs = 0;
@@ -1272,20 +1134,6 @@ export class BrushEngine {
           stamps.length * STAMP_STRIDE_BYTES,
         );
         instanceUploadMs = performance.now() - uploadStart;
-      }
-
-      if (stamps.length > 0 && dirtyRect) {
-        this.ensurePhysicalCopyCapacity(stamps.length * this.settings.count);
-        const copyPreparationStart = performance.now();
-        const dispatch = this.getCopyPreparationDispatch(stamps.length);
-        const copyPreparationPass = encoder.beginComputePass({
-          label: "Prepare physical brush copies",
-        });
-        copyPreparationPass.setPipeline(this.copyPreparationPipeline);
-        copyPreparationPass.setBindGroup(0, this.copyPreparationBindGroup);
-        copyPreparationPass.dispatchWorkgroups(dispatch.width, dispatch.height);
-        copyPreparationPass.end();
-        copyPreparationEncodingMs = performance.now() - copyPreparationStart;
       }
 
       const brushEncodingStart = performance.now();
@@ -1338,7 +1186,6 @@ export class BrushEngine {
       totalCpuMs: performance.now() - cpuStart,
       stampPackingMs,
       instanceUploadMs,
-      copyPreparationEncodingMs,
       brushEncodingMs,
       displayEncodingMs,
       commandSubmitMs,
@@ -1474,7 +1321,6 @@ export class BrushEngine {
     profile.statsPublishMs += frameTiming.statsPublishMs;
     profile.stampPackingMs += timing.stampPackingMs;
     profile.instanceUploadMs += timing.instanceUploadMs;
-    profile.copyPreparationEncodingMs += timing.copyPreparationEncodingMs;
     profile.brushEncodingMs += timing.brushEncodingMs;
     profile.displayEncodingMs += timing.displayEncodingMs;
     profile.commandSubmitMs += timing.commandSubmitMs;
