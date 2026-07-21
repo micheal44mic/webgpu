@@ -102,6 +102,7 @@ interface BenchmarkRun {
     timestampQueriesSupported: boolean;
     stampGeometry: "quad";
     stampVerticesPerCopy: number;
+    stampColorEvaluationsPerCopy: number;
   };
 }
 

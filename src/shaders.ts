@@ -142,8 +142,12 @@ fn vertexMain(
   output.position = vec4<f32>(clipPosition, 0.0, 1.0);
   output.localPosition = localPosition;
   output.pressure = stamp.pressure;
-  let colorCopyIndex = select(0u, copyIndex, brush.options.y != 0u);
-  output.pointColor = jitteredLinearColor(stamp.seed, colorCopyIndex);
+  if ((vertexIndex & 1u) == 0u) {
+    let colorCopyIndex = select(0u, copyIndex, brush.options.y != 0u);
+    output.pointColor = jitteredLinearColor(stamp.seed, colorCopyIndex);
+  } else {
+    output.pointColor = vec3<f32>(0.0);
+  }
   return output;
 }
 
