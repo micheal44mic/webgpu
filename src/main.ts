@@ -55,6 +55,8 @@ function readBrushSettings(): BrushSettings {
     lightnessJitter: rangeValue("lightnessJitter") / 100,
     darknessJitter: rangeValue("darknessJitter") / 100,
     jitterPerCopy: element<HTMLInputElement>("jitterPerCopy").checked,
+    positionJitterLateral: rangeValue("positionJitterLateral") / 100,
+    positionJitterLinear: rangeValue("positionJitterLinear") / 100,
     pressureSize: rangeValue("pressureSize") / 100,
     pressureOpacity: rangeValue("pressureOpacity") / 100,
   };
@@ -72,6 +74,8 @@ function updateControlOutputs(): void {
   element<HTMLOutputElement>("saturationJitterOut").value = `${rangeValue("saturationJitter").toFixed(0)}%`;
   element<HTMLOutputElement>("lightnessJitterOut").value = `${rangeValue("lightnessJitter").toFixed(0)}%`;
   element<HTMLOutputElement>("darknessJitterOut").value = `${rangeValue("darknessJitter").toFixed(0)}%`;
+  element<HTMLOutputElement>("positionJitterLateralOut").value = `${rangeValue("positionJitterLateral").toFixed(0)}%`;
+  element<HTMLOutputElement>("positionJitterLinearOut").value = `${rangeValue("positionJitterLinear").toFixed(0)}%`;
   element<HTMLOutputElement>("pressureSizeOut").value = `${rangeValue("pressureSize").toFixed(0)}%`;
   element<HTMLOutputElement>("pressureOpacityOut").value = `${rangeValue("pressureOpacity").toFixed(0)}%`;
   element<HTMLOutputElement>("benchmarkStampsOut").value = formatInteger(rangeValue("benchmarkStamps"));
@@ -97,6 +101,8 @@ const brushControlIds = [
   "lightnessJitter",
   "darknessJitter",
   "jitterPerCopy",
+  "positionJitterLateral",
+  "positionJitterLinear",
   "pressureSize",
   "pressureOpacity",
 ] as const;

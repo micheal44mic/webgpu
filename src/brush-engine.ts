@@ -19,6 +19,8 @@ export interface BrushSettings {
   lightnessJitter: number;
   darknessJitter: number;
   jitterPerCopy: boolean;
+  positionJitterLateral: number;
+  positionJitterLinear: number;
   pressureSize: number;
   pressureOpacity: number;
 }
@@ -100,6 +102,8 @@ export const defaultBrushSettings: BrushSettings = {
   lightnessJitter: 0.12,
   darknessJitter: 0.18,
   jitterPerCopy: false,
+  positionJitterLateral: 0,
+  positionJitterLinear: 0,
   pressureSize: 0.65,
   pressureOpacity: 0.35,
 };
@@ -229,7 +233,7 @@ export class BrushEngine {
       ...this.settings,
       ...next,
       count: clamp(Math.round(next.count ?? this.settings.count), 1, 24),
-      size: clamp(next.size ?? this.settings.size, 4, 512),
+      size: clamp(next.size ?? this.settings.size, 4, 1500),
       spacingPercent: clamp(next.spacingPercent ?? this.settings.spacingPercent, 0.25, 25),
       flow: clamp(next.flow ?? this.settings.flow, 0.001, 1),
       hardness: clamp(next.hardness ?? this.settings.hardness, 0, 1),
@@ -239,6 +243,8 @@ export class BrushEngine {
       saturationJitter: clamp(next.saturationJitter ?? this.settings.saturationJitter, 0, 1),
       lightnessJitter: clamp(next.lightnessJitter ?? this.settings.lightnessJitter, 0, 1),
       darknessJitter: clamp(next.darknessJitter ?? this.settings.darknessJitter, 0, 1),
+      positionJitterLateral: clamp(next.positionJitterLateral ?? this.settings.positionJitterLateral, 0, 1),
+      positionJitterLinear: clamp(next.positionJitterLinear ?? this.settings.positionJitterLinear, 0, 1),
       pressureSize: clamp(next.pressureSize ?? this.settings.pressureSize, 0, 1),
       pressureOpacity: clamp(next.pressureOpacity ?? this.settings.pressureOpacity, 0, 1),
     };
@@ -343,7 +349,7 @@ export class BrushEngine {
       lastInput: point,
       distanceSinceStamp: 0,
     };
-    this.emitStamp(point);
+    this.emitStamp(point, 1, 0);
   }
 
   extendStroke(samples: readonly PointerSample[]): void {
@@ -722,6 +728,8 @@ export class BrushEngine {
     }
 
     const spacing = Math.max(0.1, this.settings.size * (this.settings.spacingPercent / 100));
+    const directionX = deltaX / segmentLength;
+    const directionY = deltaY / segmentLength;
     let distanceAlongSegment = 0;
     let distanceSinceStamp = stroke.distanceSinceStamp;
     let generatedOnSegment = 0;
@@ -734,7 +742,7 @@ export class BrushEngine {
         x: start.x + deltaX * interpolation,
         y: start.y + deltaY * interpolation,
         pressure: start.pressure + (point.pressure - start.pressure) * interpolation,
-      });
+      }, directionX, directionY);
       distanceSinceStamp = 0;
       generatedOnSegment += 1;
 
@@ -748,31 +756,65 @@ export class BrushEngine {
     stroke.distanceSinceStamp = distanceSinceStamp;
   }
 
-  private emitStamp(point: LayerPoint): void {
+  private emitStamp(point: LayerPoint, directionX: number, directionY: number): void {
     const pressure = clamp(point.pressure, 0.01, 1);
     const pressureSizeFactor = 1 - this.settings.pressureSize
       + this.settings.pressureSize * Math.max(0.08, pressure);
     const radius = Math.max(0.5, this.settings.size * 0.5 * pressureSizeFactor);
+    const seed = (Math.imul(this.seedSequence++, 0x9e3779b1) ^ 0xa511e9b3) >>> 0;
+    const jitteredPosition = this.applyPositionJitter(point, radius, directionX, directionY, seed);
 
     if (
-      point.x + radius < 0 ||
-      point.y + radius < 0 ||
-      point.x - radius >= LAYER_SIZE ||
-      point.y - radius >= LAYER_SIZE
+      jitteredPosition.x + radius < 0 ||
+      jitteredPosition.y + radius < 0 ||
+      jitteredPosition.x - radius >= LAYER_SIZE ||
+      jitteredPosition.y - radius >= LAYER_SIZE
     ) {
       return;
     }
 
-    const seed = (Math.imul(this.seedSequence++, 0x9e3779b1) ^ 0xa511e9b3) >>> 0;
     this.pendingStamps.push({
-      x: point.x,
-      y: point.y,
+      x: jitteredPosition.x,
+      y: jitteredPosition.y,
       radius,
       pressure,
       seed,
     });
     this.displayDirty = true;
     this.requestRender();
+  }
+
+  private applyPositionJitter(
+    point: LayerPoint,
+    radius: number,
+    directionX: number,
+    directionY: number,
+    seed: number,
+  ): { x: number; y: number } {
+    const linearAmount = this.settings.positionJitterLinear;
+    const lateralAmount = this.settings.positionJitterLateral;
+
+    if (linearAmount === 0 && lateralAmount === 0) {
+      return point;
+    }
+
+    const linearOffset = (this.random01(seed, 5) * 2 - 1) * radius * linearAmount;
+    const lateralOffset = (this.random01(seed, 6) * 2 - 1) * radius * lateralAmount;
+
+    return {
+      x: point.x + directionX * linearOffset - directionY * lateralOffset,
+      y: point.y + directionY * linearOffset + directionX * lateralOffset,
+    };
+  }
+
+  private random01(seed: number, salt: number): number {
+    let value = (seed ^ Math.imul(salt, 0x9e3779b9)) >>> 0;
+    value ^= value >>> 16;
+    value = Math.imul(value, 0x7feb352d) >>> 0;
+    value ^= value >>> 15;
+    value = Math.imul(value, 0x846ca68b) >>> 0;
+    value ^= value >>> 16;
+    return (value & 0x00ffffff) / 0x01000000;
   }
 
   private requestRender(): void {

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#111318" />
     <title>WebGPU Brush Engine 4096²</title>
-    <script type="module" crossorigin src="./assets/index-D89kP8EH.js"></script>
+    <script type="module" crossorigin src="./assets/index-DHhYAgpX.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-DVGmclji.css">
   </head>
   <body>
@@ -34,7 +34,7 @@
 
           <label class="control">
             <span>Dimensione <output id="brushSizeOut">96 px</output></span>
-            <input id="brushSize" type="range" min="4" max="512" step="1" value="96" />
+            <input id="brushSize" type="range" min="4" max="1500" step="1" value="96" />
           </label>
 
           <label class="control">
@@ -105,6 +105,20 @@
               Jitter diverso per ciascuna delle 24 copie
               <small>Stress mode: esatto, ma molto più costoso.</small>
             </span>
+          </label>
+        </section>
+
+        <section>
+          <h2>Jitter posizione</h2>
+
+          <label class="control">
+            <span>Laterale <output id="positionJitterLateralOut">0%</output></span>
+            <input id="positionJitterLateral" type="range" min="0" max="100" step="1" value="0" />
+          </label>
+
+          <label class="control">
+            <span>Lineare <output id="positionJitterLinearOut">0%</output></span>
+            <input id="positionJitterLinear" type="range" min="0" max="100" step="1" value="0" />
           </label>
         </section>
 
