@@ -217,7 +217,7 @@ La run `#15`, identificata da `fragmentCoverageStrategy: "interior-fast-path"`, 
 
 Il fast path perde circa l'`1,5%` di FPS, aumenta il p95 di `2 ms`, i frame lenti del `17%` e la coda finale di `53 ms`. L'utente ha inoltre osservato durante il tratto un calo live fino a circa `21 FPS`. Decisione: esperimento bocciato; la coverage generica con `smoothstep` è stata ripristinata. Non reintrodurre il ramo interno: su questa GPU Apple il lavoro evitato non compensa il costo complessivo della variante.
 
-## Passo 6: riuso esatto di `copySeed` — in prova
+## Passo 6: riuso esatto di `copySeed` — promosso
 
 Il vertex shader calcola già `copySeed = hash32(stamp.seed ^ (copyIndex * costante))` per il jitter di posizione. Con jitter colore per copia attivo, la vecchia `jitteredLinearColor` ricalcolava lo stesso hash. La nuova `jitteredLinearColorFromCopySeed` riceve direttamente il seed già disponibile.
 
@@ -225,7 +225,7 @@ Con `jitterPerCopy: true` usa lo stesso `copySeed` e rimuove una chiamata `hash3
 
 Sono ripristinati la coverage generica e tutti gli altri aspetti della run `#14`. La telemetria salva `fragmentCoverageStrategy: "generic-smoothstep"` e `colorSeedStrategy: "reuse-position-copy-seed"`. La prossima run va confrontata con la `#14`, non con la #15, e attribuisce l'eventuale differenza al solo riuso del seed.
 
-### Risultato preliminare del passo 6: run #16
+### Risultato e decisione del passo 6: run #16
 
 La run `#16` ha le firme previste ed è pienamente confrontabile con la `#14`: stesso fingerprint, preset, iPhone, canvas, `12107` stamp base, `193712` copie, quad strip da 4 vertici, coverage generica e telemetria v2.
 
@@ -239,4 +239,19 @@ La run `#16` ha le firme previste ed è pienamente confrontabile con la `#14`: s
 | input delay p95 | `17 ms` | `16 ms` |
 | fine presentazione | `7149 ms` | `7142 ms` |
 
-La #16 migliora gli FPS di circa lo `0,5%`, mantiene p95 e massimo, riduce di `2` i frame lenti e di `6 ms` la coda finale. Tutte le direzioni sono favorevoli, ma la grandezza resta dentro la normale variabilità tra run. Non promuovere ancora il passo: eseguire una seconda Play sulla stessa build e decidere usando insieme #16 e #17 contro la #14.
+La #16 migliora gli FPS di circa lo `0,5%`, mantiene p95 e massimo, riduce di `2` i frame lenti e di `6 ms` la coda finale. Tutte le direzioni sono favorevoli. Su decisione esplicita dell'utente, il riuso di `copySeed` è promosso e mantenuto: è bit-identico, generale e non ha mostrato regressioni. Non ripristinare il calcolo duplicato salvo una regressione riproducibile.
+
+## Passo 7: dirty rect direzionale conservativo — in prova
+
+Il vecchio `packStamps` estendeva entrambi gli assi di `2 * radius * (jitterLinear + jitterLateral)`, come se i due jitter raggiungessero contemporaneamente il massimo su X e Y. Il vertex shader sposta invece il centro lungo la direzione normalizzata e la sua perpendicolare.
+
+Il nuovo limite usa gli stessi valori `f32` caricati nel buffer. Normalizza le direzioni normali; nell'intorno prudenziale della soglia dello shader usa invece il vecchio limite isotropo, evitando che differenze minime di arrotondamento CPU/GPU possano restringere troppo lo scissor. Per ogni stamp direzionale calcola:
+
+- `linearReach = 2 * radius * positionJitterLinear`;
+- `lateralReach = 2 * radius * positionJitterLateral`;
+- estensione X: `radius + abs(dirX) * linearReach + abs(dirY) * lateralReach + 2`;
+- estensione Y: `radius + abs(dirY) * linearReach + abs(dirX) * lateralReach + 2`.
+
+È un limite conservativo della somma dei due offset, non un'approssimazione della posizione effettiva di una singola copia. Il margine finale di `2 px` resta invariato. Non cambiano stamp, seed, jitter, geometria, shader, ordine, blending o pixel; cambia soltanto lo scissor del render pass. Vale per tutte le size e direzioni. Con entrambi i jitter al 100%, il limite per asse scende da `5r` a `3r` su tratti allineati agli assi e a circa `3,83r` nel caso diagonale.
+
+La telemetria salva `dirtyRectStrategy: "directional-jitter-bounds"`. La prima run valida attesa è la `#17` e va confrontata direttamente con la `#16`, che mantiene lo stesso `copySeed` ma usa il dirty rect isotropo precedente. Oltre a FPS, p95, frame lenti e coda GPU, confrontare `estimatedScissorPixels`; questo contatore è la somma delle aree scissor per batch, non il numero di frammenti realmente rasterizzati.

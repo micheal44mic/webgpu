@@ -55,6 +55,7 @@ export interface StrokePerformanceProfile {
   stampVerticesPerCopy: number;
   fragmentCoverageStrategy: "generic-smoothstep";
   colorSeedStrategy: "reuse-position-copy-seed";
+  dirtyRectStrategy: "directional-jitter-bounds";
   baseStamps: number;
   physicalCopies: number;
   renderFrames: number;
@@ -169,6 +170,7 @@ const STAMP_VERTICES_PER_COPY = 4;
 const STAMP_GEOMETRY = "quad" as const;
 const FRAGMENT_COVERAGE_STRATEGY = "generic-smoothstep" as const;
 const COLOR_SEED_STRATEGY = "reuse-position-copy-seed" as const;
+const DIRTY_RECT_STRATEGY = "directional-jitter-bounds" as const;
 const BRUSH_UNIFORM_BYTES = 96;
 const DISPLAY_UNIFORM_BYTES = 32;
 
@@ -525,6 +527,7 @@ export class BrushEngine {
       "geometria quad triangle-strip (4 vertici)",
       "coverage fragment smoothstep generica",
       "riuso copySeed per jitter colore per copia",
+      "dirty rect direzionale conservativo",
     ].join(" · ");
 
     return {
@@ -617,6 +620,7 @@ export class BrushEngine {
       stampVerticesPerCopy: STAMP_VERTICES_PER_COPY,
       fragmentCoverageStrategy: FRAGMENT_COVERAGE_STRATEGY,
       colorSeedStrategy: COLOR_SEED_STRATEGY,
+      dirtyRectStrategy: DIRTY_RECT_STRATEGY,
       baseStamps: profile.baseStamps,
       physicalCopies: profile.physicalCopies,
       renderFrames: profile.renderFrames,
@@ -668,6 +672,7 @@ export class BrushEngine {
     stampVerticesPerCopy: number;
     fragmentCoverageStrategy: typeof FRAGMENT_COVERAGE_STRATEGY;
     colorSeedStrategy: typeof COLOR_SEED_STRATEGY;
+    dirtyRectStrategy: typeof DIRTY_RECT_STRATEGY;
   } {
     return {
       canvasWidth: this.canvas.width,
@@ -681,6 +686,7 @@ export class BrushEngine {
       stampVerticesPerCopy: STAMP_VERTICES_PER_COPY,
       fragmentCoverageStrategy: FRAGMENT_COVERAGE_STRATEGY,
       colorSeedStrategy: COLOR_SEED_STRATEGY,
+      dirtyRectStrategy: DIRTY_RECT_STRATEGY,
     };
   }
 
@@ -1205,11 +1211,38 @@ export class BrushEngine {
       this.instanceUploadF32[base + 6] = stamp.directionX;
       this.instanceUploadF32[base + 7] = stamp.directionY;
 
-      const jitterReach = stamp.radius * 2 * (this.settings.positionJitterLinear + this.settings.positionJitterLateral);
-      minimumX = Math.min(minimumX, stamp.x - stamp.radius - jitterReach - 2);
-      minimumY = Math.min(minimumY, stamp.y - stamp.radius - jitterReach - 2);
-      maximumX = Math.max(maximumX, stamp.x + stamp.radius + jitterReach + 2);
-      maximumY = Math.max(maximumY, stamp.y + stamp.radius + jitterReach + 2);
+      const packedX = this.instanceUploadF32[base];
+      const packedY = this.instanceUploadF32[base + 1];
+      const packedRadius = this.instanceUploadF32[base + 2];
+      const packedDirectionX = this.instanceUploadF32[base + 6];
+      const packedDirectionY = this.instanceUploadF32[base + 7];
+      const directionLength = Math.hypot(packedDirectionX, packedDirectionY);
+      const linearReach = packedRadius * 2 * this.settings.positionJitterLinear;
+      const lateralReach = packedRadius * 2 * this.settings.positionJitterLateral;
+      let reachX: number;
+      let reachY: number;
+
+      if (directionLength > 0.0002) {
+        const directionX = packedDirectionX / directionLength;
+        const directionY = packedDirectionY / directionLength;
+        reachX = packedRadius
+          + Math.abs(directionX) * linearReach
+          + Math.abs(directionY) * lateralReach
+          + 2;
+        reachY = packedRadius
+          + Math.abs(directionY) * linearReach
+          + Math.abs(directionX) * lateralReach
+          + 2;
+      } else {
+        const isotropicReach = packedRadius + linearReach + lateralReach + 2;
+        reachX = isotropicReach;
+        reachY = isotropicReach;
+      }
+
+      minimumX = Math.min(minimumX, packedX - reachX);
+      minimumY = Math.min(minimumY, packedY - reachY);
+      maximumX = Math.max(maximumX, packedX + reachX);
+      maximumY = Math.max(maximumY, packedY + reachY);
     }
 
     const x = clamp(Math.floor(minimumX), 0, LAYER_SIZE - 1);

@@ -110,6 +110,7 @@ interface BenchmarkRun {
     stampVerticesPerCopy: number;
     fragmentCoverageStrategy: "generic-smoothstep";
     colorSeedStrategy: "reuse-position-copy-seed";
+    dirtyRectStrategy: "directional-jitter-bounds";
     performanceTelemetryRevision: 2;
   };
 }
