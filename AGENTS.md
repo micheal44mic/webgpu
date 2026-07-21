@@ -308,7 +308,7 @@ Gli FPS diminuiscono di circa lo `0,5%`, il p95 resta invariato e coda GPU, rita
 
 Decisione: passo 8 bocciato. Override WGSL, pipeline Count 16, selezione automatica e relativo marker di telemetria sono stati rimossi. Il motore è tornato esattamente alla pipeline generica della run `#19`; non reintrodurre questa specializzazione senza nuovi dati che dimostrino un costo vertex rilevante.
 
-## Passo 9: display lineare su target sRGB — in prova
+## Passo 9: display lineare su target sRGB — bocciato e rimosso
 
 Ogni frame viene concluso da un pass a pieno canvas. Sulla baseline `#19` significa circa `860 × 850 × 386 = 282 milioni` di invocazioni fragment del display, oltre al lavoro del pennello. Il vecchio display shader convertiva manualmente la scacchiera da sRGB a lineare, componeva il layer e riconvertiva ogni canale da lineare a sRGB con `pow` prima di scrivere nel target `unorm`.
 
@@ -323,4 +323,18 @@ Non cambiano texture del layer, formato `rgba8unorm`, pixel permanenti, brush sh
 
 Il percorso è semanticamente equivalente, ma la conversione sRGB hardware e la precedente formula WGSL possono arrotondare diversamente prima della quantizzazione a 8 bit. Oltre alle metriche bisogna quindi controllare che luminosità, colori, bordi e scacchiera non cambino visibilmente. Non dichiarare identità byte-per-byte senza un pixel-diff sul dispositivo di destinazione. Inoltre `viewFormats` può avere un costo dipendente dall'implementazione: il guadagno non è garantito.
 
-La telemetria salva `displayColorStrategy: "srgb-render-target"`. La prima run valida attesa è la `#21` e va confrontata con la `#19`, non con la pipeline Count 16 della `#20`. Servono stesso fingerprint, preset, iPhone, GPU Apple, canvas e numero di stamp. Valutare FPS medi, p95, frame oltre 20 ms, coda GPU, fine presentazione e soprattutto qualsiasi differenza visiva.
+La run `#21`, identificata da `displayColorStrategy: "srgb-render-target"`, è direttamente confrontabile con la `#19`: stesso fingerprint `18982412`, preset, iPhone, GPU Apple, canvas `860×850`, stamp, copie e dirty rect.
+
+| Metrica | Run #19 display manuale | Run #21 target sRGB |
+|---|---:|---:|
+| FPS medi | `56,19` | `56,04` |
+| intervallo frame p95 | `28 ms` | `28 ms` |
+| intervallo frame massimo | `67 ms` | `67 ms` |
+| frame oltre 20 ms | `37` | `34` |
+| coda GPU finale | `282 ms` | `308 ms` |
+| input delay p95 | `17 ms` | `17 ms` |
+| fine presentazione | `7132 ms` | `7157 ms` |
+
+I frame lenti diminuiscono di `3`, ma gli FPS calano leggermente, il p95 non cambia e coda GPU e fine presentazione peggiorano di `26` e `25 ms`. Non c'è un miglioramento complessivo; il costo dipendente dall'implementazione della view sRGB probabilmente annulla il lavoro aritmetico eliminato.
+
+Decisione: passo 9 bocciato. View sRGB, conversione hardware, costanti lineari e relativo marker sono stati rimossi. Il display è tornato esattamente alla conversione manuale della run `#19`. Non reintrodurre `viewFormats` senza nuove prove specifiche sulla GPU di destinazione.
