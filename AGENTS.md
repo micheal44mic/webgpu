@@ -369,3 +369,42 @@ Prima di scrivere codice, progettare una prima fase isolabile e misurabile. Cons
 La baseline per il nuovo lavoro è il commit successivo al rollback del passo 10 e la run iPhone `#19`. Il benchmark canonico resta size `750`, Count `16`, spacing `1%`, blend `4×`, `193712` copie. Aggiungere telemetria che identifichi senza ambiguità tile size, tile attive, assegnazioni/binning e pass eseguiti; cambiare una sola fase architetturale per run e pubblicarla prima del test iPhone.
 
 Preferenza operativa esplicita dell'utente per la prossima chat: **lavorare senza agenti o subagenti; il modello principale deve leggere, progettare, implementare, revisionare e pubblicare da solo**.
+
+## Passo 11: layer tiled 512 e binning stabile per copia — in attesa della run iPhone
+
+La prima versione completa del salto architetturale sostituisce la singola texture persistente `4096×4096` con una `texture_2d_array` di `8×8` tile logiche da `512×512`. Ogni slice misura fisicamente `514×514`: il pixel aggiuntivo su ogni lato è un gutter usato dal display lineare. Il formato selezionato resta `rgba8unorm` o `rgba16float`; la memoria reale diventa rispettivamente circa `64,5 MiB` e `129,0 MiB`, quindi l'overhead dei gutter è inferiore all'1%.
+
+Ogni batch viene impacchettato una sola volta nel buffer `Stamp` esistente. Un binning CPU a due passaggi visita le copie fisiche in ordine stamp-major/copy-minor, calcola le tile conservativamente intersecate e produce segmenti contigui per tile. Ogni riferimento è soltanto un `u32` con `stampIndex` e `copyIndex`; il vertex shader usa questi indici e continua a eseguire direttamente le formule WGSL originali per direzione, `copySeed`, jitter di posizione, jitter colore, pressione e geometria. Non è stato reintrodotto il compute prepass della #22 e non viene scritto alcun buffer `PhysicalCopy`.
+
+L'ordine relativo delle copie dentro ogni tile è lo stesso della draw monolitica. Una copia che attraversa più tile viene inserita nello stesso punto relativo in tutte le tile interessate; ogni pixel logico appartiene comunque a una sola area centrale, quindi normal premultiplied e additive mantengono la stessa sequenza di blending. Il binning replica in JavaScript l'hash intero usato dallo shader soltanto per stimare il centro della copia. Usa i valori `f32` già impacchettati, un margine conservativo finale di `2 px` e, vicino alla soglia di normalizzazione della direzione WGSL, torna al limite isotropo prudenziale della baseline. Un errore di arrotondamento può quindi aggiungere un'assegnazione, non rimuovere la tile necessaria.
+
+Per ogni tile attiva viene aperto un render pass sulla sola slice `514×514`, con scissor sull'area centrale `512×512`. La viewport include il gutter, così la geometria e le invocazioni helper restano disponibili attorno al bordo della tile; il gutter non riceve blending del pennello. Dopo avere composto tutto il batch, i bordi e gli angoli finali delle tile attive vengono copiati nei gutter dei vicini. Il display sceglie la slice dalle coordinate globali e usa il gutter con lo stesso sampler lineare, senza filtrare verso una slice diversa o verso trasparenza. Clear azzera tutte le 64 slice; zoom, pan, fit e composizione della scacchiera restano sul display pass esistente.
+
+Non sono cambiati spacing, Count, size, flow, hardness, pressione, alpha, blend intensity, seed, sequenza degli stamp, formule del jitter, quad `triangle-strip`, coverage `smoothstep`, riuso di `copySeed`, conversione colore del display o formati del layer. Il percorso è generico per Count `1–24` e per tutte le size; la dimensione della tile non dipende dal preset canonico.
+
+### Telemetria v3
+
+`performanceTelemetryRevision: 3` aggiunge le firme `layerStorageStrategy: "tiled-2d-array"`, `tileBinningStrategy: "cpu-stable-physical-copy-references"` e `dirtyRectStrategy: "per-copy-tile-bounds"`, oltre a:
+
+- `tileSizePx`, `tileGridWidth`, `tileGridHeight`, `tileGutterPixels`: configurazione fisica dell'esperimento;
+- `activeTileVisits`: somma delle tile con almeno un'assegnazione in tutti i batch;
+- `peakActiveTiles`: massimo numero di tile attive in un singolo batch;
+- `physicalCopyTileAssignments`: riferimenti totali dopo la duplicazione conservativa delle copie multi-tile;
+- `tileRenderPasses`, `tileBrushRenderPasses`, `tileClearRenderPasses`: pass totali, pass con copie e pass di clear;
+- `tileGutterCopies`: copie GPU di bordi e angoli eseguite dopo i batch;
+- `tileBinningMs` e `copyReferenceUploadMs`: costi CPU cumulativi del binning e dell'upload dei riferimenti;
+- `estimatedTileAttachmentPixels`: somma di `514×514` per ogni pass tile, utile come proxy architetturale ma non come contatore hardware.
+
+Da questo passo `estimatedScissorPixels` è la somma delle aree centrali `512×512` dei pass con pennello. Non è semanticamente confrontabile con il rettangolo sporco globale della #19 e non va usato da solo per dichiarare una riduzione dei frammenti.
+
+### Verifica locale prima della pubblicazione
+
+TypeScript e build Vite sono riusciti. La build di produzione ha inizializzato WebGPU su GPU NVIDIA Ampere in entrambi i formati, ha eseguito clear e benchmark sintetico senza errori di validazione e non ha mostrato cuciture ai confini delle tile nel confronto visivo affiancato. Le catture disponibili dal browser erano JPEG: il controllo esclude artefatti visibili e linee sui bordi, ma non dimostra identità byte-per-byte e non sostituisce il controllo visivo sull'iPhone.
+
+Un singolo smoke sintetico locale da `2000` stamp base e `48000` copie, con impostazioni desktop predefinite e quindi non canoniche, ha misurato `24,20 ms` CPU submit e `55,70 ms` GPU completion sul tiled contro `4,50 ms` e `47,70 ms` sulla build #19. Il dato indica chiaramente il costo CPU del primo binning completo, ma non decide l'esperimento: usa GPU, size, Count, batching e percorso diversi dal replay iPhone. Non ottimizzare ulteriormente il binning prima della misura canonica, per non combinare fasi.
+
+### Protocollo e decisione pendente
+
+La prossima run iPhone valida, attesa come `#23`, deve essere confrontata direttamente con la `#19`: fingerprint `18982412`, `1583` punti, canvas `860×850`, size `750`, Count `16`, spacing `1%`, blend `4×`, `12107` stamp base e `193712` copie fisiche. Verificare prima assenza di cuciture o variazioni di bordi, colore e accumulo; poi confrontare FPS medi, intervallo p95/massimo, frame oltre `20 ms`, coda GPU finale, input delay, fine presentazione e la nuova telemetria delle tile.
+
+La decisione è sospesa fino al Play eseguito dall'utente sullo stesso iPhone. Promuovere il passo soltanto se il risultato visivo resta invariato e il minor lavoro sugli attachment Apple compensa binning, pass per tile e copie dei gutter; in caso contrario il rollback pulito resta il commit `ad37505` della #19.

@@ -110,8 +110,14 @@ interface BenchmarkRun {
     stampVerticesPerCopy: number;
     fragmentCoverageStrategy: "generic-smoothstep";
     colorSeedStrategy: "reuse-position-copy-seed";
-    dirtyRectStrategy: "directional-jitter-bounds";
-    performanceTelemetryRevision: 2;
+    dirtyRectStrategy: "per-copy-tile-bounds";
+    layerStorageStrategy: "tiled-2d-array";
+    tileBinningStrategy: "cpu-stable-physical-copy-references";
+    tileSizePx: number;
+    tileGridWidth: number;
+    tileGridHeight: number;
+    tileGutterPixels: number;
+    performanceTelemetryRevision: 3;
   };
 }
 
@@ -265,7 +271,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     hardwareConcurrency: navigator.hardwareConcurrency || null,
     deviceMemoryGiB: navigatorWithMetrics.deviceMemory ?? null,
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
-    performanceTelemetryRevision: 2,
+    performanceTelemetryRevision: 3,
     ...engineEnvironment,
   };
 }
@@ -533,7 +539,7 @@ function updateStats(stats: EngineStats): void {
   element<HTMLElement>("cpuStat").textContent = `${stats.lastCpuFrameMs.toFixed(2)} ms`;
   element<HTMLElement>("stampStat").textContent = formatInteger(stats.totalBaseStamps);
   element<HTMLElement>("avoidedStat").textContent = formatInteger(stats.avoidedLogicalDraws);
-  element<HTMLElement>("memoryStat").textContent = `${stats.layerMemoryMiB} MiB`;
+  element<HTMLElement>("memoryStat").textContent = `${stats.layerMemoryMiB.toFixed(1)} MiB`;
   element<HTMLElement>("gpuStat").textContent = stats.gpuLabel;
 }
 
@@ -711,6 +717,9 @@ async function replayHumanStroke(): Promise<void> {
       `submit p95 ${performanceProfile.submitImmediateP95Ms.toFixed(2)} ms`,
       `FPS medi ${performanceProfile.averageRenderFps.toFixed(1)}`,
       `${formatInteger(performanceProfile.delayedRenderFrames)} frame >20 ms`,
+      `tile attive max ${performanceProfile.peakActiveTiles}/${performanceProfile.tileGridWidth * performanceProfile.tileGridHeight}`,
+      `${formatInteger(performanceProfile.physicalCopyTileAssignments)} assegnazioni tile`,
+      `${formatInteger(performanceProfile.tileBrushRenderPasses)} pass tile`,
       `presentazione ${playback.endToPresentedMs.toFixed(2)} ms`,
       runId > 0 ? `run #${runId} salvata` : "run salvata",
     ].join(" · ");

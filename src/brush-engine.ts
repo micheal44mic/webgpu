@@ -55,7 +55,21 @@ export interface StrokePerformanceProfile {
   stampVerticesPerCopy: number;
   fragmentCoverageStrategy: "generic-smoothstep";
   colorSeedStrategy: "reuse-position-copy-seed";
-  dirtyRectStrategy: "directional-jitter-bounds";
+  dirtyRectStrategy: "per-copy-tile-bounds";
+  layerStorageStrategy: "tiled-2d-array";
+  tileBinningStrategy: "cpu-stable-physical-copy-references";
+  tileSizePx: number;
+  tileGridWidth: number;
+  tileGridHeight: number;
+  tileGutterPixels: number;
+  activeTileVisits: number;
+  peakActiveTiles: number;
+  physicalCopyTileAssignments: number;
+  tileRenderPasses: number;
+  tileBrushRenderPasses: number;
+  tileClearRenderPasses: number;
+  tileGutterCopies: number;
+  estimatedTileAttachmentPixels: number;
   baseStamps: number;
   physicalCopies: number;
   renderFrames: number;
@@ -64,7 +78,9 @@ export interface StrokePerformanceProfile {
   estimatedScissorPixels: number;
   stampGenerationMs: number;
   stampPackingMs: number;
+  tileBinningMs: number;
   instanceUploadMs: number;
+  copyReferenceUploadMs: number;
   brushEncodingMs: number;
   displayEncodingMs: number;
   commandSubmitMs: number;
@@ -116,21 +132,23 @@ interface ActiveStroke {
   distanceSinceStamp: number;
 }
 
-interface DirtyRect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
 interface SubmitTiming {
   totalCpuMs: number;
   stampPackingMs: number;
+  tileBinningMs: number;
   instanceUploadMs: number;
+  copyReferenceUploadMs: number;
   brushEncodingMs: number;
   displayEncodingMs: number;
   commandSubmitMs: number;
   scissorPixels: number;
+  activeTiles: number;
+  physicalCopyTileAssignments: number;
+  tileRenderPasses: number;
+  tileBrushRenderPasses: number;
+  tileClearRenderPasses: number;
+  tileGutterCopies: number;
+  tileAttachmentPixels: number;
 }
 
 interface RenderFrameTiming {
@@ -147,9 +165,19 @@ interface MutableStrokePerformanceProfile {
   brushBatches: number;
   largestBatchStamps: number;
   estimatedScissorPixels: number;
+  activeTileVisits: number;
+  peakActiveTiles: number;
+  physicalCopyTileAssignments: number;
+  tileRenderPasses: number;
+  tileBrushRenderPasses: number;
+  tileClearRenderPasses: number;
+  tileGutterCopies: number;
+  estimatedTileAttachmentPixels: number;
   stampGenerationMs: number;
   stampPackingMs: number;
+  tileBinningMs: number;
   instanceUploadMs: number;
+  copyReferenceUploadMs: number;
   brushEncodingMs: number;
   displayEncodingMs: number;
   commandSubmitMs: number;
@@ -163,16 +191,54 @@ interface MutableStrokePerformanceProfile {
   previousFrameTimestamp: number | null;
 }
 
+interface TileBinningResult {
+  activeTiles: number[];
+  assignmentCounts: Uint32Array;
+  assignmentOffsets: Uint32Array;
+  assignmentCount: number;
+}
+
 const LAYER_SIZE = 4096;
+const TILE_SIZE = 512;
+const TILE_GUTTER = 1;
+const TILE_STORAGE_SIZE = TILE_SIZE + TILE_GUTTER * 2;
+const TILE_GRID_WIDTH = LAYER_SIZE / TILE_SIZE;
+const TILE_GRID_HEIGHT = LAYER_SIZE / TILE_SIZE;
+const TILE_COUNT = TILE_GRID_WIDTH * TILE_GRID_HEIGHT;
+const TILE_UNIFORM_BYTES = 16;
+const COPY_REFERENCE_BYTES = 4;
+const INITIAL_COPY_REFERENCE_CAPACITY = 1_024;
+const TILE_BINNING_MARGIN = 2;
 const STAMP_STRIDE_BYTES = 32;
 const MAX_STAMPS_PER_BATCH = 65_536;
 const STAMP_VERTICES_PER_COPY = 4;
 const STAMP_GEOMETRY = "quad" as const;
 const FRAGMENT_COVERAGE_STRATEGY = "generic-smoothstep" as const;
 const COLOR_SEED_STRATEGY = "reuse-position-copy-seed" as const;
-const DIRTY_RECT_STRATEGY = "directional-jitter-bounds" as const;
+const DIRTY_RECT_STRATEGY = "per-copy-tile-bounds" as const;
+const LAYER_STORAGE_STRATEGY = "tiled-2d-array" as const;
+const TILE_BINNING_STRATEGY = "cpu-stable-physical-copy-references" as const;
 const BRUSH_UNIFORM_BYTES = 96;
-const DISPLAY_UNIFORM_BYTES = 32;
+const DISPLAY_UNIFORM_BYTES = 48;
+
+function hash32(value: number): number {
+  let result = value >>> 0;
+  result = (result ^ (result >>> 16)) >>> 0;
+  result = Math.imul(result, 0x7feb352d) >>> 0;
+  result = (result ^ (result >>> 15)) >>> 0;
+  result = Math.imul(result, 0x846ca68b) >>> 0;
+  result = (result ^ (result >>> 16)) >>> 0;
+  return result;
+}
+
+function random01(seed: number, salt: number): number {
+  const salted = (seed ^ Math.imul(salt, 0x9e3779b9)) >>> 0;
+  return (hash32(salted) & 0x00ff_ffff) / 16_777_216;
+}
+
+function alignTo(value: number, alignment: number): number {
+  return Math.ceil(value / alignment) * alignment;
+}
 
 function percentile(values: readonly number[], ratio: number): number {
   if (values.length === 0) {
@@ -228,10 +294,13 @@ export class BrushEngine {
   private layerFormat: LayerFormat = "rgba8unorm";
   private layerTexture!: GPUTexture;
   private layerView!: GPUTextureView;
+  private layerTileViews: GPUTextureView[] = [];
 
   private brushUniformBuffer!: GPUBuffer;
   private displayUniformBuffer!: GPUBuffer;
   private instanceBuffer!: GPUBuffer;
+  private copyReferenceBuffer!: GPUBuffer;
+  private tileUniformBuffer!: GPUBuffer;
   private sampler!: GPUSampler;
 
   private brushBindGroupLayout!: GPUBindGroupLayout;
@@ -248,6 +317,10 @@ export class BrushEngine {
   private readonly instanceUpload = new ArrayBuffer(MAX_STAMPS_PER_BATCH * STAMP_STRIDE_BYTES);
   private readonly instanceUploadF32 = new Float32Array(this.instanceUpload);
   private readonly instanceUploadU32 = new Uint32Array(this.instanceUpload);
+  private copyReferenceUpload = new Uint32Array(INITIAL_COPY_REFERENCE_CAPACITY);
+  private copyReferenceCapacity = INITIAL_COPY_REFERENCE_CAPACITY;
+  private copyTileBounds = new Uint8Array(0);
+  private tileUniformStride = TILE_UNIFORM_BYTES;
   private readonly brushUniformUpload = new ArrayBuffer(BRUSH_UNIFORM_BYTES);
   private readonly displayUniformUpload = new Float32Array(DISPLAY_UNIFORM_BYTES / 4);
 
@@ -294,6 +367,11 @@ export class BrushEngine {
     if (adapter.limits.maxTextureDimension2D < LAYER_SIZE) {
       throw new Error(
         `La GPU supporta texture fino a ${adapter.limits.maxTextureDimension2D}px, meno dei ${LAYER_SIZE}px richiesti.`,
+      );
+    }
+    if (adapter.limits.maxTextureArrayLayers < TILE_COUNT) {
+      throw new Error(
+        `La GPU supporta ${adapter.limits.maxTextureArrayLayers} layer texture, meno dei ${TILE_COUNT} tile richiesti.`,
       );
     }
 
@@ -522,12 +600,14 @@ export class BrushEngine {
       Math.PI * averageRadiusSquared * stamps.length * this.settings.count,
     );
     const strategy = [
-      "1 draw instanziata",
+      "draw instanziate soltanto per tile attiva",
       `${this.settings.count} copie fisiche GPU per stamp base`,
       "geometria quad triangle-strip (4 vertici)",
       "coverage fragment smoothstep generica",
       "riuso copySeed per jitter colore per copia",
-      "dirty rect direzionale conservativo",
+      "limiti tile conservativi per copia",
+      "layer 8×8 tile da 512 px con gutter",
+      "binning stabile per copia fisica",
     ].join(" · ");
 
     return {
@@ -548,7 +628,7 @@ export class BrushEngine {
       lastCpuFrameMs: this.lastCpuFrameMs,
       totalBaseStamps: this.totalBaseStamps,
       avoidedLogicalDraws: this.avoidedLogicalDraws,
-      layerMemoryMiB: this.layerFormat === "rgba16float" ? 128 : 64,
+      layerMemoryMiB: this.getLayerMemoryMiB(),
       gpuLabel: this.gpuLabel,
       layerFormat: this.layerFormat,
     };
@@ -590,9 +670,19 @@ export class BrushEngine {
       brushBatches: 0,
       largestBatchStamps: 0,
       estimatedScissorPixels: 0,
+      activeTileVisits: 0,
+      peakActiveTiles: 0,
+      physicalCopyTileAssignments: 0,
+      tileRenderPasses: 0,
+      tileBrushRenderPasses: 0,
+      tileClearRenderPasses: 0,
+      tileGutterCopies: 0,
+      estimatedTileAttachmentPixels: 0,
       stampGenerationMs: 0,
       stampPackingMs: 0,
+      tileBinningMs: 0,
       instanceUploadMs: 0,
+      copyReferenceUploadMs: 0,
       brushEncodingMs: 0,
       displayEncodingMs: 0,
       commandSubmitMs: 0,
@@ -621,6 +711,20 @@ export class BrushEngine {
       fragmentCoverageStrategy: FRAGMENT_COVERAGE_STRATEGY,
       colorSeedStrategy: COLOR_SEED_STRATEGY,
       dirtyRectStrategy: DIRTY_RECT_STRATEGY,
+      layerStorageStrategy: LAYER_STORAGE_STRATEGY,
+      tileBinningStrategy: TILE_BINNING_STRATEGY,
+      tileSizePx: TILE_SIZE,
+      tileGridWidth: TILE_GRID_WIDTH,
+      tileGridHeight: TILE_GRID_HEIGHT,
+      tileGutterPixels: TILE_GUTTER,
+      activeTileVisits: profile.activeTileVisits,
+      peakActiveTiles: profile.peakActiveTiles,
+      physicalCopyTileAssignments: profile.physicalCopyTileAssignments,
+      tileRenderPasses: profile.tileRenderPasses,
+      tileBrushRenderPasses: profile.tileBrushRenderPasses,
+      tileClearRenderPasses: profile.tileClearRenderPasses,
+      tileGutterCopies: profile.tileGutterCopies,
+      estimatedTileAttachmentPixels: profile.estimatedTileAttachmentPixels,
       baseStamps: profile.baseStamps,
       physicalCopies: profile.physicalCopies,
       renderFrames: profile.renderFrames,
@@ -629,7 +733,9 @@ export class BrushEngine {
       estimatedScissorPixels: profile.estimatedScissorPixels,
       stampGenerationMs: profile.stampGenerationMs,
       stampPackingMs: profile.stampPackingMs,
+      tileBinningMs: profile.tileBinningMs,
       instanceUploadMs: profile.instanceUploadMs,
+      copyReferenceUploadMs: profile.copyReferenceUploadMs,
       brushEncodingMs: profile.brushEncodingMs,
       displayEncodingMs: profile.displayEncodingMs,
       commandSubmitMs: profile.commandSubmitMs,
@@ -673,13 +779,19 @@ export class BrushEngine {
     fragmentCoverageStrategy: typeof FRAGMENT_COVERAGE_STRATEGY;
     colorSeedStrategy: typeof COLOR_SEED_STRATEGY;
     dirtyRectStrategy: typeof DIRTY_RECT_STRATEGY;
+    layerStorageStrategy: typeof LAYER_STORAGE_STRATEGY;
+    tileBinningStrategy: typeof TILE_BINNING_STRATEGY;
+    tileSizePx: number;
+    tileGridWidth: number;
+    tileGridHeight: number;
+    tileGutterPixels: number;
   } {
     return {
       canvasWidth: this.canvas.width,
       canvasHeight: this.canvas.height,
       layerSize: LAYER_SIZE,
       layerFormat: this.layerFormat,
-      layerMemoryMiB: this.layerFormat === "rgba16float" ? 128 : 64,
+      layerMemoryMiB: this.getLayerMemoryMiB(),
       gpuLabel: this.gpuLabel,
       timestampQueriesSupported: this.device?.features.has("timestamp-query") ?? false,
       stampGeometry: STAMP_GEOMETRY,
@@ -687,6 +799,12 @@ export class BrushEngine {
       fragmentCoverageStrategy: FRAGMENT_COVERAGE_STRATEGY,
       colorSeedStrategy: COLOR_SEED_STRATEGY,
       dirtyRectStrategy: DIRTY_RECT_STRATEGY,
+      layerStorageStrategy: LAYER_STORAGE_STRATEGY,
+      tileBinningStrategy: TILE_BINNING_STRATEGY,
+      tileSizePx: TILE_SIZE,
+      tileGridWidth: TILE_GRID_WIDTH,
+      tileGridHeight: TILE_GRID_HEIGHT,
+      tileGutterPixels: TILE_GUTTER,
     };
   }
 
@@ -708,6 +826,32 @@ export class BrushEngine {
       size: MAX_STAMPS_PER_BATCH * STAMP_STRIDE_BYTES,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
+
+    this.copyReferenceBuffer = this.device.createBuffer({
+      label: "Tile copy-reference storage",
+      size: this.copyReferenceCapacity * COPY_REFERENCE_BYTES,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
+    this.tileUniformStride = alignTo(
+      TILE_UNIFORM_BYTES,
+      this.device.limits.minUniformBufferOffsetAlignment,
+    );
+    this.tileUniformBuffer = this.device.createBuffer({
+      label: "Tile draw uniforms",
+      size: this.tileUniformStride * TILE_COUNT,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    const tileUniformUpload = new ArrayBuffer(this.tileUniformStride * TILE_COUNT);
+    const tileUniformFloats = new Float32Array(tileUniformUpload);
+    for (let tileIndex = 0; tileIndex < TILE_COUNT; tileIndex += 1) {
+      const base = (tileIndex * this.tileUniformStride) / 4;
+      tileUniformFloats[base] = (tileIndex % TILE_GRID_WIDTH) * TILE_SIZE;
+      tileUniformFloats[base + 1] = Math.floor(tileIndex / TILE_GRID_WIDTH) * TILE_SIZE;
+      tileUniformFloats[base + 2] = TILE_SIZE;
+      tileUniformFloats[base + 3] = TILE_STORAGE_SIZE;
+    }
+    this.device.queue.writeBuffer(this.tileUniformBuffer, 0, tileUniformUpload);
 
     this.sampler = this.device.createSampler({
       label: "Layer linear sampler",
@@ -731,6 +875,20 @@ export class BrushEngine {
           visibility: GPUShaderStage.VERTEX,
           buffer: { type: "read-only-storage" },
         },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.VERTEX,
+          buffer: { type: "read-only-storage" },
+        },
+        {
+          binding: 3,
+          visibility: GPUShaderStage.VERTEX,
+          buffer: {
+            type: "uniform",
+            hasDynamicOffset: true,
+            minBindingSize: TILE_UNIFORM_BYTES,
+          },
+        },
       ],
     });
 
@@ -745,7 +903,7 @@ export class BrushEngine {
         {
           binding: 1,
           visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float", viewDimension: "2d" },
+          texture: { sampleType: "float", viewDimension: "2d-array" },
         },
         {
           binding: 2,
@@ -755,14 +913,7 @@ export class BrushEngine {
       ],
     });
 
-    this.brushBindGroup = this.device.createBindGroup({
-      label: "Brush bind group",
-      layout: this.brushBindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: this.brushUniformBuffer } },
-        { binding: 1, resource: { buffer: this.instanceBuffer } },
-      ],
-    });
+    this.createBrushBindGroup();
 
     this.brushShaderModule = this.device.createShaderModule({ label: "Brush WGSL", code: brushShader });
     this.displayShaderModule = this.device.createShaderModule({ label: "Display WGSL", code: displayShader });
@@ -796,8 +947,12 @@ export class BrushEngine {
     const oldTexture = this.layerTexture;
 
     const texture = this.device.createTexture({
-      label: `4096² paint layer ${format}`,
-      size: { width: LAYER_SIZE, height: LAYER_SIZE, depthOrArrayLayers: 1 },
+      label: `4096² paint layer as ${TILE_GRID_WIDTH}×${TILE_GRID_HEIGHT} tiled array ${format}`,
+      size: {
+        width: TILE_STORAGE_SIZE,
+        height: TILE_STORAGE_SIZE,
+        depthOrArrayLayers: TILE_COUNT,
+      },
       format,
       usage:
         GPUTextureUsage.RENDER_ATTACHMENT |
@@ -805,7 +960,18 @@ export class BrushEngine {
         GPUTextureUsage.COPY_SRC |
         GPUTextureUsage.COPY_DST,
     });
-    const view = texture.createView();
+    const view = texture.createView({
+      label: `Paint tile array view ${format}`,
+      dimension: "2d-array",
+      baseArrayLayer: 0,
+      arrayLayerCount: TILE_COUNT,
+    });
+    const tileViews = Array.from({ length: TILE_COUNT }, (_, tileIndex) => texture.createView({
+      label: `Paint tile ${tileIndex} ${format}`,
+      dimension: "2d",
+      baseArrayLayer: tileIndex,
+      arrayLayerCount: 1,
+    }));
 
     const brushPipelineLayout = this.device.createPipelineLayout({
       label: `Brush pipeline layout ${format}`,
@@ -893,6 +1059,7 @@ export class BrushEngine {
 
     this.layerTexture = texture;
     this.layerView = view;
+    this.layerTileViews = tileViews;
     this.normalPipeline = normalPipeline;
     this.additivePipeline = additivePipeline;
     this.displayBindGroup = displayBindGroup;
@@ -942,6 +1109,10 @@ export class BrushEngine {
     this.displayUniformUpload[5] = this.viewCenterY;
     this.displayUniformUpload[6] = this.zoom;
     this.displayUniformUpload[7] = 96;
+    this.displayUniformUpload[8] = TILE_SIZE;
+    this.displayUniformUpload[9] = TILE_STORAGE_SIZE;
+    this.displayUniformUpload[10] = TILE_GRID_WIDTH;
+    this.displayUniformUpload[11] = TILE_GUTTER;
     this.device.queue.writeBuffer(this.displayUniformBuffer, 0, this.displayUniformUpload);
   }
 
@@ -1113,18 +1284,35 @@ export class BrushEngine {
     const cpuStart = performance.now();
     const encoder = this.device.createCommandEncoder({ label: "Brush frame encoder" });
     let stampPackingMs = 0;
+    let tileBinningMs = 0;
     let instanceUploadMs = 0;
+    let copyReferenceUploadMs = 0;
     let brushEncodingMs = 0;
     let displayEncodingMs = 0;
     let commandSubmitMs = 0;
     let scissorPixels = 0;
+    let tileRenderPasses = 0;
+    let tileBrushRenderPasses = 0;
+    let tileClearRenderPasses = 0;
+    let tileGutterCopies = 0;
+    let tileAttachmentPixels = 0;
+    let binning: TileBinningResult = {
+      activeTiles: [],
+      assignmentCounts: new Uint32Array(TILE_COUNT),
+      assignmentOffsets: new Uint32Array(TILE_COUNT + 1),
+      assignmentCount: 0,
+    };
 
     if (clearLayer || stamps.length > 0) {
-      let dirtyRect: DirtyRect | null = null;
       if (stamps.length > 0) {
         const packingStart = performance.now();
-        dirtyRect = this.packStamps(stamps);
+        this.packStamps(stamps);
         stampPackingMs = performance.now() - packingStart;
+
+        const binningStart = performance.now();
+        binning = this.binPhysicalCopies(stamps.length);
+        tileBinningMs = performance.now() - binningStart;
+
         const uploadStart = performance.now();
         this.device.queue.writeBuffer(
           this.instanceBuffer,
@@ -1134,29 +1322,71 @@ export class BrushEngine {
           stamps.length * STAMP_STRIDE_BYTES,
         );
         instanceUploadMs = performance.now() - uploadStart;
+
+        const copyReferenceUploadStart = performance.now();
+        this.device.queue.writeBuffer(
+          this.copyReferenceBuffer,
+          0,
+          this.copyReferenceUpload.buffer,
+          0,
+          binning.assignmentCount * COPY_REFERENCE_BYTES,
+        );
+        copyReferenceUploadMs = performance.now() - copyReferenceUploadStart;
       }
 
       const brushEncodingStart = performance.now();
-      const brushPass = encoder.beginRenderPass({
-        label: "Paint into 4096² layer",
-        colorAttachments: [
-          {
-            view: this.layerView,
-            loadOp: clearLayer ? "clear" : "load",
-            storeOp: "store",
-            clearValue: { r: 0, g: 0, b: 0, a: 0 },
-          },
-        ],
-      });
+      const encodeTilePass = (tileIndex: number): void => {
+        const assignmentCount = binning.assignmentCounts[tileIndex];
+        const brushPass = encoder.beginRenderPass({
+          label: `Paint tile ${tileIndex}`,
+          colorAttachments: [
+            {
+              view: this.layerTileViews[tileIndex],
+              loadOp: clearLayer ? "clear" : "load",
+              storeOp: "store",
+              clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            },
+          ],
+        });
 
-      if (stamps.length > 0 && dirtyRect) {
-        scissorPixels = dirtyRect.width * dirtyRect.height;
-        brushPass.setPipeline(this.settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline);
-        brushPass.setBindGroup(0, this.brushBindGroup);
-        brushPass.setScissorRect(dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height);
-        brushPass.draw(STAMP_VERTICES_PER_COPY, stamps.length * this.settings.count, 0, 0);
+        tileRenderPasses += 1;
+        if (clearLayer) {
+          tileClearRenderPasses += 1;
+        }
+        if (assignmentCount > 0) {
+          tileBrushRenderPasses += 1;
+          brushPass.setPipeline(
+            this.settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline,
+          );
+          brushPass.setBindGroup(0, this.brushBindGroup, [tileIndex * this.tileUniformStride]);
+          brushPass.setViewport(0, 0, TILE_STORAGE_SIZE, TILE_STORAGE_SIZE, 0, 1);
+          brushPass.setScissorRect(TILE_GUTTER, TILE_GUTTER, TILE_SIZE, TILE_SIZE);
+          brushPass.draw(
+            STAMP_VERTICES_PER_COPY,
+            assignmentCount,
+            0,
+            binning.assignmentOffsets[tileIndex],
+          );
+        }
+        brushPass.end();
+      };
+
+      if (clearLayer) {
+        for (let tileIndex = 0; tileIndex < TILE_COUNT; tileIndex += 1) {
+          encodeTilePass(tileIndex);
+        }
+      } else {
+        for (const tileIndex of binning.activeTiles) {
+          encodeTilePass(tileIndex);
+        }
       }
-      brushPass.end();
+
+      if (binning.activeTiles.length > 0) {
+        tileGutterCopies = this.encodeTileGutterCopies(encoder, binning.activeTiles);
+      }
+
+      scissorPixels = tileBrushRenderPasses * TILE_SIZE * TILE_SIZE;
+      tileAttachmentPixels = tileRenderPasses * TILE_STORAGE_SIZE * TILE_STORAGE_SIZE;
       brushEncodingMs = performance.now() - brushEncodingStart;
     }
 
@@ -1185,20 +1415,24 @@ export class BrushEngine {
     return {
       totalCpuMs: performance.now() - cpuStart,
       stampPackingMs,
+      tileBinningMs,
       instanceUploadMs,
+      copyReferenceUploadMs,
       brushEncodingMs,
       displayEncodingMs,
       commandSubmitMs,
       scissorPixels,
+      activeTiles: binning.activeTiles.length,
+      physicalCopyTileAssignments: binning.assignmentCount,
+      tileRenderPasses,
+      tileBrushRenderPasses,
+      tileClearRenderPasses,
+      tileGutterCopies,
+      tileAttachmentPixels,
     };
   }
 
-  private packStamps(stamps: readonly Stamp[]): DirtyRect | null {
-    let minimumX = LAYER_SIZE;
-    let minimumY = LAYER_SIZE;
-    let maximumX = 0;
-    let maximumY = 0;
-
+  private packStamps(stamps: readonly Stamp[]): void {
     for (let index = 0; index < stamps.length; index += 1) {
       const stamp = stamps[index];
       const base = index * (STAMP_STRIDE_BYTES / 4);
@@ -1210,49 +1444,280 @@ export class BrushEngine {
       this.instanceUploadU32[base + 5] = 0;
       this.instanceUploadF32[base + 6] = stamp.directionX;
       this.instanceUploadF32[base + 7] = stamp.directionY;
+    }
+  }
 
+  private binPhysicalCopies(stampCount: number): TileBinningResult {
+    const copyCount = this.settings.count;
+    const physicalCopyCount = stampCount * copyCount;
+    const assignmentCounts = new Uint32Array(TILE_COUNT);
+    const assignmentOffsets = new Uint32Array(TILE_COUNT + 1);
+
+    this.ensureCopyTileBoundsCapacity(physicalCopyCount);
+
+    for (let stampIndex = 0; stampIndex < stampCount; stampIndex += 1) {
+      const base = stampIndex * (STAMP_STRIDE_BYTES / 4);
       const packedX = this.instanceUploadF32[base];
       const packedY = this.instanceUploadF32[base + 1];
       const packedRadius = this.instanceUploadF32[base + 2];
+      const stampSeed = this.instanceUploadU32[base + 4];
       const packedDirectionX = this.instanceUploadF32[base + 6];
       const packedDirectionY = this.instanceUploadF32[base + 7];
       const directionLength = Math.hypot(packedDirectionX, packedDirectionY);
-      const linearReach = packedRadius * 2 * this.settings.positionJitterLinear;
-      const lateralReach = packedRadius * 2 * this.settings.positionJitterLateral;
-      let reachX: number;
-      let reachY: number;
+      const directionIsStable = directionLength < 0.00005 || directionLength > 0.0002;
+      const directionX = directionLength > 0.0002 ? packedDirectionX / directionLength : 1;
+      const directionY = directionLength > 0.0002 ? packedDirectionY / directionLength : 0;
 
-      if (directionLength > 0.0002) {
-        const directionX = packedDirectionX / directionLength;
-        const directionY = packedDirectionY / directionLength;
-        reachX = packedRadius
-          + Math.abs(directionX) * linearReach
-          + Math.abs(directionY) * lateralReach
-          + 2;
-        reachY = packedRadius
-          + Math.abs(directionY) * linearReach
-          + Math.abs(directionX) * lateralReach
-          + 2;
-      } else {
-        const isotropicReach = packedRadius + linearReach + lateralReach + 2;
-        reachX = isotropicReach;
-        reachY = isotropicReach;
+      for (let copyIndex = 0; copyIndex < copyCount; copyIndex += 1) {
+        const physicalCopyIndex = stampIndex * copyCount + copyIndex;
+        const boundsBase = physicalCopyIndex * 4;
+        let left: number;
+        let top: number;
+        let right: number;
+        let bottom: number;
+
+        if (directionIsStable) {
+          const copySeed = hash32(
+            (stampSeed ^ Math.imul(copyIndex, 0x85ebca6b)) >>> 0,
+          );
+          const linearOffset = (random01(copySeed, 5) - 0.5)
+            * 4
+            * packedRadius
+            * this.settings.positionJitterLinear;
+          const lateralOffset = (random01(copySeed, 6) - 0.5)
+            * 4
+            * packedRadius
+            * this.settings.positionJitterLateral;
+          const centerX = packedX
+            + directionX * linearOffset
+            - directionY * lateralOffset;
+          const centerY = packedY
+            + directionY * linearOffset
+            + directionX * lateralOffset;
+          left = centerX - packedRadius - TILE_BINNING_MARGIN;
+          top = centerY - packedRadius - TILE_BINNING_MARGIN;
+          right = centerX + packedRadius + TILE_BINNING_MARGIN;
+          bottom = centerY + packedRadius + TILE_BINNING_MARGIN;
+        } else {
+          // Vicino alla soglia di normalizzazione WGSL, usa il limite direzionale
+          // conservativo della baseline #19 anziché rischiare di perdere una tile.
+          const linearReach = packedRadius * 2 * this.settings.positionJitterLinear;
+          const lateralReach = packedRadius * 2 * this.settings.positionJitterLateral;
+          const isotropicReach = packedRadius + linearReach + lateralReach + TILE_BINNING_MARGIN;
+          left = packedX - isotropicReach;
+          top = packedY - isotropicReach;
+          right = packedX + isotropicReach;
+          bottom = packedY + isotropicReach;
+        }
+
+        if (right < 0 || bottom < 0 || left >= LAYER_SIZE || top >= LAYER_SIZE) {
+          this.copyTileBounds[boundsBase] = 0xff;
+          continue;
+        }
+
+        const minimumTileX = clamp(Math.floor(left / TILE_SIZE), 0, TILE_GRID_WIDTH - 1);
+        const minimumTileY = clamp(Math.floor(top / TILE_SIZE), 0, TILE_GRID_HEIGHT - 1);
+        const maximumTileX = clamp(Math.floor(right / TILE_SIZE), 0, TILE_GRID_WIDTH - 1);
+        const maximumTileY = clamp(Math.floor(bottom / TILE_SIZE), 0, TILE_GRID_HEIGHT - 1);
+        this.copyTileBounds[boundsBase] = minimumTileX;
+        this.copyTileBounds[boundsBase + 1] = minimumTileY;
+        this.copyTileBounds[boundsBase + 2] = maximumTileX;
+        this.copyTileBounds[boundsBase + 3] = maximumTileY;
+
+        for (let tileY = minimumTileY; tileY <= maximumTileY; tileY += 1) {
+          const rowOffset = tileY * TILE_GRID_WIDTH;
+          for (let tileX = minimumTileX; tileX <= maximumTileX; tileX += 1) {
+            assignmentCounts[rowOffset + tileX] += 1;
+          }
+        }
       }
-
-      minimumX = Math.min(minimumX, packedX - reachX);
-      minimumY = Math.min(minimumY, packedY - reachY);
-      maximumX = Math.max(maximumX, packedX + reachX);
-      maximumY = Math.max(maximumY, packedY + reachY);
     }
 
-    const x = clamp(Math.floor(minimumX), 0, LAYER_SIZE - 1);
-    const y = clamp(Math.floor(minimumY), 0, LAYER_SIZE - 1);
-    const right = clamp(Math.ceil(maximumX), 1, LAYER_SIZE);
-    const bottom = clamp(Math.ceil(maximumY), 1, LAYER_SIZE);
-    const width = Math.max(0, right - x);
-    const height = Math.max(0, bottom - y);
+    let assignmentCount = 0;
+    const activeTiles: number[] = [];
+    for (let tileIndex = 0; tileIndex < TILE_COUNT; tileIndex += 1) {
+      assignmentOffsets[tileIndex] = assignmentCount;
+      assignmentCount += assignmentCounts[tileIndex];
+      if (assignmentCounts[tileIndex] > 0) {
+        activeTiles.push(tileIndex);
+      }
+    }
+    assignmentOffsets[TILE_COUNT] = assignmentCount;
+    this.ensureCopyReferenceCapacity(assignmentCount);
 
-    return width > 0 && height > 0 ? { x, y, width, height } : null;
+    const writeOffsets = assignmentOffsets.slice(0, TILE_COUNT);
+    // Lo stesso ordine stamp-major/copy-minor della draw monolitica viene
+    // ricostruito indipendentemente in ogni segmento contiguo della tile.
+    for (let stampIndex = 0; stampIndex < stampCount; stampIndex += 1) {
+      for (let copyIndex = 0; copyIndex < copyCount; copyIndex += 1) {
+        const physicalCopyIndex = stampIndex * copyCount + copyIndex;
+        const boundsBase = physicalCopyIndex * 4;
+        if (this.copyTileBounds[boundsBase] === 0xff) {
+          continue;
+        }
+        const minimumTileX = this.copyTileBounds[boundsBase];
+        const minimumTileY = this.copyTileBounds[boundsBase + 1];
+        const maximumTileX = this.copyTileBounds[boundsBase + 2];
+        const maximumTileY = this.copyTileBounds[boundsBase + 3];
+        const packedReference = (stampIndex | (copyIndex << 16)) >>> 0;
+
+        for (let tileY = minimumTileY; tileY <= maximumTileY; tileY += 1) {
+          const rowOffset = tileY * TILE_GRID_WIDTH;
+          for (let tileX = minimumTileX; tileX <= maximumTileX; tileX += 1) {
+            const tileIndex = rowOffset + tileX;
+            this.copyReferenceUpload[writeOffsets[tileIndex]] = packedReference;
+            writeOffsets[tileIndex] += 1;
+          }
+        }
+      }
+    }
+
+    return {
+      activeTiles,
+      assignmentCounts,
+      assignmentOffsets,
+      assignmentCount,
+    };
+  }
+
+  private ensureCopyTileBoundsCapacity(physicalCopyCount: number): void {
+    const requiredBytes = physicalCopyCount * 4;
+    if (this.copyTileBounds.length >= requiredBytes) {
+      return;
+    }
+
+    let capacity = Math.max(4_096, this.copyTileBounds.length || 0);
+    while (capacity < requiredBytes) {
+      capacity *= 2;
+    }
+    this.copyTileBounds = new Uint8Array(capacity);
+  }
+
+  private ensureCopyReferenceCapacity(requiredReferences: number): void {
+    if (requiredReferences <= this.copyReferenceCapacity) {
+      return;
+    }
+
+    let capacity = this.copyReferenceCapacity;
+    while (capacity < requiredReferences) {
+      capacity *= 2;
+    }
+    const requiredBytes = capacity * COPY_REFERENCE_BYTES;
+    const maximumBytes = Number(this.device.limits.maxStorageBufferBindingSize);
+    if (requiredBytes > maximumBytes) {
+      throw new Error(
+        `Il binning richiede ${requiredBytes} byte di riferimenti, oltre il limite GPU di ${maximumBytes}.`,
+      );
+    }
+
+    const oldBuffer = this.copyReferenceBuffer;
+    this.copyReferenceBuffer = this.device.createBuffer({
+      label: "Tile copy-reference storage",
+      size: requiredBytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.copyReferenceCapacity = capacity;
+    this.copyReferenceUpload = new Uint32Array(capacity);
+    this.createBrushBindGroup();
+    oldBuffer.destroy();
+  }
+
+  private createBrushBindGroup(): void {
+    this.brushBindGroup = this.device.createBindGroup({
+      label: "Brush tiled bind group",
+      layout: this.brushBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.brushUniformBuffer } },
+        { binding: 1, resource: { buffer: this.instanceBuffer } },
+        { binding: 2, resource: { buffer: this.copyReferenceBuffer } },
+        {
+          binding: 3,
+          resource: {
+            buffer: this.tileUniformBuffer,
+            offset: 0,
+            size: TILE_UNIFORM_BYTES,
+          },
+        },
+      ],
+    });
+  }
+
+  private encodeTileGutterCopies(
+    encoder: GPUCommandEncoder,
+    activeTiles: readonly number[],
+  ): number {
+    // Sincronizza soltanto dopo avere composto tutte le copie del batch: il
+    // display lineare vede così gli stessi pixel finali su entrambi i lati.
+    let copyCount = 0;
+
+    for (const tileIndex of activeTiles) {
+      const tileX = tileIndex % TILE_GRID_WIDTH;
+      const tileY = Math.floor(tileIndex / TILE_GRID_WIDTH);
+
+      if (tileX > 0) {
+        this.copyTileRegion(encoder, tileIndex, 1, 1, tileIndex - 1, TILE_STORAGE_SIZE - 1, 1, 1, TILE_SIZE);
+        copyCount += 1;
+      }
+      if (tileX + 1 < TILE_GRID_WIDTH) {
+        this.copyTileRegion(encoder, tileIndex, TILE_SIZE, 1, tileIndex + 1, 0, 1, 1, TILE_SIZE);
+        copyCount += 1;
+      }
+      if (tileY > 0) {
+        this.copyTileRegion(encoder, tileIndex, 1, 1, tileIndex - TILE_GRID_WIDTH, 1, TILE_STORAGE_SIZE - 1, TILE_SIZE, 1);
+        copyCount += 1;
+      }
+      if (tileY + 1 < TILE_GRID_HEIGHT) {
+        this.copyTileRegion(encoder, tileIndex, 1, TILE_SIZE, tileIndex + TILE_GRID_WIDTH, 1, 0, TILE_SIZE, 1);
+        copyCount += 1;
+      }
+      if (tileX > 0 && tileY > 0) {
+        this.copyTileRegion(encoder, tileIndex, 1, 1, tileIndex - TILE_GRID_WIDTH - 1, TILE_STORAGE_SIZE - 1, TILE_STORAGE_SIZE - 1, 1, 1);
+        copyCount += 1;
+      }
+      if (tileX + 1 < TILE_GRID_WIDTH && tileY > 0) {
+        this.copyTileRegion(encoder, tileIndex, TILE_SIZE, 1, tileIndex - TILE_GRID_WIDTH + 1, 0, TILE_STORAGE_SIZE - 1, 1, 1);
+        copyCount += 1;
+      }
+      if (tileX > 0 && tileY + 1 < TILE_GRID_HEIGHT) {
+        this.copyTileRegion(encoder, tileIndex, 1, TILE_SIZE, tileIndex + TILE_GRID_WIDTH - 1, TILE_STORAGE_SIZE - 1, 0, 1, 1);
+        copyCount += 1;
+      }
+      if (tileX + 1 < TILE_GRID_WIDTH && tileY + 1 < TILE_GRID_HEIGHT) {
+        this.copyTileRegion(encoder, tileIndex, TILE_SIZE, TILE_SIZE, tileIndex + TILE_GRID_WIDTH + 1, 0, 0, 1, 1);
+        copyCount += 1;
+      }
+    }
+
+    return copyCount;
+  }
+
+  private copyTileRegion(
+    encoder: GPUCommandEncoder,
+    sourceTile: number,
+    sourceX: number,
+    sourceY: number,
+    destinationTile: number,
+    destinationX: number,
+    destinationY: number,
+    width: number,
+    height: number,
+  ): void {
+    encoder.copyTextureToTexture(
+      {
+        texture: this.layerTexture,
+        origin: { x: sourceX, y: sourceY, z: sourceTile },
+      },
+      {
+        texture: this.layerTexture,
+        origin: { x: destinationX, y: destinationY, z: destinationTile },
+      },
+      { width, height, depthOrArrayLayers: 1 },
+    );
+  }
+
+  private getLayerMemoryMiB(): number {
+    const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
+    return (TILE_STORAGE_SIZE * TILE_STORAGE_SIZE * TILE_COUNT * bytesPerPixel) / (1024 * 1024);
   }
 
   private generateBenchmarkStamps(count: number): Stamp[] {
@@ -1320,11 +1785,21 @@ export class BrushEngine {
     profile.batchExtractionMs += frameTiming.batchExtractionMs;
     profile.statsPublishMs += frameTiming.statsPublishMs;
     profile.stampPackingMs += timing.stampPackingMs;
+    profile.tileBinningMs += timing.tileBinningMs;
     profile.instanceUploadMs += timing.instanceUploadMs;
+    profile.copyReferenceUploadMs += timing.copyReferenceUploadMs;
     profile.brushEncodingMs += timing.brushEncodingMs;
     profile.displayEncodingMs += timing.displayEncodingMs;
     profile.commandSubmitMs += timing.commandSubmitMs;
     profile.estimatedScissorPixels += timing.scissorPixels;
+    profile.activeTileVisits += timing.activeTiles;
+    profile.peakActiveTiles = Math.max(profile.peakActiveTiles, timing.activeTiles);
+    profile.physicalCopyTileAssignments += timing.physicalCopyTileAssignments;
+    profile.tileRenderPasses += timing.tileRenderPasses;
+    profile.tileBrushRenderPasses += timing.tileBrushRenderPasses;
+    profile.tileClearRenderPasses += timing.tileClearRenderPasses;
+    profile.tileGutterCopies += timing.tileGutterCopies;
+    profile.estimatedTileAttachmentPixels += timing.tileAttachmentPixels;
 
     if (batchSize > 0) {
       profile.brushBatches += 1;

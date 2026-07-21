@@ -4,19 +4,19 @@ Prototipo TypeScript senza framework per verificare l'architettura di un motore 
 
 ## Cosa contiene
 
-- Layer reale **4096 × 4096**.
-- Formato selezionabile `rgba8unorm` (**64 MiB**) o `rgba16float` (**128 MiB**).
+- Layer logico **4096 × 4096**, suddiviso in una texture array di **8 × 8 tile da 512 px**.
+- Formato selezionabile `rgba8unorm` (**64,5 MiB**) o `rgba16float` (**129 MiB**), inclusi gutter da 1 px.
 - Resampling del percorso per distanza, indipendente dalla frequenza dei `pointermove`.
 - Supporto Pointer Events, pressione e `getCoalescedEvents()` quando disponibile.
 - Cerchio analitico antialias: nessuna texture della punta e nessun MSAA.
-- Una sola draw istanziata per i punti base del batch.
-- `Count` fino a 24: copie fisiche dello stamp per ogni punto di spacing, tutte disegnate con instancing GPU in una sola draw call.
+- `Count` fino a 24: ogni copia fisica viene assegnata alle tile che interseca con un binning CPU stabile.
+- Una draw istanziata per tile attiva; il vertex shader continua a calcolare direttamente seed, jitter, posizione e colore di ogni copia.
 
 - Color jitter deterministico in HSL: Hue, Saturation, Lightness e Darkness.
 - Jitter di posizione lineare e laterale, indipendente per ogni copia fisica.
 - Color jitter condiviso dal gruppo oppure indipendente per copia.
 - Blend normale premoltiplicato e modalità additiva intensa.
-- Scissor rectangle sul rettangolo sporco del batch.
+- Render pass limitati alle tile attive e sincronizzazione dei gutter per il campionamento lineare senza cuciture.
 - Zoom, pan, fit, clear e benchmark sintetico.
 - Registrazione locale di un tratto umano, con replay temporizzato e misure confrontabili tra versioni del motore.
 - Telemetria CPU e tempo di completamento della coda GPU.
@@ -70,6 +70,12 @@ Registra per ogni dispositivo:
 
 `GPU completion` è misurato con `queue.onSubmittedWorkDone()`: include il lavoro già in coda e la presentazione, quindi è utile per confrontare dispositivi e modalità, ma non equivale a una timestamp query hardware isolata.
 
+## Layer tiled e ordine del blending
+
+Il layer persistente è una `texture_2d_array` di 64 slice. Ogni tile ha un'area centrale da 512 × 512 pixel e un gutter da 1 px per lato. Il display seleziona la slice dalla coordinata globale e campiona anche il gutter, evitando discontinuità nell'antialiasing e nel filtro lineare ai bordi.
+
+Il binning conserva l'ordine originale stamp-major/copy-minor dentro ogni tile. Una copia che attraversa un confine viene inserita, nello stesso punto relativo, in tutte le tile interessate. Nel buffer vengono salvati soltanto gli indici dello stamp e della copia: le formule WGSL del pennello restano il percorso autorevole e non esiste un compute prepass che materializza le copie fisiche.
+
 ## Interpretazione del flow
 
 In questo prototipo `Flow` è l'alpha di **ogni copia fisica** prima di pressione, copertura e `Blend intensity`. Per esempio, con flow 7% e Count 24, quando le copie sono sovrapposte al centro:
@@ -82,6 +88,6 @@ Con spacing 1%, gruppi successivi si sovrappongono molto e il tratto raggiunge r
 
 ## Cosa non è ancora incluso
 
-Questo è un benchmark del brush core, non ancora un clone completo di Procreate. Mancano tile sparse, undo, più layer, maschera temporanea del tratto, stroke opacity applicata una sola volta, texture/grain della punta, smudge, wet mix e salvataggio del documento.
+Questo è un benchmark del brush core, non ancora un clone completo di Procreate. Mancano allocazione sparse/on-demand delle tile, undo, più layer, maschera temporanea del tratto, stroke opacity applicata una sola volta, texture/grain della punta, smudge, wet mix e salvataggio del documento.
 
-Il passo successivo corretto, dopo aver raccolto i numeri sui dispositivi, è dividere il layer in tile e aggiungere una texture temporanea del tratto soltanto sulle tile attive.
+La prima versione tiled va ora misurata con lo stesso replay e sullo stesso iPhone della baseline, prima di aggiungere altri cambiamenti architetturali.

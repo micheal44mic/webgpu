@@ -20,6 +20,12 @@ struct Stamp {
   direction: vec2<f32>,
 };
 
+struct TileUniforms {
+  origin: vec2<f32>,
+  logicalSize: f32,
+  storageSize: f32,
+};
+
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) localPosition: vec2<f32>,
@@ -29,6 +35,8 @@ struct VertexOutput {
 
 @group(0) @binding(0) var<uniform> brush: BrushUniforms;
 @group(0) @binding(1) var<storage, read> stamps: array<Stamp>;
+@group(0) @binding(2) var<storage, read> copyReferences: array<u32>;
+@group(0) @binding(3) var<uniform> tile: TileUniforms;
 
 fn hash32(value: u32) -> u32 {
   var x = value;
@@ -118,9 +126,9 @@ fn vertexMain(
     vec2<f32>( 1.0,  1.0)
   );
 
-  let copyCount = max(1u, min(brush.options.x, MAX_COUNT));
-  let stampIndex = instanceIndex / copyCount;
-  let copyIndex = instanceIndex % copyCount;
+  let copyReference = copyReferences[instanceIndex];
+  let stampIndex = copyReference & 0xffffu;
+  let copyIndex = (copyReference >> 16u) & 0x1fu;
   let stamp = stamps[stampIndex];
   let localPosition = corners[vertexIndex];
   let directionLength = length(stamp.direction);
@@ -132,9 +140,11 @@ fn vertexMain(
     + direction * linearOffset
     + vec2<f32>(-direction.y, direction.x) * lateralOffset;
   let layerPosition = jitteredCenter + localPosition * stamp.radius;
+  let tilePosition = layerPosition - tile.origin;
+  let gutter = (tile.storageSize - tile.logicalSize) * 0.5;
   let clipPosition = vec2<f32>(
-    layerPosition.x / brush.layerSize.x * 2.0 - 1.0,
-    1.0 - layerPosition.y / brush.layerSize.y * 2.0
+    (tilePosition.x + gutter) / tile.storageSize * 2.0 - 1.0,
+    1.0 - (tilePosition.y + gutter) / tile.storageSize * 2.0
   );
 
   var output: VertexOutput;
@@ -185,6 +195,10 @@ struct DisplayUniforms {
   viewCenter: vec2<f32>,
   zoom: f32,
   checkerSize: f32,
+  tileSize: f32,
+  tileStorageSize: f32,
+  tileGridWidth: f32,
+  tileGutter: f32,
 };
 
 struct VertexOutput {
@@ -192,7 +206,7 @@ struct VertexOutput {
 };
 
 @group(0) @binding(0) var<uniform> display: DisplayUniforms;
-@group(0) @binding(1) var layerTexture: texture_2d<f32>;
+@group(0) @binding(1) var layerTexture: texture_2d_array<f32>;
 @group(0) @binding(2) var layerSampler: sampler;
 
 fn srgbToLinearChannel(value: f32) -> f32 {
@@ -226,6 +240,21 @@ fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
   );
 }
 
+fn sampleLayer(layerPosition: vec2<f32>) -> vec4<f32> {
+  let samplePosition = min(layerPosition, display.layerSize - vec2<f32>(1.0));
+  let tileCoordinate = min(
+    vec2<u32>(floor(samplePosition / display.tileSize)),
+    vec2<u32>(u32(display.tileGridWidth) - 1u)
+  );
+  let tileIndex = tileCoordinate.y * u32(display.tileGridWidth) + tileCoordinate.x;
+  let tileOrigin = vec2<f32>(tileCoordinate) * display.tileSize;
+  let localPosition = samplePosition - tileOrigin;
+  let tileUv = (
+    localPosition + vec2<f32>(display.tileGutter + 0.5)
+  ) / display.tileStorageSize;
+  return textureSampleLevel(layerTexture, layerSampler, tileUv, i32(tileIndex), 0.0);
+}
+
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   let positions = array<vec2<f32>, 3>(
@@ -251,8 +280,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     return vec4<f32>(vec3<f32>(0.055), 1.0);
   }
 
-  let uv = clamp((layerPosition + vec2<f32>(0.5)) / display.layerSize, vec2<f32>(0.0), vec2<f32>(1.0));
-  let paint = textureSampleLevel(layerTexture, layerSampler, uv, 0.0);
+  let paint = sampleLayer(layerPosition);
 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
