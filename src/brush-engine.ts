@@ -53,7 +53,8 @@ export interface BenchmarkResult {
 export interface StrokePerformanceProfile {
   stampGeometry: "quad";
   stampVerticesPerCopy: number;
-  fragmentCoverageStrategy: "interior-fast-path";
+  fragmentCoverageStrategy: "generic-smoothstep";
+  colorSeedStrategy: "reuse-position-copy-seed";
   baseStamps: number;
   physicalCopies: number;
   renderFrames: number;
@@ -166,7 +167,8 @@ const STAMP_STRIDE_BYTES = 32;
 const MAX_STAMPS_PER_BATCH = 65_536;
 const STAMP_VERTICES_PER_COPY = 4;
 const STAMP_GEOMETRY = "quad" as const;
-const FRAGMENT_COVERAGE_STRATEGY = "interior-fast-path" as const;
+const FRAGMENT_COVERAGE_STRATEGY = "generic-smoothstep" as const;
+const COLOR_SEED_STRATEGY = "reuse-position-copy-seed" as const;
 const BRUSH_UNIFORM_BYTES = 96;
 const DISPLAY_UNIFORM_BYTES = 32;
 
@@ -521,7 +523,8 @@ export class BrushEngine {
       "1 draw instanziata",
       `${this.settings.count} copie fisiche GPU per stamp base`,
       "geometria quad triangle-strip (4 vertici)",
-      "coverage fragment con fast path interno",
+      "coverage fragment smoothstep generica",
+      "riuso copySeed per jitter colore per copia",
     ].join(" · ");
 
     return {
@@ -613,6 +616,7 @@ export class BrushEngine {
       stampGeometry: STAMP_GEOMETRY,
       stampVerticesPerCopy: STAMP_VERTICES_PER_COPY,
       fragmentCoverageStrategy: FRAGMENT_COVERAGE_STRATEGY,
+      colorSeedStrategy: COLOR_SEED_STRATEGY,
       baseStamps: profile.baseStamps,
       physicalCopies: profile.physicalCopies,
       renderFrames: profile.renderFrames,
@@ -663,6 +667,7 @@ export class BrushEngine {
     stampGeometry: typeof STAMP_GEOMETRY;
     stampVerticesPerCopy: number;
     fragmentCoverageStrategy: typeof FRAGMENT_COVERAGE_STRATEGY;
+    colorSeedStrategy: typeof COLOR_SEED_STRATEGY;
   } {
     return {
       canvasWidth: this.canvas.width,
@@ -675,6 +680,7 @@ export class BrushEngine {
       stampGeometry: STAMP_GEOMETRY,
       stampVerticesPerCopy: STAMP_VERTICES_PER_COPY,
       fragmentCoverageStrategy: FRAGMENT_COVERAGE_STRATEGY,
+      colorSeedStrategy: COLOR_SEED_STRATEGY,
     };
   }
 

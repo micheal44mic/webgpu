@@ -92,8 +92,7 @@ fn srgbToLinear(value: vec3<f32>) -> vec3<f32> {
   );
 }
 
-fn jitteredLinearColor(seed: u32, copyIndex: u32) -> vec3<f32> {
-  let copySeed = hash32(seed ^ (copyIndex * 0x85ebca6bu));
+fn jitteredLinearColorFromCopySeed(copySeed: u32) -> vec3<f32> {
   let hueDelta = (random01(copySeed, 1u) - 0.5) * 2.0 * brush.jitter.x;
   let saturationDelta = (random01(copySeed, 2u) - 0.5) * 2.0 * brush.jitter.y;
   let lightnessDelta = (random01(copySeed, 3u) - 0.5) * 2.0 * brush.jitter.z;
@@ -142,8 +141,11 @@ fn vertexMain(
   output.position = vec4<f32>(clipPosition, 0.0, 1.0);
   output.localPosition = localPosition;
   output.pressure = stamp.pressure;
-  let colorCopyIndex = select(0u, copyIndex, brush.options.y != 0u);
-  output.pointColor = jitteredLinearColor(stamp.seed, colorCopyIndex);
+  var colorCopySeed = copySeed;
+  if (brush.options.y == 0u) {
+    colorCopySeed = hash32(stamp.seed);
+  }
+  output.pointColor = jitteredLinearColorFromCopySeed(colorCopySeed);
   return output;
 }
 
@@ -158,14 +160,10 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
   let hardness = clamp(brush.controls.y, 0.0, 1.0);
   let innerEdge = min(hardness * hardness, 1.0 - antialiasWidth);
-  var coverage = 1.0;
+  let coverage = 1.0 - smoothstep(innerEdge, 1.0 + antialiasWidth, radiusSquared);
 
-  if (radiusSquared > innerEdge) {
-    coverage = 1.0 - smoothstep(innerEdge, 1.0 + antialiasWidth, radiusSquared);
-
-    if (coverage <= 0.0) {
-      discard;
-    }
+  if (coverage <= 0.0) {
+    discard;
   }
 
   let pressureInfluence = clamp(brush.controls.w, 0.0, 1.0);

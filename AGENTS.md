@@ -193,9 +193,9 @@ La telemetria aggiuntiva non ha perturbato materialmente il benchmark: tutte le 
 
 Sull'intero replay: `resizeCanvasTotalMs 5`, `batchExtractionTotalMs 4`, `statsPublishTotalMs 153` e `layerInputDispatchTotalMs 5`. L'aggiornamento DOM delle statistiche è il maggiore costo CPU esterno alla submission, circa `0,40 ms` per frame, ma da solo non spiega il p95 da `28 ms`. Potrà essere rimosso dal percorso per-frame in un esperimento separato, lasciando il timer da `500 ms`; non combinarlo con un esperimento GPU.
 
-Decisione: mantenere la telemetria v2. Il prossimo esperimento isolato deve essere il fast path della coverage nel fragment shader, lasciando invariati resize, aggiornamenti DOM e ogni altra parte del motore, così il confronto con la #14 attribuisce l'eventuale differenza al solo shader.
+Decisione: mantenere la telemetria v2. Il fast path della coverage è stato poi provato isolatamente nella run `#15`; il risultato e il rollback sono documentati sotto.
 
-## Passo 5: fast path esatto della coverage fragment — in prova
+## Passo 5: fast path della coverage fragment — bocciato e rimosso
 
 Il fragment shader continua a calcolare `radiusSquared` e `fwidth(radiusSquared)` senza controllo di flusso. Dopo il discard esterno, inizializza `coverage = 1` e chiama `smoothstep` soltanto quando `radiusSquared > innerEdge`.
 
@@ -203,4 +203,24 @@ L'equivalenza vale per ogni hardness e size: `innerEdge <= 1 - antialiasWidth < 
 
 Non sono cambiati geometria, pipeline, uniform, dati o ordine degli stamp, Count, size, spacing, flow, hardness, jitter, seed, pressione, alpha, blending, resize, aggiornamenti DOM o display pass. Il cambiamento vale per tutti i pennelli; con hardness `100%` dovrebbe evitare `smoothstep` sulla maggior parte dell'interno del disco, ma il driver potrebbe già ottimizzare il vecchio codice e il guadagno non è garantito.
 
-La telemetria salva `fragmentCoverageStrategy: "interior-fast-path"`. La prima run valida attesa è la `#15` e va confrontata direttamente con la `#14`, che usa lo stesso motore e la stessa telemetria ma la coverage generica. Se la differenza è marginale, eseguire una seconda run prima di promuovere o bocciare l'intervento.
+La run `#15`, identificata da `fragmentCoverageStrategy: "interior-fast-path"`, è confrontabile direttamente con la `#14`: stesso fingerprint, preset, iPhone, canvas, numero di stamp e telemetria v2.
+
+| Metrica | Run #14 coverage generica | Run #15 fast path |
+|---|---:|---:|
+| FPS medi | `56,04` | `55,17` |
+| intervallo frame p95 | `28 ms` | `30 ms` |
+| intervallo frame massimo | `67 ms` | `66 ms` |
+| frame oltre 20 ms | `35` | `41` |
+| coda GPU finale | `298 ms` | `351 ms` |
+| input delay p95 | `17 ms` | `20 ms` |
+| fine presentazione | `7149 ms` | `7203 ms` |
+
+Il fast path perde circa l'`1,5%` di FPS, aumenta il p95 di `2 ms`, i frame lenti del `17%` e la coda finale di `53 ms`. L'utente ha inoltre osservato durante il tratto un calo live fino a circa `21 FPS`. Decisione: esperimento bocciato; la coverage generica con `smoothstep` è stata ripristinata. Non reintrodurre il ramo interno: su questa GPU Apple il lavoro evitato non compensa il costo complessivo della variante.
+
+## Passo 6: riuso esatto di `copySeed` — in prova
+
+Il vertex shader calcola già `copySeed = hash32(stamp.seed ^ (copyIndex * costante))` per il jitter di posizione. Con jitter colore per copia attivo, la vecchia `jitteredLinearColor` ricalcolava lo stesso hash. La nuova `jitteredLinearColorFromCopySeed` riceve direttamente il seed già disponibile.
+
+Con `jitterPerCopy: true` usa lo stesso `copySeed` e rimuove una chiamata `hash32` per invocazione vertex: nel benchmark canonico sono `774848` hash evitati. Con `jitterPerCopy: false` calcola esplicitamente `hash32(stamp.seed)`, identico al vecchio indice copia `0`; quindi il comportamento resta invariato anche per gli altri pennelli. Il ramo dipende da una uniform ed è uguale per tutte le invocazioni della draw.
+
+Sono ripristinati la coverage generica e tutti gli altri aspetti della run `#14`. La telemetria salva `fragmentCoverageStrategy: "generic-smoothstep"` e `colorSeedStrategy: "reuse-position-copy-seed"`. La prossima run va confrontata con la `#14`, non con la #15, e attribuisce l'eventuale differenza al solo riuso del seed.

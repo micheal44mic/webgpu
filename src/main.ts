@@ -108,7 +108,8 @@ interface BenchmarkRun {
     timestampQueriesSupported: boolean;
     stampGeometry: "quad";
     stampVerticesPerCopy: number;
-    fragmentCoverageStrategy: "interior-fast-path";
+    fragmentCoverageStrategy: "generic-smoothstep";
+    colorSeedStrategy: "reuse-position-copy-seed";
     performanceTelemetryRevision: 2;
   };
 }
