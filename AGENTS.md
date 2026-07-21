@@ -429,7 +429,7 @@ La causa è visibile nella telemetria: `1124798` assegnazioni, pari a `5,81` til
 
 Decisione: la variante da `512 px` è bocciata. Questo risultato non boccia ancora il layer tiled in generale: boccia la granularità `8×8` con un pass per tile per il pennello canonico da `750 px`. Il commit `6446c38` resta il riferimento della #23; non usarlo come versione prestazionale.
 
-## Passo 12: tile 1024, stessa architettura — in attesa della run iPhone
+## Passo 12: tile 1024, stessa architettura — miglioramento netto sul 512, ma ancora bocciato contro la baseline
 
 Il secondo esperimento tiled cambia esclusivamente la granularità: `TILE_SIZE` passa da `512` a `1024`, la griglia da `8×8` a `4×4` e le slice fisiche da `514×514` a `1026×1026`. Binning stabile, riferimenti `u32`, ordine stamp-major/copy-minor, shader, formule, blending, gutter da `1 px`, display, clear, Count `1–24`, tutte le size e telemetria v3 restano identici alla #23.
 
@@ -439,4 +439,26 @@ L'aspettativa è un miglioramento consistente rispetto alla #23 per minori dupli
 
 Verifica locale prima della pubblicazione: TypeScript e build Vite riusciti; inizializzazione, clear e benchmark sintetico completati senza errori WebGPU su NVIDIA Ampere sia in `rgba8unorm` sia in `rgba16float`, senza cuciture visibili sui confini a `1024 px`. Sullo stesso smoke non canonico da `2000` stamp e `48000` copie con impostazioni desktop predefinite, la variante 1024 `rgba8unorm` ha misurato `9,30 ms` CPU submit e `48,10 ms` GPU completion, contro `24,20 ms` e `55,70 ms` della variante 512 e `4,50 ms` e `47,70 ms` della #19 monolitica. È un segnale locale favorevole per la granularità 1024, non un risultato trasferibile all'iPhone.
 
-La prossima run valida, attesa come `#24`, deve essere confrontata sia con la #23 per misurare l'effetto isolato della granularità, sia con la #19 per decidere se il tiled supera davvero la baseline. Controllare le stesse metriche principali e, in particolare, assegnazioni per copia, pass per batch, picco tile attive e assenza di cuciture sui nuovi confini a multipli di `1024 px`.
+La prima run valida attesa era la `#24`, ma quella run è stata registrata prima della pubblicazione della nuova build e riporta ancora `tileSizePx: 512`, griglia `8x8`, memoria `64,50 MiB` e le stesse `1124798` assegnazioni della #23. Non misura quindi questo passo e non deve essere usata come risultato del 1024.
+
+### Risultato e decisione: run #25
+
+La run `#25` è la prima misura valida del passo: riporta `tileSizePx: 1024`, griglia `4x4`, memoria `64,25 MiB` e tutte le firme attese. È pienamente confrontabile sia con la #23 sia con la #19: stesso fingerprint `18982412`, `1583` punti, preset, iPhone, GPU Apple, canvas `860x850`, formato `rgba8unorm`, `12107` stamp base e `193712` copie fisiche.
+
+| Metrica | Run #19 monolitica | Run #23 tile 512 | Run #25 tile 1024 |
+|---|---:|---:|---:|
+| FPS medi | `56,19` | `34,67` | `47,20` |
+| frame renderizzati | `386` | `243` | `326` |
+| intervallo frame p95 | `28 ms` | `106 ms` | `50 ms` |
+| intervallo frame massimo | `67 ms` | `210 ms` | `134 ms` |
+| frame oltre 20 ms | `37` (~`9,6%`) | `53` (~`21,9%`) | `54` (~`16,6%`) |
+| batch massimo | `90` stamp | `493` stamp | `303` stamp |
+| coda GPU finale | `282 ms` | `231 ms` | `201 ms` |
+| input delay p95 | `17 ms` | `118 ms` | `55 ms` |
+| fine presentazione | `7132 ms` | `7132 ms` | `7090 ms` |
+
+Il cambio di granularità funziona: rispetto alla #23 gli FPS aumentano del `36,2%`, il p95 scende da `106` a `50 ms`, il ritardo input p95 da `118` a `55 ms` e il massimo da `210` a `134 ms`. Le assegnazioni scendono da `1124798` a `547545` (`5,81` -> `2,83` per copia), i pass da `6436` a `2778` (`26,5` -> `8,5` per batch), il picco da `61/64` a `15/16` tile e le copie gutter da `45356` a `16099`. L'encoding brush cumulativo scende da `124` a `71 ms`.
+
+Il confronto decisivo con la #19 resta però negativo per la fluidità: FPS `-16,0%`, p95 da `28` a `50 ms`, massimo raddoppiato, quota di frame lenti dal `9,6%` al `16,6%` e input delay p95 da `17` a `55 ms`. La coda finale migliora di `81 ms` e la presentazione termina `42 ms` prima, segnale che il tiled riduce parte del lavoro finale, ma lo ottiene con una cadenza interattiva molto peggiore. I `2778` render pass, la duplicazione media di `2,83x` delle copie e i batch più grandi restano troppo costosi; inoltre l'attachment stimato sale da `1,70` a `2,92` miliardi di pixel rispetto al 512 perché ogni slice attiva è quattro volte più grande.
+
+Decisione: la granularità `1024` è nettamente migliore della `512` ed è il riferimento per eventuali studi futuri sul tiled, ma la presente architettura `texture_2d_array` con un render pass per tile attiva è bocciata come sostituto della baseline monolitica #19. Non presentare la minore coda finale come vittoria complessiva: il requisito principale è seguire il dito, e tutte le metriche di frame pacing rimangono significativamente peggiori.
