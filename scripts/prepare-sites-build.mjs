@@ -36,6 +36,7 @@ await writeFile(
   `const INDEX_HTML = ${JSON.stringify(indexHtml)};
 const HUMAN_STROKE_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS human_stroke_benchmark (id TEXT PRIMARY KEY NOT NULL CHECK (id = 'canonical'), payload_json TEXT NOT NULL, captured_at TEXT NOT NULL)";
 const HUMAN_STROKE_ID = "canonical";
+const HUMAN_STROKE_PRESET_REVISION = 2;
 
 function jsonResponse(payload, status = 200) {
   return new Response(JSON.stringify(payload), {
@@ -49,6 +50,32 @@ function jsonResponse(payload, status = 200) {
 
 async function ensureHumanStrokeSchema(db) {
   await db.prepare(HUMAN_STROKE_SCHEMA_SQL).run();
+}
+
+function normalizeHumanStrokeBenchmark(payload) {
+  if (!payload || typeof payload !== "object" || !payload.settings || typeof payload.settings !== "object") {
+    return payload;
+  }
+
+  if (
+    payload.presetRevision === HUMAN_STROKE_PRESET_REVISION &&
+    payload.settings.blendIntensity === 4 &&
+    payload.settings.pressureSize === 0 &&
+    payload.settings.pressureOpacity === 0
+  ) {
+    return payload;
+  }
+
+  return {
+    ...payload,
+    presetRevision: HUMAN_STROKE_PRESET_REVISION,
+    settings: {
+      ...payload.settings,
+      blendIntensity: 4,
+      pressureSize: 0,
+      pressureOpacity: 0,
+    },
+  };
 }
 
 async function handleHumanStroke(request, env) {
@@ -66,7 +93,15 @@ async function handleHumanStroke(request, env) {
     if (!record) {
       return jsonResponse({ error: "Nessun tratto registrato." }, 404);
     }
-    return new Response(record.payload_json, {
+    const canonical = normalizeHumanStrokeBenchmark(JSON.parse(record.payload_json));
+    const canonicalJson = JSON.stringify(canonical);
+    if (canonicalJson !== record.payload_json) {
+      await env.DB
+        .prepare("UPDATE human_stroke_benchmark SET payload_json = ?1 WHERE id = ?2")
+        .bind(canonicalJson, HUMAN_STROKE_ID)
+        .run();
+    }
+    return new Response(canonicalJson, {
       headers: {
         "Content-Type": "application/json; charset=utf-8",
         "Cache-Control": "no-store",
@@ -92,7 +127,8 @@ async function handleHumanStroke(request, env) {
       return jsonResponse({ error: "Il tratto registrato non è valido." }, 400);
     }
 
-    const payloadJson = JSON.stringify(payload);
+    const canonical = normalizeHumanStrokeBenchmark(payload);
+    const payloadJson = JSON.stringify(canonical);
     if (payloadJson.length > 900_000) {
       return jsonResponse({ error: "Il tratto registrato è troppo grande." }, 413);
     }
@@ -116,7 +152,7 @@ async function handleHumanStroke(request, env) {
       });
     }
 
-    return jsonResponse(payload, 201);
+    return jsonResponse(canonical, 201);
   }
 
   return new Response(null, { status: 405, headers: { Allow: "GET, POST" } });
