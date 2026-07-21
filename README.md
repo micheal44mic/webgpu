@@ -18,6 +18,7 @@ Prototipo TypeScript senza framework per verificare l'architettura di un motore 
 - Blend normale premoltiplicato e modalità additiva intensa.
 - Scissor rectangle sul rettangolo sporco del batch.
 - Zoom, pan, fit, clear e benchmark sintetico.
+- Registrazione locale di un tratto umano, con replay temporizzato e misure confrontabili tra versioni del motore.
 - Telemetria CPU e tempo di completamento della coda GPU.
 
 ## Perché TypeScript

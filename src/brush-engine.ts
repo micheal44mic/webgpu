@@ -55,7 +55,7 @@ export interface EngineCallbacks {
   onStats?: (stats: EngineStats) => void;
 }
 
-interface LayerPoint {
+export interface LayerPoint {
   x: number;
   y: number;
   pressure: number;
@@ -346,7 +346,10 @@ export class BrushEngine {
   }
 
   beginStroke(sample: PointerSample): void {
-    const point = this.pointerSampleToLayer(sample);
+    this.beginStrokeAtLayer(this.toLayerPoint(sample));
+  }
+
+  beginStrokeAtLayer(point: LayerPoint): void {
     this.activeStroke = {
       lastInput: point,
       distanceSinceStamp: 0,
@@ -355,12 +358,16 @@ export class BrushEngine {
   }
 
   extendStroke(samples: readonly PointerSample[]): void {
+    this.extendStrokeAtLayer(samples.map((sample) => this.toLayerPoint(sample)));
+  }
+
+  extendStrokeAtLayer(points: readonly LayerPoint[]): void {
     if (!this.activeStroke) {
       return;
     }
 
-    for (const sample of samples) {
-      this.appendPoint(this.pointerSampleToLayer(sample));
+    for (const point of points) {
+      this.appendPoint(point);
     }
   }
 
@@ -433,6 +440,30 @@ export class BrushEngine {
       gpuLabel: this.gpuLabel,
       layerFormat: this.layerFormat,
     };
+  }
+
+  async waitForGpu(): Promise<void> {
+    if (!this.initialized) {
+      throw new Error("Il motore non è ancora inizializzato.");
+    }
+    await this.device.queue.onSubmittedWorkDone();
+  }
+
+  async waitForIdle(): Promise<void> {
+    if (!this.initialized) {
+      throw new Error("Il motore non è ancora inizializzato.");
+    }
+
+    while (
+      this.frameRequest !== null ||
+      this.pendingStamps.length > 0 ||
+      this.clearRequested ||
+      this.displayDirty
+    ) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+
+    await this.device.queue.onSubmittedWorkDone();
   }
 
   private async createStaticResources(): Promise<void> {
@@ -690,7 +721,7 @@ export class BrushEngine {
     this.device.queue.writeBuffer(this.displayUniformBuffer, 0, this.displayUniformUpload);
   }
 
-  private pointerSampleToLayer(sample: PointerSample): LayerPoint {
+  toLayerPoint(sample: PointerSample): LayerPoint {
     const layer = this.clientToLayer(sample.clientX, sample.clientY);
     return {
       x: layer.x,

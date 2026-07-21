@@ -150,6 +150,17 @@
           </label>
           <button id="runBenchmark" class="primary wide" type="button">Esegui benchmark GPU</button>
           <p id="benchmarkResult" class="result">Nessun benchmark eseguito.</p>
+
+          <label class="check-control">
+            <span>
+              Benchmark tratto umano
+              <small>Registra una pennellata reale e riproducila con tempi, pressione e coordinate identici.</small>
+            </span>
+          </label>
+          <button id="recordHumanStroke" class="primary wide" type="button">Registra tratto umano</button>
+          <button id="playHumanStroke" class="wide" type="button" disabled>Play tratto registrato</button>
+          <button id="clearHumanStroke" class="wide danger" type="button" disabled>Elimina tratto registrato</button>
+          <p id="humanStrokeResult" class="result">Nessun tratto umano registrato.</p>
         </section>
 
         <section class="stats-section">

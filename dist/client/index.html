@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#111318" />
     <title>WebGPU Brush Engine 4096²</title>
-    <script type="module" crossorigin src="./assets/index-BZ4dW9Aw.js"></script>
+    <script type="module" crossorigin src="./assets/index-ClNS1DhS.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-DVGmclji.css">
   </head>
   <body>
@@ -152,6 +152,17 @@
           </label>
           <button id="runBenchmark" class="primary wide" type="button">Esegui benchmark GPU</button>
           <p id="benchmarkResult" class="result">Nessun benchmark eseguito.</p>
+
+          <label class="check-control">
+            <span>
+              Benchmark tratto umano
+              <small>Registra una pennellata reale e riproducila con tempi, pressione e coordinate identici.</small>
+            </span>
+          </label>
+          <button id="recordHumanStroke" class="primary wide" type="button">Registra tratto umano</button>
+          <button id="playHumanStroke" class="wide" type="button" disabled>Play tratto registrato</button>
+          <button id="clearHumanStroke" class="wide danger" type="button" disabled>Elimina tratto registrato</button>
+          <p id="humanStrokeResult" class="result">Nessun tratto umano registrato.</p>
         </section>
 
         <section class="stats-section">

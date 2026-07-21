@@ -3,6 +3,7 @@ import {
   BrushEngine,
   type BrushSettings,
   type EngineStats,
+  type LayerPoint,
   type LayerFormat,
   type PointerSample,
 } from "./brush-engine";
@@ -27,7 +28,30 @@ const canvas = element<HTMLCanvasElement>("gpuCanvas");
 const statusElement = element<HTMLParagraphElement>("status");
 const benchmarkButton = element<HTMLButtonElement>("runBenchmark");
 const benchmarkResult = element<HTMLParagraphElement>("benchmarkResult");
+const recordHumanStrokeButton = element<HTMLButtonElement>("recordHumanStroke");
+const playHumanStrokeButton = element<HTMLButtonElement>("playHumanStroke");
+const clearHumanStrokeButton = element<HTMLButtonElement>("clearHumanStroke");
+const humanStrokeResult = element<HTMLParagraphElement>("humanStrokeResult");
 const layerFormatSelect = element<HTMLSelectElement>("layerFormat");
+
+interface HumanStrokePoint extends LayerPoint {
+  timeMs: number;
+}
+
+interface HumanStrokeBenchmark {
+  version: 1;
+  capturedAt: string;
+  settings: BrushSettings;
+  points: HumanStrokePoint[];
+}
+
+interface HumanStrokeRecording {
+  settings: BrushSettings;
+  startTimestamp: number;
+  points: HumanStrokePoint[];
+}
+
+const HUMAN_STROKE_STORAGE_KEY = "webgpu-brush-engine.human-stroke.v1";
 
 const engine = new BrushEngine(canvas, {
   onStatus(message, kind) {
@@ -38,6 +62,12 @@ const engine = new BrushEngine(canvas, {
     updateStats(stats);
   },
 });
+
+let humanStrokeBenchmark: HumanStrokeBenchmark | null = loadHumanStrokeBenchmark();
+let humanStrokeRecording: HumanStrokeRecording | null = null;
+let humanStrokeRecordingArmed = false;
+let humanStrokeReplayFrame: number | null = null;
+let humanStrokeReplaying = false;
 
 function readBrushSettings(): BrushSettings {
   return {
@@ -84,6 +114,98 @@ function updateControlOutputs(): void {
 function applyBrushControls(): void {
   updateControlOutputs();
   engine.setBrushSettings(readBrushSettings());
+}
+
+function formatDuration(milliseconds: number): string {
+  return `${(milliseconds / 1000).toFixed(2)} s`;
+}
+
+function loadHumanStrokeBenchmark(): HumanStrokeBenchmark | null {
+  try {
+    const stored = window.localStorage.getItem(HUMAN_STROKE_STORAGE_KEY);
+    if (!stored) {
+      return null;
+    }
+    const parsed = JSON.parse(stored) as Partial<HumanStrokeBenchmark>;
+    if (parsed.version !== 1 || !parsed.settings || !Array.isArray(parsed.points) || parsed.points.length === 0) {
+      return null;
+    }
+    return parsed as HumanStrokeBenchmark;
+  } catch {
+    return null;
+  }
+}
+
+function persistHumanStrokeBenchmark(): void {
+  try {
+    if (humanStrokeBenchmark) {
+      window.localStorage.setItem(HUMAN_STROKE_STORAGE_KEY, JSON.stringify(humanStrokeBenchmark));
+    } else {
+      window.localStorage.removeItem(HUMAN_STROKE_STORAGE_KEY);
+    }
+  } catch {
+    humanStrokeResult.textContent = "Il tratto è valido per questa sessione, ma non è stato possibile salvarlo sul dispositivo.";
+  }
+}
+
+function setControlValue(id: string, value: string | number): void {
+  element<HTMLInputElement | HTMLSelectElement>(id).value = String(value);
+}
+
+function applySettingsToControls(settings: BrushSettings): void {
+  setControlValue("brushColor", settings.color);
+  setControlValue("brushSize", settings.size);
+  setControlValue("spacing", settings.spacingPercent);
+  setControlValue("count", settings.count);
+  setControlValue("flow", settings.flow * 100);
+  setControlValue("hardness", settings.hardness * 100);
+  setControlValue("blendIntensity", settings.blendIntensity);
+  setControlValue("blendMode", settings.blendMode);
+  setControlValue("jitterMaster", settings.jitterMaster * 100);
+  setControlValue("hueJitter", settings.hueJitterDegrees);
+  setControlValue("saturationJitter", settings.saturationJitter * 100);
+  setControlValue("lightnessJitter", settings.lightnessJitter * 100);
+  setControlValue("darknessJitter", settings.darknessJitter * 100);
+  element<HTMLInputElement>("jitterPerCopy").checked = settings.jitterPerCopy;
+  setControlValue("positionJitterLateral", settings.positionJitterLateral * 100);
+  setControlValue("positionJitterLinear", settings.positionJitterLinear * 100);
+  setControlValue("pressureSize", settings.pressureSize * 100);
+  setControlValue("pressureOpacity", settings.pressureOpacity * 100);
+  applyBrushControls();
+}
+
+function applyHumanStrokePreset(): BrushSettings {
+  setControlValue("spacing", 1);
+  setControlValue("count", 16);
+  setControlValue("flow", 100);
+  setControlValue("hardness", 100);
+  setControlValue("jitterMaster", 100);
+  setControlValue("hueJitter", 180);
+  setControlValue("saturationJitter", 100);
+  element<HTMLInputElement>("jitterPerCopy").checked = true;
+  setControlValue("positionJitterLateral", 100);
+  setControlValue("positionJitterLinear", 100);
+  applyBrushControls();
+  return readBrushSettings();
+}
+
+function updateHumanStrokeControls(): void {
+  recordHumanStrokeButton.disabled = humanStrokeReplaying;
+  recordHumanStrokeButton.textContent = humanStrokeRecordingArmed
+    ? "Annulla registrazione tratto"
+    : "Registra tratto umano";
+  playHumanStrokeButton.disabled = !humanStrokeBenchmark || humanStrokeReplaying;
+  clearHumanStrokeButton.disabled = !humanStrokeBenchmark || humanStrokeReplaying;
+}
+
+function describeHumanStrokeBenchmark(benchmark: HumanStrokeBenchmark): string {
+  const duration = benchmark.points.at(-1)?.timeMs ?? 0;
+  return [
+    `Tratto salvato: ${formatInteger(benchmark.points.length)} campioni`,
+    `durata ${formatDuration(duration)}`,
+    `size ${benchmark.settings.size.toFixed(0)} px`,
+    `Count ${benchmark.settings.count}`,
+  ].join(" · ");
 }
 
 const brushControlIds = [
@@ -151,6 +273,34 @@ benchmarkButton.addEventListener("click", async () => {
   }
 });
 
+recordHumanStrokeButton.addEventListener("click", () => {
+  if (humanStrokeReplaying || humanStrokeRecording) {
+    return;
+  }
+
+  humanStrokeRecordingArmed = !humanStrokeRecordingArmed;
+  if (humanStrokeRecordingArmed) {
+    applyHumanStrokePreset();
+    humanStrokeResult.textContent = "Preset umano applicato. Disegna ora una sola pennellata sul canvas.";
+  } else {
+    humanStrokeResult.textContent = humanStrokeBenchmark
+      ? describeHumanStrokeBenchmark(humanStrokeBenchmark)
+      : "Registrazione annullata.";
+  }
+  updateHumanStrokeControls();
+});
+
+playHumanStrokeButton.addEventListener("click", () => {
+  void replayHumanStroke();
+});
+
+clearHumanStrokeButton.addEventListener("click", () => {
+  humanStrokeBenchmark = null;
+  persistHumanStrokeBenchmark();
+  humanStrokeResult.textContent = "Tratto umano eliminato da questo dispositivo.";
+  updateHumanStrokeControls();
+});
+
 function updateStats(stats: EngineStats): void {
   element<HTMLElement>("fpsStat").textContent = `${stats.fps}`;
   element<HTMLElement>("cpuStat").textContent = `${stats.lastCpuFrameMs.toFixed(2)} ms`;
@@ -158,6 +308,132 @@ function updateStats(stats: EngineStats): void {
   element<HTMLElement>("avoidedStat").textContent = formatInteger(stats.avoidedLogicalDraws);
   element<HTMLElement>("memoryStat").textContent = `${stats.layerMemoryMiB} MiB`;
   element<HTMLElement>("gpuStat").textContent = stats.gpuLabel;
+}
+
+function startHumanStrokeRecording(event: PointerEvent, sample: PointerSample): void {
+  const settings = applyHumanStrokePreset();
+  const point = engine.toLayerPoint(sample);
+  humanStrokeRecording = {
+    settings,
+    startTimestamp: event.timeStamp,
+    points: [{ ...point, timeMs: 0 }],
+  };
+  humanStrokeResult.textContent = "Registrazione in corso…";
+}
+
+function captureHumanStrokeSamples(events: readonly PointerEvent[], samples: readonly PointerSample[]): void {
+  const recording = humanStrokeRecording;
+  if (!recording) {
+    return;
+  }
+
+  for (let index = 0; index < samples.length; index += 1) {
+    const previousTime = recording.points[recording.points.length - 1]?.timeMs ?? 0;
+    const elapsed = Math.max(previousTime, events[index].timeStamp - recording.startTimestamp, 0);
+    recording.points.push({
+      ...engine.toLayerPoint(samples[index]),
+      timeMs: elapsed,
+    });
+  }
+}
+
+function finishHumanStrokeRecording(shouldSave: boolean): void {
+  const recording = humanStrokeRecording;
+  humanStrokeRecording = null;
+  humanStrokeRecordingArmed = false;
+
+  if (recording && shouldSave && recording.points.length > 1) {
+    humanStrokeBenchmark = {
+      version: 1,
+      capturedAt: new Date().toISOString(),
+      settings: recording.settings,
+      points: recording.points,
+    };
+    persistHumanStrokeBenchmark();
+    humanStrokeResult.textContent = describeHumanStrokeBenchmark(humanStrokeBenchmark);
+  } else if (recording) {
+    humanStrokeResult.textContent = "Tratto troppo breve: registra una pennellata con almeno un movimento.";
+  }
+
+  updateHumanStrokeControls();
+}
+
+async function replayHumanStroke(): Promise<void> {
+  const benchmark = humanStrokeBenchmark;
+  if (!benchmark || humanStrokeReplaying) {
+    return;
+  }
+
+  humanStrokeReplaying = true;
+  benchmarkButton.disabled = true;
+  updateHumanStrokeControls();
+  applySettingsToControls(benchmark.settings);
+  humanStrokeResult.textContent = "Riproduzione del tratto umano in corso…";
+
+  try {
+    await engine.waitForIdle();
+    engine.clear();
+    await engine.waitForIdle();
+
+    const before = engine.getStats();
+    const replayStart = performance.now();
+    const lastPoint = benchmark.points[benchmark.points.length - 1];
+    let nextPointIndex = 1;
+
+    engine.beginStrokeAtLayer(benchmark.points[0]);
+
+    await new Promise<void>((resolve) => {
+      const step = (timestamp: number) => {
+        const elapsed = timestamp - replayStart;
+        const duePoints: HumanStrokePoint[] = [];
+
+        while (
+          nextPointIndex < benchmark.points.length &&
+          benchmark.points[nextPointIndex].timeMs <= elapsed
+        ) {
+          duePoints.push(benchmark.points[nextPointIndex]);
+          nextPointIndex += 1;
+        }
+
+        if (duePoints.length > 0) {
+          engine.extendStrokeAtLayer(duePoints);
+        }
+
+        if (nextPointIndex < benchmark.points.length) {
+          humanStrokeReplayFrame = requestAnimationFrame(step);
+          return;
+        }
+
+        engine.endStroke();
+        humanStrokeReplayFrame = null;
+        resolve();
+      };
+
+      humanStrokeReplayFrame = requestAnimationFrame(step);
+    });
+
+    const inputFinishedAt = performance.now();
+    await engine.waitForIdle();
+    const completedAt = performance.now();
+    const after = engine.getStats();
+    const baseStamps = Math.max(0, after.totalBaseStamps - before.totalBaseStamps);
+    const copies = baseStamps * benchmark.settings.count;
+
+    humanStrokeResult.textContent = [
+      `Tratto ${formatDuration(lastPoint.timeMs)}`,
+      `${formatInteger(benchmark.points.length)} campioni`,
+      `${formatInteger(baseStamps)} stamps base`,
+      `${formatInteger(copies)} copie fisiche`,
+      `coda GPU ${Math.max(0, completedAt - inputFinishedAt).toFixed(2)} ms`,
+      `CPU frame ${after.lastCpuFrameMs.toFixed(2)} ms`,
+    ].join(" · ");
+  } catch (error) {
+    humanStrokeResult.textContent = error instanceof Error ? error.message : String(error);
+  } finally {
+    humanStrokeReplaying = false;
+    benchmarkButton.disabled = false;
+    updateHumanStrokeControls();
+  }
 }
 
 function normalizedPressure(event: PointerEvent): number {
@@ -199,7 +475,11 @@ canvas.addEventListener("pointerdown", (event) => {
     lastPanClientX = event.clientX;
     lastPanClientY = event.clientY;
   } else {
-    engine.beginStroke(toPointerSample(event));
+    const sample = toPointerSample(event);
+    if (humanStrokeRecordingArmed) {
+      startHumanStrokeRecording(event, sample);
+    }
+    engine.beginStroke(sample);
   }
 });
 
@@ -220,7 +500,9 @@ canvas.addEventListener("pointermove", (event) => {
     getCoalescedEvents?: () => PointerEvent[];
   };
   const coalesced = eventWithCoalescing.getCoalescedEvents?.() ?? [];
-  const samples = (coalesced.length > 0 ? coalesced : [event]).map(toPointerSample);
+  const sourceEvents = coalesced.length > 0 ? coalesced : [event];
+  const samples = sourceEvents.map(toPointerSample);
+  captureHumanStrokeSamples(sourceEvents, samples);
   engine.extendStroke(samples);
 });
 
@@ -231,6 +513,7 @@ function finishPointer(event: PointerEvent): void {
 
   if (pointerMode === "paint") {
     engine.endStroke();
+    finishHumanStrokeRecording(event.type === "pointerup");
   }
   canvas.classList.remove("panning");
   pointerMode = null;
@@ -257,6 +540,10 @@ resizeObserver.observe(canvas);
 
 updateControlOutputs();
 engine.setBrushSettings(readBrushSettings());
+if (humanStrokeBenchmark) {
+  humanStrokeResult.textContent = describeHumanStrokeBenchmark(humanStrokeBenchmark);
+}
+updateHumanStrokeControls();
 
 void engine.initialize().catch((error) => {
   const secureContextHint = !window.isSecureContext

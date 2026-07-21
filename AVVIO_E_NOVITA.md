@@ -62,3 +62,15 @@ Per verificare velocemente l'effetto:
 5. Riporta entrambi a `0%` per tornare a un tratto regolare.
 
 Per un effetto organico ma ancora controllato, un buon punto di partenza è Laterale `15–30%` e Lineare `5–15%`.
+
+## Benchmark con tratto umano
+
+La sezione **Benchmark** include un test ripetibile basato su una tua pennellata reale.
+
+1. Premi **Registra tratto umano**.
+2. Disegna una pennellata continua sul canvas: vengono registrati posizione nel layer, pressione e tempo di ogni campione.
+3. Premi **Play tratto registrato** per riprodurla con la stessa durata e gli stessi campioni.
+
+La registrazione applica il preset di confronto: spacing `1%`, Count `16`, Flow `100%`, Hardness `100%`, Hue al massimo (`180°`), Saturation `100%`, color jitter per copia e jitter Laterale/Lineare al `100%`. La dimensione corrente e le altre impostazioni vengono salvate assieme al tratto.
+
+Alla fine di ogni Play compaiono durata, numero di campioni, stamps base, copie fisiche, tempo di coda GPU e ultimo CPU frame. Il tratto resta salvato solo nel browser del dispositivo, quindi può essere ripetuto dopo un refresh senza inviare dati all'esterno.
