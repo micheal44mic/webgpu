@@ -4,6 +4,7 @@ import { brushShader, displayShader } from "./shaders";
 export type BlendMode = "normal" | "additive";
 export type LayerFormat = "rgba8unorm" | "rgba16float";
 export type BrushShape = "circle" | "shape";
+export type FragmentCoverageStrategy = "generic-smoothstep" | "shape-alpha-mask-2k";
 
 export interface BrushSettings {
   shape: BrushShape;
@@ -56,7 +57,7 @@ export interface BenchmarkResult {
 export interface StrokePerformanceProfile {
   stampGeometry: "quad";
   stampVerticesPerCopy: number;
-  fragmentCoverageStrategy: "generic-smoothstep";
+  fragmentCoverageStrategy: FragmentCoverageStrategy;
   colorSeedStrategy: "reuse-position-copy-seed";
   dirtyRectStrategy: "directional-jitter-bounds";
   baseStamps: number;
@@ -144,6 +145,7 @@ interface RenderFrameTiming {
 }
 
 interface MutableStrokePerformanceProfile {
+  fragmentCoverageStrategy: FragmentCoverageStrategy;
   baseStamps: number;
   physicalCopies: number;
   renderFrames: number;
@@ -171,7 +173,8 @@ const STAMP_STRIDE_BYTES = 32;
 const MAX_STAMPS_PER_BATCH = 65_536;
 const STAMP_VERTICES_PER_COPY = 4;
 const STAMP_GEOMETRY = "quad" as const;
-const FRAGMENT_COVERAGE_STRATEGY = "generic-smoothstep" as const;
+const CIRCLE_FRAGMENT_COVERAGE_STRATEGY = "generic-smoothstep" as const;
+const SHAPE_FRAGMENT_COVERAGE_STRATEGY = "shape-alpha-mask-2k" as const;
 const COLOR_SEED_STRATEGY = "reuse-position-copy-seed" as const;
 const DIRTY_RECT_STRATEGY = "directional-jitter-bounds" as const;
 const SHAPE_MASK_SIZE = 2048;
@@ -602,6 +605,9 @@ export class BrushEngine {
 
   startStrokePerformanceProfile(): void {
     this.activeStrokeProfile = {
+      fragmentCoverageStrategy: this.settings.shape === "shape"
+        ? SHAPE_FRAGMENT_COVERAGE_STRATEGY
+        : CIRCLE_FRAGMENT_COVERAGE_STRATEGY,
       baseStamps: 0,
       physicalCopies: 0,
       renderFrames: 0,
@@ -636,7 +642,7 @@ export class BrushEngine {
     return {
       stampGeometry: STAMP_GEOMETRY,
       stampVerticesPerCopy: STAMP_VERTICES_PER_COPY,
-      fragmentCoverageStrategy: FRAGMENT_COVERAGE_STRATEGY,
+      fragmentCoverageStrategy: profile.fragmentCoverageStrategy,
       colorSeedStrategy: COLOR_SEED_STRATEGY,
       dirtyRectStrategy: DIRTY_RECT_STRATEGY,
       baseStamps: profile.baseStamps,
@@ -688,7 +694,7 @@ export class BrushEngine {
     timestampQueriesSupported: boolean;
     stampGeometry: typeof STAMP_GEOMETRY;
     stampVerticesPerCopy: number;
-    fragmentCoverageStrategy: typeof FRAGMENT_COVERAGE_STRATEGY;
+    fragmentCoverageStrategy: FragmentCoverageStrategy;
     colorSeedStrategy: typeof COLOR_SEED_STRATEGY;
     dirtyRectStrategy: typeof DIRTY_RECT_STRATEGY;
   } {
@@ -702,7 +708,9 @@ export class BrushEngine {
       timestampQueriesSupported: this.device?.features.has("timestamp-query") ?? false,
       stampGeometry: STAMP_GEOMETRY,
       stampVerticesPerCopy: STAMP_VERTICES_PER_COPY,
-      fragmentCoverageStrategy: FRAGMENT_COVERAGE_STRATEGY,
+      fragmentCoverageStrategy: this.settings.shape === "shape"
+        ? SHAPE_FRAGMENT_COVERAGE_STRATEGY
+        : CIRCLE_FRAGMENT_COVERAGE_STRATEGY,
       colorSeedStrategy: COLOR_SEED_STRATEGY,
       dirtyRectStrategy: DIRTY_RECT_STRATEGY,
     };

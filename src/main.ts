@@ -32,7 +32,10 @@ const benchmarkResult = element<HTMLParagraphElement>("benchmarkResult");
 const recordHumanStrokeButton = element<HTMLButtonElement>("recordHumanStroke");
 const playHumanStrokeButton = element<HTMLButtonElement>("playHumanStroke");
 const humanStrokeResult = element<HTMLParagraphElement>("humanStrokeResult");
+const humanStrokeTestVariantSelect = element<HTMLSelectElement>("humanStrokeTestVariant");
 const layerFormatSelect = element<HTMLSelectElement>("layerFormat");
+
+type HumanStrokeTestVariant = "base" | "fur";
 
 interface HumanStrokePoint extends LayerPoint {
   timeMs: number;
@@ -69,6 +72,7 @@ interface BenchmarkRun {
     sampleGapP95Ms: number;
     sampleGapMaxMs: number;
     inputGapsOver33Ms: number;
+    testVariant: HumanStrokeTestVariant;
     settings: BrushSettings;
   };
   playback: {
@@ -108,7 +112,7 @@ interface BenchmarkRun {
     timestampQueriesSupported: boolean;
     stampGeometry: "quad";
     stampVerticesPerCopy: number;
-    fragmentCoverageStrategy: "generic-smoothstep";
+    fragmentCoverageStrategy: "generic-smoothstep" | "shape-alpha-mask-2k";
     colorSeedStrategy: "reuse-position-copy-seed";
     dirtyRectStrategy: "directional-jitter-bounds";
     performanceTelemetryRevision: 2;
@@ -439,6 +443,39 @@ function applyHumanStrokePreset(): BrushSettings {
   return readBrushSettings();
 }
 
+function selectedHumanStrokeTestVariant(): HumanStrokeTestVariant {
+  return humanStrokeTestVariantSelect.value === "fur" ? "fur" : "base";
+}
+
+function humanStrokeTestSettings(
+  benchmark: HumanStrokeBenchmark,
+  variant: HumanStrokeTestVariant,
+): BrushSettings {
+  const baseSettings: BrushSettings = {
+    ...benchmark.settings,
+    shape: "circle",
+    shapeScatter: 0,
+    positionJitterLateral: 1,
+    positionJitterLinear: 1,
+  };
+
+  if (variant === "fur") {
+    return {
+      ...baseSettings,
+      shape: "shape",
+      shapeScatter: 1,
+      positionJitterLateral: 0,
+      positionJitterLinear: 0,
+    };
+  }
+
+  return baseSettings;
+}
+
+function humanStrokeTestLabel(variant: HumanStrokeTestVariant): string {
+  return variant === "fur" ? "Fur" : "Base";
+}
+
 function updateHumanStrokeControls(): void {
   recordHumanStrokeButton.disabled = humanStrokeLoading || humanStrokeSaving || humanStrokeReplaying || Boolean(humanStrokeBenchmark);
   recordHumanStrokeButton.textContent = humanStrokeRecordingArmed
@@ -447,6 +484,11 @@ function updateHumanStrokeControls(): void {
       ? "Tratto umano fissato"
       : "Registra tratto umano";
   playHumanStrokeButton.disabled = !humanStrokeBenchmark || humanStrokeLoading || humanStrokeSaving || humanStrokeReplaying;
+  humanStrokeTestVariantSelect.disabled = humanStrokeLoading
+    || humanStrokeSaving
+    || humanStrokeReplaying
+    || humanStrokeRecordingArmed
+    || Boolean(humanStrokeRecording);
 }
 
 function describeHumanStrokeBenchmark(benchmark: HumanStrokeBenchmark): string {
@@ -620,11 +662,15 @@ async function replayHumanStroke(): Promise<void> {
     return;
   }
 
+  const testVariant = selectedHumanStrokeTestVariant();
+  const replaySettings = humanStrokeTestSettings(benchmark, testVariant);
+  const testLabel = humanStrokeTestLabel(testVariant);
+
   humanStrokeReplaying = true;
   benchmarkButton.disabled = true;
   updateHumanStrokeControls();
-  applySettingsToControls(benchmark.settings);
-  humanStrokeResult.textContent = "Riproduzione del tratto umano in corso…";
+  applySettingsToControls(replaySettings);
+  humanStrokeResult.textContent = `Riproduzione test ${testLabel} in corso…`;
 
   try {
     await engine.waitForIdle();
@@ -688,7 +734,7 @@ async function replayHumanStroke(): Promise<void> {
     }
     const after = engine.getStats();
     const baseStamps = Math.max(0, after.totalBaseStamps - before.totalBaseStamps);
-    const copies = baseStamps * benchmark.settings.count;
+    const copies = baseStamps * replaySettings.count;
     const playback = {
       inputDeliveryMs: inputFinishedAt - replayStart,
       inputDelayP50Ms: percentile(inputDelays, 0.5),
@@ -712,7 +758,8 @@ async function replayHumanStroke(): Promise<void> {
         pointCount: benchmark.points.length,
         traceDurationMs: lastPoint.timeMs,
         ...summarizeHumanStrokeMotion(benchmark.points),
-        settings: benchmark.settings,
+        testVariant,
+        settings: replaySettings,
       },
       playback,
       performance: performanceProfile,
@@ -721,6 +768,7 @@ async function replayHumanStroke(): Promise<void> {
     const runId = await saveBenchmarkRun(run);
 
     humanStrokeResult.textContent = [
+      `Test ${testLabel}`,
       `Tratto ${formatDuration(lastPoint.timeMs)}`,
       `${formatInteger(benchmark.points.length)} campioni`,
       `${formatInteger(baseStamps)} stamps base`,

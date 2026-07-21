@@ -535,3 +535,12 @@ La telemetria spiega il risultato. In `374` batch sono stati eseguiti `374` pass
 Come proxy, `374` pass diretti sul layer `4096×4096` equivalgono a `6.274.678.784` pixel di attachment. Lo scratch ne evita circa `2,469` miliardi, ma copia circa `4,922` miliardi di pixel: quasi due pixel copiati per ogni pixel di attachment evitato. Su questa implementazione Safari/Metal, il pass monolitico con scissor probabilmente beneficia già della gestione a tile interna; copie, transizioni e attachment scratch aggiuntivo costano più del risparmio teorico di load/store.
 
 Decisione: passo 13 bocciato, senza una seconda run e senza tentare bucket più piccoli. Texture scratch, trasformazione delle coordinate, copy-in/copy-out, telemetria v4 e indicatori UI sono stati rimossi. Il runtime è tornato esattamente al percorso monolitico del commit `ad37505`, riferimento della run `#19`: un solo render pass diretto sul layer persistente, quad strip da quattro vertici, coverage generica, riuso di `copySeed`, dirty rectangle direzionale e telemetria v2. Non reintrodurre tiled per-pass o dirty scratch senza un'architettura che eviti sia la moltiplicazione dei render pass sia il copyback per batch.
+
+## Variante selezionabile del replay: `Fur`
+
+Il replay del tratto umano offre due test distinti senza modificare punti, timing o fingerprint della traccia registrata:
+
+- `Base`: mantiene il benchmark canonico con cerchio, scatter `0%` e jitter di posizione laterale/lineare al `100%`;
+- `Fur`: usa la Shape 2K, scatter di rotazione al `100%` e jitter di posizione laterale/lineare allo `0%`.
+
+Tutti gli altri parametri del benchmark restano quelli canonici, inclusi size `750 px`, spacing `1%`, Count `16`, flow `100%`, hardness `100%`, blend intensity `4x`, jitter cromatico, seed e ordine degli stamp. La scelta salva `testVariant: "base" | "fur"` e le impostazioni effettive nella run. Non aggregare run `Fur` e `Base` come se misurassero lo stesso pennello e non sostituire il benchmark canonico con `Fur`.

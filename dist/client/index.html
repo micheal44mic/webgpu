@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#111318" />
     <title>WebGPU Brush Engine 4096²</title>
-    <script type="module" crossorigin src="./assets/index-BaswVHR6.js"></script>
+    <script type="module" crossorigin src="./assets/index-DgKNz8D0.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-DVGmclji.css">
   </head>
   <body>
@@ -171,6 +171,13 @@
               Benchmark tratto umano
               <small>Registra una volta la pennellata di riferimento: poi la stessa sequenza viene usata su ogni dispositivo.</small>
             </span>
+          </label>
+          <label class="control">
+            <span>Variante test</span>
+            <select id="humanStrokeTestVariant">
+              <option value="base">Base — cerchio</option>
+              <option value="fur">Fur — Shape 2K + Scatter 100%</option>
+            </select>
           </label>
           <button id="recordHumanStroke" class="primary wide" type="button">Registra tratto umano</button>
           <button id="playHumanStroke" class="wide" type="button" disabled>Play tratto registrato</button>
