@@ -83,15 +83,15 @@ Il motore è stato quindi riportato al quad originale da 6 vertici per copia. La
 
 Il rollback quad è stato pubblicato come versione Sites `16` prima di iniziare l'esperimento successivo.
 
-## Passo 2: backpressure della coda GPU
+## Passo 2: backpressure della coda GPU — bocciato e rimosso
 
-Il render interattivo ora ammette al massimo `2` submission GPU in volo. Se entrambi gli slot sono occupati, gli stamp continuano a essere generati in FIFO dentro `pendingStamps`, ma non vengono rimossi dalla coda e non viene creato un nuovo command buffer. Al completamento di una submission, `GPUQueue.onSubmittedWorkDone()` libera lo slot e pianifica il prossimo frame se esiste lavoro pendente.
+L'esperimento limitava il render interattivo a `2` submission GPU in volo. Se entrambi gli slot erano occupati, gli stamp continuavano a essere generati in FIFO dentro `pendingStamps`, ma non venivano rimossi dalla coda e non veniva creato un nuovo command buffer. Al completamento di una submission, `GPUQueue.onSubmittedWorkDone()` liberava lo slot e pianificava il frame successivo.
 
-Non usare `await` dentro `renderFrame`: il limite a 2 serve a mantenere una submission pronta mentre la precedente viene completata. Il benchmark GPU sintetico è serializzato e passa dallo stesso tracker, quindi non può aggirare il limite.
+L'implementazione non usava `await` dentro `renderFrame`: il secondo slot doveva mantenere una submission pronta mentre la precedente veniva completata. Anche il benchmark GPU sintetico passava dallo stesso tracker.
 
-Questo passo non cambia shader, quad, Count, spacing, jitter, seed o ordine degli stamp. È valido per tutte le size; il beneficio dipende dalla saturazione della GPU. Con impostazioni fisse il risultato deve restare visivamente invariato, ma i confini dei render pass possono cambiare e non va promessa identità byte-per-byte su `rgba8unorm`. Se i parametri del pennello vengono modificati mentre esiste backlog, gli stamp ancora pending usano gli uniform più recenti: il Play canonico non è coinvolto perché mantiene il preset fisso.
+L'esperimento non cambiava shader, quad, Count, spacing, jitter, seed o ordine degli stamp ed era indipendente dalla size. Con impostazioni fisse il risultato doveva restare visivamente invariato, ma i confini dei render pass potevano cambiare e non era garantita identità byte-per-byte su `rgba8unorm`.
 
-Nuova telemetria salvata nella run:
+Telemetria sperimentale salvata nella run `#10` ma rimossa dal runtime con il rollback:
 
 - `submissionLimit`: limite configurato, attualmente `2`;
 - `peakInFlightSubmissions`: massimo numero osservato in volo;
@@ -99,6 +99,26 @@ Nuova telemetria salvata nella run:
 - `maxPendingStamps`: massimo backlog di stamp base, non copie fisiche;
 - `submissionCompletionP50/P95/MaxMs`: tempo dalla submission al completamento del relativo prefisso di coda; include eventuale lavoro precedente e il ritardo del callback JS, quindi non è il tempo GPU isolato del command buffer.
 
-La prossima run iPhone dovrebbe essere la `#6`. Confrontarla soprattutto con la mediana quad `#1–#3`, usando lo stesso fingerprint e preset. Il passo 2 è valido solo se il tratto segue meglio il dito e diminuiscono coda GPU e ritardi senza peggiorare chiaramente scatti, FPS o risultato visivo. Un calo degli FPS di submission non basta da solo per rifiutarlo: controllare anche backlog, completion p95 e prova a occhio.
+La run iPhone valida del passo 2 è la `#10`; le run intermedie non appartengono tutte allo stesso asset/canvas e non vanno aggregate alla cieca. Confrontare soprattutto con la mediana quad `#1–#3` e con la `#9`, ultimo quad senza backpressure sullo stesso iPhone, canvas `860×850`, fingerprint e preset.
 
-Non implementare insieme il prossimo candidato. Se il passo 2 fallisce, fare rollback prima di provare il quad identico come `triangle-strip` da 4 vertici. Il buffer temporaneo trasparente non è prioritario: il motore fonde già tutte le copie del frame in un solo render pass e una texture intermedia aggiungerebbe passaggi, memoria e possibili differenze di quantizzazione.
+Non reintrodurre questo cap. Il buffer temporaneo trasparente non è prioritario: il motore fonde già tutte le copie del frame in un solo render pass e una texture intermedia aggiungerebbe passaggi, memoria e possibili differenze di quantizzazione.
+
+## Risultato e decisione del passo 2
+
+| Metrica | Mediana #1–#3 quad | Run #9 quad pre-cap | Run #10 cap 2 |
+|---|---:|---:|---:|
+| FPS medi | circa `54,76` | `53,81` | `25,71` |
+| frame renderizzati | `376` | `369` | `184` |
+| intervallo frame p95 | `32 ms` | `33 ms` | `100 ms` |
+| intervallo frame massimo | `67 ms` | `67 ms` | `466 ms` |
+| frame oltre 20 ms | `41` (~`10,9%`) | `46` (~`12,5%`) | `74` (~`40,4%`) |
+| batch massimo | `124` stamp | `105` stamp | `910` stamp |
+| coda GPU finale | `386 ms` | `454 ms` | `331 ms` |
+| input delay p95 | `21 ms` | `23 ms` | `15 ms` |
+| fine presentazione | `7245 ms` | `7298 ms` | `7180 ms` |
+
+Telemetria specifica #10: `peakInFlightSubmissions 2/2`, `67` episodi di saturazione, backlog massimo `910` stamp base, submit→fine coda p95 `314 ms` e massimo `536 ms`.
+
+Il cap riduce la coda finale di `55 ms` rispetto alla mediana storica e di `123 ms` rispetto alla #9, ma sposta il collo di bottiglia in `pendingStamps`: i batch diventano circa 7–9 volte più grandi, gli aggiornamenti scendono a metà frequenza e il p95 sale a `100 ms`. Il piccolo miglioramento della durata totale non compensa la perdita netta di fluidità.
+
+Decisione: passo 2 rifiutato. Il cap a 2 è stato rimosso e il motore è tornato alla schedulazione quad precedente. Il prossimo esperimento isolato consigliato è lo stesso quad come `triangle-strip` da 4 vertici.

@@ -53,13 +53,6 @@ export interface BenchmarkResult {
 export interface StrokePerformanceProfile {
   stampGeometry: "quad";
   stampVerticesPerCopy: number;
-  submissionLimit: number;
-  peakInFlightSubmissions: number;
-  backpressureWaits: number;
-  maxPendingStamps: number;
-  submissionCompletionP50Ms: number;
-  submissionCompletionP95Ms: number;
-  submissionCompletionMaxMs: number;
   baseStamps: number;
   physicalCopies: number;
   renderFrames: number;
@@ -117,7 +110,6 @@ interface DirtyRect {
 
 interface SubmitTiming {
   totalCpuMs: number;
-  submittedAtMs: number;
   stampPackingMs: number;
   instanceUploadMs: number;
   brushEncodingMs: number;
@@ -127,10 +119,6 @@ interface SubmitTiming {
 }
 
 interface MutableStrokePerformanceProfile {
-  peakInFlightSubmissions: number;
-  backpressureWaits: number;
-  maxPendingStamps: number;
-  submissionCompletionMs: number[];
   baseStamps: number;
   physicalCopies: number;
   renderFrames: number;
@@ -151,7 +139,6 @@ interface MutableStrokePerformanceProfile {
 const LAYER_SIZE = 4096;
 const STAMP_STRIDE_BYTES = 32;
 const MAX_STAMPS_PER_BATCH = 65_536;
-const MAX_GPU_SUBMISSIONS_IN_FLIGHT = 2;
 const STAMP_VERTICES_PER_COPY = 6;
 const STAMP_GEOMETRY = "quad" as const;
 const BRUSH_UNIFORM_BYTES = 96;
@@ -240,10 +227,6 @@ export class BrushEngine {
   private seedSequence = 1;
 
   private frameRequest: number | null = null;
-  private inFlightSubmissions = 0;
-  private backpressureActive = false;
-  private latestTrackedSubmissionCompletion: Promise<void> = Promise.resolve();
-  private exclusiveBenchmarkRunning = false;
   private clearRequested = true;
   private displayDirty = true;
   private initialized = false;
@@ -479,65 +462,49 @@ export class BrushEngine {
     if (!this.initialized) {
       throw new Error("Il motore non è ancora inizializzato.");
     }
-    if (this.exclusiveBenchmarkRunning) {
-      throw new Error("Un benchmark GPU è già in esecuzione.");
+
+    const count = clamp(Math.round(baseStampCount), 1, Math.min(12_000, MAX_STAMPS_PER_BATCH));
+    this.pendingStamps.length = 0;
+    this.activeStroke = null;
+
+    if (this.frameRequest !== null) {
+      cancelAnimationFrame(this.frameRequest);
+      this.frameRequest = null;
     }
 
-    this.exclusiveBenchmarkRunning = true;
-    try {
-      const count = clamp(Math.round(baseStampCount), 1, Math.min(12_000, MAX_STAMPS_PER_BATCH));
-      this.pendingStamps.length = 0;
-      this.activeStroke = null;
+    await this.device.queue.onSubmittedWorkDone();
+    const stamps = this.generateBenchmarkStamps(count);
 
-      if (this.frameRequest !== null) {
-        cancelAnimationFrame(this.frameRequest);
-        this.frameRequest = null;
-      }
+    const completionStart = performance.now();
+    const cpuSubmitMs = this.submitImmediate(stamps, true).totalCpuMs;
+    this.clearRequested = false;
+    this.displayDirty = false;
+    await this.device.queue.onSubmittedWorkDone();
+    const gpuCompletionMs = performance.now() - completionStart;
 
-      await this.device.queue.onSubmittedWorkDone();
-      await this.latestTrackedSubmissionCompletion;
-      const stamps = this.generateBenchmarkStamps(count);
-      const copyCount = this.settings.count;
+    this.totalBaseStamps += stamps.length;
+    this.avoidedLogicalDraws += stamps.length * Math.max(0, this.settings.count - 1);
+    this.recordRenderedFrame(performance.now());
+    this.publishStats();
 
-      const completionStart = performance.now();
-      const timing = this.submitImmediate(stamps, true);
-      this.trackSubmission(null, timing.submittedAtMs);
-      const cpuSubmitMs = timing.totalCpuMs;
-      this.clearRequested = false;
-      this.displayDirty = false;
-      await this.device.queue.onSubmittedWorkDone();
-      await this.latestTrackedSubmissionCompletion;
-      const gpuCompletionMs = performance.now() - completionStart;
+    const averageRadiusSquared = stamps.reduce((sum, stamp) => sum + stamp.radius * stamp.radius, 0) / stamps.length;
+    const estimatedCoveredFragments = Math.round(
+      Math.PI * averageRadiusSquared * stamps.length * this.settings.count,
+    );
+    const strategy = [
+      "1 draw instanziata",
+      `${this.settings.count} copie fisiche GPU per stamp base`,
+      "geometria quad",
+    ].join(" · ");
 
-      this.totalBaseStamps += stamps.length;
-      this.avoidedLogicalDraws += stamps.length * Math.max(0, copyCount - 1);
-      this.recordRenderedFrame(performance.now());
-      this.publishStats();
-
-      const averageRadiusSquared = stamps.reduce((sum, stamp) => sum + stamp.radius * stamp.radius, 0) / stamps.length;
-      const estimatedCoveredFragments = Math.round(
-        Math.PI * averageRadiusSquared * stamps.length * copyCount,
-      );
-      const strategy = [
-        "1 draw instanziata",
-        `${copyCount} copie fisiche GPU per stamp base`,
-        "geometria quad",
-      ].join(" · ");
-
-      return {
-        baseStamps: stamps.length,
-        logicalCopies: stamps.length * copyCount,
-        cpuSubmitMs,
-        gpuCompletionMs,
-        estimatedCoveredFragments,
-        strategy,
-      };
-    } finally {
-      this.exclusiveBenchmarkRunning = false;
-      if (this.initialized && this.hasRenderWork()) {
-        this.requestRender();
-      }
-    }
+    return {
+      baseStamps: stamps.length,
+      logicalCopies: stamps.length * this.settings.count,
+      cpuSubmitMs,
+      gpuCompletionMs,
+      estimatedCoveredFragments,
+      strategy,
+    };
   }
 
   getStats(): EngineStats {
@@ -576,7 +543,6 @@ export class BrushEngine {
     }
 
     await this.device.queue.onSubmittedWorkDone();
-    await this.latestTrackedSubmissionCompletion;
   }
 
   resetStrokeRandomSeed(): void {
@@ -584,12 +550,7 @@ export class BrushEngine {
   }
 
   startStrokePerformanceProfile(): void {
-    this.backpressureActive = false;
     this.activeStrokeProfile = {
-      peakInFlightSubmissions: this.inFlightSubmissions,
-      backpressureWaits: 0,
-      maxPendingStamps: this.pendingStamps.length,
-      submissionCompletionMs: [],
       baseStamps: 0,
       physicalCopies: 0,
       renderFrames: 0,
@@ -619,13 +580,6 @@ export class BrushEngine {
     return {
       stampGeometry: STAMP_GEOMETRY,
       stampVerticesPerCopy: STAMP_VERTICES_PER_COPY,
-      submissionLimit: MAX_GPU_SUBMISSIONS_IN_FLIGHT,
-      peakInFlightSubmissions: profile.peakInFlightSubmissions,
-      backpressureWaits: profile.backpressureWaits,
-      maxPendingStamps: profile.maxPendingStamps,
-      submissionCompletionP50Ms: percentile(profile.submissionCompletionMs, 0.5),
-      submissionCompletionP95Ms: percentile(profile.submissionCompletionMs, 0.95),
-      submissionCompletionMaxMs: maximum(profile.submissionCompletionMs),
       baseStamps: profile.baseStamps,
       physicalCopies: profile.physicalCopies,
       renderFrames: profile.renderFrames,
@@ -1031,10 +985,6 @@ export class BrushEngine {
     });
     if (this.activeStrokeProfile) {
       this.activeStrokeProfile.baseStamps += 1;
-      this.activeStrokeProfile.maxPendingStamps = Math.max(
-        this.activeStrokeProfile.maxPendingStamps,
-        this.pendingStamps.length,
-      );
     }
     this.displayDirty = true;
     this.requestRender();
@@ -1044,14 +994,7 @@ export class BrushEngine {
     if (!this.initialized) {
       return;
     }
-    if (this.exclusiveBenchmarkRunning) {
-      return;
-    }
     if (this.frameRequest !== null) {
-      return;
-    }
-    if (this.inFlightSubmissions >= MAX_GPU_SUBMISSIONS_IN_FLIGHT) {
-      this.recordBackpressureWait();
       return;
     }
     this.frameRequest = requestAnimationFrame((timestamp) => this.renderFrame(timestamp));
@@ -1062,11 +1005,6 @@ export class BrushEngine {
     if (!this.initialized) {
       return;
     }
-    if (this.inFlightSubmissions >= MAX_GPU_SUBMISSIONS_IN_FLIGHT) {
-      this.recordBackpressureWait();
-      return;
-    }
-    this.backpressureActive = false;
     this.resizeCanvas();
 
     const batchSize = Math.min(this.pendingStamps.length, MAX_STAMPS_PER_BATCH);
@@ -1078,10 +1016,8 @@ export class BrushEngine {
     }
 
     const clearLayer = this.clearRequested;
-    const submissionProfile = this.activeStrokeProfile;
     const start = performance.now();
     const timing = this.submitImmediate(batch, clearLayer);
-    this.trackSubmission(submissionProfile, timing.submittedAtMs);
     this.lastCpuFrameMs = performance.now() - start;
     this.recordStrokeFrameTiming(timestamp, batch.length, timing);
 
@@ -1105,7 +1041,6 @@ export class BrushEngine {
     let brushEncodingMs = 0;
     let displayEncodingMs = 0;
     let commandSubmitMs = 0;
-    let submittedAtMs = 0;
     let scissorPixels = 0;
 
     if (clearLayer || stamps.length > 0) {
@@ -1170,11 +1105,9 @@ export class BrushEngine {
 
     const submitStart = performance.now();
     this.device.queue.submit([encoder.finish()]);
-    submittedAtMs = performance.now();
     commandSubmitMs = performance.now() - submitStart;
     return {
       totalCpuMs: performance.now() - cpuStart,
-      submittedAtMs,
       stampPackingMs,
       instanceUploadMs,
       brushEncodingMs,
@@ -1253,51 +1186,6 @@ export class BrushEngine {
     while (this.renderTimestamps.length > 0 && this.renderTimestamps[0] < cutoff) {
       this.renderTimestamps.shift();
     }
-  }
-
-  private hasRenderWork(): boolean {
-    return this.pendingStamps.length > 0 || this.displayDirty || this.clearRequested;
-  }
-
-  private recordBackpressureWait(): void {
-    if (!this.hasRenderWork() || this.backpressureActive) {
-      return;
-    }
-    this.backpressureActive = true;
-    if (this.activeStrokeProfile) {
-      this.activeStrokeProfile.backpressureWaits += 1;
-    }
-  }
-
-  private trackSubmission(
-    profile: MutableStrokePerformanceProfile | null,
-    submittedAtMs: number,
-  ): void {
-    this.inFlightSubmissions += 1;
-    if (profile) {
-      profile.peakInFlightSubmissions = Math.max(
-        profile.peakInFlightSubmissions,
-        this.inFlightSubmissions,
-      );
-    }
-
-    const release = (completed: boolean) => {
-      this.inFlightSubmissions = Math.max(0, this.inFlightSubmissions - 1);
-      if (completed && profile) {
-        profile.submissionCompletionMs.push(Math.max(0, performance.now() - submittedAtMs));
-      }
-      if (this.inFlightSubmissions < MAX_GPU_SUBMISSIONS_IN_FLIGHT) {
-        this.backpressureActive = false;
-      }
-      if (completed && this.initialized && this.hasRenderWork()) {
-        this.requestRender();
-      }
-    };
-
-    this.latestTrackedSubmissionCompletion = this.device.queue.onSubmittedWorkDone().then(
-      () => release(true),
-      () => release(false),
-    );
   }
 
   private recordStampGenerationTime(startTime: number): void {
