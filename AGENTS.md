@@ -255,3 +255,21 @@ Il nuovo limite usa gli stessi valori `f32` caricati nel buffer. Normalizza le d
 È un limite conservativo della somma dei due offset, non un'approssimazione della posizione effettiva di una singola copia. Il margine finale di `2 px` resta invariato. Non cambiano stamp, seed, jitter, geometria, shader, ordine, blending o pixel; cambia soltanto lo scissor del render pass. Vale per tutte le size e direzioni. Con entrambi i jitter al 100%, il limite per asse scende da `5r` a `3r` su tratti allineati agli assi e a circa `3,83r` nel caso diagonale.
 
 La telemetria salva `dirtyRectStrategy: "directional-jitter-bounds"`. La prima run valida attesa è la `#17` e va confrontata direttamente con la `#16`, che mantiene lo stesso `copySeed` ma usa il dirty rect isotropo precedente. Oltre a FPS, p95, frame lenti e coda GPU, confrontare `estimatedScissorPixels`; questo contatore è la somma delle aree scissor per batch, non il numero di frammenti realmente rasterizzati.
+
+### Risultato preliminare del passo 7: run #19
+
+La prima run iPhone valida con `dirtyRectStrategy: "directional-jitter-bounds"` è la `#19`. La #17 è stata eseguita su GPU NVIDIA Ampere e la #18 usa ancora la build precedente, canvas `828×819` e un backlog anomalo; non sono confrontabili con questo esperimento. La #19 e la #16 hanno invece stesso fingerprint, preset, iPhone, canvas `860×850`, stamp, copie, shader e `copySeed`.
+
+| Metrica | Run #16 bounds isotropi | Run #19 bounds direzionali |
+|---|---:|---:|
+| FPS medi | `56,33` | `56,19` |
+| intervallo frame p95 | `28 ms` | `28 ms` |
+| intervallo frame massimo | `67 ms` | `67 ms` |
+| frame oltre 20 ms | `33` | `37` |
+| coda GPU finale | `292 ms` | `282 ms` |
+| input delay p95 | `16 ms` | `17 ms` |
+| fine presentazione | `7142 ms` | `7132 ms` |
+| somma aree scissor | `4.002.660.960` | `2.538.336.064` |
+| packing CPU totale | `3 ms` | `6 ms` |
+
+L'area scissor stimata diminuisce di circa il `36,6%`, quindi il limite direzionale funziona come previsto. Tuttavia la fluidità non migliora: FPS `-0,3%`, p95 invariato e `4` frame lenti in più; soltanto coda finale e presentazione migliorano di `10 ms`. Questo conferma che `estimatedScissorPixels` non equivale a lavoro raster reale: la geometria dei quad delimitava già i frammenti e lo scissor più largo non li generava automaticamente. Il passo resta in valutazione, ma la raccomandazione tecnica è rimuoverlo se una seconda run o la percezione dell'utente non mostrano un vantaggio durante il tratto.
