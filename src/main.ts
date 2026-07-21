@@ -30,7 +30,6 @@ const benchmarkButton = element<HTMLButtonElement>("runBenchmark");
 const benchmarkResult = element<HTMLParagraphElement>("benchmarkResult");
 const recordHumanStrokeButton = element<HTMLButtonElement>("recordHumanStroke");
 const playHumanStrokeButton = element<HTMLButtonElement>("playHumanStroke");
-const clearHumanStrokeButton = element<HTMLButtonElement>("clearHumanStroke");
 const humanStrokeResult = element<HTMLParagraphElement>("humanStrokeResult");
 const layerFormatSelect = element<HTMLSelectElement>("layerFormat");
 
@@ -51,7 +50,8 @@ interface HumanStrokeRecording {
   points: HumanStrokePoint[];
 }
 
-const HUMAN_STROKE_STORAGE_KEY = "webgpu-brush-engine.human-stroke.v1";
+const LEGACY_HUMAN_STROKE_STORAGE_KEY = "webgpu-brush-engine.human-stroke.v1";
+const HUMAN_STROKE_API_URL = "/api/human-stroke";
 
 const engine = new BrushEngine(canvas, {
   onStatus(message, kind) {
@@ -63,11 +63,13 @@ const engine = new BrushEngine(canvas, {
   },
 });
 
-let humanStrokeBenchmark: HumanStrokeBenchmark | null = loadHumanStrokeBenchmark();
+let humanStrokeBenchmark: HumanStrokeBenchmark | null = null;
 let humanStrokeRecording: HumanStrokeRecording | null = null;
 let humanStrokeRecordingArmed = false;
 let humanStrokeReplayFrame: number | null = null;
 let humanStrokeReplaying = false;
+let humanStrokeLoading = true;
+let humanStrokeSaving = false;
 
 function readBrushSettings(): BrushSettings {
   return {
@@ -120,31 +122,97 @@ function formatDuration(milliseconds: number): string {
   return `${(milliseconds / 1000).toFixed(2)} s`;
 }
 
-function loadHumanStrokeBenchmark(): HumanStrokeBenchmark | null {
+function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+
+  const parsed = value as Partial<HumanStrokeBenchmark>;
+  if (parsed.version !== 1 || !parsed.settings || !Array.isArray(parsed.points) || parsed.points.length === 0) {
+    return null;
+  }
+  return parsed as HumanStrokeBenchmark;
+}
+
+function loadLegacyHumanStrokeBenchmark(): HumanStrokeBenchmark | null {
   try {
-    const stored = window.localStorage.getItem(HUMAN_STROKE_STORAGE_KEY);
+    const stored = window.localStorage.getItem(LEGACY_HUMAN_STROKE_STORAGE_KEY);
     if (!stored) {
       return null;
     }
-    const parsed = JSON.parse(stored) as Partial<HumanStrokeBenchmark>;
-    if (parsed.version !== 1 || !parsed.settings || !Array.isArray(parsed.points) || parsed.points.length === 0) {
-      return null;
-    }
-    return parsed as HumanStrokeBenchmark;
+    return parseHumanStrokeBenchmark(JSON.parse(stored));
   } catch {
     return null;
   }
 }
 
-function persistHumanStrokeBenchmark(): void {
+function clearLegacyHumanStrokeBenchmark(): void {
   try {
-    if (humanStrokeBenchmark) {
-      window.localStorage.setItem(HUMAN_STROKE_STORAGE_KEY, JSON.stringify(humanStrokeBenchmark));
-    } else {
-      window.localStorage.removeItem(HUMAN_STROKE_STORAGE_KEY);
+    window.localStorage.removeItem(LEGACY_HUMAN_STROKE_STORAGE_KEY);
+  } catch {}
+}
+
+async function requestCanonicalHumanStroke(): Promise<HumanStrokeBenchmark | null> {
+  const response = await fetch(HUMAN_STROKE_API_URL, { cache: "no-store" });
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error("Impossibile caricare il tratto umano di riferimento.");
+  }
+  return parseHumanStrokeBenchmark(await response.json());
+}
+
+async function saveCanonicalHumanStroke(benchmark: HumanStrokeBenchmark): Promise<HumanStrokeBenchmark> {
+  const response = await fetch(HUMAN_STROKE_API_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(benchmark),
+  });
+
+  if (response.status === 409) {
+    const existing = parseHumanStrokeBenchmark(await response.json());
+    if (existing) {
+      return existing;
     }
-  } catch {
-    humanStrokeResult.textContent = "Il tratto è valido per questa sessione, ma non è stato possibile salvarlo sul dispositivo.";
+  }
+  if (!response.ok) {
+    throw new Error("Impossibile fissare il tratto umano di riferimento.");
+  }
+  const saved = parseHumanStrokeBenchmark(await response.json());
+  if (!saved) {
+    throw new Error("Il tratto umano salvato non è valido.");
+  }
+  return saved;
+}
+
+async function loadCanonicalHumanStroke(): Promise<void> {
+  humanStrokeLoading = true;
+  updateHumanStrokeControls();
+  try {
+    const canonical = await requestCanonicalHumanStroke();
+    if (canonical) {
+      humanStrokeBenchmark = canonical;
+      clearLegacyHumanStrokeBenchmark();
+      humanStrokeResult.textContent = describeHumanStrokeBenchmark(canonical);
+      return;
+    }
+
+    const legacy = loadLegacyHumanStrokeBenchmark();
+    if (legacy) {
+      humanStrokeResult.textContent = "Fissaggio del tratto che avevi già registrato…";
+      humanStrokeBenchmark = await saveCanonicalHumanStroke(legacy);
+      clearLegacyHumanStrokeBenchmark();
+      humanStrokeResult.textContent = describeHumanStrokeBenchmark(humanStrokeBenchmark);
+      return;
+    }
+
+    humanStrokeResult.textContent = "Nessun tratto di riferimento: registralo una sola volta.";
+  } catch (error) {
+    humanStrokeResult.textContent = error instanceof Error ? error.message : String(error);
+  } finally {
+    humanStrokeLoading = false;
+    updateHumanStrokeControls();
   }
 }
 
@@ -180,23 +248,27 @@ function applyHumanStrokePreset(): BrushSettings {
   setControlValue("count", 16);
   setControlValue("flow", 100);
   setControlValue("hardness", 100);
+  setControlValue("blendIntensity", 4);
   setControlValue("jitterMaster", 100);
   setControlValue("hueJitter", 180);
   setControlValue("saturationJitter", 100);
   element<HTMLInputElement>("jitterPerCopy").checked = true;
   setControlValue("positionJitterLateral", 100);
   setControlValue("positionJitterLinear", 100);
+  setControlValue("pressureSize", 0);
+  setControlValue("pressureOpacity", 0);
   applyBrushControls();
   return readBrushSettings();
 }
 
 function updateHumanStrokeControls(): void {
-  recordHumanStrokeButton.disabled = humanStrokeReplaying;
+  recordHumanStrokeButton.disabled = humanStrokeLoading || humanStrokeSaving || humanStrokeReplaying || Boolean(humanStrokeBenchmark);
   recordHumanStrokeButton.textContent = humanStrokeRecordingArmed
     ? "Annulla registrazione tratto"
-    : "Registra tratto umano";
-  playHumanStrokeButton.disabled = !humanStrokeBenchmark || humanStrokeReplaying;
-  clearHumanStrokeButton.disabled = !humanStrokeBenchmark || humanStrokeReplaying;
+    : humanStrokeBenchmark
+      ? "Tratto umano fissato"
+      : "Registra tratto umano";
+  playHumanStrokeButton.disabled = !humanStrokeBenchmark || humanStrokeLoading || humanStrokeSaving || humanStrokeReplaying;
 }
 
 function describeHumanStrokeBenchmark(benchmark: HumanStrokeBenchmark): string {
@@ -275,7 +347,7 @@ benchmarkButton.addEventListener("click", async () => {
 });
 
 recordHumanStrokeButton.addEventListener("click", () => {
-  if (humanStrokeReplaying || humanStrokeRecording) {
+  if (humanStrokeLoading || humanStrokeSaving || humanStrokeReplaying || humanStrokeRecording || humanStrokeBenchmark) {
     return;
   }
 
@@ -293,13 +365,6 @@ recordHumanStrokeButton.addEventListener("click", () => {
 
 playHumanStrokeButton.addEventListener("click", () => {
   void replayHumanStroke();
-});
-
-clearHumanStrokeButton.addEventListener("click", () => {
-  humanStrokeBenchmark = null;
-  persistHumanStrokeBenchmark();
-  humanStrokeResult.textContent = "Tratto umano eliminato da questo dispositivo.";
-  updateHumanStrokeControls();
 });
 
 function updateStats(stats: EngineStats): void {
@@ -338,20 +403,30 @@ function captureHumanStrokeSamples(events: readonly PointerEvent[], samples: rea
   }
 }
 
-function finishHumanStrokeRecording(shouldSave: boolean): void {
+async function finishHumanStrokeRecording(shouldSave: boolean): Promise<void> {
   const recording = humanStrokeRecording;
   humanStrokeRecording = null;
   humanStrokeRecordingArmed = false;
 
   if (recording && shouldSave && recording.points.length > 1) {
-    humanStrokeBenchmark = {
+    const benchmark: HumanStrokeBenchmark = {
       version: 1,
       capturedAt: new Date().toISOString(),
       settings: recording.settings,
       points: recording.points,
     };
-    persistHumanStrokeBenchmark();
-    humanStrokeResult.textContent = describeHumanStrokeBenchmark(humanStrokeBenchmark);
+    humanStrokeSaving = true;
+    humanStrokeResult.textContent = "Fissaggio permanente del tratto di riferimento…";
+    updateHumanStrokeControls();
+    try {
+      humanStrokeBenchmark = await saveCanonicalHumanStroke(benchmark);
+      clearLegacyHumanStrokeBenchmark();
+      humanStrokeResult.textContent = describeHumanStrokeBenchmark(humanStrokeBenchmark);
+    } catch (error) {
+      humanStrokeResult.textContent = error instanceof Error ? error.message : String(error);
+    } finally {
+      humanStrokeSaving = false;
+    }
   } else if (recording) {
     humanStrokeResult.textContent = "Tratto troppo breve: registra una pennellata con almeno un movimento.";
   }
@@ -515,7 +590,7 @@ function finishPointer(event: PointerEvent): void {
 
   if (pointerMode === "paint") {
     engine.endStroke();
-    finishHumanStrokeRecording(event.type === "pointerup");
+    void finishHumanStrokeRecording(event.type === "pointerup");
   }
   canvas.classList.remove("panning");
   pointerMode = null;
@@ -542,10 +617,8 @@ resizeObserver.observe(canvas);
 
 updateControlOutputs();
 engine.setBrushSettings(readBrushSettings());
-if (humanStrokeBenchmark) {
-  humanStrokeResult.textContent = describeHumanStrokeBenchmark(humanStrokeBenchmark);
-}
 updateHumanStrokeControls();
+void loadCanonicalHumanStroke();
 
 void engine.initialize().catch((error) => {
   const secureContextHint = !window.isSecureContext

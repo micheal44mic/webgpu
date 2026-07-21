@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#111318" />
     <title>WebGPU Brush Engine 4096²</title>
-    <script type="module" crossorigin src="./assets/index-GAoyR4dA.js"></script>
+    <script type="module" crossorigin src="./assets/index-BIxAyeNv.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-DVGmclji.css">
   </head>
   <body>
@@ -156,13 +156,12 @@
           <label class="check-control">
             <span>
               Benchmark tratto umano
-              <small>Registra una pennellata reale e riproducila con tempi, pressione e coordinate identici.</small>
+              <small>Registra una volta la pennellata di riferimento: poi la stessa sequenza viene usata su ogni dispositivo.</small>
             </span>
           </label>
           <button id="recordHumanStroke" class="primary wide" type="button">Registra tratto umano</button>
           <button id="playHumanStroke" class="wide" type="button" disabled>Play tratto registrato</button>
-          <button id="clearHumanStroke" class="wide danger" type="button" disabled>Elimina tratto registrato</button>
-          <p id="humanStrokeResult" class="result">Nessun tratto umano registrato.</p>
+          <p id="humanStrokeResult" class="result">Caricamento tratto umano di riferimento…</p>
         </section>
 
         <section class="stats-section">

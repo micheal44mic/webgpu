@@ -71,6 +71,6 @@ La sezione **Benchmark** include un test ripetibile basato su una tua pennellata
 2. Disegna una pennellata continua sul canvas: vengono registrati posizione nel layer, pressione e tempo di ogni campione.
 3. Premi **Play tratto registrato** per riprodurla con la stessa durata e gli stessi campioni.
 
-La registrazione applica il preset di confronto: dimensione `750 px`, spacing `1%`, Count `16`, Flow `100%`, Hardness `100%`, Hue al massimo (`180°`), Saturation `100%`, color jitter per copia e jitter Laterale/Lineare al `100%`. Le altre impostazioni vengono salvate assieme al tratto.
+La registrazione applica il preset di confronto: dimensione `750 px`, spacing `1%`, Count `16`, Flow `100%`, Hardness `100%`, Blend intensity al massimo (`4×`), Hue al massimo (`180°`), Saturation `100%`, color jitter per copia e jitter Laterale/Lineare al `100%`. Pressure → size e Pressure → alpha sono entrambi a `0%`, quindi la pressione non influenza il test.
 
-Alla fine di ogni Play compaiono durata, numero di campioni, stamps base, copie fisiche, tempo di coda GPU e ultimo CPU frame. Prima di ogni Play il seed del jitter viene resettato, quindi posizione, pressione, tempi e casualità restano identici tra le ripetizioni. Il tratto resta salvato solo nel browser del dispositivo, quindi può essere ripetuto dopo un refresh senza inviare dati all'esterno.
+La prima registrazione viene fissata come tratto di riferimento centrale dell'app: ogni PC, iPad e telefono scarica e riproduce gli stessi campioni, tempi, coordinate e seed. Alla fine di ogni Play compaiono durata, numero di campioni, stamps base, copie fisiche, tempo di coda GPU e ultimo CPU frame. Prima di ogni Play il seed del jitter viene resettato, quindi la casualità resta identica tra le ripetizioni.
