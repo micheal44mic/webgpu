@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "exportedAt": "2026-07-21T18:12:06.929Z",
+  "exportedAt": "2026-07-21T18:35:07.730Z",
   "runs": [
     {
       "id": 1,
@@ -922,6 +922,99 @@
         "timestampQueriesSupported": false,
         "stampGeometry": "quad",
         "stampVerticesPerCopy": 6
+      }
+    },
+    {
+      "id": 11,
+      "createdAt": "2026-07-21T18:34:41.050Z",
+      "version": 1,
+      "recordedAt": "2026-07-21T18:34:40.514Z",
+      "benchmark": {
+        "capturedAt": "2026-07-21T16:19:41.717Z",
+        "traceFingerprint": "18982412",
+        "pointCount": 1583,
+        "traceDurationMs": 6842.999999999998,
+        "pathLengthPx": 90795.11427271627,
+        "averageSpeedPxPerSecond": 13268.32007492566,
+        "peakSpeedPxPerSecond": 42183.496653632414,
+        "sampleGapP95Ms": 5,
+        "sampleGapMaxMs": 53.99999999999818,
+        "inputGapsOver33Ms": 1,
+        "settings": {
+          "color": "#ff5b35",
+          "size": 750,
+          "spacingPercent": 1,
+          "count": 16,
+          "flow": 1,
+          "hardness": 1,
+          "blendIntensity": 4,
+          "blendMode": "normal",
+          "jitterMaster": 1,
+          "hueJitterDegrees": 180,
+          "saturationJitter": 1,
+          "lightnessJitter": 0.12,
+          "darknessJitter": 0.18,
+          "jitterPerCopy": true,
+          "positionJitterLateral": 1,
+          "positionJitterLinear": 1,
+          "pressureSize": 0,
+          "pressureOpacity": 0
+        }
+      },
+      "playback": {
+        "inputDeliveryMs": 6848,
+        "inputDelayP50Ms": 8.000000000001819,
+        "inputDelayP95Ms": 16.00000000000182,
+        "inputDelayMaxMs": 50.00000000000182,
+        "inputToGpuCompletionMs": 286,
+        "endToPresentedMs": 7134
+      },
+      "performance": {
+        "stampGeometry": "quad",
+        "stampVerticesPerCopy": 4,
+        "baseStamps": 12107,
+        "physicalCopies": 193712,
+        "renderFrames": 388,
+        "brushBatches": 388,
+        "largestBatchStamps": 122,
+        "estimatedScissorPixels": 4004073889,
+        "stampGenerationMs": 5.000000000001819,
+        "stampPackingMs": 6,
+        "instanceUploadMs": 2,
+        "brushEncodingMs": 12.999999999992724,
+        "displayEncodingMs": 9,
+        "commandSubmitMs": 3,
+        "cpuFrameP50Ms": 0,
+        "cpuFrameP95Ms": 1,
+        "cpuFrameMaxMs": 1.000000000003638,
+        "renderIntervalP50Ms": 17,
+        "renderIntervalP95Ms": 27,
+        "renderIntervalMaxMs": 51,
+        "averageRenderFps": 56.47985989492119,
+        "delayedRenderFrames": 33
+      },
+      "environment": {
+        "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/604.1",
+        "platform": "iPhone",
+        "language": "en-GB",
+        "maxTouchPoints": 5,
+        "devicePixelRatio": 3,
+        "screenWidth": 414,
+        "screenHeight": 896,
+        "viewportWidth": 430,
+        "viewportHeight": 775,
+        "hardwareConcurrency": 4,
+        "deviceMemoryGiB": null,
+        "connection": null,
+        "canvasWidth": 860,
+        "canvasHeight": 850,
+        "layerSize": 4096,
+        "layerFormat": "rgba8unorm",
+        "layerMemoryMiB": 64,
+        "gpuLabel": "apple",
+        "timestampQueriesSupported": false,
+        "stampGeometry": "quad",
+        "stampVerticesPerCopy": 4
       }
     }
   ]
