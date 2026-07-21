@@ -155,12 +155,8 @@ Rispetto alla mediana storica, la `#11` guadagna circa il `3,1%` di FPS, riduce 
 
 Decisione: passo 3 promosso e mantenuto. Riduce le invocazioni vertex del `33,3%` (`1.162.272` → `774.848`) senza cambiare il risultato visivo e migliora tutte le metriche principali di fluidità della run canonica. Da ora la `#11` è la baseline di riferimento per i prossimi esperimenti; non ripristinare i 6 vertici salvo una regressione visiva riproducibile.
 
-## Passo 4: colore flat solo sui vertici provocanti
+## Passo 4: colore flat sui soli vertici provocanti — ritirato
 
-Esperimento attivo: nel `triangle-strip` da quattro vertici le primitive sono `(0, 1, 2)` e `(2, 1, 3)`. Gli output `pressure` e `pointColor` usano interpolazione `flat`, che in WGSL prende per default il valore dal primo vertice della primitiva. Di conseguenza, soltanto i vertici `0` e `2` possono contribuire `pointColor` ai fragment; i vertici `1` e `3` scrivono un valore fittizio che non viene osservato.
+Il tentativo calcolava `jitteredLinearColor` soltanto sui vertici `0` e `2` del `triangle-strip`, cioè i primi vertici dei due triangoli, lasciando invariati geometria, stamp, parametri e blending. L'obiettivo era dimezzare i calcoli del colore per copia da `4` a `2`.
 
-Il cambiamento calcola `jitteredLinearColor` solo quando `vertexIndex` è pari. Restano invariati i quattro vertici e le loro posizioni, le due primitive e il loro ordine, il calcolo del jitter di posizione, seed, Count, size, spacing, flow, hardness, blend intensity, pressione, fragment shader e blending. Non vengono aggiunti buffer, render/compute pass o submission. Vale per tutte le size e per le pipeline normal e additive, che condividono lo shader.
-
-Obiettivo: dimezzare le valutazioni del percorso colore per copia da `4` a `2`. Nella run canonica significa `774.848` → `387.424` chiamate a `jitteredLinearColor`; anche le conversioni sRGB con `pow()` scendono da `2.324.544` a `1.162.272`. La telemetria nuova `stampColorEvaluationsPerCopy: 2` identifica senza ambiguità l'esperimento.
-
-La prossima run valida dovrebbe essere la `#12`. Confrontarla prima di tutto con la nuova baseline `#11`, verificando lo stesso fingerprint `18982412`, preset, iPhone, canvas `860×850`, `12107` stamp base e `193712` copie fisiche. Tenere il passo solo se il risultato visivo resta invariato e migliorano FPS, frame p95/ritardati o coda finale; fare rollback se il branch nel vertex shader annulla il risparmio.
+L'utente ha richiesto il rollback prima di una run canonica comparabile. Non esiste quindi un risultato prestazionale valido e non va dedotto che l'intervento fosse più veloce o più lento. Shader e telemetria sperimentale sono stati rimossi; il motore è tornato integralmente al passo 3 della run `#11`, con il colore calcolato su tutti e quattro i vertici. Non reintrodurre questo tentativo senza una richiesta esplicita.

@@ -53,7 +53,6 @@ export interface BenchmarkResult {
 export interface StrokePerformanceProfile {
   stampGeometry: "quad";
   stampVerticesPerCopy: number;
-  stampColorEvaluationsPerCopy: number;
   baseStamps: number;
   physicalCopies: number;
   renderFrames: number;
@@ -142,7 +141,6 @@ const STAMP_STRIDE_BYTES = 32;
 const MAX_STAMPS_PER_BATCH = 65_536;
 const STAMP_VERTICES_PER_COPY = 4;
 const STAMP_GEOMETRY = "quad" as const;
-const STAMP_COLOR_EVALUATIONS_PER_COPY = 2;
 const BRUSH_UNIFORM_BYTES = 96;
 const DISPLAY_UNIFORM_BYTES = 32;
 
@@ -497,7 +495,6 @@ export class BrushEngine {
       "1 draw instanziata",
       `${this.settings.count} copie fisiche GPU per stamp base`,
       "geometria quad triangle-strip (4 vertici)",
-      "colore flat calcolato su 2 vertici",
     ].join(" · ");
 
     return {
@@ -583,7 +580,6 @@ export class BrushEngine {
     return {
       stampGeometry: STAMP_GEOMETRY,
       stampVerticesPerCopy: STAMP_VERTICES_PER_COPY,
-      stampColorEvaluationsPerCopy: STAMP_COLOR_EVALUATIONS_PER_COPY,
       baseStamps: profile.baseStamps,
       physicalCopies: profile.physicalCopies,
       renderFrames: profile.renderFrames,
@@ -619,7 +615,6 @@ export class BrushEngine {
     timestampQueriesSupported: boolean;
     stampGeometry: typeof STAMP_GEOMETRY;
     stampVerticesPerCopy: number;
-    stampColorEvaluationsPerCopy: number;
   } {
     return {
       canvasWidth: this.canvas.width,
@@ -631,7 +626,6 @@ export class BrushEngine {
       timestampQueriesSupported: this.device?.features.has("timestamp-query") ?? false,
       stampGeometry: STAMP_GEOMETRY,
       stampVerticesPerCopy: STAMP_VERTICES_PER_COPY,
-      stampColorEvaluationsPerCopy: STAMP_COLOR_EVALUATIONS_PER_COPY,
     };
   }
 
