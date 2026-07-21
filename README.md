@@ -10,16 +10,11 @@ Prototipo TypeScript senza framework per verificare l'architettura di un motore 
 - Supporto Pointer Events, pressione e `getCoalescedEvents()` quando disponibile.
 - Cerchio analitico antialias: nessuna texture della punta e nessun MSAA.
 - Una sola draw istanziata per i punti base del batch.
-- `Count` fino a 24 collassato con:
-
-  ```text
-  alphaGruppo = 1 - (1 - alphaSingola)^Count
-  ```
+- `Count` fino a 24: copie fisiche dello stamp per ogni punto di spacing, tutte disegnate con instancing GPU in una sola draw call.
 
 - Color jitter deterministico in HSL: Hue, Saturation, Lightness e Darkness.
-- Due strategie di jitter:
-  - **Jitter per punto base**: fast path; le 24 copie condividono il colore e vengono collassate.
-  - **Jitter per copia**: una sola geometria, ma loop esatto fino a 24 colori nel fragment shader con compositing source-over premoltiplicato.
+- Jitter di posizione lineare e laterale, indipendente per ogni copia fisica.
+- Color jitter condiviso dal gruppo oppure indipendente per copia.
 - Blend normale premoltiplicato e modalità additiva intensa.
 - Scissor rectangle sul rettangolo sporco del batch.
 - Zoom, pan, fit, clear e benchmark sintetico.
@@ -76,7 +71,7 @@ Registra per ogni dispositivo:
 
 ## Interpretazione del flow
 
-In questo prototipo `Flow` è l'alpha di **ogni copia** prima di pressione, copertura e `Blend intensity`. Per esempio, con flow 7% e Count 24, al centro di una singola impronta di gruppo:
+In questo prototipo `Flow` è l'alpha di **ogni copia fisica** prima di pressione, copertura e `Blend intensity`. Per esempio, con flow 7% e Count 24, quando le copie sono sovrapposte al centro:
 
 ```text
 1 - (1 - 0.07)^24 ≈ 82.5%

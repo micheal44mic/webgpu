@@ -7,6 +7,7 @@ struct BrushUniforms {
   baseHslAlpha: vec4<f32>,
   jitter: vec4<f32>,
   controls: vec4<f32>,
+  positionJitter: vec4<f32>,
   options: vec4<u32>,
 };
 
@@ -16,15 +17,14 @@ struct Stamp {
   pressure: f32,
   seed: u32,
   _pad0: u32,
-  _pad1: vec2<u32>,
+  direction: vec2<f32>,
 };
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) localPosition: vec2<f32>,
   @location(1) @interpolate(flat) pressure: f32,
-  @location(2) @interpolate(flat) seed: u32,
-  @location(3) @interpolate(flat) pointColor: vec3<f32>,
+  @location(2) @interpolate(flat) pointColor: vec3<f32>,
 };
 
 @group(0) @binding(0) var<uniform> brush: BrushUniforms;
@@ -107,25 +107,6 @@ fn jitteredLinearColor(seed: u32, copyIndex: u32) -> vec3<f32> {
   return srgbToLinear(hslToSrgb(vec3<f32>(hue, saturation, lightness)));
 }
 
-fn integerPower(baseValue: f32, exponentValue: u32) -> f32 {
-  var result = 1.0;
-  var base = baseValue;
-  var exponent = exponentValue;
-
-  loop {
-    if (exponent == 0u) {
-      break;
-    }
-    if ((exponent & 1u) != 0u) {
-      result = result * base;
-    }
-    exponent = exponent >> 1u;
-    base = base * base;
-  }
-
-  return result;
-}
-
 @vertex
 fn vertexMain(
   @builtin(vertex_index) vertexIndex: u32,
@@ -140,9 +121,20 @@ fn vertexMain(
     vec2<f32>( 1.0,  1.0)
   );
 
-  let stamp = stamps[instanceIndex];
+  let copyCount = max(1u, min(brush.options.x, MAX_COUNT));
+  let stampIndex = instanceIndex / copyCount;
+  let copyIndex = instanceIndex % copyCount;
+  let stamp = stamps[stampIndex];
   let localPosition = corners[vertexIndex];
-  let layerPosition = stamp.center + localPosition * stamp.radius;
+  let directionLength = length(stamp.direction);
+  let direction = select(vec2<f32>(1.0, 0.0), stamp.direction / directionLength, directionLength > 0.0001);
+  let copySeed = hash32(stamp.seed ^ (copyIndex * 0x85ebca6bu));
+  let linearOffset = (random01(copySeed, 5u) - 0.5) * 2.0 * stamp.radius * brush.positionJitter.x;
+  let lateralOffset = (random01(copySeed, 6u) - 0.5) * 2.0 * stamp.radius * brush.positionJitter.y;
+  let jitteredCenter = stamp.center
+    + direction * linearOffset
+    + vec2<f32>(-direction.y, direction.x) * lateralOffset;
+  let layerPosition = jitteredCenter + localPosition * stamp.radius;
   let clipPosition = vec2<f32>(
     layerPosition.x / brush.layerSize.x * 2.0 - 1.0,
     1.0 - layerPosition.y / brush.layerSize.y * 2.0
@@ -152,8 +144,8 @@ fn vertexMain(
   output.position = vec4<f32>(clipPosition, 0.0, 1.0);
   output.localPosition = localPosition;
   output.pressure = stamp.pressure;
-  output.seed = stamp.seed;
-  output.pointColor = jitteredLinearColor(stamp.seed, 0u);
+  let colorCopyIndex = select(0u, copyIndex, brush.options.y != 0u);
+  output.pointColor = jitteredLinearColor(stamp.seed, colorCopyIndex);
   return output;
 }
 
@@ -176,47 +168,13 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
   let pressureInfluence = clamp(brush.controls.w, 0.0, 1.0);
   let pressureAlpha = mix(1.0, clamp(input.pressure, 0.0, 1.0), pressureInfluence);
-  let alphaPerCopy = clamp(
+  let alpha = clamp(
     coverage * brush.controls.x * brush.baseHslAlpha.w * pressureAlpha * brush.controls.z,
     0.0,
     0.999999
   );
 
-  let count = max(1u, min(brush.options.x, MAX_COUNT));
-  let jitterPerCopy = brush.options.y != 0u;
-  let additiveBlend = brush.options.z != 0u;
-  let combinedAlpha = 1.0 - integerPower(1.0 - alphaPerCopy, count);
-
-  if (!jitterPerCopy) {
-    if (additiveBlend) {
-      return vec4<f32>(input.pointColor * alphaPerCopy * f32(count), combinedAlpha);
-    }
-    return vec4<f32>(input.pointColor * combinedAlpha, combinedAlpha);
-  }
-
-  if (additiveBlend) {
-    var additiveColor = vec3<f32>(0.0);
-    for (var copyIndex = 0u; copyIndex < MAX_COUNT; copyIndex = copyIndex + 1u) {
-      if (copyIndex >= count) {
-        break;
-      }
-      additiveColor = additiveColor + jitteredLinearColor(input.seed, copyIndex) * alphaPerCopy;
-    }
-    return vec4<f32>(additiveColor, combinedAlpha);
-  }
-
-  var accumulatedColor = vec3<f32>(0.0);
-  var accumulatedAlpha = 0.0;
-  for (var copyIndex = 0u; copyIndex < MAX_COUNT; copyIndex = copyIndex + 1u) {
-    if (copyIndex >= count) {
-      break;
-    }
-    let copyColor = jitteredLinearColor(input.seed, copyIndex);
-    accumulatedColor = copyColor * alphaPerCopy + accumulatedColor * (1.0 - alphaPerCopy);
-    accumulatedAlpha = alphaPerCopy + accumulatedAlpha * (1.0 - alphaPerCopy);
-  }
-
-  return vec4<f32>(accumulatedColor, accumulatedAlpha);
+  return vec4<f32>(input.pointColor * alpha, alpha);
 }
 `;
 

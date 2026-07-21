@@ -67,6 +67,8 @@ interface Stamp {
   radius: number;
   pressure: number;
   seed: number;
+  directionX: number;
+  directionY: number;
 }
 
 interface ActiveStroke {
@@ -84,7 +86,7 @@ interface DirtyRect {
 const LAYER_SIZE = 4096;
 const STAMP_STRIDE_BYTES = 32;
 const MAX_STAMPS_PER_BATCH = 65_536;
-const BRUSH_UNIFORM_BYTES = 80;
+const BRUSH_UNIFORM_BYTES = 96;
 const DISPLAY_UNIFORM_BYTES = 32;
 
 export const defaultBrushSettings: BrushSettings = {
@@ -404,10 +406,10 @@ export class BrushEngine {
     this.publishStats();
 
     const averageRadiusSquared = stamps.reduce((sum, stamp) => sum + stamp.radius * stamp.radius, 0) / stamps.length;
-    const estimatedCoveredFragments = Math.round(Math.PI * averageRadiusSquared * stamps.length);
-    const strategy = this.settings.jitterPerCopy
-      ? `1 quad/base stamp + loop esatto ×${this.settings.count} nel fragment shader`
-      : `count ${this.settings.count} collassato in 1 quad/base stamp`;
+    const estimatedCoveredFragments = Math.round(
+      Math.PI * averageRadiusSquared * stamps.length * this.settings.count,
+    );
+    const strategy = `1 draw instanziata · ${this.settings.count} copie fisiche GPU per stamp base`;
 
     return {
       baseStamps: stamps.length,
@@ -666,10 +668,12 @@ export class BrushEngine {
     floats[13] = this.settings.hardness;
     floats[14] = this.settings.blendIntensity;
     floats[15] = this.settings.pressureOpacity;
-    unsigned[16] = this.settings.count >>> 0;
-    unsigned[17] = this.settings.jitterPerCopy ? 1 : 0;
-    unsigned[18] = this.settings.blendMode === "additive" ? 1 : 0;
-    unsigned[19] = 0;
+    floats[16] = this.settings.positionJitterLinear;
+    floats[17] = this.settings.positionJitterLateral;
+    unsigned[20] = this.settings.count >>> 0;
+    unsigned[21] = this.settings.jitterPerCopy ? 1 : 0;
+    unsigned[22] = this.settings.blendMode === "additive" ? 1 : 0;
+    unsigned[23] = 0;
 
     this.device.queue.writeBuffer(this.brushUniformBuffer, 0, this.brushUniformUpload);
   }
@@ -761,60 +765,29 @@ export class BrushEngine {
     const pressureSizeFactor = 1 - this.settings.pressureSize
       + this.settings.pressureSize * Math.max(0.08, pressure);
     const radius = Math.max(0.5, this.settings.size * 0.5 * pressureSizeFactor);
+    const jitterReach = radius * (this.settings.positionJitterLinear + this.settings.positionJitterLateral);
     const seed = (Math.imul(this.seedSequence++, 0x9e3779b1) ^ 0xa511e9b3) >>> 0;
-    const jitteredPosition = this.applyPositionJitter(point, radius, directionX, directionY, seed);
 
     if (
-      jitteredPosition.x + radius < 0 ||
-      jitteredPosition.y + radius < 0 ||
-      jitteredPosition.x - radius >= LAYER_SIZE ||
-      jitteredPosition.y - radius >= LAYER_SIZE
+      point.x + radius + jitterReach < 0 ||
+      point.y + radius + jitterReach < 0 ||
+      point.x - radius - jitterReach >= LAYER_SIZE ||
+      point.y - radius - jitterReach >= LAYER_SIZE
     ) {
       return;
     }
 
     this.pendingStamps.push({
-      x: jitteredPosition.x,
-      y: jitteredPosition.y,
+      x: point.x,
+      y: point.y,
       radius,
       pressure,
       seed,
+      directionX,
+      directionY,
     });
     this.displayDirty = true;
     this.requestRender();
-  }
-
-  private applyPositionJitter(
-    point: LayerPoint,
-    radius: number,
-    directionX: number,
-    directionY: number,
-    seed: number,
-  ): { x: number; y: number } {
-    const linearAmount = this.settings.positionJitterLinear;
-    const lateralAmount = this.settings.positionJitterLateral;
-
-    if (linearAmount === 0 && lateralAmount === 0) {
-      return point;
-    }
-
-    const linearOffset = (this.random01(seed, 5) * 2 - 1) * radius * linearAmount;
-    const lateralOffset = (this.random01(seed, 6) * 2 - 1) * radius * lateralAmount;
-
-    return {
-      x: point.x + directionX * linearOffset - directionY * lateralOffset,
-      y: point.y + directionY * linearOffset + directionX * lateralOffset,
-    };
-  }
-
-  private random01(seed: number, salt: number): number {
-    let value = (seed ^ Math.imul(salt, 0x9e3779b9)) >>> 0;
-    value ^= value >>> 16;
-    value = Math.imul(value, 0x7feb352d) >>> 0;
-    value ^= value >>> 15;
-    value = Math.imul(value, 0x846ca68b) >>> 0;
-    value ^= value >>> 16;
-    return (value & 0x00ffffff) / 0x01000000;
   }
 
   private requestRender(): void {
@@ -892,7 +865,7 @@ export class BrushEngine {
         brushPass.setPipeline(this.settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline);
         brushPass.setBindGroup(0, this.brushBindGroup);
         brushPass.setScissorRect(dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height);
-        brushPass.draw(6, stamps.length, 0, 0);
+        brushPass.draw(6, stamps.length * this.settings.count, 0, 0);
       }
       brushPass.end();
     }
@@ -933,13 +906,14 @@ export class BrushEngine {
       this.instanceUploadF32[base + 3] = stamp.pressure;
       this.instanceUploadU32[base + 4] = stamp.seed;
       this.instanceUploadU32[base + 5] = 0;
-      this.instanceUploadU32[base + 6] = 0;
-      this.instanceUploadU32[base + 7] = 0;
+      this.instanceUploadF32[base + 6] = stamp.directionX;
+      this.instanceUploadF32[base + 7] = stamp.directionY;
 
-      minimumX = Math.min(minimumX, stamp.x - stamp.radius - 2);
-      minimumY = Math.min(minimumY, stamp.y - stamp.radius - 2);
-      maximumX = Math.max(maximumX, stamp.x + stamp.radius + 2);
-      maximumY = Math.max(maximumY, stamp.y + stamp.radius + 2);
+      const jitterReach = stamp.radius * (this.settings.positionJitterLinear + this.settings.positionJitterLateral);
+      minimumX = Math.min(minimumX, stamp.x - stamp.radius - jitterReach - 2);
+      minimumY = Math.min(minimumY, stamp.y - stamp.radius - jitterReach - 2);
+      maximumX = Math.max(maximumX, stamp.x + stamp.radius + jitterReach + 2);
+      maximumY = Math.max(maximumY, stamp.y + stamp.radius + jitterReach + 2);
     }
 
     const x = clamp(Math.floor(minimumX), 0, LAYER_SIZE - 1);
@@ -972,6 +946,8 @@ export class BrushEngine {
         radius,
         pressure,
         seed: (Math.imul(this.seedSequence++, 0x9e3779b1) ^ 0xa511e9b3) >>> 0,
+        directionX: -Math.sin(angle),
+        directionY: Math.cos(angle * 1.037),
       };
     }
 
