@@ -276,7 +276,7 @@ L'area scissor stimata diminuisce di circa il `36,6%`, quindi il limite direzion
 
 Decisione esplicita dell'utente: mantenere il dirty rect direzionale. È conservativo, non ha prodotto regressioni visive, aggiunge soltanto circa `3 ms` di packing CPU sull'intero replay e potrà essere utile come base per il futuro binning a tile. Non presentarlo come un miglioramento FPS dimostrato e non rimuoverlo salvo clipping o regressione riproducibile.
 
-## Passo 8: pipeline vertex specializzata per `Count 16` — in prova
+## Passo 8: pipeline vertex specializzata per `Count 16` — bocciato e rimosso
 
 Il benchmark canonico usa sempre `Count 16`. Nel vertex shader, ogni istanza deve ricavare `stampIndex` e `copyIndex` dividendo e calcolando il modulo per il numero di copie. Quando il divisore arriva da una uniform, il compilatore GPU non può necessariamente sostituire queste operazioni con il percorso più economico disponibile per la costante `16`.
 
@@ -292,4 +292,18 @@ L'intervento non cambia:
 
 Per `Count 16`, sia il vecchio clamp della uniform sia l'override producono esattamente `16`; quindi `stampIndex`, `copyIndex` e tutti i valori successivi restano uguali. L'obiettivo è soltanto permettere al compilatore della GPU Apple di trattare divisione e modulo come operazioni a divisore costante. Il guadagno non è garantito e va deciso soltanto con la run iPhone.
 
-La telemetria salva `brushPipelineStrategy: "count16-override"` per il benchmark canonico e `"generic"` per gli altri Count. La prima run valida attesa è la `#20` e va confrontata direttamente con la `#19`: stesso fingerprint, preset, iPhone, canvas, stamp, copie, shader e dirty rect. Valutare soprattutto FPS medi, intervallo p95, frame oltre 20 ms, coda GPU finale e sensazione di inseguimento del dito. Non combinare questo test con tile, binning o altre specializzazioni.
+La run `#20`, identificata da `brushPipelineStrategy: "count16-override"`, è direttamente confrontabile con la `#19`: stesso fingerprint `18982412`, preset, iPhone, GPU Apple, canvas `860×850`, stamp, copie, shader e dirty rect.
+
+| Metrica | Run #19 pipeline generica | Run #20 pipeline Count 16 |
+|---|---:|---:|
+| FPS medi | `56,19` | `55,89` |
+| intervallo frame p95 | `28 ms` | `28 ms` |
+| intervallo frame massimo | `67 ms` | `66 ms` |
+| frame oltre 20 ms | `37` | `36` |
+| coda GPU finale | `282 ms` | `288 ms` |
+| input delay p95 | `17 ms` | `18 ms` |
+| fine presentazione | `7132 ms` | `7138 ms` |
+
+Gli FPS diminuiscono di circa lo `0,5%`, il p95 resta invariato e coda GPU, ritardo input e fine presentazione peggiorano di poco. Le differenze rientrano nella variabilità normale, ma non esiste alcun guadagno che giustifichi quattro pipeline al posto di due. Il costo dominante resta il raster e il blending delle `193712` copie fisiche, non la divisione e il modulo del vertex shader.
+
+Decisione: passo 8 bocciato. Override WGSL, pipeline Count 16, selezione automatica e relativo marker di telemetria sono stati rimossi. Il motore è tornato esattamente alla pipeline generica della run `#19`; non reintrodurre questa specializzazione senza nuovi dati che dimostrino un costo vertex rilevante.

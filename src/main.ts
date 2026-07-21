@@ -111,7 +111,6 @@ interface BenchmarkRun {
     fragmentCoverageStrategy: "generic-smoothstep";
     colorSeedStrategy: "reuse-position-copy-seed";
     dirtyRectStrategy: "directional-jitter-bounds";
-    brushPipelineStrategy: "generic" | "count16-override";
     performanceTelemetryRevision: 2;
   };
 }

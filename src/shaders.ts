@@ -1,6 +1,5 @@
 export const brushShader = /* wgsl */ `
 const MAX_COUNT: u32 = 24u;
-override SPECIALIZED_COPY_COUNT: u32 = 0u;
 
 struct BrushUniforms {
   layerSize: vec2<f32>,
@@ -119,11 +118,7 @@ fn vertexMain(
     vec2<f32>( 1.0,  1.0)
   );
 
-  let copyCount = select(
-    max(1u, min(brush.options.x, MAX_COUNT)),
-    SPECIALIZED_COPY_COUNT,
-    SPECIALIZED_COPY_COUNT > 0u
-  );
+  let copyCount = max(1u, min(brush.options.x, MAX_COUNT));
   let stampIndex = instanceIndex / copyCount;
   let copyIndex = instanceIndex % copyCount;
   let stamp = stamps[stampIndex];
