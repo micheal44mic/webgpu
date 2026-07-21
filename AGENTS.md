@@ -63,3 +63,18 @@ Eseguire il Play sullo stesso iPhone e confrontare con la run `#1`. L'intervento
 Non introdurre ancora stroke buffer, canvas software a tile, binning compute o una riscrittura Metal: vanno valutati soltanto dopo il confronto di questo singolo passo.
 
 Aggiornare questo file dopo ogni passo misurato, annotando la nuova run, il confronto con la baseline e la decisione di mantenere o annullare l'intervento. Non sostituire il benchmark canonico o i suoi parametri senza una richiesta esplicita dell'utente.
+
+## Misura preliminare del passo 1
+
+La run `#4` è la prima eseguita con `stampGeometry: "circumscribed-12-gon"`. Le run `#1`, `#2` e `#3` usano ancora il quad. Tutte e quattro hanno lo stesso fingerprint della traccia, gli stessi parametri, lo stesso iPhone, canvas e formato layer.
+
+| Metrica | Run #1 quad | Mediana run #1–#3 quad | Run #4 dodecagono |
+|---|---:|---:|---:|
+| FPS medi | circa `55,77` | circa `54,76` | `53,92` |
+| intervallo frame p95 | `29 ms` | `32 ms` | `31 ms` |
+| intervallo frame massimo | `67 ms` | `67 ms` | `117 ms` |
+| frame oltre 20 ms | `35` | `41` | `42` |
+| coda GPU finale | `310 ms` | `386 ms` | `378 ms` |
+| input delay p95 | `18 ms` | `21 ms` | `25 ms` |
+
+La run #4 è peggiore della baseline formale #1. Rispetto alla mediana delle tre run quad, i risultati sono misti e non mostrano un miglioramento significativo: coda GPU e p95 migliorano appena, mentre FPS medi, frame lenti e hitch massimo peggiorano. Non decidere ancora sulla base di una sola run ottimizzata: raccogliere le run #5 e #6 con il dodecagono e confrontare la mediana #4–#6 con la mediana #1–#3. Se non emerge un guadagno netto, ripristinare il quad.
