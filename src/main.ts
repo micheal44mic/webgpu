@@ -100,7 +100,7 @@ interface BenchmarkRun {
     layerMemoryMiB: number;
     gpuLabel: string;
     timestampQueriesSupported: boolean;
-    stampGeometry: "circumscribed-12-gon";
+    stampGeometry: "quad";
     stampVerticesPerCopy: number;
   };
 }

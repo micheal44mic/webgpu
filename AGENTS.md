@@ -49,7 +49,7 @@ Restano invariati:
 - blending e formato del layer
 - timing e campioni del replay
 
-Le nuove run salvano `stampGeometry: "circumscribed-12-gon"`, `stampVerticesPerCopy: 36`, `averageRenderFps` e mostrano FPS medi e frame oltre 20 ms nell'app.
+Le run sperimentali salvano `stampGeometry: "circumscribed-12-gon"`, `stampVerticesPerCopy: 36`, `averageRenderFps` e mostrano FPS medi e frame oltre 20 ms nell'app.
 
 ## Criteri per decidere se tenere il passo 1
 
@@ -60,21 +60,23 @@ Eseguire il Play sullo stesso iPhone e confrontare con la run `#1`. L'intervento
 3. migliorano FPS medi e intervallo frame p95;
 4. `Count 16`, size 750, spacing 1% e tutti gli altri parametri restano identici.
 
-Non introdurre ancora stroke buffer, canvas software a tile, binning compute o una riscrittura Metal: vanno valutati soltanto dopo il confronto di questo singolo passo.
+Non introdurre più interventi contemporaneamente: ogni nuovo passo va isolato e confrontato con il quad usando lo stesso replay.
 
 Aggiornare questo file dopo ogni passo misurato, annotando la nuova run, il confronto con la baseline e la decisione di mantenere o annullare l'intervento. Non sostituire il benchmark canonico o i suoi parametri senza una richiesta esplicita dell'utente.
 
-## Misura preliminare del passo 1
+## Risultato e decisione del passo 1
 
-La run `#4` è la prima eseguita con `stampGeometry: "circumscribed-12-gon"`. Le run `#1`, `#2` e `#3` usano ancora il quad. Tutte e quattro hanno lo stesso fingerprint della traccia, gli stessi parametri, lo stesso iPhone, canvas e formato layer.
+Le run `#4` e `#5` usano `stampGeometry: "circumscribed-12-gon"`. Le run `#1`, `#2` e `#3` usano il quad. Tutte hanno lo stesso fingerprint della traccia, gli stessi parametri, lo stesso iPhone, canvas e formato layer.
 
-| Metrica | Run #1 quad | Mediana run #1–#3 quad | Run #4 dodecagono |
+| Metrica | Mediana run #1–#3 quad | Run #4 dodecagono | Run #5 dodecagono |
 |---|---:|---:|---:|
-| FPS medi | circa `55,77` | circa `54,76` | `53,92` |
-| intervallo frame p95 | `29 ms` | `32 ms` | `31 ms` |
-| intervallo frame massimo | `67 ms` | `67 ms` | `117 ms` |
-| frame oltre 20 ms | `35` | `41` | `42` |
-| coda GPU finale | `310 ms` | `386 ms` | `378 ms` |
-| input delay p95 | `18 ms` | `21 ms` | `25 ms` |
+| FPS medi | circa `54,76` | `53,92` | `54,15` |
+| intervallo frame p95 | `32 ms` | `31 ms` | `33 ms` |
+| intervallo frame massimo | `67 ms` | `117 ms` | `66 ms` |
+| frame oltre 20 ms | `41` | `42` | `40` |
+| coda GPU finale | `386 ms` | `378 ms` | `423 ms` |
+| input delay p95 | `21 ms` | `25 ms` | `24 ms` |
 
-La run #4 è peggiore della baseline formale #1. Rispetto alla mediana delle tre run quad, i risultati sono misti e non mostrano un miglioramento significativo: coda GPU e p95 migliorano appena, mentre FPS medi, frame lenti e hitch massimo peggiorano. Non decidere ancora sulla base di una sola run ottimizzata: raccogliere le run #5 e #6 con il dodecagono e confrontare la mediana #4–#6 con la mediana #1–#3. Se non emerge un guadagno netto, ripristinare il quad.
+Il dodecagono non produce un miglioramento misurabile: la media delle run #4 e #5 ha meno FPS, più coda GPU e più ritardo input della mediana quad. L'utente riferisce inoltre che il tratto segue il dito visibilmente peggio. Non serve una run #6: il passo 1 è rifiutato.
+
+Il motore è stato quindi riportato al quad originale da 6 vertici per copia. La telemetria aggiunta durante l'esperimento (`averageRenderFps`, frame oltre 20 ms e identificazione `stampGeometry`) resta disponibile. Non reintrodurre il dodecagono: l'aumento da 6 a 36 vertici e i calcoli trigonometrici per vertice annullano il risparmio teorico dei frammenti su iPhone.

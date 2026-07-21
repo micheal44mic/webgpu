@@ -51,7 +51,7 @@ export interface BenchmarkResult {
 }
 
 export interface StrokePerformanceProfile {
-  stampGeometry: "circumscribed-12-gon";
+  stampGeometry: "quad";
   stampVerticesPerCopy: number;
   baseStamps: number;
   physicalCopies: number;
@@ -139,9 +139,8 @@ interface MutableStrokePerformanceProfile {
 const LAYER_SIZE = 4096;
 const STAMP_STRIDE_BYTES = 32;
 const MAX_STAMPS_PER_BATCH = 65_536;
-const STAMP_SEGMENTS = 12;
-const STAMP_VERTICES_PER_COPY = STAMP_SEGMENTS * 3;
-const STAMP_GEOMETRY = "circumscribed-12-gon" as const;
+const STAMP_VERTICES_PER_COPY = 6;
+const STAMP_GEOMETRY = "quad" as const;
 const BRUSH_UNIFORM_BYTES = 96;
 const DISPLAY_UNIFORM_BYTES = 32;
 
@@ -495,7 +494,7 @@ export class BrushEngine {
     const strategy = [
       "1 draw instanziata",
       `${this.settings.count} copie fisiche GPU per stamp base`,
-      "geometria dodecagonale circoscritta",
+      "geometria quad",
     ].join(" · ");
 
     return {

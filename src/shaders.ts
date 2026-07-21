@@ -1,7 +1,5 @@
 export const brushShader = /* wgsl */ `
 const MAX_COUNT: u32 = 24u;
-const STAMP_SEGMENTS: u32 = 12u;
-const PI: f32 = 3.141592653589793;
 
 struct BrushUniforms {
   layerSize: vec2<f32>,
@@ -114,22 +112,20 @@ fn vertexMain(
   @builtin(vertex_index) vertexIndex: u32,
   @builtin(instance_index) instanceIndex: u32
 ) -> VertexOutput {
+  let corners = array<vec2<f32>, 6>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>( 1.0, -1.0),
+    vec2<f32>(-1.0,  1.0),
+    vec2<f32>(-1.0,  1.0),
+    vec2<f32>( 1.0, -1.0),
+    vec2<f32>( 1.0,  1.0)
+  );
+
   let copyCount = max(1u, min(brush.options.x, MAX_COUNT));
   let stampIndex = instanceIndex / copyCount;
   let copyIndex = instanceIndex % copyCount;
   let stamp = stamps[stampIndex];
-  let triangleIndex = vertexIndex / 3u;
-  let triangleCorner = vertexIndex % 3u;
-  let perimeterIndex = select(triangleIndex, triangleIndex + 1u, triangleCorner == 2u);
-  let perimeterAngle = (f32(perimeterIndex) / f32(STAMP_SEGMENTS)) * 2.0 * PI;
-
-  // The dodecagon encloses every fragment that the original square could shade.
-  // A conservative two-pixel local margin keeps fwidth-based antialiasing away
-  // from the polygon boundary; fragmentMain still clips to the original square.
-  let antialiasMargin = 1.0 + 2.0 / max(stamp.radius, 0.5);
-  let polygonRadius = antialiasMargin / cos(PI / f32(STAMP_SEGMENTS));
-  let perimeterPosition = vec2<f32>(cos(perimeterAngle), sin(perimeterAngle)) * polygonRadius;
-  let localPosition = select(perimeterPosition, vec2<f32>(0.0), triangleCorner == 0u);
+  let localPosition = corners[vertexIndex];
   let directionLength = length(stamp.direction);
   let direction = select(vec2<f32>(1.0, 0.0), stamp.direction / directionLength, directionLength > 0.0001);
   let copySeed = hash32(stamp.seed ^ (copyIndex * 0x85ebca6bu));
@@ -158,10 +154,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let radiusSquared = dot(input.localPosition, input.localPosition);
   let antialiasWidth = max(fwidth(radiusSquared), 0.00001);
 
-  // Preserve the exact support of the previous [-1, 1] square geometry while
-  // avoiding fragment work in its corners.
-  let outsideOriginalQuad = any(abs(input.localPosition) > vec2<f32>(1.0));
-  if (outsideOriginalQuad || radiusSquared > 1.0 + antialiasWidth) {
+  if (radiusSquared > 1.0 + antialiasWidth) {
     discard;
   }
 
