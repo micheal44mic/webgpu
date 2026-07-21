@@ -80,3 +80,25 @@ Le run `#4` e `#5` usano `stampGeometry: "circumscribed-12-gon"`. Le run `#1`, `
 Il dodecagono non produce un miglioramento misurabile: la media delle run #4 e #5 ha meno FPS, più coda GPU e più ritardo input della mediana quad. L'utente riferisce inoltre che il tratto segue il dito visibilmente peggio. Non serve una run #6: il passo 1 è rifiutato.
 
 Il motore è stato quindi riportato al quad originale da 6 vertici per copia. La telemetria aggiunta durante l'esperimento (`averageRenderFps`, frame oltre 20 ms e identificazione `stampGeometry`) resta disponibile. Non reintrodurre il dodecagono: l'aumento da 6 a 36 vertici e i calcoli trigonometrici per vertice annullano il risparmio teorico dei frammenti su iPhone.
+
+Il rollback quad è stato pubblicato come versione Sites `16` prima di iniziare l'esperimento successivo.
+
+## Passo 2: backpressure della coda GPU
+
+Il render interattivo ora ammette al massimo `2` submission GPU in volo. Se entrambi gli slot sono occupati, gli stamp continuano a essere generati in FIFO dentro `pendingStamps`, ma non vengono rimossi dalla coda e non viene creato un nuovo command buffer. Al completamento di una submission, `GPUQueue.onSubmittedWorkDone()` libera lo slot e pianifica il prossimo frame se esiste lavoro pendente.
+
+Non usare `await` dentro `renderFrame`: il limite a 2 serve a mantenere una submission pronta mentre la precedente viene completata. Il benchmark GPU sintetico è serializzato e passa dallo stesso tracker, quindi non può aggirare il limite.
+
+Questo passo non cambia shader, quad, Count, spacing, jitter, seed o ordine degli stamp. È valido per tutte le size; il beneficio dipende dalla saturazione della GPU. Con impostazioni fisse il risultato deve restare visivamente invariato, ma i confini dei render pass possono cambiare e non va promessa identità byte-per-byte su `rgba8unorm`. Se i parametri del pennello vengono modificati mentre esiste backlog, gli stamp ancora pending usano gli uniform più recenti: il Play canonico non è coinvolto perché mantiene il preset fisso.
+
+Nuova telemetria salvata nella run:
+
+- `submissionLimit`: limite configurato, attualmente `2`;
+- `peakInFlightSubmissions`: massimo numero osservato in volo;
+- `backpressureWaits`: episodi distinti di saturazione, non durata dell'attesa;
+- `maxPendingStamps`: massimo backlog di stamp base, non copie fisiche;
+- `submissionCompletionP50/P95/MaxMs`: tempo dalla submission al completamento del relativo prefisso di coda; include eventuale lavoro precedente e il ritardo del callback JS, quindi non è il tempo GPU isolato del command buffer.
+
+La prossima run iPhone dovrebbe essere la `#6`. Confrontarla soprattutto con la mediana quad `#1–#3`, usando lo stesso fingerprint e preset. Il passo 2 è valido solo se il tratto segue meglio il dito e diminuiscono coda GPU e ritardi senza peggiorare chiaramente scatti, FPS o risultato visivo. Un calo degli FPS di submission non basta da solo per rifiutarlo: controllare anche backlog, completion p95 e prova a occhio.
+
+Non implementare insieme il prossimo candidato. Se il passo 2 fallisce, fare rollback prima di provare il quad identico come `triangle-strip` da 4 vertici. Il buffer temporaneo trasparente non è prioritario: il motore fonde già tutte le copie del frame in un solo render pass e una texture intermedia aggiungerebbe passaggi, memoria e possibili differenze di quantizzazione.
