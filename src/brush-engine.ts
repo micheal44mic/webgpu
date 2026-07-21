@@ -139,7 +139,7 @@ interface MutableStrokePerformanceProfile {
 const LAYER_SIZE = 4096;
 const STAMP_STRIDE_BYTES = 32;
 const MAX_STAMPS_PER_BATCH = 65_536;
-const STAMP_VERTICES_PER_COPY = 6;
+const STAMP_VERTICES_PER_COPY = 4;
 const STAMP_GEOMETRY = "quad" as const;
 const BRUSH_UNIFORM_BYTES = 96;
 const DISPLAY_UNIFORM_BYTES = 32;
@@ -494,7 +494,7 @@ export class BrushEngine {
     const strategy = [
       "1 draw instanziata",
       `${this.settings.count} copie fisiche GPU per stamp base`,
-      "geometria quad",
+      "geometria quad triangle-strip (4 vertici)",
     ].join(" · ");
 
     return {
@@ -780,7 +780,7 @@ export class BrushEngine {
           },
         ],
       },
-      primitive: { topology: "triangle-list" },
+      primitive: { topology: "triangle-strip" },
     });
 
     const additivePipeline = this.device.createRenderPipeline({
@@ -811,7 +811,7 @@ export class BrushEngine {
           },
         ],
       },
-      primitive: { topology: "triangle-list" },
+      primitive: { topology: "triangle-strip" },
     });
 
     const validationError = await this.device.popErrorScope();
