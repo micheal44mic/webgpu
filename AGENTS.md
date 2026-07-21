@@ -463,7 +463,7 @@ Il confronto decisivo con la #19 resta però negativo per la fluidità: FPS `-16
 
 Decisione: la granularità `1024` è nettamente migliore della `512` ed è il riferimento per eventuali studi futuri sul tiled, ma la presente architettura `texture_2d_array` con un render pass per tile attiva è bocciata come sostituto della baseline monolitica #19. Non presentare la minore coda finale come vittoria complessiva: il requisito principale è seguire il dito, e tutte le metriche di frame pacing rimangono significativamente peggiori.
 
-## Passo 13: attachment scratch sulla dirty rectangle — in attesa della run iPhone
+## Passo 13: attachment scratch sulla dirty rectangle — bocciato e rimosso
 
 Le run #23 e #25 mostrano che la riduzione dell'attachment può essere utile, ma che pass per tile, duplicazione delle copie e gutter distruggono il frame pacing. Questo passo elimina insieme quei tre costi senza tornare al render pass `4096×4096` della #19.
 
@@ -505,8 +505,33 @@ TypeScript e build Vite sono riusciti. Su GPU NVIDIA Ampere la pagina ha inizial
 
 Lo smoke sintetico desktop predefinito da `2000` stamp e `48000` copie ha misurato `2,80 ms` CPU submit e `72,60 ms` GPU completion, con scratch `3456×3456`. È peggiore dei `47,70 ms` locali della #19 e dei `48,10 ms` della #25, ma il generatore sintetico distribuisce deliberatamente l'intero batch a spirale su quasi tutto il documento: misura il caso sfavorevole in cui copie e scratch grande si sommano, non il batching temporale della traccia iPhone. Il dato non autorizza a dichiarare un miglioramento e rende essenziale leggere nella prossima run sia l'area scratch cumulativa sia i tempi reali.
 
-### Protocollo della prossima run
+### Protocollo previsto
 
 La prossima run valida, attesa come `#26`, va confrontata direttamente con la #19 e non aggregata con #23/#25: stesso fingerprint `18982412`, `1583` punti, canvas `860×850`, size `750`, Count `16`, spacing `1%`, blend `4×`, `12107` stamp base, `193712` copie e `rgba8unorm`. Prima controllare l'identità visiva; poi confrontare FPS medi, intervallo p95/massimo, frame oltre `20 ms`, input delay, coda GPU e fine presentazione. Per capire il risultato architetturale registrare anche allocazioni, scratch massimo, `requestedScratchPixels`, `estimatedScratchAttachmentPixels` e `scratchCopiedPixels`.
 
 Questa variante può raggiungere l'obiettivo soltanto se il risparmio di load/store dell'attachment rispetto a `4096×4096` supera il costo delle due copie. Non promettere `60 FPS` prima della misura iPhone e non aggiungere altre modifiche alla stessa run.
+
+### Risultato e decisione: run #27
+
+La `#26` riportava ancora `layerStorageStrategy: "tiled-2d-array"`, tile da `1024 px` e telemetria v3: era quindi un'altra misura della build tiled e non misurava questo passo. La `#27` è la prima run valida dello scratch. È pienamente confrontabile con la `#19`: stesso fingerprint `18982412`, `1583` punti, preset, iPhone, GPU Apple, canvas `860×850`, formato `rgba8unorm`, `12107` stamp base e `193712` copie fisiche.
+
+| Metrica | Run #19 monolitica diretta | Run #27 dirty scratch |
+|---|---:|---:|
+| FPS medi | `56,19` | `54,39` |
+| frame renderizzati | `386` | `374` |
+| intervallo frame p95 | `28 ms` | `31 ms` |
+| intervallo frame massimo | `67 ms` | `67 ms` |
+| frame oltre `20 ms` | `37` (~`9,6%`) | `41` (~`11,0%`) |
+| batch massimo | `90` stamp | `112` stamp |
+| coda GPU finale | `282 ms` | `394 ms` |
+| input delay p95 | `17 ms` | `23 ms` |
+| fine presentazione | `7132 ms` | `7245 ms` |
+| encoding brush cumulativo | `20 ms` | `28 ms` |
+
+La variante peggiora tutte le metriche interattive principali: FPS `-3,2%`, p95 `+3 ms`, quattro frame lenti in più, input delay p95 `+6 ms` e coda finale `+112 ms`. La CPU frame resta a `1 ms` p95, quindi la regressione non deriva da lavoro JavaScript sul percorso critico; l'encoding brush cumulativo cresce comunque del `40%` per le operazioni aggiuntive.
+
+La telemetria spiega il risultato. In `374` batch sono stati eseguiti `374` pass scratch, `374` copy-in e `374` copy-out, con `17` riallocazioni. Le dirty rectangle richieste sommano `2.460.844.630` pixel; la crescita monotona e l'arrotondamento portano gli attachment scratch realmente usati a `3.806.035.968` pixel. Il picco è `3328×3456`, cioè `11.501.568` pixel, il `68,6%` del layer intero e `43,875 MiB` in `rgba8unorm`. Le due direzioni di copia muovono complessivamente `4.921.689.260` pixel.
+
+Come proxy, `374` pass diretti sul layer `4096×4096` equivalgono a `6.274.678.784` pixel di attachment. Lo scratch ne evita circa `2,469` miliardi, ma copia circa `4,922` miliardi di pixel: quasi due pixel copiati per ogni pixel di attachment evitato. Su questa implementazione Safari/Metal, il pass monolitico con scissor probabilmente beneficia già della gestione a tile interna; copie, transizioni e attachment scratch aggiuntivo costano più del risparmio teorico di load/store.
+
+Decisione: passo 13 bocciato, senza una seconda run e senza tentare bucket più piccoli. Texture scratch, trasformazione delle coordinate, copy-in/copy-out, telemetria v4 e indicatori UI sono stati rimossi. Il runtime è tornato esattamente al percorso monolitico del commit `ad37505`, riferimento della run `#19`: un solo render pass diretto sul layer persistente, quad strip da quattro vertici, coverage generica, riuso di `copySeed`, dirty rectangle direzionale e telemetria v2. Non reintrodurre tiled per-pass o dirty scratch senza un'architettura che eviti sia la moltiplicazione dei render pass sia il copyback per batch.

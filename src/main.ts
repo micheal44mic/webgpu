@@ -111,14 +111,7 @@ interface BenchmarkRun {
     fragmentCoverageStrategy: "generic-smoothstep";
     colorSeedStrategy: "reuse-position-copy-seed";
     dirtyRectStrategy: "directional-jitter-bounds";
-    layerStorageStrategy: "monolithic-2d";
-    brushAttachmentStrategy: "dirty-rect-scratch-copyback";
-    scratchSizingStrategy: "grow-only-128px-buckets";
-    scratchSizeQuantumPx: number;
-    scratchWidthPx: number;
-    scratchHeightPx: number;
-    scratchMemoryMiB: number;
-    performanceTelemetryRevision: 4;
+    performanceTelemetryRevision: 2;
   };
 }
 
@@ -272,7 +265,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     hardwareConcurrency: navigator.hardwareConcurrency || null,
     deviceMemoryGiB: navigatorWithMetrics.deviceMemory ?? null,
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
-    performanceTelemetryRevision: 4,
+    performanceTelemetryRevision: 2,
     ...engineEnvironment,
   };
 }
@@ -540,10 +533,7 @@ function updateStats(stats: EngineStats): void {
   element<HTMLElement>("cpuStat").textContent = `${stats.lastCpuFrameMs.toFixed(2)} ms`;
   element<HTMLElement>("stampStat").textContent = formatInteger(stats.totalBaseStamps);
   element<HTMLElement>("avoidedStat").textContent = formatInteger(stats.avoidedLogicalDraws);
-  element<HTMLElement>("memoryStat").textContent = `${stats.layerMemoryMiB.toFixed(1)} MiB`;
-  element<HTMLElement>("scratchStat").textContent = stats.scratchWidthPx > 0
-    ? `${formatInteger(stats.scratchWidthPx)}×${formatInteger(stats.scratchHeightPx)} · ${stats.scratchMemoryMiB.toFixed(1)} MiB`
-    : "non allocato";
+  element<HTMLElement>("memoryStat").textContent = `${stats.layerMemoryMiB} MiB`;
   element<HTMLElement>("gpuStat").textContent = stats.gpuLabel;
 }
 
@@ -721,9 +711,6 @@ async function replayHumanStroke(): Promise<void> {
       `submit p95 ${performanceProfile.submitImmediateP95Ms.toFixed(2)} ms`,
       `FPS medi ${performanceProfile.averageRenderFps.toFixed(1)}`,
       `${formatInteger(performanceProfile.delayedRenderFrames)} frame >20 ms`,
-      `scratch max ${formatInteger(performanceProfile.peakScratchWidthPx)}×${formatInteger(performanceProfile.peakScratchHeightPx)}`,
-      `${formatInteger(performanceProfile.scratchBrushRenderPasses)} pass scratch`,
-      `${(performanceProfile.scratchCopiedPixels / 1_000_000).toFixed(1)} Mpx copiati`,
       `presentazione ${playback.endToPresentedMs.toFixed(2)} ms`,
       runId > 0 ? `run #${runId} salvata` : "run salvata",
     ].join(" · ");

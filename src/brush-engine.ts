@@ -37,9 +37,6 @@ export interface EngineStats {
   totalBaseStamps: number;
   avoidedLogicalDraws: number;
   layerMemoryMiB: number;
-  scratchMemoryMiB: number;
-  scratchWidthPx: number;
-  scratchHeightPx: number;
   gpuLabel: string;
   layerFormat: LayerFormat;
 }
@@ -59,22 +56,6 @@ export interface StrokePerformanceProfile {
   fragmentCoverageStrategy: "generic-smoothstep";
   colorSeedStrategy: "reuse-position-copy-seed";
   dirtyRectStrategy: "directional-jitter-bounds";
-  layerStorageStrategy: "monolithic-2d";
-  brushAttachmentStrategy: "dirty-rect-scratch-copyback";
-  scratchSizingStrategy: "grow-only-128px-buckets";
-  scratchSizeQuantumPx: number;
-  scratchTextureAllocations: number;
-  scratchBrushRenderPasses: number;
-  layerClearRenderPasses: number;
-  scratchCopyInOperations: number;
-  scratchCopyOutOperations: number;
-  scratchCopiedPixels: number;
-  requestedScratchPixels: number;
-  estimatedScratchAttachmentPixels: number;
-  peakScratchWidthPx: number;
-  peakScratchHeightPx: number;
-  peakScratchAttachmentPixels: number;
-  scratchAllocationMs: number;
   baseStamps: number;
   physicalCopies: number;
   renderFrames: number;
@@ -150,17 +131,6 @@ interface SubmitTiming {
   displayEncodingMs: number;
   commandSubmitMs: number;
   scissorPixels: number;
-  scratchTextureAllocations: number;
-  scratchBrushRenderPasses: number;
-  layerClearRenderPasses: number;
-  scratchCopyInOperations: number;
-  scratchCopyOutOperations: number;
-  scratchCopiedPixels: number;
-  requestedScratchPixels: number;
-  scratchAttachmentPixels: number;
-  scratchWidthPx: number;
-  scratchHeightPx: number;
-  scratchAllocationMs: number;
 }
 
 interface RenderFrameTiming {
@@ -177,18 +147,6 @@ interface MutableStrokePerformanceProfile {
   brushBatches: number;
   largestBatchStamps: number;
   estimatedScissorPixels: number;
-  scratchTextureAllocations: number;
-  scratchBrushRenderPasses: number;
-  layerClearRenderPasses: number;
-  scratchCopyInOperations: number;
-  scratchCopyOutOperations: number;
-  scratchCopiedPixels: number;
-  requestedScratchPixels: number;
-  estimatedScratchAttachmentPixels: number;
-  peakScratchWidthPx: number;
-  peakScratchHeightPx: number;
-  peakScratchAttachmentPixels: number;
-  scratchAllocationMs: number;
   stampGenerationMs: number;
   stampPackingMs: number;
   instanceUploadMs: number;
@@ -206,8 +164,6 @@ interface MutableStrokePerformanceProfile {
 }
 
 const LAYER_SIZE = 4096;
-const SCRATCH_SIZE_QUANTUM = 128;
-const SCRATCH_UNIFORM_BYTES = 16;
 const STAMP_STRIDE_BYTES = 32;
 const MAX_STAMPS_PER_BATCH = 65_536;
 const STAMP_VERTICES_PER_COPY = 4;
@@ -215,9 +171,6 @@ const STAMP_GEOMETRY = "quad" as const;
 const FRAGMENT_COVERAGE_STRATEGY = "generic-smoothstep" as const;
 const COLOR_SEED_STRATEGY = "reuse-position-copy-seed" as const;
 const DIRTY_RECT_STRATEGY = "directional-jitter-bounds" as const;
-const LAYER_STORAGE_STRATEGY = "monolithic-2d" as const;
-const BRUSH_ATTACHMENT_STRATEGY = "dirty-rect-scratch-copyback" as const;
-const SCRATCH_SIZING_STRATEGY = "grow-only-128px-buckets" as const;
 const BRUSH_UNIFORM_BYTES = 96;
 const DISPLAY_UNIFORM_BYTES = 32;
 
@@ -275,14 +228,8 @@ export class BrushEngine {
   private layerFormat: LayerFormat = "rgba8unorm";
   private layerTexture!: GPUTexture;
   private layerView!: GPUTextureView;
-  private scratchTexture: GPUTexture | null = null;
-  private scratchView: GPUTextureView | null = null;
-  private scratchWidth = 0;
-  private scratchHeight = 0;
-  private scratchResetRequested = false;
 
   private brushUniformBuffer!: GPUBuffer;
-  private scratchUniformBuffer!: GPUBuffer;
   private displayUniformBuffer!: GPUBuffer;
   private instanceBuffer!: GPUBuffer;
   private sampler!: GPUSampler;
@@ -302,7 +249,6 @@ export class BrushEngine {
   private readonly instanceUploadF32 = new Float32Array(this.instanceUpload);
   private readonly instanceUploadU32 = new Uint32Array(this.instanceUpload);
   private readonly brushUniformUpload = new ArrayBuffer(BRUSH_UNIFORM_BYTES);
-  private readonly scratchUniformUpload = new Float32Array(SCRATCH_UNIFORM_BYTES / 4);
   private readonly displayUniformUpload = new Float32Array(DISPLAY_UNIFORM_BYTES / 4);
 
   private settings: BrushSettings = { ...defaultBrushSettings };
@@ -350,6 +296,7 @@ export class BrushEngine {
         `La GPU supporta texture fino a ${adapter.limits.maxTextureDimension2D}px, meno dei ${LAYER_SIZE}px richiesti.`,
       );
     }
+
     this.device = await adapter.requestDevice();
     this.device.lost.then((info) => {
       const reason = info.message || info.reason;
@@ -536,7 +483,6 @@ export class BrushEngine {
   clear(): void {
     this.pendingStamps.length = 0;
     this.activeStroke = null;
-    this.scratchResetRequested = true;
     this.clearRequested = true;
     this.displayDirty = true;
     this.requestRender();
@@ -557,7 +503,6 @@ export class BrushEngine {
     }
 
     await this.device.queue.onSubmittedWorkDone();
-    this.releaseScratchTexture();
     const stamps = this.generateBenchmarkStamps(count);
 
     const completionStart = performance.now();
@@ -577,14 +522,12 @@ export class BrushEngine {
       Math.PI * averageRadiusSquared * stamps.length * this.settings.count,
     );
     const strategy = [
-      "un render pass scratch per batch",
+      "1 draw instanziata",
       `${this.settings.count} copie fisiche GPU per stamp base`,
       "geometria quad triangle-strip (4 vertici)",
       "coverage fragment smoothstep generica",
       "riuso copySeed per jitter colore per copia",
       "dirty rect direzionale conservativo",
-      "layer monolitico 4096²",
-      "copy-in/copy-back del dirty rect",
     ].join(" · ");
 
     return {
@@ -605,10 +548,7 @@ export class BrushEngine {
       lastCpuFrameMs: this.lastCpuFrameMs,
       totalBaseStamps: this.totalBaseStamps,
       avoidedLogicalDraws: this.avoidedLogicalDraws,
-      layerMemoryMiB: this.getLayerMemoryMiB(),
-      scratchMemoryMiB: this.getScratchMemoryMiB(),
-      scratchWidthPx: this.scratchWidth,
-      scratchHeightPx: this.scratchHeight,
+      layerMemoryMiB: this.layerFormat === "rgba16float" ? 128 : 64,
       gpuLabel: this.gpuLabel,
       layerFormat: this.layerFormat,
     };
@@ -636,9 +576,6 @@ export class BrushEngine {
     }
 
     await this.device.queue.onSubmittedWorkDone();
-    if (this.scratchResetRequested) {
-      this.releaseScratchTexture();
-    }
   }
 
   resetStrokeRandomSeed(): void {
@@ -653,18 +590,6 @@ export class BrushEngine {
       brushBatches: 0,
       largestBatchStamps: 0,
       estimatedScissorPixels: 0,
-      scratchTextureAllocations: 0,
-      scratchBrushRenderPasses: 0,
-      layerClearRenderPasses: 0,
-      scratchCopyInOperations: 0,
-      scratchCopyOutOperations: 0,
-      scratchCopiedPixels: 0,
-      requestedScratchPixels: 0,
-      estimatedScratchAttachmentPixels: 0,
-      peakScratchWidthPx: 0,
-      peakScratchHeightPx: 0,
-      peakScratchAttachmentPixels: 0,
-      scratchAllocationMs: 0,
       stampGenerationMs: 0,
       stampPackingMs: 0,
       instanceUploadMs: 0,
@@ -696,22 +621,6 @@ export class BrushEngine {
       fragmentCoverageStrategy: FRAGMENT_COVERAGE_STRATEGY,
       colorSeedStrategy: COLOR_SEED_STRATEGY,
       dirtyRectStrategy: DIRTY_RECT_STRATEGY,
-      layerStorageStrategy: LAYER_STORAGE_STRATEGY,
-      brushAttachmentStrategy: BRUSH_ATTACHMENT_STRATEGY,
-      scratchSizingStrategy: SCRATCH_SIZING_STRATEGY,
-      scratchSizeQuantumPx: SCRATCH_SIZE_QUANTUM,
-      scratchTextureAllocations: profile.scratchTextureAllocations,
-      scratchBrushRenderPasses: profile.scratchBrushRenderPasses,
-      layerClearRenderPasses: profile.layerClearRenderPasses,
-      scratchCopyInOperations: profile.scratchCopyInOperations,
-      scratchCopyOutOperations: profile.scratchCopyOutOperations,
-      scratchCopiedPixels: profile.scratchCopiedPixels,
-      requestedScratchPixels: profile.requestedScratchPixels,
-      estimatedScratchAttachmentPixels: profile.estimatedScratchAttachmentPixels,
-      peakScratchWidthPx: profile.peakScratchWidthPx,
-      peakScratchHeightPx: profile.peakScratchHeightPx,
-      peakScratchAttachmentPixels: profile.peakScratchAttachmentPixels,
-      scratchAllocationMs: profile.scratchAllocationMs,
       baseStamps: profile.baseStamps,
       physicalCopies: profile.physicalCopies,
       renderFrames: profile.renderFrames,
@@ -764,20 +673,13 @@ export class BrushEngine {
     fragmentCoverageStrategy: typeof FRAGMENT_COVERAGE_STRATEGY;
     colorSeedStrategy: typeof COLOR_SEED_STRATEGY;
     dirtyRectStrategy: typeof DIRTY_RECT_STRATEGY;
-    layerStorageStrategy: typeof LAYER_STORAGE_STRATEGY;
-    brushAttachmentStrategy: typeof BRUSH_ATTACHMENT_STRATEGY;
-    scratchSizingStrategy: typeof SCRATCH_SIZING_STRATEGY;
-    scratchSizeQuantumPx: number;
-    scratchWidthPx: number;
-    scratchHeightPx: number;
-    scratchMemoryMiB: number;
   } {
     return {
       canvasWidth: this.canvas.width,
       canvasHeight: this.canvas.height,
       layerSize: LAYER_SIZE,
       layerFormat: this.layerFormat,
-      layerMemoryMiB: this.getLayerMemoryMiB(),
+      layerMemoryMiB: this.layerFormat === "rgba16float" ? 128 : 64,
       gpuLabel: this.gpuLabel,
       timestampQueriesSupported: this.device?.features.has("timestamp-query") ?? false,
       stampGeometry: STAMP_GEOMETRY,
@@ -785,13 +687,6 @@ export class BrushEngine {
       fragmentCoverageStrategy: FRAGMENT_COVERAGE_STRATEGY,
       colorSeedStrategy: COLOR_SEED_STRATEGY,
       dirtyRectStrategy: DIRTY_RECT_STRATEGY,
-      layerStorageStrategy: LAYER_STORAGE_STRATEGY,
-      brushAttachmentStrategy: BRUSH_ATTACHMENT_STRATEGY,
-      scratchSizingStrategy: SCRATCH_SIZING_STRATEGY,
-      scratchSizeQuantumPx: SCRATCH_SIZE_QUANTUM,
-      scratchWidthPx: this.scratchWidth,
-      scratchHeightPx: this.scratchHeight,
-      scratchMemoryMiB: this.getScratchMemoryMiB(),
     };
   }
 
@@ -799,12 +694,6 @@ export class BrushEngine {
     this.brushUniformBuffer = this.device.createBuffer({
       label: "Brush uniforms",
       size: BRUSH_UNIFORM_BYTES,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-
-    this.scratchUniformBuffer = this.device.createBuffer({
-      label: "Dirty scratch uniforms",
-      size: SCRATCH_UNIFORM_BYTES,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -842,11 +731,6 @@ export class BrushEngine {
           visibility: GPUShaderStage.VERTEX,
           buffer: { type: "read-only-storage" },
         },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.VERTEX,
-          buffer: { type: "uniform" },
-        },
       ],
     });
 
@@ -871,7 +755,14 @@ export class BrushEngine {
       ],
     });
 
-    this.createBrushBindGroup();
+    this.brushBindGroup = this.device.createBindGroup({
+      label: "Brush bind group",
+      layout: this.brushBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.brushUniformBuffer } },
+        { binding: 1, resource: { buffer: this.instanceBuffer } },
+      ],
+    });
 
     this.brushShaderModule = this.device.createShaderModule({ label: "Brush WGSL", code: brushShader });
     this.displayShaderModule = this.device.createShaderModule({ label: "Display WGSL", code: displayShader });
@@ -903,10 +794,9 @@ export class BrushEngine {
 
   private async recreateLayerResources(format: LayerFormat): Promise<void> {
     const oldTexture = this.layerTexture;
-    const oldScratchTexture = this.scratchTexture;
 
     const texture = this.device.createTexture({
-      label: `4096² monolithic paint layer ${format}`,
+      label: `4096² paint layer ${format}`,
       size: { width: LAYER_SIZE, height: LAYER_SIZE, depthOrArrayLayers: 1 },
       format,
       usage:
@@ -915,7 +805,7 @@ export class BrushEngine {
         GPUTextureUsage.COPY_SRC |
         GPUTextureUsage.COPY_DST,
     });
-    const view = texture.createView({ label: `Paint layer view ${format}` });
+    const view = texture.createView();
 
     const brushPipelineLayout = this.device.createPipelineLayout({
       label: `Brush pipeline layout ${format}`,
@@ -1003,18 +893,12 @@ export class BrushEngine {
 
     this.layerTexture = texture;
     this.layerView = view;
-    this.scratchTexture = null;
-    this.scratchView = null;
-    this.scratchWidth = 0;
-    this.scratchHeight = 0;
-    this.scratchResetRequested = false;
     this.normalPipeline = normalPipeline;
     this.additivePipeline = additivePipeline;
     this.displayBindGroup = displayBindGroup;
     this.layerFormat = format;
 
     oldTexture?.destroy();
-    oldScratchTexture?.destroy();
   }
 
   private writeBrushUniforms(): void {
@@ -1047,14 +931,6 @@ export class BrushEngine {
     unsigned[23] = 0;
 
     this.device.queue.writeBuffer(this.brushUniformBuffer, 0, this.brushUniformUpload);
-  }
-
-  private writeScratchUniforms(dirtyRect: DirtyRect): void {
-    this.scratchUniformUpload[0] = dirtyRect.x;
-    this.scratchUniformUpload[1] = dirtyRect.y;
-    this.scratchUniformUpload[2] = this.scratchWidth;
-    this.scratchUniformUpload[3] = this.scratchHeight;
-    this.device.queue.writeBuffer(this.scratchUniformBuffer, 0, this.scratchUniformUpload);
   }
 
   private writeDisplayUniforms(): void {
@@ -1242,25 +1118,13 @@ export class BrushEngine {
     let displayEncodingMs = 0;
     let commandSubmitMs = 0;
     let scissorPixels = 0;
-    let scratchTextureAllocations = 0;
-    let scratchBrushRenderPasses = 0;
-    let layerClearRenderPasses = 0;
-    let scratchCopyInOperations = 0;
-    let scratchCopyOutOperations = 0;
-    let scratchCopiedPixels = 0;
-    let requestedScratchPixels = 0;
-    let scratchAttachmentPixels = 0;
-    let scratchWidthPx = 0;
-    let scratchHeightPx = 0;
-    let scratchAllocationMs = 0;
-    let dirtyRect: DirtyRect | null = null;
 
     if (clearLayer || stamps.length > 0) {
+      let dirtyRect: DirtyRect | null = null;
       if (stamps.length > 0) {
         const packingStart = performance.now();
         dirtyRect = this.packStamps(stamps);
         stampPackingMs = performance.now() - packingStart;
-
         const uploadStart = performance.now();
         this.device.queue.writeBuffer(
           this.instanceBuffer,
@@ -1273,92 +1137,26 @@ export class BrushEngine {
       }
 
       const brushEncodingStart = performance.now();
-      if (clearLayer) {
-        const clearPass = encoder.beginRenderPass({
-          label: "Clear 4096² paint layer",
-          colorAttachments: [
-            {
-              view: this.layerView,
-              loadOp: "clear",
-              storeOp: "store",
-              clearValue: { r: 0, g: 0, b: 0, a: 0 },
-            },
-          ],
-        });
-        clearPass.end();
-        layerClearRenderPasses = 1;
-      }
-
-      if (dirtyRect) {
-        const allocationStart = performance.now();
-        if (this.ensureScratchTexture(dirtyRect.width, dirtyRect.height)) {
-          scratchTextureAllocations = 1;
-          scratchAllocationMs = performance.now() - allocationStart;
-        }
-        this.writeScratchUniforms(dirtyRect);
-
-        const copyExtent = {
-          width: dirtyRect.width,
-          height: dirtyRect.height,
-          depthOrArrayLayers: 1,
-        };
-        encoder.copyTextureToTexture(
+      const brushPass = encoder.beginRenderPass({
+        label: "Paint into 4096² layer",
+        colorAttachments: [
           {
-            texture: this.layerTexture,
-            origin: { x: dirtyRect.x, y: dirtyRect.y, z: 0 },
+            view: this.layerView,
+            loadOp: clearLayer ? "clear" : "load",
+            storeOp: "store",
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
           },
-          {
-            texture: this.scratchTexture!,
-            origin: { x: 0, y: 0, z: 0 },
-          },
-          copyExtent,
-        );
-        scratchCopyInOperations = 1;
+        ],
+      });
 
-        const brushPass = encoder.beginRenderPass({
-          label: `Paint dirty scratch ${this.scratchWidth}×${this.scratchHeight}`,
-          colorAttachments: [
-            {
-              view: this.scratchView!,
-              loadOp: "load",
-              storeOp: "store",
-            },
-          ],
-        });
-        brushPass.setPipeline(
-          this.settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline,
-        );
+      if (stamps.length > 0 && dirtyRect) {
+        scissorPixels = dirtyRect.width * dirtyRect.height;
+        brushPass.setPipeline(this.settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline);
         brushPass.setBindGroup(0, this.brushBindGroup);
-        brushPass.setScissorRect(0, 0, dirtyRect.width, dirtyRect.height);
-        brushPass.draw(
-          STAMP_VERTICES_PER_COPY,
-          stamps.length * this.settings.count,
-          0,
-          0,
-        );
-        brushPass.end();
-        scratchBrushRenderPasses = 1;
-
-        encoder.copyTextureToTexture(
-          {
-            texture: this.scratchTexture!,
-            origin: { x: 0, y: 0, z: 0 },
-          },
-          {
-            texture: this.layerTexture,
-            origin: { x: dirtyRect.x, y: dirtyRect.y, z: 0 },
-          },
-          copyExtent,
-        );
-        scratchCopyOutOperations = 1;
-
-        requestedScratchPixels = dirtyRect.width * dirtyRect.height;
-        scissorPixels = requestedScratchPixels;
-        scratchCopiedPixels = requestedScratchPixels * 2;
-        scratchWidthPx = this.scratchWidth;
-        scratchHeightPx = this.scratchHeight;
-        scratchAttachmentPixels = scratchWidthPx * scratchHeightPx;
+        brushPass.setScissorRect(dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height);
+        brushPass.draw(STAMP_VERTICES_PER_COPY, stamps.length * this.settings.count, 0, 0);
       }
+      brushPass.end();
       brushEncodingMs = performance.now() - brushEncodingStart;
     }
 
@@ -1392,17 +1190,6 @@ export class BrushEngine {
       displayEncodingMs,
       commandSubmitMs,
       scissorPixels,
-      scratchTextureAllocations,
-      scratchBrushRenderPasses,
-      layerClearRenderPasses,
-      scratchCopyInOperations,
-      scratchCopyOutOperations,
-      scratchCopiedPixels,
-      requestedScratchPixels,
-      scratchAttachmentPixels,
-      scratchWidthPx,
-      scratchHeightPx,
-      scratchAllocationMs,
     };
   }
 
@@ -1466,84 +1253,6 @@ export class BrushEngine {
     const height = Math.max(0, bottom - y);
 
     return width > 0 && height > 0 ? { x, y, width, height } : null;
-  }
-
-  private ensureScratchTexture(requiredWidth: number, requiredHeight: number): boolean {
-    if (
-      this.scratchTexture
-      && this.scratchView
-      && this.scratchWidth >= requiredWidth
-      && this.scratchHeight >= requiredHeight
-    ) {
-      return false;
-    }
-
-    const roundedWidth = Math.min(
-      LAYER_SIZE,
-      Math.ceil(requiredWidth / SCRATCH_SIZE_QUANTUM) * SCRATCH_SIZE_QUANTUM,
-    );
-    const roundedHeight = Math.min(
-      LAYER_SIZE,
-      Math.ceil(requiredHeight / SCRATCH_SIZE_QUANTUM) * SCRATCH_SIZE_QUANTUM,
-    );
-    const width = Math.max(this.scratchWidth, roundedWidth);
-    const height = Math.max(this.scratchHeight, roundedHeight);
-    const previousTexture = this.scratchTexture;
-
-    const texture = this.device.createTexture({
-      label: `Dirty scratch ${width}×${height} ${this.layerFormat}`,
-      size: { width, height, depthOrArrayLayers: 1 },
-      format: this.layerFormat,
-      usage:
-        GPUTextureUsage.RENDER_ATTACHMENT
-        | GPUTextureUsage.COPY_SRC
-        | GPUTextureUsage.COPY_DST,
-    });
-
-    this.scratchTexture = texture;
-    this.scratchView = texture.createView({ label: `Dirty scratch view ${width}×${height}` });
-    this.scratchWidth = width;
-    this.scratchHeight = height;
-    this.scratchResetRequested = false;
-
-    if (previousTexture) {
-      void this.device.queue.onSubmittedWorkDone().then(
-        () => previousTexture.destroy(),
-        () => previousTexture.destroy(),
-      );
-    }
-    return true;
-  }
-
-  private releaseScratchTexture(): void {
-    this.scratchTexture?.destroy();
-    this.scratchTexture = null;
-    this.scratchView = null;
-    this.scratchWidth = 0;
-    this.scratchHeight = 0;
-    this.scratchResetRequested = false;
-  }
-
-  private createBrushBindGroup(): void {
-    this.brushBindGroup = this.device.createBindGroup({
-      label: "Brush dirty-scratch bind group",
-      layout: this.brushBindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: this.brushUniformBuffer } },
-        { binding: 1, resource: { buffer: this.instanceBuffer } },
-        { binding: 2, resource: { buffer: this.scratchUniformBuffer } },
-      ],
-    });
-  }
-
-  private getLayerMemoryMiB(): number {
-    const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
-    return (LAYER_SIZE * LAYER_SIZE * bytesPerPixel) / (1024 * 1024);
-  }
-
-  private getScratchMemoryMiB(): number {
-    const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
-    return (this.scratchWidth * this.scratchHeight * bytesPerPixel) / (1024 * 1024);
   }
 
   private generateBenchmarkStamps(count: number): Stamp[] {
@@ -1616,20 +1325,6 @@ export class BrushEngine {
     profile.displayEncodingMs += timing.displayEncodingMs;
     profile.commandSubmitMs += timing.commandSubmitMs;
     profile.estimatedScissorPixels += timing.scissorPixels;
-    profile.scratchTextureAllocations += timing.scratchTextureAllocations;
-    profile.scratchBrushRenderPasses += timing.scratchBrushRenderPasses;
-    profile.layerClearRenderPasses += timing.layerClearRenderPasses;
-    profile.scratchCopyInOperations += timing.scratchCopyInOperations;
-    profile.scratchCopyOutOperations += timing.scratchCopyOutOperations;
-    profile.scratchCopiedPixels += timing.scratchCopiedPixels;
-    profile.requestedScratchPixels += timing.requestedScratchPixels;
-    profile.estimatedScratchAttachmentPixels += timing.scratchAttachmentPixels;
-    profile.scratchAllocationMs += timing.scratchAllocationMs;
-    if (timing.scratchAttachmentPixels > profile.peakScratchAttachmentPixels) {
-      profile.peakScratchWidthPx = timing.scratchWidthPx;
-      profile.peakScratchHeightPx = timing.scratchHeightPx;
-      profile.peakScratchAttachmentPixels = timing.scratchAttachmentPixels;
-    }
 
     if (batchSize > 0) {
       profile.brushBatches += 1;
