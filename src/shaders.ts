@@ -1,5 +1,6 @@
-export const brushShader = /* wgsl */ `
+export const copyPreparationShader = /* wgsl */ `
 const MAX_COUNT: u32 = 24u;
+const COPY_WORKGROUP_SIZE: u32 = 16u;
 
 struct BrushUniforms {
   layerSize: vec2<f32>,
@@ -20,15 +21,20 @@ struct Stamp {
   direction: vec2<f32>,
 };
 
-struct VertexOutput {
-  @builtin(position) position: vec4<f32>,
-  @location(0) localPosition: vec2<f32>,
-  @location(1) @interpolate(flat) pressure: f32,
-  @location(2) @interpolate(flat) pointColor: vec3<f32>,
+struct PhysicalCopy {
+  center: vec2<f32>,
+  radius: f32,
+  pressure: f32,
+  linearColor: vec3<f32>,
+  _pad0: f32,
 };
 
 @group(0) @binding(0) var<uniform> brush: BrushUniforms;
 @group(0) @binding(1) var<storage, read> stamps: array<Stamp>;
+@group(0) @binding(2) var<storage, read_write> physicalCopies: array<PhysicalCopy>;
+
+var<workgroup> sharedStamp: Stamp;
+var<workgroup> sharedDirection: vec2<f32>;
 
 fn hash32(value: u32) -> u32 {
   var x = value;
@@ -106,6 +112,87 @@ fn jitteredLinearColorFromCopySeed(copySeed: u32) -> vec3<f32> {
   return srgbToLinear(hslToSrgb(vec3<f32>(hue, saturation, lightness)));
 }
 
+@compute @workgroup_size(16)
+fn prepareCopies(
+  @builtin(workgroup_id) workgroupId: vec3<u32>,
+  @builtin(num_workgroups) workgroupCount: vec3<u32>,
+  @builtin(local_invocation_id) localInvocationId: vec3<u32>
+) {
+  let stampIndex = workgroupId.y * workgroupCount.x + workgroupId.x;
+
+  if (localInvocationId.x == 0u) {
+    sharedStamp = stamps[stampIndex];
+    let directionLength = length(sharedStamp.direction);
+    sharedDirection = select(
+      vec2<f32>(1.0, 0.0),
+      sharedStamp.direction / directionLength,
+      directionLength > 0.0001
+    );
+  }
+  workgroupBarrier();
+
+  let stamp = sharedStamp;
+  let copyCount = max(1u, min(brush.options.x, MAX_COUNT));
+  var copyIndex = localInvocationId.x;
+  loop {
+    if (copyIndex >= copyCount) {
+      break;
+    }
+
+    let copySeed = hash32(stamp.seed ^ (copyIndex * 0x85ebca6bu));
+    let linearOffset = (random01(copySeed, 5u) - 0.5) * 4.0 * stamp.radius * brush.positionJitter.x;
+    let lateralOffset = (random01(copySeed, 6u) - 0.5) * 4.0 * stamp.radius * brush.positionJitter.y;
+    let jitteredCenter = stamp.center
+      + sharedDirection * linearOffset
+      + vec2<f32>(-sharedDirection.y, sharedDirection.x) * lateralOffset;
+
+    var colorCopySeed = copySeed;
+    if (brush.options.y == 0u) {
+      colorCopySeed = hash32(stamp.seed);
+    }
+
+    var physicalCopy: PhysicalCopy;
+    physicalCopy.center = jitteredCenter;
+    physicalCopy.radius = stamp.radius;
+    physicalCopy.pressure = stamp.pressure;
+    physicalCopy.linearColor = jitteredLinearColorFromCopySeed(colorCopySeed);
+    physicalCopy._pad0 = 0.0;
+    physicalCopies[stampIndex * copyCount + copyIndex] = physicalCopy;
+
+    copyIndex += COPY_WORKGROUP_SIZE;
+  }
+}
+`;
+
+export const brushShader = /* wgsl */ `
+struct BrushUniforms {
+  layerSize: vec2<f32>,
+  _pad0: vec2<f32>,
+  baseHslAlpha: vec4<f32>,
+  jitter: vec4<f32>,
+  controls: vec4<f32>,
+  positionJitter: vec4<f32>,
+  options: vec4<u32>,
+};
+
+struct PhysicalCopy {
+  center: vec2<f32>,
+  radius: f32,
+  pressure: f32,
+  linearColor: vec3<f32>,
+  _pad0: f32,
+};
+
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+  @location(0) localPosition: vec2<f32>,
+  @location(1) @interpolate(flat) pressure: f32,
+  @location(2) @interpolate(flat) pointColor: vec3<f32>,
+};
+
+@group(0) @binding(0) var<uniform> brush: BrushUniforms;
+@group(0) @binding(1) var<storage, read> physicalCopies: array<PhysicalCopy>;
+
 @vertex
 fn vertexMain(
   @builtin(vertex_index) vertexIndex: u32,
@@ -118,20 +205,9 @@ fn vertexMain(
     vec2<f32>( 1.0,  1.0)
   );
 
-  let copyCount = max(1u, min(brush.options.x, MAX_COUNT));
-  let stampIndex = instanceIndex / copyCount;
-  let copyIndex = instanceIndex % copyCount;
-  let stamp = stamps[stampIndex];
+  let physicalCopy = physicalCopies[instanceIndex];
   let localPosition = corners[vertexIndex];
-  let directionLength = length(stamp.direction);
-  let direction = select(vec2<f32>(1.0, 0.0), stamp.direction / directionLength, directionLength > 0.0001);
-  let copySeed = hash32(stamp.seed ^ (copyIndex * 0x85ebca6bu));
-  let linearOffset = (random01(copySeed, 5u) - 0.5) * 4.0 * stamp.radius * brush.positionJitter.x;
-  let lateralOffset = (random01(copySeed, 6u) - 0.5) * 4.0 * stamp.radius * brush.positionJitter.y;
-  let jitteredCenter = stamp.center
-    + direction * linearOffset
-    + vec2<f32>(-direction.y, direction.x) * lateralOffset;
-  let layerPosition = jitteredCenter + localPosition * stamp.radius;
+  let layerPosition = physicalCopy.center + localPosition * physicalCopy.radius;
   let clipPosition = vec2<f32>(
     layerPosition.x / brush.layerSize.x * 2.0 - 1.0,
     1.0 - layerPosition.y / brush.layerSize.y * 2.0
@@ -140,12 +216,8 @@ fn vertexMain(
   var output: VertexOutput;
   output.position = vec4<f32>(clipPosition, 0.0, 1.0);
   output.localPosition = localPosition;
-  output.pressure = stamp.pressure;
-  var colorCopySeed = copySeed;
-  if (brush.options.y == 0u) {
-    colorCopySeed = hash32(stamp.seed);
-  }
-  output.pointColor = jitteredLinearColorFromCopySeed(colorCopySeed);
+  output.pressure = physicalCopy.pressure;
+  output.pointColor = physicalCopy.linearColor;
   return output;
 }
 
