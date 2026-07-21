@@ -462,3 +462,51 @@ Il cambio di granularità funziona: rispetto alla #23 gli FPS aumentano del `36,
 Il confronto decisivo con la #19 resta però negativo per la fluidità: FPS `-16,0%`, p95 da `28` a `50 ms`, massimo raddoppiato, quota di frame lenti dal `9,6%` al `16,6%` e input delay p95 da `17` a `55 ms`. La coda finale migliora di `81 ms` e la presentazione termina `42 ms` prima, segnale che il tiled riduce parte del lavoro finale, ma lo ottiene con una cadenza interattiva molto peggiore. I `2778` render pass, la duplicazione media di `2,83x` delle copie e i batch più grandi restano troppo costosi; inoltre l'attachment stimato sale da `1,70` a `2,92` miliardi di pixel rispetto al 512 perché ogni slice attiva è quattro volte più grande.
 
 Decisione: la granularità `1024` è nettamente migliore della `512` ed è il riferimento per eventuali studi futuri sul tiled, ma la presente architettura `texture_2d_array` con un render pass per tile attiva è bocciata come sostituto della baseline monolitica #19. Non presentare la minore coda finale come vittoria complessiva: il requisito principale è seguire il dito, e tutte le metriche di frame pacing rimangono significativamente peggiori.
+
+## Passo 13: attachment scratch sulla dirty rectangle — in attesa della run iPhone
+
+Le run #23 e #25 mostrano che la riduzione dell'attachment può essere utile, ma che pass per tile, duplicazione delle copie e gutter distruggono il frame pacing. Questo passo elimina insieme quei tre costi senza tornare al render pass `4096×4096` della #19.
+
+Il documento persistente torna a essere una singola texture `4096×4096`, `rgba8unorm` o `rgba16float`, identica per forma e memoria alla #19. Per ogni batch il motore:
+
+1. impacchetta gli stamp una sola volta e calcola la stessa dirty rectangle direzionale conservativa della #19;
+2. assicura una texture scratch dello stesso formato, arrotondata separatamente sui due assi a multipli di `128 px`;
+3. copia la dirty rectangle dal layer persistente all'origine dello scratch;
+4. esegue un solo render pass e una sola draw istanziata nello scratch;
+5. ricopia la stessa regione, già composta, nella posizione originale del layer;
+6. presenta campionando direttamente il layer monolitico con lo shader display della #19.
+
+Lo scratch è riutilizzato e cresce soltanto quando il batch corrente non entra nella sua allocazione. Il replay esegue `clear()` e `waitForIdle()` prima di iniziare il profilo: in quel punto lo scratch precedente viene rilasciato, quindi ogni run parte senza una dimensione ereditata. Il clear del documento è un render pass separato sul layer persistente e non passa dallo scratch.
+
+### Identità semantica e bordi
+
+La draw usa di nuovo direttamente `instanceIndex / copyCount` e `instanceIndex % copyCount`, quindi l'ordine è esattamente stamp-major/copy-minor come nella #19. Non esistono riferimenti duplicati, segmenti per tile o riordinamenti: normal premultiplied e additive vedono la stessa sequenza di frammenti. Le copie che attraversano qualunque confine ideale restano quad interi nella stessa draw.
+
+La dirty rectangle usa i valori `f32` realmente caricati nel buffer, la stessa soglia prudenziale per la direzione e il margine finale di `2 px` della #19. Origine di copia e scissor sono interi. La geometria completa e il margine di antialiasing sono quindi interni allo scratch; il bordo fisico e la parte arrotondata dell'allocazione non possono tagliare coverage o derivate. Non servono gutter e il display non campiona mai lo scratch.
+
+Non sono cambiati stamp, Count `1–24`, size `4–1500`, spacing, flow, hardness, pressione, alpha, blend intensity, seed, jitter, formule WGSL del colore e della posizione, quad `triangle-strip`, coverage `smoothstep`, riuso di `copySeed`, formati o conversione display. Non è stato aggiunto compute e non è stato reintrodotto il buffer `PhysicalCopy` della #22.
+
+Il percorso è semanticamente equivalente, ma il calcolo clip ora trasla le coordinate nello scratch e usa le sue dimensioni; il controllo locale esclude differenze visibili, non dimostra identità byte-per-byte sull'iPhone. Prima di giudicare le prestazioni bisogna verificare visivamente bordi, colore, accumulo e assenza di clipping con il replay canonico.
+
+### Telemetria v4
+
+`performanceTelemetryRevision: 4` identifica l'esperimento con:
+
+- `layerStorageStrategy: "monolithic-2d"`;
+- `brushAttachmentStrategy: "dirty-rect-scratch-copyback"`;
+- `scratchSizingStrategy: "grow-only-128px-buckets"`;
+- `scratchSizeQuantumPx: 128`.
+
+Le nuove misure sono `scratchTextureAllocations`, `scratchBrushRenderPasses`, `layerClearRenderPasses`, `scratchCopyInOperations`, `scratchCopyOutOperations`, `scratchCopiedPixels`, `requestedScratchPixels`, `estimatedScratchAttachmentPixels`, `peakScratchWidthPx`, `peakScratchHeightPx`, `peakScratchAttachmentPixels` e `scratchAllocationMs`. `estimatedScissorPixels` torna ad avere la semantica della #19: somma delle dirty rectangle richieste. `estimatedScratchAttachmentPixels` conta invece l'intera allocazione scratch usata da ogni pass e rende visibile l'eventuale perdita dovuta alla crescita; `scratchCopiedPixels` include entrambe le direzioni.
+
+### Verifica locale prima della pubblicazione
+
+TypeScript e build Vite sono riusciti. Su GPU NVIDIA Ampere la pagina ha inizializzato WebGPU, ricreato il layer, eseguito clear e benchmark sintetici senza errori o warning di validazione in entrambi i formati. Sono stati provati gli estremi Count `1` e `24`, size massima `1500`, normal premultiplied e additive. Lo stesso output deterministico da `250` stamp è stato catturato affiancato sulla build finale e sulla #19: non mostra differenze, bordi, cuciture o clipping visibili. Le catture fornite dal browser sono JPEG e non identiche come file, quindi il controllo non dimostra identità pixel-per-pixel.
+
+Lo smoke sintetico desktop predefinito da `2000` stamp e `48000` copie ha misurato `2,80 ms` CPU submit e `72,60 ms` GPU completion, con scratch `3456×3456`. È peggiore dei `47,70 ms` locali della #19 e dei `48,10 ms` della #25, ma il generatore sintetico distribuisce deliberatamente l'intero batch a spirale su quasi tutto il documento: misura il caso sfavorevole in cui copie e scratch grande si sommano, non il batching temporale della traccia iPhone. Il dato non autorizza a dichiarare un miglioramento e rende essenziale leggere nella prossima run sia l'area scratch cumulativa sia i tempi reali.
+
+### Protocollo della prossima run
+
+La prossima run valida, attesa come `#26`, va confrontata direttamente con la #19 e non aggregata con #23/#25: stesso fingerprint `18982412`, `1583` punti, canvas `860×850`, size `750`, Count `16`, spacing `1%`, blend `4×`, `12107` stamp base, `193712` copie e `rgba8unorm`. Prima controllare l'identità visiva; poi confrontare FPS medi, intervallo p95/massimo, frame oltre `20 ms`, input delay, coda GPU e fine presentazione. Per capire il risultato architetturale registrare anche allocazioni, scratch massimo, `requestedScratchPixels`, `estimatedScratchAttachmentPixels` e `scratchCopiedPixels`.
+
+Questa variante può raggiungere l'obiettivo soltanto se il risparmio di load/store dell'attachment rispetto a `4096×4096` supera il costo delle due copie. Non promettere `60 FPS` prima della misura iPhone e non aggiungere altre modifiche alla stessa run.

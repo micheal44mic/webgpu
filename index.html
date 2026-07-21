@@ -136,8 +136,8 @@
           <label class="control">
             <span>Precisione layer</span>
             <select id="layerFormat">
-              <option value="rgba8unorm">RGBA8 linear tiled — 64.3 MiB</option>
-              <option value="rgba16float">RGBA16F linear tiled — 128.5 MiB</option>
+              <option value="rgba8unorm">RGBA8 linear + dirty scratch — 64.0 MiB layer</option>
+              <option value="rgba16float">RGBA16F linear + dirty scratch — 128.0 MiB layer</option>
             </select>
           </label>
         </section>
@@ -169,7 +169,8 @@
             <div><dt>CPU frame</dt><dd id="cpuStat">—</dd></div>
             <div><dt>Stamps base</dt><dd id="stampStat">0</dd></div>
             <div><dt>Draw logiche evitate</dt><dd id="avoidedStat">0</dd></div>
-            <div><dt>Memoria layer</dt><dd id="memoryStat">64.3 MiB</dd></div>
+            <div><dt>Layer persistente</dt><dd id="memoryStat">64.0 MiB</dd></div>
+            <div><dt>Scratch attivo</dt><dd id="scratchStat">non allocato</dd></div>
             <div><dt>GPU</dt><dd id="gpuStat">—</dd></div>
           </dl>
           <p id="status" class="status">Inizializzazione WebGPU…</p>
