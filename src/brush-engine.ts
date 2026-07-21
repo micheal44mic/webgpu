@@ -56,6 +56,7 @@ export interface StrokePerformanceProfile {
   fragmentCoverageStrategy: "generic-smoothstep";
   colorSeedStrategy: "reuse-position-copy-seed";
   dirtyRectStrategy: "directional-jitter-bounds";
+  brushPipelineStrategy: BrushPipelineStrategy;
   baseStamps: number;
   physicalCopies: number;
   renderFrames: number;
@@ -141,6 +142,7 @@ interface RenderFrameTiming {
 }
 
 interface MutableStrokePerformanceProfile {
+  brushPipelineStrategy: BrushPipelineStrategy;
   baseStamps: number;
   physicalCopies: number;
   renderFrames: number;
@@ -171,6 +173,8 @@ const STAMP_GEOMETRY = "quad" as const;
 const FRAGMENT_COVERAGE_STRATEGY = "generic-smoothstep" as const;
 const COLOR_SEED_STRATEGY = "reuse-position-copy-seed" as const;
 const DIRTY_RECT_STRATEGY = "directional-jitter-bounds" as const;
+type BrushPipelineStrategy = "generic" | "count16-override";
+const SPECIALIZED_COPY_COUNT = 16;
 const BRUSH_UNIFORM_BYTES = 96;
 const DISPLAY_UNIFORM_BYTES = 32;
 
@@ -243,6 +247,8 @@ export class BrushEngine {
   private displayShaderModule!: GPUShaderModule;
   private normalPipeline!: GPURenderPipeline;
   private additivePipeline!: GPURenderPipeline;
+  private normalCount16Pipeline!: GPURenderPipeline;
+  private additiveCount16Pipeline!: GPURenderPipeline;
   private displayPipeline!: GPURenderPipeline;
 
   private readonly instanceUpload = new ArrayBuffer(MAX_STAMPS_PER_BATCH * STAMP_STRIDE_BYTES);
@@ -528,6 +534,9 @@ export class BrushEngine {
       "coverage fragment smoothstep generica",
       "riuso copySeed per jitter colore per copia",
       "dirty rect direzionale conservativo",
+      this.getBrushPipelineStrategy() === "count16-override"
+        ? "pipeline vertex specializzata Count 16"
+        : "pipeline vertex generica",
     ].join(" · ");
 
     return {
@@ -584,6 +593,7 @@ export class BrushEngine {
 
   startStrokePerformanceProfile(): void {
     this.activeStrokeProfile = {
+      brushPipelineStrategy: this.getBrushPipelineStrategy(),
       baseStamps: 0,
       physicalCopies: 0,
       renderFrames: 0,
@@ -621,6 +631,7 @@ export class BrushEngine {
       fragmentCoverageStrategy: FRAGMENT_COVERAGE_STRATEGY,
       colorSeedStrategy: COLOR_SEED_STRATEGY,
       dirtyRectStrategy: DIRTY_RECT_STRATEGY,
+      brushPipelineStrategy: profile.brushPipelineStrategy,
       baseStamps: profile.baseStamps,
       physicalCopies: profile.physicalCopies,
       renderFrames: profile.renderFrames,
@@ -673,6 +684,7 @@ export class BrushEngine {
     fragmentCoverageStrategy: typeof FRAGMENT_COVERAGE_STRATEGY;
     colorSeedStrategy: typeof COLOR_SEED_STRATEGY;
     dirtyRectStrategy: typeof DIRTY_RECT_STRATEGY;
+    brushPipelineStrategy: BrushPipelineStrategy;
   } {
     return {
       canvasWidth: this.canvas.width,
@@ -687,6 +699,7 @@ export class BrushEngine {
       fragmentCoverageStrategy: FRAGMENT_COVERAGE_STRATEGY,
       colorSeedStrategy: COLOR_SEED_STRATEGY,
       dirtyRectStrategy: DIRTY_RECT_STRATEGY,
+      brushPipelineStrategy: this.getBrushPipelineStrategy(),
     };
   }
 
@@ -812,68 +825,65 @@ export class BrushEngine {
       bindGroupLayouts: [this.brushBindGroupLayout],
     });
 
-    this.device.pushErrorScope("validation");
-    const normalPipeline = this.device.createRenderPipeline({
-      label: `Brush normal ${format}`,
+    const normalBlend: GPUBlendState = {
+      color: {
+        operation: "add",
+        srcFactor: "one",
+        dstFactor: "one-minus-src-alpha",
+      },
+      alpha: {
+        operation: "add",
+        srcFactor: "one",
+        dstFactor: "one-minus-src-alpha",
+      },
+    };
+    const additiveBlend: GPUBlendState = {
+      color: {
+        operation: "add",
+        srcFactor: "one",
+        dstFactor: "one",
+      },
+      alpha: {
+        operation: "add",
+        srcFactor: "one",
+        dstFactor: "one-minus-src-alpha",
+      },
+    };
+    const createBrushPipeline = (
+      label: string,
+      blend: GPUBlendState,
+      specializedCopyCount?: number,
+    ): GPURenderPipeline => this.device.createRenderPipeline({
+      label,
       layout: brushPipelineLayout,
       vertex: {
         module: this.brushShaderModule,
         entryPoint: "vertexMain",
+        ...(specializedCopyCount === undefined
+          ? {}
+          : { constants: { SPECIALIZED_COPY_COUNT: specializedCopyCount } }),
       },
       fragment: {
         module: this.brushShaderModule,
         entryPoint: "fragmentMain",
-        targets: [
-          {
-            format,
-            blend: {
-              color: {
-                operation: "add",
-                srcFactor: "one",
-                dstFactor: "one-minus-src-alpha",
-              },
-              alpha: {
-                operation: "add",
-                srcFactor: "one",
-                dstFactor: "one-minus-src-alpha",
-              },
-            },
-          },
-        ],
+        targets: [{ format, blend }],
       },
       primitive: { topology: "triangle-strip" },
     });
 
-    const additivePipeline = this.device.createRenderPipeline({
-      label: `Brush additive ${format}`,
-      layout: brushPipelineLayout,
-      vertex: {
-        module: this.brushShaderModule,
-        entryPoint: "vertexMain",
-      },
-      fragment: {
-        module: this.brushShaderModule,
-        entryPoint: "fragmentMain",
-        targets: [
-          {
-            format,
-            blend: {
-              color: {
-                operation: "add",
-                srcFactor: "one",
-                dstFactor: "one",
-              },
-              alpha: {
-                operation: "add",
-                srcFactor: "one",
-                dstFactor: "one-minus-src-alpha",
-              },
-            },
-          },
-        ],
-      },
-      primitive: { topology: "triangle-strip" },
-    });
+    this.device.pushErrorScope("validation");
+    const normalPipeline = createBrushPipeline(`Brush normal ${format}`, normalBlend);
+    const additivePipeline = createBrushPipeline(`Brush additive ${format}`, additiveBlend);
+    const normalCount16Pipeline = createBrushPipeline(
+      `Brush normal Count 16 ${format}`,
+      normalBlend,
+      SPECIALIZED_COPY_COUNT,
+    );
+    const additiveCount16Pipeline = createBrushPipeline(
+      `Brush additive Count 16 ${format}`,
+      additiveBlend,
+      SPECIALIZED_COPY_COUNT,
+    );
 
     const validationError = await this.device.popErrorScope();
     if (validationError) {
@@ -895,10 +905,26 @@ export class BrushEngine {
     this.layerView = view;
     this.normalPipeline = normalPipeline;
     this.additivePipeline = additivePipeline;
+    this.normalCount16Pipeline = normalCount16Pipeline;
+    this.additiveCount16Pipeline = additiveCount16Pipeline;
     this.displayBindGroup = displayBindGroup;
     this.layerFormat = format;
 
     oldTexture?.destroy();
+  }
+
+  private getBrushPipelineStrategy(): BrushPipelineStrategy {
+    return this.settings.count === SPECIALIZED_COPY_COUNT
+      ? "count16-override"
+      : "generic";
+  }
+
+  private getActiveBrushPipeline(): GPURenderPipeline {
+    const useCount16Pipeline = this.getBrushPipelineStrategy() === "count16-override";
+    if (this.settings.blendMode === "additive") {
+      return useCount16Pipeline ? this.additiveCount16Pipeline : this.additivePipeline;
+    }
+    return useCount16Pipeline ? this.normalCount16Pipeline : this.normalPipeline;
   }
 
   private writeBrushUniforms(): void {
@@ -1151,7 +1177,7 @@ export class BrushEngine {
 
       if (stamps.length > 0 && dirtyRect) {
         scissorPixels = dirtyRect.width * dirtyRect.height;
-        brushPass.setPipeline(this.settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline);
+        brushPass.setPipeline(this.getActiveBrushPipeline());
         brushPass.setBindGroup(0, this.brushBindGroup);
         brushPass.setScissorRect(dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height);
         brushPass.draw(STAMP_VERTICES_PER_COPY, stamps.length * this.settings.count, 0, 0);

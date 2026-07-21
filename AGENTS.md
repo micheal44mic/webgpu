@@ -275,3 +275,21 @@ La prima run iPhone valida con `dirtyRectStrategy: "directional-jitter-bounds"` 
 L'area scissor stimata diminuisce di circa il `36,6%`, quindi il limite direzionale funziona come previsto. Tuttavia la fluidità non migliora: FPS `-0,3%`, p95 invariato e `4` frame lenti in più; soltanto coda finale e presentazione migliorano di `10 ms`. Questo conferma che `estimatedScissorPixels` non equivale a lavoro raster reale: la geometria dei quad delimitava già i frammenti e lo scissor più largo non li generava automaticamente.
 
 Decisione esplicita dell'utente: mantenere il dirty rect direzionale. È conservativo, non ha prodotto regressioni visive, aggiunge soltanto circa `3 ms` di packing CPU sull'intero replay e potrà essere utile come base per il futuro binning a tile. Non presentarlo come un miglioramento FPS dimostrato e non rimuoverlo salvo clipping o regressione riproducibile.
+
+## Passo 8: pipeline vertex specializzata per `Count 16` — in prova
+
+Il benchmark canonico usa sempre `Count 16`. Nel vertex shader, ogni istanza deve ricavare `stampIndex` e `copyIndex` dividendo e calcolando il modulo per il numero di copie. Quando il divisore arriva da una uniform, il compilatore GPU non può necessariamente sostituire queste operazioni con il percorso più economico disponibile per la costante `16`.
+
+L'esperimento aggiunge un `override` WGSL chiamato `SPECIALIZED_COPY_COUNT`. Il motore crea in anticipo quattro pipeline per ogni formato layer: normal e additive generiche, più normal e additive specializzate con valore `16`. Non vengono create pipeline mentre si disegna o quando si muove un controllo. La variante specializzata viene selezionata esclusivamente quando `settings.count === 16`; tutti gli altri Count continuano a usare la pipeline generica e la stessa uniform di prima.
+
+L'intervento non cambia:
+
+- numero, ordine o indice delle copie;
+- formula dei seed, jitter, posizione o colore;
+- stamp, size, spacing, flow, hardness, pressione o blend intensity;
+- geometria, fragment shader, blending, scissor, batching o draw count;
+- comportamento alle altre size: la specializzazione riguarda soltanto il divisore Count, non il raggio.
+
+Per `Count 16`, sia il vecchio clamp della uniform sia l'override producono esattamente `16`; quindi `stampIndex`, `copyIndex` e tutti i valori successivi restano uguali. L'obiettivo è soltanto permettere al compilatore della GPU Apple di trattare divisione e modulo come operazioni a divisore costante. Il guadagno non è garantito e va deciso soltanto con la run iPhone.
+
+La telemetria salva `brushPipelineStrategy: "count16-override"` per il benchmark canonico e `"generic"` per gli altri Count. La prima run valida attesa è la `#20` e va confrontata direttamente con la `#19`: stesso fingerprint, preset, iPhone, canvas, stamp, copie, shader e dirty rect. Valutare soprattutto FPS medi, intervallo p95, frame oltre 20 ms, coda GPU finale e sensazione di inseguimento del dito. Non combinare questo test con tile, binning o altre specializzazioni.
