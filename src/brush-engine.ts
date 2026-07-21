@@ -104,8 +104,8 @@ export const defaultBrushSettings: BrushSettings = {
   lightnessJitter: 0.12,
   darknessJitter: 0.18,
   jitterPerCopy: false,
-  positionJitterLateral: 0,
-  positionJitterLinear: 0,
+  positionJitterLateral: 1,
+  positionJitterLinear: 1,
   pressureSize: 0.65,
   pressureOpacity: 0.35,
 };
@@ -765,7 +765,7 @@ export class BrushEngine {
     const pressureSizeFactor = 1 - this.settings.pressureSize
       + this.settings.pressureSize * Math.max(0.08, pressure);
     const radius = Math.max(0.5, this.settings.size * 0.5 * pressureSizeFactor);
-    const jitterReach = radius * (this.settings.positionJitterLinear + this.settings.positionJitterLateral);
+    const jitterReach = radius * 2 * (this.settings.positionJitterLinear + this.settings.positionJitterLateral);
     const seed = (Math.imul(this.seedSequence++, 0x9e3779b1) ^ 0xa511e9b3) >>> 0;
 
     if (
@@ -909,7 +909,7 @@ export class BrushEngine {
       this.instanceUploadF32[base + 6] = stamp.directionX;
       this.instanceUploadF32[base + 7] = stamp.directionY;
 
-      const jitterReach = stamp.radius * (this.settings.positionJitterLinear + this.settings.positionJitterLateral);
+      const jitterReach = stamp.radius * 2 * (this.settings.positionJitterLinear + this.settings.positionJitterLateral);
       minimumX = Math.min(minimumX, stamp.x - stamp.radius - jitterReach - 2);
       minimumY = Math.min(minimumY, stamp.y - stamp.radius - jitterReach - 2);
       maximumX = Math.max(maximumX, stamp.x + stamp.radius + jitterReach + 2);

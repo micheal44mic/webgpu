@@ -47,7 +47,7 @@ Nella sezione **Jitter posizione** ci sono due controlli indipendenti:
 - **Laterale** — sposta casualmente ogni copia fisica a destra o sinistra, in modo perpendicolare alla direzione della pennellata.
 - **Lineare** — sposta casualmente ogni copia fisica in avanti o indietro, lungo la direzione della pennellata.
 
-I due valori sono espressi in percentuale. Al 100%, lo scostamento massimo in ogni asse è pari al raggio corrente del pennello. Entrambi partono da `0%`, quindi un pennello appena aperto mantiene il comportamento precedente.
+I due valori sono espressi in percentuale. Al 100%, lo scostamento massimo in ogni asse è pari al diametro corrente del pennello. Entrambi partono da `100%`, così un click mostra subito le copie fisiche impostate da `Count`.
 
 Il jitter posizione è separato dal **Color jitter**: il suo valore di intensità globale non modifica gli spostamenti laterale e lineare. `Count` indica quante copie fisiche vengono create per ogni punto di spacing; con jitter a `0%` queste copie sono sovrapposte, mentre aumentando Laterale o Lineare diventano visibili come stamp distinti.
 

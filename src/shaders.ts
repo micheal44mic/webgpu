@@ -129,8 +129,8 @@ fn vertexMain(
   let directionLength = length(stamp.direction);
   let direction = select(vec2<f32>(1.0, 0.0), stamp.direction / directionLength, directionLength > 0.0001);
   let copySeed = hash32(stamp.seed ^ (copyIndex * 0x85ebca6bu));
-  let linearOffset = (random01(copySeed, 5u) - 0.5) * 2.0 * stamp.radius * brush.positionJitter.x;
-  let lateralOffset = (random01(copySeed, 6u) - 0.5) * 2.0 * stamp.radius * brush.positionJitter.y;
+  let linearOffset = (random01(copySeed, 5u) - 0.5) * 4.0 * stamp.radius * brush.positionJitter.x;
+  let lateralOffset = (random01(copySeed, 6u) - 0.5) * 4.0 * stamp.radius * brush.positionJitter.y;
   let jitteredCenter = stamp.center
     + direction * linearOffset
     + vec2<f32>(-direction.y, direction.x) * lateralOffset;
