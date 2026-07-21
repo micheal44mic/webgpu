@@ -51,6 +51,8 @@ export interface BenchmarkResult {
 }
 
 export interface StrokePerformanceProfile {
+  stampGeometry: "circumscribed-12-gon";
+  stampVerticesPerCopy: number;
   baseStamps: number;
   physicalCopies: number;
   renderFrames: number;
@@ -69,6 +71,7 @@ export interface StrokePerformanceProfile {
   renderIntervalP50Ms: number;
   renderIntervalP95Ms: number;
   renderIntervalMaxMs: number;
+  averageRenderFps: number;
   delayedRenderFrames: number;
 }
 
@@ -136,6 +139,9 @@ interface MutableStrokePerformanceProfile {
 const LAYER_SIZE = 4096;
 const STAMP_STRIDE_BYTES = 32;
 const MAX_STAMPS_PER_BATCH = 65_536;
+const STAMP_SEGMENTS = 12;
+const STAMP_VERTICES_PER_COPY = STAMP_SEGMENTS * 3;
+const STAMP_GEOMETRY = "circumscribed-12-gon" as const;
 const BRUSH_UNIFORM_BYTES = 96;
 const DISPLAY_UNIFORM_BYTES = 32;
 
@@ -150,6 +156,12 @@ function percentile(values: readonly number[], ratio: number): number {
 
 function maximum(values: readonly number[]): number {
   return values.length === 0 ? 0 : Math.max(...values);
+}
+
+function average(values: readonly number[]): number {
+  return values.length === 0
+    ? 0
+    : values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
 export const defaultBrushSettings: BrushSettings = {
@@ -480,7 +492,11 @@ export class BrushEngine {
     const estimatedCoveredFragments = Math.round(
       Math.PI * averageRadiusSquared * stamps.length * this.settings.count,
     );
-    const strategy = `1 draw instanziata · ${this.settings.count} copie fisiche GPU per stamp base`;
+    const strategy = [
+      "1 draw instanziata",
+      `${this.settings.count} copie fisiche GPU per stamp base`,
+      "geometria dodecagonale circoscritta",
+    ].join(" · ");
 
     return {
       baseStamps: stamps.length,
@@ -560,8 +576,11 @@ export class BrushEngine {
     if (!profile) {
       return null;
     }
+    const averageRenderIntervalMs = average(profile.renderIntervalMs);
 
     return {
+      stampGeometry: STAMP_GEOMETRY,
+      stampVerticesPerCopy: STAMP_VERTICES_PER_COPY,
       baseStamps: profile.baseStamps,
       physicalCopies: profile.physicalCopies,
       renderFrames: profile.renderFrames,
@@ -580,6 +599,9 @@ export class BrushEngine {
       renderIntervalP50Ms: percentile(profile.renderIntervalMs, 0.5),
       renderIntervalP95Ms: percentile(profile.renderIntervalMs, 0.95),
       renderIntervalMaxMs: maximum(profile.renderIntervalMs),
+      averageRenderFps: averageRenderIntervalMs > 0
+        ? 1_000 / averageRenderIntervalMs
+        : 0,
       delayedRenderFrames: profile.renderIntervalMs.filter((duration) => duration > 20).length,
     };
   }
@@ -592,6 +614,8 @@ export class BrushEngine {
     layerMemoryMiB: number;
     gpuLabel: string;
     timestampQueriesSupported: boolean;
+    stampGeometry: typeof STAMP_GEOMETRY;
+    stampVerticesPerCopy: number;
   } {
     return {
       canvasWidth: this.canvas.width,
@@ -601,6 +625,8 @@ export class BrushEngine {
       layerMemoryMiB: this.layerFormat === "rgba16float" ? 128 : 64,
       gpuLabel: this.gpuLabel,
       timestampQueriesSupported: this.device?.features.has("timestamp-query") ?? false,
+      stampGeometry: STAMP_GEOMETRY,
+      stampVerticesPerCopy: STAMP_VERTICES_PER_COPY,
     };
   }
 
@@ -1053,7 +1079,7 @@ export class BrushEngine {
         brushPass.setPipeline(this.settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline);
         brushPass.setBindGroup(0, this.brushBindGroup);
         brushPass.setScissorRect(dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height);
-        brushPass.draw(6, stamps.length * this.settings.count, 0, 0);
+        brushPass.draw(STAMP_VERTICES_PER_COPY, stamps.length * this.settings.count, 0, 0);
       }
       brushPass.end();
       brushEncodingMs = performance.now() - brushEncodingStart;

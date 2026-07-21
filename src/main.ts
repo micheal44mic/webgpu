@@ -100,6 +100,8 @@ interface BenchmarkRun {
     layerMemoryMiB: number;
     gpuLabel: string;
     timestampQueriesSupported: boolean;
+    stampGeometry: "circumscribed-12-gon";
+    stampVerticesPerCopy: number;
   };
 }
 
@@ -684,6 +686,8 @@ async function replayHumanStroke(): Promise<void> {
       `${formatInteger(copies)} copie fisiche`,
       `coda GPU ${playback.inputToGpuCompletionMs.toFixed(2)} ms`,
       `CPU p95 ${performanceProfile.cpuFrameP95Ms.toFixed(2)} ms`,
+      `FPS medi ${performanceProfile.averageRenderFps.toFixed(1)}`,
+      `${formatInteger(performanceProfile.delayedRenderFrames)} frame >20 ms`,
       `presentazione ${playback.endToPresentedMs.toFixed(2)} ms`,
       runId > 0 ? `run #${runId} salvata` : "run salvata",
     ].join(" · ");
