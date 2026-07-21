@@ -175,6 +175,7 @@ function applySettingsToControls(settings: BrushSettings): void {
 }
 
 function applyHumanStrokePreset(): BrushSettings {
+  setControlValue("brushSize", 750);
   setControlValue("spacing", 1);
   setControlValue("count", 16);
   setControlValue("flow", 100);
