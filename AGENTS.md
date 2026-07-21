@@ -241,7 +241,7 @@ La run `#16` ha le firme previste ed è pienamente confrontabile con la `#14`: s
 
 La #16 migliora gli FPS di circa lo `0,5%`, mantiene p95 e massimo, riduce di `2` i frame lenti e di `6 ms` la coda finale. Tutte le direzioni sono favorevoli. Su decisione esplicita dell'utente, il riuso di `copySeed` è promosso e mantenuto: è bit-identico, generale e non ha mostrato regressioni. Non ripristinare il calcolo duplicato salvo una regressione riproducibile.
 
-## Passo 7: dirty rect direzionale conservativo — in prova
+## Passo 7: dirty rect direzionale conservativo — mantenuto
 
 Il vecchio `packStamps` estendeva entrambi gli assi di `2 * radius * (jitterLinear + jitterLateral)`, come se i due jitter raggiungessero contemporaneamente il massimo su X e Y. Il vertex shader sposta invece il centro lungo la direzione normalizzata e la sua perpendicolare.
 
@@ -272,4 +272,6 @@ La prima run iPhone valida con `dirtyRectStrategy: "directional-jitter-bounds"` 
 | somma aree scissor | `4.002.660.960` | `2.538.336.064` |
 | packing CPU totale | `3 ms` | `6 ms` |
 
-L'area scissor stimata diminuisce di circa il `36,6%`, quindi il limite direzionale funziona come previsto. Tuttavia la fluidità non migliora: FPS `-0,3%`, p95 invariato e `4` frame lenti in più; soltanto coda finale e presentazione migliorano di `10 ms`. Questo conferma che `estimatedScissorPixels` non equivale a lavoro raster reale: la geometria dei quad delimitava già i frammenti e lo scissor più largo non li generava automaticamente. Il passo resta in valutazione, ma la raccomandazione tecnica è rimuoverlo se una seconda run o la percezione dell'utente non mostrano un vantaggio durante il tratto.
+L'area scissor stimata diminuisce di circa il `36,6%`, quindi il limite direzionale funziona come previsto. Tuttavia la fluidità non migliora: FPS `-0,3%`, p95 invariato e `4` frame lenti in più; soltanto coda finale e presentazione migliorano di `10 ms`. Questo conferma che `estimatedScissorPixels` non equivale a lavoro raster reale: la geometria dei quad delimitava già i frammenti e lo scissor più largo non li generava automaticamente.
+
+Decisione esplicita dell'utente: mantenere il dirty rect direzionale. È conservativo, non ha prodotto regressioni visive, aggiunge soltanto circa `3 ms` di packing CPU sull'intero replay e potrà essere utile come base per il futuro binning a tile. Non presentarlo come un miglioramento FPS dimostrato e non rimuoverlo salvo clipping o regressione riproducibile.
