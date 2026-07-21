@@ -776,7 +776,7 @@ export class BrushEngine {
   }
 
   private requestRender(): void {
-    if (!this.initialized && !this.device) {
+    if (!this.initialized) {
       return;
     }
     if (this.frameRequest !== null) {
@@ -787,6 +787,9 @@ export class BrushEngine {
 
   private renderFrame(timestamp: number): void {
     this.frameRequest = null;
+    if (!this.initialized) {
+      return;
+    }
     this.resizeCanvas();
 
     const batchSize = Math.min(this.pendingStamps.length, MAX_STAMPS_PER_BATCH);

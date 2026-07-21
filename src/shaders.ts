@@ -294,7 +294,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   }
 
   let uv = clamp((layerPosition + vec2<f32>(0.5)) / display.layerSize, vec2<f32>(0.0), vec2<f32>(1.0));
-  let paint = textureSample(layerTexture, layerSampler, uv);
+  let paint = textureSampleLevel(layerTexture, layerSampler, uv, 0.0);
 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;

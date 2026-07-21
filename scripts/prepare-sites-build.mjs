@@ -1,4 +1,4 @@
-import { mkdir, readdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 
 const distDirectory = new URL("../dist/", import.meta.url);
 const clientDirectory = new URL("client/", distDirectory);
@@ -19,14 +19,29 @@ for (const entry of await readdir(distDirectory, { withFileTypes: true })) {
 }
 
 await mkdir(serverDirectory, { recursive: true });
+const indexHtml = await readFile(new URL("index.html", clientDirectory), "utf8");
 await writeFile(
   workerFile,
-  `export default {
+  `const INDEX_HTML = ${JSON.stringify(indexHtml)};
+
+export default {
   async fetch(request, env) {
+    const url = new URL(request.url);
+
+    if (
+      (request.method === "GET" || request.method === "HEAD") &&
+      (url.pathname === "/" || url.pathname === "/index.html")
+    ) {
+      return new Response(request.method === "HEAD" ? null : INDEX_HTML, {
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "public, max-age=0, must-revalidate",
+        },
+      });
+    }
+
     const response = await env.ASSETS.fetch(request);
-    return response.status === 404
-      ? env.ASSETS.fetch(new URL("/", request.url))
-      : response;
+    return response;
   },
 };
 `,
