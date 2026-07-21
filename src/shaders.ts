@@ -158,10 +158,14 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
   let hardness = clamp(brush.controls.y, 0.0, 1.0);
   let innerEdge = min(hardness * hardness, 1.0 - antialiasWidth);
-  let coverage = 1.0 - smoothstep(innerEdge, 1.0 + antialiasWidth, radiusSquared);
+  var coverage = 1.0;
 
-  if (coverage <= 0.0) {
-    discard;
+  if (radiusSquared > innerEdge) {
+    coverage = 1.0 - smoothstep(innerEdge, 1.0 + antialiasWidth, radiusSquared);
+
+    if (coverage <= 0.0) {
+      discard;
+    }
   }
 
   let pressureInfluence = clamp(brush.controls.w, 0.0, 1.0);

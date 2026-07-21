@@ -194,3 +194,13 @@ La telemetria aggiuntiva non ha perturbato materialmente il benchmark: tutte le 
 Sull'intero replay: `resizeCanvasTotalMs 5`, `batchExtractionTotalMs 4`, `statsPublishTotalMs 153` e `layerInputDispatchTotalMs 5`. L'aggiornamento DOM delle statistiche è il maggiore costo CPU esterno alla submission, circa `0,40 ms` per frame, ma da solo non spiega il p95 da `28 ms`. Potrà essere rimosso dal percorso per-frame in un esperimento separato, lasciando il timer da `500 ms`; non combinarlo con un esperimento GPU.
 
 Decisione: mantenere la telemetria v2. Il prossimo esperimento isolato deve essere il fast path della coverage nel fragment shader, lasciando invariati resize, aggiornamenti DOM e ogni altra parte del motore, così il confronto con la #14 attribuisce l'eventuale differenza al solo shader.
+
+## Passo 5: fast path esatto della coverage fragment — in prova
+
+Il fragment shader continua a calcolare `radiusSquared` e `fwidth(radiusSquared)` senza controllo di flusso. Dopo il discard esterno, inizializza `coverage = 1` e chiama `smoothstep` soltanto quando `radiusSquared > innerEdge`.
+
+L'equivalenza vale per ogni hardness e size: `innerEdge <= 1 - antialiasWidth < 1 + antialiasWidth`, quindi quando `radiusSquared <= innerEdge` il vecchio `smoothstep` restituiva esattamente `0` e la vecchia coverage era esattamente `1`. Per tutti gli altri frammenti resta la stessa espressione e lo stesso discard. `fwidth` rimane prima del ramo per non spostare le derivate in controllo di flusso non uniforme.
+
+Non sono cambiati geometria, pipeline, uniform, dati o ordine degli stamp, Count, size, spacing, flow, hardness, jitter, seed, pressione, alpha, blending, resize, aggiornamenti DOM o display pass. Il cambiamento vale per tutti i pennelli; con hardness `100%` dovrebbe evitare `smoothstep` sulla maggior parte dell'interno del disco, ma il driver potrebbe già ottimizzare il vecchio codice e il guadagno non è garantito.
+
+La telemetria salva `fragmentCoverageStrategy: "interior-fast-path"`. La prima run valida attesa è la `#15` e va confrontata direttamente con la `#14`, che usa lo stesso motore e la stessa telemetria ma la coverage generica. Se la differenza è marginale, eseguire una seconda run prima di promuovere o bocciare l'intervento.
