@@ -73,4 +73,4 @@ La sezione **Benchmark** include un test ripetibile basato su una tua pennellata
 
 La registrazione applica il preset di confronto: dimensione `750 px`, spacing `1%`, Count `16`, Flow `100%`, Hardness `100%`, Hue al massimo (`180°`), Saturation `100%`, color jitter per copia e jitter Laterale/Lineare al `100%`. Le altre impostazioni vengono salvate assieme al tratto.
 
-Alla fine di ogni Play compaiono durata, numero di campioni, stamps base, copie fisiche, tempo di coda GPU e ultimo CPU frame. Il tratto resta salvato solo nel browser del dispositivo, quindi può essere ripetuto dopo un refresh senza inviare dati all'esterno.
+Alla fine di ogni Play compaiono durata, numero di campioni, stamps base, copie fisiche, tempo di coda GPU e ultimo CPU frame. Prima di ogni Play il seed del jitter viene resettato, quindi posizione, pressione, tempi e casualità restano identici tra le ripetizioni. Il tratto resta salvato solo nel browser del dispositivo, quindi può essere ripetuto dopo un refresh senza inviare dati all'esterno.

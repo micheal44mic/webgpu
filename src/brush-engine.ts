@@ -466,6 +466,10 @@ export class BrushEngine {
     await this.device.queue.onSubmittedWorkDone();
   }
 
+  resetStrokeRandomSeed(): void {
+    this.seedSequence = 1;
+  }
+
   private async createStaticResources(): Promise<void> {
     this.brushUniformBuffer = this.device.createBuffer({
       label: "Brush uniforms",

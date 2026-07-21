@@ -373,6 +373,7 @@ async function replayHumanStroke(): Promise<void> {
 
   try {
     await engine.waitForIdle();
+    engine.resetStrokeRandomSeed();
     engine.clear();
     await engine.waitForIdle();
 
