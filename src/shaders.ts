@@ -195,36 +195,9 @@ struct VertexOutput {
 @group(0) @binding(1) var layerTexture: texture_2d<f32>;
 @group(0) @binding(2) var layerSampler: sampler;
 
-fn srgbToLinearChannel(value: f32) -> f32 {
-  if (value <= 0.04045) {
-    return value / 12.92;
-  }
-  return pow((value + 0.055) / 1.055, 2.4);
-}
-
-fn srgbToLinear(value: vec3<f32>) -> vec3<f32> {
-  return vec3<f32>(
-    srgbToLinearChannel(value.r),
-    srgbToLinearChannel(value.g),
-    srgbToLinearChannel(value.b)
-  );
-}
-
-fn linearToSrgbChannel(value: f32) -> f32 {
-  let clamped = clamp(value, 0.0, 1.0);
-  if (clamped <= 0.0031308) {
-    return clamped * 12.92;
-  }
-  return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
-}
-
-fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
-  return vec3<f32>(
-    linearToSrgbChannel(value.r),
-    linearToSrgbChannel(value.g),
-    linearToSrgbChannel(value.b)
-  );
-}
+const OUTSIDE_LINEAR: vec3<f32> = vec3<f32>(0.00440084934);
+const CHECKER_DARK_LINEAR: vec3<f32> = vec3<f32>(0.638283253);
+const CHECKER_LIGHT_LINEAR: vec3<f32> = vec3<f32>(0.807346106);
 
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
@@ -248,7 +221,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     && all(layerPosition < display.layerSize);
 
   if (!insideLayer) {
-    return vec4<f32>(vec3<f32>(0.055), 1.0);
+    return vec4<f32>(OUTSIDE_LINEAR, 1.0);
   }
 
   let uv = clamp((layerPosition + vec2<f32>(0.5)) / display.layerSize, vec2<f32>(0.0), vec2<f32>(1.0));
@@ -256,10 +229,9 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
-  let backgroundSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
-  let backgroundLinear = srgbToLinear(backgroundSrgb);
+  let backgroundLinear = select(CHECKER_DARK_LINEAR, CHECKER_LIGHT_LINEAR, checkerParity == 0);
   let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
 
-  return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
+  return vec4<f32>(compositedLinear, 1.0);
 }
 `;

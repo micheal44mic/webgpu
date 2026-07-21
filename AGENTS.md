@@ -307,3 +307,20 @@ La run `#20`, identificata da `brushPipelineStrategy: "count16-override"`, è di
 Gli FPS diminuiscono di circa lo `0,5%`, il p95 resta invariato e coda GPU, ritardo input e fine presentazione peggiorano di poco. Le differenze rientrano nella variabilità normale, ma non esiste alcun guadagno che giustifichi quattro pipeline al posto di due. Il costo dominante resta il raster e il blending delle `193712` copie fisiche, non la divisione e il modulo del vertex shader.
 
 Decisione: passo 8 bocciato. Override WGSL, pipeline Count 16, selezione automatica e relativo marker di telemetria sono stati rimossi. Il motore è tornato esattamente alla pipeline generica della run `#19`; non reintrodurre questa specializzazione senza nuovi dati che dimostrino un costo vertex rilevante.
+
+## Passo 9: display lineare su target sRGB — in prova
+
+Ogni frame viene concluso da un pass a pieno canvas. Sulla baseline `#19` significa circa `860 × 850 × 386 = 282 milioni` di invocazioni fragment del display, oltre al lavoro del pennello. Il vecchio display shader convertiva manualmente la scacchiera da sRGB a lineare, componeva il layer e riconvertiva ogni canale da lineare a sRGB con `pow` prima di scrivere nel target `unorm`.
+
+L'esperimento configura il canvas `unorm` con una view compatibile `*-srgb`, crea la display pipeline per quel formato e usa la stessa view nel render pass. Il display shader ora:
+
+- usa costanti lineari precalcolate per le due tonalità della scacchiera e per lo sfondo esterno;
+- campiona e compone il layer nello stesso spazio lineare di prima;
+- restituisce direttamente il colore lineare;
+- lascia alla conversione hardware del target sRGB la codifica finale.
+
+Non cambiano texture del layer, formato `rgba8unorm`, pixel permanenti, brush shader, stamp, Count, size, spacing, jitter, seed, pressione, blending, ordine, scissor, batching o draw count. L'intervento vale per tutte le size e tutti i pennelli perché riguarda soltanto la presentazione del layer sul canvas.
+
+Il percorso è semanticamente equivalente, ma la conversione sRGB hardware e la precedente formula WGSL possono arrotondare diversamente prima della quantizzazione a 8 bit. Oltre alle metriche bisogna quindi controllare che luminosità, colori, bordi e scacchiera non cambino visibilmente. Non dichiarare identità byte-per-byte senza un pixel-diff sul dispositivo di destinazione. Inoltre `viewFormats` può avere un costo dipendente dall'implementazione: il guadagno non è garantito.
+
+La telemetria salva `displayColorStrategy: "srgb-render-target"`. La prima run valida attesa è la `#21` e va confrontata con la `#19`, non con la pipeline Count 16 della `#20`. Servono stesso fingerprint, preset, iPhone, GPU Apple, canvas e numero di stamp. Valutare FPS medi, p95, frame oltre 20 ms, coda GPU, fine presentazione e soprattutto qualsiasi differenza visiva.

@@ -56,6 +56,7 @@ export interface StrokePerformanceProfile {
   fragmentCoverageStrategy: "generic-smoothstep";
   colorSeedStrategy: "reuse-position-copy-seed";
   dirtyRectStrategy: "directional-jitter-bounds";
+  displayColorStrategy: "srgb-render-target";
   baseStamps: number;
   physicalCopies: number;
   renderFrames: number;
@@ -171,8 +172,19 @@ const STAMP_GEOMETRY = "quad" as const;
 const FRAGMENT_COVERAGE_STRATEGY = "generic-smoothstep" as const;
 const COLOR_SEED_STRATEGY = "reuse-position-copy-seed" as const;
 const DIRTY_RECT_STRATEGY = "directional-jitter-bounds" as const;
+const DISPLAY_COLOR_STRATEGY = "srgb-render-target" as const;
 const BRUSH_UNIFORM_BYTES = 96;
 const DISPLAY_UNIFORM_BYTES = 32;
+
+function getSrgbCanvasViewFormat(format: GPUTextureFormat): GPUTextureFormat {
+  if (format === "bgra8unorm") {
+    return "bgra8unorm-srgb";
+  }
+  if (format === "rgba8unorm") {
+    return "rgba8unorm-srgb";
+  }
+  throw new Error(`Il formato canvas ${format} non ha una view sRGB compatibile.`);
+}
 
 function percentile(values: readonly number[], ratio: number): number {
   if (values.length === 0) {
@@ -224,6 +236,7 @@ export class BrushEngine {
   private device!: GPUDevice;
   private context!: GPUCanvasContext;
   private canvasFormat!: GPUTextureFormat;
+  private canvasSrgbFormat!: GPUTextureFormat;
 
   private layerFormat: LayerFormat = "rgba8unorm";
   private layerTexture!: GPUTexture;
@@ -310,9 +323,11 @@ export class BrushEngine {
     this.context = context;
 
     this.canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+    this.canvasSrgbFormat = getSrgbCanvasViewFormat(this.canvasFormat);
     this.context.configure({
       device: this.device,
       format: this.canvasFormat,
+      viewFormats: [this.canvasSrgbFormat],
       alphaMode: "opaque",
       colorSpace: "srgb",
     });
@@ -528,6 +543,7 @@ export class BrushEngine {
       "coverage fragment smoothstep generica",
       "riuso copySeed per jitter colore per copia",
       "dirty rect direzionale conservativo",
+      "display lineare su target sRGB",
     ].join(" · ");
 
     return {
@@ -621,6 +637,7 @@ export class BrushEngine {
       fragmentCoverageStrategy: FRAGMENT_COVERAGE_STRATEGY,
       colorSeedStrategy: COLOR_SEED_STRATEGY,
       dirtyRectStrategy: DIRTY_RECT_STRATEGY,
+      displayColorStrategy: DISPLAY_COLOR_STRATEGY,
       baseStamps: profile.baseStamps,
       physicalCopies: profile.physicalCopies,
       renderFrames: profile.renderFrames,
@@ -673,6 +690,7 @@ export class BrushEngine {
     fragmentCoverageStrategy: typeof FRAGMENT_COVERAGE_STRATEGY;
     colorSeedStrategy: typeof COLOR_SEED_STRATEGY;
     dirtyRectStrategy: typeof DIRTY_RECT_STRATEGY;
+    displayColorStrategy: typeof DISPLAY_COLOR_STRATEGY;
   } {
     return {
       canvasWidth: this.canvas.width,
@@ -687,6 +705,7 @@ export class BrushEngine {
       fragmentCoverageStrategy: FRAGMENT_COVERAGE_STRATEGY,
       colorSeedStrategy: COLOR_SEED_STRATEGY,
       dirtyRectStrategy: DIRTY_RECT_STRATEGY,
+      displayColorStrategy: DISPLAY_COLOR_STRATEGY,
     };
   }
 
@@ -786,7 +805,7 @@ export class BrushEngine {
       fragment: {
         module: this.displayShaderModule,
         entryPoint: "fragmentMain",
-        targets: [{ format: this.canvasFormat }],
+        targets: [{ format: this.canvasSrgbFormat }],
       },
       primitive: { topology: "triangle-list" },
     });
@@ -1166,10 +1185,10 @@ export class BrushEngine {
       label: "Present paint layer",
       colorAttachments: [
         {
-          view: this.context.getCurrentTexture().createView(),
+          view: this.context.getCurrentTexture().createView({ format: this.canvasSrgbFormat }),
           loadOp: "clear",
           storeOp: "store",
-          clearValue: { r: 0.02, g: 0.02, b: 0.025, a: 1 },
+          clearValue: { r: 0.001547988, g: 0.001547988, b: 0.001934985, a: 1 },
         },
       ],
     });
