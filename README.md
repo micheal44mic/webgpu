@@ -4,8 +4,8 @@ Prototipo TypeScript senza framework per verificare l'architettura di un motore 
 
 ## Cosa contiene
 
-- Layer logico **4096 × 4096**, suddiviso in una texture array di **8 × 8 tile da 512 px**.
-- Formato selezionabile `rgba8unorm` (**64,5 MiB**) o `rgba16float` (**129 MiB**), inclusi gutter da 1 px.
+- Layer logico **4096 × 4096**, suddiviso in una texture array di **4 × 4 tile da 1024 px**.
+- Formato selezionabile `rgba8unorm` (**64,25 MiB**) o `rgba16float` (**128,5 MiB**), inclusi gutter da 1 px.
 - Resampling del percorso per distanza, indipendente dalla frequenza dei `pointermove`.
 - Supporto Pointer Events, pressione e `getCoalescedEvents()` quando disponibile.
 - Cerchio analitico antialias: nessuna texture della punta e nessun MSAA.
@@ -72,7 +72,7 @@ Registra per ogni dispositivo:
 
 ## Layer tiled e ordine del blending
 
-Il layer persistente è una `texture_2d_array` di 64 slice. Ogni tile ha un'area centrale da 512 × 512 pixel e un gutter da 1 px per lato. Il display seleziona la slice dalla coordinata globale e campiona anche il gutter, evitando discontinuità nell'antialiasing e nel filtro lineare ai bordi.
+Il layer persistente è una `texture_2d_array` di 16 slice. Ogni tile ha un'area centrale da 1024 × 1024 pixel e un gutter da 1 px per lato. Il display seleziona la slice dalla coordinata globale e campiona anche il gutter, evitando discontinuità nell'antialiasing e nel filtro lineare ai bordi.
 
 Il binning conserva l'ordine originale stamp-major/copy-minor dentro ogni tile. Una copia che attraversa un confine viene inserita, nello stesso punto relativo, in tutte le tile interessate. Nel buffer vengono salvati soltanto gli indici dello stamp e della copia: le formule WGSL del pennello restano il percorso autorevole e non esiste un compute prepass che materializza le copie fisiche.
 

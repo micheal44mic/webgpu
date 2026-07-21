@@ -370,7 +370,7 @@ La baseline per il nuovo lavoro è il commit successivo al rollback del passo 10
 
 Preferenza operativa esplicita dell'utente per la prossima chat: **lavorare senza agenti o subagenti; il modello principale deve leggere, progettare, implementare, revisionare e pubblicare da solo**.
 
-## Passo 11: layer tiled 512 e binning stabile per copia — in attesa della run iPhone
+## Passo 11: layer tiled 512 e binning stabile per copia — bocciato
 
 La prima versione completa del salto architetturale sostituisce la singola texture persistente `4096×4096` con una `texture_2d_array` di `8×8` tile logiche da `512×512`. Ogni slice misura fisicamente `514×514`: il pixel aggiuntivo su ogni lato è un gutter usato dal display lineare. Il formato selezionato resta `rgba8unorm` o `rgba16float`; la memoria reale diventa rispettivamente circa `64,5 MiB` e `129,0 MiB`, quindi l'overhead dei gutter è inferiore all'1%.
 
@@ -403,8 +403,40 @@ TypeScript e build Vite sono riusciti. La build di produzione ha inizializzato W
 
 Un singolo smoke sintetico locale da `2000` stamp base e `48000` copie, con impostazioni desktop predefinite e quindi non canoniche, ha misurato `24,20 ms` CPU submit e `55,70 ms` GPU completion sul tiled contro `4,50 ms` e `47,70 ms` sulla build #19. Il dato indica chiaramente il costo CPU del primo binning completo, ma non decide l'esperimento: usa GPU, size, Count, batching e percorso diversi dal replay iPhone. Non ottimizzare ulteriormente il binning prima della misura canonica, per non combinare fasi.
 
-### Protocollo e decisione pendente
+### Protocollo usato
 
 La prossima run iPhone valida, attesa come `#23`, deve essere confrontata direttamente con la `#19`: fingerprint `18982412`, `1583` punti, canvas `860×850`, size `750`, Count `16`, spacing `1%`, blend `4×`, `12107` stamp base e `193712` copie fisiche. Verificare prima assenza di cuciture o variazioni di bordi, colore e accumulo; poi confrontare FPS medi, intervallo p95/massimo, frame oltre `20 ms`, coda GPU finale, input delay, fine presentazione e la nuova telemetria delle tile.
 
-La decisione è sospesa fino al Play eseguito dall'utente sullo stesso iPhone. Promuovere il passo soltanto se il risultato visivo resta invariato e il minor lavoro sugli attachment Apple compensa binning, pass per tile e copie dei gutter; in caso contrario il rollback pulito resta il commit `ad37505` della #19.
+### Risultato e decisione: run #23
+
+La run `#23` è pienamente confrontabile con la `#19`: stesso fingerprint `18982412`, traccia, preset, iPhone, GPU Apple, canvas `860×850`, formato `rgba8unorm`, `12107` stamp base e `193712` copie fisiche. Le firme tiled e la telemetria v3 sono presenti.
+
+| Metrica | Run #19 monolitica | Run #23 tile 512 |
+|---|---:|---:|
+| FPS medi | `56,19` | `34,67` |
+| frame renderizzati | `386` | `243` |
+| intervallo frame p95 | `28 ms` | `106 ms` |
+| intervallo frame massimo | `67 ms` | `210 ms` |
+| frame oltre 20 ms | `37` (~`9,6%`) | `53` (~`21,8%`) |
+| batch massimo | `90` stamp | `493` stamp |
+| coda GPU finale | `282 ms` | `231 ms` |
+| input delay p95 | `17 ms` | `118 ms` |
+| fine presentazione | `7132 ms` | `7132 ms` |
+
+La coda finale diminuisce di `51 ms`, ma l'input delivery aumenta di `52 ms` e la fine della presentazione resta identica: il lavoro non viene concluso prima, viene consegnato più tardi e in batch molto più grandi. Gli FPS calano del `38,3%`, il p95 diventa `3,8×` più alto e l'input delay p95 cresce di quasi `7×`.
+
+La causa è visibile nella telemetria: `1124798` assegnazioni, pari a `5,81` tile per copia fisica; `6436` pass con pennello, cioè `26,5` per batch; picco di `61/64` tile attive; `45356` copie dei gutter. L'encoding brush cumulativo passa da `20 ms` a `124 ms`. La minore area attachment stimata non compensa il costo dei pass, delle duplicazioni e delle transizioni; i frame lenti generano inoltre batch più grandi che toccano ancora più tile.
+
+Decisione: la variante da `512 px` è bocciata. Questo risultato non boccia ancora il layer tiled in generale: boccia la granularità `8×8` con un pass per tile per il pennello canonico da `750 px`. Il commit `6446c38` resta il riferimento della #23; non usarlo come versione prestazionale.
+
+## Passo 12: tile 1024, stessa architettura — in attesa della run iPhone
+
+Il secondo esperimento tiled cambia esclusivamente la granularità: `TILE_SIZE` passa da `512` a `1024`, la griglia da `8×8` a `4×4` e le slice fisiche da `514×514` a `1026×1026`. Binning stabile, riferimenti `u32`, ordine stamp-major/copy-minor, shader, formule, blending, gutter da `1 px`, display, clear, Count `1–24`, tutte le size e telemetria v3 restano identici alla #23.
+
+La memoria reale diventa circa `64,25 MiB` per `rgba8unorm` e `128,50 MiB` per `rgba16float`. Nel percorso normale una copia canonica ha diametro geometrico `750 px`, inferiore alla tile da `1024 px`: può quindi intersecare al massimo `2×2 = 4` tile invece delle `3×3 = 9` possibili con tile da `512`. I pass attivi sono inoltre limitati a `16` per batch invece di `64`. Il fallback conservativo vicino alla soglia direzionale può aggiungere assegnazioni, mai rimuoverne.
+
+L'aspettativa è un miglioramento consistente rispetto alla #23 per minori duplicazioni, pass e copie gutter. Non è garantito un miglioramento rispetto alla #19: ogni attachment attivo contiene circa quattro volte i pixel della variante 512 e un batch spazialmente ampio può ancora attivare tutta la griglia.
+
+Verifica locale prima della pubblicazione: TypeScript e build Vite riusciti; inizializzazione, clear e benchmark sintetico completati senza errori WebGPU su NVIDIA Ampere sia in `rgba8unorm` sia in `rgba16float`, senza cuciture visibili sui confini a `1024 px`. Sullo stesso smoke non canonico da `2000` stamp e `48000` copie con impostazioni desktop predefinite, la variante 1024 `rgba8unorm` ha misurato `9,30 ms` CPU submit e `48,10 ms` GPU completion, contro `24,20 ms` e `55,70 ms` della variante 512 e `4,50 ms` e `47,70 ms` della #19 monolitica. È un segnale locale favorevole per la granularità 1024, non un risultato trasferibile all'iPhone.
+
+La prossima run valida, attesa come `#24`, deve essere confrontata sia con la #23 per misurare l'effetto isolato della granularità, sia con la #19 per decidere se il tiled supera davvero la baseline. Controllare le stesse metriche principali e, in particolare, assegnazioni per copia, pass per batch, picco tile attive e assenza di cuciture sui nuovi confini a multipli di `1024 px`.

@@ -199,7 +199,7 @@ interface TileBinningResult {
 }
 
 const LAYER_SIZE = 4096;
-const TILE_SIZE = 512;
+const TILE_SIZE = 1024;
 const TILE_GUTTER = 1;
 const TILE_STORAGE_SIZE = TILE_SIZE + TILE_GUTTER * 2;
 const TILE_GRID_WIDTH = LAYER_SIZE / TILE_SIZE;
@@ -606,7 +606,7 @@ export class BrushEngine {
       "coverage fragment smoothstep generica",
       "riuso copySeed per jitter colore per copia",
       "limiti tile conservativi per copia",
-      "layer 8×8 tile da 512 px con gutter",
+      "layer 4×4 tile da 1024 px con gutter",
       "binning stabile per copia fisica",
     ].join(" · ");
 
