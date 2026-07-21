@@ -174,3 +174,23 @@ Prima del prossimo esperimento è stata estesa la telemetria senza cambiare shad
 - `layerInputDispatchTotal/P50/P95/MaxMs`: tempo impiegato da `beginStrokeAtLayer` e `extendStrokeAtLayer` per consegnare i punti già convertiti al motore.
 
 Il replay salva esplicitamente `inputDeliveryPath: "preconverted-layer-points"` e `pointerPipelineMeasured: false`: non misura `PointerEvent`, `getCoalescedEvents`, `getBoundingClientRect` o la conversione client→layer del disegno manuale. Non usare questa run per concludere che tale percorso sia gratuito. Dopo la misura di controllo, scegliere un solo intervento usando i dati; il candidato GPU isolato proposto è il fast path esatto della coverage nel fragment shader.
+
+## Risultato della telemetria CPU v2: run #14
+
+La run `#14` è la prima con `performanceTelemetryRevision: 2`. È confrontabile con le run `#11–#13`: stesso fingerprint `18982412`, `1583` punti, preset, iPhone, GPU Apple, canvas `860×850`, `12107` stamp base, `193712` copie e quad strip da `4` vertici.
+
+| Metrica | Mediana #11–#13 | Run #14 |
+|---|---:|---:|
+| FPS medi | `55,86` | `56,04` |
+| intervallo frame p95 | `28 ms` | `28 ms` |
+| intervallo frame massimo | `66 ms` | `67 ms` |
+| frame oltre 20 ms | `36` | `35` |
+| coda GPU finale | `292 ms` | `298 ms` |
+| input delay p95 | `18 ms` | `17 ms` |
+| fine presentazione | `7143 ms` | `7149 ms` |
+
+La telemetria aggiuntiva non ha perturbato materialmente il benchmark: tutte le differenze rientrano nella variabilità delle run precedenti. Nella #14 sia `submitImmediateP95Ms` sia `renderFrameTotalP95Ms` sono `1 ms`; anche il massimo misurato del frame CPU è `1 ms`, contro `28 ms` di intervallo frame p95. La risoluzione di `performance.now()` su questo Safari è circa `1 ms`, quindi non usare questi percentili per distinguere frazioni di millisecondo, ma il margine è sufficiente per confermare che la CPU del replay non è il collo di bottiglia principale.
+
+Sull'intero replay: `resizeCanvasTotalMs 5`, `batchExtractionTotalMs 4`, `statsPublishTotalMs 153` e `layerInputDispatchTotalMs 5`. L'aggiornamento DOM delle statistiche è il maggiore costo CPU esterno alla submission, circa `0,40 ms` per frame, ma da solo non spiega il p95 da `28 ms`. Potrà essere rimosso dal percorso per-frame in un esperimento separato, lasciando il timer da `500 ms`; non combinarlo con un esperimento GPU.
+
+Decisione: mantenere la telemetria v2. Il prossimo esperimento isolato deve essere il fast path della coverage nel fragment shader, lasciando invariati resize, aggiornamenti DOM e ogni altra parte del motore, così il confronto con la #14 attribuisce l'eventuale differenza al solo shader.
