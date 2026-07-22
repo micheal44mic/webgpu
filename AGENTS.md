@@ -1412,7 +1412,7 @@ Il test iPhone ha usato realmente la storage texture `R32Uint read/write`, senza
 
 Decisione: compute bocciato nettamente sulla GPU Apple e micro-benchmark rimosso dall'interfaccia e dalla build. L'algoritmo preserva l'output nel caso sintetico, ma rasterizzazione e blending hardware sono molto più efficienti del ciclo compute sequenziale con quantizzazione per copia. Non iniziare la riscrittura compute e non riproporre questo benchmark senza un cambiamento architetturale sostanziale che elimini la causa misurata del costo.
 
-## Esperimento: spacing adattivo sulla congestione — candidato da misurare
+## Esperimento: spacing adattivo sulla congestione — promosso
 
 Su richiesta esplicita dell'utente, questo esperimento costituisce un'eccezione intenzionale al vincolo storico di spacing invariato. L'obiettivo è verificare se ridurre gradualmente il numero di stamp futuri quando la coda GPU è già in ritardo migliori l'attaccatura al dito abbastanza da compensare la variazione visiva. Non descrivere quindi il risultato come pixel-identico o direttamente equivalente alla baseline.
 
@@ -1428,4 +1428,26 @@ Con il benchmark canonico lo spacing può quindi seguire `1,00→1,25→1,50→1
 
 `performanceTelemetryRevision: 17` identifica il candidato. La configurazione salva strategia, step e massimo; ogni run salva spacing iniziale/finale, numero di aumenti, raggiungimento del tetto e una timeline `adaptiveSpacingEvents` con offset, causa, spacing raggiunto, backlog e stamp generati. Il riepilogo visibile della run mostra inoltre `spacing adattivo iniziale→finale / step`. Il preset dichiarato resta `spacingPercent: 1`, mentre i valori effettivi successivi sono esplicitati dalla nuova telemetria.
 
-Dopo la pubblicazione eseguire prima Base e poi Fur, attese come `#53` e `#54`, e confrontarle con `#49` e `#50`. Base deve essere giudicata su sensazione, buchi/densità, stamp totali, p95, frame lenti, coda finale e timeline degli step. Fur idealmente deve restare a `1,00%`, zero step e `12107` stamp: un aumento su Fur indicherebbe che il trigger è troppo aggressivo. Promuovere soltanto se Base segue meglio il dito senza un cambiamento visivo fastidioso; in caso contrario ripristinare integralmente la revisione `15`.
+Dopo la pubblicazione sono state eseguite Base `#53` e Fur `#54`, pienamente confrontabili con `#49/#50`: stesso fingerprint `18982412`, `1583` punti, iPhone, GPU Apple, DPR `3`, canvas `860×1454`, size `750`, Count `16`, spacing dichiarato `1%` e formato `rgba8unorm`.
+
+| Metrica | #49 Base fissa | #53 Base adattiva | #50 Fur fissa | #54 Fur adattiva |
+|---|---:|---:|---:|---:|
+| spacing effettivo | `1,00%` | `1,00→1,50%` | `1,00%` | `1,00%` |
+| step adattivi | `0` | `2` | `0` | `0` |
+| stamp base | `12107` | `9037` | `12107` | `12107` |
+| copie fisiche | `193712` | `144592` | `193712` | `193712` |
+| FPS medi | `56,92` | `58,39` | `58,52` | `58,53` |
+| intervallo frame p95 | `26 ms` | `17 ms` | `17 ms` | `17 ms` |
+| frame oltre `20 ms` | `31` | `9` | `8` | `7` |
+| coda GPU finale | `250 ms` | `21 ms` | `21 ms` | `19 ms` |
+| backlog massimo non confermato | `1625` | `270` | `347` | `352` |
+
+Nella #53 il primo timeout a `2439 ms` porta lo spacing a `1,25%`; una completion lenta a `2605 ms` lo porta a `1,50%`. Da quel punto la coda recupera e non vengono richiesti altri step: il tetto `2,50%` non viene raggiunto. Il carico cala di `3070` stamp e `49120` copie, circa il `25,4%`, mentre la coda finale scende del `91,6%`, il p95 del `34,6%` e i frame lenti del `71,0%`. Tutti i `9037` stamp generati risultano sia sottoposti al renderer esatto sia conservati nella history: il miglioramento viene esclusivamente dal generarne meno dopo il lag, non da drop, deferred o replay.
+
+La #54 è il controllo sano: il probe massimo è `57 ms`, appena sotto la soglia lenta da `58 ms`; lo spacing resta a `1,00%`, gli stamp restano `12107` e le metriche coincidono con la #50. Questo dimostra che il feedback non riduce automaticamente la qualità quando la coda non supera la soglia.
+
+È presente anche la Base `#55`, utile come stress test ma non aggregabile alla #53 perché usa Safari `26.5.2`, DPR `2` e canvas `828×1404`. Su quel dispositivo/ambiente raggiunge tutti i sei step fino a `2,50%`, riduce il carico a `5451` stamp e chiude comunque con p95 `17 ms`, `8` frame lenti e coda `20 ms`. Conferma il funzionamento del tetto, non costituisce una replica canonica.
+
+L'utente riferisce che la sensazione è «molto meglio» e sceglie esplicitamente di mantenere la variante. Decisione: spacing adattivo promosso. Conservare step `+0,25`, massimo `+1,5`, soglie `60/58 ms`, un solo incremento per probe, nessuna discesa intra-stroke e reset al valore scelto a ogni nuovo tratto. Non cambiare contemporaneamente queste costanti o la preview.
+
+Da questo punto una run con `settings.spacingPercent: 1` non implica più necessariamente `12107` stamp: il carico e l'output possono dipendere dalla coda del dispositivo. Per confronti futuri non aggregare run adattive soltanto in base al preset; controllare sempre `adaptiveSpacingEvents`, spacing finale e numero di stamp. Se serve misurare una micro-ottimizzazione del renderer a carico identico, predisporre un controllo diagnostico separato che congeli lo spacing, senza rimuovere il comportamento promosso dall'uso normale.
