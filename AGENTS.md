@@ -637,3 +637,32 @@ Il test sintetico da `250` stamp, `4000` copie, size `750`, Count `16`, flow/har
 - `shapeOccupancyBitmaskBytes: 8192` per la mappa attiva.
 
 La prossima run Fur valida, attesa come `#31`, va confrontata con le #28 e #29, non con la #30: stesso fingerprint `18982412`, preset, iPhone, canvas `860×850`, `12107` stamp e `193712` copie. Prima verificare le firme e l'assenza di clipping; poi giudicare FPS medi, p95/massimo, frame oltre `20 ms`, input delay, coda GPU e fine presentazione. Mantenere il passo soltanto se migliora la risposta al dito sul dispositivo reale; il dato desktop è preparatorio.
+
+### Risultato run #31: pre-mappa non attivata
+
+La `#31` usa la versione pubblicata con telemetria v5 ed è pienamente confrontabile con le #28 e #29: stesso fingerprint `18982412`, `1583` punti, variante Fur, preset, iPhone, GPU Apple, canvas `860×850`, formato `rgba8unorm`, `12107` stamp base e `193712` copie. Il quad legacy corretto da quattro vertici è stato ripristinato, ma la pre-mappa non è stata selezionata. Le firme effettive sono:
+
+- `stampGeometry: "quad"`;
+- `stampVerticesPerCopy: 4`;
+- `shapeSamplingStrategy: "legacy-full-mask"`;
+- `shapeOccupancyMipLevel: -1`;
+- `shapeOccupancyActiveCells: 0` nella telemetria del percorso scelto;
+- `shapeOccupancyCoverageRatio: 0` nella telemetria del percorso scelto.
+
+| Metrica | Run #28 full quad | Run #29 full quad | Run #31 candidato in fallback |
+|---|---:|---:|---:|
+| FPS medi | `49,24` | `50,04` | `49,43` |
+| frame renderizzati | `342` | `345` | `341` |
+| intervallo frame p95 | `43 ms` | `38 ms` | `42 ms` |
+| intervallo frame massimo | `103 ms` | `88 ms` | `100 ms` |
+| frame oltre `20 ms` | `56` | `54` | `51` |
+| coda GPU finale | `691 ms` | `686 ms` | `676 ms` |
+| input delay p95 | `37 ms` | `34 ms` | `37 ms` |
+| fine presentazione | `7592 ms` | `7530 ms` | `7532 ms` |
+| batch massimo | `237` stamp | `169` stamp | `170` stamp |
+
+Rispetto alla mediana delle #28–#29, la #31 ha FPS circa `-0,4%`, p95 `+1,5 ms`, quattro frame lenti in meno, coda finale `-12,5 ms` e input delay `+1,5 ms`. Le direzioni sono miste e rientrano nella variabilità normale del full quad. Non esiste quindi un miglioramento prestazionale misurato: il risultato atteso dal test desktop non è stato esercitato sull'iPhone.
+
+Con size `750 px` e pressure-size `0%`, tutti gli stamp hanno raggio `375 px`; il selettore richiede quindi il mip `2`, ben dentro il limite `0–4`. Le condizioni su raggio e LOD non possono spiegare il fallback. Per esclusione, la mappa di occupazione costruita sull'iPhone ha superato la soglia del `50%`, invece del `5,54%` calcolato localmente. Questo è coerente con la #30, nella quale la stessa lettura runtime della PNG tramite `createImageBitmap` + canvas aveva restituito una topologia incompatibile con i sei componenti locali e aveva fatto ricadere l'estrazione a zero rettangoli.
+
+Decisione: la #31 non promuove né boccia il costo GPU della pre-mappa, perché il relativo shader non è stato usato. Il fallback legacy è visivamente e prestazionalmente sicuro, ma il preprocessing della Shape non deve più dipendere dalla conversione canvas della piattaforma. Il prossimo candidato deve decodificare deterministicamente i byte della PNG grayscale 8-bit, usare lo stesso array R8 sia per la texture sia per la bitmask e salvare anche motivo del fallback e ratio calcolata prima della selezione. Non forzare l'attuale bitmask: se la mappa fosse davvero densa, aggiungerebbe il controllo senza eliminare campioni e potrebbe regredire.
