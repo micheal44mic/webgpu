@@ -1144,3 +1144,28 @@ Gli smoke test runtime forzati sono stati completati nel browser locale su GPU N
 L'audit statico indipendente non ha rilevato P0/P1 e ha verificato anche la race catch-up pianificato → lift, il binding per identità del tip pending e l'aggiornamento atomico tramite scratch canvas. Il gesto pinch reale e il pop percepito non sono valutabili in modo affidabile con il mouse del browser: restano controlli tattili da fare sull'iPhone dopo la pubblicazione.
 
 Dopo la pubblicazione ripetere Base e Fur sullo stesso iPhone delle `#37–#38`. Confrontare soprattutto fluidità durante input e coda finale: l'obiettivo è rendere il tip leggibile quando la coda arretra senza spostare lavoro WebGPU al lift. Se `adaptivePreviewJsP95Ms` supera stabilmente il budget, gli skip sono frequenti, il compositing peggiora la GPU o il cambio patch→esatto resta visibile, rimuovere il candidato senza modificare contemporaneamente il renderer esatto.
+
+### Risultato iPhone preliminare: run #42 Base e #43 Fur
+
+Le run `#42` Base e `#43` Fur usano la versione Sites `44` e sono pienamente confrontabili con le baseline cache `#37` e `#38`: stesso fingerprint `18982412`, `1583` punti, preset, iPhone, GPU Apple, DPR `3`, viewport `430×775`, canvas `860×1454`, layer `rgba8unorm`, `12107` stamp base e `193712` copie fisiche. Fur conserva decoder diretto, bitmask, nessun fallback, mip `2`, `3633` celle e ratio `0,0554351806640625`.
+
+| Metrica | #37 Base baseline | #42 Base tip patch | #38 Fur baseline | #43 Fur tip patch |
+|---|---:|---:|---:|---:|
+| FPS medi | `57,50` | `56,49` | `59,25` | `59,26` |
+| intervallo frame p95 | `25 ms` | `26 ms` | `17 ms` | `17 ms` |
+| intervallo frame massimo | `67 ms` | `66 ms` | `67 ms` | `66 ms` |
+| frame oltre `20 ms` | `25` | `33` | `3` | `3` |
+| coda GPU finale | `224 ms` | `256 ms` | `19 ms` | `18 ms` |
+| input delay p95 | `15 ms` | `16 ms` | `15 ms` | `15 ms` |
+| fine presentazione | `7084 ms` | `7105 ms` | `6892 ms` | `6891 ms` |
+| batch massimo | `88` stamp | `93` stamp | `88` stamp | `88` stamp |
+
+La correttezza architetturale è confermata in entrambe le run: stamp e copie invariati, journal completo, una sola azione, nessun replay history, zero stamp differiti/risolti, zero replay esatti e zero submission GPU speciali al lift. Gli stamp esatti inviati coincidono con `baseStamps`, i batch esatti coincidono con `brushBatches` e nella #42 i `2` stamp pending congelati al lift sono stati entrambi legati al normale seriale esatto.
+
+Nella #42 la preview si attiva due volte, pubblica `201` patch complete, rappresenta `402` stamp base e `6432` copie fisiche. Il lavoro JavaScript sincrono totale è `156 ms`, con p95 `1 ms`, massimo `3 ms` e `9` skip di budget; la patch massima è `82944` pixel backing. La sessione più lunga dura `2816 ms`, la latenza massima del probe raggiunge `461 ms` e il backlog massimo osservato è `1745` stamp base. Rispetto alla #37 gli FPS scendono dell'`1,77%`, il p95 aumenta di `1 ms`, i frame lenti aumentano di `8` e la coda finale di `32 ms`. `renderFrameTotalP95Ms` passa da `1` a `2 ms` e `resizeCanvasTotalMs` da `10` a `60 ms`; una sola run non basta per attribuire con certezza quest'ultimo aumento, ma è compatibile con overhead DOM/layout della patch e va ricontrollato.
+
+La #43 è invece sostanzialmente identica alla #38: la latenza probe massima è `44 ms`, sotto soglia, quindi la preview non si attiva e non introduce lavoro Canvas2D. FPS, p95, frame lenti, coda e presentazione restano uguali entro `1 ms`.
+
+Rispetto alla vecchia preview differita della #39, la #42 elimina il debito strutturale: coda finale `4416→256 ms` e fine presentazione `11281→7105 ms`. Il renderer esatto non viene più alleggerito durante l'input, quindi non mantiene il p95 artificiosamente migliore della #39; il beneficio cercato è soltanto percettivo sul tip transiente.
+
+Decisione preliminare: l'architettura v2 è sicura e Fur non regredisce, ma Base mostra un piccolo costo misurabile. Non promuovere né rimuovere ancora il candidato sulla base di una sola run. Eseguire almeno un'altra Base identica e raccogliere il giudizio tattile dell'utente: se il tip non appare sensibilmente più vicino al dito o la regressione si ripete, rimuovere la patch; se la sensazione migliora, isolare in un passo successivo l'overhead di aggiornamento/posizionamento DOM senza cambiare contemporaneamente trigger o resa.
