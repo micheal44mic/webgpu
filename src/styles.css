@@ -45,8 +45,12 @@ button:hover {
 }
 
 button:disabled {
-  cursor: wait;
-  opacity: 0.55;
+  cursor: default;
+  opacity: 0.45;
+}
+
+button:disabled:hover {
+  background: #1b1f27;
 }
 
 button.primary {
@@ -336,7 +340,17 @@ select {
   }
 
   .topbar {
+    gap: 8px;
     padding-inline: max(8px, env(safe-area-inset-left)) max(8px, env(safe-area-inset-right));
+  }
+
+  .topbar > div:first-child {
+    flex: 1 1 auto;
+    overflow: hidden;
+  }
+
+  .topbar strong {
+    min-width: 0;
   }
 
   .topbar .muted {
@@ -344,6 +358,7 @@ select {
   }
 
   .topbar-actions {
+    flex: 0 0 auto;
     gap: 4px;
   }
 

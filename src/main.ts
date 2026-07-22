@@ -3,6 +3,7 @@ import {
   BrushEngine,
   type BrushSettings,
   type EngineStats,
+  type HistoryState,
   type LayerPoint,
   type LayerFormat,
   type PointerSample,
@@ -39,6 +40,13 @@ const playHumanStrokeButton = element<HTMLButtonElement>("playHumanStroke");
 const humanStrokeResult = element<HTMLParagraphElement>("humanStrokeResult");
 const humanStrokeTestVariantSelect = element<HTMLSelectElement>("humanStrokeTestVariant");
 const layerFormatSelect = element<HTMLSelectElement>("layerFormat");
+const clearLayerButton = element<HTMLButtonElement>("clearLayer");
+const undoStrokeButton = element<HTMLButtonElement>("undoStroke");
+const redoStrokeButton = element<HTMLButtonElement>("redoStroke");
+const fitViewButton = element<HTMLButtonElement>("fitView");
+const zoomInButton = element<HTMLButtonElement>("zoomIn");
+const zoomOutButton = element<HTMLButtonElement>("zoomOut");
+const benchmarkStampsInput = element<HTMLInputElement>("benchmarkStamps");
 
 type HumanStrokeTestVariant = "base" | "fur";
 
@@ -134,9 +142,22 @@ interface BenchmarkRun {
     shapeOccupancyBitmaskBytes: number;
     colorSeedStrategy: "reuse-position-copy-seed";
     dirtyRectStrategy: "directional-jitter-bounds";
-    performanceTelemetryRevision: 6;
+    historyStorageStrategy: StrokePerformanceProfile["historyStorageStrategy"];
+    historyReplayStrategy: StrokePerformanceProfile["historyReplayStrategy"];
+    historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
+    performanceTelemetryRevision: 7;
   };
 }
+
+let historyState: HistoryState = {
+  canUndo: false,
+  canRedo: false,
+  busy: false,
+  actionCount: 0,
+  cursor: 0,
+  storedBaseStamps: 0,
+  logicalStampBytes: 0,
+};
 
 const engine = new BrushEngine(canvas, {
   onStatus(message, kind) {
@@ -145,6 +166,11 @@ const engine = new BrushEngine(canvas, {
   },
   onStats(stats) {
     updateStats(stats);
+  },
+  onHistoryChange(state) {
+    historyState = state;
+    updateHistoryControls();
+    updateHumanStrokeControls();
   },
 });
 
@@ -155,6 +181,10 @@ let humanStrokeReplayFrame: number | null = null;
 let humanStrokeReplaying = false;
 let humanStrokeLoading = true;
 let humanStrokeSaving = false;
+let benchmarkRunning = false;
+let layerFormatChanging = false;
+let historyUiBusy = false;
+let engineInitialized = false;
 
 function readBrushSettings(): BrushSettings {
   return {
@@ -291,7 +321,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     hardwareConcurrency: navigator.hardwareConcurrency || null,
     deviceMemoryGiB: navigatorWithMetrics.deviceMemory ?? null,
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
-    performanceTelemetryRevision: 6,
+    performanceTelemetryRevision: 7,
     ...engineEnvironment,
   };
 }
@@ -496,18 +526,108 @@ function humanStrokeTestLabel(variant: HumanStrokeTestVariant): string {
 }
 
 function updateHumanStrokeControls(): void {
-  recordHumanStrokeButton.disabled = humanStrokeLoading || humanStrokeSaving || humanStrokeReplaying || Boolean(humanStrokeBenchmark);
+  const operationLocked = !engineInitialized
+    || historyUiBusy
+    || historyState.busy
+    || benchmarkRunning
+    || layerFormatChanging;
+  recordHumanStrokeButton.disabled = operationLocked
+    || humanStrokeLoading
+    || humanStrokeSaving
+    || humanStrokeReplaying
+    || Boolean(humanStrokeBenchmark);
   recordHumanStrokeButton.textContent = humanStrokeRecordingArmed
     ? "Annulla registrazione tratto"
     : humanStrokeBenchmark
       ? "Tratto umano fissato"
       : "Registra tratto umano";
-  playHumanStrokeButton.disabled = !humanStrokeBenchmark || humanStrokeLoading || humanStrokeSaving || humanStrokeReplaying;
-  humanStrokeTestVariantSelect.disabled = humanStrokeLoading
+  playHumanStrokeButton.disabled = operationLocked
+    || !humanStrokeBenchmark
+    || humanStrokeLoading
+    || humanStrokeSaving
+    || humanStrokeReplaying;
+  humanStrokeTestVariantSelect.disabled = operationLocked
+    || humanStrokeLoading
     || humanStrokeSaving
     || humanStrokeReplaying
     || humanStrokeRecordingArmed
     || Boolean(humanStrokeRecording);
+}
+
+function interactionLocked(): boolean {
+  return !engineInitialized
+    || activePointerId !== null
+    || historyUiBusy
+    || historyState.busy
+    || benchmarkRunning
+    || layerFormatChanging
+    || humanStrokeReplaying
+    || humanStrokeSaving;
+}
+
+function updateHistoryControls(): void {
+  const locked = interactionLocked() || activePointerId !== null;
+  undoStrokeButton.disabled = locked || !historyState.canUndo;
+  redoStrokeButton.disabled = locked || !historyState.canRedo;
+  clearLayerButton.disabled = locked;
+  benchmarkButton.disabled = locked;
+  benchmarkStampsInput.disabled = locked;
+  layerFormatSelect.disabled = locked;
+  fitViewButton.disabled = locked;
+  zoomInButton.disabled = locked;
+  zoomOutButton.disabled = locked;
+  for (const id of brushControlIds) {
+    element<HTMLInputElement | HTMLSelectElement>(id).disabled = locked;
+  }
+}
+
+async function runHistoryOperation(operation: "undo" | "redo"): Promise<void> {
+  if (interactionLocked() || activePointerId !== null) {
+    return;
+  }
+  if (operation === "undo" ? !historyState.canUndo : !historyState.canRedo) {
+    return;
+  }
+
+  historyUiBusy = true;
+  updateHistoryControls();
+  updateHumanStrokeControls();
+  try {
+    if (operation === "undo") {
+      await engine.undo();
+    } else {
+      await engine.redo();
+    }
+  } catch (error) {
+    statusElement.textContent = error instanceof Error ? error.message : String(error);
+    statusElement.className = "status error";
+  } finally {
+    historyUiBusy = false;
+    historyState = engine.getHistoryState();
+    updateHistoryControls();
+    updateHumanStrokeControls();
+  }
+}
+
+async function clearLayerWithHistory(): Promise<void> {
+  if (interactionLocked() || activePointerId !== null) {
+    return;
+  }
+
+  historyUiBusy = true;
+  updateHistoryControls();
+  updateHumanStrokeControls();
+  try {
+    await engine.clear();
+  } catch (error) {
+    statusElement.textContent = error instanceof Error ? error.message : String(error);
+    statusElement.className = "status error";
+  } finally {
+    historyUiBusy = false;
+    historyState = engine.getHistoryState();
+    updateHistoryControls();
+    updateHumanStrokeControls();
+  }
 }
 
 function describeHumanStrokeBenchmark(benchmark: HumanStrokeBenchmark): string {
@@ -548,27 +668,66 @@ for (const id of brushControlIds) {
   element<HTMLInputElement | HTMLSelectElement>(id).addEventListener("change", applyBrushControls);
 }
 
-element<HTMLInputElement>("benchmarkStamps").addEventListener("input", updateControlOutputs);
+benchmarkStampsInput.addEventListener("input", updateControlOutputs);
 
-element<HTMLButtonElement>("clearLayer").addEventListener("click", () => engine.clear());
-element<HTMLButtonElement>("fitView").addEventListener("click", () => engine.fitView());
-element<HTMLButtonElement>("zoomIn").addEventListener("click", () => engine.zoomBy(1.35));
-element<HTMLButtonElement>("zoomOut").addEventListener("click", () => engine.zoomBy(1 / 1.35));
+clearLayerButton.addEventListener("click", () => {
+  void clearLayerWithHistory();
+});
+undoStrokeButton.addEventListener("click", () => {
+  void runHistoryOperation("undo");
+});
+redoStrokeButton.addEventListener("click", () => {
+  void runHistoryOperation("redo");
+});
+fitViewButton.addEventListener("click", () => {
+  if (!interactionLocked() && activePointerId === null) {
+    engine.fitView();
+  }
+});
+zoomInButton.addEventListener("click", () => {
+  if (!interactionLocked() && activePointerId === null) {
+    engine.zoomBy(1.35);
+  }
+});
+zoomOutButton.addEventListener("click", () => {
+  if (!interactionLocked() && activePointerId === null) {
+    engine.zoomBy(1 / 1.35);
+  }
+});
 
 layerFormatSelect.addEventListener("change", async () => {
+  if (interactionLocked() || activePointerId !== null) {
+    layerFormatSelect.value = engine.getStats().layerFormat;
+    return;
+  }
   const requested = layerFormatSelect.value as LayerFormat;
+  layerFormatChanging = true;
   layerFormatSelect.disabled = true;
+  updateHistoryControls();
+  updateHumanStrokeControls();
   try {
-    await engine.setLayerFormat(requested);
+    const changed = await engine.setLayerFormat(requested);
+    if (!changed) {
+      layerFormatSelect.value = engine.getStats().layerFormat;
+    }
   } catch {
     layerFormatSelect.value = engine.getStats().layerFormat;
   } finally {
-    layerFormatSelect.disabled = false;
+    layerFormatChanging = false;
+    historyState = engine.getHistoryState();
+    updateHistoryControls();
+    updateHumanStrokeControls();
   }
 });
 
 benchmarkButton.addEventListener("click", async () => {
+  if (interactionLocked()) {
+    return;
+  }
+  benchmarkRunning = true;
   benchmarkButton.disabled = true;
+  updateHistoryControls();
+  updateHumanStrokeControls();
   benchmarkResult.textContent = "Benchmark in esecuzione sulla GPU…";
   try {
     const result = await engine.runBenchmark(rangeValue("benchmarkStamps"));
@@ -583,12 +742,23 @@ benchmarkButton.addEventListener("click", async () => {
   } catch (error) {
     benchmarkResult.textContent = error instanceof Error ? error.message : String(error);
   } finally {
+    benchmarkRunning = false;
     benchmarkButton.disabled = false;
+    historyState = engine.getHistoryState();
+    updateHistoryControls();
+    updateHumanStrokeControls();
   }
 });
 
 recordHumanStrokeButton.addEventListener("click", () => {
-  if (humanStrokeLoading || humanStrokeSaving || humanStrokeReplaying || humanStrokeRecording || humanStrokeBenchmark) {
+  if (
+    interactionLocked()
+    || humanStrokeLoading
+    || humanStrokeSaving
+    || humanStrokeReplaying
+    || humanStrokeRecording
+    || humanStrokeBenchmark
+  ) {
     return;
   }
 
@@ -677,7 +847,7 @@ async function finishHumanStrokeRecording(shouldSave: boolean): Promise<void> {
 
 async function replayHumanStroke(): Promise<void> {
   const benchmark = humanStrokeBenchmark;
-  if (!benchmark || humanStrokeReplaying) {
+  if (!benchmark || humanStrokeReplaying || interactionLocked()) {
     return;
   }
 
@@ -688,13 +858,16 @@ async function replayHumanStroke(): Promise<void> {
   humanStrokeReplaying = true;
   benchmarkButton.disabled = true;
   updateHumanStrokeControls();
+  updateHistoryControls();
   applySettingsToControls(replaySettings);
   humanStrokeResult.textContent = `Riproduzione test ${testLabel} in corso…`;
 
   try {
     await engine.waitForIdle();
     engine.resetStrokeRandomSeed();
-    engine.clear();
+    if (!engine.resetDocument()) {
+      throw new Error("Il documento è occupato da un'operazione Undo/Redo.");
+    }
     await engine.waitForIdle();
 
     const before = engine.getStats();
@@ -795,6 +968,7 @@ async function replayHumanStroke(): Promise<void> {
       `coda GPU ${playback.inputToGpuCompletionMs.toFixed(2)} ms`,
       `CPU frame p95 ${performanceProfile.renderFrameTotalP95Ms.toFixed(2)} ms`,
       `submit p95 ${performanceProfile.submitImmediateP95Ms.toFixed(2)} ms`,
+      `history CPU ${formatInteger(performanceProfile.historyCapturedBaseStamps)} stamp / ${formatInteger(performanceProfile.historyCapturedBatches)} batch`,
       `FPS medi ${performanceProfile.averageRenderFps.toFixed(1)}`,
       `${formatInteger(performanceProfile.delayedRenderFrames)} frame >20 ms`,
       `presentazione ${playback.endToPresentedMs.toFixed(2)} ms`,
@@ -807,6 +981,8 @@ async function replayHumanStroke(): Promise<void> {
     humanStrokeReplaying = false;
     benchmarkButton.disabled = false;
     updateHumanStrokeControls();
+    historyState = engine.getHistoryState();
+    updateHistoryControls();
   }
 }
 
@@ -834,7 +1010,7 @@ let lastPanClientX = 0;
 let lastPanClientY = 0;
 
 canvas.addEventListener("pointerdown", (event) => {
-  if (activePointerId !== null) {
+  if (activePointerId !== null || interactionLocked()) {
     return;
   }
 
@@ -855,6 +1031,15 @@ canvas.addEventListener("pointerdown", (event) => {
     }
     engine.beginStroke(sample);
   }
+
+  // requestRender() è già stato accodato da beginStroke(): questo callback
+  // viene dopo il primo render e tiene il lavoro DOM fuori dalla sua strada.
+  requestAnimationFrame(() => {
+    if (activePointerId === event.pointerId) {
+      updateHistoryControls();
+      updateHumanStrokeControls();
+    }
+  });
 });
 
 canvas.addEventListener("pointermove", (event) => {
@@ -892,6 +1077,9 @@ function finishPointer(event: PointerEvent): void {
   canvas.classList.remove("panning");
   pointerMode = null;
   activePointerId = null;
+  historyState = engine.getHistoryState();
+  updateHistoryControls();
+  updateHumanStrokeControls();
 }
 
 canvas.addEventListener("pointerup", finishPointer);
@@ -899,10 +1087,40 @@ canvas.addEventListener("pointercancel", finishPointer);
 canvas.addEventListener("lostpointercapture", finishPointer);
 canvas.addEventListener("contextmenu", (event) => event.preventDefault());
 
+window.addEventListener("keydown", (event) => {
+  if (
+    event.defaultPrevented
+    || event.repeat
+    || event.isComposing
+    || event.altKey
+    || (!event.ctrlKey && !event.metaKey)
+    || event.key.toLowerCase() !== "z"
+  ) {
+    return;
+  }
+
+  const target = event.target instanceof Element ? event.target : null;
+  if (target?.closest("input, textarea, select, [contenteditable]")) {
+    return;
+  }
+
+  const operation = event.shiftKey ? "redo" : "undo";
+  const available = operation === "undo" ? historyState.canUndo : historyState.canRedo;
+  if (!available || interactionLocked() || activePointerId !== null) {
+    return;
+  }
+
+  event.preventDefault();
+  void runHistoryOperation(operation);
+});
+
 canvas.addEventListener(
   "wheel",
   (event) => {
     event.preventDefault();
+    if (interactionLocked() || activePointerId !== null) {
+      return;
+    }
     const factor = Math.exp(-event.deltaY * 0.0015);
     engine.zoomBy(Math.min(2, Math.max(0.5, factor)), event.clientX, event.clientY);
   },
@@ -915,15 +1133,24 @@ resizeObserver.observe(canvas);
 updateControlOutputs();
 engine.setBrushSettings(readBrushSettings());
 updateHumanStrokeControls();
+updateHistoryControls();
 void loadCanonicalHumanStroke();
 
-void engine.initialize().catch((error) => {
-  const secureContextHint = !window.isSecureContext
-    ? " WebGPU richiede HTTPS oppure localhost; un indirizzo LAN in HTTP non è sufficiente."
-    : "";
-  statusElement.textContent = `${error instanceof Error ? error.message : String(error)}${secureContextHint}`;
-  statusElement.className = "status error";
-  benchmarkButton.disabled = true;
-});
+void engine.initialize()
+  .then(() => {
+    engineInitialized = true;
+    historyState = engine.getHistoryState();
+    updateHistoryControls();
+    updateHumanStrokeControls();
+  })
+  .catch((error) => {
+    const secureContextHint = !window.isSecureContext
+      ? " WebGPU richiede HTTPS oppure localhost; un indirizzo LAN in HTTP non è sufficiente."
+      : "";
+    statusElement.textContent = `${error instanceof Error ? error.message : String(error)}${secureContextHint}`;
+    statusElement.className = "status error";
+    benchmarkButton.disabled = true;
+    updateHistoryControls();
+  });
 
 window.setInterval(() => updateStats(engine.getStats()), 500);

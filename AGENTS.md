@@ -740,3 +740,47 @@ La `#32` riporta tutte le firme richieste ed è pienamente confrontabile con le 
 La CPU resta a `1 ms` p95; il miglioramento deriva dal percorso GPU che evita il campione della Shape 2K nelle celle sicuramente vuote. Non deriva dalla decodifica PNG, che avviene una sola volta all'avvio e serve a rendere affidabile la selezione. Il p95 uguale alla mediana dei frame (`17 ms`) e la coda finale di soli `21 ms` indicano che il replay ora resta quasi sempre vicino ai `60 FPS`, invece di accumulare lavoro GPU durante l'input.
 
 Decisione: pre-mappa promossa e mantenuta. Il risultato è ampio e coerente su tutte le metriche principali, mentre l'alpha non nullo continua a essere campionato dalla texture R8 2K originale con gli stessi mip, filtro, hardness, pressione e blending. Il bitmask elimina soltanto celle il cui supporto filtrato è dimostrabilmente nullo; il fallback legacy resta automatico per radius/LOD/copertura non convenienti. Non sostituire questo percorso con supporti geometrici specifici per Fur e non rimuovere la decodifica deterministica: insieme permettono la stessa ottimizzazione automatica anche per future Shape compatibili.
+
+## Funzione Undo/Redo con cronologia CPU — candidato da misurare
+
+Undo e Redo sono stati aggiunti come funzione isolata, senza modificare shader, pipeline, geometria, formule WGSL, stamp, Count, size, spacing, flow, hardness, pressione, alpha, blend intensity, seed, jitter, ordine delle copie, blending, scissor o percorso Shape promosso nella #32.
+
+La cronologia è un journal CPU dei batch realmente inviati al renderer, identificato da:
+
+- `historyStorageStrategy: "cpu-render-batch-journal"`;
+- `historyStampRetentionStrategy: "shared-immutable-references"`;
+- `historyReplayStrategy: "clear-and-stable-gpu-replay"`.
+
+Durante il tratto non vengono create texture di snapshot, copie GPU, readback, render pass o submission aggiuntive. Gli array di stamp già estratti da `pendingStamps` vengono trattenuti senza copiare gli stamp; per ogni batch si conservano il riferimento alle impostazioni effettive, il flag di clear originale, dirty rect, selezione della bitmask Shape e identità hash della maschera. Il costo CPU nuovo sul percorso live è l'ID dell'azione assegnato allo stamp e un record per batch. Dopo un Undo, il primo stamp del ramo nuovo tronca il Redo logicamente in O(1); l'eventuale scansione per liberare i batch abbandonati viene rimandata alla successiva operazione esplicita di cronologia o a `Pulisci`, mai eseguita durante o subito dopo una pennellata.
+
+Quando l'utente preme Undo o Redo, il motore attende che la coda corrente sia vuota, pulisce il layer e riproduce sulla GPU soltanto le azioni visibili, nello stesso ordine e con gli stessi confini brush/clear, impostazioni, scissor e selezione Shape registrati. I pass di display intermedi vengono omessi e il canvas viene presentato una volta alla fine. La cronologia quindi lascia invariato il carico GPU mentre si disegna; la GPU viene usata per la ricostruzione soltanto quando Undo/Redo viene richiesto. Un fallimento tenta di ripristinare cursore e layer precedenti.
+
+`Pulisci` è un'azione annullabile. Il reset tecnico usato dal replay canonico azzera invece documento e cronologia prima della misura. Un cambio del formato layer azzera la cronologia soltanto dopo la creazione riuscita del nuovo layer. Pennello, zoom, formato e benchmark sintetico restano bloccati durante il replay canonico, così la run salvata non può dichiarare il preset fissato mentre l'utente lo modifica.
+
+`performanceTelemetryRevision: 7` aggiunge:
+
+- `historyCapturedBaseStamps` e `historyCapturedBatches`;
+- `historyCommittedActions`;
+- `historyStoredBaseStampsAtEnd`;
+- `historyLogicalStampBytesAtEnd`;
+- `historyReplayOperations`;
+- le tre firme di strategia riportate sopra.
+
+`historyLogicalStampBytesAtEnd` conta `32 byte` di payload logico per stamp e non è una misura dell'heap JavaScript: oggetti, riferimenti e array hanno overhead reale maggiore. Non usare questo campo per stimare la RAM totale su iPhone e non è ancora presente un limite della cronologia.
+
+### Protocollo iPhone previsto
+
+La prima run valida attesa è la `#33`, variante `Fur`, da confrontare direttamente con la `#32`, perché è l'ultima build immediatamente precedente e usa lo stesso percorso bitmask promosso. Devono restare invariati fingerprint `18982412`, `1583` punti, canvas `860×850`, formato `rgba8unorm`, size `750`, spacing `1%`, Count `16`, `12107` stamp base e `193712` copie fisiche, oltre a tutte le firme Shape della #32.
+
+Prima di leggere le prestazioni verificare anche:
+
+- `historyCapturedBaseStamps === baseStamps === 12107`;
+- `historyCapturedBatches === brushBatches`;
+- `historyCommittedActions === 1`;
+- `historyReplayOperations === 0`;
+- `historyStoredBaseStampsAtEnd === 12107`;
+- `historyLogicalStampBytesAtEnd === 387424`.
+
+Confrontare FPS medi, intervallo frame p95/massimo, frame oltre `20 ms`, input delay, coda GPU finale, fine presentazione, `renderFrameTotalP95Ms` e `layerInputDispatchTotalMs`. Non premere Undo/Redo durante il replay; i controlli sono disabilitati apposta. Dopo il salvataggio della run, provare separatamente Undo, Redo e Undo di `Pulisci`, controllando identità visiva e tempo di ricostruzione. Quella latenza non va confusa con l'influenza della cattura CPU sul tratto.
+
+Decisione: in attesa della run iPhone. Non dichiarare la funzione gratuita finché la #33 non conferma che la ritenzione dei batch e i contatori non peggiorano il frame pacing della #32.

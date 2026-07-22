@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#111318" />
     <title>WebGPU Brush Engine 4096²</title>
-    <script type="module" crossorigin src="./assets/index-BSGLKWkT.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-DVGmclji.css">
+    <script type="module" crossorigin src="./assets/index-BwXGyAaF.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-Cl8o_I9x.css">
   </head>
   <body>
     <div id="app">
@@ -16,6 +16,22 @@
           <span class="muted">4096 × 4096</span>
         </div>
         <div class="topbar-actions">
+          <button
+            id="undoStroke"
+            type="button"
+            aria-label="Annulla ultimo tratto"
+            aria-keyshortcuts="Control+Z Meta+Z"
+            title="Annulla (Ctrl/⌘+Z)"
+            disabled
+          >↶</button>
+          <button
+            id="redoStroke"
+            type="button"
+            aria-label="Ripristina ultimo tratto"
+            aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z"
+            title="Ripristina (Ctrl/⌘+Shift+Z)"
+            disabled
+          >↷</button>
           <button id="zoomOut" type="button" title="Riduci zoom">−</button>
           <button id="fitView" type="button">Fit</button>
           <button id="zoomIn" type="button" title="Aumenta zoom">+</button>

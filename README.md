@@ -18,6 +18,7 @@ Prototipo TypeScript senza framework per verificare l'architettura di un motore 
 - Blend normale premoltiplicato e modalità additiva intensa.
 - Scissor rectangle sul rettangolo sporco del batch.
 - Zoom, pan, fit, clear e benchmark sintetico.
+- Undo/Redo per tratto con cronologia CPU degli stamp e ricostruzione GPU soltanto quando richiesta.
 - Registrazione locale di un tratto umano, con replay temporizzato e misure confrontabili tra versioni del motore.
 - Telemetria CPU e tempo di completamento della coda GPU.
 
@@ -82,6 +83,6 @@ Con spacing 1%, gruppi successivi si sovrappongono molto e il tratto raggiunge r
 
 ## Cosa non è ancora incluso
 
-Questo è un benchmark del brush core, non ancora un clone completo di Procreate. Mancano tile sparse, undo, più layer, maschera temporanea del tratto, stroke opacity applicata una sola volta, texture/grain della punta, smudge, wet mix e salvataggio del documento.
+Questo è un benchmark del brush core, non ancora un clone completo di Procreate. Mancano tile sparse, più layer, maschera temporanea del tratto, stroke opacity applicata una sola volta, texture/grain della punta, smudge, wet mix e salvataggio del documento.
 
 Gli esperimenti tiled delle run `#23` e `#25` e lo scratch sulla dirty rectangle della run `#27` sono stati misurati e bocciati. Il runtime pubblicato è tornato alla baseline monolitica della run `#19`; metriche, diagnosi e motivazioni dei rollback sono conservate in `AGENTS.md`.

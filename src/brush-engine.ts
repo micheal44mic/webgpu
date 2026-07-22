@@ -13,6 +13,9 @@ export type ShapeSamplingStrategy =
   | "coarse-occupancy-bitmask"
   | "mixed";
 export type ShapeMaskDecodeStrategy = "png-gray8-direct" | "canvas-fallback";
+export type HistoryStorageStrategy = "cpu-render-batch-journal";
+export type HistoryReplayStrategy = "clear-and-stable-gpu-replay";
+export type HistoryStampRetentionStrategy = "shared-immutable-references";
 export type ShapeOccupancyFallbackReason =
   | "none"
   | "minimum-radius"
@@ -59,6 +62,16 @@ export interface EngineStats {
   layerFormat: LayerFormat;
 }
 
+export interface HistoryState {
+  canUndo: boolean;
+  canRedo: boolean;
+  busy: boolean;
+  actionCount: number;
+  cursor: number;
+  storedBaseStamps: number;
+  logicalStampBytes: number;
+}
+
 export interface BenchmarkResult {
   baseStamps: number;
   logicalCopies: number;
@@ -88,6 +101,15 @@ export interface StrokePerformanceProfile {
   shapeOccupancyBitmaskBytes: number;
   colorSeedStrategy: "reuse-position-copy-seed";
   dirtyRectStrategy: "directional-jitter-bounds";
+  historyStorageStrategy: HistoryStorageStrategy;
+  historyReplayStrategy: HistoryReplayStrategy;
+  historyStampRetentionStrategy: HistoryStampRetentionStrategy;
+  historyCapturedBaseStamps: number;
+  historyCapturedBatches: number;
+  historyCommittedActions: number;
+  historyStoredBaseStampsAtEnd: number;
+  historyLogicalStampBytesAtEnd: number;
+  historyReplayOperations: number;
   baseStamps: number;
   physicalCopies: number;
   renderFrames: number;
@@ -125,6 +147,7 @@ export interface StrokePerformanceProfile {
 export interface EngineCallbacks {
   onStatus?: (message: string, kind: "working" | "ok" | "error") => void;
   onStats?: (stats: EngineStats) => void;
+  onHistoryChange?: (state: HistoryState) => void;
 }
 
 export interface LayerPoint {
@@ -141,11 +164,14 @@ interface Stamp {
   seed: number;
   directionX: number;
   directionY: number;
+  historyActionId: number;
 }
 
 interface ActiveStroke {
   lastInput: LayerPoint;
   distanceSinceStamp: number;
+  historyActionId: number;
+  historyCommitted: boolean;
 }
 
 interface DirtyRect {
@@ -158,6 +184,7 @@ interface DirtyRect {
 interface ShapeMaskResources {
   texture: GPUTexture;
   decodeStrategy: ShapeMaskDecodeStrategy;
+  identity: number;
   occupancyWords: Uint32Array;
   occupancyActiveCells: number[];
   occupancyCoverageRatios: number[];
@@ -171,6 +198,20 @@ interface ShapeOccupancySelection {
   candidateCoverageRatio: number;
 }
 
+interface HistoryAction {
+  id: number;
+  kind: "stroke" | "clear";
+}
+
+interface HistoryRenderBatch {
+  settings: BrushSettings;
+  stamps: Stamp[];
+  clearLayer: boolean;
+  dirtyRect: DirtyRect | null;
+  shapeOccupancySelection: ShapeOccupancySelection | null;
+  shapeMaskIdentity: number;
+}
+
 interface SubmitTiming {
   totalCpuMs: number;
   stampPackingMs: number;
@@ -179,6 +220,8 @@ interface SubmitTiming {
   displayEncodingMs: number;
   commandSubmitMs: number;
   scissorPixels: number;
+  dirtyRect: DirtyRect | null;
+  shapeOccupancySelection: ShapeOccupancySelection | null;
 }
 
 interface RenderFrameTiming {
@@ -200,6 +243,10 @@ interface MutableStrokePerformanceProfile {
   shapeOccupancyCandidateMipLevel: number;
   shapeOccupancyCandidateActiveCells: number;
   shapeOccupancyCandidateCoverageRatio: number;
+  historyCapturedBaseStamps: number;
+  historyCapturedBatches: number;
+  historyCommittedActions: number;
+  historyReplayOperations: number;
   baseStamps: number;
   physicalCopies: number;
   renderFrames: number;
@@ -235,6 +282,9 @@ const SHAPE_DIRECT_DECODE_STRATEGY = "png-gray8-direct" as const;
 const SHAPE_CANVAS_DECODE_STRATEGY = "canvas-fallback" as const;
 const COLOR_SEED_STRATEGY = "reuse-position-copy-seed" as const;
 const DIRTY_RECT_STRATEGY = "directional-jitter-bounds" as const;
+const HISTORY_STORAGE_STRATEGY = "cpu-render-batch-journal" as const;
+const HISTORY_REPLAY_STRATEGY = "clear-and-stable-gpu-replay" as const;
+const HISTORY_STAMP_RETENTION_STRATEGY = "shared-immutable-references" as const;
 const SHAPE_MASK_SIZE = 2048;
 const SHAPE_OCCUPANCY_GRID_SIZE = 256;
 const SHAPE_OCCUPANCY_CELL_SIZE = SHAPE_MASK_SIZE / SHAPE_OCCUPANCY_GRID_SIZE;
@@ -255,6 +305,14 @@ function percentile(values: readonly number[], ratio: number): number {
   const sorted = [...values].sort((left, right) => left - right);
   const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * ratio) - 1));
   return sorted[index];
+}
+
+function hashBytes(bytes: Uint8Array): number {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < bytes.length; index += 1) {
+    hash = Math.imul(hash ^ bytes[index], 0x01000193) >>> 0;
+  }
+  return hash;
 }
 
 function maximum(values: readonly number[]): number {
@@ -376,6 +434,7 @@ export class BrushEngine {
   private shapeMaskView!: GPUTextureView;
   private shapeMaskSampler!: GPUSampler;
   private shapeMaskDecodeStrategy: ShapeMaskDecodeStrategy = SHAPE_CANVAS_DECODE_STRATEGY;
+  private shapeMaskIdentity = 0;
   private shapeOccupancyActiveCells = new Array<number>(SHAPE_OCCUPANCY_MAP_COUNT).fill(0);
   private shapeOccupancyCoverageRatios = new Array<number>(SHAPE_OCCUPANCY_MAP_COUNT).fill(1);
   private packedMinimumRadius = Number.POSITIVE_INFINITY;
@@ -407,6 +466,15 @@ export class BrushEngine {
   private pendingStamps: Stamp[] = [];
   private activeStroke: ActiveStroke | null = null;
   private seedSequence = 1;
+
+  private historyActions: HistoryAction[] = [];
+  private historyCursor = 0;
+  private nextHistoryActionId = 1;
+  private historyBatches: HistoryRenderBatch[] = [];
+  private historyStoredBaseStamps = 0;
+  private historyCompactionPending = false;
+  private historyBusy = false;
+  private layerHasContent = false;
 
   private frameRequest: number | null = null;
   private clearRequested = true;
@@ -491,6 +559,7 @@ export class BrushEngine {
     this.requestRender();
     this.callbacks.onStatus?.("WebGPU pronto. Disegna sul canvas.", "ok");
     this.publishStats();
+    this.publishHistoryState();
   }
 
   getSettings(): BrushSettings {
@@ -527,29 +596,41 @@ export class BrushEngine {
     }
   }
 
-  async setLayerFormat(format: LayerFormat): Promise<void> {
-    if (!this.initialized || format === this.layerFormat) {
-      return;
+  async setLayerFormat(format: LayerFormat): Promise<boolean> {
+    if (format === this.layerFormat) {
+      return true;
+    }
+    if (!this.initialized || this.historyBusy || this.activeStroke) {
+      return false;
     }
 
-    this.callbacks.onStatus?.(`Ricreo il layer in formato ${format}…`, "working");
-    await this.device.queue.onSubmittedWorkDone();
-
     const previousFormat = this.layerFormat;
+    this.historyBusy = true;
+    this.publishHistoryState();
+    this.callbacks.onStatus?.(`Ricreo il layer in formato ${format}…`, "working");
     try {
+      await this.waitForIdle();
       await this.recreateLayerResources(format);
       this.layerFormat = format;
+      this.resetHistoryState();
       this.clearRequested = true;
       this.displayDirty = true;
+      this.layerHasContent = false;
       this.requestRender();
       this.callbacks.onStatus?.(`Layer ${format} pronto. Il contenuto è stato azzerato.`, "ok");
       this.publishStats();
+      return true;
     } catch (error) {
-      await this.recreateLayerResources(previousFormat);
+      // recreateLayerResources assegna e distrugge la texture precedente solo
+      // dopo che tutte le pipeline candidate sono state validate. In caso di
+      // errore, il vecchio layer e la sua cronologia sono quindi ancora validi.
       this.layerFormat = previousFormat;
       const message = error instanceof Error ? error.message : String(error);
       this.callbacks.onStatus?.(`Formato ${format} non disponibile: ${message}`, "error");
       throw error;
+    } finally {
+      this.historyBusy = false;
+      this.publishHistoryState();
     }
   }
 
@@ -619,9 +700,14 @@ export class BrushEngine {
   }
 
   beginStrokeAtLayer(point: LayerPoint): void {
+    if (this.historyBusy) {
+      return;
+    }
     this.activeStroke = {
       lastInput: point,
       distanceSinceStamp: 0,
+      historyActionId: this.nextHistoryActionId++,
+      historyCommitted: false,
     };
     this.emitStamp(point, 1, 0);
   }
@@ -641,25 +727,97 @@ export class BrushEngine {
   }
 
   endStroke(): void {
+    const historyChanged = this.activeStroke?.historyCommitted ?? false;
     this.activeStroke = null;
+    if (historyChanged) {
+      this.publishHistoryState();
+    }
   }
 
-  clear(): void {
+  async clear(): Promise<boolean> {
+    if (!this.initialized || this.activeStroke || this.historyBusy) {
+      return false;
+    }
+
+    this.historyBusy = true;
+    this.publishHistoryState();
+    this.callbacks.onStatus?.("Pulizia del layer…", "working");
+
+    try {
+      await this.waitForIdle();
+      if (!this.layerHasContent) {
+        this.callbacks.onStatus?.("Il layer è già vuoto.", "ok");
+        return false;
+      }
+
+      this.submitImmediate([], true, this.settings, true, null);
+      this.clearRequested = false;
+      this.displayDirty = false;
+      await this.device.queue.onSubmittedWorkDone();
+      this.layerHasContent = false;
+
+      // La mutazione della cronologia viene committata soltanto dopo che il
+      // clear GPU è terminato: un errore di submission non può perdere il Redo.
+      if (this.hasVisibleHistoryContent()) {
+        this.truncateRedoHistory();
+        this.historyActions.push({ id: this.nextHistoryActionId++, kind: "clear" });
+        this.historyCursor = this.historyActions.length;
+        this.compactDiscardedHistory();
+        if (this.activeStrokeProfile) {
+          this.activeStrokeProfile.historyCommittedActions += 1;
+        }
+      } else {
+        this.resetHistoryState();
+      }
+
+      this.callbacks.onStatus?.("Layer pulito.", "ok");
+      return true;
+    } finally {
+      this.historyBusy = false;
+      this.publishHistoryState();
+    }
+  }
+
+  resetDocument(): boolean {
+    if (this.historyBusy) {
+      return false;
+    }
+    if (this.frameRequest !== null) {
+      cancelAnimationFrame(this.frameRequest);
+      this.frameRequest = null;
+    }
     this.pendingStamps.length = 0;
     this.activeStroke = null;
+    this.resetHistoryState();
     this.clearRequested = true;
     this.displayDirty = true;
+    this.layerHasContent = false;
     this.requestRender();
+    this.publishHistoryState();
+    return true;
+  }
+
+  async undo(): Promise<boolean> {
+    return this.moveHistoryCursor(-1);
+  }
+
+  async redo(): Promise<boolean> {
+    return this.moveHistoryCursor(1);
   }
 
   async runBenchmark(baseStampCount: number): Promise<BenchmarkResult> {
     if (!this.initialized) {
       throw new Error("Il motore non è ancora inizializzato.");
     }
+    if (this.historyBusy || this.activeStroke) {
+      throw new Error("Concludi prima il tratto o l'operazione Undo/Redo.");
+    }
 
     const count = clamp(Math.round(baseStampCount), 1, Math.min(12_000, MAX_STAMPS_PER_BATCH));
     this.pendingStamps.length = 0;
     this.activeStroke = null;
+    this.resetHistoryState();
+    this.publishHistoryState();
 
     if (this.frameRequest !== null) {
       cancelAnimationFrame(this.frameRequest);
@@ -667,42 +825,56 @@ export class BrushEngine {
     }
 
     await this.device.queue.onSubmittedWorkDone();
-    const stamps = this.generateBenchmarkStamps(count);
+    const benchmarkSettings = this.settings;
+    const stamps = this.generateBenchmarkStamps(count, benchmarkSettings);
 
     const completionStart = performance.now();
-    const cpuSubmitMs = this.submitImmediate(stamps, true).totalCpuMs;
+    const timing = this.submitImmediate(stamps, true, benchmarkSettings);
+    const cpuSubmitMs = timing.totalCpuMs;
     this.clearRequested = false;
     this.displayDirty = false;
+    this.layerHasContent = true;
     await this.device.queue.onSubmittedWorkDone();
     const gpuCompletionMs = performance.now() - completionStart;
 
+    // Il benchmark resta escluso dalle proprie misure di history, ma il suo
+    // risultato visibile diventa comunque un'unica azione annullabile.
+    const historyActionId = this.nextHistoryActionId++;
+    for (const stamp of stamps) {
+      stamp.historyActionId = historyActionId;
+    }
+    this.historyActions.push({ id: historyActionId, kind: "stroke" });
+    this.historyCursor = this.historyActions.length;
+    this.recordHistoryBatch(stamps, benchmarkSettings, timing, true);
+
     this.totalBaseStamps += stamps.length;
-    this.avoidedLogicalDraws += stamps.length * Math.max(0, this.settings.count - 1);
+    this.avoidedLogicalDraws += stamps.length * Math.max(0, benchmarkSettings.count - 1);
     this.recordRenderedFrame(performance.now());
     this.publishStats();
+    this.publishHistoryState();
 
     const averageRadiusSquared = stamps.reduce((sum, stamp) => sum + stamp.radius * stamp.radius, 0) / stamps.length;
     const estimatedCoveredFragments = Math.round(
-      Math.PI * averageRadiusSquared * stamps.length * this.settings.count,
+      Math.PI * averageRadiusSquared * stamps.length * benchmarkSettings.count,
     );
     const strategy = [
       "1 draw instanziata",
-      `${this.settings.count} copie fisiche GPU per stamp base`,
-      this.settings.shape === "shape"
+      `${benchmarkSettings.count} copie fisiche GPU per stamp base`,
+      benchmarkSettings.shape === "shape"
         ? this.lastShapeSamplingStrategy === SHAPE_OCCUPANCY_STRATEGY
           ? `bitmask alpha ${SHAPE_OCCUPANCY_GRID_SIZE}², mip ${this.lastShapeOccupancyMipLevel}, campioni 2K ammessi ${(this.lastShapeOccupancyCoverageRatio * 100).toFixed(1)}%`
           : `quad Shape legacy da 4 vertici, fallback ${this.lastShapeOccupancyFallbackReason}, mappa candidata ${(this.lastShapeOccupancyCandidateCoverageRatio * 100).toFixed(1)}%`
         : "geometria quad triangle-strip (4 vertici)",
-      this.settings.shape === "shape"
+      benchmarkSettings.shape === "shape"
         ? "coverage da maschera alpha 2048²"
         : "coverage fragment smoothstep generica",
-      this.settings.shape === "shape"
+      benchmarkSettings.shape === "shape"
         ? this.shapeMaskDecodeStrategy === SHAPE_DIRECT_DECODE_STRATEGY
           ? "PNG grayscale decodificata direttamente"
           : "PNG decodificata tramite fallback canvas"
         : "nessuna maschera Shape",
-      this.settings.shape === "shape"
-        ? `scatter rotazione ${(this.settings.shapeScatter * 100).toFixed(0)}%`
+      benchmarkSettings.shape === "shape"
+        ? `scatter rotazione ${(benchmarkSettings.shapeScatter * 100).toFixed(0)}%`
         : "orientamento circolare invariato",
       "riuso copySeed per jitter colore per copia",
       "dirty rect direzionale conservativo",
@@ -710,7 +882,7 @@ export class BrushEngine {
 
     return {
       baseStamps: stamps.length,
-      logicalCopies: stamps.length * this.settings.count,
+      logicalCopies: stamps.length * benchmarkSettings.count,
       cpuSubmitMs,
       gpuCompletionMs,
       estimatedCoveredFragments,
@@ -729,6 +901,18 @@ export class BrushEngine {
       layerMemoryMiB: this.layerFormat === "rgba16float" ? 128 : 64,
       gpuLabel: this.gpuLabel,
       layerFormat: this.layerFormat,
+    };
+  }
+
+  getHistoryState(): HistoryState {
+    return {
+      canUndo: !this.historyBusy && this.historyCursor > 0,
+      canRedo: !this.historyBusy && this.historyCursor < this.historyActions.length,
+      busy: this.historyBusy,
+      actionCount: this.historyActions.length,
+      cursor: this.historyCursor,
+      storedBaseStamps: this.historyStoredBaseStamps,
+      logicalStampBytes: this.historyStoredBaseStamps * STAMP_STRIDE_BYTES,
     };
   }
 
@@ -775,6 +959,10 @@ export class BrushEngine {
       shapeOccupancyCandidateMipLevel: -1,
       shapeOccupancyCandidateActiveCells: 0,
       shapeOccupancyCandidateCoverageRatio: 0,
+      historyCapturedBaseStamps: 0,
+      historyCapturedBatches: 0,
+      historyCommittedActions: 0,
+      historyReplayOperations: 0,
       baseStamps: 0,
       physicalCopies: 0,
       renderFrames: 0,
@@ -826,6 +1014,15 @@ export class BrushEngine {
       shapeOccupancyBitmaskBytes: SHAPE_OCCUPANCY_MAP_BYTES,
       colorSeedStrategy: COLOR_SEED_STRATEGY,
       dirtyRectStrategy: DIRTY_RECT_STRATEGY,
+      historyStorageStrategy: HISTORY_STORAGE_STRATEGY,
+      historyReplayStrategy: HISTORY_REPLAY_STRATEGY,
+      historyStampRetentionStrategy: HISTORY_STAMP_RETENTION_STRATEGY,
+      historyCapturedBaseStamps: profile.historyCapturedBaseStamps,
+      historyCapturedBatches: profile.historyCapturedBatches,
+      historyCommittedActions: profile.historyCommittedActions,
+      historyStoredBaseStampsAtEnd: this.historyStoredBaseStamps,
+      historyLogicalStampBytesAtEnd: this.historyStoredBaseStamps * STAMP_STRIDE_BYTES,
+      historyReplayOperations: profile.historyReplayOperations,
       baseStamps: profile.baseStamps,
       physicalCopies: profile.physicalCopies,
       renderFrames: profile.renderFrames,
@@ -892,6 +1089,9 @@ export class BrushEngine {
     shapeOccupancyBitmaskBytes: number;
     colorSeedStrategy: typeof COLOR_SEED_STRATEGY;
     dirtyRectStrategy: typeof DIRTY_RECT_STRATEGY;
+    historyStorageStrategy: typeof HISTORY_STORAGE_STRATEGY;
+    historyReplayStrategy: typeof HISTORY_REPLAY_STRATEGY;
+    historyStampRetentionStrategy: typeof HISTORY_STAMP_RETENTION_STRATEGY;
   } {
     return {
       canvasWidth: this.canvas.width,
@@ -934,6 +1134,9 @@ export class BrushEngine {
       shapeOccupancyBitmaskBytes: SHAPE_OCCUPANCY_MAP_BYTES,
       colorSeedStrategy: COLOR_SEED_STRATEGY,
       dirtyRectStrategy: DIRTY_RECT_STRATEGY,
+      historyStorageStrategy: HISTORY_STORAGE_STRATEGY,
+      historyReplayStrategy: HISTORY_REPLAY_STRATEGY,
+      historyStampRetentionStrategy: HISTORY_STAMP_RETENTION_STRATEGY,
     };
   }
 
@@ -977,6 +1180,7 @@ export class BrushEngine {
     this.shapeMaskTexture = shapeMaskResources.texture;
     this.shapeMaskView = this.shapeMaskTexture.createView({ label: "Shape 2K mask view" });
     this.shapeMaskDecodeStrategy = shapeMaskResources.decodeStrategy;
+    this.shapeMaskIdentity = shapeMaskResources.identity;
     this.shapeOccupancyActiveCells = shapeMaskResources.occupancyActiveCells;
     this.shapeOccupancyCoverageRatios = shapeMaskResources.occupancyCoverageRatios;
     this.shapeOccupancyUniformBuffers = Array.from(
@@ -1235,6 +1439,7 @@ export class BrushEngine {
     return {
       texture,
       decodeStrategy,
+      identity: hashBytes(baseMask),
       occupancyWords: occupancy.words,
       occupancyActiveCells: occupancy.activeCells,
       occupancyCoverageRatios: occupancy.coverageRatios,
@@ -1482,13 +1687,13 @@ export class BrushEngine {
     oldTexture?.destroy();
   }
 
-  private writeBrushUniforms(): void {
+  private writeBrushUniforms(settings: BrushSettings = this.settings): void {
     const floats = new Float32Array(this.brushUniformUpload);
     const unsigned = new Uint32Array(this.brushUniformUpload);
     floats.fill(0);
 
-    const [hue, saturation, lightness] = hexToHsl(this.settings.color);
-    const jitterMaster = this.settings.jitterMaster;
+    const [hue, saturation, lightness] = hexToHsl(settings.color);
+    const jitterMaster = settings.jitterMaster;
 
     floats[0] = LAYER_SIZE;
     floats[1] = LAYER_SIZE;
@@ -1496,20 +1701,20 @@ export class BrushEngine {
     floats[5] = saturation;
     floats[6] = lightness;
     floats[7] = 1;
-    floats[8] = (this.settings.hueJitterDegrees / 360) * jitterMaster;
-    floats[9] = this.settings.saturationJitter * jitterMaster;
-    floats[10] = this.settings.lightnessJitter * jitterMaster;
-    floats[11] = this.settings.darknessJitter * jitterMaster;
-    floats[12] = this.settings.flow;
-    floats[13] = this.settings.hardness;
-    floats[14] = this.settings.blendIntensity;
-    floats[15] = this.settings.pressureOpacity;
-    floats[16] = this.settings.positionJitterLinear;
-    floats[17] = this.settings.positionJitterLateral;
-    floats[18] = this.settings.shapeScatter;
-    unsigned[20] = this.settings.count >>> 0;
-    unsigned[21] = this.settings.jitterPerCopy ? 1 : 0;
-    unsigned[22] = this.settings.blendMode === "additive" ? 1 : 0;
+    floats[8] = (settings.hueJitterDegrees / 360) * jitterMaster;
+    floats[9] = settings.saturationJitter * jitterMaster;
+    floats[10] = settings.lightnessJitter * jitterMaster;
+    floats[11] = settings.darknessJitter * jitterMaster;
+    floats[12] = settings.flow;
+    floats[13] = settings.hardness;
+    floats[14] = settings.blendIntensity;
+    floats[15] = settings.pressureOpacity;
+    floats[16] = settings.positionJitterLinear;
+    floats[17] = settings.positionJitterLateral;
+    floats[18] = settings.shapeScatter;
+    unsigned[20] = settings.count >>> 0;
+    unsigned[21] = settings.jitterPerCopy ? 1 : 0;
+    unsigned[22] = settings.blendMode === "additive" ? 1 : 0;
     unsigned[23] = 0;
 
     this.device.queue.writeBuffer(this.brushUniformBuffer, 0, this.brushUniformUpload);
@@ -1617,6 +1822,20 @@ export class BrushEngine {
       return;
     }
 
+    const stroke = this.activeStroke;
+    if (!stroke) {
+      return;
+    }
+    if (!stroke.historyCommitted) {
+      this.truncateRedoHistory();
+      this.historyActions.push({ id: stroke.historyActionId, kind: "stroke" });
+      this.historyCursor = this.historyActions.length;
+      stroke.historyCommitted = true;
+      if (this.activeStrokeProfile) {
+        this.activeStrokeProfile.historyCommittedActions += 1;
+      }
+    }
+
     this.pendingStamps.push({
       x: point.x,
       y: point.y,
@@ -1625,6 +1844,7 @@ export class BrushEngine {
       seed,
       directionX,
       directionY,
+      historyActionId: stroke.historyActionId,
     });
     if (this.activeStrokeProfile) {
       this.activeStrokeProfile.baseStamps += 1;
@@ -1665,14 +1885,22 @@ export class BrushEngine {
     }
 
     const clearLayer = this.clearRequested;
+    const renderSettings = this.settings;
     const start = performance.now();
-    const timing = this.submitImmediate(batch, clearLayer);
+    const timing = this.submitImmediate(batch, clearLayer, renderSettings);
     this.lastCpuFrameMs = performance.now() - start;
+
+    if (batch.length > 0) {
+      this.recordHistoryBatch(batch, renderSettings, timing, clearLayer);
+      this.layerHasContent = true;
+    } else if (clearLayer) {
+      this.layerHasContent = false;
+    }
 
     this.clearRequested = false;
     this.displayDirty = false;
     this.totalBaseStamps += batch.length;
-    this.avoidedLogicalDraws += batch.length * Math.max(0, this.settings.count - 1);
+    this.avoidedLogicalDraws += batch.length * Math.max(0, renderSettings.count - 1);
     this.recordRenderedFrame(timestamp);
 
     const statsPublishStart = performance.now();
@@ -1689,6 +1917,217 @@ export class BrushEngine {
       batchExtractionMs,
       statsPublishMs,
     });
+  }
+
+  private recordHistoryBatch(
+    batch: Stamp[],
+    settings: BrushSettings,
+    timing: SubmitTiming,
+    clearLayer: boolean,
+  ): void {
+    // pendingStamps riceve soltanto stamp interattivi e quindi ogni batch live
+    // è interamente storico. Il benchmark sintetico usa submitImmediate()
+    // direttamente e non passa da qui: evitiamo così una copia per frame.
+    if (batch.length === 0 || batch[0].historyActionId === 0) {
+      return;
+    }
+
+    this.historyBatches.push({
+      settings,
+      stamps: batch,
+      clearLayer,
+      dirtyRect: timing.dirtyRect,
+      shapeOccupancySelection: timing.shapeOccupancySelection,
+      shapeMaskIdentity: this.shapeMaskIdentity,
+    });
+    this.historyStoredBaseStamps += batch.length;
+
+    if (this.activeStrokeProfile) {
+      this.activeStrokeProfile.historyCapturedBaseStamps += batch.length;
+      this.activeStrokeProfile.historyCapturedBatches += 1;
+    }
+  }
+
+  private truncateRedoHistory(): void {
+    if (this.historyCursor >= this.historyActions.length) {
+      return;
+    }
+    this.historyActions.length = this.historyCursor;
+
+    // Il primo stamp dopo un Undo deve restare O(1): gli array abbandonati
+    // vengono esclusi subito e liberati alla prossima operazione esplicita.
+    this.historyCompactionPending = true;
+  }
+
+  private compactDiscardedHistory(): void {
+    if (!this.historyCompactionPending) {
+      return;
+    }
+
+    const retainedActionIds = new Set(
+      this.historyActions
+        .filter((action) => action.kind === "stroke")
+        .map((action) => action.id),
+    );
+
+    const retainedBatches: HistoryRenderBatch[] = [];
+    let retainedStampCount = 0;
+    for (const batch of this.historyBatches) {
+      const retainedStamps = batch.stamps.filter(
+        (stamp) => retainedActionIds.has(stamp.historyActionId),
+      );
+      if (retainedStamps.length === 0) {
+        continue;
+      }
+      retainedBatches.push(retainedStamps.length === batch.stamps.length
+        ? batch
+        : { ...batch, stamps: retainedStamps });
+      retainedStampCount += retainedStamps.length;
+    }
+    this.historyBatches = retainedBatches;
+    this.historyStoredBaseStamps = retainedStampCount;
+    this.historyCompactionPending = false;
+  }
+
+  private visibleHistoryStrokeIds(): Set<number> {
+    let firstVisibleAction = 0;
+    for (let index = this.historyCursor - 1; index >= 0; index -= 1) {
+      if (this.historyActions[index].kind === "clear") {
+        firstVisibleAction = index + 1;
+        break;
+      }
+    }
+
+    const visibleIds = new Set<number>();
+    for (let index = firstVisibleAction; index < this.historyCursor; index += 1) {
+      const action = this.historyActions[index];
+      if (action.kind === "stroke") {
+        visibleIds.add(action.id);
+      }
+    }
+    return visibleIds;
+  }
+
+  private hasVisibleHistoryContent(): boolean {
+    return this.visibleHistoryStrokeIds().size > 0;
+  }
+
+  private resetHistoryState(): void {
+    this.historyActions = [];
+    this.historyCursor = 0;
+    this.nextHistoryActionId = 1;
+    this.historyBatches = [];
+    this.historyStoredBaseStamps = 0;
+    this.historyCompactionPending = false;
+  }
+
+  private async moveHistoryCursor(delta: -1 | 1): Promise<boolean> {
+    if (!this.initialized || this.activeStroke || this.historyBusy) {
+      return false;
+    }
+    const nextCursor = this.historyCursor + delta;
+    if (nextCursor < 0 || nextCursor > this.historyActions.length) {
+      return false;
+    }
+
+    const previousCursor = this.historyCursor;
+    this.historyBusy = true;
+    this.publishHistoryState();
+    this.callbacks.onStatus?.(
+      delta < 0 ? "Undo: ricostruzione del layer…" : "Redo: ricostruzione del layer…",
+      "working",
+    );
+
+    try {
+      await this.waitForIdle();
+      // Eventuali rami Redo già invalidati vengono liberati soltanto dentro
+      // un'operazione esplicita, mai durante o subito dopo una pennellata.
+      this.compactDiscardedHistory();
+      this.historyCursor = nextCursor;
+      try {
+        await this.rebuildLayerFromHistory();
+      } catch (error) {
+        this.historyCursor = previousCursor;
+        try {
+          await this.rebuildLayerFromHistory();
+        } catch (restoreError) {
+          const originalMessage = error instanceof Error ? error.message : String(error);
+          const restoreMessage = restoreError instanceof Error ? restoreError.message : String(restoreError);
+          throw new Error(
+            `Undo/Redo non riuscito (${originalMessage}) e ripristino fallito (${restoreMessage}).`,
+          );
+        }
+        throw error;
+      }
+      if (this.activeStrokeProfile) {
+        this.activeStrokeProfile.historyReplayOperations += 1;
+      }
+      this.callbacks.onStatus?.(
+        delta < 0 ? "Undo completato." : "Redo completato.",
+        "ok",
+      );
+      return true;
+    } finally {
+      this.historyBusy = false;
+      this.publishHistoryState();
+    }
+  }
+
+  private async rebuildLayerFromHistory(): Promise<void> {
+    const visibleIds = this.visibleHistoryStrokeIds();
+    let firstVisibleBatchIndex = -1;
+    let lastVisibleBatchIndex = -1;
+    for (let index = 0; index < this.historyBatches.length; index += 1) {
+      if (!this.historyBatches[index].stamps.some((stamp) => visibleIds.has(stamp.historyActionId))) {
+        continue;
+      }
+      if (firstVisibleBatchIndex < 0) {
+        firstVisibleBatchIndex = index;
+      }
+      lastVisibleBatchIndex = index;
+    }
+
+    try {
+      if (lastVisibleBatchIndex < 0) {
+        this.submitImmediate([], true, this.settings, true, null);
+      } else {
+        const firstVisibleBatch = this.historyBatches[firstVisibleBatchIndex];
+        if (!firstVisibleBatch.clearLayer) {
+          // Il clear originale era un pass separato (per esempio dopo
+          // "Pulisci"): manteniamo quel confine prima del primo batch visibile.
+          this.submitImmediate([], true, firstVisibleBatch.settings, false, null);
+        }
+
+        for (let index = firstVisibleBatchIndex; index <= lastVisibleBatchIndex; index += 1) {
+          const batch = this.historyBatches[index];
+          const allVisible = batch.stamps.every((stamp) => visibleIds.has(stamp.historyActionId));
+          const replayStamps = allVisible
+            ? batch.stamps
+            : batch.stamps.filter((stamp) => visibleIds.has(stamp.historyActionId));
+          if (replayStamps.length === 0) {
+            continue;
+          }
+
+          this.writeBrushUniforms(batch.settings);
+          this.submitImmediate(
+            replayStamps,
+            batch.clearLayer,
+            batch.settings,
+            index === lastVisibleBatchIndex,
+            batch,
+          );
+        }
+      }
+    } finally {
+      // Ogni writeBuffer è ordinata sulla stessa GPUQueue: il ripristino arriva
+      // dopo tutti i batch storici e prima di un eventuale tratto successivo.
+      this.writeBrushUniforms(this.settings);
+    }
+
+    this.clearRequested = false;
+    this.displayDirty = false;
+    this.layerHasContent = lastVisibleBatchIndex >= 0;
+    await this.device.queue.onSubmittedWorkDone();
   }
 
   private selectShapeOccupancy(minimumRadius: number): ShapeOccupancySelection {
@@ -1802,7 +2241,13 @@ export class BrushEngine {
     }
   }
 
-  private submitImmediate(stamps: readonly Stamp[], clearLayer: boolean): SubmitTiming {
+  private submitImmediate(
+    stamps: readonly Stamp[],
+    clearLayer: boolean,
+    settings: BrushSettings = this.settings,
+    present = true,
+    replayBatch: HistoryRenderBatch | null = null,
+  ): SubmitTiming {
     const cpuStart = performance.now();
     const encoder = this.device.createCommandEncoder({ label: "Brush frame encoder" });
     let stampPackingMs = 0;
@@ -1811,13 +2256,20 @@ export class BrushEngine {
     let displayEncodingMs = 0;
     let commandSubmitMs = 0;
     let scissorPixels = 0;
+    let submittedDirtyRect: DirtyRect | null = null;
+    let submittedShapeOccupancySelection: ShapeOccupancySelection | null = null;
+
+    if (replayBatch && replayBatch.shapeMaskIdentity !== this.shapeMaskIdentity) {
+      throw new Error("La Shape usata dalla cronologia non corrisponde alla risorsa corrente.");
+    }
 
     if (clearLayer || stamps.length > 0) {
       let dirtyRect: DirtyRect | null = null;
       let shapeOccupancySelection: ShapeOccupancySelection | null = null;
       if (stamps.length > 0) {
         const packingStart = performance.now();
-        dirtyRect = this.packStamps(stamps);
+        const packedDirtyRect = this.packStamps(stamps, settings);
+        dirtyRect = replayBatch ? replayBatch.dirtyRect : packedDirtyRect;
         stampPackingMs = performance.now() - packingStart;
         const uploadStart = performance.now();
         this.device.queue.writeBuffer(
@@ -1827,11 +2279,15 @@ export class BrushEngine {
           0,
           stamps.length * STAMP_STRIDE_BYTES,
         );
-        if (this.settings.shape === "shape") {
-          shapeOccupancySelection = this.selectShapeOccupancy(this.packedMinimumRadius);
+        if (settings.shape === "shape") {
+          shapeOccupancySelection = replayBatch
+            ? replayBatch.shapeOccupancySelection
+            : this.selectShapeOccupancy(this.packedMinimumRadius);
         }
         instanceUploadMs = performance.now() - uploadStart;
       }
+      submittedDirtyRect = dirtyRect;
+      submittedShapeOccupancySelection = shapeOccupancySelection;
 
       const brushEncodingStart = performance.now();
       const brushPass = encoder.beginRenderPass({
@@ -1848,18 +2304,18 @@ export class BrushEngine {
 
       if (stamps.length > 0 && dirtyRect) {
         scissorPixels = dirtyRect.width * dirtyRect.height;
-        const isShape = this.settings.shape === "shape";
+        const isShape = settings.shape === "shape";
         const shapeOccupancyMip = shapeOccupancySelection?.selectedMipLevel ?? null;
         const useShapeOccupancy = isShape && shapeOccupancyMip !== null;
         const pipeline = isShape
           ? useShapeOccupancy
-            ? this.settings.blendMode === "additive"
+            ? settings.blendMode === "additive"
               ? this.shapeOccupancyAdditivePipeline
               : this.shapeOccupancyNormalPipeline
-            : this.settings.blendMode === "additive"
+            : settings.blendMode === "additive"
               ? this.shapeAdditivePipeline
               : this.shapeNormalPipeline
-          : this.settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline;
+          : settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline;
         brushPass.setPipeline(pipeline);
         brushPass.setBindGroup(
           0,
@@ -1868,33 +2324,35 @@ export class BrushEngine {
             : this.brushBindGroup,
         );
         brushPass.setScissorRect(dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height);
-        if (isShape && shapeOccupancySelection) {
+        if (isShape && shapeOccupancySelection && !replayBatch) {
           this.recordShapeSampling(shapeOccupancySelection);
         }
-        brushPass.draw(STAMP_VERTICES_PER_COPY, stamps.length * this.settings.count, 0, 0);
+        brushPass.draw(STAMP_VERTICES_PER_COPY, stamps.length * settings.count, 0, 0);
       }
       brushPass.end();
       brushEncodingMs = performance.now() - brushEncodingStart;
     }
 
-    const displayEncodingStart = performance.now();
-    this.writeDisplayUniforms();
-    const displayPass = encoder.beginRenderPass({
-      label: "Present paint layer",
-      colorAttachments: [
-        {
-          view: this.context.getCurrentTexture().createView(),
-          loadOp: "clear",
-          storeOp: "store",
-          clearValue: { r: 0.02, g: 0.02, b: 0.025, a: 1 },
-        },
-      ],
-    });
-    displayPass.setPipeline(this.displayPipeline);
-    displayPass.setBindGroup(0, this.displayBindGroup);
-    displayPass.draw(3, 1, 0, 0);
-    displayPass.end();
-    displayEncodingMs = performance.now() - displayEncodingStart;
+    if (present) {
+      const displayEncodingStart = performance.now();
+      this.writeDisplayUniforms();
+      const displayPass = encoder.beginRenderPass({
+        label: "Present paint layer",
+        colorAttachments: [
+          {
+            view: this.context.getCurrentTexture().createView(),
+            loadOp: "clear",
+            storeOp: "store",
+            clearValue: { r: 0.02, g: 0.02, b: 0.025, a: 1 },
+          },
+        ],
+      });
+      displayPass.setPipeline(this.displayPipeline);
+      displayPass.setBindGroup(0, this.displayBindGroup);
+      displayPass.draw(3, 1, 0, 0);
+      displayPass.end();
+      displayEncodingMs = performance.now() - displayEncodingStart;
+    }
 
     const submitStart = performance.now();
     this.device.queue.submit([encoder.finish()]);
@@ -1907,17 +2365,19 @@ export class BrushEngine {
       displayEncodingMs,
       commandSubmitMs,
       scissorPixels,
+      dirtyRect: submittedDirtyRect,
+      shapeOccupancySelection: submittedShapeOccupancySelection,
     };
   }
 
-  private packStamps(stamps: readonly Stamp[]): DirtyRect | null {
+  private packStamps(stamps: readonly Stamp[], settings: BrushSettings): DirtyRect | null {
     let minimumX = LAYER_SIZE;
     let minimumY = LAYER_SIZE;
     let maximumX = 0;
     let maximumY = 0;
     let minimumRadius = Number.POSITIVE_INFINITY;
-    const maximumShapeAngle = Math.PI * this.settings.shapeScatter;
-    const shapeExtentFactor = this.settings.shape === "shape"
+    const maximumShapeAngle = Math.PI * settings.shapeScatter;
+    const shapeExtentFactor = settings.shape === "shape"
       ? maximumShapeAngle >= Math.PI * 0.25
         ? Math.SQRT2
         : Math.cos(maximumShapeAngle) + Math.sin(maximumShapeAngle)
@@ -1942,8 +2402,8 @@ export class BrushEngine {
       const packedDirectionX = this.instanceUploadF32[base + 6];
       const packedDirectionY = this.instanceUploadF32[base + 7];
       const directionLength = Math.hypot(packedDirectionX, packedDirectionY);
-      const linearReach = packedRadius * 2 * this.settings.positionJitterLinear;
-      const lateralReach = packedRadius * 2 * this.settings.positionJitterLateral;
+      const linearReach = packedRadius * 2 * settings.positionJitterLinear;
+      const lateralReach = packedRadius * 2 * settings.positionJitterLateral;
       const brushReach = packedRadius * shapeExtentFactor;
       let reachX: number;
       let reachY: number;
@@ -1982,7 +2442,7 @@ export class BrushEngine {
     return width > 0 && height > 0 ? { x, y, width, height } : null;
   }
 
-  private generateBenchmarkStamps(count: number): Stamp[] {
+  private generateBenchmarkStamps(count: number, settings: BrushSettings): Stamp[] {
     const stamps = new Array<Stamp>(count);
     const center = LAYER_SIZE * 0.5;
     const maximumPathRadius = LAYER_SIZE * 0.39;
@@ -1992,9 +2452,9 @@ export class BrushEngine {
       const angle = progress * Math.PI * 18;
       const pathRadius = maximumPathRadius * (0.12 + progress * 0.88);
       const pressure = clamp(0.58 + Math.sin(progress * Math.PI * 15) * 0.28, 0.1, 1);
-      const pressureSizeFactor = 1 - this.settings.pressureSize
-        + this.settings.pressureSize * Math.max(0.08, pressure);
-      const radius = Math.max(0.5, this.settings.size * 0.5 * pressureSizeFactor);
+      const pressureSizeFactor = 1 - settings.pressureSize
+        + settings.pressureSize * Math.max(0.08, pressure);
+      const radius = Math.max(0.5, settings.size * 0.5 * pressureSizeFactor);
 
       stamps[index] = {
         x: center + Math.cos(angle) * pathRadius,
@@ -2004,6 +2464,7 @@ export class BrushEngine {
         seed: (Math.imul(this.seedSequence++, 0x9e3779b1) ^ 0xa511e9b3) >>> 0,
         directionX: -Math.sin(angle),
         directionY: Math.cos(angle * 1.037),
+        historyActionId: 0,
       };
     }
 
@@ -2062,6 +2523,10 @@ export class BrushEngine {
 
   private publishStats(): void {
     this.callbacks.onStats?.(this.getStats());
+  }
+
+  private publishHistoryState(): void {
+    this.callbacks.onHistoryChange?.(this.getHistoryState());
   }
 
   private async assertShaderCompiled(module: GPUShaderModule, label: string): Promise<void> {
