@@ -17,7 +17,8 @@ Prototipo TypeScript senza framework per verificare l'architettura di un motore 
 - Color jitter condiviso dal gruppo oppure indipendente per copia.
 - Blend normale premoltiplicato e modalità additiva intensa.
 - Scissor rectangle sul rettangolo sporco del batch.
-- Zoom, pan, fit, clear e benchmark sintetico.
+- Canvas a tutta area con pannelli sovrapposti richiudibili; i pannelli si chiudono automaticamente quando parte un test.
+- Un dito disegna, due dita eseguono pan e pinch-zoom; restano disponibili zoom, pan, fit, clear e benchmark sintetico.
 - Undo/Redo per tratto con cronologia CPU degli stamp e ricostruzione GPU soltanto quando richiesta.
 - Registrazione locale di un tratto umano, con replay temporizzato e misure confrontabili tra versioni del motore.
 - Telemetria CPU e tempo di completamento della coda GPU.

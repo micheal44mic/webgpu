@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#111318" />
     <title>WebGPU Brush Engine 4096²</title>
-    <script type="module" crossorigin src="./assets/index-BwXGyAaF.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-Cl8o_I9x.css">
+    <script type="module" crossorigin src="./assets/index-W0kw0Vn5.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-JEgMfD1d.css">
   </head>
   <body>
     <div id="app">
@@ -16,6 +16,14 @@
           <span class="muted">4096 × 4096</span>
         </div>
         <div class="topbar-actions">
+          <button
+            id="toggleControls"
+            type="button"
+            aria-controls="controlsPanel"
+            aria-expanded="true"
+            aria-label="Nascondi pannelli"
+            title="Nascondi pannelli"
+          >☰</button>
           <button
             id="undoStroke"
             type="button"
@@ -39,7 +47,7 @@
         </div>
       </header>
 
-      <aside class="controls" aria-label="Impostazioni pennello">
+      <aside id="controlsPanel" class="controls" aria-label="Impostazioni pennello">
         <section>
           <h2>Pennello</h2>
 
@@ -216,7 +224,7 @@
 
       <main class="stage">
         <canvas id="gpuCanvas" aria-label="Canvas di disegno WebGPU"></canvas>
-        <div class="hint">Disegna con mouse, dito o penna · Shift/medio/destro per pan · rotella per zoom</div>
+        <div class="hint">Un dito disegna · due dita spostano e fanno zoom · Shift/medio/destro per pan · rotella per zoom</div>
       </main>
     </div>
 

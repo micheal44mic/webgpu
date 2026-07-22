@@ -32,6 +32,8 @@ function formatInteger(value: number): string {
 }
 
 const canvas = element<HTMLCanvasElement>("gpuCanvas");
+const controlsPanel = element<HTMLElement>("controlsPanel");
+const toggleControlsButton = element<HTMLButtonElement>("toggleControls");
 const statusElement = element<HTMLParagraphElement>("status");
 const benchmarkButton = element<HTMLButtonElement>("runBenchmark");
 const benchmarkResult = element<HTMLParagraphElement>("benchmarkResult");
@@ -145,7 +147,9 @@ interface BenchmarkRun {
     historyStorageStrategy: StrokePerformanceProfile["historyStorageStrategy"];
     historyReplayStrategy: StrokePerformanceProfile["historyReplayStrategy"];
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
-    performanceTelemetryRevision: 7;
+    controlsLayoutStrategy: "full-stage-overlay-drawer";
+    touchNavigationStrategy: "two-finger-pan-pinch";
+    performanceTelemetryRevision: 8;
   };
 }
 
@@ -185,6 +189,15 @@ let benchmarkRunning = false;
 let layerFormatChanging = false;
 let historyUiBusy = false;
 let engineInitialized = false;
+let controlsPanelOpen = true;
+
+function setControlsPanelOpen(open: boolean): void {
+  controlsPanelOpen = open;
+  controlsPanel.hidden = !open;
+  toggleControlsButton.setAttribute("aria-expanded", String(open));
+  toggleControlsButton.setAttribute("aria-label", open ? "Nascondi pannelli" : "Mostra pannelli");
+  toggleControlsButton.title = open ? "Nascondi pannelli" : "Mostra pannelli";
+}
 
 function readBrushSettings(): BrushSettings {
   return {
@@ -321,7 +334,9 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     hardwareConcurrency: navigator.hardwareConcurrency || null,
     deviceMemoryGiB: navigatorWithMetrics.deviceMemory ?? null,
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
-    performanceTelemetryRevision: 7,
+    controlsLayoutStrategy: "full-stage-overlay-drawer",
+    touchNavigationStrategy: "two-finger-pan-pinch",
+    performanceTelemetryRevision: 8,
     ...engineEnvironment,
   };
 }
@@ -554,9 +569,8 @@ function updateHumanStrokeControls(): void {
     || Boolean(humanStrokeRecording);
 }
 
-function interactionLocked(): boolean {
+function operationLocked(): boolean {
   return !engineInitialized
-    || activePointerId !== null
     || historyUiBusy
     || historyState.busy
     || benchmarkRunning
@@ -565,8 +579,12 @@ function interactionLocked(): boolean {
     || humanStrokeSaving;
 }
 
+function interactionLocked(): boolean {
+  return operationLocked() || activePointerId !== null;
+}
+
 function updateHistoryControls(): void {
-  const locked = interactionLocked() || activePointerId !== null;
+  const locked = interactionLocked();
   undoStrokeButton.disabled = locked || !historyState.canUndo;
   redoStrokeButton.disabled = locked || !historyState.canRedo;
   clearLayerButton.disabled = locked;
@@ -576,6 +594,7 @@ function updateHistoryControls(): void {
   fitViewButton.disabled = locked;
   zoomInButton.disabled = locked;
   zoomOutButton.disabled = locked;
+  toggleControlsButton.disabled = benchmarkRunning || humanStrokeReplaying;
   for (const id of brushControlIds) {
     element<HTMLInputElement | HTMLSelectElement>(id).disabled = locked;
   }
@@ -670,6 +689,11 @@ for (const id of brushControlIds) {
 
 benchmarkStampsInput.addEventListener("input", updateControlOutputs);
 
+toggleControlsButton.addEventListener("click", () => {
+  if (!toggleControlsButton.disabled) {
+    setControlsPanelOpen(!controlsPanelOpen);
+  }
+});
 clearLayerButton.addEventListener("click", () => {
   void clearLayerWithHistory();
 });
@@ -724,6 +748,7 @@ benchmarkButton.addEventListener("click", async () => {
   if (interactionLocked()) {
     return;
   }
+  setControlsPanelOpen(false);
   benchmarkRunning = true;
   benchmarkButton.disabled = true;
   updateHistoryControls();
@@ -765,6 +790,7 @@ recordHumanStrokeButton.addEventListener("click", () => {
   humanStrokeRecordingArmed = !humanStrokeRecordingArmed;
   if (humanStrokeRecordingArmed) {
     applyHumanStrokePreset();
+    setControlsPanelOpen(false);
     humanStrokeResult.textContent = "Preset umano applicato. Disegna ora una sola pennellata sul canvas.";
   } else {
     humanStrokeResult.textContent = humanStrokeBenchmark
@@ -855,6 +881,7 @@ async function replayHumanStroke(): Promise<void> {
   const replaySettings = humanStrokeTestSettings(benchmark, testVariant);
   const testLabel = humanStrokeTestLabel(testVariant);
 
+  setControlsPanelOpen(false);
   humanStrokeReplaying = true;
   benchmarkButton.disabled = true;
   updateHumanStrokeControls();
@@ -1005,17 +1032,93 @@ function toPointerSample(event: PointerEvent): PointerSample {
 }
 
 let activePointerId: number | null = null;
-let pointerMode: "paint" | "pan" | null = null;
+let pointerMode: "paint" | "pan" | "touch-navigation" | null = null;
 let lastPanClientX = 0;
 let lastPanClientY = 0;
 
+interface TouchContact {
+  clientX: number;
+  clientY: number;
+}
+
+interface TouchNavigationGesture {
+  centerX: number;
+  centerY: number;
+  distance: number;
+}
+
+const activeTouchContacts = new Map<number, TouchContact>();
+let touchNavigationGesture: TouchNavigationGesture | null = null;
+
+function currentTouchNavigationGesture(): TouchNavigationGesture | null {
+  const contacts = [...activeTouchContacts.values()];
+  if (contacts.length < 2) {
+    return null;
+  }
+  const first = contacts[0];
+  const second = contacts[1];
+  return {
+    centerX: (first.clientX + second.clientX) * 0.5,
+    centerY: (first.clientY + second.clientY) * 0.5,
+    distance: Math.max(1, Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY)),
+  };
+}
+
+function cancelHumanStrokeRecordingForNavigation(): void {
+  if (!humanStrokeRecording) {
+    return;
+  }
+  humanStrokeRecording = null;
+  humanStrokeRecordingArmed = false;
+  humanStrokeResult.textContent = "Registrazione annullata dal gesto a due dita.";
+  updateHumanStrokeControls();
+}
+
+function enterTouchNavigation(): void {
+  if (pointerMode !== "touch-navigation") {
+    if (pointerMode === "paint") {
+      if (!engine.cancelStrokeBeforeRender()) {
+        engine.endStroke();
+      }
+      cancelHumanStrokeRecordingForNavigation();
+    }
+    pointerMode = "touch-navigation";
+    canvas.classList.add("panning");
+  }
+  touchNavigationGesture = currentTouchNavigationGesture();
+}
+
 canvas.addEventListener("pointerdown", (event) => {
-  if (activePointerId !== null || interactionLocked()) {
+  if (
+    event.pointerType === "touch"
+    && activePointerId !== null
+    && activeTouchContacts.size > 0
+    && !operationLocked()
+  ) {
+    event.preventDefault();
+    activeTouchContacts.set(event.pointerId, {
+      clientX: event.clientX,
+      clientY: event.clientY,
+    });
+    canvas.setPointerCapture(event.pointerId);
+    if (activeTouchContacts.size >= 2) {
+      enterTouchNavigation();
+    }
+    return;
+  }
+
+  if (activePointerId !== null || operationLocked()) {
     return;
   }
 
   event.preventDefault();
   activePointerId = event.pointerId;
+  if (event.pointerType === "touch") {
+    activeTouchContacts.set(event.pointerId, {
+      clientX: event.clientX,
+      clientY: event.clientY,
+    });
+  }
   const shouldPan = event.shiftKey || event.button === 1 || event.button === 2;
   pointerMode = shouldPan ? "pan" : "paint";
   canvas.setPointerCapture(event.pointerId);
@@ -1043,6 +1146,37 @@ canvas.addEventListener("pointerdown", (event) => {
 });
 
 canvas.addEventListener("pointermove", (event) => {
+  if (event.pointerType === "touch" && activeTouchContacts.has(event.pointerId)) {
+    activeTouchContacts.set(event.pointerId, {
+      clientX: event.clientX,
+      clientY: event.clientY,
+    });
+
+    if (pointerMode === "touch-navigation") {
+      event.preventDefault();
+      const nextGesture = currentTouchNavigationGesture();
+      const previousGesture = touchNavigationGesture;
+      if (nextGesture && previousGesture) {
+        const deltaX = nextGesture.centerX - previousGesture.centerX;
+        const deltaY = nextGesture.centerY - previousGesture.centerY;
+        if (Math.abs(deltaX) > 0.01 || Math.abs(deltaY) > 0.01) {
+          engine.panByClientDelta(deltaX, deltaY);
+        }
+
+        const zoomFactor = nextGesture.distance / previousGesture.distance;
+        if (Number.isFinite(zoomFactor) && Math.abs(zoomFactor - 1) > 0.0001) {
+          engine.zoomBy(
+            Math.min(2, Math.max(0.5, zoomFactor)),
+            nextGesture.centerX,
+            nextGesture.centerY,
+          );
+        }
+      }
+      touchNavigationGesture = nextGesture;
+      return;
+    }
+  }
+
   if (event.pointerId !== activePointerId || pointerMode === null) {
     return;
   }
@@ -1066,6 +1200,26 @@ canvas.addEventListener("pointermove", (event) => {
 });
 
 function finishPointer(event: PointerEvent): void {
+  if (event.pointerType === "touch") {
+    activeTouchContacts.delete(event.pointerId);
+  }
+
+  if (pointerMode === "touch-navigation") {
+    event.preventDefault();
+    const remainingPointerId = activeTouchContacts.keys().next().value;
+    activePointerId = typeof remainingPointerId === "number" ? remainingPointerId : null;
+    touchNavigationGesture = currentTouchNavigationGesture();
+
+    if (activeTouchContacts.size === 0) {
+      canvas.classList.remove("panning");
+      pointerMode = null;
+      historyState = engine.getHistoryState();
+      updateHistoryControls();
+      updateHumanStrokeControls();
+    }
+    return;
+  }
+
   if (event.pointerId !== activePointerId) {
     return;
   }
@@ -1077,6 +1231,7 @@ function finishPointer(event: PointerEvent): void {
   canvas.classList.remove("panning");
   pointerMode = null;
   activePointerId = null;
+  touchNavigationGesture = null;
   historyState = engine.getHistoryState();
   updateHistoryControls();
   updateHumanStrokeControls();
@@ -1130,6 +1285,7 @@ canvas.addEventListener(
 const resizeObserver = new ResizeObserver(() => engine.resizeCanvas());
 resizeObserver.observe(canvas);
 
+setControlsPanelOpen(true);
 updateControlOutputs();
 engine.setBrushSettings(readBrushSettings());
 updateHumanStrokeControls();

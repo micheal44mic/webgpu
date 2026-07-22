@@ -72,17 +72,18 @@ button.wide {
 }
 
 #app {
+  position: relative;
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: 52px minmax(0, 1fr);
   grid-template-areas:
-    "topbar topbar"
-    "controls stage";
+    "topbar"
+    "stage";
 }
 
 .topbar {
   grid-area: topbar;
-  z-index: 3;
+  z-index: 5;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -121,14 +122,28 @@ button.wide {
   padding-inline: 9px;
 }
 
+#toggleControls[aria-expanded="true"] {
+  border-color: #5c6dff;
+  background: #293260;
+}
+
 .controls {
-  grid-area: controls;
-  z-index: 2;
+  position: absolute;
+  z-index: 4;
+  top: 52px;
+  bottom: 0;
+  left: 0;
+  width: min(320px, calc(100% - 48px));
   overflow: auto;
   padding: 12px 12px max(24px, env(safe-area-inset-bottom));
   border-right: 1px solid #292d36;
   background: #12151b;
+  box-shadow: 14px 0 32px rgba(0, 0, 0, 0.34);
   overscroll-behavior: contain;
+}
+
+.controls[hidden] {
+  display: none;
 }
 
 .controls section {
@@ -312,14 +327,19 @@ select {
 @media (max-width: 820px) {
   #app {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: 48px minmax(0, 1fr) minmax(190px, 37vh);
+    grid-template-rows: 48px minmax(0, 1fr);
     grid-template-areas:
       "topbar"
-      "stage"
-      "controls";
+      "stage";
   }
 
   .controls {
+    top: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    height: clamp(190px, 38dvh, 360px);
     display: grid;
     grid-auto-flow: column;
     grid-auto-columns: minmax(270px, 82vw);
@@ -329,6 +349,7 @@ select {
     padding: 10px max(10px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
     border-top: 1px solid #292d36;
     border-right: 0;
+    box-shadow: 0 -14px 32px rgba(0, 0, 0, 0.38);
     scroll-snap-type: x proximity;
   }
 
@@ -372,5 +393,12 @@ select {
     right: 8px;
     bottom: 8px;
     font-size: 0.66rem;
+  }
+}
+
+@supports (height: 100dvh) {
+  body,
+  #app {
+    height: 100dvh;
   }
 }

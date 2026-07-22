@@ -833,3 +833,16 @@ Le direzioni sono miste ma tutte entro la variabilità già osservata: FPS legge
 Le firme Shape coincidono esattamente con la #32: decoder `png-gray8-direct`, percorso `coarse-occupancy-bitmask`, nessun fallback, mip `2`, `3633` celle, ratio `0,0554351806640625`, bitmask da `8192 byte`, batch massimo `90` e somma delle aree scissor `580188708`. La sola differenza principale è `1 ms` di coda GPU finale, irrilevante alla risoluzione del timer. L'ottimizzazione Shape è quindi rimasta attiva e non mostra alcuna regressione.
 
 Decisione: Undo/Redo con cronologia CPU è promosso e mantenuto. La cattura del journal non ha prodotto un costo misurabile sul tratto né Base né Fur; la #34 conferma inoltre che il percorso Shape ottimizzato della #32 è invariato. Le run non includono una cattura pixel, quindi l'identità visiva resta una verifica manuale separata. La ricostruzione GPU eseguita quando si premono Undo o Redo non è misurata da queste run e non va confusa con il costo nullo osservato durante il disegno. Il limite di memoria della cronologia resta un tema separato prima di un uso prolungato in produzione.
+
+## UI full-canvas e navigazione touch — da pubblicare e misurare
+
+I pannelli dei controlli sono ora un cassetto sovrapposto al canvas: laterale su desktop e inferiore su schermi fino a `820 px`. Il pulsante menu nella barra superiore li apre e li nasconde completamente. Il canvas occupa sempre tutta l'area sotto la barra, indipendentemente dallo stato del cassetto; per questo chiudere il pannello non provoca un resize proprio all'avvio del test. Il pannello si chiude automaticamente quando partono il benchmark GPU sintetico, il replay canonico o la registrazione del tratto umano, e resta chiuso al termine finché l'utente non lo riapre.
+
+La navigazione touch mantiene un dito per il disegno e usa due dita per pan e pinch-zoom simultanei, con lo zoom ancorato al punto medio del gesto. Dopo l'inizio di un gesto a due dita, l'eventuale dito rimasto sul canvas non ricomincia a disegnare finché tutte le dita non vengono sollevate. Se il secondo dito arriva prima che il primo stamp sia stato inviato alla GPU, `cancelStrokeBeforeRender()` rimuove quel solo tratto ancora pendente, ripristina seed e stato Redo e impedisce il punto accidentale; se il tratto era già stato renderizzato, viene concluso e conservato prima di passare alla navigazione. Questa cancellazione viene eseguita soltanto all'ingresso del gesto touch e non modifica il percorso normale di generazione o rendering del tratto.
+
+`performanceTelemetryRevision: 8` aggiunge due firme di ambiente:
+
+- `controlsLayoutStrategy: "full-stage-overlay-drawer"`;
+- `touchNavigationStrategy: "two-finger-pan-pinch"`.
+
+Non sono cambiati shader, pipeline, geometria, formule, stamp, seed del replay, Count, spacing, jitter, Shape, blending o journal Undo/Redo. Cambia però l'area visibile: su iPhone il canvas non cede più circa il `38%` dell'altezza al pannello inferiore. Le prossime run registreranno quindi un canvas più alto e includeranno un display pass più grande. Non confrontare direttamente i loro valori di GPU, FPS o coda finale con le #33–#34 come se fosse cambiato soltanto il pannello; acquisire una nuova coppia Base/Fur con pannello overlay, stesso dispositivo e stesse dimensioni canvas per stabilire il controllo del nuovo layout.

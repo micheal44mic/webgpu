@@ -172,6 +172,11 @@ interface ActiveStroke {
   distanceSinceStamp: number;
   historyActionId: number;
   historyCommitted: boolean;
+  submitted: boolean;
+  seedSequenceBeforeStroke: number;
+  historyCursorBeforeStroke: number;
+  redoActionsBeforeStroke: HistoryAction[] | null;
+  historyCompactionPendingBeforeStroke: boolean;
 }
 
 interface DirtyRect {
@@ -703,11 +708,19 @@ export class BrushEngine {
     if (this.historyBusy) {
       return;
     }
+    const historyActionId = this.nextHistoryActionId++;
     this.activeStroke = {
       lastInput: point,
       distanceSinceStamp: 0,
-      historyActionId: this.nextHistoryActionId++,
+      historyActionId,
       historyCommitted: false,
+      submitted: false,
+      seedSequenceBeforeStroke: this.seedSequence,
+      historyCursorBeforeStroke: this.historyCursor,
+      redoActionsBeforeStroke: this.historyCursor < this.historyActions.length
+        ? this.historyActions.slice(this.historyCursor)
+        : null,
+      historyCompactionPendingBeforeStroke: this.historyCompactionPending,
     };
     this.emitStamp(point, 1, 0);
   }
@@ -732,6 +745,48 @@ export class BrushEngine {
     if (historyChanged) {
       this.publishHistoryState();
     }
+  }
+
+  cancelStrokeBeforeRender(): boolean {
+    const stroke = this.activeStroke;
+    if (!stroke || stroke.submitted) {
+      return false;
+    }
+
+    let removedStampCount = 0;
+    this.pendingStamps = this.pendingStamps.filter((stamp) => {
+      const belongsToStroke = stamp.historyActionId === stroke.historyActionId;
+      if (belongsToStroke) {
+        removedStampCount += 1;
+      }
+      return !belongsToStroke;
+    });
+    this.seedSequence = stroke.seedSequenceBeforeStroke;
+
+    if (stroke.historyCommitted) {
+      this.historyActions.length = stroke.historyCursorBeforeStroke;
+      if (stroke.redoActionsBeforeStroke) {
+        this.historyActions.push(...stroke.redoActionsBeforeStroke);
+      }
+      this.historyCursor = stroke.historyCursorBeforeStroke;
+      this.historyCompactionPending = stroke.historyCompactionPendingBeforeStroke;
+      if (this.activeStrokeProfile) {
+        this.activeStrokeProfile.baseStamps = Math.max(
+          0,
+          this.activeStrokeProfile.baseStamps - removedStampCount,
+        );
+        this.activeStrokeProfile.historyCommittedActions = Math.max(
+          0,
+          this.activeStrokeProfile.historyCommittedActions - 1,
+        );
+      }
+    }
+
+    this.activeStroke = null;
+    if (stroke.historyCommitted) {
+      this.publishHistoryState();
+    }
+    return true;
   }
 
   async clear(): Promise<boolean> {
@@ -1930,6 +1985,13 @@ export class BrushEngine {
     // direttamente e non passa da qui: evitiamo così una copia per frame.
     if (batch.length === 0 || batch[0].historyActionId === 0) {
       return;
+    }
+
+    if (
+      this.activeStroke
+      && batch.some((stamp) => stamp.historyActionId === this.activeStroke?.historyActionId)
+    ) {
+      this.activeStroke.submitted = true;
     }
 
     this.historyBatches.push({

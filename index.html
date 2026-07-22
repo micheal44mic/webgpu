@@ -15,6 +15,14 @@
         </div>
         <div class="topbar-actions">
           <button
+            id="toggleControls"
+            type="button"
+            aria-controls="controlsPanel"
+            aria-expanded="true"
+            aria-label="Nascondi pannelli"
+            title="Nascondi pannelli"
+          >☰</button>
+          <button
             id="undoStroke"
             type="button"
             aria-label="Annulla ultimo tratto"
@@ -37,7 +45,7 @@
         </div>
       </header>
 
-      <aside class="controls" aria-label="Impostazioni pennello">
+      <aside id="controlsPanel" class="controls" aria-label="Impostazioni pennello">
         <section>
           <h2>Pennello</h2>
 
@@ -214,7 +222,7 @@
 
       <main class="stage">
         <canvas id="gpuCanvas" aria-label="Canvas di disegno WebGPU"></canvas>
-        <div class="hint">Disegna con mouse, dito o penna · Shift/medio/destro per pan · rotella per zoom</div>
+        <div class="hint">Un dito disegna · due dita spostano e fanno zoom · Shift/medio/destro per pan · rotella per zoom</div>
       </main>
     </div>
 
