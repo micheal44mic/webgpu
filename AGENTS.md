@@ -883,7 +883,7 @@ Il totale dei pixel del display pass è circa `282,9 M` nella #33 contro `342,6 
 
 Decisione: il layout full-canvas pubblicato è nettamente più lento alla risoluzione interna `860×1454`; le #35–#36 diventano il controllo del layout corrente, non nuove baseline prestazionali promosse. Non modificare Shape, brush shader o Undo/Redo per compensare. Il prossimo intervento isolato consigliato è mantenere il canvas CSS a tutto schermo ma limitare il buffer di presentazione a un budget vicino ai precedenti `731000` pixel, riducendo uniformemente la scala interna per conservare le proporzioni. Va valutata separatamente la nitidezza su iPhone e poi ripetuta la coppia Base/Fur.
 
-## Esperimento: cache persistente di presentazione a piena risoluzione — in attesa di run iPhone
+## Esperimento: cache persistente di presentazione a piena risoluzione — promosso
 
 La riduzione della risoluzione non è stata applicata. Il canvas resta alla risoluzione fisica corrente, quindi sul dispositivo delle #35–#36 rimane `860×1454`. È stata invece aggiunta una texture GPU persistente screen-space, nello stesso formato e con le stesse dimensioni della texture del canvas, che conserva il risultato già composto e convertito dallo shader display.
 
@@ -933,3 +933,27 @@ Le prossime run valide, attese come `#37` Base e `#38` Fur, vanno confrontate di
 Prima di leggere le prestazioni verificare entrambe le firme di presentazione, `presentationCacheFullRebuilds === 0`, `presentationCachePartialUpdates === brushBatches`, `presentationCacheOffscreenSkips === 0` e `presentationCopiedPixels === legacyDisplayShaderPixels === renderFrames × 1250440`. Controllare anche che `presentationCacheUpdatedPixels` sia minore del valore legacy; la sua riduzione non prova da sola un guadagno hardware.
 
 Confrontare FPS medi, p95/massimo, frame oltre `20 ms`, input delay p95, coda GPU finale e fine presentazione. Mantenere il candidato soltanto se il risultato visivo resta invariato e la fluidità migliora chiaramente su entrambe le varianti, soprattutto Base. Se la copia completa o il `loadOp` parziale annullano il risparmio, rimuovere l'esperimento senza modificare contemporaneamente brush o Shape.
+
+### Risultato e decisione: run #37 Base e #38 Fur
+
+Le run iPhone `#37` Base e `#38` Fur hanno tutte le firme previste e sono direttamente confrontabili con i controlli fullscreen `#35` e `#36`: stesso fingerprint `18982412`, `1583` punti, preset, iPhone, GPU Apple, DPR `3`, viewport `430×775`, canvas `860×1454`, layer `rgba8unorm`, `12107` stamp base e `193712` copie fisiche. Fur mantiene decoder diretto, bitmask, nessun fallback, mip `2`, `3633` celle e ratio `0,0554351806640625`.
+
+| Metrica | #35 Base pre-cache | #37 Base cache | #36 Fur pre-cache | #38 Fur cache |
+|---|---:|---:|---:|---:|
+| FPS medi | `39,35` | `57,50` | `52,23` | `59,25` |
+| frame renderizzati | `274` | `396` | `361` | `408` |
+| intervallo frame p95 | `67 ms` | `25 ms` | `35 ms` | `17 ms` |
+| intervallo frame massimo | `312 ms` | `67 ms` | `66 ms` | `67 ms` |
+| frame oltre `20 ms` | `56` | `25` | `54` | `3` |
+| coda GPU finale | `1685 ms` | `224 ms` | `491 ms` | `19 ms` |
+| input delay p95 | `136 ms` | `15 ms` | `25 ms` | `15 ms` |
+| fine presentazione | `8572 ms` | `7084 ms` | `7374 ms` | `6892 ms` |
+| batch massimo | `508` stamp | `88` stamp | `134` stamp | `88` stamp |
+
+Rispetto al controllo fullscreen, Base guadagna il `46,1%` di FPS, riduce il p95 da `67` a `25 ms`, i frame lenti del `55,4%`, la coda finale dell'`86,7%` e la fine presentazione di `1488 ms`. Fur guadagna il `13,4%` di FPS, dimezza il p95, riduce i frame lenti del `94,4%`, la coda finale del `96,1%` e termina `482 ms` prima.
+
+Il recupero non dipende da un confronto favorevole soltanto con le run degradate: rispetto al vecchio canvas `860×850`, la #37 supera la #33 di circa il `2,1%` negli FPS, porta il p95 da `28` a `25 ms`, i frame lenti da `34` a `25` e la coda da `293` a `224 ms`; la #38 è sostanzialmente equivalente o migliore della #34, con `59,25` contro `58,82` FPS, p95 identico a `17 ms`, `3` contro `6` frame lenti e coda `19` contro `22 ms`. La CPU resta a `1 ms` p95.
+
+I contatori della cache sono coerenti. La #37 registra `396` aggiornamenti parziali per `396` brush batch, nessun rebuild e nessuno skip; lo shader display elabora `102525367` pixel invece dei `495174240` del percorso legacy, una riduzione del `79,3%`. La #38 registra `408/408` aggiornamenti parziali, nessun rebuild e nessuno skip; elabora `23499061` pixel invece di `510179520`, una riduzione del `95,39%`. In entrambe le run la copia finale resta esattamente pari ai pixel legacy, confermando che la swapchain riceve ogni frame completo. Questi contatori spiegano la direzione del risultato, ma non rappresentano tempo GPU isolato.
+
+Decisione: cache persistente promossa e mantenuta. Le verifiche locali erano identiche byte per byte e le run Apple migliorano nettamente entrambe le varianti senza cambiare il layer o il pennello. Le #37 e #38 diventano le baseline prestazionali del layout fullscreen; le #35 e #36 restano i controlli pre-cache. Non sostituire la cache con una riduzione permanente della risoluzione e non rimuoverla salvo regressione visiva o incompatibilità riproducibile su un dispositivo supportato.
