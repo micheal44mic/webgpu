@@ -22,7 +22,14 @@ export type AdaptivePreviewStrategy = "queue-lag-triggered-canvas2d-tip-patch";
 export type AdaptivePreviewTriggerStrategy = "single-sampled-queue-prefix-latency";
 export type AdaptivePreviewVisibleCanvasStrategy =
   "iphone-desynchronized-others-synchronized-canvas2d";
-export type AdaptivePreviewActivationReason = "none" | "queue-lag" | "diagnostic-force" | "mixed";
+export type AdaptivePreviewConcreteActivationReason =
+  | "probe-timeout"
+  | "consecutive-slow"
+  | "diagnostic-force";
+export type AdaptivePreviewActivationReason =
+  | "none"
+  | AdaptivePreviewConcreteActivationReason
+  | "mixed";
 export type ShapeOccupancyFallbackReason =
   | "none"
   | "minimum-radius"
@@ -134,8 +141,20 @@ export interface StrokePerformanceProfile {
   adaptivePreviewTriggerThresholdMs: number;
   adaptivePreviewSlowCompletionThresholdMs: number;
   adaptivePreviewTriggerConsecutiveProbes: number;
+  adaptivePreviewProbeNearMissMinimumMs: number;
+  adaptivePreviewProbeStarts: number;
+  adaptivePreviewProbeResolvedFast: number;
+  adaptivePreviewProbeResolvedSlow: number;
+  adaptivePreviewProbeTimeouts: number;
+  adaptivePreviewProbeCancellations: number;
+  adaptivePreviewProbeRejections: number;
+  adaptivePreviewProbeNearMisses: number;
   adaptivePreviewActivations: number;
   adaptivePreviewActivationReason: AdaptivePreviewActivationReason;
+  adaptivePreviewFirstActivationReason: AdaptivePreviewConcreteActivationReason | null;
+  adaptivePreviewFirstActivationMs: number | null;
+  adaptivePreviewSecondActivationReason: AdaptivePreviewConcreteActivationReason | null;
+  adaptivePreviewSecondActivationMs: number | null;
   adaptivePreviewFrames: number;
   adaptivePreviewBaseStampsDrawn: number;
   adaptivePreviewPhysicalCopiesDrawn: number;
@@ -148,7 +167,15 @@ export interface StrokePerformanceProfile {
   adaptivePreviewJsP95Ms: number;
   adaptivePreviewJsMaxMs: number;
   adaptivePreviewMaxLifetimeMs: number;
+  adaptivePreviewProbeLatencyP50Ms: number;
+  adaptivePreviewProbeLatencyP95Ms: number;
   adaptivePreviewMaxQueueProbeLatencyMs: number;
+  adaptivePreviewProbeBacklogP50BaseStamps: number;
+  adaptivePreviewProbeBacklogP95BaseStamps: number;
+  adaptivePreviewProbeBacklogMaxBaseStamps: number;
+  adaptivePreviewProbeTimeoutLatenessP50Ms: number;
+  adaptivePreviewProbeTimeoutLatenessP95Ms: number;
+  adaptivePreviewProbeTimeoutLatenessMaxMs: number;
   adaptivePreviewMaxUnconfirmedBaseStamps: number;
   adaptivePreviewRetirements: number;
   adaptivePreviewFrozenAtLift: number;
@@ -268,6 +295,7 @@ interface AdaptivePreviewProbe {
   startedAt: number;
   prefixSerial: number;
   timeout: number;
+  telemetryProfile: MutableStrokePerformanceProfile | null;
 }
 
 interface AdaptivePreviewCopy {
@@ -338,6 +366,7 @@ interface RenderFrameTiming {
 }
 
 interface MutableStrokePerformanceProfile {
+  startedAt: number;
   stampGeometry: StampGeometry;
   stampVerticesPerCopy: number;
   fragmentCoverageStrategy: FragmentCoverageStrategy;
@@ -365,8 +394,22 @@ interface MutableStrokePerformanceProfile {
   presentationCacheUpdatedPixels: number;
   legacyDisplayShaderPixels: number;
   presentationCopiedPixels: number;
+  adaptivePreviewProbeStarts: number;
+  adaptivePreviewProbeResolvedFast: number;
+  adaptivePreviewProbeResolvedSlow: number;
+  adaptivePreviewProbeTimeouts: number;
+  adaptivePreviewProbeCancellations: number;
+  adaptivePreviewProbeRejections: number;
+  adaptivePreviewProbeNearMisses: number;
+  adaptivePreviewProbeLatencyMs: number[];
+  adaptivePreviewProbeBacklogBaseStamps: number[];
+  adaptivePreviewProbeTimeoutLatenessMs: number[];
   adaptivePreviewActivations: number;
   adaptivePreviewActivationReason: AdaptivePreviewActivationReason;
+  adaptivePreviewFirstActivationReason: AdaptivePreviewConcreteActivationReason | null;
+  adaptivePreviewFirstActivationMs: number | null;
+  adaptivePreviewSecondActivationReason: AdaptivePreviewConcreteActivationReason | null;
+  adaptivePreviewSecondActivationMs: number | null;
   adaptivePreviewFrames: number;
   adaptivePreviewBaseStampsDrawn: number;
   adaptivePreviewPhysicalCopiesDrawn: number;
@@ -435,6 +478,7 @@ const ADAPTIVE_PREVIEW_PROBE_INTERVAL_SUBMISSIONS = 4;
 const ADAPTIVE_PREVIEW_TRIGGER_THRESHOLD_MS = 60;
 const ADAPTIVE_PREVIEW_SLOW_COMPLETION_THRESHOLD_MS = 58;
 const ADAPTIVE_PREVIEW_TRIGGER_CONSECUTIVE_PROBES = 2;
+const ADAPTIVE_PREVIEW_PROBE_NEAR_MISS_MINIMUM_MS = 45;
 const ADAPTIVE_PREVIEW_FORCE = import.meta.env.DEV
   && typeof window !== "undefined"
   && new URLSearchParams(window.location.search).get("adaptivePreview") === "force";
@@ -1338,6 +1382,7 @@ export class BrushEngine {
 
   startStrokePerformanceProfile(): void {
     this.activeStrokeProfile = {
+      startedAt: performance.now(),
       stampGeometry: STAMP_GEOMETRY,
       stampVerticesPerCopy: STAMP_VERTICES_PER_COPY,
       fragmentCoverageStrategy: this.settings.shape === "shape"
@@ -1367,8 +1412,22 @@ export class BrushEngine {
       presentationCacheUpdatedPixels: 0,
       legacyDisplayShaderPixels: 0,
       presentationCopiedPixels: 0,
+      adaptivePreviewProbeStarts: 0,
+      adaptivePreviewProbeResolvedFast: 0,
+      adaptivePreviewProbeResolvedSlow: 0,
+      adaptivePreviewProbeTimeouts: 0,
+      adaptivePreviewProbeCancellations: 0,
+      adaptivePreviewProbeRejections: 0,
+      adaptivePreviewProbeNearMisses: 0,
+      adaptivePreviewProbeLatencyMs: [],
+      adaptivePreviewProbeBacklogBaseStamps: [],
+      adaptivePreviewProbeTimeoutLatenessMs: [],
       adaptivePreviewActivations: 0,
       adaptivePreviewActivationReason: "none",
+      adaptivePreviewFirstActivationReason: null,
+      adaptivePreviewFirstActivationMs: null,
+      adaptivePreviewSecondActivationReason: null,
+      adaptivePreviewSecondActivationMs: null,
       adaptivePreviewFrames: 0,
       adaptivePreviewBaseStampsDrawn: 0,
       adaptivePreviewPhysicalCopiesDrawn: 0,
@@ -1464,8 +1523,20 @@ export class BrushEngine {
       adaptivePreviewTriggerThresholdMs: ADAPTIVE_PREVIEW_TRIGGER_THRESHOLD_MS,
       adaptivePreviewSlowCompletionThresholdMs: ADAPTIVE_PREVIEW_SLOW_COMPLETION_THRESHOLD_MS,
       adaptivePreviewTriggerConsecutiveProbes: ADAPTIVE_PREVIEW_TRIGGER_CONSECUTIVE_PROBES,
+      adaptivePreviewProbeNearMissMinimumMs: ADAPTIVE_PREVIEW_PROBE_NEAR_MISS_MINIMUM_MS,
+      adaptivePreviewProbeStarts: profile.adaptivePreviewProbeStarts,
+      adaptivePreviewProbeResolvedFast: profile.adaptivePreviewProbeResolvedFast,
+      adaptivePreviewProbeResolvedSlow: profile.adaptivePreviewProbeResolvedSlow,
+      adaptivePreviewProbeTimeouts: profile.adaptivePreviewProbeTimeouts,
+      adaptivePreviewProbeCancellations: profile.adaptivePreviewProbeCancellations,
+      adaptivePreviewProbeRejections: profile.adaptivePreviewProbeRejections,
+      adaptivePreviewProbeNearMisses: profile.adaptivePreviewProbeNearMisses,
       adaptivePreviewActivations: profile.adaptivePreviewActivations,
       adaptivePreviewActivationReason: profile.adaptivePreviewActivationReason,
+      adaptivePreviewFirstActivationReason: profile.adaptivePreviewFirstActivationReason,
+      adaptivePreviewFirstActivationMs: profile.adaptivePreviewFirstActivationMs,
+      adaptivePreviewSecondActivationReason: profile.adaptivePreviewSecondActivationReason,
+      adaptivePreviewSecondActivationMs: profile.adaptivePreviewSecondActivationMs,
       adaptivePreviewFrames: profile.adaptivePreviewFrames,
       adaptivePreviewBaseStampsDrawn: profile.adaptivePreviewBaseStampsDrawn,
       adaptivePreviewPhysicalCopiesDrawn: profile.adaptivePreviewPhysicalCopiesDrawn,
@@ -1478,7 +1549,31 @@ export class BrushEngine {
       adaptivePreviewJsP95Ms: percentile(profile.adaptivePreviewJsFrameMs, 0.95),
       adaptivePreviewJsMaxMs: maximum(profile.adaptivePreviewJsFrameMs),
       adaptivePreviewMaxLifetimeMs: profile.adaptivePreviewMaxLifetimeMs,
+      adaptivePreviewProbeLatencyP50Ms: percentile(profile.adaptivePreviewProbeLatencyMs, 0.5),
+      adaptivePreviewProbeLatencyP95Ms: percentile(profile.adaptivePreviewProbeLatencyMs, 0.95),
       adaptivePreviewMaxQueueProbeLatencyMs: profile.adaptivePreviewMaxQueueProbeLatencyMs,
+      adaptivePreviewProbeBacklogP50BaseStamps: percentile(
+        profile.adaptivePreviewProbeBacklogBaseStamps,
+        0.5,
+      ),
+      adaptivePreviewProbeBacklogP95BaseStamps: percentile(
+        profile.adaptivePreviewProbeBacklogBaseStamps,
+        0.95,
+      ),
+      adaptivePreviewProbeBacklogMaxBaseStamps: maximum(
+        profile.adaptivePreviewProbeBacklogBaseStamps,
+      ),
+      adaptivePreviewProbeTimeoutLatenessP50Ms: percentile(
+        profile.adaptivePreviewProbeTimeoutLatenessMs,
+        0.5,
+      ),
+      adaptivePreviewProbeTimeoutLatenessP95Ms: percentile(
+        profile.adaptivePreviewProbeTimeoutLatenessMs,
+        0.95,
+      ),
+      adaptivePreviewProbeTimeoutLatenessMaxMs: maximum(
+        profile.adaptivePreviewProbeTimeoutLatenessMs,
+      ),
       adaptivePreviewMaxUnconfirmedBaseStamps: profile.adaptivePreviewMaxUnconfirmedBaseStamps,
       adaptivePreviewRetirements: profile.adaptivePreviewRetirements,
       adaptivePreviewFrozenAtLift: profile.adaptivePreviewFrozenAtLift,
@@ -1586,6 +1681,7 @@ export class BrushEngine {
     adaptivePreviewTriggerThresholdMs: number;
     adaptivePreviewSlowCompletionThresholdMs: number;
     adaptivePreviewTriggerConsecutiveProbes: number;
+    adaptivePreviewProbeNearMissMinimumMs: number;
     historyStorageStrategy: typeof HISTORY_STORAGE_STRATEGY;
     historyReplayStrategy: typeof HISTORY_REPLAY_STRATEGY;
     historyStampRetentionStrategy: typeof HISTORY_STAMP_RETENTION_STRATEGY;
@@ -1656,6 +1752,7 @@ export class BrushEngine {
       adaptivePreviewTriggerThresholdMs: ADAPTIVE_PREVIEW_TRIGGER_THRESHOLD_MS,
       adaptivePreviewSlowCompletionThresholdMs: ADAPTIVE_PREVIEW_SLOW_COMPLETION_THRESHOLD_MS,
       adaptivePreviewTriggerConsecutiveProbes: ADAPTIVE_PREVIEW_TRIGGER_CONSECUTIVE_PROBES,
+      adaptivePreviewProbeNearMissMinimumMs: ADAPTIVE_PREVIEW_PROBE_NEAR_MISS_MINIMUM_MS,
       historyStorageStrategy: HISTORY_STORAGE_STRATEGY,
       historyReplayStrategy: HISTORY_REPLAY_STRATEGY,
       historyStampRetentionStrategy: HISTORY_STAMP_RETENTION_STRATEGY,
@@ -3000,13 +3097,22 @@ export class BrushEngine {
     }
   }
 
+  private cancelAdaptivePreviewProbe(): void {
+    const probe = this.adaptivePreviewProbe;
+    if (!probe) {
+      return;
+    }
+    window.clearTimeout(probe.timeout);
+    this.adaptivePreviewProbe = null;
+    if (probe.telemetryProfile) {
+      probe.telemetryProfile.adaptivePreviewProbeCancellations += 1;
+    }
+  }
+
   private invalidateAdaptivePreview(): void {
     this.finishAdaptivePreviewLifetime();
     this.adaptivePreviewGeneration += 1;
-    if (this.adaptivePreviewProbe) {
-      window.clearTimeout(this.adaptivePreviewProbe.timeout);
-      this.adaptivePreviewProbe = null;
-    }
+    this.cancelAdaptivePreviewProbe();
     if (this.adaptivePreviewFrameRequest !== null) {
       cancelAnimationFrame(this.adaptivePreviewFrameRequest);
       this.adaptivePreviewFrameRequest = null;
@@ -3028,7 +3134,7 @@ export class BrushEngine {
   }
 
   private activateAdaptivePreview(
-    reason: Exclude<AdaptivePreviewActivationReason, "none" | "mixed">,
+    reason: AdaptivePreviewConcreteActivationReason,
   ): void {
     if (
       this.adaptivePreviewActive
@@ -3047,9 +3153,18 @@ export class BrushEngine {
     }
 
     this.adaptivePreviewActive = true;
-    this.adaptivePreviewStartedAt = performance.now();
+    const activatedAt = performance.now();
+    this.adaptivePreviewStartedAt = activatedAt;
     const profile = this.activeStrokeProfile;
     if (profile) {
+      const activationOffsetMs = activatedAt - profile.startedAt;
+      if (profile.adaptivePreviewActivations === 0) {
+        profile.adaptivePreviewFirstActivationReason = reason;
+        profile.adaptivePreviewFirstActivationMs = activationOffsetMs;
+      } else if (profile.adaptivePreviewActivations === 1) {
+        profile.adaptivePreviewSecondActivationReason = reason;
+        profile.adaptivePreviewSecondActivationMs = activationOffsetMs;
+      }
       profile.adaptivePreviewActivations += 1;
       profile.adaptivePreviewActivationReason = profile.adaptivePreviewActivationReason === "none"
         ? reason
@@ -3066,10 +3181,7 @@ export class BrushEngine {
       || this.adaptivePreviewLastPresentedSerial > 0;
     this.finishAdaptivePreviewLifetime();
     this.adaptivePreviewGeneration += 1;
-    if (this.adaptivePreviewProbe) {
-      window.clearTimeout(this.adaptivePreviewProbe.timeout);
-      this.adaptivePreviewProbe = null;
-    }
+    this.cancelAdaptivePreviewProbe();
     if (this.adaptivePreviewFrameRequest !== null) {
       cancelAnimationFrame(this.adaptivePreviewFrameRequest);
       this.adaptivePreviewFrameRequest = null;
@@ -3273,14 +3385,26 @@ export class BrushEngine {
       return;
     }
 
+    const startedAt = performance.now();
+    const telemetryProfile = this.activeStrokeProfile;
+    const backlogBaseStamps = Math.max(
+      0,
+      this.adaptivePreviewSubmittedSerial - this.adaptivePreviewConfirmedSerial,
+    );
     const probe: AdaptivePreviewProbe = {
       generation: this.adaptivePreviewGeneration,
-      startedAt: performance.now(),
+      startedAt,
       prefixSerial: this.adaptivePreviewSubmittedSerial,
       timeout: 0,
+      telemetryProfile,
     };
+    if (telemetryProfile) {
+      telemetryProfile.adaptivePreviewProbeStarts += 1;
+      telemetryProfile.adaptivePreviewProbeBacklogBaseStamps.push(backlogBaseStamps);
+    }
     this.adaptivePreviewSubmissionsSinceProbe = 0;
     probe.timeout = window.setTimeout(() => {
+      const timedOutAt = performance.now();
       if (
         this.adaptivePreviewProbe !== probe
         || probe.generation !== this.adaptivePreviewGeneration
@@ -3289,7 +3413,16 @@ export class BrushEngine {
       ) {
         return;
       }
-      this.activateAdaptivePreview("queue-lag");
+      if (probe.telemetryProfile) {
+        probe.telemetryProfile.adaptivePreviewProbeTimeouts += 1;
+        probe.telemetryProfile.adaptivePreviewProbeTimeoutLatenessMs.push(
+          Math.max(
+            0,
+            timedOutAt - (probe.startedAt + ADAPTIVE_PREVIEW_TRIGGER_THRESHOLD_MS),
+          ),
+        );
+      }
+      this.activateAdaptivePreview("probe-timeout");
     }, ADAPTIVE_PREVIEW_TRIGGER_THRESHOLD_MS);
     this.adaptivePreviewProbe = probe;
 
@@ -3305,8 +3438,20 @@ export class BrushEngine {
         this.adaptivePreviewConfirmedSerial,
         probe.prefixSerial,
       );
-      const profile = this.activeStrokeProfile;
+      const profile = probe.telemetryProfile;
       if (profile) {
+        profile.adaptivePreviewProbeLatencyMs.push(latency);
+        if (latency >= ADAPTIVE_PREVIEW_SLOW_COMPLETION_THRESHOLD_MS) {
+          profile.adaptivePreviewProbeResolvedSlow += 1;
+        } else {
+          profile.adaptivePreviewProbeResolvedFast += 1;
+        }
+        if (
+          latency >= ADAPTIVE_PREVIEW_PROBE_NEAR_MISS_MINIMUM_MS
+          && latency < ADAPTIVE_PREVIEW_TRIGGER_THRESHOLD_MS
+        ) {
+          profile.adaptivePreviewProbeNearMisses += 1;
+        }
         profile.adaptivePreviewMaxQueueProbeLatencyMs = Math.max(
           profile.adaptivePreviewMaxQueueProbeLatencyMs,
           latency,
@@ -3340,7 +3485,7 @@ export class BrushEngine {
         && this.activeStroke
         && this.adaptivePreviewConsecutiveSlowProbes >= ADAPTIVE_PREVIEW_TRIGGER_CONSECUTIVE_PROBES
       ) {
-        this.activateAdaptivePreview("queue-lag");
+        this.activateAdaptivePreview("consecutive-slow");
       }
 
       if (this.adaptivePreviewActive) {
@@ -3359,6 +3504,9 @@ export class BrushEngine {
         );
       }
     }).catch(() => {
+      if (probe.telemetryProfile) {
+        probe.telemetryProfile.adaptivePreviewProbeRejections += 1;
+      }
       if (this.adaptivePreviewProbe === probe) {
         window.clearTimeout(probe.timeout);
         this.adaptivePreviewProbe = null;

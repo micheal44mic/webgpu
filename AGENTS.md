@@ -1275,3 +1275,49 @@ Il canvas visibile usa ora `adaptivePreviewVisibleCanvasStrategy: "iphone-desync
 - scratch: actual `true` su tutte le piattaforme che espongono l'attributo.
 
 Non cambiano trigger, intervallo probe `4`, soglie `60/58 ms`, tip patch, disegno, compositing, lift, renderer WebGPU esatto o shader. La build locale TypeScript/Vite/Sites riesce. Il candidato non è ancora pubblicato; la prima Base iPhone attesa dopo la pubblicazione è la `#48`.
+
+### Risultato della strategia per piattaforma: run #48 — promossa
+
+La Base iPhone `#48` è pienamente comparabile con `#42/#44/#47`: stesso fingerprint `18982412`, preset, dispositivo, viewport, canvas `860×1454`, stamp e copie. La telemetria revisione `14` conferma che iPhone ha richiesto e ottenuto `visible desynchronized=true`; anche lo scratch riporta `true` e lo spazio colore resta `srgb`. Il controllo manuale Android sulla stessa build conferma che il rettangolo nero resta assente con il ramo sincronizzato.
+
+| Metrica | #42/#44 vecchio percorso iPhone | #47 sincronizzato ovunque | #48 policy per piattaforma |
+|---|---:|---:|---:|
+| FPS medi | `56,49–56,86` | `55,90` | `56,93` |
+| intervallo frame p95 | `25–26 ms` | `28 ms` | `23 ms` |
+| intervallo frame massimo | `66–67 ms` | `67 ms` | `67 ms` |
+| frame oltre 20 ms | `30–33` | `37` | `24` |
+| coda GPU finale | `253–256 ms` | `285 ms` | `247 ms` |
+| input delay p95 | `15–16 ms` | `17 ms` | `16 ms` |
+| fine presentazione | `7100–7105 ms` | `7138 ms` | `7098 ms` |
+| `resizeCanvasTotalMs` | `60–67 ms` | `66 ms` | `74 ms` |
+
+La #48 usa `2` attivazioni, `210` patch, `420` stamp rappresentati e `6720` copie; il costo JS totale è `159 ms`, p95 `1 ms`, massimo isolato `6 ms` e `10` skip. Tutti gli invarianti esatti sono validi: nessun deferred/replay/lift submission, `12107` stamp e `391` batch sottoposti una volta sola.
+
+Decisione: strategia promossa. Conservare `desynchronized=true` soltanto su iPhone e `false` su Android/desktop. La #47 suggerisce che sincronizzare il canvas visibile può avere un costo su iPhone, mentre il confronto Android dimostra il beneficio di correttezza. Il valore `resizeCanvasTotalMs` sale a `74 ms` proprio nella run con migliore p95 e meno frame lenti: non usarlo più da solo come indicatore causale del calo Base e non riprovare il posizionamento `transform`.
+
+Prima di cambiare la frequenza dei probe, il prossimo passo consigliato resta una build di sola telemetria con policy intervallo `4` invariata: distinguere timeout e slow-completion, misurare ritardo del timer, distribuzione delle latenze, backlog, near-miss `45–60 ms` e tempi di prima/seconda attivazione. Soltanto quei dati devono decidere tra intervallo `1` e `armed-not-visible`.
+
+## Telemetria probe revisione 15 — candidato locale, comportamento invariato
+
+È stata implementata la misura richiesta senza cambiare la preview. Restano identici intervallo probe `4`, timeout `60 ms`, soglia slow-completion `58 ms`, requisito di `2` completamenti lenti consecutivi, numero di promise `onSubmittedWorkDone()`, patch Canvas2D, renderer esatto, lift e retirement. Non sono stati aggiunti `PerformanceObserver`, nuovi probe o lavoro GPU.
+
+La telemetria distingue ora il motivo effettivo di ogni attivazione:
+
+- `probe-timeout`: il callback del timer da `60 ms` è arrivato mentre il probe era ancora corrente;
+- `consecutive-slow`: due probe risolti consecutivamente con latenza almeno `58 ms`;
+- `diagnostic-force`: soltanto il percorso forzato della build di sviluppo.
+
+`adaptivePreviewActivationReason` conserva il riepilogo e diventa `mixed` se nello stesso tratto compaiono cause diverse. Sono inoltre salvati motivo e offset dal principio del profilo per prima e seconda attivazione.
+
+I nuovi contatori e aggregati sono:
+
+- probe avviati, risolti fast, risolti slow, timeout, cancellazioni e rejection;
+- latenza dei probe risolti p50/p95, mantenendo `adaptivePreviewMaxQueueProbeLatencyMs` come massimo compatibile con le run precedenti;
+- backlog di stamp base non confermati all'avvio del probe p50/p95/massimo;
+- near-miss con latenza nell'intervallo `[45, 60) ms`;
+- ritardo reale del callback timeout rispetto alla deadline p50/p95/massimo;
+- offset e causa della prima e della seconda attivazione.
+
+Un timeout e una successiva risoluzione appartengono allo stesso probe e possono quindi incrementare entrambi i rispettivi contatori; non sono categorie terminali mutuamente esclusive. La latenza di `onSubmittedWorkDone()` misura il completamento del prefisso della coda più il ritardo della callback JavaScript, non tempo GPU isolato. Allo stesso modo la lateness del timer misura anche la congestione del main thread: un timeout tardivo non prova da solo che la GPU fosse occupata per tutta la durata.
+
+La build TypeScript/Vite/Sites riesce. Gli smoke locali su GPU NVIDIA Ampere sono riusciti con Circle, Shape, lift, Undo e Redo, senza errori console. Shader, soglie e schedulazione del probe non sono stati modificati. Il candidato non è ancora pubblicato; dopo la pubblicazione eseguire una Base e una Fur, attese come `#49` e `#50`, prima di scegliere tra intervallo `1` e una preview armata ma non visibile.

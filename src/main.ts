@@ -165,12 +165,13 @@ interface BenchmarkRun {
     adaptivePreviewTriggerThresholdMs: number;
     adaptivePreviewSlowCompletionThresholdMs: number;
     adaptivePreviewTriggerConsecutiveProbes: number;
+    adaptivePreviewProbeNearMissMinimumMs: number;
     historyStorageStrategy: StrokePerformanceProfile["historyStorageStrategy"];
     historyReplayStrategy: StrokePerformanceProfile["historyReplayStrategy"];
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 14;
+    performanceTelemetryRevision: 15;
   };
 }
 
@@ -360,7 +361,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 14,
+    performanceTelemetryRevision: 15,
     ...engineEnvironment,
   };
 }
