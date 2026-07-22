@@ -1,5 +1,6 @@
 export const brushShader = /* wgsl */ `
 const MAX_COUNT: u32 = 24u;
+const MAX_SHAPE_SUPPORT_RECTS: u32 = 8u;
 const TAU: f32 = 6.283185307179586;
 
 struct BrushUniforms {
@@ -26,12 +27,23 @@ struct VertexOutput {
   @location(0) localPosition: vec2<f32>,
   @location(1) @interpolate(flat) pressure: f32,
   @location(2) @interpolate(flat) pointColor: vec3<f32>,
+  @location(3) @interpolate(flat) shapeSupportIndex: u32,
+};
+
+struct ShapeSupportRect {
+  centerAndAxisU: vec4<f32>,
+  axisVAndHalfExtent: vec4<f32>,
+};
+
+struct ShapeSupport {
+  rects: array<ShapeSupportRect, 8>,
 };
 
 @group(0) @binding(0) var<uniform> brush: BrushUniforms;
 @group(0) @binding(1) var<storage, read> stamps: array<Stamp>;
 @group(0) @binding(2) var shapeMaskTexture: texture_2d<f32>;
 @group(0) @binding(3) var shapeMaskSampler: sampler;
+@group(0) @binding(4) var<uniform> shapeSupport: ShapeSupport;
 
 fn hash32(value: u32) -> u32 {
   var x = value;
@@ -144,6 +156,7 @@ fn vertexMain(
   output.position = vec4<f32>(clipPosition, 0.0, 1.0);
   output.localPosition = localPosition;
   output.pressure = stamp.pressure;
+  output.shapeSupportIndex = 0u;
   var colorCopySeed = copySeed;
   if (brush.options.y == 0u) {
     colorCopySeed = hash32(stamp.seed);
@@ -154,21 +167,15 @@ fn vertexMain(
 
 @vertex
 fn shapeVertexMain(
-  @builtin(vertex_index) vertexIndex: u32,
+  @location(0) supportLocalPosition: vec2<f32>,
+  @location(1) supportIndex: u32,
   @builtin(instance_index) instanceIndex: u32
 ) -> VertexOutput {
-  let corners = array<vec2<f32>, 4>(
-    vec2<f32>(-1.0, -1.0),
-    vec2<f32>( 1.0, -1.0),
-    vec2<f32>(-1.0,  1.0),
-    vec2<f32>( 1.0,  1.0)
-  );
-
   let copyCount = max(1u, min(brush.options.x, MAX_COUNT));
   let stampIndex = instanceIndex / copyCount;
   let copyIndex = instanceIndex % copyCount;
   let stamp = stamps[stampIndex];
-  let localPosition = corners[vertexIndex];
+  let localPosition = supportLocalPosition;
   let directionLength = length(stamp.direction);
   let direction = select(vec2<f32>(1.0, 0.0), stamp.direction / directionLength, directionLength > 0.0001);
   let copySeed = hash32(stamp.seed ^ (copyIndex * 0x85ebca6bu));
@@ -200,6 +207,7 @@ fn shapeVertexMain(
   output.position = vec4<f32>(clipPosition, 0.0, 1.0);
   output.localPosition = localPosition;
   output.pressure = stamp.pressure;
+  output.shapeSupportIndex = supportIndex;
   var colorCopySeed = copySeed;
   if (brush.options.y == 0u) {
     colorCopySeed = hash32(stamp.seed);
@@ -236,10 +244,39 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   return vec4<f32>(input.pointColor * alpha, alpha);
 }
 
+fn shapeSupportContains(rectIndex: u32, localPosition: vec2<f32>) -> bool {
+  let rect = shapeSupport.rects[rectIndex];
+  let delta = localPosition - rect.centerAndAxisU.xy;
+  let alongU = dot(delta, rect.centerAndAxisU.zw);
+  let alongV = dot(delta, rect.axisVAndHalfExtent.xy);
+  return abs(alongU) <= rect.axisVAndHalfExtent.z
+    && abs(alongV) <= rect.axisVAndHalfExtent.w;
+}
+
+fn shapeSupportOwnsSample(supportIndex: u32, localPosition: vec2<f32>) -> bool {
+  var previousIndex = 0u;
+  while (previousIndex < min(supportIndex, MAX_SHAPE_SUPPORT_RECTS)) {
+    if (shapeSupportContains(previousIndex, localPosition)) {
+      return false;
+    }
+    previousIndex = previousIndex + 1u;
+  }
+  return true;
+}
+
 @fragment
 fn shapeFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let uv = input.localPosition * 0.5 + vec2<f32>(0.5);
-  let sourceCoverage = textureSample(shapeMaskTexture, shapeMaskSampler, uv).r;
+  let uvDx = dpdx(uv);
+  let uvDy = dpdy(uv);
+  let insideOriginalQuad = all(input.localPosition >= vec2<f32>(-1.0))
+    && all(input.localPosition <= vec2<f32>(1.0));
+
+  if (!insideOriginalQuad || !shapeSupportOwnsSample(input.shapeSupportIndex, input.localPosition)) {
+    discard;
+  }
+
+  let sourceCoverage = textureSampleGrad(shapeMaskTexture, shapeMaskSampler, uv, uvDx, uvDy).r;
   let hardness = clamp(brush.controls.y, 0.0, 1.0);
   let coverage = mix(sourceCoverage * sourceCoverage, sourceCoverage, hardness);
 

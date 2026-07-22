@@ -4,7 +4,9 @@ import { brushShader, displayShader } from "./shaders";
 export type BlendMode = "normal" | "additive";
 export type LayerFormat = "rgba8unorm" | "rgba16float";
 export type BrushShape = "circle" | "shape";
+export type StampGeometry = "quad" | "oriented-support-quads";
 export type FragmentCoverageStrategy = "generic-smoothstep" | "shape-alpha-mask-2k";
+export type ShapeSupportStrategy = "none" | "full-quad" | "exact-alpha-oriented-components";
 
 export interface BrushSettings {
   shape: BrushShape;
@@ -55,9 +57,12 @@ export interface BenchmarkResult {
 }
 
 export interface StrokePerformanceProfile {
-  stampGeometry: "quad";
+  stampGeometry: StampGeometry;
   stampVerticesPerCopy: number;
   fragmentCoverageStrategy: FragmentCoverageStrategy;
+  shapeSupportStrategy: ShapeSupportStrategy;
+  shapeSupportRectangles: number;
+  shapeSupportMinimumRadius: number;
   colorSeedStrategy: "reuse-position-copy-seed";
   dirtyRectStrategy: "directional-jitter-bounds";
   baseStamps: number;
@@ -127,6 +132,23 @@ interface DirtyRect {
   height: number;
 }
 
+interface ShapeSupportRect {
+  centerX: number;
+  centerY: number;
+  axisUX: number;
+  axisUY: number;
+  axisVX: number;
+  axisVY: number;
+  halfExtentU: number;
+  halfExtentV: number;
+  sourceArea: number;
+}
+
+interface ShapeMaskResources {
+  texture: GPUTexture;
+  supportRects: ShapeSupportRect[];
+}
+
 interface SubmitTiming {
   totalCpuMs: number;
   stampPackingMs: number;
@@ -145,7 +167,11 @@ interface RenderFrameTiming {
 }
 
 interface MutableStrokePerformanceProfile {
+  stampGeometry: StampGeometry;
+  stampVerticesPerCopy: number;
   fragmentCoverageStrategy: FragmentCoverageStrategy;
+  shapeSupportStrategy: ShapeSupportStrategy;
+  shapeSupportRectangles: number;
   baseStamps: number;
   physicalCopies: number;
   renderFrames: number;
@@ -172,12 +198,21 @@ const LAYER_SIZE = 4096;
 const STAMP_STRIDE_BYTES = 32;
 const MAX_STAMPS_PER_BATCH = 65_536;
 const STAMP_VERTICES_PER_COPY = 4;
+const FULL_SHAPE_VERTICES_PER_COPY = 6;
 const STAMP_GEOMETRY = "quad" as const;
+const SHAPE_STAMP_GEOMETRY = "oriented-support-quads" as const;
 const CIRCLE_FRAGMENT_COVERAGE_STRATEGY = "generic-smoothstep" as const;
 const SHAPE_FRAGMENT_COVERAGE_STRATEGY = "shape-alpha-mask-2k" as const;
+const SHAPE_SUPPORT_STRATEGY = "exact-alpha-oriented-components" as const;
 const COLOR_SEED_STRATEGY = "reuse-position-copy-seed" as const;
 const DIRTY_RECT_STRATEGY = "directional-jitter-bounds" as const;
 const SHAPE_MASK_SIZE = 2048;
+const SHAPE_SUPPORT_MAX_RECTS = 8;
+const SHAPE_SUPPORT_MAX_MIP = 4;
+const SHAPE_SUPPORT_MIN_RADIUS = 128;
+const SHAPE_SUPPORT_PADDING_PIXELS = Math.ceil(1.5 * (1 << SHAPE_SUPPORT_MAX_MIP) * Math.SQRT2);
+const SHAPE_SUPPORT_VERTEX_STRIDE_BYTES = 12;
+const SHAPE_SUPPORT_UNIFORM_BYTES = SHAPE_SUPPORT_MAX_RECTS * 8 * 4;
 const BRUSH_UNIFORM_BYTES = 96;
 const DISPLAY_UNIFORM_BYTES = 32;
 
@@ -198,6 +233,207 @@ function average(values: readonly number[]): number {
   return values.length === 0
     ? 0
     : values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function buildShapeSupportRects(baseMask: Uint8Array): ShapeSupportRect[] {
+  const visited = new Uint8Array(baseMask.length);
+  const components: number[][] = [];
+
+  for (let seedIndex = 0; seedIndex < baseMask.length; seedIndex += 1) {
+    if (baseMask[seedIndex] === 0 || visited[seedIndex] !== 0) {
+      continue;
+    }
+
+    const component: number[] = [];
+    const stack = [seedIndex];
+    visited[seedIndex] = 1;
+
+    while (stack.length > 0) {
+      const pixelIndex = stack.pop()!;
+      component.push(pixelIndex);
+      const x = pixelIndex % SHAPE_MASK_SIZE;
+      const y = Math.floor(pixelIndex / SHAPE_MASK_SIZE);
+
+      for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+        const neighborY = y + offsetY;
+        if (neighborY < 0 || neighborY >= SHAPE_MASK_SIZE) {
+          continue;
+        }
+        for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+          if (offsetX === 0 && offsetY === 0) {
+            continue;
+          }
+          const neighborX = x + offsetX;
+          if (neighborX < 0 || neighborX >= SHAPE_MASK_SIZE) {
+            continue;
+          }
+          const neighborIndex = neighborY * SHAPE_MASK_SIZE + neighborX;
+          if (baseMask[neighborIndex] === 0 || visited[neighborIndex] !== 0) {
+            continue;
+          }
+          visited[neighborIndex] = 1;
+          stack.push(neighborIndex);
+        }
+      }
+    }
+
+    components.push(component);
+    if (components.length > SHAPE_SUPPORT_MAX_RECTS) {
+      return [];
+    }
+  }
+
+  const supportRects = components.map((component): ShapeSupportRect => {
+    let sumX = 0;
+    let sumY = 0;
+    for (const pixelIndex of component) {
+      sumX += (pixelIndex % SHAPE_MASK_SIZE) + 0.5;
+      sumY += Math.floor(pixelIndex / SHAPE_MASK_SIZE) + 0.5;
+    }
+
+    const meanX = sumX / component.length;
+    const meanY = sumY / component.length;
+    let covarianceXX = 0;
+    let covarianceXY = 0;
+    let covarianceYY = 0;
+    for (const pixelIndex of component) {
+      const deltaX = (pixelIndex % SHAPE_MASK_SIZE) + 0.5 - meanX;
+      const deltaY = Math.floor(pixelIndex / SHAPE_MASK_SIZE) + 0.5 - meanY;
+      covarianceXX += deltaX * deltaX;
+      covarianceXY += deltaX * deltaY;
+      covarianceYY += deltaY * deltaY;
+    }
+
+    const principalAngle = 0.5 * Math.atan2(
+      covarianceXY * 2,
+      covarianceXX - covarianceYY,
+    );
+    let axisUX = Math.cos(principalAngle);
+    let axisUY = Math.sin(principalAngle);
+    if (axisUX < 0) {
+      axisUX = -axisUX;
+      axisUY = -axisUY;
+    }
+    const axisVX = -axisUY;
+    const axisVY = axisUX;
+
+    let minimumU = Number.POSITIVE_INFINITY;
+    let maximumU = Number.NEGATIVE_INFINITY;
+    let minimumV = Number.POSITIVE_INFINITY;
+    let maximumV = Number.NEGATIVE_INFINITY;
+    for (const pixelIndex of component) {
+      const x = (pixelIndex % SHAPE_MASK_SIZE) + 0.5;
+      const y = Math.floor(pixelIndex / SHAPE_MASK_SIZE) + 0.5;
+      const projectionU = x * axisUX + y * axisUY;
+      const projectionV = x * axisVX + y * axisVY;
+      minimumU = Math.min(minimumU, projectionU);
+      maximumU = Math.max(maximumU, projectionU);
+      minimumV = Math.min(minimumV, projectionV);
+      maximumV = Math.max(maximumV, projectionV);
+    }
+
+    minimumU -= SHAPE_SUPPORT_PADDING_PIXELS;
+    maximumU += SHAPE_SUPPORT_PADDING_PIXELS;
+    minimumV -= SHAPE_SUPPORT_PADDING_PIXELS;
+    maximumV += SHAPE_SUPPORT_PADDING_PIXELS;
+
+    const centerU = (minimumU + maximumU) * 0.5;
+    const centerV = (minimumV + maximumV) * 0.5;
+    const centerSourceX = axisUX * centerU + axisVX * centerV;
+    const centerSourceY = axisUY * centerU + axisVY * centerV;
+    const sourceWidth = maximumU - minimumU;
+    const sourceHeight = maximumV - minimumV;
+
+    return {
+      centerX: centerSourceX / SHAPE_MASK_SIZE * 2 - 1,
+      centerY: centerSourceY / SHAPE_MASK_SIZE * 2 - 1,
+      axisUX,
+      axisUY,
+      axisVX,
+      axisVY,
+      halfExtentU: sourceWidth / SHAPE_MASK_SIZE,
+      halfExtentV: sourceHeight / SHAPE_MASK_SIZE,
+      sourceArea: sourceWidth * sourceHeight,
+    };
+  });
+
+  supportRects.sort((left, right) => right.sourceArea - left.sourceArea);
+  return supportRects;
+}
+
+function buildShapeSupportVertexData(supportRects: readonly ShapeSupportRect[]): ArrayBuffer {
+  const vertexCount = FULL_SHAPE_VERTICES_PER_COPY + supportRects.length * 6;
+  const data = new ArrayBuffer(vertexCount * SHAPE_SUPPORT_VERTEX_STRIDE_BYTES);
+  const floats = new Float32Array(data);
+  const unsigned = new Uint32Array(data);
+  let vertexIndex = 0;
+
+  const writeVertex = (x: number, y: number, supportIndex: number): void => {
+    const base = vertexIndex * (SHAPE_SUPPORT_VERTEX_STRIDE_BYTES / 4);
+    floats[base] = x;
+    floats[base + 1] = y;
+    unsigned[base + 2] = supportIndex >>> 0;
+    vertexIndex += 1;
+  };
+
+  const writeQuad = (
+    topLeftX: number,
+    topLeftY: number,
+    topRightX: number,
+    topRightY: number,
+    bottomLeftX: number,
+    bottomLeftY: number,
+    bottomRightX: number,
+    bottomRightY: number,
+    supportIndex: number,
+  ): void => {
+    writeVertex(topLeftX, topLeftY, supportIndex);
+    writeVertex(topRightX, topRightY, supportIndex);
+    writeVertex(bottomLeftX, bottomLeftY, supportIndex);
+    writeVertex(bottomLeftX, bottomLeftY, supportIndex);
+    writeVertex(topRightX, topRightY, supportIndex);
+    writeVertex(bottomRightX, bottomRightY, supportIndex);
+  };
+
+  writeQuad(-1, -1, 1, -1, -1, 1, 1, 1, 0);
+
+  for (let supportIndex = 0; supportIndex < supportRects.length; supportIndex += 1) {
+    const rect = supportRects[supportIndex];
+    const extentUX = rect.axisUX * rect.halfExtentU;
+    const extentUY = rect.axisUY * rect.halfExtentU;
+    const extentVX = rect.axisVX * rect.halfExtentV;
+    const extentVY = rect.axisVY * rect.halfExtentV;
+    writeQuad(
+      rect.centerX - extentUX - extentVX,
+      rect.centerY - extentUY - extentVY,
+      rect.centerX + extentUX - extentVX,
+      rect.centerY + extentUY - extentVY,
+      rect.centerX - extentUX + extentVX,
+      rect.centerY - extentUY + extentVY,
+      rect.centerX + extentUX + extentVX,
+      rect.centerY + extentUY + extentVY,
+      supportIndex,
+    );
+  }
+
+  return data;
+}
+
+function buildShapeSupportUniformData(supportRects: readonly ShapeSupportRect[]): Float32Array {
+  const data = new Float32Array(SHAPE_SUPPORT_UNIFORM_BYTES / 4);
+  for (let index = 0; index < supportRects.length; index += 1) {
+    const rect = supportRects[index];
+    const base = index * 8;
+    data[base] = rect.centerX;
+    data[base + 1] = rect.centerY;
+    data[base + 2] = rect.axisUX;
+    data[base + 3] = rect.axisUY;
+    data[base + 4] = rect.axisVX;
+    data[base + 5] = rect.axisVY;
+    data[base + 6] = rect.halfExtentU;
+    data[base + 7] = rect.halfExtentV;
+  }
+  return data;
 }
 
 export const defaultBrushSettings: BrushSettings = {
@@ -241,10 +477,15 @@ export class BrushEngine {
   private brushUniformBuffer!: GPUBuffer;
   private displayUniformBuffer!: GPUBuffer;
   private instanceBuffer!: GPUBuffer;
+  private shapeSupportVertexBuffer!: GPUBuffer;
+  private shapeSupportUniformBuffer!: GPUBuffer;
   private sampler!: GPUSampler;
   private shapeMaskTexture!: GPUTexture;
   private shapeMaskView!: GPUTextureView;
   private shapeMaskSampler!: GPUSampler;
+  private shapeSupportRectCount = 0;
+  private shapeSupportVertexCount = 0;
+  private packedMinimumRadius = Number.POSITIVE_INFINITY;
 
   private brushBindGroupLayout!: GPUBindGroupLayout;
   private displayBindGroupLayout!: GPUBindGroupLayout;
@@ -286,6 +527,9 @@ export class BrushEngine {
   private renderTimestamps: number[] = [];
   private gpuLabel = "GPU WebGPU";
   private activeStrokeProfile: MutableStrokePerformanceProfile | null = null;
+  private lastStampGeometry: StampGeometry = STAMP_GEOMETRY;
+  private lastStampVerticesPerCopy = STAMP_VERTICES_PER_COPY;
+  private lastShapeSupportStrategy: ShapeSupportStrategy = "none";
 
   constructor(canvas: HTMLCanvasElement, callbacks: EngineCallbacks = {}) {
     this.canvas = canvas;
@@ -540,7 +784,9 @@ export class BrushEngine {
     const strategy = [
       "1 draw instanziata",
       `${this.settings.count} copie fisiche GPU per stamp base`,
-      "geometria quad triangle-strip (4 vertici)",
+      this.settings.shape === "shape"
+        ? `supporto alpha esatto ${this.shapeSupportRectCount} quad orientati (${this.shapeSupportVertexCount} vertici)`
+        : "geometria quad triangle-strip (4 vertici)",
       this.settings.shape === "shape"
         ? "coverage da maschera alpha 2048²"
         : "coverage fragment smoothstep generica",
@@ -605,9 +851,13 @@ export class BrushEngine {
 
   startStrokePerformanceProfile(): void {
     this.activeStrokeProfile = {
+      stampGeometry: STAMP_GEOMETRY,
+      stampVerticesPerCopy: STAMP_VERTICES_PER_COPY,
       fragmentCoverageStrategy: this.settings.shape === "shape"
         ? SHAPE_FRAGMENT_COVERAGE_STRATEGY
         : CIRCLE_FRAGMENT_COVERAGE_STRATEGY,
+      shapeSupportStrategy: "none",
+      shapeSupportRectangles: 0,
       baseStamps: 0,
       physicalCopies: 0,
       renderFrames: 0,
@@ -640,9 +890,12 @@ export class BrushEngine {
     const averageRenderIntervalMs = average(profile.renderIntervalMs);
 
     return {
-      stampGeometry: STAMP_GEOMETRY,
-      stampVerticesPerCopy: STAMP_VERTICES_PER_COPY,
+      stampGeometry: profile.stampGeometry,
+      stampVerticesPerCopy: profile.stampVerticesPerCopy,
       fragmentCoverageStrategy: profile.fragmentCoverageStrategy,
+      shapeSupportStrategy: profile.shapeSupportStrategy,
+      shapeSupportRectangles: profile.shapeSupportRectangles,
+      shapeSupportMinimumRadius: SHAPE_SUPPORT_MIN_RADIUS,
       colorSeedStrategy: COLOR_SEED_STRATEGY,
       dirtyRectStrategy: DIRTY_RECT_STRATEGY,
       baseStamps: profile.baseStamps,
@@ -692,9 +945,12 @@ export class BrushEngine {
     layerMemoryMiB: number;
     gpuLabel: string;
     timestampQueriesSupported: boolean;
-    stampGeometry: typeof STAMP_GEOMETRY;
+    stampGeometry: StampGeometry;
     stampVerticesPerCopy: number;
     fragmentCoverageStrategy: FragmentCoverageStrategy;
+    shapeSupportStrategy: ShapeSupportStrategy;
+    shapeSupportRectangles: number;
+    shapeSupportMinimumRadius: number;
     colorSeedStrategy: typeof COLOR_SEED_STRATEGY;
     dirtyRectStrategy: typeof DIRTY_RECT_STRATEGY;
   } {
@@ -706,11 +962,18 @@ export class BrushEngine {
       layerMemoryMiB: this.layerFormat === "rgba16float" ? 128 : 64,
       gpuLabel: this.gpuLabel,
       timestampQueriesSupported: this.device?.features.has("timestamp-query") ?? false,
-      stampGeometry: STAMP_GEOMETRY,
-      stampVerticesPerCopy: STAMP_VERTICES_PER_COPY,
+      stampGeometry: this.settings.shape === "shape" ? this.lastStampGeometry : STAMP_GEOMETRY,
+      stampVerticesPerCopy: this.settings.shape === "shape"
+        ? this.lastStampVerticesPerCopy
+        : STAMP_VERTICES_PER_COPY,
       fragmentCoverageStrategy: this.settings.shape === "shape"
         ? SHAPE_FRAGMENT_COVERAGE_STRATEGY
         : CIRCLE_FRAGMENT_COVERAGE_STRATEGY,
+      shapeSupportStrategy: this.settings.shape === "shape"
+        ? this.lastShapeSupportStrategy
+        : "none",
+      shapeSupportRectangles: this.settings.shape === "shape" ? this.shapeSupportRectCount : 0,
+      shapeSupportMinimumRadius: SHAPE_SUPPORT_MIN_RADIUS,
       colorSeedStrategy: COLOR_SEED_STRATEGY,
       dirtyRectStrategy: DIRTY_RECT_STRATEGY,
     };
@@ -752,8 +1015,27 @@ export class BrushEngine {
       addressModeU: "clamp-to-edge",
       addressModeV: "clamp-to-edge",
     });
-    this.shapeMaskTexture = await this.createShapeMaskTexture();
+    const shapeMaskResources = await this.createShapeMaskResources();
+    this.shapeMaskTexture = shapeMaskResources.texture;
     this.shapeMaskView = this.shapeMaskTexture.createView({ label: "Shape 2K mask view" });
+    this.shapeSupportRectCount = shapeMaskResources.supportRects.length;
+    this.shapeSupportVertexCount = this.shapeSupportRectCount * 6;
+
+    const shapeSupportVertexData = buildShapeSupportVertexData(shapeMaskResources.supportRects);
+    this.shapeSupportVertexBuffer = this.device.createBuffer({
+      label: "Shape exact-alpha support vertices",
+      size: shapeSupportVertexData.byteLength,
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    });
+    this.device.queue.writeBuffer(this.shapeSupportVertexBuffer, 0, shapeSupportVertexData);
+
+    const shapeSupportUniformData = buildShapeSupportUniformData(shapeMaskResources.supportRects);
+    this.shapeSupportUniformBuffer = this.device.createBuffer({
+      label: "Shape exact-alpha support rectangles",
+      size: SHAPE_SUPPORT_UNIFORM_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.device.queue.writeBuffer(this.shapeSupportUniformBuffer, 0, shapeSupportUniformData);
 
     this.brushBindGroupLayout = this.device.createBindGroupLayout({
       label: "Brush bind group layout",
@@ -777,6 +1059,11 @@ export class BrushEngine {
           binding: 3,
           visibility: GPUShaderStage.FRAGMENT,
           sampler: { type: "filtering" },
+        },
+        {
+          binding: 4,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
         },
       ],
     });
@@ -810,6 +1097,7 @@ export class BrushEngine {
         { binding: 1, resource: { buffer: this.instanceBuffer } },
         { binding: 2, resource: this.shapeMaskView },
         { binding: 3, resource: this.shapeMaskSampler },
+        { binding: 4, resource: { buffer: this.shapeSupportUniformBuffer } },
       ],
     });
 
@@ -841,7 +1129,7 @@ export class BrushEngine {
     });
   }
 
-  private async createShapeMaskTexture(): Promise<GPUTexture> {
+  private async createShapeMaskResources(): Promise<ShapeMaskResources> {
     const response = await fetch(new URL("../Shape.png", import.meta.url));
     if (!response.ok) {
       throw new Error(`Impossibile caricare Shape.png (${response.status}).`);
@@ -883,6 +1171,7 @@ export class BrushEngine {
       bitmap.close();
     }
 
+    const supportRects = buildShapeSupportRects(baseMask);
     const mipLevelCount = Math.log2(SHAPE_MASK_SIZE) + 1;
     const texture = this.device.createTexture({
       label: "Shape 2K white-times-alpha mask",
@@ -938,7 +1227,7 @@ export class BrushEngine {
       levelSize = nextSize;
     }
 
-    return texture;
+    return { texture, supportRects };
   }
 
   private async recreateLayerResources(format: LayerFormat): Promise<void> {
@@ -1030,6 +1319,16 @@ export class BrushEngine {
       vertex: {
         module: this.brushShaderModule,
         entryPoint: "shapeVertexMain",
+        buffers: [
+          {
+            arrayStride: SHAPE_SUPPORT_VERTEX_STRIDE_BYTES,
+            stepMode: "vertex",
+            attributes: [
+              { shaderLocation: 0, offset: 0, format: "float32x2" },
+              { shaderLocation: 1, offset: 8, format: "uint32" },
+            ],
+          },
+        ],
       },
       fragment: {
         module: this.brushShaderModule,
@@ -1052,7 +1351,7 @@ export class BrushEngine {
           },
         ],
       },
-      primitive: { topology: "triangle-strip" },
+      primitive: { topology: "triangle-list" },
     });
 
     const shapeAdditivePipeline = this.device.createRenderPipeline({
@@ -1061,6 +1360,16 @@ export class BrushEngine {
       vertex: {
         module: this.brushShaderModule,
         entryPoint: "shapeVertexMain",
+        buffers: [
+          {
+            arrayStride: SHAPE_SUPPORT_VERTEX_STRIDE_BYTES,
+            stepMode: "vertex",
+            attributes: [
+              { shaderLocation: 0, offset: 0, format: "float32x2" },
+              { shaderLocation: 1, offset: 8, format: "uint32" },
+            ],
+          },
+        ],
       },
       fragment: {
         module: this.brushShaderModule,
@@ -1083,7 +1392,7 @@ export class BrushEngine {
           },
         ],
       },
-      primitive: { topology: "triangle-strip" },
+      primitive: { topology: "triangle-list" },
     });
 
     const validationError = await this.device.popErrorScope();
@@ -1365,13 +1674,48 @@ export class BrushEngine {
 
       if (stamps.length > 0 && dirtyRect) {
         scissorPixels = dirtyRect.width * dirtyRect.height;
-        const pipeline = this.settings.shape === "shape"
+        const isShape = this.settings.shape === "shape";
+        const useExactAlphaSupport = isShape
+          && this.shapeSupportVertexCount > 0
+          && this.packedMinimumRadius >= SHAPE_SUPPORT_MIN_RADIUS;
+        const pipeline = isShape
           ? this.settings.blendMode === "additive" ? this.shapeAdditivePipeline : this.shapeNormalPipeline
           : this.settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline;
         brushPass.setPipeline(pipeline);
         brushPass.setBindGroup(0, this.brushBindGroup);
         brushPass.setScissorRect(dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height);
-        brushPass.draw(STAMP_VERTICES_PER_COPY, stamps.length * this.settings.count, 0, 0);
+        if (isShape) {
+          const shapeVerticesPerCopy = useExactAlphaSupport
+            ? this.shapeSupportVertexCount
+            : FULL_SHAPE_VERTICES_PER_COPY;
+          const firstShapeVertex = useExactAlphaSupport ? FULL_SHAPE_VERTICES_PER_COPY : 0;
+          const shapeSupportStrategy: ShapeSupportStrategy = useExactAlphaSupport
+            ? SHAPE_SUPPORT_STRATEGY
+            : "full-quad";
+          this.lastStampGeometry = useExactAlphaSupport ? SHAPE_STAMP_GEOMETRY : STAMP_GEOMETRY;
+          this.lastStampVerticesPerCopy = shapeVerticesPerCopy;
+          this.lastShapeSupportStrategy = shapeSupportStrategy;
+          if (this.activeStrokeProfile) {
+            this.activeStrokeProfile.stampGeometry = this.lastStampGeometry;
+            this.activeStrokeProfile.stampVerticesPerCopy = Math.max(
+              this.activeStrokeProfile.stampVerticesPerCopy,
+              shapeVerticesPerCopy,
+            );
+            this.activeStrokeProfile.shapeSupportStrategy = shapeSupportStrategy;
+            this.activeStrokeProfile.shapeSupportRectangles = useExactAlphaSupport
+              ? this.shapeSupportRectCount
+              : 0;
+          }
+          brushPass.setVertexBuffer(0, this.shapeSupportVertexBuffer);
+          brushPass.draw(
+            shapeVerticesPerCopy,
+            stamps.length * this.settings.count,
+            firstShapeVertex,
+            0,
+          );
+        } else {
+          brushPass.draw(STAMP_VERTICES_PER_COPY, stamps.length * this.settings.count, 0, 0);
+        }
       }
       brushPass.end();
       brushEncodingMs = performance.now() - brushEncodingStart;
@@ -1415,6 +1759,7 @@ export class BrushEngine {
     let minimumY = LAYER_SIZE;
     let maximumX = 0;
     let maximumY = 0;
+    let minimumRadius = Number.POSITIVE_INFINITY;
     const maximumShapeAngle = Math.PI * this.settings.shapeScatter;
     const shapeExtentFactor = this.settings.shape === "shape"
       ? maximumShapeAngle >= Math.PI * 0.25
@@ -1437,6 +1782,7 @@ export class BrushEngine {
       const packedX = this.instanceUploadF32[base];
       const packedY = this.instanceUploadF32[base + 1];
       const packedRadius = this.instanceUploadF32[base + 2];
+      minimumRadius = Math.min(minimumRadius, packedRadius);
       const packedDirectionX = this.instanceUploadF32[base + 6];
       const packedDirectionY = this.instanceUploadF32[base + 7];
       const directionLength = Math.hypot(packedDirectionX, packedDirectionY);
@@ -1476,6 +1822,7 @@ export class BrushEngine {
     const width = Math.max(0, right - x);
     const height = Math.max(0, bottom - y);
 
+    this.packedMinimumRadius = minimumRadius;
     return width > 0 && height > 0 ? { x, y, width, height } : null;
   }
 

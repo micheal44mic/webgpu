@@ -6,6 +6,9 @@ import {
   type LayerPoint,
   type LayerFormat,
   type PointerSample,
+  type FragmentCoverageStrategy,
+  type ShapeSupportStrategy,
+  type StampGeometry,
   type StrokePerformanceProfile,
 } from "./brush-engine";
 
@@ -110,9 +113,12 @@ interface BenchmarkRun {
     layerMemoryMiB: number;
     gpuLabel: string;
     timestampQueriesSupported: boolean;
-    stampGeometry: "quad";
+    stampGeometry: StampGeometry;
     stampVerticesPerCopy: number;
-    fragmentCoverageStrategy: "generic-smoothstep" | "shape-alpha-mask-2k";
+    fragmentCoverageStrategy: FragmentCoverageStrategy;
+    shapeSupportStrategy: ShapeSupportStrategy;
+    shapeSupportRectangles: number;
+    shapeSupportMinimumRadius: number;
     colorSeedStrategy: "reuse-position-copy-seed";
     dirtyRectStrategy: "directional-jitter-bounds";
     performanceTelemetryRevision: 2;

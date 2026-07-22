@@ -544,3 +544,26 @@ Il replay del tratto umano offre due test distinti senza modificare punti, timin
 - `Fur`: usa la Shape 2K, scatter di rotazione al `100%` e jitter di posizione laterale/lineare allo `0%`.
 
 Tutti gli altri parametri del benchmark restano quelli canonici, inclusi size `750 px`, spacing `1%`, Count `16`, flow `100%`, hardness `100%`, blend intensity `4x`, jitter cromatico, seed e ordine degli stamp. La scelta salva `testVariant: "base" | "fur"` e le impostazioni effettive nella run. Non aggregare run `Fur` e `Base` come se misurassero lo stesso pennello e non sostituire il benchmark canonico con `Fur`.
+
+## Esperimento Shape: supporto conservativo con alpha esatta — in attesa di run iPhone
+
+La prima run `Fur` con il quad completo è la `#28`. Rispetto alla `#19` Base mantiene `12107` stamp e `193712` copie, ma scende a `49,24 FPS`, porta il p95 a `43 ms`, i frame oltre `20 ms` a `56` e la coda GPU finale a `691 ms`. La CPU resta a `1 ms` p95. Il costo nuovo dominante è il campionamento trilineare della maschera R8 2K su quasi tutto il quad: la Shape contiene soltanto `48190` pixel non nulli su `4194304`, circa l'`1,15%`.
+
+L'esperimento mantiene integralmente la maschera `2048×2048`, la conversione bianco × alpha, tutti i mip generati, il sampler lineare/trilineare, hardness, pressione, alpha finale e blending. Non approssima o vettorializza l'alpha. All'avvio individua invece le componenti connesse non nulle della maschera; per l'asset attuale sono `6`. Ogni componente viene racchiusa in un bounding quad orientato lungo il suo asse principale.
+
+I quad sono allargati di `34 px` nella sorgente. Questo margine contiene in modo conservativo il supporto bilineare dei mip `0–4`: con raggio almeno `128 px`, il LOD implicito non supera `3`, mentre il livello `4` è incluso come margine per il filtro trilineare e gli arrotondamenti. Sotto `128 px`, oppure se la maschera produce più di `8` componenti, il motore torna automaticamente al quad completo. Il ritaglio del supporto originale `[-1, 1]` resta nel fragment shader.
+
+I sei quad possono sovrapporsi. Ogni vertice porta l'indice flat del proprio supporto; prima del campione, il fragment shader assegna la zona sovrapposta al rettangolo con indice più basso. Le derivate UV vengono calcolate prima di questo test e il campione usa `textureSampleGrad` con quelle stesse derivate, evitando derivate in controllo non uniforme. Ogni copia continua quindi a contribuire una sola volta per pixel e legge la stessa texture con lo stesso LOD e filtro del quad precedente.
+
+La verifica CPU sulla maschera reale trova zero pixel potenzialmente non nulli esclusi dal supporto dei mip `0–4`. I sei quad richiedono `36` vertici per copia. La somma delle loro aree raster è circa il `37,43%` del quad completo; dopo l'assegnazione delle sovrapposizioni, la regione unica che può eseguire il campionamento è circa il `28,50%`. Questi valori descrivono la geometria sorgente, non garantiscono lo stesso risparmio GPU.
+
+La telemetria identifica l'esperimento con:
+
+- `stampGeometry: "oriented-support-quads"`;
+- `stampVerticesPerCopy: 36` nel preset Fur;
+- `fragmentCoverageStrategy: "shape-alpha-mask-2k"`, perché l'alpha non cambia;
+- `shapeSupportStrategy: "exact-alpha-oriented-components"`;
+- `shapeSupportRectangles: 6`;
+- `shapeSupportMinimumRadius: 128`.
+
+La prossima run Fur valida, attesa come `#29`, va confrontata direttamente con la `#28`, non con la `#19`: stesso test `Fur`, fingerprint, preset, Shape, scatter, canvas, stamp e copie. Prima controllare visivamente che non esistano clipping, linee mancanti o accumulo doppio nelle sovrapposizioni; poi confrontare FPS, p95/massimo, frame oltre `20 ms`, input delay, coda GPU e fine presentazione. Il precedente dodecagono da `36` vertici era più lento sul cerchio, quindi il nuovo supporto va mantenuto soltanto se la riduzione molto maggiore dei frammenti e dei campioni compensa lo stesso aumento vertex.
