@@ -598,7 +598,7 @@ La minore somma delle aree scissor della `#30` (`392.940.818` contro `515.214.99
 
 Decisione: la build dell'esperimento è bocciata e non serve ripetere una run Fur finché `shapeSupportRectangles` non vale `6`. La `#30` non boccia il concetto dei supporti sparsi, perché quel percorso non è mai stato attivato; boccia l'estrazione runtime e soprattutto il fallback della build attuale su Safari/iPhone. Ripristinare come versione pubblica il full quad precedente. Un eventuale nuovo tentativo deve usare supporti deterministici precomputati dall'asset, mantenere il fallback shader precedente e verificare le firme prima del benchmark.
 
-## Esperimento Shape: pre-mappa di occupazione conservativa — in attesa di run iPhone
+## Esperimento Shape: pre-mappa di occupazione conservativa — promosso
 
 Il nuovo tentativo non modifica più la geometria. Sia il percorso ottimizzato sia il fallback usano il vero quad `triangle-strip` da `4` vertici della run #28. È stato inoltre ripristinato integralmente il fragment shader legacy del full quad: usa `textureSample` implicito e non eredita né i `6` vertici né `textureSampleGrad` dal fallback fallito della #30.
 
@@ -712,3 +712,31 @@ La prossima run Fur, attesa come `#32`, è valida per misurare finalmente la pre
 - quad da `4` vertici.
 
 Se anche una sola firma differisce, diagnosticare il motivo prima di leggere le prestazioni. Se tutte coincidono, confrontare #32 con #28–#29 su FPS, p95/massimo, frame oltre `20 ms`, input delay, coda GPU e fine presentazione. Non confrontare il guadagno con #30 e non attribuirlo alla decodifica: la decodifica corregge l'attivazione; l'eventuale differenza durante il tratto misura il pre-test bitmask e i campioni 2K evitati.
+
+### Risultato e decisione: run #32
+
+La `#32` riporta tutte le firme richieste ed è pienamente confrontabile con le `#28–#29`: stesso fingerprint `18982412`, `1583` punti, variante Fur, preset, iPhone, GPU Apple, canvas `860×850`, formato `rgba8unorm`, `12107` stamp base e `193712` copie fisiche. La decodifica e il selettore hanno prodotto esattamente i valori deterministici previsti:
+
+- `performanceTelemetryRevision: 6`;
+- `shapeMaskDecodeStrategy: "png-gray8-direct"`;
+- `shapeSamplingStrategy: "coarse-occupancy-bitmask"`;
+- `shapeOccupancyFallbackReason: "none"`;
+- mip selezionato e candidato `2`;
+- celle selezionate e candidate `3633` su `65536`, ratio `0,0554351806640625`;
+- quad `triangle-strip` da `4` vertici.
+
+| Metrica | Mediana run #28–#29 full mask | Run #32 bitmask | Differenza |
+|---|---:|---:|---:|
+| FPS medi | `49,64` | `58,82` | `+18,5%` |
+| frame renderizzati | `343,5` | `404` | `+17,6%` |
+| intervallo frame p95 | `40,5 ms` | `17 ms` | `-58,0%` |
+| intervallo frame massimo | `95,5 ms` | `67 ms` | `-29,8%` |
+| frame oltre `20 ms` | `55` | `6` | `-89,1%` |
+| coda GPU finale | `688,5 ms` | `21 ms` | `-96,9%` |
+| input delay p95 | `35,5 ms` | `14 ms` | `-60,6%` |
+| fine presentazione | `7561 ms` | `6882 ms` | `-679 ms` (`-9,0%`) |
+| batch massimo | `203` stamp | `90` stamp | `-55,7%` |
+
+La CPU resta a `1 ms` p95; il miglioramento deriva dal percorso GPU che evita il campione della Shape 2K nelle celle sicuramente vuote. Non deriva dalla decodifica PNG, che avviene una sola volta all'avvio e serve a rendere affidabile la selezione. Il p95 uguale alla mediana dei frame (`17 ms`) e la coda finale di soli `21 ms` indicano che il replay ora resta quasi sempre vicino ai `60 FPS`, invece di accumulare lavoro GPU durante l'input.
+
+Decisione: pre-mappa promossa e mantenuta. Il risultato è ampio e coerente su tutte le metriche principali, mentre l'alpha non nullo continua a essere campionato dalla texture R8 2K originale con gli stessi mip, filtro, hardness, pressione e blending. Il bitmask elimina soltanto celle il cui supporto filtrato è dimostrabilmente nullo; il fallback legacy resta automatico per radius/LOD/copertura non convenienti. Non sostituire questo percorso con supporti geometrici specifici per Fur e non rimuovere la decodifica deterministica: insieme permettono la stessa ottimizzazione automatica anche per future Shape compatibili.
