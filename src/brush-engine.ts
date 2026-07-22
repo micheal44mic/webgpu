@@ -16,6 +16,8 @@ export type ShapeMaskDecodeStrategy = "png-gray8-direct" | "canvas-fallback";
 export type HistoryStorageStrategy = "cpu-render-batch-journal";
 export type HistoryReplayStrategy = "clear-and-stable-gpu-replay";
 export type HistoryStampRetentionStrategy = "shared-immutable-references";
+export type PresentationCacheStrategy = "persistent-full-resolution-screen-cache";
+export type PresentationTransferStrategy = "copy-texture-to-current-texture";
 export type ShapeOccupancyFallbackReason =
   | "none"
   | "minimum-radius"
@@ -101,6 +103,14 @@ export interface StrokePerformanceProfile {
   shapeOccupancyBitmaskBytes: number;
   colorSeedStrategy: "reuse-position-copy-seed";
   dirtyRectStrategy: "directional-jitter-bounds";
+  presentationCacheStrategy: PresentationCacheStrategy;
+  presentationTransferStrategy: PresentationTransferStrategy;
+  presentationCacheFullRebuilds: number;
+  presentationCachePartialUpdates: number;
+  presentationCacheOffscreenSkips: number;
+  presentationCacheUpdatedPixels: number;
+  legacyDisplayShaderPixels: number;
+  presentationCopiedPixels: number;
   historyStorageStrategy: HistoryStorageStrategy;
   historyReplayStrategy: HistoryReplayStrategy;
   historyStampRetentionStrategy: HistoryStampRetentionStrategy;
@@ -227,6 +237,12 @@ interface SubmitTiming {
   scissorPixels: number;
   dirtyRect: DirtyRect | null;
   shapeOccupancySelection: ShapeOccupancySelection | null;
+  presentationCacheFullRebuilds: number;
+  presentationCachePartialUpdates: number;
+  presentationCacheOffscreenSkips: number;
+  presentationCacheUpdatedPixels: number;
+  legacyDisplayShaderPixels: number;
+  presentationCopiedPixels: number;
 }
 
 interface RenderFrameTiming {
@@ -258,6 +274,12 @@ interface MutableStrokePerformanceProfile {
   brushBatches: number;
   largestBatchStamps: number;
   estimatedScissorPixels: number;
+  presentationCacheFullRebuilds: number;
+  presentationCachePartialUpdates: number;
+  presentationCacheOffscreenSkips: number;
+  presentationCacheUpdatedPixels: number;
+  legacyDisplayShaderPixels: number;
+  presentationCopiedPixels: number;
   stampGenerationMs: number;
   stampPackingMs: number;
   instanceUploadMs: number;
@@ -287,6 +309,8 @@ const SHAPE_DIRECT_DECODE_STRATEGY = "png-gray8-direct" as const;
 const SHAPE_CANVAS_DECODE_STRATEGY = "canvas-fallback" as const;
 const COLOR_SEED_STRATEGY = "reuse-position-copy-seed" as const;
 const DIRTY_RECT_STRATEGY = "directional-jitter-bounds" as const;
+const PRESENTATION_CACHE_STRATEGY = "persistent-full-resolution-screen-cache" as const;
+const PRESENTATION_TRANSFER_STRATEGY = "copy-texture-to-current-texture" as const;
 const HISTORY_STORAGE_STRATEGY = "cpu-render-batch-journal" as const;
 const HISTORY_REPLAY_STRATEGY = "clear-and-stable-gpu-replay" as const;
 const HISTORY_STAMP_RETENTION_STRATEGY = "shared-immutable-references" as const;
@@ -429,6 +453,11 @@ export class BrushEngine {
   private layerFormat: LayerFormat = "rgba8unorm";
   private layerTexture!: GPUTexture;
   private layerView!: GPUTextureView;
+  private presentationCacheTexture: GPUTexture | null = null;
+  private presentationCacheView: GPUTextureView | null = null;
+  private presentationCacheWidth = 0;
+  private presentationCacheHeight = 0;
+  private presentationCacheNeedsFullRebuild = true;
 
   private brushUniformBuffer!: GPUBuffer;
   private displayUniformBuffer!: GPUBuffer;
@@ -548,6 +577,7 @@ export class BrushEngine {
     this.context.configure({
       device: this.device,
       format: this.canvasFormat,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
       alphaMode: "opaque",
       colorSpace: "srgb",
     });
@@ -656,6 +686,7 @@ export class BrushEngine {
     this.canvas.width = width;
     this.canvas.height = height;
     this.displayDirty = true;
+    this.presentationCacheNeedsFullRebuild = true;
 
     if (!this.hasFittedView) {
       this.fitView();
@@ -672,6 +703,7 @@ export class BrushEngine {
     this.zoom = Math.max(0.01, Math.min(width / LAYER_SIZE, height / LAYER_SIZE) * 0.94);
     this.hasFittedView = true;
     this.displayDirty = true;
+    this.presentationCacheNeedsFullRebuild = true;
     this.requestRender();
   }
 
@@ -687,6 +719,7 @@ export class BrushEngine {
     this.viewCenterX = anchorBefore.x - (screen.x - this.canvas.width * 0.5) / this.zoom;
     this.viewCenterY = anchorBefore.y - (screen.y - this.canvas.height * 0.5) / this.zoom;
     this.displayDirty = true;
+    this.presentationCacheNeedsFullRebuild = true;
     this.requestRender();
   }
 
@@ -697,6 +730,7 @@ export class BrushEngine {
     this.viewCenterX -= (deltaClientX * scaleX) / this.zoom;
     this.viewCenterY -= (deltaClientY * scaleY) / this.zoom;
     this.displayDirty = true;
+    this.presentationCacheNeedsFullRebuild = true;
     this.requestRender();
   }
 
@@ -846,6 +880,7 @@ export class BrushEngine {
     this.resetHistoryState();
     this.clearRequested = true;
     this.displayDirty = true;
+    this.presentationCacheNeedsFullRebuild = true;
     this.layerHasContent = false;
     this.requestRender();
     this.publishHistoryState();
@@ -1024,6 +1059,12 @@ export class BrushEngine {
       brushBatches: 0,
       largestBatchStamps: 0,
       estimatedScissorPixels: 0,
+      presentationCacheFullRebuilds: 0,
+      presentationCachePartialUpdates: 0,
+      presentationCacheOffscreenSkips: 0,
+      presentationCacheUpdatedPixels: 0,
+      legacyDisplayShaderPixels: 0,
+      presentationCopiedPixels: 0,
       stampGenerationMs: 0,
       stampPackingMs: 0,
       instanceUploadMs: 0,
@@ -1069,6 +1110,14 @@ export class BrushEngine {
       shapeOccupancyBitmaskBytes: SHAPE_OCCUPANCY_MAP_BYTES,
       colorSeedStrategy: COLOR_SEED_STRATEGY,
       dirtyRectStrategy: DIRTY_RECT_STRATEGY,
+      presentationCacheStrategy: PRESENTATION_CACHE_STRATEGY,
+      presentationTransferStrategy: PRESENTATION_TRANSFER_STRATEGY,
+      presentationCacheFullRebuilds: profile.presentationCacheFullRebuilds,
+      presentationCachePartialUpdates: profile.presentationCachePartialUpdates,
+      presentationCacheOffscreenSkips: profile.presentationCacheOffscreenSkips,
+      presentationCacheUpdatedPixels: profile.presentationCacheUpdatedPixels,
+      legacyDisplayShaderPixels: profile.legacyDisplayShaderPixels,
+      presentationCopiedPixels: profile.presentationCopiedPixels,
       historyStorageStrategy: HISTORY_STORAGE_STRATEGY,
       historyReplayStrategy: HISTORY_REPLAY_STRATEGY,
       historyStampRetentionStrategy: HISTORY_STAMP_RETENTION_STRATEGY,
@@ -1144,6 +1193,8 @@ export class BrushEngine {
     shapeOccupancyBitmaskBytes: number;
     colorSeedStrategy: typeof COLOR_SEED_STRATEGY;
     dirtyRectStrategy: typeof DIRTY_RECT_STRATEGY;
+    presentationCacheStrategy: typeof PRESENTATION_CACHE_STRATEGY;
+    presentationTransferStrategy: typeof PRESENTATION_TRANSFER_STRATEGY;
     historyStorageStrategy: typeof HISTORY_STORAGE_STRATEGY;
     historyReplayStrategy: typeof HISTORY_REPLAY_STRATEGY;
     historyStampRetentionStrategy: typeof HISTORY_STAMP_RETENTION_STRATEGY;
@@ -1189,6 +1240,8 @@ export class BrushEngine {
       shapeOccupancyBitmaskBytes: SHAPE_OCCUPANCY_MAP_BYTES,
       colorSeedStrategy: COLOR_SEED_STRATEGY,
       dirtyRectStrategy: DIRTY_RECT_STRATEGY,
+      presentationCacheStrategy: PRESENTATION_CACHE_STRATEGY,
+      presentationTransferStrategy: PRESENTATION_TRANSFER_STRATEGY,
       historyStorageStrategy: HISTORY_STORAGE_STRATEGY,
       historyReplayStrategy: HISTORY_REPLAY_STRATEGY,
       historyStampRetentionStrategy: HISTORY_STAMP_RETENTION_STRATEGY,
@@ -1738,6 +1791,7 @@ export class BrushEngine {
     this.shapeOccupancyAdditivePipeline = shapeOccupancyAdditivePipeline;
     this.displayBindGroup = displayBindGroup;
     this.layerFormat = format;
+    this.presentationCacheNeedsFullRebuild = true;
 
     oldTexture?.destroy();
   }
@@ -1785,6 +1839,66 @@ export class BrushEngine {
     this.displayUniformUpload[6] = this.zoom;
     this.displayUniformUpload[7] = 96;
     this.device.queue.writeBuffer(this.displayUniformBuffer, 0, this.displayUniformUpload);
+  }
+
+  private ensurePresentationCacheTexture(): void {
+    const width = Math.max(1, this.canvas.width);
+    const height = Math.max(1, this.canvas.height);
+    if (
+      this.presentationCacheTexture
+      && this.presentationCacheView
+      && this.presentationCacheWidth === width
+      && this.presentationCacheHeight === height
+    ) {
+      return;
+    }
+
+    const oldTexture = this.presentationCacheTexture;
+    const texture = this.device.createTexture({
+      label: `Persistent presentation cache ${width}×${height}`,
+      size: { width, height, depthOrArrayLayers: 1 },
+      format: this.canvasFormat,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+    });
+
+    this.presentationCacheTexture = texture;
+    this.presentationCacheView = texture.createView({ label: "Persistent presentation cache view" });
+    this.presentationCacheWidth = width;
+    this.presentationCacheHeight = height;
+    this.presentationCacheNeedsFullRebuild = true;
+    oldTexture?.destroy();
+  }
+
+  private layerDirtyRectToPresentationRect(dirtyRect: DirtyRect): DirtyRect | null {
+    const width = this.canvas.width;
+    const height = this.canvas.height;
+    if (width <= 0 || height <= 0) {
+      return null;
+    }
+
+    // Il display usa filtraggio lineare: un texel modificato può contribuire ai
+    // campioni adiacenti. Due pixel layer più un pixel canvas proteggono anche
+    // gli arrotondamenti f32 e i confini dello scissor a qualunque zoom.
+    const layerMargin = 2;
+    const canvasMargin = 1;
+    const layerLeft = dirtyRect.x - layerMargin;
+    const layerTop = dirtyRect.y - layerMargin;
+    const layerRight = dirtyRect.x + dirtyRect.width + layerMargin;
+    const layerBottom = dirtyRect.y + dirtyRect.height + layerMargin;
+    const canvasLeft = (layerLeft - this.viewCenterX) * this.zoom + width * 0.5;
+    const canvasTop = (layerTop - this.viewCenterY) * this.zoom + height * 0.5;
+    const canvasRight = (layerRight - this.viewCenterX) * this.zoom + width * 0.5;
+    const canvasBottom = (layerBottom - this.viewCenterY) * this.zoom + height * 0.5;
+
+    const x = Math.max(0, Math.floor(Math.min(canvasLeft, canvasRight)) - canvasMargin);
+    const y = Math.max(0, Math.floor(Math.min(canvasTop, canvasBottom)) - canvasMargin);
+    const right = Math.min(width, Math.ceil(Math.max(canvasLeft, canvasRight)) + canvasMargin);
+    const bottom = Math.min(height, Math.ceil(Math.max(canvasTop, canvasBottom)) + canvasMargin);
+    const dirtyWidth = Math.max(0, right - x);
+    const dirtyHeight = Math.max(0, bottom - y);
+    return dirtyWidth > 0 && dirtyHeight > 0
+      ? { x, y, width: dirtyWidth, height: dirtyHeight }
+      : null;
   }
 
   toLayerPoint(sample: PointerSample): LayerPoint {
@@ -2311,6 +2425,9 @@ export class BrushEngine {
     replayBatch: HistoryRenderBatch | null = null,
   ): SubmitTiming {
     const cpuStart = performance.now();
+    if (present) {
+      this.ensurePresentationCacheTexture();
+    }
     const encoder = this.device.createCommandEncoder({ label: "Brush frame encoder" });
     let stampPackingMs = 0;
     let instanceUploadMs = 0;
@@ -2320,6 +2437,13 @@ export class BrushEngine {
     let scissorPixels = 0;
     let submittedDirtyRect: DirtyRect | null = null;
     let submittedShapeOccupancySelection: ShapeOccupancySelection | null = null;
+    let presentationCacheFullRebuilds = 0;
+    let presentationCachePartialUpdates = 0;
+    let presentationCacheOffscreenSkips = 0;
+    let presentationCacheUpdatedPixels = 0;
+    let legacyDisplayShaderPixels = 0;
+    let presentationCopiedPixels = 0;
+    let presentationCacheWasUpdated = false;
 
     if (replayBatch && replayBatch.shapeMaskIdentity !== this.shapeMaskIdentity) {
       throw new Error("La Shape usata dalla cronologia non corrisponde alla risorsa corrente.");
@@ -2395,30 +2519,83 @@ export class BrushEngine {
       brushEncodingMs = performance.now() - brushEncodingStart;
     }
 
+    if (!present && (clearLayer || stamps.length > 0)) {
+      // Una ricostruzione Undo/Redo omette i display intermedi. La cache non
+      // deve quindi essere riutilizzata finché l'ultimo batch non la ricrea.
+      this.presentationCacheNeedsFullRebuild = true;
+    }
+
     if (present) {
       const displayEncodingStart = performance.now();
-      this.writeDisplayUniforms();
-      const displayPass = encoder.beginRenderPass({
-        label: "Present paint layer",
-        colorAttachments: [
-          {
-            view: this.context.getCurrentTexture().createView(),
-            loadOp: "clear",
-            storeOp: "store",
-            clearValue: { r: 0.02, g: 0.02, b: 0.025, a: 1 },
-          },
-        ],
-      });
-      displayPass.setPipeline(this.displayPipeline);
-      displayPass.setBindGroup(0, this.displayBindGroup);
-      displayPass.draw(3, 1, 0, 0);
-      displayPass.end();
+      const canvasPixels = this.canvas.width * this.canvas.height;
+      legacyDisplayShaderPixels = canvasPixels;
+      presentationCopiedPixels = canvasPixels;
+
+      const requiresFullRebuild = this.presentationCacheNeedsFullRebuild || clearLayer;
+      const presentationDirtyRect = requiresFullRebuild
+        ? { x: 0, y: 0, width: this.canvas.width, height: this.canvas.height }
+        : submittedDirtyRect
+          ? this.layerDirtyRectToPresentationRect(submittedDirtyRect)
+          : null;
+
+      if (presentationDirtyRect) {
+        this.writeDisplayUniforms();
+        const displayPass = encoder.beginRenderPass({
+          label: requiresFullRebuild
+            ? "Rebuild persistent presentation cache"
+            : "Update persistent presentation cache dirty rect",
+          colorAttachments: [
+            {
+              view: this.presentationCacheView!,
+              loadOp: requiresFullRebuild ? "clear" : "load",
+              storeOp: "store",
+              clearValue: { r: 0.02, g: 0.02, b: 0.025, a: 1 },
+            },
+          ],
+        });
+        displayPass.setPipeline(this.displayPipeline);
+        displayPass.setBindGroup(0, this.displayBindGroup);
+        if (!requiresFullRebuild) {
+          displayPass.setScissorRect(
+            presentationDirtyRect.x,
+            presentationDirtyRect.y,
+            presentationDirtyRect.width,
+            presentationDirtyRect.height,
+          );
+        }
+        displayPass.draw(3, 1, 0, 0);
+        displayPass.end();
+
+        presentationCacheWasUpdated = true;
+        presentationCacheUpdatedPixels = presentationDirtyRect.width * presentationDirtyRect.height;
+        if (requiresFullRebuild) {
+          presentationCacheFullRebuilds = 1;
+        } else {
+          presentationCachePartialUpdates = 1;
+        }
+      } else if (submittedDirtyRect) {
+        presentationCacheOffscreenSkips = 1;
+      }
+
+      const currentTexture = this.context.getCurrentTexture();
+      encoder.copyTextureToTexture(
+        { texture: this.presentationCacheTexture! },
+        { texture: currentTexture },
+        {
+          width: this.canvas.width,
+          height: this.canvas.height,
+          depthOrArrayLayers: 1,
+        },
+      );
       displayEncodingMs = performance.now() - displayEncodingStart;
     }
 
     const submitStart = performance.now();
     this.device.queue.submit([encoder.finish()]);
     commandSubmitMs = performance.now() - submitStart;
+    if (present && presentationCacheWasUpdated) {
+      this.presentationCacheNeedsFullRebuild = false;
+    }
     return {
       totalCpuMs: performance.now() - cpuStart,
       stampPackingMs,
@@ -2429,6 +2606,12 @@ export class BrushEngine {
       scissorPixels,
       dirtyRect: submittedDirtyRect,
       shapeOccupancySelection: submittedShapeOccupancySelection,
+      presentationCacheFullRebuilds,
+      presentationCachePartialUpdates,
+      presentationCacheOffscreenSkips,
+      presentationCacheUpdatedPixels,
+      legacyDisplayShaderPixels,
+      presentationCopiedPixels,
     };
   }
 
@@ -2575,6 +2758,12 @@ export class BrushEngine {
     profile.displayEncodingMs += timing.displayEncodingMs;
     profile.commandSubmitMs += timing.commandSubmitMs;
     profile.estimatedScissorPixels += timing.scissorPixels;
+    profile.presentationCacheFullRebuilds += timing.presentationCacheFullRebuilds;
+    profile.presentationCachePartialUpdates += timing.presentationCachePartialUpdates;
+    profile.presentationCacheOffscreenSkips += timing.presentationCacheOffscreenSkips;
+    profile.presentationCacheUpdatedPixels += timing.presentationCacheUpdatedPixels;
+    profile.legacyDisplayShaderPixels += timing.legacyDisplayShaderPixels;
+    profile.presentationCopiedPixels += timing.presentationCopiedPixels;
 
     if (batchSize > 0) {
       profile.brushBatches += 1;

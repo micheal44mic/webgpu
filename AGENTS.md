@@ -882,3 +882,54 @@ In entrambe le run la CPU resta a `1 ms` p95. I contatori della cronologia sono 
 Il totale dei pixel del display pass è circa `282,9 M` nella #33 contro `342,6 M` nella #35, e `295,3 M` nella #34 contro `451,4 M` nella #36, nonostante il numero inferiore di frame nelle nuove run. Poiché il lavoro CPU e tutte le firme brush restano invariati, i dati indicano che il target di presentazione più grande è la causa dominante della regressione. `estimatedScissorPixels` non include il display pass e non va usato per contraddire questa diagnosi.
 
 Decisione: il layout full-canvas pubblicato è nettamente più lento alla risoluzione interna `860×1454`; le #35–#36 diventano il controllo del layout corrente, non nuove baseline prestazionali promosse. Non modificare Shape, brush shader o Undo/Redo per compensare. Il prossimo intervento isolato consigliato è mantenere il canvas CSS a tutto schermo ma limitare il buffer di presentazione a un budget vicino ai precedenti `731000` pixel, riducendo uniformemente la scala interna per conservare le proporzioni. Va valutata separatamente la nitidezza su iPhone e poi ripetuta la coppia Base/Fur.
+
+## Esperimento: cache persistente di presentazione a piena risoluzione — in attesa di run iPhone
+
+La riduzione della risoluzione non è stata applicata. Il canvas resta alla risoluzione fisica corrente, quindi sul dispositivo delle #35–#36 rimane `860×1454`. È stata invece aggiunta una texture GPU persistente screen-space, nello stesso formato e con le stesse dimensioni della texture del canvas, che conserva il risultato già composto e convertito dallo shader display.
+
+Il display shader è esattamente quello precedente: stesso campionamento lineare del layer monolitico `4096×4096`, stessa scacchiera, stessa composizione premoltiplicata e stessa conversione manuale lineare→sRGB. Cambia soltanto dove e su quanti pixel viene eseguito:
+
+- alla creazione della cache, dopo un resize, pan, zoom, Fit, clear, cambio formato o ricostruzione Undo/Redo, lo shader ricostruisce l'intera cache;
+- durante una pennellata con vista stabile, il dirty rect conservativo del layer viene trasformato in coordinate schermo e lo shader viene limitato a quello scissor;
+- il rettangolo schermo viene ampliato di `2 px` nel layer e `1 px` nel canvas per includere il supporto del filtro lineare, gli arrotondamenti f32 e i confini interi dello scissor;
+- se il dirty rect è completamente fuori dalla vista, la cache non viene aggiornata;
+- la texture restituita dalla swapchain resta transiente: ogni frame copia quindi l'intera cache già pronta nella `currentTexture` tramite `copyTextureToTexture`. Il contesto richiede esplicitamente `COPY_DST`, mentre la cache usa `RENDER_ATTACHMENT | COPY_SRC`.
+
+La copia finale continua a muovere tutti i pixel del canvas, ma non ripete su tutti quei pixel campionamento del layer, scacchiera e funzioni `pow`. Il vantaggio su Safari/Metal non è garantito: il costo della copia completa e del render pass parziale con `loadOp: "load"` deve essere deciso soltanto dalle run iPhone. Alla dimensione `860×1454`, la cache aggiunge circa `4,77 MiB` di memoria GPU con il formato canvas a 4 byte per pixel.
+
+Non sono cambiati layer del documento, shader brush, quad `triangle-strip`, stamp, ordine, Count, size, spacing, flow, hardness, pressione, alpha, blend intensity, seed, jitter, dirty rect direzionale, Shape/bitmask, blending o journal Undo/Redo. Le submission omesse durante il replay della cronologia invalidano la cache; soltanto l'ultima presentazione la ricostruisce, evitando che una cache precedente possa sopravvivere a un layer ricreato.
+
+### Telemetria v9
+
+`performanceTelemetryRevision: 9` aggiunge:
+
+- `presentationCacheStrategy: "persistent-full-resolution-screen-cache"`;
+- `presentationTransferStrategy: "copy-texture-to-current-texture"`;
+- `presentationCacheFullRebuilds` e `presentationCachePartialUpdates`;
+- `presentationCacheOffscreenSkips`;
+- `presentationCacheUpdatedPixels`: pixel sui quali è stato realmente eseguito lo shader display nella cache;
+- `legacyDisplayShaderPixels`: pixel sui quali il percorso precedente avrebbe eseguito lo shader display completo;
+- `presentationCopiedPixels`: pixel copiati dalla cache alla swapchain, normalmente uguali a `legacyDisplayShaderPixels`.
+
+I contatori vengono accumulati nei dati della run e non introducono aggiornamenti DOM per frame. Nel replay canonico `resetDocument()` e il relativo full rebuild terminano prima dell'avvio del profilo; con vista e dimensioni stabili ci si aspetta quindi `presentationCacheFullRebuilds: 0`, un aggiornamento parziale per ogni batch visibile e `presentationCopiedPixels === legacyDisplayShaderPixels`.
+
+### Verifica locale prima della pubblicazione
+
+TypeScript e build Vite sono riusciti. Su GPU NVIDIA Ampere il nuovo uso `COPY_DST` della texture canvas, il render nella cache e la copia finale non hanno prodotto errori o warning WebGPU. È stata confrontata la build candidata con un worktree non modificato del commit `7aee64f`, sullo stesso browser, viewport, seed e sequenza di operazioni. Le catture PNG complete sono risultate identiche byte per byte dopo:
+
+- benchmark sintetico deterministico da `2000` stamp e `48000` copie, che esercita un full rebuild;
+- singolo stamp con cache valida, che esercita l'aggiornamento parziale;
+- aggiornamento parziale dopo sei livelli di zoom;
+- pan e zoom con ricostruzione completa;
+- clear, Undo del clear e Redo;
+- nuova inizializzazione alla viewport `430×775`.
+
+Un harness temporaneo, rimosso dopo il test, ha verificato anche i contatori: un batch da `169` stamp ha prodotto `1` partial update e `2288` pixel display aggiornati contro `312610` pixel del percorso legacy; uno zoom ha prodotto `1` full rebuild da `312610` pixel; uno stamp completamente fuori vista ha prodotto `1` offscreen skip e `0` pixel aggiornati. In tutti e tre i casi la copia finale è rimasta di `312610` pixel, come richiesto dalla swapchain transiente.
+
+### Protocollo iPhone previsto
+
+Le prossime run valide, attese come `#37` Base e `#38` Fur, vanno confrontate direttamente con le #35 e #36: stesso fingerprint `18982412`, `1583` punti, viewport `430×775`, canvas `860×1454`, formato `rgba8unorm`, preset, `12107` stamp base e `193712` copie fisiche. Fur deve mantenere inoltre decoder `png-gray8-direct`, bitmask, nessun fallback, mip `2`, `3633` celle e ratio `0,0554351806640625`.
+
+Prima di leggere le prestazioni verificare entrambe le firme di presentazione, `presentationCacheFullRebuilds === 0`, `presentationCachePartialUpdates === brushBatches`, `presentationCacheOffscreenSkips === 0` e `presentationCopiedPixels === legacyDisplayShaderPixels === renderFrames × 1250440`. Controllare anche che `presentationCacheUpdatedPixels` sia minore del valore legacy; la sua riduzione non prova da sola un guadagno hardware.
+
+Confrontare FPS medi, p95/massimo, frame oltre `20 ms`, input delay p95, coda GPU finale e fine presentazione. Mantenere il candidato soltanto se il risultato visivo resta invariato e la fluidità migliora chiaramente su entrambe le varianti, soprattutto Base. Se la copia completa o il `loadOp` parziale annullano il risparmio, rimuovere l'esperimento senza modificare contemporaneamente brush o Shape.

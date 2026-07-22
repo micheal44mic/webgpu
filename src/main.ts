@@ -144,12 +144,14 @@ interface BenchmarkRun {
     shapeOccupancyBitmaskBytes: number;
     colorSeedStrategy: "reuse-position-copy-seed";
     dirtyRectStrategy: "directional-jitter-bounds";
+    presentationCacheStrategy: StrokePerformanceProfile["presentationCacheStrategy"];
+    presentationTransferStrategy: StrokePerformanceProfile["presentationTransferStrategy"];
     historyStorageStrategy: StrokePerformanceProfile["historyStorageStrategy"];
     historyReplayStrategy: StrokePerformanceProfile["historyReplayStrategy"];
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 8;
+    performanceTelemetryRevision: 9;
   };
 }
 
@@ -336,7 +338,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 8,
+    performanceTelemetryRevision: 9,
     ...engineEnvironment,
   };
 }
