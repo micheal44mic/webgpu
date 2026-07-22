@@ -1192,3 +1192,23 @@ La `#45` non va aggregata alle run canoniche: pur dichiarando user agent iPhone,
 Il candidato crea il contesto visibile con `{ alpha: true, desynchronized: true }`. La documentazione Chrome del percorso low-latency specifica che un canvas traslucido desincronizzato può funzionare soltanto se non ha altri elementi DOM sopra. Nel layout corrente `.hint` ha `z-index: 2`, sopra `#tipPreviewCanvas` con `z-index: 1`. La violazione è una causa plausibile del rettangolo nero Android: il percorso desincronizzato può bypassare la composizione ordinaria/front-buffer, mentre i pixel trasparenti della patch vengono presentati come nero. `globalCompositeOperation = "copy"` durante il commit visibile è un secondo punto da verificare, ma non va cambiato contemporaneamente senza prima isolare il contesto desincronizzato.
 
 Decisione aggiornata: la tip preview v2 non è bocciata, ma il candidato è sospeso e non vanno effettuate altre modifiche finché non viene concordato il passo successivo. La prima correzione isolata consigliata è rimuovere soltanto `desynchronized: true` dal canvas visibile, mantenendo alpha, scratch atomico, trigger, resa e renderer esatto invariati; aggiungere la lettura di `getContextAttributes()` alla diagnostica e verificare su Android che il rettangolo nero sparisca. Soltanto dopo va affrontato separatamente il piccolo overhead Base, senza combinare fix di correttezza e ottimizzazione.
+
+## Esperimento: posizionamento della tip patch senza layout — candidato locale
+
+Le run Base `#42` e `#44` hanno portato `resizeCanvasTotalMs` da `10 ms` della baseline `#37` a `60–67 ms`. La patch Canvas2D aggiorna la propria posizione a ogni frame; nella versione misurata lo faceva scrivendo `left` e `top` subito prima che il normale `renderFrame` leggesse `getBoundingClientRect()` sul canvas WebGPU. Questo è compatibile con un flush sincrono del layout, ma non lo dimostra ancora: la decisione resta affidata a una nuova run iPhone.
+
+Questo esperimento cambia esclusivamente il posizionamento DOM della patch. `#tipPreviewCanvas` resta ancorato a `top: 0` e `left: 0`; la posizione per-frame usa `transform: translate(x, y)` 2D. Quando viene ritirato, il canvas diventa invisibile tramite `opacity: 0` senza riscrivere coordinate geometriche. Non vengono usati `translate3d`, `will-change` o altre richieste esplicite di promozione a layer. Dimensioni CSS quantizzate, backing Canvas2D, risoluzione, patch massima, disegno scratch atomico e commit restano identici.
+
+Non sono cambiati:
+
+- trigger, intervallo probe e soglie `60/58 ms`;
+- massimo `2` stamp base, Count e copie fisiche;
+- budget JavaScript `1,25 ms`, riserva commit e comportamento degli skip;
+- resa Circle/Shape, alpha, colore, jitter e ordine;
+- candidati provvisori al lift, seriali, retirement e invalidazioni;
+- renderer WebGPU esatto, shader, `submitImmediate`, cache di presentazione e journal;
+- contesti Canvas2D: `desynchronized: true` resta intenzionalmente presente sia sul canvas visibile sia sullo scratch. Il rettangolo nero Android non viene corretto in questo passo.
+
+`performanceTelemetryRevision: 12` aggiunge il marker `adaptivePreviewPositionStrategy: "fixed-origin-2d-transform"` sia al profilo sia all'ambiente. Non aggiunge contatori per-frame. La prima Base canonica valida attesa è la `#46`, da confrontare soprattutto con le `#42/#44` e con la baseline `#37`. Oltre a FPS, p95, frame lenti e coda finale, verificare se `resizeCanvasTotalMs` torna verso `10 ms`; una diminuzione di questo solo contatore non basta se la fluidità peggiora.
+
+Verifica locale: TypeScript, Vite e preparazione Sites riescono; `git diff --check` è pulito; `src/shaders.ts` è invariato; il corpo di `submitImmediate` è identico byte-per-byte dopo normalizzazione dei newline e nel sorgente resta una sola chiamata `queue.submit`. La build di produzione non contiene l'hook `window.__brushEngine`, il parametro force o `URLSearchParams`. Con la preview forzata in sviluppo sono riusciti gli smoke Circle, Shape, doppio tratto, zoom e Undo/Redo: durante ogni tratto `left` e `top` restano a `0`, la patch visibile segue il tip tramite la sola trasformazione 2D e torna a `opacity: 0` dopo il retirement; nessun errore o warning è comparso nella console. Il candidato non è stato committato, pubblicato o promosso.

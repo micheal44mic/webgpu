@@ -264,12 +264,13 @@ select {
 #tipPreviewCanvas {
   position: absolute;
   z-index: 1;
-  top: -10000px;
-  left: -10000px;
+  top: 0;
+  left: 0;
   display: block;
   width: 0;
   height: 0;
   opacity: 0;
+  transform: translate(0, 0);
   pointer-events: none;
   contain: strict;
 }

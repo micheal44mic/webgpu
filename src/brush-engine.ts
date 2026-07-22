@@ -20,6 +20,7 @@ export type PresentationCacheStrategy = "persistent-full-resolution-screen-cache
 export type PresentationTransferStrategy = "copy-texture-to-current-texture";
 export type AdaptivePreviewStrategy = "queue-lag-triggered-canvas2d-tip-patch";
 export type AdaptivePreviewTriggerStrategy = "single-sampled-queue-prefix-latency";
+export type AdaptivePreviewPositionStrategy = "fixed-origin-2d-transform";
 export type AdaptivePreviewActivationReason = "none" | "queue-lag" | "diagnostic-force" | "mixed";
 export type ShapeOccupancyFallbackReason =
   | "none"
@@ -116,6 +117,7 @@ export interface StrokePerformanceProfile {
   presentationCopiedPixels: number;
   adaptivePreviewStrategy: AdaptivePreviewStrategy;
   adaptivePreviewTriggerStrategy: AdaptivePreviewTriggerStrategy;
+  adaptivePreviewPositionStrategy: AdaptivePreviewPositionStrategy;
   adaptivePreviewExactLinearScale: number;
   adaptivePreviewJsBudgetMs: number;
   adaptivePreviewMaxTipBaseStamps: number;
@@ -409,6 +411,7 @@ const PRESENTATION_CACHE_STRATEGY = "persistent-full-resolution-screen-cache" as
 const PRESENTATION_TRANSFER_STRATEGY = "copy-texture-to-current-texture" as const;
 const ADAPTIVE_PREVIEW_STRATEGY = "queue-lag-triggered-canvas2d-tip-patch" as const;
 const ADAPTIVE_PREVIEW_TRIGGER_STRATEGY = "single-sampled-queue-prefix-latency" as const;
+const ADAPTIVE_PREVIEW_POSITION_STRATEGY = "fixed-origin-2d-transform" as const;
 const ADAPTIVE_PREVIEW_EXACT_LINEAR_SCALE = 0.5;
 const ADAPTIVE_PREVIEW_JS_BUDGET_MS = 1.25;
 const ADAPTIVE_PREVIEW_COMMIT_BUDGET_RESERVE_MS = 0.2;
@@ -1394,6 +1397,7 @@ export class BrushEngine {
       presentationCopiedPixels: profile.presentationCopiedPixels,
       adaptivePreviewStrategy: ADAPTIVE_PREVIEW_STRATEGY,
       adaptivePreviewTriggerStrategy: ADAPTIVE_PREVIEW_TRIGGER_STRATEGY,
+      adaptivePreviewPositionStrategy: ADAPTIVE_PREVIEW_POSITION_STRATEGY,
       adaptivePreviewExactLinearScale: ADAPTIVE_PREVIEW_EXACT_LINEAR_SCALE,
       adaptivePreviewJsBudgetMs: ADAPTIVE_PREVIEW_JS_BUDGET_MS,
       adaptivePreviewMaxTipBaseStamps: ADAPTIVE_PREVIEW_MAX_TIP_BASE_STAMPS,
@@ -1508,6 +1512,7 @@ export class BrushEngine {
     presentationTransferStrategy: typeof PRESENTATION_TRANSFER_STRATEGY;
     adaptivePreviewStrategy: typeof ADAPTIVE_PREVIEW_STRATEGY;
     adaptivePreviewTriggerStrategy: typeof ADAPTIVE_PREVIEW_TRIGGER_STRATEGY;
+    adaptivePreviewPositionStrategy: typeof ADAPTIVE_PREVIEW_POSITION_STRATEGY;
     adaptivePreviewExactLinearScale: number;
     adaptivePreviewJsBudgetMs: number;
     adaptivePreviewMaxTipBaseStamps: number;
@@ -1565,6 +1570,7 @@ export class BrushEngine {
       presentationTransferStrategy: PRESENTATION_TRANSFER_STRATEGY,
       adaptivePreviewStrategy: ADAPTIVE_PREVIEW_STRATEGY,
       adaptivePreviewTriggerStrategy: ADAPTIVE_PREVIEW_TRIGGER_STRATEGY,
+      adaptivePreviewPositionStrategy: ADAPTIVE_PREVIEW_POSITION_STRATEGY,
       adaptivePreviewExactLinearScale: ADAPTIVE_PREVIEW_EXACT_LINEAR_SCALE,
       adaptivePreviewJsBudgetMs: ADAPTIVE_PREVIEW_JS_BUDGET_MS,
       adaptivePreviewMaxTipBaseStamps: ADAPTIVE_PREVIEW_MAX_TIP_BASE_STAMPS,
@@ -2909,8 +2915,6 @@ export class BrushEngine {
     context.globalCompositeOperation = "source-over";
     context.clearRect(0, 0, canvas.width, canvas.height);
     canvas.style.opacity = "0";
-    canvas.style.left = "-10000px";
-    canvas.style.top = "-10000px";
     this.adaptivePreviewLastPresentedSerial = 0;
     for (const candidate of this.adaptivePreviewCandidates) {
       candidate.presented = false;
@@ -3677,8 +3681,7 @@ export class BrushEngine {
       this.adaptivePreviewCssWidth = patchCssWidth;
       this.adaptivePreviewCssHeight = patchCssHeight;
     }
-    canvas.style.left = `${patchLeft}px`;
-    canvas.style.top = `${patchTop}px`;
+    canvas.style.transform = `translate(${patchLeft}px, ${patchTop}px)`;
     visibleContext.setTransform(1, 0, 0, 1, 0, 0);
     visibleContext.globalCompositeOperation = "copy";
     visibleContext.globalAlpha = 1;
