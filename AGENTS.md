@@ -848,3 +848,37 @@ La navigazione touch mantiene un dito per il disegno e usa due dita per pan e pi
 - `touchNavigationStrategy: "two-finger-pan-pinch"`.
 
 Non sono cambiati shader, pipeline, geometria, formule, stamp, seed del replay, Count, spacing, jitter, Shape, blending o journal Undo/Redo. Cambia però l'area visibile: su iPhone il canvas non cede più circa il `38%` dell'altezza al pannello inferiore. Le prossime run registreranno quindi un canvas più alto e includeranno un display pass più grande. Non confrontare direttamente i loro valori di GPU, FPS o coda finale con le #33–#34 come se fosse cambiato soltanto il pannello; acquisire una nuova coppia Base/Fur con pannello overlay, stesso dispositivo e stesse dimensioni canvas per stabilire il controllo del nuovo layout.
+
+### Risultato full-canvas: run #35 Base e #36 Fur
+
+Le `#35–#36` sono valide e usano lo stesso fingerprint `18982412`, `1583` punti, preset, iPhone, GPU Apple, viewport `430×775`, formato `rgba8unorm`, `12107` stamp base e `193712` copie fisiche delle `#33–#34`. Riportano entrambe le firme UI v8 previste. Il canvas passa però da `860×850` (`731000` pixel) a `860×1454` (`1250440` pixel), cioè `+71,1%` di pixel per ogni display pass.
+
+| Metrica Base | Run #33 pannello in layout | Run #35 full-canvas | Differenza |
+|---|---:|---:|---:|
+| FPS medi | `56,34` | `39,35` | `-30,2%` |
+| frame renderizzati | `387` | `274` | `-29,2%` |
+| intervallo frame p95 | `28 ms` | `67 ms` | `+39 ms` |
+| intervallo frame massimo | `67 ms` | `312 ms` | `+245 ms` |
+| frame oltre `20 ms` | `34` | `56` | `+64,7%` |
+| coda GPU finale | `293 ms` | `1685 ms` | `+1392 ms` |
+| input delay p95 | `17 ms` | `136 ms` | `+119 ms` |
+| fine presentazione | `7144 ms` | `8572 ms` | `+1428 ms` |
+| batch massimo | `110` | `508` | `+398` stamp |
+
+| Metrica Fur | Run #34 pannello in layout | Run #36 full-canvas | Differenza |
+|---|---:|---:|---:|
+| FPS medi | `58,82` | `52,23` | `-11,2%` |
+| frame renderizzati | `404` | `361` | `-10,6%` |
+| intervallo frame p95 | `17 ms` | `35 ms` | `+18 ms` |
+| intervallo frame massimo | `67 ms` | `66 ms` | `-1 ms` |
+| frame oltre `20 ms` | `6` | `54` | `+800%` |
+| coda GPU finale | `22 ms` | `491 ms` | `+469 ms` |
+| input delay p95 | `14 ms` | `25 ms` | `+11 ms` |
+| fine presentazione | `6882 ms` | `7374 ms` | `+492 ms` |
+| batch massimo | `90` | `134` | `+44` stamp |
+
+In entrambe le run la CPU resta a `1 ms` p95. I contatori della cronologia sono coerenti: `12107` stamp catturati e conservati, un'azione, `387424 byte` logici, zero replay e batch catturati uguali ai brush batch (`274` nella #35, `361` nella #36). La #36 mantiene inoltre esattamente decoder diretto, bitmask, nessun fallback, mip `2`, `3633` celle, ratio `0,0554351806640625` e bitmask da `8192 byte`. Non emerge quindi una regressione del journal o del percorso Shape.
+
+Il totale dei pixel del display pass è circa `282,9 M` nella #33 contro `342,6 M` nella #35, e `295,3 M` nella #34 contro `451,4 M` nella #36, nonostante il numero inferiore di frame nelle nuove run. Poiché il lavoro CPU e tutte le firme brush restano invariati, i dati indicano che il target di presentazione più grande è la causa dominante della regressione. `estimatedScissorPixels` non include il display pass e non va usato per contraddire questa diagnosi.
+
+Decisione: il layout full-canvas pubblicato è nettamente più lento alla risoluzione interna `860×1454`; le #35–#36 diventano il controllo del layout corrente, non nuove baseline prestazionali promosse. Non modificare Shape, brush shader o Undo/Redo per compensare. Il prossimo intervento isolato consigliato è mantenere il canvas CSS a tutto schermo ma limitare il buffer di presentazione a un budget vicino ai precedenti `731000` pixel, riducendo uniformemente la scala interna per conservare le proporzioni. Va valutata separatamente la nitidezza su iPhone e poi ripetuta la coppia Base/Fur.
