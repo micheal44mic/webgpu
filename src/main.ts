@@ -149,7 +149,13 @@ interface BenchmarkRun {
     presentationTransferStrategy: StrokePerformanceProfile["presentationTransferStrategy"];
     adaptivePreviewStrategy: StrokePerformanceProfile["adaptivePreviewStrategy"];
     adaptivePreviewTriggerStrategy: StrokePerformanceProfile["adaptivePreviewTriggerStrategy"];
-    adaptivePreviewPositionStrategy: StrokePerformanceProfile["adaptivePreviewPositionStrategy"];
+    adaptivePreviewVisibleCanvasStrategy: StrokePerformanceProfile["adaptivePreviewVisibleCanvasStrategy"];
+    adaptivePreviewVisibleCanvasAlpha: boolean | null;
+    adaptivePreviewVisibleCanvasDesynchronized: boolean | null;
+    adaptivePreviewVisibleCanvasColorSpace: string | null;
+    adaptivePreviewScratchCanvasAlpha: boolean | null;
+    adaptivePreviewScratchCanvasDesynchronized: boolean | null;
+    adaptivePreviewScratchCanvasColorSpace: string | null;
     adaptivePreviewExactLinearScale: number;
     adaptivePreviewJsBudgetMs: number;
     adaptivePreviewMaxTipBaseStamps: number;
@@ -163,7 +169,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 12;
+    performanceTelemetryRevision: 13;
   };
 }
 
@@ -353,7 +359,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 12,
+    performanceTelemetryRevision: 13,
     ...engineEnvironment,
   };
 }

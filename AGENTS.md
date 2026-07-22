@@ -1211,4 +1211,37 @@ Non sono cambiati:
 
 `performanceTelemetryRevision: 12` aggiunge il marker `adaptivePreviewPositionStrategy: "fixed-origin-2d-transform"` sia al profilo sia all'ambiente. Non aggiunge contatori per-frame. La prima Base canonica valida attesa è la `#46`, da confrontare soprattutto con le `#42/#44` e con la baseline `#37`. Oltre a FPS, p95, frame lenti e coda finale, verificare se `resizeCanvasTotalMs` torna verso `10 ms`; una diminuzione di questo solo contatore non basta se la fluidità peggiora.
 
-Verifica locale: TypeScript, Vite e preparazione Sites riescono; `git diff --check` è pulito; `src/shaders.ts` è invariato; il corpo di `submitImmediate` è identico byte-per-byte dopo normalizzazione dei newline e nel sorgente resta una sola chiamata `queue.submit`. La build di produzione non contiene l'hook `window.__brushEngine`, il parametro force o `URLSearchParams`. Con la preview forzata in sviluppo sono riusciti gli smoke Circle, Shape, doppio tratto, zoom e Undo/Redo: durante ogni tratto `left` e `top` restano a `0`, la patch visibile segue il tip tramite la sola trasformazione 2D e torna a `opacity: 0` dopo il retirement; nessun errore o warning è comparso nella console. Il candidato non è stato committato, pubblicato o promosso.
+Verifica locale precedente alla pubblicazione della `#46`: TypeScript, Vite e preparazione Sites riusciti; `git diff --check` pulito; `src/shaders.ts` invariato; corpo di `submitImmediate` identico byte-per-byte dopo normalizzazione dei newline e una sola chiamata `queue.submit`. La build di produzione non conteneva l'hook `window.__brushEngine`, il parametro force o `URLSearchParams`. Con la preview forzata in sviluppo erano riusciti gli smoke Circle, Shape, doppio tratto, zoom e Undo/Redo: durante ogni tratto `left` e `top` restavano a `0`, la patch visibile seguiva il tip tramite la sola trasformazione 2D e tornava a `opacity: 0` dopo il retirement; nessun errore o warning era comparso nella console.
+
+### Risultato del posizionamento senza layout: run #46 — bocciato e rimosso
+
+La `#46` è pienamente comparabile con `#42` e `#44`: stesso fingerprint `18982412`, preset Base, iPhone, viewport, canvas `860×1454`, `12107` stamp base, `193712` copie fisiche, shader, trigger e tip patch. Salva `performanceTelemetryRevision: 12` e `adaptivePreviewPositionStrategy: "fixed-origin-2d-transform"`.
+
+| Metrica | Baseline #37 senza preview | Run #42/#44 con `left/top` | Run #46 con `transform` |
+|---|---:|---:|---:|
+| FPS medi | `57,50` | `56,49–56,86` | `56,77` |
+| intervallo frame p95 | `25 ms` | `25–26 ms` | `25 ms` |
+| intervallo frame massimo | `67 ms` | `66–67 ms` | `67 ms` |
+| frame oltre 20 ms | `25` | `30–33` | `32` |
+| coda GPU finale | `224 ms` | `253–256 ms` | `257 ms` |
+| input delay p95 | `15 ms` | `15–16 ms` | `15 ms` |
+| fine presentazione | `7084 ms` | `7100–7105 ms` | `7106 ms` |
+| `resizeCanvasTotalMs` | `10 ms` | `60–67 ms` | `61 ms` |
+| `renderFrameTotalP95Ms` | `1 ms` | `2 ms` | `2 ms` |
+
+La preview si comporta come nelle repliche precedenti: `2` attivazioni, `210` patch, `420` stamp rappresentati, `6720` copie, `134 ms` JS totali, p95 `1 ms`, `6` skip, lifetime massimo `2816 ms` e backlog massimo `1633` stamp. Tutti gli invarianti del percorso esatto sono validi: zero deferred/replay/lift submission, `12107` stamp esatti e `390` batch sottoposti una volta sola.
+
+Il passaggio a `transform` non recupera il calo Base e non riduce il tempo attribuito a `resizeCanvas`: `61 ms` resta nello stesso intervallo `60–67 ms`. La scrittura per-frame di `left/top` non era quindi la spiegazione sufficiente del costo osservato; il contatore può includere risoluzione degli stili o il costo della lettura del rettangolo dopo altre mutazioni della patch. Decisione: esperimento bocciato come ottimizzazione e rimosso. Il canvas torna al posizionamento originale con `left/top`, così i passi successivi ripartono dalla v2 misurata nelle `#42/#44`.
+
+## Esperimento Android: canvas visibile sincronizzato — candidato locale
+
+Il rettangolo nero Android viene affrontato isolatamente partendo dal codice v2 originale delle `#42/#44`, incluso il posizionamento `left/top`. Il canvas Canvas2D visibile viene ora creato con il solo `{ alpha: true }`: non richiede più `desynchronized: true`, il cui valore predefinito è falso. Lo scratch detached conserva invece `{ alpha: true, desynchronized: true }`. Restano invariati `globalCompositeOperation = "copy"`, scratch atomico, trasparenza, z-index, trigger, soglie, patch, budget, Circle/Shape, seriali, lift, retirement e renderer WebGPU esatto.
+
+`performanceTelemetryRevision: 13` aggiunge:
+
+- `adaptivePreviewVisibleCanvasStrategy: "alpha-synchronized-canvas2d"`;
+- alpha, `desynchronized` e spazio colore effettivamente restituiti da `getContextAttributes()` per canvas visibile e scratch.
+
+Sul browser locale sono attesi `visible alpha=true`, `visible desynchronized=false`, mentre lo scratch deve restare `alpha=true`, `desynchronized=true`; la run Android dovrà confermare i valori realmente concessi dalla piattaforma. Prima va verificato visivamente che durante l'attivazione della tip patch non compaia più il rettangolo nero. Se resta, il passo successivo deve essere isolato: prima rimuovere il flag dallo scratch, e soltanto dopo provare separatamente `clearRect` + `source-over` al posto di `copy`.
+
+Verifica locale del candidato: build TypeScript/Vite/Sites riuscita; smoke con preview forzata riusciti per Circle, Shape, zoom, lift e Undo/Redo; il canvas visibile torna a `left/top: -10000px` dopo il retirement; nessun errore o warning runtime. Shader e percorso WebGPU esatto non sono stati modificati. Il candidato Android non è ancora pubblicato.

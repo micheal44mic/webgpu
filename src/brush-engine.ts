@@ -20,7 +20,7 @@ export type PresentationCacheStrategy = "persistent-full-resolution-screen-cache
 export type PresentationTransferStrategy = "copy-texture-to-current-texture";
 export type AdaptivePreviewStrategy = "queue-lag-triggered-canvas2d-tip-patch";
 export type AdaptivePreviewTriggerStrategy = "single-sampled-queue-prefix-latency";
-export type AdaptivePreviewPositionStrategy = "fixed-origin-2d-transform";
+export type AdaptivePreviewVisibleCanvasStrategy = "alpha-synchronized-canvas2d";
 export type AdaptivePreviewActivationReason = "none" | "queue-lag" | "diagnostic-force" | "mixed";
 export type ShapeOccupancyFallbackReason =
   | "none"
@@ -117,7 +117,13 @@ export interface StrokePerformanceProfile {
   presentationCopiedPixels: number;
   adaptivePreviewStrategy: AdaptivePreviewStrategy;
   adaptivePreviewTriggerStrategy: AdaptivePreviewTriggerStrategy;
-  adaptivePreviewPositionStrategy: AdaptivePreviewPositionStrategy;
+  adaptivePreviewVisibleCanvasStrategy: AdaptivePreviewVisibleCanvasStrategy;
+  adaptivePreviewVisibleCanvasAlpha: boolean | null;
+  adaptivePreviewVisibleCanvasDesynchronized: boolean | null;
+  adaptivePreviewVisibleCanvasColorSpace: string | null;
+  adaptivePreviewScratchCanvasAlpha: boolean | null;
+  adaptivePreviewScratchCanvasDesynchronized: boolean | null;
+  adaptivePreviewScratchCanvasColorSpace: string | null;
   adaptivePreviewExactLinearScale: number;
   adaptivePreviewJsBudgetMs: number;
   adaptivePreviewMaxTipBaseStamps: number;
@@ -411,7 +417,7 @@ const PRESENTATION_CACHE_STRATEGY = "persistent-full-resolution-screen-cache" as
 const PRESENTATION_TRANSFER_STRATEGY = "copy-texture-to-current-texture" as const;
 const ADAPTIVE_PREVIEW_STRATEGY = "queue-lag-triggered-canvas2d-tip-patch" as const;
 const ADAPTIVE_PREVIEW_TRIGGER_STRATEGY = "single-sampled-queue-prefix-latency" as const;
-const ADAPTIVE_PREVIEW_POSITION_STRATEGY = "fixed-origin-2d-transform" as const;
+const ADAPTIVE_PREVIEW_VISIBLE_CANVAS_STRATEGY = "alpha-synchronized-canvas2d" as const;
 const ADAPTIVE_PREVIEW_EXACT_LINEAR_SCALE = 0.5;
 const ADAPTIVE_PREVIEW_JS_BUDGET_MS = 1.25;
 const ADAPTIVE_PREVIEW_COMMIT_BUDGET_RESERVE_MS = 0.2;
@@ -429,6 +435,28 @@ const ADAPTIVE_PREVIEW_TRIGGER_CONSECUTIVE_PROBES = 2;
 const ADAPTIVE_PREVIEW_FORCE = import.meta.env.DEV
   && typeof window !== "undefined"
   && new URLSearchParams(window.location.search).get("adaptivePreview") === "force";
+
+interface AdaptivePreviewContextAttributes {
+  alpha: boolean | null;
+  desynchronized: boolean | null;
+  colorSpace: string | null;
+}
+
+function readAdaptivePreviewContextAttributes(
+  context: CanvasRenderingContext2D | null,
+): AdaptivePreviewContextAttributes {
+  if (!context || typeof context.getContextAttributes !== "function") {
+    return { alpha: null, desynchronized: null, colorSpace: null };
+  }
+  const attributes = context.getContextAttributes();
+  return {
+    alpha: typeof attributes.alpha === "boolean" ? attributes.alpha : null,
+    desynchronized: typeof attributes.desynchronized === "boolean"
+      ? attributes.desynchronized
+      : null,
+    colorSpace: typeof attributes.colorSpace === "string" ? attributes.colorSpace : null,
+  };
+}
 const HISTORY_STORAGE_STRATEGY = "cpu-render-batch-journal" as const;
 const HISTORY_REPLAY_STRATEGY = "clear-and-stable-gpu-replay" as const;
 const HISTORY_STAMP_RETENTION_STRATEGY = "shared-immutable-references" as const;
@@ -626,6 +654,8 @@ export class BrushEngine {
   private readonly adaptivePreviewContext: CanvasRenderingContext2D | null;
   private readonly adaptivePreviewScratchCanvas: HTMLCanvasElement | null;
   private readonly adaptivePreviewScratchContext: CanvasRenderingContext2D | null;
+  private readonly adaptivePreviewVisibleContextAttributes: AdaptivePreviewContextAttributes;
+  private readonly adaptivePreviewScratchContextAttributes: AdaptivePreviewContextAttributes;
   private adaptivePreviewShapeSprite: HTMLCanvasElement | null = null;
   private adaptivePreviewShapePalette: AdaptivePreviewShapePaletteEntry[] = [];
   private adaptivePreviewShapePaletteKey = "";
@@ -737,7 +767,6 @@ export class BrushEngine {
     this.adaptivePreviewCanvas = adaptivePreviewCanvas;
     this.adaptivePreviewContext = adaptivePreviewCanvas?.getContext("2d", {
       alpha: true,
-      desynchronized: true,
     }) ?? null;
     this.adaptivePreviewScratchCanvas = this.adaptivePreviewContext
       ? document.createElement("canvas")
@@ -746,6 +775,12 @@ export class BrushEngine {
       alpha: true,
       desynchronized: true,
     }) ?? null;
+    this.adaptivePreviewVisibleContextAttributes = readAdaptivePreviewContextAttributes(
+      this.adaptivePreviewContext,
+    );
+    this.adaptivePreviewScratchContextAttributes = readAdaptivePreviewContextAttributes(
+      this.adaptivePreviewScratchContext,
+    );
   }
 
   async initialize(): Promise<void> {
@@ -1397,7 +1432,17 @@ export class BrushEngine {
       presentationCopiedPixels: profile.presentationCopiedPixels,
       adaptivePreviewStrategy: ADAPTIVE_PREVIEW_STRATEGY,
       adaptivePreviewTriggerStrategy: ADAPTIVE_PREVIEW_TRIGGER_STRATEGY,
-      adaptivePreviewPositionStrategy: ADAPTIVE_PREVIEW_POSITION_STRATEGY,
+      adaptivePreviewVisibleCanvasStrategy: ADAPTIVE_PREVIEW_VISIBLE_CANVAS_STRATEGY,
+      adaptivePreviewVisibleCanvasAlpha: this.adaptivePreviewVisibleContextAttributes.alpha,
+      adaptivePreviewVisibleCanvasDesynchronized:
+        this.adaptivePreviewVisibleContextAttributes.desynchronized,
+      adaptivePreviewVisibleCanvasColorSpace:
+        this.adaptivePreviewVisibleContextAttributes.colorSpace,
+      adaptivePreviewScratchCanvasAlpha: this.adaptivePreviewScratchContextAttributes.alpha,
+      adaptivePreviewScratchCanvasDesynchronized:
+        this.adaptivePreviewScratchContextAttributes.desynchronized,
+      adaptivePreviewScratchCanvasColorSpace:
+        this.adaptivePreviewScratchContextAttributes.colorSpace,
       adaptivePreviewExactLinearScale: ADAPTIVE_PREVIEW_EXACT_LINEAR_SCALE,
       adaptivePreviewJsBudgetMs: ADAPTIVE_PREVIEW_JS_BUDGET_MS,
       adaptivePreviewMaxTipBaseStamps: ADAPTIVE_PREVIEW_MAX_TIP_BASE_STAMPS,
@@ -1512,7 +1557,13 @@ export class BrushEngine {
     presentationTransferStrategy: typeof PRESENTATION_TRANSFER_STRATEGY;
     adaptivePreviewStrategy: typeof ADAPTIVE_PREVIEW_STRATEGY;
     adaptivePreviewTriggerStrategy: typeof ADAPTIVE_PREVIEW_TRIGGER_STRATEGY;
-    adaptivePreviewPositionStrategy: typeof ADAPTIVE_PREVIEW_POSITION_STRATEGY;
+    adaptivePreviewVisibleCanvasStrategy: typeof ADAPTIVE_PREVIEW_VISIBLE_CANVAS_STRATEGY;
+    adaptivePreviewVisibleCanvasAlpha: boolean | null;
+    adaptivePreviewVisibleCanvasDesynchronized: boolean | null;
+    adaptivePreviewVisibleCanvasColorSpace: string | null;
+    adaptivePreviewScratchCanvasAlpha: boolean | null;
+    adaptivePreviewScratchCanvasDesynchronized: boolean | null;
+    adaptivePreviewScratchCanvasColorSpace: string | null;
     adaptivePreviewExactLinearScale: number;
     adaptivePreviewJsBudgetMs: number;
     adaptivePreviewMaxTipBaseStamps: number;
@@ -1570,7 +1621,17 @@ export class BrushEngine {
       presentationTransferStrategy: PRESENTATION_TRANSFER_STRATEGY,
       adaptivePreviewStrategy: ADAPTIVE_PREVIEW_STRATEGY,
       adaptivePreviewTriggerStrategy: ADAPTIVE_PREVIEW_TRIGGER_STRATEGY,
-      adaptivePreviewPositionStrategy: ADAPTIVE_PREVIEW_POSITION_STRATEGY,
+      adaptivePreviewVisibleCanvasStrategy: ADAPTIVE_PREVIEW_VISIBLE_CANVAS_STRATEGY,
+      adaptivePreviewVisibleCanvasAlpha: this.adaptivePreviewVisibleContextAttributes.alpha,
+      adaptivePreviewVisibleCanvasDesynchronized:
+        this.adaptivePreviewVisibleContextAttributes.desynchronized,
+      adaptivePreviewVisibleCanvasColorSpace:
+        this.adaptivePreviewVisibleContextAttributes.colorSpace,
+      adaptivePreviewScratchCanvasAlpha: this.adaptivePreviewScratchContextAttributes.alpha,
+      adaptivePreviewScratchCanvasDesynchronized:
+        this.adaptivePreviewScratchContextAttributes.desynchronized,
+      adaptivePreviewScratchCanvasColorSpace:
+        this.adaptivePreviewScratchContextAttributes.colorSpace,
       adaptivePreviewExactLinearScale: ADAPTIVE_PREVIEW_EXACT_LINEAR_SCALE,
       adaptivePreviewJsBudgetMs: ADAPTIVE_PREVIEW_JS_BUDGET_MS,
       adaptivePreviewMaxTipBaseStamps: ADAPTIVE_PREVIEW_MAX_TIP_BASE_STAMPS,
@@ -2915,6 +2976,8 @@ export class BrushEngine {
     context.globalCompositeOperation = "source-over";
     context.clearRect(0, 0, canvas.width, canvas.height);
     canvas.style.opacity = "0";
+    canvas.style.left = "-10000px";
+    canvas.style.top = "-10000px";
     this.adaptivePreviewLastPresentedSerial = 0;
     for (const candidate of this.adaptivePreviewCandidates) {
       candidate.presented = false;
@@ -3681,7 +3744,8 @@ export class BrushEngine {
       this.adaptivePreviewCssWidth = patchCssWidth;
       this.adaptivePreviewCssHeight = patchCssHeight;
     }
-    canvas.style.transform = `translate(${patchLeft}px, ${patchTop}px)`;
+    canvas.style.left = `${patchLeft}px`;
+    canvas.style.top = `${patchTop}px`;
     visibleContext.setTransform(1, 0, 0, 1, 0, 0);
     visibleContext.globalCompositeOperation = "copy";
     visibleContext.globalAlpha = 1;
