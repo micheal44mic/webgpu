@@ -22,6 +22,8 @@ export type AdaptivePreviewStrategy = "queue-lag-triggered-canvas2d-tip-patch";
 export type AdaptivePreviewTriggerStrategy = "single-sampled-queue-prefix-latency";
 export type AdaptivePreviewVisibleCanvasStrategy =
   "iphone-desynchronized-others-synchronized-canvas2d";
+export type AdaptiveSpacingStrategy = "queue-lag-step-up-per-stroke";
+export type AdaptiveSpacingTriggerReason = "probe-timeout" | "slow-completion";
 export type AdaptivePreviewConcreteActivationReason =
   | "probe-timeout"
   | "consecutive-slow"
@@ -58,6 +60,15 @@ export interface BrushSettings {
   positionJitterLinear: number;
   pressureSize: number;
   pressureOpacity: number;
+}
+
+export interface AdaptiveSpacingEvent {
+  offsetMs: number;
+  reason: AdaptiveSpacingTriggerReason;
+  spacingPercent: number;
+  extraPercentPoints: number;
+  backlogBaseStamps: number;
+  generatedBaseStamps: number;
 }
 
 export interface PointerSample {
@@ -149,6 +160,14 @@ export interface StrokePerformanceProfile {
   adaptivePreviewProbeCancellations: number;
   adaptivePreviewProbeRejections: number;
   adaptivePreviewProbeNearMisses: number;
+  adaptiveSpacingStrategy: AdaptiveSpacingStrategy;
+  adaptiveSpacingStepPercentPoints: number;
+  adaptiveSpacingMaxExtraPercentPoints: number;
+  adaptiveSpacingInitialPercent: number;
+  adaptiveSpacingFinalPercent: number;
+  adaptiveSpacingIncreaseCount: number;
+  adaptiveSpacingReachedMaximum: boolean;
+  adaptiveSpacingEvents: AdaptiveSpacingEvent[];
   adaptivePreviewActivations: number;
   adaptivePreviewActivationReason: AdaptivePreviewActivationReason;
   adaptivePreviewFirstActivationReason: AdaptivePreviewConcreteActivationReason | null;
@@ -257,6 +276,8 @@ interface Stamp {
 interface ActiveStroke {
   lastInput: LayerPoint;
   distanceSinceStamp: number;
+  adaptiveSpacingInitialPercent: number;
+  adaptiveSpacingPercent: number;
   historyActionId: number;
   historyCommitted: boolean;
   submitted: boolean;
@@ -295,6 +316,7 @@ interface AdaptivePreviewProbe {
   startedAt: number;
   prefixSerial: number;
   timeout: number;
+  spacingIncreaseApplied: boolean;
   telemetryProfile: MutableStrokePerformanceProfile | null;
 }
 
@@ -404,6 +426,9 @@ interface MutableStrokePerformanceProfile {
   adaptivePreviewProbeLatencyMs: number[];
   adaptivePreviewProbeBacklogBaseStamps: number[];
   adaptivePreviewProbeTimeoutLatenessMs: number[];
+  adaptiveSpacingInitialPercent: number;
+  adaptiveSpacingFinalPercent: number;
+  adaptiveSpacingEvents: AdaptiveSpacingEvent[];
   adaptivePreviewActivations: number;
   adaptivePreviewActivationReason: AdaptivePreviewActivationReason;
   adaptivePreviewFirstActivationReason: AdaptivePreviewConcreteActivationReason | null;
@@ -479,6 +504,9 @@ const ADAPTIVE_PREVIEW_TRIGGER_THRESHOLD_MS = 60;
 const ADAPTIVE_PREVIEW_SLOW_COMPLETION_THRESHOLD_MS = 58;
 const ADAPTIVE_PREVIEW_TRIGGER_CONSECUTIVE_PROBES = 2;
 const ADAPTIVE_PREVIEW_PROBE_NEAR_MISS_MINIMUM_MS = 45;
+const ADAPTIVE_SPACING_STRATEGY = "queue-lag-step-up-per-stroke" as const;
+const ADAPTIVE_SPACING_STEP_PERCENT_POINTS = 0.25;
+const ADAPTIVE_SPACING_MAX_EXTRA_PERCENT_POINTS = 1.5;
 const ADAPTIVE_PREVIEW_FORCE = import.meta.env.DEV
   && typeof window !== "undefined"
   && new URLSearchParams(window.location.search).get("adaptivePreview") === "force";
@@ -1056,6 +1084,8 @@ export class BrushEngine {
     this.activeStroke = {
       lastInput: point,
       distanceSinceStamp: 0,
+      adaptiveSpacingInitialPercent: this.settings.spacingPercent,
+      adaptiveSpacingPercent: this.settings.spacingPercent,
       historyActionId,
       historyCommitted: false,
       submitted: false,
@@ -1422,6 +1452,9 @@ export class BrushEngine {
       adaptivePreviewProbeLatencyMs: [],
       adaptivePreviewProbeBacklogBaseStamps: [],
       adaptivePreviewProbeTimeoutLatenessMs: [],
+      adaptiveSpacingInitialPercent: this.settings.spacingPercent,
+      adaptiveSpacingFinalPercent: this.settings.spacingPercent,
+      adaptiveSpacingEvents: [],
       adaptivePreviewActivations: 0,
       adaptivePreviewActivationReason: "none",
       adaptivePreviewFirstActivationReason: null,
@@ -1531,6 +1564,18 @@ export class BrushEngine {
       adaptivePreviewProbeCancellations: profile.adaptivePreviewProbeCancellations,
       adaptivePreviewProbeRejections: profile.adaptivePreviewProbeRejections,
       adaptivePreviewProbeNearMisses: profile.adaptivePreviewProbeNearMisses,
+      adaptiveSpacingStrategy: ADAPTIVE_SPACING_STRATEGY,
+      adaptiveSpacingStepPercentPoints: ADAPTIVE_SPACING_STEP_PERCENT_POINTS,
+      adaptiveSpacingMaxExtraPercentPoints: ADAPTIVE_SPACING_MAX_EXTRA_PERCENT_POINTS,
+      adaptiveSpacingInitialPercent: profile.adaptiveSpacingInitialPercent,
+      adaptiveSpacingFinalPercent: profile.adaptiveSpacingFinalPercent,
+      adaptiveSpacingIncreaseCount: profile.adaptiveSpacingEvents.length,
+      adaptiveSpacingReachedMaximum:
+        profile.adaptiveSpacingFinalPercent
+          >= profile.adaptiveSpacingInitialPercent
+            + ADAPTIVE_SPACING_MAX_EXTRA_PERCENT_POINTS
+            - Number.EPSILON * 8,
+      adaptiveSpacingEvents: profile.adaptiveSpacingEvents,
       adaptivePreviewActivations: profile.adaptivePreviewActivations,
       adaptivePreviewActivationReason: profile.adaptivePreviewActivationReason,
       adaptivePreviewFirstActivationReason: profile.adaptivePreviewFirstActivationReason,
@@ -1682,6 +1727,9 @@ export class BrushEngine {
     adaptivePreviewSlowCompletionThresholdMs: number;
     adaptivePreviewTriggerConsecutiveProbes: number;
     adaptivePreviewProbeNearMissMinimumMs: number;
+    adaptiveSpacingStrategy: typeof ADAPTIVE_SPACING_STRATEGY;
+    adaptiveSpacingStepPercentPoints: number;
+    adaptiveSpacingMaxExtraPercentPoints: number;
     historyStorageStrategy: typeof HISTORY_STORAGE_STRATEGY;
     historyReplayStrategy: typeof HISTORY_REPLAY_STRATEGY;
     historyStampRetentionStrategy: typeof HISTORY_STAMP_RETENTION_STRATEGY;
@@ -1753,6 +1801,9 @@ export class BrushEngine {
       adaptivePreviewSlowCompletionThresholdMs: ADAPTIVE_PREVIEW_SLOW_COMPLETION_THRESHOLD_MS,
       adaptivePreviewTriggerConsecutiveProbes: ADAPTIVE_PREVIEW_TRIGGER_CONSECUTIVE_PROBES,
       adaptivePreviewProbeNearMissMinimumMs: ADAPTIVE_PREVIEW_PROBE_NEAR_MISS_MINIMUM_MS,
+      adaptiveSpacingStrategy: ADAPTIVE_SPACING_STRATEGY,
+      adaptiveSpacingStepPercentPoints: ADAPTIVE_SPACING_STEP_PERCENT_POINTS,
+      adaptiveSpacingMaxExtraPercentPoints: ADAPTIVE_SPACING_MAX_EXTRA_PERCENT_POINTS,
       historyStorageStrategy: HISTORY_STORAGE_STRATEGY,
       historyReplayStrategy: HISTORY_REPLAY_STRATEGY,
       historyStampRetentionStrategy: HISTORY_STAMP_RETENTION_STRATEGY,
@@ -2474,7 +2525,7 @@ export class BrushEngine {
       return;
     }
 
-    const spacing = Math.max(0.1, this.settings.size * (this.settings.spacingPercent / 100));
+    const spacing = Math.max(0.1, this.settings.size * (stroke.adaptiveSpacingPercent / 100));
     const directionX = deltaX / segmentLength;
     const directionY = deltaY / segmentLength;
     let distanceAlongSegment = 0;
@@ -3374,6 +3425,42 @@ export class BrushEngine {
     });
   }
 
+  private increaseAdaptiveSpacing(reason: AdaptiveSpacingTriggerReason): void {
+    const stroke = this.activeStroke;
+    if (!stroke || this.adaptivePreviewFrozen) {
+      return;
+    }
+
+    const maximumSpacingPercent =
+      stroke.adaptiveSpacingInitialPercent + ADAPTIVE_SPACING_MAX_EXTRA_PERCENT_POINTS;
+    const nextSpacingPercent = Math.min(
+      maximumSpacingPercent,
+      stroke.adaptiveSpacingPercent + ADAPTIVE_SPACING_STEP_PERCENT_POINTS,
+    );
+    if (nextSpacingPercent <= stroke.adaptiveSpacingPercent) {
+      return;
+    }
+
+    stroke.adaptiveSpacingPercent = nextSpacingPercent;
+    const profile = this.activeStrokeProfile;
+    if (!profile) {
+      return;
+    }
+
+    profile.adaptiveSpacingFinalPercent = nextSpacingPercent;
+    profile.adaptiveSpacingEvents.push({
+      offsetMs: Math.max(0, performance.now() - profile.startedAt),
+      reason,
+      spacingPercent: nextSpacingPercent,
+      extraPercentPoints: nextSpacingPercent - stroke.adaptiveSpacingInitialPercent,
+      backlogBaseStamps: Math.max(
+        0,
+        this.adaptivePreviewSubmittedSerial - this.adaptivePreviewConfirmedSerial,
+      ),
+      generatedBaseStamps: profile.baseStamps,
+    });
+  }
+
   private startAdaptivePreviewProbe(force: boolean): void {
     if (
       !this.adaptivePreviewContext
@@ -3396,6 +3483,7 @@ export class BrushEngine {
       startedAt,
       prefixSerial: this.adaptivePreviewSubmittedSerial,
       timeout: 0,
+      spacingIncreaseApplied: false,
       telemetryProfile,
     };
     if (telemetryProfile) {
@@ -3422,6 +3510,8 @@ export class BrushEngine {
           ),
         );
       }
+      probe.spacingIncreaseApplied = true;
+      this.increaseAdaptiveSpacing("probe-timeout");
       this.activateAdaptivePreview("probe-timeout");
     }, ADAPTIVE_PREVIEW_TRIGGER_THRESHOLD_MS);
     this.adaptivePreviewProbe = probe;
@@ -3434,6 +3524,13 @@ export class BrushEngine {
       this.adaptivePreviewProbe = null;
       const completedAt = performance.now();
       const latency = completedAt - probe.startedAt;
+      if (
+        latency >= ADAPTIVE_PREVIEW_SLOW_COMPLETION_THRESHOLD_MS
+        && !probe.spacingIncreaseApplied
+      ) {
+        probe.spacingIncreaseApplied = true;
+        this.increaseAdaptiveSpacing("slow-completion");
+      }
       this.adaptivePreviewConfirmedSerial = Math.max(
         this.adaptivePreviewConfirmedSerial,
         probe.prefixSerial,

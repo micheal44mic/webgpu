@@ -1411,3 +1411,21 @@ Smoke locale finale su NVIDIA Ampere, storage texture R32Uint disponibile:
 Il test iPhone ha usato realmente la storage texture `R32Uint read/write`, senza fallback. I pixel sono risultati identici al `100,0000%`, con zero pixel diversi, ma il raster ha impiegato `12,75 ms` e il compute `21,25 ms`: campioni stabili `12,8/12,8/12,8` contro `21,3/21,3/21,5`, quindi il compute richiede il `66,7%` di tempo in più. Il binning CPU aggiunge inoltre `1,00 ms`.
 
 Decisione: compute bocciato nettamente sulla GPU Apple e micro-benchmark rimosso dall'interfaccia e dalla build. L'algoritmo preserva l'output nel caso sintetico, ma rasterizzazione e blending hardware sono molto più efficienti del ciclo compute sequenziale con quantizzazione per copia. Non iniziare la riscrittura compute e non riproporre questo benchmark senza un cambiamento architetturale sostanziale che elimini la causa misurata del costo.
+
+## Esperimento: spacing adattivo sulla congestione — candidato da misurare
+
+Su richiesta esplicita dell'utente, questo esperimento costituisce un'eccezione intenzionale al vincolo storico di spacing invariato. L'obiettivo è verificare se ridurre gradualmente il numero di stamp futuri quando la coda GPU è già in ritardo migliori l'attaccatura al dito abbastanza da compensare la variazione visiva. Non descrivere quindi il risultato come pixel-identico o direttamente equivalente alla baseline.
+
+Ogni tratto conserva separatamente lo spacing scelto dall'utente come valore iniziale. Lo stesso probe FIFO già usato dalla tip preview può aumentare lo spacing effettivo:
+
+- uno step di `+0,25` punti percentuali quando il probe raggiunge il timeout da `60 ms`;
+- oppure uno step quando si completa con almeno `58 ms`, se lo stesso probe non aveva già applicato lo step al timeout;
+- massimo un solo step per probe, quindi timeout e successiva completion lenta non vengono contati due volte;
+- tetto pari allo spacing iniziale `+1,5` punti percentuali;
+- nessuna discesa o oscillazione nello stesso tratto; il tratto successivo riparte dal valore scelto nell'interfaccia.
+
+Con il benchmark canonico lo spacing può quindi seguire `1,00→1,25→1,50→1,75→2,00→2,25→2,50%`. Gli stamp già generati o inviati non vengono eliminati, differiti o rigenerati: il nuovo valore agisce soltanto sulla distanza necessaria per i punti successivi. Count `16`, size `750`, flow, hardness, blend `4×`, seed, jitter, ordine delle copie, shader, renderer esatto, history e tip preview revisione `15` restano invariati. Undo/Redo conserva gli stamp realmente generati, quindi non ricalcola lo spacing.
+
+`performanceTelemetryRevision: 17` identifica il candidato. La configurazione salva strategia, step e massimo; ogni run salva spacing iniziale/finale, numero di aumenti, raggiungimento del tetto e una timeline `adaptiveSpacingEvents` con offset, causa, spacing raggiunto, backlog e stamp generati. Il riepilogo visibile della run mostra inoltre `spacing adattivo iniziale→finale / step`. Il preset dichiarato resta `spacingPercent: 1`, mentre i valori effettivi successivi sono esplicitati dalla nuova telemetria.
+
+Dopo la pubblicazione eseguire prima Base e poi Fur, attese come `#53` e `#54`, e confrontarle con `#49` e `#50`. Base deve essere giudicata su sensazione, buchi/densità, stamp totali, p95, frame lenti, coda finale e timeline degli step. Fur idealmente deve restare a `1,00%`, zero step e `12107` stamp: un aumento su Fur indicherebbe che il trigger è troppo aggressivo. Promuovere soltanto se Base segue meglio il dito senza un cambiamento visivo fastidioso; in caso contrario ripristinare integralmente la revisione `15`.

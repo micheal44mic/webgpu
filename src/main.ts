@@ -166,12 +166,15 @@ interface BenchmarkRun {
     adaptivePreviewSlowCompletionThresholdMs: number;
     adaptivePreviewTriggerConsecutiveProbes: number;
     adaptivePreviewProbeNearMissMinimumMs: number;
+    adaptiveSpacingStrategy: StrokePerformanceProfile["adaptiveSpacingStrategy"];
+    adaptiveSpacingStepPercentPoints: number;
+    adaptiveSpacingMaxExtraPercentPoints: number;
     historyStorageStrategy: StrokePerformanceProfile["historyStorageStrategy"];
     historyReplayStrategy: StrokePerformanceProfile["historyReplayStrategy"];
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 15;
+    performanceTelemetryRevision: 17;
   };
 }
 
@@ -361,7 +364,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 15,
+    performanceTelemetryRevision: 17,
     ...engineEnvironment,
   };
 }
@@ -1023,6 +1026,7 @@ async function replayHumanStroke(): Promise<void> {
       performanceProfile.adaptivePreviewActivations > 0
         ? `preview tip ${formatInteger(performanceProfile.adaptivePreviewBaseStampsDrawn)} stamp / ${performanceProfile.adaptivePreviewJsTotalMs.toFixed(2)} ms JS`
         : "preview tip non attivata",
+      `spacing adattivo ${performanceProfile.adaptiveSpacingInitialPercent.toFixed(2)}→${performanceProfile.adaptiveSpacingFinalPercent.toFixed(2)}% / ${performanceProfile.adaptiveSpacingIncreaseCount} step`,
       `history CPU ${formatInteger(performanceProfile.historyCapturedBaseStamps)} stamp / ${formatInteger(performanceProfile.historyCapturedBatches)} batch`,
       `FPS medi ${performanceProfile.averageRenderFps.toFixed(1)}`,
       `${formatInteger(performanceProfile.delayedRenderFrames)} frame >20 ms`,
