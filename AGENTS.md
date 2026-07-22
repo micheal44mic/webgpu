@@ -1169,3 +1169,26 @@ La #43 è invece sostanzialmente identica alla #38: la latenza probe massima è 
 Rispetto alla vecchia preview differita della #39, la #42 elimina il debito strutturale: coda finale `4416→256 ms` e fine presentazione `11281→7105 ms`. Il renderer esatto non viene più alleggerito durante l'input, quindi non mantiene il p95 artificiosamente migliore della #39; il beneficio cercato è soltanto percettivo sul tip transiente.
 
 Decisione preliminare: l'architettura v2 è sicura e Fur non regredisce, ma Base mostra un piccolo costo misurabile. Non promuovere né rimuovere ancora il candidato sulla base di una sola run. Eseguire almeno un'altra Base identica e raccogliere il giudizio tattile dell'utente: se il tip non appare sensibilmente più vicino al dito o la regressione si ripete, rimuovere la patch; se la sensazione migliora, isolare in un passo successivo l'overhead di aggiornamento/posizionamento DOM senza cambiare contemporaneamente trigger o resa.
+
+### Run esplorative #44–#45 e problema Android — candidato sospeso, non bocciato
+
+L'utente riferisce che la sensazione della tip preview gli piace e vuole continuare a sviluppare l'idea, ma chiede di fermare le modifiche prima del passo successivo. Riferisce inoltre che su Android gli stamp transitori Canvas2D appaiono con uno sfondo nero rettangolare. Questa osservazione manuale non è associata a una run Android salvata nel registro.
+
+La `#44` è una seconda Base canonica sullo stesso iPhone della `#42`, con lo stesso fingerprint, viewport `430×775`, canvas `860×1454`, DPR `3`, preset, GPU Apple, stamp e copie. È quindi utile come replica anche se è stata eseguita come prova informale:
+
+| Metrica | #37 Base baseline | #42 Base tip patch | #44 Base tip patch |
+|---|---:|---:|---:|
+| FPS medi | `57,50` | `56,49` | `56,86` |
+| intervallo frame p95 | `25 ms` | `26 ms` | `25 ms` |
+| frame oltre `20 ms` | `25` | `33` | `30` |
+| coda GPU finale | `224 ms` | `256 ms` | `253 ms` |
+| input delay p95 | `15 ms` | `16 ms` | `15 ms` |
+| fine presentazione | `7084 ms` | `7105 ms` | `7100 ms` |
+
+La #44 conferma la direzione della #42 con una regressione piccola: FPS circa `-1,1%`, `5` frame lenti in più e `29 ms` di coda aggiuntiva rispetto alla #37. La preview si attiva due volte, emette `208` patch, accumula `131 ms` di lavoro JS, p95 `1 ms`, massimo `2 ms` e `7` skip di budget. La sessione massima dura `2812 ms`; probe massimo `414 ms` e backlog massimo `1610` stamp. Gli invarianti esatti restano tutti validi e non compare debito GPU al lift.
+
+La `#45` non va aggregata alle run canoniche: pur dichiarando user agent iPhone, usa Safari `26.5.2`, lingua italiana, DPR `2`, viewport `414×750` e canvas `828×1404`. È inoltre una condizione di saturazione estrema: FPS `25,60`, p95 `157 ms`, massimo `604 ms`, batch massimo `1025`, input delay p95 `208 ms` e coda finale `5349 ms`. La preview resta coinvolta fino a `11157 ms`, con probe massimo `4751 ms` e `6975` stamp non confermati. Anche in questo stress test non differisce né ripete lavoro esatto: `12107` stamp e `193` batch esatti coincidono con il renderer normale, mentre deferred, replay e submit al lift restano zero. La run dimostra soltanto che una tip patch di due stamp non può nascondere una GPU arretrata di molti secondi.
+
+Il candidato crea il contesto visibile con `{ alpha: true, desynchronized: true }`. La documentazione Chrome del percorso low-latency specifica che un canvas traslucido desincronizzato può funzionare soltanto se non ha altri elementi DOM sopra. Nel layout corrente `.hint` ha `z-index: 2`, sopra `#tipPreviewCanvas` con `z-index: 1`. La violazione è una causa plausibile del rettangolo nero Android: il percorso desincronizzato può bypassare la composizione ordinaria/front-buffer, mentre i pixel trasparenti della patch vengono presentati come nero. `globalCompositeOperation = "copy"` durante il commit visibile è un secondo punto da verificare, ma non va cambiato contemporaneamente senza prima isolare il contesto desincronizzato.
+
+Decisione aggiornata: la tip preview v2 non è bocciata, ma il candidato è sospeso e non vanno effettuate altre modifiche finché non viene concordato il passo successivo. La prima correzione isolata consigliata è rimuovere soltanto `desynchronized: true` dal canvas visibile, mantenendo alpha, scratch atomico, trigger, resa e renderer esatto invariati; aggiungere la lettura di `getContextAttributes()` alla diagnostica e verificare su Android che il rettangolo nero sparisca. Soltanto dopo va affrontato separatamente il piccolo overhead Base, senza combinare fix di correttezza e ottimizzazione.
