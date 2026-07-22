@@ -834,7 +834,9 @@ Le firme Shape coincidono esattamente con la #32: decoder `png-gray8-direct`, pe
 
 Decisione: Undo/Redo con cronologia CPU è promosso e mantenuto. La cattura del journal non ha prodotto un costo misurabile sul tratto né Base né Fur; la #34 conferma inoltre che il percorso Shape ottimizzato della #32 è invariato. Le run non includono una cattura pixel, quindi l'identità visiva resta una verifica manuale separata. La ricostruzione GPU eseguita quando si premono Undo o Redo non è misurata da queste run e non va confusa con il costo nullo osservato durante il disegno. Il limite di memoria della cronologia resta un tema separato prima di un uso prolungato in produzione.
 
-## UI full-canvas e navigazione touch — da pubblicare e misurare
+## UI full-canvas e navigazione touch — pubblicata, da misurare
+
+L'implementazione è stata pubblicata come versione Sites `41` dal commit `0aa6f53`.
 
 I pannelli dei controlli sono ora un cassetto sovrapposto al canvas: laterale su desktop e inferiore su schermi fino a `820 px`. Il pulsante menu nella barra superiore li apre e li nasconde completamente. Il canvas occupa sempre tutta l'area sotto la barra, indipendentemente dallo stato del cassetto; per questo chiudere il pannello non provoca un resize proprio all'avvio del test. Il pannello si chiude automaticamente quando partono il benchmark GPU sintetico, il replay canonico o la registrazione del tratto umano, e resta chiuso al termine finché l'utente non lo riapre.
 
