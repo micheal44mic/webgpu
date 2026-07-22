@@ -1245,3 +1245,33 @@ Il rettangolo nero Android viene affrontato isolatamente partendo dal codice v2 
 Sul browser locale sono attesi `visible alpha=true`, `visible desynchronized=false`, mentre lo scratch deve restare `alpha=true`, `desynchronized=true`; la run Android dovrà confermare i valori realmente concessi dalla piattaforma. Prima va verificato visivamente che durante l'attivazione della tip patch non compaia più il rettangolo nero. Se resta, il passo successivo deve essere isolato: prima rimuovere il flag dallo scratch, e soltanto dopo provare separatamente `clearRect` + `source-over` al posto di `copy`.
 
 Verifica locale del candidato: build TypeScript/Vite/Sites riuscita; smoke con preview forzata riusciti per Circle, Shape, zoom, lift e Undo/Redo; il canvas visibile torna a `left/top: -10000px` dopo il retirement; nessun errore o warning runtime. Shader e percorso WebGPU esatto non sono stati modificati. Il candidato Android non è ancora pubblicato.
+
+### Risultato Android e controllo iPhone #47
+
+Il candidato sincronizzato è stato pubblicato e il controllo manuale Android ha confermato che il rettangolo nero della tip patch è scomparso. Poiché rispetto alla build Android difettosa il posizionamento `left/top`, lo scratch e il commit `copy` sono invariati, il confronto identifica il contesto visibile `desynchronized` come causa operativa del difetto di presentazione. Il controllo manuale non ha salvato una run benchmark.
+
+La successiva Base iPhone `#47` è comparabile con `#42/#44`: stesso fingerprint, preset, dispositivo, viewport, canvas, stamp e copie. La telemetria conferma `visible desynchronized=false`, `scratch desynchronized=true` e spazio colore `srgb`; Safari non espone il campo `alpha` in `getContextAttributes()`, quindi il valore salvato è `null` e non significa che l'alpha sia disabilitato.
+
+| Metrica | Run #42/#44 sincronizzazione precedente | Run #47 canvas visibile sincronizzato |
+|---|---:|---:|
+| FPS medi | `56,49–56,86` | `55,90` |
+| intervallo frame p95 | `25–26 ms` | `28 ms` |
+| frame oltre 20 ms | `30–33` | `37` |
+| coda GPU finale | `253–256 ms` | `285 ms` |
+| input delay p95 | `15–16 ms` | `17 ms` |
+| fine presentazione | `7100–7105 ms` | `7138 ms` |
+| `resizeCanvasTotalMs` | `60–67 ms` | `66 ms` |
+
+La #47 peggiora tutte le metriche principali, ma una singola replica non dimostra da sola il costo del contesto sincronizzato. L'utente ha comunque scelto una politica deterministica per conservare il percorso iPhone originale e il fix Android: `desynchronized: true` soltanto su iPhone, `false` su Android e desktop.
+
+## Strategia Canvas2D per piattaforma — candidato locale
+
+Il canvas visibile usa ora `adaptivePreviewVisibleCanvasStrategy: "iphone-desynchronized-others-synchronized-canvas2d"`. Il rilevamento iPhone controlla `navigator.platform === "iPhone"` oppure la presenza della parola `iPhone` nello user agent. Non abilita il flag su iPad, Android o desktop. Lo scratch resta `desynchronized: true` su tutte le piattaforme.
+
+`performanceTelemetryRevision: 14` aggiunge `adaptivePreviewVisibleCanvasRequestedDesynchronized` oltre agli attributi effettivi già presenti. Valori attesi:
+
+- iPhone: requested `true`, actual `true` quando Safari onora il flag;
+- Android e desktop: requested `false`, actual `false`;
+- scratch: actual `true` su tutte le piattaforme che espongono l'attributo.
+
+Non cambiano trigger, intervallo probe `4`, soglie `60/58 ms`, tip patch, disegno, compositing, lift, renderer WebGPU esatto o shader. La build locale TypeScript/Vite/Sites riesce. Il candidato non è ancora pubblicato; la prima Base iPhone attesa dopo la pubblicazione è la `#48`.

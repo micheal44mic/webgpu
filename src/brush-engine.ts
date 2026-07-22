@@ -20,7 +20,8 @@ export type PresentationCacheStrategy = "persistent-full-resolution-screen-cache
 export type PresentationTransferStrategy = "copy-texture-to-current-texture";
 export type AdaptivePreviewStrategy = "queue-lag-triggered-canvas2d-tip-patch";
 export type AdaptivePreviewTriggerStrategy = "single-sampled-queue-prefix-latency";
-export type AdaptivePreviewVisibleCanvasStrategy = "alpha-synchronized-canvas2d";
+export type AdaptivePreviewVisibleCanvasStrategy =
+  "iphone-desynchronized-others-synchronized-canvas2d";
 export type AdaptivePreviewActivationReason = "none" | "queue-lag" | "diagnostic-force" | "mixed";
 export type ShapeOccupancyFallbackReason =
   | "none"
@@ -118,6 +119,7 @@ export interface StrokePerformanceProfile {
   adaptivePreviewStrategy: AdaptivePreviewStrategy;
   adaptivePreviewTriggerStrategy: AdaptivePreviewTriggerStrategy;
   adaptivePreviewVisibleCanvasStrategy: AdaptivePreviewVisibleCanvasStrategy;
+  adaptivePreviewVisibleCanvasRequestedDesynchronized: boolean;
   adaptivePreviewVisibleCanvasAlpha: boolean | null;
   adaptivePreviewVisibleCanvasDesynchronized: boolean | null;
   adaptivePreviewVisibleCanvasColorSpace: string | null;
@@ -417,7 +419,8 @@ const PRESENTATION_CACHE_STRATEGY = "persistent-full-resolution-screen-cache" as
 const PRESENTATION_TRANSFER_STRATEGY = "copy-texture-to-current-texture" as const;
 const ADAPTIVE_PREVIEW_STRATEGY = "queue-lag-triggered-canvas2d-tip-patch" as const;
 const ADAPTIVE_PREVIEW_TRIGGER_STRATEGY = "single-sampled-queue-prefix-latency" as const;
-const ADAPTIVE_PREVIEW_VISIBLE_CANVAS_STRATEGY = "alpha-synchronized-canvas2d" as const;
+const ADAPTIVE_PREVIEW_VISIBLE_CANVAS_STRATEGY =
+  "iphone-desynchronized-others-synchronized-canvas2d" as const;
 const ADAPTIVE_PREVIEW_EXACT_LINEAR_SCALE = 0.5;
 const ADAPTIVE_PREVIEW_JS_BUDGET_MS = 1.25;
 const ADAPTIVE_PREVIEW_COMMIT_BUDGET_RESERVE_MS = 0.2;
@@ -456,6 +459,10 @@ function readAdaptivePreviewContextAttributes(
       : null,
     colorSpace: typeof attributes.colorSpace === "string" ? attributes.colorSpace : null,
   };
+}
+
+function shouldDesynchronizeAdaptivePreviewVisibleCanvas(): boolean {
+  return navigator.platform === "iPhone" || /\biPhone\b/.test(navigator.userAgent);
 }
 const HISTORY_STORAGE_STRATEGY = "cpu-render-batch-journal" as const;
 const HISTORY_REPLAY_STRATEGY = "clear-and-stable-gpu-replay" as const;
@@ -654,6 +661,7 @@ export class BrushEngine {
   private readonly adaptivePreviewContext: CanvasRenderingContext2D | null;
   private readonly adaptivePreviewScratchCanvas: HTMLCanvasElement | null;
   private readonly adaptivePreviewScratchContext: CanvasRenderingContext2D | null;
+  private readonly adaptivePreviewVisibleCanvasRequestedDesynchronized: boolean;
   private readonly adaptivePreviewVisibleContextAttributes: AdaptivePreviewContextAttributes;
   private readonly adaptivePreviewScratchContextAttributes: AdaptivePreviewContextAttributes;
   private adaptivePreviewShapeSprite: HTMLCanvasElement | null = null;
@@ -765,8 +773,11 @@ export class BrushEngine {
     this.canvas = canvas;
     this.callbacks = callbacks;
     this.adaptivePreviewCanvas = adaptivePreviewCanvas;
+    this.adaptivePreviewVisibleCanvasRequestedDesynchronized =
+      shouldDesynchronizeAdaptivePreviewVisibleCanvas();
     this.adaptivePreviewContext = adaptivePreviewCanvas?.getContext("2d", {
       alpha: true,
+      desynchronized: this.adaptivePreviewVisibleCanvasRequestedDesynchronized,
     }) ?? null;
     this.adaptivePreviewScratchCanvas = this.adaptivePreviewContext
       ? document.createElement("canvas")
@@ -1433,6 +1444,8 @@ export class BrushEngine {
       adaptivePreviewStrategy: ADAPTIVE_PREVIEW_STRATEGY,
       adaptivePreviewTriggerStrategy: ADAPTIVE_PREVIEW_TRIGGER_STRATEGY,
       adaptivePreviewVisibleCanvasStrategy: ADAPTIVE_PREVIEW_VISIBLE_CANVAS_STRATEGY,
+      adaptivePreviewVisibleCanvasRequestedDesynchronized:
+        this.adaptivePreviewVisibleCanvasRequestedDesynchronized,
       adaptivePreviewVisibleCanvasAlpha: this.adaptivePreviewVisibleContextAttributes.alpha,
       adaptivePreviewVisibleCanvasDesynchronized:
         this.adaptivePreviewVisibleContextAttributes.desynchronized,
@@ -1558,6 +1571,7 @@ export class BrushEngine {
     adaptivePreviewStrategy: typeof ADAPTIVE_PREVIEW_STRATEGY;
     adaptivePreviewTriggerStrategy: typeof ADAPTIVE_PREVIEW_TRIGGER_STRATEGY;
     adaptivePreviewVisibleCanvasStrategy: typeof ADAPTIVE_PREVIEW_VISIBLE_CANVAS_STRATEGY;
+    adaptivePreviewVisibleCanvasRequestedDesynchronized: boolean;
     adaptivePreviewVisibleCanvasAlpha: boolean | null;
     adaptivePreviewVisibleCanvasDesynchronized: boolean | null;
     adaptivePreviewVisibleCanvasColorSpace: string | null;
@@ -1622,6 +1636,8 @@ export class BrushEngine {
       adaptivePreviewStrategy: ADAPTIVE_PREVIEW_STRATEGY,
       adaptivePreviewTriggerStrategy: ADAPTIVE_PREVIEW_TRIGGER_STRATEGY,
       adaptivePreviewVisibleCanvasStrategy: ADAPTIVE_PREVIEW_VISIBLE_CANVAS_STRATEGY,
+      adaptivePreviewVisibleCanvasRequestedDesynchronized:
+        this.adaptivePreviewVisibleCanvasRequestedDesynchronized,
       adaptivePreviewVisibleCanvasAlpha: this.adaptivePreviewVisibleContextAttributes.alpha,
       adaptivePreviewVisibleCanvasDesynchronized:
         this.adaptivePreviewVisibleContextAttributes.desynchronized,
