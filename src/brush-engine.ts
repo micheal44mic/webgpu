@@ -1,6 +1,6 @@
 import { clamp, hexToHsl } from "./color";
 import { decodeGrayscalePng8 } from "./png-mask";
-import { brushShader, displayShader } from "./shaders";
+import { adaptivePreviewDisplayShader, brushShader, displayShader } from "./shaders";
 
 export type BlendMode = "normal" | "additive";
 export type LayerFormat = "rgba8unorm" | "rgba16float";
@@ -18,6 +18,10 @@ export type HistoryReplayStrategy = "clear-and-stable-gpu-replay";
 export type HistoryStampRetentionStrategy = "shared-immutable-references";
 export type PresentationCacheStrategy = "persistent-full-resolution-screen-cache";
 export type PresentationTransferStrategy = "copy-texture-to-current-texture";
+export type AdaptivePreviewStrategy = "gpu-lag-triggered-half-resolution-overlay";
+export type AdaptivePreviewTriggerStrategy = "sampled-queue-prefix-latency";
+export type AdaptivePreviewActivationReason = "none" | "queue-lag" | "diagnostic-force" | "mixed";
+export type AdaptivePreviewFallbackReason = "none" | "blend-mode-change" | "clear-requested" | "mixed";
 export type ShapeOccupancyFallbackReason =
   | "none"
   | "minimum-radius"
@@ -111,6 +115,33 @@ export interface StrokePerformanceProfile {
   presentationCacheUpdatedPixels: number;
   legacyDisplayShaderPixels: number;
   presentationCopiedPixels: number;
+  adaptivePreviewStrategy: AdaptivePreviewStrategy;
+  adaptivePreviewTriggerStrategy: AdaptivePreviewTriggerStrategy;
+  adaptivePreviewScale: number;
+  adaptivePreviewOverlayMemoryMiB: number;
+  adaptivePreviewTriggerThresholdMs: number;
+  adaptivePreviewUrgentThresholdMs: number;
+  adaptivePreviewTriggerConsecutiveProbes: number;
+  adaptivePreviewProbeIntervalSubmissions: number;
+  adaptivePreviewActivations: number;
+  adaptivePreviewActivationReason: AdaptivePreviewActivationReason;
+  adaptivePreviewFrames: number;
+  adaptivePreviewTimeMs: number;
+  adaptivePreviewMaxEstimatedInFlightSubmissions: number;
+  adaptivePreviewMaxQueueProbeLatencyMs: number;
+  adaptivePreviewDeferredBaseStamps: number;
+  adaptivePreviewDeferredBatches: number;
+  adaptivePreviewResolvedBaseStamps: number;
+  adaptivePreviewResolvedBatches: number;
+  adaptivePreviewResolveCount: number;
+  adaptivePreviewResolveEnqueueMs: number;
+  adaptivePreviewResolveQueueMs: number;
+  adaptivePreviewFinalPresentationQueueMs: number;
+  adaptivePreviewFallbacks: number;
+  adaptivePreviewFallbackReason: AdaptivePreviewFallbackReason;
+  adaptivePreviewCacheFullRebuilds: number;
+  adaptivePreviewCachePartialUpdates: number;
+  adaptivePreviewFinalPresentations: number;
   historyStorageStrategy: HistoryStorageStrategy;
   historyReplayStrategy: HistoryReplayStrategy;
   historyStampRetentionStrategy: HistoryStampRetentionStrategy;
@@ -227,6 +258,22 @@ interface HistoryRenderBatch {
   shapeMaskIdentity: number;
 }
 
+interface AdaptivePreviewSession {
+  id: number;
+  blendMode: BlendMode;
+  activationStartedAt: number;
+  activationReason: Exclude<AdaptivePreviewActivationReason, "none" | "mixed">;
+  hasPreviewContent: boolean;
+  deferredBatches: HistoryRenderBatch[];
+}
+
+interface AdaptiveQueueProbe {
+  generation: number;
+  submissionSerial: number;
+  startedAt: number;
+  eligibleForTrigger: boolean;
+}
+
 interface SubmitTiming {
   totalCpuMs: number;
   stampPackingMs: number;
@@ -243,6 +290,9 @@ interface SubmitTiming {
   presentationCacheUpdatedPixels: number;
   legacyDisplayShaderPixels: number;
   presentationCopiedPixels: number;
+  adaptivePreviewFrame: boolean;
+  adaptivePreviewCacheFullRebuilds: number;
+  adaptivePreviewCachePartialUpdates: number;
 }
 
 interface RenderFrameTiming {
@@ -280,6 +330,25 @@ interface MutableStrokePerformanceProfile {
   presentationCacheUpdatedPixels: number;
   legacyDisplayShaderPixels: number;
   presentationCopiedPixels: number;
+  adaptivePreviewActivations: number;
+  adaptivePreviewActivationReason: AdaptivePreviewActivationReason;
+  adaptivePreviewFrames: number;
+  adaptivePreviewTimeMs: number;
+  adaptivePreviewMaxEstimatedInFlightSubmissions: number;
+  adaptivePreviewMaxQueueProbeLatencyMs: number;
+  adaptivePreviewDeferredBaseStamps: number;
+  adaptivePreviewDeferredBatches: number;
+  adaptivePreviewResolvedBaseStamps: number;
+  adaptivePreviewResolvedBatches: number;
+  adaptivePreviewResolveCount: number;
+  adaptivePreviewResolveEnqueueMs: number;
+  adaptivePreviewResolveQueueMs: number;
+  adaptivePreviewFinalPresentationQueueMs: number;
+  adaptivePreviewFallbacks: number;
+  adaptivePreviewFallbackReason: AdaptivePreviewFallbackReason;
+  adaptivePreviewCacheFullRebuilds: number;
+  adaptivePreviewCachePartialUpdates: number;
+  adaptivePreviewFinalPresentations: number;
   stampGenerationMs: number;
   stampPackingMs: number;
   instanceUploadMs: number;
@@ -311,6 +380,16 @@ const COLOR_SEED_STRATEGY = "reuse-position-copy-seed" as const;
 const DIRTY_RECT_STRATEGY = "directional-jitter-bounds" as const;
 const PRESENTATION_CACHE_STRATEGY = "persistent-full-resolution-screen-cache" as const;
 const PRESENTATION_TRANSFER_STRATEGY = "copy-texture-to-current-texture" as const;
+const ADAPTIVE_PREVIEW_STRATEGY = "gpu-lag-triggered-half-resolution-overlay" as const;
+const ADAPTIVE_PREVIEW_TRIGGER_STRATEGY = "sampled-queue-prefix-latency" as const;
+const ADAPTIVE_PREVIEW_SCALE = 0.5;
+const ADAPTIVE_PREVIEW_SIZE = Math.round(LAYER_SIZE * ADAPTIVE_PREVIEW_SCALE);
+const ADAPTIVE_PREVIEW_TRIGGER_THRESHOLD_MS = 42;
+const ADAPTIVE_PREVIEW_URGENT_THRESHOLD_MS = 70;
+const ADAPTIVE_PREVIEW_TRIGGER_CONSECUTIVE_PROBES = 2;
+const ADAPTIVE_PREVIEW_PROBE_INTERVAL_SUBMISSIONS = 4;
+const FORCE_ADAPTIVE_PREVIEW_FOR_DIAGNOSTICS = import.meta.env.DEV
+  && new URLSearchParams(window.location.search).get("adaptivePreview") === "force";
 const HISTORY_STORAGE_STRATEGY = "cpu-render-batch-journal" as const;
 const HISTORY_REPLAY_STRATEGY = "clear-and-stable-gpu-replay" as const;
 const HISTORY_STAMP_RETENTION_STRATEGY = "shared-immutable-references" as const;
@@ -458,6 +537,9 @@ export class BrushEngine {
   private presentationCacheWidth = 0;
   private presentationCacheHeight = 0;
   private presentationCacheNeedsFullRebuild = true;
+  private adaptivePreviewTexture!: GPUTexture;
+  private adaptivePreviewView!: GPUTextureView;
+  private adaptivePreviewOverlayKnownClear = false;
 
   private brushUniformBuffer!: GPUBuffer;
   private displayUniformBuffer!: GPUBuffer;
@@ -476,12 +558,15 @@ export class BrushEngine {
   private brushBindGroupLayout!: GPUBindGroupLayout;
   private brushOccupancyBindGroupLayout!: GPUBindGroupLayout;
   private displayBindGroupLayout!: GPUBindGroupLayout;
+  private adaptivePreviewDisplayBindGroupLayout!: GPUBindGroupLayout;
   private brushBindGroup!: GPUBindGroup;
   private brushOccupancyBindGroups: GPUBindGroup[] = [];
   private displayBindGroup!: GPUBindGroup;
+  private adaptivePreviewDisplayBindGroup!: GPUBindGroup;
 
   private brushShaderModule!: GPUShaderModule;
   private displayShaderModule!: GPUShaderModule;
+  private adaptivePreviewDisplayShaderModule!: GPUShaderModule;
   private normalPipeline!: GPURenderPipeline;
   private additivePipeline!: GPURenderPipeline;
   private shapeNormalPipeline!: GPURenderPipeline;
@@ -489,6 +574,8 @@ export class BrushEngine {
   private shapeOccupancyNormalPipeline!: GPURenderPipeline;
   private shapeOccupancyAdditivePipeline!: GPURenderPipeline;
   private displayPipeline!: GPURenderPipeline;
+  private adaptivePreviewNormalDisplayPipeline!: GPURenderPipeline;
+  private adaptivePreviewAdditiveDisplayPipeline!: GPURenderPipeline;
 
   private readonly instanceUpload = new ArrayBuffer(MAX_STAMPS_PER_BATCH * STAMP_STRIDE_BYTES);
   private readonly instanceUploadF32 = new Float32Array(this.instanceUpload);
@@ -509,6 +596,18 @@ export class BrushEngine {
   private historyCompactionPending = false;
   private historyBusy = false;
   private layerHasContent = false;
+
+  private adaptivePreviewSession: AdaptivePreviewSession | null = null;
+  private adaptivePreviewResolvePromise: Promise<void> | null = null;
+  private adaptivePreviewActivationRequested = false;
+  private adaptivePreviewRequestedReason: Exclude<AdaptivePreviewActivationReason, "none" | "mixed"> = "queue-lag";
+  private adaptivePreviewNextSessionId = 1;
+  private adaptiveQueueProbe: AdaptiveQueueProbe | null = null;
+  private adaptiveQueueProbeGeneration = 1;
+  private adaptiveTrackedSubmissionSerial = 0;
+  private adaptiveCompletedSubmissionSerial = 0;
+  private adaptiveSubmissionsSinceProbe = 0;
+  private adaptiveConsecutiveSlowProbes = 0;
 
   private frameRequest: number | null = null;
   private clearRequested = true;
@@ -564,6 +663,16 @@ export class BrushEngine {
     this.device = await adapter.requestDevice();
     this.device.lost.then((info) => {
       const reason = info.message || info.reason;
+      this.initialized = false;
+      if (this.frameRequest !== null) {
+        cancelAnimationFrame(this.frameRequest);
+        this.frameRequest = null;
+      }
+      this.adaptiveQueueProbeGeneration += 1;
+      this.adaptiveQueueProbe = null;
+      this.adaptivePreviewSession = null;
+      this.adaptivePreviewResolvePromise = null;
+      this.adaptivePreviewActivationRequested = false;
       this.callbacks.onStatus?.(`Device WebGPU perso: ${reason}`, "error");
     });
 
@@ -602,6 +711,13 @@ export class BrushEngine {
   }
 
   setBrushSettings(next: Partial<BrushSettings>): void {
+    const blendModeWillChange = next.blendMode !== undefined
+      && next.blendMode !== this.settings.blendMode;
+    if (blendModeWillChange && this.adaptivePreviewSession) {
+      this.recordAdaptivePreviewFallback("blend-mode-change");
+      this.startAdaptivePreviewResolve();
+    }
+
     this.settings = {
       ...this.settings,
       ...next,
@@ -742,6 +858,13 @@ export class BrushEngine {
     if (this.historyBusy) {
       return;
     }
+    if (!this.adaptivePreviewSession && !this.adaptivePreviewResolvePromise) {
+      this.adaptiveConsecutiveSlowProbes = 0;
+      if (FORCE_ADAPTIVE_PREVIEW_FOR_DIAGNOSTICS) {
+        this.adaptivePreviewActivationRequested = true;
+        this.adaptivePreviewRequestedReason = "diagnostic-force";
+      }
+    }
     const historyActionId = this.nextHistoryActionId++;
     this.activeStroke = {
       lastInput: point,
@@ -776,6 +899,16 @@ export class BrushEngine {
   endStroke(): void {
     const historyChanged = this.activeStroke?.historyCommitted ?? false;
     this.activeStroke = null;
+    if (this.adaptivePreviewSession) {
+      if (this.pendingStamps.length === 0) {
+        this.startAdaptivePreviewResolve();
+      } else {
+        this.requestRender();
+      }
+    } else if (this.pendingStamps.length === 0) {
+      this.adaptivePreviewActivationRequested = false;
+      this.adaptivePreviewRequestedReason = "queue-lag";
+    }
     if (historyChanged) {
       this.publishHistoryState();
     }
@@ -817,6 +950,9 @@ export class BrushEngine {
     }
 
     this.activeStroke = null;
+    this.adaptivePreviewActivationRequested = false;
+    this.adaptivePreviewRequestedReason = "queue-lag";
+    this.adaptiveConsecutiveSlowProbes = 0;
     if (stroke.historyCommitted) {
       this.publishHistoryState();
     }
@@ -868,7 +1004,7 @@ export class BrushEngine {
   }
 
   resetDocument(): boolean {
-    if (this.historyBusy) {
+    if (this.historyBusy || this.adaptivePreviewSession || this.adaptivePreviewResolvePromise) {
       return false;
     }
     if (this.frameRequest !== null) {
@@ -881,6 +1017,7 @@ export class BrushEngine {
     this.clearRequested = true;
     this.displayDirty = true;
     this.presentationCacheNeedsFullRebuild = true;
+    this.resetAdaptiveQueueDetector();
     this.layerHasContent = false;
     this.requestRender();
     this.publishHistoryState();
@@ -902,6 +1039,8 @@ export class BrushEngine {
     if (this.historyBusy || this.activeStroke) {
       throw new Error("Concludi prima il tratto o l'operazione Undo/Redo.");
     }
+
+    await this.waitForIdle();
 
     const count = clamp(Math.round(baseStampCount), 1, Math.min(12_000, MAX_STAMPS_PER_BATCH));
     this.pendingStamps.length = 0;
@@ -1018,11 +1157,17 @@ export class BrushEngine {
       throw new Error("Il motore non è ancora inizializzato.");
     }
 
+    if (this.adaptivePreviewSession && !this.activeStroke && this.pendingStamps.length === 0) {
+      this.startAdaptivePreviewResolve();
+    }
+
     while (
       this.frameRequest !== null ||
       this.pendingStamps.length > 0 ||
       this.clearRequested ||
-      this.displayDirty
+      this.displayDirty ||
+      this.adaptivePreviewSession !== null ||
+      this.adaptivePreviewResolvePromise !== null
     ) {
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     }
@@ -1035,6 +1180,7 @@ export class BrushEngine {
   }
 
   startStrokePerformanceProfile(): void {
+    this.resetAdaptiveQueueDetector();
     this.activeStrokeProfile = {
       stampGeometry: STAMP_GEOMETRY,
       stampVerticesPerCopy: STAMP_VERTICES_PER_COPY,
@@ -1065,6 +1211,25 @@ export class BrushEngine {
       presentationCacheUpdatedPixels: 0,
       legacyDisplayShaderPixels: 0,
       presentationCopiedPixels: 0,
+      adaptivePreviewActivations: 0,
+      adaptivePreviewActivationReason: "none",
+      adaptivePreviewFrames: 0,
+      adaptivePreviewTimeMs: 0,
+      adaptivePreviewMaxEstimatedInFlightSubmissions: 0,
+      adaptivePreviewMaxQueueProbeLatencyMs: 0,
+      adaptivePreviewDeferredBaseStamps: 0,
+      adaptivePreviewDeferredBatches: 0,
+      adaptivePreviewResolvedBaseStamps: 0,
+      adaptivePreviewResolvedBatches: 0,
+      adaptivePreviewResolveCount: 0,
+      adaptivePreviewResolveEnqueueMs: 0,
+      adaptivePreviewResolveQueueMs: 0,
+      adaptivePreviewFinalPresentationQueueMs: 0,
+      adaptivePreviewFallbacks: 0,
+      adaptivePreviewFallbackReason: "none",
+      adaptivePreviewCacheFullRebuilds: 0,
+      adaptivePreviewCachePartialUpdates: 0,
+      adaptivePreviewFinalPresentations: 0,
       stampGenerationMs: 0,
       stampPackingMs: 0,
       instanceUploadMs: 0,
@@ -1118,6 +1283,34 @@ export class BrushEngine {
       presentationCacheUpdatedPixels: profile.presentationCacheUpdatedPixels,
       legacyDisplayShaderPixels: profile.legacyDisplayShaderPixels,
       presentationCopiedPixels: profile.presentationCopiedPixels,
+      adaptivePreviewStrategy: ADAPTIVE_PREVIEW_STRATEGY,
+      adaptivePreviewTriggerStrategy: ADAPTIVE_PREVIEW_TRIGGER_STRATEGY,
+      adaptivePreviewScale: ADAPTIVE_PREVIEW_SCALE,
+      adaptivePreviewOverlayMemoryMiB: this.layerFormat === "rgba16float" ? 32 : 16,
+      adaptivePreviewTriggerThresholdMs: ADAPTIVE_PREVIEW_TRIGGER_THRESHOLD_MS,
+      adaptivePreviewUrgentThresholdMs: ADAPTIVE_PREVIEW_URGENT_THRESHOLD_MS,
+      adaptivePreviewTriggerConsecutiveProbes: ADAPTIVE_PREVIEW_TRIGGER_CONSECUTIVE_PROBES,
+      adaptivePreviewProbeIntervalSubmissions: ADAPTIVE_PREVIEW_PROBE_INTERVAL_SUBMISSIONS,
+      adaptivePreviewActivations: profile.adaptivePreviewActivations,
+      adaptivePreviewActivationReason: profile.adaptivePreviewActivationReason,
+      adaptivePreviewFrames: profile.adaptivePreviewFrames,
+      adaptivePreviewTimeMs: profile.adaptivePreviewTimeMs,
+      adaptivePreviewMaxEstimatedInFlightSubmissions:
+        profile.adaptivePreviewMaxEstimatedInFlightSubmissions,
+      adaptivePreviewMaxQueueProbeLatencyMs: profile.adaptivePreviewMaxQueueProbeLatencyMs,
+      adaptivePreviewDeferredBaseStamps: profile.adaptivePreviewDeferredBaseStamps,
+      adaptivePreviewDeferredBatches: profile.adaptivePreviewDeferredBatches,
+      adaptivePreviewResolvedBaseStamps: profile.adaptivePreviewResolvedBaseStamps,
+      adaptivePreviewResolvedBatches: profile.adaptivePreviewResolvedBatches,
+      adaptivePreviewResolveCount: profile.adaptivePreviewResolveCount,
+      adaptivePreviewResolveEnqueueMs: profile.adaptivePreviewResolveEnqueueMs,
+      adaptivePreviewResolveQueueMs: profile.adaptivePreviewResolveQueueMs,
+      adaptivePreviewFinalPresentationQueueMs: profile.adaptivePreviewFinalPresentationQueueMs,
+      adaptivePreviewFallbacks: profile.adaptivePreviewFallbacks,
+      adaptivePreviewFallbackReason: profile.adaptivePreviewFallbackReason,
+      adaptivePreviewCacheFullRebuilds: profile.adaptivePreviewCacheFullRebuilds,
+      adaptivePreviewCachePartialUpdates: profile.adaptivePreviewCachePartialUpdates,
+      adaptivePreviewFinalPresentations: profile.adaptivePreviewFinalPresentations,
       historyStorageStrategy: HISTORY_STORAGE_STRATEGY,
       historyReplayStrategy: HISTORY_REPLAY_STRATEGY,
       historyStampRetentionStrategy: HISTORY_STAMP_RETENTION_STRATEGY,
@@ -1195,6 +1388,14 @@ export class BrushEngine {
     dirtyRectStrategy: typeof DIRTY_RECT_STRATEGY;
     presentationCacheStrategy: typeof PRESENTATION_CACHE_STRATEGY;
     presentationTransferStrategy: typeof PRESENTATION_TRANSFER_STRATEGY;
+    adaptivePreviewStrategy: typeof ADAPTIVE_PREVIEW_STRATEGY;
+    adaptivePreviewTriggerStrategy: typeof ADAPTIVE_PREVIEW_TRIGGER_STRATEGY;
+    adaptivePreviewScale: number;
+    adaptivePreviewOverlayMemoryMiB: number;
+    adaptivePreviewTriggerThresholdMs: number;
+    adaptivePreviewUrgentThresholdMs: number;
+    adaptivePreviewTriggerConsecutiveProbes: number;
+    adaptivePreviewProbeIntervalSubmissions: number;
     historyStorageStrategy: typeof HISTORY_STORAGE_STRATEGY;
     historyReplayStrategy: typeof HISTORY_REPLAY_STRATEGY;
     historyStampRetentionStrategy: typeof HISTORY_STAMP_RETENTION_STRATEGY;
@@ -1242,6 +1443,14 @@ export class BrushEngine {
       dirtyRectStrategy: DIRTY_RECT_STRATEGY,
       presentationCacheStrategy: PRESENTATION_CACHE_STRATEGY,
       presentationTransferStrategy: PRESENTATION_TRANSFER_STRATEGY,
+      adaptivePreviewStrategy: ADAPTIVE_PREVIEW_STRATEGY,
+      adaptivePreviewTriggerStrategy: ADAPTIVE_PREVIEW_TRIGGER_STRATEGY,
+      adaptivePreviewScale: ADAPTIVE_PREVIEW_SCALE,
+      adaptivePreviewOverlayMemoryMiB: this.layerFormat === "rgba16float" ? 32 : 16,
+      adaptivePreviewTriggerThresholdMs: ADAPTIVE_PREVIEW_TRIGGER_THRESHOLD_MS,
+      adaptivePreviewUrgentThresholdMs: ADAPTIVE_PREVIEW_URGENT_THRESHOLD_MS,
+      adaptivePreviewTriggerConsecutiveProbes: ADAPTIVE_PREVIEW_TRIGGER_CONSECUTIVE_PROBES,
+      adaptivePreviewProbeIntervalSubmissions: ADAPTIVE_PREVIEW_PROBE_INTERVAL_SUBMISSIONS,
       historyStorageStrategy: HISTORY_STORAGE_STRATEGY,
       historyReplayStrategy: HISTORY_REPLAY_STRATEGY,
       historyStampRetentionStrategy: HISTORY_STAMP_RETENTION_STRATEGY,
@@ -1370,6 +1579,31 @@ export class BrushEngine {
         },
       ],
     });
+    this.adaptivePreviewDisplayBindGroupLayout = this.device.createBindGroupLayout({
+      label: "Adaptive preview display bind group layout",
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float", viewDimension: "2d" },
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.FRAGMENT,
+          sampler: { type: "filtering" },
+        },
+        {
+          binding: 3,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float", viewDimension: "2d" },
+        },
+      ],
+    });
 
     this.brushBindGroup = this.device.createBindGroup({
       label: "Brush legacy bind group",
@@ -1397,9 +1631,14 @@ export class BrushEngine {
 
     this.brushShaderModule = this.device.createShaderModule({ label: "Brush WGSL", code: brushShader });
     this.displayShaderModule = this.device.createShaderModule({ label: "Display WGSL", code: displayShader });
+    this.adaptivePreviewDisplayShaderModule = this.device.createShaderModule({
+      label: "Adaptive preview display WGSL",
+      code: adaptivePreviewDisplayShader,
+    });
     await Promise.all([
       this.assertShaderCompiled(this.brushShaderModule, "brush"),
       this.assertShaderCompiled(this.displayShaderModule, "display"),
+      this.assertShaderCompiled(this.adaptivePreviewDisplayShaderModule, "adaptive preview display"),
     ]);
 
     const displayPipelineLayout = this.device.createPipelineLayout({
@@ -1417,6 +1656,39 @@ export class BrushEngine {
       fragment: {
         module: this.displayShaderModule,
         entryPoint: "fragmentMain",
+        targets: [{ format: this.canvasFormat }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+
+    const adaptivePreviewDisplayPipelineLayout = this.device.createPipelineLayout({
+      label: "Adaptive preview display pipeline layout",
+      bindGroupLayouts: [this.adaptivePreviewDisplayBindGroupLayout],
+    });
+    this.adaptivePreviewNormalDisplayPipeline = this.device.createRenderPipeline({
+      label: "Adaptive preview display normal",
+      layout: adaptivePreviewDisplayPipelineLayout,
+      vertex: {
+        module: this.adaptivePreviewDisplayShaderModule,
+        entryPoint: "vertexMain",
+      },
+      fragment: {
+        module: this.adaptivePreviewDisplayShaderModule,
+        entryPoint: "fragmentNormal",
+        targets: [{ format: this.canvasFormat }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+    this.adaptivePreviewAdditiveDisplayPipeline = this.device.createRenderPipeline({
+      label: "Adaptive preview display additive",
+      layout: adaptivePreviewDisplayPipelineLayout,
+      vertex: {
+        module: this.adaptivePreviewDisplayShaderModule,
+        entryPoint: "vertexMain",
+      },
+      fragment: {
+        module: this.adaptivePreviewDisplayShaderModule,
+        entryPoint: "fragmentAdditive",
         targets: [{ format: this.canvasFormat }],
       },
       primitive: { topology: "triangle-list" },
@@ -1556,6 +1828,7 @@ export class BrushEngine {
 
   private async recreateLayerResources(format: LayerFormat): Promise<void> {
     const oldTexture = this.layerTexture;
+    const oldAdaptivePreviewTexture = this.adaptivePreviewTexture;
 
     const texture = this.device.createTexture({
       label: `4096² paint layer ${format}`,
@@ -1568,6 +1841,19 @@ export class BrushEngine {
         GPUTextureUsage.COPY_DST,
     });
     const view = texture.createView();
+    const adaptivePreviewTexture = this.device.createTexture({
+      label: `Adaptive half-resolution preview ${ADAPTIVE_PREVIEW_SIZE}² ${format}`,
+      size: {
+        width: ADAPTIVE_PREVIEW_SIZE,
+        height: ADAPTIVE_PREVIEW_SIZE,
+        depthOrArrayLayers: 1,
+      },
+      format,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    const adaptivePreviewView = adaptivePreviewTexture.createView({
+      label: "Adaptive half-resolution preview view",
+    });
 
     const brushPipelineLayout = this.device.createPipelineLayout({
       label: `Brush legacy pipeline layout ${format}`,
@@ -1768,6 +2054,7 @@ export class BrushEngine {
     const validationError = await this.device.popErrorScope();
     if (validationError) {
       texture.destroy();
+      adaptivePreviewTexture.destroy();
       throw new Error(validationError.message);
     }
 
@@ -1780,6 +2067,34 @@ export class BrushEngine {
         { binding: 2, resource: this.sampler },
       ],
     });
+    const adaptivePreviewDisplayBindGroup = this.device.createBindGroup({
+      label: `Adaptive preview display bind group ${format}`,
+      layout: this.adaptivePreviewDisplayBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.displayUniformBuffer } },
+        { binding: 1, resource: view },
+        { binding: 2, resource: this.sampler },
+        { binding: 3, resource: adaptivePreviewView },
+      ],
+    });
+
+    // Pre-clear the lazily displayed overlay while no stroke profile is
+    // active. Future sessions clear it again only as part of their final
+    // exact resolve, never on the latency-sensitive activation frame.
+    const previewClearEncoder = this.device.createCommandEncoder({
+      label: "Initialize adaptive preview overlay",
+    });
+    const previewClearPass = previewClearEncoder.beginRenderPass({
+      label: "Clear adaptive preview overlay outside profile",
+      colorAttachments: [{
+        view: adaptivePreviewView,
+        loadOp: "clear",
+        storeOp: "store",
+        clearValue: { r: 0, g: 0, b: 0, a: 0 },
+      }],
+    });
+    previewClearPass.end();
+    this.device.queue.submit([previewClearEncoder.finish()]);
 
     this.layerTexture = texture;
     this.layerView = view;
@@ -1790,10 +2105,15 @@ export class BrushEngine {
     this.shapeOccupancyNormalPipeline = shapeOccupancyNormalPipeline;
     this.shapeOccupancyAdditivePipeline = shapeOccupancyAdditivePipeline;
     this.displayBindGroup = displayBindGroup;
+    this.adaptivePreviewTexture = adaptivePreviewTexture;
+    this.adaptivePreviewView = adaptivePreviewView;
+    this.adaptivePreviewDisplayBindGroup = adaptivePreviewDisplayBindGroup;
+    this.adaptivePreviewOverlayKnownClear = true;
     this.layerFormat = format;
     this.presentationCacheNeedsFullRebuild = true;
 
     oldTexture?.destroy();
+    oldAdaptivePreviewTexture?.destroy();
   }
 
   private writeBrushUniforms(settings: BrushSettings = this.settings): void {
@@ -2038,6 +2358,16 @@ export class BrushEngine {
     if (!this.initialized) {
       return;
     }
+    if (this.adaptivePreviewResolvePromise) {
+      return;
+    }
+    if (this.adaptivePreviewSession && this.clearRequested) {
+      this.recordAdaptivePreviewFallback("clear-requested");
+      this.startAdaptivePreviewResolve();
+      return;
+    }
+
+    this.observeAdaptiveQueueProbeAge();
 
     const resizeStart = performance.now();
     this.resizeCanvas();
@@ -2056,14 +2386,32 @@ export class BrushEngine {
     const clearLayer = this.clearRequested;
     const renderSettings = this.settings;
     const start = performance.now();
-    const timing = this.submitImmediate(batch, clearLayer, renderSettings);
+    const useAdaptivePreview = !clearLayer && (
+      this.adaptivePreviewSession !== null
+      || (batch.length > 0 && this.adaptivePreviewActivationRequested)
+    );
+    if (useAdaptivePreview && batch.length > 0 && !this.adaptivePreviewSession) {
+      this.beginAdaptivePreviewSession(renderSettings.blendMode);
+    }
+    const timing = useAdaptivePreview
+      ? this.submitAdaptivePreviewImmediate(batch, renderSettings)
+      : this.submitImmediate(batch, clearLayer, renderSettings, true, null, true);
     this.lastCpuFrameMs = performance.now() - start;
 
+    let historyBatch: HistoryRenderBatch | null = null;
     if (batch.length > 0) {
-      this.recordHistoryBatch(batch, renderSettings, timing, clearLayer);
+      historyBatch = this.recordHistoryBatch(batch, renderSettings, timing, clearLayer);
       this.layerHasContent = true;
     } else if (clearLayer) {
       this.layerHasContent = false;
+    }
+    if (useAdaptivePreview && historyBatch && this.adaptivePreviewSession) {
+      this.adaptivePreviewSession.deferredBatches.push(historyBatch);
+      const profile = this.activeStrokeProfile;
+      if (profile) {
+        profile.adaptivePreviewDeferredBaseStamps += batch.length;
+        profile.adaptivePreviewDeferredBatches += 1;
+      }
     }
 
     this.clearRequested = false;
@@ -2086,6 +2434,10 @@ export class BrushEngine {
       batchExtractionMs,
       statsPublishMs,
     });
+
+    if (this.adaptivePreviewSession && !this.activeStroke && this.pendingStamps.length === 0) {
+      this.startAdaptivePreviewResolve();
+    }
   }
 
   private recordHistoryBatch(
@@ -2093,12 +2445,12 @@ export class BrushEngine {
     settings: BrushSettings,
     timing: SubmitTiming,
     clearLayer: boolean,
-  ): void {
+  ): HistoryRenderBatch | null {
     // pendingStamps riceve soltanto stamp interattivi e quindi ogni batch live
     // è interamente storico. Il benchmark sintetico usa submitImmediate()
     // direttamente e non passa da qui: evitiamo così una copia per frame.
     if (batch.length === 0 || batch[0].historyActionId === 0) {
-      return;
+      return null;
     }
 
     if (
@@ -2108,20 +2460,22 @@ export class BrushEngine {
       this.activeStroke.submitted = true;
     }
 
-    this.historyBatches.push({
+    const historyBatch: HistoryRenderBatch = {
       settings,
       stamps: batch,
       clearLayer,
       dirtyRect: timing.dirtyRect,
       shapeOccupancySelection: timing.shapeOccupancySelection,
       shapeMaskIdentity: this.shapeMaskIdentity,
-    });
+    };
+    this.historyBatches.push(historyBatch);
     this.historyStoredBaseStamps += batch.length;
 
     if (this.activeStrokeProfile) {
       this.activeStrokeProfile.historyCapturedBaseStamps += batch.length;
       this.activeStrokeProfile.historyCapturedBatches += 1;
     }
+    return historyBatch;
   }
 
   private truncateRedoHistory(): void {
@@ -2417,12 +2771,353 @@ export class BrushEngine {
     }
   }
 
+  private beginAdaptivePreviewSession(blendMode: BlendMode): void {
+    if (this.adaptivePreviewSession || this.adaptivePreviewResolvePromise) {
+      return;
+    }
+
+    const activationReason = this.adaptivePreviewRequestedReason;
+    this.adaptivePreviewSession = {
+      id: this.adaptivePreviewNextSessionId++,
+      blendMode,
+      activationStartedAt: performance.now(),
+      activationReason,
+      hasPreviewContent: false,
+      deferredBatches: [],
+    };
+    this.adaptivePreviewActivationRequested = false;
+    this.adaptiveQueueProbeGeneration += 1;
+    this.adaptiveQueueProbe = null;
+    this.adaptiveSubmissionsSinceProbe = 0;
+    this.adaptiveConsecutiveSlowProbes = 0;
+
+    const profile = this.activeStrokeProfile;
+    if (profile) {
+      profile.adaptivePreviewActivations += 1;
+      profile.adaptivePreviewActivationReason = profile.adaptivePreviewActivationReason === "none"
+        ? activationReason
+        : profile.adaptivePreviewActivationReason === activationReason
+          ? activationReason
+          : "mixed";
+    }
+  }
+
+  private recordAdaptivePreviewFallback(
+    reason: Exclude<AdaptivePreviewFallbackReason, "none" | "mixed">,
+  ): void {
+    const profile = this.activeStrokeProfile;
+    if (!profile) {
+      return;
+    }
+    profile.adaptivePreviewFallbacks += 1;
+    profile.adaptivePreviewFallbackReason = profile.adaptivePreviewFallbackReason === "none"
+      ? reason
+      : profile.adaptivePreviewFallbackReason === reason
+        ? reason
+        : "mixed";
+  }
+
+  private requestAdaptivePreviewActivation(
+    reason: Exclude<AdaptivePreviewActivationReason, "none" | "mixed">,
+  ): void {
+    if (
+      !this.activeStroke
+      || this.adaptivePreviewSession
+      || this.adaptivePreviewResolvePromise
+    ) {
+      return;
+    }
+    if (this.adaptivePreviewActivationRequested && this.adaptivePreviewRequestedReason !== reason) {
+      this.adaptivePreviewRequestedReason = "queue-lag";
+    } else {
+      this.adaptivePreviewRequestedReason = reason;
+    }
+    this.adaptivePreviewActivationRequested = true;
+  }
+
+  private trackAdaptiveQueueSubmission(eligibleForTrigger: boolean): void {
+    this.adaptiveTrackedSubmissionSerial += 1;
+    const estimatedInFlight = Math.max(
+      0,
+      this.adaptiveTrackedSubmissionSerial - this.adaptiveCompletedSubmissionSerial,
+    );
+    if (this.activeStrokeProfile) {
+      this.activeStrokeProfile.adaptivePreviewMaxEstimatedInFlightSubmissions = Math.max(
+        this.activeStrokeProfile.adaptivePreviewMaxEstimatedInFlightSubmissions,
+        estimatedInFlight,
+      );
+    }
+
+    if (!this.activeStroke || this.adaptivePreviewResolvePromise) {
+      return;
+    }
+
+    this.adaptiveSubmissionsSinceProbe += 1;
+    if (
+      this.adaptiveQueueProbe
+      || this.adaptiveSubmissionsSinceProbe < ADAPTIVE_PREVIEW_PROBE_INTERVAL_SUBMISSIONS
+    ) {
+      return;
+    }
+
+    this.adaptiveSubmissionsSinceProbe = 0;
+    const probe: AdaptiveQueueProbe = {
+      generation: this.adaptiveQueueProbeGeneration,
+      submissionSerial: this.adaptiveTrackedSubmissionSerial,
+      startedAt: performance.now(),
+      eligibleForTrigger,
+    };
+    this.adaptiveQueueProbe = probe;
+    void this.device.queue.onSubmittedWorkDone().then(() => {
+      if (
+        probe.generation !== this.adaptiveQueueProbeGeneration
+        || this.adaptiveQueueProbe !== probe
+      ) {
+        return;
+      }
+
+      const latencyMs = Math.max(0, performance.now() - probe.startedAt);
+      this.adaptiveCompletedSubmissionSerial = Math.max(
+        this.adaptiveCompletedSubmissionSerial,
+        probe.submissionSerial,
+      );
+      this.adaptiveQueueProbe = null;
+      if (this.activeStrokeProfile) {
+        this.activeStrokeProfile.adaptivePreviewMaxQueueProbeLatencyMs = Math.max(
+          this.activeStrokeProfile.adaptivePreviewMaxQueueProbeLatencyMs,
+          latencyMs,
+        );
+      }
+
+      if (
+        !probe.eligibleForTrigger
+        || this.adaptivePreviewSession
+        || this.adaptivePreviewResolvePromise
+      ) {
+        return;
+      }
+      if (latencyMs >= ADAPTIVE_PREVIEW_TRIGGER_THRESHOLD_MS) {
+        this.adaptiveConsecutiveSlowProbes += 1;
+      } else {
+        this.adaptiveConsecutiveSlowProbes = 0;
+      }
+      if (this.adaptiveConsecutiveSlowProbes >= ADAPTIVE_PREVIEW_TRIGGER_CONSECUTIVE_PROBES) {
+        this.requestAdaptivePreviewActivation("queue-lag");
+      }
+    }).catch(() => {
+      if (probe.generation === this.adaptiveQueueProbeGeneration && this.adaptiveQueueProbe === probe) {
+        this.adaptiveQueueProbe = null;
+      }
+    });
+  }
+
+  private observeAdaptiveQueueProbeAge(): void {
+    const probe = this.adaptiveQueueProbe;
+    if (!probe || probe.generation !== this.adaptiveQueueProbeGeneration) {
+      return;
+    }
+    const ageMs = Math.max(0, performance.now() - probe.startedAt);
+    if (this.activeStrokeProfile) {
+      this.activeStrokeProfile.adaptivePreviewMaxQueueProbeLatencyMs = Math.max(
+        this.activeStrokeProfile.adaptivePreviewMaxQueueProbeLatencyMs,
+        ageMs,
+      );
+    }
+    if (ageMs >= ADAPTIVE_PREVIEW_URGENT_THRESHOLD_MS) {
+      this.requestAdaptivePreviewActivation("queue-lag");
+    }
+  }
+
+  private resetAdaptiveQueueDetector(): void {
+    this.adaptiveQueueProbeGeneration += 1;
+    this.adaptiveQueueProbe = null;
+    this.adaptiveTrackedSubmissionSerial = 0;
+    this.adaptiveCompletedSubmissionSerial = 0;
+    this.adaptiveSubmissionsSinceProbe = 0;
+    this.adaptiveConsecutiveSlowProbes = 0;
+    this.adaptivePreviewActivationRequested = false;
+    this.adaptivePreviewRequestedReason = "queue-lag";
+  }
+
+  private startAdaptivePreviewResolve(): void {
+    const session = this.adaptivePreviewSession;
+    if (!session || this.adaptivePreviewResolvePromise) {
+      return;
+    }
+    if (session.deferredBatches.length === 0) {
+      this.adaptivePreviewSession = null;
+      this.adaptivePreviewActivationRequested = false;
+      return;
+    }
+
+    this.adaptiveQueueProbeGeneration += 1;
+    this.adaptiveQueueProbe = null;
+    const resolveStart = performance.now();
+    let enqueueFinishedAt = resolveStart;
+
+    try {
+      for (const batch of session.deferredBatches) {
+        this.writeBrushUniforms(batch.settings);
+        this.submitImmediate(
+          batch.stamps,
+          batch.clearLayer,
+          batch.settings,
+          false,
+          batch,
+          false,
+        );
+        const profile = this.activeStrokeProfile;
+        if (profile) {
+          profile.adaptivePreviewResolvedBaseStamps += batch.stamps.length;
+          profile.adaptivePreviewResolvedBatches += 1;
+        }
+      }
+      this.writeBrushUniforms(this.settings);
+      enqueueFinishedAt = performance.now();
+      if (this.activeStrokeProfile) {
+        this.activeStrokeProfile.adaptivePreviewResolveCount += 1;
+        this.activeStrokeProfile.adaptivePreviewResolveEnqueueMs += enqueueFinishedAt - resolveStart;
+      }
+    } catch (error) {
+      this.writeBrushUniforms(this.settings);
+      this.presentationCacheNeedsFullRebuild = true;
+      this.displayDirty = true;
+      this.adaptivePreviewOverlayKnownClear = false;
+      const message = error instanceof Error ? error.message : String(error);
+      this.callbacks.onStatus?.(`Resolve adaptive preview non riuscito: ${message}`, "error");
+      this.adaptivePreviewSession = null;
+      this.resetAdaptiveQueueDetector();
+      this.requestRender();
+      return;
+    }
+
+    let finalPresentationSubmittedAt = enqueueFinishedAt;
+    const completionPromise = this.device.queue.onSubmittedWorkDone().then(() => {
+      const exactCompletedAt = performance.now();
+      if (this.activeStrokeProfile) {
+        this.activeStrokeProfile.adaptivePreviewResolveQueueMs += exactCompletedAt - enqueueFinishedAt;
+      }
+
+      // No presentation was submitted while exact batches were replayed. The
+      // last preview therefore remains visible until this prefix is complete.
+      const finalPresentationCpuMs = this.submitAdaptivePreviewFinalPresentation();
+      finalPresentationSubmittedAt = performance.now();
+      if (this.activeStrokeProfile) {
+        this.activeStrokeProfile.adaptivePreviewResolveEnqueueMs += finalPresentationCpuMs;
+      }
+      return this.device.queue.onSubmittedWorkDone();
+    }).then(() => {
+      const completedAt = performance.now();
+      if (this.activeStrokeProfile) {
+        this.activeStrokeProfile.adaptivePreviewTimeMs += completedAt - session.activationStartedAt;
+        this.activeStrokeProfile.adaptivePreviewFinalPresentationQueueMs +=
+          completedAt - finalPresentationSubmittedAt;
+      }
+      if (this.adaptivePreviewSession?.id === session.id) {
+        this.adaptivePreviewSession = null;
+      }
+      this.adaptivePreviewResolvePromise = null;
+      this.resetAdaptiveQueueDetector();
+      if (FORCE_ADAPTIVE_PREVIEW_FOR_DIAGNOSTICS && this.activeStroke) {
+        this.adaptivePreviewActivationRequested = true;
+        this.adaptivePreviewRequestedReason = "diagnostic-force";
+      }
+      if (
+        this.pendingStamps.length > 0
+        || this.displayDirty
+        || this.clearRequested
+      ) {
+        this.requestRender();
+      }
+    }).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      this.callbacks.onStatus?.(`Coda GPU persa durante il resolve preview: ${message}`, "error");
+      if (this.adaptivePreviewSession?.id === session.id) {
+        this.adaptivePreviewSession = null;
+      }
+      this.adaptivePreviewResolvePromise = null;
+      this.adaptivePreviewOverlayKnownClear = false;
+      this.resetAdaptiveQueueDetector();
+      this.presentationCacheNeedsFullRebuild = true;
+      this.displayDirty = true;
+      this.requestRender();
+    });
+    this.adaptivePreviewResolvePromise = completionPromise;
+  }
+
+  private submitAdaptivePreviewFinalPresentation(): number {
+    const cpuStart = performance.now();
+    this.ensurePresentationCacheTexture();
+    const encoder = this.device.createCommandEncoder({
+      label: "Adaptive preview exact resolve presentation",
+    });
+
+    const clearPass = encoder.beginRenderPass({
+      label: "Clear adaptive preview after exact resolve",
+      colorAttachments: [{
+        view: this.adaptivePreviewView,
+        loadOp: "clear",
+        storeOp: "store",
+        clearValue: { r: 0, g: 0, b: 0, a: 0 },
+      }],
+    });
+    clearPass.end();
+
+    const displayStart = performance.now();
+    this.writeDisplayUniforms();
+    const displayPass = encoder.beginRenderPass({
+      label: "Rebuild exact presentation cache after adaptive preview",
+      colorAttachments: [{
+        view: this.presentationCacheView!,
+        loadOp: "clear",
+        storeOp: "store",
+        clearValue: { r: 0.02, g: 0.02, b: 0.025, a: 1 },
+      }],
+    });
+    displayPass.setPipeline(this.displayPipeline);
+    displayPass.setBindGroup(0, this.displayBindGroup);
+    displayPass.draw(3, 1, 0, 0);
+    displayPass.end();
+
+    const currentTexture = this.context.getCurrentTexture();
+    encoder.copyTextureToTexture(
+      { texture: this.presentationCacheTexture! },
+      { texture: currentTexture },
+      {
+        width: this.canvas.width,
+        height: this.canvas.height,
+        depthOrArrayLayers: 1,
+      },
+    );
+    const displayEncodingMs = performance.now() - displayStart;
+    const submitStart = performance.now();
+    this.device.queue.submit([encoder.finish()]);
+    const commandSubmitMs = performance.now() - submitStart;
+
+    this.adaptivePreviewOverlayKnownClear = true;
+    this.presentationCacheNeedsFullRebuild = false;
+    this.displayDirty = false;
+    const profile = this.activeStrokeProfile;
+    if (profile) {
+      const canvasPixels = this.canvas.width * this.canvas.height;
+      profile.displayEncodingMs += displayEncodingMs;
+      profile.commandSubmitMs += commandSubmitMs;
+      profile.presentationCacheFullRebuilds += 1;
+      profile.presentationCacheUpdatedPixels += canvasPixels;
+      profile.legacyDisplayShaderPixels += canvasPixels;
+      profile.presentationCopiedPixels += canvasPixels;
+      profile.adaptivePreviewFinalPresentations += 1;
+    }
+    return performance.now() - cpuStart;
+  }
+
   private submitImmediate(
     stamps: readonly Stamp[],
     clearLayer: boolean,
     settings: BrushSettings = this.settings,
     present = true,
     replayBatch: HistoryRenderBatch | null = null,
+    trackAdaptiveQueue = false,
   ): SubmitTiming {
     const cpuStart = performance.now();
     if (present) {
@@ -2593,6 +3288,9 @@ export class BrushEngine {
     const submitStart = performance.now();
     this.device.queue.submit([encoder.finish()]);
     commandSubmitMs = performance.now() - submitStart;
+    if (trackAdaptiveQueue) {
+      this.trackAdaptiveQueueSubmission(true);
+    }
     if (present && presentationCacheWasUpdated) {
       this.presentationCacheNeedsFullRebuild = false;
     }
@@ -2612,6 +3310,228 @@ export class BrushEngine {
       presentationCacheUpdatedPixels,
       legacyDisplayShaderPixels,
       presentationCopiedPixels,
+      adaptivePreviewFrame: false,
+      adaptivePreviewCacheFullRebuilds: 0,
+      adaptivePreviewCachePartialUpdates: 0,
+    };
+  }
+
+  private submitAdaptivePreviewImmediate(
+    stamps: readonly Stamp[],
+    settings: BrushSettings,
+  ): SubmitTiming {
+    const session = this.adaptivePreviewSession;
+    if (!session) {
+      throw new Error("Sessione adaptive preview assente.");
+    }
+
+    const cpuStart = performance.now();
+    this.ensurePresentationCacheTexture();
+    const encoder = this.device.createCommandEncoder({ label: "Adaptive preview frame encoder" });
+    let stampPackingMs = 0;
+    let instanceUploadMs = 0;
+    let brushEncodingMs = 0;
+    let displayEncodingMs = 0;
+    let commandSubmitMs = 0;
+    let scissorPixels = 0;
+    let dirtyRect: DirtyRect | null = null;
+    let exactShapeOccupancySelection: ShapeOccupancySelection | null = null;
+    let presentationCacheFullRebuilds = 0;
+    let presentationCachePartialUpdates = 0;
+    let presentationCacheOffscreenSkips = 0;
+    let presentationCacheUpdatedPixels = 0;
+    const canvasPixels = this.canvas.width * this.canvas.height;
+    const legacyDisplayShaderPixels = canvasPixels;
+    const presentationCopiedPixels = canvasPixels;
+    let presentationCacheWasUpdated = false;
+
+    if (stamps.length > 0) {
+      const packingStart = performance.now();
+      dirtyRect = this.packStamps(stamps, settings);
+      stampPackingMs = performance.now() - packingStart;
+
+      const uploadStart = performance.now();
+      this.device.queue.writeBuffer(
+        this.instanceBuffer,
+        0,
+        this.instanceUpload,
+        0,
+        stamps.length * STAMP_STRIDE_BYTES,
+      );
+      if (settings.shape === "shape") {
+        exactShapeOccupancySelection = this.selectShapeOccupancy(this.packedMinimumRadius);
+      }
+      instanceUploadMs = performance.now() - uploadStart;
+
+      const brushEncodingStart = performance.now();
+      const previewPass = encoder.beginRenderPass({
+        label: "Accumulate deferred stamps into half-resolution preview",
+        colorAttachments: [{
+          view: this.adaptivePreviewView,
+          // The first batch may reuse the transparent texture prepared by the
+          // previous exact resolve. Every later batch in the same session must
+          // preserve the preview already accumulated there. If an earlier
+          // session ended abnormally, only its first replacement batch clears
+          // the stale overlay.
+          loadOp: session.hasPreviewContent || this.adaptivePreviewOverlayKnownClear
+            ? "load"
+            : "clear",
+          storeOp: "store",
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        }],
+      });
+
+      if (dirtyRect) {
+        const previewDirtyRect = this.layerRectToAdaptivePreviewRect(dirtyRect);
+        scissorPixels = previewDirtyRect.width * previewDirtyRect.height;
+        const isShape = settings.shape === "shape";
+        const previewShapeSelection = isShape
+          ? this.selectShapeOccupancy(this.packedMinimumRadius * ADAPTIVE_PREVIEW_SCALE)
+          : null;
+        const previewShapeMip = previewShapeSelection?.selectedMipLevel ?? null;
+        const useShapeOccupancy = isShape && previewShapeMip !== null;
+        const pipeline = isShape
+          ? useShapeOccupancy
+            ? settings.blendMode === "additive"
+              ? this.shapeOccupancyAdditivePipeline
+              : this.shapeOccupancyNormalPipeline
+            : settings.blendMode === "additive"
+              ? this.shapeAdditivePipeline
+              : this.shapeNormalPipeline
+          : settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline;
+        previewPass.setPipeline(pipeline);
+        previewPass.setBindGroup(
+          0,
+          useShapeOccupancy
+            ? this.brushOccupancyBindGroups[previewShapeMip!]
+            : this.brushBindGroup,
+        );
+        previewPass.setScissorRect(
+          previewDirtyRect.x,
+          previewDirtyRect.y,
+          previewDirtyRect.width,
+          previewDirtyRect.height,
+        );
+        previewPass.draw(STAMP_VERTICES_PER_COPY, stamps.length * settings.count, 0, 0);
+        if (isShape && exactShapeOccupancySelection) {
+          // Telemetry and the retained history describe the exact resolve;
+          // the coarser preview LOD is a temporary presentation detail.
+          this.recordShapeSampling(exactShapeOccupancySelection);
+        }
+      }
+      previewPass.end();
+      session.hasPreviewContent = true;
+      this.adaptivePreviewOverlayKnownClear = false;
+      brushEncodingMs = performance.now() - brushEncodingStart;
+    }
+
+    const displayEncodingStart = performance.now();
+    const requiresFullRebuild = this.presentationCacheNeedsFullRebuild;
+    const presentationDirtyRect = requiresFullRebuild
+      ? { x: 0, y: 0, width: this.canvas.width, height: this.canvas.height }
+      : dirtyRect
+        ? this.layerDirtyRectToPresentationRect(dirtyRect)
+        : null;
+
+    if (presentationDirtyRect) {
+      this.writeDisplayUniforms();
+      const displayPass = encoder.beginRenderPass({
+        label: requiresFullRebuild
+          ? "Rebuild presentation cache with adaptive preview"
+          : "Update presentation cache with adaptive preview dirty rect",
+        colorAttachments: [{
+          view: this.presentationCacheView!,
+          loadOp: requiresFullRebuild ? "clear" : "load",
+          storeOp: "store",
+          clearValue: { r: 0.02, g: 0.02, b: 0.025, a: 1 },
+        }],
+      });
+      displayPass.setPipeline(
+        session.blendMode === "additive"
+          ? this.adaptivePreviewAdditiveDisplayPipeline
+          : this.adaptivePreviewNormalDisplayPipeline,
+      );
+      displayPass.setBindGroup(0, this.adaptivePreviewDisplayBindGroup);
+      if (!requiresFullRebuild) {
+        displayPass.setScissorRect(
+          presentationDirtyRect.x,
+          presentationDirtyRect.y,
+          presentationDirtyRect.width,
+          presentationDirtyRect.height,
+        );
+      }
+      displayPass.draw(3, 1, 0, 0);
+      displayPass.end();
+
+      presentationCacheWasUpdated = true;
+      presentationCacheUpdatedPixels = presentationDirtyRect.width * presentationDirtyRect.height;
+      if (requiresFullRebuild) {
+        presentationCacheFullRebuilds = 1;
+      } else {
+        presentationCachePartialUpdates = 1;
+      }
+    } else if (dirtyRect) {
+      presentationCacheOffscreenSkips = 1;
+    }
+
+    const currentTexture = this.context.getCurrentTexture();
+    encoder.copyTextureToTexture(
+      { texture: this.presentationCacheTexture! },
+      { texture: currentTexture },
+      {
+        width: this.canvas.width,
+        height: this.canvas.height,
+        depthOrArrayLayers: 1,
+      },
+    );
+    displayEncodingMs = performance.now() - displayEncodingStart;
+
+    const submitStart = performance.now();
+    this.device.queue.submit([encoder.finish()]);
+    commandSubmitMs = performance.now() - submitStart;
+    this.trackAdaptiveQueueSubmission(false);
+    if (presentationCacheWasUpdated) {
+      this.presentationCacheNeedsFullRebuild = false;
+    }
+
+    return {
+      totalCpuMs: performance.now() - cpuStart,
+      stampPackingMs,
+      instanceUploadMs,
+      brushEncodingMs,
+      displayEncodingMs,
+      commandSubmitMs,
+      scissorPixels,
+      dirtyRect,
+      shapeOccupancySelection: exactShapeOccupancySelection,
+      presentationCacheFullRebuilds,
+      presentationCachePartialUpdates,
+      presentationCacheOffscreenSkips,
+      presentationCacheUpdatedPixels,
+      legacyDisplayShaderPixels,
+      presentationCopiedPixels,
+      adaptivePreviewFrame: true,
+      adaptivePreviewCacheFullRebuilds: presentationCacheFullRebuilds,
+      adaptivePreviewCachePartialUpdates: presentationCachePartialUpdates,
+    };
+  }
+
+  private layerRectToAdaptivePreviewRect(dirtyRect: DirtyRect): DirtyRect {
+    const x = Math.max(0, Math.floor(dirtyRect.x * ADAPTIVE_PREVIEW_SCALE));
+    const y = Math.max(0, Math.floor(dirtyRect.y * ADAPTIVE_PREVIEW_SCALE));
+    const right = Math.min(
+      ADAPTIVE_PREVIEW_SIZE,
+      Math.ceil((dirtyRect.x + dirtyRect.width) * ADAPTIVE_PREVIEW_SCALE),
+    );
+    const bottom = Math.min(
+      ADAPTIVE_PREVIEW_SIZE,
+      Math.ceil((dirtyRect.y + dirtyRect.height) * ADAPTIVE_PREVIEW_SCALE),
+    );
+    return {
+      x,
+      y,
+      width: Math.max(1, right - x),
+      height: Math.max(1, bottom - y),
     };
   }
 
@@ -2764,6 +3684,11 @@ export class BrushEngine {
     profile.presentationCacheUpdatedPixels += timing.presentationCacheUpdatedPixels;
     profile.legacyDisplayShaderPixels += timing.legacyDisplayShaderPixels;
     profile.presentationCopiedPixels += timing.presentationCopiedPixels;
+    if (timing.adaptivePreviewFrame) {
+      profile.adaptivePreviewFrames += 1;
+      profile.adaptivePreviewCacheFullRebuilds += timing.adaptivePreviewCacheFullRebuilds;
+      profile.adaptivePreviewCachePartialUpdates += timing.adaptivePreviewCachePartialUpdates;
+    }
 
     if (batchSize > 0) {
       profile.brushBatches += 1;

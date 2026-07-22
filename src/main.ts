@@ -146,12 +146,20 @@ interface BenchmarkRun {
     dirtyRectStrategy: "directional-jitter-bounds";
     presentationCacheStrategy: StrokePerformanceProfile["presentationCacheStrategy"];
     presentationTransferStrategy: StrokePerformanceProfile["presentationTransferStrategy"];
+    adaptivePreviewStrategy: StrokePerformanceProfile["adaptivePreviewStrategy"];
+    adaptivePreviewTriggerStrategy: StrokePerformanceProfile["adaptivePreviewTriggerStrategy"];
+    adaptivePreviewScale: number;
+    adaptivePreviewOverlayMemoryMiB: number;
+    adaptivePreviewTriggerThresholdMs: number;
+    adaptivePreviewUrgentThresholdMs: number;
+    adaptivePreviewTriggerConsecutiveProbes: number;
+    adaptivePreviewProbeIntervalSubmissions: number;
     historyStorageStrategy: StrokePerformanceProfile["historyStorageStrategy"];
     historyReplayStrategy: StrokePerformanceProfile["historyReplayStrategy"];
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 9;
+    performanceTelemetryRevision: 10;
   };
 }
 
@@ -338,7 +346,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 9,
+    performanceTelemetryRevision: 10,
     ...engineEnvironment,
   };
 }
@@ -998,6 +1006,9 @@ async function replayHumanStroke(): Promise<void> {
       `CPU frame p95 ${performanceProfile.renderFrameTotalP95Ms.toFixed(2)} ms`,
       `submit p95 ${performanceProfile.submitImmediateP95Ms.toFixed(2)} ms`,
       `history CPU ${formatInteger(performanceProfile.historyCapturedBaseStamps)} stamp / ${formatInteger(performanceProfile.historyCapturedBatches)} batch`,
+      performanceProfile.adaptivePreviewActivations > 0
+        ? `preview 0,5× ${formatInteger(performanceProfile.adaptivePreviewDeferredBaseStamps)} stamp / ${performanceProfile.adaptivePreviewTimeMs.toFixed(0)} ms`
+        : "preview adattiva non attivata",
       `FPS medi ${performanceProfile.averageRenderFps.toFixed(1)}`,
       `${formatInteger(performanceProfile.delayedRenderFrames)} frame >20 ms`,
       `presentazione ${playback.endToPresentedMs.toFixed(2)} ms`,

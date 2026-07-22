@@ -957,3 +957,103 @@ Il recupero non dipende da un confronto favorevole soltanto con le run degradate
 I contatori della cache sono coerenti. La #37 registra `396` aggiornamenti parziali per `396` brush batch, nessun rebuild e nessuno skip; lo shader display elabora `102525367` pixel invece dei `495174240` del percorso legacy, una riduzione del `79,3%`. La #38 registra `408/408` aggiornamenti parziali, nessun rebuild e nessuno skip; elabora `23499061` pixel invece di `510179520`, una riduzione del `95,39%`. In entrambe le run la copia finale resta esattamente pari ai pixel legacy, confermando che la swapchain riceve ogni frame completo. Questi contatori spiegano la direzione del risultato, ma non rappresentano tempo GPU isolato.
 
 Decisione: cache persistente promossa e mantenuta. Le verifiche locali erano identiche byte per byte e le run Apple migliorano nettamente entrambe le varianti senza cambiare il layer o il pennello. Le #37 e #38 diventano le baseline prestazionali del layout fullscreen; le #35 e #36 restano i controlli pre-cache. Non sostituire la cache con una riduzione permanente della risoluzione e non rimuoverla salvo regressione visiva o incompatibilità riproducibile su un dispositivo supportato.
+
+## Esperimento: Instant Preview adattiva a metà risoluzione — candidato, non pubblicato
+
+Questo passo è costruito sopra la cache di presentazione promossa nelle #37–#38. Il percorso normale resta quello della #37/#38: gli stamp vengono renderizzati direttamente nel layer monolitico `4096×4096`, lo shader display originale aggiorna soltanto la dirty region della cache screen-space e la cache viene copiata nella swapchain. Se la preview non si attiva, shader, pipeline selezionate, render pass, ordine, journal e pixel finali del percorso promosso non cambiano.
+
+Il candidato prealloca una texture trasparente document-space `2048×2048`, cioè scala lineare `0,5`, nello stesso formato del layer (`rgba8unorm` o `rgba16float`). Richiede `16 MiB` nel primo formato e `32 MiB` nel secondo. La texture viene creata e azzerata insieme alle risorse del layer, fuori dal profilo del replay. Non sostituisce mai il layer definitivo.
+
+### Trigger passivo e isteresi
+
+Safari/iPhone non espone `timestamp-query`, quindi il runtime non dichiara una percentuale di utilizzo GPU. Mantiene al massimo un probe `GPUQueue.onSubmittedWorkDone()` pendente e ne campiona uno ogni `4` submission interattive. La latenza del probe misura il completamento di un prefisso FIFO e include anche il ritardo con cui Safari esegue la callback JavaScript; è quindi una stima conservativa del ritardo della coda, non tempo GPU isolato.
+
+La preview viene richiesta quando si verificano due probe consecutivi da almeno `42 ms`, oppure quando un singolo probe resta irrisolto per almeno `70 ms`. Due campioni riducono il rischio che un solo frame anomalo attivi Fur; la soglia bassa è circa due frame e mezzo a `60 Hz`, mentre quella urgente impedisce che un prefisso già molto arretrato debba prima completarsi. La #37 Base, con p95 `25 ms` e coda finale `224 ms`, dovrebbe attraversare la soglia durante il tratto; la #38 Fur, con p95 `17 ms` e coda `19 ms`, idealmente no. Questa distinzione deve essere verificata sull'iPhone e non è garantita dai soli dati storici.
+
+Il probe non viene `await`-ato in `renderFrame`, non limita il numero di submission e non trattiene stamp prima dell'attivazione. Non è quindi il cap a due submission bocciato nella #10. Una volta attivata, la preview resta attiva per tutto il resto del tratto; non oscilla quando un probe successivo migliora.
+
+### Overlay temporaneo e resolve esatto
+
+Dall'attivazione in poi ogni batch live viene:
+
+1. impacchettato con gli stessi stamp e le stesse impostazioni effettive;
+2. registrato una sola volta nel journal Undo/Redo;
+3. renderizzato soltanto nell'overlay `2048²`, con le stesse pipeline brush, stesso ordine stamp-major/copy-minor, seed, jitter, Count, coverage e blend;
+4. conservato in FIFO per il resolve definitivo, senza inviarlo ancora al layer `4096²`.
+
+Il vertex shader continua a usare `layerSize = 4096`, quindi la riduzione dipende esclusivamente dalla risoluzione dell'attachment. Per Shape, la bitmask della preview viene scelta usando il raggio effettivo moltiplicato per `0,5`: il LOD più grossolano resta conservativo e non può ritagliare texel che il filtro della preview può leggere. La selezione salvata nel journal resta invece quella del resolve esatto a piena risoluzione.
+
+Una pipeline display separata, usata soltanto durante la preview, campiona layer definitivo e overlay. Per `normal` applica source-over premoltiplicato; per una sequenza omogenea `additive` somma il colore e conserva la stessa equazione source-over dell'alpha. Le due composizioni sono algebricamente equivalenti a sovrapporre quel segmento sul prefisso esatto, salvo campionamento e quantizzazione temporanei a metà risoluzione. Un cambio `normal`↔`additive` durante la preview forza prima un resolve sicuro: un singolo RGBA non rappresenta in generale una sequenza mista. Colore, size, Count, Shape e gli altri cambi con blend invariato restano rappresentabili.
+
+Al lift, i batch differiti vengono risottomessi al layer definitivo con gli stessi array, impostazioni, dirty rect, scelta Shape e confini di render pass originali. Durante questo replay ogni chiamata usa `present = false`: non esiste quindi un frame che componga contemporaneamente overlay e stamp già riversati, e il contributo non può apparire doppio. L'ultima cache preview rimane visibile mentre il prefisso esatto completa. Soltanto dopo il relativo `onSubmittedWorkDone()` viene inviata una singola presentazione finale che:
+
+- azzera l'overlay;
+- ricostruisce tutta la cache con lo shader display originale e il solo layer esatto;
+- copia la cache nella swapchain.
+
+Un secondo completion chiude la sessione. `waitForIdle()` comprende sia il resolve esatto sia questa presentazione, quindi il profilo canonico termina soltanto dopo che il risultato definitivo è stato inviato. Un nuovo tratto iniziato nel frattempo conserva gli stamp in `pendingStamps`: `renderFrame` non li consuma durante il vecchio resolve e li pianifica appena la presentazione finale completa. Clear, Undo/Redo e cambio formato attendono lo stesso stato idle; `resetDocument()` rifiuta esplicitamente di agire durante preview/resolve. Pan, zoom e resize possono invalidare la cache mentre il resolve è in corso: la presentazione finale usa l'ultima vista disponibile. Device loss invalida sessione, probe e callback pendenti senza tentare di continuare su risorse perse.
+
+### Telemetria v10
+
+`performanceTelemetryRevision: 10` aggiunge le firme:
+
+- `adaptivePreviewStrategy: "gpu-lag-triggered-half-resolution-overlay"`;
+- `adaptivePreviewTriggerStrategy: "sampled-queue-prefix-latency"`;
+- scala, memoria overlay, soglie, numero di probe consecutivi e intervallo di campionamento.
+
+I contatori nuovi sono attivazioni e motivo, frame e tempo totale in preview, massimo numero stimato di submission interattive non completate, massima latenza probe, stamp/batch differiti e risolti, numero di resolve, CPU di enqueue, attesa della coda esatta, attesa della presentazione finale, fallback e motivo, full/partial update della cache mentre la preview è attiva e presentazioni finali. Non introducono aggiornamenti DOM per frame.
+
+Se la preview si attiva correttamente devono valere:
+
+- `adaptivePreviewDeferredBaseStamps === adaptivePreviewResolvedBaseStamps`;
+- `adaptivePreviewDeferredBatches === adaptivePreviewResolvedBatches`;
+- `historyCapturedBaseStamps === baseStamps === 12107`;
+- `historyCapturedBatches === brushBatches`;
+- `historyCommittedActions === 1` e `historyReplayOperations === 0`;
+- `presentationCopiedPixels === (renderFrames + adaptivePreviewFinalPresentations) × canvasPixels` nel replay visibile senza skip;
+- un solo resolve e una sola presentazione finale per la normale traccia a tratto singolo.
+
+`adaptivePreviewMaxEstimatedInFlightSubmissions` è un limite superiore campionato: tra due probe può includere submission già concluse ma non ancora osservate. `adaptivePreviewMaxQueueProbeLatencyMs` include la callback JavaScript. Nessuno dei due campo è utilizzo GPU.
+
+### Verifiche completate e test diagnostico
+
+TypeScript e build Vite riescono. Due harness logici in memoria, non conservati nel repository, hanno verificato:
+
+- nessuna attivazione con probe ripetuti da `17 ms`, attivazione dopo due probe da `50 ms` e percorso urgente oltre `70 ms`;
+- conservazione di ordine e confini dei batch nel resolve;
+- `present = false` per ogni batch esatto e zero presentazioni intermedie;
+- presentazione finale inviata soltanto dopo la completion esatta e sessione mantenuta fino alla completion finale;
+- input arrivato subito dopo il lift conservato e ripianificato, senza consumo durante il vecchio resolve;
+- fallback prima del cambio normal/additive;
+- equivalenza algebrica della composizione separata per segmenti normal e additive omogenei.
+
+La build normale non espone un interruttore UI. Soltanto il server Vite in modalità `DEV` riconosce `?adaptivePreview=force`, che forza il ramo dal primo batch del tratto successivo; `import.meta.env.DEV` è `false` nella build di produzione. Il parametro serve a confrontare la preview mentre il resolve è pendente, il finale dopo il lift e il finale dopo Undo/Redo. Non trasformarlo in un controllo utente e non abilitarlo in produzione.
+
+La verifica runtime WebGPU è stata poi eseguita dall'agente principale su GPU NVIDIA Ampere, confrontando il candidato con un worktree pulito di `c01ac1c` nello stesso browser e viewport. Durante la prima prova è stato trovato e corretto un errore nel `loadOp` dell'overlay: dal secondo batch veniva azzerata la preview già accumulata. Ora il primo batch riusa la texture trasparente preparata dal resolve precedente, oppure elimina un overlay stale dopo un errore; tutti i batch successivi della stessa sessione usano `load` e conservano il contenuto precedente. Dopo la correzione la preview è continua, senza le regioni rettangolari mancanti osservate nel prototipo iniziale.
+
+Le prove runtime completate sono:
+
+- percorso inattivo: benchmark sintetico deterministico da `2000` stamp, cattura PNG completa identica byte per byte a `c01ac1c`;
+- preview forzata normal/circle con size `750`, spacing `1%`, Count `16`, flow/hardness `100%` e blend `4x`: risultato finale identico byte per byte alla baseline dopo la stessa sequenza di input;
+- stesso confronto forzato con Shape 2K e scatter `100%`: finale identico byte per byte;
+- stesso confronto con blending additive: finale identico byte per byte;
+- Undo seguito da Redo dopo una sessione Shape: il crop del canvas dopo Redo è identico byte per byte al finale precedente;
+- zoom richiesto mentre il resolve era ancora pendente: la presentazione conclusiva usa la nuova vista ed è identica byte per byte alla baseline zoomata dopo il completamento;
+- secondo tratto inviato immediatamente dopo il primo, mentre il vecchio resolve poteva essere ancora in corso: nessuno stamp perso e canvas finale dei due tratti identico byte per byte alla baseline;
+- nessun errore o warning WebGPU/console nelle prove candidata e baseline.
+
+Una cattura diagnostica preview→finale sul canvas `628×629` visibile ha misurato, per Circle, differenza media assoluta `1,183/255` per canale, PSNR `38,70 dB` e soltanto lo `0,36%` dei pixel con differenza massima oltre `20/255`: lo scambio è difficile da percepire alla scala dello schermo desktop. Shape è volutamente meno fedele perché il dettaglio molto fine attraversa un attachment e un LOD a metà risoluzione: differenza media `9,385/255`, PSNR `24,21 dB` e `22,35%` dei pixel oltre `20/255`, pur mantenendo visivamente forma e densità del Fur. Sono misure diagnostiche su Ampere, non una decisione di qualità sull'iPhone.
+
+I test logici già descritti coprono anche il fallback di blend. Restano utili, prima della promozione definitiva, una prova manuale iPhone del pop Shape e una verifica tattile di pan/pinch durante il resolve: lo zoom programmatico è corretto, ma non misura la sensazione dell'interazione a due dita. Il candidato non è promosso e non è stato pubblicato.
+
+### Protocollo iPhone previsto
+
+Dopo le verifiche locali, pubblicare una sola build candidata ed eseguire `#39 Base` e `#40 Fur` sullo stesso iPhone delle #37–#38, con fingerprint `18982412`, `1583` punti, viewport `430×775`, canvas `860×1454`, `rgba8unorm`, size `750`, spacing `1%`, Count `16`, `12107` stamp base e `193712` copie. Fur deve mantenere tutte le firme decoder/bitmask della #38.
+
+Prima delle prestazioni verificare coerenza di history, stamp differiti/risolti e presentazione. Base dovrebbe avere una sola attivazione `queue-lag`; Fur idealmente zero. Confrontare separatamente:
+
+- durante input: FPS, p95/massimo, frame oltre `20 ms`, input delay e batch massimo;
+- dopo input: `inputToGpuCompletionMs`, `adaptivePreviewResolveEnqueueMs`, `adaptivePreviewResolveQueueMs`, `adaptivePreviewFinalPresentationQueueMs` e tempo totale in preview;
+- qualità: vicinanza dell'overlay, assenza di doppio contributo e pop finale accettabile.
+
+Promuovere soltanto se Base segue visibilmente meglio il dito senza attivazioni frequenti su Fur, il finale resta identico e il costo del resolve dopo il lift è accettabile. Un tail totale maggiore può essere il prezzo intenzionale del feedback temporaneo, ma va riportato esplicitamente e non nascosto dentro la nuova telemetria.
