@@ -1345,7 +1345,7 @@ Decisione: mantenere la telemetria revisione `15` e non passare globalmente a in
 
 Il prossimo candidato isolato consigliato è uno stato `armed-not-visible`: conservare invariati intervallo `4` e timeout `60 ms` fino alla prima attivazione; dopo il primo catch-up nascondere e svuotare la patch ma mantenere il tratto armato, usando probe più frequenti soltanto per le eventuali ricadute dello stesso stroke. Fur non entrerebbe mai nello stato armato, mentre la seconda congestione Base non ripartirebbe completamente dal percorso freddo. Non lasciare semplicemente la patch visibile fino al lift: aumenterebbe il lavoro Canvas2D anche quando l'esatto ha già recuperato. Implementare e misurare questo candidato soltanto come passo separato.
 
-## Esperimento: preview nascosta ma armata dopo la prima attivazione — candidato locale
+## Esperimento: preview nascosta ma armata dopo la prima attivazione — bocciato e rimosso
 
 Il candidato implementa soltanto la riattivazione intra-stroke suggerita dalle run `#49–#50`. Prima della prima attivazione il comportamento resta identico alla revisione `15`: un solo probe pendente, intervallo freddo di `4` submission, timeout `60 ms`, soglia slow-completion `58 ms` e requisito di `2` completamenti lenti consecutivi. La prima comparsa della patch non può quindi anticipare rispetto alla #49.
 
@@ -1372,9 +1372,15 @@ Non cambiano shader, geometria, stamp, copie, seed, jitter, Count, size, spacing
 
 Verifiche locali: TypeScript, Vite e preparazione Sites riescono; `git diff --check` è pulito; `src/shaders.ts` è invariato. Gli smoke browser su GPU NVIDIA Ampere sono riusciti per Circle, Shape, lift, Undo e Redo con diagnostica forzata: la patch torna a `opacity: 0` e fuori schermo dopo il lift, Undo/Redo non lasciano residui e console senza errori o warning. La transizione armata dipendente da una prima congestione reale resta da misurare sull'iPhone; il candidato non è ancora pubblicato.
 
-Dopo la pubblicazione eseguire una Base e una Fur, attese come `#51` e `#52`. Confrontare Base soprattutto con la #49: tempo della seconda attivazione, `adaptivePreviewArmedTransitions`, `adaptivePreviewArmedProbeStarts`, `adaptivePreviewArmedReactivations`, FPS, p95, frame lenti e coda finale. Fur deve continuare a riportare zero transizioni/probe armati/riattivazioni; se quei valori non sono zero, il gate freddo è stato alterato. Promuovere il candidato soltanto se la seconda patch è percepibilmente più pronta senza regressione complessiva; altrimenti ripristinare la revisione `15` mantenendo i dati diagnostici acquisiti.
+Dopo la pubblicazione sono state eseguite la Base `#51` e la Fur `#52`. La #51 ha effettivamente attraversato una transizione armata, avviato `19` probe armati e riattivato la seconda patch da quello stato a `4271 ms`, contro `4288 ms` nella #49: il vantaggio osservato è soltanto `17 ms`. Le metriche complessive peggiorano leggermente: FPS `56,92→56,34`, p95 `26→27 ms`, frame oltre `20 ms` `31→35`, coda finale `250→267 ms` e fine presentazione `7099→7117 ms`. Gli invarianti esatti restano validi: `12107` stamp e `387` batch sono stati inviati una sola volta, senza deferred, replay o submission al lift.
 
-## Micro-benchmark isolato raster vs compute — candidato locale
+La #52 Fur resta identica alla #50 entro la risoluzione della misura: FPS `58,52`, p95 `17 ms`, `8` frame lenti e coda `23` contro `21 ms`. Non entra mai nello stato armato e riporta zero attivazioni, transizioni, probe armati e riattivazioni, confermando che il gate freddo non è stato alterato.
+
+L'utente ha inoltre percepito un breve intervallo bloccato dopo la fine della run. La sola coda GPU spiega soltanto `17 ms` aggiuntivi in Base e `2 ms` in Fur; l'interfaccia resta però intenzionalmente bloccata anche durante la richiesta `saveBenchmarkRun`, che avviene dopo la presentazione e non è compresa in `endToPresentedMs`. Non attribuire quindi tutto il blocco percepito alla GPU senza una misura separata del salvataggio.
+
+Decisione: candidato armato bocciato e rimosso. Il guadagno di `17 ms` sulla seconda attivazione non è percepibilmente utile e non compensa la lieve regressione complessiva. Il runtime torna integralmente alla revisione `15` delle #49/#50: intervallo probe `4` per tutto il tratto e retirement completo dopo il catch-up. Conservare i dati delle #51/#52 soltanto come prova dell'esperimento; non reintrodurre la riattivazione armata senza una nuova ipotesi misurabile.
+
+## Micro-benchmark isolato raster vs compute — bocciato e rimosso
 
 Su richiesta dell'utente è stato aggiunto un confronto offscreen che non modifica il renderer permanente, il replay umano, la preview armata, il canvas, la cronologia o D1. Il pulsante **Confronta raster vs compute** non salva una run canonica e usa risorse temporanee distrutte al termine. Il modulo del test viene caricato con `import()` soltanto alla pressione del pulsante e finisce in un chunk di build separato: le run umane che non lo invocano non caricano né compilano shader o logica del micro-benchmark.
 
@@ -1402,4 +1408,6 @@ Smoke locale finale su NVIDIA Ampere, storage texture R32Uint disponibile:
 - `100,0000%` dei pixel identici, zero pixel differenti;
 - nessun errore o warning runtime.
 
-Il risultato desktop non promuove il compute, ma non decide per la GPU Apple. Dopo la pubblicazione eseguire una volta il pulsante su iPhone e riportare l'intera riga. Il compute resta in considerazione soltanto se la storage texture R32Uint è realmente disponibile, il pixel-diff resta zero, il vantaggio normalizzato è almeno `20%` con campioni coerenti e il binning CPU non introduce una latenza comparabile al risparmio GPU. In caso contrario rimuovere il micro-benchmark e non iniziare la riscrittura compute.
+Il test iPhone ha usato realmente la storage texture `R32Uint read/write`, senza fallback. I pixel sono risultati identici al `100,0000%`, con zero pixel diversi, ma il raster ha impiegato `12,75 ms` e il compute `21,25 ms`: campioni stabili `12,8/12,8/12,8` contro `21,3/21,3/21,5`, quindi il compute richiede il `66,7%` di tempo in più. Il binning CPU aggiunge inoltre `1,00 ms`.
+
+Decisione: compute bocciato nettamente sulla GPU Apple e micro-benchmark rimosso dall'interfaccia e dalla build. L'algoritmo preserva l'output nel caso sintetico, ma rasterizzazione e blending hardware sono molto più efficienti del ciclo compute sequenziale con quantizzazione per copia. Non iniziare la riscrittura compute e non riproporre questo benchmark senza un cambiamento architetturale sostanziale che elimini la causa misurata del costo.

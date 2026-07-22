@@ -1,6 +1,5 @@
 import { clamp, hexToHsl } from "./color";
 import { decodeGrayscalePng8 } from "./png-mask";
-import type { RasterComputeBenchmarkResult } from "./raster-compute-benchmark";
 import { brushShader, displayShader } from "./shaders";
 
 export type BlendMode = "normal" | "additive";
@@ -23,7 +22,6 @@ export type AdaptivePreviewStrategy = "queue-lag-triggered-canvas2d-tip-patch";
 export type AdaptivePreviewTriggerStrategy = "single-sampled-queue-prefix-latency";
 export type AdaptivePreviewVisibleCanvasStrategy =
   "iphone-desynchronized-others-synchronized-canvas2d";
-export type AdaptivePreviewReactivationStrategy = "armed-hidden-per-submission-probes";
 export type AdaptivePreviewConcreteActivationReason =
   | "probe-timeout"
   | "consecutive-slow"
@@ -128,7 +126,6 @@ export interface StrokePerformanceProfile {
   adaptivePreviewStrategy: AdaptivePreviewStrategy;
   adaptivePreviewTriggerStrategy: AdaptivePreviewTriggerStrategy;
   adaptivePreviewVisibleCanvasStrategy: AdaptivePreviewVisibleCanvasStrategy;
-  adaptivePreviewReactivationStrategy: AdaptivePreviewReactivationStrategy;
   adaptivePreviewVisibleCanvasRequestedDesynchronized: boolean;
   adaptivePreviewVisibleCanvasAlpha: boolean | null;
   adaptivePreviewVisibleCanvasDesynchronized: boolean | null;
@@ -141,7 +138,6 @@ export interface StrokePerformanceProfile {
   adaptivePreviewMaxTipBaseStamps: number;
   adaptivePreviewMaxPatchCssPixels: number;
   adaptivePreviewProbeIntervalSubmissions: number;
-  adaptivePreviewArmedProbeIntervalSubmissions: number;
   adaptivePreviewTriggerThresholdMs: number;
   adaptivePreviewSlowCompletionThresholdMs: number;
   adaptivePreviewTriggerConsecutiveProbes: number;
@@ -153,9 +149,6 @@ export interface StrokePerformanceProfile {
   adaptivePreviewProbeCancellations: number;
   adaptivePreviewProbeRejections: number;
   adaptivePreviewProbeNearMisses: number;
-  adaptivePreviewArmedTransitions: number;
-  adaptivePreviewArmedProbeStarts: number;
-  adaptivePreviewArmedReactivations: number;
   adaptivePreviewActivations: number;
   adaptivePreviewActivationReason: AdaptivePreviewActivationReason;
   adaptivePreviewFirstActivationReason: AdaptivePreviewConcreteActivationReason | null;
@@ -408,9 +401,6 @@ interface MutableStrokePerformanceProfile {
   adaptivePreviewProbeCancellations: number;
   adaptivePreviewProbeRejections: number;
   adaptivePreviewProbeNearMisses: number;
-  adaptivePreviewArmedTransitions: number;
-  adaptivePreviewArmedProbeStarts: number;
-  adaptivePreviewArmedReactivations: number;
   adaptivePreviewProbeLatencyMs: number[];
   adaptivePreviewProbeBacklogBaseStamps: number[];
   adaptivePreviewProbeTimeoutLatenessMs: number[];
@@ -474,7 +464,6 @@ const ADAPTIVE_PREVIEW_STRATEGY = "queue-lag-triggered-canvas2d-tip-patch" as co
 const ADAPTIVE_PREVIEW_TRIGGER_STRATEGY = "single-sampled-queue-prefix-latency" as const;
 const ADAPTIVE_PREVIEW_VISIBLE_CANVAS_STRATEGY =
   "iphone-desynchronized-others-synchronized-canvas2d" as const;
-const ADAPTIVE_PREVIEW_REACTIVATION_STRATEGY = "armed-hidden-per-submission-probes" as const;
 const ADAPTIVE_PREVIEW_EXACT_LINEAR_SCALE = 0.5;
 const ADAPTIVE_PREVIEW_JS_BUDGET_MS = 1.25;
 const ADAPTIVE_PREVIEW_COMMIT_BUDGET_RESERVE_MS = 0.2;
@@ -486,7 +475,6 @@ const ADAPTIVE_PREVIEW_PATCH_MARGIN_CSS_PIXELS = 3;
 const ADAPTIVE_PREVIEW_ALPHA_SCALE = 0.86;
 const ADAPTIVE_PREVIEW_SHAPE_PALETTE_SIZE = 12;
 const ADAPTIVE_PREVIEW_PROBE_INTERVAL_SUBMISSIONS = 4;
-const ADAPTIVE_PREVIEW_ARMED_PROBE_INTERVAL_SUBMISSIONS = 1;
 const ADAPTIVE_PREVIEW_TRIGGER_THRESHOLD_MS = 60;
 const ADAPTIVE_PREVIEW_SLOW_COMPLETION_THRESHOLD_MS = 58;
 const ADAPTIVE_PREVIEW_TRIGGER_CONSECUTIVE_PROBES = 2;
@@ -732,7 +720,6 @@ export class BrushEngine {
   private adaptivePreviewProbe: AdaptivePreviewProbe | null = null;
   private adaptivePreviewConsecutiveSlowProbes = 0;
   private adaptivePreviewActive = false;
-  private adaptivePreviewArmed = false;
   private adaptivePreviewFrozen = false;
   private adaptivePreviewForceStroke = false;
   private adaptivePreviewStartedAt = 0;
@@ -1308,23 +1295,6 @@ export class BrushEngine {
     };
   }
 
-  async runRasterComputeBenchmark(): Promise<RasterComputeBenchmarkResult> {
-    if (!this.initialized) {
-      throw new Error("Il motore non è ancora inizializzato.");
-    }
-    if (this.historyBusy || this.activeStroke) {
-      throw new Error("Concludi prima il tratto o l'operazione Undo/Redo.");
-    }
-
-    // Il confronto usa soltanto risorse offscreen proprie. Attendere il
-    // renderer evita che lavoro precedente contamini i tempi di coda, senza
-    // cancellare o modificare layer, cronologia e impostazioni dell'utente.
-    await this.waitForIdle();
-    const languageFeatures = navigator.gpu.wgslLanguageFeatures ?? new Set<string>();
-    const { runRasterComputeBenchmark } = await import("./raster-compute-benchmark");
-    return runRasterComputeBenchmark(this.device, languageFeatures);
-  }
-
   getStats(): EngineStats {
     const now = performance.now();
     this.renderTimestamps = this.renderTimestamps.filter((timestamp) => now - timestamp <= 1000);
@@ -1353,7 +1323,6 @@ export class BrushEngine {
 
   getAdaptivePreviewDiagnostics(): {
     active: boolean;
-    armed: boolean;
     frozen: boolean;
     visible: boolean;
     submittedSerial: number;
@@ -1367,7 +1336,6 @@ export class BrushEngine {
   } {
     return {
       active: this.adaptivePreviewActive,
-      armed: this.adaptivePreviewArmed,
       frozen: this.adaptivePreviewFrozen,
       visible: this.adaptivePreviewCanvas?.style.opacity === "1",
       submittedSerial: this.adaptivePreviewSubmittedSerial,
@@ -1451,9 +1419,6 @@ export class BrushEngine {
       adaptivePreviewProbeCancellations: 0,
       adaptivePreviewProbeRejections: 0,
       adaptivePreviewProbeNearMisses: 0,
-      adaptivePreviewArmedTransitions: 0,
-      adaptivePreviewArmedProbeStarts: 0,
-      adaptivePreviewArmedReactivations: 0,
       adaptivePreviewProbeLatencyMs: [],
       adaptivePreviewProbeBacklogBaseStamps: [],
       adaptivePreviewProbeTimeoutLatenessMs: [],
@@ -1538,7 +1503,6 @@ export class BrushEngine {
       adaptivePreviewStrategy: ADAPTIVE_PREVIEW_STRATEGY,
       adaptivePreviewTriggerStrategy: ADAPTIVE_PREVIEW_TRIGGER_STRATEGY,
       adaptivePreviewVisibleCanvasStrategy: ADAPTIVE_PREVIEW_VISIBLE_CANVAS_STRATEGY,
-      adaptivePreviewReactivationStrategy: ADAPTIVE_PREVIEW_REACTIVATION_STRATEGY,
       adaptivePreviewVisibleCanvasRequestedDesynchronized:
         this.adaptivePreviewVisibleCanvasRequestedDesynchronized,
       adaptivePreviewVisibleCanvasAlpha: this.adaptivePreviewVisibleContextAttributes.alpha,
@@ -1556,8 +1520,6 @@ export class BrushEngine {
       adaptivePreviewMaxTipBaseStamps: ADAPTIVE_PREVIEW_MAX_TIP_BASE_STAMPS,
       adaptivePreviewMaxPatchCssPixels: ADAPTIVE_PREVIEW_MAX_PATCH_CSS_PIXELS,
       adaptivePreviewProbeIntervalSubmissions: ADAPTIVE_PREVIEW_PROBE_INTERVAL_SUBMISSIONS,
-      adaptivePreviewArmedProbeIntervalSubmissions:
-        ADAPTIVE_PREVIEW_ARMED_PROBE_INTERVAL_SUBMISSIONS,
       adaptivePreviewTriggerThresholdMs: ADAPTIVE_PREVIEW_TRIGGER_THRESHOLD_MS,
       adaptivePreviewSlowCompletionThresholdMs: ADAPTIVE_PREVIEW_SLOW_COMPLETION_THRESHOLD_MS,
       adaptivePreviewTriggerConsecutiveProbes: ADAPTIVE_PREVIEW_TRIGGER_CONSECUTIVE_PROBES,
@@ -1569,9 +1531,6 @@ export class BrushEngine {
       adaptivePreviewProbeCancellations: profile.adaptivePreviewProbeCancellations,
       adaptivePreviewProbeRejections: profile.adaptivePreviewProbeRejections,
       adaptivePreviewProbeNearMisses: profile.adaptivePreviewProbeNearMisses,
-      adaptivePreviewArmedTransitions: profile.adaptivePreviewArmedTransitions,
-      adaptivePreviewArmedProbeStarts: profile.adaptivePreviewArmedProbeStarts,
-      adaptivePreviewArmedReactivations: profile.adaptivePreviewArmedReactivations,
       adaptivePreviewActivations: profile.adaptivePreviewActivations,
       adaptivePreviewActivationReason: profile.adaptivePreviewActivationReason,
       adaptivePreviewFirstActivationReason: profile.adaptivePreviewFirstActivationReason,
@@ -1707,7 +1666,6 @@ export class BrushEngine {
     adaptivePreviewStrategy: typeof ADAPTIVE_PREVIEW_STRATEGY;
     adaptivePreviewTriggerStrategy: typeof ADAPTIVE_PREVIEW_TRIGGER_STRATEGY;
     adaptivePreviewVisibleCanvasStrategy: typeof ADAPTIVE_PREVIEW_VISIBLE_CANVAS_STRATEGY;
-    adaptivePreviewReactivationStrategy: typeof ADAPTIVE_PREVIEW_REACTIVATION_STRATEGY;
     adaptivePreviewVisibleCanvasRequestedDesynchronized: boolean;
     adaptivePreviewVisibleCanvasAlpha: boolean | null;
     adaptivePreviewVisibleCanvasDesynchronized: boolean | null;
@@ -1720,7 +1678,6 @@ export class BrushEngine {
     adaptivePreviewMaxTipBaseStamps: number;
     adaptivePreviewMaxPatchCssPixels: number;
     adaptivePreviewProbeIntervalSubmissions: number;
-    adaptivePreviewArmedProbeIntervalSubmissions: number;
     adaptivePreviewTriggerThresholdMs: number;
     adaptivePreviewSlowCompletionThresholdMs: number;
     adaptivePreviewTriggerConsecutiveProbes: number;
@@ -1775,7 +1732,6 @@ export class BrushEngine {
       adaptivePreviewStrategy: ADAPTIVE_PREVIEW_STRATEGY,
       adaptivePreviewTriggerStrategy: ADAPTIVE_PREVIEW_TRIGGER_STRATEGY,
       adaptivePreviewVisibleCanvasStrategy: ADAPTIVE_PREVIEW_VISIBLE_CANVAS_STRATEGY,
-      adaptivePreviewReactivationStrategy: ADAPTIVE_PREVIEW_REACTIVATION_STRATEGY,
       adaptivePreviewVisibleCanvasRequestedDesynchronized:
         this.adaptivePreviewVisibleCanvasRequestedDesynchronized,
       adaptivePreviewVisibleCanvasAlpha: this.adaptivePreviewVisibleContextAttributes.alpha,
@@ -1793,8 +1749,6 @@ export class BrushEngine {
       adaptivePreviewMaxTipBaseStamps: ADAPTIVE_PREVIEW_MAX_TIP_BASE_STAMPS,
       adaptivePreviewMaxPatchCssPixels: ADAPTIVE_PREVIEW_MAX_PATCH_CSS_PIXELS,
       adaptivePreviewProbeIntervalSubmissions: ADAPTIVE_PREVIEW_PROBE_INTERVAL_SUBMISSIONS,
-      adaptivePreviewArmedProbeIntervalSubmissions:
-        ADAPTIVE_PREVIEW_ARMED_PROBE_INTERVAL_SUBMISSIONS,
       adaptivePreviewTriggerThresholdMs: ADAPTIVE_PREVIEW_TRIGGER_THRESHOLD_MS,
       adaptivePreviewSlowCompletionThresholdMs: ADAPTIVE_PREVIEW_SLOW_COMPLETION_THRESHOLD_MS,
       adaptivePreviewTriggerConsecutiveProbes: ADAPTIVE_PREVIEW_TRIGGER_CONSECUTIVE_PROBES,
@@ -3173,7 +3127,6 @@ export class BrushEngine {
     this.adaptivePreviewCandidates.length = 0;
     this.adaptivePreviewConsecutiveSlowProbes = 0;
     this.adaptivePreviewActive = false;
-    this.adaptivePreviewArmed = false;
     this.adaptivePreviewFrozen = false;
     this.adaptivePreviewForceStroke = false;
     this.adaptivePreviewRetirementTargetSerial = 0;
@@ -3199,9 +3152,7 @@ export class BrushEngine {
       return;
     }
 
-    const reactivatingFromArmedHidden = this.adaptivePreviewArmed;
     this.adaptivePreviewActive = true;
-    this.adaptivePreviewArmed = true;
     const activatedAt = performance.now();
     this.adaptivePreviewStartedAt = activatedAt;
     const profile = this.activeStrokeProfile;
@@ -3215,9 +3166,6 @@ export class BrushEngine {
         profile.adaptivePreviewSecondActivationMs = activationOffsetMs;
       }
       profile.adaptivePreviewActivations += 1;
-      if (reactivatingFromArmedHidden) {
-        profile.adaptivePreviewArmedReactivations += 1;
-      }
       profile.adaptivePreviewActivationReason = profile.adaptivePreviewActivationReason === "none"
         ? reason
         : profile.adaptivePreviewActivationReason === reason
@@ -3244,7 +3192,6 @@ export class BrushEngine {
     }
     this.adaptivePreviewCandidates.length = 0;
     this.adaptivePreviewActive = false;
-    this.adaptivePreviewArmed = false;
     this.adaptivePreviewFrozen = false;
     this.adaptivePreviewForceStroke = false;
     this.adaptivePreviewRetirementTargetSerial = 0;
@@ -3273,27 +3220,6 @@ export class BrushEngine {
       }
     } else {
       this.clearAdaptivePreviewCanvas();
-    }
-  }
-
-  private hideAdaptivePreviewWhileArmed(countRetirement: boolean): void {
-    const hadPreview = this.adaptivePreviewActive
-      || this.adaptivePreviewLastPresentedSerial > 0;
-    this.finishAdaptivePreviewLifetime();
-    if (this.adaptivePreviewFrameRequest !== null) {
-      cancelAnimationFrame(this.adaptivePreviewFrameRequest);
-      this.adaptivePreviewFrameRequest = null;
-    }
-    this.adaptivePreviewCandidates.length = 0;
-    this.adaptivePreviewActive = false;
-    this.adaptivePreviewFrozen = false;
-    this.adaptivePreviewRetirementTargetSerial = 0;
-    this.adaptivePreviewSubmissionsSinceProbe = 0;
-    this.adaptivePreviewConsecutiveSlowProbes = 0;
-    this.clearAdaptivePreviewCanvas();
-    if (hadPreview && countRetirement && this.activeStrokeProfile) {
-      this.activeStrokeProfile.adaptivePreviewRetirements += 1;
-      this.activeStrokeProfile.adaptivePreviewArmedTransitions += 1;
     }
   }
 
@@ -3350,8 +3276,6 @@ export class BrushEngine {
       }
       if (this.adaptivePreviewForceStroke && this.activeStroke) {
         this.clearAdaptivePreviewCanvas();
-      } else if (this.adaptivePreviewArmed && this.activeStroke) {
-        this.hideAdaptivePreviewWhileArmed(true);
       } else {
         this.retireAdaptivePreview(true);
       }
@@ -3451,18 +3375,12 @@ export class BrushEngine {
   }
 
   private startAdaptivePreviewProbe(force: boolean): void {
-    const armedHidden = this.adaptivePreviewArmed
-      && !this.adaptivePreviewActive
-      && !this.adaptivePreviewFrozen;
-    const intervalSubmissions = armedHidden
-      ? ADAPTIVE_PREVIEW_ARMED_PROBE_INTERVAL_SUBMISSIONS
-      : ADAPTIVE_PREVIEW_PROBE_INTERVAL_SUBMISSIONS;
     if (
       !this.adaptivePreviewContext
       || this.adaptivePreviewProbe
       || this.adaptivePreviewSubmittedSerial <= this.adaptivePreviewConfirmedSerial
       || (!this.activeStroke && !this.adaptivePreviewFrozen)
-      || (!force && this.adaptivePreviewSubmissionsSinceProbe < intervalSubmissions)
+      || (!force && this.adaptivePreviewSubmissionsSinceProbe < ADAPTIVE_PREVIEW_PROBE_INTERVAL_SUBMISSIONS)
     ) {
       return;
     }
@@ -3482,9 +3400,6 @@ export class BrushEngine {
     };
     if (telemetryProfile) {
       telemetryProfile.adaptivePreviewProbeStarts += 1;
-      if (armedHidden) {
-        telemetryProfile.adaptivePreviewArmedProbeStarts += 1;
-      }
       telemetryProfile.adaptivePreviewProbeBacklogBaseStamps.push(backlogBaseStamps);
     }
     this.adaptivePreviewSubmissionsSinceProbe = 0;
@@ -3583,7 +3498,10 @@ export class BrushEngine {
       }
 
       if (this.activeStroke && this.adaptivePreviewSubmittedSerial > this.adaptivePreviewConfirmedSerial) {
-        this.startAdaptivePreviewProbe(this.adaptivePreviewActive);
+        this.startAdaptivePreviewProbe(
+          this.adaptivePreviewActive
+          || this.adaptivePreviewSubmissionsSinceProbe >= ADAPTIVE_PREVIEW_PROBE_INTERVAL_SUBMISSIONS,
+        );
       }
     }).catch(() => {
       if (probe.telemetryProfile) {
