@@ -7,6 +7,8 @@ import {
   type LayerFormat,
   type PointerSample,
   type FragmentCoverageStrategy,
+  type ShapeMaskDecodeStrategy,
+  type ShapeOccupancyFallbackReason,
   type ShapeSamplingStrategy,
   type StampGeometry,
   type StrokePerformanceProfile,
@@ -117,17 +119,22 @@ interface BenchmarkRun {
     stampVerticesPerCopy: number;
     fragmentCoverageStrategy: FragmentCoverageStrategy;
     shapeSamplingStrategy: ShapeSamplingStrategy;
+    shapeMaskDecodeStrategy: ShapeMaskDecodeStrategy;
+    shapeOccupancyFallbackReason: ShapeOccupancyFallbackReason;
     shapeOccupancyGridSize: number;
     shapeOccupancyMipLevel: number;
     shapeOccupancyActiveCells: number;
     shapeOccupancyCoverageRatio: number;
+    shapeOccupancyCandidateMipLevel: number;
+    shapeOccupancyCandidateActiveCells: number;
+    shapeOccupancyCandidateCoverageRatio: number;
     shapeOccupancyMaximumMip: number;
     shapeOccupancyMinimumRadius: number;
     shapeOccupancyMaximumCoverageRatio: number;
     shapeOccupancyBitmaskBytes: number;
     colorSeedStrategy: "reuse-position-copy-seed";
     dirtyRectStrategy: "directional-jitter-bounds";
-    performanceTelemetryRevision: 5;
+    performanceTelemetryRevision: 6;
   };
 }
 
@@ -284,7 +291,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     hardwareConcurrency: navigator.hardwareConcurrency || null,
     deviceMemoryGiB: navigatorWithMetrics.deviceMemory ?? null,
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
-    performanceTelemetryRevision: 5,
+    performanceTelemetryRevision: 6,
     ...engineEnvironment,
   };
 }

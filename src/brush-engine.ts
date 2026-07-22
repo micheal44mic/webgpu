@@ -1,4 +1,5 @@
 import { clamp, hexToHsl } from "./color";
+import { decodeGrayscalePng8 } from "./png-mask";
 import { brushShader, displayShader } from "./shaders";
 
 export type BlendMode = "normal" | "additive";
@@ -10,6 +11,13 @@ export type ShapeSamplingStrategy =
   | "none"
   | "legacy-full-mask"
   | "coarse-occupancy-bitmask"
+  | "mixed";
+export type ShapeMaskDecodeStrategy = "png-gray8-direct" | "canvas-fallback";
+export type ShapeOccupancyFallbackReason =
+  | "none"
+  | "minimum-radius"
+  | "mip-out-of-range"
+  | "coverage-too-dense"
   | "mixed";
 
 export interface BrushSettings {
@@ -65,10 +73,15 @@ export interface StrokePerformanceProfile {
   stampVerticesPerCopy: number;
   fragmentCoverageStrategy: FragmentCoverageStrategy;
   shapeSamplingStrategy: ShapeSamplingStrategy;
+  shapeMaskDecodeStrategy: ShapeMaskDecodeStrategy;
+  shapeOccupancyFallbackReason: ShapeOccupancyFallbackReason;
   shapeOccupancyGridSize: number;
   shapeOccupancyMipLevel: number;
   shapeOccupancyActiveCells: number;
   shapeOccupancyCoverageRatio: number;
+  shapeOccupancyCandidateMipLevel: number;
+  shapeOccupancyCandidateActiveCells: number;
+  shapeOccupancyCandidateCoverageRatio: number;
   shapeOccupancyMaximumMip: number;
   shapeOccupancyMinimumRadius: number;
   shapeOccupancyMaximumCoverageRatio: number;
@@ -144,9 +157,18 @@ interface DirtyRect {
 
 interface ShapeMaskResources {
   texture: GPUTexture;
+  decodeStrategy: ShapeMaskDecodeStrategy;
   occupancyWords: Uint32Array;
   occupancyActiveCells: number[];
   occupancyCoverageRatios: number[];
+}
+
+interface ShapeOccupancySelection {
+  selectedMipLevel: number | null;
+  fallbackReason: Exclude<ShapeOccupancyFallbackReason, "mixed">;
+  candidateMipLevel: number;
+  candidateActiveCells: number;
+  candidateCoverageRatio: number;
 }
 
 interface SubmitTiming {
@@ -171,9 +193,13 @@ interface MutableStrokePerformanceProfile {
   stampVerticesPerCopy: number;
   fragmentCoverageStrategy: FragmentCoverageStrategy;
   shapeSamplingStrategy: ShapeSamplingStrategy;
+  shapeOccupancyFallbackReason: ShapeOccupancyFallbackReason;
   shapeOccupancyMipLevel: number;
   shapeOccupancyActiveCells: number;
   shapeOccupancyCoverageRatio: number;
+  shapeOccupancyCandidateMipLevel: number;
+  shapeOccupancyCandidateActiveCells: number;
+  shapeOccupancyCandidateCoverageRatio: number;
   baseStamps: number;
   physicalCopies: number;
   renderFrames: number;
@@ -205,6 +231,8 @@ const CIRCLE_FRAGMENT_COVERAGE_STRATEGY = "generic-smoothstep" as const;
 const SHAPE_FRAGMENT_COVERAGE_STRATEGY = "shape-alpha-mask-2k" as const;
 const SHAPE_OCCUPANCY_STRATEGY = "coarse-occupancy-bitmask" as const;
 const SHAPE_LEGACY_STRATEGY = "legacy-full-mask" as const;
+const SHAPE_DIRECT_DECODE_STRATEGY = "png-gray8-direct" as const;
+const SHAPE_CANVAS_DECODE_STRATEGY = "canvas-fallback" as const;
 const COLOR_SEED_STRATEGY = "reuse-position-copy-seed" as const;
 const DIRTY_RECT_STRATEGY = "directional-jitter-bounds" as const;
 const SHAPE_MASK_SIZE = 2048;
@@ -347,6 +375,7 @@ export class BrushEngine {
   private shapeMaskTexture!: GPUTexture;
   private shapeMaskView!: GPUTextureView;
   private shapeMaskSampler!: GPUSampler;
+  private shapeMaskDecodeStrategy: ShapeMaskDecodeStrategy = SHAPE_CANVAS_DECODE_STRATEGY;
   private shapeOccupancyActiveCells = new Array<number>(SHAPE_OCCUPANCY_MAP_COUNT).fill(0);
   private shapeOccupancyCoverageRatios = new Array<number>(SHAPE_OCCUPANCY_MAP_COUNT).fill(1);
   private packedMinimumRadius = Number.POSITIVE_INFINITY;
@@ -398,9 +427,13 @@ export class BrushEngine {
   private lastStampGeometry: StampGeometry = STAMP_GEOMETRY;
   private lastStampVerticesPerCopy = STAMP_VERTICES_PER_COPY;
   private lastShapeSamplingStrategy: ShapeSamplingStrategy = "none";
+  private lastShapeOccupancyFallbackReason: ShapeOccupancyFallbackReason = "none";
   private lastShapeOccupancyMipLevel = -1;
   private lastShapeOccupancyActiveCells = 0;
   private lastShapeOccupancyCoverageRatio = 0;
+  private lastShapeOccupancyCandidateMipLevel = -1;
+  private lastShapeOccupancyCandidateActiveCells = 0;
+  private lastShapeOccupancyCandidateCoverageRatio = 0;
 
   constructor(canvas: HTMLCanvasElement, callbacks: EngineCallbacks = {}) {
     this.canvas = canvas;
@@ -658,11 +691,16 @@ export class BrushEngine {
       this.settings.shape === "shape"
         ? this.lastShapeSamplingStrategy === SHAPE_OCCUPANCY_STRATEGY
           ? `bitmask alpha ${SHAPE_OCCUPANCY_GRID_SIZE}², mip ${this.lastShapeOccupancyMipLevel}, campioni 2K ammessi ${(this.lastShapeOccupancyCoverageRatio * 100).toFixed(1)}%`
-          : "quad Shape legacy da 4 vertici"
+          : `quad Shape legacy da 4 vertici, fallback ${this.lastShapeOccupancyFallbackReason}, mappa candidata ${(this.lastShapeOccupancyCandidateCoverageRatio * 100).toFixed(1)}%`
         : "geometria quad triangle-strip (4 vertici)",
       this.settings.shape === "shape"
         ? "coverage da maschera alpha 2048²"
         : "coverage fragment smoothstep generica",
+      this.settings.shape === "shape"
+        ? this.shapeMaskDecodeStrategy === SHAPE_DIRECT_DECODE_STRATEGY
+          ? "PNG grayscale decodificata direttamente"
+          : "PNG decodificata tramite fallback canvas"
+        : "nessuna maschera Shape",
       this.settings.shape === "shape"
         ? `scatter rotazione ${(this.settings.shapeScatter * 100).toFixed(0)}%`
         : "orientamento circolare invariato",
@@ -730,9 +768,13 @@ export class BrushEngine {
         ? SHAPE_FRAGMENT_COVERAGE_STRATEGY
         : CIRCLE_FRAGMENT_COVERAGE_STRATEGY,
       shapeSamplingStrategy: "none",
+      shapeOccupancyFallbackReason: "none",
       shapeOccupancyMipLevel: -1,
       shapeOccupancyActiveCells: 0,
       shapeOccupancyCoverageRatio: 0,
+      shapeOccupancyCandidateMipLevel: -1,
+      shapeOccupancyCandidateActiveCells: 0,
+      shapeOccupancyCandidateCoverageRatio: 0,
       baseStamps: 0,
       physicalCopies: 0,
       renderFrames: 0,
@@ -769,10 +811,15 @@ export class BrushEngine {
       stampVerticesPerCopy: profile.stampVerticesPerCopy,
       fragmentCoverageStrategy: profile.fragmentCoverageStrategy,
       shapeSamplingStrategy: profile.shapeSamplingStrategy,
+      shapeMaskDecodeStrategy: this.shapeMaskDecodeStrategy,
+      shapeOccupancyFallbackReason: profile.shapeOccupancyFallbackReason,
       shapeOccupancyGridSize: SHAPE_OCCUPANCY_GRID_SIZE,
       shapeOccupancyMipLevel: profile.shapeOccupancyMipLevel,
       shapeOccupancyActiveCells: profile.shapeOccupancyActiveCells,
       shapeOccupancyCoverageRatio: profile.shapeOccupancyCoverageRatio,
+      shapeOccupancyCandidateMipLevel: profile.shapeOccupancyCandidateMipLevel,
+      shapeOccupancyCandidateActiveCells: profile.shapeOccupancyCandidateActiveCells,
+      shapeOccupancyCandidateCoverageRatio: profile.shapeOccupancyCandidateCoverageRatio,
       shapeOccupancyMaximumMip: SHAPE_OCCUPANCY_MAX_MIP,
       shapeOccupancyMinimumRadius: SHAPE_OCCUPANCY_MIN_RADIUS,
       shapeOccupancyMaximumCoverageRatio: SHAPE_OCCUPANCY_MAX_COVERAGE_RATIO,
@@ -830,10 +877,15 @@ export class BrushEngine {
     stampVerticesPerCopy: number;
     fragmentCoverageStrategy: FragmentCoverageStrategy;
     shapeSamplingStrategy: ShapeSamplingStrategy;
+    shapeMaskDecodeStrategy: ShapeMaskDecodeStrategy;
+    shapeOccupancyFallbackReason: ShapeOccupancyFallbackReason;
     shapeOccupancyGridSize: number;
     shapeOccupancyMipLevel: number;
     shapeOccupancyActiveCells: number;
     shapeOccupancyCoverageRatio: number;
+    shapeOccupancyCandidateMipLevel: number;
+    shapeOccupancyCandidateActiveCells: number;
+    shapeOccupancyCandidateCoverageRatio: number;
     shapeOccupancyMaximumMip: number;
     shapeOccupancyMinimumRadius: number;
     shapeOccupancyMaximumCoverageRatio: number;
@@ -859,10 +911,23 @@ export class BrushEngine {
       shapeSamplingStrategy: this.settings.shape === "shape"
         ? this.lastShapeSamplingStrategy
         : "none",
+      shapeMaskDecodeStrategy: this.shapeMaskDecodeStrategy,
+      shapeOccupancyFallbackReason: this.settings.shape === "shape"
+        ? this.lastShapeOccupancyFallbackReason
+        : "none",
       shapeOccupancyGridSize: SHAPE_OCCUPANCY_GRID_SIZE,
       shapeOccupancyMipLevel: this.settings.shape === "shape" ? this.lastShapeOccupancyMipLevel : -1,
       shapeOccupancyActiveCells: this.settings.shape === "shape" ? this.lastShapeOccupancyActiveCells : 0,
       shapeOccupancyCoverageRatio: this.settings.shape === "shape" ? this.lastShapeOccupancyCoverageRatio : 0,
+      shapeOccupancyCandidateMipLevel: this.settings.shape === "shape"
+        ? this.lastShapeOccupancyCandidateMipLevel
+        : -1,
+      shapeOccupancyCandidateActiveCells: this.settings.shape === "shape"
+        ? this.lastShapeOccupancyCandidateActiveCells
+        : 0,
+      shapeOccupancyCandidateCoverageRatio: this.settings.shape === "shape"
+        ? this.lastShapeOccupancyCandidateCoverageRatio
+        : 0,
       shapeOccupancyMaximumMip: SHAPE_OCCUPANCY_MAX_MIP,
       shapeOccupancyMinimumRadius: SHAPE_OCCUPANCY_MIN_RADIUS,
       shapeOccupancyMaximumCoverageRatio: SHAPE_OCCUPANCY_MAX_COVERAGE_RATIO,
@@ -911,6 +976,7 @@ export class BrushEngine {
     const shapeMaskResources = await this.createShapeMaskResources();
     this.shapeMaskTexture = shapeMaskResources.texture;
     this.shapeMaskView = this.shapeMaskTexture.createView({ label: "Shape 2K mask view" });
+    this.shapeMaskDecodeStrategy = shapeMaskResources.decodeStrategy;
     this.shapeOccupancyActiveCells = shapeMaskResources.occupancyActiveCells;
     this.shapeOccupancyCoverageRatios = shapeMaskResources.occupancyCoverageRatios;
     this.shapeOccupancyUniformBuffers = Array.from(
@@ -1045,17 +1111,11 @@ export class BrushEngine {
     });
   }
 
-  private async createShapeMaskResources(): Promise<ShapeMaskResources> {
-    const response = await fetch(new URL("../Shape.png", import.meta.url));
-    if (!response.ok) {
-      throw new Error(`Impossibile caricare Shape.png (${response.status}).`);
-    }
-
-    const bitmap = await createImageBitmap(await response.blob(), {
+  private async decodeShapeMaskWithCanvas(source: ArrayBuffer): Promise<Uint8Array> {
+    const bitmap = await createImageBitmap(new Blob([source], { type: "image/png" }), {
       colorSpaceConversion: "none",
       premultiplyAlpha: "none",
     });
-    let baseMask: Uint8Array;
 
     try {
       if (bitmap.width !== SHAPE_MASK_SIZE || bitmap.height !== SHAPE_MASK_SIZE) {
@@ -1073,7 +1133,7 @@ export class BrushEngine {
       }
       sourceContext.drawImage(bitmap, 0, 0);
       const rgba = sourceContext.getImageData(0, 0, SHAPE_MASK_SIZE, SHAPE_MASK_SIZE).data;
-      baseMask = new Uint8Array(SHAPE_MASK_SIZE * SHAPE_MASK_SIZE);
+      const baseMask = new Uint8Array(SHAPE_MASK_SIZE * SHAPE_MASK_SIZE);
 
       for (let pixelIndex = 0, rgbaIndex = 0; pixelIndex < baseMask.length; pixelIndex += 1, rgbaIndex += 4) {
         const luminance = Math.round(
@@ -1083,8 +1143,33 @@ export class BrushEngine {
         );
         baseMask[pixelIndex] = Math.round((luminance * rgba[rgbaIndex + 3]) / 255);
       }
+      return baseMask;
     } finally {
       bitmap.close();
+    }
+  }
+
+  private async createShapeMaskResources(): Promise<ShapeMaskResources> {
+    const response = await fetch(new URL("../Shape.png", import.meta.url));
+    if (!response.ok) {
+      throw new Error(`Impossibile caricare Shape.png (${response.status}).`);
+    }
+
+    const source = await response.arrayBuffer();
+    let baseMask: Uint8Array;
+    let decodeStrategy: ShapeMaskDecodeStrategy;
+    try {
+      const decoded = await decodeGrayscalePng8(source);
+      if (decoded.width !== SHAPE_MASK_SIZE || decoded.height !== SHAPE_MASK_SIZE) {
+        throw new Error(
+          `Shape.png deve restare ${SHAPE_MASK_SIZE}×${SHAPE_MASK_SIZE}px; trovata ${decoded.width}×${decoded.height}px.`,
+        );
+      }
+      baseMask = decoded.pixels;
+      decodeStrategy = SHAPE_DIRECT_DECODE_STRATEGY;
+    } catch {
+      baseMask = await this.decodeShapeMaskWithCanvas(source);
+      decodeStrategy = SHAPE_CANVAS_DECODE_STRATEGY;
     }
 
     const mipLevelCount = Math.log2(SHAPE_MASK_SIZE) + 1;
@@ -1149,6 +1234,7 @@ export class BrushEngine {
     const occupancy = buildShapeOccupancyMaps(occupancyMipMasks);
     return {
       texture,
+      decodeStrategy,
       occupancyWords: occupancy.words,
       occupancyActiveCells: occupancy.activeCells,
       occupancyCoverageRatios: occupancy.coverageRatios,
@@ -1605,23 +1691,60 @@ export class BrushEngine {
     });
   }
 
-  private selectShapeOccupancyMip(minimumRadius: number): number | null {
-    if (!Number.isFinite(minimumRadius) || minimumRadius < SHAPE_OCCUPANCY_MIN_RADIUS) {
-      return null;
-    }
+  private selectShapeOccupancy(minimumRadius: number): ShapeOccupancySelection {
+    const finiteRadius = Number.isFinite(minimumRadius);
+    const estimatedLod = finiteRadius
+      ? Math.log2(SHAPE_MASK_SIZE / Math.max(1, minimumRadius * 2))
+      : Number.POSITIVE_INFINITY;
+    const requiredMip = finiteRadius
+      ? Math.max(0, Math.ceil(estimatedLod + 0.0001))
+      : -1;
+    const candidateInRange = requiredMip >= 0 && requiredMip <= SHAPE_OCCUPANCY_MAX_MIP;
+    const candidateActiveCells = candidateInRange
+      ? this.shapeOccupancyActiveCells[requiredMip]
+      : 0;
+    const candidateCoverageRatio = candidateInRange
+      ? this.shapeOccupancyCoverageRatios[requiredMip]
+      : 0;
 
-    const estimatedLod = Math.log2(SHAPE_MASK_SIZE / Math.max(1, minimumRadius * 2));
-    const requiredMip = Math.max(0, Math.ceil(estimatedLod + 0.0001));
-    if (requiredMip > SHAPE_OCCUPANCY_MAX_MIP) {
-      return null;
+    if (!finiteRadius || minimumRadius < SHAPE_OCCUPANCY_MIN_RADIUS) {
+      return {
+        selectedMipLevel: null,
+        fallbackReason: "minimum-radius",
+        candidateMipLevel: requiredMip,
+        candidateActiveCells,
+        candidateCoverageRatio,
+      };
     }
-    if (this.shapeOccupancyCoverageRatios[requiredMip] > SHAPE_OCCUPANCY_MAX_COVERAGE_RATIO) {
-      return null;
+    if (!candidateInRange) {
+      return {
+        selectedMipLevel: null,
+        fallbackReason: "mip-out-of-range",
+        candidateMipLevel: requiredMip,
+        candidateActiveCells: 0,
+        candidateCoverageRatio: 0,
+      };
     }
-    return requiredMip;
+    if (candidateCoverageRatio > SHAPE_OCCUPANCY_MAX_COVERAGE_RATIO) {
+      return {
+        selectedMipLevel: null,
+        fallbackReason: "coverage-too-dense",
+        candidateMipLevel: requiredMip,
+        candidateActiveCells,
+        candidateCoverageRatio,
+      };
+    }
+    return {
+      selectedMipLevel: requiredMip,
+      fallbackReason: "none",
+      candidateMipLevel: requiredMip,
+      candidateActiveCells,
+      candidateCoverageRatio,
+    };
   }
 
-  private recordShapeSampling(occupancyMip: number | null): void {
+  private recordShapeSampling(selection: ShapeOccupancySelection): void {
+    const occupancyMip = selection.selectedMipLevel;
     const strategy: ShapeSamplingStrategy = occupancyMip === null
       ? SHAPE_LEGACY_STRATEGY
       : SHAPE_OCCUPANCY_STRATEGY;
@@ -1631,9 +1754,13 @@ export class BrushEngine {
     this.lastStampGeometry = STAMP_GEOMETRY;
     this.lastStampVerticesPerCopy = STAMP_VERTICES_PER_COPY;
     this.lastShapeSamplingStrategy = strategy;
+    this.lastShapeOccupancyFallbackReason = selection.fallbackReason;
     this.lastShapeOccupancyMipLevel = occupancyMip ?? -1;
     this.lastShapeOccupancyActiveCells = activeCells;
     this.lastShapeOccupancyCoverageRatio = coverageRatio;
+    this.lastShapeOccupancyCandidateMipLevel = selection.candidateMipLevel;
+    this.lastShapeOccupancyCandidateActiveCells = selection.candidateActiveCells;
+    this.lastShapeOccupancyCandidateCoverageRatio = selection.candidateCoverageRatio;
 
     const profile = this.activeStrokeProfile;
     if (!profile) {
@@ -1641,11 +1768,33 @@ export class BrushEngine {
     }
     profile.stampGeometry = STAMP_GEOMETRY;
     profile.stampVerticesPerCopy = STAMP_VERTICES_PER_COPY;
+    const previousStrategy = profile.shapeSamplingStrategy;
     profile.shapeSamplingStrategy = profile.shapeSamplingStrategy === "none"
       ? strategy
       : profile.shapeSamplingStrategy === strategy
         ? strategy
         : "mixed";
+    if (previousStrategy !== "none" && previousStrategy !== strategy) {
+      profile.shapeOccupancyFallbackReason = "mixed";
+    } else if (selection.fallbackReason !== "none") {
+      profile.shapeOccupancyFallbackReason = profile.shapeOccupancyFallbackReason === "none"
+        ? selection.fallbackReason
+        : profile.shapeOccupancyFallbackReason === selection.fallbackReason
+          ? selection.fallbackReason
+          : "mixed";
+    }
+    profile.shapeOccupancyCandidateMipLevel = Math.max(
+      profile.shapeOccupancyCandidateMipLevel,
+      selection.candidateMipLevel,
+    );
+    profile.shapeOccupancyCandidateActiveCells = Math.max(
+      profile.shapeOccupancyCandidateActiveCells,
+      selection.candidateActiveCells,
+    );
+    profile.shapeOccupancyCandidateCoverageRatio = Math.max(
+      profile.shapeOccupancyCandidateCoverageRatio,
+      selection.candidateCoverageRatio,
+    );
     if (occupancyMip !== null) {
       profile.shapeOccupancyMipLevel = Math.max(profile.shapeOccupancyMipLevel, occupancyMip);
       profile.shapeOccupancyActiveCells = Math.max(profile.shapeOccupancyActiveCells, activeCells);
@@ -1665,7 +1814,7 @@ export class BrushEngine {
 
     if (clearLayer || stamps.length > 0) {
       let dirtyRect: DirtyRect | null = null;
-      let shapeOccupancyMip: number | null = null;
+      let shapeOccupancySelection: ShapeOccupancySelection | null = null;
       if (stamps.length > 0) {
         const packingStart = performance.now();
         dirtyRect = this.packStamps(stamps);
@@ -1679,7 +1828,7 @@ export class BrushEngine {
           stamps.length * STAMP_STRIDE_BYTES,
         );
         if (this.settings.shape === "shape") {
-          shapeOccupancyMip = this.selectShapeOccupancyMip(this.packedMinimumRadius);
+          shapeOccupancySelection = this.selectShapeOccupancy(this.packedMinimumRadius);
         }
         instanceUploadMs = performance.now() - uploadStart;
       }
@@ -1700,6 +1849,7 @@ export class BrushEngine {
       if (stamps.length > 0 && dirtyRect) {
         scissorPixels = dirtyRect.width * dirtyRect.height;
         const isShape = this.settings.shape === "shape";
+        const shapeOccupancyMip = shapeOccupancySelection?.selectedMipLevel ?? null;
         const useShapeOccupancy = isShape && shapeOccupancyMip !== null;
         const pipeline = isShape
           ? useShapeOccupancy
@@ -1718,8 +1868,8 @@ export class BrushEngine {
             : this.brushBindGroup,
         );
         brushPass.setScissorRect(dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height);
-        if (isShape) {
-          this.recordShapeSampling(useShapeOccupancy ? shapeOccupancyMip : null);
+        if (isShape && shapeOccupancySelection) {
+          this.recordShapeSampling(shapeOccupancySelection);
         }
         brushPass.draw(STAMP_VERTICES_PER_COPY, stamps.length * this.settings.count, 0, 0);
       }

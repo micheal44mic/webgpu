@@ -666,3 +666,49 @@ Rispetto alla mediana delle #28–#29, la #31 ha FPS circa `-0,4%`, p95 `+1,5 ms
 Con size `750 px` e pressure-size `0%`, tutti gli stamp hanno raggio `375 px`; il selettore richiede quindi il mip `2`, ben dentro il limite `0–4`. Le condizioni su raggio e LOD non possono spiegare il fallback. Per esclusione, la mappa di occupazione costruita sull'iPhone ha superato la soglia del `50%`, invece del `5,54%` calcolato localmente. Questo è coerente con la #30, nella quale la stessa lettura runtime della PNG tramite `createImageBitmap` + canvas aveva restituito una topologia incompatibile con i sei componenti locali e aveva fatto ricadere l'estrazione a zero rettangoli.
 
 Decisione: la #31 non promuove né boccia il costo GPU della pre-mappa, perché il relativo shader non è stato usato. Il fallback legacy è visivamente e prestazionalmente sicuro, ma il preprocessing della Shape non deve più dipendere dalla conversione canvas della piattaforma. Il prossimo candidato deve decodificare deterministicamente i byte della PNG grayscale 8-bit, usare lo stesso array R8 sia per la texture sia per la bitmask e salvare anche motivo del fallback e ratio calcolata prima della selezione. Non forzare l'attuale bitmask: se la mappa fosse davvero densa, aggiungerebbe il controllo senza eliminare campioni e potrebbe regredire.
+
+## Correzione preparatoria: decodifica PNG grayscale deterministica
+
+La Shape inclusa è una PNG `2048×2048`, grayscale 8-bit, non interlacciata, senza profilo colore né orientamento EXIF. Il runtime non usa più `createImageBitmap` e canvas per questo formato. Un decoder dedicato:
+
+1. valida firma, `IHDR`, dimensioni, profondità, tipo colore e interlacciamento;
+2. concatena i chunk `IDAT`;
+3. decomprime il flusso zlib con `DecompressionStream("deflate")`;
+4. ricostruisce le scanline applicando esattamente i filtri PNG `0–4`;
+5. restituisce direttamente l'array R8 della sorgente.
+
+Lo stesso identico `Uint8Array` viene usato per caricare il mip `0`, generare tutti i mip successivi e costruire le mappe di occupazione. Texture e bitmask non possono quindi più divergere a causa della conversione colore o della lettura canvas della piattaforma. La decodifica avviene una volta all'inizializzazione, fuori dal percorso del tratto. Per formati PNG non supportati o browser privi di `DecompressionStream` resta il decoder canvas precedente, identificato esplicitamente in telemetria; non viene forzata una bitmask quando il selettore giudica la mappa troppo densa.
+
+### Verifica locale
+
+TypeScript e build Vite sono riusciti. La decodifica diretta della sorgente produce:
+
+- `4194304` byte R8;
+- `48190` pixel non nulli;
+- valore massimo `255`;
+- somma dei campioni `9100015`;
+- SHA-256 dell'array R8 `69978b6ecb707965204c7551789eb1a6ecab481c0959ea796cf0bfbe77b1b94c`.
+
+Le cinque mappe cumulative ricostruite dallo stesso array hanno rispettivamente `2503`, `2860`, `3633`, `5158` e `6710` celle attive, cioè `3,8193%`, `4,3640%`, `5,5435%`, `7,8705%` e `10,2386%`. Fur a raggio `375 px` deve quindi scegliere il mip `2` e non può raggiungere la soglia fallback del `50%` se usa il decoder diretto.
+
+### Telemetria v6 e protocollo previsto
+
+`performanceTelemetryRevision: 6` aggiunge:
+
+- `shapeMaskDecodeStrategy`: `"png-gray8-direct"` oppure `"canvas-fallback"`;
+- `shapeOccupancyFallbackReason`: `"none"`, `"minimum-radius"`, `"mip-out-of-range"`, `"coverage-too-dense"` o `"mixed"`;
+- `shapeOccupancyCandidateMipLevel`;
+- `shapeOccupancyCandidateActiveCells`;
+- `shapeOccupancyCandidateCoverageRatio`.
+
+La prossima run Fur, attesa come `#32`, è valida per misurare finalmente la pre-mappa soltanto se riporta contemporaneamente:
+
+- `shapeMaskDecodeStrategy: "png-gray8-direct"`;
+- `shapeSamplingStrategy: "coarse-occupancy-bitmask"`;
+- `shapeOccupancyFallbackReason: "none"`;
+- mip selezionato e candidato `2`;
+- celle selezionate e candidate `3633`;
+- ratio selezionata e candidata circa `0,055435`;
+- quad da `4` vertici.
+
+Se anche una sola firma differisce, diagnosticare il motivo prima di leggere le prestazioni. Se tutte coincidono, confrontare #32 con #28–#29 su FPS, p95/massimo, frame oltre `20 ms`, input delay, coda GPU e fine presentazione. Non confrontare il guadagno con #30 e non attribuirlo alla decodifica: la decodifica corregge l'attivazione; l'eventuale differenza durante il tratto misura il pre-test bitmask e i campioni 2K evitati.
