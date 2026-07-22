@@ -38,6 +38,8 @@ const toggleControlsButton = element<HTMLButtonElement>("toggleControls");
 const statusElement = element<HTMLParagraphElement>("status");
 const benchmarkButton = element<HTMLButtonElement>("runBenchmark");
 const benchmarkResult = element<HTMLParagraphElement>("benchmarkResult");
+const rasterComputeBenchmarkButton = element<HTMLButtonElement>("runRasterComputeBenchmark");
+const rasterComputeBenchmarkResult = element<HTMLParagraphElement>("rasterComputeBenchmarkResult");
 const recordHumanStrokeButton = element<HTMLButtonElement>("recordHumanStroke");
 const playHumanStrokeButton = element<HTMLButtonElement>("playHumanStroke");
 const humanStrokeResult = element<HTMLParagraphElement>("humanStrokeResult");
@@ -150,6 +152,7 @@ interface BenchmarkRun {
     adaptivePreviewStrategy: StrokePerformanceProfile["adaptivePreviewStrategy"];
     adaptivePreviewTriggerStrategy: StrokePerformanceProfile["adaptivePreviewTriggerStrategy"];
     adaptivePreviewVisibleCanvasStrategy: StrokePerformanceProfile["adaptivePreviewVisibleCanvasStrategy"];
+    adaptivePreviewReactivationStrategy: StrokePerformanceProfile["adaptivePreviewReactivationStrategy"];
     adaptivePreviewVisibleCanvasRequestedDesynchronized: boolean;
     adaptivePreviewVisibleCanvasAlpha: boolean | null;
     adaptivePreviewVisibleCanvasDesynchronized: boolean | null;
@@ -162,6 +165,7 @@ interface BenchmarkRun {
     adaptivePreviewMaxTipBaseStamps: number;
     adaptivePreviewMaxPatchCssPixels: number;
     adaptivePreviewProbeIntervalSubmissions: number;
+    adaptivePreviewArmedProbeIntervalSubmissions: number;
     adaptivePreviewTriggerThresholdMs: number;
     adaptivePreviewSlowCompletionThresholdMs: number;
     adaptivePreviewTriggerConsecutiveProbes: number;
@@ -171,7 +175,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 15;
+    performanceTelemetryRevision: 16;
   };
 }
 
@@ -361,7 +365,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 15,
+    performanceTelemetryRevision: 16,
     ...engineEnvironment,
   };
 }
@@ -614,6 +618,7 @@ function updateHistoryControls(): void {
   redoStrokeButton.disabled = locked || !historyState.canRedo;
   clearLayerButton.disabled = locked;
   benchmarkButton.disabled = locked;
+  rasterComputeBenchmarkButton.disabled = locked;
   benchmarkStampsInput.disabled = locked;
   layerFormatSelect.disabled = locked;
   fitViewButton.disabled = locked;
@@ -794,6 +799,69 @@ benchmarkButton.addEventListener("click", async () => {
   } finally {
     benchmarkRunning = false;
     benchmarkButton.disabled = false;
+    historyState = engine.getHistoryState();
+    updateHistoryControls();
+    updateHumanStrokeControls();
+  }
+});
+
+rasterComputeBenchmarkButton.addEventListener("click", async () => {
+  if (interactionLocked()) {
+    return;
+  }
+  setControlsPanelOpen(false);
+  benchmarkRunning = true;
+  updateHistoryControls();
+  updateHumanStrokeControls();
+  rasterComputeBenchmarkResult.textContent =
+    "Confronto raster/compute in esecuzione… può richiedere alcuni secondi.";
+
+  try {
+    const result = await engine.runRasterComputeBenchmark();
+    const backend = result.storageBackend === "r32uint-read-write-storage-texture"
+      ? "texture R32Uint read/write"
+      : "buffer u32 read/write";
+    const speedDirection = result.computeSpeedupPercent >= 0
+      ? `compute +${result.computeSpeedupPercent.toFixed(1)}%`
+      : `compute ${result.computeSpeedupPercent.toFixed(1)}%`;
+    const verdict = result.verdict === "compute-clear-win"
+      ? "COMPUTE VINCE NETTAMENTE: merita un prototipo"
+      : result.verdict === "compute-small-win"
+        ? "vantaggio compute troppo piccolo per una riscrittura"
+        : result.verdict === "output-mismatch"
+          ? "output diverso: candidato non promosso"
+          : "RASTER VINCE: compute bocciato";
+    const fallback = result.storageTextureFallbackReason
+      ? `fallback: ${result.storageTextureFallbackReason}`
+      : "storage texture disponibile";
+
+    rasterComputeBenchmarkResult.textContent = [
+      `${result.targetSize}²`,
+      `${formatInteger(result.baseStamps)} stamp Base`,
+      `${formatInteger(result.physicalCopies)} copie`,
+      `tile ${result.tileSize}²`,
+      `${result.workloadRepetitionsPerSample}× per campione`,
+      `${formatInteger(result.activeTiles)} tile attive`,
+      `${formatInteger(result.tileReferences)} riferimenti`,
+      `binning CPU ${result.preparationCpuMs.toFixed(2)} ms`,
+      `upload CPU ${result.uploadCpuMs.toFixed(2)} ms`,
+      `raster mediana ${result.rasterCompletionMedianMs.toFixed(2)} ms`,
+      `campioni ${result.rasterCompletionSamplesMs.map((value) => value.toFixed(1)).join("/")}`,
+      `compute mediana ${result.computeCompletionMedianMs.toFixed(2)} ms`,
+      `campioni ${result.computeCompletionSamplesMs.map((value) => value.toFixed(1)).join("/")}`,
+      speedDirection,
+      `pixel identici ${(result.exactPixelRatio * 100).toFixed(4)}%`,
+      `${formatInteger(result.differentPixels)} pixel diversi`,
+      backend,
+      fallback,
+      verdict,
+      "test isolato, run canonica non salvata",
+    ].join(" · ");
+  } catch (error) {
+    rasterComputeBenchmarkResult.textContent =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    benchmarkRunning = false;
     historyState = engine.getHistoryState();
     updateHistoryControls();
     updateHumanStrokeControls();
@@ -1334,6 +1402,7 @@ void engine.initialize()
     statusElement.textContent = `${error instanceof Error ? error.message : String(error)}${secureContextHint}`;
     statusElement.className = "status error";
     benchmarkButton.disabled = true;
+    rasterComputeBenchmarkButton.disabled = true;
     updateHistoryControls();
   });
 

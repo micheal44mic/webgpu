@@ -1321,3 +1321,85 @@ I nuovi contatori e aggregati sono:
 Un timeout e una successiva risoluzione appartengono allo stesso probe e possono quindi incrementare entrambi i rispettivi contatori; non sono categorie terminali mutuamente esclusive. La latenza di `onSubmittedWorkDone()` misura il completamento del prefisso della coda più il ritardo della callback JavaScript, non tempo GPU isolato. Allo stesso modo la lateness del timer misura anche la congestione del main thread: un timeout tardivo non prova da solo che la GPU fosse occupata per tutta la durata.
 
 La build TypeScript/Vite/Sites riesce. Gli smoke locali su GPU NVIDIA Ampere sono riusciti con Circle, Shape, lift, Undo e Redo, senza errori console. Shader, soglie e schedulazione del probe non sono stati modificati. Il candidato non è ancora pubblicato; dopo la pubblicazione eseguire una Base e una Fur, attese come `#49` e `#50`, prima di scegliere tra intervallo `1` e una preview armata ma non visibile.
+
+### Risultato telemetria probe: run #49 Base e #50 Fur
+
+Le run `#49` Base e `#50` Fur usano la revisione `15` e sono confrontabili con le rispettive run precedenti: stesso fingerprint `18982412`, `1583` punti, iPhone, GPU Apple, DPR `3`, canvas `860×1454`, `12107` stamp base e `193712` copie fisiche. Entrambe confermano la policy Canvas2D iPhone con `desynchronized=true`. Gli invarianti esatti sono validi: gli stamp esatti coincidono con `baseStamps`, i batch esatti con `brushBatches`, mentre deferred, replay e submission speciali al lift restano a zero.
+
+| Metrica | #48 Base rev. 14 | #49 Base rev. 15 | #43 Fur | #50 Fur rev. 15 |
+|---|---:|---:|---:|---:|
+| FPS medi | `56,93` | `56,92` | `59,26` | `58,52` |
+| intervallo frame p95 | `23 ms` | `26 ms` | `17 ms` | `17 ms` |
+| frame oltre `20 ms` | `24` | `31` | `3` | `8` |
+| coda GPU finale | `247 ms` | `250 ms` | `18 ms` | `21 ms` |
+| input delay p95 | `16 ms` | `14 ms` | `15 ms` | `15 ms` |
+| fine presentazione | `7098 ms` | `7099 ms` | `6891 ms` | `6879 ms` |
+
+La sola telemetria non perturba materialmente Base: rispetto alla #48 gli FPS cambiano di circa `-0,02%`, la coda di `+3 ms` e la presentazione di `+1 ms`; p95 e frame lenti oscillano entro l'intervallo già osservato nelle #42/#44. Fur resta sano e non attiva mai la patch: p95 invariato a `17 ms`, coda `21 ms` e presentazione persino `12 ms` prima della #43. Il calo FPS di circa `1,2%` e i cinque frame lenti aggiuntivi non sono accompagnati da backlog o coda anomali e, con una sola replica, non dimostrano una regressione del trigger.
+
+Nella #49 Base sono partiti `74` probe: `48` si sono risolti fast, `26` slow e `24` hanno raggiunto il timeout; gli eventi timeout e slow possono riferirsi allo stesso probe. Entrambe le attivazioni sono causate da `probe-timeout`, rispettivamente a `2438 ms` e `4288 ms`; nessuna è causata dai due slow consecutivi. Le latenze risolte sono p50 `29 ms`, p95 `282 ms`, massimo `413 ms`; soltanto `3` probe cadono nel near-miss `[45,60) ms`. Il backlog all'avvio dei probe è p50 `104`, p95 `589`, massimo `849` stamp, mentre il massimo globale non confermato raggiunge `1625` stamp. La lateness del timer è piccola, p50 `1 ms`, p95 `5 ms`, massimo `17 ms`: il timeout non è spiegato principalmente da un main thread bloccato, anche se `onSubmittedWorkDone()` continua a misurare il completamento del prefisso di coda più la callback JavaScript e non il solo tempo GPU.
+
+Nella #50 Fur tutti i `100` probe si risolvono fast, con latenza p50 `14 ms`, p95 `41 ms`, massimo `55 ms`, zero timeout, zero slow e soltanto `2` near-miss. Il backlog all'avvio è p50 `113`, p95 `233`, massimo `283`, e il massimo non confermato è `347`. Questo conferma che il gate protegge correttamente Fur.
+
+Decisione: mantenere la telemetria revisione `15` e non passare globalmente a intervallo probe `1`. In Fur il numero di probe potrebbe avvicinarsi a uno per submission nei periodi sani senza alcun beneficio visivo; in Base l'intervallo più breve può eliminare al massimo tre submission di attesa, ma non il timeout obbligatorio da `60 ms` e non anticiperebbe l'episodio reale di congestione che inizia intorno a `2,4 s`. Gli aggregati della #49 non permettono inoltre di ricostruire un controfattuale esatto a intervallo `1`, perché cambierebbero i prefissi osservati e la schedulazione.
+
+Il prossimo candidato isolato consigliato è uno stato `armed-not-visible`: conservare invariati intervallo `4` e timeout `60 ms` fino alla prima attivazione; dopo il primo catch-up nascondere e svuotare la patch ma mantenere il tratto armato, usando probe più frequenti soltanto per le eventuali ricadute dello stesso stroke. Fur non entrerebbe mai nello stato armato, mentre la seconda congestione Base non ripartirebbe completamente dal percorso freddo. Non lasciare semplicemente la patch visibile fino al lift: aumenterebbe il lavoro Canvas2D anche quando l'esatto ha già recuperato. Implementare e misurare questo candidato soltanto come passo separato.
+
+## Esperimento: preview nascosta ma armata dopo la prima attivazione — candidato locale
+
+Il candidato implementa soltanto la riattivazione intra-stroke suggerita dalle run `#49–#50`. Prima della prima attivazione il comportamento resta identico alla revisione `15`: un solo probe pendente, intervallo freddo di `4` submission, timeout `60 ms`, soglia slow-completion `58 ms` e requisito di `2` completamenti lenti consecutivi. La prima comparsa della patch non può quindi anticipare rispetto alla #49.
+
+Alla prima attivazione il tratto viene marcato come armato. Quando il prefisso esatto raggiunge la patch durante lo stesso stroke, il normale rAF di catch-up:
+
+- termina la lifetime visibile e cancella l'eventuale draw rAF;
+- svuota i due candidati transitori e rende il canvas invisibile;
+- conserva seriali confermati, percorso WebGPU e stato armato;
+- non lascia il bitmap visibile fino al lift e non disegna nulla mentre la GPU è al passo.
+
+Da quel momento, e soltanto fino al lift dello stesso stroke, l'intervallo dei probe nascosti passa da `4` a `1` submission. Resta consentita una sola promise `onSubmittedWorkDone()` pendente: se arrivano più submission durante il probe, il successivo osserva il prefisso più recente dopo la risoluzione. Una nuova attivazione richiede ancora il timeout reale da `60 ms` o i due completamenti slow già esistenti; non vengono generati, estrapolati o previsti eventi del puntatore. Il guadagno massimo riguarda quindi le fino a tre submission fredde eliminate prima del probe della ricaduta, non i `60 ms` della soglia.
+
+Al lift mentre la patch è nascosta, `freezeAdaptivePreviewAtLift()` usa il reset completo esistente: cancella il probe armato e non crea una patch finale. Se la patch è invece visibile, resta invariato il freeze con binding dei candidati pending al normale batch esatto. Nuovo stroke, cambio impostazioni, clear, Undo/Redo, formato, resize, fit, pan, zoom e device loss azzerano anche lo stato armato. Il percorso diagnostico forzato di sviluppo conserva il comportamento precedente.
+
+`performanceTelemetryRevision: 16` aggiunge:
+
+- `adaptivePreviewReactivationStrategy: "armed-hidden-per-submission-probes"`;
+- `adaptivePreviewArmedProbeIntervalSubmissions: 1`, mentre `adaptivePreviewProbeIntervalSubmissions` resta `4`;
+- `adaptivePreviewArmedTransitions`: catch-up visibili terminati nello stato nascosto ma armato;
+- `adaptivePreviewArmedProbeStarts`: sottoinsieme dei probe partiti mentre la patch era nascosta e armata;
+- `adaptivePreviewArmedReactivations`: attivazioni successive provenienti da quello stato.
+
+Non cambiano shader, geometria, stamp, copie, seed, jitter, Count, size, spacing, alpha, blending, ordine, renderer esatto, numero di `queue.submit`, gestione del lift o resa Canvas2D. Nel sorgente resta una sola chiamata `device.queue.submit`, quella del renderer esatto.
+
+Verifiche locali: TypeScript, Vite e preparazione Sites riescono; `git diff --check` è pulito; `src/shaders.ts` è invariato. Gli smoke browser su GPU NVIDIA Ampere sono riusciti per Circle, Shape, lift, Undo e Redo con diagnostica forzata: la patch torna a `opacity: 0` e fuori schermo dopo il lift, Undo/Redo non lasciano residui e console senza errori o warning. La transizione armata dipendente da una prima congestione reale resta da misurare sull'iPhone; il candidato non è ancora pubblicato.
+
+Dopo la pubblicazione eseguire una Base e una Fur, attese come `#51` e `#52`. Confrontare Base soprattutto con la #49: tempo della seconda attivazione, `adaptivePreviewArmedTransitions`, `adaptivePreviewArmedProbeStarts`, `adaptivePreviewArmedReactivations`, FPS, p95, frame lenti e coda finale. Fur deve continuare a riportare zero transizioni/probe armati/riattivazioni; se quei valori non sono zero, il gate freddo è stato alterato. Promuovere il candidato soltanto se la seconda patch è percepibilmente più pronta senza regressione complessiva; altrimenti ripristinare la revisione `15` mantenendo i dati diagnostici acquisiti.
+
+## Micro-benchmark isolato raster vs compute — candidato locale
+
+Su richiesta dell'utente è stato aggiunto un confronto offscreen che non modifica il renderer permanente, il replay umano, la preview armata, il canvas, la cronologia o D1. Il pulsante **Confronta raster vs compute** non salva una run canonica e usa risorse temporanee distrutte al termine. Il modulo del test viene caricato con `import()` soltanto alla pressione del pulsante e finisce in un chunk di build separato: le run umane che non lo invocano non caricano né compilano shader o logica del micro-benchmark.
+
+Il test isola esclusivamente l'ipotesi secondo cui un workgroup compute per tile possa sostituire ripetute operazioni di blending in memoria con un accumulo ordinato in registro e una sola scrittura finale. Il carico fisso usa:
+
+- target offscreen `2048×2048`;
+- `32` stamp base, circa la media di un batch del replay;
+- size `750 px`, raggio `375 px`, spacing `7,5 px`, Count `16` e jitter posizione lineare/laterale al `100%`;
+- `512` copie fisiche già espanse in ordine stamp-major/copy-minor;
+- tile logiche `64×64`, workgroup `16×16`, sedici pixel per invocation;
+- liste per tile costruite in due passaggi con `Uint32Array`, senza piccoli array o sort;
+- tre campioni alternati per percorso, ciascuno amplificato quattro volte e normalizzato per ridurre il rumore di `onSubmittedWorkDone()`.
+
+Il raster usa un draw instanziato con blending premoltiplicato su `rgba8unorm`. Il compute preferisce una storage texture `r32uint` `read_write` quando `navigator.gpu.wgslLanguageFeatures` espone `readonly_and_readwrite_storage_textures`; altrimenti ripiega esplicitamente su un buffer `u32` e lo dichiara nel risultato. Ogni thread legge il pixel una volta, visita i riferimenti della tile nello stesso ordine globale, quantizza con `pack4x8unorm`/`unpack4x8unorm` dopo ogni copia e scrive una volta. Il readback confronta tutti i quattro canali di tutti i pixel.
+
+È un gate, non una prova di equivalenza del motore completo: usa cerchi hard-edge e l'alpha piena dell'interno Base, con colore e posizione fisica già preparati. Non include antialias `fwidth`, Shape 2K, campionamento texture, generazione shader di seed/colore, visualizzazione del layer packed o presentazione. Un eventuale risultato positivo autorizzerebbe soltanto un prototipo successivo che dovrà validare separatamente questi aspetti.
+
+Smoke locale finale su NVIDIA Ampere, storage texture R32Uint disponibile:
+
+- `1012` tile attive e `78601` riferimenti;
+- binning CPU mediano `0,90 ms`, upload CPU `0,00 ms` alla risoluzione del timer;
+- raster normalizzato: `7,13 ms` mediana, campioni `7,1 / 7,7 / 7,0 ms`;
+- compute normalizzato: `6,75 ms` mediana, campioni `7,6 / 6,8 / 5,3 ms`;
+- compute circa `5,3%` più veloce, sotto la soglia minima del `20%` richiesta per giustificare una riscrittura;
+- `100,0000%` dei pixel identici, zero pixel differenti;
+- nessun errore o warning runtime.
+
+Il risultato desktop non promuove il compute, ma non decide per la GPU Apple. Dopo la pubblicazione eseguire una volta il pulsante su iPhone e riportare l'intera riga. Il compute resta in considerazione soltanto se la storage texture R32Uint è realmente disponibile, il pixel-diff resta zero, il vantaggio normalizzato è almeno `20%` con campioni coerenti e il binning CPU non introduce una latenza comparabile al risparmio GPU. In caso contrario rimuovere il micro-benchmark e non iniziare la riscrittura compute.
