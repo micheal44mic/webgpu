@@ -7,7 +7,7 @@ import {
   type LayerFormat,
   type PointerSample,
   type FragmentCoverageStrategy,
-  type ShapeSupportStrategy,
+  type ShapeSamplingStrategy,
   type StampGeometry,
   type StrokePerformanceProfile,
 } from "./brush-engine";
@@ -116,12 +116,18 @@ interface BenchmarkRun {
     stampGeometry: StampGeometry;
     stampVerticesPerCopy: number;
     fragmentCoverageStrategy: FragmentCoverageStrategy;
-    shapeSupportStrategy: ShapeSupportStrategy;
-    shapeSupportRectangles: number;
-    shapeSupportMinimumRadius: number;
+    shapeSamplingStrategy: ShapeSamplingStrategy;
+    shapeOccupancyGridSize: number;
+    shapeOccupancyMipLevel: number;
+    shapeOccupancyActiveCells: number;
+    shapeOccupancyCoverageRatio: number;
+    shapeOccupancyMaximumMip: number;
+    shapeOccupancyMinimumRadius: number;
+    shapeOccupancyMaximumCoverageRatio: number;
+    shapeOccupancyBitmaskBytes: number;
     colorSeedStrategy: "reuse-position-copy-seed";
     dirtyRectStrategy: "directional-jitter-bounds";
-    performanceTelemetryRevision: 2;
+    performanceTelemetryRevision: 5;
   };
 }
 
@@ -278,7 +284,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     hardwareConcurrency: navigator.hardwareConcurrency || null,
     deviceMemoryGiB: navigatorWithMetrics.deviceMemory ?? null,
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
-    performanceTelemetryRevision: 2,
+    performanceTelemetryRevision: 5,
     ...engineEnvironment,
   };
 }

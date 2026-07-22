@@ -567,3 +567,73 @@ La telemetria identifica l'esperimento con:
 - `shapeSupportMinimumRadius: 128`.
 
 La prossima run Fur valida, attesa come `#29`, va confrontata direttamente con la `#28`, non con la `#19`: stesso test `Fur`, fingerprint, preset, Shape, scatter, canvas, stamp e copie. Prima controllare visivamente che non esistano clipping, linee mancanti o accumulo doppio nelle sovrapposizioni; poi confrontare FPS, p95/massimo, frame oltre `20 ms`, input delay, coda GPU e fine presentazione. Il precedente dodecagono da `36` vertici era più lento sul cerchio, quindi il nuovo supporto va mantenuto soltanto se la riduzione molto maggiore dei frammenti e dei campioni compensa lo stesso aumento vertex.
+
+### Risultato run #30: supporto non attivato, build bocciata
+
+La `#29` è un'altra misura Fur della build precedente e riporta ancora `stampGeometry: "quad"`, `stampVerticesPerCopy: 4`, senza i marker del supporto. La `#30` è la prima run eseguita con la build dell'esperimento, ma non misura i sei quad orientati: sull'iPhone l'estrazione runtime ha restituito zero rettangoli e ha attivato il fallback. Le firme effettive sono:
+
+- `stampGeometry: "quad"`;
+- `stampVerticesPerCopy: 6`;
+- `shapeSupportStrategy: "full-quad"`;
+- `shapeSupportRectangles: 0`;
+- `shapeSupportMinimumRadius: 128`.
+
+La run è confrontabile con `#28` e `#29`: stesso fingerprint `18982412`, `1583` punti, variante Fur, preset, iPhone, GPU Apple, canvas `860×850`, formato `rgba8unorm`, `12107` stamp base e `193712` copie fisiche.
+
+| Metrica | Run #28 full quad | Run #29 full quad | Run #30 fallback build esperimento |
+|---|---:|---:|---:|
+| FPS medi | `49,24` | `50,04` | `30,13` |
+| frame renderizzati | `342` | `345` | `223` |
+| intervallo frame p95 | `43 ms` | `38 ms` | `121 ms` |
+| intervallo frame massimo | `103 ms` | `88 ms` | `447 ms` |
+| frame oltre `20 ms` | `56` (~`16,4%`) | `54` (~`15,7%`) | `58` (~`26,0%`) |
+| batch massimo | `237` stamp | `169` stamp | `584` stamp |
+| coda GPU finale | `691 ms` | `686 ms` | `3118 ms` |
+| input delay p95 | `37 ms` | `34 ms` | `153 ms` |
+| fine presentazione | `7592 ms` | `7530 ms` | `10056 ms` |
+
+Rispetto alla `#28`, la `#30` perde il `38,8%` di FPS, porta il p95 da `43` a `121 ms`, il massimo da `103` a `447 ms`, la coda GPU da `691` a `3118 ms` e l'input delay p95 da `37` a `153 ms`. Il batch massimo cresce da `237` a `584` stamp. La CPU resta a `1 ms` p95, quindi la regressione è nel percorso GPU e nel backlog che ne consegue.
+
+La minore somma delle aree scissor della `#30` (`392.940.818` contro `515.214.998` nella `#28`) non è un miglioramento: la run renderizza molti meno frame e raggruppa batch molto più grandi. La misura non autorizza inoltre ad attribuire il costo a una singola istruzione: il fallback combina quad `triangle-list` da 6 vertici e il nuovo fragment shader con derivate esplicite/`textureSampleGrad`, senza ottenere alcuna riduzione dell'area campionata.
+
+Decisione: la build dell'esperimento è bocciata e non serve ripetere una run Fur finché `shapeSupportRectangles` non vale `6`. La `#30` non boccia il concetto dei supporti sparsi, perché quel percorso non è mai stato attivato; boccia l'estrazione runtime e soprattutto il fallback della build attuale su Safari/iPhone. Ripristinare come versione pubblica il full quad precedente. Un eventuale nuovo tentativo deve usare supporti deterministici precomputati dall'asset, mantenere il fallback shader precedente e verificare le firme prima del benchmark.
+
+## Esperimento Shape: pre-mappa di occupazione conservativa — in attesa di run iPhone
+
+Il nuovo tentativo non modifica più la geometria. Sia il percorso ottimizzato sia il fallback usano il vero quad `triangle-strip` da `4` vertici della run #28. È stato inoltre ripristinato integralmente il fragment shader legacy del full quad: usa `textureSample` implicito e non eredita né i `6` vertici né `textureSampleGrad` dal fallback fallito della #30.
+
+All'avvio, mentre viene costruita la stessa catena di mip R8 della Shape 2K, il motore genera automaticamente cinque mappe cumulative di occupazione per i mip `0–4`. La griglia è `256×256`; ogni cella rappresenta `8×8` texel della maschera base. Una cella viene marcata quando almeno un texel non nullo di uno dei mip considerati può contribuire, includendo in modo conservativo il supporto bilineare del filtro. La procedura dipende soltanto dai pixel della maschera e vale quindi anche per future immagini dell'utente, senza rettangoli o coordinate specifiche per l'asset Fur.
+
+Ogni mappa è un bitmask da `8192 byte`; le cinque mappe occupano complessivamente `40 KiB`. Sono caricate una volta in cinque buffer uniform separati e hanno bind group già creati: durante il disegno il motore sceglie il bind group corretto, senza upload o `queue.writeBuffer` aggiuntivi per batch. Il fragment shader calcola le derivate UV prima del test; nelle celle marcate esegue `textureSampleGrad` sulla texture R8 2K originale con la stessa catena mip, filtro lineare/trilineare, hardness, pressione, alpha e blending. Nelle celle non marcate scarta soltanto perché tutti i texel che il filtro può leggere sono dimostrabilmente zero. L'alpha non nullo non viene quantizzato, sostituito o approssimato.
+
+La selezione è automatica e conservativa. Il motore torna al percorso legacy quando:
+
+- il raggio minimo del batch è inferiore a `128 px`;
+- il LOD richiesto supera il mip `4` preanalizzato;
+- la mappa richiesta copre più del `50%` del quad, caso in cui il controllo preliminare difficilmente ripaga il proprio costo.
+
+Per Fur a size `750 px`, pressure-size `0%`, il raggio è `375 px` e viene selezionata la mappa cumulativa fino al mip `2`. Sono attive `3633` celle su `65536`, cioè il `5,54%`: il campione esatto della Shape 2K viene quindi autorizzato su circa il `5,5%` del quad invece che sul `100%`. Le altre mappe dell'asset attuale coprono circa `3,82%`, `4,36%`, `7,87%` e `10,24%` rispettivamente ai livelli `0`, `1`, `3` e `4`.
+
+### Verifica locale prima della pubblicazione
+
+TypeScript e build Vite sono riusciti. Su GPU NVIDIA Ampere entrambi i percorsi hanno inizializzato WebGPU ed eseguito il benchmark senza errori o warning di validazione. A size `96 px` la telemetria conferma il fallback `quad Shape legacy da 4 vertici`; a size `750 px` conferma `bitmask alpha 256², mip 2, campioni 2K ammessi 5.5%`.
+
+Con stesso viewport, seed e preset sintetico Fur, la regione canvas catturata dalla build candidata e dal full quad precedente ha zero canali differenti dopo la decodifica della cattura. Questo è un controllo visivo pixel-per-pixel della presentazione, non una lettura byte-per-byte del layer interno; la conservatività dell'alpha deriva invece dal fatto che vengono scartate soltanto celle con supporto filtrato interamente nullo.
+
+Il test sintetico da `250` stamp, `4000` copie, size `750`, Count `16`, flow/hardness `100%`, blend `4×`, jitter posizione `0%`, normal premultiplied e `rgba8unorm` è rumoroso, ma il confronto sequenziale ha dato una mediana di `64,65 ms` sulla variante, contro `96,60 ms` sul full quad dopo aver escluso le prime due misure: circa `-33%` di GPU completion locale. Non promuovere il passo con questo dato desktop e non aspettarsi un miglioramento del `94,5%`: rasterizzazione del quad, test bitmask, blending e display restano invariati.
+
+### Telemetria v5 e protocollo iPhone
+
+`performanceTelemetryRevision: 5` identifica il candidato. Le firme richieste sono:
+
+- `stampGeometry: "quad"`;
+- `stampVerticesPerCopy: 4`;
+- `fragmentCoverageStrategy: "shape-alpha-mask-2k"`;
+- `shapeSamplingStrategy: "coarse-occupancy-bitmask"` per Fur a 750 px;
+- `shapeOccupancyGridSize: 256`;
+- `shapeOccupancyMipLevel: 2`;
+- `shapeOccupancyActiveCells: 3633`;
+- `shapeOccupancyCoverageRatio` circa `0,0554`;
+- `shapeOccupancyBitmaskBytes: 8192` per la mappa attiva.
+
+La prossima run Fur valida, attesa come `#31`, va confrontata con le #28 e #29, non con la #30: stesso fingerprint `18982412`, preset, iPhone, canvas `860×850`, `12107` stamp e `193712` copie. Prima verificare le firme e l'assenza di clipping; poi giudicare FPS medi, p95/massimo, frame oltre `20 ms`, input delay, coda GPU e fine presentazione. Mantenere il passo soltanto se migliora la risposta al dito sul dispositivo reale; il dato desktop è preparatorio.
