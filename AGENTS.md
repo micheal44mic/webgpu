@@ -770,7 +770,7 @@ Quando l'utente preme Undo o Redo, il motore attende che la coda corrente sia vu
 
 ### Protocollo iPhone previsto
 
-La prima run valida attesa è la `#33`, variante `Fur`, da confrontare direttamente con la `#32`, perché è l'ultima build immediatamente precedente e usa lo stesso percorso bitmask promosso. Devono restare invariati fingerprint `18982412`, `1583` punti, canvas `860×850`, formato `rgba8unorm`, size `750`, spacing `1%`, Count `16`, `12107` stamp base e `193712` copie fisiche, oltre a tutte le firme Shape della #32.
+Servono una run `Base`, da confrontare con la `#19`, e una run `Fur`, da confrontare direttamente con la `#32`, perché sono le baseline promosse dei due percorsi. Devono restare invariati fingerprint `18982412`, `1583` punti, canvas `860×850`, formato `rgba8unorm`, size `750`, spacing `1%`, Count `16`, `12107` stamp base e `193712` copie fisiche; per Fur devono inoltre coincidere tutte le firme Shape della #32.
 
 Prima di leggere le prestazioni verificare anche:
 
@@ -783,4 +783,53 @@ Prima di leggere le prestazioni verificare anche:
 
 Confrontare FPS medi, intervallo frame p95/massimo, frame oltre `20 ms`, input delay, coda GPU finale, fine presentazione, `renderFrameTotalP95Ms` e `layerInputDispatchTotalMs`. Non premere Undo/Redo durante il replay; i controlli sono disabilitati apposta. Dopo il salvataggio della run, provare separatamente Undo, Redo e Undo di `Pulisci`, controllando identità visiva e tempo di ricostruzione. Quella latenza non va confusa con l'influenza della cattura CPU sul tratto.
 
-Decisione: in attesa della run iPhone. Non dichiarare la funzione gratuita finché la #33 non conferma che la ritenzione dei batch e i contatori non peggiorano il frame pacing della #32.
+### Risultato e decisione: run #33 Base e #34 Fur
+
+Le due run usano lo stesso fingerprint `18982412`, `1583` punti, preset canonico, iPhone, GPU Apple, canvas `860×850`, formato `rgba8unorm`, `12107` stamp base e `193712` copie fisiche delle rispettive baseline. Entrambe riportano `performanceTelemetryRevision: 7` e le tre strategie previste per la cronologia CPU.
+
+La telemetria della cronologia è internamente coerente in entrambe le run:
+
+| Contatore cronologia | Run #33 Base | Run #34 Fur |
+|---|---:|---:|
+| stamp catturati | `12107` | `12107` |
+| batch catturati / brush batch | `387 / 387` | `404 / 404` |
+| azioni confermate | `1` | `1` |
+| stamp conservati a fine run | `12107` | `12107` |
+| payload logico | `387424 byte` | `387424 byte` |
+| operazioni di replay | `0` | `0` |
+
+Questo conferma che ogni batch del tratto viene registrato una sola volta e che il benchmark non ha eseguito Undo o Redo. Durante il replay canonico non è stato quindi aggiunto lavoro GPU di ricostruzione.
+
+#### Base: #33 contro #19
+
+| Metrica | Run #19 senza cronologia | Run #33 con cronologia |
+|---|---:|---:|
+| FPS medi | `56,19` | `56,34` |
+| frame renderizzati | `386` | `387` |
+| intervallo frame p95 | `28 ms` | `28 ms` |
+| intervallo frame massimo | `67 ms` | `67 ms` |
+| frame oltre `20 ms` | `37` | `34` |
+| coda GPU finale | `282 ms` | `293 ms` |
+| input delay p95 | `17 ms` | `17 ms` |
+| fine presentazione | `7132 ms` | `7144 ms` |
+| CPU frame p95 | `1 ms` | `1 ms` |
+
+Le direzioni sono miste ma tutte entro la variabilità già osservata: FPS leggermente migliori, tre frame lenti in meno e p95 invariato, a fronte di `11 ms` di coda finale e `12 ms` di presentazione in più sull'intera traccia. Non emerge una regressione misurabile del tratto Base.
+
+#### Fur: #34 contro #32
+
+| Metrica | Run #32 senza cronologia | Run #34 con cronologia |
+|---|---:|---:|
+| FPS medi | `58,82` | `58,82` |
+| frame renderizzati | `404` | `404` |
+| intervallo frame p95 | `17 ms` | `17 ms` |
+| intervallo frame massimo | `67 ms` | `67 ms` |
+| frame oltre `20 ms` | `6` | `6` |
+| coda GPU finale | `21 ms` | `22 ms` |
+| input delay p95 | `14 ms` | `14 ms` |
+| fine presentazione | `6882 ms` | `6882 ms` |
+| CPU frame p95 | `1 ms` | `1 ms` |
+
+Le firme Shape coincidono esattamente con la #32: decoder `png-gray8-direct`, percorso `coarse-occupancy-bitmask`, nessun fallback, mip `2`, `3633` celle, ratio `0,0554351806640625`, bitmask da `8192 byte`, batch massimo `90` e somma delle aree scissor `580188708`. La sola differenza principale è `1 ms` di coda GPU finale, irrilevante alla risoluzione del timer. L'ottimizzazione Shape è quindi rimasta attiva e non mostra alcuna regressione.
+
+Decisione: Undo/Redo con cronologia CPU è promosso e mantenuto. La cattura del journal non ha prodotto un costo misurabile sul tratto né Base né Fur; la #34 conferma inoltre che il percorso Shape ottimizzato della #32 è invariato. Le run non includono una cattura pixel, quindi l'identità visiva resta una verifica manuale separata. La ricostruzione GPU eseguita quando si premono Undo o Redo non è misurata da queste run e non va confusa con il costo nullo osservato durante il disegno. Il limite di memoria della cronologia resta un tema separato prima di un uso prolungato in produzione.
