@@ -249,6 +249,8 @@ select {
 }
 
 #gpuCanvas {
+  position: relative;
+  z-index: 0;
   display: block;
   width: 100%;
   height: 100%;
@@ -259,12 +261,26 @@ select {
   -webkit-user-select: none;
 }
 
+#tipPreviewCanvas {
+  position: absolute;
+  z-index: 1;
+  top: -10000px;
+  left: -10000px;
+  display: block;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+  contain: strict;
+}
+
 #gpuCanvas.panning {
   cursor: grabbing;
 }
 
 .hint {
   position: absolute;
+  z-index: 2;
   right: 12px;
   bottom: max(10px, env(safe-area-inset-bottom));
   max-width: calc(100% - 24px);

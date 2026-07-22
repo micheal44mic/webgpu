@@ -32,6 +32,7 @@ function formatInteger(value: number): string {
 }
 
 const canvas = element<HTMLCanvasElement>("gpuCanvas");
+const tipPreviewCanvas = element<HTMLCanvasElement>("tipPreviewCanvas");
 const controlsPanel = element<HTMLElement>("controlsPanel");
 const toggleControlsButton = element<HTMLButtonElement>("toggleControls");
 const statusElement = element<HTMLParagraphElement>("status");
@@ -148,18 +149,20 @@ interface BenchmarkRun {
     presentationTransferStrategy: StrokePerformanceProfile["presentationTransferStrategy"];
     adaptivePreviewStrategy: StrokePerformanceProfile["adaptivePreviewStrategy"];
     adaptivePreviewTriggerStrategy: StrokePerformanceProfile["adaptivePreviewTriggerStrategy"];
-    adaptivePreviewScale: number;
-    adaptivePreviewOverlayMemoryMiB: number;
-    adaptivePreviewTriggerThresholdMs: number;
-    adaptivePreviewUrgentThresholdMs: number;
-    adaptivePreviewTriggerConsecutiveProbes: number;
+    adaptivePreviewExactLinearScale: number;
+    adaptivePreviewJsBudgetMs: number;
+    adaptivePreviewMaxTipBaseStamps: number;
+    adaptivePreviewMaxPatchCssPixels: number;
     adaptivePreviewProbeIntervalSubmissions: number;
+    adaptivePreviewTriggerThresholdMs: number;
+    adaptivePreviewSlowCompletionThresholdMs: number;
+    adaptivePreviewTriggerConsecutiveProbes: number;
     historyStorageStrategy: StrokePerformanceProfile["historyStorageStrategy"];
     historyReplayStrategy: StrokePerformanceProfile["historyReplayStrategy"];
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 10;
+    performanceTelemetryRevision: 11;
   };
 }
 
@@ -186,7 +189,10 @@ const engine = new BrushEngine(canvas, {
     updateHistoryControls();
     updateHumanStrokeControls();
   },
-});
+}, tipPreviewCanvas);
+if (import.meta.env.DEV) {
+  (window as Window & { __brushEngine?: BrushEngine }).__brushEngine = engine;
+}
 
 let humanStrokeBenchmark: HumanStrokeBenchmark | null = null;
 let humanStrokeRecording: HumanStrokeRecording | null = null;
@@ -346,7 +352,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 10,
+    performanceTelemetryRevision: 11,
     ...engineEnvironment,
   };
 }
@@ -1005,10 +1011,10 @@ async function replayHumanStroke(): Promise<void> {
       `coda GPU ${playback.inputToGpuCompletionMs.toFixed(2)} ms`,
       `CPU frame p95 ${performanceProfile.renderFrameTotalP95Ms.toFixed(2)} ms`,
       `submit p95 ${performanceProfile.submitImmediateP95Ms.toFixed(2)} ms`,
-      `history CPU ${formatInteger(performanceProfile.historyCapturedBaseStamps)} stamp / ${formatInteger(performanceProfile.historyCapturedBatches)} batch`,
       performanceProfile.adaptivePreviewActivations > 0
-        ? `preview 0,5× ${formatInteger(performanceProfile.adaptivePreviewDeferredBaseStamps)} stamp / ${performanceProfile.adaptivePreviewTimeMs.toFixed(0)} ms`
-        : "preview adattiva non attivata",
+        ? `preview tip ${formatInteger(performanceProfile.adaptivePreviewBaseStampsDrawn)} stamp / ${performanceProfile.adaptivePreviewJsTotalMs.toFixed(2)} ms JS`
+        : "preview tip non attivata",
+      `history CPU ${formatInteger(performanceProfile.historyCapturedBaseStamps)} stamp / ${formatInteger(performanceProfile.historyCapturedBatches)} batch`,
       `FPS medi ${performanceProfile.averageRenderFps.toFixed(1)}`,
       `${formatInteger(performanceProfile.delayedRenderFrames)} frame >20 ms`,
       `presentazione ${playback.endToPresentedMs.toFixed(2)} ms`,

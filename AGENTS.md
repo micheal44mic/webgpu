@@ -1057,3 +1057,90 @@ Prima delle prestazioni verificare coerenza di history, stamp differiti/risolti 
 - qualità: vicinanza dell'overlay, assenza di doppio contributo e pop finale accettabile.
 
 Promuovere soltanto se Base segue visibilmente meglio il dito senza attivazioni frequenti su Fur, il finale resta identico e il costo del resolve dopo il lift è accettabile. Un tail totale maggiore può essere il prezzo intenzionale del feedback temporaneo, ma va riportato esplicitamente e non nascosto dentro la nuova telemetria.
+
+### Risultato iPhone: run #39 Base e #40 Fur — candidato non promuovibile
+
+Le run `#39` Base e `#40` Fur usano la versione Sites `43` e sono pienamente confrontabili con le baseline cache `#37` e `#38`: stesso fingerprint `18982412`, `1583` punti, preset, iPhone, GPU Apple, DPR `3`, viewport `430×775`, canvas `860×1454`, layer `rgba8unorm`, `12107` stamp base e `193712` copie fisiche. Fur conserva decoder diretto, bitmask, nessun fallback, mip `2`, `3633` celle e ratio `0,0554351806640625`.
+
+| Metrica | #37 Base cache | #39 Base preview | #38 Fur cache | #40 Fur preview |
+|---|---:|---:|---:|---:|
+| FPS medi | `57,50` | `58,38` | `59,25` | `58,53` |
+| frame renderizzati | `396` | `401` | `408` | `402` |
+| intervallo frame p95 | `25 ms` | `17 ms` | `17 ms` | `17 ms` |
+| intervallo frame massimo | `67 ms` | `67 ms` | `67 ms` | `67 ms` |
+| frame oltre `20 ms` | `25` | `8` | `3` | `8` |
+| coda GPU finale | `224 ms` | `4416 ms` | `19 ms` | `1216 ms` |
+| input delay p95 | `15 ms` | `16 ms` | `15 ms` | `15 ms` |
+| fine presentazione | `7084 ms` | `11281 ms` | `6892 ms` | `8079 ms` |
+| batch massimo | `88` stamp | `158` stamp | `88` stamp | `87` stamp |
+
+La preview migliora realmente la cadenza live di Base: p95 `25→17 ms`, frame lenti `25→8` e FPS `+1,5%`. Si attiva però dopo il prefisso iniziale e differisce `9290` stamp (`76,7%` della traccia, `257` batch). Al lift deve quindi ridisegnare esattamente `148640` copie fisiche sul layer `4096²`: il solo `adaptivePreviewResolveQueueMs` è `4379 ms`, la coda finale cresce di `4192 ms` e la presentazione termina `4197 ms` più tardi. `adaptivePreviewTimeMs` raggiunge `8779 ms`, quindi l'overlay temporaneo resta coinvolto molto oltre la fine dell'input.
+
+Fur doveva idealmente non attivarsi, ma due probe oltre la soglia lo attivano comunque (`max 55 ms`). Differisce `3416` stamp (`28,2%`, `100` batch) e aggiunge `1178 ms` di resolve; la coda passa da `19` a `1216 ms`, gli FPS calano dell'`1,2%` e i frame lenti salgono da `3` a `8`. I massimi probe `68 ms` Base e `55 ms` Fur mostrano che le soglie `42/70 ms` non separano in modo affidabile i due casi.
+
+La correttezza è confermata in entrambe le run: stamp e copie invariati, journal completo, una sola azione, nessun fallback, batch e stamp differiti uguali a quelli risolti, un solo resolve e una sola presentazione finale. Non è stato perso o duplicato alcun contributo.
+
+Decisione tecnica: il concetto di feedback a bassa risoluzione è validato per la fluidità durante Base, ma questa implementazione monolitica non va promossa. Sposta il collo di bottiglia dopo il lift e introduce una regressione enorme anche su Fur. Non tentare di salvarla cambiando soltanto la soglia: una soglia più alta può evitare Fur o ridurre gli stamp differiti, ma non elimina il costo strutturale di ridisegnare a fine tratto tutto il segmento rimandato. La versione `43` resta soltanto il candidato misurato finché non viene eseguito il rollback esplicito; la baseline promossa rimane la `42` con le run `#37–#38`.
+
+## Esperimento successivo: tip preview Canvas2D senza debito GPU — candidato locale, non pubblicato
+
+Questo candidato rimuove integralmente l'architettura differita della versione `43` e riparte dal renderer esatto promosso della versione `42`/commit `c01ac1c`. Ogni batch viene impacchettato, inviato una sola volta al layer WebGPU esatto e registrato nel journal nello stesso `renderFrame` della baseline. Shader, pipeline brush/display, `submitImmediate`, Count, ordine stamp-major/copy-minor, seed, jitter, Shape, blending e pixel permanenti restano invariati. Non esistono texture WebGPU di preview, batch differiti, resolve, replay esatti o presentazioni WebGPU speciali al lift.
+
+### Trigger e patch transiente
+
+Il trigger mantiene al massimo un solo `GPUQueue.onSubmittedWorkDone()` pendente, campionato ogni `4` submission quando la preview è inattiva. Un timeout irrisolto da `60 ms` attiva subito la patch; in alternativa servono due completion campionate consecutive da almeno `58 ms`. Queste durate misurano il completamento di un prefisso FIFO più il ritardo della callback JavaScript, non tempo GPU isolato né utilizzo percentuale.
+
+Quando il trigger scatta, soltanto gli ultimi `2` stamp base vengono approssimati in una piccola patch Canvas2D screen-space:
+
+- massimo `384×384` CSS pixel, mai un canvas trasparente full-screen;
+- risoluzione lineare `0,5×` rispetto al backing WebGPU esatto per ciascun asse; con DPR limitato a `2` equivale a circa `1×` CSS su iPhone;
+- budget sincrono JavaScript `1,25 ms`, con `0,2 ms` riservati al commit;
+- supporto normal blend; additive disabilita la preview senza cambiare il percorso esatto;
+- Circle ricostruisce seed, jitter di posizione e colore per copia;
+- Shape usa il mip CPU `128×128` già derivato dalla stessa maschera decodificata, applica anche `mix(source², source, hardness)` e sceglie il colore più vicino da una palette pre-tinta di `12` sprite.
+
+Il rendering è atomico: tutte le copie vengono prima disegnate su un canvas staccato. La patch visibile viene sostituita soltanto se l'intero frame termina entro il budget; uno sforamento, una patch troppo grande o una preparazione incompleta conserva l'ultimo bitmap completo. Non vengono mai pubblicate nuvole parziali di copie. Lo spostamento DOM usa `left/top`, non una trasformazione 3D forzata. Se la patch è già invisibile, pan/zoom/pinch ripetuti azzerano soltanto lo stato logico e non ripetono `clearRect` o scritture di stile.
+
+Canvas2D è separato dalla coda WebGPU, ma Safari sceglie liberamente il backend di raster e compositing. Non dichiarare quindi che la patch sia garantita CPU-only o GPU-free. La telemetria `adaptivePreviewJs*` misura soltanto il lavoro JavaScript sincrono per preparare ed emettere i comandi Canvas2D e gli stili; non include raster differito, upload o compositing.
+
+### Lift senza replay e ritiro della patch
+
+Il replay canonico chiama `endStroke()` nello stesso rAF dell'ultimo input, prima del normale `renderFrame` successivo. Al lift il candidato aggiunge quindi alla patch gli ultimi stamp ancora presenti in `pendingStamps` come candidati provvisori, senza inviarli alla GPU. Quando il normale `renderFrame` della baseline consuma quel batch, i candidati vengono legati per identità al relativo seriale esatto. La patch resta congelata finché il prefisso esatto più recente che rappresenta non completa; viene rimossa soltanto nel rAF successivo alla completion, lasciando alla texture WebGPU il tempo di essere presentata.
+
+Questo passaggio non chiama `queue.submit`, non estrae stamp dalla FIFO, non crea un batch aggiuntivo e non ridisegna nulla nel layer. Anche il catch-up durante un tratto attivo rimuove la patch soltanto in un rAF successivo alla completion, mai direttamente nella microtask di `onSubmittedWorkDone()`. Un eventuale clear di catch-up già pianificato viene cancellato prima di congelare la patch, evitando che il retirement frozen resti senza callback.
+
+Nuovo stroke, cambio impostazioni, clear/reset, Undo/Redo, formato, resize, fit, pan, zoom e device loss invalidano deterministicamente la patch e usano un token di generazione per ignorare callback stale. Un secondo stroke o un pinch arrivato prima del rAF di retirement va incluso nello stress test manuale, perché l'invalidazione intenzionale privilegia la nuova interazione e può rimuovere subito il vecchio tip transiente.
+
+### Telemetria v11 e invarianti
+
+`performanceTelemetryRevision: 11` salva strategia, scala rispetto all'esatto, budget JS, dimensione massima, intervallo e soglie complete del trigger, attivazioni, frame/copie disegnate, skip atomici o oversized, pixel della patch, tempi JS, durata, latenza probe, stamp non confermati, retirement e freeze. `adaptivePreviewLiftPendingBaseStamps` conta i candidati provvisori conservati al lift; `adaptivePreviewLiftPendingSerialBindings` conta quanti vengono poi associati al normale batch esatto.
+
+Per ogni run valida devono valere:
+
+- `adaptivePreviewDeferredBaseStamps === 0`;
+- `adaptivePreviewResolvedBaseStamps === 0`;
+- `adaptivePreviewExactReplayBatches === 0`;
+- `adaptivePreviewLiftGpuSubmissions === 0`;
+- `adaptivePreviewExactBaseStampsSubmitted === baseStamps`;
+- `adaptivePreviewExactBatchesSubmitted === brushBatches`;
+- `adaptivePreviewLiftPendingSerialBindings === adaptivePreviewLiftPendingBaseStamps` quando la preview è congelata con un tip pending;
+- history, stamp, copie, cache di presentazione e firme Shape identici alla baseline `#37–#38`.
+
+Soltanto Vite `DEV` riconosce `?adaptivePreview=force` ed espone `window.__brushEngine` con `getAdaptivePreviewDiagnostics()` per il test della sequenza completion → catch-up pianificato → `endStroke()` prima del rAF. La build di produzione elimina sia il parametro force sia l'hook globale.
+
+### Verifiche locali completate e protocollo iPhone
+
+TypeScript, Vite e preparazione Sites riescono. `src/shaders.ts` è identico al commit `c01ac1c`; il corpo di `submitImmediate` è identico dopo normalizzazione dei newline e nel sorgente esiste una sola chiamata `device.queue.submit`, quella del renderer esatto della baseline. `git diff --check` non segnala errori. Il candidato non è stato pubblicato e non è promosso.
+
+Gli smoke test runtime forzati sono stati completati nel browser locale su GPU NVIDIA Ampere:
+
+- Circle con preset canonico: patch osservata durante il drag e ritirata al termine senza residui;
+- Shape/Fur con size `750`, spacing `1%`, Count `16`, flow/hardness `100%`, blend `4x` e scatter `100%`: patch osservata in `16/55` campioni di polling e poi nascosta;
+- due tratti immediatamente consecutivi: patch osservata in entrambe le finestre attive e stato finale nascosto;
+- Undo e Redo Shape: replay completati, controlli ripristinati e nessuna patch stale;
+- zoom seguito da Fit durante il retirement: invalidazione riuscita e patch finale nascosta;
+- console senza errori o warning applicativi; soltanto messaggi debug di Vite.
+
+L'audit statico indipendente non ha rilevato P0/P1 e ha verificato anche la race catch-up pianificato → lift, il binding per identità del tip pending e l'aggiornamento atomico tramite scratch canvas. Il gesto pinch reale e il pop percepito non sono valutabili in modo affidabile con il mouse del browser: restano controlli tattili da fare sull'iPhone dopo la pubblicazione.
+
+Dopo la pubblicazione ripetere Base e Fur sullo stesso iPhone delle `#37–#38`. Confrontare soprattutto fluidità durante input e coda finale: l'obiettivo è rendere il tip leggibile quando la coda arretra senza spostare lavoro WebGPU al lift. Se `adaptivePreviewJsP95Ms` supera stabilmente il budget, gli skip sono frequenti, il compositing peggiora la GPU o il cambio patch→esatto resta visibile, rimuovere il candidato senza modificare contemporaneamente il renderer esatto.
