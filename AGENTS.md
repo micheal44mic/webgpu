@@ -1480,3 +1480,49 @@ Su richiesta dell'utente, il tetto adattivo viene differenziato per piattaforma 
 Restano identici step `+0,25`, probe ogni quattro submission, soglie `60/58 ms`, massimo un incremento per probe, assenza di discesa intra-stroke, reset al nuovo tratto, preview, shader e renderer. La sola differenza funzionale è che un Android ancora congestionato dopo `2,50%` può continuare a diradare gli stamp futuri fino a sedici step complessivi. È una riduzione di qualità intenzionale e visibile solo quando la piattaforma continua a non reggere; non è un'ottimizzazione pixel-identica.
 
 `performanceTelemetryRevision: 18` identifica il candidato. Sia l'ambiente sia il profilo salvano in `adaptiveSpacingMaxExtraPercentPoints` il tetto effettivo selezionato (`4` Android, `1.5` altrove), così la policy può essere verificata direttamente nelle run. Il confronto Android va fatto contro `#57` per Base e `#58` per Fur, controllando soprattutto spacing finale, stamp, FPS, p95, coda finale, ritardo input e backlog. Se il nuovo tetto lascia ancora latenze dell'ordine dei secondi, aumentare ulteriormente lo spacing non è una soluzione sufficiente per quel dispositivo.
+
+### Risultato del tetto Android esteso: run #59–#60
+
+Le run Android `#59` Base e `#60` Fur usano lo stesso Android 10, Chrome 150, GPU ARM Valhall, DPR `3` e canvas `720×1232` delle `#57–#58`. Il tetto dichiarato è correttamente `+4` punti, ma nessuna delle due run raggiunge `5%`: entrambe arrivano soltanto a `3%`, cioè otto incrementi da `+0,25`.
+
+| Metrica | #57 Base +1,5 | #59 Base +4 | #58 Fur +1,5 | #60 Fur +4 |
+|---|---:|---:|---:|---:|
+| spacing finale | `2,50%` | `3,00%` | `2,50%` | `3,00%` |
+| stamp base / copie | `5179 / 82864` | `4568 / 73088` | `5012 / 80192` | `4915 / 78640` |
+| FPS medi | `2,50` | `2,99` | `2,73` | `1,49` |
+| intervallo frame p95 | `1591 ms` | `1470 ms` | `1751 ms` | `3500 ms` |
+| coda GPU finale | `12407 ms` | `10680 ms` | `9567 ms` | `9710 ms` |
+
+Base migliora soltanto in misura modesta e resta inutilizzabile; Fur non migliora e in questa replica ha un frame pacing nettamente peggiore. Il limite nuovo non è il fattore attivo: con appena `29–30` frame durante il replay, i probe applicano soltanto otto step e gli ultimi arrivano quando gran parte degli stamp è già stata generata. Decisione: il solo aumento del tetto non risolve questo Android. Non attribuire alla soglia `5%` un risultato che le run non hanno realmente esercitato; un eventuale passo successivo sullo spacing dovrebbe modificare separatamente la velocità di salita Android, non aumentare ancora il massimo.
+
+## Esperimento di qualità: piramide mip live del layer dipinto — candidato locale
+
+Su richiesta esplicita dell'utente questo passo riguarda la qualità percepita del canvas ridotto, che con il campionamento diretto del `4096²` appare troppo morbido/povero di dettaglio. La qualità filtrata deve essere presente anche mentre si disegna: non è accettabile mostrare LOD 0 durante il tratto e cambiare nitidezza dopo il lift.
+
+Il paint layer resta una texture monolitica `4096×4096`; il mip `0` è ancora l'unico attachment autorevole del brush. La view del brush è ora esplicitamente limitata a quel solo mip. Stamp, Count, spacing adattivo, seed, jitter, ordine, blending, Shape, history e tip preview non sono cambiati. I dodici livelli successivi sono soltanto dati derivati per la presentazione e portano il totale a `13` livelli (`4096→1`). L'overhead di memoria è circa `21,33 MiB` in `rgba8unorm` e `42,67 MiB` in `rgba16float`, oltre ai rispettivi `64/128 MiB` del mip autorevole.
+
+La manutenzione è live e sincronizzata nello stesso command encoder di ogni frame:
+
+1. il brush compone il batch nel mip `0` esatto;
+2. la dirty rectangle conservativa del batch viene propagata con divisione `floor/ceil` nei mip necessari;
+3. ogni livello esegue un box filter esatto `2×2` con quattro `textureLoad` e media in RGBA lineare premoltiplicato;
+4. soltanto dopo questi pass lo shader display aggiorna la cache screen-space e la copia alla swapchain.
+
+Il frame presentato non può quindi contenere un mip vecchio né subire un cambio di nitidezza al lift. Non esistono readback o ricampionamenti CPU. Il filtro non separa RGB e alpha: media direttamente il colore già premoltiplicato del layer, evitando aloni colorati sui bordi trasparenti.
+
+La selezione usa `floor(log2(1 / zoom))`, limitata a `0–12`: viene scelto il livello più piccolo che resta almeno grande quanto la proiezione del layer sul backing canvas. Il ricampionamento residuo è quindi sempre una riduzione o `1:1`, mai un upscaling. Il sampler resta bilineare per il residuo. Un cambio LOD forza un rebuild completo e atomico della cache di presentazione, così non possono coesistere zone filtrate da livelli diversi.
+
+Si mantengono soltanto i livelli fino a quello effettivamente visualizzato. Se si disegna a un LOD più fine, i livelli superiori vengono marcati non validi; un successivo zoom-out costruisce in full il primo livello mancante e deriva i successivi prima del display dello stesso frame. Pan e zoom con livelli già validi non rigenerano la piramide. Durante Undo/Redo i batch `present=false` non mantengono mip intermedi: invalidano la catena e l'ultimo batch visibile la ricostruisce una sola volta prima della presentazione finale. Clear, cambio formato e ricreazione risorse ripartono da mip `0` e inizializzano i livelli richiesti prima di mostrarli.
+
+`performanceTelemetryRevision: 19` identifica il candidato con:
+
+- `paintDisplayPyramidStrategy: "live-dirty-box-filter-mip-chain"`;
+- `paintDisplayLodSelectionStrategy: "largest-power-of-two-without-upscaling"`;
+- numero di livelli, LOD finale e massimo LOD usato;
+- memoria aggiuntiva della catena;
+- frame con manutenzione, pass totali, build full e aggiornamenti dirty;
+- pixel dirty del mip autorevole, pixel derivati aggiornati e tempo CPU di encoding dei pass.
+
+Il contatore `displayEncodingMs` continua a includere l'intero blocco presentazione e quindi comprende anche l'encoding mip; `paintDisplayPyramidEncodingMs` ne isola il sottoinsieme. Nessuno dei due misura il tempo GPU. Il costo reale va deciso con nuove coppie Base/Fur sullo stesso dispositivo, confrontando FPS, p95, frame lenti, coda finale e qualità visiva con la build precedente. In particolare, al Fit mobile sono attesi uno o più render pass aggiuntivi per frame: il candidato va rimosso se la qualità non migliora chiaramente o se il downgrade del tratto è eccessivo.
+
+Verifica locale prima della pubblicazione: TypeScript, Vite e preparazione Sites riescono; `git diff --check` è pulito. La porzione `brushShader` precedente a `displayShader` è identica al commit base. Su Chrome/WebGPU con GPU NVIDIA Ampere, canvas `860×1454`, il Fit ha selezionato LOD `2` senza errori di validazione. Uno smoke Shape su dodici frame ha registrato esattamente `24` pass mip (`2` per frame), tutti dirty update, mantenendo `coarse-occupancy-bitmask`; Undo e Redo sono riusciti. Uno zoom-out successivo ha selezionato e costruito LOD `4`. Anche ricreazione e disegno in `rgba16float` sono riusciti, riportando `42,67 MiB` aggiuntivi. La console non contiene errori WebGPU; l'unico `404` locale è la richiesta accessoria del browser priva di risorsa e non riguarda il renderer. Il candidato non è stato pubblicato né committato.

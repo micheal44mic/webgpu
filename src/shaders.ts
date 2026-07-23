@@ -314,6 +314,7 @@ struct DisplayUniforms {
   viewCenter: vec2<f32>,
   zoom: f32,
   checkerSize: f32,
+  selectedMipLevel: f32,
 };
 
 struct VertexOutput {
@@ -381,7 +382,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   }
 
   let uv = clamp((layerPosition + vec2<f32>(0.5)) / display.layerSize, vec2<f32>(0.0), vec2<f32>(1.0));
-  let paint = textureSampleLevel(layerTexture, layerSampler, uv, 0.0);
+  let paint = textureSampleLevel(layerTexture, layerSampler, uv, display.selectedMipLevel);
 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
@@ -390,5 +391,54 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
 
   return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
+}
+`;
+
+// Downsample 2x2 in the paint layer's native linear, premultiplied RGBA
+// representation. Each destination pixel owns an exact, non-overlapping 2x2
+// source footprint, so dirty rectangles can be propagated with floor/ceil
+// division and no platform-dependent filtering kernel.
+export const paintMipDownsampleShader = /* wgsl */ `
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+};
+
+@group(0) @binding(0) var sourceTexture: texture_2d<f32>;
+
+@vertex
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+  let positions = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>( 3.0, -1.0),
+    vec2<f32>(-1.0,  3.0)
+  );
+
+  var output: VertexOutput;
+  output.position = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
+  return output;
+}
+
+@fragment
+fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
+  let sourceOrigin = vec2<i32>(fragmentPosition.xy) * 2;
+  let dimensions = vec2<i32>(textureDimensions(sourceTexture));
+  let maximumCoordinate = dimensions - vec2<i32>(1);
+  let p00 = textureLoad(sourceTexture, min(sourceOrigin, maximumCoordinate), 0);
+  let p10 = textureLoad(
+    sourceTexture,
+    min(sourceOrigin + vec2<i32>(1, 0), maximumCoordinate),
+    0
+  );
+  let p01 = textureLoad(
+    sourceTexture,
+    min(sourceOrigin + vec2<i32>(0, 1), maximumCoordinate),
+    0
+  );
+  let p11 = textureLoad(
+    sourceTexture,
+    min(sourceOrigin + vec2<i32>(1, 1), maximumCoordinate),
+    0
+  );
+  return (p00 + p10 + p01 + p11) * 0.25;
 }
 `;

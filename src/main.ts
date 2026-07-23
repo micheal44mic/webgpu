@@ -147,6 +147,11 @@ interface BenchmarkRun {
     dirtyRectStrategy: "directional-jitter-bounds";
     presentationCacheStrategy: StrokePerformanceProfile["presentationCacheStrategy"];
     presentationTransferStrategy: StrokePerformanceProfile["presentationTransferStrategy"];
+    paintDisplayPyramidStrategy: StrokePerformanceProfile["paintDisplayPyramidStrategy"];
+    paintDisplayLodSelectionStrategy: StrokePerformanceProfile["paintDisplayLodSelectionStrategy"];
+    paintDisplayMipLevelCount: number;
+    paintDisplaySelectedMipLevel: number;
+    paintDisplayPyramidAdditionalMemoryMiB: number;
     adaptivePreviewStrategy: StrokePerformanceProfile["adaptivePreviewStrategy"];
     adaptivePreviewTriggerStrategy: StrokePerformanceProfile["adaptivePreviewTriggerStrategy"];
     adaptivePreviewVisibleCanvasStrategy: StrokePerformanceProfile["adaptivePreviewVisibleCanvasStrategy"];
@@ -174,7 +179,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 18;
+    performanceTelemetryRevision: 19;
   };
 }
 
@@ -364,7 +369,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 18,
+    performanceTelemetryRevision: 19,
     ...engineEnvironment,
   };
 }
@@ -1023,6 +1028,7 @@ async function replayHumanStroke(): Promise<void> {
       `coda GPU ${playback.inputToGpuCompletionMs.toFixed(2)} ms`,
       `CPU frame p95 ${performanceProfile.renderFrameTotalP95Ms.toFixed(2)} ms`,
       `submit p95 ${performanceProfile.submitImmediateP95Ms.toFixed(2)} ms`,
+      `display mip ${performanceProfile.paintDisplaySelectedMipLevel} / ${formatInteger(performanceProfile.paintDisplayPyramidPasses)} pass`,
       performanceProfile.adaptivePreviewActivations > 0
         ? `preview tip ${formatInteger(performanceProfile.adaptivePreviewBaseStampsDrawn)} stamp / ${performanceProfile.adaptivePreviewJsTotalMs.toFixed(2)} ms JS`
         : "preview tip non attivata",

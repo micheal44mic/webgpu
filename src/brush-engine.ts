@@ -1,6 +1,6 @@
 import { clamp, hexToHsl } from "./color";
 import { decodeGrayscalePng8 } from "./png-mask";
-import { brushShader, displayShader } from "./shaders";
+import { brushShader, displayShader, paintMipDownsampleShader } from "./shaders";
 
 export type BlendMode = "normal" | "additive";
 export type LayerFormat = "rgba8unorm" | "rgba16float";
@@ -18,6 +18,8 @@ export type HistoryReplayStrategy = "clear-and-stable-gpu-replay";
 export type HistoryStampRetentionStrategy = "shared-immutable-references";
 export type PresentationCacheStrategy = "persistent-full-resolution-screen-cache";
 export type PresentationTransferStrategy = "copy-texture-to-current-texture";
+export type PaintDisplayPyramidStrategy = "live-dirty-box-filter-mip-chain";
+export type PaintDisplayLodSelectionStrategy = "largest-power-of-two-without-upscaling";
 export type AdaptivePreviewStrategy = "queue-lag-triggered-canvas2d-tip-patch";
 export type AdaptivePreviewTriggerStrategy = "single-sampled-queue-prefix-latency";
 export type AdaptivePreviewVisibleCanvasStrategy =
@@ -134,6 +136,19 @@ export interface StrokePerformanceProfile {
   presentationCacheUpdatedPixels: number;
   legacyDisplayShaderPixels: number;
   presentationCopiedPixels: number;
+  paintDisplayPyramidStrategy: PaintDisplayPyramidStrategy;
+  paintDisplayLodSelectionStrategy: PaintDisplayLodSelectionStrategy;
+  paintDisplayMipLevelCount: number;
+  paintDisplaySelectedMipLevel: number;
+  paintDisplayMaximumSelectedMipLevel: number;
+  paintDisplayPyramidAdditionalMemoryMiB: number;
+  paintDisplayPyramidMaintenanceFrames: number;
+  paintDisplayPyramidFullLevelBuilds: number;
+  paintDisplayPyramidDirtyLevelUpdates: number;
+  paintDisplayPyramidPasses: number;
+  paintDisplayPyramidBaseDirtyPixels: number;
+  paintDisplayPyramidUpdatedPixels: number;
+  paintDisplayPyramidEncodingMs: number;
   adaptivePreviewStrategy: AdaptivePreviewStrategy;
   adaptivePreviewTriggerStrategy: AdaptivePreviewTriggerStrategy;
   adaptivePreviewVisibleCanvasStrategy: AdaptivePreviewVisibleCanvasStrategy;
@@ -378,6 +393,14 @@ interface SubmitTiming {
   presentationCacheUpdatedPixels: number;
   legacyDisplayShaderPixels: number;
   presentationCopiedPixels: number;
+  displaySelectedMipLevel: number;
+  paintDisplayPyramidMaintenanceFrames: number;
+  paintDisplayPyramidFullLevelBuilds: number;
+  paintDisplayPyramidDirtyLevelUpdates: number;
+  paintDisplayPyramidPasses: number;
+  paintDisplayPyramidBaseDirtyPixels: number;
+  paintDisplayPyramidUpdatedPixels: number;
+  paintDisplayPyramidEncodingMs: number;
 }
 
 interface RenderFrameTiming {
@@ -416,6 +439,14 @@ interface MutableStrokePerformanceProfile {
   presentationCacheUpdatedPixels: number;
   legacyDisplayShaderPixels: number;
   presentationCopiedPixels: number;
+  paintDisplayMaximumSelectedMipLevel: number;
+  paintDisplayPyramidMaintenanceFrames: number;
+  paintDisplayPyramidFullLevelBuilds: number;
+  paintDisplayPyramidDirtyLevelUpdates: number;
+  paintDisplayPyramidPasses: number;
+  paintDisplayPyramidBaseDirtyPixels: number;
+  paintDisplayPyramidUpdatedPixels: number;
+  paintDisplayPyramidEncodingMs: number;
   adaptivePreviewProbeStarts: number;
   adaptivePreviewProbeResolvedFast: number;
   adaptivePreviewProbeResolvedSlow: number;
@@ -471,6 +502,7 @@ interface MutableStrokePerformanceProfile {
 }
 
 const LAYER_SIZE = 4096;
+const PAINT_DISPLAY_MIP_LEVEL_COUNT = Math.floor(Math.log2(LAYER_SIZE)) + 1;
 const STAMP_STRIDE_BYTES = 32;
 const MAX_STAMPS_PER_BATCH = 65_536;
 const STAMP_VERTICES_PER_COPY = 4;
@@ -485,6 +517,9 @@ const COLOR_SEED_STRATEGY = "reuse-position-copy-seed" as const;
 const DIRTY_RECT_STRATEGY = "directional-jitter-bounds" as const;
 const PRESENTATION_CACHE_STRATEGY = "persistent-full-resolution-screen-cache" as const;
 const PRESENTATION_TRANSFER_STRATEGY = "copy-texture-to-current-texture" as const;
+const PAINT_DISPLAY_PYRAMID_STRATEGY = "live-dirty-box-filter-mip-chain" as const;
+const PAINT_DISPLAY_LOD_SELECTION_STRATEGY =
+  "largest-power-of-two-without-upscaling" as const;
 const ADAPTIVE_PREVIEW_STRATEGY = "queue-lag-triggered-canvas2d-tip-patch" as const;
 const ADAPTIVE_PREVIEW_TRIGGER_STRATEGY = "single-sampled-queue-prefix-latency" as const;
 const ADAPTIVE_PREVIEW_VISIBLE_CANVAS_STRATEGY =
@@ -557,7 +592,17 @@ const SHAPE_OCCUPANCY_MIN_RADIUS = 128;
 const SHAPE_OCCUPANCY_MAX_COVERAGE_RATIO = 0.5;
 const SHAPE_OCCUPANCY_MAP_BYTES = SHAPE_OCCUPANCY_WORDS_PER_MAP * 4;
 const BRUSH_UNIFORM_BYTES = 96;
-const DISPLAY_UNIFORM_BYTES = 32;
+const DISPLAY_UNIFORM_BYTES = 48;
+
+function paintDisplayPyramidAdditionalMemoryMiB(format: LayerFormat): number {
+  const bytesPerPixel = format === "rgba16float" ? 8 : 4;
+  let pixels = 0;
+  for (let mipLevel = 1; mipLevel < PAINT_DISPLAY_MIP_LEVEL_COUNT; mipLevel += 1) {
+    const dimension = Math.max(1, LAYER_SIZE >> mipLevel);
+    pixels += dimension * dimension;
+  }
+  return (pixels * bytesPerPixel) / (1024 * 1024);
+}
 
 function percentile(values: readonly number[], ratio: number): number {
   if (values.length === 0) {
@@ -731,6 +776,10 @@ export class BrushEngine {
   private layerFormat: LayerFormat = "rgba8unorm";
   private layerTexture!: GPUTexture;
   private layerView!: GPUTextureView;
+  private paintMipViews: GPUTextureView[] = [];
+  private paintMipDownsampleBindGroups: GPUBindGroup[] = [];
+  private paintDisplayMipValidThroughLevel = 0;
+  private paintDisplaySelectedMipLevel = 0;
   private presentationCacheTexture: GPUTexture | null = null;
   private presentationCacheView: GPUTextureView | null = null;
   private presentationCacheWidth = 0;
@@ -784,12 +833,14 @@ export class BrushEngine {
   private brushBindGroupLayout!: GPUBindGroupLayout;
   private brushOccupancyBindGroupLayout!: GPUBindGroupLayout;
   private displayBindGroupLayout!: GPUBindGroupLayout;
+  private paintMipDownsampleBindGroupLayout!: GPUBindGroupLayout;
   private brushBindGroup!: GPUBindGroup;
   private brushOccupancyBindGroups: GPUBindGroup[] = [];
   private displayBindGroup!: GPUBindGroup;
 
   private brushShaderModule!: GPUShaderModule;
   private displayShaderModule!: GPUShaderModule;
+  private paintMipDownsampleShaderModule!: GPUShaderModule;
   private normalPipeline!: GPURenderPipeline;
   private additivePipeline!: GPURenderPipeline;
   private shapeNormalPipeline!: GPURenderPipeline;
@@ -797,6 +848,7 @@ export class BrushEngine {
   private shapeOccupancyNormalPipeline!: GPURenderPipeline;
   private shapeOccupancyAdditivePipeline!: GPURenderPipeline;
   private displayPipeline!: GPURenderPipeline;
+  private paintMipDownsamplePipeline!: GPURenderPipeline;
 
   private readonly instanceUpload = new ArrayBuffer(MAX_STAMPS_PER_BATCH * STAMP_STRIDE_BYTES);
   private readonly instanceUploadF32 = new Float32Array(this.instanceUpload);
@@ -1452,6 +1504,14 @@ export class BrushEngine {
       presentationCacheUpdatedPixels: 0,
       legacyDisplayShaderPixels: 0,
       presentationCopiedPixels: 0,
+      paintDisplayMaximumSelectedMipLevel: 0,
+      paintDisplayPyramidMaintenanceFrames: 0,
+      paintDisplayPyramidFullLevelBuilds: 0,
+      paintDisplayPyramidDirtyLevelUpdates: 0,
+      paintDisplayPyramidPasses: 0,
+      paintDisplayPyramidBaseDirtyPixels: 0,
+      paintDisplayPyramidUpdatedPixels: 0,
+      paintDisplayPyramidEncodingMs: 0,
       adaptivePreviewProbeStarts: 0,
       adaptivePreviewProbeResolvedFast: 0,
       adaptivePreviewProbeResolvedSlow: 0,
@@ -1543,6 +1603,20 @@ export class BrushEngine {
       presentationCacheUpdatedPixels: profile.presentationCacheUpdatedPixels,
       legacyDisplayShaderPixels: profile.legacyDisplayShaderPixels,
       presentationCopiedPixels: profile.presentationCopiedPixels,
+      paintDisplayPyramidStrategy: PAINT_DISPLAY_PYRAMID_STRATEGY,
+      paintDisplayLodSelectionStrategy: PAINT_DISPLAY_LOD_SELECTION_STRATEGY,
+      paintDisplayMipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT,
+      paintDisplaySelectedMipLevel: this.paintDisplaySelectedMipLevel,
+      paintDisplayMaximumSelectedMipLevel: profile.paintDisplayMaximumSelectedMipLevel,
+      paintDisplayPyramidAdditionalMemoryMiB:
+        paintDisplayPyramidAdditionalMemoryMiB(this.layerFormat),
+      paintDisplayPyramidMaintenanceFrames: profile.paintDisplayPyramidMaintenanceFrames,
+      paintDisplayPyramidFullLevelBuilds: profile.paintDisplayPyramidFullLevelBuilds,
+      paintDisplayPyramidDirtyLevelUpdates: profile.paintDisplayPyramidDirtyLevelUpdates,
+      paintDisplayPyramidPasses: profile.paintDisplayPyramidPasses,
+      paintDisplayPyramidBaseDirtyPixels: profile.paintDisplayPyramidBaseDirtyPixels,
+      paintDisplayPyramidUpdatedPixels: profile.paintDisplayPyramidUpdatedPixels,
+      paintDisplayPyramidEncodingMs: profile.paintDisplayPyramidEncodingMs,
       adaptivePreviewStrategy: ADAPTIVE_PREVIEW_STRATEGY,
       adaptivePreviewTriggerStrategy: ADAPTIVE_PREVIEW_TRIGGER_STRATEGY,
       adaptivePreviewVisibleCanvasStrategy: ADAPTIVE_PREVIEW_VISIBLE_CANVAS_STRATEGY,
@@ -1718,6 +1792,11 @@ export class BrushEngine {
     dirtyRectStrategy: typeof DIRTY_RECT_STRATEGY;
     presentationCacheStrategy: typeof PRESENTATION_CACHE_STRATEGY;
     presentationTransferStrategy: typeof PRESENTATION_TRANSFER_STRATEGY;
+    paintDisplayPyramidStrategy: typeof PAINT_DISPLAY_PYRAMID_STRATEGY;
+    paintDisplayLodSelectionStrategy: typeof PAINT_DISPLAY_LOD_SELECTION_STRATEGY;
+    paintDisplayMipLevelCount: number;
+    paintDisplaySelectedMipLevel: number;
+    paintDisplayPyramidAdditionalMemoryMiB: number;
     adaptivePreviewStrategy: typeof ADAPTIVE_PREVIEW_STRATEGY;
     adaptivePreviewTriggerStrategy: typeof ADAPTIVE_PREVIEW_TRIGGER_STRATEGY;
     adaptivePreviewVisibleCanvasStrategy: typeof ADAPTIVE_PREVIEW_VISIBLE_CANVAS_STRATEGY;
@@ -1787,6 +1866,12 @@ export class BrushEngine {
       dirtyRectStrategy: DIRTY_RECT_STRATEGY,
       presentationCacheStrategy: PRESENTATION_CACHE_STRATEGY,
       presentationTransferStrategy: PRESENTATION_TRANSFER_STRATEGY,
+      paintDisplayPyramidStrategy: PAINT_DISPLAY_PYRAMID_STRATEGY,
+      paintDisplayLodSelectionStrategy: PAINT_DISPLAY_LOD_SELECTION_STRATEGY,
+      paintDisplayMipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT,
+      paintDisplaySelectedMipLevel: this.paintDisplaySelectedMipLevel,
+      paintDisplayPyramidAdditionalMemoryMiB:
+        paintDisplayPyramidAdditionalMemoryMiB(this.layerFormat),
       adaptivePreviewStrategy: ADAPTIVE_PREVIEW_STRATEGY,
       adaptivePreviewTriggerStrategy: ADAPTIVE_PREVIEW_TRIGGER_STRATEGY,
       adaptivePreviewVisibleCanvasStrategy: ADAPTIVE_PREVIEW_VISIBLE_CANVAS_STRATEGY,
@@ -1943,6 +2028,16 @@ export class BrushEngine {
         },
       ],
     });
+    this.paintMipDownsampleBindGroupLayout = this.device.createBindGroupLayout({
+      label: "Paint display mip downsample bind group layout",
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float", viewDimension: "2d" },
+        },
+      ],
+    });
 
     this.brushBindGroup = this.device.createBindGroup({
       label: "Brush legacy bind group",
@@ -1970,9 +2065,14 @@ export class BrushEngine {
 
     this.brushShaderModule = this.device.createShaderModule({ label: "Brush WGSL", code: brushShader });
     this.displayShaderModule = this.device.createShaderModule({ label: "Display WGSL", code: displayShader });
+    this.paintMipDownsampleShaderModule = this.device.createShaderModule({
+      label: "Paint display mip downsample WGSL",
+      code: paintMipDownsampleShader,
+    });
     await Promise.all([
       this.assertShaderCompiled(this.brushShaderModule, "brush"),
       this.assertShaderCompiled(this.displayShaderModule, "display"),
+      this.assertShaderCompiled(this.paintMipDownsampleShaderModule, "paint display mip downsample"),
     ]);
 
     const displayPipelineLayout = this.device.createPipelineLayout({
@@ -2151,6 +2251,7 @@ export class BrushEngine {
     const texture = this.device.createTexture({
       label: `4096² paint layer ${format}`,
       size: { width: LAYER_SIZE, height: LAYER_SIZE, depthOrArrayLayers: 1 },
+      mipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT,
       format,
       usage:
         GPUTextureUsage.RENDER_ATTACHMENT |
@@ -2158,7 +2259,26 @@ export class BrushEngine {
         GPUTextureUsage.COPY_SRC |
         GPUTextureUsage.COPY_DST,
     });
-    const view = texture.createView();
+    // Mip 0 remains the only authoritative brush attachment. The remaining
+    // subresources are derived presentation data and are never blended into.
+    const view = texture.createView({
+      label: `Paint layer authoritative mip 0 ${format}`,
+      baseMipLevel: 0,
+      mipLevelCount: 1,
+    });
+    const samplingView = texture.createView({
+      label: `Paint layer display mip chain ${format}`,
+      baseMipLevel: 0,
+      mipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT,
+    });
+    const mipViews = Array.from(
+      { length: PAINT_DISPLAY_MIP_LEVEL_COUNT },
+      (_, mipLevel) => texture.createView({
+        label: `Paint layer mip ${mipLevel} ${format}`,
+        baseMipLevel: mipLevel,
+        mipLevelCount: 1,
+      }),
+    );
 
     const brushPipelineLayout = this.device.createPipelineLayout({
       label: `Brush legacy pipeline layout ${format}`,
@@ -2167,6 +2287,10 @@ export class BrushEngine {
     const brushOccupancyPipelineLayout = this.device.createPipelineLayout({
       label: `Brush occupancy pipeline layout ${format}`,
       bindGroupLayouts: [this.brushOccupancyBindGroupLayout],
+    });
+    const paintMipDownsamplePipelineLayout = this.device.createPipelineLayout({
+      label: `Paint display mip downsample pipeline layout ${format}`,
+      bindGroupLayouts: [this.paintMipDownsampleBindGroupLayout],
     });
 
     this.device.pushErrorScope("validation");
@@ -2356,6 +2480,21 @@ export class BrushEngine {
       primitive: { topology: "triangle-strip" },
     });
 
+    const paintMipDownsamplePipeline = this.device.createRenderPipeline({
+      label: `Paint display mip downsample ${format}`,
+      layout: paintMipDownsamplePipelineLayout,
+      vertex: {
+        module: this.paintMipDownsampleShaderModule,
+        entryPoint: "vertexMain",
+      },
+      fragment: {
+        module: this.paintMipDownsampleShaderModule,
+        entryPoint: "fragmentMain",
+        targets: [{ format }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+
     const validationError = await this.device.popErrorScope();
     if (validationError) {
       texture.destroy();
@@ -2367,21 +2506,33 @@ export class BrushEngine {
       layout: this.displayBindGroupLayout,
       entries: [
         { binding: 0, resource: { buffer: this.displayUniformBuffer } },
-        { binding: 1, resource: view },
+        { binding: 1, resource: samplingView },
         { binding: 2, resource: this.sampler },
       ],
     });
+    const paintMipDownsampleBindGroups = mipViews
+      .slice(0, PAINT_DISPLAY_MIP_LEVEL_COUNT - 1)
+      .map((sourceView, sourceMipLevel) => this.device.createBindGroup({
+        label: `Paint display mip ${sourceMipLevel} to ${sourceMipLevel + 1} ${format}`,
+        layout: this.paintMipDownsampleBindGroupLayout,
+        entries: [{ binding: 0, resource: sourceView }],
+      }));
 
     this.layerTexture = texture;
     this.layerView = view;
+    this.paintMipViews = mipViews;
+    this.paintMipDownsampleBindGroups = paintMipDownsampleBindGroups;
     this.normalPipeline = normalPipeline;
     this.additivePipeline = additivePipeline;
     this.shapeNormalPipeline = shapeNormalPipeline;
     this.shapeAdditivePipeline = shapeAdditivePipeline;
     this.shapeOccupancyNormalPipeline = shapeOccupancyNormalPipeline;
     this.shapeOccupancyAdditivePipeline = shapeOccupancyAdditivePipeline;
+    this.paintMipDownsamplePipeline = paintMipDownsamplePipeline;
     this.displayBindGroup = displayBindGroup;
     this.layerFormat = format;
+    this.paintDisplayMipValidThroughLevel = 0;
+    this.paintDisplaySelectedMipLevel = 0;
     this.presentationCacheNeedsFullRebuild = true;
 
     oldTexture?.destroy();
@@ -2420,7 +2571,135 @@ export class BrushEngine {
     this.device.queue.writeBuffer(this.brushUniformBuffer, 0, this.brushUniformUpload);
   }
 
-  private writeDisplayUniforms(): void {
+  private desiredPaintDisplayMipLevel(): number {
+    if (!Number.isFinite(this.zoom) || this.zoom >= 1) {
+      return 0;
+    }
+    // Pick the coarsest power-of-two variant that is still at least as large
+    // as its projected size. The residual operation is therefore always a
+    // downscale (or 1:1), never a blurry upscale.
+    return clamp(
+      Math.floor(Math.log2(1 / Math.max(this.zoom, Number.EPSILON)) + 1e-6),
+      0,
+      PAINT_DISPLAY_MIP_LEVEL_COUNT - 1,
+    );
+  }
+
+  private paintMipDimensions(mipLevel: number): { width: number; height: number } {
+    const dimension = Math.max(1, LAYER_SIZE >> mipLevel);
+    return { width: dimension, height: dimension };
+  }
+
+  private downsampleDirtyRect(dirtyRect: DirtyRect, mipLevel: number): DirtyRect {
+    const { width, height } = this.paintMipDimensions(mipLevel);
+    const x = Math.max(0, Math.floor(dirtyRect.x / 2));
+    const y = Math.max(0, Math.floor(dirtyRect.y / 2));
+    const right = Math.min(width, Math.ceil((dirtyRect.x + dirtyRect.width) / 2));
+    const bottom = Math.min(height, Math.ceil((dirtyRect.y + dirtyRect.height) / 2));
+    return {
+      x,
+      y,
+      width: Math.max(0, right - x),
+      height: Math.max(0, bottom - y),
+    };
+  }
+
+  private encodePaintDisplayPyramid(
+    encoder: GPUCommandEncoder,
+    baseDirtyRect: DirtyRect | null,
+    selectedMipLevel: number,
+  ): {
+    maintenanceFrames: number;
+    fullLevelBuilds: number;
+    dirtyLevelUpdates: number;
+    passes: number;
+    baseDirtyPixels: number;
+    updatedPixels: number;
+    encodingMs: number;
+  } {
+    const startedAt = performance.now();
+    const previousValidThroughLevel = this.paintDisplayMipValidThroughLevel;
+    const baseChanged = baseDirtyRect !== null;
+    let sourceDirtyRect = baseDirtyRect;
+    let fullLevelBuilds = 0;
+    let dirtyLevelUpdates = 0;
+    let passes = 0;
+    let updatedPixels = 0;
+
+    for (let mipLevel = 1; mipLevel <= selectedMipLevel; mipLevel += 1) {
+      const dimensions = this.paintMipDimensions(mipLevel);
+      const needsFullBuild = mipLevel > previousValidThroughLevel;
+      let targetDirtyRect: DirtyRect | null;
+
+      if (needsFullBuild) {
+        targetDirtyRect = { x: 0, y: 0, ...dimensions };
+      } else if (sourceDirtyRect) {
+        targetDirtyRect = this.downsampleDirtyRect(sourceDirtyRect, mipLevel);
+      } else {
+        targetDirtyRect = null;
+      }
+
+      if (!targetDirtyRect || targetDirtyRect.width <= 0 || targetDirtyRect.height <= 0) {
+        continue;
+      }
+
+      const pass = encoder.beginRenderPass({
+        label: needsFullBuild
+          ? `Build full paint display mip ${mipLevel}`
+          : `Update paint display mip ${mipLevel} dirty rect`,
+        colorAttachments: [
+          {
+            view: this.paintMipViews[mipLevel],
+            loadOp: needsFullBuild ? "clear" : "load",
+            storeOp: "store",
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          },
+        ],
+      });
+      pass.setPipeline(this.paintMipDownsamplePipeline);
+      pass.setBindGroup(0, this.paintMipDownsampleBindGroups[mipLevel - 1]);
+      if (!needsFullBuild) {
+        pass.setScissorRect(
+          targetDirtyRect.x,
+          targetDirtyRect.y,
+          targetDirtyRect.width,
+          targetDirtyRect.height,
+        );
+      }
+      pass.draw(3, 1, 0, 0);
+      pass.end();
+
+      passes += 1;
+      updatedPixels += targetDirtyRect.width * targetDirtyRect.height;
+      if (needsFullBuild) {
+        fullLevelBuilds += 1;
+      } else {
+        dirtyLevelUpdates += 1;
+      }
+      sourceDirtyRect = targetDirtyRect;
+    }
+
+    if (baseChanged) {
+      // Levels coarser than the one maintained for this frame become stale.
+      // A later zoom-out rebuilds the first missing level in full, then safely
+      // derives all following levels from it.
+      this.paintDisplayMipValidThroughLevel = selectedMipLevel;
+    } else if (selectedMipLevel > previousValidThroughLevel) {
+      this.paintDisplayMipValidThroughLevel = selectedMipLevel;
+    }
+
+    return {
+      maintenanceFrames: passes > 0 ? 1 : 0,
+      fullLevelBuilds,
+      dirtyLevelUpdates,
+      passes,
+      baseDirtyPixels: baseDirtyRect ? baseDirtyRect.width * baseDirtyRect.height : 0,
+      updatedPixels,
+      encodingMs: passes > 0 ? performance.now() - startedAt : 0,
+    };
+  }
+
+  private writeDisplayUniforms(selectedMipLevel = this.paintDisplaySelectedMipLevel): void {
     this.displayUniformUpload[0] = this.canvas.width;
     this.displayUniformUpload[1] = this.canvas.height;
     this.displayUniformUpload[2] = LAYER_SIZE;
@@ -2429,6 +2708,7 @@ export class BrushEngine {
     this.displayUniformUpload[5] = this.viewCenterY;
     this.displayUniformUpload[6] = this.zoom;
     this.displayUniformUpload[7] = 96;
+    this.displayUniformUpload[8] = selectedMipLevel;
     this.device.queue.writeBuffer(this.displayUniformBuffer, 0, this.displayUniformUpload);
   }
 
@@ -2460,17 +2740,21 @@ export class BrushEngine {
     oldTexture?.destroy();
   }
 
-  private layerDirtyRectToPresentationRect(dirtyRect: DirtyRect): DirtyRect | null {
+  private layerDirtyRectToPresentationRect(
+    dirtyRect: DirtyRect,
+    selectedMipLevel: number,
+  ): DirtyRect | null {
     const width = this.canvas.width;
     const height = this.canvas.height;
     if (width <= 0 || height <= 0) {
       return null;
     }
 
-    // Il display usa filtraggio lineare: un texel modificato può contribuire ai
-    // campioni adiacenti. Due pixel layer più un pixel canvas proteggono anche
-    // gli arrotondamenti f32 e i confini dello scissor a qualunque zoom.
-    const layerMargin = 2;
+    // Il display usa filtraggio lineare sul mip selezionato: un texel derivato
+    // copre 2^LOD pixel layer e può contribuire anche al campione adiacente.
+    // Il margine 2^(LOD+1), più un pixel canvas, è conservativo anche rispetto
+    // agli arrotondamenti f32 e ai confini interi dello scissor.
+    const layerMargin = Math.max(2, 2 ** (selectedMipLevel + 1));
     const canvasMargin = 1;
     const layerLeft = dirtyRect.x - layerMargin;
     const layerTop = dirtyRect.y - layerMargin;
@@ -4078,6 +4362,14 @@ export class BrushEngine {
     let legacyDisplayShaderPixels = 0;
     let presentationCopiedPixels = 0;
     let presentationCacheWasUpdated = false;
+    let displaySelectedMipLevel = this.paintDisplaySelectedMipLevel;
+    let paintDisplayPyramidMaintenanceFrames = 0;
+    let paintDisplayPyramidFullLevelBuilds = 0;
+    let paintDisplayPyramidDirtyLevelUpdates = 0;
+    let paintDisplayPyramidPasses = 0;
+    let paintDisplayPyramidBaseDirtyPixels = 0;
+    let paintDisplayPyramidUpdatedPixels = 0;
+    let paintDisplayPyramidEncodingMs = 0;
 
     if (replayBatch && replayBatch.shapeMaskIdentity !== this.shapeMaskIdentity) {
       throw new Error("La Shape usata dalla cronologia non corrisponde alla risorsa corrente.");
@@ -4157,10 +4449,38 @@ export class BrushEngine {
       // Una ricostruzione Undo/Redo omette i display intermedi. La cache non
       // deve quindi essere riutilizzata finché l'ultimo batch non la ricrea.
       this.presentationCacheNeedsFullRebuild = true;
+      this.paintDisplayMipValidThroughLevel = 0;
     }
 
     if (present) {
       const displayEncodingStart = performance.now();
+      displaySelectedMipLevel = this.desiredPaintDisplayMipLevel();
+      if (displaySelectedMipLevel !== this.paintDisplaySelectedMipLevel) {
+        // A screen-space cache must never contain a mixture of samples from
+        // two pyramid levels. A LOD switch therefore rebuilds it atomically.
+        this.presentationCacheNeedsFullRebuild = true;
+      }
+      this.paintDisplaySelectedMipLevel = displaySelectedMipLevel;
+
+      const baseDirtyRect = clearLayer
+        ? { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE }
+        : submittedDirtyRect;
+      if (clearLayer) {
+        this.paintDisplayMipValidThroughLevel = 0;
+      }
+      const pyramidTiming = this.encodePaintDisplayPyramid(
+        encoder,
+        baseDirtyRect,
+        displaySelectedMipLevel,
+      );
+      paintDisplayPyramidMaintenanceFrames = pyramidTiming.maintenanceFrames;
+      paintDisplayPyramidFullLevelBuilds = pyramidTiming.fullLevelBuilds;
+      paintDisplayPyramidDirtyLevelUpdates = pyramidTiming.dirtyLevelUpdates;
+      paintDisplayPyramidPasses = pyramidTiming.passes;
+      paintDisplayPyramidBaseDirtyPixels = pyramidTiming.baseDirtyPixels;
+      paintDisplayPyramidUpdatedPixels = pyramidTiming.updatedPixels;
+      paintDisplayPyramidEncodingMs = pyramidTiming.encodingMs;
+
       const canvasPixels = this.canvas.width * this.canvas.height;
       legacyDisplayShaderPixels = canvasPixels;
       presentationCopiedPixels = canvasPixels;
@@ -4169,11 +4489,11 @@ export class BrushEngine {
       const presentationDirtyRect = requiresFullRebuild
         ? { x: 0, y: 0, width: this.canvas.width, height: this.canvas.height }
         : submittedDirtyRect
-          ? this.layerDirtyRectToPresentationRect(submittedDirtyRect)
+          ? this.layerDirtyRectToPresentationRect(submittedDirtyRect, displaySelectedMipLevel)
           : null;
 
       if (presentationDirtyRect) {
-        this.writeDisplayUniforms();
+        this.writeDisplayUniforms(displaySelectedMipLevel);
         const displayPass = encoder.beginRenderPass({
           label: requiresFullRebuild
             ? "Rebuild persistent presentation cache"
@@ -4246,6 +4566,14 @@ export class BrushEngine {
       presentationCacheUpdatedPixels,
       legacyDisplayShaderPixels,
       presentationCopiedPixels,
+      displaySelectedMipLevel,
+      paintDisplayPyramidMaintenanceFrames,
+      paintDisplayPyramidFullLevelBuilds,
+      paintDisplayPyramidDirtyLevelUpdates,
+      paintDisplayPyramidPasses,
+      paintDisplayPyramidBaseDirtyPixels,
+      paintDisplayPyramidUpdatedPixels,
+      paintDisplayPyramidEncodingMs,
     };
   }
 
@@ -4398,6 +4726,19 @@ export class BrushEngine {
     profile.presentationCacheUpdatedPixels += timing.presentationCacheUpdatedPixels;
     profile.legacyDisplayShaderPixels += timing.legacyDisplayShaderPixels;
     profile.presentationCopiedPixels += timing.presentationCopiedPixels;
+    profile.paintDisplayMaximumSelectedMipLevel = Math.max(
+      profile.paintDisplayMaximumSelectedMipLevel,
+      timing.displaySelectedMipLevel,
+    );
+    profile.paintDisplayPyramidMaintenanceFrames +=
+      timing.paintDisplayPyramidMaintenanceFrames;
+    profile.paintDisplayPyramidFullLevelBuilds += timing.paintDisplayPyramidFullLevelBuilds;
+    profile.paintDisplayPyramidDirtyLevelUpdates +=
+      timing.paintDisplayPyramidDirtyLevelUpdates;
+    profile.paintDisplayPyramidPasses += timing.paintDisplayPyramidPasses;
+    profile.paintDisplayPyramidBaseDirtyPixels += timing.paintDisplayPyramidBaseDirtyPixels;
+    profile.paintDisplayPyramidUpdatedPixels += timing.paintDisplayPyramidUpdatedPixels;
+    profile.paintDisplayPyramidEncodingMs += timing.paintDisplayPyramidEncodingMs;
 
     if (batchSize > 0) {
       profile.brushBatches += 1;
