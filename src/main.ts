@@ -152,6 +152,9 @@ interface BenchmarkRun {
     shapeOccupancyBitmaskBytes: number;
     colorSeedStrategy: "reuse-position-copy-seed";
     dirtyRectStrategy: "directional-jitter-bounds";
+    thicknessDynamicsStrategy: StrokePerformanceProfile["thicknessDynamicsStrategy"];
+    thicknessDynamicsTaperWindowMs: number;
+    thicknessDynamicsSpeedFilterTimeMs: number;
     presentationCacheStrategy: StrokePerformanceProfile["presentationCacheStrategy"];
     presentationTransferStrategy: StrokePerformanceProfile["presentationTransferStrategy"];
     paintDisplayPyramidStrategy: StrokePerformanceProfile["paintDisplayPyramidStrategy"];
@@ -210,7 +213,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 24;
+    performanceTelemetryRevision: 25;
   };
 }
 
@@ -280,6 +283,9 @@ function readBrushSettings(): BrushSettings {
     color: element<HTMLInputElement>("brushColor").value,
     size: rangeValue("brushSize"),
     spacingPercent: rangeValue("spacing"),
+    startThickness: rangeValue("startThickness") / 100,
+    endThickness: rangeValue("endThickness") / 100,
+    speedThickness: rangeValue("speedThickness"),
     count: rangeValue("count"),
     flow: rangeValue("flow") / 100,
     opacity: rangeValue("opacity") / 100,
@@ -311,6 +317,11 @@ function updateControlOutputs(): void {
     `${grainContrast > 0 ? "+" : ""}${grainContrast.toFixed(0)}%`;
   element<HTMLOutputElement>("brushSizeOut").value = `${rangeValue("brushSize").toFixed(0)} px`;
   element<HTMLOutputElement>("spacingOut").value = `${rangeValue("spacing").toFixed(2)}%`;
+  element<HTMLOutputElement>("startThicknessOut").value = `${rangeValue("startThickness").toFixed(0)}%`;
+  element<HTMLOutputElement>("endThicknessOut").value = `${rangeValue("endThickness").toFixed(0)}%`;
+  const speedThickness = rangeValue("speedThickness");
+  element<HTMLOutputElement>("speedThicknessOut").value =
+    `${speedThickness > 0 ? "+" : ""}${speedThickness.toFixed(0)}%`;
   element<HTMLOutputElement>("countOut").value = rangeValue("count").toFixed(0);
   element<HTMLOutputElement>("flowOut").value = `${rangeValue("flow").toFixed(1).replace(".0", "")}%`;
   element<HTMLOutputElement>("opacityOut").value = `${rangeValue("opacity").toFixed(1).replace(".0", "")}%`;
@@ -421,7 +432,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 24,
+    performanceTelemetryRevision: 25,
     ...engineEnvironment,
   };
 }
@@ -478,6 +489,15 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
     || benchmark.settings.grainFiltering === "classic"
     ? benchmark.settings.grainFiltering
     : "improved";
+  const startThickness = Number.isFinite(benchmark.settings.startThickness)
+    ? Math.min(2, Math.max(0, benchmark.settings.startThickness))
+    : 1;
+  const endThickness = Number.isFinite(benchmark.settings.endThickness)
+    ? Math.min(2, Math.max(0, benchmark.settings.endThickness))
+    : 1;
+  const speedThickness = Number.isFinite(benchmark.settings.speedThickness)
+    ? Math.min(200, Math.max(-200, benchmark.settings.speedThickness))
+    : 0;
   return {
     ...benchmark,
     settings: {
@@ -494,6 +514,9 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
       grainInvert,
       grainFiltering,
       grainBlendMode: "multiply",
+      startThickness,
+      endThickness,
+      speedThickness,
       opacity,
       blendMode,
     },
@@ -610,6 +633,9 @@ function applySettingsToControls(settings: BrushSettings): void {
   setControlValue("brushColor", settings.color);
   setControlValue("brushSize", settings.size);
   setControlValue("spacing", settings.spacingPercent);
+  setControlValue("startThickness", (settings.startThickness ?? 1) * 100);
+  setControlValue("endThickness", (settings.endThickness ?? 1) * 100);
+  setControlValue("speedThickness", settings.speedThickness ?? 0);
   setControlValue("count", settings.count);
   setControlValue("flow", settings.flow * 100);
   setControlValue("opacity", (settings.opacity ?? 1) * 100);
@@ -642,6 +668,9 @@ function applyHumanStrokePreset(): BrushSettings {
   setControlValue("grainBlendMode", "multiply");
   setControlValue("brushSize", 750);
   setControlValue("spacing", 1);
+  setControlValue("startThickness", 100);
+  setControlValue("endThickness", 100);
+  setControlValue("speedThickness", 0);
   setControlValue("count", 16);
   setControlValue("flow", 100);
   setControlValue("opacity", 100);
@@ -693,6 +722,9 @@ function humanStrokeTestSettings(
     grainBlendMode: "multiply",
     shape: "circle",
     shapeScatter: 0,
+    startThickness: 1,
+    endThickness: 1,
+    speedThickness: 0,
     positionJitterLateral: 1,
     positionJitterLinear: 1,
   };
@@ -883,6 +915,9 @@ const brushControlIds = [
   "brushColor",
   "brushSize",
   "spacing",
+  "startThickness",
+  "endThickness",
+  "speedThickness",
   "count",
   "flow",
   "opacity",
@@ -1160,7 +1195,7 @@ async function replayHumanStroke(): Promise<void> {
           return;
         }
 
-        engine.endStroke();
+        engine.endStroke(lastPoint.timeMs);
         humanStrokeReplayFrame = null;
         resolve();
       };
@@ -1261,6 +1296,7 @@ function toPointerSample(event: PointerEvent): PointerSample {
     clientX: event.clientX,
     clientY: event.clientY,
     pressure: normalizedPressure(event),
+    timeMs: event.timeStamp,
   };
 }
 
@@ -1458,7 +1494,7 @@ function finishPointer(event: PointerEvent): void {
   }
 
   if (pointerMode === "paint") {
-    engine.endStroke();
+    engine.endStroke(event.timeStamp);
     void finishHumanStrokeRecording(event.type === "pointerup");
   }
   canvas.classList.remove("panning");

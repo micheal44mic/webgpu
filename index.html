@@ -114,6 +114,34 @@
         </section>
 
         <section>
+          <h2>Spessore dinamico — test ibis</h2>
+
+          <label class="control">
+            <span>
+              Spessore dell'inizio <output id="startThicknessOut">100%</output>
+              <small>Rapporto rispetto alla dimensione del pennello.</small>
+            </span>
+            <input id="startThickness" type="range" min="0" max="200" step="1" value="100" />
+          </label>
+
+          <label class="control">
+            <span>
+              Spessore della fine <output id="endThicknessOut">100%</output>
+              <small>La coda finale usa gli ultimi 100 ms del gesto.</small>
+            </span>
+            <input id="endThickness" type="range" min="0" max="200" step="1" value="100" />
+          </label>
+
+          <label class="control">
+            <span>
+              Velocità → Spessore <output id="speedThicknessOut">0%</output>
+              <small>Negativo assottiglia, positivo ingrossa; 0% è neutro. Nessuna pressione.</small>
+            </span>
+            <input id="speedThickness" type="range" min="-200" max="200" step="1" value="0" />
+          </label>
+        </section>
+
+        <section>
           <h2>Grain</h2>
 
           <label class="control">

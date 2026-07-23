@@ -1930,3 +1930,56 @@ l'opzione verificare localmente `npm run grain:verify`, `npm run build` e
 `git diff --check`; il giudizio visivo Invert ON/OFF resta dell'utente su
 iPhone e non richiede un nuovo benchmark prestazionale, perché il percorso GPU
 è lo stesso e cambiano soltanto i valori della uniform.
+
+## Dinamica spessore stile ibis — candidato locale, senza pressione
+
+Su richiesta dell'utente è stato aggiunto un esperimento indipendente per i
+tre controlli `Spessore dell'inizio`, `Spessore della fine` e
+`Velocità → Spessore`. Non è codice proprietario di ibisPaint: è una
+reimplementazione compatibile costruita dai comportamenti documentati, dai
+nomi/simboli osservati e dalle curve ricavate durante l'analisi. Non dichiarare
+equivalenza bit-per-bit con ibis senza misure affiancate.
+
+Semantica della UI:
+
+- inizio e fine vanno da `0%` a `200%` e sono rapporti rispetto alla size;
+- velocità va da `-200%` a `+200%`, coerente con il range ibis corrente;
+- `100% / 100% / 0%` è il tripletto neutro e percorre esattamente il vecchio
+  calcolo del raggio;
+- il parametro velocità negativo assottiglia e quello positivo ingrossa;
+- la nuova dinamica non legge la pressione. I vecchi controlli pressione
+  restano separati e non fanno parte di questo esperimento.
+
+Ogni `PointerEvent`, inclusi i coalescenti, consegna ora il proprio timestamp al
+motore. La velocità è distanza layer / millisecondi, filtrata con una EMA a
+costante temporale `50 ms`. Una velocità pari a un diametro del pennello in
+`100 ms` satura la risposta; la curva è quadratic ease-out
+`1 - (1 - t)^2`. Il coefficiente `-200…+200` mappa la risposta massima nel
+fattore `0…2`.
+
+Inizio e fine usano finestre temporali da `100 ms`. Di conseguenza la lunghezza
+spaziale della punta cresce con la velocità del gesto: a parità di finestra, un
+movimento otto volte più veloce crea una coda circa otto volte più lunga. La
+fine richiede di conoscere il momento del lift; quando fine o velocità non sono
+neutri, il motore trattiene in FIFO soltanto gli stamp degli ultimi `100 ms`,
+rilascia durante il tratto quelli ormai maturi e finalizza i rimanenti al
+pointer-up. Culling, history e pending GPU avvengono soltanto dopo il raggio
+finale, conservando seed e ordine globale. Una pausa finale più lunga della
+finestra produce intenzionalmente una coda spaziale minima.
+
+Questo holdback può ritardare fino a `100 ms` la punta WebGPU quando la dinamica
+finale è attiva; il percorso neutro non introduce il ritardo. È la prima fase
+isolabile: prima di promuoverla l'utente deve giudicare su iPhone sia la forma
+della punta sia la latenza percepita. Non mascherare il costo cambiando spacing,
+Count, size, flow, hardness, jitter, seed o blending.
+
+La telemetria `performanceTelemetryRevision: 25` salva strategia, finestra,
+filtro, totale di stamp trattenuti, massimo simultaneo e rilasci durante il
+tratto/al lift. Il replay canonico forza sempre `100% / 100% / 0%`, così le
+baseline precedenti restano neutrali. I benchmark storici senza i tre campi
+vengono normalizzati agli stessi valori.
+
+Verifica locale completata: `npm run thickness:verify`, `npm run grain:verify`,
+`npm run build` e `git diff --check`. La promozione o il rollback dipendono dal
+confronto visivo e dalla prova della latenza su iPhone; non dedurli dalla build
+desktop.

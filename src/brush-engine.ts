@@ -10,6 +10,18 @@ import {
   paintMipDownsampleShader,
   texturizedGrainShader,
 } from "./shaders";
+import {
+  THICKNESS_DYNAMICS_STRATEGY,
+  THICKNESS_SPEED_FILTER_TIME_MS,
+  THICKNESS_TAPER_WINDOW_MS,
+  endThicknessFactor,
+  filterStrokeSpeed,
+  speedThicknessFactor,
+  startThicknessFactor,
+  thicknessDynamicsIsNeutral,
+  thicknessDynamicsNeedsTailHoldback,
+  type ThicknessDynamicsStrategy,
+} from "./thickness-dynamics";
 
 export type BlendMode = "normal" | "additive" | "light-glaze" | "m1-glaze";
 export type LayerFormat = "rgba8unorm" | "rgba16float";
@@ -98,6 +110,9 @@ export interface BrushSettings {
   color: string;
   size: number;
   spacingPercent: number;
+  startThickness: number;
+  endThickness: number;
+  speedThickness: number;
   count: number;
   flow: number;
   opacity: number;
@@ -129,6 +144,7 @@ export interface PointerSample {
   clientX: number;
   clientY: number;
   pressure: number;
+  timeMs: number;
 }
 
 export interface EngineStats {
@@ -180,6 +196,13 @@ export interface StrokePerformanceProfile {
   shapeOccupancyBitmaskBytes: number;
   colorSeedStrategy: "reuse-position-copy-seed";
   dirtyRectStrategy: "directional-jitter-bounds";
+  thicknessDynamicsStrategy: ThicknessDynamicsStrategy;
+  thicknessDynamicsTaperWindowMs: number;
+  thicknessDynamicsSpeedFilterTimeMs: number;
+  thicknessDynamicsHeldBaseStamps: number;
+  thicknessDynamicsMaximumHeldBaseStamps: number;
+  thicknessDynamicsReleasedDuringStroke: number;
+  thicknessDynamicsReleasedAtLift: number;
   presentationCacheStrategy: PresentationCacheStrategy;
   presentationTransferStrategy: PresentationTransferStrategy;
   presentationCacheFullRebuilds: number;
@@ -362,6 +385,7 @@ export interface LayerPoint {
   x: number;
   y: number;
   pressure: number;
+  timeMs: number;
 }
 
 interface Stamp {
@@ -375,8 +399,26 @@ interface Stamp {
   historyActionId: number;
 }
 
+interface HeldThicknessStamp {
+  stamp: Stamp;
+  timeMs: number;
+  baseRadius: number;
+  liveThicknessFactor: number;
+}
+
 interface ActiveStroke {
   lastInput: LayerPoint;
+  startedAtMs: number;
+  filteredSpeedPxPerMs: number;
+  speedFilterInitialized: boolean;
+  thicknessSettings: Pick<
+    BrushSettings,
+    "startThickness" | "endThickness" | "speedThickness"
+  >;
+  thicknessDynamicsNeutral: boolean;
+  thicknessTailHoldback: boolean;
+  heldThicknessStamps: HeldThicknessStamp[];
+  heldThicknessHead: number;
   distanceSinceStamp: number;
   adaptiveSpacingInitialPercent: number;
   adaptiveSpacingPercent: number;
@@ -552,6 +594,10 @@ interface MutableStrokePerformanceProfile {
   brushBatches: number;
   largestBatchStamps: number;
   estimatedScissorPixels: number;
+  thicknessDynamicsHeldBaseStamps: number;
+  thicknessDynamicsMaximumHeldBaseStamps: number;
+  thicknessDynamicsReleasedDuringStroke: number;
+  thicknessDynamicsReleasedAtLift: number;
   presentationCacheFullRebuilds: number;
   presentationCachePartialUpdates: number;
   presentationCacheOffscreenSkips: number;
@@ -940,6 +986,9 @@ export const defaultBrushSettings: BrushSettings = {
   color: "#ff5b35",
   size: 96,
   spacingPercent: 1,
+  startThickness: 1,
+  endThickness: 1,
+  speedThickness: 0,
   count: 24,
   flow: 0.07,
   opacity: 1,
@@ -1270,6 +1319,9 @@ export class BrushEngine {
       count: clamp(Math.round(next.count ?? this.settings.count), 1, 24),
       size: clamp(next.size ?? this.settings.size, 4, 1500),
       spacingPercent: clamp(next.spacingPercent ?? this.settings.spacingPercent, 0.25, 25),
+      startThickness: clamp(next.startThickness ?? this.settings.startThickness, 0, 2),
+      endThickness: clamp(next.endThickness ?? this.settings.endThickness, 0, 2),
+      speedThickness: clamp(next.speedThickness ?? this.settings.speedThickness, -200, 200),
       flow: clamp(next.flow ?? this.settings.flow, 0.001, 1),
       opacity: clamp(next.opacity ?? this.settings.opacity, 0, 1),
       hardness: clamp(next.hardness ?? this.settings.hardness, 0, 1),
@@ -1421,6 +1473,10 @@ export class BrushEngine {
     if (this.historyBusy) {
       return;
     }
+    const normalizedPoint: LayerPoint = {
+      ...point,
+      timeMs: Number.isFinite(point.timeMs) ? point.timeMs : performance.now(),
+    };
     this.flushClosingLightGlazeSessionBeforeNewStroke();
     this.invalidateAdaptivePreview();
     const lightGlazeSettings = isStrokeGlazeBlendMode(this.settings.blendMode)
@@ -1428,8 +1484,29 @@ export class BrushEngine {
       : null;
     this.adaptivePreviewForceStroke = ADAPTIVE_PREVIEW_FORCE && !lightGlazeSettings;
     const historyActionId = this.nextHistoryActionId++;
+    const thicknessSource = lightGlazeSettings ?? this.settings;
+    const thicknessSettings = {
+      startThickness: thicknessSource.startThickness,
+      endThickness: thicknessSource.endThickness,
+      speedThickness: thicknessSource.speedThickness,
+    };
     this.activeStroke = {
-      lastInput: point,
+      lastInput: normalizedPoint,
+      startedAtMs: normalizedPoint.timeMs,
+      filteredSpeedPxPerMs: 0,
+      speedFilterInitialized: false,
+      thicknessSettings,
+      thicknessDynamicsNeutral: thicknessDynamicsIsNeutral(
+        thicknessSettings.startThickness,
+        thicknessSettings.endThickness,
+        thicknessSettings.speedThickness,
+      ),
+      thicknessTailHoldback: thicknessDynamicsNeedsTailHoldback(
+        thicknessSettings.endThickness,
+        thicknessSettings.speedThickness,
+      ),
+      heldThicknessStamps: [],
+      heldThicknessHead: 0,
       distanceSinceStamp: 0,
       adaptiveSpacingInitialPercent: lightGlazeSettings?.spacingPercent ?? this.settings.spacingPercent,
       adaptiveSpacingPercent: lightGlazeSettings?.spacingPercent ?? this.settings.spacingPercent,
@@ -1447,7 +1524,7 @@ export class BrushEngine {
     if (lightGlazeSettings) {
       this.startLightGlazeSession(historyActionId, lightGlazeSettings);
     }
-    this.emitStamp(point, 1, 0);
+    this.emitStamp(normalizedPoint, 1, 0);
   }
 
   extendStroke(samples: readonly PointerSample[]): void {
@@ -1464,8 +1541,15 @@ export class BrushEngine {
     }
   }
 
-  endStroke(): void {
+  endStroke(timeMs?: number): void {
     const endingStroke = this.activeStroke;
+    if (endingStroke) {
+      const requestedLiftTime = Number.isFinite(timeMs)
+        ? timeMs as number
+        : endingStroke.lastInput.timeMs;
+      const liftTime = Math.max(endingStroke.lastInput.timeMs, requestedLiftTime);
+      this.releaseHeldThicknessStamps(liftTime, true);
+    }
     const historyChanged = endingStroke?.historyCommitted ?? false;
     if (
       endingStroke?.lightGlazeSettings
@@ -1816,6 +1900,10 @@ export class BrushEngine {
       brushBatches: 0,
       largestBatchStamps: 0,
       estimatedScissorPixels: 0,
+      thicknessDynamicsHeldBaseStamps: 0,
+      thicknessDynamicsMaximumHeldBaseStamps: 0,
+      thicknessDynamicsReleasedDuringStroke: 0,
+      thicknessDynamicsReleasedAtLift: 0,
       presentationCacheFullRebuilds: 0,
       presentationCachePartialUpdates: 0,
       presentationCacheOffscreenSkips: 0,
@@ -1936,6 +2024,15 @@ export class BrushEngine {
       shapeOccupancyBitmaskBytes: SHAPE_OCCUPANCY_MAP_BYTES,
       colorSeedStrategy: COLOR_SEED_STRATEGY,
       dirtyRectStrategy: DIRTY_RECT_STRATEGY,
+      thicknessDynamicsStrategy: THICKNESS_DYNAMICS_STRATEGY,
+      thicknessDynamicsTaperWindowMs: THICKNESS_TAPER_WINDOW_MS,
+      thicknessDynamicsSpeedFilterTimeMs: THICKNESS_SPEED_FILTER_TIME_MS,
+      thicknessDynamicsHeldBaseStamps: profile.thicknessDynamicsHeldBaseStamps,
+      thicknessDynamicsMaximumHeldBaseStamps:
+        profile.thicknessDynamicsMaximumHeldBaseStamps,
+      thicknessDynamicsReleasedDuringStroke:
+        profile.thicknessDynamicsReleasedDuringStroke,
+      thicknessDynamicsReleasedAtLift: profile.thicknessDynamicsReleasedAtLift,
       presentationCacheStrategy: PRESENTATION_CACHE_STRATEGY,
       presentationTransferStrategy: PRESENTATION_TRANSFER_STRATEGY,
       presentationCacheFullRebuilds: profile.presentationCacheFullRebuilds,
@@ -2170,6 +2267,9 @@ export class BrushEngine {
     shapeOccupancyBitmaskBytes: number;
     colorSeedStrategy: typeof COLOR_SEED_STRATEGY;
     dirtyRectStrategy: typeof DIRTY_RECT_STRATEGY;
+    thicknessDynamicsStrategy: ThicknessDynamicsStrategy;
+    thicknessDynamicsTaperWindowMs: number;
+    thicknessDynamicsSpeedFilterTimeMs: number;
     presentationCacheStrategy: typeof PRESENTATION_CACHE_STRATEGY;
     presentationTransferStrategy: typeof PRESENTATION_TRANSFER_STRATEGY;
     paintDisplayPyramidStrategy: typeof PAINT_DISPLAY_PYRAMID_STRATEGY;
@@ -2266,6 +2366,9 @@ export class BrushEngine {
       shapeOccupancyBitmaskBytes: SHAPE_OCCUPANCY_MAP_BYTES,
       colorSeedStrategy: COLOR_SEED_STRATEGY,
       dirtyRectStrategy: DIRTY_RECT_STRATEGY,
+      thicknessDynamicsStrategy: THICKNESS_DYNAMICS_STRATEGY,
+      thicknessDynamicsTaperWindowMs: THICKNESS_TAPER_WINDOW_MS,
+      thicknessDynamicsSpeedFilterTimeMs: THICKNESS_SPEED_FILTER_TIME_MS,
       presentationCacheStrategy: PRESENTATION_CACHE_STRATEGY,
       presentationTransferStrategy: PRESENTATION_TRANSFER_STRATEGY,
       paintDisplayPyramidStrategy: PAINT_DISPLAY_PYRAMID_STRATEGY,
@@ -4293,6 +4396,7 @@ export class BrushEngine {
       x: layer.x,
       y: layer.y,
       pressure: clamp(sample.pressure, 0.01, 1),
+      timeMs: Number.isFinite(sample.timeMs) ? sample.timeMs : performance.now(),
     };
   }
 
@@ -4320,12 +4424,32 @@ export class BrushEngine {
     }
 
     const start = stroke.lastInput;
-    const deltaX = point.x - start.x;
-    const deltaY = point.y - start.y;
+    const normalizedPoint: LayerPoint = {
+      ...point,
+      timeMs: Math.max(
+        start.timeMs,
+        Number.isFinite(point.timeMs) ? point.timeMs : start.timeMs,
+      ),
+    };
+    const deltaX = normalizedPoint.x - start.x;
+    const deltaY = normalizedPoint.y - start.y;
     const segmentLength = Math.hypot(deltaX, deltaY);
+    const deltaTimeMs = normalizedPoint.timeMs - start.timeMs;
+
+    if (deltaTimeMs > 0) {
+      stroke.filteredSpeedPxPerMs = filterStrokeSpeed(
+        stroke.filteredSpeedPxPerMs,
+        segmentLength / deltaTimeMs,
+        deltaTimeMs,
+        stroke.speedFilterInitialized,
+      );
+      stroke.speedFilterInitialized = true;
+    }
+
+    this.releaseHeldThicknessStamps(normalizedPoint.timeMs, false);
 
     if (segmentLength <= 0.0001) {
-      stroke.lastInput = point;
+      stroke.lastInput = normalizedPoint;
       this.recordStampGenerationTime(generationStart);
       return;
     }
@@ -4348,7 +4472,8 @@ export class BrushEngine {
       this.emitStamp({
         x: start.x + deltaX * interpolation,
         y: start.y + deltaY * interpolation,
-        pressure: start.pressure + (point.pressure - start.pressure) * interpolation,
+        pressure: start.pressure + (normalizedPoint.pressure - start.pressure) * interpolation,
+        timeMs: start.timeMs + deltaTimeMs * interpolation,
       }, directionX, directionY);
       distanceSinceStamp = 0;
       generatedOnSegment += 1;
@@ -4359,8 +4484,9 @@ export class BrushEngine {
     }
 
     distanceSinceStamp += Math.max(0, segmentLength - distanceAlongSegment);
-    stroke.lastInput = point;
+    stroke.lastInput = normalizedPoint;
     stroke.distanceSinceStamp = distanceSinceStamp;
+    this.releaseHeldThicknessStamps(normalizedPoint.timeMs, false);
     this.recordStampGenerationTime(generationStart);
   }
 
@@ -4373,17 +4499,117 @@ export class BrushEngine {
     const pressure = clamp(point.pressure, 0.01, 1);
     const pressureSizeFactor = 1 - generationSettings.pressureSize
       + generationSettings.pressureSize * Math.max(0.08, pressure);
-    const radius = Math.max(0.5, generationSettings.size * 0.5 * pressureSizeFactor);
-    const jitterReach = radius * 2 * (
+    const baseRadius = Math.max(0.5, generationSettings.size * 0.5 * pressureSizeFactor);
+    const centerThicknessFactor = stroke.thicknessDynamicsNeutral
+      ? 1
+      : speedThicknessFactor(
+        stroke.filteredSpeedPxPerMs,
+        generationSettings.size,
+        stroke.thicknessSettings.speedThickness,
+      );
+    const liveThicknessFactor = stroke.thicknessDynamicsNeutral
+      ? 1
+      : startThicknessFactor(
+        stroke.thicknessSettings.startThickness,
+        centerThicknessFactor,
+        Math.max(0, point.timeMs - stroke.startedAtMs),
+      );
+    const radius = stroke.thicknessDynamicsNeutral
+      ? baseRadius
+      : baseRadius * liveThicknessFactor;
+    const seed = (Math.imul(this.seedSequence++, 0x9e3779b1) ^ 0xa511e9b3) >>> 0;
+    const stamp: Stamp = {
+      x: point.x,
+      y: point.y,
+      radius,
+      pressure,
+      seed,
+      directionX,
+      directionY,
+      historyActionId: stroke.historyActionId,
+    };
+
+    if (stroke.thicknessTailHoldback) {
+      stroke.heldThicknessStamps.push({
+        stamp,
+        timeMs: point.timeMs,
+        baseRadius,
+        liveThicknessFactor,
+      });
+      if (this.activeStrokeProfile) {
+        this.activeStrokeProfile.thicknessDynamicsHeldBaseStamps += 1;
+        this.activeStrokeProfile.thicknessDynamicsMaximumHeldBaseStamps = Math.max(
+          this.activeStrokeProfile.thicknessDynamicsMaximumHeldBaseStamps,
+          stroke.heldThicknessStamps.length - stroke.heldThicknessHead,
+        );
+      }
+      return;
+    }
+
+    this.commitThicknessStamp(stamp, stroke);
+  }
+
+  private releaseHeldThicknessStamps(referenceTimeMs: number, atLift: boolean): void {
+    const stroke = this.activeStroke;
+    if (!stroke || !stroke.thicknessTailHoldback) {
+      return;
+    }
+
+    const held = stroke.heldThicknessStamps;
+    let released = 0;
+    while (stroke.heldThicknessHead < held.length) {
+      const candidate = held[stroke.heldThicknessHead];
+      const millisecondsBeforeReference = Math.max(0, referenceTimeMs - candidate.timeMs);
+      if (!atLift && millisecondsBeforeReference < THICKNESS_TAPER_WINDOW_MS) {
+        break;
+      }
+
+      const finalThicknessFactor = atLift
+        ? endThicknessFactor(
+          candidate.liveThicknessFactor,
+          stroke.thicknessSettings.endThickness,
+          millisecondsBeforeReference,
+        )
+        : candidate.liveThicknessFactor;
+      this.commitThicknessStamp({
+        ...candidate.stamp,
+        radius: candidate.baseRadius * finalThicknessFactor,
+      }, stroke);
+      stroke.heldThicknessHead += 1;
+      released += 1;
+    }
+
+    if (released > 0 && this.activeStrokeProfile) {
+      if (atLift) {
+        this.activeStrokeProfile.thicknessDynamicsReleasedAtLift += released;
+      } else {
+        this.activeStrokeProfile.thicknessDynamicsReleasedDuringStroke += released;
+      }
+    }
+
+    if (stroke.heldThicknessHead === held.length) {
+      stroke.heldThicknessStamps = [];
+      stroke.heldThicknessHead = 0;
+    } else if (stroke.heldThicknessHead >= 1024) {
+      stroke.heldThicknessStamps = held.slice(stroke.heldThicknessHead);
+      stroke.heldThicknessHead = 0;
+    }
+  }
+
+  private commitThicknessStamp(stamp: Stamp, stroke: ActiveStroke): void {
+    if (stamp.radius <= 0) {
+      return;
+    }
+    const generationSettings = stroke.lightGlazeSettings ?? this.settings;
+    const jitterReach = stamp.radius * 2 * (
       generationSettings.positionJitterLinear + generationSettings.positionJitterLateral
     );
-    const seed = (Math.imul(this.seedSequence++, 0x9e3779b1) ^ 0xa511e9b3) >>> 0;
 
     if (
-      point.x + radius + jitterReach < 0 ||
-      point.y + radius + jitterReach < 0 ||
-      point.x - radius - jitterReach >= LAYER_SIZE ||
-      point.y - radius - jitterReach >= LAYER_SIZE
+      stamp.x + stamp.radius + jitterReach < 0 ||
+      stamp.y + stamp.radius + jitterReach < 0 ||
+      stamp.x - stamp.radius - jitterReach >= LAYER_SIZE ||
+      stamp.y - stamp.radius - jitterReach >= LAYER_SIZE
     ) {
       return;
     }
@@ -4398,16 +4624,7 @@ export class BrushEngine {
       }
     }
 
-    this.pendingStamps.push({
-      x: point.x,
-      y: point.y,
-      radius,
-      pressure,
-      seed,
-      directionX,
-      directionY,
-      historyActionId: stroke.historyActionId,
-    });
+    this.pendingStamps.push(stamp);
     if (this.activeStrokeProfile) {
       this.activeStrokeProfile.baseStamps += 1;
     }
