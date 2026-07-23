@@ -16,6 +16,7 @@ import {
   THICKNESS_TAPER_WINDOW_MS,
   endThicknessFactor,
   filterStrokeSpeed,
+  selectEvenlySpacedItems,
   speedThicknessFactor,
   startThicknessFactor,
   thicknessDynamicsIsNeutral,
@@ -44,7 +45,8 @@ export type PresentationCacheStrategy = "persistent-full-resolution-screen-cache
 export type PresentationTransferStrategy = "copy-texture-to-current-texture";
 export type PaintDisplayPyramidStrategy = "live-dirty-box-filter-mip-chain";
 export type PaintDisplayLodSelectionStrategy = "largest-power-of-two-without-upscaling";
-export type AdaptivePreviewStrategy = "queue-lag-triggered-canvas2d-tip-patch";
+export type AdaptivePreviewStrategy =
+  "queue-lag-or-thickness-holdback-canvas2d-tip-patch";
 export type AdaptivePreviewTriggerStrategy = "single-sampled-queue-prefix-latency";
 export type AdaptivePreviewStaleFrameStrategy =
   "hide-confirmed-stale-bitmap-and-single-raf-retry";
@@ -84,7 +86,8 @@ export type AdaptiveSpacingTriggerReason = "probe-timeout" | "slow-completion";
 export type AdaptivePreviewConcreteActivationReason =
   | "probe-timeout"
   | "consecutive-slow"
-  | "diagnostic-force";
+  | "diagnostic-force"
+  | "thickness-tail-holdback";
 export type AdaptivePreviewActivationReason =
   | "none"
   | AdaptivePreviewConcreteActivationReason
@@ -95,6 +98,7 @@ export type ShapeOccupancyFallbackReason =
   | "mip-out-of-range"
   | "coverage-too-dense"
   | "mixed";
+export type ThicknessDynamicsPreviewStrategy = "immediate-canvas2d-held-tail-bridge";
 
 export interface BrushSettings {
   shape: BrushShape;
@@ -203,6 +207,9 @@ export interface StrokePerformanceProfile {
   thicknessDynamicsMaximumHeldBaseStamps: number;
   thicknessDynamicsReleasedDuringStroke: number;
   thicknessDynamicsReleasedAtLift: number;
+  thicknessDynamicsPreviewStrategy: ThicknessDynamicsPreviewStrategy;
+  thicknessDynamicsPreviewSourceLimit: number;
+  thicknessDynamicsPreviewDrawLimit: number;
   presentationCacheStrategy: PresentationCacheStrategy;
   presentationTransferStrategy: PresentationTransferStrategy;
   presentationCacheFullRebuilds: number;
@@ -720,7 +727,10 @@ const LIGHT_GLAZE_STRATEGY =
 const M1_GLAZE_STRATEGY =
   "m1-r8-quantized-max-coverage-rgba-compat-single-commit" as const;
 const LIGHT_GLAZE_ADAPTIVE_PREVIEW_STRATEGY = "disabled-semantic-mismatch" as const;
-const ADAPTIVE_PREVIEW_STRATEGY = "queue-lag-triggered-canvas2d-tip-patch" as const;
+const ADAPTIVE_PREVIEW_STRATEGY =
+  "queue-lag-or-thickness-holdback-canvas2d-tip-patch" as const;
+const THICKNESS_DYNAMICS_PREVIEW_STRATEGY =
+  "immediate-canvas2d-held-tail-bridge" as const;
 const ADAPTIVE_PREVIEW_TRIGGER_STRATEGY = "single-sampled-queue-prefix-latency" as const;
 const ADAPTIVE_PREVIEW_STALE_FRAME_STRATEGY =
   "hide-confirmed-stale-bitmap-and-single-raf-retry" as const;
@@ -730,6 +740,8 @@ const ADAPTIVE_PREVIEW_EXACT_LINEAR_SCALE = 0.5;
 const ADAPTIVE_PREVIEW_JS_BUDGET_MS = 1.25;
 const ADAPTIVE_PREVIEW_COMMIT_BUDGET_RESERVE_MS = 0.2;
 const ADAPTIVE_PREVIEW_MAX_TIP_BASE_STAMPS = 2;
+const THICKNESS_DYNAMICS_PREVIEW_SOURCE_BASE_STAMPS = 256;
+const THICKNESS_DYNAMICS_PREVIEW_DRAW_BASE_STAMPS = 4;
 const ADAPTIVE_PREVIEW_MAX_PATCH_CSS_PIXELS = 384;
 const ADAPTIVE_PREVIEW_MIN_PATCH_CSS_PIXELS = 32;
 const ADAPTIVE_PREVIEW_PATCH_QUANTUM_CSS_PIXELS = 32;
@@ -2033,6 +2045,11 @@ export class BrushEngine {
       thicknessDynamicsReleasedDuringStroke:
         profile.thicknessDynamicsReleasedDuringStroke,
       thicknessDynamicsReleasedAtLift: profile.thicknessDynamicsReleasedAtLift,
+      thicknessDynamicsPreviewStrategy: THICKNESS_DYNAMICS_PREVIEW_STRATEGY,
+      thicknessDynamicsPreviewSourceLimit:
+        THICKNESS_DYNAMICS_PREVIEW_SOURCE_BASE_STAMPS,
+      thicknessDynamicsPreviewDrawLimit:
+        THICKNESS_DYNAMICS_PREVIEW_DRAW_BASE_STAMPS,
       presentationCacheStrategy: PRESENTATION_CACHE_STRATEGY,
       presentationTransferStrategy: PRESENTATION_TRANSFER_STRATEGY,
       presentationCacheFullRebuilds: profile.presentationCacheFullRebuilds,
@@ -2270,6 +2287,9 @@ export class BrushEngine {
     thicknessDynamicsStrategy: ThicknessDynamicsStrategy;
     thicknessDynamicsTaperWindowMs: number;
     thicknessDynamicsSpeedFilterTimeMs: number;
+    thicknessDynamicsPreviewStrategy: ThicknessDynamicsPreviewStrategy;
+    thicknessDynamicsPreviewSourceLimit: number;
+    thicknessDynamicsPreviewDrawLimit: number;
     presentationCacheStrategy: typeof PRESENTATION_CACHE_STRATEGY;
     presentationTransferStrategy: typeof PRESENTATION_TRANSFER_STRATEGY;
     paintDisplayPyramidStrategy: typeof PAINT_DISPLAY_PYRAMID_STRATEGY;
@@ -2369,6 +2389,11 @@ export class BrushEngine {
       thicknessDynamicsStrategy: THICKNESS_DYNAMICS_STRATEGY,
       thicknessDynamicsTaperWindowMs: THICKNESS_TAPER_WINDOW_MS,
       thicknessDynamicsSpeedFilterTimeMs: THICKNESS_SPEED_FILTER_TIME_MS,
+      thicknessDynamicsPreviewStrategy: THICKNESS_DYNAMICS_PREVIEW_STRATEGY,
+      thicknessDynamicsPreviewSourceLimit:
+        THICKNESS_DYNAMICS_PREVIEW_SOURCE_BASE_STAMPS,
+      thicknessDynamicsPreviewDrawLimit:
+        THICKNESS_DYNAMICS_PREVIEW_DRAW_BASE_STAMPS,
       presentationCacheStrategy: PRESENTATION_CACHE_STRATEGY,
       presentationTransferStrategy: PRESENTATION_TRANSFER_STRATEGY,
       paintDisplayPyramidStrategy: PAINT_DISPLAY_PYRAMID_STRATEGY,
@@ -4543,6 +4568,7 @@ export class BrushEngine {
           stroke.heldThicknessStamps.length - stroke.heldThicknessHead,
         );
       }
+      this.queueHeldThicknessAdaptivePreview(stamp, generationSettings);
       return;
     }
 
@@ -4571,10 +4597,8 @@ export class BrushEngine {
           millisecondsBeforeReference,
         )
         : candidate.liveThicknessFactor;
-      this.commitThicknessStamp({
-        ...candidate.stamp,
-        radius: candidate.baseRadius * finalThicknessFactor,
-      }, stroke);
+      candidate.stamp.radius = candidate.baseRadius * finalThicknessFactor;
+      this.commitThicknessStamp(candidate.stamp, stroke);
       stroke.heldThicknessHead += 1;
       released += 1;
     }
@@ -5205,6 +5229,62 @@ export class BrushEngine {
     return nearest?.sprite ?? null;
   }
 
+  private thicknessHoldbackPreviewActive(): boolean {
+    return this.activeStroke?.thicknessTailHoldback === true;
+  }
+
+  private adaptivePreviewCandidateLimit(): number {
+    return this.thicknessHoldbackPreviewActive()
+      ? THICKNESS_DYNAMICS_PREVIEW_SOURCE_BASE_STAMPS
+      : ADAPTIVE_PREVIEW_MAX_TIP_BASE_STAMPS;
+  }
+
+  private adaptivePreviewCandidatesForFrame(): AdaptivePreviewCandidate[] {
+    const candidates = this.adaptivePreviewCandidates
+      .filter((candidate) => candidate.serial === null
+        || candidate.serial > this.adaptivePreviewConfirmedSerial)
+      .slice(-this.adaptivePreviewCandidateLimit());
+    if (!this.thicknessHoldbackPreviewActive()) {
+      return candidates.slice(-ADAPTIVE_PREVIEW_MAX_TIP_BASE_STAMPS);
+    }
+    return selectEvenlySpacedItems(
+      candidates,
+      THICKNESS_DYNAMICS_PREVIEW_DRAW_BASE_STAMPS,
+    );
+  }
+
+  private queueHeldThicknessAdaptivePreview(
+    stamp: Stamp,
+    settings: BrushSettings,
+  ): void {
+    if (
+      !this.adaptivePreviewContext
+      || settings.blendMode !== "normal"
+      || this.isTexturizedGrainActive(settings)
+    ) {
+      return;
+    }
+
+    if (!this.adaptivePreviewCandidates.some((candidate) => candidate.stamp === stamp)) {
+      this.adaptivePreviewCandidates.push({
+        serial: null,
+        stamp,
+        settings,
+        presented: false,
+      });
+    }
+    this.adaptivePreviewCandidates = this.adaptivePreviewCandidates
+      .filter((candidate) => candidate.serial === null
+        || candidate.serial > this.adaptivePreviewConfirmedSerial)
+      .slice(-this.adaptivePreviewCandidateLimit());
+
+    if (!this.adaptivePreviewActive) {
+      this.activateAdaptivePreview("thickness-tail-holdback");
+    } else {
+      this.requestAdaptivePreviewDraw();
+    }
+  }
+
   private finishAdaptivePreviewLifetime(timestamp = performance.now()): void {
     if (this.adaptivePreviewStartedAt <= 0) {
       return;
@@ -5519,9 +5599,10 @@ export class BrushEngine {
     if (stroke) {
       const pendingTip: Stamp[] = [];
       let pendingCandidatesAdded = 0;
+      const candidateLimit = this.adaptivePreviewCandidateLimit();
       for (
         let index = this.pendingStamps.length - 1;
-        index >= 0 && pendingTip.length < ADAPTIVE_PREVIEW_MAX_TIP_BASE_STAMPS;
+        index >= 0 && pendingTip.length < candidateLimit;
         index -= 1
       ) {
         const stamp = this.pendingStamps[index];
@@ -5541,7 +5622,7 @@ export class BrushEngine {
         }
       }
       this.adaptivePreviewCandidates = this.adaptivePreviewCandidates
-        .slice(-ADAPTIVE_PREVIEW_MAX_TIP_BASE_STAMPS);
+        .slice(-candidateLimit);
       if (this.activeStrokeProfile) {
         this.activeStrokeProfile.adaptivePreviewLiftPendingBaseStamps += pendingCandidatesAdded;
       }
@@ -5869,19 +5950,22 @@ export class BrushEngine {
       return;
     }
 
-    const firstCandidate = Math.max(0, batch.length - ADAPTIVE_PREVIEW_MAX_TIP_BASE_STAMPS);
+    const candidateLimit = this.adaptivePreviewCandidateLimit();
+    const firstCandidate = Math.max(0, batch.length - candidateLimit);
     for (let index = firstCandidate; index < batch.length; index += 1) {
-      this.adaptivePreviewCandidates.push({
-        serial: startSerial + index + 1,
-        stamp: batch[index],
-        settings,
-        presented: false,
-      });
+      if (!this.adaptivePreviewCandidates.some((candidate) => candidate.stamp === batch[index])) {
+        this.adaptivePreviewCandidates.push({
+          serial: startSerial + index + 1,
+          stamp: batch[index],
+          settings,
+          presented: false,
+        });
+      }
     }
     this.adaptivePreviewCandidates = this.adaptivePreviewCandidates
       .filter((candidate) => candidate.serial === null
         || candidate.serial > this.adaptivePreviewConfirmedSerial)
-      .slice(-ADAPTIVE_PREVIEW_MAX_TIP_BASE_STAMPS);
+      .slice(-candidateLimit);
 
     if (this.adaptivePreviewForceStroke) {
       this.activateAdaptivePreview("diagnostic-force");
@@ -5911,10 +5995,7 @@ export class BrushEngine {
     const visibleContext = this.adaptivePreviewContext;
     const scratchCanvas = this.adaptivePreviewScratchCanvas;
     const context = this.adaptivePreviewScratchContext;
-    const candidates = this.adaptivePreviewCandidates
-      .filter((candidate) => candidate.serial === null
-        || candidate.serial > this.adaptivePreviewConfirmedSerial)
-      .slice(-ADAPTIVE_PREVIEW_MAX_TIP_BASE_STAMPS);
+    const candidates = this.adaptivePreviewCandidatesForFrame();
     if (!canvas || !visibleContext || !scratchCanvas || !context || candidates.length === 0) {
       this.finishIncompleteAdaptivePreviewFrame(startedAt, false, candidates, false);
       return;
@@ -5974,6 +6055,9 @@ export class BrushEngine {
       const stampX = Math.fround(stamp.x);
       const stampY = Math.fround(stamp.y);
       const radius = Math.fround(stamp.radius);
+      if (radius <= 0) {
+        continue;
+      }
       const directionXRaw = Math.fround(stamp.directionX);
       const directionYRaw = Math.fround(stamp.directionY);
       const directionLength = Math.hypot(directionXRaw, directionYRaw);

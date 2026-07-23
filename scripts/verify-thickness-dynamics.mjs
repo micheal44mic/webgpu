@@ -4,6 +4,7 @@ import {
   endThicknessFactor,
   filterStrokeSpeed,
   quadraticEaseOut,
+  selectEvenlySpacedItems,
   speedThicknessFactor,
   startThicknessFactor,
   thicknessDynamicsIsNeutral,
@@ -46,5 +47,10 @@ assert.ok(filteredFaster > filteredSlow && filteredFaster < 2);
 const slowTailLengthPx = 0.25 * THICKNESS_TAPER_WINDOW_MS;
 const fastTailLengthPx = 2 * THICKNESS_TAPER_WINDOW_MS;
 assert.equal(fastTailLengthPx / slowTailLengthPx, 8);
+
+assert.deepEqual(selectEvenlySpacedItems([], 4), []);
+assert.deepEqual(selectEvenlySpacedItems([0, 1, 2], 4), [0, 1, 2]);
+assert.deepEqual(selectEvenlySpacedItems([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 4), [0, 3, 6, 9]);
+assert.deepEqual(selectEvenlySpacedItems([0, 1, 2], 1), [2]);
 
 console.log("Thickness dynamics verification passed.");

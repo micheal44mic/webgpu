@@ -1983,3 +1983,44 @@ Verifica locale completata: `npm run thickness:verify`, `npm run grain:verify`,
 `npm run build` e `git diff --check`. La promozione o il rollback dipendono dal
 confronto visivo e dalla prova della latenza su iPhone; non dedurli dalla build
 desktop.
+
+## Bridge visivo del tail holdback — candidato locale
+
+Dopo la versione Sites `63`, l'utente ha approvato la forma della dinamica ma
+ha segnalato un distacco visibile fra touch e punta. La causa è il tail
+holdback da `100 ms`: gli stamp trattenuti non entrano nel layer WebGPU fino a
+quando la loro forma finale è determinabile. La finestra, le curve e il
+risultato permanente non sono stati ridotti o modificati.
+
+L'esperimento estende il Canvas2D tip preview già esistente. Quando il tail
+holdback è attivo, Grain è Off e il blend è Normal:
+
+- il primo stamp trattenuto attiva subito il preview con reason
+  `thickness-tail-holdback`, senza aspettare una sonda di coda GPU lenta;
+- il motore conserva al massimo `256` candidati transitori e ne sceglie `4`
+  uniformemente fra bordo già renderizzabile e punta più recente; in questo
+  modo il campionamento copre l'intera finestra invece di usare quattro stamp
+  quasi coincidenti allo spacing `1%`;
+- il limite di draw resta piccolo: con Count `16` il frame temporaneo disegna
+  al massimo `64` copie Canvas2D;
+- un candidato a raggio zero non produce il precedente punto minimo da
+  `0,25 px`, quindi inizio/fine a `0%` restano realmente appuntiti;
+- quando uno stamp matura o viene finalizzato al lift, il motore aggiorna il
+  raggio sullo stesso oggetto `Stamp` mostrato dal preview. La submission GPU
+  gli assegna così il seriale esatto per ritirare l'overlay soltanto dopo la
+  conferma della coda, senza sostituzioni per identità o flash intenzionali.
+
+Questo è soltanto un bridge visivo: seed, ordine, raggio WebGPU finale,
+history, culling, blending, finestra `100 ms`, filtro velocità e curve non
+cambiano. Il tripletto neutro `100% / 100% / 0%` non crea holdback e continua
+nel percorso originario. Grain e Light/M1 Glaze conservano il divieto di
+preview Canvas2D per mismatch semantico; non dichiarare risolto il distacco per
+queste modalità.
+
+La telemetria `performanceTelemetryRevision: 26` identifica
+`thicknessDynamicsPreviewStrategy: "immediate-canvas2d-held-tail-bridge"` e i
+limiti sorgente/draw `256/4`. Verifica locale completata con
+`npm run thickness:verify`, `npm run grain:verify`, `npm run build` e
+`git diff --check`. L'utente deve ora giudicare su iPhone l'aggancio al dito,
+la continuità fra overlay e layer e l'assenza di flash al lift; non promuovere
+il bridge dalla sola build desktop.

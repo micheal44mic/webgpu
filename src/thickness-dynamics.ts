@@ -84,3 +84,26 @@ export function thicknessDynamicsIsNeutral(
   return Math.abs(clamp(startThicknessRatio, 0, 2) - 1) <= Number.EPSILON * 8
     && !thicknessDynamicsNeedsTailHoldback(endThicknessRatio, speedThicknessPercent);
 }
+
+export function selectEvenlySpacedItems<T>(
+  items: readonly T[],
+  maximumItems: number,
+): T[] {
+  const limit = Math.max(0, Math.floor(maximumItems));
+  if (limit === 0 || items.length === 0) {
+    return [];
+  }
+  if (items.length <= limit) {
+    return [...items];
+  }
+  if (limit === 1) {
+    return [items[items.length - 1]];
+  }
+
+  const selected: T[] = [];
+  for (let sampleIndex = 0; sampleIndex < limit; sampleIndex += 1) {
+    const itemIndex = Math.round(sampleIndex * (items.length - 1) / (limit - 1));
+    selected.push(items[itemIndex]);
+  }
+  return selected;
+}
