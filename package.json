@@ -10,7 +10,8 @@
     "benchmark:sync": "node scripts/sync-benchmark-runs.mjs",
     "blend:verify": "node scripts/verify-blend-core.mjs",
     "grain:verify": "node scripts/verify-grain-phase1.mjs",
-    "thickness:verify": "node scripts/verify-thickness-dynamics.mjs"
+    "thickness:verify": "node scripts/verify-thickness-dynamics.mjs",
+    "stroke:verify": "node scripts/verify-stroke-core.mjs"
   },
   "devDependencies": {
     "@webgpu/types": "0.1.71",

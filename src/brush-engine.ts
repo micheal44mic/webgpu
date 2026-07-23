@@ -29,6 +29,26 @@ import {
   thicknessDynamicsNeedsTailHoldback,
   type ThicknessDynamicsStrategy,
 } from "./thickness-dynamics";
+import {
+  RasterStrokeRenderer,
+  type RasterStrokeEncodeResult,
+  type RasterStrokeSourceMode,
+} from "./stroke-renderer";
+import {
+  DEFAULT_RASTER_STROKE_STYLE,
+  copyRasterStrokeStyle,
+  nextRasterStrokeMipValidThroughLevel,
+  normalizeRasterStrokeStyle,
+  rasterStrokeStylesEqual,
+  type RasterStrokeRect,
+  type RasterStrokeStyle,
+} from "./stroke-core";
+
+export type {
+  RasterStrokePosition,
+  RasterStrokeStyle,
+} from "./stroke-core";
+
 
 export type BlendMode = "normal" | "additive" | "light-glaze" | "m1-glaze";
 export type BrushTool = "paint" | "blend";
@@ -163,6 +183,12 @@ export interface EngineStats {
   totalBaseStamps: number;
   avoidedLogicalDraws: number;
   layerMemoryMiB: number;
+  rasterStrokeStyle: RasterStrokeStyle;
+  rasterStrokePersistentMemoryMiB: number;
+  rasterStrokeScratchMemoryMiB: number;
+  rasterStrokeBuilds: number;
+  rasterStrokeComposes: number;
+  rasterStrokeRendererBuild: string | null;
   gpuLabel: string;
   layerFormat: LayerFormat;
 }
@@ -1089,6 +1115,23 @@ export class BrushEngine {
   private layerView!: GPUTextureView;
   private layerSamplingView!: GPUTextureView;
   private blendRenderer: DryBlendRenderer | null = null;
+  private rasterStrokeRenderer: RasterStrokeRenderer | null = null;
+  private rasterStrokeStyle: RasterStrokeStyle = copyRasterStrokeStyle(
+    DEFAULT_RASTER_STROKE_STYLE,
+  );
+  private rasterStrokeFieldValid = false;
+  private rasterStrokeBuiltWidth = 0;
+  private rasterStrokeStyledInitialized = false;
+  private rasterStrokeMipValidThroughLevel = 0;
+  private rasterStrokeMipDownsampleBindGroups: GPUBindGroup[] = [];
+  private rasterStrokeDisplayBindGroup: GPUBindGroup | null = null;
+  private rasterStrokePendingComposeRect: DirtyRect | null = null;
+  private rasterStrokeBusy = false;
+  private rasterStrokeLastEncode: RasterStrokeEncodeResult | null = null;
+  private rasterStrokeTotalBuilds = 0;
+  private rasterStrokeTotalComposes = 0;
+  private layerContentBounds: DirtyRect | null = null;
+
   private paintMipViews: GPUTextureView[] = [];
   private paintMipDownsampleBindGroups: GPUBindGroup[] = [];
   private paintDisplayMipValidThroughLevel = 0;
@@ -1465,6 +1508,143 @@ export class BrushEngine {
     }
   }
 
+  getRasterStrokeStyle(): RasterStrokeStyle {
+    return copyRasterStrokeStyle(this.rasterStrokeStyle);
+  }
+
+  isRasterStrokeBusy(): boolean {
+    return this.rasterStrokeBusy;
+  }
+
+  private rasterStrokeActive(): boolean {
+    return Boolean(
+      this.rasterStrokeRenderer
+      && this.rasterStrokeStyle.enabled
+      && this.rasterStrokeStyle.width > 0,
+    );
+  }
+
+  private async ensureRasterStrokeRenderer(): Promise<RasterStrokeRenderer> {
+    if (this.rasterStrokeRenderer) {
+      return this.rasterStrokeRenderer;
+    }
+    const renderer = await RasterStrokeRenderer.create({
+      device: this.device,
+      documentWidth: LAYER_SIZE,
+      documentHeight: LAYER_SIZE,
+      layerFormat: this.layerFormat,
+      layerView: this.layerView,
+      lightGlazeUniformBuffer: this.lightGlazeUniformBuffer,
+      thicknessTailUniformBuffer: this.thicknessTailDisplayUniformBuffer,
+    });
+    renderer.setLightGlazeView(this.lightGlazeView);
+    renderer.setThicknessTailView(this.thicknessTailView);
+    this.rasterStrokeRenderer = renderer;
+    this.rasterStrokeDisplayBindGroup = this.device.createBindGroup({
+      label: `Traccia display bind group ${this.layerFormat}`,
+      layout: this.displayBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.displayUniformBuffer } },
+        { binding: 1, resource: renderer.samplingView },
+        { binding: 2, resource: this.sampler },
+      ],
+    });
+    this.rasterStrokeMipDownsampleBindGroups = renderer.mipViews
+      .slice(0, PAINT_DISPLAY_MIP_LEVEL_COUNT - 1)
+      .map((sourceView, sourceMipLevel) => this.device.createBindGroup({
+        label: `Traccia styled mip ${sourceMipLevel} to ${sourceMipLevel + 1}`,
+        layout: this.paintMipDownsampleBindGroupLayout,
+        entries: [{ binding: 0, resource: sourceView }],
+      }));
+    this.rasterStrokeFieldValid = false;
+    this.rasterStrokeBuiltWidth = 0;
+    this.rasterStrokeStyledInitialized = false;
+    this.rasterStrokeMipValidThroughLevel = 0;
+    this.rasterStrokeLastEncode = null;
+    return renderer;
+  }
+
+  private releaseRasterStrokeRenderer(): void {
+    this.rasterStrokeRenderer?.destroy();
+    this.rasterStrokeRenderer = null;
+    this.rasterStrokeDisplayBindGroup = null;
+    this.rasterStrokeMipDownsampleBindGroups = [];
+    this.rasterStrokeFieldValid = false;
+    this.rasterStrokeBuiltWidth = 0;
+    this.rasterStrokeStyledInitialized = false;
+    this.rasterStrokeMipValidThroughLevel = 0;
+    this.rasterStrokePendingComposeRect = null;
+    this.rasterStrokeLastEncode = null;
+  }
+
+  async setRasterStrokeStyle(style: unknown): Promise<boolean> {
+    const normalized = normalizeRasterStrokeStyle(style);
+    const normalizedActive = normalized.enabled && normalized.width > 0;
+    if (
+      rasterStrokeStylesEqual(normalized, this.rasterStrokeStyle)
+      && (!normalizedActive || this.rasterStrokeRenderer)
+    ) {
+      return true;
+    }
+    if (!this.initialized) {
+      this.rasterStrokeStyle = normalized;
+      return true;
+    }
+    if (this.activeStroke || this.historyBusy || this.rasterStrokeBusy) {
+      return false;
+    }
+
+    this.flushPendingWorkBeforeSettingsChange();
+    const previous = copyRasterStrokeStyle(this.rasterStrokeStyle);
+    const previousActive = previous.enabled && previous.width > 0;
+    const nextActive = normalized.enabled && normalized.width > 0;
+    this.rasterStrokeBusy = true;
+    try {
+      if (nextActive && !this.rasterStrokeRenderer) {
+        this.callbacks.onStatus?.("Preparo la Traccia WebGPU…", "working");
+        await this.waitForIdle();
+        await this.ensureRasterStrokeRenderer();
+      }
+
+      this.rasterStrokeStyle = normalized;
+      if (nextActive) {
+        if (!previousActive || normalized.width > this.rasterStrokeBuiltWidth) {
+          this.rasterStrokeFieldValid = false;
+        }
+        this.rasterStrokePendingComposeRect = this.rasterStrokeEffectRect(
+          this.layerContentBounds,
+          Math.max(previous.width, normalized.width),
+        );
+        this.presentationCacheNeedsFullRebuild = true;
+        this.displayDirty = true;
+        this.requestRender();
+        this.callbacks.onStatus?.("Traccia WebGPU attiva.", "ok");
+      } else {
+        await this.waitForIdle();
+        this.releaseRasterStrokeRenderer();
+        this.paintDisplayMipValidThroughLevel = 0;
+        this.presentationCacheNeedsFullRebuild = true;
+        this.displayDirty = true;
+        this.requestRender();
+        if (previousActive) {
+          this.callbacks.onStatus?.("Traccia disattivata; memoria GPU liberata.", "ok");
+        }
+      }
+      this.publishStats();
+      return true;
+    } catch (error) {
+      this.rasterStrokeStyle = previous;
+      if (!previousActive) {
+        this.releaseRasterStrokeRenderer();
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      this.callbacks.onStatus?.(`Traccia WebGPU non disponibile: ${message}`, "error");
+      throw error;
+    } finally {
+      this.rasterStrokeBusy = false;
+    }
+  }
+
   async setLayerFormat(format: LayerFormat): Promise<boolean> {
     if (format === this.layerFormat) {
       return true;
@@ -1486,6 +1666,15 @@ export class BrushEngine {
       this.clearRequested = true;
       this.displayDirty = true;
       this.layerHasContent = false;
+      this.layerContentBounds = null;
+      if (this.rasterStrokeStyle.enabled && this.rasterStrokeStyle.width > 0) {
+        try {
+          await this.ensureRasterStrokeRenderer();
+        } catch (strokeError) {
+          this.rasterStrokeStyle = { ...this.rasterStrokeStyle, enabled: false };
+          console.error("Ricreazione Traccia dopo cambio formato non riuscita", strokeError);
+        }
+      }
       this.requestRender();
       this.callbacks.onStatus?.(`Layer ${format} pronto. Il contenuto è stato azzerato.`, "ok");
       this.publishStats();
@@ -1850,6 +2039,7 @@ export class BrushEngine {
     this.displayDirty = true;
     this.presentationCacheNeedsFullRebuild = true;
     this.layerHasContent = false;
+    this.layerContentBounds = null;
     this.requestRender();
     this.publishHistoryState();
     return true;
@@ -1977,6 +2167,14 @@ export class BrushEngine {
       totalBaseStamps: this.totalBaseStamps,
       avoidedLogicalDraws: this.avoidedLogicalDraws,
       layerMemoryMiB: this.layerFormat === "rgba16float" ? 128 : 64,
+      rasterStrokeStyle: copyRasterStrokeStyle(this.rasterStrokeStyle),
+      rasterStrokePersistentMemoryMiB:
+        (this.rasterStrokeRenderer?.persistentMemoryBytes ?? 0) / (1024 * 1024),
+      rasterStrokeScratchMemoryMiB:
+        (this.rasterStrokeRenderer?.scratchMemoryBytes ?? 0) / (1024 * 1024),
+      rasterStrokeBuilds: this.rasterStrokeTotalBuilds,
+      rasterStrokeComposes: this.rasterStrokeTotalComposes,
+      rasterStrokeRendererBuild: this.rasterStrokeRenderer?.build ?? null,
       gpuLabel: this.gpuLabel,
       layerFormat: this.layerFormat,
     };
@@ -2453,6 +2651,10 @@ export class BrushEngine {
     layerFormat: LayerFormat;
     layerMemoryMiB: number;
     gpuLabel: string;
+    rasterStrokeRendererBuild: string | null;
+    rasterStrokeStyle: RasterStrokeStyle;
+    rasterStrokePersistentMemoryMiB: number;
+    rasterStrokeScratchMemoryMiB: number;
     timestampQueriesSupported: boolean;
     stampGeometry: StampGeometry;
     stampVerticesPerCopy: number;
@@ -2541,6 +2743,12 @@ export class BrushEngine {
       layerMemoryMiB: this.layerFormat === "rgba16float" ? 128 : 64,
       gpuLabel: this.gpuLabel,
       timestampQueriesSupported: this.device?.features.has("timestamp-query") ?? false,
+      rasterStrokeRendererBuild: this.rasterStrokeRenderer?.build ?? null,
+      rasterStrokeStyle: copyRasterStrokeStyle(this.rasterStrokeStyle),
+      rasterStrokePersistentMemoryMiB:
+        (this.rasterStrokeRenderer?.persistentMemoryBytes ?? 0) / (1024 * 1024),
+      rasterStrokeScratchMemoryMiB:
+        (this.rasterStrokeRenderer?.scratchMemoryBytes ?? 0) / (1024 * 1024),
       stampGeometry: this.settings.shape === "shape" ? this.lastStampGeometry : STAMP_GEOMETRY,
       stampVerticesPerCopy: this.settings.shape === "shape"
         ? this.lastStampVerticesPerCopy
@@ -4185,6 +4393,7 @@ export class BrushEngine {
     this.paintDisplayMipValidThroughLevel = 0;
     this.paintDisplaySelectedMipLevel = 0;
     this.presentationCacheNeedsFullRebuild = true;
+    this.releaseRasterStrokeRenderer();
 
     oldBlendRenderer?.destroy();
     oldTexture?.destroy();
@@ -4243,10 +4452,12 @@ export class BrushEngine {
     this.thicknessTailDisplayBindGroup = displayBindGroup;
     this.thicknessTailTextureWidth = width;
     this.thicknessTailTextureHeight = height;
+    this.rasterStrokeRenderer?.setThicknessTailView(view);
     oldTexture?.destroy();
   }
 
   private destroyThicknessTailOverlayResources(): void {
+    this.rasterStrokeRenderer?.setThicknessTailView(null);
     this.thicknessTailTexture?.destroy();
     this.thicknessTailTexture = null;
     this.thicknessTailView = null;
@@ -4338,9 +4549,11 @@ export class BrushEngine {
     this.lightGlazeDisplayBindGroup = displayBindGroup;
     this.lightGlazeCompositeBindGroup = compositeBindGroup;
     this.lightGlazeStorageAllocated = true;
+    this.rasterStrokeRenderer?.setLightGlazeView(view);
   }
 
   private destroyLightGlazeResources(): void {
+    this.rasterStrokeRenderer?.setLightGlazeView(null);
     this.lightGlazeSession = null;
     this.lightGlazeTexture?.destroy();
     this.lightGlazeTexture = null;
@@ -4385,6 +4598,7 @@ export class BrushEngine {
     // that abandons a stroke (reset, cancel or failure) must rebuild it before
     // it is shown again.
     this.presentationCacheNeedsFullRebuild = true;
+    this.deferRasterStrokeMutation(false);
   }
 
   private flushClosingLightGlazeSessionBeforeNewStroke(): void {
@@ -4477,6 +4691,197 @@ export class BrushEngine {
     const maximumX = Math.max(left.x + left.width, right.x + right.width);
     const maximumY = Math.max(left.y + left.height, right.y + right.height);
     return { x, y, width: maximumX - x, height: maximumY - y };
+  }
+
+  private rasterStrokeEffectRect(
+    rect: DirtyRect | RasterStrokeRect | null,
+    width = this.rasterStrokeStyle.width,
+  ): DirtyRect | null {
+    if (!rect) {
+      return null;
+    }
+    const margin = Math.ceil(Math.max(0, width) + 1.5);
+    const x = Math.max(0, Math.floor(rect.x) - margin);
+    const y = Math.max(0, Math.floor(rect.y) - margin);
+    const right = Math.min(LAYER_SIZE, Math.ceil(rect.x + rect.width) + margin);
+    const bottom = Math.min(LAYER_SIZE, Math.ceil(rect.y + rect.height) + margin);
+    return right > x && bottom > y
+      ? { x, y, width: right - x, height: bottom - y }
+      : null;
+  }
+
+  private noteLayerMutation(dirtyRect: DirtyRect | null, cleared: boolean): void {
+    if (cleared) {
+      this.layerContentBounds = null;
+      this.rasterStrokeFieldValid = false;
+      this.rasterStrokeBuiltWidth = 0;
+    }
+    if (dirtyRect) {
+      this.layerContentBounds = this.mergeDirtyRects(this.layerContentBounds, dirtyRect);
+    }
+    if (!this.rasterStrokeActive()) {
+      this.rasterStrokeFieldValid = false;
+    }
+  }
+
+  private deferRasterStrokeMutation(cleared: boolean): void {
+    this.rasterStrokeFieldValid = false;
+    if (cleared) {
+      this.rasterStrokeStyledInitialized = false;
+      this.rasterStrokeMipValidThroughLevel = 0;
+    }
+  }
+
+  private encodeRasterStrokeUpdate(
+    encoder: GPUCommandEncoder,
+    sourceMode: RasterStrokeSourceMode,
+    mutationRect: DirtyRect | null,
+    virtualContentBounds: DirtyRect | null = this.layerContentBounds,
+    layerCleared = false,
+  ): { dirtyRect: DirtyRect | null; timing: RasterStrokeEncodeResult | null } {
+    const renderer = this.rasterStrokeRenderer;
+    if (!renderer || !this.rasterStrokeActive()) {
+      if (mutationRect || layerCleared) {
+        this.rasterStrokeFieldValid = false;
+      }
+      return { dirtyRect: mutationRect, timing: null };
+    }
+
+    if (layerCleared) {
+      this.rasterStrokeFieldValid = false;
+      this.rasterStrokeBuiltWidth = 0;
+      this.rasterStrokeMipValidThroughLevel = 0;
+    }
+    const fieldWasValid = this.rasterStrokeFieldValid;
+    const clearStyled = layerCleared || !this.rasterStrokeStyledInitialized;
+    let rebuildRect: DirtyRect | null = null;
+    let changeDetectionRect: DirtyRect | null = null;
+    let composeRect: DirtyRect | null = null;
+    let conditionalComposeRect: DirtyRect | null = null;
+
+    if (!fieldWasValid) {
+      rebuildRect = this.rasterStrokeEffectRect(
+        virtualContentBounds,
+        this.rasterStrokeStyle.width,
+      );
+      composeRect = rebuildRect;
+    } else if (mutationRect) {
+      rebuildRect = this.rasterStrokeEffectRect(
+        mutationRect,
+        this.rasterStrokeStyle.width,
+      );
+      changeDetectionRect = mutationRect;
+      composeRect = mutationRect;
+      conditionalComposeRect = rebuildRect;
+    }
+    composeRect = this.mergeDirtyRects(
+      composeRect,
+      this.rasterStrokePendingComposeRect,
+    );
+
+    const timing = renderer.encode({
+      encoder,
+      style: this.rasterStrokeStyle,
+      sourceMode,
+      rebuildRect,
+      changeDetectionRect,
+      composeRect,
+      conditionalComposeRect,
+      clearStyled,
+      resetThresholdMask: !fieldWasValid,
+    });
+    this.rasterStrokeLastEncode = timing;
+    this.rasterStrokeStyledInitialized = true;
+    this.rasterStrokePendingComposeRect = null;
+    if (clearStyled) {
+      this.rasterStrokeMipValidThroughLevel = 0;
+    }
+    if (rebuildRect || !virtualContentBounds) {
+      this.rasterStrokeFieldValid = true;
+      this.rasterStrokeBuiltWidth = Math.max(
+        this.rasterStrokeBuiltWidth,
+        this.rasterStrokeStyle.width,
+      );
+    }
+    if (timing.buildJobs > 0) {
+      this.rasterStrokeTotalBuilds += 1;
+    }
+    if (timing.composeDispatches > 0 || timing.cleared) {
+      this.rasterStrokeTotalComposes += 1;
+    }
+
+    return {
+      dirtyRect: clearStyled
+        ? { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE }
+        : this.mergeDirtyRects(composeRect, conditionalComposeRect),
+      timing,
+    };
+  }
+
+  private encodeRasterStrokeDisplayPyramid(
+    encoder: GPUCommandEncoder,
+    baseDirtyRect: DirtyRect | null,
+    selectedMipLevel: number,
+  ): { passes: number; updatedPixels: number } {
+    const renderer = this.rasterStrokeRenderer;
+    if (!renderer || !this.rasterStrokeActive()) {
+      return { passes: 0, updatedPixels: 0 };
+    }
+    const previousValidThroughLevel = this.rasterStrokeMipValidThroughLevel;
+    const baseChanged = baseDirtyRect !== null;
+    let sourceDirtyRect = baseDirtyRect;
+    let passes = 0;
+    let updatedPixels = 0;
+
+    for (let mipLevel = 1; mipLevel <= selectedMipLevel; mipLevel += 1) {
+      const dimensions = this.paintMipDimensions(mipLevel);
+      const needsFullBuild = mipLevel > previousValidThroughLevel;
+      const targetDirtyRect = needsFullBuild
+        ? { x: 0, y: 0, ...dimensions }
+        : sourceDirtyRect
+          ? this.downsampleDirtyRect(sourceDirtyRect, mipLevel)
+          : null;
+      if (!targetDirtyRect || targetDirtyRect.width <= 0 || targetDirtyRect.height <= 0) {
+        sourceDirtyRect = null;
+        continue;
+      }
+
+      const pass = encoder.beginRenderPass({
+        label: needsFullBuild
+          ? `Build full Traccia styled mip ${mipLevel}`
+          : `Update Traccia styled mip ${mipLevel} dirty rect`,
+        colorAttachments: [{
+          view: renderer.mipViews[mipLevel],
+          loadOp: needsFullBuild ? "clear" : "load",
+          storeOp: "store",
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        }],
+      });
+      pass.setPipeline(this.paintMipDownsamplePipeline);
+      pass.setBindGroup(0, this.rasterStrokeMipDownsampleBindGroups[mipLevel - 1]);
+      if (!needsFullBuild) {
+        pass.setScissorRect(
+          targetDirtyRect.x,
+          targetDirtyRect.y,
+          targetDirtyRect.width,
+          targetDirtyRect.height,
+        );
+      }
+      pass.draw(3, 1, 0, 0);
+      pass.end();
+      passes += 1;
+      updatedPixels += targetDirtyRect.width * targetDirtyRect.height;
+      sourceDirtyRect = targetDirtyRect;
+    }
+    // A mip-0 mutation invalidates every coarser level that was not refreshed
+    // in this frame. Otherwise a later zoom-out can sample an older styled
+    // image until another brush mutation happens to update that mip.
+    this.rasterStrokeMipValidThroughLevel = nextRasterStrokeMipValidThroughLevel(
+      previousValidThroughLevel,
+      selectedMipLevel,
+      baseChanged,
+    );
+    return { passes, updatedPixels };
   }
 
   private encodeLightGlazeDisplayPyramid(
@@ -7187,6 +7592,7 @@ export class BrushEngine {
       });
       clearPass.end();
       this.paintDisplayMipValidThroughLevel = 0;
+      this.noteLayerMutation(null, true);
     }
 
     if (stamps.length > 0) {
@@ -7292,6 +7698,7 @@ export class BrushEngine {
     if (!present && (clearLayer || stamps.length > 0 || session.commitRequested)) {
       this.presentationCacheNeedsFullRebuild = true;
       this.paintDisplayMipValidThroughLevel = 0;
+      this.deferRasterStrokeMutation(clearLayer);
     }
 
     if (present) {
@@ -7310,7 +7717,34 @@ export class BrushEngine {
       // below. Intermediate frames use mip 0 for direct live composition and
       // mip 1+ from the temporary final-composite pyramid.
       if (!session.commitRequested) {
-        if (session.hasContent) {
+        const rasterStrokeActive = this.rasterStrokeActive();
+        const rasterStrokeUpdate = rasterStrokeActive
+          ? this.encodeRasterStrokeUpdate(
+            encoder,
+            "light-glaze",
+            submittedDirtyRect,
+            this.mergeDirtyRects(this.layerContentBounds, session.dirtyRect),
+            clearLayer,
+          )
+          : { dirtyRect: null, timing: null };
+        if (rasterStrokeActive) {
+          if (clearLayer || submittedDirtyRect) {
+            this.paintDisplayMipValidThroughLevel = 0;
+          }
+          const rasterPyramidStart = performance.now();
+          const rasterPyramid = this.encodeRasterStrokeDisplayPyramid(
+            encoder,
+            rasterStrokeUpdate.dirtyRect,
+            displaySelectedMipLevel,
+          );
+          paintDisplayPyramidMaintenanceFrames += rasterPyramid.passes > 0 ? 1 : 0;
+          paintDisplayPyramidPasses += rasterPyramid.passes;
+          paintDisplayPyramidBaseDirtyPixels += rasterStrokeUpdate.dirtyRect
+            ? rasterStrokeUpdate.dirtyRect.width * rasterStrokeUpdate.dirtyRect.height
+            : 0;
+          paintDisplayPyramidUpdatedPixels += rasterPyramid.updatedPixels;
+          paintDisplayPyramidEncodingMs += performance.now() - rasterPyramidStart;
+        } else if (session.hasContent) {
           const glazePyramid = this.encodeLightGlazeDisplayPyramid(
             encoder,
             session,
@@ -7335,10 +7769,13 @@ export class BrushEngine {
         }
 
         const requiresFullRebuild = this.presentationCacheNeedsFullRebuild || clearLayer;
+        const presentationLayerDirtyRect = rasterStrokeActive
+          ? rasterStrokeUpdate.dirtyRect
+          : submittedDirtyRect;
         const presentationDirtyRect = requiresFullRebuild
           ? { x: 0, y: 0, width: this.canvas.width, height: this.canvas.height }
-          : submittedDirtyRect
-            ? this.layerDirtyRectToPresentationRect(submittedDirtyRect, displaySelectedMipLevel)
+          : presentationLayerDirtyRect
+            ? this.layerDirtyRectToPresentationRect(presentationLayerDirtyRect, displaySelectedMipLevel)
             : null;
 
         if (presentationDirtyRect) {
@@ -7357,11 +7794,15 @@ export class BrushEngine {
             ],
           });
           displayPass.setPipeline(
-            session.hasContent ? this.lightGlazeDisplayPipeline : this.displayPipeline,
+            rasterStrokeActive
+              ? this.displayPipeline
+              : session.hasContent ? this.lightGlazeDisplayPipeline : this.displayPipeline,
           );
           displayPass.setBindGroup(
             0,
-            session.hasContent ? this.lightGlazeDisplayBindGroup! : this.displayBindGroup,
+            rasterStrokeActive
+              ? this.rasterStrokeDisplayBindGroup!
+              : session.hasContent ? this.lightGlazeDisplayBindGroup! : this.displayBindGroup,
           );
           if (!requiresFullRebuild) {
             displayPass.setScissorRect(
@@ -7380,7 +7821,7 @@ export class BrushEngine {
           } else {
             presentationCachePartialUpdates = 1;
           }
-        } else if (submittedDirtyRect) {
+        } else if (presentationLayerDirtyRect) {
           presentationCacheOffscreenSkips = 1;
         }
       }
@@ -7414,33 +7855,64 @@ export class BrushEngine {
         lightGlazeCommits = 1;
         lightGlazeCompositePixels = session.dirtyRect.width * session.dirtyRect.height;
       }
+      this.noteLayerMutation(session.dirtyRect, false);
 
       if (present) {
         const canonicalDisplayStart = performance.now();
+        const rasterStrokeActive = this.rasterStrokeActive();
+        const rasterStrokeUpdate = rasterStrokeActive
+          ? this.encodeRasterStrokeUpdate(
+            encoder,
+            "permanent",
+            session.dirtyRect,
+            this.layerContentBounds,
+            clearLayer,
+          )
+          : { dirtyRect: null, timing: null };
         const canonicalLayerDirtyRect = clearLayer
           ? { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE }
           : session.dirtyRect;
-        const mainPyramid = this.encodePaintDisplayPyramid(
-          encoder,
-          canonicalLayerDirtyRect,
-          displaySelectedMipLevel,
-        );
-        paintDisplayPyramidMaintenanceFrames += mainPyramid.maintenanceFrames;
-        paintDisplayPyramidFullLevelBuilds += mainPyramid.fullLevelBuilds;
-        paintDisplayPyramidDirtyLevelUpdates += mainPyramid.dirtyLevelUpdates;
-        paintDisplayPyramidPasses += mainPyramid.passes;
-        paintDisplayPyramidBaseDirtyPixels += mainPyramid.baseDirtyPixels;
-        paintDisplayPyramidUpdatedPixels += mainPyramid.updatedPixels;
-        paintDisplayPyramidEncodingMs += mainPyramid.encodingMs;
+        if (rasterStrokeActive) {
+          this.paintDisplayMipValidThroughLevel = 0;
+          const rasterPyramidStart = performance.now();
+          const rasterPyramid = this.encodeRasterStrokeDisplayPyramid(
+            encoder,
+            rasterStrokeUpdate.dirtyRect,
+            displaySelectedMipLevel,
+          );
+          paintDisplayPyramidMaintenanceFrames += rasterPyramid.passes > 0 ? 1 : 0;
+          paintDisplayPyramidPasses += rasterPyramid.passes;
+          paintDisplayPyramidBaseDirtyPixels += rasterStrokeUpdate.dirtyRect
+            ? rasterStrokeUpdate.dirtyRect.width * rasterStrokeUpdate.dirtyRect.height
+            : 0;
+          paintDisplayPyramidUpdatedPixels += rasterPyramid.updatedPixels;
+          paintDisplayPyramidEncodingMs += performance.now() - rasterPyramidStart;
+        } else {
+          const mainPyramid = this.encodePaintDisplayPyramid(
+            encoder,
+            canonicalLayerDirtyRect,
+            displaySelectedMipLevel,
+          );
+          paintDisplayPyramidMaintenanceFrames += mainPyramid.maintenanceFrames;
+          paintDisplayPyramidFullLevelBuilds += mainPyramid.fullLevelBuilds;
+          paintDisplayPyramidDirtyLevelUpdates += mainPyramid.dirtyLevelUpdates;
+          paintDisplayPyramidPasses += mainPyramid.passes;
+          paintDisplayPyramidBaseDirtyPixels += mainPyramid.baseDirtyPixels;
+          paintDisplayPyramidUpdatedPixels += mainPyramid.updatedPixels;
+          paintDisplayPyramidEncodingMs += mainPyramid.encodingMs;
+        }
 
         // Replace every live-composite cache pixel touched by this stroke with
         // the canonical permanent-layer result. Subsequent partial updates can
         // therefore never mix live and committed mip semantics.
         const requiresFullRebuild = this.presentationCacheNeedsFullRebuild || clearLayer;
+        const presentationLayerDirtyRect = rasterStrokeActive
+          ? rasterStrokeUpdate.dirtyRect
+          : session.dirtyRect;
         const presentationDirtyRect = requiresFullRebuild
           ? { x: 0, y: 0, width: this.canvas.width, height: this.canvas.height }
-          : session.dirtyRect
-            ? this.layerDirtyRectToPresentationRect(session.dirtyRect, displaySelectedMipLevel)
+          : presentationLayerDirtyRect
+            ? this.layerDirtyRectToPresentationRect(presentationLayerDirtyRect, displaySelectedMipLevel)
             : null;
         if (presentationDirtyRect) {
           this.writeDisplayUniforms(displaySelectedMipLevel);
@@ -7458,7 +7930,10 @@ export class BrushEngine {
             ],
           });
           displayPass.setPipeline(this.displayPipeline);
-          displayPass.setBindGroup(0, this.displayBindGroup);
+          displayPass.setBindGroup(
+            0,
+            rasterStrokeActive ? this.rasterStrokeDisplayBindGroup! : this.displayBindGroup,
+          );
           if (!requiresFullRebuild) {
             displayPass.setScissorRect(
               presentationDirtyRect.x,
@@ -7476,7 +7951,7 @@ export class BrushEngine {
           } else {
             presentationCachePartialUpdates = 1;
           }
-        } else if (session.dirtyRect) {
+        } else if (presentationLayerDirtyRect) {
           presentationCacheOffscreenSkips = 1;
         }
         displayEncodingMs += performance.now() - canonicalDisplayStart;
@@ -7598,9 +8073,6 @@ export class BrushEngine {
         blendDirtyRect = this.mergeDirtyRects(blendDirtyRect, chunkTiming.dirtyRect);
       }
     }
-    const presentationDirtyRect = clearLayer
-      ? { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE }
-      : blendDirtyRect;
     if (clearLayer) {
       this.presentationCacheNeedsFullRebuild = true;
       this.paintDisplayMipValidThroughLevel = 0;
@@ -7611,7 +8083,8 @@ export class BrushEngine {
       settings,
       present,
       null,
-      presentationDirtyRect,
+      blendDirtyRect,
+      clearLayer,
     );
     return {
       ...timing,
@@ -7633,6 +8106,7 @@ export class BrushEngine {
     present = true,
     replayBatch: PaintHistoryRenderBatch | null = null,
     externalDirtyRect: DirtyRect | null = null,
+    externalLayerCleared = false,
   ): SubmitTiming {
     if (isStrokeGlazeBlendMode(settings.blendMode)) {
       if (this.lightGlazeSession) {
@@ -7790,6 +8264,11 @@ export class BrushEngine {
       brushPass.end();
       brushEncodingMs = performance.now() - brushEncodingStart;
     }
+    const layerCleared = clearLayer || externalLayerCleared;
+    if (layerCleared || submittedDirtyRect) {
+      this.noteLayerMutation(submittedDirtyRect, layerCleared);
+    }
+
 
     if (thicknessTailFrame) {
       const thicknessTailEncodingStart = performance.now();
@@ -7797,11 +8276,12 @@ export class BrushEngine {
       brushEncodingMs += performance.now() - thicknessTailEncodingStart;
     }
 
-    if (!present && (clearLayer || stamps.length > 0 || externalDirtyRect)) {
+    if (!present && (clearLayer || stamps.length > 0 || externalDirtyRect || externalLayerCleared)) {
       // Una ricostruzione Undo/Redo omette i display intermedi. La cache non
       // deve quindi essere riutilizzata finché l'ultimo batch non la ricrea.
       this.presentationCacheNeedsFullRebuild = true;
       this.paintDisplayMipValidThroughLevel = 0;
+      this.deferRasterStrokeMutation(layerCleared);
     }
 
     if (present) {
@@ -7813,38 +8293,78 @@ export class BrushEngine {
         this.presentationCacheNeedsFullRebuild = true;
       }
       this.paintDisplaySelectedMipLevel = displaySelectedMipLevel;
+      const rasterStrokeActive = this.rasterStrokeActive();
+      const transientMutationRect = this.mergeDirtyRects(
+        this.thicknessTailPresentedRect,
+        thicknessTailFrame?.dirtyRect ?? null,
+      );
+      const rasterStrokeMutationRect = this.mergeDirtyRects(
+        submittedDirtyRect,
+        transientMutationRect,
+      );
+      const rasterStrokeVirtualBounds = thicknessTailFrame
+        ? this.mergeDirtyRects(this.layerContentBounds, thicknessTailFrame.dirtyRect)
+        : this.layerContentBounds;
+      const rasterStrokeUpdate = rasterStrokeActive
+        ? this.encodeRasterStrokeUpdate(
+          encoder,
+          thicknessTailFrame ? "thickness-tail" : "permanent",
+          rasterStrokeMutationRect,
+          rasterStrokeVirtualBounds,
+          layerCleared,
+        )
+        : { dirtyRect: null, timing: null };
 
-      const baseDirtyRect = clearLayer
+
+      const baseDirtyRect = layerCleared
         ? { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE }
         : submittedDirtyRect;
-      if (clearLayer) {
+      if (layerCleared || (rasterStrokeActive && submittedDirtyRect)) {
         this.paintDisplayMipValidThroughLevel = 0;
       }
-      const pyramidTiming = this.encodePaintDisplayPyramid(
-        encoder,
-        baseDirtyRect,
-        displaySelectedMipLevel,
-      );
-      paintDisplayPyramidMaintenanceFrames = pyramidTiming.maintenanceFrames;
-      paintDisplayPyramidFullLevelBuilds = pyramidTiming.fullLevelBuilds;
-      paintDisplayPyramidDirtyLevelUpdates = pyramidTiming.dirtyLevelUpdates;
-      paintDisplayPyramidPasses = pyramidTiming.passes;
-      paintDisplayPyramidBaseDirtyPixels = pyramidTiming.baseDirtyPixels;
-      paintDisplayPyramidUpdatedPixels = pyramidTiming.updatedPixels;
-      paintDisplayPyramidEncodingMs = pyramidTiming.encodingMs;
+      if (!rasterStrokeActive) {
+        const pyramidTiming = this.encodePaintDisplayPyramid(
+          encoder,
+          baseDirtyRect,
+          displaySelectedMipLevel,
+        );
+        paintDisplayPyramidMaintenanceFrames = pyramidTiming.maintenanceFrames;
+        paintDisplayPyramidFullLevelBuilds = pyramidTiming.fullLevelBuilds;
+        paintDisplayPyramidDirtyLevelUpdates = pyramidTiming.dirtyLevelUpdates;
+        paintDisplayPyramidPasses = pyramidTiming.passes;
+        paintDisplayPyramidBaseDirtyPixels = pyramidTiming.baseDirtyPixels;
+        paintDisplayPyramidUpdatedPixels = pyramidTiming.updatedPixels;
+        paintDisplayPyramidEncodingMs = pyramidTiming.encodingMs;
+      } else {
+        const rasterPyramidStart = performance.now();
+        const rasterPyramid = this.encodeRasterStrokeDisplayPyramid(
+          encoder,
+          rasterStrokeUpdate.dirtyRect,
+          displaySelectedMipLevel,
+        );
+        paintDisplayPyramidMaintenanceFrames = rasterPyramid.passes > 0 ? 1 : 0;
+        paintDisplayPyramidPasses = rasterPyramid.passes;
+        paintDisplayPyramidBaseDirtyPixels = rasterStrokeUpdate.dirtyRect
+          ? rasterStrokeUpdate.dirtyRect.width * rasterStrokeUpdate.dirtyRect.height
+          : 0;
+        paintDisplayPyramidUpdatedPixels = rasterPyramid.updatedPixels;
+        paintDisplayPyramidEncodingMs = performance.now() - rasterPyramidStart;
+      }
 
       const canvasPixels = this.canvas.width * this.canvas.height;
       legacyDisplayShaderPixels = canvasPixels;
       presentationCopiedPixels = canvasPixels;
 
-      const requiresFullRebuild = this.presentationCacheNeedsFullRebuild || clearLayer;
-      const presentationLayerDirtyRect = this.mergeDirtyRects(
-        submittedDirtyRect,
-        this.mergeDirtyRects(
-          this.thicknessTailPresentedRect,
-          thicknessTailFrame?.dirtyRect ?? null,
-        ),
-      );
+      const requiresFullRebuild = this.presentationCacheNeedsFullRebuild || layerCleared;
+      const presentationLayerDirtyRect = rasterStrokeActive
+        ? rasterStrokeUpdate.dirtyRect
+        : this.mergeDirtyRects(
+          submittedDirtyRect,
+          this.mergeDirtyRects(
+            this.thicknessTailPresentedRect,
+            thicknessTailFrame?.dirtyRect ?? null,
+          ),
+        );
       const presentationDirtyRect = requiresFullRebuild
         ? { x: 0, y: 0, width: this.canvas.width, height: this.canvas.height }
         : presentationLayerDirtyRect
@@ -7870,11 +8390,15 @@ export class BrushEngine {
           ],
         });
         displayPass.setPipeline(
-          thicknessTailFrame ? this.thicknessTailDisplayPipeline : this.displayPipeline,
+          rasterStrokeActive
+            ? this.displayPipeline
+            : thicknessTailFrame ? this.thicknessTailDisplayPipeline : this.displayPipeline,
         );
         displayPass.setBindGroup(
           0,
-          thicknessTailFrame ? this.thicknessTailDisplayBindGroup! : this.displayBindGroup,
+          rasterStrokeActive
+            ? this.rasterStrokeDisplayBindGroup!
+            : thicknessTailFrame ? this.thicknessTailDisplayBindGroup! : this.displayBindGroup,
         );
         if (!requiresFullRebuild) {
           displayPass.setScissorRect(

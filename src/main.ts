@@ -14,6 +14,7 @@ import {
   type ShapeSamplingStrategy,
   type StampGeometry,
   type StrokePerformanceProfile,
+  type RasterStrokeStyle,
 } from "./brush-engine";
 
 function element<T extends HTMLElement>(id: string): T {
@@ -138,6 +139,10 @@ interface BenchmarkRun {
     canvasHeight: number;
     layerSize: number;
     layerFormat: LayerFormat;
+    rasterStrokeRendererBuild: string | null;
+    rasterStrokeStyle: RasterStrokeStyle;
+    rasterStrokePersistentMemoryMiB: number;
+    rasterStrokeScratchMemoryMiB: number;
     layerMemoryMiB: number;
     gpuLabel: string;
     timestampQueriesSupported: boolean;
@@ -224,7 +229,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 29;
+    performanceTelemetryRevision: 31;
   };
 }
 
@@ -265,6 +270,7 @@ let humanStrokeLoading = true;
 let humanStrokeSaving = false;
 let benchmarkRunning = false;
 let layerFormatChanging = false;
+let rasterStrokeChanging = false;
 let historyUiBusy = false;
 let engineInitialized = false;
 let controlsPanelOpen = true;
@@ -401,6 +407,8 @@ function updateControlOutputs(): void {
   element<HTMLOutputElement>("lightnessJitterOut").value = `${rangeValue("lightnessJitter").toFixed(0)}%`;
   element<HTMLOutputElement>("darknessJitterOut").value = `${rangeValue("darknessJitter").toFixed(0)}%`;
   element<HTMLOutputElement>("positionJitterLateralOut").value = `${rangeValue("positionJitterLateral").toFixed(0)}%`;
+  element<HTMLOutputElement>("rasterStrokeWidthOut").value =
+    `${rangeValue("rasterStrokeWidth").toFixed(0)} px`;
   element<HTMLOutputElement>("positionJitterLinearOut").value = `${rangeValue("positionJitterLinear").toFixed(0)}%`;
   element<HTMLOutputElement>("benchmarkStampsOut").value = formatInteger(rangeValue("benchmarkStamps"));
 }
@@ -499,7 +507,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 29,
+    performanceTelemetryRevision: 31,
     ...engineEnvironment,
   };
 }
@@ -689,6 +697,85 @@ async function loadCanonicalHumanStroke(): Promise<void> {
 
 function setControlValue(id: string, value: string | number): void {
   element<HTMLInputElement | HTMLSelectElement>(id).value = String(value);
+}
+
+function rasterStrokeColorFromHex(value: string): RasterStrokeStyle["color"] {
+  const match = /^#([0-9a-f]{6})$/i.exec(value);
+  if (!match) {
+    return [1, 0.643, 0.282, 1];
+  }
+  const packed = Number.parseInt(match[1], 16);
+  return [
+    ((packed >>> 16) & 0xff) / 255,
+    ((packed >>> 8) & 0xff) / 255,
+    (packed & 0xff) / 255,
+    1,
+  ];
+}
+
+function rasterStrokeColorToHex(color: RasterStrokeStyle["color"]): string {
+  const channel = (value: number) => Math.round(Math.max(0, Math.min(1, value)) * 255)
+    .toString(16)
+    .padStart(2, "0");
+  return `#${channel(color[0])}${channel(color[1])}${channel(color[2])}`;
+}
+
+function readRasterStrokeStyle(): RasterStrokeStyle {
+  return {
+    enabled: element<HTMLInputElement>("rasterStrokeEnabled").checked,
+    width: rangeValue("rasterStrokeWidth"),
+    position: element<HTMLSelectElement>("rasterStrokePosition")
+      .value as RasterStrokeStyle["position"],
+    color: rasterStrokeColorFromHex(element<HTMLInputElement>("rasterStrokeColor").value),
+  };
+}
+
+function syncRasterStrokeControls(style: RasterStrokeStyle): void {
+  element<HTMLInputElement>("rasterStrokeEnabled").checked = style.enabled;
+  setControlValue("rasterStrokeWidth", style.width);
+  setControlValue("rasterStrokePosition", style.position);
+  setControlValue("rasterStrokeColor", rasterStrokeColorToHex(style.color));
+  element<HTMLOutputElement>("rasterStrokeWidthOut").value = `${style.width.toFixed(0)} px`;
+  element<HTMLElement>("rasterStrokeParameters").hidden = !style.enabled;
+}
+
+const rasterStrokeControlIds = [
+  "rasterStrokeEnabled",
+  "rasterStrokeWidth",
+  "rasterStrokePosition",
+  "rasterStrokeColor",
+] as const;
+
+function updateRasterStrokeControlAvailability(locked = interactionLocked()): void {
+  const enabled = element<HTMLInputElement>("rasterStrokeEnabled").checked;
+  element<HTMLElement>("rasterStrokeParameters").hidden = !enabled;
+  for (const id of rasterStrokeControlIds) {
+    element<HTMLInputElement | HTMLSelectElement>(id).disabled =
+      locked || rasterStrokeChanging || (id !== "rasterStrokeEnabled" && !enabled);
+  }
+}
+
+async function applyRasterStrokeControls(): Promise<void> {
+  if (!engineInitialized || rasterStrokeChanging || activePointerId !== null) {
+    syncRasterStrokeControls(engine.getRasterStrokeStyle());
+    updateRasterStrokeControlAvailability();
+    return;
+  }
+  rasterStrokeChanging = true;
+  updateHistoryControls();
+  updateHumanStrokeControls();
+  try {
+    const accepted = await engine.setRasterStrokeStyle(readRasterStrokeStyle());
+    if (!accepted) {
+      syncRasterStrokeControls(engine.getRasterStrokeStyle());
+    }
+  } catch {
+    syncRasterStrokeControls(engine.getRasterStrokeStyle());
+  } finally {
+    rasterStrokeChanging = false;
+    updateHistoryControls();
+    updateHumanStrokeControls();
+  }
 }
 
 function applySettingsToControls(settings: BrushSettings): void {
@@ -938,7 +1025,8 @@ function updateHumanStrokeControls(): void {
     || historyUiBusy
     || historyState.busy
     || benchmarkRunning
-    || layerFormatChanging;
+    || layerFormatChanging
+    || rasterStrokeChanging;
   recordHumanStrokeButton.disabled = operationLocked
     || humanStrokeLoading
     || humanStrokeSaving
@@ -985,6 +1073,7 @@ function operationLocked(): boolean {
     || historyState.busy
     || benchmarkRunning
     || layerFormatChanging
+    || rasterStrokeChanging
     || humanStrokeReplaying
     || humanStrokeSaving;
 }
@@ -1010,6 +1099,7 @@ function updateHistoryControls(): void {
     element<HTMLInputElement | HTMLSelectElement>(id).disabled = locked;
   }
   updateGrainControlAvailability(locked);
+  updateRasterStrokeControlAvailability(locked);
 }
 
 async function runHistoryOperation(operation: "undo" | "redo"): Promise<void> {
@@ -1128,6 +1218,24 @@ for (const id of brushControlIds) {
   element<HTMLInputElement | HTMLSelectElement>(id).addEventListener("change", applyBrushControls);
 }
 
+element<HTMLInputElement>("rasterStrokeEnabled").addEventListener("change", () => {
+  updateRasterStrokeControlAvailability();
+  void applyRasterStrokeControls();
+});
+element<HTMLInputElement>("rasterStrokeWidth").addEventListener("input", () => {
+  element<HTMLOutputElement>("rasterStrokeWidthOut").value =
+    `${rangeValue("rasterStrokeWidth").toFixed(0)} px`;
+});
+element<HTMLInputElement>("rasterStrokeWidth").addEventListener("change", () => {
+  void applyRasterStrokeControls();
+});
+element<HTMLSelectElement>("rasterStrokePosition").addEventListener("change", () => {
+  void applyRasterStrokeControls();
+});
+element<HTMLInputElement>("rasterStrokeColor").addEventListener("change", () => {
+  void applyRasterStrokeControls();
+});
+
 element<HTMLSelectElement>("brushTool").addEventListener("change", () => {
   const tool = element<HTMLSelectElement>("brushTool").value === "blend" ? "blend" : "paint";
   configureBrushToolUi(tool, true);
@@ -1186,6 +1294,7 @@ layerFormatSelect.addEventListener("change", async () => {
     layerFormatSelect.value = engine.getStats().layerFormat;
   } finally {
     layerFormatChanging = false;
+    syncRasterStrokeControls(engine.getRasterStrokeStyle());
     historyState = engine.getHistoryState();
     updateHistoryControls();
     updateHumanStrokeControls();
@@ -1261,7 +1370,11 @@ function updateStats(stats: EngineStats): void {
   element<HTMLElement>("cpuStat").textContent = `${stats.lastCpuFrameMs.toFixed(2)} ms`;
   element<HTMLElement>("stampStat").textContent = formatInteger(stats.totalBaseStamps);
   element<HTMLElement>("avoidedStat").textContent = formatInteger(stats.avoidedLogicalDraws);
-  element<HTMLElement>("memoryStat").textContent = `${stats.layerMemoryMiB} MiB`;
+  const rasterStrokeMemoryMiB =
+    stats.rasterStrokePersistentMemoryMiB + stats.rasterStrokeScratchMemoryMiB;
+  element<HTMLElement>("memoryStat").textContent = rasterStrokeMemoryMiB > 0
+    ? `${stats.layerMemoryMiB} + ${rasterStrokeMemoryMiB.toFixed(1)} MiB`
+    : `${stats.layerMemoryMiB} MiB`;
   element<HTMLElement>("gpuStat").textContent = stats.gpuLabel;
 }
 
@@ -1783,6 +1896,7 @@ canvas.addEventListener(
 const resizeObserver = new ResizeObserver(() => engine.resizeCanvas());
 resizeObserver.observe(canvas);
 
+syncRasterStrokeControls(engine.getRasterStrokeStyle());
 setControlsPanelOpen(true);
 configureBrushToolUi("paint", false);
 updateControlOutputs();

@@ -128,6 +128,53 @@ Paint:
   Spessore` e `Pressure → size/alpha` sono stati **rimossi** su richiesta:
   la pressione resta nei dati come campo inerte, `controls.w` azzerato.
 
+### Traccia raster M1 (WebGPU, sperimentale da provare)
+
+- Stile di default equivalente al progetto M1: disattivato, `14 px`, esterno,
+  colore `#FFA448`; posizioni supportate `inside` / `center` / `outside`, width
+  `0–512 px`. Nessuna modifica ai parametri o ai pixel del pennello sorgente.
+- Contratto visivo portato senza scorciatoie: seed duale sulla soglia alpha
+  `0,5`, JFA per estensione con passo `1` extra, tie deterministico `y→x`,
+  distanza Q10.6 half-up (cap `1023 px`), correzione subpixel dall'alpha,
+  coverage quantizzata R8 e compositing premoltiplicato M1.
+- Renderer `raster-stroke-webgpu-v2-compute-threshold-gated-packed-dual-jfa-q10.6`:
+  seed, JFA, resolve, compositing e piramide mip restano sulla GPU. Il campo
+  Q10.6 persistente usa due pixel per `u32` (`32 MiB`); due scratch dual-seed
+  `2048²` usano `64 MiB`. La texture styled completa costa ~`85,3 MiB` in
+  RGBA8 o ~`170,7 MiB` in RGBA16F. La maschera alpha bit-packed costa `2 MiB`
+  e gli argomenti indirect ~`0,02 MiB`. Totale aggiuntivo: ~`183,4 MiB` in
+  RGBA8 o ~`268,7 MiB` in RGBA16F, allocato lazy e liberato alla disabilitazione.
+- Rebuild completo solo all'abilitazione, clear, replay o crescita oltre il
+  campo valido. Durante il disegno un compute confronta la soglia alpha `0,5`
+  nella dirty region con una maschera persistente; un flag atomico azzera via
+  `dispatchWorkgroupsIndirect` seed, tutti i JFA, resolve e compose dell'halo se
+  nessun bit cambia. Nessun readback CPU. La compose diretta resta sulla dirty
+  region per aggiornare colore/alpha; se cambia un bit, il campo usa la dirty
+  region espansa più apron. La cache campiona la texture styled con gli stessi
+  mip del Paint.
+- Integrata con Paint Normal/Additive, Light Glaze live + commit, M1 Glaze,
+  tail predittivo dello spessore, Blend dry e Undo/Redo. Verifica funzionale
+  desktop NVIDIA Ampere: inizializzazione WGSL, tratto visibile, cambi stile,
+  Undo/Redo e tutti i percorsi citati senza errori console/GPU.
+- Non esiste ancora una run canonica di prestazioni né la prova iPhone: non
+  dichiarare guadagni o promuovere la Traccia finché l'utente non misura il
+  comportamento end-to-end. Le run rev `31` riportano stile, build e memoria
+  Traccia nella firma e non vanno aggregate con rev `30` o precedenti.
+- Fix zoom-out del 23 luglio 2026, da segnalazione utente senza riproduzione
+  visiva: una mutazione del mip styled `0` lasciava erroneamente marcati validi
+  i mip più piccoli non aggiornati nel frame; il successivo zoom-out poteva
+  quindi mostrare pixel precedenti finché un'altra mutazione li aggiornava. Ora
+  `rasterStrokeMipValidThroughLevel` retrocede al mip effettivamente aggiornato
+  e il primo livello mancante viene ricostruito prima della cache di
+  presentazione. Verifiche: `npm run stroke:verify` e `npx tsc --noEmit`; prova
+  percettiva lasciata all'utente come richiesto.
+- Gate alpha v2 verificato con `npm run stroke:verify`, `npm run grain:verify`,
+  `npm run blend:verify`, `npm run thickness:verify`, TypeScript, build Vite in
+  output temporaneo e inizializzazione runtime WebGPU su NVIDIA Ampere: shader,
+  layout, buffer storage/indirect e bind group accettati senza errori. Non è
+  stata disegnata una traccia automatica: esecuzione effettiva e sensazione
+  restano da confermare dall'utente; nessuna dichiarazione prestazionale.
+
 Blend (tool separato, vedi sezione dedicata più sotto).
 
 ## Esperimenti chiusi — esiti vincolanti
@@ -178,7 +225,8 @@ probe · `16` armed-hidden · `17` spacing adattivo · `18` tetto Android ·
 `19` piramide mip · `20` ritiro stale · `21` Opacità/Light Glaze · `22–23`
 Grain/M1 matrice · `24` Grain Invert · `25` dinamica spessore · `26` bridge
 Canvas2D tail · `27` overlay WebGPU tail · `28` rimozione velocità ·
-`29` rimozione pressione (revisione canonica corrente del Paint).
+`29` rimozione pressione · `30` firma Traccia raster · `31` gate alpha GPU
+Traccia (revisione canonica corrente del Paint).
 
 ## Strumento Blend dry (WebGPU)
 

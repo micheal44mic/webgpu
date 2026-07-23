@@ -282,6 +282,43 @@
           </label>
         </section>
 
+        <section id="rasterStrokeSection">
+          <h2>Traccia</h2>
+
+          <label class="check-control">
+            <input id="rasterStrokeEnabled" type="checkbox" />
+            <span>
+              Contorno raster
+              <small>Distance field e compositing eseguiti in WebGPU.</small>
+            </span>
+          </label>
+
+          <div id="rasterStrokeParameters" hidden>
+            <label class="control">
+              <span>Larghezza <output id="rasterStrokeWidthOut">14 px</output></span>
+              <input id="rasterStrokeWidth" type="range" min="0" max="512" step="1" value="14" />
+            </label>
+
+            <label class="control">
+              <span>Posizione</span>
+              <select id="rasterStrokePosition">
+                <option value="inside">Interna</option>
+                <option value="center">Centrata</option>
+                <option value="outside" selected>Esterna</option>
+              </select>
+            </label>
+
+            <label class="control color-control">
+              <span>Colore</span>
+              <input id="rasterStrokeColor" type="color" value="#ffa448" />
+            </label>
+
+            <p class="result">
+              Equivalenza M1: JFA duale, distanza Q10.6, copertura R8 e compositing premoltiplicato.
+            </p>
+          </div>
+        </section>
+
         <section>
           <h2>Layer</h2>
 
@@ -343,7 +380,7 @@
             <div><dt>CPU frame</dt><dd id="cpuStat">—</dd></div>
             <div><dt>Stamps base</dt><dd id="stampStat">0</dd></div>
             <div><dt>Draw logiche evitate</dt><dd id="avoidedStat">0</dd></div>
-            <div><dt>Memoria layer</dt><dd id="memoryStat">64 MiB</dd></div>
+            <div><dt>Memoria layer / Traccia</dt><dd id="memoryStat">64 MiB</dd></div>
             <div><dt>GPU</dt><dd id="gpuStat">—</dd></div>
           </dl>
           <p id="status" class="status">Inizializzazione WebGPU…</p>

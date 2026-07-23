@@ -30,7 +30,9 @@ await cp(
   new URL("drizzle/", hostingDirectory),
   { recursive: true, force: true },
 );
-const indexHtml = await readFile(new URL("index.html", clientDirectory), "utf8");
+const indexHtmlFile = new URL("index.html", clientDirectory);
+const indexHtml = (await readFile(indexHtmlFile, "utf8")).replace(/\r\n?/g, "\n");
+await writeFile(indexHtmlFile, indexHtml);
 await writeFile(
   workerFile,
   `const INDEX_HTML = ${JSON.stringify(indexHtml)};
