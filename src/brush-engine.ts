@@ -1,6 +1,15 @@
 import { clamp, hexToHsl } from "./color";
 import { decodeGrayscalePng8 } from "./png-mask";
 import {
+  createDryBlendPlanner,
+  type DryBlendPlanner,
+} from "./blend-core";
+import {
+  DryBlendRenderer,
+  cloneDryBlendRenderBatch,
+  type DryBlendRenderBatch,
+} from "./blend-renderer";
+import {
   brushShader,
   displayShader,
   grainMipShader,
@@ -22,6 +31,7 @@ import {
 } from "./thickness-dynamics";
 
 export type BlendMode = "normal" | "additive" | "light-glaze" | "m1-glaze";
+export type BrushTool = "paint" | "blend";
 export type LayerFormat = "rgba8unorm" | "rgba16float";
 export type BrushShape = "circle" | "shape";
 export type GrainMode = "off" | "texturized" | "moving";
@@ -97,6 +107,7 @@ export type ShapeOccupancyFallbackReason =
 export type ThicknessDynamicsPreviewStrategy = "predictive-webgpu-tail-overlay";
 
 export interface BrushSettings {
+  tool: BrushTool;
   shape: BrushShape;
   shapeScatter: number;
   grainMode: GrainMode;
@@ -118,6 +129,8 @@ export interface BrushSettings {
   hardness: number;
   blendIntensity: number;
   blendMode: BlendMode;
+  blendStretch: number;
+  blendPaint: number;
   jitterMaster: number;
   hueJitterDegrees: number;
   saturationJitter: number;
@@ -411,6 +424,7 @@ interface HeldThicknessStamp {
 }
 
 interface ActiveStroke {
+  tool: BrushTool;
   lastInput: LayerPoint;
   startedAtMs: number;
   thicknessSettings: Pick<BrushSettings, "startThickness" | "endThickness">;
@@ -429,6 +443,8 @@ interface ActiveStroke {
   redoActionsBeforeStroke: HistoryAction[] | null;
   historyCompactionPendingBeforeStroke: boolean;
   lightGlazeSettings: BrushSettings | null;
+  blendSettings: BrushSettings | null;
+  blendPlanner: DryBlendPlanner | null;
 }
 
 interface LightGlazeSession {
@@ -530,7 +546,8 @@ interface HistoryAction {
   kind: "stroke" | "clear";
 }
 
-interface HistoryRenderBatch {
+interface PaintHistoryRenderBatch {
+  kind: "paint";
   settings: BrushSettings;
   stamps: Stamp[];
   clearLayer: boolean;
@@ -538,6 +555,25 @@ interface HistoryRenderBatch {
   shapeOccupancySelection: ShapeOccupancySelection | null;
   shapeMaskIdentity: number;
   grainTextureIdentity: number | null;
+}
+
+interface BlendHistoryRenderBatch {
+  kind: "blend";
+  actionId: number;
+  settings: BrushSettings;
+  batches: DryBlendRenderBatch[];
+  clearLayer: boolean;
+  dirtyRect: DirtyRect | null;
+  shapeMaskIdentity: number;
+  grainTextureIdentity: number | null;
+}
+
+type HistoryRenderBatch = PaintHistoryRenderBatch | BlendHistoryRenderBatch;
+
+interface PendingBlendBatch {
+  actionId: number;
+  settings: BrushSettings;
+  batch: DryBlendRenderBatch;
 }
 
 interface SubmitTiming {
@@ -995,6 +1031,7 @@ function buildShapeOccupancyMaps(mipMasks: readonly Uint8Array[]): {
 }
 
 export const defaultBrushSettings: BrushSettings = {
+  tool: "paint",
   shape: "circle",
   shapeScatter: 0,
   grainMode: "off",
@@ -1016,6 +1053,8 @@ export const defaultBrushSettings: BrushSettings = {
   hardness: 0.88,
   blendIntensity: 1,
   blendMode: "normal",
+  blendStretch: 0.18,
+  blendPaint: 0.14,
   jitterMaster: 1,
   hueJitterDegrees: 12,
   saturationJitter: 0.18,
@@ -1041,6 +1080,7 @@ export class BrushEngine {
   private layerTexture!: GPUTexture;
   private layerView!: GPUTextureView;
   private layerSamplingView!: GPUTextureView;
+  private blendRenderer: DryBlendRenderer | null = null;
   private paintMipViews: GPUTextureView[] = [];
   private paintMipDownsampleBindGroups: GPUBindGroup[] = [];
   private paintDisplayMipValidThroughLevel = 0;
@@ -1211,6 +1251,7 @@ export class BrushEngine {
 
   private settings: BrushSettings = { ...defaultBrushSettings };
   private pendingStamps: Stamp[] = [];
+  private pendingBlendBatches: PendingBlendBatch[] = [];
   private activeStroke: ActiveStroke | null = null;
   private seedSequence = 1;
 
@@ -1345,9 +1386,13 @@ export class BrushEngine {
 
   setBrushSettings(next: Partial<BrushSettings>): void {
     this.flushPendingWorkBeforeSettingsChange();
+    const tool = next.tool === "paint" || next.tool === "blend"
+      ? next.tool
+      : this.settings.tool;
     this.settings = {
       ...this.settings,
       ...next,
+      tool,
       shape: next.shape === "shape" || next.shape === "circle" ? next.shape : this.settings.shape,
       shapeScatter: clamp(next.shapeScatter ?? this.settings.shapeScatter, 0, 1),
       grainMode: next.grainMode === "off"
@@ -1371,8 +1416,12 @@ export class BrushEngine {
         ? next.grainBlendMode
         : this.settings.grainBlendMode,
       count: clamp(Math.round(next.count ?? this.settings.count), 1, 24),
-      size: clamp(next.size ?? this.settings.size, 4, 1500),
-      spacingPercent: clamp(next.spacingPercent ?? this.settings.spacingPercent, 0.25, 25),
+      size: clamp(next.size ?? this.settings.size, tool === "blend" ? 1 : 4, tool === "blend" ? 1024 : 1500),
+      spacingPercent: clamp(
+        next.spacingPercent ?? this.settings.spacingPercent,
+        tool === "blend" ? 1 : 0.25,
+        tool === "blend" ? 400 : 25,
+      ),
       startThickness: clamp(next.startThickness ?? this.settings.startThickness, 0, 2),
       endThickness: clamp(next.endThickness ?? this.settings.endThickness, 0, 2),
       flow: clamp(next.flow ?? this.settings.flow, 0.001, 1),
@@ -1385,6 +1434,8 @@ export class BrushEngine {
         || next.blendMode === "m1-glaze"
         ? next.blendMode
         : this.settings.blendMode,
+      blendStretch: clamp(next.blendStretch ?? this.settings.blendStretch, 0, 1),
+      blendPaint: clamp(next.blendPaint ?? this.settings.blendPaint, 0, 1),
       jitterMaster: clamp(next.jitterMaster ?? this.settings.jitterMaster, 0, 1),
       hueJitterDegrees: clamp(next.hueJitterDegrees ?? this.settings.hueJitterDegrees, 0, 180),
       saturationJitter: clamp(next.saturationJitter ?? this.settings.saturationJitter, 0, 1),
@@ -1528,9 +1579,11 @@ export class BrushEngine {
       ...point,
       timeMs: Number.isFinite(point.timeMs) ? point.timeMs : performance.now(),
     };
+    this.flushPendingWorkBeforeSettingsChange();
     this.flushClosingLightGlazeSessionBeforeNewStroke();
     this.invalidateAdaptivePreview();
-    const lightGlazeSettings = isStrokeGlazeBlendMode(this.settings.blendMode)
+    const tool = this.settings.tool;
+    const lightGlazeSettings = tool === "paint" && isStrokeGlazeBlendMode(this.settings.blendMode)
       ? { ...this.settings }
       : null;
     if (lightGlazeSettings && this.thicknessTailPresentedRect) {
@@ -1538,22 +1591,43 @@ export class BrushEngine {
       this.presentationCacheNeedsFullRebuild = true;
       this.displayDirty = true;
     }
-    this.adaptivePreviewForceStroke = ADAPTIVE_PREVIEW_FORCE && !lightGlazeSettings;
+    this.adaptivePreviewForceStroke = tool === "paint"
+      && ADAPTIVE_PREVIEW_FORCE
+      && !lightGlazeSettings;
     const historyActionId = this.nextHistoryActionId++;
     const thicknessSource = lightGlazeSettings ?? this.settings;
     const thicknessSettings = {
       startThickness: thicknessSource.startThickness,
       endThickness: thicknessSource.endThickness,
     };
+    const blendPlanner = tool === "blend"
+      ? createDryBlendPlanner({
+        size: this.settings.size,
+        strength: 1,
+        spacing: this.settings.spacingPercent / 100,
+        flow: this.settings.flow,
+        stretch: this.settings.blendStretch,
+        paint: this.settings.blendPaint,
+        aspect: 1,
+        angle: 0,
+        orientToStroke: true,
+        seed: historyActionId,
+      }, {
+        documentWidth: LAYER_SIZE,
+        documentHeight: LAYER_SIZE,
+      })
+      : null;
+    blendPlanner?.reset(normalizedPoint);
     this.activeStroke = {
+      tool,
       lastInput: normalizedPoint,
       startedAtMs: normalizedPoint.timeMs,
       thicknessSettings,
-      thicknessDynamicsNeutral: thicknessDynamicsIsNeutral(
+      thicknessDynamicsNeutral: tool === "blend" || thicknessDynamicsIsNeutral(
         thicknessSettings.startThickness,
         thicknessSettings.endThickness,
       ),
-      thicknessTailHoldback: thicknessDynamicsNeedsTailHoldback(
+      thicknessTailHoldback: tool === "paint" && thicknessDynamicsNeedsTailHoldback(
         thicknessSettings.endThickness,
       ),
       heldThicknessStamps: [],
@@ -1571,11 +1645,17 @@ export class BrushEngine {
         : null,
       historyCompactionPendingBeforeStroke: this.historyCompactionPending,
       lightGlazeSettings,
+      blendSettings: tool === "blend" ? { ...this.settings } : null,
+      blendPlanner,
     };
     if (lightGlazeSettings) {
       this.startLightGlazeSession(historyActionId, lightGlazeSettings);
     }
-    this.emitStamp(normalizedPoint, 1, 0);
+    if (tool === "blend") {
+      this.blendRenderer?.beginStroke(historyActionId);
+    } else {
+      this.emitStamp(normalizedPoint, 1, 0);
+    }
   }
 
   extendStroke(samples: readonly PointerSample[]): void {
@@ -1594,6 +1674,20 @@ export class BrushEngine {
 
   endStroke(timeMs?: number): void {
     const endingStroke = this.activeStroke;
+    if (endingStroke?.tool === "blend") {
+      endingStroke.blendPlanner?.finish();
+      this.drainBlendPlanner(endingStroke);
+      const historyChanged = endingStroke.historyCommitted;
+      this.activeStroke = null;
+      if (this.pendingBlendBatches.length > 0) {
+        this.displayDirty = true;
+        this.requestRender();
+      }
+      if (historyChanged) {
+        this.publishHistoryState();
+      }
+      return;
+    }
     const hadPredictiveThicknessTail = Boolean(
       endingStroke?.thicknessTailHoldback
       && !endingStroke.lightGlazeSettings
@@ -1643,6 +1737,12 @@ export class BrushEngine {
       }
       return !belongsToStroke;
     });
+    const pendingBlendCountBeforeCancel = this.pendingBlendBatches.length;
+    this.pendingBlendBatches = this.pendingBlendBatches.filter(
+      (pending) => pending.actionId !== stroke.historyActionId,
+    );
+    removedStampCount += pendingBlendCountBeforeCancel - this.pendingBlendBatches.length;
+    stroke.blendPlanner?.discardPending();
     this.seedSequence = stroke.seedSequenceBeforeStroke;
 
     if (stroke.historyCommitted) {
@@ -1733,6 +1833,7 @@ export class BrushEngine {
       this.frameRequest = null;
     }
     this.pendingStamps.length = 0;
+    this.pendingBlendBatches.length = 0;
     this.activeStroke = null;
     this.abandonLightGlazeSession();
     this.invalidateAdaptivePreview();
@@ -1761,6 +1862,9 @@ export class BrushEngine {
     if (this.historyBusy || this.activeStroke) {
       throw new Error("Concludi prima il tratto o l'operazione Undo/Redo.");
     }
+    if (this.settings.tool === "blend") {
+      throw new Error("Il benchmark GPU sintetico misura Paint: seleziona Pennello Paint.");
+    }
     if (this.lightGlazeSession) {
       await this.waitForIdle();
     }
@@ -1768,6 +1872,7 @@ export class BrushEngine {
     const count = clamp(Math.round(baseStampCount), 1, Math.min(12_000, MAX_STAMPS_PER_BATCH));
     this.invalidateAdaptivePreview();
     this.pendingStamps.length = 0;
+    this.pendingBlendBatches.length = 0;
     this.activeStroke = null;
     this.resetHistoryState();
     this.publishHistoryState();
@@ -1926,6 +2031,7 @@ export class BrushEngine {
     while (
       this.frameRequest !== null ||
       this.pendingStamps.length > 0 ||
+      this.pendingBlendBatches.length > 0 ||
       this.clearRequested ||
       this.displayDirty ||
       Boolean(this.lightGlazeSession?.commitRequested)
@@ -3408,6 +3514,7 @@ export class BrushEngine {
 
   private async recreateLayerResources(format: LayerFormat): Promise<void> {
     const oldTexture = this.layerTexture;
+    const oldBlendRenderer = this.blendRenderer;
 
     const texture = this.device.createTexture({
       label: `4096² paint layer ${format}`,
@@ -4009,11 +4116,31 @@ export class BrushEngine {
         entries: [{ binding: 0, resource: sourceView }],
       }));
 
+    let blendRenderer: DryBlendRenderer;
+    try {
+      blendRenderer = await DryBlendRenderer.create({
+        device: this.device,
+        documentWidth: LAYER_SIZE,
+        documentHeight: LAYER_SIZE,
+        layerFormat: format,
+        layerView: view,
+        layerSamplingView: samplingView,
+        shapeMaskView: this.shapeMaskView,
+        shapeMaskSampler: this.shapeMaskSampler,
+        grainTextureView: this.grainTextureView,
+        grainSamplers: this.grainSamplers,
+      });
+    } catch (error) {
+      texture.destroy();
+      throw error;
+    }
+
     this.destroyLightGlazeResources();
     this.destroyThicknessTailOverlayResources();
     this.layerTexture = texture;
     this.layerView = view;
     this.layerSamplingView = samplingView;
+    this.blendRenderer = blendRenderer;
     this.paintMipViews = mipViews;
     this.paintMipDownsampleBindGroups = paintMipDownsampleBindGroups;
     this.normalPipeline = normalPipeline;
@@ -4043,6 +4170,7 @@ export class BrushEngine {
     this.paintDisplaySelectedMipLevel = 0;
     this.presentationCacheNeedsFullRebuild = true;
 
+    oldBlendRenderer?.destroy();
     oldTexture?.destroy();
   }
 
@@ -4273,21 +4401,29 @@ export class BrushEngine {
     // a control change can replace them. For Light Glaze this also guarantees
     // that the old accumulator is committed before another blend mode starts.
     this.flushClosingLightGlazeSessionBeforeNewStroke();
-    if (this.lightGlazeSession || this.pendingStamps.length === 0) {
+    if (
+      this.lightGlazeSession
+      || (this.pendingStamps.length === 0 && this.pendingBlendBatches.length === 0)
+    ) {
       return;
     }
 
     let iterations = 0;
-    const maximumIterations = Math.ceil(this.pendingStamps.length / MAX_STAMPS_PER_BATCH) + 1;
-    while (this.pendingStamps.length > 0) {
+    const maximumIterations = Math.ceil(this.pendingStamps.length / MAX_STAMPS_PER_BATCH)
+      + Math.ceil(this.pendingBlendBatches.length / 64)
+      + 2;
+    while (this.pendingStamps.length > 0 || this.pendingBlendBatches.length > 0) {
       if (this.frameRequest !== null) {
         cancelAnimationFrame(this.frameRequest);
         this.frameRequest = null;
       }
-      const pendingBeforeRender = this.pendingStamps.length;
+      const pendingBeforeRender = this.pendingStamps.length + this.pendingBlendBatches.length;
       this.renderFrame(performance.now());
       iterations += 1;
-      if (this.pendingStamps.length >= pendingBeforeRender || iterations > maximumIterations) {
+      if (
+        this.pendingStamps.length + this.pendingBlendBatches.length >= pendingBeforeRender
+        || iterations > maximumIterations
+      ) {
         throw new Error("Impossibile finalizzare gli stamp prima del cambio impostazioni.");
       }
     }
@@ -4788,6 +4924,25 @@ export class BrushEngine {
     if (!stroke) {
       return;
     }
+    if (stroke.tool === "blend") {
+      const normalizedPoint: LayerPoint = {
+        ...point,
+        timeMs: Math.max(
+          stroke.lastInput.timeMs,
+          Number.isFinite(point.timeMs) ? point.timeMs : stroke.lastInput.timeMs,
+        ),
+      };
+      const result = stroke.blendPlanner?.pushSample(normalizedPoint);
+      if (result && !result.accepted) {
+        throw new Error(
+          `Coda Blend dry piena: servono ${result.requiredSteps} segmenti.`,
+        );
+      }
+      stroke.lastInput = normalizedPoint;
+      this.drainBlendPlanner(stroke);
+      this.recordStampGenerationTime(generationStart);
+      return;
+    }
 
     const start = stroke.lastInput;
     const normalizedPoint: LayerPoint = {
@@ -4844,6 +4999,41 @@ export class BrushEngine {
     stroke.distanceSinceStamp = distanceSinceStamp;
     this.releaseHeldThicknessStamps(normalizedPoint.timeMs, false);
     this.recordStampGenerationTime(generationStart);
+  }
+
+  private drainBlendPlanner(stroke: ActiveStroke): void {
+    const planner = stroke.blendPlanner;
+    const settings = stroke.blendSettings;
+    if (!planner || !settings) {
+      return;
+    }
+    let batch = planner.buildNextBatch();
+    while (batch) {
+      if (!batch.empty) {
+        if (!stroke.historyCommitted) {
+          this.truncateRedoHistory();
+          this.historyActions.push({ id: stroke.historyActionId, kind: "stroke" });
+          this.historyCursor = this.historyActions.length;
+          stroke.historyCommitted = true;
+          if (this.activeStrokeProfile) {
+            this.activeStrokeProfile.historyCommittedActions += 1;
+          }
+        }
+        this.pendingBlendBatches.push({
+          actionId: stroke.historyActionId,
+          settings,
+          batch: cloneDryBlendRenderBatch(batch),
+        });
+        if (this.activeStrokeProfile) {
+          this.activeStrokeProfile.baseStamps += 1;
+        }
+      }
+      batch = planner.buildNextBatch();
+    }
+    if (this.pendingBlendBatches.length > 0) {
+      this.displayDirty = true;
+      this.requestRender();
+    }
   }
 
   private emitStamp(point: LayerPoint, directionX: number, directionY: number): void {
@@ -5181,6 +5371,25 @@ export class BrushEngine {
     }
     const batchSize = Math.min(availableBatchSize, MAX_STAMPS_PER_BATCH);
     const batch = batchSize > 0 ? this.pendingStamps.splice(0, batchSize) : [];
+    let blendBatch: PendingBlendBatch[] = [];
+    if (!lightGlazeSession && batch.length === 0 && this.pendingBlendBatches.length > 0) {
+      const first = this.pendingBlendBatches[0];
+      const sizeLimit = first.settings.size <= 8
+        ? 64
+        : first.settings.size <= 32 ? 32
+          : first.settings.size <= 64 ? 24
+            : first.settings.size <= 256 ? 8
+              : first.settings.size <= 512 ? 4 : 2;
+      let blendBatchSize = 0;
+      while (
+        blendBatchSize < this.pendingBlendBatches.length
+        && blendBatchSize < sizeLimit
+        && this.pendingBlendBatches[blendBatchSize].actionId === first.actionId
+      ) {
+        blendBatchSize += 1;
+      }
+      blendBatch = this.pendingBlendBatches.splice(0, blendBatchSize);
+    }
     if (lightGlazeSession) {
       lightGlazeSession.commitRequested = lightGlazeSession.endRequested
         && !this.pendingStamps.some(
@@ -5190,6 +5399,7 @@ export class BrushEngine {
     const batchExtractionMs = performance.now() - batchExtractionStart;
     const shouldSubmit = this.clearRequested
       || batch.length > 0
+      || blendBatch.length > 0
       || this.displayDirty
       || Boolean(lightGlazeSession?.commitRequested)
       || this.thicknessTailPreviewEligible()
@@ -5200,12 +5410,24 @@ export class BrushEngine {
     }
 
     const clearLayer = this.clearRequested;
-    const renderSettings = lightGlazeSession?.settings ?? this.settings;
+    const renderSettings = blendBatch[0]?.settings
+      ?? lightGlazeSession?.settings
+      ?? this.settings;
     const start = performance.now();
-    const timing = this.submitImmediate(batch, clearLayer, renderSettings);
+    const timing = blendBatch.length > 0
+      ? this.submitBlendImmediate(
+        blendBatch.map((pending) => pending.batch),
+        clearLayer,
+        renderSettings,
+        blendBatch[0].actionId,
+      )
+      : this.submitImmediate(batch, clearLayer, renderSettings);
     this.lastCpuFrameMs = performance.now() - start;
 
-    if (batch.length > 0) {
+    if (blendBatch.length > 0) {
+      this.recordBlendHistoryBatch(blendBatch, timing, clearLayer);
+      this.layerHasContent = true;
+    } else if (batch.length > 0) {
       this.trackAdaptivePreviewExactSubmission(batch, renderSettings);
       this.recordHistoryBatch(batch, renderSettings, timing, clearLayer);
       this.layerHasContent = true;
@@ -5215,8 +5437,10 @@ export class BrushEngine {
 
     this.clearRequested = false;
     this.displayDirty = false;
-    this.totalBaseStamps += batch.length;
-    this.avoidedLogicalDraws += batch.length * Math.max(0, renderSettings.count - 1);
+    this.totalBaseStamps += batch.length + blendBatch.length;
+    if (batch.length > 0) {
+      this.avoidedLogicalDraws += batch.length * Math.max(0, renderSettings.count - 1);
+    }
     this.recordRenderedFrame(timestamp);
 
     const statsPublishStart = performance.now();
@@ -5225,6 +5449,7 @@ export class BrushEngine {
 
     if (
       this.pendingStamps.length > 0
+      || this.pendingBlendBatches.length > 0
       || this.displayDirty
       || this.clearRequested
       || Boolean(this.lightGlazeSession?.commitRequested)
@@ -5234,12 +5459,18 @@ export class BrushEngine {
       this.requestRender();
     }
 
-    this.recordStrokeFrameTiming(timestamp, batch.length, renderSettings.count, timing, {
+    this.recordStrokeFrameTiming(
+      timestamp,
+      batch.length + blendBatch.length,
+      blendBatch.length > 0 ? 1 : renderSettings.count,
+      timing,
+      {
       totalCpuMs: performance.now() - frameStart,
       resizeCanvasMs,
       batchExtractionMs,
       statsPublishMs,
-    });
+      },
+    );
   }
 
   private recordHistoryBatch(
@@ -5263,6 +5494,7 @@ export class BrushEngine {
     }
 
     this.historyBatches.push({
+      kind: "paint",
       settings,
       stamps: batch,
       clearLayer,
@@ -5306,6 +5538,14 @@ export class BrushEngine {
     const retainedBatches: HistoryRenderBatch[] = [];
     let retainedStampCount = 0;
     for (const batch of this.historyBatches) {
+      if (batch.kind === "blend") {
+        if (!retainedActionIds.has(batch.actionId)) {
+          continue;
+        }
+        retainedBatches.push(batch);
+        retainedStampCount += batch.batches.length;
+        continue;
+      }
       const retainedStamps = batch.stamps.filter(
         (stamp) => retainedActionIds.has(stamp.historyActionId),
       );
@@ -5408,11 +5648,18 @@ export class BrushEngine {
   }
 
   private async rebuildLayerFromHistory(): Promise<void> {
+    // Force the first historical Blend action to reset its persistent carrier,
+    // even when its numeric id matches the last live action rendered.
+    this.blendRenderer?.beginStroke(0);
     const visibleIds = this.visibleHistoryStrokeIds();
     let firstVisibleBatchIndex = -1;
     let lastVisibleBatchIndex = -1;
     for (let index = 0; index < this.historyBatches.length; index += 1) {
-      if (!this.historyBatches[index].stamps.some((stamp) => visibleIds.has(stamp.historyActionId))) {
+      const batch = this.historyBatches[index];
+      const visible = batch.kind === "blend"
+        ? visibleIds.has(batch.actionId)
+        : batch.stamps.some((stamp) => visibleIds.has(stamp.historyActionId));
+      if (!visible) {
         continue;
       }
       if (firstVisibleBatchIndex < 0) {
@@ -5434,6 +5681,20 @@ export class BrushEngine {
 
         for (let index = firstVisibleBatchIndex; index <= lastVisibleBatchIndex; index += 1) {
           const batch = this.historyBatches[index];
+          if (batch.kind === "blend") {
+            if (!visibleIds.has(batch.actionId)) {
+              continue;
+            }
+            this.submitBlendImmediate(
+              batch.batches,
+              batch.clearLayer,
+              batch.settings,
+              batch.actionId,
+              index === lastVisibleBatchIndex,
+              batch,
+            );
+            continue;
+          }
           const allVisible = batch.stamps.every((stamp) => visibleIds.has(stamp.historyActionId));
           const replayStamps = allVisible
             ? batch.stamps
@@ -5454,8 +5715,10 @@ export class BrushEngine {
             }
             let hasLaterBatchForAction = false;
             for (let nextIndex = index + 1; nextIndex <= lastVisibleBatchIndex; nextIndex += 1) {
+              const nextBatch = this.historyBatches[nextIndex];
               if (
-                this.historyBatches[nextIndex].stamps.some(
+                nextBatch.kind === "paint"
+                && nextBatch.stamps.some(
                   (stamp) => stamp.historyActionId === actionId && visibleIds.has(actionId),
                 )
               ) {
@@ -5610,6 +5873,41 @@ export class BrushEngine {
       profile.shapeOccupancyMipLevel = Math.max(profile.shapeOccupancyMipLevel, occupancyMip);
       profile.shapeOccupancyActiveCells = Math.max(profile.shapeOccupancyActiveCells, activeCells);
       profile.shapeOccupancyCoverageRatio = Math.max(profile.shapeOccupancyCoverageRatio, coverageRatio);
+    }
+  }
+
+  private recordBlendHistoryBatch(
+    pending: readonly PendingBlendBatch[],
+    timing: SubmitTiming,
+    clearLayer: boolean,
+  ): void {
+    if (pending.length === 0 || pending[0].actionId === 0) {
+      return;
+    }
+    const actionId = pending[0].actionId;
+    if (pending.some((entry) => entry.actionId !== actionId)) {
+      throw new Error("Un batch storico Blend contiene più pennellate.");
+    }
+    if (this.activeStroke?.historyActionId === actionId) {
+      this.activeStroke.submitted = true;
+    }
+    const settings = pending[0].settings;
+    this.historyBatches.push({
+      kind: "blend",
+      actionId,
+      settings,
+      batches: pending.map((entry) => entry.batch),
+      clearLayer,
+      dirtyRect: timing.dirtyRect,
+      shapeMaskIdentity: this.shapeMaskIdentity,
+      grainTextureIdentity: this.isTexturizedGrainActive(settings)
+        ? this.grainTextureIdentity
+        : null,
+    });
+    this.historyStoredBaseStamps += pending.length;
+    if (this.activeStrokeProfile) {
+      this.activeStrokeProfile.historyCapturedBaseStamps += pending.length;
+      this.activeStrokeProfile.historyCapturedBatches += 1;
     }
   }
 
@@ -6770,7 +7068,7 @@ export class BrushEngine {
     clearLayer: boolean,
     settings: BrushSettings,
     present: boolean,
-    replayBatch: HistoryRenderBatch | null,
+    replayBatch: PaintHistoryRenderBatch | null,
   ): SubmitTiming {
     if (this.thicknessTailPresentedRect) {
       this.thicknessTailPresentedRect = null;
@@ -7234,12 +7532,64 @@ export class BrushEngine {
     };
   }
 
+  private submitBlendImmediate(
+    batches: readonly DryBlendRenderBatch[],
+    clearLayer: boolean,
+    settings: BrushSettings,
+    historyActionId: number,
+    present = true,
+    replayBatch: BlendHistoryRenderBatch | null = null,
+  ): SubmitTiming {
+    const renderer = this.blendRenderer;
+    if (!renderer) {
+      throw new Error("Renderer WebGPU Blend dry non inizializzato.");
+    }
+    if (replayBatch && replayBatch.shapeMaskIdentity !== this.shapeMaskIdentity) {
+      throw new Error("La Shape Blend usata dalla cronologia non corrisponde alla risorsa corrente.");
+    }
+    const expectedGrainIdentity = this.isTexturizedGrainActive(settings)
+      ? this.grainTextureIdentity
+      : null;
+    if (replayBatch && replayBatch.grainTextureIdentity !== expectedGrainIdentity) {
+      throw new Error("Il Grain Blend usato dalla cronologia non corrisponde alla risorsa corrente.");
+    }
+
+    const blendTiming = renderer.submit(batches, settings, historyActionId, clearLayer);
+    const presentationDirtyRect = clearLayer
+      ? { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE }
+      : blendTiming.dirtyRect;
+    if (clearLayer) {
+      this.presentationCacheNeedsFullRebuild = true;
+      this.paintDisplayMipValidThroughLevel = 0;
+    }
+    const timing = this.submitImmediate(
+      [],
+      false,
+      settings,
+      present,
+      null,
+      presentationDirtyRect,
+    );
+    return {
+      ...timing,
+      totalCpuMs: timing.totalCpuMs + blendTiming.cpuMs,
+      brushEncodingMs: timing.brushEncodingMs + blendTiming.cpuMs,
+      scissorPixels: batches.reduce(
+        (total, batch) => total + batch.readRect.width * batch.readRect.height,
+        0,
+      ),
+      dirtyRect: blendTiming.dirtyRect,
+      shapeOccupancySelection: null,
+    };
+  }
+
   private submitImmediate(
     stamps: readonly Stamp[],
     clearLayer: boolean,
     settings: BrushSettings = this.settings,
     present = true,
-    replayBatch: HistoryRenderBatch | null = null,
+    replayBatch: PaintHistoryRenderBatch | null = null,
+    externalDirtyRect: DirtyRect | null = null,
   ): SubmitTiming {
     if (isStrokeGlazeBlendMode(settings.blendMode)) {
       if (this.lightGlazeSession) {
@@ -7268,7 +7618,7 @@ export class BrushEngine {
     let displayEncodingMs = 0;
     let commandSubmitMs = 0;
     let scissorPixels = 0;
-    let submittedDirtyRect: DirtyRect | null = null;
+    let submittedDirtyRect: DirtyRect | null = externalDirtyRect;
     let submittedShapeOccupancySelection: ShapeOccupancySelection | null = null;
     let presentationCacheFullRebuilds = 0;
     let presentationCachePartialUpdates = 0;
@@ -7404,7 +7754,7 @@ export class BrushEngine {
       brushEncodingMs += performance.now() - thicknessTailEncodingStart;
     }
 
-    if (!present && (clearLayer || stamps.length > 0)) {
+    if (!present && (clearLayer || stamps.length > 0 || externalDirtyRect)) {
       // Una ricostruzione Undo/Redo omette i display intermedi. La cache non
       // deve quindi essere riutilizzata finché l'ultimo batch non la ricrea.
       this.presentationCacheNeedsFullRebuild = true;

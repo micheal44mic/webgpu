@@ -146,6 +146,10 @@ button.wide {
   display: none;
 }
 
+.controls [hidden] {
+  display: none;
+}
+
 .controls section {
   margin: 0 0 12px;
   padding: 12px;

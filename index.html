@@ -50,6 +50,14 @@
           <h2>Pennello</h2>
 
           <label class="control">
+            <span>Strumento</span>
+            <select id="brushTool">
+              <option value="paint">Paint</option>
+              <option value="blend">Blend — dry</option>
+            </select>
+          </label>
+
+          <label class="control">
             <span>Forma</span>
             <select id="brushShape">
               <option value="circle">Cerchio</option>
@@ -57,7 +65,7 @@
             </select>
           </label>
 
-          <label class="control">
+          <label id="shapeScatterControl" class="control">
             <span>Scatter rotazione <output id="shapeScatterOut">0%</output></span>
             <input id="shapeScatter" type="range" min="0" max="100" step="1" value="0" />
           </label>
@@ -77,7 +85,7 @@
             <input id="spacing" type="range" min="0.25" max="25" step="0.25" value="1" />
           </label>
 
-          <label class="control">
+          <label id="countControl" class="control">
             <span>Count <output id="countOut">24</output></span>
             <input id="count" type="range" min="1" max="24" step="1" value="24" />
           </label>
@@ -87,7 +95,7 @@
             <input id="flow" type="range" min="0.1" max="100" step="0.1" value="7" />
           </label>
 
-          <label class="control">
+          <label id="opacityControl" class="control">
             <span>Opacità <output id="opacityOut">100%</output></span>
             <input id="opacity" type="range" min="0" max="100" step="0.1" value="100" />
           </label>
@@ -97,12 +105,12 @@
             <input id="hardness" type="range" min="0" max="100" step="1" value="88" />
           </label>
 
-          <label class="control">
+          <label id="paintBlendIntensityControl" class="control">
             <span>Blend intensity <output id="blendIntensityOut">1.00×</output></span>
             <input id="blendIntensity" type="range" min="0.1" max="4" step="0.05" value="1" />
           </label>
 
-          <label class="control">
+          <label id="paintBlendModeControl" class="control">
             <span>Blend mode</span>
             <select id="blendMode">
               <option value="normal">Normal premultiplied</option>
@@ -111,9 +119,29 @@
               <option value="m1-glaze">M1 Glaze — non accumulativo</option>
             </select>
           </label>
+
+          <div id="blendControls" hidden>
+            <label class="control">
+              <span>
+                Stretch <output id="blendStretchOut">18%</output>
+                <small>Quanto pigmento già raccolto resta nel carrier.</small>
+              </span>
+              <input id="blendStretch" type="range" min="0" max="100" step="1" value="18" />
+            </label>
+
+            <label class="control">
+              <span>
+                Paint <output id="blendPaintOut">14%</output>
+                <small>Carica il colore selezionato nel pigmento trasportato.</small>
+              </span>
+              <input id="blendPaint" type="range" min="0" max="100" step="1" value="14" />
+            </label>
+
+            <p class="result">Blend dry: pickup e deposito del colore, senza serbatoio Wet.</p>
+          </div>
         </section>
 
-        <section>
+        <section id="thicknessSection">
           <h2>Spessore dinamico — test ibis</h2>
 
           <label class="control">
@@ -203,7 +231,7 @@
           </div>
         </section>
 
-        <section>
+        <section id="colorJitterSection">
           <h2>Color jitter</h2>
 
           <label class="control">
@@ -240,7 +268,7 @@
           </label>
         </section>
 
-        <section>
+        <section id="positionJitterSection">
           <h2>Jitter posizione</h2>
 
           <label class="control">

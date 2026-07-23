@@ -2174,3 +2174,47 @@ preset canonico passa a `3`.
 
 `performanceTelemetryRevision: 29` identifica questa rimozione. Non
 reintrodurre una dipendenza dalla pressione senza una nuova richiesta esplicita.
+
+## Strumento Blend dry WebGPU — approvato per la pubblicazione
+
+Il 23 luglio 2026 è stato aggiunto come strumento separato `tool: "blend"` il
+Blend proprietario già presente in `paint-webgpu-m1`. Il port conserva
+esclusivamente la modalità **dry**: non esistono reservoir, controlli, shader o
+rami Wet. Non aggiungere Wet senza una nuova richiesta esplicita dell'utente.
+
+L'implementazione non è un `BlendMode` del pennello Paint. Usa un planner
+continuo dedicato e una pipeline WebGPU WGSL stateful, nell'ordine:
+
+1. gather della ROI dal mip autorevole del layer;
+2. mask swept continua del segmento;
+3. pickup pesato `8×8` in un carrier persistente `1×1` per tratto;
+4. deposito del pigmento trasportato, con eventuale carica del colore Paint;
+5. scatter della dirty rect sul layer autorevole.
+
+Lo scratch è allocato soltanto al primo uso di Blend: due texture
+`1664×1664 rgba16float`, due mask `r8unorm` e due carrier `1×1`, circa
+`47,5 MiB` più la uniform dinamica. Il layer target resta `4096×4096` e Paint
+non percorre né alloca questo scratch. La pipeline usa coordinate top-left e
+legge/scrive direttamente il premoltiplicato lineare del motore; non deve
+reintrodurre le conversioni sRGB o il flip Y del sorgente WebGL2.
+
+Le curve proprietarie restano `sqrt(Stretch)` e `Paint²`. I default UI Blend
+sono size `100 px`, spacing `10%`, flow `45%`, hardness `8%`, Stretch `18%` e
+Paint `14%`. Size è limitata a `1024 px`. Shape e Grain Fixed/Moving restano
+disponibili; Count, opacity, blend mode/intensity, dinamica dello spessore,
+jitter colore e jitter posizione sono nascosti e ignorati in Blend. La
+pressione viene normalizzata al valore neutro `1` e non cambia size,
+intensità, planner o pixel.
+
+Undo/Redo conserva batch Blend discriminati, resetta il carrier all'inizio di
+ogni azione e verifica le identità di Shape e Grain durante il replay. Il
+benchmark GPU sintetico è disabilitato in Blend. Registrazione, preset e replay
+del benchmark umano forzano `tool: "paint"`, quindi la run canonica e
+`performanceTelemetryRevision: 29` non cambiano.
+
+Verifiche prima della pubblicazione: `npm run blend:verify`, TypeScript, build
+Sites, compilazione reale di tutti gli shader/pipeline su GPU NVIDIA Ampere,
+tratto live e Undo/Redo Blend senza errori WebGPU. L'utente ha provato il
+risultato locale e lo ha approvato esplicitamente per la pubblicazione. Questa
+approvazione è visiva/funzionale, non una misura prestazionale iPhone: non
+presentare Blend come ottimizzazione del benchmark Paint.

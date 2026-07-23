@@ -260,6 +260,64 @@ let layerFormatChanging = false;
 let historyUiBusy = false;
 let engineInitialized = false;
 let controlsPanelOpen = true;
+let activeBrushTool: BrushSettings["tool"] = "paint";
+
+const toolControlSnapshots: Record<
+  BrushSettings["tool"],
+  { size: number; spacing: number; flow: number; hardness: number }
+> = {
+  paint: { size: 96, spacing: 1, flow: 7, hardness: 88 },
+  blend: { size: 100, spacing: 10, flow: 45, hardness: 8 },
+};
+
+function captureActiveToolControls(): void {
+  toolControlSnapshots[activeBrushTool] = {
+    size: rangeValue("brushSize"),
+    spacing: rangeValue("spacing"),
+    flow: rangeValue("flow"),
+    hardness: rangeValue("hardness"),
+  };
+}
+
+function configureBrushToolUi(
+  tool: BrushSettings["tool"],
+  restoreSnapshot: boolean,
+): void {
+  const previousTool = activeBrushTool;
+  if (restoreSnapshot && previousTool !== tool) {
+    captureActiveToolControls();
+  }
+  activeBrushTool = tool;
+  setControlValue("brushTool", tool);
+  const blend = tool === "blend";
+  const size = element<HTMLInputElement>("brushSize");
+  const spacing = element<HTMLInputElement>("spacing");
+  size.min = blend ? "1" : "4";
+  size.max = blend ? "1024" : "1500";
+  spacing.min = blend ? "1" : "0.25";
+  spacing.max = blend ? "400" : "25";
+  spacing.step = blend ? "1" : "0.25";
+  if (restoreSnapshot && previousTool !== tool) {
+    const snapshot = toolControlSnapshots[tool];
+    setControlValue("brushSize", snapshot.size);
+    setControlValue("spacing", snapshot.spacing);
+    setControlValue("flow", snapshot.flow);
+    setControlValue("hardness", snapshot.hardness);
+  }
+  for (const id of [
+    "shapeScatterControl",
+    "countControl",
+    "opacityControl",
+    "paintBlendIntensityControl",
+    "paintBlendModeControl",
+    "thicknessSection",
+    "colorJitterSection",
+    "positionJitterSection",
+  ]) {
+    element<HTMLElement>(id).hidden = blend;
+  }
+  element<HTMLElement>("blendControls").hidden = !blend;
+}
 
 function setControlsPanelOpen(open: boolean): void {
   controlsPanelOpen = open;
@@ -271,6 +329,7 @@ function setControlsPanelOpen(open: boolean): void {
 
 function readBrushSettings(): BrushSettings {
   return {
+    tool: element<HTMLSelectElement>("brushTool").value === "blend" ? "blend" : "paint",
     shape: element<HTMLSelectElement>("brushShape").value as BrushSettings["shape"],
     shapeScatter: rangeValue("shapeScatter") / 100,
     grainMode: element<HTMLSelectElement>("grainMode").value as BrushSettings["grainMode"],
@@ -294,6 +353,8 @@ function readBrushSettings(): BrushSettings {
     hardness: rangeValue("hardness") / 100,
     blendIntensity: rangeValue("blendIntensity"),
     blendMode: element<HTMLSelectElement>("blendMode").value as BrushSettings["blendMode"],
+    blendStretch: rangeValue("blendStretch") / 100,
+    blendPaint: rangeValue("blendPaint") / 100,
     jitterMaster: rangeValue("jitterMaster") / 100,
     hueJitterDegrees: rangeValue("hueJitter"),
     saturationJitter: rangeValue("saturationJitter") / 100,
@@ -324,6 +385,8 @@ function updateControlOutputs(): void {
   element<HTMLOutputElement>("opacityOut").value = `${rangeValue("opacity").toFixed(1).replace(".0", "")}%`;
   element<HTMLOutputElement>("hardnessOut").value = `${rangeValue("hardness").toFixed(0)}%`;
   element<HTMLOutputElement>("blendIntensityOut").value = `${rangeValue("blendIntensity").toFixed(2)}×`;
+  element<HTMLOutputElement>("blendStretchOut").value = `${rangeValue("blendStretch").toFixed(0)}%`;
+  element<HTMLOutputElement>("blendPaintOut").value = `${rangeValue("blendPaint").toFixed(0)}%`;
   element<HTMLOutputElement>("jitterMasterOut").value = `${rangeValue("jitterMaster").toFixed(0)}%`;
   element<HTMLOutputElement>("hueJitterOut").value = `${rangeValue("hueJitter").toFixed(0)}°`;
   element<HTMLOutputElement>("saturationJitterOut").value = `${rangeValue("saturationJitter").toFixed(0)}%`;
@@ -335,6 +398,7 @@ function updateControlOutputs(): void {
 }
 
 function applyBrushControls(): void {
+  captureActiveToolControls();
   updateControlOutputs();
   updateGrainControlAvailability();
   engine.setBrushSettings(readBrushSettings());
@@ -490,6 +554,12 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
   const endThickness = Number.isFinite(benchmark.settings.endThickness)
     ? Math.min(2, Math.max(0, benchmark.settings.endThickness))
     : 1;
+  const blendStretch = Number.isFinite(benchmark.settings.blendStretch)
+    ? Math.min(1, Math.max(0, benchmark.settings.blendStretch))
+    : 0.18;
+  const blendPaint = Number.isFinite(benchmark.settings.blendPaint)
+    ? Math.min(1, Math.max(0, benchmark.settings.blendPaint))
+    : 0.14;
   const settingsWithoutLegacyDynamics = {
     ...benchmark.settings,
   } as BrushSettings & {
@@ -504,6 +574,7 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
     ...benchmark,
     settings: {
       ...settingsWithoutLegacyDynamics,
+      tool: "paint",
       shape: benchmark.settings.shape === "shape" ? "shape" : "circle",
       shapeScatter: Number.isFinite(benchmark.settings.shapeScatter)
         ? Math.min(1, Math.max(0, benchmark.settings.shapeScatter))
@@ -520,6 +591,8 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
       endThickness,
       opacity,
       blendMode,
+      blendStretch,
+      blendPaint,
     },
   };
 }
@@ -611,6 +684,8 @@ function setControlValue(id: string, value: string | number): void {
 }
 
 function applySettingsToControls(settings: BrushSettings): void {
+  const tool = settings.tool === "blend" ? "blend" : "paint";
+  configureBrushToolUi(tool, false);
   setControlValue("brushShape", settings.shape === "shape" ? "shape" : "circle");
   setControlValue("shapeScatter", (settings.shapeScatter ?? 0) * 100);
   setControlValue(
@@ -642,6 +717,8 @@ function applySettingsToControls(settings: BrushSettings): void {
   setControlValue("hardness", settings.hardness * 100);
   setControlValue("blendIntensity", settings.blendIntensity);
   setControlValue("blendMode", settings.blendMode);
+  setControlValue("blendStretch", (settings.blendStretch ?? 0.18) * 100);
+  setControlValue("blendPaint", (settings.blendPaint ?? 0.14) * 100);
   setControlValue("jitterMaster", settings.jitterMaster * 100);
   setControlValue("hueJitter", settings.hueJitterDegrees);
   setControlValue("saturationJitter", settings.saturationJitter * 100);
@@ -654,6 +731,7 @@ function applySettingsToControls(settings: BrushSettings): void {
 }
 
 function applyHumanStrokePreset(): BrushSettings {
+  configureBrushToolUi("paint", false);
   setControlValue("brushShape", "circle");
   setControlValue("shapeScatter", 0);
   setControlValue("grainMode", "off");
@@ -674,6 +752,8 @@ function applyHumanStrokePreset(): BrushSettings {
   setControlValue("hardness", 100);
   setControlValue("blendIntensity", 4);
   setControlValue("blendMode", "normal");
+  setControlValue("blendStretch", 18);
+  setControlValue("blendPaint", 14);
   setControlValue("jitterMaster", 100);
   setControlValue("hueJitter", 180);
   setControlValue("saturationJitter", 100);
@@ -704,9 +784,12 @@ function humanStrokeTestSettings(
 ): BrushSettings {
   const baseSettings: BrushSettings = {
     ...benchmark.settings,
+    tool: "paint",
     opacity: 1,
     blendIntensity: blendMode === "m1-glaze" ? 1 : 4,
     blendMode,
+    blendStretch: 0.18,
+    blendPaint: 0.14,
     grainMode,
     grainScale: 1.4,
     grainDepth: 1,
@@ -809,8 +892,9 @@ function updateHistoryControls(): void {
   undoStrokeButton.disabled = locked || !historyState.canUndo;
   redoStrokeButton.disabled = locked || !historyState.canRedo;
   clearLayerButton.disabled = locked;
-  benchmarkButton.disabled = locked;
-  benchmarkStampsInput.disabled = locked;
+  const blendToolActive = activeBrushTool === "blend";
+  benchmarkButton.disabled = locked || blendToolActive;
+  benchmarkStampsInput.disabled = locked || blendToolActive;
   layerFormatSelect.disabled = locked;
   fitViewButton.disabled = locked;
   zoomInButton.disabled = locked;
@@ -902,6 +986,7 @@ function updateGrainControlAvailability(locked = interactionLocked()): void {
 }
 
 const brushControlIds = [
+  "brushTool",
   "brushShape",
   "shapeScatter",
   "grainMode",
@@ -917,6 +1002,8 @@ const brushControlIds = [
   "hardness",
   "blendIntensity",
   "blendMode",
+  "blendStretch",
+  "blendPaint",
   "jitterMaster",
   "hueJitter",
   "saturationJitter",
@@ -928,9 +1015,19 @@ const brushControlIds = [
 ] as const;
 
 for (const id of brushControlIds) {
+  if (id === "brushTool") {
+    continue;
+  }
   element<HTMLInputElement | HTMLSelectElement>(id).addEventListener("input", applyBrushControls);
   element<HTMLInputElement | HTMLSelectElement>(id).addEventListener("change", applyBrushControls);
 }
+
+element<HTMLSelectElement>("brushTool").addEventListener("change", () => {
+  const tool = element<HTMLSelectElement>("brushTool").value === "blend" ? "blend" : "paint";
+  configureBrushToolUi(tool, true);
+  applyBrushControls();
+  updateHistoryControls();
+});
 
 benchmarkStampsInput.addEventListener("input", updateControlOutputs);
 
@@ -1550,6 +1647,7 @@ const resizeObserver = new ResizeObserver(() => engine.resizeCanvas());
 resizeObserver.observe(canvas);
 
 setControlsPanelOpen(true);
+configureBrushToolUi("paint", false);
 updateControlOutputs();
 engine.setBrushSettings(readBrushSettings());
 updateHumanStrokeControls();
