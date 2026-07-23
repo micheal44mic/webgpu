@@ -15,11 +15,6 @@ import {
   type StampGeometry,
   type StrokePerformanceProfile,
 } from "./brush-engine";
-import {
-  humanStrokeTestThicknessLabel,
-  humanStrokeTestThicknessSettings,
-  type HumanStrokeTestThicknessMode,
-} from "./human-stroke-test";
 
 function element<T extends HTMLElement>(id: string): T {
   const result = document.getElementById(id);
@@ -50,8 +45,6 @@ const humanStrokeResult = element<HTMLParagraphElement>("humanStrokeResult");
 const humanStrokeTestVariantSelect = element<HTMLSelectElement>("humanStrokeTestVariant");
 const humanStrokeTestBlendModeSelect = element<HTMLSelectElement>("humanStrokeTestBlendMode");
 const humanStrokeTestGrainModeSelect = element<HTMLSelectElement>("humanStrokeTestGrainMode");
-const humanStrokeTestThicknessModeSelect =
-  element<HTMLSelectElement>("humanStrokeTestThicknessMode");
 const layerFormatSelect = element<HTMLSelectElement>("layerFormat");
 const clearLayerButton = element<HTMLButtonElement>("clearLayer");
 const undoStrokeButton = element<HTMLButtonElement>("undoStroke");
@@ -103,7 +96,6 @@ interface BenchmarkRun {
     testVariant: HumanStrokeTestVariant;
     testBlendMode: HumanStrokeTestBlendMode;
     testGrainMode: HumanStrokeTestGrainMode;
-    testThicknessMode: HumanStrokeTestThicknessMode;
     settings: BrushSettings;
   };
   playback: {
@@ -162,7 +154,6 @@ interface BenchmarkRun {
     dirtyRectStrategy: "directional-jitter-bounds";
     thicknessDynamicsStrategy: StrokePerformanceProfile["thicknessDynamicsStrategy"];
     thicknessDynamicsTaperWindowMs: number;
-    thicknessDynamicsSpeedFilterTimeMs: number;
     thicknessDynamicsPreviewStrategy:
       StrokePerformanceProfile["thicknessDynamicsPreviewStrategy"];
     thicknessDynamicsPreviewTextureQuantum: number;
@@ -225,7 +216,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 27;
+    performanceTelemetryRevision: 28;
   };
 }
 
@@ -297,7 +288,6 @@ function readBrushSettings(): BrushSettings {
     spacingPercent: rangeValue("spacing"),
     startThickness: rangeValue("startThickness") / 100,
     endThickness: rangeValue("endThickness") / 100,
-    speedThickness: rangeValue("speedThickness"),
     count: rangeValue("count"),
     flow: rangeValue("flow") / 100,
     opacity: rangeValue("opacity") / 100,
@@ -331,9 +321,6 @@ function updateControlOutputs(): void {
   element<HTMLOutputElement>("spacingOut").value = `${rangeValue("spacing").toFixed(2)}%`;
   element<HTMLOutputElement>("startThicknessOut").value = `${rangeValue("startThickness").toFixed(0)}%`;
   element<HTMLOutputElement>("endThicknessOut").value = `${rangeValue("endThickness").toFixed(0)}%`;
-  const speedThickness = rangeValue("speedThickness");
-  element<HTMLOutputElement>("speedThicknessOut").value =
-    `${speedThickness > 0 ? "+" : ""}${speedThickness.toFixed(0)}%`;
   element<HTMLOutputElement>("countOut").value = rangeValue("count").toFixed(0);
   element<HTMLOutputElement>("flowOut").value = `${rangeValue("flow").toFixed(1).replace(".0", "")}%`;
   element<HTMLOutputElement>("opacityOut").value = `${rangeValue("opacity").toFixed(1).replace(".0", "")}%`;
@@ -444,7 +431,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 27,
+    performanceTelemetryRevision: 28,
     ...engineEnvironment,
   };
 }
@@ -507,13 +494,14 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
   const endThickness = Number.isFinite(benchmark.settings.endThickness)
     ? Math.min(2, Math.max(0, benchmark.settings.endThickness))
     : 1;
-  const speedThickness = Number.isFinite(benchmark.settings.speedThickness)
-    ? Math.min(200, Math.max(-200, benchmark.settings.speedThickness))
-    : 0;
+  const settingsWithoutLegacySpeed = {
+    ...benchmark.settings,
+  } as BrushSettings & { speedThickness?: unknown };
+  delete settingsWithoutLegacySpeed.speedThickness;
   return {
     ...benchmark,
     settings: {
-      ...benchmark.settings,
+      ...settingsWithoutLegacySpeed,
       shape: benchmark.settings.shape === "shape" ? "shape" : "circle",
       shapeScatter: Number.isFinite(benchmark.settings.shapeScatter)
         ? Math.min(1, Math.max(0, benchmark.settings.shapeScatter))
@@ -528,7 +516,6 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
       grainBlendMode: "multiply",
       startThickness,
       endThickness,
-      speedThickness,
       opacity,
       blendMode,
     },
@@ -647,7 +634,6 @@ function applySettingsToControls(settings: BrushSettings): void {
   setControlValue("spacing", settings.spacingPercent);
   setControlValue("startThickness", (settings.startThickness ?? 1) * 100);
   setControlValue("endThickness", (settings.endThickness ?? 1) * 100);
-  setControlValue("speedThickness", settings.speedThickness ?? 0);
   setControlValue("count", settings.count);
   setControlValue("flow", settings.flow * 100);
   setControlValue("opacity", (settings.opacity ?? 1) * 100);
@@ -682,7 +668,6 @@ function applyHumanStrokePreset(): BrushSettings {
   setControlValue("spacing", 1);
   setControlValue("startThickness", 100);
   setControlValue("endThickness", 100);
-  setControlValue("speedThickness", 0);
   setControlValue("count", 16);
   setControlValue("flow", 100);
   setControlValue("opacity", 100);
@@ -713,20 +698,12 @@ function selectedHumanStrokeTestGrainMode(): HumanStrokeTestGrainMode {
   return humanStrokeTestGrainModeSelect.value === "texturized" ? "texturized" : "off";
 }
 
-function selectedHumanStrokeTestThicknessMode(): HumanStrokeTestThicknessMode {
-  return humanStrokeTestThicknessModeSelect.value === "taper-0-0-speed100"
-    ? "taper-0-0-speed100"
-    : "standard";
-}
-
 function humanStrokeTestSettings(
   benchmark: HumanStrokeBenchmark,
   variant: HumanStrokeTestVariant,
   blendMode: HumanStrokeTestBlendMode,
   grainMode: HumanStrokeTestGrainMode,
-  thicknessMode: HumanStrokeTestThicknessMode,
 ): BrushSettings {
-  const thicknessSettings = humanStrokeTestThicknessSettings(thicknessMode);
   const baseSettings: BrushSettings = {
     ...benchmark.settings,
     opacity: 1,
@@ -742,7 +719,8 @@ function humanStrokeTestSettings(
     grainBlendMode: "multiply",
     shape: "circle",
     shapeScatter: 0,
-    ...thicknessSettings,
+    startThickness: 1,
+    endThickness: 1,
     positionJitterLateral: 1,
     positionJitterLinear: 1,
   };
@@ -764,15 +742,13 @@ function humanStrokeTestLabel(
   variant: HumanStrokeTestVariant,
   blendMode: HumanStrokeTestBlendMode,
   grainMode: HumanStrokeTestGrainMode,
-  thicknessMode: HumanStrokeTestThicknessMode,
 ): string {
   const variantLabel = variant === "fur" ? "Fur" : "Base";
   const blendLabel = blendMode === "m1-glaze"
     ? "M1 Glaze non accumulativo · 1×"
     : "Normal accumulativo · 4×";
   const grainLabel = grainMode === "texturized" ? "Grain Fixed M1" : "Grain Off";
-  const thicknessLabel = humanStrokeTestThicknessLabel(thicknessMode);
-  return `${variantLabel} · ${thicknessLabel} · ${blendLabel} · ${grainLabel}`;
+  return `${variantLabel} · ${blendLabel} · ${grainLabel}`;
 }
 
 function updateHumanStrokeControls(): void {
@@ -809,12 +785,6 @@ function updateHumanStrokeControls(): void {
     || humanStrokeRecordingArmed
     || Boolean(humanStrokeRecording);
   humanStrokeTestGrainModeSelect.disabled = operationLocked
-    || humanStrokeLoading
-    || humanStrokeSaving
-    || humanStrokeReplaying
-    || humanStrokeRecordingArmed
-    || Boolean(humanStrokeRecording);
-  humanStrokeTestThicknessModeSelect.disabled = operationLocked
     || humanStrokeLoading
     || humanStrokeSaving
     || humanStrokeReplaying
@@ -943,7 +913,6 @@ const brushControlIds = [
   "spacing",
   "startThickness",
   "endThickness",
-  "speedThickness",
   "count",
   "flow",
   "opacity",
@@ -1160,19 +1129,16 @@ async function replayHumanStroke(): Promise<void> {
   const testVariant = selectedHumanStrokeTestVariant();
   const testBlendMode = selectedHumanStrokeTestBlendMode();
   const testGrainMode = selectedHumanStrokeTestGrainMode();
-  const testThicknessMode = selectedHumanStrokeTestThicknessMode();
   const replaySettings = humanStrokeTestSettings(
     benchmark,
     testVariant,
     testBlendMode,
     testGrainMode,
-    testThicknessMode,
   );
   const testLabel = humanStrokeTestLabel(
     testVariant,
     testBlendMode,
     testGrainMode,
-    testThicknessMode,
   );
 
   setControlsPanelOpen(false);
@@ -1274,7 +1240,6 @@ async function replayHumanStroke(): Promise<void> {
         testVariant,
         testBlendMode,
         testGrainMode,
-        testThicknessMode,
         settings: replaySettings,
       },
       playback,

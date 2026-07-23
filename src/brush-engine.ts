@@ -13,11 +13,8 @@ import {
 } from "./shaders";
 import {
   THICKNESS_DYNAMICS_STRATEGY,
-  THICKNESS_SPEED_FILTER_TIME_MS,
   THICKNESS_TAPER_WINDOW_MS,
   endThicknessRadius,
-  filterStrokeSpeed,
-  speedThicknessFactor,
   startThicknessFactor,
   thicknessDynamicsIsNeutral,
   thicknessDynamicsNeedsTailHoldback,
@@ -115,7 +112,6 @@ export interface BrushSettings {
   spacingPercent: number;
   startThickness: number;
   endThickness: number;
-  speedThickness: number;
   count: number;
   flow: number;
   opacity: number;
@@ -201,7 +197,6 @@ export interface StrokePerformanceProfile {
   dirtyRectStrategy: "directional-jitter-bounds";
   thicknessDynamicsStrategy: ThicknessDynamicsStrategy;
   thicknessDynamicsTaperWindowMs: number;
-  thicknessDynamicsSpeedFilterTimeMs: number;
   thicknessDynamicsHeldBaseStamps: number;
   thicknessDynamicsMaximumHeldBaseStamps: number;
   thicknessDynamicsReleasedDuringStroke: number;
@@ -420,12 +415,7 @@ interface HeldThicknessStamp {
 interface ActiveStroke {
   lastInput: LayerPoint;
   startedAtMs: number;
-  filteredSpeedPxPerMs: number;
-  speedFilterInitialized: boolean;
-  thicknessSettings: Pick<
-    BrushSettings,
-    "startThickness" | "endThickness" | "speedThickness"
-  >;
+  thicknessSettings: Pick<BrushSettings, "startThickness" | "endThickness">;
   thicknessDynamicsNeutral: boolean;
   thicknessTailHoldback: boolean;
   heldThicknessStamps: HeldThicknessStamp[];
@@ -1022,7 +1012,6 @@ export const defaultBrushSettings: BrushSettings = {
   spacingPercent: 1,
   startThickness: 1,
   endThickness: 1,
-  speedThickness: 0,
   count: 24,
   flow: 0.07,
   opacity: 1,
@@ -1390,7 +1379,6 @@ export class BrushEngine {
       spacingPercent: clamp(next.spacingPercent ?? this.settings.spacingPercent, 0.25, 25),
       startThickness: clamp(next.startThickness ?? this.settings.startThickness, 0, 2),
       endThickness: clamp(next.endThickness ?? this.settings.endThickness, 0, 2),
-      speedThickness: clamp(next.speedThickness ?? this.settings.speedThickness, -200, 200),
       flow: clamp(next.flow ?? this.settings.flow, 0.001, 1),
       opacity: clamp(next.opacity ?? this.settings.opacity, 0, 1),
       hardness: clamp(next.hardness ?? this.settings.hardness, 0, 1),
@@ -1562,22 +1550,17 @@ export class BrushEngine {
     const thicknessSettings = {
       startThickness: thicknessSource.startThickness,
       endThickness: thicknessSource.endThickness,
-      speedThickness: thicknessSource.speedThickness,
     };
     this.activeStroke = {
       lastInput: normalizedPoint,
       startedAtMs: normalizedPoint.timeMs,
-      filteredSpeedPxPerMs: 0,
-      speedFilterInitialized: false,
       thicknessSettings,
       thicknessDynamicsNeutral: thicknessDynamicsIsNeutral(
         thicknessSettings.startThickness,
         thicknessSettings.endThickness,
-        thicknessSettings.speedThickness,
       ),
       thicknessTailHoldback: thicknessDynamicsNeedsTailHoldback(
         thicknessSettings.endThickness,
-        thicknessSettings.speedThickness,
       ),
       heldThicknessStamps: [],
       heldThicknessHead: 0,
@@ -2120,7 +2103,6 @@ export class BrushEngine {
       dirtyRectStrategy: DIRTY_RECT_STRATEGY,
       thicknessDynamicsStrategy: THICKNESS_DYNAMICS_STRATEGY,
       thicknessDynamicsTaperWindowMs: THICKNESS_TAPER_WINDOW_MS,
-      thicknessDynamicsSpeedFilterTimeMs: THICKNESS_SPEED_FILTER_TIME_MS,
       thicknessDynamicsHeldBaseStamps: profile.thicknessDynamicsHeldBaseStamps,
       thicknessDynamicsMaximumHeldBaseStamps:
         profile.thicknessDynamicsMaximumHeldBaseStamps,
@@ -2377,7 +2359,6 @@ export class BrushEngine {
     dirtyRectStrategy: typeof DIRTY_RECT_STRATEGY;
     thicknessDynamicsStrategy: ThicknessDynamicsStrategy;
     thicknessDynamicsTaperWindowMs: number;
-    thicknessDynamicsSpeedFilterTimeMs: number;
     thicknessDynamicsPreviewStrategy: ThicknessDynamicsPreviewStrategy;
     thicknessDynamicsPreviewTextureQuantum: number;
     thicknessDynamicsPreviewMaximumTextureDimension: number;
@@ -2479,7 +2460,6 @@ export class BrushEngine {
       dirtyRectStrategy: DIRTY_RECT_STRATEGY,
       thicknessDynamicsStrategy: THICKNESS_DYNAMICS_STRATEGY,
       thicknessDynamicsTaperWindowMs: THICKNESS_TAPER_WINDOW_MS,
-      thicknessDynamicsSpeedFilterTimeMs: THICKNESS_SPEED_FILTER_TIME_MS,
       thicknessDynamicsPreviewStrategy: THICKNESS_DYNAMICS_PREVIEW_STRATEGY,
       thicknessDynamicsPreviewTextureQuantum: THICKNESS_TAIL_TEXTURE_QUANTUM,
       thicknessDynamicsPreviewMaximumTextureDimension:
@@ -4827,16 +4807,6 @@ export class BrushEngine {
     const segmentLength = Math.hypot(deltaX, deltaY);
     const deltaTimeMs = normalizedPoint.timeMs - start.timeMs;
 
-    if (deltaTimeMs > 0) {
-      stroke.filteredSpeedPxPerMs = filterStrokeSpeed(
-        stroke.filteredSpeedPxPerMs,
-        segmentLength / deltaTimeMs,
-        deltaTimeMs,
-        stroke.speedFilterInitialized,
-      );
-      stroke.speedFilterInitialized = true;
-    }
-
     this.releaseHeldThicknessStamps(normalizedPoint.timeMs, false);
 
     if (segmentLength <= 0.0001) {
@@ -4891,18 +4861,10 @@ export class BrushEngine {
     const pressureSizeFactor = 1 - generationSettings.pressureSize
       + generationSettings.pressureSize * Math.max(0.08, pressure);
     const baseRadius = Math.max(0.5, generationSettings.size * 0.5 * pressureSizeFactor);
-    const centerThicknessFactor = stroke.thicknessDynamicsNeutral
-      ? 1
-      : speedThicknessFactor(
-        stroke.filteredSpeedPxPerMs,
-        generationSettings.size,
-        stroke.thicknessSettings.speedThickness,
-      );
     const liveThicknessFactor = stroke.thicknessDynamicsNeutral
       ? 1
       : startThicknessFactor(
         stroke.thicknessSettings.startThickness,
-        centerThicknessFactor,
         Math.max(0, point.timeMs - stroke.startedAtMs),
       );
     const radius = stroke.thicknessDynamicsNeutral

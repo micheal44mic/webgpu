@@ -2113,3 +2113,42 @@ all'overlay controllare anche tutti i contatori `thicknessDynamicsHeld*`,
 `thicknessDynamicsReleased*` e `thicknessDynamicsPreview*`, insieme a texture
 massima e memoria aggiuntiva. Non sostituire il benchmark canonico e non
 aggregare Standard e Coda come se fossero la stessa modalità.
+
+## Decisione successiva: rimosso Velocità → Spessore
+
+Le run `#74` e `#75` della versione Sites `66` non costituiscono un confronto
+A/B: entrambe usano `taper-0-0-speed100`, mentre la `#74` è Base · Grain Off e
+la `#75` è Fur · Grain Fixed. La #74 misura circa `57,65 FPS`, p95 `17 ms`,
+`13` frame oltre `20 ms` e coda finale `18 ms`; la #75 circa `57,51 FPS`, p95
+`17 ms`, `14` frame lenti e coda `92 ms`. Non attribuire la differenza alla
+coda, perché Shape e Grain cambiano contemporaneamente. Inoltre il replay usa
+timestamp relativi della registrazione contro `performance.now()` del preview:
+per questo entrambe salvano zero frame/stamp dell'overlay e non ne misurano il
+costo.
+
+L'utente non vuole proseguire questa matrice e ha richiesto di semplificare la
+funzione. Sono stati rimossi integralmente:
+
+- slider, output e campo `speedThickness` dalle impostazioni correnti;
+- filtro EMA, costante temporale e fattore esplicito velocità→spessore;
+- modalità `Spessore test` e marker `testThicknessMode` dal replay umano;
+- helper e test dedicati alla variante `0/0/+100`.
+
+Restano soltanto `startThickness` ed `endThickness`, entrambi `0…200%`. Il
+centro del tratto è sempre `100%`: l'inizio interpola verso `1` nei primi
+`100 ms`, mentre la fine interpola da `1` al rapporto scelto negli ultimi
+`100 ms`. La lunghezza spaziale continua naturalmente a dipendere da quanta
+distanza percorre il gesto nella finestra temporale, ma non esiste più un
+controllo o moltiplicatore esplicito basato sulla velocità.
+
+Il tail holdback e l'overlay WebGPU predittivo si attivano ora soltanto quando
+`endThickness != 100%`; cambiare soltanto lo spessore iniziale non trattiene
+stamp e percorre il renderer permanente diretto. Il replay canonico forza
+inizio/fine a `100%` e non offre più una variante della coda. I benchmark
+storici possono ancora contenere `speedThickness`, ma il parser lo scarta prima
+di applicare le impostazioni al motore.
+
+`performanceTelemetryRevision: 28` identifica questa semplificazione e
+`thicknessDynamicsStrategy` diventa
+`"time-window-quadratic-ease-out-start-end-tail-holdback"`. Non ripristinare
+Velocità → Spessore o la modalità benchmark senza una nuova richiesta esplicita.
