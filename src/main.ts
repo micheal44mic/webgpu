@@ -56,7 +56,7 @@ const benchmarkStampsInput = element<HTMLInputElement>("benchmarkStamps");
 
 type HumanStrokeTestVariant = "base" | "fur";
 type HumanStrokeTestBlendMode = "normal" | "m1-glaze";
-type HumanStrokeTestGrainMode = Extract<GrainMode, "texturized">;
+type HumanStrokeTestGrainMode = Extract<GrainMode, "off" | "texturized">;
 
 interface HumanStrokePoint extends LayerPoint {
   timeMs: number;
@@ -210,7 +210,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 22;
+    performanceTelemetryRevision: 23;
   };
 }
 
@@ -420,7 +420,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 22,
+    performanceTelemetryRevision: 23,
     ...engineEnvironment,
   };
 }
@@ -664,7 +664,7 @@ function selectedHumanStrokeTestBlendMode(): HumanStrokeTestBlendMode {
 }
 
 function selectedHumanStrokeTestGrainMode(): HumanStrokeTestGrainMode {
-  return "texturized";
+  return humanStrokeTestGrainModeSelect.value === "texturized" ? "texturized" : "off";
 }
 
 function humanStrokeTestSettings(
@@ -676,7 +676,7 @@ function humanStrokeTestSettings(
   const baseSettings: BrushSettings = {
     ...benchmark.settings,
     opacity: 1,
-    blendIntensity: 4,
+    blendIntensity: blendMode === "m1-glaze" ? 1 : 4,
     blendMode,
     grainMode,
     grainScale: 1.4,
@@ -707,12 +707,14 @@ function humanStrokeTestSettings(
 function humanStrokeTestLabel(
   variant: HumanStrokeTestVariant,
   blendMode: HumanStrokeTestBlendMode,
+  grainMode: HumanStrokeTestGrainMode,
 ): string {
   const variantLabel = variant === "fur" ? "Fur" : "Base";
   const blendLabel = blendMode === "m1-glaze"
-    ? "M1 Glaze non accumulativo"
-    : "Normal accumulativo";
-  return `${variantLabel} · ${blendLabel} · Grain Fixed M1 · 4×`;
+    ? "M1 Glaze non accumulativo · 1×"
+    : "Normal accumulativo · 4×";
+  const grainLabel = grainMode === "texturized" ? "Grain Fixed M1" : "Grain Off";
+  return `${variantLabel} · ${blendLabel} · ${grainLabel}`;
 }
 
 function updateHumanStrokeControls(): void {
@@ -748,7 +750,12 @@ function updateHumanStrokeControls(): void {
     || humanStrokeReplaying
     || humanStrokeRecordingArmed
     || Boolean(humanStrokeRecording);
-  humanStrokeTestGrainModeSelect.disabled = true;
+  humanStrokeTestGrainModeSelect.disabled = operationLocked
+    || humanStrokeLoading
+    || humanStrokeSaving
+    || humanStrokeReplaying
+    || humanStrokeRecordingArmed
+    || Boolean(humanStrokeRecording);
 }
 
 function operationLocked(): boolean {
@@ -1091,7 +1098,7 @@ async function replayHumanStroke(): Promise<void> {
     testBlendMode,
     testGrainMode,
   );
-  const testLabel = humanStrokeTestLabel(testVariant, testBlendMode);
+  const testLabel = humanStrokeTestLabel(testVariant, testBlendMode, testGrainMode);
 
   setControlsPanelOpen(false);
   humanStrokeReplaying = true;

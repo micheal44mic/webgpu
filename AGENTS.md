@@ -1801,25 +1801,54 @@ serve prima validare la semantica visiva richiesta dall’utente.
 
 ### Matrice iPhone richiesta dall’utente
 
-La precedente matrice generica Off/Fixed/Moving e Normal/Light Glaze non è il
-test da eseguire per questo candidato. **Play tratto registrato** forza sempre:
+La matrice iniziale pubblicata nella versione 60 era errata: forzava Grain
+Fixed e Blend intensity `4×` anche per M1 Glaze. Dopo le run iPhone `#68` e
+`#69`, l’utente ha corretto esplicitamente il protocollo. La `#69` non è una
+run visiva valida di M1 Glaze perché salva `blendIntensity: 4`; non usarla per
+decidere l'aspetto o promuovere la modalità.
 
-- Grain `texturized` / Fixed M1;
-- Scale `140%`, Depth `100%`, Brightness/Contrast `0`, Improved, Multiply;
-- Blend intensity `4×` e Opacità `100%`;
-- tutti gli altri valori, la traccia, il fingerprint, seed e ordine canonici.
+Da `performanceTelemetryRevision: 23`, **Play tratto registrato** espone due
+scelte indipendenti:
 
-Il solo selettore sperimentale offre:
+- Grain `off`, senza texture, oppure `texturized` / Fixed M1;
+- `Normal accumulativo — 4×` oppure
+  `M1 Glaze non accumulativo — 1×`.
 
-1. `Normal accumulativo — 4×`;
-2. `M1 Glaze non accumulativo — 4×`.
+Fixed usa Scale `140%`, Depth `100%`, Brightness/Contrast `0`, Improved e
+Multiply. Moving resta disponibile per il confronto manuale ma non entra nella
+matrice del replay. Opacità resta `100%`; tutti gli altri valori, traccia,
+fingerprint, seed e ordine partono dal preset canonico.
 
-Il selettore Grain del replay mostra un’unica opzione Fixed ed è bloccato.
-`testGrainMode` deve essere `"texturized"` in entrambe le run; cambiano
-soltanto `testBlendMode` e `benchmark.settings.blendMode`. Verificare comunque
-stesso fingerprint, punti, stamp base e copie fisiche prima del confronto.
+Per misurare il costo della texture confrontare Off e Fixed dentro lo stesso
+blending: Normal contro Normal a `4×`, oppure M1 contro M1 a `1×`. Verificare
+sempre anche spacing adattivo finale, stamp base e copie fisiche. Se differiscono
+materialmente, gli FPS da soli non isolano il costo della texture.
 
-Queste due run valide devono essere eseguite dall’utente sullo stesso iPhone.
+### Prime run Base Grain e limite del confronto
+
+Le run `#66–#69` usano fingerprint `18982412`, `1583` punti, Base, iPhone,
+GPU Apple, canvas `860×1454`, size `750`, spacing iniziale `1%`, Count `16`,
+flow/hardness `100%` e `performanceTelemetryRevision: 22`.
+
+| Run | Modalità | FPS | p95 | frame >20 ms | coda finale | spacing finale | stamp base |
+|---|---|---:|---:|---:|---:|---:|---:|
+| `#66` | Grain Off · Normal `4×` | `58,96` | `17 ms` | `5` | `18 ms` | `2%` | `9193` |
+| `#67` | derivato R8 2K · Normal `4×` | `58,67` | `17 ms` | `7` | `20 ms` | `2%` | `7254` |
+| `#68` | originale RGBA 2500 Fixed · Normal `4×` | `58,24` | `17 ms` | `9` | `18 ms` | `2,5%` | `6236` |
+| `#69` | originale RGBA 2500 Fixed · M1, errato `4×` | `58,97` | `17 ms` | `5` | `56 ms` | `2,25%` | `6748` |
+
+Rispetto alla `#66`, la `#68` perde circa `1,2%` di FPS e aggiunge quattro
+frame lenti, con p95 e coda invariati. Tuttavia genera il `32,2%` di stamp e
+copie in meno perché lo spacing adattivo sale prima e arriva a `2,5%`: non è
+quindi una misura isolata del costo Grain. Rispetto al derivato 2K della `#67`,
+la `#68` usa circa `26,45 MiB` GPU aggiuntivi per la texture (`31,79` contro
+`5,33 MiB`) e il caricamento iniziale misurato cresce complessivamente di circa
+`228 ms`; durante il replay perde circa `0,7%` di FPS ma processa anche il
+`14,0%` di stamp in meno.
+
+Eseguire le prossime run valide sullo stesso iPhone. Per il confronto più pulito
+fare almeno Base Off/Normal `4×` e Base Fixed/Normal `4×` sulla stessa versione,
+poi Base Off/M1 `1×` e Base Fixed/M1 `1×` per il percorso non accumulativo.
 Non eseguire autonomamente un benchmark locale come sostituto e non dichiarare
 regressioni o miglioramenti prestazionali dalla build, dallo smoke GPU desktop
 o dai tempi del benchmark sintetico.

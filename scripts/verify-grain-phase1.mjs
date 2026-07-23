@@ -216,20 +216,21 @@ assert(main.includes('setControlValue("grainMode", "off")'),
   "Il preset canonico non forza Grain Off.");
 assert(main.includes('benchmark.settings.grainMode === "moving"'),
   "La normalizzazione delle impostazioni manuali Moving è assente.");
-assert(main.includes('type HumanStrokeTestGrainMode = Extract<GrainMode, "texturized">')
-  && main.includes('blendIntensity: 4')
-  && main.includes('return "texturized"'),
-  "Il replay iPhone non forza Texturized Fixed e Blend intensity 4×.");
+assert(main.includes('type HumanStrokeTestGrainMode = Extract<GrainMode, "off" | "texturized">')
+  && main.includes('blendIntensity: blendMode === "m1-glaze" ? 1 : 4')
+  && main.includes('humanStrokeTestGrainModeSelect.value === "texturized" ? "texturized" : "off"'),
+  "Il replay iPhone non espone correttamente Grain Off/Fixed o le intensità Normal 4× / M1 1×.");
 assert(html.includes('value="texturized">Texturized — Fixed M1')
   && html.includes('value="moving">Texturized — Moving M1'),
   "Le due impostazioni Grain M1 non sono esposte nella UI.");
 assert(html.includes('value="m1-glaze">M1 Glaze — non accumulativo'),
   "M1 Glaze non è esposto nella UI.");
 assert(html.includes('value="normal">Normal accumulativo — 4×')
-  && html.includes('value="m1-glaze">M1 Glaze non accumulativo — 4×')
+  && html.includes('value="m1-glaze">M1 Glaze non accumulativo — 1×')
+  && html.includes('value="off">Off — senza texture')
   && html.includes('value="texturized">Texturized — Fixed M1 (fisso)'),
-  "La matrice iPhone Normal/M1 a Grain Fixed e 4× non è esposta correttamente.");
-assert(main.includes("performanceTelemetryRevision: 22"),
+  "La matrice iPhone Normal 4× / M1 1× con Grain Off/Fixed non è esposta correttamente.");
+assert(main.includes("performanceTelemetryRevision: 23"),
   "Revisione telemetria attesa assente.");
 
 console.log(JSON.stringify({
@@ -250,7 +251,8 @@ console.log(JSON.stringify({
     fixedUsesLayerCoordinates: true,
     movingUsesStampLocalCoordinates: true,
     movingIgnoresScaleControl: true,
-    iphoneReplayUsesOnlyFixedTexturizedAt4x: true,
+    iphoneReplayOffersOffOrFixedTexturized: true,
+    iphoneReplayUsesNormal4xAndM1Glaze1x: true,
     m1GlazeUsesR8QuantizedMaxCoverage: true,
     legacyLightGlazePreserved: true,
     canonicalReplayForcesGrainOff: true,

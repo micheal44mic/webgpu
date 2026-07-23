@@ -152,18 +152,22 @@ coordinate e filtering della texture; probe FIFO e spacing adattivo
 continuano a funzionare. La telemetria distingue asset nativo, coordinate
 Fixed/Moving, sampling, memoria, mip e strategia del glaze.
 
-Fixed e Moving restano confrontabili manualmente per scegliere l'aspetto. Il
-replay prestazionale iPhone è invece volutamente più stretto: usa sempre
-`Texturized — Fixed M1`, Scale `140%`, Depth `100%`, Improved e Blend
-intensity `4×`. Il selettore cambia soltanto fra:
+Fixed e Moving restano confrontabili manualmente per scegliere l'aspetto. Nel
+replay prestazionale iPhone Moving non è usato: il selettore Grain offre
+`Off — senza texture` e `Texturized — Fixed M1`. Quando Fixed è selezionato
+usa Scale `140%`, Depth `100%`, Brightness/Contrast `0`, Improved e Multiply.
+Il selettore di blending applica l'intensità prevista dalla relativa modalità:
 
 1. `Normal accumulativo — 4×`;
-2. `M1 Glaze non accumulativo — 4×`.
+2. `M1 Glaze non accumulativo — 1×`.
 
 Size, spacing, Count, flow, hardness, jitter, seed, pressione, traccia e ordine
-degli stamp restano quelli canonici. Queste run devono essere eseguite
-dall'utente sullo stesso iPhone con **Play tratto registrato**; build e smoke
-locali non sono risultati prestazionali e non sostituiscono la baseline.
+degli stamp partono dai valori canonici. Per misurare il costo della texture
+bisogna confrontare Off e Fixed con lo stesso blending. Se lo spacing adattivo
+termina a un valore diverso e cambia stamp/copie fisiche, il confronto non
+isola il costo della texture e va dichiarato come tale. Le run devono essere
+eseguite dall'utente sullo stesso iPhone con **Play tratto registrato**; build e
+smoke locali non sono risultati prestazionali e non sostituiscono la baseline.
 
 L'asset e le invarianti statiche si verificano con:
 
