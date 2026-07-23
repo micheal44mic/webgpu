@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   THICKNESS_TAPER_WINDOW_MS,
   endThicknessFactor,
+  endThicknessRadius,
   filterStrokeSpeed,
   quadraticEaseOut,
-  selectEvenlySpacedItems,
   speedThicknessFactor,
   startThicknessFactor,
   thicknessDynamicsIsNeutral,
@@ -30,6 +31,9 @@ assert.equal(startThicknessFactor(0, 1, THICKNESS_TAPER_WINDOW_MS), 1);
 assert.equal(endThicknessFactor(1, 0, 0), 0);
 assert.equal(endThicknessFactor(1, 2, 0), 2);
 assert.equal(endThicknessFactor(1, 0, THICKNESS_TAPER_WINDOW_MS), 1);
+assert.equal(endThicknessRadius(25, 1, 0, 0), 0);
+assert.equal(endThicknessRadius(25, 1, 0, THICKNESS_TAPER_WINDOW_MS), 25);
+assert.equal(endThicknessRadius(25, 1.5, 2, 0), 50);
 
 assert.equal(speedThicknessFactor(1, 100, -200), 0);
 assert.equal(speedThicknessFactor(1, 100, 200), 2);
@@ -48,9 +52,18 @@ const slowTailLengthPx = 0.25 * THICKNESS_TAPER_WINDOW_MS;
 const fastTailLengthPx = 2 * THICKNESS_TAPER_WINDOW_MS;
 assert.equal(fastTailLengthPx / slowTailLengthPx, 8);
 
-assert.deepEqual(selectEvenlySpacedItems([], 4), []);
-assert.deepEqual(selectEvenlySpacedItems([0, 1, 2], 4), [0, 1, 2]);
-assert.deepEqual(selectEvenlySpacedItems([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 4), [0, 3, 6, 9]);
-assert.deepEqual(selectEvenlySpacedItems([0, 1, 2], 1), [2]);
+const brushEngineSource = readFileSync(
+  new URL("../src/brush-engine.ts", import.meta.url),
+  "utf8",
+);
+const shaderSource = readFileSync(new URL("../src/shaders.ts", import.meta.url), "utf8");
+assert(brushEngineSource.includes('"predictive-webgpu-tail-overlay"'));
+assert(brushEngineSource.includes("prepareThicknessTailFrame"));
+assert(brushEngineSource.includes("encodeThicknessTailFrame"));
+assert(!brushEngineSource.includes("queueHeldThicknessAdaptivePreview"));
+assert(shaderSource.includes("export const thicknessTailDisplayShader"));
+assert(shaderSource.includes("layerPosition - brush.renderTargetOrigin"));
+assert(shaderSource.includes("input.position.xy + brush.renderTargetOrigin"));
+assert(shaderSource.includes("transientPaint + permanentPaint * (1.0 - transientPaint.a)"));
 
 console.log("Thickness dynamics verification passed.");

@@ -2024,3 +2024,62 @@ limiti sorgente/draw `256/4`. Verifica locale completata con
 `git diff --check`. L'utente deve ora giudicare su iPhone l'aggancio al dito,
 la continuità fra overlay e layer e l'assenza di flash al lift; non promuovere
 il bridge dalla sola build desktop.
+
+## Overlay WebGPU predittivo del tail — candidato locale
+
+Su richiesta esplicita dell'utente, il bridge Canvas2D della versione Sites
+`64` è stato sostituito localmente per il tail dello spessore. La matematica
+permanente resta quella della revisione 25: FIFO da `100 ms`, stessi stamp,
+seed, ordine, Count, jitter, pressione separata e raggi finali. Il vecchio
+Canvas2D rimane soltanto come tip patch del sistema di backpressure GPU già
+promosso; non riceve più gli stamp trattenuti dalla dinamica dello spessore.
+
+La nuova preview calcola ogni frame il raggio che ciascuno stamp trattenuto
+avrebbe se il lift avvenisse in quel momento. Preview e finalizzazione al lift
+chiamano entrambe `endThicknessRadius`, quindi non mantengono due formule
+indipendenti. Durante una pausa, un tick rAF continua a far maturare gli stamp:
+quelli che superano la finestra entrano nel layer col raggio live, come avviene
+già durante il movimento.
+
+Il tail viene ricostruito con le stesse pipeline WebGPU del pennello:
+
+- buffer uniforme e instance buffer sono separati da quelli autorevoli, così
+  due upload nello stesso submit non possono sostituirsi a vicenda;
+- Circle/Shape, occupancy, Grain Fixed/Moving, filtering, seed, jitter colore e
+  posizione usano gli stessi shader e le stesse pipeline Normal/Additive;
+- i due float di padding della uniform brush sono diventati
+  `renderTargetOrigin`. Sul layer permanente valgono sempre `(0, 0)`; nel tail
+  allineano una texture locale alle coordinate autorevoli del layer;
+- il Grain Fixed somma la stessa origin a `@builtin(position)`, preservando la
+  fase della carta invece di riavviarla nell'overlay;
+- la texture è allocata solo al primo uso, cresce per quanti da `256 px` fino a
+  `4096 px` per asse e non viene ridotta durante la sessione. Non esiste quindi
+  una texture tail `4096²` obbligatoria per ogni tratto;
+- il display compone l'overlay premoltiplicato sopra il layer per Normal e
+  somma il colore per Additive. La cache di presentazione ridisegna l'unione del
+  rect del tail precedente, di quello corrente e degli stamp permanenti.
+
+Al pointer-up gli stamp finali vengono accodati al layer e il tail viene
+rimosso nello stesso submit che ricostruisce la cache dalla sorgente
+autorevole. Non viene inserito un clear visibile separato. L'overlay non entra
+in history, non modifica i mip del paint layer e non cambia la run canonica
+neutra `100% / 100% / 0%`, che non alloca né disegna alcun tail.
+
+Questa prima fase supporta Normal e Additive, anche con Shape e Grain. Light
+Glaze e M1 Glaze conservano intenzionalmente il comportamento precedente:
+richiedono che il tail venga integrato nel loro accumulatore per-stroke e non
+vanno approssimati con il compositore Normal.
+
+`performanceTelemetryRevision: 27` identifica
+`thicknessDynamicsPreviewStrategy: "predictive-webgpu-tail-overlay"`, quantum e
+dimensione massima della texture, frame/stamp/copie transitorie, massimo numero
+di pixel allocati e memoria addizionale effettiva. La build locale e i test
+statici non dimostrano fluidità né identità pixel su Apple: prima di promuovere
+il candidato, l'utente deve verificare su iPhone aggancio al touch, continuità
+del bordo a `100 ms`, assenza di pop al lift e costo GPU con size `750`, Count
+`16`, Grain Off e Fixed. Non presentare il nuovo overlay come ottimizzazione.
+
+Verifica locale completata con `npm run thickness:verify`,
+`npm run grain:verify`, `npx tsc --noEmit`, `npm run build` e
+`git diff --check`. Questi controlli coprono formule condivise, firme shader,
+ABI TypeScript e artefatto di produzione, ma non sostituiscono la prova iPhone.

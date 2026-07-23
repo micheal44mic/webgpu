@@ -5,7 +5,7 @@ const SHAPE_OCCUPANCY_GRID_SIZE: u32 = 256u;
 
 struct BrushUniforms {
   layerSize: vec2<f32>,
-  _pad0: vec2<f32>,
+  renderTargetOrigin: vec2<f32>,
   baseHslAlpha: vec4<f32>,
   jitter: vec4<f32>,
   controls: vec4<f32>,
@@ -141,9 +141,10 @@ fn vertexMain(
     + direction * linearOffset
     + vec2<f32>(-direction.y, direction.x) * lateralOffset;
   let layerPosition = jitteredCenter + localPosition * stamp.radius;
+  let targetPosition = layerPosition - brush.renderTargetOrigin;
   let clipPosition = vec2<f32>(
-    layerPosition.x / brush.layerSize.x * 2.0 - 1.0,
-    1.0 - layerPosition.y / brush.layerSize.y * 2.0
+    targetPosition.x / brush.layerSize.x * 2.0 - 1.0,
+    1.0 - targetPosition.y / brush.layerSize.y * 2.0
   );
 
   var output: VertexOutput;
@@ -197,9 +198,10 @@ fn shapeVertexMain(
   }
 
   let layerPosition = jitteredCenter + geometryPosition * stamp.radius;
+  let targetPosition = layerPosition - brush.renderTargetOrigin;
   let clipPosition = vec2<f32>(
-    layerPosition.x / brush.layerSize.x * 2.0 - 1.0,
-    1.0 - layerPosition.y / brush.layerSize.y * 2.0
+    targetPosition.x / brush.layerSize.x * 2.0 - 1.0,
+    1.0 - targetPosition.y / brush.layerSize.y * 2.0
   );
 
   var output: VertexOutput;
@@ -340,7 +342,7 @@ const GRAIN_MIP_LEVEL_COUNT: u32 = 12u;
 
 struct BrushUniforms {
   layerSize: vec2<f32>,
-  _pad0: vec2<f32>,
+  renderTargetOrigin: vec2<f32>,
   baseHslAlpha: vec4<f32>,
   jitter: vec4<f32>,
   controls: vec4<f32>,
@@ -432,7 +434,7 @@ fn selectedGrainUv(input: FragmentInput) -> vec2<f32> {
     return input.localPosition * 0.5 + vec2<f32>(0.5);
   }
   // Fixed/Texturized is paper grain in authoritative layer coordinates.
-  return input.position.xy * grain.inversePeriod;
+  return (input.position.xy + brush.renderTargetOrigin) * grain.inversePeriod;
 }
 
 fn shapeOccupancyMayContribute(uv: vec2<f32>) -> bool {
@@ -682,6 +684,136 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
 
   let uv = clamp((layerPosition + vec2<f32>(0.5)) / display.layerSize, vec2<f32>(0.0), vec2<f32>(1.0));
   let paint = textureSampleLevel(layerTexture, layerSampler, uv, display.selectedMipLevel);
+
+  let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
+  let checkerParity = (checkerCell.x + checkerCell.y) & 1;
+  let backgroundSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
+  let backgroundLinear = srgbToLinear(backgroundSrgb);
+  let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
+
+  return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
+}
+`;
+
+// Predictive thickness tails use the exact brush pipeline in a transparent,
+// layer-aligned texture. This display-only variant composes that transient
+// texture over the permanent paint without mutating the authoritative layer.
+export const thicknessTailDisplayShader = /* wgsl */ `
+struct DisplayUniforms {
+  canvasSize: vec2<f32>,
+  layerSize: vec2<f32>,
+  viewCenter: vec2<f32>,
+  zoom: f32,
+  checkerSize: f32,
+  selectedMipLevel: f32,
+};
+
+struct ThicknessTailUniforms {
+  origin: vec2<f32>,
+  textureSize: vec2<f32>,
+  compositionMode: u32,
+  _pad0: u32,
+  _pad1: vec2<u32>,
+};
+
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+};
+
+@group(0) @binding(0) var<uniform> display: DisplayUniforms;
+@group(0) @binding(1) var layerTexture: texture_2d<f32>;
+@group(0) @binding(2) var layerSampler: sampler;
+@group(0) @binding(3) var tailTexture: texture_2d<f32>;
+@group(0) @binding(4) var<uniform> tail: ThicknessTailUniforms;
+
+fn srgbToLinearChannel(value: f32) -> f32 {
+  if (value <= 0.04045) {
+    return value / 12.92;
+  }
+  return pow((value + 0.055) / 1.055, 2.4);
+}
+
+fn srgbToLinear(value: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    srgbToLinearChannel(value.r),
+    srgbToLinearChannel(value.g),
+    srgbToLinearChannel(value.b)
+  );
+}
+
+fn linearToSrgbChannel(value: f32) -> f32 {
+  let clamped = clamp(value, 0.0, 1.0);
+  if (clamped <= 0.0031308) {
+    return clamped * 12.92;
+  }
+  return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
+}
+
+fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    linearToSrgbChannel(value.r),
+    linearToSrgbChannel(value.g),
+    linearToSrgbChannel(value.b)
+  );
+}
+
+@vertex
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+  let positions = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>( 3.0, -1.0),
+    vec2<f32>(-1.0,  3.0)
+  );
+
+  var output: VertexOutput;
+  output.position = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
+  return output;
+}
+
+@fragment
+fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
+  let layerPosition = display.viewCenter
+    + (fragmentPosition.xy - display.canvasSize * 0.5) / display.zoom;
+
+  let insideLayer = all(layerPosition >= vec2<f32>(0.0))
+    && all(layerPosition < display.layerSize);
+
+  if (!insideLayer) {
+    return vec4<f32>(vec3<f32>(0.055), 1.0);
+  }
+
+  let layerUv = clamp(
+    (layerPosition + vec2<f32>(0.5)) / display.layerSize,
+    vec2<f32>(0.0),
+    vec2<f32>(1.0)
+  );
+  let permanentPaint = textureSampleLevel(
+    layerTexture,
+    layerSampler,
+    layerUv,
+    display.selectedMipLevel
+  );
+
+  var paint = permanentPaint;
+  let tailPosition = layerPosition - tail.origin;
+  let insideTail = all(tailPosition >= vec2<f32>(0.0))
+    && all(tailPosition < tail.textureSize);
+  if (insideTail) {
+    let tailUv = clamp(
+      (tailPosition + vec2<f32>(0.5)) / tail.textureSize,
+      vec2<f32>(0.0),
+      vec2<f32>(1.0)
+    );
+    let transientPaint = textureSampleLevel(tailTexture, layerSampler, tailUv, 0.0);
+    if (tail.compositionMode == 1u) {
+      paint = vec4<f32>(
+        permanentPaint.rgb + transientPaint.rgb,
+        transientPaint.a + permanentPaint.a * (1.0 - transientPaint.a)
+      );
+    } else {
+      paint = transientPaint + permanentPaint * (1.0 - transientPaint.a);
+    }
+  }
 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;

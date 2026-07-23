@@ -9,14 +9,14 @@ import {
   lightGlazeDisplayShader,
   paintMipDownsampleShader,
   texturizedGrainShader,
+  thicknessTailDisplayShader,
 } from "./shaders";
 import {
   THICKNESS_DYNAMICS_STRATEGY,
   THICKNESS_SPEED_FILTER_TIME_MS,
   THICKNESS_TAPER_WINDOW_MS,
-  endThicknessFactor,
+  endThicknessRadius,
   filterStrokeSpeed,
-  selectEvenlySpacedItems,
   speedThicknessFactor,
   startThicknessFactor,
   thicknessDynamicsIsNeutral,
@@ -46,7 +46,7 @@ export type PresentationTransferStrategy = "copy-texture-to-current-texture";
 export type PaintDisplayPyramidStrategy = "live-dirty-box-filter-mip-chain";
 export type PaintDisplayLodSelectionStrategy = "largest-power-of-two-without-upscaling";
 export type AdaptivePreviewStrategy =
-  "queue-lag-or-thickness-holdback-canvas2d-tip-patch";
+  "queue-lag-canvas2d-tip-patch";
 export type AdaptivePreviewTriggerStrategy = "single-sampled-queue-prefix-latency";
 export type AdaptivePreviewStaleFrameStrategy =
   "hide-confirmed-stale-bitmap-and-single-raf-retry";
@@ -86,8 +86,7 @@ export type AdaptiveSpacingTriggerReason = "probe-timeout" | "slow-completion";
 export type AdaptivePreviewConcreteActivationReason =
   | "probe-timeout"
   | "consecutive-slow"
-  | "diagnostic-force"
-  | "thickness-tail-holdback";
+  | "diagnostic-force";
 export type AdaptivePreviewActivationReason =
   | "none"
   | AdaptivePreviewConcreteActivationReason
@@ -98,7 +97,7 @@ export type ShapeOccupancyFallbackReason =
   | "mip-out-of-range"
   | "coverage-too-dense"
   | "mixed";
-export type ThicknessDynamicsPreviewStrategy = "immediate-canvas2d-held-tail-bridge";
+export type ThicknessDynamicsPreviewStrategy = "predictive-webgpu-tail-overlay";
 
 export interface BrushSettings {
   shape: BrushShape;
@@ -208,8 +207,13 @@ export interface StrokePerformanceProfile {
   thicknessDynamicsReleasedDuringStroke: number;
   thicknessDynamicsReleasedAtLift: number;
   thicknessDynamicsPreviewStrategy: ThicknessDynamicsPreviewStrategy;
-  thicknessDynamicsPreviewSourceLimit: number;
-  thicknessDynamicsPreviewDrawLimit: number;
+  thicknessDynamicsPreviewTextureQuantum: number;
+  thicknessDynamicsPreviewMaximumTextureDimension: number;
+  thicknessDynamicsPreviewFrames: number;
+  thicknessDynamicsPreviewBaseStamps: number;
+  thicknessDynamicsPreviewPhysicalCopies: number;
+  thicknessDynamicsPreviewMaximumTexturePixels: number;
+  thicknessDynamicsPreviewAdditionalMemoryMiB: number;
   presentationCacheStrategy: PresentationCacheStrategy;
   presentationTransferStrategy: PresentationTransferStrategy;
   presentationCacheFullRebuilds: number;
@@ -458,6 +462,19 @@ interface DirtyRect {
   height: number;
 }
 
+interface PackedStampUpload {
+  dirtyRect: DirtyRect | null;
+  minimumRadius: number;
+}
+
+interface ThicknessTailFrame {
+  settings: BrushSettings;
+  stamps: Stamp[];
+  dirtyRect: DirtyRect;
+  shapeOccupancySelection: ShapeOccupancySelection | null;
+  grainActive: boolean;
+}
+
 interface ShapeMaskResources {
   texture: GPUTexture;
   decodeStrategy: ShapeMaskDecodeStrategy;
@@ -605,6 +622,10 @@ interface MutableStrokePerformanceProfile {
   thicknessDynamicsMaximumHeldBaseStamps: number;
   thicknessDynamicsReleasedDuringStroke: number;
   thicknessDynamicsReleasedAtLift: number;
+  thicknessDynamicsPreviewFrames: number;
+  thicknessDynamicsPreviewBaseStamps: number;
+  thicknessDynamicsPreviewPhysicalCopies: number;
+  thicknessDynamicsPreviewMaximumTexturePixels: number;
   presentationCacheFullRebuilds: number;
   presentationCachePartialUpdates: number;
   presentationCacheOffscreenSkips: number;
@@ -728,9 +749,9 @@ const M1_GLAZE_STRATEGY =
   "m1-r8-quantized-max-coverage-rgba-compat-single-commit" as const;
 const LIGHT_GLAZE_ADAPTIVE_PREVIEW_STRATEGY = "disabled-semantic-mismatch" as const;
 const ADAPTIVE_PREVIEW_STRATEGY =
-  "queue-lag-or-thickness-holdback-canvas2d-tip-patch" as const;
+  "queue-lag-canvas2d-tip-patch" as const;
 const THICKNESS_DYNAMICS_PREVIEW_STRATEGY =
-  "immediate-canvas2d-held-tail-bridge" as const;
+  "predictive-webgpu-tail-overlay" as const;
 const ADAPTIVE_PREVIEW_TRIGGER_STRATEGY = "single-sampled-queue-prefix-latency" as const;
 const ADAPTIVE_PREVIEW_STALE_FRAME_STRATEGY =
   "hide-confirmed-stale-bitmap-and-single-raf-retry" as const;
@@ -740,8 +761,8 @@ const ADAPTIVE_PREVIEW_EXACT_LINEAR_SCALE = 0.5;
 const ADAPTIVE_PREVIEW_JS_BUDGET_MS = 1.25;
 const ADAPTIVE_PREVIEW_COMMIT_BUDGET_RESERVE_MS = 0.2;
 const ADAPTIVE_PREVIEW_MAX_TIP_BASE_STAMPS = 2;
-const THICKNESS_DYNAMICS_PREVIEW_SOURCE_BASE_STAMPS = 256;
-const THICKNESS_DYNAMICS_PREVIEW_DRAW_BASE_STAMPS = 4;
+const THICKNESS_TAIL_TEXTURE_QUANTUM = 256;
+const THICKNESS_TAIL_MAXIMUM_TEXTURE_DIMENSION = LAYER_SIZE;
 const ADAPTIVE_PREVIEW_MAX_PATCH_CSS_PIXELS = 384;
 const ADAPTIVE_PREVIEW_MIN_PATCH_CSS_PIXELS = 32;
 const ADAPTIVE_PREVIEW_PATCH_QUANTUM_CSS_PIXELS = 32;
@@ -818,6 +839,7 @@ const BRUSH_UNIFORM_BYTES = 96;
 const GRAIN_UNIFORM_BYTES = 32;
 const DISPLAY_UNIFORM_BYTES = 48;
 const LIGHT_GLAZE_UNIFORM_BYTES = 32;
+const THICKNESS_TAIL_UNIFORM_BYTES = 32;
 
 function isStrokeGlazeBlendMode(mode: BlendMode): boolean {
   return mode === "light-glaze" || mode === "m1-glaze";
@@ -1053,6 +1075,12 @@ export class BrushEngine {
   private lightGlazeCompositeBindGroup: GPUBindGroup | null = null;
   private lightGlazeSession: LightGlazeSession | null = null;
   private lightGlazeStorageAllocated = false;
+  private thicknessTailTexture: GPUTexture | null = null;
+  private thicknessTailView: GPUTextureView | null = null;
+  private thicknessTailDisplayBindGroup: GPUBindGroup | null = null;
+  private thicknessTailTextureWidth = 0;
+  private thicknessTailTextureHeight = 0;
+  private thicknessTailPresentedRect: DirtyRect | null = null;
   private readonly adaptivePreviewCanvas: HTMLCanvasElement | null;
   private readonly adaptivePreviewContext: CanvasRenderingContext2D | null;
   private readonly adaptivePreviewScratchCanvas: HTMLCanvasElement | null;
@@ -1086,10 +1114,13 @@ export class BrushEngine {
   private canvasCssHeight = 1;
 
   private brushUniformBuffer!: GPUBuffer;
+  private thicknessTailBrushUniformBuffer!: GPUBuffer;
   private grainUniformBuffer!: GPUBuffer;
   private displayUniformBuffer!: GPUBuffer;
+  private thicknessTailDisplayUniformBuffer!: GPUBuffer;
   private lightGlazeUniformBuffer!: GPUBuffer;
   private instanceBuffer!: GPUBuffer;
+  private thicknessTailInstanceBuffer!: GPUBuffer;
   private shapeOccupancyUniformBuffers: GPUBuffer[] = [];
   private sampler!: GPUSampler;
   private shapeMaskTexture!: GPUTexture;
@@ -1113,12 +1144,15 @@ export class BrushEngine {
   private grainBrushBindGroupLayout!: GPUBindGroupLayout;
   private grainBrushOccupancyBindGroupLayout!: GPUBindGroupLayout;
   private displayBindGroupLayout!: GPUBindGroupLayout;
+  private thicknessTailDisplayBindGroupLayout!: GPUBindGroupLayout;
   private lightGlazeDisplayBindGroupLayout!: GPUBindGroupLayout;
   private lightGlazeCompositeMipBindGroupLayout!: GPUBindGroupLayout;
   private lightGlazeCompositeBindGroupLayout!: GPUBindGroupLayout;
   private paintMipDownsampleBindGroupLayout!: GPUBindGroupLayout;
   private brushBindGroup!: GPUBindGroup;
+  private thicknessTailBrushBindGroup!: GPUBindGroup;
   private brushOccupancyBindGroups: GPUBindGroup[] = [];
+  private thicknessTailBrushOccupancyBindGroups: GPUBindGroup[] = [];
   private grainBrushBindGroups!: Record<
     "fixed" | "moving",
     Record<GrainFiltering, GPUBindGroup>
@@ -1127,11 +1161,20 @@ export class BrushEngine {
     "fixed" | "moving",
     Record<GrainFiltering, GPUBindGroup[]>
   >;
+  private thicknessTailGrainBrushBindGroups!: Record<
+    "fixed" | "moving",
+    Record<GrainFiltering, GPUBindGroup>
+  >;
+  private thicknessTailGrainBrushOccupancyBindGroups!: Record<
+    "fixed" | "moving",
+    Record<GrainFiltering, GPUBindGroup[]>
+  >;
   private displayBindGroup!: GPUBindGroup;
 
   private brushShaderModule!: GPUShaderModule;
   private texturizedGrainShaderModule!: GPUShaderModule;
   private displayShaderModule!: GPUShaderModule;
+  private thicknessTailDisplayShaderModule!: GPUShaderModule;
   private lightGlazeDisplayShaderModule!: GPUShaderModule;
   private lightGlazeCompositeMipShaderModule!: GPUShaderModule;
   private lightGlazeCompositeShaderModule!: GPUShaderModule;
@@ -1155,6 +1198,7 @@ export class BrushEngine {
   private grainM1GlazeShapePipeline!: GPURenderPipeline;
   private grainM1GlazeShapeOccupancyPipeline!: GPURenderPipeline;
   private displayPipeline!: GPURenderPipeline;
+  private thicknessTailDisplayPipeline!: GPURenderPipeline;
   private lightGlazeDisplayPipeline!: GPURenderPipeline;
   private lightGlazeCompositeMipPipeline!: GPURenderPipeline;
   private lightGlazeCompositePipeline!: GPURenderPipeline;
@@ -1163,9 +1207,22 @@ export class BrushEngine {
   private readonly instanceUpload = new ArrayBuffer(MAX_STAMPS_PER_BATCH * STAMP_STRIDE_BYTES);
   private readonly instanceUploadF32 = new Float32Array(this.instanceUpload);
   private readonly instanceUploadU32 = new Uint32Array(this.instanceUpload);
+  private readonly thicknessTailInstanceUpload = new ArrayBuffer(
+    MAX_STAMPS_PER_BATCH * STAMP_STRIDE_BYTES,
+  );
+  private readonly thicknessTailInstanceUploadF32 = new Float32Array(
+    this.thicknessTailInstanceUpload,
+  );
+  private readonly thicknessTailInstanceUploadU32 = new Uint32Array(
+    this.thicknessTailInstanceUpload,
+  );
   private readonly brushUniformUpload = new ArrayBuffer(BRUSH_UNIFORM_BYTES);
+  private readonly thicknessTailBrushUniformUpload = new ArrayBuffer(BRUSH_UNIFORM_BYTES);
   private readonly grainUniformUpload = new Float32Array(GRAIN_UNIFORM_BYTES / 4);
   private readonly displayUniformUpload = new Float32Array(DISPLAY_UNIFORM_BYTES / 4);
+  private readonly thicknessTailDisplayUniformUpload = new ArrayBuffer(
+    THICKNESS_TAIL_UNIFORM_BYTES,
+  );
 
   private settings: BrushSettings = { ...defaultBrushSettings };
   private pendingStamps: Stamp[] = [];
@@ -1494,6 +1551,11 @@ export class BrushEngine {
     const lightGlazeSettings = isStrokeGlazeBlendMode(this.settings.blendMode)
       ? { ...this.settings }
       : null;
+    if (lightGlazeSettings && this.thicknessTailPresentedRect) {
+      this.thicknessTailPresentedRect = null;
+      this.presentationCacheNeedsFullRebuild = true;
+      this.displayDirty = true;
+    }
     this.adaptivePreviewForceStroke = ADAPTIVE_PREVIEW_FORCE && !lightGlazeSettings;
     const historyActionId = this.nextHistoryActionId++;
     const thicknessSource = lightGlazeSettings ?? this.settings;
@@ -1555,6 +1617,11 @@ export class BrushEngine {
 
   endStroke(timeMs?: number): void {
     const endingStroke = this.activeStroke;
+    const hadPredictiveThicknessTail = Boolean(
+      endingStroke?.thicknessTailHoldback
+      && !endingStroke.lightGlazeSettings
+      && (this.settings.blendMode === "normal" || this.settings.blendMode === "additive"),
+    );
     if (endingStroke) {
       const requestedLiftTime = Number.isFinite(timeMs)
         ? timeMs as number
@@ -1573,6 +1640,13 @@ export class BrushEngine {
     }
     this.freezeAdaptivePreviewAtLift();
     this.activeStroke = null;
+    if (hadPredictiveThicknessTail || this.thicknessTailPresentedRect) {
+      // The same next GPU submit commits the final held stamps and redraws the
+      // previous tail area from the authoritative layer, avoiding a blank or
+      // doubled frame at lift.
+      this.displayDirty = true;
+      this.requestRender();
+    }
     if (historyChanged) {
       this.publishHistoryState();
     }
@@ -1618,6 +1692,10 @@ export class BrushEngine {
       this.abandonLightGlazeSession();
     }
     this.invalidateAdaptivePreview();
+    if (this.thicknessTailPresentedRect) {
+      this.displayDirty = true;
+      this.requestRender();
+    }
     if (stroke.historyCommitted) {
       this.publishHistoryState();
     }
@@ -1916,6 +1994,10 @@ export class BrushEngine {
       thicknessDynamicsMaximumHeldBaseStamps: 0,
       thicknessDynamicsReleasedDuringStroke: 0,
       thicknessDynamicsReleasedAtLift: 0,
+      thicknessDynamicsPreviewFrames: 0,
+      thicknessDynamicsPreviewBaseStamps: 0,
+      thicknessDynamicsPreviewPhysicalCopies: 0,
+      thicknessDynamicsPreviewMaximumTexturePixels: 0,
       presentationCacheFullRebuilds: 0,
       presentationCachePartialUpdates: 0,
       presentationCacheOffscreenSkips: 0,
@@ -2046,10 +2128,19 @@ export class BrushEngine {
         profile.thicknessDynamicsReleasedDuringStroke,
       thicknessDynamicsReleasedAtLift: profile.thicknessDynamicsReleasedAtLift,
       thicknessDynamicsPreviewStrategy: THICKNESS_DYNAMICS_PREVIEW_STRATEGY,
-      thicknessDynamicsPreviewSourceLimit:
-        THICKNESS_DYNAMICS_PREVIEW_SOURCE_BASE_STAMPS,
-      thicknessDynamicsPreviewDrawLimit:
-        THICKNESS_DYNAMICS_PREVIEW_DRAW_BASE_STAMPS,
+      thicknessDynamicsPreviewTextureQuantum: THICKNESS_TAIL_TEXTURE_QUANTUM,
+      thicknessDynamicsPreviewMaximumTextureDimension:
+        THICKNESS_TAIL_MAXIMUM_TEXTURE_DIMENSION,
+      thicknessDynamicsPreviewFrames: profile.thicknessDynamicsPreviewFrames,
+      thicknessDynamicsPreviewBaseStamps: profile.thicknessDynamicsPreviewBaseStamps,
+      thicknessDynamicsPreviewPhysicalCopies:
+        profile.thicknessDynamicsPreviewPhysicalCopies,
+      thicknessDynamicsPreviewMaximumTexturePixels:
+        profile.thicknessDynamicsPreviewMaximumTexturePixels,
+      thicknessDynamicsPreviewAdditionalMemoryMiB:
+        profile.thicknessDynamicsPreviewMaximumTexturePixels
+        * (this.layerFormat === "rgba16float" ? 8 : 4)
+        / (1024 * 1024),
       presentationCacheStrategy: PRESENTATION_CACHE_STRATEGY,
       presentationTransferStrategy: PRESENTATION_TRANSFER_STRATEGY,
       presentationCacheFullRebuilds: profile.presentationCacheFullRebuilds,
@@ -2288,8 +2379,8 @@ export class BrushEngine {
     thicknessDynamicsTaperWindowMs: number;
     thicknessDynamicsSpeedFilterTimeMs: number;
     thicknessDynamicsPreviewStrategy: ThicknessDynamicsPreviewStrategy;
-    thicknessDynamicsPreviewSourceLimit: number;
-    thicknessDynamicsPreviewDrawLimit: number;
+    thicknessDynamicsPreviewTextureQuantum: number;
+    thicknessDynamicsPreviewMaximumTextureDimension: number;
     presentationCacheStrategy: typeof PRESENTATION_CACHE_STRATEGY;
     presentationTransferStrategy: typeof PRESENTATION_TRANSFER_STRATEGY;
     paintDisplayPyramidStrategy: typeof PAINT_DISPLAY_PYRAMID_STRATEGY;
@@ -2390,10 +2481,9 @@ export class BrushEngine {
       thicknessDynamicsTaperWindowMs: THICKNESS_TAPER_WINDOW_MS,
       thicknessDynamicsSpeedFilterTimeMs: THICKNESS_SPEED_FILTER_TIME_MS,
       thicknessDynamicsPreviewStrategy: THICKNESS_DYNAMICS_PREVIEW_STRATEGY,
-      thicknessDynamicsPreviewSourceLimit:
-        THICKNESS_DYNAMICS_PREVIEW_SOURCE_BASE_STAMPS,
-      thicknessDynamicsPreviewDrawLimit:
-        THICKNESS_DYNAMICS_PREVIEW_DRAW_BASE_STAMPS,
+      thicknessDynamicsPreviewTextureQuantum: THICKNESS_TAIL_TEXTURE_QUANTUM,
+      thicknessDynamicsPreviewMaximumTextureDimension:
+        THICKNESS_TAIL_MAXIMUM_TEXTURE_DIMENSION,
       presentationCacheStrategy: PRESENTATION_CACHE_STRATEGY,
       presentationTransferStrategy: PRESENTATION_TRANSFER_STRATEGY,
       paintDisplayPyramidStrategy: PAINT_DISPLAY_PYRAMID_STRATEGY,
@@ -2470,6 +2560,12 @@ export class BrushEngine {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
+    this.thicknessTailBrushUniformBuffer = this.device.createBuffer({
+      label: "Predictive thickness tail brush uniforms",
+      size: BRUSH_UNIFORM_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
     this.grainUniformBuffer = this.device.createBuffer({
       label: "Texturized grain uniforms",
       size: GRAIN_UNIFORM_BYTES,
@@ -2482,6 +2578,12 @@ export class BrushEngine {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
+    this.thicknessTailDisplayUniformBuffer = this.device.createBuffer({
+      label: "Predictive thickness tail display uniforms",
+      size: THICKNESS_TAIL_UNIFORM_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
     this.lightGlazeUniformBuffer = this.device.createBuffer({
       label: "Light Glaze stroke opacity",
       size: LIGHT_GLAZE_UNIFORM_BYTES,
@@ -2490,6 +2592,12 @@ export class BrushEngine {
 
     this.instanceBuffer = this.device.createBuffer({
       label: "Stamp instance storage",
+      size: MAX_STAMPS_PER_BATCH * STAMP_STRIDE_BYTES,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
+    this.thicknessTailInstanceBuffer = this.device.createBuffer({
+      label: "Predictive thickness tail instance storage",
       size: MAX_STAMPS_PER_BATCH * STAMP_STRIDE_BYTES,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
@@ -2673,6 +2781,36 @@ export class BrushEngine {
         },
       ],
     });
+    this.thicknessTailDisplayBindGroupLayout = this.device.createBindGroupLayout({
+      label: "Predictive thickness tail display bind group layout",
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float", viewDimension: "2d" },
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.FRAGMENT,
+          sampler: { type: "filtering" },
+        },
+        {
+          binding: 3,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float", viewDimension: "2d" },
+        },
+        {
+          binding: 4,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        },
+      ],
+    });
     const grainLayoutEntries: GPUBindGroupLayoutEntry[] = [
       ...brushLayoutEntries,
       {
@@ -2775,6 +2913,29 @@ export class BrushEngine {
         ],
       }),
     );
+    this.thicknessTailBrushBindGroup = this.device.createBindGroup({
+      label: "Predictive thickness tail brush legacy bind group",
+      layout: this.brushBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.thicknessTailBrushUniformBuffer } },
+        { binding: 1, resource: { buffer: this.thicknessTailInstanceBuffer } },
+        { binding: 2, resource: this.shapeMaskView },
+        { binding: 3, resource: this.shapeMaskSampler },
+      ],
+    });
+    this.thicknessTailBrushOccupancyBindGroups = this.shapeOccupancyUniformBuffers.map(
+      (buffer, mipLevel) => this.device.createBindGroup({
+        label: `Predictive thickness tail brush occupancy bind group mip ${mipLevel}`,
+        layout: this.brushOccupancyBindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: this.thicknessTailBrushUniformBuffer } },
+          { binding: 1, resource: { buffer: this.thicknessTailInstanceBuffer } },
+          { binding: 2, resource: this.shapeMaskView },
+          { binding: 3, resource: this.shapeMaskSampler },
+          { binding: 4, resource: { buffer } },
+        ],
+      }),
+    );
     const grainFilteringModes: GrainFiltering[] = ["no", "classic", "improved"];
     const grainCoordinateModes = ["fixed", "moving"] as const;
     this.grainBrushBindGroups = Object.fromEntries(
@@ -2824,6 +2985,56 @@ export class BrushEngine {
         ) as Record<GrainFiltering, GPUBindGroup[]>,
       ]),
     ) as Record<"fixed" | "moving", Record<GrainFiltering, GPUBindGroup[]>>;
+    this.thicknessTailGrainBrushBindGroups = Object.fromEntries(
+      grainCoordinateModes.map((mode) => [
+        mode,
+        Object.fromEntries(
+          grainFilteringModes.map((filtering) => [
+            filtering,
+            this.device.createBindGroup({
+              label: `Predictive thickness tail ${mode} grain bind group ${filtering}`,
+              layout: this.grainBrushBindGroupLayout,
+              entries: [
+                { binding: 0, resource: { buffer: this.thicknessTailBrushUniformBuffer } },
+                { binding: 1, resource: { buffer: this.thicknessTailInstanceBuffer } },
+                { binding: 2, resource: this.shapeMaskView },
+                { binding: 3, resource: this.shapeMaskSampler },
+                { binding: 5, resource: this.grainTextureView },
+                { binding: 6, resource: this.grainSamplers[mode][filtering] },
+                { binding: 7, resource: { buffer: this.grainUniformBuffer } },
+              ],
+            }),
+          ]),
+        ) as Record<GrainFiltering, GPUBindGroup>,
+      ]),
+    ) as Record<"fixed" | "moving", Record<GrainFiltering, GPUBindGroup>>;
+    this.thicknessTailGrainBrushOccupancyBindGroups = Object.fromEntries(
+      grainCoordinateModes.map((mode) => [
+        mode,
+        Object.fromEntries(
+          grainFilteringModes.map((filtering) => [
+            filtering,
+            this.shapeOccupancyUniformBuffers.map((buffer, mipLevel) =>
+              this.device.createBindGroup({
+                label:
+                  `Predictive thickness tail ${mode} grain occupancy ${filtering} mip ${mipLevel}`,
+                layout: this.grainBrushOccupancyBindGroupLayout,
+                entries: [
+                  { binding: 0, resource: { buffer: this.thicknessTailBrushUniformBuffer } },
+                  { binding: 1, resource: { buffer: this.thicknessTailInstanceBuffer } },
+                  { binding: 2, resource: this.shapeMaskView },
+                  { binding: 3, resource: this.shapeMaskSampler },
+                  { binding: 4, resource: { buffer } },
+                  { binding: 5, resource: this.grainTextureView },
+                  { binding: 6, resource: this.grainSamplers[mode][filtering] },
+                  { binding: 7, resource: { buffer: this.grainUniformBuffer } },
+                ],
+              }),
+            ),
+          ]),
+        ) as Record<GrainFiltering, GPUBindGroup[]>,
+      ]),
+    ) as Record<"fixed" | "moving", Record<GrainFiltering, GPUBindGroup[]>>;
 
     this.brushShaderModule = this.device.createShaderModule({ label: "Brush WGSL", code: brushShader });
     this.texturizedGrainShaderModule = this.device.createShaderModule({
@@ -2831,6 +3042,10 @@ export class BrushEngine {
       code: texturizedGrainShader,
     });
     this.displayShaderModule = this.device.createShaderModule({ label: "Display WGSL", code: displayShader });
+    this.thicknessTailDisplayShaderModule = this.device.createShaderModule({
+      label: "Predictive thickness tail display WGSL",
+      code: thicknessTailDisplayShader,
+    });
     this.lightGlazeDisplayShaderModule = this.device.createShaderModule({
       label: "Light Glaze live display WGSL",
       code: lightGlazeDisplayShader,
@@ -2851,6 +3066,10 @@ export class BrushEngine {
       this.assertShaderCompiled(this.brushShaderModule, "brush"),
       this.assertShaderCompiled(this.texturizedGrainShaderModule, "Texturized grain fragment"),
       this.assertShaderCompiled(this.displayShaderModule, "display"),
+      this.assertShaderCompiled(
+        this.thicknessTailDisplayShaderModule,
+        "predictive thickness tail display",
+      ),
       this.assertShaderCompiled(this.lightGlazeDisplayShaderModule, "Light Glaze live display"),
       this.assertShaderCompiled(
         this.lightGlazeCompositeMipShaderModule,
@@ -2874,6 +3093,25 @@ export class BrushEngine {
       },
       fragment: {
         module: this.displayShaderModule,
+        entryPoint: "fragmentMain",
+        targets: [{ format: this.canvasFormat }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+
+    const thicknessTailDisplayPipelineLayout = this.device.createPipelineLayout({
+      label: "Predictive thickness tail display pipeline layout",
+      bindGroupLayouts: [this.thicknessTailDisplayBindGroupLayout],
+    });
+    this.thicknessTailDisplayPipeline = this.device.createRenderPipeline({
+      label: "Predictive thickness tail display pipeline",
+      layout: thicknessTailDisplayPipelineLayout,
+      vertex: {
+        module: this.thicknessTailDisplayShaderModule,
+        entryPoint: "vertexMain",
+      },
+      fragment: {
+        module: this.thicknessTailDisplayShaderModule,
         entryPoint: "fragmentMain",
         targets: [{ format: this.canvasFormat }],
       },
@@ -3798,6 +4036,7 @@ export class BrushEngine {
       }));
 
     this.destroyLightGlazeResources();
+    this.destroyThicknessTailOverlayResources();
     this.layerTexture = texture;
     this.layerView = view;
     this.layerSamplingView = samplingView;
@@ -3831,6 +4070,72 @@ export class BrushEngine {
     this.presentationCacheNeedsFullRebuild = true;
 
     oldTexture?.destroy();
+  }
+
+  private ensureThicknessTailOverlayResources(
+    minimumWidth: number,
+    minimumHeight: number,
+  ): void {
+    const roundedWidth = clamp(
+      Math.ceil(Math.max(1, minimumWidth) / THICKNESS_TAIL_TEXTURE_QUANTUM)
+        * THICKNESS_TAIL_TEXTURE_QUANTUM,
+      THICKNESS_TAIL_TEXTURE_QUANTUM,
+      THICKNESS_TAIL_MAXIMUM_TEXTURE_DIMENSION,
+    );
+    const roundedHeight = clamp(
+      Math.ceil(Math.max(1, minimumHeight) / THICKNESS_TAIL_TEXTURE_QUANTUM)
+        * THICKNESS_TAIL_TEXTURE_QUANTUM,
+      THICKNESS_TAIL_TEXTURE_QUANTUM,
+      THICKNESS_TAIL_MAXIMUM_TEXTURE_DIMENSION,
+    );
+    if (
+      this.thicknessTailTexture
+      && this.thicknessTailView
+      && this.thicknessTailDisplayBindGroup
+      && this.thicknessTailTextureWidth >= roundedWidth
+      && this.thicknessTailTextureHeight >= roundedHeight
+    ) {
+      return;
+    }
+
+    const width = Math.max(this.thicknessTailTextureWidth, roundedWidth);
+    const height = Math.max(this.thicknessTailTextureHeight, roundedHeight);
+    const texture = this.device.createTexture({
+      label: `Predictive thickness tail ${width}×${height} ${this.layerFormat}`,
+      size: { width, height, depthOrArrayLayers: 1 },
+      format: this.layerFormat,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    const view = texture.createView({ label: "Predictive thickness tail view" });
+    const displayBindGroup = this.device.createBindGroup({
+      label: "Predictive thickness tail display bind group",
+      layout: this.thicknessTailDisplayBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.displayUniformBuffer } },
+        { binding: 1, resource: this.layerSamplingView },
+        { binding: 2, resource: this.sampler },
+        { binding: 3, resource: view },
+        { binding: 4, resource: { buffer: this.thicknessTailDisplayUniformBuffer } },
+      ],
+    });
+
+    const oldTexture = this.thicknessTailTexture;
+    this.thicknessTailTexture = texture;
+    this.thicknessTailView = view;
+    this.thicknessTailDisplayBindGroup = displayBindGroup;
+    this.thicknessTailTextureWidth = width;
+    this.thicknessTailTextureHeight = height;
+    oldTexture?.destroy();
+  }
+
+  private destroyThicknessTailOverlayResources(): void {
+    this.thicknessTailTexture?.destroy();
+    this.thicknessTailTexture = null;
+    this.thicknessTailView = null;
+    this.thicknessTailDisplayBindGroup = null;
+    this.thicknessTailTextureWidth = 0;
+    this.thicknessTailTextureHeight = 0;
+    this.thicknessTailPresentedRect = null;
   }
 
   private ensureLightGlazeResources(): void {
@@ -4174,16 +4479,25 @@ export class BrushEngine {
     this.device.queue.writeBuffer(this.grainUniformBuffer, 0, floats);
   }
 
-  private writeBrushUniforms(settings: BrushSettings = this.settings): void {
-    const floats = new Float32Array(this.brushUniformUpload);
-    const unsigned = new Uint32Array(this.brushUniformUpload);
+  private populateBrushUniformUpload(
+    upload: ArrayBuffer,
+    settings: BrushSettings,
+    targetWidth: number,
+    targetHeight: number,
+    targetOriginX: number,
+    targetOriginY: number,
+  ): void {
+    const floats = new Float32Array(upload);
+    const unsigned = new Uint32Array(upload);
     floats.fill(0);
 
     const [hue, saturation, lightness] = hexToHsl(settings.color);
     const jitterMaster = settings.jitterMaster;
 
-    floats[0] = LAYER_SIZE;
-    floats[1] = LAYER_SIZE;
+    floats[0] = targetWidth;
+    floats[1] = targetHeight;
+    floats[2] = targetOriginX;
+    floats[3] = targetOriginY;
     floats[4] = hue;
     floats[5] = saturation;
     floats[6] = lightness;
@@ -4206,8 +4520,40 @@ export class BrushEngine {
     unsigned[21] = settings.jitterPerCopy ? 1 : 0;
     unsigned[22] = settings.blendMode === "additive" ? 1 : 0;
     unsigned[23] = 0;
+  }
 
+  private writeBrushUniforms(settings: BrushSettings = this.settings): void {
+    this.populateBrushUniformUpload(
+      this.brushUniformUpload,
+      settings,
+      LAYER_SIZE,
+      LAYER_SIZE,
+      0,
+      0,
+    );
     this.device.queue.writeBuffer(this.brushUniformBuffer, 0, this.brushUniformUpload);
+  }
+
+  private writeThicknessTailBrushUniforms(
+    settings: BrushSettings,
+    targetWidth: number,
+    targetHeight: number,
+    targetOriginX: number,
+    targetOriginY: number,
+  ): void {
+    this.populateBrushUniformUpload(
+      this.thicknessTailBrushUniformUpload,
+      settings,
+      targetWidth,
+      targetHeight,
+      targetOriginX,
+      targetOriginY,
+    );
+    this.device.queue.writeBuffer(
+      this.thicknessTailBrushUniformBuffer,
+      0,
+      this.thicknessTailBrushUniformUpload,
+    );
   }
 
   private desiredPaintDisplayMipLevel(): number {
@@ -4349,6 +4695,26 @@ export class BrushEngine {
     this.displayUniformUpload[7] = 96;
     this.displayUniformUpload[8] = selectedMipLevel;
     this.device.queue.writeBuffer(this.displayUniformBuffer, 0, this.displayUniformUpload);
+  }
+
+  private writeThicknessTailDisplayUniforms(
+    originX: number,
+    originY: number,
+    settings: BrushSettings,
+  ): void {
+    const floats = new Float32Array(this.thicknessTailDisplayUniformUpload);
+    const unsigned = new Uint32Array(this.thicknessTailDisplayUniformUpload);
+    floats.fill(0);
+    floats[0] = originX;
+    floats[1] = originY;
+    floats[2] = this.thicknessTailTextureWidth;
+    floats[3] = this.thicknessTailTextureHeight;
+    unsigned[4] = settings.blendMode === "additive" ? 1 : 0;
+    this.device.queue.writeBuffer(
+      this.thicknessTailDisplayUniformBuffer,
+      0,
+      this.thicknessTailDisplayUniformUpload,
+    );
   }
 
   private ensurePresentationCacheTexture(): void {
@@ -4568,7 +4934,10 @@ export class BrushEngine {
           stroke.heldThicknessStamps.length - stroke.heldThicknessHead,
         );
       }
-      this.queueHeldThicknessAdaptivePreview(stamp, generationSettings);
+      // The permanent layer still waits for the exact lift time, but the
+      // predictive WebGPU tail must be presented immediately.
+      this.displayDirty = true;
+      this.requestRender();
       return;
     }
 
@@ -4590,14 +4959,14 @@ export class BrushEngine {
         break;
       }
 
-      const finalThicknessFactor = atLift
-        ? endThicknessFactor(
+      candidate.stamp.radius = atLift
+        ? endThicknessRadius(
+          candidate.baseRadius,
           candidate.liveThicknessFactor,
           stroke.thicknessSettings.endThickness,
           millisecondsBeforeReference,
         )
-        : candidate.liveThicknessFactor;
-      candidate.stamp.radius = candidate.baseRadius * finalThicknessFactor;
+        : candidate.baseRadius * candidate.liveThicknessFactor;
       this.commitThicknessStamp(candidate.stamp, stroke);
       stroke.heldThicknessHead += 1;
       released += 1;
@@ -4617,6 +4986,167 @@ export class BrushEngine {
     } else if (stroke.heldThicknessHead >= 1024) {
       stroke.heldThicknessStamps = held.slice(stroke.heldThicknessHead);
       stroke.heldThicknessHead = 0;
+    }
+  }
+
+  private thicknessTailReferenceTimeMs(): number {
+    const stroke = this.activeStroke;
+    if (!stroke) {
+      return performance.now();
+    }
+    return Math.max(stroke.lastInput.timeMs, performance.now());
+  }
+
+  private thicknessTailPreviewEligible(): boolean {
+    const stroke = this.activeStroke;
+    if (
+      !stroke
+      || !stroke.thicknessTailHoldback
+      || stroke.lightGlazeSettings
+      || stroke.heldThicknessHead >= stroke.heldThicknessStamps.length
+    ) {
+      return false;
+    }
+    return this.settings.blendMode === "normal" || this.settings.blendMode === "additive";
+  }
+
+  private prepareThicknessTailFrame(): ThicknessTailFrame | null {
+    const stroke = this.activeStroke;
+    if (!stroke || !this.thicknessTailPreviewEligible()) {
+      return null;
+    }
+
+    const settings = this.settings;
+    const held = stroke.heldThicknessStamps;
+    const firstHeld = Math.max(
+      stroke.heldThicknessHead,
+      held.length - MAX_STAMPS_PER_BATCH,
+    );
+    const referenceTimeMs = this.thicknessTailReferenceTimeMs();
+    const stamps: Stamp[] = [];
+    for (let index = firstHeld; index < held.length; index += 1) {
+      const candidate = held[index];
+      const radius = endThicknessRadius(
+        candidate.baseRadius,
+        candidate.liveThicknessFactor,
+        stroke.thicknessSettings.endThickness,
+        Math.max(0, referenceTimeMs - candidate.timeMs),
+      );
+      if (!Number.isFinite(radius) || radius <= 0) {
+        continue;
+      }
+      stamps.push({ ...candidate.stamp, radius });
+    }
+    if (stamps.length === 0) {
+      return null;
+    }
+
+    const packed = this.packThicknessTailStamps(stamps, settings);
+    if (!packed.dirtyRect) {
+      return null;
+    }
+    this.ensureThicknessTailOverlayResources(
+      packed.dirtyRect.width,
+      packed.dirtyRect.height,
+    );
+    this.writeThicknessTailBrushUniforms(
+      settings,
+      this.thicknessTailTextureWidth,
+      this.thicknessTailTextureHeight,
+      packed.dirtyRect.x,
+      packed.dirtyRect.y,
+    );
+    this.writeThicknessTailDisplayUniforms(
+      packed.dirtyRect.x,
+      packed.dirtyRect.y,
+      settings,
+    );
+    this.device.queue.writeBuffer(
+      this.thicknessTailInstanceBuffer,
+      0,
+      this.thicknessTailInstanceUpload,
+      0,
+      stamps.length * STAMP_STRIDE_BYTES,
+    );
+
+    return {
+      settings,
+      stamps,
+      dirtyRect: packed.dirtyRect,
+      shapeOccupancySelection: settings.shape === "shape"
+        ? this.selectShapeOccupancy(packed.minimumRadius)
+        : null,
+      grainActive: this.isTexturizedGrainActive(settings),
+    };
+  }
+
+  private encodeThicknessTailFrame(
+    encoder: GPUCommandEncoder,
+    frame: ThicknessTailFrame,
+  ): void {
+    const settings = frame.settings;
+    const isShape = settings.shape === "shape";
+    const shapeOccupancyMip = frame.shapeOccupancySelection?.selectedMipLevel ?? null;
+    const useShapeOccupancy = isShape && shapeOccupancyMip !== null;
+    const pipeline = frame.grainActive
+      ? isShape
+        ? useShapeOccupancy
+          ? settings.blendMode === "additive"
+            ? this.grainShapeOccupancyAdditivePipeline
+            : this.grainShapeOccupancyNormalPipeline
+          : settings.blendMode === "additive"
+            ? this.grainShapeAdditivePipeline
+            : this.grainShapeNormalPipeline
+        : settings.blendMode === "additive"
+          ? this.grainAdditivePipeline
+          : this.grainNormalPipeline
+      : isShape
+        ? useShapeOccupancy
+          ? settings.blendMode === "additive"
+            ? this.shapeOccupancyAdditivePipeline
+            : this.shapeOccupancyNormalPipeline
+          : settings.blendMode === "additive"
+            ? this.shapeAdditivePipeline
+            : this.shapeNormalPipeline
+        : settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline;
+    const bindGroup = frame.grainActive
+      ? useShapeOccupancy
+        ? this.thicknessTailGrainBrushOccupancyBindGroups[
+          this.grainCoordinateMode(settings)
+        ][settings.grainFiltering][shapeOccupancyMip!]
+        : this.thicknessTailGrainBrushBindGroups[
+          this.grainCoordinateMode(settings)
+        ][settings.grainFiltering]
+      : useShapeOccupancy
+        ? this.thicknessTailBrushOccupancyBindGroups[shapeOccupancyMip!]
+        : this.thicknessTailBrushBindGroup;
+
+    const pass = encoder.beginRenderPass({
+      label: "Rebuild predictive thickness tail",
+      colorAttachments: [
+        {
+          view: this.thicknessTailView!,
+          loadOp: "clear",
+          storeOp: "store",
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        },
+      ],
+    });
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.setScissorRect(0, 0, frame.dirtyRect.width, frame.dirtyRect.height);
+    pass.draw(STAMP_VERTICES_PER_COPY, frame.stamps.length * settings.count, 0, 0);
+    pass.end();
+
+    const profile = this.activeStrokeProfile;
+    if (profile) {
+      profile.thicknessDynamicsPreviewFrames += 1;
+      profile.thicknessDynamicsPreviewBaseStamps += frame.stamps.length;
+      profile.thicknessDynamicsPreviewPhysicalCopies += frame.stamps.length * settings.count;
+      profile.thicknessDynamicsPreviewMaximumTexturePixels = Math.max(
+        profile.thicknessDynamicsPreviewMaximumTexturePixels,
+        this.thicknessTailTextureWidth * this.thicknessTailTextureHeight,
+      );
     }
   }
 
@@ -4677,6 +5207,10 @@ export class BrushEngine {
     this.resizeCanvas();
     const resizeCanvasMs = performance.now() - resizeStart;
 
+    if (this.activeStroke?.thicknessTailHoldback) {
+      this.releaseHeldThicknessStamps(this.thicknessTailReferenceTimeMs(), false);
+    }
+
     const batchExtractionStart = performance.now();
     let availableBatchSize = this.pendingStamps.length;
     const lightGlazeSession = this.lightGlazeSession;
@@ -4702,7 +5236,9 @@ export class BrushEngine {
     const shouldSubmit = this.clearRequested
       || batch.length > 0
       || this.displayDirty
-      || Boolean(lightGlazeSession?.commitRequested);
+      || Boolean(lightGlazeSession?.commitRequested)
+      || this.thicknessTailPreviewEligible()
+      || this.thicknessTailPresentedRect !== null;
 
     if (!shouldSubmit || this.canvas.width <= 0 || this.canvas.height <= 0) {
       return;
@@ -4737,6 +5273,8 @@ export class BrushEngine {
       || this.displayDirty
       || this.clearRequested
       || Boolean(this.lightGlazeSession?.commitRequested)
+      || this.thicknessTailPreviewEligible()
+      || this.thicknessTailPresentedRect !== null
     ) {
       this.requestRender();
     }
@@ -5229,60 +5767,11 @@ export class BrushEngine {
     return nearest?.sprite ?? null;
   }
 
-  private thicknessHoldbackPreviewActive(): boolean {
-    return this.activeStroke?.thicknessTailHoldback === true;
-  }
-
-  private adaptivePreviewCandidateLimit(): number {
-    return this.thicknessHoldbackPreviewActive()
-      ? THICKNESS_DYNAMICS_PREVIEW_SOURCE_BASE_STAMPS
-      : ADAPTIVE_PREVIEW_MAX_TIP_BASE_STAMPS;
-  }
-
   private adaptivePreviewCandidatesForFrame(): AdaptivePreviewCandidate[] {
-    const candidates = this.adaptivePreviewCandidates
+    return this.adaptivePreviewCandidates
       .filter((candidate) => candidate.serial === null
         || candidate.serial > this.adaptivePreviewConfirmedSerial)
-      .slice(-this.adaptivePreviewCandidateLimit());
-    if (!this.thicknessHoldbackPreviewActive()) {
-      return candidates.slice(-ADAPTIVE_PREVIEW_MAX_TIP_BASE_STAMPS);
-    }
-    return selectEvenlySpacedItems(
-      candidates,
-      THICKNESS_DYNAMICS_PREVIEW_DRAW_BASE_STAMPS,
-    );
-  }
-
-  private queueHeldThicknessAdaptivePreview(
-    stamp: Stamp,
-    settings: BrushSettings,
-  ): void {
-    if (
-      !this.adaptivePreviewContext
-      || settings.blendMode !== "normal"
-      || this.isTexturizedGrainActive(settings)
-    ) {
-      return;
-    }
-
-    if (!this.adaptivePreviewCandidates.some((candidate) => candidate.stamp === stamp)) {
-      this.adaptivePreviewCandidates.push({
-        serial: null,
-        stamp,
-        settings,
-        presented: false,
-      });
-    }
-    this.adaptivePreviewCandidates = this.adaptivePreviewCandidates
-      .filter((candidate) => candidate.serial === null
-        || candidate.serial > this.adaptivePreviewConfirmedSerial)
-      .slice(-this.adaptivePreviewCandidateLimit());
-
-    if (!this.adaptivePreviewActive) {
-      this.activateAdaptivePreview("thickness-tail-holdback");
-    } else {
-      this.requestAdaptivePreviewDraw();
-    }
+      .slice(-ADAPTIVE_PREVIEW_MAX_TIP_BASE_STAMPS);
   }
 
   private finishAdaptivePreviewLifetime(timestamp = performance.now()): void {
@@ -5599,7 +6088,7 @@ export class BrushEngine {
     if (stroke) {
       const pendingTip: Stamp[] = [];
       let pendingCandidatesAdded = 0;
-      const candidateLimit = this.adaptivePreviewCandidateLimit();
+      const candidateLimit = ADAPTIVE_PREVIEW_MAX_TIP_BASE_STAMPS;
       for (
         let index = this.pendingStamps.length - 1;
         index >= 0 && pendingTip.length < candidateLimit;
@@ -5950,7 +6439,7 @@ export class BrushEngine {
       return;
     }
 
-    const candidateLimit = this.adaptivePreviewCandidateLimit();
+    const candidateLimit = ADAPTIVE_PREVIEW_MAX_TIP_BASE_STAMPS;
     const firstCandidate = Math.max(0, batch.length - candidateLimit);
     for (let index = firstCandidate; index < batch.length; index += 1) {
       if (!this.adaptivePreviewCandidates.some((candidate) => candidate.stamp === batch[index])) {
@@ -6332,6 +6821,10 @@ export class BrushEngine {
     present: boolean,
     replayBatch: HistoryRenderBatch | null,
   ): SubmitTiming {
+    if (this.thicknessTailPresentedRect) {
+      this.thicknessTailPresentedRect = null;
+      this.presentationCacheNeedsFullRebuild = true;
+    }
     const session = this.lightGlazeSession;
     if (!session || !isStrokeGlazeBlendMode(session.settings.blendMode)) {
       throw new Error("Sessione Light Glaze mancante durante il rendering.");
@@ -6813,6 +7306,10 @@ export class BrushEngine {
     if (present) {
       this.ensurePresentationCacheTexture();
     }
+    const thicknessTailFrame = present ? this.prepareThicknessTailFrame() : null;
+    if (thicknessTailFrame?.grainActive && !grainActive) {
+      this.writeGrainUniforms(thicknessTailFrame.settings);
+    }
     const encoder = this.device.createCommandEncoder({ label: "Brush frame encoder" });
     let stampPackingMs = 0;
     let instanceUploadMs = 0;
@@ -6950,6 +7447,12 @@ export class BrushEngine {
       brushEncodingMs = performance.now() - brushEncodingStart;
     }
 
+    if (thicknessTailFrame) {
+      const thicknessTailEncodingStart = performance.now();
+      this.encodeThicknessTailFrame(encoder, thicknessTailFrame);
+      brushEncodingMs += performance.now() - thicknessTailEncodingStart;
+    }
+
     if (!present && (clearLayer || stamps.length > 0)) {
       // Una ricostruzione Undo/Redo omette i display intermedi. La cache non
       // deve quindi essere riutilizzata finché l'ultimo batch non la ricrea.
@@ -6991,10 +7494,20 @@ export class BrushEngine {
       presentationCopiedPixels = canvasPixels;
 
       const requiresFullRebuild = this.presentationCacheNeedsFullRebuild || clearLayer;
+      const presentationLayerDirtyRect = this.mergeDirtyRects(
+        submittedDirtyRect,
+        this.mergeDirtyRects(
+          this.thicknessTailPresentedRect,
+          thicknessTailFrame?.dirtyRect ?? null,
+        ),
+      );
       const presentationDirtyRect = requiresFullRebuild
         ? { x: 0, y: 0, width: this.canvas.width, height: this.canvas.height }
-        : submittedDirtyRect
-          ? this.layerDirtyRectToPresentationRect(submittedDirtyRect, displaySelectedMipLevel)
+        : presentationLayerDirtyRect
+          ? this.layerDirtyRectToPresentationRect(
+            presentationLayerDirtyRect,
+            displaySelectedMipLevel,
+          )
           : null;
 
       if (presentationDirtyRect) {
@@ -7012,8 +7525,13 @@ export class BrushEngine {
             },
           ],
         });
-        displayPass.setPipeline(this.displayPipeline);
-        displayPass.setBindGroup(0, this.displayBindGroup);
+        displayPass.setPipeline(
+          thicknessTailFrame ? this.thicknessTailDisplayPipeline : this.displayPipeline,
+        );
+        displayPass.setBindGroup(
+          0,
+          thicknessTailFrame ? this.thicknessTailDisplayBindGroup! : this.displayBindGroup,
+        );
         if (!requiresFullRebuild) {
           displayPass.setScissorRect(
             presentationDirtyRect.x,
@@ -7032,7 +7550,7 @@ export class BrushEngine {
         } else {
           presentationCachePartialUpdates = 1;
         }
-      } else if (submittedDirtyRect) {
+      } else if (presentationLayerDirtyRect) {
         presentationCacheOffscreenSkips = 1;
       }
 
@@ -7054,6 +7572,11 @@ export class BrushEngine {
     commandSubmitMs = performance.now() - submitStart;
     if (present && presentationCacheWasUpdated) {
       this.presentationCacheNeedsFullRebuild = false;
+    }
+    if (present) {
+      this.thicknessTailPresentedRect = thicknessTailFrame
+        ? { ...thicknessTailFrame.dirtyRect }
+        : null;
     }
     return {
       totalCpuMs: performance.now() - cpuStart,
@@ -7092,7 +7615,12 @@ export class BrushEngine {
     };
   }
 
-  private packStamps(stamps: readonly Stamp[], settings: BrushSettings): DirtyRect | null {
+  private packStampsIntoUpload(
+    stamps: readonly Stamp[],
+    settings: BrushSettings,
+    uploadF32: Float32Array,
+    uploadU32: Uint32Array,
+  ): PackedStampUpload {
     let minimumX = LAYER_SIZE;
     let minimumY = LAYER_SIZE;
     let maximumX = 0;
@@ -7108,21 +7636,21 @@ export class BrushEngine {
     for (let index = 0; index < stamps.length; index += 1) {
       const stamp = stamps[index];
       const base = index * (STAMP_STRIDE_BYTES / 4);
-      this.instanceUploadF32[base] = stamp.x;
-      this.instanceUploadF32[base + 1] = stamp.y;
-      this.instanceUploadF32[base + 2] = stamp.radius;
-      this.instanceUploadF32[base + 3] = stamp.pressure;
-      this.instanceUploadU32[base + 4] = stamp.seed;
-      this.instanceUploadU32[base + 5] = 0;
-      this.instanceUploadF32[base + 6] = stamp.directionX;
-      this.instanceUploadF32[base + 7] = stamp.directionY;
+      uploadF32[base] = stamp.x;
+      uploadF32[base + 1] = stamp.y;
+      uploadF32[base + 2] = stamp.radius;
+      uploadF32[base + 3] = stamp.pressure;
+      uploadU32[base + 4] = stamp.seed;
+      uploadU32[base + 5] = 0;
+      uploadF32[base + 6] = stamp.directionX;
+      uploadF32[base + 7] = stamp.directionY;
 
-      const packedX = this.instanceUploadF32[base];
-      const packedY = this.instanceUploadF32[base + 1];
-      const packedRadius = this.instanceUploadF32[base + 2];
+      const packedX = uploadF32[base];
+      const packedY = uploadF32[base + 1];
+      const packedRadius = uploadF32[base + 2];
       minimumRadius = Math.min(minimumRadius, packedRadius);
-      const packedDirectionX = this.instanceUploadF32[base + 6];
-      const packedDirectionY = this.instanceUploadF32[base + 7];
+      const packedDirectionX = uploadF32[base + 6];
+      const packedDirectionY = uploadF32[base + 7];
       const directionLength = Math.hypot(packedDirectionX, packedDirectionY);
       const linearReach = packedRadius * 2 * settings.positionJitterLinear;
       const lateralReach = packedRadius * 2 * settings.positionJitterLateral;
@@ -7160,8 +7688,33 @@ export class BrushEngine {
     const width = Math.max(0, right - x);
     const height = Math.max(0, bottom - y);
 
-    this.packedMinimumRadius = minimumRadius;
-    return width > 0 && height > 0 ? { x, y, width, height } : null;
+    return {
+      dirtyRect: width > 0 && height > 0 ? { x, y, width, height } : null,
+      minimumRadius,
+    };
+  }
+
+  private packStamps(stamps: readonly Stamp[], settings: BrushSettings): DirtyRect | null {
+    const packed = this.packStampsIntoUpload(
+      stamps,
+      settings,
+      this.instanceUploadF32,
+      this.instanceUploadU32,
+    );
+    this.packedMinimumRadius = packed.minimumRadius;
+    return packed.dirtyRect;
+  }
+
+  private packThicknessTailStamps(
+    stamps: readonly Stamp[],
+    settings: BrushSettings,
+  ): PackedStampUpload {
+    return this.packStampsIntoUpload(
+      stamps,
+      settings,
+      this.thicknessTailInstanceUploadF32,
+      this.thicknessTailInstanceUploadU32,
+    );
   }
 
   private generateBenchmarkStamps(count: number, settings: BrushSettings): Stamp[] {

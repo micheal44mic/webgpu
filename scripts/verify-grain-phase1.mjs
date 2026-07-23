@@ -167,7 +167,7 @@ const grainShader = shaders.slice(legacyEnd, grainMipStart);
 const grainUniformLayout = wgslStructLayout(grainShader, "GrainUniforms");
 assert(!legacyShader.includes("grainTexture") && !legacyShader.includes("GrainUniforms"),
   "Il modulo brush Grain Off contiene binding Grain.");
-assert(grainShader.includes("input.position.xy * grain.inversePeriod"),
+assert(grainShader.includes("(input.position.xy + brush.renderTargetOrigin) * grain.inversePeriod"),
   "Fixed M1 non è ancorato alle coordinate autorevoli del layer.");
 assert(grainShader.includes("input.localPosition * 0.5 + vec2<f32>(0.5)"),
   "Moving M1 non usa le coordinate locali dello stamp.");
@@ -238,7 +238,7 @@ assert(html.includes('value="normal">Normal accumulativo — 4×')
   && html.includes('value="off">Off — senza texture')
   && html.includes('value="texturized">Texturized — Fixed M1 (fisso)'),
   "La matrice iPhone Normal 4× / M1 1× con Grain Off/Fixed non è esposta correttamente.");
-assert(main.includes("performanceTelemetryRevision: 26"),
+assert(main.includes("performanceTelemetryRevision: 27"),
   "Revisione telemetria attesa assente.");
 
 console.log(JSON.stringify({
