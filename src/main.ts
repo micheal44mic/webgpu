@@ -8,6 +8,7 @@ import {
   type LayerFormat,
   type PointerSample,
   type FragmentCoverageStrategy,
+  type GrainMode,
   type ShapeMaskDecodeStrategy,
   type ShapeOccupancyFallbackReason,
   type ShapeSamplingStrategy,
@@ -43,6 +44,7 @@ const playHumanStrokeButton = element<HTMLButtonElement>("playHumanStroke");
 const humanStrokeResult = element<HTMLParagraphElement>("humanStrokeResult");
 const humanStrokeTestVariantSelect = element<HTMLSelectElement>("humanStrokeTestVariant");
 const humanStrokeTestBlendModeSelect = element<HTMLSelectElement>("humanStrokeTestBlendMode");
+const humanStrokeTestGrainModeSelect = element<HTMLSelectElement>("humanStrokeTestGrainMode");
 const layerFormatSelect = element<HTMLSelectElement>("layerFormat");
 const clearLayerButton = element<HTMLButtonElement>("clearLayer");
 const undoStrokeButton = element<HTMLButtonElement>("undoStroke");
@@ -54,6 +56,7 @@ const benchmarkStampsInput = element<HTMLInputElement>("benchmarkStamps");
 
 type HumanStrokeTestVariant = "base" | "fur";
 type HumanStrokeTestBlendMode = "normal" | "light-glaze";
+type HumanStrokeTestGrainMode = GrainMode;
 
 interface HumanStrokePoint extends LayerPoint {
   timeMs: number;
@@ -92,6 +95,7 @@ interface BenchmarkRun {
     inputGapsOver33Ms: number;
     testVariant: HumanStrokeTestVariant;
     testBlendMode: HumanStrokeTestBlendMode;
+    testGrainMode: HumanStrokeTestGrainMode;
     settings: BrushSettings;
   };
   playback: {
@@ -156,6 +160,22 @@ interface BenchmarkRun {
     paintDisplaySelectedMipLevel: number;
     paintDisplayPyramidAdditionalMemoryMiB: number;
     brushOpacityStrategy: StrokePerformanceProfile["brushOpacityStrategy"];
+    grainStrategy: StrokePerformanceProfile["grainStrategy"];
+    grainCoordinateStrategy: StrokePerformanceProfile["grainCoordinateStrategy"];
+    grainSamplingStrategy: StrokePerformanceProfile["grainSamplingStrategy"];
+    grainMipStrategy: StrokePerformanceProfile["grainMipStrategy"];
+    grainTextureFormat: StrokePerformanceProfile["grainTextureFormat"];
+    grainTextureWidth: number;
+    grainTextureHeight: number;
+    grainTextureMipLevelCount: number;
+    grainTextureMemoryMiB: number;
+    grainTextureIdentity: number;
+    grainPipelineStrategy: StrokePerformanceProfile["grainPipelineStrategy"];
+    grainCoverageStrategy: StrokePerformanceProfile["grainCoverageStrategy"];
+    grainAdaptivePreviewStrategy: StrokePerformanceProfile["grainAdaptivePreviewStrategy"];
+    grainStartupDecodeMs: number;
+    grainStartupMipBuildMs: number;
+    grainStartupUploadMs: number;
     lightGlazeStrategy: StrokePerformanceProfile["lightGlazeStrategy"];
     lightGlazeAdaptivePreviewStrategy:
       StrokePerformanceProfile["lightGlazeAdaptivePreviewStrategy"];
@@ -190,7 +210,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 21;
+    performanceTelemetryRevision: 22;
   };
 }
 
@@ -247,6 +267,15 @@ function readBrushSettings(): BrushSettings {
   return {
     shape: element<HTMLSelectElement>("brushShape").value as BrushSettings["shape"],
     shapeScatter: rangeValue("shapeScatter") / 100,
+    grainMode: element<HTMLSelectElement>("grainMode").value as BrushSettings["grainMode"],
+    grainScale: rangeValue("grainScale") / 100,
+    grainDepth: rangeValue("grainDepth") / 100,
+    grainBrightness: rangeValue("grainBrightness") / 100,
+    grainContrast: rangeValue("grainContrast") / 100,
+    grainFiltering:
+      element<HTMLSelectElement>("grainFiltering").value as BrushSettings["grainFiltering"],
+    grainBlendMode:
+      element<HTMLSelectElement>("grainBlendMode").value as BrushSettings["grainBlendMode"],
     color: element<HTMLInputElement>("brushColor").value,
     size: rangeValue("brushSize"),
     spacingPercent: rangeValue("spacing"),
@@ -271,6 +300,14 @@ function readBrushSettings(): BrushSettings {
 
 function updateControlOutputs(): void {
   element<HTMLOutputElement>("shapeScatterOut").value = `${rangeValue("shapeScatter").toFixed(0)}%`;
+  element<HTMLOutputElement>("grainScaleOut").value = `${rangeValue("grainScale").toFixed(0)}%`;
+  element<HTMLOutputElement>("grainDepthOut").value = `${rangeValue("grainDepth").toFixed(0)}%`;
+  const grainBrightness = rangeValue("grainBrightness");
+  element<HTMLOutputElement>("grainBrightnessOut").value =
+    `${grainBrightness > 0 ? "+" : ""}${grainBrightness.toFixed(0)}%`;
+  const grainContrast = rangeValue("grainContrast");
+  element<HTMLOutputElement>("grainContrastOut").value =
+    `${grainContrast > 0 ? "+" : ""}${grainContrast.toFixed(0)}%`;
   element<HTMLOutputElement>("brushSizeOut").value = `${rangeValue("brushSize").toFixed(0)} px`;
   element<HTMLOutputElement>("spacingOut").value = `${rangeValue("spacing").toFixed(2)}%`;
   element<HTMLOutputElement>("countOut").value = rangeValue("count").toFixed(0);
@@ -292,6 +329,7 @@ function updateControlOutputs(): void {
 
 function applyBrushControls(): void {
   updateControlOutputs();
+  updateGrainControlAvailability();
   engine.setBrushSettings(readBrushSettings());
 }
 
@@ -382,7 +420,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 21,
+    performanceTelemetryRevision: 22,
     ...engineEnvironment,
   };
 }
@@ -417,6 +455,23 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
     || benchmark.settings.blendMode === "light-glaze"
     ? benchmark.settings.blendMode
     : "normal";
+  const grainMode = benchmark.settings.grainMode === "texturized" ? "texturized" : "off";
+  const grainScale = Number.isFinite(benchmark.settings.grainScale)
+    ? Math.min(4, Math.max(0.1, benchmark.settings.grainScale))
+    : 1;
+  const grainDepth = Number.isFinite(benchmark.settings.grainDepth)
+    ? Math.min(1, Math.max(0, benchmark.settings.grainDepth))
+    : 1;
+  const grainBrightness = Number.isFinite(benchmark.settings.grainBrightness)
+    ? Math.min(1, Math.max(-1, benchmark.settings.grainBrightness))
+    : 0;
+  const grainContrast = Number.isFinite(benchmark.settings.grainContrast)
+    ? Math.min(1, Math.max(-1, benchmark.settings.grainContrast))
+    : 0;
+  const grainFiltering = benchmark.settings.grainFiltering === "no"
+    || benchmark.settings.grainFiltering === "classic"
+    ? benchmark.settings.grainFiltering
+    : "improved";
   return {
     ...benchmark,
     settings: {
@@ -425,6 +480,13 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
       shapeScatter: Number.isFinite(benchmark.settings.shapeScatter)
         ? Math.min(1, Math.max(0, benchmark.settings.shapeScatter))
         : 0,
+      grainMode,
+      grainScale,
+      grainDepth,
+      grainBrightness,
+      grainContrast,
+      grainFiltering,
+      grainBlendMode: "multiply",
       opacity,
       blendMode,
     },
@@ -520,6 +582,18 @@ function setControlValue(id: string, value: string | number): void {
 function applySettingsToControls(settings: BrushSettings): void {
   setControlValue("brushShape", settings.shape === "shape" ? "shape" : "circle");
   setControlValue("shapeScatter", (settings.shapeScatter ?? 0) * 100);
+  setControlValue("grainMode", settings.grainMode === "texturized" ? "texturized" : "off");
+  setControlValue("grainScale", (settings.grainScale ?? 1) * 100);
+  setControlValue("grainDepth", (settings.grainDepth ?? 1) * 100);
+  setControlValue("grainBrightness", (settings.grainBrightness ?? 0) * 100);
+  setControlValue("grainContrast", (settings.grainContrast ?? 0) * 100);
+  setControlValue(
+    "grainFiltering",
+    settings.grainFiltering === "no" || settings.grainFiltering === "classic"
+      ? settings.grainFiltering
+      : "improved",
+  );
+  setControlValue("grainBlendMode", "multiply");
   setControlValue("brushColor", settings.color);
   setControlValue("brushSize", settings.size);
   setControlValue("spacing", settings.spacingPercent);
@@ -545,6 +619,13 @@ function applySettingsToControls(settings: BrushSettings): void {
 function applyHumanStrokePreset(): BrushSettings {
   setControlValue("brushShape", "circle");
   setControlValue("shapeScatter", 0);
+  setControlValue("grainMode", "off");
+  setControlValue("grainScale", 100);
+  setControlValue("grainDepth", 100);
+  setControlValue("grainBrightness", 0);
+  setControlValue("grainContrast", 0);
+  setControlValue("grainFiltering", "improved");
+  setControlValue("grainBlendMode", "multiply");
   setControlValue("brushSize", 750);
   setControlValue("spacing", 1);
   setControlValue("count", 16);
@@ -573,15 +654,27 @@ function selectedHumanStrokeTestBlendMode(): HumanStrokeTestBlendMode {
   return humanStrokeTestBlendModeSelect.value === "light-glaze" ? "light-glaze" : "normal";
 }
 
+function selectedHumanStrokeTestGrainMode(): HumanStrokeTestGrainMode {
+  return humanStrokeTestGrainModeSelect.value === "texturized" ? "texturized" : "off";
+}
+
 function humanStrokeTestSettings(
   benchmark: HumanStrokeBenchmark,
   variant: HumanStrokeTestVariant,
   blendMode: HumanStrokeTestBlendMode,
+  grainMode: HumanStrokeTestGrainMode,
 ): BrushSettings {
   const baseSettings: BrushSettings = {
     ...benchmark.settings,
     opacity: 1,
     blendMode,
+    grainMode,
+    grainScale: 1,
+    grainDepth: 1,
+    grainBrightness: 0,
+    grainContrast: 0,
+    grainFiltering: "improved",
+    grainBlendMode: "multiply",
     shape: "circle",
     shapeScatter: 0,
     positionJitterLateral: 1,
@@ -604,10 +697,12 @@ function humanStrokeTestSettings(
 function humanStrokeTestLabel(
   variant: HumanStrokeTestVariant,
   blendMode: HumanStrokeTestBlendMode,
+  grainMode: HumanStrokeTestGrainMode,
 ): string {
   const variantLabel = variant === "fur" ? "Fur" : "Base";
   const blendLabel = blendMode === "light-glaze" ? "Light Glaze" : "Normal premultiplied";
-  return `${variantLabel} · ${blendLabel}`;
+  const grainLabel = grainMode === "texturized" ? "Grain Texturized" : "Grain Off";
+  return `${variantLabel} · ${blendLabel} · ${grainLabel}`;
 }
 
 function updateHumanStrokeControls(): void {
@@ -638,6 +733,12 @@ function updateHumanStrokeControls(): void {
     || humanStrokeRecordingArmed
     || Boolean(humanStrokeRecording);
   humanStrokeTestBlendModeSelect.disabled = operationLocked
+    || humanStrokeLoading
+    || humanStrokeSaving
+    || humanStrokeReplaying
+    || humanStrokeRecordingArmed
+    || Boolean(humanStrokeRecording);
+  humanStrokeTestGrainModeSelect.disabled = operationLocked
     || humanStrokeLoading
     || humanStrokeSaving
     || humanStrokeReplaying
@@ -674,6 +775,7 @@ function updateHistoryControls(): void {
   for (const id of brushControlIds) {
     element<HTMLInputElement | HTMLSelectElement>(id).disabled = locked;
   }
+  updateGrainControlAvailability(locked);
 }
 
 async function runHistoryOperation(operation: "undo" | "redo"): Promise<void> {
@@ -735,9 +837,28 @@ function describeHumanStrokeBenchmark(benchmark: HumanStrokeBenchmark): string {
   ].join(" · ");
 }
 
+const grainParameterControlIds = [
+  "grainScale",
+  "grainDepth",
+  "grainBrightness",
+  "grainContrast",
+  "grainFiltering",
+  "grainBlendMode",
+] as const;
+
+function updateGrainControlAvailability(locked = interactionLocked()): void {
+  const active = element<HTMLSelectElement>("grainMode").value === "texturized";
+  element<HTMLElement>("grainParameters").hidden = !active;
+  for (const id of grainParameterControlIds) {
+    element<HTMLInputElement | HTMLSelectElement>(id).disabled = locked || !active;
+  }
+}
+
 const brushControlIds = [
   "brushShape",
   "shapeScatter",
+  "grainMode",
+  ...grainParameterControlIds,
   "brushColor",
   "brushSize",
   "spacing",
@@ -956,8 +1077,14 @@ async function replayHumanStroke(): Promise<void> {
 
   const testVariant = selectedHumanStrokeTestVariant();
   const testBlendMode = selectedHumanStrokeTestBlendMode();
-  const replaySettings = humanStrokeTestSettings(benchmark, testVariant, testBlendMode);
-  const testLabel = humanStrokeTestLabel(testVariant, testBlendMode);
+  const testGrainMode = selectedHumanStrokeTestGrainMode();
+  const replaySettings = humanStrokeTestSettings(
+    benchmark,
+    testVariant,
+    testBlendMode,
+    testGrainMode,
+  );
+  const testLabel = humanStrokeTestLabel(testVariant, testBlendMode, testGrainMode);
 
   setControlsPanelOpen(false);
   humanStrokeReplaying = true;
@@ -1057,6 +1184,7 @@ async function replayHumanStroke(): Promise<void> {
         ...summarizeHumanStrokeMotion(benchmark.points),
         testVariant,
         testBlendMode,
+        testGrainMode,
         settings: replaySettings,
       },
       playback,

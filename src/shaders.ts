@@ -307,6 +307,199 @@ fn shapeOccupancyFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 `;
 
+// Grain remains an opt-in fragment path. The legacy brushShader above is not
+// modified or given an inactive branch: Grain Off therefore keeps compiling
+// and executing the exact previous shader entry points and bindings.
+export const texturizedGrainShader = /* wgsl */ `
+const SHAPE_OCCUPANCY_GRID_SIZE: u32 = 256u;
+const GRAIN_MIP_LEVEL_COUNT: u32 = 12u;
+
+struct BrushUniforms {
+  layerSize: vec2<f32>,
+  _pad0: vec2<f32>,
+  baseHslAlpha: vec4<f32>,
+  jitter: vec4<f32>,
+  controls: vec4<f32>,
+  positionJitter: vec4<f32>,
+  options: vec4<u32>,
+};
+
+struct GrainUniforms {
+  inversePeriod: f32,
+  depth: f32,
+  brightness: f32,
+  contrastFactor: f32,
+  filteringMode: u32,
+  _pad0: u32,
+  _pad1: u32,
+  _pad2: u32,
+};
+
+struct FragmentInput {
+  @builtin(position) position: vec4<f32>,
+  @location(0) localPosition: vec2<f32>,
+  @location(1) @interpolate(flat) pressure: f32,
+  @location(2) @interpolate(flat) pointColor: vec3<f32>,
+};
+
+struct ShapeOccupancy {
+  words: array<vec4<u32>, 512>,
+};
+
+@group(0) @binding(0) var<uniform> brush: BrushUniforms;
+@group(0) @binding(2) var shapeMaskTexture: texture_2d<f32>;
+@group(0) @binding(3) var shapeMaskSampler: sampler;
+@group(0) @binding(4) var<uniform> shapeOccupancy: ShapeOccupancy;
+@group(0) @binding(5) var grainTexture: texture_2d<f32>;
+@group(0) @binding(6) var grainSampler: sampler;
+@group(0) @binding(7) var<uniform> grain: GrainUniforms;
+
+fn adjustedGrainCoverage(
+  grainUv: vec2<f32>,
+  grainUvDx: vec2<f32>,
+  grainUvDy: vec2<f32>
+) -> f32 {
+  var source: f32;
+  if (grain.filteringMode == 0u) {
+    let baseDimensions = vec2<f32>(textureDimensions(grainTexture, 0));
+    let footprint = max(
+      length(grainUvDx * baseDimensions),
+      length(grainUvDy * baseDimensions)
+    );
+    let mipLevel = u32(clamp(
+      round(log2(max(footprint, 1.0))),
+      0.0,
+      f32(GRAIN_MIP_LEVEL_COUNT - 1u)
+    ));
+    // The No sampler uses nearest min/mag. Its mip filter is declared linear
+    // only so it remains compatible with the shared filtering binding; an
+    // exact integer LOD makes the effective mip choice nearest as well.
+    source = textureSampleLevel(
+      grainTexture,
+      grainSampler,
+      grainUv,
+      f32(mipLevel)
+    ).r;
+  } else {
+    source = textureSampleGrad(
+      grainTexture,
+      grainSampler,
+      grainUv,
+      grainUvDx,
+      grainUvDy
+    ).r;
+  }
+  let adjusted = clamp(
+    (source - 0.5) * grain.contrastFactor + 0.5 + grain.brightness,
+    0.0,
+    1.0
+  );
+  return mix(1.0, adjusted, clamp(grain.depth, 0.0, 1.0));
+}
+
+fn shapeOccupancyMayContribute(uv: vec2<f32>) -> bool {
+  let clampedUv = clamp(uv, vec2<f32>(0.0), vec2<f32>(0.99999994));
+  let cell = min(
+    vec2<u32>(clampedUv * f32(SHAPE_OCCUPANCY_GRID_SIZE)),
+    vec2<u32>(SHAPE_OCCUPANCY_GRID_SIZE - 1u)
+  );
+  let cellIndex = cell.y * SHAPE_OCCUPANCY_GRID_SIZE + cell.x;
+  let wordIndex = cellIndex >> 5u;
+  let packedVector = shapeOccupancy.words[wordIndex >> 2u];
+  let packedWord = packedVector[wordIndex & 3u];
+  return (packedWord & (1u << (cellIndex & 31u))) != 0u;
+}
+
+fn premultipliedPaint(input: FragmentInput, coverage: f32) -> vec4<f32> {
+  let pressureInfluence = clamp(brush.controls.w, 0.0, 1.0);
+  let pressureAlpha = mix(1.0, clamp(input.pressure, 0.0, 1.0), pressureInfluence);
+  let alpha = clamp(
+    coverage * brush.controls.x * brush.baseHslAlpha.w * pressureAlpha * brush.controls.z,
+    0.0,
+    0.999999
+  );
+  return vec4<f32>(input.pointColor * alpha, alpha);
+}
+
+@fragment
+fn fragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
+  // Fragment position is the authoritative 4096² layer attachment position.
+  // It is independent from stamp center, viewport, pan and display zoom.
+  let grainUv = input.position.xy * grain.inversePeriod;
+  let grainUvDx = dpdx(grainUv);
+  let grainUvDy = dpdy(grainUv);
+  let radiusSquared = dot(input.localPosition, input.localPosition);
+  let antialiasWidth = max(fwidth(radiusSquared), 0.00001);
+
+  if (radiusSquared > 1.0 + antialiasWidth) {
+    discard;
+  }
+
+  let hardness = clamp(brush.controls.y, 0.0, 1.0);
+  let innerEdge = min(hardness * hardness, 1.0 - antialiasWidth);
+  var coverage = 1.0 - smoothstep(innerEdge, 1.0 + antialiasWidth, radiusSquared);
+
+  if (coverage <= 0.0) {
+    discard;
+  }
+
+  coverage *= adjustedGrainCoverage(grainUv, grainUvDx, grainUvDy);
+  if (coverage <= 0.0) {
+    discard;
+  }
+  return premultipliedPaint(input, coverage);
+}
+
+@fragment
+fn shapeFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
+  let grainUv = input.position.xy * grain.inversePeriod;
+  let grainUvDx = dpdx(grainUv);
+  let grainUvDy = dpdy(grainUv);
+  let uv = input.localPosition * 0.5 + vec2<f32>(0.5);
+  let sourceCoverage = textureSample(shapeMaskTexture, shapeMaskSampler, uv).r;
+  let hardness = clamp(brush.controls.y, 0.0, 1.0);
+  var coverage = mix(sourceCoverage * sourceCoverage, sourceCoverage, hardness);
+
+  if (coverage <= 0.0) {
+    discard;
+  }
+
+  coverage *= adjustedGrainCoverage(grainUv, grainUvDx, grainUvDy);
+  if (coverage <= 0.0) {
+    discard;
+  }
+  return premultipliedPaint(input, coverage);
+}
+
+@fragment
+fn shapeOccupancyFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
+  let grainUv = input.position.xy * grain.inversePeriod;
+  let grainUvDx = dpdx(grainUv);
+  let grainUvDy = dpdy(grainUv);
+  let uv = input.localPosition * 0.5 + vec2<f32>(0.5);
+  let uvDx = dpdx(uv);
+  let uvDy = dpdy(uv);
+
+  if (!shapeOccupancyMayContribute(uv)) {
+    discard;
+  }
+
+  let sourceCoverage = textureSampleGrad(shapeMaskTexture, shapeMaskSampler, uv, uvDx, uvDy).r;
+  let hardness = clamp(brush.controls.y, 0.0, 1.0);
+  var coverage = mix(sourceCoverage * sourceCoverage, sourceCoverage, hardness);
+
+  if (coverage <= 0.0) {
+    discard;
+  }
+
+  coverage *= adjustedGrainCoverage(grainUv, grainUvDx, grainUvDy);
+  if (coverage <= 0.0) {
+    discard;
+  }
+  return premultipliedPaint(input, coverage);
+}
+`;
+
 export const displayShader = /* wgsl */ `
 struct DisplayUniforms {
   canvasSize: vec2<f32>,

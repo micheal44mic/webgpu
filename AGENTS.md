@@ -1727,3 +1727,98 @@ punti, stamp base e copie fisiche corrispondano alla combinazione dichiarata.
 Le run Light Glaze non sostituiscono le baseline Normal e non vanno aggregate
 con esse; il label UI e il riepilogo della run devono riportare entrambe le
 dimensioni del test senza ambiguità.
+
+## Grain Phase 1: `Off` e `Texturized` — candidato locale
+
+La prima fase Grain aggiunge soltanto le modalità `Off` e `Texturized`; non
+esiste una modalità Moving. Il file originale dell’utente
+`graincottonfleece.PNG` resta intatto. Il runtime usa l’asset derivato
+`grain-cotton-fleece-2048.png`, convertito deterministicamente a grayscale
+8-bit opaco `2048×2048`, corretto sui bordi per il repeat e scritto con i soli
+chunk PNG `IHDR`, `IDAT` e `IEND`.
+
+L’asset finale ha SHA-256
+`F353BDF4C8671D56AA69F4242AE60D34993EA883467CB616950A0FC292E8FD4B` e
+identità runtime FNV-1a `1741938840`. La texture GPU è `r8unorm`, usa repeat
+su entrambi gli assi e una catena completa di 12 mip `2048→1`, costruita sulla
+CPU con box filter deterministico prima del primo tratto. I mip occupano
+`5592405` byte, circa `5,33 MiB`. Non generare i mip al primo dab.
+
+I controlli aggiunti a `BrushSettings` sono:
+
+- `grainMode: "off" | "texturized"`;
+- `grainScale`, limitato a `0,1–4`;
+- `grainDepth`, limitato a `0–1`;
+- `grainBrightness` e `grainContrast`, limitati a `-1–1`;
+- `grainFiltering: "no" | "classic" | "improved"`;
+- `grainBlendMode: "multiply"`.
+
+La UI mostra Scale, Depth, Brightness, Contrast, Filtering e Multiply soltanto
+quando Texturized è attivo. `No` usa campionamento nearest e selezione
+deterministica del mip intero più vicino; `Classic` usa bilineare con mip più
+vicino; `Improved` usa trilineare. Il default è Grain Off, Scale `100%`, Depth
+`100%`, Brightness/Contrast `0%`, Improved e Multiply.
+
+Grain Off mantiene rigorosamente il modulo WGSL, le pipeline e i bind group
+legacy: non contiene un ramo Grain inattivo. Texturized usa pipeline separate e
+si applica a Circle, Shape legacy e Shape con occupancy, sia nelle pipeline
+Normal sia Additive; Light Glaze usa la stessa pipeline Grain quando accumula
+la coverage temporanea e conserva invariato il commit.
+
+Le UV Texturized derivano da `@builtin(position).xy` nel render target
+autorevole del layer e dal periodo `2048 * grainScale`. Non dipendono da
+viewport, pan, zoom, centro dello stamp o replay. Le derivate UV sono calcolate
+prima dei discard non uniformi. Dopo brightness/contrast il campione viene
+interpolato con `1` tramite Depth e moltiplica la coverage dopo la punta
+Circle/Shape ma prima di alpha, pressione e blending. Ordine stamp-major /
+copy-minor, seed, jitter, Count `1–24`, spacing, geometria e formule del brush
+restano invariati.
+
+History salva tutte le impostazioni Grain e, per i batch Texturized, l’identità
+dell’asset; replay, Undo e Redo rifiutano una ricostruzione con identità
+diversa. La tip preview Canvas2D adattiva è disabilitata soltanto quando Grain
+Texturized contribuisce effettivamente (`Depth > 0`), perché non può
+rappresentare correttamente una texture layer-space. Il probe FIFO resta attivo
+e lo spacing adattivo promosso continua a reagire normalmente.
+
+`performanceTelemetryRevision: 22` identifica il candidato. Le firme e misure
+aggiunte comprendono:
+
+- strategia Grain attiva/disattiva, coordinate, sampling, mip, pipeline e punto
+  di applicazione della coverage;
+- formato, dimensioni, livelli mip, memoria e identità della texture;
+- tempi CPU di decode, costruzione mip e upload allo startup;
+- batch, stamp base, copie fisiche, batch Circle/Shape e skip della preview
+  attribuibili a Grain.
+
+Il replay umano aggiunge il selettore indipendente `testGrainMode` e salva sia
+il marker sia le impostazioni effettive. Registrazioni storiche prive dei campi
+Grain vengono normalizzate esplicitamente a Off. Il preset canonico continua a
+forzare Grain Off e non viene sostituito.
+
+### Protocollo iniziale a tre run
+
+Sul medesimo dispositivo, con stessa traccia, fingerprint, preset, viewport,
+canvas e formato, eseguire nell’ordine:
+
+1. Base · Normal · Grain Off;
+2. Base · Normal · Grain Texturized;
+3. Fur · Normal · Grain Texturized.
+
+Le run Grain fissano Scale `100%`, Depth `100%`, Brightness `0%`, Contrast
+`0%`, filtro Improved e Multiply. Non cambiare size `750`, spacing dichiarato
+`1%`, Count `16`, flow `100%`, hardness `100%`, opacity `100%`, blend
+intensity `4×`, jitter, seed, pressione o ordine per rendere il confronto più
+favorevole. Prima del confronto verificare insieme `testVariant`,
+`testBlendMode`, `testGrainMode`, `benchmark.settings`, fingerprint, punti,
+stamp e copie. Non aggregare le tre combinazioni e non usare Texturized come
+nuova baseline canonica senza misura e decisione esplicita.
+
+Verifica statica locale: `npm run grain:verify` valida formato e metadati PNG,
+12 mip, memoria, continuità dei bordi e invarianti sorgente di Off, coordinate
+layer-space, normalizzazione storica e preset canonico. Prima di commit o
+pubblicazione servono inoltre TypeScript, build Vite, `git diff --check`, smoke
+WebGPU senza errori per Circle/Shape e controllo visivo di ancoraggio,
+filtering, Light Glaze, Undo/Redo e assenza di preview falsa. Non sono ancora
+disponibili run iPhone della funzione e non va dichiarato alcun miglioramento
+prestazionale.

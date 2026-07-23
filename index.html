@@ -113,6 +113,63 @@
         </section>
 
         <section>
+          <h2>Grain</h2>
+
+          <label class="control">
+            <span>Sorgente</span>
+            <select id="grainSource" disabled>
+              <option>Cotton Fleece 2K</option>
+            </select>
+          </label>
+
+          <label class="control">
+            <span>Modalità</span>
+            <select id="grainMode">
+              <option value="off">Off</option>
+              <option value="texturized">Texturized</option>
+            </select>
+          </label>
+
+          <div id="grainParameters" hidden>
+            <label class="control">
+              <span>Scale <output id="grainScaleOut">100%</output></span>
+              <input id="grainScale" type="range" min="10" max="400" step="1" value="100" />
+            </label>
+
+            <label class="control">
+              <span>Depth <output id="grainDepthOut">100%</output></span>
+              <input id="grainDepth" type="range" min="0" max="100" step="1" value="100" />
+            </label>
+
+            <label class="control">
+              <span>Brightness <output id="grainBrightnessOut">0%</output></span>
+              <input id="grainBrightness" type="range" min="-100" max="100" step="1" value="0" />
+            </label>
+
+            <label class="control">
+              <span>Contrast <output id="grainContrastOut">0%</output></span>
+              <input id="grainContrast" type="range" min="-100" max="100" step="1" value="0" />
+            </label>
+
+            <label class="control">
+              <span>Filtering</span>
+              <select id="grainFiltering">
+                <option value="no">No</option>
+                <option value="classic">Classic</option>
+                <option value="improved" selected>Improved</option>
+              </select>
+            </label>
+
+            <label class="control">
+              <span>Blend Mode</span>
+              <select id="grainBlendMode">
+                <option value="multiply">Multiply</option>
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <section>
           <h2>Color jitter</h2>
 
           <label class="control">
@@ -212,6 +269,13 @@
             <select id="humanStrokeTestBlendMode">
               <option value="normal">Normal premultiplied</option>
               <option value="light-glaze">Light Glaze</option>
+            </select>
+          </label>
+          <label class="control">
+            <span>Grain test</span>
+            <select id="humanStrokeTestGrainMode">
+              <option value="off">Off</option>
+              <option value="texturized">Texturized</option>
             </select>
           </label>
           <button id="recordHumanStroke" class="primary wide" type="button">Registra tratto umano</button>

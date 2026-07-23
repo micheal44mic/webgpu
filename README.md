@@ -20,6 +20,8 @@ Prototipo TypeScript senza framework per verificare l'architettura di un motore 
 - Canvas a tutta area con pannelli sovrapposti richiudibili; i pannelli si chiudono automaticamente quando parte un test.
 - Un dito disegna, due dita eseguono pan e pinch-zoom; restano disponibili zoom, pan, fit, clear e benchmark sintetico.
 - Undo/Redo per tratto con cronologia CPU degli stamp e ricostruzione GPU soltanto quando richiesta.
+- Grain opzionale `Texturized` ancorato alle coordinate del layer, con texture
+  Cotton Fleece R8 2K, mip CPU completi e filtri No/Classic/Improved.
 - Registrazione locale di un tratto umano, con replay temporizzato e misure confrontabili tra versioni del motore.
 - Telemetria CPU e tempo di completamento della coda GPU.
 
@@ -98,12 +100,62 @@ compositato viene quantizzato come il formato reale (`rgba8unorm` o
 quantizzazione per-texel. Il compositing è visibile live e il contributo viene
 committato una sola volta nel layer permanente dopo l'ultimo batch pendente; la
 cache di presentazione viene poi canonicalizzata dal layer committato.
-La tip preview Canvas2D adattiva è disabilitata soltanto in Light Glaze, perché
-una patch di due stamp non può rappresentare correttamente il limite globale
-della pennellata.
+La tip preview Canvas2D adattiva è disabilitata in Light Glaze e, come descritto
+sotto, quando Grain Texturized è attivo: una patch di due stamp non può
+rappresentare correttamente il limite globale della pennellata né una texture
+ancorata al layer.
+
+## Grain Phase 1
+
+Il controllo Grain offre soltanto `Off` e `Texturized`; la modalità Moving non
+fa parte di questa fase. `Off` seleziona gli shader, bind group e pipeline
+legacy senza ramo Grain. `Texturized` usa
+`grain-cotton-fleece-2048.png`, un asset grayscale 8-bit opaco
+`2048 × 2048` con repeat corretto, formato GPU `r8unorm` e catena completa di
+12 mip generata deterministicamente sulla CPU prima del primo tratto.
+
+La texture è ancorata a `@builtin(position)` nel render target autorevole del
+layer: pan, zoom, viewport, posizione dello stamp e replay non possono farla
+scorrere. Il valore campionato moltiplica la coverage della punta dopo la
+coverage Circle/Shape e prima di alpha, pressione e compositing. Restano
+disponibili Scale `10–400%`, Depth `0–100%`, Brightness e Contrast
+`-100–100%`, filtro `No`, `Classic` o `Improved` e blend Grain `Multiply`.
+I tre filtri corrispondono rispettivamente a texel e mip più vicino, bilineare
+con mip più vicino e trilineare.
+
+Il percorso copre Circle e Shape, inclusa la pre-mappa di occupazione, e tutti
+i blend del brush: Normal, Additive e Light Glaze. Undo/Redo conserva
+impostazioni e identità della texture. Quando Grain è attivo la tip preview
+Canvas2D è disabilitata perché non può riprodurre fedelmente la texture
+layer-space; probe FIFO e spacing adattivo continuano invece a funzionare.
+
+`performanceTelemetryRevision: 22` salva strategia, coordinate, filtro,
+pipeline, applicazione della coverage, risorsa/mip/identità, tempi di startup,
+batch/stamp/copie Grain e skip della preview.
+
+Per la prima misura sullo stesso dispositivo e con la stessa traccia canonica,
+eseguire separatamente:
+
+1. Base · Normal · Grain Off;
+2. Base · Normal · Grain Texturized;
+3. Fur · Normal · Grain Texturized.
+
+Il selettore Grain del replay è indipendente da variante e blend. Il test fissa
+Scale `100%`, Depth `100%`, Brightness `0%`, Contrast `0%`, filtro `Improved`
+e Multiply; il preset canonico e le registrazioni storiche restano Grain Off.
+Verificare `testVariant`, `testBlendMode`, `testGrainMode`, impostazioni,
+fingerprint, punti, stamp e copie prima di confrontare le run. Le tre
+combinazioni non vanno aggregate e questa fase locale non contiene ancora una
+misura prestazionale su iPhone.
+
+L’asset e le invarianti statiche si verificano con:
+
+```bash
+npm run grain:verify
+```
 
 ## Cosa non è ancora incluso
 
-Questo è un benchmark del brush core, non ancora un clone completo di Procreate. Mancano tile sparse, più layer, texture/grain della punta, smudge, wet mix e salvataggio del documento.
+Questo è un benchmark del brush core, non ancora un clone completo di Procreate. Mancano tile sparse, più layer, Grain Moving, smudge, wet mix e salvataggio del documento.
 
 Gli esperimenti tiled delle run `#23` e `#25` e lo scratch sulla dirty rectangle della run `#27` sono stati misurati e bocciati. Il runtime pubblicato è tornato alla baseline monolitica della run `#19`; metriche, diagnosi e motivazioni dei rollback sono conservate in `AGENTS.md`.

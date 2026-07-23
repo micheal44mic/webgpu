@@ -7,11 +7,15 @@ import {
   lightGlazeCompositeShader,
   lightGlazeDisplayShader,
   paintMipDownsampleShader,
+  texturizedGrainShader,
 } from "./shaders";
 
 export type BlendMode = "normal" | "additive" | "light-glaze";
 export type LayerFormat = "rgba8unorm" | "rgba16float";
 export type BrushShape = "circle" | "shape";
+export type GrainMode = "off" | "texturized";
+export type GrainFiltering = "no" | "classic" | "improved";
+export type GrainBlendMode = "multiply";
 export type StampGeometry = "quad" | "oriented-support-quads";
 export type FragmentCoverageStrategy = "generic-smoothstep" | "shape-alpha-mask-2k";
 export type ShapeSamplingStrategy =
@@ -35,6 +39,23 @@ export type AdaptivePreviewVisibleCanvasStrategy =
   "iphone-desynchronized-others-synchronized-canvas2d";
 export type AdaptiveSpacingStrategy = "queue-lag-step-up-per-stroke";
 export type BrushOpacityStrategy = "per-stamp-uniform-alpha-multiplier";
+export type GrainStrategy =
+  | "disabled-legacy-pipeline"
+  | "r8-2k-texturized-coverage-multiply";
+export type GrainCoordinateStrategy = "none" | "authoritative-layer-position";
+export type GrainSamplingStrategy =
+  | "none"
+  | "repeat-nearest"
+  | "repeat-linear-mip-nearest"
+  | "repeat-linear-trilinear";
+export type GrainMipStrategy = "cpu-box-filter-full-chain";
+export type GrainPipelineStrategy = "separate-opt-in-pipelines";
+export type GrainCoverageStrategy =
+  | "none"
+  | "post-tip-coverage-pre-alpha-multiply";
+export type GrainAdaptivePreviewStrategy =
+  | "legacy"
+  | "disabled-semantic-mismatch-probe-spacing-active";
 export type LightGlazeStrategy =
   "lazy-stroke-mip0-format-quantized-composite-mips-single-commit";
 export type LightGlazeAdaptivePreviewStrategy = "disabled-semantic-mismatch";
@@ -57,6 +78,13 @@ export type ShapeOccupancyFallbackReason =
 export interface BrushSettings {
   shape: BrushShape;
   shapeScatter: number;
+  grainMode: GrainMode;
+  grainScale: number;
+  grainDepth: number;
+  grainBrightness: number;
+  grainContrast: number;
+  grainFiltering: GrainFiltering;
+  grainBlendMode: GrainBlendMode;
   color: string;
   size: number;
   spacingPercent: number;
@@ -199,6 +227,28 @@ export interface StrokePerformanceProfile {
   adaptiveSpacingReachedMaximum: boolean;
   adaptiveSpacingEvents: AdaptiveSpacingEvent[];
   brushOpacityStrategy: BrushOpacityStrategy;
+  grainStrategy: GrainStrategy;
+  grainCoordinateStrategy: GrainCoordinateStrategy;
+  grainSamplingStrategy: GrainSamplingStrategy;
+  grainMipStrategy: GrainMipStrategy;
+  grainTextureFormat: "r8unorm";
+  grainTextureWidth: number;
+  grainTextureHeight: number;
+  grainTextureMipLevelCount: number;
+  grainTextureMemoryMiB: number;
+  grainTextureIdentity: number;
+  grainPipelineStrategy: GrainPipelineStrategy;
+  grainCoverageStrategy: GrainCoverageStrategy;
+  grainAdaptivePreviewStrategy: GrainAdaptivePreviewStrategy;
+  grainStartupDecodeMs: number;
+  grainStartupMipBuildMs: number;
+  grainStartupUploadMs: number;
+  grainBatches: number;
+  grainBaseStamps: number;
+  grainPhysicalCopies: number;
+  grainCircleBatches: number;
+  grainShapeBatches: number;
+  grainAdaptivePreviewSkips: number;
   lightGlazeStrategy: LightGlazeStrategy;
   lightGlazeAdaptivePreviewStrategy: LightGlazeAdaptivePreviewStrategy;
   lightGlazeStorageAllocated: boolean;
@@ -358,6 +408,14 @@ interface ShapeMaskResources {
   previewSprite: HTMLCanvasElement;
 }
 
+interface GrainTextureResources {
+  texture: GPUTexture;
+  identity: number;
+  decodeMs: number;
+  mipBuildMs: number;
+  uploadMs: number;
+}
+
 interface AdaptivePreviewCandidate {
   serial: number | null;
   stamp: Stamp;
@@ -414,6 +472,7 @@ interface HistoryRenderBatch {
   dirtyRect: DirtyRect | null;
   shapeOccupancySelection: ShapeOccupancySelection | null;
   shapeMaskIdentity: number;
+  grainTextureIdentity: number | null;
 }
 
 interface SubmitTiming {
@@ -445,6 +504,11 @@ interface SubmitTiming {
   lightGlazeCompositePixels: number;
   lightGlazePyramidPasses: number;
   lightGlazePyramidUpdatedPixels: number;
+  grainBatches: number;
+  grainBaseStamps: number;
+  grainPhysicalCopies: number;
+  grainCircleBatches: number;
+  grainShapeBatches: number;
 }
 
 interface RenderFrameTiming {
@@ -504,6 +568,17 @@ interface MutableStrokePerformanceProfile {
   adaptiveSpacingInitialPercent: number;
   adaptiveSpacingFinalPercent: number;
   adaptiveSpacingEvents: AdaptiveSpacingEvent[];
+  grainStrategy: GrainStrategy;
+  grainCoordinateStrategy: GrainCoordinateStrategy;
+  grainSamplingStrategy: GrainSamplingStrategy;
+  grainCoverageStrategy: GrainCoverageStrategy;
+  grainAdaptivePreviewStrategy: GrainAdaptivePreviewStrategy;
+  grainBatches: number;
+  grainBaseStamps: number;
+  grainPhysicalCopies: number;
+  grainCircleBatches: number;
+  grainShapeBatches: number;
+  grainAdaptivePreviewSkips: number;
   lightGlazeBatches: number;
   lightGlazeCommits: number;
   lightGlazeCompositePixels: number;
@@ -572,6 +647,14 @@ const PAINT_DISPLAY_PYRAMID_STRATEGY = "live-dirty-box-filter-mip-chain" as cons
 const PAINT_DISPLAY_LOD_SELECTION_STRATEGY =
   "largest-power-of-two-without-upscaling" as const;
 const BRUSH_OPACITY_STRATEGY = "per-stamp-uniform-alpha-multiplier" as const;
+const GRAIN_DISABLED_STRATEGY = "disabled-legacy-pipeline" as const;
+const GRAIN_TEXTURIZED_STRATEGY = "r8-2k-texturized-coverage-multiply" as const;
+const GRAIN_COORDINATE_STRATEGY = "authoritative-layer-position" as const;
+const GRAIN_MIP_STRATEGY = "cpu-box-filter-full-chain" as const;
+const GRAIN_PIPELINE_STRATEGY = "separate-opt-in-pipelines" as const;
+const GRAIN_COVERAGE_STRATEGY = "post-tip-coverage-pre-alpha-multiply" as const;
+const GRAIN_ADAPTIVE_PREVIEW_STRATEGY =
+  "disabled-semantic-mismatch-probe-spacing-active" as const;
 const LIGHT_GLAZE_STRATEGY =
   "lazy-stroke-mip0-format-quantized-composite-mips-single-commit" as const;
 const LIGHT_GLAZE_ADAPTIVE_PREVIEW_STRATEGY = "disabled-semantic-mismatch" as const;
@@ -639,6 +722,11 @@ const HISTORY_STORAGE_STRATEGY = "cpu-render-batch-journal" as const;
 const HISTORY_REPLAY_STRATEGY = "clear-and-stable-gpu-replay" as const;
 const HISTORY_STAMP_RETENTION_STRATEGY = "shared-immutable-references" as const;
 const SHAPE_MASK_SIZE = 2048;
+const GRAIN_TEXTURE_SIZE = 2048;
+const GRAIN_TEXTURE_MIP_LEVEL_COUNT = Math.log2(GRAIN_TEXTURE_SIZE) + 1;
+const GRAIN_TEXTURE_PIXEL_COUNT = Math.round(
+  GRAIN_TEXTURE_SIZE * GRAIN_TEXTURE_SIZE * (4 / 3),
+);
 const SHAPE_OCCUPANCY_GRID_SIZE = 256;
 const SHAPE_OCCUPANCY_CELL_SIZE = SHAPE_MASK_SIZE / SHAPE_OCCUPANCY_GRID_SIZE;
 const SHAPE_OCCUPANCY_CELL_COUNT = SHAPE_OCCUPANCY_GRID_SIZE * SHAPE_OCCUPANCY_GRID_SIZE;
@@ -649,6 +737,7 @@ const SHAPE_OCCUPANCY_MIN_RADIUS = 128;
 const SHAPE_OCCUPANCY_MAX_COVERAGE_RATIO = 0.5;
 const SHAPE_OCCUPANCY_MAP_BYTES = SHAPE_OCCUPANCY_WORDS_PER_MAP * 4;
 const BRUSH_UNIFORM_BYTES = 96;
+const GRAIN_UNIFORM_BYTES = 32;
 const DISPLAY_UNIFORM_BYTES = 48;
 const LIGHT_GLAZE_UNIFORM_BYTES = 16;
 
@@ -805,6 +894,13 @@ function buildShapeOccupancyMaps(mipMasks: readonly Uint8Array[]): {
 export const defaultBrushSettings: BrushSettings = {
   shape: "circle",
   shapeScatter: 0,
+  grainMode: "off",
+  grainScale: 1,
+  grainDepth: 1,
+  grainBrightness: 0,
+  grainContrast: 0,
+  grainFiltering: "improved",
+  grainBlendMode: "multiply",
   color: "#ff5b35",
   size: 96,
   spacingPercent: 1,
@@ -893,6 +989,7 @@ export class BrushEngine {
   private canvasCssHeight = 1;
 
   private brushUniformBuffer!: GPUBuffer;
+  private grainUniformBuffer!: GPUBuffer;
   private displayUniformBuffer!: GPUBuffer;
   private lightGlazeUniformBuffer!: GPUBuffer;
   private instanceBuffer!: GPUBuffer;
@@ -901,6 +998,13 @@ export class BrushEngine {
   private shapeMaskTexture!: GPUTexture;
   private shapeMaskView!: GPUTextureView;
   private shapeMaskSampler!: GPUSampler;
+  private grainTexture!: GPUTexture;
+  private grainTextureView!: GPUTextureView;
+  private grainSamplers!: Record<GrainFiltering, GPUSampler>;
+  private grainTextureIdentity = 0;
+  private grainStartupDecodeMs = 0;
+  private grainStartupMipBuildMs = 0;
+  private grainStartupUploadMs = 0;
   private shapeMaskDecodeStrategy: ShapeMaskDecodeStrategy = SHAPE_CANVAS_DECODE_STRATEGY;
   private shapeMaskIdentity = 0;
   private shapeOccupancyActiveCells = new Array<number>(SHAPE_OCCUPANCY_MAP_COUNT).fill(0);
@@ -909,6 +1013,8 @@ export class BrushEngine {
 
   private brushBindGroupLayout!: GPUBindGroupLayout;
   private brushOccupancyBindGroupLayout!: GPUBindGroupLayout;
+  private grainBrushBindGroupLayout!: GPUBindGroupLayout;
+  private grainBrushOccupancyBindGroupLayout!: GPUBindGroupLayout;
   private displayBindGroupLayout!: GPUBindGroupLayout;
   private lightGlazeDisplayBindGroupLayout!: GPUBindGroupLayout;
   private lightGlazeCompositeMipBindGroupLayout!: GPUBindGroupLayout;
@@ -916,9 +1022,12 @@ export class BrushEngine {
   private paintMipDownsampleBindGroupLayout!: GPUBindGroupLayout;
   private brushBindGroup!: GPUBindGroup;
   private brushOccupancyBindGroups: GPUBindGroup[] = [];
+  private grainBrushBindGroups!: Record<GrainFiltering, GPUBindGroup>;
+  private grainBrushOccupancyBindGroups!: Record<GrainFiltering, GPUBindGroup[]>;
   private displayBindGroup!: GPUBindGroup;
 
   private brushShaderModule!: GPUShaderModule;
+  private texturizedGrainShaderModule!: GPUShaderModule;
   private displayShaderModule!: GPUShaderModule;
   private lightGlazeDisplayShaderModule!: GPUShaderModule;
   private lightGlazeCompositeMipShaderModule!: GPUShaderModule;
@@ -930,6 +1039,12 @@ export class BrushEngine {
   private shapeAdditivePipeline!: GPURenderPipeline;
   private shapeOccupancyNormalPipeline!: GPURenderPipeline;
   private shapeOccupancyAdditivePipeline!: GPURenderPipeline;
+  private grainNormalPipeline!: GPURenderPipeline;
+  private grainAdditivePipeline!: GPURenderPipeline;
+  private grainShapeNormalPipeline!: GPURenderPipeline;
+  private grainShapeAdditivePipeline!: GPURenderPipeline;
+  private grainShapeOccupancyNormalPipeline!: GPURenderPipeline;
+  private grainShapeOccupancyAdditivePipeline!: GPURenderPipeline;
   private displayPipeline!: GPURenderPipeline;
   private lightGlazeDisplayPipeline!: GPURenderPipeline;
   private lightGlazeCompositeMipPipeline!: GPURenderPipeline;
@@ -940,6 +1055,7 @@ export class BrushEngine {
   private readonly instanceUploadF32 = new Float32Array(this.instanceUpload);
   private readonly instanceUploadU32 = new Uint32Array(this.instanceUpload);
   private readonly brushUniformUpload = new ArrayBuffer(BRUSH_UNIFORM_BYTES);
+  private readonly grainUniformUpload = new Float32Array(GRAIN_UNIFORM_BYTES / 4);
   private readonly displayUniformUpload = new Float32Array(DISPLAY_UNIFORM_BYTES / 4);
 
   private settings: BrushSettings = { ...defaultBrushSettings };
@@ -1083,6 +1199,21 @@ export class BrushEngine {
       ...next,
       shape: next.shape === "shape" || next.shape === "circle" ? next.shape : this.settings.shape,
       shapeScatter: clamp(next.shapeScatter ?? this.settings.shapeScatter, 0, 1),
+      grainMode: next.grainMode === "off" || next.grainMode === "texturized"
+        ? next.grainMode
+        : this.settings.grainMode,
+      grainScale: clamp(next.grainScale ?? this.settings.grainScale, 0.1, 4),
+      grainDepth: clamp(next.grainDepth ?? this.settings.grainDepth, 0, 1),
+      grainBrightness: clamp(next.grainBrightness ?? this.settings.grainBrightness, -1, 1),
+      grainContrast: clamp(next.grainContrast ?? this.settings.grainContrast, -1, 1),
+      grainFiltering: next.grainFiltering === "no"
+        || next.grainFiltering === "classic"
+        || next.grainFiltering === "improved"
+        ? next.grainFiltering
+        : this.settings.grainFiltering,
+      grainBlendMode: next.grainBlendMode === "multiply"
+        ? next.grainBlendMode
+        : this.settings.grainBlendMode,
       count: clamp(Math.round(next.count ?? this.settings.count), 1, 24),
       size: clamp(next.size ?? this.settings.size, 4, 1500),
       spacingPercent: clamp(next.spacingPercent ?? this.settings.spacingPercent, 0.25, 25),
@@ -1110,6 +1241,9 @@ export class BrushEngine {
     if (this.initialized) {
       this.invalidateAdaptivePreview();
       this.writeBrushUniforms();
+      if (this.isTexturizedGrainActive(this.settings)) {
+        this.writeGrainUniforms(this.settings);
+      }
       this.displayDirty = true;
       this.requestRender();
     }
@@ -1498,6 +1632,11 @@ export class BrushEngine {
         : "orientamento circolare invariato",
       "riuso copySeed per jitter colore per copia",
       "dirty rect direzionale conservativo",
+      this.isTexturizedGrainActive(benchmarkSettings)
+        ? `grain Cotton Fleece 2K Texturized ${benchmarkSettings.grainFiltering}, `
+          + `scale ${(benchmarkSettings.grainScale * 100).toFixed(0)}%, `
+          + `depth ${(benchmarkSettings.grainDepth * 100).toFixed(0)}%`
+        : "grain Off, pipeline legacy",
     ].join(" · ");
 
     return {
@@ -1649,6 +1788,25 @@ export class BrushEngine {
       adaptiveSpacingInitialPercent: this.settings.spacingPercent,
       adaptiveSpacingFinalPercent: this.settings.spacingPercent,
       adaptiveSpacingEvents: [],
+      grainStrategy: this.isTexturizedGrainActive(this.settings)
+        ? GRAIN_TEXTURIZED_STRATEGY
+        : GRAIN_DISABLED_STRATEGY,
+      grainCoordinateStrategy: this.isTexturizedGrainActive(this.settings)
+        ? GRAIN_COORDINATE_STRATEGY
+        : "none",
+      grainSamplingStrategy: this.grainSamplingStrategy(this.settings),
+      grainCoverageStrategy: this.isTexturizedGrainActive(this.settings)
+        ? GRAIN_COVERAGE_STRATEGY
+        : "none",
+      grainAdaptivePreviewStrategy: this.isTexturizedGrainActive(this.settings)
+        ? GRAIN_ADAPTIVE_PREVIEW_STRATEGY
+        : "legacy",
+      grainBatches: 0,
+      grainBaseStamps: 0,
+      grainPhysicalCopies: 0,
+      grainCircleBatches: 0,
+      grainShapeBatches: 0,
+      grainAdaptivePreviewSkips: 0,
       lightGlazeBatches: 0,
       lightGlazeCommits: 0,
       lightGlazeCompositePixels: 0,
@@ -1749,6 +1907,28 @@ export class BrushEngine {
       paintDisplayPyramidUpdatedPixels: profile.paintDisplayPyramidUpdatedPixels,
       paintDisplayPyramidEncodingMs: profile.paintDisplayPyramidEncodingMs,
       brushOpacityStrategy: BRUSH_OPACITY_STRATEGY,
+      grainStrategy: profile.grainStrategy,
+      grainCoordinateStrategy: profile.grainCoordinateStrategy,
+      grainSamplingStrategy: profile.grainSamplingStrategy,
+      grainMipStrategy: GRAIN_MIP_STRATEGY,
+      grainTextureFormat: "r8unorm",
+      grainTextureWidth: GRAIN_TEXTURE_SIZE,
+      grainTextureHeight: GRAIN_TEXTURE_SIZE,
+      grainTextureMipLevelCount: GRAIN_TEXTURE_MIP_LEVEL_COUNT,
+      grainTextureMemoryMiB: GRAIN_TEXTURE_PIXEL_COUNT / (1024 * 1024),
+      grainTextureIdentity: this.grainTextureIdentity,
+      grainPipelineStrategy: GRAIN_PIPELINE_STRATEGY,
+      grainCoverageStrategy: profile.grainCoverageStrategy,
+      grainAdaptivePreviewStrategy: profile.grainAdaptivePreviewStrategy,
+      grainStartupDecodeMs: this.grainStartupDecodeMs,
+      grainStartupMipBuildMs: this.grainStartupMipBuildMs,
+      grainStartupUploadMs: this.grainStartupUploadMs,
+      grainBatches: profile.grainBatches,
+      grainBaseStamps: profile.grainBaseStamps,
+      grainPhysicalCopies: profile.grainPhysicalCopies,
+      grainCircleBatches: profile.grainCircleBatches,
+      grainShapeBatches: profile.grainShapeBatches,
+      grainAdaptivePreviewSkips: profile.grainAdaptivePreviewSkips,
       lightGlazeStrategy: LIGHT_GLAZE_STRATEGY,
       lightGlazeAdaptivePreviewStrategy: LIGHT_GLAZE_ADAPTIVE_PREVIEW_STRATEGY,
       lightGlazeStorageAllocated: this.lightGlazeStorageAllocated,
@@ -1946,6 +2126,22 @@ export class BrushEngine {
     paintDisplaySelectedMipLevel: number;
     paintDisplayPyramidAdditionalMemoryMiB: number;
     brushOpacityStrategy: typeof BRUSH_OPACITY_STRATEGY;
+    grainStrategy: GrainStrategy;
+    grainCoordinateStrategy: GrainCoordinateStrategy;
+    grainSamplingStrategy: GrainSamplingStrategy;
+    grainMipStrategy: typeof GRAIN_MIP_STRATEGY;
+    grainTextureFormat: "r8unorm";
+    grainTextureWidth: number;
+    grainTextureHeight: number;
+    grainTextureMipLevelCount: number;
+    grainTextureMemoryMiB: number;
+    grainTextureIdentity: number;
+    grainPipelineStrategy: typeof GRAIN_PIPELINE_STRATEGY;
+    grainCoverageStrategy: GrainCoverageStrategy;
+    grainAdaptivePreviewStrategy: GrainAdaptivePreviewStrategy;
+    grainStartupDecodeMs: number;
+    grainStartupMipBuildMs: number;
+    grainStartupUploadMs: number;
     lightGlazeStrategy: typeof LIGHT_GLAZE_STRATEGY;
     lightGlazeAdaptivePreviewStrategy: typeof LIGHT_GLAZE_ADAPTIVE_PREVIEW_STRATEGY;
     lightGlazeStorageAllocated: boolean;
@@ -2027,6 +2223,30 @@ export class BrushEngine {
       paintDisplayPyramidAdditionalMemoryMiB:
         paintDisplayPyramidAdditionalMemoryMiB(this.layerFormat),
       brushOpacityStrategy: BRUSH_OPACITY_STRATEGY,
+      grainStrategy: this.isTexturizedGrainActive(this.settings)
+        ? GRAIN_TEXTURIZED_STRATEGY
+        : GRAIN_DISABLED_STRATEGY,
+      grainCoordinateStrategy: this.isTexturizedGrainActive(this.settings)
+        ? GRAIN_COORDINATE_STRATEGY
+        : "none",
+      grainSamplingStrategy: this.grainSamplingStrategy(this.settings),
+      grainMipStrategy: GRAIN_MIP_STRATEGY,
+      grainTextureFormat: "r8unorm",
+      grainTextureWidth: GRAIN_TEXTURE_SIZE,
+      grainTextureHeight: GRAIN_TEXTURE_SIZE,
+      grainTextureMipLevelCount: GRAIN_TEXTURE_MIP_LEVEL_COUNT,
+      grainTextureMemoryMiB: GRAIN_TEXTURE_PIXEL_COUNT / (1024 * 1024),
+      grainTextureIdentity: this.grainTextureIdentity,
+      grainPipelineStrategy: GRAIN_PIPELINE_STRATEGY,
+      grainCoverageStrategy: this.isTexturizedGrainActive(this.settings)
+        ? GRAIN_COVERAGE_STRATEGY
+        : "none",
+      grainAdaptivePreviewStrategy: this.isTexturizedGrainActive(this.settings)
+        ? GRAIN_ADAPTIVE_PREVIEW_STRATEGY
+        : "legacy",
+      grainStartupDecodeMs: this.grainStartupDecodeMs,
+      grainStartupMipBuildMs: this.grainStartupMipBuildMs,
+      grainStartupUploadMs: this.grainStartupUploadMs,
       lightGlazeStrategy: LIGHT_GLAZE_STRATEGY,
       lightGlazeAdaptivePreviewStrategy: LIGHT_GLAZE_ADAPTIVE_PREVIEW_STRATEGY,
       lightGlazeStorageAllocated: this.lightGlazeStorageAllocated,
@@ -2074,6 +2294,12 @@ export class BrushEngine {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
+    this.grainUniformBuffer = this.device.createBuffer({
+      label: "Texturized grain uniforms",
+      size: GRAIN_UNIFORM_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
     this.displayUniformBuffer = this.device.createBuffer({
       label: "Display uniforms",
       size: DISPLAY_UNIFORM_BYTES,
@@ -2109,6 +2335,45 @@ export class BrushEngine {
       addressModeU: "clamp-to-edge",
       addressModeV: "clamp-to-edge",
     });
+    const grainClassicSampler = this.device.createSampler({
+      label: "Cotton Fleece grain classic filtering",
+      magFilter: "linear",
+      minFilter: "linear",
+      mipmapFilter: "nearest",
+      addressModeU: "repeat",
+      addressModeV: "repeat",
+    });
+    this.grainSamplers = {
+      no: this.device.createSampler({
+        label: "Cotton Fleece grain no filtering",
+        magFilter: "nearest",
+        minFilter: "nearest",
+        // A linear mip declaration makes this sampler valid for the common
+        // filtering binding. WGSL supplies a rounded integer LOD, so the
+        // effective mip and texel choices both remain nearest.
+        mipmapFilter: "linear",
+        addressModeU: "repeat",
+        addressModeV: "repeat",
+      }),
+      classic: grainClassicSampler,
+      improved: this.device.createSampler({
+        label: "Cotton Fleece grain improved filtering",
+        magFilter: "linear",
+        minFilter: "linear",
+        mipmapFilter: "linear",
+        addressModeU: "repeat",
+        addressModeV: "repeat",
+      }),
+    };
+    const grainResources = await this.createGrainTextureResources();
+    this.grainTexture = grainResources.texture;
+    this.grainTextureView = this.grainTexture.createView({
+      label: "Cotton Fleece 2K grain full mip view",
+    });
+    this.grainTextureIdentity = grainResources.identity;
+    this.grainStartupDecodeMs = grainResources.decodeMs;
+    this.grainStartupMipBuildMs = grainResources.mipBuildMs;
+    this.grainStartupUploadMs = grainResources.uploadMs;
     const shapeMaskResources = await this.createShapeMaskResources();
     this.shapeMaskTexture = shapeMaskResources.texture;
     this.shapeMaskView = this.shapeMaskTexture.createView({ label: "Shape 2K mask view" });
@@ -2226,6 +2491,39 @@ export class BrushEngine {
         },
       ],
     });
+    const grainLayoutEntries: GPUBindGroupLayoutEntry[] = [
+      ...brushLayoutEntries,
+      {
+        binding: 5,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float", viewDimension: "2d" },
+      },
+      {
+        binding: 6,
+        visibility: GPUShaderStage.FRAGMENT,
+        sampler: { type: "filtering" },
+      },
+      {
+        binding: 7,
+        visibility: GPUShaderStage.FRAGMENT,
+        buffer: { type: "uniform" },
+      },
+    ];
+    this.grainBrushBindGroupLayout = this.device.createBindGroupLayout({
+      label: "Texturized grain brush bind group layout",
+      entries: grainLayoutEntries,
+    });
+    this.grainBrushOccupancyBindGroupLayout = this.device.createBindGroupLayout({
+      label: "Texturized grain occupancy brush bind group layout",
+      entries: [
+        ...grainLayoutEntries,
+        {
+          binding: 4,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        },
+      ],
+    });
     this.lightGlazeCompositeMipBindGroupLayout = this.device.createBindGroupLayout({
       label: "Light Glaze composited mip 1 bind group layout",
       entries: [
@@ -2295,8 +2593,50 @@ export class BrushEngine {
         ],
       }),
     );
+    const grainFilteringModes: GrainFiltering[] = ["no", "classic", "improved"];
+    this.grainBrushBindGroups = Object.fromEntries(
+      grainFilteringModes.map((filtering) => [
+        filtering,
+        this.device.createBindGroup({
+          label: `Texturized grain brush bind group ${filtering}`,
+          layout: this.grainBrushBindGroupLayout,
+          entries: [
+            { binding: 0, resource: { buffer: this.brushUniformBuffer } },
+            { binding: 1, resource: { buffer: this.instanceBuffer } },
+            { binding: 2, resource: this.shapeMaskView },
+            { binding: 3, resource: this.shapeMaskSampler },
+            { binding: 5, resource: this.grainTextureView },
+            { binding: 6, resource: this.grainSamplers[filtering] },
+            { binding: 7, resource: { buffer: this.grainUniformBuffer } },
+          ],
+        }),
+      ]),
+    ) as Record<GrainFiltering, GPUBindGroup>;
+    this.grainBrushOccupancyBindGroups = Object.fromEntries(
+      grainFilteringModes.map((filtering) => [
+        filtering,
+        this.shapeOccupancyUniformBuffers.map((buffer, mipLevel) => this.device.createBindGroup({
+          label: `Texturized grain occupancy bind group ${filtering} mip ${mipLevel}`,
+          layout: this.grainBrushOccupancyBindGroupLayout,
+          entries: [
+            { binding: 0, resource: { buffer: this.brushUniformBuffer } },
+            { binding: 1, resource: { buffer: this.instanceBuffer } },
+            { binding: 2, resource: this.shapeMaskView },
+            { binding: 3, resource: this.shapeMaskSampler },
+            { binding: 4, resource: { buffer } },
+            { binding: 5, resource: this.grainTextureView },
+            { binding: 6, resource: this.grainSamplers[filtering] },
+            { binding: 7, resource: { buffer: this.grainUniformBuffer } },
+          ],
+        })),
+      ]),
+    ) as Record<GrainFiltering, GPUBindGroup[]>;
 
     this.brushShaderModule = this.device.createShaderModule({ label: "Brush WGSL", code: brushShader });
+    this.texturizedGrainShaderModule = this.device.createShaderModule({
+      label: "Texturized grain fragment WGSL",
+      code: texturizedGrainShader,
+    });
     this.displayShaderModule = this.device.createShaderModule({ label: "Display WGSL", code: displayShader });
     this.lightGlazeDisplayShaderModule = this.device.createShaderModule({
       label: "Light Glaze live display WGSL",
@@ -2316,6 +2656,7 @@ export class BrushEngine {
     });
     await Promise.all([
       this.assertShaderCompiled(this.brushShaderModule, "brush"),
+      this.assertShaderCompiled(this.texturizedGrainShaderModule, "Texturized grain fragment"),
       this.assertShaderCompiled(this.displayShaderModule, "display"),
       this.assertShaderCompiled(this.lightGlazeDisplayShaderModule, "Light Glaze live display"),
       this.assertShaderCompiled(
@@ -2364,6 +2705,97 @@ export class BrushEngine {
       },
       primitive: { topology: "triangle-list" },
     });
+  }
+
+  private async createGrainTextureResources(): Promise<GrainTextureResources> {
+    const response = await fetch(new URL("../grain-cotton-fleece-2048.png", import.meta.url));
+    if (!response.ok) {
+      throw new Error(`Impossibile caricare Cotton Fleece 2K (${response.status}).`);
+    }
+
+    const source = await response.arrayBuffer();
+    const decodeStart = performance.now();
+    const decoded = await decodeGrayscalePng8(source);
+    const decodeMs = performance.now() - decodeStart;
+    if (decoded.width !== GRAIN_TEXTURE_SIZE || decoded.height !== GRAIN_TEXTURE_SIZE) {
+      throw new Error(
+        `Il grain deve restare ${GRAIN_TEXTURE_SIZE}×${GRAIN_TEXTURE_SIZE}px; `
+        + `trovata ${decoded.width}×${decoded.height}px.`,
+      );
+    }
+
+    const mipBuildStart = performance.now();
+    const mipMasks: Uint8Array[] = [decoded.pixels];
+    let levelMask = decoded.pixels;
+    let levelSize = GRAIN_TEXTURE_SIZE;
+    while (levelSize > 1) {
+      const nextSize = levelSize / 2;
+      const nextMask = new Uint8Array(nextSize * nextSize);
+      for (let y = 0; y < nextSize; y += 1) {
+        for (let x = 0; x < nextSize; x += 1) {
+          const sourceIndex = y * 2 * levelSize + x * 2;
+          nextMask[y * nextSize + x] = Math.round(
+            (
+              levelMask[sourceIndex]
+              + levelMask[sourceIndex + 1]
+              + levelMask[sourceIndex + levelSize]
+              + levelMask[sourceIndex + levelSize + 1]
+            ) / 4,
+          );
+        }
+      }
+      mipMasks.push(nextMask);
+      levelMask = nextMask;
+      levelSize = nextSize;
+    }
+    const mipBuildMs = performance.now() - mipBuildStart;
+    if (mipMasks.length !== GRAIN_TEXTURE_MIP_LEVEL_COUNT) {
+      throw new Error(
+        `Catena mip grain non valida: ${mipMasks.length} livelli invece di `
+        + `${GRAIN_TEXTURE_MIP_LEVEL_COUNT}.`,
+      );
+    }
+
+    const texture = this.device.createTexture({
+      label: "Cotton Fleece 2K grayscale grain",
+      size: {
+        width: GRAIN_TEXTURE_SIZE,
+        height: GRAIN_TEXTURE_SIZE,
+        depthOrArrayLayers: 1,
+      },
+      mipLevelCount: GRAIN_TEXTURE_MIP_LEVEL_COUNT,
+      format: "r8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+
+    const uploadStart = performance.now();
+    for (let mipLevel = 0; mipLevel < mipMasks.length; mipLevel += 1) {
+      const mask = mipMasks[mipLevel];
+      const size = Math.max(1, GRAIN_TEXTURE_SIZE >> mipLevel);
+      const bytesPerRow = Math.ceil(size / 256) * 256;
+      let upload = mask;
+      if (bytesPerRow !== size) {
+        upload = new Uint8Array(bytesPerRow * size);
+        for (let row = 0; row < size; row += 1) {
+          upload.set(mask.subarray(row * size, (row + 1) * size), row * bytesPerRow);
+        }
+      }
+      this.device.queue.writeTexture(
+        { texture, mipLevel },
+        upload,
+        { offset: 0, bytesPerRow, rowsPerImage: size },
+        { width: size, height: size, depthOrArrayLayers: 1 },
+      );
+    }
+    const uploadMs = performance.now() - uploadStart;
+
+    return {
+      texture,
+      identity: hashBytes(decoded.pixels),
+      decodeMs,
+      mipBuildMs,
+      uploadMs,
+    };
   }
 
   private async decodeShapeMaskWithCanvas(source: ArrayBuffer): Promise<Uint8Array> {
@@ -2557,6 +2989,14 @@ export class BrushEngine {
     const brushOccupancyPipelineLayout = this.device.createPipelineLayout({
       label: `Brush occupancy pipeline layout ${format}`,
       bindGroupLayouts: [this.brushOccupancyBindGroupLayout],
+    });
+    const grainBrushPipelineLayout = this.device.createPipelineLayout({
+      label: `Texturized grain brush pipeline layout ${format}`,
+      bindGroupLayouts: [this.grainBrushBindGroupLayout],
+    });
+    const grainBrushOccupancyPipelineLayout = this.device.createPipelineLayout({
+      label: `Texturized grain occupancy pipeline layout ${format}`,
+      bindGroupLayouts: [this.grainBrushOccupancyBindGroupLayout],
     });
     const paintMipDownsamplePipelineLayout = this.device.createPipelineLayout({
       label: `Paint display mip downsample pipeline layout ${format}`,
@@ -2758,6 +3198,192 @@ export class BrushEngine {
       primitive: { topology: "triangle-strip" },
     });
 
+    const grainNormalPipeline = this.device.createRenderPipeline({
+      label: `Brush Texturized grain normal ${format}`,
+      layout: grainBrushPipelineLayout,
+      vertex: {
+        module: this.brushShaderModule,
+        entryPoint: "vertexMain",
+      },
+      fragment: {
+        module: this.texturizedGrainShaderModule,
+        entryPoint: "fragmentMain",
+        targets: [
+          {
+            format,
+            blend: {
+              color: {
+                operation: "add",
+                srcFactor: "one",
+                dstFactor: "one-minus-src-alpha",
+              },
+              alpha: {
+                operation: "add",
+                srcFactor: "one",
+                dstFactor: "one-minus-src-alpha",
+              },
+            },
+          },
+        ],
+      },
+      primitive: { topology: "triangle-strip" },
+    });
+
+    const grainAdditivePipeline = this.device.createRenderPipeline({
+      label: `Brush Texturized grain additive ${format}`,
+      layout: grainBrushPipelineLayout,
+      vertex: {
+        module: this.brushShaderModule,
+        entryPoint: "vertexMain",
+      },
+      fragment: {
+        module: this.texturizedGrainShaderModule,
+        entryPoint: "fragmentMain",
+        targets: [
+          {
+            format,
+            blend: {
+              color: {
+                operation: "add",
+                srcFactor: "one",
+                dstFactor: "one",
+              },
+              alpha: {
+                operation: "add",
+                srcFactor: "one",
+                dstFactor: "one-minus-src-alpha",
+              },
+            },
+          },
+        ],
+      },
+      primitive: { topology: "triangle-strip" },
+    });
+
+    const grainShapeNormalPipeline = this.device.createRenderPipeline({
+      label: `Brush Shape 2K Texturized grain normal ${format}`,
+      layout: grainBrushPipelineLayout,
+      vertex: {
+        module: this.brushShaderModule,
+        entryPoint: "shapeVertexMain",
+      },
+      fragment: {
+        module: this.texturizedGrainShaderModule,
+        entryPoint: "shapeFragmentMain",
+        targets: [
+          {
+            format,
+            blend: {
+              color: {
+                operation: "add",
+                srcFactor: "one",
+                dstFactor: "one-minus-src-alpha",
+              },
+              alpha: {
+                operation: "add",
+                srcFactor: "one",
+                dstFactor: "one-minus-src-alpha",
+              },
+            },
+          },
+        ],
+      },
+      primitive: { topology: "triangle-strip" },
+    });
+
+    const grainShapeAdditivePipeline = this.device.createRenderPipeline({
+      label: `Brush Shape 2K Texturized grain additive ${format}`,
+      layout: grainBrushPipelineLayout,
+      vertex: {
+        module: this.brushShaderModule,
+        entryPoint: "shapeVertexMain",
+      },
+      fragment: {
+        module: this.texturizedGrainShaderModule,
+        entryPoint: "shapeFragmentMain",
+        targets: [
+          {
+            format,
+            blend: {
+              color: {
+                operation: "add",
+                srcFactor: "one",
+                dstFactor: "one",
+              },
+              alpha: {
+                operation: "add",
+                srcFactor: "one",
+                dstFactor: "one-minus-src-alpha",
+              },
+            },
+          },
+        ],
+      },
+      primitive: { topology: "triangle-strip" },
+    });
+
+    const grainShapeOccupancyNormalPipeline = this.device.createRenderPipeline({
+      label: `Brush Shape 2K occupancy Texturized grain normal ${format}`,
+      layout: grainBrushOccupancyPipelineLayout,
+      vertex: {
+        module: this.brushShaderModule,
+        entryPoint: "shapeVertexMain",
+      },
+      fragment: {
+        module: this.texturizedGrainShaderModule,
+        entryPoint: "shapeOccupancyFragmentMain",
+        targets: [
+          {
+            format,
+            blend: {
+              color: {
+                operation: "add",
+                srcFactor: "one",
+                dstFactor: "one-minus-src-alpha",
+              },
+              alpha: {
+                operation: "add",
+                srcFactor: "one",
+                dstFactor: "one-minus-src-alpha",
+              },
+            },
+          },
+        ],
+      },
+      primitive: { topology: "triangle-strip" },
+    });
+
+    const grainShapeOccupancyAdditivePipeline = this.device.createRenderPipeline({
+      label: `Brush Shape 2K occupancy Texturized grain additive ${format}`,
+      layout: grainBrushOccupancyPipelineLayout,
+      vertex: {
+        module: this.brushShaderModule,
+        entryPoint: "shapeVertexMain",
+      },
+      fragment: {
+        module: this.texturizedGrainShaderModule,
+        entryPoint: "shapeOccupancyFragmentMain",
+        targets: [
+          {
+            format,
+            blend: {
+              color: {
+                operation: "add",
+                srcFactor: "one",
+                dstFactor: "one",
+              },
+              alpha: {
+                operation: "add",
+                srcFactor: "one",
+                dstFactor: "one-minus-src-alpha",
+              },
+            },
+          },
+        ],
+      },
+      primitive: { topology: "triangle-strip" },
+    });
+
     const lightGlazeCompositeMipPipeline = this.device.createRenderPipeline({
       label: `Light Glaze composited mip 1 ${format}`,
       layout: lightGlazeCompositeMipPipelineLayout,
@@ -2854,6 +3480,12 @@ export class BrushEngine {
     this.shapeAdditivePipeline = shapeAdditivePipeline;
     this.shapeOccupancyNormalPipeline = shapeOccupancyNormalPipeline;
     this.shapeOccupancyAdditivePipeline = shapeOccupancyAdditivePipeline;
+    this.grainNormalPipeline = grainNormalPipeline;
+    this.grainAdditivePipeline = grainAdditivePipeline;
+    this.grainShapeNormalPipeline = grainShapeNormalPipeline;
+    this.grainShapeAdditivePipeline = grainShapeAdditivePipeline;
+    this.grainShapeOccupancyNormalPipeline = grainShapeOccupancyNormalPipeline;
+    this.grainShapeOccupancyAdditivePipeline = grainShapeOccupancyAdditivePipeline;
     this.lightGlazeCompositeMipPipeline = lightGlazeCompositeMipPipeline;
     this.lightGlazeCompositePipeline = lightGlazeCompositePipeline;
     this.paintMipDownsamplePipeline = paintMipDownsamplePipeline;
@@ -3134,6 +3766,39 @@ export class BrushEngine {
       session.mipValidThroughLevel = selectedMipLevel;
     }
     return { passes, updatedPixels };
+  }
+
+  private isTexturizedGrainActive(settings: BrushSettings): boolean {
+    return settings.grainMode === "texturized"
+      && settings.grainBlendMode === "multiply"
+      && settings.grainDepth > 0;
+  }
+
+  private grainSamplingStrategy(settings: BrushSettings): GrainSamplingStrategy {
+    if (!this.isTexturizedGrainActive(settings)) {
+      return "none";
+    }
+    if (settings.grainFiltering === "no") {
+      return "repeat-nearest";
+    }
+    return settings.grainFiltering === "classic"
+      ? "repeat-linear-mip-nearest"
+      : "repeat-linear-trilinear";
+  }
+
+  private writeGrainUniforms(settings: BrushSettings): void {
+    const floats = this.grainUniformUpload;
+    const unsigned = new Uint32Array(floats.buffer);
+    floats.fill(0);
+    const scale = clamp(settings.grainScale, 0.1, 4);
+    floats[0] = 1 / (GRAIN_TEXTURE_SIZE * scale);
+    floats[1] = clamp(settings.grainDepth, 0, 1);
+    floats[2] = clamp(settings.grainBrightness, -1, 1);
+    floats[3] = 1 + clamp(settings.grainContrast, -1, 1);
+    unsigned[4] = settings.grainFiltering === "no"
+      ? 0
+      : settings.grainFiltering === "classic" ? 1 : 2;
+    this.device.queue.writeBuffer(this.grainUniformBuffer, 0, floats);
   }
 
   private writeBrushUniforms(settings: BrushSettings = this.settings): void {
@@ -3625,6 +4290,9 @@ export class BrushEngine {
       dirtyRect: timing.dirtyRect,
       shapeOccupancySelection: timing.shapeOccupancySelection,
       shapeMaskIdentity: this.shapeMaskIdentity,
+      grainTextureIdentity: this.isTexturizedGrainActive(settings)
+        ? this.grainTextureIdentity
+        : null,
     });
     this.historyStoredBaseStamps += batch.length;
 
@@ -3844,6 +4512,9 @@ export class BrushEngine {
       // Ogni writeBuffer è ordinata sulla stessa GPUQueue: il ripristino arriva
       // dopo tutti i batch storici e prima di un eventuale tratto successivo.
       this.writeBrushUniforms(this.settings);
+      if (this.isTexturizedGrainActive(this.settings)) {
+        this.writeGrainUniforms(this.settings);
+      }
     }
 
     this.clearRequested = false;
@@ -4709,6 +5380,18 @@ export class BrushEngine {
       }
       return;
     }
+    if (this.isTexturizedGrainActive(settings)) {
+      if (profile) {
+        profile.grainAdaptivePreviewSkips += 1;
+      }
+      this.adaptivePreviewCandidates.length = 0;
+      this.clearAdaptivePreviewCanvas();
+      // A smooth Canvas2D tip would misrepresent the authoritative
+      // layer-anchored grain. Queue probes remain active so the promoted
+      // adaptive-spacing policy still reacts to GPU latency.
+      this.startAdaptivePreviewProbe(false);
+      return;
+    }
     if (settings.blendMode !== "normal") {
       if (profile) {
         profile.adaptivePreviewUnsupportedBlendSkips += 1;
@@ -4776,6 +5459,13 @@ export class BrushEngine {
     }
 
     const settings = candidates[candidates.length - 1].settings;
+    if (this.isTexturizedGrainActive(settings)) {
+      if (this.activeStrokeProfile) {
+        this.activeStrokeProfile.grainAdaptivePreviewSkips += 1;
+      }
+      this.finishIncompleteAdaptivePreviewFrame(startedAt, false, candidates, false);
+      return;
+    }
     if (settings.blendMode !== "normal") {
       if (this.activeStrokeProfile) {
         this.activeStrokeProfile.adaptivePreviewUnsupportedBlendSkips += 1;
@@ -5103,7 +5793,14 @@ export class BrushEngine {
     if (replayBatch && replayBatch.shapeMaskIdentity !== this.shapeMaskIdentity) {
       throw new Error("La Shape usata dalla cronologia non corrisponde alla risorsa corrente.");
     }
+    const expectedGrainIdentity = this.isTexturizedGrainActive(settings)
+      ? this.grainTextureIdentity
+      : null;
+    if (replayBatch && replayBatch.grainTextureIdentity !== expectedGrainIdentity) {
+      throw new Error("Il Grain usato dalla cronologia non corrisponde alla risorsa corrente.");
+    }
     this.ensureLightGlazeResources();
+    const grainActive = this.isTexturizedGrainActive(settings);
 
     const cpuStart = performance.now();
     if (present) {
@@ -5112,6 +5809,9 @@ export class BrushEngine {
     // Flow, pressure, coverage and jitter remain per stamp. Opacity is applied
     // exactly once to the accumulated stroke by the live/final compositors.
     this.writeBrushUniforms({ ...settings, opacity: 1, blendMode: "normal" });
+    if (grainActive) {
+      this.writeGrainUniforms(settings);
+    }
     this.writeLightGlazeUniforms(settings.opacity);
 
     const encoder = this.device.createCommandEncoder({ label: "Light Glaze frame encoder" });
@@ -5143,6 +5843,11 @@ export class BrushEngine {
     let lightGlazeCompositePixels = 0;
     let lightGlazePyramidPasses = 0;
     let lightGlazePyramidUpdatedPixels = 0;
+    let grainBatches = 0;
+    let grainBaseStamps = 0;
+    let grainPhysicalCopies = 0;
+    let grainCircleBatches = 0;
+    let grainShapeBatches = 0;
 
     const brushEncodingStart = performance.now();
     if (clearLayer) {
@@ -5197,17 +5902,27 @@ export class BrushEngine {
         const isShape = settings.shape === "shape";
         const shapeOccupancyMip = submittedShapeOccupancySelection?.selectedMipLevel ?? null;
         const useShapeOccupancy = isShape && shapeOccupancyMip !== null;
-        const pipeline = isShape
-          ? useShapeOccupancy
-            ? this.shapeOccupancyNormalPipeline
-            : this.shapeNormalPipeline
-          : this.normalPipeline;
+        const pipeline = grainActive
+          ? isShape
+            ? useShapeOccupancy
+              ? this.grainShapeOccupancyNormalPipeline
+              : this.grainShapeNormalPipeline
+            : this.grainNormalPipeline
+          : isShape
+            ? useShapeOccupancy
+              ? this.shapeOccupancyNormalPipeline
+              : this.shapeNormalPipeline
+            : this.normalPipeline;
         brushPass.setPipeline(pipeline);
         brushPass.setBindGroup(
           0,
-          useShapeOccupancy
-            ? this.brushOccupancyBindGroups[shapeOccupancyMip!]
-            : this.brushBindGroup,
+          grainActive
+            ? useShapeOccupancy
+              ? this.grainBrushOccupancyBindGroups[settings.grainFiltering][shapeOccupancyMip!]
+              : this.grainBrushBindGroups[settings.grainFiltering]
+            : useShapeOccupancy
+              ? this.brushOccupancyBindGroups[shapeOccupancyMip!]
+              : this.brushBindGroup,
         );
         brushPass.setScissorRect(
           submittedDirtyRect.x,
@@ -5219,6 +5934,13 @@ export class BrushEngine {
           this.recordShapeSampling(submittedShapeOccupancySelection);
         }
         brushPass.draw(STAMP_VERTICES_PER_COPY, stamps.length * settings.count, 0, 0);
+        if (grainActive) {
+          grainBatches = 1;
+          grainBaseStamps = stamps.length;
+          grainPhysicalCopies = stamps.length * settings.count;
+          grainCircleBatches = isShape ? 0 : 1;
+          grainShapeBatches = isShape ? 1 : 0;
+        }
       }
       brushPass.end();
       session.needsClear = false;
@@ -5449,6 +6171,9 @@ export class BrushEngine {
     // Restore the current UI settings after the ordered Light Glaze submit so
     // a following Normal/Additive frame sees the ordinary uniform contents.
     this.writeBrushUniforms(this.settings);
+    if (this.isTexturizedGrainActive(this.settings)) {
+      this.writeGrainUniforms(this.settings);
+    }
 
     return {
       totalCpuMs: performance.now() - cpuStart,
@@ -5479,6 +6204,11 @@ export class BrushEngine {
       lightGlazeCompositePixels,
       lightGlazePyramidPasses,
       lightGlazePyramidUpdatedPixels,
+      grainBatches,
+      grainBaseStamps,
+      grainPhysicalCopies,
+      grainCircleBatches,
+      grainShapeBatches,
     };
   }
 
@@ -5496,6 +6226,10 @@ export class BrushEngine {
       if (stamps.length > 0) {
         throw new Error("Stamp Light Glaze senza sessione per-stroke.");
       }
+    }
+    const grainActive = this.isTexturizedGrainActive(settings);
+    if (grainActive) {
+      this.writeGrainUniforms(settings);
     }
     const cpuStart = performance.now();
     if (present) {
@@ -5525,9 +6259,20 @@ export class BrushEngine {
     let paintDisplayPyramidBaseDirtyPixels = 0;
     let paintDisplayPyramidUpdatedPixels = 0;
     let paintDisplayPyramidEncodingMs = 0;
+    let grainBatches = 0;
+    let grainBaseStamps = 0;
+    let grainPhysicalCopies = 0;
+    let grainCircleBatches = 0;
+    let grainShapeBatches = 0;
 
     if (replayBatch && replayBatch.shapeMaskIdentity !== this.shapeMaskIdentity) {
       throw new Error("La Shape usata dalla cronologia non corrisponde alla risorsa corrente.");
+    }
+    const expectedGrainIdentity = this.isTexturizedGrainActive(settings)
+      ? this.grainTextureIdentity
+      : null;
+    if (replayBatch && replayBatch.grainTextureIdentity !== expectedGrainIdentity) {
+      throw new Error("Il Grain usato dalla cronologia non corrisponde alla risorsa corrente.");
     }
 
     if (clearLayer || stamps.length > 0) {
@@ -5574,27 +6319,50 @@ export class BrushEngine {
         const isShape = settings.shape === "shape";
         const shapeOccupancyMip = shapeOccupancySelection?.selectedMipLevel ?? null;
         const useShapeOccupancy = isShape && shapeOccupancyMip !== null;
-        const pipeline = isShape
-          ? useShapeOccupancy
-            ? settings.blendMode === "additive"
-              ? this.shapeOccupancyAdditivePipeline
-              : this.shapeOccupancyNormalPipeline
+        const pipeline = grainActive
+          ? isShape
+            ? useShapeOccupancy
+              ? settings.blendMode === "additive"
+                ? this.grainShapeOccupancyAdditivePipeline
+                : this.grainShapeOccupancyNormalPipeline
+              : settings.blendMode === "additive"
+                ? this.grainShapeAdditivePipeline
+                : this.grainShapeNormalPipeline
             : settings.blendMode === "additive"
-              ? this.shapeAdditivePipeline
-              : this.shapeNormalPipeline
-          : settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline;
+              ? this.grainAdditivePipeline
+              : this.grainNormalPipeline
+          : isShape
+            ? useShapeOccupancy
+              ? settings.blendMode === "additive"
+                ? this.shapeOccupancyAdditivePipeline
+                : this.shapeOccupancyNormalPipeline
+              : settings.blendMode === "additive"
+                ? this.shapeAdditivePipeline
+                : this.shapeNormalPipeline
+            : settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline;
         brushPass.setPipeline(pipeline);
         brushPass.setBindGroup(
           0,
-          useShapeOccupancy
-            ? this.brushOccupancyBindGroups[shapeOccupancyMip!]
-            : this.brushBindGroup,
+          grainActive
+            ? useShapeOccupancy
+              ? this.grainBrushOccupancyBindGroups[settings.grainFiltering][shapeOccupancyMip!]
+              : this.grainBrushBindGroups[settings.grainFiltering]
+            : useShapeOccupancy
+              ? this.brushOccupancyBindGroups[shapeOccupancyMip!]
+              : this.brushBindGroup,
         );
         brushPass.setScissorRect(dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height);
         if (isShape && shapeOccupancySelection && !replayBatch) {
           this.recordShapeSampling(shapeOccupancySelection);
         }
         brushPass.draw(STAMP_VERTICES_PER_COPY, stamps.length * settings.count, 0, 0);
+        if (grainActive) {
+          grainBatches = 1;
+          grainBaseStamps = stamps.length;
+          grainPhysicalCopies = stamps.length * settings.count;
+          grainCircleBatches = isShape ? 0 : 1;
+          grainShapeBatches = isShape ? 1 : 0;
+        }
       }
       brushPass.end();
       brushEncodingMs = performance.now() - brushEncodingStart;
@@ -5734,6 +6502,11 @@ export class BrushEngine {
       lightGlazeCompositePixels: 0,
       lightGlazePyramidPasses: 0,
       lightGlazePyramidUpdatedPixels: 0,
+      grainBatches,
+      grainBaseStamps,
+      grainPhysicalCopies,
+      grainCircleBatches,
+      grainShapeBatches,
     };
   }
 
@@ -5905,6 +6678,11 @@ export class BrushEngine {
     profile.lightGlazeCompositePixels += timing.lightGlazeCompositePixels;
     profile.lightGlazePyramidPasses += timing.lightGlazePyramidPasses;
     profile.lightGlazePyramidUpdatedPixels += timing.lightGlazePyramidUpdatedPixels;
+    profile.grainBatches += timing.grainBatches;
+    profile.grainBaseStamps += timing.grainBaseStamps;
+    profile.grainPhysicalCopies += timing.grainPhysicalCopies;
+    profile.grainCircleBatches += timing.grainCircleBatches;
+    profile.grainShapeBatches += timing.grainShapeBatches;
 
     if (batchSize > 0) {
       profile.brushBatches += 1;
