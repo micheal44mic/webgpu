@@ -163,6 +163,9 @@ interface BenchmarkRun {
     rasterStrokeStyle: RasterStrokeStyle;
     rasterStrokePersistentMemoryMiB: number;
     rasterStrokeScratchMemoryMiB: number;
+    rasterStrokeScratchStrategy: string;
+    rasterStrokeScratchExtent: number;
+    rasterStrokeScratchCompactMaxWidth: number;
     layerMemoryMiB: number;
     gpuLabel: string;
     timestampQueriesSupported: boolean;
@@ -249,7 +252,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 32;
+    performanceTelemetryRevision: 33;
   };
 }
 
@@ -558,7 +561,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 32,
+    performanceTelemetryRevision: 33,
     ...engineEnvironment,
   };
 }
@@ -1430,6 +1433,11 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
     output.textContent = formatMemoryMiB(value);
     output.parentElement?.classList.toggle("memory-zero", value < 0.05);
   }
+
+  const scratchExtent = stats.gpuMemory.rasterStrokeScratchExtent;
+  element<HTMLElement>("gpuMemoryStrokeScratchLabel").textContent = scratchExtent > 0
+    ? `Traccia · scratch JFA ${scratchExtent}²`
+    : "Traccia · scratch JFA";
 
   const totalMiB = stats.gpuMemory.countedTotalMiB;
   const formattedTotal = formatMemoryMiB(totalMiB);

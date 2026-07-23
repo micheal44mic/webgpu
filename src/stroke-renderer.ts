@@ -1,12 +1,11 @@
 import {
-  RASTER_STROKE_MAX_WIDTH,
   jfaScheduleForExtent,
   type RasterStrokeRect,
   type RasterStrokeStyle,
 } from "./stroke-core";
 
 export const RASTER_STROKE_RENDERER_BUILD =
-  "raster-stroke-webgpu-v2-compute-threshold-gated-packed-dual-jfa-q10.6";
+  "raster-stroke-webgpu-v3-width-tiered-scratch-threshold-gated-packed-dual-jfa-q10.6";
 
 export type RasterStrokeSourceMode = "permanent" | "light-glaze" | "thickness-tail";
 
@@ -150,7 +149,8 @@ struct StrokeParameters {
   sourceMode: u32,
   styleWidth: f32,
   stylePosition: u32,
-  _pad0: vec2<u32>,
+  scratchExtent: u32,
+  _pad0: u32,
   styleColor: vec4<f32>,
 };
 
@@ -241,7 +241,6 @@ fn unpackSeed(value: u32) -> vec2<u32> {
 function seedShader(
   documentWidth: number,
   documentHeight: number,
-  scratchExtent: number,
 ): string {
   return `${shaderSourceCommon(documentWidth, documentHeight)}
 @group(0) @binding(5) var<storage, read_write> outputSeeds: array<vec2<u32>>;
@@ -260,12 +259,12 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
     vec2<u32>(packed, INVALID_SEED),
     inside
   );
-  outputSeeds[localPosition.y * ${scratchExtent}u + localPosition.x] = value;
+  outputSeeds[localPosition.y * parameters.scratchExtent + localPosition.x] = value;
 }
 `;
 }
 
-function jfaShader(scratchExtent: number): string {
+function jfaShader(): string {
   return /* wgsl */ `
 struct StrokeParameters {
   buildOrigin: vec2<i32>,
@@ -277,7 +276,8 @@ struct StrokeParameters {
   sourceMode: u32,
   styleWidth: f32,
   stylePosition: u32,
-  _pad0: vec2<u32>,
+  scratchExtent: u32,
+  _pad0: u32,
   styleColor: vec4<f32>,
 };
 
@@ -313,7 +313,7 @@ fn bestCandidate(position: vec2<u32>, candidateIndex: u32) -> u32 {
         continue;
       }
       let pair = inputSeeds[
-        u32(samplePosition.y) * ${scratchExtent}u + u32(samplePosition.x)
+        u32(samplePosition.y) * parameters.scratchExtent + u32(samplePosition.x)
       ];
       let candidate = select(pair.x, pair.y, candidateIndex == 1u);
       if (candidate == INVALID_SEED) {
@@ -344,7 +344,7 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
     return;
   }
   let position = globalId.xy;
-  outputSeeds[position.y * ${scratchExtent}u + position.x] = vec2<u32>(
+  outputSeeds[position.y * parameters.scratchExtent + position.x] = vec2<u32>(
     bestCandidate(position, 0u),
     bestCandidate(position, 1u)
   );
@@ -355,7 +355,6 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
 function resolveShader(
   documentWidth: number,
   documentHeight: number,
-  scratchExtent: number,
 ): string {
   return `${shaderSourceCommon(documentWidth, documentHeight)}
 @group(0) @binding(5) var<storage, read> propagatedSeeds: array<vec2<u32>>;
@@ -366,7 +365,7 @@ fn resolveFixedDistance(
   localPosition: vec2<u32>
 ) -> u32 {
   let pair = propagatedSeeds[
-    localPosition.y * ${scratchExtent}u + localPosition.x
+    localPosition.y * parameters.scratchExtent + localPosition.x
   ];
   let inside = sourceTexel(vec2<i32>(documentPosition)).a >= 0.5;
   let candidate = select(pair.x, pair.y, inside);
@@ -557,7 +556,8 @@ struct StrokeParameters {
   sourceMode: u32,
   styleWidth: f32,
   stylePosition: u32,
-  _pad0: vec2<u32>,
+  scratchExtent: u32,
+  _pad0: u32,
   styleColor: vec4<f32>,
 };
 
@@ -616,9 +616,7 @@ export class RasterStrokeRenderer {
   readonly build = RASTER_STROKE_RENDERER_BUILD;
   readonly samplingView: GPUTextureView;
   readonly mipViews: readonly GPUTextureView[];
-  readonly scratchExtent: number;
   readonly persistentMemoryBytes: number;
-  readonly scratchMemoryBytes: number;
   readonly styledMemoryBytes: number;
   readonly distanceMemoryBytes: number;
   readonly thresholdMaskMemoryBytes: number;
@@ -631,6 +629,9 @@ export class RasterStrokeRenderer {
   private readonly layerView: GPUTextureView;
   private readonly lightGlazeUniformBuffer: GPUBuffer;
   private readonly thicknessTailUniformBuffer: GPUBuffer;
+  private readonly maximumScratchExtent: number;
+  private _scratchExtent: number;
+  private _scratchMemoryBytes: number;
   private readonly parameterBuffer: GPUBuffer;
   private readonly parameterUpload = new ArrayBuffer(PARAMETER_CAPACITY * PARAMETER_STRIDE);
   private readonly parameterUploadI32 = new Int32Array(this.parameterUpload);
@@ -639,7 +640,7 @@ export class RasterStrokeRenderer {
   private readonly indirectTemplateUpload = new Uint32Array(
     PARAMETER_CAPACITY * INDIRECT_ARGUMENT_WORDS,
   );
-  private readonly scratchBuffers: readonly [GPUBuffer, GPUBuffer];
+  private scratchBuffers: [GPUBuffer, GPUBuffer];
   private readonly distanceBuffer: GPUBuffer;
   private readonly thresholdMaskBuffer: GPUBuffer;
   private readonly changeStateBuffer: GPUBuffer;
@@ -685,38 +686,14 @@ export class RasterStrokeRenderer {
     const maximumScratchFromBuffer = Math.floor(Math.sqrt(
       Number(this.device.limits.maxBufferSize) / 8,
     ));
-    const requestedScratch = Math.max(
-      1,
-      Math.trunc(options.scratchExtent ?? DEFAULT_SCRATCH_EXTENT),
-    );
-    this.scratchExtent = Math.floor(
-      Math.min(
-        requestedScratch,
-        maximumScratchFromBinding,
-        maximumScratchFromBuffer,
-      ) / WORKGROUP_SIZE,
+    this.maximumScratchExtent = Math.floor(
+      Math.min(maximumScratchFromBinding, maximumScratchFromBuffer) / WORKGROUP_SIZE,
     ) * WORKGROUP_SIZE;
-    const minimumRequiredExtent = Math.ceil(RASTER_STROKE_MAX_WIDTH + 2) * 2 + 1;
-    if (this.scratchExtent < minimumRequiredExtent) {
-      throw new Error(
-        `Limite storage GPU insufficiente per la Traccia 512 px: scratch `
-        + `${this.scratchExtent}px, richiesti almeno ${minimumRequiredExtent}px.`,
-      );
-    }
-
-    const scratchBytes = this.scratchExtent * this.scratchExtent * 8;
-    this.scratchBuffers = [
-      this.device.createBuffer({
-        label: "Traccia packed dual JFA scratch A",
-        size: scratchBytes,
-        usage: GPUBufferUsage.STORAGE,
-      }),
-      this.device.createBuffer({
-        label: "Traccia packed dual JFA scratch B",
-        size: scratchBytes,
-        usage: GPUBufferUsage.STORAGE,
-      }),
-    ];
+    this._scratchExtent = this.normalizeScratchExtent(
+      options.scratchExtent ?? DEFAULT_SCRATCH_EXTENT,
+    );
+    this.scratchBuffers = this.createScratchBuffers(this._scratchExtent);
+    this._scratchMemoryBytes = this._scratchExtent * this._scratchExtent * 8 * 2;
     const parameterBufferBytes = PARAMETER_CAPACITY * PARAMETER_STRIDE;
     this.parameterBuffer = this.device.createBuffer({
       label: "Traccia dynamic dispatch parameters",
@@ -822,7 +799,64 @@ export class RasterStrokeRenderer {
       + this.styledMemoryBytes
       + this.thresholdMaskMemoryBytes
       + this.controlMemoryBytes;
-    this.scratchMemoryBytes = scratchBytes * 2;
+  }
+
+  get scratchExtent(): number {
+    return this._scratchExtent;
+  }
+
+  get scratchMemoryBytes(): number {
+    return this._scratchMemoryBytes;
+  }
+
+  private normalizeScratchExtent(requestedExtent: unknown): number {
+    const requested = Math.max(
+      WORKGROUP_SIZE,
+      Math.trunc(Number(requestedExtent) || DEFAULT_SCRATCH_EXTENT),
+    );
+    const extent = Math.floor(
+      Math.min(requested, this.maximumScratchExtent) / WORKGROUP_SIZE,
+    ) * WORKGROUP_SIZE;
+    if (extent < WORKGROUP_SIZE) {
+      throw new Error("Limite storage GPU insufficiente per lo scratch Traccia.");
+    }
+    return extent;
+  }
+
+  private createScratchBuffers(extent: number): [GPUBuffer, GPUBuffer] {
+    const scratchBytes = extent * extent * 8;
+    return [
+      this.device.createBuffer({
+        label: `Traccia packed dual JFA scratch A ${extent}²`,
+        size: scratchBytes,
+        usage: GPUBufferUsage.STORAGE,
+      }),
+      this.device.createBuffer({
+        label: `Traccia packed dual JFA scratch B ${extent}²`,
+        size: scratchBytes,
+        usage: GPUBufferUsage.STORAGE,
+      }),
+    ];
+  }
+
+  resizeScratch(requestedExtent: number): boolean {
+    if (this.destroyed) {
+      throw new Error("Renderer Traccia già distrutto.");
+    }
+    const nextExtent = this.normalizeScratchExtent(requestedExtent);
+    if (nextExtent === this._scratchExtent) {
+      return false;
+    }
+    const previousBuffers = this.scratchBuffers;
+    this.scratchBuffers = this.createScratchBuffers(nextExtent);
+    this._scratchExtent = nextExtent;
+    this._scratchMemoryBytes = nextExtent * nextExtent * 8 * 2;
+    if (this.jfaBindGroupLayout) {
+      this.rebuildScratchBindGroups();
+    }
+    previousBuffers[0].destroy();
+    previousBuffers[1].destroy();
+    return true;
   }
 
   private async initialize(): Promise<void> {
@@ -921,15 +955,15 @@ export class RasterStrokeRenderer {
 
     const seedModule = this.device.createShaderModule({
       label: "Traccia dual seed WGSL",
-      code: seedShader(this.documentWidth, this.documentHeight, this.scratchExtent),
+      code: seedShader(this.documentWidth, this.documentHeight),
     });
     const jfaModule = this.device.createShaderModule({
       label: "Traccia packed dual JFA WGSL",
-      code: jfaShader(this.scratchExtent),
+      code: jfaShader(),
     });
     const resolveModule = this.device.createShaderModule({
       label: "Traccia Q10.6 resolve WGSL",
-      code: resolveShader(this.documentWidth, this.documentHeight, this.scratchExtent),
+      code: resolveShader(this.documentWidth, this.documentHeight),
     });
     const composeModule = this.device.createShaderModule({
       label: "Traccia styled compose WGSL",
@@ -1000,6 +1034,40 @@ export class RasterStrokeRenderer {
       throw new Error(validationError.message);
     }
 
+    this.rebuildScratchBindGroups();
+    this.indirectGateBindGroup = this.device.createBindGroup({
+      label: "Traccia indirect dispatch gate bind group",
+      layout: this.indirectGateBindGroupLayout,
+      entries: [
+        {
+          binding: 0,
+          resource: {
+            buffer: this.parameterBuffer,
+            offset: 0,
+            size: PARAMETER_BYTES,
+          },
+        },
+        { binding: 1, resource: { buffer: this.changeStateBuffer } },
+        { binding: 2, resource: { buffer: this.indirectArgumentsBuffer } },
+      ],
+    });
+  }
+
+  setLightGlazeView(view: GPUTextureView | null): void {
+    this.sourceViews[1] = view ?? this.dummyView;
+    if (this.seedBindGroupLayout) {
+      this.rebuildSourceBindGroups(1);
+    }
+  }
+
+  setThicknessTailView(view: GPUTextureView | null): void {
+    this.sourceViews[2] = view ?? this.dummyView;
+    if (this.seedBindGroupLayout) {
+      this.rebuildSourceBindGroups(2);
+    }
+  }
+
+  private rebuildScratchBindGroups(): void {
     this.jfaBindGroups = [
       this.device.createBindGroup({
         label: "Traccia JFA A to B",
@@ -1034,39 +1102,9 @@ export class RasterStrokeRenderer {
         ],
       }),
     ];
-    this.indirectGateBindGroup = this.device.createBindGroup({
-      label: "Traccia indirect dispatch gate bind group",
-      layout: this.indirectGateBindGroupLayout,
-      entries: [
-        {
-          binding: 0,
-          resource: {
-            buffer: this.parameterBuffer,
-            offset: 0,
-            size: PARAMETER_BYTES,
-          },
-        },
-        { binding: 1, resource: { buffer: this.changeStateBuffer } },
-        { binding: 2, resource: { buffer: this.indirectArgumentsBuffer } },
-      ],
-    });
     this.rebuildSourceBindGroups(0);
     this.rebuildSourceBindGroups(1);
     this.rebuildSourceBindGroups(2);
-  }
-
-  setLightGlazeView(view: GPUTextureView | null): void {
-    this.sourceViews[1] = view ?? this.dummyView;
-    if (this.seedBindGroupLayout) {
-      this.rebuildSourceBindGroups(1);
-    }
-  }
-
-  setThicknessTailView(view: GPUTextureView | null): void {
-    this.sourceViews[2] = view ?? this.dummyView;
-    if (this.seedBindGroupLayout) {
-      this.rebuildSourceBindGroups(2);
-    }
   }
 
   private commonSourceEntries(mode: SourceModeCode): GPUBindGroupEntry[] {
@@ -1195,7 +1233,7 @@ export class RasterStrokeRenderer {
     this.parameterUploadU32[word + 11] = mode;
     this.parameterUploadF32[word + 12] = style.width;
     this.parameterUploadU32[word + 13] = stylePositionCode(style.position);
-    this.parameterUploadU32[word + 14] = 0;
+    this.parameterUploadU32[word + 14] = this.scratchExtent;
     this.parameterUploadU32[word + 15] = 0;
     this.parameterUploadF32[word + 16] = style.color[0];
     this.parameterUploadF32[word + 17] = style.color[1];

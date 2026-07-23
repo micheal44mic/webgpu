@@ -36,9 +36,12 @@ import {
 } from "./stroke-renderer";
 import {
   DEFAULT_RASTER_STROKE_STYLE,
+  RASTER_STROKE_COMPACT_SCRATCH_MAX_WIDTH,
+  RASTER_STROKE_SCRATCH_STRATEGY,
   copyRasterStrokeStyle,
   nextRasterStrokeMipValidThroughLevel,
   normalizeRasterStrokeStyle,
+  rasterStrokeScratchExtentForWidth,
   rasterStrokeStylesEqual,
   type RasterStrokeRect,
   type RasterStrokeStyle,
@@ -188,6 +191,7 @@ export interface EngineGpuMemoryStats {
   rasterStrokeDistanceMiB: number;
   rasterStrokeMaskAndControlMiB: number;
   rasterStrokeScratchMiB: number;
+  rasterStrokeScratchExtent: number;
   blendRendererMiB: number;
   lightGlazeMiB: number;
   thicknessTailMiB: number;
@@ -1569,10 +1573,13 @@ export class BrushEngine {
     );
   }
 
-  private async ensureRasterStrokeRenderer(): Promise<RasterStrokeRenderer> {
+  private async ensureRasterStrokeRenderer(
+    styleWidth = this.rasterStrokeStyle.width,
+  ): Promise<RasterStrokeRenderer> {
     if (this.rasterStrokeRenderer) {
       return this.rasterStrokeRenderer;
     }
+    const scratchExtent = rasterStrokeScratchExtentForWidth(styleWidth);
     const renderer = await RasterStrokeRenderer.create({
       device: this.device,
       documentWidth: LAYER_SIZE,
@@ -1581,6 +1588,7 @@ export class BrushEngine {
       layerView: this.layerView,
       lightGlazeUniformBuffer: this.lightGlazeUniformBuffer,
       thicknessTailUniformBuffer: this.thicknessTailDisplayUniformBuffer,
+      scratchExtent,
     });
     renderer.setLightGlazeView(this.lightGlazeView);
     renderer.setThicknessTailView(this.thicknessTailView);
@@ -1645,10 +1653,17 @@ export class BrushEngine {
     const nextActive = normalized.enabled && normalized.width > 0;
     this.rasterStrokeBusy = true;
     try {
-      if (nextActive && !this.rasterStrokeRenderer) {
-        this.callbacks.onStatus?.("Preparo la Traccia WebGPU…", "working");
-        await this.waitForIdle();
-        await this.ensureRasterStrokeRenderer();
+      if (nextActive) {
+        const scratchExtent = rasterStrokeScratchExtentForWidth(normalized.width);
+        if (!this.rasterStrokeRenderer) {
+          this.callbacks.onStatus?.("Preparo la Traccia WebGPU…", "working");
+          await this.waitForIdle();
+          await this.ensureRasterStrokeRenderer(normalized.width);
+        } else if (this.rasterStrokeRenderer.scratchExtent !== scratchExtent) {
+          this.callbacks.onStatus?.("Adatto la memoria scratch della Traccia…", "working");
+          await this.waitForIdle();
+          this.rasterStrokeRenderer.resizeScratch(scratchExtent);
+        }
       }
 
       this.rasterStrokeStyle = normalized;
@@ -2229,6 +2244,7 @@ export class BrushEngine {
     ) / MEBIBYTE_BYTES;
     const rasterStrokeScratchMiB =
       (rasterStroke?.scratchMemoryBytes ?? 0) / MEBIBYTE_BYTES;
+    const rasterStrokeScratchExtent = rasterStroke?.scratchExtent ?? 0;
     const blendRendererMiB = this.blendRenderer?.allocatedMemoryMiB() ?? 0;
     const lightGlazeMiB = this.lightGlazeStorageAllocated
       ? lightGlazeAdditionalMemoryMiB(this.layerFormat)
@@ -2267,6 +2283,7 @@ export class BrushEngine {
       blendRendererMiB,
       lightGlazeMiB,
       thicknessTailMiB,
+      rasterStrokeScratchExtent,
       countedTotalMiB,
     };
   }
@@ -2770,6 +2787,9 @@ export class BrushEngine {
     rasterStrokeStyle: RasterStrokeStyle;
     rasterStrokePersistentMemoryMiB: number;
     rasterStrokeScratchMemoryMiB: number;
+    rasterStrokeScratchStrategy: typeof RASTER_STROKE_SCRATCH_STRATEGY;
+    rasterStrokeScratchExtent: number;
+    rasterStrokeScratchCompactMaxWidth: number;
     timestampQueriesSupported: boolean;
     stampGeometry: StampGeometry;
     stampVerticesPerCopy: number;
@@ -2864,6 +2884,9 @@ export class BrushEngine {
         (this.rasterStrokeRenderer?.persistentMemoryBytes ?? 0) / (1024 * 1024),
       rasterStrokeScratchMemoryMiB:
         (this.rasterStrokeRenderer?.scratchMemoryBytes ?? 0) / (1024 * 1024),
+      rasterStrokeScratchStrategy: RASTER_STROKE_SCRATCH_STRATEGY,
+      rasterStrokeScratchExtent: this.rasterStrokeRenderer?.scratchExtent ?? 0,
+      rasterStrokeScratchCompactMaxWidth: RASTER_STROKE_COMPACT_SCRATCH_MAX_WIDTH,
       stampGeometry: this.settings.shape === "shape" ? this.lastStampGeometry : STAMP_GEOMETRY,
       stampVerticesPerCopy: this.settings.shape === "shape"
         ? this.lastStampVerticesPerCopy

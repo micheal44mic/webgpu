@@ -137,14 +137,19 @@ Paint:
   `0,5`, JFA per estensione con passo `1` extra, tie deterministico `y→x`,
   distanza Q10.6 half-up (cap `1023 px`), correzione subpixel dall'alpha,
   coverage quantizzata R8 e compositing premoltiplicato M1.
-- Renderer `raster-stroke-webgpu-v2-compute-threshold-gated-packed-dual-jfa-q10.6`:
+- Renderer `raster-stroke-webgpu-v3-width-tiered-scratch-threshold-gated-packed-dual-jfa-q10.6`:
   seed, JFA, resolve, compositing e piramide mip restano sulla GPU. Il campo
-  Q10.6 persistente usa due pixel per `u32` (`32 MiB`); due scratch dual-seed
-  `2048²` usano `64 MiB`. La texture styled completa costa ~`85,3 MiB` in
-  RGBA8 o ~`170,7 MiB` in RGBA16F. La maschera alpha bit-packed costa `2 MiB`;
-  parametri dinamici, argomenti indirect, flag e texture dummy costano insieme
-  ~`0,52 MiB`. Totale aggiuntivo corretto: ~`183,9 MiB` in RGBA8 o
-  ~`269,2 MiB` in RGBA16F, allocato lazy e liberato alla disabilitazione.
+  Q10.6 persistente usa due pixel per `u32` (`32 MiB`). Lo scratch dual-seed è
+  adattivo alla width: `1024²` (`16 MiB`) fino a `128 px`, `2048²` (`64 MiB`)
+  da `129` a `512 px`. Lo stride è una uniform per-dispatch; al cambio tier
+  vengono sostituiti solo i due buffer scratch e i relativi bind group dopo
+  `waitForIdle`, senza ricreare campo distanza o texture styled.
+- La texture styled completa costa ~`85,3 MiB` in RGBA8 o ~`170,7 MiB` in
+  RGBA16F. La maschera alpha bit-packed costa `2 MiB`; parametri dinamici,
+  argomenti indirect, flag e texture dummy costano insieme ~`0,52 MiB`. Totale
+  aggiuntivo a width `≤128`: ~`135,9 MiB` RGBA8 o ~`221,2 MiB` RGBA16F; oltre
+  `128`: ~`183,9 MiB` o ~`269,2 MiB`. Tutto resta lazy e viene liberato alla
+  disabilitazione.
 - Rebuild completo solo all'abilitazione, clear, replay o crescita oltre il
   campo valido. Durante il disegno un compute confronta la soglia alpha `0,5`
   nella dirty region con una maschera persistente; un flag atomico azzera via
@@ -157,15 +162,15 @@ Paint:
   tail predittivo dello spessore, Blend dry e Undo/Redo. Verifica funzionale
   desktop NVIDIA Ampere: inizializzazione WGSL, tratto visibile, cambi stile,
   Undo/Redo e tutti i percorsi citati senza errori console/GPU.
-- Monitor memoria GPU rev `32`: pill apribile/chiudibile in basso a destra,
+- Monitor memoria GPU rev `33`: pill apribile/chiudibile in basso a destra,
   totale aggiornato ogni `500 ms`, dettaglio per risorsa e badge temporaneo per
   ogni variazione di almeno `0,05 MiB`. Conta le dimensioni logiche delle risorse
   WebGPU create dal motore; non misura residency fisica e non include swapchain,
   pipeline/driver, RAM, cronologia o memoria del browser.
 - Non esiste ancora una run canonica di prestazioni né la prova iPhone: non
   dichiarare guadagni o promuovere la Traccia finché l'utente non misura il
-  comportamento end-to-end. Le run rev `32` riportano stile, build e memoria
-  corretta nella firma e non vanno aggregate con rev `31` o precedenti.
+  comportamento end-to-end. Le run rev `33` riportano stile, build, strategia,
+  extent scratch e memoria corretta; non vanno aggregate con rev `32` o precedenti.
 - Fix zoom-out del 23 luglio 2026, da segnalazione utente senza riproduzione
   visiva: una mutazione del mip styled `0` lasciava erroneamente marcati validi
   i mip più piccoli non aggiornati nel frame; il successivo zoom-out poteva
@@ -174,6 +179,13 @@ Paint:
   e il primo livello mancante viene ricostruito prima della cache di
   presentazione. Verifiche: `npm run stroke:verify` e `npx tsc --noEmit`; prova
   percettiva lasciata all'utente come richiesto.
+- Scratch adattivo verificato localmente il 24 luglio 2026 su NVIDIA Ampere:
+  transizioni `14→512→14 px` riportano `16→64→16 MiB`, totali conteggiati
+  `264,9→312,9→264,9 MiB`, shader e bind group senza errori console/GPU. Nessun
+  tratto è stato disegnato automaticamente; pacing e risultato percettivo sono
+  lasciati alla prova utente prima di promuovere il tier compatto. Verifiche:
+  `npm run stroke:verify`, `grain:verify`, `blend:verify`, `thickness:verify`,
+  TypeScript e build Vite.
 - Gate alpha v2 verificato con `npm run stroke:verify`, `npm run grain:verify`,
   `npm run blend:verify`, `npm run thickness:verify`, TypeScript, build Vite in
   output temporaneo e inizializzazione runtime WebGPU su NVIDIA Ampere: shader,
@@ -232,8 +244,8 @@ probe · `16` armed-hidden · `17` spacing adattivo · `18` tetto Android ·
 Grain/M1 matrice · `24` Grain Invert · `25` dinamica spessore · `26` bridge
 Canvas2D tail · `27` overlay WebGPU tail · `28` rimozione velocità ·
 `29` rimozione pressione · `30` firma Traccia raster · `31` gate alpha GPU
-Traccia · `32` monitor e contabilità memoria GPU (revisione canonica corrente
-del Paint).
+Traccia · `32` monitor e contabilità memoria GPU · `33` scratch Traccia adattivo
+alla width (revisione canonica corrente del Paint).
 
 ## Strumento Blend dry (WebGPU)
 

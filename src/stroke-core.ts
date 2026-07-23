@@ -15,6 +15,22 @@ export const RASTER_STROKE_MAX_BUILD_EXTENT = 4096;
 export const RASTER_STROKE_ALPHA_THRESHOLD = 127.5 / 255;
 export const RASTER_STROKE_JFA_TIE_ORDER = "yx" as const;
 export const RASTER_STROKE_JFA_TIE_EPSILON = 1e-5;
+export const RASTER_STROKE_SCRATCH_STRATEGY =
+  "width-tiered-1024-through-128-otherwise-2048" as const;
+export const RASTER_STROKE_COMPACT_SCRATCH_EXTENT = 1024;
+export const RASTER_STROKE_COMPACT_SCRATCH_MAX_WIDTH = 128;
+export const RASTER_STROKE_FULL_SCRATCH_EXTENT = 2048;
+
+export function rasterStrokeScratchExtentForWidth(width: unknown): number {
+  const normalizedWidth = Math.min(
+    RASTER_STROKE_MAX_WIDTH,
+    Math.max(0, Number(width) || 0),
+  );
+  return normalizedWidth <= RASTER_STROKE_COMPACT_SCRATCH_MAX_WIDTH
+    ? RASTER_STROKE_COMPACT_SCRATCH_EXTENT
+    : RASTER_STROKE_FULL_SCRATCH_EXTENT;
+}
+
 export const RASTER_STROKE_POSITIONS = [
   "inside",
   "center",

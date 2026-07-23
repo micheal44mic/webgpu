@@ -6,6 +6,10 @@ import {
   RASTER_STROKE_DISTANCE_SCALE,
   RASTER_STROKE_JFA_TIE_ORDER,
   RASTER_STROKE_MAX_DISTANCE,
+  RASTER_STROKE_COMPACT_SCRATCH_EXTENT,
+  RASTER_STROKE_COMPACT_SCRATCH_MAX_WIDTH,
+  RASTER_STROKE_FULL_SCRATCH_EXTENT,
+  RASTER_STROKE_SCRATCH_STRATEGY,
   RASTER_STROKE_MAX_WIDTH,
   compositeRasterStrokePixel,
   copyRasterStrokeStyle,
@@ -23,6 +27,7 @@ import {
   rasterStrokeJfaCandidateWins,
   rasterStrokeJfaScheduleForRegion,
   rasterStrokeJfaSeedTieLess,
+  rasterStrokeScratchExtentForWidth,
   rasterStrokeSignedDistance,
   rasterStrokeStylesEqual,
   rasterStrokeTileHalo,
@@ -73,6 +78,27 @@ const copiedStyle = copyRasterStrokeStyle(DEFAULT_RASTER_STROKE_STYLE);
 assert.notEqual(copiedStyle.color, DEFAULT_RASTER_STROKE_STYLE.color);
 assert.equal(rasterStrokeStylesEqual(copiedStyle, DEFAULT_RASTER_STROKE_STYLE), true);
 assert.equal(rasterStrokeStylesEqual(copiedStyle, { ...copiedStyle, width: 15 }), false);
+
+assert.equal(
+  RASTER_STROKE_SCRATCH_STRATEGY,
+  "width-tiered-1024-through-128-otherwise-2048",
+);
+assert.equal(rasterStrokeScratchExtentForWidth(14), RASTER_STROKE_COMPACT_SCRATCH_EXTENT);
+assert.equal(
+  rasterStrokeScratchExtentForWidth(RASTER_STROKE_COMPACT_SCRATCH_MAX_WIDTH),
+  RASTER_STROKE_COMPACT_SCRATCH_EXTENT,
+);
+assert.equal(
+  rasterStrokeScratchExtentForWidth(RASTER_STROKE_COMPACT_SCRATCH_MAX_WIDTH + 1),
+  RASTER_STROKE_FULL_SCRATCH_EXTENT,
+);
+assert.equal(rasterStrokeScratchExtentForWidth(512), RASTER_STROKE_FULL_SCRATCH_EXTENT);
+const compactTargetExtent = RASTER_STROKE_COMPACT_SCRATCH_EXTENT
+  - 2 * Math.ceil(RASTER_STROKE_COMPACT_SCRATCH_MAX_WIDTH + 2);
+const compactFullDocumentJobs = Math.ceil(4_096 / compactTargetExtent) ** 2;
+const compactParameters = compactFullDocumentJobs
+  * (jfaScheduleForExtent(RASTER_STROKE_COMPACT_SCRATCH_EXTENT, { plusOne: true }).length + 2);
+assert.ok(compactParameters < 2_048);
 
 // A mip-0 change makes every coarser level not rebuilt in the same frame
 // stale. Zooming out later must rebuild it instead of reusing old pixels.
@@ -325,7 +351,7 @@ const stylesSource = readFileSync(
 );
 assert.match(
   rendererSource,
-  /raster-stroke-webgpu-v2-compute-threshold-gated/,
+  /raster-stroke-webgpu-v3-width-tiered-scratch-threshold-gated/,
 );
 assert.match(rendererSource, /persistent alpha-threshold bit mask/);
 assert.match(rendererSource, /array<atomic<u32>>/);
@@ -337,6 +363,10 @@ assert.match(engineSource, /changeDetectionRect = mutationRect;/);
 assert.match(engineSource, /composeRect = mutationRect;/);
 assert.match(engineSource, /conditionalComposeRect = rebuildRect;/);
 assert.match(rendererSource, /this\.controlMemoryBytes = parameterBufferBytes/);
+assert.match(rendererSource, /parameters\.scratchExtent/);
+assert.match(rendererSource, /resizeScratch\(requestedExtent: number\)/);
+assert.match(engineSource, /rasterStrokeScratchExtentForWidth\(normalized\.width\)/);
+assert.match(mainSource, /gpuMemoryStrokeScratchLabel/);
 assert.match(engineSource, /private getGpuMemoryStats\(\): EngineGpuMemoryStats/);
 assert.match(engineSource, /countedTotalMiB/);
 assert.match(mainSource, /const gpuMemoryRows:/);
@@ -345,13 +375,17 @@ assert.match(htmlSource, /id="gpuMemoryMonitor"/);
 assert.match(stylesSource, /\.gpu-memory-panel/);
 
 const traceControlBytes = 2_048 * 256 + 4 + 2_048 * 12 + 4;
-const traceRgba8MiB = (
+const tracePersistentRgba8MiB = (
   (4_096 * 4_096 * 4 / 3) * 4
   + Math.ceil(4_096 * 4_096 / 2) * 4
   + Math.ceil(4_096 / 32) * 4_096 * 4
   + traceControlBytes
-  + 2_048 * 2_048 * 8 * 2
 ) / (1024 * 1024);
-assert.equal(Number(traceRgba8MiB.toFixed(1)), 183.9);
+const traceCompactRgba8MiB = tracePersistentRgba8MiB
+  + RASTER_STROKE_COMPACT_SCRATCH_EXTENT ** 2 * 8 * 2 / (1024 * 1024);
+const traceFullRgba8MiB = tracePersistentRgba8MiB
+  + RASTER_STROKE_FULL_SCRATCH_EXTENT ** 2 * 8 * 2 / (1024 * 1024);
+assert.equal(Number(traceCompactRgba8MiB.toFixed(1)), 135.9);
+assert.equal(Number(traceFullRgba8MiB.toFixed(1)), 183.9);
 
 console.log("Raster Stroke core verification passed.");
