@@ -30,6 +30,9 @@ import {
   type ThicknessDynamicsStrategy,
 } from "./thickness-dynamics";
 import {
+  RASTER_STROKE_COVERAGE_STRATEGY,
+  RASTER_STROKE_DISTANCE_STORAGE_STRATEGY,
+  RASTER_STROKE_MUTATION_GATE_STRATEGY,
   RasterStrokeRenderer,
   type RasterStrokeEncodeResult,
   type RasterStrokeSourceMode,
@@ -189,7 +192,7 @@ export interface EngineGpuMemoryStats {
   paintBuffersMiB: number;
   presentationCacheMiB: number;
   rasterStrokeStyledMiB: number;
-  rasterStrokeDistanceMiB: number;
+  rasterStrokeCoverageMiB: number;
   rasterStrokeMaskAndControlMiB: number;
   rasterStrokeScratchMiB: number;
   rasterStrokeScratchExtent: number;
@@ -1169,8 +1172,7 @@ export class BrushEngine {
   private rasterStrokeStyle: RasterStrokeStyle = copyRasterStrokeStyle(
     DEFAULT_RASTER_STROKE_STYLE,
   );
-  private rasterStrokeFieldValid = false;
-  private rasterStrokeBuiltWidth = 0;
+  private rasterStrokeCoverageValid = false;
   private rasterStrokeStyledInitialized = false;
   private rasterStrokeMipValidThroughLevel = 0;
   private rasterStrokeMipDownsampleBindGroups: GPUBindGroup[] = [];
@@ -1610,8 +1612,7 @@ export class BrushEngine {
         layout: this.paintMipDownsampleBindGroupLayout,
         entries: [{ binding: 0, resource: sourceView }],
       }));
-    this.rasterStrokeFieldValid = false;
-    this.rasterStrokeBuiltWidth = 0;
+    this.rasterStrokeCoverageValid = false;
     this.rasterStrokeStyledInitialized = false;
     this.rasterStrokeMipValidThroughLevel = 0;
     this.rasterStrokeLastEncode = null;
@@ -1623,8 +1624,7 @@ export class BrushEngine {
     this.rasterStrokeRenderer = null;
     this.rasterStrokeDisplayBindGroup = null;
     this.rasterStrokeMipDownsampleBindGroups = [];
-    this.rasterStrokeFieldValid = false;
-    this.rasterStrokeBuiltWidth = 0;
+    this.rasterStrokeCoverageValid = false;
     this.rasterStrokeStyledInitialized = false;
     this.rasterStrokeMipValidThroughLevel = 0;
     this.rasterStrokePendingComposeRect = null;
@@ -1669,8 +1669,10 @@ export class BrushEngine {
 
       this.rasterStrokeStyle = normalized;
       if (nextActive) {
-        if (!previousActive || normalized.width > this.rasterStrokeBuiltWidth) {
-          this.rasterStrokeFieldValid = false;
+        const coverageStyleChanged = normalized.width !== previous.width
+          || normalized.position !== previous.position;
+        if (!previousActive || coverageStyleChanged) {
+          this.rasterStrokeCoverageValid = false;
         }
         this.rasterStrokePendingComposeRect = this.rasterStrokeEffectRect(
           this.layerContentBounds,
@@ -2237,8 +2239,8 @@ export class BrushEngine {
       : 0;
     const rasterStrokeStyledMiB =
       (rasterStroke?.styledMemoryBytes ?? 0) / MEBIBYTE_BYTES;
-    const rasterStrokeDistanceMiB =
-      (rasterStroke?.distanceMemoryBytes ?? 0) / MEBIBYTE_BYTES;
+    const rasterStrokeCoverageMiB =
+      (rasterStroke?.coverageMemoryBytes ?? 0) / MEBIBYTE_BYTES;
     const rasterStrokeMaskAndControlMiB = (
       (rasterStroke?.thresholdMaskMemoryBytes ?? 0)
       + (rasterStroke?.controlMemoryBytes ?? 0)
@@ -2262,7 +2264,7 @@ export class BrushEngine {
       paintBuffersMiB,
       presentationCacheMiB,
       rasterStrokeStyledMiB,
-      rasterStrokeDistanceMiB,
+      rasterStrokeCoverageMiB,
       rasterStrokeMaskAndControlMiB,
       rasterStrokeScratchMiB,
       blendRendererMiB,
@@ -2278,7 +2280,7 @@ export class BrushEngine {
       paintBuffersMiB,
       presentationCacheMiB,
       rasterStrokeStyledMiB,
-      rasterStrokeDistanceMiB,
+      rasterStrokeCoverageMiB,
       rasterStrokeMaskAndControlMiB,
       rasterStrokeScratchMiB,
       blendRendererMiB,
@@ -2799,7 +2801,11 @@ export class BrushEngine {
     rasterStrokeRendererBuild: string | null;
     rasterStrokeStyle: RasterStrokeStyle;
     rasterStrokePersistentMemoryMiB: number;
+    rasterStrokeCoverageMemoryMiB: number;
     rasterStrokeScratchMemoryMiB: number;
+    rasterStrokeCoverageStrategy: typeof RASTER_STROKE_COVERAGE_STRATEGY;
+    rasterStrokeDistanceStorageStrategy: typeof RASTER_STROKE_DISTANCE_STORAGE_STRATEGY;
+    rasterStrokeMutationGateStrategy: typeof RASTER_STROKE_MUTATION_GATE_STRATEGY;
     rasterStrokeScratchStrategy: typeof RASTER_STROKE_SCRATCH_STRATEGY;
     rasterStrokeScratchExtent: number;
     rasterStrokeScratchCompactMaxWidth: number;
@@ -2895,8 +2901,13 @@ export class BrushEngine {
       rasterStrokeStyle: copyRasterStrokeStyle(this.rasterStrokeStyle),
       rasterStrokePersistentMemoryMiB:
         (this.rasterStrokeRenderer?.persistentMemoryBytes ?? 0) / (1024 * 1024),
+      rasterStrokeCoverageMemoryMiB:
+        (this.rasterStrokeRenderer?.coverageMemoryBytes ?? 0) / (1024 * 1024),
       rasterStrokeScratchMemoryMiB:
         (this.rasterStrokeRenderer?.scratchMemoryBytes ?? 0) / (1024 * 1024),
+      rasterStrokeCoverageStrategy: RASTER_STROKE_COVERAGE_STRATEGY,
+      rasterStrokeDistanceStorageStrategy: RASTER_STROKE_DISTANCE_STORAGE_STRATEGY,
+      rasterStrokeMutationGateStrategy: RASTER_STROKE_MUTATION_GATE_STRATEGY,
       rasterStrokeScratchStrategy: RASTER_STROKE_SCRATCH_STRATEGY,
       rasterStrokeScratchExtent: this.rasterStrokeRenderer?.scratchExtent ?? 0,
       rasterStrokeScratchCompactMaxWidth: RASTER_STROKE_COMPACT_SCRATCH_MAX_WIDTH,
@@ -4864,19 +4875,18 @@ export class BrushEngine {
   private noteLayerMutation(dirtyRect: DirtyRect | null, cleared: boolean): void {
     if (cleared) {
       this.layerContentBounds = null;
-      this.rasterStrokeFieldValid = false;
-      this.rasterStrokeBuiltWidth = 0;
+      this.rasterStrokeCoverageValid = false;
     }
     if (dirtyRect) {
       this.layerContentBounds = this.mergeDirtyRects(this.layerContentBounds, dirtyRect);
     }
     if (!this.rasterStrokeActive()) {
-      this.rasterStrokeFieldValid = false;
+      this.rasterStrokeCoverageValid = false;
     }
   }
 
   private deferRasterStrokeMutation(cleared: boolean): void {
-    this.rasterStrokeFieldValid = false;
+    this.rasterStrokeCoverageValid = false;
     if (cleared) {
       this.rasterStrokeStyledInitialized = false;
       this.rasterStrokeMipValidThroughLevel = 0;
@@ -4893,27 +4903,29 @@ export class BrushEngine {
     const renderer = this.rasterStrokeRenderer;
     if (!renderer || !this.rasterStrokeActive()) {
       if (mutationRect || layerCleared) {
-        this.rasterStrokeFieldValid = false;
+        this.rasterStrokeCoverageValid = false;
       }
       return { dirtyRect: mutationRect, timing: null };
     }
 
     if (layerCleared) {
-      this.rasterStrokeFieldValid = false;
-      this.rasterStrokeBuiltWidth = 0;
+      this.rasterStrokeCoverageValid = false;
       this.rasterStrokeMipValidThroughLevel = 0;
     }
-    const fieldWasValid = this.rasterStrokeFieldValid;
+    const coverageWasValid = this.rasterStrokeCoverageValid;
     const clearStyled = layerCleared || !this.rasterStrokeStyledInitialized;
     let rebuildRect: DirtyRect | null = null;
     let changeDetectionRect: DirtyRect | null = null;
     let composeRect: DirtyRect | null = null;
     let conditionalComposeRect: DirtyRect | null = null;
 
-    if (!fieldWasValid) {
-      rebuildRect = this.rasterStrokeEffectRect(
-        virtualContentBounds,
-        this.rasterStrokeStyle.width,
+    if (!coverageWasValid) {
+      rebuildRect = this.mergeDirtyRects(
+        this.rasterStrokeEffectRect(
+          virtualContentBounds,
+          this.rasterStrokeStyle.width,
+        ),
+        this.rasterStrokePendingComposeRect,
       );
       composeRect = rebuildRect;
     } else if (mutationRect) {
@@ -4939,7 +4951,7 @@ export class BrushEngine {
       composeRect,
       conditionalComposeRect,
       clearStyled,
-      resetThresholdMask: !fieldWasValid,
+      resetThresholdMask: !coverageWasValid,
     });
     this.rasterStrokeLastEncode = timing;
     this.rasterStrokeStyledInitialized = true;
@@ -4948,11 +4960,7 @@ export class BrushEngine {
       this.rasterStrokeMipValidThroughLevel = 0;
     }
     if (rebuildRect || !virtualContentBounds) {
-      this.rasterStrokeFieldValid = true;
-      this.rasterStrokeBuiltWidth = Math.max(
-        this.rasterStrokeBuiltWidth,
-        this.rasterStrokeStyle.width,
-      );
+      this.rasterStrokeCoverageValid = true;
     }
     if (timing.buildJobs > 0) {
       this.rasterStrokeTotalBuilds += 1;

@@ -5,7 +5,13 @@ import {
 } from "./stroke-core";
 
 export const RASTER_STROKE_RENDERER_BUILD =
-  "raster-stroke-webgpu-v3-width-tiered-scratch-threshold-gated-packed-dual-jfa-q10.6";
+  "raster-stroke-webgpu-v4-packed-r8-coverage-width-tiered-scratch-dual-jfa-q10.6";
+export const RASTER_STROKE_COVERAGE_STRATEGY =
+  "persistent-packed-r8-style-coverage" as const;
+export const RASTER_STROKE_DISTANCE_STORAGE_STRATEGY =
+  "register-only-during-coverage-resolve" as const;
+export const RASTER_STROKE_MUTATION_GATE_STRATEGY =
+  "threshold-change-or-existing-coverage-one-pixel-halo" as const;
 
 export type RasterStrokeSourceMode = "permanent" | "light-glaze" | "thickness-tail";
 
@@ -71,6 +77,8 @@ const PARAMETER_STRIDE = 256;
 const PARAMETER_CAPACITY = 2048;
 const INVALID_PACKED_SEED = 0xffff_ffff;
 const THRESHOLD_MASK_WORD_BITS = 32;
+const COVERAGE_WORD_PIXELS = 4;
+const COVERAGE_DETECTION_HALO = 1;
 const INDIRECT_ARGUMENT_WORDS = 3;
 const INDIRECT_ARGUMENT_BYTES = INDIRECT_ARGUMENT_WORDS * 4;
 const INDIRECT_GATE_WORKGROUP_SIZE = 64;
@@ -116,7 +124,7 @@ function normalizedRect(
     : null;
 }
 
-function pairAlignedDistanceRect(
+function wordAlignedCoverageRect(
   rect: RasterStrokeRect | null | undefined,
   width: number,
   height: number,
@@ -125,10 +133,11 @@ function pairAlignedDistanceRect(
   if (!normalized) {
     return null;
   }
-  const x = Math.floor(normalized.x / 2) * 2;
+  const x = Math.floor(normalized.x / COVERAGE_WORD_PIXELS) * COVERAGE_WORD_PIXELS;
   const right = Math.min(
     width,
-    Math.ceil((normalized.x + normalized.width) / 2) * 2,
+    Math.ceil((normalized.x + normalized.width) / COVERAGE_WORD_PIXELS)
+      * COVERAGE_WORD_PIXELS,
   );
   return {
     x,
@@ -136,6 +145,22 @@ function pairAlignedDistanceRect(
     width: right - x,
     height: normalized.height,
   };
+}
+
+function expandedCoverageDetectionRect(
+  rect: RasterStrokeRect | null | undefined,
+  width: number,
+  height: number,
+): RasterStrokeRect | null {
+  const normalized = normalizedRect(rect, width, height);
+  return normalized
+    ? normalizedRect({
+      x: normalized.x - COVERAGE_DETECTION_HALO,
+      y: normalized.y - COVERAGE_DETECTION_HALO,
+      width: normalized.width + COVERAGE_DETECTION_HALO * 2,
+      height: normalized.height + COVERAGE_DETECTION_HALO * 2,
+    }, width, height)
+    : null;
 }
 
 function shaderSourceCommon(documentWidth: number, documentHeight: number): string {
@@ -359,16 +384,21 @@ function resolveShader(
 ): string {
   return `${shaderSourceCommon(documentWidth, documentHeight)}
 @group(0) @binding(5) var<storage, read> propagatedSeeds: array<vec2<u32>>;
-@group(0) @binding(6) var<storage, read_write> distanceField: array<u32>;
+@group(0) @binding(6) var<storage, read_write> coverageField: array<u32>;
 
-fn resolveFixedDistance(
+fn rampAt(offset: f32, signedDistance: f32) -> f32 {
+  return clamp(offset + 0.5 - signedDistance, 0.0, 1.0);
+}
+
+fn resolveCoverageByte(
   documentPosition: vec2<u32>,
   localPosition: vec2<u32>
 ) -> u32 {
   let pair = propagatedSeeds[
     localPosition.y * parameters.scratchExtent + localPosition.x
   ];
-  let inside = sourceTexel(vec2<i32>(documentPosition)).a >= 0.5;
+  let alpha = sourceTexel(vec2<i32>(documentPosition)).a;
+  let inside = alpha >= 0.5;
   let candidate = select(pair.x, pair.y, inside);
   if (candidate == INVALID_SEED) {
     return 0u;
@@ -376,7 +406,27 @@ fn resolveFixedDistance(
   let seedPosition = unpackSeed(candidate);
   let delta = vec2<f32>(seedPosition) - vec2<f32>(localPosition);
   let distance = sqrt(dot(delta, delta));
-  return u32(floor(min(distance, 1023.0) * 64.0 + 0.5));
+  let fixedDistance = u32(floor(min(distance, 1023.0) * 64.0 + 0.5));
+  if (fixedDistance < 1u) {
+    return 0u;
+  }
+  let quantizedDistance = f32(fixedDistance) / 64.0;
+  let signedDistance = select(
+    quantizedDistance - 0.5 - alpha,
+    1.5 - alpha - quantizedDistance,
+    inside
+  );
+  let f0 = rampAt(0.0, signedDistance);
+  var coverage = 0.0;
+  if (parameters.stylePosition == 2u) {
+    coverage = rampAt(parameters.styleWidth, signedDistance) - f0;
+  } else if (parameters.stylePosition == 0u) {
+    coverage = f0 - rampAt(-parameters.styleWidth, signedDistance);
+  } else {
+    let radius = parameters.styleWidth * 0.5;
+    coverage = rampAt(radius, signedDistance) - rampAt(-radius, signedDistance);
+  }
+  return u32(floor(clamp(coverage, 0.0, 1.0) * 255.0 + 0.5));
 }
 
 @compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
@@ -384,27 +434,27 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   if (globalId.y >= parameters.targetSize.y) {
     return;
   }
-  let firstX = globalId.x * 2u;
+  let firstX = globalId.x * 4u;
   if (firstX >= parameters.targetSize.x) {
     return;
   }
   let firstOffset = vec2<u32>(firstX, globalId.y);
   let firstDocumentPosition = parameters.targetOrigin + firstOffset;
-  let firstDistance = resolveFixedDistance(
-    firstDocumentPosition,
-    parameters.localTargetOrigin + firstOffset
-  );
-  var secondDistance = 0u;
-  if (firstX + 1u < parameters.targetSize.x) {
-    let secondOffset = firstOffset + vec2<u32>(1u, 0u);
-    secondDistance = resolveFixedDistance(
-      parameters.targetOrigin + secondOffset,
-      parameters.localTargetOrigin + secondOffset
+  var packedCoverage = 0u;
+  for (var lane = 0u; lane < 4u; lane += 1u) {
+    if (firstX + lane >= parameters.targetSize.x) {
+      continue;
+    }
+    let offset = firstOffset + vec2<u32>(lane, 0u);
+    let coverage = resolveCoverageByte(
+      parameters.targetOrigin + offset,
+      parameters.localTargetOrigin + offset
     );
+    packedCoverage |= coverage << (lane * 8u);
   }
   let linearIndex = firstDocumentPosition.y * ${documentWidth}u
     + firstDocumentPosition.x;
-  distanceField[linearIndex >> 1u] = firstDistance | (secondDistance << 16u);
+  coverageField[linearIndex >> 2u] = packedCoverage;
 }
 `;
 }
@@ -415,17 +465,14 @@ function composeShader(
   layerFormat: "rgba8unorm" | "rgba16float",
 ): string {
   return `${shaderSourceCommon(documentWidth, documentHeight)}
-@group(0) @binding(5) var<storage, read> distanceField: array<u32>;
+@group(0) @binding(5) var<storage, read> coverageField: array<u32>;
 @group(0) @binding(6) var styledTexture: texture_storage_2d<${layerFormat}, write>;
 
-fn loadFixedDistance(position: vec2<i32>) -> u32 {
+fn loadCoverageByte(position: vec2<i32>) -> u32 {
   let linearIndex = u32(position.y) * ${documentWidth}u + u32(position.x);
-  let packed = distanceField[linearIndex >> 1u];
-  return select(packed & 65535u, packed >> 16u, (linearIndex & 1u) == 1u);
-}
-
-fn rampAt(offset: f32, signedDistance: f32) -> f32 {
-  return clamp(offset + 0.5 - signedDistance, 0.0, 1.0);
+  let packed = coverageField[linearIndex >> 2u];
+  let shift = (linearIndex & 3u) * 8u;
+  return (packed >> shift) & 255u;
 }
 
 @compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
@@ -435,28 +482,7 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   }
   let position = vec2<i32>(parameters.targetOrigin + globalId.xy);
   let base = sourceTexel(position);
-  let fixedDistance = loadFixedDistance(position);
-  var coverage = 0.0;
-  if (fixedDistance >= 1u) {
-    let alpha = base.a;
-    let distance = f32(fixedDistance) / 64.0;
-    let signedDistance = select(
-      distance - 0.5 - alpha,
-      1.5 - alpha - distance,
-      alpha >= 0.5
-    );
-    let f0 = rampAt(0.0, signedDistance);
-    if (parameters.stylePosition == 2u) {
-      coverage = rampAt(parameters.styleWidth, signedDistance) - f0;
-    } else if (parameters.stylePosition == 0u) {
-      coverage = f0 - rampAt(-parameters.styleWidth, signedDistance);
-    } else {
-      let radius = parameters.styleWidth * 0.5;
-      coverage = rampAt(radius, signedDistance) - rampAt(-radius, signedDistance);
-    }
-    coverage = floor(clamp(coverage, 0.0, 1.0) * 255.0 + 0.5) / 255.0;
-  }
-
+  let coverage = f32(loadCoverageByte(position)) / 255.0;
   let alpha = base.a;
   var strokeWeight = coverage * parameters.styleColor.a;
   if (parameters.stylePosition == 2u) {
@@ -497,9 +523,17 @@ function thresholdMaskShader(
   return `${shaderSourceCommon(documentWidth, documentHeight)}
 @group(0) @binding(5) var<storage, read_write> thresholdMask: array<u32>;
 @group(0) @binding(6) var<storage, read_write> changeState: array<atomic<u32>>;
+@group(0) @binding(7) var<storage, read> coverageField: array<u32>;
 
 const THRESHOLD_WORD_BITS = ${THRESHOLD_MASK_WORD_BITS}u;
 const THRESHOLD_WORDS_PER_ROW = ${wordsPerRow}u;
+
+fn loadCoverageByte(position: vec2<u32>) -> u32 {
+  let linearIndex = position.y * ${documentWidth}u + position.x;
+  let packed = coverageField[linearIndex >> 2u];
+  let shift = (linearIndex & 3u) * 8u;
+  return (packed >> shift) & 255u;
+}
 
 @compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
@@ -529,8 +563,12 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
     }
     let bit = 1u << lane;
     writeMask |= bit;
-    if (sourceTexel(vec2<i32>(i32(documentX), i32(documentY))).a >= 0.5) {
+    let documentPosition = vec2<u32>(documentX, documentY);
+    if (sourceTexel(vec2<i32>(documentPosition)).a >= 0.5) {
       nextBits |= bit;
+    }
+    if (loadCoverageByte(documentPosition) != 0u) {
+      atomicOr(&changeState[0], 2u);
     }
   }
 
@@ -619,7 +657,7 @@ export class RasterStrokeRenderer {
   readonly mipViews: readonly GPUTextureView[];
   readonly persistentMemoryBytes: number;
   readonly styledMemoryBytes: number;
-  readonly distanceMemoryBytes: number;
+  readonly coverageMemoryBytes: number;
   readonly thresholdMaskMemoryBytes: number;
   readonly controlMemoryBytes: number;
 
@@ -643,7 +681,7 @@ export class RasterStrokeRenderer {
     PARAMETER_CAPACITY * INDIRECT_ARGUMENT_WORDS,
   );
   private scratchBuffers: [GPUBuffer, GPUBuffer];
-  private readonly distanceBuffer: GPUBuffer;
+  private readonly coverageBuffer: GPUBuffer;
   private readonly thresholdMaskBuffer: GPUBuffer;
   private readonly changeStateBuffer: GPUBuffer;
   private readonly indirectArgumentsBuffer: GPUBuffer;
@@ -677,6 +715,9 @@ export class RasterStrokeRenderer {
     this.device = options.device;
     this.documentWidth = options.documentWidth;
     this.documentHeight = options.documentHeight;
+    if (this.documentWidth % COVERAGE_WORD_PIXELS !== 0) {
+      throw new Error("La larghezza documento Traccia deve essere divisibile per 4.");
+    }
     this.layerFormat = options.layerFormat;
     this.layerView = options.layerView;
     this.lightGlazeUniformBuffer = options.lightGlazeUniformBuffer;
@@ -703,11 +744,13 @@ export class RasterStrokeRenderer {
       size: parameterBufferBytes,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    const distanceWordCount = Math.ceil(this.documentWidth * this.documentHeight / 2);
-    this.distanceBuffer = this.device.createBuffer({
-      label: "Traccia persistent packed Q10.6 distance field",
-      size: distanceWordCount * 4,
-      usage: GPUBufferUsage.STORAGE,
+    const coverageWordCount = Math.ceil(
+      this.documentWidth * this.documentHeight / COVERAGE_WORD_PIXELS,
+    );
+    this.coverageBuffer = this.device.createBuffer({
+      label: "Traccia persistent packed R8 coverage",
+      size: coverageWordCount * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     const thresholdMaskWordCount = Math.ceil(
       this.documentWidth / THRESHOLD_MASK_WORD_BITS,
@@ -720,13 +763,13 @@ export class RasterStrokeRenderer {
     });
     const changeStateBytes = 4;
     this.changeStateBuffer = this.device.createBuffer({
-      label: "Traccia alpha-threshold change flag",
+      label: "Traccia threshold-or-coverage-overlap change flags",
       size: changeStateBytes,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     const indirectArgumentsBytes = PARAMETER_CAPACITY * INDIRECT_ARGUMENT_BYTES;
     this.indirectArgumentsBuffer = this.device.createBuffer({
-      label: "Traccia threshold-gated indirect dispatch arguments",
+      label: "Traccia threshold-or-coverage-gated indirect dispatch arguments",
       size: indirectArgumentsBytes,
       usage:
         GPUBufferUsage.STORAGE
@@ -793,13 +836,13 @@ export class RasterStrokeRenderer {
         * Math.max(1, this.documentHeight >> mipLevel);
     }
     this.styledMemoryBytes = styledPixels * bytesPerPixel;
-    this.distanceMemoryBytes = distanceWordCount * 4;
+    this.coverageMemoryBytes = coverageWordCount * 4;
     this.thresholdMaskMemoryBytes = thresholdMaskBytes;
     this.controlMemoryBytes = parameterBufferBytes
       + changeStateBytes
       + indirectArgumentsBytes
       + 4;
-    this.persistentMemoryBytes = this.distanceMemoryBytes
+    this.persistentMemoryBytes = this.coverageMemoryBytes
       + this.styledMemoryBytes
       + this.thresholdMaskMemoryBytes
       + this.controlMemoryBytes;
@@ -1010,6 +1053,7 @@ export class RasterStrokeRenderer {
         { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
         { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+        { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
       ],
     });
     this.indirectGateBindGroupLayout = this.device.createBindGroupLayout({
@@ -1034,7 +1078,7 @@ export class RasterStrokeRenderer {
       code: jfaShader(),
     });
     const resolveModule = this.device.createShaderModule({
-      label: "Traccia Q10.6 resolve WGSL",
+      label: "Traccia Q10.6 to packed R8 coverage WGSL",
       code: resolveShader(this.documentWidth, this.documentHeight),
     });
     const composeModule = this.device.createShaderModule({
@@ -1074,7 +1118,7 @@ export class RasterStrokeRenderer {
       compute: { module: jfaModule, entryPoint: "main" },
     });
     this.resolvePipeline = this.device.createComputePipeline({
-      label: "Traccia Q10.6 resolve pipeline",
+      label: "Traccia packed R8 coverage resolve pipeline",
       layout: this.device.createPipelineLayout({
         bindGroupLayouts: [this.resolveBindGroupLayout],
       }),
@@ -1212,7 +1256,7 @@ export class RasterStrokeRenderer {
         entries: [
           ...this.commonSourceEntries(mode),
           { binding: 5, resource: { buffer: this.scratchBuffers[scratchIndex] } },
-          { binding: 6, resource: { buffer: this.distanceBuffer } },
+          { binding: 6, resource: { buffer: this.coverageBuffer } },
         ],
       }));
     }
@@ -1221,7 +1265,7 @@ export class RasterStrokeRenderer {
       layout: this.composeBindGroupLayout,
       entries: [
         ...this.commonSourceEntries(mode),
-        { binding: 5, resource: { buffer: this.distanceBuffer } },
+        { binding: 5, resource: { buffer: this.coverageBuffer } },
         { binding: 6, resource: this.styledStorageView },
       ],
     }));
@@ -1232,13 +1276,16 @@ export class RasterStrokeRenderer {
         ...this.commonSourceEntries(mode),
         { binding: 5, resource: { buffer: this.thresholdMaskBuffer } },
         { binding: 6, resource: { buffer: this.changeStateBuffer } },
+        { binding: 7, resource: { buffer: this.coverageBuffer } },
       ],
     }));
   }
 
   private buildJobs(rect: RasterStrokeRect, width: number): BuildJob[] {
     const apron = Math.ceil(width + 2);
-    const maximumTargetExtent = this.scratchExtent - apron * 2;
+    const maximumTargetExtent = Math.floor(
+      (this.scratchExtent - apron * 2) / COVERAGE_WORD_PIXELS,
+    ) * COVERAGE_WORD_PIXELS;
     if (maximumTargetExtent <= 0) {
       throw new Error(
         `Scratch Traccia ${this.scratchExtent}px insufficiente per width ${width}px.`,
@@ -1340,12 +1387,12 @@ export class RasterStrokeRenderer {
     if (this.destroyed) {
       throw new Error("Renderer Traccia già distrutto.");
     }
-    const rebuildRect = pairAlignedDistanceRect(
+    const rebuildRect = wordAlignedCoverageRect(
       options.rebuildRect,
       this.documentWidth,
       this.documentHeight,
     );
-    const requestedDetectionRect = normalizedRect(
+    const requestedDetectionRect = expandedCoverageDetectionRect(
       options.changeDetectionRect,
       this.documentWidth,
       this.documentHeight,
@@ -1393,7 +1440,7 @@ export class RasterStrokeRenderer {
         const resolve = indirectArgumentCount;
         indirectArgumentCount = this.writeIndirectArgument(
           indirectArgumentCount,
-          Math.ceil(Math.ceil(job.targetWidth / 2) / WORKGROUP_SIZE),
+          Math.ceil(Math.ceil(job.targetWidth / COVERAGE_WORD_PIXELS) / WORKGROUP_SIZE),
           Math.ceil(job.targetHeight / WORKGROUP_SIZE),
         );
         jobIndirectArguments.push({ field, resolve });
@@ -1513,6 +1560,9 @@ export class RasterStrokeRenderer {
       || options.clearStyled
       || (jobs.length > 0 && !useThresholdGate),
     );
+    if (options.clearStyled) {
+      options.encoder.clearBuffer(this.coverageBuffer);
+    }
     if (resetThresholdMask) {
       options.encoder.clearBuffer(this.thresholdMaskBuffer);
     }
@@ -1524,7 +1574,7 @@ export class RasterStrokeRenderer {
       );
       const thresholdPass = options.encoder.beginComputePass({
         label: useThresholdGate
-          ? "Detect Traccia alpha-threshold changes"
+          ? "Detect Traccia threshold changes or existing coverage overlap"
           : "Synchronize Traccia alpha-threshold mask",
       });
       thresholdPass.setPipeline(this.thresholdMaskPipeline);
@@ -1541,7 +1591,7 @@ export class RasterStrokeRenderer {
     }
     if (useThresholdGate) {
       const gatePass = options.encoder.beginComputePass({
-        label: "Gate Traccia field dispatches from alpha-threshold changes",
+        label: "Gate Traccia field dispatches from threshold or coverage overlap",
       });
       gatePass.setPipeline(this.indirectGatePipeline);
       gatePass.setBindGroup(
@@ -1572,8 +1622,8 @@ export class RasterStrokeRenderer {
     if (jobs.length > 0) {
       const fieldPass = options.encoder.beginComputePass({
         label: useThresholdGate
-          ? "Traccia threshold-gated seed + packed dual JFA + Q10.6 resolve"
-          : "Traccia seed + packed dual JFA + Q10.6 resolve",
+          ? "Traccia gated seed + packed dual JFA + packed R8 coverage"
+          : "Traccia seed + packed dual JFA + packed R8 coverage",
       });
       for (let jobIndex = 0; jobIndex < jobs.length; jobIndex += 1) {
         const job = jobs[jobIndex];
@@ -1633,7 +1683,7 @@ export class RasterStrokeRenderer {
           );
         } else {
           fieldPass.dispatchWorkgroups(
-            Math.ceil(Math.ceil(job.targetWidth / 2) / WORKGROUP_SIZE),
+            Math.ceil(Math.ceil(job.targetWidth / COVERAGE_WORD_PIXELS) / WORKGROUP_SIZE),
             Math.ceil(job.targetHeight / WORKGROUP_SIZE),
           );
         }
@@ -1645,7 +1695,7 @@ export class RasterStrokeRenderer {
     if (composeDispatches > 0) {
       const composePass = options.encoder.beginComputePass({
         label: conditionalComposeRect
-          ? "Traccia styled compose with threshold-gated halo"
+          ? "Traccia styled compose with gated coverage halo"
           : "Traccia styled layer compose",
       });
       composePass.setPipeline(this.composePipeline);
@@ -1715,7 +1765,7 @@ export class RasterStrokeRenderer {
     this.scratchBuffers[0].destroy();
     this.scratchBuffers[1].destroy();
     this.parameterBuffer.destroy();
-    this.distanceBuffer.destroy();
+    this.coverageBuffer.destroy();
     this.thresholdMaskBuffer.destroy();
     this.changeStateBuffer.destroy();
     this.indirectArgumentsBuffer.destroy();

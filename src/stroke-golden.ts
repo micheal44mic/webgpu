@@ -300,18 +300,22 @@ export async function runRasterStrokeGolden(
     });
     await capture("inside-9-style-only", {
       style: INSIDE_STYLE,
+      rebuildRect: FULL_RECT,
       composeRect: FULL_RECT,
     });
     await capture("center-31-style-only", {
       style: CENTER_STYLE,
+      rebuildRect: FULL_RECT,
       composeRect: FULL_RECT,
     });
     await capture("outside-129-style-only", {
       style: WIDE_STYLE,
+      rebuildRect: FULL_RECT,
       composeRect: FULL_RECT,
     });
     await capture("center-31-restored", {
       style: CENTER_STYLE,
+      rebuildRect: FULL_RECT,
       composeRect: FULL_RECT,
     });
 

@@ -167,7 +167,11 @@ interface BenchmarkRun {
     rasterStrokeRendererBuild: string | null;
     rasterStrokeStyle: RasterStrokeStyle;
     rasterStrokePersistentMemoryMiB: number;
+    rasterStrokeCoverageMemoryMiB: number;
     rasterStrokeScratchMemoryMiB: number;
+    rasterStrokeCoverageStrategy: string;
+    rasterStrokeDistanceStorageStrategy: string;
+    rasterStrokeMutationGateStrategy: string;
     rasterStrokeScratchStrategy: string;
     rasterStrokeScratchExtent: number;
     rasterStrokeScratchCompactMaxWidth: number;
@@ -257,7 +261,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 33;
+    performanceTelemetryRevision: 34;
   };
 }
 
@@ -318,7 +322,7 @@ const gpuMemoryRows: ReadonlyArray<
   ["gpuMemoryPaintBuffers", "paintBuffersMiB"],
   ["gpuMemoryPresentation", "presentationCacheMiB"],
   ["gpuMemoryStrokeStyled", "rasterStrokeStyledMiB"],
-  ["gpuMemoryStrokeDistance", "rasterStrokeDistanceMiB"],
+  ["gpuMemoryStrokeCoverage", "rasterStrokeCoverageMiB"],
   ["gpuMemoryStrokeControl", "rasterStrokeMaskAndControlMiB"],
   ["gpuMemoryStrokeScratch", "rasterStrokeScratchMiB"],
   ["gpuMemoryBlend", "blendRendererMiB"],
@@ -567,7 +571,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 33,
+    performanceTelemetryRevision: 34,
     ...engineEnvironment,
   };
 }

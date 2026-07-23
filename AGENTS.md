@@ -128,7 +128,7 @@ Paint:
   Spessore` e `Pressure → size/alpha` sono stati **rimossi** su richiesta:
   la pressione resta nei dati come campo inerte, `controls.w` azzerato.
 
-### Traccia raster M1 (WebGPU, sperimentale da provare)
+### Traccia raster M1 (WebGPU)
 
 - Stile di default equivalente al progetto M1: disattivato, `14 px`, esterno,
   colore `#FFA448`; posizioni supportate `inside` / `center` / `outside`, width
@@ -137,40 +137,38 @@ Paint:
   `0,5`, JFA per estensione con passo `1` extra, tie deterministico `y→x`,
   distanza Q10.6 half-up (cap `1023 px`), correzione subpixel dall'alpha,
   coverage quantizzata R8 e compositing premoltiplicato M1.
-- Renderer `raster-stroke-webgpu-v3-width-tiered-scratch-threshold-gated-packed-dual-jfa-q10.6`:
-  seed, JFA, resolve, compositing e piramide mip restano sulla GPU. Il campo
-  Q10.6 persistente usa due pixel per `u32` (`32 MiB`). Lo scratch dual-seed è
-  adattivo alla width: `1024²` (`16 MiB`) fino a `128 px`, `2048²` (`64 MiB`)
-  da `129` a `512 px`. Lo stride è una uniform per-dispatch; al cambio tier
-  vengono sostituiti solo i due buffer scratch e i relativi bind group dopo
-  `waitForIdle`, senza ricreare campo distanza o texture styled.
-- La texture styled completa costa ~`85,3 MiB` in RGBA8 o ~`170,7 MiB` in
-  RGBA16F. La maschera alpha bit-packed costa `2 MiB`; parametri dinamici,
-  argomenti indirect, flag e texture dummy costano insieme ~`0,52 MiB`. Totale
-  aggiuntivo a width `≤128`: ~`135,9 MiB` RGBA8 o ~`221,2 MiB` RGBA16F; oltre
-  `128`: ~`183,9 MiB` o ~`269,2 MiB`. Tutto resta lazy e viene liberato alla
-  disabilitazione.
-- Rebuild completo solo all'abilitazione, clear, replay o crescita oltre il
-  campo valido. Durante il disegno un compute confronta la soglia alpha `0,5`
-  nella dirty region con una maschera persistente; un flag atomico azzera via
-  `dispatchWorkgroupsIndirect` seed, tutti i JFA, resolve e compose dell'halo se
-  nessun bit cambia. Nessun readback CPU. La compose diretta resta sulla dirty
-  region per aggiornare colore/alpha; se cambia un bit, il campo usa la dirty
-  region espansa più apron. La cache campiona la texture styled con gli stessi
-  mip del Paint.
+- Renderer `raster-stroke-webgpu-v4-packed-r8-coverage-width-tiered-scratch-dual-jfa-q10.6`:
+  seed, JFA, resolve, compositing e piramide mip restano sulla GPU. Non esiste
+  più un campo distanza residente: la distanza Q10.6 vive nei registri del
+  resolve e viene convertita subito in coverage R8, packed quattro pixel per
+  `u32` in un buffer persistente da `16 MiB`.
+- Lo scratch dual-seed resta adattivo alla width: `1024²` (`16 MiB`) fino a
+  `128 px`, `2048²` (`64 MiB`) da `129` a `512 px`. La texture styled
+  completa costa ~`85,3 MiB` in RGBA8 o ~`170,7 MiB` in RGBA16F; mask alpha
+  e controllo ~`2,52 MiB`. Totale aggiuntivo a width `≤128`: ~`119,9 MiB`
+  RGBA8 o ~`205,2 MiB` RGBA16F; oltre `128`: ~`167,9 MiB` o ~`253,2 MiB`.
+  Tutto resta lazy e viene liberato alla disabilitazione.
+- La coverage è specifica di width/position: quei due cambi stile ricostruiscono
+  l'area del contenuto (inclusa l'estensione del vecchio stile); il solo colore
+  ricompone senza JFA. Durante il disegno il gate GPU controlla sia i cambi di
+  soglia alpha `0,5` sia la coverage già presente nella dirty region con halo
+  di un pixel. Se si disegna dentro una zona senza bordo vicino, gli indirect di
+  seed/JFA/resolve/compose halo vengono azzerati; resta solo scan + compose della
+  dirty region. Se cambia la soglia o si tocca il bordo, ricostruisce l'area
+  espansa. Nessun readback CPU.
 - Integrata con Paint Normal/Additive, Light Glaze live + commit, M1 Glaze,
   tail predittivo dello spessore, Blend dry e Undo/Redo. Verifica funzionale
   desktop NVIDIA Ampere: inizializzazione WGSL, tratto visibile, cambi stile,
   Undo/Redo e tutti i percorsi citati senza errori console/GPU.
-- Monitor memoria GPU rev `33`: pill apribile/chiudibile in basso a destra,
+- Monitor memoria GPU rev `34`: pill apribile/chiudibile in basso a destra,
   totale aggiornato ogni `500 ms`, dettaglio per risorsa e badge temporaneo per
   ogni variazione di almeno `0,05 MiB`. Conta le dimensioni logiche delle risorse
   WebGPU create dal motore; non misura residency fisica e non include swapchain,
   pipeline/driver, RAM, cronologia o memoria del browser.
 - Non esiste ancora una run canonica di prestazioni né la prova iPhone: non
-  dichiarare guadagni o promuovere la Traccia finché l'utente non misura il
-  comportamento end-to-end. Le run rev `33` riportano stile, build, strategia,
-  extent scratch e memoria corretta; non vanno aggregate con rev `32` o precedenti.
+  dichiarare guadagni di velocità né considerare conclusa la Traccia. Le run rev
+  `34` riportano stile, build, strategie coverage/distanza/gate, extent scratch
+  e memoria corretta; non vanno aggregate con rev `33` o precedenti.
 - Fix zoom-out del 23 luglio 2026, da segnalazione utente senza riproduzione
   visiva: una mutazione del mip styled `0` lasciava erroneamente marcati validi
   i mip più piccoli non aggiornati nel frame; il successivo zoom-out poteva
@@ -192,19 +190,22 @@ Paint:
   center, width `129`, una mutazione dentro una forma già sopra soglia (nessun
   nuovo bordo) e una mutazione che crea davvero un bordo. Non tocca il layer
   dell'utente; il flag `COPY_SRC` è abilitato solo sul renderer temporaneo.
-  Prima di sostituire il distance field persistente con coverage R8 va catturato
-  e registrato il report sulla GPU scelta, poi la nuova architettura deve
-  restituire gli stessi hash su quella GPU.
+  Il report v3 è stato catturato prima della sostituzione del distance field e
+  costituisce la baseline vincolante per l'architettura coverage R8.
 - Baseline golden catturata dall'utente il 24 luglio 2026:
   fixture `bcbaa02c…`, combinato `8d5a75a6…`, sette hash conservati in
   `goldens/raster-stroke-rgba8-v1.json`. La ripetizione center-31 prima/dopo
   width 129 è identica (`5cf27e7b…`), quindi il run è internamente stabile.
-- Gate alpha v2 verificato con `npm run stroke:verify`, `npm run grain:verify`,
-  `npm run blend:verify`, `npm run thickness:verify`, TypeScript, build Vite in
-  output temporaneo e inizializzazione runtime WebGPU su NVIDIA Ampere: shader,
-  layout, buffer storage/indirect e bind group accettati senza errori. Non è
-  stata disegnata una traccia automatica: esecuzione effettiva e sensazione
-  restano da confermare dall'utente; nessuna dichiarazione prestazionale.
+- Coverage R8 v4 **promossa** il 24 luglio 2026: il golden eseguito dall'utente
+  restituisce tutti i sette hash v3 identici, combinato `8d5a75a6…`,
+  `baselineMatches: true` e nessun mismatch. Risparmio logico deterministico
+  `16 MiB`: sul desktop corrente width 14 `264,9→248,9 MiB`; width 512
+  `312,9→296,9 MiB`.
+- L'utente ha inoltre approvato il test percettivo richiesto: disegno dentro una
+  forma chiusa, cambi stile `14→129→31`, zoom e Undo/Redo. Verifiche automatiche:
+  `npm run stroke:verify`, `grain:verify`, `blend:verify`, `thickness:verify`,
+  TypeScript e build Vite. Nessuna dichiarazione prestazionale: pacing e iPhone
+  richiedono ancora le rispettive run canoniche.
 
 Blend (tool separato, vedi sezione dedicata più sotto).
 
@@ -258,7 +259,8 @@ Grain/M1 matrice · `24` Grain Invert · `25` dinamica spessore · `26` bridge
 Canvas2D tail · `27` overlay WebGPU tail · `28` rimozione velocità ·
 `29` rimozione pressione · `30` firma Traccia raster · `31` gate alpha GPU
 Traccia · `32` monitor e contabilità memoria GPU · `33` scratch Traccia adattivo
-alla width (revisione canonica corrente del Paint).
+alla width · `34` coverage R8 packed senza distanza residente (revisione
+canonica corrente del Paint).
 
 ## Strumento Blend dry (WebGPU)
 

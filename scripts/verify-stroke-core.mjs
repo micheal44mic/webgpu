@@ -359,9 +359,12 @@ const goldenBaseline = JSON.parse(readFileSync(
 ));
 assert.match(
   rendererSource,
-  /raster-stroke-webgpu-v3-width-tiered-scratch-threshold-gated/,
+  /raster-stroke-webgpu-v4-packed-r8-coverage-width-tiered-scratch/,
 );
 assert.match(rendererSource, /persistent alpha-threshold bit mask/);
+assert.match(rendererSource, /persistent packed R8 coverage/);
+assert.match(rendererSource, /threshold changes or existing coverage overlap/);
+assert.doesNotMatch(rendererSource, /distanceBuffer/);
 assert.match(rendererSource, /array<atomic<u32>>/);
 assert.ok(
   rendererSource.match(/dispatchWorkgroupsIndirect/g)?.length >= 3,
@@ -400,7 +403,7 @@ assert.match(stylesSource, /\.gpu-memory-panel/);
 const traceControlBytes = 2_048 * 256 + 4 + 2_048 * 12 + 4;
 const tracePersistentRgba8MiB = (
   (4_096 * 4_096 * 4 / 3) * 4
-  + Math.ceil(4_096 * 4_096 / 2) * 4
+  + Math.ceil(4_096 * 4_096 / 4) * 4
   + Math.ceil(4_096 / 32) * 4_096 * 4
   + traceControlBytes
 ) / (1024 * 1024);
@@ -408,7 +411,7 @@ const traceCompactRgba8MiB = tracePersistentRgba8MiB
   + RASTER_STROKE_COMPACT_SCRATCH_EXTENT ** 2 * 8 * 2 / (1024 * 1024);
 const traceFullRgba8MiB = tracePersistentRgba8MiB
   + RASTER_STROKE_FULL_SCRATCH_EXTENT ** 2 * 8 * 2 / (1024 * 1024);
-assert.equal(Number(traceCompactRgba8MiB.toFixed(1)), 135.9);
-assert.equal(Number(traceFullRgba8MiB.toFixed(1)), 183.9);
+assert.equal(Number(traceCompactRgba8MiB.toFixed(1)), 119.9);
+assert.equal(Number(traceFullRgba8MiB.toFixed(1)), 167.9);
 
 console.log("Raster Stroke core verification passed.");
