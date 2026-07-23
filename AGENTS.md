@@ -141,9 +141,10 @@ Paint:
   seed, JFA, resolve, compositing e piramide mip restano sulla GPU. Il campo
   Q10.6 persistente usa due pixel per `u32` (`32 MiB`); due scratch dual-seed
   `2048²` usano `64 MiB`. La texture styled completa costa ~`85,3 MiB` in
-  RGBA8 o ~`170,7 MiB` in RGBA16F. La maschera alpha bit-packed costa `2 MiB`
-  e gli argomenti indirect ~`0,02 MiB`. Totale aggiuntivo: ~`183,4 MiB` in
-  RGBA8 o ~`268,7 MiB` in RGBA16F, allocato lazy e liberato alla disabilitazione.
+  RGBA8 o ~`170,7 MiB` in RGBA16F. La maschera alpha bit-packed costa `2 MiB`;
+  parametri dinamici, argomenti indirect, flag e texture dummy costano insieme
+  ~`0,52 MiB`. Totale aggiuntivo corretto: ~`183,9 MiB` in RGBA8 o
+  ~`269,2 MiB` in RGBA16F, allocato lazy e liberato alla disabilitazione.
 - Rebuild completo solo all'abilitazione, clear, replay o crescita oltre il
   campo valido. Durante il disegno un compute confronta la soglia alpha `0,5`
   nella dirty region con una maschera persistente; un flag atomico azzera via
@@ -156,10 +157,15 @@ Paint:
   tail predittivo dello spessore, Blend dry e Undo/Redo. Verifica funzionale
   desktop NVIDIA Ampere: inizializzazione WGSL, tratto visibile, cambi stile,
   Undo/Redo e tutti i percorsi citati senza errori console/GPU.
+- Monitor memoria GPU rev `32`: pill apribile/chiudibile in basso a destra,
+  totale aggiornato ogni `500 ms`, dettaglio per risorsa e badge temporaneo per
+  ogni variazione di almeno `0,05 MiB`. Conta le dimensioni logiche delle risorse
+  WebGPU create dal motore; non misura residency fisica e non include swapchain,
+  pipeline/driver, RAM, cronologia o memoria del browser.
 - Non esiste ancora una run canonica di prestazioni né la prova iPhone: non
   dichiarare guadagni o promuovere la Traccia finché l'utente non misura il
-  comportamento end-to-end. Le run rev `31` riportano stile, build e memoria
-  Traccia nella firma e non vanno aggregate con rev `30` o precedenti.
+  comportamento end-to-end. Le run rev `32` riportano stile, build e memoria
+  corretta nella firma e non vanno aggregate con rev `31` o precedenti.
 - Fix zoom-out del 23 luglio 2026, da segnalazione utente senza riproduzione
   visiva: una mutazione del mip styled `0` lasciava erroneamente marcati validi
   i mip più piccoli non aggiornati nel frame; il successivo zoom-out poteva
@@ -226,7 +232,8 @@ probe · `16` armed-hidden · `17` spacing adattivo · `18` tetto Android ·
 Grain/M1 matrice · `24` Grain Invert · `25` dinamica spessore · `26` bridge
 Canvas2D tail · `27` overlay WebGPU tail · `28` rimozione velocità ·
 `29` rimozione pressione · `30` firma Traccia raster · `31` gate alpha GPU
-Traccia (revisione canonica corrente del Paint).
+Traccia · `32` monitor e contabilità memoria GPU (revisione canonica corrente
+del Paint).
 
 ## Strumento Blend dry (WebGPU)
 

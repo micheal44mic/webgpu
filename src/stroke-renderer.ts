@@ -619,6 +619,10 @@ export class RasterStrokeRenderer {
   readonly scratchExtent: number;
   readonly persistentMemoryBytes: number;
   readonly scratchMemoryBytes: number;
+  readonly styledMemoryBytes: number;
+  readonly distanceMemoryBytes: number;
+  readonly thresholdMaskMemoryBytes: number;
+  readonly controlMemoryBytes: number;
 
   private readonly device: GPUDevice;
   private readonly documentWidth: number;
@@ -713,9 +717,10 @@ export class RasterStrokeRenderer {
         usage: GPUBufferUsage.STORAGE,
       }),
     ];
+    const parameterBufferBytes = PARAMETER_CAPACITY * PARAMETER_STRIDE;
     this.parameterBuffer = this.device.createBuffer({
       label: "Traccia dynamic dispatch parameters",
-      size: PARAMETER_CAPACITY * PARAMETER_STRIDE,
+      size: parameterBufferBytes,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     const distanceWordCount = Math.ceil(this.documentWidth * this.documentHeight / 2);
@@ -806,11 +811,17 @@ export class RasterStrokeRenderer {
       styledPixels += Math.max(1, this.documentWidth >> mipLevel)
         * Math.max(1, this.documentHeight >> mipLevel);
     }
-    this.persistentMemoryBytes = distanceWordCount * 4
-      + styledPixels * bytesPerPixel
-      + thresholdMaskBytes
+    this.styledMemoryBytes = styledPixels * bytesPerPixel;
+    this.distanceMemoryBytes = distanceWordCount * 4;
+    this.thresholdMaskMemoryBytes = thresholdMaskBytes;
+    this.controlMemoryBytes = parameterBufferBytes
       + changeStateBytes
-      + indirectArgumentsBytes;
+      + indirectArgumentsBytes
+      + 4;
+    this.persistentMemoryBytes = this.distanceMemoryBytes
+      + this.styledMemoryBytes
+      + this.thresholdMaskMemoryBytes
+      + this.controlMemoryBytes;
     this.scratchMemoryBytes = scratchBytes * 2;
   }
 

@@ -546,6 +546,12 @@ export class DryBlendRenderer {
       / (1024 * 1024);
   }
 
+  allocatedMemoryMiB(): number {
+    return this.scratch
+      ? this.memoryMiB()
+      : this.uniformUpload.byteLength / (1024 * 1024);
+  }
+
   destroy(): void {
     if (this.destroyed) {
       return;

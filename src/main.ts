@@ -33,6 +33,21 @@ function formatInteger(value: number): string {
   return new Intl.NumberFormat("it-IT", { maximumFractionDigits: 0 }).format(value);
 }
 
+const memoryNumberFormatter = new Intl.NumberFormat("it-IT", {
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+});
+
+function formatMemoryMiB(value: number): string {
+  if (value === 0) {
+    return "0 MiB";
+  }
+  if (value > 0 && value < 0.05) {
+    return "<0,1 MiB";
+  }
+  return `${memoryNumberFormatter.format(value)} MiB`;
+}
+
 const canvas = element<HTMLCanvasElement>("gpuCanvas");
 const tipPreviewCanvas = element<HTMLCanvasElement>("tipPreviewCanvas");
 const controlsPanel = element<HTMLElement>("controlsPanel");
@@ -55,6 +70,11 @@ const fitViewButton = element<HTMLButtonElement>("fitView");
 const zoomInButton = element<HTMLButtonElement>("zoomIn");
 const zoomOutButton = element<HTMLButtonElement>("zoomOut");
 const benchmarkStampsInput = element<HTMLInputElement>("benchmarkStamps");
+const gpuMemoryPanel = element<HTMLElement>("gpuMemoryPanel");
+const gpuMemoryToggle = element<HTMLButtonElement>("gpuMemoryToggle");
+const gpuMemoryClose = element<HTMLButtonElement>("gpuMemoryClose");
+const gpuMemoryChevron = element<HTMLElement>("gpuMemoryChevron");
+const gpuMemoryDelta = element<HTMLElement>("gpuMemoryDelta");
 
 type HumanStrokeTestVariant = "base" | "fur" | "blend";
 type HumanStrokeTestBlendMode = "normal" | "m1-glaze";
@@ -229,7 +249,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 31;
+    performanceTelemetryRevision: 32;
   };
 }
 
@@ -274,7 +294,28 @@ let rasterStrokeChanging = false;
 let historyUiBusy = false;
 let engineInitialized = false;
 let controlsPanelOpen = true;
+let gpuMemoryPanelOpen = false;
+let previousGpuMemoryTotalMiB: number | null = null;
+let gpuMemoryDeltaTimer: number | null = null;
 let activeBrushTool: BrushSettings["tool"] = "paint";
+
+const gpuMemoryRows: ReadonlyArray<
+  readonly [string, keyof EngineStats["gpuMemory"]]
+> = [
+  ["gpuMemoryLayerBase", "layerBaseMiB"],
+  ["gpuMemoryLayerMips", "layerMipChainMiB"],
+  ["gpuMemoryGrain", "grainTextureMiB"],
+  ["gpuMemoryShape", "shapeTextureMiB"],
+  ["gpuMemoryPaintBuffers", "paintBuffersMiB"],
+  ["gpuMemoryPresentation", "presentationCacheMiB"],
+  ["gpuMemoryStrokeStyled", "rasterStrokeStyledMiB"],
+  ["gpuMemoryStrokeDistance", "rasterStrokeDistanceMiB"],
+  ["gpuMemoryStrokeControl", "rasterStrokeMaskAndControlMiB"],
+  ["gpuMemoryStrokeScratch", "rasterStrokeScratchMiB"],
+  ["gpuMemoryBlend", "blendRendererMiB"],
+  ["gpuMemoryLightGlaze", "lightGlazeMiB"],
+  ["gpuMemoryThicknessTail", "thicknessTailMiB"],
+];
 
 const toolControlSnapshots: Record<
   BrushSettings["tool"],
@@ -339,6 +380,16 @@ function setControlsPanelOpen(open: boolean): void {
   toggleControlsButton.setAttribute("aria-expanded", String(open));
   toggleControlsButton.setAttribute("aria-label", open ? "Nascondi pannelli" : "Mostra pannelli");
   toggleControlsButton.title = open ? "Nascondi pannelli" : "Mostra pannelli";
+}
+
+function setGpuMemoryPanelOpen(open: boolean): void {
+  gpuMemoryPanelOpen = open;
+  gpuMemoryPanel.hidden = !open;
+  gpuMemoryToggle.setAttribute("aria-expanded", String(open));
+  gpuMemoryToggle.title = open
+    ? "Chiudi dettaglio memoria GPU"
+    : "Apri dettaglio memoria GPU";
+  gpuMemoryChevron.textContent = open ? "▾" : "▴";
 }
 
 function readBrushSettings(): BrushSettings {
@@ -507,7 +558,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 31,
+    performanceTelemetryRevision: 32,
     ...engineEnvironment,
   };
 }
@@ -1250,6 +1301,13 @@ toggleControlsButton.addEventListener("click", () => {
     setControlsPanelOpen(!controlsPanelOpen);
   }
 });
+gpuMemoryToggle.addEventListener("click", () => {
+  setGpuMemoryPanelOpen(!gpuMemoryPanelOpen);
+});
+gpuMemoryClose.addEventListener("click", () => {
+  setGpuMemoryPanelOpen(false);
+  gpuMemoryToggle.focus();
+});
 clearLayerButton.addEventListener("click", () => {
   void clearLayerWithHistory();
 });
@@ -1365,16 +1423,52 @@ playBlendHumanStrokeButton.addEventListener("click", () => {
   void replayHumanStroke("blend");
 });
 
+function updateGpuMemoryPanel(stats: EngineStats): void {
+  for (const [id, key] of gpuMemoryRows) {
+    const output = element<HTMLElement>(id);
+    const value = stats.gpuMemory[key];
+    output.textContent = formatMemoryMiB(value);
+    output.parentElement?.classList.toggle("memory-zero", value < 0.05);
+  }
+
+  const totalMiB = stats.gpuMemory.countedTotalMiB;
+  const formattedTotal = formatMemoryMiB(totalMiB);
+  element<HTMLElement>("gpuMemoryTotal").textContent = formattedTotal;
+  element<HTMLElement>("gpuMemoryCompact").textContent = formattedTotal;
+  element<HTMLElement>("memoryStat").textContent = formattedTotal;
+
+  if (!engineInitialized) {
+    previousGpuMemoryTotalMiB = null;
+    gpuMemoryDelta.hidden = true;
+    return;
+  }
+
+  if (previousGpuMemoryTotalMiB !== null) {
+    const deltaMiB = totalMiB - previousGpuMemoryTotalMiB;
+    if (Math.abs(deltaMiB) >= 0.05) {
+      gpuMemoryDelta.textContent = (deltaMiB > 0 ? "+" : "−")
+        + memoryNumberFormatter.format(Math.abs(deltaMiB))
+        + " MiB";
+      gpuMemoryDelta.classList.toggle("decrease", deltaMiB < 0);
+      gpuMemoryDelta.hidden = false;
+      if (gpuMemoryDeltaTimer !== null) {
+        window.clearTimeout(gpuMemoryDeltaTimer);
+      }
+      gpuMemoryDeltaTimer = window.setTimeout(() => {
+        gpuMemoryDelta.hidden = true;
+        gpuMemoryDeltaTimer = null;
+      }, 3500);
+    }
+  }
+  previousGpuMemoryTotalMiB = totalMiB;
+}
+
 function updateStats(stats: EngineStats): void {
-  element<HTMLElement>("fpsStat").textContent = `${stats.fps}`;
-  element<HTMLElement>("cpuStat").textContent = `${stats.lastCpuFrameMs.toFixed(2)} ms`;
+  element<HTMLElement>("fpsStat").textContent = String(stats.fps);
+  element<HTMLElement>("cpuStat").textContent = stats.lastCpuFrameMs.toFixed(2) + " ms";
   element<HTMLElement>("stampStat").textContent = formatInteger(stats.totalBaseStamps);
   element<HTMLElement>("avoidedStat").textContent = formatInteger(stats.avoidedLogicalDraws);
-  const rasterStrokeMemoryMiB =
-    stats.rasterStrokePersistentMemoryMiB + stats.rasterStrokeScratchMemoryMiB;
-  element<HTMLElement>("memoryStat").textContent = rasterStrokeMemoryMiB > 0
-    ? `${stats.layerMemoryMiB} + ${rasterStrokeMemoryMiB.toFixed(1)} MiB`
-    : `${stats.layerMemoryMiB} MiB`;
+  updateGpuMemoryPanel(stats);
   element<HTMLElement>("gpuStat").textContent = stats.gpuLabel;
 }
 
@@ -1897,6 +1991,7 @@ const resizeObserver = new ResizeObserver(() => engine.resizeCanvas());
 resizeObserver.observe(canvas);
 
 syncRasterStrokeControls(engine.getRasterStrokeStyle());
+setGpuMemoryPanelOpen(false);
 setControlsPanelOpen(true);
 configureBrushToolUi("paint", false);
 updateControlOutputs();

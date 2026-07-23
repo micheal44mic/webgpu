@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#111318" />
     <title>WebGPU Brush Engine 4096²</title>
-    <script type="module" crossorigin src="./assets/index-bLk5m4ia.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-mLF0Q4Xj.css">
+    <script type="module" crossorigin src="./assets/index-BRinjom2.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-BwlMjeyn.css">
   </head>
   <body>
     <div id="app">
@@ -382,7 +382,7 @@
             <div><dt>CPU frame</dt><dd id="cpuStat">—</dd></div>
             <div><dt>Stamps base</dt><dd id="stampStat">0</dd></div>
             <div><dt>Draw logiche evitate</dt><dd id="avoidedStat">0</dd></div>
-            <div><dt>Memoria layer / Traccia</dt><dd id="memoryStat">64 MiB</dd></div>
+            <div><dt>Memoria GPU conteggiata</dt><dd id="memoryStat">—</dd></div>
             <div><dt>GPU</dt><dd id="gpuStat">—</dd></div>
           </dl>
           <p id="status" class="status">Inizializzazione WebGPU…</p>
@@ -393,9 +393,51 @@
         <canvas id="gpuCanvas" aria-label="Canvas di disegno WebGPU"></canvas>
         <canvas id="tipPreviewCanvas" aria-hidden="true"></canvas>
         <div class="hint">Un dito disegna · due dita spostano e fanno zoom · Shift/medio/destro per pan · rotella per zoom</div>
+
+        <aside id="gpuMemoryMonitor" class="gpu-memory-monitor" aria-label="Memoria GPU conteggiata">
+          <section id="gpuMemoryPanel" class="gpu-memory-panel" hidden>
+            <header class="gpu-memory-header">
+              <div>
+                <span>Memoria GPU conteggiata</span>
+                <strong id="gpuMemoryTotal">—</strong>
+              </div>
+              <button id="gpuMemoryClose" type="button" aria-label="Chiudi dettaglio memoria" title="Chiudi">×</button>
+            </header>
+            <p class="gpu-memory-subtitle">Risorse WebGPU create dal motore</p>
+            <dl class="gpu-memory-list">
+              <div data-memory-row><dt>Layer · livello 0</dt><dd id="gpuMemoryLayerBase">—</dd></div>
+              <div data-memory-row><dt>Mip del layer</dt><dd id="gpuMemoryLayerMips">—</dd></div>
+              <div data-memory-row><dt>Grain M1</dt><dd id="gpuMemoryGrain">—</dd></div>
+              <div data-memory-row><dt>Shape 2K</dt><dd id="gpuMemoryShape">—</dd></div>
+              <div data-memory-row><dt>Buffer Paint</dt><dd id="gpuMemoryPaintBuffers">—</dd></div>
+              <div data-memory-row><dt>Cache schermo</dt><dd id="gpuMemoryPresentation">—</dd></div>
+              <div class="gpu-memory-group-start" data-memory-row><dt>Traccia · risultato + mip</dt><dd id="gpuMemoryStrokeStyled">—</dd></div>
+              <div data-memory-row><dt>Traccia · campo distanza</dt><dd id="gpuMemoryStrokeDistance">—</dd></div>
+              <div data-memory-row><dt>Traccia · mask e controllo</dt><dd id="gpuMemoryStrokeControl">—</dd></div>
+              <div data-memory-row><dt>Traccia · scratch JFA</dt><dd id="gpuMemoryStrokeScratch">—</dd></div>
+              <div class="gpu-memory-group-start" data-memory-row><dt>Blend</dt><dd id="gpuMemoryBlend">—</dd></div>
+              <div data-memory-row><dt>Light / M1 Glaze</dt><dd id="gpuMemoryLightGlaze">—</dd></div>
+              <div data-memory-row><dt>Coda spessore</dt><dd id="gpuMemoryThicknessTail">—</dd></div>
+            </dl>
+            <p class="gpu-memory-note">Stima delle allocazioni note. Non include swapchain, pipeline, driver, RAM, cronologia o memoria del browser.</p>
+          </section>
+
+          <button
+            id="gpuMemoryToggle"
+            class="gpu-memory-toggle"
+            type="button"
+            aria-controls="gpuMemoryPanel"
+            aria-expanded="false"
+            title="Apri dettaglio memoria GPU"
+          >
+            <span>GPU</span>
+            <strong id="gpuMemoryCompact">—</strong>
+            <span id="gpuMemoryDelta" class="gpu-memory-delta" aria-live="polite" hidden></span>
+            <span id="gpuMemoryChevron" aria-hidden="true">▴</span>
+          </button>
+        </aside>
       </main>
     </div>
-
 
   </body>
 </html>

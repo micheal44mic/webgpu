@@ -177,6 +177,23 @@ export interface PointerSample {
   timeMs: number;
 }
 
+export interface EngineGpuMemoryStats {
+  layerBaseMiB: number;
+  layerMipChainMiB: number;
+  grainTextureMiB: number;
+  shapeTextureMiB: number;
+  paintBuffersMiB: number;
+  presentationCacheMiB: number;
+  rasterStrokeStyledMiB: number;
+  rasterStrokeDistanceMiB: number;
+  rasterStrokeMaskAndControlMiB: number;
+  rasterStrokeScratchMiB: number;
+  blendRendererMiB: number;
+  lightGlazeMiB: number;
+  thicknessTailMiB: number;
+  countedTotalMiB: number;
+}
+
 export interface EngineStats {
   fps: number;
   lastCpuFrameMs: number;
@@ -189,6 +206,7 @@ export interface EngineStats {
   rasterStrokeBuilds: number;
   rasterStrokeComposes: number;
   rasterStrokeRendererBuild: string | null;
+  gpuMemory: EngineGpuMemoryStats;
   gpuLabel: string;
   layerFormat: LayerFormat;
 }
@@ -764,6 +782,7 @@ interface MutableStrokePerformanceProfile {
 }
 
 const LAYER_SIZE = 4096;
+const MEBIBYTE_BYTES = 1024 * 1024;
 const PAINT_DISPLAY_MIP_LEVEL_COUNT = Math.floor(Math.log2(LAYER_SIZE)) + 1;
 const STAMP_STRIDE_BYTES = 32;
 const MAX_STAMPS_PER_BATCH = 65_536;
@@ -884,6 +903,13 @@ const GRAIN_TEXTURE_PIXEL_COUNT = Array.from(
     return dimension * dimension;
   },
 ).reduce((sum, pixels) => sum + pixels, 0);
+const SHAPE_MASK_PIXEL_COUNT = Array.from(
+  { length: Math.log2(SHAPE_MASK_SIZE) + 1 },
+  (_, mipLevel) => {
+    const dimension = Math.max(1, SHAPE_MASK_SIZE >> mipLevel);
+    return dimension * dimension;
+  },
+).reduce((sum, pixels) => sum + pixels, 0);
 const SHAPE_OCCUPANCY_GRID_SIZE = 256;
 const SHAPE_OCCUPANCY_CELL_SIZE = SHAPE_MASK_SIZE / SHAPE_OCCUPANCY_GRID_SIZE;
 const SHAPE_OCCUPANCY_CELL_COUNT = SHAPE_OCCUPANCY_GRID_SIZE * SHAPE_OCCUPANCY_GRID_SIZE;
@@ -898,6 +924,14 @@ const GRAIN_UNIFORM_BYTES = 32;
 const DISPLAY_UNIFORM_BYTES = 48;
 const LIGHT_GLAZE_UNIFORM_BYTES = 32;
 const THICKNESS_TAIL_UNIFORM_BYTES = 32;
+const STATIC_PAINT_BUFFER_BYTES =
+  BRUSH_UNIFORM_BYTES * 2
+  + GRAIN_UNIFORM_BYTES
+  + DISPLAY_UNIFORM_BYTES
+  + THICKNESS_TAIL_UNIFORM_BYTES
+  + LIGHT_GLAZE_UNIFORM_BYTES
+  + MAX_STAMPS_PER_BATCH * STAMP_STRIDE_BYTES * 2
+  + SHAPE_OCCUPANCY_MAP_BYTES * SHAPE_OCCUPANCY_MAP_COUNT;
 
 function isStrokeGlazeBlendMode(mode: BlendMode): boolean {
   return mode === "light-glaze" || mode === "m1-glaze";
@@ -917,9 +951,20 @@ function paintDisplayPyramidAdditionalMemoryMiB(format: LayerFormat): number {
   return (pixels * bytesPerPixel) / (1024 * 1024);
 }
 
+function layerBaseMemoryMiB(format: LayerFormat): number {
+  return format === "rgba16float" ? 128 : 64;
+}
+
 function lightGlazeAdditionalMemoryMiB(format: LayerFormat): number {
-  const authoritativeMipMiB = format === "rgba16float" ? 128 : 64;
-  return authoritativeMipMiB + paintDisplayPyramidAdditionalMemoryMiB(format);
+  return layerBaseMemoryMiB(format) + paintDisplayPyramidAdditionalMemoryMiB(format);
+}
+
+function shapeTextureMemoryMiB(): number {
+  return SHAPE_MASK_PIXEL_COUNT / MEBIBYTE_BYTES;
+}
+
+function staticPaintBufferMemoryMiB(): number {
+  return STATIC_PAINT_BUFFER_BYTES / MEBIBYTE_BYTES;
 }
 
 function percentile(values: readonly number[], ratio: number): number {
@@ -2158,9 +2203,78 @@ export class BrushEngine {
     };
   }
 
+  private getGpuMemoryStats(): EngineGpuMemoryStats {
+    const baseResourcesAllocated = this.initialized;
+    const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
+    const rasterStroke = this.rasterStrokeRenderer;
+    const layerBaseMiB = baseResourcesAllocated ? layerBaseMemoryMiB(this.layerFormat) : 0;
+    const layerMipChainMiB = baseResourcesAllocated
+      ? paintDisplayPyramidAdditionalMemoryMiB(this.layerFormat)
+      : 0;
+    const grainTextureMiB = baseResourcesAllocated
+      ? GRAIN_TEXTURE_PIXEL_COUNT * 4 / MEBIBYTE_BYTES
+      : 0;
+    const shapeTextureMiB = baseResourcesAllocated ? shapeTextureMemoryMiB() : 0;
+    const paintBuffersMiB = baseResourcesAllocated ? staticPaintBufferMemoryMiB() : 0;
+    const presentationCacheMiB = this.presentationCacheTexture
+      ? this.presentationCacheWidth * this.presentationCacheHeight * 4 / MEBIBYTE_BYTES
+      : 0;
+    const rasterStrokeStyledMiB =
+      (rasterStroke?.styledMemoryBytes ?? 0) / MEBIBYTE_BYTES;
+    const rasterStrokeDistanceMiB =
+      (rasterStroke?.distanceMemoryBytes ?? 0) / MEBIBYTE_BYTES;
+    const rasterStrokeMaskAndControlMiB = (
+      (rasterStroke?.thresholdMaskMemoryBytes ?? 0)
+      + (rasterStroke?.controlMemoryBytes ?? 0)
+    ) / MEBIBYTE_BYTES;
+    const rasterStrokeScratchMiB =
+      (rasterStroke?.scratchMemoryBytes ?? 0) / MEBIBYTE_BYTES;
+    const blendRendererMiB = this.blendRenderer?.allocatedMemoryMiB() ?? 0;
+    const lightGlazeMiB = this.lightGlazeStorageAllocated
+      ? lightGlazeAdditionalMemoryMiB(this.layerFormat)
+      : 0;
+    const thicknessTailMiB = this.thicknessTailTexture
+      ? this.thicknessTailTextureWidth * this.thicknessTailTextureHeight
+        * bytesPerPixel / MEBIBYTE_BYTES
+      : 0;
+    const countedTotalMiB = [
+      layerBaseMiB,
+      layerMipChainMiB,
+      grainTextureMiB,
+      shapeTextureMiB,
+      paintBuffersMiB,
+      presentationCacheMiB,
+      rasterStrokeStyledMiB,
+      rasterStrokeDistanceMiB,
+      rasterStrokeMaskAndControlMiB,
+      rasterStrokeScratchMiB,
+      blendRendererMiB,
+      lightGlazeMiB,
+      thicknessTailMiB,
+    ].reduce((total, value) => total + value, 0);
+
+    return {
+      layerBaseMiB,
+      layerMipChainMiB,
+      grainTextureMiB,
+      shapeTextureMiB,
+      paintBuffersMiB,
+      presentationCacheMiB,
+      rasterStrokeStyledMiB,
+      rasterStrokeDistanceMiB,
+      rasterStrokeMaskAndControlMiB,
+      rasterStrokeScratchMiB,
+      blendRendererMiB,
+      lightGlazeMiB,
+      thicknessTailMiB,
+      countedTotalMiB,
+    };
+  }
+
   getStats(): EngineStats {
     const now = performance.now();
     this.renderTimestamps = this.renderTimestamps.filter((timestamp) => now - timestamp <= 1000);
+    const gpuMemory = this.getGpuMemoryStats();
     return {
       fps: this.renderTimestamps.length,
       lastCpuFrameMs: this.lastCpuFrameMs,
@@ -2175,6 +2289,7 @@ export class BrushEngine {
       rasterStrokeBuilds: this.rasterStrokeTotalBuilds,
       rasterStrokeComposes: this.rasterStrokeTotalComposes,
       rasterStrokeRendererBuild: this.rasterStrokeRenderer?.build ?? null,
+      gpuMemory,
       gpuLabel: this.gpuLabel,
       layerFormat: this.layerFormat,
     };

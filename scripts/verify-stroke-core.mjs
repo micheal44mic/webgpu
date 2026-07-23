@@ -311,6 +311,18 @@ const engineSource = readFileSync(
   new URL("../src/brush-engine.ts", import.meta.url),
   "utf8",
 );
+const mainSource = readFileSync(
+  new URL("../src/main.ts", import.meta.url),
+  "utf8",
+);
+const htmlSource = readFileSync(
+  new URL("../index.html", import.meta.url),
+  "utf8",
+);
+const stylesSource = readFileSync(
+  new URL("../src/styles.css", import.meta.url),
+  "utf8",
+);
 assert.match(
   rendererSource,
   /raster-stroke-webgpu-v2-compute-threshold-gated/,
@@ -324,5 +336,22 @@ assert.ok(
 assert.match(engineSource, /changeDetectionRect = mutationRect;/);
 assert.match(engineSource, /composeRect = mutationRect;/);
 assert.match(engineSource, /conditionalComposeRect = rebuildRect;/);
+assert.match(rendererSource, /this\.controlMemoryBytes = parameterBufferBytes/);
+assert.match(engineSource, /private getGpuMemoryStats\(\): EngineGpuMemoryStats/);
+assert.match(engineSource, /countedTotalMiB/);
+assert.match(mainSource, /const gpuMemoryRows:/);
+assert.match(mainSource, /gpuMemoryDelta\.textContent/);
+assert.match(htmlSource, /id="gpuMemoryMonitor"/);
+assert.match(stylesSource, /\.gpu-memory-panel/);
+
+const traceControlBytes = 2_048 * 256 + 4 + 2_048 * 12 + 4;
+const traceRgba8MiB = (
+  (4_096 * 4_096 * 4 / 3) * 4
+  + Math.ceil(4_096 * 4_096 / 2) * 4
+  + Math.ceil(4_096 / 32) * 4_096 * 4
+  + traceControlBytes
+  + 2_048 * 2_048 * 8 * 2
+) / (1024 * 1024);
+assert.equal(Number(traceRgba8MiB.toFixed(1)), 183.9);
 
 console.log("Raster Stroke core verification passed.");
