@@ -34,6 +34,7 @@ import {
   type RasterStrokeEncodeResult,
   type RasterStrokeSourceMode,
 } from "./stroke-renderer";
+import type { RasterStrokeGoldenReport } from "./stroke-golden";
 import {
   DEFAULT_RASTER_STROKE_STYLE,
   RASTER_STROKE_COMPACT_SCRATCH_MAX_WIDTH,
@@ -2367,6 +2368,18 @@ export class BrushEngine {
       throw new Error("Il motore non è ancora inizializzato.");
     }
     await this.device.queue.onSubmittedWorkDone();
+  }
+
+  async runRasterStrokeGolden(): Promise<RasterStrokeGoldenReport> {
+    if (!this.initialized) {
+      throw new Error("WebGPU non ancora inizializzato.");
+    }
+    if (this.activeStroke) {
+      throw new Error("Termina prima la pennellata attiva.");
+    }
+    await this.waitForIdle();
+    const { runRasterStrokeGolden } = await import("./stroke-golden");
+    return runRasterStrokeGolden(this.device);
   }
 
   async waitForIdle(): Promise<void> {

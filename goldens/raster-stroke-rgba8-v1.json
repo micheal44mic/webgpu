@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "rendererBuild": "raster-stroke-webgpu-v3-width-tiered-scratch-threshold-gated-packed-dual-jfa-q10.6",
+  "format": "rgba8unorm",
+  "width": 256,
+  "height": 192,
+  "fixtureSha256": "bcbaa02ce90eaa947fc76b9b0161840f8f6a8c02693624ad45520b64596733fb",
+  "combinedSha256": "8d5a75a6abb9f47cdf4a794d560b5795aa4b4c85520db2dd1466833157f6dcb0",
+  "cases": [
+    {
+      "id": "outside-14-full-build",
+      "sha256": "b5d6f46d2e6153fe7765d020107005adcbf978ec7b0bdc3b1fd6934e03427b1b",
+      "byteLength": 196608,
+      "nonZeroAlphaPixels": 26989
+    },
+    {
+      "id": "inside-9-style-only",
+      "sha256": "16806f989add97de2fbd66555f4a9e3b560fe506cc7cba1799878a29f89c0556",
+      "byteLength": 196608,
+      "nonZeroAlphaPixels": 12766
+    },
+    {
+      "id": "center-31-style-only",
+      "sha256": "5cf27e7b9b939d3278360579ae73dcd530ac1d5887dd0be969809d2ec63097db",
+      "byteLength": 196608,
+      "nonZeroAlphaPixels": 28415
+    },
+    {
+      "id": "outside-129-style-only",
+      "sha256": "5f241e01e3a9a2301cdab69b120383d66f1c9774c503ed8283466384e2d09e7b",
+      "byteLength": 196608,
+      "nonZeroAlphaPixels": 49152
+    },
+    {
+      "id": "center-31-restored",
+      "sha256": "5cf27e7b9b939d3278360579ae73dcd530ac1d5887dd0be969809d2ec63097db",
+      "byteLength": 196608,
+      "nonZeroAlphaPixels": 28415
+    },
+    {
+      "id": "opaque-interior-paint-no-new-edge",
+      "sha256": "cb08ae768009b02459b8918ff92a77f2dd2034c7970e785f8f62af94924ae45c",
+      "byteLength": 196608,
+      "nonZeroAlphaPixels": 28415
+    },
+    {
+      "id": "threshold-island-new-edge",
+      "sha256": "f1c1629a4818379206feb29a70c9de0ad976bb888aaf24a5dc4efe37b57b5a35",
+      "byteLength": 196608,
+      "nonZeroAlphaPixels": 28415
+    }
+  ]
+}

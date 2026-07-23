@@ -349,6 +349,14 @@ const stylesSource = readFileSync(
   new URL("../src/styles.css", import.meta.url),
   "utf8",
 );
+const goldenSource = readFileSync(
+  new URL("../src/stroke-golden.ts", import.meta.url),
+  "utf8",
+);
+const goldenBaseline = JSON.parse(readFileSync(
+  new URL("../goldens/raster-stroke-rgba8-v1.json", import.meta.url),
+  "utf8",
+));
 assert.match(
   rendererSource,
   /raster-stroke-webgpu-v3-width-tiered-scratch-threshold-gated/,
@@ -365,6 +373,21 @@ assert.match(engineSource, /conditionalComposeRect = rebuildRect;/);
 assert.match(rendererSource, /this\.controlMemoryBytes = parameterBufferBytes/);
 assert.match(rendererSource, /parameters\.scratchExtent/);
 assert.match(rendererSource, /resizeScratch\(requestedExtent: number\)/);
+assert.match(rendererSource, /readbackEnabled\?: boolean/);
+assert.match(rendererSource, /async readStyledPixels\(/);
+assert.match(rendererSource, /GPUTextureUsage\.COPY_SRC/);
+assert.match(goldenSource, /opaque-interior-paint-no-new-edge/);
+assert.match(goldenSource, /threshold-island-new-edge/);
+assert.match(goldenSource, /combinedSha256/);
+assert.equal(
+  goldenBaseline.combinedSha256,
+  "8d5a75a6abb9f47cdf4a794d560b5795aa4b4c85520db2dd1466833157f6dcb0",
+);
+assert.equal(goldenBaseline.cases.length, 7);
+assert.equal(goldenBaseline.cases[2].sha256, goldenBaseline.cases[4].sha256);
+assert.match(engineSource, /async runRasterStrokeGolden\(\)/);
+assert.match(mainSource, /rasterStrokeGoldenSection/);
+assert.match(htmlSource, /id="runRasterStrokeGolden"/);
 assert.match(engineSource, /rasterStrokeScratchExtentForWidth\(normalized\.width\)/);
 assert.match(mainSource, /gpuMemoryStrokeScratchLabel/);
 assert.match(engineSource, /private getGpuMemoryStats\(\): EngineGpuMemoryStats/);

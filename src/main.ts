@@ -55,6 +55,11 @@ const toggleControlsButton = element<HTMLButtonElement>("toggleControls");
 const statusElement = element<HTMLParagraphElement>("status");
 const benchmarkButton = element<HTMLButtonElement>("runBenchmark");
 const benchmarkResult = element<HTMLParagraphElement>("benchmarkResult");
+const rasterStrokeGoldenSection = element<HTMLElement>("rasterStrokeGoldenSection");
+const rasterStrokeGoldenButton = element<HTMLButtonElement>("runRasterStrokeGolden");
+const rasterStrokeGoldenResult = element<HTMLParagraphElement>("rasterStrokeGoldenResult");
+const rasterStrokeGoldenDetails = element<HTMLDetailsElement>("rasterStrokeGoldenDetails");
+const rasterStrokeGoldenReport = element<HTMLElement>("rasterStrokeGoldenReport");
 const recordHumanStrokeButton = element<HTMLButtonElement>("recordHumanStroke");
 const playHumanStrokeButton = element<HTMLButtonElement>("playHumanStroke");
 const playBlendHumanStrokeButton = element<HTMLButtonElement>("playBlendHumanStroke");
@@ -292,6 +297,7 @@ let humanStrokeReplaying = false;
 let humanStrokeLoading = true;
 let humanStrokeSaving = false;
 let benchmarkRunning = false;
+let rasterStrokeGoldenRunning = false;
 let layerFormatChanging = false;
 let rasterStrokeChanging = false;
 let historyUiBusy = false;
@@ -1079,6 +1085,7 @@ function updateHumanStrokeControls(): void {
     || historyUiBusy
     || historyState.busy
     || benchmarkRunning
+    || rasterStrokeGoldenRunning
     || layerFormatChanging
     || rasterStrokeChanging;
   recordHumanStrokeButton.disabled = operationLocked
@@ -1126,6 +1133,7 @@ function operationLocked(): boolean {
     || historyUiBusy
     || historyState.busy
     || benchmarkRunning
+    || rasterStrokeGoldenRunning
     || layerFormatChanging
     || rasterStrokeChanging
     || humanStrokeReplaying
@@ -1144,11 +1152,13 @@ function updateHistoryControls(): void {
   const blendToolActive = activeBrushTool === "blend";
   benchmarkButton.disabled = locked || blendToolActive;
   benchmarkStampsInput.disabled = locked || blendToolActive;
+  rasterStrokeGoldenButton.disabled = locked;
   layerFormatSelect.disabled = locked;
   fitViewButton.disabled = locked;
   zoomInButton.disabled = locked;
   zoomOutButton.disabled = locked;
-  toggleControlsButton.disabled = benchmarkRunning || humanStrokeReplaying;
+  toggleControlsButton.disabled =
+    benchmarkRunning || rasterStrokeGoldenRunning || humanStrokeReplaying;
   for (const id of brushControlIds) {
     element<HTMLInputElement | HTMLSelectElement>(id).disabled = locked;
   }
@@ -1392,6 +1402,52 @@ benchmarkButton.addEventListener("click", async () => {
     updateHumanStrokeControls();
   }
 });
+
+if (import.meta.env.DEV) {
+  rasterStrokeGoldenSection.hidden = false;
+  rasterStrokeGoldenButton.addEventListener("click", async () => {
+    if (interactionLocked()) {
+      return;
+    }
+    rasterStrokeGoldenRunning = true;
+    rasterStrokeGoldenDetails.hidden = true;
+    rasterStrokeGoldenButton.disabled = true;
+    rasterStrokeGoldenResult.textContent = "Cattura golden pixel sulla GPU…";
+    updateHistoryControls();
+    updateHumanStrokeControls();
+    try {
+      const report = await engine.runRasterStrokeGolden();
+      const serialized = JSON.stringify(report, null, 2);
+      rasterStrokeGoldenReport.textContent = serialized;
+      rasterStrokeGoldenDetails.hidden = false;
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(serialized);
+        copied = true;
+      } catch {
+        // Il report resta visibile e disponibile sull'oggetto window di sviluppo.
+      }
+      (
+        window as Window & { __rasterStrokeGoldenReport?: typeof report }
+      ).__rasterStrokeGoldenReport = report;
+      rasterStrokeGoldenResult.textContent =
+        (report.baselineMatches ? "Golden identico" : "Golden diverso")
+        + " · v" + report.version + " · " + report.combinedSha256
+        + " · " + report.cases.length + " casi"
+        + (report.baselineMatches
+          ? ""
+          : " · differenze: " + report.baselineMismatches.join(", "))
+        + (copied ? " · report copiato" : "");
+    } catch (error) {
+      rasterStrokeGoldenResult.textContent =
+        error instanceof Error ? error.message : String(error);
+    } finally {
+      rasterStrokeGoldenRunning = false;
+      updateHistoryControls();
+      updateHumanStrokeControls();
+    }
+  });
+}
 
 recordHumanStrokeButton.addEventListener("click", () => {
   if (

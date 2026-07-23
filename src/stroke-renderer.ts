@@ -18,6 +18,7 @@ export interface RasterStrokeRendererOptions {
   lightGlazeUniformBuffer: GPUBuffer;
   thicknessTailUniformBuffer: GPUBuffer;
   scratchExtent?: number;
+  readbackEnabled?: boolean;
 }
 
 export interface RasterStrokeEncodeOptions {
@@ -629,6 +630,7 @@ export class RasterStrokeRenderer {
   private readonly layerView: GPUTextureView;
   private readonly lightGlazeUniformBuffer: GPUBuffer;
   private readonly thicknessTailUniformBuffer: GPUBuffer;
+  private readonly readbackEnabled: boolean;
   private readonly maximumScratchExtent: number;
   private _scratchExtent: number;
   private _scratchMemoryBytes: number;
@@ -679,6 +681,7 @@ export class RasterStrokeRenderer {
     this.layerView = options.layerView;
     this.lightGlazeUniformBuffer = options.lightGlazeUniformBuffer;
     this.thicknessTailUniformBuffer = options.thicknessTailUniformBuffer;
+    this.readbackEnabled = options.readbackEnabled === true;
 
     const maximumScratchFromBinding = Math.floor(Math.sqrt(
       Number(this.device.limits.maxStorageBufferBindingSize) / 8,
@@ -745,7 +748,8 @@ export class RasterStrokeRenderer {
       usage:
         GPUTextureUsage.STORAGE_BINDING
         | GPUTextureUsage.TEXTURE_BINDING
-        | GPUTextureUsage.RENDER_ATTACHMENT,
+        | GPUTextureUsage.RENDER_ATTACHMENT
+        | (this.readbackEnabled ? GPUTextureUsage.COPY_SRC : 0),
     });
     this.styledStorageView = this.styledTexture.createView({
       label: "Traccia styled authoritative mip 0 storage view",
@@ -857,6 +861,74 @@ export class RasterStrokeRenderer {
     previousBuffers[0].destroy();
     previousBuffers[1].destroy();
     return true;
+  }
+
+  async readStyledPixels(requestedRect?: RasterStrokeRect): Promise<Uint8Array> {
+    if (this.destroyed) {
+      throw new Error("Renderer Traccia già distrutto.");
+    }
+    if (!this.readbackEnabled) {
+      throw new Error("Readback Traccia non abilitato per questo renderer.");
+    }
+    const rect = normalizedRect(
+      requestedRect ?? {
+        x: 0,
+        y: 0,
+        width: this.documentWidth,
+        height: this.documentHeight,
+      },
+      this.documentWidth,
+      this.documentHeight,
+    );
+    if (!rect) {
+      return new Uint8Array();
+    }
+    const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
+    const unpaddedBytesPerRow = rect.width * bytesPerPixel;
+    const bytesPerRow = Math.ceil(unpaddedBytesPerRow / 256) * 256;
+    const readbackBuffer = this.device.createBuffer({
+      label: "Traccia golden styled readback",
+      size: bytesPerRow * rect.height,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    try {
+      const encoder = this.device.createCommandEncoder({
+        label: "Traccia golden styled readback encoder",
+      });
+      encoder.copyTextureToBuffer(
+        {
+          texture: this.styledTexture,
+          origin: { x: rect.x, y: rect.y, z: 0 },
+        },
+        {
+          buffer: readbackBuffer,
+          bytesPerRow,
+          rowsPerImage: rect.height,
+        },
+        {
+          width: rect.width,
+          height: rect.height,
+          depthOrArrayLayers: 1,
+        },
+      );
+      this.device.queue.submit([encoder.finish()]);
+      await readbackBuffer.mapAsync(GPUMapMode.READ);
+      const mapped = new Uint8Array(readbackBuffer.getMappedRange());
+      const compact = new Uint8Array(unpaddedBytesPerRow * rect.height);
+      for (let row = 0; row < rect.height; row += 1) {
+        compact.set(
+          mapped.subarray(
+            row * bytesPerRow,
+            row * bytesPerRow + unpaddedBytesPerRow,
+          ),
+          row * unpaddedBytesPerRow,
+        );
+      }
+      readbackBuffer.unmap();
+      return compact;
+    } finally {
+      readbackBuffer.destroy();
+    }
   }
 
   private async initialize(): Promise<void> {

@@ -186,6 +186,19 @@ Paint:
   lasciati alla prova utente prima di promuovere il tier compatto. Verifiche:
   `npm run stroke:verify`, `grain:verify`, `blend:verify`, `thickness:verify`,
   TypeScript e build Vite.
+- Harness golden pixel Traccia v1 disponibile solo in sviluppo: usa un renderer
+  isolato `256×192`, sette casi deterministici e readback RGBA8 senza padding,
+  quindi produce SHA-256 per caso e combinato. Include stile outside/inside/
+  center, width `129`, una mutazione dentro una forma già sopra soglia (nessun
+  nuovo bordo) e una mutazione che crea davvero un bordo. Non tocca il layer
+  dell'utente; il flag `COPY_SRC` è abilitato solo sul renderer temporaneo.
+  Prima di sostituire il distance field persistente con coverage R8 va catturato
+  e registrato il report sulla GPU scelta, poi la nuova architettura deve
+  restituire gli stessi hash su quella GPU.
+- Baseline golden catturata dall'utente il 24 luglio 2026:
+  fixture `bcbaa02c…`, combinato `8d5a75a6…`, sette hash conservati in
+  `goldens/raster-stroke-rgba8-v1.json`. La ripetizione center-31 prima/dopo
+  width 129 è identica (`5cf27e7b…`), quindi il run è internamente stabile.
 - Gate alpha v2 verificato con `npm run stroke:verify`, `npm run grain:verify`,
   `npm run blend:verify`, `npm run thickness:verify`, TypeScript, build Vite in
   output temporaneo e inizializzazione runtime WebGPU su NVIDIA Ampere: shader,

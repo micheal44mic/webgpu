@@ -478,6 +478,14 @@ select {
   color: #ff9ca7;
 }
 
+.golden-report {
+  max-height: 12rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.7rem;
+}
+
 .stats {
   display: grid;
   gap: 7px;

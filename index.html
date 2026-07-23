@@ -340,6 +340,19 @@
           <button id="runBenchmark" class="primary wide" type="button">Esegui benchmark GPU</button>
           <p id="benchmarkResult" class="result">Nessun benchmark eseguito.</p>
 
+          <div id="rasterStrokeGoldenSection" hidden>
+            <button id="runRasterStrokeGolden" class="wide" type="button">
+              Cattura golden pixel Traccia
+            </button>
+            <p id="rasterStrokeGoldenResult" class="result">
+              Test locale isolato: non modifica il disegno.
+            </p>
+            <details id="rasterStrokeGoldenDetails" hidden>
+              <summary>Report JSON</summary>
+              <pre id="rasterStrokeGoldenReport" class="golden-report"></pre>
+            </details>
+          </div>
+
           <label class="check-control">
             <span>
               Benchmark tratto umano
