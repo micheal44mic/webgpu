@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import {
   DEFAULT_DRY_BLEND_CONTROLS,
   DRY_BLEND_CORE_BUILD,
@@ -55,6 +56,27 @@ assert.match(
 assert.match(blendPickupShader, /let sampleDocumentPosition = clamp\(/);
 assert.match(blendPickupShader, /var pigment = sum \/ max\(total, 0\.000001\)/);
 assert.match(blendPickupShader, /else \{\s*\/\/ A completely off-canvas step[\s\S]*?pigment = previous;/);
+
+const brushEngineSource = await readFile(
+  new URL("../src/brush-engine.ts", import.meta.url),
+  "utf8",
+);
+assert.match(
+  brushEngineSource,
+  /const DRY_BLEND_FRAME_PIXEL_BUDGET = 24_000_000;/,
+);
+assert.match(
+  brushEngineSource,
+  /const DRY_BLEND_MAX_BATCHES_PER_FRAME = 256;/,
+);
+assert.match(
+  brushEngineSource,
+  /const batchCost = readRect\.width \* readRect\.height \* 2;/,
+);
+assert.match(
+  brushEngineSource,
+  /start \+= renderer\.maximumBatchesPerSubmit/,
+);
 
 assert.deepEqual(
   quantizeDryBlendSample({ x: 10.0004, y: 20.0004, pressure: 0, timeMs: 10.2 }),

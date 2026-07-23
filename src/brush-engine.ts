@@ -741,6 +741,14 @@ const LAYER_SIZE = 4096;
 const PAINT_DISPLAY_MIP_LEVEL_COUNT = Math.floor(Math.log2(LAYER_SIZE)) + 1;
 const STAMP_STRIDE_BYTES = 32;
 const MAX_STAMPS_PER_BATCH = 65_536;
+// Il drenaggio dei batch Blend è limitato dai pixel-pass per frame, non da un
+// conteggio fisso per size: col renderer compute un segmento costa il deposit
+// sulla propria writeRect più la quota di gather/scatter del gruppo (~2 pass
+// equivalenti sulla readRect). Un budget in pixel lascia alle size piccole
+// centinaia di segmenti per frame (il tratto resta attaccato al puntatore) e
+// continua a proteggere il frame time sulle size grandi.
+const DRY_BLEND_FRAME_PIXEL_BUDGET = 24_000_000;
+const DRY_BLEND_MAX_BATCHES_PER_FRAME = 256;
 const STAMP_VERTICES_PER_COPY = 4;
 const STAMP_GEOMETRY = "quad" as const;
 const CIRCLE_FRAGMENT_COVERAGE_STRATEGY = "generic-smoothstep" as const;
@@ -4417,8 +4425,10 @@ export class BrushEngine {
     }
 
     let iterations = 0;
+    // Il drenaggio Blend è a budget di pixel: nel caso peggiore (ROI enormi)
+    // un frame consuma un solo batch, quindi il tetto usa quel minimo garantito.
     const maximumIterations = Math.ceil(this.pendingStamps.length / MAX_STAMPS_PER_BATCH)
-      + Math.ceil(this.pendingBlendBatches.length / 64)
+      + this.pendingBlendBatches.length
       + 2;
     while (this.pendingStamps.length > 0 || this.pendingBlendBatches.length > 0) {
       if (this.frameRequest !== null) {
@@ -5382,18 +5392,19 @@ export class BrushEngine {
     let blendBatch: PendingBlendBatch[] = [];
     if (!lightGlazeSession && batch.length === 0 && this.pendingBlendBatches.length > 0) {
       const first = this.pendingBlendBatches[0];
-      const sizeLimit = first.settings.size <= 8
-        ? 64
-        : first.settings.size <= 32 ? 32
-          : first.settings.size <= 64 ? 24
-            : first.settings.size <= 256 ? 8
-              : first.settings.size <= 512 ? 4 : 2;
+      let remainingPixelBudget = DRY_BLEND_FRAME_PIXEL_BUDGET;
       let blendBatchSize = 0;
       while (
         blendBatchSize < this.pendingBlendBatches.length
-        && blendBatchSize < sizeLimit
+        && blendBatchSize < DRY_BLEND_MAX_BATCHES_PER_FRAME
         && this.pendingBlendBatches[blendBatchSize].actionId === first.actionId
       ) {
+        const readRect = this.pendingBlendBatches[blendBatchSize].batch.readRect;
+        const batchCost = readRect.width * readRect.height * 2;
+        if (blendBatchSize > 0 && batchCost > remainingPixelBudget) {
+          break;
+        }
+        remainingPixelBudget -= batchCost;
         blendBatchSize += 1;
       }
       blendBatch = this.pendingBlendBatches.splice(0, blendBatchSize);
@@ -7562,10 +7573,34 @@ export class BrushEngine {
       throw new Error("Il Grain Blend usato dalla cronologia non corrisponde alla risorsa corrente.");
     }
 
-    const blendTiming = renderer.submit(batches, settings, historyActionId, clearLayer);
+    // Il renderer accetta al massimo maximumBatchesPerSubmit batch per submit;
+    // il drenaggio per frame può superarlo, quindi qui si spezza in chunk.
+    let blendCpuMs = 0;
+    let blendDirtyRect: DirtyRect | null = null;
+    if (batches.length === 0) {
+      const blendTiming = renderer.submit(batches, settings, historyActionId, clearLayer);
+      blendCpuMs = blendTiming.cpuMs;
+      blendDirtyRect = blendTiming.dirtyRect;
+    } else {
+      for (
+        let start = 0;
+        start < batches.length;
+        start += renderer.maximumBatchesPerSubmit
+      ) {
+        const chunk = batches.slice(start, start + renderer.maximumBatchesPerSubmit);
+        const chunkTiming = renderer.submit(
+          chunk,
+          settings,
+          historyActionId,
+          clearLayer && start === 0,
+        );
+        blendCpuMs += chunkTiming.cpuMs;
+        blendDirtyRect = this.mergeDirtyRects(blendDirtyRect, chunkTiming.dirtyRect);
+      }
+    }
     const presentationDirtyRect = clearLayer
       ? { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE }
-      : blendTiming.dirtyRect;
+      : blendDirtyRect;
     if (clearLayer) {
       this.presentationCacheNeedsFullRebuild = true;
       this.paintDisplayMipValidThroughLevel = 0;
@@ -7580,13 +7615,13 @@ export class BrushEngine {
     );
     return {
       ...timing,
-      totalCpuMs: timing.totalCpuMs + blendTiming.cpuMs,
-      brushEncodingMs: timing.brushEncodingMs + blendTiming.cpuMs,
+      totalCpuMs: timing.totalCpuMs + blendCpuMs,
+      brushEncodingMs: timing.brushEncodingMs + blendCpuMs,
       scissorPixels: batches.reduce(
         (total, batch) => total + batch.readRect.width * batch.readRect.height,
         0,
       ),
-      dirtyRect: blendTiming.dirtyRect,
+      dirtyRect: blendDirtyRect,
       shapeOccupancySelection: null,
     };
   }

@@ -1,7 +1,6 @@
 import {
   blendDepositShader,
   blendGatherShader,
-  blendMaskShader,
   blendPickupShader,
   blendScatterShader,
 } from "./blend-shaders";
@@ -15,13 +14,14 @@ import {
   type DryBlendStep,
 } from "./blend-core";
 
-const BLEND_UNIFORM_BYTES = 160;
-const BLEND_MAX_BATCHES_PER_SUBMIT = 64;
-const BLEND_STATE_FORMAT: GPUTextureFormat = "rgba16float";
-const BLEND_MASK_FORMAT: GPUTextureFormat = "r8unorm";
+const BLEND_UNIFORM_BYTES = 192;
+const BLEND_MAX_BATCHES_PER_SUBMIT = 256;
+// Ring of persistent carrier slots: slot i feeds step i, the step writes i+1.
+// The ring only needs to out-size a single submit so read/write never collide.
+const BLEND_CARRIER_SLOT_COUNT = 4096;
 
 export const DRY_BLEND_RENDERER_BUILD =
-  "dry-blend-webgpu-v2-border-safe-pickup";
+  "dry-blend-webgpu-v3-compute-fused-sweep";
 
 export interface DryBlendRenderSettings {
   shape: "circle" | "shape";
@@ -73,22 +73,26 @@ interface DryBlendRendererOptions {
 }
 
 interface ScratchResources {
-  stateTextures: readonly [GPUTexture, GPUTexture];
-  stateViews: readonly [GPUTextureView, GPUTextureView];
-  stepMaskTexture: GPUTexture;
-  stepMaskView: GPUTextureView;
-  unionMaskTexture: GPUTexture;
-  unionMaskView: GPUTextureView;
-  carrierTextures: readonly [GPUTexture, GPUTexture];
-  carrierViews: readonly [GPUTextureView, GPUTextureView];
+  stateBuffer: GPUBuffer;
+  coverageBuffer: GPUBuffer;
+  carrierBuffer: GPUBuffer;
   gatherBindGroup: GPUBindGroup;
-  maskBindGroups: Record<
+  pickupBindGroup: GPUBindGroup;
+  depositBindGroups: Record<
     "fixed" | "moving",
     Record<"no" | "classic" | "improved", GPUBindGroup>
   >;
-  pickupBindGroups: readonly [GPUBindGroup, GPUBindGroup];
-  depositBindGroups: readonly [GPUBindGroup, GPUBindGroup];
   scatterBindGroup: GPUBindGroup;
+}
+
+// Consecutive sweep segments overlap heavily; sharing one gather/scatter pair
+// across a group whose united ROI still fits the scratch keeps the per-step
+// cost down to two small compute dispatches.
+interface BlendStepGroup {
+  start: number;
+  count: number;
+  readRect: BlendRect;
+  writeRect: BlendRect;
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {
@@ -200,18 +204,16 @@ export class DryBlendRenderer {
   private readonly uniformBuffer: GPUBuffer;
 
   private gatherBindGroupLayout!: GPUBindGroupLayout;
-  private maskBindGroupLayout!: GPUBindGroupLayout;
   private pickupBindGroupLayout!: GPUBindGroupLayout;
   private depositBindGroupLayout!: GPUBindGroupLayout;
   private scatterBindGroupLayout!: GPUBindGroupLayout;
-  private gatherPipeline!: GPURenderPipeline;
-  private maskPipeline!: GPURenderPipeline;
-  private pickupPipeline!: GPURenderPipeline;
-  private depositPipeline!: GPURenderPipeline;
+  private gatherPipeline!: GPUComputePipeline;
+  private pickupPipeline!: GPUComputePipeline;
+  private depositPipeline!: GPUComputePipeline;
   private scatterPipeline!: GPURenderPipeline;
   private scratch: ScratchResources | null = null;
   private activeHistoryActionId: number | null = null;
-  private carrierIndex: 0 | 1 = 0;
+  private carrierCursor = 0;
   private carrierValid = false;
   private destroyed = false;
 
@@ -241,60 +243,78 @@ export class DryBlendRenderer {
   }
 
   private async initialize(): Promise<void> {
-    const dynamicUniformEntry: GPUBindGroupLayoutEntry = {
+    const dynamicUniformEntry = (
+      visibility: GPUShaderStageFlags,
+    ): GPUBindGroupLayoutEntry => ({
       binding: 0,
-      visibility: GPUShaderStage.FRAGMENT,
+      visibility,
       buffer: {
         type: "uniform",
         hasDynamicOffset: true,
         minBindingSize: BLEND_UNIFORM_BYTES,
       },
-    };
-    const sampledTexture = (binding: number): GPUBindGroupLayoutEntry => ({
+    });
+    const storageEntry = (
+      binding: number,
+      visibility: GPUShaderStageFlags,
+      readOnly: boolean,
+    ): GPUBindGroupLayoutEntry => ({
       binding,
-      visibility: GPUShaderStage.FRAGMENT,
+      visibility,
+      buffer: { type: readOnly ? "read-only-storage" : "storage" },
+    });
+    const computeTexture = (binding: number): GPUBindGroupLayoutEntry => ({
+      binding,
+      visibility: GPUShaderStage.COMPUTE,
       texture: {
         sampleType: "float",
         viewDimension: "2d",
         multisampled: false,
       },
     });
-    const filteringSampler = (binding: number): GPUBindGroupLayoutEntry => ({
+    const computeSampler = (binding: number): GPUBindGroupLayoutEntry => ({
       binding,
-      visibility: GPUShaderStage.FRAGMENT,
+      visibility: GPUShaderStage.COMPUTE,
       sampler: { type: "filtering" },
     });
 
     this.gatherBindGroupLayout = this.device.createBindGroupLayout({
       label: "Blend dry gather bind group layout",
-      entries: [dynamicUniformEntry, sampledTexture(1)],
-    });
-    this.maskBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Blend dry mask bind group layout",
       entries: [
-        dynamicUniformEntry,
-        sampledTexture(1),
-        filteringSampler(2),
-        sampledTexture(3),
-        filteringSampler(4),
+        dynamicUniformEntry(GPUShaderStage.COMPUTE),
+        computeTexture(1),
+        storageEntry(2, GPUShaderStage.COMPUTE, false),
+        storageEntry(3, GPUShaderStage.COMPUTE, false),
       ],
     });
     this.pickupBindGroupLayout = this.device.createBindGroupLayout({
       label: "Blend dry pickup bind group layout",
-      entries: [dynamicUniformEntry, sampledTexture(1), sampledTexture(2)],
+      entries: [
+        dynamicUniformEntry(GPUShaderStage.COMPUTE),
+        storageEntry(1, GPUShaderStage.COMPUTE, true),
+        storageEntry(2, GPUShaderStage.COMPUTE, false),
+      ],
     });
     this.depositBindGroupLayout = this.device.createBindGroupLayout({
       label: "Blend dry deposit bind group layout",
       entries: [
-        dynamicUniformEntry,
-        sampledTexture(1),
-        sampledTexture(2),
-        sampledTexture(3),
+        dynamicUniformEntry(GPUShaderStage.COMPUTE),
+        storageEntry(1, GPUShaderStage.COMPUTE, false),
+        storageEntry(2, GPUShaderStage.COMPUTE, false),
+        storageEntry(3, GPUShaderStage.COMPUTE, true),
+        computeTexture(4),
+        computeSampler(5),
+        computeTexture(6),
+        computeSampler(7),
       ],
     });
     this.scatterBindGroupLayout = this.device.createBindGroupLayout({
       label: "Blend dry scatter bind group layout",
-      entries: [dynamicUniformEntry, sampledTexture(1), sampledTexture(2)],
+      entries: [
+        dynamicUniformEntry(GPUShaderStage.FRAGMENT),
+        storageEntry(1, GPUShaderStage.FRAGMENT, true),
+        storageEntry(2, GPUShaderStage.FRAGMENT, true),
+      ],
     });
 
     const modules = [
@@ -303,13 +323,6 @@ export class DryBlendRenderer {
         module: this.device.createShaderModule({
           label: "Blend gather WGSL",
           code: blendGatherShader,
-        }),
-      },
-      {
-        label: "Blend mask",
-        module: this.device.createShaderModule({
-          label: "Blend mask WGSL",
-          code: blendMaskShader,
         }),
       },
       {
@@ -338,63 +351,53 @@ export class DryBlendRenderer {
 
     const pipelineLayout = (label: string, layout: GPUBindGroupLayout) =>
       this.device.createPipelineLayout({ label, bindGroupLayouts: [layout] });
-    const renderPipeline = (
+    const computePipeline = (
       label: string,
       layout: GPUBindGroupLayout,
       module: GPUShaderModule,
-      fragmentEntryPoint: string,
-      targets: GPUColorTargetState[],
-    ): GPURenderPipeline => this.device.createRenderPipeline({
+      entryPoint: string,
+    ): GPUComputePipeline => this.device.createComputePipeline({
       label,
       layout: pipelineLayout(`${label} pipeline layout`, layout),
-      vertex: {
-        module,
-        entryPoint: "fullscreenVertex",
-      },
-      fragment: {
-        module,
-        entryPoint: fragmentEntryPoint,
-        targets,
-      },
-      primitive: { topology: "triangle-list" },
+      compute: { module, entryPoint },
     });
 
     this.device.pushErrorScope("validation");
-    this.gatherPipeline = renderPipeline(
-      "Blend dry gather",
+    this.gatherPipeline = computePipeline(
+      "Blend dry gather ROI",
       this.gatherBindGroupLayout,
       modules[0].module,
-      "gatherFragment",
-      [{ format: BLEND_STATE_FORMAT }],
+      "gatherMain",
     );
-    this.maskPipeline = renderPipeline(
-      "Blend dry continuous sweep mask",
-      this.maskBindGroupLayout,
-      modules[1].module,
-      "maskFragment",
-      [{ format: BLEND_MASK_FORMAT }, { format: BLEND_MASK_FORMAT }],
-    );
-    this.pickupPipeline = renderPipeline(
-      "Blend dry weighted pickup",
+    this.pickupPipeline = computePipeline(
+      "Blend dry 8x8 weighted pigment pickup",
       this.pickupBindGroupLayout,
-      modules[2].module,
-      "pickupFragment",
-      [{ format: BLEND_STATE_FORMAT }],
+      modules[1].module,
+      "pickupMain",
     );
-    this.depositPipeline = renderPipeline(
-      "Blend dry pigment deposit",
+    this.depositPipeline = computePipeline(
+      "Blend dry fused sweep mask and pigment deposit",
       this.depositBindGroupLayout,
-      modules[3].module,
-      "depositFragment",
-      [{ format: BLEND_STATE_FORMAT }],
+      modules[2].module,
+      "depositMain",
     );
-    this.scatterPipeline = renderPipeline(
-      "Blend dry scatter to canonical layer",
-      this.scatterBindGroupLayout,
-      modules[4].module,
-      "scatterFragment",
-      [{ format: this.layerFormat }],
-    );
+    this.scatterPipeline = this.device.createRenderPipeline({
+      label: "Blend dry scatter to canonical layer",
+      layout: pipelineLayout(
+        "Blend dry scatter pipeline layout",
+        this.scatterBindGroupLayout,
+      ),
+      vertex: {
+        module: modules[3].module,
+        entryPoint: "fullscreenVertex",
+      },
+      fragment: {
+        module: modules[3].module,
+        entryPoint: "scatterFragment",
+        targets: [{ format: this.layerFormat }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
     const validationError = await this.device.popErrorScope();
     if (validationError) {
       throw new Error(`Pipeline Blend WebGPU non valida: ${validationError.message}`);
@@ -404,7 +407,7 @@ export class DryBlendRenderer {
   beginStroke(historyActionId: number): void {
     this.assertAlive();
     this.activeHistoryActionId = historyActionId;
-    this.carrierIndex = 0;
+    this.carrierCursor = 0;
     this.carrierValid = false;
   }
 
@@ -429,7 +432,8 @@ export class DryBlendRenderer {
     for (const batch of renderable) {
       this.validateBatch(batch);
     }
-    this.populateUniforms(renderable, settings);
+    const groups = this.buildStepGroups(renderable);
+    this.populateUniforms(renderable, groups, settings);
     if (renderable.length > 0) {
       this.device.queue.writeBuffer(
         this.uniformBuffer,
@@ -460,90 +464,37 @@ export class DryBlendRenderer {
       passCount += 1;
     }
 
-    for (let index = 0; index < renderable.length; index += 1) {
-      const batch = renderable[index];
-      const dynamicOffset = index * this.uniformStride;
-      const width = batch.readRect.width;
-      const height = batch.readRect.height;
-
-      const gatherPass = encoder.beginRenderPass({
-        label: "Blend dry gather ROI",
-        colorAttachments: [{
-          view: scratch.stateViews[0],
-          loadOp: "load",
-          storeOp: "store",
-        }],
+    const workgroups = (pixels: number): number => Math.ceil(pixels / 8);
+    const grainMode = settings.grainMode === "moving" ? "moving" : "fixed";
+    for (const group of groups) {
+      const groupOffset = group.start * this.uniformStride;
+      const computePass = encoder.beginComputePass({
+        label: "Blend dry gather + fused sweep steps",
       });
-      gatherPass.setPipeline(this.gatherPipeline);
-      gatherPass.setBindGroup(0, scratch.gatherBindGroup, [dynamicOffset]);
-      gatherPass.setScissorRect(0, 0, width, height);
-      gatherPass.draw(3);
-      gatherPass.end();
-
-      const maskMode = settings.grainMode === "moving" ? "moving" : "fixed";
-      const maskPass = encoder.beginRenderPass({
-        label: "Blend dry continuous sweep mask",
-        colorAttachments: [
-          {
-            view: scratch.stepMaskView,
-            loadOp: "load",
-            storeOp: "store",
-          },
-          {
-            view: scratch.unionMaskView,
-            loadOp: "load",
-            storeOp: "store",
-          },
-        ],
-      });
-      maskPass.setPipeline(this.maskPipeline);
-      maskPass.setBindGroup(
-        0,
-        scratch.maskBindGroups[maskMode][settings.grainFiltering],
-        [dynamicOffset],
+      computePass.setPipeline(this.gatherPipeline);
+      computePass.setBindGroup(0, scratch.gatherBindGroup, [groupOffset]);
+      computePass.dispatchWorkgroups(
+        workgroups(group.readRect.width),
+        workgroups(group.readRect.height),
       );
-      maskPass.setScissorRect(0, 0, width, height);
-      maskPass.draw(3);
-      maskPass.end();
-
-      const destinationCarrier = (this.carrierIndex === 0 ? 1 : 0) as 0 | 1;
-      const pickupPass = encoder.beginRenderPass({
-        label: "Blend dry 8x8 weighted pigment pickup",
-        colorAttachments: [{
-          view: scratch.carrierViews[destinationCarrier],
-          loadOp: "load",
-          storeOp: "store",
-        }],
-      });
-      pickupPass.setPipeline(this.pickupPipeline);
-      pickupPass.setBindGroup(
-        0,
-        scratch.pickupBindGroups[destinationCarrier],
-        [dynamicOffset],
-      );
-      pickupPass.setScissorRect(0, 0, 1, 1);
-      pickupPass.draw(3);
-      pickupPass.end();
-      this.carrierIndex = destinationCarrier;
-      this.carrierValid = true;
-
-      const depositPass = encoder.beginRenderPass({
-        label: "Blend dry carried pigment deposit",
-        colorAttachments: [{
-          view: scratch.stateViews[1],
-          loadOp: "load",
-          storeOp: "store",
-        }],
-      });
-      depositPass.setPipeline(this.depositPipeline);
-      depositPass.setBindGroup(
-        0,
-        scratch.depositBindGroups[this.carrierIndex],
-        [dynamicOffset],
-      );
-      depositPass.setScissorRect(0, 0, width, height);
-      depositPass.draw(3);
-      depositPass.end();
+      for (let index = 0; index < group.count; index += 1) {
+        const batch = renderable[group.start + index];
+        const dynamicOffset = (group.start + index) * this.uniformStride;
+        computePass.setPipeline(this.pickupPipeline);
+        computePass.setBindGroup(0, scratch.pickupBindGroup, [dynamicOffset]);
+        computePass.dispatchWorkgroups(1);
+        computePass.setPipeline(this.depositPipeline);
+        computePass.setBindGroup(
+          0,
+          scratch.depositBindGroups[grainMode][settings.grainFiltering],
+          [dynamicOffset],
+        );
+        computePass.dispatchWorkgroups(
+          workgroups(batch.writeRect.width),
+          workgroups(batch.writeRect.height),
+        );
+      }
+      computePass.end();
 
       const scatterPass = encoder.beginRenderPass({
         label: "Blend dry scatter ROI to canonical layer",
@@ -554,22 +505,25 @@ export class DryBlendRenderer {
         }],
       });
       scatterPass.setPipeline(this.scatterPipeline);
-      scatterPass.setBindGroup(0, scratch.scatterBindGroup, [dynamicOffset]);
+      scatterPass.setBindGroup(0, scratch.scatterBindGroup, [groupOffset]);
       scatterPass.setScissorRect(
-        batch.writeRect.x,
-        batch.writeRect.y,
-        batch.writeRect.width,
-        batch.writeRect.height,
+        group.writeRect.x,
+        group.writeRect.y,
+        group.writeRect.width,
+        group.writeRect.height,
       );
       scatterPass.draw(3);
       scatterPass.end();
 
-      passCount += 5;
-      dirtyRect = mergeRects(dirtyRect, batch.writeRect);
+      passCount += 2;
+      dirtyRect = mergeRects(dirtyRect, group.writeRect);
     }
 
     if (clearLayer || renderable.length > 0) {
       this.device.queue.submit([encoder.finish()]);
+    }
+    if (renderable.length > 0) {
+      this.carrierValid = true;
     }
     return {
       dirtyRect,
@@ -585,10 +539,10 @@ export class DryBlendRenderer {
       return 0;
     }
     const pixels = this.scratchSize * this.scratchSize;
-    const stateBytes = pixels * 8 * 2;
-    const maskBytes = pixels * 2;
-    const carrierBytes = 8 * 2;
-    return (stateBytes + maskBytes + carrierBytes + this.uniformUpload.byteLength)
+    const stateBytes = pixels * 16;
+    const coverageBytes = pixels * 4;
+    const carrierBytes = BLEND_CARRIER_SLOT_COUNT * 16;
+    return (stateBytes + coverageBytes + carrierBytes + this.uniformUpload.byteLength)
       / (1024 * 1024);
   }
 
@@ -599,14 +553,9 @@ export class DryBlendRenderer {
     this.destroyed = true;
     this.uniformBuffer.destroy();
     if (this.scratch) {
-      for (const texture of this.scratch.stateTextures) {
-        texture.destroy();
-      }
-      this.scratch.stepMaskTexture.destroy();
-      this.scratch.unionMaskTexture.destroy();
-      for (const texture of this.scratch.carrierTextures) {
-        texture.destroy();
-      }
+      this.scratch.stateBuffer.destroy();
+      this.scratch.coverageBuffer.destroy();
+      this.scratch.carrierBuffer.destroy();
       this.scratch = null;
     }
   }
@@ -654,8 +603,42 @@ export class DryBlendRenderer {
     }
   }
 
+  private buildStepGroups(
+    renderable: readonly DryBlendRenderBatch[],
+  ): BlendStepGroup[] {
+    const groups: BlendStepGroup[] = [];
+    let current: BlendStepGroup | null = null;
+    for (let index = 0; index < renderable.length; index += 1) {
+      const batch = renderable[index];
+      if (current) {
+        const candidate = mergeRects(current.readRect, batch.readRect);
+        if (
+          candidate.width <= this.scratchSize
+          && candidate.height <= this.scratchSize
+        ) {
+          current.count += 1;
+          current.readRect = candidate;
+          current.writeRect = mergeRects(current.writeRect, batch.writeRect);
+          continue;
+        }
+        groups.push(current);
+      }
+      current = {
+        start: index,
+        count: 1,
+        readRect: cloneRect(batch.readRect),
+        writeRect: cloneRect(batch.writeRect),
+      };
+    }
+    if (current) {
+      groups.push(current);
+    }
+    return groups;
+  }
+
   private populateUniforms(
     batches: readonly DryBlendRenderBatch[],
+    groups: readonly BlendStepGroup[],
     settings: DryBlendRenderSettings,
   ): void {
     const paintColor = hexToLinearRgb(settings.color);
@@ -668,51 +651,65 @@ export class DryBlendRenderer {
       ? 0
       : settings.grainFiltering === "classic" ? 1 : 2;
 
-    for (let index = 0; index < batches.length; index += 1) {
-      const batch = batches[index];
-      const step = batch.steps[0];
-      const offset = index * this.uniformStride;
-      const floats = new Float32Array(this.uniformUpload, offset, BLEND_UNIFORM_BYTES / 4);
-      const unsigned = new Uint32Array(this.uniformUpload, offset, BLEND_UNIFORM_BYTES / 4);
-      floats.fill(0);
-      floats[0] = this.documentWidth;
-      floats[1] = this.documentHeight;
-      floats[2] = batch.readRect.x;
-      floats[3] = batch.readRect.y;
-      floats[4] = batch.readRect.width;
-      floats[5] = batch.readRect.height;
-      floats[6] = step.fromX;
-      floats[7] = step.fromY;
-      floats[8] = step.toX;
-      floats[9] = step.toY;
-      floats[10] = step.fromHalfWidth;
-      floats[11] = step.fromHalfHeight;
-      floats[12] = step.toHalfWidth;
-      floats[13] = step.toHalfHeight;
-      floats[14] = step.fromAngle;
-      floats[15] = step.toAngle;
-      floats[16] = clamp(settings.hardness, 0, 1);
-      floats[17] = clamp(step.flow, 0, 1);
-      floats[18] = step.spacing;
-      floats[19] = step.arcStart;
-      floats[20] = step.distance;
-      floats[21] = step.diameter;
-      floats[22] = clamp(step.warpStrength, 0, 1);
-      floats[23] = blendStretchCoefficient(settings.blendStretch);
-      floats[24] = 1 / (2500 * grainScale);
-      floats[25] = blendPaintCoefficient(settings.blendPaint);
-      floats[26] = clamp(settings.grainDepth, 0, 1);
-      floats[27] = clamp(settings.grainBrightness, -1, 1) * grainPolarity;
-      floats[28] = (1 + clamp(settings.grainContrast, -1, 1)) * grainPolarity;
-      floats[31] = 0;
-      floats[32] = paintColor[0];
-      floats[33] = paintColor[1];
-      floats[34] = paintColor[2];
-      floats[35] = 1;
-      unsigned[36] = settings.shape === "shape" ? 1 : 0;
-      unsigned[37] = grainMode;
-      unsigned[38] = filtering;
-      unsigned[39] = this.carrierValid || index > 0 ? 1 : 0;
+    for (const group of groups) {
+      for (let member = 0; member < group.count; member += 1) {
+        const index = group.start + member;
+        const batch = batches[index];
+        const step = batch.steps[0];
+        const carrierReadSlot = this.carrierCursor;
+        const carrierWriteSlot = (this.carrierCursor + 1) % BLEND_CARRIER_SLOT_COUNT;
+        this.carrierCursor = carrierWriteSlot;
+        const offset = index * this.uniformStride;
+        const floats = new Float32Array(this.uniformUpload, offset, BLEND_UNIFORM_BYTES / 4);
+        const unsigned = new Uint32Array(this.uniformUpload, offset, BLEND_UNIFORM_BYTES / 4);
+        floats.fill(0);
+        floats[0] = this.documentWidth;
+        floats[1] = this.documentHeight;
+        floats[2] = group.readRect.x;
+        floats[3] = group.readRect.y;
+        floats[4] = group.readRect.width;
+        floats[5] = group.readRect.height;
+        floats[6] = step.fromX;
+        floats[7] = step.fromY;
+        floats[8] = step.toX;
+        floats[9] = step.toY;
+        floats[10] = step.fromHalfWidth;
+        floats[11] = step.fromHalfHeight;
+        floats[12] = step.toHalfWidth;
+        floats[13] = step.toHalfHeight;
+        floats[14] = step.fromAngle;
+        floats[15] = step.toAngle;
+        floats[16] = clamp(settings.hardness, 0, 1);
+        floats[17] = clamp(step.flow, 0, 1);
+        floats[18] = step.spacing;
+        floats[19] = step.arcStart;
+        floats[20] = step.distance;
+        floats[21] = step.diameter;
+        floats[22] = clamp(step.warpStrength, 0, 1);
+        floats[23] = blendStretchCoefficient(settings.blendStretch);
+        floats[24] = 1 / (2500 * grainScale);
+        floats[25] = blendPaintCoefficient(settings.blendPaint);
+        floats[26] = clamp(settings.grainDepth, 0, 1);
+        floats[27] = clamp(settings.grainBrightness, -1, 1) * grainPolarity;
+        floats[28] = (1 + clamp(settings.grainContrast, -1, 1)) * grainPolarity;
+        floats[31] = 0;
+        floats[32] = paintColor[0];
+        floats[33] = paintColor[1];
+        floats[34] = paintColor[2];
+        floats[35] = 1;
+        floats[36] = batch.writeRect.x - group.readRect.x;
+        floats[37] = batch.writeRect.y - group.readRect.y;
+        floats[38] = batch.writeRect.width;
+        floats[39] = batch.writeRect.height;
+        unsigned[40] = settings.shape === "shape" ? 1 : 0;
+        unsigned[41] = grainMode;
+        unsigned[42] = filtering;
+        unsigned[43] = this.carrierValid || index > 0 ? 1 : 0;
+        unsigned[44] = carrierReadSlot;
+        unsigned[45] = carrierWriteSlot;
+        unsigned[46] = this.scratchSize;
+        unsigned[47] = 0;
+      }
     }
   }
 
@@ -720,52 +717,22 @@ export class DryBlendRenderer {
     if (this.scratch) {
       return this.scratch;
     }
-    const stateTexture = (label: string): GPUTexture => this.device.createTexture({
-      label,
-      size: {
-        width: this.scratchSize,
-        height: this.scratchSize,
-        depthOrArrayLayers: 1,
-      },
-      format: BLEND_STATE_FORMAT,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    const pixels = this.scratchSize * this.scratchSize;
+    const stateBuffer = this.device.createBuffer({
+      label: "Blend dry scratch state",
+      size: pixels * 16,
+      usage: GPUBufferUsage.STORAGE,
     });
-    const maskTexture = (label: string): GPUTexture => this.device.createTexture({
-      label,
-      size: {
-        width: this.scratchSize,
-        height: this.scratchSize,
-        depthOrArrayLayers: 1,
-      },
-      format: BLEND_MASK_FORMAT,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    const coverageBuffer = this.device.createBuffer({
+      label: "Blend dry union coverage",
+      size: pixels * 4,
+      usage: GPUBufferUsage.STORAGE,
     });
-    const carrierTexture = (label: string): GPUTexture => this.device.createTexture({
-      label,
-      size: { width: 1, height: 1, depthOrArrayLayers: 1 },
-      format: BLEND_STATE_FORMAT,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    const carrierBuffer = this.device.createBuffer({
+      label: "Blend dry carrier ring",
+      size: BLEND_CARRIER_SLOT_COUNT * 16,
+      usage: GPUBufferUsage.STORAGE,
     });
-    const stateTextures = [
-      stateTexture("Blend dry scratch state A"),
-      stateTexture("Blend dry scratch state B"),
-    ] as const;
-    const stateViews = stateTextures.map((texture) => texture.createView()) as unknown as readonly [
-      GPUTextureView,
-      GPUTextureView,
-    ];
-    const stepMaskTexture = maskTexture("Blend dry step coverage");
-    const unionMaskTexture = maskTexture("Blend dry union coverage");
-    const stepMaskView = stepMaskTexture.createView();
-    const unionMaskView = unionMaskTexture.createView();
-    const carrierTextures = [
-      carrierTexture("Blend dry carrier A"),
-      carrierTexture("Blend dry carrier B"),
-    ] as const;
-    const carrierViews = carrierTextures.map((texture) => texture.createView()) as unknown as readonly [
-      GPUTextureView,
-      GPUTextureView,
-    ];
     const uniformEntry = {
       binding: 0,
       resource: {
@@ -774,75 +741,66 @@ export class DryBlendRenderer {
         size: BLEND_UNIFORM_BYTES,
       },
     } as const;
+    const bufferEntry = (binding: number, buffer: GPUBuffer) => ({
+      binding,
+      resource: { buffer },
+    });
     const gatherBindGroup = this.device.createBindGroup({
       label: "Blend dry gather bind group",
       layout: this.gatherBindGroupLayout,
       entries: [
         uniformEntry,
         { binding: 1, resource: this.layerSamplingView },
+        bufferEntry(2, stateBuffer),
+        bufferEntry(3, coverageBuffer),
       ],
     });
-    const maskBindGroups = {
+    const pickupBindGroup = this.device.createBindGroup({
+      label: "Blend dry pickup bind group",
+      layout: this.pickupBindGroupLayout,
+      entries: [
+        uniformEntry,
+        bufferEntry(1, stateBuffer),
+        bufferEntry(2, carrierBuffer),
+      ],
+    });
+    const depositBindGroups = {
       fixed: {} as Record<"no" | "classic" | "improved", GPUBindGroup>,
       moving: {} as Record<"no" | "classic" | "improved", GPUBindGroup>,
     };
     for (const mode of ["fixed", "moving"] as const) {
       for (const filtering of ["no", "classic", "improved"] as const) {
-        maskBindGroups[mode][filtering] = this.device.createBindGroup({
-          label: `Blend dry mask ${mode} ${filtering}`,
-          layout: this.maskBindGroupLayout,
+        depositBindGroups[mode][filtering] = this.device.createBindGroup({
+          label: `Blend dry deposit ${mode} ${filtering}`,
+          layout: this.depositBindGroupLayout,
           entries: [
             uniformEntry,
-            { binding: 1, resource: this.shapeMaskView },
-            { binding: 2, resource: this.shapeMaskSampler },
-            { binding: 3, resource: this.grainTextureView },
-            { binding: 4, resource: this.grainSamplers[mode][filtering] },
+            bufferEntry(1, stateBuffer),
+            bufferEntry(2, coverageBuffer),
+            bufferEntry(3, carrierBuffer),
+            { binding: 4, resource: this.shapeMaskView },
+            { binding: 5, resource: this.shapeMaskSampler },
+            { binding: 6, resource: this.grainTextureView },
+            { binding: 7, resource: this.grainSamplers[mode][filtering] },
           ],
         });
       }
     }
-    const pickupBindGroups = ([0, 1] as const).map((destination) =>
-      this.device.createBindGroup({
-        label: `Blend dry pickup to carrier ${destination}`,
-        layout: this.pickupBindGroupLayout,
-        entries: [
-          uniformEntry,
-          { binding: 1, resource: stateViews[0] },
-          { binding: 2, resource: carrierViews[destination === 0 ? 1 : 0] },
-        ],
-      })) as unknown as readonly [GPUBindGroup, GPUBindGroup];
-    const depositBindGroups = ([0, 1] as const).map((carrier) =>
-      this.device.createBindGroup({
-        label: `Blend dry deposit from carrier ${carrier}`,
-        layout: this.depositBindGroupLayout,
-        entries: [
-          uniformEntry,
-          { binding: 1, resource: stateViews[0] },
-          { binding: 2, resource: stepMaskView },
-          { binding: 3, resource: carrierViews[carrier] },
-        ],
-      })) as unknown as readonly [GPUBindGroup, GPUBindGroup];
     const scatterBindGroup = this.device.createBindGroup({
       label: "Blend dry scatter bind group",
       layout: this.scatterBindGroupLayout,
       entries: [
         uniformEntry,
-        { binding: 1, resource: stateViews[1] },
-        { binding: 2, resource: unionMaskView },
+        bufferEntry(1, stateBuffer),
+        bufferEntry(2, coverageBuffer),
       ],
     });
     this.scratch = {
-      stateTextures,
-      stateViews,
-      stepMaskTexture,
-      stepMaskView,
-      unionMaskTexture,
-      unionMaskView,
-      carrierTextures,
-      carrierViews,
+      stateBuffer,
+      coverageBuffer,
+      carrierBuffer,
       gatherBindGroup,
-      maskBindGroups,
-      pickupBindGroups,
+      pickupBindGroup,
       depositBindGroups,
       scatterBindGroup,
     };
