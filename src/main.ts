@@ -15,6 +15,11 @@ import {
   type StampGeometry,
   type StrokePerformanceProfile,
 } from "./brush-engine";
+import {
+  humanStrokeTestThicknessLabel,
+  humanStrokeTestThicknessSettings,
+  type HumanStrokeTestThicknessMode,
+} from "./human-stroke-test";
 
 function element<T extends HTMLElement>(id: string): T {
   const result = document.getElementById(id);
@@ -45,6 +50,8 @@ const humanStrokeResult = element<HTMLParagraphElement>("humanStrokeResult");
 const humanStrokeTestVariantSelect = element<HTMLSelectElement>("humanStrokeTestVariant");
 const humanStrokeTestBlendModeSelect = element<HTMLSelectElement>("humanStrokeTestBlendMode");
 const humanStrokeTestGrainModeSelect = element<HTMLSelectElement>("humanStrokeTestGrainMode");
+const humanStrokeTestThicknessModeSelect =
+  element<HTMLSelectElement>("humanStrokeTestThicknessMode");
 const layerFormatSelect = element<HTMLSelectElement>("layerFormat");
 const clearLayerButton = element<HTMLButtonElement>("clearLayer");
 const undoStrokeButton = element<HTMLButtonElement>("undoStroke");
@@ -96,6 +103,7 @@ interface BenchmarkRun {
     testVariant: HumanStrokeTestVariant;
     testBlendMode: HumanStrokeTestBlendMode;
     testGrainMode: HumanStrokeTestGrainMode;
+    testThicknessMode: HumanStrokeTestThicknessMode;
     settings: BrushSettings;
   };
   playback: {
@@ -705,12 +713,20 @@ function selectedHumanStrokeTestGrainMode(): HumanStrokeTestGrainMode {
   return humanStrokeTestGrainModeSelect.value === "texturized" ? "texturized" : "off";
 }
 
+function selectedHumanStrokeTestThicknessMode(): HumanStrokeTestThicknessMode {
+  return humanStrokeTestThicknessModeSelect.value === "taper-0-0-speed100"
+    ? "taper-0-0-speed100"
+    : "standard";
+}
+
 function humanStrokeTestSettings(
   benchmark: HumanStrokeBenchmark,
   variant: HumanStrokeTestVariant,
   blendMode: HumanStrokeTestBlendMode,
   grainMode: HumanStrokeTestGrainMode,
+  thicknessMode: HumanStrokeTestThicknessMode,
 ): BrushSettings {
+  const thicknessSettings = humanStrokeTestThicknessSettings(thicknessMode);
   const baseSettings: BrushSettings = {
     ...benchmark.settings,
     opacity: 1,
@@ -726,9 +742,7 @@ function humanStrokeTestSettings(
     grainBlendMode: "multiply",
     shape: "circle",
     shapeScatter: 0,
-    startThickness: 1,
-    endThickness: 1,
-    speedThickness: 0,
+    ...thicknessSettings,
     positionJitterLateral: 1,
     positionJitterLinear: 1,
   };
@@ -750,13 +764,15 @@ function humanStrokeTestLabel(
   variant: HumanStrokeTestVariant,
   blendMode: HumanStrokeTestBlendMode,
   grainMode: HumanStrokeTestGrainMode,
+  thicknessMode: HumanStrokeTestThicknessMode,
 ): string {
   const variantLabel = variant === "fur" ? "Fur" : "Base";
   const blendLabel = blendMode === "m1-glaze"
     ? "M1 Glaze non accumulativo · 1×"
     : "Normal accumulativo · 4×";
   const grainLabel = grainMode === "texturized" ? "Grain Fixed M1" : "Grain Off";
-  return `${variantLabel} · ${blendLabel} · ${grainLabel}`;
+  const thicknessLabel = humanStrokeTestThicknessLabel(thicknessMode);
+  return `${variantLabel} · ${thicknessLabel} · ${blendLabel} · ${grainLabel}`;
 }
 
 function updateHumanStrokeControls(): void {
@@ -793,6 +809,12 @@ function updateHumanStrokeControls(): void {
     || humanStrokeRecordingArmed
     || Boolean(humanStrokeRecording);
   humanStrokeTestGrainModeSelect.disabled = operationLocked
+    || humanStrokeLoading
+    || humanStrokeSaving
+    || humanStrokeReplaying
+    || humanStrokeRecordingArmed
+    || Boolean(humanStrokeRecording);
+  humanStrokeTestThicknessModeSelect.disabled = operationLocked
     || humanStrokeLoading
     || humanStrokeSaving
     || humanStrokeReplaying
@@ -1138,13 +1160,20 @@ async function replayHumanStroke(): Promise<void> {
   const testVariant = selectedHumanStrokeTestVariant();
   const testBlendMode = selectedHumanStrokeTestBlendMode();
   const testGrainMode = selectedHumanStrokeTestGrainMode();
+  const testThicknessMode = selectedHumanStrokeTestThicknessMode();
   const replaySettings = humanStrokeTestSettings(
     benchmark,
     testVariant,
     testBlendMode,
     testGrainMode,
+    testThicknessMode,
   );
-  const testLabel = humanStrokeTestLabel(testVariant, testBlendMode, testGrainMode);
+  const testLabel = humanStrokeTestLabel(
+    testVariant,
+    testBlendMode,
+    testGrainMode,
+    testThicknessMode,
+  );
 
   setControlsPanelOpen(false);
   humanStrokeReplaying = true;
@@ -1245,6 +1274,7 @@ async function replayHumanStroke(): Promise<void> {
         testVariant,
         testBlendMode,
         testGrainMode,
+        testThicknessMode,
         settings: replaySettings,
       },
       playback,

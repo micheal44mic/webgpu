@@ -2083,3 +2083,33 @@ Verifica locale completata con `npm run thickness:verify`,
 `npm run grain:verify`, `npx tsc --noEmit`, `npm run build` e
 `git diff --check`. Questi controlli coprono formule condivise, firme shader,
 ABI TypeScript e artefatto di produzione, ma non sostituiscono la prova iPhone.
+
+## Variante replay per misurare la coda dinamica
+
+La versione Sites `65` con overlay WebGPU predittivo è stata pubblicata e
+l'utente ha approvato visivamente l'aggancio al touch. La valutazione delle
+prestazioni resta separata: non dichiarare ancora l'overlay promosso o più
+veloce finché non esiste un confronto controllato sullo stesso iPhone.
+
+Il replay del tratto umano espone ora un selettore ortogonale `Spessore test`:
+
+- `standard` conserva esattamente il preset canonico `100% / 100% / 0%`;
+- `taper-0-0-speed100` cambia soltanto inizio `0%`, fine `0%` e
+  velocità→spessore `+100%`.
+
+La scelta viene applicata dal replay invece di leggere slider arbitrari e viene
+salvata come `benchmark.testThicknessMode`, oltre ai valori effettivi già
+presenti in `benchmark.settings`. Il registro D1 rimane append-only e conserva
+JSON opaco: non servono migrazioni né un cambio di versione del payload. Il
+default resta `standard`, quindi le run storiche e il benchmark Base non
+cambiano.
+
+Protocollo richiesto per il confronto: sulla stessa versione pubblicata, stesso
+iPhone e stessa viewport, eseguire Base · Normal `4×` · Grain Off prima con
+`standard` e poi con `taper-0-0-speed100`, idealmente tre run consecutive per
+modalità. Confrontare le mediane di FPS medi, p95/massimo, frame oltre `20 ms`,
+input delay p95, coda GPU finale e fine presentazione. Per attribuire il costo
+all'overlay controllare anche tutti i contatori `thicknessDynamicsHeld*`,
+`thicknessDynamicsReleased*` e `thicknessDynamicsPreview*`, insieme a texture
+massima e memoria aggiuntiva. Non sostituire il benchmark canonico e non
+aggregare Standard e Coda come se fossero la stessa modalità.

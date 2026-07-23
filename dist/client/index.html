@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#111318" />
     <title>WebGPU Brush Engine 4096²</title>
-    <script type="module" crossorigin src="./assets/index-ujP3H53j.js"></script>
+    <script type="module" crossorigin src="./assets/index-DNlGWwB1.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-ZJh80Jtj.css">
   </head>
   <body>
@@ -319,6 +319,13 @@
             <select id="humanStrokeTestGrainMode">
               <option value="off">Off — senza texture</option>
               <option value="texturized">Texturized — Fixed M1 (fisso)</option>
+            </select>
+          </label>
+          <label class="control">
+            <span>Spessore test</span>
+            <select id="humanStrokeTestThicknessMode">
+              <option value="standard">Standard — inizio 100% · fine 100% · velocità 0%</option>
+              <option value="taper-0-0-speed100">Coda — inizio 0% · fine 0% · velocità +100%</option>
             </select>
           </label>
           <button id="recordHumanStroke" class="primary wide" type="button">Registra tratto umano</button>

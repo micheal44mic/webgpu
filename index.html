@@ -319,6 +319,13 @@
               <option value="texturized">Texturized — Fixed M1 (fisso)</option>
             </select>
           </label>
+          <label class="control">
+            <span>Spessore test</span>
+            <select id="humanStrokeTestThicknessMode">
+              <option value="standard">Standard — inizio 100% · fine 100% · velocità 0%</option>
+              <option value="taper-0-0-speed100">Coda — inizio 0% · fine 0% · velocità +100%</option>
+            </select>
+          </label>
           <button id="recordHumanStroke" class="primary wide" type="button">Registra tratto umano</button>
           <button id="playHumanStroke" class="wide" type="button" disabled>Play tratto registrato</button>
           <p id="humanStrokeResult" class="result">Caricamento tratto umano di riferimento…</p>
