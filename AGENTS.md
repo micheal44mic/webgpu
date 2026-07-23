@@ -196,6 +196,9 @@ Paint:
   fixture `bcbaa02c…`, combinato `8d5a75a6…`, sette hash conservati in
   `goldens/raster-stroke-rgba8-v1.json`. La ripetizione center-31 prima/dopo
   width 129 è identica (`5cf27e7b…`), quindi il run è internamente stabile.
+  Estensione mip v1 sulla stessa GPU: 63 hash (`7` casi × `9` livelli), combinato
+  `f7f53472…`, conservati in `goldens/raster-stroke-rgba8-mips-v1.json`; questa
+  baseline è vincolante per ogni modifica alla texture styled o allo zoom.
 - Coverage R8 v4 **promossa** il 24 luglio 2026: il golden eseguito dall'utente
   restituisce tutti i sette hash v3 identici, combinato `8d5a75a6…`,
   `baselineMatches: true` e nessun mismatch. Risparmio logico deterministico

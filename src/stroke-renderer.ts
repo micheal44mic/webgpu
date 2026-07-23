@@ -906,22 +906,30 @@ export class RasterStrokeRenderer {
     return true;
   }
 
-  async readStyledPixels(requestedRect?: RasterStrokeRect): Promise<Uint8Array> {
+  async readStyledPixels(
+    requestedRect?: RasterStrokeRect,
+    mipLevel = 0,
+  ): Promise<Uint8Array> {
     if (this.destroyed) {
       throw new Error("Renderer Traccia già distrutto.");
     }
     if (!this.readbackEnabled) {
       throw new Error("Readback Traccia non abilitato per questo renderer.");
     }
+    if (!Number.isInteger(mipLevel) || mipLevel < 0 || mipLevel >= this.mipViews.length) {
+      throw new Error(`Mip Traccia non valido per il readback: ${mipLevel}.`);
+    }
+    const mipWidth = Math.max(1, this.documentWidth >> mipLevel);
+    const mipHeight = Math.max(1, this.documentHeight >> mipLevel);
     const rect = normalizedRect(
       requestedRect ?? {
         x: 0,
         y: 0,
-        width: this.documentWidth,
-        height: this.documentHeight,
+        width: mipWidth,
+        height: mipHeight,
       },
-      this.documentWidth,
-      this.documentHeight,
+      mipWidth,
+      mipHeight,
     );
     if (!rect) {
       return new Uint8Array();
@@ -930,17 +938,18 @@ export class RasterStrokeRenderer {
     const unpaddedBytesPerRow = rect.width * bytesPerPixel;
     const bytesPerRow = Math.ceil(unpaddedBytesPerRow / 256) * 256;
     const readbackBuffer = this.device.createBuffer({
-      label: "Traccia golden styled readback",
+      label: `Traccia golden styled mip ${mipLevel} readback`,
       size: bytesPerRow * rect.height,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     });
     try {
       const encoder = this.device.createCommandEncoder({
-        label: "Traccia golden styled readback encoder",
+        label: `Traccia golden styled mip ${mipLevel} readback encoder`,
       });
       encoder.copyTextureToBuffer(
         {
           texture: this.styledTexture,
+          mipLevel,
           origin: { x: rect.x, y: rect.y, z: 0 },
         },
         {

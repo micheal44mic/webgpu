@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
   DEFAULT_RASTER_STROKE_STYLE,
@@ -357,6 +358,10 @@ const goldenBaseline = JSON.parse(readFileSync(
   new URL("../goldens/raster-stroke-rgba8-v1.json", import.meta.url),
   "utf8",
 ));
+const goldenMipBaseline = JSON.parse(readFileSync(
+  new URL("../goldens/raster-stroke-rgba8-mips-v1.json", import.meta.url),
+  "utf8",
+));
 assert.match(
   rendererSource,
   /raster-stroke-webgpu-v4-packed-r8-coverage-width-tiered-scratch/,
@@ -388,6 +393,29 @@ assert.equal(
 );
 assert.equal(goldenBaseline.cases.length, 7);
 assert.equal(goldenBaseline.cases[2].sha256, goldenBaseline.cases[4].sha256);
+assert.equal(goldenMipBaseline.cases.length, 7);
+assert.ok(goldenMipBaseline.cases.every((goldenCase) => goldenCase.mips.length === 9));
+const goldenMipIdentity = Buffer.from(JSON.stringify({
+  mipChainVersion: goldenMipBaseline.mipChainVersion,
+  format: goldenMipBaseline.format,
+  width: goldenMipBaseline.width,
+  height: goldenMipBaseline.height,
+  fixtureSha256: goldenMipBaseline.fixtureSha256,
+  cases: goldenMipBaseline.cases.map(({ id, mips }) => ({
+    id,
+    mips: mips.map(({ level, width, height, sha256 }) => ({
+      level,
+      width,
+      height,
+      sha256,
+    })),
+  })),
+}));
+assert.equal(
+  createHash("sha256").update(goldenMipIdentity).digest("hex"),
+  "f7f534721e4ca863fb9cecf379d2efa05e6e5f9840f92aa667c032a1fcdd441f",
+);
+assert.match(goldenSource, /mipCombinedSha256/);
 assert.match(engineSource, /async runRasterStrokeGolden\(\)/);
 assert.match(mainSource, /rasterStrokeGoldenSection/);
 assert.match(htmlSource, /id="runRasterStrokeGolden"/);

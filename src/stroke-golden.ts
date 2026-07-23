@@ -4,18 +4,31 @@ import {
   type RasterStrokeEncodeOptions,
 } from "./stroke-renderer";
 import type { RasterStrokeRect, RasterStrokeStyle } from "./stroke-core";
+import { paintMipDownsampleShader } from "./shaders";
 import rasterStrokeGoldenBaseline from "../goldens/raster-stroke-rgba8-v1.json";
+import rasterStrokeMipGoldenBaseline from "../goldens/raster-stroke-rgba8-mips-v1.json";
 
 export const RASTER_STROKE_GOLDEN_VERSION = 1 as const;
 export const RASTER_STROKE_GOLDEN_WIDTH = 256;
 export const RASTER_STROKE_GOLDEN_HEIGHT = 192;
 export const RASTER_STROKE_GOLDEN_FORMAT = "rgba8unorm" as const;
+export const RASTER_STROKE_GOLDEN_MIP_CHAIN_VERSION = 1 as const;
+
+export interface RasterStrokeGoldenMip {
+  level: number;
+  width: number;
+  height: number;
+  sha256: string;
+  byteLength: number;
+  nonZeroAlphaPixels: number;
+}
 
 export interface RasterStrokeGoldenCase {
   id: string;
   sha256: string;
   byteLength: number;
   nonZeroAlphaPixels: number;
+  mips: RasterStrokeGoldenMip[];
 }
 
 export interface RasterStrokeGoldenReport {
@@ -26,6 +39,8 @@ export interface RasterStrokeGoldenReport {
   height: number;
   fixtureSha256: string;
   combinedSha256: string;
+  mipChainVersion: typeof RASTER_STROKE_GOLDEN_MIP_CHAIN_VERSION;
+  mipCombinedSha256: string;
   baselineMatches: boolean;
   baselineMismatches: string[];
   cases: RasterStrokeGoldenCase[];
@@ -264,6 +279,36 @@ export async function runRasterStrokeGolden(
       readbackEnabled: true,
     });
 
+    const mipBindGroupLayout = device.createBindGroupLayout({
+      label: "Traccia golden mip downsample bind group layout",
+      entries: [{
+        binding: 0,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float" },
+      }],
+    });
+    const mipShaderModule = device.createShaderModule({
+      label: "Traccia golden mip downsample WGSL",
+      code: paintMipDownsampleShader,
+    });
+    const mipPipeline = device.createRenderPipeline({
+      label: "Traccia golden mip downsample pipeline",
+      layout: device.createPipelineLayout({ bindGroupLayouts: [mipBindGroupLayout] }),
+      vertex: { module: mipShaderModule, entryPoint: "vertexMain" },
+      fragment: {
+        module: mipShaderModule,
+        entryPoint: "fragmentMain",
+        targets: [{ format: RASTER_STROKE_GOLDEN_FORMAT }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+    const mipBindGroups = renderer.mipViews.slice(0, -1).map((sourceView, mipLevel) =>
+      device.createBindGroup({
+        label: `Traccia golden mip ${mipLevel} to ${mipLevel + 1}`,
+        layout: mipBindGroupLayout,
+        entries: [{ binding: 0, resource: sourceView }],
+      }));
+
     const fixture = createRasterStrokeGoldenFixture();
     const fixtureSha256 = await sha256(fixture);
     uploadFixture(device, sourceTexture, fixture);
@@ -281,13 +326,42 @@ export async function runRasterStrokeGolden(
         encoder,
         sourceMode: "permanent",
       });
+      for (let mipLevel = 1; mipLevel < renderer!.mipViews.length; mipLevel += 1) {
+        const mipPass = encoder.beginRenderPass({
+          label: `Traccia golden build full styled mip ${mipLevel}`,
+          colorAttachments: [{
+            view: renderer!.mipViews[mipLevel],
+            loadOp: "clear",
+            storeOp: "store",
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          }],
+        });
+        mipPass.setPipeline(mipPipeline);
+        mipPass.setBindGroup(0, mipBindGroups[mipLevel - 1]);
+        mipPass.draw(3, 1, 0, 0);
+        mipPass.end();
+      }
       device.queue.submit([encoder.finish()]);
-      const pixels = await renderer!.readStyledPixels();
+
+      const mips: RasterStrokeGoldenMip[] = [];
+      for (let mipLevel = 0; mipLevel < renderer!.mipViews.length; mipLevel += 1) {
+        const pixels = await renderer!.readStyledPixels(undefined, mipLevel);
+        mips.push({
+          level: mipLevel,
+          width: Math.max(1, RASTER_STROKE_GOLDEN_WIDTH >> mipLevel),
+          height: Math.max(1, RASTER_STROKE_GOLDEN_HEIGHT >> mipLevel),
+          sha256: await sha256(pixels),
+          byteLength: pixels.byteLength,
+          nonZeroAlphaPixels: countNonZeroAlphaPixels(pixels),
+        });
+      }
+      const baseMip = mips[0];
       cases.push({
         id,
-        sha256: await sha256(pixels),
-        byteLength: pixels.byteLength,
-        nonZeroAlphaPixels: countNonZeroAlphaPixels(pixels),
+        sha256: baseMip.sha256,
+        byteLength: baseMip.byteLength,
+        nonZeroAlphaPixels: baseMip.nonZeroAlphaPixels,
+        mips,
       });
     };
 
@@ -357,6 +431,23 @@ export async function runRasterStrokeGolden(
       })),
     }));
     const combinedSha256 = await sha256(combinedIdentity);
+    const mipCombinedIdentity = new TextEncoder().encode(JSON.stringify({
+      mipChainVersion: RASTER_STROKE_GOLDEN_MIP_CHAIN_VERSION,
+      format: RASTER_STROKE_GOLDEN_FORMAT,
+      width: RASTER_STROKE_GOLDEN_WIDTH,
+      height: RASTER_STROKE_GOLDEN_HEIGHT,
+      fixtureSha256,
+      cases: cases.map(({ id, mips }) => ({
+        id,
+        mips: mips.map(({ level, width, height, sha256: mipSha256 }) => ({
+          level,
+          width,
+          height,
+          sha256: mipSha256,
+        })),
+      })),
+    }));
+    const mipCombinedSha256 = await sha256(mipCombinedIdentity);
     const baselineCases = new Map(
       rasterStrokeGoldenBaseline.cases.map((goldenCase) => [
         goldenCase.id,
@@ -366,11 +457,29 @@ export async function runRasterStrokeGolden(
     const baselineMismatches = cases
       .filter((goldenCase) => baselineCases.get(goldenCase.id) !== goldenCase.sha256)
       .map((goldenCase) => goldenCase.id);
+    const baselineMips = new Map<string, string>(
+      rasterStrokeMipGoldenBaseline.cases.flatMap((goldenCase) =>
+        goldenCase.mips.map((mip) => [
+          `${goldenCase.id}:mip-${mip.level}`,
+          mip.sha256,
+        ] as const)),
+    );
+    for (const goldenCase of cases) {
+      for (const mip of goldenCase.mips) {
+        const id = `${goldenCase.id}:mip-${mip.level}`;
+        if (baselineMips.get(id) !== mip.sha256) {
+          baselineMismatches.push(id);
+        }
+      }
+    }
     if (fixtureSha256 !== rasterStrokeGoldenBaseline.fixtureSha256) {
       baselineMismatches.unshift("fixture");
     }
     if (combinedSha256 !== rasterStrokeGoldenBaseline.combinedSha256) {
       baselineMismatches.unshift("combined");
+    }
+    if (mipCombinedSha256 !== rasterStrokeMipGoldenBaseline.mipCombinedSha256) {
+      baselineMismatches.unshift("mip-combined");
     }
     return {
       version: RASTER_STROKE_GOLDEN_VERSION,
@@ -380,6 +489,8 @@ export async function runRasterStrokeGolden(
       height: RASTER_STROKE_GOLDEN_HEIGHT,
       fixtureSha256,
       combinedSha256,
+      mipChainVersion: RASTER_STROKE_GOLDEN_MIP_CHAIN_VERSION,
+      mipCombinedSha256,
       baselineMatches: baselineMismatches.length === 0,
       baselineMismatches,
       cases,
