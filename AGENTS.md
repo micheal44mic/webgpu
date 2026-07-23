@@ -1699,3 +1699,31 @@ riescono. Il browser controllabile non era disponibile nella sessione, quindi
 pipeline/bind group, risultato visivo e protocollo GPU sopra restano da
 eseguire prima di qualunque commit, pubblicazione o promozione. Non sono stati
 modificati `benchmarks/results.json` né la registrazione canonica.
+
+### Matrice benchmark Light Glaze
+
+Il replay del tratto umano mantiene il selettore storico `testVariant:
+"base" | "fur"` e aggiunge un selettore indipendente di blending con sole
+opzioni `Normal premultiplied` e `Light Glaze`. La run salva inoltre
+`testBlendMode` e le impostazioni effettive complete in `benchmark.settings`.
+
+Il percorso Normal resta il controllo canonico: applica la stessa traccia e lo
+stesso preset di prima, forza `opacity: 1` e `blendMode: "normal"`. La scelta
+Light Glaze parte dallo stesso identico oggetto di impostazioni e sostituisce
+soltanto `blendMode: "light-glaze"`; anche qui `opacity` resta `1`. Non cambiare
+Count, size, spacing, flow, hardness, blend intensity, jitter, seed, pressione,
+Shape o ordine degli stamp per rendere il confronto più favorevole.
+
+Eseguire e confrontare separatamente le quattro combinazioni:
+
+1. Base · Normal premultiplied;
+2. Fur · Normal premultiplied;
+3. Base · Light Glaze;
+4. Fur · Light Glaze.
+
+Prima di usare una run verificare che `testVariant`, `testBlendMode`,
+`benchmark.settings.blendMode`, `benchmark.settings.opacity`, fingerprint,
+punti, stamp base e copie fisiche corrispondano alla combinazione dichiarata.
+Le run Light Glaze non sostituiscono le baseline Normal e non vanno aggregate
+con esse; il label UI e il riepilogo della run devono riportare entrambe le
+dimensioni del test senza ambiguità.

@@ -42,6 +42,7 @@ const recordHumanStrokeButton = element<HTMLButtonElement>("recordHumanStroke");
 const playHumanStrokeButton = element<HTMLButtonElement>("playHumanStroke");
 const humanStrokeResult = element<HTMLParagraphElement>("humanStrokeResult");
 const humanStrokeTestVariantSelect = element<HTMLSelectElement>("humanStrokeTestVariant");
+const humanStrokeTestBlendModeSelect = element<HTMLSelectElement>("humanStrokeTestBlendMode");
 const layerFormatSelect = element<HTMLSelectElement>("layerFormat");
 const clearLayerButton = element<HTMLButtonElement>("clearLayer");
 const undoStrokeButton = element<HTMLButtonElement>("undoStroke");
@@ -52,6 +53,7 @@ const zoomOutButton = element<HTMLButtonElement>("zoomOut");
 const benchmarkStampsInput = element<HTMLInputElement>("benchmarkStamps");
 
 type HumanStrokeTestVariant = "base" | "fur";
+type HumanStrokeTestBlendMode = "normal" | "light-glaze";
 
 interface HumanStrokePoint extends LayerPoint {
   timeMs: number;
@@ -89,6 +91,7 @@ interface BenchmarkRun {
     sampleGapMaxMs: number;
     inputGapsOver33Ms: number;
     testVariant: HumanStrokeTestVariant;
+    testBlendMode: HumanStrokeTestBlendMode;
     settings: BrushSettings;
   };
   playback: {
@@ -566,12 +569,19 @@ function selectedHumanStrokeTestVariant(): HumanStrokeTestVariant {
   return humanStrokeTestVariantSelect.value === "fur" ? "fur" : "base";
 }
 
+function selectedHumanStrokeTestBlendMode(): HumanStrokeTestBlendMode {
+  return humanStrokeTestBlendModeSelect.value === "light-glaze" ? "light-glaze" : "normal";
+}
+
 function humanStrokeTestSettings(
   benchmark: HumanStrokeBenchmark,
   variant: HumanStrokeTestVariant,
+  blendMode: HumanStrokeTestBlendMode,
 ): BrushSettings {
   const baseSettings: BrushSettings = {
     ...benchmark.settings,
+    opacity: 1,
+    blendMode,
     shape: "circle",
     shapeScatter: 0,
     positionJitterLateral: 1,
@@ -591,8 +601,13 @@ function humanStrokeTestSettings(
   return baseSettings;
 }
 
-function humanStrokeTestLabel(variant: HumanStrokeTestVariant): string {
-  return variant === "fur" ? "Fur" : "Base";
+function humanStrokeTestLabel(
+  variant: HumanStrokeTestVariant,
+  blendMode: HumanStrokeTestBlendMode,
+): string {
+  const variantLabel = variant === "fur" ? "Fur" : "Base";
+  const blendLabel = blendMode === "light-glaze" ? "Light Glaze" : "Normal premultiplied";
+  return `${variantLabel} · ${blendLabel}`;
 }
 
 function updateHumanStrokeControls(): void {
@@ -617,6 +632,12 @@ function updateHumanStrokeControls(): void {
     || humanStrokeSaving
     || humanStrokeReplaying;
   humanStrokeTestVariantSelect.disabled = operationLocked
+    || humanStrokeLoading
+    || humanStrokeSaving
+    || humanStrokeReplaying
+    || humanStrokeRecordingArmed
+    || Boolean(humanStrokeRecording);
+  humanStrokeTestBlendModeSelect.disabled = operationLocked
     || humanStrokeLoading
     || humanStrokeSaving
     || humanStrokeReplaying
@@ -934,8 +955,9 @@ async function replayHumanStroke(): Promise<void> {
   }
 
   const testVariant = selectedHumanStrokeTestVariant();
-  const replaySettings = humanStrokeTestSettings(benchmark, testVariant);
-  const testLabel = humanStrokeTestLabel(testVariant);
+  const testBlendMode = selectedHumanStrokeTestBlendMode();
+  const replaySettings = humanStrokeTestSettings(benchmark, testVariant, testBlendMode);
+  const testLabel = humanStrokeTestLabel(testVariant, testBlendMode);
 
   setControlsPanelOpen(false);
   humanStrokeReplaying = true;
@@ -1034,6 +1056,7 @@ async function replayHumanStroke(): Promise<void> {
         traceDurationMs: lastPoint.timeMs,
         ...summarizeHumanStrokeMotion(benchmark.points),
         testVariant,
+        testBlendMode,
         settings: replaySettings,
       },
       playback,
