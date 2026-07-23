@@ -92,6 +92,7 @@ export interface BrushSettings {
   grainDepth: number;
   grainBrightness: number;
   grainContrast: number;
+  grainInvert: boolean;
   grainFiltering: GrainFiltering;
   grainBlendMode: GrainBlendMode;
   color: string;
@@ -933,6 +934,7 @@ export const defaultBrushSettings: BrushSettings = {
   grainDepth: 1,
   grainBrightness: 0,
   grainContrast: 0,
+  grainInvert: false,
   grainFiltering: "improved",
   grainBlendMode: "multiply",
   color: "#ff5b35",
@@ -1254,6 +1256,9 @@ export class BrushEngine {
       grainDepth: clamp(next.grainDepth ?? this.settings.grainDepth, 0, 1),
       grainBrightness: clamp(next.grainBrightness ?? this.settings.grainBrightness, -1, 1),
       grainContrast: clamp(next.grainContrast ?? this.settings.grainContrast, -1, 1),
+      grainInvert: typeof next.grainInvert === "boolean"
+        ? next.grainInvert
+        : this.settings.grainInvert,
       grainFiltering: next.grainFiltering === "no"
         || next.grainFiltering === "classic"
         || next.grainFiltering === "improved"
@@ -4025,10 +4030,15 @@ export class BrushEngine {
     const unsigned = new Uint32Array(floats.buffer);
     floats.fill(0);
     const scale = clamp(settings.grainScale, 0.1, 4);
+    const polarity = settings.grainInvert ? -1 : 1;
     floats[0] = 1 / (GRAIN_TEXTURE_SIZE * scale);
     floats[1] = clamp(settings.grainDepth, 0, 1);
-    floats[2] = clamp(settings.grainBrightness, -1, 1);
-    floats[3] = 1 + clamp(settings.grainContrast, -1, 1);
+    // Folding inversion into the existing affine transform preserves the
+    // fragment shader and its cost:
+    // 1 - clamp((s - .5) * c + .5 + b) =
+    //     clamp((s - .5) * -c + .5 - b).
+    floats[2] = clamp(settings.grainBrightness, -1, 1) * polarity;
+    floats[3] = (1 + clamp(settings.grainContrast, -1, 1)) * polarity;
     unsigned[4] = settings.grainFiltering === "no"
       ? 0
       : settings.grainFiltering === "classic" ? 1 : 2;

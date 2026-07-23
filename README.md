@@ -140,11 +140,15 @@ Le due impostazioni valutabili sono:
   nelle sue coordinate locali e ruota con esso. Come in M1, il controllo Scale
   è ignorato e viene disabilitato nella UI.
 
-Depth, Brightness, Contrast e i filtri No/Classic/Improved restano disponibili;
-il campione moltiplica la coverage dopo Circle/Shape e prima di flow,
-pressione, alpha e blending. Il percorso copre Circle, Shape e occupancy,
-Normal, Additive, Light Glaze e M1 Glaze. `Off` continua a selezionare il
-modulo WGSL e le pipeline legacy senza binding o ramo Grain.
+Depth, Brightness, Contrast, Invert e i filtri No/Classic/Improved restano
+disponibili. Invert scambia chiaro e scuro dopo Brightness/Contrast e prima di
+Depth. È incorporato nei coefficienti affini già caricati nella uniform: con
+Invert spento i valori GPU restano identici, mentre acceso non aggiunge rami,
+pipeline, binding o operazioni al fragment WGSL. Il campione moltiplica la
+coverage dopo Circle/Shape e prima di flow, pressione, alpha e blending. Il
+percorso copre Circle, Shape e occupancy, Normal, Additive, Light Glaze e M1
+Glaze. `Off` continua a selezionare il modulo WGSL e le pipeline legacy senza
+binding o ramo Grain.
 
 Undo/Redo conserva impostazioni e identità dell'asset. Con Grain attivo la tip
 preview Canvas2D resta disabilitata perché non può riprodurre fedelmente
@@ -156,6 +160,7 @@ Fixed e Moving restano confrontabili manualmente per scegliere l'aspetto. Nel
 replay prestazionale iPhone Moving non è usato: il selettore Grain offre
 `Off — senza texture` e `Texturized — Fixed M1`. Quando Fixed è selezionato
 usa Scale `140%`, Depth `100%`, Brightness/Contrast `0`, Improved e Multiply.
+Invert viene forzato spento per conservare le baseline `#70–#73`.
 Il selettore di blending applica l'intensità prevista dalla relativa modalità:
 
 1. `Normal accumulativo — 4×`;

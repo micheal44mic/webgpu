@@ -1906,3 +1906,27 @@ ABI WGSL, coordinate Fixed/Moving, pipeline MAX e collegamenti UI. La build
 locale non dimostra equivalenza pixel né prestazioni su iPhone. Le run iPhone
 sopra promuovono l'accettabilità prestazionale end-to-end, non l'equivalenza
 pixel né una scelta visiva definitiva.
+
+## Grain Invert — candidato locale
+
+Su decisione dell'utente l'architettura Grain Fixed/Moving, l'asset nativo
+`2500×2500`, i mip, il sampling e i blending restano invariati. È stata
+aggiunta soltanto l'opzione booleana `grainInvert`, con default spento.
+
+Invert viene applicato semanticamente dopo Brightness/Contrast e prima di
+Depth. Non introduce un ramo WGSL: la CPU cambia il segno dei due coefficienti
+affini già presenti nella uniform, sfruttando l'identità
+`1 - clamp(x, 0, 1) = clamp(1 - x, 0, 1)`. Con Invert spento i byte caricati
+nei campi Brightness e Contrast sono gli stessi della build precedente; non
+cambiano shader, ABI da `32` byte, pipeline, bind group, texture o memoria GPU.
+
+La UI espone un checkbox soltanto quando Grain è attivo. History, registrazioni
+nuove e risultati salvano il booleano; i benchmark storici che non lo
+contengono vengono normalizzati a `false`. Anche il replay canonico lo forza a
+`false`, così le baseline `#70–#73` non cambiano.
+
+`performanceTelemetryRevision: 24` identifica la build. Prima di promuovere
+l'opzione verificare localmente `npm run grain:verify`, `npm run build` e
+`git diff --check`; il giudizio visivo Invert ON/OFF resta dell'utente su
+iPhone e non richiede un nuovo benchmark prestazionale, perché il percorso GPU
+è lo stesso e cambiano soltanto i valori della uniform.

@@ -209,6 +209,10 @@ assert(engine.includes("session.tintLinear")
   "Tint per tratto e resolve M1 Glaze non collegati.");
 assert(engine.includes("grainTextureIdentity") && engine.includes("expectedGrainIdentity"),
   "Identità Grain non protetta nel journal/replay.");
+assert(engine.includes("const polarity = settings.grainInvert ? -1 : 1")
+  && engine.includes("settings.grainBrightness, -1, 1) * polarity")
+  && engine.includes("settings.grainContrast, -1, 1)) * polarity"),
+  "Invert Grain non è incorporato nei coefficienti esistenti.");
 
 const main = fs.readFileSync(mainPath, "utf8");
 const html = fs.readFileSync(htmlPath, "utf8");
@@ -223,6 +227,10 @@ assert(main.includes('type HumanStrokeTestGrainMode = Extract<GrainMode, "off" |
 assert(html.includes('value="texturized">Texturized — Fixed M1')
   && html.includes('value="moving">Texturized — Moving M1'),
   "Le due impostazioni Grain M1 non sono esposte nella UI.");
+assert(html.includes('id="grainInvert" type="checkbox"')
+  && main.includes('grainInvert: element<HTMLInputElement>("grainInvert").checked')
+  && main.includes('element<HTMLInputElement>("grainInvert").checked = false'),
+  "Il controllo Invert Grain o il default canonico Off non sono collegati.");
 assert(html.includes('value="m1-glaze">M1 Glaze — non accumulativo'),
   "M1 Glaze non è esposto nella UI.");
 assert(html.includes('value="normal">Normal accumulativo — 4×')
@@ -230,7 +238,7 @@ assert(html.includes('value="normal">Normal accumulativo — 4×')
   && html.includes('value="off">Off — senza texture')
   && html.includes('value="texturized">Texturized — Fixed M1 (fisso)'),
   "La matrice iPhone Normal 4× / M1 1× con Grain Off/Fixed non è esposta correttamente.");
-assert(main.includes("performanceTelemetryRevision: 23"),
+assert(main.includes("performanceTelemetryRevision: 24"),
   "Revisione telemetria attesa assente.");
 
 console.log(JSON.stringify({
@@ -251,6 +259,7 @@ console.log(JSON.stringify({
     fixedUsesLayerCoordinates: true,
     movingUsesStampLocalCoordinates: true,
     movingIgnoresScaleControl: true,
+    invertUsesExistingAffineUniforms: true,
     iphoneReplayOffersOffOrFixedTexturized: true,
     iphoneReplayUsesNormal4xAndM1Glaze1x: true,
     m1GlazeUsesR8QuantizedMaxCoverage: true,

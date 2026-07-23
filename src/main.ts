@@ -210,7 +210,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 23;
+    performanceTelemetryRevision: 24;
   };
 }
 
@@ -272,6 +272,7 @@ function readBrushSettings(): BrushSettings {
     grainDepth: rangeValue("grainDepth") / 100,
     grainBrightness: rangeValue("grainBrightness") / 100,
     grainContrast: rangeValue("grainContrast") / 100,
+    grainInvert: element<HTMLInputElement>("grainInvert").checked,
     grainFiltering:
       element<HTMLSelectElement>("grainFiltering").value as BrushSettings["grainFiltering"],
     grainBlendMode:
@@ -420,7 +421,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 23,
+    performanceTelemetryRevision: 24,
     ...engineEnvironment,
   };
 }
@@ -472,6 +473,7 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
   const grainContrast = Number.isFinite(benchmark.settings.grainContrast)
     ? Math.min(1, Math.max(-1, benchmark.settings.grainContrast))
     : 0;
+  const grainInvert = benchmark.settings.grainInvert === true;
   const grainFiltering = benchmark.settings.grainFiltering === "no"
     || benchmark.settings.grainFiltering === "classic"
     ? benchmark.settings.grainFiltering
@@ -489,6 +491,7 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
       grainDepth,
       grainBrightness,
       grainContrast,
+      grainInvert,
       grainFiltering,
       grainBlendMode: "multiply",
       opacity,
@@ -596,6 +599,7 @@ function applySettingsToControls(settings: BrushSettings): void {
   setControlValue("grainDepth", (settings.grainDepth ?? 1) * 100);
   setControlValue("grainBrightness", (settings.grainBrightness ?? 0) * 100);
   setControlValue("grainContrast", (settings.grainContrast ?? 0) * 100);
+  element<HTMLInputElement>("grainInvert").checked = settings.grainInvert === true;
   setControlValue(
     "grainFiltering",
     settings.grainFiltering === "no" || settings.grainFiltering === "classic"
@@ -633,6 +637,7 @@ function applyHumanStrokePreset(): BrushSettings {
   setControlValue("grainDepth", 100);
   setControlValue("grainBrightness", 0);
   setControlValue("grainContrast", 0);
+  element<HTMLInputElement>("grainInvert").checked = false;
   setControlValue("grainFiltering", "improved");
   setControlValue("grainBlendMode", "multiply");
   setControlValue("brushSize", 750);
@@ -683,6 +688,7 @@ function humanStrokeTestSettings(
     grainDepth: 1,
     grainBrightness: 0,
     grainContrast: 0,
+    grainInvert: false,
     grainFiltering: "improved",
     grainBlendMode: "multiply",
     shape: "circle",
@@ -854,6 +860,7 @@ const grainParameterControlIds = [
   "grainDepth",
   "grainBrightness",
   "grainContrast",
+  "grainInvert",
   "grainFiltering",
   "grainBlendMode",
 ] as const;
