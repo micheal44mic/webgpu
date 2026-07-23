@@ -1853,8 +1853,56 @@ Non eseguire autonomamente un benchmark locale come sostituto e non dichiarare
 regressioni o miglioramenti prestazionali dalla build, dallo smoke GPU desktop
 o dai tempi del benchmark sintetico.
 
+### Risultato della matrice corretta: run #70–#73
+
+Le run `#70–#73` sono la matrice Base completa della versione Sites `61` e
+`performanceTelemetryRevision: 23`. Hanno stesso fingerprint `18982412`,
+`1583` punti, iPhone, GPU Apple, canvas `860×1454`, size `750`, spacing
+configurato `1%`, Count `16`, flow/hardness `100%`, pressione disabilitata e
+texture originale RGBA `2500×2500` caricata dal runtime. Cambiano soltanto
+Grain Off/Fixed e il blending previsto dalla matrice.
+
+| Run | Modalità | FPS | p95 | frame >20 ms | coda finale | spacing finale | stamp base | copie |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| `#70` | Grain Off · Normal `4×` | `58,39` | `17 ms` | `9` | `21 ms` | `1,5%` | `9185` | `146960` |
+| `#71` | Grain Fixed · Normal `4×` | `57,94` | `17 ms` | `11` | `22 ms` | `2,5%` | `6673` | `106768` |
+| `#72` | Grain Off · M1 `1×` | `58,39` | `17 ms` | `9` | `24 ms` | `1,25%` | `10236` | `163776` |
+| `#73` | Grain Fixed · M1 `1×` | `58,24` | `17 ms` | `10` | `22 ms` | `2,25%` | `6480` | `103680` |
+
+Lo spacing adattivo può aggiungere intenzionalmente fino a `1,5` punti
+percentuali al valore configurato: il massimo operativo previsto è quindi
+`2,5%`. L'utente ha confermato che questa compensazione fa parte del motore e
+che il criterio è il comportamento end-to-end senza lag, non un confronto a
+numero di stamp forzatamente identico.
+
+Con Normal, Fixed porta lo spacing da `1,5%` a `2,5%` e riduce stamp/copie del
+`27,4%`; gli FPS cambiano di circa `-0,8%`, il p95 resta `17 ms`, la coda passa
+da `21` a `22 ms` e i frame lenti da `9` a `11`. Con M1, Fixed porta lo spacing
+da `1,25%` a `2,25%` e riduce stamp/copie del `36,7%`; gli FPS cambiano di circa
+`-0,25%`, il p95 resta `17 ms`, la coda migliora da `24` a `22 ms` e i frame
+lenti passano da `9` a `10`.
+
+Il confronto del blending non mostra una regressione M1:
+
+- senza Grain, `#70` e `#72` hanno gli stessi FPS, p95, massimo e frame lenti;
+  M1 processa l'`11,4%` di stamp in più e aggiunge `3 ms` di coda;
+- con Grain Fixed, `#71` e `#73` hanno p95 e coda identici; la differenza FPS
+  (`+0,5%` per M1) è dentro la variabilità e M1 ha un frame lento in meno;
+- la presentazione finale della `#73` termina `13 ms` dopo la `#71`, senza
+  aumento della coda finale;
+- M1 alloca comunque `85,33 MiB` temporanei per l'accumulatore per-stroke:
+  mantenere questo costo nella telemetria e nei futuri controlli di memoria.
+
+Decisione dell'utente: le run non mostrano lag e l'aumento adattivo dello
+spacing è accettato perché resta dentro il tetto promosso di `+1,5%`.
+Prestazionalmente, Grain Fixed nativo 2500 e M1 non accumulativo `1×` sono
+quindi accettabili nel comportamento end-to-end. Le `#70–#73` diventano il
+quartetto di riferimento per questa matrice; non aggregarle con la `#69`,
+errata a `4×`, né usarle per affermare che il costo raw della texture sia nullo.
+La scelta finale dell'aspetto resta visiva e spetta all'utente.
+
 `npm run grain:verify` controlla hash/dimensioni/formato originali, mip nativi,
 ABI WGSL, coordinate Fixed/Moving, pipeline MAX e collegamenti UI. La build
-locale non dimostra equivalenza pixel né prestazioni su iPhone: non promuovere
-questa variante e non sostituire la baseline canonica Grain Off finché
-l’utente non ha scelto visivamente e non esiste una run comparabile.
+locale non dimostra equivalenza pixel né prestazioni su iPhone. Le run iPhone
+sopra promuovono l'accettabilità prestazionale end-to-end, non l'equivalenza
+pixel né una scelta visiva definitiva.
