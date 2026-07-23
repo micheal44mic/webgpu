@@ -214,8 +214,31 @@ fn shapeVertexMain(
   return output;
 }
 
-@fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+fn paintAlpha(input: VertexOutput, coverage: f32) -> f32 {
+  let pressureInfluence = clamp(brush.controls.w, 0.0, 1.0);
+  let pressureAlpha = mix(1.0, clamp(input.pressure, 0.0, 1.0), pressureInfluence);
+  return clamp(
+    coverage * brush.controls.x * brush.baseHslAlpha.w * pressureAlpha * brush.controls.z,
+    0.0,
+    0.999999
+  );
+}
+
+fn premultipliedPaint(input: VertexOutput, coverage: f32) -> vec4<f32> {
+  let alpha = paintAlpha(input, coverage);
+  return vec4<f32>(input.pointColor * alpha, alpha);
+}
+
+fn quantizedCoveragePaint(input: VertexOutput, coverage: f32) -> vec4<f32> {
+  let alpha = paintAlpha(input, coverage);
+  // M1 Glaze accumulates an R8 coverage mask with MAX. Repeating the exact
+  // quantized value in RGBA lets the existing temporary RGBA attachment keep
+  // its display mip chain while preserving the same coverage semantics.
+  let quantized = unpack4x8unorm(pack4x8unorm(vec4<f32>(alpha))).r;
+  return vec4<f32>(quantized);
+}
+
+fn circleCoverage(input: VertexOutput) -> f32 {
   let radiusSquared = dot(input.localPosition, input.localPosition);
   let antialiasWidth = max(fwidth(radiusSquared), 0.00001);
 
@@ -230,20 +253,10 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   if (coverage <= 0.0) {
     discard;
   }
-
-  let pressureInfluence = clamp(brush.controls.w, 0.0, 1.0);
-  let pressureAlpha = mix(1.0, clamp(input.pressure, 0.0, 1.0), pressureInfluence);
-  let alpha = clamp(
-    coverage * brush.controls.x * brush.baseHslAlpha.w * pressureAlpha * brush.controls.z,
-    0.0,
-    0.999999
-  );
-
-  return vec4<f32>(input.pointColor * alpha, alpha);
+  return coverage;
 }
 
-@fragment
-fn shapeFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+fn shapeCoverage(input: VertexOutput) -> f32 {
   let uv = input.localPosition * 0.5 + vec2<f32>(0.5);
   let sourceCoverage = textureSample(shapeMaskTexture, shapeMaskSampler, uv).r;
   let hardness = clamp(brush.controls.y, 0.0, 1.0);
@@ -252,16 +265,27 @@ fn shapeFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   if (coverage <= 0.0) {
     discard;
   }
+  return coverage;
+}
 
-  let pressureInfluence = clamp(brush.controls.w, 0.0, 1.0);
-  let pressureAlpha = mix(1.0, clamp(input.pressure, 0.0, 1.0), pressureInfluence);
-  let alpha = clamp(
-    coverage * brush.controls.x * brush.baseHslAlpha.w * pressureAlpha * brush.controls.z,
-    0.0,
-    0.999999
-  );
+@fragment
+fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  return premultipliedPaint(input, circleCoverage(input));
+}
 
-  return vec4<f32>(input.pointColor * alpha, alpha);
+@fragment
+fn coverageFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  return quantizedCoveragePaint(input, circleCoverage(input));
+}
+
+@fragment
+fn shapeFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  return premultipliedPaint(input, shapeCoverage(input));
+}
+
+@fragment
+fn shapeCoverageFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  return quantizedCoveragePaint(input, shapeCoverage(input));
 }
 
 fn shapeOccupancyMayContribute(uv: vec2<f32>) -> bool {
@@ -277,8 +301,7 @@ fn shapeOccupancyMayContribute(uv: vec2<f32>) -> bool {
   return (packedWord & (1u << (cellIndex & 31u))) != 0u;
 }
 
-@fragment
-fn shapeOccupancyFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+fn occupiedShapeCoverage(input: VertexOutput) -> f32 {
   let uv = input.localPosition * 0.5 + vec2<f32>(0.5);
   let uvDx = dpdx(uv);
   let uvDy = dpdy(uv);
@@ -294,16 +317,17 @@ fn shapeOccupancyFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   if (coverage <= 0.0) {
     discard;
   }
+  return coverage;
+}
 
-  let pressureInfluence = clamp(brush.controls.w, 0.0, 1.0);
-  let pressureAlpha = mix(1.0, clamp(input.pressure, 0.0, 1.0), pressureInfluence);
-  let alpha = clamp(
-    coverage * brush.controls.x * brush.baseHslAlpha.w * pressureAlpha * brush.controls.z,
-    0.0,
-    0.999999
-  );
+@fragment
+fn shapeOccupancyFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  return premultipliedPaint(input, occupiedShapeCoverage(input));
+}
 
-  return vec4<f32>(input.pointColor * alpha, alpha);
+@fragment
+fn shapeOccupancyCoverageFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  return quantizedCoveragePaint(input, occupiedShapeCoverage(input));
 }
 `;
 
@@ -330,7 +354,7 @@ struct GrainUniforms {
   brightness: f32,
   contrastFactor: f32,
   filteringMode: u32,
-  _pad0: u32,
+  coordinateMode: u32,
   _pad1: u32,
   _pad2: u32,
 };
@@ -359,7 +383,7 @@ fn adjustedGrainCoverage(
   grainUvDx: vec2<f32>,
   grainUvDy: vec2<f32>
 ) -> f32 {
-  var source: f32;
+  var sourceSample: vec4<f32>;
   if (grain.filteringMode == 0u) {
     let baseDimensions = vec2<f32>(textureDimensions(grainTexture, 0));
     let footprint = max(
@@ -374,27 +398,41 @@ fn adjustedGrainCoverage(
     // The No sampler uses nearest min/mag. Its mip filter is declared linear
     // only so it remains compatible with the shared filtering binding; an
     // exact integer LOD makes the effective mip choice nearest as well.
-    source = textureSampleLevel(
+    sourceSample = textureSampleLevel(
       grainTexture,
       grainSampler,
       grainUv,
       f32(mipLevel)
-    ).r;
+    );
   } else {
-    source = textureSampleGrad(
+    sourceSample = textureSampleGrad(
       grainTexture,
       grainSampler,
       grainUv,
       grainUvDx,
       grainUvDy
-    ).r;
+    );
   }
+  // M1 uploads the original RGBA image and derives grain from RGB luma in the
+  // fragment shader. Alpha metadata in the source image does not modulate paint.
+  let source = dot(sourceSample.rgb, vec3<f32>(0.299, 0.587, 0.114));
   let adjusted = clamp(
     (source - 0.5) * grain.contrastFactor + 0.5 + grain.brightness,
     0.0,
     1.0
   );
   return mix(1.0, adjusted, clamp(grain.depth, 0.0, 1.0));
+}
+
+fn selectedGrainUv(input: FragmentInput) -> vec2<f32> {
+  if (grain.coordinateMode == 1u) {
+    // M1 Moving maps one full grain image to every physical stamp. Because
+    // localPosition is carried by the rotated support quad, the grain follows
+    // the stamp's translation, scale and rotation.
+    return input.localPosition * 0.5 + vec2<f32>(0.5);
+  }
+  // Fixed/Texturized is paper grain in authoritative layer coordinates.
+  return input.position.xy * grain.inversePeriod;
 }
 
 fn shapeOccupancyMayContribute(uv: vec2<f32>) -> bool {
@@ -410,22 +448,29 @@ fn shapeOccupancyMayContribute(uv: vec2<f32>) -> bool {
   return (packedWord & (1u << (cellIndex & 31u))) != 0u;
 }
 
-fn premultipliedPaint(input: FragmentInput, coverage: f32) -> vec4<f32> {
+fn paintAlpha(input: FragmentInput, coverage: f32) -> f32 {
   let pressureInfluence = clamp(brush.controls.w, 0.0, 1.0);
   let pressureAlpha = mix(1.0, clamp(input.pressure, 0.0, 1.0), pressureInfluence);
-  let alpha = clamp(
+  return clamp(
     coverage * brush.controls.x * brush.baseHslAlpha.w * pressureAlpha * brush.controls.z,
     0.0,
     0.999999
   );
+}
+
+fn premultipliedPaint(input: FragmentInput, coverage: f32) -> vec4<f32> {
+  let alpha = paintAlpha(input, coverage);
   return vec4<f32>(input.pointColor * alpha, alpha);
 }
 
-@fragment
-fn fragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
-  // Fragment position is the authoritative 4096² layer attachment position.
-  // It is independent from stamp center, viewport, pan and display zoom.
-  let grainUv = input.position.xy * grain.inversePeriod;
+fn quantizedCoveragePaint(input: FragmentInput, coverage: f32) -> vec4<f32> {
+  let alpha = paintAlpha(input, coverage);
+  let quantized = unpack4x8unorm(pack4x8unorm(vec4<f32>(alpha))).r;
+  return vec4<f32>(quantized);
+}
+
+fn circleGrainCoverage(input: FragmentInput) -> f32 {
+  let grainUv = selectedGrainUv(input);
   let grainUvDx = dpdx(grainUv);
   let grainUvDy = dpdy(grainUv);
   let radiusSquared = dot(input.localPosition, input.localPosition);
@@ -447,12 +492,21 @@ fn fragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
   if (coverage <= 0.0) {
     discard;
   }
-  return premultipliedPaint(input, coverage);
+  return coverage;
 }
 
 @fragment
-fn shapeFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
-  let grainUv = input.position.xy * grain.inversePeriod;
+fn fragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
+  return premultipliedPaint(input, circleGrainCoverage(input));
+}
+
+@fragment
+fn coverageFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
+  return quantizedCoveragePaint(input, circleGrainCoverage(input));
+}
+
+fn shapeGrainCoverage(input: FragmentInput) -> f32 {
+  let grainUv = selectedGrainUv(input);
   let grainUvDx = dpdx(grainUv);
   let grainUvDy = dpdy(grainUv);
   let uv = input.localPosition * 0.5 + vec2<f32>(0.5);
@@ -468,12 +522,21 @@ fn shapeFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
   if (coverage <= 0.0) {
     discard;
   }
-  return premultipliedPaint(input, coverage);
+  return coverage;
 }
 
 @fragment
-fn shapeOccupancyFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
-  let grainUv = input.position.xy * grain.inversePeriod;
+fn shapeFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
+  return premultipliedPaint(input, shapeGrainCoverage(input));
+}
+
+@fragment
+fn shapeCoverageFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
+  return quantizedCoveragePaint(input, shapeGrainCoverage(input));
+}
+
+fn occupiedShapeGrainCoverage(input: FragmentInput) -> f32 {
+  let grainUv = selectedGrainUv(input);
   let grainUvDx = dpdx(grainUv);
   let grainUvDy = dpdy(grainUv);
   let uv = input.localPosition * 0.5 + vec2<f32>(0.5);
@@ -496,7 +559,50 @@ fn shapeOccupancyFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
   if (coverage <= 0.0) {
     discard;
   }
-  return premultipliedPaint(input, coverage);
+  return coverage;
+}
+
+@fragment
+fn shapeOccupancyFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
+  return premultipliedPaint(input, occupiedShapeGrainCoverage(input));
+}
+
+@fragment
+fn shapeOccupancyCoverageFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
+  return quantizedCoveragePaint(input, occupiedShapeGrainCoverage(input));
+}
+`;
+
+// Runtime mip generation for the original M1 RGBA grain. Each pass samples the
+// immediately preceding mip with a linear clamp sampler and writes the next
+// level. This keeps asset preparation on WebGPU/WGSL and handles the native
+// non-power-of-two 2500² dimensions without a 2K resample.
+export const grainMipShader = /* wgsl */ `
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+};
+
+@group(0) @binding(0) var sourceTexture: texture_2d<f32>;
+@group(0) @binding(1) var sourceSampler: sampler;
+
+@vertex
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+  let positions = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>( 3.0, -1.0),
+    vec2<f32>(-1.0,  3.0)
+  );
+  var output: VertexOutput;
+  output.position = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
+  return output;
+}
+
+@fragment
+fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
+  let sourceDimensions = vec2<u32>(textureDimensions(sourceTexture, 0));
+  let targetDimensions = max(sourceDimensions / 2u, vec2<u32>(1u));
+  let uv = fragmentPosition.xy / vec2<f32>(targetDimensions);
+  return textureSampleLevel(sourceTexture, sourceSampler, uv, 0.0);
 }
 `;
 
@@ -604,8 +710,9 @@ struct DisplayUniforms {
 struct LightGlazeUniforms {
   opacity: f32,
   formatCode: u32,
-  _pad0: u32,
+  accumulationMode: u32,
   _pad1: u32,
+  tintLinear: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -658,10 +765,19 @@ fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
   return vec4<f32>(redGreen, blueAlpha);
 }
 
+fn resolvedStrokePaint(accumulatedStroke: vec4<f32>) -> vec4<f32> {
+  let opacity = clamp(lightGlaze.opacity, 0.0, 1.0);
+  if (lightGlaze.accumulationMode == 1u) {
+    let coverage = clamp(accumulatedStroke.r, 0.0, 1.0);
+    return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
+  }
+  return accumulatedStroke * opacity;
+}
+
 fn compositedLayerTexel(position: vec2<i32>) -> vec4<f32> {
   let permanentPaint = textureLoad(layerTexture, position, 0);
   let accumulatedStroke = textureLoad(strokeTexture, position, 0);
-  let strokePaint = accumulatedStroke * clamp(lightGlaze.opacity, 0.0, 1.0);
+  let strokePaint = resolvedStrokePaint(accumulatedStroke);
   return quantizeLayer(strokePaint + permanentPaint * (1.0 - strokePaint.a));
 }
 
@@ -755,8 +871,9 @@ export const lightGlazeCompositeMipShader = /* wgsl */ `
 struct LightGlazeUniforms {
   opacity: f32,
   formatCode: u32,
-  _pad0: u32,
+  accumulationMode: u32,
   _pad1: u32,
+  tintLinear: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -776,6 +893,15 @@ fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
   return vec4<f32>(redGreen, blueAlpha);
 }
 
+fn resolvedStrokePaint(accumulatedStroke: vec4<f32>) -> vec4<f32> {
+  let opacity = clamp(lightGlaze.opacity, 0.0, 1.0);
+  if (lightGlaze.accumulationMode == 1u) {
+    let coverage = clamp(accumulatedStroke.r, 0.0, 1.0);
+    return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
+  }
+  return accumulatedStroke * opacity;
+}
+
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   let positions = array<vec2<f32>, 3>(
@@ -792,7 +918,7 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 fn compositedSource(sourcePosition: vec2<i32>) -> vec4<f32> {
   let permanentPaint = textureLoad(permanentTexture, sourcePosition, 0);
   let accumulatedStroke = textureLoad(strokeTexture, sourcePosition, 0);
-  let strokePaint = accumulatedStroke * clamp(lightGlaze.opacity, 0.0, 1.0);
+  let strokePaint = resolvedStrokePaint(accumulatedStroke);
   return quantizeLayer(strokePaint + permanentPaint * (1.0 - strokePaint.a));
 }
 
@@ -816,8 +942,9 @@ export const lightGlazeCompositeShader = /* wgsl */ `
 struct LightGlazeUniforms {
   opacity: f32,
   formatCode: u32,
-  _pad0: u32,
+  accumulationMode: u32,
   _pad1: u32,
+  tintLinear: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -843,7 +970,12 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 @fragment
 fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
   let source = textureLoad(strokeTexture, vec2<i32>(fragmentPosition.xy), 0);
-  return source * clamp(lightGlaze.opacity, 0.0, 1.0);
+  let opacity = clamp(lightGlaze.opacity, 0.0, 1.0);
+  if (lightGlaze.accumulationMode == 1u) {
+    let coverage = clamp(source.r, 0.0, 1.0);
+    return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
+  }
+  return source * opacity;
 }
 `;
 

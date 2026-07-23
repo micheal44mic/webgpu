@@ -1728,97 +1728,104 @@ Le run Light Glaze non sostituiscono le baseline Normal e non vanno aggregate
 con esse; il label UI e il riepilogo della run devono riportare entrambe le
 dimensioni del test senza ambiguità.
 
-## Grain Phase 1: `Off` e `Texturized` — candidato locale
+## Grain M1 nativo + M1 Glaze non accumulativo — candidato locale
 
-La prima fase Grain aggiunge soltanto le modalità `Off` e `Texturized`; non
-esiste una modalità Moving. Il file originale dell’utente
-`graincottonfleece.PNG` resta intatto. Il runtime usa l’asset derivato
-`grain-cotton-fleece-2048.png`, convertito deterministicamente a grayscale
-8-bit opaco `2048×2048`, corretto sui bordi per il repeat e scritto con i soli
-chunk PNG `IHDR`, `IDAT` e `IEND`.
+Su richiesta esplicita dell’utente il derivato
+`grain-cotton-fleece-2048.png` non viene più usato dal runtime. La risorsa
+attiva è `graincottonfleece.PNG`, byte-identica a quella di
+`paint-webgpu-m1`. Il file originale non è 4K: è RGBA8 `2500×2500`, conserva
+il profilo ICC e ha SHA-256
+`9AA1CE073885B83EA223AF0941EF74604548A85F54442228EC15522ACE3EF2D7`.
+Non ridimensionarlo a 2K o 4K senza una nuova richiesta e un confronto visivo.
 
-L’asset finale ha SHA-256
-`F353BDF4C8671D56AA69F4242AE60D34993EA883467CB616950A0FC292E8FD4B` e
-identità runtime FNV-1a `1741938840`. La texture GPU è `r8unorm`, usa repeat
-su entrambi gli assi e una catena completa di 12 mip `2048→1`, costruita sulla
-CPU con box filter deterministico prima del primo tratto. I mip occupano
-`5592405` byte, circa `5,33 MiB`. Non generare i mip al primo dab.
+Il port resta interamente WebGPU/WGSL. Il browser decodifica il PNG originale
+senza premoltiplicare alpha; la texture GPU è `rgba8unorm`. Il fragment WGSL
+ricava la luma M1 da RGB con `0.299/0.587/0.114` e ignora l’alpha del file. I
+12 mip NPOT sono generati allo startup tramite render pass WebGPU e shader
+WGSL:
 
-I controlli aggiunti a `BrushSettings` sono:
+`2500→1250→625→312→156→78→39→19→9→4→2→1`.
 
-- `grainMode: "off" | "texturized"`;
-- `grainScale`, limitato a `0,1–4`;
-- `grainDepth`, limitato a `0–1`;
-- `grainBrightness` e `grainContrast`, limitati a `-1–1`;
-- `grainFiltering: "no" | "classic" | "improved"`;
-- `grainBlendMode: "multiply"`.
+La catena occupa `33331492` byte, circa `31,79 MiB`. Non generare mip durante
+il primo dab. La texture sorgente compressa pesa circa `25,05 MB`, quindi
+verificare anche startup e distribuzione mobile.
 
-La UI mostra Scale, Depth, Brightness, Contrast, Filtering e Multiply soltanto
-quando Texturized è attivo. `No` usa campionamento nearest e selezione
-deterministica del mip intero più vicino; `Classic` usa bilineare con mip più
-vicino; `Improved` usa trilineare. Il default è Grain Off, Scale `100%`, Depth
-`100%`, Brightness/Contrast `0%`, Improved e Multiply.
+`GrainMode` ora è `"off" | "texturized" | "moving"`:
 
-Grain Off mantiene rigorosamente il modulo WGSL, le pipeline e i bind group
-legacy: non contiene un ramo Grain inattivo. Texturized usa pipeline separate e
-si applica a Circle, Shape legacy e Shape con occupancy, sia nelle pipeline
-Normal sia Additive; Light Glaze usa la stessa pipeline Grain quando accumula
-la coverage temporanea e conserva invariato il commit.
+- `texturized` è **Fixed M1**: UV da `@builtin(position).xy` nel layer
+  autorevole, periodo `2500 * grainScale`, sampler repeat;
+- `moving` è **Moving M1**: UV locali dello stamp `localPosition * .5 + .5`,
+  sampler clamp; lo stamp porta e ruota la texture con sé;
+- come in M1, Scale non influenza Moving ed è disabilitato nella UI;
+- default Scale `1,4`, Depth `1`, Brightness/Contrast `0`, Improved e
+  Multiply.
 
-Le UV Texturized derivano da `@builtin(position).xy` nel render target
-autorevole del layer e dal periodo `2048 * grainScale`. Non dipendono da
-viewport, pan, zoom, centro dello stamp o replay. Le derivate UV sono calcolate
-prima dei discard non uniformi. Dopo brightness/contrast il campione viene
-interpolato con `1` tramite Depth e moltiplica la coverage dopo la punta
-Circle/Shape ma prima di alpha, pressione e blending. Ordine stamp-major /
-copy-minor, seed, jitter, Count `1–24`, spacing, geometria e formule del brush
-restano invariati.
+Brightess, Contrast e i tre filtri restano estensioni del prototipo. Off
+mantiene il modulo/pipeline legacy senza binding Grain. Fixed e Moving usano
+pipeline separate per Circle, Shape e occupancy in Normal, Additive, Light
+Glaze e M1 Glaze. History salva modalità e identità della risorsa; Undo/Redo
+deve restare deterministico.
 
-History salva tutte le impostazioni Grain e, per i batch Texturized, l’identità
-dell’asset; replay, Undo e Redo rifiutano una ricostruzione con identità
-diversa. La tip preview Canvas2D adattiva è disabilitata soltanto quando Grain
-Texturized contribuisce effettivamente (`Depth > 0`), perché non può
-rappresentare correttamente una texture layer-space. Il probe FIFO resta attivo
-e lo spacing adattivo promosso continua a reagire normalmente.
+La modalità di blend aggiunta è `"m1-glaze"` e non sostituisce
+`"light-glaze"`. Replica il piano `cov8` di M1:
 
-`performanceTelemetryRevision: 22` identifica il candidato. Le firme e misure
-aggiunte comprendono:
+- il target temporaneo conserva coverage quantizzata R8; per compatibilità con
+  la piramide esistente il valore viene replicato nei quattro canali di una
+  texture RGBA del formato layer;
+- il blending del target temporaneo usa `operation: "max"` per colore e alpha,
+  quindi `C(x) = maxᵢ coverageᵢ(x)` e gli overlap della stessa pennellata non
+  si accumulano;
+- un solo colore, campionato deterministicamente all’inizio del tratto, viene
+  usato come tinta del resolve; questo evita il MAX RGBA per-canale e le tinte
+  spurie;
+- Opacità e tinta sono applicate una sola volta dal display/commit; pennellate
+  distinte si compositano normalmente sul layer permanente.
 
-- strategia Grain attiva/disattiva, coordinate, sampling, mip, pipeline e punto
-  di applicazione della coverage;
-- formato, dimensioni, livelli mip, memoria e identità della texture;
-- tempi CPU di decode, costruzione mip e upload allo startup;
-- batch, stamp base, copie fisiche, batch Circle/Shape e skip della preview
-  attribuibili a Grain.
+Light Glaze conserva il precedente source-over interno ed è il controllo
+accumulativo. Non unire le due strategie o cambiare il Light Glaze esistente.
+La texture RGBA compatibile non è ancora l’ottimizzazione di memoria R8 di M1:
+serve prima validare la semantica visiva richiesta dall’utente.
 
-Il replay umano aggiunge il selettore indipendente `testGrainMode` e salva sia
-il marker sia le impostazioni effettive. Registrazioni storiche prive dei campi
-Grain vengono normalizzate esplicitamente a Off. Il preset canonico continua a
-forzare Grain Off e non viene sostituito.
+### Verifica richiesta
 
-### Protocollo iniziale a tre run
+1. `npm run grain:verify`, `npm run build` e `git diff --check`;
+2. smoke WebGPU senza errori di validazione per Off, Fixed e Moving, Circle e
+   Shape, `rgba8unorm` e `rgba16float`;
+3. confrontare manualmente Fixed e Moving per il solo risultato visivo;
+4. in M1 Glaze ripassare più volte senza alzare il contributo di uno stesso
+   pixel; sollevare e iniziare un secondo tratto per verificare che questo si
+   accumuli;
+5. verificare live, lift, mip/zoom, Undo/Redo e replay oltre un batch;
+6. confrontare separatamente con Light Glaze, senza cambiare Count, size,
+   spacing, flow, hardness, jitter, seed o ordine.
 
-Sul medesimo dispositivo, con stessa traccia, fingerprint, preset, viewport,
-canvas e formato, eseguire nell’ordine:
+### Matrice iPhone richiesta dall’utente
 
-1. Base · Normal · Grain Off;
-2. Base · Normal · Grain Texturized;
-3. Fur · Normal · Grain Texturized.
+La precedente matrice generica Off/Fixed/Moving e Normal/Light Glaze non è il
+test da eseguire per questo candidato. **Play tratto registrato** forza sempre:
 
-Le run Grain fissano Scale `100%`, Depth `100%`, Brightness `0%`, Contrast
-`0%`, filtro Improved e Multiply. Non cambiare size `750`, spacing dichiarato
-`1%`, Count `16`, flow `100%`, hardness `100%`, opacity `100%`, blend
-intensity `4×`, jitter, seed, pressione o ordine per rendere il confronto più
-favorevole. Prima del confronto verificare insieme `testVariant`,
-`testBlendMode`, `testGrainMode`, `benchmark.settings`, fingerprint, punti,
-stamp e copie. Non aggregare le tre combinazioni e non usare Texturized come
-nuova baseline canonica senza misura e decisione esplicita.
+- Grain `texturized` / Fixed M1;
+- Scale `140%`, Depth `100%`, Brightness/Contrast `0`, Improved, Multiply;
+- Blend intensity `4×` e Opacità `100%`;
+- tutti gli altri valori, la traccia, il fingerprint, seed e ordine canonici.
 
-Verifica statica locale: `npm run grain:verify` valida formato e metadati PNG,
-12 mip, memoria, continuità dei bordi e invarianti sorgente di Off, coordinate
-layer-space, normalizzazione storica e preset canonico. Prima di commit o
-pubblicazione servono inoltre TypeScript, build Vite, `git diff --check`, smoke
-WebGPU senza errori per Circle/Shape e controllo visivo di ancoraggio,
-filtering, Light Glaze, Undo/Redo e assenza di preview falsa. Non sono ancora
-disponibili run iPhone della funzione e non va dichiarato alcun miglioramento
-prestazionale.
+Il solo selettore sperimentale offre:
+
+1. `Normal accumulativo — 4×`;
+2. `M1 Glaze non accumulativo — 4×`.
+
+Il selettore Grain del replay mostra un’unica opzione Fixed ed è bloccato.
+`testGrainMode` deve essere `"texturized"` in entrambe le run; cambiano
+soltanto `testBlendMode` e `benchmark.settings.blendMode`. Verificare comunque
+stesso fingerprint, punti, stamp base e copie fisiche prima del confronto.
+
+Queste due run valide devono essere eseguite dall’utente sullo stesso iPhone.
+Non eseguire autonomamente un benchmark locale come sostituto e non dichiarare
+regressioni o miglioramenti prestazionali dalla build, dallo smoke GPU desktop
+o dai tempi del benchmark sintetico.
+
+`npm run grain:verify` controlla hash/dimensioni/formato originali, mip nativi,
+ABI WGSL, coordinate Fixed/Moving, pipeline MAX e collegamenti UI. La build
+locale non dimostra equivalenza pixel né prestazioni su iPhone: non promuovere
+questa variante e non sostituire la baseline canonica Grain Off finché
+l’utente non ha scelto visivamente e non esiste una run comparabile.

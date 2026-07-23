@@ -15,13 +15,14 @@ Prototipo TypeScript senza framework per verificare l'architettura di un motore 
 - Color jitter deterministico in HSL: Hue, Saturation, Lightness e Darkness.
 - Jitter di posizione lineare e laterale, indipendente per ogni copia fisica.
 - Color jitter condiviso dal gruppo oppure indipendente per copia.
-- Blend normale premoltiplicato e modalità additiva intensa.
+- Blend normale premoltiplicato, modalità additiva intensa, Light Glaze e
+  M1 Glaze non accumulativo.
 - Scissor rectangle sul rettangolo sporco del batch.
 - Canvas a tutta area con pannelli sovrapposti richiudibili; i pannelli si chiudono automaticamente quando parte un test.
 - Un dito disegna, due dita eseguono pan e pinch-zoom; restano disponibili zoom, pan, fit, clear e benchmark sintetico.
 - Undo/Redo per tratto con cronologia CPU degli stamp e ricostruzione GPU soltanto quando richiesta.
-- Grain opzionale `Texturized` ancorato alle coordinate del layer, con texture
-  Cotton Fleece R8 2K, mip CPU completi e filtri No/Classic/Improved.
+- Grain Cotton Fleece M1 originale con modalità `Fixed` e `Moving`, texture
+  RGBA nativa 2500² e mip generati in WebGPU/WGSL.
 - Registrazione locale di un tratto umano, con replay temporizzato e misure confrontabili tra versioni del motore.
 - Telemetria CPU e tempo di completamento della coda GPU.
 
@@ -91,6 +92,14 @@ temporanea per-stroke e Opacità viene applicata una sola volta all'intera
 pennellata: una pennellata non può superare quel limite, mentre pennellate
 distinte continuano a sovrapporsi normalmente.
 
+`M1 Glaze — non accumulativo` replica la semantica `cov8` di M1: durante una
+singola pennellata conserva per ogni pixel la coverage R8 massima, non la somma
+o il source-over degli stamp. In formula, `C(x) = maxᵢ coverageᵢ(x)`. Un solo
+colore viene scelto per l'intero tratto e tinta e Opacità sono applicate una
+volta al resolve. Due pennellate separate continuano invece a compositarsi
+normalmente sul layer. `Light Glaze` resta disponibile e invariato per il
+confronto.
+
 La texture Light Glaze viene allocata soltanto al primo uso della modalità. Il
 mip 0 conserva l'accumulatore raw dello stroke; i mip successivi conservano il
 composito finale già filtrato sopra il layer permanente, così lo zoom ridotto
@@ -105,50 +114,58 @@ sotto, quando Grain Texturized è attivo: una patch di due stamp non può
 rappresentare correttamente il limite globale della pennellata né una texture
 ancorata al layer.
 
-## Grain Phase 1
+## Grain M1: Fixed e Moving
 
-Il controllo Grain offre soltanto `Off` e `Texturized`; la modalità Moving non
-fa parte di questa fase. `Off` seleziona gli shader, bind group e pipeline
-legacy senza ramo Grain. `Texturized` usa
-`grain-cotton-fleece-2048.png`, un asset grayscale 8-bit opaco
-`2048 × 2048` con repeat corretto, formato GPU `r8unorm` e catena completa di
-12 mip generata deterministicamente sulla CPU prima del primo tratto.
+Il vecchio derivato `grain-cotton-fleece-2048.png` non è più usato. Il runtime
+carica direttamente `graincottonfleece.PNG`, byte per byte uguale all'asset di
+M1. Il file reale non è 4K: misura **2500 × 2500 px**, è RGBA8, conserva il
+profilo ICC originale e ha SHA-256
+`9AA1CE073885B83EA223AF0941EF74604548A85F54442228EC15522ACE3EF2D7`.
+Non viene ridimensionato né convertito in grayscale prima dell'upload.
 
-La texture è ancorata a `@builtin(position)` nel render target autorevole del
-layer: pan, zoom, viewport, posizione dello stamp e replay non possono farla
-scorrere. Il valore campionato moltiplica la coverage della punta dopo la
-coverage Circle/Shape e prima di alpha, pressione e compositing. Restano
-disponibili Scale `10–400%`, Depth `0–100%`, Brightness e Contrast
-`-100–100%`, filtro `No`, `Classic` o `Improved` e blend Grain `Multiply`.
-I tre filtri corrispondono rispettivamente a texel e mip più vicino, bilineare
-con mip più vicino e trilineare.
+La texture GPU è `rgba8unorm`; la luma M1 viene ricavata in WGSL dai canali RGB
+con i coefficienti `0.299 / 0.587 / 0.114`, mentre l'alpha del PNG non modula
+il pennello. La catena NPOT completa
+`2500→1250→625→312→156→78→39→19→9→4→2→1` viene costruita all'avvio con
+render pass WebGPU e shader WGSL. Occupa circa **31,79 MiB**. Tutto il percorso
+di disegno resta WebGPU/WGSL; M1 WebGL2/GLSL è usato soltanto come riferimento
+semantico.
 
-Il percorso copre Circle e Shape, inclusa la pre-mappa di occupazione, e tutti
-i blend del brush: Normal, Additive e Light Glaze. Undo/Redo conserva
-impostazioni e identità della texture. Quando Grain è attivo la tip preview
-Canvas2D è disabilitata perché non può riprodurre fedelmente la texture
-layer-space; probe FIFO e spacing adattivo continuano invece a funzionare.
+Le due impostazioni valutabili sono:
 
-`performanceTelemetryRevision: 22` salva strategia, coordinate, filtro,
-pipeline, applicazione della coverage, risorsa/mip/identità, tempi di startup,
-batch/stamp/copie Grain e skip della preview.
+- `Texturized — Fixed M1`: la grana è carta ancorata alle coordinate
+  autorevoli del layer. Pan, zoom, posizione e rotazione dello stamp non la
+  spostano. Scale `10–400%` controlla il periodo, con default M1 `140%`.
+- `Texturized — Moving M1`: una copia completa della texture segue ogni stamp
+  nelle sue coordinate locali e ruota con esso. Come in M1, il controllo Scale
+  è ignorato e viene disabilitato nella UI.
 
-Per la prima misura sullo stesso dispositivo e con la stessa traccia canonica,
-eseguire separatamente:
+Depth, Brightness, Contrast e i filtri No/Classic/Improved restano disponibili;
+il campione moltiplica la coverage dopo Circle/Shape e prima di flow,
+pressione, alpha e blending. Il percorso copre Circle, Shape e occupancy,
+Normal, Additive, Light Glaze e M1 Glaze. `Off` continua a selezionare il
+modulo WGSL e le pipeline legacy senza binding o ramo Grain.
 
-1. Base · Normal · Grain Off;
-2. Base · Normal · Grain Texturized;
-3. Fur · Normal · Grain Texturized.
+Undo/Redo conserva impostazioni e identità dell'asset. Con Grain attivo la tip
+preview Canvas2D resta disabilitata perché non può riprodurre fedelmente
+coordinate e filtering della texture; probe FIFO e spacing adattivo
+continuano a funzionare. La telemetria distingue asset nativo, coordinate
+Fixed/Moving, sampling, memoria, mip e strategia del glaze.
 
-Il selettore Grain del replay è indipendente da variante e blend. Il test fissa
-Scale `100%`, Depth `100%`, Brightness `0%`, Contrast `0%`, filtro `Improved`
-e Multiply; il preset canonico e le registrazioni storiche restano Grain Off.
-Verificare `testVariant`, `testBlendMode`, `testGrainMode`, impostazioni,
-fingerprint, punti, stamp e copie prima di confrontare le run. Le tre
-combinazioni non vanno aggregate e questa fase locale non contiene ancora una
-misura prestazionale su iPhone.
+Fixed e Moving restano confrontabili manualmente per scegliere l'aspetto. Il
+replay prestazionale iPhone è invece volutamente più stretto: usa sempre
+`Texturized — Fixed M1`, Scale `140%`, Depth `100%`, Improved e Blend
+intensity `4×`. Il selettore cambia soltanto fra:
 
-L’asset e le invarianti statiche si verificano con:
+1. `Normal accumulativo — 4×`;
+2. `M1 Glaze non accumulativo — 4×`.
+
+Size, spacing, Count, flow, hardness, jitter, seed, pressione, traccia e ordine
+degli stamp restano quelli canonici. Queste run devono essere eseguite
+dall'utente sullo stesso iPhone con **Play tratto registrato**; build e smoke
+locali non sono risultati prestazionali e non sostituiscono la baseline.
+
+L'asset e le invarianti statiche si verificano con:
 
 ```bash
 npm run grain:verify
@@ -156,6 +173,6 @@ npm run grain:verify
 
 ## Cosa non è ancora incluso
 
-Questo è un benchmark del brush core, non ancora un clone completo di Procreate. Mancano tile sparse, più layer, Grain Moving, smudge, wet mix e salvataggio del documento.
+Questo è un benchmark del brush core, non ancora un clone completo di Procreate. Mancano tile sparse, più layer, smudge, wet mix e salvataggio del documento.
 
 Gli esperimenti tiled delle run `#23` e `#25` e lo scratch sulla dirty rectangle della run `#27` sono stati misurati e bocciati. Il runtime pubblicato è tornato alla baseline monolitica della run `#19`; metriche, diagnosi e motivazioni dei rollback sono conservate in `AGENTS.md`.

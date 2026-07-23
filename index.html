@@ -108,6 +108,7 @@
               <option value="normal">Normal premultiplied</option>
               <option value="additive">Intense additive</option>
               <option value="light-glaze">Light Glaze</option>
+              <option value="m1-glaze">M1 Glaze — non accumulativo</option>
             </select>
           </label>
         </section>
@@ -118,7 +119,7 @@
           <label class="control">
             <span>Sorgente</span>
             <select id="grainSource" disabled>
-              <option>Cotton Fleece 2K</option>
+              <option>Cotton Fleece M1 originale — 2500 px</option>
             </select>
           </label>
 
@@ -126,14 +127,18 @@
             <span>Modalità</span>
             <select id="grainMode">
               <option value="off">Off</option>
-              <option value="texturized">Texturized</option>
+              <option value="texturized">Texturized — Fixed M1</option>
+              <option value="moving">Texturized — Moving M1</option>
             </select>
           </label>
 
           <div id="grainParameters" hidden>
             <label class="control">
-              <span>Scale <output id="grainScaleOut">100%</output></span>
-              <input id="grainScale" type="range" min="10" max="400" step="1" value="100" />
+              <span>
+                Scale <output id="grainScaleOut">140%</output>
+                <small>Come in M1: agisce su Fixed; Moving usa una texture completa per stamp.</small>
+              </span>
+              <input id="grainScale" type="range" min="10" max="400" step="1" value="140" />
             </label>
 
             <label class="control">
@@ -267,15 +272,14 @@
           <label class="control">
             <span>Blending test</span>
             <select id="humanStrokeTestBlendMode">
-              <option value="normal">Normal premultiplied</option>
-              <option value="light-glaze">Light Glaze</option>
+              <option value="normal">Normal accumulativo — 4×</option>
+              <option value="m1-glaze">M1 Glaze non accumulativo — 4×</option>
             </select>
           </label>
           <label class="control">
             <span>Grain test</span>
-            <select id="humanStrokeTestGrainMode">
-              <option value="off">Off</option>
-              <option value="texturized">Texturized</option>
+            <select id="humanStrokeTestGrainMode" disabled>
+              <option value="texturized">Texturized — Fixed M1 (fisso)</option>
             </select>
           </label>
           <button id="recordHumanStroke" class="primary wide" type="button">Registra tratto umano</button>

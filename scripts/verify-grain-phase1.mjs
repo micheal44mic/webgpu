@@ -1,16 +1,16 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import zlib from "node:zlib";
-import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const assetPath = path.join(projectRoot, "grain-cotton-fleece-2048.png");
+const assetPath = path.join(projectRoot, "graincottonfleece.PNG");
 const shaderPath = path.join(projectRoot, "src", "shaders.ts");
 const enginePath = path.join(projectRoot, "src", "brush-engine.ts");
 const mainPath = path.join(projectRoot, "src", "main.ts");
-const expectedSize = 2048;
-const expectedSha256 = "F353BDF4C8671D56AA69F4242AE60D34993EA883467CB616950A0FC292E8FD4B";
+const htmlPath = path.join(projectRoot, "index.html");
+const expectedSize = 2500;
+const expectedSha256 = "9AA1CE073885B83EA223AF0941EF74604548A85F54442228EC15522ACE3EF2D7";
 
 function assert(condition, message) {
   if (!condition) {
@@ -18,7 +18,7 @@ function assert(condition, message) {
   }
 }
 
-function readPngGray8(filePath) {
+function readPngHeader(filePath) {
   const bytes = fs.readFileSync(filePath);
   const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
   assert(bytes.subarray(0, signature.length).equals(signature), "Firma PNG non valida.");
@@ -32,7 +32,7 @@ function readPngGray8(filePath) {
   let filterMethod = 0;
   let interlaceMethod = 0;
   const chunks = [];
-  const idat = [];
+  let idatBytes = 0;
 
   while (offset + 12 <= bytes.length) {
     const length = bytes.readUInt32BE(offset);
@@ -51,139 +51,48 @@ function readPngGray8(filePath) {
       filterMethod = bytes[dataStart + 11];
       interlaceMethod = bytes[dataStart + 12];
     } else if (type === "IDAT") {
-      idat.push(bytes.subarray(dataStart, dataEnd));
-    } else if (type === "IEND") {
-      break;
+      idatBytes += length;
     }
     offset = dataEnd + 4;
-  }
-
-  assert(width === expectedSize && height === expectedSize, `Asset ${width}×${height}, atteso 2048².`);
-  assert(bitDepth === 8, `Bit depth ${bitDepth}, atteso 8.`);
-  assert(colorType === 0, `Color type ${colorType}, atteso grayscale opaco (0).`);
-  assert(compressionMethod === 0 && filterMethod === 0 && interlaceMethod === 0,
-    "PNG deve usare compressione/filtro standard e non essere interlacciata.");
-  assert(chunks[0] === "IHDR" && chunks.at(-1) === "IEND" && idat.length > 0,
-    "Ordine chunk PNG non valido.");
-  assert(chunks.every((type) => type === "IHDR" || type === "IDAT" || type === "IEND"),
-    `Metadata inattesi: ${chunks.join(", ")}.`);
-
-  const inflated = zlib.inflateSync(Buffer.concat(idat));
-  assert(inflated.length === (width + 1) * height, "Dimensione scanline decompressa non valida.");
-  const pixels = Buffer.alloc(width * height);
-  let sourceOffset = 0;
-
-  function paeth(left, up, upperLeft) {
-    const prediction = left + up - upperLeft;
-    const leftDistance = Math.abs(prediction - left);
-    const upDistance = Math.abs(prediction - up);
-    const upperLeftDistance = Math.abs(prediction - upperLeft);
-    if (leftDistance <= upDistance && leftDistance <= upperLeftDistance) {
-      return left;
-    }
-    return upDistance <= upperLeftDistance ? up : upperLeft;
-  }
-
-  for (let y = 0; y < height; y += 1) {
-    const filter = inflated[sourceOffset];
-    sourceOffset += 1;
-    assert(filter <= 4, `Filtro PNG non supportato: ${filter}.`);
-    for (let x = 0; x < width; x += 1) {
-      const encoded = inflated[sourceOffset];
-      sourceOffset += 1;
-      const destination = y * width + x;
-      const left = x > 0 ? pixels[destination - 1] : 0;
-      const up = y > 0 ? pixels[destination - width] : 0;
-      const upperLeft = x > 0 && y > 0 ? pixels[destination - width - 1] : 0;
-      const predictor = filter === 1
-        ? left
-        : filter === 2
-          ? up
-          : filter === 3
-            ? Math.floor((left + up) * 0.5)
-            : filter === 4 ? paeth(left, up, upperLeft) : 0;
-      pixels[destination] = (encoded + predictor) & 0xff;
+    if (type === "IEND") {
+      break;
     }
   }
-  return { width, height, pixels, chunks };
-}
 
-function differenceStats(histogram, sampleCount) {
-  let sum = 0;
-  let seen = 0;
-  let p95 = 0;
-  let maximum = 0;
-  const threshold = Math.ceil(sampleCount * 0.95);
-  for (let difference = 0; difference < histogram.length; difference += 1) {
-    const count = histogram[difference];
-    if (count === 0) {
-      continue;
-    }
-    sum += difference * count;
-    seen += count;
-    maximum = difference;
-    if (p95 === 0 && seen >= threshold) {
-      p95 = difference;
-    }
-  }
-  return { mean: sum / sampleCount, p95, max: maximum };
-}
-
-function seamStatistics({ width, height, pixels }) {
-  const wrapX = new Uint32Array(256);
-  const wrapY = new Uint32Array(256);
-  const internalX = new Uint32Array(256);
-  const internalY = new Uint32Array(256);
-  for (let y = 0; y < height; y += 1) {
-    wrapX[Math.abs(pixels[y * width] - pixels[y * width + width - 1])] += 1;
-    for (let x = 1; x < width; x += 1) {
-      internalX[Math.abs(pixels[y * width + x] - pixels[y * width + x - 1])] += 1;
-    }
-  }
-  for (let x = 0; x < width; x += 1) {
-    wrapY[Math.abs(pixels[x] - pixels[(height - 1) * width + x])] += 1;
-    for (let y = 1; y < height; y += 1) {
-      internalY[Math.abs(pixels[y * width + x] - pixels[(y - 1) * width + x])] += 1;
-    }
-  }
+  assert(chunks[0] === "IHDR" && chunks.at(-1) === "IEND", "Ordine chunk PNG non valido.");
+  assert(idatBytes > 0, "Il PNG non contiene dati immagine.");
   return {
-    wrapX: differenceStats(wrapX, height),
-    wrapY: differenceStats(wrapY, width),
-    internalX: differenceStats(internalX, height * (width - 1)),
-    internalY: differenceStats(internalY, width * (height - 1)),
+    bytes,
+    width,
+    height,
+    bitDepth,
+    colorType,
+    compressionMethod,
+    filterMethod,
+    interlaceMethod,
+    chunks,
+    idatBytes,
   };
 }
 
-function mipSummary(basePixels, baseSize) {
-  let pixels = basePixels;
-  let size = baseSize;
-  let levels = 1;
-  let bytes = pixels.length;
-  while (size > 1) {
-    const nextSize = size / 2;
-    const next = new Uint8Array(nextSize * nextSize);
-    for (let y = 0; y < nextSize; y += 1) {
-      for (let x = 0; x < nextSize; x += 1) {
-        const source = y * 2 * size + x * 2;
-        next[y * nextSize + x] = Math.round(
-          (pixels[source] + pixels[source + 1] + pixels[source + size] + pixels[source + size + 1]) / 4,
-        );
-      }
+function nativeMipSummary(size, bytesPerPixel) {
+  const dimensions = [];
+  let dimension = size;
+  let pixels = 0;
+  while (true) {
+    dimensions.push(dimension);
+    pixels += dimension * dimension;
+    if (dimension === 1) {
+      break;
     }
-    pixels = next;
-    size = nextSize;
-    levels += 1;
-    bytes += next.length;
+    dimension = Math.max(1, Math.floor(dimension / 2));
   }
-  return { levels, bytes };
-}
-
-function fnv1a(bytes) {
-  let hash = 0x811c9dc5;
-  for (const value of bytes) {
-    hash = Math.imul(hash ^ value, 0x01000193) >>> 0;
-  }
-  return hash;
+  return {
+    dimensions,
+    levels: dimensions.length,
+    pixels,
+    bytes: pixels * bytesPerPixel,
+  };
 }
 
 function roundUp(alignment, value) {
@@ -195,7 +104,7 @@ function wgslTypeLayout(type) {
     return { alignment: 4, size: 4 };
   }
   const vector = /^vec([234])<(f32|i32|u32)>$/.exec(type);
-  assert(vector, `Tipo WGSL non supportato dal controllo ABI Grain: ${type}.`);
+  assert(vector, `Tipo WGSL non supportato dal controllo ABI: ${type}.`);
   const components = Number(vector[1]);
   return {
     alignment: components === 2 ? 8 : 16,
@@ -212,114 +121,138 @@ function wgslStructLayout(source, name) {
     .map((member) => member.trim())
     .filter(Boolean)
     .map((member) => {
-      const memberMatch = /^([A-Za-z_]\w*)\s*:\s*([^,\s]+)$/.exec(member);
-      assert(memberMatch, `Membro WGSL ${name} non riconosciuto: ${member}.`);
-      return { name: memberMatch[1], type: memberMatch[2] };
+      const parsed = /^([A-Za-z_]\w*)\s*:\s*([^,\s]+)$/.exec(member);
+      assert(parsed, `Membro WGSL ${name} non riconosciuto: ${member}.`);
+      return { name: parsed[1], type: parsed[2] };
     });
 
   let offset = 0;
-  let structAlignment = 1;
+  let alignment = 1;
   const offsets = {};
   for (const member of members) {
     const layout = wgslTypeLayout(member.type);
     offset = roundUp(layout.alignment, offset);
     offsets[member.name] = offset;
     offset += layout.size;
-    structAlignment = Math.max(structAlignment, layout.alignment);
+    alignment = Math.max(alignment, layout.alignment);
   }
-  return {
-    members,
-    offsets,
-    alignment: structAlignment,
-    size: roundUp(structAlignment, offset),
-  };
+  return { members, offsets, alignment, size: roundUp(alignment, offset) };
 }
 
-const decoded = readPngGray8(assetPath);
-const assetSha256 = crypto
-  .createHash("sha256")
-  .update(fs.readFileSync(assetPath))
-  .digest("hex")
-  .toUpperCase();
+const decoded = readPngHeader(assetPath);
+assert(decoded.width === expectedSize && decoded.height === expectedSize,
+  `Asset ${decoded.width}×${decoded.height}, atteso 2500² nativo.`);
+assert(decoded.bitDepth === 8, `Bit depth ${decoded.bitDepth}, atteso 8.`);
+assert(decoded.colorType === 6, `Color type ${decoded.colorType}, atteso RGBA (6).`);
+assert(
+  decoded.compressionMethod === 0
+    && decoded.filterMethod === 0
+    && decoded.interlaceMethod === 0,
+  "PNG deve usare compressione/filtro standard e non essere interlacciato.",
+);
+assert(decoded.chunks.includes("iCCP"), "Il profilo colore ICC originale è stato rimosso.");
+
+const assetSha256 = crypto.createHash("sha256").update(decoded.bytes).digest("hex").toUpperCase();
 assert(assetSha256 === expectedSha256,
   `SHA-256 asset ${assetSha256}, atteso ${expectedSha256}.`);
-const seams = seamStatistics(decoded);
-const mip = mipSummary(decoded.pixels, decoded.width);
+const mip = nativeMipSummary(expectedSize, 4);
 assert(mip.levels === 12, `Catena mip ${mip.levels}, attesi 12 livelli.`);
-assert(mip.bytes === 5_592_405, `Memoria mip ${mip.bytes}, attesi 5.592.405 byte.`);
-assert(seams.wrapX.mean <= seams.internalX.mean * 1.15,
-  `Seam X troppo forte: ${seams.wrapX.mean} contro ${seams.internalX.mean}.`);
-assert(seams.wrapY.mean <= seams.internalY.mean * 1.15,
-  `Seam Y troppo forte: ${seams.wrapY.mean} contro ${seams.internalY.mean}.`);
-assert(seams.wrapX.p95 <= seams.internalX.p95 + 2,
-  `Seam X p95 troppo forte: ${seams.wrapX.p95} contro ${seams.internalX.p95}.`);
-assert(seams.wrapY.p95 <= seams.internalY.p95 + 2,
-  `Seam Y p95 troppo forte: ${seams.wrapY.p95} contro ${seams.internalY.p95}.`);
 
 const shaders = fs.readFileSync(shaderPath, "utf8");
 const legacyEnd = shaders.indexOf("export const texturizedGrainShader");
-assert(legacyEnd > 0, "Modulo fragment grain separato non trovato.");
-const grainEnd = shaders.indexOf("\nexport const ", legacyEnd + 1);
-assert(grainEnd > legacyEnd, "Fine del modulo fragment grain non trovata.");
+const grainMipStart = shaders.indexOf("export const grainMipShader");
+assert(legacyEnd > 0 && grainMipStart > legacyEnd, "Shader Grain WebGPU/WGSL separati non trovati.");
 const legacyShader = shaders.slice(0, legacyEnd);
-const grainShader = shaders.slice(legacyEnd, grainEnd);
+const grainShader = shaders.slice(legacyEnd, grainMipStart);
 const grainUniformLayout = wgslStructLayout(grainShader, "GrainUniforms");
 assert(!legacyShader.includes("grainTexture") && !legacyShader.includes("GrainUniforms"),
-  "Il modulo brush legacy contiene binding o uniform Grain.");
+  "Il modulo brush Grain Off contiene binding Grain.");
 assert(grainShader.includes("input.position.xy * grain.inversePeriod"),
-  "Le UV Texturized non sono ancorate alla posizione layer.");
-assert(!grainShader.includes("viewCenter") && !grainShader.includes("display.zoom"),
-  "Il fragment Grain dipende dal viewport/display.");
+  "Fixed M1 non è ancorato alle coordinate autorevoli del layer.");
+assert(grainShader.includes("input.localPosition * 0.5 + vec2<f32>(0.5)"),
+  "Moving M1 non usa le coordinate locali dello stamp.");
+assert(grainShader.includes("grain.coordinateMode == 1u"),
+  "Selezione Fixed/Moving assente dallo shader WGSL.");
+assert(grainShader.includes("dot(sourceSample.rgb, vec3<f32>(0.299, 0.587, 0.114))"),
+  "Luma RGB dell'asset M1 originale non trovata.");
+assert(grainShader.includes("shapeOccupancyCoverageFragmentMain")
+  && grainShader.includes("coverageFragmentMain"),
+  "Entry point coverage M1 mancanti nel Grain WGSL.");
+assert(shaders.includes("export const grainMipShader")
+  && shaders.includes("textureSampleLevel(sourceTexture, sourceSampler"),
+  "Generazione mip WebGPU/WGSL assente.");
 assert(grainUniformLayout.size === 32,
   `ABI WGSL GrainUniforms ${grainUniformLayout.size} byte, attesi 32.`);
-assert(grainUniformLayout.members.length === 8
-  && grainUniformLayout.members.every((member) => member.type === "f32" || member.type === "u32"),
-  "GrainUniforms deve restare composta da otto scalari a 32 bit.");
+assert(grainUniformLayout.offsets.coordinateMode === 20,
+  `Offset coordinateMode ${grainUniformLayout.offsets.coordinateMode}, atteso 20.`);
 
 const engine = fs.readFileSync(enginePath, "utf8");
-assert(engine.includes('grainMode: "off"'), "Il default engine Grain Off non è esplicito.");
-const grainUniformBytesMatch = /const\s+GRAIN_UNIFORM_BYTES\s*=\s*(\d+)\s*;/.exec(engine);
-assert(grainUniformBytesMatch, "Costante CPU GRAIN_UNIFORM_BYTES non trovata.");
-const grainUniformCpuBytes = Number(grainUniformBytesMatch[1]);
-assert(grainUniformCpuBytes === grainUniformLayout.size,
-  `ABI Grain CPU ${grainUniformCpuBytes} byte, WGSL ${grainUniformLayout.size} byte.`);
-assert(engine.includes("separate-opt-in-pipelines"), "Marker pipeline Grain separata assente.");
-assert(engine.includes("this.grainNormalPipeline") && engine.includes("this.normalPipeline"),
-  "Selezione pipeline Grain/legacy non trovata.");
+assert(engine.includes('fetch(new URL("../graincottonfleece.PNG", import.meta.url))'),
+  "Il runtime non carica l'asset M1 originale.");
+assert(engine.includes('const GRAIN_TEXTURE_SIZE = 2500;')
+  && engine.includes('format: "rgba8unorm"'),
+  "Dimensione/formato nativi del Grain non configurati.");
+assert(engine.includes('"rgba8-native-2500-fixed-coverage-multiply"')
+  && engine.includes('"rgba8-native-2500-moving-coverage-multiply"'),
+  "Marker Fixed/Moving nativi assenti.");
+assert(engine.includes('export type BlendMode = "normal" | "additive" | "light-glaze" | "m1-glaze"'),
+  "Blend mode M1 Glaze assente.");
+assert(engine.includes('operation: "max"')
+  && engine.includes("m1GlazePipeline")
+  && engine.includes("grainM1GlazePipeline"),
+  "Pipeline MAX coverage M1 Glaze assenti.");
+assert(shaders.includes("unpack4x8unorm(pack4x8unorm")
+  && engine.includes("m1-r8-quantized-max-coverage-rgba-compat-single-commit"),
+  "Semantica coverage R8 quantizzata M1 assente.");
+assert(engine.includes("session.tintLinear")
+  && engine.includes('"m1-max-coverage"'),
+  "Tint per tratto e resolve M1 Glaze non collegati.");
 assert(engine.includes("grainTextureIdentity") && engine.includes("expectedGrainIdentity"),
   "Identità Grain non protetta nel journal/replay.");
-assert(engine.includes("profile.grainAdaptivePreviewSkips")
-  && engine.includes("this.startAdaptivePreviewProbe(false)"),
-  "Preview Grain o probe adattivo non protetti.");
 
 const main = fs.readFileSync(mainPath, "utf8");
+const html = fs.readFileSync(htmlPath, "utf8");
 assert(main.includes('setControlValue("grainMode", "off")'),
   "Il preset canonico non forza Grain Off.");
-assert(main.includes('benchmark.settings.grainMode === "texturized" ? "texturized" : "off"'),
-  "La normalizzazione dei settings legacy a Grain Off non è presente.");
-assert(main.includes("testGrainMode"), "Il marker benchmark testGrainMode non è presente.");
+assert(main.includes('benchmark.settings.grainMode === "moving"'),
+  "La normalizzazione delle impostazioni manuali Moving è assente.");
+assert(main.includes('type HumanStrokeTestGrainMode = Extract<GrainMode, "texturized">')
+  && main.includes('blendIntensity: 4')
+  && main.includes('return "texturized"'),
+  "Il replay iPhone non forza Texturized Fixed e Blend intensity 4×.");
+assert(html.includes('value="texturized">Texturized — Fixed M1')
+  && html.includes('value="moving">Texturized — Moving M1'),
+  "Le due impostazioni Grain M1 non sono esposte nella UI.");
+assert(html.includes('value="m1-glaze">M1 Glaze — non accumulativo'),
+  "M1 Glaze non è esposto nella UI.");
+assert(html.includes('value="normal">Normal accumulativo — 4×')
+  && html.includes('value="m1-glaze">M1 Glaze non accumulativo — 4×')
+  && html.includes('value="texturized">Texturized — Fixed M1 (fisso)'),
+  "La matrice iPhone Normal/M1 a Grain Fixed e 4× non è esposta correttamente.");
 assert(main.includes("performanceTelemetryRevision: 22"),
-  "Revisione telemetria Grain 22 assente.");
+  "Revisione telemetria attesa assente.");
 
 console.log(JSON.stringify({
   asset: path.relative(projectRoot, assetPath),
   sha256: assetSha256,
   width: decoded.width,
   height: decoded.height,
-  format: "grayscale-8-opaque",
-  chunks: decoded.chunks,
+  format: "rgba8-original-with-icc",
+  sourceBytes: decoded.bytes.length,
+  mipDimensions: mip.dimensions,
   mipLevels: mip.levels,
-  mipBytes: mip.bytes,
-  identityFnv1a: fnv1a(decoded.pixels),
+  gpuMipBytes: mip.bytes,
+  gpuMipMiB: mip.bytes / (1024 * 1024),
   grainUniformAbiBytes: grainUniformLayout.size,
-  seams,
   invariants: {
-    grainUniformCpuWgslAbiMatches: true,
-    legacyShaderHasNoGrainBindings: true,
-    texturizedUvUsesAuthoritativeLayerPosition: true,
-    historyChecksGrainIdentity: true,
-    adaptivePreviewDisabledButProbeActive: true,
-    legacySettingsNormalizeToOff: true,
-    canonicalReplayForcesOff: true,
+    originalM1AssetUnmodified: true,
+    webGpuWgslOnlyRenderingPath: true,
+    fixedUsesLayerCoordinates: true,
+    movingUsesStampLocalCoordinates: true,
+    movingIgnoresScaleControl: true,
+    iphoneReplayUsesOnlyFixedTexturizedAt4x: true,
+    m1GlazeUsesR8QuantizedMaxCoverage: true,
+    legacyLightGlazePreserved: true,
+    canonicalReplayForcesGrainOff: true,
   },
 }, null, 2));

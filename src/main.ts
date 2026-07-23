@@ -55,8 +55,8 @@ const zoomOutButton = element<HTMLButtonElement>("zoomOut");
 const benchmarkStampsInput = element<HTMLInputElement>("benchmarkStamps");
 
 type HumanStrokeTestVariant = "base" | "fur";
-type HumanStrokeTestBlendMode = "normal" | "light-glaze";
-type HumanStrokeTestGrainMode = GrainMode;
+type HumanStrokeTestBlendMode = "normal" | "m1-glaze";
+type HumanStrokeTestGrainMode = Extract<GrainMode, "texturized">;
 
 interface HumanStrokePoint extends LayerPoint {
   timeMs: number;
@@ -453,12 +453,16 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
     : 1;
   const blendMode = benchmark.settings.blendMode === "additive"
     || benchmark.settings.blendMode === "light-glaze"
+    || benchmark.settings.blendMode === "m1-glaze"
     ? benchmark.settings.blendMode
     : "normal";
-  const grainMode = benchmark.settings.grainMode === "texturized" ? "texturized" : "off";
+  const grainMode = benchmark.settings.grainMode === "texturized"
+    || benchmark.settings.grainMode === "moving"
+    ? benchmark.settings.grainMode
+    : "off";
   const grainScale = Number.isFinite(benchmark.settings.grainScale)
     ? Math.min(4, Math.max(0.1, benchmark.settings.grainScale))
-    : 1;
+    : 1.4;
   const grainDepth = Number.isFinite(benchmark.settings.grainDepth)
     ? Math.min(1, Math.max(0, benchmark.settings.grainDepth))
     : 1;
@@ -582,8 +586,13 @@ function setControlValue(id: string, value: string | number): void {
 function applySettingsToControls(settings: BrushSettings): void {
   setControlValue("brushShape", settings.shape === "shape" ? "shape" : "circle");
   setControlValue("shapeScatter", (settings.shapeScatter ?? 0) * 100);
-  setControlValue("grainMode", settings.grainMode === "texturized" ? "texturized" : "off");
-  setControlValue("grainScale", (settings.grainScale ?? 1) * 100);
+  setControlValue(
+    "grainMode",
+    settings.grainMode === "texturized" || settings.grainMode === "moving"
+      ? settings.grainMode
+      : "off",
+  );
+  setControlValue("grainScale", (settings.grainScale ?? 1.4) * 100);
   setControlValue("grainDepth", (settings.grainDepth ?? 1) * 100);
   setControlValue("grainBrightness", (settings.grainBrightness ?? 0) * 100);
   setControlValue("grainContrast", (settings.grainContrast ?? 0) * 100);
@@ -620,7 +629,7 @@ function applyHumanStrokePreset(): BrushSettings {
   setControlValue("brushShape", "circle");
   setControlValue("shapeScatter", 0);
   setControlValue("grainMode", "off");
-  setControlValue("grainScale", 100);
+  setControlValue("grainScale", 140);
   setControlValue("grainDepth", 100);
   setControlValue("grainBrightness", 0);
   setControlValue("grainContrast", 0);
@@ -651,11 +660,11 @@ function selectedHumanStrokeTestVariant(): HumanStrokeTestVariant {
 }
 
 function selectedHumanStrokeTestBlendMode(): HumanStrokeTestBlendMode {
-  return humanStrokeTestBlendModeSelect.value === "light-glaze" ? "light-glaze" : "normal";
+  return humanStrokeTestBlendModeSelect.value === "m1-glaze" ? "m1-glaze" : "normal";
 }
 
 function selectedHumanStrokeTestGrainMode(): HumanStrokeTestGrainMode {
-  return humanStrokeTestGrainModeSelect.value === "texturized" ? "texturized" : "off";
+  return "texturized";
 }
 
 function humanStrokeTestSettings(
@@ -667,9 +676,10 @@ function humanStrokeTestSettings(
   const baseSettings: BrushSettings = {
     ...benchmark.settings,
     opacity: 1,
+    blendIntensity: 4,
     blendMode,
     grainMode,
-    grainScale: 1,
+    grainScale: 1.4,
     grainDepth: 1,
     grainBrightness: 0,
     grainContrast: 0,
@@ -697,12 +707,12 @@ function humanStrokeTestSettings(
 function humanStrokeTestLabel(
   variant: HumanStrokeTestVariant,
   blendMode: HumanStrokeTestBlendMode,
-  grainMode: HumanStrokeTestGrainMode,
 ): string {
   const variantLabel = variant === "fur" ? "Fur" : "Base";
-  const blendLabel = blendMode === "light-glaze" ? "Light Glaze" : "Normal premultiplied";
-  const grainLabel = grainMode === "texturized" ? "Grain Texturized" : "Grain Off";
-  return `${variantLabel} · ${blendLabel} · ${grainLabel}`;
+  const blendLabel = blendMode === "m1-glaze"
+    ? "M1 Glaze non accumulativo"
+    : "Normal accumulativo";
+  return `${variantLabel} · ${blendLabel} · Grain Fixed M1 · 4×`;
 }
 
 function updateHumanStrokeControls(): void {
@@ -738,12 +748,7 @@ function updateHumanStrokeControls(): void {
     || humanStrokeReplaying
     || humanStrokeRecordingArmed
     || Boolean(humanStrokeRecording);
-  humanStrokeTestGrainModeSelect.disabled = operationLocked
-    || humanStrokeLoading
-    || humanStrokeSaving
-    || humanStrokeReplaying
-    || humanStrokeRecordingArmed
-    || Boolean(humanStrokeRecording);
+  humanStrokeTestGrainModeSelect.disabled = true;
 }
 
 function operationLocked(): boolean {
@@ -847,10 +852,12 @@ const grainParameterControlIds = [
 ] as const;
 
 function updateGrainControlAvailability(locked = interactionLocked()): void {
-  const active = element<HTMLSelectElement>("grainMode").value === "texturized";
+  const grainMode = element<HTMLSelectElement>("grainMode").value;
+  const active = grainMode === "texturized" || grainMode === "moving";
   element<HTMLElement>("grainParameters").hidden = !active;
   for (const id of grainParameterControlIds) {
-    element<HTMLInputElement | HTMLSelectElement>(id).disabled = locked || !active;
+    element<HTMLInputElement | HTMLSelectElement>(id).disabled =
+      locked || !active || (id === "grainScale" && grainMode === "moving");
   }
 }
 
@@ -1084,7 +1091,7 @@ async function replayHumanStroke(): Promise<void> {
     testBlendMode,
     testGrainMode,
   );
-  const testLabel = humanStrokeTestLabel(testVariant, testBlendMode, testGrainMode);
+  const testLabel = humanStrokeTestLabel(testVariant, testBlendMode);
 
   setControlsPanelOpen(false);
   humanStrokeReplaying = true;
