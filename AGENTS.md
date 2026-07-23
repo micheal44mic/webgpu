@@ -2218,3 +2218,56 @@ tratto live e Undo/Redo Blend senza errori WebGPU. L'utente ha provato il
 risultato locale e lo ha approvato esplicitamente per la pubblicazione. Questa
 approvazione è visiva/funzionale, non una misura prestazionale iPhone: non
 presentare Blend come ottimizzazione del benchmark Paint.
+
+## Replay prestazionale dedicato `Blend dry`
+
+Su richiesta esplicita dell'utente è stato aggiunto un secondo pulsante,
+`Play Blend registrato`. Il pulsante storico `Play tratto registrato`, il suo
+default Base, le varianti Paint Base/Fur e il benchmark canonico restano
+invariati. Il nuovo test riusa esclusivamente gli stessi punti, timestamp e
+fingerprint della traccia umana per misurare il tool Blend.
+
+Prima del profilo viene disegnato nel layer autorevole, tramite sei normali
+azioni Paint, uno sfondo deterministico a bande orizzontali rosso, arancio,
+giallo, verde, blu e viola. Le bande usano Circle, size `1500 px`, spacing
+`15%`, Count `1`, flow/hardness `100%`, Normal `1×` e jitter disattivato. Il
+setup completa tutta la coda GPU prima di acquisire `before`, `replayStart` e
+il profilo, quindi il suo costo non entra nella misura. Essendo azioni Paint
+ordinarie, Undo/Redo può ricostruire anche la sorgente multicolore.
+
+Il replay Blend forza esattamente:
+
+- size canonica `750 px`;
+- spacing `1%`;
+- flow `100%`;
+- hardness `100%`;
+- Paint `0%`;
+- Stretch `20%`;
+- Circle, Grain Off, Count `1` e jitter disattivato.
+
+Il registro salva `testVariant: "blend"`, `testTool: "blend"`,
+`backgroundStrategy: "multicolor-horizontal-stripes-v1"`, stato scratch
+`cold|warm` prima del replay e memoria scratch prima/dopo. I batch Blend sono
+contati una volta come segmenti dry e non moltiplicati per il Count Paint. Lo
+scratch resta lazy: una run `cold` include la prima allocazione, mentre una run
+`warm` no; non aggregarle come se fossero equivalenti. Lo spacing richiesto è
+salvato come `1%`, mentre il planner dry mantiene il proprio sweep continuo di
+riferimento al `6%` della size. Non aggregare run Blend con Base/Fur né usare
+il risultato per cambiare automaticamente i parametri fissati dall'utente.
+
+## Correzione Blend al bordo del documento
+
+Il pickup dry non interpreta più l'esterno del documento come pigmento
+trasparente. I tap `8×8` con centro fuori da `[0, documentSize)` sono esclusi
+sia dalla somma sia dal denominatore; i tap validi vicini al bordo usano un
+lookup bilineare clampato al centro del pixel limite, così non incorporano gli
+zeri dello scratch fuori documento. I pixel trasparenti che si trovano davvero
+dentro il documento restano invece campioni validi.
+
+Se un passo è completamente fuori canvas e il tratto possiede già un carrier,
+il carrier precedente viene trasportato senza applicare Stretch e senza
+decadimento dell'alpha. Mask, deposito e scatter restano ritagliati al
+documento, quindi fuori canvas non viene scritto alcun pixel. La strategia è
+identificata da
+`DRY_BLEND_PICKUP_BORDER_STRATEGY: "exclude-outside-document-preserve-carrier"`
+e il renderer da `dry-blend-webgpu-v2-border-safe-pickup`.

@@ -21,7 +21,7 @@ const BLEND_STATE_FORMAT: GPUTextureFormat = "rgba16float";
 const BLEND_MASK_FORMAT: GPUTextureFormat = "r8unorm";
 
 export const DRY_BLEND_RENDERER_BUILD =
-  "dry-blend-webgpu-v1-weighted-pickup-carried-pigment";
+  "dry-blend-webgpu-v2-border-safe-pickup";
 
 export interface DryBlendRenderSettings {
   shape: "circle" | "shape";

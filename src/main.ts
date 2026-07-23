@@ -41,6 +41,7 @@ const benchmarkButton = element<HTMLButtonElement>("runBenchmark");
 const benchmarkResult = element<HTMLParagraphElement>("benchmarkResult");
 const recordHumanStrokeButton = element<HTMLButtonElement>("recordHumanStroke");
 const playHumanStrokeButton = element<HTMLButtonElement>("playHumanStroke");
+const playBlendHumanStrokeButton = element<HTMLButtonElement>("playBlendHumanStroke");
 const humanStrokeResult = element<HTMLParagraphElement>("humanStrokeResult");
 const humanStrokeTestVariantSelect = element<HTMLSelectElement>("humanStrokeTestVariant");
 const humanStrokeTestBlendModeSelect = element<HTMLSelectElement>("humanStrokeTestBlendMode");
@@ -54,9 +55,11 @@ const zoomInButton = element<HTMLButtonElement>("zoomIn");
 const zoomOutButton = element<HTMLButtonElement>("zoomOut");
 const benchmarkStampsInput = element<HTMLInputElement>("benchmarkStamps");
 
-type HumanStrokeTestVariant = "base" | "fur";
+type HumanStrokeTestVariant = "base" | "fur" | "blend";
 type HumanStrokeTestBlendMode = "normal" | "m1-glaze";
 type HumanStrokeTestGrainMode = Extract<GrainMode, "off" | "texturized">;
+type HumanStrokeBackgroundStrategy = "transparent" | "multicolor-horizontal-stripes-v1";
+type BlendScratchState = "not-applicable" | "cold" | "warm";
 
 interface HumanStrokePoint extends LayerPoint {
   timeMs: number;
@@ -94,8 +97,13 @@ interface BenchmarkRun {
     sampleGapMaxMs: number;
     inputGapsOver33Ms: number;
     testVariant: HumanStrokeTestVariant;
+    testTool: BrushSettings["tool"];
     testBlendMode: HumanStrokeTestBlendMode;
     testGrainMode: HumanStrokeTestGrainMode;
+    backgroundStrategy: HumanStrokeBackgroundStrategy;
+    blendScratchStateBeforeReplay: BlendScratchState;
+    blendScratchMemoryMiBBeforeReplay: number;
+    blendScratchMemoryMiBAfterReplay: number;
     settings: BrushSettings;
   };
   playback: {
@@ -819,6 +827,43 @@ function humanStrokeTestSettings(
   return baseSettings;
 }
 
+function humanStrokeBlendTestSettings(benchmark: HumanStrokeBenchmark): BrushSettings {
+  return {
+    ...benchmark.settings,
+    tool: "blend",
+    shape: "circle",
+    shapeScatter: 0,
+    grainMode: "off",
+    grainScale: 1.4,
+    grainDepth: 1,
+    grainBrightness: 0,
+    grainContrast: 0,
+    grainInvert: false,
+    grainFiltering: "improved",
+    grainBlendMode: "multiply",
+    size: benchmark.settings.size,
+    spacingPercent: 1,
+    startThickness: 1,
+    endThickness: 1,
+    count: 1,
+    flow: 1,
+    opacity: 1,
+    hardness: 1,
+    blendIntensity: 1,
+    blendMode: "normal",
+    blendStretch: 0.2,
+    blendPaint: 0,
+    jitterMaster: 0,
+    hueJitterDegrees: 0,
+    saturationJitter: 0,
+    lightnessJitter: 0,
+    darknessJitter: 0,
+    jitterPerCopy: false,
+    positionJitterLateral: 0,
+    positionJitterLinear: 0,
+  };
+}
+
 function humanStrokeTestLabel(
   variant: HumanStrokeTestVariant,
   blendMode: HumanStrokeTestBlendMode,
@@ -830,6 +875,62 @@ function humanStrokeTestLabel(
     : "Normal accumulativo · 4×";
   const grainLabel = grainMode === "texturized" ? "Grain Fixed M1" : "Grain Off";
   return `${variantLabel} · ${blendLabel} · ${grainLabel}`;
+}
+
+const BLEND_REPLAY_LABEL =
+  "Blend dry · sfondo multicolore · spacing 1% · flow 100% · hardness 100% · Paint 0% · Stretch 20%";
+
+async function prepareBlendBenchmarkBackground(replaySettings: BrushSettings): Promise<void> {
+  const palette = [
+    "#ff334f",
+    "#ff9f1c",
+    "#f4e04d",
+    "#20c997",
+    "#2d7ff9",
+    "#8b5cf6",
+  ] as const;
+  const backgroundSettings: BrushSettings = {
+    ...replaySettings,
+    tool: "paint",
+    shape: "circle",
+    shapeScatter: 0,
+    grainMode: "off",
+    size: 1500,
+    spacingPercent: 15,
+    startThickness: 1,
+    endThickness: 1,
+    count: 1,
+    flow: 1,
+    opacity: 1,
+    hardness: 1,
+    blendIntensity: 1,
+    blendMode: "normal",
+    jitterMaster: 0,
+    hueJitterDegrees: 0,
+    saturationJitter: 0,
+    lightnessJitter: 0,
+    darknessJitter: 0,
+    jitterPerCopy: false,
+    positionJitterLateral: 0,
+    positionJitterLinear: 0,
+  };
+
+  try {
+    for (let index = 0; index < palette.length; index += 1) {
+      const y = engine.layerSize * index / (palette.length - 1);
+      const timeMs = index * 10;
+      engine.setBrushSettings({ ...backgroundSettings, color: palette[index] });
+      engine.beginStrokeAtLayer({ x: 0, y, pressure: 1, timeMs });
+      engine.extendStrokeAtLayer([
+        { x: engine.layerSize, y, pressure: 1, timeMs: timeMs + 1 },
+      ]);
+      engine.endStroke(timeMs + 1);
+      await engine.waitForIdle();
+    }
+  } finally {
+    engine.setBrushSettings(replaySettings);
+    await engine.waitForIdle();
+  }
 }
 
 function updateHumanStrokeControls(): void {
@@ -849,6 +950,11 @@ function updateHumanStrokeControls(): void {
       ? "Tratto umano fissato"
       : "Registra tratto umano";
   playHumanStrokeButton.disabled = operationLocked
+    || !humanStrokeBenchmark
+    || humanStrokeLoading
+    || humanStrokeSaving
+    || humanStrokeReplaying;
+  playBlendHumanStrokeButton.disabled = operationLocked
     || !humanStrokeBenchmark
     || humanStrokeLoading
     || humanStrokeSaving
@@ -1146,6 +1252,10 @@ playHumanStrokeButton.addEventListener("click", () => {
   void replayHumanStroke();
 });
 
+playBlendHumanStrokeButton.addEventListener("click", () => {
+  void replayHumanStroke("blend");
+});
+
 function updateStats(stats: EngineStats): void {
   element<HTMLElement>("fpsStat").textContent = `${stats.fps}`;
   element<HTMLElement>("cpuStat").textContent = `${stats.lastCpuFrameMs.toFixed(2)} ms`;
@@ -1213,26 +1323,26 @@ async function finishHumanStrokeRecording(shouldSave: boolean): Promise<void> {
   updateHumanStrokeControls();
 }
 
-async function replayHumanStroke(): Promise<void> {
+async function replayHumanStroke(replayTool: BrushSettings["tool"] = "paint"): Promise<void> {
   const benchmark = humanStrokeBenchmark;
   if (!benchmark || humanStrokeReplaying || interactionLocked()) {
     return;
   }
 
-  const testVariant = selectedHumanStrokeTestVariant();
-  const testBlendMode = selectedHumanStrokeTestBlendMode();
-  const testGrainMode = selectedHumanStrokeTestGrainMode();
-  const replaySettings = humanStrokeTestSettings(
-    benchmark,
-    testVariant,
-    testBlendMode,
-    testGrainMode,
-  );
-  const testLabel = humanStrokeTestLabel(
-    testVariant,
-    testBlendMode,
-    testGrainMode,
-  );
+  const testVariant: HumanStrokeTestVariant = replayTool === "blend"
+    ? "blend"
+    : selectedHumanStrokeTestVariant();
+  const testBlendMode = replayTool === "blend" ? "normal" : selectedHumanStrokeTestBlendMode();
+  const testGrainMode = replayTool === "blend" ? "off" : selectedHumanStrokeTestGrainMode();
+  const replaySettings = replayTool === "blend"
+    ? humanStrokeBlendTestSettings(benchmark)
+    : humanStrokeTestSettings(benchmark, testVariant, testBlendMode, testGrainMode);
+  const testLabel = replayTool === "blend"
+    ? BLEND_REPLAY_LABEL
+    : humanStrokeTestLabel(testVariant, testBlendMode, testGrainMode);
+  const backgroundStrategy: HumanStrokeBackgroundStrategy = replayTool === "blend"
+    ? "multicolor-horizontal-stripes-v1"
+    : "transparent";
 
   setControlsPanelOpen(false);
   humanStrokeReplaying = true;
@@ -1249,6 +1359,17 @@ async function replayHumanStroke(): Promise<void> {
       throw new Error("Il documento è occupato da un'operazione Undo/Redo.");
     }
     await engine.waitForIdle();
+    if (replayTool === "blend") {
+      humanStrokeResult.textContent = "Preparazione dello sfondo multicolore Blend…";
+      await prepareBlendBenchmarkBackground(replaySettings);
+      engine.resetStrokeRandomSeed();
+      humanStrokeResult.textContent = `Riproduzione test ${testLabel} in corso…`;
+    }
+
+    const blendRuntimeBeforeReplay = engine.getBlendRuntimeState();
+    const blendScratchStateBeforeReplay: BlendScratchState = replayTool === "blend"
+      ? blendRuntimeBeforeReplay.scratchAllocated ? "warm" : "cold"
+      : "not-applicable";
 
     const before = engine.getStats();
     const replayStart = performance.now();
@@ -1305,8 +1426,11 @@ async function replayHumanStroke(): Promise<void> {
       throw new Error("Profilo del tratto non disponibile.");
     }
     const after = engine.getStats();
+    const blendRuntimeAfterReplay = engine.getBlendRuntimeState();
     const baseStamps = Math.max(0, after.totalBaseStamps - before.totalBaseStamps);
-    const copies = baseStamps * replaySettings.count;
+    const physicalOperations = replayTool === "blend"
+      ? baseStamps
+      : baseStamps * replaySettings.count;
     const playback = {
       inputDeliveryMs: inputFinishedAt - replayStart,
       inputDelayP50Ms: percentile(inputDelays, 0.5),
@@ -1331,8 +1455,13 @@ async function replayHumanStroke(): Promise<void> {
         traceDurationMs: lastPoint.timeMs,
         ...summarizeHumanStrokeMotion(benchmark.points),
         testVariant,
+        testTool: replayTool,
         testBlendMode,
         testGrainMode,
+        backgroundStrategy,
+        blendScratchStateBeforeReplay,
+        blendScratchMemoryMiBBeforeReplay: blendRuntimeBeforeReplay.scratchMemoryMiB,
+        blendScratchMemoryMiBAfterReplay: blendRuntimeAfterReplay.scratchMemoryMiB,
         settings: replaySettings,
       },
       playback,
@@ -1345,16 +1474,24 @@ async function replayHumanStroke(): Promise<void> {
       `Test ${testLabel}`,
       `Tratto ${formatDuration(lastPoint.timeMs)}`,
       `${formatInteger(benchmark.points.length)} campioni`,
-      `${formatInteger(baseStamps)} stamps base`,
-      `${formatInteger(copies)} copie fisiche`,
+      replayTool === "blend"
+        ? `${formatInteger(baseStamps)} segmenti Blend dry`
+        : `${formatInteger(baseStamps)} stamps base`,
+      replayTool === "blend"
+        ? `scratch ${blendScratchStateBeforeReplay} → ${blendRuntimeAfterReplay.scratchMemoryMiB.toFixed(1)} MiB`
+        : `${formatInteger(physicalOperations)} copie fisiche`,
       `coda GPU ${playback.inputToGpuCompletionMs.toFixed(2)} ms`,
       `CPU frame p95 ${performanceProfile.renderFrameTotalP95Ms.toFixed(2)} ms`,
       `submit p95 ${performanceProfile.submitImmediateP95Ms.toFixed(2)} ms`,
       `display mip ${performanceProfile.paintDisplaySelectedMipLevel} / ${formatInteger(performanceProfile.paintDisplayPyramidPasses)} pass`,
-      performanceProfile.adaptivePreviewActivations > 0
+      replayTool === "blend"
+        ? "preview tip n/a Blend"
+        : performanceProfile.adaptivePreviewActivations > 0
         ? `preview tip ${formatInteger(performanceProfile.adaptivePreviewBaseStampsDrawn)} stamp / ${performanceProfile.adaptivePreviewJsTotalMs.toFixed(2)} ms JS`
         : "preview tip non attivata",
-      `spacing adattivo ${performanceProfile.adaptiveSpacingInitialPercent.toFixed(2)}→${performanceProfile.adaptiveSpacingFinalPercent.toFixed(2)}% / ${performanceProfile.adaptiveSpacingIncreaseCount} step`,
+      replayTool === "blend"
+        ? `spacing Blend ${replaySettings.spacingPercent.toFixed(2)}%`
+        : `spacing adattivo ${performanceProfile.adaptiveSpacingInitialPercent.toFixed(2)}→${performanceProfile.adaptiveSpacingFinalPercent.toFixed(2)}% / ${performanceProfile.adaptiveSpacingIncreaseCount} step`,
       `history CPU ${formatInteger(performanceProfile.historyCapturedBaseStamps)} stamp / ${formatInteger(performanceProfile.historyCapturedBatches)} batch`,
       `FPS medi ${performanceProfile.averageRenderFps.toFixed(1)}`,
       `${formatInteger(performanceProfile.delayedRenderFrames)} frame >20 ms`,

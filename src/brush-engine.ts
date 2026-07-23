@@ -1974,6 +1974,14 @@ export class BrushEngine {
     };
   }
 
+  getBlendRuntimeState(): { scratchAllocated: boolean; scratchMemoryMiB: number } {
+    const scratchMemoryMiB = this.blendRenderer?.memoryMiB() ?? 0;
+    return {
+      scratchAllocated: scratchMemoryMiB > 0,
+      scratchMemoryMiB,
+    };
+  }
+
   getHistoryState(): HistoryState {
     return {
       canUndo: !this.historyBusy && this.historyCursor > 0,

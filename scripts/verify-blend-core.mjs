@@ -12,6 +12,10 @@ import {
   quantizeDryBlendSample,
   resampleDryBlendStroke,
 } from "../src/blend-core.ts";
+import {
+  DRY_BLEND_PICKUP_BORDER_STRATEGY,
+  blendPickupShader,
+} from "../src/blend-shaders.ts";
 
 const approx = (actual, expected, epsilon = 1e-6) => {
   assert.ok(Math.abs(actual - expected) <= epsilon, `${actual} != ${expected}`);
@@ -35,6 +39,22 @@ assert.equal(blendStretchCoefficient(0), 0);
 assert.equal(blendStretchCoefficient(1), 1);
 assert.equal(blendPaintCoefficient(0), 0);
 assert.equal(blendPaintCoefficient(1), 1);
+
+assert.equal(
+  DRY_BLEND_PICKUP_BORDER_STRATEGY,
+  "exclude-outside-document-preserve-carrier",
+);
+assert.match(
+  blendPickupShader,
+  /all\(documentPosition >= vec2<f32>\(0\.0\)\)/,
+);
+assert.match(
+  blendPickupShader,
+  /all\(documentPosition < blend\.documentAndRoi\.xy\)/,
+);
+assert.match(blendPickupShader, /let sampleDocumentPosition = clamp\(/);
+assert.match(blendPickupShader, /var pigment = sum \/ max\(total, 0\.000001\)/);
+assert.match(blendPickupShader, /else \{\s*\/\/ A completely off-canvas step[\s\S]*?pigment = previous;/);
 
 assert.deepEqual(
   quantizeDryBlendSample({ x: 10.0004, y: 20.0004, pressure: 0, timeMs: 10.2 }),

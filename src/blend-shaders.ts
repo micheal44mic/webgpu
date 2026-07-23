@@ -304,6 +304,9 @@ fn sampleState(center: vec2<f32>) -> vec4<f32> {
 }
 `;
 
+export const DRY_BLEND_PICKUP_BORDER_STRATEGY =
+  "exclude-outside-document-preserve-carrier";
+
 export const blendPickupShader = /* wgsl */ `
 ${blendUniformsWgsl}
 ${blendStateSamplingWgsl}
@@ -331,20 +334,41 @@ fn pickupFragment() -> @location(0) vec4<f32> {
           cosine * local.x - sine * local.y,
           sine * local.x + cosine * local.y
         );
-        sum += sampleState(documentPosition - blend.documentAndRoi.zw) * weight;
-        total += weight;
+        if (
+          all(documentPosition >= vec2<f32>(0.0))
+          && all(documentPosition < blend.documentAndRoi.xy)
+        ) {
+          // Outside the authoritative document is not transparent pigment.
+          // Clamp only the bilinear lookup so a valid edge tap cannot mix with
+          // the zero-filled scratch texels that surround the document.
+          let sampleDocumentPosition = clamp(
+            documentPosition,
+            vec2<f32>(0.5),
+            blend.documentAndRoi.xy - vec2<f32>(0.5)
+          );
+          sum += sampleState(
+            sampleDocumentPosition - blend.documentAndRoi.zw
+          ) * weight;
+          total += weight;
+        }
       }
     }
   }
 
-  var pigment = select(vec4<f32>(0.0), sum / total, total > 0.0);
+  let hasPickup = total > 0.0;
+  var pigment = sum / max(total, 0.000001);
   if (blend.options.w != 0u) {
     let previous = textureLoad(previousCarrier, vec2<i32>(0), 0);
-    pigment = mix(
-      pigment,
-      previous,
-      clamp(blend.transportControls.w, 0.0, 1.0)
-    );
+    if (hasPickup) {
+      pigment = mix(
+        pigment,
+        previous,
+        clamp(blend.transportControls.w, 0.0, 1.0)
+      );
+    } else {
+      // A completely off-canvas step transports the carrier unchanged.
+      pigment = previous;
+    }
   }
 
   let alpha = clamp(pigment.a, 0.0, 1.0);
