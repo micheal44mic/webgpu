@@ -1554,3 +1554,20 @@ La correzione mantiene scratch atomico, budget `1,25 ms`, massimo due stamp, tri
 La patch deve quindi essere o ancora necessaria, o aggiornata, o invisibile: non può restare sopra contenuto esatto più recente dopo che il proprio seriale è stato confermato. Non cambiano stamp, Count, spacing, mip, seed, jitter, blending, shader, submission GPU, lift o pixel permanenti.
 
 `performanceTelemetryRevision: 20` aggiunge il marker `adaptivePreviewStaleFrameStrategy: "hide-confirmed-stale-bitmap-and-single-raf-retry"` e i contatori `adaptivePreviewConfirmedStaleBitmapHides` e `adaptivePreviewIncompleteFrameRetryRequests`. Nella prossima Base controllare visivamente l'assenza del tip fermo e confrontare anche skip, hide e retry; Fur deve restare inattiva e invariata.
+
+### Risultato del ritiro stale: run #63 — promosso
+
+La Base iPhone `#63` è direttamente confrontabile con la `#61`: stesso Safari `26.5`, DPR `3`, viewport, canvas, fingerprint, preset, piramide mip live, spacing adattivo e doppia attivazione della preview. La nuova firma è presente e i contatori mostrano che il ramo ha agito: `12` bitmap confermati ormai stale sono stati nascosti, è stato richiesto un solo retry e gli skip di budget sono scesi da `5` a `2`.
+
+| Metrica | #61 prima del fix | #63 ritiro stale |
+|---|---:|---:|
+| FPS medi | `58,97` | `58,81` |
+| intervallo frame p95 | `17 ms` | `17 ms` |
+| frame oltre `20 ms` | `5` | `6` |
+| coda GPU finale | `19 ms` | `18 ms` |
+| input delay p95 | `16 ms` | `16 ms` |
+| preview pubblicate | `78` | `81` |
+| lavoro JS preview | `67 ms` | `64 ms` |
+| spacing finale | `2%` | `2%` |
+
+Le differenze prestazionali sono trascurabili e non mostrano un costo del fix. L'utente conferma manualmente che la preview non resta più ferma mentre il tratto esatto avanza e giudica il comportamento «perfetto». Decisione: correzione promossa e mantenuta. Conservare il ritiro soltanto dopo conferma GPU e il limite di un retry per nuovo seriale; non aumentare il budget Canvas2D per risolvere lo stesso problema.
