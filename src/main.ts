@@ -152,6 +152,12 @@ interface BenchmarkRun {
     paintDisplayMipLevelCount: number;
     paintDisplaySelectedMipLevel: number;
     paintDisplayPyramidAdditionalMemoryMiB: number;
+    brushOpacityStrategy: StrokePerformanceProfile["brushOpacityStrategy"];
+    lightGlazeStrategy: StrokePerformanceProfile["lightGlazeStrategy"];
+    lightGlazeAdaptivePreviewStrategy:
+      StrokePerformanceProfile["lightGlazeAdaptivePreviewStrategy"];
+    lightGlazeStorageAllocated: boolean;
+    lightGlazeAdditionalMemoryMiB: number;
     adaptivePreviewStrategy: StrokePerformanceProfile["adaptivePreviewStrategy"];
     adaptivePreviewTriggerStrategy: StrokePerformanceProfile["adaptivePreviewTriggerStrategy"];
     adaptivePreviewStaleFrameStrategy:
@@ -181,7 +187,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 20;
+    performanceTelemetryRevision: 21;
   };
 }
 
@@ -243,6 +249,7 @@ function readBrushSettings(): BrushSettings {
     spacingPercent: rangeValue("spacing"),
     count: rangeValue("count"),
     flow: rangeValue("flow") / 100,
+    opacity: rangeValue("opacity") / 100,
     hardness: rangeValue("hardness") / 100,
     blendIntensity: rangeValue("blendIntensity"),
     blendMode: element<HTMLSelectElement>("blendMode").value as BrushSettings["blendMode"],
@@ -265,6 +272,7 @@ function updateControlOutputs(): void {
   element<HTMLOutputElement>("spacingOut").value = `${rangeValue("spacing").toFixed(2)}%`;
   element<HTMLOutputElement>("countOut").value = rangeValue("count").toFixed(0);
   element<HTMLOutputElement>("flowOut").value = `${rangeValue("flow").toFixed(1).replace(".0", "")}%`;
+  element<HTMLOutputElement>("opacityOut").value = `${rangeValue("opacity").toFixed(1).replace(".0", "")}%`;
   element<HTMLOutputElement>("hardnessOut").value = `${rangeValue("hardness").toFixed(0)}%`;
   element<HTMLOutputElement>("blendIntensityOut").value = `${rangeValue("blendIntensity").toFixed(2)}×`;
   element<HTMLOutputElement>("jitterMasterOut").value = `${rangeValue("jitterMaster").toFixed(0)}%`;
@@ -371,7 +379,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 20,
+    performanceTelemetryRevision: 21,
     ...engineEnvironment,
   };
 }
@@ -399,6 +407,13 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
     return null;
   }
   const benchmark = parsed as HumanStrokeBenchmark;
+  const opacity = Number.isFinite(benchmark.settings.opacity)
+    ? Math.min(1, Math.max(0, benchmark.settings.opacity))
+    : 1;
+  const blendMode = benchmark.settings.blendMode === "additive"
+    || benchmark.settings.blendMode === "light-glaze"
+    ? benchmark.settings.blendMode
+    : "normal";
   return {
     ...benchmark,
     settings: {
@@ -407,6 +422,8 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
       shapeScatter: Number.isFinite(benchmark.settings.shapeScatter)
         ? Math.min(1, Math.max(0, benchmark.settings.shapeScatter))
         : 0,
+      opacity,
+      blendMode,
     },
   };
 }
@@ -505,6 +522,7 @@ function applySettingsToControls(settings: BrushSettings): void {
   setControlValue("spacing", settings.spacingPercent);
   setControlValue("count", settings.count);
   setControlValue("flow", settings.flow * 100);
+  setControlValue("opacity", (settings.opacity ?? 1) * 100);
   setControlValue("hardness", settings.hardness * 100);
   setControlValue("blendIntensity", settings.blendIntensity);
   setControlValue("blendMode", settings.blendMode);
@@ -528,8 +546,10 @@ function applyHumanStrokePreset(): BrushSettings {
   setControlValue("spacing", 1);
   setControlValue("count", 16);
   setControlValue("flow", 100);
+  setControlValue("opacity", 100);
   setControlValue("hardness", 100);
   setControlValue("blendIntensity", 4);
+  setControlValue("blendMode", "normal");
   setControlValue("jitterMaster", 100);
   setControlValue("hueJitter", 180);
   setControlValue("saturationJitter", 100);
@@ -702,6 +722,7 @@ const brushControlIds = [
   "spacing",
   "count",
   "flow",
+  "opacity",
   "hardness",
   "blendIntensity",
   "blendMode",

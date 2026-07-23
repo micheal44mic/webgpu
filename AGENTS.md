@@ -1571,3 +1571,131 @@ La Base iPhone `#63` è direttamente confrontabile con la `#61`: stesso Safari `
 | spacing finale | `2%` | `2%` |
 
 Le differenze prestazionali sono trascurabili e non mostrano un costo del fix. L'utente conferma manualmente che la preview non resta più ferma mentre il tratto esatto avanza e giudica il comportamento «perfetto». Decisione: correzione promossa e mantenuta. Conservare il ritiro soltanto dopo conferma GPU e il limite di un retry per nuovo seriale; non aumentare il budget Canvas2D per risolvere lo stesso problema.
+
+## Funzione pennello: Opacità separata e modalità Light Glaze — candidato locale
+
+È stato aggiunto `opacity` a `BrushSettings`, con intervallo `0–1`, controllo UI
+`Opacità 0–100%` e default `100%`. Le registrazioni nuove conservano il valore;
+il caricamento di registrazioni storiche prive del campo usa esplicitamente
+`100%`. Anche un blend mode storico sconosciuto viene sanitizzato a `normal`.
+Il preset del replay canonico forza `Opacità 100%` e `Normal premultiplied`, così
+la traccia di riferimento non eredita valori lasciati nell'interfaccia.
+
+Per `normal` e `additive`, Opacità moltiplica ogni stamp oltre al Flow. Non è
+stato modificato il WGSL del brush: viene usato il componente
+`baseHslAlpha.w`, che il fragment shader moltiplicava già e che in precedenza
+era sempre `1`. Con `normal + opacity 100%` buffer, shader, pipeline, draw,
+blending, geometria e percorso `submitImmediate` restano quindi quelli
+promossi; l'unica differenza dati è che il valore `1` proviene dal controllo.
+
+`light-glaze` usa invece questa architettura per-stroke:
+
+1. al primo uso viene allocata lazy una texture RGBA `4096×4096` dello stesso
+   formato del layer, con la propria catena mip `4096→1`; il solo mip `0`
+   conserva l'accumulatore raw dello stroke;
+2. tutti gli stamp della pennellata vengono accumulati nella texture temporanea
+   con il normale source-over premoltiplicato e Opacità interna `100%`; Flow,
+   hardness, pressione, blend intensity, Shape, seed, jitter, Count e ordine
+   stamp-major/copy-minor restano quelli del renderer esatto;
+3. a LOD `0` un display pipeline separato carica i quattro texel vicini di base
+   e accumulatore, compone e quantizza ogni coppia nel formato del layer, poi
+   applica la bilineare. Per LOD maggiori, mip `1` della texture temporanea
+   compone e quantizza allo stesso modo ciascuna delle quattro coppie prima
+   della media; mip `2+` downsamplano quel composito premoltiplicato. La
+   quantizzazione usa i builtin WGSL core `pack4x8unorm`/`unpack4x8unorm` per
+   `rgba8unorm` e `pack2x16float`/`unpack2x16float` per `rgba16float`, selezionati
+   da una uniform. Il display campiona quindi un solo mip già compositato. Questo conserva l'ordine
+   `filter(compose(base, stroke))`: il precedente
+   `compose(filter(base), filter(stroke))` non era equivalente;
+4. il layer permanente non viene modificato finché la pennellata non è
+   conclusa e tutti i suoi batch pendenti sono stati codificati;
+5. dopo l'ultimo batch, un solo pass legge mip `0` temporaneo con
+   `textureLoad`, moltiplica RGBA premoltiplicato per Opacità e lo fonde
+   source-over nel layer permanente. Poi aggiorna la piramide permanente sulla
+   dirty rect totale del tratto;
+6. nello stesso frame finale la cache di presentazione viene aggiornata dalla
+   piramide permanente appena ricostruita su tutta la dirty rect dello stroke.
+   In questo modo un dirty update successivo non può mescolare pixel della
+   variante live con pixel della variante committata; la piramide live usa già
+   lo stesso ordine compose→filter per evitare un salto visibile al lift.
+
+L'alpha sorgente dell'intera pennellata è quindi al massimo `opacity`, anche se
+gli stamp interni raggiungono coverage piena. Una pennellata successiva parte
+dal layer già committato e può aumentare normalmente colore e alpha: non viene
+usato `max` sul layer permanente. Le impostazioni Light Glaze vengono
+fotografate all'inizio della pennellata; eventuali modifiche dei controlli
+durante il drag valgono dal tratto successivo e non possono cambiare il cap a
+metà stroke.
+
+La texture temporanea viene riusata tra pennellate ma non esiste prima del
+primo uso Light Glaze. L'overhead allocato è circa `85,33 MiB` in `rgba8unorm`
+e `170,67 MiB` in `rgba16float`, mip inclusi. Un cambio formato distrugge la
+risorsa precedente; la nuova viene ricreata soltanto al successivo uso Light
+Glaze. Clear/reset abbandonano in modo deterministico una sessione transiente;
+la successiva submission del layer resta ordinata sulla stessa `GPUQueue`.
+
+Il lift marca la sessione come in chiusura ma non scarta la FIFO. Batch multipli
+restano nella sequenza originale e il commit viene richiesto soltanto quando
+non rimane alcuno stamp con l'action ID del tratto. Se una seconda pennellata
+inizia prima del rAF conclusivo, il motore codifica sincronicamente i batch
+residui e il commit del primo tratto; la texture può essere poi azzerata e
+riusata perché le submission della stessa queue ne garantiscono l'ordine.
+
+Il journal Undo/Redo conserva i batch Light Glaze originali. In ricostruzione
+li raggruppa per action ID, ricrea l'accumulo temporaneo e committa una sola
+volta alla fine di ciascuna pennellata, anche quando il tratto occupa più batch
+o è seguito da modalità diverse. Clear annullabile, reset tecnico, replay
+storico e cambio formato non trattano i batch come stamp Normal indipendenti.
+
+La tip preview Canvas2D adattiva è disabilitata esplicitamente soltanto per
+Light Glaze (`lightGlazeAdaptivePreviewStrategy:
+"disabled-semantic-mismatch"`): due stamp transitori non possono rappresentare
+il cap globale senza falsare il risultato. Il probe FIFO continua però a
+funzionare per lo spacing adattivo promosso. Normal mantiene la preview e ora
+ne moltiplica l'alpha anche per Opacità; additive conserva il comportamento
+precedente della preview non supportata.
+
+`performanceTelemetryRevision: 21` identifica il candidato. Le nuove firme e
+misure sono:
+
+- `brushOpacityStrategy: "per-stamp-uniform-alpha-multiplier"`;
+- `lightGlazeStrategy: "lazy-stroke-mip0-format-quantized-composite-mips-single-commit"`;
+- `lightGlazeAdaptivePreviewStrategy: "disabled-semantic-mismatch"`;
+- allocazione e MiB effettivi della texture lazy;
+- batch Light Glaze, commit, pixel della dirty rect compositata;
+- pass e pixel aggiornati della piramide temporanea del composito finale.
+
+### Protocollo di verifica richiesto
+
+Prima di pubblicare o promuovere la funzione:
+
+1. eseguire build TypeScript/Vite e `git diff --check`; verificare WebGPU senza
+   errori di validazione in `rgba8unorm` e `rgba16float`;
+2. confrontare `Normal + Opacità 100%` con la build precedente usando replay
+   canonico Base e Fur: stessi stamp/copie, Shape, mip, history, output visivo e
+   metriche entro variabilità; la texture Light Glaze deve risultare non
+   allocata;
+3. in Normal e additive provare Opacità `0/25/50/100%`, controllando che cambi
+   soltanto il contributo per stamp e non Flow, spacing, Count o ordine;
+4. in Light Glaze, con Circle e Shape, Count `1` e `24`, size minima e massima,
+   verificare che ripassare molte volte dentro una sola pennellata non superi
+   l'Opacità scelta, ma due pennellate distinte sulla stessa zona si accumulino;
+5. osservare il tratto durante il drag, durante zoom/fit a LOD diversi e al
+   lift: nessun mip stale, doppio contributo o salto di qualità;
+6. stressare un tratto oltre `MAX_STAMPS_PER_BATCH`, un lift con FIFO non vuota
+   e due tratti immediatamente consecutivi; la telemetria deve riportare un
+   solo commit per action e nessuno stamp perso/duplicato;
+7. provare Clear, reset replay, cambio formato, Circle/Shape, Undo, Redo, Undo
+   di Pulisci e una sequenza mista Normal → Light Glaze → additive → Light
+   Glaze;
+8. caricare una registrazione storica senza `opacity`: UI e run devono mostrare
+   `100%`; registrare poi un tratto nuovo e verificare la persistenza del campo;
+9. confermare che la tip preview non si attivi in Light Glaze, che lo spacing
+   adattivo possa ancora reagire ai probe e che Normal continui a usare la tip
+   preview promossa.
+
+Verifica locale disponibile finora: `tsc --noEmit` e build di produzione
+riescono. Il browser controllabile non era disponibile nella sessione, quindi
+pipeline/bind group, risultato visivo e protocollo GPU sopra restano da
+eseguire prima di qualunque commit, pubblicazione o promozione. Non sono stati
+modificati `benchmarks/results.json` né la registrazione canonica.

@@ -394,6 +394,266 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
 }
 `;
 
+// Light Glaze keeps the permanent paint layer unchanged while a stroke is in
+// progress. This display-only variant composes the per-stroke accumulator over
+// the permanent layer with one stroke-wide opacity multiplier. The legacy
+// display shader above remains byte-for-byte independent from this path.
+export const lightGlazeDisplayShader = /* wgsl */ `
+struct DisplayUniforms {
+  canvasSize: vec2<f32>,
+  layerSize: vec2<f32>,
+  viewCenter: vec2<f32>,
+  zoom: f32,
+  checkerSize: f32,
+  selectedMipLevel: f32,
+};
+
+struct LightGlazeUniforms {
+  opacity: f32,
+  formatCode: u32,
+  _pad0: u32,
+  _pad1: u32,
+};
+
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+};
+
+@group(0) @binding(0) var<uniform> display: DisplayUniforms;
+@group(0) @binding(1) var layerTexture: texture_2d<f32>;
+@group(0) @binding(2) var strokeTexture: texture_2d<f32>;
+@group(0) @binding(3) var layerSampler: sampler;
+@group(0) @binding(4) var<uniform> lightGlaze: LightGlazeUniforms;
+
+fn srgbToLinearChannel(value: f32) -> f32 {
+  if (value <= 0.04045) {
+    return value / 12.92;
+  }
+  return pow((value + 0.055) / 1.055, 2.4);
+}
+
+fn srgbToLinear(value: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    srgbToLinearChannel(value.r),
+    srgbToLinearChannel(value.g),
+    srgbToLinearChannel(value.b)
+  );
+}
+
+fn linearToSrgbChannel(value: f32) -> f32 {
+  let clamped = clamp(value, 0.0, 1.0);
+  if (clamped <= 0.0031308) {
+    return clamped * 12.92;
+  }
+  return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
+}
+
+fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    linearToSrgbChannel(value.r),
+    linearToSrgbChannel(value.g),
+    linearToSrgbChannel(value.b)
+  );
+}
+
+fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
+  if (lightGlaze.formatCode == 0u) {
+    return unpack4x8unorm(pack4x8unorm(value));
+  }
+  let redGreen = unpack2x16float(pack2x16float(value.rg));
+  let blueAlpha = unpack2x16float(pack2x16float(value.ba));
+  return vec4<f32>(redGreen, blueAlpha);
+}
+
+fn compositedLayerTexel(position: vec2<i32>) -> vec4<f32> {
+  let permanentPaint = textureLoad(layerTexture, position, 0);
+  let accumulatedStroke = textureLoad(strokeTexture, position, 0);
+  let strokePaint = accumulatedStroke * clamp(lightGlaze.opacity, 0.0, 1.0);
+  return quantizeLayer(strokePaint + permanentPaint * (1.0 - strokePaint.a));
+}
+
+fn sampleCompositedLayerLinear(uv: vec2<f32>) -> vec4<f32> {
+  let dimensions = vec2<i32>(textureDimensions(layerTexture, 0));
+  let maximumCoordinate = dimensions - vec2<i32>(1);
+  let texelPosition = uv * vec2<f32>(dimensions) - vec2<f32>(0.5);
+  let lowerCoordinate = vec2<i32>(floor(texelPosition));
+  let interpolation = fract(texelPosition);
+  let p00 = compositedLayerTexel(clamp(lowerCoordinate, vec2<i32>(0), maximumCoordinate));
+  let p10 = compositedLayerTexel(clamp(
+    lowerCoordinate + vec2<i32>(1, 0),
+    vec2<i32>(0),
+    maximumCoordinate
+  ));
+  let p01 = compositedLayerTexel(clamp(
+    lowerCoordinate + vec2<i32>(0, 1),
+    vec2<i32>(0),
+    maximumCoordinate
+  ));
+  let p11 = compositedLayerTexel(clamp(
+    lowerCoordinate + vec2<i32>(1, 1),
+    vec2<i32>(0),
+    maximumCoordinate
+  ));
+  return mix(
+    mix(p00, p10, interpolation.x),
+    mix(p01, p11, interpolation.x),
+    interpolation.y
+  );
+}
+
+@vertex
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+  let positions = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>( 3.0, -1.0),
+    vec2<f32>(-1.0,  3.0)
+  );
+
+  var output: VertexOutput;
+  output.position = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
+  return output;
+}
+
+@fragment
+fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
+  let layerPosition = display.viewCenter
+    + (fragmentPosition.xy - display.canvasSize * 0.5) / display.zoom;
+
+  let insideLayer = all(layerPosition >= vec2<f32>(0.0))
+    && all(layerPosition < display.layerSize);
+
+  if (!insideLayer) {
+    return vec4<f32>(vec3<f32>(0.055), 1.0);
+  }
+
+  let uv = clamp((layerPosition + vec2<f32>(0.5)) / display.layerSize, vec2<f32>(0.0), vec2<f32>(1.0));
+  var paint: vec4<f32>;
+  if (display.selectedMipLevel < 0.5) {
+    // Reproduce sampling of the quantized committed mip 0: compose and encode
+    // each neighboring layer texel first, then apply the sampler's bilinear mix.
+    paint = sampleCompositedLayerLinear(uv);
+  } else {
+    // Mip 1+ of strokeTexture already stores box-filtered final compositing.
+    // Sampling that pyramid avoids compose(filter(base), filter(stroke)),
+    // which is not equivalent to filtering the per-pixel source-over result.
+    paint = textureSampleLevel(
+      strokeTexture,
+      layerSampler,
+      uv,
+      display.selectedMipLevel
+    );
+  }
+
+  let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
+  let checkerParity = (checkerCell.x + checkerCell.y) & 1;
+  let backgroundSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
+  let backgroundLinear = srgbToLinear(backgroundSrgb);
+  let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
+
+  return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
+}
+`;
+
+// Mip 0 of the Light Glaze texture is the raw per-stroke accumulator. Mip 1
+// starts a different, derived chain: each destination texel composes the four
+// permanent/stroke source pairs independently and only then box-filters them.
+// Higher levels can use the ordinary premultiplied box downsampler.
+export const lightGlazeCompositeMipShader = /* wgsl */ `
+struct LightGlazeUniforms {
+  opacity: f32,
+  formatCode: u32,
+  _pad0: u32,
+  _pad1: u32,
+};
+
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+};
+
+@group(0) @binding(0) var permanentTexture: texture_2d<f32>;
+@group(0) @binding(1) var strokeTexture: texture_2d<f32>;
+@group(0) @binding(2) var<uniform> lightGlaze: LightGlazeUniforms;
+
+fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
+  if (lightGlaze.formatCode == 0u) {
+    return unpack4x8unorm(pack4x8unorm(value));
+  }
+  let redGreen = unpack2x16float(pack2x16float(value.rg));
+  let blueAlpha = unpack2x16float(pack2x16float(value.ba));
+  return vec4<f32>(redGreen, blueAlpha);
+}
+
+@vertex
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+  let positions = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>( 3.0, -1.0),
+    vec2<f32>(-1.0,  3.0)
+  );
+
+  var output: VertexOutput;
+  output.position = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
+  return output;
+}
+
+fn compositedSource(sourcePosition: vec2<i32>) -> vec4<f32> {
+  let permanentPaint = textureLoad(permanentTexture, sourcePosition, 0);
+  let accumulatedStroke = textureLoad(strokeTexture, sourcePosition, 0);
+  let strokePaint = accumulatedStroke * clamp(lightGlaze.opacity, 0.0, 1.0);
+  return quantizeLayer(strokePaint + permanentPaint * (1.0 - strokePaint.a));
+}
+
+@fragment
+fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
+  let sourceOrigin = vec2<i32>(fragmentPosition.xy) * 2;
+  return (
+    compositedSource(sourceOrigin)
+    + compositedSource(sourceOrigin + vec2<i32>(1, 0))
+    + compositedSource(sourceOrigin + vec2<i32>(0, 1))
+    + compositedSource(sourceOrigin + vec2<i32>(1, 1))
+  ) * 0.25;
+}
+`;
+
+// The final Light Glaze commit reads the already accumulated per-stroke pixel
+// one-to-one and lets fixed-function premultiplied source-over blend it into
+// the permanent layer. Applying opacity here caps this stroke's source alpha,
+// while later strokes can still accumulate normally on the permanent layer.
+export const lightGlazeCompositeShader = /* wgsl */ `
+struct LightGlazeUniforms {
+  opacity: f32,
+  formatCode: u32,
+  _pad0: u32,
+  _pad1: u32,
+};
+
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+};
+
+@group(0) @binding(0) var strokeTexture: texture_2d<f32>;
+@group(0) @binding(1) var<uniform> lightGlaze: LightGlazeUniforms;
+
+@vertex
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+  let positions = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>( 3.0, -1.0),
+    vec2<f32>(-1.0,  3.0)
+  );
+
+  var output: VertexOutput;
+  output.position = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
+  return output;
+}
+
+@fragment
+fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
+  let source = textureLoad(strokeTexture, vec2<i32>(fragmentPosition.xy), 0);
+  return source * clamp(lightGlaze.opacity, 0.0, 1.0);
+}
+`;
+
 // Downsample 2x2 in the paint layer's native linear, premultiplied RGBA
 // representation. Each destination pixel owns an exact, non-overlapping 2x2
 // source footprint, so dirty rectangles can be propagated with floor/ceil

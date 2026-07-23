@@ -82,8 +82,28 @@ In questo prototipo `Flow` è l'alpha di **ogni copia fisica** prima di pression
 
 Con spacing 1%, gruppi successivi si sovrappongono molto e il tratto raggiunge rapidamente l'opacità. Questo è voluto per rendere evidente il costo dell'overdraw e la differenza tra flow per copia e opacità complessiva.
 
+`Opacità` è un controllo separato. In `Normal premultiplied` e `Intense additive`
+moltiplica l'alpha e il colore premoltiplicato di ogni stamp dopo il Flow. In
+`Light Glaze`, invece, il Flow costruisce la coverage dentro una texture
+temporanea per-stroke e Opacità viene applicata una sola volta all'intera
+pennellata: una pennellata non può superare quel limite, mentre pennellate
+distinte continuano a sovrapporsi normalmente.
+
+La texture Light Glaze viene allocata soltanto al primo uso della modalità. Il
+mip 0 conserva l'accumulatore raw dello stroke; i mip successivi conservano il
+composito finale già filtrato sopra il layer permanente, così lo zoom ridotto
+non scambia l'ordine fra filtering e source-over. Prima del filtro ogni texel
+compositato viene quantizzato come il formato reale (`rgba8unorm` o
+`rgba16float`); a LOD 0 la bilineare viene ricostruita dopo la stessa
+quantizzazione per-texel. Il compositing è visibile live e il contributo viene
+committato una sola volta nel layer permanente dopo l'ultimo batch pendente; la
+cache di presentazione viene poi canonicalizzata dal layer committato.
+La tip preview Canvas2D adattiva è disabilitata soltanto in Light Glaze, perché
+una patch di due stamp non può rappresentare correttamente il limite globale
+della pennellata.
+
 ## Cosa non è ancora incluso
 
-Questo è un benchmark del brush core, non ancora un clone completo di Procreate. Mancano tile sparse, più layer, maschera temporanea del tratto, stroke opacity applicata una sola volta, texture/grain della punta, smudge, wet mix e salvataggio del documento.
+Questo è un benchmark del brush core, non ancora un clone completo di Procreate. Mancano tile sparse, più layer, texture/grain della punta, smudge, wet mix e salvataggio del documento.
 
 Gli esperimenti tiled delle run `#23` e `#25` e lo scratch sulla dirty rectangle della run `#27` sono stati misurati e bocciati. Il runtime pubblicato è tornato alla baseline monolitica della run `#19`; metriche, diagnosi e motivazioni dei rollback sono conservate in `AGENTS.md`.

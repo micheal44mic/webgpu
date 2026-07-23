@@ -88,6 +88,11 @@
           </label>
 
           <label class="control">
+            <span>Opacità <output id="opacityOut">100%</output></span>
+            <input id="opacity" type="range" min="0" max="100" step="0.1" value="100" />
+          </label>
+
+          <label class="control">
             <span>Hardness <output id="hardnessOut">88%</output></span>
             <input id="hardness" type="range" min="0" max="100" step="1" value="88" />
           </label>
@@ -102,6 +107,7 @@
             <select id="blendMode">
               <option value="normal">Normal premultiplied</option>
               <option value="additive">Intense additive</option>
+              <option value="light-glaze">Light Glaze</option>
             </select>
           </label>
         </section>
