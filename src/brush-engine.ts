@@ -507,6 +507,7 @@ const ADAPTIVE_PREVIEW_PROBE_NEAR_MISS_MINIMUM_MS = 45;
 const ADAPTIVE_SPACING_STRATEGY = "queue-lag-step-up-per-stroke" as const;
 const ADAPTIVE_SPACING_STEP_PERCENT_POINTS = 0.25;
 const ADAPTIVE_SPACING_MAX_EXTRA_PERCENT_POINTS = 1.5;
+const ADAPTIVE_SPACING_ANDROID_MAX_EXTRA_PERCENT_POINTS = 4;
 const ADAPTIVE_PREVIEW_FORCE = import.meta.env.DEV
   && typeof window !== "undefined"
   && new URLSearchParams(window.location.search).get("adaptivePreview") === "force";
@@ -535,6 +536,12 @@ function readAdaptivePreviewContextAttributes(
 
 function shouldDesynchronizeAdaptivePreviewVisibleCanvas(): boolean {
   return navigator.platform === "iPhone" || /\biPhone\b/.test(navigator.userAgent);
+}
+
+function adaptiveSpacingMaxExtraPercentPointsForPlatform(): number {
+  return /\bAndroid\b/i.test(navigator.userAgent)
+    ? ADAPTIVE_SPACING_ANDROID_MAX_EXTRA_PERCENT_POINTS
+    : ADAPTIVE_SPACING_MAX_EXTRA_PERCENT_POINTS;
 }
 const HISTORY_STORAGE_STRATEGY = "cpu-render-batch-journal" as const;
 const HISTORY_REPLAY_STRATEGY = "clear-and-stable-gpu-replay" as const;
@@ -733,6 +740,7 @@ export class BrushEngine {
   private readonly adaptivePreviewContext: CanvasRenderingContext2D | null;
   private readonly adaptivePreviewScratchCanvas: HTMLCanvasElement | null;
   private readonly adaptivePreviewScratchContext: CanvasRenderingContext2D | null;
+  private readonly adaptiveSpacingMaxExtraPercentPoints: number;
   private readonly adaptivePreviewVisibleCanvasRequestedDesynchronized: boolean;
   private readonly adaptivePreviewVisibleContextAttributes: AdaptivePreviewContextAttributes;
   private readonly adaptivePreviewScratchContextAttributes: AdaptivePreviewContextAttributes;
@@ -845,6 +853,8 @@ export class BrushEngine {
     this.canvas = canvas;
     this.callbacks = callbacks;
     this.adaptivePreviewCanvas = adaptivePreviewCanvas;
+    this.adaptiveSpacingMaxExtraPercentPoints =
+      adaptiveSpacingMaxExtraPercentPointsForPlatform();
     this.adaptivePreviewVisibleCanvasRequestedDesynchronized =
       shouldDesynchronizeAdaptivePreviewVisibleCanvas();
     this.adaptivePreviewContext = adaptivePreviewCanvas?.getContext("2d", {
@@ -1566,14 +1576,14 @@ export class BrushEngine {
       adaptivePreviewProbeNearMisses: profile.adaptivePreviewProbeNearMisses,
       adaptiveSpacingStrategy: ADAPTIVE_SPACING_STRATEGY,
       adaptiveSpacingStepPercentPoints: ADAPTIVE_SPACING_STEP_PERCENT_POINTS,
-      adaptiveSpacingMaxExtraPercentPoints: ADAPTIVE_SPACING_MAX_EXTRA_PERCENT_POINTS,
+      adaptiveSpacingMaxExtraPercentPoints: this.adaptiveSpacingMaxExtraPercentPoints,
       adaptiveSpacingInitialPercent: profile.adaptiveSpacingInitialPercent,
       adaptiveSpacingFinalPercent: profile.adaptiveSpacingFinalPercent,
       adaptiveSpacingIncreaseCount: profile.adaptiveSpacingEvents.length,
       adaptiveSpacingReachedMaximum:
         profile.adaptiveSpacingFinalPercent
           >= profile.adaptiveSpacingInitialPercent
-            + ADAPTIVE_SPACING_MAX_EXTRA_PERCENT_POINTS
+            + this.adaptiveSpacingMaxExtraPercentPoints
             - Number.EPSILON * 8,
       adaptiveSpacingEvents: profile.adaptiveSpacingEvents,
       adaptivePreviewActivations: profile.adaptivePreviewActivations,
@@ -1803,7 +1813,7 @@ export class BrushEngine {
       adaptivePreviewProbeNearMissMinimumMs: ADAPTIVE_PREVIEW_PROBE_NEAR_MISS_MINIMUM_MS,
       adaptiveSpacingStrategy: ADAPTIVE_SPACING_STRATEGY,
       adaptiveSpacingStepPercentPoints: ADAPTIVE_SPACING_STEP_PERCENT_POINTS,
-      adaptiveSpacingMaxExtraPercentPoints: ADAPTIVE_SPACING_MAX_EXTRA_PERCENT_POINTS,
+      adaptiveSpacingMaxExtraPercentPoints: this.adaptiveSpacingMaxExtraPercentPoints,
       historyStorageStrategy: HISTORY_STORAGE_STRATEGY,
       historyReplayStrategy: HISTORY_REPLAY_STRATEGY,
       historyStampRetentionStrategy: HISTORY_STAMP_RETENTION_STRATEGY,
@@ -3432,7 +3442,7 @@ export class BrushEngine {
     }
 
     const maximumSpacingPercent =
-      stroke.adaptiveSpacingInitialPercent + ADAPTIVE_SPACING_MAX_EXTRA_PERCENT_POINTS;
+      stroke.adaptiveSpacingInitialPercent + this.adaptiveSpacingMaxExtraPercentPoints;
     const nextSpacingPercent = Math.min(
       maximumSpacingPercent,
       stroke.adaptiveSpacingPercent + ADAPTIVE_SPACING_STEP_PERCENT_POINTS,

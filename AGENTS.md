@@ -1451,3 +1451,32 @@ La #54 è il controllo sano: il probe massimo è `57 ms`, appena sotto la soglia
 L'utente riferisce che la sensazione è «molto meglio» e sceglie esplicitamente di mantenere la variante. Decisione: spacing adattivo promosso. Conservare step `+0,25`, massimo `+1,5`, soglie `60/58 ms`, un solo incremento per probe, nessuna discesa intra-stroke e reset al valore scelto a ogni nuovo tratto. Non cambiare contemporaneamente queste costanti o la preview.
 
 Da questo punto una run con `settings.spacingPercent: 1` non implica più necessariamente `12107` stamp: il carico e l'output possono dipendere dalla coda del dispositivo. Per confronti futuri non aggregare run adattive soltanto in base al preset; controllare sempre `adaptiveSpacingEvents`, spacing finale e numero di stamp. Se serve misurare una micro-ottimizzazione del renderer a carico identico, predisporre un controllo diagnostico separato che congeli lo spacing, senza rimuovere il comportamento promosso dall'uso normale.
+
+### Controllo su iPhone secondario e Android: run #56–#58
+
+La Fur `#56` appartiene allo stesso ambiente iPhone secondario della Base `#55` (Safari `26.5.2`, DPR `2`, canvas `828×1404`). Sale da `1,00%` a `2,00%` in quattro step, genera `7376` stamp e mantiene `58,10 FPS`, p95 `17 ms` e coda finale `21 ms`. Insieme alla #55 conferma che il tetto promosso `+1,5` è sufficiente su entrambi i pennelli di quell'iPhone.
+
+Le Base `#57` e Fur `#58` sono invece dello stesso Android 10, Chrome 150, GPU `ARM Valhall`, DPR `3` e canvas `720×1232`. Entrambe raggiungono rapidamente il tetto `1,00→2,50%`, ma restano in grave sovraccarico:
+
+| Metrica | #57 Base Android | #58 Fur Android |
+|---|---:|---:|
+| stamp base / copie | `5179 / 82864` | `5012 / 80192` |
+| FPS medi | `2,50` | `2,73` |
+| intervallo frame p95 | `1591 ms` | `1751 ms` |
+| intervallo frame massimo | `3871 ms` | `4379 ms` |
+| input delay p95 | `3521 ms` | `4017 ms` |
+| coda GPU finale | `12407 ms` | `9567 ms` |
+| backlog massimo non confermato | `3415` | `3264` |
+
+La CPU misurata non spiega questi secondi di ritardo: `renderFrameTotalP95Ms` è circa `7 ms` nella #57 e `3,7 ms` nella #58. Il tetto corrente riduce il carico ma non abbastanza per quella GPU/browser; la UI, il `requestAnimationFrame` e la coda WebGPU restano indietro di interi secondi.
+
+## Esperimento: tetto spacing esteso soltanto su Android — candidato
+
+Su richiesta dell'utente, il tetto adattivo viene differenziato per piattaforma senza alterare il comportamento già promosso su iPhone:
+
+- Android, identificato dalla parola `Android` nello user agent: massimo `+4` punti percentuali, quindi nel benchmark `1,00→5,00%`;
+- iPhone, iPad e desktop: massimo invariato `+1,5` punti percentuali, quindi nel benchmark `1,00→2,50%`.
+
+Restano identici step `+0,25`, probe ogni quattro submission, soglie `60/58 ms`, massimo un incremento per probe, assenza di discesa intra-stroke, reset al nuovo tratto, preview, shader e renderer. La sola differenza funzionale è che un Android ancora congestionato dopo `2,50%` può continuare a diradare gli stamp futuri fino a sedici step complessivi. È una riduzione di qualità intenzionale e visibile solo quando la piattaforma continua a non reggere; non è un'ottimizzazione pixel-identica.
+
+`performanceTelemetryRevision: 18` identifica il candidato. Sia l'ambiente sia il profilo salvano in `adaptiveSpacingMaxExtraPercentPoints` il tetto effettivo selezionato (`4` Android, `1.5` altrove), così la policy può essere verificata direttamente nelle run. Il confronto Android va fatto contro `#57` per Base e `#58` per Fur, controllando soprattutto spacing finale, stamp, FPS, p95, coda finale, ritardo input e backlog. Se il nuovo tetto lascia ancora latenze dell'ordine dei secondi, aumentare ulteriormente lo spacing non è una soluzione sufficiente per quel dispositivo.

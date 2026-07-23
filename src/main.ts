@@ -174,7 +174,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 17;
+    performanceTelemetryRevision: 18;
   };
 }
 
@@ -364,7 +364,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 17,
+    performanceTelemetryRevision: 18,
     ...engineEnvironment,
   };
 }
