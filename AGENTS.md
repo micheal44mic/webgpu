@@ -1526,3 +1526,31 @@ Si mantengono soltanto i livelli fino a quello effettivamente visualizzato. Se s
 Il contatore `displayEncodingMs` continua a includere l'intero blocco presentazione e quindi comprende anche l'encoding mip; `paintDisplayPyramidEncodingMs` ne isola il sottoinsieme. Nessuno dei due misura il tempo GPU. Il costo reale va deciso con nuove coppie Base/Fur sullo stesso dispositivo, confrontando FPS, p95, frame lenti, coda finale e qualità visiva con la build precedente. In particolare, al Fit mobile sono attesi uno o più render pass aggiuntivi per frame: il candidato va rimosso se la qualità non migliora chiaramente o se il downgrade del tratto è eccessivo.
 
 Verifica locale prima della pubblicazione: TypeScript, Vite e preparazione Sites riescono; `git diff --check` è pulito. La porzione `brushShader` precedente a `displayShader` è identica al commit base. Su Chrome/WebGPU con GPU NVIDIA Ampere, canvas `860×1454`, il Fit ha selezionato LOD `2` senza errori di validazione. Uno smoke Shape su dodici frame ha registrato esattamente `24` pass mip (`2` per frame), tutti dirty update, mantenendo `coarse-occupancy-bitmask`; Undo e Redo sono riusciti. Uno zoom-out successivo ha selezionato e costruito LOD `4`. Anche ricreazione e disegno in `rgba16float` sono riusciti, riportando `42,67 MiB` aggiuntivi. La console non contiene errori WebGPU; l'unico `404` locale è la richiesta accessoria del browser priva di risorsa e non riguarda il renderer. Il candidato non è stato pubblicato né committato.
+
+### Primo risultato iPhone della piramide live: run #61–#62
+
+Le run `#61` Base e `#62` Fur usano lo stesso iPhone, viewport `430×775`, canvas `860×1454`, DPR `3`, fingerprint e preset delle `#53–#54`. Il Fit seleziona il mip `2`; la Base registra `812` pass mip e la Fur `804`, cioè due dirty downsample per ciascun frame mantenuto. L'encoding CPU della piramide è rispettivamente `20` e `19 ms` sull'intero replay, circa `0,05 ms` per frame.
+
+| Metrica | #53 Base senza piramide | #61 Base con piramide | #54 Fur senza piramide | #62 Fur con piramide |
+|---|---:|---:|---:|---:|
+| FPS medi | `58,39` | `58,97` | `58,53` | `58,52` |
+| intervallo frame p95 | `17 ms` | `17 ms` | `17 ms` | `17 ms` |
+| frame oltre `20 ms` | `9` | `5` | `7` | `8` |
+| coda GPU finale | `21 ms` | `19 ms` | `19 ms` | `23 ms` |
+| fine presentazione | `6879 ms` | `6892 ms` | `6885 ms` | `6877 ms` |
+
+La coppia non mostra un downgrade prestazionale misurabile. Fur è il controllo più pulito perché non attiva né preview né spacing adattivo in entrambe le build. Base resta fluida, ma nella #61 attraversa più volte la soglia del probe: quattro timeout, due attivazioni della preview e spacing finale `2%`, contro un timeout, un'attivazione e `1,5%` nella #53. Una sola replica non consente di attribuire questi episodi alla piramide, soprattutto perché le metriche di frame e coda non peggiorano; controllarli comunque nella prossima Base.
+
+L'utente osserva nella #61 che la patch Canvas2D può restare ferma mentre il tratto WebGPU esatto continua. La telemetria conferma `5` skip atomici del budget su `78` patch pubblicate. Il comportamento precedente conserva intenzionalmente l'ultimo bitmap completo quando la preparazione del nuovo tip supera `1,25 ms`; poiché i candidati logici avanzano comunque, quel bitmap può restare nella posizione precedente fino al prossimo commit riuscito. La #62 non può mostrare il difetto perché la preview non si attiva.
+
+## Correzione preview: ritiro del bitmap stale confermato — candidato locale
+
+La correzione mantiene scratch atomico, budget `1,25 ms`, massimo due stamp, trigger, Canvas2D per piattaforma e renderer WebGPU esatto. Quando un frame della preview non può essere pubblicato:
+
+- se il seriale rappresentato dal bitmap visibile è già stato confermato dalla coda GPU, il canvas viene reso immediatamente invisibile senza eseguire `clearRect`; il backing vecchio resta nascosto e il successivo commit `copy` lo sostituisce integralmente;
+- se il bitmap rappresenta ancora lavoro non confermato, resta visibile per non aprire prematuramente un vuoto davanti al tratto esatto;
+- dopo uno sforamento di budget viene richiesto al massimo un nuovo rAF per ogni nuovo seriale di tip. Il limite per seriale impedisce un loop di retry su dispositivi che non riescono stabilmente a rispettare il budget.
+
+La patch deve quindi essere o ancora necessaria, o aggiornata, o invisibile: non può restare sopra contenuto esatto più recente dopo che il proprio seriale è stato confermato. Non cambiano stamp, Count, spacing, mip, seed, jitter, blending, shader, submission GPU, lift o pixel permanenti.
+
+`performanceTelemetryRevision: 20` aggiunge il marker `adaptivePreviewStaleFrameStrategy: "hide-confirmed-stale-bitmap-and-single-raf-retry"` e i contatori `adaptivePreviewConfirmedStaleBitmapHides` e `adaptivePreviewIncompleteFrameRetryRequests`. Nella prossima Base controllare visivamente l'assenza del tip fermo e confrontare anche skip, hide e retry; Fur deve restare inattiva e invariata.

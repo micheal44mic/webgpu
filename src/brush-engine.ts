@@ -22,6 +22,8 @@ export type PaintDisplayPyramidStrategy = "live-dirty-box-filter-mip-chain";
 export type PaintDisplayLodSelectionStrategy = "largest-power-of-two-without-upscaling";
 export type AdaptivePreviewStrategy = "queue-lag-triggered-canvas2d-tip-patch";
 export type AdaptivePreviewTriggerStrategy = "single-sampled-queue-prefix-latency";
+export type AdaptivePreviewStaleFrameStrategy =
+  "hide-confirmed-stale-bitmap-and-single-raf-retry";
 export type AdaptivePreviewVisibleCanvasStrategy =
   "iphone-desynchronized-others-synchronized-canvas2d";
 export type AdaptiveSpacingStrategy = "queue-lag-step-up-per-stroke";
@@ -151,6 +153,7 @@ export interface StrokePerformanceProfile {
   paintDisplayPyramidEncodingMs: number;
   adaptivePreviewStrategy: AdaptivePreviewStrategy;
   adaptivePreviewTriggerStrategy: AdaptivePreviewTriggerStrategy;
+  adaptivePreviewStaleFrameStrategy: AdaptivePreviewStaleFrameStrategy;
   adaptivePreviewVisibleCanvasStrategy: AdaptivePreviewVisibleCanvasStrategy;
   adaptivePreviewVisibleCanvasRequestedDesynchronized: boolean;
   adaptivePreviewVisibleCanvasAlpha: boolean | null;
@@ -193,6 +196,8 @@ export interface StrokePerformanceProfile {
   adaptivePreviewBaseStampsDrawn: number;
   adaptivePreviewPhysicalCopiesDrawn: number;
   adaptivePreviewBudgetSkips: number;
+  adaptivePreviewConfirmedStaleBitmapHides: number;
+  adaptivePreviewIncompleteFrameRetryRequests: number;
   adaptivePreviewOversizedSkips: number;
   adaptivePreviewPatchPixels: number;
   adaptivePreviewMaxPatchBackingPixels: number;
@@ -470,6 +475,8 @@ interface MutableStrokePerformanceProfile {
   adaptivePreviewBaseStampsDrawn: number;
   adaptivePreviewPhysicalCopiesDrawn: number;
   adaptivePreviewBudgetSkips: number;
+  adaptivePreviewConfirmedStaleBitmapHides: number;
+  adaptivePreviewIncompleteFrameRetryRequests: number;
   adaptivePreviewOversizedSkips: number;
   adaptivePreviewPatchPixels: number;
   adaptivePreviewMaxPatchBackingPixels: number;
@@ -522,6 +529,8 @@ const PAINT_DISPLAY_LOD_SELECTION_STRATEGY =
   "largest-power-of-two-without-upscaling" as const;
 const ADAPTIVE_PREVIEW_STRATEGY = "queue-lag-triggered-canvas2d-tip-patch" as const;
 const ADAPTIVE_PREVIEW_TRIGGER_STRATEGY = "single-sampled-queue-prefix-latency" as const;
+const ADAPTIVE_PREVIEW_STALE_FRAME_STRATEGY =
+  "hide-confirmed-stale-bitmap-and-single-raf-retry" as const;
 const ADAPTIVE_PREVIEW_VISIBLE_CANVAS_STRATEGY =
   "iphone-desynchronized-others-synchronized-canvas2d" as const;
 const ADAPTIVE_PREVIEW_EXACT_LINEAR_SCALE = 0.5;
@@ -801,6 +810,7 @@ export class BrushEngine {
   private adaptivePreviewSubmittedSerial = 0;
   private adaptivePreviewConfirmedSerial = 0;
   private adaptivePreviewLastPresentedSerial = 0;
+  private adaptivePreviewLastIncompleteRetrySerial = 0;
   private adaptivePreviewCandidates: AdaptivePreviewCandidate[] = [];
   private adaptivePreviewProbe: AdaptivePreviewProbe | null = null;
   private adaptivePreviewConsecutiveSlowProbes = 0;
@@ -1535,6 +1545,8 @@ export class BrushEngine {
       adaptivePreviewBaseStampsDrawn: 0,
       adaptivePreviewPhysicalCopiesDrawn: 0,
       adaptivePreviewBudgetSkips: 0,
+      adaptivePreviewConfirmedStaleBitmapHides: 0,
+      adaptivePreviewIncompleteFrameRetryRequests: 0,
       adaptivePreviewOversizedSkips: 0,
       adaptivePreviewPatchPixels: 0,
       adaptivePreviewMaxPatchBackingPixels: 0,
@@ -1619,6 +1631,7 @@ export class BrushEngine {
       paintDisplayPyramidEncodingMs: profile.paintDisplayPyramidEncodingMs,
       adaptivePreviewStrategy: ADAPTIVE_PREVIEW_STRATEGY,
       adaptivePreviewTriggerStrategy: ADAPTIVE_PREVIEW_TRIGGER_STRATEGY,
+      adaptivePreviewStaleFrameStrategy: ADAPTIVE_PREVIEW_STALE_FRAME_STRATEGY,
       adaptivePreviewVisibleCanvasStrategy: ADAPTIVE_PREVIEW_VISIBLE_CANVAS_STRATEGY,
       adaptivePreviewVisibleCanvasRequestedDesynchronized:
         this.adaptivePreviewVisibleCanvasRequestedDesynchronized,
@@ -1670,6 +1683,10 @@ export class BrushEngine {
       adaptivePreviewBaseStampsDrawn: profile.adaptivePreviewBaseStampsDrawn,
       adaptivePreviewPhysicalCopiesDrawn: profile.adaptivePreviewPhysicalCopiesDrawn,
       adaptivePreviewBudgetSkips: profile.adaptivePreviewBudgetSkips,
+      adaptivePreviewConfirmedStaleBitmapHides:
+        profile.adaptivePreviewConfirmedStaleBitmapHides,
+      adaptivePreviewIncompleteFrameRetryRequests:
+        profile.adaptivePreviewIncompleteFrameRetryRequests,
       adaptivePreviewOversizedSkips: profile.adaptivePreviewOversizedSkips,
       adaptivePreviewPatchPixels: profile.adaptivePreviewPatchPixels,
       adaptivePreviewMaxPatchBackingPixels: profile.adaptivePreviewMaxPatchBackingPixels,
@@ -1799,6 +1816,7 @@ export class BrushEngine {
     paintDisplayPyramidAdditionalMemoryMiB: number;
     adaptivePreviewStrategy: typeof ADAPTIVE_PREVIEW_STRATEGY;
     adaptivePreviewTriggerStrategy: typeof ADAPTIVE_PREVIEW_TRIGGER_STRATEGY;
+    adaptivePreviewStaleFrameStrategy: typeof ADAPTIVE_PREVIEW_STALE_FRAME_STRATEGY;
     adaptivePreviewVisibleCanvasStrategy: typeof ADAPTIVE_PREVIEW_VISIBLE_CANVAS_STRATEGY;
     adaptivePreviewVisibleCanvasRequestedDesynchronized: boolean;
     adaptivePreviewVisibleCanvasAlpha: boolean | null;
@@ -1874,6 +1892,7 @@ export class BrushEngine {
         paintDisplayPyramidAdditionalMemoryMiB(this.layerFormat),
       adaptivePreviewStrategy: ADAPTIVE_PREVIEW_STRATEGY,
       adaptivePreviewTriggerStrategy: ADAPTIVE_PREVIEW_TRIGGER_STRATEGY,
+      adaptivePreviewStaleFrameStrategy: ADAPTIVE_PREVIEW_STALE_FRAME_STRATEGY,
       adaptivePreviewVisibleCanvasStrategy: ADAPTIVE_PREVIEW_VISIBLE_CANVAS_STRATEGY,
       adaptivePreviewVisibleCanvasRequestedDesynchronized:
         this.adaptivePreviewVisibleCanvasRequestedDesynchronized,
@@ -3442,6 +3461,76 @@ export class BrushEngine {
     }
   }
 
+  private hideConfirmedStaleAdaptivePreviewBitmap(): boolean {
+    const canvas = this.adaptivePreviewCanvas;
+    if (
+      !canvas
+      || canvas.style.opacity !== "1"
+      || this.adaptivePreviewLastPresentedSerial <= 0
+      || this.adaptivePreviewLastPresentedSerial > this.adaptivePreviewConfirmedSerial
+      || this.hasAdaptivePreviewPresentedUnboundCandidate()
+    ) {
+      return false;
+    }
+
+    // Il backing resta intatto e verrà sostituito atomicamente con `copy` al
+    // prossimo commit riuscito. Nascondere soltanto l'elemento evita di
+    // aggiungere un clear Canvas2D proprio nel frame che ha già sforato il
+    // budget, ma impedisce a un tip ormai raggiunto dalla GPU di restare fermo
+    // sopra stamp esatti più recenti.
+    canvas.style.opacity = "0";
+    this.adaptivePreviewLastPresentedSerial = 0;
+    for (const candidate of this.adaptivePreviewCandidates) {
+      candidate.presented = false;
+    }
+    if (this.activeStrokeProfile) {
+      this.activeStrokeProfile.adaptivePreviewConfirmedStaleBitmapHides += 1;
+    }
+    return true;
+  }
+
+  private requestAdaptivePreviewIncompleteFrameRetry(
+    candidates: readonly AdaptivePreviewCandidate[],
+  ): void {
+    if (!this.adaptivePreviewActive || this.adaptivePreviewFrozen) {
+      return;
+    }
+
+    let latestSerial = 0;
+    for (const candidate of candidates) {
+      if (candidate.serial !== null) {
+        latestSerial = Math.max(latestSerial, candidate.serial);
+      }
+    }
+    if (
+      latestSerial <= 0
+      || latestSerial <= this.adaptivePreviewLastIncompleteRetrySerial
+    ) {
+      return;
+    }
+
+    // Un solo tentativo aggiuntivo per ogni nuovo tip: evita un loop rAF
+    // quando il dispositivo non riesce stabilmente a rispettare il budget.
+    this.adaptivePreviewLastIncompleteRetrySerial = latestSerial;
+    if (this.activeStrokeProfile) {
+      this.activeStrokeProfile.adaptivePreviewIncompleteFrameRetryRequests += 1;
+    }
+    this.requestAdaptivePreviewDraw();
+  }
+
+  private finishIncompleteAdaptivePreviewFrame(
+    startedAt: number,
+    budgetAlreadyCounted: boolean,
+    candidates: readonly AdaptivePreviewCandidate[],
+    retry: boolean,
+  ): void {
+    this.hideConfirmedStaleAdaptivePreviewBitmap();
+    if (retry) {
+      this.requestAdaptivePreviewIncompleteFrameRetry(candidates);
+    }
+    this.recordAdaptivePreviewJsFrame(startedAt, budgetAlreadyCounted);
+  }
+
   private cancelAdaptivePreviewProbe(): void {
     const probe = this.adaptivePreviewProbe;
     if (!probe) {
@@ -3469,6 +3558,7 @@ export class BrushEngine {
     this.adaptivePreviewSubmissionsSinceProbe = 0;
     this.adaptivePreviewSubmittedSerial = 0;
     this.adaptivePreviewConfirmedSerial = 0;
+    this.adaptivePreviewLastIncompleteRetrySerial = 0;
     this.adaptivePreviewCandidates.length = 0;
     this.adaptivePreviewConsecutiveSlowProbes = 0;
     this.adaptivePreviewActive = false;
@@ -3541,6 +3631,7 @@ export class BrushEngine {
     this.adaptivePreviewForceStroke = false;
     this.adaptivePreviewRetirementTargetSerial = 0;
     this.adaptivePreviewSubmissionsSinceProbe = 0;
+    this.adaptivePreviewLastIncompleteRetrySerial = 0;
     this.adaptivePreviewConsecutiveSlowProbes = 0;
     this.clearAdaptivePreviewCanvas();
     if (hadPreview && countRetirement && this.activeStrokeProfile) {
@@ -4024,7 +4115,7 @@ export class BrushEngine {
         || candidate.serial > this.adaptivePreviewConfirmedSerial)
       .slice(-ADAPTIVE_PREVIEW_MAX_TIP_BASE_STAMPS);
     if (!canvas || !visibleContext || !scratchCanvas || !context || candidates.length === 0) {
-      this.recordAdaptivePreviewJsFrame(startedAt, false);
+      this.finishIncompleteAdaptivePreviewFrame(startedAt, false, candidates, false);
       return;
     }
 
@@ -4033,13 +4124,13 @@ export class BrushEngine {
       if (this.activeStrokeProfile) {
         this.activeStrokeProfile.adaptivePreviewUnsupportedBlendSkips += 1;
       }
-      this.recordAdaptivePreviewJsFrame(startedAt, false);
+      this.finishIncompleteAdaptivePreviewFrame(startedAt, false, candidates, false);
       return;
     }
     if (settings.shape === "shape") {
       this.prepareAdaptivePreviewShapePalette(settings);
       if (this.adaptivePreviewShapePalette.length === 0) {
-        this.recordAdaptivePreviewJsFrame(startedAt, false);
+        this.finishIncompleteAdaptivePreviewFrame(startedAt, false, candidates, false);
         return;
       }
     }
@@ -4057,7 +4148,7 @@ export class BrushEngine {
       || !Number.isFinite(radiusScale)
       || radiusScale <= 0
     ) {
-      this.recordAdaptivePreviewJsFrame(startedAt, false);
+      this.finishIncompleteAdaptivePreviewFrame(startedAt, false, candidates, false);
       return;
     }
 
@@ -4135,11 +4226,15 @@ export class BrushEngine {
       }
     }
 
-    if (copies.length === 0 || performance.now() - startedAt > ADAPTIVE_PREVIEW_JS_BUDGET_MS) {
+    if (copies.length === 0) {
+      this.finishIncompleteAdaptivePreviewFrame(startedAt, false, candidates, false);
+      return;
+    }
+    if (performance.now() - startedAt > ADAPTIVE_PREVIEW_JS_BUDGET_MS) {
       if (this.activeStrokeProfile) {
         this.activeStrokeProfile.adaptivePreviewBudgetSkips += 1;
       }
-      this.recordAdaptivePreviewJsFrame(startedAt, true);
+      this.finishIncompleteAdaptivePreviewFrame(startedAt, true, candidates, true);
       return;
     }
 
@@ -4163,7 +4258,7 @@ export class BrushEngine {
     const requiredWidth = Math.max(0, visibleRight - visibleLeft);
     const requiredHeight = Math.max(0, visibleBottom - visibleTop);
     if (requiredWidth <= 0 || requiredHeight <= 0) {
-      this.recordAdaptivePreviewJsFrame(startedAt, false);
+      this.finishIncompleteAdaptivePreviewFrame(startedAt, false, candidates, false);
       return;
     }
     if (
@@ -4174,7 +4269,7 @@ export class BrushEngine {
       if (profile) {
         profile.adaptivePreviewOversizedSkips += 1;
       }
-      this.recordAdaptivePreviewJsFrame(startedAt, false);
+      this.finishIncompleteAdaptivePreviewFrame(startedAt, false, candidates, false);
       return;
     }
 
@@ -4282,7 +4377,7 @@ export class BrushEngine {
       if (this.activeStrokeProfile) {
         this.activeStrokeProfile.adaptivePreviewBudgetSkips += 1;
       }
-      this.recordAdaptivePreviewJsFrame(startedAt, true);
+      this.finishIncompleteAdaptivePreviewFrame(startedAt, true, candidates, true);
       return;
     }
 
