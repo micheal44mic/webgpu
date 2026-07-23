@@ -216,7 +216,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 28;
+    performanceTelemetryRevision: 29;
   };
 }
 
@@ -302,8 +302,6 @@ function readBrushSettings(): BrushSettings {
     jitterPerCopy: element<HTMLInputElement>("jitterPerCopy").checked,
     positionJitterLateral: rangeValue("positionJitterLateral") / 100,
     positionJitterLinear: rangeValue("positionJitterLinear") / 100,
-    pressureSize: rangeValue("pressureSize") / 100,
-    pressureOpacity: rangeValue("pressureOpacity") / 100,
   };
 }
 
@@ -333,8 +331,6 @@ function updateControlOutputs(): void {
   element<HTMLOutputElement>("darknessJitterOut").value = `${rangeValue("darknessJitter").toFixed(0)}%`;
   element<HTMLOutputElement>("positionJitterLateralOut").value = `${rangeValue("positionJitterLateral").toFixed(0)}%`;
   element<HTMLOutputElement>("positionJitterLinearOut").value = `${rangeValue("positionJitterLinear").toFixed(0)}%`;
-  element<HTMLOutputElement>("pressureSizeOut").value = `${rangeValue("pressureSize").toFixed(0)}%`;
-  element<HTMLOutputElement>("pressureOpacityOut").value = `${rangeValue("pressureOpacity").toFixed(0)}%`;
   element<HTMLOutputElement>("benchmarkStampsOut").value = formatInteger(rangeValue("benchmarkStamps"));
 }
 
@@ -431,7 +427,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 28,
+    performanceTelemetryRevision: 29,
     ...engineEnvironment,
   };
 }
@@ -494,14 +490,20 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
   const endThickness = Number.isFinite(benchmark.settings.endThickness)
     ? Math.min(2, Math.max(0, benchmark.settings.endThickness))
     : 1;
-  const settingsWithoutLegacySpeed = {
+  const settingsWithoutLegacyDynamics = {
     ...benchmark.settings,
-  } as BrushSettings & { speedThickness?: unknown };
-  delete settingsWithoutLegacySpeed.speedThickness;
+  } as BrushSettings & {
+    speedThickness?: unknown;
+    pressureSize?: unknown;
+    pressureOpacity?: unknown;
+  };
+  delete settingsWithoutLegacyDynamics.speedThickness;
+  delete settingsWithoutLegacyDynamics.pressureSize;
+  delete settingsWithoutLegacyDynamics.pressureOpacity;
   return {
     ...benchmark,
     settings: {
-      ...settingsWithoutLegacySpeed,
+      ...settingsWithoutLegacyDynamics,
       shape: benchmark.settings.shape === "shape" ? "shape" : "circle",
       shapeScatter: Number.isFinite(benchmark.settings.shapeScatter)
         ? Math.min(1, Math.max(0, benchmark.settings.shapeScatter))
@@ -648,8 +650,6 @@ function applySettingsToControls(settings: BrushSettings): void {
   element<HTMLInputElement>("jitterPerCopy").checked = settings.jitterPerCopy;
   setControlValue("positionJitterLateral", settings.positionJitterLateral * 100);
   setControlValue("positionJitterLinear", settings.positionJitterLinear * 100);
-  setControlValue("pressureSize", settings.pressureSize * 100);
-  setControlValue("pressureOpacity", settings.pressureOpacity * 100);
   applyBrushControls();
 }
 
@@ -680,8 +680,6 @@ function applyHumanStrokePreset(): BrushSettings {
   element<HTMLInputElement>("jitterPerCopy").checked = true;
   setControlValue("positionJitterLateral", 100);
   setControlValue("positionJitterLinear", 100);
-  setControlValue("pressureSize", 0);
-  setControlValue("pressureOpacity", 0);
   applyBrushControls();
   return readBrushSettings();
 }
@@ -927,8 +925,6 @@ const brushControlIds = [
   "jitterPerCopy",
   "positionJitterLateral",
   "positionJitterLinear",
-  "pressureSize",
-  "pressureOpacity",
 ] as const;
 
 for (const id of brushControlIds) {

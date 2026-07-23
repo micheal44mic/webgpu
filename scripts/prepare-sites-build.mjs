@@ -36,7 +36,7 @@ await writeFile(
   `const INDEX_HTML = ${JSON.stringify(indexHtml)};
 const HUMAN_STROKE_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS human_stroke_benchmark (id TEXT PRIMARY KEY NOT NULL CHECK (id = 'canonical'), payload_json TEXT NOT NULL, captured_at TEXT NOT NULL)";
 const HUMAN_STROKE_ID = "canonical";
-const HUMAN_STROKE_PRESET_REVISION = 2;
+const HUMAN_STROKE_PRESET_REVISION = 3;
 const BENCHMARK_RUNS_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS benchmark_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)";
 const BENCHMARK_RUNS_INDEX_SQL = "CREATE INDEX IF NOT EXISTS benchmark_runs_created_at_idx ON benchmark_runs (created_at DESC)";
 
@@ -69,21 +69,25 @@ function normalizeHumanStrokeBenchmark(payload) {
   if (
     payload.presetRevision === HUMAN_STROKE_PRESET_REVISION &&
     payload.settings.blendIntensity === 4 &&
-    payload.settings.pressureSize === 0 &&
-    payload.settings.pressureOpacity === 0
+    !Object.hasOwn(payload.settings, "speedThickness") &&
+    !Object.hasOwn(payload.settings, "pressureSize") &&
+    !Object.hasOwn(payload.settings, "pressureOpacity")
   ) {
     return payload;
   }
 
+  const settings = {
+    ...payload.settings,
+    blendIntensity: 4,
+  };
+  delete settings.speedThickness;
+  delete settings.pressureSize;
+  delete settings.pressureOpacity;
+
   return {
     ...payload,
     presetRevision: HUMAN_STROKE_PRESET_REVISION,
-    settings: {
-      ...payload.settings,
-      blendIntensity: 4,
-      pressureSize: 0,
-      pressureOpacity: 0,
-    },
+    settings,
   };
 }
 

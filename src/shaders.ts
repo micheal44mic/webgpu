@@ -25,8 +25,7 @@ struct Stamp {
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) localPosition: vec2<f32>,
-  @location(1) @interpolate(flat) pressure: f32,
-  @location(2) @interpolate(flat) pointColor: vec3<f32>,
+  @location(1) @interpolate(flat) pointColor: vec3<f32>,
 };
 
 struct ShapeOccupancy {
@@ -150,7 +149,6 @@ fn vertexMain(
   var output: VertexOutput;
   output.position = vec4<f32>(clipPosition, 0.0, 1.0);
   output.localPosition = localPosition;
-  output.pressure = stamp.pressure;
   var colorCopySeed = copySeed;
   if (brush.options.y == 0u) {
     colorCopySeed = hash32(stamp.seed);
@@ -207,7 +205,6 @@ fn shapeVertexMain(
   var output: VertexOutput;
   output.position = vec4<f32>(clipPosition, 0.0, 1.0);
   output.localPosition = localPosition;
-  output.pressure = stamp.pressure;
   var colorCopySeed = copySeed;
   if (brush.options.y == 0u) {
     colorCopySeed = hash32(stamp.seed);
@@ -217,10 +214,8 @@ fn shapeVertexMain(
 }
 
 fn paintAlpha(input: VertexOutput, coverage: f32) -> f32 {
-  let pressureInfluence = clamp(brush.controls.w, 0.0, 1.0);
-  let pressureAlpha = mix(1.0, clamp(input.pressure, 0.0, 1.0), pressureInfluence);
   return clamp(
-    coverage * brush.controls.x * brush.baseHslAlpha.w * pressureAlpha * brush.controls.z,
+    coverage * brush.controls.x * brush.baseHslAlpha.w * brush.controls.z,
     0.0,
     0.999999
   );
@@ -364,8 +359,7 @@ struct GrainUniforms {
 struct FragmentInput {
   @builtin(position) position: vec4<f32>,
   @location(0) localPosition: vec2<f32>,
-  @location(1) @interpolate(flat) pressure: f32,
-  @location(2) @interpolate(flat) pointColor: vec3<f32>,
+  @location(1) @interpolate(flat) pointColor: vec3<f32>,
 };
 
 struct ShapeOccupancy {
@@ -451,10 +445,8 @@ fn shapeOccupancyMayContribute(uv: vec2<f32>) -> bool {
 }
 
 fn paintAlpha(input: FragmentInput, coverage: f32) -> f32 {
-  let pressureInfluence = clamp(brush.controls.w, 0.0, 1.0);
-  let pressureAlpha = mix(1.0, clamp(input.pressure, 0.0, 1.0), pressureInfluence);
   return clamp(
-    coverage * brush.controls.x * brush.baseHslAlpha.w * pressureAlpha * brush.controls.z,
+    coverage * brush.controls.x * brush.baseHslAlpha.w * brush.controls.z,
     0.0,
     0.999999
   );

@@ -62,5 +62,14 @@ assert(!indexHtmlSource.includes('id="speedThickness"'));
 assert(!indexHtmlSource.includes('id="humanStrokeTestThicknessMode"'));
 assert(!mainSource.includes('rangeValue("speedThickness")'));
 assert(!mainSource.includes("testThicknessMode"));
+assert(!brushEngineSource.includes("pressureSize"));
+assert(!brushEngineSource.includes("pressureOpacity"));
+assert(!mainSource.includes('rangeValue("pressureSize")'));
+assert(!mainSource.includes('rangeValue("pressureOpacity")'));
+assert(!indexHtmlSource.includes('id="pressureSize"'));
+assert(!indexHtmlSource.includes('id="pressureOpacity"'));
+assert(!shaderSource.includes("pressureAlpha"));
+assert(!shaderSource.includes("pressureInfluence"));
+assert(!shaderSource.includes("input.pressure"));
 
 console.log("Thickness dynamics verification passed.");

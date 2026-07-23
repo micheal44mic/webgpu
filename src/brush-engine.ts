@@ -126,8 +126,6 @@ export interface BrushSettings {
   jitterPerCopy: boolean;
   positionJitterLateral: number;
   positionJitterLinear: number;
-  pressureSize: number;
-  pressureOpacity: number;
 }
 
 export interface AdaptiveSpacingEvent {
@@ -1026,8 +1024,6 @@ export const defaultBrushSettings: BrushSettings = {
   jitterPerCopy: false,
   positionJitterLateral: 1,
   positionJitterLinear: 1,
-  pressureSize: 0.65,
-  pressureOpacity: 0.35,
 };
 
 export class BrushEngine {
@@ -1396,8 +1392,6 @@ export class BrushEngine {
       darknessJitter: clamp(next.darknessJitter ?? this.settings.darknessJitter, 0, 1),
       positionJitterLateral: clamp(next.positionJitterLateral ?? this.settings.positionJitterLateral, 0, 1),
       positionJitterLinear: clamp(next.positionJitterLinear ?? this.settings.positionJitterLinear, 0, 1),
-      pressureSize: clamp(next.pressureSize ?? this.settings.pressureSize, 0, 1),
-      pressureOpacity: clamp(next.pressureOpacity ?? this.settings.pressureOpacity, 0, 1),
     };
     this.prepareAdaptivePreviewShapePalette(this.settings);
 
@@ -4492,7 +4486,8 @@ export class BrushEngine {
     floats[12] = settings.flow;
     floats[13] = settings.hardness;
     floats[14] = settings.blendIntensity;
-    floats[15] = settings.pressureOpacity;
+    // Keep the uniform ABI stable; pressure-to-alpha has been removed.
+    floats[15] = 0;
     floats[16] = settings.positionJitterLinear;
     floats[17] = settings.positionJitterLateral;
     floats[18] = settings.shapeScatter;
@@ -4858,9 +4853,7 @@ export class BrushEngine {
     }
     const generationSettings = stroke.lightGlazeSettings ?? this.settings;
     const pressure = clamp(point.pressure, 0.01, 1);
-    const pressureSizeFactor = 1 - generationSettings.pressureSize
-      + generationSettings.pressureSize * Math.max(0.08, pressure);
-    const baseRadius = Math.max(0.5, generationSettings.size * 0.5 * pressureSizeFactor);
+    const baseRadius = Math.max(0.5, generationSettings.size * 0.5);
     const liveThicknessFactor = stroke.thicknessDynamicsNeutral
       ? 1
       : startThicknessFactor(
@@ -6515,14 +6508,10 @@ export class BrushEngine {
       const directionX = directionLength > 0.0001 ? directionXRaw / directionLength : 1;
       const directionY = directionLength > 0.0001 ? directionYRaw / directionLength : 0;
       const baseHsl = hexToHsl(candidateSettings.color);
-      const pressureInfluence = candidateSettings.pressureOpacity;
-      const pressureAlpha = 1 - pressureInfluence
-        + pressureInfluence * clamp(stamp.pressure, 0, 1);
       const alpha = clamp(
         candidateSettings.flow
           * candidateSettings.opacity
-          * candidateSettings.blendIntensity
-          * pressureAlpha,
+          * candidateSettings.blendIntensity,
         0,
         0.999999,
       ) * ADAPTIVE_PREVIEW_ALPHA_SCALE;
@@ -6808,7 +6797,7 @@ export class BrushEngine {
     if (present) {
       this.ensurePresentationCacheTexture();
     }
-    // Flow, pressure, coverage and jitter remain per stamp. Opacity is applied
+    // Flow, coverage and jitter remain per stamp. Opacity is applied
     // exactly once to the accumulated stroke by the live/final compositors.
     this.writeBrushUniforms({ ...settings, opacity: 1, blendMode: "normal" });
     if (grainActive) {
@@ -7689,9 +7678,7 @@ export class BrushEngine {
       const angle = progress * Math.PI * 18;
       const pathRadius = maximumPathRadius * (0.12 + progress * 0.88);
       const pressure = clamp(0.58 + Math.sin(progress * Math.PI * 15) * 0.28, 0.1, 1);
-      const pressureSizeFactor = 1 - settings.pressureSize
-        + settings.pressureSize * Math.max(0.08, pressure);
-      const radius = Math.max(0.5, settings.size * 0.5 * pressureSizeFactor);
+      const radius = Math.max(0.5, settings.size * 0.5);
 
       stamps[index] = {
         x: center + Math.cos(angle) * pathRadius,

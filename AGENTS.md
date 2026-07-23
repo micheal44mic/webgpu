@@ -2152,3 +2152,25 @@ di applicare le impostazioni al motore.
 `thicknessDynamicsStrategy` diventa
 `"time-window-quadratic-ease-out-start-end-tail-holdback"`. Non ripristinare
 Velocità → Spessore o la modalità benchmark senza una nuova richiesta esplicita.
+
+## Rimozione pressione da size e alpha
+
+Su richiesta dell'utente sono stati rimossi anche i controlli `Pressure → size`
+e `Pressure → alpha`. La pressione del puntatore non modifica più il raggio né
+l'alpha: il raggio base è sempre `size * 0,5`, mentre l'alpha usa soltanto
+coverage, Flow, Opacità e blend intensity. Lo stesso vale per il renderer
+WebGPU, l'overlay predittivo, la preview Canvas2D e il benchmark sintetico.
+
+I campioni e lo stride storico degli stamp conservano il valore di pressione
+come dato inerte per compatibilità con la registrazione canonica, il fingerprint
+e il journal già esistenti; non viene però inoltrato al fragment shader e non
+influenza alcun pixel. Lo slot `controls.w` della uniform resta azzerato per non
+cambiare l'ABI.
+
+La UI espone ora soltanto `Spessore dell'inizio` e `Spessore della fine` per la
+dinamica della size. Il parser client e la normalizzazione D1 rimuovono i campi
+storici `speedThickness`, `pressureSize` e `pressureOpacity`; la revisione del
+preset canonico passa a `3`.
+
+`performanceTelemetryRevision: 29` identifica questa rimozione. Non
+reintrodurre una dipendenza dalla pressione senza una nuova richiesta esplicita.
