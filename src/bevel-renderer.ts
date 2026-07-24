@@ -14,13 +14,13 @@ import type { RasterStrokeSourceMode } from "./stroke-renderer";
 import type { EffectsScratchLease, EffectsScratchPool } from "./effects-scratch-pool";
 
 export const RASTER_BEVEL_RENDERER_BUILD =
-  "raster-bevel-webgpu-v3-retargetable-layer-heightfield-v2-r32f-segment-jfa-workgroup-gaussian-gpu-gate";
+  "raster-bevel-webgpu-v4-shared-effects-scratch-retargetable-layer-heightfield-v2-r32f-segment-jfa-workgroup-gaussian-gpu-gate";
 export const RASTER_BEVEL_FIELD_STRATEGY =
   "persistent-document-plus-one-pixel-apron-r32float-heightfield" as const;
 export const RASTER_BEVEL_DISTANCE_STRATEGY =
   "subpixel-marching-squares-segment-jfa-r32float" as const;
 export const RASTER_BEVEL_WORKSPACE_STRATEGY =
-  "lazy-roi-split-common-segment-arenas-workgroup-gaussian-gpu-gated-grow-only" as const;
+  "shared-effects-pool-roi-split-common-segment-arenas-grow-until-idle-shrink" as const;
 
 export interface RasterBevelRendererOptions {
   device: GPUDevice;

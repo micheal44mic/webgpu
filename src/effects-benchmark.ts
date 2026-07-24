@@ -23,6 +23,7 @@ import {
   EffectsWorkbench,
   type EffectsLayerFormat,
 } from "./effects-workbench";
+import { EFFECTS_SCRATCH_POOL_STRATEGY } from "./effects-scratch-pool";
 
 export const EFFECTS_WORKBENCH_BENCHMARK_MEASUREMENT =
   "wall-clock-onSubmittedWorkDone-queue-prefix-plus-js-callback" as const;
@@ -72,6 +73,10 @@ export interface EffectsWorkbenchBenchmarkReport {
   strokeStyle: RasterStrokeStyle;
   bevelStyle: RasterBevelStyle;
   persistentAndScratchMemoryMiB: number;
+  scratchPoolStrategy: typeof EFFECTS_SCRATCH_POOL_STRATEGY;
+  scratchPoolCurrentMiB: number;
+  scratchPoolPeakMiB: number;
+  scratchPoolRequirementsMiB: Readonly<Record<string, number>>;
   retarget: EffectsWorkbenchBenchmarkSummary;
   destroyRecreate: EffectsWorkbenchBenchmarkSummary;
 }
@@ -295,6 +300,7 @@ export async function benchmarkEffectsWorkbench(
       );
     }
 
+    const scratchPool = pair.workbench.scratchPool.snapshot();
     return {
       strategy: EFFECTS_WORKING_SET_STRATEGY,
       measurement: EFFECTS_WORKBENCH_BENCHMARK_MEASUREMENT,
@@ -308,13 +314,19 @@ export async function benchmarkEffectsWorkbench(
       bevelBuild: pair.bevel.build,
       strokeStyle: copyRasterStrokeStyle(styles.stroke),
       bevelStyle: copyRasterBevelStyle(styles.bevel),
+      scratchPoolStrategy: EFFECTS_SCRATCH_POOL_STRATEGY,
+      scratchPoolCurrentMiB: scratchPool.currentBytes / (1024 * 1024),
+      scratchPoolPeakMiB: scratchPool.peakBytes / (1024 * 1024),
+      scratchPoolRequirementsMiB: Object.fromEntries(
+        Object.entries(scratchPool.requirements)
+          .map(([effectId, bytes]) => [effectId, bytes / (1024 * 1024)]),
+      ),
       persistentAndScratchMemoryMiB: (
         pair.stroke.persistentMemoryBytes
-        + pair.stroke.scratchMemoryBytes
         + pair.bevel.heightMemoryBytes
         + pair.bevel.lutMemoryBytes
         + pair.bevel.controlMemoryBytes
-        + pair.bevel.workspaceMemoryBytes
+        + scratchPool.currentBytes
       ) / (1024 * 1024),
       retarget: summarize(retargetSamples),
       destroyRecreate: summarize(recreateSamples),

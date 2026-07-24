@@ -79,6 +79,7 @@ import {
 import type { EffectsWorkbenchBenchmarkReport } from "./effects-benchmark";
 import {
   EFFECTS_SCRATCH_POOL_IDLE_SHRINK_DELAY_MS,
+  EFFECTS_SCRATCH_POOL_STRATEGY,
   effectsScratchCanShrink,
 } from "./effects-scratch-pool";
 
@@ -235,12 +236,12 @@ export interface EngineGpuMemoryStats {
   rasterStrokeStyledMiB: number;
   rasterStrokeCoverageMiB: number;
   rasterStrokeMaskAndControlMiB: number;
-  rasterStrokeScratchMiB: number;
-  rasterStrokeScratchExtent: number;
+  effectsScratchPoolMiB: number;
+  effectsScratchPoolPeakMiB: number;
+  effectsScratchStrokeExtent: number;
+  effectsScratchBevelExtent: number;
   rasterBevelHeightMiB: number;
   rasterBevelLutAndControlMiB: number;
-  rasterBevelScratchMiB: number;
-  rasterBevelScratchExtent: number;
   blendRendererMiB: number;
   lightGlazeMiB: number;
   thicknessTailMiB: number;
@@ -275,6 +276,12 @@ export interface EngineStats {
   effectsWorkingSetStrategy: typeof EFFECTS_WORKING_SET_STRATEGY;
   effectsWorkingSetGeneration: number;
   effectsWorkingSetSourceFormat: LayerFormat;
+  effectsScratchPoolStrategy: typeof EFFECTS_SCRATCH_POOL_STRATEGY;
+  effectsScratchPoolCurrentMiB: number;
+  effectsScratchPoolPeakMiB: number;
+  effectsScratchPoolGeneration: number;
+  effectsScratchPoolAllocationCount: number;
+  effectsScratchPoolShrinkCount: number;
 }
 
 export interface HistoryState {
@@ -2660,6 +2667,7 @@ export class BrushEngine {
     const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
     const rasterStroke = this.rasterStrokeRenderer;
     const rasterBevel = this.rasterBevelRenderer;
+    const effectsScratch = this.effectsWorkbench?.scratchPool.snapshot();
     const layerBaseMiB = baseResourcesAllocated ? layerBaseMemoryMiB(this.layerFormat) : 0;
     const layerMipChainMiB = baseResourcesAllocated
       ? paintDisplayPyramidAdditionalMemoryMiB(this.layerFormat)
@@ -2682,18 +2690,18 @@ export class BrushEngine {
       (rasterStroke?.thresholdMaskMemoryBytes ?? 0)
       + (rasterStroke?.controlMemoryBytes ?? 0)
     ) / MEBIBYTE_BYTES;
-    const rasterStrokeScratchMiB =
-      (rasterStroke?.scratchMemoryBytes ?? 0) / MEBIBYTE_BYTES;
-    const rasterStrokeScratchExtent = rasterStroke?.scratchExtent ?? 0;
+    const effectsScratchPoolMiB =
+      (effectsScratch?.currentBytes ?? 0) / MEBIBYTE_BYTES;
+    const effectsScratchPoolPeakMiB =
+      (effectsScratch?.peakBytes ?? 0) / MEBIBYTE_BYTES;
+    const effectsScratchStrokeExtent = rasterStroke?.scratchExtent ?? 0;
+    const effectsScratchBevelExtent = rasterBevel?.workspaceExtent ?? 0;
     const rasterBevelHeightMiB =
       (rasterBevel?.heightMemoryBytes ?? 0) / MEBIBYTE_BYTES;
     const rasterBevelLutAndControlMiB = (
       (rasterBevel?.lutMemoryBytes ?? 0)
       + (rasterBevel?.controlMemoryBytes ?? 0)
     ) / MEBIBYTE_BYTES;
-    const rasterBevelScratchMiB =
-      (rasterBevel?.workspaceMemoryBytes ?? 0) / MEBIBYTE_BYTES;
-    const rasterBevelScratchExtent = rasterBevel?.workspaceExtent ?? 0;
     const blendRendererMiB = this.blendRenderer?.allocatedMemoryMiB() ?? 0;
     const lightGlazeMiB = this.lightGlazeStorageAllocated
       ? lightGlazeAdditionalMemoryMiB(this.layerFormat, this.lightGlazeStorageMode)
@@ -2714,13 +2722,12 @@ export class BrushEngine {
       rasterStrokeStyledMiB,
       rasterStrokeCoverageMiB,
       rasterStrokeMaskAndControlMiB,
-      rasterStrokeScratchMiB,
+      effectsScratchPoolMiB,
       blendRendererMiB,
       lightGlazeMiB,
       thicknessTailMiB,
       rasterBevelHeightMiB,
       rasterBevelLutAndControlMiB,
-      rasterBevelScratchMiB,
     ].reduce((total, value) => total + value, 0);
 
     return {
@@ -2733,16 +2740,16 @@ export class BrushEngine {
       rasterStrokeStyledMiB,
       rasterStrokeCoverageMiB,
       rasterStrokeMaskAndControlMiB,
-      rasterStrokeScratchMiB,
+      effectsScratchPoolMiB,
+      effectsScratchPoolPeakMiB,
+      effectsScratchStrokeExtent,
+      effectsScratchBevelExtent,
       blendRendererMiB,
       rasterBevelHeightMiB,
       rasterBevelLutAndControlMiB,
-      rasterBevelScratchMiB,
-      rasterBevelScratchExtent,
       lightGlazeMiB,
       thicknessTailMiB,
       historyCpuMiB,
-      rasterStrokeScratchExtent,
       countedTotalMiB,
     };
   }
@@ -2751,6 +2758,7 @@ export class BrushEngine {
     const now = performance.now();
     this.renderTimestamps = this.renderTimestamps.filter((timestamp) => now - timestamp <= 1000);
     const gpuMemory = this.getGpuMemoryStats();
+    const effectsScratch = this.effectsWorkbench?.scratchPool.snapshot();
     return {
       fps: this.renderTimestamps.length,
       lastCpuFrameMs: this.lastCpuFrameMs,
@@ -2779,6 +2787,12 @@ export class BrushEngine {
       effectsWorkingSetStrategy: EFFECTS_WORKING_SET_STRATEGY,
       effectsWorkingSetGeneration: this.effectsWorkbench?.generation ?? 0,
       effectsWorkingSetSourceFormat: this.effectsWorkbench?.sourceFormat ?? this.layerFormat,
+      effectsScratchPoolStrategy: EFFECTS_SCRATCH_POOL_STRATEGY,
+      effectsScratchPoolCurrentMiB: gpuMemory.effectsScratchPoolMiB,
+      effectsScratchPoolPeakMiB: gpuMemory.effectsScratchPoolPeakMiB,
+      effectsScratchPoolGeneration: effectsScratch?.generation ?? 0,
+      effectsScratchPoolAllocationCount: effectsScratch?.allocationCount ?? 0,
+      effectsScratchPoolShrinkCount: effectsScratch?.shrinkCount ?? 0,
       gpuMemory,
       gpuLabel: this.gpuLabel,
       layerFormat: this.layerFormat,
@@ -3722,6 +3736,13 @@ export class BrushEngine {
     effectsWorkingSetStrategy: typeof EFFECTS_WORKING_SET_STRATEGY;
     effectsWorkingSetGeneration: number;
     effectsWorkingSetSourceFormat: LayerFormat;
+    effectsScratchPoolStrategy: typeof EFFECTS_SCRATCH_POOL_STRATEGY;
+    effectsScratchPoolCurrentBytes: number;
+    effectsScratchPoolPeakBytes: number;
+    effectsScratchPoolGeneration: number;
+    effectsScratchPoolAllocationCount: number;
+    effectsScratchPoolShrinkCount: number;
+    effectsScratchPoolRequirementsBytes: Readonly<Record<string, number>>;
     rasterStrokeRendererBuild: string | null;
     rasterStrokeStyle: RasterStrokeStyle;
     rasterStrokePersistentMemoryMiB: number;
@@ -3831,6 +3852,7 @@ export class BrushEngine {
     historyReplayStrategy: typeof HISTORY_REPLAY_STRATEGY;
     historyStampRetentionStrategy: typeof HISTORY_STAMP_RETENTION_STRATEGY;
   } {
+    const effectsScratch = this.effectsWorkbench?.scratchPool.snapshot();
     return {
       canvasWidth: this.canvas.width,
       canvasHeight: this.canvas.height,
@@ -3841,6 +3863,13 @@ export class BrushEngine {
       effectsWorkingSetStrategy: EFFECTS_WORKING_SET_STRATEGY,
       effectsWorkingSetGeneration: this.effectsWorkbench?.generation ?? 0,
       effectsWorkingSetSourceFormat: this.effectsWorkbench?.sourceFormat ?? this.layerFormat,
+      effectsScratchPoolStrategy: EFFECTS_SCRATCH_POOL_STRATEGY,
+      effectsScratchPoolCurrentBytes: effectsScratch?.currentBytes ?? 0,
+      effectsScratchPoolPeakBytes: effectsScratch?.peakBytes ?? 0,
+      effectsScratchPoolGeneration: effectsScratch?.generation ?? 0,
+      effectsScratchPoolAllocationCount: effectsScratch?.allocationCount ?? 0,
+      effectsScratchPoolShrinkCount: effectsScratch?.shrinkCount ?? 0,
+      effectsScratchPoolRequirementsBytes: effectsScratch?.requirements ?? {},
       timestampQueriesSupported: this.device?.features.has("timestamp-query") ?? false,
       rasterStrokeRendererBuild: this.rasterStrokeRenderer?.build ?? null,
       rasterStrokeStyle: copyRasterStrokeStyle(this.rasterStrokeStyle),

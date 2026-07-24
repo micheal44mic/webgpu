@@ -171,7 +171,8 @@ const workbenchSource = readFileSync(new URL("../src/effects-workbench.ts", impo
 const benchmarkSource = readFileSync(new URL("../src/effects-benchmark.ts", import.meta.url), "utf8");
 const rendererSource = readFileSync(new URL("../src/bevel-renderer.ts", import.meta.url), "utf8");
 const styleStackSource = readFileSync(new URL("../src/stroke-renderer.ts", import.meta.url), "utf8");
-assert(rendererSource.includes("raster-bevel-webgpu-v3-retargetable-layer"));
+assert(rendererSource.includes("raster-bevel-webgpu-v4-shared-effects-scratch-retargetable-layer"));
+assert(rendererSource.includes("shared-effects-pool-roi-split-common-segment-arenas-grow-until-idle-shrink"));
 const engineSource = readFileSync(new URL("../src/brush-engine.ts", import.meta.url), "utf8");
 assert(rendererSource.includes("texture_storage_2d<r32float, write>"));
 assert(rendererSource.includes("marching"));

@@ -172,6 +172,13 @@ interface BenchmarkRun {
     effectsWorkingSetStrategy: string;
     effectsWorkingSetGeneration: number;
     effectsWorkingSetSourceFormat: LayerFormat;
+    effectsScratchPoolStrategy: string;
+    effectsScratchPoolCurrentBytes: number;
+    effectsScratchPoolPeakBytes: number;
+    effectsScratchPoolGeneration: number;
+    effectsScratchPoolAllocationCount: number;
+    effectsScratchPoolShrinkCount: number;
+    effectsScratchPoolRequirementsBytes: Readonly<Record<string, number>>;
     rasterStrokeRendererBuild: string | null;
     rasterStrokeStyle: RasterStrokeStyle;
     rasterStrokePersistentMemoryMiB: number;
@@ -286,7 +293,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 41;
+    performanceTelemetryRevision: 42;
   };
 }
 
@@ -351,10 +358,10 @@ const gpuMemoryRows: ReadonlyArray<
   ["gpuMemoryStrokeStyled", "rasterStrokeStyledMiB"],
   ["gpuMemoryStrokeCoverage", "rasterStrokeCoverageMiB"],
   ["gpuMemoryStrokeControl", "rasterStrokeMaskAndControlMiB"],
-  ["gpuMemoryStrokeScratch", "rasterStrokeScratchMiB"],
+  ["gpuMemoryEffectsScratch", "effectsScratchPoolMiB"],
+  ["gpuMemoryEffectsScratchPeak", "effectsScratchPoolPeakMiB"],
   ["gpuMemoryBevelHeight", "rasterBevelHeightMiB"],
   ["gpuMemoryBevelControl", "rasterBevelLutAndControlMiB"],
-  ["gpuMemoryBevelScratch", "rasterBevelScratchMiB"],
   ["gpuMemoryBlend", "blendRendererMiB"],
   ["gpuMemoryLightGlaze", "lightGlazeMiB"],
   ["gpuMemoryThicknessTail", "thicknessTailMiB"],
@@ -620,7 +627,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 41,
+    performanceTelemetryRevision: 42,
     ...engineEnvironment,
   };
 }
@@ -1789,14 +1796,16 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
     output.parentElement?.classList.toggle("memory-zero", value < 0.05);
   }
 
-  const scratchExtent = stats.gpuMemory.rasterStrokeScratchExtent;
-  element<HTMLElement>("gpuMemoryStrokeScratchLabel").textContent = scratchExtent > 0
-    ? `Traccia · scratch JFA ${scratchExtent}²`
-    : "Traccia · scratch JFA";
-  const bevelScratchExtent = stats.gpuMemory.rasterBevelScratchExtent;
-  element<HTMLElement>("gpuMemoryBevelScratchLabel").textContent = bevelScratchExtent > 0
-    ? `Smusso · scratch ROI ${bevelScratchExtent}²`
-    : "Smusso · scratch ROI";
+  const scratchExtents: string[] = [];
+  if (stats.gpuMemory.effectsScratchStrokeExtent > 0) {
+    scratchExtents.push(`Traccia ${stats.gpuMemory.effectsScratchStrokeExtent}²`);
+  }
+  if (stats.gpuMemory.effectsScratchBevelExtent > 0) {
+    scratchExtents.push(`Smusso ${stats.gpuMemory.effectsScratchBevelExtent}²`);
+  }
+  element<HTMLElement>("gpuMemoryEffectsScratchLabel").textContent = scratchExtents.length > 0
+    ? `Effetti · pool scratch · ${scratchExtents.join(" / ")}`
+    : "Effetti · pool scratch";
 
 
   const totalMiB = stats.gpuMemory.countedTotalMiB;

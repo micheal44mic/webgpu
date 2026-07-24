@@ -334,14 +334,14 @@ Paint:
 - L'altezza autorevole è una texture persistente `r32float` `4098²`: documento
   `4096²` più apron esterno di un pixel per Scharr `3×3`. Costa
   `64,063 MiB`; LUT, maschera alpha a due classi, controllo e indirect portano
-  il persistente dedicato a `69,641 MiB`. Lo scratch ROI è lazy e grow-only;
-  col default richiede circa `1,266 MiB`, quindi il costo dedicato normale è
-  circa `70,91 MiB`.
+  il persistente dedicato a `69,641 MiB`. Il workspace ROI logico default
+  richiede `1,265869 MiB`, ma da rev `42` vive nel pool scratch condiviso e non
+  si somma fisicamente allo scratch Traccia quando questo è più grande.
 - L'arena ROI arriva al solo alone reale e al massimo di sicurezza di circa
-  `1408²`. Comune e segmenti sono buffer distinti per rispettare
-  `maxStorageBufferBindingSize`. Una sequenza che prima porta Morbida al massimo
-  e poi abilita Scalpello può trattenere circa `76,6 MiB` di scratch fino alla
-  disattivazione: non confondere questo worst case grow-only col default.
+  `1408²`. Comune e segmenti sono range distinti e allineati dello stesso
+  `GPUBuffer`, ciascuno ancora vincolato da `maxStorageBufferBindingSize`.
+  Il layout può crescere prima del tratto e rimpicciolisce solo in idle con
+  isteresi; non esiste più uno scratch Smusso grow-only residente separato.
 - Il gate alpha è interamente GPU: maschera persistente soglia/frazionario,
   scan della mutation rect e dispatch indirect. Un aggiornamento RGB-only in
   una zona completamente opaca o vuota azzera i dispatch del campo; alpha
@@ -358,17 +358,17 @@ Paint:
   soften, contour/range) invalidano l'heightfield; depth, luce, colori,
   opacità, gloss, AA e fill ricompongono soltanto i pixel. Una prova runtime ha
   confermato `depth` con delta build `0` e `size` con delta build `1`.
-- Se Traccia è già residente a width `14`, attivare lo Smusso default aggiunge
-  circa `70,91 MiB`: ai totali storici v5 corrisponde a
-  `184,9→~255,8 MiB` (`232,9→~303,8 MiB` con width `512`). Se Smusso è l'unico
-  stile attivo, oggi forza anche il compositore `RasterStrokeRenderer` completo:
-  styled mip condivisi più coverage/mask/scratch Traccia. Sul runtime locale il
-  delta totale misurato da tutti gli stili off è quindi `~126,6 MiB`, non solo
-  il campo dedicato. Disabilitare l'ultimo stile libera entrambe le famiglie.
-- Sono condivisi compositore, mip styled, source mode, dirty rect, scheduling e
-  infrastruttura JFA; i buffer scratch Traccia e Smusso non sono ancora una
-  singola arena fisica. È una differenza architetturale nota da valutare dopo
-  la parità, non una dichiarazione di condivisione già avvenuta.
+- Se Smusso è l'unico stile attivo, continua a forzare anche il compositore
+  `RasterStrokeRenderer` completo: styled mip condivisi, coverage/mask e scratch
+  Traccia. Sul runtime locale rev `42`, tutti gli stili off misurano `92,7 MiB`;
+  Traccia width `14` + Smusso default misurano `218,2 MiB` e width `512` +
+  Smusso `266,2 MiB`. Disabilitare l'ultimo stile riporta il pool a `0 byte`.
+- Da rev `42` Traccia e Smusso condividono un solo `GPUBuffer` scratch fisico.
+  I rispettivi layout partono da offset zero perché i contenuti sono
+  temporalmente disgiunti; dentro ciascun layout i range restano distinti e
+  allineati. La capacità è `max(Traccia, Smusso)`, mai la somma. Il default
+  misurato è `16 MiB` invece di `17,265869 MiB`; il tier Traccia `2048²` è
+  `64 MiB` invece di `65,265869 MiB`.
 - Verifiche locali verdi: `bevel:verify`, `stroke:verify`, `grain:verify`,
   `blend:verify`, `thickness:verify`, TypeScript; inizializzazione WGSL e matrice
   delle tre tecniche/quattro modalità su WebGPU NVIDIA. Il warning Chromium
@@ -379,16 +379,16 @@ Paint:
   corner documento, mip `0–12`, AA, source mode e combinazione con le tre
   posizioni della Traccia. Lo Scalpello sulle seam è il rischio prioritario.
 
-### Banco effetti condiviso (Fase 1, retargetable)
+### Banco effetti condiviso (Fasi 1–2, retargetable + pool scratch)
 
 - Strategia corrente `single-retargetable-active-layer-source`: un solo
   `EffectsWorkbench` possiede Traccia e Smusso per la sorgente attiva. Il
   numero di working set resta quindi O(1) rispetto ai layer futuri; questa fase
   non introduce ancora layer multipli.
-- Build retargetable correnti: Traccia
-  `style-stack-webgpu-v8-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even`
+- Build correnti: Traccia
+  `style-stack-webgpu-v9-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even`
   e Smusso
-  `raster-bevel-webgpu-v3-retargetable-layer-heightfield-v2-r32f-segment-jfa-workgroup-gaussian-gpu-gate`.
+  `raster-bevel-webgpu-v4-shared-effects-scratch-retargetable-layer-heightfield-v2-r32f-segment-jfa-workgroup-gaussian-gpu-gate`.
 - Il retarget a formato identico ricrea tutti i bind group che referenziano la
   source view nei due renderer e i display bind group lato engine, poi invalida
   coverage/mask/styled mip/heightfield/cache di presentazione ed esegue in un
@@ -407,6 +407,19 @@ Paint:
   `timestamp-query` non disponibile: sono misure wall-clock
   `onSubmittedWorkDone`, non tempo GPU isolato. Working set logico della prova
   `126,764 MiB`. Report completo in `docs/effects-workbench-pr1.md`.
+- Fase 2, rev telemetria `42`: strategia pool
+  `single-buffer-aliased-effect-layouts-grow-immediate-shrink-idle-hysteresis`;
+  un solo buffer fisico, layout effect-locali aliasati, crescita prima del
+  tratto e shrink idle dopo `1500 ms`. Nessuna riallocazione durante una
+  pennellata, nessuna passata/copia/barriera nuova.
+- Benchmark isolato finale Fase 2, stesso device/preset: retarget `128,3 ms`
+  mediani (`2,7 ms` CPU + `125,6 ms` queue/callback), cioè `−2,73%` rispetto a
+  `131,9 ms`; seconda ripetizione `125,4 ms`. Working set della prova
+  `125,497726 MiB`.
+- Golden GPU Fase 2: combinato mip `0` invariato `8d5a75a6…`; restano soltanto i
+  tre diagnostici source-mode e i 25 mismatch mip preesistenti. Mutation
+  offset `ping-b→0` osservata fallire sia staticamente (`0 != 256`) sia su GPU
+  (`70d14e7a…`). Tabella completa in `docs/effects-workbench-pr2.md`.
 
 Blend (tool separato, vedi sezione dedicata più sotto).
 
@@ -471,7 +484,8 @@ con i pool parziali, quindi la revisione copre i quattro pool insieme) · `40`
 port sperimentale Smusso/Rilievo Heightfield V2, contabilità memoria dedicata,
 invalidazioni geometry/hot e compositore comune Smusso→Traccia · `41` banco
 effetti unico retargetable, diagnostica same-view e benchmark
-retarget-vs-recreate.
+retarget-vs-recreate · `42` pool scratch effetti fisico unico, extent/byte correnti,
+picco storico, shrink idle e firma dei layout aliasati.
 
 ## Strumento Blend dry (WebGPU)
 

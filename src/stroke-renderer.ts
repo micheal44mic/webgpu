@@ -14,7 +14,7 @@ import {
 import type { EffectsScratchLease, EffectsScratchPool } from "./effects-scratch-pool";
 
 export const RASTER_STROKE_RENDERER_BUILD =
-  "style-stack-webgpu-v8-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even";
+  "style-stack-webgpu-v9-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even";
 export const RASTER_STROKE_COVERAGE_STRATEGY =
   "persistent-packed-r8-style-coverage" as const;
 export const RASTER_STROKE_DISTANCE_STORAGE_STRATEGY =
@@ -355,7 +355,9 @@ struct StrokeParameters {
 const INVALID_SEED: u32 = ${INVALID_PACKED_SEED}u;
 
 @group(0) @binding(0) var<uniform> parameters: StrokeParameters;
-@group(0) @binding(1) var<storage, read> inputSeeds: array<vec2<u32>>;
+// Both disjoint subranges use one physical buffer. WebGPU validates usage per buffer
+// within this compute pass, so both bindings are storage; this shader never writes inputSeeds.
+@group(0) @binding(1) var<storage, read_write> inputSeeds: array<vec2<u32>>;
 @group(0) @binding(2) var<storage, read_write> outputSeeds: array<vec2<u32>>;
 
 fn unpackSeed(value: u32) -> vec2<u32> {
@@ -1639,7 +1641,7 @@ export class RasterStrokeRenderer {
           visibility: GPUShaderStage.COMPUTE,
           buffer: { type: "uniform", hasDynamicOffset: true, minBindingSize: PARAMETER_BYTES },
         },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
       ],
     });

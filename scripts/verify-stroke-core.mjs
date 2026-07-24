@@ -372,7 +372,7 @@ const goldenMipBaseline = JSON.parse(readFileSync(
 ));
 assert.match(
   rendererSource,
-  /style-stack-webgpu-v8-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even/,
+  /style-stack-webgpu-v9-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even/,
 );
 assert.ok(
   rendererSource.indexOf("bevelNode(base, position)")
@@ -494,7 +494,9 @@ assert.match(engineSource, /async runRasterStrokeGolden\(\)/);
 assert.match(mainSource, /rasterStrokeGoldenSection/);
 assert.match(htmlSource, /id="runRasterStrokeGolden"/);
 assert.match(engineSource, /rasterStrokeScratchExtentForWidth\(normalized\.width\)/);
-assert.match(mainSource, /gpuMemoryStrokeScratchLabel/);
+assert.match(mainSource, /gpuMemoryEffectsScratchLabel/);
+assert.match(htmlSource, /gpuMemoryEffectsScratchPeak/);
+assert.match(engineSource, /effectsScratchPoolMiB/);
 assert.match(engineSource, /private getGpuMemoryStats\(\): EngineGpuMemoryStats/);
 assert.match(engineSource, /countedTotalMiB/);
 assert.match(mainSource, /const gpuMemoryRows:/);
