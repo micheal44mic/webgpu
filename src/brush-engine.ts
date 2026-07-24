@@ -62,6 +62,7 @@ import {
 } from "./bevel-renderer";
 import {
   DEFAULT_RASTER_BEVEL_STYLE,
+  RASTER_BEVEL_FIELD_IDLE_SHRINK_DELAY_MS,
   classifyRasterBevelStyleChange,
   copyRasterBevelStyle,
   rasterBevelInfluenceBounds,
@@ -308,6 +309,8 @@ export interface EffectsWorkbenchRetargetResult {
   strategy: typeof EFFECTS_WORKING_SET_STRATEGY;
   generation: number;
   layerFormat: LayerFormat;
+  contentBounds: DirtyRect | null;
+  contentPixels: number;
   fullDocumentPixels: number;
   cpuRetargetAndEncodeMs: number;
   queueCompletionMs: number;
@@ -1282,6 +1285,9 @@ export class BrushEngine {
   private effectsWorkbench: EffectsWorkbench | null = null;
   private effectsScratchShrinkTimer: number | null = null;
   private effectsScratchShrinkInFlight = false;
+  private bevelFieldShrinkTimer: number | null = null;
+  private bevelFieldShrinkInFlight = false;
+  private bevelFieldShrinkOnNextEncode = false;
 
   private get rasterStrokeRenderer(): RasterStrokeRenderer | null {
     return this.effectsWorkbench?.strokeRenderer ?? null;
@@ -1908,6 +1914,7 @@ export class BrushEngine {
   }
 
   private releaseRasterBevelRenderer(): void {
+    this.cancelBevelFieldShrink();
     this.effectsWorkbench?.releaseBevelRenderer();
     this.rasterBevelHeightValid = false;
     this.rasterBevelHeightSourceMode = null;
@@ -2284,6 +2291,7 @@ export class BrushEngine {
     this.flushPendingWorkBeforeSettingsChange();
     this.flushClosingLightGlazeSessionBeforeNewStroke();
     this.cancelEffectsScratchShrink();
+    this.cancelBevelFieldShrink();
     if (this.rasterBevelActive()) {
       // Prewarm before activeStroke is assigned: the pool never reallocates
       // while a pen/finger stroke is active, even after an idle shrink.
@@ -2530,6 +2538,7 @@ export class BrushEngine {
       this.historyBusy = false;
       this.publishHistoryState();
       this.scheduleEffectsScratchShrink();
+      this.scheduleBevelFieldShrink();
     }
   }
 
@@ -2555,6 +2564,7 @@ export class BrushEngine {
     this.requestRender();
     this.publishHistoryState();
     this.scheduleEffectsScratchShrink();
+    this.scheduleBevelFieldShrink();
     return true;
   }
 
@@ -2863,6 +2873,13 @@ export class BrushEngine {
     return effectsScratchShrinkIsWorthwhile(snapshot.currentBytes, retainedBytes);
   }
 
+  private bevelFieldBlocksScratchShrink(): boolean {
+    return this.bevelFieldShrinkTimer !== null
+      || this.bevelFieldShrinkInFlight
+      || this.bevelFieldShrinkOnNextEncode
+      || this.bevelFieldNeedsShrink();
+  }
+
   private cancelEffectsScratchShrink(): void {
     if (this.effectsScratchShrinkTimer === null) {
       return;
@@ -2875,6 +2892,7 @@ export class BrushEngine {
     if (
       this.effectsScratchShrinkTimer !== null
       || this.effectsScratchShrinkInFlight
+      || this.bevelFieldBlocksScratchShrink()
       || !this.effectsScratchNeedsShrink()
     ) {
       return;
@@ -2886,7 +2904,12 @@ export class BrushEngine {
   }
 
   private async shrinkEffectsScratchAfterIdle(): Promise<void> {
-    if (this.effectsScratchShrinkInFlight || !this.effectsScratchNeedsShrink()) {
+    if (
+      this.effectsScratchShrinkInFlight
+      || this.bevelFieldBlocksScratchShrink()
+      || !this.effectsScratchNeedsShrink()
+    ) {
+      this.scheduleBevelFieldShrink();
       return;
     }
     if (!this.effectsScratchCanShrinkNow()) {
@@ -2897,7 +2920,11 @@ export class BrushEngine {
     this.effectsScratchShrinkInFlight = true;
     try {
       await this.device.queue.onSubmittedWorkDone();
-      if (!this.effectsScratchCanShrinkNow()) {
+      if (
+        !this.effectsScratchCanShrinkNow()
+        || this.bevelFieldBlocksScratchShrink()
+      ) {
+        this.scheduleBevelFieldShrink();
         return;
       }
 
@@ -2923,6 +2950,77 @@ export class BrushEngine {
       this.effectsScratchShrinkInFlight = false;
       if (this.effectsScratchNeedsShrink()) {
         this.scheduleEffectsScratchShrink();
+      }
+    }
+  }
+
+  private bevelFieldTargetBounds(): DirtyRect | null {
+    return this.rasterBevelInfluenceRect(this.layerContentBounds);
+  }
+
+  private bevelFieldNeedsShrink(): boolean {
+    if (!this.bevelBoundingFieldEnabled || !this.rasterBevelStyle.enabled) {
+      return false;
+    }
+    return this.rasterBevelRenderer?.fieldNeedsShrink(
+      this.bevelFieldTargetBounds(),
+    ) ?? false;
+  }
+
+  private cancelBevelFieldShrink(): void {
+    if (this.bevelFieldShrinkTimer !== null) {
+      window.clearTimeout(this.bevelFieldShrinkTimer);
+      this.bevelFieldShrinkTimer = null;
+    }
+    this.bevelFieldShrinkOnNextEncode = false;
+  }
+
+  private scheduleBevelFieldShrink(): void {
+    if (
+      this.bevelFieldShrinkTimer !== null
+      || this.bevelFieldShrinkInFlight
+      || this.bevelFieldShrinkOnNextEncode
+      || !this.bevelFieldNeedsShrink()
+    ) {
+      return;
+    }
+    // The field rebuild needs the Bevel workspace once more. Let it finish
+    // before the shared scratch pool is released, avoiding a shrink/regrow pair.
+    this.cancelEffectsScratchShrink();
+    this.bevelFieldShrinkTimer = window.setTimeout(() => {
+      this.bevelFieldShrinkTimer = null;
+      void this.armBevelFieldShrinkAfterIdle();
+    }, RASTER_BEVEL_FIELD_IDLE_SHRINK_DELAY_MS);
+  }
+
+  private async armBevelFieldShrinkAfterIdle(): Promise<void> {
+    if (this.bevelFieldShrinkInFlight) {
+      return;
+    }
+    if (!this.bevelFieldNeedsShrink()) {
+      this.scheduleEffectsScratchShrink();
+      return;
+    }
+    if (!this.effectsScratchCanShrinkNow()) {
+      this.scheduleBevelFieldShrink();
+      return;
+    }
+
+    this.bevelFieldShrinkInFlight = true;
+    try {
+      await this.device.queue.onSubmittedWorkDone();
+      if (!this.effectsScratchCanShrinkNow() || !this.bevelFieldNeedsShrink()) {
+        return;
+      }
+      // The next regular frame replaces the texture before the first command
+      // that can read or write the heightfield, then rebuilds the whole new bbox.
+      this.bevelFieldShrinkOnNextEncode = true;
+      this.displayDirty = true;
+      this.requestRender();
+    } finally {
+      this.bevelFieldShrinkInFlight = false;
+      if (this.bevelFieldNeedsShrink()) {
+        this.scheduleBevelFieldShrink();
       }
     }
   }
@@ -3163,6 +3261,7 @@ export class BrushEngine {
   async retargetEffectsWorkingSet(
     layerView: GPUTextureView,
     layerFormat: LayerFormat = this.layerFormat,
+    contentBounds: DirtyRect | null | undefined = undefined,
   ): Promise<EffectsWorkbenchRetargetResult> {
     if (!this.initialized) {
       throw new Error("Il motore non è ancora inizializzato.");
@@ -3185,6 +3284,13 @@ export class BrushEngine {
       width: LAYER_SIZE,
       height: LAYER_SIZE,
     };
+    // Omitted preserves the pre-PR3 contract; explicit null means an empty source.
+    const normalizedContentBounds = contentBounds === undefined
+      ? fullDocumentRect
+      : this.normalizeLayerRect(contentBounds);
+    const bevelRetargetContentBounds = this.bevelBoundingFieldEnabled
+      ? normalizedContentBounds
+      : fullDocumentRect;
     this.rasterStrokeBusy = true;
     this.rasterBevelBusy = true;
     const startedAt = performance.now();
@@ -3202,14 +3308,20 @@ export class BrushEngine {
       this.rasterBevelLastEncode = null;
 
       const encoder = this.device.createCommandEncoder({
-        label: `Banco effetti retarget #${generation}: rebuild documento completo`,
+        label: this.bevelBoundingFieldEnabled
+          ? `Banco effetti retarget #${generation}: rebuild campo bbox`
+          : `Banco effetti retarget #${generation}: rebuild documento completo`,
       });
+      // Stroke/mask/styled remain full-document in both variants. Only the
+      // heightfield receives the known source bounds in this PR.
       const update = this.encodeRasterStrokeUpdate(
         encoder,
         "permanent",
         fullDocumentRect,
         fullDocumentRect,
         true,
+        bevelRetargetContentBounds,
+        this.bevelBoundingFieldEnabled,
       );
       this.encodeRasterStrokeDisplayPyramid(
         encoder,
@@ -3224,6 +3336,10 @@ export class BrushEngine {
         strategy: EFFECTS_WORKING_SET_STRATEGY,
         generation,
         layerFormat,
+        contentBounds: normalizedContentBounds ? { ...normalizedContentBounds } : null,
+        contentPixels: normalizedContentBounds
+          ? normalizedContentBounds.width * normalizedContentBounds.height
+          : 0,
         fullDocumentPixels: LAYER_SIZE * LAYER_SIZE,
         cpuRetargetAndEncodeMs: submittedAt - startedAt,
         queueCompletionMs: completedAt - submittedAt,
@@ -3236,7 +3352,12 @@ export class BrushEngine {
       this.requestRender();
       this.publishStats();
       if (import.meta.env.DEV) {
-        console.info("[EffectsWorkbench] retarget 4096² completato", result);
+        console.info(
+          this.bevelBoundingFieldEnabled
+            ? "[EffectsWorkbench] retarget con campo Smusso bbox completato"
+            : "[EffectsWorkbench] retarget 4096² completato",
+          result,
+        );
       }
       return result;
     } finally {
@@ -6014,6 +6135,19 @@ export class BrushEngine {
     this.device.queue.writeBuffer(this.lightGlazeUniformBuffer, 0, upload);
   }
 
+  private normalizeLayerRect(rect: DirtyRect | null): DirtyRect | null {
+    if (!rect) {
+      return null;
+    }
+    const x = clamp(Math.floor(rect.x), 0, LAYER_SIZE);
+    const y = clamp(Math.floor(rect.y), 0, LAYER_SIZE);
+    const right = clamp(Math.ceil(rect.x + rect.width), 0, LAYER_SIZE);
+    const bottom = clamp(Math.ceil(rect.y + rect.height), 0, LAYER_SIZE);
+    return right > x && bottom > y
+      ? { x, y, width: right - x, height: bottom - y }
+      : null;
+  }
+
   private mergeDirtyRects(left: DirtyRect | null, right: DirtyRect | null): DirtyRect | null {
     if (!left) {
       return right ? { ...right } : null;
@@ -6090,6 +6224,8 @@ export class BrushEngine {
     mutationRect: DirtyRect | null,
     virtualContentBounds: DirtyRect | null = this.layerContentBounds,
     layerCleared = false,
+    bevelContentBounds: DirtyRect | null = virtualContentBounds,
+    allowBevelFieldShrink = false,
   ): { dirtyRect: DirtyRect | null; timing: RasterStrokeEncodeResult | null } {
     const renderer = this.rasterStrokeRenderer;
     if (!renderer || !this.styleStackActive()) {
@@ -6114,8 +6250,15 @@ export class BrushEngine {
     if (bevelActive) {
       const bevelRenderer = this.rasterBevelRenderer!;
       const sourceChanged = this.rasterBevelHeightSourceMode !== sourceMode;
-      const clearHeight = !this.rasterBevelHeightValid || sourceChanged;
-      const bevelFieldBounds = this.rasterBevelInfluenceRect(virtualContentBounds);
+      const allowFieldShrink = allowBevelFieldShrink || (
+        this.bevelFieldShrinkOnNextEncode
+        && sourceMode === "permanent"
+        && this.activeStroke === null
+      );
+      const clearHeight = !this.rasterBevelHeightValid
+        || sourceChanged
+        || allowFieldShrink;
+      const bevelFieldBounds = this.rasterBevelInfluenceRect(bevelContentBounds);
       const bevelRebuildRect = clearHeight
         ? bevelFieldBounds
         : mutationRect
@@ -6129,7 +6272,11 @@ export class BrushEngine {
         changeDetectionRect: clearHeight ? null : mutationRect,
         clearHeight,
         fieldBounds: bevelFieldBounds,
+        allowFieldShrink,
       });
+      if (allowFieldShrink && this.bevelFieldShrinkOnNextEncode) {
+        this.bevelFieldShrinkOnNextEncode = false;
+      }
       if (bevelTiming.fieldReallocated) {
         renderer.setBevelResources(bevelRenderer.heightView, bevelRenderer.glossView);
         this.rebuildRasterStrokeDisplayBindGroups();
@@ -7310,6 +7457,7 @@ export class BrushEngine {
     this.maybeReleaseIdleGrainResources();
     this.maybeReleaseIdleShapeResources();
     this.scheduleEffectsScratchShrink();
+    this.scheduleBevelFieldShrink();
   }
 
   private recordHistoryBatch(
@@ -7484,6 +7632,7 @@ export class BrushEngine {
       this.historyBusy = false;
       this.publishHistoryState();
       this.scheduleEffectsScratchShrink();
+      this.scheduleBevelFieldShrink();
     }
   }
 

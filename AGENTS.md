@@ -369,18 +369,25 @@ Paint:
   allineati. La capacità è `max(Traccia, Smusso)`, mai la somma. Il default
   misurato è `16 MiB` invece di `17,265869 MiB`; il tier Traccia `2048²` è
   `64 MiB` invece di `65,265869 MiB`.
-- PR 3 bbox, Step 2 candidato del 24 luglio 2026: il gate documentato in
-  `docs/effects-bbox-pr3.md` è stato riaperto con sei decisioni esplicite. Un
-  flag default-OFF conserva il campo full-document; ON usa l'inviluppo
-  tile-aligned dei job più apron fisico, origine documento→storage in uniform
-  e rebuild dell'intero nuovo bbox alla riallocazione. Fuori dal dominio
-  `bevelHeightAt()` usa una costante CPU: `0` per inner/outer/emboss e, per
-  pillow, `1` oppure la stessa LUT contour a `min(1/range,1)`. Gli apron ai
+- PR 3 bbox, Step 2 congelato nel commit `0f26957`: flag default-OFF; ON usa
+  l'inviluppo tile-aligned dei job più apron fisico, origine documento→storage
+  in uniform e rebuild dell'intero nuovo bbox alla riallocazione. Fuori dal
+  dominio `bevelHeightAt()` usa una costante CPU: `0` per inner/outer/emboss e,
+  per pillow, `1` oppure la stessa LUT contour a `min(1/range,1)`. Gli apron ai
   bordi documento restano leggibili, mentre un campo vuoto usa sempre la
   costante. Nessuna copia, passata o barriera è stata aggiunta; OFF conserva
-  texture `4098²` e uniform da `80 byte`. Verifiche Step 2 verdi:
-  `bevel:verify`, `stroke:verify` e TypeScript. Golden GPU, lifecycle shrink,
-  retarget con bounds, benchmark e prova browser restano aperti.
+  texture `4098²` e uniform da `80 byte`.
+- PR 3 bbox, Step 3 candidato: una ROI dentro capacità resta incrementale; una
+  crescita sostituisce la texture a inizio uso del campo e ricostruisce tutto
+  il nuovo bbox. La riduzione fisica avviene solo dopo `1500 ms` idle e almeno
+  `8 MiB` recuperabili; i bounds validi escludono subito i texel stale. Lo
+  shrink del campo precede quello del pool, evitando shrink/regrow del workspace.
+  `retargetEffectsWorkingSet` accetta content bounds espliciti, ma lascia
+  coverage/mask/styled full-document per isolare la variabile. Mutation test
+  CPU verdi: zero esterno forzato fallisce pillow ma non inner/outer; una
+  crescita marcata come sola corona fallisce. Verifiche: `bevel:verify`,
+  `effects-scratch:verify`, `stroke:verify` e TypeScript. Golden GPU, benchmark,
+  HUD/telemetria rev 43 e prova browser restano aperti.
 - Verifiche locali verdi: `bevel:verify`, `stroke:verify`, `grain:verify`,
   `blend:verify`, `thickness:verify`, TypeScript; inizializzazione WGSL e matrice
   delle tre tecniche/quattro modalità su WebGPU NVIDIA. Il warning Chromium

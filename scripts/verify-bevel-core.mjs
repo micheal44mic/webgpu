@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
 import {
   DEFAULT_RASTER_BEVEL_STYLE,
   RASTER_BEVEL_HEIGHTFIELD_CALIBRATION,
@@ -7,6 +8,8 @@ import {
   RASTER_BEVEL_MAX_WORK_SIDE,
   RASTER_BEVEL_PROFILE_SIZE,
   RASTER_BEVEL_CONTOURS,
+  RASTER_BEVEL_FIELD_IDLE_SHRINK_DELAY_MS,
+  RASTER_BEVEL_FIELD_MINIMUM_SHRINK_BYTES,
   RASTER_BEVEL_MODES,
   RASTER_BEVEL_TECHNIQUES,
   classifyRasterBevelStyleChange,
@@ -14,7 +17,10 @@ import {
   deriveRasterBevelHeightfield,
   makeRasterBevelSplineContourLut,
   normalizeRasterBevelStyle,
+  planRasterBevelFieldTransition,
   rasterBevelAlignedFieldBounds,
+  rasterBevelFieldMemoryBytes,
+  rasterBevelFieldShrinkIsWorthwhile,
   rasterBevelGeometryKey,
   rasterBevelLightVector,
   rasterBevelOutsideFieldHeight,
@@ -189,6 +195,61 @@ assert.deepEqual(
 );
 assert.equal(rasterBevelAlignedFieldBounds(null), null);
 
+const smallField = { x: 0, y: 0, width: 1024, height: 1024 };
+const grownField = { x: 0, y: 0, width: 1280, height: 1024 };
+const innerField = { x: 256, y: 256, width: 512, height: 512 };
+assert.deepEqual(
+  planRasterBevelFieldTransition(null, smallField),
+  {
+    kind: "grow",
+    allocationBounds: smallField,
+    validBounds: smallField,
+    reallocated: true,
+    fullRebuild: true,
+  },
+  "first allocation must rebuild the entire target bbox",
+);
+assert.deepEqual(
+  planRasterBevelFieldTransition(smallField, innerField),
+  {
+    kind: "retain",
+    allocationBounds: smallField,
+    validBounds: innerField,
+    reallocated: false,
+    fullRebuild: false,
+  },
+  "an in-capacity ROI update must preserve the allocation and stay incremental",
+);
+assert.deepEqual(
+  planRasterBevelFieldTransition(smallField, grownField),
+  {
+    kind: "grow",
+    allocationBounds: grownField,
+    validBounds: grownField,
+    reallocated: true,
+    fullRebuild: true,
+  },
+  "growth must rebuild the whole new bbox, never only its crown",
+);
+const fullField = { x: 0, y: 0, width: 4096, height: 4096 };
+assert.equal(RASTER_BEVEL_FIELD_IDLE_SHRINK_DELAY_MS, 1_500);
+assert.equal(RASTER_BEVEL_FIELD_MINIMUM_SHRINK_BYTES, 8 * 1024 * 1024);
+assert.equal(
+  rasterBevelFieldMemoryBytes(fullField),
+  4098 * 4098 * 4,
+  "full path accounting must remain exactly 4098² R32F",
+);
+assert.equal(rasterBevelFieldShrinkIsWorthwhile(fullField, smallField), true);
+assert.equal(
+  planRasterBevelFieldTransition(fullField, smallField, false).kind,
+  "retain",
+  "shrink must remain deferred without the idle permission",
+);
+const idleShrink = planRasterBevelFieldTransition(fullField, smallField, true);
+assert.equal(idleShrink.kind, "shrink");
+assert.equal(idleShrink.fullRebuild, true);
+assert.deepEqual(idleShrink.allocationBounds, smallField);
+
 const profileSample = (kind, rangePercent, input) => {
   const values = makeRasterBevelSplineContourLut(kind, RASTER_BEVEL_PROFILE_SIZE);
   const normalized = Math.min(input / Math.max(rangePercent / 100, 1e-3), 1);
@@ -229,6 +290,49 @@ assert.equal(rasterBevelOutsideFieldHeight({ mode: "inner" }), 0);
 assert.equal(rasterBevelOutsideFieldHeight({ mode: "outer" }), 0);
 assert.notEqual(rasterBevelOutsideFieldHeight({ mode: "pillow" }), 0);
 
+const coreSource = readFileSync(new URL("../src/bevel-core.ts", import.meta.url), "utf8");
+const importMutatedCore = async (needle, replacement, label) => {
+  const occurrences = coreSource.split(needle).length - 1;
+  assert.equal(occurrences, 1, `${label}: mutation anchor must be unique`);
+  const mutatedSource = coreSource.replace(needle, replacement);
+  const runtimeSource = stripTypeScriptTypes(mutatedSource, { mode: "transform" });
+  const moduleUrl = `data:text/javascript;base64,${
+    Buffer.from(runtimeSource).toString("base64")
+  }#${encodeURIComponent(label)}`;
+  return import(moduleUrl);
+};
+
+const zeroOutsideMutation = await importMutatedCore(
+  'const neutralProfileInput = style.mode === "pillow" ? 1 : 0;',
+  "const neutralProfileInput = 0;",
+  "outside-height-forced-zero",
+);
+assert.equal(zeroOutsideMutation.rasterBevelOutsideFieldHeight({ mode: "inner" }), 0);
+assert.equal(zeroOutsideMutation.rasterBevelOutsideFieldHeight({ mode: "outer" }), 0);
+assert.throws(
+  () => assert.notEqual(
+    zeroOutsideMutation.rasterBevelOutsideFieldHeight({ mode: "pillow" }),
+    0,
+  ),
+  "the forced-zero mutation must be detected by pillow while inner/outer stay valid",
+);
+
+const crownOnlyMutation = await importMutatedCore(
+  "fullRebuild: targetBounds !== null,",
+  "fullRebuild: false,",
+  "growth-rebuilds-only-crown",
+);
+assert.throws(
+  () => assert.equal(
+    crownOnlyMutation.planRasterBevelFieldTransition(
+      smallField,
+      grownField,
+    ).fullRebuild,
+    true,
+  ),
+  "the growth mutation must be rejected because a new texture needs the whole bbox",
+);
+
 const workbenchSource = readFileSync(new URL("../src/effects-workbench.ts", import.meta.url), "utf8");
 const benchmarkSource = readFileSync(new URL("../src/effects-benchmark.ts", import.meta.url), "utf8");
 const rendererSource = readFileSync(new URL("../src/bevel-renderer.ts", import.meta.url), "utf8");
@@ -256,5 +360,44 @@ assert(workbenchSource.includes("single-retargetable-active-layer-source"));
 assert(benchmarkSource.includes("clearHeight: true"));
 assert(benchmarkSource.includes("clearStyled: true"));
 assert(engineSource.includes("this.rasterBevelRenderer?.workspaceMemoryBytes"));
+assert.match(
+  engineSource,
+  /retargetEffectsWorkingSet\([\s\S]*contentBounds: DirtyRect \| null \| undefined/,
+  "retarget must transport known source content bounds",
+);
+assert.match(
+  engineSource,
+  /bevelContentBounds: DirtyRect \| null = virtualContentBounds/,
+  "only the bevel field may receive a smaller retarget domain in PR3",
+);
+assert.match(engineSource, /bevelFieldShrinkOnNextEncode/);
+assert.match(engineSource, /RASTER_BEVEL_FIELD_IDLE_SHRINK_DELAY_MS/);
+assert.match(engineSource, /bevelFieldBlocksScratchShrink/);
+assert.equal(
+  rendererSource.includes("copyTextureToTexture"),
+  false,
+  "bbox growth must rebuild the new domain without a preservation copy",
+);
+const bevelEncodeStart = rendererSource.indexOf(
+  "  encode(options: RasterBevelEncodeOptions): RasterBevelEncodeResult {",
+);
+const bevelEncodeEnd = rendererSource.indexOf("\n  destroy(): void {", bevelEncodeStart);
+assert.notEqual(bevelEncodeStart, -1);
+assert.notEqual(bevelEncodeEnd, -1);
+const bevelEncodeSource = rendererSource.slice(bevelEncodeStart, bevelEncodeEnd);
+const fieldPreparationIndex = bevelEncodeSource.indexOf(
+  "const fieldPreparation = this.prepareHeightField(",
+);
+const encoderCommandIndexes = [
+  "options.encoder.clearBuffer(",
+  "options.encoder.beginComputePass(",
+  "options.encoder.beginRenderPass(",
+].map((needle) => bevelEncodeSource.indexOf(needle)).filter((index) => index >= 0);
+assert.notEqual(fieldPreparationIndex, -1);
+assert.ok(encoderCommandIndexes.length > 0);
+assert.ok(
+  encoderCommandIndexes.every((index) => fieldPreparationIndex < index),
+  "field replacement must precede every encoder command that can use the field",
+);
 
 console.log("Raster bevel Heightfield V2 verification passed.");

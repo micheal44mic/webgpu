@@ -5,6 +5,8 @@ export const RASTER_BEVEL_STYLE_BUILD =
 
 export const RASTER_BEVEL_TILE_SIZE = 256;
 export const RASTER_BEVEL_NORMAL_APRON = 1;
+export const RASTER_BEVEL_FIELD_IDLE_SHRINK_DELAY_MS = 1_500;
+export const RASTER_BEVEL_FIELD_MINIMUM_SHRINK_BYTES = 8 * 1024 * 1024;
 export const RASTER_BEVEL_MAX_RADIUS = 576;
 export const RASTER_BEVEL_PROFILE_SIZE = 1024;
 export const RASTER_BEVEL_GLOSS_SIZE = 256;
@@ -87,6 +89,16 @@ export interface RasterBevelRect {
   y: number;
   width: number;
   height: number;
+}
+
+export type RasterBevelFieldTransitionKind = "retain" | "grow" | "shrink";
+
+export interface RasterBevelFieldTransition {
+  kind: RasterBevelFieldTransitionKind;
+  allocationBounds: RasterBevelRect | null;
+  validBounds: RasterBevelRect | null;
+  reallocated: boolean;
+  fullRebuild: boolean;
 }
 
 export interface RasterBevelStyleChange {
@@ -585,6 +597,92 @@ export function rasterBevelAlignedFieldBounds(
   return right > x && bottom > y
     ? { x, y, width: right - x, height: bottom - y }
     : null;
+}
+
+function copyRasterBevelRect(rect: RasterBevelRect | null): RasterBevelRect | null {
+  return rect ? { ...rect } : null;
+}
+
+function rasterBevelRectsEqual(
+  left: RasterBevelRect | null,
+  right: RasterBevelRect | null,
+): boolean {
+  return left === right || Boolean(
+    left
+    && right
+    && left.x === right.x
+    && left.y === right.y
+    && left.width === right.width
+    && left.height === right.height,
+  );
+}
+
+function rasterBevelRectContains(
+  container: RasterBevelRect | null,
+  candidate: RasterBevelRect | null,
+): boolean {
+  if (!candidate) {
+    return true;
+  }
+  return Boolean(
+    container
+    && candidate.x >= container.x
+    && candidate.y >= container.y
+    && candidate.x + candidate.width <= container.x + container.width
+    && candidate.y + candidate.height <= container.y + container.height,
+  );
+}
+
+export function rasterBevelFieldMemoryBytes(
+  bounds: RasterBevelRect | null,
+): number {
+  if (!bounds) {
+    return 4;
+  }
+  return (bounds.width + RASTER_BEVEL_NORMAL_APRON * 2)
+    * (bounds.height + RASTER_BEVEL_NORMAL_APRON * 2)
+    * 4;
+}
+
+export function rasterBevelFieldShrinkIsWorthwhile(
+  currentBounds: RasterBevelRect | null,
+  targetBounds: RasterBevelRect | null,
+): boolean {
+  return rasterBevelFieldMemoryBytes(currentBounds)
+    - rasterBevelFieldMemoryBytes(targetBounds)
+    >= RASTER_BEVEL_FIELD_MINIMUM_SHRINK_BYTES;
+}
+
+export function planRasterBevelFieldTransition(
+  currentAllocationBounds: RasterBevelRect | null,
+  targetBounds: RasterBevelRect | null,
+  allowShrink = false,
+): RasterBevelFieldTransition {
+  const allocationContainsTarget = rasterBevelRectContains(
+    currentAllocationBounds,
+    targetBounds,
+  );
+  const shrink = allocationContainsTarget
+    && !rasterBevelRectsEqual(currentAllocationBounds, targetBounds)
+    && allowShrink
+    && rasterBevelFieldShrinkIsWorthwhile(currentAllocationBounds, targetBounds);
+  const grow = !allocationContainsTarget;
+  if (grow || shrink) {
+    return {
+      kind: shrink ? "shrink" : "grow",
+      allocationBounds: copyRasterBevelRect(targetBounds),
+      validBounds: copyRasterBevelRect(targetBounds),
+      reallocated: true,
+      fullRebuild: targetBounds !== null,
+    };
+  }
+  return {
+    kind: "retain",
+    allocationBounds: copyRasterBevelRect(currentAllocationBounds),
+    validBounds: copyRasterBevelRect(targetBounds),
+    reallocated: false,
+    fullRebuild: false,
+  };
 }
 
 export function rasterBevelOutsideFieldHeight(

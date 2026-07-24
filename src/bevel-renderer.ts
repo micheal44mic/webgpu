@@ -4,6 +4,7 @@ import {
   RASTER_BEVEL_PROFILE_SIZE,
   RASTER_BEVEL_TILE_SIZE,
   deriveRasterBevelHeightfield,
+  planRasterBevelFieldTransition,
   makeRasterBevelSplineContourLut,
   rasterBevelAlignedFieldBounds,
   normalizeRasterBevelStyle,
@@ -21,8 +22,6 @@ export const RASTER_BEVEL_FIELD_STRATEGY =
 export const RASTER_BEVEL_BOUNDING_FIELD_STRATEGY =
   "persistent-tile-aligned-influence-bbox-plus-one-pixel-apron-r32float-heightfield" as const;
 export const RASTER_BEVEL_BOUNDING_FIELD_ENABLED_BY_DEFAULT = false;
-export const RASTER_BEVEL_FIELD_IDLE_SHRINK_DELAY_MS = 1_500;
-export const RASTER_BEVEL_FIELD_MINIMUM_SHRINK_BYTES = 8 * 1024 * 1024;
 export const RASTER_BEVEL_DISTANCE_STRATEGY =
   "subpixel-marching-squares-segment-jfa-r32float" as const;
 export const RASTER_BEVEL_WORKSPACE_STRATEGY =
@@ -169,36 +168,6 @@ function copyRect(rect: RasterBevelRect | null): RasterBevelRect | null {
   return rect ? { ...rect } : null;
 }
 
-function rectsEqual(
-  left: RasterBevelRect | null,
-  right: RasterBevelRect | null,
-): boolean {
-  return left === right || Boolean(
-    left
-    && right
-    && left.x === right.x
-    && left.y === right.y
-    && left.width === right.width
-    && left.height === right.height,
-  );
-}
-
-function rectContains(
-  container: RasterBevelRect | null,
-  candidate: RasterBevelRect | null,
-): boolean {
-  if (!candidate) {
-    return true;
-  }
-  return Boolean(
-    container
-    && candidate.x >= container.x
-    && candidate.y >= container.y
-    && candidate.x + candidate.width <= container.x + container.width
-    && candidate.y + candidate.height <= container.y + container.height,
-  );
-}
-
 function heightTextureDimensions(bounds: RasterBevelRect | null): {
   width: number;
   height: number;
@@ -209,19 +178,6 @@ function heightTextureDimensions(bounds: RasterBevelRect | null): {
       height: bounds.height + RASTER_BEVEL_NORMAL_APRON * 2,
     }
     : { width: 1, height: 1 };
-}
-
-function heightFieldBytes(bounds: RasterBevelRect | null): number {
-  const dimensions = heightTextureDimensions(bounds);
-  return dimensions.width * dimensions.height * 4;
-}
-
-export function rasterBevelFieldShrinkIsWorthwhile(
-  currentBounds: RasterBevelRect | null,
-  targetBounds: RasterBevelRect | null,
-): boolean {
-  return heightFieldBytes(currentBounds) - heightFieldBytes(targetBounds)
-    >= RASTER_BEVEL_FIELD_MINIMUM_SHRINK_BYTES;
 }
 
 function workspaceLayout(extent: number, segments: boolean): WorkspaceLayout {
@@ -1125,9 +1081,11 @@ export class RasterBevelRenderer {
       return false;
     }
     const target = this.normalizedFieldBounds(bounds);
-    return rectContains(this._fieldAllocationBounds, target)
-      && !rectsEqual(this._fieldAllocationBounds, target)
-      && rasterBevelFieldShrinkIsWorthwhile(this._fieldAllocationBounds, target);
+    return planRasterBevelFieldTransition(
+      this._fieldAllocationBounds,
+      target,
+      true,
+    ).kind === "shrink";
   }
 
   private replaceHeightField(
@@ -1177,21 +1135,23 @@ export class RasterBevelRenderer {
       return { reallocated: false, fullRebuild: false, state: this.fieldState };
     }
     const target = this.normalizedFieldBounds(bounds);
-    const allocationContainsTarget = rectContains(this._fieldAllocationBounds, target);
-    const shrink = allocationContainsTarget
-      && !rectsEqual(this._fieldAllocationBounds, target)
-      && allowShrink
-      && rasterBevelFieldShrinkIsWorthwhile(this._fieldAllocationBounds, target);
-    const grow = !allocationContainsTarget;
-    if (grow || shrink) {
-      this.replaceHeightField(target, shrink);
+    const transition = planRasterBevelFieldTransition(
+      this._fieldAllocationBounds,
+      target,
+      allowShrink,
+    );
+    if (transition.reallocated) {
+      this.replaceHeightField(
+        transition.allocationBounds,
+        transition.kind === "shrink",
+      );
       return {
         reallocated: true,
-        fullRebuild: target !== null,
+        fullRebuild: transition.fullRebuild,
         state: this.fieldState,
       };
     }
-    this._fieldValidBounds = copyRect(target);
+    this._fieldValidBounds = copyRect(transition.validBounds);
     return { reallocated: false, fullRebuild: false, state: this.fieldState };
   }
 

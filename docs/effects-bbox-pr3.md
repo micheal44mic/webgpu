@@ -26,6 +26,54 @@ correzioni; non descrivono più blocker aperti.
 
 I riferimenti sotto sono stati verificati sul commit `e9851ed`.
 
+## Stato dell'implementazione dopo gli Step 2–3
+
+Lo Step 2 è congelato nel commit `0f26957`. Il flag
+`bevelBoundingFieldEnabled` resta default-OFF. OFF conserva texture `4098²`,
+uniform da 80 byte, shader e dominio full-document; ON usa un'allocazione
+R32F pari al bbox tile-aligned più un apron fisico per lato e uniform da 112
+byte con origine storage, bounds validi e costante esterna.
+
+La transizione del campo è ora una funzione pura e verificata:
+
+| Stato | Azione fisica | Lavoro del campo |
+|---|---:|---:|
+| prima allocazione o crescita oltre capacità | nuova texture | rebuild dell'intero nuovo bbox |
+| ROI contenuta nella capacità | nessuna realloc | soli tile della ROI |
+| dominio più piccolo ma motore non ancora idle | capacità trattenuta | bounds validi ridotti, nessun texel stale leggibile |
+| idle per 1,5 s e risparmio almeno 8 MiB | nuova texture più piccola | rebuild dell'intero nuovo bbox |
+| sorgente vuota dopo idle | placeholder R32F `1×1` | nessun job |
+
+La sostituzione avviene all'ingresso di `RasterBevelRenderer.encode()`, prima
+di qualunque comando dell'encoder che possa leggere o scrivere il campo. Non
+esiste `copyTextureToTexture`: una crescita ricostruisce il nuovo bbox, quindi
+non dipende dai texel della texture distrutta. Lo shrink del campo precede lo
+shrink del pool condiviso, perché il rebuild usa ancora una volta il workspace
+Smusso; questo evita una coppia shrink/regrow dello scratch.
+
+`retargetEffectsWorkingSet()` accetta ora un terzo parametro `contentBounds`.
+Parametro omesso conserva il contratto precedente 4096², `null` dichiara una
+sorgente vuota. Nei confronti PR 3 Traccia, coverage, mask e styled restano
+full-document; solo lo Smusso riceve i bounds piccoli, così il benchmark non
+attribuisce a questa PR risparmi fuori scope.
+
+### Test di mutazione CPU degli Step 2–3
+
+Eseguiti da `npm run bevel:verify`; ogni mutazione viene caricata come modulo
+separato e l'implementazione su disco resta corretta.
+
+| Invariante | Implementazione corretta | Mutazione eseguita | Esito della mutazione |
+|---|---:|---|---:|
+| costante esterna `pillow` | passa | costante forzata a zero | fallisce `pillow`; `inner` e `outer` restano verdi |
+| crescita con texture nuova | passa | `fullRebuild=false` (sola corona) | fallisce |
+| ROI dentro capacità | passa | piano atteso `retain`, nessuna realloc | verde |
+| ordine di realloc | passa | controllo statico prima di ogni comando encoder del campo | verde |
+| nessuna copia di preservazione | passa | ricerca `copyTextureToTexture` | assente |
+
+Il confronto pixel GPU contro un renderer full-document indipendente, le
+mutazioni origine/clamp e i benchmark browser appartengono allo Step 4 e non
+sono dichiarati verificati in questa fase.
+
 ## A. Copertura delle letture
 
 La prova di centralizzazione **passa**.
