@@ -11,6 +11,7 @@ import {
   rasterBevelLightVector,
   type RasterBevelStyle,
 } from "./bevel-core";
+import type { EffectsScratchLease, EffectsScratchPool } from "./effects-scratch-pool";
 
 export const RASTER_STROKE_RENDERER_BUILD =
   "style-stack-webgpu-v8-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even";
@@ -27,6 +28,7 @@ export type RasterStrokeSourceMode = "permanent" | "light-glaze" | "thickness-ta
 
 export interface RasterStrokeRendererOptions {
   device: GPUDevice;
+  scratchPool: EffectsScratchPool;
   documentWidth: number;
   documentHeight: number;
   layerFormat: "rgba8unorm" | "rgba16float";
@@ -1095,6 +1097,7 @@ export class RasterStrokeRenderer {
   readonly controlMemoryBytes: number;
 
   private readonly device: GPUDevice;
+  private readonly scratchPool: EffectsScratchPool;
   private readonly documentWidth: number;
   private readonly documentHeight: number;
   private readonly layerFormat: "rgba8unorm" | "rgba16float";
@@ -1104,7 +1107,9 @@ export class RasterStrokeRenderer {
   private readonly readbackEnabled: boolean;
   private readonly maximumScratchExtent: number;
   private _scratchExtent: number;
-  private _scratchMemoryBytes: number;
+  private _scratchMemoryBytes = 0;
+  private scratchPoolGeneration = -1;
+  private scratchPoolLayoutVersion = -1;
   private readonly parameterBuffer: GPUBuffer;
   private readonly displayParameterBuffers: Record<SourceModeCode, GPUBuffer>;
   private readonly displayParameterUpload = new ArrayBuffer(DISPLAY_PARAMETER_BYTES);
@@ -1122,7 +1127,6 @@ export class RasterStrokeRenderer {
   private readonly indirectTemplateUpload = new Uint32Array(
     PARAMETER_CAPACITY * INDIRECT_ARGUMENT_WORDS,
   );
-  private scratchBuffers: [GPUBuffer, GPUBuffer];
   private readonly coverageBuffer: GPUBuffer;
   private readonly thresholdMaskBuffer: GPUBuffer;
   private readonly changeStateBuffer: GPUBuffer;
@@ -1164,6 +1168,7 @@ export class RasterStrokeRenderer {
 
   private constructor(options: RasterStrokeRendererOptions) {
     this.device = options.device;
+    this.scratchPool = options.scratchPool;
     this.documentWidth = options.documentWidth;
     this.documentHeight = options.documentHeight;
     if (this.documentWidth % COVERAGE_WORD_PIXELS !== 0) {
@@ -1179,7 +1184,7 @@ export class RasterStrokeRenderer {
       Number(this.device.limits.maxStorageBufferBindingSize) / 8,
     ));
     const maximumScratchFromBuffer = Math.floor(Math.sqrt(
-      Number(this.device.limits.maxBufferSize) / 8,
+      Number(this.device.limits.maxBufferSize) / 16,
     ));
     this.maximumScratchExtent = Math.floor(
       Math.min(maximumScratchFromBinding, maximumScratchFromBuffer) / WORKGROUP_SIZE,
@@ -1187,8 +1192,7 @@ export class RasterStrokeRenderer {
     this._scratchExtent = this.normalizeScratchExtent(
       options.scratchExtent ?? DEFAULT_SCRATCH_EXTENT,
     );
-    this.scratchBuffers = this.createScratchBuffers(this._scratchExtent);
-    this._scratchMemoryBytes = this._scratchExtent * this._scratchExtent * 8 * 2;
+    this.updateScratchRequirement();
     const parameterBufferBytes = PARAMETER_CAPACITY * PARAMETER_STRIDE;
     this.parameterBuffer = this.device.createBuffer({
       label: "Traccia dynamic dispatch parameters",
@@ -1433,20 +1437,53 @@ export class RasterStrokeRenderer {
     return extent;
   }
 
-  private createScratchBuffers(extent: number): [GPUBuffer, GPUBuffer] {
-    const scratchBytes = extent * extent * 8;
-    return [
-      this.device.createBuffer({
-        label: `Traccia packed dual JFA scratch A ${extent}²`,
-        size: scratchBytes,
-        usage: GPUBufferUsage.STORAGE,
-      }),
-      this.device.createBuffer({
-        label: `Traccia packed dual JFA scratch B ${extent}²`,
-        size: scratchBytes,
-        usage: GPUBufferUsage.STORAGE,
-      }),
-    ];
+  private updateScratchRequirement(): EffectsScratchLease {
+    const rangeBytes = this._scratchExtent * this._scratchExtent * 8;
+    this._scratchMemoryBytes = rangeBytes * 2;
+    return this.scratchPool.setRequirement("stroke", [
+      {
+        id: "ping-a",
+        label: `Traccia packed dual JFA scratch A ${this._scratchExtent}²`,
+        size: rangeBytes,
+      },
+      {
+        id: "ping-b",
+        label: `Traccia packed dual JFA scratch B ${this._scratchExtent}²`,
+        size: rangeBytes,
+      },
+    ]);
+  }
+
+  private requireScratchLease(): EffectsScratchLease {
+    const lease = this.scratchPool.lease("stroke");
+    if (!lease) {
+      throw new Error("Lease scratch Traccia non disponibile.");
+    }
+    return lease;
+  }
+
+  private scratchBinding(
+    lease: EffectsScratchLease,
+    index: ScratchIndex,
+  ): GPUBufferBinding {
+    const range = lease.ranges[index === 0 ? "ping-a" : "ping-b"];
+    if (!range) {
+      throw new Error(`Range scratch Traccia ${index} non disponibile.`);
+    }
+    return { buffer: lease.buffer, offset: range.offset, size: range.size };
+  }
+
+  private syncScratchBindGroups(): void {
+    const lease = this.requireScratchLease();
+    if (
+      lease.generation === this.scratchPoolGeneration
+      && lease.layoutVersion === this.scratchPoolLayoutVersion
+    ) {
+      return;
+    }
+    if (this.jfaBindGroupLayout) {
+      this.rebuildScratchBindGroups();
+    }
   }
 
   resizeScratch(requestedExtent: number): boolean {
@@ -1457,15 +1494,11 @@ export class RasterStrokeRenderer {
     if (nextExtent === this._scratchExtent) {
       return false;
     }
-    const previousBuffers = this.scratchBuffers;
-    this.scratchBuffers = this.createScratchBuffers(nextExtent);
     this._scratchExtent = nextExtent;
-    this._scratchMemoryBytes = nextExtent * nextExtent * 8 * 2;
+    this.updateScratchRequirement();
     if (this.jfaBindGroupLayout) {
       this.rebuildScratchBindGroups();
     }
-    previousBuffers[0].destroy();
-    previousBuffers[1].destroy();
     return true;
   }
 
@@ -1866,6 +1899,9 @@ export class RasterStrokeRenderer {
 
 
   private rebuildScratchBindGroups(): void {
+    const lease = this.requireScratchLease();
+    const scratchA = this.scratchBinding(lease, 0);
+    const scratchB = this.scratchBinding(lease, 1);
     this.jfaBindGroups = [
       this.device.createBindGroup({
         label: "Traccia JFA A to B",
@@ -1879,8 +1915,8 @@ export class RasterStrokeRenderer {
               size: PARAMETER_BYTES,
             },
           },
-          { binding: 1, resource: { buffer: this.scratchBuffers[0] } },
-          { binding: 2, resource: { buffer: this.scratchBuffers[1] } },
+          { binding: 1, resource: scratchA },
+          { binding: 2, resource: scratchB },
         ],
       }),
       this.device.createBindGroup({
@@ -1895,14 +1931,16 @@ export class RasterStrokeRenderer {
               size: PARAMETER_BYTES,
             },
           },
-          { binding: 1, resource: { buffer: this.scratchBuffers[1] } },
-          { binding: 2, resource: { buffer: this.scratchBuffers[0] } },
+          { binding: 1, resource: scratchB },
+          { binding: 2, resource: scratchA },
         ],
       }),
     ];
     this.rebuildSourceBindGroups(0);
     this.rebuildSourceBindGroups(1);
     this.rebuildSourceBindGroups(2);
+    this.scratchPoolGeneration = lease.generation;
+    this.scratchPoolLayoutVersion = lease.layoutVersion;
   }
 
   private commonSourceEntries(mode: SourceModeCode): GPUBindGroupEntry[] {
@@ -1923,12 +1961,13 @@ export class RasterStrokeRenderer {
   }
 
   private rebuildSourceBindGroups(mode: SourceModeCode): void {
+    const scratchLease = this.requireScratchLease();
     this.seedBindGroups.set(mode, this.device.createBindGroup({
       label: `Traccia seed source mode ${mode}`,
       layout: this.seedBindGroupLayout,
       entries: [
         ...this.commonSourceEntries(mode),
-        { binding: 5, resource: { buffer: this.scratchBuffers[0] } },
+        { binding: 5, resource: this.scratchBinding(scratchLease, 0) },
       ],
     }));
     for (const scratchIndex of [0, 1] as const) {
@@ -1937,7 +1976,7 @@ export class RasterStrokeRenderer {
         layout: this.resolveBindGroupLayout,
         entries: [
           ...this.commonSourceEntries(mode),
-          { binding: 5, resource: { buffer: this.scratchBuffers[scratchIndex] } },
+          { binding: 5, resource: this.scratchBinding(scratchLease, scratchIndex) },
           { binding: 6, resource: { buffer: this.coverageBuffer } },
         ],
       }));
@@ -2112,6 +2151,7 @@ export class RasterStrokeRenderer {
     if (this.destroyed) {
       throw new Error("Renderer Traccia già distrutto.");
     }
+    this.syncScratchBindGroups();
     const rebuildRect = wordAlignedCoverageRect(
       options.rebuildRect,
       this.documentWidth,
@@ -2552,8 +2592,7 @@ export class RasterStrokeRenderer {
       return;
     }
     this.destroyed = true;
-    this.scratchBuffers[0].destroy();
-    this.scratchBuffers[1].destroy();
+    this.scratchPool.releaseRequirement("stroke");
     this.parameterBuffer.destroy();
     this.bevelUniformBuffer.destroy();
     this.displayParameterBuffers[0].destroy();

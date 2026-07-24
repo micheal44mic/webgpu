@@ -1,5 +1,6 @@
 import type { RasterBevelRenderer } from "./bevel-renderer";
 import type { RasterStrokeRenderer } from "./stroke-renderer";
+import { EffectsScratchPool } from "./effects-scratch-pool";
 
 export const EFFECTS_WORKING_SET_STRATEGY =
   "single-retargetable-active-layer-source" as const;
@@ -10,6 +11,11 @@ export interface EffectsLayerSource {
   view: GPUTextureView;
   format: EffectsLayerFormat;
 }
+export interface EffectsWorkbenchOptions extends EffectsLayerSource {
+  device: GPUDevice;
+  canReallocateScratch?: () => boolean;
+}
+
 
 /**
  * Owns the one reusable set of derived effect resources. The engine remains
@@ -21,8 +27,12 @@ export class EffectsWorkbench {
   private _strokeRenderer: RasterStrokeRenderer | null = null;
   private _bevelRenderer: RasterBevelRenderer | null = null;
 
-  constructor(source: EffectsLayerSource) {
-    this.source = { ...source };
+  readonly scratchPool: EffectsScratchPool;
+  constructor(options: EffectsWorkbenchOptions) {
+    this.source = { view: options.view, format: options.format };
+    this.scratchPool = new EffectsScratchPool(options.device, {
+      canReallocate: options.canReallocateScratch,
+    });
   }
 
   get sourceView(): GPUTextureView {
@@ -86,5 +96,6 @@ export class EffectsWorkbench {
   destroy(): void {
     this.releaseStrokeRenderer();
     this.releaseBevelRenderer();
+    this.scratchPool.destroy();
   }
 }

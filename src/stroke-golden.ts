@@ -568,8 +568,14 @@ export async function runRasterStrokeGolden(
   let retargetWorkbench: EffectsWorkbench | null = null;
   let referenceWorkbench: EffectsWorkbench | null = null;
   try {
+    retargetWorkbench = new EffectsWorkbench({
+      device,
+      view: sourceTexture.createView(),
+      format: RASTER_STROKE_GOLDEN_FORMAT,
+    });
     renderer = await RasterStrokeRenderer.create({
       device,
+      scratchPool: retargetWorkbench.scratchPool,
       documentWidth: RASTER_STROKE_GOLDEN_WIDTH,
       documentHeight: RASTER_STROKE_GOLDEN_HEIGHT,
       layerFormat: RASTER_STROKE_GOLDEN_FORMAT,
@@ -945,6 +951,7 @@ export async function runRasterStrokeGolden(
     retargetBevelStyle.size = 12;
     bevelRenderer = await RasterBevelRenderer.create({
       device,
+      scratchPool: retargetWorkbench.scratchPool,
       documentWidth: RASTER_STROKE_GOLDEN_WIDTH,
       documentHeight: RASTER_STROKE_GOLDEN_HEIGHT,
       layerView: sourceTexture.createView(),
@@ -952,10 +959,6 @@ export async function runRasterStrokeGolden(
       thicknessTailUniformBuffer,
     });
     const retargetBevelRenderer = bevelRenderer;
-    retargetWorkbench = new EffectsWorkbench({
-      view: sourceTexture.createView(),
-      format: RASTER_STROKE_GOLDEN_FORMAT,
-    });
     retargetWorkbench.attachStrokeRenderer(renderer);
     retargetWorkbench.attachBevelRenderer(retargetBevelRenderer);
     retargetBevelRenderer.updateStyleResources(retargetBevelStyle);
@@ -1075,21 +1078,24 @@ export async function runRasterStrokeGolden(
     const crossRetargetedMip0 = await renderer.readStyledPixels(undefined, 0);
     const crossRetargetedMip1 = await renderer.readStyledPixels(undefined, 1);
 
+    referenceWorkbench = new EffectsWorkbench({
+      device,
+      view: retargetSourceTexture.createView(),
+      format: RASTER_STROKE_GOLDEN_FORMAT,
+    });
     const referenceBevelRenderer = await RasterBevelRenderer.create({
       device,
+      scratchPool: referenceWorkbench.scratchPool,
       documentWidth: RASTER_STROKE_GOLDEN_WIDTH,
       documentHeight: RASTER_STROKE_GOLDEN_HEIGHT,
       layerView: retargetSourceTexture.createView(),
       lightGlazeUniformBuffer,
       thicknessTailUniformBuffer,
     });
-    referenceWorkbench = new EffectsWorkbench({
-      view: retargetSourceTexture.createView(),
-      format: RASTER_STROKE_GOLDEN_FORMAT,
-    });
     referenceWorkbench.attachBevelRenderer(referenceBevelRenderer);
     const referenceStrokeRenderer = await RasterStrokeRenderer.create({
       device,
+      scratchPool: referenceWorkbench.scratchPool,
       documentWidth: RASTER_STROKE_GOLDEN_WIDTH,
       documentHeight: RASTER_STROKE_GOLDEN_HEIGHT,
       layerFormat: RASTER_STROKE_GOLDEN_FORMAT,

@@ -11,6 +11,7 @@ import {
 } from "./bevel-core";
 import { jfaScheduleForExtent } from "./stroke-core";
 import type { RasterStrokeSourceMode } from "./stroke-renderer";
+import type { EffectsScratchLease, EffectsScratchPool } from "./effects-scratch-pool";
 
 export const RASTER_BEVEL_RENDERER_BUILD =
   "raster-bevel-webgpu-v3-retargetable-layer-heightfield-v2-r32f-segment-jfa-workgroup-gaussian-gpu-gate";
@@ -23,6 +24,7 @@ export const RASTER_BEVEL_WORKSPACE_STRATEGY =
 
 export interface RasterBevelRendererOptions {
   device: GPUDevice;
+  scratchPool: EffectsScratchPool;
   documentWidth: number;
   documentHeight: number;
   layerView: GPUTextureView;
@@ -847,6 +849,9 @@ export class RasterBevelRenderer {
   readonly controlMemoryBytes: number;
 
   private readonly device: GPUDevice;
+  private readonly scratchPool: EffectsScratchPool;
+  private scratchPoolGeneration = -1;
+  private scratchPoolLayoutVersion = -1;
   private readonly documentWidth: number;
   private readonly documentHeight: number;
   private layerView: GPUTextureView;
@@ -861,8 +866,6 @@ export class RasterBevelRenderer {
   private readonly parameterUploadI32 = new Int32Array(this.parameterUpload);
   private readonly parameterUploadU32 = new Uint32Array(this.parameterUpload);
   private readonly parameterUploadF32 = new Float32Array(this.parameterUpload);
-  private workspaceBuffer: GPUBuffer | null = null;
-  private segmentWorkspaceBuffer: GPUBuffer | null = null;
   private readonly alphaClassMaskBuffer: GPUBuffer;
   private readonly gateStateBuffer: GPUBuffer;
   private readonly indirectArgumentsBuffer: GPUBuffer;
@@ -896,6 +899,7 @@ export class RasterBevelRenderer {
 
   private constructor(options: RasterBevelRendererOptions) {
     this.device = options.device;
+    this.scratchPool = options.scratchPool;
     this.documentWidth = options.documentWidth;
     this.documentHeight = options.documentHeight;
     this.layerView = options.layerView;
@@ -1208,10 +1212,32 @@ export class RasterBevelRenderer {
     this.updateStyleResources({});
   }
 
+  private requireWorkspaceLease(): EffectsScratchLease {
+    const lease = this.scratchPool.lease("bevel");
+    if (!lease) {
+      throw new Error("Lease scratch Smusso non disponibile.");
+    }
+    return lease;
+  }
+
+  private workspaceBinding(
+    lease: EffectsScratchLease,
+    rangeId: "common" | "segments",
+  ): GPUBufferBinding {
+    const range = lease.ranges[rangeId];
+    if (!range) {
+      throw new Error(`Range scratch Smusso ${rangeId} non disponibile.`);
+    }
+    return { buffer: lease.buffer, offset: range.offset, size: range.size };
+  }
+
   private rebuildBindGroups(): void {
-    if (!this.workspaceBuffer || !this.bindGroupLayout) {
+    if (!this.workspace || !this.bindGroupLayout) {
       return;
     }
+    const lease = this.requireWorkspaceLease();
+    const commonBinding = this.workspaceBinding(lease, "common");
+    const segmentBinding = this.workspaceBinding(lease, "segments");
     this.bindGroups.clear();
     for (const mode of [0, 1, 2] as const) {
       this.bindGroups.set(mode, this.device.createBindGroup({
@@ -1230,10 +1256,10 @@ export class RasterBevelRenderer {
           { binding: 2, resource: this.sourceViews[mode] },
           { binding: 3, resource: { buffer: this.lightGlazeUniformBuffer } },
           { binding: 4, resource: { buffer: this.thicknessTailUniformBuffer } },
-          { binding: 5, resource: { buffer: this.workspaceBuffer } },
+          { binding: 5, resource: commonBinding },
           {
             binding: 8,
-            resource: { buffer: this.segmentWorkspaceBuffer ?? this.workspaceBuffer },
+            resource: segmentBinding,
           },
           { binding: 6, resource: this.heightView },
           { binding: 7, resource: this.profileView },
@@ -1242,6 +1268,8 @@ export class RasterBevelRenderer {
         ],
       }));
     }
+    this.scratchPoolGeneration = lease.generation;
+    this.scratchPoolLayoutVersion = lease.layoutVersion;
   }
 
   private ensureWorkspace(requiredExtent: number, segments: boolean): WorkspaceLayout {
@@ -1253,57 +1281,65 @@ export class RasterBevelRenderer {
     const needsSegments = Boolean(this.workspace?.segments || segments);
     if (
       this.workspace
-      && this.workspaceBuffer
       && this.workspace.extent === extent
       && this.workspace.segments === needsSegments
     ) {
+      const lease = this.requireWorkspaceLease();
+      if (
+        lease.generation !== this.scratchPoolGeneration
+        || lease.layoutVersion !== this.scratchPoolLayoutVersion
+      ) {
+        this.rebuildBindGroups();
+      }
       return this.workspace;
     }
     const next = workspaceLayout(extent, needsSegments);
-    const maximumBufferBytes = Number(this.device.limits.maxBufferSize);
-    const maximumBindingBytes = Number(this.device.limits.maxStorageBufferBindingSize);
-    for (const [label, bytes] of [
-      ["comune", next.commonBytes],
-      ["segmenti", next.segmentBytes],
-    ] as const) {
-      if (bytes > maximumBufferBytes) {
-        throw new Error(`Scratch Smusso ${label} ${extent}² oltre maxBufferSize.`);
-      }
-      if (bytes > maximumBindingBytes) {
-        throw new Error(
-          `Scratch Smusso ${label} ${extent}² oltre maxStorageBufferBindingSize.`,
-        );
-      }
-    }
-    const nextCommonBuffer = this.device.createBuffer({
-      label: `Smusso lazy ROI arena comune ${extent}²`,
-      size: next.commonBytes,
-      usage: GPUBufferUsage.STORAGE,
-    });
-    let nextSegmentBuffer: GPUBuffer | null = null;
-    try {
-      if (next.segmentBytes > 0) {
-        nextSegmentBuffer = this.device.createBuffer({
-          label: `Smusso lazy ROI arena segmenti RGBA32F ${extent}²`,
-          size: next.segmentBytes,
-          usage: GPUBufferUsage.STORAGE,
-        });
-      }
-    } catch (error) {
-      nextCommonBuffer.destroy();
-      throw error;
-    }
-    const previousCommonBuffer = this.workspaceBuffer;
-    const previousSegmentBuffer = this.segmentWorkspaceBuffer;
-    this.workspaceBuffer = nextCommonBuffer;
-    this.segmentWorkspaceBuffer = nextSegmentBuffer;
+    this.scratchPool.setRequirement("bevel", [
+      {
+        id: "common",
+        label: `Smusso arena comune ${extent}²`,
+        size: next.commonBytes,
+      },
+      {
+        id: "segments",
+        label: `Smusso arena segmenti RGBA32F ${extent}²`,
+        size: next.segmentBytes,
+      },
+    ]);
     this.workspace = next;
     this._workspaceMemoryBytes = next.totalBytes;
     this._workspaceExtent = extent;
     this.rebuildBindGroups();
-    previousCommonBuffer?.destroy();
-    previousSegmentBuffer?.destroy();
     return next;
+  }
+
+  prewarmWorkspace(style: RasterBevelStyle): void {
+    if (this.destroyed) {
+      throw new Error("Renderer Smusso già distrutto.");
+    }
+    const normalized = normalizeRasterBevelStyle(style);
+    if (!normalized.enabled) {
+      return;
+    }
+    const derived = deriveRasterBevelHeightfield(normalized);
+    this.ensureWorkspace(
+      RASTER_BEVEL_TILE_SIZE + derived.apron * 2,
+      normalized.technique !== "smooth",
+    );
+  }
+
+  releaseIdleWorkspace(): boolean {
+    if (this.destroyed || !this.workspace) {
+      return false;
+    }
+    this.workspace = null;
+    this._workspaceMemoryBytes = 0;
+    this._workspaceExtent = 0;
+    this.scratchPoolGeneration = -1;
+    this.scratchPoolLayoutVersion = -1;
+    this.bindGroups.clear();
+    this.scratchPool.releaseRequirement("bevel");
+    return true;
   }
 
   private buildJobs(rect: RasterBevelRect, apron: number): BuildJob[] {
@@ -1903,10 +1939,8 @@ export class RasterBevelRenderer {
       return;
     }
     this.destroyed = true;
-    this.segmentWorkspaceBuffer?.destroy();
-    this.segmentWorkspaceBuffer = null;
-    this.workspaceBuffer?.destroy();
-    this.workspaceBuffer = null;
+    this.scratchPool.releaseRequirement("bevel");
+    this.workspace = null;
     this.heightTexture.destroy();
     this.profileTexture.destroy();
     this.glossTexture.destroy();

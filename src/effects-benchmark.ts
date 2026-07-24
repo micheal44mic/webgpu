@@ -122,12 +122,14 @@ async function createRendererPair(
   bevelStyle: RasterBevelStyle,
 ): Promise<RendererPair> {
   const workbench = new EffectsWorkbench({
+    device: options.device,
     view: layerView,
     format: options.layerFormat,
   });
   try {
     const bevel = await RasterBevelRenderer.create({
       device: options.device,
+      scratchPool: workbench.scratchPool,
       documentWidth: options.documentWidth,
       documentHeight: options.documentHeight,
       layerView,
@@ -141,6 +143,7 @@ async function createRendererPair(
 
     const stroke = await RasterStrokeRenderer.create({
       device: options.device,
+      scratchPool: workbench.scratchPool,
       documentWidth: options.documentWidth,
       documentHeight: options.documentHeight,
       layerFormat: options.layerFormat,

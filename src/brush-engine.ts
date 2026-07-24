@@ -77,6 +77,10 @@ import {
   EffectsWorkbench,
 } from "./effects-workbench";
 import type { EffectsWorkbenchBenchmarkReport } from "./effects-benchmark";
+import {
+  EFFECTS_SCRATCH_POOL_IDLE_SHRINK_DELAY_MS,
+  effectsScratchCanShrink,
+} from "./effects-scratch-pool";
 
 export type {
   RasterStrokePosition,
@@ -1263,6 +1267,8 @@ export class BrushEngine {
   private layerSamplingView!: GPUTextureView;
   private blendRenderer: DryBlendRenderer | null = null;
   private effectsWorkbench: EffectsWorkbench | null = null;
+  private effectsScratchShrinkTimer: number | null = null;
+  private effectsScratchShrinkInFlight = false;
 
   private get rasterStrokeRenderer(): RasterStrokeRenderer | null {
     return this.effectsWorkbench?.strokeRenderer ?? null;
@@ -1816,6 +1822,7 @@ export class BrushEngine {
       lightGlazeUniformBuffer: this.lightGlazeUniformBuffer,
       thicknessTailUniformBuffer: this.thicknessTailDisplayUniformBuffer,
       scratchExtent,
+      scratchPool: this.requireEffectsWorkbench().scratchPool,
     });
     renderer.setLightGlazeView(this.lightGlazeView);
     renderer.setThicknessTailView(this.thicknessTailView);
@@ -1862,6 +1869,7 @@ export class BrushEngine {
       layerView: this.layerView,
       lightGlazeUniformBuffer: this.lightGlazeUniformBuffer,
       thicknessTailUniformBuffer: this.thicknessTailDisplayUniformBuffer,
+      scratchPool: this.requireEffectsWorkbench().scratchPool,
     });
     renderer.setLightGlazeView(this.lightGlazeView);
     renderer.setThicknessTailView(this.thicknessTailView);
@@ -2224,7 +2232,7 @@ export class BrushEngine {
   }
 
   beginStrokeAtLayer(point: LayerPoint): void {
-    if (this.historyBusy) {
+    if (this.historyBusy || this.activeStroke) {
       return;
     }
     if (this.settings.grainMode !== "off" && !this.grainResident) {
@@ -2251,6 +2259,12 @@ export class BrushEngine {
     };
     this.flushPendingWorkBeforeSettingsChange();
     this.flushClosingLightGlazeSessionBeforeNewStroke();
+    this.cancelEffectsScratchShrink();
+    if (this.rasterBevelActive()) {
+      // Prewarm before activeStroke is assigned: the pool never reallocates
+      // while a pen/finger stroke is active, even after an idle shrink.
+      this.rasterBevelRenderer?.prewarmWorkspace(this.rasterBevelStyle);
+    }
     this.invalidateAdaptivePreview();
     const tool = this.settings.tool;
     const lightGlazeSettings = tool === "paint" && isStrokeGlazeBlendMode(this.settings.blendMode)
@@ -2491,6 +2505,7 @@ export class BrushEngine {
     } finally {
       this.historyBusy = false;
       this.publishHistoryState();
+      this.scheduleEffectsScratchShrink();
     }
   }
 
@@ -2515,6 +2530,7 @@ export class BrushEngine {
     this.layerContentBounds = null;
     this.requestRender();
     this.publishHistoryState();
+    this.scheduleEffectsScratchShrink();
     return true;
   }
 
@@ -2775,6 +2791,104 @@ export class BrushEngine {
       scratchAllocated: scratchMemoryMiB > 0,
       scratchMemoryMiB,
     };
+  }
+
+  private effectsScratchHasQueuedWork(): boolean {
+    return this.frameRequest !== null
+      || this.pendingStamps.length > 0
+      || this.pendingBlendBatches.length > 0
+      || this.clearRequested
+      || this.displayDirty
+      || this.lightGlazeSession !== null;
+  }
+
+  private effectsScratchCanShrinkNow(): boolean {
+    return effectsScratchCanShrink({
+      initialized: this.initialized,
+      activeStroke: this.activeStroke !== null,
+      historyBusy: this.historyBusy,
+      rasterStrokeBusy: this.rasterStrokeBusy,
+      rasterBevelBusy: this.rasterBevelBusy,
+      queuedWork: this.effectsScratchHasQueuedWork(),
+    });
+  }
+
+  private effectsScratchNeedsShrink(): boolean {
+    const snapshot = this.effectsWorkbench?.scratchPool.snapshot();
+    if (!snapshot || snapshot.currentBytes === 0) {
+      return false;
+    }
+    let retainedBytes = 0;
+    for (const [effectId, bytes] of Object.entries(snapshot.requirements)) {
+      if (effectId !== "bevel") {
+        retainedBytes = Math.max(retainedBytes, bytes);
+      }
+    }
+    return snapshot.currentBytes > retainedBytes;
+  }
+
+  private cancelEffectsScratchShrink(): void {
+    if (this.effectsScratchShrinkTimer === null) {
+      return;
+    }
+    window.clearTimeout(this.effectsScratchShrinkTimer);
+    this.effectsScratchShrinkTimer = null;
+  }
+
+  private scheduleEffectsScratchShrink(): void {
+    if (
+      this.effectsScratchShrinkTimer !== null
+      || this.effectsScratchShrinkInFlight
+      || !this.effectsScratchNeedsShrink()
+    ) {
+      return;
+    }
+    this.effectsScratchShrinkTimer = window.setTimeout(() => {
+      this.effectsScratchShrinkTimer = null;
+      void this.shrinkEffectsScratchAfterIdle();
+    }, EFFECTS_SCRATCH_POOL_IDLE_SHRINK_DELAY_MS);
+  }
+
+  private async shrinkEffectsScratchAfterIdle(): Promise<void> {
+    if (this.effectsScratchShrinkInFlight || !this.effectsScratchNeedsShrink()) {
+      return;
+    }
+    if (!this.effectsScratchCanShrinkNow()) {
+      this.scheduleEffectsScratchShrink();
+      return;
+    }
+
+    this.effectsScratchShrinkInFlight = true;
+    try {
+      await this.device.queue.onSubmittedWorkDone();
+      if (!this.effectsScratchCanShrinkNow()) {
+        return;
+      }
+
+      const pool = this.effectsWorkbench?.scratchPool;
+      if (!pool) {
+        return;
+      }
+      const before = pool.snapshot();
+      const retainedWithoutBevel = Math.max(
+        0,
+        ...Object.entries(before.requirements)
+          .filter(([effectId]) => effectId !== "bevel")
+          .map(([, bytes]) => bytes),
+      );
+      if ((before.requirements.bevel ?? 0) > retainedWithoutBevel) {
+        this.rasterBevelRenderer?.releaseIdleWorkspace();
+      }
+      const shrunk = pool.shrinkToFit();
+      if (shrunk) {
+        this.publishStats();
+      }
+    } finally {
+      this.effectsScratchShrinkInFlight = false;
+      if (this.effectsScratchNeedsShrink()) {
+        this.scheduleEffectsScratchShrink();
+      }
+    }
   }
 
   // Lo scratch Blend (~53 MiB) resta residente solo mentre lo strumento è
@@ -5517,7 +5631,13 @@ export class BrushEngine {
     this.releaseRasterStrokeRenderer();
     this.releaseRasterBevelRenderer();
 
-    this.effectsWorkbench = new EffectsWorkbench({ view, format });
+    this.effectsWorkbench?.destroy();
+    this.effectsWorkbench = new EffectsWorkbench({
+      device: this.device,
+      view,
+      format,
+      canReallocateScratch: () => this.activeStroke === null,
+    });
     oldBlendRenderer?.destroy();
     oldTexture?.destroy();
   }
@@ -7117,6 +7237,7 @@ export class BrushEngine {
     this.maybeReleaseIdleLightGlazeResources();
     this.maybeReleaseIdleGrainResources();
     this.maybeReleaseIdleShapeResources();
+    this.scheduleEffectsScratchShrink();
   }
 
   private recordHistoryBatch(
@@ -7290,6 +7411,7 @@ export class BrushEngine {
     } finally {
       this.historyBusy = false;
       this.publishHistoryState();
+      this.scheduleEffectsScratchShrink();
     }
   }
 
