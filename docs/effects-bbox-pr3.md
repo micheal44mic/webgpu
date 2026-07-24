@@ -330,10 +330,53 @@ affermare altro servirebbero più campioni o `timestamp-query`.
   `thickness:verify`, `effects-scratch:verify`
 - build Vite in directory temporanea; `dist/` non modificata (`git status` pulito)
 
+### Pittura interattiva con crescita dei bounds
+
+Misura mancante alla prima stesura, eseguita poi sul motore reale — non sul
+golden, che costruisce renderer propri. Sei tratti in punti progressivamente più
+lontani, ciascuno abbastanza lungo da spingere i bounds oltre il campo corrente,
+con campionamento dei delta di `requestAnimationFrame` e un tratto di warm-up
+escluso per separare l'inizializzazione pigra dal regime.
+
+Il campo è cresciuto **sette volte**, quindi il percorso di riallocazione è stato
+davvero esercitato, e la crescita è avvenuta anche **durante** un tratto, non solo
+fra un tratto e l'altro:
+
+| Momento | Campo | Memoria |
+|---|---|---:|
+| dopo il warm-up | `1024×1024 @ 1536,1536` | 4,0 MiB |
+| 3° tratto | `1792×1280 @ 1024,1536` | 8,8 MiB |
+| 5° tratto | `2816×1792 @ 512,1024` | 19,3 MiB |
+| 7° tratto | `3584×2560 @ 256,1024` | 35,0 MiB |
+
+Confronto diretto, stessa sequenza di tratti, stessa GPU:
+
+| | Flag OFF | Flag ON |
+|---|---:|---:|
+| Frame mediano | 6,9 ms | 6,9 ms |
+| p95 | 7,2 ms | 7,3 ms |
+| p99 | 8,9 ms | 9,0 ms |
+| Frame peggiore | 13,4 ms | **27,6 ms** |
+| Frame oltre 33 ms | 0 | **0** |
+| Errori | nessuno | nessuno |
+| Heightfield | 64,1 MiB sempre | da 4,0 a 35,0 MiB |
+
+Lettura: **il regime è identico**: mediana, p95 e p99 coincidono, quindi il
+percorso per stampo non paga nulla per la traduzione di coordinate e i controlli
+di bounds. Tutta la differenza è concentrata nei frame di crescita, dove la
+riallocazione più il rebuild del nuovo bbox costano circa **+14 ms** sul frame
+peggiore. A 60 Hz è un frame che ne occupa due: un micro-scatto nel caso
+peggiore, non un blocco, e limitato per costruzione perché i bounds crescono
+soltanto.
+
+Nell'app reale, a effetti attivi e senza contenuto, il totale GPU è **154,1 MiB**
+con il flag ON contro **218,1 MiB** con il flag OFF.
+
 ### Cosa resta non verificato
 
-- Il percorso di **pittura interattiva** con il flag ON non è coperto da test
-  automatici: il golden costruisce renderer propri, non quelli del motore.
-- Il flag resta **default-OFF**. Prima di renderlo predefinito serve una sessione
-  di disegno reale con crescita ripetuta dei bounds durante il tratto, che è il
-  percorso che nessuna delle misure qui sopra esercita.
+- Una sola GPU (NVIDIA Ampere desktop) e un pattern di tratti sintetico. Su
+  mobile il rebuild di crescita sarà proporzionalmente più lento, e il frame
+  peggiore va rimisurato lì prima di considerare il costo accettabile ovunque.
+- Il flag resta **default-OFF** in questo commit. I dati sopra sostengono
+  l'attivazione predefinita su desktop; la decisione è deliberatamente separata
+  dalla PR che la rende misurabile.
