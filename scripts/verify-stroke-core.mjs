@@ -441,7 +441,30 @@ assert.match(goldenSource, /light-glaze-m1-r8-max-coverage-opacity-0\.37/);
 assert.match(goldenSource, /thickness-tail-source-over/);
 assert.match(goldenSource, /diagnosticsMatch/);
 assert.match(goldenSource, /differingBytes/);
-assert.match(goldenSource, /RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION = 5/);
+assert.match(goldenSource, /RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION = 6/);
+// Il pool sostituisce il buffer fisico quando cresce e distrugge il vecchio: se
+// i renderer non rileggessero il lease, i loro bind group punterebbero a un
+// buffer distrutto. Nessun altro caso raggiunge quello stato.
+assert.match(goldenSource, /stroke-bevel-pool-growth-resync/);
+assert.match(goldenSource, /declareEffect\("golden-growth-probe"/);
+assert.match(goldenSource, /releaseRequirement\("golden-growth-probe"\)/);
+assert.match(
+  goldenSource,
+  /const poolBufferWasReplaced = generationAfterGrowth > generationBeforeGrowth/,
+);
+assert.ok(
+  /passed:\s*\n\s*resyncDifferingBytes === 0[\s\S]{0,320}&& poolBufferWasReplaced\s*\n\s*&& sourceContentDistinct,/
+    .test(goldenSource),
+  "Il caso di crescita del pool deve fallire se il buffer non è stato davvero sostituito.",
+);
+// Il retarget ricostruisce i bind group da solo: se avvenisse DOPO la crescita
+// del pool riparerebbe le bindings stantie dello Smusso e maschererebbe il
+// difetto. L'ordine è parte dell'invariante, non uno stile.
+assert.ok(
+  goldenSource.indexOf('label: "Traccia/Smusso pool growth resync view"')
+    < goldenSource.indexOf('declareEffect("golden-growth-probe"'),
+  "Il retarget deve precedere la crescita del pool, altrimenti il caso non prova nulla.",
+);
 assert.match(goldenSource, /stroke-bevel-same-view-retarget/);
 // Il caso same-view passerebbe anche con un retarget inerte: il caso
 // cross-texture e la sua guardia anti-tautologia sono ciò che lo dimostra.

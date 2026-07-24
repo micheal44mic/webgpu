@@ -3,6 +3,23 @@ export const EFFECTS_SCRATCH_POOL_STRATEGY =
 
 export const EFFECTS_SCRATCH_POOL_IDLE_SHRINK_DELAY_MS = 1_500;
 
+/**
+ * A reallocation costs a buffer destroy, a fresh allocation and a rebuild of
+ * every bind group that referenced the old buffer. Reclaiming a couple of MiB
+ * is not worth that, and paying it repeatedly is worse than never shrinking:
+ * when the largest declared footprint belongs to a releasable effect, the
+ * release/regrow cycle would otherwise repeat for as long as the user keeps
+ * painting. Only shrink when the reclaimed amount is actually material.
+ */
+export const EFFECTS_SCRATCH_MINIMUM_SHRINK_BYTES = 8 * 1024 * 1024;
+
+export function effectsScratchShrinkIsWorthwhile(
+  currentBytes: number,
+  retainedBytes: number,
+): boolean {
+  return currentBytes - retainedBytes >= EFFECTS_SCRATCH_MINIMUM_SHRINK_BYTES;
+}
+
 export interface EffectsScratchIdleState {
   initialized: boolean;
   activeStroke: boolean;
@@ -53,6 +70,12 @@ export interface EffectsScratchPoolSnapshot {
 
 export interface EffectsScratchPoolOptions {
   canReallocate?: () => boolean;
+  /**
+   * Carries the session high-water mark across a pool replacement, so that
+   * recreating the workbench (a layer format change, for instance) does not
+   * silently reset the peak the HUD reports.
+   */
+  initialPeakBytes?: number;
 }
 
 interface StoredRequirement {
@@ -123,6 +146,7 @@ export class EffectsScratchPool {
   constructor(device: GPUDevice, options: EffectsScratchPoolOptions = {}) {
     this.device = device;
     this.canReallocate = options.canReallocate ?? (() => true);
+    this._peakBytes = Math.max(0, options.initialPeakBytes ?? 0);
     this.storageAlignment = Math.max(
       4,
       Number(device.limits.minStorageBufferOffsetAlignment),
@@ -188,12 +212,24 @@ export class EffectsScratchPool {
     const layoutVersion = previous && sameRanges(previous.ranges, ranges)
       ? previous.layoutVersion
       : (previous?.layoutVersion ?? 0) + 1;
+    // Compute then commit. ensureCapacity() can throw — a refused reallocation
+    // during an active stroke is a legitimate outcome — and committing the
+    // requirement first would leave the map claiming a footprint the physical
+    // buffer does not have. Every later lease would then hand out ranges past
+    // the end of the buffer, and requiredCapacity() would keep reporting the
+    // value that was never allocated, so shrinkToFit() could never recover.
+    let requiredBytes = footprintBytes;
+    for (const [otherId, requirement] of this.requirements) {
+      if (otherId !== effectId) {
+        requiredBytes = Math.max(requiredBytes, requirement.footprintBytes);
+      }
+    }
+    this.ensureCapacity(requiredBytes);
     this.requirements.set(effectId, {
       footprintBytes,
       layoutVersion,
       ranges: Object.freeze(ranges),
     });
-    this.ensureCapacity(this.requiredCapacity());
     return footprintBytes > 0 ? this.requireLease(effectId) : null;
   }
 

@@ -355,8 +355,12 @@ struct StrokeParameters {
 const INVALID_SEED: u32 = ${INVALID_PACKED_SEED}u;
 
 @group(0) @binding(0) var<uniform> parameters: StrokeParameters;
-// Both disjoint subranges use one physical buffer. WebGPU validates usage per buffer
-// within this compute pass, so both bindings are storage; this shader never writes inputSeeds.
+// Both disjoint subranges live in one physical buffer. A buffer is a single
+// subresource, and each dispatch is its own usage scope, so the usage list must be
+// homogeneous: storage + read-only-storage on the same buffer is rejected even when
+// the ranges do not intersect. Both bindings are therefore storage — the spec's
+// "usage scope storage exception" permits it, and disjoint ranges keep the separate
+// per-dispatch aliasing check from firing. This shader never writes inputSeeds.
 @group(0) @binding(1) var<storage, read_write> inputSeeds: array<vec2<u32>>;
 @group(0) @binding(2) var<storage, read_write> outputSeeds: array<vec2<u32>>;
 
@@ -1500,8 +1504,19 @@ export class RasterStrokeRenderer {
     if (nextExtent === this._scratchExtent) {
       return false;
     }
+    const previousExtent = this._scratchExtent;
+    const previousMemoryBytes = this._scratchMemoryBytes;
     this._scratchExtent = nextExtent;
-    this.updateScratchRequirement();
+    try {
+      this.updateScratchRequirement();
+    } catch (error) {
+      // The pool can legitimately refuse to reallocate. Without this rollback
+      // the extent would keep the value that was never backed by a buffer, and
+      // the next call would take the early return above and never retry.
+      this._scratchExtent = previousExtent;
+      this._scratchMemoryBytes = previousMemoryBytes;
+      throw error;
+    }
     if (this.jfaBindGroupLayout) {
       this.rebuildScratchBindGroups();
     }

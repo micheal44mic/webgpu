@@ -14,6 +14,8 @@ export interface EffectsLayerSource {
 export interface EffectsWorkbenchOptions extends EffectsLayerSource {
   device: GPUDevice;
   canReallocateScratch?: () => boolean;
+  /** Session high-water mark carried over when the workbench is recreated. */
+  initialScratchPeakBytes?: number;
 }
 
 
@@ -32,6 +34,7 @@ export class EffectsWorkbench {
     this.source = { view: options.view, format: options.format };
     this.scratchPool = new EffectsScratchPool(options.device, {
       canReallocate: options.canReallocateScratch,
+      initialPeakBytes: options.initialScratchPeakBytes,
     });
   }
 

@@ -249,6 +249,72 @@ chiamata esatta e un indice diverso da `-1`; la stessa implementazione rotta è
 stata rieseguita e ha fallito. Questo evita di ripetere il difetto tautologico
 della PR 1.
 
+## Revisione post-audit
+
+Un audit indipendente (ricerca spec + revisione avversariale) ha prodotto le
+correzioni seguenti, tutte applicate in questo branch.
+
+### Legalità del binding aliasato: risolta, non aggirata
+
+La domanda aperta era se dichiarare `storage` entrambi i binding JFA sullo stesso
+buffer fosse legale per spec o soltanto tollerato da Dawn. **È legale per spec.**
+
+- Un buffer è un'unica subresource: *"We define subresource to be either a whole
+  buffer, or a texture subresource."*
+- La lista di usage dev'essere omogenea, non di cardinalità uno: *"Each usage in
+  U is storage. Multiple such usages are allowed even though they are writable.
+  This is the usage scope storage exception."*
+- L'esempio non normativo nomina il caso alla lettera: *"Disjoint ranges of a
+  single buffer may be bound to two different binding points as storage."*
+- Il controllo separato «Encoder bind groups alias a writable resource» scatta
+  solo su range che **si intersecano**; i nostri sono disgiunti.
+
+Il test CTS `api/validation/resource_usages/buffer/in_pass_encoder.spec.ts` lega
+un buffer due volte a offset disgiunti e attende successo per `storage+storage`.
+WebKit accetta con la stessa logica (`BindGroup::allowedUsage`, `OptionSet`).
+
+**Invariante da non perdere:** entrambi i binding devono passare un `size`
+esplicito. Se il size è omesso il range arriva a fine buffer, i due si
+intersecano e il dispatch diventa invalido. `scratchBinding()` costruisce sempre
+`{ buffer, offset, size }` dal lease.
+
+Non serve quindi la variante a due buffer fisici: la memoria sarebbe identica ma
+la complessità no.
+
+### Correzioni applicate
+
+| # | Difetto | Correzione |
+|---|---|---|
+| B1 | `declareEffect()` committava il requisito **prima** di validare la capacità: una riallocazione rifiutata lasciava la mappa con un footprint che il buffer non aveva, ogni lease successivo restituiva range oltre la fine del buffer e `shrinkToFit()` non recuperava più | compute-then-commit: la capacità si calcola su un candidato e si scrive solo a successo |
+| B1b | `resizeScratch()` assegnava `_scratchExtent` prima di `updateScratchRequirement()` senza rollback: dopo un rifiuto la chiamata successiva prendeva l'early return e non riprovava mai | rollback di extent e byte in `catch`, poi rilancio |
+| B2 | Nessun test poteva fallire cancellando il resync di generation/layoutVersion: nel golden la capacità non cresce mai, quindi la generation restava 1 per tutta la run | nuovo caso `stroke-bevel-pool-growth-resync`, che forza una sostituzione reale del buffer |
+| M1 | `effectsScratchNeedsShrink()` escludeva `"bevel"` dai retained, quindi restava vero **in regime stazionario** quando il footprint Smusso supera quello Traccia: ogni pausa fra due tratti diventava un ciclo free/regrow | soglia `EFFECTS_SCRATCH_MINIMUM_SHRINK_BYTES` (8 MiB): uno swing da 2 MiB non paga più una realloc, la discesa dal tier 2048² sì |
+| m3 | Il ramo `else` nel `finally` del golden era irraggiungibile, quindi un throw prima dell'attach perdeva i renderer | distruzione diretta dei renderer, **prima** del workbench, perché il loro `destroy()` rilascia il requisito su un pool ancora vivo |
+| m4 | Il picco del pool si azzerava alla ricreazione del workbench, contraddicendo la riga «picco storico» | `initialPeakBytes` propagato attraverso la sostituzione |
+| n1 | Il commento WGSL diceva «per buffer within this compute pass» | corretto: la subresource è il buffer intero, ma **ogni dispatch è un usage scope** |
+
+### Mutation test delle nuove invarianti
+
+Ogni riga provata con implementazione corretta, poi mutata, poi ripristinata.
+
+| Invariante | Corretta | Mutazione | Fallimento osservato |
+|---|---|---|---|
+| Resync Traccia dopo sostituzione del buffer | `d1630de4`, 0 byte | `syncScratchBindGroups()` rimossa da `encode()` | `377b4d79` ≠ `d1630de4`, **148 969 byte** |
+| Resync Smusso dopo sostituzione del buffer | `d1630de4`, 0 byte | fast path di `ensureWorkspace()` reso incondizionato | `377b4d79` ≠ `d1630de4`, **148 969 byte** |
+| Rifiuto di riallocazione atomico | capacità e requisiti invariati | commit prima della validazione | requisiti divergenti, lease fuori dal buffer |
+| Soglia di shrink | 2 MiB non shrinka, 48 MiB sì | soglia a 0 | `true !== false` |
+| Picco preservato | `4096` dopo la ricreazione | `initialPeakBytes` ignorato | `0 !== 4096` |
+
+Nota metodologica: **la prima versione del caso B2 passava anche con la
+mutazione attiva.** Confrontava il risultato con l'immagine precedente, ma un
+submit scartato per bind group stantii lascia in memoria esattamente
+quell'immagine. È stato necessario (a) far muovere il bersaglio, retargettando
+alla prima sorgente così che un rebuild riuscito produca l'immagine di contenuto
+A, e (b) spostare il retarget **prima** della crescita del pool, perché il
+retarget ricostruisce i bind group da solo e altrimenti riparava lo Smusso
+mascherando il difetto. Entrambi gli ordini sono ora asseriti in
+`verify-stroke-core.mjs`.
+
 ### Verifiche finali
 
 - `npm run effects-scratch:verify`

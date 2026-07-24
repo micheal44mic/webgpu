@@ -24,7 +24,9 @@ const moduleUrl = `data:text/javascript;base64,${
 const {
   EffectsScratchPool,
   EFFECTS_SCRATCH_POOL_IDLE_SHRINK_DELAY_MS,
+  EFFECTS_SCRATCH_MINIMUM_SHRINK_BYTES,
   effectsScratchCanShrink,
+  effectsScratchShrinkIsWorthwhile,
 } = await import(moduleUrl);
 
 function createMockDevice() {
@@ -184,6 +186,88 @@ assert.match(
 assert.match(
   strokeSource,
   /\{ binding: 1, visibility: GPUShaderStage\.COMPUTE, buffer: \{ type: "storage" \} \},/,
+);
+
+// A refused reallocation must leave the pool exactly as it was: if the
+// requirement were committed before the capacity check, the map would claim a
+// footprint the buffer does not have and every later lease would hand out
+// ranges past its end.
+{
+  const { device } = createMockDevice();
+  let reallocationAllowed = true;
+  const pool = new EffectsScratchPool(device, {
+    canReallocate: () => reallocationAllowed,
+  });
+  pool.declareEffect("stroke", [
+    { id: "a", label: "a", size: 1_024 },
+    { id: "b", label: "b", size: 1_024 },
+  ]);
+  const bytesBefore = pool.currentBytes;
+  const snapshotBefore = pool.snapshot();
+  reallocationAllowed = false;
+  assert.throws(
+    () => pool.declareEffect("stroke", [
+      { id: "a", label: "a", size: 65_536 },
+      { id: "b", label: "b", size: 65_536 },
+    ]),
+    /pennellata attiva/,
+    "A refused growth must throw",
+  );
+  assert.equal(pool.currentBytes, bytesBefore, "Refused growth must not change capacity");
+  assert.deepEqual(
+    pool.snapshot().requirements,
+    snapshotBefore.requirements,
+    "Refused growth must not commit the new requirement",
+  );
+  const lease = pool.lease("stroke");
+  for (const range of Object.values(lease.ranges)) {
+    assert.ok(
+      range.offset + range.size <= pool.currentBytes,
+      `Lease range ${range.offset}+${range.size} must stay inside the ${pool.currentBytes} byte buffer`,
+    );
+  }
+  reallocationAllowed = true;
+  assert.equal(pool.shrinkToFit(), false, "Nothing to reclaim after a refused growth");
+}
+
+// Shrinking costs a buffer replacement plus a bind group rebuild, so it must
+// only happen when it reclaims something material. Otherwise a releasable
+// effect that is merely a little larger than the retained one turns every idle
+// gap between two strokes into a free/regrow cycle.
+assert.equal(EFFECTS_SCRATCH_MINIMUM_SHRINK_BYTES, 8 * 1024 * 1024);
+assert.equal(
+  effectsScratchShrinkIsWorthwhile(18 * 1024 * 1024, 16 * 1024 * 1024),
+  false,
+  "A 2 MiB swing must not pay for a reallocation",
+);
+assert.equal(
+  effectsScratchShrinkIsWorthwhile(64 * 1024 * 1024, 16 * 1024 * 1024),
+  true,
+  "Dropping from the 2048² tier must still shrink",
+);
+assert.equal(
+  effectsScratchShrinkIsWorthwhile(16 * 1024 * 1024, 0),
+  true,
+  "Disabling every effect must still return the pool to zero",
+);
+assert.match(
+  engineSource,
+  /effectsScratchShrinkIsWorthwhile\(snapshot\.currentBytes, retainedBytes\)/,
+  "The engine shrink policy must go through the worthwhile threshold",
+);
+
+// The peak is a session statistic: recreating the workbench must not reset it.
+{
+  const { device } = createMockDevice();
+  const pool = new EffectsScratchPool(device, { initialPeakBytes: 4_096 });
+  assert.equal(pool.peakBytes, 4_096, "The carried peak must survive construction");
+  pool.declareEffect("stroke", [{ id: "a", label: "a", size: 1_024 }]);
+  assert.equal(pool.peakBytes, 4_096, "A smaller allocation must not lower the peak");
+}
+assert.match(
+  engineSource,
+  /initialScratchPeakBytes: previousScratchPeakBytes/,
+  "recreateLayerResources must carry the pool peak across the workbench replacement",
 );
 
 console.log("Effects scratch pool verification passed.");

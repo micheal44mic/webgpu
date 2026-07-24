@@ -81,6 +81,7 @@ import {
   EFFECTS_SCRATCH_POOL_IDLE_SHRINK_DELAY_MS,
   EFFECTS_SCRATCH_POOL_STRATEGY,
   effectsScratchCanShrink,
+  effectsScratchShrinkIsWorthwhile,
 } from "./effects-scratch-pool";
 
 export type {
@@ -2838,7 +2839,12 @@ export class BrushEngine {
         retainedBytes = Math.max(retainedBytes, bytes);
       }
     }
-    return snapshot.currentBytes > retainedBytes;
+    // Releasing the Smusso workspace only pays off when it actually reclaims
+    // something material. When the Smusso footprint merely exceeds the Traccia
+    // one by a little — reachable from the shipped UI with a hard chisel at a
+    // large size — an unconditional comparison stays true in steady state and
+    // turns every idle gap between two strokes into a free/regrow cycle.
+    return effectsScratchShrinkIsWorthwhile(snapshot.currentBytes, retainedBytes);
   }
 
   private cancelEffectsScratchShrink(): void {
@@ -5660,12 +5666,17 @@ export class BrushEngine {
     this.releaseRasterStrokeRenderer();
     this.releaseRasterBevelRenderer();
 
+    // The high-water mark is a session statistic, not a property of the pool
+    // instance: recreating the workbench must not silently reset the number the
+    // memory monitor reports.
+    const previousScratchPeakBytes = this.effectsWorkbench?.scratchPool.peakBytes ?? 0;
     this.effectsWorkbench?.destroy();
     this.effectsWorkbench = new EffectsWorkbench({
       device: this.device,
       view,
       format,
       canReallocateScratch: () => this.activeStroke === null,
+      initialScratchPeakBytes: previousScratchPeakBytes,
     });
     oldBlendRenderer?.destroy();
     oldTexture?.destroy();

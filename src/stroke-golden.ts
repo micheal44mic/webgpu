@@ -20,7 +20,7 @@ export const RASTER_STROKE_GOLDEN_WIDTH = 256;
 export const RASTER_STROKE_GOLDEN_HEIGHT = 192;
 export const RASTER_STROKE_GOLDEN_FORMAT = "rgba8unorm" as const;
 export const RASTER_STROKE_GOLDEN_MIP_CHAIN_VERSION = 1 as const;
-export const RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION = 5 as const;
+export const RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION = 6 as const;
 
 export interface RasterStrokeGoldenMip {
   level: number;
@@ -57,6 +57,7 @@ export interface RasterStrokeGoldenDiagnostic {
   beforeMip1Sha256?: string;
   afterMip1Sha256?: string;
   sourceContentDistinct?: boolean;
+  poolBufferWasReplaced?: boolean;
   maxByteDelta?: number;
   firstDifference?: {
     byteIndex: number;
@@ -1169,6 +1170,91 @@ export async function runRasterStrokeGolden(
       maxByteDelta: crossMaxByteDelta,
     });
 
+    // The pool replaces its physical GPUBuffer whenever capacity grows, and
+    // destroys the old one. Every bind group built on the previous buffer must
+    // therefore be rebuilt before the next encode. Nothing else in the suite
+    // reaches that state: the golden renderers are small enough that capacity
+    // never grows, so the pool generation stays at 1 for the whole run and the
+    // resync guards are never exercised. This case forces a real replacement.
+    const scratchPool = retargetWorkbench.scratchPool;
+    // Two ordering constraints make this case probing rather than decorative.
+    //
+    // First, the comparison target has to MOVE. A submit whose bind group still
+    // references the destroyed buffer is dropped, and a dropped submit leaves
+    // the styled texture holding exactly the image it already had — so
+    // comparing against the previous result would pass on a broken resync.
+    // Retargeting back to the first source means a successful rebuild produces
+    // the content-A image, which a dropped submit could never leave behind.
+    //
+    // Second, the retarget must happen BEFORE the pool grows. Retargeting
+    // rebuilds bind groups on its own, so doing it afterwards would repair the
+    // stale Smusso bindings as a side effect and hide the very defect this case
+    // exists to catch.
+    retargetWorkbench.retarget({
+      view: sourceTexture.createView({
+        label: "Traccia/Smusso pool growth resync view",
+      }),
+      format: RASTER_STROKE_GOLDEN_FORMAT,
+    });
+    const generationBeforeGrowth = scratchPool.generation;
+    const probeBytes = scratchPool.currentBytes + 8 * 1024 * 1024;
+    scratchPool.declareEffect("golden-growth-probe", [{
+      id: "probe",
+      label: "Golden pool growth probe",
+      size: probeBytes,
+    }]);
+    const generationAfterGrowth = scratchPool.generation;
+    await encodeRetargetStyleStack(
+      "Traccia/Smusso rebuild dopo sostituzione del buffer del pool",
+      renderer,
+      retargetBevelRenderer,
+    );
+    const afterGrowthMip0 = await renderer.readStyledPixels(undefined, 0);
+    const afterGrowthMip1 = await renderer.readStyledPixels(undefined, 1);
+    scratchPool.releaseRequirement("golden-growth-probe");
+    let resyncDifferingBytes = 0;
+    let resyncMaxByteDelta = 0;
+    for (const [expected, actual] of [
+      [afterMip0, afterGrowthMip0],
+      [afterMip1, afterGrowthMip1],
+    ] as const) {
+      for (let byteIndex = 0; byteIndex < expected.length; byteIndex += 1) {
+        if (expected[byteIndex] === actual[byteIndex]) {
+          continue;
+        }
+        resyncDifferingBytes += 1;
+        resyncMaxByteDelta = Math.max(
+          resyncMaxByteDelta,
+          Math.abs(expected[byteIndex] - actual[byteIndex]),
+        );
+      }
+    }
+    const afterGrowthMip0Sha256 = await sha256(afterGrowthMip0);
+    const afterGrowthMip1Sha256 = await sha256(afterGrowthMip1);
+    // Guardia anti-tautologia: se il probe non avesse davvero sostituito il
+    // buffer, l'uguaglianza sarebbe soddisfatta anche senza alcun resync.
+    const poolBufferWasReplaced = generationAfterGrowth > generationBeforeGrowth;
+    diagnostics.push({
+      id: "stroke-bevel-pool-growth-resync",
+      kind: "retarget-identity",
+      passed:
+        resyncDifferingBytes === 0
+        && afterGrowthMip0Sha256 === afterMip0Sha256
+        && afterGrowthMip1Sha256 === afterMip1Sha256
+        && poolBufferWasReplaced
+        && sourceContentDistinct,
+      beforeMip0Sha256: crossRetargetedMip0Sha256,
+      referenceMip0Sha256: afterMip0Sha256,
+      afterMip0Sha256: afterGrowthMip0Sha256,
+      beforeMip1Sha256: crossRetargetedMip1Sha256,
+      referenceMip1Sha256: afterMip1Sha256,
+      afterMip1Sha256: afterGrowthMip1Sha256,
+      poolBufferWasReplaced,
+      sourceContentDistinct,
+      differingBytes: resyncDifferingBytes,
+      maxByteDelta: resyncMaxByteDelta,
+    });
+
     const combinedIdentity = new TextEncoder().encode(JSON.stringify({
       version: RASTER_STROKE_GOLDEN_VERSION,
       format: RASTER_STROKE_GOLDEN_FORMAT,
@@ -1250,12 +1336,15 @@ export async function runRasterStrokeGolden(
     };
   } finally {
     referenceWorkbench?.destroy();
-    if (retargetWorkbench) {
-      retargetWorkbench.destroy();
-    } else {
-      bevelRenderer?.destroy();
-      renderer?.destroy();
-    }
+    // The renderers are attached to the workbench only once the golden reaches
+    // the retarget cases, several hundred lines in, but the workbench itself is
+    // created first because it owns the scratch pool they need. Destroy them
+    // directly so a throw in between cannot leak them, and do it BEFORE the
+    // workbench, because their destroy() releases their pool requirement and
+    // the workbench takes the pool down with it.
+    bevelRenderer?.destroy();
+    renderer?.destroy();
+    retargetWorkbench?.destroy();
     sourceTexture.destroy();
     retargetSourceTexture.destroy();
     transientTexture.destroy();
