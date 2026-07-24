@@ -1440,7 +1440,7 @@ export class RasterStrokeRenderer {
   private updateScratchRequirement(): EffectsScratchLease {
     const rangeBytes = this._scratchExtent * this._scratchExtent * 8;
     this._scratchMemoryBytes = rangeBytes * 2;
-    return this.scratchPool.setRequirement("stroke", [
+    const lease = this.scratchPool.declareEffect("stroke", [
       {
         id: "ping-a",
         label: `Traccia packed dual JFA scratch A ${this._scratchExtent}²`,
@@ -1452,6 +1452,10 @@ export class RasterStrokeRenderer {
         size: rangeBytes,
       },
     ]);
+    if (!lease) {
+      throw new Error("La Traccia richiede scratch ma il pool non ha restituito un lease.");
+    }
+    return lease;
   }
 
   private requireScratchLease(): EffectsScratchLease {

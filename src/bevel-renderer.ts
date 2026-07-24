@@ -1294,7 +1294,7 @@ export class RasterBevelRenderer {
       return this.workspace;
     }
     const next = workspaceLayout(extent, needsSegments);
-    this.scratchPool.setRequirement("bevel", [
+    this.scratchPool.declareEffect("bevel", [
       {
         id: "common",
         label: `Smusso arena comune ${extent}²`,

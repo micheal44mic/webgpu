@@ -96,3 +96,32 @@ stesso encoder. Per i due effetti attuali questo è possibile perché:
 
 Non verranno aggiunte passate, copie o barriere. Il benchmark retarget 4096²
 resta il gate prestazionale dello Step 4.
+
+## Step 3 — Contratto per gli effetti futuri
+
+`EffectsScratchPool.declareEffect(effectId, ranges)` è il solo punto con cui un
+renderer dichiara scratch effect-locali. I range di uno stesso effetto sono
+distinti e allineati; i layout di effetti diversi partono da zero e possono
+aliasare perché lo scheduler ne garantisce l'ordine provato sopra. Una nuova
+dichiarazione uguale non rialloca il buffer e il layout non viene ricalcolato
+dal renderer a ogni frame.
+
+La dichiarazione vuota è intenzionale: `declareEffect(effectId, [])` registra
+un footprint di zero byte e restituisce `null`, senza creare o ampliare il
+buffer. Questo rende verificabile che un effetto compose-only non introduca
+scratch per errore.
+
+Due controlli di progetto, senza implementarli in questa PR:
+
+- **Ombra esterna / glow.** Può dichiarare range ping-pong gaussiani e di
+  distanza, riusare le passate già presenti nello Smusso e lasciare nel pool
+  soltanto gli intermedi. L'eventuale output persistente resta fuori dal pool,
+  come oggi l'heightfield. Il caso è coperto purché lo scheduler assegni
+  all'effetto un intervallo ordinato e non sovrapposto a un altro utilizzatore.
+- **Riempimento colore / gradiente.** È una composizione diretta e dichiara
+  `[]`: footprint zero, nessun lease, nessuna crescita della capacità.
+
+Il pool non promette condivisione simultanea. Se un futuro effetto dovesse
+tenere intermedi vivi mentre ne parte un altro, servirà prima una nuova prova
+di lifetime (o un piano B con range non aliasati), non una modifica silenziosa
+alla dichiarazione.

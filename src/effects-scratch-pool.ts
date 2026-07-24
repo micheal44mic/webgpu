@@ -91,6 +91,19 @@ function sameRanges(
  * different effects intentionally alias; ranges inside one layout never do.
  * Growth is immediate. Shrink is explicit so the engine can wait for GPU idle
  * and apply its interaction hysteresis before replacing the buffer.
+ *
+ * Design checks for future effects (not implementations):
+ * - An outer shadow/glow renderer can declare Gaussian ping/pong plus distance
+ *   ranges, then reuse the same ordered Gaussian/distance passes as Bevel. Its
+ *   effect-local layout aliases the other effects only after their compute
+ *   passes end; its persistent styled output must live outside this pool.
+ * - A color/gradient fill calls declareEffect(effectId, []). The declaration
+ *   is recorded as a zero-byte requirement and returns null: a compose-only
+ *   effect cannot allocate or grow scratch accidentally.
+ *
+ * The scheduler remains responsible for the proven effect ordering. The pool
+ * deliberately does not add passes, copies, barriers, or per-frame dynamic
+ * sub-allocation.
  */
 export class EffectsScratchPool {
   private readonly device: GPUDevice;
@@ -138,16 +151,13 @@ export class EffectsScratchPool {
     return this._shrinkCount;
   }
 
-  setRequirement(
+  declareEffect(
     effectId: string,
     rangeRequests: readonly EffectsScratchRangeRequest[],
-  ): EffectsScratchLease {
+  ): EffectsScratchLease | null {
     this.assertLive();
     if (!effectId) {
       throw new Error("Identità effetto scratch mancante.");
-    }
-    if (rangeRequests.length === 0) {
-      throw new Error(`L'effetto ${effectId} non ha dichiarato range scratch.`);
     }
 
     let cursor = 0;
@@ -184,7 +194,7 @@ export class EffectsScratchPool {
       ranges: Object.freeze(ranges),
     });
     this.ensureCapacity(this.requiredCapacity());
-    return this.requireLease(effectId);
+    return footprintBytes > 0 ? this.requireLease(effectId) : null;
   }
 
   releaseRequirement(effectId: string): void {
@@ -194,7 +204,10 @@ export class EffectsScratchPool {
 
   lease(effectId: string): EffectsScratchLease | null {
     this.assertLive();
-    return this.requirements.has(effectId) ? this.requireLease(effectId) : null;
+    const requirement = this.requirements.get(effectId);
+    return requirement && requirement.footprintBytes > 0
+      ? this.requireLease(effectId)
+      : null;
   }
 
   shrinkToFit(): boolean {
