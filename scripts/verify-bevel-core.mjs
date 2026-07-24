@@ -6,14 +6,18 @@ import {
   RASTER_BEVEL_MAX_RADIUS,
   RASTER_BEVEL_MAX_WORK_SIDE,
   RASTER_BEVEL_PROFILE_SIZE,
+  RASTER_BEVEL_CONTOURS,
+  RASTER_BEVEL_MODES,
   RASTER_BEVEL_TECHNIQUES,
   classifyRasterBevelStyleChange,
   copyRasterBevelStyle,
   deriveRasterBevelHeightfield,
   makeRasterBevelSplineContourLut,
   normalizeRasterBevelStyle,
+  rasterBevelAlignedFieldBounds,
   rasterBevelGeometryKey,
   rasterBevelLightVector,
+  rasterBevelOutsideFieldHeight,
   rasterBevelRadiusBucket,
   rasterBevelStylesEqual,
   rasterBevelVisualBounds,
@@ -166,6 +170,64 @@ assert.deepEqual(
   makeRasterBevelSplineContourLut("soft", 32),
   makeRasterBevelSplineContourLut("gaussian", 32),
 );
+
+assert.deepEqual(
+  rasterBevelAlignedFieldBounds(
+    { x: 300, y: 500, width: 400, height: 300 },
+    4096,
+    4096,
+  ),
+  { x: 256, y: 256, width: 512, height: 768 },
+);
+assert.deepEqual(
+  rasterBevelAlignedFieldBounds(
+    { x: 900, y: 700, width: 100, height: 100 },
+    1000,
+    800,
+  ),
+  { x: 768, y: 512, width: 232, height: 288 },
+);
+assert.equal(rasterBevelAlignedFieldBounds(null), null);
+
+const profileSample = (kind, rangePercent, input) => {
+  const values = makeRasterBevelSplineContourLut(kind, RASTER_BEVEL_PROFILE_SIZE);
+  const normalized = Math.min(input / Math.max(rangePercent / 100, 1e-3), 1);
+  const q = normalized * (RASTER_BEVEL_PROFILE_SIZE - 1);
+  const first = Math.floor(q);
+  const second = Math.min(RASTER_BEVEL_PROFILE_SIZE - 1, first + 1);
+  return values[first] * (1 - (q - first)) + values[second] * (q - first);
+};
+for (const mode of RASTER_BEVEL_MODES) {
+  for (const technique of RASTER_BEVEL_TECHNIQUES) {
+    const plain = rasterBevelOutsideFieldHeight({
+      ...DEFAULT_RASTER_BEVEL_STYLE,
+      mode,
+      technique,
+      bevelContourEnabled: false,
+    });
+    assert.equal(plain, mode === "pillow" ? 1 : 0);
+    for (const bevelContour of RASTER_BEVEL_CONTOURS) {
+      const range = 37;
+      const contoured = rasterBevelOutsideFieldHeight({
+        ...DEFAULT_RASTER_BEVEL_STYLE,
+        mode,
+        technique,
+        bevelContourEnabled: true,
+        bevelContour,
+        bevelRange: range,
+      });
+      approx(
+        contoured,
+        profileSample(bevelContour, range, mode === "pillow" ? 1 : 0),
+      );
+    }
+  }
+}
+// Required mutation oracle: forcing the outside constant to zero is invisible
+// for inner/outer, but is observably wrong for pillow.
+assert.equal(rasterBevelOutsideFieldHeight({ mode: "inner" }), 0);
+assert.equal(rasterBevelOutsideFieldHeight({ mode: "outer" }), 0);
+assert.notEqual(rasterBevelOutsideFieldHeight({ mode: "pillow" }), 0);
 
 const workbenchSource = readFileSync(new URL("../src/effects-workbench.ts", import.meta.url), "utf8");
 const benchmarkSource = readFileSync(new URL("../src/effects-benchmark.ts", import.meta.url), "utf8");

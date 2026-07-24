@@ -5,6 +5,7 @@ import {
   RASTER_BEVEL_TILE_SIZE,
   deriveRasterBevelHeightfield,
   makeRasterBevelSplineContourLut,
+  rasterBevelAlignedFieldBounds,
   normalizeRasterBevelStyle,
   type RasterBevelRect,
   type RasterBevelStyle,
@@ -17,6 +18,11 @@ export const RASTER_BEVEL_RENDERER_BUILD =
   "raster-bevel-webgpu-v4-shared-effects-scratch-retargetable-layer-heightfield-v2-r32f-segment-jfa-workgroup-gaussian-gpu-gate";
 export const RASTER_BEVEL_FIELD_STRATEGY =
   "persistent-document-plus-one-pixel-apron-r32float-heightfield" as const;
+export const RASTER_BEVEL_BOUNDING_FIELD_STRATEGY =
+  "persistent-tile-aligned-influence-bbox-plus-one-pixel-apron-r32float-heightfield" as const;
+export const RASTER_BEVEL_BOUNDING_FIELD_ENABLED_BY_DEFAULT = false;
+export const RASTER_BEVEL_FIELD_IDLE_SHRINK_DELAY_MS = 1_500;
+export const RASTER_BEVEL_FIELD_MINIMUM_SHRINK_BYTES = 8 * 1024 * 1024;
 export const RASTER_BEVEL_DISTANCE_STRATEGY =
   "subpixel-marching-squares-segment-jfa-r32float" as const;
 export const RASTER_BEVEL_WORKSPACE_STRATEGY =
@@ -30,6 +36,7 @@ export interface RasterBevelRendererOptions {
   layerView: GPUTextureView;
   lightGlazeUniformBuffer: GPUBuffer;
   thicknessTailUniformBuffer: GPUBuffer;
+  boundingFieldEnabled?: boolean;
 }
 
 export interface RasterBevelEncodeOptions {
@@ -39,6 +46,20 @@ export interface RasterBevelEncodeOptions {
   rebuildRect?: RasterBevelRect | null;
   changeDetectionRect?: RasterBevelRect | null;
   clearHeight?: boolean;
+  fieldBounds?: RasterBevelRect | null;
+  allowFieldShrink?: boolean;
+}
+
+export interface RasterBevelFieldState {
+  bounded: boolean;
+  allocationBounds: RasterBevelRect | null;
+  validBounds: RasterBevelRect | null;
+  textureWidth: number;
+  textureHeight: number;
+  memoryBytes: number;
+  generation: number;
+  allocationCount: number;
+  shrinkCount: number;
 }
 
 export interface RasterBevelEncodeResult {
@@ -53,6 +74,15 @@ export interface RasterBevelEncodeResult {
   technique: RasterBevelStyle["technique"];
   gateScans: number;
   indirectDispatches: number;
+  fieldReallocated: boolean;
+  fieldFullRebuild: boolean;
+  fieldState: RasterBevelFieldState;
+}
+
+interface FieldPreparation {
+  reallocated: boolean;
+  fullRebuild: boolean;
+  state: RasterBevelFieldState;
 }
 
 interface BuildJob {
@@ -133,6 +163,65 @@ function normalizedRect(
   return right > x && bottom > y
     ? { x, y, width: right - x, height: bottom - y }
     : null;
+}
+
+function copyRect(rect: RasterBevelRect | null): RasterBevelRect | null {
+  return rect ? { ...rect } : null;
+}
+
+function rectsEqual(
+  left: RasterBevelRect | null,
+  right: RasterBevelRect | null,
+): boolean {
+  return left === right || Boolean(
+    left
+    && right
+    && left.x === right.x
+    && left.y === right.y
+    && left.width === right.width
+    && left.height === right.height,
+  );
+}
+
+function rectContains(
+  container: RasterBevelRect | null,
+  candidate: RasterBevelRect | null,
+): boolean {
+  if (!candidate) {
+    return true;
+  }
+  return Boolean(
+    container
+    && candidate.x >= container.x
+    && candidate.y >= container.y
+    && candidate.x + candidate.width <= container.x + container.width
+    && candidate.y + candidate.height <= container.y + container.height,
+  );
+}
+
+function heightTextureDimensions(bounds: RasterBevelRect | null): {
+  width: number;
+  height: number;
+} {
+  return bounds
+    ? {
+      width: bounds.width + RASTER_BEVEL_NORMAL_APRON * 2,
+      height: bounds.height + RASTER_BEVEL_NORMAL_APRON * 2,
+    }
+    : { width: 1, height: 1 };
+}
+
+function heightFieldBytes(bounds: RasterBevelRect | null): number {
+  const dimensions = heightTextureDimensions(bounds);
+  return dimensions.width * dimensions.height * 4;
+}
+
+export function rasterBevelFieldShrinkIsWorthwhile(
+  currentBounds: RasterBevelRect | null,
+  targetBounds: RasterBevelRect | null,
+): boolean {
+  return heightFieldBytes(currentBounds) - heightFieldBytes(targetBounds)
+    >= RASTER_BEVEL_FIELD_MINIMUM_SHRINK_BYTES;
 }
 
 function workspaceLayout(extent: number, segments: boolean): WorkspaceLayout {
@@ -646,7 +735,14 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
 `;
 }
 
-function resolveHeightShader(documentWidth: number, documentHeight: number): string {
+function resolveHeightShader(
+  documentWidth: number,
+  documentHeight: number,
+  boundingFieldEnabled = false,
+): string {
+  const fieldTranslation = boundingFieldEnabled
+    ? "\n    - parameters._pad0"
+    : "";
   return `${sourceShaderCommon(documentWidth, documentHeight)}
 fn sampleInput(position: vec2<i32>) -> f32 {
   let clamped = clamp(
@@ -718,7 +814,7 @@ fn main(
   let documentPosition = vec2<i32>(parameters.targetOrigin)
     + vec2<i32>(output)
     + parameters.destinationOffset
-    + vec2<i32>(${RASTER_BEVEL_NORMAL_APRON});
+    + vec2<i32>(${RASTER_BEVEL_NORMAL_APRON})${fieldTranslation};
   textureStore(heightOutput, vec2<i32>(documentPosition), vec4<f32>(value, 0.0, 0.0, 0.0));
 }
 `;
@@ -842,11 +938,10 @@ export class RasterBevelRenderer {
   }
 
   readonly build = RASTER_BEVEL_RENDERER_BUILD;
-  readonly heightView: GPUTextureView;
   readonly glossView: GPUTextureView;
-  readonly heightMemoryBytes: number;
   readonly lutMemoryBytes = RASTER_BEVEL_PROFILE_SIZE * 4 * 2;
   readonly controlMemoryBytes: number;
+  readonly boundingFieldEnabled: boolean;
 
   private readonly device: GPUDevice;
   private readonly scratchPool: EffectsScratchPool;
@@ -857,7 +952,15 @@ export class RasterBevelRenderer {
   private layerView: GPUTextureView;
   private readonly lightGlazeUniformBuffer: GPUBuffer;
   private readonly thicknessTailUniformBuffer: GPUBuffer;
-  private readonly heightTexture: GPUTexture;
+  private heightTexture: GPUTexture;
+  private _heightView: GPUTextureView;
+  private _heightTextureWidth: number;
+  private _heightTextureHeight: number;
+  private _fieldAllocationBounds: RasterBevelRect | null;
+  private _fieldValidBounds: RasterBevelRect | null;
+  private _fieldGeneration = 0;
+  private _fieldAllocationCount = 1;
+  private _fieldShrinkCount = 0;
   private readonly profileTexture: GPUTexture;
   private readonly profileView: GPUTextureView;
   private readonly glossTexture: GPUTexture;
@@ -905,9 +1008,15 @@ export class RasterBevelRenderer {
     this.layerView = options.layerView;
     this.lightGlazeUniformBuffer = options.lightGlazeUniformBuffer;
     this.thicknessTailUniformBuffer = options.thicknessTailUniformBuffer;
-    this.heightMemoryBytes =
-      (this.documentWidth + RASTER_BEVEL_NORMAL_APRON * 2)
-      * (this.documentHeight + RASTER_BEVEL_NORMAL_APRON * 2) * 4;
+    this.boundingFieldEnabled = options.boundingFieldEnabled
+      ?? RASTER_BEVEL_BOUNDING_FIELD_ENABLED_BY_DEFAULT;
+    this._fieldAllocationBounds = this.boundingFieldEnabled
+      ? null
+      : { x: 0, y: 0, width: this.documentWidth, height: this.documentHeight };
+    this._fieldValidBounds = copyRect(this._fieldAllocationBounds);
+    const initialHeightDimensions = heightTextureDimensions(this._fieldAllocationBounds);
+    this._heightTextureWidth = initialHeightDimensions.width;
+    this._heightTextureHeight = initialHeightDimensions.height;
     const alphaClassMaskBytes = Math.ceil(
       this.documentWidth / ALPHA_CLASS_WORD_BITS,
     ) * this.documentHeight * 2 * 4;
@@ -916,10 +1025,12 @@ export class RasterBevelRenderer {
     this.controlMemoryBytes = PARAMETER_CAPACITY * PARAMETER_STRIDE
       + alphaClassMaskBytes + gateStateBytes + indirectArgumentsBytes;
     this.heightTexture = this.device.createTexture({
-      label: "Smusso Heightfield V2 persistent R32F",
+      label: this.boundingFieldEnabled
+        ? "Smusso Heightfield V2 bbox R32F placeholder"
+        : "Smusso Heightfield V2 persistent R32F",
       size: {
-        width: this.documentWidth + RASTER_BEVEL_NORMAL_APRON * 2,
-        height: this.documentHeight + RASTER_BEVEL_NORMAL_APRON * 2,
+        width: this._heightTextureWidth,
+        height: this._heightTextureHeight,
         depthOrArrayLayers: 1,
       },
       format: "r32float",
@@ -928,7 +1039,7 @@ export class RasterBevelRenderer {
         | GPUTextureUsage.TEXTURE_BINDING
         | GPUTextureUsage.RENDER_ATTACHMENT,
     });
-    this.heightView = this.heightTexture.createView({
+    this._heightView = this.heightTexture.createView({
       label: "Smusso Heightfield V2 sampling/storage view",
     });
     this.profileTexture = this.device.createTexture({
@@ -975,6 +1086,113 @@ export class RasterBevelRenderer {
       1: this.layerView,
       2: this.layerView,
     };
+  }
+
+  get heightView(): GPUTextureView {
+    return this._heightView;
+  }
+
+  get heightMemoryBytes(): number {
+    return this._heightTextureWidth * this._heightTextureHeight * 4;
+  }
+
+  get fieldState(): RasterBevelFieldState {
+    return {
+      bounded: this.boundingFieldEnabled,
+      allocationBounds: copyRect(this._fieldAllocationBounds),
+      validBounds: copyRect(this._fieldValidBounds),
+      textureWidth: this._heightTextureWidth,
+      textureHeight: this._heightTextureHeight,
+      memoryBytes: this.heightMemoryBytes,
+      generation: this._fieldGeneration,
+      allocationCount: this._fieldAllocationCount,
+      shrinkCount: this._fieldShrinkCount,
+    };
+  }
+
+  private normalizedFieldBounds(
+    bounds: RasterBevelRect | null | undefined,
+  ): RasterBevelRect | null {
+    return rasterBevelAlignedFieldBounds(
+      normalizedRect(bounds, this.documentWidth, this.documentHeight),
+      this.documentWidth,
+      this.documentHeight,
+    );
+  }
+
+  fieldNeedsShrink(bounds: RasterBevelRect | null | undefined): boolean {
+    if (!this.boundingFieldEnabled) {
+      return false;
+    }
+    const target = this.normalizedFieldBounds(bounds);
+    return rectContains(this._fieldAllocationBounds, target)
+      && !rectsEqual(this._fieldAllocationBounds, target)
+      && rasterBevelFieldShrinkIsWorthwhile(this._fieldAllocationBounds, target);
+  }
+
+  private replaceHeightField(
+    bounds: RasterBevelRect | null,
+    shrink: boolean,
+  ): void {
+    const dimensions = heightTextureDimensions(bounds);
+    const nextTexture = this.device.createTexture({
+      label: bounds
+        ? `Smusso Heightfield V2 bbox ${bounds.width}×${bounds.height} R32F`
+        : "Smusso Heightfield V2 bbox R32F placeholder",
+      size: {
+        width: dimensions.width,
+        height: dimensions.height,
+        depthOrArrayLayers: 1,
+      },
+      format: "r32float",
+      usage:
+        GPUTextureUsage.STORAGE_BINDING
+        | GPUTextureUsage.TEXTURE_BINDING
+        | GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    const nextView = nextTexture.createView({
+      label: "Smusso Heightfield V2 bbox sampling/storage view",
+    });
+    const previousTexture = this.heightTexture;
+    this.heightTexture = nextTexture;
+    this._heightView = nextView;
+    this._heightTextureWidth = dimensions.width;
+    this._heightTextureHeight = dimensions.height;
+    this._fieldAllocationBounds = copyRect(bounds);
+    this._fieldValidBounds = copyRect(bounds);
+    this._fieldGeneration += 1;
+    this._fieldAllocationCount += 1;
+    if (shrink) {
+      this._fieldShrinkCount += 1;
+    }
+    this.rebuildBindGroups();
+    previousTexture.destroy();
+  }
+
+  private prepareHeightField(
+    bounds: RasterBevelRect | null | undefined,
+    allowShrink: boolean,
+  ): FieldPreparation {
+    if (!this.boundingFieldEnabled) {
+      return { reallocated: false, fullRebuild: false, state: this.fieldState };
+    }
+    const target = this.normalizedFieldBounds(bounds);
+    const allocationContainsTarget = rectContains(this._fieldAllocationBounds, target);
+    const shrink = allocationContainsTarget
+      && !rectsEqual(this._fieldAllocationBounds, target)
+      && allowShrink
+      && rasterBevelFieldShrinkIsWorthwhile(this._fieldAllocationBounds, target);
+    const grow = !allocationContainsTarget;
+    if (grow || shrink) {
+      this.replaceHeightField(target, shrink);
+      return {
+        reallocated: true,
+        fullRebuild: target !== null,
+        state: this.fieldState,
+      };
+    }
+    this._fieldValidBounds = copyRect(target);
+    return { reallocated: false, fullRebuild: false, state: this.fieldState };
   }
 
   get workspaceMemoryBytes(): number {
@@ -1130,7 +1348,11 @@ export class RasterBevelRenderer {
       }),
       resolve: this.device.createShaderModule({
         label: "Smusso final R32F height resolve WGSL",
-        code: resolveHeightShader(this.documentWidth, this.documentHeight),
+        code: resolveHeightShader(
+          this.documentWidth,
+          this.documentHeight,
+          this.boundingFieldEnabled,
+        ),
       }),
       alphaClass: this.device.createShaderModule({
         label: "Smusso alpha class change gate WGSL",
@@ -1454,6 +1676,12 @@ export class RasterBevelRenderer {
     this.parameterUploadU32[word + 27] = values.inputKind ?? 0;
     this.parameterUploadI32[word + 28] = values.destinationOffsetX ?? 0;
     this.parameterUploadI32[word + 29] = values.destinationOffsetY ?? 0;
+    this.parameterUploadI32[word + 30] = this.boundingFieldEnabled
+      ? this._fieldAllocationBounds?.x ?? 0
+      : 0;
+    this.parameterUploadI32[word + 31] = this.boundingFieldEnabled
+      ? this._fieldAllocationBounds?.y ?? 0
+      : 0;
     return slot + 1;
   }
 
@@ -1485,11 +1713,23 @@ export class RasterBevelRenderer {
     }
     const style = normalizeRasterBevelStyle(options.style);
     this.updateStyleResources(style);
-    const rect = normalizedRect(
+    const requestedRect = normalizedRect(
       options.rebuildRect,
       this.documentWidth,
       this.documentHeight,
     );
+    const requestedFieldBounds = options.fieldBounds === undefined
+      ? requestedRect
+      : options.fieldBounds;
+    // Field replacement is the first field operation in this encoder. No
+    // command that reads or writes either the old or new view has been encoded.
+    const fieldPreparation = this.prepareHeightField(
+      requestedFieldBounds,
+      options.allowFieldShrink === true,
+    );
+    const rect = fieldPreparation.fullRebuild
+      ? copyRect(fieldPreparation.state.validBounds)
+      : requestedRect;
     const changeDetectionRect = normalizedRect(
       options.changeDetectionRect,
       this.documentWidth,
@@ -1507,7 +1747,10 @@ export class RasterBevelRenderer {
     const workspace = this.workspace;
     const mode = sourceModeCode(options.sourceMode);
     const useGate = Boolean(
-      jobs.length > 0 && changeDetectionRect && !options.clearHeight,
+      jobs.length > 0
+      && changeDetectionRect
+      && !options.clearHeight
+      && !fieldPreparation.fullRebuild,
     );
     const alphaClassRect = jobs.length > 0
       ? useGate ? changeDetectionRect : rect : null;
@@ -1924,6 +2167,9 @@ export class RasterBevelRenderer {
       technique: style.technique,
       gateScans,
       indirectDispatches: useGate ? passes : 0,
+      fieldReallocated: fieldPreparation.reallocated,
+      fieldFullRebuild: fieldPreparation.fullRebuild,
+      fieldState: fieldPreparation.state,
     };
     if (jobs.length > 0 || options.clearHeight) {
       this._totalBuilds += 1;

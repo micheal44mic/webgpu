@@ -369,15 +369,18 @@ Paint:
   allineati. La capacità è `max(Traccia, Smusso)`, mai la somma. Il default
   misurato è `16 MiB` invece di `17,265869 MiB`; il tier Traccia `2048²` è
   `64 MiB` invece di `65,265869 MiB`.
-- Gate PR 3 bbox del 24 luglio 2026: fermato prima del codice di produzione.
-  `bevelHeightAt()` è davvero l'unico punto di lettura, ma `pillow` produce
-  altezza `1` lontano dall'alpha e i job scrivono l'intero inviluppo dei tile,
-  quindi i raw influence bounds non contengono in senso stretto tutti i texel
-  non nulli. Inoltre una texture monolitica riallocata non può conservare
-  l'intersezione valida e ricostruire solo la corona senza copia, rebuild
-  dell'intersezione o campo tiled; la crescita durante un tratto e il retarget
-  privo di content bounds sono ulteriori decisioni aperte. Prova completa in
-  `docs/effects-bbox-pr3.md`; flag bbox non introdotto, runtime invariato.
+- PR 3 bbox, Step 2 candidato del 24 luglio 2026: il gate documentato in
+  `docs/effects-bbox-pr3.md` è stato riaperto con sei decisioni esplicite. Un
+  flag default-OFF conserva il campo full-document; ON usa l'inviluppo
+  tile-aligned dei job più apron fisico, origine documento→storage in uniform
+  e rebuild dell'intero nuovo bbox alla riallocazione. Fuori dal dominio
+  `bevelHeightAt()` usa una costante CPU: `0` per inner/outer/emboss e, per
+  pillow, `1` oppure la stessa LUT contour a `min(1/range,1)`. Gli apron ai
+  bordi documento restano leggibili, mentre un campo vuoto usa sempre la
+  costante. Nessuna copia, passata o barriera è stata aggiunta; OFF conserva
+  texture `4098²` e uniform da `80 byte`. Verifiche Step 2 verdi:
+  `bevel:verify`, `stroke:verify` e TypeScript. Golden GPU, lifecycle shrink,
+  retarget con bounds, benchmark e prova browser restano aperti.
 - Verifiche locali verdi: `bevel:verify`, `stroke:verify`, `grain:verify`,
   `blend:verify`, `thickness:verify`, TypeScript; inizializzazione WGSL e matrice
   delle tre tecniche/quattro modalità su WebGPU NVIDIA. Il warning Chromium

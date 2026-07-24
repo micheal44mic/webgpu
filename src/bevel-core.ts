@@ -5,8 +5,6 @@ export const RASTER_BEVEL_STYLE_BUILD =
 
 export const RASTER_BEVEL_TILE_SIZE = 256;
 export const RASTER_BEVEL_NORMAL_APRON = 1;
-export const RASTER_BEVEL_FIELD_PAGE_SIZE =
-  RASTER_BEVEL_TILE_SIZE + RASTER_BEVEL_NORMAL_APRON * 2;
 export const RASTER_BEVEL_MAX_RADIUS = 576;
 export const RASTER_BEVEL_PROFILE_SIZE = 1024;
 export const RASTER_BEVEL_GLOSS_SIZE = 256;
@@ -15,9 +13,6 @@ export const RASTER_BEVEL_DISTANCE_SCALE = 4;
 export const RASTER_BEVEL_DISTANCE_SIGN_BIT = 0x0800;
 export const RASTER_BEVEL_DISTANCE_MASK = 0x07ff;
 export const RASTER_BEVEL_DISTANCE_DIRECTION_SHIFT = 12;
-export const RASTER_BEVEL_POOL_BUDGET_BYTES = 128 * 1024 * 1024;
-export const RASTER_BEVEL_PAGE_BYTES =
-  RASTER_BEVEL_FIELD_PAGE_SIZE * RASTER_BEVEL_FIELD_PAGE_SIZE * 4;
 export const RASTER_BEVEL_MAX_WORK_SIDE =
   RASTER_BEVEL_TILE_SIZE + RASTER_BEVEL_MAX_RADIUS * 2;
 
@@ -553,6 +548,66 @@ export function rasterBevelInfluenceBounds(
   return right > x && bottom > y
     ? { x, y, width: right - x, height: bottom - y }
     : null;
+}
+
+export function rasterBevelAlignedFieldBounds(
+  bounds: RasterBevelRect | null,
+  documentWidth = 4096,
+  documentHeight = 4096,
+): RasterBevelRect | null {
+  if (!bounds) {
+    return null;
+  }
+  const normalizedWidth = Math.max(1, Math.trunc(finite(documentWidth, 4096)));
+  const normalizedHeight = Math.max(1, Math.trunc(finite(documentHeight, 4096)));
+  const x = clamp(
+    Math.floor(bounds.x / RASTER_BEVEL_TILE_SIZE) * RASTER_BEVEL_TILE_SIZE,
+    0,
+    normalizedWidth,
+  );
+  const y = clamp(
+    Math.floor(bounds.y / RASTER_BEVEL_TILE_SIZE) * RASTER_BEVEL_TILE_SIZE,
+    0,
+    normalizedHeight,
+  );
+  const right = clamp(
+    Math.ceil((bounds.x + bounds.width) / RASTER_BEVEL_TILE_SIZE)
+      * RASTER_BEVEL_TILE_SIZE,
+    0,
+    normalizedWidth,
+  );
+  const bottom = clamp(
+    Math.ceil((bounds.y + bounds.height) / RASTER_BEVEL_TILE_SIZE)
+      * RASTER_BEVEL_TILE_SIZE,
+    0,
+    normalizedHeight,
+  );
+  return right > x && bottom > y
+    ? { x, y, width: right - x, height: bottom - y }
+    : null;
+}
+
+export function rasterBevelOutsideFieldHeight(
+  source: unknown = DEFAULT_RASTER_BEVEL_STYLE,
+): number {
+  const style = normalizeRasterBevelStyle(source);
+  const neutralProfileInput = style.mode === "pillow" ? 1 : 0;
+  if (!style.bevelContourEnabled) {
+    return neutralProfileInput;
+  }
+  const values = makeRasterBevelSplineContourLut(
+    style.bevelContour,
+    RASTER_BEVEL_PROFILE_SIZE,
+  );
+  const normalizedInput = Math.min(
+    neutralProfileInput / Math.max(style.bevelRange / 100, 1e-3),
+    1,
+  );
+  const q = clamp(normalizedInput, 0, 1) * (RASTER_BEVEL_PROFILE_SIZE - 1);
+  const first = Math.floor(q);
+  const second = Math.min(RASTER_BEVEL_PROFILE_SIZE - 1, first + 1);
+  const fraction = q - first;
+  return values[first] * (1 - fraction) + values[second] * fraction;
 }
 
 export function rasterBevelLightVector(

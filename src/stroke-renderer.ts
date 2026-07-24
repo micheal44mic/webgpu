@@ -9,8 +9,11 @@ import {
   deriveRasterBevelHeightfield,
   normalizeRasterBevelStyle,
   rasterBevelLightVector,
+  rasterBevelOutsideFieldHeight,
+  type RasterBevelRect,
   type RasterBevelStyle,
 } from "./bevel-core";
+import type { RasterBevelFieldState } from "./bevel-renderer";
 import type { EffectsScratchLease, EffectsScratchPool } from "./effects-scratch-pool";
 
 export const RASTER_STROKE_RENDERER_BUILD =
@@ -37,6 +40,7 @@ export interface RasterStrokeRendererOptions {
   thicknessTailUniformBuffer: GPUBuffer;
   scratchExtent?: number;
   readbackEnabled?: boolean;
+  bevelBoundingFieldEnabled?: boolean;
 }
 
 export interface RasterStrokeEncodeOptions {
@@ -87,7 +91,8 @@ const DEFAULT_SCRATCH_EXTENT = 2048;
 const WORKGROUP_SIZE = 8;
 const PARAMETER_BYTES = 80;
 const DISPLAY_PARAMETER_BYTES = PARAMETER_BYTES;
-const BEVEL_UNIFORM_BYTES = 80;
+const BEVEL_DOCUMENT_UNIFORM_BYTES = 80;
+const BEVEL_BOUNDING_FIELD_UNIFORM_BYTES = 112;
 const PARAMETER_STRIDE = 256;
 const PARAMETER_CAPACITY = 2048;
 const INVALID_PACKED_SEED = 0xffff_ffff;
@@ -519,6 +524,7 @@ function strokeCompositionShaderSource(
   glossBinding = 8,
   bevelUniformBinding = 9,
   derivativeMode: "analytic" | "fragment" = "analytic",
+  boundingFieldEnabled = false,
 ): string {
   const contourAA = derivativeMode === "fragment"
     ? /* wgsl */ `
@@ -540,13 +546,56 @@ function strokeCompositionShaderSource(
         lightContour(t - dt) + lightContour(t) + lightContour(t + dt)
       ) / 3.0;
     }`;
+  const fieldUniformMembers = boundingFieldEnabled
+    ? `
+  fieldStorage: vec4<i32>,
+  fieldValid: vec4<i32>,`
+    : "";
+  const heightLookup = boundingFieldEnabled
+    ? /* wgsl */ `fn bevelHeightAt(position: vec2<i32>) -> f32 {
+  let validOrigin = bevel.fieldValid.xy;
+  let validSize = bevel.fieldValid.zw;
+  if (any(validSize <= vec2<i32>(0))) {
+    return bevel.scalars.w;
+  }
+  let validEnd = validOrigin + validSize;
+  let apron = vec2<i32>(${RASTER_BEVEL_NORMAL_APRON});
+  let readableOrigin = validOrigin - select(
+    vec2<i32>(0),
+    apron,
+    validOrigin == vec2<i32>(0)
+  );
+  let readableEnd = validEnd + select(
+    vec2<i32>(0),
+    apron,
+    validEnd == DOCUMENT_SIZE
+  );
+  if (
+    any(position < readableOrigin)
+    || any(position >= readableEnd)
+  ) {
+    return bevel.scalars.w;
+  }
+  let fieldPosition = position - bevel.fieldStorage.xy + apron;
+  return textureLoad(bevelHeight, fieldPosition, 0).r;
+}`
+    : /* wgsl */ `fn bevelHeightAt(position: vec2<i32>) -> f32 {
+  let apron = vec2<i32>(${RASTER_BEVEL_NORMAL_APRON});
+  if (
+    any(position < -apron)
+    || any(position >= DOCUMENT_SIZE + apron)
+  ) {
+    return 0.0;
+  }
+  return textureLoad(bevelHeight, position + apron, 0).r;
+}`;
   return /* wgsl */ `
 struct BevelUniforms {
   flags: vec4<u32>,
   scalars: vec4<f32>,
   light: vec4<f32>,
   highlight: vec4<f32>,
-  shadow: vec4<f32>,
+  shadow: vec4<f32>,${fieldUniformMembers}
 };
 
 @group(${bindGroup}) @binding(${coverageBinding})
@@ -562,16 +611,7 @@ fn loadCoverageByte(position: vec2<i32>) -> u32 {
   return (packed >> shift) & 255u;
 }
 
-fn bevelHeightAt(position: vec2<i32>) -> f32 {
-  let apron = vec2<i32>(${RASTER_BEVEL_NORMAL_APRON});
-  if (
-    any(position < -apron)
-    || any(position >= DOCUMENT_SIZE + apron)
-  ) {
-    return 0.0;
-  }
-  return textureLoad(bevelHeight, position + apron, 0).r;
-}
+${heightLookup}
 
 fn reliefResponse(normal: vec3<f32>, light: vec3<f32>) -> f32 {
   let value = clamp(dot(normal, light), -1.0, 1.0);
@@ -783,9 +823,12 @@ function readbackComposeShader(
   documentWidth: number,
   documentHeight: number,
   layerFormat: "rgba8unorm" | "rgba16float",
+  bevelBoundingFieldEnabled = false,
 ): string {
   return `${shaderSourceCommon(documentWidth, documentHeight)}
-${strokeCompositionShaderSource(documentWidth)}
+${strokeCompositionShaderSource(
+  documentWidth, 0, 5, 7, 8, 9, "analytic", bevelBoundingFieldEnabled,
+)}
 @group(0) @binding(6) var styledTexture: texture_storage_2d<${layerFormat}, write>;
 
 @compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
@@ -803,9 +846,12 @@ function coarseComposeShader(
   documentWidth: number,
   documentHeight: number,
   layerFormat: "rgba8unorm" | "rgba16float",
+  bevelBoundingFieldEnabled = false,
 ): string {
   return `${shaderSourceCommon(documentWidth, documentHeight)}
-${strokeCompositionShaderSource(documentWidth)}
+${strokeCompositionShaderSource(
+  documentWidth, 0, 5, 7, 8, 9, "analytic", bevelBoundingFieldEnabled,
+)}
 @group(0) @binding(6) var coarseStyledTexture: texture_storage_2d<${layerFormat}, write>;
 
 fn quantizedStyledTexel(position: vec2<i32>) -> vec4<f32> {
@@ -831,6 +877,7 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
 export function rasterStrokeDisplayShader(
   documentWidth: number,
   documentHeight: number,
+  bevelBoundingFieldEnabled = false,
 ): string {
   return /* wgsl */ `
 struct DisplayUniforms {
@@ -848,7 +895,9 @@ struct VertexOutput {
 
 @group(0) @binding(0) var<uniform> display: DisplayUniforms;
 ${shaderSourceCommon(documentWidth, documentHeight, 1)}
-${strokeCompositionShaderSource(documentWidth, 1, 5, 8, 9, 10, "fragment")}
+${strokeCompositionShaderSource(
+  documentWidth, 1, 5, 8, 9, 10, "fragment", bevelBoundingFieldEnabled,
+)}
 @group(1) @binding(6) var coarseStyledTexture: texture_2d<f32>;
 @group(1) @binding(7) var layerSampler: sampler;
 
@@ -1111,6 +1160,8 @@ export class RasterStrokeRenderer {
   private readonly lightGlazeUniformBuffer: GPUBuffer;
   private readonly thicknessTailUniformBuffer: GPUBuffer;
   private readonly readbackEnabled: boolean;
+  private readonly bevelBoundingFieldEnabled: boolean;
+  private readonly bevelUniformBytes: number;
   private readonly maximumScratchExtent: number;
   private _scratchExtent: number;
   private _scratchMemoryBytes = 0;
@@ -1123,9 +1174,12 @@ export class RasterStrokeRenderer {
   private readonly displayParameterUploadF32 = new Float32Array(this.displayParameterUpload);
   private readonly parameterUpload = new ArrayBuffer(PARAMETER_CAPACITY * PARAMETER_STRIDE);
   private readonly bevelUniformBuffer: GPUBuffer;
-  private readonly bevelUniformUpload = new ArrayBuffer(BEVEL_UNIFORM_BYTES);
-  private readonly bevelUniformUploadU32 = new Uint32Array(this.bevelUniformUpload);
-  private readonly bevelUniformUploadF32 = new Float32Array(this.bevelUniformUpload);
+  private readonly bevelUniformUpload: ArrayBuffer;
+  private readonly bevelUniformUploadI32: Int32Array;
+  private readonly bevelUniformUploadU32: Uint32Array;
+  private readonly bevelUniformUploadF32: Float32Array;
+  private bevelFieldAllocationBounds: RasterBevelRect | null = null;
+  private bevelFieldValidBounds: RasterBevelRect | null = null;
 
   private readonly parameterUploadI32 = new Int32Array(this.parameterUpload);
   private readonly parameterUploadU32 = new Uint32Array(this.parameterUpload);
@@ -1185,6 +1239,14 @@ export class RasterStrokeRenderer {
     this.lightGlazeUniformBuffer = options.lightGlazeUniformBuffer;
     this.thicknessTailUniformBuffer = options.thicknessTailUniformBuffer;
     this.readbackEnabled = options.readbackEnabled === true;
+    this.bevelBoundingFieldEnabled = options.bevelBoundingFieldEnabled === true;
+    this.bevelUniformBytes = this.bevelBoundingFieldEnabled
+      ? BEVEL_BOUNDING_FIELD_UNIFORM_BYTES
+      : BEVEL_DOCUMENT_UNIFORM_BYTES;
+    this.bevelUniformUpload = new ArrayBuffer(this.bevelUniformBytes);
+    this.bevelUniformUploadI32 = new Int32Array(this.bevelUniformUpload);
+    this.bevelUniformUploadU32 = new Uint32Array(this.bevelUniformUpload);
+    this.bevelUniformUploadF32 = new Float32Array(this.bevelUniformUpload);
 
     const maximumScratchFromBinding = Math.floor(Math.sqrt(
       Number(this.device.limits.maxStorageBufferBindingSize) / 8,
@@ -1224,7 +1286,7 @@ export class RasterStrokeRenderer {
     };
     this.bevelUniformBuffer = this.device.createBuffer({
       label: "Style stack Smusso/Rilievo composition parameters",
-      size: BEVEL_UNIFORM_BYTES,
+      size: this.bevelUniformBytes,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     this.updateBevelParameters(DEFAULT_RASTER_BEVEL_STYLE);
@@ -1370,7 +1432,7 @@ export class RasterStrokeRenderer {
       + DISPLAY_PARAMETER_BYTES * 3
       + changeStateBytes
       + indirectArgumentsBytes
-      + BEVEL_UNIFORM_BYTES + 4;
+      + this.bevelUniformBytes + 4;
     this.persistentMemoryBytes = this.coverageMemoryBytes
       + this.styledMemoryBytes
       + this.thresholdMaskMemoryBytes
@@ -1756,12 +1818,22 @@ export class RasterStrokeRenderer {
     });
     const composeModule = this.device.createShaderModule({
       label: "Traccia styled logical mip 1 compose WGSL",
-      code: coarseComposeShader(this.documentWidth, this.documentHeight, this.layerFormat),
+      code: coarseComposeShader(
+        this.documentWidth,
+        this.documentHeight,
+        this.layerFormat,
+        this.bevelBoundingFieldEnabled,
+      ),
     });
     const readbackComposeModule = this.readbackEnabled
       ? this.device.createShaderModule({
         label: "Traccia golden logical mip 0 compose WGSL",
-        code: readbackComposeShader(this.documentWidth, this.documentHeight, this.layerFormat),
+        code: readbackComposeShader(
+          this.documentWidth,
+          this.documentHeight,
+          this.layerFormat,
+          this.bevelBoundingFieldEnabled,
+        ),
       })
       : null;
     const thresholdMaskModule = this.device.createShaderModule({
@@ -1883,6 +1955,40 @@ export class RasterStrokeRenderer {
     }
   }
 
+  private writeBevelFieldUniforms(): void {
+    if (!this.bevelBoundingFieldEnabled) {
+      return;
+    }
+    const storage = this.bevelFieldAllocationBounds;
+    const valid = this.bevelFieldValidBounds;
+    this.bevelUniformUploadI32[20] = storage?.x ?? 0;
+    this.bevelUniformUploadI32[21] = storage?.y ?? 0;
+    this.bevelUniformUploadI32[22] = storage?.width ?? 0;
+    this.bevelUniformUploadI32[23] = storage?.height ?? 0;
+    this.bevelUniformUploadI32[24] = valid?.x ?? 0;
+    this.bevelUniformUploadI32[25] = valid?.y ?? 0;
+    this.bevelUniformUploadI32[26] = valid?.width ?? 0;
+    this.bevelUniformUploadI32[27] = valid?.height ?? 0;
+  }
+
+  updateBevelFieldParameters(state: RasterBevelFieldState): void {
+    if (!this.bevelBoundingFieldEnabled) {
+      if (state.bounded) {
+        throw new Error("Il renderer Traccia full-document non accetta un campo Smusso bbox.");
+      }
+      return;
+    }
+    if (!state.bounded) {
+      throw new Error("Il renderer Traccia bbox richiede un campo Smusso bbox.");
+    }
+    this.bevelFieldAllocationBounds = state.allocationBounds
+      ? { ...state.allocationBounds }
+      : null;
+    this.bevelFieldValidBounds = state.validBounds ? { ...state.validBounds } : null;
+    this.writeBevelFieldUniforms();
+    this.device.queue.writeBuffer(this.bevelUniformBuffer, 0, this.bevelUniformUpload);
+  }
+
   updateBevelParameters(source: RasterBevelStyle): void {
     if (this.destroyed) {
       throw new Error("Renderer style stack già distrutto.");
@@ -1915,6 +2021,10 @@ export class RasterStrokeRenderer {
     this.bevelUniformUploadF32[17] = style.shadowColor[1];
     this.bevelUniformUploadF32[18] = style.shadowColor[2];
     this.bevelUniformUploadF32[19] = style.shadowOpacity / 100;
+    if (this.bevelBoundingFieldEnabled) {
+      this.bevelUniformUploadF32[7] = rasterBevelOutsideFieldHeight(style);
+      this.writeBevelFieldUniforms();
+    }
     this.device.queue.writeBuffer(this.bevelUniformBuffer, 0, this.bevelUniformUpload);
   }
 

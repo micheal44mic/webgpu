@@ -2,21 +2,27 @@
 
 ## Esito
 
-**Gate non superato.** La modifica di produzione non può iniziare rispettando
-contemporaneamente tutti i vincoli del prompt.
+Il gate iniziale è stato correttamente fermato sul commit `e9851ed`: l'assunto
+«altezza zero fuori dai bounds» era falso per `pillow` e una nuova texture
+WebGPU non poteva conservare implicitamente l'intersezione precedente. Il
+commit `2400548` registra quell'audit prima di qualsiasi modifica di
+produzione.
 
-La lettura dell'heightfield è effettivamente centralizzata, ma le altre due
-premesse necessarie non reggono sul codice corrente:
+Il 24 luglio 2026 il gate è stato riaperto con sei decisioni esplicite:
 
-1. `rasterBevelInfluenceBounds()` non contiene, in senso stretto, ogni texel
-   non nullo prodotto dal campo per tutte le modalità;
-2. una texture WebGPU monolitica riallocata non conserva i texel precedenti.
-   Senza copia, rebuild dell'area già valida o partizionamento del campo non è
-   quindi possibile ricostruire soltanto la corona nuova.
+1. il dominio logico è l'inviluppo tile-aligned dei job;
+2. una riallocazione ricostruisce l'intero **nuovo bbox**, mai il documento per
+   scorciatoia e mai soltanto la corona;
+3. finché l'allocazione non cambia, gli update restano incrementali per ROI;
+4. la crescita durante un tratto è consentita solo all'inizio del frame, prima
+   di qualsiasi comando dell'encoder che legga o scriva il campo;
+5. il contratto di retarget trasporta i content bounds noti;
+6. fuori dal campo il compositore usa una costante CPU dipendente dallo stile:
+   zero per `inner`, `outer` ed `emboss`; per `pillow`, 1 senza contour oppure
+   la stessa `profileValue(min(1 / bevelRange, 1))` del renderer con contour.
 
-Inoltre il contenuto può crescere mentre una pennellata è attiva e il contratto
-di retarget non trasporta i bounds della nuova sorgente. Entrambi i percorsi
-richiedono una decisione progettuale prima dello Step 2.
+Le sezioni seguenti restano il verbale dell'audit che ha prodotto queste
+correzioni; non descrivono più blocker aperti.
 
 I riferimenti sotto sono stati verificati sul commit `e9851ed`.
 
@@ -182,16 +188,15 @@ l'aggiornamento visivo al lift, oppure adottare una rappresentazione espandibile
 Le prime due opzioni perdono rispettivamente il beneficio di memoria o la
 parità frame-per-frame; la terza è fuori scope.
 
-## Decisioni necessarie prima dello Step 2
+## Decisioni emerse dal gate (risolte)
 
-Per rendere implementabile la PR servono istruzioni esplicite su questi punti:
+Le decisioni richieste dall'audit sono state fornite prima dello Step 2:
 
-1. definire il dominio come inviluppo tile-aligned dei job e verificare la
-   semantica `pillow`, invece di assumere che il campo matematico sia zero;
-2. consentire una copia in-encoder durante la crescita **oppure** consentire il
-   rebuild dell'intero nuovo bbox quando la texture viene sostituita;
-3. stabilire la policy durante una pennellata che supera la capacità corrente;
-4. estendere retarget e benchmark con i bounds noti della nuova sorgente.
+1. dominio tile-aligned e valore esterno esplicito, incluso `pillow`;
+2. nessuna copia: alla sostituzione si ricostruisce tutto il nuovo bbox;
+3. crescita della texture ammessa solo all'inizio del frame;
+4. content bounds aggiunti a retarget e benchmark.
 
-Fino a questa scelta il flag resta inesistente e il comportamento di
-produzione resta esattamente quello di `e9851ed`.
+Il flag bbox resta default-OFF: il percorso full-document di `e9851ed` rimane
+il controllo indipendente e non viene riscritto per condividere scorciatoie con
+il candidato.

@@ -533,6 +533,10 @@ export interface EngineCallbacks {
   onHistoryChange?: (state: HistoryState) => void;
 }
 
+export interface BrushEngineOptions {
+  bevelBoundingFieldEnabled?: boolean;
+}
+
 export interface LayerPoint {
   x: number;
   y: number;
@@ -1263,6 +1267,7 @@ export class BrushEngine {
 
   private readonly canvas: HTMLCanvasElement;
   private readonly callbacks: EngineCallbacks;
+  private readonly bevelBoundingFieldEnabled: boolean;
 
   private adapter!: GPUAdapter;
   private device!: GPUDevice;
@@ -1540,9 +1545,11 @@ export class BrushEngine {
     canvas: HTMLCanvasElement,
     callbacks: EngineCallbacks = {},
     adaptivePreviewCanvas: HTMLCanvasElement | null = null,
+    options: BrushEngineOptions = {},
   ) {
     this.canvas = canvas;
     this.callbacks = callbacks;
+    this.bevelBoundingFieldEnabled = options.bevelBoundingFieldEnabled === true;
     this.adaptivePreviewCanvas = adaptivePreviewCanvas;
     this.adaptiveSpacingMaxExtraPercentPoints =
       adaptiveSpacingMaxExtraPercentPointsForPlatform();
@@ -1831,6 +1838,7 @@ export class BrushEngine {
       thicknessTailUniformBuffer: this.thicknessTailDisplayUniformBuffer,
       scratchExtent,
       scratchPool: this.requireEffectsWorkbench().scratchPool,
+      bevelBoundingFieldEnabled: this.bevelBoundingFieldEnabled,
     });
     renderer.setLightGlazeView(this.lightGlazeView);
     renderer.setThicknessTailView(this.thicknessTailView);
@@ -1838,6 +1846,9 @@ export class BrushEngine {
       this.rasterBevelRenderer?.heightView ?? null,
       this.rasterBevelRenderer?.glossView ?? null,
     );
+    if (this.rasterBevelRenderer) {
+      renderer.updateBevelFieldParameters(this.rasterBevelRenderer.fieldState);
+    }
     renderer.updateBevelParameters(this.rasterBevelStyle);
     this.requireEffectsWorkbench().attachStrokeRenderer(renderer);
     this.rebuildRasterStrokeDisplayBindGroups();
@@ -1878,6 +1889,7 @@ export class BrushEngine {
       lightGlazeUniformBuffer: this.lightGlazeUniformBuffer,
       thicknessTailUniformBuffer: this.thicknessTailDisplayUniformBuffer,
       scratchPool: this.requireEffectsWorkbench().scratchPool,
+      boundingFieldEnabled: this.bevelBoundingFieldEnabled,
     });
     renderer.setLightGlazeView(this.lightGlazeView);
     renderer.setThicknessTailView(this.thicknessTailView);
@@ -1888,6 +1900,7 @@ export class BrushEngine {
     this.rasterBevelLastEncode = null;
     if (this.rasterStrokeRenderer) {
       this.rasterStrokeRenderer.setBevelResources(renderer.heightView, renderer.glossView);
+      this.rasterStrokeRenderer.updateBevelFieldParameters(renderer.fieldState);
       this.rasterStrokeRenderer.updateBevelParameters(this.rasterBevelStyle);
       this.rebuildRasterStrokeDisplayBindGroups();
     }
@@ -2046,6 +2059,9 @@ export class BrushEngine {
         this.rasterStrokeRenderer!.setBevelResources(
           this.rasterBevelRenderer!.heightView,
           this.rasterBevelRenderer!.glossView,
+        );
+        this.rasterStrokeRenderer!.updateBevelFieldParameters(
+          this.rasterBevelRenderer!.fieldState,
         );
         this.rasterStrokeRenderer!.updateBevelParameters(normalized);
         this.rebuildRasterStrokeDisplayBindGroups();
@@ -4588,7 +4604,11 @@ export class BrushEngine {
     this.displayShaderModule = this.device.createShaderModule({ label: "Display WGSL", code: displayShader });
     this.rasterStrokeDisplayShaderModule = this.device.createShaderModule({
       label: "Traccia direct LOD 0 and coarse mip display WGSL",
-      code: rasterStrokeDisplayShader(LAYER_SIZE, LAYER_SIZE),
+      code: rasterStrokeDisplayShader(
+        LAYER_SIZE,
+        LAYER_SIZE,
+        this.bevelBoundingFieldEnabled,
+      ),
     });
     this.thicknessTailDisplayShaderModule = this.device.createShaderModule({
       label: "Predictive thickness tail display WGSL",
@@ -6095,8 +6115,9 @@ export class BrushEngine {
       const bevelRenderer = this.rasterBevelRenderer!;
       const sourceChanged = this.rasterBevelHeightSourceMode !== sourceMode;
       const clearHeight = !this.rasterBevelHeightValid || sourceChanged;
+      const bevelFieldBounds = this.rasterBevelInfluenceRect(virtualContentBounds);
       const bevelRebuildRect = clearHeight
-        ? this.rasterBevelInfluenceRect(virtualContentBounds)
+        ? bevelFieldBounds
         : mutationRect
           ? this.rasterBevelInfluenceRect(mutationRect)
           : null;
@@ -6107,7 +6128,13 @@ export class BrushEngine {
         rebuildRect: bevelRebuildRect,
         changeDetectionRect: clearHeight ? null : mutationRect,
         clearHeight,
+        fieldBounds: bevelFieldBounds,
       });
+      if (bevelTiming.fieldReallocated) {
+        renderer.setBevelResources(bevelRenderer.heightView, bevelRenderer.glossView);
+        this.rebuildRasterStrokeDisplayBindGroups();
+      }
+      renderer.updateBevelFieldParameters(bevelTiming.fieldState);
       this.rasterBevelLastEncode = bevelTiming;
       this.rasterBevelHeightValid = true;
       this.rasterBevelHeightSourceMode = sourceMode;
@@ -6115,7 +6142,12 @@ export class BrushEngine {
         this.rasterBevelTotalBuilds += 1;
         this.rasterBevelTotalPasses += bevelTiming.passes;
       }
-      composeRect = this.mergeDirtyRects(composeRect, bevelRebuildRect);
+      composeRect = this.mergeDirtyRects(
+        composeRect,
+        bevelTiming.fieldFullRebuild
+          ? bevelTiming.fieldState.validBounds
+          : bevelRebuildRect,
+      );
     } else {
       this.rasterBevelHeightValid = false;
       this.rasterBevelHeightSourceMode = null;
