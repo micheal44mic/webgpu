@@ -197,6 +197,14 @@ interface BenchmarkRun {
     rasterBevelScratchMemoryMiB: number;
     rasterBevelScratchExtent: number;
     rasterBevelFieldStrategy: string;
+    rasterBevelBoundingFieldEnabled: boolean;
+    rasterBevelFieldAllocationBounds: Readonly<{ x: number; y: number; width: number; height: number }> | null;
+    rasterBevelFieldValidBounds: Readonly<{ x: number; y: number; width: number; height: number }> | null;
+    rasterBevelFieldTextureWidth: number;
+    rasterBevelFieldTextureHeight: number;
+    rasterBevelFieldGeneration: number;
+    rasterBevelFieldAllocationCount: number;
+    rasterBevelFieldShrinkCount: number;
     rasterBevelDistanceStrategy: string;
     rasterBevelWorkspaceStrategy: string;
     rasterBevelHeightSourceMode: string | null;
@@ -293,7 +301,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 42;
+    performanceTelemetryRevision: 43;
   };
 }
 
@@ -307,6 +315,8 @@ let historyState: HistoryState = {
   logicalStampBytes: 0,
 };
 
+const bevelBoundingFieldEnabled =
+  new URLSearchParams(window.location.search).get("bevelField") === "bbox";
 const engine = new BrushEngine(canvas, {
   onStatus(message, kind) {
     statusElement.textContent = message;
@@ -320,7 +330,7 @@ const engine = new BrushEngine(canvas, {
     updateHistoryControls();
     updateHumanStrokeControls();
   },
-}, tipPreviewCanvas);
+}, tipPreviewCanvas, { bevelBoundingFieldEnabled });
 if (import.meta.env.DEV) {
   (window as Window & { __brushEngine?: BrushEngine }).__brushEngine = engine;
 }
@@ -346,8 +356,12 @@ let previousGpuMemoryTotalMiB: number | null = null;
 let gpuMemoryDeltaTimer: number | null = null;
 let activeBrushTool: BrushSettings["tool"] = "paint";
 
+type NumericKeyOf<T> = {
+  [Key in keyof T]-?: T[Key] extends number ? Key : never;
+}[keyof T];
+
 const gpuMemoryRows: ReadonlyArray<
-  readonly [string, keyof EngineStats["gpuMemory"]]
+  readonly [string, NumericKeyOf<EngineStats["gpuMemory"]>]
 > = [
   ["gpuMemoryLayerBase", "layerBaseMiB"],
   ["gpuMemoryLayerMips", "layerMipChainMiB"],
@@ -627,7 +641,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 42,
+    performanceTelemetryRevision: 43,
     ...engineEnvironment,
   };
 }
@@ -1740,10 +1754,19 @@ if (import.meta.env.DEV) {
       (
         window as Window & { __effectsWorkbenchBenchmarkReport?: typeof report }
       ).__effectsWorkbenchBenchmarkReport = report;
+      const smallOff = report.scenarios.find((scenario) =>
+        scenario.contentId === "small-1000x800" && !scenario.boundingFieldEnabled
+      );
+      const smallOn = report.scenarios.find((scenario) =>
+        scenario.contentId === "small-1000x800" && scenario.boundingFieldEnabled
+      );
+      if (!smallOff || !smallOn) {
+        throw new Error("Il benchmark non ha prodotto la coppia small OFF/ON.");
+      }
       effectsWorkbenchBenchmarkResult.textContent =
-        `Retarget ${report.retarget.totalMedianMs.toFixed(2)} ms mediani`
-        + ` · destroy+recreate ${report.destroyRecreate.totalMedianMs.toFixed(2)} ms mediani`
-        + ` · ${report.sampleCount} campioni`;
+        `Small retarget OFF ${smallOff.retarget.totalMedianMs.toFixed(2)} ms`
+        + ` · ON ${smallOn.retarget.totalMedianMs.toFixed(2)} ms`
+        + ` · ${report.scenarios.length} scenari × ${report.sampleCount} campioni`;
     } catch (error) {
       effectsWorkbenchBenchmarkResult.textContent =
         error instanceof Error ? error.message : String(error);
@@ -1807,6 +1830,31 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
     ? `Effetti · pool scratch · ${scratchExtents.join(" / ")}`
     : "Effetti · pool scratch";
 
+  const fieldBoundsLabel = (
+    bounds: Readonly<{ x: number; y: number; width: number; height: number }>,
+  ): string => `${bounds.width}×${bounds.height} @ ${bounds.x},${bounds.y}`;
+  const allocation = stats.gpuMemory.rasterBevelFieldAllocationBounds;
+  const valid = stats.gpuMemory.rasterBevelFieldValidBounds;
+  let bevelHeightLabel = "Smusso · heightfield R32F · documento 4096×4096";
+  if (stats.gpuMemory.rasterBevelFieldBounded) {
+    if (!valid) {
+      bevelHeightLabel = allocation
+        ? `Smusso · heightfield R32F · vuoto · alloc ${fieldBoundsLabel(allocation)}`
+        : "Smusso · heightfield R32F · vuoto";
+    } else if (
+      allocation
+      && allocation.x === valid.x
+      && allocation.y === valid.y
+      && allocation.width === valid.width
+      && allocation.height === valid.height
+    ) {
+      bevelHeightLabel = `Smusso · heightfield R32F · bbox ${fieldBoundsLabel(valid)}`;
+    } else {
+      bevelHeightLabel = `Smusso · heightfield R32F · valido ${fieldBoundsLabel(valid)}`
+        + (allocation ? ` · alloc ${fieldBoundsLabel(allocation)}` : "");
+    }
+  }
+  element<HTMLElement>("gpuMemoryBevelHeightLabel").textContent = bevelHeightLabel;
 
   const totalMiB = stats.gpuMemory.countedTotalMiB;
   const formattedTotal = formatMemoryMiB(totalMiB);

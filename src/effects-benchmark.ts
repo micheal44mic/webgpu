@@ -1,11 +1,15 @@
 import {
   DEFAULT_RASTER_BEVEL_STYLE,
   copyRasterBevelStyle,
+  rasterBevelInfluenceBounds,
+  type RasterBevelRect,
   type RasterBevelStyle,
 } from "./bevel-core";
 import {
+  RASTER_BEVEL_RENDERER_BUILD,
   RasterBevelRenderer,
   type RasterBevelEncodeResult,
+  type RasterBevelFieldState,
 } from "./bevel-renderer";
 import {
   DEFAULT_RASTER_STROKE_STYLE,
@@ -15,6 +19,7 @@ import {
   type RasterStrokeStyle,
 } from "./stroke-core";
 import {
+  RASTER_STROKE_RENDERER_BUILD,
   RasterStrokeRenderer,
   type RasterStrokeEncodeResult,
 } from "./stroke-renderer";
@@ -56,7 +61,26 @@ export interface EffectsWorkbenchBenchmarkSummary {
   cpuSetupAndEncodeMedianMs: number;
   queueCompletionMedianMs: number;
   totalMedianMs: number;
+  bevelResolvedPixelsMedian: number;
   samples: EffectsWorkbenchBenchmarkSample[];
+}
+
+export interface EffectsWorkbenchBenchmarkScenario {
+  id: string;
+  contentId: "small-1000x800" | "full-canvas";
+  contentBounds: RasterBevelRect;
+  contentPixels: number;
+  boundingFieldEnabled: boolean;
+  fieldMode: "full-document" | "tile-aligned-influence-bbox";
+  fieldState: RasterBevelFieldState;
+  heightfieldMemoryMiB: number;
+  persistentAndScratchMemoryMiB: number;
+  scratchPoolStrategy: typeof EFFECTS_SCRATCH_POOL_STRATEGY;
+  scratchPoolCurrentMiB: number;
+  scratchPoolPeakMiB: number;
+  scratchPoolRequirementsMiB: Readonly<Record<string, number>>;
+  retarget: EffectsWorkbenchBenchmarkSummary;
+  destroyRecreate: EffectsWorkbenchBenchmarkSummary;
 }
 
 export interface EffectsWorkbenchBenchmarkReport {
@@ -72,19 +96,18 @@ export interface EffectsWorkbenchBenchmarkReport {
   bevelBuild: string;
   strokeStyle: RasterStrokeStyle;
   bevelStyle: RasterBevelStyle;
-  persistentAndScratchMemoryMiB: number;
-  scratchPoolStrategy: typeof EFFECTS_SCRATCH_POOL_STRATEGY;
-  scratchPoolCurrentMiB: number;
-  scratchPoolPeakMiB: number;
-  scratchPoolRequirementsMiB: Readonly<Record<string, number>>;
-  retarget: EffectsWorkbenchBenchmarkSummary;
-  destroyRecreate: EffectsWorkbenchBenchmarkSummary;
+  scenarios: EffectsWorkbenchBenchmarkScenario[];
 }
 
 interface RendererPair {
   workbench: EffectsWorkbench;
   stroke: RasterStrokeRenderer;
   bevel: RasterBevelRenderer;
+}
+
+interface ContentCase {
+  id: EffectsWorkbenchBenchmarkScenario["contentId"];
+  bounds: RasterBevelRect;
 }
 
 function median(values: number[]): number {
@@ -105,6 +128,9 @@ function summarize(
     cpuSetupAndEncodeMedianMs: median(samples.map((sample) => sample.cpuSetupAndEncodeMs)),
     queueCompletionMedianMs: median(samples.map((sample) => sample.queueCompletionMs)),
     totalMedianMs: median(samples.map((sample) => sample.totalMs)),
+    bevelResolvedPixelsMedian: median(
+      samples.map((sample) => sample.bevel.resolvedPixels),
+    ),
     samples,
   };
 }
@@ -120,11 +146,35 @@ function benchmarkStyles(): {
   return { stroke, bevel };
 }
 
+function benchmarkContentCases(
+  documentWidth: number,
+  documentHeight: number,
+): ContentCase[] {
+  const smallWidth = Math.min(1_000, documentWidth);
+  const smallHeight = Math.min(800, documentHeight);
+  return [
+    {
+      id: "small-1000x800",
+      bounds: {
+        x: Math.max(0, Math.min(documentWidth - smallWidth, 384)),
+        y: Math.max(0, Math.min(documentHeight - smallHeight, 512)),
+        width: smallWidth,
+        height: smallHeight,
+      },
+    },
+    {
+      id: "full-canvas",
+      bounds: { x: 0, y: 0, width: documentWidth, height: documentHeight },
+    },
+  ];
+}
+
 async function createRendererPair(
   options: EffectsWorkbenchBenchmarkOptions,
   layerView: GPUTextureView,
   strokeStyle: RasterStrokeStyle,
   bevelStyle: RasterBevelStyle,
+  boundingFieldEnabled: boolean,
 ): Promise<RendererPair> {
   const workbench = new EffectsWorkbench({
     device: options.device,
@@ -140,6 +190,7 @@ async function createRendererPair(
       layerView,
       lightGlazeUniformBuffer: options.lightGlazeUniformBuffer,
       thicknessTailUniformBuffer: options.thicknessTailUniformBuffer,
+      boundingFieldEnabled,
     });
     workbench.attachBevelRenderer(bevel);
     bevel.setLightGlazeView(null);
@@ -156,11 +207,13 @@ async function createRendererPair(
       lightGlazeUniformBuffer: options.lightGlazeUniformBuffer,
       thicknessTailUniformBuffer: options.thicknessTailUniformBuffer,
       scratchExtent: rasterStrokeScratchExtentForWidth(strokeStyle.width),
+      bevelBoundingFieldEnabled: boundingFieldEnabled,
     });
     workbench.attachStrokeRenderer(stroke);
     stroke.setLightGlazeView(null);
     stroke.setThicknessTailView(null);
     stroke.setBevelResources(bevel.heightView, bevel.glossView);
+    stroke.updateBevelFieldParameters(bevel.fieldState);
     stroke.updateBevelParameters(bevelStyle);
     options.onWorkbenchChanged?.(workbench);
     options.onMemoryChanged?.();
@@ -171,11 +224,13 @@ async function createRendererPair(
   }
 }
 
-function encodeFullDocumentRebuild(
+function encodeRebuild(
   options: EffectsWorkbenchBenchmarkOptions,
   pair: RendererPair,
   strokeStyle: RasterStrokeStyle,
   bevelStyle: RasterBevelStyle,
+  content: ContentCase,
+  boundingFieldEnabled: boolean,
   label: string,
 ): {
   encoder: GPUCommandEncoder;
@@ -188,15 +243,34 @@ function encodeFullDocumentRebuild(
     width: options.documentWidth,
     height: options.documentHeight,
   };
+  const influenceBounds = rasterBevelInfluenceBounds(
+    content.bounds,
+    bevelStyle,
+    options.documentWidth,
+    options.documentHeight,
+  );
+  if (!influenceBounds) {
+    throw new Error(`Bounds benchmark ${content.id} non validi.`);
+  }
+  const bevelTarget = boundingFieldEnabled ? influenceBounds : fullDocument;
   const encoder = options.device.createCommandEncoder({ label });
   const bevel = pair.bevel.encode({
     encoder,
     style: bevelStyle,
     sourceMode: "permanent",
-    rebuildRect: fullDocument,
+    rebuildRect: bevelTarget,
     changeDetectionRect: null,
     clearHeight: true,
+    fieldBounds: bevelTarget,
+    allowFieldShrink: boundingFieldEnabled,
   });
+  if (bevel.fieldReallocated) {
+    pair.stroke.setBevelResources(pair.bevel.heightView, pair.bevel.glossView);
+  }
+  pair.stroke.updateBevelFieldParameters(bevel.fieldState);
+  pair.stroke.updateBevelParameters(bevelStyle);
+  // Coverage, mask and styled textures deliberately keep the full-document
+  // workload in both variants. PR3 changes only the R32F bevel heightfield.
   const stroke = pair.stroke.encode({
     encoder,
     style: strokeStyle,
@@ -212,11 +286,12 @@ function encodeFullDocumentRebuild(
   options.onMemoryChanged?.();
   return { encoder, stroke, bevel };
 }
+
 async function submitMeasured(
   options: EffectsWorkbenchBenchmarkOptions,
   operation: EffectsWorkbenchBenchmarkSample["operation"],
   startedAt: number,
-  encoded: ReturnType<typeof encodeFullDocumentRebuild>,
+  encoded: ReturnType<typeof encodeRebuild>,
 ): Promise<EffectsWorkbenchBenchmarkSample> {
   options.device.queue.submit([encoded.encoder.finish()]);
   const submittedAt = performance.now();
@@ -232,31 +307,33 @@ async function submitMeasured(
   };
 }
 
-export async function benchmarkEffectsWorkbench(
+async function runScenario(
   options: EffectsWorkbenchBenchmarkOptions,
-): Promise<EffectsWorkbenchBenchmarkReport> {
-  const sampleCount = Math.max(1, Math.min(10, Math.floor(options.samples ?? 3)));
-  const styles = benchmarkStyles();
-  const createSourceView = (): GPUTextureView => options.sourceTexture.createView({
-    label: "EffectsWorkbench benchmark source mip 0",
-    baseMipLevel: 0,
-    mipLevelCount: 1,
-  });
+  styles: ReturnType<typeof benchmarkStyles>,
+  content: ContentCase,
+  boundingFieldEnabled: boolean,
+  sampleCount: number,
+  createSourceView: () => GPUTextureView,
+): Promise<EffectsWorkbenchBenchmarkScenario> {
   let pair: RendererPair | null = await createRendererPair(
     options,
     createSourceView(),
     styles.stroke,
     styles.bevel,
+    boundingFieldEnabled,
   );
   const retargetSamples: EffectsWorkbenchBenchmarkSample[] = [];
   const recreateSamples: EffectsWorkbenchBenchmarkSample[] = [];
+  const id = `${content.id}-${boundingFieldEnabled ? "bbox-on" : "bbox-off"}`;
   try {
-    const warmup = encodeFullDocumentRebuild(
+    const warmup = encodeRebuild(
       options,
       pair,
       styles.stroke,
       styles.bevel,
-      "EffectsWorkbench benchmark warm-up",
+      content,
+      boundingFieldEnabled,
+      `EffectsWorkbench ${id} warm-up`,
     );
     options.device.queue.submit([warmup.encoder.finish()]);
     await options.device.queue.onSubmittedWorkDone();
@@ -267,12 +344,14 @@ export async function benchmarkEffectsWorkbench(
         view: createSourceView(),
         format: options.layerFormat,
       });
-      const encoded = encodeFullDocumentRebuild(
+      const encoded = encodeRebuild(
         options,
         pair,
         styles.stroke,
         styles.bevel,
-        `EffectsWorkbench retarget benchmark ${index + 1}/${sampleCount}`,
+        content,
+        boundingFieldEnabled,
+        `EffectsWorkbench ${id} retarget ${index + 1}/${sampleCount}`,
       );
       retargetSamples.push(await submitMeasured(options, "retarget", startedAt, encoded));
     }
@@ -287,13 +366,16 @@ export async function benchmarkEffectsWorkbench(
         createSourceView(),
         styles.stroke,
         styles.bevel,
+        boundingFieldEnabled,
       );
-      const encoded = encodeFullDocumentRebuild(
+      const encoded = encodeRebuild(
         options,
         pair,
         styles.stroke,
         styles.bevel,
-        `EffectsWorkbench destroy/recreate benchmark ${index + 1}/${sampleCount}`,
+        content,
+        boundingFieldEnabled,
+        `EffectsWorkbench ${id} destroy/recreate ${index + 1}/${sampleCount}`,
       );
       recreateSamples.push(
         await submitMeasured(options, "destroy-recreate", startedAt, encoded),
@@ -301,19 +383,18 @@ export async function benchmarkEffectsWorkbench(
     }
 
     const scratchPool = pair.workbench.scratchPool.snapshot();
+    const fieldState = pair.bevel.fieldState;
     return {
-      strategy: EFFECTS_WORKING_SET_STRATEGY,
-      measurement: EFFECTS_WORKBENCH_BENCHMARK_MEASUREMENT,
-      documentWidth: options.documentWidth,
-      documentHeight: options.documentHeight,
-      layerFormat: options.layerFormat,
-      gpuLabel: options.gpuLabel,
-      timestampQueriesSupported: options.timestampQueriesSupported,
-      sampleCount,
-      strokeBuild: pair.stroke.build,
-      bevelBuild: pair.bevel.build,
-      strokeStyle: copyRasterStrokeStyle(styles.stroke),
-      bevelStyle: copyRasterBevelStyle(styles.bevel),
+      id,
+      contentId: content.id,
+      contentBounds: { ...content.bounds },
+      contentPixels: content.bounds.width * content.bounds.height,
+      boundingFieldEnabled,
+      fieldMode: boundingFieldEnabled
+        ? "tile-aligned-influence-bbox"
+        : "full-document",
+      fieldState,
+      heightfieldMemoryMiB: fieldState.memoryBytes / (1024 * 1024),
       scratchPoolStrategy: EFFECTS_SCRATCH_POOL_STRATEGY,
       scratchPoolCurrentMiB: scratchPool.currentBytes / (1024 * 1024),
       scratchPoolPeakMiB: scratchPool.peakBytes / (1024 * 1024),
@@ -337,4 +418,44 @@ export async function benchmarkEffectsWorkbench(
     options.onWorkbenchChanged?.(null);
     options.onMemoryChanged?.();
   }
+}
+
+export async function benchmarkEffectsWorkbench(
+  options: EffectsWorkbenchBenchmarkOptions,
+): Promise<EffectsWorkbenchBenchmarkReport> {
+  const sampleCount = Math.max(1, Math.min(10, Math.floor(options.samples ?? 3)));
+  const styles = benchmarkStyles();
+  const createSourceView = (): GPUTextureView => options.sourceTexture.createView({
+    label: "EffectsWorkbench benchmark source mip 0",
+    baseMipLevel: 0,
+    mipLevelCount: 1,
+  });
+  const scenarios: EffectsWorkbenchBenchmarkScenario[] = [];
+  for (const content of benchmarkContentCases(options.documentWidth, options.documentHeight)) {
+    for (const boundingFieldEnabled of [false, true]) {
+      scenarios.push(await runScenario(
+        options,
+        styles,
+        content,
+        boundingFieldEnabled,
+        sampleCount,
+        createSourceView,
+      ));
+    }
+  }
+  return {
+    strategy: EFFECTS_WORKING_SET_STRATEGY,
+    measurement: EFFECTS_WORKBENCH_BENCHMARK_MEASUREMENT,
+    documentWidth: options.documentWidth,
+    documentHeight: options.documentHeight,
+    layerFormat: options.layerFormat,
+    gpuLabel: options.gpuLabel,
+    timestampQueriesSupported: options.timestampQueriesSupported,
+    sampleCount,
+    strokeBuild: RASTER_STROKE_RENDERER_BUILD,
+    bevelBuild: RASTER_BEVEL_RENDERER_BUILD,
+    strokeStyle: copyRasterStrokeStyle(styles.stroke),
+    bevelStyle: copyRasterBevelStyle(styles.bevel),
+    scenarios,
+  };
 }

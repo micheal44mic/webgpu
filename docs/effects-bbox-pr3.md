@@ -248,3 +248,92 @@ Le decisioni richieste dall'audit sono state fornite prima dello Step 2:
 Il flag bbox resta default-OFF: il percorso full-document di `e9851ed` rimane
 il controllo indipendente e non viene riscritto per condividere scorciatoie con
 il candidato.
+
+## Step 4 — Misure finali
+
+Verifiche eseguite sul commit finale, con il server locale e il golden reale
+sulla GPU, non dedotte.
+
+### Golden, con flag OFF e con flag ON
+
+| | Flag OFF | Flag ON (`?bevelField=bbox`) |
+|---|---|---|
+| `combinedSha256` | `8d5a75a6…` canonico | `8d5a75a6…` canonico |
+| `mipCombinedSha256` | `9208e2a3…` | `9208e2a3…` |
+| Mismatch mip | 25 preesistenti | 25 preesistenti |
+| Diagnostici falliti | i 3 source-mode preesistenti | i 3 source-mode preesistenti |
+| Errori di validazione WebGPU | nessuno | nessuno |
+
+Nessun golden rigenerato o modificato.
+
+### Golden bbox indipendente, 24 combinazioni
+
+`modo × tecnica × contour` con renderer separati per il percorso full-document e
+per quello bbox. Parità **24/24**, `differingBytes: 0` ovunque.
+
+Guardie anti-tautologia, tutte verificate a runtime e non solo dichiarate:
+
+| Guardia | Valore |
+|---|---|
+| `independentRenderers` | `true` |
+| `bboxOriginNonZero` | `true` — campo a `(256, 256)`, la traslazione è esercitata |
+| `bboxSmallerThanDocument` | `true` — `256²` contro `512²` |
+| `bboxReallocationStayedInsideNewBounds` | `true` |
+| `styledOutputDistinctFromSource` | `true` |
+
+Memoria del campo nel golden `512²`: **1,0078 MiB → 0,2539 MiB**.
+Pixel risolti per caso: **262 144 → 65 536**.
+
+### Oracolo della mutazione `zero-outside`
+
+È la mutazione che verifica il valore esterno costante. Il suo valore sta nel
+comportamento **asimmetrico**, che è ciò che rende il caso probante:
+
+| Modo | Mutazione a zero | Atteso |
+|---|---|---|
+| `inner`, `outer`, `emboss` | invisibile, hash identico | invisibile: il valore esterno è già 0 |
+| `pillow` (tutte e 6 le combinazioni) | **rilevata**, hash diverso | rilevata: il valore esterno è 1 |
+
+Se la mutazione fosse invisibile anche su `pillow`, la costante esterna sarebbe
+sbagliata. Se fosse visibile su `inner`, lo sarebbe altrettanto. Entrambi i lati
+sono asseriti da `zeroMutationOraclePassed`.
+
+Mutazione `omit-origin`: rilevata, **60 641 byte differenti**.
+
+### Benchmark full-document 4096², quattro scenari
+
+NVIDIA Ampere, RGBA8, Traccia outside 14 px, Smusso inner/smooth 32 px soften 4,
+cinque campioni per scenario dopo warm-up, `timestamp-query` non disponibile.
+
+| Scenario | Flag | Campo | Heightfield | Working set | Retarget mediano | Pixel Smusso risolti |
+|---|---|---|---:|---:|---:|---:|
+| Piccolo 1000×800 | OFF | full-document | 64,06 MiB | 125,50 MiB | 125,7 ms | 16 777 216 |
+| Piccolo 1000×800 | **ON** | tile-aligned bbox | **6,27 MiB** | **67,70 MiB** | **66,7 ms** | **1 638 400** |
+| Full-canvas | OFF | full-document | 64,06 MiB | 125,50 MiB | 125,3 ms | 16 777 216 |
+| Full-canvas | ON | tile-aligned bbox | 64,06 MiB | 125,50 MiB | 130,2 ms | 16 777 216 |
+
+Sul contenuto piccolo il rebuild scende del **47%** e il campo del **90%**, con
+un ordine di grandezza in meno di pixel elaborati. È l'obiettivo dichiarato
+della PR ed è raggiunto.
+
+Sul full-canvas il bbox coincide con il documento, quindi per costruzione non
+c'è nulla da guadagnare: memoria e pixel sono identici. La differenza di
+`+4,9 ms` **non è interpretabile come regressione**: cade dentro la varianza
+già osservata in questo harness, dove serie ripetute sullo stesso codice hanno
+prodotto campioni distribuiti su oltre 20 ms. Va letta come invariata, e per
+affermare altro servirebbero più campioni o `timestamp-query`.
+
+### Verifiche finali
+
+- `npx tsc --noEmit`
+- `npm run stroke:verify`, `bevel:verify`, `grain:verify`, `blend:verify`,
+  `thickness:verify`, `effects-scratch:verify`
+- build Vite in directory temporanea; `dist/` non modificata (`git status` pulito)
+
+### Cosa resta non verificato
+
+- Il percorso di **pittura interattiva** con il flag ON non è coperto da test
+  automatici: il golden costruisce renderer propri, non quelli del motore.
+- Il flag resta **default-OFF**. Prima di renderlo predefinito serve una sessione
+  di disegno reale con crescita ripetuta dei bounds durante il tratto, che è il
+  percorso che nessuna delle misure qui sopra esercita.

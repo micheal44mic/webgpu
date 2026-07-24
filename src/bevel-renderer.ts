@@ -16,7 +16,7 @@ import type { RasterStrokeSourceMode } from "./stroke-renderer";
 import type { EffectsScratchLease, EffectsScratchPool } from "./effects-scratch-pool";
 
 export const RASTER_BEVEL_RENDERER_BUILD =
-  "raster-bevel-webgpu-v4-shared-effects-scratch-retargetable-layer-heightfield-v2-r32f-segment-jfa-workgroup-gaussian-gpu-gate";
+  "raster-bevel-webgpu-v5-bbox-field-shared-effects-scratch-retargetable-layer-heightfield-v2-r32f-segment-jfa-workgroup-gaussian-gpu-gate";
 export const RASTER_BEVEL_FIELD_STRATEGY =
   "persistent-document-plus-one-pixel-apron-r32float-heightfield" as const;
 export const RASTER_BEVEL_BOUNDING_FIELD_STRATEGY =
@@ -697,7 +697,7 @@ function resolveHeightShader(
   boundingFieldEnabled = false,
 ): string {
   const fieldTranslation = boundingFieldEnabled
-    ? "\n    - parameters._pad0"
+    ? "\n    - vec2<i32>(parameters._pad0)"
     : "";
   return `${sourceShaderCommon(documentWidth, documentHeight)}
 fn sampleInput(position: vec2<i32>) -> f32 {

@@ -284,8 +284,8 @@ assert(html.includes('value="normal">Normal accumulativo — 4×')
   && html.includes('value="off">Off — senza texture')
   && html.includes('value="texturized">Texturized — Fixed M1 (fisso)'),
   "La matrice iPhone Normal 4× / M1 1× con Grain Off/Fixed non è esposta correttamente.");
-assert(main.includes("performanceTelemetryRevision: 42"),
-  "Revisione telemetria banco effetti retargetable attesa assente.");
+assert(main.includes("performanceTelemetryRevision: 43"),
+  "Revisione telemetria campo Smusso bbox attesa assente.");
 
 console.log(JSON.stringify({
   asset: path.relative(projectRoot, assetPath),

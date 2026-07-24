@@ -54,6 +54,7 @@ import {
 } from "./stroke-core";
 
 import {
+  RASTER_BEVEL_BOUNDING_FIELD_STRATEGY,
   RASTER_BEVEL_DISTANCE_STRATEGY,
   RASTER_BEVEL_FIELD_STRATEGY,
   RASTER_BEVEL_WORKSPACE_STRATEGY,
@@ -244,6 +245,14 @@ export interface EngineGpuMemoryStats {
   effectsScratchBevelExtent: number;
   rasterBevelHeightMiB: number;
   rasterBevelLutAndControlMiB: number;
+  rasterBevelFieldBounded: boolean;
+  rasterBevelFieldAllocationBounds: RasterBevelRect | null;
+  rasterBevelFieldValidBounds: RasterBevelRect | null;
+  rasterBevelFieldTextureWidth: number;
+  rasterBevelFieldTextureHeight: number;
+  rasterBevelFieldGeneration: number;
+  rasterBevelFieldAllocationCount: number;
+  rasterBevelFieldShrinkCount: number;
   blendRendererMiB: number;
   lightGlazeMiB: number;
   thicknessTailMiB: number;
@@ -2729,6 +2738,17 @@ export class BrushEngine {
       (rasterBevel?.lutMemoryBytes ?? 0)
       + (rasterBevel?.controlMemoryBytes ?? 0)
     ) / MEBIBYTE_BYTES;
+    const rasterBevelField = rasterBevel?.fieldState ?? {
+      bounded: this.bevelBoundingFieldEnabled,
+      allocationBounds: null,
+      validBounds: null,
+      textureWidth: 0,
+      textureHeight: 0,
+      memoryBytes: 0,
+      generation: 0,
+      allocationCount: 0,
+      shrinkCount: 0,
+    };
     const blendRendererMiB = this.blendRenderer?.allocatedMemoryMiB() ?? 0;
     const lightGlazeMiB = this.lightGlazeStorageAllocated
       ? lightGlazeAdditionalMemoryMiB(this.layerFormat, this.lightGlazeStorageMode)
@@ -2774,6 +2794,14 @@ export class BrushEngine {
       blendRendererMiB,
       rasterBevelHeightMiB,
       rasterBevelLutAndControlMiB,
+      rasterBevelFieldBounded: rasterBevelField.bounded,
+      rasterBevelFieldAllocationBounds: rasterBevelField.allocationBounds,
+      rasterBevelFieldValidBounds: rasterBevelField.validBounds,
+      rasterBevelFieldTextureWidth: rasterBevelField.textureWidth,
+      rasterBevelFieldTextureHeight: rasterBevelField.textureHeight,
+      rasterBevelFieldGeneration: rasterBevelField.generation,
+      rasterBevelFieldAllocationCount: rasterBevelField.allocationCount,
+      rasterBevelFieldShrinkCount: rasterBevelField.shrinkCount,
       lightGlazeMiB,
       thicknessTailMiB,
       historyCpuMiB,
@@ -3409,18 +3437,17 @@ export class BrushEngine {
         onMemoryChanged: () => this.publishStats(),
       });
       console.info("[EffectsWorkbench] benchmark 4096²", report);
-      console.table({
-        retarget: {
-          cpuMs: report.retarget.cpuSetupAndEncodeMedianMs,
-          queueMs: report.retarget.queueCompletionMedianMs,
-          totalMs: report.retarget.totalMedianMs,
+      console.table(Object.fromEntries(report.scenarios.map((scenario) => [
+        scenario.id,
+        {
+          retargetCpuMs: scenario.retarget.cpuSetupAndEncodeMedianMs,
+          retargetQueueMs: scenario.retarget.queueCompletionMedianMs,
+          retargetTotalMs: scenario.retarget.totalMedianMs,
+          recreateTotalMs: scenario.destroyRecreate.totalMedianMs,
+          heightfieldMiB: scenario.heightfieldMemoryMiB,
+          resolvedPixels: scenario.retarget.bevelResolvedPixelsMedian,
         },
-        "destroy+recreate": {
-          cpuMs: report.destroyRecreate.cpuSetupAndEncodeMedianMs,
-          queueMs: report.destroyRecreate.queueCompletionMedianMs,
-          totalMs: report.destroyRecreate.totalMedianMs,
-        },
-      });
+      ])));
       this.callbacks.onStatus?.("Benchmark banco effetti completato.", "ok");
       return report;
     } finally {
@@ -3440,7 +3467,9 @@ export class BrushEngine {
     }
     await this.waitForIdle();
     const { runRasterStrokeGolden } = await import("./stroke-golden");
-    return runRasterStrokeGolden(this.device);
+    return runRasterStrokeGolden(this.device, {
+      bevelBoundingFieldEnabled: this.bevelBoundingFieldEnabled,
+    });
   }
 
   async waitForIdle(): Promise<void> {
@@ -3903,7 +3932,17 @@ export class BrushEngine {
     rasterBevelHeightMemoryMiB: number;
     rasterBevelScratchMemoryMiB: number;
     rasterBevelScratchExtent: number;
-    rasterBevelFieldStrategy: typeof RASTER_BEVEL_FIELD_STRATEGY;
+    rasterBevelFieldStrategy:
+      | typeof RASTER_BEVEL_FIELD_STRATEGY
+      | typeof RASTER_BEVEL_BOUNDING_FIELD_STRATEGY;
+    rasterBevelBoundingFieldEnabled: boolean;
+    rasterBevelFieldAllocationBounds: RasterBevelRect | null;
+    rasterBevelFieldValidBounds: RasterBevelRect | null;
+    rasterBevelFieldTextureWidth: number;
+    rasterBevelFieldTextureHeight: number;
+    rasterBevelFieldGeneration: number;
+    rasterBevelFieldAllocationCount: number;
+    rasterBevelFieldShrinkCount: number;
     rasterBevelDistanceStrategy: typeof RASTER_BEVEL_DISTANCE_STRATEGY;
     rasterBevelWorkspaceStrategy: typeof RASTER_BEVEL_WORKSPACE_STRATEGY;
     rasterBevelHeightSourceMode: RasterStrokeSourceMode | null;
@@ -3996,6 +4035,17 @@ export class BrushEngine {
     historyStampRetentionStrategy: typeof HISTORY_STAMP_RETENTION_STRATEGY;
   } {
     const effectsScratch = this.effectsWorkbench?.scratchPool.snapshot();
+    const bevelField = this.rasterBevelRenderer?.fieldState ?? {
+      bounded: this.bevelBoundingFieldEnabled,
+      allocationBounds: null,
+      validBounds: null,
+      textureWidth: 0,
+      textureHeight: 0,
+      memoryBytes: 0,
+      generation: 0,
+      allocationCount: 0,
+      shrinkCount: 0,
+    };
     return {
       canvasWidth: this.canvas.width,
       canvasHeight: this.canvas.height,
@@ -4037,7 +4087,17 @@ export class BrushEngine {
       rasterBevelScratchMemoryMiB:
         (this.rasterBevelRenderer?.workspaceMemoryBytes ?? 0) / MEBIBYTE_BYTES,
       rasterBevelScratchExtent: this.rasterBevelRenderer?.workspaceExtent ?? 0,
-      rasterBevelFieldStrategy: RASTER_BEVEL_FIELD_STRATEGY,
+      rasterBevelFieldStrategy: this.bevelBoundingFieldEnabled
+        ? RASTER_BEVEL_BOUNDING_FIELD_STRATEGY
+        : RASTER_BEVEL_FIELD_STRATEGY,
+      rasterBevelBoundingFieldEnabled: this.bevelBoundingFieldEnabled,
+      rasterBevelFieldAllocationBounds: bevelField.allocationBounds,
+      rasterBevelFieldValidBounds: bevelField.validBounds,
+      rasterBevelFieldTextureWidth: bevelField.textureWidth,
+      rasterBevelFieldTextureHeight: bevelField.textureHeight,
+      rasterBevelFieldGeneration: bevelField.generation,
+      rasterBevelFieldAllocationCount: bevelField.allocationCount,
+      rasterBevelFieldShrinkCount: bevelField.shrinkCount,
       rasterBevelDistanceStrategy: RASTER_BEVEL_DISTANCE_STRATEGY,
       rasterBevelWorkspaceStrategy: RASTER_BEVEL_WORKSPACE_STRATEGY,
       rasterBevelHeightSourceMode: this.rasterBevelHeightSourceMode,

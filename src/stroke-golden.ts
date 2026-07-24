@@ -10,6 +10,10 @@ import {
   copyRasterBevelStyle,
 } from "./bevel-core";
 import { EffectsWorkbench } from "./effects-workbench";
+import {
+  runRasterBevelBboxGolden,
+  type RasterBevelBboxGoldenReport,
+} from "./bevel-bbox-golden";
 import type { RasterStrokeRect, RasterStrokeStyle } from "./stroke-core";
 import { paintMipDownsampleShader } from "./shaders";
 import rasterStrokeGoldenBaseline from "../goldens/raster-stroke-rgba8-v1.json";
@@ -20,7 +24,7 @@ export const RASTER_STROKE_GOLDEN_WIDTH = 256;
 export const RASTER_STROKE_GOLDEN_HEIGHT = 192;
 export const RASTER_STROKE_GOLDEN_FORMAT = "rgba8unorm" as const;
 export const RASTER_STROKE_GOLDEN_MIP_CHAIN_VERSION = 1 as const;
-export const RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION = 6 as const;
+export const RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION = 7 as const;
 
 export interface RasterStrokeGoldenMip {
   level: number;
@@ -69,9 +73,14 @@ export interface RasterStrokeGoldenDiagnostic {
   };
 }
 
+export interface RasterStrokeGoldenOptions {
+  bevelBoundingFieldEnabled?: boolean;
+}
+
 export interface RasterStrokeGoldenReport {
   version: typeof RASTER_STROKE_GOLDEN_VERSION;
   rendererBuild: string;
+  bevelBoundingFieldEnabled: boolean;
   format: typeof RASTER_STROKE_GOLDEN_FORMAT;
   width: number;
   height: number;
@@ -83,6 +92,7 @@ export interface RasterStrokeGoldenReport {
   diagnosticsVersion: typeof RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION;
   diagnosticsMatch: boolean;
   diagnostics: RasterStrokeGoldenDiagnostic[];
+  bevelBbox: RasterBevelBboxGoldenReport;
   baselineMismatches: string[];
   cases: RasterStrokeGoldenCase[];
 }
@@ -500,7 +510,9 @@ function writeGoldenThicknessTailUniforms(
 }
 export async function runRasterStrokeGolden(
   device: GPUDevice,
+  options: RasterStrokeGoldenOptions = {},
 ): Promise<RasterStrokeGoldenReport> {
+  const bevelBoundingFieldEnabled = options.bevelBoundingFieldEnabled === true;
   const sourceTexture = device.createTexture({
     label: "Traccia golden deterministic source",
     size: {
@@ -585,6 +597,7 @@ export async function runRasterStrokeGolden(
       thicknessTailUniformBuffer,
       scratchExtent: 512,
       readbackEnabled: true,
+      bevelBoundingFieldEnabled,
     });
 
     const mipBindGroupLayout = device.createBindGroupLayout({
@@ -958,6 +971,7 @@ export async function runRasterStrokeGolden(
       layerView: sourceTexture.createView(),
       lightGlazeUniformBuffer,
       thicknessTailUniformBuffer,
+      boundingFieldEnabled: bevelBoundingFieldEnabled,
     });
     const retargetBevelRenderer = bevelRenderer;
     retargetWorkbench.attachStrokeRenderer(renderer);
@@ -967,6 +981,7 @@ export async function runRasterStrokeGolden(
       retargetBevelRenderer.heightView,
       retargetBevelRenderer.glossView,
     );
+    renderer.updateBevelFieldParameters(retargetBevelRenderer.fieldState);
     renderer.updateBevelParameters(retargetBevelStyle);
 
     // Parametrizzato di proposito: il caso cross-texture deve eseguire
@@ -978,14 +993,21 @@ export async function runRasterStrokeGolden(
       bevelTarget: RasterBevelRenderer,
     ): Promise<void> => {
       const encoder = device.createCommandEncoder({ label });
-      bevelTarget.encode({
+      const bevelTiming = bevelTarget.encode({
         encoder,
         style: retargetBevelStyle,
         sourceMode: "permanent",
         rebuildRect: FULL_RECT,
         changeDetectionRect: null,
         clearHeight: true,
+        fieldBounds: FULL_RECT,
+        allowFieldShrink: bevelBoundingFieldEnabled,
       });
+      if (bevelTiming.fieldReallocated) {
+        strokeTarget.setBevelResources(bevelTarget.heightView, bevelTarget.glossView);
+      }
+      strokeTarget.updateBevelFieldParameters(bevelTiming.fieldState);
+      strokeTarget.updateBevelParameters(retargetBevelStyle);
       strokeTarget.encode({
         encoder,
         sourceMode: "permanent",
@@ -1092,6 +1114,7 @@ export async function runRasterStrokeGolden(
       layerView: retargetSourceTexture.createView(),
       lightGlazeUniformBuffer,
       thicknessTailUniformBuffer,
+      boundingFieldEnabled: bevelBoundingFieldEnabled,
     });
     referenceWorkbench.attachBevelRenderer(referenceBevelRenderer);
     const referenceStrokeRenderer = await RasterStrokeRenderer.create({
@@ -1105,12 +1128,16 @@ export async function runRasterStrokeGolden(
       thicknessTailUniformBuffer,
       scratchExtent: 512,
       readbackEnabled: true,
+      bevelBoundingFieldEnabled,
     });
     referenceWorkbench.attachStrokeRenderer(referenceStrokeRenderer);
     referenceBevelRenderer.updateStyleResources(retargetBevelStyle);
     referenceStrokeRenderer.setBevelResources(
       referenceBevelRenderer.heightView,
       referenceBevelRenderer.glossView,
+    );
+    referenceStrokeRenderer.updateBevelFieldParameters(
+      referenceBevelRenderer.fieldState,
     );
     referenceStrokeRenderer.updateBevelParameters(retargetBevelStyle);
     await encodeRetargetStyleStack(
@@ -1317,9 +1344,11 @@ export async function runRasterStrokeGolden(
     if (mipCombinedSha256 !== rasterStrokeMipGoldenBaseline.mipCombinedSha256) {
       baselineMismatches.unshift("mip-combined");
     }
+    const bevelBbox = await runRasterBevelBboxGolden(device);
     return {
       version: RASTER_STROKE_GOLDEN_VERSION,
       rendererBuild: RASTER_STROKE_RENDERER_BUILD,
+      bevelBoundingFieldEnabled,
       format: RASTER_STROKE_GOLDEN_FORMAT,
       width: RASTER_STROKE_GOLDEN_WIDTH,
       height: RASTER_STROKE_GOLDEN_HEIGHT,
@@ -1328,8 +1357,11 @@ export async function runRasterStrokeGolden(
       mipChainVersion: RASTER_STROKE_GOLDEN_MIP_CHAIN_VERSION,
       mipCombinedSha256,
       diagnosticsVersion: RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION,
-      diagnosticsMatch: diagnostics.every((diagnostic) => diagnostic.passed),
+      diagnosticsMatch:
+        diagnostics.every((diagnostic) => diagnostic.passed)
+        && bevelBbox.passed,
       diagnostics,
+      bevelBbox,
       baselineMatches: baselineMismatches.length === 0,
       baselineMismatches,
       cases,

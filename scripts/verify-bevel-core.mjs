@@ -337,7 +337,11 @@ const workbenchSource = readFileSync(new URL("../src/effects-workbench.ts", impo
 const benchmarkSource = readFileSync(new URL("../src/effects-benchmark.ts", import.meta.url), "utf8");
 const rendererSource = readFileSync(new URL("../src/bevel-renderer.ts", import.meta.url), "utf8");
 const styleStackSource = readFileSync(new URL("../src/stroke-renderer.ts", import.meta.url), "utf8");
-assert(rendererSource.includes("raster-bevel-webgpu-v4-shared-effects-scratch-retargetable-layer"));
+const bboxGoldenSource = readFileSync(
+  new URL("../src/bevel-bbox-golden.ts", import.meta.url),
+  "utf8",
+);
+assert(rendererSource.includes("raster-bevel-webgpu-v5-bbox-field-shared-effects-scratch-retargetable-layer"));
 assert(rendererSource.includes("shared-effects-pool-roi-split-common-segment-arenas-grow-until-idle-shrink"));
 const engineSource = readFileSync(new URL("../src/brush-engine.ts", import.meta.url), "utf8");
 assert(rendererSource.includes("texture_storage_2d<r32float, write>"));
@@ -399,5 +403,25 @@ assert.ok(
   encoderCommandIndexes.every((index) => fieldPreparationIndex < index),
   "field replacement must precede every encoder command that can use the field",
 );
+assert.match(bboxGoldenSource, /for \(const mode of RASTER_BEVEL_MODES\)/);
+assert.match(bboxGoldenSource, /for \(const technique of RASTER_BEVEL_TECHNIQUES\)/);
+assert.match(bboxGoldenSource, /for \(const contour of \["off", "linear"\] as const\)/);
+assert.match(bboxGoldenSource, /matrixComplete/);
+assert.match(bboxGoldenSource, /fullPair\.workbench !== bboxPair\.workbench/);
+assert.match(bboxGoldenSource, /zero-outside/);
+assert.match(bboxGoldenSource, /zeroMutationExpectedToMatch = mode !== "pillow"/);
+assert.match(bboxGoldenSource, /omit-origin/);
+assert.match(
+  bboxGoldenSource,
+  /bbox\.bevel\.resolvedPixels\s*=== fieldBounds\.width \* fieldBounds\.height/,
+  "the bbox golden must prove realloc work is bounded to the new bbox",
+);
+assert.doesNotMatch(
+  bboxGoldenSource,
+  /previous(Image|Pixels|Output)/i,
+  "the bbox golden must not compare against a previous image",
+);
+assert.match(styleStackSource, /Golden-only compile mutation/);
+assert.match(styleStackSource, /bevelBoundingFieldTestMutation \?\? "none"/);
 
 console.log("Raster bevel Heightfield V2 verification passed.");

@@ -372,7 +372,7 @@ const goldenMipBaseline = JSON.parse(readFileSync(
 ));
 assert.match(
   rendererSource,
-  /style-stack-webgpu-v9-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even/,
+  /style-stack-webgpu-v10-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even/,
 );
 assert.ok(
   rendererSource.indexOf("bevelNode(base, position)")
@@ -441,7 +441,7 @@ assert.match(goldenSource, /light-glaze-m1-r8-max-coverage-opacity-0\.37/);
 assert.match(goldenSource, /thickness-tail-source-over/);
 assert.match(goldenSource, /diagnosticsMatch/);
 assert.match(goldenSource, /differingBytes/);
-assert.match(goldenSource, /RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION = 6/);
+assert.match(goldenSource, /RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION = 7/);
 // Il pool sostituisce il buffer fisico quando cresce e distrugge il vecchio: se
 // i renderer non rileggessero il lease, i loro bind group punterebbero a un
 // buffer distrutto. Nessun altro caso raggiunge quello stato.

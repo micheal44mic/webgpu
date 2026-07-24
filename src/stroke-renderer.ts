@@ -17,7 +17,7 @@ import type { RasterBevelFieldState } from "./bevel-renderer";
 import type { EffectsScratchLease, EffectsScratchPool } from "./effects-scratch-pool";
 
 export const RASTER_STROKE_RENDERER_BUILD =
-  "style-stack-webgpu-v9-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even";
+  "style-stack-webgpu-v10-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even";
 export const RASTER_STROKE_COVERAGE_STRATEGY =
   "persistent-packed-r8-style-coverage" as const;
 export const RASTER_STROKE_DISTANCE_STORAGE_STRATEGY =
@@ -28,6 +28,10 @@ export const RASTER_STROKE_STYLED_STORAGE_STRATEGY =
   "direct-lod0-plus-derived-mips-1-through-12" as const;
 
 export type RasterStrokeSourceMode = "permanent" | "light-glaze" | "thickness-tail";
+export type RasterBevelBoundingFieldTestMutation =
+  | "none"
+  | "zero-outside"
+  | "omit-origin";
 
 export interface RasterStrokeRendererOptions {
   device: GPUDevice;
@@ -41,6 +45,8 @@ export interface RasterStrokeRendererOptions {
   scratchExtent?: number;
   readbackEnabled?: boolean;
   bevelBoundingFieldEnabled?: boolean;
+  /** Golden-only compile mutation; never set by the application renderer. */
+  bevelBoundingFieldTestMutation?: RasterBevelBoundingFieldTestMutation;
 }
 
 export interface RasterStrokeEncodeOptions {
@@ -525,6 +531,7 @@ function strokeCompositionShaderSource(
   bevelUniformBinding = 9,
   derivativeMode: "analytic" | "fragment" = "analytic",
   boundingFieldEnabled = false,
+  boundingFieldTestMutation: RasterBevelBoundingFieldTestMutation = "none",
 ): string {
   const contourAA = derivativeMode === "fragment"
     ? /* wgsl */ `
@@ -551,6 +558,9 @@ function strokeCompositionShaderSource(
   fieldStorage: vec4<i32>,
   fieldValid: vec4<i32>,`
     : "";
+  const fieldPositionExpression = boundingFieldTestMutation === "omit-origin"
+    ? "position + apron"
+    : "position - bevel.fieldStorage.xy + apron";
   const heightLookup = boundingFieldEnabled
     ? /* wgsl */ `fn bevelHeightAt(position: vec2<i32>) -> f32 {
   let validOrigin = bevel.fieldValid.xy;
@@ -576,7 +586,7 @@ function strokeCompositionShaderSource(
   ) {
     return bevel.scalars.w;
   }
-  let fieldPosition = position - bevel.fieldStorage.xy + apron;
+  let fieldPosition = ${fieldPositionExpression};
   return textureLoad(bevelHeight, fieldPosition, 0).r;
 }`
     : /* wgsl */ `fn bevelHeightAt(position: vec2<i32>) -> f32 {
@@ -824,10 +834,12 @@ function readbackComposeShader(
   documentHeight: number,
   layerFormat: "rgba8unorm" | "rgba16float",
   bevelBoundingFieldEnabled = false,
+  bevelBoundingFieldTestMutation: RasterBevelBoundingFieldTestMutation = "none",
 ): string {
   return `${shaderSourceCommon(documentWidth, documentHeight)}
 ${strokeCompositionShaderSource(
   documentWidth, 0, 5, 7, 8, 9, "analytic", bevelBoundingFieldEnabled,
+  bevelBoundingFieldTestMutation,
 )}
 @group(0) @binding(6) var styledTexture: texture_storage_2d<${layerFormat}, write>;
 
@@ -847,10 +859,12 @@ function coarseComposeShader(
   documentHeight: number,
   layerFormat: "rgba8unorm" | "rgba16float",
   bevelBoundingFieldEnabled = false,
+  bevelBoundingFieldTestMutation: RasterBevelBoundingFieldTestMutation = "none",
 ): string {
   return `${shaderSourceCommon(documentWidth, documentHeight)}
 ${strokeCompositionShaderSource(
   documentWidth, 0, 5, 7, 8, 9, "analytic", bevelBoundingFieldEnabled,
+  bevelBoundingFieldTestMutation,
 )}
 @group(0) @binding(6) var coarseStyledTexture: texture_storage_2d<${layerFormat}, write>;
 
@@ -1161,6 +1175,7 @@ export class RasterStrokeRenderer {
   private readonly thicknessTailUniformBuffer: GPUBuffer;
   private readonly readbackEnabled: boolean;
   private readonly bevelBoundingFieldEnabled: boolean;
+  private readonly bevelBoundingFieldTestMutation: RasterBevelBoundingFieldTestMutation;
   private readonly bevelUniformBytes: number;
   private readonly maximumScratchExtent: number;
   private _scratchExtent: number;
@@ -1240,6 +1255,14 @@ export class RasterStrokeRenderer {
     this.thicknessTailUniformBuffer = options.thicknessTailUniformBuffer;
     this.readbackEnabled = options.readbackEnabled === true;
     this.bevelBoundingFieldEnabled = options.bevelBoundingFieldEnabled === true;
+    this.bevelBoundingFieldTestMutation =
+      options.bevelBoundingFieldTestMutation ?? "none";
+    if (
+      this.bevelBoundingFieldTestMutation !== "none"
+      && !this.bevelBoundingFieldEnabled
+    ) {
+      throw new Error("Le mutazioni golden del campo Smusso richiedono il percorso bbox.");
+    }
     this.bevelUniformBytes = this.bevelBoundingFieldEnabled
       ? BEVEL_BOUNDING_FIELD_UNIFORM_BYTES
       : BEVEL_DOCUMENT_UNIFORM_BYTES;
@@ -1823,6 +1846,7 @@ export class RasterStrokeRenderer {
         this.documentHeight,
         this.layerFormat,
         this.bevelBoundingFieldEnabled,
+        this.bevelBoundingFieldTestMutation,
       ),
     });
     const readbackComposeModule = this.readbackEnabled
@@ -1833,6 +1857,7 @@ export class RasterStrokeRenderer {
           this.documentHeight,
           this.layerFormat,
           this.bevelBoundingFieldEnabled,
+          this.bevelBoundingFieldTestMutation,
         ),
       })
       : null;
@@ -2022,7 +2047,9 @@ export class RasterStrokeRenderer {
     this.bevelUniformUploadF32[18] = style.shadowColor[2];
     this.bevelUniformUploadF32[19] = style.shadowOpacity / 100;
     if (this.bevelBoundingFieldEnabled) {
-      this.bevelUniformUploadF32[7] = rasterBevelOutsideFieldHeight(style);
+      this.bevelUniformUploadF32[7] = this.bevelBoundingFieldTestMutation === "zero-outside"
+        ? 0
+        : rasterBevelOutsideFieldHeight(style);
       this.writeBevelFieldUniforms();
     }
     this.device.queue.writeBuffer(this.bevelUniformBuffer, 0, this.bevelUniformUpload);
