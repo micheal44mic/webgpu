@@ -118,6 +118,16 @@ Paint:
   gli stessi mip finali compositati; totale ~`37,3 MiB` RGBA8 o ~`58,7 MiB`
   RGBA16F. Le risorse sono lazy e il cambio modo distrugge il formato precedente,
   quindi Light e M1 non sono residenti insieme. Non unire le due strategie.
+- Ciclo di vita storage glaze (sperimentale rev `39`, da validare):
+  `LIGHT_GLAZE_STORAGE_LIFECYCLE_STRATEGY =
+  "allocate-on-glaze-select-release-when-idle-deselected"`. Lo storage viene
+  allocato quando si seleziona un blending glaze sul Paint (prewarm al click,
+  gestisce anche lo scambio rgba↔r8) e rilasciato da
+  `maybeReleaseIdleLightGlazeResources` quando il glaze non è più selezionato
+  e il motore è fermo — mai con sessione o tratto attivi, replay in corso o
+  stamp in coda. Il replay Undo/Redo rialloca da solo e il frame successivo
+  rilascia di nuovo. Pixel e commit invariati; cambia solo la residenza
+  (−85,3 o −37,3 MiB quando si torna a Normal/Additive).
   `#70–#73` descrivono la semantica originale accettata; lo storage R8 corrente
   resta sperimentale finché non passa Golden GPU e prova percettiva.
 - Grain M1 nativo: asset originale `graincottonfleece.PNG` RGBA `2500×2500`
@@ -125,6 +135,34 @@ Paint:
   WGSL allo startup (~`31,8 MiB`). Fixed = UV layer; Moving = UV stamp (Scale
   disabilitato come in M1). Invert via segno dei coefficienti affini, nessun
   ramo WGSL. Non ridimensionare l'asset senza richiesta esplicita.
+- Ciclo di vita Grain (sperimentale rev `39`, da validare):
+  `GRAIN_STORAGE_LIFECYCLE_STRATEGY =
+  "allocate-on-grain-select-release-when-idle-unused"`. La texture non viene
+  più caricata allo startup: fetch/decodifica/mip (pipeline invariata, stessa
+  identità SHA) partono alla selezione di un grain mode; con mode `off` e
+  motore fermo la texture viene rilasciata (−31,8 MiB) e un placeholder 1×1
+  bianco tiene validi i bind group, ricostruiti a ogni scambio
+  (`rebuildGrainBrushBindGroups`, più `setGrainTextureView` sul renderer
+  Blend). Un tratto iniziato durante il load viene rifiutato con status
+  («Grain M1 in caricamento…»): mai disegnare col placeholder. `waitForIdle`
+  attende anche il load, quindi i replay benchmark restano corretti; il
+  replay Undo/Redo ricarica da solo se un batch registra
+  `grainTextureIdentity`. Identità e tempi di load restano riportati in
+  telemetria (`grainTextureResident` nuova firma).
+- Ciclo di vita Shape (sperimentale rev `39`, da validare):
+  `SHAPE_STORAGE_LIFECYCLE_STRATEGY =
+  "allocate-on-shape-select-release-when-idle-unused"`, gemello del Grain. La
+  maschera 2K (~5,3 MiB, decodifica e pre-mappe di occupazione invariate)
+  viene caricata alla selezione della Shape e rilasciata con Cerchio
+  selezionato e motore fermo; un placeholder r8 1×1 bianco tiene validi tutti
+  i bind group (base pennello + coda spessore + grain + deposit Blend,
+  ricostruiti da `rebuildShapeBrushBindGroups` e `setShapeMaskView`). Sprite
+  della tip preview, identità e statistiche di occupazione (CPU) sopravvivono
+  al rilascio; le mappe di occupazione GPU restano allocate (40 KiB) e
+  vengono riscritte al load. Tratti Shape durante il load rifiutati con
+  status; `waitForIdle` attende anche questo load (replay benchmark Fur
+  coperti); il replay Undo/Redo ricarica se un batch ha `shape === "shape"`.
+  Firma `shapeMaskResident` in telemetria.
 - Dinamica spessore: solo `Spessore inizio` e `fine` (`0–200%`), finestre
   temporali `100 ms`, quadratic ease-out. Il tail holdback (attivo solo con
   fine `≠100%`) trattiene gli stamp degli ultimi `100 ms`; un overlay WebGPU
@@ -176,8 +214,14 @@ Paint:
   totale aggiornato ogni `500 ms`, dettaglio per risorsa e badge temporaneo per
   ogni variazione di almeno `0,05 MiB`. Conta le dimensioni logiche delle risorse
   WebGPU create dal motore; non misura residency fisica e non include swapchain,
-  pipeline/driver, RAM, cronologia o memoria del browser. Il report include ora
+  pipeline/driver, RAM o memoria del browser. Il report include ora
   anche la strategia di storage styled v5.
+- Riga «Cronologia stamp · RAM CPU» (con rev `39`): mostra il journal Undo/Redo
+  (`historyStoredBaseStamps × 32 B`), unica voce CPU del pannello, **esclusa**
+  dal totale GPU e dal badge di variazione. Rende visibile la crescita della
+  cronologia — il tetto per l'uso prolungato resta un problema aperto. Le altre
+  voci non conteggiate (swapchain, driver, tip preview) restano fuori perché
+  sarebbero stime, non contabilità deterministica.
 - Non esiste ancora una run canonica di prestazioni né la prova iPhone: non
   dichiarare guadagni di velocità né considerare conclusa la Traccia. Le run rev
   `35` riportano stile, build, strategie coverage/styled/distanza/gate, extent
@@ -327,8 +371,11 @@ Traccia · `32` monitor e contabilità memoria GPU · `33` scratch Traccia adatt
 alla width · `34` coverage R8 packed senza distanza residente · `35` LOD 0
 diretto + soli mip styled 1–12 · `36` diagnostica gate/source-mode e costo CPU
 rebuild cache LOD 0 · `37` accumulatore M1 Glaze R8 con mip finali compositati
-separati · `38` emulazione conversione UNORM nativa + diagnostica diff mip
-(revisione sperimentale corrente del Paint).
+separati · `38` emulazione conversione UNORM nativa + diagnostica diff mip ·
+`39` ciclo di vita di Blend scratch, storage Light/M1 Glaze, texture Grain M1
+e maschera Shape 2K: alloca alla selezione, rilascia quando deselezionato e
+il motore è fermo (revisione sperimentale corrente; nessuna run registrata
+con i pool parziali, quindi la revisione copre i quattro pool insieme).
 
 ## Strumento Blend dry (WebGPU)
 
@@ -398,3 +445,32 @@ Verifiche fatte: `npm run blend:verify` (assert su budget/chunking/pickup),
 TypeScript, avvio senza errori WGSL, tratto funzionante su NVIDIA Ampere;
 l'utente conferma sul desktop che il tratto ora segue il puntatore. Manca la
 run iPhone canonica del v3.
+
+### Ciclo di vita dello scratch (sperimentale, da validare)
+
+`DRY_BLEND_SCRATCH_LIFECYCLE_STRATEGY =
+"allocate-on-tool-select-release-when-idle-deselected"` (telemetria rev `39`):
+lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
+`128 KiB`) non resta più residente per sempre dopo il primo tratto Blend.
+
+- Allocazione spostata dal primo tratto alla **selezione dello strumento**
+  (`prewarmScratch` in `setBrushSettings`): l'eventuale costo driver cade sul
+  click UI, mai a metà pennellata.
+- Rilascio (`maybeReleaseIdleBlendScratch`) solo quando **tutte** queste
+  condizioni valgono: tool ≠ blend, nessun tratto attivo, coda
+  `pendingBlendBatches` vuota, nessun replay in corso. Chiamato al cambio
+  strumento e in coda a `renderFrame` (copre i cambi arrivati durante un
+  tratto e la riallocazione fatta dal replay Undo/Redo con tool Paint).
+- Il replay Undo/Redo rialloca da solo via `ensureScratchResources` e il
+  frame successivo rilascia di nuovo se il tool è Paint. Pixel, planner,
+  budget e FIFO invariati; cambia solo la residenza della memoria.
+- **Avvertenza run**: la distinzione cold/warm cambia significato — "cold" ora
+  è la prima run dopo una (ri)selezione dello strumento, e `scratchAllocated`
+  parte già `true` al primo tratto. Non aggregare con run rev `≤38`.
+- Da validare dall'utente: monitor a ~`0` MiB sulla riga Blend dopo il
+  deselect, pacing invariato della prima pennellata dopo una riselezione,
+  Undo/Redo di tratti Blend con tool Paint selezionato.
+- Il gemello per lo storage Light/M1 Glaze (stessa rev `39`) è documentato
+  nella sezione Paint. Effetto combinato: i due pool grossi non idle non
+  restano mai residenti insieme — selezionare il Blend libera il glaze e
+  viceversa.

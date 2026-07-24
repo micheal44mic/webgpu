@@ -429,8 +429,9 @@
               <div class="gpu-memory-group-start" data-memory-row><dt>Blend</dt><dd id="gpuMemoryBlend">—</dd></div>
               <div data-memory-row><dt>Light / M1 Glaze</dt><dd id="gpuMemoryLightGlaze">—</dd></div>
               <div data-memory-row><dt>Coda spessore</dt><dd id="gpuMemoryThicknessTail">—</dd></div>
+              <div class="gpu-memory-group-start" data-memory-row><dt>Cronologia stamp · RAM CPU</dt><dd id="gpuMemoryHistory">—</dd></div>
             </dl>
-            <p class="gpu-memory-note">Stima delle allocazioni note. Non include swapchain, pipeline, driver, RAM, cronologia o memoria del browser.</p>
+            <p class="gpu-memory-note">Stima delle allocazioni note. La riga Cronologia è RAM CPU (journal Undo/Redo, 32 B per stamp) ed è esclusa dal totale GPU. Non include swapchain, pipeline, driver o memoria del browser.</p>
           </section>
 
           <button

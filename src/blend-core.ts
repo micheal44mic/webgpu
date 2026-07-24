@@ -11,6 +11,8 @@ export const DRY_BLEND_REFERENCE_MAX_STEP_PX = 48;
 export const DRY_BLEND_DEFAULT_DOCUMENT_SIZE = 4096;
 export const DRY_BLEND_DEFAULT_SCRATCH_SIZE = 1664;
 export const DRY_BLEND_DEFAULT_TILE_SIZE = 256;
+export const DRY_BLEND_SCRATCH_LIFECYCLE_STRATEGY =
+  "allocate-on-tool-select-release-when-idle-deselected" as const;
 
 const POSITION_QUANTUM = 1 / 256;
 

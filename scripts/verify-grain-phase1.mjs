@@ -197,6 +197,19 @@ assert(engine.includes('"rgba8-native-2500-fixed-coverage-multiply"')
   "Marker Fixed/Moving nativi assenti.");
 assert(engine.includes('export type BlendMode = "normal" | "additive" | "light-glaze" | "m1-glaze"'),
   "Blend mode M1 Glaze assente.");
+assert(engine.includes('"allocate-on-glaze-select-release-when-idle-deselected"')
+  && engine.includes("maybeReleaseIdleLightGlazeResources"),
+  "Light Glaze storage lifecycle (alloca al select, rilascia al deselect) mancante");
+assert(engine.includes('"allocate-on-grain-select-release-when-idle-unused"')
+  && engine.includes("maybeReleaseIdleGrainResources")
+  && engine.includes("rebuildGrainBrushBindGroups")
+  && engine.includes("Grain placeholder 1×1 while released"),
+  "Grain M1 lifecycle (lazy alla selezione, rilascio quando inutilizzato) mancante");
+assert(engine.includes('"allocate-on-shape-select-release-when-idle-unused"')
+  && engine.includes("maybeReleaseIdleShapeResources")
+  && engine.includes("rebuildShapeBrushBindGroups")
+  && engine.includes("Shape placeholder 1×1 while released"),
+  "Shape 2K lifecycle (lazy alla selezione, rilascio quando inutilizzata) mancante");
 assert(engine.includes('operation: "max"')
   && engine.includes("m1GlazePipeline")
   && engine.includes("grainM1GlazePipeline"),
@@ -271,7 +284,7 @@ assert(html.includes('value="normal">Normal accumulativo — 4×')
   && html.includes('value="off">Off — senza texture')
   && html.includes('value="texturized">Texturized — Fixed M1 (fisso)'),
   "La matrice iPhone Normal 4× / M1 1× con Grain Off/Fixed non è esposta correttamente.");
-assert(main.includes("performanceTelemetryRevision: 38"),
+assert(main.includes("performanceTelemetryRevision: 39"),
   "Revisione telemetria attesa assente.");
 
 console.log(JSON.stringify({

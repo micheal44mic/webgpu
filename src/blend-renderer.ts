@@ -194,9 +194,9 @@ export class DryBlendRenderer {
   private readonly layerFormat: GPUTextureFormat;
   private readonly layerView: GPUTextureView;
   private readonly layerSamplingView: GPUTextureView;
-  private readonly shapeMaskView: GPUTextureView;
+  private shapeMaskView: GPUTextureView;
   private readonly shapeMaskSampler: GPUSampler;
-  private readonly grainTextureView: GPUTextureView;
+  private grainTextureView: GPUTextureView;
   private readonly grainSamplers: DryBlendRendererOptions["grainSamplers"];
   private readonly scratchSize: number;
   private readonly uniformStride: number;
@@ -552,6 +552,27 @@ export class DryBlendRenderer {
       : this.uniformUpload.byteLength / (1024 * 1024);
   }
 
+  prewarmScratch(): boolean {
+    this.assertAlive();
+    const wasAllocated = this.scratch !== null;
+    this.ensureScratchResources();
+    return !wasAllocated;
+  }
+
+  // Il chiamante garantisce che nessun tratto Blend sia attivo o in coda:
+  // il carrier ring vive nello scratch e non sopravvive al rilascio.
+  releaseScratch(): boolean {
+    if (this.destroyed || !this.scratch) {
+      return false;
+    }
+    this.scratch.stateBuffer.destroy();
+    this.scratch.coverageBuffer.destroy();
+    this.scratch.carrierBuffer.destroy();
+    this.scratch = null;
+    this.carrierValid = false;
+    return true;
+  }
+
   destroy(): void {
     if (this.destroyed) {
       return;
@@ -719,6 +740,73 @@ export class DryBlendRenderer {
     }
   }
 
+  private createDepositBindGroups(
+    stateBuffer: GPUBuffer,
+    coverageBuffer: GPUBuffer,
+    carrierBuffer: GPUBuffer,
+  ): ScratchResources["depositBindGroups"] {
+    const uniformEntry = {
+      binding: 0,
+      resource: {
+        buffer: this.uniformBuffer,
+        offset: 0,
+        size: BLEND_UNIFORM_BYTES,
+      },
+    } as const;
+    const depositBindGroups = {
+      fixed: {} as Record<"no" | "classic" | "improved", GPUBindGroup>,
+      moving: {} as Record<"no" | "classic" | "improved", GPUBindGroup>,
+    };
+    for (const mode of ["fixed", "moving"] as const) {
+      for (const filtering of ["no", "classic", "improved"] as const) {
+        depositBindGroups[mode][filtering] = this.device.createBindGroup({
+          label: `Blend dry deposit ${mode} ${filtering}`,
+          layout: this.depositBindGroupLayout,
+          entries: [
+            uniformEntry,
+            { binding: 1, resource: { buffer: stateBuffer } },
+            { binding: 2, resource: { buffer: coverageBuffer } },
+            { binding: 3, resource: { buffer: carrierBuffer } },
+            { binding: 4, resource: this.shapeMaskView },
+            { binding: 5, resource: this.shapeMaskSampler },
+            { binding: 6, resource: this.grainTextureView },
+            { binding: 7, resource: this.grainSamplers[mode][filtering] },
+          ],
+        });
+      }
+    }
+    return depositBindGroups;
+  }
+
+  // Il ciclo di vita del Grain scambia la texture (placeholder ↔ M1): i
+  // deposit bind group residenti vanno ricostruiti sulla view nuova.
+  setGrainTextureView(view: GPUTextureView): void {
+    if (this.destroyed || this.grainTextureView === view) {
+      return;
+    }
+    this.grainTextureView = view;
+    this.rebuildResidentDepositBindGroups();
+  }
+
+  // Idem per la maschera Shape (placeholder ↔ 2K residente).
+  setShapeMaskView(view: GPUTextureView): void {
+    if (this.destroyed || this.shapeMaskView === view) {
+      return;
+    }
+    this.shapeMaskView = view;
+    this.rebuildResidentDepositBindGroups();
+  }
+
+  private rebuildResidentDepositBindGroups(): void {
+    if (this.scratch) {
+      this.scratch.depositBindGroups = this.createDepositBindGroups(
+        this.scratch.stateBuffer,
+        this.scratch.coverageBuffer,
+        this.scratch.carrierBuffer,
+      );
+    }
+  }
+
   private ensureScratchResources(): ScratchResources {
     if (this.scratch) {
       return this.scratch;
@@ -770,28 +858,11 @@ export class DryBlendRenderer {
         bufferEntry(2, carrierBuffer),
       ],
     });
-    const depositBindGroups = {
-      fixed: {} as Record<"no" | "classic" | "improved", GPUBindGroup>,
-      moving: {} as Record<"no" | "classic" | "improved", GPUBindGroup>,
-    };
-    for (const mode of ["fixed", "moving"] as const) {
-      for (const filtering of ["no", "classic", "improved"] as const) {
-        depositBindGroups[mode][filtering] = this.device.createBindGroup({
-          label: `Blend dry deposit ${mode} ${filtering}`,
-          layout: this.depositBindGroupLayout,
-          entries: [
-            uniformEntry,
-            bufferEntry(1, stateBuffer),
-            bufferEntry(2, coverageBuffer),
-            bufferEntry(3, carrierBuffer),
-            { binding: 4, resource: this.shapeMaskView },
-            { binding: 5, resource: this.shapeMaskSampler },
-            { binding: 6, resource: this.grainTextureView },
-            { binding: 7, resource: this.grainSamplers[mode][filtering] },
-          ],
-        });
-      }
-    }
+    const depositBindGroups = this.createDepositBindGroups(
+      stateBuffer,
+      coverageBuffer,
+      carrierBuffer,
+    );
     const scatterBindGroup = this.device.createBindGroup({
       label: "Blend dry scatter bind group",
       layout: this.scatterBindGroupLayout,

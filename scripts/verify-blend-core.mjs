@@ -5,6 +5,7 @@ import {
   DRY_BLEND_CORE_BUILD,
   DRY_BLEND_DEFAULT_DOCUMENT_SIZE,
   DRY_BLEND_DEFAULT_SCRATCH_SIZE,
+  DRY_BLEND_SCRATCH_LIFECYCLE_STRATEGY,
   blendPaintCoefficient,
   blendStretchCoefficient,
   createDryBlendPlanner,
@@ -76,6 +77,31 @@ assert.match(
 assert.match(
   brushEngineSource,
   /start \+= renderer\.maximumBatchesPerSubmit/,
+);
+
+assert.equal(
+  DRY_BLEND_SCRATCH_LIFECYCLE_STRATEGY,
+  "allocate-on-tool-select-release-when-idle-deselected",
+);
+assert.match(brushEngineSource, /this\.blendRenderer\?\.prewarmScratch\(\);/);
+assert.match(brushEngineSource, /private maybeReleaseIdleBlendScratch\(\): void/);
+assert.match(
+  brushEngineSource,
+  /\|\| this\.pendingBlendBatches\.length > 0\s*\n\s*\) \{\s*\n\s*return;/,
+);
+assert.match(
+  brushEngineSource,
+  /dryBlendScratchLifecycleStrategy: DRY_BLEND_SCRATCH_LIFECYCLE_STRATEGY,/,
+);
+const blendRendererSource = await readFile(
+  new URL("../src/blend-renderer.ts", import.meta.url),
+  "utf8",
+);
+assert.match(blendRendererSource, /prewarmScratch\(\): boolean/);
+assert.match(blendRendererSource, /releaseScratch\(\): boolean/);
+assert.match(
+  blendRendererSource,
+  /this\.scratch = null;\s*\n\s*this\.carrierValid = false;/,
 );
 
 assert.deepEqual(

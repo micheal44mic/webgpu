@@ -176,6 +176,7 @@ interface BenchmarkRun {
     rasterStrokeScratchStrategy: string;
     rasterStrokeScratchExtent: number;
     rasterStrokeScratchCompactMaxWidth: number;
+    dryBlendScratchLifecycleStrategy: string;
     layerMemoryMiB: number;
     gpuLabel: string;
     timestampQueriesSupported: boolean;
@@ -196,6 +197,8 @@ interface BenchmarkRun {
     shapeOccupancyMinimumRadius: number;
     shapeOccupancyMaximumCoverageRatio: number;
     shapeOccupancyBitmaskBytes: number;
+    shapeMaskResident: boolean;
+    shapeStorageLifecycleStrategy: string;
     colorSeedStrategy: "reuse-position-copy-seed";
     dirtyRectStrategy: "directional-jitter-bounds";
     thicknessDynamicsStrategy: StrokePerformanceProfile["thicknessDynamicsStrategy"];
@@ -225,6 +228,8 @@ interface BenchmarkRun {
     grainPipelineStrategy: StrokePerformanceProfile["grainPipelineStrategy"];
     grainCoverageStrategy: StrokePerformanceProfile["grainCoverageStrategy"];
     grainAdaptivePreviewStrategy: StrokePerformanceProfile["grainAdaptivePreviewStrategy"];
+    grainTextureResident: boolean;
+    grainStorageLifecycleStrategy: string;
     grainStartupDecodeMs: number;
     grainStartupMipBuildMs: number;
     grainStartupUploadMs: number;
@@ -233,6 +238,7 @@ interface BenchmarkRun {
       StrokePerformanceProfile["lightGlazeAdaptivePreviewStrategy"];
     lightGlazeStorageAllocated: boolean;
     lightGlazeStorageMode: StrokePerformanceProfile["lightGlazeStorageMode"];
+    lightGlazeStorageLifecycleStrategy: string;
     lightGlazeAdditionalMemoryMiB: number;
     adaptivePreviewStrategy: StrokePerformanceProfile["adaptivePreviewStrategy"];
     adaptivePreviewTriggerStrategy: StrokePerformanceProfile["adaptivePreviewTriggerStrategy"];
@@ -263,7 +269,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 38;
+    performanceTelemetryRevision: 39;
   };
 }
 
@@ -330,6 +336,7 @@ const gpuMemoryRows: ReadonlyArray<
   ["gpuMemoryBlend", "blendRendererMiB"],
   ["gpuMemoryLightGlaze", "lightGlazeMiB"],
   ["gpuMemoryThicknessTail", "thicknessTailMiB"],
+  ["gpuMemoryHistory", "historyCpuMiB"],
 ];
 
 const toolControlSnapshots: Record<
@@ -573,7 +580,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 38,
+    performanceTelemetryRevision: 39,
     ...engineEnvironment,
   };
 }

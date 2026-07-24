@@ -2,6 +2,7 @@ import { clamp, hexToHsl } from "./color";
 import { decodeGrayscalePng8 } from "./png-mask";
 import {
   createDryBlendPlanner,
+  DRY_BLEND_SCRATCH_LIFECYCLE_STRATEGY,
   type DryBlendPlanner,
 } from "./blend-core";
 import {
@@ -201,6 +202,9 @@ export interface EngineGpuMemoryStats {
   blendRendererMiB: number;
   lightGlazeMiB: number;
   thicknessTailMiB: number;
+  // RAM CPU del journal Undo/Redo (32 B per stamp): mostrata nel monitor ma
+  // esclusa dal totale GPU conteggiato.
+  historyCpuMiB: number;
   countedTotalMiB: number;
 }
 
@@ -848,6 +852,12 @@ const LIGHT_GLAZE_STRATEGY =
 const M1_GLAZE_STRATEGY =
   "m1-r8-quantized-max-coverage-plus-composited-mips-single-commit" as const;
 const LIGHT_GLAZE_ADAPTIVE_PREVIEW_STRATEGY = "disabled-semantic-mismatch" as const;
+const LIGHT_GLAZE_STORAGE_LIFECYCLE_STRATEGY =
+  "allocate-on-glaze-select-release-when-idle-deselected" as const;
+const GRAIN_STORAGE_LIFECYCLE_STRATEGY =
+  "allocate-on-grain-select-release-when-idle-unused" as const;
+const SHAPE_STORAGE_LIFECYCLE_STRATEGY =
+  "allocate-on-shape-select-release-when-idle-unused" as const;
 const ADAPTIVE_PREVIEW_STRATEGY =
   "queue-lag-canvas2d-tip-patch" as const;
 const THICKNESS_DYNAMICS_PREVIEW_STRATEGY =
@@ -1277,11 +1287,19 @@ export class BrushEngine {
   private thicknessTailInstanceBuffer!: GPUBuffer;
   private shapeOccupancyUniformBuffers: GPUBuffer[] = [];
   private sampler!: GPUSampler;
-  private shapeMaskTexture!: GPUTexture;
+  private shapeMaskTexture: GPUTexture | null = null;
   private shapeMaskView!: GPUTextureView;
+  private shapeMaskPlaceholderTexture!: GPUTexture;
+  private shapeMaskPlaceholderView!: GPUTextureView;
+  private shapeResident = false;
+  private shapeLoadingPromise: Promise<void> | null = null;
   private shapeMaskSampler!: GPUSampler;
-  private grainTexture!: GPUTexture;
+  private grainTexture: GPUTexture | null = null;
   private grainTextureView!: GPUTextureView;
+  private grainPlaceholderTexture!: GPUTexture;
+  private grainPlaceholderView!: GPUTextureView;
+  private grainResident = false;
+  private grainLoadingPromise: Promise<void> | null = null;
   private grainSamplers!: Record<"fixed" | "moving", Record<GrainFiltering, GPUSampler>>;
   private grainTextureIdentity = 0;
   private grainStartupDecodeMs = 0;
@@ -1507,6 +1525,12 @@ export class BrushEngine {
     this.writeBrushUniforms();
 
     this.initialized = true;
+    if (this.settings.grainMode !== "off") {
+      this.requestGrainLoad();
+    }
+    if (this.settings.shape === "shape") {
+      this.requestShapeLoad();
+    }
     this.clearAdaptivePreviewCanvas();
     this.requestRender();
     this.callbacks.onStatus?.("WebGPU pronto. Disegna sul canvas.", "ok");
@@ -1520,6 +1544,7 @@ export class BrushEngine {
 
   setBrushSettings(next: Partial<BrushSettings>): void {
     this.flushPendingWorkBeforeSettingsChange();
+    const previousTool = this.settings.tool;
     const tool = next.tool === "paint" || next.tool === "blend"
       ? next.tool
       : this.settings.tool;
@@ -1581,6 +1606,36 @@ export class BrushEngine {
     this.prepareAdaptivePreviewShapePalette(this.settings);
 
     if (this.initialized) {
+      if (tool !== previousTool) {
+        if (tool === "blend") {
+          // L'allocazione avviene al select così l'eventuale costo del driver
+          // cade sul click UI e mai dentro la prima pennellata.
+          this.blendRenderer?.prewarmScratch();
+        } else {
+          this.maybeReleaseIdleBlendScratch();
+        }
+      }
+      const glazeSelected = tool === "paint"
+        && isStrokeGlazeBlendMode(this.settings.blendMode);
+      if (glazeSelected) {
+        // Prewarm al select del blending glaze (gestisce anche il cambio di
+        // storage rgba↔r8); con sessione o tratto attivi provvede il frame.
+        if (!this.lightGlazeSession && !this.activeStroke) {
+          this.ensureLightGlazeResources(this.settings.blendMode);
+        }
+      } else {
+        this.maybeReleaseIdleLightGlazeResources();
+      }
+      if (this.settings.grainMode !== "off") {
+        this.requestGrainLoad();
+      } else {
+        this.maybeReleaseIdleGrainResources();
+      }
+      if (this.settings.shape === "shape") {
+        this.requestShapeLoad();
+      } else {
+        this.maybeReleaseIdleShapeResources();
+      }
       this.invalidateAdaptivePreview();
       this.writeBrushUniforms();
       if (this.isTexturizedGrainActive(this.settings)) {
@@ -1881,6 +1936,24 @@ export class BrushEngine {
     if (this.historyBusy) {
       return;
     }
+    if (this.settings.grainMode !== "off" && !this.grainResident) {
+      // Senza texture residente i pixel non sarebbero identici: il tratto
+      // attende il load partito alla selezione del grain (o parte ora).
+      this.requestGrainLoad();
+      this.callbacks.onStatus?.(
+        "Grain M1 in caricamento: riprova tra un istante…",
+        "working",
+      );
+      return;
+    }
+    if (this.settings.shape === "shape" && !this.shapeResident) {
+      this.requestShapeLoad();
+      this.callbacks.onStatus?.(
+        "Shape 2K in caricamento: riprova tra un istante…",
+        "working",
+      );
+      return;
+    }
     const normalizedPoint: LayerPoint = {
       ...point,
       timeMs: Number.isFinite(point.timeMs) ? point.timeMs : performance.now(),
@@ -2175,6 +2248,14 @@ export class BrushEngine {
     if (this.lightGlazeSession) {
       await this.waitForIdle();
     }
+    // Il benchmark sottomette stamp senza passare da beginStroke: gli asset
+    // lazy vanno garantiti qui, mai campionare i placeholder.
+    if (this.settings.shape === "shape") {
+      await this.ensureShapeResources();
+    }
+    if (this.settings.grainMode !== "off") {
+      await this.ensureGrainResources();
+    }
 
     const count = clamp(Math.round(baseStampCount), 1, Math.min(12_000, MAX_STAMPS_PER_BATCH));
     this.invalidateAdaptivePreview();
@@ -2275,10 +2356,12 @@ export class BrushEngine {
     const layerMipChainMiB = baseResourcesAllocated
       ? paintDisplayPyramidAdditionalMemoryMiB(this.layerFormat)
       : 0;
-    const grainTextureMiB = baseResourcesAllocated
+    const grainTextureMiB = baseResourcesAllocated && this.grainResident
       ? GRAIN_TEXTURE_PIXEL_COUNT * 4 / MEBIBYTE_BYTES
       : 0;
-    const shapeTextureMiB = baseResourcesAllocated ? shapeTextureMemoryMiB() : 0;
+    const shapeTextureMiB = baseResourcesAllocated && this.shapeResident
+      ? shapeTextureMemoryMiB()
+      : 0;
     const paintBuffersMiB = baseResourcesAllocated ? staticPaintBufferMemoryMiB() : 0;
     const presentationCacheMiB = this.presentationCacheTexture
       ? this.presentationCacheWidth * this.presentationCacheHeight * 4 / MEBIBYTE_BYTES
@@ -2302,6 +2385,8 @@ export class BrushEngine {
       ? this.thicknessTailTextureWidth * this.thicknessTailTextureHeight
         * bytesPerPixel / MEBIBYTE_BYTES
       : 0;
+    const historyCpuMiB =
+      this.historyStoredBaseStamps * STAMP_STRIDE_BYTES / MEBIBYTE_BYTES;
     const countedTotalMiB = [
       layerBaseMiB,
       layerMipChainMiB,
@@ -2332,6 +2417,7 @@ export class BrushEngine {
       blendRendererMiB,
       lightGlazeMiB,
       thicknessTailMiB,
+      historyCpuMiB,
       rasterStrokeScratchExtent,
       countedTotalMiB,
     };
@@ -2367,6 +2453,190 @@ export class BrushEngine {
       scratchAllocated: scratchMemoryMiB > 0,
       scratchMemoryMiB,
     };
+  }
+
+  // Lo scratch Blend (~53 MiB) resta residente solo mentre lo strumento è
+  // selezionato. Mai rilasciare con un tratto attivo, batch in coda o replay
+  // in corso: il carrier ring del tratto vive in quei buffer.
+  private maybeReleaseIdleBlendScratch(): void {
+    if (
+      !this.initialized
+      || this.settings.tool === "blend"
+      || this.activeStroke !== null
+      || this.historyBusy
+      || this.pendingBlendBatches.length > 0
+    ) {
+      return;
+    }
+    if (this.blendRenderer?.releaseScratch()) {
+      this.publishStats();
+    }
+  }
+
+  // Lo storage Light Glaze (fino a ~85,3 MiB) resta residente solo mentre un
+  // blending glaze è selezionato sul Paint. Mai rilasciare con sessione o
+  // tratto attivi, replay in corso o stamp in coda: la sessione vive
+  // nell'accumulatore fino al commit.
+  private maybeReleaseIdleLightGlazeResources(): void {
+    if (
+      !this.initialized
+      || !this.lightGlazeStorageAllocated
+      || (this.settings.tool === "paint"
+        && isStrokeGlazeBlendMode(this.settings.blendMode))
+      || this.lightGlazeSession !== null
+      || this.activeStroke !== null
+      || this.historyBusy
+      || this.pendingStamps.length > 0
+    ) {
+      return;
+    }
+    this.destroyLightGlazeResources();
+    this.publishStats();
+  }
+
+  private requestGrainLoad(): void {
+    if (this.grainResident || this.grainLoadingPromise) {
+      return;
+    }
+    void this.ensureGrainResources().catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      this.callbacks.onStatus?.(`Grain M1 non disponibile: ${message}`, "error");
+    });
+  }
+
+  private ensureGrainResources(): Promise<void> {
+    if (this.grainResident) {
+      return Promise.resolve();
+    }
+    if (this.grainLoadingPromise) {
+      return this.grainLoadingPromise;
+    }
+    this.callbacks.onStatus?.("Carico la texture Grain M1…", "working");
+    const loading = (async () => {
+      const resources = await this.createGrainTextureResources();
+      this.grainTexture = resources.texture;
+      this.grainTextureView = this.grainTexture.createView({
+        label: "Cotton Fleece M1 native grain full mip view",
+      });
+      this.grainTextureIdentity = resources.identity;
+      this.grainStartupDecodeMs = resources.decodeMs;
+      this.grainStartupMipBuildMs = resources.mipBuildMs;
+      this.grainStartupUploadMs = resources.uploadMs;
+      this.rebuildGrainBrushBindGroups();
+      this.blendRenderer?.setGrainTextureView(this.grainTextureView);
+      this.grainResident = true;
+      this.callbacks.onStatus?.("Grain M1 pronto.", "ok");
+      this.publishStats();
+    })();
+    this.grainLoadingPromise = loading.finally(() => {
+      this.grainLoadingPromise = null;
+    });
+    return this.grainLoadingPromise;
+  }
+
+  // La texture Grain M1 (~31,8 MiB) resta residente solo mentre un grain mode
+  // è selezionato o c'è lavoro in corso che può campionarla. Il replay
+  // Undo/Redo la ricarica da solo prima di ridisegnare batch con grain.
+  private maybeReleaseIdleGrainResources(): void {
+    if (
+      !this.initialized
+      || !this.grainResident
+      || this.grainLoadingPromise !== null
+      || this.settings.grainMode !== "off"
+      || this.activeStroke !== null
+      || this.lightGlazeSession !== null
+      || this.historyBusy
+      || this.pendingStamps.length > 0
+      || this.pendingBlendBatches.length > 0
+    ) {
+      return;
+    }
+    this.grainTexture?.destroy();
+    this.grainTexture = null;
+    this.grainTextureView = this.grainPlaceholderView;
+    this.rebuildGrainBrushBindGroups();
+    this.blendRenderer?.setGrainTextureView(this.grainPlaceholderView);
+    this.grainResident = false;
+    this.publishStats();
+  }
+
+  private requestShapeLoad(): void {
+    if (this.shapeResident || this.shapeLoadingPromise) {
+      return;
+    }
+    void this.ensureShapeResources().catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      this.callbacks.onStatus?.(`Shape 2K non disponibile: ${message}`, "error");
+    });
+  }
+
+  private ensureShapeResources(): Promise<void> {
+    if (this.shapeResident) {
+      return Promise.resolve();
+    }
+    if (this.shapeLoadingPromise) {
+      return this.shapeLoadingPromise;
+    }
+    this.callbacks.onStatus?.("Carico la maschera Shape 2K…", "working");
+    const loading = (async () => {
+      const resources = await this.createShapeMaskResources();
+      this.shapeMaskTexture = resources.texture;
+      this.shapeMaskView = this.shapeMaskTexture.createView({ label: "Shape 2K mask view" });
+      this.shapeMaskDecodeStrategy = resources.decodeStrategy;
+      this.shapeMaskIdentity = resources.identity;
+      this.shapeOccupancyActiveCells = resources.occupancyActiveCells;
+      this.shapeOccupancyCoverageRatios = resources.occupancyCoverageRatios;
+      this.adaptivePreviewShapeSprite = resources.previewSprite;
+      this.shapeOccupancyUniformBuffers.forEach((buffer, mipLevel) => {
+        const wordOffset = mipLevel * SHAPE_OCCUPANCY_WORDS_PER_MAP;
+        this.device.queue.writeBuffer(
+          buffer,
+          0,
+          resources.occupancyWords.subarray(
+            wordOffset,
+            wordOffset + SHAPE_OCCUPANCY_WORDS_PER_MAP,
+          ),
+        );
+      });
+      this.rebuildShapeBrushBindGroups();
+      this.rebuildGrainBrushBindGroups();
+      this.blendRenderer?.setShapeMaskView(this.shapeMaskView);
+      this.prepareAdaptivePreviewShapePalette(this.settings);
+      this.shapeResident = true;
+      this.callbacks.onStatus?.("Shape 2K pronta.", "ok");
+      this.publishStats();
+    })();
+    this.shapeLoadingPromise = loading.finally(() => {
+      this.shapeLoadingPromise = null;
+    });
+    return this.shapeLoadingPromise;
+  }
+
+  // La maschera Shape 2K (~5,3 MiB) resta residente solo mentre la Shape è
+  // selezionata o c'è lavoro in corso che può campionarla. Sprite di preview,
+  // identità e statistiche di occupazione (CPU) sopravvivono al rilascio.
+  private maybeReleaseIdleShapeResources(): void {
+    if (
+      !this.initialized
+      || !this.shapeResident
+      || this.shapeLoadingPromise !== null
+      || this.settings.shape === "shape"
+      || this.activeStroke !== null
+      || this.lightGlazeSession !== null
+      || this.historyBusy
+      || this.pendingStamps.length > 0
+      || this.pendingBlendBatches.length > 0
+    ) {
+      return;
+    }
+    this.shapeMaskTexture?.destroy();
+    this.shapeMaskTexture = null;
+    this.shapeMaskView = this.shapeMaskPlaceholderView;
+    this.rebuildShapeBrushBindGroups();
+    this.rebuildGrainBrushBindGroups();
+    this.blendRenderer?.setShapeMaskView(this.shapeMaskPlaceholderView);
+    this.shapeResident = false;
+    this.publishStats();
   }
 
   getHistoryState(): HistoryState {
@@ -2435,6 +2705,12 @@ export class BrushEngine {
       throw new Error("Il motore non è ancora inizializzato.");
     }
 
+    while (this.grainLoadingPromise) {
+      await this.grainLoadingPromise;
+    }
+    while (this.shapeLoadingPromise) {
+      await this.shapeLoadingPromise;
+    }
     while (
       this.frameRequest !== null ||
       this.pendingStamps.length > 0 ||
@@ -2869,6 +3145,7 @@ export class BrushEngine {
     rasterStrokeScratchStrategy: typeof RASTER_STROKE_SCRATCH_STRATEGY;
     rasterStrokeScratchExtent: number;
     rasterStrokeScratchCompactMaxWidth: number;
+    dryBlendScratchLifecycleStrategy: typeof DRY_BLEND_SCRATCH_LIFECYCLE_STRATEGY;
     timestampQueriesSupported: boolean;
     stampGeometry: StampGeometry;
     stampVerticesPerCopy: number;
@@ -2887,6 +3164,8 @@ export class BrushEngine {
     shapeOccupancyMinimumRadius: number;
     shapeOccupancyMaximumCoverageRatio: number;
     shapeOccupancyBitmaskBytes: number;
+    shapeMaskResident: boolean;
+    shapeStorageLifecycleStrategy: typeof SHAPE_STORAGE_LIFECYCLE_STRATEGY;
     colorSeedStrategy: typeof COLOR_SEED_STRATEGY;
     dirtyRectStrategy: typeof DIRTY_RECT_STRATEGY;
     thicknessDynamicsStrategy: ThicknessDynamicsStrategy;
@@ -2918,11 +3197,14 @@ export class BrushEngine {
     grainStartupDecodeMs: number;
     grainStartupMipBuildMs: number;
     grainStartupUploadMs: number;
+    grainTextureResident: boolean;
+    grainStorageLifecycleStrategy: typeof GRAIN_STORAGE_LIFECYCLE_STRATEGY;
     lightGlazeStrategy: LightGlazeStrategy;
     lightGlazeAdaptivePreviewStrategy: typeof LIGHT_GLAZE_ADAPTIVE_PREVIEW_STRATEGY;
     lightGlazeStorageAllocated: boolean;
     lightGlazeStorageMode: LightGlazeStorageMode;
     lightGlazeAdditionalMemoryMiB: number;
+    lightGlazeStorageLifecycleStrategy: typeof LIGHT_GLAZE_STORAGE_LIFECYCLE_STRATEGY;
     adaptivePreviewStrategy: typeof ADAPTIVE_PREVIEW_STRATEGY;
     adaptivePreviewTriggerStrategy: typeof ADAPTIVE_PREVIEW_TRIGGER_STRATEGY;
     adaptivePreviewStaleFrameStrategy: typeof ADAPTIVE_PREVIEW_STALE_FRAME_STRATEGY;
@@ -2973,6 +3255,7 @@ export class BrushEngine {
       rasterStrokeScratchStrategy: RASTER_STROKE_SCRATCH_STRATEGY,
       rasterStrokeScratchExtent: this.rasterStrokeRenderer?.scratchExtent ?? 0,
       rasterStrokeScratchCompactMaxWidth: RASTER_STROKE_COMPACT_SCRATCH_MAX_WIDTH,
+      dryBlendScratchLifecycleStrategy: DRY_BLEND_SCRATCH_LIFECYCLE_STRATEGY,
       stampGeometry: this.settings.shape === "shape" ? this.lastStampGeometry : STAMP_GEOMETRY,
       stampVerticesPerCopy: this.settings.shape === "shape"
         ? this.lastStampVerticesPerCopy
@@ -3004,6 +3287,8 @@ export class BrushEngine {
       shapeOccupancyMinimumRadius: SHAPE_OCCUPANCY_MIN_RADIUS,
       shapeOccupancyMaximumCoverageRatio: SHAPE_OCCUPANCY_MAX_COVERAGE_RATIO,
       shapeOccupancyBitmaskBytes: SHAPE_OCCUPANCY_MAP_BYTES,
+      shapeMaskResident: this.shapeResident,
+      shapeStorageLifecycleStrategy: SHAPE_STORAGE_LIFECYCLE_STRATEGY,
       colorSeedStrategy: COLOR_SEED_STRATEGY,
       dirtyRectStrategy: DIRTY_RECT_STRATEGY,
       thicknessDynamicsStrategy: THICKNESS_DYNAMICS_STRATEGY,
@@ -3041,6 +3326,8 @@ export class BrushEngine {
       grainStartupDecodeMs: this.grainStartupDecodeMs,
       grainStartupMipBuildMs: this.grainStartupMipBuildMs,
       grainStartupUploadMs: this.grainStartupUploadMs,
+      grainTextureResident: this.grainResident,
+      grainStorageLifecycleStrategy: GRAIN_STORAGE_LIFECYCLE_STRATEGY,
       lightGlazeStrategy: lightGlazeStrategyForBlendMode(this.settings.blendMode),
       lightGlazeAdaptivePreviewStrategy: LIGHT_GLAZE_ADAPTIVE_PREVIEW_STRATEGY,
       lightGlazeStorageAllocated: this.lightGlazeStorageAllocated,
@@ -3048,6 +3335,7 @@ export class BrushEngine {
       lightGlazeAdditionalMemoryMiB: this.lightGlazeStorageAllocated
         ? lightGlazeAdditionalMemoryMiB(this.layerFormat, this.lightGlazeStorageMode)
         : 0,
+      lightGlazeStorageLifecycleStrategy: LIGHT_GLAZE_STORAGE_LIFECYCLE_STRATEGY,
       adaptivePreviewStrategy: ADAPTIVE_PREVIEW_STRATEGY,
       adaptivePreviewTriggerStrategy: ADAPTIVE_PREVIEW_TRIGGER_STRATEGY,
       adaptivePreviewStaleFrameStrategy: ADAPTIVE_PREVIEW_STALE_FRAME_STRATEGY,
@@ -3184,42 +3472,53 @@ export class BrushEngine {
       fixed: createGrainSamplerSet("fixed", "repeat"),
       moving: createGrainSamplerSet("moving", "clamp-to-edge"),
     };
-    const grainResources = await this.createGrainTextureResources();
-    this.grainTexture = grainResources.texture;
-    this.grainTextureView = this.grainTexture.createView({
-      label: "Cotton Fleece M1 native grain full mip view",
+    // Il Grain M1 non viene più caricato allo startup: la texture vera arriva
+    // con ensureGrainResources alla selezione di un grain mode. Il placeholder
+    // bianco (identità del multiply) mantiene validi tutti i bind group.
+    this.grainPlaceholderTexture = this.device.createTexture({
+      label: "Grain placeholder 1×1 while released",
+      size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+      format: "rgba8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
-    this.grainTextureIdentity = grainResources.identity;
-    this.grainStartupDecodeMs = grainResources.decodeMs;
-    this.grainStartupMipBuildMs = grainResources.mipBuildMs;
-    this.grainStartupUploadMs = grainResources.uploadMs;
-    const shapeMaskResources = await this.createShapeMaskResources();
-    this.shapeMaskTexture = shapeMaskResources.texture;
-    this.shapeMaskView = this.shapeMaskTexture.createView({ label: "Shape 2K mask view" });
-    this.shapeMaskDecodeStrategy = shapeMaskResources.decodeStrategy;
-    this.shapeMaskIdentity = shapeMaskResources.identity;
-    this.shapeOccupancyActiveCells = shapeMaskResources.occupancyActiveCells;
-    this.shapeOccupancyCoverageRatios = shapeMaskResources.occupancyCoverageRatios;
-    this.adaptivePreviewShapeSprite = shapeMaskResources.previewSprite;
+    this.device.queue.writeTexture(
+      { texture: this.grainPlaceholderTexture },
+      new Uint8Array([255, 255, 255, 255]),
+      { bytesPerRow: 256, rowsPerImage: 1 },
+      { width: 1, height: 1, depthOrArrayLayers: 1 },
+    );
+    this.grainPlaceholderView = this.grainPlaceholderTexture.createView({
+      label: "Grain placeholder view",
+    });
+    this.grainTextureView = this.grainPlaceholderView;
+    // La Shape 2K non viene più caricata allo startup: la maschera vera
+    // arriva con ensureShapeResources alla selezione della Shape. Il
+    // placeholder 1×1 bianco tiene validi i bind group; le mappe di
+    // occupazione restano a zero finché la decodifica non le riempie (mai
+    // consultate vuote: i tratti Shape senza maschera vengono rifiutati).
+    this.shapeMaskPlaceholderTexture = this.device.createTexture({
+      label: "Shape placeholder 1×1 while released",
+      size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+      format: "r8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    this.device.queue.writeTexture(
+      { texture: this.shapeMaskPlaceholderTexture },
+      new Uint8Array(256).fill(255),
+      { bytesPerRow: 256, rowsPerImage: 1 },
+      { width: 1, height: 1, depthOrArrayLayers: 1 },
+    );
+    this.shapeMaskPlaceholderView = this.shapeMaskPlaceholderTexture.createView({
+      label: "Shape placeholder view",
+    });
+    this.shapeMaskView = this.shapeMaskPlaceholderView;
     this.shapeOccupancyUniformBuffers = Array.from(
       { length: SHAPE_OCCUPANCY_MAP_COUNT },
-      (_, mipLevel) => {
-        const buffer = this.device.createBuffer({
-          label: `Shape conservative occupancy bitmask mip ${mipLevel}`,
-          size: SHAPE_OCCUPANCY_MAP_BYTES,
-          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        });
-        const wordOffset = mipLevel * SHAPE_OCCUPANCY_WORDS_PER_MAP;
-        this.device.queue.writeBuffer(
-          buffer,
-          0,
-          shapeMaskResources.occupancyWords.subarray(
-            wordOffset,
-            wordOffset + SHAPE_OCCUPANCY_WORDS_PER_MAP,
-          ),
-        );
-        return buffer;
-      },
+      (_, mipLevel) => this.device.createBuffer({
+        label: `Shape conservative occupancy bitmask mip ${mipLevel}`,
+        size: SHAPE_OCCUPANCY_MAP_BYTES,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      }),
     );
 
     const brushLayoutEntries: GPUBindGroupLayoutEntry[] = [
@@ -3455,6 +3754,15 @@ export class BrushEngine {
       ],
     });
 
+    this.rebuildShapeBrushBindGroups();
+    this.rebuildGrainBrushBindGroups();
+    await this.finishStaticResourceCreation();
+  }
+
+  // I gruppi base del pennello (Paint e coda spessore, con e senza occupancy)
+  // legano la maschera Shape: vanno ricostruiti a ogni load/release. I gruppi
+  // grain la legano anch'essi e vengono ricostruiti dal chiamante.
+  private rebuildShapeBrushBindGroups(): void {
     this.brushBindGroup = this.device.createBindGroup({
       label: "Brush legacy bind group",
       layout: this.brushBindGroupLayout,
@@ -3501,6 +3809,11 @@ export class BrushEngine {
         ],
       }),
     );
+  }
+
+  // I quattro gruppi di bind dipendono dalla view grain corrente (placeholder
+  // o M1 residente): vanno ricostruiti a ogni load/release della texture.
+  private rebuildGrainBrushBindGroups(): void {
     const grainFilteringModes: GrainFiltering[] = ["no", "classic", "improved"];
     const grainCoordinateModes = ["fixed", "moving"] as const;
     this.grainBrushBindGroups = Object.fromEntries(
@@ -3600,7 +3913,9 @@ export class BrushEngine {
         ) as Record<GrainFiltering, GPUBindGroup[]>,
       ]),
     ) as Record<"fixed" | "moving", Record<GrainFiltering, GPUBindGroup[]>>;
+  }
 
+  private async finishStaticResourceCreation(): Promise<void> {
     this.brushShaderModule = this.device.createShaderModule({ label: "Brush WGSL", code: brushShader });
     this.texturizedGrainShaderModule = this.device.createShaderModule({
       label: "Texturized grain fragment WGSL",
@@ -6212,6 +6527,13 @@ export class BrushEngine {
       statsPublishMs,
       },
     );
+
+    // Copre i rilasci differiti: cambio strumento o blending arrivato durante
+    // un tratto o un replay, oppure pool riallocati dal replay Undo/Redo.
+    this.maybeReleaseIdleBlendScratch();
+    this.maybeReleaseIdleLightGlazeResources();
+    this.maybeReleaseIdleGrainResources();
+    this.maybeReleaseIdleShapeResources();
   }
 
   private recordHistoryBatch(
@@ -6389,6 +6711,12 @@ export class BrushEngine {
   }
 
   private async rebuildLayerFromHistory(): Promise<void> {
+    if (this.historyBatches.some((batch) => batch.grainTextureIdentity !== null)) {
+      await this.ensureGrainResources();
+    }
+    if (this.historyBatches.some((batch) => batch.settings.shape === "shape")) {
+      await this.ensureShapeResources();
+    }
     // Force the first historical Blend action to reset its persistent carrier,
     // even when its numeric id matches the last live action rendered.
     this.blendRenderer?.beginStroke(0);
