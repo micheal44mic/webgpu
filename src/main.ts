@@ -1409,7 +1409,7 @@ benchmarkButton.addEventListener("click", async () => {
   }
 });
 
-if (import.meta.env.DEV) {
+{
   rasterStrokeGoldenSection.hidden = false;
   rasterStrokeGoldenButton.addEventListener("click", async () => {
     if (interactionLocked()) {

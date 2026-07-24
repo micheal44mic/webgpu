@@ -195,7 +195,8 @@ Paint:
   lasciati alla prova utente prima di promuovere il tier compatto. Verifiche:
   `npm run stroke:verify`, `grain:verify`, `blend:verify`, `thickness:verify`,
   TypeScript e build Vite.
-- Harness golden pixel Traccia v1 disponibile solo in sviluppo: usa un renderer
+- Harness golden pixel Traccia v1 disponibile anche nella build pubblicata di
+  prova: usa un renderer
   isolato `256×192`, sette casi canonici e readback RGBA8 senza padding, quindi
   produce SHA-256 per caso e combinato. I sette hash e i 63 hash mip della
   baseline sono vincolanti. Una diagnostica separata rev `3`, esclusa
@@ -265,6 +266,11 @@ Paint:
   committare gli esperimenti finché l'utente non restituisce il golden
   (`8d5a75a6…` + `f7f53472…`, zero mismatch, `diagnosticsMatch: true`) e
   approva Light Glaze, M1, disegno/zoom/Undo-Redo sulla v5.
+- Il 24 luglio 2026 la prima pubblicazione v5 non mostrava il comando Golden
+  perché la UI era ancora racchiusa in `import.meta.env.DEV`: il renderer e la
+  diagnostica erano presenti nel bundle, ma la sezione restava `hidden`.
+  Rimosso il gate UI per consentire la cattura Golden sull'iPhone dalla build
+  pubblicata; il test resta isolato e parte solo su pressione esplicita.
 
 Blend (tool separato, vedi sezione dedicata più sotto).
 
