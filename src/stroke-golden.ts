@@ -2,6 +2,7 @@ import {
   RASTER_STROKE_RENDERER_BUILD,
   RasterStrokeRenderer,
   type RasterStrokeEncodeOptions,
+  type RasterStrokeSourceMode,
 } from "./stroke-renderer";
 import type { RasterStrokeRect, RasterStrokeStyle } from "./stroke-core";
 import { paintMipDownsampleShader } from "./shaders";
@@ -13,6 +14,7 @@ export const RASTER_STROKE_GOLDEN_WIDTH = 256;
 export const RASTER_STROKE_GOLDEN_HEIGHT = 192;
 export const RASTER_STROKE_GOLDEN_FORMAT = "rgba8unorm" as const;
 export const RASTER_STROKE_GOLDEN_MIP_CHAIN_VERSION = 1 as const;
+export const RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION = 3 as const;
 
 export interface RasterStrokeGoldenMip {
   level: number;
@@ -31,6 +33,28 @@ export interface RasterStrokeGoldenCase {
   mips: RasterStrokeGoldenMip[];
 }
 
+export interface RasterStrokeGoldenDiagnostic {
+  id: string;
+  kind: "mutation-gate" | "source-mode-mip";
+  passed: boolean;
+  expectedGateFlags?: number;
+  gateFlags?: number;
+  gatedMip1Sha256?: string;
+  forcedMip1Sha256?: string;
+  runtimeMip1Sha256?: string;
+  referenceMip1Sha256?: string;
+  differingBytes?: number;
+  maxByteDelta?: number;
+  firstDifference?: {
+    byteIndex: number;
+    x: number;
+    y: number;
+    channel: "r" | "g" | "b" | "a";
+    runtime: number;
+    reference: number;
+  };
+}
+
 export interface RasterStrokeGoldenReport {
   version: typeof RASTER_STROKE_GOLDEN_VERSION;
   rendererBuild: string;
@@ -42,6 +66,9 @@ export interface RasterStrokeGoldenReport {
   mipChainVersion: typeof RASTER_STROKE_GOLDEN_MIP_CHAIN_VERSION;
   mipCombinedSha256: string;
   baselineMatches: boolean;
+  diagnosticsVersion: typeof RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION;
+  diagnosticsMatch: boolean;
+  diagnostics: RasterStrokeGoldenDiagnostic[];
   baselineMismatches: string[];
   cases: RasterStrokeGoldenCase[];
 }
@@ -65,6 +92,18 @@ const THRESHOLD_MUTATION_RECT: RasterStrokeRect = {
   height: 16,
 };
 
+const DEEP_INTERIOR_MUTATION_RECT: RasterStrokeRect = {
+  x: 70,
+  y: 76,
+  width: 8,
+  height: 7,
+};
+const OUTER_COVERAGE_ALPHA_MUTATION_RECT: RasterStrokeRect = {
+  x: 142,
+  y: 64,
+  width: 1,
+  height: 64,
+};
 const OUTSIDE_STYLE: RasterStrokeStyle = {
   enabled: true,
   width: 14,
@@ -187,6 +226,97 @@ function mutateThresholdIsland(pixels: Uint8Array): void {
   }
 }
 
+
+function mutateDeepInterior(pixels: Uint8Array): void {
+  const right = DEEP_INTERIOR_MUTATION_RECT.x + DEEP_INTERIOR_MUTATION_RECT.width;
+  const bottom = DEEP_INTERIOR_MUTATION_RECT.y + DEEP_INTERIOR_MUTATION_RECT.height;
+  for (let y = DEEP_INTERIOR_MUTATION_RECT.y; y < bottom; y += 1) {
+    for (let x = DEEP_INTERIOR_MUTATION_RECT.x; x < right; x += 1) {
+      setPremultipliedPixel(pixels, x, y, 190 + ((x * 3 + y) % 38), 7);
+    }
+  }
+}
+
+function createOuterCoverageAlphaFixture(): Uint8Array {
+  const pixels = new Uint8Array(
+    RASTER_STROKE_GOLDEN_WIDTH * RASTER_STROKE_GOLDEN_HEIGHT * 4,
+  );
+  for (let y = 24; y < 168; y += 1) {
+    for (let x = 32; x < 128; x += 1) {
+      setPremultipliedPixel(pixels, x, y, 255, 9);
+    }
+    setPremultipliedPixel(pixels, 128, y, 127, 9);
+  }
+  for (
+    let y = OUTER_COVERAGE_ALPHA_MUTATION_RECT.y;
+    y < OUTER_COVERAGE_ALPHA_MUTATION_RECT.y
+      + OUTER_COVERAGE_ALPHA_MUTATION_RECT.height;
+    y += 1
+  ) {
+    setPremultipliedPixel(pixels, OUTER_COVERAGE_ALPHA_MUTATION_RECT.x, y, 100, 11);
+  }
+  return pixels;
+}
+
+function mutateOuterCoverageAlpha(pixels: Uint8Array): void {
+  const bottom = OUTER_COVERAGE_ALPHA_MUTATION_RECT.y
+    + OUTER_COVERAGE_ALPHA_MUTATION_RECT.height;
+  for (let y = OUTER_COVERAGE_ALPHA_MUTATION_RECT.y; y < bottom; y += 1) {
+    setPremultipliedPixel(pixels, OUTER_COVERAGE_ALPHA_MUTATION_RECT.x, y, 40, 13);
+  }
+}
+
+function createLightGlazeTransientFixture(
+  accumulationMode: "source-over" | "m1-max-coverage",
+): Uint8Array {
+  const pixels = new Uint8Array(
+    RASTER_STROKE_GOLDEN_WIDTH * RASTER_STROKE_GOLDEN_HEIGHT * 4,
+  );
+  for (let y = 18; y < 174; y += 1) {
+    for (let x = 16; x < 240; x += 1) {
+      if (((x * 5 + y * 3) % 19) > 13) {
+        continue;
+      }
+      const coverage = 32 + ((x * 17 + y * 29) % 211);
+      if (accumulationMode === "m1-max-coverage") {
+        const offset = pixelOffset(x, y);
+        pixels[offset] = coverage;
+        pixels[offset + 3] = 255;
+      } else {
+        setPremultipliedPixel(pixels, x, y, coverage, 17);
+      }
+    }
+  }
+  return pixels;
+}
+
+function createM1CoverageFixture(): Uint8Array {
+  const rgba = createLightGlazeTransientFixture("m1-max-coverage");
+  const coverage = new Uint8Array(
+    RASTER_STROKE_GOLDEN_WIDTH * RASTER_STROKE_GOLDEN_HEIGHT,
+  );
+  for (let pixel = 0; pixel < coverage.length; pixel += 1) {
+    coverage[pixel] = rgba[pixel * 4];
+  }
+  return coverage;
+}
+
+function createThicknessTailTransientFixture(): Uint8Array {
+  const pixels = new Uint8Array(
+    RASTER_STROKE_GOLDEN_WIDTH * RASTER_STROKE_GOLDEN_HEIGHT * 4,
+  );
+  for (let y = 0; y < 80; y += 1) {
+    for (let x = 0; x < 96; x += 1) {
+      const ellipse = ((x - 48) / 46) ** 2 + ((y - 40) / 35) ** 2;
+      if (ellipse >= 1) {
+        continue;
+      }
+      const alpha = Math.round((1 - ellipse) * 224);
+      setPremultipliedPixel(pixels, x, y, alpha, 23);
+    }
+  }
+  return pixels;
+}
 function expandedEffectRect(
   rect: RasterStrokeRect,
   width: number,
@@ -239,6 +369,98 @@ function uploadFixture(device: GPUDevice, texture: GPUTexture, pixels: Uint8Arra
   );
 }
 
+function uploadR8Fixture(
+  device: GPUDevice,
+  texture: GPUTexture,
+  pixels: Uint8Array,
+): void {
+  device.queue.writeTexture(
+    { texture },
+    pixels,
+    {
+      bytesPerRow: RASTER_STROKE_GOLDEN_WIDTH,
+      rowsPerImage: RASTER_STROKE_GOLDEN_HEIGHT,
+    },
+    {
+      width: RASTER_STROKE_GOLDEN_WIDTH,
+      height: RASTER_STROKE_GOLDEN_HEIGHT,
+      depthOrArrayLayers: 1,
+    },
+  );
+}
+
+async function readRgba8Texture(
+  device: GPUDevice,
+  texture: GPUTexture,
+  width: number,
+  height: number,
+): Promise<Uint8Array> {
+  const unpaddedBytesPerRow = width * 4;
+  const bytesPerRow = Math.ceil(unpaddedBytesPerRow / 256) * 256;
+  const buffer = device.createBuffer({
+    label: "Traccia golden reference texture readback",
+    size: bytesPerRow * height,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  try {
+    const encoder = device.createCommandEncoder({
+      label: "Traccia golden reference texture readback encoder",
+    });
+    encoder.copyTextureToBuffer(
+      { texture },
+      { buffer, bytesPerRow, rowsPerImage: height },
+      { width, height, depthOrArrayLayers: 1 },
+    );
+    device.queue.submit([encoder.finish()]);
+    await buffer.mapAsync(GPUMapMode.READ);
+    const mapped = new Uint8Array(buffer.getMappedRange());
+    const compact = new Uint8Array(unpaddedBytesPerRow * height);
+    for (let row = 0; row < height; row += 1) {
+      compact.set(
+        mapped.subarray(row * bytesPerRow, row * bytesPerRow + unpaddedBytesPerRow),
+        row * unpaddedBytesPerRow,
+      );
+    }
+    buffer.unmap();
+    return compact;
+  } finally {
+    buffer.destroy();
+  }
+}
+
+function writeGoldenLightGlazeUniforms(
+  device: GPUDevice,
+  buffer: GPUBuffer,
+  opacity: number,
+  accumulationMode: "source-over" | "m1-max-coverage",
+): void {
+  const upload = new ArrayBuffer(32);
+  const floats = new Float32Array(upload);
+  const unsigned = new Uint32Array(upload);
+  floats[0] = opacity;
+  unsigned[1] = 0;
+  unsigned[2] = accumulationMode === "m1-max-coverage" ? 1 : 0;
+  floats[4] = 0.12;
+  floats[5] = 0.62;
+  floats[6] = 0.88;
+  floats[7] = 1;
+  device.queue.writeBuffer(buffer, 0, upload);
+}
+
+function writeGoldenThicknessTailUniforms(
+  device: GPUDevice,
+  buffer: GPUBuffer,
+): void {
+  const upload = new ArrayBuffer(32);
+  const floats = new Float32Array(upload);
+  const unsigned = new Uint32Array(upload);
+  floats[0] = 44;
+  floats[1] = 52;
+  floats[2] = 96;
+  floats[3] = 80;
+  unsigned[4] = 0;
+  device.queue.writeBuffer(buffer, 0, upload);
+}
 export async function runRasterStrokeGolden(
   device: GPUDevice,
 ): Promise<RasterStrokeGoldenReport> {
@@ -251,6 +473,36 @@ export async function runRasterStrokeGolden(
     },
     format: RASTER_STROKE_GOLDEN_FORMAT,
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+  const transientTexture = device.createTexture({
+    label: "Traccia golden transient source",
+    size: {
+      width: RASTER_STROKE_GOLDEN_WIDTH,
+      height: RASTER_STROKE_GOLDEN_HEIGHT,
+      depthOrArrayLayers: 1,
+    },
+    format: RASTER_STROKE_GOLDEN_FORMAT,
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+  const m1CoverageTexture = device.createTexture({
+    label: "Traccia golden M1 R8 coverage source",
+    size: {
+      width: RASTER_STROKE_GOLDEN_WIDTH,
+      height: RASTER_STROKE_GOLDEN_HEIGHT,
+      depthOrArrayLayers: 1,
+    },
+    format: "r8unorm",
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+  const referenceMip1Texture = device.createTexture({
+    label: "Traccia golden materialized mip 0 to reference mip 1",
+    size: {
+      width: RASTER_STROKE_GOLDEN_WIDTH >> 1,
+      height: RASTER_STROKE_GOLDEN_HEIGHT >> 1,
+      depthOrArrayLayers: 1,
+    },
+    format: RASTER_STROKE_GOLDEN_FORMAT,
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
   });
   const lightGlazeUniformBuffer = device.createBuffer({
     label: "Traccia golden Light Glaze uniforms",
@@ -302,6 +554,16 @@ export async function runRasterStrokeGolden(
       },
       primitive: { topology: "triangle-list" },
     });
+    if (!renderer.goldenMip0SamplingView) {
+      throw new Error("Vista golden mip 0 Traccia non disponibile.");
+    }
+    renderer.setLightGlazeView(transientTexture.createView());
+    renderer.setThicknessTailView(transientTexture.createView());
+    const referenceMip1BindGroup = device.createBindGroup({
+      label: "Traccia golden materialized mip 0 reference bind group",
+      layout: mipBindGroupLayout,
+      entries: [{ binding: 0, resource: renderer.goldenMip0SamplingView }],
+    });
     const mipBindGroups = renderer.mipViews.slice(0, -1).map((sourceView, mipLevel) =>
       device.createBindGroup({
         label: `Traccia golden mip ${mipLevel} to ${mipLevel + 1}`,
@@ -313,6 +575,7 @@ export async function runRasterStrokeGolden(
     const fixtureSha256 = await sha256(fixture);
     uploadFixture(device, sourceTexture, fixture);
     const cases: RasterStrokeGoldenCase[] = [];
+    const diagnostics: RasterStrokeGoldenDiagnostic[] = [];
 
     const capture = async (
       id: string,
@@ -326,25 +589,25 @@ export async function runRasterStrokeGolden(
         encoder,
         sourceMode: "permanent",
       });
-      for (let mipLevel = 1; mipLevel < renderer!.mipViews.length; mipLevel += 1) {
+      for (let mipLevel = 2; mipLevel < renderer!.styledMipLevelCount; mipLevel += 1) {
         const mipPass = encoder.beginRenderPass({
           label: `Traccia golden build full styled mip ${mipLevel}`,
           colorAttachments: [{
-            view: renderer!.mipViews[mipLevel],
+            view: renderer!.mipViews[mipLevel - 1],
             loadOp: "clear",
             storeOp: "store",
             clearValue: { r: 0, g: 0, b: 0, a: 0 },
           }],
         });
         mipPass.setPipeline(mipPipeline);
-        mipPass.setBindGroup(0, mipBindGroups[mipLevel - 1]);
+        mipPass.setBindGroup(0, mipBindGroups[mipLevel - 2]);
         mipPass.draw(3, 1, 0, 0);
         mipPass.end();
       }
       device.queue.submit([encoder.finish()]);
 
       const mips: RasterStrokeGoldenMip[] = [];
-      for (let mipLevel = 0; mipLevel < renderer!.mipViews.length; mipLevel += 1) {
+      for (let mipLevel = 0; mipLevel < renderer!.styledMipLevelCount; mipLevel += 1) {
         const pixels = await renderer!.readStyledPixels(undefined, mipLevel);
         mips.push({
           level: mipLevel,
@@ -362,6 +625,156 @@ export async function runRasterStrokeGolden(
         byteLength: baseMip.byteLength,
         nonZeroAlphaPixels: baseMip.nonZeroAlphaPixels,
         mips,
+      });
+    };
+
+    const runMutationGateDiagnostic = async (
+      id: string,
+      baselinePixels: Uint8Array,
+      mutate: (pixels: Uint8Array) => void,
+      mutationRect: RasterStrokeRect,
+      style: RasterStrokeStyle,
+      expectedGateFlags: number,
+    ): Promise<void> => {
+      uploadFixture(device, sourceTexture, baselinePixels);
+      const baselineEncoder = device.createCommandEncoder({
+        label: `Traccia golden ${id} baseline`,
+      });
+      renderer!.encode({
+        encoder: baselineEncoder,
+        sourceMode: "permanent",
+        style,
+        rebuildRect: FULL_RECT,
+        composeRect: FULL_RECT,
+        clearStyled: true,
+        resetThresholdMask: true,
+      });
+      device.queue.submit([baselineEncoder.finish()]);
+
+      mutate(baselinePixels);
+      uploadFixture(device, sourceTexture, baselinePixels);
+      const effectRect = expandedEffectRect(mutationRect, style.width);
+      const gatedEncoder = device.createCommandEncoder({
+        label: `Traccia golden ${id} gated mutation`,
+      });
+      renderer!.encode({
+        encoder: gatedEncoder,
+        sourceMode: "permanent",
+        style,
+        rebuildRect: effectRect,
+        changeDetectionRect: mutationRect,
+        composeRect: mutationRect,
+        conditionalComposeRect: effectRect,
+      });
+      device.queue.submit([gatedEncoder.finish()]);
+      const gateFlags = await renderer!.readChangeStateFlags();
+      const gatedMip1Sha256 = await sha256(
+        await renderer!.readStyledPixels(undefined, 1),
+      );
+
+      const forcedEncoder = device.createCommandEncoder({
+        label: `Traccia golden ${id} forced rebuild`,
+      });
+      renderer!.encode({
+        encoder: forcedEncoder,
+        sourceMode: "permanent",
+        style,
+        rebuildRect: effectRect,
+        composeRect: effectRect,
+        resetThresholdMask: true,
+      });
+      device.queue.submit([forcedEncoder.finish()]);
+      const forcedMip1Sha256 = await sha256(
+        await renderer!.readStyledPixels(undefined, 1),
+      );
+      diagnostics.push({
+        id,
+        kind: "mutation-gate",
+        passed:
+          gateFlags === expectedGateFlags
+          && gatedMip1Sha256 === forcedMip1Sha256,
+        expectedGateFlags,
+        gateFlags,
+        gatedMip1Sha256,
+        forcedMip1Sha256,
+      });
+    };
+
+    const runSourceModeMipDiagnostic = async (
+      id: string,
+      sourceMode: RasterStrokeSourceMode,
+      style: RasterStrokeStyle,
+    ): Promise<void> => {
+      const encoder = device.createCommandEncoder({
+        label: `Traccia golden ${id}`,
+      });
+      renderer!.encode({
+        encoder,
+        sourceMode,
+        style,
+        rebuildRect: FULL_RECT,
+        composeRect: FULL_RECT,
+        clearStyled: true,
+        resetThresholdMask: true,
+      });
+      const referencePass = encoder.beginRenderPass({
+        label: `Traccia golden ${id} materialized mip 0 reference`,
+        colorAttachments: [{
+          view: referenceMip1Texture.createView(),
+          loadOp: "clear",
+          storeOp: "store",
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        }],
+      });
+      referencePass.setPipeline(mipPipeline);
+      referencePass.setBindGroup(0, referenceMip1BindGroup);
+      referencePass.draw(3, 1, 0, 0);
+      referencePass.end();
+      device.queue.submit([encoder.finish()]);
+
+      const runtimeMip1Pixels = await renderer!.readStyledPixels(undefined, 1);
+      const referenceMip1Pixels = await readRgba8Texture(
+        device,
+        referenceMip1Texture,
+        RASTER_STROKE_GOLDEN_WIDTH >> 1,
+        RASTER_STROKE_GOLDEN_HEIGHT >> 1,
+      );
+      const runtimeMip1Sha256 = await sha256(runtimeMip1Pixels);
+      const referenceMip1Sha256 = await sha256(referenceMip1Pixels);
+      let differingBytes = 0;
+      let maxByteDelta = 0;
+      let firstDifference: RasterStrokeGoldenDiagnostic["firstDifference"];
+      const mip1Width = RASTER_STROKE_GOLDEN_WIDTH >> 1;
+      const channels = ["r", "g", "b", "a"] as const;
+      for (let byteIndex = 0; byteIndex < runtimeMip1Pixels.length; byteIndex += 1) {
+        const runtime = runtimeMip1Pixels[byteIndex];
+        const reference = referenceMip1Pixels[byteIndex];
+        if (runtime === reference) {
+          continue;
+        }
+        differingBytes += 1;
+        maxByteDelta = Math.max(maxByteDelta, Math.abs(runtime - reference));
+        if (!firstDifference) {
+          const pixelIndex = Math.floor(byteIndex / 4);
+          firstDifference = {
+            byteIndex,
+            x: pixelIndex % mip1Width,
+            y: Math.floor(pixelIndex / mip1Width),
+            channel: channels[byteIndex % 4],
+            runtime,
+            reference,
+          };
+        }
+      }
+      diagnostics.push({
+        id,
+        kind: "source-mode-mip",
+        passed: differingBytes === 0,
+        runtimeMip1Sha256,
+        referenceMip1Sha256,
+        differingBytes,
+        maxByteDelta,
+        ...(firstDifference ? { firstDifference } : {}),
       });
     };
 
@@ -418,6 +831,65 @@ export async function runRasterStrokeGolden(
         CENTER_STYLE.width,
       ),
     });
+
+    await runMutationGateDiagnostic(
+      "gate-deep-interior-skips-rebuild",
+      createRasterStrokeGoldenFixture(),
+      mutateDeepInterior,
+      DEEP_INTERIOR_MUTATION_RECT,
+      CENTER_STYLE,
+      0,
+    );
+    await runMutationGateDiagnostic(
+      "gate-subthreshold-alpha-near-outer-coverage",
+      createOuterCoverageAlphaFixture(),
+      mutateOuterCoverageAlpha,
+      OUTER_COVERAGE_ALPHA_MUTATION_RECT,
+      OUTSIDE_STYLE,
+      2,
+    );
+
+    const sourceModeBase = createRasterStrokeGoldenFixture();
+    uploadFixture(device, sourceTexture, sourceModeBase);
+    uploadFixture(
+      device,
+      transientTexture,
+      createLightGlazeTransientFixture("source-over"),
+    );
+    writeGoldenLightGlazeUniforms(
+      device,
+      lightGlazeUniformBuffer,
+      0.43,
+      "source-over",
+    );
+    await runSourceModeMipDiagnostic(
+      "light-glaze-source-over-opacity-0.43",
+      "light-glaze",
+      CENTER_STYLE,
+    );
+
+    uploadR8Fixture(device, m1CoverageTexture, createM1CoverageFixture());
+    renderer.setLightGlazeView(m1CoverageTexture.createView());
+    writeGoldenLightGlazeUniforms(
+      device,
+      lightGlazeUniformBuffer,
+      0.37,
+      "m1-max-coverage",
+    );
+    await runSourceModeMipDiagnostic(
+      "light-glaze-m1-r8-max-coverage-opacity-0.37",
+      "light-glaze",
+      CENTER_STYLE,
+    );
+
+    renderer.setLightGlazeView(transientTexture.createView());
+    uploadFixture(device, transientTexture, createThicknessTailTransientFixture());
+    writeGoldenThicknessTailUniforms(device, thicknessTailUniformBuffer);
+    await runSourceModeMipDiagnostic(
+      "thickness-tail-source-over",
+      "thickness-tail",
+      OUTSIDE_STYLE,
+    );
 
     const combinedIdentity = new TextEncoder().encode(JSON.stringify({
       version: RASTER_STROKE_GOLDEN_VERSION,
@@ -491,6 +963,9 @@ export async function runRasterStrokeGolden(
       combinedSha256,
       mipChainVersion: RASTER_STROKE_GOLDEN_MIP_CHAIN_VERSION,
       mipCombinedSha256,
+      diagnosticsVersion: RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION,
+      diagnosticsMatch: diagnostics.every((diagnostic) => diagnostic.passed),
+      diagnostics,
       baselineMatches: baselineMismatches.length === 0,
       baselineMismatches,
       cases,
@@ -498,6 +973,9 @@ export async function runRasterStrokeGolden(
   } finally {
     renderer?.destroy();
     sourceTexture.destroy();
+    transientTexture.destroy();
+    m1CoverageTexture.destroy();
+    referenceMip1Texture.destroy();
     lightGlazeUniformBuffer.destroy();
     thicknessTailUniformBuffer.destroy();
   }

@@ -202,11 +202,44 @@ assert(engine.includes('operation: "max"')
   && engine.includes("grainM1GlazePipeline"),
   "Pipeline MAX coverage M1 Glaze assenti.");
 assert(shaders.includes("unpack4x8unorm(pack4x8unorm")
-  && engine.includes("m1-r8-quantized-max-coverage-rgba-compat-single-commit"),
-  "Semantica coverage R8 quantizzata M1 assente.");
+  && engine.includes("m1-r8-quantized-max-coverage-plus-composited-mips-single-commit")
+  && engine.includes('format: "r8unorm"')
+  && engine.includes("lightGlazeCompositeMipTexture")
+  && engine.includes('storageMode === "r8-coverage"'),
+  "Semantica coverage R8 nativa M1 e mip compositati separati assenti.");
 assert(engine.includes("session.tintLinear")
   && engine.includes('"m1-max-coverage"'),
   "Tint per tratto e resolve M1 Glaze non collegati.");
+assert(shaders.includes("@group(0) @binding(5) var compositedMipTexture")
+  && shaders.includes("display.selectedMipLevel - 1.0")
+  && engine.includes("lightGlazeMipDownsampleBindGroups[mipLevel - 2]"),
+  "Catena mip compositata separata Light/M1 Glaze non collegata correttamente.");
+assert(shaders.includes("fn storedM1Coverage(value: f32)")
+  && shaders.includes("pack2x16float(vec2<f32>(coverage, 0.0))"),
+  "Compatibilità esatta del vecchio accumulatore M1 RGBA16F assente.");
+
+let compositedMipPixels = 0;
+for (let mipLevel = 1; mipLevel < 13; mipLevel += 1) {
+  compositedMipPixels += Math.max(1, 4_096 >> mipLevel) ** 2;
+}
+const compositedRgba8MiB = compositedMipPixels * 4 / (1024 * 1024);
+const compositedRgba16MiB = compositedMipPixels * 8 / (1024 * 1024);
+const m1Rgba8MiB = 16 + compositedRgba8MiB;
+const m1Rgba16MiB = 16 + compositedRgba16MiB;
+const lightRgba8MiB = 64 + compositedRgba8MiB;
+const lightRgba16MiB = 128 + compositedRgba16MiB;
+assert(Number(m1Rgba8MiB.toFixed(1)) === 37.3,
+  `Memoria M1 RGBA8 ${m1Rgba8MiB.toFixed(1)} MiB, attesi 37.3.`);
+assert(Number(m1Rgba16MiB.toFixed(1)) === 58.7,
+  `Memoria M1 RGBA16F ${m1Rgba16MiB.toFixed(1)} MiB, attesi 58.7.`);
+assert(Number(lightRgba8MiB.toFixed(1)) === 85.3,
+  `Memoria Light RGBA8 ${lightRgba8MiB.toFixed(1)} MiB, attesi 85.3.`);
+assert(Number(lightRgba16MiB.toFixed(1)) === 170.7,
+  `Memoria Light RGBA16F ${lightRgba16MiB.toFixed(1)} MiB, attesi 170.7.`);
+assert(Number((lightRgba8MiB - m1Rgba8MiB).toFixed(1)) === 48.0,
+  "Risparmio M1 RGBA8 diverso da 48.0 MiB.");
+assert(Number((lightRgba16MiB - m1Rgba16MiB).toFixed(1)) === 112.0,
+  "Risparmio M1 RGBA16F diverso da 112.0 MiB.");
 assert(engine.includes("grainTextureIdentity") && engine.includes("expectedGrainIdentity"),
   "Identità Grain non protetta nel journal/replay.");
 assert(engine.includes("const polarity = settings.grainInvert ? -1 : 1")
@@ -238,7 +271,7 @@ assert(html.includes('value="normal">Normal accumulativo — 4×')
   && html.includes('value="off">Off — senza texture')
   && html.includes('value="texturized">Texturized — Fixed M1 (fisso)'),
   "La matrice iPhone Normal 4× / M1 1× con Grain Off/Fixed non è esposta correttamente.");
-assert(main.includes("performanceTelemetryRevision: 34"),
+assert(main.includes("performanceTelemetryRevision: 38"),
   "Revisione telemetria attesa assente.");
 
 console.log(JSON.stringify({

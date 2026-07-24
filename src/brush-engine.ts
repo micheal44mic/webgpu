@@ -33,7 +33,9 @@ import {
   RASTER_STROKE_COVERAGE_STRATEGY,
   RASTER_STROKE_DISTANCE_STORAGE_STRATEGY,
   RASTER_STROKE_MUTATION_GATE_STRATEGY,
+  RASTER_STROKE_STYLED_STORAGE_STRATEGY,
   RasterStrokeRenderer,
+  rasterStrokeDisplayShader,
   type RasterStrokeEncodeResult,
   type RasterStrokeSourceMode,
 } from "./stroke-renderer";
@@ -43,7 +45,6 @@ import {
   RASTER_STROKE_COMPACT_SCRATCH_MAX_WIDTH,
   RASTER_STROKE_SCRATCH_STRATEGY,
   copyRasterStrokeStyle,
-  nextRasterStrokeMipValidThroughLevel,
   normalizeRasterStrokeStyle,
   rasterStrokeScratchExtentForWidth,
   rasterStrokeStylesEqual,
@@ -114,8 +115,9 @@ export type GrainAdaptivePreviewStrategy =
   | "disabled-semantic-mismatch-probe-spacing-active";
 export type LightGlazeStrategy =
   | "lazy-stroke-mip0-format-quantized-composite-mips-single-commit"
-  | "m1-r8-quantized-max-coverage-rgba-compat-single-commit";
+  | "m1-r8-quantized-max-coverage-plus-composited-mips-single-commit";
 export type LightGlazeAdaptivePreviewStrategy = "disabled-semantic-mismatch";
+export type LightGlazeStorageMode = "none" | "rgba-stroke" | "r8-coverage";
 export type AdaptiveSpacingTriggerReason = "probe-timeout" | "slow-completion";
 export type AdaptivePreviewConcreteActivationReason =
   | "probe-timeout"
@@ -277,6 +279,10 @@ export interface StrokePerformanceProfile {
   presentationCacheFullRebuilds: number;
   presentationCachePartialUpdates: number;
   presentationCacheOffscreenSkips: number;
+  presentationCacheLod0FullRebuildTraceEnabledPasses: number;
+  presentationCacheLod0FullRebuildTraceEnabledCpuEncodingMs: number;
+  presentationCacheLod0FullRebuildTraceDisabledPasses: number;
+  presentationCacheLod0FullRebuildTraceDisabledCpuEncodingMs: number;
   presentationCacheUpdatedPixels: number;
   legacyDisplayShaderPixels: number;
   presentationCopiedPixels: number;
@@ -354,6 +360,7 @@ export interface StrokePerformanceProfile {
   lightGlazeStrategy: LightGlazeStrategy;
   lightGlazeAdaptivePreviewStrategy: LightGlazeAdaptivePreviewStrategy;
   lightGlazeStorageAllocated: boolean;
+  lightGlazeStorageMode: LightGlazeStorageMode;
   lightGlazeAdditionalMemoryMiB: number;
   lightGlazeBatches: number;
   lightGlazeCommits: number;
@@ -641,6 +648,10 @@ interface SubmitTiming {
   presentationCacheFullRebuilds: number;
   presentationCachePartialUpdates: number;
   presentationCacheOffscreenSkips: number;
+  presentationCacheLod0FullRebuildTraceEnabledPasses: number;
+  presentationCacheLod0FullRebuildTraceEnabledCpuEncodingMs: number;
+  presentationCacheLod0FullRebuildTraceDisabledPasses: number;
+  presentationCacheLod0FullRebuildTraceDisabledCpuEncodingMs: number;
   presentationCacheUpdatedPixels: number;
   legacyDisplayShaderPixels: number;
   presentationCopiedPixels: number;
@@ -705,6 +716,10 @@ interface MutableStrokePerformanceProfile {
   presentationCacheFullRebuilds: number;
   presentationCachePartialUpdates: number;
   presentationCacheOffscreenSkips: number;
+  presentationCacheLod0FullRebuildTraceEnabledPasses: number;
+  presentationCacheLod0FullRebuildTraceEnabledCpuEncodingMs: number;
+  presentationCacheLod0FullRebuildTraceDisabledPasses: number;
+  presentationCacheLod0FullRebuildTraceDisabledCpuEncodingMs: number;
   presentationCacheUpdatedPixels: number;
   legacyDisplayShaderPixels: number;
   presentationCopiedPixels: number;
@@ -831,7 +846,7 @@ const GRAIN_ADAPTIVE_PREVIEW_STRATEGY =
 const LIGHT_GLAZE_STRATEGY =
   "lazy-stroke-mip0-format-quantized-composite-mips-single-commit" as const;
 const M1_GLAZE_STRATEGY =
-  "m1-r8-quantized-max-coverage-rgba-compat-single-commit" as const;
+  "m1-r8-quantized-max-coverage-plus-composited-mips-single-commit" as const;
 const LIGHT_GLAZE_ADAPTIVE_PREVIEW_STRATEGY = "disabled-semantic-mismatch" as const;
 const ADAPTIVE_PREVIEW_STRATEGY =
   "queue-lag-canvas2d-tip-patch" as const;
@@ -963,8 +978,17 @@ function layerBaseMemoryMiB(format: LayerFormat): number {
   return format === "rgba16float" ? 128 : 64;
 }
 
-function lightGlazeAdditionalMemoryMiB(format: LayerFormat): number {
-  return layerBaseMemoryMiB(format) + paintDisplayPyramidAdditionalMemoryMiB(format);
+function lightGlazeAdditionalMemoryMiB(
+  format: LayerFormat,
+  storageMode: LightGlazeStorageMode,
+): number {
+  if (storageMode === "none") {
+    return 0;
+  }
+  const accumulatorMiB = storageMode === "r8-coverage"
+    ? LAYER_SIZE * LAYER_SIZE / MEBIBYTE_BYTES
+    : layerBaseMemoryMiB(format);
+  return accumulatorMiB + paintDisplayPyramidAdditionalMemoryMiB(format);
 }
 
 function shapeTextureMemoryMiB(): number {
@@ -1176,7 +1200,7 @@ export class BrushEngine {
   private rasterStrokeStyledInitialized = false;
   private rasterStrokeMipValidThroughLevel = 0;
   private rasterStrokeMipDownsampleBindGroups: GPUBindGroup[] = [];
-  private rasterStrokeDisplayBindGroup: GPUBindGroup | null = null;
+  private rasterStrokeDisplayBindGroups = new Map<RasterStrokeSourceMode, GPUBindGroup>();
   private rasterStrokePendingComposeRect: DirtyRect | null = null;
   private rasterStrokeBusy = false;
   private rasterStrokeLastEncode: RasterStrokeEncodeResult | null = null;
@@ -1194,6 +1218,7 @@ export class BrushEngine {
   private presentationCacheHeight = 0;
   private presentationCacheNeedsFullRebuild = true;
   private lightGlazeTexture: GPUTexture | null = null;
+  private lightGlazeCompositeMipTexture: GPUTexture | null = null;
   private lightGlazeView: GPUTextureView | null = null;
   private lightGlazeSamplingView: GPUTextureView | null = null;
   private lightGlazeMipViews: GPUTextureView[] = [];
@@ -1203,6 +1228,7 @@ export class BrushEngine {
   private lightGlazeCompositeBindGroup: GPUBindGroup | null = null;
   private lightGlazeSession: LightGlazeSession | null = null;
   private lightGlazeStorageAllocated = false;
+  private lightGlazeStorageMode: LightGlazeStorageMode = "none";
   private thicknessTailTexture: GPUTexture | null = null;
   private thicknessTailView: GPUTextureView | null = null;
   private thicknessTailDisplayBindGroup: GPUBindGroup | null = null;
@@ -1272,6 +1298,8 @@ export class BrushEngine {
   private grainBrushBindGroupLayout!: GPUBindGroupLayout;
   private grainBrushOccupancyBindGroupLayout!: GPUBindGroupLayout;
   private displayBindGroupLayout!: GPUBindGroupLayout;
+  private rasterStrokeDisplayScreenBindGroupLayout!: GPUBindGroupLayout;
+  private rasterStrokeDisplaySourceBindGroupLayout!: GPUBindGroupLayout;
   private thicknessTailDisplayBindGroupLayout!: GPUBindGroupLayout;
   private lightGlazeDisplayBindGroupLayout!: GPUBindGroupLayout;
   private lightGlazeCompositeMipBindGroupLayout!: GPUBindGroupLayout;
@@ -1298,10 +1326,12 @@ export class BrushEngine {
     Record<GrainFiltering, GPUBindGroup[]>
   >;
   private displayBindGroup!: GPUBindGroup;
+  private rasterStrokeDisplayScreenBindGroup!: GPUBindGroup;
 
   private brushShaderModule!: GPUShaderModule;
   private texturizedGrainShaderModule!: GPUShaderModule;
   private displayShaderModule!: GPUShaderModule;
+  private rasterStrokeDisplayShaderModule!: GPUShaderModule;
   private thicknessTailDisplayShaderModule!: GPUShaderModule;
   private lightGlazeDisplayShaderModule!: GPUShaderModule;
   private lightGlazeCompositeMipShaderModule!: GPUShaderModule;
@@ -1326,6 +1356,7 @@ export class BrushEngine {
   private grainM1GlazeShapePipeline!: GPURenderPipeline;
   private grainM1GlazeShapeOccupancyPipeline!: GPURenderPipeline;
   private displayPipeline!: GPURenderPipeline;
+  private rasterStrokeDisplayPipeline!: GPURenderPipeline;
   private thicknessTailDisplayPipeline!: GPURenderPipeline;
   private lightGlazeDisplayPipeline!: GPURenderPipeline;
   private lightGlazeCompositeMipPipeline!: GPURenderPipeline;
@@ -1576,6 +1607,29 @@ export class BrushEngine {
     );
   }
 
+  private rebuildRasterStrokeDisplayBindGroups(): void {
+    const renderer = this.rasterStrokeRenderer;
+    this.rasterStrokeDisplayBindGroups.clear();
+    if (!renderer) {
+      return;
+    }
+    const modes: RasterStrokeSourceMode[] = [
+      "permanent",
+      "light-glaze",
+      "thickness-tail",
+    ];
+    for (const mode of modes) {
+      this.rasterStrokeDisplayBindGroups.set(
+        mode,
+        renderer.createDisplayBindGroup(
+          this.rasterStrokeDisplaySourceBindGroupLayout,
+          this.sampler,
+          mode,
+        ),
+      );
+    }
+  }
+
   private async ensureRasterStrokeRenderer(
     styleWidth = this.rasterStrokeStyle.width,
   ): Promise<RasterStrokeRenderer> {
@@ -1596,19 +1650,11 @@ export class BrushEngine {
     renderer.setLightGlazeView(this.lightGlazeView);
     renderer.setThicknessTailView(this.thicknessTailView);
     this.rasterStrokeRenderer = renderer;
-    this.rasterStrokeDisplayBindGroup = this.device.createBindGroup({
-      label: `Traccia display bind group ${this.layerFormat}`,
-      layout: this.displayBindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: this.displayUniformBuffer } },
-        { binding: 1, resource: renderer.samplingView },
-        { binding: 2, resource: this.sampler },
-      ],
-    });
+    this.rebuildRasterStrokeDisplayBindGroups();
     this.rasterStrokeMipDownsampleBindGroups = renderer.mipViews
-      .slice(0, PAINT_DISPLAY_MIP_LEVEL_COUNT - 1)
-      .map((sourceView, sourceMipLevel) => this.device.createBindGroup({
-        label: `Traccia styled mip ${sourceMipLevel} to ${sourceMipLevel + 1}`,
+      .slice(0, -1)
+      .map((sourceView, sourceMipIndex) => this.device.createBindGroup({
+        label: `Traccia styled logical mip ${sourceMipIndex + 1} to ${sourceMipIndex + 2}`,
         layout: this.paintMipDownsampleBindGroupLayout,
         entries: [{ binding: 0, resource: sourceView }],
       }));
@@ -1622,7 +1668,7 @@ export class BrushEngine {
   private releaseRasterStrokeRenderer(): void {
     this.rasterStrokeRenderer?.destroy();
     this.rasterStrokeRenderer = null;
-    this.rasterStrokeDisplayBindGroup = null;
+    this.rasterStrokeDisplayBindGroups.clear();
     this.rasterStrokeMipDownsampleBindGroups = [];
     this.rasterStrokeCoverageValid = false;
     this.rasterStrokeStyledInitialized = false;
@@ -2250,7 +2296,7 @@ export class BrushEngine {
     const rasterStrokeScratchExtent = rasterStroke?.scratchExtent ?? 0;
     const blendRendererMiB = this.blendRenderer?.allocatedMemoryMiB() ?? 0;
     const lightGlazeMiB = this.lightGlazeStorageAllocated
-      ? lightGlazeAdditionalMemoryMiB(this.layerFormat)
+      ? lightGlazeAdditionalMemoryMiB(this.layerFormat, this.lightGlazeStorageMode)
       : 0;
     const thicknessTailMiB = this.thicknessTailTexture
       ? this.thicknessTailTextureWidth * this.thicknessTailTextureHeight
@@ -2445,6 +2491,10 @@ export class BrushEngine {
       presentationCacheFullRebuilds: 0,
       presentationCachePartialUpdates: 0,
       presentationCacheOffscreenSkips: 0,
+      presentationCacheLod0FullRebuildTraceEnabledPasses: 0,
+      presentationCacheLod0FullRebuildTraceEnabledCpuEncodingMs: 0,
+      presentationCacheLod0FullRebuildTraceDisabledPasses: 0,
+      presentationCacheLod0FullRebuildTraceDisabledCpuEncodingMs: 0,
       presentationCacheUpdatedPixels: 0,
       legacyDisplayShaderPixels: 0,
       presentationCopiedPixels: 0,
@@ -2589,6 +2639,14 @@ export class BrushEngine {
       presentationCacheFullRebuilds: profile.presentationCacheFullRebuilds,
       presentationCachePartialUpdates: profile.presentationCachePartialUpdates,
       presentationCacheOffscreenSkips: profile.presentationCacheOffscreenSkips,
+      presentationCacheLod0FullRebuildTraceEnabledPasses:
+        profile.presentationCacheLod0FullRebuildTraceEnabledPasses,
+      presentationCacheLod0FullRebuildTraceEnabledCpuEncodingMs:
+        profile.presentationCacheLod0FullRebuildTraceEnabledCpuEncodingMs,
+      presentationCacheLod0FullRebuildTraceDisabledPasses:
+        profile.presentationCacheLod0FullRebuildTraceDisabledPasses,
+      presentationCacheLod0FullRebuildTraceDisabledCpuEncodingMs:
+        profile.presentationCacheLod0FullRebuildTraceDisabledCpuEncodingMs,
       presentationCacheUpdatedPixels: profile.presentationCacheUpdatedPixels,
       legacyDisplayShaderPixels: profile.legacyDisplayShaderPixels,
       presentationCopiedPixels: profile.presentationCopiedPixels,
@@ -2632,8 +2690,9 @@ export class BrushEngine {
       lightGlazeStrategy: profile.lightGlazeStrategy,
       lightGlazeAdaptivePreviewStrategy: LIGHT_GLAZE_ADAPTIVE_PREVIEW_STRATEGY,
       lightGlazeStorageAllocated: this.lightGlazeStorageAllocated,
+      lightGlazeStorageMode: this.lightGlazeStorageMode,
       lightGlazeAdditionalMemoryMiB: this.lightGlazeStorageAllocated
-        ? lightGlazeAdditionalMemoryMiB(this.layerFormat)
+        ? lightGlazeAdditionalMemoryMiB(this.layerFormat, this.lightGlazeStorageMode)
         : 0,
       lightGlazeBatches: profile.lightGlazeBatches,
       lightGlazeCommits: profile.lightGlazeCommits,
@@ -2804,6 +2863,7 @@ export class BrushEngine {
     rasterStrokeCoverageMemoryMiB: number;
     rasterStrokeScratchMemoryMiB: number;
     rasterStrokeCoverageStrategy: typeof RASTER_STROKE_COVERAGE_STRATEGY;
+    rasterStrokeStyledStorageStrategy: typeof RASTER_STROKE_STYLED_STORAGE_STRATEGY;
     rasterStrokeDistanceStorageStrategy: typeof RASTER_STROKE_DISTANCE_STORAGE_STRATEGY;
     rasterStrokeMutationGateStrategy: typeof RASTER_STROKE_MUTATION_GATE_STRATEGY;
     rasterStrokeScratchStrategy: typeof RASTER_STROKE_SCRATCH_STRATEGY;
@@ -2861,6 +2921,7 @@ export class BrushEngine {
     lightGlazeStrategy: LightGlazeStrategy;
     lightGlazeAdaptivePreviewStrategy: typeof LIGHT_GLAZE_ADAPTIVE_PREVIEW_STRATEGY;
     lightGlazeStorageAllocated: boolean;
+    lightGlazeStorageMode: LightGlazeStorageMode;
     lightGlazeAdditionalMemoryMiB: number;
     adaptivePreviewStrategy: typeof ADAPTIVE_PREVIEW_STRATEGY;
     adaptivePreviewTriggerStrategy: typeof ADAPTIVE_PREVIEW_TRIGGER_STRATEGY;
@@ -2906,6 +2967,7 @@ export class BrushEngine {
       rasterStrokeScratchMemoryMiB:
         (this.rasterStrokeRenderer?.scratchMemoryBytes ?? 0) / (1024 * 1024),
       rasterStrokeCoverageStrategy: RASTER_STROKE_COVERAGE_STRATEGY,
+      rasterStrokeStyledStorageStrategy: RASTER_STROKE_STYLED_STORAGE_STRATEGY,
       rasterStrokeDistanceStorageStrategy: RASTER_STROKE_DISTANCE_STORAGE_STRATEGY,
       rasterStrokeMutationGateStrategy: RASTER_STROKE_MUTATION_GATE_STRATEGY,
       rasterStrokeScratchStrategy: RASTER_STROKE_SCRATCH_STRATEGY,
@@ -2982,8 +3044,9 @@ export class BrushEngine {
       lightGlazeStrategy: lightGlazeStrategyForBlendMode(this.settings.blendMode),
       lightGlazeAdaptivePreviewStrategy: LIGHT_GLAZE_ADAPTIVE_PREVIEW_STRATEGY,
       lightGlazeStorageAllocated: this.lightGlazeStorageAllocated,
+      lightGlazeStorageMode: this.lightGlazeStorageMode,
       lightGlazeAdditionalMemoryMiB: this.lightGlazeStorageAllocated
-        ? lightGlazeAdditionalMemoryMiB(this.layerFormat)
+        ? lightGlazeAdditionalMemoryMiB(this.layerFormat, this.lightGlazeStorageMode)
         : 0,
       adaptivePreviewStrategy: ADAPTIVE_PREVIEW_STRATEGY,
       adaptivePreviewTriggerStrategy: ADAPTIVE_PREVIEW_TRIGGER_STRATEGY,
@@ -3217,6 +3280,37 @@ export class BrushEngine {
         },
       ],
     });
+    this.rasterStrokeDisplayScreenBindGroupLayout = this.device.createBindGroupLayout({
+      label: "Traccia display screen bind group layout",
+      entries: [{
+        binding: 0,
+        visibility: GPUShaderStage.FRAGMENT,
+        buffer: { type: "uniform" },
+      }],
+    });
+    this.rasterStrokeDisplaySourceBindGroupLayout = this.device.createBindGroupLayout({
+      label: "Traccia direct LOD 0 and coarse mip display source layout",
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+        { binding: 4, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+        {
+          binding: 5,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "read-only-storage" },
+        },
+        { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        { binding: 7, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+      ],
+    });
+    this.rasterStrokeDisplayScreenBindGroup = this.device.createBindGroup({
+      label: "Traccia display screen bind group",
+      layout: this.rasterStrokeDisplayScreenBindGroupLayout,
+      entries: [{ binding: 0, resource: { buffer: this.displayUniformBuffer } }],
+    });
+
     this.lightGlazeDisplayBindGroupLayout = this.device.createBindGroupLayout({
       label: "Light Glaze live display bind group layout",
       entries: [
@@ -3244,6 +3338,11 @@ export class BrushEngine {
           binding: 4,
           visibility: GPUShaderStage.FRAGMENT,
           buffer: { type: "uniform" },
+        },
+        {
+          binding: 5,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float", viewDimension: "2d" },
         },
       ],
     });
@@ -3508,6 +3607,10 @@ export class BrushEngine {
       code: texturizedGrainShader,
     });
     this.displayShaderModule = this.device.createShaderModule({ label: "Display WGSL", code: displayShader });
+    this.rasterStrokeDisplayShaderModule = this.device.createShaderModule({
+      label: "Traccia direct LOD 0 and coarse mip display WGSL",
+      code: rasterStrokeDisplayShader(LAYER_SIZE, LAYER_SIZE),
+    });
     this.thicknessTailDisplayShaderModule = this.device.createShaderModule({
       label: "Predictive thickness tail display WGSL",
       code: thicknessTailDisplayShader,
@@ -3532,6 +3635,7 @@ export class BrushEngine {
       this.assertShaderCompiled(this.brushShaderModule, "brush"),
       this.assertShaderCompiled(this.texturizedGrainShaderModule, "Texturized grain fragment"),
       this.assertShaderCompiled(this.displayShaderModule, "display"),
+      this.assertShaderCompiled(this.rasterStrokeDisplayShaderModule, "Traccia display"),
       this.assertShaderCompiled(
         this.thicknessTailDisplayShaderModule,
         "predictive thickness tail display",
@@ -3559,6 +3663,28 @@ export class BrushEngine {
       },
       fragment: {
         module: this.displayShaderModule,
+        entryPoint: "fragmentMain",
+        targets: [{ format: this.canvasFormat }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+
+    const rasterStrokeDisplayPipelineLayout = this.device.createPipelineLayout({
+      label: "Traccia display pipeline layout",
+      bindGroupLayouts: [
+        this.rasterStrokeDisplayScreenBindGroupLayout,
+        this.rasterStrokeDisplaySourceBindGroupLayout,
+      ],
+    });
+    this.rasterStrokeDisplayPipeline = this.device.createRenderPipeline({
+      label: "Traccia direct LOD 0 and coarse mip display pipeline",
+      layout: rasterStrokeDisplayPipelineLayout,
+      vertex: {
+        module: this.rasterStrokeDisplayShaderModule,
+        entryPoint: "vertexMain",
+      },
+      fragment: {
+        module: this.rasterStrokeDisplayShaderModule,
         entryPoint: "fragmentMain",
         targets: [{ format: this.canvasFormat }],
       },
@@ -4357,7 +4483,7 @@ export class BrushEngine {
         entryPoint: fragmentEntryPoint,
         targets: [
           {
-            format,
+            format: "r8unorm",
             blend: {
               color: {
                 operation: "max",
@@ -4376,42 +4502,42 @@ export class BrushEngine {
       primitive: { topology: "triangle-strip" },
     });
     const m1GlazePipeline = createM1GlazePipeline(
-      `Brush M1 Glaze circle MAX coverage ${format}`,
+      `Brush M1 Glaze circle MAX coverage r8unorm`,
       brushPipelineLayout,
       this.brushShaderModule,
       "vertexMain",
       "coverageFragmentMain",
     );
     const m1GlazeShapePipeline = createM1GlazePipeline(
-      `Brush M1 Glaze Shape MAX coverage ${format}`,
+      `Brush M1 Glaze Shape MAX coverage r8unorm`,
       brushPipelineLayout,
       this.brushShaderModule,
       "shapeVertexMain",
       "shapeCoverageFragmentMain",
     );
     const m1GlazeShapeOccupancyPipeline = createM1GlazePipeline(
-      `Brush M1 Glaze Shape occupancy MAX coverage ${format}`,
+      `Brush M1 Glaze Shape occupancy MAX coverage r8unorm`,
       brushOccupancyPipelineLayout,
       this.brushShaderModule,
       "shapeVertexMain",
       "shapeOccupancyCoverageFragmentMain",
     );
     const grainM1GlazePipeline = createM1GlazePipeline(
-      `Brush M1 Glaze Texturized circle MAX coverage ${format}`,
+      `Brush M1 Glaze Texturized circle MAX coverage r8unorm`,
       grainBrushPipelineLayout,
       this.texturizedGrainShaderModule,
       "vertexMain",
       "coverageFragmentMain",
     );
     const grainM1GlazeShapePipeline = createM1GlazePipeline(
-      `Brush M1 Glaze Texturized Shape MAX coverage ${format}`,
+      `Brush M1 Glaze Texturized Shape MAX coverage r8unorm`,
       grainBrushPipelineLayout,
       this.texturizedGrainShaderModule,
       "shapeVertexMain",
       "shapeCoverageFragmentMain",
     );
     const grainM1GlazeShapeOccupancyPipeline = createM1GlazePipeline(
-      `Brush M1 Glaze Texturized Shape occupancy MAX coverage ${format}`,
+      `Brush M1 Glaze Texturized Shape occupancy MAX coverage r8unorm`,
       grainBrushOccupancyPipelineLayout,
       this.texturizedGrainShaderModule,
       "shapeVertexMain",
@@ -4552,6 +4678,9 @@ export class BrushEngine {
     this.paintMipDownsamplePipeline = paintMipDownsamplePipeline;
     this.displayBindGroup = displayBindGroup;
     this.layerFormat = format;
+    // The direct Traccia LOD 0 path uses the format flag to reproduce the
+    // quantization that the removed full-resolution styled texture applied.
+    this.writeLightGlazeUniforms(1, "source-over", null);
     this.paintDisplayMipValidThroughLevel = 0;
     this.paintDisplaySelectedMipLevel = 0;
     this.presentationCacheNeedsFullRebuild = true;
@@ -4615,11 +4744,13 @@ export class BrushEngine {
     this.thicknessTailTextureWidth = width;
     this.thicknessTailTextureHeight = height;
     this.rasterStrokeRenderer?.setThicknessTailView(view);
+    this.rebuildRasterStrokeDisplayBindGroups();
     oldTexture?.destroy();
   }
 
   private destroyThicknessTailOverlayResources(): void {
     this.rasterStrokeRenderer?.setThicknessTailView(null);
+    this.rebuildRasterStrokeDisplayBindGroups();
     this.thicknessTailTexture?.destroy();
     this.thicknessTailTexture = null;
     this.thicknessTailView = null;
@@ -4629,52 +4760,71 @@ export class BrushEngine {
     this.thicknessTailPresentedRect = null;
   }
 
-  private ensureLightGlazeResources(): void {
+  private ensureLightGlazeResources(blendMode: BlendMode): void {
+    const storageMode: LightGlazeStorageMode = blendMode === "m1-glaze"
+      ? "r8-coverage"
+      : "rgba-stroke";
     if (
       this.lightGlazeTexture
+      && this.lightGlazeCompositeMipTexture
       && this.lightGlazeView
       && this.lightGlazeSamplingView
       && this.lightGlazeCompositeMipBindGroup
       && this.lightGlazeDisplayBindGroup
       && this.lightGlazeCompositeBindGroup
+      && this.lightGlazeStorageMode === storageMode
     ) {
       return;
     }
+    if (this.lightGlazeTexture || this.lightGlazeCompositeMipTexture) {
+      this.destroyLightGlazeResources();
+    }
 
+    const accumulatorFormat: GPUTextureFormat = storageMode === "r8-coverage"
+      ? "r8unorm"
+      : this.layerFormat;
     const texture = this.device.createTexture({
-      label: `Lazy Light Glaze stroke accumulator ${this.layerFormat}`,
+      label: `Lazy Light Glaze stroke accumulator ${accumulatorFormat}`,
       size: { width: LAYER_SIZE, height: LAYER_SIZE, depthOrArrayLayers: 1 },
-      mipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT,
+      format: accumulatorFormat,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    const compositeMipTexture = this.device.createTexture({
+      label: `Lazy Light Glaze composited logical mip 1+ ${this.layerFormat}`,
+      size: {
+        width: Math.max(1, LAYER_SIZE >> 1),
+        height: Math.max(1, LAYER_SIZE >> 1),
+        depthOrArrayLayers: 1,
+      },
+      mipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT - 1,
       format: this.layerFormat,
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
     const view = texture.createView({
       label: "Light Glaze authoritative stroke mip 0",
-      baseMipLevel: 0,
-      mipLevelCount: 1,
     });
-    const samplingView = texture.createView({
-      label: "Light Glaze live display mip chain",
+    const samplingView = compositeMipTexture.createView({
+      label: "Light Glaze final-composite logical mip 1+ sampling chain",
       baseMipLevel: 0,
-      mipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT,
+      mipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT - 1,
     });
-    const mipViews = Array.from(
-      { length: PAINT_DISPLAY_MIP_LEVEL_COUNT },
-      (_, mipLevel) => texture.createView({
-        label: `Light Glaze stroke mip ${mipLevel}`,
-        baseMipLevel: mipLevel,
+    const compositeMipViews = Array.from(
+      { length: PAINT_DISPLAY_MIP_LEVEL_COUNT - 1 },
+      (_, mipIndex) => compositeMipTexture.createView({
+        label: `Light Glaze final-composite logical mip ${mipIndex + 1}`,
+        baseMipLevel: mipIndex,
         mipLevelCount: 1,
       }),
     );
-    const downsampleBindGroups = mipViews
-      .slice(0, PAINT_DISPLAY_MIP_LEVEL_COUNT - 1)
-      .map((sourceView, sourceMipLevel) => this.device.createBindGroup({
-        label: `Light Glaze mip ${sourceMipLevel} to ${sourceMipLevel + 1}`,
+    const downsampleBindGroups = compositeMipViews
+      .slice(0, -1)
+      .map((sourceView, sourceMipIndex) => this.device.createBindGroup({
+        label: `Light Glaze logical mip ${sourceMipIndex + 1} to ${sourceMipIndex + 2}`,
         layout: this.paintMipDownsampleBindGroupLayout,
         entries: [{ binding: 0, resource: sourceView }],
       }));
     const compositeMipBindGroup = this.device.createBindGroup({
-      label: "Light Glaze permanent + stroke to composited mip 1",
+      label: "Light Glaze permanent + stroke to composited logical mip 1",
       layout: this.lightGlazeCompositeMipBindGroupLayout,
       entries: [
         { binding: 0, resource: this.layerView },
@@ -4688,9 +4838,10 @@ export class BrushEngine {
       entries: [
         { binding: 0, resource: { buffer: this.displayUniformBuffer } },
         { binding: 1, resource: this.layerSamplingView },
-        { binding: 2, resource: samplingView },
+        { binding: 2, resource: view },
         { binding: 3, resource: this.sampler },
         { binding: 4, resource: { buffer: this.lightGlazeUniformBuffer } },
+        { binding: 5, resource: samplingView },
       ],
     });
     const compositeBindGroup = this.device.createBindGroup({
@@ -4703,22 +4854,27 @@ export class BrushEngine {
     });
 
     this.lightGlazeTexture = texture;
+    this.lightGlazeCompositeMipTexture = compositeMipTexture;
     this.lightGlazeView = view;
     this.lightGlazeSamplingView = samplingView;
-    this.lightGlazeMipViews = mipViews;
+    this.lightGlazeMipViews = [view, ...compositeMipViews];
     this.lightGlazeMipDownsampleBindGroups = downsampleBindGroups;
     this.lightGlazeCompositeMipBindGroup = compositeMipBindGroup;
     this.lightGlazeDisplayBindGroup = displayBindGroup;
     this.lightGlazeCompositeBindGroup = compositeBindGroup;
     this.lightGlazeStorageAllocated = true;
+    this.lightGlazeStorageMode = storageMode;
     this.rasterStrokeRenderer?.setLightGlazeView(view);
+    this.rebuildRasterStrokeDisplayBindGroups();
   }
-
   private destroyLightGlazeResources(): void {
     this.rasterStrokeRenderer?.setLightGlazeView(null);
+    this.rebuildRasterStrokeDisplayBindGroups();
     this.lightGlazeSession = null;
     this.lightGlazeTexture?.destroy();
+    this.lightGlazeCompositeMipTexture?.destroy();
     this.lightGlazeTexture = null;
+    this.lightGlazeCompositeMipTexture = null;
     this.lightGlazeView = null;
     this.lightGlazeSamplingView = null;
     this.lightGlazeMipViews = [];
@@ -4727,13 +4883,14 @@ export class BrushEngine {
     this.lightGlazeDisplayBindGroup = null;
     this.lightGlazeCompositeBindGroup = null;
     this.lightGlazeStorageAllocated = false;
+    this.lightGlazeStorageMode = "none";
   }
 
   private startLightGlazeSession(historyActionId: number, settings: BrushSettings): void {
     if (this.lightGlazeSession) {
       throw new Error("Un tratto Light Glaze precedente non è ancora stato finalizzato.");
     }
-    this.ensureLightGlazeResources();
+    this.ensureLightGlazeResources(settings.blendMode);
     this.lightGlazeSession = {
       historyActionId,
       settings: {
@@ -4988,11 +5145,15 @@ export class BrushEngine {
     }
     const previousValidThroughLevel = this.rasterStrokeMipValidThroughLevel;
     const baseChanged = baseDirtyRect !== null;
-    let sourceDirtyRect = baseDirtyRect;
+    let sourceDirtyRect = baseDirtyRect
+      ? this.downsampleDirtyRect(baseDirtyRect, 1)
+      : null;
     let passes = 0;
     let updatedPixels = 0;
 
-    for (let mipLevel = 1; mipLevel <= selectedMipLevel; mipLevel += 1) {
+    // Il renderer materializza già il mip logico 1 direttamente da layer +
+    // coverage. Solo i livelli 2+ vengono derivati e conservati nella catena.
+    for (let mipLevel = 2; mipLevel <= selectedMipLevel; mipLevel += 1) {
       const dimensions = this.paintMipDimensions(mipLevel);
       const needsFullBuild = mipLevel > previousValidThroughLevel;
       const targetDirtyRect = needsFullBuild
@@ -5007,17 +5168,17 @@ export class BrushEngine {
 
       const pass = encoder.beginRenderPass({
         label: needsFullBuild
-          ? `Build full Traccia styled mip ${mipLevel}`
-          : `Update Traccia styled mip ${mipLevel} dirty rect`,
+          ? `Build full Traccia styled logical mip ${mipLevel}`
+          : `Update Traccia styled logical mip ${mipLevel} dirty rect`,
         colorAttachments: [{
-          view: renderer.mipViews[mipLevel],
+          view: renderer.mipViews[mipLevel - 1],
           loadOp: needsFullBuild ? "clear" : "load",
           storeOp: "store",
           clearValue: { r: 0, g: 0, b: 0, a: 0 },
         }],
       });
       pass.setPipeline(this.paintMipDownsamplePipeline);
-      pass.setBindGroup(0, this.rasterStrokeMipDownsampleBindGroups[mipLevel - 1]);
+      pass.setBindGroup(0, this.rasterStrokeMipDownsampleBindGroups[mipLevel - 2]);
       if (!needsFullBuild) {
         pass.setScissorRect(
           targetDirtyRect.x,
@@ -5032,17 +5193,14 @@ export class BrushEngine {
       updatedPixels += targetDirtyRect.width * targetDirtyRect.height;
       sourceDirtyRect = targetDirtyRect;
     }
-    // A mip-0 mutation invalidates every coarser level that was not refreshed
-    // in this frame. Otherwise a later zoom-out can sample an older styled
-    // image until another brush mutation happens to update that mip.
-    this.rasterStrokeMipValidThroughLevel = nextRasterStrokeMipValidThroughLevel(
-      previousValidThroughLevel,
-      selectedMipLevel,
-      baseChanged,
-    );
+
+    if (baseChanged) {
+      this.rasterStrokeMipValidThroughLevel = Math.max(1, selectedMipLevel);
+    } else if (selectedMipLevel > previousValidThroughLevel) {
+      this.rasterStrokeMipValidThroughLevel = selectedMipLevel;
+    }
     return { passes, updatedPixels };
   }
-
   private encodeLightGlazeDisplayPyramid(
     encoder: GPUCommandEncoder,
     session: LightGlazeSession,
@@ -5085,7 +5243,7 @@ export class BrushEngine {
         pass.setBindGroup(0, this.lightGlazeCompositeMipBindGroup!);
       } else {
         pass.setPipeline(this.paintMipDownsamplePipeline);
-        pass.setBindGroup(0, this.lightGlazeMipDownsampleBindGroups[mipLevel - 1]);
+        pass.setBindGroup(0, this.lightGlazeMipDownsampleBindGroups[mipLevel - 2]);
       }
       if (!needsFullBuild) {
         pass.setScissorRect(
@@ -7670,7 +7828,7 @@ export class BrushEngine {
     if (replayBatch && replayBatch.grainTextureIdentity !== expectedGrainIdentity) {
       throw new Error("Il Grain usato dalla cronologia non corrisponde alla risorsa corrente.");
     }
-    this.ensureLightGlazeResources();
+    this.ensureLightGlazeResources(settings.blendMode);
     const grainActive = this.isTexturizedGrainActive(settings);
     const m1Glaze = settings.blendMode === "m1-glaze";
 
@@ -7713,6 +7871,10 @@ export class BrushEngine {
     let presentationCacheFullRebuilds = 0;
     let presentationCachePartialUpdates = 0;
     let presentationCacheOffscreenSkips = 0;
+    let presentationCacheLod0FullRebuildTraceEnabledPasses = 0;
+    let presentationCacheLod0FullRebuildTraceEnabledCpuEncodingMs = 0;
+    let presentationCacheLod0FullRebuildTraceDisabledPasses = 0;
+    let presentationCacheLod0FullRebuildTraceDisabledCpuEncodingMs = 0;
     let presentationCacheUpdatedPixels = 0;
     let legacyDisplayShaderPixels = 0;
     let presentationCopiedPixels = 0;
@@ -7939,6 +8101,14 @@ export class BrushEngine {
 
         if (presentationDirtyRect) {
           this.writeDisplayUniforms(displaySelectedMipLevel);
+          if (rasterStrokeActive) {
+            this.rasterStrokeRenderer!.updateDisplayParameters(
+              "light-glaze",
+              this.rasterStrokeStyle,
+            );
+          }
+          const lod0FullRebuildCpuEncodingStart = requiresFullRebuild
+            && displaySelectedMipLevel === 0 ? performance.now() : 0;
           const displayPass = encoder.beginRenderPass({
             label: requiresFullRebuild
               ? "Rebuild presentation cache with live Light Glaze"
@@ -7954,15 +8124,21 @@ export class BrushEngine {
           });
           displayPass.setPipeline(
             rasterStrokeActive
-              ? this.displayPipeline
+              ? this.rasterStrokeDisplayPipeline
               : session.hasContent ? this.lightGlazeDisplayPipeline : this.displayPipeline,
           );
-          displayPass.setBindGroup(
-            0,
-            rasterStrokeActive
-              ? this.rasterStrokeDisplayBindGroup!
-              : session.hasContent ? this.lightGlazeDisplayBindGroup! : this.displayBindGroup,
-          );
+          if (rasterStrokeActive) {
+            displayPass.setBindGroup(0, this.rasterStrokeDisplayScreenBindGroup);
+            displayPass.setBindGroup(
+              1,
+              this.rasterStrokeDisplayBindGroups.get("light-glaze")!,
+            );
+          } else {
+            displayPass.setBindGroup(
+              0,
+              session.hasContent ? this.lightGlazeDisplayBindGroup! : this.displayBindGroup,
+            );
+          }
           if (!requiresFullRebuild) {
             displayPass.setScissorRect(
               presentationDirtyRect.x,
@@ -7974,6 +8150,16 @@ export class BrushEngine {
           displayPass.draw(3, 1, 0, 0);
           displayPass.end();
           presentationCacheWasUpdated = true;
+          if (lod0FullRebuildCpuEncodingStart > 0) {
+            const elapsed = performance.now() - lod0FullRebuildCpuEncodingStart;
+            if (rasterStrokeActive) {
+              presentationCacheLod0FullRebuildTraceEnabledPasses += 1;
+              presentationCacheLod0FullRebuildTraceEnabledCpuEncodingMs += elapsed;
+            } else {
+              presentationCacheLod0FullRebuildTraceDisabledPasses += 1;
+              presentationCacheLod0FullRebuildTraceDisabledCpuEncodingMs += elapsed;
+            }
+          }
           presentationCacheUpdatedPixels = presentationDirtyRect.width * presentationDirtyRect.height;
           if (requiresFullRebuild) {
             presentationCacheFullRebuilds = 1;
@@ -8075,6 +8261,14 @@ export class BrushEngine {
             : null;
         if (presentationDirtyRect) {
           this.writeDisplayUniforms(displaySelectedMipLevel);
+          if (rasterStrokeActive) {
+            this.rasterStrokeRenderer!.updateDisplayParameters(
+              "permanent",
+              this.rasterStrokeStyle,
+            );
+          }
+          const lod0FullRebuildCpuEncodingStart = requiresFullRebuild
+            && displaySelectedMipLevel === 0 ? performance.now() : 0;
           const displayPass = encoder.beginRenderPass({
             label: requiresFullRebuild
               ? "Rebuild canonical presentation cache after Light Glaze commit"
@@ -8088,11 +8282,18 @@ export class BrushEngine {
               },
             ],
           });
-          displayPass.setPipeline(this.displayPipeline);
-          displayPass.setBindGroup(
-            0,
-            rasterStrokeActive ? this.rasterStrokeDisplayBindGroup! : this.displayBindGroup,
+          displayPass.setPipeline(
+            rasterStrokeActive ? this.rasterStrokeDisplayPipeline : this.displayPipeline,
           );
+          if (rasterStrokeActive) {
+            displayPass.setBindGroup(0, this.rasterStrokeDisplayScreenBindGroup);
+            displayPass.setBindGroup(
+              1,
+              this.rasterStrokeDisplayBindGroups.get("permanent")!,
+            );
+          } else {
+            displayPass.setBindGroup(0, this.displayBindGroup);
+          }
           if (!requiresFullRebuild) {
             displayPass.setScissorRect(
               presentationDirtyRect.x,
@@ -8104,6 +8305,16 @@ export class BrushEngine {
           displayPass.draw(3, 1, 0, 0);
           displayPass.end();
           presentationCacheWasUpdated = true;
+          if (lod0FullRebuildCpuEncodingStart > 0) {
+            const elapsed = performance.now() - lod0FullRebuildCpuEncodingStart;
+            if (rasterStrokeActive) {
+              presentationCacheLod0FullRebuildTraceEnabledPasses += 1;
+              presentationCacheLod0FullRebuildTraceEnabledCpuEncodingMs += elapsed;
+            } else {
+              presentationCacheLod0FullRebuildTraceDisabledPasses += 1;
+              presentationCacheLod0FullRebuildTraceDisabledCpuEncodingMs += elapsed;
+            }
+          }
           presentationCacheUpdatedPixels = presentationDirtyRect.width * presentationDirtyRect.height;
           if (requiresFullRebuild) {
             presentationCacheFullRebuilds = 1;
@@ -8161,6 +8372,10 @@ export class BrushEngine {
       presentationCacheFullRebuilds,
       presentationCachePartialUpdates,
       presentationCacheOffscreenSkips,
+      presentationCacheLod0FullRebuildTraceEnabledPasses,
+      presentationCacheLod0FullRebuildTraceEnabledCpuEncodingMs,
+      presentationCacheLod0FullRebuildTraceDisabledPasses,
+      presentationCacheLod0FullRebuildTraceDisabledCpuEncodingMs,
       presentationCacheUpdatedPixels,
       legacyDisplayShaderPixels,
       presentationCopiedPixels,
@@ -8299,6 +8514,10 @@ export class BrushEngine {
     let presentationCacheFullRebuilds = 0;
     let presentationCachePartialUpdates = 0;
     let presentationCacheOffscreenSkips = 0;
+    let presentationCacheLod0FullRebuildTraceEnabledPasses = 0;
+    let presentationCacheLod0FullRebuildTraceEnabledCpuEncodingMs = 0;
+    let presentationCacheLod0FullRebuildTraceDisabledPasses = 0;
+    let presentationCacheLod0FullRebuildTraceDisabledCpuEncodingMs = 0;
     let presentationCacheUpdatedPixels = 0;
     let legacyDisplayShaderPixels = 0;
     let presentationCopiedPixels = 0;
@@ -8535,6 +8754,14 @@ export class BrushEngine {
 
       if (presentationDirtyRect) {
         this.writeDisplayUniforms(displaySelectedMipLevel);
+        if (rasterStrokeActive) {
+          this.rasterStrokeRenderer!.updateDisplayParameters(
+            thicknessTailFrame ? "thickness-tail" : "permanent",
+            this.rasterStrokeStyle,
+          );
+        }
+        const lod0FullRebuildCpuEncodingStart = requiresFullRebuild
+          && displaySelectedMipLevel === 0 ? performance.now() : 0;
         const displayPass = encoder.beginRenderPass({
           label: requiresFullRebuild
             ? "Rebuild persistent presentation cache"
@@ -8550,15 +8777,23 @@ export class BrushEngine {
         });
         displayPass.setPipeline(
           rasterStrokeActive
-            ? this.displayPipeline
+            ? this.rasterStrokeDisplayPipeline
             : thicknessTailFrame ? this.thicknessTailDisplayPipeline : this.displayPipeline,
         );
-        displayPass.setBindGroup(
-          0,
-          rasterStrokeActive
-            ? this.rasterStrokeDisplayBindGroup!
-            : thicknessTailFrame ? this.thicknessTailDisplayBindGroup! : this.displayBindGroup,
-        );
+        if (rasterStrokeActive) {
+          displayPass.setBindGroup(0, this.rasterStrokeDisplayScreenBindGroup);
+          displayPass.setBindGroup(
+            1,
+            this.rasterStrokeDisplayBindGroups.get(
+              thicknessTailFrame ? "thickness-tail" : "permanent",
+            )!,
+          );
+        } else {
+          displayPass.setBindGroup(
+            0,
+            thicknessTailFrame ? this.thicknessTailDisplayBindGroup! : this.displayBindGroup,
+          );
+        }
         if (!requiresFullRebuild) {
           displayPass.setScissorRect(
             presentationDirtyRect.x,
@@ -8571,6 +8806,16 @@ export class BrushEngine {
         displayPass.end();
 
         presentationCacheWasUpdated = true;
+        if (lod0FullRebuildCpuEncodingStart > 0) {
+          const elapsed = performance.now() - lod0FullRebuildCpuEncodingStart;
+          if (rasterStrokeActive) {
+            presentationCacheLod0FullRebuildTraceEnabledPasses += 1;
+            presentationCacheLod0FullRebuildTraceEnabledCpuEncodingMs += elapsed;
+          } else {
+            presentationCacheLod0FullRebuildTraceDisabledPasses += 1;
+            presentationCacheLod0FullRebuildTraceDisabledCpuEncodingMs += elapsed;
+          }
+        }
         presentationCacheUpdatedPixels = presentationDirtyRect.width * presentationDirtyRect.height;
         if (requiresFullRebuild) {
           presentationCacheFullRebuilds = 1;
@@ -8618,6 +8863,10 @@ export class BrushEngine {
       presentationCacheFullRebuilds,
       presentationCachePartialUpdates,
       presentationCacheOffscreenSkips,
+      presentationCacheLod0FullRebuildTraceEnabledPasses,
+      presentationCacheLod0FullRebuildTraceEnabledCpuEncodingMs,
+      presentationCacheLod0FullRebuildTraceDisabledPasses,
+      presentationCacheLod0FullRebuildTraceDisabledCpuEncodingMs,
       presentationCacheUpdatedPixels,
       legacyDisplayShaderPixels,
       presentationCopiedPixels,
@@ -8817,6 +9066,14 @@ export class BrushEngine {
     profile.presentationCacheFullRebuilds += timing.presentationCacheFullRebuilds;
     profile.presentationCachePartialUpdates += timing.presentationCachePartialUpdates;
     profile.presentationCacheOffscreenSkips += timing.presentationCacheOffscreenSkips;
+    profile.presentationCacheLod0FullRebuildTraceEnabledPasses +=
+      timing.presentationCacheLod0FullRebuildTraceEnabledPasses;
+    profile.presentationCacheLod0FullRebuildTraceEnabledCpuEncodingMs +=
+      timing.presentationCacheLod0FullRebuildTraceEnabledCpuEncodingMs;
+    profile.presentationCacheLod0FullRebuildTraceDisabledPasses +=
+      timing.presentationCacheLod0FullRebuildTraceDisabledPasses;
+    profile.presentationCacheLod0FullRebuildTraceDisabledCpuEncodingMs +=
+      timing.presentationCacheLod0FullRebuildTraceDisabledCpuEncodingMs;
     profile.presentationCacheUpdatedPixels += timing.presentationCacheUpdatedPixels;
     profile.legacyDisplayShaderPixels += timing.legacyDisplayShaderPixels;
     profile.presentationCopiedPixels += timing.presentationCopiedPixels;

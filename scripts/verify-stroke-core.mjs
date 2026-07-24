@@ -364,10 +364,23 @@ const goldenMipBaseline = JSON.parse(readFileSync(
 ));
 assert.match(
   rendererSource,
-  /raster-stroke-webgpu-v4-packed-r8-coverage-width-tiered-scratch/,
+  /raster-stroke-webgpu-v5-direct-lod0-coarse-styled-mips-packed-r8-coverage/,
 );
 assert.match(rendererSource, /persistent alpha-threshold bit mask/);
 assert.match(rendererSource, /persistent packed R8 coverage/);
+assert.match(rendererSource, /direct-lod0-plus-derived-mips-1-through-12/);
+assert.match(rendererSource, /fn directStyledSample/);
+assert.match(rendererSource, /native-unorm-round-even/);
+assert.match(
+  rendererSource,
+  /round\(clamp\(value, vec4<f32>\(0\.0\), vec4<f32>\(1\.0\)\) \* 255\.0\) \/ 255\.0/,
+);
+assert.match(rendererSource, /fn storedM1Coverage/);
+assert.match(rendererSource, /pack2x16float\(vec2<f32>\(coverage, 0\.0\)\)/);
+assert.match(rendererSource, /Traccia styled derived mip 1\+/);
+assert.match(engineSource, /rasterStrokeDisplayPipeline/);
+assert.match(engineSource, /presentationCacheLod0FullRebuildTraceEnabledCpuEncodingMs/);
+assert.match(engineSource, /presentationCacheLod0FullRebuildTraceDisabledCpuEncodingMs/);
 assert.match(rendererSource, /threshold changes or existing coverage overlap/);
 assert.doesNotMatch(rendererSource, /distanceBuffer/);
 assert.match(rendererSource, /array<atomic<u32>>/);
@@ -383,9 +396,21 @@ assert.match(rendererSource, /parameters\.scratchExtent/);
 assert.match(rendererSource, /resizeScratch\(requestedExtent: number\)/);
 assert.match(rendererSource, /readbackEnabled\?: boolean/);
 assert.match(rendererSource, /async readStyledPixels\(/);
+assert.match(rendererSource, /async readChangeStateFlags\(/);
+assert.match(rendererSource, /updateDisplayParameters\(/);
+assert.match(rendererSource, /displayParameterBuffers: Record<SourceModeCode, GPUBuffer>/);
 assert.match(rendererSource, /GPUTextureUsage\.COPY_SRC/);
 assert.match(goldenSource, /opaque-interior-paint-no-new-edge/);
 assert.match(goldenSource, /threshold-island-new-edge/);
+assert.match(goldenSource, /gate-deep-interior-skips-rebuild/);
+assert.match(goldenSource, /gate-subthreshold-alpha-near-outer-coverage/);
+assert.match(goldenSource, /light-glaze-source-over-opacity-0\.43/);
+assert.match(goldenSource, /light-glaze-m1-r8-max-coverage-opacity-0\.37/);
+assert.match(goldenSource, /thickness-tail-source-over/);
+assert.match(goldenSource, /diagnosticsMatch/);
+assert.match(goldenSource, /differingBytes/);
+assert.match(goldenSource, /maxByteDelta/);
+assert.match(goldenSource, /firstDifference/);
 assert.match(goldenSource, /combinedSha256/);
 assert.equal(
   goldenBaseline.combinedSha256,
@@ -428,9 +453,13 @@ assert.match(mainSource, /gpuMemoryDelta\.textContent/);
 assert.match(htmlSource, /id="gpuMemoryMonitor"/);
 assert.match(stylesSource, /\.gpu-memory-panel/);
 
-const traceControlBytes = 2_048 * 256 + 4 + 2_048 * 12 + 4;
+const traceControlBytes = 2_048 * 256 + 80 * 3 + 4 + 2_048 * 12 + 4;
+let traceStyledPixels = 0;
+for (let mipLevel = 1; mipLevel < 13; mipLevel += 1) {
+  traceStyledPixels += Math.max(1, 4_096 >> mipLevel) ** 2;
+}
 const tracePersistentRgba8MiB = (
-  (4_096 * 4_096 * 4 / 3) * 4
+  traceStyledPixels * 4
   + Math.ceil(4_096 * 4_096 / 4) * 4
   + Math.ceil(4_096 / 32) * 4_096 * 4
   + traceControlBytes
@@ -439,7 +468,7 @@ const traceCompactRgba8MiB = tracePersistentRgba8MiB
   + RASTER_STROKE_COMPACT_SCRATCH_EXTENT ** 2 * 8 * 2 / (1024 * 1024);
 const traceFullRgba8MiB = tracePersistentRgba8MiB
   + RASTER_STROKE_FULL_SCRATCH_EXTENT ** 2 * 8 * 2 / (1024 * 1024);
-assert.equal(Number(traceCompactRgba8MiB.toFixed(1)), 119.9);
-assert.equal(Number(traceFullRgba8MiB.toFixed(1)), 167.9);
+assert.equal(Number(traceCompactRgba8MiB.toFixed(1)), 55.9);
+assert.equal(Number(traceFullRgba8MiB.toFixed(1)), 103.9);
 
 console.log("Raster Stroke core verification passed.");

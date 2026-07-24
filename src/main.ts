@@ -170,6 +170,7 @@ interface BenchmarkRun {
     rasterStrokeCoverageMemoryMiB: number;
     rasterStrokeScratchMemoryMiB: number;
     rasterStrokeCoverageStrategy: string;
+    rasterStrokeStyledStorageStrategy: string;
     rasterStrokeDistanceStorageStrategy: string;
     rasterStrokeMutationGateStrategy: string;
     rasterStrokeScratchStrategy: string;
@@ -231,6 +232,7 @@ interface BenchmarkRun {
     lightGlazeAdaptivePreviewStrategy:
       StrokePerformanceProfile["lightGlazeAdaptivePreviewStrategy"];
     lightGlazeStorageAllocated: boolean;
+    lightGlazeStorageMode: StrokePerformanceProfile["lightGlazeStorageMode"];
     lightGlazeAdditionalMemoryMiB: number;
     adaptivePreviewStrategy: StrokePerformanceProfile["adaptivePreviewStrategy"];
     adaptivePreviewTriggerStrategy: StrokePerformanceProfile["adaptivePreviewTriggerStrategy"];
@@ -261,7 +263,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 34;
+    performanceTelemetryRevision: 38;
   };
 }
 
@@ -571,7 +573,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 34,
+    performanceTelemetryRevision: 38,
     ...engineEnvironment,
   };
 }
@@ -1438,6 +1440,8 @@ if (import.meta.env.DEV) {
         (report.baselineMatches ? "Golden identico" : "Golden diverso")
         + " · v" + report.version + " · " + report.combinedSha256
         + " · " + report.cases.length + " casi"
+        + " · diagnostica " + (report.diagnosticsMatch ? "OK" : "fallita")
+        + " (" + report.diagnostics.length + ")"
         + (report.baselineMatches
           ? ""
           : " · differenze: " + report.baselineMismatches.join(", "))

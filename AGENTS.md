@@ -110,11 +110,16 @@ Paint:
   Android esteso non basta su ARM Valhall (`#59/#60`: resta a secondi di
   ritardo) — su quel dispositivo serve altro, non più spacing.
 - Opacità per-stamp (moltiplica l'alpha già presente nella uniform, ABI
-  invariata) + **Light Glaze**: accumulatore per-stroke lazy `4096²` con mip
-  compositati `compose→filter`, commit unico al lift con cap Opacità
-  sull'intera pennellata. **M1 Glaze non accumulativo**: coverage con blending
-  `MAX`, tinta unica campionata a inizio tratto, `1×`. Non unire le due
-  strategie. `#70–#73`: nessun lag end-to-end, accettate.
+  invariata) + **Light Glaze**: accumulatore RGBA per-stroke lazy `4096²`, mip
+  finali compositati `compose→filter` separati e commit unico al lift con cap
+  Opacità sull'intera pennellata. Costa ~`85,3 MiB` RGBA8 o ~`170,7 MiB`
+  RGBA16F. **M1 Glaze non accumulativo**: accumulatore coverage R8 a un solo
+  mip (`16 MiB`) con blending `MAX`, tinta unica campionata a inizio tratto e
+  gli stessi mip finali compositati; totale ~`37,3 MiB` RGBA8 o ~`58,7 MiB`
+  RGBA16F. Le risorse sono lazy e il cambio modo distrugge il formato precedente,
+  quindi Light e M1 non sono residenti insieme. Non unire le due strategie.
+  `#70–#73` descrivono la semantica originale accettata; lo storage R8 corrente
+  resta sperimentale finché non passa Golden GPU e prova percettiva.
 - Grain M1 nativo: asset originale `graincottonfleece.PNG` RGBA `2500×2500`
   (SHA-256 `9AA1CE07…`), luma `0.299/0.587/0.114`, 12 mip NPOT generati in
   WGSL allo startup (~`31,8 MiB`). Fixed = UV layer; Moving = UV stamp (Scale
@@ -137,16 +142,23 @@ Paint:
   `0,5`, JFA per estensione con passo `1` extra, tie deterministico `y→x`,
   distanza Q10.6 half-up (cap `1023 px`), correzione subpixel dall'alpha,
   coverage quantizzata R8 e compositing premoltiplicato M1.
-- Renderer `raster-stroke-webgpu-v4-packed-r8-coverage-width-tiered-scratch-dual-jfa-q10.6`:
+- Renderer sperimentale corrente
+  `raster-stroke-webgpu-v5-direct-lod0-coarse-styled-mips-packed-r8-coverage-native-unorm-round-even`:
   seed, JFA, resolve, compositing e piramide mip restano sulla GPU. Non esiste
-  più un campo distanza residente: la distanza Q10.6 vive nei registri del
-  resolve e viene convertita subito in coverage R8, packed quattro pixel per
-  `u32` in un buffer persistente da `16 MiB`.
+  un campo distanza residente: la distanza Q10.6 vive nei registri del resolve
+  e viene convertita subito in coverage R8, packed quattro pixel per `u32` in
+  un buffer persistente da `16 MiB`.
+- Il risultato styled full-resolution non è più residente: a LOD `0` il
+  fragment shader ricostruisce e quantizza direttamente i quattro texel da
+  layer + coverage; restano materializzati solo i mip logici `1–12`, circa
+  `21,3 MiB` RGBA8 o `42,7 MiB` RGBA16F. Il mip `1` viene sempre mantenuto dal
+  compose GPU e i livelli superiori derivano da quello, così uno zoom-out non
+  dipende da un ricalcolo tardivo. Il renderer golden temporaneo conserva un
+  mip `0` separato solo per readback e non viene allocato nell'uso normale.
 - Lo scratch dual-seed resta adattivo alla width: `1024²` (`16 MiB`) fino a
-  `128 px`, `2048²` (`64 MiB`) da `129` a `512 px`. La texture styled
-  completa costa ~`85,3 MiB` in RGBA8 o ~`170,7 MiB` in RGBA16F; mask alpha
-  e controllo ~`2,52 MiB`. Totale aggiuntivo a width `≤128`: ~`119,9 MiB`
-  RGBA8 o ~`205,2 MiB` RGBA16F; oltre `128`: ~`167,9 MiB` o ~`253,2 MiB`.
+  `128 px`, `2048²` (`64 MiB`) da `129` a `512 px`; mask alpha e controllo
+  costano ~`2,52 MiB`. Totale aggiuntivo v5 a width `≤128`: ~`55,9 MiB`
+  RGBA8 o ~`77,2 MiB` RGBA16F; oltre `128`: ~`103,9 MiB` o ~`125,2 MiB`.
   Tutto resta lazy e viene liberato alla disabilitazione.
 - La coverage è specifica di width/position: quei due cambi stile ricostruiscono
   l'area del contenuto (inclusa l'estensione del vecchio stile); il solo colore
@@ -156,42 +168,45 @@ Paint:
   seed/JFA/resolve/compose halo vengono azzerati; resta solo scan + compose della
   dirty region. Se cambia la soglia o si tocca il bordo, ricostruisce l'area
   espansa. Nessun readback CPU.
-- Integrata con Paint Normal/Additive, Light Glaze live + commit, M1 Glaze,
-  tail predittivo dello spessore, Blend dry e Undo/Redo. Verifica funzionale
-  desktop NVIDIA Ampere: inizializzazione WGSL, tratto visibile, cambi stile,
-  Undo/Redo e tutti i percorsi citati senza errori console/GPU.
-- Monitor memoria GPU rev `34`: pill apribile/chiudibile in basso a destra,
+- L'integrazione v4 con Paint Normal/Additive, Light Glaze live + commit, M1
+  Glaze, tail predittivo dello spessore, Blend dry e Undo/Redo è stata verificata
+  su NVIDIA Ampere. La v5 riusa gli stessi ingressi ma resta da approvare con il
+  golden mip e la prova percettiva dell'utente.
+- Monitor memoria GPU rev `35`: pill apribile/chiudibile in basso a destra,
   totale aggiornato ogni `500 ms`, dettaglio per risorsa e badge temporaneo per
   ogni variazione di almeno `0,05 MiB`. Conta le dimensioni logiche delle risorse
   WebGPU create dal motore; non misura residency fisica e non include swapchain,
-  pipeline/driver, RAM, cronologia o memoria del browser.
+  pipeline/driver, RAM, cronologia o memoria del browser. Il report include ora
+  anche la strategia di storage styled v5.
 - Non esiste ancora una run canonica di prestazioni né la prova iPhone: non
   dichiarare guadagni di velocità né considerare conclusa la Traccia. Le run rev
-  `34` riportano stile, build, strategie coverage/distanza/gate, extent scratch
-  e memoria corretta; non vanno aggregate con rev `33` o precedenti.
+  `35` riportano stile, build, strategie coverage/styled/distanza/gate, extent
+  scratch e memoria corretta; non vanno aggregate con rev `34` o precedenti.
 - Fix zoom-out del 23 luglio 2026, da segnalazione utente senza riproduzione
-  visiva: una mutazione del mip styled `0` lasciava erroneamente marcati validi
-  i mip più piccoli non aggiornati nel frame; il successivo zoom-out poteva
-  quindi mostrare pixel precedenti finché un'altra mutazione li aggiornava. Ora
-  `rasterStrokeMipValidThroughLevel` retrocede al mip effettivamente aggiornato
-  e il primo livello mancante viene ricostruito prima della cache di
-  presentazione. Verifiche: `npm run stroke:verify` e `npx tsc --noEmit`; prova
-  percettiva lasciata all'utente come richiesto.
+  visiva: nella v4 una mutazione del mip styled `0` lasciava erroneamente validi
+  mip più piccoli non aggiornati nel frame. La v5 mantiene sempre il mip logico
+  `1`, retrocede la validità a quel livello dopo ogni mutazione e ricostruisce i
+  livelli mancanti prima della cache di presentazione. Verifiche statiche
+  passate; prova percettiva lasciata all'utente come richiesto.
 - Scratch adattivo verificato localmente il 24 luglio 2026 su NVIDIA Ampere:
-  transizioni `14→512→14 px` riportano `16→64→16 MiB`, totali conteggiati
-  `264,9→312,9→264,9 MiB`, shader e bind group senza errori console/GPU. Nessun
+  transizioni `14→512→14 px` riportano `16→64→16 MiB`; i totali allora misurati
+  (`264,9→312,9→264,9 MiB`) precedono coverage R8 e v5. Nessun
   tratto è stato disegnato automaticamente; pacing e risultato percettivo sono
   lasciati alla prova utente prima di promuovere il tier compatto. Verifiche:
   `npm run stroke:verify`, `grain:verify`, `blend:verify`, `thickness:verify`,
   TypeScript e build Vite.
 - Harness golden pixel Traccia v1 disponibile solo in sviluppo: usa un renderer
-  isolato `256×192`, sette casi deterministici e readback RGBA8 senza padding,
-  quindi produce SHA-256 per caso e combinato. Include stile outside/inside/
-  center, width `129`, una mutazione dentro una forma già sopra soglia (nessun
-  nuovo bordo) e una mutazione che crea davvero un bordo. Non tocca il layer
-  dell'utente; il flag `COPY_SRC` è abilitato solo sul renderer temporaneo.
-  Il report v3 è stato catturato prima della sostituzione del distance field e
-  costituisce la baseline vincolante per l'architettura coverage R8.
+  isolato `256×192`, sette casi canonici e readback RGBA8 senza padding, quindi
+  produce SHA-256 per caso e combinato. I sette hash e i 63 hash mip della
+  baseline sono vincolanti. Una diagnostica separata rev `3`, esclusa
+  dall'identità canonica,
+  aggiunge cinque prove: skip reale del gate in un interno profondo (flag `0`),
+  calo alpha sotto soglia vicino alla coverage esterna (flag `2`) confrontato
+  con rebuild forzato, Light Glaze source-over a opacità `0,43`, M1
+  max-coverage letto da una vera texture `r8unorm` a `0,37` e tail spessore.
+  Gli ultimi tre confrontano il mip `1` diretto v5 con il downsample GPU del
+  mip `0` materializzato. Non tocca il layer dell'utente;
+  `COPY_SRC` e la texture mip `0` esistono solo nel renderer temporaneo.
 - Baseline golden catturata dall'utente il 24 luglio 2026:
   fixture `bcbaa02c…`, combinato `8d5a75a6…`, sette hash conservati in
   `goldens/raster-stroke-rgba8-v1.json`. La ripetizione center-31 prima/dopo
@@ -204,11 +219,52 @@ Paint:
   `baselineMatches: true` e nessun mismatch. Risparmio logico deterministico
   `16 MiB`: sul desktop corrente width 14 `264,9→248,9 MiB`; width 512
   `312,9→296,9 MiB`.
-- L'utente ha inoltre approvato il test percettivo richiesto: disegno dentro una
-  forma chiusa, cambi stile `14→129→31`, zoom e Undo/Redo. Verifiche automatiche:
-  `npm run stroke:verify`, `grain:verify`, `blend:verify`, `thickness:verify`,
-  TypeScript e build Vite. Nessuna dichiarazione prestazionale: pacing e iPhone
-  richiedono ancora le rispettive run canoniche.
+- L'utente ha inoltre approvato il test percettivo richiesto sulla v4: disegno
+  dentro una forma chiusa, cambi stile `14→129→31`, zoom e Undo/Redo. Verifiche
+  automatiche: `npm run stroke:verify`, `grain:verify`, `blend:verify`,
+  `thickness:verify`, TypeScript e build Vite. Nessuna dichiarazione
+  prestazionale: pacing e iPhone richiedono ancora le rispettive run canoniche.
+- Riduzione styled v5 implementata il 24 luglio 2026 come singolo esperimento:
+  rimuove esattamente `64 MiB` RGBA8 dal runtime. Sul desktop corrente i totali
+  attesi sono width 14 `248,9→184,9 MiB` e width 512 `296,9→232,9 MiB`.
+- Hardening successivo alla revisione esterna: i parametri display dei modi
+  permanent/Light Glaze/tail vivono in tre uniform buffer distinti e vengono
+  riscritti esplicitamente prima di ogni pass display. Due modi nello stesso
+  submit non possono più osservare l'ultimo `sourceMode` scritto; costo netto
+  rispetto al candidato precedente: `160 byte`.
+- Telemetria rev `36`: per i rebuild completi della cache di presentazione a
+  LOD `0` separa numero di pass e millisecondi di sola codifica CPU con Traccia
+  attiva/disattiva. Non è tempo GPU e su Safari la risoluzione ~`1 ms` impone
+  di confrontare aggregati, non singoli frame.
+- Esperimento isolato M1 R8 del 24 luglio 2026: il mip autorevole della
+  pennellata passa da RGBA a `r8unorm`; una seconda texture conserva solo i mip
+  finali RGBA logici `1–12`, necessari per mantenere identici i pixel durante
+  lo zoom. Per i layer RGBA16F lo shader riapplica l'arrotondamento half-float
+  che prima avveniva scrivendo l'accumulatore RGBA, preservando gli stessi
+  input di compositing. Risparmio deterministico rispetto allo storage Light/RGBA:
+  `48,0 MiB` in RGBA8 e `112,0 MiB` in RGBA16F. Light Glaze tradizionale resta
+  invariato. La telemetria riporta il modo attivo
+  (`r8-coverage`/`rgba-stroke`) e la relativa memoria.
+- Telemetria rev `37`: firma il nuovo modo di storage M1 e la sua contabilità.
+  La diagnostica Golden rev `2` usa una vera sorgente R8 per il caso M1.
+- Golden GPU v5 pre-fix eseguito dall'utente il 24 luglio 2026: tutti i sette
+  mip `0` e il combinato canonico `8d5a75a6…` sono identici; entrambi i test del
+  gate passano (`0` e `2`). Il combinato mip è invece `9208e2a3…` contro
+  `f7f53472…`; `outside-129` è interamente identico, mentre i casi con valori
+  frazionari divergono nei primi mip. Falliscono anche i tre confronti
+  Light/M1/tail tra mip `1` diretto e mip `0` materializzato.
+- Candidato root cause: `pack4x8unorm` usa half-up e non riproduce ai tie la
+  conversione nativa dell'attachment RGBA8. I tre helper `quantizeLayer` usano
+  ora `round` ties-to-even; la quantizzazione coverage M1 resta volutamente
+  `pack4x8unorm` e non è stata cambiata. Nessun mip `0` residente reintrodotto,
+  nessun aumento di memoria.
+- Telemetria rev `38`; diagnostica Golden rev `3`, che in caso di nuova
+  divergenza riporta byte differenti, delta massimo e primo pixel/canale.
+  Verifiche locali: `stroke:verify`, `grain:verify`, `blend:verify`,
+  `thickness:verify`, TypeScript e build Vite tutte passate. Non promuovere né
+  committare gli esperimenti finché l'utente non restituisce il golden
+  (`8d5a75a6…` + `f7f53472…`, zero mismatch, `diagnosticsMatch: true`) e
+  approva Light Glaze, M1, disegno/zoom/Undo-Redo sulla v5.
 
 Blend (tool separato, vedi sezione dedicata più sotto).
 
@@ -262,8 +318,11 @@ Grain/M1 matrice · `24` Grain Invert · `25` dinamica spessore · `26` bridge
 Canvas2D tail · `27` overlay WebGPU tail · `28` rimozione velocità ·
 `29` rimozione pressione · `30` firma Traccia raster · `31` gate alpha GPU
 Traccia · `32` monitor e contabilità memoria GPU · `33` scratch Traccia adattivo
-alla width · `34` coverage R8 packed senza distanza residente (revisione
-canonica corrente del Paint).
+alla width · `34` coverage R8 packed senza distanza residente · `35` LOD 0
+diretto + soli mip styled 1–12 · `36` diagnostica gate/source-mode e costo CPU
+rebuild cache LOD 0 · `37` accumulatore M1 Glaze R8 con mip finali compositati
+separati · `38` emulazione conversione UNORM nativa + diagnostica diff mip
+(revisione sperimentale corrente del Paint).
 
 ## Strumento Blend dry (WebGPU)
 

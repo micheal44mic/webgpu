@@ -228,9 +228,9 @@ fn premultipliedPaint(input: VertexOutput, coverage: f32) -> vec4<f32> {
 
 fn quantizedCoveragePaint(input: VertexOutput, coverage: f32) -> vec4<f32> {
   let alpha = paintAlpha(input, coverage);
-  // M1 Glaze accumulates an R8 coverage mask with MAX. Repeating the exact
-  // quantized value in RGBA lets the existing temporary RGBA attachment keep
-  // its display mip chain while preserving the same coverage semantics.
+  // M1 Glaze stores only the exactly quantized red coverage channel in an
+  // r8unorm attachment. The vec4 output keeps this entry point valid for WGSL;
+  // the render target writes only its red component.
   let quantized = unpack4x8unorm(pack4x8unorm(vec4<f32>(alpha))).r;
   return vec4<f32>(quantized);
 }
@@ -848,6 +848,7 @@ struct VertexOutput {
 @group(0) @binding(2) var strokeTexture: texture_2d<f32>;
 @group(0) @binding(3) var layerSampler: sampler;
 @group(0) @binding(4) var<uniform> lightGlaze: LightGlazeUniforms;
+@group(0) @binding(5) var compositedMipTexture: texture_2d<f32>;
 
 fn srgbToLinearChannel(value: f32) -> f32 {
   if (value <= 0.04045) {
@@ -882,17 +883,28 @@ fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
 
 fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
   if (lightGlaze.formatCode == 0u) {
-    return unpack4x8unorm(pack4x8unorm(value));
+    return round(clamp(value, vec4<f32>(0.0), vec4<f32>(1.0)) * 255.0) / 255.0;
   }
   let redGreen = unpack2x16float(pack2x16float(value.rg));
   let blueAlpha = unpack2x16float(pack2x16float(value.ba));
   return vec4<f32>(redGreen, blueAlpha);
 }
 
+fn storedM1Coverage(value: f32) -> f32 {
+  let coverage = clamp(value, 0.0, 1.0);
+  // The previous RGBA16F accumulator stored the already R8-quantized coverage
+  // as half-float. Reapply that storage conversion after loading the R8 mask
+  // so both layer formats retain their exact previous compositing inputs.
+  if (lightGlaze.formatCode == 1u) {
+    return unpack2x16float(pack2x16float(vec2<f32>(coverage, 0.0))).x;
+  }
+  return coverage;
+}
+
 fn resolvedStrokePaint(accumulatedStroke: vec4<f32>) -> vec4<f32> {
   let opacity = clamp(lightGlaze.opacity, 0.0, 1.0);
   if (lightGlaze.accumulationMode == 1u) {
-    let coverage = clamp(accumulatedStroke.r, 0.0, 1.0);
+    let coverage = storedM1Coverage(accumulatedStroke.r);
     return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
   }
   return accumulatedStroke * opacity;
@@ -966,14 +978,14 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     // each neighboring layer texel first, then apply the sampler's bilinear mix.
     paint = sampleCompositedLayerLinear(uv);
   } else {
-    // Mip 1+ of strokeTexture already stores box-filtered final compositing.
+    // Mip 1+ of compositedMipTexture stores box-filtered final compositing.
     // Sampling that pyramid avoids compose(filter(base), filter(stroke)),
     // which is not equivalent to filtering the per-pixel source-over result.
     paint = textureSampleLevel(
-      strokeTexture,
+      compositedMipTexture,
       layerSampler,
       uv,
-      display.selectedMipLevel
+      display.selectedMipLevel - 1.0
     );
   }
 
@@ -1010,17 +1022,28 @@ struct VertexOutput {
 
 fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
   if (lightGlaze.formatCode == 0u) {
-    return unpack4x8unorm(pack4x8unorm(value));
+    return round(clamp(value, vec4<f32>(0.0), vec4<f32>(1.0)) * 255.0) / 255.0;
   }
   let redGreen = unpack2x16float(pack2x16float(value.rg));
   let blueAlpha = unpack2x16float(pack2x16float(value.ba));
   return vec4<f32>(redGreen, blueAlpha);
 }
 
+fn storedM1Coverage(value: f32) -> f32 {
+  let coverage = clamp(value, 0.0, 1.0);
+  // The previous RGBA16F accumulator stored the already R8-quantized coverage
+  // as half-float. Reapply that storage conversion after loading the R8 mask
+  // so both layer formats retain their exact previous compositing inputs.
+  if (lightGlaze.formatCode == 1u) {
+    return unpack2x16float(pack2x16float(vec2<f32>(coverage, 0.0))).x;
+  }
+  return coverage;
+}
+
 fn resolvedStrokePaint(accumulatedStroke: vec4<f32>) -> vec4<f32> {
   let opacity = clamp(lightGlaze.opacity, 0.0, 1.0);
   if (lightGlaze.accumulationMode == 1u) {
-    let coverage = clamp(accumulatedStroke.r, 0.0, 1.0);
+    let coverage = storedM1Coverage(accumulatedStroke.r);
     return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
   }
   return accumulatedStroke * opacity;
@@ -1078,6 +1101,14 @@ struct VertexOutput {
 @group(0) @binding(0) var strokeTexture: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> lightGlaze: LightGlazeUniforms;
 
+fn storedM1Coverage(value: f32) -> f32 {
+  let coverage = clamp(value, 0.0, 1.0);
+  if (lightGlaze.formatCode == 1u) {
+    return unpack2x16float(pack2x16float(vec2<f32>(coverage, 0.0))).x;
+  }
+  return coverage;
+}
+
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   let positions = array<vec2<f32>, 3>(
@@ -1096,7 +1127,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   let source = textureLoad(strokeTexture, vec2<i32>(fragmentPosition.xy), 0);
   let opacity = clamp(lightGlaze.opacity, 0.0, 1.0);
   if (lightGlaze.accumulationMode == 1u) {
-    let coverage = clamp(source.r, 0.0, 1.0);
+    let coverage = storedM1Coverage(source.r);
     return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
   }
   return source * opacity;
