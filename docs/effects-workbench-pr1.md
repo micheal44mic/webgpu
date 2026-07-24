@@ -96,6 +96,35 @@ Il combinato canonico mip 0 resta
 `8d5a75a6abb9f47cdf4a794d560b5795aa4b4c85520db2dd1466833157f6dcb0`.
 Nessun golden è stato modificato o rigenerato.
 
+### Limite del caso same-view e caso cross-texture
+
+Il caso same-view da solo **non è sufficiente**: verifica che il retarget non
+corrompa lo stato, ma un `retarget()` completamente inerte lo supererebbe
+ugualmente, perché entrambe le esecuzioni restano legate alla stessa texture.
+
+La diagnostica rev 5 aggiunge quindi `stroke-bevel-cross-texture-retarget`:
+ricollega il working set a una **seconda texture con contenuto diverso**,
+ricostruisce, e confronta il risultato con una coppia Traccia/Smusso creata
+nativamente su quella texture. I due percorsi eseguono lo stesso identico stack
+di encode (`encodeRetargetStyleStack`, parametrizzato).
+
+- prima del retarget, mip 0: `d1630de4…`
+- dopo il retarget verso la seconda sorgente, mip 0: `377b4d79…`
+- riferimento nativo sulla seconda sorgente, mip 0: `377b4d79…`
+- byte differenti: `0`; `sourceContentDistinct`: `true`
+
+`sourceContentDistinct` è una guardia anti-tautologia: se le due sorgenti
+producessero lo stesso stile, l'uguaglianza sarebbe soddisfatta anche da un
+retarget inerte, quindi il caso fallisce esplicitamente in quella condizione.
+
+Mutation test eseguito su GPU (Traccia/Smusso disabilitando le due chiamate in
+`EffectsWorkbench.retarget`, poi ripristinate):
+
+| Caso | Retarget funzionante | Retarget inerte |
+|---|---|---|
+| `stroke-bevel-same-view-retarget` | passa | **passa comunque** |
+| `stroke-bevel-cross-texture-retarget` | passa | **fallisce**, 148 969 byte differenti |
+
 Il ramo di partenza conserva il mismatch v5 già registrato per i mip derivati
 (`9208e2a3…` contro `f7f53472…`) e le tre diagnostiche source-mode già aperte.
 La PR non modifica quegli hash; il nuovo caso di retarget passa.

@@ -441,8 +441,23 @@ assert.match(goldenSource, /light-glaze-m1-r8-max-coverage-opacity-0\.37/);
 assert.match(goldenSource, /thickness-tail-source-over/);
 assert.match(goldenSource, /diagnosticsMatch/);
 assert.match(goldenSource, /differingBytes/);
-assert.match(goldenSource, /RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION = 4/);
+assert.match(goldenSource, /RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION = 5/);
 assert.match(goldenSource, /stroke-bevel-same-view-retarget/);
+// Il caso same-view passerebbe anche con un retarget inerte: il caso
+// cross-texture e la sua guardia anti-tautologia sono ciò che lo dimostra.
+assert.match(goldenSource, /stroke-bevel-cross-texture-retarget/);
+assert.match(goldenSource, /createRetargetSourceFixture\(\)/);
+assert.match(goldenSource, /const sourceContentDistinct = afterMip0Sha256 !== crossReferenceMip0Sha256/);
+assert.ok(
+  /passed:\s*\n\s*crossDifferingBytes === 0[\s\S]{0,240}&& sourceContentDistinct,/.test(goldenSource),
+  "Il caso cross-texture deve fallire se le due sorgenti non sono distinguibili.",
+);
+assert.ok(
+  (goldenSource.match(/await encodeRetargetStyleStack\(/g) ?? []).length >= 4,
+  "Retarget e riferimento nativo devono usare lo stesso stack di encode.",
+);
+assert.match(goldenSource, /referenceStrokeRenderer = await RasterStrokeRenderer\.create/);
+assert.match(goldenSource, /referenceWorkbench\?\.destroy\(\)/);
 assert.match(goldenSource, /maxByteDelta/);
 assert.match(goldenSource, /firstDifference/);
 assert.match(goldenSource, /combinedSha256/);

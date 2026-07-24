@@ -20,7 +20,7 @@ export const RASTER_STROKE_GOLDEN_WIDTH = 256;
 export const RASTER_STROKE_GOLDEN_HEIGHT = 192;
 export const RASTER_STROKE_GOLDEN_FORMAT = "rgba8unorm" as const;
 export const RASTER_STROKE_GOLDEN_MIP_CHAIN_VERSION = 1 as const;
-export const RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION = 4 as const;
+export const RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION = 5 as const;
 
 export interface RasterStrokeGoldenMip {
   level: number;
@@ -47,6 +47,8 @@ export interface RasterStrokeGoldenDiagnostic {
   gateFlags?: number;
   gatedMip1Sha256?: string;
   forcedMip1Sha256?: string;
+  runtimeMip0Sha256?: string;
+  referenceMip0Sha256?: string;
   runtimeMip1Sha256?: string;
   referenceMip1Sha256?: string;
   differingBytes?: number;
@@ -54,6 +56,7 @@ export interface RasterStrokeGoldenDiagnostic {
   afterMip0Sha256?: string;
   beforeMip1Sha256?: string;
   afterMip1Sha256?: string;
+  sourceContentDistinct?: boolean;
   maxByteDelta?: number;
   firstDifference?: {
     byteIndex: number;
@@ -276,6 +279,29 @@ function mutateOuterCoverageAlpha(pixels: Uint8Array): void {
   }
 }
 
+// Geometria deliberatamente diversa dalla fixture principale: anello a destra e
+// blocco in alto a sinistra. Serve al caso cross-texture, dove sorgente vecchia
+// e nuova devono produrre stili distinguibili.
+function createRetargetSourceFixture(): Uint8Array {
+  const pixels = new Uint8Array(
+    RASTER_STROKE_GOLDEN_WIDTH * RASTER_STROKE_GOLDEN_HEIGHT * 4,
+  );
+  for (let y = 0; y < RASTER_STROKE_GOLDEN_HEIGHT; y += 1) {
+    for (let x = 0; x < RASTER_STROKE_GOLDEN_WIDTH; x += 1) {
+      let alpha = 0;
+      const ringDistance = Math.hypot(x - 188.5, y - 116.5);
+      if (ringDistance > 26 && ringDistance < 52) {
+        alpha = ringDistance < 28 || ringDistance > 50 ? 128 : 246;
+      }
+      if (x >= 24 && x < 96 && y >= 20 && y < 64) {
+        alpha = Math.max(alpha, (x + y) % 3 === 0 ? 200 : 255);
+      }
+      setPremultipliedPixel(pixels, x, y, alpha, 17);
+    }
+  }
+  return pixels;
+}
+
 function createLightGlazeTransientFixture(
   accumulationMode: "source-over" | "m1-max-coverage",
 ): Uint8Array {
@@ -494,6 +520,16 @@ export async function runRasterStrokeGolden(
     format: RASTER_STROKE_GOLDEN_FORMAT,
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   });
+  const retargetSourceTexture = device.createTexture({
+    label: "Traccia golden cross-texture retarget source",
+    size: {
+      width: RASTER_STROKE_GOLDEN_WIDTH,
+      height: RASTER_STROKE_GOLDEN_HEIGHT,
+      depthOrArrayLayers: 1,
+    },
+    format: RASTER_STROKE_GOLDEN_FORMAT,
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
   const m1CoverageTexture = device.createTexture({
     label: "Traccia golden M1 R8 coverage source",
     size: {
@@ -530,6 +566,7 @@ export async function runRasterStrokeGolden(
   let renderer: RasterStrokeRenderer | null = null;
   let bevelRenderer: RasterBevelRenderer | null = null;
   let retargetWorkbench: EffectsWorkbench | null = null;
+  let referenceWorkbench: EffectsWorkbench | null = null;
   try {
     renderer = await RasterStrokeRenderer.create({
       device,
@@ -928,9 +965,16 @@ export async function runRasterStrokeGolden(
     );
     renderer.updateBevelParameters(retargetBevelStyle);
 
-    const encodeRetargetIdentityStack = async (label: string): Promise<void> => {
+    // Parametrizzato di proposito: il caso cross-texture deve eseguire
+    // ESATTAMENTE lo stesso stack sul renderer retargettato e su quello di
+    // riferimento, altrimenti il confronto non dimostrerebbe nulla.
+    const encodeRetargetStyleStack = async (
+      label: string,
+      strokeTarget: RasterStrokeRenderer,
+      bevelTarget: RasterBevelRenderer,
+    ): Promise<void> => {
       const encoder = device.createCommandEncoder({ label });
-      retargetBevelRenderer.encode({
+      bevelTarget.encode({
         encoder,
         style: retargetBevelStyle,
         sourceMode: "permanent",
@@ -938,7 +982,7 @@ export async function runRasterStrokeGolden(
         changeDetectionRect: null,
         clearHeight: true,
       });
-      renderer!.encode({
+      strokeTarget.encode({
         encoder,
         sourceMode: "permanent",
         style: CENTER_STYLE,
@@ -954,7 +998,11 @@ export async function runRasterStrokeGolden(
       await device.queue.onSubmittedWorkDone();
     };
 
-    await encodeRetargetIdentityStack("Traccia/Smusso same-view retarget baseline");
+    await encodeRetargetStyleStack(
+      "Traccia/Smusso same-view retarget baseline",
+      renderer,
+      retargetBevelRenderer,
+    );
     const beforeMip0 = await renderer.readStyledPixels(undefined, 0);
     const beforeMip1 = await renderer.readStyledPixels(undefined, 1);
     const sameTextureView = sourceTexture.createView({
@@ -964,7 +1012,11 @@ export async function runRasterStrokeGolden(
       view: sameTextureView,
       format: RASTER_STROKE_GOLDEN_FORMAT,
     });
-    await encodeRetargetIdentityStack("Traccia/Smusso same-view retarget rebuilt");
+    await encodeRetargetStyleStack(
+      "Traccia/Smusso same-view retarget rebuilt",
+      renderer,
+      retargetBevelRenderer,
+    );
     const afterMip0 = await renderer.readStyledPixels(undefined, 0);
     const afterMip1 = await renderer.readStyledPixels(undefined, 1);
     let retargetDifferingBytes = 0;
@@ -1001,6 +1053,114 @@ export async function runRasterStrokeGolden(
       afterMip1Sha256,
       differingBytes: retargetDifferingBytes,
       maxByteDelta: retargetMaxByteDelta,
+    });
+
+    // Il caso same-view non può distinguere un retarget funzionante da un
+    // no-op: entrambi lasciano ogni binding sulla texture di partenza. Solo il
+    // ricollegamento a una sorgente DIVERSA, confrontato con renderer creati
+    // nativamente su quella sorgente, dimostra che il retarget ha ricostruito
+    // ogni bind group che referenzia il layer.
+    uploadFixture(device, retargetSourceTexture, createRetargetSourceFixture());
+    retargetWorkbench.retarget({
+      view: retargetSourceTexture.createView({
+        label: "Traccia/Smusso cross-texture retarget view",
+      }),
+      format: RASTER_STROKE_GOLDEN_FORMAT,
+    });
+    await encodeRetargetStyleStack(
+      "Traccia/Smusso cross-texture retarget rebuilt",
+      renderer,
+      retargetBevelRenderer,
+    );
+    const crossRetargetedMip0 = await renderer.readStyledPixels(undefined, 0);
+    const crossRetargetedMip1 = await renderer.readStyledPixels(undefined, 1);
+
+    const referenceBevelRenderer = await RasterBevelRenderer.create({
+      device,
+      documentWidth: RASTER_STROKE_GOLDEN_WIDTH,
+      documentHeight: RASTER_STROKE_GOLDEN_HEIGHT,
+      layerView: retargetSourceTexture.createView(),
+      lightGlazeUniformBuffer,
+      thicknessTailUniformBuffer,
+    });
+    referenceWorkbench = new EffectsWorkbench({
+      view: retargetSourceTexture.createView(),
+      format: RASTER_STROKE_GOLDEN_FORMAT,
+    });
+    referenceWorkbench.attachBevelRenderer(referenceBevelRenderer);
+    const referenceStrokeRenderer = await RasterStrokeRenderer.create({
+      device,
+      documentWidth: RASTER_STROKE_GOLDEN_WIDTH,
+      documentHeight: RASTER_STROKE_GOLDEN_HEIGHT,
+      layerFormat: RASTER_STROKE_GOLDEN_FORMAT,
+      layerView: retargetSourceTexture.createView(),
+      lightGlazeUniformBuffer,
+      thicknessTailUniformBuffer,
+      scratchExtent: 512,
+      readbackEnabled: true,
+    });
+    referenceWorkbench.attachStrokeRenderer(referenceStrokeRenderer);
+    referenceBevelRenderer.updateStyleResources(retargetBevelStyle);
+    referenceStrokeRenderer.setBevelResources(
+      referenceBevelRenderer.heightView,
+      referenceBevelRenderer.glossView,
+    );
+    referenceStrokeRenderer.updateBevelParameters(retargetBevelStyle);
+    await encodeRetargetStyleStack(
+      "Traccia/Smusso cross-texture riferimento nativo",
+      referenceStrokeRenderer,
+      referenceBevelRenderer,
+    );
+    const crossReferenceMip0 = await referenceStrokeRenderer.readStyledPixels(
+      undefined,
+      0,
+    );
+    const crossReferenceMip1 = await referenceStrokeRenderer.readStyledPixels(
+      undefined,
+      1,
+    );
+
+    let crossDifferingBytes = 0;
+    let crossMaxByteDelta = 0;
+    for (const [retargeted, reference] of [
+      [crossRetargetedMip0, crossReferenceMip0],
+      [crossRetargetedMip1, crossReferenceMip1],
+    ] as const) {
+      for (let byteIndex = 0; byteIndex < reference.length; byteIndex += 1) {
+        if (retargeted[byteIndex] === reference[byteIndex]) {
+          continue;
+        }
+        crossDifferingBytes += 1;
+        crossMaxByteDelta = Math.max(
+          crossMaxByteDelta,
+          Math.abs(retargeted[byteIndex] - reference[byteIndex]),
+        );
+      }
+    }
+    const crossRetargetedMip0Sha256 = await sha256(crossRetargetedMip0);
+    const crossRetargetedMip1Sha256 = await sha256(crossRetargetedMip1);
+    const crossReferenceMip0Sha256 = await sha256(crossReferenceMip0);
+    const crossReferenceMip1Sha256 = await sha256(crossReferenceMip1);
+    // Guardia anti-tautologia: se le due sorgenti producessero lo stesso stile,
+    // l'uguaglianza qui sopra sarebbe soddisfatta anche da un retarget inerte.
+    const sourceContentDistinct = afterMip0Sha256 !== crossReferenceMip0Sha256;
+    diagnostics.push({
+      id: "stroke-bevel-cross-texture-retarget",
+      kind: "retarget-identity",
+      passed:
+        crossDifferingBytes === 0
+        && crossRetargetedMip0Sha256 === crossReferenceMip0Sha256
+        && crossRetargetedMip1Sha256 === crossReferenceMip1Sha256
+        && sourceContentDistinct,
+      beforeMip0Sha256: afterMip0Sha256,
+      beforeMip1Sha256: afterMip1Sha256,
+      runtimeMip0Sha256: crossRetargetedMip0Sha256,
+      referenceMip0Sha256: crossReferenceMip0Sha256,
+      runtimeMip1Sha256: crossRetargetedMip1Sha256,
+      referenceMip1Sha256: crossReferenceMip1Sha256,
+      sourceContentDistinct,
+      differingBytes: crossDifferingBytes,
+      maxByteDelta: crossMaxByteDelta,
     });
 
     const combinedIdentity = new TextEncoder().encode(JSON.stringify({
@@ -1083,6 +1243,7 @@ export async function runRasterStrokeGolden(
       cases,
     };
   } finally {
+    referenceWorkbench?.destroy();
     if (retargetWorkbench) {
       retargetWorkbench.destroy();
     } else {
@@ -1090,6 +1251,7 @@ export async function runRasterStrokeGolden(
       renderer?.destroy();
     }
     sourceTexture.destroy();
+    retargetSourceTexture.destroy();
     transientTexture.destroy();
     m1CoverageTexture.destroy();
     referenceMip1Texture.destroy();
