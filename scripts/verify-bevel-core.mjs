@@ -167,8 +167,11 @@ assert.deepEqual(
   makeRasterBevelSplineContourLut("gaussian", 32),
 );
 
+const workbenchSource = readFileSync(new URL("../src/effects-workbench.ts", import.meta.url), "utf8");
+const benchmarkSource = readFileSync(new URL("../src/effects-benchmark.ts", import.meta.url), "utf8");
 const rendererSource = readFileSync(new URL("../src/bevel-renderer.ts", import.meta.url), "utf8");
 const styleStackSource = readFileSync(new URL("../src/stroke-renderer.ts", import.meta.url), "utf8");
+assert(rendererSource.includes("raster-bevel-webgpu-v3-retargetable-layer"));
 const engineSource = readFileSync(new URL("../src/brush-engine.ts", import.meta.url), "utf8");
 assert(rendererSource.includes("texture_storage_2d<r32float, write>"));
 assert(rendererSource.includes("marching"));
@@ -181,6 +184,14 @@ assert(styleStackSource.indexOf("bevelNode(base, position)")
   < styleStackSource.indexOf("combinedStrokeNode(base.a, node, coverage)"));
 assert(styleStackSource.includes("random24(documentPosition, 4660u)"));
 assert(engineSource.includes("sourceMode: RasterStrokeSourceMode"));
+assert.match(rendererSource, /retarget\(layerView: GPUTextureView\)/);
+assert.match(rendererSource, /this\.sourceViews\[0\] = layerView/);
+assert.match(rendererSource, /this\.sourceViews\[1\] = this\.lightGlazeView \?\? layerView/);
+assert.match(rendererSource, /this\.sourceViews\[2\] = this\.thicknessTailView \?\? layerView/);
+assert.match(rendererSource, /this\.rebuildBindGroups\(\)/);
+assert(workbenchSource.includes("single-retargetable-active-layer-source"));
+assert(benchmarkSource.includes("clearHeight: true"));
+assert(benchmarkSource.includes("clearStyled: true"));
 assert(engineSource.includes("this.rasterBevelRenderer?.workspaceMemoryBytes"));
 
 console.log("Raster bevel Heightfield V2 verification passed.");

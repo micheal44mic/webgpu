@@ -4,6 +4,12 @@ import {
   type RasterStrokeEncodeOptions,
   type RasterStrokeSourceMode,
 } from "./stroke-renderer";
+import { RasterBevelRenderer } from "./bevel-renderer";
+import {
+  DEFAULT_RASTER_BEVEL_STYLE,
+  copyRasterBevelStyle,
+} from "./bevel-core";
+import { EffectsWorkbench } from "./effects-workbench";
 import type { RasterStrokeRect, RasterStrokeStyle } from "./stroke-core";
 import { paintMipDownsampleShader } from "./shaders";
 import rasterStrokeGoldenBaseline from "../goldens/raster-stroke-rgba8-v1.json";
@@ -14,7 +20,7 @@ export const RASTER_STROKE_GOLDEN_WIDTH = 256;
 export const RASTER_STROKE_GOLDEN_HEIGHT = 192;
 export const RASTER_STROKE_GOLDEN_FORMAT = "rgba8unorm" as const;
 export const RASTER_STROKE_GOLDEN_MIP_CHAIN_VERSION = 1 as const;
-export const RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION = 3 as const;
+export const RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION = 4 as const;
 
 export interface RasterStrokeGoldenMip {
   level: number;
@@ -35,7 +41,7 @@ export interface RasterStrokeGoldenCase {
 
 export interface RasterStrokeGoldenDiagnostic {
   id: string;
-  kind: "mutation-gate" | "source-mode-mip";
+  kind: "mutation-gate" | "source-mode-mip" | "retarget-identity";
   passed: boolean;
   expectedGateFlags?: number;
   gateFlags?: number;
@@ -44,6 +50,10 @@ export interface RasterStrokeGoldenDiagnostic {
   runtimeMip1Sha256?: string;
   referenceMip1Sha256?: string;
   differingBytes?: number;
+  beforeMip0Sha256?: string;
+  afterMip0Sha256?: string;
+  beforeMip1Sha256?: string;
+  afterMip1Sha256?: string;
   maxByteDelta?: number;
   firstDifference?: {
     byteIndex: number;
@@ -518,6 +528,8 @@ export async function runRasterStrokeGolden(
   device.queue.writeBuffer(thicknessTailUniformBuffer, 0, new Uint8Array(32));
 
   let renderer: RasterStrokeRenderer | null = null;
+  let bevelRenderer: RasterBevelRenderer | null = null;
+  let retargetWorkbench: EffectsWorkbench | null = null;
   try {
     renderer = await RasterStrokeRenderer.create({
       device,
@@ -891,6 +903,106 @@ export async function runRasterStrokeGolden(
       OUTSIDE_STYLE,
     );
 
+    const retargetBevelStyle = copyRasterBevelStyle(DEFAULT_RASTER_BEVEL_STYLE);
+    retargetBevelStyle.enabled = true;
+    retargetBevelStyle.size = 12;
+    bevelRenderer = await RasterBevelRenderer.create({
+      device,
+      documentWidth: RASTER_STROKE_GOLDEN_WIDTH,
+      documentHeight: RASTER_STROKE_GOLDEN_HEIGHT,
+      layerView: sourceTexture.createView(),
+      lightGlazeUniformBuffer,
+      thicknessTailUniformBuffer,
+    });
+    const retargetBevelRenderer = bevelRenderer;
+    retargetWorkbench = new EffectsWorkbench({
+      view: sourceTexture.createView(),
+      format: RASTER_STROKE_GOLDEN_FORMAT,
+    });
+    retargetWorkbench.attachStrokeRenderer(renderer);
+    retargetWorkbench.attachBevelRenderer(retargetBevelRenderer);
+    retargetBevelRenderer.updateStyleResources(retargetBevelStyle);
+    renderer.setBevelResources(
+      retargetBevelRenderer.heightView,
+      retargetBevelRenderer.glossView,
+    );
+    renderer.updateBevelParameters(retargetBevelStyle);
+
+    const encodeRetargetIdentityStack = async (label: string): Promise<void> => {
+      const encoder = device.createCommandEncoder({ label });
+      retargetBevelRenderer.encode({
+        encoder,
+        style: retargetBevelStyle,
+        sourceMode: "permanent",
+        rebuildRect: FULL_RECT,
+        changeDetectionRect: null,
+        clearHeight: true,
+      });
+      renderer!.encode({
+        encoder,
+        sourceMode: "permanent",
+        style: CENTER_STYLE,
+        bevelStyle: retargetBevelStyle,
+        rebuildRect: FULL_RECT,
+        changeDetectionRect: null,
+        composeRect: FULL_RECT,
+        conditionalComposeRect: null,
+        clearStyled: true,
+        resetThresholdMask: true,
+      });
+      device.queue.submit([encoder.finish()]);
+      await device.queue.onSubmittedWorkDone();
+    };
+
+    await encodeRetargetIdentityStack("Traccia/Smusso same-view retarget baseline");
+    const beforeMip0 = await renderer.readStyledPixels(undefined, 0);
+    const beforeMip1 = await renderer.readStyledPixels(undefined, 1);
+    const sameTextureView = sourceTexture.createView({
+      label: "Traccia/Smusso same-texture retarget view",
+    });
+    retargetWorkbench.retarget({
+      view: sameTextureView,
+      format: RASTER_STROKE_GOLDEN_FORMAT,
+    });
+    await encodeRetargetIdentityStack("Traccia/Smusso same-view retarget rebuilt");
+    const afterMip0 = await renderer.readStyledPixels(undefined, 0);
+    const afterMip1 = await renderer.readStyledPixels(undefined, 1);
+    let retargetDifferingBytes = 0;
+    let retargetMaxByteDelta = 0;
+    for (const [before, after] of [
+      [beforeMip0, afterMip0],
+      [beforeMip1, afterMip1],
+    ] as const) {
+      for (let byteIndex = 0; byteIndex < before.length; byteIndex += 1) {
+        if (before[byteIndex] === after[byteIndex]) {
+          continue;
+        }
+        retargetDifferingBytes += 1;
+        retargetMaxByteDelta = Math.max(
+          retargetMaxByteDelta,
+          Math.abs(before[byteIndex] - after[byteIndex]),
+        );
+      }
+    }
+    const beforeMip0Sha256 = await sha256(beforeMip0);
+    const afterMip0Sha256 = await sha256(afterMip0);
+    const beforeMip1Sha256 = await sha256(beforeMip1);
+    const afterMip1Sha256 = await sha256(afterMip1);
+    diagnostics.push({
+      id: "stroke-bevel-same-view-retarget",
+      kind: "retarget-identity",
+      passed:
+        retargetDifferingBytes === 0
+        && beforeMip0Sha256 === afterMip0Sha256
+        && beforeMip1Sha256 === afterMip1Sha256,
+      beforeMip0Sha256,
+      afterMip0Sha256,
+      beforeMip1Sha256,
+      afterMip1Sha256,
+      differingBytes: retargetDifferingBytes,
+      maxByteDelta: retargetMaxByteDelta,
+    });
+
     const combinedIdentity = new TextEncoder().encode(JSON.stringify({
       version: RASTER_STROKE_GOLDEN_VERSION,
       format: RASTER_STROKE_GOLDEN_FORMAT,
@@ -971,7 +1083,12 @@ export async function runRasterStrokeGolden(
       cases,
     };
   } finally {
-    renderer?.destroy();
+    if (retargetWorkbench) {
+      retargetWorkbench.destroy();
+    } else {
+      bevelRenderer?.destroy();
+      renderer?.destroy();
+    }
     sourceTexture.destroy();
     transientTexture.destroy();
     m1CoverageTexture.destroy();

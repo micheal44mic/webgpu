@@ -61,6 +61,10 @@ const rasterStrokeGoldenButton = element<HTMLButtonElement>("runRasterStrokeGold
 const rasterStrokeGoldenResult = element<HTMLParagraphElement>("rasterStrokeGoldenResult");
 const rasterStrokeGoldenDetails = element<HTMLDetailsElement>("rasterStrokeGoldenDetails");
 const rasterStrokeGoldenReport = element<HTMLElement>("rasterStrokeGoldenReport");
+const effectsWorkbenchBenchmarkButton = element<HTMLButtonElement>("runEffectsWorkbenchBenchmark");
+const effectsWorkbenchBenchmarkResult = element<HTMLParagraphElement>("effectsWorkbenchBenchmarkResult");
+const effectsWorkbenchBenchmarkDetails = element<HTMLDetailsElement>("effectsWorkbenchBenchmarkDetails");
+const effectsWorkbenchBenchmarkReport = element<HTMLElement>("effectsWorkbenchBenchmarkReport");
 const recordHumanStrokeButton = element<HTMLButtonElement>("recordHumanStroke");
 const playHumanStrokeButton = element<HTMLButtonElement>("playHumanStroke");
 const playBlendHumanStrokeButton = element<HTMLButtonElement>("playBlendHumanStroke");
@@ -165,6 +169,9 @@ interface BenchmarkRun {
     canvasHeight: number;
     layerSize: number;
     layerFormat: LayerFormat;
+    effectsWorkingSetStrategy: string;
+    effectsWorkingSetGeneration: number;
+    effectsWorkingSetSourceFormat: LayerFormat;
     rasterStrokeRendererBuild: string | null;
     rasterStrokeStyle: RasterStrokeStyle;
     rasterStrokePersistentMemoryMiB: number;
@@ -279,7 +286,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 40;
+    performanceTelemetryRevision: 41;
   };
 }
 
@@ -320,6 +327,7 @@ let humanStrokeLoading = true;
 let humanStrokeSaving = false;
 let benchmarkRunning = false;
 let rasterStrokeGoldenRunning = false;
+let effectsWorkbenchBenchmarkRunning = false;
 let layerFormatChanging = false;
 let rasterStrokeChanging = false;
 let historyUiBusy = false;
@@ -612,7 +620,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 40,
+    performanceTelemetryRevision: 41,
     ...engineEnvironment,
   };
 }
@@ -1286,6 +1294,7 @@ function updateHumanStrokeControls(): void {
     || historyState.busy
     || benchmarkRunning
     || rasterStrokeGoldenRunning
+    || effectsWorkbenchBenchmarkRunning
     || layerFormatChanging
     || rasterStrokeChanging
     || rasterBevelChanging;
@@ -1335,6 +1344,7 @@ function operationLocked(): boolean {
     || historyState.busy
     || benchmarkRunning
     || rasterStrokeGoldenRunning
+    || effectsWorkbenchBenchmarkRunning
     || layerFormatChanging
     || rasterStrokeChanging
     || rasterBevelChanging
@@ -1355,12 +1365,14 @@ function updateHistoryControls(): void {
   benchmarkButton.disabled = locked || blendToolActive;
   benchmarkStampsInput.disabled = locked || blendToolActive;
   rasterStrokeGoldenButton.disabled = locked;
+  effectsWorkbenchBenchmarkButton.disabled = locked;
   layerFormatSelect.disabled = locked;
   fitViewButton.disabled = locked;
   zoomInButton.disabled = locked;
   zoomOutButton.disabled = locked;
   toggleControlsButton.disabled =
-    benchmarkRunning || rasterStrokeGoldenRunning || humanStrokeReplaying;
+    benchmarkRunning || rasterStrokeGoldenRunning
+    || effectsWorkbenchBenchmarkRunning || humanStrokeReplaying;
   for (const id of brushControlIds) {
     element<HTMLInputElement | HTMLSelectElement>(id).disabled = locked;
   }
@@ -1692,6 +1704,44 @@ benchmarkButton.addEventListener("click", async () => {
         error instanceof Error ? error.message : String(error);
     } finally {
       rasterStrokeGoldenRunning = false;
+      updateHistoryControls();
+      updateHumanStrokeControls();
+    }
+  });
+}
+
+if (import.meta.env.DEV) {
+  effectsWorkbenchBenchmarkButton.hidden = false;
+  effectsWorkbenchBenchmarkResult.hidden = false;
+  effectsWorkbenchBenchmarkResult.textContent =
+    "Benchmark dev isolato: Traccia e Smusso devono essere disattivati.";
+  effectsWorkbenchBenchmarkButton.addEventListener("click", async () => {
+    if (interactionLocked()) {
+      return;
+    }
+    effectsWorkbenchBenchmarkRunning = true;
+    effectsWorkbenchBenchmarkDetails.hidden = true;
+    effectsWorkbenchBenchmarkResult.textContent =
+      "Misuro retarget e destroy+recreate sul documento 4096²…";
+    updateHistoryControls();
+    updateHumanStrokeControls();
+    try {
+      const report = await engine.benchmarkEffectsWorkingSet(5);
+      const serialized = JSON.stringify(report, null, 2);
+      effectsWorkbenchBenchmarkReport.textContent = serialized;
+      effectsWorkbenchBenchmarkDetails.hidden = false;
+      (
+        window as Window & { __effectsWorkbenchBenchmarkReport?: typeof report }
+      ).__effectsWorkbenchBenchmarkReport = report;
+      effectsWorkbenchBenchmarkResult.textContent =
+        `Retarget ${report.retarget.totalMedianMs.toFixed(2)} ms mediani`
+        + ` · destroy+recreate ${report.destroyRecreate.totalMedianMs.toFixed(2)} ms mediani`
+        + ` · ${report.sampleCount} campioni`;
+    } catch (error) {
+      effectsWorkbenchBenchmarkResult.textContent =
+        error instanceof Error ? error.message : String(error);
+    } finally {
+      effectsWorkbenchBenchmarkRunning = false;
       updateHistoryControls();
       updateHumanStrokeControls();
     }

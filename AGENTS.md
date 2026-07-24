@@ -319,7 +319,7 @@ Paint:
 ### Smusso/Rilievo raster M1 (WebGPU, sperimentale)
 
 - Port Heightfield V2 implementato il 24 luglio 2026. Build corrente
-  `raster-bevel-webgpu-v2-heightfield-v2-r32f-segment-jfa-workgroup-gaussian-gpu-gate`;
+  `raster-bevel-webgpu-v3-retargetable-layer-heightfield-v2-r32f-segment-jfa-workgroup-gaussian-gpu-gate`;
   non è un emboss derivato dall'alpha nel solo fragment shader.
 - Il core tipizzato conserva modalità `inner` / `outer` / `emboss` / `pillow`,
   tecniche `smooth` / `chiselHard` / `chiselSoft`, direzione, size, soften,
@@ -378,6 +378,35 @@ Paint:
   almeno tutte le modalità/tecniche, edge frazionari sulle seam `256`, bordi e
   corner documento, mip `0–12`, AA, source mode e combinazione con le tre
   posizioni della Traccia. Lo Scalpello sulle seam è il rischio prioritario.
+
+### Banco effetti condiviso (Fase 1, retargetable)
+
+- Strategia corrente `single-retargetable-active-layer-source`: un solo
+  `EffectsWorkbench` possiede Traccia e Smusso per la sorgente attiva. Il
+  numero di working set resta quindi O(1) rispetto ai layer futuri; questa fase
+  non introduce ancora layer multipli.
+- Build retargetable correnti: Traccia
+  `style-stack-webgpu-v8-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even`
+  e Smusso
+  `raster-bevel-webgpu-v3-retargetable-layer-heightfield-v2-r32f-segment-jfa-workgroup-gaussian-gpu-gate`.
+- Il retarget a formato identico ricrea tutti i bind group che referenziano la
+  source view nei due renderer e i display bind group lato engine, poi invalida
+  coverage/mask/styled mip/heightfield/cache di presentazione ed esegue in un
+  solo encoder clear + rebuild dell’intero `4096²`. I bind group dei downsample
+  mip restano validi perché puntano soltanto alle texture interne riusate.
+  Formati incompatibili restano sul fallback distruttivo `setLayerFormat()`.
+- Diagnostica Golden rev `4`: il caso
+  `stroke-bevel-same-view-retarget` passa con mip `0` e `1` identici, zero byte
+  diversi e delta massimo `0`. Il combinato mip `0` resta `8d5a75a6…`; il
+  mismatch v5 preesistente dei mip derivati resta `9208e2a3…` contro
+  `f7f53472…` e non è stato nascosto né rigenerato.
+- Benchmark dev del 24 luglio 2026 su NVIDIA Ampere, RGBA8 `4096²`, Traccia
+  outside `14 px` + Smusso inner/smooth `32 px`, 5 campioni dopo warm-up:
+  retarget `131,9 ms` totali mediani (`3,2 ms` CPU setup/encode + `128,8 ms`
+  queue/callback) contro destroy+recreate `152,2 ms` (`25,1 + 126,8 ms`).
+  `timestamp-query` non disponibile: sono misure wall-clock
+  `onSubmittedWorkDone`, non tempo GPU isolato. Working set logico della prova
+  `126,764 MiB`. Report completo in `docs/effects-workbench-pr1.md`.
 
 Blend (tool separato, vedi sezione dedicata più sotto).
 
@@ -440,7 +469,9 @@ e maschera Shape 2K: alloca alla selezione, rilascia quando deselezionato e
 il motore è fermo (revisione sperimentale corrente; nessuna run registrata
 con i pool parziali, quindi la revisione copre i quattro pool insieme) · `40`
 port sperimentale Smusso/Rilievo Heightfield V2, contabilità memoria dedicata,
-invalidazioni geometry/hot e compositore comune Smusso→Traccia.
+invalidazioni geometry/hot e compositore comune Smusso→Traccia · `41` banco
+effetti unico retargetable, diagnostica same-view e benchmark
+retarget-vs-recreate.
 
 ## Strumento Blend dry (WebGPU)
 

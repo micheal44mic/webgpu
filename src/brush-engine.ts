@@ -72,6 +72,11 @@ import {
   type RasterBevelRect,
   type RasterBevelStyle,
 } from "./bevel-core";
+import {
+  EFFECTS_WORKING_SET_STRATEGY,
+  EffectsWorkbench,
+} from "./effects-workbench";
+import type { EffectsWorkbenchBenchmarkReport } from "./effects-benchmark";
 
 export type {
   RasterStrokePosition,
@@ -263,6 +268,9 @@ export interface EngineStats {
   gpuMemory: EngineGpuMemoryStats;
   gpuLabel: string;
   layerFormat: LayerFormat;
+  effectsWorkingSetStrategy: typeof EFFECTS_WORKING_SET_STRATEGY;
+  effectsWorkingSetGeneration: number;
+  effectsWorkingSetSourceFormat: LayerFormat;
 }
 
 export interface HistoryState {
@@ -282,6 +290,18 @@ export interface BenchmarkResult {
   gpuCompletionMs: number;
   estimatedCoveredFragments: number;
   strategy: string;
+}
+
+export interface EffectsWorkbenchRetargetResult {
+  strategy: typeof EFFECTS_WORKING_SET_STRATEGY;
+  generation: number;
+  layerFormat: LayerFormat;
+  fullDocumentPixels: number;
+  cpuRetargetAndEncodeMs: number;
+  queueCompletionMs: number;
+  totalMs: number;
+  stroke: RasterStrokeEncodeResult | null;
+  bevel: RasterBevelEncodeResult | null;
 }
 
 export interface StrokePerformanceProfile {
@@ -1242,7 +1262,15 @@ export class BrushEngine {
   private layerView!: GPUTextureView;
   private layerSamplingView!: GPUTextureView;
   private blendRenderer: DryBlendRenderer | null = null;
-  private rasterStrokeRenderer: RasterStrokeRenderer | null = null;
+  private effectsWorkbench: EffectsWorkbench | null = null;
+
+  private get rasterStrokeRenderer(): RasterStrokeRenderer | null {
+    return this.effectsWorkbench?.strokeRenderer ?? null;
+  }
+
+  private get rasterBevelRenderer(): RasterBevelRenderer | null {
+    return this.effectsWorkbench?.bevelRenderer ?? null;
+  }
   private rasterStrokeStyle: RasterStrokeStyle = copyRasterStrokeStyle(
     DEFAULT_RASTER_STROKE_STYLE,
   );
@@ -1254,7 +1282,6 @@ export class BrushEngine {
   private rasterStrokePendingComposeRect: DirtyRect | null = null;
   private rasterStrokeBusy = false;
   private rasterStrokeLastEncode: RasterStrokeEncodeResult | null = null;
-  private rasterBevelRenderer: RasterBevelRenderer | null = null;
   private rasterBevelStyle: RasterBevelStyle = copyRasterBevelStyle(
     DEFAULT_RASTER_BEVEL_STYLE,
   );
@@ -1766,6 +1793,13 @@ export class BrushEngine {
     }
   }
 
+  private requireEffectsWorkbench(): EffectsWorkbench {
+    if (!this.effectsWorkbench) {
+      throw new Error("Banco effetti non inizializzato per il layer attivo.");
+    }
+    return this.effectsWorkbench;
+  }
+
   private async ensureRasterStrokeRenderer(
     styleWidth = this.rasterStrokeStyle.width,
   ): Promise<RasterStrokeRenderer> {
@@ -1790,7 +1824,7 @@ export class BrushEngine {
       this.rasterBevelRenderer?.glossView ?? null,
     );
     renderer.updateBevelParameters(this.rasterBevelStyle);
-    this.rasterStrokeRenderer = renderer;
+    this.requireEffectsWorkbench().attachStrokeRenderer(renderer);
     this.rebuildRasterStrokeDisplayBindGroups();
     this.rasterStrokeMipDownsampleBindGroups = renderer.mipViews
       .slice(0, -1)
@@ -1807,8 +1841,7 @@ export class BrushEngine {
   }
 
   private releaseRasterStrokeRenderer(): void {
-    this.rasterStrokeRenderer?.destroy();
-    this.rasterStrokeRenderer = null;
+    this.effectsWorkbench?.releaseStrokeRenderer();
     this.rasterStrokeDisplayBindGroups.clear();
     this.rasterStrokeMipDownsampleBindGroups = [];
     this.rasterStrokeCoverageValid = false;
@@ -1833,7 +1866,7 @@ export class BrushEngine {
     renderer.setLightGlazeView(this.lightGlazeView);
     renderer.setThicknessTailView(this.thicknessTailView);
     renderer.updateStyleResources(this.rasterBevelStyle);
-    this.rasterBevelRenderer = renderer;
+    this.requireEffectsWorkbench().attachBevelRenderer(renderer);
     this.rasterBevelHeightValid = false;
     this.rasterBevelHeightSourceMode = null;
     this.rasterBevelLastEncode = null;
@@ -1846,8 +1879,7 @@ export class BrushEngine {
   }
 
   private releaseRasterBevelRenderer(): void {
-    this.rasterBevelRenderer?.destroy();
-    this.rasterBevelRenderer = null;
+    this.effectsWorkbench?.releaseBevelRenderer();
     this.rasterBevelHeightValid = false;
     this.rasterBevelHeightSourceMode = null;
     this.rasterBevelLastEncode = null;
@@ -2728,6 +2760,9 @@ export class BrushEngine {
       rasterBevelBuilds: this.rasterBevelTotalBuilds,
       rasterBevelPasses: this.rasterBevelTotalPasses,
       rasterBevelRendererBuild: this.rasterBevelRenderer?.build ?? null,
+      effectsWorkingSetStrategy: EFFECTS_WORKING_SET_STRATEGY,
+      effectsWorkingSetGeneration: this.effectsWorkbench?.generation ?? 0,
+      effectsWorkingSetSourceFormat: this.effectsWorkbench?.sourceFormat ?? this.layerFormat,
       gpuMemory,
       gpuLabel: this.gpuLabel,
       layerFormat: this.layerFormat,
@@ -2973,6 +3008,156 @@ export class BrushEngine {
       throw new Error("Il motore non è ancora inizializzato.");
     }
     await this.device.queue.onSubmittedWorkDone();
+  }
+
+  async retargetEffectsWorkingSet(
+    layerView: GPUTextureView,
+    layerFormat: LayerFormat = this.layerFormat,
+  ): Promise<EffectsWorkbenchRetargetResult> {
+    if (!this.initialized) {
+      throw new Error("Il motore non è ancora inizializzato.");
+    }
+    if (this.activeStroke || this.historyBusy || this.rasterStrokeBusy || this.rasterBevelBusy) {
+      throw new Error("Il banco effetti può cambiare sorgente solo a motore fermo.");
+    }
+    const workbench = this.requireEffectsWorkbench();
+    if (layerFormat !== this.layerFormat || layerFormat !== workbench.sourceFormat) {
+      throw new Error(
+        `Formato banco effetti ${workbench.sourceFormat} incompatibile con ${layerFormat}; `
+        + "usa setLayerFormat() per il fallback con ricreazione completa.",
+      );
+    }
+
+    await this.waitForIdle();
+    const fullDocumentRect: DirtyRect = {
+      x: 0,
+      y: 0,
+      width: LAYER_SIZE,
+      height: LAYER_SIZE,
+    };
+    this.rasterStrokeBusy = true;
+    this.rasterBevelBusy = true;
+    const startedAt = performance.now();
+    try {
+      const generation = workbench.retarget({ view: layerView, format: layerFormat });
+      this.rebuildRasterStrokeDisplayBindGroups();
+      this.rasterStrokeCoverageValid = false;
+      this.rasterStrokeStyledInitialized = false;
+      this.rasterStrokeMipValidThroughLevel = 0;
+      this.rasterStrokePendingComposeRect = null;
+      this.rasterStrokeLastEncode = null;
+      this.rasterBevelHeightValid = false;
+      this.rasterBevelHeightSourceMode = null;
+      this.rasterBevelPendingComposeRect = null;
+      this.rasterBevelLastEncode = null;
+
+      const encoder = this.device.createCommandEncoder({
+        label: `Banco effetti retarget #${generation}: rebuild documento completo`,
+      });
+      const update = this.encodeRasterStrokeUpdate(
+        encoder,
+        "permanent",
+        fullDocumentRect,
+        fullDocumentRect,
+        true,
+      );
+      this.encodeRasterStrokeDisplayPyramid(
+        encoder,
+        update.dirtyRect,
+        this.paintDisplaySelectedMipLevel,
+      );
+      this.device.queue.submit([encoder.finish()]);
+      const submittedAt = performance.now();
+      await this.device.queue.onSubmittedWorkDone();
+      const completedAt = performance.now();
+      const result: EffectsWorkbenchRetargetResult = {
+        strategy: EFFECTS_WORKING_SET_STRATEGY,
+        generation,
+        layerFormat,
+        fullDocumentPixels: LAYER_SIZE * LAYER_SIZE,
+        cpuRetargetAndEncodeMs: submittedAt - startedAt,
+        queueCompletionMs: completedAt - submittedAt,
+        totalMs: completedAt - startedAt,
+        stroke: update.timing,
+        bevel: this.rasterBevelLastEncode,
+      };
+      this.presentationCacheNeedsFullRebuild = true;
+      this.displayDirty = true;
+      this.requestRender();
+      this.publishStats();
+      if (import.meta.env.DEV) {
+        console.info("[EffectsWorkbench] retarget 4096² completato", result);
+      }
+      return result;
+    } finally {
+      this.rasterStrokeBusy = false;
+      this.rasterBevelBusy = false;
+    }
+  }
+
+  async benchmarkEffectsWorkingSet(
+    samples = 3,
+  ): Promise<EffectsWorkbenchBenchmarkReport> {
+    if (!import.meta.env.DEV) {
+      throw new Error("Il benchmark del banco effetti è disponibile solo in modalità dev.");
+    }
+    if (!this.initialized) {
+      throw new Error("Il motore non è ancora inizializzato.");
+    }
+    if (this.activeStroke || this.historyBusy || this.rasterStrokeBusy || this.rasterBevelBusy) {
+      throw new Error("Ferma il motore prima del benchmark del banco effetti.");
+    }
+    await this.waitForIdle();
+    if (this.rasterStrokeRenderer || this.rasterBevelRenderer) {
+      throw new Error(
+        "Disattiva Traccia e Smusso prima del benchmark per evitare due working set residenti.",
+      );
+    }
+
+    const originalWorkbench = this.requireEffectsWorkbench();
+    this.rasterStrokeBusy = true;
+    this.rasterBevelBusy = true;
+    this.callbacks.onStatus?.("Benchmark banco effetti 4096² in corso…", "working");
+    try {
+      const { benchmarkEffectsWorkbench } = await import("./effects-benchmark");
+      const report = await benchmarkEffectsWorkbench({
+        device: this.device,
+        sourceTexture: this.layerTexture,
+        layerFormat: this.layerFormat,
+        lightGlazeUniformBuffer: this.lightGlazeUniformBuffer,
+        thicknessTailUniformBuffer: this.thicknessTailDisplayUniformBuffer,
+        documentWidth: LAYER_SIZE,
+        documentHeight: LAYER_SIZE,
+        gpuLabel: this.gpuLabel,
+        timestampQueriesSupported: this.device.features.has("timestamp-query"),
+        samples,
+        onWorkbenchChanged: (workbench) => {
+          this.effectsWorkbench = workbench ?? originalWorkbench;
+          this.publishStats();
+        },
+        onMemoryChanged: () => this.publishStats(),
+      });
+      console.info("[EffectsWorkbench] benchmark 4096²", report);
+      console.table({
+        retarget: {
+          cpuMs: report.retarget.cpuSetupAndEncodeMedianMs,
+          queueMs: report.retarget.queueCompletionMedianMs,
+          totalMs: report.retarget.totalMedianMs,
+        },
+        "destroy+recreate": {
+          cpuMs: report.destroyRecreate.cpuSetupAndEncodeMedianMs,
+          queueMs: report.destroyRecreate.queueCompletionMedianMs,
+          totalMs: report.destroyRecreate.totalMedianMs,
+        },
+      });
+      this.callbacks.onStatus?.("Benchmark banco effetti completato.", "ok");
+      return report;
+    } finally {
+      this.effectsWorkbench = originalWorkbench;
+      this.rasterStrokeBusy = false;
+      this.rasterBevelBusy = false;
+      this.publishStats();
+    }
   }
 
   async runRasterStrokeGolden(): Promise<RasterStrokeGoldenReport> {
@@ -3420,6 +3605,9 @@ export class BrushEngine {
     layerFormat: LayerFormat;
     layerMemoryMiB: number;
     gpuLabel: string;
+    effectsWorkingSetStrategy: typeof EFFECTS_WORKING_SET_STRATEGY;
+    effectsWorkingSetGeneration: number;
+    effectsWorkingSetSourceFormat: LayerFormat;
     rasterStrokeRendererBuild: string | null;
     rasterStrokeStyle: RasterStrokeStyle;
     rasterStrokePersistentMemoryMiB: number;
@@ -3536,6 +3724,9 @@ export class BrushEngine {
       layerFormat: this.layerFormat,
       layerMemoryMiB: this.layerFormat === "rgba16float" ? 128 : 64,
       gpuLabel: this.gpuLabel,
+      effectsWorkingSetStrategy: EFFECTS_WORKING_SET_STRATEGY,
+      effectsWorkingSetGeneration: this.effectsWorkbench?.generation ?? 0,
+      effectsWorkingSetSourceFormat: this.effectsWorkbench?.sourceFormat ?? this.layerFormat,
       timestampQueriesSupported: this.device?.features.has("timestamp-query") ?? false,
       rasterStrokeRendererBuild: this.rasterStrokeRenderer?.build ?? null,
       rasterStrokeStyle: copyRasterStrokeStyle(this.rasterStrokeStyle),
@@ -5326,6 +5517,7 @@ export class BrushEngine {
     this.releaseRasterStrokeRenderer();
     this.releaseRasterBevelRenderer();
 
+    this.effectsWorkbench = new EffectsWorkbench({ view, format });
     oldBlendRenderer?.destroy();
     oldTexture?.destroy();
   }

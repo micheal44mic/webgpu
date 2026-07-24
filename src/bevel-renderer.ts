@@ -13,7 +13,7 @@ import { jfaScheduleForExtent } from "./stroke-core";
 import type { RasterStrokeSourceMode } from "./stroke-renderer";
 
 export const RASTER_BEVEL_RENDERER_BUILD =
-  "raster-bevel-webgpu-v2-heightfield-v2-r32f-segment-jfa-workgroup-gaussian-gpu-gate";
+  "raster-bevel-webgpu-v3-retargetable-layer-heightfield-v2-r32f-segment-jfa-workgroup-gaussian-gpu-gate";
 export const RASTER_BEVEL_FIELD_STRATEGY =
   "persistent-document-plus-one-pixel-apron-r32float-heightfield" as const;
 export const RASTER_BEVEL_DISTANCE_STRATEGY =
@@ -849,7 +849,7 @@ export class RasterBevelRenderer {
   private readonly device: GPUDevice;
   private readonly documentWidth: number;
   private readonly documentHeight: number;
-  private readonly layerView: GPUTextureView;
+  private layerView: GPUTextureView;
   private readonly lightGlazeUniformBuffer: GPUBuffer;
   private readonly thicknessTailUniformBuffer: GPUBuffer;
   private readonly heightTexture: GPUTexture;
@@ -879,6 +879,8 @@ export class RasterBevelRenderer {
   private resolveHeightPipeline!: GPUComputePipeline;
   private sourceViews: Record<SourceModeCode, GPUTextureView>;
   private indirectGateBindGroupLayout!: GPUBindGroupLayout;
+  private lightGlazeView: GPUTextureView | null = null;
+  private thicknessTailView: GPUTextureView | null = null;
   private indirectGateBindGroup!: GPUBindGroup;
   private profileKey = "";
   private glossKey = "";
@@ -997,11 +999,24 @@ export class RasterBevelRenderer {
 
   setLightGlazeView(view: GPUTextureView | null): void {
     this.sourceViews[1] = view ?? this.layerView;
+    this.lightGlazeView = view;
     this.rebuildBindGroups();
   }
 
   setThicknessTailView(view: GPUTextureView | null): void {
     this.sourceViews[2] = view ?? this.layerView;
+    this.thicknessTailView = view;
+    this.rebuildBindGroups();
+  }
+
+  retarget(layerView: GPUTextureView): void {
+    if (this.destroyed) {
+      throw new Error("Il renderer Smusso è già stato distrutto.");
+    }
+    this.layerView = layerView;
+    this.sourceViews[0] = layerView;
+    this.sourceViews[1] = this.lightGlazeView ?? layerView;
+    this.sourceViews[2] = this.thicknessTailView ?? layerView;
     this.rebuildBindGroups();
   }
 

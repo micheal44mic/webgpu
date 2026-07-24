@@ -338,6 +338,14 @@ const engineSource = readFileSync(
   new URL("../src/brush-engine.ts", import.meta.url),
   "utf8",
 );
+const workbenchSource = readFileSync(
+  new URL("../src/effects-workbench.ts", import.meta.url),
+  "utf8",
+);
+const effectsBenchmarkSource = readFileSync(
+  new URL("../src/effects-benchmark.ts", import.meta.url),
+  "utf8",
+);
 const mainSource = readFileSync(
   new URL("../src/main.ts", import.meta.url),
   "utf8",
@@ -364,7 +372,7 @@ const goldenMipBaseline = JSON.parse(readFileSync(
 ));
 assert.match(
   rendererSource,
-  /style-stack-webgpu-v7-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even/,
+  /style-stack-webgpu-v8-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even/,
 );
 assert.ok(
   rendererSource.indexOf("bevelNode(base, position)")
@@ -406,6 +414,20 @@ assert.match(rendererSource, /parameters\.scratchExtent/);
 assert.match(rendererSource, /resizeScratch\(requestedExtent: number\)/);
 assert.match(rendererSource, /readbackEnabled\?: boolean/);
 assert.match(rendererSource, /async readStyledPixels\(/);
+assert.match(rendererSource, /retarget\(\s*layerView: GPUTextureView,/);
+assert.ok(
+  (rendererSource.match(/this\.rebuildSourceBindGroups\([012]\)/g) ?? []).length >= 3,
+  "Retarget Traccia deve ricostruire i bind group di tutte le source mode.",
+);
+assert.match(workbenchSource, /single-retargetable-active-layer-source/);
+assert.match(workbenchSource, /this\._bevelRenderer\?\.retarget\(source\.view\)/);
+assert.match(workbenchSource, /this\._strokeRenderer\?\.retarget\(source\.view, source\.format\)/);
+assert.match(engineSource, /async retargetEffectsWorkingSet\(/);
+assert.match(engineSource, /this\.rebuildRasterStrokeDisplayBindGroups\(\)/);
+assert.match(engineSource, /fullDocumentRect,\s*fullDocumentRect,\s*true/);
+assert.match(effectsBenchmarkSource, /destroy-recreate/);
+assert.match(effectsBenchmarkSource, /onSubmittedWorkDone\(\)/);
+assert.match(effectsBenchmarkSource, /4096|documentWidth/);
 assert.match(rendererSource, /async readChangeStateFlags\(/);
 assert.match(rendererSource, /updateDisplayParameters\(/);
 assert.match(rendererSource, /displayParameterBuffers: Record<SourceModeCode, GPUBuffer>/);
@@ -419,6 +441,8 @@ assert.match(goldenSource, /light-glaze-m1-r8-max-coverage-opacity-0\.37/);
 assert.match(goldenSource, /thickness-tail-source-over/);
 assert.match(goldenSource, /diagnosticsMatch/);
 assert.match(goldenSource, /differingBytes/);
+assert.match(goldenSource, /RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION = 4/);
+assert.match(goldenSource, /stroke-bevel-same-view-retarget/);
 assert.match(goldenSource, /maxByteDelta/);
 assert.match(goldenSource, /firstDifference/);
 assert.match(goldenSource, /combinedSha256/);

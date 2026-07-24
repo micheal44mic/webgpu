@@ -13,7 +13,7 @@ import {
 } from "./bevel-core";
 
 export const RASTER_STROKE_RENDERER_BUILD =
-  "style-stack-webgpu-v7-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even";
+  "style-stack-webgpu-v8-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even";
 export const RASTER_STROKE_COVERAGE_STRATEGY =
   "persistent-packed-r8-style-coverage" as const;
 export const RASTER_STROKE_DISTANCE_STORAGE_STRATEGY =
@@ -1098,7 +1098,7 @@ export class RasterStrokeRenderer {
   private readonly documentWidth: number;
   private readonly documentHeight: number;
   private readonly layerFormat: "rgba8unorm" | "rgba16float";
-  private readonly layerView: GPUTextureView;
+  private layerView: GPUTextureView;
   private readonly lightGlazeUniformBuffer: GPUBuffer;
   private readonly thicknessTailUniformBuffer: GPUBuffer;
   private readonly readbackEnabled: boolean;
@@ -1373,6 +1373,25 @@ export class RasterStrokeRenderer {
 
   get scratchMemoryBytes(): number {
     return this._scratchMemoryBytes;
+  }
+
+  retarget(
+    layerView: GPUTextureView,
+    layerFormat: "rgba8unorm" | "rgba16float",
+  ): void {
+    if (this.destroyed) {
+      throw new Error("Il renderer Traccia è già stato distrutto.");
+    }
+    if (layerFormat !== this.layerFormat) {
+      throw new Error(
+        `Formato Traccia ${this.layerFormat} incompatibile con ${layerFormat}; `
+        + "serve la ricreazione completa del renderer.",
+      );
+    }
+    this.layerView = layerView;
+    this.rebuildSourceBindGroups(0);
+    this.rebuildSourceBindGroups(1);
+    this.rebuildSourceBindGroups(2);
   }
 
   createDisplayBindGroup(
