@@ -319,7 +319,7 @@ Paint:
 ### Smusso/Rilievo raster M1 (WebGPU, sperimentale)
 
 - Port Heightfield V2 implementato il 24 luglio 2026. Build corrente
-  `raster-bevel-webgpu-v3-retargetable-layer-heightfield-v2-r32f-segment-jfa-workgroup-gaussian-gpu-gate`;
+  `raster-bevel-webgpu-v4-shared-effects-scratch-retargetable-layer-heightfield-v2-r32f-segment-jfa-workgroup-gaussian-gpu-gate`;
   non è un emboss derivato dall'alpha nel solo fragment shader.
 - Il core tipizzato conserva modalità `inner` / `outer` / `emboss` / `pillow`,
   tecniche `smooth` / `chiselHard` / `chiselSoft`, direzione, size, soften,
@@ -369,6 +369,15 @@ Paint:
   allineati. La capacità è `max(Traccia, Smusso)`, mai la somma. Il default
   misurato è `16 MiB` invece di `17,265869 MiB`; il tier Traccia `2048²` è
   `64 MiB` invece di `65,265869 MiB`.
+- Gate PR 3 bbox del 24 luglio 2026: fermato prima del codice di produzione.
+  `bevelHeightAt()` è davvero l'unico punto di lettura, ma `pillow` produce
+  altezza `1` lontano dall'alpha e i job scrivono l'intero inviluppo dei tile,
+  quindi i raw influence bounds non contengono in senso stretto tutti i texel
+  non nulli. Inoltre una texture monolitica riallocata non può conservare
+  l'intersezione valida e ricostruire solo la corona senza copia, rebuild
+  dell'intersezione o campo tiled; la crescita durante un tratto e il retarget
+  privo di content bounds sono ulteriori decisioni aperte. Prova completa in
+  `docs/effects-bbox-pr3.md`; flag bbox non introdotto, runtime invariato.
 - Verifiche locali verdi: `bevel:verify`, `stroke:verify`, `grain:verify`,
   `blend:verify`, `thickness:verify`, TypeScript; inizializzazione WGSL e matrice
   delle tre tecniche/quattro modalità su WebGPU NVIDIA. Il warning Chromium

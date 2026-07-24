@@ -1,0 +1,197 @@
+# PR 3 — Gate del campo Smusso a bounding box
+
+## Esito
+
+**Gate non superato.** La modifica di produzione non può iniziare rispettando
+contemporaneamente tutti i vincoli del prompt.
+
+La lettura dell'heightfield è effettivamente centralizzata, ma le altre due
+premesse necessarie non reggono sul codice corrente:
+
+1. `rasterBevelInfluenceBounds()` non contiene, in senso stretto, ogni texel
+   non nullo prodotto dal campo per tutte le modalità;
+2. una texture WebGPU monolitica riallocata non conserva i texel precedenti.
+   Senza copia, rebuild dell'area già valida o partizionamento del campo non è
+   quindi possibile ricostruire soltanto la corona nuova.
+
+Inoltre il contenuto può crescere mentre una pennellata è attiva e il contratto
+di retarget non trasporta i bounds della nuova sorgente. Entrambi i percorsi
+richiedono una decisione progettuale prima dello Step 2.
+
+I riferimenti sotto sono stati verificati sul commit `e9851ed`.
+
+## A. Copertura delle letture
+
+La prova di centralizzazione **passa**.
+
+- La texture è dichiarata una sola volta nel WGSL di composizione come
+  `bevelHeight` (`src/stroke-renderer.ts:554`).
+- L'unico `textureLoad()` che la legge è dentro
+  `bevelHeightAt()` (`src/stroke-renderer.ts:565-573`).
+- Le otto letture usate da Scharr passano tutte da quell'helper
+  (`src/stroke-renderer.ts:597-605`).
+- Lo stesso sorgente WGSL viene incluso nel compose mip 0 e mip 1
+  (`src/stroke-renderer.ts:782-809`) e nel display diretto
+  (`src/stroke-renderer.ts:831-852`), quindi non esiste un secondo percorso di
+  sampling nascosto nel display.
+- Le view legate al compose, al readback golden e al display sono la stessa
+  `bevelHeightView` (`src/stroke-renderer.ts:1407-1428`,
+  `src/stroke-renderer.ts:2005-2028`).
+
+Ricerca eseguita su `src/`: nessun altro `textureLoad`, `textureSample` o
+readback dell'heightfield. Le occorrenze esterne di `heightView` sono solo
+propagazione e binding della risorsa. Sul lato Smusso `heightOutput` è
+`write-only` (`src/bevel-renderer.ts:222-232`) e l'unica scrittura persistente
+è il `textureStore()` del resolve (`src/bevel-renderer.ts:718-722`).
+
+**Eccezioni trovate: nessuna.**
+
+## B. Supporto del campo e controesempio `pillow`
+
+`deriveRasterBevelHeightfield()` calcola un apron finito che comprende size,
+due gaussiane troncate e il margine di sicurezza
+(`src/bevel-core.ts:272-302`). `rasterBevelInfluenceBounds()` espande i bounds
+del contenuto di `apron + 1` e li limita al documento
+(`src/bevel-core.ts:525-555`).
+
+Questa espansione contiene il supporto utile di `inner`, `outer` ed `emboss`
+per entrambe le famiglie di tecnica:
+
+- nella tecnica `smooth`, una sorgente alpha nulla resta nulla dopo la prima
+  gaussiana e le formule dei primi tre modi tornano a zero fuori dal supporto
+  (`src/bevel-renderer.ts:610-638`);
+- nelle tecniche `chiselHard` e `chiselSoft`, la distanza firmata viene
+  saturata dalle stesse formule entro `size`, poi dalla gaussiana finale entro
+  il suo raggio finito (`src/bevel-renderer.ts:500-529`,
+  `src/bevel-renderer.ts:629-638`).
+
+La modalità `pillow` è però un controesempio diretto:
+
+- `smooth`: con alpha sorgente nulla, `source == 0` e
+  `abs(2 * source - 1) == 1` (`src/bevel-renderer.ts:619-628`);
+- scalpello: lontano dal bordo la distanza firmata ha modulo maggiore di
+  `size`, quindi `clamp(abs(source) / size, 0, 1) == 1`
+  (`src/bevel-renderer.ts:629-638`).
+
+La gaussiana finale conserva una regione costante a 1. Il resolve scrive
+quindi valori non nulli anche dove non esiste copertura sorgente
+(`src/bevel-renderer.ts:649-723`).
+
+C'è una seconda differenza fra bounds matematici e texel effettivamente
+scritti: `buildJobs()` arrotonda la ROI ai tile da 256 e ogni job risolve
+l'intero target tile (`src/bevel-renderer.ts:1345-1389`). I texel non nulli
+`pillow` possono perciò arrivare fino all'inviluppo dei tile, oltre il rettangolo
+grezzo restituito da `rasterBevelInfluenceBounds()`.
+
+Il percorso corrente resta visivamente stabile perché il campo viene prima
+azzerato (`src/bevel-renderer.ts:1808-1819`) e soltanto i tile schedulati sono
+riscritti. Fuori dall'inviluppo schedulato rimane quindi lo zero della clear,
+non lo zero prodotto dall'algoritmo Heightfield V2. Un bbox può riprodurre
+questa semantica solo definendo esplicitamente come dominio l'inviluppo
+tile-aligned dei job, non sostenendo che il valore matematico del campo sia
+zero fuori dagli influence bounds.
+
+Conclusione del punto B: la frase «i bounds di influenza contengono tutti i
+pixel in cui il campo è diverso da zero, per tutte le modalità» non è
+dimostrabile sul renderer corrente.
+
+## C. Percorsi di crescita e osservatori
+
+### Bounds persistenti del layer
+
+`noteLayerMutation()` azzera `layerContentBounds` dopo una clear e altrimenti
+unisce ogni dirty rect al massimo storico corrente
+(`src/brush-engine.ts:6042-6051`). I chiamanti di produzione sono:
+
+- clear e frame Light Glaze (`src/brush-engine.ts:8989`,
+  `src/brush-engine.ts:9277`);
+- Paint normale, Blend dry e replay Undo/Redo, che convergono nel frame comune
+  (`src/brush-engine.ts:9720-9723`);
+- cambio formato e comando Pulisci, che azzerano esplicitamente i bounds
+  (`src/brush-engine.ts:2121-2129`, `src/brush-engine.ts:2533-2541`).
+
+Il contenuto persistente può quindi crescere a ogni dirty rect Paint/Blend e
+durante un replay; non si restringe fra due clear.
+
+### Bounds virtuali transienti
+
+Light Glaze unisce `layerContentBounds` alla dirty rect della sessione prima
+del commit (`src/brush-engine.ts:9113-9122`). Il tail predittivo fa lo stesso
+con la sua dirty rect (`src/brush-engine.ts:9749-9767`). Questi bounds possono
+crescere frame per frame durante la pennellata senza modificare ancora i bounds
+persistenti.
+
+### Cambi di stile e sorgente
+
+Un cambio geometry invalida il campo e lo ricostruisce sui bounds esistenti
+(`src/brush-engine.ts:1998-2055`). Size, soften, mode e technique possono
+quindi allargare l'influenza anche senza una mutazione del layer. Un cambio fra
+`permanent`, `light-glaze` e `thickness-tail` forza ugualmente clear e rebuild
+(`src/brush-engine.ts:6093-6113`).
+
+Il retarget è un caso separato: l'API riceve soltanto view e formato
+(`src/brush-engine.ts:3147-3163`), poi passa intenzionalmente un rettangolo
+4096×4096 come mutation e content bounds (`src/brush-engine.ts:3165-3197`).
+Non esistono oggi metadati con cui ricavare la bbox della nuova texture.
+
+### Osservatori
+
+- `encodeRasterStrokeUpdate()` sceglie fra rebuild dell'influenza completa e
+  ROI incrementale (`src/brush-engine.ts:6067-6118`).
+- `rasterBevelInfluenceBounds()` è l'osservatore del dominio del campo
+  (`src/brush-engine.ts:6035-6040`).
+- `rasterBevelVisualBounds()` è distinto e serve a comporre soltanto la zona
+  visibile (`src/brush-engine.ts:6028-6033`,
+  `src/brush-engine.ts:2027-2065`).
+- `RasterBevelRenderer.encode()` normalizza la ROI, la converte nei job
+  tile-aligned e usa la mutation rect per il gate alpha
+  (`src/bevel-renderer.ts:1482-1517`).
+
+## D. Blocco strutturale della crescita “solo corona”
+
+La texture corrente nasce con dimensione immutabile nel costruttore
+(`src/bevel-renderer.ts:900-933`). Una nuova `GPUTexture`:
+
+- non eredita i texel della precedente;
+- richiede nuove view e nuovi bind group Smusso/Traccia/display
+  (`src/bevel-renderer.ts:1234-1273`,
+  `src/stroke-renderer.ts:1876-1884`);
+- non può ricevere i texel vecchi tramite il percorso attuale, perché la
+  texture non ha neppure `COPY_SRC`/`COPY_DST`
+  (`src/bevel-renderer.ts:925-929`).
+
+Se, dopo una crescita, si ricostruisce soltanto la corona, l'intersezione fra
+vecchio e nuovo dominio resta non inizializzata. Per preservarla serve almeno
+una delle seguenti scelte:
+
+1. `copyTextureToTexture` della regione valida;
+2. rebuild anche dell'intersezione dalla sorgente;
+3. campo paged/tiled o più texture;
+4. allocazione fisica full-document fin dall'inizio.
+
+La prima viola «nessuna copia», la seconda viola «rebuild della sola corona»,
+la terza è fuori scope e la quarta elimina il risparmio di memoria cercato.
+Non esiste un quinto percorso implicito di resize/preserve in WebGPU.
+
+Anche «nessuna realloc durante una pennellata attiva» entra in conflitto con la
+crescita dei bounds transienti appena elencata: il percorso Light Glaze/tail
+può attraversare in un frame un lato della capacità corrente mentre
+`activeStroke` è ancora valorizzato. Garantire l'assenza di realloc richiede
+preallocare il massimo documento all'inizio del tratto, rimandare
+l'aggiornamento visivo al lift, oppure adottare una rappresentazione espandibile.
+Le prime due opzioni perdono rispettivamente il beneficio di memoria o la
+parità frame-per-frame; la terza è fuori scope.
+
+## Decisioni necessarie prima dello Step 2
+
+Per rendere implementabile la PR servono istruzioni esplicite su questi punti:
+
+1. definire il dominio come inviluppo tile-aligned dei job e verificare la
+   semantica `pillow`, invece di assumere che il campo matematico sia zero;
+2. consentire una copia in-encoder durante la crescita **oppure** consentire il
+   rebuild dell'intero nuovo bbox quando la texture viene sostituita;
+3. stabilire la policy durante una pennellata che supera la capacità corrente;
+4. estendere retarget e benchmark con i bounds noti della nuova sorgente.
+
+Fino a questa scelta il flag resta inesistente e il comportamento di
+produzione resta esattamente quello di `e9851ed`.
