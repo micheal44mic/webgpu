@@ -15,6 +15,7 @@ import {
   type StampGeometry,
   type StrokePerformanceProfile,
   type RasterStrokeStyle,
+  type RasterBevelStyle,
 } from "./brush-engine";
 
 function element<T extends HTMLElement>(id: string): T {
@@ -176,6 +177,15 @@ interface BenchmarkRun {
     rasterStrokeScratchStrategy: string;
     rasterStrokeScratchExtent: number;
     rasterStrokeScratchCompactMaxWidth: number;
+    rasterBevelRendererBuild: string | null;
+    rasterBevelStyle: RasterBevelStyle;
+    rasterBevelHeightMemoryMiB: number;
+    rasterBevelScratchMemoryMiB: number;
+    rasterBevelScratchExtent: number;
+    rasterBevelFieldStrategy: string;
+    rasterBevelDistanceStrategy: string;
+    rasterBevelWorkspaceStrategy: string;
+    rasterBevelHeightSourceMode: string | null;
     dryBlendScratchLifecycleStrategy: string;
     layerMemoryMiB: number;
     gpuLabel: string;
@@ -269,7 +279,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 39;
+    performanceTelemetryRevision: 40;
   };
 }
 
@@ -313,6 +323,7 @@ let rasterStrokeGoldenRunning = false;
 let layerFormatChanging = false;
 let rasterStrokeChanging = false;
 let historyUiBusy = false;
+let rasterBevelChanging = false;
 let engineInitialized = false;
 let controlsPanelOpen = true;
 let gpuMemoryPanelOpen = false;
@@ -333,6 +344,9 @@ const gpuMemoryRows: ReadonlyArray<
   ["gpuMemoryStrokeCoverage", "rasterStrokeCoverageMiB"],
   ["gpuMemoryStrokeControl", "rasterStrokeMaskAndControlMiB"],
   ["gpuMemoryStrokeScratch", "rasterStrokeScratchMiB"],
+  ["gpuMemoryBevelHeight", "rasterBevelHeightMiB"],
+  ["gpuMemoryBevelControl", "rasterBevelLutAndControlMiB"],
+  ["gpuMemoryBevelScratch", "rasterBevelScratchMiB"],
   ["gpuMemoryBlend", "blendRendererMiB"],
   ["gpuMemoryLightGlaze", "lightGlazeMiB"],
   ["gpuMemoryThicknessTail", "thicknessTailMiB"],
@@ -482,6 +496,24 @@ function updateControlOutputs(): void {
   element<HTMLOutputElement>("positionJitterLateralOut").value = `${rangeValue("positionJitterLateral").toFixed(0)}%`;
   element<HTMLOutputElement>("rasterStrokeWidthOut").value =
     `${rangeValue("rasterStrokeWidth").toFixed(0)} px`;
+  element<HTMLOutputElement>("rasterBevelSizeOut").value =
+    `${rangeValue("rasterBevelSize").toFixed(1).replace(".0", "")} px`;
+  element<HTMLOutputElement>("rasterBevelSoftenOut").value =
+    `${rangeValue("rasterBevelSoften").toFixed(1).replace(".0", "")} px`;
+  element<HTMLOutputElement>("rasterBevelDepthOut").value =
+    `${rangeValue("rasterBevelDepth").toFixed(0)}%`;
+  element<HTMLOutputElement>("rasterBevelAngleOut").value =
+    `${rangeValue("rasterBevelAngle").toFixed(0)}°`;
+  element<HTMLOutputElement>("rasterBevelAltitudeOut").value =
+    `${rangeValue("rasterBevelAltitude").toFixed(0)}°`;
+  element<HTMLOutputElement>("rasterBevelRangeOut").value =
+    `${rangeValue("rasterBevelRange").toFixed(0)}%`;
+  element<HTMLOutputElement>("rasterBevelFillOut").value =
+    `${rangeValue("rasterBevelFill").toFixed(0)}%`;
+  element<HTMLOutputElement>("rasterBevelHighlightOpacityOut").value =
+    `${rangeValue("rasterBevelHighlightOpacity").toFixed(0)}%`;
+  element<HTMLOutputElement>("rasterBevelShadowOpacityOut").value =
+    `${rangeValue("rasterBevelShadowOpacity").toFixed(0)}%`;
   element<HTMLOutputElement>("positionJitterLinearOut").value = `${rangeValue("positionJitterLinear").toFixed(0)}%`;
   element<HTMLOutputElement>("benchmarkStampsOut").value = formatInteger(rangeValue("benchmarkStamps"));
 }
@@ -580,7 +612,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 39,
+    performanceTelemetryRevision: 40,
     ...engineEnvironment,
   };
 }
@@ -851,6 +883,161 @@ async function applyRasterStrokeControls(): Promise<void> {
   }
 }
 
+function rasterBevelColorFromHex(
+  value: string,
+  fallback: RasterBevelStyle["highlightColor"],
+): RasterBevelStyle["highlightColor"] {
+  const match = /^#([0-9a-f]{6})$/i.exec(value);
+  if (!match) {
+    return [...fallback] as [number, number, number];
+  }
+  const packed = Number.parseInt(match[1], 16);
+  return [
+    ((packed >>> 16) & 0xff) / 255,
+    ((packed >>> 8) & 0xff) / 255,
+    (packed & 0xff) / 255,
+  ];
+}
+
+function rasterBevelColorToHex(color: RasterBevelStyle["highlightColor"]): string {
+  const channel = (value: number) => Math.round(Math.max(0, Math.min(1, value)) * 255)
+    .toString(16)
+    .padStart(2, "0");
+  return `#${channel(color[0])}${channel(color[1])}${channel(color[2])}`;
+}
+
+function readRasterBevelStyle(): RasterBevelStyle {
+  return {
+    enabled: element<HTMLInputElement>("rasterBevelEnabled").checked,
+    mode: element<HTMLSelectElement>("rasterBevelMode").value as RasterBevelStyle["mode"],
+    technique: element<HTMLSelectElement>("rasterBevelTechnique")
+      .value as RasterBevelStyle["technique"],
+    direction: element<HTMLSelectElement>("rasterBevelDirection")
+      .value as RasterBevelStyle["direction"],
+    size: rangeValue("rasterBevelSize"),
+    soften: rangeValue("rasterBevelSoften"),
+    depth: rangeValue("rasterBevelDepth"),
+    angle: rangeValue("rasterBevelAngle"),
+    altitude: rangeValue("rasterBevelAltitude"),
+    highlightColor: rasterBevelColorFromHex(
+      element<HTMLInputElement>("rasterBevelHighlightColor").value,
+      [1, 0.957, 0.875],
+    ),
+    highlightOpacity: rangeValue("rasterBevelHighlightOpacity"),
+    shadowColor: rasterBevelColorFromHex(
+      element<HTMLInputElement>("rasterBevelShadowColor").value,
+      [0.141, 0.078, 0.035],
+    ),
+    shadowOpacity: rangeValue("rasterBevelShadowOpacity"),
+    gloss: element<HTMLSelectElement>("rasterBevelGloss")
+      .value as RasterBevelStyle["gloss"],
+    contourAA: element<HTMLInputElement>("rasterBevelContourAA").checked,
+    bevelContourEnabled: element<HTMLInputElement>("rasterBevelContourEnabled").checked,
+    bevelContour: element<HTMLSelectElement>("rasterBevelContour")
+      .value as RasterBevelStyle["bevelContour"],
+    bevelRange: rangeValue("rasterBevelRange"),
+    fill: rangeValue("rasterBevelFill"),
+  };
+}
+
+function updateRasterBevelOutputs(): void {
+  element<HTMLOutputElement>("rasterBevelSizeOut").value =
+    `${rangeValue("rasterBevelSize").toFixed(1).replace(".0", "")} px`;
+  element<HTMLOutputElement>("rasterBevelSoftenOut").value =
+    `${rangeValue("rasterBevelSoften").toFixed(1).replace(".0", "")} px`;
+  for (const id of ["Depth", "Range", "Fill", "HighlightOpacity", "ShadowOpacity"] as const) {
+    element<HTMLOutputElement>(`rasterBevel${id}Out`).value =
+      `${rangeValue(`rasterBevel${id}`).toFixed(0)}%`;
+  }
+  element<HTMLOutputElement>("rasterBevelAngleOut").value =
+    `${rangeValue("rasterBevelAngle").toFixed(0)}°`;
+  element<HTMLOutputElement>("rasterBevelAltitudeOut").value =
+    `${rangeValue("rasterBevelAltitude").toFixed(0)}°`;
+}
+
+function syncRasterBevelControls(style: RasterBevelStyle): void {
+  element<HTMLInputElement>("rasterBevelEnabled").checked = style.enabled;
+  setControlValue("rasterBevelMode", style.mode);
+  setControlValue("rasterBevelTechnique", style.technique);
+  setControlValue("rasterBevelDirection", style.direction);
+  setControlValue("rasterBevelSize", style.size);
+  setControlValue("rasterBevelSoften", style.soften);
+  setControlValue("rasterBevelDepth", style.depth);
+  setControlValue("rasterBevelAngle", style.angle);
+  setControlValue("rasterBevelAltitude", style.altitude);
+  setControlValue("rasterBevelHighlightColor", rasterBevelColorToHex(style.highlightColor));
+  setControlValue("rasterBevelHighlightOpacity", style.highlightOpacity);
+  setControlValue("rasterBevelShadowColor", rasterBevelColorToHex(style.shadowColor));
+  setControlValue("rasterBevelShadowOpacity", style.shadowOpacity);
+  setControlValue("rasterBevelGloss", style.gloss);
+  element<HTMLInputElement>("rasterBevelContourAA").checked = style.contourAA;
+  element<HTMLInputElement>("rasterBevelContourEnabled").checked = style.bevelContourEnabled;
+  setControlValue("rasterBevelContour", style.bevelContour);
+  setControlValue("rasterBevelRange", style.bevelRange);
+  setControlValue("rasterBevelFill", style.fill);
+  element<HTMLElement>("rasterBevelParameters").hidden = !style.enabled;
+  updateRasterBevelOutputs();
+}
+
+const rasterBevelControlIds = [
+  "rasterBevelEnabled",
+  "rasterBevelMode",
+  "rasterBevelTechnique",
+  "rasterBevelDirection",
+  "rasterBevelSize",
+  "rasterBevelSoften",
+  "rasterBevelDepth",
+  "rasterBevelAngle",
+  "rasterBevelAltitude",
+  "rasterBevelGloss",
+  "rasterBevelContourAA",
+  "rasterBevelContourEnabled",
+  "rasterBevelContour",
+  "rasterBevelRange",
+  "rasterBevelFill",
+  "rasterBevelHighlightColor",
+  "rasterBevelHighlightOpacity",
+  "rasterBevelShadowColor",
+  "rasterBevelShadowOpacity",
+] as const;
+
+function updateRasterBevelControlAvailability(locked = interactionLocked()): void {
+  const enabled = element<HTMLInputElement>("rasterBevelEnabled").checked;
+  const contourEnabled = element<HTMLInputElement>("rasterBevelContourEnabled").checked;
+  element<HTMLElement>("rasterBevelParameters").hidden = !enabled;
+  for (const id of rasterBevelControlIds) {
+    const contourControl = id === "rasterBevelContour" || id === "rasterBevelRange";
+    element<HTMLInputElement | HTMLSelectElement>(id).disabled =
+      locked
+      || rasterBevelChanging
+      || (id !== "rasterBevelEnabled" && !enabled)
+      || (contourControl && !contourEnabled);
+  }
+}
+
+async function applyRasterBevelControls(): Promise<void> {
+  if (!engineInitialized || rasterBevelChanging || activePointerId !== null) {
+    syncRasterBevelControls(engine.getRasterBevelStyle());
+    updateRasterBevelControlAvailability();
+    return;
+  }
+  rasterBevelChanging = true;
+  updateHistoryControls();
+  updateHumanStrokeControls();
+  try {
+    const accepted = await engine.setRasterBevelStyle(readRasterBevelStyle());
+    if (!accepted) {
+      syncRasterBevelControls(engine.getRasterBevelStyle());
+    }
+  } catch {
+    syncRasterBevelControls(engine.getRasterBevelStyle());
+  } finally {
+    rasterBevelChanging = false;
+    updateHistoryControls();
+    updateHumanStrokeControls();
+  }
+}
+
 function applySettingsToControls(settings: BrushSettings): void {
   const tool = settings.tool === "blend" ? "blend" : "paint";
   configureBrushToolUi(tool, false);
@@ -1100,7 +1287,8 @@ function updateHumanStrokeControls(): void {
     || benchmarkRunning
     || rasterStrokeGoldenRunning
     || layerFormatChanging
-    || rasterStrokeChanging;
+    || rasterStrokeChanging
+    || rasterBevelChanging;
   recordHumanStrokeButton.disabled = operationLocked
     || humanStrokeLoading
     || humanStrokeSaving
@@ -1149,6 +1337,7 @@ function operationLocked(): boolean {
     || rasterStrokeGoldenRunning
     || layerFormatChanging
     || rasterStrokeChanging
+    || rasterBevelChanging
     || humanStrokeReplaying
     || humanStrokeSaving;
 }
@@ -1177,6 +1366,7 @@ function updateHistoryControls(): void {
   }
   updateGrainControlAvailability(locked);
   updateRasterStrokeControlAvailability(locked);
+  updateRasterBevelControlAvailability(locked);
 }
 
 async function runHistoryOperation(operation: "undo" | "redo"): Promise<void> {
@@ -1313,6 +1503,49 @@ element<HTMLInputElement>("rasterStrokeColor").addEventListener("change", () => 
   void applyRasterStrokeControls();
 });
 
+element<HTMLInputElement>("rasterBevelEnabled").addEventListener("change", () => {
+  updateRasterBevelControlAvailability();
+  void applyRasterBevelControls();
+});
+element<HTMLInputElement>("rasterBevelContourEnabled").addEventListener("change", () => {
+  updateRasterBevelControlAvailability();
+  void applyRasterBevelControls();
+});
+
+const rasterBevelRangeIds = [
+  "rasterBevelSize",
+  "rasterBevelSoften",
+  "rasterBevelDepth",
+  "rasterBevelAngle",
+  "rasterBevelAltitude",
+  "rasterBevelRange",
+  "rasterBevelFill",
+  "rasterBevelHighlightOpacity",
+  "rasterBevelShadowOpacity",
+] as const;
+for (const id of rasterBevelRangeIds) {
+  element<HTMLInputElement>(id).addEventListener("input", updateRasterBevelOutputs);
+  element<HTMLInputElement>(id).addEventListener("change", () => {
+    void applyRasterBevelControls();
+  });
+}
+
+const rasterBevelChangeControlIds = [
+  "rasterBevelMode",
+  "rasterBevelTechnique",
+  "rasterBevelDirection",
+  "rasterBevelGloss",
+  "rasterBevelContourAA",
+  "rasterBevelContour",
+  "rasterBevelHighlightColor",
+  "rasterBevelShadowColor",
+] as const;
+for (const id of rasterBevelChangeControlIds) {
+  element<HTMLInputElement | HTMLSelectElement>(id).addEventListener("change", () => {
+    void applyRasterBevelControls();
+  });
+}
+
 element<HTMLSelectElement>("brushTool").addEventListener("change", () => {
   const tool = element<HTMLSelectElement>("brushTool").value === "blend" ? "blend" : "paint";
   configureBrushToolUi(tool, true);
@@ -1379,6 +1612,7 @@ layerFormatSelect.addEventListener("change", async () => {
   } finally {
     layerFormatChanging = false;
     syncRasterStrokeControls(engine.getRasterStrokeStyle());
+    syncRasterBevelControls(engine.getRasterBevelStyle());
     historyState = engine.getHistoryState();
     updateHistoryControls();
     updateHumanStrokeControls();
@@ -1509,6 +1743,11 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
   element<HTMLElement>("gpuMemoryStrokeScratchLabel").textContent = scratchExtent > 0
     ? `Traccia · scratch JFA ${scratchExtent}²`
     : "Traccia · scratch JFA";
+  const bevelScratchExtent = stats.gpuMemory.rasterBevelScratchExtent;
+  element<HTMLElement>("gpuMemoryBevelScratchLabel").textContent = bevelScratchExtent > 0
+    ? `Smusso · scratch ROI ${bevelScratchExtent}²`
+    : "Smusso · scratch ROI";
+
 
   const totalMiB = stats.gpuMemory.countedTotalMiB;
   const formattedTotal = formatMemoryMiB(totalMiB);
@@ -2070,6 +2309,7 @@ const resizeObserver = new ResizeObserver(() => engine.resizeCanvas());
 resizeObserver.observe(canvas);
 
 syncRasterStrokeControls(engine.getRasterStrokeStyle());
+syncRasterBevelControls(engine.getRasterBevelStyle());
 setGpuMemoryPanelOpen(false);
 setControlsPanelOpen(true);
 configureBrushToolUi("paint", false);

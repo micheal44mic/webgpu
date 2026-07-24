@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#111318" />
+    <link rel="icon" href="data:," />
     <title>WebGPU Brush Engine 4096²</title>
   </head>
   <body>
@@ -319,6 +320,137 @@
           </div>
         </section>
 
+        <section id="rasterBevelSection">
+          <h2>Smusso / Rilievo</h2>
+
+          <label class="check-control">
+            <input id="rasterBevelEnabled" type="checkbox" />
+            <span>
+              Heightfield V2
+              <small>Campo altezza R32F, normali Scharr 3×3 e compositing nello style stack.</small>
+            </span>
+          </label>
+
+          <div id="rasterBevelParameters" hidden>
+            <label class="control">
+              <span>Modalità</span>
+              <select id="rasterBevelMode">
+                <option value="inner" selected>Interno</option>
+                <option value="outer">Esterno</option>
+                <option value="emboss">Rilievo</option>
+                <option value="pillow">Cuscino</option>
+              </select>
+            </label>
+
+            <label class="control">
+              <span>Tecnica</span>
+              <select id="rasterBevelTechnique">
+                <option value="smooth" selected>Morbida</option>
+                <option value="chiselHard">Scalpello duro</option>
+                <option value="chiselSoft">Scalpello morbido</option>
+              </select>
+            </label>
+
+            <label class="control">
+              <span>Direzione</span>
+              <select id="rasterBevelDirection">
+                <option value="up" selected>Su</option>
+                <option value="down">Giù</option>
+              </select>
+            </label>
+
+            <label class="control">
+              <span>Dimensione <output id="rasterBevelSizeOut">32 px</output></span>
+              <input id="rasterBevelSize" type="range" min="0.5" max="250" step="0.5" value="32" />
+            </label>
+
+            <label class="control">
+              <span>Ammorbidisci <output id="rasterBevelSoftenOut">4 px</output></span>
+              <input id="rasterBevelSoften" type="range" min="0" max="64" step="0.5" value="4" />
+            </label>
+
+            <label class="control">
+              <span>Profondità <output id="rasterBevelDepthOut">100%</output></span>
+              <input id="rasterBevelDepth" type="range" min="1" max="1000" step="1" value="100" />
+            </label>
+
+            <label class="control">
+              <span>Angolo luce <output id="rasterBevelAngleOut">135°</output></span>
+              <input id="rasterBevelAngle" type="range" min="0" max="359" step="1" value="135" />
+            </label>
+
+            <label class="control">
+              <span>Altitudine luce <output id="rasterBevelAltitudeOut">30°</output></span>
+              <input id="rasterBevelAltitude" type="range" min="0" max="90" step="1" value="30" />
+            </label>
+
+            <label class="control">
+              <span>Gloss</span>
+              <select id="rasterBevelGloss">
+                <option value="linear" selected>Lineare</option>
+                <option value="soft">Morbido</option>
+                <option value="gaussian">Gaussiano</option>
+                <option value="cone">Cono</option>
+                <option value="ring">Anello</option>
+              </select>
+            </label>
+
+            <label class="check-control">
+              <input id="rasterBevelContourAA" type="checkbox" checked />
+              <span>Antialias del gloss</span>
+            </label>
+
+            <label class="check-control">
+              <input id="rasterBevelContourEnabled" type="checkbox" />
+              <span>Profilo smusso</span>
+            </label>
+
+            <label class="control">
+              <span>Profilo</span>
+              <select id="rasterBevelContour">
+                <option value="linear" selected>Lineare</option>
+                <option value="cone">Cono</option>
+                <option value="gaussian">Gaussiano</option>
+                <option value="ring">Anello</option>
+              </select>
+            </label>
+
+            <label class="control">
+              <span>Range profilo <output id="rasterBevelRangeOut">100%</output></span>
+              <input id="rasterBevelRange" type="range" min="1" max="100" step="1" value="100" />
+            </label>
+
+            <label class="control">
+              <span>Riempimento <output id="rasterBevelFillOut">100%</output></span>
+              <input id="rasterBevelFill" type="range" min="0" max="100" step="1" value="100" />
+            </label>
+
+            <label class="control color-control">
+              <span>Colore luce</span>
+              <input id="rasterBevelHighlightColor" type="color" value="#fff4df" />
+            </label>
+
+            <label class="control">
+              <span>Opacità luce <output id="rasterBevelHighlightOpacityOut">75%</output></span>
+              <input id="rasterBevelHighlightOpacity" type="range" min="0" max="100" step="1" value="75" />
+            </label>
+
+            <label class="control color-control">
+              <span>Colore ombra</span>
+              <input id="rasterBevelShadowColor" type="color" value="#241409" />
+            </label>
+
+            <label class="control">
+              <span>Opacità ombra <output id="rasterBevelShadowOpacityOut">75%</output></span>
+              <input id="rasterBevelShadowOpacity" type="range" min="0" max="100" step="1" value="75" />
+            </label>
+
+            <p class="result">
+              Morbida usa Gaussian separabile; Scalpello usa marching squares subpixel, JFA sui segmenti e distanza signed R32F.
+            </p>
+          </div>
+        </section>
+
         <section>
           <h2>Layer</h2>
 
@@ -422,10 +554,13 @@
               <div data-memory-row><dt>Shape 2K</dt><dd id="gpuMemoryShape">—</dd></div>
               <div data-memory-row><dt>Buffer Paint</dt><dd id="gpuMemoryPaintBuffers">—</dd></div>
               <div data-memory-row><dt>Cache schermo</dt><dd id="gpuMemoryPresentation">—</dd></div>
-              <div class="gpu-memory-group-start" data-memory-row><dt>Traccia · risultato mip 1+</dt><dd id="gpuMemoryStrokeStyled">—</dd></div>
+              <div class="gpu-memory-group-start" data-memory-row><dt>Style stack · risultato mip 1+</dt><dd id="gpuMemoryStrokeStyled">—</dd></div>
               <div data-memory-row><dt>Traccia · copertura R8</dt><dd id="gpuMemoryStrokeCoverage">—</dd></div>
               <div data-memory-row><dt>Traccia · mask e controllo</dt><dd id="gpuMemoryStrokeControl">—</dd></div>
               <div data-memory-row><dt id="gpuMemoryStrokeScratchLabel">Traccia · scratch JFA</dt><dd id="gpuMemoryStrokeScratch">—</dd></div>
+              <div class="gpu-memory-group-start" data-memory-row><dt>Smusso · heightfield R32F</dt><dd id="gpuMemoryBevelHeight">—</dd></div>
+              <div data-memory-row><dt>Smusso · LUT e controllo</dt><dd id="gpuMemoryBevelControl">—</dd></div>
+              <div data-memory-row><dt id="gpuMemoryBevelScratchLabel">Smusso · scratch ROI</dt><dd id="gpuMemoryBevelScratch">—</dd></div>
               <div class="gpu-memory-group-start" data-memory-row><dt>Blend</dt><dd id="gpuMemoryBlend">—</dd></div>
               <div data-memory-row><dt>Light / M1 Glaze</dt><dd id="gpuMemoryLightGlaze">—</dd></div>
               <div data-memory-row><dt>Coda spessore</dt><dd id="gpuMemoryThicknessTail">—</dd></div>

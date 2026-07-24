@@ -3,9 +3,17 @@ import {
   type RasterStrokeRect,
   type RasterStrokeStyle,
 } from "./stroke-core";
+import {
+  DEFAULT_RASTER_BEVEL_STYLE,
+  RASTER_BEVEL_NORMAL_APRON,
+  deriveRasterBevelHeightfield,
+  normalizeRasterBevelStyle,
+  rasterBevelLightVector,
+  type RasterBevelStyle,
+} from "./bevel-core";
 
 export const RASTER_STROKE_RENDERER_BUILD =
-  "raster-stroke-webgpu-v5-direct-lod0-coarse-styled-mips-packed-r8-coverage-native-unorm-round-even";
+  "style-stack-webgpu-v7-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even";
 export const RASTER_STROKE_COVERAGE_STRATEGY =
   "persistent-packed-r8-style-coverage" as const;
 export const RASTER_STROKE_DISTANCE_STORAGE_STRATEGY =
@@ -32,6 +40,7 @@ export interface RasterStrokeRendererOptions {
 export interface RasterStrokeEncodeOptions {
   encoder: GPUCommandEncoder;
   style: RasterStrokeStyle;
+  bevelStyle?: RasterBevelStyle;
   sourceMode: RasterStrokeSourceMode;
   rebuildRect?: RasterStrokeRect | null;
   changeDetectionRect?: RasterStrokeRect | null;
@@ -76,6 +85,7 @@ const DEFAULT_SCRATCH_EXTENT = 2048;
 const WORKGROUP_SIZE = 8;
 const PARAMETER_BYTES = 80;
 const DISPLAY_PARAMETER_BYTES = PARAMETER_BYTES;
+const BEVEL_UNIFORM_BYTES = 80;
 const PARAMETER_STRIDE = 256;
 const PARAMETER_CAPACITY = 2048;
 const INVALID_PACKED_SEED = 0xffff_ffff;
@@ -201,7 +211,7 @@ struct StrokeParameters {
   styleWidth: f32,
   stylePosition: u32,
   scratchExtent: u32,
-  _pad0: u32,
+  strokeEnabled: u32,
   styleColor: vec4<f32>,
 };
 
@@ -336,7 +346,7 @@ struct StrokeParameters {
   styleWidth: f32,
   stylePosition: u32,
   scratchExtent: u32,
-  _pad0: u32,
+  strokeEnabled: u32,
   styleColor: vec4<f32>,
 };
 
@@ -492,13 +502,50 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
 `;
 }
 
+
 function strokeCompositionShaderSource(
   documentWidth: number,
   bindGroup = 0,
   coverageBinding = 5,
+  heightBinding = 7,
+  glossBinding = 8,
+  bevelUniformBinding = 9,
+  derivativeMode: "analytic" | "fragment" = "analytic",
 ): string {
+  const contourAA = derivativeMode === "fragment"
+    ? /* wgsl */ `
+    if (bevel.flags.z == 1u) {
+      let dt = 0.5 * fwidth(t);
+      contour = (
+        lightContour(t - dt) + lightContour(t) + lightContour(t + dt)
+      ) / 3.0;
+    }`
+    : /* wgsl */ `
+    if (bevel.flags.z == 1u) {
+      let quadOrigin = position - (position & vec2<i32>(1));
+      let leftT = bevelResponseAt(vec2<i32>(quadOrigin.x, position.y)).x;
+      let rightT = bevelResponseAt(vec2<i32>(quadOrigin.x + 1, position.y)).x;
+      let topT = bevelResponseAt(vec2<i32>(position.x, quadOrigin.y)).x;
+      let bottomT = bevelResponseAt(vec2<i32>(position.x, quadOrigin.y + 1)).x;
+      let dt = 0.5 * (abs(rightT - leftT) + abs(bottomT - topT));
+      contour = (
+        lightContour(t - dt) + lightContour(t) + lightContour(t + dt)
+      ) / 3.0;
+    }`;
   return /* wgsl */ `
-@group(${bindGroup}) @binding(${coverageBinding}) var<storage, read> coverageField: array<u32>;
+struct BevelUniforms {
+  flags: vec4<u32>,
+  scalars: vec4<f32>,
+  light: vec4<f32>,
+  highlight: vec4<f32>,
+  shadow: vec4<f32>,
+};
+
+@group(${bindGroup}) @binding(${coverageBinding})
+var<storage, read> coverageField: array<u32>;
+@group(${bindGroup}) @binding(${heightBinding}) var bevelHeight: texture_2d<f32>;
+@group(${bindGroup}) @binding(${glossBinding}) var bevelGloss: texture_2d<f32>;
+@group(${bindGroup}) @binding(${bevelUniformBinding}) var<uniform> bevel: BevelUniforms;
 
 fn loadCoverageByte(position: vec2<i32>) -> u32 {
   let linearIndex = u32(position.y) * ${documentWidth}u + u32(position.x);
@@ -507,9 +554,114 @@ fn loadCoverageByte(position: vec2<i32>) -> u32 {
   return (packed >> shift) & 255u;
 }
 
-fn styledTexel(position: vec2<i32>) -> vec4<f32> {
-  let base = sourceTexel(position);
-  let coverage = f32(loadCoverageByte(position)) / 255.0;
+fn bevelHeightAt(position: vec2<i32>) -> f32 {
+  let apron = vec2<i32>(${RASTER_BEVEL_NORMAL_APRON});
+  if (
+    any(position < -apron)
+    || any(position >= DOCUMENT_SIZE + apron)
+  ) {
+    return 0.0;
+  }
+  return textureLoad(bevelHeight, position + apron, 0).r;
+}
+
+fn reliefResponse(normal: vec3<f32>, light: vec3<f32>) -> f32 {
+  let value = clamp(dot(normal, light), -1.0, 1.0);
+  let baseline = light.z;
+  if (value >= baseline) {
+    return clamp((value - baseline) / max(1e-5, 1.0 - baseline), -1.0, 1.0);
+  }
+  return clamp((value - baseline) / max(1e-5, 1.0 + baseline), -1.0, 1.0);
+}
+
+fn lightContour(value: f32) -> f32 {
+  let size = textureDimensions(bevelGloss).x;
+  let q = clamp(value, 0.0, 1.0) * f32(size - 1u);
+  let first = u32(floor(q));
+  let second = min(size - 1u, first + 1u);
+  return mix(
+    textureLoad(bevelGloss, vec2<i32>(i32(first), 0), 0).r,
+    textureLoad(bevelGloss, vec2<i32>(i32(second), 0), 0).r,
+    fract(q)
+  );
+}
+
+fn bevelResponseAt(position: vec2<i32>) -> vec2<f32> {
+  let nw = bevelHeightAt(position + vec2<i32>(-1, 1));
+  let n = bevelHeightAt(position + vec2<i32>(0, 1));
+  let ne = bevelHeightAt(position + vec2<i32>(1, 1));
+  let w = bevelHeightAt(position + vec2<i32>(-1, 0));
+  let e = bevelHeightAt(position + vec2<i32>(1, 0));
+  let sw = bevelHeightAt(position + vec2<i32>(-1, -1));
+  let s = bevelHeightAt(position + vec2<i32>(0, -1));
+  let se = bevelHeightAt(position + vec2<i32>(1, -1));
+  let gradient = vec2<f32>(
+    (3.0 * (ne - nw) + 10.0 * (e - w) + 3.0 * (se - sw)) / 32.0,
+    (3.0 * (nw - sw) + 10.0 * (n - s) + 3.0 * (ne - se)) / 32.0
+  );
+  let effectMask = smoothstep(1e-6, 2e-4, length(gradient));
+  let normal = normalize(vec3<f32>(-bevel.scalars.x * gradient, 1.0));
+  let response = reliefResponse(normal, normalize(bevel.light.xyz));
+  return vec2<f32>(response * 0.5 + 0.5, effectMask);
+}
+
+fn overPlane(dst: vec4<f32>, color: vec3<f32>, sourceAlpha: f32) -> vec4<f32> {
+  let alpha = clamp(sourceAlpha, 0.0, 1.0);
+  return vec4<f32>(
+    color * alpha + dst.rgb * (1.0 - alpha),
+    alpha + dst.a * (1.0 - alpha)
+  );
+}
+
+fn blendEffect(
+  dst: vec4<f32>,
+  color: vec3<f32>,
+  sourceAlpha: f32,
+  screenMode: bool,
+) -> vec4<f32> {
+  let alpha = clamp(sourceAlpha, 0.0, 1.0);
+  if (alpha <= 0.0) {
+    return dst;
+  }
+  if (dst.a <= 1e-6) {
+    return overPlane(dst, color, alpha);
+  }
+  let base = dst.rgb / dst.a;
+  let blended = select(base * color, base + color - base * color, screenMode);
+  let outputAlpha = max(dst.a, alpha);
+  return vec4<f32>(mix(base, blended, alpha) * outputAlpha, outputAlpha);
+}
+
+fn bevelNode(base: vec4<f32>, position: vec2<i32>) -> vec4<f32> {
+  var node = vec4<f32>(base.rgb * bevel.scalars.y, base.a * bevel.scalars.y);
+  let response = bevelResponseAt(position);
+  let t = response.x;
+  var contour = lightContour(t);
+${contourAA}
+  let signedLight = 2.0 * contour - 1.0;
+  let highlightWeight = max(signedLight, 0.0) * bevel.highlight.a * response.y;
+  let shadowWeight = max(-signedLight, 0.0) * bevel.shadow.a * response.y;
+  let insideWeight = select(base.a, 0.0, bevel.flags.y == 1u);
+  let outsideWeight = select(1.0 - base.a, 0.0, bevel.flags.y == 0u);
+  let innerHighlight = highlightWeight * insideWeight;
+  let innerShadow = shadowWeight * insideWeight;
+  let outerHighlight = highlightWeight * outsideWeight;
+  let outerShadow = shadowWeight * outsideWeight;
+  var straight = vec3<f32>(0.0);
+  if (base.a > 1e-6) {
+    straight = base.rgb / base.a;
+  }
+  var group = vec4<f32>(0.0);
+  group = overPlane(group, bevel.shadow.rgb, outerShadow);
+  group = overPlane(group, bevel.highlight.rgb, outerHighlight);
+  group = overPlane(group, straight, base.a * bevel.scalars.y);
+  group = blendEffect(group, bevel.shadow.rgb, innerShadow, false);
+  group = blendEffect(group, bevel.highlight.rgb, innerHighlight, true);
+  node = group;
+  return node;
+}
+
+fn traceOnlyNode(base: vec4<f32>, coverage: f32) -> vec4<f32> {
   let alpha = base.a;
   var strokeWeight = coverage * parameters.styleColor.a;
   if (parameters.stylePosition == 2u) {
@@ -529,7 +681,7 @@ fn styledTexel(position: vec2<i32>) -> vec4<f32> {
   if (alpha > 0.0) {
     baseStraight = base.rgb / alpha;
   }
-  var result = vec4<f32>(
+  let result = vec4<f32>(
     parameters.styleColor.rgb * strokeWeight + baseStraight * baseWeight,
     clamp(finalAlpha, 0.0, 1.0)
   );
@@ -537,6 +689,84 @@ fn styledTexel(position: vec2<i32>) -> vec4<f32> {
     clamp(result.rgb, vec3<f32>(0.0), vec3<f32>(result.a)),
     result.a
   );
+}
+
+fn combinedStrokeNode(sourceAlpha: f32, inputNode: vec4<f32>, coverage: f32) -> vec4<f32> {
+  var node = inputNode;
+  var strokeWeight = coverage * parameters.styleColor.a;
+  if (parameters.stylePosition == 2u) {
+    strokeWeight = min(strokeWeight, 1.0 - node.a);
+  }
+  if (strokeWeight > 0.0) {
+    if (parameters.stylePosition == 2u) {
+      let remainingAlpha = 1.0 - node.a;
+      node = vec4<f32>(
+        node.rgb + parameters.styleColor.rgb * strokeWeight * remainingAlpha,
+        node.a + strokeWeight * remainingAlpha
+      );
+    } else {
+      let alpha = node.a;
+      let baseWeight = max(0.0, alpha - strokeWeight);
+      var straight = vec3<f32>(0.0);
+      if (alpha > 1e-6) {
+        straight = node.rgb / alpha;
+      }
+      node = vec4<f32>(
+        parameters.styleColor.rgb * strokeWeight + straight * baseWeight,
+        max(alpha, strokeWeight)
+      );
+    }
+  }
+  return node;
+}
+
+fn hash32(input: u32) -> u32 {
+  var value = input;
+  value ^= value >> 16u;
+  value *= 2146121005u;
+  value ^= value >> 15u;
+  value *= 2221713035u;
+  value ^= value >> 16u;
+  return value;
+}
+
+fn random24(position: vec2<u32>, seed: u32) -> f32 {
+  let value = hash32(
+    (position.x * 2654435769u) ^ (position.y * 2246822507u) ^ seed
+  );
+  return f32(value & 16777215u) / 16777215.0;
+}
+
+fn styledTexel(position: vec2<i32>) -> vec4<f32> {
+  let base = sourceTexel(position);
+  var coverage = 0.0;
+  if (parameters.strokeEnabled == 1u) {
+    coverage = f32(loadCoverageByte(position)) / 255.0;
+  }
+  if (bevel.flags.x == 0u) {
+    if (parameters.strokeEnabled == 0u) {
+      return base;
+    }
+    return traceOnlyNode(base, coverage);
+  }
+  var node = bevelNode(base, position);
+  if (parameters.strokeEnabled == 1u) {
+    node = combinedStrokeNode(base.a, node, coverage);
+  }
+  let clampedAlpha = clamp(node.a, 0.0, 1.0);
+  node = vec4<f32>(
+    clamp(node.rgb, vec3<f32>(0.0), vec3<f32>(clampedAlpha)),
+    clampedAlpha
+  );
+  if (node.a > 1e-6) {
+    var straight = node.rgb / node.a;
+    let documentPosition = vec2<u32>(position);
+    let noise = random24(documentPosition, 4660u)
+      + random24(documentPosition, 40503u) - 1.0;
+    straight = clamp(straight + noise * (0.75 / 255.0), vec3<f32>(0.0), vec3<f32>(1.0));
+    node = vec4<f32>(straight * node.a, node.a);
+  }
+  return node * bevel.scalars.z;
 }
 `;
 }
@@ -610,7 +840,7 @@ struct VertexOutput {
 
 @group(0) @binding(0) var<uniform> display: DisplayUniforms;
 ${shaderSourceCommon(documentWidth, documentHeight, 1)}
-${strokeCompositionShaderSource(documentWidth, 1, 5)}
+${strokeCompositionShaderSource(documentWidth, 1, 5, 8, 9, 10, "fragment")}
 @group(1) @binding(6) var coarseStyledTexture: texture_2d<f32>;
 @group(1) @binding(7) var layerSampler: sampler;
 
@@ -686,9 +916,6 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     + (fragmentPosition.xy - display.canvasSize * 0.5) / display.zoom;
   let insideLayer = all(layerPosition >= vec2<f32>(0.0))
     && all(layerPosition < display.layerSize);
-  if (!insideLayer) {
-    return vec4<f32>(vec3<f32>(0.055), 1.0);
-  }
 
   var paint: vec4<f32>;
   if (display.selectedMipLevel < 0.5) {
@@ -705,6 +932,10 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
       uv,
       display.selectedMipLevel - 1.0
     );
+  }
+
+  if (!insideLayer) {
+    return vec4<f32>(vec3<f32>(0.055), 1.0);
   }
 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
@@ -797,7 +1028,7 @@ struct StrokeParameters {
   styleWidth: f32,
   stylePosition: u32,
   scratchExtent: u32,
-  _pad0: u32,
+  strokeEnabled: u32,
   styleColor: vec4<f32>,
 };
 
@@ -880,6 +1111,11 @@ export class RasterStrokeRenderer {
   private readonly displayParameterUploadU32 = new Uint32Array(this.displayParameterUpload);
   private readonly displayParameterUploadF32 = new Float32Array(this.displayParameterUpload);
   private readonly parameterUpload = new ArrayBuffer(PARAMETER_CAPACITY * PARAMETER_STRIDE);
+  private readonly bevelUniformBuffer: GPUBuffer;
+  private readonly bevelUniformUpload = new ArrayBuffer(BEVEL_UNIFORM_BYTES);
+  private readonly bevelUniformUploadU32 = new Uint32Array(this.bevelUniformUpload);
+  private readonly bevelUniformUploadF32 = new Float32Array(this.bevelUniformUpload);
+
   private readonly parameterUploadI32 = new Int32Array(this.parameterUpload);
   private readonly parameterUploadU32 = new Uint32Array(this.parameterUpload);
   private readonly parameterUploadF32 = new Float32Array(this.parameterUpload);
@@ -898,6 +1134,10 @@ export class RasterStrokeRenderer {
   readonly goldenMip0SamplingView: GPUTextureView | null;
   private readonly dummyTexture: GPUTexture;
   private readonly dummyView: GPUTextureView;
+  private readonly dummyBevelTexture: GPUTexture;
+  private readonly dummyBevelView: GPUTextureView;
+  private bevelHeightView: GPUTextureView;
+  private bevelGlossView: GPUTextureView;
 
   private seedBindGroupLayout!: GPUBindGroupLayout;
   private jfaBindGroupLayout!: GPUBindGroupLayout;
@@ -972,6 +1212,12 @@ export class RasterStrokeRenderer {
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       }),
     };
+    this.bevelUniformBuffer = this.device.createBuffer({
+      label: "Style stack Smusso/Rilievo composition parameters",
+      size: BEVEL_UNIFORM_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.updateBevelParameters(DEFAULT_RASTER_BEVEL_STYLE);
     const coverageWordCount = Math.ceil(
       this.documentWidth * this.documentHeight / COVERAGE_WORD_PIXELS,
     );
@@ -1087,6 +1333,21 @@ export class RasterStrokeRenderer {
     };
 
     const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
+    this.dummyBevelTexture = this.device.createTexture({
+      label: "Style stack disabled Smusso R32F placeholder",
+      size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+      format: "r32float",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    this.device.queue.writeTexture(
+      { texture: this.dummyBevelTexture },
+      new Float32Array(64),
+      { bytesPerRow: 256, rowsPerImage: 1 },
+      { width: 1, height: 1, depthOrArrayLayers: 1 },
+    );
+    this.dummyBevelView = this.dummyBevelTexture.createView();
+    this.bevelHeightView = this.dummyBevelView;
+    this.bevelGlossView = this.dummyBevelView;
     let styledPixels = 0;
     for (let mipLevel = 1; mipLevel < mipLevelCount; mipLevel += 1) {
       styledPixels += Math.max(1, this.documentWidth >> mipLevel)
@@ -1099,7 +1360,7 @@ export class RasterStrokeRenderer {
       + DISPLAY_PARAMETER_BYTES * 3
       + changeStateBytes
       + indirectArgumentsBytes
-      + 4;
+      + BEVEL_UNIFORM_BYTES + 4;
     this.persistentMemoryBytes = this.coverageMemoryBytes
       + this.styledMemoryBytes
       + this.thresholdMaskMemoryBytes
@@ -1132,6 +1393,9 @@ export class RasterStrokeRenderer {
         { binding: 5, resource: { buffer: this.coverageBuffer } },
         { binding: 6, resource: this.samplingView },
         { binding: 7, resource: sampler },
+        { binding: 8, resource: this.bevelHeightView },
+        { binding: 9, resource: this.bevelGlossView },
+        { binding: 10, resource: { buffer: this.bevelUniformBuffer } },
       ],
     });
   }
@@ -1357,6 +1621,21 @@ export class RasterStrokeRenderer {
           visibility: GPUShaderStage.COMPUTE,
           storageTexture: { access: "write-only", format: this.layerFormat },
         },
+        {
+          binding: 7,
+          visibility: GPUShaderStage.COMPUTE,
+          texture: { sampleType: "unfilterable-float" },
+        },
+        {
+          binding: 8,
+          visibility: GPUShaderStage.COMPUTE,
+          texture: { sampleType: "unfilterable-float" },
+        },
+        {
+          binding: 9,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: "uniform" },
+        },
       ],
     });
 
@@ -1521,6 +1800,51 @@ export class RasterStrokeRenderer {
       this.rebuildSourceBindGroups(2);
     }
   }
+  setBevelResources(heightView: GPUTextureView | null, glossView: GPUTextureView | null): void {
+    this.bevelHeightView = heightView ?? this.dummyBevelView;
+    this.bevelGlossView = glossView ?? this.dummyBevelView;
+    if (this.composeBindGroupLayout) {
+      this.rebuildSourceBindGroups(0);
+      this.rebuildSourceBindGroups(1);
+      this.rebuildSourceBindGroups(2);
+    }
+  }
+
+  updateBevelParameters(source: RasterBevelStyle): void {
+    if (this.destroyed) {
+      throw new Error("Renderer style stack già distrutto.");
+    }
+    const style = normalizeRasterBevelStyle(source);
+    const derived = deriveRasterBevelHeightfield(style);
+    const light = rasterBevelLightVector(style.angle, style.altitude);
+    const modeCode = style.mode === "inner"
+      ? 0
+      : style.mode === "outer"
+        ? 1
+        : style.mode === "emboss" ? 2 : 3;
+    this.bevelUniformUploadU32.fill(0);
+    this.bevelUniformUploadU32[0] = style.enabled ? 1 : 0;
+    this.bevelUniformUploadU32[1] = modeCode;
+    this.bevelUniformUploadU32[2] = style.contourAA ? 1 : 0;
+    this.bevelUniformUploadF32[4] = derived.amplitudeScale
+      * (style.depth / 100)
+      * (style.direction === "down" ? -1 : 1);
+    this.bevelUniformUploadF32[5] = style.fill / 100;
+    this.bevelUniformUploadF32[6] = 1;
+    this.bevelUniformUploadF32[8] = light[0];
+    this.bevelUniformUploadF32[9] = light[1];
+    this.bevelUniformUploadF32[10] = light[2];
+    this.bevelUniformUploadF32[12] = style.highlightColor[0];
+    this.bevelUniformUploadF32[13] = style.highlightColor[1];
+    this.bevelUniformUploadF32[14] = style.highlightColor[2];
+    this.bevelUniformUploadF32[15] = style.highlightOpacity / 100;
+    this.bevelUniformUploadF32[16] = style.shadowColor[0];
+    this.bevelUniformUploadF32[17] = style.shadowColor[1];
+    this.bevelUniformUploadF32[18] = style.shadowColor[2];
+    this.bevelUniformUploadF32[19] = style.shadowOpacity / 100;
+    this.device.queue.writeBuffer(this.bevelUniformBuffer, 0, this.bevelUniformUpload);
+  }
+
 
   private rebuildScratchBindGroups(): void {
     this.jfaBindGroups = [
@@ -1600,22 +1924,28 @@ export class RasterStrokeRenderer {
       }));
     }
     this.composeBindGroups.set(mode, this.device.createBindGroup({
-      label: `Traccia logical mip 1 compose source mode ${mode}`,
+      label: `Style stack logical mip 1 compose source mode ${mode}`,
       layout: this.composeBindGroupLayout,
       entries: [
         ...this.commonSourceEntries(mode),
         { binding: 5, resource: { buffer: this.coverageBuffer } },
         { binding: 6, resource: this.coarseStyledStorageView },
+        { binding: 7, resource: this.bevelHeightView },
+        { binding: 8, resource: this.bevelGlossView },
+        { binding: 9, resource: { buffer: this.bevelUniformBuffer } },
       ],
     }));
     if (this.readbackStyledStorageView) {
       this.readbackComposeBindGroups.set(mode, this.device.createBindGroup({
-        label: `Traccia golden logical mip 0 compose source mode ${mode}`,
+        label: `Style stack golden logical mip 0 compose source mode ${mode}`,
         layout: this.composeBindGroupLayout,
         entries: [
           ...this.commonSourceEntries(mode),
           { binding: 5, resource: { buffer: this.coverageBuffer } },
           { binding: 6, resource: this.readbackStyledStorageView },
+          { binding: 7, resource: this.bevelHeightView },
+          { binding: 8, resource: this.bevelGlossView },
+          { binding: 9, resource: { buffer: this.bevelUniformBuffer } },
         ],
       }));
     }
@@ -1680,6 +2010,7 @@ export class RasterStrokeRenderer {
   updateDisplayParameters(
     sourceMode: RasterStrokeSourceMode,
     style: RasterStrokeStyle,
+    bevelStyle: RasterBevelStyle = DEFAULT_RASTER_BEVEL_STYLE,
   ): void {
     if (this.destroyed) {
       throw new Error("Renderer Traccia già distrutto.");
@@ -1693,6 +2024,8 @@ export class RasterStrokeRenderer {
     this.displayParameterUploadF32[17] = style.color[1];
     this.displayParameterUploadF32[18] = style.color[2];
     this.displayParameterUploadF32[19] = style.color[3];
+    this.displayParameterUploadU32[15] = style.enabled && style.width > 0 ? 1 : 0;
+    this.updateBevelParameters(bevelStyle);
     this.device.queue.writeBuffer(
       this.displayParameterBuffers[mode],
       0,
@@ -1726,7 +2059,7 @@ export class RasterStrokeRenderer {
     this.parameterUploadF32[word + 12] = style.width;
     this.parameterUploadU32[word + 13] = stylePositionCode(style.position);
     this.parameterUploadU32[word + 14] = this.scratchExtent;
-    this.parameterUploadU32[word + 15] = 0;
+    this.parameterUploadU32[word + 15] = style.enabled && style.width > 0 ? 1 : 0;
     this.parameterUploadF32[word + 16] = style.color[0];
     this.parameterUploadF32[word + 17] = style.color[1];
     this.parameterUploadF32[word + 18] = style.color[2];
@@ -1781,7 +2114,11 @@ export class RasterStrokeRenderer {
       this.documentHeight,
     );
     const mode = sourceModeCode(options.sourceMode);
-    this.updateDisplayParameters(options.sourceMode, options.style);
+    this.updateDisplayParameters(
+      options.sourceMode,
+      options.style,
+      options.bevelStyle ?? DEFAULT_RASTER_BEVEL_STYLE,
+    );
 
     const jobs = rebuildRect ? this.buildJobs(rebuildRect, options.style.width) : [];
     const schedules = jobs.map((job) =>
@@ -2199,6 +2536,7 @@ export class RasterStrokeRenderer {
     this.scratchBuffers[0].destroy();
     this.scratchBuffers[1].destroy();
     this.parameterBuffer.destroy();
+    this.bevelUniformBuffer.destroy();
     this.displayParameterBuffers[0].destroy();
     this.displayParameterBuffers[1].destroy();
     this.displayParameterBuffers[2].destroy();
@@ -2209,6 +2547,7 @@ export class RasterStrokeRenderer {
     this.coarseStyledTexture.destroy();
     this.readbackStyledTexture?.destroy();
     this.dummyTexture.destroy();
+    this.dummyBevelTexture.destroy();
     this.seedBindGroups.clear();
     this.resolveBindGroups.clear();
     this.composeBindGroups.clear();

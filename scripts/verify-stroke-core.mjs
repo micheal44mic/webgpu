@@ -364,8 +364,15 @@ const goldenMipBaseline = JSON.parse(readFileSync(
 ));
 assert.match(
   rendererSource,
-  /raster-stroke-webgpu-v5-direct-lod0-coarse-styled-mips-packed-r8-coverage/,
+  /style-stack-webgpu-v7-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even/,
 );
+assert.ok(
+  rendererSource.indexOf("bevelNode(base, position)")
+    < rendererSource.indexOf("combinedStrokeNode(base.a, node, coverage)"),
+  "The style stack must compose bevel before stroke.",
+);
+assert.match(rendererSource, /style\.enabled && style\.width > 0 \? 1 : 0/);
+assert.match(rendererSource, /let dt = 0\.5 \* fwidth\(t\)/);
 assert.match(rendererSource, /persistent alpha-threshold bit mask/);
 assert.match(rendererSource, /persistent packed R8 coverage/);
 assert.match(rendererSource, /direct-lod0-plus-derived-mips-1-through-12/);
@@ -389,7 +396,10 @@ assert.ok(
   "The threshold gate must cover seed/JFA, resolve and conditional compose.",
 );
 assert.match(engineSource, /changeDetectionRect = mutationRect;/);
-assert.match(engineSource, /composeRect = mutationRect;/);
+assert.match(
+  engineSource,
+  /composeRect = this\.mergeDirtyRects\(composeRect, mutationRect\);/,
+);
 assert.match(engineSource, /conditionalComposeRect = rebuildRect;/);
 assert.match(rendererSource, /this\.controlMemoryBytes = parameterBufferBytes/);
 assert.match(rendererSource, /parameters\.scratchExtent/);

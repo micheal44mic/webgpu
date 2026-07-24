@@ -316,6 +316,69 @@ Paint:
   Rimosso il gate UI per consentire la cattura Golden sull'iPhone dalla build
   pubblicata; il test resta isolato e parte solo su pressione esplicita.
 
+### Smusso/Rilievo raster M1 (WebGPU, sperimentale)
+
+- Port Heightfield V2 implementato il 24 luglio 2026. Build corrente
+  `raster-bevel-webgpu-v2-heightfield-v2-r32f-segment-jfa-workgroup-gaussian-gpu-gate`;
+  non è un emboss derivato dall'alpha nel solo fragment shader.
+- Il core tipizzato conserva modalità `inner` / `outer` / `emboss` / `pillow`,
+  tecniche `smooth` / `chiselHard` / `chiselSoft`, direzione, size, soften,
+  range, contour di altezza, gloss, AA, fill, profondità, luce, colori e
+  opacità, con limiti, LUT spline e calibrazioni dell'originale
+  `paint-webgpu-m1` (`0,5`, `0,15`, `1`, `0,31`).
+- Morbida: alpha R8 → Gaussian separabile orizzontale/verticale con cache di
+  workgroup → profilo altezza → Gaussian finale. Scalpello: marching squares
+  subpixel sulla soglia `0,5` → JFA sui segmenti con passo `1` extra → signed
+  distance R32F non quantizzata → profilo altezza → Gaussian finale. Tutti i
+  pass del campo sono compute e non fanno readback CPU.
+- L'altezza autorevole è una texture persistente `r32float` `4098²`: documento
+  `4096²` più apron esterno di un pixel per Scharr `3×3`. Costa
+  `64,063 MiB`; LUT, maschera alpha a due classi, controllo e indirect portano
+  il persistente dedicato a `69,641 MiB`. Lo scratch ROI è lazy e grow-only;
+  col default richiede circa `1,266 MiB`, quindi il costo dedicato normale è
+  circa `70,91 MiB`.
+- L'arena ROI arriva al solo alone reale e al massimo di sicurezza di circa
+  `1408²`. Comune e segmenti sono buffer distinti per rispettare
+  `maxStorageBufferBindingSize`. Una sequenza che prima porta Morbida al massimo
+  e poi abilita Scalpello può trattenere circa `76,6 MiB` di scratch fino alla
+  disattivazione: non confondere questo worst case grow-only col default.
+- Il gate alpha è interamente GPU: maschera persistente soglia/frazionario,
+  scan della mutation rect e dispatch indirect. Un aggiornamento RGB-only in
+  una zona completamente opaca o vuota azzera i dispatch del campo; alpha
+  frazionario resta conservativo. Encoder e submit restano quelli unici
+  dell'aggiornamento del motore.
+- Ordine vincolante nel compositore comune:
+  `sorgente → Smusso/Rilievo → Traccia → dithering → layer opacity`. La Traccia
+  continua a ricavare la distanza dall'alpha sorgente; il compositing outside
+  usa invece l'alpha già modificata dallo Smusso, come nell'originale. LOD `0`
+  è ricostruito direttamente; sono residenti solo i mip styled logici `1–12`.
+- Sono collegati gli stessi ingressi `permanent`, `light-glaze` / M1 R8 e
+  `thickness-tail`; verificati in runtime su WebGPU insieme a Normal, Light
+  Glaze, M1 Glaze, tail, Undo e Redo. I cambi geometry (mode, technique, size,
+  soften, contour/range) invalidano l'heightfield; depth, luce, colori,
+  opacità, gloss, AA e fill ricompongono soltanto i pixel. Una prova runtime ha
+  confermato `depth` con delta build `0` e `size` con delta build `1`.
+- Se Traccia è già residente a width `14`, attivare lo Smusso default aggiunge
+  circa `70,91 MiB`: ai totali storici v5 corrisponde a
+  `184,9→~255,8 MiB` (`232,9→~303,8 MiB` con width `512`). Se Smusso è l'unico
+  stile attivo, oggi forza anche il compositore `RasterStrokeRenderer` completo:
+  styled mip condivisi più coverage/mask/scratch Traccia. Sul runtime locale il
+  delta totale misurato da tutti gli stili off è quindi `~126,6 MiB`, non solo
+  il campo dedicato. Disabilitare l'ultimo stile libera entrambe le famiglie.
+- Sono condivisi compositore, mip styled, source mode, dirty rect, scheduling e
+  infrastruttura JFA; i buffer scratch Traccia e Smusso non sono ancora una
+  singola arena fisica. È una differenza architetturale nota da valutare dopo
+  la parità, non una dichiarazione di condivisione già avvenuta.
+- Verifiche locali verdi: `bevel:verify`, `stroke:verify`, `grain:verify`,
+  `blend:verify`, `thickness:verify`, TypeScript; inizializzazione WGSL e matrice
+  delle tre tecniche/quattro modalità su WebGPU NVIDIA. Il warning Chromium
+  secondo cui Windows ignora `powerPreference` è estraneo al renderer.
+- Non esiste ancora un golden GPU Smusso WebGL2→WebGPU né una run iPhone:
+  **non dichiarare il port pixel-identico o più veloce**. Il golden deve coprire
+  almeno tutte le modalità/tecniche, edge frazionari sulle seam `256`, bordi e
+  corner documento, mip `0–12`, AA, source mode e combinazione con le tre
+  posizioni della Traccia. Lo Scalpello sulle seam è il rischio prioritario.
+
 Blend (tool separato, vedi sezione dedicata più sotto).
 
 ## Esperimenti chiusi — esiti vincolanti
@@ -375,7 +438,9 @@ separati · `38` emulazione conversione UNORM nativa + diagnostica diff mip ·
 `39` ciclo di vita di Blend scratch, storage Light/M1 Glaze, texture Grain M1
 e maschera Shape 2K: alloca alla selezione, rilascia quando deselezionato e
 il motore è fermo (revisione sperimentale corrente; nessuna run registrata
-con i pool parziali, quindi la revisione copre i quattro pool insieme).
+con i pool parziali, quindi la revisione copre i quattro pool insieme) · `40`
+port sperimentale Smusso/Rilievo Heightfield V2, contabilità memoria dedicata,
+invalidazioni geometry/hot e compositore comune Smusso→Traccia.
 
 ## Strumento Blend dry (WebGPU)
 

@@ -53,6 +53,26 @@ import {
   type RasterStrokeStyle,
 } from "./stroke-core";
 
+import {
+  RASTER_BEVEL_DISTANCE_STRATEGY,
+  RASTER_BEVEL_FIELD_STRATEGY,
+  RASTER_BEVEL_WORKSPACE_STRATEGY,
+  RasterBevelRenderer,
+  type RasterBevelEncodeResult,
+} from "./bevel-renderer";
+import {
+  DEFAULT_RASTER_BEVEL_STYLE,
+  classifyRasterBevelStyleChange,
+  copyRasterBevelStyle,
+  rasterBevelInfluenceBounds,
+  normalizeRasterBevelStyle,
+  rasterBevelRadiusBucket,
+  rasterBevelStylesEqual,
+  rasterBevelVisualBounds,
+  type RasterBevelRect,
+  type RasterBevelStyle,
+} from "./bevel-core";
+
 export type {
   RasterStrokePosition,
   RasterStrokeStyle,
@@ -66,6 +86,15 @@ export type BrushShape = "circle" | "shape";
 export type GrainMode = "off" | "texturized" | "moving";
 export type GrainFiltering = "no" | "classic" | "improved";
 export type GrainBlendMode = "multiply";
+export type {
+  RasterBevelContour,
+  RasterBevelDirection,
+  RasterBevelGloss,
+  RasterBevelMode,
+  RasterBevelStyle,
+  RasterBevelTechnique,
+} from "./bevel-core";
+
 export type StampGeometry = "quad" | "oriented-support-quads";
 export type FragmentCoverageStrategy = "generic-smoothstep" | "shape-alpha-mask-2k";
 export type ShapeSamplingStrategy =
@@ -199,6 +228,10 @@ export interface EngineGpuMemoryStats {
   rasterStrokeMaskAndControlMiB: number;
   rasterStrokeScratchMiB: number;
   rasterStrokeScratchExtent: number;
+  rasterBevelHeightMiB: number;
+  rasterBevelLutAndControlMiB: number;
+  rasterBevelScratchMiB: number;
+  rasterBevelScratchExtent: number;
   blendRendererMiB: number;
   lightGlazeMiB: number;
   thicknessTailMiB: number;
@@ -220,6 +253,13 @@ export interface EngineStats {
   rasterStrokeBuilds: number;
   rasterStrokeComposes: number;
   rasterStrokeRendererBuild: string | null;
+  rasterBevelStyle: RasterBevelStyle;
+  rasterBevelPersistentMemoryMiB: number;
+  rasterBevelScratchMemoryMiB: number;
+  rasterBevelBuilds: number;
+  rasterBevelPasses: number;
+  rasterBevelRendererBuild: string | null;
+
   gpuMemory: EngineGpuMemoryStats;
   gpuLabel: string;
   layerFormat: LayerFormat;
@@ -1214,6 +1254,18 @@ export class BrushEngine {
   private rasterStrokePendingComposeRect: DirtyRect | null = null;
   private rasterStrokeBusy = false;
   private rasterStrokeLastEncode: RasterStrokeEncodeResult | null = null;
+  private rasterBevelRenderer: RasterBevelRenderer | null = null;
+  private rasterBevelStyle: RasterBevelStyle = copyRasterBevelStyle(
+    DEFAULT_RASTER_BEVEL_STYLE,
+  );
+  private rasterBevelHeightValid = false;
+  private rasterBevelHeightSourceMode: RasterStrokeSourceMode | null = null;
+  private rasterBevelPendingComposeRect: DirtyRect | null = null;
+  private rasterBevelBusy = false;
+  private rasterBevelLastEncode: RasterBevelEncodeResult | null = null;
+  private rasterBevelTotalBuilds = 0;
+  private rasterBevelTotalPasses = 0;
+
   private rasterStrokeTotalBuilds = 0;
   private rasterStrokeTotalComposes = 0;
   private layerContentBounds: DirtyRect | null = null;
@@ -1481,7 +1533,11 @@ export class BrushEngine {
       throw new Error("WebGPU non è disponibile in questo browser o in questo contesto.");
     }
 
-    const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
+    const adapterOptions: GPURequestAdapterOptions | undefined =
+      /\bWindows\b/i.test(navigator.userAgent)
+        ? undefined
+        : { powerPreference: "high-performance" };
+    const adapter = await navigator.gpu.requestAdapter(adapterOptions);
     if (!adapter) {
       throw new Error("Nessun adapter WebGPU compatibile trovato.");
     }
@@ -1653,6 +1709,14 @@ export class BrushEngine {
   isRasterStrokeBusy(): boolean {
     return this.rasterStrokeBusy;
   }
+  getRasterBevelStyle(): RasterBevelStyle {
+    return copyRasterBevelStyle(this.rasterBevelStyle);
+  }
+
+  isRasterBevelBusy(): boolean {
+    return this.rasterBevelBusy;
+  }
+
 
   private rasterStrokeActive(): boolean {
     return Boolean(
@@ -1661,6 +1725,23 @@ export class BrushEngine {
       && this.rasterStrokeStyle.width > 0,
     );
   }
+  private rasterBevelActive(): boolean {
+    return Boolean(
+      this.rasterBevelRenderer
+      && this.rasterBevelStyle.enabled,
+    );
+  }
+
+  private styleStackActive(): boolean {
+    return Boolean(
+      this.rasterStrokeRenderer
+      && (
+        (this.rasterStrokeStyle.enabled && this.rasterStrokeStyle.width > 0)
+        || this.rasterBevelStyle.enabled
+      ),
+    );
+  }
+
 
   private rebuildRasterStrokeDisplayBindGroups(): void {
     const renderer = this.rasterStrokeRenderer;
@@ -1704,6 +1785,11 @@ export class BrushEngine {
     });
     renderer.setLightGlazeView(this.lightGlazeView);
     renderer.setThicknessTailView(this.thicknessTailView);
+    renderer.setBevelResources(
+      this.rasterBevelRenderer?.heightView ?? null,
+      this.rasterBevelRenderer?.glossView ?? null,
+    );
+    renderer.updateBevelParameters(this.rasterBevelStyle);
     this.rasterStrokeRenderer = renderer;
     this.rebuildRasterStrokeDisplayBindGroups();
     this.rasterStrokeMipDownsampleBindGroups = renderer.mipViews
@@ -1732,6 +1818,46 @@ export class BrushEngine {
     this.rasterStrokeLastEncode = null;
   }
 
+  private async ensureRasterBevelRenderer(): Promise<RasterBevelRenderer> {
+    if (this.rasterBevelRenderer) {
+      return this.rasterBevelRenderer;
+    }
+    const renderer = await RasterBevelRenderer.create({
+      device: this.device,
+      documentWidth: LAYER_SIZE,
+      documentHeight: LAYER_SIZE,
+      layerView: this.layerView,
+      lightGlazeUniformBuffer: this.lightGlazeUniformBuffer,
+      thicknessTailUniformBuffer: this.thicknessTailDisplayUniformBuffer,
+    });
+    renderer.setLightGlazeView(this.lightGlazeView);
+    renderer.setThicknessTailView(this.thicknessTailView);
+    renderer.updateStyleResources(this.rasterBevelStyle);
+    this.rasterBevelRenderer = renderer;
+    this.rasterBevelHeightValid = false;
+    this.rasterBevelHeightSourceMode = null;
+    this.rasterBevelLastEncode = null;
+    if (this.rasterStrokeRenderer) {
+      this.rasterStrokeRenderer.setBevelResources(renderer.heightView, renderer.glossView);
+      this.rasterStrokeRenderer.updateBevelParameters(this.rasterBevelStyle);
+      this.rebuildRasterStrokeDisplayBindGroups();
+    }
+    return renderer;
+  }
+
+  private releaseRasterBevelRenderer(): void {
+    this.rasterBevelRenderer?.destroy();
+    this.rasterBevelRenderer = null;
+    this.rasterBevelHeightValid = false;
+    this.rasterBevelHeightSourceMode = null;
+    this.rasterBevelLastEncode = null;
+    if (this.rasterStrokeRenderer) {
+      this.rasterStrokeRenderer.setBevelResources(null, null);
+      this.rasterStrokeRenderer.updateBevelParameters(this.rasterBevelStyle);
+      this.rebuildRasterStrokeDisplayBindGroups();
+    }
+  }
+
   async setRasterStrokeStyle(style: unknown): Promise<boolean> {
     const normalized = normalizeRasterStrokeStyle(style);
     const normalizedActive = normalized.enabled && normalized.width > 0;
@@ -1745,7 +1871,7 @@ export class BrushEngine {
       this.rasterStrokeStyle = normalized;
       return true;
     }
-    if (this.activeStroke || this.historyBusy || this.rasterStrokeBusy) {
+    if (this.activeStroke || this.historyBusy || this.rasterStrokeBusy || this.rasterBevelBusy) {
       return false;
     }
 
@@ -1785,20 +1911,32 @@ export class BrushEngine {
         this.callbacks.onStatus?.("Traccia WebGPU attiva.", "ok");
       } else {
         await this.waitForIdle();
-        this.releaseRasterStrokeRenderer();
+        if (this.rasterBevelStyle.enabled) {
+          this.rasterStrokePendingComposeRect = this.rasterStrokeEffectRect(
+            this.layerContentBounds,
+            previous.width,
+          );
+        } else {
+          this.releaseRasterStrokeRenderer();
+        }
         this.paintDisplayMipValidThroughLevel = 0;
         this.presentationCacheNeedsFullRebuild = true;
         this.displayDirty = true;
         this.requestRender();
         if (previousActive) {
-          this.callbacks.onStatus?.("Traccia disattivata; memoria GPU liberata.", "ok");
+          this.callbacks.onStatus?.(
+            this.rasterBevelStyle.enabled
+              ? "Traccia disattivata; il compositore condiviso resta per lo Smusso/Rilievo."
+              : "Traccia disattivata; memoria GPU liberata.",
+            "ok",
+          );
         }
       }
       this.publishStats();
       return true;
     } catch (error) {
       this.rasterStrokeStyle = previous;
-      if (!previousActive) {
+      if (!previousActive && !this.rasterBevelStyle.enabled) {
         this.releaseRasterStrokeRenderer();
       }
       const message = error instanceof Error ? error.message : String(error);
@@ -1806,6 +1944,115 @@ export class BrushEngine {
       throw error;
     } finally {
       this.rasterStrokeBusy = false;
+    }
+  }
+
+  async setRasterBevelStyle(style: unknown): Promise<boolean> {
+    const normalized = normalizeRasterBevelStyle(style);
+    const change = classifyRasterBevelStyleChange(
+      this.rasterBevelStyle,
+      normalized,
+      this.rasterBevelHeightValid ? rasterBevelRadiusBucket(this.rasterBevelStyle) : 0,
+    );
+    if (
+      rasterBevelStylesEqual(normalized, this.rasterBevelStyle)
+      && (!normalized.enabled || (this.rasterBevelRenderer && this.rasterStrokeRenderer))
+    ) {
+      return true;
+    }
+    if (!this.initialized) {
+      this.rasterBevelStyle = normalized;
+      return true;
+    }
+    if (
+      this.activeStroke
+      || this.historyBusy
+      || this.rasterStrokeBusy
+      || this.rasterBevelBusy
+    ) {
+      return false;
+    }
+
+    this.flushPendingWorkBeforeSettingsChange();
+    const previous = copyRasterBevelStyle(this.rasterBevelStyle);
+    const previousActive = previous.enabled;
+    const previousRect = rasterBevelVisualBounds(
+      this.layerContentBounds,
+      previous,
+      LAYER_SIZE,
+      LAYER_SIZE,
+    );
+    this.rasterBevelBusy = true;
+    try {
+      await this.waitForIdle();
+      this.rasterBevelStyle = normalized;
+      if (normalized.enabled) {
+        if (!this.rasterBevelRenderer) {
+          this.callbacks.onStatus?.("Preparo lo Smusso/Rilievo Heightfield V2…", "working");
+          await this.ensureRasterBevelRenderer();
+        }
+        if (!this.rasterStrokeRenderer) {
+          await this.ensureRasterStrokeRenderer();
+        }
+        this.rasterBevelRenderer!.updateStyleResources(normalized);
+        this.rasterStrokeRenderer!.setBevelResources(
+          this.rasterBevelRenderer!.heightView,
+          this.rasterBevelRenderer!.glossView,
+        );
+        this.rasterStrokeRenderer!.updateBevelParameters(normalized);
+        this.rebuildRasterStrokeDisplayBindGroups();
+        if (!previousActive || change.geometryRebuild) {
+          this.rasterBevelHeightValid = false;
+          this.rasterBevelHeightSourceMode = null;
+        }
+        const nextRect = rasterBevelVisualBounds(
+          this.layerContentBounds,
+          normalized,
+          LAYER_SIZE,
+          LAYER_SIZE,
+        );
+        this.rasterBevelPendingComposeRect = this.mergeDirtyRects(
+          previousRect,
+          nextRect,
+        );
+        this.callbacks.onStatus?.("Smusso/Rilievo Heightfield V2 attivo.", "ok");
+      } else {
+        this.rasterBevelPendingComposeRect = previousRect;
+        this.releaseRasterBevelRenderer();
+        if (!(this.rasterStrokeStyle.enabled && this.rasterStrokeStyle.width > 0)) {
+          this.releaseRasterStrokeRenderer();
+        }
+        if (previousActive) {
+          this.callbacks.onStatus?.(
+            "Smusso/Rilievo disattivato; memoria Heightfield liberata.",
+            "ok",
+          );
+        }
+      }
+      this.paintDisplayMipValidThroughLevel = 0;
+      this.presentationCacheNeedsFullRebuild = true;
+      this.displayDirty = true;
+      this.requestRender();
+      this.publishStats();
+      return true;
+    } catch (error) {
+      this.rasterBevelStyle = previous;
+      if (!previousActive) {
+        this.releaseRasterBevelRenderer();
+        if (!(this.rasterStrokeStyle.enabled && this.rasterStrokeStyle.width > 0)) {
+          this.releaseRasterStrokeRenderer();
+        }
+      } else {
+        this.rasterBevelHeightValid = false;
+        this.rasterBevelHeightSourceMode = null;
+        this.rasterBevelRenderer?.updateStyleResources(previous);
+        this.rasterStrokeRenderer?.updateBevelParameters(previous);
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      this.callbacks.onStatus?.(`Smusso/Rilievo WebGPU non disponibile: ${message}`, "error");
+      throw error;
+    } finally {
+      this.rasterBevelBusy = false;
     }
   }
 
@@ -1831,13 +2078,25 @@ export class BrushEngine {
       this.displayDirty = true;
       this.layerHasContent = false;
       this.layerContentBounds = null;
-      if (this.rasterStrokeStyle.enabled && this.rasterStrokeStyle.width > 0) {
-        try {
-          await this.ensureRasterStrokeRenderer();
-        } catch (strokeError) {
-          this.rasterStrokeStyle = { ...this.rasterStrokeStyle, enabled: false };
-          console.error("Ricreazione Traccia dopo cambio formato non riuscita", strokeError);
+      try {
+        if (this.rasterBevelStyle.enabled) {
+          await this.ensureRasterBevelRenderer();
         }
+        if (
+          (this.rasterStrokeStyle.enabled && this.rasterStrokeStyle.width > 0)
+          || this.rasterBevelStyle.enabled
+        ) {
+          await this.ensureRasterStrokeRenderer();
+        }
+      } catch (styleError) {
+        this.rasterStrokeStyle = { ...this.rasterStrokeStyle, enabled: false };
+        this.rasterBevelStyle = { ...this.rasterBevelStyle, enabled: false };
+        this.releaseRasterBevelRenderer();
+        this.releaseRasterStrokeRenderer();
+        console.error(
+          "Ricreazione style stack dopo cambio formato non riuscita",
+          styleError,
+        );
       }
       this.requestRender();
       this.callbacks.onStatus?.(`Layer ${format} pronto. Il contenuto è stato azzerato.`, "ok");
@@ -2352,6 +2611,7 @@ export class BrushEngine {
     const baseResourcesAllocated = this.initialized;
     const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
     const rasterStroke = this.rasterStrokeRenderer;
+    const rasterBevel = this.rasterBevelRenderer;
     const layerBaseMiB = baseResourcesAllocated ? layerBaseMemoryMiB(this.layerFormat) : 0;
     const layerMipChainMiB = baseResourcesAllocated
       ? paintDisplayPyramidAdditionalMemoryMiB(this.layerFormat)
@@ -2377,6 +2637,15 @@ export class BrushEngine {
     const rasterStrokeScratchMiB =
       (rasterStroke?.scratchMemoryBytes ?? 0) / MEBIBYTE_BYTES;
     const rasterStrokeScratchExtent = rasterStroke?.scratchExtent ?? 0;
+    const rasterBevelHeightMiB =
+      (rasterBevel?.heightMemoryBytes ?? 0) / MEBIBYTE_BYTES;
+    const rasterBevelLutAndControlMiB = (
+      (rasterBevel?.lutMemoryBytes ?? 0)
+      + (rasterBevel?.controlMemoryBytes ?? 0)
+    ) / MEBIBYTE_BYTES;
+    const rasterBevelScratchMiB =
+      (rasterBevel?.workspaceMemoryBytes ?? 0) / MEBIBYTE_BYTES;
+    const rasterBevelScratchExtent = rasterBevel?.workspaceExtent ?? 0;
     const blendRendererMiB = this.blendRenderer?.allocatedMemoryMiB() ?? 0;
     const lightGlazeMiB = this.lightGlazeStorageAllocated
       ? lightGlazeAdditionalMemoryMiB(this.layerFormat, this.lightGlazeStorageMode)
@@ -2401,6 +2670,9 @@ export class BrushEngine {
       blendRendererMiB,
       lightGlazeMiB,
       thicknessTailMiB,
+      rasterBevelHeightMiB,
+      rasterBevelLutAndControlMiB,
+      rasterBevelScratchMiB,
     ].reduce((total, value) => total + value, 0);
 
     return {
@@ -2415,6 +2687,10 @@ export class BrushEngine {
       rasterStrokeMaskAndControlMiB,
       rasterStrokeScratchMiB,
       blendRendererMiB,
+      rasterBevelHeightMiB,
+      rasterBevelLutAndControlMiB,
+      rasterBevelScratchMiB,
+      rasterBevelScratchExtent,
       lightGlazeMiB,
       thicknessTailMiB,
       historyCpuMiB,
@@ -2435,12 +2711,23 @@ export class BrushEngine {
       layerMemoryMiB: this.layerFormat === "rgba16float" ? 128 : 64,
       rasterStrokeStyle: copyRasterStrokeStyle(this.rasterStrokeStyle),
       rasterStrokePersistentMemoryMiB:
-        (this.rasterStrokeRenderer?.persistentMemoryBytes ?? 0) / (1024 * 1024),
+        (this.rasterStrokeRenderer?.persistentMemoryBytes ?? 0) / MEBIBYTE_BYTES,
       rasterStrokeScratchMemoryMiB:
-        (this.rasterStrokeRenderer?.scratchMemoryBytes ?? 0) / (1024 * 1024),
+        (this.rasterStrokeRenderer?.scratchMemoryBytes ?? 0) / MEBIBYTE_BYTES,
       rasterStrokeBuilds: this.rasterStrokeTotalBuilds,
       rasterStrokeComposes: this.rasterStrokeTotalComposes,
       rasterStrokeRendererBuild: this.rasterStrokeRenderer?.build ?? null,
+      rasterBevelStyle: copyRasterBevelStyle(this.rasterBevelStyle),
+      rasterBevelPersistentMemoryMiB: (
+        (this.rasterBevelRenderer?.heightMemoryBytes ?? 0)
+        + (this.rasterBevelRenderer?.lutMemoryBytes ?? 0)
+        + (this.rasterBevelRenderer?.controlMemoryBytes ?? 0)
+      ) / MEBIBYTE_BYTES,
+      rasterBevelScratchMemoryMiB:
+        (this.rasterBevelRenderer?.workspaceMemoryBytes ?? 0) / MEBIBYTE_BYTES,
+      rasterBevelBuilds: this.rasterBevelTotalBuilds,
+      rasterBevelPasses: this.rasterBevelTotalPasses,
+      rasterBevelRendererBuild: this.rasterBevelRenderer?.build ?? null,
       gpuMemory,
       gpuLabel: this.gpuLabel,
       layerFormat: this.layerFormat,
@@ -3145,6 +3432,16 @@ export class BrushEngine {
     rasterStrokeScratchStrategy: typeof RASTER_STROKE_SCRATCH_STRATEGY;
     rasterStrokeScratchExtent: number;
     rasterStrokeScratchCompactMaxWidth: number;
+    rasterBevelRendererBuild: string | null;
+    rasterBevelStyle: RasterBevelStyle;
+    rasterBevelHeightMemoryMiB: number;
+    rasterBevelScratchMemoryMiB: number;
+    rasterBevelScratchExtent: number;
+    rasterBevelFieldStrategy: typeof RASTER_BEVEL_FIELD_STRATEGY;
+    rasterBevelDistanceStrategy: typeof RASTER_BEVEL_DISTANCE_STRATEGY;
+    rasterBevelWorkspaceStrategy: typeof RASTER_BEVEL_WORKSPACE_STRATEGY;
+    rasterBevelHeightSourceMode: RasterStrokeSourceMode | null;
+
     dryBlendScratchLifecycleStrategy: typeof DRY_BLEND_SCRATCH_LIFECYCLE_STRATEGY;
     timestampQueriesSupported: boolean;
     stampGeometry: StampGeometry;
@@ -3256,6 +3553,18 @@ export class BrushEngine {
       rasterStrokeScratchExtent: this.rasterStrokeRenderer?.scratchExtent ?? 0,
       rasterStrokeScratchCompactMaxWidth: RASTER_STROKE_COMPACT_SCRATCH_MAX_WIDTH,
       dryBlendScratchLifecycleStrategy: DRY_BLEND_SCRATCH_LIFECYCLE_STRATEGY,
+      rasterBevelRendererBuild: this.rasterBevelRenderer?.build ?? null,
+      rasterBevelStyle: copyRasterBevelStyle(this.rasterBevelStyle),
+      rasterBevelHeightMemoryMiB:
+        (this.rasterBevelRenderer?.heightMemoryBytes ?? 0) / MEBIBYTE_BYTES,
+      rasterBevelScratchMemoryMiB:
+        (this.rasterBevelRenderer?.workspaceMemoryBytes ?? 0) / MEBIBYTE_BYTES,
+      rasterBevelScratchExtent: this.rasterBevelRenderer?.workspaceExtent ?? 0,
+      rasterBevelFieldStrategy: RASTER_BEVEL_FIELD_STRATEGY,
+      rasterBevelDistanceStrategy: RASTER_BEVEL_DISTANCE_STRATEGY,
+      rasterBevelWorkspaceStrategy: RASTER_BEVEL_WORKSPACE_STRATEGY,
+      rasterBevelHeightSourceMode: this.rasterBevelHeightSourceMode,
+
       stampGeometry: this.settings.shape === "shape" ? this.lastStampGeometry : STAMP_GEOMETRY,
       stampVerticesPerCopy: this.settings.shape === "shape"
         ? this.lastStampVerticesPerCopy
@@ -3602,6 +3911,21 @@ export class BrushEngine {
         },
         { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
         { binding: 7, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+        {
+          binding: 8,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "unfilterable-float" },
+        },
+        {
+          binding: 9,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "unfilterable-float" },
+        },
+        {
+          binding: 10,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        },
       ],
     });
     this.rasterStrokeDisplayScreenBindGroup = this.device.createBindGroup({
@@ -5000,6 +5324,7 @@ export class BrushEngine {
     this.paintDisplaySelectedMipLevel = 0;
     this.presentationCacheNeedsFullRebuild = true;
     this.releaseRasterStrokeRenderer();
+    this.releaseRasterBevelRenderer();
 
     oldBlendRenderer?.destroy();
     oldTexture?.destroy();
@@ -5059,12 +5384,14 @@ export class BrushEngine {
     this.thicknessTailTextureWidth = width;
     this.thicknessTailTextureHeight = height;
     this.rasterStrokeRenderer?.setThicknessTailView(view);
+    this.rasterBevelRenderer?.setThicknessTailView(view);
     this.rebuildRasterStrokeDisplayBindGroups();
     oldTexture?.destroy();
   }
 
   private destroyThicknessTailOverlayResources(): void {
     this.rasterStrokeRenderer?.setThicknessTailView(null);
+    this.rasterBevelRenderer?.setThicknessTailView(null);
     this.rebuildRasterStrokeDisplayBindGroups();
     this.thicknessTailTexture?.destroy();
     this.thicknessTailTexture = null;
@@ -5180,10 +5507,12 @@ export class BrushEngine {
     this.lightGlazeStorageAllocated = true;
     this.lightGlazeStorageMode = storageMode;
     this.rasterStrokeRenderer?.setLightGlazeView(view);
+    this.rasterBevelRenderer?.setLightGlazeView(view);
     this.rebuildRasterStrokeDisplayBindGroups();
   }
   private destroyLightGlazeResources(): void {
     this.rasterStrokeRenderer?.setLightGlazeView(null);
+    this.rasterBevelRenderer?.setLightGlazeView(null);
     this.rebuildRasterStrokeDisplayBindGroups();
     this.lightGlazeSession = null;
     this.lightGlazeTexture?.destroy();
@@ -5344,10 +5673,26 @@ export class BrushEngine {
       : null;
   }
 
+  private rasterBevelEffectRect(
+    rect: DirtyRect | RasterBevelRect | null,
+    style: RasterBevelStyle = this.rasterBevelStyle,
+  ): DirtyRect | null {
+    return rasterBevelVisualBounds(rect, style, LAYER_SIZE, LAYER_SIZE);
+  }
+
+  private rasterBevelInfluenceRect(
+    rect: DirtyRect | RasterBevelRect | null,
+    style: RasterBevelStyle = this.rasterBevelStyle,
+  ): DirtyRect | null {
+    return rasterBevelInfluenceBounds(rect, style, LAYER_SIZE, LAYER_SIZE);
+  }
+
   private noteLayerMutation(dirtyRect: DirtyRect | null, cleared: boolean): void {
     if (cleared) {
       this.layerContentBounds = null;
       this.rasterStrokeCoverageValid = false;
+      this.rasterBevelHeightValid = false;
+      this.rasterBevelHeightSourceMode = null;
     }
     if (dirtyRect) {
       this.layerContentBounds = this.mergeDirtyRects(this.layerContentBounds, dirtyRect);
@@ -5359,6 +5704,8 @@ export class BrushEngine {
 
   private deferRasterStrokeMutation(cleared: boolean): void {
     this.rasterStrokeCoverageValid = false;
+    this.rasterBevelHeightValid = false;
+    this.rasterBevelHeightSourceMode = null;
     if (cleared) {
       this.rasterStrokeStyledInitialized = false;
       this.rasterStrokeMipValidThroughLevel = 0;
@@ -5373,65 +5720,109 @@ export class BrushEngine {
     layerCleared = false,
   ): { dirtyRect: DirtyRect | null; timing: RasterStrokeEncodeResult | null } {
     const renderer = this.rasterStrokeRenderer;
-    if (!renderer || !this.rasterStrokeActive()) {
+    if (!renderer || !this.styleStackActive()) {
       if (mutationRect || layerCleared) {
         this.rasterStrokeCoverageValid = false;
+        this.rasterBevelHeightValid = false;
+        this.rasterBevelHeightSourceMode = null;
       }
       return { dirtyRect: mutationRect, timing: null };
     }
 
     if (layerCleared) {
       this.rasterStrokeCoverageValid = false;
+      this.rasterBevelHeightValid = false;
+      this.rasterBevelHeightSourceMode = null;
       this.rasterStrokeMipValidThroughLevel = 0;
     }
-    const coverageWasValid = this.rasterStrokeCoverageValid;
     const clearStyled = layerCleared || !this.rasterStrokeStyledInitialized;
+    let composeRect: DirtyRect | null = null;
+
+    const bevelActive = this.rasterBevelActive();
+    if (bevelActive) {
+      const bevelRenderer = this.rasterBevelRenderer!;
+      const sourceChanged = this.rasterBevelHeightSourceMode !== sourceMode;
+      const clearHeight = !this.rasterBevelHeightValid || sourceChanged;
+      const bevelRebuildRect = clearHeight
+        ? this.rasterBevelInfluenceRect(virtualContentBounds)
+        : mutationRect
+          ? this.rasterBevelInfluenceRect(mutationRect)
+          : null;
+      const bevelTiming = bevelRenderer.encode({
+        encoder,
+        style: this.rasterBevelStyle,
+        sourceMode,
+        rebuildRect: bevelRebuildRect,
+        changeDetectionRect: clearHeight ? null : mutationRect,
+        clearHeight,
+      });
+      this.rasterBevelLastEncode = bevelTiming;
+      this.rasterBevelHeightValid = true;
+      this.rasterBevelHeightSourceMode = sourceMode;
+      if (bevelTiming.jobs > 0 || bevelTiming.cleared) {
+        this.rasterBevelTotalBuilds += 1;
+        this.rasterBevelTotalPasses += bevelTiming.passes;
+      }
+      composeRect = this.mergeDirtyRects(composeRect, bevelRebuildRect);
+    } else {
+      this.rasterBevelHeightValid = false;
+      this.rasterBevelHeightSourceMode = null;
+    }
+    composeRect = this.mergeDirtyRects(composeRect, this.rasterBevelPendingComposeRect);
+
+    const strokeActive = this.rasterStrokeActive();
+    const coverageWasValid = strokeActive && this.rasterStrokeCoverageValid;
     let rebuildRect: DirtyRect | null = null;
     let changeDetectionRect: DirtyRect | null = null;
-    let composeRect: DirtyRect | null = null;
     let conditionalComposeRect: DirtyRect | null = null;
 
-    if (!coverageWasValid) {
-      rebuildRect = this.mergeDirtyRects(
-        this.rasterStrokeEffectRect(
-          virtualContentBounds,
+    if (strokeActive) {
+      if (!coverageWasValid) {
+        rebuildRect = this.mergeDirtyRects(
+          this.rasterStrokeEffectRect(
+            virtualContentBounds,
+            this.rasterStrokeStyle.width,
+          ),
+          this.rasterStrokePendingComposeRect,
+        );
+        composeRect = this.mergeDirtyRects(composeRect, rebuildRect);
+      } else if (mutationRect) {
+        rebuildRect = this.rasterStrokeEffectRect(
+          mutationRect,
           this.rasterStrokeStyle.width,
-        ),
-        this.rasterStrokePendingComposeRect,
-      );
-      composeRect = rebuildRect;
-    } else if (mutationRect) {
-      rebuildRect = this.rasterStrokeEffectRect(
-        mutationRect,
-        this.rasterStrokeStyle.width,
-      );
-      changeDetectionRect = mutationRect;
-      composeRect = mutationRect;
-      conditionalComposeRect = rebuildRect;
+        );
+        changeDetectionRect = mutationRect;
+        composeRect = this.mergeDirtyRects(composeRect, mutationRect);
+        conditionalComposeRect = rebuildRect;
+      }
+    } else {
+      this.rasterStrokeCoverageValid = false;
     }
-    composeRect = this.mergeDirtyRects(
-      composeRect,
-      this.rasterStrokePendingComposeRect,
-    );
+    composeRect = this.mergeDirtyRects(composeRect, this.rasterStrokePendingComposeRect);
+    if (mutationRect && !bevelActive && !strokeActive) {
+      composeRect = this.mergeDirtyRects(composeRect, mutationRect);
+    }
 
     const timing = renderer.encode({
       encoder,
       style: this.rasterStrokeStyle,
+      bevelStyle: this.rasterBevelStyle,
       sourceMode,
       rebuildRect,
       changeDetectionRect,
       composeRect,
       conditionalComposeRect,
       clearStyled,
-      resetThresholdMask: !coverageWasValid,
+      resetThresholdMask: strokeActive && !coverageWasValid,
     });
     this.rasterStrokeLastEncode = timing;
     this.rasterStrokeStyledInitialized = true;
     this.rasterStrokePendingComposeRect = null;
+    this.rasterBevelPendingComposeRect = null;
     if (clearStyled) {
       this.rasterStrokeMipValidThroughLevel = 0;
     }
-    if (rebuildRect || !virtualContentBounds) {
+    if (strokeActive && (rebuildRect || !virtualContentBounds)) {
       this.rasterStrokeCoverageValid = true;
     }
     if (timing.buildJobs > 0) {
@@ -5455,7 +5846,7 @@ export class BrushEngine {
     selectedMipLevel: number,
   ): { passes: number; updatedPixels: number } {
     const renderer = this.rasterStrokeRenderer;
-    if (!renderer || !this.rasterStrokeActive()) {
+    if (!renderer || !this.styleStackActive()) {
       return { passes: 0, updatedPixels: 0 };
     }
     const previousValidThroughLevel = this.rasterStrokeMipValidThroughLevel;
@@ -8366,7 +8757,7 @@ export class BrushEngine {
       // below. Intermediate frames use mip 0 for direct live composition and
       // mip 1+ from the temporary final-composite pyramid.
       if (!session.commitRequested) {
-        const rasterStrokeActive = this.rasterStrokeActive();
+        const rasterStrokeActive = this.styleStackActive();
         const rasterStrokeUpdate = rasterStrokeActive
           ? this.encodeRasterStrokeUpdate(
             encoder,
@@ -8433,6 +8824,7 @@ export class BrushEngine {
             this.rasterStrokeRenderer!.updateDisplayParameters(
               "light-glaze",
               this.rasterStrokeStyle,
+              this.rasterBevelStyle,
             );
           }
           const lod0FullRebuildCpuEncodingStart = requiresFullRebuild
@@ -8532,7 +8924,7 @@ export class BrushEngine {
 
       if (present) {
         const canonicalDisplayStart = performance.now();
-        const rasterStrokeActive = this.rasterStrokeActive();
+        const rasterStrokeActive = this.styleStackActive();
         const rasterStrokeUpdate = rasterStrokeActive
           ? this.encodeRasterStrokeUpdate(
             encoder,
@@ -8593,6 +8985,7 @@ export class BrushEngine {
             this.rasterStrokeRenderer!.updateDisplayParameters(
               "permanent",
               this.rasterStrokeStyle,
+              this.rasterBevelStyle,
             );
           }
           const lod0FullRebuildCpuEncodingStart = requiresFullRebuild
@@ -8999,7 +9392,7 @@ export class BrushEngine {
         this.presentationCacheNeedsFullRebuild = true;
       }
       this.paintDisplaySelectedMipLevel = displaySelectedMipLevel;
-      const rasterStrokeActive = this.rasterStrokeActive();
+      const rasterStrokeActive = this.styleStackActive();
       const transientMutationRect = this.mergeDirtyRects(
         this.thicknessTailPresentedRect,
         thicknessTailFrame?.dirtyRect ?? null,
@@ -9086,6 +9479,7 @@ export class BrushEngine {
           this.rasterStrokeRenderer!.updateDisplayParameters(
             thicknessTailFrame ? "thickness-tail" : "permanent",
             this.rasterStrokeStyle,
+            this.rasterBevelStyle,
           );
         }
         const lod0FullRebuildCpuEncodingStart = requiresFullRebuild
