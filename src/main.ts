@@ -213,6 +213,8 @@ interface BenchmarkRun {
     rasterBevelHeightSourceMode: string | null;
     dryBlendScratchLifecycleStrategy: string;
     layerMemoryMiB: number;
+    layerCount: number;
+    activeLayerId: number;
     gpuLabel: string;
     timestampQueriesSupported: boolean;
     stampGeometry: StampGeometry;

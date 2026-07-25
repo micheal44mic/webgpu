@@ -42,6 +42,30 @@ export interface LayerRecord {
   bevelStyle: RasterBevelStyle;
 }
 
+export interface LayerEffectRendererRequirements {
+  needsStrokeRenderer: boolean;
+  needsBevelRenderer: boolean;
+  strokeWidth: number;
+}
+
+/**
+ * Smusso is composed by RasterStrokeRenderer even when the visible Traccia
+ * style is disabled. Keeping this decision pure makes the otherwise easy-to-
+ * miss "bevel only" lifecycle case executable in the Node verification.
+ */
+export function layerEffectRendererRequirements(
+  strokeStyle: Pick<RasterStrokeStyle, "enabled" | "width">,
+  bevelStyle: Pick<RasterBevelStyle, "enabled">,
+): LayerEffectRendererRequirements {
+  const needsBevelRenderer = bevelStyle.enabled;
+  return {
+    needsStrokeRenderer:
+      (strokeStyle.enabled && strokeStyle.width > 0) || needsBevelRenderer,
+    needsBevelRenderer,
+    strokeWidth: strokeStyle.width,
+  };
+}
+
 /**
  * Produces a FRESH pair of style objects for each new layer. It must be invoked
  * once per record: two records sharing one style object would mean editing the

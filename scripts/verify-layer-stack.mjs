@@ -4,7 +4,9 @@ import {
   LAYER_STACK_MAXIMUM,
   LAYER_STACK_STRATEGY,
   LayerStack,
+  layerEffectRendererRequirements,
 } from "../src/layer-stack.ts";
+import { runGpuAllocationTransaction } from "../src/gpu-allocation-transaction.ts";
 
 assert.equal(
   LAYER_STACK_STRATEGY,
@@ -181,6 +183,83 @@ const newStack = () => new LayerStack(createStyles);
   assert.equal(stack.anyHasContent(), true);
 }
 
+// Smusso is displayed by the shared RasterStrokeRenderer even when Traccia is
+// disabled. This is the lifecycle case that previously returned with the
+// Smusso checkbox checked but no composed effect after another layer released
+// the renderers.
+{
+  assert.deepEqual(
+    layerEffectRendererRequirements(
+      { enabled: false, width: 14 },
+      { enabled: true },
+    ),
+    {
+      needsStrokeRenderer: true,
+      needsBevelRenderer: true,
+      strokeWidth: 14,
+    },
+  );
+  assert.equal(
+    layerEffectRendererRequirements(
+      { enabled: false, width: 14 },
+      { enabled: false },
+    ).needsStrokeRenderer,
+    false,
+  );
+  assert.equal(
+    layerEffectRendererRequirements(
+      { enabled: true, width: 512 },
+      { enabled: false },
+    ).needsStrokeRenderer,
+    true,
+  );
+}
+
+// WebGPU reports texture OOM asynchronously when error scopes are popped. The
+// allocation transaction must destroy a candidate even when its factory
+// returned normally, and must leave a successful candidate alive.
+{
+  const pushed = [];
+  const errors = [null, { message: "OOM simulato" }];
+  const host = {
+    pushErrorScope(filter) {
+      pushed.push(filter);
+    },
+    async popErrorScope() {
+      return errors.shift() ?? null;
+    },
+  };
+  let destroyed = false;
+  await assert.rejects(
+    runGpuAllocationTransaction(host, "Texture test", (transaction) => {
+      transaction.deferRollback(() => { destroyed = true; });
+      return { candidate: true };
+    }),
+    /Texture test: OOM simulato/,
+  );
+  assert.deepEqual(pushed, ["out-of-memory", "validation"]);
+  assert.equal(errors.length, 0, "entrambi gli error scope devono essere chiusi");
+  assert.equal(destroyed, true, "il candidato OOM deve essere distrutto");
+}
+
+{
+  const host = {
+    pushErrorScope() {},
+    async popErrorScope() { return null; },
+  };
+  let destroyed = false;
+  const candidate = await runGpuAllocationTransaction(
+    host,
+    "Texture valida",
+    (transaction) => {
+      transaction.deferRollback(() => { destroyed = true; });
+      return { candidate: true };
+    },
+  );
+  assert.deepEqual(candidate, { candidate: true });
+  assert.equal(destroyed, false, "il commit non deve distruggere il candidato valido");
+}
+
 // The pixel probe is what makes multi-layer claims falsifiable: correctness
 // cannot be read off the screen, because the display shows one composite and a
 // dropped submit leaves the previous image in place. Guard it against silent
@@ -220,8 +299,8 @@ assert.match(
 );
 assert.match(
   engineSource,
-  /const \{ texture, view, samplingView, mipViews \} = this\.allocateLayerTexture\(format\)/,
-  "recreateLayerResources deve usare l'helper, non una copia del codice",
+  /private async allocateLayerGpuResources\([\s\S]*?runGpuAllocationTransaction\(this\.device, label/,
+  "l'allocazione completa deve chiudere validation e OOM scope prima del commit",
 );
 assert.equal(
   (engineSource.match(/label: `4096² paint layer \$\{format\}`/g) ?? []).length,
@@ -322,9 +401,8 @@ assert.match(mainSource, /return !engineInitialized\s*\|\| layerSwitching/,
   "il lock di switch deve entrare in operationLocked, non solo nella lista");
 
 // The workbench is one retargetable instance, so a layer whose record says
-// Traccia is enabled can arrive after another layer released the renderer. Without
-// this the layer returns with the checkbox on and nothing drawn — verified on GPU
-// as scratch 64 MiB, then 0, then still 0 with the call removed.
+// Traccia OR Smusso is enabled can arrive after another layer released the
+// renderer. Without this the checkbox returns on and the effect stays absent.
 assert.match(engineSource, /private async ensureEffectRenderersForActiveLayer\(\): Promise<void>/);
 assert.match(
   engineSource,
@@ -333,9 +411,27 @@ assert.match(
 );
 const ensureStart = engineSource.indexOf("private async ensureEffectRenderersForActiveLayer(");
 const ensureBody = engineSource.slice(ensureStart, ensureStart + 1_400);
-assert.match(ensureBody, /rasterStrokeScratchExtentForWidth\(strokeStyle\.width\)/,
+assert.match(ensureBody, /layerEffectRendererRequirements\(/,
+  "la decisione Smusso-only deve passare dall'invariante testato");
+assert.match(ensureBody, /if \(requirements\.needsStrokeRenderer\)/,
+  "Smusso deve ricreare anche il compositore Traccia");
+assert.match(ensureBody, /rasterStrokeScratchExtentForWidth\(requirements\.strokeWidth\)/,
   "il tier di scratch dipende dalla width del livello entrante");
 assert.match(ensureBody, /this\.rasterStrokeRenderer\.resizeScratch\(scratchExtent\)/);
+
+// A failed activation mutates Blend, effects and live content fields before it
+// can reject. Rollback therefore has to run the complete activation path back
+// to the outgoing layer; rebinding only the texture is not sufficient.
+const selectMethodStart = engineSource.indexOf("async setActiveLayer(");
+const selectMethodBody = engineSource.slice(selectMethodStart, selectMethodStart + 2_200);
+assert.match(selectMethodBody, /activationStarted = true/);
+assert.match(selectMethodBody, /this\.layerStack\.setActiveIndex\(fromIndex\);[\s\S]*?await this\.activateLayer\(index\);/,
+  "il rollback dello switch deve ritargettare tutti i sottosistemi");
+const addMethodStart = engineSource.indexOf("async addLayer(");
+const addMethodBody = engineSource.slice(addMethodStart, addMethodStart + 2_800);
+assert.match(addMethodBody, /await this\.allocateLayerGpuResources\(/);
+assert.match(addMethodBody, /await this\.activateLayer\(index\);[\s\S]*?this\.layerGpu\.delete\(record\.id\);[\s\S]*?gpu\.texture\.destroy\(\)/,
+  "un livello fallito va distrutto solo dopo il ripristino completo");
 
 // Measurement setups reset the GLOBAL journal but clear only the active layer.
 assert.match(engineSource, /private get documentWideResetBlockedByLayers\(\): boolean/);
@@ -347,6 +443,23 @@ assert.ok(
     < engineSource.indexOf("const supersededLayerGpu = [...this.layerGpu.values()];"),
   "il cambio formato deve allocare prima di distruggere",
 );
+const recreateStart = engineSource.indexOf("private async recreateLayerResources(");
+const recreateBody = engineSource.slice(recreateStart, recreateStart + 30_000);
+assert.match(recreateBody, /runGpuAllocationTransaction\(\s*this\.device,\s*`Pipeline formato layer/,
+  "anche pipeline e layout devono chiudere validation/OOM scope");
+assert.match(recreateBody, /for \(const record of this\.layerStack\.layers\)[\s\S]*?await this\.allocateLayerGpuResources\(/,
+  "ogni texture sostitutiva deve essere validata prima dello swap");
+assert.match(recreateBody, /for \(const gpu of replacement\.values\(\)\) \{\s*gpu\.texture\.destroy\(\);/,
+  "un fallimento deve eliminare tutti i candidati, incluso quello attivo");
+assert.doesNotMatch(recreateBody, /layerId !== this\.layerStack\.active\.id/,
+  "il cleanup non può saltare il candidato del livello attivo");
+
+// Public mutations must not interleave with the awaited layer switch.
+assert.match(engineSource, /setBrushSettings\([\s\S]*?this\.initialized && this\.layerSwitchBusy/);
+assert.match(engineSource, /async setLayerFormat\([\s\S]*?this\.layerSwitchBusy/);
+assert.match(engineSource, /async benchmarkEffectsWorkingSet\([\s\S]*?this\.layerSwitchBusy/);
+assert.match(engineSource, /\(!allowLayerSwitch && this\.layerSwitchBusy\)/,
+  "solo il retarget interno dello switch può attraversare il lock");
 // Telemetry has to sign the layer count, or runs with one and several layers
 // look equivalent in the log.
 assert.match(engineSource, /layerCount: this\.layerStack\.count/);
@@ -354,5 +467,7 @@ assert.match(
   engineSource,
   /layerMemoryMiB: \(this\.layerFormat === "rgba16float" \? 128 : 64\) \* this\.layerGpu\.size/,
 );
+assert.match(mainSource, /layerCount: number;/);
+assert.match(mainSource, /activeLayerId: number;/);
 
 console.log("Layer stack verification passed.");

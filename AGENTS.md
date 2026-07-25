@@ -523,17 +523,36 @@ ridisegnava il tratto del livello A sopra B (`{P:0,Q:1024}` → `{P:1024,Q:0}`).
 Altri invarianti da non perdere:
 
 - `layerSwitchBusy` è tenuto per **tutta** la durata dello switch, `await`
-  inclusi, e rifiuta tratti, `clear`, undo e altri switch. Le guardie in testa ai
-  metodi dimostrano solo che il motore era fermo *quando sono girate*; il rebuild
-  dura 150–390 ms. Lato UI il flag entra in `operationLocked()`.
-- `activateLayer()` chiama `ensureEffectRenderersForActiveLayer()`: il banco è una
-  sola istanza retargettabile, quindi un livello con stile memorizzato attivo può
-  arrivare dopo che un altro livello ha rilasciato il renderer. Include il resize
-  dello scratch al tier della width entrante.
-- Il cambio formato **alloca prima di distruggere**: altrimenti un OOM a metà
-  lascia il documento senza né le texture vecchie né le nuove.
+  inclusi. Oltre a tratti, `clear`, undo e altri switch, blocca anche modifiche
+  brush/Traccia/Smusso, cambio formato, benchmark e il retarget pubblico del
+  banco; solo il retarget interno chiamato da `activateLayer()` riceve un bypass
+  esplicito. Le guardie in testa ai metodi dimostrano solo che il motore era fermo
+  *quando sono girate*; il rebuild dura 150–410 ms. Lato UI il flag entra in
+  `operationLocked()`.
+- `activateLayer()` chiama `ensureEffectRenderersForActiveLayer()`. Invariante:
+  **Smusso attivo richiede anche `RasterStrokeRenderer`**, perché è quel renderer
+  a comporre lo Smusso anche con Traccia disattivata. Verifica GPU del 25 luglio:
+  Smusso-only sul livello 1 → rilascio reale di entrambi i renderer sul livello 2
+  → ritorno al livello 1; ricompaiono style stack `21,3 MiB`, coverage `16 MiB`,
+  scratch `16 MiB` e heightfield `64,1 MiB`. Il test puro
+  `layers:verify` fallisce mutando via il requisito Smusso-only. Il resize dello
+  scratch segue sempre la width memorizzata sul livello entrante.
+- Se `activateLayer()` fallisce, cambiare indietro il solo indice o ribindare la
+  sola texture **non è rollback**: Blend, campi live e banco effetti possono già
+  puntare all'entrante. `setActiveLayer()` esegue quindi `activateLayer()` in senso
+  inverso; `addLayer()` distrugge texture e record candidati solo dopo lo stesso
+  ripristino completo. Se anche il ripristino fallisce, le risorse candidate
+  restano vive: mai distruggere una texture che un renderer potrebbe ancora usare.
+- Il cambio formato è una transazione WebGPU: pipeline, tutte le texture e il
+  nuovo Blend sono candidate validate prima dello swap. Ogni allocazione chiude
+  scope `validation` **e** `out-of-memory`, perché `createTexture()` può restituire
+  un oggetto invalido e segnalare l'OOM solo a `popErrorScope()`; il `catch` JS da
+  solo non basta. Un fallimento distrugge tutti i candidati, incluso quello del
+  livello attivo, e lascia texture/Blend/workbench vecchi intatti. Prova Node con
+  OOM asincrono simulato inclusa in `layers:verify`; nessun OOM GPU reale forzato.
 - Telemetria `44` firma `layerCount` e `activeLayerId`, e `layerMemoryMiB` è
-  moltiplicato per i livelli allocati.
+  moltiplicato per i livelli allocati; anche il tipo persistito `BenchmarkRun`
+  dichiara entrambi i campi, così la firma non può sparire silenziosamente.
 
 Da fare: replay con target esplicito (che rimuove il gate su Undo/Redo), undo
 globale che cambia livello attivo (un Ctrl+Z può dover disfare un retarget già

@@ -79,12 +79,17 @@ import {
   EffectsWorkbench,
 } from "./effects-workbench";
 import type { EffectsWorkbenchBenchmarkReport } from "./effects-benchmark";
-import { LAYER_STACK_MAXIMUM, LayerStack } from "./layer-stack";
+import {
+  LAYER_STACK_MAXIMUM,
+  LayerStack,
+  layerEffectRendererRequirements,
+} from "./layer-stack";
 import {
   hasVisibleContent,
   layersWithVisibleContent,
   visibleStrokeIds,
 } from "./history-journal";
+import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import {
   EFFECTS_SCRATCH_POOL_IDLE_SHRINK_DELAY_MS,
   EFFECTS_SCRATCH_POOL_STRATEGY,
@@ -1752,6 +1757,9 @@ export class BrushEngine {
   }
 
   setBrushSettings(next: Partial<BrushSettings>): void {
+    if (this.initialized && this.layerSwitchBusy) {
+      throw new Error("Le impostazioni non possono cambiare durante uno switch di livello.");
+    }
     this.flushPendingWorkBeforeSettingsChange();
     const previousTool = this.settings.tool;
     const tool = next.tool === "paint" || next.tool === "blend"
@@ -2028,6 +2036,9 @@ export class BrushEngine {
   async setRasterStrokeStyle(style: unknown): Promise<boolean> {
     const normalized = normalizeRasterStrokeStyle(style);
     const normalizedActive = normalized.enabled && normalized.width > 0;
+    if (this.initialized && this.layerSwitchBusy) {
+      return false;
+    }
     if (
       rasterStrokeStylesEqual(normalized, this.rasterStrokeStyle)
       && (!normalizedActive || this.rasterStrokeRenderer)
@@ -2038,7 +2049,13 @@ export class BrushEngine {
       this.rasterStrokeStyle = normalized;
       return true;
     }
-    if (this.activeStroke || this.historyBusy || this.rasterStrokeBusy || this.rasterBevelBusy) {
+    if (
+      this.activeStroke
+      || this.historyBusy
+      || this.layerSwitchBusy
+      || this.rasterStrokeBusy
+      || this.rasterBevelBusy
+    ) {
       return false;
     }
 
@@ -2116,6 +2133,9 @@ export class BrushEngine {
 
   async setRasterBevelStyle(style: unknown): Promise<boolean> {
     const normalized = normalizeRasterBevelStyle(style);
+    if (this.initialized && this.layerSwitchBusy) {
+      return false;
+    }
     const change = classifyRasterBevelStyleChange(
       this.rasterBevelStyle,
       normalized,
@@ -2134,6 +2154,7 @@ export class BrushEngine {
     if (
       this.activeStroke
       || this.historyBusy
+      || this.layerSwitchBusy
       || this.rasterStrokeBusy
       || this.rasterBevelBusy
     ) {
@@ -2230,7 +2251,7 @@ export class BrushEngine {
     if (format === this.layerFormat) {
       return true;
     }
-    if (!this.initialized || this.historyBusy || this.activeStroke) {
+    if (!this.initialized || this.historyBusy || this.activeStroke || this.layerSwitchBusy) {
       return false;
     }
 
@@ -2273,9 +2294,10 @@ export class BrushEngine {
       this.publishStats();
       return true;
     } catch (error) {
-      // recreateLayerResources assegna e distrugge la texture precedente solo
-      // dopo che tutte le pipeline candidate sono state validate. In caso di
-      // errore, il vecchio layer e la sua cronologia sono quindi ancora validi.
+      // recreateLayerResources assegna e distrugge le risorse precedenti solo
+      // dopo che pipeline, texture di tutti i livelli e Blend candidati hanno
+      // chiuso gli scope validation/OOM. In caso di errore, il documento e la
+      // sua cronologia sono quindi ancora validi.
       this.layerFormat = previousFormat;
       const message = error instanceof Error ? error.message : String(error);
       this.callbacks.onStatus?.(`Formato ${format} non disponibile: ${message}`, "error");
@@ -3467,10 +3489,30 @@ export class BrushEngine {
     layerFormat: LayerFormat = this.layerFormat,
     contentBounds: DirtyRect | null | undefined = undefined,
   ): Promise<EffectsWorkbenchRetargetResult> {
+    return this.retargetEffectsWorkingSetInternal(
+      layerView,
+      layerFormat,
+      contentBounds,
+      false,
+    );
+  }
+
+  private async retargetEffectsWorkingSetInternal(
+    layerView: GPUTextureView,
+    layerFormat: LayerFormat,
+    contentBounds: DirtyRect | null | undefined,
+    allowLayerSwitch: boolean,
+  ): Promise<EffectsWorkbenchRetargetResult> {
     if (!this.initialized) {
       throw new Error("Il motore non è ancora inizializzato.");
     }
-    if (this.activeStroke || this.historyBusy || this.rasterStrokeBusy || this.rasterBevelBusy) {
+    if (
+      this.activeStroke
+      || this.historyBusy
+      || (!allowLayerSwitch && this.layerSwitchBusy)
+      || this.rasterStrokeBusy
+      || this.rasterBevelBusy
+    ) {
       throw new Error("Il banco effetti può cambiare sorgente solo a motore fermo.");
     }
     const workbench = this.requireEffectsWorkbench();
@@ -3579,7 +3621,13 @@ export class BrushEngine {
     if (!this.initialized) {
       throw new Error("Il motore non è ancora inizializzato.");
     }
-    if (this.activeStroke || this.historyBusy || this.rasterStrokeBusy || this.rasterBevelBusy) {
+    if (
+      this.activeStroke
+      || this.historyBusy
+      || this.layerSwitchBusy
+      || this.rasterStrokeBusy
+      || this.rasterBevelBusy
+    ) {
       throw new Error("Ferma il motore prima del benchmark del banco effetti.");
     }
     await this.waitForIdle();
@@ -5475,34 +5523,38 @@ export class BrushEngine {
         GPUTextureUsage.COPY_SRC |
         GPUTextureUsage.COPY_DST,
     });
-    // Mip 0 remains the only authoritative brush attachment. The remaining
-    // subresources are derived presentation data and are never blended into.
-    const view = texture.createView({
-      label: `Paint layer authoritative mip 0 ${format}`,
-      baseMipLevel: 0,
-      mipLevelCount: 1,
-    });
-    const samplingView = texture.createView({
-      label: `Paint layer display mip chain ${format}`,
-      baseMipLevel: 0,
-      mipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT,
-    });
-    const mipViews = Array.from(
-      { length: PAINT_DISPLAY_MIP_LEVEL_COUNT },
-      (_, mipLevel) => texture.createView({
-        label: `Paint layer mip ${mipLevel} ${format}`,
-        baseMipLevel: mipLevel,
+    try {
+      // Mip 0 remains the only authoritative brush attachment. The remaining
+      // subresources are derived presentation data and are never blended into.
+      const view = texture.createView({
+        label: `Paint layer authoritative mip 0 ${format}`,
+        baseMipLevel: 0,
         mipLevelCount: 1,
-      }),
-    );
-    return { texture, view, samplingView, mipViews };
+      });
+      const samplingView = texture.createView({
+        label: `Paint layer display mip chain ${format}`,
+        baseMipLevel: 0,
+        mipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT,
+      });
+      const mipViews = Array.from(
+        { length: PAINT_DISPLAY_MIP_LEVEL_COUNT },
+        (_, mipLevel) => texture.createView({
+          label: `Paint layer mip ${mipLevel} ${format}`,
+          baseMipLevel: mipLevel,
+          mipLevelCount: 1,
+        }),
+      );
+      return { texture, view, samplingView, mipViews };
+    } catch (error) {
+      texture.destroy();
+      throw error;
+    }
   }
 
   /**
-   * The bind groups that name one layer's views. Kept separate from
-   * allocateLayerTexture only because recreateLayerResources creates them
-   * inside its validation error scope, and moving them out would silently
-   * change which failures that scope reports.
+   * The bind groups that name one layer's views. Keeping this separate lets the
+   * allocation transaction cover texture, views and bind groups as one candidate
+   * and destroy exactly one texture if any asynchronous validation/OOM fails.
    */
   private createLayerBindGroups(
     format: LayerFormat,
@@ -5526,6 +5578,28 @@ export class BrushEngine {
         entries: [{ binding: 0, resource: sourceView }],
       }));
     return { displayBindGroup, paintMipDownsampleBindGroups };
+  }
+
+  /**
+   * Allocates one complete layer candidate under WebGPU validation and OOM
+   * scopes. createTexture may return an invalid object and report the failure
+   * only when the scope is popped, so a JavaScript try/catch alone is not a
+   * rollback boundary.
+   */
+  private async allocateLayerGpuResources(
+    format: LayerFormat,
+    label: string,
+  ): Promise<LayerGpuResources> {
+    return runGpuAllocationTransaction(this.device, label, (transaction) => {
+      const textureResources = this.allocateLayerTexture(format);
+      transaction.deferRollback(() => textureResources.texture.destroy());
+      const bindGroups = this.createLayerBindGroups(
+        format,
+        textureResources.samplingView,
+        textureResources.mipViews,
+      );
+      return { ...textureResources, ...bindGroups };
+    });
   }
 
   private requireLayerGpu(layerId: number): LayerGpuResources {
@@ -5570,14 +5644,13 @@ export class BrushEngine {
       this.persistActiveLayerState();
       const index = this.layerStack.add(name);
       const record = this.layerStack.at(index);
+      let gpu: LayerGpuResources;
       try {
-        const texture = this.allocateLayerTexture(this.layerFormat);
-        const bindGroups = this.createLayerBindGroups(
+        gpu = await this.allocateLayerGpuResources(
           this.layerFormat,
-          texture.samplingView,
-          texture.mipViews,
+          `Allocazione livello ${record.id}`,
         );
-        this.layerGpu.set(record.id, { ...texture, ...bindGroups });
+        this.layerGpu.set(record.id, gpu);
       } catch (error) {
         // Leave the stack exactly as it was rather than holding a record with no
         // GPU resources, which every later switch would trip over.
@@ -5585,7 +5658,31 @@ export class BrushEngine {
         this.layerStack.setActiveIndex(fromIndex);
         throw error;
       }
-      return await this.activateLayer(fromIndex);
+      try {
+        return await this.activateLayer(fromIndex);
+      } catch (error) {
+        // activateLayer mutates more than the selected index: it binds texture
+        // fields, retargets Blend and the effect workbench, and loads content
+        // metadata. Restore through the same complete path before discarding the
+        // candidate. If restoration itself fails, keep every resource alive so
+        // no renderer can be left pointing at a destroyed texture.
+        this.layerStack.setActiveIndex(fromIndex);
+        try {
+          await this.activateLayer(index);
+        } catch (restoreError) {
+          const originalMessage = error instanceof Error ? error.message : String(error);
+          const restoreMessage = restoreError instanceof Error
+            ? restoreError.message
+            : String(restoreError);
+          throw new Error(
+            `Creazione livello fallita: ${originalMessage}; ripristino fallito: ${restoreMessage}`,
+          );
+        }
+        this.layerGpu.delete(record.id);
+        this.layerStack.remove(index);
+        gpu.texture.destroy();
+        throw error;
+      }
     } finally {
       this.layerSwitchBusy = false;
       this.publishHistoryState();
@@ -5605,17 +5702,31 @@ export class BrushEngine {
     this.assertLayerSwitchAllowed();
     this.layerSwitchBusy = true;
     const fromIndex = this.layerStack.activeIndex;
+    let activationStarted = false;
     try {
       await this.waitForIdle();
       this.persistActiveLayerState();
       this.layerStack.setActiveIndex(index);
+      activationStarted = true;
       return await this.activateLayer(fromIndex);
     } catch (error) {
-      // Put the selection back: leaving the stack pointing at a layer whose
-      // resources were never bound would make every later operation act on the
-      // wrong texture.
-      this.layerStack.setActiveIndex(fromIndex);
-      this.bindActiveLayerResources();
+      if (activationStarted) {
+        // Restoring only the selected index and texture fields is insufficient:
+        // Blend, content metadata and the effect workbench may already target the
+        // incoming layer. Run the complete activation path in reverse.
+        this.layerStack.setActiveIndex(fromIndex);
+        try {
+          await this.activateLayer(index);
+        } catch (restoreError) {
+          const originalMessage = error instanceof Error ? error.message : String(error);
+          const restoreMessage = restoreError instanceof Error
+            ? restoreError.message
+            : String(restoreError);
+          throw new Error(
+            `Cambio livello fallito: ${originalMessage}; ripristino fallito: ${restoreMessage}`,
+          );
+        }
+      }
       throw error;
     } finally {
       this.layerSwitchBusy = false;
@@ -5665,16 +5776,19 @@ export class BrushEngine {
    */
   private async ensureEffectRenderersForActiveLayer(): Promise<void> {
     const record = this.layerStack.active;
-    const strokeStyle = record.strokeStyle;
-    if (strokeStyle.enabled && strokeStyle.width > 0) {
-      const scratchExtent = rasterStrokeScratchExtentForWidth(strokeStyle.width);
+    const requirements = layerEffectRendererRequirements(
+      record.strokeStyle,
+      normalizeRasterBevelStyle(record.bevelStyle),
+    );
+    if (requirements.needsStrokeRenderer) {
+      const scratchExtent = rasterStrokeScratchExtentForWidth(requirements.strokeWidth);
       if (!this.rasterStrokeRenderer) {
-        await this.ensureRasterStrokeRenderer(strokeStyle.width);
+        await this.ensureRasterStrokeRenderer(requirements.strokeWidth);
       } else if (this.rasterStrokeRenderer.scratchExtent !== scratchExtent) {
         this.rasterStrokeRenderer.resizeScratch(scratchExtent);
       }
     }
-    if (normalizeRasterBevelStyle(record.bevelStyle).enabled && !this.rasterBevelRenderer) {
+    if (requirements.needsBevelRenderer && !this.rasterBevelRenderer) {
       await this.ensureRasterBevelRenderer();
     }
   }
@@ -5694,10 +5808,11 @@ export class BrushEngine {
     await this.ensureEffectRenderersForActiveLayer();
 
     const effectsStartedAt = performance.now();
-    const effects = await this.retargetEffectsWorkingSet(
+    const effects = await this.retargetEffectsWorkingSetInternal(
       this.layerView,
       this.layerFormat,
       record.contentBounds,
+      true,
     );
     const effectsMs = performance.now() - effectsStartedAt;
 
@@ -5717,11 +5832,35 @@ export class BrushEngine {
   }
 
   private async recreateLayerResources(format: LayerFormat): Promise<void> {
-    const oldTexture = this.layerTexture;
     const oldBlendRenderer = this.blendRenderer;
-
-    const { texture, view, samplingView, mipViews } = this.allocateLayerTexture(format);
-
+    const oldEffectsWorkbench = this.effectsWorkbench;
+    const previousScratchPeakBytes = oldEffectsWorkbench?.scratchPool.peakBytes ?? 0;
+    const {
+      normalPipeline,
+      additivePipeline,
+      shapeNormalPipeline,
+      shapeAdditivePipeline,
+      shapeOccupancyNormalPipeline,
+      shapeOccupancyAdditivePipeline,
+      grainNormalPipeline,
+      grainAdditivePipeline,
+      grainShapeNormalPipeline,
+      grainShapeAdditivePipeline,
+      grainShapeOccupancyNormalPipeline,
+      grainShapeOccupancyAdditivePipeline,
+      m1GlazePipeline,
+      m1GlazeShapePipeline,
+      m1GlazeShapeOccupancyPipeline,
+      grainM1GlazePipeline,
+      grainM1GlazeShapePipeline,
+      grainM1GlazeShapeOccupancyPipeline,
+      lightGlazeCompositeMipPipeline,
+      lightGlazeCompositePipeline,
+      paintMipDownsamplePipeline,
+    } = await runGpuAllocationTransaction(
+      this.device,
+      `Pipeline formato layer ${format}`,
+      () => {
     const brushPipelineLayout = this.device.createPipelineLayout({
       label: `Brush legacy pipeline layout ${format}`,
       bindGroupLayouts: [this.brushBindGroupLayout],
@@ -5751,7 +5890,6 @@ export class BrushEngine {
       bindGroupLayouts: [this.lightGlazeCompositeBindGroupLayout],
     });
 
-    this.device.pushErrorScope("validation");
     const normalPipeline = this.device.createRenderPipeline({
       label: `Brush normal ${format}`,
       layout: brushPipelineLayout,
@@ -6266,37 +6404,32 @@ export class BrushEngine {
       },
       primitive: { topology: "triangle-list" },
     });
+        return {
+          normalPipeline,
+          additivePipeline,
+          shapeNormalPipeline,
+          shapeAdditivePipeline,
+          shapeOccupancyNormalPipeline,
+          shapeOccupancyAdditivePipeline,
+          grainNormalPipeline,
+          grainAdditivePipeline,
+          grainShapeNormalPipeline,
+          grainShapeAdditivePipeline,
+          grainShapeOccupancyNormalPipeline,
+          grainShapeOccupancyAdditivePipeline,
+          m1GlazePipeline,
+          m1GlazeShapePipeline,
+          m1GlazeShapeOccupancyPipeline,
+          grainM1GlazePipeline,
+          grainM1GlazeShapePipeline,
+          grainM1GlazeShapeOccupancyPipeline,
+          lightGlazeCompositeMipPipeline,
+          lightGlazeCompositePipeline,
+          paintMipDownsamplePipeline,
+        };
+      },
+    );
 
-    const validationError = await this.device.popErrorScope();
-    if (validationError) {
-      texture.destroy();
-      throw new Error(validationError.message);
-    }
-
-    const { displayBindGroup, paintMipDownsampleBindGroups } = this
-      .createLayerBindGroups(format, samplingView, mipViews);
-
-    let blendRenderer: DryBlendRenderer;
-    try {
-      blendRenderer = await DryBlendRenderer.create({
-        device: this.device,
-        documentWidth: LAYER_SIZE,
-        documentHeight: LAYER_SIZE,
-        layerFormat: format,
-        layerView: view,
-        layerSamplingView: samplingView,
-        shapeMaskView: this.shapeMaskView,
-        shapeMaskSampler: this.shapeMaskSampler,
-        grainTextureView: this.grainTextureView,
-        grainSamplers: this.grainSamplers,
-      });
-    } catch (error) {
-      texture.destroy();
-      throw error;
-    }
-
-    this.destroyLightGlazeResources();
-    this.destroyThicknessTailOverlayResources();
     // A format change invalidates every layer's texture, not just the active one,
     // and setLayerFormat already tells the user the content is cleared.
     //
@@ -6306,37 +6439,79 @@ export class BrushEngine {
     // could still recover, since setLayerFormat's error path restores the previous
     // format and expects the old resources to still be there.
     const replacement = new Map<number, LayerGpuResources>();
-    replacement.set(this.layerStack.active.id, {
+    let blendRenderer: DryBlendRenderer | null = null;
+    let nextEffectsWorkbench: EffectsWorkbench | null = null;
+    try {
+      for (const record of this.layerStack.layers) {
+        const gpu = await this.allocateLayerGpuResources(
+          format,
+          `Cambio formato: livello ${record.id}`,
+        );
+        replacement.set(record.id, gpu);
+      }
+
+      const activeGpu = replacement.get(this.layerStack.active.id);
+      if (!activeGpu) {
+        throw new Error("Risorse candidate mancanti per il livello attivo.");
+      }
+      blendRenderer = await runGpuAllocationTransaction(
+        this.device,
+        `Renderer Blend formato ${format}`,
+        async (transaction) => {
+          const candidate = await DryBlendRenderer.create({
+            device: this.device,
+            documentWidth: LAYER_SIZE,
+            documentHeight: LAYER_SIZE,
+            layerFormat: format,
+            layerView: activeGpu.view,
+            layerSamplingView: activeGpu.samplingView,
+            shapeMaskView: this.shapeMaskView,
+            shapeMaskSampler: this.shapeMaskSampler,
+            grainTextureView: this.grainTextureView,
+            grainSamplers: this.grainSamplers,
+          });
+          transaction.deferRollback(() => candidate.destroy());
+          return candidate;
+        },
+      );
+      nextEffectsWorkbench = new EffectsWorkbench({
+        device: this.device,
+        view: activeGpu.view,
+        format,
+        canReallocateScratch: () => this.activeStroke === null,
+        initialScratchPeakBytes: previousScratchPeakBytes,
+      });
+    } catch (error) {
+      // Nothing has been swapped in yet: every candidate is disposable and all
+      // old textures/renderers still describe the intact document.
+      nextEffectsWorkbench?.destroy();
+      blendRenderer?.destroy();
+      for (const gpu of replacement.values()) {
+        gpu.texture.destroy();
+      }
+      throw error;
+    }
+
+    const activeGpu = replacement.get(this.layerStack.active.id);
+    if (!activeGpu || !blendRenderer || !nextEffectsWorkbench) {
+      nextEffectsWorkbench?.destroy();
+      blendRenderer?.destroy();
+      for (const gpu of replacement.values()) {
+        gpu.texture.destroy();
+      }
+      throw new Error("Transazione cambio formato incompleta.");
+    }
+    const {
       texture,
       view,
       samplingView,
       mipViews,
       displayBindGroup,
       paintMipDownsampleBindGroups,
-    });
-    try {
-      for (const other of this.layerStack.layers) {
-        if (other.id === this.layerStack.active.id) {
-          continue;
-        }
-        const otherTexture = this.allocateLayerTexture(format);
-        const otherBindGroups = this.createLayerBindGroups(
-          format,
-          otherTexture.samplingView,
-          otherTexture.mipViews,
-        );
-        replacement.set(other.id, { ...otherTexture, ...otherBindGroups });
-      }
-    } catch (error) {
-      // Nothing has been swapped in yet, so drop only what we just allocated and
-      // leave the document exactly as it was.
-      for (const [layerId, gpu] of replacement) {
-        if (layerId !== this.layerStack.active.id) {
-          gpu.texture.destroy();
-        }
-      }
-      throw error;
-    }
+    } = activeGpu;
+
+    this.destroyLightGlazeResources();
+    this.destroyThicknessTailOverlayResources();
     const supersededLayerGpu = [...this.layerGpu.values()];
     this.layerGpu.clear();
     for (const [layerId, gpu] of replacement) {
@@ -6349,9 +6524,6 @@ export class BrushEngine {
       other.contentBounds = null;
       other.hasContent = false;
       other.mipValidThroughLevel = 0;
-    }
-    for (const gpu of supersededLayerGpu) {
-      gpu.texture.destroy();
     }
     this.layerTexture = texture;
     this.layerView = view;
@@ -6390,21 +6562,12 @@ export class BrushEngine {
     this.presentationCacheNeedsFullRebuild = true;
     this.releaseRasterStrokeRenderer();
     this.releaseRasterBevelRenderer();
-
-    // The high-water mark is a session statistic, not a property of the pool
-    // instance: recreating the workbench must not silently reset the number the
-    // memory monitor reports.
-    const previousScratchPeakBytes = this.effectsWorkbench?.scratchPool.peakBytes ?? 0;
-    this.effectsWorkbench?.destroy();
-    this.effectsWorkbench = new EffectsWorkbench({
-      device: this.device,
-      view,
-      format,
-      canReallocateScratch: () => this.activeStroke === null,
-      initialScratchPeakBytes: previousScratchPeakBytes,
-    });
+    oldEffectsWorkbench?.destroy();
+    this.effectsWorkbench = nextEffectsWorkbench;
     oldBlendRenderer?.destroy();
-    oldTexture?.destroy();
+    for (const gpu of supersededLayerGpu) {
+      gpu.texture.destroy();
+    }
   }
 
   private ensureThicknessTailOverlayResources(

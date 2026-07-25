@@ -13,6 +13,7 @@ import {
   type DryBlendBatch,
   type DryBlendStep,
 } from "./blend-core";
+import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 
 const BLEND_UNIFORM_BYTES = 192;
 const BLEND_MAX_BATCHES_PER_SUBMIT = 256;
@@ -362,46 +363,47 @@ export class DryBlendRenderer {
       compute: { module, entryPoint },
     });
 
-    this.device.pushErrorScope("validation");
-    this.gatherPipeline = computePipeline(
-      "Blend dry gather ROI",
-      this.gatherBindGroupLayout,
-      modules[0].module,
-      "gatherMain",
-    );
-    this.pickupPipeline = computePipeline(
-      "Blend dry 8x8 weighted pigment pickup",
-      this.pickupBindGroupLayout,
-      modules[1].module,
-      "pickupMain",
-    );
-    this.depositPipeline = computePipeline(
-      "Blend dry fused sweep mask and pigment deposit",
-      this.depositBindGroupLayout,
-      modules[2].module,
-      "depositMain",
-    );
-    this.scatterPipeline = this.device.createRenderPipeline({
-      label: "Blend dry scatter to canonical layer",
-      layout: pipelineLayout(
-        "Blend dry scatter pipeline layout",
-        this.scatterBindGroupLayout,
-      ),
-      vertex: {
-        module: modules[3].module,
-        entryPoint: "fullscreenVertex",
+    await runGpuAllocationTransaction(
+      this.device,
+      "Pipeline Blend WebGPU non valida",
+      () => {
+        this.gatherPipeline = computePipeline(
+          "Blend dry gather ROI",
+          this.gatherBindGroupLayout,
+          modules[0].module,
+          "gatherMain",
+        );
+        this.pickupPipeline = computePipeline(
+          "Blend dry 8x8 weighted pigment pickup",
+          this.pickupBindGroupLayout,
+          modules[1].module,
+          "pickupMain",
+        );
+        this.depositPipeline = computePipeline(
+          "Blend dry fused sweep mask and pigment deposit",
+          this.depositBindGroupLayout,
+          modules[2].module,
+          "depositMain",
+        );
+        this.scatterPipeline = this.device.createRenderPipeline({
+          label: "Blend dry scatter to canonical layer",
+          layout: pipelineLayout(
+            "Blend dry scatter pipeline layout",
+            this.scatterBindGroupLayout,
+          ),
+          vertex: {
+            module: modules[3].module,
+            entryPoint: "fullscreenVertex",
+          },
+          fragment: {
+            module: modules[3].module,
+            entryPoint: "scatterFragment",
+            targets: [{ format: this.layerFormat }],
+          },
+          primitive: { topology: "triangle-list" },
+        });
       },
-      fragment: {
-        module: modules[3].module,
-        entryPoint: "scatterFragment",
-        targets: [{ format: this.layerFormat }],
-      },
-      primitive: { topology: "triangle-list" },
-    });
-    const validationError = await this.device.popErrorScope();
-    if (validationError) {
-      throw new Error(`Pipeline Blend WebGPU non valida: ${validationError.message}`);
-    }
+    );
   }
 
   beginStroke(historyActionId: number): void {
