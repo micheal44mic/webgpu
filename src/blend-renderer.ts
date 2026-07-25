@@ -192,8 +192,8 @@ export class DryBlendRenderer {
   private readonly documentWidth: number;
   private readonly documentHeight: number;
   private readonly layerFormat: GPUTextureFormat;
-  private readonly layerView: GPUTextureView;
-  private readonly layerSamplingView: GPUTextureView;
+  private layerView: GPUTextureView;
+  private layerSamplingView: GPUTextureView;
   private shapeMaskView: GPUTextureView;
   private readonly shapeMaskSampler: GPUSampler;
   private grainTextureView: GPUTextureView;
@@ -795,6 +795,48 @@ export class DryBlendRenderer {
     }
     this.shapeMaskView = view;
     this.rebuildResidentDepositBindGroups();
+  }
+
+  /**
+   * Points the renderer at a different paint layer.
+   *
+   * Blend only ever wets the active layer, so one instance is retargeted rather
+   * than one instance per layer — the same shape EffectsWorkbench uses. The
+   * carrier is invalidated because it holds pigment picked up from the outgoing
+   * layer: seeding the first step of a stroke on the incoming layer with that
+   * pigment would silently bleed one layer's colour into another.
+   */
+  retarget(view: GPUTextureView, samplingView: GPUTextureView): void {
+    if (this.destroyed) {
+      throw new Error("Renderer Blend già distrutto.");
+    }
+    if (this.layerView === view && this.layerSamplingView === samplingView) {
+      return;
+    }
+    this.layerView = view;
+    this.layerSamplingView = samplingView;
+    // layerView is read at encode time as a colour attachment, so it needs no
+    // rebuild. layerSamplingView is baked into the gather bind group.
+    if (this.scratch) {
+      this.scratch.gatherBindGroup = this.device.createBindGroup({
+        label: "Blend dry gather bind group",
+        layout: this.gatherBindGroupLayout,
+        entries: [
+          {
+            binding: 0,
+            resource: {
+              buffer: this.uniformBuffer,
+              offset: 0,
+              size: BLEND_UNIFORM_BYTES,
+            },
+          },
+          { binding: 1, resource: this.layerSamplingView },
+          { binding: 2, resource: { buffer: this.scratch.stateBuffer } },
+          { binding: 3, resource: { buffer: this.scratch.coverageBuffer } },
+        ],
+      });
+    }
+    this.carrierValid = false;
   }
 
   private rebuildResidentDepositBindGroups(): void {
