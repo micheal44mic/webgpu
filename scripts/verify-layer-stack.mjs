@@ -281,12 +281,46 @@ assert.match(
 const probeStart = engineSource.indexOf("async readLayerPixels(");
 const probeBody = engineSource.slice(probeStart, probeStart + 2_600);
 assert.match(probeBody, /import\.meta\.env\.DEV/, "la sonda deve restare solo-dev");
-assert.match(probeBody, /copyTextureToBuffer/);
-assert.match(probeBody, /texture: target, mipLevel: 0/,
+assert.match(probeBody, /return this\.readTexturePixels\(target, rect, "livello"\)/);
+const textureProbeStart = engineSource.indexOf("private async readTexturePixels(");
+const textureProbeBody = engineSource.slice(textureProbeStart, textureProbeStart + 3_000);
+assert.match(textureProbeBody, /copyTextureToBuffer/);
+assert.match(textureProbeBody, /texture: target, mipLevel: 0/,
   "la sonda deve leggere il mip 0 autorevole, non un livello derivato");
-assert.match(probeBody, /Math\.ceil\(unpaddedBytesPerRow \/ 256\) \* 256/,
+assert.match(textureProbeBody, /Math\.ceil\(unpaddedBytesPerRow \/ 256\) \* 256/,
   "bytesPerRow deve restare allineato a 256");
-assert.match(probeBody, /readbackBuffer\.destroy\(\)/, "la sonda non deve perdere il buffer");
+assert.match(textureProbeBody, /readbackBuffer\.destroy\(\)/, "la sonda non deve perdere il buffer");
+
+// Step 12: the outgoing styled result is a lazy full-resolution bake. It must
+// use the analytic golden compositor and replace the old texture only after a
+// complete allocation/submit transaction has succeeded.
+assert.match(engineSource, /LAYER_BAKE_STRATEGY =\s*\n\s*"lazy-per-layer-analytic-mip0-transactional-replacement"/);
+const bakeStart = engineSource.indexOf("private async bakeActiveLayerForSwitch(");
+const bakeEnd = engineSource.indexOf("/** Points the engine's active-layer fields", bakeStart);
+const bakeBody = engineSource.slice(bakeStart, bakeEnd);
+assert.match(bakeBody, /runGpuAllocationTransaction\(/,
+  "allocation, validation, submit e rollback del bake devono condividere una transazione");
+assert.match(bakeBody, /GPUTextureUsage\.STORAGE_BINDING/);
+assert.match(bakeBody, /GPUTextureUsage\.TEXTURE_BINDING/);
+assert.match(bakeBody, /GPUTextureUsage\.COPY_SRC/);
+assert.match(bakeBody, /renderer\.encodeBake\(/,
+  "il motore deve usare il compositore promosso dal golden");
+assert.match(bakeBody, /await this\.device\.queue\.onSubmittedWorkDone\(\);\s*this\.maybeInjectLayerBakeFault\("after-candidate-submit"\)/,
+  "il fault discriminante deve avvenire dopo un vero submit completato");
+assert.ok(
+  bakeBody.indexOf("gpu.bake = completed;")
+    > bakeBody.indexOf("await runGpuAllocationTransaction("),
+  "la cache candidata non deve essere pubblicata prima del commit GPU",
+);
+assert.ok(
+  bakeBody.lastIndexOf("previous?.texture.destroy();")
+    > bakeBody.indexOf("gpu.bake = completed;"),
+  "il bake precedente va distrutto soltanto dopo lo swap riuscito",
+);
+assert.match(engineSource, /async readLayerBakePixels\(/);
+assert.match(engineSource, /gpu\.bake \|\| !gpu\.bakeValid/);
+assert.match(engineSource, /layerBakeMiB/,
+  "la texture bake deve entrare nella contabilità GPU");
 
 // Allocating a layer must not go through recreateLayerResources, whose tail
 // destroys the outgoing texture, the blend renderer and the effects workbench.
@@ -422,11 +456,17 @@ assert.match(
 // the old cursor, then reactivate the original layer. Reversing the last two loses
 // pixels while CPU cursor/index state still looks correct.
 const switchedDeclaration = cursorBody.indexOf("const switched =");
+const historyOutgoingBake = cursorBody.indexOf("await this.bakeActiveLayerForSwitch();");
+const forwardIndexChange = cursorBody.indexOf("this.layerStack.setActiveIndex(targetIndex);");
 const forwardActivation = cursorBody.indexOf(
   'await this.activateLayer(previousActiveIndex, "history-replay");',
 );
 assert.ok(switchedDeclaration >= 0 && switchedDeclaration < forwardActivation,
   "switched deve essere noto prima che activateLayer possa fallire");
+assert.ok(
+  historyOutgoingBake > switchedDeclaration && historyOutgoingBake < forwardIndexChange,
+  "Undo/Redo cross-layer deve congelare l'uscente prima di cambiare target",
+);
 const operationCatch = cursorBody.indexOf("catch (operationError)");
 const cursorRestore = cursorBody.indexOf("this.historyCursor = previousCursor;", operationCatch);
 const targetRestore = cursorBody.indexOf(
@@ -451,6 +491,8 @@ assert.ok(
 );
 assert.match(cursorBody, /this\.historyStateInconsistent = true;/,
   "un rollback fallito deve alzare il latch fatale");
+assert.match(cursorBody, /bakeValid =\s*targetBakeWasValid/,
+  "un rollback byte-identico deve ripristinare anche la validità del bake preesistente");
 assert.match(cursorBody, /Ricarica la pagina prima di continuare/,
   "anche l'errore propagato alla UI deve dire che serve il reload");
 assert.match(cursorBody, /this\.historyBusy = this\.historyStateInconsistent;/,
@@ -492,8 +534,8 @@ const layerHistoryGpuTestSource = readFileSync(
 assert.match(mainSource, /pageSearchParams\.get\("layerHistoryTest"\) === "1"/);
 assert.match(mainSource, /await import\("\.\/layer-history-gpu-test"\)/);
 assert.match(mainSource, /await runLayerHistoryGpuTest\(engine\)/);
-assert.match(mainSource, /const failure = \{ version: 2, passed: false/);
-assert.match(layerHistoryGpuTestSource, /LAYER_HISTORY_GPU_TEST_VERSION = 2 as const/);
+assert.match(mainSource, /const failure = \{ version: 3, passed: false/);
+assert.match(layerHistoryGpuTestSource, /LAYER_HISTORY_GPU_TEST_VERSION = 3 as const/);
 assert.match(layerHistoryGpuTestSource, /readLayerPixels\(auditRect, 0\)/);
 assert.match(layerHistoryGpuTestSource, /readLayerPixels\(auditRect, 1\)/);
 assert.match(layerHistoryGpuTestSource, /const undoReturned = await engine\.undo\(\)/);
@@ -521,6 +563,10 @@ assert.match(layerHistoryGpuTestSource, /fatalRollbackLatchedInconsistent: fatal
 assert.match(layerHistoryGpuTestSource, /fatalLatchRefusedAnotherUndo: !fatalFollowUpUndoReturned/);
 assert.match(layerHistoryGpuTestSource, /layerAAfterUndo: countDifferingBytes\(layerABaseline, layerAAfterUndo\)/);
 assert.match(layerHistoryGpuTestSource, /layerBRedoVersusBeforeUndo: countDifferingBytes\(layerBBeforeUndo, layerBAfterRedo\)/);
+assert.match(layerHistoryGpuTestSource, /engine\.injectLayerBakeFault\("after-candidate-submit"\)/);
+assert.match(layerHistoryGpuTestSource, /injectedBakeFailureKeptAuditedBakeBytes: bakeAfterInjectedFailure === 0/);
+assert.match(layerHistoryGpuTestSource, /successfulRetryAdvancedTheGeneration/);
+assert.match(layerHistoryGpuTestSource, /historyRoundTripRebakedTheSamePixels/);
 
 // The switch lock has to be held across the awaits, or a pointerdown landing
 // during the 150-215 ms rebuild starts a stroke on a half-swapped layer.
@@ -558,10 +604,20 @@ assert.match(ensureBody, /this\.rasterStrokeRenderer\.resizeScratch\(scratchExte
 const selectMethodStart = engineSource.indexOf("async setActiveLayer(");
 const selectMethodBody = engineSource.slice(selectMethodStart, selectMethodStart + 2_200);
 assert.match(selectMethodBody, /activationStarted = true/);
+assert.ok(
+  selectMethodBody.indexOf("await this.bakeActiveLayerForSwitch();")
+    < selectMethodBody.indexOf("this.layerStack.setActiveIndex(index);"),
+  "setActiveLayer deve completare il bake prima di cambiare indice",
+);
 assert.match(selectMethodBody, /this\.layerStack\.setActiveIndex\(fromIndex\);[\s\S]*?await this\.activateLayer\(index\);/,
   "il rollback dello switch deve ritargettare tutti i sottosistemi");
 const addMethodStart = engineSource.indexOf("async addLayer(");
 const addMethodBody = engineSource.slice(addMethodStart, addMethodStart + 2_800);
+assert.ok(
+  addMethodBody.indexOf("await this.bakeActiveLayerForSwitch();")
+    < addMethodBody.indexOf("this.layerStack.add(name)"),
+  "addLayer deve congelare l'uscente prima di creare/selezionare il candidato",
+);
 assert.match(addMethodBody, /await this\.allocateLayerGpuResources\(/);
 assert.match(addMethodBody, /await this\.activateLayer\(index\);[\s\S]*?this\.layerGpu\.delete\(record\.id\);[\s\S]*?gpu\.texture\.destroy\(\)/,
   "un livello fallito va distrutto solo dopo il ripristino completo");

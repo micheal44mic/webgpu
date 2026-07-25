@@ -17,7 +17,7 @@ import type { RasterBevelFieldState } from "./bevel-renderer";
 import type { EffectsScratchLease, EffectsScratchPool } from "./effects-scratch-pool";
 
 export const RASTER_STROKE_RENDERER_BUILD =
-  "style-stack-webgpu-v10-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even";
+  "style-stack-webgpu-v11-layer-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even";
 export const RASTER_STROKE_COVERAGE_STRATEGY =
   "persistent-packed-r8-style-coverage" as const;
 export const RASTER_STROKE_DISTANCE_STORAGE_STRATEGY =
@@ -74,6 +74,21 @@ export interface RasterStrokeEncodeResult {
   thresholdDetectionDispatches: number;
   thresholdDetectionPixels: number;
   indirectDispatches: number;
+}
+
+export interface RasterStrokeBakeOptions {
+  encoder: GPUCommandEncoder;
+  targetView: GPUTextureView;
+  style: RasterStrokeStyle;
+  bevelStyle?: RasterBevelStyle;
+  sourceMode?: RasterStrokeSourceMode;
+  rect?: RasterStrokeRect | null;
+}
+
+export interface RasterStrokeBakeResult {
+  rect: RasterStrokeRect | null;
+  pixels: number;
+  dispatches: number;
 }
 
 
@@ -1489,6 +1504,84 @@ export class RasterStrokeRenderer {
     this.rebuildSourceBindGroups(2);
   }
 
+  /**
+   * Materializes the exact analytic mip-0 style stack into a caller-owned
+   * texture. The golden readback path uses the same shader; keeping one pipeline
+   * for both prevents the inactive-layer bake from becoming a second visual
+   * implementation that can drift unnoticed.
+   *
+   * The caller owns allocation, submission and rollback. In particular this
+   * method never replaces a previously valid bake in-place.
+   */
+  encodeBake(options: RasterStrokeBakeOptions): RasterStrokeBakeResult {
+    if (this.destroyed) {
+      throw new Error("Renderer Traccia già distrutto.");
+    }
+    if (!this.readbackComposePipeline) {
+      throw new Error("Pipeline bake mip 0 Traccia non inizializzata.");
+    }
+    const rect = normalizedRect(
+      options.rect ?? {
+        x: 0,
+        y: 0,
+        width: this.documentWidth,
+        height: this.documentHeight,
+      },
+      this.documentWidth,
+      this.documentHeight,
+    );
+    if (!rect) {
+      return { rect: null, pixels: 0, dispatches: 0 };
+    }
+
+    const sourceMode = options.sourceMode ?? "permanent";
+    const mode = sourceModeCode(sourceMode);
+    const bevelStyle = options.bevelStyle ?? DEFAULT_RASTER_BEVEL_STYLE;
+    this.updateDisplayParameters(sourceMode, options.style, bevelStyle);
+    this.updateBevelParameters(bevelStyle);
+    this.writeParameters(0, {
+      targetX: rect.x,
+      targetY: rect.y,
+      targetWidth: rect.width,
+      targetHeight: rect.height,
+    }, 0, mode, options.style);
+    this.device.queue.writeBuffer(
+      this.parameterBuffer,
+      0,
+      this.parameterUpload,
+      0,
+      PARAMETER_STRIDE,
+    );
+
+    const bindGroup = this.device.createBindGroup({
+      label: `Style stack layer bake mip 0 source mode ${sourceMode}`,
+      layout: this.composeBindGroupLayout,
+      entries: [
+        ...this.commonSourceEntries(mode),
+        { binding: 5, resource: { buffer: this.coverageBuffer } },
+        { binding: 6, resource: options.targetView },
+        { binding: 7, resource: this.bevelHeightView },
+        { binding: 8, resource: this.bevelGlossView },
+        { binding: 9, resource: { buffer: this.bevelUniformBuffer } },
+      ],
+    });
+    const pass = options.encoder.beginComputePass({
+      label: "Style stack layer bake analytic mip 0",
+    });
+    pass.setPipeline(this.readbackComposePipeline);
+    pass.setBindGroup(0, bindGroup, this.dynamicOffset(0));
+    pass.dispatchWorkgroups(
+      Math.ceil(rect.width / WORKGROUP_SIZE),
+      Math.ceil(rect.height / WORKGROUP_SIZE),
+    );
+    pass.end();
+    return {
+      rect: { ...rect },
+      pixels: rect.width * rect.height,
+      dispatches: 1,
+    };
+  }
+
   createDisplayBindGroup(
     layout: GPUBindGroupLayout,
     sampler: GPUSampler,
@@ -1849,18 +1942,18 @@ export class RasterStrokeRenderer {
         this.bevelBoundingFieldTestMutation,
       ),
     });
-    const readbackComposeModule = this.readbackEnabled
-      ? this.device.createShaderModule({
-        label: "Traccia golden logical mip 0 compose WGSL",
-        code: readbackComposeShader(
-          this.documentWidth,
-          this.documentHeight,
-          this.layerFormat,
-          this.bevelBoundingFieldEnabled,
-          this.bevelBoundingFieldTestMutation,
-        ),
-      })
-      : null;
+    // Compiled for every renderer: the application uses it for inactive-layer
+    // bakes, while readbackEnabled only controls the golden-owned target texture.
+    const readbackComposeModule = this.device.createShaderModule({
+      label: "Style stack analytic logical mip 0 bake WGSL",
+      code: readbackComposeShader(
+        this.documentWidth,
+        this.documentHeight,
+        this.layerFormat,
+        this.bevelBoundingFieldEnabled,
+        this.bevelBoundingFieldTestMutation,
+      ),
+    });
     const thresholdMaskModule = this.device.createShaderModule({
       label: "Traccia alpha-threshold mask WGSL",
       code: thresholdMaskShader(this.documentWidth, this.documentHeight),
@@ -1874,9 +1967,7 @@ export class RasterStrokeRenderer {
       { label: "jfa", module: jfaModule },
       { label: "resolve", module: resolveModule },
       { label: "coarse-compose", module: composeModule },
-      ...(readbackComposeModule
-        ? [{ label: "golden-readback-compose", module: readbackComposeModule }]
-        : []),
+      { label: "analytic-mip0-bake", module: readbackComposeModule },
       { label: "threshold-mask", module: thresholdMaskModule },
       { label: "indirect-gate", module: indirectGateModule },
     ]);
@@ -1912,13 +2003,11 @@ export class RasterStrokeRenderer {
       layout: composePipelineLayout,
       compute: { module: composeModule, entryPoint: "main" },
     });
-    this.readbackComposePipeline = readbackComposeModule
-      ? this.device.createComputePipeline({
-        label: "Traccia golden logical mip 0 compose pipeline",
-        layout: composePipelineLayout,
-        compute: { module: readbackComposeModule, entryPoint: "main" },
-      })
-      : null;
+    this.readbackComposePipeline = this.device.createComputePipeline({
+      label: "Style stack analytic logical mip 0 bake pipeline",
+      layout: composePipelineLayout,
+      compute: { module: readbackComposeModule, entryPoint: "main" },
+    });
     this.thresholdMaskPipeline = this.device.createComputePipeline({
       label: "Traccia alpha-threshold mask pipeline",
       layout: this.device.createPipelineLayout({

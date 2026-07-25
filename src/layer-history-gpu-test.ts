@@ -4,7 +4,14 @@ import type {
   HistoryState,
 } from "./brush-engine";
 
-export const LAYER_HISTORY_GPU_TEST_VERSION = 2 as const;
+export const LAYER_HISTORY_GPU_TEST_VERSION = 3 as const;
+
+interface LayerBakeState {
+  allocated: boolean;
+  valid: boolean;
+  generation: number;
+  memoryMiB: number;
+}
 
 interface PixelRect {
   x: number;
@@ -31,6 +38,18 @@ export interface LayerHistoryGpuTestReport {
     layerAAfterUndo: number;
     layerAAfterRedo: number;
     layerBRedoVersusBeforeUndo: number;
+    initialBakeVersusRawLayerA: number;
+    bakeAfterInjectedFailure: number;
+    bakeAfterSuccessfulReplacement: number;
+    bakeAfterHistoryRoundTrip: number;
+  };
+  bake: {
+    initial: LayerBakeState;
+    beforeInjectedFailure: LayerBakeState;
+    afterInjectedFailure: LayerBakeState;
+    afterSuccessfulReplacement: LayerBakeState;
+    afterHistoryRoundTrip: LayerBakeState;
+    finalMemoryMiB: number;
   };
   history: {
     beforeUndo: HistoryState;
@@ -50,6 +69,8 @@ export interface LayerHistoryGpuTestReport {
     redoReturned: boolean;
     fatalPreparationUndoReturned: boolean;
     fatalFollowUpUndoReturned: boolean;
+    strokeStyleEnabled: boolean;
+    bakeFailureWasReported: boolean;
   };
 }
 
@@ -141,6 +162,14 @@ export async function runLayerHistoryGpuTest(
     positionJitterLateral: 0,
     positionJitterLinear: 0,
   });
+  const bakeStrokeStyle = {
+    enabled: true,
+    width: 14,
+    position: "outside" as const,
+    color: [1, 0.643, 0.282, 1],
+  };
+  const strokeStyleEnabled = await engine.setRasterStrokeStyle(bakeStrokeStyle);
+  await engine.waitForIdle();
 
   const draw = async (x: number, color: string, timeMs: number): Promise<void> => {
     engine.setBrushSettings({ color });
@@ -158,6 +187,51 @@ export async function runLayerHistoryGpuTest(
   const layerAQ = await engine.readLayerPixels(qRect, 0);
 
   await engine.addLayer("Test cronologia B");
+  const initialBake = engine.getLayerBakeState(0);
+  const initialBakePixels = await engine.readLayerBakePixels(auditRect, 0);
+  const initialBakeVersusRawLayerA = countDifferingBytes(
+    initialBakePixels,
+    layerABaseline,
+  );
+  const layerBBakeAfterCreation = engine.getLayerBakeState(1);
+
+  // Force the candidate to fail only AFTER a real full-resolution submit. The
+  // selected layer, previous generation and previous bytes must all survive.
+  await engine.setActiveLayer(0);
+  const beforeInjectedFailure = engine.getLayerBakeState(0);
+  const beforeInjectedFailurePixels = await engine.readLayerBakePixels(auditRect, 0);
+  engine.injectLayerBakeFault("after-candidate-submit");
+  let bakeFailureWasReported = false;
+  try {
+    await engine.setActiveLayer(1);
+  } catch {
+    bakeFailureWasReported = true;
+  }
+  const activeAfterBakeFailure = engine.getStats().activeLayerIndex;
+  const afterInjectedFailure = engine.getLayerBakeState(0);
+  const afterInjectedFailurePixels = await engine.readLayerBakePixels(auditRect, 0);
+  const bakeAfterInjectedFailure = countDifferingBytes(
+    beforeInjectedFailurePixels,
+    afterInjectedFailurePixels,
+  );
+
+  // Invalidate the old cache while restoring the exact same final style. The
+  // next successful switch must therefore replace generation 1 rather than take
+  // the no-change reuse fast path, and the resulting bytes must still match.
+  await engine.setRasterStrokeStyle({
+    ...bakeStrokeStyle,
+    color: [0.25, 0.75, 1, 1],
+  });
+  await engine.waitForIdle();
+  await engine.setRasterStrokeStyle(bakeStrokeStyle);
+  await engine.waitForIdle();
+  await engine.setActiveLayer(1);
+  const afterSuccessfulReplacement = engine.getLayerBakeState(0);
+  const afterSuccessfulReplacementPixels = await engine.readLayerBakePixels(auditRect, 0);
+  const bakeAfterSuccessfulReplacement = countDifferingBytes(
+    initialBakePixels,
+    afterSuccessfulReplacementPixels,
+  );
   await draw(1024, "#35c66b", 200);
   const beforeUndo = engine.getHistoryState();
   const layerAAfterPaintingB = await engine.readLayerPixels(auditRect, 0);
@@ -195,6 +269,12 @@ export async function runLayerHistoryGpuTest(
     .effectsWorkingSetMatchesActiveLayer();
   const layerAAfterCrossLayerRedo = await engine.readLayerPixels(pRect, 0);
   await engine.setActiveLayer(1);
+  const afterHistoryRoundTrip = engine.getLayerBakeState(0);
+  const afterHistoryRoundTripPixels = await engine.readLayerBakePixels(auditRect, 0);
+  const bakeAfterHistoryRoundTrip = countDifferingBytes(
+    initialBakePixels,
+    afterHistoryRoundTripPixels,
+  );
 
   const probeRollback = async (
     ...faultPoints: HistoryReplayFaultPoint[]
@@ -275,8 +355,27 @@ export async function runLayerHistoryGpuTest(
     layerAAfterUndo: countDifferingBytes(layerABaseline, layerAAfterUndo),
     layerAAfterRedo: countDifferingBytes(layerABaseline, layerAAfterRedo),
     layerBRedoVersusBeforeUndo: countDifferingBytes(layerBBeforeUndo, layerBAfterRedo),
+    initialBakeVersusRawLayerA,
+    bakeAfterInjectedFailure,
+    bakeAfterSuccessfulReplacement,
+    bakeAfterHistoryRoundTrip,
   };
   const checks = {
+    rasterStrokeWasEnabledForBake: strokeStyleEnabled,
+    outgoingStyledLayerAllocatedBake:
+      initialBake.allocated && initialBake.valid && initialBake.generation === 1,
+    bakeContainsTheStyledResult: initialBakeVersusRawLayerA > 0,
+    plainIncomingLayerDidNotAllocateBake: !layerBBakeAfterCreation.allocated,
+    injectedBakeFailureWasReported: bakeFailureWasReported,
+    injectedBakeFailureKeptTheActiveLayer: activeAfterBakeFailure === 0,
+    injectedBakeFailureKeptTheGeneration:
+      afterInjectedFailure.generation === beforeInjectedFailure.generation,
+    injectedBakeFailureKeptTheBakeValid: afterInjectedFailure.valid,
+    injectedBakeFailureKeptAuditedBakeBytes: bakeAfterInjectedFailure === 0,
+    successfulRetryAdvancedTheGeneration:
+      afterSuccessfulReplacement.generation > afterInjectedFailure.generation,
+    successfulRetryKeptTheStyledPixels: bakeAfterSuccessfulReplacement === 0,
+    historyRoundTripRebakedTheSamePixels: bakeAfterHistoryRoundTrip === 0,
     layerAContainsP: alphaPixels.layerAStrokeP > 0,
     layerARegionQIsEmpty: alphaPixels.layerARegionQ === 0,
     layerBBeforeUndoDoesNotContainP: alphaPixels.layerBBeforeUndoRegionP === 0,
@@ -369,6 +468,14 @@ export async function runLayerHistoryGpuTest(
     checks,
     alphaPixels,
     differingBytes,
+    bake: {
+      initial: initialBake,
+      beforeInjectedFailure,
+      afterInjectedFailure,
+      afterSuccessfulReplacement,
+      afterHistoryRoundTrip,
+      finalMemoryMiB: engine.getStats().gpuMemory.layerBakeMiB,
+    },
     history: {
       beforeUndo,
       afterUndo,
@@ -387,6 +494,8 @@ export async function runLayerHistoryGpuTest(
       redoReturned,
       fatalPreparationUndoReturned,
       fatalFollowUpUndoReturned,
+      strokeStyleEnabled,
+      bakeFailureWasReported,
     },
   };
 }

@@ -24,7 +24,7 @@ export const RASTER_STROKE_GOLDEN_WIDTH = 256;
 export const RASTER_STROKE_GOLDEN_HEIGHT = 192;
 export const RASTER_STROKE_GOLDEN_FORMAT = "rgba8unorm" as const;
 export const RASTER_STROKE_GOLDEN_MIP_CHAIN_VERSION = 1 as const;
-export const RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION = 7 as const;
+export const RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION = 8 as const;
 
 export interface RasterStrokeGoldenMip {
   level: number;
@@ -45,7 +45,7 @@ export interface RasterStrokeGoldenCase {
 
 export interface RasterStrokeGoldenDiagnostic {
   id: string;
-  kind: "mutation-gate" | "source-mode-mip" | "retarget-identity";
+  kind: "mutation-gate" | "source-mode-mip" | "retarget-identity" | "layer-bake";
   passed: boolean;
   expectedGateFlags?: number;
   gateFlags?: number;
@@ -847,6 +847,83 @@ export async function runRasterStrokeGolden(
       });
     };
 
+    const runLayerBakeDiagnostic = async (): Promise<void> => {
+      const bakeTexture = device.createTexture({
+        label: "Traccia golden external layer bake mip 0",
+        size: {
+          width: RASTER_STROKE_GOLDEN_WIDTH,
+          height: RASTER_STROKE_GOLDEN_HEIGHT,
+          depthOrArrayLayers: 1,
+        },
+        format: RASTER_STROKE_GOLDEN_FORMAT,
+        usage:
+          GPUTextureUsage.STORAGE_BINDING
+          | GPUTextureUsage.TEXTURE_BINDING
+          | GPUTextureUsage.COPY_SRC,
+      });
+      try {
+        const referenceEncoder = device.createCommandEncoder({
+          label: "Traccia golden layer bake internal reference",
+        });
+        renderer!.encode({
+          encoder: referenceEncoder,
+          sourceMode: "permanent",
+          style: CENTER_STYLE,
+          rebuildRect: FULL_RECT,
+          composeRect: FULL_RECT,
+          clearStyled: true,
+          resetThresholdMask: true,
+        });
+        device.queue.submit([referenceEncoder.finish()]);
+        await device.queue.onSubmittedWorkDone();
+        const referencePixels = await renderer!.readStyledPixels(undefined, 0);
+
+        const bakeEncoder = device.createCommandEncoder({
+          label: "Traccia golden external layer bake",
+        });
+        const encoded = renderer!.encodeBake({
+          encoder: bakeEncoder,
+          targetView: bakeTexture.createView(),
+          sourceMode: "permanent",
+          style: CENTER_STYLE,
+          bevelStyle: DEFAULT_RASTER_BEVEL_STYLE,
+        });
+        device.queue.submit([bakeEncoder.finish()]);
+        await device.queue.onSubmittedWorkDone();
+        const runtimePixels = await readRgba8Texture(
+          device,
+          bakeTexture,
+          RASTER_STROKE_GOLDEN_WIDTH,
+          RASTER_STROKE_GOLDEN_HEIGHT,
+        );
+        let differingBytes = 0;
+        let maxByteDelta = 0;
+        for (let index = 0; index < runtimePixels.length; index += 1) {
+          if (runtimePixels[index] === referencePixels[index]) {
+            continue;
+          }
+          differingBytes += 1;
+          maxByteDelta = Math.max(
+            maxByteDelta,
+            Math.abs(runtimePixels[index] - referencePixels[index]),
+          );
+        }
+        diagnostics.push({
+          id: "analytic-layer-bake-matches-golden-mip0",
+          kind: "layer-bake",
+          passed:
+            encoded.pixels === RASTER_STROKE_GOLDEN_WIDTH * RASTER_STROKE_GOLDEN_HEIGHT
+            && differingBytes === 0,
+          runtimeMip0Sha256: await sha256(runtimePixels),
+          referenceMip0Sha256: await sha256(referencePixels),
+          differingBytes,
+          maxByteDelta,
+        });
+      } finally {
+        bakeTexture.destroy();
+      }
+    };
+
     await capture("outside-14-full-build", {
       style: OUTSIDE_STYLE,
       rebuildRect: FULL_RECT,
@@ -900,6 +977,8 @@ export async function runRasterStrokeGolden(
         CENTER_STYLE.width,
       ),
     });
+
+    await runLayerBakeDiagnostic();
 
     await runMutationGateDiagnostic(
       "gate-deep-interior-skips-rebuild",

@@ -244,6 +244,7 @@ export interface PointerSample {
 export interface EngineGpuMemoryStats {
   layerBaseMiB: number;
   layerMipChainMiB: number;
+  layerBakeMiB: number;
   grainTextureMiB: number;
   shapeTextureMiB: number;
   paintBuffersMiB: number;
@@ -282,7 +283,15 @@ export interface EngineStats {
   layerMemoryMiB: number;
   layerCount: number;
   activeLayerId: number;
-  layers: readonly { id: number; name: string; hasContent: boolean }[];
+  layerBakeStrategy: typeof LAYER_BAKE_STRATEGY;
+  layers: readonly {
+    id: number;
+    name: string;
+    hasContent: boolean;
+    bakeAllocated: boolean;
+    bakeValid: boolean;
+    bakeGeneration: number;
+  }[];
   activeLayerIndex: number;
   rasterStrokeStyle: RasterStrokeStyle;
   rasterStrokePersistentMemoryMiB: number;
@@ -652,7 +661,18 @@ interface LayerBindGroups {
   paintMipDownsampleBindGroups: GPUBindGroup[];
 }
 
-type LayerGpuResources = LayerTextureResources & LayerBindGroups;
+interface LayerBakeResources {
+  texture: GPUTexture;
+  storageView: GPUTextureView;
+  samplingView: GPUTextureView;
+  memoryBytes: number;
+  generation: number;
+}
+
+type LayerGpuResources = LayerTextureResources & LayerBindGroups & {
+  bake: LayerBakeResources | null;
+  bakeValid: boolean;
+};
 
 /**
  * Who is asking the effects working set to change source. Each value carries a
@@ -664,6 +684,8 @@ type EffectsRetargetCaller = "public" | "layer-switch" | "history-replay";
 export type HistoryReplayFaultPoint =
   | "during-switch-activation"
   | "after-first-replay-submit";
+
+export type LayerBakeFaultPoint = "after-candidate-submit";
 
 export interface LayerSwitchResult {
   fromIndex: number;
@@ -995,6 +1017,8 @@ const DIRTY_RECT_STRATEGY = "directional-jitter-bounds" as const;
 const PRESENTATION_CACHE_STRATEGY = "persistent-full-resolution-screen-cache" as const;
 const PRESENTATION_TRANSFER_STRATEGY = "copy-texture-to-current-texture" as const;
 const PAINT_DISPLAY_PYRAMID_STRATEGY = "live-dirty-box-filter-mip-chain" as const;
+export const LAYER_BAKE_STRATEGY =
+  "lazy-per-layer-analytic-mip0-transactional-replacement" as const;
 const PAINT_DISPLAY_LOD_SELECTION_STRATEGY =
   "largest-power-of-two-without-upscaling" as const;
 const BRUSH_OPACITY_STRATEGY = "per-stamp-uniform-alpha-multiplier" as const;
@@ -1405,6 +1429,9 @@ export class BrushEngine {
    * a layer that is halfway through being swapped.
    */
   private layerSwitchBusy = false;
+
+  /** Dev-only injection for the otherwise unreachable post-submit bake rollback. */
+  private layerBakeFaultQueue: LayerBakeFaultPoint[] = [];
 
   // Accessors rather than fields: every read site keeps working, and the styles
   // follow the active layer by construction rather than by remembering to copy
@@ -2101,6 +2128,7 @@ export class BrushEngine {
       }
 
       this.rasterStrokeStyle = normalized;
+      this.invalidateActiveLayerBake();
       if (nextActive) {
         const coverageStyleChanged = normalized.width !== previous.width
           || normalized.position !== previous.position;
@@ -2196,6 +2224,7 @@ export class BrushEngine {
     try {
       await this.waitForIdle();
       this.rasterBevelStyle = normalized;
+      this.invalidateActiveLayerBake();
       if (normalized.enabled) {
         if (!this.rasterBevelRenderer) {
           this.callbacks.onStatus?.("Preparo lo Smusso/Rilievo Heightfield V2…", "working");
@@ -2882,6 +2911,12 @@ export class BrushEngine {
     const layerMipChainMiB = baseResourcesAllocated
       ? paintDisplayPyramidAdditionalMemoryMiB(this.layerFormat) * allocatedLayerCount
       : 0;
+    const layerBakeMiB = baseResourcesAllocated
+      ? [...this.layerGpu.values()].reduce(
+        (total, gpu) => total + (gpu.bake?.memoryBytes ?? 0),
+        0,
+      ) / MEBIBYTE_BYTES
+      : 0;
     const grainTextureMiB = baseResourcesAllocated && this.grainResident
       ? GRAIN_TEXTURE_PIXEL_COUNT * 4 / MEBIBYTE_BYTES
       : 0;
@@ -2936,6 +2971,7 @@ export class BrushEngine {
     const countedTotalMiB = [
       layerBaseMiB,
       layerMipChainMiB,
+      layerBakeMiB,
       grainTextureMiB,
       shapeTextureMiB,
       paintBuffersMiB,
@@ -2954,6 +2990,7 @@ export class BrushEngine {
     return {
       layerBaseMiB,
       layerMipChainMiB,
+      layerBakeMiB,
       grainTextureMiB,
       shapeTextureMiB,
       paintBuffersMiB,
@@ -2996,16 +3033,23 @@ export class BrushEngine {
       layerMemoryMiB: (this.layerFormat === "rgba16float" ? 128 : 64) * this.layerGpu.size,
       layerCount: this.layerStack.count,
       activeLayerId: this.layerStack.active.id,
-      layers: this.layerStack.layers.map((record) => ({
-        id: record.id,
-        name: record.name,
-        // The record's copy is only written back when the layer stops being
-        // active, so for the active one the engine field is the live truth.
-        // Reading the record here would report "empty" while the user paints.
-        hasContent: record.id === this.layerStack.active.id
-          ? this.layerHasContent
-          : record.hasContent,
-      })),
+      layerBakeStrategy: LAYER_BAKE_STRATEGY,
+      layers: this.layerStack.layers.map((record) => {
+        const gpu = this.layerGpu.get(record.id);
+        return {
+          id: record.id,
+          name: record.name,
+          // The record's copy is only written back when the layer stops being
+          // active, so for the active one the engine field is the live truth.
+          // Reading the record here would report "empty" while the user paints.
+          hasContent: record.id === this.layerStack.active.id
+            ? this.layerHasContent
+            : record.hasContent,
+          bakeAllocated: Boolean(gpu?.bake),
+          bakeValid: gpu?.bakeValid ?? false,
+          bakeGeneration: gpu?.bake?.generation ?? 0,
+        };
+      }),
       activeLayerIndex: this.layerStack.activeIndex,
       rasterStrokeStyle: copyRasterStrokeStyle(this.rasterStrokeStyle),
       rasterStrokePersistentMemoryMiB:
@@ -3776,6 +3820,49 @@ export class BrushEngine {
     const target = layerIndex === undefined
       ? this.layerTexture
       : this.requireLayerGpu(this.layerStack.at(layerIndex).id).texture;
+    return this.readTexturePixels(target, rect, "livello");
+  }
+
+  getLayerBakeState(layerIndex: number): {
+    allocated: boolean;
+    valid: boolean;
+    generation: number;
+    memoryMiB: number;
+  } {
+    if (!import.meta.env.DEV) {
+      throw new Error("Diagnostica bake disponibile solo in modalità dev.");
+    }
+    if (!this.initialized) {
+      throw new Error("Il motore non è ancora inizializzato.");
+    }
+    const gpu = this.requireLayerGpu(this.layerStack.at(layerIndex).id);
+    return {
+      allocated: Boolean(gpu.bake),
+      valid: gpu.bakeValid,
+      generation: gpu.bake?.generation ?? 0,
+      memoryMiB: (gpu.bake?.memoryBytes ?? 0) / MEBIBYTE_BYTES,
+    };
+  }
+
+  async readLayerBakePixels(rect?: DirtyRect, layerIndex = 0): Promise<Uint8Array> {
+    if (!import.meta.env.DEV) {
+      throw new Error("La sonda del bake è disponibile solo in modalità dev.");
+    }
+    if (!this.initialized) {
+      throw new Error("Il motore non è ancora inizializzato.");
+    }
+    const gpu = this.requireLayerGpu(this.layerStack.at(layerIndex).id);
+    if (!gpu.bake || !gpu.bakeValid) {
+      throw new Error(`Bake valido non disponibile per il livello ${layerIndex}.`);
+    }
+    return this.readTexturePixels(gpu.bake.texture, rect, "bake livello");
+  }
+
+  private async readTexturePixels(
+    target: GPUTexture,
+    rect: DirtyRect | undefined,
+    label: string,
+  ): Promise<Uint8Array> {
     const requested = rect ?? { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE };
     const x = clamp(Math.floor(requested.x), 0, LAYER_SIZE);
     const y = clamp(Math.floor(requested.y), 0, LAYER_SIZE);
@@ -3789,13 +3876,13 @@ export class BrushEngine {
     const unpaddedBytesPerRow = width * bytesPerPixel;
     const bytesPerRow = Math.ceil(unpaddedBytesPerRow / 256) * 256;
     const readbackBuffer = this.device.createBuffer({
-      label: `Sonda pixel livello ${width}×${height}`,
+      label: `Sonda pixel ${label} ${width}×${height}`,
       size: bytesPerRow * height,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     });
     try {
       const encoder = this.device.createCommandEncoder({
-        label: "Sonda pixel livello",
+        label: `Sonda pixel ${label}`,
       });
       encoder.copyTextureToBuffer(
         { texture: target, mipLevel: 0, origin: { x, y, z: 0 } },
@@ -5667,7 +5754,12 @@ export class BrushEngine {
         textureResources.samplingView,
         textureResources.mipViews,
       );
-      return { ...textureResources, ...bindGroups };
+      return {
+        ...textureResources,
+        ...bindGroups,
+        bake: null,
+        bakeValid: false,
+      };
     });
   }
 
@@ -5677,6 +5769,144 @@ export class BrushEngine {
       throw new Error(`Risorse GPU del livello ${layerId} non allocate.`);
     }
     return gpu;
+  }
+
+  private invalidateActiveLayerBake(): void {
+    if (!this.initialized) {
+      return;
+    }
+    const gpu = this.layerGpu.get(this.layerStack.active.id);
+    if (gpu) {
+      gpu.bakeValid = false;
+    }
+  }
+
+  injectLayerBakeFault(...faultPoints: LayerBakeFaultPoint[]): void {
+    if (!import.meta.env.DEV) {
+      throw new Error("Iniezione di guasti bake disponibile solo in modalità dev.");
+    }
+    if (faultPoints.length === 0) {
+      throw new Error("Specifica almeno un punto di guasto del bake.");
+    }
+    this.layerBakeFaultQueue = [...faultPoints];
+  }
+
+  private maybeInjectLayerBakeFault(point: LayerBakeFaultPoint): void {
+    if (!import.meta.env.DEV || this.layerBakeFaultQueue[0] !== point) {
+      return;
+    }
+    this.layerBakeFaultQueue.shift();
+    throw new Error(`Guasto iniettato nel bake: ${point}.`);
+  }
+
+  /**
+   * Freezes the outgoing layer's analytic style stack before the shared effects
+   * workbench is retargeted. A fresh texture is allocated for every attempt and
+   * becomes visible to the engine only after allocation, encoding, submission
+   * and GPU completion all succeed. The previous valid bake therefore survives
+   * OOM, validation errors and injected post-submit failures byte-for-byte.
+   */
+  private async bakeActiveLayerForSwitch(): Promise<void> {
+    try {
+      await this.bakeActiveLayerForSwitchAttempt();
+    } finally {
+      if (import.meta.env.DEV) {
+        // A fault that was not reached by this attempt must not ambush a later,
+        // unrelated switch.
+        this.layerBakeFaultQueue = [];
+      }
+    }
+  }
+
+  private async bakeActiveLayerForSwitchAttempt(): Promise<void> {
+    const record = this.layerStack.active;
+    const gpu = this.requireLayerGpu(record.id);
+    const requirements = layerEffectRendererRequirements(
+      record.strokeStyle,
+      normalizeRasterBevelStyle(record.bevelStyle),
+    );
+    if (!this.layerHasContent || !requirements.needsStrokeRenderer) {
+      const previous = gpu.bake;
+      gpu.bake = null;
+      gpu.bakeValid = false;
+      previous?.texture.destroy();
+      return;
+    }
+
+    // Returning to a layer does not change its source or styles. If the user
+    // leaves it again without editing, the last bake is still exact and a new
+    // 4096² dispatch would add latency and a transient full-size allocation for
+    // no visual change. A queued dev fault deliberately bypasses this fast path
+    // so the replacement transaction remains executable in the GPU harness.
+    const faultForcesCandidate = import.meta.env.DEV
+      && this.layerBakeFaultQueue[0] === "after-candidate-submit";
+    if (gpu.bake && gpu.bakeValid && !faultForcesCandidate) {
+      return;
+    }
+
+    const renderer = this.rasterStrokeRenderer;
+    const workbench = this.effectsWorkbench;
+    if (!renderer || !workbench) {
+      throw new Error("Bake impossibile: compositore effetti non disponibile.");
+    }
+    if (
+      this.layerView !== gpu.view
+      || workbench.sourceView !== gpu.view
+      || this.layerStack.active.id !== record.id
+    ) {
+      throw new Error("Bake rifiutato: il banco effetti non punta al livello uscente.");
+    }
+
+    const previous = gpu.bake;
+    const generation = (previous?.generation ?? 0) + 1;
+    const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
+    const memoryBytes = LAYER_SIZE * LAYER_SIZE * bytesPerPixel;
+    const completed = await runGpuAllocationTransaction(
+      this.device,
+      `Bake analitico livello ${record.id}`,
+      async (transaction) => {
+        const texture = this.device.createTexture({
+          label: `Bake analitico livello ${record.id} #${generation}`,
+          size: { width: LAYER_SIZE, height: LAYER_SIZE, depthOrArrayLayers: 1 },
+          format: this.layerFormat,
+          usage:
+            GPUTextureUsage.STORAGE_BINDING
+            | GPUTextureUsage.TEXTURE_BINDING
+            | GPUTextureUsage.COPY_SRC,
+        });
+        transaction.deferRollback(() => texture.destroy());
+        const storageView = texture.createView({
+          label: `Bake analitico storage livello ${record.id} #${generation}`,
+        });
+        const samplingView = texture.createView({
+          label: `Bake analitico sampling livello ${record.id} #${generation}`,
+        });
+        const encoder = this.device.createCommandEncoder({
+          label: `Bake analitico livello ${record.id} #${generation}`,
+        });
+        renderer.encodeBake({
+          encoder,
+          targetView: storageView,
+          sourceMode: "permanent",
+          style: record.strokeStyle,
+          bevelStyle: record.bevelStyle,
+        });
+        this.device.queue.submit([encoder.finish()]);
+        await this.device.queue.onSubmittedWorkDone();
+        this.maybeInjectLayerBakeFault("after-candidate-submit");
+        return {
+          texture,
+          storageView,
+          samplingView,
+          memoryBytes,
+          generation,
+        } satisfies LayerBakeResources;
+      },
+    );
+
+    gpu.bake = completed;
+    gpu.bakeValid = true;
+    previous?.texture.destroy();
   }
 
   /** Points the engine's active-layer fields at one layer's resources. */
@@ -5711,6 +5941,7 @@ export class BrushEngine {
       await this.waitForIdle();
       const fromIndex = this.layerStack.activeIndex;
       this.persistActiveLayerState();
+      await this.bakeActiveLayerForSwitch();
       const index = this.layerStack.add(name);
       const record = this.layerStack.at(index);
       let gpu: LayerGpuResources;
@@ -5775,6 +6006,7 @@ export class BrushEngine {
     try {
       await this.waitForIdle();
       this.persistActiveLayerState();
+      await this.bakeActiveLayerForSwitch();
       this.layerStack.setActiveIndex(index);
       activationStarted = true;
       return await this.activateLayer(fromIndex);
@@ -6643,6 +6875,7 @@ export class BrushEngine {
     this.effectsWorkbench = nextEffectsWorkbench;
     oldBlendRenderer?.destroy();
     for (const gpu of supersededLayerGpu) {
+      gpu.bake?.texture.destroy();
       gpu.texture.destroy();
     }
   }
@@ -7018,6 +7251,9 @@ export class BrushEngine {
   }
 
   private noteLayerMutation(dirtyRect: DirtyRect | null, cleared: boolean): void {
+    if (dirtyRect || cleared) {
+      this.invalidateActiveLayerBake();
+    }
     if (cleared) {
       this.layerContentBounds = null;
       this.rasterStrokeCoverageValid = false;
@@ -7033,6 +7269,7 @@ export class BrushEngine {
   }
 
   private deferRasterStrokeMutation(cleared: boolean): void {
+    this.invalidateActiveLayerBake();
     this.rasterStrokeCoverageValid = false;
     this.rasterBevelHeightValid = false;
     this.rasterBevelHeightSourceMode = null;
@@ -8436,10 +8673,19 @@ export class BrushEngine {
       const previousActiveIndex = this.layerStack.activeIndex;
       const targetIndex = this.historyStepTargetLayerIndex(delta);
       const switched = targetIndex !== null && targetIndex !== previousActiveIndex;
+      const targetBakeWasValid = targetIndex === null
+        ? false
+        : this.requireLayerGpu(this.layerStack.at(targetIndex).id).bakeValid;
+      if (switched) {
+        // Freeze the outgoing visible result before the one shared workbench is
+        // pointed elsewhere. A bake failure happens before any cursor/index/GPU
+        // target mutation, so it needs no history rollback.
+        this.persistActiveLayerState();
+        await this.bakeActiveLayerForSwitch();
+      }
       let replayAttempted = false;
       try {
         if (switched) {
-          this.persistActiveLayerState();
           this.layerStack.setActiveIndex(targetIndex);
           await this.activateLayer(previousActiveIndex, "history-replay");
         }
@@ -8456,6 +8702,12 @@ export class BrushEngine {
         if (replayAttempted) {
           try {
             await this.rebuildActiveLayerFromHistory();
+            // The target is again byte-for-byte the pre-operation document, so
+            // its pre-existing inactive bake has the same validity it had before
+            // replay dirtied the active-layer flag. No new allocation is needed
+            // inside the rollback path.
+            this.requireLayerGpu(this.layerStack.active.id).bakeValid =
+              targetBakeWasValid;
           } catch (restoreTargetError) {
             rollbackErrors.push(restoreTargetError);
           }

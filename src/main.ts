@@ -388,6 +388,7 @@ const gpuMemoryRows: ReadonlyArray<
 > = [
   ["gpuMemoryLayerBase", "layerBaseMiB"],
   ["gpuMemoryLayerMips", "layerMipChainMiB"],
+  ["gpuMemoryLayerBakes", "layerBakeMiB"],
   ["gpuMemoryGrain", "grainTextureMiB"],
   ["gpuMemoryShape", "shapeTextureMiB"],
   ["gpuMemoryPaintBuffers", "paintBuffersMiB"],
@@ -1821,11 +1822,11 @@ async function runRequestedLayerHistoryTest(): Promise<void> {
     ).__layerHistoryGpuTestReport = report;
     layerHistoryTestResult.className = report.passed ? "result ok" : "result error";
     layerHistoryTestResult.textContent = report.passed
-      ? "Cronologia livelli GPU OK · undo/redo bilaterale byte-identico."
+      ? "Cronologia livelli GPU OK · undo/redo bilaterale e rollback bake verificati."
       : "Cronologia livelli GPU ERRORE · consulta il report JSON.";
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const failure = { version: 2, passed: false, error: message };
+    const failure = { version: 3, passed: false, error: message };
     layerHistoryTestReport.textContent = JSON.stringify(failure, null, 2);
     layerHistoryTestDetails.hidden = false;
     layerHistoryTestDetails.open = true;

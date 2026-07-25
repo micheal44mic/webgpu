@@ -372,7 +372,7 @@ const goldenMipBaseline = JSON.parse(readFileSync(
 ));
 assert.match(
   rendererSource,
-  /style-stack-webgpu-v10-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even/,
+  /style-stack-webgpu-v11-layer-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even/,
 );
 assert.ok(
   rendererSource.indexOf("bevelNode(base, position)")
@@ -414,6 +414,18 @@ assert.match(rendererSource, /parameters\.scratchExtent/);
 assert.match(rendererSource, /resizeScratch\(requestedExtent: number\)/);
 assert.match(rendererSource, /readbackEnabled\?: boolean/);
 assert.match(rendererSource, /async readStyledPixels\(/);
+assert.match(rendererSource, /encodeBake\(options: RasterStrokeBakeOptions\)/);
+assert.match(rendererSource, /Style stack layer bake analytic mip 0/);
+assert.match(
+  rendererSource,
+  /const readbackComposeModule = this\.device\.createShaderModule\(/,
+  "il compositore analitico mip 0 deve esistere anche fuori dal golden",
+);
+assert.doesNotMatch(
+  rendererSource,
+  /const readbackComposeModule = this\.readbackEnabled/,
+  "readbackEnabled può controllare la texture golden, non la pipeline bake runtime",
+);
 assert.match(rendererSource, /retarget\(\s*layerView: GPUTextureView,/);
 assert.ok(
   (rendererSource.match(/this\.rebuildSourceBindGroups\([012]\)/g) ?? []).length >= 3,
@@ -439,9 +451,12 @@ assert.match(goldenSource, /gate-subthreshold-alpha-near-outer-coverage/);
 assert.match(goldenSource, /light-glaze-source-over-opacity-0\.43/);
 assert.match(goldenSource, /light-glaze-m1-r8-max-coverage-opacity-0\.37/);
 assert.match(goldenSource, /thickness-tail-source-over/);
+assert.match(goldenSource, /analytic-layer-bake-matches-golden-mip0/);
+assert.match(goldenSource, /renderer!\.encodeBake\(/);
+assert.match(goldenSource, /encoded\.pixels === RASTER_STROKE_GOLDEN_WIDTH \* RASTER_STROKE_GOLDEN_HEIGHT/);
 assert.match(goldenSource, /diagnosticsMatch/);
 assert.match(goldenSource, /differingBytes/);
-assert.match(goldenSource, /RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION = 7/);
+assert.match(goldenSource, /RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION = 8/);
 // Il pool sostituisce il buffer fisico quando cresce e distrugge il vecchio: se
 // i renderer non rileggessero il lease, i loro bind group punterebbero a un
 // buffer distrutto. Nessun altro caso raggiunge quello stato.

@@ -494,11 +494,10 @@ Costi misurati (desktop Ampere, effetti attivi, flag bbox OFF):
 Il termine dominante è il rebuild full-document dei campi, lo stesso che il flag
 bbox dimezza.
 
-**Stato del display: mostra solo il livello attivo.** Lasciando un livello il suo
-contenuto sparisce dalla vista. È deliberato: finché il display mostra un livello
-solo, un livello ricostruito dalla cronologia non richiede bake per essere
-corretto, e il rollback dell'undo cross-layer resta trattabile. Bake e
-compositing sono i passi successivi.
+**Stato del display: mostra ancora solo il livello attivo.** Lasciando un livello
+stilizzato, il motore materializza ora il suo bake analitico, ma il display non lo
+campiona ancora: il contenuto uscente sparisce quindi dalla vista finché non viene
+selezionato di nuovo. Il compositing dei bake è il passo successivo.
 
 Test bilaterale su GPU (l'unica forma non tautologica: lo schermo mostra un
 composito e un submit scartato lascia l'immagine precedente): P sul livello 0,
@@ -508,16 +507,16 @@ composito e un submit scartato lascia l'immagine precedente): P sul livello 0,
 
 La regressione della cronologia ha inoltre un harness GPU persistente e
 distruttivo solo sulla pagina dev nuova: avviare Vite e aprire
-`/?layerHistoryTest=1`. La revisione `2` dipinge P sul livello A e Q sul B,
+`/?layerHistoryTest=1`. La revisione `3` dipinge P sul livello A e Q sul B,
 esegue Undo/Redo sia same-layer sia **davvero cross-layer** (prima del Redo
 seleziona deliberatamente B mentre l'azione appartiene ad A), legge entrambe le
-texture per nome e verifica anche che il banco effetti segua il record attivo.
-Il report JSON resta nel pannello Benchmark e in
-`window.__layerHistoryGpuTestReport`. Non sostituisce il golden
-Traccia/Smusso: verifica destinazione, transazione e isolamento dei livelli, non
-l'identità percettiva dello style stack.
+texture per nome, verifica che il banco effetti segua il record attivo e copre
+anche allocazione, invalidazione, sostituzione e rollback del bake. Il report
+JSON resta nel pannello Benchmark e in `window.__layerHistoryGpuTestReport`.
+Non sostituisce il golden Traccia/Smusso: verifica destinazione, transazione e
+isolamento dei livelli; l'identità del bake ha una diagnostica Golden dedicata.
 
-Run locale del 25 luglio 2026: `61/61`, `passed: true`, zero warning/errori.
+Run locale del 25 luglio 2026: `73/73`, `passed: true`, zero warning/errori.
 P e Q hanno entrambi `6488` pixel con alpha; Q passa a `0` dopo Undo e torna a
 `6488` dopo Redo. A resta byte-identico dopo pittura su B, Undo e Redo; B è
 byte-identico tra pre-Undo e post-Redo. Undo e Redo cross-layer cambiano davvero
@@ -542,7 +541,8 @@ livello. Prima, annullare Q su B ridisegnava P di A sopra B
 filtro ha una mutazione che fallisce da solo, quindi la difesa ridondante non può
 essere cancellata come apparentemente inutile.
 
-L'harness rev `2` inietta inoltre guasti in due punti discriminanti:
+La parte cronologia dell'harness rev `3` inietta inoltre guasti in due punti
+discriminanti:
 `after-first-replay-submit` (dopo un vero clear/draw GPU) e
 `during-switch-activation` (engine e Blend già ritargettati, workbench non
 ancora). I due rollback recuperabili ripristinano cursore, livello, banco e
@@ -551,7 +551,7 @@ alza invece `HistoryState.inconsistent`, mantiene `historyBusy=true`, disabilita
 Undo/Redo e rifiuta una chiamata API successiva: soltanto il reload può
 sbloccare un documento la cui coerenza non è dimostrabile.
 
-Mutation test rev `2`, tutti ripristinati: saltare il restore del target lascia A
+Mutation test rev `3`, tutti ripristinati: saltare il restore del target lascia A
 diverso per `25880` byte; saltare l'attivazione inversa lascia il livello attivo
 non ripristinato e manda rosso il probe half-switch; rilasciare il latch dopo il
 doppio guasto lascia `canUndo/canRedo=true` e il successivo Undo parte davvero.
@@ -562,6 +562,37 @@ doppio guasto lascia `canUndo/canRedo=true` e il successivo Undo parte davvero.
 | `resetDocument()` | rifiutato | reset davvero document-wide |
 | `runBenchmark()` | rifiutato | idem, più parità di baseline |
 | `setLayerFormat()` | **consentito** | già ricrea tutti i livelli |
+
+#### Bake stilizzato per livello (passo 12)
+
+Strategia `lazy-per-layer-analytic-mip0-transactional-replacement`: soltanto un
+livello con contenuto e Traccia o Smusso attivi riceve una texture bake mip `0`.
+Il costo logico è `64 MiB` in RGBA8 o `128 MiB` in RGBA16F per bake allocato,
+riportato separatamente come `layerBakeMiB`; livelli vuoti o senza effetti non
+la allocano. Ogni mutazione dei pixel o dello stile invalida la cache, mentre uno
+switch senza modifiche riusa il bake valido e non ridispatcha `4096²`.
+
+Il compositore è lo stesso shader analitico già usato dal Golden, promosso a
+pipeline runtime tramite `RasterStrokeRenderer.encodeBake()`. Lo switch alloca
+una texture candidata sotto scope WebGPU `validation` + `out-of-memory`, codifica,
+fa submit, attende `onSubmittedWorkDone()` e soltanto allora pubblica la candidata
+e distrugge il bake precedente. Un guasto dev iniettato dopo il submit lascia
+indice attivo, generazione, validità e finestra di audit del vecchio bake
+invariati; il retry avanza la generazione e produce gli stessi byte.
+
+Prova GPU rev `3`: il bake iniziale differisce dal layer sorgente per `21072`
+byte nella finestra discriminante, quindi non è una copia tautologica; guasto,
+retry e giro Undo/Redo hanno delta `0`. Mutation test ripristinati: omettere il
+bake prima dello switch fa fallire l'harness; distruggere il precedente prima
+del commit produce `45072` byte diversi nella finestra di audit; omettere il
+dispatch fa fallire la diagnostica Golden con `113634` byte diversi.
+
+Golden GPU del passo 12: combinato mip `0` canonico invariato
+`8d5a75a6…`; il bake esterno e il riferimento interno coincidono con hash
+`f1c1629a…`, zero byte diversi e delta massimo `0`. Restano intenzionalmente
+invariati il combinato mip noto `9208e2a3…`, i 25 mismatch mip preesistenti e i
+tre diagnostici source-mode già rossi: non dichiarare il Golden complessivo
+verde. La matrice bbox Smusso resta `24/24`.
 
 Altri invarianti da non perdere:
 
@@ -606,13 +637,13 @@ Altri invarianti da non perdere:
   moltiplicato per i livelli allocati; anche il tipo persistito `BenchmarkRun`
   dichiara entrambi i campi, così la firma non può sparire silenziosamente.
 
-Da fare: bake del risultato stilizzato, compositing merged-below/above e
-riduzione del costo di switch. Il replay scrive deliberatamente solo sul livello
-attivo; Undo/Redo cross-layer seleziona ora il proprietario dentro la transazione
-e ripristina target + switch in ordine inverso in caso di errore. Nodo noto non
-coperto da alcun golden: il bake usa il contorno analitico e il display del
-livello attivo usa `fwidth`, quindi il bordo Smusso può spostarsi nell'istante in
-cui il livello perde il fuoco.
+Da fare: compositing merged-below/above dei bake e riduzione del costo di switch.
+Il replay scrive deliberatamente solo sul livello attivo; Undo/Redo cross-layer
+seleziona il proprietario dentro la transazione e ripristina target + switch in
+ordine inverso in caso di errore. Scelta visiva ancora aperta per il passo 13:
+il bake usa il contorno analitico, mentre il display attivo usa `fwidth`; il
+Golden prova l'identità del percorso analitico ma non decide se il display debba
+adottarlo. Serve prova percettiva prima di eliminare uno dei due comportamenti.
 
 Blend (tool separato, vedi sezione dedicata più sotto).
 
