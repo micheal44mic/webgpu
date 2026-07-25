@@ -56,6 +56,9 @@ const toggleControlsButton = element<HTMLButtonElement>("toggleControls");
 const statusElement = element<HTMLParagraphElement>("status");
 const benchmarkButton = element<HTMLButtonElement>("runBenchmark");
 const benchmarkResult = element<HTMLParagraphElement>("benchmarkResult");
+const layerList = element<HTMLElement>("layerList");
+const addLayerButton = element<HTMLButtonElement>("addLayer");
+const layerSwitchResult = element<HTMLParagraphElement>("layerSwitchResult");
 const rasterStrokeGoldenSection = element<HTMLElement>("rasterStrokeGoldenSection");
 const rasterStrokeGoldenButton = element<HTMLButtonElement>("runRasterStrokeGolden");
 const rasterStrokeGoldenResult = element<HTMLParagraphElement>("rasterStrokeGoldenResult");
@@ -1888,7 +1891,91 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
   previousGpuMemoryTotalMiB = totalMiB;
 }
 
+let layerSwitching = false;
+
+/**
+ * After a switch the Traccia and Smusso controls must be re-read from the
+ * engine, because the styles belong to the layer record now. Leaving them alone
+ * would show the outgoing layer's settings while painting on the incoming one.
+ */
+function syncActiveLayerControls(): void {
+  syncRasterStrokeControls(engine.getRasterStrokeStyle());
+  syncRasterBevelControls(engine.getRasterBevelStyle());
+  updateRasterStrokeControlAvailability();
+  updateRasterBevelControlAvailability();
+}
+
+function renderLayerList(stats: EngineStats): void {
+  const locked = interactionLocked() || layerSwitching;
+  addLayerButton.disabled = locked || stats.layers.length >= 16;
+  if (layerList.childElementCount !== stats.layers.length) {
+    layerList.replaceChildren(...stats.layers.map(() => document.createElement("button")));
+  }
+  // Top layer first, the way every editor shows a stack.
+  const ordered = [...stats.layers].reverse();
+  ordered.forEach((layer, position) => {
+    const index = stats.layers.length - 1 - position;
+    const button = layerList.children[position] as HTMLButtonElement;
+    button.type = "button";
+    button.disabled = locked;
+    button.setAttribute("aria-current", index === stats.activeLayerIndex ? "true" : "false");
+    button.textContent = "";
+    const name = document.createElement("span");
+    name.textContent = layer.name;
+    const hint = document.createElement("span");
+    hint.className = "layer-hint";
+    hint.textContent = layer.hasContent ? "disegnato" : "vuoto";
+    button.append(name, hint);
+    button.onclick = () => { void selectLayer(index); };
+  });
+}
+
+async function selectLayer(index: number): Promise<void> {
+  if (layerSwitching || interactionLocked()) {
+    return;
+  }
+  layerSwitching = true;
+  updateHistoryControls();
+  try {
+    const result = await engine.setActiveLayer(index);
+    syncActiveLayerControls();
+    layerSwitchResult.textContent = result
+      ? `Livello ${result.toIndex + 1} attivo in ${result.totalMs.toFixed(0)} ms`
+        + ` (campi effetti ${result.effectsMs.toFixed(0)} ms).`
+      : "Livello già attivo.";
+  } catch (error) {
+    layerSwitchResult.textContent = error instanceof Error
+      ? error.message
+      : "Cambio livello non riuscito.";
+  } finally {
+    layerSwitching = false;
+    updateHistoryControls();
+  }
+}
+
+addLayerButton.addEventListener("click", async () => {
+  if (layerSwitching || interactionLocked()) {
+    return;
+  }
+  layerSwitching = true;
+  updateHistoryControls();
+  try {
+    const result = await engine.addLayer();
+    syncActiveLayerControls();
+    layerSwitchResult.textContent =
+      `Livello ${result.toIndex + 1} creato e attivo in ${result.totalMs.toFixed(0)} ms.`;
+  } catch (error) {
+    layerSwitchResult.textContent = error instanceof Error
+      ? error.message
+      : "Creazione livello non riuscita.";
+  } finally {
+    layerSwitching = false;
+    updateHistoryControls();
+  }
+});
+
 function updateStats(stats: EngineStats): void {
+  renderLayerList(stats);
   element<HTMLElement>("fpsStat").textContent = String(stats.fps);
   element<HTMLElement>("cpuStat").textContent = stats.lastCpuFrameMs.toFixed(2) + " ms";
   element<HTMLElement>("stampStat").textContent = formatInteger(stats.totalBaseStamps);

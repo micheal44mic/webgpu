@@ -253,4 +253,29 @@ assert.doesNotMatch(
   "lo stile Smusso non può tornare a essere un campo del motore",
 );
 
+// After a switch the effect controls must be re-read from the engine, or the
+// panel would show the outgoing layer's Traccia and Smusso while the brush
+// paints on the incoming one — wrong in a way that looks like a rendering bug.
+const mainSource = readFileSync(
+  new URL("../src/main.ts", import.meta.url),
+  "utf8",
+);
+assert.match(mainSource, /function syncActiveLayerControls\(\): void \{/);
+const syncStart = mainSource.indexOf("function syncActiveLayerControls(");
+const syncBody = mainSource.slice(syncStart, syncStart + 600);
+assert.match(syncBody, /syncRasterStrokeControls\(engine\.getRasterStrokeStyle\(\)\)/);
+assert.match(syncBody, /syncRasterBevelControls\(engine\.getRasterBevelStyle\(\)\)/);
+const selectStart = mainSource.indexOf("async function selectLayer(");
+assert.notEqual(selectStart, -1, "selectLayer deve esistere");
+assert.match(
+  mainSource.slice(selectStart, selectStart + 900),
+  /await engine\.setActiveLayer\(index\);\s*syncActiveLayerControls\(\);/,
+  "il cambio livello deve risincronizzare i controlli degli effetti",
+);
+assert.match(
+  mainSource,
+  /const result = await engine\.addLayer\(\);\s*syncActiveLayerControls\(\);/,
+  "anche la creazione di un livello deve risincronizzare i controlli",
+);
+
 console.log("Layer stack verification passed.");
