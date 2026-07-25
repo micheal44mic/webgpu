@@ -647,7 +647,12 @@ export interface LayerSwitchResult {
   totalMs: number;
   /** The dominant term: retarget plus the full rebuild of the effect fields. */
   effectsMs: number;
-  rebuiltPyramidThroughLevel: number;
+  /**
+   * Generation of the effects working set after the retarget. Deliberately not a
+   * "pyramid rebuilt through level" figure: the switch only invalidates the
+   * pyramid, and the next frame is what rebuilds it up to the selected level.
+   */
+  effectsGeneration: number;
   contentBoundsRestored: boolean;
 }
 
@@ -1364,6 +1369,16 @@ export class BrushEngine {
    * than the one it was allocated for.
    */
   private readonly layerGpu = new Map<number, LayerGpuResources>();
+
+  /**
+   * Held for the WHOLE duration of a switch, awaits included.
+   *
+   * The guards at the top of addLayer/setActiveLayer only prove the engine was
+   * idle when they ran; the switch then awaits waitForIdle and the field rebuild,
+   * and during those 150–215 ms a pointerdown could otherwise start a stroke on
+   * a layer that is halfway through being swapped.
+   */
+  private layerSwitchBusy = false;
 
   // Accessors rather than fields: every read site keeps working, and the styles
   // follow the active layer by construction rather than by remembering to copy
@@ -2345,7 +2360,9 @@ export class BrushEngine {
   }
 
   beginStrokeAtLayer(point: LayerPoint): void {
-    if (this.historyBusy || this.activeStroke) {
+    // layerSwitchBusy is held across the switch's awaits, so a pointerdown
+    // landing mid-switch cannot start a stroke on a half-swapped layer.
+    if (this.historyBusy || this.activeStroke || this.layerSwitchBusy) {
       return;
     }
     if (this.settings.grainMode !== "off" && !this.grainResident) {
@@ -2578,7 +2595,12 @@ export class BrushEngine {
   }
 
   async clear(): Promise<boolean> {
-    if (!this.initialized || this.activeStroke || this.historyBusy) {
+    if (
+      !this.initialized
+      || this.activeStroke
+      || this.historyBusy
+      || this.layerSwitchBusy
+    ) {
       return false;
     }
 
@@ -2917,7 +2939,12 @@ export class BrushEngine {
       layers: this.layerStack.layers.map((record) => ({
         id: record.id,
         name: record.name,
-        hasContent: record.hasContent,
+        // The record's copy is only written back when the layer stops being
+        // active, so for the active one the engine field is the live truth.
+        // Reading the record here would report "empty" while the user paints.
+        hasContent: record.id === this.layerStack.active.id
+          ? this.layerHasContent
+          : record.hasContent,
       })),
       activeLayerIndex: this.layerStack.activeIndex,
       rasterStrokeStyle: copyRasterStrokeStyle(this.rasterStrokeStyle),
@@ -3337,10 +3364,28 @@ export class BrushEngine {
     this.publishStats();
   }
 
+  /**
+   * TEMPORARY GATE — undo and redo are refused while more than one layer exists.
+   *
+   * Replay rebuilds a layer by clearing it and re-applying every *visible*
+   * stroke, and that scan is still document-wide: with P on layer A and Q on
+   * layer B, undoing Q while B is active re-applies A's stroke onto B. Verified
+   * on GPU: layer B went from {P:0, Q:1024} to {P:1024, Q:0}. That destroys the
+   * user's work, so the feature is disabled rather than left reachable until
+   * replay takes an explicit target layer.
+   */
+  private get historyBlockedByLayers(): boolean {
+    return this.layerStack.count > 1;
+  }
+
   getHistoryState(): HistoryState {
     return {
-      canUndo: !this.historyBusy && this.historyCursor > 0,
-      canRedo: !this.historyBusy && this.historyCursor < this.historyActions.length,
+      canUndo: !this.historyBusy
+        && !this.historyBlockedByLayers
+        && this.historyCursor > 0,
+      canRedo: !this.historyBusy
+        && !this.historyBlockedByLayers
+        && this.historyCursor < this.historyActions.length,
       busy: this.historyBusy,
       actionCount: this.historyActions.length,
       cursor: this.historyCursor,
@@ -5483,27 +5528,34 @@ export class BrushEngine {
       throw new Error(`Massimo ${LAYER_STACK_MAXIMUM} livelli raggiunto.`);
     }
     this.assertLayerSwitchAllowed();
-    await this.waitForIdle();
-    const fromIndex = this.layerStack.activeIndex;
-    this.persistActiveLayerState();
-    const index = this.layerStack.add(name);
-    const record = this.layerStack.at(index);
+    this.layerSwitchBusy = true;
     try {
-      const texture = this.allocateLayerTexture(this.layerFormat);
-      const bindGroups = this.createLayerBindGroups(
-        this.layerFormat,
-        texture.samplingView,
-        texture.mipViews,
-      );
-      this.layerGpu.set(record.id, { ...texture, ...bindGroups });
-    } catch (error) {
-      // Leave the stack exactly as it was rather than holding a record with no
-      // GPU resources, which every later switch would trip over.
-      this.layerStack.remove(index);
-      this.layerStack.setActiveIndex(fromIndex);
-      throw error;
+      await this.waitForIdle();
+      const fromIndex = this.layerStack.activeIndex;
+      this.persistActiveLayerState();
+      const index = this.layerStack.add(name);
+      const record = this.layerStack.at(index);
+      try {
+        const texture = this.allocateLayerTexture(this.layerFormat);
+        const bindGroups = this.createLayerBindGroups(
+          this.layerFormat,
+          texture.samplingView,
+          texture.mipViews,
+        );
+        this.layerGpu.set(record.id, { ...texture, ...bindGroups });
+      } catch (error) {
+        // Leave the stack exactly as it was rather than holding a record with no
+        // GPU resources, which every later switch would trip over.
+        this.layerStack.remove(index);
+        this.layerStack.setActiveIndex(fromIndex);
+        throw error;
+      }
+      return await this.activateLayer(fromIndex);
+    } finally {
+      this.layerSwitchBusy = false;
+      this.publishHistoryState();
+      this.publishStats();
     }
-    return this.activateLayer(fromIndex);
   }
 
   /** Selects an existing layer, paying the switch cost. */
@@ -5516,11 +5568,25 @@ export class BrushEngine {
       return null;
     }
     this.assertLayerSwitchAllowed();
-    await this.waitForIdle();
+    this.layerSwitchBusy = true;
     const fromIndex = this.layerStack.activeIndex;
-    this.persistActiveLayerState();
-    this.layerStack.setActiveIndex(index);
-    return this.activateLayer(fromIndex);
+    try {
+      await this.waitForIdle();
+      this.persistActiveLayerState();
+      this.layerStack.setActiveIndex(index);
+      return await this.activateLayer(fromIndex);
+    } catch (error) {
+      // Put the selection back: leaving the stack pointing at a layer whose
+      // resources were never bound would make every later operation act on the
+      // wrong texture.
+      this.layerStack.setActiveIndex(fromIndex);
+      this.bindActiveLayerResources();
+      throw error;
+    } finally {
+      this.layerSwitchBusy = false;
+      this.publishHistoryState();
+      this.publishStats();
+    }
   }
 
   private assertLayerSwitchAllowed(): void {
@@ -5528,6 +5594,7 @@ export class BrushEngine {
       this.activeStroke
       || this.lightGlazeSession
       || this.historyBusy
+      || this.layerSwitchBusy
       || this.rasterStrokeBusy
       || this.rasterBevelBusy
     ) {
@@ -5578,9 +5645,7 @@ export class BrushEngine {
       layerId: record.id,
       totalMs: performance.now() - startedAt,
       effectsMs,
-      rebuiltPyramidThroughLevel: effects.generation >= 0
-        ? this.paintDisplayMipValidThroughLevel
-        : 0,
+      effectsGeneration: effects.generation,
       contentBoundsRestored: record.contentBounds !== null,
     };
   }
@@ -8003,6 +8068,18 @@ export class BrushEngine {
 
   private async moveHistoryCursor(delta: -1 | 1): Promise<boolean> {
     if (!this.initialized || this.activeStroke || this.historyBusy) {
+      return false;
+    }
+    // The gate lives here as well as in getHistoryState: reporting canUndo=false
+    // only greys out a button, and the API is reachable directly.
+    if (this.historyBlockedByLayers) {
+      this.callbacks.onStatus?.(
+        "Undo e Redo non sono ancora disponibili con più livelli.",
+        "error",
+      );
+      return false;
+    }
+    if (this.layerSwitchBusy) {
       return false;
     }
     const nextCursor = this.historyCursor + delta;

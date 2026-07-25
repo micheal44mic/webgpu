@@ -278,4 +278,47 @@ assert.match(
   "anche la creazione di un livello deve risincronizzare i controlli",
 );
 
+// The record's hasContent is only written back when a layer stops being active,
+// so reading it for the ACTIVE layer would report "empty" while the user paints.
+assert.match(
+  engineSource,
+  /hasContent: record\.id === this\.layerStack\.active\.id\s*\?\s*this\.layerHasContent\s*:\s*record\.hasContent/,
+  "hasContent del livello attivo deve venire dal campo vivo, non dal record",
+);
+// The switch result must not claim to report a rebuilt pyramid level: the switch
+// only invalidates the pyramid, and the next frame rebuilds it.
+assert.doesNotMatch(engineSource, /rebuiltPyramidThroughLevel/);
+
+// TEMPORARY GATE. Replay rebuilds a layer by re-applying every VISIBLE stroke,
+// and that scan is still document-wide, so undoing on layer B re-applies layer
+// A's strokes onto B — verified on GPU as {P:0,Q:1024} becoming {P:1024,Q:0}.
+// The gate must live in the engine, not only in the button state, because the
+// API is reachable directly. Remove it only together with target-aware replay.
+assert.match(engineSource, /private get historyBlockedByLayers\(\): boolean \{\s*return this\.layerStack\.count > 1;/);
+assert.match(
+  engineSource,
+  /canUndo: !this\.historyBusy\s*&& !this\.historyBlockedByLayers/,
+);
+assert.match(
+  engineSource,
+  /canRedo: !this\.historyBusy\s*&& !this\.historyBlockedByLayers/,
+);
+const cursorStart = engineSource.indexOf("private async moveHistoryCursor(");
+assert.match(
+  engineSource.slice(cursorStart, cursorStart + 900),
+  /if \(this\.historyBlockedByLayers\) \{/,
+  "il gate deve valere anche chiamando l'API, non solo il bottone",
+);
+
+// The switch lock has to be held across the awaits, or a pointerdown landing
+// during the 150-215 ms rebuild starts a stroke on a half-swapped layer.
+assert.match(engineSource, /private layerSwitchBusy = false;/);
+assert.match(
+  engineSource,
+  /if \(this\.historyBusy \|\| this\.activeStroke \|\| this\.layerSwitchBusy\) \{/,
+  "beginStrokeAtLayer deve rifiutare durante uno switch",
+);
+assert.match(mainSource, /return !engineInitialized\s*\|\| layerSwitching/,
+  "il lock di switch deve entrare in operationLocked, non solo nella lista");
+
 console.log("Layer stack verification passed.");

@@ -349,6 +349,7 @@ let benchmarkRunning = false;
 let rasterStrokeGoldenRunning = false;
 let effectsWorkbenchBenchmarkRunning = false;
 let layerFormatChanging = false;
+let layerSwitching = false;
 let rasterStrokeChanging = false;
 let historyUiBusy = false;
 let rasterBevelChanging = false;
@@ -1364,6 +1365,7 @@ function updateHumanStrokeControls(): void {
 
 function operationLocked(): boolean {
   return !engineInitialized
+    || layerSwitching
     || historyUiBusy
     || historyState.busy
     || benchmarkRunning
@@ -1890,8 +1892,6 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
   }
   previousGpuMemoryTotalMiB = totalMiB;
 }
-
-let layerSwitching = false;
 
 /**
  * After a switch the Traccia and Smusso controls must be re-read from the
