@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   LAYER_STACK_MAXIMUM,
   LAYER_STACK_STRATEGY,
@@ -179,5 +180,24 @@ const newStack = () => new LayerStack(createStyles);
   stack.at(0).hasContent = true;
   assert.equal(stack.anyHasContent(), true);
 }
+
+// The pixel probe is what makes multi-layer claims falsifiable: correctness
+// cannot be read off the screen, because the display shows one composite and a
+// dropped submit leaves the previous image in place. Guard it against silent
+// removal, and against losing its dev gate.
+const engineSource = readFileSync(
+  new URL("../src/brush-engine.ts", import.meta.url),
+  "utf8",
+);
+assert.match(engineSource, /async readLayerPixels\(rect\?: DirtyRect\): Promise<Uint8Array>/);
+const probeStart = engineSource.indexOf("async readLayerPixels(");
+const probeBody = engineSource.slice(probeStart, probeStart + 2_600);
+assert.match(probeBody, /import\.meta\.env\.DEV/, "la sonda deve restare solo-dev");
+assert.match(probeBody, /copyTextureToBuffer/);
+assert.match(probeBody, /texture: this\.layerTexture, mipLevel: 0/,
+  "la sonda deve leggere il mip 0 autorevole, non un livello derivato");
+assert.match(probeBody, /Math\.ceil\(unpaddedBytesPerRow \/ 256\) \* 256/,
+  "bytesPerRow deve restare allineato a 256");
+assert.match(probeBody, /readbackBuffer\.destroy\(\)/, "la sonda non deve perdere il buffer");
 
 console.log("Layer stack verification passed.");

@@ -3458,6 +3458,68 @@ export class BrushEngine {
     }
   }
 
+  /**
+   * Reads authoritative mip 0 back from a paint layer, for tests that must
+   * assert on two layers at once.
+   *
+   * Multi-layer correctness cannot be proved from the screen: the display shows
+   * one composite, so "layer A kept its pixels while layer B was rebuilt" is
+   * invisible there. Worse, a comparison against the previously presented image
+   * passes when a submit is silently dropped, because a dropped submit leaves
+   * exactly that image in place — a trap this repo has already fallen into
+   * twice. Asserting absolute values in two distinct textures is the only form
+   * that cannot pass vacuously.
+   */
+  async readLayerPixels(rect?: DirtyRect): Promise<Uint8Array> {
+    if (!import.meta.env.DEV) {
+      throw new Error("La sonda dei pixel di livello è disponibile solo in modalità dev.");
+    }
+    if (!this.initialized) {
+      throw new Error("Il motore non è ancora inizializzato.");
+    }
+    const requested = rect ?? { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE };
+    const x = clamp(Math.floor(requested.x), 0, LAYER_SIZE);
+    const y = clamp(Math.floor(requested.y), 0, LAYER_SIZE);
+    const width = clamp(Math.ceil(requested.width), 0, LAYER_SIZE - x);
+    const height = clamp(Math.ceil(requested.height), 0, LAYER_SIZE - y);
+    if (width <= 0 || height <= 0) {
+      return new Uint8Array();
+    }
+    await this.waitForIdle();
+    const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
+    const unpaddedBytesPerRow = width * bytesPerPixel;
+    const bytesPerRow = Math.ceil(unpaddedBytesPerRow / 256) * 256;
+    const readbackBuffer = this.device.createBuffer({
+      label: `Sonda pixel livello ${width}×${height}`,
+      size: bytesPerRow * height,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    try {
+      const encoder = this.device.createCommandEncoder({
+        label: "Sonda pixel livello",
+      });
+      encoder.copyTextureToBuffer(
+        { texture: this.layerTexture, mipLevel: 0, origin: { x, y, z: 0 } },
+        { buffer: readbackBuffer, bytesPerRow, rowsPerImage: height },
+        { width, height, depthOrArrayLayers: 1 },
+      );
+      this.device.queue.submit([encoder.finish()]);
+      await readbackBuffer.mapAsync(GPUMapMode.READ);
+      const mapped = new Uint8Array(readbackBuffer.getMappedRange());
+      const compact = new Uint8Array(unpaddedBytesPerRow * height);
+      for (let row = 0; row < height; row += 1) {
+        compact.set(
+          mapped.subarray(row * bytesPerRow, row * bytesPerRow + unpaddedBytesPerRow),
+          row * unpaddedBytesPerRow,
+        );
+      }
+      readbackBuffer.unmap();
+      return compact;
+    } finally {
+      readbackBuffer.destroy();
+    }
+  }
+
   async runRasterStrokeGolden(): Promise<RasterStrokeGoldenReport> {
     if (!this.initialized) {
       throw new Error("WebGPU non ancora inizializzato.");
