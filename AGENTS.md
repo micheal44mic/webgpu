@@ -440,6 +440,79 @@ Paint:
   offset `ping-b→0` osservata fallire sia staticamente (`0 != 256`) sia su GPU
   (`70d14e7a…`). Tabella completa in `docs/effects-workbench-pr2.md`.
 
+### Campo Smusso a misura bbox (PR 3, dietro flag)
+
+Flag runtime `?bevelField=bbox`, **default OFF**. L'heightfield R32F passa da
+documento+apron (`64,06 MiB` fissi) a inviluppo tile-aligned dei job + apron.
+
+- Gate di fattibilità documentato in `docs/effects-bbox-pr3.md`: l'invariante
+  «fuori dai bounds il campo vale 0» è **falsa** per `pillow`
+  (`x = abs(2*source-1)` con `source→0` vale `1`). Fuori dal campo si usa una
+  costante dipendente da modo/tecnica/contour: `0` per inner, outer ed emboss;
+  per pillow `1`, oppure la LUT contour a `min(1/range,1)`.
+- Riallocazione ⇒ rebuild dell'intero nuovo bbox: una texture WebGPU riallocata
+  non conserva i pixel, quindi «ricostruire solo la corona» non esiste.
+- Crescita ammessa a inizio frame anche durante il tratto, mai a metà encoder.
+- Golden invariato con flag OFF **e** ON, 24/24 combinazioni modo × tecnica.
+- Benchmark contenuto piccolo: retarget `133,90 → 68,80 ms` (**−48,6%**).
+- Pittura interattiva misurata (7 crescite dei bounds, anche a metà tratto):
+  regime **identico** al flag OFF (mediana `6,9 ms`, p95 `7,2` vs `7,3`, p99
+  `8,9` vs `9,0`); tutta la differenza è nei frame di crescita, frame peggiore
+  `27,6` vs `13,4 ms`, **zero** frame oltre `33 ms`. Campo da `4,0` a `35,0 MiB`
+  contro `64,1` fissi. A effetti attivi e tela vuota: `154,1` contro `218,1 MiB`.
+- Non verificato: una sola GPU desktop. Su mobile il frame di crescita va
+  rimisurato prima di considerare il default ON.
+
+### Livelli multipli (Fase 2, in corso)
+
+Modello: `src/layer-stack.ts` (modulo puro, `npm run layers:verify`) tiene i
+record CPU — id monotoni mai riusati, bounds del contenuto, `hasContent`,
+validità piramide, **stili Traccia e Smusso per livello**. Le risorse GPU stanno
+in una mappa del motore chiavata sull'id. Cap `16` livelli: ogni livello alloca
+`85,3 MiB` eager (`64` mip 0 + `21,33` catena).
+
+- Gli stili sono accessori sul record attivo, non campi del motore: 60 letture e
+  8 scritture invariate. La UI li risincronizza a ogni switch, altrimenti
+  mostrerebbe gli effetti del livello uscente.
+- `addLayer` NON passa da `recreateLayerResources`, la cui coda distrugge
+  texture uscente, blend renderer e workbench. Le 21 pipeline dipendono solo dal
+  formato e vengono riusate.
+- Switch: persiste bounds/hasContent/validità sul record uscente, poi carica
+  l'entrante, `blendRenderer.retarget()`, teardown glaze/tail,
+  `retargetEffectsWorkingSet` con i bounds dell'entrante, validità piramide a 0.
+- `DryBlendRenderer.retarget()` invalida il carrier: contiene pigmento del
+  livello uscente, e senza invalidazione sanguinerebbe nel primo step sul nuovo.
+
+Costi misurati (desktop Ampere, effetti attivi, flag bbox OFF):
+
+| Operazione | Costo |
+|---|---:|
+| `addLayer` (livello vuoto) | `8,3 – 9 ms` |
+| Switch a livello con contenuto ed effetti | `151 – 215 ms` |
+| Switch a livello con effetti spenti | `3,6 – 4 ms` |
+
+Il termine dominante è il rebuild full-document dei campi, lo stesso che il flag
+bbox dimezza.
+
+**Stato del display: mostra solo il livello attivo.** Lasciando un livello il suo
+contenuto sparisce dalla vista. È deliberato: finché il display mostra un livello
+solo, un livello ricostruito dalla cronologia non richiede bake per essere
+corretto, e il rollback dell'undo cross-layer resta trattabile. Bake e
+compositing sono i passi successivi.
+
+Test bilaterale su GPU (l'unica forma non tautologica: lo schermo mostra un
+composito e un submit scartato lascia l'immagine precedente): P sul livello 0,
+`addLayer`, Q sul livello 1, rilettura di **entrambe** le texture →
+`layer0 {P:1024, Q:0}`, `layer1 {P:0, Q:1024}`. Mutazione
+`bindActiveLayerResources` no-op → `layer0 {P:1024, Q:1024}`, `layer1` vuoto.
+
+Da fare: `layerId` nella cronologia e undo globale (un Ctrl+Z può dover cambiare
+livello attivo, con rollback di un retarget già eseguito), bake del risultato
+stilizzato, compositing merged-below/above, riduzione del costo di switch. Nodo
+noto non coperto da alcun golden: il bake usa il contorno analitico e il display
+del livello attivo usa `fwidth`, quindi il bordo Smusso può spostarsi
+nell'istante in cui il livello perde il fuoco.
+
 Blend (tool separato, vedi sezione dedicata più sotto).
 
 ## Esperimenti chiusi — esiti vincolanti
