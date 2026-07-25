@@ -318,6 +318,7 @@ let historyState: HistoryState = {
   canUndo: false,
   canRedo: false,
   busy: false,
+  inconsistent: false,
   actionCount: 0,
   cursor: 0,
   storedBaseStamps: 0,
@@ -1824,7 +1825,7 @@ async function runRequestedLayerHistoryTest(): Promise<void> {
       : "Cronologia livelli GPU ERRORE · consulta il report JSON.";
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const failure = { version: 1, passed: false, error: message };
+    const failure = { version: 2, passed: false, error: message };
     layerHistoryTestReport.textContent = JSON.stringify(failure, null, 2);
     layerHistoryTestDetails.hidden = false;
     layerHistoryTestDetails.open = true;

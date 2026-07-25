@@ -508,19 +508,21 @@ composito e un submit scartato lascia l'immagine precedente): P sul livello 0,
 
 La regressione della cronologia ha inoltre un harness GPU persistente e
 distruttivo solo sulla pagina dev nuova: avviare Vite e aprire
-`/?layerHistoryTest=1`. Dipinge P sul livello A e Q sul B, annulla/ripristina Q,
-legge entrambe le texture per nome e richiede A byte-identico in ogni passaggio,
-P assente da B, Q rimosso dall'Undo e il Redo di B byte-identico al pre-Undo. Il
-report JSON resta nel pannello Benchmark e in `window.__layerHistoryGpuTestReport`.
-Non sostituisce il golden Traccia/Smusso: verifica destinazione e isolamento dei
-livelli, non l'identità percettiva dello style stack.
+`/?layerHistoryTest=1`. La revisione `2` dipinge P sul livello A e Q sul B,
+esegue Undo/Redo sia same-layer sia **davvero cross-layer** (prima del Redo
+seleziona deliberatamente B mentre l'azione appartiene ad A), legge entrambe le
+texture per nome e verifica anche che il banco effetti segua il record attivo.
+Il report JSON resta nel pannello Benchmark e in
+`window.__layerHistoryGpuTestReport`. Non sostituisce il golden
+Traccia/Smusso: verifica destinazione, transazione e isolamento dei livelli, non
+l'identità percettiva dello style stack.
 
-Run locale del 25 luglio 2026 su NVIDIA Ampere: `passed: true`; P e Q hanno
-entrambi `6488` pixel con alpha, Q passa a `0` dopo Undo e torna a `6488` dopo
-Redo. Differenze byte del livello A dopo pittura su B, Undo e Redo: sempre `0`;
-differenze di B tra pre-Undo e post-Redo: `0`. Il secondo Undo, appartenente ad
-A mentre B è attivo, restituisce `false` e lascia il cursore a `1`. Nessun errore
-o warning nella console del browser durante la prova.
+Run locale del 25 luglio 2026: `61/61`, `passed: true`, zero warning/errori.
+P e Q hanno entrambi `6488` pixel con alpha; Q passa a `0` dopo Undo e torna a
+`6488` dopo Redo. A resta byte-identico dopo pittura su B, Undo e Redo; B è
+byte-identico tra pre-Undo e post-Redo. Undo e Redo cross-layer cambiano davvero
+livello attivo e lasciano `EffectsWorkbench.sourceView` sulla view del record
+attivo.
 
 Mutation test dello stesso harness: rimossi temporaneamente **entrambi** i
 filtri di `selectLayerReplay`, dopo Undo P compare su B con `6488` pixel alpha e
@@ -540,15 +542,38 @@ livello. Prima, annullare Q su B ridisegnava P di A sopra B
 filtro ha una mutazione che fallisce da solo, quindi la difesa ridondante non può
 essere cancellata come apparentemente inutile.
 
+L'harness rev `2` inietta inoltre guasti in due punti discriminanti:
+`after-first-replay-submit` (dopo un vero clear/draw GPU) e
+`during-switch-activation` (engine e Blend già ritargettati, workbench non
+ancora). I due rollback recuperabili ripristinano cursore, livello, banco e
+entrambe le texture con delta byte `0`. Un doppio guasto durante il rollback
+alza invece `HistoryState.inconsistent`, mantiene `historyBusy=true`, disabilita
+Undo/Redo e rifiuta una chiamata API successiva: soltanto il reload può
+sbloccare un documento la cui coerenza non è dimostrabile.
+
+Mutation test rev `2`, tutti ripristinati: saltare il restore del target lascia A
+diverso per `25880` byte; saltare l'attivazione inversa lascia il livello attivo
+non ripristinato e manda rosso il probe half-switch; rilasciare il latch dopo il
+doppio guasto lascia `canUndo/canRedo=true` e il successivo Undo parte davvero.
+
 | Operazione | Stato con `layerCount > 1` | Si sblocca con |
 |---|---|---|
-| Undo / Redo | consentiti se il passo adiacente appartiene al livello attivo; un passo di un altro livello è rifiutato nel motore | switch transazionale cross-layer con rollback |
+| Undo / Redo | globali: un passo su un altro livello vivo lo seleziona e lo ricostruisce; è rifiutato solo se il livello proprietario non esiste più | già implementato; il livello eliminato resta non riproducibile |
 | `resetDocument()` | rifiutato | reset davvero document-wide |
 | `runBenchmark()` | rifiutato | idem, più parità di baseline |
 | `setLayerFormat()` | **consentito** | già ricrea tutti i livelli |
 
 Altri invarianti da non perdere:
 
+- Undo/Redo cross-layer è una sola transazione: `switched` viene derivato **prima**
+  dell'`await activateLayer`; su errore il cursore torna al valore precedente, il
+  target eventualmente già pulito viene ricostruito sotto quel cursore mentre è
+  ancora attivo, e soltanto dopo si esegue `activateLayer()` completo in senso
+  inverso. Ripristinare prima l'indice/livello ricostruirebbe la texture sbagliata.
+- Un errore del rollback non è un normale errore operativo. Il latch
+  `historyStateInconsistent` resta osservabile nello stato pubblico e tiene alto
+  `historyBusy`; anche `setBrushSettings` rifiuta, perché un cambio impostazioni
+  potrebbe riattivare allocazioni/render su un banco mezzo ritargettato.
 - `layerSwitchBusy` è tenuto per **tutta** la durata dello switch, `await`
   inclusi. Oltre a tratti, `clear`, undo e altri switch, blocca anche modifiche
   brush/Traccia/Smusso, cambio formato, benchmark e il retarget pubblico del
@@ -581,17 +606,13 @@ Altri invarianti da non perdere:
   moltiplicato per i livelli allocati; anche il tipo persistito `BenchmarkRun`
   dichiara entrambi i campi, così la firma non può sparire silenziosamente.
 
-Da fare: undo globale che cambia livello attivo (un Ctrl+Z può dover disfare un
-retarget già eseguito, e esiste una finestra in cui il banco punta a un livello
-che il cursore non dichiara più attivo — incoerenza che nessun test sui soli
-pixel vede), bake del risultato stilizzato, compositing merged-below/above,
-riduzione del costo di switch. Il replay attuale scrive deliberatamente solo sul
-livello attivo; l'undo cross-layer dovrà quindi eseguire lo switch dentro la
-transazione oppure introdurre una destinazione esplicita, senza presupporre oggi
-quale delle due architetture sia necessaria. Nodo noto non coperto da alcun
-golden: il bake usa il contorno analitico e il display del livello attivo usa
-`fwidth`, quindi il bordo Smusso può spostarsi nell'istante in cui il livello
-perde il fuoco.
+Da fare: bake del risultato stilizzato, compositing merged-below/above e
+riduzione del costo di switch. Il replay scrive deliberatamente solo sul livello
+attivo; Undo/Redo cross-layer seleziona ora il proprietario dentro la transazione
+e ripristina target + switch in ordine inverso in caso di errore. Nodo noto non
+coperto da alcun golden: il bake usa il contorno analitico e il display del
+livello attivo usa `fwidth`, quindi il bordo Smusso può spostarsi nell'istante in
+cui il livello perde il fuoco.
 
 Blend (tool separato, vedi sezione dedicata più sotto).
 

@@ -124,17 +124,6 @@ export function historyStepTargetsMissingLayer(
   return Boolean(action) && !liveLayerIds.has(action.layerId);
 }
 
-/** True when undo/redo would cross an action owned by another layer. */
-export function historyStepTargetsOtherLayer(
-  actions: readonly JournalAction[],
-  cursor: number,
-  delta: -1 | 1,
-  activeLayerId: number,
-): boolean {
-  const action = delta < 0 ? actions[cursor - 1] : actions[cursor];
-  return Boolean(action) && action.layerId !== activeLayerId;
-}
-
 /** Layers that still have visible content, for "is the document empty" checks. */
 export function layersWithVisibleContent(
   actions: readonly JournalAction[],

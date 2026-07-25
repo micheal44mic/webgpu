@@ -1,6 +1,10 @@
-import type { BrushEngine, HistoryState } from "./brush-engine";
+import type {
+  BrushEngine,
+  HistoryReplayFaultPoint,
+  HistoryState,
+} from "./brush-engine";
 
-export const LAYER_HISTORY_GPU_TEST_VERSION = 1 as const;
+export const LAYER_HISTORY_GPU_TEST_VERSION = 2 as const;
 
 interface PixelRect {
   x: number;
@@ -31,23 +35,35 @@ export interface LayerHistoryGpuTestReport {
   history: {
     beforeUndo: HistoryState;
     afterUndo: HistoryState;
-    afterBlockedUndo: HistoryState;
+    afterCrossLayerUndo: HistoryState;
+    afterCrossLayerRedo: HistoryState;
     afterRedo: HistoryState;
+    afterFatalRollback: HistoryState;
   };
-  rollback: {
-    threw: boolean;
-    cursorRestored: boolean;
-    activeLayerRestored: boolean;
-    workingSetMatchesActiveLayer: boolean;
-    layerADifferingBytes: number;
-    layerBDifferingBytes: number;
-  };
+  partialReplayRollback: RollbackProbe;
+  switchActivationRollback: RollbackProbe;
+  fatalRollback: RollbackProbe;
   operations: {
     undoReturned: boolean;
     crossLayerUndoReturned: boolean;
     crossLayerRedoReturned: boolean;
     redoReturned: boolean;
+    fatalPreparationUndoReturned: boolean;
+    fatalFollowUpUndoReturned: boolean;
   };
+}
+
+interface RollbackProbe {
+  threw: boolean;
+  cursorRestored: boolean;
+  activeLayerRestored: boolean;
+  workingSetMatchesActiveLayer: boolean;
+  historyBusy: boolean;
+  historyInconsistent: boolean;
+  canUndo: boolean;
+  canRedo: boolean;
+  layerADifferingBytes: number;
+  layerBDifferingBytes: number;
 }
 
 function countNonZeroAlpha(pixels: Uint8Array): number {
@@ -156,65 +172,94 @@ export async function runLayerHistoryGpuTest(
   const layerBAfterUndoP = await engine.readLayerPixels(pRect, 1);
   const layerBAfterUndoQ = await engine.readLayerPixels(qRect, 1);
 
-  // The next undo belongs to layer A: it must SUCCEED and move the active layer
-  // with the cursor, since the stack is global. The state invariant matters more
-  // than the pixels here — a failed rollback can leave the working set pointed at
-  // the layer the cursor no longer selects while every pixel still looks right.
+  // The next undo belongs to layer A: it must succeed and move the active layer
+  // with the cursor, since the journal is global.
   const activeBeforeCrossLayerUndo = engine.getStats().activeLayerIndex;
   const crossLayerUndoReturned = await engine.undo();
   await engine.waitForIdle();
-  const afterBlockedUndo = engine.getHistoryState();
+  const afterCrossLayerUndo = engine.getHistoryState();
   const activeAfterCrossLayerUndo = engine.getStats().activeLayerIndex;
   const workingSetMatchesAfterCrossLayerUndo = engine
     .effectsWorkingSetMatchesActiveLayer();
   const layerAAfterCrossLayerUndo = await engine.readLayerPixels(pRect, 0);
 
-  // Put layer A back so the redo assertions below still describe layer B.
+  // Force a REAL cross-layer redo: deliberately select B while the next action
+  // belongs to A. A same-layer redo would not exercise the activation path.
+  await engine.setActiveLayer(1);
+  const activeBeforeCrossLayerRedo = engine.getStats().activeLayerIndex;
   const crossLayerRedoReturned = await engine.redo();
   await engine.waitForIdle();
+  const afterCrossLayerRedo = engine.getHistoryState();
   const activeAfterCrossLayerRedo = engine.getStats().activeLayerIndex;
+  const workingSetMatchesAfterCrossLayerRedo = engine
+    .effectsWorkingSetMatchesActiveLayer();
   const layerAAfterCrossLayerRedo = await engine.readLayerPixels(pRect, 0);
   await engine.setActiveLayer(1);
 
-  // ROLLBACK. A cross-layer undo switches the active layer inside the history
-  // transaction, so a failing rebuild has to undo that switch as well. The happy
-  // path never runs this code, so the failure is injected on purpose: mutating
-  // the rollback otherwise leaves every check green.
-  const beforeRollbackHistory = engine.getHistoryState();
-  const beforeRollbackActive = engine.getStats().activeLayerIndex;
-  const beforeRollbackLayerA = await engine.readLayerPixels(auditRect, 0);
-  const beforeRollbackLayerB = await engine.readLayerPixels(auditRect, 1);
-  // The first call is the failing forward replay; the second is the restore.
-  engine.injectHistoryReplayFault(0);
-  let rollbackThrew = false;
-  try {
-    await engine.undo();
-  } catch {
-    rollbackThrew = true;
-  }
-  await engine.waitForIdle();
-  const afterRollbackHistory = engine.getHistoryState();
-  const rollback = {
-    threw: rollbackThrew,
-    cursorRestored: afterRollbackHistory.cursor === beforeRollbackHistory.cursor,
-    activeLayerRestored: engine.getStats().activeLayerIndex === beforeRollbackActive,
-    workingSetMatchesActiveLayer: engine.effectsWorkingSetMatchesActiveLayer(),
-    layerADifferingBytes: countDifferingBytes(
-      beforeRollbackLayerA,
-      await engine.readLayerPixels(auditRect, 0),
-    ),
-    layerBDifferingBytes: countDifferingBytes(
-      beforeRollbackLayerB,
-      await engine.readLayerPixels(auditRect, 1),
-    ),
+  const probeRollback = async (
+    ...faultPoints: HistoryReplayFaultPoint[]
+  ): Promise<RollbackProbe> => {
+    const beforeHistory = engine.getHistoryState();
+    const beforeActive = engine.getStats().activeLayerIndex;
+    const beforeLayerA = await engine.readLayerPixels(auditRect, 0);
+    const beforeLayerB = await engine.readLayerPixels(auditRect, 1);
+    engine.injectHistoryReplayFault(...faultPoints);
+    let threw = false;
+    try {
+      await engine.undo();
+    } catch {
+      threw = true;
+    }
+    await engine.waitForIdle();
+    const afterHistory = engine.getHistoryState();
+    return {
+      threw,
+      cursorRestored: afterHistory.cursor === beforeHistory.cursor,
+      activeLayerRestored: engine.getStats().activeLayerIndex === beforeActive,
+      workingSetMatchesActiveLayer: engine.effectsWorkingSetMatchesActiveLayer(),
+      historyBusy: afterHistory.busy,
+      historyInconsistent: afterHistory.inconsistent,
+      canUndo: afterHistory.canUndo,
+      canRedo: afterHistory.canRedo,
+      layerADifferingBytes: countDifferingBytes(
+        beforeLayerA,
+        await engine.readLayerPixels(auditRect, 0),
+      ),
+      layerBDifferingBytes: countDifferingBytes(
+        beforeLayerB,
+        await engine.readLayerPixels(auditRect, 1),
+      ),
+    };
   };
 
+  // This failure happens only after a real clear/draw submission. Restoring just
+  // cursor/index would leave A damaged even though all CPU state looked correct.
+  const partialReplayRollback = await probeRollback("after-first-replay-submit");
+
+  // This failure lands after engine fields and Blend point at A but before the
+  // effects workbench does. Pixel-only checks cannot observe that half-switch.
+  const switchActivationRollback = await probeRollback("during-switch-activation");
+
+  // Cursor 1 on B: the next redo is Q on B and must restore it byte-for-byte.
   const redoReturned = await engine.redo();
   await engine.waitForIdle();
   const afterRedo = engine.getHistoryState();
   const layerAAfterRedo = await engine.readLayerPixels(auditRect, 0);
   const layerBAfterRedo = await engine.readLayerPixels(auditRect, 1);
   const layerBAfterRedoQ = await engine.readLayerPixels(qRect, 1);
+
+  // Finish with a deliberately unrecoverable transaction. The first fault lands
+  // after A was cleared; rollback rebuilds A, then the second fault breaks the
+  // reverse activation halfway through. The engine must expose and retain a fatal
+  // latch: continuing to edit a half-retargeted document would risk user data.
+  const fatalPreparationUndoReturned = await engine.undo();
+  await engine.waitForIdle();
+  const fatalRollback = await probeRollback(
+    "after-first-replay-submit",
+    "during-switch-activation",
+  );
+  const afterFatalRollback = engine.getHistoryState();
+  const fatalFollowUpUndoReturned = await engine.undo();
 
   const alphaPixels = {
     layerAStrokeP: countNonZeroAlpha(layerAP),
@@ -243,36 +288,79 @@ export async function runLayerHistoryGpuTest(
     crossLayerUndoAdvertised: afterUndo.canUndo,
     redoAdvertised: afterUndo.canRedo,
     crossLayerUndoSucceeded: crossLayerUndoReturned,
-    crossLayerUndoMovedTheCursor: afterBlockedUndo.cursor === afterUndo.cursor - 1,
+    crossLayerUndoMovedTheCursor:
+      afterCrossLayerUndo.cursor === afterUndo.cursor - 1,
     crossLayerUndoMovedTheActiveLayer:
       activeAfterCrossLayerUndo !== activeBeforeCrossLayerUndo,
     crossLayerUndoRemovedPFromA:
       countNonZeroAlpha(layerAAfterCrossLayerUndo) === 0,
-    // THE state invariant: no pixel comparison can see this one.
     workingSetFollowedTheCrossLayerUndo: workingSetMatchesAfterCrossLayerUndo,
+    crossLayerRedoAdvertised: afterCrossLayerUndo.canRedo,
     crossLayerRedoSucceeded: crossLayerRedoReturned,
+    crossLayerRedoMovedTheCursor:
+      afterCrossLayerRedo.cursor === afterCrossLayerUndo.cursor + 1,
+    crossLayerRedoMovedTheActiveLayer:
+      activeAfterCrossLayerRedo !== activeBeforeCrossLayerRedo,
     crossLayerRedoRestoredPOnA:
       countNonZeroAlpha(layerAAfterCrossLayerRedo) > 0,
-    // Redoing an action already owned by the ACTIVE layer must not switch: the
-    // invariant is "the active layer owns the crossed action", not "every step
-    // moves". Expecting a move here was the assertion being wrong, not the code.
-    crossLayerRedoStayedOnTheActionsLayer:
+    crossLayerRedoRestoredPByteExactly:
+      countDifferingBytes(layerAP, layerAAfterCrossLayerRedo) === 0,
+    crossLayerRedoSelectedTheActionsLayer:
       activeAfterCrossLayerRedo === activeAfterCrossLayerUndo,
-    workingSetMatchesAtEnd: engine.effectsWorkingSetMatchesActiveLayer(),
-    rollbackReportedTheFailure: rollback.threw,
-    rollbackRestoredTheCursor: rollback.cursorRestored,
-    rollbackRestoredTheActiveLayer: rollback.activeLayerRestored,
-    // The one a pixel test cannot see: pixels can be perfect while the working
-    // set still points at the layer the cursor no longer selects.
-    rollbackKeptWorkingSetOnActiveLayer: rollback.workingSetMatchesActiveLayer,
-    rollbackLeftLayerAByteIdentical: rollback.layerADifferingBytes === 0,
-    rollbackLeftLayerBByteIdentical: rollback.layerBDifferingBytes === 0,
+    workingSetFollowedTheCrossLayerRedo: workingSetMatchesAfterCrossLayerRedo,
+    partialReplayFailureWasReported: partialReplayRollback.threw,
+    partialReplayRollbackRestoredTheCursor: partialReplayRollback.cursorRestored,
+    partialReplayRollbackRestoredTheActiveLayer:
+      partialReplayRollback.activeLayerRestored,
+    partialReplayRollbackRestoredTheWorkingSet:
+      partialReplayRollback.workingSetMatchesActiveLayer,
+    partialReplayRollbackReleasedTheLock: !partialReplayRollback.historyBusy,
+    partialReplayRollbackStayedConsistent:
+      !partialReplayRollback.historyInconsistent,
+    partialReplayRollbackPreservedUndo: partialReplayRollback.canUndo,
+    partialReplayRollbackPreservedRedo: partialReplayRollback.canRedo,
+    partialReplayRollbackLeftLayerAByteIdentical:
+      partialReplayRollback.layerADifferingBytes === 0,
+    partialReplayRollbackLeftLayerBByteIdentical:
+      partialReplayRollback.layerBDifferingBytes === 0,
+    switchActivationFailureWasReported: switchActivationRollback.threw,
+    switchActivationRollbackRestoredTheCursor:
+      switchActivationRollback.cursorRestored,
+    switchActivationRollbackRestoredTheActiveLayer:
+      switchActivationRollback.activeLayerRestored,
+    switchActivationRollbackRestoredTheWorkingSet:
+      switchActivationRollback.workingSetMatchesActiveLayer,
+    switchActivationRollbackReleasedTheLock:
+      !switchActivationRollback.historyBusy,
+    switchActivationRollbackStayedConsistent:
+      !switchActivationRollback.historyInconsistent,
+    switchActivationRollbackPreservedUndo: switchActivationRollback.canUndo,
+    switchActivationRollbackPreservedRedo: switchActivationRollback.canRedo,
+    switchActivationRollbackLeftLayerAByteIdentical:
+      switchActivationRollback.layerADifferingBytes === 0,
+    switchActivationRollbackLeftLayerBByteIdentical:
+      switchActivationRollback.layerBDifferingBytes === 0,
     redoSucceeded: redoReturned,
     redoRestoredQ: alphaPixels.layerBAfterRedoStrokeQ > 0,
     redoRestoredBByteExactly: differingBytes.layerBRedoVersusBeforeUndo === 0,
     paintingBDidNotChangeA: differingBytes.layerAAfterPaintingB === 0,
     undoDidNotChangeA: differingBytes.layerAAfterUndo === 0,
     redoDidNotChangeA: differingBytes.layerAAfterRedo === 0,
+    fatalPreparationUndoSucceeded: fatalPreparationUndoReturned,
+    fatalRollbackFailureWasReported: fatalRollback.threw,
+    fatalRollbackRestoredTheCursor: fatalRollback.cursorRestored,
+    fatalRollbackRestoredTheActiveLayer: fatalRollback.activeLayerRestored,
+    fatalRollbackDetectedTheHalfSwitch:
+      !fatalRollback.workingSetMatchesActiveLayer,
+    fatalRollbackLatchedBusy: fatalRollback.historyBusy,
+    fatalRollbackLatchedInconsistent: fatalRollback.historyInconsistent,
+    fatalRollbackDisabledUndo: !fatalRollback.canUndo,
+    fatalRollbackDisabledRedo: !fatalRollback.canRedo,
+    fatalRollbackLeftLayerAByteIdentical:
+      fatalRollback.layerADifferingBytes === 0,
+    fatalRollbackLeftLayerBByteIdentical:
+      fatalRollback.layerBDifferingBytes === 0,
+    fatalLatchRefusedAnotherUndo: !fatalFollowUpUndoReturned,
   };
 
   return {
@@ -281,8 +369,24 @@ export async function runLayerHistoryGpuTest(
     checks,
     alphaPixels,
     differingBytes,
-    history: { beforeUndo, afterUndo, afterBlockedUndo, afterRedo },
-    rollback,
-    operations: { undoReturned, crossLayerUndoReturned, crossLayerRedoReturned, redoReturned },
+    history: {
+      beforeUndo,
+      afterUndo,
+      afterCrossLayerUndo,
+      afterCrossLayerRedo,
+      afterRedo,
+      afterFatalRollback,
+    },
+    partialReplayRollback,
+    switchActivationRollback,
+    fatalRollback,
+    operations: {
+      undoReturned,
+      crossLayerUndoReturned,
+      crossLayerRedoReturned,
+      redoReturned,
+      fatalPreparationUndoReturned,
+      fatalFollowUpUndoReturned,
+    },
   };
 }

@@ -387,9 +387,8 @@ assert.doesNotMatch(
   "il replay non deve indicizzare l'array non filtrato",
 );
 
-// A step that crosses another layer's action still needs the switch to happen
-// inside the history transaction, so it is refused rather than misapplied. The
-// refusal lives in the engine as well as the button state.
+// Crossing another LIVE layer is supported transactionally. Only a step whose
+// owner was deleted is refused, both in button state and in the engine API.
 assert.match(
   engineSource,
   /private historyStepBlockedByLayer\(delta: -1 \| 1\): boolean \{/,
@@ -402,20 +401,90 @@ assert.match(
 assert.match(engineSource, /&& !this\.historyStepBlockedByLayer\(-1\)/);
 assert.match(engineSource, /&& !this\.historyStepBlockedByLayer\(1\)/);
 const cursorStart = engineSource.indexOf("private async moveHistoryCursor(");
+const cursorEnd = engineSource.indexOf(
+  "private async rebuildActiveLayerFromHistory(",
+  cursorStart,
+);
+const cursorBody = engineSource.slice(cursorStart, cursorEnd);
 assert.match(
-  engineSource.slice(cursorStart, cursorStart + 1_400),
+  cursorBody,
   /if \(this\.historyStepBlockedByLayer\(delta\)\) \{/,
   "il gate deve valere anche chiamando l'API, non solo il bottone",
 );
 assert.match(
-  engineSource.slice(cursorStart, cursorStart + 1_800),
+  cursorBody,
   /delta < 0[\s\S]*impossibile annullarlo[\s\S]*impossibile ripristinarlo/,
   "il messaggio del gate deve distinguere Undo da Redo",
 );
 
-// The promised bilateral GPU regression is a persistent, fresh-page dev route,
-// not a one-off console transcript. It must read both named textures and compare
-// the untouched one byte-for-byte across undo and redo.
+// The cross-layer transaction has three non-interchangeable phases: derive the
+// switch before the awaited activation, restore a partially written TARGET under
+// the old cursor, then reactivate the original layer. Reversing the last two loses
+// pixels while CPU cursor/index state still looks correct.
+const switchedDeclaration = cursorBody.indexOf("const switched =");
+const forwardActivation = cursorBody.indexOf(
+  'await this.activateLayer(previousActiveIndex, "history-replay");',
+);
+assert.ok(switchedDeclaration >= 0 && switchedDeclaration < forwardActivation,
+  "switched deve essere noto prima che activateLayer possa fallire");
+const operationCatch = cursorBody.indexOf("catch (operationError)");
+const cursorRestore = cursorBody.indexOf("this.historyCursor = previousCursor;", operationCatch);
+const targetRestore = cursorBody.indexOf(
+  "await this.rebuildActiveLayerFromHistory();",
+  operationCatch,
+);
+const reverseIndex = cursorBody.indexOf(
+  "this.layerStack.setActiveIndex(previousActiveIndex);",
+  operationCatch,
+);
+const reverseActivation = cursorBody.indexOf(
+  'await this.activateLayer(targetIndex, "history-replay");',
+  operationCatch,
+);
+assert.ok(
+  operationCatch >= 0
+    && cursorRestore > operationCatch
+    && targetRestore > cursorRestore
+    && reverseIndex > targetRestore
+    && reverseActivation > reverseIndex,
+  "il rollback deve ripristinare target e cursore prima dello switch inverso completo",
+);
+assert.match(cursorBody, /this\.historyStateInconsistent = true;/,
+  "un rollback fallito deve alzare il latch fatale");
+assert.match(cursorBody, /Ricarica la pagina prima di continuare/,
+  "anche l'errore propagato alla UI deve dire che serve il reload");
+assert.match(cursorBody, /this\.historyBusy = this\.historyStateInconsistent;/,
+  "il latch fatale deve mantenere bloccate le mutazioni");
+assert.match(cursorBody, /this\.historyReplayFaultQueue = \[\];/,
+  "un fault point non consumato non deve contaminare la transazione successiva");
+assert.match(engineSource, /inconsistent: this\.historyStateInconsistent/,
+  "lo stato fatale deve essere osservabile dalla UI e dai test");
+
+// One fault point lands in the half-switch window, after engine/Blend changed
+// source but before the workbench; the other lands only after a real GPU submit.
+const activateStart = engineSource.indexOf("private async activateLayer(");
+const activateEnd = engineSource.indexOf("private async recreateLayerResources(", activateStart);
+const activateBody = engineSource.slice(activateStart, activateEnd);
+const blendRetarget = activateBody.indexOf("this.blendRenderer?.retarget(");
+const switchFault = activateBody.indexOf(
+  'this.maybeInjectHistoryReplayFault("during-switch-activation")',
+);
+const workbenchRetarget = activateBody.indexOf("this.retargetEffectsWorkingSetInternal(");
+assert.ok(
+  blendRetarget >= 0 && switchFault > blendRetarget && workbenchRetarget > switchFault,
+  "il fault di attivazione deve discriminare davvero uno switch parziale",
+);
+const replayEnd = engineSource.indexOf("private selectShapeOccupancy(", rebuildStart);
+const replayBody = engineSource.slice(rebuildStart, replayEnd);
+assert.match(replayBody, /this\.maybeInjectHistoryReplayFault\("after-first-replay-submit"\)/);
+assert.ok(
+  [...replayBody.matchAll(/observeReplaySubmit\(\);/g)].length >= 4,
+  "ogni variante del primo submit Paint/Blend/clear deve raggiungere il fault point",
+);
+
+// The GPU regression is persistent, bilateral and destructive on a fresh page.
+// It forces a genuine cross-layer redo, fails after a real submit, fails in the
+// half-switch window, and verifies a fatal double-failure latch.
 const layerHistoryGpuTestSource = readFileSync(
   new URL("../src/layer-history-gpu-test.ts", import.meta.url),
   "utf8",
@@ -423,10 +492,33 @@ const layerHistoryGpuTestSource = readFileSync(
 assert.match(mainSource, /pageSearchParams\.get\("layerHistoryTest"\) === "1"/);
 assert.match(mainSource, /await import\("\.\/layer-history-gpu-test"\)/);
 assert.match(mainSource, /await runLayerHistoryGpuTest\(engine\)/);
+assert.match(mainSource, /const failure = \{ version: 2, passed: false/);
+assert.match(layerHistoryGpuTestSource, /LAYER_HISTORY_GPU_TEST_VERSION = 2 as const/);
 assert.match(layerHistoryGpuTestSource, /readLayerPixels\(auditRect, 0\)/);
 assert.match(layerHistoryGpuTestSource, /readLayerPixels\(auditRect, 1\)/);
 assert.match(layerHistoryGpuTestSource, /const undoReturned = await engine\.undo\(\)/);
 assert.match(layerHistoryGpuTestSource, /const redoReturned = await engine\.redo\(\)/);
+assert.match(
+  layerHistoryGpuTestSource,
+  /await engine\.setActiveLayer\(1\);\s*const activeBeforeCrossLayerRedo[\s\S]*?const crossLayerRedoReturned = await engine\.redo\(\)/,
+  "il redo cross-layer deve partire deliberatamente dal livello sbagliato",
+);
+assert.match(layerHistoryGpuTestSource, /probeRollback\("after-first-replay-submit"\)/);
+assert.match(layerHistoryGpuTestSource, /probeRollback\("during-switch-activation"\)/);
+assert.match(
+  layerHistoryGpuTestSource,
+  /crossLayerRedoRestoredPByteExactly:[\s\S]*?countDifferingBytes\(layerAP, layerAAfterCrossLayerRedo\) === 0/,
+  "il redo cross-layer va confrontato byte-per-byte prima che un rollback successivo possa mascherarlo",
+);
+assert.match(layerHistoryGpuTestSource, /partialReplayRollbackPreservedUndo: partialReplayRollback\.canUndo/);
+assert.match(layerHistoryGpuTestSource, /switchActivationRollbackPreservedRedo: switchActivationRollback\.canRedo/);
+assert.match(
+  layerHistoryGpuTestSource,
+  /probeRollback\(\s*"after-first-replay-submit",\s*"during-switch-activation",\s*\)/,
+  "il test deve esercitare anche un errore durante il rollback",
+);
+assert.match(layerHistoryGpuTestSource, /fatalRollbackLatchedInconsistent: fatalRollback\.historyInconsistent/);
+assert.match(layerHistoryGpuTestSource, /fatalLatchRefusedAnotherUndo: !fatalFollowUpUndoReturned/);
 assert.match(layerHistoryGpuTestSource, /layerAAfterUndo: countDifferingBytes\(layerABaseline, layerAAfterUndo\)/);
 assert.match(layerHistoryGpuTestSource, /layerBRedoVersusBeforeUndo: countDifferingBytes\(layerBBeforeUndo, layerBAfterRedo\)/);
 
@@ -496,7 +588,11 @@ assert.doesNotMatch(recreateBody, /layerId !== this\.layerStack\.active\.id/,
   "il cleanup non può saltare il candidato del livello attivo");
 
 // Public mutations must not interleave with the awaited layer switch.
-assert.match(engineSource, /setBrushSettings\([\s\S]*?this\.initialized && this\.layerSwitchBusy/);
+assert.match(
+  engineSource,
+  /setBrushSettings\([\s\S]*?this\.initialized && \(this\.layerSwitchBusy \|\| this\.historyBusy\)/,
+  "le impostazioni non devono riattivare render o allocazioni dopo un latch fatale",
+);
 assert.match(engineSource, /async setLayerFormat\([\s\S]*?this\.layerSwitchBusy/);
 assert.match(engineSource, /async benchmarkEffectsWorkingSet\([\s\S]*?this\.layerSwitchBusy/);
 // Each caller's exemption is named rather than passed as an unreadable boolean.

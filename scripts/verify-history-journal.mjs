@@ -4,7 +4,6 @@ import {
   firstVisibleActionIndex,
   hasVisibleContent,
   historyStepTargetsMissingLayer,
-  historyStepTargetsOtherLayer,
   layersWithVisibleContent,
   selectLayerReplay,
   selectBatchesForLayer,
@@ -130,18 +129,6 @@ const clear = (id, layerId) => ({ id, kind: "clear", layerId });
     [0, 0, 0, 0, 0, 0, 0, 0],
     "entrambi i filtri devono respingere metadati azione/batch incoerenti",
   );
-}
-
-// The per-step gate is directional and cursor-aware. Same-layer undo/redo is
-// available even with several layers; only the adjacent foreign action blocks.
-{
-  const actions = [stroke(1, 1), stroke(2, 2), stroke(3, 1)];
-  assert.equal(historyStepTargetsOtherLayer(actions, 3, -1, 1), false);
-  assert.equal(historyStepTargetsOtherLayer(actions, 2, -1, 1), true);
-  assert.equal(historyStepTargetsOtherLayer(actions, 1, 1, 1), true);
-  assert.equal(historyStepTargetsOtherLayer(actions, 2, 1, 1), false);
-  assert.equal(historyStepTargetsOtherLayer(actions, 0, -1, 1), false);
-  assert.equal(historyStepTargetsOtherLayer(actions, actions.length, 1, 1), false);
 }
 
 // Crossing into another LIVE layer is allowed — the active layer moves with the

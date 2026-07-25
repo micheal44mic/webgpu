@@ -87,7 +87,6 @@ import {
 import {
   hasVisibleContent,
   historyStepTargetsMissingLayer,
-  historyStepTargetsOtherLayer,
   layersWithVisibleContent,
   selectLayerReplay,
 } from "./history-journal";
@@ -316,6 +315,8 @@ export interface HistoryState {
   canUndo: boolean;
   canRedo: boolean;
   busy: boolean;
+  /** A rollback failed; editing stays locked until the page is reloaded. */
+  inconsistent: boolean;
   actionCount: number;
   cursor: number;
   storedBaseStamps: number;
@@ -659,6 +660,10 @@ type LayerGpuResources = LayerTextureResources & LayerBindGroups;
  * and naming them beats threading booleans that nobody can read back.
  */
 type EffectsRetargetCaller = "public" | "layer-switch" | "history-replay";
+
+export type HistoryReplayFaultPoint =
+  | "during-switch-activation"
+  | "after-first-replay-submit";
 
 export interface LayerSwitchResult {
   fromIndex: number;
@@ -1636,6 +1641,7 @@ export class BrushEngine {
   private historyStoredBaseStamps = 0;
   private historyCompactionPending = false;
   private historyBusy = false;
+  private historyStateInconsistent = false;
   private layerHasContent = false;
 
   private frameRequest: number | null = null;
@@ -1771,8 +1777,10 @@ export class BrushEngine {
   }
 
   setBrushSettings(next: Partial<BrushSettings>): void {
-    if (this.initialized && this.layerSwitchBusy) {
-      throw new Error("Le impostazioni non possono cambiare durante uno switch di livello.");
+    if (this.initialized && (this.layerSwitchBusy || this.historyBusy)) {
+      throw new Error(
+        "Le impostazioni non possono cambiare durante uno switch o un replay della cronologia.",
+      );
     }
     this.flushPendingWorkBeforeSettingsChange();
     const previousTool = this.settings.tool;
@@ -3417,12 +3425,6 @@ export class BrushEngine {
   }
 
   /**
-   * True when the step the cursor would cross belongs to a layer other than the
-   * active one. Replay is layer-aware, so same-layer steps are safe; a
-   * cross-layer step needs to switch the active layer from inside the history
-   * transaction and roll that back on failure, which is a later step.
-   */
-  /**
    * Index of the layer the crossed action belongs to, or null when the step stays
    * on the active layer or there is nothing to cross.
    */
@@ -3443,8 +3445,7 @@ export class BrushEngine {
    * Crossing into ANOTHER live layer is supported now: the active layer moves
    * with the cursor. What cannot be replayed is an action whose layer is gone,
    * because there is no texture to rebuild — refusing beats applying it somewhere
-   * else. historyStepTargetsOtherLayer stays in use for the same-layer fast path
-   * inside moveHistoryCursor's reporting.
+   * else.
    */
   private historyStepBlockedByLayer(delta: -1 | 1): boolean {
     return historyStepTargetsMissingLayer(
@@ -3479,6 +3480,7 @@ export class BrushEngine {
         && this.historyCursor < this.historyActions.length
         && !this.historyStepBlockedByLayer(1),
       busy: this.historyBusy,
+      inconsistent: this.historyStateInconsistent,
       actionCount: this.historyActions.length,
       cursor: this.historyCursor,
       storedBaseStamps: this.historyStoredBaseStamps,
@@ -5873,6 +5875,11 @@ export class BrushEngine {
     // incremental maintenance would refine stale garbage. Force a full rebuild.
     this.paintDisplayMipValidThroughLevel = 0;
     this.blendRenderer?.retarget(this.layerView, this.layerSamplingView);
+    if (caller === "history-replay") {
+      // After the engine fields and Blend have moved, but before the workbench
+      // does: this is the half-switched state the transaction must recover from.
+      this.maybeInjectHistoryReplayFault("during-switch-activation");
+    }
     this.destroyLightGlazeResources();
     this.destroyThicknessTailOverlayResources();
     await this.ensureEffectRenderersForActiveLayer();
@@ -8422,49 +8429,71 @@ export class BrushEngine {
       // Eventuali rami Redo già invalidati vengono liberati soltanto dentro
       // un'operazione esplicita, mai durante o subito dopo una pennellata.
       this.compactDiscardedHistory();
-      // Cross-layer undo: the step belongs to another layer, so the active layer
-      // has to move with the cursor. It goes through activateLayer's internals
-      // rather than setActiveLayer, whose guard refuses while historyBusy is high
-      // — and historyBusy is high precisely because this IS the transaction.
+      // Cross-layer Undo/Redo is one transaction: switch, move the cursor, replay.
+      // Any failure restores the target pixels under the OLD cursor before moving
+      // the active layer back. Reversing that order would strand a partially
+      // cleared target texture behind an apparently successful rollback.
       const previousActiveIndex = this.layerStack.activeIndex;
       const targetIndex = this.historyStepTargetLayerIndex(delta);
-      let switched = false;
-      if (targetIndex !== null && targetIndex !== previousActiveIndex) {
-        this.persistActiveLayerState();
-        this.layerStack.setActiveIndex(targetIndex);
-        await this.activateLayer(previousActiveIndex, "history-replay");
-        switched = true;
-      }
-      this.historyCursor = nextCursor;
+      const switched = targetIndex !== null && targetIndex !== previousActiveIndex;
+      let replayAttempted = false;
       try {
+        if (switched) {
+          this.persistActiveLayerState();
+          this.layerStack.setActiveIndex(targetIndex);
+          await this.activateLayer(previousActiveIndex, "history-replay");
+        }
+        this.historyCursor = nextCursor;
+        replayAttempted = true;
         await this.rebuildActiveLayerFromHistory();
-      } catch (error) {
+      } catch (operationError) {
         this.historyCursor = previousCursor;
-        try {
-          // Undo the switch before replaying, or the restore would rebuild the
-          // wrong layer and the working set would stay pointed at a layer the
-          // cursor no longer calls active — a mismatch no pixel test can see.
-          if (switched) {
-            this.persistActiveLayerState();
-            this.layerStack.setActiveIndex(previousActiveIndex);
-            await this.activateLayer(targetIndex ?? previousActiveIndex, "history-replay");
+        const rollbackErrors: unknown[] = [];
+
+        // If replay was entered, it may already have submitted a clear or one or
+        // more batches. Restore the TARGET while it is still active and while the
+        // cursor again describes the pre-operation document.
+        if (replayAttempted) {
+          try {
+            await this.rebuildActiveLayerFromHistory();
+          } catch (restoreTargetError) {
+            rollbackErrors.push(restoreTargetError);
           }
-          await this.rebuildActiveLayerFromHistory();
-        } catch (restoreError) {
-          const originalMessage = error instanceof Error ? error.message : String(error);
-          const restoreMessage = restoreError instanceof Error ? restoreError.message : String(restoreError);
-          // Both the operation and its rollback failed: the document may now
-          // disagree with the journal. Say so instead of reporting a plain undo
-          // failure, which would invite the user to keep working on it.
+        }
+
+        // activateLayer itself can fail after binding engine fields and Blend but
+        // before retargeting the effects workbench. switched is derived before
+        // that await, so this reverse activation also repairs a half-switch.
+        if (switched) {
+          try {
+            this.layerStack.setActiveIndex(previousActiveIndex);
+            await this.activateLayer(targetIndex, "history-replay");
+          } catch (restoreSwitchError) {
+            rollbackErrors.push(restoreSwitchError);
+          }
+        }
+
+        if (rollbackErrors.length > 0) {
+          const originalMessage = operationError instanceof Error
+            ? operationError.message
+            : String(operationError);
+          const restoreMessage = rollbackErrors.map((rollbackError) =>
+            rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+          ).join("; ");
+          // A damaged target or half-retargeted workbench is not safe to edit.
+          // Latch historyBusy in finally; every existing mutation guard and the UI
+          // already treats it as a hard lock, and only a reload clears the latch.
+          this.historyStateInconsistent = true;
           this.callbacks.onStatus?.(
             "Stato incoerente dopo Undo/Redo: ricarica prima di continuare.",
             "error",
           );
           throw new Error(
-            `Undo/Redo non riuscito (${originalMessage}) e ripristino fallito (${restoreMessage}).`,
+            `Undo/Redo non riuscito (${originalMessage}) e ripristino fallito (${restoreMessage}). `
+            + "Ricarica la pagina prima di continuare.",
           );
         }
-        throw error;
+        throw operationError;
       }
       if (switched) {
         this.callbacks.onActiveLayerChange?.(this.layerStack.activeIndex);
@@ -8478,7 +8507,16 @@ export class BrushEngine {
       );
       return true;
     } finally {
-      this.historyBusy = false;
+      // A failed rollback is a terminal document state. Keeping historyBusy high
+      // reuses every engine-side mutation guard and the UI lock; a status message
+      // alone would still let the user continue painting on incoherent resources.
+      this.historyBusy = this.historyStateInconsistent;
+      if (import.meta.env.DEV) {
+        // A point that did not match this transaction must not ambush a later
+        // unrelated Undo/Redo. Multi-point rollback probes are consumed before
+        // this outer transaction finally runs.
+        this.historyReplayFaultQueue = [];
+      }
       this.publishHistoryState();
       this.scheduleEffectsScratchShrink();
       this.scheduleBevelFieldShrink();
@@ -8495,36 +8533,39 @@ export class BrushEngine {
    * active painted A's stroke onto B. Reproduced on GPU as layer B going from
    * {P:0, Q:1024} to {P:1024, Q:0}.
    *
-   * This routine deliberately writes only to the active layer. Cross-layer undo
-   * must therefore switch the active layer transactionally before calling it (or
-   * introduce an explicit destination); that later design choice is not hidden
-   * inside this same-layer fix.
-   */
-  /**
-   * Dev-only fault injection for the cross-layer undo rollback.
+   * This routine deliberately writes only to the active layer. The history
+   * transaction switches to the action's owner before calling it; on failure it
+   * restores that target under the old cursor before switching back.
+   *
+   * Dev-only fault injection makes both destructive replay and half-activation
+   * failures observable rather than trusting an unreachable rollback path.
    *
    * The rollback is the part of a global undo that can lose the user's work, and
    * the happy path never runs it — mutating the rollback leaves every test green.
    * Deliberately injectable so the failure can be exercised on purpose instead of
    * shipped on trust.
    */
-  private historyReplayFaultCountdown: number | null = null;
+  private historyReplayFaultQueue: HistoryReplayFaultPoint[] = [];
 
-  injectHistoryReplayFault(callsUntilFailure: number): void {
+  injectHistoryReplayFault(...faultPoints: HistoryReplayFaultPoint[]): void {
     if (!import.meta.env.DEV) {
       throw new Error("Iniezione di guasti disponibile solo in modalità dev.");
     }
-    this.historyReplayFaultCountdown = callsUntilFailure;
+    if (faultPoints.length === 0) {
+      throw new Error("Specifica almeno un punto di guasto della cronologia.");
+    }
+    this.historyReplayFaultQueue = [...faultPoints];
+  }
+
+  private maybeInjectHistoryReplayFault(point: HistoryReplayFaultPoint): void {
+    if (!import.meta.env.DEV || this.historyReplayFaultQueue[0] !== point) {
+      return;
+    }
+    this.historyReplayFaultQueue.shift();
+    throw new Error(`Guasto iniettato nella cronologia: ${point}.`);
   }
 
   private async rebuildActiveLayerFromHistory(): Promise<void> {
-    if (this.historyReplayFaultCountdown !== null) {
-      if (this.historyReplayFaultCountdown <= 0) {
-        this.historyReplayFaultCountdown = null;
-        throw new Error("Guasto iniettato nel replay della cronologia.");
-      }
-      this.historyReplayFaultCountdown -= 1;
-    }
     const layerId = this.layerStack.active.id;
     const {
       batches: layerBatches,
@@ -8546,6 +8587,14 @@ export class BrushEngine {
     this.blendRenderer?.beginStroke(0);
     let firstVisibleBatchIndex = -1;
     let lastVisibleBatchIndex = -1;
+    let firstReplaySubmitObserved = false;
+    const observeReplaySubmit = (): void => {
+      if (firstReplaySubmitObserved) {
+        return;
+      }
+      firstReplaySubmitObserved = true;
+      this.maybeInjectHistoryReplayFault("after-first-replay-submit");
+    };
     for (let index = 0; index < layerBatches.length; index += 1) {
       const batch = layerBatches[index];
       const visible = batch.kind === "blend"
@@ -8563,12 +8612,14 @@ export class BrushEngine {
     try {
       if (lastVisibleBatchIndex < 0) {
         this.submitImmediate([], true, this.settings, true, null);
+        observeReplaySubmit();
       } else {
         const firstVisibleBatch = layerBatches[firstVisibleBatchIndex];
         if (!firstVisibleBatch.clearLayer) {
           // Il clear originale era un pass separato (per esempio dopo
           // "Pulisci"): manteniamo quel confine prima del primo batch visibile.
           this.submitImmediate([], true, firstVisibleBatch.settings, false, null);
+          observeReplaySubmit();
         }
 
         for (let index = firstVisibleBatchIndex; index <= lastVisibleBatchIndex; index += 1) {
@@ -8585,6 +8636,7 @@ export class BrushEngine {
               index === lastVisibleBatchIndex,
               batch,
             );
+            observeReplaySubmit();
             continue;
           }
           const allVisible = batch.stamps.every((stamp) => visibleIds.has(stamp.historyActionId));
@@ -8634,6 +8686,7 @@ export class BrushEngine {
             index === lastVisibleBatchIndex,
             batch,
           );
+          observeReplaySubmit();
         }
         if (this.lightGlazeSession) {
           throw new Error("La ricostruzione storica ha lasciato un tratto Light Glaze aperto.");
