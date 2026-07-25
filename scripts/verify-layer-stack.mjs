@@ -368,24 +368,43 @@ assert.match(
 // only invalidates the pyramid, and the next frame rebuilds it.
 assert.doesNotMatch(engineSource, /rebuiltPyramidThroughLevel/);
 
-// TEMPORARY GATE. Replay rebuilds a layer by re-applying every VISIBLE stroke,
-// and that scan is still document-wide, so undoing on layer B re-applies layer
-// A's strokes onto B — verified on GPU as {P:0,Q:1024} becoming {P:1024,Q:0}.
-// The gate must live in the engine, not only in the button state, because the
-// API is reachable directly. Remove it only together with target-aware replay.
-assert.match(engineSource, /private get historyBlockedByLayers\(\): boolean \{\s*return this\.layerStack\.count > 1;/);
+// Replay is layer-aware: both the visible-id scan and the batch list filter on
+// the active layer. Without that filter it re-applied every layer's strokes onto
+// the active texture — verified on GPU as {P:0,Q:1024} becoming {P:1024,Q:0}.
+const rebuildStart = engineSource.indexOf("private async rebuildActiveLayerFromHistory(");
+assert.notEqual(rebuildStart, -1, "il replay deve dichiarare di ricostruire il livello ATTIVO");
+const rebuildBody = engineSource.slice(rebuildStart, rebuildStart + 1_200);
 assert.match(
-  engineSource,
-  /canUndo: !this\.historyBusy\s*&& !this\.historyBlockedByLayers/,
+  rebuildBody,
+  /const layerBatches = this\.historyBatches\.filter\(\s*\(batch\) => batch\.layerId === layerId,\s*\)/,
+  "i batch vanno filtrati per livello",
 );
 assert.match(
-  engineSource,
-  /canRedo: !this\.historyBusy\s*&& !this\.historyBlockedByLayers/,
+  rebuildBody,
+  /const visibleIds = this\.visibleHistoryStrokeIds\(layerId\)/,
+  "la scansione dei tratti visibili deve ricevere il livello",
 );
+// Nothing in the replay may index the unfiltered array, or a single stray index
+// would reintroduce another layer's batch.
+assert.doesNotMatch(
+  engineSource.slice(rebuildStart, rebuildStart + 5_000),
+  /this\.historyBatches\[/,
+  "il replay non deve indicizzare l'array non filtrato",
+);
+
+// A step that crosses another layer's action still needs the switch to happen
+// inside the history transaction, so it is refused rather than misapplied. The
+// refusal lives in the engine as well as the button state.
+assert.match(
+  engineSource,
+  /private historyStepBlockedByLayer\(delta: -1 \| 1\): boolean \{/,
+);
+assert.match(engineSource, /&& !this\.historyStepBlockedByLayer\(-1\)/);
+assert.match(engineSource, /&& !this\.historyStepBlockedByLayer\(1\)/);
 const cursorStart = engineSource.indexOf("private async moveHistoryCursor(");
 assert.match(
-  engineSource.slice(cursorStart, cursorStart + 900),
-  /if \(this\.historyBlockedByLayers\) \{/,
+  engineSource.slice(cursorStart, cursorStart + 1_400),
+  /if \(this\.historyStepBlockedByLayer\(delta\)\) \{/,
   "il gate deve valere anche chiamando l'API, non solo il bottone",
 );
 

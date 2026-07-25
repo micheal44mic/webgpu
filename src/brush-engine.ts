@@ -3412,8 +3412,17 @@ export class BrushEngine {
    * user's work, so the feature is disabled rather than left reachable until
    * replay takes an explicit target layer.
    */
-  private get historyBlockedByLayers(): boolean {
-    return this.layerStack.count > 1;
+  /**
+   * True when the step the cursor would cross belongs to a layer other than the
+   * active one. Replay is layer-aware, so same-layer steps are safe; a
+   * cross-layer step needs to switch the active layer from inside the history
+   * transaction and roll that back on failure, which is a later step.
+   */
+  private historyStepBlockedByLayer(delta: -1 | 1): boolean {
+    const action = delta < 0
+      ? this.historyActions[this.historyCursor - 1]
+      : this.historyActions[this.historyCursor];
+    return Boolean(action) && action.layerId !== this.layerStack.active.id;
   }
 
   /**
@@ -3434,11 +3443,11 @@ export class BrushEngine {
   getHistoryState(): HistoryState {
     return {
       canUndo: !this.historyBusy
-        && !this.historyBlockedByLayers
-        && this.historyCursor > 0,
+        && this.historyCursor > 0
+        && !this.historyStepBlockedByLayer(-1),
       canRedo: !this.historyBusy
-        && !this.historyBlockedByLayers
-        && this.historyCursor < this.historyActions.length,
+        && this.historyCursor < this.historyActions.length
+        && !this.historyStepBlockedByLayer(1),
       busy: this.historyBusy,
       actionCount: this.historyActions.length,
       cursor: this.historyCursor,
@@ -8326,20 +8335,26 @@ export class BrushEngine {
     if (!this.initialized || this.activeStroke || this.historyBusy) {
       return false;
     }
-    // The gate lives here as well as in getHistoryState: reporting canUndo=false
-    // only greys out a button, and the API is reachable directly.
-    if (this.historyBlockedByLayers) {
-      this.callbacks.onStatus?.(
-        "Undo e Redo non sono ancora disponibili con più livelli.",
-        "error",
-      );
-      return false;
-    }
     if (this.layerSwitchBusy) {
       return false;
     }
     const nextCursor = this.historyCursor + delta;
     if (nextCursor < 0 || nextCursor > this.historyActions.length) {
+      return false;
+    }
+    // The gate lives here as well as in getHistoryState: reporting canUndo=false
+    // only greys out a button, and the API is reachable directly.
+    //
+    // Replay is layer-aware now, so crossing an action on the ACTIVE layer is
+    // safe. Crossing one that belongs to another layer would have to switch the
+    // active layer from inside the history transaction, and roll that switch back
+    // if the rebuild fails — that is cross-layer undo, and until it exists the
+    // step is refused rather than silently applied to the wrong layer.
+    if (this.historyStepBlockedByLayer(delta)) {
+      this.callbacks.onStatus?.(
+        "Quel passo appartiene a un altro livello: selezionalo per annullarlo.",
+        "error",
+      );
       return false;
     }
 
@@ -8359,11 +8374,11 @@ export class BrushEngine {
       this.compactDiscardedHistory();
       this.historyCursor = nextCursor;
       try {
-        await this.rebuildLayerFromHistory();
+        await this.rebuildActiveLayerFromHistory();
       } catch (error) {
         this.historyCursor = previousCursor;
         try {
-          await this.rebuildLayerFromHistory();
+          await this.rebuildActiveLayerFromHistory();
         } catch (restoreError) {
           const originalMessage = error instanceof Error ? error.message : String(error);
           const restoreMessage = restoreError instanceof Error ? restoreError.message : String(restoreError);
@@ -8389,21 +8404,42 @@ export class BrushEngine {
     }
   }
 
-  private async rebuildLayerFromHistory(): Promise<void> {
-    if (this.historyBatches.some((batch) => batch.grainTextureIdentity !== null)) {
+  /**
+   * Rebuilds the ACTIVE layer by clearing it and re-applying its own visible
+   * strokes.
+   *
+   * Both the visible-id scan and the batch list are filtered by layer. Without
+   * that filter the replay re-applied every layer's visible strokes onto the
+   * active texture: with P on layer A and Q on layer B, undoing Q while B was
+   * active painted A's stroke onto B. Reproduced on GPU as layer B going from
+   * {P:0, Q:1024} to {P:1024, Q:0}.
+   *
+   * Note what this does NOT do: it never writes to a layer other than the active
+   * one, so no destination view has to be threaded through submitImmediate. That
+   * arrives with cross-layer undo, which is the only caller that needs it.
+   */
+  private async rebuildActiveLayerFromHistory(): Promise<void> {
+    const layerId = this.layerStack.active.id;
+    // Both filters below are load-bearing together and redundant apart: removing
+    // either one alone still keeps the other layer's strokes out, and only
+    // removing both reproduces the original corruption. Keep both.
+    const layerBatches = this.historyBatches.filter(
+      (batch) => batch.layerId === layerId,
+    );
+    if (layerBatches.some((batch) => batch.grainTextureIdentity !== null)) {
       await this.ensureGrainResources();
     }
-    if (this.historyBatches.some((batch) => batch.settings.shape === "shape")) {
+    if (layerBatches.some((batch) => batch.settings.shape === "shape")) {
       await this.ensureShapeResources();
     }
     // Force the first historical Blend action to reset its persistent carrier,
     // even when its numeric id matches the last live action rendered.
     this.blendRenderer?.beginStroke(0);
-    const visibleIds = this.visibleHistoryStrokeIds();
+    const visibleIds = this.visibleHistoryStrokeIds(layerId);
     let firstVisibleBatchIndex = -1;
     let lastVisibleBatchIndex = -1;
-    for (let index = 0; index < this.historyBatches.length; index += 1) {
-      const batch = this.historyBatches[index];
+    for (let index = 0; index < layerBatches.length; index += 1) {
+      const batch = layerBatches[index];
       const visible = batch.kind === "blend"
         ? visibleIds.has(batch.actionId)
         : batch.stamps.some((stamp) => visibleIds.has(stamp.historyActionId));
@@ -8420,7 +8456,7 @@ export class BrushEngine {
       if (lastVisibleBatchIndex < 0) {
         this.submitImmediate([], true, this.settings, true, null);
       } else {
-        const firstVisibleBatch = this.historyBatches[firstVisibleBatchIndex];
+        const firstVisibleBatch = layerBatches[firstVisibleBatchIndex];
         if (!firstVisibleBatch.clearLayer) {
           // Il clear originale era un pass separato (per esempio dopo
           // "Pulisci"): manteniamo quel confine prima del primo batch visibile.
@@ -8428,7 +8464,7 @@ export class BrushEngine {
         }
 
         for (let index = firstVisibleBatchIndex; index <= lastVisibleBatchIndex; index += 1) {
-          const batch = this.historyBatches[index];
+          const batch = layerBatches[index];
           if (batch.kind === "blend") {
             if (!visibleIds.has(batch.actionId)) {
               continue;
@@ -8463,7 +8499,7 @@ export class BrushEngine {
             }
             let hasLaterBatchForAction = false;
             for (let nextIndex = index + 1; nextIndex <= lastVisibleBatchIndex; nextIndex += 1) {
-              const nextBatch = this.historyBatches[nextIndex];
+              const nextBatch = layerBatches[nextIndex];
               if (
                 nextBatch.kind === "paint"
                 && nextBatch.stamps.some(
