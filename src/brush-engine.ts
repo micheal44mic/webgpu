@@ -79,6 +79,7 @@ import {
   EffectsWorkbench,
 } from "./effects-workbench";
 import type { EffectsWorkbenchBenchmarkReport } from "./effects-benchmark";
+import { LayerStack } from "./layer-stack";
 import {
   EFFECTS_SCRATCH_POOL_IDLE_SHRINK_DELAY_MS,
   EFFECTS_SCRATCH_POOL_STRATEGY,
@@ -1317,9 +1318,28 @@ export class BrushEngine {
   private get rasterBevelRenderer(): RasterBevelRenderer | null {
     return this.effectsWorkbench?.bevelRenderer ?? null;
   }
-  private rasterStrokeStyle: RasterStrokeStyle = copyRasterStrokeStyle(
-    DEFAULT_RASTER_STROKE_STYLE,
-  );
+  /**
+   * The stack owns the CPU state the map classified as per-layer. Today it holds
+   * exactly one record, so behaviour is unchanged; routing the styles through it
+   * now means the switch has somewhere to read the incoming layer's effects from
+   * instead of retrofitting 68 call sites later.
+   */
+  private readonly layerStack = new LayerStack(() => ({
+    strokeStyle: copyRasterStrokeStyle(DEFAULT_RASTER_STROKE_STYLE),
+    bevelStyle: copyRasterBevelStyle(DEFAULT_RASTER_BEVEL_STYLE),
+  }));
+
+  // Accessors rather than fields: every read site keeps working, and the styles
+  // follow the active layer by construction rather than by remembering to copy
+  // them on every switch.
+  private get rasterStrokeStyle(): RasterStrokeStyle {
+    return this.layerStack.active.strokeStyle;
+  }
+
+  private set rasterStrokeStyle(style: RasterStrokeStyle) {
+    this.layerStack.active.strokeStyle = style;
+  }
+
   private rasterStrokeCoverageValid = false;
   private rasterStrokeStyledInitialized = false;
   private rasterStrokeMipValidThroughLevel = 0;
@@ -1328,9 +1348,14 @@ export class BrushEngine {
   private rasterStrokePendingComposeRect: DirtyRect | null = null;
   private rasterStrokeBusy = false;
   private rasterStrokeLastEncode: RasterStrokeEncodeResult | null = null;
-  private rasterBevelStyle: RasterBevelStyle = copyRasterBevelStyle(
-    DEFAULT_RASTER_BEVEL_STYLE,
-  );
+  private get rasterBevelStyle(): RasterBevelStyle {
+    return this.layerStack.active.bevelStyle;
+  }
+
+  private set rasterBevelStyle(style: RasterBevelStyle) {
+    this.layerStack.active.bevelStyle = style;
+  }
+
   private rasterBevelHeightValid = false;
   private rasterBevelHeightSourceMode: RasterStrokeSourceMode | null = null;
   private rasterBevelPendingComposeRect: DirtyRect | null = null;

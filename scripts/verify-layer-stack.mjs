@@ -220,4 +220,28 @@ assert.equal(
   "la creazione della texture di livello deve esistere in un solo punto",
 );
 
+// The effect styles must live on the layer record, not on the engine, or a
+// switch would show the outgoing layer's stroke and bevel on the incoming one.
+// Accessors keep all 68 existing call sites working while making the styles
+// follow the active layer by construction rather than by remembering to copy.
+assert.match(engineSource, /private readonly layerStack = new LayerStack\(\(\) => \(\{/);
+assert.match(
+  engineSource,
+  /private get rasterStrokeStyle\(\): RasterStrokeStyle \{\s*return this\.layerStack\.active\.strokeStyle;/,
+);
+assert.match(
+  engineSource,
+  /private get rasterBevelStyle\(\): RasterBevelStyle \{\s*return this\.layerStack\.active\.bevelStyle;/,
+);
+assert.doesNotMatch(
+  engineSource,
+  /private rasterStrokeStyle: RasterStrokeStyle =/,
+  "lo stile Traccia non può tornare a essere un campo del motore",
+);
+assert.doesNotMatch(
+  engineSource,
+  /private rasterBevelStyle: RasterBevelStyle =/,
+  "lo stile Smusso non può tornare a essere un campo del motore",
+);
+
 console.log("Layer stack verification passed.");
