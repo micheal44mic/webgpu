@@ -189,12 +189,21 @@ const engineSource = readFileSync(
   new URL("../src/brush-engine.ts", import.meta.url),
   "utf8",
 );
-assert.match(engineSource, /async readLayerPixels\(rect\?: DirtyRect\): Promise<Uint8Array>/);
+assert.match(
+  engineSource,
+  /async readLayerPixels\(rect\?: DirtyRect, layerIndex\?: number\): Promise<Uint8Array>/,
+);
+// Reading a NAMED layer is what makes the test bilateral: "A kept its pixels
+// while B was rebuilt" needs both textures, and the active one cannot say it.
+assert.match(
+  engineSource,
+  /const target = layerIndex === undefined\s*\?\s*this\.layerTexture\s*:\s*this\.requireLayerGpu\(this\.layerStack\.at\(layerIndex\)\.id\)\.texture/,
+);
 const probeStart = engineSource.indexOf("async readLayerPixels(");
 const probeBody = engineSource.slice(probeStart, probeStart + 2_600);
 assert.match(probeBody, /import\.meta\.env\.DEV/, "la sonda deve restare solo-dev");
 assert.match(probeBody, /copyTextureToBuffer/);
-assert.match(probeBody, /texture: this\.layerTexture, mipLevel: 0/,
+assert.match(probeBody, /texture: target, mipLevel: 0/,
   "la sonda deve leggere il mip 0 autorevole, non un livello derivato");
 assert.match(probeBody, /Math\.ceil\(unpaddedBytesPerRow \/ 256\) \* 256/,
   "bytesPerRow deve restare allineato a 256");

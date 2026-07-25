@@ -79,7 +79,7 @@ import {
   EffectsWorkbench,
 } from "./effects-workbench";
 import type { EffectsWorkbenchBenchmarkReport } from "./effects-benchmark";
-import { LayerStack } from "./layer-stack";
+import { LAYER_STACK_MAXIMUM, LayerStack } from "./layer-stack";
 import {
   EFFECTS_SCRATCH_POOL_IDLE_SHRINK_DELAY_MS,
   EFFECTS_SCRATCH_POOL_STRATEGY,
@@ -269,6 +269,8 @@ export interface EngineStats {
   totalBaseStamps: number;
   avoidedLogicalDraws: number;
   layerMemoryMiB: number;
+  layers: readonly { id: number; name: string; hasContent: boolean }[];
+  activeLayerIndex: number;
   rasterStrokeStyle: RasterStrokeStyle;
   rasterStrokePersistentMemoryMiB: number;
   rasterStrokeScratchMemoryMiB: number;
@@ -628,6 +630,20 @@ interface LayerTextureResources {
 interface LayerBindGroups {
   displayBindGroup: GPUBindGroup;
   paintMipDownsampleBindGroups: GPUBindGroup[];
+}
+
+type LayerGpuResources = LayerTextureResources & LayerBindGroups;
+
+export interface LayerSwitchResult {
+  fromIndex: number;
+  toIndex: number;
+  layerId: number;
+  /** Wall clock across the whole switch, including the field rebuild. */
+  totalMs: number;
+  /** The dominant term: retarget plus the full rebuild of the effect fields. */
+  effectsMs: number;
+  rebuiltPyramidThroughLevel: number;
+  contentBoundsRestored: boolean;
 }
 
 interface PackedStampUpload {
@@ -1328,6 +1344,13 @@ export class BrushEngine {
     strokeStyle: copyRasterStrokeStyle(DEFAULT_RASTER_STROKE_STYLE),
     bevelStyle: copyRasterBevelStyle(DEFAULT_RASTER_BEVEL_STYLE),
   }));
+
+  /**
+   * GPU resources per layer, keyed by the record's stable id. Ids are never
+   * reused after a delete, so an entry can never be handed to a different layer
+   * than the one it was allocated for.
+   */
+  private readonly layerGpu = new Map<number, LayerGpuResources>();
 
   // Accessors rather than fields: every read site keeps working, and the styles
   // follow the active layer by construction rather than by remembering to copy
@@ -2741,9 +2764,15 @@ export class BrushEngine {
     const rasterStroke = this.rasterStrokeRenderer;
     const rasterBevel = this.rasterBevelRenderer;
     const effectsScratch = this.effectsWorkbench?.scratchPool.snapshot();
-    const layerBaseMiB = baseResourcesAllocated ? layerBaseMemoryMiB(this.layerFormat) : 0;
+    // Every layer allocates its own texture eagerly, so the monitor has to count
+    // all of them: with one layer the numbers are unchanged, and without the
+    // multiplier the panel would understate by 85,3 MiB per extra layer.
+    const allocatedLayerCount = this.layerGpu.size;
+    const layerBaseMiB = baseResourcesAllocated
+      ? layerBaseMemoryMiB(this.layerFormat) * allocatedLayerCount
+      : 0;
     const layerMipChainMiB = baseResourcesAllocated
-      ? paintDisplayPyramidAdditionalMemoryMiB(this.layerFormat)
+      ? paintDisplayPyramidAdditionalMemoryMiB(this.layerFormat) * allocatedLayerCount
       : 0;
     const grainTextureMiB = baseResourcesAllocated && this.grainResident
       ? GRAIN_TEXTURE_PIXEL_COUNT * 4 / MEBIBYTE_BYTES
@@ -2857,6 +2886,12 @@ export class BrushEngine {
       totalBaseStamps: this.totalBaseStamps,
       avoidedLogicalDraws: this.avoidedLogicalDraws,
       layerMemoryMiB: this.layerFormat === "rgba16float" ? 128 : 64,
+      layers: this.layerStack.layers.map((record) => ({
+        id: record.id,
+        name: record.name,
+        hasContent: record.hasContent,
+      })),
+      activeLayerIndex: this.layerStack.activeIndex,
       rasterStrokeStyle: copyRasterStrokeStyle(this.rasterStrokeStyle),
       rasterStrokePersistentMemoryMiB:
         (this.rasterStrokeRenderer?.persistentMemoryBytes ?? 0) / MEBIBYTE_BYTES,
@@ -3507,13 +3542,19 @@ export class BrushEngine {
    * twice. Asserting absolute values in two distinct textures is the only form
    * that cannot pass vacuously.
    */
-  async readLayerPixels(rect?: DirtyRect): Promise<Uint8Array> {
+  async readLayerPixels(rect?: DirtyRect, layerIndex?: number): Promise<Uint8Array> {
     if (!import.meta.env.DEV) {
       throw new Error("La sonda dei pixel di livello è disponibile solo in modalità dev.");
     }
     if (!this.initialized) {
       throw new Error("Il motore non è ancora inizializzato.");
     }
+    // Reading a NAMED layer rather than only the active one is what makes the
+    // test bilateral: "layer A kept its pixels while B was rebuilt" needs both
+    // textures, and the active one alone cannot express it.
+    const target = layerIndex === undefined
+      ? this.layerTexture
+      : this.requireLayerGpu(this.layerStack.at(layerIndex).id).texture;
     const requested = rect ?? { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE };
     const x = clamp(Math.floor(requested.x), 0, LAYER_SIZE);
     const y = clamp(Math.floor(requested.y), 0, LAYER_SIZE);
@@ -3536,7 +3577,7 @@ export class BrushEngine {
         label: "Sonda pixel livello",
       });
       encoder.copyTextureToBuffer(
-        { texture: this.layerTexture, mipLevel: 0, origin: { x, y, z: 0 } },
+        { texture: target, mipLevel: 0, origin: { x, y, z: 0 } },
         { buffer: readbackBuffer, bytesPerRow, rowsPerImage: height },
         { width, height, depthOrArrayLayers: 1 },
       );
@@ -5379,6 +5420,143 @@ export class BrushEngine {
     return { displayBindGroup, paintMipDownsampleBindGroups };
   }
 
+  private requireLayerGpu(layerId: number): LayerGpuResources {
+    const gpu = this.layerGpu.get(layerId);
+    if (!gpu) {
+      throw new Error(`Risorse GPU del livello ${layerId} non allocate.`);
+    }
+    return gpu;
+  }
+
+  /** Points the engine's active-layer fields at one layer's resources. */
+  private bindActiveLayerResources(): void {
+    const gpu = this.requireLayerGpu(this.layerStack.active.id);
+    this.layerTexture = gpu.texture;
+    this.layerView = gpu.view;
+    this.layerSamplingView = gpu.samplingView;
+    this.paintMipViews = gpu.mipViews;
+    this.paintMipDownsampleBindGroups = gpu.paintMipDownsampleBindGroups;
+    this.displayBindGroup = gpu.displayBindGroup;
+  }
+
+  /**
+   * Adds a layer above the active one and selects it.
+   *
+   * Deliberately not routed through recreateLayerResources: that function's tail
+   * destroys the outgoing texture, the blend renderer and the effects workbench,
+   * which is right for a format change and fatal here. The 21 render pipelines
+   * depend only on the format, so a new layer in the same format reuses them.
+   */
+  async addLayer(name?: string): Promise<LayerSwitchResult> {
+    if (!this.initialized) {
+      throw new Error("Il motore non è ancora inizializzato.");
+    }
+    if (this.layerStack.count >= LAYER_STACK_MAXIMUM) {
+      throw new Error(`Massimo ${LAYER_STACK_MAXIMUM} livelli raggiunto.`);
+    }
+    this.assertLayerSwitchAllowed();
+    await this.waitForIdle();
+    const fromIndex = this.layerStack.activeIndex;
+    this.persistActiveLayerState();
+    const index = this.layerStack.add(name);
+    const record = this.layerStack.at(index);
+    try {
+      const texture = this.allocateLayerTexture(this.layerFormat);
+      const bindGroups = this.createLayerBindGroups(
+        this.layerFormat,
+        texture.samplingView,
+        texture.mipViews,
+      );
+      this.layerGpu.set(record.id, { ...texture, ...bindGroups });
+    } catch (error) {
+      // Leave the stack exactly as it was rather than holding a record with no
+      // GPU resources, which every later switch would trip over.
+      this.layerStack.remove(index);
+      this.layerStack.setActiveIndex(fromIndex);
+      throw error;
+    }
+    return this.activateLayer(fromIndex);
+  }
+
+  /** Selects an existing layer, paying the switch cost. */
+  async setActiveLayer(index: number): Promise<LayerSwitchResult | null> {
+    if (!this.initialized) {
+      throw new Error("Il motore non è ancora inizializzato.");
+    }
+    this.layerStack.at(index);
+    if (index === this.layerStack.activeIndex) {
+      return null;
+    }
+    this.assertLayerSwitchAllowed();
+    await this.waitForIdle();
+    const fromIndex = this.layerStack.activeIndex;
+    this.persistActiveLayerState();
+    this.layerStack.setActiveIndex(index);
+    return this.activateLayer(fromIndex);
+  }
+
+  private assertLayerSwitchAllowed(): void {
+    if (
+      this.activeStroke
+      || this.lightGlazeSession
+      || this.historyBusy
+      || this.rasterStrokeBusy
+      || this.rasterBevelBusy
+    ) {
+      throw new Error("Il livello può cambiare solo a motore fermo.");
+    }
+  }
+
+  /**
+   * Writes the engine's live per-layer state back onto the outgoing record.
+   * Without this the incoming layer would inherit the outgoing layer's content
+   * bounds, and the bbox bevel field would be sized for the wrong content.
+   */
+  private persistActiveLayerState(): void {
+    const record = this.layerStack.active;
+    record.contentBounds = this.layerContentBounds;
+    record.hasContent = this.layerHasContent;
+    record.mipValidThroughLevel = this.paintDisplayMipValidThroughLevel;
+  }
+
+  private async activateLayer(fromIndex: number): Promise<LayerSwitchResult> {
+    const startedAt = performance.now();
+    const record = this.layerStack.active;
+    this.bindActiveLayerResources();
+    this.layerContentBounds = record.contentBounds;
+    this.layerHasContent = record.hasContent;
+    // The incoming layer's deep pyramid levels may never have been built, so
+    // incremental maintenance would refine stale garbage. Force a full rebuild.
+    this.paintDisplayMipValidThroughLevel = 0;
+    this.blendRenderer?.retarget(this.layerView, this.layerSamplingView);
+    this.destroyLightGlazeResources();
+    this.destroyThicknessTailOverlayResources();
+
+    const effectsStartedAt = performance.now();
+    const effects = await this.retargetEffectsWorkingSet(
+      this.layerView,
+      this.layerFormat,
+      record.contentBounds,
+    );
+    const effectsMs = performance.now() - effectsStartedAt;
+
+    this.presentationCacheNeedsFullRebuild = true;
+    this.displayDirty = true;
+    this.requestRender();
+    this.publishStats();
+    return {
+      fromIndex,
+      toIndex: this.layerStack.activeIndex,
+      layerId: record.id,
+      totalMs: performance.now() - startedAt,
+      effectsMs,
+      rebuiltPyramidThroughLevel: effects.generation >= 0
+        ? this.paintDisplayMipValidThroughLevel
+        : 0,
+      contentBoundsRestored: record.contentBounds !== null,
+    };
+  }
+
   private async recreateLayerResources(format: LayerFormat): Promise<void> {
     const oldTexture = this.layerTexture;
     const oldBlendRenderer = this.blendRenderer;
@@ -5960,6 +6138,35 @@ export class BrushEngine {
 
     this.destroyLightGlazeResources();
     this.destroyThicknessTailOverlayResources();
+    // A format change invalidates every layer's texture, not just the active
+    // one, and setLayerFormat already tells the user the content is cleared.
+    for (const gpu of this.layerGpu.values()) {
+      gpu.texture.destroy();
+    }
+    this.layerGpu.clear();
+    this.layerGpu.set(this.layerStack.active.id, {
+      texture,
+      view,
+      samplingView,
+      mipViews,
+      displayBindGroup,
+      paintMipDownsampleBindGroups,
+    });
+    for (const other of this.layerStack.layers) {
+      if (other.id === this.layerStack.active.id) {
+        continue;
+      }
+      const otherTexture = this.allocateLayerTexture(format);
+      const otherBindGroups = this.createLayerBindGroups(
+        format,
+        otherTexture.samplingView,
+        otherTexture.mipViews,
+      );
+      this.layerGpu.set(other.id, { ...otherTexture, ...otherBindGroups });
+      other.contentBounds = null;
+      other.hasContent = false;
+      other.mipValidThroughLevel = 0;
+    }
     this.layerTexture = texture;
     this.layerView = view;
     this.layerSamplingView = samplingView;
