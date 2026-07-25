@@ -13,8 +13,12 @@ export interface JournalAction {
 }
 
 export interface JournalBatch {
-  actionId: number;
   layerId: number;
+}
+
+export interface LayerReplaySelection<T extends JournalBatch> {
+  batches: T[];
+  visibleStrokeIds: Set<number>;
 }
 
 /**
@@ -86,20 +90,32 @@ export function selectBatchesForLayer<T extends JournalBatch>(
 }
 
 /**
- * A batch is the unit of replay and targets exactly one layer texture, so it may
- * never mix layers. Free today because there is one layer; load-bearing the
- * moment replay starts choosing a destination.
+ * Complete input selection for rebuilding one layer. Keep the action filter and
+ * the batch filter together: either one independently prevents a foreign stroke
+ * from being replayed, but both are required as defence against inconsistent
+ * journal metadata.
  */
-export function assertSingleLayerBatch(
-  batch: { layerId: number; stamps?: readonly { layerId?: number }[] },
-): void {
-  for (const stamp of batch.stamps ?? []) {
-    if (stamp.layerId !== undefined && stamp.layerId !== batch.layerId) {
-      throw new Error(
-        `Batch cronologia con stamp su livelli diversi: ${batch.layerId} e ${stamp.layerId}.`,
-      );
-    }
-  }
+export function selectLayerReplay<T extends JournalBatch>(
+  actions: readonly JournalAction[],
+  cursor: number,
+  batches: readonly T[],
+  layerId: number,
+): LayerReplaySelection<T> {
+  return {
+    batches: selectBatchesForLayer(batches, layerId),
+    visibleStrokeIds: visibleStrokeIds(actions, cursor, layerId),
+  };
+}
+
+/** True when undo/redo would cross an action owned by another layer. */
+export function historyStepTargetsOtherLayer(
+  actions: readonly JournalAction[],
+  cursor: number,
+  delta: -1 | 1,
+  activeLayerId: number,
+): boolean {
+  const action = delta < 0 ? actions[cursor - 1] : actions[cursor];
+  return Boolean(action) && action.layerId !== activeLayerId;
 }
 
 /** Layers that still have visible content, for "is the document empty" checks. */

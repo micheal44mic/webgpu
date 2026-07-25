@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import {
   HISTORY_JOURNAL_STRATEGY,
-  assertSingleLayerBatch,
   firstVisibleActionIndex,
   hasVisibleContent,
+  historyStepTargetsOtherLayer,
   layersWithVisibleContent,
+  selectLayerReplay,
   selectBatchesForLayer,
   visibleStrokeIds,
 } from "../src/history-journal.ts";
@@ -86,19 +87,60 @@ const clear = (id, layerId) => ({ id, kind: "clear", layerId });
   assert.equal(selectBatchesForLayer(batches, 1)[0], batches[0]);
 }
 
-// A batch is the unit of replay and targets one texture, so it may not mix
-// layers. The guard is free with one layer and load-bearing the moment replay
-// starts choosing a destination.
+// The engine uses this combined selector directly. Test it as replay behaviour,
+// not as two regexes: the untouched texture is compared byte-for-byte while the
+// active target is rebuilt from interleaved global history.
 {
-  assert.doesNotThrow(() => assertSingleLayerBatch({ layerId: 1 }));
-  assert.doesNotThrow(() => assertSingleLayerBatch({
-    layerId: 1,
-    stamps: [{ layerId: 1 }, {}, { layerId: 1 }],
-  }));
-  assert.throws(
-    () => assertSingleLayerBatch({ layerId: 1, stamps: [{ layerId: 1 }, { layerId: 2 }] }),
-    /livelli diversi: 1 e 2/,
+  const actions = [stroke(1, 1), stroke(2, 2)];
+  const batches = [
+    { actionId: 1, layerId: 1, pixel: 1, value: 41 },
+    { actionId: 2, layerId: 2, pixel: 6, value: 92 },
+  ];
+  const layerOne = Uint8Array.from([0, 41, 0, 0, 0, 0, 0, 0]);
+  const layerOneBefore = layerOne.slice();
+  const layerTwo = new Uint8Array(8);
+
+  const replay = (target, cursor, layerId, sourceBatches = batches) => {
+    target.fill(0);
+    const selection = selectLayerReplay(actions, cursor, sourceBatches, layerId);
+    for (const batch of selection.batches) {
+      if (selection.visibleStrokeIds.has(batch.actionId)) {
+        target[batch.pixel] = batch.value;
+      }
+    }
+  };
+
+  replay(layerTwo, 2, 2);
+  assert.deepEqual([...layerTwo], [0, 0, 0, 0, 0, 0, 92, 0]);
+  replay(layerTwo, 1, 2);
+  assert.deepEqual([...layerTwo], [0, 0, 0, 0, 0, 0, 0, 0]);
+  assert.deepEqual(layerOne, layerOneBefore, "il livello non ricostruito deve essere byte-identico");
+
+  // Each half is independently load-bearing under inconsistent metadata. If
+  // the batch filter is removed, id 2 (tagged layer 1) leaks into layer 2. If
+  // the visible-id filter becomes document-wide, id 1 (tagged layer 2) leaks.
+  const adversarial = [
+    { actionId: 1, layerId: 2, pixel: 1, value: 41 },
+    { actionId: 2, layerId: 1, pixel: 6, value: 92 },
+  ];
+  replay(layerTwo, 2, 2, adversarial);
+  assert.deepEqual(
+    [...layerTwo],
+    [0, 0, 0, 0, 0, 0, 0, 0],
+    "entrambi i filtri devono respingere metadati azione/batch incoerenti",
   );
+}
+
+// The per-step gate is directional and cursor-aware. Same-layer undo/redo is
+// available even with several layers; only the adjacent foreign action blocks.
+{
+  const actions = [stroke(1, 1), stroke(2, 2), stroke(3, 1)];
+  assert.equal(historyStepTargetsOtherLayer(actions, 3, -1, 1), false);
+  assert.equal(historyStepTargetsOtherLayer(actions, 2, -1, 1), true);
+  assert.equal(historyStepTargetsOtherLayer(actions, 1, 1, 1), true);
+  assert.equal(historyStepTargetsOtherLayer(actions, 2, 1, 1), false);
+  assert.equal(historyStepTargetsOtherLayer(actions, 0, -1, 1), false);
+  assert.equal(historyStepTargetsOtherLayer(actions, actions.length, 1, 1), false);
 }
 
 // layersWithVisibleContent answers "which layers still show something", which

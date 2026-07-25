@@ -478,6 +478,14 @@ select {
   color: #ff9ca7;
 }
 
+.result.ok {
+  color: #9edeb4;
+}
+
+.result.error {
+  color: #ff9ca7;
+}
+
 .golden-report {
   max-height: 12rem;
   overflow: auto;

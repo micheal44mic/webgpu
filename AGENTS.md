@@ -506,16 +506,43 @@ composito e un submit scartato lascia l'immagine precedente): P sul livello 0,
 `layer0 {P:1024, Q:0}`, `layer1 {P:0, Q:1024}`. Mutazione
 `bindActiveLayerResources` no-op → `layer0 {P:1024, Q:1024}`, `layer1` vuoto.
 
+La regressione della cronologia ha inoltre un harness GPU persistente e
+distruttivo solo sulla pagina dev nuova: avviare Vite e aprire
+`/?layerHistoryTest=1`. Dipinge P sul livello A e Q sul B, annulla/ripristina Q,
+legge entrambe le texture per nome e richiede A byte-identico in ogni passaggio,
+P assente da B, Q rimosso dall'Undo e il Redo di B byte-identico al pre-Undo. Il
+report JSON resta nel pannello Benchmark e in `window.__layerHistoryGpuTestReport`.
+Non sostituisce il golden Traccia/Smusso: verifica destinazione e isolamento dei
+livelli, non l'identità percettiva dello style stack.
+
+Run locale del 25 luglio 2026 su NVIDIA Ampere: `passed: true`; P e Q hanno
+entrambi `6488` pixel con alpha, Q passa a `0` dopo Undo e torna a `6488` dopo
+Redo. Differenze byte del livello A dopo pittura su B, Undo e Redo: sempre `0`;
+differenze di B tra pre-Undo e post-Redo: `0`. Il secondo Undo, appartenente ad
+A mentre B è attivo, restituisce `false` e lascia il cursore a `1`. Nessun errore
+o warning nella console del browser durante la prova.
+
+Mutation test dello stesso harness: rimossi temporaneamente **entrambi** i
+filtri di `selectLayerReplay`, dopo Undo P compare su B con `6488` pixel alpha e
+il Redo differisce dal pre-Undo di `25880` byte; `passed` diventa correttamente
+`false`. Ripristinati i filtri, la ripetizione torna `passed: true` e tutti i
+delta byte tornano a `0`. Le due mutazioni singole nel test puro falliscono
+separatamente (`92` e `41` nel buffer avversario), quindi anche ciascun filtro
+isolato ha una prova che lo rende portante.
+
 #### Gate temporanei attivi con più di un livello
 
-Introdotti dopo una revisione che ha trovato un bug di **perdita di lavoro**
-riprodotto su GPU: il replay ricostruisce un livello rigiocando i tratti
-*visibili*, e quella scansione era document-wide, quindi annullare sul livello B
-ridisegnava il tratto del livello A sopra B (`{P:0,Q:1024}` → `{P:1024,Q:0}`).
+Il bug di **perdita di lavoro** trovato in revisione è corretto da `efabc58`: il
+replay del livello attivo seleziona sia i batch sia gli id visibili per quel
+livello. Prima, annullare Q su B ridisegnava P di A sopra B
+(`{P:0,Q:1024}` → `{P:1024,Q:0}`). I due filtri sono centralizzati in
+`selectLayerReplay`, usato dal motore e testato con metadati avversari: ciascun
+filtro ha una mutazione che fallisce da solo, quindi la difesa ridondante non può
+essere cancellata come apparentemente inutile.
 
 | Operazione | Stato con `layerCount > 1` | Si sblocca con |
 |---|---|---|
-| Undo / Redo | **rifiutati** (motore, non solo bottone) | replay con target esplicito |
+| Undo / Redo | consentiti se il passo adiacente appartiene al livello attivo; un passo di un altro livello è rifiutato nel motore | switch transazionale cross-layer con rollback |
 | `resetDocument()` | rifiutato | reset davvero document-wide |
 | `runBenchmark()` | rifiutato | idem, più parità di baseline |
 | `setLayerFormat()` | **consentito** | già ricrea tutti i livelli |
@@ -554,14 +581,17 @@ Altri invarianti da non perdere:
   moltiplicato per i livelli allocati; anche il tipo persistito `BenchmarkRun`
   dichiara entrambi i campi, così la firma non può sparire silenziosamente.
 
-Da fare: replay con target esplicito (che rimuove il gate su Undo/Redo), undo
-globale che cambia livello attivo (un Ctrl+Z può dover disfare un retarget già
-eseguito, e esiste una finestra in cui il banco punta a un livello che il cursore
-non dichiara più attivo — incoerenza che nessun test sui soli pixel vede), bake
-del risultato stilizzato, compositing merged-below/above, riduzione del costo di
-switch. Nodo noto non coperto da alcun golden: il bake usa il contorno analitico e
-il display del livello attivo usa `fwidth`, quindi il bordo Smusso può spostarsi
-nell'istante in cui il livello perde il fuoco.
+Da fare: undo globale che cambia livello attivo (un Ctrl+Z può dover disfare un
+retarget già eseguito, e esiste una finestra in cui il banco punta a un livello
+che il cursore non dichiara più attivo — incoerenza che nessun test sui soli
+pixel vede), bake del risultato stilizzato, compositing merged-below/above,
+riduzione del costo di switch. Il replay attuale scrive deliberatamente solo sul
+livello attivo; l'undo cross-layer dovrà quindi eseguire lo switch dentro la
+transazione oppure introdurre una destinazione esplicita, senza presupporre oggi
+quale delle due architetture sia necessaria. Nodo noto non coperto da alcun
+golden: il bake usa il contorno analitico e il display del livello attivo usa
+`fwidth`, quindi il bordo Smusso può spostarsi nell'istante in cui il livello
+perde il fuoco.
 
 Blend (tool separato, vedi sezione dedicata più sotto).
 

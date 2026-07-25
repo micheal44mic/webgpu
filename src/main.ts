@@ -68,6 +68,10 @@ const effectsWorkbenchBenchmarkButton = element<HTMLButtonElement>("runEffectsWo
 const effectsWorkbenchBenchmarkResult = element<HTMLParagraphElement>("effectsWorkbenchBenchmarkResult");
 const effectsWorkbenchBenchmarkDetails = element<HTMLDetailsElement>("effectsWorkbenchBenchmarkDetails");
 const effectsWorkbenchBenchmarkReport = element<HTMLElement>("effectsWorkbenchBenchmarkReport");
+const layerHistoryTestSection = element<HTMLElement>("layerHistoryTestSection");
+const layerHistoryTestResult = element<HTMLParagraphElement>("layerHistoryTestResult");
+const layerHistoryTestDetails = element<HTMLDetailsElement>("layerHistoryTestDetails");
+const layerHistoryTestReport = element<HTMLElement>("layerHistoryTestReport");
 const recordHumanStrokeButton = element<HTMLButtonElement>("recordHumanStroke");
 const playHumanStrokeButton = element<HTMLButtonElement>("playHumanStroke");
 const playBlendHumanStrokeButton = element<HTMLButtonElement>("playBlendHumanStroke");
@@ -320,8 +324,10 @@ let historyState: HistoryState = {
   logicalStampBytes: 0,
 };
 
-const bevelBoundingFieldEnabled =
-  new URLSearchParams(window.location.search).get("bevelField") === "bbox";
+const pageSearchParams = new URLSearchParams(window.location.search);
+const bevelBoundingFieldEnabled = pageSearchParams.get("bevelField") === "bbox";
+const layerHistoryTestRequested = import.meta.env.DEV
+  && pageSearchParams.get("layerHistoryTest") === "1";
 const engine = new BrushEngine(canvas, {
   onStatus(message, kind) {
     statusElement.textContent = message;
@@ -350,6 +356,7 @@ let humanStrokeSaving = false;
 let benchmarkRunning = false;
 let rasterStrokeGoldenRunning = false;
 let effectsWorkbenchBenchmarkRunning = false;
+let layerHistoryTestRunning = false;
 let layerFormatChanging = false;
 let layerSwitching = false;
 let rasterStrokeChanging = false;
@@ -1322,6 +1329,7 @@ function updateHumanStrokeControls(): void {
     || benchmarkRunning
     || rasterStrokeGoldenRunning
     || effectsWorkbenchBenchmarkRunning
+    || layerHistoryTestRunning
     || layerFormatChanging
     || rasterStrokeChanging
     || rasterBevelChanging;
@@ -1373,6 +1381,7 @@ function operationLocked(): boolean {
     || benchmarkRunning
     || rasterStrokeGoldenRunning
     || effectsWorkbenchBenchmarkRunning
+    || layerHistoryTestRunning
     || layerFormatChanging
     || rasterStrokeChanging
     || rasterBevelChanging
@@ -1400,7 +1409,8 @@ function updateHistoryControls(): void {
   zoomOutButton.disabled = locked;
   toggleControlsButton.disabled =
     benchmarkRunning || rasterStrokeGoldenRunning
-    || effectsWorkbenchBenchmarkRunning || humanStrokeReplaying;
+    || effectsWorkbenchBenchmarkRunning || layerHistoryTestRunning
+    || humanStrokeReplaying;
   for (const id of brushControlIds) {
     element<HTMLInputElement | HTMLSelectElement>(id).disabled = locked;
   }
@@ -1783,6 +1793,45 @@ if (import.meta.env.DEV) {
       updateHumanStrokeControls();
     }
   });
+}
+
+async function runRequestedLayerHistoryTest(): Promise<void> {
+  layerHistoryTestSection.hidden = false;
+  layerHistoryTestDetails.hidden = true;
+  layerHistoryTestResult.className = "result";
+  layerHistoryTestResult.textContent = "Test GPU bilaterale della cronologia livelli…";
+  try {
+    const { runLayerHistoryGpuTest } = await import("./layer-history-gpu-test");
+    const report = await runLayerHistoryGpuTest(engine);
+    layerHistoryTestReport.textContent = JSON.stringify(report, null, 2);
+    layerHistoryTestDetails.hidden = false;
+    layerHistoryTestDetails.open = true;
+    (
+      window as Window & { __layerHistoryGpuTestReport?: typeof report }
+    ).__layerHistoryGpuTestReport = report;
+    layerHistoryTestResult.className = report.passed ? "result ok" : "result error";
+    layerHistoryTestResult.textContent = report.passed
+      ? "Cronologia livelli GPU OK · undo/redo bilaterale byte-identico."
+      : "Cronologia livelli GPU ERRORE · consulta il report JSON.";
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const failure = { version: 1, passed: false, error: message };
+    layerHistoryTestReport.textContent = JSON.stringify(failure, null, 2);
+    layerHistoryTestDetails.hidden = false;
+    layerHistoryTestDetails.open = true;
+    (
+      window as Window & { __layerHistoryGpuTestReport?: typeof failure }
+    ).__layerHistoryGpuTestReport = failure;
+    layerHistoryTestResult.className = "result error";
+    layerHistoryTestResult.textContent = `Cronologia livelli GPU ERRORE · ${message}`;
+  } finally {
+    layerHistoryTestRunning = false;
+    historyState = engine.getHistoryState();
+    syncActiveLayerControls();
+    updateHistoryControls();
+    updateHumanStrokeControls();
+    updateStats(engine.getStats());
+  }
 }
 
 recordHumanStrokeButton.addEventListener("click", () => {
@@ -2516,11 +2565,15 @@ updateHistoryControls();
 void loadCanonicalHumanStroke();
 
 void engine.initialize()
-  .then(() => {
+  .then(async () => {
     engineInitialized = true;
     historyState = engine.getHistoryState();
+    layerHistoryTestRunning = layerHistoryTestRequested;
     updateHistoryControls();
     updateHumanStrokeControls();
+    if (layerHistoryTestRequested) {
+      await runRequestedLayerHistoryTest();
+    }
   })
   .catch((error) => {
     const secureContextHint = !window.isSecureContext

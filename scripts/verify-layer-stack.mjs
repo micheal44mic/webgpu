@@ -368,21 +368,16 @@ assert.match(
 // only invalidates the pyramid, and the next frame rebuilds it.
 assert.doesNotMatch(engineSource, /rebuiltPyramidThroughLevel/);
 
-// Replay is layer-aware: both the visible-id scan and the batch list filter on
-// the active layer. Without that filter it re-applied every layer's strokes onto
-// the active texture — verified on GPU as {P:0,Q:1024} becoming {P:1024,Q:0}.
+// Replay is layer-aware through the same pure selector exercised behaviorally by
+// history:verify. This assertion is only the integration seam: it prevents the
+// engine from drifting back to a second, untested implementation.
 const rebuildStart = engineSource.indexOf("private async rebuildActiveLayerFromHistory(");
 assert.notEqual(rebuildStart, -1, "il replay deve dichiarare di ricostruire il livello ATTIVO");
-const rebuildBody = engineSource.slice(rebuildStart, rebuildStart + 1_200);
+const rebuildBody = engineSource.slice(rebuildStart, rebuildStart + 1_500);
 assert.match(
   rebuildBody,
-  /const layerBatches = this\.historyBatches\.filter\(\s*\(batch\) => batch\.layerId === layerId,\s*\)/,
-  "i batch vanno filtrati per livello",
-);
-assert.match(
-  rebuildBody,
-  /const visibleIds = this\.visibleHistoryStrokeIds\(layerId\)/,
-  "la scansione dei tratti visibili deve ricevere il livello",
+  /\} = selectLayerReplay\(\s*this\.historyActions,\s*this\.historyCursor,\s*this\.historyBatches,\s*layerId,\s*\)/,
+  "il replay reale deve usare il selettore per-livello testato",
 );
 // Nothing in the replay may index the unfiltered array, or a single stray index
 // would reintroduce another layer's batch.
@@ -399,6 +394,11 @@ assert.match(
   engineSource,
   /private historyStepBlockedByLayer\(delta: -1 \| 1\): boolean \{/,
 );
+assert.match(
+  engineSource.slice(engineSource.indexOf("private historyStepBlockedByLayer("), rebuildStart),
+  /return historyStepTargetsOtherLayer\(/,
+  "anche il gate per-passo deve usare la funzione pura testata",
+);
 assert.match(engineSource, /&& !this\.historyStepBlockedByLayer\(-1\)/);
 assert.match(engineSource, /&& !this\.historyStepBlockedByLayer\(1\)/);
 const cursorStart = engineSource.indexOf("private async moveHistoryCursor(");
@@ -407,6 +407,28 @@ assert.match(
   /if \(this\.historyStepBlockedByLayer\(delta\)\) \{/,
   "il gate deve valere anche chiamando l'API, non solo il bottone",
 );
+assert.match(
+  engineSource.slice(cursorStart, cursorStart + 1_800),
+  /delta < 0[\s\S]*selezionalo per annullarlo[\s\S]*selezionalo per ripristinarlo/,
+  "il messaggio del gate deve distinguere Undo da Redo",
+);
+
+// The promised bilateral GPU regression is a persistent, fresh-page dev route,
+// not a one-off console transcript. It must read both named textures and compare
+// the untouched one byte-for-byte across undo and redo.
+const layerHistoryGpuTestSource = readFileSync(
+  new URL("../src/layer-history-gpu-test.ts", import.meta.url),
+  "utf8",
+);
+assert.match(mainSource, /pageSearchParams\.get\("layerHistoryTest"\) === "1"/);
+assert.match(mainSource, /await import\("\.\/layer-history-gpu-test"\)/);
+assert.match(mainSource, /await runLayerHistoryGpuTest\(engine\)/);
+assert.match(layerHistoryGpuTestSource, /readLayerPixels\(auditRect, 0\)/);
+assert.match(layerHistoryGpuTestSource, /readLayerPixels\(auditRect, 1\)/);
+assert.match(layerHistoryGpuTestSource, /const undoReturned = await engine\.undo\(\)/);
+assert.match(layerHistoryGpuTestSource, /const redoReturned = await engine\.redo\(\)/);
+assert.match(layerHistoryGpuTestSource, /layerAAfterUndo: countDifferingBytes\(layerABaseline, layerAAfterUndo\)/);
+assert.match(layerHistoryGpuTestSource, /layerBRedoVersusBeforeUndo: countDifferingBytes\(layerBBeforeUndo, layerBAfterRedo\)/);
 
 // The switch lock has to be held across the awaits, or a pointerdown landing
 // during the 150-215 ms rebuild starts a stroke on a half-swapped layer.
