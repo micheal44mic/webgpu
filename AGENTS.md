@@ -506,11 +506,42 @@ composito e un submit scartato lascia l'immagine precedente): P sul livello 0,
 `layer0 {P:1024, Q:0}`, `layer1 {P:0, Q:1024}`. Mutazione
 `bindActiveLayerResources` no-op → `layer0 {P:1024, Q:1024}`, `layer1` vuoto.
 
-Da fare: `layerId` nella cronologia e undo globale (un Ctrl+Z può dover cambiare
-livello attivo, con rollback di un retarget già eseguito), bake del risultato
-stilizzato, compositing merged-below/above, riduzione del costo di switch. Nodo
-noto non coperto da alcun golden: il bake usa il contorno analitico e il display
-del livello attivo usa `fwidth`, quindi il bordo Smusso può spostarsi
+#### Gate temporanei attivi con più di un livello
+
+Introdotti dopo una revisione che ha trovato un bug di **perdita di lavoro**
+riprodotto su GPU: il replay ricostruisce un livello rigiocando i tratti
+*visibili*, e quella scansione era document-wide, quindi annullare sul livello B
+ridisegnava il tratto del livello A sopra B (`{P:0,Q:1024}` → `{P:1024,Q:0}`).
+
+| Operazione | Stato con `layerCount > 1` | Si sblocca con |
+|---|---|---|
+| Undo / Redo | **rifiutati** (motore, non solo bottone) | replay con target esplicito |
+| `resetDocument()` | rifiutato | reset davvero document-wide |
+| `runBenchmark()` | rifiutato | idem, più parità di baseline |
+| `setLayerFormat()` | **consentito** | già ricrea tutti i livelli |
+
+Altri invarianti da non perdere:
+
+- `layerSwitchBusy` è tenuto per **tutta** la durata dello switch, `await`
+  inclusi, e rifiuta tratti, `clear`, undo e altri switch. Le guardie in testa ai
+  metodi dimostrano solo che il motore era fermo *quando sono girate*; il rebuild
+  dura 150–390 ms. Lato UI il flag entra in `operationLocked()`.
+- `activateLayer()` chiama `ensureEffectRenderersForActiveLayer()`: il banco è una
+  sola istanza retargettabile, quindi un livello con stile memorizzato attivo può
+  arrivare dopo che un altro livello ha rilasciato il renderer. Include il resize
+  dello scratch al tier della width entrante.
+- Il cambio formato **alloca prima di distruggere**: altrimenti un OOM a metà
+  lascia il documento senza né le texture vecchie né le nuove.
+- Telemetria `44` firma `layerCount` e `activeLayerId`, e `layerMemoryMiB` è
+  moltiplicato per i livelli allocati.
+
+Da fare: replay con target esplicito (che rimuove il gate su Undo/Redo), undo
+globale che cambia livello attivo (un Ctrl+Z può dover disfare un retarget già
+eseguito, e esiste una finestra in cui il banco punta a un livello che il cursore
+non dichiara più attivo — incoerenza che nessun test sui soli pixel vede), bake
+del risultato stilizzato, compositing merged-below/above, riduzione del costo di
+switch. Nodo noto non coperto da alcun golden: il bake usa il contorno analitico e
+il display del livello attivo usa `fwidth`, quindi il bordo Smusso può spostarsi
 nell'istante in cui il livello perde il fuoco.
 
 Blend (tool separato, vedi sezione dedicata più sotto).
