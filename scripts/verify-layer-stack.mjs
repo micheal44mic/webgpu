@@ -533,7 +533,15 @@ const layerHistoryGpuTestSource = readFileSync(
 );
 assert.match(mainSource, /pageSearchParams\.get\("layerHistoryTest"\) === "1"/);
 assert.match(mainSource, /await import\("\.\/layer-history-gpu-test"\)/);
-assert.match(mainSource, /await runLayerHistoryGpuTest\(engine\)/);
+// A harness that hangs reads as "still running" rather than "broken", which is
+// worse than a failure: the run must be capped and say so.
+assert.match(mainSource, /runLayerHistoryGpuTest\(engine\)/);
+assert.match(
+  mainSource,
+  /const report = await Promise\.race\(\[\s*runLayerHistoryGpuTest\(engine\),/,
+  "l'esecuzione dell'harness deve avere un tetto di tempo",
+);
+assert.match(mainSource, /Test cronologia livelli scaduto dopo 60 s/);
 assert.match(mainSource, /const failure = \{ version: 3, passed: false/);
 assert.match(layerHistoryGpuTestSource, /LAYER_HISTORY_GPU_TEST_VERSION = 3 as const/);
 assert.match(layerHistoryGpuTestSource, /readLayerPixels\(auditRect, 0\)/);

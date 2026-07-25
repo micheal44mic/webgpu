@@ -1813,7 +1813,22 @@ async function runRequestedLayerHistoryTest(): Promise<void> {
   layerHistoryTestResult.textContent = "Test GPU bilaterale della cronologia livelli…";
   try {
     const { runLayerHistoryGpuTest } = await import("./layer-history-gpu-test");
-    const report = await runLayerHistoryGpuTest(engine);
+    // The harness awaits waitForIdle(), which needs the frame loop to be pumping.
+    // Started from the init chain in a window whose frames are not being rendered
+    // — a hidden or backgrounded tab — it waited forever and reported nothing,
+    // which reads as "still running" instead of "broken". A test that hangs is
+    // worse than one that fails, so cap it and say so.
+    const report = await Promise.race([
+      runLayerHistoryGpuTest(engine),
+      new Promise<never>((_, reject) => {
+        window.setTimeout(
+          () => reject(new Error(
+            "Test cronologia livelli scaduto dopo 60 s: la finestra sta rendendo frame?",
+          )),
+          60_000,
+        );
+      }),
+    ]);
     layerHistoryTestReport.textContent = JSON.stringify(report, null, 2);
     layerHistoryTestDetails.hidden = false;
     layerHistoryTestDetails.open = true;
