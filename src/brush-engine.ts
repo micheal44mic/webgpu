@@ -81,6 +81,11 @@ import {
 import type { EffectsWorkbenchBenchmarkReport } from "./effects-benchmark";
 import { LAYER_STACK_MAXIMUM, LayerStack } from "./layer-stack";
 import {
+  hasVisibleContent,
+  layersWithVisibleContent,
+  visibleStrokeIds,
+} from "./history-journal";
+import {
   EFFECTS_SCRATCH_POOL_IDLE_SHRINK_DELAY_MS,
   EFFECTS_SCRATCH_POOL_STRATEGY,
   effectsScratchCanShrink,
@@ -724,10 +729,17 @@ interface ShapeOccupancySelection {
 interface HistoryAction {
   id: number;
   kind: "stroke" | "clear";
+  /**
+   * Which layer the action belongs to. The stack stays global so undo walks the
+   * user's actions in the order they happened, but visibility is resolved per
+   * layer: a clear on one layer must not hide another layer's strokes.
+   */
+  layerId: number;
 }
 
 interface PaintHistoryRenderBatch {
   kind: "paint";
+  layerId: number;
   settings: BrushSettings;
   stamps: Stamp[];
   clearLayer: boolean;
@@ -740,6 +752,7 @@ interface PaintHistoryRenderBatch {
 interface BlendHistoryRenderBatch {
   kind: "blend";
   actionId: number;
+  layerId: number;
   settings: BrushSettings;
   batches: DryBlendRenderBatch[];
   clearLayer: boolean;
@@ -2589,15 +2602,30 @@ export class BrushEngine {
 
       // La mutazione della cronologia viene committata soltanto dopo che il
       // clear GPU è terminato: un errore di submission non può perdere il Redo.
-      if (this.hasVisibleHistoryContent()) {
+      // Clearing affects the ACTIVE layer, so the recorded action and the
+      // decision to record one are both per-layer. The shortcut of resetting the
+      // whole journal is only legitimate when nothing is left anywhere:
+      // otherwise clearing an empty layer would throw away another layer's undo.
+      if (this.hasVisibleHistoryContent(this.layerStack.active.id)) {
         this.truncateRedoHistory();
-        this.historyActions.push({ id: this.nextHistoryActionId++, kind: "clear" });
+        this.historyActions.push({
+          id: this.nextHistoryActionId++,
+          kind: "clear",
+          layerId: this.layerStack.active.id,
+        });
         this.historyCursor = this.historyActions.length;
         this.compactDiscardedHistory();
         if (this.activeStrokeProfile) {
           this.activeStrokeProfile.historyCommittedActions += 1;
         }
-      } else {
+      } else if (
+        // Defensive, and today unreachable from the UI: clear() returns early
+        // when the active layer has no content, so this branch needs a layer
+        // that has pixels but no visible history. Replay in the next step makes
+        // that state reachable, and resetting the journal there would throw away
+        // another layer's undo.
+        layersWithVisibleContent(this.historyActions, this.historyCursor).size === 0
+      ) {
         this.resetHistoryState();
       }
 
@@ -2705,7 +2733,7 @@ export class BrushEngine {
     for (const stamp of stamps) {
       stamp.historyActionId = historyActionId;
     }
-    this.historyActions.push({ id: historyActionId, kind: "stroke" });
+    this.historyActions.push({ id: historyActionId, kind: "stroke", layerId: this.layerStack.active.id });
     this.historyCursor = this.historyActions.length;
     this.recordHistoryBatch(stamps, benchmarkSettings, timing, true);
 
@@ -7387,7 +7415,7 @@ export class BrushEngine {
       if (!batch.empty) {
         if (!stroke.historyCommitted) {
           this.truncateRedoHistory();
-          this.historyActions.push({ id: stroke.historyActionId, kind: "stroke" });
+          this.historyActions.push({ id: stroke.historyActionId, kind: "stroke", layerId: this.layerStack.active.id });
           this.historyCursor = this.historyActions.length;
           stroke.historyCommitted = true;
           if (this.activeStrokeProfile) {
@@ -7690,7 +7718,7 @@ export class BrushEngine {
 
     if (!stroke.historyCommitted) {
       this.truncateRedoHistory();
-      this.historyActions.push({ id: stroke.historyActionId, kind: "stroke" });
+      this.historyActions.push({ id: stroke.historyActionId, kind: "stroke", layerId: this.layerStack.active.id });
       this.historyCursor = this.historyActions.length;
       stroke.historyCommitted = true;
       if (this.activeStrokeProfile) {
@@ -7880,6 +7908,10 @@ export class BrushEngine {
 
     this.historyBatches.push({
       kind: "paint",
+      // Safe to read the active layer here because switching is refused while a
+      // stroke is open (assertLayerSwitchAllowed), so the layer that recorded
+      // the stamps is still the active one when the batch is stored.
+      layerId: this.layerStack.active.id,
       settings,
       stamps: batch,
       clearLayer,
@@ -7947,27 +7979,17 @@ export class BrushEngine {
     this.historyCompactionPending = false;
   }
 
-  private visibleHistoryStrokeIds(): Set<number> {
-    let firstVisibleAction = 0;
-    for (let index = this.historyCursor - 1; index >= 0; index -= 1) {
-      if (this.historyActions[index].kind === "clear") {
-        firstVisibleAction = index + 1;
-        break;
-      }
-    }
-
-    const visibleIds = new Set<number>();
-    for (let index = firstVisibleAction; index < this.historyCursor; index += 1) {
-      const action = this.historyActions[index];
-      if (action.kind === "stroke") {
-        visibleIds.add(action.id);
-      }
-    }
-    return visibleIds;
+  /**
+   * Passing no layerId keeps the document-wide meaning, where any clear is a
+   * barrier. Passing one resolves visibility for that layer alone, so clearing
+   * one layer does not hide another layer's strokes.
+   */
+  private visibleHistoryStrokeIds(layerId?: number): Set<number> {
+    return visibleStrokeIds(this.historyActions, this.historyCursor, layerId);
   }
 
-  private hasVisibleHistoryContent(): boolean {
-    return this.visibleHistoryStrokeIds().size > 0;
+  private hasVisibleHistoryContent(layerId?: number): boolean {
+    return hasVisibleContent(this.historyActions, this.historyCursor, layerId);
   }
 
   private resetHistoryState(): void {
@@ -8288,6 +8310,7 @@ export class BrushEngine {
     this.historyBatches.push({
       kind: "blend",
       actionId,
+      layerId: this.layerStack.active.id,
       settings,
       batches: pending.map((entry) => entry.batch),
       clearLayer,
