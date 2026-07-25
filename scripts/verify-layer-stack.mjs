@@ -396,7 +396,7 @@ assert.match(
 );
 assert.match(
   engineSource.slice(engineSource.indexOf("private historyStepBlockedByLayer("), rebuildStart),
-  /return historyStepTargetsOtherLayer\(/,
+  /return historyStepTargetsMissingLayer\(/,
   "anche il gate per-passo deve usare la funzione pura testata",
 );
 assert.match(engineSource, /&& !this\.historyStepBlockedByLayer\(-1\)/);
@@ -409,7 +409,7 @@ assert.match(
 );
 assert.match(
   engineSource.slice(cursorStart, cursorStart + 1_800),
-  /delta < 0[\s\S]*selezionalo per annullarlo[\s\S]*selezionalo per ripristinarlo/,
+  /delta < 0[\s\S]*impossibile annullarlo[\s\S]*impossibile ripristinarlo/,
   "il messaggio del gate deve distinguere Undo da Redo",
 );
 
@@ -499,8 +499,23 @@ assert.doesNotMatch(recreateBody, /layerId !== this\.layerStack\.active\.id/,
 assert.match(engineSource, /setBrushSettings\([\s\S]*?this\.initialized && this\.layerSwitchBusy/);
 assert.match(engineSource, /async setLayerFormat\([\s\S]*?this\.layerSwitchBusy/);
 assert.match(engineSource, /async benchmarkEffectsWorkingSet\([\s\S]*?this\.layerSwitchBusy/);
-assert.match(engineSource, /\(!allowLayerSwitch && this\.layerSwitchBusy\)/,
-  "solo il retarget interno dello switch può attraversare il lock");
+// Each caller's exemption is named rather than passed as an unreadable boolean.
+// A layer switch may cross layerSwitchBusy because that flag is its own; only
+// cross-layer undo may cross historyBusy, because it IS the history transaction.
+assert.match(engineSource, /type EffectsRetargetCaller = "public" \| "layer-switch" \| "history-replay";/);
+assert.match(engineSource, /\(!duringLayerSwitch && this\.layerSwitchBusy\)/,
+  "solo i retarget interni possono attraversare il lock di switch");
+assert.match(engineSource, /\(!duringHistoryReplay && this\.historyBusy\)/,
+  "solo l'undo cross-layer può attraversare historyBusy");
+assert.match(
+  engineSource,
+  /const duringHistoryReplay = caller === "history-replay";/,
+);
+// The public entry point must never grant itself an exemption.
+assert.match(
+  engineSource,
+  /return this\.retargetEffectsWorkingSetInternal\(\s*layerView,\s*layerFormat,\s*contentBounds,\s*"public",\s*\)/,
+);
 // Telemetry has to sign the layer count, or runs with one and several layers
 // look equivalent in the log.
 assert.match(engineSource, /layerCount: this\.layerStack\.count/);

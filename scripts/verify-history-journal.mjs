@@ -3,6 +3,7 @@ import {
   HISTORY_JOURNAL_STRATEGY,
   firstVisibleActionIndex,
   hasVisibleContent,
+  historyStepTargetsMissingLayer,
   historyStepTargetsOtherLayer,
   layersWithVisibleContent,
   selectLayerReplay,
@@ -141,6 +142,24 @@ const clear = (id, layerId) => ({ id, kind: "clear", layerId });
   assert.equal(historyStepTargetsOtherLayer(actions, 2, 1, 1), false);
   assert.equal(historyStepTargetsOtherLayer(actions, 0, -1, 1), false);
   assert.equal(historyStepTargetsOtherLayer(actions, actions.length, 1, 1), false);
+}
+
+// Crossing into another LIVE layer is allowed — the active layer moves with the
+// cursor. Only an action whose layer is gone is refused: there is no texture to
+// rebuild, so applying it anywhere would be applying it to the wrong layer.
+{
+  const actions = [stroke(1, 1), stroke(2, 2), stroke(3, 1)];
+  const bothAlive = new Set([1, 2]);
+  assert.equal(historyStepTargetsMissingLayer(actions, 3, -1, bothAlive), false);
+  assert.equal(historyStepTargetsMissingLayer(actions, 2, -1, bothAlive), false,
+    "un passo su un altro livello VIVO non va rifiutato");
+  const onlyOne = new Set([1]);
+  assert.equal(historyStepTargetsMissingLayer(actions, 2, -1, onlyOne), true,
+    "un passo su un livello eliminato va rifiutato");
+  assert.equal(historyStepTargetsMissingLayer(actions, 1, 1, onlyOne), true);
+  // Nothing to cross at either end.
+  assert.equal(historyStepTargetsMissingLayer(actions, 0, -1, onlyOne), false);
+  assert.equal(historyStepTargetsMissingLayer(actions, actions.length, 1, onlyOne), false);
 }
 
 // layersWithVisibleContent answers "which layers still show something", which

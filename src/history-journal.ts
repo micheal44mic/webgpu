@@ -107,6 +107,23 @@ export function selectLayerReplay<T extends JournalBatch>(
   };
 }
 
+/**
+ * True when undo/redo would cross an action whose layer no longer exists.
+ *
+ * Crossing into another LIVE layer is supported: the active layer moves with the
+ * cursor. An action whose layer is gone has no texture to rebuild, so it must be
+ * refused rather than applied somewhere else.
+ */
+export function historyStepTargetsMissingLayer(
+  actions: readonly JournalAction[],
+  cursor: number,
+  delta: -1 | 1,
+  liveLayerIds: ReadonlySet<number>,
+): boolean {
+  const action = delta < 0 ? actions[cursor - 1] : actions[cursor];
+  return Boolean(action) && !liveLayerIds.has(action.layerId);
+}
+
 /** True when undo/redo would cross an action owned by another layer. */
 export function historyStepTargetsOtherLayer(
   actions: readonly JournalAction[],

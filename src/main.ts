@@ -341,6 +341,15 @@ const engine = new BrushEngine(canvas, {
     updateHistoryControls();
     updateHumanStrokeControls();
   },
+  onActiveLayerChange(activeIndex) {
+    // A global undo can move the active layer on its own. Without resyncing, the
+    // panel would keep highlighting the layer the user left and the Traccia and
+    // Smusso controls would show that layer's effects while the brush paints on
+    // another one.
+    syncActiveLayerControls();
+    layerSwitchResult.textContent =
+      `Undo/Redo ha selezionato il livello ${activeIndex + 1}.`;
+  },
 }, tipPreviewCanvas, { bevelBoundingFieldEnabled });
 if (import.meta.env.DEV) {
   (window as Window & { __brushEngine?: BrushEngine }).__brushEngine = engine;

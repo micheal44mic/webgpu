@@ -34,9 +34,18 @@ export interface LayerHistoryGpuTestReport {
     afterBlockedUndo: HistoryState;
     afterRedo: HistoryState;
   };
+  rollback: {
+    threw: boolean;
+    cursorRestored: boolean;
+    activeLayerRestored: boolean;
+    workingSetMatchesActiveLayer: boolean;
+    layerADifferingBytes: number;
+    layerBDifferingBytes: number;
+  };
   operations: {
     undoReturned: boolean;
-    blockedUndoReturned: boolean;
+    crossLayerUndoReturned: boolean;
+    crossLayerRedoReturned: boolean;
     redoReturned: boolean;
   };
 }
@@ -147,10 +156,58 @@ export async function runLayerHistoryGpuTest(
   const layerBAfterUndoP = await engine.readLayerPixels(pRect, 1);
   const layerBAfterUndoQ = await engine.readLayerPixels(qRect, 1);
 
-  // The next undo belongs to layer A. Calling the API directly must be refused,
-  // not merely hidden by the disabled UI button.
-  const blockedUndoReturned = await engine.undo();
+  // The next undo belongs to layer A: it must SUCCEED and move the active layer
+  // with the cursor, since the stack is global. The state invariant matters more
+  // than the pixels here — a failed rollback can leave the working set pointed at
+  // the layer the cursor no longer selects while every pixel still looks right.
+  const activeBeforeCrossLayerUndo = engine.getStats().activeLayerIndex;
+  const crossLayerUndoReturned = await engine.undo();
+  await engine.waitForIdle();
   const afterBlockedUndo = engine.getHistoryState();
+  const activeAfterCrossLayerUndo = engine.getStats().activeLayerIndex;
+  const workingSetMatchesAfterCrossLayerUndo = engine
+    .effectsWorkingSetMatchesActiveLayer();
+  const layerAAfterCrossLayerUndo = await engine.readLayerPixels(pRect, 0);
+
+  // Put layer A back so the redo assertions below still describe layer B.
+  const crossLayerRedoReturned = await engine.redo();
+  await engine.waitForIdle();
+  const activeAfterCrossLayerRedo = engine.getStats().activeLayerIndex;
+  const layerAAfterCrossLayerRedo = await engine.readLayerPixels(pRect, 0);
+  await engine.setActiveLayer(1);
+
+  // ROLLBACK. A cross-layer undo switches the active layer inside the history
+  // transaction, so a failing rebuild has to undo that switch as well. The happy
+  // path never runs this code, so the failure is injected on purpose: mutating
+  // the rollback otherwise leaves every check green.
+  const beforeRollbackHistory = engine.getHistoryState();
+  const beforeRollbackActive = engine.getStats().activeLayerIndex;
+  const beforeRollbackLayerA = await engine.readLayerPixels(auditRect, 0);
+  const beforeRollbackLayerB = await engine.readLayerPixels(auditRect, 1);
+  // The first call is the failing forward replay; the second is the restore.
+  engine.injectHistoryReplayFault(0);
+  let rollbackThrew = false;
+  try {
+    await engine.undo();
+  } catch {
+    rollbackThrew = true;
+  }
+  await engine.waitForIdle();
+  const afterRollbackHistory = engine.getHistoryState();
+  const rollback = {
+    threw: rollbackThrew,
+    cursorRestored: afterRollbackHistory.cursor === beforeRollbackHistory.cursor,
+    activeLayerRestored: engine.getStats().activeLayerIndex === beforeRollbackActive,
+    workingSetMatchesActiveLayer: engine.effectsWorkingSetMatchesActiveLayer(),
+    layerADifferingBytes: countDifferingBytes(
+      beforeRollbackLayerA,
+      await engine.readLayerPixels(auditRect, 0),
+    ),
+    layerBDifferingBytes: countDifferingBytes(
+      beforeRollbackLayerB,
+      await engine.readLayerPixels(auditRect, 1),
+    ),
+  };
 
   const redoReturned = await engine.redo();
   await engine.waitForIdle();
@@ -183,10 +240,33 @@ export async function runLayerHistoryGpuTest(
     undoSucceeded: undoReturned,
     undoRemovedQ: alphaPixels.layerBAfterUndoRegionQ === 0,
     undoDidNotReplayPOnB: alphaPixels.layerBAfterUndoRegionP === 0,
-    foreignUndoNotAdvertised: !afterUndo.canUndo,
+    crossLayerUndoAdvertised: afterUndo.canUndo,
     redoAdvertised: afterUndo.canRedo,
-    directForeignUndoRefused: !blockedUndoReturned,
-    blockedUndoKeptCursor: afterBlockedUndo.cursor === afterUndo.cursor,
+    crossLayerUndoSucceeded: crossLayerUndoReturned,
+    crossLayerUndoMovedTheCursor: afterBlockedUndo.cursor === afterUndo.cursor - 1,
+    crossLayerUndoMovedTheActiveLayer:
+      activeAfterCrossLayerUndo !== activeBeforeCrossLayerUndo,
+    crossLayerUndoRemovedPFromA:
+      countNonZeroAlpha(layerAAfterCrossLayerUndo) === 0,
+    // THE state invariant: no pixel comparison can see this one.
+    workingSetFollowedTheCrossLayerUndo: workingSetMatchesAfterCrossLayerUndo,
+    crossLayerRedoSucceeded: crossLayerRedoReturned,
+    crossLayerRedoRestoredPOnA:
+      countNonZeroAlpha(layerAAfterCrossLayerRedo) > 0,
+    // Redoing an action already owned by the ACTIVE layer must not switch: the
+    // invariant is "the active layer owns the crossed action", not "every step
+    // moves". Expecting a move here was the assertion being wrong, not the code.
+    crossLayerRedoStayedOnTheActionsLayer:
+      activeAfterCrossLayerRedo === activeAfterCrossLayerUndo,
+    workingSetMatchesAtEnd: engine.effectsWorkingSetMatchesActiveLayer(),
+    rollbackReportedTheFailure: rollback.threw,
+    rollbackRestoredTheCursor: rollback.cursorRestored,
+    rollbackRestoredTheActiveLayer: rollback.activeLayerRestored,
+    // The one a pixel test cannot see: pixels can be perfect while the working
+    // set still points at the layer the cursor no longer selects.
+    rollbackKeptWorkingSetOnActiveLayer: rollback.workingSetMatchesActiveLayer,
+    rollbackLeftLayerAByteIdentical: rollback.layerADifferingBytes === 0,
+    rollbackLeftLayerBByteIdentical: rollback.layerBDifferingBytes === 0,
     redoSucceeded: redoReturned,
     redoRestoredQ: alphaPixels.layerBAfterRedoStrokeQ > 0,
     redoRestoredBByteExactly: differingBytes.layerBRedoVersusBeforeUndo === 0,
@@ -202,6 +282,7 @@ export async function runLayerHistoryGpuTest(
     alphaPixels,
     differingBytes,
     history: { beforeUndo, afterUndo, afterBlockedUndo, afterRedo },
-    operations: { undoReturned, blockedUndoReturned, redoReturned },
+    rollback,
+    operations: { undoReturned, crossLayerUndoReturned, crossLayerRedoReturned, redoReturned },
   };
 }
