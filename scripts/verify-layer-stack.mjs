@@ -321,4 +321,38 @@ assert.match(
 assert.match(mainSource, /return !engineInitialized\s*\|\| layerSwitching/,
   "il lock di switch deve entrare in operationLocked, non solo nella lista");
 
+// The workbench is one retargetable instance, so a layer whose record says
+// Traccia is enabled can arrive after another layer released the renderer. Without
+// this the layer returns with the checkbox on and nothing drawn — verified on GPU
+// as scratch 64 MiB, then 0, then still 0 with the call removed.
+assert.match(engineSource, /private async ensureEffectRenderersForActiveLayer\(\): Promise<void>/);
+assert.match(
+  engineSource,
+  /await this\.ensureEffectRenderersForActiveLayer\(\);/,
+  "activateLayer deve garantire i renderer del livello entrante",
+);
+const ensureStart = engineSource.indexOf("private async ensureEffectRenderersForActiveLayer(");
+const ensureBody = engineSource.slice(ensureStart, ensureStart + 1_400);
+assert.match(ensureBody, /rasterStrokeScratchExtentForWidth\(strokeStyle\.width\)/,
+  "il tier di scratch dipende dalla width del livello entrante");
+assert.match(ensureBody, /this\.rasterStrokeRenderer\.resizeScratch\(scratchExtent\)/);
+
+// Measurement setups reset the GLOBAL journal but clear only the active layer.
+assert.match(engineSource, /private get documentWideResetBlockedByLayers\(\): boolean/);
+assert.match(engineSource, /if \(this\.documentWideResetBlockedByLayers\) \{/);
+// Allocation must precede destruction, or an OOM partway through a format change
+// leaves the document with neither the old textures nor the new ones.
+assert.ok(
+  engineSource.indexOf("const replacement = new Map<number, LayerGpuResources>();")
+    < engineSource.indexOf("const supersededLayerGpu = [...this.layerGpu.values()];"),
+  "il cambio formato deve allocare prima di distruggere",
+);
+// Telemetry has to sign the layer count, or runs with one and several layers
+// look equivalent in the log.
+assert.match(engineSource, /layerCount: this\.layerStack\.count/);
+assert.match(
+  engineSource,
+  /layerMemoryMiB: \(this\.layerFormat === "rgba16float" \? 128 : 64\) \* this\.layerGpu\.size/,
+);
+
 console.log("Layer stack verification passed.");

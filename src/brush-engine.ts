@@ -274,6 +274,8 @@ export interface EngineStats {
   totalBaseStamps: number;
   avoidedLogicalDraws: number;
   layerMemoryMiB: number;
+  layerCount: number;
+  activeLayerId: number;
   layers: readonly { id: number; name: string; hasContent: boolean }[];
   activeLayerIndex: number;
   rasterStrokeStyle: RasterStrokeStyle;
@@ -2662,7 +2664,14 @@ export class BrushEngine {
   }
 
   resetDocument(): boolean {
-    if (this.historyBusy) {
+    if (this.historyBusy || this.layerSwitchBusy) {
+      return false;
+    }
+    if (this.documentWideResetBlockedByLayers) {
+      this.callbacks.onStatus?.(
+        "Il ripristino del documento non è ancora disponibile con più livelli.",
+        "error",
+      );
       return false;
     }
     if (this.frameRequest !== null) {
@@ -2699,8 +2708,13 @@ export class BrushEngine {
     if (!this.initialized) {
       throw new Error("Il motore non è ancora inizializzato.");
     }
-    if (this.historyBusy || this.activeStroke) {
+    if (this.historyBusy || this.activeStroke || this.layerSwitchBusy) {
       throw new Error("Concludi prima il tratto o l'operazione Undo/Redo.");
+    }
+    if (this.documentWideResetBlockedByLayers) {
+      throw new Error(
+        "Il benchmark azzera la cronologia dell'intero documento: tienilo a un solo livello.",
+      );
     }
     if (this.settings.tool === "blend") {
       throw new Error("Il benchmark GPU sintetico misura Paint: seleziona Pennello Paint.");
@@ -2935,7 +2949,9 @@ export class BrushEngine {
       lastCpuFrameMs: this.lastCpuFrameMs,
       totalBaseStamps: this.totalBaseStamps,
       avoidedLogicalDraws: this.avoidedLogicalDraws,
-      layerMemoryMiB: this.layerFormat === "rgba16float" ? 128 : 64,
+      layerMemoryMiB: (this.layerFormat === "rgba16float" ? 128 : 64) * this.layerGpu.size,
+      layerCount: this.layerStack.count,
+      activeLayerId: this.layerStack.active.id,
       layers: this.layerStack.layers.map((record) => ({
         id: record.id,
         name: record.name,
@@ -3375,6 +3391,21 @@ export class BrushEngine {
    * replay takes an explicit target layer.
    */
   private get historyBlockedByLayers(): boolean {
+    return this.layerStack.count > 1;
+  }
+
+  /**
+   * Measurement setups — resetDocument() and runBenchmark() — reset the GLOBAL
+   * journal but only clear the active layer, so with several layers they would
+   * silently destroy every other layer's undo while leaving its pixels behind.
+   *
+   * Refusing is right on a second ground too: AGENTS.md requires a run to be
+   * compared against the baseline at parity, and a canonical replay with a
+   * different layer count is not that. Note that setLayerFormat is NOT gated —
+   * it recreates every layer's texture, so its journal reset is genuinely
+   * document-wide.
+   */
+  private get documentWideResetBlockedByLayers(): boolean {
     return this.layerStack.count > 1;
   }
 
@@ -4117,6 +4148,8 @@ export class BrushEngine {
     layerSize: number;
     layerFormat: LayerFormat;
     layerMemoryMiB: number;
+    layerCount: number;
+    activeLayerId: number;
     gpuLabel: string;
     effectsWorkingSetStrategy: typeof EFFECTS_WORKING_SET_STRATEGY;
     effectsWorkingSetGeneration: number;
@@ -4264,7 +4297,9 @@ export class BrushEngine {
       canvasHeight: this.canvas.height,
       layerSize: LAYER_SIZE,
       layerFormat: this.layerFormat,
-      layerMemoryMiB: this.layerFormat === "rgba16float" ? 128 : 64,
+      layerMemoryMiB: (this.layerFormat === "rgba16float" ? 128 : 64) * this.layerGpu.size,
+      layerCount: this.layerStack.count,
+      activeLayerId: this.layerStack.active.id,
       gpuLabel: this.gpuLabel,
       effectsWorkingSetStrategy: EFFECTS_WORKING_SET_STRATEGY,
       effectsWorkingSetGeneration: this.effectsWorkbench?.generation ?? 0,
@@ -5614,6 +5649,36 @@ export class BrushEngine {
     record.mipValidThroughLevel = this.paintDisplayMipValidThroughLevel;
   }
 
+  /**
+   * Makes the effect renderers match the INCOMING layer's stored styles.
+   *
+   * The workbench is a single retargetable instance, so a layer whose record says
+   * Traccia is enabled can arrive after another layer released the renderer — it
+   * would come back with the style checkbox on and no effect drawn. The scratch
+   * tier is width-derived too, so a layer stored at width 512 entering while the
+   * renderer sits at the 1024 tier needs the resize that setRasterStrokeStyle
+   * would have done.
+   *
+   * Renderers are deliberately NOT released when the incoming layer does not use
+   * them: the working set is shared and singular, so keeping it costs nothing per
+   * layer, while releasing and rebuilding would add cost to every switch.
+   */
+  private async ensureEffectRenderersForActiveLayer(): Promise<void> {
+    const record = this.layerStack.active;
+    const strokeStyle = record.strokeStyle;
+    if (strokeStyle.enabled && strokeStyle.width > 0) {
+      const scratchExtent = rasterStrokeScratchExtentForWidth(strokeStyle.width);
+      if (!this.rasterStrokeRenderer) {
+        await this.ensureRasterStrokeRenderer(strokeStyle.width);
+      } else if (this.rasterStrokeRenderer.scratchExtent !== scratchExtent) {
+        this.rasterStrokeRenderer.resizeScratch(scratchExtent);
+      }
+    }
+    if (normalizeRasterBevelStyle(record.bevelStyle).enabled && !this.rasterBevelRenderer) {
+      await this.ensureRasterBevelRenderer();
+    }
+  }
+
   private async activateLayer(fromIndex: number): Promise<LayerSwitchResult> {
     const startedAt = performance.now();
     const record = this.layerStack.active;
@@ -5626,6 +5691,7 @@ export class BrushEngine {
     this.blendRenderer?.retarget(this.layerView, this.layerSamplingView);
     this.destroyLightGlazeResources();
     this.destroyThicknessTailOverlayResources();
+    await this.ensureEffectRenderersForActiveLayer();
 
     const effectsStartedAt = performance.now();
     const effects = await this.retargetEffectsWorkingSet(
@@ -6231,13 +6297,16 @@ export class BrushEngine {
 
     this.destroyLightGlazeResources();
     this.destroyThicknessTailOverlayResources();
-    // A format change invalidates every layer's texture, not just the active
-    // one, and setLayerFormat already tells the user the content is cleared.
-    for (const gpu of this.layerGpu.values()) {
-      gpu.texture.destroy();
-    }
-    this.layerGpu.clear();
-    this.layerGpu.set(this.layerStack.active.id, {
+    // A format change invalidates every layer's texture, not just the active one,
+    // and setLayerFormat already tells the user the content is cleared.
+    //
+    // Allocate everything BEFORE destroying anything. Destroying first would mean
+    // an OOM partway through the remaining layers left the document with neither
+    // the old textures nor the new ones — losing content the caller was told it
+    // could still recover, since setLayerFormat's error path restores the previous
+    // format and expects the old resources to still be there.
+    const replacement = new Map<number, LayerGpuResources>();
+    replacement.set(this.layerStack.active.id, {
       texture,
       view,
       samplingView,
@@ -6245,20 +6314,44 @@ export class BrushEngine {
       displayBindGroup,
       paintMipDownsampleBindGroups,
     });
+    try {
+      for (const other of this.layerStack.layers) {
+        if (other.id === this.layerStack.active.id) {
+          continue;
+        }
+        const otherTexture = this.allocateLayerTexture(format);
+        const otherBindGroups = this.createLayerBindGroups(
+          format,
+          otherTexture.samplingView,
+          otherTexture.mipViews,
+        );
+        replacement.set(other.id, { ...otherTexture, ...otherBindGroups });
+      }
+    } catch (error) {
+      // Nothing has been swapped in yet, so drop only what we just allocated and
+      // leave the document exactly as it was.
+      for (const [layerId, gpu] of replacement) {
+        if (layerId !== this.layerStack.active.id) {
+          gpu.texture.destroy();
+        }
+      }
+      throw error;
+    }
+    const supersededLayerGpu = [...this.layerGpu.values()];
+    this.layerGpu.clear();
+    for (const [layerId, gpu] of replacement) {
+      this.layerGpu.set(layerId, gpu);
+    }
     for (const other of this.layerStack.layers) {
       if (other.id === this.layerStack.active.id) {
         continue;
       }
-      const otherTexture = this.allocateLayerTexture(format);
-      const otherBindGroups = this.createLayerBindGroups(
-        format,
-        otherTexture.samplingView,
-        otherTexture.mipViews,
-      );
-      this.layerGpu.set(other.id, { ...otherTexture, ...otherBindGroups });
       other.contentBounds = null;
       other.hasContent = false;
       other.mipValidThroughLevel = 0;
+    }
+    for (const gpu of supersededLayerGpu) {
+      gpu.texture.destroy();
     }
     this.layerTexture = texture;
     this.layerView = view;
