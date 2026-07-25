@@ -11,6 +11,7 @@
     "blend:verify": "node scripts/verify-blend-core.mjs",
     "grain:verify": "node scripts/verify-grain-phase1.mjs",
     "thickness:verify": "node scripts/verify-thickness-dynamics.mjs",
+    "layers:verify": "node scripts/verify-layer-stack.mjs",
     "stroke:verify": "node scripts/verify-stroke-core.mjs",
     "effects-scratch:verify": "node scripts/verify-effects-scratch-pool.mjs",
     "bevel:verify": "node scripts/verify-bevel-core.mjs"
