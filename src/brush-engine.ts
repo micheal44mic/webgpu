@@ -617,6 +617,18 @@ interface DirtyRect {
   height: number;
 }
 
+interface LayerTextureResources {
+  texture: GPUTexture;
+  view: GPUTextureView;
+  samplingView: GPUTextureView;
+  mipViews: GPUTextureView[];
+}
+
+interface LayerBindGroups {
+  displayBindGroup: GPUBindGroup;
+  paintMipDownsampleBindGroups: GPUBindGroup[];
+}
+
 interface PackedStampUpload {
   dirtyRect: DirtyRect | null;
   minimumRadius: number;
@@ -5266,10 +5278,18 @@ export class BrushEngine {
     };
   }
 
-  private async recreateLayerResources(format: LayerFormat): Promise<void> {
-    const oldTexture = this.layerTexture;
-    const oldBlendRenderer = this.blendRenderer;
-
+  /**
+   * The GPU side of one paint layer: 64 MiB of authoritative mip 0 in rgba8 plus
+   * 21,33 MiB of derived display levels.
+   *
+   * Extracted so that adding a layer does not have to go through
+   * recreateLayerResources, whose tail destroys the outgoing texture, the blend
+   * renderer and the effects workbench — correct for a format change, fatal for
+   * "give me a second layer". The 21 render pipelines further down that function
+   * depend only on the format, never on the texture, so a new layer in the same
+   * format reuses them untouched.
+   */
+  private allocateLayerTexture(format: LayerFormat): LayerTextureResources {
     const texture = this.device.createTexture({
       label: `4096² paint layer ${format}`,
       size: { width: LAYER_SIZE, height: LAYER_SIZE, depthOrArrayLayers: 1 },
@@ -5301,6 +5321,44 @@ export class BrushEngine {
         mipLevelCount: 1,
       }),
     );
+    return { texture, view, samplingView, mipViews };
+  }
+
+  /**
+   * The bind groups that name one layer's views. Kept separate from
+   * allocateLayerTexture only because recreateLayerResources creates them
+   * inside its validation error scope, and moving them out would silently
+   * change which failures that scope reports.
+   */
+  private createLayerBindGroups(
+    format: LayerFormat,
+    samplingView: GPUTextureView,
+    mipViews: readonly GPUTextureView[],
+  ): LayerBindGroups {
+    const displayBindGroup = this.device.createBindGroup({
+      label: `Display bind group ${format}`,
+      layout: this.displayBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.displayUniformBuffer } },
+        { binding: 1, resource: samplingView },
+        { binding: 2, resource: this.sampler },
+      ],
+    });
+    const paintMipDownsampleBindGroups = mipViews
+      .slice(0, PAINT_DISPLAY_MIP_LEVEL_COUNT - 1)
+      .map((sourceView, sourceMipLevel) => this.device.createBindGroup({
+        label: `Paint display mip ${sourceMipLevel} to ${sourceMipLevel + 1} ${format}`,
+        layout: this.paintMipDownsampleBindGroupLayout,
+        entries: [{ binding: 0, resource: sourceView }],
+      }));
+    return { displayBindGroup, paintMipDownsampleBindGroups };
+  }
+
+  private async recreateLayerResources(format: LayerFormat): Promise<void> {
+    const oldTexture = this.layerTexture;
+    const oldBlendRenderer = this.blendRenderer;
+
+    const { texture, view, samplingView, mipViews } = this.allocateLayerTexture(format);
 
     const brushPipelineLayout = this.device.createPipelineLayout({
       label: `Brush legacy pipeline layout ${format}`,
@@ -5853,22 +5911,8 @@ export class BrushEngine {
       throw new Error(validationError.message);
     }
 
-    const displayBindGroup = this.device.createBindGroup({
-      label: `Display bind group ${format}`,
-      layout: this.displayBindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: this.displayUniformBuffer } },
-        { binding: 1, resource: samplingView },
-        { binding: 2, resource: this.sampler },
-      ],
-    });
-    const paintMipDownsampleBindGroups = mipViews
-      .slice(0, PAINT_DISPLAY_MIP_LEVEL_COUNT - 1)
-      .map((sourceView, sourceMipLevel) => this.device.createBindGroup({
-        label: `Paint display mip ${sourceMipLevel} to ${sourceMipLevel + 1} ${format}`,
-        layout: this.paintMipDownsampleBindGroupLayout,
-        entries: [{ binding: 0, resource: sourceView }],
-      }));
+    const { displayBindGroup, paintMipDownsampleBindGroups } = this
+      .createLayerBindGroups(format, samplingView, mipViews);
 
     let blendRenderer: DryBlendRenderer;
     try {

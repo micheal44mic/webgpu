@@ -200,4 +200,24 @@ assert.match(probeBody, /Math\.ceil\(unpaddedBytesPerRow \/ 256\) \* 256/,
   "bytesPerRow deve restare allineato a 256");
 assert.match(probeBody, /readbackBuffer\.destroy\(\)/, "la sonda non deve perdere il buffer");
 
+// Allocating a layer must not go through recreateLayerResources, whose tail
+// destroys the outgoing texture, the blend renderer and the effects workbench.
+// These two helpers are the seam that makes "give me a second layer" possible,
+// so keep them from being folded back in.
+assert.match(engineSource, /private allocateLayerTexture\(format: LayerFormat\): LayerTextureResources/);
+assert.match(
+  engineSource,
+  /private createLayerBindGroups\(\s*format: LayerFormat,\s*samplingView: GPUTextureView,\s*mipViews: readonly GPUTextureView\[\],\s*\): LayerBindGroups/,
+);
+assert.match(
+  engineSource,
+  /const \{ texture, view, samplingView, mipViews \} = this\.allocateLayerTexture\(format\)/,
+  "recreateLayerResources deve usare l'helper, non una copia del codice",
+);
+assert.equal(
+  (engineSource.match(/label: `4096² paint layer \$\{format\}`/g) ?? []).length,
+  1,
+  "la creazione della texture di livello deve esistere in un solo punto",
+);
+
 console.log("Layer stack verification passed.");
