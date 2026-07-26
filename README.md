@@ -28,7 +28,7 @@ Prototipo TypeScript senza framework per verificare l'architettura di un motore 
 
 ## Perché TypeScript
 
-Il sorgente è TypeScript perché buffer, uniform layout, impostazioni del pennello e risorse GPU diventano rapidamente complessi. Vite produce JavaScript standard per il browser. La cartella `dist/` già compilata non richiede TypeScript né dipendenze runtime.
+Il sorgente è TypeScript perché buffer, uniform layout, impostazioni del pennello e risorse GPU diventano rapidamente complessi. Vite produce JavaScript standard per il browser. La cartella `dist/`, generata con la build e non tracciata da Git, non richiede TypeScript né dipendenze runtime dopo la generazione.
 
 ## Avvio in sviluppo
 

@@ -19,6 +19,9 @@ registro D1, che è append-only.
   end-to-end senza lag, non il confronto a carico forzatamente identico.
 - Aggiornare questo file dopo ogni passo misurato. Non sostituire il benchmark
   canonico o i suoi parametri senza richiesta esplicita.
+- `dist/` è un artefatto generato e ignorato da Git: rigenerarlo con
+  `npm run build` per ogni pubblicazione, impacchettarlo per Sites e non
+  commettere i bundle con hash.
 - Preferenza esplicita dell'utente: **niente agenti o subagenti**; il modello
   principale legge, progetta, implementa, revisiona e pubblica da solo.
 
