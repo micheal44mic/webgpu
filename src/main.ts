@@ -62,6 +62,10 @@ const layerList = element<HTMLElement>("layerList");
 const addLayerButton = element<HTMLButtonElement>("addLayer");
 const layerSwitchResult = element<HTMLParagraphElement>("layerSwitchResult");
 const rasterStrokeGoldenSection = element<HTMLElement>("rasterStrokeGoldenSection");
+const rasterShadowGoldenButton = element<HTMLButtonElement>("runRasterShadowGolden");
+const rasterShadowGoldenResult = element<HTMLParagraphElement>("rasterShadowGoldenResult");
+const rasterShadowGoldenDetails = element<HTMLDetailsElement>("rasterShadowGoldenDetails");
+const rasterShadowGoldenReport = element<HTMLElement>("rasterShadowGoldenReport");
 const rasterStrokeGoldenButton = element<HTMLButtonElement>("runRasterStrokeGolden");
 const rasterStrokeGoldenResult = element<HTMLParagraphElement>("rasterStrokeGoldenResult");
 const rasterStrokeGoldenDetails = element<HTMLDetailsElement>("rasterStrokeGoldenDetails");
@@ -333,7 +337,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 48;
+    performanceTelemetryRevision: 49;
   };
 }
 
@@ -387,6 +391,7 @@ let humanStrokeReplaying = false;
 let humanStrokeLoading = true;
 let humanStrokeSaving = false;
 let benchmarkRunning = false;
+let rasterShadowGoldenRunning = false;
 let rasterStrokeGoldenRunning = false;
 let effectsWorkbenchBenchmarkRunning = false;
 let layerHistoryTestRunning = false;
@@ -699,7 +704,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 48,
+    performanceTelemetryRevision: 49,
     ...engineEnvironment,
   };
 }
@@ -1592,6 +1597,7 @@ function updateHumanStrokeControls(): void {
     || historyUiBusy
     || historyState.busy
     || benchmarkRunning
+    || rasterShadowGoldenRunning
     || rasterStrokeGoldenRunning
     || effectsWorkbenchBenchmarkRunning
     || layerHistoryTestRunning
@@ -1646,6 +1652,7 @@ function operationLocked(): boolean {
     || historyUiBusy
     || historyState.busy
     || benchmarkRunning
+    || rasterShadowGoldenRunning
     || rasterStrokeGoldenRunning
     || effectsWorkbenchBenchmarkRunning
     || layerHistoryTestRunning
@@ -1670,6 +1677,7 @@ function updateHistoryControls(): void {
   const blendToolActive = activeBrushTool === "blend";
   benchmarkButton.disabled = locked || blendToolActive;
   benchmarkStampsInput.disabled = locked || blendToolActive;
+  rasterShadowGoldenButton.disabled = locked;
   rasterStrokeGoldenButton.disabled = locked;
   effectsWorkbenchBenchmarkButton.disabled = locked;
   layerFormatSelect.disabled = locked;
@@ -1677,7 +1685,7 @@ function updateHistoryControls(): void {
   zoomInButton.disabled = locked;
   zoomOutButton.disabled = locked;
   toggleControlsButton.disabled =
-    benchmarkRunning || rasterStrokeGoldenRunning
+    benchmarkRunning || rasterShadowGoldenRunning || rasterStrokeGoldenRunning
     || effectsWorkbenchBenchmarkRunning || layerHistoryTestRunning
     || humanStrokeReplaying;
   for (const id of brushControlIds) {
@@ -2040,6 +2048,51 @@ benchmarkButton.addEventListener("click", async () => {
 
 {
   rasterStrokeGoldenSection.hidden = false;
+  rasterShadowGoldenButton.addEventListener("click", async () => {
+    if (interactionLocked()) {
+      return;
+    }
+    rasterShadowGoldenRunning = true;
+    rasterShadowGoldenDetails.hidden = true;
+    rasterShadowGoldenButton.disabled = true;
+    rasterShadowGoldenResult.textContent = "Cattura Golden Ombre sulla GPU…";
+    updateHistoryControls();
+    updateHumanStrokeControls();
+    try {
+      const report = await engine.runRasterShadowGolden();
+      const serialized = JSON.stringify(report, null, 2);
+      rasterShadowGoldenReport.textContent = serialized;
+      rasterShadowGoldenDetails.hidden = false;
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(serialized);
+        copied = true;
+      } catch {
+        // Il report resta visibile e disponibile sull'oggetto window.
+      }
+      (
+        window as Window & { __rasterShadowGoldenReport?: typeof report }
+      ).__rasterShadowGoldenReport = report;
+      rasterShadowGoldenResult.textContent =
+        (report.baselineMatches ? "Golden Ombre identico" : "Golden Ombre da fissare")
+        + " · v" + report.version + " · " + report.combinedSha256
+        + " · mip " + report.mipCombinedSha256
+        + " · " + report.cases.length + " casi"
+        + " · ripetizione " + (report.repeatMatches ? "OK" : "fallita")
+        + (report.baselineMatches
+          ? ""
+          : " · differenze: " + report.baselineMismatches.join(", "))
+        + (copied ? " · report copiato" : "");
+    } catch (error) {
+      rasterShadowGoldenResult.textContent =
+        error instanceof Error ? error.message : String(error);
+    } finally {
+      rasterShadowGoldenRunning = false;
+      updateHistoryControls();
+      updateHumanStrokeControls();
+    }
+  });
+
   rasterStrokeGoldenButton.addEventListener("click", async () => {
     if (interactionLocked()) {
       return;
@@ -2275,10 +2328,26 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
 
   const scratchExtents: string[] = [];
   if (stats.gpuMemory.effectsScratchStrokeExtent > 0) {
-    scratchExtents.push(`Traccia ${stats.gpuMemory.effectsScratchStrokeExtent}²`);
+    const strokeScratchOwner =
+      stats.rasterStrokeStyle.enabled && stats.rasterStrokeStyle.width > 0
+        ? "Traccia"
+        : "Compositore";
+    scratchExtents.push(
+      `${strokeScratchOwner} ${stats.gpuMemory.effectsScratchStrokeExtent}²`,
+    );
   }
   if (stats.gpuMemory.effectsScratchBevelExtent > 0) {
     scratchExtents.push(`Smusso ${stats.gpuMemory.effectsScratchBevelExtent}²`);
+  }
+  if (stats.gpuMemory.effectsScratchOuterShadowExtent > 0) {
+    scratchExtents.push(
+      `Ombra esterna ${stats.gpuMemory.effectsScratchOuterShadowExtent}²`,
+    );
+  }
+  if (stats.gpuMemory.effectsScratchInnerShadowExtent > 0) {
+    scratchExtents.push(
+      `Ombra interna ${stats.gpuMemory.effectsScratchInnerShadowExtent}²`,
+    );
   }
   element<HTMLElement>("gpuMemoryEffectsScratchLabel").textContent = scratchExtents.length > 0
     ? `Effetti · pool scratch · ${scratchExtents.join(" / ")}`

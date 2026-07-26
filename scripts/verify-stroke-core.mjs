@@ -7,6 +7,7 @@ import {
   RASTER_STROKE_DISTANCE_SCALE,
   RASTER_STROKE_JFA_TIE_ORDER,
   RASTER_STROKE_MAX_DISTANCE,
+  RASTER_STROKE_COMPOSITOR_ONLY_SCRATCH_EXTENT,
   RASTER_STROKE_COMPACT_SCRATCH_EXTENT,
   RASTER_STROKE_COMPACT_SCRATCH_MAX_WIDTH,
   RASTER_STROKE_FULL_SCRATCH_EXTENT,
@@ -28,6 +29,7 @@ import {
   rasterStrokeJfaCandidateWins,
   rasterStrokeJfaScheduleForRegion,
   rasterStrokeJfaSeedTieLess,
+  rasterStrokeScratchExtentForRenderer,
   rasterStrokeScratchExtentForWidth,
   rasterStrokeSignedDistance,
   rasterStrokeStylesEqual,
@@ -82,7 +84,19 @@ assert.equal(rasterStrokeStylesEqual(copiedStyle, { ...copiedStyle, width: 15 })
 
 assert.equal(
   RASTER_STROKE_SCRATCH_STRATEGY,
-  "width-tiered-1024-through-128-otherwise-2048",
+  "compositor-only-8-otherwise-width-tiered-1024-through-128-or-2048",
+);
+assert.equal(
+  rasterStrokeScratchExtentForRenderer(false, 14),
+  RASTER_STROKE_COMPOSITOR_ONLY_SCRATCH_EXTENT,
+);
+assert.equal(
+  rasterStrokeScratchExtentForRenderer(true, 0),
+  RASTER_STROKE_COMPOSITOR_ONLY_SCRATCH_EXTENT,
+);
+assert.equal(
+  rasterStrokeScratchExtentForRenderer(true, 14),
+  RASTER_STROKE_COMPACT_SCRATCH_EXTENT,
 );
 assert.equal(rasterStrokeScratchExtentForWidth(14), RASTER_STROKE_COMPACT_SCRATCH_EXTENT);
 assert.equal(

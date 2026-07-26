@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
   DEFAULT_RASTER_INNER_SHADOW_STYLE,
@@ -264,5 +265,63 @@ assert.match(engineSource, /outerShadowStyle: RasterOuterShadowStyle/);
 assert.match(engineSource, /innerShadowStyle: RasterInnerShadowStyle/);
 assert.match(engineSource, /rasterOuterShadowMatteMiB/);
 assert.match(engineSource, /rasterInnerShadowMatteMiB/);
+
+const goldenSource = readFileSync(
+  new URL("../src/shadow-golden.ts", import.meta.url),
+  "utf8",
+);
+const mainSource = readFileSync(
+  new URL("../src/main.ts", import.meta.url),
+  "utf8",
+);
+const goldenBaseline = JSON.parse(readFileSync(
+  new URL("../goldens/raster-shadow-rgba8-v1.json", import.meta.url),
+  "utf8",
+));
+assert.equal(goldenBaseline.version, 1);
+assert.equal(goldenBaseline.cases.length, 6);
+assert.ok(goldenBaseline.cases.every((goldenCase) => goldenCase.mips.length === 9));
+assert.equal(
+  goldenBaseline.cases[4].sha256,
+  goldenBaseline.cases[5].sha256,
+  "la ricostruzione ripetuta della coppia Ombre deve essere deterministica",
+);
+assert.equal(
+  goldenBaseline.combinedSha256,
+  "2b812a001c7951ea5b41df933e811af8baad9f503a4a24b05915374b697b8040",
+);
+assert.equal(
+  goldenBaseline.mipCombinedSha256,
+  "f5bcd1e4caee360ab77cdcd9a9f8022fc3b93f079cc75216bf60471a27ed0a9e",
+);
+const mipIdentity = Buffer.from(JSON.stringify({
+  mipChainVersion: 1,
+  format: "rgba8unorm",
+  width: 256,
+  height: 192,
+  fixtureSha256: goldenBaseline.fixtureSha256,
+  cases: goldenBaseline.cases.map(({ id, mips }) => ({
+    id,
+    mips: mips.map(({ level, sha256 }) => ({
+      level,
+      width: Math.max(1, 256 >> level),
+      height: Math.max(1, 192 >> level),
+      sha256,
+    })),
+  })),
+}));
+assert.equal(
+  createHash("sha256").update(mipIdentity).digest("hex"),
+  goldenBaseline.mipCombinedSha256,
+);
+assert.match(goldenSource, /outer-soft-linear/);
+assert.match(goldenSource, /inner-hard-cone-noise/);
+assert.match(goldenSource, /outer-inner-combined-restored/);
+assert.match(goldenSource, /scratchExtent: 8/);
+assert.match(goldenSource, /baselineMatches: baselineMismatches\.length === 0/);
+assert.match(engineSource, /async runRasterShadowGolden\(\)/);
+assert.match(mainSource, /id="runRasterShadowGolden"|runRasterShadowGolden/);
+assert.match(engineSource, /RASTER_STROKE_COMPOSITOR_ONLY_SCRATCH_EXTENT/);
+assert.match(engineSource, /scheduleEffectsScratchShrink\(\)/);
 
 console.log("Shadow core verification passed.");

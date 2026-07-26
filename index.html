@@ -644,6 +644,16 @@
           <p id="benchmarkResult" class="result">Nessun benchmark eseguito.</p>
 
           <div id="rasterStrokeGoldenSection" hidden>
+            <button id="runRasterShadowGolden" class="wide" type="button">
+              Cattura golden pixel Ombre
+            </button>
+            <p id="rasterShadowGoldenResult" class="result">
+              Sei casi isolati: esterna, interna e combinata; non modifica il disegno.
+            </p>
+            <details id="rasterShadowGoldenDetails" hidden>
+              <summary>Report Golden Ombre JSON</summary>
+              <pre id="rasterShadowGoldenReport" class="golden-report"></pre>
+            </details>
             <button id="runRasterStrokeGolden" class="wide" type="button">
               Cattura golden pixel Traccia
             </button>

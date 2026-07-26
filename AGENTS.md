@@ -362,9 +362,11 @@ Paint:
   soften, contour/range) invalidano l'heightfield; depth, luce, colori,
   opacità, gloss, AA e fill ricompongono soltanto i pixel. Una prova runtime ha
   confermato `depth` con delta build `0` e `size` con delta build `1`.
-- Se Smusso è l'unico stile attivo, continua a forzare anche il compositore
-  `RasterStrokeRenderer` completo: styled mip condivisi, coverage/mask e scratch
-  Traccia. Sul runtime locale rev `42`, tutti gli stili off misurano `92,7 MiB`;
+- Se Smusso è l'unico stile attivo, continua a forzare il compositore
+  `RasterStrokeRenderer`: styled mip condivisi e coverage/mask restano
+  residenti. Dal candidato del 27 luglio lo scratch Traccia è però il placeholder
+  `8²`, mentre il pool fisico segue il workspace Smusso. Sul runtime storico
+  rev `42`, prima di questa riduzione, tutti gli stili off misurano `92,7 MiB`;
   Traccia width `14` + Smusso default misurano `218,2 MiB` e width `512` +
   Smusso `266,2 MiB`. Disabilitare l'ultimo stile riporta il pool a `0 byte`.
 - Da rev `42` Traccia e Smusso condividono un solo `GPUBuffer` scratch fisico.
@@ -433,33 +435,53 @@ Paint:
   con Traccia e Smusso: la capacità fisica resta il massimo dei layout attivi,
   non la loro somma. Le risorse sono lazy e il toggle OFF distrugge matte e
   controllo; il prewarm riusa lease e bind group finché l'extent non cambia.
-- Prova runtime locale su NVIDIA Ampere: tutti gli effetti OFF `92,7 MiB`;
-  sola Ombra esterna `165,1 MiB`; entrambe `181,6 MiB`; disattivata l'interna
-  `165,1 MiB`; disattivate entrambe di nuovo `92,7 MiB`. Il salto della prima
-  ombra include il compositore `RasterStrokeRenderer`, non va attribuito al
-  solo matte. Verificati tratto reale, contour Anello, Estensione, Riduci,
+- Baseline runtime locale pre-riduzione su NVIDIA Ampere: tutti gli effetti OFF
+  `92,7 MiB`; sola Ombra esterna `165,0 MiB`; entrambe circa `181,6 MiB`.
+  Il salto della prima ombra include il compositore `RasterStrokeRenderer`, non
+  va attribuito al solo matte. Verificati tratto reale, contour Anello,
+  Estensione, Riduci,
   Size/Distanza/Opacità, profilo Gaussiano con Disturbo `100%` senza riaccendere
   i pixel a coverage zero, compilazione WGSL dei due renderer, isolamento dello
   stato fra due livelli e rilascio completo senza warning/errori console.
+- Esperimento isolato memoria del 27 luglio 2026: quando la Traccia è OFF ma il
+  suo renderer serve soltanto da compositore per Ombre/Smusso, il requisito
+  scratch Traccia passa dal tier `1024²` (`16 MiB`) al minimo di bind group
+  `8²` (`1 KiB`). Con sola Ombra esterna default il pool fisico scende
+  `16,0→0,6 MiB` e il totale conteggiato `165,0→149,6 MiB` (`−15,4 MiB`);
+  con entrambe le ombre il totale corrente è `166,1 MiB`. Attivare la Traccia
+  rialloca correttamente `16,0 MiB`; disattivarla di nuovo, dopo l'isteresi idle
+  di `1500 ms`, riporta il pool a `0,6 MiB`. Il matte e le altre risorse
+  persistenti non sono cambiati. Strategia firmata:
+  `compositor-only-8-otherwise-width-tiered-1024-through-128-or-2048`.
 - Prova percettiva dell'utente approvata il 27 luglio 2026 sulla build locale:
   Ombra esterna e Ombra interna, controlli e risultato visivo sono stati
   giudicati «perfetti». L'approvazione promuove il gate percettivo del candidato
-  corrente; non sostituisce il Golden dedicato né la futura misura iPhone.
+  corrente; non sostituisce un oracle Photoshop→WebGPU né la futura misura
+  iPhone.
+- Golden di regressione Ombre v1 aggiunto il 27 luglio 2026: renderer isolato
+  RGBA8 `256×192`, fixture `bcbaa02c…`, sei casi (esterna morbida, esterna
+  dura/contour/Disturbo, interna morbida, interna dura/contour/Disturbo e
+  combinata ripetuta) e mip `0–8`, cioè `54` hash. Baseline vincolante in
+  `goldens/raster-shadow-rgba8-v1.json`: combinato mip `0`
+  `2b812a001c7951ea…`, combinato catena mip `f5bcd1e4caee360a…`.
+  Prima e dopo la riduzione scratch: `baselineMatches: true`, ripetizione
+  combinata identica e zero warning/errori WebGPU. Il comando UI è separato da
+  quello della Traccia e non tocca il disegno dell'utente.
 - Con entrambe le ombre OFF il fast path conserva il vecchio shader: Golden
   canonico mip `0` ancora `8d5a75a6…`; il combinato mip resta
   `9208e2a3…` con gli stessi `25` mismatch e i tre diagnostici delta massimo
   `1` già aperti, quindi non sono stati nascosti o rigenerati. Telemetria rev
-  `48` firma build, strategie, stili, source mode, conteggi pass/build, extent
+  `49` firma build, strategie, stili, source mode, conteggi pass/build, extent
   scratch e le quattro righe memoria dedicate.
 - Verifiche finali locali: `shadow:verify`, `effects-scratch:verify`,
   `history:verify`, `layers:verify`, `stroke:verify`, `bevel:verify`,
   `grain:verify`, `blend:verify`, `thickness:verify`, TypeScript e build Vite.
-  Non esiste ancora un Golden dedicato Photoshop→WebGPU né una run iPhone: **non
-  dichiarare le ombre pixel-identiche a Photoshop o più veloci**. Il Golden
-  dovrà coprire almeno Estensione/Riduci, Size `0/1/250`, offset e bordi,
-  seam `256`, alpha frazionaria e Layer Knocks Out, tutti i contour/mip
-  `0–12`, i tre source mode e l'ordine con Traccia/Smusso; resta necessaria
-  anche la prova percettiva dell'utente.
+  Il Golden v1 blocca regressioni del candidato WebGPU corrente, ma non è ancora
+  un oracle Photoshop→WebGPU e non esiste una run iPhone: **non dichiarare le
+  ombre pixel-identiche a Photoshop o più veloci**. L'estensione futura dovrà
+  coprire Size `0/1/250`, seam `256`, bordi/corner, i tre source mode e l'ordine
+  completo con Traccia/Smusso; la prova percettiva utente del candidato è già
+  approvata.
 
 ### Banco effetti condiviso (Fasi 1–2, retargetable + pool scratch)
 

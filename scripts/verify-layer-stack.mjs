@@ -687,9 +687,9 @@ const mainSource = readFileSync(
   "utf8",
 );
 assert.equal(
-  (mainSource.match(/performanceTelemetryRevision: 48/g) ?? []).length,
+  (mainSource.match(/performanceTelemetryRevision: 49/g) ?? []).length,
   2,
-  "tipo persistito e runtime devono avanzare insieme alla revisione 48",
+  "tipo persistito e runtime devono avanzare insieme alla revisione 49",
 );
 assert.match(mainSource, /layerBakeStrategy: string;/);
 assert.match(mainSource, /layerCompositeStrategy: string;/);
@@ -953,8 +953,13 @@ assert.match(ensureBody, /layerEffectRendererRequirements\(/,
   "la decisione Smusso-only deve passare dall'invariante testato");
 assert.match(ensureBody, /if \(requirements\.needsStrokeRenderer\)/,
   "Smusso deve ricreare anche il compositore Traccia");
-assert.match(ensureBody, /rasterStrokeScratchExtentForWidth\(requirements\.strokeWidth\)/,
-  "il tier di scratch dipende dalla width del livello entrante");
+assert.match(
+  ensureBody,
+  /rasterStrokeScratchExtentForRenderer\([\s\S]*?strokeGeometryActive,[\s\S]*?requirements\.strokeWidth/,
+  "il tier dipende dall'attività della Traccia e dalla width del livello entrante",
+);
+assert.match(ensureBody, /record\.strokeStyle\.enabled && record\.strokeStyle\.width > 0/,
+  "un compositore senza Traccia deve usare lo scratch minimo");
 assert.match(ensureBody, /this\.rasterStrokeRenderer\.resizeScratch\(scratchExtent\)/);
 
 // A failed activation mutates Blend, effects and live content fields before it
@@ -1120,7 +1125,7 @@ assert.match(exactStudyBody, /temporaryReadbackPeakMiB/);
 assert.match(layerHistoryGpuTestSource, /measureExactLayerStorageStudy\(\)/);
 assert.match(layerHistoryGpuTestSource, /conservativeTilesContainEveryExactTile/);
 assert.match(layerHistoryGpuTestSource, /exactReadbackReleasedItsTemporaryBuffers/);
-assert.match(mainSource, /performanceTelemetryRevision: 48/);
+assert.match(mainSource, /performanceTelemetryRevision: 49/);
 assert.match(mainSource, /gpuMemoryLayerCold/);
 assert.match(mainSource, /gpuMemoryLayerHydration/);
 assert.match(mainSource, /Raw livelli · effettivo/);

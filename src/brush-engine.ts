@@ -42,13 +42,16 @@ import {
   type RasterStrokeSourceMode,
 } from "./stroke-renderer";
 import type { RasterStrokeGoldenReport } from "./stroke-golden";
+import type { RasterShadowGoldenReport } from "./shadow-golden";
 import {
   DEFAULT_RASTER_STROKE_STYLE,
   RASTER_STROKE_COMPACT_SCRATCH_MAX_WIDTH,
+  RASTER_STROKE_COMPOSITOR_ONLY_SCRATCH_EXTENT,
   RASTER_STROKE_SCRATCH_STRATEGY,
   copyRasterStrokeStyle,
   normalizeRasterStrokeStyle,
   rasterStrokeScratchExtentForWidth,
+  rasterStrokeScratchExtentForRenderer,
   rasterStrokeStylesEqual,
   type RasterStrokeRect,
   type RasterStrokeStyle,
@@ -2258,11 +2261,16 @@ export class BrushEngine {
 
   private async ensureRasterStrokeRenderer(
     styleWidth = this.rasterStrokeStyle.width,
+    strokeGeometryActive =
+      this.rasterStrokeStyle.enabled && styleWidth > 0,
   ): Promise<RasterStrokeRenderer> {
     if (this.rasterStrokeRenderer) {
       return this.rasterStrokeRenderer;
     }
-    const scratchExtent = rasterStrokeScratchExtentForWidth(styleWidth);
+    const scratchExtent = rasterStrokeScratchExtentForRenderer(
+      strokeGeometryActive,
+      styleWidth,
+    );
     const renderer = await RasterStrokeRenderer.create({
       device: this.device,
       documentWidth: LAYER_SIZE,
@@ -2504,7 +2512,7 @@ export class BrushEngine {
         if (!this.rasterStrokeRenderer) {
           this.callbacks.onStatus?.("Preparo la Traccia WebGPU…", "working");
           await this.waitForIdle();
-          await this.ensureRasterStrokeRenderer(normalized.width);
+          await this.ensureRasterStrokeRenderer(normalized.width, true);
         } else if (this.rasterStrokeRenderer.scratchExtent !== scratchExtent) {
           this.callbacks.onStatus?.("Adatto la memoria scratch della Traccia…", "working");
           await this.waitForIdle();
@@ -2539,6 +2547,16 @@ export class BrushEngine {
             this.layerContentBounds,
             previous.width,
           );
+          if (
+            this.rasterStrokeRenderer
+            && this.rasterStrokeRenderer.scratchExtent
+              !== RASTER_STROKE_COMPOSITOR_ONLY_SCRATCH_EXTENT
+          ) {
+            this.rasterStrokeRenderer.resizeScratch(
+              RASTER_STROKE_COMPOSITOR_ONLY_SCRATCH_EXTENT,
+            );
+            this.scheduleEffectsScratchShrink();
+          }
         } else {
           this.releaseRasterStrokeRenderer();
         }
@@ -5292,6 +5310,18 @@ export class BrushEngine {
     return runRasterStrokeGolden(this.device, {
       bevelBoundingFieldEnabled: this.bevelBoundingFieldEnabled,
     });
+  }
+
+  async runRasterShadowGolden(): Promise<RasterShadowGoldenReport> {
+    if (!this.initialized) {
+      throw new Error("WebGPU non ancora inizializzato.");
+    }
+    if (this.activeStroke) {
+      throw new Error("Termina prima la pennellata attiva.");
+    }
+    await this.waitForIdle();
+    const { runRasterShadowGolden } = await import("./shadow-golden");
+    return runRasterShadowGolden(this.device);
   }
 
   async waitForIdle(): Promise<void> {
@@ -8372,12 +8402,25 @@ export class BrushEngine {
       await this.ensureRasterInnerShadowRenderer();
     }
     if (requirements.needsStrokeRenderer) {
-      const scratchExtent = rasterStrokeScratchExtentForWidth(requirements.strokeWidth);
+      const strokeGeometryActive =
+        record.strokeStyle.enabled && record.strokeStyle.width > 0;
+      const scratchExtent = rasterStrokeScratchExtentForRenderer(
+        strokeGeometryActive,
+        requirements.strokeWidth,
+      );
       if (!this.rasterStrokeRenderer) {
-        await this.ensureRasterStrokeRenderer(requirements.strokeWidth);
+        await this.ensureRasterStrokeRenderer(
+          requirements.strokeWidth,
+          strokeGeometryActive,
+        );
       } else if (this.rasterStrokeRenderer.scratchExtent !== scratchExtent) {
         this.rasterStrokeRenderer.resizeScratch(scratchExtent);
       }
+    } else if (
+      this.rasterStrokeRenderer
+      && this.rasterStrokeRenderer.scratchExtent !== RASTER_STROKE_COMPOSITOR_ONLY_SCRATCH_EXTENT
+    ) {
+      this.rasterStrokeRenderer.resizeScratch(RASTER_STROKE_COMPOSITOR_ONLY_SCRATCH_EXTENT);
     }
     this.rasterOuterShadowRenderer?.updateStyle(record.outerShadowStyle);
     this.rasterInnerShadowRenderer?.updateStyle(record.innerShadowStyle);
