@@ -350,10 +350,11 @@ Paint:
   una zona completamente opaca o vuota azzera i dispatch del campo; alpha
   frazionario resta conservativo. Encoder e submit restano quelli unici
   dell'aggiornamento del motore.
-- Ordine vincolante nel compositore comune:
-  `sorgente → Smusso/Rilievo → Traccia → dithering → layer opacity`. La Traccia
-  continua a ricavare la distanza dall'alpha sorgente; il compositing outside
-  usa invece l'alpha già modificata dallo Smusso, come nell'originale. LOD `0`
+- Ordine vincolante corrente nel compositore comune:
+  `sorgente → Ombra interna → Smusso/Rilievo → Traccia → Ombra esterna dietro il nodo → dithering → layer opacity`.
+  La Traccia continua a ricavare la distanza dall'alpha sorgente; il
+  compositing outside usa invece l'alpha già modificata dagli effetti interni,
+  come nell'originale. LOD `0`
   è ricostruito direttamente; sono residenti solo i mip styled logici `1–12`.
 - Sono collegati gli stessi ingressi `permanent`, `light-glaze` / M1 R8 e
   `thickness-tail`; verificati in runtime su WebGPU insieme a Normal, Light
@@ -401,21 +402,83 @@ Paint:
   corner documento, mip `0–12`, AA, source mode e combinazione con le tre
   posizioni della Traccia. Lo Scalpello sulle seam è il rischio prioritario.
 
+### Ombra esterna / Ombra interna raster (WebGPU, sperimentali)
+
+- Implementate il 26 luglio 2026 come due effetti realmente distinti e
+  non distruttivi. Core
+  `raster-shadow-core-webgpu-v1-morphology-then-gaussian`, renderer
+  `raster-shadow-webgpu-v1-independent-packed-r8-morphology-gaussian` e
+  style stack
+  `style-stack-webgpu-v13-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even`.
+  Ogni record livello conserva separatamente entrambi gli stili; cambiare o
+  disattivare un'ombra non modifica i pixel autorevoli del layer.
+- Parametri Ombra esterna: attivazione, `Normal` oppure `Multiply` nero,
+  colore, opacità, angolo, distanza, Estensione, Dimensione, quattro contour,
+  AA del contour, Disturbo e `Layer Knocks Out`. `Multiply` colorato viene
+  rifiutato esplicitamente perché non è rappresentabile esattamente da un
+  piano premoltiplicato indipendente dal backdrop; per il colore usare
+  `Normal`. Parametri Ombra interna: attivazione, `Normal`/`Multiply`, colore,
+  opacità, angolo, distanza, Riduci, Dimensione, contour, AA e Disturbo.
+  `useGlobalLight` resta nel modello tipizzato ma non è ancora collegato a un
+  controllo luce globale condiviso.
+- Pipeline interamente GPU e senza readback CPU: alpha della sorgente
+  (`permanent`, Light/M1 Glaze live o `thickness-tail`) → dilatazione massima
+  per Estensione esterna / erosione minima per Riduci interna → Gaussian
+  separabile orizzontale/verticale con cache workgroup → resolve packed R8.
+  Tile `256`, Size massimo `250 px`; il Disturbo e i contour vengono applicati
+  nel compositore comune.
+- Ogni ombra abilitata possiede un matte packed R8 persistente full-document da
+  esattamente `16 MiB` e `0,500061 MiB` di uniform/parametri. I due matte non
+  sono condivisi. I due ping/pong f32 ROI vivono invece nel pool scratch comune
+  con Traccia e Smusso: la capacità fisica resta il massimo dei layout attivi,
+  non la loro somma. Le risorse sono lazy e il toggle OFF distrugge matte e
+  controllo; il prewarm riusa lease e bind group finché l'extent non cambia.
+- Prova runtime locale su NVIDIA Ampere: tutti gli effetti OFF `92,7 MiB`;
+  sola Ombra esterna `165,1 MiB`; entrambe `181,6 MiB`; disattivata l'interna
+  `165,1 MiB`; disattivate entrambe di nuovo `92,7 MiB`. Il salto della prima
+  ombra include il compositore `RasterStrokeRenderer`, non va attribuito al
+  solo matte. Verificati tratto reale, contour Anello, Estensione, Riduci,
+  Size/Distanza/Opacità, profilo Gaussiano con Disturbo `100%` senza riaccendere
+  i pixel a coverage zero, compilazione WGSL dei due renderer, isolamento dello
+  stato fra due livelli e rilascio completo senza warning/errori console.
+- Prova percettiva dell'utente approvata il 27 luglio 2026 sulla build locale:
+  Ombra esterna e Ombra interna, controlli e risultato visivo sono stati
+  giudicati «perfetti». L'approvazione promuove il gate percettivo del candidato
+  corrente; non sostituisce il Golden dedicato né la futura misura iPhone.
+- Con entrambe le ombre OFF il fast path conserva il vecchio shader: Golden
+  canonico mip `0` ancora `8d5a75a6…`; il combinato mip resta
+  `9208e2a3…` con gli stessi `25` mismatch e i tre diagnostici delta massimo
+  `1` già aperti, quindi non sono stati nascosti o rigenerati. Telemetria rev
+  `48` firma build, strategie, stili, source mode, conteggi pass/build, extent
+  scratch e le quattro righe memoria dedicate.
+- Verifiche finali locali: `shadow:verify`, `effects-scratch:verify`,
+  `history:verify`, `layers:verify`, `stroke:verify`, `bevel:verify`,
+  `grain:verify`, `blend:verify`, `thickness:verify`, TypeScript e build Vite.
+  Non esiste ancora un Golden dedicato Photoshop→WebGPU né una run iPhone: **non
+  dichiarare le ombre pixel-identiche a Photoshop o più veloci**. Il Golden
+  dovrà coprire almeno Estensione/Riduci, Size `0/1/250`, offset e bordi,
+  seam `256`, alpha frazionaria e Layer Knocks Out, tutti i contour/mip
+  `0–12`, i tre source mode e l'ordine con Traccia/Smusso; resta necessaria
+  anche la prova percettiva dell'utente.
+
 ### Banco effetti condiviso (Fasi 1–2, retargetable + pool scratch)
 
 - Strategia corrente `single-retargetable-active-layer-source`: un solo
-  `EffectsWorkbench` possiede Traccia e Smusso per la sorgente attiva. Il
-  numero di working set resta quindi O(1) rispetto ai layer futuri; questa fase
+  `EffectsWorkbench` possiede Traccia, Smusso, Ombra esterna e Ombra interna
+  per la sorgente attiva. Il numero di working set resta quindi O(1) rispetto ai layer futuri; questa fase
   non introduce ancora layer multipli.
-- Build correnti: Traccia
-  `style-stack-webgpu-v9-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even`
-  e Smusso
-  `raster-bevel-webgpu-v4-shared-effects-scratch-retargetable-layer-heightfield-v2-r32f-segment-jfa-workgroup-gaussian-gpu-gate`.
+- Build correnti: style stack
+  `style-stack-webgpu-v13-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even`,
+  Smusso
+  `raster-bevel-webgpu-v4-shared-effects-scratch-retargetable-layer-heightfield-v2-r32f-segment-jfa-workgroup-gaussian-gpu-gate`
+  e Ombre
+  `raster-shadow-webgpu-v1-independent-packed-r8-morphology-gaussian`.
 - Il retarget a formato identico ricrea tutti i bind group che referenziano la
-  source view nei due renderer e i display bind group lato engine, poi invalida
-  coverage/mask/styled mip/heightfield/cache di presentazione ed esegue in un
-  solo encoder clear + rebuild dell’intero `4096²`. I bind group dei downsample
-  mip restano validi perché puntano soltanto alle texture interne riusate.
+  source view nei quattro renderer e i display bind group lato engine, poi
+  invalida coverage/mask/styled mip/heightfield/matte/cache di presentazione ed
+  esegue in un solo encoder clear + rebuild del contenuto pertinente. I bind
+  group dei downsample mip restano validi perché puntano soltanto alle texture
+  interne riusate.
   Formati incompatibili restano sul fallback distruttivo `setLayerFormat()`.
 - Diagnostica Golden rev `4`: il caso
   `stroke-bevel-same-view-retarget` passa con mip `0` e `1` identici, zero byte
@@ -470,9 +533,10 @@ documento+apron (`64,06 MiB` fissi) a inviluppo tile-aligned dei job + apron.
 
 Il modello CPU resta in `src/layer-stack.ts` (`npm run layers:verify`): record
 ordinati, id monotoni mai riusati, bounds/`hasContent`, visibilità, opacità e
-stili Traccia/Smusso per livello. La mappa GPU è chiavata sull'id stabile. Il cap
-resta `16`, ma dal candidato commit 13 il costo eager per livello è soltanto il
-mip `0` autorevole: `64 MiB` RGBA8 o `128 MiB` RGBA16F.
+stili Traccia/Smusso/Ombra esterna/Ombra interna per livello. La mappa GPU è
+chiavata sull'id stabile. Il cap resta `16`, ma dal candidato commit 13 il
+costo eager per livello è soltanto il mip `0` autorevole: `64 MiB` RGBA8 o
+`128 MiB` RGBA16F.
 
 Architettura display candidata:
 
@@ -501,8 +565,8 @@ effetti. Gli altri fold source-over usano lo stesso rettangolo come scissor.
 Il display esegue in lineare premoltiplicato
 `mergedAbove over (active * activeLayerAlpha over mergedBelow)`, poi scacchiera e
 conversione lineare→sRGB. Lo stesso ordine è cablato nei quattro percorsi:
-permanente, Light/M1 Glaze live, coda spessore e display diretto
-Traccia/Smusso. Visibilità e opacità dell'attivo passano nei tre slot prima
+permanente, Light/M1 Glaze live, coda spessore e display diretto dello style
+stack. Visibilità e opacità dell'attivo passano nei tre slot prima
 liberi della uniform da `48 byte`; cambiarle su un inattivo ricostruisce la
 superficie fusa interessata, mentre sull'attivo basta invalidare la cache di
 presentazione.
@@ -527,10 +591,11 @@ inattivo stilizzato. `layers:verify` vincola l'intera catena.
 
 Gli stili restano accessori del record attivo. Lo switch persiste stato e bake
 dell'uscente, carica texture e metadati dell'entrante, ritargetta Blend e banco
-effetti, ricostruisce le due superfici fuse e invalida la cache. Smusso-only
-richiede comunque `RasterStrokeRenderer`, che è il compositore comune. La UI
-risincronizza Traccia/Smusso a ogni cambio e ora espone selezione, visibilità e
-opacità separatamente.
+effetti, ricostruisce le due superfici fuse e invalida la cache. Smusso-only o
+qualunque Ombra-only richiede comunque `RasterStrokeRenderer`, che è il
+compositore comune. La UI risincronizza Traccia/Smusso/Ombra esterna/Ombra
+interna a ogni cambio e ora espone selezione, visibilità e opacità
+separatamente.
 
 Costi storici pre-compositing misurati su desktop Ampere, effetti attivi e flag
 bbox OFF (non riutilizzarli come risultato del candidato):

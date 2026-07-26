@@ -290,7 +290,7 @@
             Aggiungi livello
           </button>
           <p id="layerSwitchResult" class="result" aria-live="polite">
-            Ogni livello ha i propri effetti Traccia e Smusso.
+            Ogni livello conserva Traccia, Ombra esterna, Ombra interna e Smusso.
           </p>
         </section>
 
@@ -327,6 +327,166 @@
 
             <p class="result">
               Equivalenza M1: JFA duale, distanza Q10.6, copertura R8 e compositing premoltiplicato.
+            </p>
+          </div>
+        </section>
+
+        <section id="rasterOuterShadowSection">
+          <h2>Ombra esterna</h2>
+
+          <label class="check-control">
+            <input id="rasterOuterShadowEnabled" type="checkbox" />
+            <span>
+              Ombra proiettata
+              <small>Matte R8 indipendente, applicata senza modificare i pixel sorgente.</small>
+            </span>
+          </label>
+
+          <div id="rasterOuterShadowParameters" hidden>
+            <label class="control">
+              <span>Metodo fusione</span>
+              <select id="rasterOuterShadowBlendMode">
+                <option value="multiply" selected>Moltiplica — nero</option>
+                <option value="normal">Normale</option>
+              </select>
+            </label>
+
+            <label class="control color-control">
+              <span>Colore</span>
+              <input id="rasterOuterShadowColor" type="color" value="#000000" />
+            </label>
+
+            <label class="control">
+              <span>Opacità <output id="rasterOuterShadowOpacityOut">75%</output></span>
+              <input id="rasterOuterShadowOpacity" type="range" min="0" max="100" step="1" value="75" />
+            </label>
+
+            <label class="control">
+              <span>Angolo <output id="rasterOuterShadowAngleOut">120°</output></span>
+              <input id="rasterOuterShadowAngle" type="range" min="0" max="359" step="1" value="120" />
+            </label>
+
+            <label class="control">
+              <span>Distanza <output id="rasterOuterShadowDistanceOut">5 px</output></span>
+              <input id="rasterOuterShadowDistance" type="range" min="0" max="1024" step="1" value="5" />
+            </label>
+
+            <label class="control">
+              <span>Estensione <output id="rasterOuterShadowSpreadOut">0%</output></span>
+              <input id="rasterOuterShadowSpread" type="range" min="0" max="100" step="1" value="0" />
+            </label>
+
+            <label class="control">
+              <span>Dimensione <output id="rasterOuterShadowSizeOut">5 px</output></span>
+              <input id="rasterOuterShadowSize" type="range" min="0" max="250" step="1" value="5" />
+            </label>
+
+            <label class="control">
+              <span>Profilo</span>
+              <select id="rasterOuterShadowContour">
+                <option value="linear" selected>Lineare</option>
+                <option value="cone">Cono</option>
+                <option value="gaussian">Gaussiano</option>
+                <option value="ring">Anello</option>
+              </select>
+            </label>
+
+            <label class="check-control">
+              <input id="rasterOuterShadowContourAA" type="checkbox" checked />
+              <span>Antialias del profilo</span>
+            </label>
+
+            <label class="control">
+              <span>Disturbo <output id="rasterOuterShadowNoiseOut">0%</output></span>
+              <input id="rasterOuterShadowNoise" type="range" min="0" max="100" step="1" value="0" />
+            </label>
+
+            <label class="check-control">
+              <input id="rasterOuterShadowLayerKnocksOut" type="checkbox" checked />
+              <span>
+                Il livello buca l’ombra
+                <small>Equivalente al comportamento «Layer Knocks Out Drop Shadow».</small>
+              </span>
+            </label>
+
+            <p class="result">
+              Estensione morfologica e Gaussian separabile sono calcolati in WebGPU; l’effetto resta modificabile per livello.
+            </p>
+          </div>
+        </section>
+
+        <section id="rasterInnerShadowSection">
+          <h2>Ombra interna</h2>
+
+          <label class="check-control">
+            <input id="rasterInnerShadowEnabled" type="checkbox" />
+            <span>
+              Ombra sul bordo interno
+              <small>Matte R8 indipendente, ritagliata dall’alpha del livello.</small>
+            </span>
+          </label>
+
+          <div id="rasterInnerShadowParameters" hidden>
+            <label class="control">
+              <span>Metodo fusione</span>
+              <select id="rasterInnerShadowBlendMode">
+                <option value="multiply" selected>Moltiplica</option>
+                <option value="normal">Normale</option>
+              </select>
+            </label>
+
+            <label class="control color-control">
+              <span>Colore</span>
+              <input id="rasterInnerShadowColor" type="color" value="#000000" />
+            </label>
+
+            <label class="control">
+              <span>Opacità <output id="rasterInnerShadowOpacityOut">75%</output></span>
+              <input id="rasterInnerShadowOpacity" type="range" min="0" max="100" step="1" value="75" />
+            </label>
+
+            <label class="control">
+              <span>Angolo <output id="rasterInnerShadowAngleOut">120°</output></span>
+              <input id="rasterInnerShadowAngle" type="range" min="0" max="359" step="1" value="120" />
+            </label>
+
+            <label class="control">
+              <span>Distanza <output id="rasterInnerShadowDistanceOut">5 px</output></span>
+              <input id="rasterInnerShadowDistance" type="range" min="0" max="1024" step="1" value="5" />
+            </label>
+
+            <label class="control">
+              <span>Riduci <output id="rasterInnerShadowChokeOut">0%</output></span>
+              <input id="rasterInnerShadowChoke" type="range" min="0" max="100" step="1" value="0" />
+            </label>
+
+            <label class="control">
+              <span>Dimensione <output id="rasterInnerShadowSizeOut">5 px</output></span>
+              <input id="rasterInnerShadowSize" type="range" min="0" max="250" step="1" value="5" />
+            </label>
+
+            <label class="control">
+              <span>Profilo</span>
+              <select id="rasterInnerShadowContour">
+                <option value="linear" selected>Lineare</option>
+                <option value="cone">Cono</option>
+                <option value="gaussian">Gaussiano</option>
+                <option value="ring">Anello</option>
+              </select>
+            </label>
+
+            <label class="check-control">
+              <input id="rasterInnerShadowContourAA" type="checkbox" checked />
+              <span>Antialias del profilo</span>
+            </label>
+
+            <label class="control">
+              <span>Disturbo <output id="rasterInnerShadowNoiseOut">0%</output></span>
+              <input id="rasterInnerShadowNoise" type="range" min="0" max="100" step="1" value="0" />
+            </label>
+
+            <p class="result">
+              Riduci morfologico e Gaussian separabile sono calcolati in WebGPU; l’ombra resta confinata dentro il livello.
             </p>
           </div>
         </section>
@@ -595,6 +755,10 @@
               <div data-memory-row><dt>Traccia · mask e controllo</dt><dd id="gpuMemoryStrokeControl">—</dd></div>
               <div data-memory-row><dt id="gpuMemoryEffectsScratchLabel">Effetti · pool scratch</dt><dd id="gpuMemoryEffectsScratch">—</dd></div>
               <div data-memory-row><dt>Pool scratch · picco</dt><dd id="gpuMemoryEffectsScratchPeak">—</dd></div>
+              <div class="gpu-memory-group-start" data-memory-row><dt>Ombra esterna · matte R8</dt><dd id="gpuMemoryOuterShadowMatte">—</dd></div>
+              <div data-memory-row><dt>Ombra esterna · controllo</dt><dd id="gpuMemoryOuterShadowControl">—</dd></div>
+              <div class="gpu-memory-group-start" data-memory-row><dt>Ombra interna · matte R8</dt><dd id="gpuMemoryInnerShadowMatte">—</dd></div>
+              <div data-memory-row><dt>Ombra interna · controllo</dt><dd id="gpuMemoryInnerShadowControl">—</dd></div>
               <div class="gpu-memory-group-start" data-memory-row><dt id="gpuMemoryBevelHeightLabel">Smusso · heightfield R32F</dt><dd id="gpuMemoryBevelHeight">—</dd></div>
               <div data-memory-row><dt>Smusso · LUT e controllo</dt><dd id="gpuMemoryBevelControl">—</dd></div>
 

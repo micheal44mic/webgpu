@@ -3,6 +3,10 @@
 // injected instead — see LayerStyleFactory.
 import type { RasterStrokeStyle } from "./stroke-core";
 import type { RasterBevelStyle } from "./bevel-core";
+import type {
+  RasterInnerShadowStyle,
+  RasterOuterShadowStyle,
+} from "./shadow-core";
 import type { LayerStorageTileMask } from "./layer-storage-study";
 
 export const LAYER_STACK_STRATEGY =
@@ -46,11 +50,15 @@ export interface LayerRecord {
   hasContent: boolean;
   strokeStyle: RasterStrokeStyle;
   bevelStyle: RasterBevelStyle;
+  outerShadowStyle: RasterOuterShadowStyle;
+  innerShadowStyle: RasterInnerShadowStyle;
 }
 
 export interface LayerEffectRendererRequirements {
   needsStrokeRenderer: boolean;
   needsBevelRenderer: boolean;
+  needsOuterShadowRenderer: boolean;
+  needsInnerShadowRenderer: boolean;
   strokeWidth: number;
 }
 
@@ -62,18 +70,27 @@ export interface LayerEffectRendererRequirements {
 export function layerEffectRendererRequirements(
   strokeStyle: Pick<RasterStrokeStyle, "enabled" | "width">,
   bevelStyle: Pick<RasterBevelStyle, "enabled">,
+  outerShadowStyle: Pick<RasterOuterShadowStyle, "enabled"> = { enabled: false },
+  innerShadowStyle: Pick<RasterInnerShadowStyle, "enabled"> = { enabled: false },
 ): LayerEffectRendererRequirements {
   const needsBevelRenderer = bevelStyle.enabled;
+  const needsOuterShadowRenderer = outerShadowStyle.enabled;
+  const needsInnerShadowRenderer = innerShadowStyle.enabled;
   return {
     needsStrokeRenderer:
-      (strokeStyle.enabled && strokeStyle.width > 0) || needsBevelRenderer,
+      (strokeStyle.enabled && strokeStyle.width > 0)
+      || needsBevelRenderer
+      || needsOuterShadowRenderer
+      || needsInnerShadowRenderer,
     needsBevelRenderer,
+    needsOuterShadowRenderer,
+    needsInnerShadowRenderer,
     strokeWidth: strokeStyle.width,
   };
 }
 
 /**
- * Produces a FRESH pair of style objects for each new layer. It must be invoked
+ * Produces a FRESH set of style objects for each new layer. It must be invoked
  * once per record: two records sharing one style object would mean editing the
  * bevel on one layer silently changed it on another, which is precisely what
  * per-layer effect state exists to prevent.
@@ -81,6 +98,8 @@ export function layerEffectRendererRequirements(
 export type LayerStyleFactory = () => {
   strokeStyle: RasterStrokeStyle;
   bevelStyle: RasterBevelStyle;
+  outerShadowStyle: RasterOuterShadowStyle;
+  innerShadowStyle: RasterInnerShadowStyle;
 };
 
 export class LayerStack {
@@ -99,7 +118,12 @@ export class LayerStack {
   private createRecord(name: string): LayerRecord {
     const id = this.nextId;
     this.nextId += 1;
-    const { strokeStyle, bevelStyle } = this.createStyles();
+    const {
+      strokeStyle,
+      bevelStyle,
+      outerShadowStyle,
+      innerShadowStyle,
+    } = this.createStyles();
     return {
       id,
       name,
@@ -110,6 +134,8 @@ export class LayerStack {
       hasContent: false,
       strokeStyle,
       bevelStyle,
+      outerShadowStyle,
+      innerShadowStyle,
     };
   }
 

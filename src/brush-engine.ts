@@ -76,6 +76,32 @@ import {
   type RasterBevelStyle,
 } from "./bevel-core";
 import {
+  RASTER_SHADOW_STORAGE_STRATEGY,
+  RASTER_SHADOW_WORKSPACE_STRATEGY,
+  RasterShadowRenderer,
+  type RasterShadowEncodeResult,
+} from "./shadow-renderer";
+import {
+  DEFAULT_RASTER_INNER_SHADOW_STYLE,
+  DEFAULT_RASTER_OUTER_SHADOW_STYLE,
+  classifyRasterInnerShadowStyleChange,
+  classifyRasterOuterShadowStyleChange,
+  copyRasterInnerShadowStyle,
+  copyRasterOuterShadowStyle,
+  normalizeRasterInnerShadowStyle,
+  normalizeRasterOuterShadowStyle,
+  rasterInnerShadowInfluenceBounds,
+  rasterInnerShadowStylesEqual,
+  rasterInnerShadowVisualBounds,
+  rasterOuterShadowInfluenceBounds,
+  rasterOuterShadowStylesEqual,
+  rasterOuterShadowUsesSupportedBlend,
+  rasterOuterShadowVisualBounds,
+  type RasterInnerShadowStyle,
+  type RasterOuterShadowStyle,
+  type RasterShadowRect,
+} from "./shadow-core";
+import {
   EFFECTS_WORKING_SET_STRATEGY,
   EffectsWorkbench,
 } from "./effects-workbench";
@@ -135,6 +161,12 @@ export type {
   RasterBevelStyle,
   RasterBevelTechnique,
 } from "./bevel-core";
+export type {
+  RasterInnerShadowStyle,
+  RasterOuterShadowStyle,
+  RasterShadowBlendMode,
+  RasterShadowContour,
+} from "./shadow-core";
 
 export type StampGeometry = "quad" | "oriented-support-quads";
 export type FragmentCoverageStrategy = "generic-smoothstep" | "shape-alpha-mask-2k";
@@ -275,6 +307,12 @@ export interface EngineGpuMemoryStats {
   effectsScratchPoolPeakMiB: number;
   effectsScratchStrokeExtent: number;
   effectsScratchBevelExtent: number;
+  effectsScratchOuterShadowExtent: number;
+  effectsScratchInnerShadowExtent: number;
+  rasterOuterShadowMatteMiB: number;
+  rasterOuterShadowControlMiB: number;
+  rasterInnerShadowMatteMiB: number;
+  rasterInnerShadowControlMiB: number;
   rasterBevelHeightMiB: number;
   rasterBevelLutAndControlMiB: number;
   rasterBevelFieldBounded: boolean;
@@ -401,6 +439,18 @@ export interface EngineStats {
   rasterBevelBuilds: number;
   rasterBevelPasses: number;
   rasterBevelRendererBuild: string | null;
+  rasterOuterShadowStyle: RasterOuterShadowStyle;
+  rasterOuterShadowPersistentMemoryMiB: number;
+  rasterOuterShadowScratchMemoryMiB: number;
+  rasterOuterShadowBuilds: number;
+  rasterOuterShadowPasses: number;
+  rasterOuterShadowRendererBuild: string | null;
+  rasterInnerShadowStyle: RasterInnerShadowStyle;
+  rasterInnerShadowPersistentMemoryMiB: number;
+  rasterInnerShadowScratchMemoryMiB: number;
+  rasterInnerShadowBuilds: number;
+  rasterInnerShadowPasses: number;
+  rasterInnerShadowRendererBuild: string | null;
 
   gpuMemory: EngineGpuMemoryStats;
   gpuLabel: string;
@@ -449,6 +499,8 @@ export interface EffectsWorkbenchRetargetResult {
   totalMs: number;
   stroke: RasterStrokeEncodeResult | null;
   bevel: RasterBevelEncodeResult | null;
+  outerShadow: RasterShadowEncodeResult | null;
+  innerShadow: RasterShadowEncodeResult | null;
 }
 
 export interface StrokePerformanceProfile {
@@ -1524,6 +1576,14 @@ export class BrushEngine {
   private get rasterBevelRenderer(): RasterBevelRenderer | null {
     return this.effectsWorkbench?.bevelRenderer ?? null;
   }
+
+  private get rasterOuterShadowRenderer(): RasterShadowRenderer | null {
+    return this.effectsWorkbench?.outerShadowRenderer ?? null;
+  }
+
+  private get rasterInnerShadowRenderer(): RasterShadowRenderer | null {
+    return this.effectsWorkbench?.innerShadowRenderer ?? null;
+  }
   /**
    * The stack owns the CPU state the map classified as per-layer. Today it holds
    * exactly one record, so behaviour is unchanged; routing the styles through it
@@ -1533,6 +1593,8 @@ export class BrushEngine {
   private readonly layerStack = new LayerStack(() => ({
     strokeStyle: copyRasterStrokeStyle(DEFAULT_RASTER_STROKE_STYLE),
     bevelStyle: copyRasterBevelStyle(DEFAULT_RASTER_BEVEL_STYLE),
+    outerShadowStyle: copyRasterOuterShadowStyle(DEFAULT_RASTER_OUTER_SHADOW_STYLE),
+    innerShadowStyle: copyRasterInnerShadowStyle(DEFAULT_RASTER_INNER_SHADOW_STYLE),
   }));
 
   /**
@@ -1597,6 +1659,38 @@ export class BrushEngine {
   private rasterBevelLastEncode: RasterBevelEncodeResult | null = null;
   private rasterBevelTotalBuilds = 0;
   private rasterBevelTotalPasses = 0;
+
+  private get rasterOuterShadowStyle(): RasterOuterShadowStyle {
+    return this.layerStack.active.outerShadowStyle;
+  }
+
+  private set rasterOuterShadowStyle(style: RasterOuterShadowStyle) {
+    this.layerStack.active.outerShadowStyle = style;
+  }
+
+  private rasterOuterShadowMatteValid = false;
+  private rasterOuterShadowSourceMode: RasterStrokeSourceMode | null = null;
+  private rasterOuterShadowPendingComposeRect: DirtyRect | null = null;
+  private rasterOuterShadowBusy = false;
+  private rasterOuterShadowLastEncode: RasterShadowEncodeResult | null = null;
+  private rasterOuterShadowTotalBuilds = 0;
+  private rasterOuterShadowTotalPasses = 0;
+
+  private get rasterInnerShadowStyle(): RasterInnerShadowStyle {
+    return this.layerStack.active.innerShadowStyle;
+  }
+
+  private set rasterInnerShadowStyle(style: RasterInnerShadowStyle) {
+    this.layerStack.active.innerShadowStyle = style;
+  }
+
+  private rasterInnerShadowMatteValid = false;
+  private rasterInnerShadowSourceMode: RasterStrokeSourceMode | null = null;
+  private rasterInnerShadowPendingComposeRect: DirtyRect | null = null;
+  private rasterInnerShadowBusy = false;
+  private rasterInnerShadowLastEncode: RasterShadowEncodeResult | null = null;
+  private rasterInnerShadowTotalBuilds = 0;
+  private rasterInnerShadowTotalPasses = 0;
 
   private rasterStrokeTotalBuilds = 0;
   private rasterStrokeTotalComposes = 0;
@@ -2066,6 +2160,22 @@ export class BrushEngine {
     return this.rasterBevelBusy;
   }
 
+  getRasterOuterShadowStyle(): RasterOuterShadowStyle {
+    return copyRasterOuterShadowStyle(this.rasterOuterShadowStyle);
+  }
+
+  isRasterOuterShadowBusy(): boolean {
+    return this.rasterOuterShadowBusy;
+  }
+
+  getRasterInnerShadowStyle(): RasterInnerShadowStyle {
+    return copyRasterInnerShadowStyle(this.rasterInnerShadowStyle);
+  }
+
+  isRasterInnerShadowBusy(): boolean {
+    return this.rasterInnerShadowBusy;
+  }
+
 
   private rasterStrokeActive(): boolean {
     return Boolean(
@@ -2080,6 +2190,18 @@ export class BrushEngine {
       && this.rasterBevelStyle.enabled,
     );
   }
+  private rasterOuterShadowActive(): boolean {
+    return Boolean(
+      this.rasterOuterShadowRenderer
+      && this.rasterOuterShadowStyle.enabled,
+    );
+  }
+  private rasterInnerShadowActive(): boolean {
+    return Boolean(
+      this.rasterInnerShadowRenderer
+      && this.rasterInnerShadowStyle.enabled,
+    );
+  }
 
   private styleStackActive(): boolean {
     return Boolean(
@@ -2087,6 +2209,8 @@ export class BrushEngine {
       && (
         (this.rasterStrokeStyle.enabled && this.rasterStrokeStyle.width > 0)
         || this.rasterBevelStyle.enabled
+        || this.rasterOuterShadowStyle.enabled
+        || this.rasterInnerShadowStyle.enabled
       ),
     );
   }
@@ -2161,6 +2285,16 @@ export class BrushEngine {
       renderer.updateBevelFieldParameters(this.rasterBevelRenderer.fieldState);
     }
     renderer.updateBevelParameters(this.rasterBevelStyle);
+    renderer.setShadowResources(
+      "outer",
+      this.rasterOuterShadowRenderer?.coverageBuffer ?? null,
+      this.rasterOuterShadowRenderer?.compositionUniformBuffer ?? null,
+    );
+    renderer.setShadowResources(
+      "inner",
+      this.rasterInnerShadowRenderer?.coverageBuffer ?? null,
+      this.rasterInnerShadowRenderer?.compositionUniformBuffer ?? null,
+    );
     this.requireEffectsWorkbench().attachStrokeRenderer(renderer);
     this.rebuildRasterStrokeDisplayBindGroups();
     this.rasterStrokeMipDownsampleBindGroups = renderer.mipViews
@@ -2231,6 +2365,106 @@ export class BrushEngine {
     }
   }
 
+  private async ensureRasterOuterShadowRenderer(): Promise<RasterShadowRenderer> {
+    if (this.rasterOuterShadowRenderer) {
+      return this.rasterOuterShadowRenderer;
+    }
+    const renderer = await RasterShadowRenderer.create({
+      device: this.device,
+      scratchPool: this.requireEffectsWorkbench().scratchPool,
+      kind: "outer",
+      documentWidth: LAYER_SIZE,
+      documentHeight: LAYER_SIZE,
+      layerView: this.layerView,
+      lightGlazeUniformBuffer: this.lightGlazeUniformBuffer,
+      thicknessTailUniformBuffer: this.thicknessTailDisplayUniformBuffer,
+    });
+    try {
+      renderer.setLightGlazeView(this.lightGlazeView);
+      renderer.setThicknessTailView(this.thicknessTailView);
+      renderer.updateStyle(this.rasterOuterShadowStyle);
+    } catch (error) {
+      renderer.destroy();
+      throw error;
+    }
+    this.requireEffectsWorkbench().attachOuterShadowRenderer(renderer);
+    this.rasterOuterShadowMatteValid = false;
+    this.rasterOuterShadowSourceMode = null;
+    this.rasterOuterShadowLastEncode = null;
+    if (this.rasterStrokeRenderer) {
+      this.rasterStrokeRenderer.setShadowResources(
+        "outer",
+        renderer.coverageBuffer,
+        renderer.compositionUniformBuffer,
+      );
+      this.rebuildRasterStrokeDisplayBindGroups();
+    }
+    return renderer;
+  }
+
+  private releaseRasterOuterShadowRenderer(): void {
+    if (this.rasterStrokeRenderer) {
+      this.rasterStrokeRenderer.setShadowResources("outer", null, null);
+    }
+    this.effectsWorkbench?.releaseOuterShadowRenderer();
+    this.rasterOuterShadowMatteValid = false;
+    this.rasterOuterShadowSourceMode = null;
+    this.rasterOuterShadowLastEncode = null;
+    if (this.rasterStrokeRenderer) {
+      this.rebuildRasterStrokeDisplayBindGroups();
+    }
+  }
+
+  private async ensureRasterInnerShadowRenderer(): Promise<RasterShadowRenderer> {
+    if (this.rasterInnerShadowRenderer) {
+      return this.rasterInnerShadowRenderer;
+    }
+    const renderer = await RasterShadowRenderer.create({
+      device: this.device,
+      scratchPool: this.requireEffectsWorkbench().scratchPool,
+      kind: "inner",
+      documentWidth: LAYER_SIZE,
+      documentHeight: LAYER_SIZE,
+      layerView: this.layerView,
+      lightGlazeUniformBuffer: this.lightGlazeUniformBuffer,
+      thicknessTailUniformBuffer: this.thicknessTailDisplayUniformBuffer,
+    });
+    try {
+      renderer.setLightGlazeView(this.lightGlazeView);
+      renderer.setThicknessTailView(this.thicknessTailView);
+      renderer.updateStyle(this.rasterInnerShadowStyle);
+    } catch (error) {
+      renderer.destroy();
+      throw error;
+    }
+    this.requireEffectsWorkbench().attachInnerShadowRenderer(renderer);
+    this.rasterInnerShadowMatteValid = false;
+    this.rasterInnerShadowSourceMode = null;
+    this.rasterInnerShadowLastEncode = null;
+    if (this.rasterStrokeRenderer) {
+      this.rasterStrokeRenderer.setShadowResources(
+        "inner",
+        renderer.coverageBuffer,
+        renderer.compositionUniformBuffer,
+      );
+      this.rebuildRasterStrokeDisplayBindGroups();
+    }
+    return renderer;
+  }
+
+  private releaseRasterInnerShadowRenderer(): void {
+    if (this.rasterStrokeRenderer) {
+      this.rasterStrokeRenderer.setShadowResources("inner", null, null);
+    }
+    this.effectsWorkbench?.releaseInnerShadowRenderer();
+    this.rasterInnerShadowMatteValid = false;
+    this.rasterInnerShadowSourceMode = null;
+    this.rasterInnerShadowLastEncode = null;
+    if (this.rasterStrokeRenderer) {
+      this.rebuildRasterStrokeDisplayBindGroups();
+    }
+  }
+
   async setRasterStrokeStyle(style: unknown): Promise<boolean> {
     const normalized = normalizeRasterStrokeStyle(style);
     const normalizedActive = normalized.enabled && normalized.width > 0;
@@ -2253,6 +2487,8 @@ export class BrushEngine {
       || this.layerSwitchBusy
       || this.rasterStrokeBusy
       || this.rasterBevelBusy
+      || this.rasterOuterShadowBusy
+      || this.rasterInnerShadowBusy
     ) {
       return false;
     }
@@ -2294,7 +2530,11 @@ export class BrushEngine {
         this.callbacks.onStatus?.("Traccia WebGPU attiva.", "ok");
       } else {
         await this.waitForIdle();
-        if (this.rasterBevelStyle.enabled) {
+        if (
+          this.rasterBevelStyle.enabled
+          || this.rasterOuterShadowStyle.enabled
+          || this.rasterInnerShadowStyle.enabled
+        ) {
           this.rasterStrokePendingComposeRect = this.rasterStrokeEffectRect(
             this.layerContentBounds,
             previous.width,
@@ -2308,8 +2548,8 @@ export class BrushEngine {
         this.requestRender();
         if (previousActive) {
           this.callbacks.onStatus?.(
-            this.rasterBevelStyle.enabled
-              ? "Traccia disattivata; il compositore condiviso resta per lo Smusso/Rilievo."
+            this.rasterBevelStyle.enabled || this.rasterOuterShadowStyle.enabled || this.rasterInnerShadowStyle.enabled
+              ? "Traccia disattivata; il compositore condiviso resta per gli altri effetti."
               : "Traccia disattivata; memoria GPU liberata.",
             "ok",
           );
@@ -2319,7 +2559,12 @@ export class BrushEngine {
       return true;
     } catch (error) {
       this.rasterStrokeStyle = previous;
-      if (!previousActive && !this.rasterBevelStyle.enabled) {
+      if (
+        !previousActive
+        && !this.rasterBevelStyle.enabled
+        && !this.rasterOuterShadowStyle.enabled
+        && !this.rasterInnerShadowStyle.enabled
+      ) {
         this.releaseRasterStrokeRenderer();
       }
       const message = error instanceof Error ? error.message : String(error);
@@ -2356,6 +2601,8 @@ export class BrushEngine {
       || this.layerSwitchBusy
       || this.rasterStrokeBusy
       || this.rasterBevelBusy
+      || this.rasterOuterShadowBusy
+      || this.rasterInnerShadowBusy
     ) {
       return false;
     }
@@ -2410,7 +2657,11 @@ export class BrushEngine {
       } else {
         this.rasterBevelPendingComposeRect = previousRect;
         this.releaseRasterBevelRenderer();
-        if (!(this.rasterStrokeStyle.enabled && this.rasterStrokeStyle.width > 0)) {
+        if (
+          !(this.rasterStrokeStyle.enabled && this.rasterStrokeStyle.width > 0)
+          && !this.rasterOuterShadowStyle.enabled
+          && !this.rasterInnerShadowStyle.enabled
+        ) {
           this.releaseRasterStrokeRenderer();
         }
         if (previousActive) {
@@ -2430,7 +2681,11 @@ export class BrushEngine {
       this.rasterBevelStyle = previous;
       if (!previousActive) {
         this.releaseRasterBevelRenderer();
-        if (!(this.rasterStrokeStyle.enabled && this.rasterStrokeStyle.width > 0)) {
+        if (
+          !(this.rasterStrokeStyle.enabled && this.rasterStrokeStyle.width > 0)
+          && !this.rasterOuterShadowStyle.enabled
+          && !this.rasterInnerShadowStyle.enabled
+        ) {
           this.releaseRasterStrokeRenderer();
         }
       } else {
@@ -2444,6 +2699,248 @@ export class BrushEngine {
       throw error;
     } finally {
       this.rasterBevelBusy = false;
+    }
+  }
+
+  async setRasterOuterShadowStyle(style: unknown): Promise<boolean> {
+    const normalized = normalizeRasterOuterShadowStyle(style);
+    if (!rasterOuterShadowUsesSupportedBlend(normalized)) {
+      throw new Error(
+        "L'Ombra esterna Multiply è esatta solo con colore nero; "
+        + "usa Normale per un'ombra colorata.",
+      );
+    }
+    if (this.initialized && this.layerSwitchBusy) {
+      return false;
+    }
+    const change = classifyRasterOuterShadowStyleChange(
+      this.rasterOuterShadowStyle,
+      normalized,
+    );
+    if (
+      rasterOuterShadowStylesEqual(normalized, this.rasterOuterShadowStyle)
+      && (!normalized.enabled || (this.rasterOuterShadowRenderer && this.rasterStrokeRenderer))
+    ) {
+      return true;
+    }
+    if (!this.initialized) {
+      this.rasterOuterShadowStyle = normalized;
+      return true;
+    }
+    if (
+      this.activeStroke
+      || this.historyBusy
+      || this.layerSwitchBusy
+      || this.rasterStrokeBusy
+      || this.rasterBevelBusy
+      || this.rasterOuterShadowBusy
+      || this.rasterInnerShadowBusy
+    ) {
+      return false;
+    }
+
+    this.flushPendingWorkBeforeSettingsChange();
+    const previous = copyRasterOuterShadowStyle(this.rasterOuterShadowStyle);
+    const previousRect = rasterOuterShadowVisualBounds(
+      this.layerContentBounds,
+      previous,
+      LAYER_SIZE,
+      LAYER_SIZE,
+    );
+    this.rasterOuterShadowBusy = true;
+    try {
+      await this.waitForIdle();
+      this.rasterOuterShadowStyle = normalized;
+      this.invalidateActiveLayerBake();
+      if (normalized.enabled) {
+        if (!this.rasterOuterShadowRenderer) {
+          this.callbacks.onStatus?.("Preparo l'Ombra esterna WebGPU…", "working");
+          await this.ensureRasterOuterShadowRenderer();
+        }
+        if (!this.rasterStrokeRenderer) {
+          await this.ensureRasterStrokeRenderer();
+        }
+        this.rasterOuterShadowRenderer!.updateStyle(normalized);
+        this.rasterStrokeRenderer!.setShadowResources(
+          "outer",
+          this.rasterOuterShadowRenderer!.coverageBuffer,
+          this.rasterOuterShadowRenderer!.compositionUniformBuffer,
+        );
+        if (change.matteChanged) {
+          this.rasterOuterShadowMatteValid = false;
+          this.rasterOuterShadowSourceMode = null;
+        }
+        const nextRect = rasterOuterShadowVisualBounds(
+          this.layerContentBounds,
+          normalized,
+          LAYER_SIZE,
+          LAYER_SIZE,
+        );
+        this.rasterOuterShadowPendingComposeRect = this.mergeDirtyRects(
+          previousRect,
+          nextRect,
+        );
+        this.callbacks.onStatus?.("Ombra esterna WebGPU attiva.", "ok");
+      } else {
+        this.rasterOuterShadowPendingComposeRect = previousRect;
+        this.releaseRasterOuterShadowRenderer();
+        if (
+          !(this.rasterStrokeStyle.enabled && this.rasterStrokeStyle.width > 0)
+          && !this.rasterBevelStyle.enabled
+          && !this.rasterInnerShadowStyle.enabled
+        ) {
+          this.releaseRasterStrokeRenderer();
+        }
+        this.callbacks.onStatus?.(
+          "Ombra esterna disattivata; matte R8 liberata.",
+          "ok",
+        );
+      }
+      this.paintDisplayMipValidThroughLevel = 0;
+      this.presentationCacheNeedsFullRebuild = true;
+      this.displayDirty = true;
+      this.requestRender();
+      this.publishStats();
+      return true;
+    } catch (error) {
+      this.rasterOuterShadowStyle = previous;
+      if (!previous.enabled) {
+        this.releaseRasterOuterShadowRenderer();
+        if (
+          !(this.rasterStrokeStyle.enabled && this.rasterStrokeStyle.width > 0)
+          && !this.rasterBevelStyle.enabled
+          && !this.rasterInnerShadowStyle.enabled
+        ) {
+          this.releaseRasterStrokeRenderer();
+        }
+      } else {
+        this.rasterOuterShadowMatteValid = false;
+        this.rasterOuterShadowSourceMode = null;
+        this.rasterOuterShadowRenderer?.updateStyle(previous);
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      this.callbacks.onStatus?.(`Ombra esterna WebGPU non disponibile: ${message}`, "error");
+      throw error;
+    } finally {
+      this.rasterOuterShadowBusy = false;
+    }
+  }
+
+  async setRasterInnerShadowStyle(style: unknown): Promise<boolean> {
+    const normalized = normalizeRasterInnerShadowStyle(style);
+    if (this.initialized && this.layerSwitchBusy) {
+      return false;
+    }
+    const change = classifyRasterInnerShadowStyleChange(
+      this.rasterInnerShadowStyle,
+      normalized,
+    );
+    if (
+      rasterInnerShadowStylesEqual(normalized, this.rasterInnerShadowStyle)
+      && (!normalized.enabled || (this.rasterInnerShadowRenderer && this.rasterStrokeRenderer))
+    ) {
+      return true;
+    }
+    if (!this.initialized) {
+      this.rasterInnerShadowStyle = normalized;
+      return true;
+    }
+    if (
+      this.activeStroke
+      || this.historyBusy
+      || this.layerSwitchBusy
+      || this.rasterStrokeBusy
+      || this.rasterBevelBusy
+      || this.rasterOuterShadowBusy
+      || this.rasterInnerShadowBusy
+    ) {
+      return false;
+    }
+
+    this.flushPendingWorkBeforeSettingsChange();
+    const previous = copyRasterInnerShadowStyle(this.rasterInnerShadowStyle);
+    const previousRect = rasterInnerShadowVisualBounds(
+      this.layerContentBounds,
+      previous,
+      LAYER_SIZE,
+      LAYER_SIZE,
+    );
+    this.rasterInnerShadowBusy = true;
+    try {
+      await this.waitForIdle();
+      this.rasterInnerShadowStyle = normalized;
+      this.invalidateActiveLayerBake();
+      if (normalized.enabled) {
+        if (!this.rasterInnerShadowRenderer) {
+          this.callbacks.onStatus?.("Preparo l'Ombra interna WebGPU…", "working");
+          await this.ensureRasterInnerShadowRenderer();
+        }
+        if (!this.rasterStrokeRenderer) {
+          await this.ensureRasterStrokeRenderer();
+        }
+        this.rasterInnerShadowRenderer!.updateStyle(normalized);
+        this.rasterStrokeRenderer!.setShadowResources(
+          "inner",
+          this.rasterInnerShadowRenderer!.coverageBuffer,
+          this.rasterInnerShadowRenderer!.compositionUniformBuffer,
+        );
+        if (change.matteChanged) {
+          this.rasterInnerShadowMatteValid = false;
+          this.rasterInnerShadowSourceMode = null;
+        }
+        const nextRect = rasterInnerShadowVisualBounds(
+          this.layerContentBounds,
+          normalized,
+          LAYER_SIZE,
+          LAYER_SIZE,
+        );
+        this.rasterInnerShadowPendingComposeRect = this.mergeDirtyRects(
+          previousRect,
+          nextRect,
+        );
+        this.callbacks.onStatus?.("Ombra interna WebGPU attiva.", "ok");
+      } else {
+        this.rasterInnerShadowPendingComposeRect = previousRect;
+        this.releaseRasterInnerShadowRenderer();
+        if (
+          !(this.rasterStrokeStyle.enabled && this.rasterStrokeStyle.width > 0)
+          && !this.rasterBevelStyle.enabled
+          && !this.rasterOuterShadowStyle.enabled
+        ) {
+          this.releaseRasterStrokeRenderer();
+        }
+        this.callbacks.onStatus?.(
+          "Ombra interna disattivata; matte R8 liberata.",
+          "ok",
+        );
+      }
+      this.paintDisplayMipValidThroughLevel = 0;
+      this.presentationCacheNeedsFullRebuild = true;
+      this.displayDirty = true;
+      this.requestRender();
+      this.publishStats();
+      return true;
+    } catch (error) {
+      this.rasterInnerShadowStyle = previous;
+      if (!previous.enabled) {
+        this.releaseRasterInnerShadowRenderer();
+        if (
+          !(this.rasterStrokeStyle.enabled && this.rasterStrokeStyle.width > 0)
+          && !this.rasterBevelStyle.enabled
+          && !this.rasterOuterShadowStyle.enabled
+        ) {
+          this.releaseRasterStrokeRenderer();
+        }
+      } else {
+        this.rasterInnerShadowMatteValid = false;
+        this.rasterInnerShadowSourceMode = null;
+        this.rasterInnerShadowRenderer?.updateStyle(previous);
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      this.callbacks.onStatus?.(`Ombra interna WebGPU non disponibile: ${message}`, "error");
+      throw error;
+    } finally {
+      this.rasterInnerShadowBusy = false;
     }
   }
 
@@ -2476,15 +2973,27 @@ export class BrushEngine {
         if (this.rasterBevelStyle.enabled) {
           await this.ensureRasterBevelRenderer();
         }
+        if (this.rasterOuterShadowStyle.enabled) {
+          await this.ensureRasterOuterShadowRenderer();
+        }
+        if (this.rasterInnerShadowStyle.enabled) {
+          await this.ensureRasterInnerShadowRenderer();
+        }
         if (
           (this.rasterStrokeStyle.enabled && this.rasterStrokeStyle.width > 0)
           || this.rasterBevelStyle.enabled
+          || this.rasterOuterShadowStyle.enabled
+          || this.rasterInnerShadowStyle.enabled
         ) {
           await this.ensureRasterStrokeRenderer();
         }
       } catch (styleError) {
         this.rasterStrokeStyle = { ...this.rasterStrokeStyle, enabled: false };
         this.rasterBevelStyle = { ...this.rasterBevelStyle, enabled: false };
+        this.rasterOuterShadowStyle = { ...this.rasterOuterShadowStyle, enabled: false };
+        this.rasterInnerShadowStyle = { ...this.rasterInnerShadowStyle, enabled: false };
+        this.releaseRasterOuterShadowRenderer();
+        this.releaseRasterInnerShadowRenderer();
         this.releaseRasterBevelRenderer();
         this.releaseRasterStrokeRenderer();
         console.error(
@@ -2622,6 +3131,12 @@ export class BrushEngine {
       // Prewarm before activeStroke is assigned: the pool never reallocates
       // while a pen/finger stroke is active, even after an idle shrink.
       this.rasterBevelRenderer?.prewarmWorkspace(this.rasterBevelStyle);
+    }
+    if (this.rasterOuterShadowActive()) {
+      this.rasterOuterShadowRenderer?.prewarmWorkspace(this.rasterOuterShadowStyle);
+    }
+    if (this.rasterInnerShadowActive()) {
+      this.rasterInnerShadowRenderer?.prewarmWorkspace(this.rasterInnerShadowStyle);
     }
     this.invalidateAdaptivePreview();
     const tool = this.settings.tool;
@@ -3053,6 +3568,8 @@ export class BrushEngine {
     const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
     const rasterStroke = this.rasterStrokeRenderer;
     const rasterBevel = this.rasterBevelRenderer;
+    const rasterOuterShadow = this.rasterOuterShadowRenderer;
+    const rasterInnerShadow = this.rasterInnerShadowRenderer;
     const effectsScratch = this.effectsWorkbench?.scratchPool.snapshot();
     // Exactly one active layer owns a full authoritative mip 0 at idle. Inactive
     // layers keep only their conservative 256px tiles. A second full texture may
@@ -3118,12 +3635,22 @@ export class BrushEngine {
       (effectsScratch?.peakBytes ?? 0) / MEBIBYTE_BYTES;
     const effectsScratchStrokeExtent = rasterStroke?.scratchExtent ?? 0;
     const effectsScratchBevelExtent = rasterBevel?.workspaceExtent ?? 0;
+    const effectsScratchOuterShadowExtent = rasterOuterShadow?.workspaceExtent ?? 0;
+    const effectsScratchInnerShadowExtent = rasterInnerShadow?.workspaceExtent ?? 0;
     const rasterBevelHeightMiB =
       (rasterBevel?.heightMemoryBytes ?? 0) / MEBIBYTE_BYTES;
     const rasterBevelLutAndControlMiB = (
       (rasterBevel?.lutMemoryBytes ?? 0)
       + (rasterBevel?.controlMemoryBytes ?? 0)
     ) / MEBIBYTE_BYTES;
+    const rasterOuterShadowMatteMiB =
+      (rasterOuterShadow?.coverageMemoryBytes ?? 0) / MEBIBYTE_BYTES;
+    const rasterOuterShadowControlMiB =
+      (rasterOuterShadow?.controlMemoryBytes ?? 0) / MEBIBYTE_BYTES;
+    const rasterInnerShadowMatteMiB =
+      (rasterInnerShadow?.coverageMemoryBytes ?? 0) / MEBIBYTE_BYTES;
+    const rasterInnerShadowControlMiB =
+      (rasterInnerShadow?.controlMemoryBytes ?? 0) / MEBIBYTE_BYTES;
     const rasterBevelField = rasterBevel?.fieldState ?? {
       bounded: this.bevelBoundingFieldEnabled,
       allocationBounds: null,
@@ -3165,6 +3692,10 @@ export class BrushEngine {
       thicknessTailMiB,
       rasterBevelHeightMiB,
       rasterBevelLutAndControlMiB,
+      rasterOuterShadowMatteMiB,
+      rasterOuterShadowControlMiB,
+      rasterInnerShadowMatteMiB,
+      rasterInnerShadowControlMiB,
     ].reduce((total, value) => total + value, 0);
 
     return {
@@ -3185,9 +3716,15 @@ export class BrushEngine {
       effectsScratchPoolPeakMiB,
       effectsScratchStrokeExtent,
       effectsScratchBevelExtent,
+      effectsScratchOuterShadowExtent,
+      effectsScratchInnerShadowExtent,
       blendRendererMiB,
       rasterBevelHeightMiB,
       rasterBevelLutAndControlMiB,
+      rasterOuterShadowMatteMiB,
+      rasterOuterShadowControlMiB,
+      rasterInnerShadowMatteMiB,
+      rasterInnerShadowControlMiB,
       rasterBevelFieldBounded: rasterBevelField.bounded,
       rasterBevelFieldAllocationBounds: rasterBevelField.allocationBounds,
       rasterBevelFieldValidBounds: rasterBevelField.validBounds,
@@ -3346,6 +3883,26 @@ export class BrushEngine {
       rasterBevelBuilds: this.rasterBevelTotalBuilds,
       rasterBevelPasses: this.rasterBevelTotalPasses,
       rasterBevelRendererBuild: this.rasterBevelRenderer?.build ?? null,
+      rasterOuterShadowStyle: copyRasterOuterShadowStyle(this.rasterOuterShadowStyle),
+      rasterOuterShadowPersistentMemoryMiB: (
+        (this.rasterOuterShadowRenderer?.coverageMemoryBytes ?? 0)
+        + (this.rasterOuterShadowRenderer?.controlMemoryBytes ?? 0)
+      ) / MEBIBYTE_BYTES,
+      rasterOuterShadowScratchMemoryMiB:
+        (this.rasterOuterShadowRenderer?.workspaceMemoryBytes ?? 0) / MEBIBYTE_BYTES,
+      rasterOuterShadowBuilds: this.rasterOuterShadowTotalBuilds,
+      rasterOuterShadowPasses: this.rasterOuterShadowTotalPasses,
+      rasterOuterShadowRendererBuild: this.rasterOuterShadowRenderer?.build ?? null,
+      rasterInnerShadowStyle: copyRasterInnerShadowStyle(this.rasterInnerShadowStyle),
+      rasterInnerShadowPersistentMemoryMiB: (
+        (this.rasterInnerShadowRenderer?.coverageMemoryBytes ?? 0)
+        + (this.rasterInnerShadowRenderer?.controlMemoryBytes ?? 0)
+      ) / MEBIBYTE_BYTES,
+      rasterInnerShadowScratchMemoryMiB:
+        (this.rasterInnerShadowRenderer?.workspaceMemoryBytes ?? 0) / MEBIBYTE_BYTES,
+      rasterInnerShadowBuilds: this.rasterInnerShadowTotalBuilds,
+      rasterInnerShadowPasses: this.rasterInnerShadowTotalPasses,
+      rasterInnerShadowRendererBuild: this.rasterInnerShadowRenderer?.build ?? null,
       effectsWorkingSetStrategy: EFFECTS_WORKING_SET_STRATEGY,
       effectsWorkingSetGeneration: this.effectsWorkbench?.generation ?? 0,
       effectsWorkingSetSourceFormat: this.effectsWorkbench?.sourceFormat ?? this.layerFormat,
@@ -3385,6 +3942,8 @@ export class BrushEngine {
       historyBusy: this.historyBusy,
       rasterStrokeBusy: this.rasterStrokeBusy,
       rasterBevelBusy: this.rasterBevelBusy,
+      rasterOuterShadowBusy: this.rasterOuterShadowBusy,
+      rasterInnerShadowBusy: this.rasterInnerShadowBusy,
       queuedWork: this.effectsScratchHasQueuedWork(),
     });
   }
@@ -3863,7 +4422,10 @@ export class BrushEngine {
     layerFormat: LayerFormat,
     contentBounds: DirtyRect | null | undefined,
     caller: EffectsRetargetCaller,
-    styles: Pick<LayerRecord, "strokeStyle" | "bevelStyle"> | null = null,
+    styles: Pick<
+      LayerRecord,
+      "strokeStyle" | "bevelStyle" | "outerShadowStyle" | "innerShadowStyle"
+    > | null = null,
     publish = true,
     maintainDisplayPyramid = true,
   ): Promise<EffectsWorkbenchRetargetResult> {
@@ -3883,6 +4445,8 @@ export class BrushEngine {
       || (!duringLayerSwitch && this.layerSwitchBusy)
       || this.rasterStrokeBusy
       || this.rasterBevelBusy
+      || this.rasterOuterShadowBusy
+      || this.rasterInnerShadowBusy
     ) {
       throw new Error("Il banco effetti può cambiare sorgente solo a motore fermo.");
     }
@@ -3897,6 +4461,8 @@ export class BrushEngine {
     await this.waitForIdle();
     const strokeStyle = styles?.strokeStyle ?? this.rasterStrokeStyle;
     const bevelStyle = styles?.bevelStyle ?? this.rasterBevelStyle;
+    const outerShadowStyle = styles?.outerShadowStyle ?? this.rasterOuterShadowStyle;
+    const innerShadowStyle = styles?.innerShadowStyle ?? this.rasterInnerShadowStyle;
     const fullDocumentRect: DirtyRect = {
       x: 0,
       y: 0,
@@ -3912,6 +4478,8 @@ export class BrushEngine {
       : fullDocumentRect;
     this.rasterStrokeBusy = true;
     this.rasterBevelBusy = true;
+    this.rasterOuterShadowBusy = true;
+    this.rasterInnerShadowBusy = true;
     const startedAt = performance.now();
     try {
       const generation = workbench.retarget({ view: layerView, format: layerFormat });
@@ -3925,6 +4493,14 @@ export class BrushEngine {
       this.rasterBevelHeightSourceMode = null;
       this.rasterBevelPendingComposeRect = null;
       this.rasterBevelLastEncode = null;
+      this.rasterOuterShadowMatteValid = false;
+      this.rasterOuterShadowSourceMode = null;
+      this.rasterOuterShadowPendingComposeRect = null;
+      this.rasterOuterShadowLastEncode = null;
+      this.rasterInnerShadowMatteValid = false;
+      this.rasterInnerShadowSourceMode = null;
+      this.rasterInnerShadowPendingComposeRect = null;
+      this.rasterInnerShadowLastEncode = null;
 
       const encoder = this.device.createCommandEncoder({
         label: this.bevelBoundingFieldEnabled
@@ -3943,6 +4519,9 @@ export class BrushEngine {
         this.bevelBoundingFieldEnabled,
         strokeStyle,
         bevelStyle,
+        outerShadowStyle,
+        innerShadowStyle,
+        normalizedContentBounds,
       );
       if (maintainDisplayPyramid) {
         this.encodeRasterStrokeDisplayPyramid(
@@ -3969,6 +4548,8 @@ export class BrushEngine {
         totalMs: completedAt - startedAt,
         stroke: update.timing,
         bevel: this.rasterBevelLastEncode,
+        outerShadow: this.rasterOuterShadowLastEncode,
+        innerShadow: this.rasterInnerShadowLastEncode,
       };
       if (publish) {
         this.presentationCacheNeedsFullRebuild = true;
@@ -3988,6 +4569,8 @@ export class BrushEngine {
     } finally {
       this.rasterStrokeBusy = false;
       this.rasterBevelBusy = false;
+      this.rasterOuterShadowBusy = false;
+      this.rasterInnerShadowBusy = false;
     }
   }
 
@@ -4006,19 +4589,28 @@ export class BrushEngine {
       || this.layerSwitchBusy
       || this.rasterStrokeBusy
       || this.rasterBevelBusy
+      || this.rasterOuterShadowBusy
+      || this.rasterInnerShadowBusy
     ) {
       throw new Error("Ferma il motore prima del benchmark del banco effetti.");
     }
     await this.waitForIdle();
-    if (this.rasterStrokeRenderer || this.rasterBevelRenderer) {
+    if (
+      this.rasterStrokeRenderer
+      || this.rasterBevelRenderer
+      || this.rasterOuterShadowRenderer
+      || this.rasterInnerShadowRenderer
+    ) {
       throw new Error(
-        "Disattiva Traccia e Smusso prima del benchmark per evitare due working set residenti.",
+        "Disattiva Traccia, Smusso e Ombre prima del benchmark per evitare due working set residenti.",
       );
     }
 
     const originalWorkbench = this.requireEffectsWorkbench();
     this.rasterStrokeBusy = true;
     this.rasterBevelBusy = true;
+    this.rasterOuterShadowBusy = true;
+    this.rasterInnerShadowBusy = true;
     this.callbacks.onStatus?.("Benchmark banco effetti 4096² in corso…", "working");
     try {
       const { benchmarkEffectsWorkbench } = await import("./effects-benchmark");
@@ -4057,6 +4649,8 @@ export class BrushEngine {
       this.effectsWorkbench = originalWorkbench;
       this.rasterStrokeBusy = false;
       this.rasterBevelBusy = false;
+      this.rasterOuterShadowBusy = false;
+      this.rasterInnerShadowBusy = false;
       this.publishStats();
     }
   }
@@ -5179,6 +5773,24 @@ export class BrushEngine {
     rasterBevelDistanceStrategy: typeof RASTER_BEVEL_DISTANCE_STRATEGY;
     rasterBevelWorkspaceStrategy: typeof RASTER_BEVEL_WORKSPACE_STRATEGY;
     rasterBevelHeightSourceMode: RasterStrokeSourceMode | null;
+    rasterOuterShadowRendererBuild: string | null;
+    rasterOuterShadowStyle: RasterOuterShadowStyle;
+    rasterOuterShadowMatteMemoryMiB: number;
+    rasterOuterShadowControlMemoryMiB: number;
+    rasterOuterShadowScratchMemoryMiB: number;
+    rasterOuterShadowScratchExtent: number;
+    rasterOuterShadowStorageStrategy: typeof RASTER_SHADOW_STORAGE_STRATEGY;
+    rasterOuterShadowWorkspaceStrategy: typeof RASTER_SHADOW_WORKSPACE_STRATEGY;
+    rasterOuterShadowSourceMode: RasterStrokeSourceMode | null;
+    rasterInnerShadowRendererBuild: string | null;
+    rasterInnerShadowStyle: RasterInnerShadowStyle;
+    rasterInnerShadowMatteMemoryMiB: number;
+    rasterInnerShadowControlMemoryMiB: number;
+    rasterInnerShadowScratchMemoryMiB: number;
+    rasterInnerShadowScratchExtent: number;
+    rasterInnerShadowStorageStrategy: typeof RASTER_SHADOW_STORAGE_STRATEGY;
+    rasterInnerShadowWorkspaceStrategy: typeof RASTER_SHADOW_WORKSPACE_STRATEGY;
+    rasterInnerShadowSourceMode: RasterStrokeSourceMode | null;
 
     dryBlendScratchLifecycleStrategy: typeof DRY_BLEND_SCRATCH_LIFECYCLE_STRATEGY;
     timestampQueriesSupported: boolean;
@@ -5340,6 +5952,30 @@ export class BrushEngine {
       rasterBevelDistanceStrategy: RASTER_BEVEL_DISTANCE_STRATEGY,
       rasterBevelWorkspaceStrategy: RASTER_BEVEL_WORKSPACE_STRATEGY,
       rasterBevelHeightSourceMode: this.rasterBevelHeightSourceMode,
+      rasterOuterShadowRendererBuild: this.rasterOuterShadowRenderer?.build ?? null,
+      rasterOuterShadowStyle: copyRasterOuterShadowStyle(this.rasterOuterShadowStyle),
+      rasterOuterShadowMatteMemoryMiB:
+        (this.rasterOuterShadowRenderer?.coverageMemoryBytes ?? 0) / MEBIBYTE_BYTES,
+      rasterOuterShadowControlMemoryMiB:
+        (this.rasterOuterShadowRenderer?.controlMemoryBytes ?? 0) / MEBIBYTE_BYTES,
+      rasterOuterShadowScratchMemoryMiB:
+        (this.rasterOuterShadowRenderer?.workspaceMemoryBytes ?? 0) / MEBIBYTE_BYTES,
+      rasterOuterShadowScratchExtent: this.rasterOuterShadowRenderer?.workspaceExtent ?? 0,
+      rasterOuterShadowStorageStrategy: RASTER_SHADOW_STORAGE_STRATEGY,
+      rasterOuterShadowWorkspaceStrategy: RASTER_SHADOW_WORKSPACE_STRATEGY,
+      rasterOuterShadowSourceMode: this.rasterOuterShadowSourceMode,
+      rasterInnerShadowRendererBuild: this.rasterInnerShadowRenderer?.build ?? null,
+      rasterInnerShadowStyle: copyRasterInnerShadowStyle(this.rasterInnerShadowStyle),
+      rasterInnerShadowMatteMemoryMiB:
+        (this.rasterInnerShadowRenderer?.coverageMemoryBytes ?? 0) / MEBIBYTE_BYTES,
+      rasterInnerShadowControlMemoryMiB:
+        (this.rasterInnerShadowRenderer?.controlMemoryBytes ?? 0) / MEBIBYTE_BYTES,
+      rasterInnerShadowScratchMemoryMiB:
+        (this.rasterInnerShadowRenderer?.workspaceMemoryBytes ?? 0) / MEBIBYTE_BYTES,
+      rasterInnerShadowScratchExtent: this.rasterInnerShadowRenderer?.workspaceExtent ?? 0,
+      rasterInnerShadowStorageStrategy: RASTER_SHADOW_STORAGE_STRATEGY,
+      rasterInnerShadowWorkspaceStrategy: RASTER_SHADOW_WORKSPACE_STRATEGY,
+      rasterInnerShadowSourceMode: this.rasterInnerShadowSourceMode,
 
       stampGeometry: this.settings.shape === "shape" ? this.lastStampGeometry : STAMP_GEOMETRY,
       stampVerticesPerCopy: this.settings.shape === "shape"
@@ -5699,8 +6335,28 @@ export class BrushEngine {
           visibility: GPUShaderStage.FRAGMENT,
           buffer: { type: "uniform" },
         },
-        { binding: 11, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-        { binding: 12, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        {
+          binding: 11,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "read-only-storage" },
+        },
+        {
+          binding: 12,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        },
+        {
+          binding: 13,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "read-only-storage" },
+        },
+        {
+          binding: 14,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        },
+        { binding: 15, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        { binding: 16, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
       ],
     });
     this.rasterStrokeDisplayScreenBindGroup = this.device.createBindGroup({
@@ -6969,6 +7625,8 @@ export class BrushEngine {
     const requirements = layerEffectRendererRequirements(
       record.strokeStyle,
       normalizeRasterBevelStyle(record.bevelStyle),
+      normalizeRasterOuterShadowStyle(record.outerShadowStyle),
+      normalizeRasterInnerShadowStyle(record.innerShadowStyle),
     );
     if (!this.layerHasContent || !requirements.needsStrokeRenderer) {
       const previous = gpu.bake;
@@ -7129,6 +7787,8 @@ export class BrushEngine {
     const requirements = layerEffectRendererRequirements(
       record.strokeStyle,
       normalizeRasterBevelStyle(record.bevelStyle),
+      normalizeRasterOuterShadowStyle(record.outerShadowStyle),
+      normalizeRasterInnerShadowStyle(record.innerShadowStyle),
     );
     if (gpu.bake && gpu.bakeValid) {
       return {
@@ -7663,6 +8323,8 @@ export class BrushEngine {
       || this.layerSwitchBusy
       || this.rasterStrokeBusy
       || this.rasterBevelBusy
+      || this.rasterOuterShadowBusy
+      || this.rasterInnerShadowBusy
     ) {
       throw new Error("Il livello può cambiare solo a motore fermo.");
     }
@@ -7697,7 +8359,18 @@ export class BrushEngine {
     const requirements = layerEffectRendererRequirements(
       record.strokeStyle,
       normalizeRasterBevelStyle(record.bevelStyle),
+      normalizeRasterOuterShadowStyle(record.outerShadowStyle),
+      normalizeRasterInnerShadowStyle(record.innerShadowStyle),
     );
+    if (requirements.needsBevelRenderer && !this.rasterBevelRenderer) {
+      await this.ensureRasterBevelRenderer();
+    }
+    if (requirements.needsOuterShadowRenderer && !this.rasterOuterShadowRenderer) {
+      await this.ensureRasterOuterShadowRenderer();
+    }
+    if (requirements.needsInnerShadowRenderer && !this.rasterInnerShadowRenderer) {
+      await this.ensureRasterInnerShadowRenderer();
+    }
     if (requirements.needsStrokeRenderer) {
       const scratchExtent = rasterStrokeScratchExtentForWidth(requirements.strokeWidth);
       if (!this.rasterStrokeRenderer) {
@@ -7706,8 +8379,19 @@ export class BrushEngine {
         this.rasterStrokeRenderer.resizeScratch(scratchExtent);
       }
     }
-    if (requirements.needsBevelRenderer && !this.rasterBevelRenderer) {
-      await this.ensureRasterBevelRenderer();
+    this.rasterOuterShadowRenderer?.updateStyle(record.outerShadowStyle);
+    this.rasterInnerShadowRenderer?.updateStyle(record.innerShadowStyle);
+    if (this.rasterStrokeRenderer) {
+      this.rasterStrokeRenderer.setShadowResources(
+        "outer",
+        this.rasterOuterShadowRenderer?.coverageBuffer ?? null,
+        this.rasterOuterShadowRenderer?.compositionUniformBuffer ?? null,
+      );
+      this.rasterStrokeRenderer.setShadowResources(
+        "inner",
+        this.rasterInnerShadowRenderer?.coverageBuffer ?? null,
+        this.rasterInnerShadowRenderer?.compositionUniformBuffer ?? null,
+      );
     }
   }
 
@@ -8561,6 +9245,8 @@ export class BrushEngine {
     this.presentationCacheNeedsFullRebuild = true;
     this.releaseRasterStrokeRenderer();
     this.releaseRasterBevelRenderer();
+    this.releaseRasterOuterShadowRenderer();
+    this.releaseRasterInnerShadowRenderer();
     oldEffectsWorkbench?.destroy();
     this.effectsWorkbench = nextEffectsWorkbench;
     oldBlendRenderer?.destroy();
@@ -8631,6 +9317,8 @@ export class BrushEngine {
     this.thicknessTailTextureHeight = height;
     this.rasterStrokeRenderer?.setThicknessTailView(view);
     this.rasterBevelRenderer?.setThicknessTailView(view);
+    this.rasterOuterShadowRenderer?.setThicknessTailView(view);
+    this.rasterInnerShadowRenderer?.setThicknessTailView(view);
     this.rebuildRasterStrokeDisplayBindGroups();
     oldTexture?.destroy();
   }
@@ -8638,6 +9326,8 @@ export class BrushEngine {
   private destroyThicknessTailOverlayResources(): void {
     this.rasterStrokeRenderer?.setThicknessTailView(null);
     this.rasterBevelRenderer?.setThicknessTailView(null);
+    this.rasterOuterShadowRenderer?.setThicknessTailView(null);
+    this.rasterInnerShadowRenderer?.setThicknessTailView(null);
     this.rebuildRasterStrokeDisplayBindGroups();
     this.thicknessTailTexture?.destroy();
     this.thicknessTailTexture = null;
@@ -8756,11 +9446,15 @@ export class BrushEngine {
     this.lightGlazeStorageMode = storageMode;
     this.rasterStrokeRenderer?.setLightGlazeView(view);
     this.rasterBevelRenderer?.setLightGlazeView(view);
+    this.rasterOuterShadowRenderer?.setLightGlazeView(view);
+    this.rasterInnerShadowRenderer?.setLightGlazeView(view);
     this.rebuildRasterStrokeDisplayBindGroups();
   }
   private destroyLightGlazeResources(): void {
     this.rasterStrokeRenderer?.setLightGlazeView(null);
     this.rasterBevelRenderer?.setLightGlazeView(null);
+    this.rasterOuterShadowRenderer?.setLightGlazeView(null);
+    this.rasterInnerShadowRenderer?.setLightGlazeView(null);
     this.rebuildRasterStrokeDisplayBindGroups();
     this.lightGlazeSession = null;
     this.lightGlazeTexture?.destroy();
@@ -8948,6 +9642,34 @@ export class BrushEngine {
     return rasterBevelInfluenceBounds(rect, style, LAYER_SIZE, LAYER_SIZE);
   }
 
+  private rasterOuterShadowEffectRect(
+    rect: DirtyRect | RasterShadowRect | null,
+    style: RasterOuterShadowStyle = this.rasterOuterShadowStyle,
+  ): DirtyRect | null {
+    return rasterOuterShadowVisualBounds(rect, style, LAYER_SIZE, LAYER_SIZE);
+  }
+
+  private rasterOuterShadowInfluenceRect(
+    rect: DirtyRect | RasterShadowRect | null,
+    style: RasterOuterShadowStyle = this.rasterOuterShadowStyle,
+  ): DirtyRect | null {
+    return rasterOuterShadowInfluenceBounds(rect, style, LAYER_SIZE, LAYER_SIZE);
+  }
+
+  private rasterInnerShadowEffectRect(
+    rect: DirtyRect | RasterShadowRect | null,
+    style: RasterInnerShadowStyle = this.rasterInnerShadowStyle,
+  ): DirtyRect | null {
+    return rasterInnerShadowVisualBounds(rect, style, LAYER_SIZE, LAYER_SIZE);
+  }
+
+  private rasterInnerShadowInfluenceRect(
+    rect: DirtyRect | RasterShadowRect | null,
+    style: RasterInnerShadowStyle = this.rasterInnerShadowStyle,
+  ): DirtyRect | null {
+    return rasterInnerShadowInfluenceBounds(rect, style, LAYER_SIZE, LAYER_SIZE);
+  }
+
   private noteLayerMutation(dirtyRect: DirtyRect | null, cleared: boolean): void {
     if (dirtyRect || cleared) {
       this.invalidateActiveLayerBake();
@@ -8958,6 +9680,10 @@ export class BrushEngine {
       this.rasterStrokeCoverageValid = false;
       this.rasterBevelHeightValid = false;
       this.rasterBevelHeightSourceMode = null;
+      this.rasterOuterShadowMatteValid = false;
+      this.rasterOuterShadowSourceMode = null;
+      this.rasterInnerShadowMatteValid = false;
+      this.rasterInnerShadowSourceMode = null;
     }
     if (dirtyRect) {
       this.layerContentBounds = this.mergeDirtyRects(this.layerContentBounds, dirtyRect);
@@ -8973,6 +9699,10 @@ export class BrushEngine {
     this.rasterStrokeCoverageValid = false;
     this.rasterBevelHeightValid = false;
     this.rasterBevelHeightSourceMode = null;
+    this.rasterOuterShadowMatteValid = false;
+    this.rasterOuterShadowSourceMode = null;
+    this.rasterInnerShadowMatteValid = false;
+    this.rasterInnerShadowSourceMode = null;
     if (cleared) {
       this.rasterStrokeStyledInitialized = false;
       this.rasterStrokeMipValidThroughLevel = 0;
@@ -8989,17 +9719,27 @@ export class BrushEngine {
     allowBevelFieldShrink = false,
     strokeStyle: RasterStrokeStyle = this.rasterStrokeStyle,
     bevelStyle: RasterBevelStyle = this.rasterBevelStyle,
+    outerShadowStyle: RasterOuterShadowStyle = this.rasterOuterShadowStyle,
+    innerShadowStyle: RasterInnerShadowStyle = this.rasterInnerShadowStyle,
+    shadowContentBounds: DirtyRect | null = virtualContentBounds,
   ): { dirtyRect: DirtyRect | null; timing: RasterStrokeEncodeResult | null } {
     const renderer = this.rasterStrokeRenderer;
     const styleStackActive = Boolean(
       renderer
-      && ((strokeStyle.enabled && strokeStyle.width > 0) || bevelStyle.enabled)
+      && ((strokeStyle.enabled && strokeStyle.width > 0)
+        || bevelStyle.enabled
+        || outerShadowStyle.enabled
+        || innerShadowStyle.enabled)
     );
     if (!renderer || !styleStackActive) {
       if (mutationRect || layerCleared) {
         this.rasterStrokeCoverageValid = false;
         this.rasterBevelHeightValid = false;
         this.rasterBevelHeightSourceMode = null;
+        this.rasterOuterShadowMatteValid = false;
+        this.rasterOuterShadowSourceMode = null;
+        this.rasterInnerShadowMatteValid = false;
+        this.rasterInnerShadowSourceMode = null;
       }
       return { dirtyRect: mutationRect, timing: null };
     }
@@ -9008,6 +9748,10 @@ export class BrushEngine {
       this.rasterStrokeCoverageValid = false;
       this.rasterBevelHeightValid = false;
       this.rasterBevelHeightSourceMode = null;
+      this.rasterOuterShadowMatteValid = false;
+      this.rasterOuterShadowSourceMode = null;
+      this.rasterInnerShadowMatteValid = false;
+      this.rasterInnerShadowSourceMode = null;
       this.rasterStrokeMipValidThroughLevel = 0;
     }
     const clearStyled = layerCleared || !this.rasterStrokeStyledInitialized;
@@ -9068,6 +9812,94 @@ export class BrushEngine {
     }
     composeRect = this.mergeDirtyRects(composeRect, this.rasterBevelPendingComposeRect);
 
+    const outerShadowActive = Boolean(
+      this.rasterOuterShadowRenderer && outerShadowStyle.enabled,
+    );
+    if (outerShadowActive) {
+      const shadowRenderer = this.rasterOuterShadowRenderer!;
+      shadowRenderer.updateStyle(outerShadowStyle);
+      const sourceChanged = this.rasterOuterShadowSourceMode !== sourceMode;
+      const clearMatte = !this.rasterOuterShadowMatteValid || sourceChanged;
+      const rebuildRect = clearMatte
+        ? this.rasterOuterShadowInfluenceRect(shadowContentBounds, outerShadowStyle)
+        : mutationRect
+          ? this.rasterOuterShadowInfluenceRect(mutationRect, outerShadowStyle)
+          : null;
+      const shadowTiming = shadowRenderer.encode({
+        encoder,
+        style: outerShadowStyle,
+        sourceMode,
+        rebuildRect,
+        clearMatte,
+      });
+      this.rasterOuterShadowLastEncode = shadowTiming;
+      this.rasterOuterShadowMatteValid = true;
+      this.rasterOuterShadowSourceMode = sourceMode;
+      if (shadowTiming.jobs > 0 || shadowTiming.cleared) {
+        this.rasterOuterShadowTotalBuilds += 1;
+        this.rasterOuterShadowTotalPasses += shadowTiming.passes;
+      }
+      composeRect = this.mergeDirtyRects(
+        composeRect,
+        clearMatte
+          ? this.rasterOuterShadowEffectRect(shadowContentBounds, outerShadowStyle)
+          : mutationRect
+            ? this.rasterOuterShadowEffectRect(mutationRect, outerShadowStyle)
+            : null,
+      );
+    } else {
+      this.rasterOuterShadowMatteValid = false;
+      this.rasterOuterShadowSourceMode = null;
+    }
+    composeRect = this.mergeDirtyRects(
+      composeRect,
+      this.rasterOuterShadowPendingComposeRect,
+    );
+
+    const innerShadowActive = Boolean(
+      this.rasterInnerShadowRenderer && innerShadowStyle.enabled,
+    );
+    if (innerShadowActive) {
+      const shadowRenderer = this.rasterInnerShadowRenderer!;
+      shadowRenderer.updateStyle(innerShadowStyle);
+      const sourceChanged = this.rasterInnerShadowSourceMode !== sourceMode;
+      const clearMatte = !this.rasterInnerShadowMatteValid || sourceChanged;
+      const rebuildRect = clearMatte
+        ? this.rasterInnerShadowInfluenceRect(shadowContentBounds, innerShadowStyle)
+        : mutationRect
+          ? this.rasterInnerShadowInfluenceRect(mutationRect, innerShadowStyle)
+          : null;
+      const shadowTiming = shadowRenderer.encode({
+        encoder,
+        style: innerShadowStyle,
+        sourceMode,
+        rebuildRect,
+        clearMatte,
+      });
+      this.rasterInnerShadowLastEncode = shadowTiming;
+      this.rasterInnerShadowMatteValid = true;
+      this.rasterInnerShadowSourceMode = sourceMode;
+      if (shadowTiming.jobs > 0 || shadowTiming.cleared) {
+        this.rasterInnerShadowTotalBuilds += 1;
+        this.rasterInnerShadowTotalPasses += shadowTiming.passes;
+      }
+      composeRect = this.mergeDirtyRects(
+        composeRect,
+        clearMatte
+          ? this.rasterInnerShadowEffectRect(shadowContentBounds, innerShadowStyle)
+          : mutationRect
+            ? this.rasterInnerShadowEffectRect(mutationRect, innerShadowStyle)
+            : null,
+      );
+    } else {
+      this.rasterInnerShadowMatteValid = false;
+      this.rasterInnerShadowSourceMode = null;
+    }
+    composeRect = this.mergeDirtyRects(
+      composeRect,
+      this.rasterInnerShadowPendingComposeRect,
+    );
+
     const strokeActive = strokeStyle.enabled && strokeStyle.width > 0;
     const coverageWasValid = strokeActive && this.rasterStrokeCoverageValid;
     let rebuildRect: DirtyRect | null = null;
@@ -9097,7 +9929,7 @@ export class BrushEngine {
       this.rasterStrokeCoverageValid = false;
     }
     composeRect = this.mergeDirtyRects(composeRect, this.rasterStrokePendingComposeRect);
-    if (mutationRect && !bevelActive && !strokeActive) {
+    if (mutationRect && !bevelActive && !outerShadowActive && !innerShadowActive && !strokeActive) {
       composeRect = this.mergeDirtyRects(composeRect, mutationRect);
     }
 
@@ -9117,6 +9949,8 @@ export class BrushEngine {
     this.rasterStrokeStyledInitialized = true;
     this.rasterStrokePendingComposeRect = null;
     this.rasterBevelPendingComposeRect = null;
+    this.rasterOuterShadowPendingComposeRect = null;
+    this.rasterInnerShadowPendingComposeRect = null;
     if (clearStyled) {
       this.rasterStrokeMipValidThroughLevel = 0;
     }

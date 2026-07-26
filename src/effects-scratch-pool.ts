@@ -26,6 +26,8 @@ export interface EffectsScratchIdleState {
   historyBusy: boolean;
   rasterStrokeBusy: boolean;
   rasterBevelBusy: boolean;
+  rasterOuterShadowBusy?: boolean;
+  rasterInnerShadowBusy?: boolean;
   queuedWork: boolean;
 }
 
@@ -35,6 +37,8 @@ export function effectsScratchCanShrink(state: EffectsScratchIdleState): boolean
     && !state.historyBusy
     && !state.rasterStrokeBusy
     && !state.rasterBevelBusy
+    && !state.rasterOuterShadowBusy
+    && !state.rasterInnerShadowBusy
     && !state.queuedWork;
 }
 
@@ -115,11 +119,11 @@ function sameRanges(
  * Growth is immediate. Shrink is explicit so the engine can wait for GPU idle
  * and apply its interaction hysteresis before replacing the buffer.
  *
- * Design checks for future effects (not implementations):
- * - An outer shadow/glow renderer can declare Gaussian ping/pong plus distance
- *   ranges, then reuse the same ordered Gaussian/distance passes as Bevel. Its
- *   effect-local layout aliases the other effects only after their compute
- *   passes end; its persistent styled output must live outside this pool.
+ * Implemented effect layouts:
+ * - Ombra esterna and Ombra interna each declare scalar f32 ping/pong ranges.
+ *   Their effect-local layouts alias Traccia and Smusso only after the previous
+ *   renderer's compute pass has ended. The persistent packed-R8 mattes live
+ *   outside this pool.
  * - A color/gradient fill calls declareEffect(effectId, []). The declaration
  *   is recorded as a zero-byte requirement and returns null: a compose-only
  *   effect cannot allocate or grow scratch accidentally.

@@ -16,6 +16,8 @@ import {
   type StrokePerformanceProfile,
   type RasterStrokeStyle,
   type RasterBevelStyle,
+  type RasterOuterShadowStyle,
+  type RasterInnerShadowStyle,
 } from "./brush-engine";
 
 function element<T extends HTMLElement>(id: string): T {
@@ -215,6 +217,24 @@ interface BenchmarkRun {
     rasterBevelDistanceStrategy: string;
     rasterBevelWorkspaceStrategy: string;
     rasterBevelHeightSourceMode: string | null;
+    rasterOuterShadowRendererBuild: string | null;
+    rasterOuterShadowStyle: RasterOuterShadowStyle;
+    rasterOuterShadowMatteMemoryMiB: number;
+    rasterOuterShadowControlMemoryMiB: number;
+    rasterOuterShadowScratchMemoryMiB: number;
+    rasterOuterShadowScratchExtent: number;
+    rasterOuterShadowStorageStrategy: string;
+    rasterOuterShadowWorkspaceStrategy: string;
+    rasterOuterShadowSourceMode: string | null;
+    rasterInnerShadowRendererBuild: string | null;
+    rasterInnerShadowStyle: RasterInnerShadowStyle;
+    rasterInnerShadowMatteMemoryMiB: number;
+    rasterInnerShadowControlMemoryMiB: number;
+    rasterInnerShadowScratchMemoryMiB: number;
+    rasterInnerShadowScratchExtent: number;
+    rasterInnerShadowStorageStrategy: string;
+    rasterInnerShadowWorkspaceStrategy: string;
+    rasterInnerShadowSourceMode: string | null;
     dryBlendScratchLifecycleStrategy: string;
     layerMemoryMiB: number;
     layerCount: number;
@@ -313,7 +333,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 47;
+    performanceTelemetryRevision: 48;
   };
 }
 
@@ -347,8 +367,8 @@ const engine = new BrushEngine(canvas, {
   },
   onActiveLayerChange(activeIndex) {
     // A global undo can move the active layer on its own. Without resyncing, the
-    // panel would keep highlighting the layer the user left and the Traccia and
-    // Smusso controls would show that layer's effects while the brush paints on
+    // panel would keep highlighting the layer the user left and the four effect
+    // controls would show that layer's styles while the brush paints on
     // another one.
     syncActiveLayerControls();
     layerSwitchResult.textContent =
@@ -375,6 +395,8 @@ let layerSwitching = false;
 let rasterStrokeChanging = false;
 let historyUiBusy = false;
 let rasterBevelChanging = false;
+let rasterOuterShadowChanging = false;
+let rasterInnerShadowChanging = false;
 let engineInitialized = false;
 let controlsPanelOpen = true;
 let gpuMemoryPanelOpen = false;
@@ -404,6 +426,10 @@ const gpuMemoryRows: ReadonlyArray<
   ["gpuMemoryStrokeControl", "rasterStrokeMaskAndControlMiB"],
   ["gpuMemoryEffectsScratch", "effectsScratchPoolMiB"],
   ["gpuMemoryEffectsScratchPeak", "effectsScratchPoolPeakMiB"],
+  ["gpuMemoryOuterShadowMatte", "rasterOuterShadowMatteMiB"],
+  ["gpuMemoryOuterShadowControl", "rasterOuterShadowControlMiB"],
+  ["gpuMemoryInnerShadowMatte", "rasterInnerShadowMatteMiB"],
+  ["gpuMemoryInnerShadowControl", "rasterInnerShadowControlMiB"],
   ["gpuMemoryBevelHeight", "rasterBevelHeightMiB"],
   ["gpuMemoryBevelControl", "rasterBevelLutAndControlMiB"],
   ["gpuMemoryBlend", "blendRendererMiB"],
@@ -574,6 +600,8 @@ function updateControlOutputs(): void {
   element<HTMLOutputElement>("rasterBevelShadowOpacityOut").value =
     `${rangeValue("rasterBevelShadowOpacity").toFixed(0)}%`;
   element<HTMLOutputElement>("positionJitterLinearOut").value = `${rangeValue("positionJitterLinear").toFixed(0)}%`;
+  updateRasterOuterShadowOutputs();
+  updateRasterInnerShadowOutputs();
   element<HTMLOutputElement>("benchmarkStampsOut").value = formatInteger(rangeValue("benchmarkStamps"));
 }
 
@@ -671,7 +699,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 47,
+    performanceTelemetryRevision: 48,
     ...engineEnvironment,
   };
 }
@@ -937,6 +965,226 @@ async function applyRasterStrokeControls(): Promise<void> {
     syncRasterStrokeControls(engine.getRasterStrokeStyle());
   } finally {
     rasterStrokeChanging = false;
+    updateHistoryControls();
+    updateHumanStrokeControls();
+  }
+}
+
+function rasterShadowColorFromHex(value: string): [number, number, number] {
+  const match = /^#([0-9a-f]{6})$/i.exec(value);
+  if (!match) {
+    return [0, 0, 0];
+  }
+  const packed = Number.parseInt(match[1], 16);
+  return [
+    ((packed >>> 16) & 0xff) / 255,
+    ((packed >>> 8) & 0xff) / 255,
+    (packed & 0xff) / 255,
+  ];
+}
+
+function rasterShadowColorToHex(color: readonly number[]): string {
+  const channel = (value: number) => Math.round(Math.max(0, Math.min(1, value)) * 255)
+    .toString(16)
+    .padStart(2, "0");
+  return `#${channel(color[0])}${channel(color[1])}${channel(color[2])}`;
+}
+
+function readRasterOuterShadowStyle(): RasterOuterShadowStyle {
+  const blendMode = element<HTMLSelectElement>("rasterOuterShadowBlendMode")
+    .value as RasterOuterShadowStyle["blendMode"];
+  return {
+    enabled: element<HTMLInputElement>("rasterOuterShadowEnabled").checked,
+    blendMode,
+    color: blendMode === "multiply"
+      ? [0, 0, 0]
+      : rasterShadowColorFromHex(element<HTMLInputElement>("rasterOuterShadowColor").value),
+    opacity: rangeValue("rasterOuterShadowOpacity"),
+    angle: rangeValue("rasterOuterShadowAngle"),
+    useGlobalLight: engine.getRasterOuterShadowStyle().useGlobalLight,
+    distance: rangeValue("rasterOuterShadowDistance"),
+    spread: rangeValue("rasterOuterShadowSpread"),
+    size: rangeValue("rasterOuterShadowSize"),
+    contour: element<HTMLSelectElement>("rasterOuterShadowContour")
+      .value as RasterOuterShadowStyle["contour"],
+    contourAA: element<HTMLInputElement>("rasterOuterShadowContourAA").checked,
+    noise: rangeValue("rasterOuterShadowNoise"),
+    layerKnocksOut: element<HTMLInputElement>("rasterOuterShadowLayerKnocksOut").checked,
+  };
+}
+
+function updateRasterOuterShadowOutputs(): void {
+  for (const id of ["Opacity", "Spread", "Noise"] as const) {
+    element<HTMLOutputElement>(`rasterOuterShadow${id}Out`).value =
+      `${rangeValue(`rasterOuterShadow${id}`).toFixed(0)}%`;
+  }
+  element<HTMLOutputElement>("rasterOuterShadowAngleOut").value =
+    `${rangeValue("rasterOuterShadowAngle").toFixed(0)}°`;
+  element<HTMLOutputElement>("rasterOuterShadowDistanceOut").value =
+    `${rangeValue("rasterOuterShadowDistance").toFixed(0)} px`;
+  element<HTMLOutputElement>("rasterOuterShadowSizeOut").value =
+    `${rangeValue("rasterOuterShadowSize").toFixed(0)} px`;
+}
+
+function syncRasterOuterShadowControls(style: RasterOuterShadowStyle): void {
+  element<HTMLInputElement>("rasterOuterShadowEnabled").checked = style.enabled;
+  setControlValue("rasterOuterShadowBlendMode", style.blendMode);
+  setControlValue("rasterOuterShadowColor", rasterShadowColorToHex(style.color));
+  setControlValue("rasterOuterShadowOpacity", style.opacity);
+  setControlValue("rasterOuterShadowAngle", style.angle);
+  setControlValue("rasterOuterShadowDistance", style.distance);
+  setControlValue("rasterOuterShadowSpread", style.spread);
+  setControlValue("rasterOuterShadowSize", style.size);
+  setControlValue("rasterOuterShadowContour", style.contour);
+  element<HTMLInputElement>("rasterOuterShadowContourAA").checked = style.contourAA;
+  setControlValue("rasterOuterShadowNoise", style.noise);
+  element<HTMLInputElement>("rasterOuterShadowLayerKnocksOut").checked = style.layerKnocksOut;
+  element<HTMLElement>("rasterOuterShadowParameters").hidden = !style.enabled;
+  updateRasterOuterShadowOutputs();
+}
+
+const rasterOuterShadowControlIds = [
+  "rasterOuterShadowEnabled",
+  "rasterOuterShadowBlendMode",
+  "rasterOuterShadowColor",
+  "rasterOuterShadowOpacity",
+  "rasterOuterShadowAngle",
+  "rasterOuterShadowDistance",
+  "rasterOuterShadowSpread",
+  "rasterOuterShadowSize",
+  "rasterOuterShadowContour",
+  "rasterOuterShadowContourAA",
+  "rasterOuterShadowNoise",
+  "rasterOuterShadowLayerKnocksOut",
+] as const;
+
+function updateRasterOuterShadowControlAvailability(locked = interactionLocked()): void {
+  const enabled = element<HTMLInputElement>("rasterOuterShadowEnabled").checked;
+  const multiply = element<HTMLSelectElement>("rasterOuterShadowBlendMode").value === "multiply";
+  element<HTMLElement>("rasterOuterShadowParameters").hidden = !enabled;
+  for (const id of rasterOuterShadowControlIds) {
+    element<HTMLInputElement | HTMLSelectElement>(id).disabled =
+      locked
+      || rasterOuterShadowChanging
+      || (id !== "rasterOuterShadowEnabled" && !enabled)
+      || (id === "rasterOuterShadowColor" && multiply);
+  }
+}
+
+async function applyRasterOuterShadowControls(): Promise<void> {
+  if (!engineInitialized || rasterOuterShadowChanging || activePointerId !== null) {
+    syncRasterOuterShadowControls(engine.getRasterOuterShadowStyle());
+    updateRasterOuterShadowControlAvailability();
+    return;
+  }
+  rasterOuterShadowChanging = true;
+  updateHistoryControls();
+  updateHumanStrokeControls();
+  try {
+    const accepted = await engine.setRasterOuterShadowStyle(readRasterOuterShadowStyle());
+    if (!accepted) {
+      syncRasterOuterShadowControls(engine.getRasterOuterShadowStyle());
+    }
+  } catch {
+    syncRasterOuterShadowControls(engine.getRasterOuterShadowStyle());
+  } finally {
+    rasterOuterShadowChanging = false;
+    updateHistoryControls();
+    updateHumanStrokeControls();
+  }
+}
+
+function readRasterInnerShadowStyle(): RasterInnerShadowStyle {
+  return {
+    enabled: element<HTMLInputElement>("rasterInnerShadowEnabled").checked,
+    blendMode: element<HTMLSelectElement>("rasterInnerShadowBlendMode")
+      .value as RasterInnerShadowStyle["blendMode"],
+    color: rasterShadowColorFromHex(element<HTMLInputElement>("rasterInnerShadowColor").value),
+    opacity: rangeValue("rasterInnerShadowOpacity"),
+    angle: rangeValue("rasterInnerShadowAngle"),
+    useGlobalLight: engine.getRasterInnerShadowStyle().useGlobalLight,
+    distance: rangeValue("rasterInnerShadowDistance"),
+    choke: rangeValue("rasterInnerShadowChoke"),
+    size: rangeValue("rasterInnerShadowSize"),
+    contour: element<HTMLSelectElement>("rasterInnerShadowContour")
+      .value as RasterInnerShadowStyle["contour"],
+    contourAA: element<HTMLInputElement>("rasterInnerShadowContourAA").checked,
+    noise: rangeValue("rasterInnerShadowNoise"),
+  };
+}
+
+function updateRasterInnerShadowOutputs(): void {
+  for (const id of ["Opacity", "Choke", "Noise"] as const) {
+    element<HTMLOutputElement>(`rasterInnerShadow${id}Out`).value =
+      `${rangeValue(`rasterInnerShadow${id}`).toFixed(0)}%`;
+  }
+  element<HTMLOutputElement>("rasterInnerShadowAngleOut").value =
+    `${rangeValue("rasterInnerShadowAngle").toFixed(0)}°`;
+  element<HTMLOutputElement>("rasterInnerShadowDistanceOut").value =
+    `${rangeValue("rasterInnerShadowDistance").toFixed(0)} px`;
+  element<HTMLOutputElement>("rasterInnerShadowSizeOut").value =
+    `${rangeValue("rasterInnerShadowSize").toFixed(0)} px`;
+}
+
+function syncRasterInnerShadowControls(style: RasterInnerShadowStyle): void {
+  element<HTMLInputElement>("rasterInnerShadowEnabled").checked = style.enabled;
+  setControlValue("rasterInnerShadowBlendMode", style.blendMode);
+  setControlValue("rasterInnerShadowColor", rasterShadowColorToHex(style.color));
+  setControlValue("rasterInnerShadowOpacity", style.opacity);
+  setControlValue("rasterInnerShadowAngle", style.angle);
+  setControlValue("rasterInnerShadowDistance", style.distance);
+  setControlValue("rasterInnerShadowChoke", style.choke);
+  setControlValue("rasterInnerShadowSize", style.size);
+  setControlValue("rasterInnerShadowContour", style.contour);
+  element<HTMLInputElement>("rasterInnerShadowContourAA").checked = style.contourAA;
+  setControlValue("rasterInnerShadowNoise", style.noise);
+  element<HTMLElement>("rasterInnerShadowParameters").hidden = !style.enabled;
+  updateRasterInnerShadowOutputs();
+}
+
+const rasterInnerShadowControlIds = [
+  "rasterInnerShadowEnabled",
+  "rasterInnerShadowBlendMode",
+  "rasterInnerShadowColor",
+  "rasterInnerShadowOpacity",
+  "rasterInnerShadowAngle",
+  "rasterInnerShadowDistance",
+  "rasterInnerShadowChoke",
+  "rasterInnerShadowSize",
+  "rasterInnerShadowContour",
+  "rasterInnerShadowContourAA",
+  "rasterInnerShadowNoise",
+] as const;
+
+function updateRasterInnerShadowControlAvailability(locked = interactionLocked()): void {
+  const enabled = element<HTMLInputElement>("rasterInnerShadowEnabled").checked;
+  element<HTMLElement>("rasterInnerShadowParameters").hidden = !enabled;
+  for (const id of rasterInnerShadowControlIds) {
+    element<HTMLInputElement | HTMLSelectElement>(id).disabled =
+      locked
+      || rasterInnerShadowChanging
+      || (id !== "rasterInnerShadowEnabled" && !enabled);
+  }
+}
+
+async function applyRasterInnerShadowControls(): Promise<void> {
+  if (!engineInitialized || rasterInnerShadowChanging || activePointerId !== null) {
+    syncRasterInnerShadowControls(engine.getRasterInnerShadowStyle());
+    updateRasterInnerShadowControlAvailability();
+    return;
+  }
+  rasterInnerShadowChanging = true;
+  updateHistoryControls();
+  updateHumanStrokeControls();
+  try {
+    const accepted = await engine.setRasterInnerShadowStyle(readRasterInnerShadowStyle());
+    if (!accepted) {
+      syncRasterInnerShadowControls(engine.getRasterInnerShadowStyle());
+    }
+  } catch {
+    syncRasterInnerShadowControls(engine.getRasterInnerShadowStyle());
+  } finally {
+    rasterInnerShadowChanging = false;
     updateHistoryControls();
     updateHumanStrokeControls();
   }
@@ -1349,6 +1597,8 @@ function updateHumanStrokeControls(): void {
     || layerHistoryTestRunning
     || layerFormatChanging
     || rasterStrokeChanging
+    || rasterOuterShadowChanging
+    || rasterInnerShadowChanging
     || rasterBevelChanging;
   recordHumanStrokeButton.disabled = operationLocked
     || humanStrokeLoading
@@ -1401,6 +1651,8 @@ function operationLocked(): boolean {
     || layerHistoryTestRunning
     || layerFormatChanging
     || rasterStrokeChanging
+    || rasterOuterShadowChanging
+    || rasterInnerShadowChanging
     || rasterBevelChanging
     || humanStrokeReplaying
     || humanStrokeSaving;
@@ -1433,6 +1685,8 @@ function updateHistoryControls(): void {
   }
   updateGrainControlAvailability(locked);
   updateRasterStrokeControlAvailability(locked);
+  updateRasterOuterShadowControlAvailability(locked);
+  updateRasterInnerShadowControlAvailability(locked);
   updateRasterBevelControlAvailability(locked);
 }
 
@@ -1570,6 +1824,71 @@ element<HTMLInputElement>("rasterStrokeColor").addEventListener("change", () => 
   void applyRasterStrokeControls();
 });
 
+element<HTMLInputElement>("rasterOuterShadowEnabled").addEventListener("change", () => {
+  updateRasterOuterShadowControlAvailability();
+  void applyRasterOuterShadowControls();
+});
+element<HTMLSelectElement>("rasterOuterShadowBlendMode").addEventListener("change", () => {
+  if (element<HTMLSelectElement>("rasterOuterShadowBlendMode").value === "multiply") {
+    setControlValue("rasterOuterShadowColor", "#000000");
+  }
+  updateRasterOuterShadowControlAvailability();
+  void applyRasterOuterShadowControls();
+});
+const rasterOuterShadowRangeIds = [
+  "rasterOuterShadowOpacity",
+  "rasterOuterShadowAngle",
+  "rasterOuterShadowDistance",
+  "rasterOuterShadowSpread",
+  "rasterOuterShadowSize",
+  "rasterOuterShadowNoise",
+] as const;
+for (const id of rasterOuterShadowRangeIds) {
+  element<HTMLInputElement>(id).addEventListener("input", updateRasterOuterShadowOutputs);
+  element<HTMLInputElement>(id).addEventListener("change", () => {
+    void applyRasterOuterShadowControls();
+  });
+}
+for (const id of [
+  "rasterOuterShadowColor",
+  "rasterOuterShadowContour",
+  "rasterOuterShadowContourAA",
+  "rasterOuterShadowLayerKnocksOut",
+] as const) {
+  element<HTMLInputElement | HTMLSelectElement>(id).addEventListener("change", () => {
+    void applyRasterOuterShadowControls();
+  });
+}
+
+element<HTMLInputElement>("rasterInnerShadowEnabled").addEventListener("change", () => {
+  updateRasterInnerShadowControlAvailability();
+  void applyRasterInnerShadowControls();
+});
+const rasterInnerShadowRangeIds = [
+  "rasterInnerShadowOpacity",
+  "rasterInnerShadowAngle",
+  "rasterInnerShadowDistance",
+  "rasterInnerShadowChoke",
+  "rasterInnerShadowSize",
+  "rasterInnerShadowNoise",
+] as const;
+for (const id of rasterInnerShadowRangeIds) {
+  element<HTMLInputElement>(id).addEventListener("input", updateRasterInnerShadowOutputs);
+  element<HTMLInputElement>(id).addEventListener("change", () => {
+    void applyRasterInnerShadowControls();
+  });
+}
+for (const id of [
+  "rasterInnerShadowBlendMode",
+  "rasterInnerShadowColor",
+  "rasterInnerShadowContour",
+  "rasterInnerShadowContourAA",
+] as const) {
+  element<HTMLInputElement | HTMLSelectElement>(id).addEventListener("change", () => {
+    void applyRasterInnerShadowControls();
+  });
+}
+
 element<HTMLInputElement>("rasterBevelEnabled").addEventListener("change", () => {
   updateRasterBevelControlAvailability();
   void applyRasterBevelControls();
@@ -1679,6 +1998,8 @@ layerFormatSelect.addEventListener("change", async () => {
   } finally {
     layerFormatChanging = false;
     syncRasterStrokeControls(engine.getRasterStrokeStyle());
+    syncRasterOuterShadowControls(engine.getRasterOuterShadowStyle());
+    syncRasterInnerShadowControls(engine.getRasterInnerShadowStyle());
     syncRasterBevelControls(engine.getRasterBevelStyle());
     historyState = engine.getHistoryState();
     updateHistoryControls();
@@ -1769,7 +2090,7 @@ if (import.meta.env.DEV) {
   effectsWorkbenchBenchmarkButton.hidden = false;
   effectsWorkbenchBenchmarkResult.hidden = false;
   effectsWorkbenchBenchmarkResult.textContent =
-    "Benchmark dev isolato: Traccia e Smusso devono essere disattivati.";
+    "Benchmark dev isolato: tutti gli effetti del livello devono essere disattivati.";
   effectsWorkbenchBenchmarkButton.addEventListener("click", async () => {
     if (interactionLocked()) {
       return;
@@ -2022,14 +2343,18 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
 }
 
 /**
- * After a switch the Traccia and Smusso controls must be re-read from the
+ * After a switch all non-destructive effect controls must be re-read from the
  * engine, because the styles belong to the layer record now. Leaving them alone
  * would show the outgoing layer's settings while painting on the incoming one.
  */
 function syncActiveLayerControls(): void {
   syncRasterStrokeControls(engine.getRasterStrokeStyle());
+  syncRasterOuterShadowControls(engine.getRasterOuterShadowStyle());
+  syncRasterInnerShadowControls(engine.getRasterInnerShadowStyle());
   syncRasterBevelControls(engine.getRasterBevelStyle());
   updateRasterStrokeControlAvailability();
+  updateRasterOuterShadowControlAvailability();
+  updateRasterInnerShadowControlAvailability();
   updateRasterBevelControlAvailability();
 }
 
@@ -2732,6 +3057,8 @@ const resizeObserver = new ResizeObserver(() => engine.resizeCanvas());
 resizeObserver.observe(canvas);
 
 syncRasterStrokeControls(engine.getRasterStrokeStyle());
+syncRasterOuterShadowControls(engine.getRasterOuterShadowStyle());
+syncRasterInnerShadowControls(engine.getRasterInnerShadowStyle());
 syncRasterBevelControls(engine.getRasterBevelStyle());
 setGpuMemoryPanelOpen(false);
 setControlsPanelOpen(true);

@@ -9,10 +9,12 @@ const poolPath = path.join(root, "src", "effects-scratch-pool.ts");
 const enginePath = path.join(root, "src", "brush-engine.ts");
 const bevelPath = path.join(root, "src", "bevel-renderer.ts");
 const strokePath = path.join(root, "src", "stroke-renderer.ts");
+const shadowPath = path.join(root, "src", "shadow-renderer.ts");
 const poolSource = fs.readFileSync(poolPath, "utf8");
 const engineSource = fs.readFileSync(enginePath, "utf8");
 const bevelSource = fs.readFileSync(bevelPath, "utf8");
 const strokeSource = fs.readFileSync(strokePath, "utf8");
+const shadowSource = fs.readFileSync(shadowPath, "utf8");
 
 const runtimeSource = stripTypeScriptTypes(poolSource, {
   mode: "transform",
@@ -120,6 +122,8 @@ const idleState = {
   historyBusy: false,
   rasterStrokeBusy: false,
   rasterBevelBusy: false,
+  rasterOuterShadowBusy: false,
+  rasterInnerShadowBusy: false,
   queuedWork: false,
 };
 assert.equal(effectsScratchCanShrink(idleState), true);
@@ -127,6 +131,16 @@ assert.equal(
   effectsScratchCanShrink({ ...idleState, activeStroke: true }),
   false,
   "active strokes must block shrink",
+);
+assert.equal(
+  effectsScratchCanShrink({ ...idleState, rasterOuterShadowBusy: true }),
+  false,
+  "Ombra esterna busy must block shrink",
+);
+assert.equal(
+  effectsScratchCanShrink({ ...idleState, rasterInnerShadowBusy: true }),
+  false,
+  "Ombra interna busy must block shrink",
 );
 assert.equal(
   effectsScratchCanShrink({ ...idleState, queuedWork: true }),
@@ -177,6 +191,24 @@ assert.ok(
   bevelPrewarmIndex < activeStrokeAssignmentIndex,
   "Bevel scratch prewarm must precede activeStroke assignment",
 );
+const outerShadowPrewarmIndex = engineSource.indexOf(
+  "this.rasterOuterShadowRenderer?.prewarmWorkspace(this.rasterOuterShadowStyle);",
+);
+const innerShadowPrewarmIndex = engineSource.indexOf(
+  "this.rasterInnerShadowRenderer?.prewarmWorkspace(this.rasterInnerShadowStyle);",
+);
+assert.notEqual(outerShadowPrewarmIndex, -1, "Outer shadow prewarm call must exist");
+assert.notEqual(innerShadowPrewarmIndex, -1, "Inner shadow prewarm call must exist");
+assert.ok(
+  outerShadowPrewarmIndex < activeStrokeAssignmentIndex,
+  "Outer shadow scratch prewarm must precede activeStroke assignment",
+);
+assert.ok(
+  innerShadowPrewarmIndex < activeStrokeAssignmentIndex,
+  "Inner shadow scratch prewarm must precede activeStroke assignment",
+);
+assert.match(shadowSource, /this\.scratchPool\.declareEffect\(this\.effectId/);
+assert.match(shadowSource, /id: "scalar-a"[\s\S]*?id: "scalar-b"/);
 assert.match(bevelSource, /releaseIdleWorkspace\(\): boolean/);
 assert.match(
   strokeSource,

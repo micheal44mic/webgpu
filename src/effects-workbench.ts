@@ -1,4 +1,5 @@
 import type { RasterBevelRenderer } from "./bevel-renderer";
+import type { RasterShadowRenderer } from "./shadow-renderer";
 import type { RasterStrokeRenderer } from "./stroke-renderer";
 import { EffectsScratchPool } from "./effects-scratch-pool";
 
@@ -28,6 +29,8 @@ export class EffectsWorkbench {
   private _generation = 0;
   private _strokeRenderer: RasterStrokeRenderer | null = null;
   private _bevelRenderer: RasterBevelRenderer | null = null;
+  private _outerShadowRenderer: RasterShadowRenderer | null = null;
+  private _innerShadowRenderer: RasterShadowRenderer | null = null;
 
   readonly scratchPool: EffectsScratchPool;
   constructor(options: EffectsWorkbenchOptions) {
@@ -58,6 +61,14 @@ export class EffectsWorkbench {
     return this._bevelRenderer;
   }
 
+  get outerShadowRenderer(): RasterShadowRenderer | null {
+    return this._outerShadowRenderer;
+  }
+
+  get innerShadowRenderer(): RasterShadowRenderer | null {
+    return this._innerShadowRenderer;
+  }
+
   attachStrokeRenderer(renderer: RasterStrokeRenderer): void {
     if (this._strokeRenderer && this._strokeRenderer !== renderer) {
       throw new Error("Il working set possiede già un renderer Traccia.");
@@ -72,6 +83,26 @@ export class EffectsWorkbench {
     this._bevelRenderer = renderer;
   }
 
+  attachOuterShadowRenderer(renderer: RasterShadowRenderer): void {
+    if (renderer.kind !== "outer") {
+      throw new Error("Il renderer assegnato all'Ombra esterna ha tipo errato.");
+    }
+    if (this._outerShadowRenderer && this._outerShadowRenderer !== renderer) {
+      throw new Error("Il working set possiede già un renderer Ombra esterna.");
+    }
+    this._outerShadowRenderer = renderer;
+  }
+
+  attachInnerShadowRenderer(renderer: RasterShadowRenderer): void {
+    if (renderer.kind !== "inner") {
+      throw new Error("Il renderer assegnato all'Ombra interna ha tipo errato.");
+    }
+    if (this._innerShadowRenderer && this._innerShadowRenderer !== renderer) {
+      throw new Error("Il working set possiede già un renderer Ombra interna.");
+    }
+    this._innerShadowRenderer = renderer;
+  }
+
   releaseStrokeRenderer(): void {
     this._strokeRenderer?.destroy();
     this._strokeRenderer = null;
@@ -82,6 +113,16 @@ export class EffectsWorkbench {
     this._bevelRenderer = null;
   }
 
+  releaseOuterShadowRenderer(): void {
+    this._outerShadowRenderer?.destroy();
+    this._outerShadowRenderer = null;
+  }
+
+  releaseInnerShadowRenderer(): void {
+    this._innerShadowRenderer?.destroy();
+    this._innerShadowRenderer = null;
+  }
+
   retarget(source: EffectsLayerSource): number {
     if (source.format !== this.source.format) {
       throw new Error(
@@ -89,6 +130,8 @@ export class EffectsWorkbench {
         + "serve la ricreazione completa delle risorse layer.",
       );
     }
+    this._outerShadowRenderer?.retarget(source.view);
+    this._innerShadowRenderer?.retarget(source.view);
     this._bevelRenderer?.retarget(source.view);
     this._strokeRenderer?.retarget(source.view, source.format);
     this.source = { ...source };
@@ -99,6 +142,8 @@ export class EffectsWorkbench {
   destroy(): void {
     this.releaseStrokeRenderer();
     this.releaseBevelRenderer();
+    this.releaseOuterShadowRenderer();
+    this.releaseInnerShadowRenderer();
     this.scratchPool.destroy();
   }
 }

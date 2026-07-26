@@ -8,6 +8,12 @@ import {
 } from "../src/layer-stack.ts";
 import { runGpuAllocationTransaction } from "../src/gpu-allocation-transaction.ts";
 import {
+  DEFAULT_RASTER_INNER_SHADOW_STYLE,
+  DEFAULT_RASTER_OUTER_SHADOW_STYLE,
+  copyRasterInnerShadowStyle,
+  copyRasterOuterShadowStyle,
+} from "../src/shadow-core.ts";
+import {
   LAYER_STORAGE_GRID_SIZE,
   LAYER_STORAGE_MASK_WORD_COUNT,
   LAYER_STORAGE_STRATEGY,
@@ -37,6 +43,8 @@ const createStyles = () => {
   return {
     strokeStyle: { enabled: false, width: 14, position: "outside", color: [1, 0.643, 0.282, 1] },
     bevelStyle: { enabled: false, mode: "inner", technique: "smooth", size: 32, soften: 4 },
+    outerShadowStyle: copyRasterOuterShadowStyle(DEFAULT_RASTER_OUTER_SHADOW_STYLE),
+    innerShadowStyle: copyRasterInnerShadowStyle(DEFAULT_RASTER_INNER_SHADOW_STYLE),
   };
 };
 const newStack = () => new LayerStack(createStyles);
@@ -80,16 +88,32 @@ const newStack = () => new LayerStack(createStyles);
   const [first, second] = stack.layers;
   assert.notEqual(first.strokeStyle, second.strokeStyle);
   assert.notEqual(first.bevelStyle, second.bevelStyle);
+  assert.notEqual(first.outerShadowStyle, second.outerShadowStyle);
+  assert.notEqual(first.innerShadowStyle, second.innerShadowStyle);
+  assert.notEqual(first.outerShadowStyle.color, second.outerShadowStyle.color);
+  assert.notEqual(first.innerShadowStyle.color, second.innerShadowStyle.color);
   assert.notEqual(first.strokeStyle.color, second.strokeStyle.color);
   first.bevelStyle.size = 47;
   first.strokeStyle.width = 93;
   first.strokeStyle.color[0] = 0.125;
+  first.outerShadowStyle.size = 61;
+  first.innerShadowStyle.choke = 42;
   assert.notEqual(second.bevelStyle.size, 47, "bevelStyle è aliasato fra livelli");
   assert.notEqual(second.strokeStyle.width, 93, "strokeStyle è aliasato fra livelli");
   assert.notEqual(
     second.strokeStyle.color[0],
     0.125,
     "il colore Traccia è aliasato fra livelli",
+  );
+  assert.notEqual(
+    second.outerShadowStyle.size,
+    61,
+    "outerShadowStyle è aliasato fra livelli",
+  );
+  assert.notEqual(
+    second.innerShadowStyle.choke,
+    42,
+    "innerShadowStyle è aliasato fra livelli",
   );
   // And neither may alias the frozen defaults.
   assert.doesNotThrow(() => { second.bevelStyle.size = 3; });
@@ -340,6 +364,8 @@ assert.throws(
     {
       needsStrokeRenderer: true,
       needsBevelRenderer: true,
+      needsOuterShadowRenderer: false,
+      needsInnerShadowRenderer: false,
       strokeWidth: 14,
     },
   );
@@ -355,6 +381,30 @@ assert.throws(
       { enabled: true, width: 512 },
       { enabled: false },
     ).needsStrokeRenderer,
+    true,
+  );
+  assert.deepEqual(
+    layerEffectRendererRequirements(
+      { enabled: false, width: 14 },
+      { enabled: false },
+      { enabled: true },
+      { enabled: false },
+    ),
+    {
+      needsStrokeRenderer: true,
+      needsBevelRenderer: false,
+      needsOuterShadowRenderer: true,
+      needsInnerShadowRenderer: false,
+      strokeWidth: 14,
+    },
+  );
+  assert.equal(
+    layerEffectRendererRequirements(
+      { enabled: false, width: 14 },
+      { enabled: false },
+      { enabled: false },
+      { enabled: true },
+    ).needsInnerShadowRenderer,
     true,
   );
 }
@@ -580,16 +630,16 @@ const strokeRendererSource = readFileSync(
   "utf8",
 );
 assert.match(strokeRendererSource, /paint = composeLayerStack\(paint, uv\);/);
-assert.match(strokeRendererSource, /@group\(1\) @binding\(11\) var mergedBelowTexture/);
-assert.match(strokeRendererSource, /@group\(1\) @binding\(12\) var mergedAboveTexture/);
+assert.match(strokeRendererSource, /@group\(1\) @binding\(15\) var mergedBelowTexture/);
+assert.match(strokeRendererSource, /@group\(1\) @binding\(16\) var mergedAboveTexture/);
 assert.ok(
   shaderSource.indexOf("paint = composeLayerStack(paint, layerUv);")
     < shaderSource.indexOf("let checkerCell", shaderSource.indexOf("paint = composeLayerStack(paint, layerUv);")),
   "la coda spessore deve comporre i layer prima della scacchiera e della conversione sRGB",
 );
-// The effect styles must live on the layer record, not on the engine, or a
-// switch would show the outgoing layer's stroke and bevel on the incoming one.
-// Accessors keep all 68 existing call sites working while making the styles
+// All four effect styles must live on the layer record, not on the engine, or a
+// switch would show the outgoing layer's effects on the incoming one.
+// Accessors keep existing call sites working while making the styles
 // follow the active layer by construction rather than by remembering to copy.
 assert.match(engineSource, /private readonly layerStack = new LayerStack\(\(\) => \(\{/);
 assert.match(
@@ -599,6 +649,14 @@ assert.match(
 assert.match(
   engineSource,
   /private get rasterBevelStyle\(\): RasterBevelStyle \{\s*return this\.layerStack\.active\.bevelStyle;/,
+);
+assert.match(
+  engineSource,
+  /private get rasterOuterShadowStyle\(\): RasterOuterShadowStyle \{\s*return this\.layerStack\.active\.outerShadowStyle;/,
+);
+assert.match(
+  engineSource,
+  /private get rasterInnerShadowStyle\(\): RasterInnerShadowStyle \{\s*return this\.layerStack\.active\.innerShadowStyle;/,
 );
 assert.doesNotMatch(
   engineSource,
@@ -610,6 +668,16 @@ assert.doesNotMatch(
   /private rasterBevelStyle: RasterBevelStyle =/,
   "lo stile Smusso non può tornare a essere un campo del motore",
 );
+assert.doesNotMatch(
+  engineSource,
+  /private rasterOuterShadowStyle: RasterOuterShadowStyle =/,
+  "lo stile Ombra esterna non può tornare a essere un campo del motore",
+);
+assert.doesNotMatch(
+  engineSource,
+  /private rasterInnerShadowStyle: RasterInnerShadowStyle =/,
+  "lo stile Ombra interna non può tornare a essere un campo del motore",
+);
 
 // After a switch the effect controls must be re-read from the engine, or the
 // panel would show the outgoing layer's Traccia and Smusso while the brush
@@ -619,9 +687,9 @@ const mainSource = readFileSync(
   "utf8",
 );
 assert.equal(
-  (mainSource.match(/performanceTelemetryRevision: 47/g) ?? []).length,
+  (mainSource.match(/performanceTelemetryRevision: 48/g) ?? []).length,
   2,
-  "tipo persistito e runtime devono avanzare insieme alla revisione 47",
+  "tipo persistito e runtime devono avanzare insieme alla revisione 48",
 );
 assert.match(mainSource, /layerBakeStrategy: string;/);
 assert.match(mainSource, /layerCompositeStrategy: string;/);
@@ -631,6 +699,8 @@ assert.match(mainSource, /function syncActiveLayerControls\(\): void \{/);
 const syncStart = mainSource.indexOf("function syncActiveLayerControls(");
 const syncBody = mainSource.slice(syncStart, syncStart + 600);
 assert.match(syncBody, /syncRasterStrokeControls\(engine\.getRasterStrokeStyle\(\)\)/);
+assert.match(syncBody, /syncRasterOuterShadowControls\(engine\.getRasterOuterShadowStyle\(\)\)/);
+assert.match(syncBody, /syncRasterInnerShadowControls\(engine\.getRasterInnerShadowStyle\(\)\)/);
 assert.match(syncBody, /syncRasterBevelControls\(engine\.getRasterBevelStyle\(\)\)/);
 const selectStart = mainSource.indexOf("async function selectLayer(");
 assert.notEqual(selectStart, -1, "selectLayer deve esistere");
@@ -1050,7 +1120,7 @@ assert.match(exactStudyBody, /temporaryReadbackPeakMiB/);
 assert.match(layerHistoryGpuTestSource, /measureExactLayerStorageStudy\(\)/);
 assert.match(layerHistoryGpuTestSource, /conservativeTilesContainEveryExactTile/);
 assert.match(layerHistoryGpuTestSource, /exactReadbackReleasedItsTemporaryBuffers/);
-assert.match(mainSource, /performanceTelemetryRevision: 47/);
+assert.match(mainSource, /performanceTelemetryRevision: 48/);
 assert.match(mainSource, /gpuMemoryLayerCold/);
 assert.match(mainSource, /gpuMemoryLayerHydration/);
 assert.match(mainSource, /Raw livelli · effettivo/);

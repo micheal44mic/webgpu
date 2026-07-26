@@ -17,7 +17,7 @@ import type { RasterBevelFieldState } from "./bevel-renderer";
 import type { EffectsScratchLease, EffectsScratchPool } from "./effects-scratch-pool";
 
 export const RASTER_STROKE_RENDERER_BUILD =
-  "style-stack-webgpu-v12-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even";
+  "style-stack-webgpu-v13-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even";
 export const RASTER_STROKE_COVERAGE_STRATEGY =
   "persistent-packed-r8-style-coverage" as const;
 export const RASTER_STROKE_DISTANCE_STORAGE_STRATEGY =
@@ -544,6 +544,10 @@ function strokeCompositionShaderSource(
   heightBinding = 7,
   glossBinding = 8,
   bevelUniformBinding = 9,
+  outerShadowCoverageBinding = 10,
+  outerShadowUniformBinding = 11,
+  innerShadowCoverageBinding = 12,
+  innerShadowUniformBinding = 13,
   derivativeMode: "analytic" | "fragment" = "analytic",
   boundingFieldEnabled = false,
   boundingFieldTestMutation: RasterBevelBoundingFieldTestMutation = "none",
@@ -623,17 +627,107 @@ struct BevelUniforms {
   shadow: vec4<f32>,${fieldUniformMembers}
 };
 
+struct ShadowUniforms {
+  flags: vec4<u32>,
+  colorOpacity: vec4<f32>,
+  geometry: vec4<f32>,
+  metadata: vec4<u32>,
+};
+
 @group(${bindGroup}) @binding(${coverageBinding})
 var<storage, read> coverageField: array<u32>;
 @group(${bindGroup}) @binding(${heightBinding}) var bevelHeight: texture_2d<f32>;
 @group(${bindGroup}) @binding(${glossBinding}) var bevelGloss: texture_2d<f32>;
 @group(${bindGroup}) @binding(${bevelUniformBinding}) var<uniform> bevel: BevelUniforms;
+@group(${bindGroup}) @binding(${outerShadowCoverageBinding})
+var<storage, read> outerShadowField: array<u32>;
+@group(${bindGroup}) @binding(${outerShadowUniformBinding})
+var<uniform> outerShadow: ShadowUniforms;
+@group(${bindGroup}) @binding(${innerShadowCoverageBinding})
+var<storage, read> innerShadowField: array<u32>;
+@group(${bindGroup}) @binding(${innerShadowUniformBinding})
+var<uniform> innerShadow: ShadowUniforms;
 
 fn loadCoverageByte(position: vec2<i32>) -> u32 {
   let linearIndex = u32(position.y) * ${documentWidth}u + u32(position.x);
   let packed = coverageField[linearIndex >> 2u];
   let shift = (linearIndex & 3u) * 8u;
   return (packed >> shift) & 255u;
+}
+
+fn loadOuterShadow(position: vec2<i32>) -> f32 {
+  if (any(position < vec2<i32>(0)) || any(position >= DOCUMENT_SIZE)) {
+    return 0.0;
+  }
+  let linearIndex = u32(position.y) * ${documentWidth}u + u32(position.x);
+  let packed = outerShadowField[linearIndex >> 2u];
+  let shift = (linearIndex & 3u) * 8u;
+  return f32((packed >> shift) & 255u) / 255.0;
+}
+
+fn loadInnerShadow(position: vec2<i32>) -> f32 {
+  if (any(position < vec2<i32>(0)) || any(position >= DOCUMENT_SIZE)) {
+    return 0.0;
+  }
+  let linearIndex = u32(position.y) * ${documentWidth}u + u32(position.x);
+  let packed = innerShadowField[linearIndex >> 2u];
+  let shift = (linearIndex & 3u) * 8u;
+  return f32((packed >> shift) & 255u) / 255.0;
+}
+
+fn sampleOuterShadow(position: vec2<f32>) -> f32 {
+  let origin = vec2<i32>(floor(position));
+  let fraction = fract(position);
+  let p00 = loadOuterShadow(origin);
+  let p10 = loadOuterShadow(origin + vec2<i32>(1, 0));
+  let p01 = loadOuterShadow(origin + vec2<i32>(0, 1));
+  let p11 = loadOuterShadow(origin + vec2<i32>(1, 1));
+  return mix(mix(p00, p10, fraction.x), mix(p01, p11, fraction.x), fraction.y);
+}
+
+fn sampleInnerShadow(position: vec2<f32>) -> f32 {
+  let origin = vec2<i32>(floor(position));
+  let fraction = fract(position);
+  let p00 = loadInnerShadow(origin);
+  let p10 = loadInnerShadow(origin + vec2<i32>(1, 0));
+  let p01 = loadInnerShadow(origin + vec2<i32>(0, 1));
+  let p11 = loadInnerShadow(origin + vec2<i32>(1, 1));
+  return mix(mix(p00, p10, fraction.x), mix(p01, p11, fraction.x), fraction.y);
+}
+
+fn shadowContourRaw(value: f32, contourCode: u32) -> f32 {
+  let x = clamp(value, 0.0, 1.0);
+  if (contourCode == 1u) {
+    return 1.0 - abs(2.0 * x - 1.0);
+  }
+  if (contourCode == 2u) {
+    let normalized = (1.0 - x) / 0.35;
+    let zeroPoint = exp(-0.5 / (0.35 * 0.35));
+    let gaussian = exp(-0.5 * normalized * normalized);
+    return clamp((gaussian - zeroPoint) / (1.0 - zeroPoint), 0.0, 1.0);
+  }
+  if (contourCode == 3u) {
+    return clamp(0.5 - 0.5 * cos(2.0 * 3.14159265359 * x), 0.0, 1.0);
+  }
+  return x;
+}
+
+fn shadowContourValue(value: f32, contourCode: u32, antialias: u32) -> f32 {
+  let x = clamp(value, 0.0, 1.0);
+  if (x <= 0.0) {
+    return 0.0;
+  }
+  var result = shadowContourRaw(x, contourCode);
+  if (antialias == 1u && contourCode != 0u) {
+    let lower = clamp(x - 0.5 / 255.0, 0.0, 1.0);
+    let upper = clamp(x + 0.5 / 255.0, 0.0, 1.0);
+    result = (
+      shadowContourRaw(lower, contourCode)
+      + result
+      + shadowContourRaw(upper, contourCode)
+    ) / 3.0;
+  }
+  return clamp(result, 0.0, 1.0);
 }
 
 ${heightLookup}
@@ -810,22 +904,124 @@ fn random24(position: vec2<u32>, seed: u32) -> f32 {
   return f32(value & 16777215u) / 16777215.0;
 }
 
+fn shadowNoise(
+  coverage: f32,
+  position: vec2<i32>,
+  amount: f32,
+  seed: u32
+) -> f32 {
+  if (amount <= 0.0) {
+    return coverage;
+  }
+  let grain = select(0.0, 1.0, random24(vec2<u32>(position), seed) < coverage);
+  return mix(coverage, grain, clamp(amount, 0.0, 1.0));
+}
+
+fn outerShadowPlane(base: vec4<f32>, position: vec2<i32>) -> vec4<f32> {
+  if (outerShadow.flags.x == 0u) {
+    return vec4<f32>(0.0);
+  }
+  let samplePosition = vec2<f32>(position) - outerShadow.geometry.xy;
+  var coverage = sampleOuterShadow(samplePosition);
+  coverage = shadowContourValue(
+    coverage,
+    outerShadow.flags.z,
+    outerShadow.flags.w
+  );
+  coverage = shadowNoise(
+    coverage,
+    position,
+    outerShadow.geometry.z,
+    outerShadow.metadata.x
+  );
+  coverage *= outerShadow.colorOpacity.a;
+  if (outerShadow.geometry.w > 0.5) {
+    coverage *= 1.0 - base.a;
+  }
+  coverage = clamp(coverage, 0.0, 1.0);
+  return vec4<f32>(outerShadow.colorOpacity.rgb * coverage, coverage);
+}
+
+fn innerShadowNode(base: vec4<f32>, position: vec2<i32>) -> vec4<f32> {
+  if (innerShadow.flags.x == 0u || base.a <= 1e-6) {
+    return base;
+  }
+  let samplePosition = vec2<f32>(position) - innerShadow.geometry.xy;
+  var coverage = 1.0 - sampleInnerShadow(samplePosition);
+  coverage = shadowContourValue(
+    coverage,
+    innerShadow.flags.z,
+    innerShadow.flags.w
+  );
+  coverage = shadowNoise(
+    coverage,
+    position,
+    innerShadow.geometry.z,
+    innerShadow.metadata.x
+  );
+  let weight = clamp(coverage * innerShadow.colorOpacity.a * base.a, 0.0, 1.0);
+  let straight = base.rgb / base.a;
+  let effectColor = select(
+    innerShadow.colorOpacity.rgb,
+    straight * innerShadow.colorOpacity.rgb,
+    innerShadow.flags.y == 1u
+  );
+  return vec4<f32>(mix(straight, effectColor, weight) * base.a, base.a);
+}
+
 fn styledTexel(position: vec2<i32>) -> vec4<f32> {
   let base = sourceTexel(position);
   var coverage = 0.0;
   if (parameters.strokeEnabled == 1u) {
     coverage = f32(loadCoverageByte(position)) / 255.0;
   }
-  if (bevel.flags.x == 0u) {
-    if (parameters.strokeEnabled == 0u) {
-      return base;
+  let shadowsDisabled = outerShadow.flags.x == 0u && innerShadow.flags.x == 0u;
+  if (shadowsDisabled) {
+    if (bevel.flags.x == 0u) {
+      if (parameters.strokeEnabled == 0u) {
+        return base;
+      }
+      return traceOnlyNode(base, coverage);
     }
-    return traceOnlyNode(base, coverage);
+    var legacyNode = bevelNode(base, position);
+    if (parameters.strokeEnabled == 1u) {
+      legacyNode = combinedStrokeNode(base.a, legacyNode, coverage);
+    }
+    let legacyAlpha = clamp(legacyNode.a, 0.0, 1.0);
+    legacyNode = vec4<f32>(
+      clamp(legacyNode.rgb, vec3<f32>(0.0), vec3<f32>(legacyAlpha)),
+      legacyAlpha
+    );
+    if (legacyNode.a > 1e-6) {
+      var legacyStraight = legacyNode.rgb / legacyNode.a;
+      let documentPosition = vec2<u32>(position);
+      let noise = random24(documentPosition, 4660u)
+        + random24(documentPosition, 40503u) - 1.0;
+      legacyStraight = clamp(
+        legacyStraight + noise * (0.75 / 255.0),
+        vec3<f32>(0.0),
+        vec3<f32>(1.0)
+      );
+      legacyNode = vec4<f32>(legacyStraight * legacyNode.a, legacyNode.a);
+    }
+    return legacyNode * bevel.scalars.z;
   }
-  var node = bevelNode(base, position);
+
+  let shadowedBase = innerShadowNode(base, position);
+  var node = select(
+    shadowedBase,
+    bevelNode(shadowedBase, position),
+    bevel.flags.x == 1u
+  );
   if (parameters.strokeEnabled == 1u) {
-    node = combinedStrokeNode(base.a, node, coverage);
+    node = select(
+      traceOnlyNode(shadowedBase, coverage),
+      combinedStrokeNode(base.a, node, coverage),
+      bevel.flags.x == 1u
+    );
   }
+  let outerPlane = outerShadowPlane(base, position);
+  node = node + outerPlane * (1.0 - node.a);
   let clampedAlpha = clamp(node.a, 0.0, 1.0);
   node = vec4<f32>(
     clamp(node.rgb, vec3<f32>(0.0), vec3<f32>(clampedAlpha)),
@@ -853,7 +1049,7 @@ function readbackComposeShader(
 ): string {
   return `${shaderSourceCommon(documentWidth, documentHeight)}
 ${strokeCompositionShaderSource(
-  documentWidth, 0, 5, 7, 8, 9, "analytic", bevelBoundingFieldEnabled,
+  documentWidth, 0, 5, 7, 8, 9, 10, 11, 12, 13, "analytic", bevelBoundingFieldEnabled,
   bevelBoundingFieldTestMutation,
 )}
 @group(0) @binding(6) var styledTexture: texture_storage_2d<${layerFormat}, write>;
@@ -878,7 +1074,7 @@ function coarseComposeShader(
 ): string {
   return `${shaderSourceCommon(documentWidth, documentHeight)}
 ${strokeCompositionShaderSource(
-  documentWidth, 0, 5, 7, 8, 9, "analytic", bevelBoundingFieldEnabled,
+  documentWidth, 0, 5, 7, 8, 9, 10, 11, 12, 13, "analytic", bevelBoundingFieldEnabled,
   bevelBoundingFieldTestMutation,
 )}
 @group(0) @binding(6) var coarseStyledTexture: texture_storage_2d<${layerFormat}, write>;
@@ -928,12 +1124,12 @@ struct VertexOutput {
 @group(0) @binding(0) var<uniform> display: DisplayUniforms;
 ${shaderSourceCommon(documentWidth, documentHeight, 1)}
 ${strokeCompositionShaderSource(
-  documentWidth, 1, 5, 8, 9, 10, "fragment", bevelBoundingFieldEnabled,
+  documentWidth, 1, 5, 8, 9, 10, 11, 12, 13, 14, "fragment", bevelBoundingFieldEnabled,
 )}
 @group(1) @binding(6) var coarseStyledTexture: texture_2d<f32>;
 @group(1) @binding(7) var layerSampler: sampler;
-@group(1) @binding(11) var mergedBelowTexture: texture_2d<f32>;
-@group(1) @binding(12) var mergedAboveTexture: texture_2d<f32>;
+@group(1) @binding(15) var mergedBelowTexture: texture_2d<f32>;
+@group(1) @binding(16) var mergedAboveTexture: texture_2d<f32>;
 
 fn srgbToLinearChannel(value: f32) -> f32 {
   if (value <= 0.04045) {
@@ -1261,8 +1457,14 @@ export class RasterStrokeRenderer {
   private readonly dummyView: GPUTextureView;
   private readonly dummyBevelTexture: GPUTexture;
   private readonly dummyBevelView: GPUTextureView;
+  private readonly dummyShadowStorageBuffer: GPUBuffer;
+  private readonly dummyShadowUniformBuffer: GPUBuffer;
   private bevelHeightView: GPUTextureView;
   private bevelGlossView: GPUTextureView;
+  private outerShadowCoverageBuffer: GPUBuffer;
+  private outerShadowUniformBuffer: GPUBuffer;
+  private innerShadowCoverageBuffer: GPUBuffer;
+  private innerShadowUniformBuffer: GPUBuffer;
 
   private seedBindGroupLayout!: GPUBindGroupLayout;
   private jfaBindGroupLayout!: GPUBindGroupLayout;
@@ -1489,6 +1691,30 @@ export class RasterStrokeRenderer {
     this.dummyBevelView = this.dummyBevelTexture.createView();
     this.bevelHeightView = this.dummyBevelView;
     this.bevelGlossView = this.dummyBevelView;
+    this.dummyShadowStorageBuffer = this.device.createBuffer({
+      label: "Style stack disabled Ombra packed R8 placeholder",
+      size: 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.dummyShadowUniformBuffer = this.device.createBuffer({
+      label: "Style stack disabled Ombra uniform placeholder",
+      size: 64,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.device.queue.writeBuffer(
+      this.dummyShadowStorageBuffer,
+      0,
+      new Uint32Array(1),
+    );
+    this.device.queue.writeBuffer(
+      this.dummyShadowUniformBuffer,
+      0,
+      new Uint32Array(16),
+    );
+    this.outerShadowCoverageBuffer = this.dummyShadowStorageBuffer;
+    this.outerShadowUniformBuffer = this.dummyShadowUniformBuffer;
+    this.innerShadowCoverageBuffer = this.dummyShadowStorageBuffer;
+    this.innerShadowUniformBuffer = this.dummyShadowUniformBuffer;
     let styledPixels = 0;
     for (let mipLevel = 1; mipLevel < mipLevelCount; mipLevel += 1) {
       styledPixels += Math.max(1, this.documentWidth >> mipLevel)
@@ -1501,7 +1727,7 @@ export class RasterStrokeRenderer {
       + DISPLAY_PARAMETER_BYTES * 3
       + changeStateBytes
       + indirectArgumentsBytes
-      + this.bevelUniformBytes + 4;
+      + this.bevelUniformBytes + 4 + 68;
     this.persistentMemoryBytes = this.coverageMemoryBytes
       + this.styledMemoryBytes
       + this.thresholdMaskMemoryBytes
@@ -1594,6 +1820,10 @@ export class RasterStrokeRenderer {
         { binding: 7, resource: this.bevelHeightView },
         { binding: 8, resource: this.bevelGlossView },
         { binding: 9, resource: { buffer: this.bevelUniformBuffer } },
+        { binding: 10, resource: { buffer: this.outerShadowCoverageBuffer } },
+        { binding: 11, resource: { buffer: this.outerShadowUniformBuffer } },
+        { binding: 12, resource: { buffer: this.innerShadowCoverageBuffer } },
+        { binding: 13, resource: { buffer: this.innerShadowUniformBuffer } },
       ],
     });
     const pass = options.encoder.beginComputePass({
@@ -1636,8 +1866,12 @@ export class RasterStrokeRenderer {
         { binding: 8, resource: this.bevelHeightView },
         { binding: 9, resource: this.bevelGlossView },
         { binding: 10, resource: { buffer: this.bevelUniformBuffer } },
-        { binding: 11, resource: mergedBelowView },
-        { binding: 12, resource: mergedAboveView },
+        { binding: 11, resource: { buffer: this.outerShadowCoverageBuffer } },
+        { binding: 12, resource: { buffer: this.outerShadowUniformBuffer } },
+        { binding: 13, resource: { buffer: this.innerShadowCoverageBuffer } },
+        { binding: 14, resource: { buffer: this.innerShadowUniformBuffer } },
+        { binding: 15, resource: mergedBelowView },
+        { binding: 16, resource: mergedAboveView },
       ],
     });
   }
@@ -1922,6 +2156,26 @@ export class RasterStrokeRenderer {
           visibility: GPUShaderStage.COMPUTE,
           buffer: { type: "uniform" },
         },
+        {
+          binding: 10,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: "read-only-storage" },
+        },
+        {
+          binding: 11,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: "uniform" },
+        },
+        {
+          binding: 12,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: "read-only-storage" },
+        },
+        {
+          binding: 13,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: "uniform" },
+        },
       ],
     });
 
@@ -2104,6 +2358,27 @@ export class RasterStrokeRenderer {
     }
   }
 
+  setShadowResources(
+    kind: "outer" | "inner",
+    coverageBuffer: GPUBuffer | null,
+    uniformBuffer: GPUBuffer | null,
+  ): void {
+    const coverage = coverageBuffer ?? this.dummyShadowStorageBuffer;
+    const uniforms = uniformBuffer ?? this.dummyShadowUniformBuffer;
+    if (kind === "outer") {
+      this.outerShadowCoverageBuffer = coverage;
+      this.outerShadowUniformBuffer = uniforms;
+    } else {
+      this.innerShadowCoverageBuffer = coverage;
+      this.innerShadowUniformBuffer = uniforms;
+    }
+    if (this.composeBindGroupLayout) {
+      this.rebuildSourceBindGroups(0);
+      this.rebuildSourceBindGroups(1);
+      this.rebuildSourceBindGroups(2);
+    }
+  }
+
   private writeBevelFieldUniforms(): void {
     if (!this.bevelBoundingFieldEnabled) {
       return;
@@ -2273,6 +2548,10 @@ export class RasterStrokeRenderer {
         { binding: 7, resource: this.bevelHeightView },
         { binding: 8, resource: this.bevelGlossView },
         { binding: 9, resource: { buffer: this.bevelUniformBuffer } },
+        { binding: 10, resource: { buffer: this.outerShadowCoverageBuffer } },
+        { binding: 11, resource: { buffer: this.outerShadowUniformBuffer } },
+        { binding: 12, resource: { buffer: this.innerShadowCoverageBuffer } },
+        { binding: 13, resource: { buffer: this.innerShadowUniformBuffer } },
       ],
     }));
     if (this.readbackStyledStorageView) {
@@ -2286,6 +2565,10 @@ export class RasterStrokeRenderer {
           { binding: 7, resource: this.bevelHeightView },
           { binding: 8, resource: this.bevelGlossView },
           { binding: 9, resource: { buffer: this.bevelUniformBuffer } },
+          { binding: 10, resource: { buffer: this.outerShadowCoverageBuffer } },
+          { binding: 11, resource: { buffer: this.outerShadowUniformBuffer } },
+          { binding: 12, resource: { buffer: this.innerShadowCoverageBuffer } },
+          { binding: 13, resource: { buffer: this.innerShadowUniformBuffer } },
         ],
       }));
     }
@@ -2888,6 +3171,8 @@ export class RasterStrokeRenderer {
     this.readbackStyledTexture?.destroy();
     this.dummyTexture.destroy();
     this.dummyBevelTexture.destroy();
+    this.dummyShadowStorageBuffer.destroy();
+    this.dummyShadowUniformBuffer.destroy();
     this.seedBindGroups.clear();
     this.resolveBindGroups.clear();
     this.composeBindGroups.clear();
