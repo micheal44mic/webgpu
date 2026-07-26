@@ -453,6 +453,13 @@ select {
   white-space: nowrap;
 }
 
+.gpu-memory-list > div.gpu-memory-study dt,
+.gpu-memory-list > div.gpu-memory-study dd {
+  color: #8fb7f2;
+  font-style: italic;
+}
+
+
 .gpu-memory-note {
   margin: 10px 0 0;
   padding-top: 9px;

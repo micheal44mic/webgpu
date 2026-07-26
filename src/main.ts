@@ -221,6 +221,7 @@ interface BenchmarkRun {
     activeLayerId: number;
     layerBakeStrategy: string;
     layerCompositeStrategy: string;
+    layerStorageStudy: EngineStats["layerStorageStudy"];
     gpuLabel: string;
     timestampQueriesSupported: boolean;
     stampGeometry: StampGeometry;
@@ -312,7 +313,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 45;
+    performanceTelemetryRevision: 46;
   };
 }
 
@@ -668,7 +669,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 45,
+    performanceTelemetryRevision: 46,
     ...engineEnvironment,
   };
 }
@@ -1846,7 +1847,7 @@ async function runRequestedLayerHistoryTest(): Promise<void> {
       : "Cronologia livelli GPU ERRORE · consulta il report JSON.";
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const failure = { version: 4, passed: false, error: message };
+    const failure = { version: 5, passed: false, error: message };
     layerHistoryTestReport.textContent = JSON.stringify(failure, null, 2);
     layerHistoryTestDetails.hidden = false;
     layerHistoryTestDetails.open = true;
@@ -1910,6 +1911,42 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
     output.textContent = formatMemoryMiB(value);
     output.parentElement?.classList.toggle("memory-zero", value < 0.05);
   }
+
+  const storageStudy = stats.layerStorageStudy;
+  const inactiveLayers = storageStudy.layers.filter((layer) => !layer.active);
+  const inactiveTileCount = inactiveLayers.reduce(
+    (total, layer) => total + layer.conservativeTileCount,
+    0,
+  );
+  const inactiveBboxTileCount = inactiveLayers.reduce(
+    (total, layer) => total + layer.alignedBboxTileCount,
+    0,
+  );
+  const inactiveTileCapacity = inactiveLayers.length * storageStudy.tileCount;
+  const formatStudy = (projectedMiB: number, savingsMiB: number) =>
+    `${formatMemoryMiB(projectedMiB)} · −${formatMemoryMiB(savingsMiB)}`;
+  const tileOutput = element<HTMLElement>("gpuMemoryLayerStudyTiles");
+  const bboxOutput = element<HTMLElement>("gpuMemoryLayerStudyBbox");
+  element<HTMLElement>("gpuMemoryLayerStudyTilesLabel").textContent =
+    `Studio cold · tile ${storageStudy.tileSizePx} · `
+    + `${inactiveTileCount}/${inactiveTileCapacity} inattive`;
+  element<HTMLElement>("gpuMemoryLayerStudyBboxLabel").textContent =
+    `Studio cold · bbox ${storageStudy.tileSizePx} · `
+    + `${inactiveBboxTileCount}/${inactiveTileCapacity} inattive`;
+  tileOutput.textContent = formatStudy(
+    storageStudy.projectedConservativeRawMiB,
+    storageStudy.conservativeSavingsMiB,
+  );
+  bboxOutput.textContent = formatStudy(
+    storageStudy.projectedAlignedBboxRawMiB,
+    storageStudy.alignedBboxSavingsMiB,
+  );
+  tileOutput.title =
+    "Stima raw totale: attivo full-canvas più sole tile conservative degli inattivi; "
+    + "non è memoria allocata.";
+  bboxOutput.title =
+    "Stima raw totale: attivo full-canvas più bbox allineato degli inattivi; "
+    + "non è memoria allocata.";
 
   const scratchExtents: string[] = [];
   if (stats.gpuMemory.effectsScratchStrokeExtent > 0) {
@@ -2047,7 +2084,13 @@ function renderLayerList(stats: EngineStats): void {
     name.textContent = layer.name;
     const hint = document.createElement("span");
     hint.className = "layer-hint";
-    hint.textContent = layer.hasContent ? "disegnato" : "vuoto";
+    hint.textContent = layer.hasContent
+      ? `disegnato · ${layer.conservativeTileCount}/${stats.layerStorageStudy.tileCount} tile`
+      : "vuoto";
+    select.title = layer.hasContent
+      ? `Studio cold: ${layer.conservativeTileMiB.toFixed(2)} MiB tile conservative; `
+        + `${layer.alignedBboxMiB.toFixed(2)} MiB bbox allineato.`
+      : "Studio cold: 0 MiB se il livello diventa inattivo.";
     select.append(name, hint);
     select.onclick = () => { void selectLayer(index); };
 

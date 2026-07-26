@@ -463,7 +463,7 @@ documento+apron (`64,06 MiB` fissi) a inviluppo tile-aligned dei job + apron.
 - Non verificato: una sola GPU desktop. Su mobile il frame di crescita va
   rimisurato prima di considerare il default ON.
 
-### Livelli multipli (Fase 2, candidato commit 13 non pubblicato)
+### Livelli multipli (Fase 2, commit 13 locale non pubblicato)
 
 Il modello CPU resta in `src/layer-stack.ts` (`npm run layers:verify`): record
 ordinati, id monotoni mai riusati, bounds/`hasContent`, visibilità, opacità e
@@ -635,6 +635,58 @@ documentato sopra.
 `dist/` era già sporca prima del candidato e non fa parte del lavoro: non
 ripulirla, rigenerarla o includerla nel commit. Il Golden del passo 12 resta la
 baseline storica misurata; non vale come esecuzione del commit 13.
+
+#### Commit 14a — misura tile dei livelli inattivi, storage invariato
+
+Il commit 14a non cambia ancora alcuna allocazione GPU: il livello attivo resta
+sempre una texture full-canvas e anche gli inattivi continuano a occupare il mip
+`0` intero. La strategia firmata è
+`measure-only-active-full-inactive-256-dirty-tiles-vs-aligned-bbox`. Ogni record
+mantiene soltanto una maschera CPU conservativa `16×16` di tile `256×256`, cioè
+`8 u32` / `32 byte`; la mutazione centrale marca tutte le tile toccate e un
+clear azzera la maschera. Non esistono texture sparse, texture array o buffer
+tile in questo commit.
+
+La telemetria rev `46` e le due righe HUD «Studio cold» confrontano tile
+conservative e bbox allineata. Sono stime controfattuali: non entrano nel totale
+GPU, non generano badge di allocazione e non vanno descritte come memoria già
+risparmiata. La sonda dev esatta legge un livello alla volta, considera occupata
+una tile quando **qualunque byte raw RGBA è non zero** e distrugge subito il
+buffer temporaneo.
+
+Run WebGPU finale su NVIDIA Ampere, RGBA8, cinque livelli della fixture:
+
+| Modello raw | MiB |
+|---|---:|
+| allocazione reale corrente | `320` |
+| proiezione esatta, attivo full | `69` |
+| maschera conservativa, attivo full | `69` |
+| bbox allineata, attivo full | `75,5` |
+
+La maschera non perde nessuna tile esatta (`0` miss) e in questa fixture non ha
+extra; la riduzione **ipotetica** rispetto ai soli mip `0` è `251 MiB`. La
+contabilità GPU prima/dopo il readback resta identica a `489,887363 MiB`; la
+contabilità separata dei buffer diagnostici misura `0 → 64 → 0 MiB`, quindi il
+full readback avviene davvero e il buffer temporaneo viene rilasciato. Harness
+rev `5`: `111/111` controlli verdi; switch a due livelli `90,6/12,1 ms`, stress
+a cinque `360,1/380,0 ms`, sotto il tetto storico nella run pulita finale.
+
+
+Mutation gate: rimossa la chiamata che marca la dirty rect, il riferimento esatto
+trova `24` tile mancanti e rende rossi
+`conservativeTilesContainEveryExactTile` e
+`exactProjectionIsNoLargerThanConservative`. Rimossa poi la chiusura della sola
+contabilità readback, lasciando `GPUBuffer.destroy()`, l'harness si interrompe
+con `11.762.176` byte temporanei ancora segnati vivi. Dopo entrambi i ripristini
+la run torna `111/111`. Golden invariato (`8d5a75a6…` mip `0`, `9208e2a3…` mip derivati),
+con gli stessi 25 mismatch e tre diagnostici già aperti; otto verify, TypeScript,
+`git diff --check` e build Vite temporanea (`350 ms`) verdi. `dist/` non è stata
+toccata.
+
+La scelta del backend cold resta aperta: questi numeri autorizzano il passo
+successivo di prototipazione, non la conclusione che tile siano già migliori in
+latenza o memoria fisica su mobile.
+
 
 #### Gate document-wide e cronologia da preservare
 

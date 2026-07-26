@@ -9,7 +9,7 @@ import {
   type LayerMemorySnapshot,
 } from "./layer-composite-gpu-test";
 
-export const LAYER_HISTORY_GPU_TEST_VERSION = 4 as const;
+export const LAYER_HISTORY_GPU_TEST_VERSION = 5 as const;
 
 interface PixelRect {
   x: number;
@@ -64,6 +64,7 @@ export interface LayerHistoryGpuTestReport {
   fwidthBakeGap: Awaited<ReturnType<BrushEngine["measureActiveStyleBakeGap"]>>;
   bakeRollback: BakeRollbackProbe;
   compositing: LayerCompositeGpuTestReport;
+  storageStudy: Awaited<ReturnType<BrushEngine["measureExactLayerStorageStudy"]>>;
   memory: {
     oneLayer: LayerMemorySnapshot;
     twoLayers: LayerMemorySnapshot;
@@ -359,6 +360,7 @@ export async function runLayerHistoryGpuTest(
   const withinDocumentedCeiling = Math.max(...twoLayerAfterMs) <= 215 * 1.03;
 
   const compositing = await runLayerCompositeGpuTest(engine, strokeStyle, 2_000);
+  const storageStudy = await engine.measureExactLayerStorageStudy();
 
   const fatalPreparationUndoReturned = await engine.undo();
   await engine.waitForIdle();
@@ -407,6 +409,29 @@ export async function runLayerHistoryGpuTest(
   };
 
   const checks: Record<string, boolean> = {
+    storageStudyMeasuredEveryLayer:
+      storageStudy.layers.length === 5
+      && storageStudy.layers.every((layer) => layer.exactTileCount > 0),
+    conservativeTilesContainEveryExactTile:
+      storageStudy.totalMissedExactTiles === 0
+      && storageStudy.layers.every((layer) => layer.missedExactTiles === 0),
+    exactProjectionIsNoLargerThanConservative:
+      storageStudy.projectedExactRawMiB
+        <= storageStudy.projectedConservativeRawMiB + 1e-6,
+    conservativeProjectionIsNoLargerThanBbox:
+      storageStudy.projectedConservativeRawMiB
+        <= storageStudy.projectedAlignedBboxRawMiB + 1e-6,
+    sparseHarnessWouldReduceRawLayerMemory:
+      storageStudy.projectedConservativeRawMiB < storageStudy.actualRawMiB,
+    exactReadbackReleasedItsTemporaryBuffers: (() => {
+      const expectedPeakMiB = storageStudy.bytesPerPixel === 8 ? 128 : 64;
+      return storageStudy.temporaryReadbackMiBBefore === 0
+        && storageStudy.temporaryReadbackMiBAfter === 0
+        && Math.abs(storageStudy.temporaryReadbackPeakMiB - expectedPeakMiB) < 0.01
+        && Math.abs(
+          storageStudy.countedGpuMiBAfter - storageStudy.countedGpuMiBBefore,
+        ) < 0.01;
+    })(),
     bevelWasEnabledForGapAndBake: bevelStyleEnabled,
     fwidthBakeGapWasMeasured:
       fwidthBakeGap.comparedPixels === pRect.width * pRect.height
@@ -515,6 +540,7 @@ export async function runLayerHistoryGpuTest(
     fwidthBakeGap,
     bakeRollback,
     compositing,
+    storageStudy,
     memory: {
       oneLayer: oneLayerMemory,
       twoLayers: twoLayersMemory,

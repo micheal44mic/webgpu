@@ -7,6 +7,20 @@ import {
   layerEffectRendererRequirements,
 } from "../src/layer-stack.ts";
 import { runGpuAllocationTransaction } from "../src/gpu-allocation-transaction.ts";
+import {
+  LAYER_STORAGE_GRID_SIZE,
+  LAYER_STORAGE_MASK_WORD_COUNT,
+  LAYER_STORAGE_STUDY_STRATEGY,
+  LAYER_STORAGE_TILE_COUNT,
+  alignedBoundsTileCount,
+  clearLayerStorageTileMask,
+  compareLayerStorageMasks,
+  countLayerStorageTiles,
+  createLayerStorageTileMask,
+  exactLayerStorageTileMask,
+  layerStorageTileMemoryMiB,
+  markLayerStorageRect,
+} from "../src/layer-storage-study.ts";
 
 assert.equal(
   LAYER_STACK_STRATEGY,
@@ -175,6 +189,125 @@ const newStack = () => new LayerStack(createStyles);
   assert.throws(() => stack.add(), /Massimo/);
 }
 
+// Commit 14a is measurement-only: one 32-byte conservative mask per layer,
+// fixed 256² tiles over the 4096² document, and no GPU storage change.
+assert.equal(
+  LAYER_STORAGE_STUDY_STRATEGY,
+  "measure-only-active-full-inactive-256-dirty-tiles-vs-aligned-bbox",
+);
+assert.equal(LAYER_STORAGE_GRID_SIZE, 16);
+assert.equal(LAYER_STORAGE_TILE_COUNT, 256);
+assert.equal(LAYER_STORAGE_MASK_WORD_COUNT * Uint32Array.BYTES_PER_ELEMENT, 32);
+
+// Every record owns a fresh mask. Sharing one would make painting on B mark A.
+{
+  const stack = newStack();
+  stack.add();
+  assert.notEqual(stack.at(0).storageTileMask, stack.at(1).storageTileMask);
+  assert.equal(countLayerStorageTiles(stack.at(0).storageTileMask), 0);
+  assert.equal(countLayerStorageTiles(stack.at(1).storageTileMask), 0);
+  markLayerStorageRect(stack.at(0).storageTileMask, {
+    x: 32,
+    y: 48,
+    width: 8,
+    height: 12,
+  });
+  assert.equal(countLayerStorageTiles(stack.at(0).storageTileMask), 1);
+  assert.equal(countLayerStorageTiles(stack.at(1).storageTileMask), 0);
+}
+
+// A rect straddling both 256-pixel seams touches exactly four tiles. Clamping a
+// document-sized rect must cover all 256 without writing outside the bitset.
+{
+  const mask = createLayerStorageTileMask();
+  markLayerStorageRect(mask, { x: 255, y: 255, width: 2, height: 2 });
+  assert.equal(countLayerStorageTiles(mask), 4);
+  clearLayerStorageTileMask(mask);
+  markLayerStorageRect(mask, { x: -50, y: -80, width: 5000, height: 5000 });
+  assert.equal(countLayerStorageTiles(mask), LAYER_STORAGE_TILE_COUNT);
+  clearLayerStorageTileMask(mask);
+  assert.equal(countLayerStorageTiles(mask), 0);
+}
+
+// Sparse corners demonstrate the question 14a exists to answer: two occupied
+// pages versus a full-document aligned bbox.
+{
+  const mask = createLayerStorageTileMask();
+  markLayerStorageRect(mask, { x: 0, y: 0, width: 1, height: 1 });
+  markLayerStorageRect(mask, { x: 4095, y: 4095, width: 1, height: 1 });
+  assert.equal(countLayerStorageTiles(mask), 2);
+  assert.equal(
+    alignedBoundsTileCount({ x: 0, y: 0, width: 4096, height: 4096 }),
+    256,
+  );
+  assert.equal(layerStorageTileMemoryMiB(1, 4), 0.25);
+  assert.equal(layerStorageTileMemoryMiB(1, 8), 0.5);
+  assert.equal(layerStorageTileMemoryMiB(256, 4), 64);
+  assert.equal(layerStorageTileMemoryMiB(256, 8), 128);
+}
+
+// Exact occupancy means any non-zero raw byte, not alpha. This preserves a
+// future or malformed transparent-RGB texel byte-for-byte.
+{
+  const pixels = new Uint8Array(512 * 512 * 4);
+  pixels[0] = 17; // RGB non-zero, alpha remains zero.
+  pixels[(300 * 512 + 300) * 4 + 3] = 255;
+  const exact = exactLayerStorageTileMask(pixels, 512, 512, 4);
+  assert.equal(countLayerStorageTiles(exact), 2);
+
+  const conservative = createLayerStorageTileMask();
+  markLayerStorageRect(conservative, { x: 0, y: 0, width: 1, height: 1 });
+  markLayerStorageRect(conservative, { x: 300, y: 300, width: 1, height: 1 });
+  assert.deepEqual(compareLayerStorageMasks(exact, conservative), {
+    missedReferenceTiles: 0,
+    extraCandidateTiles: 0,
+  });
+
+  const underMarked = createLayerStorageTileMask();
+  markLayerStorageRect(underMarked, { x: 0, y: 0, width: 1, height: 1 });
+  assert.equal(compareLayerStorageMasks(exact, underMarked).missedReferenceTiles, 1);
+}
+
+// RGBA16F is scanned as raw bytes too: a non-zero high half in the second word
+// of a texel must still keep the tile.
+{
+  const pixels = new Uint8Array(256 * 256 * 8);
+  pixels[7] = 0x80;
+  assert.equal(
+    countLayerStorageTiles(exactLayerStorageTileMask(pixels, 256, 256, 8)),
+    1,
+  );
+}
+
+// Deterministic differential fuzz: every non-zero texel chosen inside a dirty
+// rect must be covered by the conservative mask. Over-marking is allowed.
+{
+  let state = 0x12345678;
+  const random = () => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 0x1_0000_0000;
+  };
+  const pixels = new Uint8Array(512 * 512 * 4);
+  const conservative = createLayerStorageTileMask();
+  for (let index = 0; index < 128; index += 1) {
+    const x = Math.floor(random() * 500);
+    const y = Math.floor(random() * 500);
+    const width = 1 + Math.floor(random() * (512 - x));
+    const height = 1 + Math.floor(random() * (512 - y));
+    markLayerStorageRect(conservative, { x, y, width, height });
+    const pixelX = x + Math.floor(random() * width);
+    const pixelY = y + Math.floor(random() * height);
+    pixels[(pixelY * 512 + pixelX) * 4] = 1;
+  }
+  const exact = exactLayerStorageTileMask(pixels, 512, 512, 4);
+  assert.equal(compareLayerStorageMasks(exact, conservative).missedReferenceTiles, 0);
+}
+
+assert.throws(
+  () => exactLayerStorageTileMask(new Uint8Array(3), 1, 1, 4),
+  /Readback non valido/,
+);
+
 {
   const stack = newStack();
   assert.equal(stack.anyHasContent(), false);
@@ -289,7 +422,16 @@ assert.match(textureProbeBody, /\{ texture: target, mipLevel, origin:/,
   "la sonda deve inoltrare esplicitamente il mip richiesto");
 assert.match(textureProbeBody, /Math\.ceil\(unpaddedBytesPerRow \/ 256\) \* 256/,
   "bytesPerRow deve restare allineato a 256");
-assert.match(textureProbeBody, /readbackBuffer\.destroy\(\)/, "la sonda non deve perdere il buffer");
+assert.match(
+  textureProbeBody,
+  /this\.destroyTrackedReadbackBuffer\(readbackBuffer, readbackBytes\)/,
+  "la sonda deve rilasciare il buffer attraverso la contabilità dev",
+);
+const destroyReadbackStart = engineSource.indexOf("private destroyTrackedReadbackBuffer(");
+const destroyReadbackBody = engineSource.slice(destroyReadbackStart, destroyReadbackStart + 500);
+assert.match(destroyReadbackBody, /buffer\.destroy\(\)/, "il rilascio tracciato deve distruggere il buffer");
+assert.match(destroyReadbackBody, /this\.devReadbackActiveBytes -= size/,
+  "il rilascio tracciato deve azzerare la residenza temporanea");
 
 // Steps 12–13: analytic bakes are transactional but transient. A successful
 // rebuild folds them into at most two persistent surfaces, then releases every
@@ -462,9 +604,9 @@ const mainSource = readFileSync(
   "utf8",
 );
 assert.equal(
-  (mainSource.match(/performanceTelemetryRevision: 45/g) ?? []).length,
+  (mainSource.match(/performanceTelemetryRevision: 46/g) ?? []).length,
   2,
-  "tipo persistito e runtime devono avanzare insieme alla revisione 45",
+  "tipo persistito e runtime devono avanzare insieme alla revisione 46",
 );
 assert.match(mainSource, /layerBakeStrategy: string;/);
 assert.match(mainSource, /layerCompositeStrategy: string;/);
@@ -646,8 +788,8 @@ assert.match(mainSource, /window\.clearTimeout\(timeoutId\)/,
   "il timer dell'harness deve essere disarmato dopo successo o errore");
 assert.match(mainSource, /layerHistoryTestRunning = timedOut/,
   "dopo timeout la pagina deve restare bloccata perché Promise.race non cancella il test");
-assert.match(mainSource, /const failure = \{ version: 4, passed: false/);
-assert.match(layerHistoryGpuTestSource, /LAYER_HISTORY_GPU_TEST_VERSION = 4 as const/);
+assert.match(mainSource, /const failure = \{ version: 5, passed: false/);
+assert.match(layerHistoryGpuTestSource, /LAYER_HISTORY_GPU_TEST_VERSION = 5 as const/);
 assert.match(layerHistoryGpuTestSource, /measureActiveStyleBakeGap\(pRect\)/);
 assert.match(layerHistoryGpuTestSource, /engine\.injectLayerBakeFault\("after-candidate-submit"\)/);
 assert.match(layerHistoryGpuTestSource, /injectedBakeFailureReleasedCandidate/);
@@ -800,5 +942,58 @@ assert.match(
 );
 assert.match(mainSource, /layerCount: number;/);
 assert.match(mainSource, /activeLayerId: number;/);
+
+// Commit 14a must remain observational. The only live mutation is 32 B of CPU
+// metadata per layer; actual GPU allocation accounting and drawing stay intact.
+const layerStorageStudySource = readFileSync(
+  new URL("../src/layer-storage-study.ts", import.meta.url),
+  "utf8",
+);
+assert.match(
+  layerStorageStudySource,
+  /measure-only-active-full-inactive-256-dirty-tiles-vs-aligned-bbox/,
+);
+assert.match(layerStorageStudySource, /"Occupied" deliberately means ANY non-zero byte/);
+assert.doesNotMatch(
+  layerStorageStudySource,
+  /GPUTexture|GPUBuffer|GPUDevice|GPUQueue/,
+  "lo studio puro non deve creare o nominare risorse WebGPU",
+);
+const mutationStart = engineSource.indexOf("private noteLayerMutation(");
+const mutationBody = engineSource.slice(mutationStart, mutationStart + 1_100);
+assert.match(
+  mutationBody,
+  /clearLayerStorageTileMask\(this\.layerStack\.active\.storageTileMask\)/,
+  "clear deve azzerare la maschera del solo livello attivo",
+);
+assert.match(
+  mutationBody,
+  /markLayerStorageRect\(this\.layerStack\.active\.storageTileMask, dirtyRect\)/,
+  "ogni mutazione raw deve raggiungere il collo di bottiglia della maschera",
+);
+assert.match(engineSource, /private getLayerStorageStudy\(\): LayerStorageStudyStats/);
+assert.match(
+  engineSource,
+  /projectedConservativeRawMiB = activeFullMiB \+ inactiveConservativeTileMiB/,
+  "la proiezione deve conservare il livello attivo full-canvas",
+);
+const exactStudyStart = engineSource.indexOf("async measureExactLayerStorageStudy(");
+const exactStudyBody = engineSource.slice(exactStudyStart, exactStudyStart + 4_500);
+assert.match(exactStudyBody, /import\.meta\.env\.DEV/);
+assert.match(exactStudyBody, /await this\.readLayerPixels\(undefined, index\)/);
+assert.match(exactStudyBody, /compareLayerStorageMasks\(exactMask, record\.storageTileMask\)/);
+assert.match(exactStudyBody, /countedGpuMiBBefore/);
+assert.match(exactStudyBody, /countedGpuMiBAfter/);
+assert.match(exactStudyBody, /temporaryReadbackMiBBefore/);
+assert.match(exactStudyBody, /temporaryReadbackMiBAfter/);
+assert.match(exactStudyBody, /temporaryReadbackPeakMiB/);
+assert.match(layerHistoryGpuTestSource, /measureExactLayerStorageStudy\(\)/);
+assert.match(layerHistoryGpuTestSource, /conservativeTilesContainEveryExactTile/);
+assert.match(layerHistoryGpuTestSource, /exactReadbackReleasedItsTemporaryBuffers/);
+assert.match(layerHistoryGpuTestSource, /temporaryReadbackPeakMiB/);
+assert.match(mainSource, /performanceTelemetryRevision: 46/);
+assert.match(mainSource, /gpuMemoryLayerStudyTiles/);
+assert.match(mainSource, /gpuMemoryLayerStudyBbox/);
+assert.match(mainSource, /non è memoria allocata/);
 
 console.log("Layer stack verification passed.");

@@ -99,6 +99,19 @@ import {
   effectsScratchCanShrink,
   effectsScratchShrinkIsWorthwhile,
 } from "./effects-scratch-pool";
+import {
+  LAYER_STORAGE_GRID_SIZE,
+  LAYER_STORAGE_STUDY_STRATEGY,
+  LAYER_STORAGE_TILE_COUNT,
+  LAYER_STORAGE_TILE_SIZE,
+  alignedBoundsTileCount,
+  clearLayerStorageTileMask,
+  compareLayerStorageMasks,
+  countLayerStorageTiles,
+  exactLayerStorageTileMask,
+  layerStorageTileMemoryMiB,
+  markLayerStorageRect,
+} from "./layer-storage-study";
 
 export type {
   RasterStrokePosition,
@@ -278,6 +291,67 @@ export interface EngineGpuMemoryStats {
   countedTotalMiB: number;
 }
 
+export interface LayerStorageLayerEstimate {
+  id: number;
+  name: string;
+  active: boolean;
+  hasContent: boolean;
+  conservativeTileCount: number;
+  alignedBboxTileCount: number;
+  conservativeTileMiB: number;
+  alignedBboxMiB: number;
+}
+
+/**
+ * Counterfactual raw-layer memory only. These values describe what commit 14b
+ * could allocate; commit 14a does not subtract them from counted GPU memory.
+ */
+export interface LayerStorageStudyStats {
+  strategy: typeof LAYER_STORAGE_STUDY_STRATEGY;
+  measurementOnly: true;
+  tileSizePx: typeof LAYER_STORAGE_TILE_SIZE;
+  gridSize: typeof LAYER_STORAGE_GRID_SIZE;
+  tileCount: typeof LAYER_STORAGE_TILE_COUNT;
+  bytesPerPixel: 4 | 8;
+  fullLayerMiB: number;
+  actualRawMiB: number;
+  inactiveFullMiB: number;
+  inactiveConservativeTileMiB: number;
+  inactiveAlignedBboxMiB: number;
+  projectedConservativeRawMiB: number;
+  projectedAlignedBboxRawMiB: number;
+  conservativeSavingsMiB: number;
+  alignedBboxSavingsMiB: number;
+  layers: readonly LayerStorageLayerEstimate[];
+}
+
+export interface LayerStorageExactLayerMeasurement extends LayerStorageLayerEstimate {
+  exactTileCount: number;
+  exactTileMiB: number;
+  missedExactTiles: number;
+  conservativelyExtraTiles: number;
+}
+
+export interface LayerStorageExactStudy {
+  strategy: typeof LAYER_STORAGE_STUDY_STRATEGY;
+  reference: "any-nonzero-raw-byte";
+  tileSizePx: typeof LAYER_STORAGE_TILE_SIZE;
+  bytesPerPixel: 4 | 8;
+  actualRawMiB: number;
+  projectedExactRawMiB: number;
+  projectedConservativeRawMiB: number;
+  projectedAlignedBboxRawMiB: number;
+  exactSavingsMiB: number;
+  totalMissedExactTiles: number;
+  totalConservativelyExtraTiles: number;
+  countedGpuMiBBefore: number;
+  countedGpuMiBAfter: number;
+  temporaryReadbackMiBBefore: number;
+  temporaryReadbackMiBAfter: number;
+  temporaryReadbackPeakMiB: number;
+  layers: readonly LayerStorageExactLayerMeasurement[];
+}
+
 export interface EngineStats {
   fps: number;
   lastCpuFrameMs: number;
@@ -288,12 +362,17 @@ export interface EngineStats {
   activeLayerId: number;
   layerBakeStrategy: typeof LAYER_BAKE_STRATEGY;
   layerCompositeStrategy: typeof LAYER_COMPOSITE_STRATEGY;
+  layerStorageStudy: LayerStorageStudyStats;
   layers: readonly {
     id: number;
     name: string;
     visible: boolean;
     opacity: number;
     hasContent: boolean;
+    conservativeTileCount: number;
+    alignedBboxTileCount: number;
+    conservativeTileMiB: number;
+    alignedBboxMiB: number;
     bakeAllocated: boolean;
     bakeValid: boolean;
     bakeGeneration: number;
@@ -1455,6 +1534,9 @@ export class BrushEngine {
   private layerCompositeFaultQueue: LayerCompositeFaultPoint[] = [];
   private readonly liveLayerBakeTextures = new Map<GPUTexture, number>();
   private readonly liveMergedSurfaceTextures = new Set<GPUTexture>();
+  /** Dev probe buffers are excluded from counted GPU memory, so track them separately. */
+  private devReadbackActiveBytes = 0;
+  private devReadbackPeakBytes = 0;
 
   // Accessors rather than fields: every read site keeps working, and the styles
   // follow the active layer by construction rather than by remembering to copy
@@ -2360,6 +2442,9 @@ export class BrushEngine {
       this.resetHistoryState();
       this.clearRequested = true;
       this.displayDirty = true;
+      this.layerStack.active.contentBounds = null;
+      this.layerStack.active.hasContent = false;
+      clearLayerStorageTileMask(this.layerStack.active.storageTileMask);
       this.layerHasContent = false;
       this.layerContentBounds = null;
       try {
@@ -2805,6 +2890,7 @@ export class BrushEngine {
     this.layerHasContent = false;
     this.layerContentBounds = null;
     this.requestRender();
+    clearLayerStorageTileMask(this.layerStack.active.storageTileMask);
     this.publishHistoryState();
     this.scheduleEffectsScratchShrink();
     this.scheduleBevelFieldShrink();
@@ -3074,10 +3160,78 @@ export class BrushEngine {
     };
   }
 
+  private getLayerStorageStudy(): LayerStorageStudyStats {
+    const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
+    const fullLayerMiB = layerStorageTileMemoryMiB(
+      LAYER_STORAGE_TILE_COUNT,
+      bytesPerPixel,
+    );
+    const activeId = this.layerStack.active.id;
+    const layers = this.layerStack.layers.map((record): LayerStorageLayerEstimate => {
+      const active = record.id === activeId;
+      const hasContent = active ? this.layerHasContent : record.hasContent;
+      const contentBounds = active ? this.layerContentBounds : record.contentBounds;
+      const conservativeTileCount = hasContent
+        ? countLayerStorageTiles(record.storageTileMask)
+        : 0;
+      const alignedBboxTileCount = hasContent
+        ? alignedBoundsTileCount(contentBounds)
+        : 0;
+      return {
+        id: record.id,
+        name: record.name,
+        active,
+        hasContent,
+        conservativeTileCount,
+        alignedBboxTileCount,
+        conservativeTileMiB: layerStorageTileMemoryMiB(
+          conservativeTileCount,
+          bytesPerPixel,
+        ),
+        alignedBboxMiB: layerStorageTileMemoryMiB(
+          alignedBboxTileCount,
+          bytesPerPixel,
+        ),
+      };
+    });
+    const inactive = layers.filter((layer) => !layer.active);
+    const inactiveConservativeTileMiB = inactive.reduce(
+      (total, layer) => total + layer.conservativeTileMiB,
+      0,
+    );
+    const inactiveAlignedBboxMiB = inactive.reduce(
+      (total, layer) => total + layer.alignedBboxMiB,
+      0,
+    );
+    const actualRawMiB = fullLayerMiB * this.layerGpu.size;
+    const activeFullMiB = this.layerGpu.size > 0 ? fullLayerMiB : 0;
+    const projectedConservativeRawMiB = activeFullMiB + inactiveConservativeTileMiB;
+    const projectedAlignedBboxRawMiB = activeFullMiB + inactiveAlignedBboxMiB;
+    return {
+      strategy: LAYER_STORAGE_STUDY_STRATEGY,
+      measurementOnly: true,
+      tileSizePx: LAYER_STORAGE_TILE_SIZE,
+      gridSize: LAYER_STORAGE_GRID_SIZE,
+      tileCount: LAYER_STORAGE_TILE_COUNT,
+      bytesPerPixel,
+      fullLayerMiB,
+      actualRawMiB,
+      inactiveFullMiB: fullLayerMiB * Math.max(0, this.layerGpu.size - 1),
+      inactiveConservativeTileMiB,
+      inactiveAlignedBboxMiB,
+      projectedConservativeRawMiB,
+      projectedAlignedBboxRawMiB,
+      conservativeSavingsMiB: Math.max(0, actualRawMiB - projectedConservativeRawMiB),
+      alignedBboxSavingsMiB: Math.max(0, actualRawMiB - projectedAlignedBboxRawMiB),
+      layers,
+    };
+  }
+
   getStats(): EngineStats {
     const now = performance.now();
     this.renderTimestamps = this.renderTimestamps.filter((timestamp) => now - timestamp <= 1000);
     const gpuMemory = this.getGpuMemoryStats();
+    const layerStorageStudy = this.getLayerStorageStudy();
     const effectsScratch = this.effectsWorkbench?.scratchPool.snapshot();
     return {
       fps: this.renderTimestamps.length,
@@ -3089,8 +3243,10 @@ export class BrushEngine {
       activeLayerId: this.layerStack.active.id,
       layerBakeStrategy: LAYER_BAKE_STRATEGY,
       layerCompositeStrategy: LAYER_COMPOSITE_STRATEGY,
-      layers: this.layerStack.layers.map((record) => {
+      layerStorageStudy,
+      layers: this.layerStack.layers.map((record, index) => {
         const gpu = this.layerGpu.get(record.id);
+        const storage = layerStorageStudy.layers[index];
         return {
           id: record.id,
           name: record.name,
@@ -3102,6 +3258,10 @@ export class BrushEngine {
           hasContent: record.id === this.layerStack.active.id
             ? this.layerHasContent
             : record.hasContent,
+          conservativeTileCount: storage.conservativeTileCount,
+          alignedBboxTileCount: storage.alignedBboxTileCount,
+          conservativeTileMiB: storage.conservativeTileMiB,
+          alignedBboxMiB: storage.alignedBboxMiB,
           bakeAllocated: Boolean(gpu?.bake),
           bakeValid: gpu?.bakeValid ?? false,
           bakeGeneration: gpu?.bake?.generation ?? 0,
@@ -3891,6 +4051,92 @@ export class BrushEngine {
     return this.readTexturePixels(target, rect, "livello");
   }
 
+  /**
+   * Dev-only ground truth for commit 14a. Full raw readbacks are intentionally
+   * absent from normal telemetry: they would stall and transfer 64/128 MiB per
+   * layer. The destructive GPU harness pays that cost once and compares the
+   * resulting any-nonzero-byte mask with the always-on conservative metadata.
+   */
+  async measureExactLayerStorageStudy(): Promise<LayerStorageExactStudy> {
+    if (!import.meta.env.DEV) {
+      throw new Error("Misura esatta cold storage disponibile solo in modalità dev.");
+    }
+    if (!this.initialized) {
+      throw new Error("Il motore non è ancora inizializzato.");
+    }
+    if (this.activeStroke || this.historyBusy || this.layerSwitchBusy) {
+      throw new Error("La misura esatta richiede il motore fermo.");
+    }
+
+    await this.waitForIdle();
+    const temporaryReadbackBytesBefore = this.devReadbackActiveBytes;
+    if (temporaryReadbackBytesBefore !== 0) {
+      throw new Error(
+        `Sonda cold storage avviata con ${temporaryReadbackBytesBefore} byte readback ancora vivi.`,
+      );
+    }
+    this.devReadbackPeakBytes = temporaryReadbackBytesBefore;
+
+    const countedGpuMiBBefore = this.getGpuMemoryStats().countedTotalMiB;
+    const estimate = this.getLayerStorageStudy();
+    const bytesPerPixel: 4 | 8 = this.layerFormat === "rgba16float" ? 8 : 4;
+    const layers: LayerStorageExactLayerMeasurement[] = [];
+    for (let index = 0; index < this.layerStack.count; index += 1) {
+      const record = this.layerStack.at(index);
+      const pixels = await this.readLayerPixels(undefined, index);
+      const exactMask = exactLayerStorageTileMask(
+        pixels,
+        LAYER_SIZE,
+        LAYER_SIZE,
+        bytesPerPixel,
+      );
+      const comparison = compareLayerStorageMasks(exactMask, record.storageTileMask);
+      const base = estimate.layers[index];
+      const exactTileCount = countLayerStorageTiles(exactMask);
+      layers.push({
+        ...base,
+        exactTileCount,
+        exactTileMiB: layerStorageTileMemoryMiB(exactTileCount, bytesPerPixel),
+        missedExactTiles: comparison.missedReferenceTiles,
+        conservativelyExtraTiles: comparison.extraCandidateTiles,
+      });
+    }
+
+    const inactiveExactMiB = layers
+      .filter((layer) => !layer.active)
+      .reduce((total, layer) => total + layer.exactTileMiB, 0);
+    const activeFullMiB = this.layerGpu.size > 0 ? estimate.fullLayerMiB : 0;
+    const projectedExactRawMiB = activeFullMiB + inactiveExactMiB;
+    const countedGpuMiBAfter = this.getGpuMemoryStats().countedTotalMiB;
+    const temporaryReadbackBytesAfter = this.devReadbackActiveBytes;
+    const temporaryReadbackPeakBytes = this.devReadbackPeakBytes;
+    return {
+      strategy: LAYER_STORAGE_STUDY_STRATEGY,
+      reference: "any-nonzero-raw-byte",
+      tileSizePx: LAYER_STORAGE_TILE_SIZE,
+      bytesPerPixel,
+      actualRawMiB: estimate.actualRawMiB,
+      projectedExactRawMiB,
+      projectedConservativeRawMiB: estimate.projectedConservativeRawMiB,
+      projectedAlignedBboxRawMiB: estimate.projectedAlignedBboxRawMiB,
+      exactSavingsMiB: Math.max(0, estimate.actualRawMiB - projectedExactRawMiB),
+      totalMissedExactTiles: layers.reduce(
+        (total, layer) => total + layer.missedExactTiles,
+        0,
+      ),
+      totalConservativelyExtraTiles: layers.reduce(
+        (total, layer) => total + layer.conservativelyExtraTiles,
+        0,
+      ),
+      countedGpuMiBBefore,
+      countedGpuMiBAfter,
+      temporaryReadbackMiBBefore: temporaryReadbackBytesBefore / MEBIBYTE_BYTES,
+      temporaryReadbackMiBAfter: temporaryReadbackBytesAfter / MEBIBYTE_BYTES,
+      temporaryReadbackPeakMiB: temporaryReadbackPeakBytes / MEBIBYTE_BYTES,
+      layers,
+    };
+  }
+
   getLayerBakeState(layerIndex: number): {
     allocated: boolean;
     valid: boolean;
@@ -4289,6 +4535,14 @@ export class BrushEngine {
       this.requestRender();
     }
   }
+  private destroyTrackedReadbackBuffer(buffer: GPUBuffer, size: number): void {
+    buffer.destroy();
+    this.devReadbackActiveBytes -= size;
+    if (this.devReadbackActiveBytes < 0) {
+      this.devReadbackActiveBytes = 0;
+      throw new Error("Contabilità readback GPU negativa.");
+    }
+  }
   private async readTexturePixels(
     target: GPUTexture,
     rect: DirtyRect | undefined,
@@ -4308,11 +4562,15 @@ export class BrushEngine {
     const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
     const unpaddedBytesPerRow = width * bytesPerPixel;
     const bytesPerRow = Math.ceil(unpaddedBytesPerRow / 256) * 256;
+    const readbackBytes = bytesPerRow * height;
     const readbackBuffer = this.device.createBuffer({
       label: `Sonda pixel ${label} ${width}×${height}`,
-      size: bytesPerRow * height,
+      size: readbackBytes,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     });
+    this.devReadbackActiveBytes += readbackBytes;
+    this.devReadbackPeakBytes = Math.max(this.devReadbackPeakBytes, this.devReadbackActiveBytes);
+
     try {
       const encoder = this.device.createCommandEncoder({
         label: `Sonda pixel ${label}`,
@@ -4350,7 +4608,7 @@ export class BrushEngine {
       readbackBuffer.unmap();
       return compact;
     } finally {
-      readbackBuffer.destroy();
+      this.destroyTrackedReadbackBuffer(readbackBuffer, readbackBytes);
     }
   }
 
@@ -4804,6 +5062,7 @@ export class BrushEngine {
     activeLayerId: number;
     layerBakeStrategy: typeof LAYER_BAKE_STRATEGY;
     layerCompositeStrategy: typeof LAYER_COMPOSITE_STRATEGY;
+    layerStorageStudy: LayerStorageStudyStats;
     gpuLabel: string;
     effectsWorkingSetStrategy: typeof EFFECTS_WORKING_SET_STRATEGY;
     effectsWorkingSetGeneration: number;
@@ -4956,6 +5215,7 @@ export class BrushEngine {
       activeLayerId: this.layerStack.active.id,
       layerBakeStrategy: LAYER_BAKE_STRATEGY,
       layerCompositeStrategy: LAYER_COMPOSITE_STRATEGY,
+      layerStorageStudy: this.getLayerStorageStudy(),
       gpuLabel: this.gpuLabel,
       effectsWorkingSetStrategy: EFFECTS_WORKING_SET_STRATEGY,
       effectsWorkingSetGeneration: this.effectsWorkbench?.generation ?? 0,
@@ -7868,6 +8128,7 @@ export class BrushEngine {
       }
       other.contentBounds = null;
       other.hasContent = false;
+      clearLayerStorageTileMask(other.storageTileMask);
     }
     this.layerTexture = texture;
     this.layerView = view;
@@ -8305,12 +8566,14 @@ export class BrushEngine {
     }
     if (cleared) {
       this.layerContentBounds = null;
+      clearLayerStorageTileMask(this.layerStack.active.storageTileMask);
       this.rasterStrokeCoverageValid = false;
       this.rasterBevelHeightValid = false;
       this.rasterBevelHeightSourceMode = null;
     }
     if (dirtyRect) {
       this.layerContentBounds = this.mergeDirtyRects(this.layerContentBounds, dirtyRect);
+      markLayerStorageRect(this.layerStack.active.storageTileMask, dirtyRect);
     }
     if (!this.rasterStrokeActive()) {
       this.rasterStrokeCoverageValid = false;

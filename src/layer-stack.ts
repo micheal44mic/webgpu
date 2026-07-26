@@ -3,6 +3,7 @@
 // injected instead — see LayerStyleFactory.
 import type { RasterStrokeStyle } from "./stroke-core";
 import type { RasterBevelStyle } from "./bevel-core";
+import type { LayerStorageTileMask } from "./layer-storage-study";
 
 export const LAYER_STACK_STRATEGY =
   "ordered-records-single-active-index-monotonic-ids" as const;
@@ -36,6 +37,11 @@ export interface LayerRecord {
   opacity: number;
   /** Conservative union of everything ever painted, in document space. */
   contentBounds: LayerRect | null;
+  /**
+   * Measurement-only 16×16 mask of raw-layer mutation tiles. It allocates 32 B
+   * of CPU metadata per layer and does not change GPU storage in commit 14a.
+   */
+  storageTileMask: LayerStorageTileMask;
   hasContent: boolean;
   strokeStyle: RasterStrokeStyle;
   bevelStyle: RasterBevelStyle;
@@ -99,6 +105,7 @@ export class LayerStack {
       visible: true,
       opacity: 1,
       contentBounds: null,
+      storageTileMask: new Uint32Array(8),
       hasContent: false,
       strokeStyle,
       bevelStyle,
