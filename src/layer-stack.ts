@@ -8,11 +8,12 @@ export const LAYER_STACK_STRATEGY =
   "ordered-records-single-active-index-monotonic-ids" as const;
 
 /**
- * Each layer owns a 4096² mip-0 texture plus its 12 derived display levels,
- * which the engine allocates eagerly: 85,3 MiB per layer in rgba8. The cap is a
- * guard against an accidental loop allocating until the device refuses, not a
- * product decision — raising it is a memory decision, so it lives here where
- * the cost is documented rather than being spread across call sites.
+ * Each layer owns only its authoritative 4096² mip-0 texture. Display mips are
+ * singular for the active layer and for the two fused surfaces around it, so
+ * they do not scale linearly with the layer count. The cap is a guard against
+ * an accidental loop allocating until the device refuses, not a product
+ * decision — raising it is still a memory decision, so it lives here where the
+ * cost is documented rather than being spread across call sites.
  */
 export const LAYER_STACK_MAXIMUM = 16;
 
@@ -36,8 +37,6 @@ export interface LayerRecord {
   /** Conservative union of everything ever painted, in document space. */
   contentBounds: LayerRect | null;
   hasContent: boolean;
-  /** How deep this layer's display pyramid is currently coherent. */
-  mipValidThroughLevel: number;
   strokeStyle: RasterStrokeStyle;
   bevelStyle: RasterBevelStyle;
 }
@@ -101,7 +100,6 @@ export class LayerStack {
       opacity: 1,
       contentBounds: null,
       hasContent: false,
-      mipValidThroughLevel: 0,
       strokeStyle,
       bevelStyle,
     };

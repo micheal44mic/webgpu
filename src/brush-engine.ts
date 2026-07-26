@@ -14,6 +14,7 @@ import {
   brushShader,
   displayShader,
   grainMipShader,
+  layerCompositeShader,
   lightGlazeCompositeMipShader,
   lightGlazeCompositeShader,
   lightGlazeDisplayShader,
@@ -83,6 +84,7 @@ import {
   LAYER_STACK_MAXIMUM,
   LayerStack,
   layerEffectRendererRequirements,
+  type LayerRecord,
 } from "./layer-stack";
 import {
   hasVisibleContent,
@@ -245,6 +247,7 @@ export interface EngineGpuMemoryStats {
   layerBaseMiB: number;
   layerMipChainMiB: number;
   layerBakeMiB: number;
+  layerCompositeMiB: number;
   grainTextureMiB: number;
   shapeTextureMiB: number;
   paintBuffersMiB: number;
@@ -284,9 +287,12 @@ export interface EngineStats {
   layerCount: number;
   activeLayerId: number;
   layerBakeStrategy: typeof LAYER_BAKE_STRATEGY;
+  layerCompositeStrategy: typeof LAYER_COMPOSITE_STRATEGY;
   layers: readonly {
     id: number;
     name: string;
+    visible: boolean;
+    opacity: number;
     hasContent: boolean;
     bakeAllocated: boolean;
     bakeValid: boolean;
@@ -653,12 +659,21 @@ interface LayerTextureResources {
   texture: GPUTexture;
   view: GPUTextureView;
   samplingView: GPUTextureView;
+}
+
+interface DisplayPyramidResources {
+  texture: GPUTexture;
+  samplingView: GPUTextureView;
   mipViews: GPUTextureView[];
 }
 
-interface LayerBindGroups {
-  displayBindGroup: GPUBindGroup;
-  paintMipDownsampleBindGroups: GPUBindGroup[];
+interface MergedSurfaceResources {
+  texture: GPUTexture;
+  samplingView: GPUTextureView;
+  mipViews: GPUTextureView[];
+  mipDownsampleBindGroups: GPUBindGroup[];
+  validThroughLevel: number;
+  layerCount: number;
 }
 
 interface LayerBakeResources {
@@ -669,7 +684,7 @@ interface LayerBakeResources {
   generation: number;
 }
 
-type LayerGpuResources = LayerTextureResources & LayerBindGroups & {
+type LayerGpuResources = LayerTextureResources & {
   bake: LayerBakeResources | null;
   bakeValid: boolean;
 };
@@ -686,6 +701,7 @@ export type HistoryReplayFaultPoint =
   | "after-first-replay-submit";
 
 export type LayerBakeFaultPoint = "after-candidate-submit";
+export type LayerCompositeFaultPoint = "after-candidate-submit";
 
 export interface LayerSwitchResult {
   fromIndex: number;
@@ -1018,7 +1034,9 @@ const PRESENTATION_CACHE_STRATEGY = "persistent-full-resolution-screen-cache" as
 const PRESENTATION_TRANSFER_STRATEGY = "copy-texture-to-current-texture" as const;
 const PAINT_DISPLAY_PYRAMID_STRATEGY = "live-dirty-box-filter-mip-chain" as const;
 export const LAYER_BAKE_STRATEGY =
-  "lazy-per-layer-analytic-mip0-transactional-replacement" as const;
+  "transient-analytic-mip0-fused-into-two-merged-surfaces" as const;
+export const LAYER_COMPOSITE_STRATEGY =
+  "merged-above-over-active-over-merged-below-source-over" as const;
 const PAINT_DISPLAY_LOD_SELECTION_STRATEGY =
   "largest-power-of-two-without-upscaling" as const;
 const BRUSH_OPACITY_STRATEGY = "per-stamp-uniform-alpha-multiplier" as const;
@@ -1140,12 +1158,14 @@ const SHAPE_OCCUPANCY_MAP_BYTES = SHAPE_OCCUPANCY_WORDS_PER_MAP * 4;
 const BRUSH_UNIFORM_BYTES = 96;
 const GRAIN_UNIFORM_BYTES = 32;
 const DISPLAY_UNIFORM_BYTES = 48;
+const LAYER_COMPOSITE_UNIFORM_BYTES = 16;
 const LIGHT_GLAZE_UNIFORM_BYTES = 32;
 const THICKNESS_TAIL_UNIFORM_BYTES = 32;
 const STATIC_PAINT_BUFFER_BYTES =
   BRUSH_UNIFORM_BYTES * 2
   + GRAIN_UNIFORM_BYTES
   + DISPLAY_UNIFORM_BYTES
+  + LAYER_COMPOSITE_UNIFORM_BYTES
   + THICKNESS_TAIL_UNIFORM_BYTES
   + LIGHT_GLAZE_UNIFORM_BYTES
   + MAX_STAMPS_PER_BATCH * STAMP_STRIDE_BYTES * 2
@@ -1430,8 +1450,11 @@ export class BrushEngine {
    */
   private layerSwitchBusy = false;
 
-  /** Dev-only injection for the otherwise unreachable post-submit bake rollback. */
+  /** Dev-only injections for post-submit rollback boundaries. */
   private layerBakeFaultQueue: LayerBakeFaultPoint[] = [];
+  private layerCompositeFaultQueue: LayerCompositeFaultPoint[] = [];
+  private readonly liveLayerBakeTextures = new Map<GPUTexture, number>();
+  private readonly liveMergedSurfaceTextures = new Set<GPUTexture>();
 
   // Accessors rather than fields: every read site keeps working, and the styles
   // follow the active layer by construction rather than by remembering to copy
@@ -1472,6 +1495,11 @@ export class BrushEngine {
   private rasterStrokeTotalComposes = 0;
   private layerContentBounds: DirtyRect | null = null;
 
+  private activeLayerDisplayPyramid!: DisplayPyramidResources;
+  private transparentLayerTexture!: GPUTexture;
+  private transparentLayerView!: GPUTextureView;
+  private mergedBelow: MergedSurfaceResources | null = null;
+  private mergedAbove: MergedSurfaceResources | null = null;
   private paintMipViews: GPUTextureView[] = [];
   private paintMipDownsampleBindGroups: GPUBindGroup[] = [];
   private paintDisplayMipValidThroughLevel = 0;
@@ -1577,6 +1605,7 @@ export class BrushEngine {
   private lightGlazeCompositeMipBindGroupLayout!: GPUBindGroupLayout;
   private lightGlazeCompositeBindGroupLayout!: GPUBindGroupLayout;
   private paintMipDownsampleBindGroupLayout!: GPUBindGroupLayout;
+  private layerCompositeBindGroupLayout!: GPUBindGroupLayout;
   private brushBindGroup!: GPUBindGroup;
   private thicknessTailBrushBindGroup!: GPUBindGroup;
   private brushOccupancyBindGroups: GPUBindGroup[] = [];
@@ -1609,6 +1638,7 @@ export class BrushEngine {
   private lightGlazeCompositeMipShaderModule!: GPUShaderModule;
   private lightGlazeCompositeShaderModule!: GPUShaderModule;
   private paintMipDownsampleShaderModule!: GPUShaderModule;
+  private layerCompositeShaderModule!: GPUShaderModule;
   private normalPipeline!: GPURenderPipeline;
   private additivePipeline!: GPURenderPipeline;
   private shapeNormalPipeline!: GPURenderPipeline;
@@ -1634,6 +1664,7 @@ export class BrushEngine {
   private lightGlazeCompositeMipPipeline!: GPURenderPipeline;
   private lightGlazeCompositePipeline!: GPURenderPipeline;
   private paintMipDownsamplePipeline!: GPURenderPipeline;
+  private layerCompositePipeline!: GPURenderPipeline;
 
   private readonly instanceUpload = new ArrayBuffer(MAX_STAMPS_PER_BATCH * STAMP_STRIDE_BYTES);
   private readonly instanceUploadF32 = new Float32Array(this.instanceUpload);
@@ -1651,6 +1682,7 @@ export class BrushEngine {
   private readonly thicknessTailBrushUniformUpload = new ArrayBuffer(BRUSH_UNIFORM_BYTES);
   private readonly grainUniformUpload = new Float32Array(GRAIN_UNIFORM_BYTES / 4);
   private readonly displayUniformUpload = new Float32Array(DISPLAY_UNIFORM_BYTES / 4);
+  private layerCompositeUniformBuffer!: GPUBuffer;
   private readonly thicknessTailDisplayUniformUpload = new ArrayBuffer(
     THICKNESS_TAIL_UNIFORM_BYTES,
   );
@@ -1953,6 +1985,14 @@ export class BrushEngine {
   }
 
 
+  private mergedBelowView(): GPUTextureView {
+    return this.mergedBelow?.samplingView ?? this.transparentLayerView;
+  }
+
+  private mergedAboveView(): GPUTextureView {
+    return this.mergedAbove?.samplingView ?? this.transparentLayerView;
+  }
+
   private rebuildRasterStrokeDisplayBindGroups(): void {
     const renderer = this.rasterStrokeRenderer;
     this.rasterStrokeDisplayBindGroups.clear();
@@ -1971,6 +2011,8 @@ export class BrushEngine {
           this.rasterStrokeDisplaySourceBindGroupLayout,
           this.sampler,
           mode,
+          this.mergedBelowView(),
+          this.mergedAboveView(),
         ),
       );
     }
@@ -2901,21 +2943,31 @@ export class BrushEngine {
     const rasterStroke = this.rasterStrokeRenderer;
     const rasterBevel = this.rasterBevelRenderer;
     const effectsScratch = this.effectsWorkbench?.scratchPool.snapshot();
-    // Every layer allocates its own texture eagerly, so the monitor has to count
-    // all of them: with one layer the numbers are unchanged, and without the
-    // multiplier the panel would understate by 85,3 MiB per extra layer.
+    // Every layer owns one eager authoritative mip 0. Display chains and fused
+    // surfaces are singular resources counted below, so only 64/128 MiB scales
+    // linearly with each additional RGBA8/RGBA16F layer.
     const allocatedLayerCount = this.layerGpu.size;
     const layerBaseMiB = baseResourcesAllocated
       ? layerBaseMemoryMiB(this.layerFormat) * allocatedLayerCount
       : 0;
+    // Exactly one raw-layer pyramid follows the active layer. Each allocated
+    // merged side owns one additional chain, independent of how many inactive
+    // layers were folded into it.
+    const mergedSurfaceCount = this.liveMergedSurfaceTextures.size;
     const layerMipChainMiB = baseResourcesAllocated
-      ? paintDisplayPyramidAdditionalMemoryMiB(this.layerFormat) * allocatedLayerCount
+      ? paintDisplayPyramidAdditionalMemoryMiB(this.layerFormat)
+        * (1 + mergedSurfaceCount)
       : 0;
-    const layerBakeMiB = baseResourcesAllocated
-      ? [...this.layerGpu.values()].reduce(
-        (total, gpu) => total + (gpu.bake?.memoryBytes ?? 0),
-        0,
-      ) / MEBIBYTE_BYTES
+    // Per-layer analytic bakes exist only inside a transaction. The two fused
+    // mip-0 surfaces are accounted separately so a steady document reports
+    // zero resident layer bakes regardless of how many styled layers it owns.
+    const transientBakeMiB = [...this.liveLayerBakeTextures.values()].reduce(
+      (total, bytes) => total + bytes,
+      0,
+    ) / MEBIBYTE_BYTES;
+    const layerBakeMiB = baseResourcesAllocated ? transientBakeMiB : 0;
+    const layerCompositeMiB = baseResourcesAllocated
+      ? layerBaseMemoryMiB(this.layerFormat) * mergedSurfaceCount
       : 0;
     const grainTextureMiB = baseResourcesAllocated && this.grainResident
       ? GRAIN_TEXTURE_PIXEL_COUNT * 4 / MEBIBYTE_BYTES
@@ -2972,6 +3024,7 @@ export class BrushEngine {
       layerBaseMiB,
       layerMipChainMiB,
       layerBakeMiB,
+      layerCompositeMiB,
       grainTextureMiB,
       shapeTextureMiB,
       paintBuffersMiB,
@@ -2991,6 +3044,7 @@ export class BrushEngine {
       layerBaseMiB,
       layerMipChainMiB,
       layerBakeMiB,
+      layerCompositeMiB,
       grainTextureMiB,
       shapeTextureMiB,
       paintBuffersMiB,
@@ -3034,11 +3088,14 @@ export class BrushEngine {
       layerCount: this.layerStack.count,
       activeLayerId: this.layerStack.active.id,
       layerBakeStrategy: LAYER_BAKE_STRATEGY,
+      layerCompositeStrategy: LAYER_COMPOSITE_STRATEGY,
       layers: this.layerStack.layers.map((record) => {
         const gpu = this.layerGpu.get(record.id);
         return {
           id: record.id,
           name: record.name,
+          visible: record.visible,
+          opacity: record.opacity,
           // The record's copy is only written back when the layer stops being
           // active, so for the active one the engine field is the live truth.
           // Reading the record here would report "empty" while the user paints.
@@ -3587,6 +3644,9 @@ export class BrushEngine {
     layerFormat: LayerFormat,
     contentBounds: DirtyRect | null | undefined,
     caller: EffectsRetargetCaller,
+    styles: Pick<LayerRecord, "strokeStyle" | "bevelStyle"> | null = null,
+    publish = true,
+    maintainDisplayPyramid = true,
   ): Promise<EffectsWorkbenchRetargetResult> {
     if (!this.initialized) {
       throw new Error("Il motore non è ancora inizializzato.");
@@ -3616,6 +3676,8 @@ export class BrushEngine {
     }
 
     await this.waitForIdle();
+    const strokeStyle = styles?.strokeStyle ?? this.rasterStrokeStyle;
+    const bevelStyle = styles?.bevelStyle ?? this.rasterBevelStyle;
     const fullDocumentRect: DirtyRect = {
       x: 0,
       y: 0,
@@ -3660,15 +3722,19 @@ export class BrushEngine {
         true,
         bevelRetargetContentBounds,
         this.bevelBoundingFieldEnabled,
+        strokeStyle,
+        bevelStyle,
       );
-      this.encodeRasterStrokeDisplayPyramid(
-        encoder,
-        update.dirtyRect,
-        this.paintDisplaySelectedMipLevel,
-      );
+      if (maintainDisplayPyramid) {
+        this.encodeRasterStrokeDisplayPyramid(
+          encoder,
+          update.dirtyRect,
+          this.paintDisplaySelectedMipLevel,
+        );
+      }
       this.device.queue.submit([encoder.finish()]);
       const submittedAt = performance.now();
-      await this.device.queue.onSubmittedWorkDone();
+      await this.waitForGpuCapped(`Retarget banco effetti #${generation}`);
       const completedAt = performance.now();
       const result: EffectsWorkbenchRetargetResult = {
         strategy: EFFECTS_WORKING_SET_STRATEGY,
@@ -3685,10 +3751,12 @@ export class BrushEngine {
         stroke: update.timing,
         bevel: this.rasterBevelLastEncode,
       };
-      this.presentationCacheNeedsFullRebuild = true;
-      this.displayDirty = true;
-      this.requestRender();
-      this.publishStats();
+      if (publish) {
+        this.presentationCacheNeedsFullRebuild = true;
+        this.displayDirty = true;
+        this.requestRender();
+        this.publishStats();
+      }
       if (import.meta.env.DEV) {
         console.info(
           this.bevelBoundingFieldEnabled
@@ -3858,16 +3926,381 @@ export class BrushEngine {
     return this.readTexturePixels(gpu.bake.texture, rect, "bake livello");
   }
 
+  getLayerCompositeState(): {
+    selectedMipLevel: number;
+    below: { allocated: boolean; validThroughLevel: number; layerCount: number };
+    above: { allocated: boolean; validThroughLevel: number; layerCount: number };
+  } {
+    const describe = (surface: MergedSurfaceResources | null) => ({
+      allocated: surface !== null,
+      validThroughLevel: surface?.validThroughLevel ?? -1,
+      layerCount: surface?.layerCount ?? 0,
+    });
+    return {
+      selectedMipLevel: this.paintDisplaySelectedMipLevel,
+      below: describe(this.mergedBelow),
+      above: describe(this.mergedAbove),
+    };
+  }
+
+  async readMergedLayerPixels(
+    side: "below" | "above",
+    rect?: DirtyRect,
+    mipLevel = 0,
+    completePyramid = true,
+  ): Promise<Uint8Array> {
+    if (!import.meta.env.DEV) {
+      throw new Error("Sonda merged disponibile solo in modalità dev.");
+    }
+    const surface = side === "below" ? this.mergedBelow : this.mergedAbove;
+    if (!surface) {
+      throw new Error(`Superficie merged ${side} non allocata.`);
+    }
+    if (mipLevel > surface.validThroughLevel && completePyramid) {
+      const encoder = this.device.createCommandEncoder({
+        label: `Complete merged ${side} pyramid for readback`,
+      });
+      this.encodeMergedSurfacePyramid(encoder, surface, mipLevel);
+      this.device.queue.submit([encoder.finish()]);
+      await this.waitForGpuCapped(`Readback merged ${side}`);
+    }
+    return this.readTexturePixels(surface.texture, rect, `merged ${side}`, mipLevel);
+  }
+
+  setLayerCompositeTestView(centerX: number, centerY: number, zoom = 1): void {
+    if (!import.meta.env.DEV) {
+      throw new Error("Vista test compositing disponibile solo in modalità dev.");
+    }
+    this.viewCenterX = centerX;
+    this.viewCenterY = centerY;
+    this.zoom = clamp(zoom, 0.02, 64);
+    this.hasFittedView = true;
+    this.presentationCacheNeedsFullRebuild = true;
+    this.displayDirty = true;
+    this.requestRender();
+  }
+
+  private async readPresentationLayerRect(rect: DirtyRect): Promise<Uint8Array> {
+    if (Math.abs(this.zoom - 1) > 1e-6) {
+      throw new Error("La sonda rettangolare richiede zoom 1:1.");
+    }
+    await this.waitForIdle();
+    if (!this.presentationCacheTexture) {
+      throw new Error("Cache di presentazione non allocata.");
+    }
+    const x = Math.floor(rect.x);
+    const y = Math.floor(rect.y);
+    const width = Math.floor(rect.width);
+    const height = Math.floor(rect.height);
+    if (
+      x < 0 || y < 0 || width <= 0 || height <= 0
+      || x + width > LAYER_SIZE || y + height > LAYER_SIZE
+    ) {
+      throw new Error("Rettangolo della sonda presentazione non valido.");
+    }
+    const canvasX = Math.round(
+      (x + 0.5 - this.viewCenterX) + this.canvas.width * 0.5 - 0.5,
+    );
+    const canvasY = Math.round(
+      (y + 0.5 - this.viewCenterY) + this.canvas.height * 0.5 - 0.5,
+    );
+    if (
+      canvasX < 0 || canvasY < 0
+      || canvasX + width > this.canvas.width
+      || canvasY + height > this.canvas.height
+    ) {
+      throw new Error("Rettangolo della sonda presentazione fuori dal canvas.");
+    }
+
+    const unpaddedBytesPerRow = width * 4;
+    const bytesPerRow = Math.ceil(unpaddedBytesPerRow / 256) * 256;
+    const buffer = this.device.createBuffer({
+      label: `Layer presentation rect probe ${width}×${height}`,
+      size: bytesPerRow * height,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    try {
+      const encoder = this.device.createCommandEncoder({
+        label: "Layer presentation rect probe",
+      });
+      encoder.copyTextureToBuffer(
+        {
+          texture: this.presentationCacheTexture,
+          origin: { x: canvasX, y: canvasY, z: 0 },
+        },
+        { buffer, bytesPerRow, rowsPerImage: height },
+        { width, height, depthOrArrayLayers: 1 },
+      );
+      this.device.queue.submit([encoder.finish()]);
+      let timer = 0;
+      try {
+        await Promise.race([
+          buffer.mapAsync(GPUMapMode.READ),
+          new Promise<never>((_, reject) => {
+            timer = window.setTimeout(
+              () => reject(new Error("Sonda presentazione: timeout readback dopo 10 s.")),
+              10_000,
+            );
+          }),
+        ]);
+      } finally {
+        if (timer !== 0) {
+          window.clearTimeout(timer);
+        }
+      }
+      const mapped = new Uint8Array(buffer.getMappedRange());
+      const rgba = new Uint8Array(unpaddedBytesPerRow * height);
+      const bgra = this.canvasFormat.startsWith("bgra");
+      for (let row = 0; row < height; row += 1) {
+        for (let column = 0; column < width; column += 1) {
+          const sourceOffset = row * bytesPerRow + column * 4;
+          const targetOffset = row * unpaddedBytesPerRow + column * 4;
+          rgba[targetOffset] = mapped[sourceOffset + (bgra ? 2 : 0)];
+          rgba[targetOffset + 1] = mapped[sourceOffset + 1];
+          rgba[targetOffset + 2] = mapped[sourceOffset + (bgra ? 0 : 2)];
+          rgba[targetOffset + 3] = mapped[sourceOffset + 3];
+        }
+      }
+      buffer.unmap();
+      return rgba;
+    } finally {
+      buffer.destroy();
+    }
+  }
+
+  async readPresentationPixelAtLayer(x: number, y: number): Promise<Uint8Array> {
+    if (!import.meta.env.DEV) {
+      throw new Error("Sonda presentazione disponibile solo in modalità dev.");
+    }
+    await this.waitForIdle();
+    if (!this.presentationCacheTexture) {
+      throw new Error("Cache di presentazione non allocata.");
+    }
+    const canvasX = Math.round(
+      (x + 0.5 - this.viewCenterX) * this.zoom + this.canvas.width * 0.5 - 0.5,
+    );
+    const canvasY = Math.round(
+      (y + 0.5 - this.viewCenterY) * this.zoom + this.canvas.height * 0.5 - 0.5,
+    );
+    if (
+      canvasX < 0 || canvasY < 0
+      || canvasX >= this.canvas.width || canvasY >= this.canvas.height
+    ) {
+      throw new Error("Texel di presentazione fuori dal canvas di test.");
+    }
+    const buffer = this.device.createBuffer({
+      label: "Layer presentation pixel probe",
+      size: 256,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    try {
+      const encoder = this.device.createCommandEncoder({
+        label: "Layer presentation pixel probe",
+      });
+      encoder.copyTextureToBuffer(
+        {
+          texture: this.presentationCacheTexture,
+          origin: { x: canvasX, y: canvasY, z: 0 },
+        },
+        { buffer, bytesPerRow: 256, rowsPerImage: 1 },
+        { width: 1, height: 1, depthOrArrayLayers: 1 },
+      );
+      this.device.queue.submit([encoder.finish()]);
+      let timer = 0;
+      try {
+        await Promise.race([
+          buffer.mapAsync(GPUMapMode.READ),
+          new Promise<never>((_, reject) => {
+            timer = window.setTimeout(
+              () => reject(new Error("Sonda presentazione: timeout readback dopo 10 s.")),
+              10_000,
+            );
+          }),
+        ]);
+      } finally {
+        if (timer !== 0) {
+          window.clearTimeout(timer);
+        }
+      }
+      const stored = new Uint8Array(buffer.getMappedRange(), 0, 4);
+      const rgba = this.canvasFormat.startsWith("bgra")
+        ? new Uint8Array([stored[2], stored[1], stored[0], stored[3]])
+        : new Uint8Array(stored);
+      buffer.unmap();
+      return rgba;
+    } finally {
+      buffer.destroy();
+    }
+  }
+
+  /**
+   * Measures, without choosing between them, the live fragment-derivative
+   * contour and the analytic mip-0 bake used after a layer loses focus.
+   */
+  async measureActiveStyleBakeGap(rect: DirtyRect): Promise<{
+    comparedPixels: number;
+    comparedBytes: number;
+    differingPixels: number;
+    differingBytes: number;
+    maxDelta: number;
+    maxDeltaByChannel: readonly [number, number, number, number];
+    firstDifference: {
+      x: number;
+      y: number;
+      channel: "r" | "g" | "b" | "a";
+      live: number;
+      analyticBake: number;
+    } | null;
+  }> {
+    if (!import.meta.env.DEV) {
+      throw new Error("Misura fwidth/bake disponibile solo in modalità dev.");
+    }
+    if (!this.initialized || this.layerFormat !== "rgba8unorm") {
+      throw new Error("La misura fwidth/bake richiede un layer RGBA8 inizializzato.");
+    }
+    if (this.layerStack.count !== 1 || !this.styleStackActive()) {
+      throw new Error("La misura fwidth/bake richiede un solo livello con effetti attivi.");
+    }
+    await this.waitForIdle();
+
+    const previousView = {
+      centerX: this.viewCenterX,
+      centerY: this.viewCenterY,
+      zoom: this.zoom,
+      hasFittedView: this.hasFittedView,
+    };
+    let candidate: LayerBakeResources | null = null;
+    try {
+      this.viewCenterX = rect.x + rect.width * 0.5;
+      this.viewCenterY = rect.y + rect.height * 0.5;
+      this.zoom = 1;
+      this.hasFittedView = true;
+      this.presentationCacheNeedsFullRebuild = true;
+      this.displayDirty = true;
+      this.requestRender();
+      const live = await this.readPresentationLayerRect(rect);
+
+      const record = this.layerStack.active;
+      const gpu = this.requireLayerGpu(record.id);
+      candidate = await this.createLayerBakeCandidate(
+        record,
+        (gpu.bake?.generation ?? 0) + 1,
+        false,
+      );
+      const analytic = await this.readTexturePixels(
+        candidate.texture,
+        rect,
+        "bake analitico per misura fwidth",
+      );
+      if (analytic.length !== live.length) {
+        throw new Error("Misura fwidth/bake: dimensioni readback incoerenti.");
+      }
+
+      const srgbToLinear = (value: number): number => value <= 0.04045
+        ? value / 12.92
+        : ((value + 0.055) / 1.055) ** 2.4;
+      const linearToSrgb = (value: number): number => value <= 0.0031308
+        ? value * 12.92
+        : 1.055 * Math.max(value, 0) ** (1 / 2.4) - 0.055;
+      const quantizeUnorm = (value: number): number => {
+        const scaled = clamp(value, 0, 1) * 255;
+        const lower = Math.floor(scaled);
+        const fraction = scaled - lower;
+        if (fraction < 0.5) {
+          return lower;
+        }
+        if (fraction > 0.5) {
+          return lower + 1;
+        }
+        return lower % 2 === 0 ? lower : lower + 1;
+      };
+      const activeAlpha = record.visible ? clamp(record.opacity, 0, 1) : 0;
+      const channelNames = ["r", "g", "b", "a"] as const;
+      const maxDeltaByChannel = [0, 0, 0, 0] as [number, number, number, number];
+      let differingPixels = 0;
+      let differingBytes = 0;
+      let firstDifference: {
+        x: number;
+        y: number;
+        channel: "r" | "g" | "b" | "a";
+        live: number;
+        analyticBake: number;
+      } | null = null;
+      const width = Math.floor(rect.width);
+      const height = Math.floor(rect.height);
+      for (let row = 0; row < height; row += 1) {
+        for (let column = 0; column < width; column += 1) {
+          const offset = (row * width + column) * 4;
+          const alpha = analytic[offset + 3] / 255 * activeAlpha;
+          const checkerX = Math.floor((rect.x + column + 0.5) / 96);
+          const checkerY = Math.floor((rect.y + row + 0.5) / 96);
+          const backgroundSrgb = ((checkerX + checkerY) & 1) === 0 ? 0.91 : 0.82;
+          const backgroundLinear = srgbToLinear(backgroundSrgb);
+          const expected = [
+            quantizeUnorm(linearToSrgb(
+              analytic[offset] / 255 * activeAlpha + backgroundLinear * (1 - alpha),
+            )),
+            quantizeUnorm(linearToSrgb(
+              analytic[offset + 1] / 255 * activeAlpha + backgroundLinear * (1 - alpha),
+            )),
+            quantizeUnorm(linearToSrgb(
+              analytic[offset + 2] / 255 * activeAlpha + backgroundLinear * (1 - alpha),
+            )),
+            255,
+          ];
+          let pixelDiffers = false;
+          for (let channel = 0; channel < 4; channel += 1) {
+            const delta = Math.abs(live[offset + channel] - expected[channel]);
+            maxDeltaByChannel[channel] = Math.max(maxDeltaByChannel[channel], delta);
+            if (delta > 0) {
+              differingBytes += 1;
+              pixelDiffers = true;
+              firstDifference ??= {
+                x: Math.floor(rect.x) + column,
+                y: Math.floor(rect.y) + row,
+                channel: channelNames[channel],
+                live: live[offset + channel],
+                analyticBake: expected[channel],
+              };
+            }
+          }
+          if (pixelDiffers) {
+            differingPixels += 1;
+          }
+        }
+      }
+      return {
+        comparedPixels: width * height,
+        comparedBytes: live.length,
+        differingPixels,
+        differingBytes,
+        maxDelta: Math.max(...maxDeltaByChannel),
+        maxDeltaByChannel,
+        firstDifference,
+      };
+    } finally {
+      this.destroyLayerBake(candidate);
+      this.viewCenterX = previousView.centerX;
+      this.viewCenterY = previousView.centerY;
+      this.zoom = previousView.zoom;
+      this.hasFittedView = previousView.hasFittedView;
+      this.presentationCacheNeedsFullRebuild = true;
+      this.displayDirty = true;
+      this.requestRender();
+    }
+  }
   private async readTexturePixels(
     target: GPUTexture,
     rect: DirtyRect | undefined,
     label: string,
+    mipLevel = 0,
   ): Promise<Uint8Array> {
-    const requested = rect ?? { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE };
-    const x = clamp(Math.floor(requested.x), 0, LAYER_SIZE);
-    const y = clamp(Math.floor(requested.y), 0, LAYER_SIZE);
-    const width = clamp(Math.ceil(requested.width), 0, LAYER_SIZE - x);
-    const height = clamp(Math.ceil(requested.height), 0, LAYER_SIZE - y);
+    const dimension = Math.max(1, LAYER_SIZE >> mipLevel);
+    const requested = rect ?? { x: 0, y: 0, width: dimension, height: dimension };
+    const x = clamp(Math.floor(requested.x), 0, dimension);
+    const y = clamp(Math.floor(requested.y), 0, dimension);
+    const width = clamp(Math.ceil(requested.width), 0, dimension - x);
+    const height = clamp(Math.ceil(requested.height), 0, dimension - y);
     if (width <= 0 || height <= 0) {
       return new Uint8Array();
     }
@@ -3885,12 +4318,27 @@ export class BrushEngine {
         label: `Sonda pixel ${label}`,
       });
       encoder.copyTextureToBuffer(
-        { texture: target, mipLevel: 0, origin: { x, y, z: 0 } },
+        { texture: target, mipLevel, origin: { x, y, z: 0 } },
         { buffer: readbackBuffer, bytesPerRow, rowsPerImage: height },
         { width, height, depthOrArrayLayers: 1 },
       );
       this.device.queue.submit([encoder.finish()]);
-      await readbackBuffer.mapAsync(GPUMapMode.READ);
+      let timer = 0;
+      try {
+        await Promise.race([
+          readbackBuffer.mapAsync(GPUMapMode.READ),
+          new Promise<never>((_, reject) => {
+            timer = window.setTimeout(
+              () => reject(new Error(`Sonda ${label}: timeout readback dopo 10 s.`)),
+              10_000,
+            );
+          }),
+        ]);
+      } finally {
+        if (timer !== 0) {
+          window.clearTimeout(timer);
+        }
+      }
       const mapped = new Uint8Array(readbackBuffer.getMappedRange());
       const compact = new Uint8Array(unpaddedBytesPerRow * height);
       for (let row = 0; row < height; row += 1) {
@@ -4354,6 +4802,8 @@ export class BrushEngine {
     layerMemoryMiB: number;
     layerCount: number;
     activeLayerId: number;
+    layerBakeStrategy: typeof LAYER_BAKE_STRATEGY;
+    layerCompositeStrategy: typeof LAYER_COMPOSITE_STRATEGY;
     gpuLabel: string;
     effectsWorkingSetStrategy: typeof EFFECTS_WORKING_SET_STRATEGY;
     effectsWorkingSetGeneration: number;
@@ -4504,6 +4954,8 @@ export class BrushEngine {
       layerMemoryMiB: (this.layerFormat === "rgba16float" ? 128 : 64) * this.layerGpu.size,
       layerCount: this.layerStack.count,
       activeLayerId: this.layerStack.active.id,
+      layerBakeStrategy: LAYER_BAKE_STRATEGY,
+      layerCompositeStrategy: LAYER_COMPOSITE_STRATEGY,
       gpuLabel: this.gpuLabel,
       effectsWorkingSetStrategy: EFFECTS_WORKING_SET_STRATEGY,
       effectsWorkingSetGeneration: this.effectsWorkbench?.generation ?? 0,
@@ -4693,6 +5145,12 @@ export class BrushEngine {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
+    this.layerCompositeUniformBuffer = this.device.createBuffer({
+      label: "Layer composite opacity",
+      size: LAYER_COMPOSITE_UNIFORM_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
     this.thicknessTailDisplayUniformBuffer = this.device.createBuffer({
       label: "Predictive thickness tail display uniforms",
       size: THICKNESS_TAIL_UNIFORM_BYTES,
@@ -4858,23 +5316,14 @@ export class BrushEngine {
     });
 
     this.displayBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Display bind group layout",
+      label: "Three-surface layer display bind group layout",
       entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float", viewDimension: "2d" },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: "filtering" },
-        },
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        { binding: 5, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
       ],
     });
     this.rasterStrokeDisplayScreenBindGroupLayout = this.device.createBindGroupLayout({
@@ -4915,6 +5364,8 @@ export class BrushEngine {
           visibility: GPUShaderStage.FRAGMENT,
           buffer: { type: "uniform" },
         },
+        { binding: 11, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        { binding: 12, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
       ],
     });
     this.rasterStrokeDisplayScreenBindGroup = this.device.createBindGroup({
@@ -4956,6 +5407,8 @@ export class BrushEngine {
           visibility: GPUShaderStage.FRAGMENT,
           texture: { sampleType: "float", viewDimension: "2d" },
         },
+        { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
       ],
     });
     this.thicknessTailDisplayBindGroupLayout = this.device.createBindGroupLayout({
@@ -4986,6 +5439,9 @@ export class BrushEngine {
           visibility: GPUShaderStage.FRAGMENT,
           buffer: { type: "uniform" },
         },
+        { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
       ],
     });
     const grainLayoutEntries: GPUBindGroupLayoutEntry[] = [
@@ -5058,12 +5514,17 @@ export class BrushEngine {
     });
     this.paintMipDownsampleBindGroupLayout = this.device.createBindGroupLayout({
       label: "Paint display mip downsample bind group layout",
+      entries: [{
+        binding: 0,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float", viewDimension: "2d" },
+      }],
+    });
+    this.layerCompositeBindGroupLayout = this.device.createBindGroupLayout({
+      label: "Layer source-over fold bind group layout",
       entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float", viewDimension: "2d" },
-        },
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
       ],
     });
 
@@ -5263,6 +5724,10 @@ export class BrushEngine {
       label: "Paint display mip downsample WGSL",
       code: paintMipDownsampleShader,
     });
+    this.layerCompositeShaderModule = this.device.createShaderModule({
+      label: "Layer source-over fold WGSL",
+      code: layerCompositeShader,
+    });
     await Promise.all([
       this.assertShaderCompiled(this.brushShaderModule, "brush"),
       this.assertShaderCompiled(this.texturizedGrainShaderModule, "Texturized grain fragment"),
@@ -5279,6 +5744,7 @@ export class BrushEngine {
       ),
       this.assertShaderCompiled(this.lightGlazeCompositeShaderModule, "Light Glaze final composite"),
       this.assertShaderCompiled(this.paintMipDownsampleShaderModule, "paint display mip downsample"),
+      this.assertShaderCompiled(this.layerCompositeShaderModule, "layer source-over fold"),
     ]);
 
     const displayPipelineLayout = this.device.createPipelineLayout({
@@ -5657,91 +6123,106 @@ export class BrushEngine {
   }
 
   /**
-   * The GPU side of one paint layer: 64 MiB of authoritative mip 0 in rgba8 plus
-   * 21,33 MiB of derived display levels.
-   *
-   * Extracted so that adding a layer does not have to go through
-   * recreateLayerResources, whose tail destroys the outgoing texture, the blend
-   * renderer and the effects workbench — correct for a format change, fatal for
-   * "give me a second layer". The 21 render pipelines further down that function
-   * depend only on the format, never on the texture, so a new layer in the same
-   * format reuses them untouched.
+   * One authoritative layer is exactly one 4096² mip-0 texture. Display mips
+   * live in one reusable active-layer pyramid instead of every layer texture.
    */
   private allocateLayerTexture(format: LayerFormat): LayerTextureResources {
     const texture = this.device.createTexture({
-      label: `4096² paint layer ${format}`,
+      label: `4096² authoritative paint layer ${format}`,
       size: { width: LAYER_SIZE, height: LAYER_SIZE, depthOrArrayLayers: 1 },
-      mipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT,
+      mipLevelCount: 1,
       format,
       usage:
-        GPUTextureUsage.RENDER_ATTACHMENT |
-        GPUTextureUsage.TEXTURE_BINDING |
-        GPUTextureUsage.COPY_SRC |
-        GPUTextureUsage.COPY_DST,
+        GPUTextureUsage.RENDER_ATTACHMENT
+        | GPUTextureUsage.TEXTURE_BINDING
+        | GPUTextureUsage.COPY_SRC
+        | GPUTextureUsage.COPY_DST,
     });
     try {
-      // Mip 0 remains the only authoritative brush attachment. The remaining
-      // subresources are derived presentation data and are never blended into.
-      const view = texture.createView({
-        label: `Paint layer authoritative mip 0 ${format}`,
-        baseMipLevel: 0,
-        mipLevelCount: 1,
-      });
-      const samplingView = texture.createView({
-        label: `Paint layer display mip chain ${format}`,
-        baseMipLevel: 0,
-        mipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT,
-      });
-      const mipViews = Array.from(
-        { length: PAINT_DISPLAY_MIP_LEVEL_COUNT },
-        (_, mipLevel) => texture.createView({
-          label: `Paint layer mip ${mipLevel} ${format}`,
-          baseMipLevel: mipLevel,
-          mipLevelCount: 1,
-        }),
-      );
-      return { texture, view, samplingView, mipViews };
+      const view = texture.createView({ label: `Paint layer mip 0 ${format}` });
+      const samplingView = texture.createView({ label: `Paint layer sampling mip 0 ${format}` });
+      return { texture, view, samplingView };
     } catch (error) {
       texture.destroy();
       throw error;
     }
   }
 
-  /**
-   * The bind groups that name one layer's views. Keeping this separate lets the
-   * allocation transaction cover texture, views and bind groups as one candidate
-   * and destroy exactly one texture if any asynchronous validation/OOM fails.
-   */
-  private createLayerBindGroups(
-    format: LayerFormat,
-    samplingView: GPUTextureView,
-    mipViews: readonly GPUTextureView[],
-  ): LayerBindGroups {
-    const displayBindGroup = this.device.createBindGroup({
-      label: `Display bind group ${format}`,
-      layout: this.displayBindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: this.displayUniformBuffer } },
-        { binding: 1, resource: samplingView },
-        { binding: 2, resource: this.sampler },
-      ],
+  /** Logical mips 1–12 for whichever raw layer is active right now. */
+  private allocateActiveLayerDisplayPyramid(format: LayerFormat): DisplayPyramidResources {
+    const texture = this.device.createTexture({
+      label: `Single active-layer display pyramid ${format}`,
+      size: { width: LAYER_SIZE >> 1, height: LAYER_SIZE >> 1, depthOrArrayLayers: 1 },
+      mipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT - 1,
+      format,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
-    const paintMipDownsampleBindGroups = mipViews
-      .slice(0, PAINT_DISPLAY_MIP_LEVEL_COUNT - 1)
-      .map((sourceView, sourceMipLevel) => this.device.createBindGroup({
-        label: `Paint display mip ${sourceMipLevel} to ${sourceMipLevel + 1} ${format}`,
-        layout: this.paintMipDownsampleBindGroupLayout,
-        entries: [{ binding: 0, resource: sourceView }],
-      }));
-    return { displayBindGroup, paintMipDownsampleBindGroups };
+    try {
+      const samplingView = texture.createView({ label: `Active logical mips 1–12 ${format}` });
+      const mipViews = Array.from(
+        { length: PAINT_DISPLAY_MIP_LEVEL_COUNT - 1 },
+        (_, mipLevel) => texture.createView({
+          label: `Active logical mip ${mipLevel + 1} ${format}`,
+          baseMipLevel: mipLevel,
+          mipLevelCount: 1,
+        }),
+      );
+      return { texture, samplingView, mipViews };
+    } catch (error) {
+      texture.destroy();
+      throw error;
+    }
   }
 
-  /**
-   * Allocates one complete layer candidate under WebGPU validation and OOM
-   * scopes. createTexture may return an invalid object and report the failure
-   * only when the scope is popped, so a JavaScript try/catch alone is not a
-   * rollback boundary.
-   */
+  /** Full mip chain for one fused side of the active layer. */
+  private allocateMergedSurface(
+    format: LayerFormat,
+    side: "below" | "above",
+    layerCount: number,
+  ): MergedSurfaceResources {
+    const texture = this.device.createTexture({
+      label: `Merged ${side} surface (${layerCount} layers) ${format}`,
+      size: { width: LAYER_SIZE, height: LAYER_SIZE, depthOrArrayLayers: 1 },
+      mipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT,
+      format,
+      usage:
+        GPUTextureUsage.RENDER_ATTACHMENT
+        | GPUTextureUsage.TEXTURE_BINDING
+        | GPUTextureUsage.COPY_DST
+        | GPUTextureUsage.COPY_SRC,
+    });
+    this.liveMergedSurfaceTextures.add(texture);
+    try {
+      const samplingView = texture.createView({ label: `Merged ${side} sampling chain ${format}` });
+      const mipViews = Array.from(
+        { length: PAINT_DISPLAY_MIP_LEVEL_COUNT },
+        (_, mipLevel) => texture.createView({
+          label: `Merged ${side} mip ${mipLevel} ${format}`,
+          baseMipLevel: mipLevel,
+          mipLevelCount: 1,
+        }),
+      );
+      const mipDownsampleBindGroups = mipViews.slice(0, -1).map(
+        (sourceView, sourceMipLevel) => this.device.createBindGroup({
+          label: `Merged ${side} mip ${sourceMipLevel} to ${sourceMipLevel + 1}`,
+          layout: this.paintMipDownsampleBindGroupLayout,
+          entries: [{ binding: 0, resource: sourceView }],
+        }),
+      );
+      return {
+        texture,
+        samplingView,
+        mipViews,
+        mipDownsampleBindGroups,
+        validThroughLevel: 0,
+        layerCount,
+      };
+    } catch (error) {
+      this.destroyMergedSurfaceTexture(texture);
+      throw error;
+    }
+  }
+
   private async allocateLayerGpuResources(
     format: LayerFormat,
     label: string,
@@ -5749,20 +6230,9 @@ export class BrushEngine {
     return runGpuAllocationTransaction(this.device, label, (transaction) => {
       const textureResources = this.allocateLayerTexture(format);
       transaction.deferRollback(() => textureResources.texture.destroy());
-      const bindGroups = this.createLayerBindGroups(
-        format,
-        textureResources.samplingView,
-        textureResources.mipViews,
-      );
-      return {
-        ...textureResources,
-        ...bindGroups,
-        bake: null,
-        bakeValid: false,
-      };
+      return { ...textureResources, bake: null, bakeValid: false };
     });
   }
-
   private requireLayerGpu(layerId: number): LayerGpuResources {
     const gpu = this.layerGpu.get(layerId);
     if (!gpu) {
@@ -5799,12 +6269,74 @@ export class BrushEngine {
     throw new Error(`Guasto iniettato nel bake: ${point}.`);
   }
 
+  private destroyLayerBakeTexture(texture: GPUTexture): void {
+    this.liveLayerBakeTextures.delete(texture);
+    texture.destroy();
+  }
+
+  private destroyLayerBake(bake: LayerBakeResources | null | undefined): void {
+    if (bake) {
+      this.destroyLayerBakeTexture(bake.texture);
+    }
+  }
+  private async createLayerBakeCandidate(
+    record: LayerRecord,
+    generation: number,
+    injectBakeFault: boolean,
+  ): Promise<LayerBakeResources> {
+    const renderer = this.rasterStrokeRenderer;
+    if (!renderer) {
+      throw new Error("Bake impossibile: compositore effetti non disponibile.");
+    }
+    const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
+    const memoryBytes = LAYER_SIZE * LAYER_SIZE * bytesPerPixel;
+    return runGpuAllocationTransaction(
+      this.device,
+      `Bake analitico livello ${record.id}`,
+      async (transaction) => {
+        const texture = this.device.createTexture({
+          label: `Bake analitico livello ${record.id} #${generation}`,
+          size: { width: LAYER_SIZE, height: LAYER_SIZE, depthOrArrayLayers: 1 },
+          format: this.layerFormat,
+          usage:
+            GPUTextureUsage.STORAGE_BINDING
+            | GPUTextureUsage.TEXTURE_BINDING
+            | GPUTextureUsage.COPY_SRC,
+        });
+        this.liveLayerBakeTextures.set(texture, memoryBytes);
+        transaction.deferRollback(() => this.destroyLayerBakeTexture(texture));
+        const storageView = texture.createView({
+          label: `Bake analitico storage livello ${record.id} #${generation}`,
+        });
+        const samplingView = texture.createView({
+          label: `Bake analitico sampling livello ${record.id} #${generation}`,
+        });
+        const encoder = this.device.createCommandEncoder({
+          label: `Bake analitico livello ${record.id} #${generation}`,
+        });
+        renderer.encodeBake({
+          encoder,
+          targetView: storageView,
+          sourceMode: "permanent",
+          style: record.strokeStyle,
+          bevelStyle: record.bevelStyle,
+        });
+        this.device.queue.submit([encoder.finish()]);
+        await this.waitForGpuCapped(`Bake livello ${record.id}`);
+        if (injectBakeFault) {
+          this.maybeInjectLayerBakeFault("after-candidate-submit");
+        }
+        return { texture, storageView, samplingView, memoryBytes, generation };
+      },
+    );
+  }
+
   /**
    * Freezes the outgoing layer's analytic style stack before the shared effects
-   * workbench is retargeted. A fresh texture is allocated for every attempt and
-   * becomes visible to the engine only after allocation, encoding, submission
-   * and GPU completion all succeed. The previous valid bake therefore survives
-   * OOM, validation errors and injected post-submit failures byte-for-byte.
+   * workbench is retargeted. The candidate is published only after GPU completion
+   * so activation can consume it transactionally; the merged-surface commit then
+   * releases it. A failed candidate leaves the raw layer and every published
+   * merged surface intact and contributes zero steady-state bake memory.
    */
   private async bakeActiveLayerForSwitch(): Promise<void> {
     try {
@@ -5829,24 +6361,18 @@ export class BrushEngine {
       const previous = gpu.bake;
       gpu.bake = null;
       gpu.bakeValid = false;
-      previous?.texture.destroy();
+      this.destroyLayerBake(previous);
       return;
     }
 
-    // Returning to a layer does not change its source or styles. If the user
-    // leaves it again without editing, the last bake is still exact and a new
-    // 4096² dispatch would add latency and a transient full-size allocation for
-    // no visual change. A queued dev fault deliberately bypasses this fast path
-    // so the replacement transaction remains executable in the GPU harness.
     const faultForcesCandidate = import.meta.env.DEV
       && this.layerBakeFaultQueue[0] === "after-candidate-submit";
     if (gpu.bake && gpu.bakeValid && !faultForcesCandidate) {
       return;
     }
 
-    const renderer = this.rasterStrokeRenderer;
     const workbench = this.effectsWorkbench;
-    if (!renderer || !workbench) {
+    if (!this.rasterStrokeRenderer || !workbench) {
       throw new Error("Bake impossibile: compositore effetti non disponibile.");
     }
     if (
@@ -5859,54 +6385,74 @@ export class BrushEngine {
 
     const previous = gpu.bake;
     const generation = (previous?.generation ?? 0) + 1;
-    const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
-    const memoryBytes = LAYER_SIZE * LAYER_SIZE * bytesPerPixel;
-    const completed = await runGpuAllocationTransaction(
-      this.device,
-      `Bake analitico livello ${record.id}`,
-      async (transaction) => {
-        const texture = this.device.createTexture({
-          label: `Bake analitico livello ${record.id} #${generation}`,
-          size: { width: LAYER_SIZE, height: LAYER_SIZE, depthOrArrayLayers: 1 },
-          format: this.layerFormat,
-          usage:
-            GPUTextureUsage.STORAGE_BINDING
-            | GPUTextureUsage.TEXTURE_BINDING
-            | GPUTextureUsage.COPY_SRC,
-        });
-        transaction.deferRollback(() => texture.destroy());
-        const storageView = texture.createView({
-          label: `Bake analitico storage livello ${record.id} #${generation}`,
-        });
-        const samplingView = texture.createView({
-          label: `Bake analitico sampling livello ${record.id} #${generation}`,
-        });
-        const encoder = this.device.createCommandEncoder({
-          label: `Bake analitico livello ${record.id} #${generation}`,
-        });
-        renderer.encodeBake({
-          encoder,
-          targetView: storageView,
-          sourceMode: "permanent",
-          style: record.strokeStyle,
-          bevelStyle: record.bevelStyle,
-        });
-        this.device.queue.submit([encoder.finish()]);
-        await this.device.queue.onSubmittedWorkDone();
-        this.maybeInjectLayerBakeFault("after-candidate-submit");
-        return {
-          texture,
-          storageView,
-          samplingView,
-          memoryBytes,
-          generation,
-        } satisfies LayerBakeResources;
-      },
-    );
-
+    const completed = await this.createLayerBakeCandidate(record, generation, true);
     gpu.bake = completed;
     gpu.bakeValid = true;
-    previous?.texture.destroy();
+    this.destroyLayerBake(previous);
+  }
+  /** Rebinds the one reusable raw-layer pyramid to the currently active mip 0. */
+  private rebuildActiveLayerPyramidBindings(): void {
+    this.paintMipViews = [this.layerView, ...this.activeLayerDisplayPyramid.mipViews];
+    const sources = [
+      this.layerView,
+      ...this.activeLayerDisplayPyramid.mipViews.slice(0, -1),
+    ];
+    this.paintMipDownsampleBindGroups = sources.map((sourceView, sourceMipLevel) =>
+      this.device.createBindGroup({
+        label: `Active display logical mip ${sourceMipLevel} to ${sourceMipLevel + 1}`,
+        layout: this.paintMipDownsampleBindGroupLayout,
+        entries: [{ binding: 0, resource: sourceView }],
+      })
+    );
+  }
+
+  /** Every display path sees the same below/active/above surface triplet. */
+  private rebuildLayerDisplayBindGroups(): void {
+    this.displayBindGroup = this.device.createBindGroup({
+      label: "Three-surface layer display bind group",
+      layout: this.displayBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.displayUniformBuffer } },
+        { binding: 1, resource: this.layerView },
+        { binding: 2, resource: this.activeLayerDisplayPyramid.samplingView },
+        { binding: 3, resource: this.mergedBelowView() },
+        { binding: 4, resource: this.mergedAboveView() },
+        { binding: 5, resource: this.sampler },
+      ],
+    });
+    if (this.thicknessTailView) {
+      this.thicknessTailDisplayBindGroup = this.device.createBindGroup({
+        label: "Predictive thickness tail three-surface display bind group",
+        layout: this.thicknessTailDisplayBindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: this.displayUniformBuffer } },
+          { binding: 1, resource: this.layerView },
+          { binding: 2, resource: this.sampler },
+          { binding: 3, resource: this.thicknessTailView },
+          { binding: 4, resource: { buffer: this.thicknessTailDisplayUniformBuffer } },
+          { binding: 5, resource: this.activeLayerDisplayPyramid.samplingView },
+          { binding: 6, resource: this.mergedBelowView() },
+          { binding: 7, resource: this.mergedAboveView() },
+        ],
+      });
+    }
+    if (this.lightGlazeView && this.lightGlazeSamplingView) {
+      this.lightGlazeDisplayBindGroup = this.device.createBindGroup({
+        label: "Light Glaze three-surface live display bind group",
+        layout: this.lightGlazeDisplayBindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: this.displayUniformBuffer } },
+          { binding: 1, resource: this.layerView },
+          { binding: 2, resource: this.lightGlazeView },
+          { binding: 3, resource: this.sampler },
+          { binding: 4, resource: { buffer: this.lightGlazeUniformBuffer } },
+          { binding: 5, resource: this.lightGlazeSamplingView },
+          { binding: 6, resource: this.mergedBelowView() },
+          { binding: 7, resource: this.mergedAboveView() },
+        ],
+      });
+    }
+    this.rebuildRasterStrokeDisplayBindGroups();
   }
 
   /** Points the engine's active-layer fields at one layer's resources. */
@@ -5915,11 +6461,358 @@ export class BrushEngine {
     this.layerTexture = gpu.texture;
     this.layerView = gpu.view;
     this.layerSamplingView = gpu.samplingView;
-    this.paintMipViews = gpu.mipViews;
-    this.paintMipDownsampleBindGroups = gpu.paintMipDownsampleBindGroups;
-    this.displayBindGroup = gpu.displayBindGroup;
+    this.rebuildActiveLayerPyramidBindings();
+    this.rebuildLayerDisplayBindGroups();
   }
 
+  private async waitForGpuCapped(label: string, timeoutMs = 30_000): Promise<void> {
+    let timer = 0;
+    try {
+      await Promise.race([
+        this.device.queue.onSubmittedWorkDone(),
+        new Promise<never>((_, reject) => {
+          timer = window.setTimeout(
+            () => reject(new Error(`${label}: timeout GPU dopo ${timeoutMs} ms.`)),
+            timeoutMs,
+          );
+        }),
+      ]);
+    } finally {
+      if (timer !== 0) {
+        window.clearTimeout(timer);
+      }
+    }
+  }
+
+  injectLayerCompositeFault(...faultPoints: LayerCompositeFaultPoint[]): void {
+    if (!import.meta.env.DEV) {
+      throw new Error("Iniezione guasti compositing disponibile solo in modalità dev.");
+    }
+    if (faultPoints.length === 0) {
+      throw new Error("Specifica almeno un punto di guasto del compositing.");
+    }
+    this.layerCompositeFaultQueue = [...faultPoints];
+  }
+
+  private maybeInjectLayerCompositeFault(point: LayerCompositeFaultPoint): void {
+    if (!import.meta.env.DEV || this.layerCompositeFaultQueue[0] !== point) {
+      return;
+    }
+    this.layerCompositeFaultQueue.shift();
+    throw new Error(`Guasto iniettato nel compositing: ${point}.`);
+  }
+
+  private async materializeLayerCompositeSource(
+    record: LayerRecord,
+    caller: EffectsRetargetCaller,
+  ): Promise<{
+    texture: GPUTexture;
+    view: GPUTextureView;
+    transientBake: LayerBakeResources | null;
+    nonTransparentBounds: DirtyRect;
+  }> {
+    const gpu = this.requireLayerGpu(record.id);
+    const requirements = layerEffectRendererRequirements(
+      record.strokeStyle,
+      normalizeRasterBevelStyle(record.bevelStyle),
+    );
+    if (!requirements.needsStrokeRenderer) {
+      return {
+        texture: gpu.texture,
+        view: gpu.view,
+        transientBake: null,
+        nonTransparentBounds: this.normalizeLayerRect(record.contentBounds) ?? {
+          x: 0,
+          y: 0,
+          width: LAYER_SIZE,
+          height: LAYER_SIZE,
+        },
+      };
+    }
+    if (gpu.bake && gpu.bakeValid) {
+      return {
+        texture: gpu.bake.texture,
+        view: gpu.bake.samplingView,
+        transientBake: null,
+        // The analytic style stack may extend beyond the raw content bounds.
+        // Keep the full document until every mode has a proven visual-bounds
+        // helper; this path is still byte-identical and only for styled layers.
+        nonTransparentBounds: { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE },
+      };
+    }
+
+    await this.ensureEffectRenderersForRecord(record);
+    await this.retargetEffectsWorkingSetInternal(
+      gpu.view,
+      this.layerFormat,
+      record.contentBounds,
+      caller,
+      record,
+      false,
+      false,
+    );
+    const transientBake = await this.createLayerBakeCandidate(record, 1, false);
+    return {
+      texture: transientBake.texture,
+      view: transientBake.samplingView,
+      transientBake,
+      nonTransparentBounds: { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE },
+    };
+  }
+
+  private encodeMergedSurfacePyramid(
+    encoder: GPUCommandEncoder,
+    surface: MergedSurfaceResources,
+    selectedMipLevel: number,
+  ): number {
+    let passes = 0;
+    for (
+      let mipLevel = surface.validThroughLevel + 1;
+      mipLevel <= selectedMipLevel;
+      mipLevel += 1
+    ) {
+      const pass = encoder.beginRenderPass({
+        label: `Build merged surface mip ${mipLevel}`,
+        colorAttachments: [{
+          view: surface.mipViews[mipLevel],
+          loadOp: "clear",
+          storeOp: "store",
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        }],
+      });
+      pass.setPipeline(this.paintMipDownsamplePipeline);
+      pass.setBindGroup(0, surface.mipDownsampleBindGroups[mipLevel - 1]);
+      pass.draw(3, 1, 0, 0);
+      pass.end();
+      passes += 1;
+    }
+    surface.validThroughLevel = Math.max(surface.validThroughLevel, selectedMipLevel);
+    return passes;
+  }
+
+  private encodeMergedDisplayPyramids(
+    encoder: GPUCommandEncoder,
+    selectedMipLevel: number,
+  ): number {
+    let passes = 0;
+    if (this.mergedBelow) {
+      passes += this.encodeMergedSurfacePyramid(encoder, this.mergedBelow, selectedMipLevel);
+    }
+    if (this.mergedAbove) {
+      passes += this.encodeMergedSurfacePyramid(encoder, this.mergedAbove, selectedMipLevel);
+    }
+    return passes;
+  }
+  private destroyMergedSurfaceTexture(texture: GPUTexture): void {
+    this.liveMergedSurfaceTextures.delete(texture);
+    texture.destroy();
+  }
+
+  private destroyMergedSurface(surface: MergedSurfaceResources | null | undefined): void {
+    if (surface) {
+      this.destroyMergedSurfaceTexture(surface.texture);
+    }
+  }
+  private async buildMergedSurfaceCandidate(
+    records: readonly LayerRecord[],
+    side: "below" | "above",
+    caller: EffectsRetargetCaller,
+  ): Promise<MergedSurfaceResources | null> {
+    const visibleRecords = records.filter(
+      (record) => record.visible && record.opacity > 0 && record.hasContent,
+    );
+    if (visibleRecords.length === 0) {
+      return null;
+    }
+
+    return runGpuAllocationTransaction(
+      this.device,
+      `Merged ${side} surface transaction`,
+      async (transaction) => {
+        const surface = this.allocateMergedSurface(
+          this.layerFormat,
+          side,
+          visibleRecords.length,
+        );
+        transaction.deferRollback(() => this.destroyMergedSurface(surface));
+
+        let first = true;
+        for (const record of visibleRecords) {
+          const source = await this.materializeLayerCompositeSource(record, caller);
+          try {
+            const encoder = this.device.createCommandEncoder({
+              label: `Fold layer ${record.id} into merged ${side}`,
+            });
+            if (first && record.opacity >= 1) {
+              // A fresh WebGPU texture is zero-initialized. For the common
+              // singleton/opaque side, copy only the conservative non-transparent
+              // bounds instead of shading all 16.8 million document pixels.
+              // copyTextureToTexture is exact for both RGBA8 and RGBA16F.
+              encoder.copyTextureToTexture(
+                {
+                  texture: source.texture,
+                  origin: {
+                    x: source.nonTransparentBounds.x,
+                    y: source.nonTransparentBounds.y,
+                    z: 0,
+                  },
+                },
+                {
+                  texture: surface.texture,
+                  origin: {
+                    x: source.nonTransparentBounds.x,
+                    y: source.nonTransparentBounds.y,
+                    z: 0,
+                  },
+                },
+                {
+                  width: source.nonTransparentBounds.width,
+                  height: source.nonTransparentBounds.height,
+                  depthOrArrayLayers: 1,
+                },
+              );
+            } else {
+              this.device.queue.writeBuffer(
+                this.layerCompositeUniformBuffer,
+                0,
+                new Float32Array([record.opacity, 0, 0, 0]),
+              );
+              const bindGroup = this.device.createBindGroup({
+                label: `Fold layer ${record.id} into merged ${side}`,
+                layout: this.layerCompositeBindGroupLayout,
+                entries: [
+                  { binding: 0, resource: source.view },
+                  { binding: 1, resource: { buffer: this.layerCompositeUniformBuffer } },
+                ],
+              });
+              const pass = encoder.beginRenderPass({
+                label: `Source-over layer ${record.id} into merged ${side}`,
+                colorAttachments: [{
+                  view: surface.mipViews[0],
+                  loadOp: first ? "clear" : "load",
+                  storeOp: "store",
+                  clearValue: { r: 0, g: 0, b: 0, a: 0 },
+                }],
+              });
+              pass.setPipeline(this.layerCompositePipeline);
+              pass.setBindGroup(0, bindGroup);
+              pass.setScissorRect(
+                source.nonTransparentBounds.x,
+                source.nonTransparentBounds.y,
+                source.nonTransparentBounds.width,
+                source.nonTransparentBounds.height,
+              );
+              pass.draw(3, 1, 0, 0);
+              pass.end();
+            }
+            this.device.queue.submit([encoder.finish()]);
+            await this.waitForGpuCapped(`Fold livello ${record.id}`);
+            first = false;
+          } finally {
+            this.destroyLayerBake(source.transientBake);
+          }
+        }
+
+        if (this.paintDisplaySelectedMipLevel > 0) {
+          const encoder = this.device.createCommandEncoder({
+            label: `Build merged ${side} display pyramid`,
+          });
+          this.encodeMergedSurfacePyramid(
+            encoder,
+            surface,
+            this.paintDisplaySelectedMipLevel,
+          );
+          this.device.queue.submit([encoder.finish()]);
+          await this.waitForGpuCapped(`Piramide merged ${side}`);
+        }
+        return surface;
+      },
+    );
+  }
+
+  private async restoreEffectsWorkbenchToActiveLayer(
+    caller: EffectsRetargetCaller = "layer-switch",
+    force = false,
+  ): Promise<void> {
+    const record = this.layerStack.active;
+    const gpu = this.requireLayerGpu(record.id);
+    if (!force && this.effectsWorkbench?.sourceView === gpu.view) {
+      return;
+    }
+    await this.ensureEffectRenderersForRecord(record);
+    await this.retargetEffectsWorkingSetInternal(
+      gpu.view,
+      this.layerFormat,
+      record.contentBounds,
+      caller,
+      record,
+      false,
+      true,
+    );
+  }
+
+  private releaseFusedLayerBakes(): void {
+    for (const gpu of this.layerGpu.values()) {
+      this.destroyLayerBake(gpu.bake);
+      gpu.bake = null;
+      gpu.bakeValid = false;
+    }
+  }
+
+  /**
+   * Rebuilds both sides off-screen and publishes them together. Until the last
+   * GPU completion succeeds, every display bind group still names the previous
+   * valid pair; an OOM, validation error or injected fault therefore cannot
+   * expose a half-updated stack.
+   */
+  private async rebuildMergedLayerSurfaces(
+    caller: EffectsRetargetCaller = "layer-switch",
+  ): Promise<void> {
+    let candidateBelow: MergedSurfaceResources | null = null;
+    let candidateAbove: MergedSurfaceResources | null = null;
+    let activeWorkbenchRestored = false;
+    try {
+      candidateBelow = await this.buildMergedSurfaceCandidate(
+        this.layerStack.below(),
+        "below",
+        caller,
+      );
+      candidateAbove = await this.buildMergedSurfaceCandidate(
+        this.layerStack.above(),
+        "above",
+        caller,
+      );
+      await this.restoreEffectsWorkbenchToActiveLayer(caller);
+      activeWorkbenchRestored = true;
+      this.maybeInjectLayerCompositeFault("after-candidate-submit");
+
+      const previousBelow = this.mergedBelow;
+      const previousAbove = this.mergedAbove;
+      this.mergedBelow = candidateBelow;
+      this.mergedAbove = candidateAbove;
+      candidateBelow = null;
+      candidateAbove = null;
+      this.rebuildLayerDisplayBindGroups();
+      this.destroyMergedSurface(previousBelow);
+      this.destroyMergedSurface(previousAbove);
+      this.releaseFusedLayerBakes();
+      this.presentationCacheNeedsFullRebuild = true;
+    } catch (error) {
+      this.destroyMergedSurface(candidateBelow);
+      this.destroyMergedSurface(candidateAbove);
+      if (!activeWorkbenchRestored) {
+        // A failed retarget may already have changed sourceView before its GPU
+        // rebuild failed. Force the reverse retarget instead of trusting the
+        // pointer equality fast path.
+        await this.restoreEffectsWorkbenchToActiveLayer(caller, true);
+      }
+      throw error;
+    } finally {
+      if (import.meta.env.DEV) {
+        this.layerCompositeFaultQueue = [];
+      }
+    }
+  }
   /**
    * Adds a layer above the active one and selects it.
    *
@@ -5956,6 +6849,10 @@ export class BrushEngine {
         // GPU resources, which every later switch would trip over.
         this.layerStack.remove(index);
         this.layerStack.setActiveIndex(fromIndex);
+        // The outgoing bake was only a hand-off candidate for the switch. If
+        // allocating the new mip 0 fails before activation, no fusion consumes
+        // it, so release it explicitly and restore zero steady-state bake memory.
+        this.releaseFusedLayerBakes();
         throw error;
       }
       try {
@@ -5974,12 +6871,17 @@ export class BrushEngine {
           const restoreMessage = restoreError instanceof Error
             ? restoreError.message
             : String(restoreError);
+          this.latchDocumentStateInconsistent(
+            "Stato incoerente dopo la creazione del livello: ricarica prima di continuare.",
+          );
           throw new Error(
-            `Creazione livello fallita: ${originalMessage}; ripristino fallito: ${restoreMessage}`,
+            `Creazione livello fallita: ${originalMessage}; ripristino fallito: ${restoreMessage}. `
+            + "Ricarica la pagina prima di continuare.",
           );
         }
         this.layerGpu.delete(record.id);
         this.layerStack.remove(index);
+        this.destroyLayerBake(gpu.bake);
         gpu.texture.destroy();
         throw error;
       }
@@ -6023,8 +6925,12 @@ export class BrushEngine {
           const restoreMessage = restoreError instanceof Error
             ? restoreError.message
             : String(restoreError);
+          this.latchDocumentStateInconsistent(
+            "Stato incoerente dopo il cambio livello: ricarica prima di continuare.",
+          );
           throw new Error(
-            `Cambio livello fallito: ${originalMessage}; ripristino fallito: ${restoreMessage}`,
+            `Cambio livello fallito: ${originalMessage}; ripristino fallito: ${restoreMessage}. `
+            + "Ricarica la pagina prima di continuare.",
           );
         }
       }
@@ -6034,6 +6940,77 @@ export class BrushEngine {
       this.publishHistoryState();
       this.publishStats();
     }
+  }
+
+  async setLayerVisibility(index: number, visible: boolean): Promise<boolean> {
+    return this.setLayerPresentation(index, Boolean(visible), undefined);
+  }
+
+  async setLayerOpacity(index: number, opacity: number): Promise<boolean> {
+    return this.setLayerPresentation(index, undefined, clamp(opacity, 0, 1));
+  }
+
+  private async setLayerPresentation(
+    index: number,
+    visible: boolean | undefined,
+    opacity: number | undefined,
+  ): Promise<boolean> {
+    if (!this.initialized) {
+      throw new Error("Il motore non è ancora inizializzato.");
+    }
+    const record = this.layerStack.at(index);
+    const nextVisible = visible ?? record.visible;
+    const nextOpacity = opacity ?? record.opacity;
+    if (nextVisible === record.visible && nextOpacity === record.opacity) {
+      return false;
+    }
+    this.assertLayerSwitchAllowed();
+    this.layerSwitchBusy = true;
+    const previousVisible = record.visible;
+    const previousOpacity = record.opacity;
+    try {
+      await this.waitForIdle();
+      record.visible = nextVisible;
+      record.opacity = nextOpacity;
+      if (index !== this.layerStack.activeIndex) {
+        await this.rebuildMergedLayerSurfaces();
+      }
+      this.presentationCacheNeedsFullRebuild = true;
+      this.displayDirty = true;
+      this.requestRender();
+      this.publishStats();
+      return true;
+    } catch (error) {
+      record.visible = previousVisible;
+      record.opacity = previousOpacity;
+      try {
+        // This operation has no outer activation transaction to repair a
+        // half-retargeted workbench. Force a complete rebuild even when the CPU
+        // source pointer already looks active.
+        await this.restoreEffectsWorkbenchToActiveLayer("layer-switch", true);
+      } catch (restoreError) {
+        this.latchDocumentStateInconsistent(
+          "Stato incoerente dopo il compositing: ricarica prima di continuare.",
+        );
+        const originalMessage = error instanceof Error ? error.message : String(error);
+        const restoreMessage = restoreError instanceof Error
+          ? restoreError.message
+          : String(restoreError);
+        throw new Error(
+          `Compositing non riuscito (${originalMessage}) e ripristino fallito `
+          + `(${restoreMessage}). Ricarica la pagina prima di continuare.`,
+        );
+      }
+      throw error;
+    } finally {
+      this.layerSwitchBusy = false;
+    }
+  }
+  private latchDocumentStateInconsistent(message: string): void {
+    this.historyStateInconsistent = true;
+    this.historyBusy = true;
+    this.publishHistoryState();
+    this.callbacks.onStatus?.(message, "error");
   }
 
   private assertLayerSwitchAllowed(): void {
@@ -6058,7 +7035,6 @@ export class BrushEngine {
     const record = this.layerStack.active;
     record.contentBounds = this.layerContentBounds;
     record.hasContent = this.layerHasContent;
-    record.mipValidThroughLevel = this.paintDisplayMipValidThroughLevel;
   }
 
   /**
@@ -6075,8 +7051,7 @@ export class BrushEngine {
    * them: the working set is shared and singular, so keeping it costs nothing per
    * layer, while releasing and rebuilding would add cost to every switch.
    */
-  private async ensureEffectRenderersForActiveLayer(): Promise<void> {
-    const record = this.layerStack.active;
+  private async ensureEffectRenderersForRecord(record: LayerRecord): Promise<void> {
     const requirements = layerEffectRendererRequirements(
       record.strokeStyle,
       normalizeRasterBevelStyle(record.bevelStyle),
@@ -6114,7 +7089,7 @@ export class BrushEngine {
     }
     this.destroyLightGlazeResources();
     this.destroyThicknessTailOverlayResources();
-    await this.ensureEffectRenderersForActiveLayer();
+    await this.ensureEffectRenderersForRecord(record);
 
     const effectsStartedAt = performance.now();
     const effects = await this.retargetEffectsWorkingSetInternal(
@@ -6122,8 +7097,12 @@ export class BrushEngine {
       this.layerFormat,
       record.contentBounds,
       caller,
+      record,
+      false,
+      true,
     );
     const effectsMs = performance.now() - effectsStartedAt;
+    await this.rebuildMergedLayerSurfaces(caller);
 
     this.presentationCacheNeedsFullRebuild = true;
     this.displayDirty = true;
@@ -6166,6 +7145,7 @@ export class BrushEngine {
       lightGlazeCompositeMipPipeline,
       lightGlazeCompositePipeline,
       paintMipDownsamplePipeline,
+      layerCompositePipeline,
     } = await runGpuAllocationTransaction(
       this.device,
       `Pipeline formato layer ${format}`,
@@ -6189,6 +7169,10 @@ export class BrushEngine {
     const paintMipDownsamplePipelineLayout = this.device.createPipelineLayout({
       label: `Paint display mip downsample pipeline layout ${format}`,
       bindGroupLayouts: [this.paintMipDownsampleBindGroupLayout],
+    });
+    const layerCompositePipelineLayout = this.device.createPipelineLayout({
+      label: `Layer source-over fold pipeline layout ${format}`,
+      bindGroupLayouts: [this.layerCompositeBindGroupLayout],
     });
     const lightGlazeCompositeMipPipelineLayout = this.device.createPipelineLayout({
       label: `Light Glaze composited mip 1 pipeline layout ${format}`,
@@ -6713,6 +7697,23 @@ export class BrushEngine {
       },
       primitive: { topology: "triangle-list" },
     });
+    const layerCompositePipeline = this.device.createRenderPipeline({
+      label: `Layer source-over fold ${format}`,
+      layout: layerCompositePipelineLayout,
+      vertex: { module: this.layerCompositeShaderModule, entryPoint: "vertexMain" },
+      fragment: {
+        module: this.layerCompositeShaderModule,
+        entryPoint: "fragmentMain",
+        targets: [{
+          format,
+          blend: {
+            color: { operation: "add", srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+            alpha: { operation: "add", srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+          },
+        }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
         return {
           normalPipeline,
           additivePipeline,
@@ -6735,6 +7736,7 @@ export class BrushEngine {
           lightGlazeCompositeMipPipeline,
           lightGlazeCompositePipeline,
           paintMipDownsamplePipeline,
+          layerCompositePipeline,
         };
       },
     );
@@ -6750,7 +7752,33 @@ export class BrushEngine {
     const replacement = new Map<number, LayerGpuResources>();
     let blendRenderer: DryBlendRenderer | null = null;
     let nextEffectsWorkbench: EffectsWorkbench | null = null;
+    let nextDisplayPyramid: DisplayPyramidResources | null = null;
+    let nextTransparentTexture: GPUTexture | null = null;
+    let nextTransparentView: GPUTextureView | null = null;
     try {
+      const displayInfrastructure = await runGpuAllocationTransaction(
+        this.device,
+        `Display layer infrastructure ${format}`,
+        (transaction) => {
+          const pyramid = this.allocateActiveLayerDisplayPyramid(format);
+          transaction.deferRollback(() => pyramid.texture.destroy());
+          const transparentTexture = this.device.createTexture({
+            label: `Transparent layer placeholder ${format}`,
+            size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+            format,
+            usage: GPUTextureUsage.TEXTURE_BINDING,
+          });
+          transaction.deferRollback(() => transparentTexture.destroy());
+          return {
+            pyramid,
+            transparentTexture,
+            transparentView: transparentTexture.createView(),
+          };
+        },
+      );
+      nextDisplayPyramid = displayInfrastructure.pyramid;
+      nextTransparentTexture = displayInfrastructure.transparentTexture;
+      nextTransparentView = displayInfrastructure.transparentView;
       for (const record of this.layerStack.layers) {
         const gpu = await this.allocateLayerGpuResources(
           format,
@@ -6795,6 +7823,8 @@ export class BrushEngine {
       // old textures/renderers still describe the intact document.
       nextEffectsWorkbench?.destroy();
       blendRenderer?.destroy();
+      nextDisplayPyramid?.texture.destroy();
+      nextTransparentTexture?.destroy();
       for (const gpu of replacement.values()) {
         gpu.texture.destroy();
       }
@@ -6802,26 +7832,32 @@ export class BrushEngine {
     }
 
     const activeGpu = replacement.get(this.layerStack.active.id);
-    if (!activeGpu || !blendRenderer || !nextEffectsWorkbench) {
+    if (
+      !activeGpu
+      || !blendRenderer
+      || !nextEffectsWorkbench
+      || !nextDisplayPyramid
+      || !nextTransparentTexture
+      || !nextTransparentView
+    ) {
       nextEffectsWorkbench?.destroy();
       blendRenderer?.destroy();
+      nextDisplayPyramid?.texture.destroy();
+      nextTransparentTexture?.destroy();
       for (const gpu of replacement.values()) {
         gpu.texture.destroy();
       }
       throw new Error("Transazione cambio formato incompleta.");
     }
-    const {
-      texture,
-      view,
-      samplingView,
-      mipViews,
-      displayBindGroup,
-      paintMipDownsampleBindGroups,
-    } = activeGpu;
+    const { texture, view, samplingView } = activeGpu;
 
     this.destroyLightGlazeResources();
     this.destroyThicknessTailOverlayResources();
     const supersededLayerGpu = [...this.layerGpu.values()];
+    const supersededDisplayPyramid = this.activeLayerDisplayPyramid;
+    const supersededTransparentTexture = this.transparentLayerTexture;
+    const supersededMergedBelow = this.mergedBelow;
+    const supersededMergedAbove = this.mergedAbove;
     this.layerGpu.clear();
     for (const [layerId, gpu] of replacement) {
       this.layerGpu.set(layerId, gpu);
@@ -6832,14 +7868,16 @@ export class BrushEngine {
       }
       other.contentBounds = null;
       other.hasContent = false;
-      other.mipValidThroughLevel = 0;
     }
     this.layerTexture = texture;
     this.layerView = view;
     this.layerSamplingView = samplingView;
     this.blendRenderer = blendRenderer;
-    this.paintMipViews = mipViews;
-    this.paintMipDownsampleBindGroups = paintMipDownsampleBindGroups;
+    this.activeLayerDisplayPyramid = nextDisplayPyramid;
+    this.transparentLayerTexture = nextTransparentTexture;
+    this.transparentLayerView = nextTransparentView;
+    this.mergedBelow = null;
+    this.mergedAbove = null;
     this.normalPipeline = normalPipeline;
     this.additivePipeline = additivePipeline;
     this.shapeNormalPipeline = shapeNormalPipeline;
@@ -6861,8 +7899,10 @@ export class BrushEngine {
     this.lightGlazeCompositeMipPipeline = lightGlazeCompositeMipPipeline;
     this.lightGlazeCompositePipeline = lightGlazeCompositePipeline;
     this.paintMipDownsamplePipeline = paintMipDownsamplePipeline;
-    this.displayBindGroup = displayBindGroup;
+    this.layerCompositePipeline = layerCompositePipeline;
     this.layerFormat = format;
+    this.rebuildActiveLayerPyramidBindings();
+    this.rebuildLayerDisplayBindGroups();
     // The direct Traccia LOD 0 path uses the format flag to reproduce the
     // quantization that the removed full-resolution styled texture applied.
     this.writeLightGlazeUniforms(1, "source-over", null);
@@ -6874,8 +7914,12 @@ export class BrushEngine {
     oldEffectsWorkbench?.destroy();
     this.effectsWorkbench = nextEffectsWorkbench;
     oldBlendRenderer?.destroy();
+    supersededDisplayPyramid?.texture.destroy();
+    supersededTransparentTexture?.destroy();
+    this.destroyMergedSurface(supersededMergedBelow);
+    this.destroyMergedSurface(supersededMergedAbove);
     for (const gpu of supersededLayerGpu) {
-      gpu.bake?.texture.destroy();
+      this.destroyLayerBake(gpu.bake);
       gpu.texture.destroy();
     }
   }
@@ -6924,6 +7968,9 @@ export class BrushEngine {
         { binding: 2, resource: this.sampler },
         { binding: 3, resource: view },
         { binding: 4, resource: { buffer: this.thicknessTailDisplayUniformBuffer } },
+        { binding: 5, resource: this.activeLayerDisplayPyramid.samplingView },
+        { binding: 6, resource: this.mergedBelowView() },
+        { binding: 7, resource: this.mergedAboveView() },
       ],
     });
 
@@ -7034,6 +8081,8 @@ export class BrushEngine {
         { binding: 3, resource: this.sampler },
         { binding: 4, resource: { buffer: this.lightGlazeUniformBuffer } },
         { binding: 5, resource: samplingView },
+        { binding: 6, resource: this.mergedBelowView() },
+        { binding: 7, resource: this.mergedAboveView() },
       ],
     });
     const compositeBindGroup = this.device.createBindGroup({
@@ -7287,9 +8336,15 @@ export class BrushEngine {
     layerCleared = false,
     bevelContentBounds: DirtyRect | null = virtualContentBounds,
     allowBevelFieldShrink = false,
+    strokeStyle: RasterStrokeStyle = this.rasterStrokeStyle,
+    bevelStyle: RasterBevelStyle = this.rasterBevelStyle,
   ): { dirtyRect: DirtyRect | null; timing: RasterStrokeEncodeResult | null } {
     const renderer = this.rasterStrokeRenderer;
-    if (!renderer || !this.styleStackActive()) {
+    const styleStackActive = Boolean(
+      renderer
+      && ((strokeStyle.enabled && strokeStyle.width > 0) || bevelStyle.enabled)
+    );
+    if (!renderer || !styleStackActive) {
       if (mutationRect || layerCleared) {
         this.rasterStrokeCoverageValid = false;
         this.rasterBevelHeightValid = false;
@@ -7307,7 +8362,7 @@ export class BrushEngine {
     const clearStyled = layerCleared || !this.rasterStrokeStyledInitialized;
     let composeRect: DirtyRect | null = null;
 
-    const bevelActive = this.rasterBevelActive();
+    const bevelActive = Boolean(this.rasterBevelRenderer && bevelStyle.enabled);
     if (bevelActive) {
       const bevelRenderer = this.rasterBevelRenderer!;
       const sourceChanged = this.rasterBevelHeightSourceMode !== sourceMode;
@@ -7319,15 +8374,15 @@ export class BrushEngine {
       const clearHeight = !this.rasterBevelHeightValid
         || sourceChanged
         || allowFieldShrink;
-      const bevelFieldBounds = this.rasterBevelInfluenceRect(bevelContentBounds);
+      const bevelFieldBounds = this.rasterBevelInfluenceRect(bevelContentBounds, bevelStyle);
       const bevelRebuildRect = clearHeight
         ? bevelFieldBounds
         : mutationRect
-          ? this.rasterBevelInfluenceRect(mutationRect)
+          ? this.rasterBevelInfluenceRect(mutationRect, bevelStyle)
           : null;
       const bevelTiming = bevelRenderer.encode({
         encoder,
-        style: this.rasterBevelStyle,
+        style: bevelStyle,
         sourceMode,
         rebuildRect: bevelRebuildRect,
         changeDetectionRect: clearHeight ? null : mutationRect,
@@ -7362,7 +8417,7 @@ export class BrushEngine {
     }
     composeRect = this.mergeDirtyRects(composeRect, this.rasterBevelPendingComposeRect);
 
-    const strokeActive = this.rasterStrokeActive();
+    const strokeActive = strokeStyle.enabled && strokeStyle.width > 0;
     const coverageWasValid = strokeActive && this.rasterStrokeCoverageValid;
     let rebuildRect: DirtyRect | null = null;
     let changeDetectionRect: DirtyRect | null = null;
@@ -7373,7 +8428,7 @@ export class BrushEngine {
         rebuildRect = this.mergeDirtyRects(
           this.rasterStrokeEffectRect(
             virtualContentBounds,
-            this.rasterStrokeStyle.width,
+            strokeStyle.width,
           ),
           this.rasterStrokePendingComposeRect,
         );
@@ -7381,7 +8436,7 @@ export class BrushEngine {
       } else if (mutationRect) {
         rebuildRect = this.rasterStrokeEffectRect(
           mutationRect,
-          this.rasterStrokeStyle.width,
+          strokeStyle.width,
         );
         changeDetectionRect = mutationRect;
         composeRect = this.mergeDirtyRects(composeRect, mutationRect);
@@ -7397,8 +8452,8 @@ export class BrushEngine {
 
     const timing = renderer.encode({
       encoder,
-      style: this.rasterStrokeStyle,
-      bevelStyle: this.rasterBevelStyle,
+      style: strokeStyle,
+      bevelStyle,
       sourceMode,
       rebuildRect,
       changeDetectionRect,
@@ -7843,6 +8898,11 @@ export class BrushEngine {
     this.displayUniformUpload[6] = this.zoom;
     this.displayUniformUpload[7] = 96;
     this.displayUniformUpload[8] = selectedMipLevel;
+    this.displayUniformUpload[9] = this.mergedBelow ? 1 : 0;
+    this.displayUniformUpload[10] = this.mergedAbove ? 1 : 0;
+    this.displayUniformUpload[11] = this.layerStack.active.visible
+      ? clamp(this.layerStack.active.opacity, 0, 1)
+      : 0;
     this.device.queue.writeBuffer(this.displayUniformBuffer, 0, this.displayUniformUpload);
   }
 
@@ -10557,6 +11617,7 @@ export class BrushEngine {
             : null;
 
         if (presentationDirtyRect) {
+          this.encodeMergedDisplayPyramids(encoder, displaySelectedMipLevel);
           this.writeDisplayUniforms(displaySelectedMipLevel);
           if (rasterStrokeActive) {
             this.rasterStrokeRenderer!.updateDisplayParameters(
@@ -10718,6 +11779,7 @@ export class BrushEngine {
             ? this.layerDirtyRectToPresentationRect(presentationLayerDirtyRect, displaySelectedMipLevel)
             : null;
         if (presentationDirtyRect) {
+          this.encodeMergedDisplayPyramids(encoder, displaySelectedMipLevel);
           this.writeDisplayUniforms(displaySelectedMipLevel);
           if (rasterStrokeActive) {
             this.rasterStrokeRenderer!.updateDisplayParameters(
@@ -11212,6 +12274,7 @@ export class BrushEngine {
           : null;
 
       if (presentationDirtyRect) {
+        this.encodeMergedDisplayPyramids(encoder, displaySelectedMipLevel);
         this.writeDisplayUniforms(displaySelectedMipLevel);
         if (rasterStrokeActive) {
           this.rasterStrokeRenderer!.updateDisplayParameters(

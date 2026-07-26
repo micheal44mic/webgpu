@@ -219,6 +219,8 @@ interface BenchmarkRun {
     layerMemoryMiB: number;
     layerCount: number;
     activeLayerId: number;
+    layerBakeStrategy: string;
+    layerCompositeStrategy: string;
     gpuLabel: string;
     timestampQueriesSupported: boolean;
     stampGeometry: StampGeometry;
@@ -310,7 +312,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 44;
+    performanceTelemetryRevision: 45;
   };
 }
 
@@ -389,6 +391,7 @@ const gpuMemoryRows: ReadonlyArray<
   ["gpuMemoryLayerBase", "layerBaseMiB"],
   ["gpuMemoryLayerMips", "layerMipChainMiB"],
   ["gpuMemoryLayerBakes", "layerBakeMiB"],
+  ["gpuMemoryLayerComposite", "layerCompositeMiB"],
   ["gpuMemoryGrain", "grainTextureMiB"],
   ["gpuMemoryShape", "shapeTextureMiB"],
   ["gpuMemoryPaintBuffers", "paintBuffersMiB"],
@@ -665,7 +668,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 44,
+    performanceTelemetryRevision: 45,
     ...engineEnvironment,
   };
 }
@@ -1807,10 +1810,12 @@ if (import.meta.env.DEV) {
 }
 
 async function runRequestedLayerHistoryTest(): Promise<void> {
+  let timeoutId = 0;
+  let timedOut = false;
   layerHistoryTestSection.hidden = false;
   layerHistoryTestDetails.hidden = true;
   layerHistoryTestResult.className = "result";
-  layerHistoryTestResult.textContent = "Test GPU bilaterale della cronologia livelli…";
+  layerHistoryTestResult.textContent = "Test GPU cronologia e compositing livelli…";
   try {
     const { runLayerHistoryGpuTest } = await import("./layer-history-gpu-test");
     // The harness awaits waitForIdle(), which needs the frame loop to be pumping.
@@ -1821,12 +1826,12 @@ async function runRequestedLayerHistoryTest(): Promise<void> {
     const report = await Promise.race([
       runLayerHistoryGpuTest(engine),
       new Promise<never>((_, reject) => {
-        window.setTimeout(
-          () => reject(new Error(
-            "Test cronologia livelli scaduto dopo 60 s: la finestra sta rendendo frame?",
-          )),
-          60_000,
-        );
+        timeoutId = window.setTimeout(() => {
+          timedOut = true;
+          reject(new Error(
+            "Test livelli scaduto dopo 180 s: ricarica la pagina dev prima di continuare.",
+          ));
+        }, 180_000);
       }),
     ]);
     layerHistoryTestReport.textContent = JSON.stringify(report, null, 2);
@@ -1837,11 +1842,11 @@ async function runRequestedLayerHistoryTest(): Promise<void> {
     ).__layerHistoryGpuTestReport = report;
     layerHistoryTestResult.className = report.passed ? "result ok" : "result error";
     layerHistoryTestResult.textContent = report.passed
-      ? "Cronologia livelli GPU OK · undo/redo bilaterale e rollback bake verificati."
+      ? "Livelli GPU OK · cronologia, fusione, mip e rollback verificati."
       : "Cronologia livelli GPU ERRORE · consulta il report JSON.";
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const failure = { version: 3, passed: false, error: message };
+    const failure = { version: 4, passed: false, error: message };
     layerHistoryTestReport.textContent = JSON.stringify(failure, null, 2);
     layerHistoryTestDetails.hidden = false;
     layerHistoryTestDetails.open = true;
@@ -1851,7 +1856,12 @@ async function runRequestedLayerHistoryTest(): Promise<void> {
     layerHistoryTestResult.className = "result error";
     layerHistoryTestResult.textContent = `Cronologia livelli GPU ERRORE · ${message}`;
   } finally {
-    layerHistoryTestRunning = false;
+    if (timeoutId !== 0) {
+      window.clearTimeout(timeoutId);
+    }
+    // Promise.race cannot cancel the underlying GPU harness. Keep this dedicated
+    // page locked after a timeout so late work cannot race user input.
+    layerHistoryTestRunning = timedOut;
     historyState = engine.getHistoryState();
     syncActiveLayerControls();
     updateHistoryControls();
@@ -1986,27 +1996,111 @@ function renderLayerList(stats: EngineStats): void {
   const locked = interactionLocked() || layerSwitching;
   addLayerButton.disabled = locked || stats.layers.length >= 16;
   if (layerList.childElementCount !== stats.layers.length) {
-    layerList.replaceChildren(...stats.layers.map(() => document.createElement("button")));
+    layerList.replaceChildren(...stats.layers.map(() => {
+      const row = document.createElement("div");
+      row.className = "layer-row";
+      const visibility = document.createElement("button");
+      visibility.type = "button";
+      visibility.className = "layer-visibility";
+      const select = document.createElement("button");
+      select.type = "button";
+      select.className = "layer-select";
+      const opacity = document.createElement("label");
+      opacity.className = "layer-opacity";
+      const range = document.createElement("input");
+      range.type = "range";
+      range.min = "0";
+      range.max = "100";
+      range.step = "1";
+      const output = document.createElement("output");
+      opacity.append(range, output);
+      row.append(visibility, select, opacity);
+      return row;
+    }));
   }
+
   // Top layer first, the way every editor shows a stack.
   const ordered = [...stats.layers].reverse();
   ordered.forEach((layer, position) => {
     const index = stats.layers.length - 1 - position;
-    const button = layerList.children[position] as HTMLButtonElement;
-    button.type = "button";
-    button.disabled = locked;
-    button.setAttribute("aria-current", index === stats.activeLayerIndex ? "true" : "false");
-    button.textContent = "";
+    const row = layerList.children[position] as HTMLDivElement;
+    const visibility = row.querySelector<HTMLButtonElement>(".layer-visibility")!;
+    const select = row.querySelector<HTMLButtonElement>(".layer-select")!;
+    const range = row.querySelector<HTMLInputElement>("input[type=range]")!;
+    const output = row.querySelector<HTMLOutputElement>("output")!;
+
+    visibility.disabled = locked;
+    visibility.textContent = layer.visible ? "●" : "○";
+    visibility.setAttribute("aria-pressed", String(layer.visible));
+    visibility.setAttribute(
+      "aria-label",
+      `${layer.visible ? "Nascondi" : "Mostra"} ${layer.name}`,
+    );
+    visibility.onclick = () => {
+      void changeLayerVisibility(index, !layer.visible);
+    };
+
+    select.disabled = locked;
+    select.setAttribute("aria-current", index === stats.activeLayerIndex ? "true" : "false");
+    select.textContent = "";
     const name = document.createElement("span");
     name.textContent = layer.name;
     const hint = document.createElement("span");
     hint.className = "layer-hint";
     hint.textContent = layer.hasContent ? "disegnato" : "vuoto";
-    button.append(name, hint);
-    button.onclick = () => { void selectLayer(index); };
+    select.append(name, hint);
+    select.onclick = () => { void selectLayer(index); };
+
+    range.disabled = locked;
+    range.value = String(Math.round(layer.opacity * 100));
+    range.setAttribute("aria-label", `Opacità ${layer.name}`);
+    output.value = `${range.value}%`;
+    range.oninput = () => { output.value = `${range.value}%`; };
+    range.onchange = () => {
+      void changeLayerOpacity(index, Number(range.value) / 100);
+    };
   });
 }
 
+async function changeLayerVisibility(index: number, visible: boolean): Promise<void> {
+  if (layerSwitching || interactionLocked()) {
+    return;
+  }
+  layerSwitching = true;
+  updateHistoryControls();
+  try {
+    await engine.setLayerVisibility(index, visible);
+    layerSwitchResult.textContent = visible ? "Livello mostrato." : "Livello nascosto.";
+  } catch (error) {
+    layerSwitchResult.textContent = error instanceof Error
+      ? error.message
+      : "Visibilità del livello non aggiornata.";
+  } finally {
+    layerSwitching = false;
+    updateHistoryControls();
+    updateStats(engine.getStats());
+  }
+}
+
+async function changeLayerOpacity(index: number, opacity: number): Promise<void> {
+  if (layerSwitching || interactionLocked()) {
+    return;
+  }
+  layerSwitching = true;
+  updateHistoryControls();
+  try {
+    await engine.setLayerOpacity(index, opacity);
+    layerSwitchResult.textContent = `Opacità livello ${Math.round(opacity * 100)}%.`;
+  } catch (error) {
+    layerSwitchResult.textContent = error instanceof Error
+      ? error.message
+      : "Opacità del livello non aggiornata.";
+  } finally {
+    layerSwitching = false;
+    updateHistoryControls();
+    updateStats(engine.getStats());
+  }
+}
 async function selectLayer(index: number): Promise<void> {
   if (layerSwitching || interactionLocked()) {
     return;

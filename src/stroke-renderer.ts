@@ -17,7 +17,7 @@ import type { RasterBevelFieldState } from "./bevel-renderer";
 import type { EffectsScratchLease, EffectsScratchPool } from "./effects-scratch-pool";
 
 export const RASTER_STROKE_RENDERER_BUILD =
-  "style-stack-webgpu-v11-layer-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even";
+  "style-stack-webgpu-v12-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even";
 export const RASTER_STROKE_COVERAGE_STRATEGY =
   "persistent-packed-r8-style-coverage" as const;
 export const RASTER_STROKE_DISTANCE_STORAGE_STRATEGY =
@@ -916,6 +916,9 @@ struct DisplayUniforms {
   zoom: f32,
   checkerSize: f32,
   selectedMipLevel: f32,
+  hasMergedBelow: f32,
+  hasMergedAbove: f32,
+  activeLayerAlpha: f32,
 };
 
 struct VertexOutput {
@@ -929,6 +932,8 @@ ${strokeCompositionShaderSource(
 )}
 @group(1) @binding(6) var coarseStyledTexture: texture_2d<f32>;
 @group(1) @binding(7) var layerSampler: sampler;
+@group(1) @binding(11) var mergedBelowTexture: texture_2d<f32>;
+@group(1) @binding(12) var mergedAboveTexture: texture_2d<f32>;
 
 fn srgbToLinearChannel(value: f32) -> f32 {
   if (value <= 0.04045) {
@@ -959,6 +964,25 @@ fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
     linearToSrgbChannel(value.g),
     linearToSrgbChannel(value.b)
   );
+}
+
+fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
+  return source + destination * (1.0 - source.a);
+}
+
+fn composeLayerStack(activePaint: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {
+  var paint = vec4<f32>(0.0);
+  if (display.hasMergedBelow > 0.5) {
+    paint = textureSampleLevel(mergedBelowTexture, layerSampler, uv, display.selectedMipLevel);
+  }
+  paint = sourceOver(activePaint * display.activeLayerAlpha, paint);
+  if (display.hasMergedAbove > 0.5) {
+    paint = sourceOver(
+      textureSampleLevel(mergedAboveTexture, layerSampler, uv, display.selectedMipLevel),
+      paint
+    );
+  }
+  return paint;
 }
 
 fn directStyledSample(layerPosition: vec2<f32>) -> vec4<f32> {
@@ -1023,6 +1047,13 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   if (!insideLayer) {
     return vec4<f32>(vec3<f32>(0.055), 1.0);
   }
+
+  let uv = clamp(
+    (layerPosition + vec2<f32>(0.5)) / display.layerSize,
+    vec2<f32>(0.0),
+    vec2<f32>(1.0)
+  );
+  paint = composeLayerStack(paint, uv);
 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
@@ -1586,6 +1617,8 @@ export class RasterStrokeRenderer {
     layout: GPUBindGroupLayout,
     sampler: GPUSampler,
     sourceMode: RasterStrokeSourceMode,
+    mergedBelowView: GPUTextureView,
+    mergedAboveView: GPUTextureView,
   ): GPUBindGroup {
     const mode = sourceModeCode(sourceMode);
     return this.device.createBindGroup({
@@ -1603,6 +1636,8 @@ export class RasterStrokeRenderer {
         { binding: 8, resource: this.bevelHeightView },
         { binding: 9, resource: this.bevelGlossView },
         { binding: 10, resource: { buffer: this.bevelUniformBuffer } },
+        { binding: 11, resource: mergedBelowView },
+        { binding: 12, resource: mergedAboveView },
       ],
     });
   }

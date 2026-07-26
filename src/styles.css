@@ -615,30 +615,66 @@ select {
   }
 }
 
-/* Elenco livelli: il livello attivo è quello che il pennello dipinge e a cui
-   appartiene il banco effetti, quindi la selezione va letta a colpo d'occhio. */
+/* Elenco livelli: selezione, visibilità e opacità sono proprietà distinte. */
 .layer-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
   margin: 0 0 8px;
 }
 
-.layer-list button {
+.layer-row {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) 76px;
+  align-items: center;
+  gap: 5px;
+}
+
+.layer-row button {
+  min-height: 34px;
+}
+
+.layer-visibility {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: #b8c8df;
+}
+
+.layer-visibility[aria-pressed="false"] {
+  color: #626a76;
+}
+
+.layer-select {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
+  min-width: 0;
   width: 100%;
   text-align: left;
 }
 
-.layer-list button[aria-current="true"] {
+.layer-select[aria-current="true"] {
   border-color: #6ea8fe;
   color: #eaf2ff;
 }
 
-.layer-list .layer-hint {
+.layer-hint {
   color: #8b929e;
   font-size: 0.72rem;
+}
+
+.layer-opacity {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1px;
+  color: #8b929e;
+  font-size: 0.68rem;
+  text-align: right;
+}
+
+.layer-opacity input {
+  width: 100%;
+  min-width: 0;
 }

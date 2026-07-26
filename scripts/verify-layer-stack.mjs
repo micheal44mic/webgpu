@@ -36,7 +36,6 @@ const newStack = () => new LayerStack(createStyles);
   assert.equal(stack.active.opacity, 1);
   assert.equal(stack.active.hasContent, false);
   assert.equal(stack.active.contentBounds, null);
-  assert.equal(stack.active.mipValidThroughLevel, 0);
   assert.deepEqual(stack.below(), []);
   assert.deepEqual(stack.above(), []);
 }
@@ -165,7 +164,8 @@ const newStack = () => new LayerStack(createStyles);
   assert.equal(stack.below().length + stack.above().length + 1, stack.count);
 }
 
-// The cap is enforced, because each layer costs 85,3 MiB eagerly.
+// The cap is enforced. Only the authoritative mip 0 scales per layer
+// (64 MiB RGBA8 / 128 MiB RGBA16F); display pyramids are shared.
 {
   const stack = newStack();
   while (stack.count < LAYER_STACK_MAXIMUM) {
@@ -285,63 +285,151 @@ assert.match(probeBody, /return this\.readTexturePixels\(target, rect, "livello"
 const textureProbeStart = engineSource.indexOf("private async readTexturePixels(");
 const textureProbeBody = engineSource.slice(textureProbeStart, textureProbeStart + 3_000);
 assert.match(textureProbeBody, /copyTextureToBuffer/);
-assert.match(textureProbeBody, /texture: target, mipLevel: 0/,
-  "la sonda deve leggere il mip 0 autorevole, non un livello derivato");
+assert.match(textureProbeBody, /\{ texture: target, mipLevel, origin:/,
+  "la sonda deve inoltrare esplicitamente il mip richiesto");
 assert.match(textureProbeBody, /Math\.ceil\(unpaddedBytesPerRow \/ 256\) \* 256/,
   "bytesPerRow deve restare allineato a 256");
 assert.match(textureProbeBody, /readbackBuffer\.destroy\(\)/, "la sonda non deve perdere il buffer");
 
-// Step 12: the outgoing styled result is a lazy full-resolution bake. It must
-// use the analytic golden compositor and replace the old texture only after a
-// complete allocation/submit transaction has succeeded.
-assert.match(engineSource, /LAYER_BAKE_STRATEGY =\s*\n\s*"lazy-per-layer-analytic-mip0-transactional-replacement"/);
-const bakeStart = engineSource.indexOf("private async bakeActiveLayerForSwitch(");
-const bakeEnd = engineSource.indexOf("/** Points the engine's active-layer fields", bakeStart);
-const bakeBody = engineSource.slice(bakeStart, bakeEnd);
-assert.match(bakeBody, /runGpuAllocationTransaction\(/,
-  "allocation, validation, submit e rollback del bake devono condividere una transazione");
-assert.match(bakeBody, /GPUTextureUsage\.STORAGE_BINDING/);
-assert.match(bakeBody, /GPUTextureUsage\.TEXTURE_BINDING/);
-assert.match(bakeBody, /GPUTextureUsage\.COPY_SRC/);
-assert.match(bakeBody, /renderer\.encodeBake\(/,
-  "il motore deve usare il compositore promosso dal golden");
-assert.match(bakeBody, /await this\.device\.queue\.onSubmittedWorkDone\(\);\s*this\.maybeInjectLayerBakeFault\("after-candidate-submit"\)/,
-  "il fault discriminante deve avvenire dopo un vero submit completato");
+// Steps 12–13: analytic bakes are transactional but transient. A successful
+// rebuild folds them into at most two persistent surfaces, then releases every
+// per-layer bake. Raw inactive layers own no mip chain.
+assert.match(engineSource, /LAYER_BAKE_STRATEGY =\s*\n\s*"transient-analytic-mip0-fused-into-two-merged-surfaces"/);
+assert.match(engineSource, /LAYER_COMPOSITE_STRATEGY =\s*\n\s*"merged-above-over-active-over-merged-below-source-over"/);
 assert.ok(
-  bakeBody.indexOf("gpu.bake = completed;")
-    > bakeBody.indexOf("await runGpuAllocationTransaction("),
-  "la cache candidata non deve essere pubblicata prima del commit GPU",
+  (engineSource.match(/layerBakeStrategy: LAYER_BAKE_STRATEGY/g) ?? []).length >= 2,
+  "stats e benchmark devono firmare la strategia dei bake",
 );
 assert.ok(
-  bakeBody.lastIndexOf("previous?.texture.destroy();")
-    > bakeBody.indexOf("gpu.bake = completed;"),
-  "il bake precedente va distrutto soltanto dopo lo swap riuscito",
+  (engineSource.match(/layerCompositeStrategy: LAYER_COMPOSITE_STRATEGY/g) ?? []).length >= 2,
+  "stats e benchmark devono firmare la strategia di compositing",
 );
-assert.match(engineSource, /async readLayerBakePixels\(/);
-assert.match(engineSource, /gpu\.bake \|\| !gpu\.bakeValid/);
-assert.match(engineSource, /layerBakeMiB/,
-  "la texture bake deve entrare nella contabilità GPU");
+const retargetStart = engineSource.indexOf("private async retargetEffectsWorkingSetInternal(");
+const retargetEnd = engineSource.indexOf("async benchmarkEffectsWorkingSet(", retargetStart);
+const retargetBody = engineSource.slice(retargetStart, retargetEnd);
+assert.match(retargetBody, /await this\.waitForGpuCapped\(`Retarget banco effetti #\$\{generation\}`\)/,
+  "i retarget riusati dalla fusione devono avere un timeout GPU");
+const bakeCandidateStart = engineSource.indexOf("private async createLayerBakeCandidate(");
+const bakeCandidateEnd = engineSource.indexOf("private async bakeActiveLayerForSwitch(", bakeCandidateStart);
+const bakeCandidateBody = engineSource.slice(bakeCandidateStart, bakeCandidateEnd);
+assert.match(bakeCandidateBody, /runGpuAllocationTransaction\(/,
+  "il bake deve restare dentro allocation, validation, submit e rollback atomici");
+assert.match(bakeCandidateBody, /GPUTextureUsage\.STORAGE_BINDING/);
+assert.match(bakeCandidateBody, /GPUTextureUsage\.TEXTURE_BINDING/);
+assert.match(bakeCandidateBody, /GPUTextureUsage\.COPY_SRC/);
+assert.match(bakeCandidateBody, /renderer\.encodeBake\(/,
+  "la fusione deve partire dal compositore analitico promosso dal golden");
+assert.match(bakeCandidateBody, /await this\.waitForGpuCapped\(`/,
+  "ogni nuovo submit atteso deve avere un timeout");
+assert.match(bakeCandidateBody, /this\.maybeInjectLayerBakeFault\("after-candidate-submit"\)/);
+assert.match(engineSource, /private readonly liveLayerBakeTextures = new Map<GPUTexture, number>\(\)/);
+assert.match(engineSource, /transaction\.deferRollback\(\(\) => this\.destroyLayerBakeTexture\(texture\)\)/,
+  "il fault post-submit deve rendere osservabile anche il rilascio del candidato");
 
-// Allocating a layer must not go through recreateLayerResources, whose tail
-// destroys the outgoing texture, the blend renderer and the effects workbench.
-// These two helpers are the seam that makes "give me a second layer" possible,
-// so keep them from being folded back in.
-assert.match(engineSource, /private allocateLayerTexture\(format: LayerFormat\): LayerTextureResources/);
+const mergedStart = engineSource.indexOf("private async buildMergedSurfaceCandidate(");
+const mergedEnd = engineSource.indexOf("private async restoreEffectsWorkbenchToActiveLayer(", mergedStart);
+const mergedBody = engineSource.slice(mergedStart, mergedEnd);
+assert.match(mergedBody, /record\.visible && record\.opacity > 0 && record\.hasContent/);
+assert.match(mergedBody, /await this\.materializeLayerCompositeSource\(record, caller\)/);
+assert.match(mergedBody, /if \(first && record\.opacity >= 1\)/,
+  "il primo livello opaco deve evitare il pass full-document");
+assert.match(mergedBody, /encoder\.copyTextureToTexture\(/,
+  "il percorso veloce deve conservare esattamente i texel sorgente");
+assert.match(mergedBody, /pass\.setScissorRect\(/,
+  "i fold renderizzati devono restare limitati ai bounds conservativi");
+assert.match(mergedBody, /new Float32Array\(\[record\.opacity, 0, 0, 0\]\)/);
+assert.match(mergedBody, /this\.layerCompositePipeline/);
+assert.match(mergedBody, /this\.destroyLayerBake\(source\.transientBake\)/);
 assert.match(
   engineSource,
-  /private createLayerBindGroups\(\s*format: LayerFormat,\s*samplingView: GPUTextureView,\s*mipViews: readonly GPUTextureView\[\],\s*\): LayerBindGroups/,
+  /private async rebuildMergedLayerSurfaces\(\s*caller: EffectsRetargetCaller = "layer-switch",\s*\): Promise<void>/,
 );
 assert.match(
   engineSource,
+  /private async materializeLayerCompositeSource\([\s\S]*?caller: EffectsRetargetCaller,[\s\S]*?retargetEffectsWorkingSetInternal\([\s\S]*?caller,/,
+  "la fusione deve conservare l'esenzione history-replay durante i retarget temporanei",
+);
+assert.match(
+  engineSource,
+  /buildMergedSurfaceCandidate\([\s\S]*?caller: EffectsRetargetCaller,[\s\S]*?materializeLayerCompositeSource\(record, caller\)/,
+);
+assert.match(
+  engineSource,
+  /private async activateLayer\([\s\S]*?caller: EffectsRetargetCaller = "layer-switch",[\s\S]*?rebuildMergedLayerSurfaces\(caller\)/,
+  "Undo/Redo cross-layer deve propagare il caller anche al compositing dei livelli",
+);
+assert.match(engineSource, /this\.maybeInjectLayerCompositeFault\("after-candidate-submit"\)/);
+assert.match(engineSource, /let activeWorkbenchRestored = false;/);
+assert.match(engineSource, /if \(!activeWorkbenchRestored\) \{[\s\S]*?restoreEffectsWorkbenchToActiveLayer\(caller, true\)/,
+  "un errore durante la fusione deve forzare il retarget inverso del banco");
+assert.match(engineSource, /Stato incoerente dopo il compositing: ricarica prima di continuare/);
+assert.match(engineSource, /private latchDocumentStateInconsistent\(message: string\): void/);
+assert.match(engineSource, /this\.historyStateInconsistent = true;[\s\S]*?this\.historyBusy = true;/,
+  "il latch documentale deve bloccare ogni mutazione successiva");
+assert.match(engineSource, /this\.releaseFusedLayerBakes\(\)/);
+assert.match(engineSource, /private readonly liveMergedSurfaceTextures = new Set<GPUTexture>\(\)/);
+assert.match(engineSource, /layerCompositeMiB/,
+  "le superfici fuse e i bake transitori devono avere righe di memoria distinte");
+const compositePipelineStart = engineSource.indexOf("const layerCompositePipeline = this.device.createRenderPipeline(");
+const compositePipelineBody = engineSource.slice(compositePipelineStart, compositePipelineStart + 1_100);
+assert.match(
+  compositePipelineBody,
+  /srcFactor: "one", dstFactor: "one-minus-src-alpha"/,
+  "la fusione deve usare source-over premoltiplicato",
+);
+assert.match(mergedBody, /loadOp: first \? "clear" : "load"/,
+  "il primo livello pulisce la superficie, i successivi si fondono sul risultato");
+
+const allocationStart = engineSource.indexOf("private allocateLayerTexture(");
+const allocationEnd = engineSource.indexOf("private requireLayerGpu(", allocationStart);
+const allocationBody = engineSource.slice(allocationStart, allocationEnd);
+assert.match(allocationBody, /mipLevelCount: 1/,
+  "ogni layer inattivo deve possedere soltanto il mip 0 autorevole");
+assert.match(allocationBody, /private allocateActiveLayerDisplayPyramid\(/);
+assert.match(allocationBody, /mipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT - 1/);
+assert.match(allocationBody, /private allocateMergedSurface\(/);
+assert.match(allocationBody, /mipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT/);
+assert.match(allocationBody, /GPUTextureUsage\.COPY_DST/,
+  "la superficie fusa deve accettare il percorso veloce byte-esatto");
+assert.match(
+  allocationBody,
   /private async allocateLayerGpuResources\([\s\S]*?runGpuAllocationTransaction\(this\.device, label/,
-  "l'allocazione completa deve chiudere validation e OOM scope prima del commit",
+  "l'allocazione completa del mip 0 deve chiudere validation e OOM scope prima del commit",
 );
 assert.equal(
-  (engineSource.match(/label: `4096² paint layer \$\{format\}`/g) ?? []).length,
+  (engineSource.match(/label: `4096² authoritative paint layer \$\{format\}`/g) ?? []).length,
   1,
-  "la creazione della texture di livello deve esistere in un solo punto",
+  "la creazione della texture autorevole deve esistere in un solo punto",
 );
 
+// Every display path receives below/active/above before checkerboard and sRGB.
+assert.match(engineSource, /this\.displayUniformUpload\[9\] = this\.mergedBelow \? 1 : 0/);
+assert.match(engineSource, /this\.displayUniformUpload\[10\] = this\.mergedAbove \? 1 : 0/);
+assert.match(engineSource, /this\.displayUniformUpload\[11\] = this\.layerStack\.active\.visible/);
+const shaderSource = readFileSync(new URL("../src/shaders.ts", import.meta.url), "utf8");
+assert.match(shaderSource, /fn composeLayerStack\(activePaint: vec4<f32>, uv: vec2<f32>\)/);
+assert.match(shaderSource, /paint = sourceOver\(activePaint \* display\.activeLayerAlpha, paint\)/);
+assert.match(shaderSource, /textureSampleLevel\(mergedAboveTexture[\s\S]*?paint\s*\)/);
+assert.equal(
+  (shaderSource.match(/fn composeLayerStack\(activePaint: vec4<f32>, uv: vec2<f32>\)/g) ?? []).length,
+  3,
+  "display base, coda e Light Glaze devono comporre tutti la stessa terna",
+);
+assert.match(shaderSource, /composeLayerStack\(sampleActiveLayer\(uv\), uv\)/);
+assert.match(shaderSource, /paint = composeLayerStack\(paint, layerUv\);/);
+assert.match(shaderSource, /paint = composeLayerStack\(paint, uv\);/);
+const strokeRendererSource = readFileSync(
+  new URL("../src/stroke-renderer.ts", import.meta.url),
+  "utf8",
+);
+assert.match(strokeRendererSource, /paint = composeLayerStack\(paint, uv\);/);
+assert.match(strokeRendererSource, /@group\(1\) @binding\(11\) var mergedBelowTexture/);
+assert.match(strokeRendererSource, /@group\(1\) @binding\(12\) var mergedAboveTexture/);
+assert.ok(
+  shaderSource.indexOf("paint = composeLayerStack(paint, layerUv);")
+    < shaderSource.indexOf("let checkerCell", shaderSource.indexOf("paint = composeLayerStack(paint, layerUv);")),
+  "la coda spessore deve comporre i layer prima della scacchiera e della conversione sRGB",
+);
 // The effect styles must live on the layer record, not on the engine, or a
 // switch would show the outgoing layer's stroke and bevel on the incoming one.
 // Accessors keep all 68 existing call sites working while making the styles
@@ -373,6 +461,15 @@ const mainSource = readFileSync(
   new URL("../src/main.ts", import.meta.url),
   "utf8",
 );
+assert.equal(
+  (mainSource.match(/performanceTelemetryRevision: 45/g) ?? []).length,
+  2,
+  "tipo persistito e runtime devono avanzare insieme alla revisione 45",
+);
+assert.match(mainSource, /layerBakeStrategy: string;/);
+assert.match(mainSource, /layerCompositeStrategy: string;/);
+assert.match(mainSource, /async function changeLayerVisibility\(/);
+assert.match(mainSource, /async function changeLayerOpacity\(/);
 assert.match(mainSource, /function syncActiveLayerControls\(\): void \{/);
 const syncStart = mainSource.indexOf("function syncActiveLayerControls(");
 const syncBody = mainSource.slice(syncStart, syncStart + 600);
@@ -524,26 +621,36 @@ assert.ok(
   "ogni variante del primo submit Paint/Blend/clear deve raggiungere il fault point",
 );
 
-// The GPU regression is persistent, bilateral and destructive on a fresh page.
-// It forces a genuine cross-layer redo, fails after a real submit, fails in the
-// half-switch window, and verifies a fatal double-failure latch.
+// The GPU regression is persistent, destructive on a fresh page and capped.
+// History rollback and the absolute three-surface compositor references run in
+// the same `?layerHistoryTest=1` harness.
 const layerHistoryGpuTestSource = readFileSync(
   new URL("../src/layer-history-gpu-test.ts", import.meta.url),
   "utf8",
 );
+const layerCompositeGpuTestSource = readFileSync(
+  new URL("../src/layer-composite-gpu-test.ts", import.meta.url),
+  "utf8",
+);
 assert.match(mainSource, /pageSearchParams\.get\("layerHistoryTest"\) === "1"/);
 assert.match(mainSource, /await import\("\.\/layer-history-gpu-test"\)/);
-// A harness that hangs reads as "still running" rather than "broken", which is
-// worse than a failure: the run must be capped and say so.
 assert.match(mainSource, /runLayerHistoryGpuTest\(engine\)/);
 assert.match(
   mainSource,
   /const report = await Promise\.race\(\[\s*runLayerHistoryGpuTest\(engine\),/,
   "l'esecuzione dell'harness deve avere un tetto di tempo",
 );
-assert.match(mainSource, /Test cronologia livelli scaduto dopo 60 s/);
-assert.match(mainSource, /const failure = \{ version: 3, passed: false/);
-assert.match(layerHistoryGpuTestSource, /LAYER_HISTORY_GPU_TEST_VERSION = 3 as const/);
+assert.match(mainSource, /Test livelli scaduto dopo 180 s/);
+assert.match(mainSource, /180_000/);
+assert.match(mainSource, /window\.clearTimeout\(timeoutId\)/,
+  "il timer dell'harness deve essere disarmato dopo successo o errore");
+assert.match(mainSource, /layerHistoryTestRunning = timedOut/,
+  "dopo timeout la pagina deve restare bloccata perché Promise.race non cancella il test");
+assert.match(mainSource, /const failure = \{ version: 4, passed: false/);
+assert.match(layerHistoryGpuTestSource, /LAYER_HISTORY_GPU_TEST_VERSION = 4 as const/);
+assert.match(layerHistoryGpuTestSource, /measureActiveStyleBakeGap\(pRect\)/);
+assert.match(layerHistoryGpuTestSource, /engine\.injectLayerBakeFault\("after-candidate-submit"\)/);
+assert.match(layerHistoryGpuTestSource, /injectedBakeFailureReleasedCandidate/);
 assert.match(layerHistoryGpuTestSource, /readLayerPixels\(auditRect, 0\)/);
 assert.match(layerHistoryGpuTestSource, /readLayerPixels\(auditRect, 1\)/);
 assert.match(layerHistoryGpuTestSource, /const undoReturned = await engine\.undo\(\)/);
@@ -557,25 +664,27 @@ assert.match(layerHistoryGpuTestSource, /probeRollback\("after-first-replay-subm
 assert.match(layerHistoryGpuTestSource, /probeRollback\("during-switch-activation"\)/);
 assert.match(
   layerHistoryGpuTestSource,
-  /crossLayerRedoRestoredPByteExactly:[\s\S]*?countDifferingBytes\(layerAP, layerAAfterCrossLayerRedo\) === 0/,
-  "il redo cross-layer va confrontato byte-per-byte prima che un rollback successivo possa mascherarlo",
-);
-assert.match(layerHistoryGpuTestSource, /partialReplayRollbackPreservedUndo: partialReplayRollback\.canUndo/);
-assert.match(layerHistoryGpuTestSource, /switchActivationRollbackPreservedRedo: switchActivationRollback\.canRedo/);
-assert.match(
-  layerHistoryGpuTestSource,
   /probeRollback\(\s*"after-first-replay-submit",\s*"during-switch-activation",\s*\)/,
   "il test deve esercitare anche un errore durante il rollback",
 );
 assert.match(layerHistoryGpuTestSource, /fatalRollbackLatchedInconsistent: fatalRollback\.historyInconsistent/);
 assert.match(layerHistoryGpuTestSource, /fatalLatchRefusedAnotherUndo: !fatalFollowUpUndoReturned/);
-assert.match(layerHistoryGpuTestSource, /layerAAfterUndo: countDifferingBytes\(layerABaseline, layerAAfterUndo\)/);
-assert.match(layerHistoryGpuTestSource, /layerBRedoVersusBeforeUndo: countDifferingBytes\(layerBBeforeUndo, layerBAfterRedo\)/);
-assert.match(layerHistoryGpuTestSource, /engine\.injectLayerBakeFault\("after-candidate-submit"\)/);
-assert.match(layerHistoryGpuTestSource, /injectedBakeFailureKeptAuditedBakeBytes: bakeAfterInjectedFailure === 0/);
-assert.match(layerHistoryGpuTestSource, /successfulRetryAdvancedTheGeneration/);
-assert.match(layerHistoryGpuTestSource, /historyRoundTripRebakedTheSamePixels/);
+assert.match(layerHistoryGpuTestSource, /twoAndFiveLayerMipMemoryIsConstant/);
+assert.match(layerHistoryGpuTestSource, /twoAndFiveLayerCompositeMemoryIsConstant/);
 
+assert.match(layerCompositeGpuTestSource, /expectedPresentation\(/);
+assert.match(layerCompositeGpuTestSource, /sourceOver\(above, sourceOver\(active, below\)\)/,
+  "il riferimento indipendente deve fissare sopra over attivo over sotto");
+assert.match(layerCompositeGpuTestSource, /wrongSrgbSpacePresentation\(/,
+  "il riferimento deve discriminare la composizione eseguita nello spazio sbagliato");
+assert.match(layerCompositeGpuTestSource, /engine\.injectLayerCompositeFault\("after-candidate-submit"\)/);
+assert.match(layerCompositeGpuTestSource, /setLayerOpacity\(2, 0\.25\)/);
+assert.match(layerCompositeGpuTestSource, /setLayerVisibility\(2, false\)/);
+assert.match(layerCompositeGpuTestSource, /readMergedLayerPixels\(\s*"above",[\s\S]*?2,\s*false,/,
+  "il test zoom non deve riparare la piramide prima di leggerla");
+assert.match(layerCompositeGpuTestSource, /zoomMip2MatchesIndependentBoxFilter/);
+assert.match(layerCompositeGpuTestSource, /fiveLayerBakesWereReleased/);
+assert.match(layerCompositeGpuTestSource, /opaqueRawFastPathIsByteExact/);
 // The switch lock has to be held across the awaits, or a pointerdown landing
 // during the 150-215 ms rebuild starts a stroke on a half-swapped layer.
 assert.match(engineSource, /private layerSwitchBusy = false;/);
@@ -590,13 +699,13 @@ assert.match(mainSource, /return !engineInitialized\s*\|\| layerSwitching/,
 // The workbench is one retargetable instance, so a layer whose record says
 // Traccia OR Smusso is enabled can arrive after another layer released the
 // renderer. Without this the checkbox returns on and the effect stays absent.
-assert.match(engineSource, /private async ensureEffectRenderersForActiveLayer\(\): Promise<void>/);
+assert.match(engineSource, /private async ensureEffectRenderersForRecord\(record: LayerRecord\): Promise<void>/);
 assert.match(
   engineSource,
-  /await this\.ensureEffectRenderersForActiveLayer\(\);/,
+  /await this\.ensureEffectRenderersForRecord\(record\);/,
   "activateLayer deve garantire i renderer del livello entrante",
 );
-const ensureStart = engineSource.indexOf("private async ensureEffectRenderersForActiveLayer(");
+const ensureStart = engineSource.indexOf("private async ensureEffectRenderersForRecord(");
 const ensureBody = engineSource.slice(ensureStart, ensureStart + 1_400);
 assert.match(ensureBody, /layerEffectRendererRequirements\(/,
   "la decisione Smusso-only deve passare dall'invariante testato");
@@ -619,6 +728,8 @@ assert.ok(
 );
 assert.match(selectMethodBody, /this\.layerStack\.setActiveIndex\(fromIndex\);[\s\S]*?await this\.activateLayer\(index\);/,
   "il rollback dello switch deve ritargettare tutti i sottosistemi");
+assert.match(selectMethodBody, /Stato incoerente dopo il cambio livello:[\s\S]*?Ricarica la pagina/,
+  "un doppio fallimento dello switch deve alzare il latch fatale");
 const addMethodStart = engineSource.indexOf("async addLayer(");
 const addMethodBody = engineSource.slice(addMethodStart, addMethodStart + 2_800);
 assert.ok(
@@ -627,7 +738,11 @@ assert.ok(
   "addLayer deve congelare l'uscente prima di creare/selezionare il candidato",
 );
 assert.match(addMethodBody, /await this\.allocateLayerGpuResources\(/);
-assert.match(addMethodBody, /await this\.activateLayer\(index\);[\s\S]*?this\.layerGpu\.delete\(record\.id\);[\s\S]*?gpu\.texture\.destroy\(\)/,
+assert.match(addMethodBody, /Stato incoerente dopo la creazione del livello:[\s\S]*?Ricarica la pagina/,
+  "un doppio fallimento di addLayer deve alzare il latch fatale");
+assert.match(addMethodBody, /this\.layerStack\.setActiveIndex\(fromIndex\);[\s\S]*?this\.releaseFusedLayerBakes\(\);[\s\S]*?throw error;/,
+  "un OOM del nuovo mip 0 non deve lasciare residente il bake di hand-off");
+assert.match(addMethodBody, /await this\.activateLayer\(index\);[\s\S]*?this\.layerGpu\.delete\(record\.id\);[\s\S]*?this\.destroyLayerBake\(gpu\.bake\);[\s\S]*?gpu\.texture\.destroy\(\)/,
   "un livello fallito va distrutto solo dopo il ripristino completo");
 
 // Measurement setups reset the GLOBAL journal but clear only the active layer.

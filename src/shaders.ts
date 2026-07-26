@@ -608,6 +608,9 @@ struct DisplayUniforms {
   zoom: f32,
   checkerSize: f32,
   selectedMipLevel: f32,
+  hasMergedBelow: f32,
+  hasMergedAbove: f32,
+  activeLayerAlpha: f32,
 };
 
 struct VertexOutput {
@@ -615,8 +618,11 @@ struct VertexOutput {
 };
 
 @group(0) @binding(0) var<uniform> display: DisplayUniforms;
-@group(0) @binding(1) var layerTexture: texture_2d<f32>;
-@group(0) @binding(2) var layerSampler: sampler;
+@group(0) @binding(1) var activeLayerBase: texture_2d<f32>;
+@group(0) @binding(2) var activeLayerPyramid: texture_2d<f32>;
+@group(0) @binding(3) var mergedBelowTexture: texture_2d<f32>;
+@group(0) @binding(4) var mergedAboveTexture: texture_2d<f32>;
+@group(0) @binding(5) var layerSampler: sampler;
 
 fn srgbToLinearChannel(value: f32) -> f32 {
   if (value <= 0.04045) {
@@ -647,6 +653,37 @@ fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
     linearToSrgbChannel(value.g),
     linearToSrgbChannel(value.b)
   );
+}
+
+fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
+  return source + destination * (1.0 - source.a);
+}
+
+fn sampleActiveLayer(uv: vec2<f32>) -> vec4<f32> {
+  if (display.selectedMipLevel < 0.5) {
+    return textureSampleLevel(activeLayerBase, layerSampler, uv, 0.0);
+  }
+  return textureSampleLevel(
+    activeLayerPyramid,
+    layerSampler,
+    uv,
+    display.selectedMipLevel - 1.0
+  );
+}
+
+fn composeLayerStack(activePaint: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {
+  var paint = vec4<f32>(0.0);
+  if (display.hasMergedBelow > 0.5) {
+    paint = textureSampleLevel(mergedBelowTexture, layerSampler, uv, display.selectedMipLevel);
+  }
+  paint = sourceOver(activePaint * display.activeLayerAlpha, paint);
+  if (display.hasMergedAbove > 0.5) {
+    paint = sourceOver(
+      textureSampleLevel(mergedAboveTexture, layerSampler, uv, display.selectedMipLevel),
+      paint
+    );
+  }
+  return paint;
 }
 
 @vertex
@@ -675,7 +712,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   }
 
   let uv = clamp((layerPosition + vec2<f32>(0.5)) / display.layerSize, vec2<f32>(0.0), vec2<f32>(1.0));
-  let paint = textureSampleLevel(layerTexture, layerSampler, uv, display.selectedMipLevel);
+  let paint = composeLayerStack(sampleActiveLayer(uv), uv);
 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
@@ -698,6 +735,9 @@ struct DisplayUniforms {
   zoom: f32,
   checkerSize: f32,
   selectedMipLevel: f32,
+  hasMergedBelow: f32,
+  hasMergedAbove: f32,
+  activeLayerAlpha: f32,
 };
 
 struct ThicknessTailUniforms {
@@ -713,10 +753,13 @@ struct VertexOutput {
 };
 
 @group(0) @binding(0) var<uniform> display: DisplayUniforms;
-@group(0) @binding(1) var layerTexture: texture_2d<f32>;
+@group(0) @binding(1) var activeLayerBase: texture_2d<f32>;
 @group(0) @binding(2) var layerSampler: sampler;
 @group(0) @binding(3) var tailTexture: texture_2d<f32>;
 @group(0) @binding(4) var<uniform> tail: ThicknessTailUniforms;
+@group(0) @binding(5) var activeLayerPyramid: texture_2d<f32>;
+@group(0) @binding(6) var mergedBelowTexture: texture_2d<f32>;
+@group(0) @binding(7) var mergedAboveTexture: texture_2d<f32>;
 
 fn srgbToLinearChannel(value: f32) -> f32 {
   if (value <= 0.04045) {
@@ -747,6 +790,37 @@ fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
     linearToSrgbChannel(value.g),
     linearToSrgbChannel(value.b)
   );
+}
+
+fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
+  return source + destination * (1.0 - source.a);
+}
+
+fn samplePermanentLayer(uv: vec2<f32>) -> vec4<f32> {
+  if (display.selectedMipLevel < 0.5) {
+    return textureSampleLevel(activeLayerBase, layerSampler, uv, 0.0);
+  }
+  return textureSampleLevel(
+    activeLayerPyramid,
+    layerSampler,
+    uv,
+    display.selectedMipLevel - 1.0
+  );
+}
+
+fn composeLayerStack(activePaint: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {
+  var paint = vec4<f32>(0.0);
+  if (display.hasMergedBelow > 0.5) {
+    paint = textureSampleLevel(mergedBelowTexture, layerSampler, uv, display.selectedMipLevel);
+  }
+  paint = sourceOver(activePaint * display.activeLayerAlpha, paint);
+  if (display.hasMergedAbove > 0.5) {
+    paint = sourceOver(
+      textureSampleLevel(mergedAboveTexture, layerSampler, uv, display.selectedMipLevel),
+      paint
+    );
+  }
+  return paint;
 }
 
 @vertex
@@ -779,12 +853,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     vec2<f32>(0.0),
     vec2<f32>(1.0)
   );
-  let permanentPaint = textureSampleLevel(
-    layerTexture,
-    layerSampler,
-    layerUv,
-    display.selectedMipLevel
-  );
+  let permanentPaint = samplePermanentLayer(layerUv);
 
   var paint = permanentPaint;
   let tailPosition = layerPosition - tail.origin;
@@ -806,6 +875,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
       paint = transientPaint + permanentPaint * (1.0 - transientPaint.a);
     }
   }
+  paint = composeLayerStack(paint, layerUv);
 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
@@ -829,6 +899,9 @@ struct DisplayUniforms {
   zoom: f32,
   checkerSize: f32,
   selectedMipLevel: f32,
+  hasMergedBelow: f32,
+  hasMergedAbove: f32,
+  activeLayerAlpha: f32,
 };
 
 struct LightGlazeUniforms {
@@ -849,6 +922,8 @@ struct VertexOutput {
 @group(0) @binding(3) var layerSampler: sampler;
 @group(0) @binding(4) var<uniform> lightGlaze: LightGlazeUniforms;
 @group(0) @binding(5) var compositedMipTexture: texture_2d<f32>;
+@group(0) @binding(6) var mergedBelowTexture: texture_2d<f32>;
+@group(0) @binding(7) var mergedAboveTexture: texture_2d<f32>;
 
 fn srgbToLinearChannel(value: f32) -> f32 {
   if (value <= 0.04045) {
@@ -879,6 +954,25 @@ fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
     linearToSrgbChannel(value.g),
     linearToSrgbChannel(value.b)
   );
+}
+
+fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
+  return source + destination * (1.0 - source.a);
+}
+
+fn composeLayerStack(activePaint: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {
+  var paint = vec4<f32>(0.0);
+  if (display.hasMergedBelow > 0.5) {
+    paint = textureSampleLevel(mergedBelowTexture, layerSampler, uv, display.selectedMipLevel);
+  }
+  paint = sourceOver(activePaint * display.activeLayerAlpha, paint);
+  if (display.hasMergedAbove > 0.5) {
+    paint = sourceOver(
+      textureSampleLevel(mergedAboveTexture, layerSampler, uv, display.selectedMipLevel),
+      paint
+    );
+  }
+  return paint;
 }
 
 fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
@@ -988,6 +1082,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
       display.selectedMipLevel - 1.0
     );
   }
+  paint = composeLayerStack(paint, uv);
 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
@@ -1134,6 +1229,42 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
 }
 `;
 
+// Folds one premultiplied layer into a merged surface. The fixed-function
+// source-over blend owns the destination term, so the pass never samples and
+// renders the same texture subresource.
+export const layerCompositeShader = /* wgsl */ `
+struct LayerCompositeUniforms {
+  opacity: f32,
+  _pad0: f32,
+  _pad1: f32,
+  _pad2: f32,
+};
+
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+};
+
+@group(0) @binding(0) var sourceTexture: texture_2d<f32>;
+@group(0) @binding(1) var<uniform> layer: LayerCompositeUniforms;
+
+@vertex
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+  let positions = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>( 3.0, -1.0),
+    vec2<f32>(-1.0,  3.0)
+  );
+  var output: VertexOutput;
+  output.position = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
+  return output;
+}
+
+@fragment
+fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
+  return textureLoad(sourceTexture, vec2<i32>(fragmentPosition.xy), 0)
+    * clamp(layer.opacity, 0.0, 1.0);
+}
+`;
 // Downsample 2x2 in the paint layer's native linear, premultiplied RGBA
 // representation. Each destination pixel owns an exact, non-overlapping 2x2
 // source footprint, so dirty rectangles can be propagated with floor/ceil

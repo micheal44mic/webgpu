@@ -463,187 +463,194 @@ documento+apron (`64,06 MiB` fissi) a inviluppo tile-aligned dei job + apron.
 - Non verificato: una sola GPU desktop. Su mobile il frame di crescita va
   rimisurato prima di considerare il default ON.
 
-### Livelli multipli (Fase 2, in corso)
+### Livelli multipli (Fase 2, candidato commit 13 non pubblicato)
 
-Modello: `src/layer-stack.ts` (modulo puro, `npm run layers:verify`) tiene i
-record CPU — id monotoni mai riusati, bounds del contenuto, `hasContent`,
-validità piramide, **stili Traccia e Smusso per livello**. Le risorse GPU stanno
-in una mappa del motore chiavata sull'id. Cap `16` livelli: ogni livello alloca
-`85,3 MiB` eager (`64` mip 0 + `21,33` catena).
+Il modello CPU resta in `src/layer-stack.ts` (`npm run layers:verify`): record
+ordinati, id monotoni mai riusati, bounds/`hasContent`, visibilità, opacità e
+stili Traccia/Smusso per livello. La mappa GPU è chiavata sull'id stabile. Il cap
+resta `16`, ma dal candidato commit 13 il costo eager per livello è soltanto il
+mip `0` autorevole: `64 MiB` RGBA8 o `128 MiB` RGBA16F.
 
-- Gli stili sono accessori sul record attivo, non campi del motore: 60 letture e
-  8 scritture invariate. La UI li risincronizza a ogni switch, altrimenti
-  mostrerebbe gli effetti del livello uscente.
-- `addLayer` NON passa da `recreateLayerResources`, la cui coda distrugge
-  texture uscente, blend renderer e workbench. Le 21 pipeline dipendono solo dal
-  formato e vengono riusate.
-- Switch: persiste bounds/hasContent/validità sul record uscente, poi carica
-  l'entrante, `blendRenderer.retarget()`, teardown glaze/tail,
-  `retargetEffectsWorkingSet` con i bounds dell'entrante, validità piramide a 0.
-- `DryBlendRenderer.retarget()` invalida il carrier: contiene pigmento del
-  livello uscente, e senza invalidazione sanguinerebbe nel primo step sul nuovo.
+Architettura display candidata:
 
-Costi misurati (desktop Ampere, effetti attivi, flag bbox OFF):
+- strategia bake
+  `transient-analytic-mip0-fused-into-two-merged-surfaces`;
+- strategia compositing
+  `merged-above-over-active-over-merged-below-source-over`;
+- una sola piramide raw, riusata dal livello attivo (`21,33 MiB` RGBA8,
+  `42,67 MiB` RGBA16F);
+- al massimo due superfici fuse, `mergedBelow` e `mergedAbove`. Ciascuna ha mip
+  `0` più catena completa: `85,33 MiB` RGBA8 o `170,67 MiB` RGBA16F;
+- nessun livello inattivo possiede una piramide propria. I bake analitici mip `0`
+  vengono creati dentro la transazione, fusi in ordine bottom-up e distrutti
+  subito; `layerBakeMiB` deve quindi tornare a `0` a motore fermo;
+- `layerMipChainMiB` dipende dal numero di lati fusi presenti, non dal numero di
+  livelli: attivo in cima/fondo ⇒ due catene totali (attivo + un lato), attivo in
+  mezzo ⇒ tre (attivo + due lati). Anche `layerCompositeMiB` è `64 MiB` RGBA8 o
+  `128 MiB` RGBA16F per lato, non per livello.
 
-| Operazione | Costo |
+Il fold evita il pass full-document per il primo livello opaco: copia
+byte-esattamente la sorgente nella superficie nuova e limita la copia ai
+`contentBounds` conservativi quando la sorgente è raw. I bake analitici restano
+full-document finché non esiste un helper dimostrato per tutti gli aloni degli
+effetti. Gli altri fold source-over usano lo stesso rettangolo come scissor.
+
+Il display esegue in lineare premoltiplicato
+`mergedAbove over (active * activeLayerAlpha over mergedBelow)`, poi scacchiera e
+conversione lineare→sRGB. Lo stesso ordine è cablato nei quattro percorsi:
+permanente, Light/M1 Glaze live, coda spessore e display diretto
+Traccia/Smusso. Visibilità e opacità dell'attivo passano nei tre slot prima
+liberi della uniform da `48 byte`; cambiarle su un inattivo ricostruisce la
+superficie fusa interessata, mentre sull'attivo basta invalidare la cache di
+presentazione.
+
+La fusione è transazionale: costruisce entrambe le superfici candidate fuori
+schermo, ripristina il banco effetti sul record attivo, pubblica la coppia in un
+solo punto e soltanto dopo distrugge la coppia precedente. Un errore/OOM o il
+fault dev `injectLayerCompositeFault("after-candidate-submit")` distrugge i
+candidati e lascia pubblicati i byte vecchi. Le attese GPU nuove e il retarget
+usato dalla fusione hanno un tetto esplicito. Anche un OOM del mip `0` durante
+`addLayer` libera il bake di hand-off dell'uscente: nessun fallimento deve
+lasciare memoria bake residente. Se anche il retarget inverso fallisce, il
+documento alza il latch fatale e richiede reload: non consente di continuare
+con un banco effetti dalla sorgente non dimostrata.
+
+Il `caller` del retarget è un'invariante transazionale: `history-replay` deve
+propagarsi da `activateLayer` a `rebuildMergedLayerSurfaces`, ai due builder e
+fino a ogni materializzazione/retarget temporaneo, incluso il ripristino. In
+Undo/Redo `historyBusy` è già alto; degradare uno di questi passaggi al default
+`layer-switch` rifiuta il retarget e rompe soltanto i replay cross-layer con un
+inattivo stilizzato. `layers:verify` vincola l'intera catena.
+
+Gli stili restano accessori del record attivo. Lo switch persiste stato e bake
+dell'uscente, carica texture e metadati dell'entrante, ritargetta Blend e banco
+effetti, ricostruisce le due superfici fuse e invalida la cache. Smusso-only
+richiede comunque `RasterStrokeRenderer`, che è il compositore comune. La UI
+risincronizza Traccia/Smusso a ogni cambio e ora espone selezione, visibilità e
+opacità separatamente.
+
+Costi storici pre-compositing misurati su desktop Ampere, effetti attivi e flag
+bbox OFF (non riutilizzarli come risultato del candidato):
+
+| Operazione | Prima del commit 13 |
 |---|---:|
-| `addLayer` (livello vuoto) | `8,3 – 9 ms` |
-| Switch a livello con contenuto ed effetti | `151 – 215 ms` |
-| Switch a livello con effetti spenti | `3,6 – 4 ms` |
+| `addLayer` vuoto | `8,3 – 9 ms` |
+| switch con contenuto ed effetti | `151 – 215 ms` |
+| switch con effetti spenti | `3,6 – 4 ms` |
 
-Il termine dominante è il rebuild full-document dei campi, lo stesso che il flag
-bbox dimezza.
+Il candidato firma in telemetria rev `45` `layerCount`, `activeLayerId`,
+`layerBakeStrategy` e `layerCompositeStrategy`; `layerMemoryMiB` continua a
+contare soltanto i mip `0` raw e scala con i livelli. Le righe HUD distinte sono
+mip attivo+fusi, bake transitori e mip `0` fusi. Run con revisione/strategie
+diverse non sono aggregabili.
 
-**Stato del display: mostra ancora solo il livello attivo.** Lasciando un livello
-stilizzato, il motore materializza ora il suo bake analitico, ma il display non lo
-campiona ancora: il contenuto uscente sparisce quindi dalla vista finché non viene
-selezionato di nuovo. Il compositing dei bake è il passo successivo.
+#### Harness permanente candidato (rev 4)
 
-Test bilaterale su GPU (l'unica forma non tautologica: lo schermo mostra un
-composito e un submit scartato lascia l'immagine precedente): P sul livello 0,
-`addLayer`, Q sul livello 1, rilettura di **entrambe** le texture →
-`layer0 {P:1024, Q:0}`, `layer1 {P:0, Q:1024}`. Mutazione
-`bindActiveLayerResources` no-op → `layer0 {P:1024, Q:1024}`, `layer1` vuoto.
+`/?layerHistoryTest=1` resta distruttivo e richiede una pagina dev nuova. Oltre
+alla cronologia bilaterale e ai rollback cross-layer già esistenti, la rev `4`:
 
-La regressione della cronologia ha inoltre un harness GPU persistente e
-distruttivo solo sulla pagina dev nuova: avviare Vite e aprire
-`/?layerHistoryTest=1`. La revisione `3` dipinge P sul livello A e Q sul B,
-esegue Undo/Redo sia same-layer sia **davvero cross-layer** (prima del Redo
-seleziona deliberatamente B mentre l'azione appartiene ad A), legge entrambe le
-texture per nome, verifica che il banco effetti segua il record attivo e copre
-anche allocazione, invalidazione, sostituzione e rollback del bake. Il report
-JSON resta nel pannello Benchmark e in `window.__layerHistoryGpuTestReport`.
-Non sostituisce il golden Traccia/Smusso: verifica destinazione, transazione e
-isolamento dei livelli; l'identità del bake ha una diagnostica Golden dedicata.
+- misura lo scarto tra display live `fwidth` e bake analitico sullo stesso rect,
+  riportando pixel/byte differenti, delta massimo per canale e primo byte;
+- verifica tre texel assoluti (solo sotto, sovrapposizione, solo sopra) più la
+  sola scacchiera contro un riferimento CPU source-over indipendente;
+- prova che il riferimento sRGB errato sia discriminante;
+- legge separatamente `mergedBelow` e `mergedAbove`;
+- confronta byte-per-byte il fast path opaco raw con il mip `0` autorevole,
+  compresi i texel trasparenti fuori dal tratto;
+- forza il rollback post-submit del compositing e controlla bytes, record,
+  working set e memoria;
+- cambia opacità e visibilità di un inattivo e verifica l'invalidazione;
+- porta la camera a mip logico `2`, legge il mip senza completarlo dalla sonda e
+  lo confronta con due box filter CPU `2×2`;
+- costruisce cinque livelli con effetti, controlla bake rilasciati e memoria
+  `1/2/5`, misura switch a due livelli e stress a cinque;
+- ha un tetto esterno di `180 s`; ogni nuovo submit atteso ha anche un timeout
+  interno, così un blocco diventa un errore esplicito.
 
-Run locale del 25 luglio 2026: `73/73`, `passed: true`, zero warning/errori.
-P e Q hanno entrambi `6488` pixel con alpha; Q passa a `0` dopo Undo e torna a
-`6488` dopo Redo. A resta byte-identico dopo pittura su B, Undo e Redo; B è
-byte-identico tra pre-Undo e post-Redo. Undo e Redo cross-layer cambiano davvero
-livello attivo e lasciano `EffectsWorkbench.sourceView` sulla view del record
-attivo.
+#### Decisione visiva provvisoria dell'utente — 26 luglio 2026
 
-Mutation test dello stesso harness: rimossi temporaneamente **entrambi** i
-filtri di `selectLayerReplay`, dopo Undo P compare su B con `6488` pixel alpha e
-il Redo differisce dal pre-Undo di `25880` byte; `passed` diventa correttamente
-`false`. Ripristinati i filtri, la ripetizione torna `passed: true` e tutti i
-delta byte tornano a `0`. Le due mutazioni singole nel test puro falliscono
-separatamente (`92` e `41` nel buffer avversario), quindi anche ciascun filtro
-isolato ha una prova che lo rende portante.
+Il livello attivo usa il contorno live basato su `fwidth`; quando diventa
+inattivo viene materializzato dal compositore analitico. La misura browser del
+26 luglio 2026 confronta `22.528` pixel / `90.112` byte: `5.370` pixel e
+`11.061` byte differiscono, delta massimo RGBA `[8, 68, 68, 0]`; il primo
+scarto è a `(501, 479)`, canale verde, live `208` contro bake `209`.
 
-#### Gate temporanei attivi con più di un livello
+Scelta esplicita dell'utente, **per ora**: conservare `fwidth` per il livello
+attivo, accettare lo scarto misurato al cambio fuoco e mantenere
+`layerBakeMiB = 0` a regime. È una decisione reversibile, non una promozione
+pixel-identica: si potrà tornare a mostrare anche l'attivo dal bake analitico,
+ma quel cambiamento richiederà una nuova decisione, circa `64 MiB` RGBA8
+residenti in più e una nuova verifica Golden. Non riaprire o cambiare questa
+scelta automaticamente.
 
-Il bug di **perdita di lavoro** trovato in revisione è corretto da `efabc58`: il
-replay del livello attivo seleziona sia i batch sia gli id visibili per quel
-livello. Prima, annullare Q su B ridisegnava P di A sopra B
-(`{P:0,Q:1024}` → `{P:1024,Q:0}`). I due filtri sono centralizzati in
-`selectLayerReplay`, usato dal motore e testato con metadati avversari: ciascun
-filtro ha una mutazione che fallisce da solo, quindi la difesa ridondante non può
-essere cancellata come apparentemente inutile.
+#### Gate prima di pubblicare il commit 13
 
-La parte cronologia dell'harness rev `3` inietta inoltre guasti in due punti
-discriminanti:
-`after-first-replay-submit` (dopo un vero clear/draw GPU) e
-`during-switch-activation` (engine e Blend già ritargettati, workbench non
-ancora). I due rollback recuperabili ripristinano cursore, livello, banco e
-entrambe le texture con delta byte `0`. Un doppio guasto durante il rollback
-alza invece `HistoryState.inconsistent`, mantiene `historyBusy=true`, disabilita
-Undo/Redo e rifiuta una chiamata API successiva: soltanto il reload può
-sbloccare un documento la cui coerenza non è dimostrabile.
+Verifiche locali finali del candidato eseguite il 26 luglio 2026: tutte le otto verify
+(`stroke`, `grain`, `blend`, `thickness`, `history`, `layers`,
+`effects-scratch`, `bevel`), `tsc --noEmit` e `git diff --check` sono verdi.
 
-Mutation test rev `3`, tutti ripristinati: saltare il restore del target lascia A
-diverso per `25880` byte; saltare l'attivazione inversa lascia il livello attivo
-non ripristinato e manda rosso il probe half-switch; rilasciare il latch dopo il
-doppio guasto lascia `canUndo/canRedo=true` e il successivo Undo parte davvero.
+Verifiche browser e build eseguite il 26 luglio 2026:
+
+- Golden mip `0`
+  `8d5a75a6abb9f47cdf4a794d560b5795aa4b4c85520db2dd1466833157f6dcb0` e mip
+  combinato `9208e2a30e5ece12dc92f31e74f6113ffd89af60672492cf534f1b5e08208196`
+  invariati. `baselineMatches` resta volutamente falso per gli stessi 25 mismatch
+  mip; restano rossi soltanto i tre diagnostici source-mode già aperti, delta
+  massimo `1`;
+- harness rev `4`: `105/105` controlli verdi entro il tetto. Il fast path raw
+  confronta `3.076` byte con zero differenze. La mutazione della destinazione di
+  copia di `+1 px` produce un solo rosso e `24` byte diversi, poi è stata
+  ripristinata;
+- memoria RGBA8: 1 livello `218,195 MiB` totali (`64` raw, `21,333` mip,
+  bake/fuso `0`); 2 livelli `367,528 MiB` (`128` raw, `42,667` mip, bake `0`,
+  fuso `64`); 5 livelli `489,887 MiB` (`320` raw, `42,667` mip, bake `0`,
+  fuso `64`);
+- prima dell'ottimizzazione il nuovo compositing misurava `238/27 ms` a due
+  livelli. Il fold opaco con copia esatta e scissor misura `100,7/12,7 ms`,
+  quindi resta sotto il tetto storico `215 ms` senza alzarlo. Lo stress a cinque
+  livelli misura `376,7/368,1 ms`, coerente con la run precedente `371–404 ms`;
+  una prima ripetizione contesa aveva prodotto `1176,6/1077,2 ms` e va conservata
+  come outlier, non aggregata. La run pulita finale pre-commit, dopo tutte le
+  mutazioni ripristinate, misura `85,7/10,2 ms` a due livelli e
+  `356,1/359,9 ms` a cinque;
+- build Vite finale in directory temporanea verde (`447 ms`; prima run `486 ms`), senza toccare `dist/`.
+
+Mutation gate GPU completato il 26 luglio 2026; ogni mutazione è stata
+ripristinata e la run successiva è tornata `105/105`:
+
+| Mutazione | Rosso discriminante |
+|---|---|
+| ordine attivo/sotto invertito | sola sovrapposizione, delta massimo `22` |
+| source-over dopo conversione sRGB | riferimenti assoluti e sovrapposizione, delta `30` |
+| `hasMergedAbove = 0` | lato sopra assente, delta `81`, zoom sulla scacchiera |
+| niente rebuild per opacità/visibilità inattiva | i due controlli di invalidazione, delta `57/81` |
+| niente piramide mip del lato sopra | mip `2` nullo contro `[6,34,154,178]`, delta `178` |
+| destinazione fast-copy spostata di `+1 px` | `24` byte diversi su `3.076` |
+
+Il rollback post-submit è esercitato separatamente dall'iniezione di guasto
+permanente. Nessun residuo delle mutazioni è presente nel sorgente. La scelta
+percettiva `fwidth`/analitico è stata presa provvisoriamente dall'utente come
+documentato sopra.
+
+`dist/` era già sporca prima del candidato e non fa parte del lavoro: non
+ripulirla, rigenerarla o includerla nel commit. Il Golden del passo 12 resta la
+baseline storica misurata; non vale come esecuzione del commit 13.
+
+#### Gate document-wide e cronologia da preservare
 
 | Operazione | Stato con `layerCount > 1` | Si sblocca con |
 |---|---|---|
-| Undo / Redo | globali: un passo su un altro livello vivo lo seleziona e lo ricostruisce; è rifiutato solo se il livello proprietario non esiste più | già implementato; il livello eliminato resta non riproducibile |
+| Undo / Redo | globali: un passo su un altro livello vivo lo seleziona e lo ricostruisce; rifiuto solo se il proprietario non esiste più | già implementato |
 | `resetDocument()` | rifiutato | reset davvero document-wide |
-| `runBenchmark()` | rifiutato | idem, più parità di baseline |
-| `setLayerFormat()` | **consentito** | già ricrea tutti i livelli |
+| `runBenchmark()` | rifiutato | reset document-wide + parità baseline |
+| `setLayerFormat()` | consentito | ricrea transazionalmente tutti i livelli |
 
-#### Bake stilizzato per livello (passo 12)
-
-Strategia `lazy-per-layer-analytic-mip0-transactional-replacement`: soltanto un
-livello con contenuto e Traccia o Smusso attivi riceve una texture bake mip `0`.
-Il costo logico è `64 MiB` in RGBA8 o `128 MiB` in RGBA16F per bake allocato,
-riportato separatamente come `layerBakeMiB`; livelli vuoti o senza effetti non
-la allocano. Ogni mutazione dei pixel o dello stile invalida la cache, mentre uno
-switch senza modifiche riusa il bake valido e non ridispatcha `4096²`.
-
-Il compositore è lo stesso shader analitico già usato dal Golden, promosso a
-pipeline runtime tramite `RasterStrokeRenderer.encodeBake()`. Lo switch alloca
-una texture candidata sotto scope WebGPU `validation` + `out-of-memory`, codifica,
-fa submit, attende `onSubmittedWorkDone()` e soltanto allora pubblica la candidata
-e distrugge il bake precedente. Un guasto dev iniettato dopo il submit lascia
-indice attivo, generazione, validità e finestra di audit del vecchio bake
-invariati; il retry avanza la generazione e produce gli stessi byte.
-
-Prova GPU rev `3`: il bake iniziale differisce dal layer sorgente per `21072`
-byte nella finestra discriminante, quindi non è una copia tautologica; guasto,
-retry e giro Undo/Redo hanno delta `0`. Mutation test ripristinati: omettere il
-bake prima dello switch fa fallire l'harness; distruggere il precedente prima
-del commit produce `45072` byte diversi nella finestra di audit; omettere il
-dispatch fa fallire la diagnostica Golden con `113634` byte diversi.
-
-Golden GPU del passo 12: combinato mip `0` canonico invariato
-`8d5a75a6…`; il bake esterno e il riferimento interno coincidono con hash
-`f1c1629a…`, zero byte diversi e delta massimo `0`. Restano intenzionalmente
-invariati il combinato mip noto `9208e2a3…`, i 25 mismatch mip preesistenti e i
-tre diagnostici source-mode già rossi: non dichiarare il Golden complessivo
-verde. La matrice bbox Smusso resta `24/24`.
-
-Altri invarianti da non perdere:
-
-- Undo/Redo cross-layer è una sola transazione: `switched` viene derivato **prima**
-  dell'`await activateLayer`; su errore il cursore torna al valore precedente, il
-  target eventualmente già pulito viene ricostruito sotto quel cursore mentre è
-  ancora attivo, e soltanto dopo si esegue `activateLayer()` completo in senso
-  inverso. Ripristinare prima l'indice/livello ricostruirebbe la texture sbagliata.
-- Un errore del rollback non è un normale errore operativo. Il latch
-  `historyStateInconsistent` resta osservabile nello stato pubblico e tiene alto
-  `historyBusy`; anche `setBrushSettings` rifiuta, perché un cambio impostazioni
-  potrebbe riattivare allocazioni/render su un banco mezzo ritargettato.
-- `layerSwitchBusy` è tenuto per **tutta** la durata dello switch, `await`
-  inclusi. Oltre a tratti, `clear`, undo e altri switch, blocca anche modifiche
-  brush/Traccia/Smusso, cambio formato, benchmark e il retarget pubblico del
-  banco; solo il retarget interno chiamato da `activateLayer()` riceve un bypass
-  esplicito. Le guardie in testa ai metodi dimostrano solo che il motore era fermo
-  *quando sono girate*; il rebuild dura 150–410 ms. Lato UI il flag entra in
-  `operationLocked()`.
-- `activateLayer()` chiama `ensureEffectRenderersForActiveLayer()`. Invariante:
-  **Smusso attivo richiede anche `RasterStrokeRenderer`**, perché è quel renderer
-  a comporre lo Smusso anche con Traccia disattivata. Verifica GPU del 25 luglio:
-  Smusso-only sul livello 1 → rilascio reale di entrambi i renderer sul livello 2
-  → ritorno al livello 1; ricompaiono style stack `21,3 MiB`, coverage `16 MiB`,
-  scratch `16 MiB` e heightfield `64,1 MiB`. Il test puro
-  `layers:verify` fallisce mutando via il requisito Smusso-only. Il resize dello
-  scratch segue sempre la width memorizzata sul livello entrante.
-- Se `activateLayer()` fallisce, cambiare indietro il solo indice o ribindare la
-  sola texture **non è rollback**: Blend, campi live e banco effetti possono già
-  puntare all'entrante. `setActiveLayer()` esegue quindi `activateLayer()` in senso
-  inverso; `addLayer()` distrugge texture e record candidati solo dopo lo stesso
-  ripristino completo. Se anche il ripristino fallisce, le risorse candidate
-  restano vive: mai distruggere una texture che un renderer potrebbe ancora usare.
-- Il cambio formato è una transazione WebGPU: pipeline, tutte le texture e il
-  nuovo Blend sono candidate validate prima dello swap. Ogni allocazione chiude
-  scope `validation` **e** `out-of-memory`, perché `createTexture()` può restituire
-  un oggetto invalido e segnalare l'OOM solo a `popErrorScope()`; il `catch` JS da
-  solo non basta. Un fallimento distrugge tutti i candidati, incluso quello del
-  livello attivo, e lascia texture/Blend/workbench vecchi intatti. Prova Node con
-  OOM asincrono simulato inclusa in `layers:verify`; nessun OOM GPU reale forzato.
-- Telemetria `44` firma `layerCount` e `activeLayerId`, e `layerMemoryMiB` è
-  moltiplicato per i livelli allocati; anche il tipo persistito `BenchmarkRun`
-  dichiara entrambi i campi, così la firma non può sparire silenziosamente.
-
-Da fare: compositing merged-below/above dei bake e riduzione del costo di switch.
-Il replay scrive deliberatamente solo sul livello attivo; Undo/Redo cross-layer
-seleziona il proprietario dentro la transazione e ripristina target + switch in
-ordine inverso in caso di errore. Scelta visiva ancora aperta per il passo 13:
-il bake usa il contorno analitico, mentre il display attivo usa `fwidth`; il
-Golden prova l'identità del percorso analitico ma non decide se il display debba
-adottarlo. Serve prova percettiva prima di eliminare uno dei due comportamenti.
+Undo/Redo cross-layer resta una singola transazione. Su errore ripristina prima
+cursore e target ancora attivo, poi esegue l'attivazione inversa completa;
+fallire anche il rollback alza il latch fatale `historyStateInconsistent`, tiene
+`historyBusy` alto e richiede reload. `layerSwitchBusy` copre tutta la durata
+degli `await`: nessun tratto o cambio impostazioni può entrare in uno switch a
+metà. Non sostituire questi rollback con il solo cambio indice o bind texture.
 
 Blend (tool separato, vedi sezione dedicata più sotto).
 
@@ -709,7 +716,9 @@ port sperimentale Smusso/Rilievo Heightfield V2, contabilità memoria dedicata,
 invalidazioni geometry/hot e compositore comune Smusso→Traccia · `41` banco
 effetti unico retargetable, diagnostica same-view e benchmark
 retarget-vs-recreate · `42` pool scratch effetti fisico unico, extent/byte correnti,
-picco storico, shrink idle e firma dei layout aliasati.
+picco storico, shrink idle e firma dei layout aliasati · `43` campo Smusso bbox e
+relative allocazioni · `44` conteggio/id dei livelli e memoria raw moltiplicata ·
+`45` strategie bake/compositing a tre superfici e contabilità mip/fusione.
 
 ## Strumento Blend dry (WebGPU)
 

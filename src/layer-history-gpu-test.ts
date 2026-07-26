@@ -3,21 +3,42 @@ import type {
   HistoryReplayFaultPoint,
   HistoryState,
 } from "./brush-engine";
+import {
+  runLayerCompositeGpuTest,
+  type LayerCompositeGpuTestReport,
+  type LayerMemorySnapshot,
+} from "./layer-composite-gpu-test";
 
-export const LAYER_HISTORY_GPU_TEST_VERSION = 3 as const;
-
-interface LayerBakeState {
-  allocated: boolean;
-  valid: boolean;
-  generation: number;
-  memoryMiB: number;
-}
+export const LAYER_HISTORY_GPU_TEST_VERSION = 4 as const;
 
 interface PixelRect {
   x: number;
   y: number;
   width: number;
   height: number;
+}
+
+interface RollbackProbe {
+  threw: boolean;
+  cursorRestored: boolean;
+  activeLayerRestored: boolean;
+  workingSetMatchesActiveLayer: boolean;
+  historyBusy: boolean;
+  historyInconsistent: boolean;
+  canUndo: boolean;
+  canRedo: boolean;
+  layerDifferingBytes: number[];
+}
+
+interface BakeRollbackProbe {
+  threw: boolean;
+  layerCountRestored: boolean;
+  activeLayerRestored: boolean;
+  workingSetMatchesActiveLayer: boolean;
+  rawLayerDifferingBytes: number;
+  bakeAllocatedAfterFailure: boolean;
+  bakeMemoryBeforeMiB: number;
+  bakeMemoryAfterMiB: number;
 }
 
 export interface LayerHistoryGpuTestReport {
@@ -38,18 +59,21 @@ export interface LayerHistoryGpuTestReport {
     layerAAfterUndo: number;
     layerAAfterRedo: number;
     layerBRedoVersusBeforeUndo: number;
-    initialBakeVersusRawLayerA: number;
-    bakeAfterInjectedFailure: number;
-    bakeAfterSuccessfulReplacement: number;
-    bakeAfterHistoryRoundTrip: number;
+    fusedStyledLayerVersusRawLayerA: number;
   };
-  bake: {
-    initial: LayerBakeState;
-    beforeInjectedFailure: LayerBakeState;
-    afterInjectedFailure: LayerBakeState;
-    afterSuccessfulReplacement: LayerBakeState;
-    afterHistoryRoundTrip: LayerBakeState;
-    finalMemoryMiB: number;
+  fwidthBakeGap: Awaited<ReturnType<BrushEngine["measureActiveStyleBakeGap"]>>;
+  bakeRollback: BakeRollbackProbe;
+  compositing: LayerCompositeGpuTestReport;
+  memory: {
+    oneLayer: LayerMemorySnapshot;
+    twoLayers: LayerMemorySnapshot;
+    fiveLayers: LayerMemorySnapshot;
+  };
+  switchCost: {
+    documentedBeforeMs: readonly [151, 215];
+    twoLayerAfterMs: readonly [number, number];
+    fiveLayerStressMs: readonly [number, number];
+    withinDocumentedCeiling: boolean;
   };
   history: {
     beforeUndo: HistoryState;
@@ -69,30 +93,15 @@ export interface LayerHistoryGpuTestReport {
     redoReturned: boolean;
     fatalPreparationUndoReturned: boolean;
     fatalFollowUpUndoReturned: boolean;
-    strokeStyleEnabled: boolean;
+    bevelStyleEnabled: boolean;
     bakeFailureWasReported: boolean;
   };
-}
-
-interface RollbackProbe {
-  threw: boolean;
-  cursorRestored: boolean;
-  activeLayerRestored: boolean;
-  workingSetMatchesActiveLayer: boolean;
-  historyBusy: boolean;
-  historyInconsistent: boolean;
-  canUndo: boolean;
-  canRedo: boolean;
-  layerADifferingBytes: number;
-  layerBDifferingBytes: number;
 }
 
 function countNonZeroAlpha(pixels: Uint8Array): number {
   let count = 0;
   for (let index = 3; index < pixels.length; index += 4) {
-    if (pixels[index] !== 0) {
-      count += 1;
-    }
+    count += Number(pixels[index] !== 0);
   }
   return count;
 }
@@ -103,17 +112,27 @@ function countDifferingBytes(left: Uint8Array, right: Uint8Array): number {
   }
   let count = 0;
   for (let index = 0; index < left.length; index += 1) {
-    if (left[index] !== right[index]) {
-      count += 1;
-    }
+    count += Number(left[index] !== right[index]);
   }
   return count;
 }
 
+function snapshotMemory(engine: BrushEngine): LayerMemorySnapshot {
+  const stats = engine.getStats();
+  return {
+    layerCount: stats.layerCount,
+    layerBaseMiB: stats.gpuMemory.layerBaseMiB,
+    layerMipChainMiB: stats.gpuMemory.layerMipChainMiB,
+    layerBakeMiB: stats.gpuMemory.layerBakeMiB,
+    layerCompositeMiB: stats.gpuMemory.layerCompositeMiB,
+    countedTotalMiB: stats.gpuMemory.countedTotalMiB,
+  };
+}
+
 /**
  * Destructive diagnostic for a fresh dev page (`?layerHistoryTest=1`). It uses
- * two real RGBA8 layer textures and named-layer readback, so the untouched layer
- * is verified byte-for-byte rather than inferred from the active composite.
+ * named RGBA8 layer readback, absolute compositor references and explicit fault
+ * injection. The outer caller adds a wall-clock timeout as a final fail-safe.
  */
 export async function runLayerHistoryGpuTest(
   engine: BrushEngine,
@@ -129,13 +148,15 @@ export async function runLayerHistoryGpuTest(
     || initialHistory.cursor !== 0
   ) {
     throw new Error(
-      "Il test GPU della cronologia richiede una pagina dev nuova, RGBA8, con un solo livello vuoto.",
+      "Il test GPU richiede una pagina dev nuova, RGBA8, con un solo livello vuoto.",
     );
   }
 
   const pRect: PixelRect = { x: 448, y: 448, width: 176, height: 128 };
   const qRect: PixelRect = { x: 960, y: 448, width: 176, height: 128 };
   const auditRect: PixelRect = { x: 448, y: 448, width: 688, height: 128 };
+  const compositeAuditRect: PixelRect = { x: 1280, y: 960, width: 1160, height: 128 };
+  const rollbackAuditRects = [auditRect, compositeAuditRect] as const;
 
   engine.setBrushSettings({
     tool: "paint",
@@ -162,77 +183,83 @@ export async function runLayerHistoryGpuTest(
     positionJitterLateral: 0,
     positionJitterLinear: 0,
   });
-  const bakeStrokeStyle = {
+
+  const strokeStyle = {
     enabled: true,
     width: 14,
     position: "outside" as const,
-    color: [1, 0.643, 0.282, 1],
+    color: [1, 0.643, 0.282, 1] as [number, number, number, number],
   };
-  const strokeStyleEnabled = await engine.setRasterStrokeStyle(bakeStrokeStyle);
+  const bevelStyleEnabled = await engine.setRasterBevelStyle({
+    ...engine.getRasterBevelStyle(),
+    enabled: true,
+    mode: "inner",
+    technique: "smooth",
+    size: 32,
+    soften: 4,
+    gloss: "linear",
+    contourAA: true,
+  });
   await engine.waitForIdle();
 
-  const draw = async (x: number, color: string, timeMs: number): Promise<void> => {
+  const draw = async (
+    x: number,
+    y: number,
+    color: string,
+    timeMs: number,
+  ): Promise<void> => {
     engine.setBrushSettings({ color });
-    engine.beginStrokeAtLayer({ x, y: 512, pressure: 1, timeMs });
+    engine.beginStrokeAtLayer({ x, y, pressure: 1, timeMs });
     engine.extendStrokeAtLayer([
-      { x: x + 48, y: 512, pressure: 1, timeMs: timeMs + 16 },
+      { x: x + 48, y, pressure: 1, timeMs: timeMs + 16 },
     ]);
     engine.endStroke(timeMs + 16);
     await engine.waitForIdle();
   };
 
-  await draw(512, "#e33939", 100);
+  await draw(512, 512, "#e33939", 100);
   const layerABaseline = await engine.readLayerPixels(auditRect, 0);
   const layerAP = await engine.readLayerPixels(pRect, 0);
   const layerAQ = await engine.readLayerPixels(qRect, 0);
+  const fwidthBakeGap = await engine.measureActiveStyleBakeGap(pRect);
+  await engine.waitForIdle();
+  const oneLayerMemory = snapshotMemory(engine);
 
-  await engine.addLayer("Test cronologia B");
-  const initialBake = engine.getLayerBakeState(0);
-  const initialBakePixels = await engine.readLayerBakePixels(auditRect, 0);
-  const initialBakeVersusRawLayerA = countDifferingBytes(
-    initialBakePixels,
-    layerABaseline,
-  );
-  const layerBBakeAfterCreation = engine.getLayerBakeState(1);
-
-  // Force the candidate to fail only AFTER a real full-resolution submit. The
-  // selected layer, previous generation and previous bytes must all survive.
-  await engine.setActiveLayer(0);
-  const beforeInjectedFailure = engine.getLayerBakeState(0);
-  const beforeInjectedFailurePixels = await engine.readLayerBakePixels(auditRect, 0);
+  const bakeMemoryBeforeMiB = engine.getStats().gpuMemory.layerBakeMiB;
   engine.injectLayerBakeFault("after-candidate-submit");
   let bakeFailureWasReported = false;
   try {
-    await engine.setActiveLayer(1);
+    await engine.addLayer("Bake fault candidate");
   } catch {
     bakeFailureWasReported = true;
   }
-  const activeAfterBakeFailure = engine.getStats().activeLayerIndex;
-  const afterInjectedFailure = engine.getLayerBakeState(0);
-  const afterInjectedFailurePixels = await engine.readLayerBakePixels(auditRect, 0);
-  const bakeAfterInjectedFailure = countDifferingBytes(
-    beforeInjectedFailurePixels,
-    afterInjectedFailurePixels,
-  );
+  await engine.waitForIdle();
+  const statsAfterBakeFailure = engine.getStats();
+  const rawAfterBakeFailure = await engine.readLayerPixels(auditRect, 0);
+  const bakeStateAfterFailure = engine.getLayerBakeState(0);
+  const bakeRollback: BakeRollbackProbe = {
+    threw: bakeFailureWasReported,
+    layerCountRestored: statsAfterBakeFailure.layerCount === 1,
+    activeLayerRestored: statsAfterBakeFailure.activeLayerIndex === 0,
+    workingSetMatchesActiveLayer: engine.effectsWorkingSetMatchesActiveLayer(),
+    rawLayerDifferingBytes: countDifferingBytes(layerABaseline, rawAfterBakeFailure),
+    bakeAllocatedAfterFailure: bakeStateAfterFailure.allocated,
+    bakeMemoryBeforeMiB,
+    bakeMemoryAfterMiB: statsAfterBakeFailure.gpuMemory.layerBakeMiB,
+  };
 
-  // Invalidate the old cache while restoring the exact same final style. The
-  // next successful switch must therefore replace generation 1 rather than take
-  // the no-change reuse fast path, and the resulting bytes must still match.
-  await engine.setRasterStrokeStyle({
-    ...bakeStrokeStyle,
-    color: [0.25, 0.75, 1, 1],
-  });
+  await engine.addLayer("Test cronologia B");
   await engine.waitForIdle();
-  await engine.setRasterStrokeStyle(bakeStrokeStyle);
-  await engine.waitForIdle();
-  await engine.setActiveLayer(1);
-  const afterSuccessfulReplacement = engine.getLayerBakeState(0);
-  const afterSuccessfulReplacementPixels = await engine.readLayerBakePixels(auditRect, 0);
-  const bakeAfterSuccessfulReplacement = countDifferingBytes(
-    initialBakePixels,
-    afterSuccessfulReplacementPixels,
+  const twoLayersMemory = snapshotMemory(engine);
+  const fusedStyledLayer = await engine.readMergedLayerPixels("below", auditRect);
+  const fusedStyledLayerVersusRawLayerA = countDifferingBytes(
+    fusedStyledLayer,
+    layerABaseline,
   );
-  await draw(1024, "#35c66b", 200);
+  const releasedBakeAfterFusion = engine.getLayerBakeState(0);
+  const compositeAfterFirstFusion = engine.getLayerCompositeState();
+
+  await draw(1024, 512, "#35c66b", 200);
   const beforeUndo = engine.getHistoryState();
   const layerAAfterPaintingB = await engine.readLayerPixels(auditRect, 0);
   const layerBBeforeUndo = await engine.readLayerPixels(auditRect, 1);
@@ -246,43 +273,42 @@ export async function runLayerHistoryGpuTest(
   const layerBAfterUndoP = await engine.readLayerPixels(pRect, 1);
   const layerBAfterUndoQ = await engine.readLayerPixels(qRect, 1);
 
-  // The next undo belongs to layer A: it must succeed and move the active layer
-  // with the cursor, since the journal is global.
   const activeBeforeCrossLayerUndo = engine.getStats().activeLayerIndex;
   const crossLayerUndoReturned = await engine.undo();
   await engine.waitForIdle();
   const afterCrossLayerUndo = engine.getHistoryState();
   const activeAfterCrossLayerUndo = engine.getStats().activeLayerIndex;
-  const workingSetMatchesAfterCrossLayerUndo = engine
-    .effectsWorkingSetMatchesActiveLayer();
+  const workingSetMatchesAfterCrossLayerUndo = engine.effectsWorkingSetMatchesActiveLayer();
   const layerAAfterCrossLayerUndo = await engine.readLayerPixels(pRect, 0);
 
-  // Force a REAL cross-layer redo: deliberately select B while the next action
-  // belongs to A. A same-layer redo would not exercise the activation path.
   await engine.setActiveLayer(1);
   const activeBeforeCrossLayerRedo = engine.getStats().activeLayerIndex;
   const crossLayerRedoReturned = await engine.redo();
   await engine.waitForIdle();
   const afterCrossLayerRedo = engine.getHistoryState();
   const activeAfterCrossLayerRedo = engine.getStats().activeLayerIndex;
-  const workingSetMatchesAfterCrossLayerRedo = engine
-    .effectsWorkingSetMatchesActiveLayer();
+  const workingSetMatchesAfterCrossLayerRedo = engine.effectsWorkingSetMatchesActiveLayer();
   const layerAAfterCrossLayerRedo = await engine.readLayerPixels(pRect, 0);
   await engine.setActiveLayer(1);
-  const afterHistoryRoundTrip = engine.getLayerBakeState(0);
-  const afterHistoryRoundTripPixels = await engine.readLayerBakePixels(auditRect, 0);
-  const bakeAfterHistoryRoundTrip = countDifferingBytes(
-    initialBakePixels,
-    afterHistoryRoundTripPixels,
-  );
+
+  const readLayerAudit = async (layerIndex: number): Promise<Uint8Array[]> => {
+    const pixels: Uint8Array[] = [];
+    for (const rect of rollbackAuditRects) {
+      pixels.push(await engine.readLayerPixels(rect, layerIndex));
+    }
+    return pixels;
+  };
 
   const probeRollback = async (
     ...faultPoints: HistoryReplayFaultPoint[]
   ): Promise<RollbackProbe> => {
     const beforeHistory = engine.getHistoryState();
     const beforeActive = engine.getStats().activeLayerIndex;
-    const beforeLayerA = await engine.readLayerPixels(auditRect, 0);
-    const beforeLayerB = await engine.readLayerPixels(auditRect, 1);
+    const layerCount = engine.getStats().layerCount;
+    const beforeLayers: Uint8Array[][] = [];
+    for (let layerIndex = 0; layerIndex < layerCount; layerIndex += 1) {
+      beforeLayers.push(await readLayerAudit(layerIndex));
+    }
     engine.injectHistoryReplayFault(...faultPoints);
     let threw = false;
     try {
@@ -292,6 +318,15 @@ export async function runLayerHistoryGpuTest(
     }
     await engine.waitForIdle();
     const afterHistory = engine.getHistoryState();
+    const layerDifferingBytes: number[] = [];
+    for (let layerIndex = 0; layerIndex < layerCount; layerIndex += 1) {
+      const afterRects = await readLayerAudit(layerIndex);
+      layerDifferingBytes.push(afterRects.reduce(
+        (total, pixels, rectIndex) =>
+          total + countDifferingBytes(beforeLayers[layerIndex][rectIndex], pixels),
+        0,
+      ));
+    }
     return {
       threw,
       cursorRestored: afterHistory.cursor === beforeHistory.cursor,
@@ -301,26 +336,13 @@ export async function runLayerHistoryGpuTest(
       historyInconsistent: afterHistory.inconsistent,
       canUndo: afterHistory.canUndo,
       canRedo: afterHistory.canRedo,
-      layerADifferingBytes: countDifferingBytes(
-        beforeLayerA,
-        await engine.readLayerPixels(auditRect, 0),
-      ),
-      layerBDifferingBytes: countDifferingBytes(
-        beforeLayerB,
-        await engine.readLayerPixels(auditRect, 1),
-      ),
+      layerDifferingBytes,
     };
   };
 
-  // This failure happens only after a real clear/draw submission. Restoring just
-  // cursor/index would leave A damaged even though all CPU state looked correct.
   const partialReplayRollback = await probeRollback("after-first-replay-submit");
-
-  // This failure lands after engine fields and Blend point at A but before the
-  // effects workbench does. Pixel-only checks cannot observe that half-switch.
   const switchActivationRollback = await probeRollback("during-switch-activation");
 
-  // Cursor 1 on B: the next redo is Q on B and must restore it byte-for-byte.
   const redoReturned = await engine.redo();
   await engine.waitForIdle();
   const afterRedo = engine.getHistoryState();
@@ -328,10 +350,16 @@ export async function runLayerHistoryGpuTest(
   const layerBAfterRedo = await engine.readLayerPixels(auditRect, 1);
   const layerBAfterRedoQ = await engine.readLayerPixels(qRect, 1);
 
-  // Finish with a deliberately unrecoverable transaction. The first fault lands
-  // after A was cleared; rollback rebuilds A, then the second fault breaks the
-  // reverse activation halfway through. The engine must expose and retain a fatal
-  // latch: continuing to edit a half-retargeted document would risk user data.
+  const switchToA = await engine.setActiveLayer(0);
+  const switchToB = await engine.setActiveLayer(1);
+  const twoLayerAfterMs = [
+    switchToA?.totalMs ?? 0,
+    switchToB?.totalMs ?? 0,
+  ] as const;
+  const withinDocumentedCeiling = Math.max(...twoLayerAfterMs) <= 215 * 1.03;
+
+  const compositing = await runLayerCompositeGpuTest(engine, strokeStyle, 2_000);
+
   const fatalPreparationUndoReturned = await engine.undo();
   await engine.waitForIdle();
   const fatalRollback = await probeRollback(
@@ -355,27 +383,53 @@ export async function runLayerHistoryGpuTest(
     layerAAfterUndo: countDifferingBytes(layerABaseline, layerAAfterUndo),
     layerAAfterRedo: countDifferingBytes(layerABaseline, layerAAfterRedo),
     layerBRedoVersusBeforeUndo: countDifferingBytes(layerBBeforeUndo, layerBAfterRedo),
-    initialBakeVersusRawLayerA,
-    bakeAfterInjectedFailure,
-    bakeAfterSuccessfulReplacement,
-    bakeAfterHistoryRoundTrip,
+    fusedStyledLayerVersusRawLayerA,
   };
-  const checks = {
-    rasterStrokeWasEnabledForBake: strokeStyleEnabled,
-    outgoingStyledLayerAllocatedBake:
-      initialBake.allocated && initialBake.valid && initialBake.generation === 1,
-    bakeContainsTheStyledResult: initialBakeVersusRawLayerA > 0,
-    plainIncomingLayerDidNotAllocateBake: !layerBBakeAfterCreation.allocated,
-    injectedBakeFailureWasReported: bakeFailureWasReported,
-    injectedBakeFailureKeptTheActiveLayer: activeAfterBakeFailure === 0,
-    injectedBakeFailureKeptTheGeneration:
-      afterInjectedFailure.generation === beforeInjectedFailure.generation,
-    injectedBakeFailureKeptTheBakeValid: afterInjectedFailure.valid,
-    injectedBakeFailureKeptAuditedBakeBytes: bakeAfterInjectedFailure === 0,
-    successfulRetryAdvancedTheGeneration:
-      afterSuccessfulReplacement.generation > afterInjectedFailure.generation,
-    successfulRetryKeptTheStyledPixels: bakeAfterSuccessfulReplacement === 0,
-    historyRoundTripRebakedTheSamePixels: bakeAfterHistoryRoundTrip === 0,
+
+  const memoryChecks = {
+    oneLayerHasOneRawPyramid: oneLayerMemory.layerCount === 1
+      && oneLayerMemory.layerMipChainMiB > 21
+      && oneLayerMemory.layerMipChainMiB < 22,
+    twoLayersReleasedPerLayerBakes: twoLayersMemory.layerBakeMiB < 0.01,
+    fiveLayersReleasedPerLayerBakes: compositing.fiveLayerMemory.layerBakeMiB < 0.01,
+    twoAndFiveLayerMipMemoryIsConstant:
+      Math.abs(
+        twoLayersMemory.layerMipChainMiB
+          - compositing.fiveLayerMemory.layerMipChainMiB,
+      ) < 0.05,
+    twoAndFiveLayerCompositeMemoryIsConstant:
+      Math.abs(
+        twoLayersMemory.layerCompositeMiB
+          - compositing.fiveLayerMemory.layerCompositeMiB,
+      ) < 0.05,
+    fiveRawLayersCostExactlyFiveMipZeros:
+      Math.abs(compositing.fiveLayerMemory.layerBaseMiB - 320) < 0.05,
+  };
+
+  const checks: Record<string, boolean> = {
+    bevelWasEnabledForGapAndBake: bevelStyleEnabled,
+    fwidthBakeGapWasMeasured:
+      fwidthBakeGap.comparedPixels === pRect.width * pRect.height
+      && fwidthBakeGap.comparedBytes === pRect.width * pRect.height * 4
+      && Number.isFinite(fwidthBakeGap.maxDelta),
+    fwidthProbeReleasedItsTransientBake: oneLayerMemory.layerBakeMiB < 0.01,
+    injectedBakeFailureWasReported: bakeRollback.threw,
+    injectedBakeFailureKeptOneLayer: bakeRollback.layerCountRestored,
+    injectedBakeFailureKeptActiveLayer: bakeRollback.activeLayerRestored,
+    injectedBakeFailureKeptWorkingSet: bakeRollback.workingSetMatchesActiveLayer,
+    injectedBakeFailureKeptRawPixels: bakeRollback.rawLayerDifferingBytes === 0,
+    injectedBakeFailureDidNotPublishBake: !bakeRollback.bakeAllocatedAfterFailure,
+    injectedBakeFailureReleasedCandidate:
+      Math.abs(bakeRollback.bakeMemoryAfterMiB - bakeRollback.bakeMemoryBeforeMiB) < 0.01,
+    successfulFusionContainsStyledResult: fusedStyledLayerVersusRawLayerA > 0,
+    successfulFusionReleasedLayerBake:
+      !releasedBakeAfterFusion.allocated
+      && !releasedBakeAfterFusion.valid
+      && twoLayersMemory.layerBakeMiB < 0.01,
+    firstFusionCreatedOnlyMergedBelow:
+      compositeAfterFirstFusion.below.allocated
+      && compositeAfterFirstFusion.below.layerCount === 1
+      && !compositeAfterFirstFusion.above.allocated,
     layerAContainsP: alphaPixels.layerAStrokeP > 0,
     layerARegionQIsEmpty: alphaPixels.layerARegionQ === 0,
     layerBBeforeUndoDoesNotContainP: alphaPixels.layerBBeforeUndoRegionP === 0,
@@ -387,12 +441,10 @@ export async function runLayerHistoryGpuTest(
     crossLayerUndoAdvertised: afterUndo.canUndo,
     redoAdvertised: afterUndo.canRedo,
     crossLayerUndoSucceeded: crossLayerUndoReturned,
-    crossLayerUndoMovedTheCursor:
-      afterCrossLayerUndo.cursor === afterUndo.cursor - 1,
+    crossLayerUndoMovedTheCursor: afterCrossLayerUndo.cursor === afterUndo.cursor - 1,
     crossLayerUndoMovedTheActiveLayer:
       activeAfterCrossLayerUndo !== activeBeforeCrossLayerUndo,
-    crossLayerUndoRemovedPFromA:
-      countNonZeroAlpha(layerAAfterCrossLayerUndo) === 0,
+    crossLayerUndoRemovedPFromA: countNonZeroAlpha(layerAAfterCrossLayerUndo) === 0,
     workingSetFollowedTheCrossLayerUndo: workingSetMatchesAfterCrossLayerUndo,
     crossLayerRedoAdvertised: afterCrossLayerUndo.canRedo,
     crossLayerRedoSucceeded: crossLayerRedoReturned,
@@ -400,8 +452,7 @@ export async function runLayerHistoryGpuTest(
       afterCrossLayerRedo.cursor === afterCrossLayerUndo.cursor + 1,
     crossLayerRedoMovedTheActiveLayer:
       activeAfterCrossLayerRedo !== activeBeforeCrossLayerRedo,
-    crossLayerRedoRestoredPOnA:
-      countNonZeroAlpha(layerAAfterCrossLayerRedo) > 0,
+    crossLayerRedoRestoredPOnA: countNonZeroAlpha(layerAAfterCrossLayerRedo) > 0,
     crossLayerRedoRestoredPByteExactly:
       countDifferingBytes(layerAP, layerAAfterCrossLayerRedo) === 0,
     crossLayerRedoSelectedTheActionsLayer:
@@ -409,56 +460,49 @@ export async function runLayerHistoryGpuTest(
     workingSetFollowedTheCrossLayerRedo: workingSetMatchesAfterCrossLayerRedo,
     partialReplayFailureWasReported: partialReplayRollback.threw,
     partialReplayRollbackRestoredTheCursor: partialReplayRollback.cursorRestored,
-    partialReplayRollbackRestoredTheActiveLayer:
-      partialReplayRollback.activeLayerRestored,
+    partialReplayRollbackRestoredTheActiveLayer: partialReplayRollback.activeLayerRestored,
     partialReplayRollbackRestoredTheWorkingSet:
       partialReplayRollback.workingSetMatchesActiveLayer,
     partialReplayRollbackReleasedTheLock: !partialReplayRollback.historyBusy,
-    partialReplayRollbackStayedConsistent:
-      !partialReplayRollback.historyInconsistent,
+    partialReplayRollbackStayedConsistent: !partialReplayRollback.historyInconsistent,
     partialReplayRollbackPreservedUndo: partialReplayRollback.canUndo,
     partialReplayRollbackPreservedRedo: partialReplayRollback.canRedo,
-    partialReplayRollbackLeftLayerAByteIdentical:
-      partialReplayRollback.layerADifferingBytes === 0,
-    partialReplayRollbackLeftLayerBByteIdentical:
-      partialReplayRollback.layerBDifferingBytes === 0,
+    partialReplayRollbackLeftEveryLayerByteIdentical:
+      partialReplayRollback.layerDifferingBytes.every((count) => count === 0),
     switchActivationFailureWasReported: switchActivationRollback.threw,
-    switchActivationRollbackRestoredTheCursor:
-      switchActivationRollback.cursorRestored,
+    switchActivationRollbackRestoredTheCursor: switchActivationRollback.cursorRestored,
     switchActivationRollbackRestoredTheActiveLayer:
       switchActivationRollback.activeLayerRestored,
     switchActivationRollbackRestoredTheWorkingSet:
       switchActivationRollback.workingSetMatchesActiveLayer,
-    switchActivationRollbackReleasedTheLock:
-      !switchActivationRollback.historyBusy,
-    switchActivationRollbackStayedConsistent:
-      !switchActivationRollback.historyInconsistent,
+    switchActivationRollbackReleasedTheLock: !switchActivationRollback.historyBusy,
+    switchActivationRollbackStayedConsistent: !switchActivationRollback.historyInconsistent,
     switchActivationRollbackPreservedUndo: switchActivationRollback.canUndo,
     switchActivationRollbackPreservedRedo: switchActivationRollback.canRedo,
-    switchActivationRollbackLeftLayerAByteIdentical:
-      switchActivationRollback.layerADifferingBytes === 0,
-    switchActivationRollbackLeftLayerBByteIdentical:
-      switchActivationRollback.layerBDifferingBytes === 0,
+    switchActivationRollbackLeftEveryLayerByteIdentical:
+      switchActivationRollback.layerDifferingBytes.every((count) => count === 0),
     redoSucceeded: redoReturned,
     redoRestoredQ: alphaPixels.layerBAfterRedoStrokeQ > 0,
     redoRestoredBByteExactly: differingBytes.layerBRedoVersusBeforeUndo === 0,
     paintingBDidNotChangeA: differingBytes.layerAAfterPaintingB === 0,
     undoDidNotChangeA: differingBytes.layerAAfterUndo === 0,
     redoDidNotChangeA: differingBytes.layerAAfterRedo === 0,
+    twoLayerSwitchStayedWithinDocumentedCeiling: withinDocumentedCeiling,
+    ...memoryChecks,
+    ...Object.fromEntries(Object.entries(compositing.checks).map(
+      ([name, passed]) => [`composite.${name}`, passed],
+    )),
     fatalPreparationUndoSucceeded: fatalPreparationUndoReturned,
     fatalRollbackFailureWasReported: fatalRollback.threw,
     fatalRollbackRestoredTheCursor: fatalRollback.cursorRestored,
     fatalRollbackRestoredTheActiveLayer: fatalRollback.activeLayerRestored,
-    fatalRollbackDetectedTheHalfSwitch:
-      !fatalRollback.workingSetMatchesActiveLayer,
+    fatalRollbackDetectedTheHalfSwitch: !fatalRollback.workingSetMatchesActiveLayer,
     fatalRollbackLatchedBusy: fatalRollback.historyBusy,
     fatalRollbackLatchedInconsistent: fatalRollback.historyInconsistent,
     fatalRollbackDisabledUndo: !fatalRollback.canUndo,
     fatalRollbackDisabledRedo: !fatalRollback.canRedo,
-    fatalRollbackLeftLayerAByteIdentical:
-      fatalRollback.layerADifferingBytes === 0,
-    fatalRollbackLeftLayerBByteIdentical:
-      fatalRollback.layerBDifferingBytes === 0,
+    fatalRollbackLeftEveryLayerByteIdentical:
+      fatalRollback.layerDifferingBytes.every((count) => count === 0),
     fatalLatchRefusedAnotherUndo: !fatalFollowUpUndoReturned,
   };
 
@@ -468,13 +512,19 @@ export async function runLayerHistoryGpuTest(
     checks,
     alphaPixels,
     differingBytes,
-    bake: {
-      initial: initialBake,
-      beforeInjectedFailure,
-      afterInjectedFailure,
-      afterSuccessfulReplacement,
-      afterHistoryRoundTrip,
-      finalMemoryMiB: engine.getStats().gpuMemory.layerBakeMiB,
+    fwidthBakeGap,
+    bakeRollback,
+    compositing,
+    memory: {
+      oneLayer: oneLayerMemory,
+      twoLayers: twoLayersMemory,
+      fiveLayers: compositing.fiveLayerMemory,
+    },
+    switchCost: {
+      documentedBeforeMs: [151, 215],
+      twoLayerAfterMs,
+      fiveLayerStressMs: compositing.fiveLayerSwitchMs,
+      withinDocumentedCeiling,
     },
     history: {
       beforeUndo,
@@ -494,7 +544,7 @@ export async function runLayerHistoryGpuTest(
       redoReturned,
       fatalPreparationUndoReturned,
       fatalFollowUpUndoReturned,
-      strokeStyleEnabled,
+      bevelStyleEnabled,
       bakeFailureWasReported,
     },
   };
