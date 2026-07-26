@@ -101,7 +101,7 @@ import {
 } from "./effects-scratch-pool";
 import {
   LAYER_STORAGE_GRID_SIZE,
-  LAYER_STORAGE_STUDY_STRATEGY,
+  LAYER_STORAGE_STRATEGY,
   LAYER_STORAGE_TILE_COUNT,
   LAYER_STORAGE_TILE_SIZE,
   alignedBoundsTileCount,
@@ -110,6 +110,7 @@ import {
   countLayerStorageTiles,
   exactLayerStorageTileMask,
   layerStorageTileMemoryMiB,
+  layerStorageTileIndices,
   markLayerStorageRect,
 } from "./layer-storage-study";
 
@@ -258,6 +259,8 @@ export interface PointerSample {
 
 export interface EngineGpuMemoryStats {
   layerBaseMiB: number;
+  layerColdMiB: number;
+  layerHydrationMiB: number;
   layerMipChainMiB: number;
   layerBakeMiB: number;
   layerCompositeMiB: number;
@@ -296,6 +299,9 @@ export interface LayerStorageLayerEstimate {
   name: string;
   active: boolean;
   hasContent: boolean;
+  hotAllocated: boolean;
+  coldTileCount: number;
+  actualRawMiB: number;
   conservativeTileCount: number;
   alignedBboxTileCount: number;
   conservativeTileMiB: number;
@@ -303,17 +309,18 @@ export interface LayerStorageLayerEstimate {
 }
 
 /**
- * Counterfactual raw-layer memory only. These values describe what commit 14b
- * could allocate; commit 14a does not subtract them from counted GPU memory.
+ * Actual hot/cold raw storage plus the two counterfactual projections retained
+ * from 14a. Only actualRawMiB contributes to counted GPU memory.
  */
 export interface LayerStorageStudyStats {
-  strategy: typeof LAYER_STORAGE_STUDY_STRATEGY;
-  measurementOnly: true;
+  strategy: typeof LAYER_STORAGE_STRATEGY;
+  measurementOnly: false;
   tileSizePx: typeof LAYER_STORAGE_TILE_SIZE;
   gridSize: typeof LAYER_STORAGE_GRID_SIZE;
   tileCount: typeof LAYER_STORAGE_TILE_COUNT;
   bytesPerPixel: 4 | 8;
   fullLayerMiB: number;
+  eagerFullRawMiB: number;
   actualRawMiB: number;
   inactiveFullMiB: number;
   inactiveConservativeTileMiB: number;
@@ -333,10 +340,11 @@ export interface LayerStorageExactLayerMeasurement extends LayerStorageLayerEsti
 }
 
 export interface LayerStorageExactStudy {
-  strategy: typeof LAYER_STORAGE_STUDY_STRATEGY;
+  strategy: typeof LAYER_STORAGE_STRATEGY;
   reference: "any-nonzero-raw-byte";
   tileSizePx: typeof LAYER_STORAGE_TILE_SIZE;
   bytesPerPixel: 4 | 8;
+  eagerFullRawMiB: number;
   actualRawMiB: number;
   projectedExactRawMiB: number;
   projectedConservativeRawMiB: number;
@@ -369,6 +377,9 @@ export interface EngineStats {
     visible: boolean;
     opacity: number;
     hasContent: boolean;
+    hotAllocated: boolean;
+    coldTileCount: number;
+    actualRawMiB: number;
     conservativeTileCount: number;
     alignedBboxTileCount: number;
     conservativeTileMiB: number;
@@ -763,7 +774,16 @@ interface LayerBakeResources {
   generation: number;
 }
 
-type LayerGpuResources = LayerTextureResources & {
+interface LayerColdStorageResources {
+  texture: GPUTexture;
+  tileIndices: readonly number[];
+  memoryBytes: number;
+  generation: number;
+}
+
+type LayerGpuResources = {
+  hot: LayerTextureResources | null;
+  cold: LayerColdStorageResources | null;
   bake: LayerBakeResources | null;
   bakeValid: boolean;
 };
@@ -781,6 +801,9 @@ export type HistoryReplayFaultPoint =
 
 export type LayerBakeFaultPoint = "after-candidate-submit";
 export type LayerCompositeFaultPoint = "after-candidate-submit";
+export type LayerColdStorageFaultPoint =
+  | "after-pack-submit"
+  | "after-hydrate-submit";
 
 export interface LayerSwitchResult {
   fromIndex: number;
@@ -1532,8 +1555,10 @@ export class BrushEngine {
   /** Dev-only injections for post-submit rollback boundaries. */
   private layerBakeFaultQueue: LayerBakeFaultPoint[] = [];
   private layerCompositeFaultQueue: LayerCompositeFaultPoint[] = [];
+  private layerColdStorageFaultQueue: LayerColdStorageFaultPoint[] = [];
   private readonly liveLayerBakeTextures = new Map<GPUTexture, number>();
   private readonly liveMergedSurfaceTextures = new Set<GPUTexture>();
+  private readonly liveLayerHydrationTextures = new Map<GPUTexture, number>();
   /** Dev probe buffers are excluded from counted GPU memory, so track them separately. */
   private devReadbackActiveBytes = 0;
   private devReadbackPeakBytes = 0;
@@ -3029,13 +3054,27 @@ export class BrushEngine {
     const rasterStroke = this.rasterStrokeRenderer;
     const rasterBevel = this.rasterBevelRenderer;
     const effectsScratch = this.effectsWorkbench?.scratchPool.snapshot();
-    // Every layer owns one eager authoritative mip 0. Display chains and fused
-    // surfaces are singular resources counted below, so only 64/128 MiB scales
-    // linearly with each additional RGBA8/RGBA16F layer.
-    const allocatedLayerCount = this.layerGpu.size;
+    // Exactly one active layer owns a full authoritative mip 0 at idle. Inactive
+    // layers keep only their conservative 256px tiles. A second full texture may
+    // exist briefly while a hydration/switch transaction is still reversible.
+    const fullLayerMiB = layerBaseMemoryMiB(this.layerFormat);
+    const hotLayerCount = [...this.layerGpu.values()].reduce(
+      (count, gpu) => count + (gpu.hot ? 1 : 0),
+      0,
+    );
     const layerBaseMiB = baseResourcesAllocated
-      ? layerBaseMemoryMiB(this.layerFormat) * allocatedLayerCount
+      ? fullLayerMiB * hotLayerCount
       : 0;
+    const layerColdMiB = baseResourcesAllocated
+      ? [...this.layerGpu.values()].reduce(
+        (total, gpu) => total + (gpu.cold?.memoryBytes ?? 0),
+        0,
+      ) / MEBIBYTE_BYTES
+      : 0;
+    const layerHydrationMiB = [...this.liveLayerHydrationTextures.values()].reduce(
+      (total, bytes) => total + bytes,
+      0,
+    ) / MEBIBYTE_BYTES;
     // Exactly one raw-layer pyramid follows the active layer. Each allocated
     // merged side owns one additional chain, independent of how many inactive
     // layers were folded into it.
@@ -3109,6 +3148,8 @@ export class BrushEngine {
     const countedTotalMiB = [
       layerBaseMiB,
       layerMipChainMiB,
+      layerColdMiB,
+      layerHydrationMiB,
       layerBakeMiB,
       layerCompositeMiB,
       grainTextureMiB,
@@ -3129,6 +3170,8 @@ export class BrushEngine {
     return {
       layerBaseMiB,
       layerMipChainMiB,
+      layerColdMiB,
+      layerHydrationMiB,
       layerBakeMiB,
       layerCompositeMiB,
       grainTextureMiB,
@@ -3168,6 +3211,7 @@ export class BrushEngine {
     );
     const activeId = this.layerStack.active.id;
     const layers = this.layerStack.layers.map((record): LayerStorageLayerEstimate => {
+      const gpu = this.layerGpu.get(record.id);
       const active = record.id === activeId;
       const hasContent = active ? this.layerHasContent : record.hasContent;
       const contentBounds = active ? this.layerContentBounds : record.contentBounds;
@@ -3177,12 +3221,19 @@ export class BrushEngine {
       const alignedBboxTileCount = hasContent
         ? alignedBoundsTileCount(contentBounds)
         : 0;
+      const hotAllocated = Boolean(gpu?.hot);
+      const coldTileCount = gpu?.cold?.tileIndices.length ?? 0;
+      const actualRawMiB = (hotAllocated ? fullLayerMiB : 0)
+        + (gpu?.cold?.memoryBytes ?? 0) / MEBIBYTE_BYTES;
       return {
         id: record.id,
         name: record.name,
         active,
         hasContent,
         conservativeTileCount,
+        hotAllocated,
+        coldTileCount,
+        actualRawMiB,
         alignedBboxTileCount,
         conservativeTileMiB: layerStorageTileMemoryMiB(
           conservativeTileCount,
@@ -3203,13 +3254,14 @@ export class BrushEngine {
       (total, layer) => total + layer.alignedBboxMiB,
       0,
     );
-    const actualRawMiB = fullLayerMiB * this.layerGpu.size;
+    const eagerFullRawMiB = fullLayerMiB * this.layerGpu.size;
+    const actualRawMiB = layers.reduce((total, layer) => total + layer.actualRawMiB, 0);
     const activeFullMiB = this.layerGpu.size > 0 ? fullLayerMiB : 0;
     const projectedConservativeRawMiB = activeFullMiB + inactiveConservativeTileMiB;
     const projectedAlignedBboxRawMiB = activeFullMiB + inactiveAlignedBboxMiB;
     return {
-      strategy: LAYER_STORAGE_STUDY_STRATEGY,
-      measurementOnly: true,
+      strategy: LAYER_STORAGE_STRATEGY,
+      measurementOnly: false,
       tileSizePx: LAYER_STORAGE_TILE_SIZE,
       gridSize: LAYER_STORAGE_GRID_SIZE,
       tileCount: LAYER_STORAGE_TILE_COUNT,
@@ -3217,12 +3269,13 @@ export class BrushEngine {
       fullLayerMiB,
       actualRawMiB,
       inactiveFullMiB: fullLayerMiB * Math.max(0, this.layerGpu.size - 1),
+      eagerFullRawMiB,
       inactiveConservativeTileMiB,
       inactiveAlignedBboxMiB,
       projectedConservativeRawMiB,
       projectedAlignedBboxRawMiB,
-      conservativeSavingsMiB: Math.max(0, actualRawMiB - projectedConservativeRawMiB),
-      alignedBboxSavingsMiB: Math.max(0, actualRawMiB - projectedAlignedBboxRawMiB),
+      conservativeSavingsMiB: Math.max(0, eagerFullRawMiB - projectedConservativeRawMiB),
+      alignedBboxSavingsMiB: Math.max(0, eagerFullRawMiB - projectedAlignedBboxRawMiB),
       layers,
     };
   }
@@ -3238,7 +3291,10 @@ export class BrushEngine {
       lastCpuFrameMs: this.lastCpuFrameMs,
       totalBaseStamps: this.totalBaseStamps,
       avoidedLogicalDraws: this.avoidedLogicalDraws,
-      layerMemoryMiB: (this.layerFormat === "rgba16float" ? 128 : 64) * this.layerGpu.size,
+      layerMemoryMiB:
+        gpuMemory.layerBaseMiB
+        + gpuMemory.layerColdMiB
+        + gpuMemory.layerHydrationMiB,
       layerCount: this.layerStack.count,
       activeLayerId: this.layerStack.active.id,
       layerBakeStrategy: LAYER_BAKE_STRATEGY,
@@ -3259,6 +3315,9 @@ export class BrushEngine {
             ? this.layerHasContent
             : record.hasContent,
           conservativeTileCount: storage.conservativeTileCount,
+          hotAllocated: storage.hotAllocated,
+          coldTileCount: storage.coldTileCount,
+          actualRawMiB: storage.actualRawMiB,
           alignedBboxTileCount: storage.alignedBboxTileCount,
           conservativeTileMiB: storage.conservativeTileMiB,
           alignedBboxMiB: storage.alignedBboxMiB,
@@ -4032,7 +4091,7 @@ export class BrushEngine {
       return false;
     }
     const active = this.layerGpu.get(this.layerStack.active.id);
-    return Boolean(active) && workbench.sourceView === active!.view;
+    return Boolean(active?.hot) && workbench.sourceView === active!.hot!.view;
   }
 
   async readLayerPixels(rect?: DirtyRect, layerIndex?: number): Promise<Uint8Array> {
@@ -4045,14 +4104,28 @@ export class BrushEngine {
     // Reading a NAMED layer rather than only the active one is what makes the
     // test bilateral: "layer A kept its pixels while B was rebuilt" needs both
     // textures, and the active one alone cannot express it.
-    const target = layerIndex === undefined
-      ? this.layerTexture
-      : this.requireLayerGpu(this.layerStack.at(layerIndex).id).texture;
-    return this.readTexturePixels(target, rect, "livello");
+    const record = layerIndex === undefined
+      ? this.layerStack.active
+      : this.layerStack.at(layerIndex);
+    const gpu = this.requireLayerGpu(record.id);
+    if (gpu.hot) {
+      return this.readTexturePixels(gpu.hot.texture, rect, "livello");
+    }
+    const hydration = await this.createHydratedLayerTexture(
+      record,
+      gpu,
+      `Sonda reidratazione livello ${record.id}`,
+      false,
+    );
+    try {
+      return await this.readTexturePixels(hydration.texture, rect, "livello");
+    } finally {
+      this.destroyTransientLayerHydration(hydration);
+    }
   }
 
   /**
-   * Dev-only ground truth for commit 14a. Full raw readbacks are intentionally
+   * Dev-only ground truth for the tiled cold store. Full raw readbacks are
    * absent from normal telemetry: they would stall and transfer 64/128 MiB per
    * layer. The destructive GPU harness pays that cost once and compares the
    * resulting any-nonzero-byte mask with the always-on conservative metadata.
@@ -4111,15 +4184,16 @@ export class BrushEngine {
     const temporaryReadbackBytesAfter = this.devReadbackActiveBytes;
     const temporaryReadbackPeakBytes = this.devReadbackPeakBytes;
     return {
-      strategy: LAYER_STORAGE_STUDY_STRATEGY,
+      strategy: LAYER_STORAGE_STRATEGY,
       reference: "any-nonzero-raw-byte",
       tileSizePx: LAYER_STORAGE_TILE_SIZE,
       bytesPerPixel,
       actualRawMiB: estimate.actualRawMiB,
+      eagerFullRawMiB: estimate.eagerFullRawMiB,
       projectedExactRawMiB,
       projectedConservativeRawMiB: estimate.projectedConservativeRawMiB,
       projectedAlignedBboxRawMiB: estimate.projectedAlignedBboxRawMiB,
-      exactSavingsMiB: Math.max(0, estimate.actualRawMiB - projectedExactRawMiB),
+      exactSavingsMiB: Math.max(0, estimate.eagerFullRawMiB - projectedExactRawMiB),
       totalMissedExactTiles: layers.reduce(
         (total, layer) => total + layer.missedExactTiles,
         0,
@@ -5194,6 +5268,7 @@ export class BrushEngine {
     historyStampRetentionStrategy: typeof HISTORY_STAMP_RETENTION_STRATEGY;
   } {
     const effectsScratch = this.effectsWorkbench?.scratchPool.snapshot();
+    const layerStorageStudy = this.getLayerStorageStudy();
     const bevelField = this.rasterBevelRenderer?.fieldState ?? {
       bounded: this.bevelBoundingFieldEnabled,
       allocationBounds: null,
@@ -5210,12 +5285,12 @@ export class BrushEngine {
       canvasHeight: this.canvas.height,
       layerSize: LAYER_SIZE,
       layerFormat: this.layerFormat,
-      layerMemoryMiB: (this.layerFormat === "rgba16float" ? 128 : 64) * this.layerGpu.size,
+      layerMemoryMiB: layerStorageStudy.actualRawMiB,
       layerCount: this.layerStack.count,
       activeLayerId: this.layerStack.active.id,
       layerBakeStrategy: LAYER_BAKE_STRATEGY,
       layerCompositeStrategy: LAYER_COMPOSITE_STRATEGY,
-      layerStorageStudy: this.getLayerStorageStudy(),
+      layerStorageStudy,
       gpuLabel: this.gpuLabel,
       effectsWorkingSetStrategy: EFFECTS_WORKING_SET_STRATEGY,
       effectsWorkingSetGeneration: this.effectsWorkbench?.generation ?? 0,
@@ -6488,17 +6563,279 @@ export class BrushEngine {
     label: string,
   ): Promise<LayerGpuResources> {
     return runGpuAllocationTransaction(this.device, label, (transaction) => {
-      const textureResources = this.allocateLayerTexture(format);
-      transaction.deferRollback(() => textureResources.texture.destroy());
-      return { ...textureResources, bake: null, bakeValid: false };
+      const hot = this.allocateLayerTexture(format);
+      transaction.deferRollback(() => hot.texture.destroy());
+      return { hot, cold: null, bake: null, bakeValid: false };
     });
   }
+
+  private createColdLayerGpuResources(): LayerGpuResources {
+    return { hot: null, cold: null, bake: null, bakeValid: false };
+  }
+
   private requireLayerGpu(layerId: number): LayerGpuResources {
     const gpu = this.layerGpu.get(layerId);
     if (!gpu) {
       throw new Error(`Risorse GPU del livello ${layerId} non allocate.`);
     }
     return gpu;
+  }
+
+  private requireLayerHot(layerId: number): LayerTextureResources {
+    const hot = this.requireLayerGpu(layerId).hot;
+    if (!hot) {
+      throw new Error(`Texture full-canvas del livello ${layerId} non residente.`);
+    }
+    return hot;
+  }
+
+  injectLayerColdStorageFault(...faultPoints: LayerColdStorageFaultPoint[]): void {
+    if (!import.meta.env.DEV) {
+      throw new Error("Iniezione guasti cold storage disponibile solo in modalità dev.");
+    }
+    if (faultPoints.length === 0) {
+      throw new Error("Specifica almeno un punto di guasto del cold storage.");
+    }
+    this.layerColdStorageFaultQueue = [...faultPoints];
+  }
+
+  private maybeInjectLayerColdStorageFault(point: LayerColdStorageFaultPoint): void {
+    if (!import.meta.env.DEV || this.layerColdStorageFaultQueue[0] !== point) {
+      return;
+    }
+    this.layerColdStorageFaultQueue.shift();
+    throw new Error(`Guasto iniettato nel cold storage: ${point}.`);
+  }
+
+  private destroyLayerColdStorage(cold: LayerColdStorageResources | null | undefined): void {
+    cold?.texture.destroy();
+  }
+
+  private destroyLayerHot(hot: LayerTextureResources | null | undefined): void {
+    hot?.texture.destroy();
+  }
+
+  private destroyTransientLayerHydration(hot: LayerTextureResources | null | undefined): void {
+    if (!hot) {
+      return;
+    }
+    this.liveLayerHydrationTextures.delete(hot.texture);
+    hot.texture.destroy();
+  }
+
+  private destroyLayerGpuResources(gpu: LayerGpuResources): void {
+    this.destroyLayerBake(gpu.bake);
+    this.destroyLayerColdStorage(gpu.cold);
+    this.destroyLayerHot(gpu.hot);
+    gpu.bake = null;
+    gpu.bakeValid = false;
+    gpu.cold = null;
+    gpu.hot = null;
+  }
+
+  private coldStorageMaskForRecord(record: LayerRecord): Uint32Array {
+    const mask = record.storageTileMask.slice();
+    if (record.contentBounds) {
+      // The bbox is an independent conservative fallback. A future writer that
+      // forgets the sparse bit still cannot silently discard a pixel inside the
+      // document-wide bounds.
+      markLayerStorageRect(mask, record.contentBounds);
+    }
+    if (record.hasContent && countLayerStorageTiles(mask) === 0) {
+      // Last-resort safety for inconsistent metadata: keep the whole layer.
+      // This loses the memory win, never the user pixels.
+      mask.fill(0xffffffff);
+    }
+    return mask;
+  }
+
+  private async createLayerColdStorageCandidate(
+    record: LayerRecord,
+    hot: LayerTextureResources,
+    mask: Uint32Array,
+    generation: number,
+  ): Promise<LayerColdStorageResources> {
+    const tileIndices = layerStorageTileIndices(mask);
+    if (tileIndices.length === 0) {
+      throw new Error(`Cold storage livello ${record.id}: contenuto senza tile.`);
+    }
+    if (tileIndices.length > this.device.limits.maxTextureArrayLayers) {
+      throw new Error(
+        `Cold storage livello ${record.id}: ${tileIndices.length} tile superano `
+        + `maxTextureArrayLayers=${this.device.limits.maxTextureArrayLayers}.`,
+      );
+    }
+    const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
+    const memoryBytes = tileIndices.length
+      * LAYER_STORAGE_TILE_SIZE
+      * LAYER_STORAGE_TILE_SIZE
+      * bytesPerPixel;
+    return runGpuAllocationTransaction(
+      this.device,
+      `Pack cold livello ${record.id}`,
+      async (transaction) => {
+        const texture = this.device.createTexture({
+          label: `Cold tile livello ${record.id} #${generation}`,
+          size: {
+            width: LAYER_STORAGE_TILE_SIZE,
+            height: LAYER_STORAGE_TILE_SIZE,
+            depthOrArrayLayers: tileIndices.length,
+          },
+          format: this.layerFormat,
+          usage:
+            GPUTextureUsage.COPY_SRC
+            | GPUTextureUsage.COPY_DST
+            | GPUTextureUsage.TEXTURE_BINDING,
+        });
+        transaction.deferRollback(() => texture.destroy());
+        const encoder = this.device.createCommandEncoder({
+          label: `Pack cold livello ${record.id} #${generation}`,
+        });
+        tileIndices.forEach((tileIndex, arrayLayer) => {
+          const tileX = tileIndex % LAYER_STORAGE_GRID_SIZE;
+          const tileY = Math.floor(tileIndex / LAYER_STORAGE_GRID_SIZE);
+          encoder.copyTextureToTexture(
+            {
+              texture: hot.texture,
+              origin: {
+                x: tileX * LAYER_STORAGE_TILE_SIZE,
+                y: tileY * LAYER_STORAGE_TILE_SIZE,
+                z: 0,
+              },
+            },
+            { texture, origin: { x: 0, y: 0, z: arrayLayer } },
+            {
+              width: LAYER_STORAGE_TILE_SIZE,
+              height: LAYER_STORAGE_TILE_SIZE,
+              depthOrArrayLayers: 1,
+            },
+          );
+        });
+        this.device.queue.submit([encoder.finish()]);
+        await this.waitForGpuCapped(`Pack cold livello ${record.id}`);
+        this.maybeInjectLayerColdStorageFault("after-pack-submit");
+        return { texture, tileIndices, memoryBytes, generation };
+      },
+    );
+  }
+
+  private async freezeActiveLayerToCold(): Promise<void> {
+    const record = this.layerStack.active;
+    const gpu = this.requireLayerGpu(record.id);
+    const hot = this.requireLayerHot(record.id);
+    const previous = gpu.cold;
+    if (!record.hasContent) {
+      gpu.cold = null;
+      this.destroyLayerColdStorage(previous);
+      return;
+    }
+    const mask = this.coldStorageMaskForRecord(record);
+    const generation = (previous?.generation ?? 0) + 1;
+    const candidate = await this.createLayerColdStorageCandidate(
+      record,
+      hot,
+      mask,
+      generation,
+    );
+    gpu.cold = candidate;
+    record.storageTileMask.set(mask);
+    this.destroyLayerColdStorage(previous);
+  }
+
+  private releaseActiveColdDuplicate(): void {
+    const gpu = this.requireLayerGpu(this.layerStack.active.id);
+    this.destroyLayerColdStorage(gpu.cold);
+    gpu.cold = null;
+  }
+
+  private encodeLayerColdHydration(
+    encoder: GPUCommandEncoder,
+    cold: LayerColdStorageResources,
+    hot: LayerTextureResources,
+  ): void {
+    cold.tileIndices.forEach((tileIndex, arrayLayer) => {
+      const tileX = tileIndex % LAYER_STORAGE_GRID_SIZE;
+      const tileY = Math.floor(tileIndex / LAYER_STORAGE_GRID_SIZE);
+      encoder.copyTextureToTexture(
+        { texture: cold.texture, origin: { x: 0, y: 0, z: arrayLayer } },
+        {
+          texture: hot.texture,
+          origin: {
+            x: tileX * LAYER_STORAGE_TILE_SIZE,
+            y: tileY * LAYER_STORAGE_TILE_SIZE,
+            z: 0,
+          },
+        },
+        {
+          width: LAYER_STORAGE_TILE_SIZE,
+          height: LAYER_STORAGE_TILE_SIZE,
+          depthOrArrayLayers: 1,
+        },
+      );
+    });
+  }
+
+  private async createHydratedLayerTexture(
+    record: LayerRecord,
+    gpu: LayerGpuResources,
+    label: string,
+    injectFault: boolean,
+  ): Promise<LayerTextureResources> {
+    const cold = gpu.cold;
+    if (record.hasContent && !cold) {
+      throw new Error(`Reidratazione livello ${record.id}: cold store mancante.`);
+    }
+    const memoryBytes = LAYER_SIZE * LAYER_SIZE
+      * (this.layerFormat === "rgba16float" ? 8 : 4);
+    return runGpuAllocationTransaction(
+      this.device,
+      label,
+      async (transaction) => {
+        const hot = this.allocateLayerTexture(this.layerFormat);
+        this.liveLayerHydrationTextures.set(hot.texture, memoryBytes);
+        transaction.deferRollback(() => this.destroyTransientLayerHydration(hot));
+        if (cold) {
+          const encoder = this.device.createCommandEncoder({ label });
+          this.encodeLayerColdHydration(encoder, cold, hot);
+          this.device.queue.submit([encoder.finish()]);
+          await this.waitForGpuCapped(label);
+          if (injectFault) {
+            this.maybeInjectLayerColdStorageFault("after-hydrate-submit");
+          }
+        }
+        return hot;
+      },
+    );
+  }
+
+  private async ensureActiveLayerHot(record: LayerRecord): Promise<void> {
+    const gpu = this.requireLayerGpu(record.id);
+    if (gpu.hot) {
+      return;
+    }
+    const hot = await this.createHydratedLayerTexture(
+      record,
+      gpu,
+      `Reidrata livello ${record.id}`,
+      true,
+    );
+    gpu.hot = hot;
+    this.liveLayerHydrationTextures.delete(hot.texture);
+  }
+
+  private commitActiveLayerResidency(fromIndex: number): void {
+    const activeGpu = this.requireLayerGpu(this.layerStack.active.id);
+    this.requireLayerHot(this.layerStack.active.id);
+    this.destroyLayerColdStorage(activeGpu.cold);
+    activeGpu.cold = null;
+
+    const previousRecord = this.layerStack.at(fromIndex);
+    if (previousRecord.id === this.layerStack.active.id) {
+      return;
+    }
+    const previousGpu = this.requireLayerGpu(previousRecord.id);
+    this.destroyLayerHot(previousGpu.hot);
+    previousGpu.hot = null;
   }
 
   private invalidateActiveLayerBake(): void {
@@ -6610,9 +6947,25 @@ export class BrushEngine {
     }
   }
 
+  private async prepareActiveLayerForSwitch(): Promise<void> {
+    await this.bakeActiveLayerForSwitch();
+    try {
+      await this.freezeActiveLayerToCold();
+    } catch (error) {
+      // The raw full-canvas and workbench still point at the active layer, so a
+      // completed bake is only an abandoned hand-off candidate. Keep neither a
+      // memory leak nor a misleading valid flag after a failed cold pack.
+      const gpu = this.requireLayerGpu(this.layerStack.active.id);
+      this.destroyLayerBake(gpu.bake);
+      gpu.bake = null;
+      gpu.bakeValid = false;
+      throw error;
+    }
+  }
   private async bakeActiveLayerForSwitchAttempt(): Promise<void> {
     const record = this.layerStack.active;
     const gpu = this.requireLayerGpu(record.id);
+    const hot = this.requireLayerHot(record.id);
     const requirements = layerEffectRendererRequirements(
       record.strokeStyle,
       normalizeRasterBevelStyle(record.bevelStyle),
@@ -6636,8 +6989,8 @@ export class BrushEngine {
       throw new Error("Bake impossibile: compositore effetti non disponibile.");
     }
     if (
-      this.layerView !== gpu.view
-      || workbench.sourceView !== gpu.view
+      this.layerView !== hot.view
+      || workbench.sourceView !== hot.view
       || this.layerStack.active.id !== record.id
     ) {
       throw new Error("Bake rifiutato: il banco effetti non punta al livello uscente.");
@@ -6717,10 +7070,10 @@ export class BrushEngine {
 
   /** Points the engine's active-layer fields at one layer's resources. */
   private bindActiveLayerResources(): void {
-    const gpu = this.requireLayerGpu(this.layerStack.active.id);
-    this.layerTexture = gpu.texture;
-    this.layerView = gpu.view;
-    this.layerSamplingView = gpu.samplingView;
+    const hot = this.requireLayerHot(this.layerStack.active.id);
+    this.layerTexture = hot.texture;
+    this.layerView = hot.view;
+    this.layerSamplingView = hot.samplingView;
     this.rebuildActiveLayerPyramidBindings();
     this.rebuildLayerDisplayBindGroups();
   }
@@ -6769,6 +7122,7 @@ export class BrushEngine {
     texture: GPUTexture;
     view: GPUTextureView;
     transientBake: LayerBakeResources | null;
+    transientHydration: LayerTextureResources | null;
     nonTransparentBounds: DirtyRect;
   }> {
     const gpu = this.requireLayerGpu(record.id);
@@ -6776,11 +7130,37 @@ export class BrushEngine {
       record.strokeStyle,
       normalizeRasterBevelStyle(record.bevelStyle),
     );
+    if (gpu.bake && gpu.bakeValid) {
+      return {
+        texture: gpu.bake.texture,
+        view: gpu.bake.samplingView,
+        transientBake: null,
+        transientHydration: null,
+        // The analytic style stack may extend beyond the raw content bounds.
+        // Keep the full document until every mode has a proven visual-bounds
+        // helper; this path is still byte-identical and only for styled layers.
+        nonTransparentBounds: { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE },
+      };
+    }
+
+    const transientHydration = gpu.hot
+      ? null
+      : await this.createHydratedLayerTexture(
+        record,
+        gpu,
+        `Fold reidratazione livello ${record.id}`,
+        false,
+      );
+    const hot = gpu.hot ?? transientHydration;
+    if (!hot) {
+      throw new Error(`Fold livello ${record.id}: sorgente full-canvas mancante.`);
+    }
     if (!requirements.needsStrokeRenderer) {
       return {
-        texture: gpu.texture,
-        view: gpu.view,
+        texture: hot.texture,
+        view: hot.view,
         transientBake: null,
+        transientHydration,
         nonTransparentBounds: this.normalizeLayerRect(record.contentBounds) ?? {
           x: 0,
           y: 0,
@@ -6789,35 +7169,30 @@ export class BrushEngine {
         },
       };
     }
-    if (gpu.bake && gpu.bakeValid) {
+
+    try {
+      await this.ensureEffectRenderersForRecord(record);
+      await this.retargetEffectsWorkingSetInternal(
+        hot.view,
+        this.layerFormat,
+        record.contentBounds,
+        caller,
+        record,
+        false,
+        false,
+      );
+      const transientBake = await this.createLayerBakeCandidate(record, 1, false);
       return {
-        texture: gpu.bake.texture,
-        view: gpu.bake.samplingView,
-        transientBake: null,
-        // The analytic style stack may extend beyond the raw content bounds.
-        // Keep the full document until every mode has a proven visual-bounds
-        // helper; this path is still byte-identical and only for styled layers.
+        texture: transientBake.texture,
+        view: transientBake.samplingView,
+        transientBake,
+        transientHydration,
         nonTransparentBounds: { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE },
       };
+    } catch (error) {
+      this.destroyTransientLayerHydration(transientHydration);
+      throw error;
     }
-
-    await this.ensureEffectRenderersForRecord(record);
-    await this.retargetEffectsWorkingSetInternal(
-      gpu.view,
-      this.layerFormat,
-      record.contentBounds,
-      caller,
-      record,
-      false,
-      false,
-    );
-    const transientBake = await this.createLayerBakeCandidate(record, 1, false);
-    return {
-      texture: transientBake.texture,
-      view: transientBake.samplingView,
-      transientBake,
-      nonTransparentBounds: { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE },
-    };
   }
 
   private encodeMergedSurfacePyramid(
@@ -6970,6 +7345,7 @@ export class BrushEngine {
             first = false;
           } finally {
             this.destroyLayerBake(source.transientBake);
+            this.destroyTransientLayerHydration(source.transientHydration);
           }
         }
 
@@ -6995,13 +7371,13 @@ export class BrushEngine {
     force = false,
   ): Promise<void> {
     const record = this.layerStack.active;
-    const gpu = this.requireLayerGpu(record.id);
-    if (!force && this.effectsWorkbench?.sourceView === gpu.view) {
+    const hot = this.requireLayerHot(record.id);
+    if (!force && this.effectsWorkbench?.sourceView === hot.view) {
       return;
     }
     await this.ensureEffectRenderersForRecord(record);
     await this.retargetEffectsWorkingSetInternal(
-      gpu.view,
+      hot.view,
       this.layerFormat,
       record.contentBounds,
       caller,
@@ -7094,7 +7470,7 @@ export class BrushEngine {
       await this.waitForIdle();
       const fromIndex = this.layerStack.activeIndex;
       this.persistActiveLayerState();
-      await this.bakeActiveLayerForSwitch();
+      await this.prepareActiveLayerForSwitch();
       const index = this.layerStack.add(name);
       const record = this.layerStack.at(index);
       let gpu: LayerGpuResources;
@@ -7113,6 +7489,7 @@ export class BrushEngine {
         // allocating the new mip 0 fails before activation, no fusion consumes
         // it, so release it explicitly and restore zero steady-state bake memory.
         this.releaseFusedLayerBakes();
+        this.releaseActiveColdDuplicate();
         throw error;
       }
       try {
@@ -7141,12 +7518,14 @@ export class BrushEngine {
         }
         this.layerGpu.delete(record.id);
         this.layerStack.remove(index);
-        this.destroyLayerBake(gpu.bake);
-        gpu.texture.destroy();
+        this.destroyLayerGpuResources(gpu);
         throw error;
       }
     } finally {
       this.layerSwitchBusy = false;
+      if (import.meta.env.DEV) {
+        this.layerColdStorageFaultQueue = [];
+      }
       this.publishHistoryState();
       this.publishStats();
     }
@@ -7168,7 +7547,7 @@ export class BrushEngine {
     try {
       await this.waitForIdle();
       this.persistActiveLayerState();
-      await this.bakeActiveLayerForSwitch();
+      await this.prepareActiveLayerForSwitch();
       this.layerStack.setActiveIndex(index);
       activationStarted = true;
       return await this.activateLayer(fromIndex);
@@ -7197,6 +7576,9 @@ export class BrushEngine {
       throw error;
     } finally {
       this.layerSwitchBusy = false;
+      if (import.meta.env.DEV) {
+        this.layerColdStorageFaultQueue = [];
+      }
       this.publishHistoryState();
       this.publishStats();
     }
@@ -7335,6 +7717,7 @@ export class BrushEngine {
   ): Promise<LayerSwitchResult> {
     const startedAt = performance.now();
     const record = this.layerStack.active;
+    await this.ensureActiveLayerHot(record);
     this.bindActiveLayerResources();
     this.layerContentBounds = record.contentBounds;
     this.layerHasContent = record.hasContent;
@@ -7363,6 +7746,7 @@ export class BrushEngine {
     );
     const effectsMs = performance.now() - effectsStartedAt;
     await this.rebuildMergedLayerSurfaces(caller);
+    this.commitActiveLayerResidency(fromIndex);
 
     this.presentationCacheNeedsFullRebuild = true;
     this.displayDirty = true;
@@ -8040,15 +8424,18 @@ export class BrushEngine {
       nextTransparentTexture = displayInfrastructure.transparentTexture;
       nextTransparentView = displayInfrastructure.transparentView;
       for (const record of this.layerStack.layers) {
-        const gpu = await this.allocateLayerGpuResources(
-          format,
-          `Cambio formato: livello ${record.id}`,
-        );
+        const gpu = record.id === this.layerStack.active.id
+          ? await this.allocateLayerGpuResources(
+            format,
+            `Cambio formato: livello ${record.id}`,
+          )
+          : this.createColdLayerGpuResources();
         replacement.set(record.id, gpu);
       }
 
       const activeGpu = replacement.get(this.layerStack.active.id);
-      if (!activeGpu) {
+      const activeHot = activeGpu?.hot;
+      if (!activeGpu || !activeHot) {
         throw new Error("Risorse candidate mancanti per il livello attivo.");
       }
       blendRenderer = await runGpuAllocationTransaction(
@@ -8060,8 +8447,8 @@ export class BrushEngine {
             documentWidth: LAYER_SIZE,
             documentHeight: LAYER_SIZE,
             layerFormat: format,
-            layerView: activeGpu.view,
-            layerSamplingView: activeGpu.samplingView,
+            layerView: activeHot.view,
+            layerSamplingView: activeHot.samplingView,
             shapeMaskView: this.shapeMaskView,
             shapeMaskSampler: this.shapeMaskSampler,
             grainTextureView: this.grainTextureView,
@@ -8073,7 +8460,7 @@ export class BrushEngine {
       );
       nextEffectsWorkbench = new EffectsWorkbench({
         device: this.device,
-        view: activeGpu.view,
+        view: activeHot.view,
         format,
         canReallocateScratch: () => this.activeStroke === null,
         initialScratchPeakBytes: previousScratchPeakBytes,
@@ -8086,14 +8473,16 @@ export class BrushEngine {
       nextDisplayPyramid?.texture.destroy();
       nextTransparentTexture?.destroy();
       for (const gpu of replacement.values()) {
-        gpu.texture.destroy();
+        this.destroyLayerGpuResources(gpu);
       }
       throw error;
     }
 
     const activeGpu = replacement.get(this.layerStack.active.id);
+    const activeHot = activeGpu?.hot;
     if (
       !activeGpu
+      || !activeHot
       || !blendRenderer
       || !nextEffectsWorkbench
       || !nextDisplayPyramid
@@ -8105,11 +8494,11 @@ export class BrushEngine {
       nextDisplayPyramid?.texture.destroy();
       nextTransparentTexture?.destroy();
       for (const gpu of replacement.values()) {
-        gpu.texture.destroy();
+        this.destroyLayerGpuResources(gpu);
       }
       throw new Error("Transazione cambio formato incompleta.");
     }
-    const { texture, view, samplingView } = activeGpu;
+    const { texture, view, samplingView } = activeHot;
 
     this.destroyLightGlazeResources();
     this.destroyThicknessTailOverlayResources();
@@ -8180,8 +8569,7 @@ export class BrushEngine {
     this.destroyMergedSurface(supersededMergedBelow);
     this.destroyMergedSurface(supersededMergedAbove);
     for (const gpu of supersededLayerGpu) {
-      this.destroyLayerBake(gpu.bake);
-      gpu.texture.destroy();
+      this.destroyLayerGpuResources(gpu);
     }
   }
 
@@ -9996,15 +10384,12 @@ export class BrushEngine {
       const previousActiveIndex = this.layerStack.activeIndex;
       const targetIndex = this.historyStepTargetLayerIndex(delta);
       const switched = targetIndex !== null && targetIndex !== previousActiveIndex;
-      const targetBakeWasValid = targetIndex === null
-        ? false
-        : this.requireLayerGpu(this.layerStack.at(targetIndex).id).bakeValid;
       if (switched) {
-        // Freeze the outgoing visible result before the one shared workbench is
-        // pointed elsewhere. A bake failure happens before any cursor/index/GPU
-        // target mutation, so it needs no history rollback.
+        // Freeze both the visible effect result and the authoritative raw tiles
+        // before the shared workbench is pointed elsewhere. Neither candidate is
+        // published until its GPU copy completes.
         this.persistActiveLayerState();
-        await this.bakeActiveLayerForSwitch();
+        await this.prepareActiveLayerForSwitch();
       }
       let replayAttempted = false;
       try {
@@ -10021,16 +10406,18 @@ export class BrushEngine {
 
         // If replay was entered, it may already have submitted a clear or one or
         // more batches. Restore the TARGET while it is still active and while the
-        // cursor again describes the pre-operation document.
+        // cursor again describes the pre-operation document. A switched target
+        // must then receive a fresh cold candidate before reverse activation is
+        // allowed to release its repaired full texture.
+        let targetPreparedForRelease = !replayAttempted;
         if (replayAttempted) {
           try {
             await this.rebuildActiveLayerFromHistory();
-            // The target is again byte-for-byte the pre-operation document, so
-            // its pre-existing inactive bake has the same validity it had before
-            // replay dirtied the active-layer flag. No new allocation is needed
-            // inside the rollback path.
-            this.requireLayerGpu(this.layerStack.active.id).bakeValid =
-              targetBakeWasValid;
+            if (switched) {
+              this.persistActiveLayerState();
+              await this.prepareActiveLayerForSwitch();
+            }
+            targetPreparedForRelease = true;
           } catch (restoreTargetError) {
             rollbackErrors.push(restoreTargetError);
           }
@@ -10038,8 +10425,10 @@ export class BrushEngine {
 
         // activateLayer itself can fail after binding engine fields and Blend but
         // before retargeting the effects workbench. switched is derived before
-        // that await, so this reverse activation also repairs a half-switch.
-        if (switched) {
+        // that await, so this reverse activation also repairs a half-switch. If
+        // target recovery/packing failed, keep its full texture alive and latch
+        // the document instead of silently discarding the only valid copy.
+        if (switched && targetPreparedForRelease) {
           try {
             this.layerStack.setActiveIndex(previousActiveIndex);
             await this.activateLayer(targetIndex, "history-replay");
@@ -10091,6 +10480,7 @@ export class BrushEngine {
         // unrelated Undo/Redo. Multi-point rollback probes are consumed before
         // this outer transaction finally runs.
         this.historyReplayFaultQueue = [];
+        this.layerColdStorageFaultQueue = [];
       }
       this.publishHistoryState();
       this.scheduleEffectsScratchShrink();

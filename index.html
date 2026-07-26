@@ -578,9 +578,11 @@
             </header>
             <p class="gpu-memory-subtitle">Risorse WebGPU create dal motore</p>
             <dl class="gpu-memory-list">
-              <div data-memory-row><dt>Layer · livello 0</dt><dd id="gpuMemoryLayerBase">—</dd></div>
-              <div class="gpu-memory-study" data-memory-study-row><dt id="gpuMemoryLayerStudyTilesLabel">Studio cold · tile 256 · non allocato</dt><dd id="gpuMemoryLayerStudyTiles">—</dd></div>
-              <div class="gpu-memory-study" data-memory-study-row><dt id="gpuMemoryLayerStudyBboxLabel">Studio cold · bbox 256 · non allocato</dt><dd id="gpuMemoryLayerStudyBbox">—</dd></div>
+              <div data-memory-row><dt>Layer · attivo full-canvas</dt><dd id="gpuMemoryLayerBase">—</dd></div>
+              <div data-memory-row><dt>Layer · inattivi cold tile</dt><dd id="gpuMemoryLayerCold">—</dd></div>
+              <div data-memory-row><dt>Layer · reidratazione transitoria</dt><dd id="gpuMemoryLayerHydration">—</dd></div>
+              <div class="gpu-memory-study" data-memory-study-row><dt id="gpuMemoryLayerStudyTilesLabel">Raw livelli · hot + cold effettivo</dt><dd id="gpuMemoryLayerStudyTiles">—</dd></div>
+              <div class="gpu-memory-study" data-memory-study-row><dt id="gpuMemoryLayerStudyBboxLabel">Confronto · bbox 256</dt><dd id="gpuMemoryLayerStudyBbox">—</dd></div>
               <div data-memory-row><dt>Mip · attivo e superfici fuse</dt><dd id="gpuMemoryLayerMips">—</dd></div>
               <div data-memory-row><dt>Bake livelli · transitori</dt><dd id="gpuMemoryLayerBakes">—</dd></div>
               <div data-memory-row><dt>Livelli fusi · mip 0</dt><dd id="gpuMemoryLayerComposite">—</dd></div>

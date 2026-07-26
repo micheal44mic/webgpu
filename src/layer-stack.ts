@@ -38,8 +38,9 @@ export interface LayerRecord {
   /** Conservative union of everything ever painted, in document space. */
   contentBounds: LayerRect | null;
   /**
-   * Measurement-only 16×16 mask of raw-layer mutation tiles. It allocates 32 B
-   * of CPU metadata per layer and does not change GPU storage in commit 14a.
+   * Conservative 16×16 mask of raw-layer mutation tiles. It allocates 32 B of
+   * CPU metadata per layer and selects the 256×256 GPU tiles retained while
+   * this layer is inactive.
    */
   storageTileMask: LayerStorageTileMask;
   hasContent: boolean;

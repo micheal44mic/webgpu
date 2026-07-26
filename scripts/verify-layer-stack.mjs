@@ -10,7 +10,7 @@ import { runGpuAllocationTransaction } from "../src/gpu-allocation-transaction.t
 import {
   LAYER_STORAGE_GRID_SIZE,
   LAYER_STORAGE_MASK_WORD_COUNT,
-  LAYER_STORAGE_STUDY_STRATEGY,
+  LAYER_STORAGE_STRATEGY,
   LAYER_STORAGE_TILE_COUNT,
   alignedBoundsTileCount,
   clearLayerStorageTileMask,
@@ -20,6 +20,7 @@ import {
   exactLayerStorageTileMask,
   layerStorageTileMemoryMiB,
   markLayerStorageRect,
+  layerStorageTileIndices,
 } from "../src/layer-storage-study.ts";
 
 assert.equal(
@@ -189,11 +190,11 @@ const newStack = () => new LayerStack(createStyles);
   assert.throws(() => stack.add(), /Massimo/);
 }
 
-// Commit 14a is measurement-only: one 32-byte conservative mask per layer,
-// fixed 256² tiles over the 4096² document, and no GPU storage change.
+// Commit 14b keeps one active full canvas and stores each inactive layer as a
+// deterministic 256² texture array keyed by the 32-byte conservative mask.
 assert.equal(
-  LAYER_STORAGE_STUDY_STRATEGY,
-  "measure-only-active-full-inactive-256-dirty-tiles-vs-aligned-bbox",
+  LAYER_STORAGE_STRATEGY,
+  "single-active-full-inactive-256-array-tiles-rehydrate-fold",
 );
 assert.equal(LAYER_STORAGE_GRID_SIZE, 16);
 assert.equal(LAYER_STORAGE_TILE_COUNT, 256);
@@ -229,7 +230,7 @@ assert.equal(LAYER_STORAGE_MASK_WORD_COUNT * Uint32Array.BYTES_PER_ELEMENT, 32);
   assert.equal(countLayerStorageTiles(mask), 0);
 }
 
-// Sparse corners demonstrate the question 14a exists to answer: two occupied
+// Sparse corners demonstrate the storage win: two occupied
 // pages versus a full-document aligned bbox.
 {
   const mask = createLayerStorageTileMask();
@@ -246,6 +247,16 @@ assert.equal(LAYER_STORAGE_MASK_WORD_COUNT * Uint32Array.BYTES_PER_ELEMENT, 32);
   assert.equal(layerStorageTileMemoryMiB(256, 8), 128);
 }
 
+// Array slices must be deterministic because hydration uses the same ordered
+// list to map each slice back to its document tile.
+{
+  const mask = createLayerStorageTileMask();
+  markLayerStorageRect(mask, { x: 4095, y: 4095, width: 1, height: 1 });
+  markLayerStorageRect(mask, { x: 0, y: 256, width: 1, height: 1 });
+  markLayerStorageRect(mask, { x: 3840, y: 0, width: 1, height: 1 });
+  markLayerStorageRect(mask, { x: 0, y: 0, width: 1, height: 1 });
+  assert.deepEqual(layerStorageTileIndices(mask), [0, 15, 16, 255]);
+}
 // Exact occupancy means any non-zero raw byte, not alpha. This preserves a
 // future or malformed transparent-RGB texel byte-for-byte.
 {
@@ -406,15 +417,19 @@ assert.match(
   /async readLayerPixels\(rect\?: DirtyRect, layerIndex\?: number\): Promise<Uint8Array>/,
 );
 // Reading a NAMED layer is what makes the test bilateral: "A kept its pixels
-// while B was rebuilt" needs both textures, and the active one cannot say it.
-assert.match(
-  engineSource,
-  /const target = layerIndex === undefined\s*\?\s*this\.layerTexture\s*:\s*this\.requireLayerGpu\(this\.layerStack\.at\(layerIndex\)\.id\)\.texture/,
-);
+// while B was rebuilt" needs both records. Cold records are rehydrated only for
+// the probe and the temporary full texture must be released in finally.
 const probeStart = engineSource.indexOf("async readLayerPixels(");
 const probeBody = engineSource.slice(probeStart, probeStart + 2_600);
 assert.match(probeBody, /import\.meta\.env\.DEV/, "la sonda deve restare solo-dev");
-assert.match(probeBody, /return this\.readTexturePixels\(target, rect, "livello"\)/);
+assert.match(probeBody, /const record = layerIndex === undefined/);
+assert.match(probeBody, /if \(gpu\.hot\)/);
+assert.match(probeBody, /await this\.createHydratedLayerTexture\(/);
+assert.match(
+  probeBody,
+  /finally \{\s*this\.destroyTransientLayerHydration\(hydration\);/,
+  "la sonda cold deve sempre rilasciare la reidratazione full-canvas",
+);
 const textureProbeStart = engineSource.indexOf("private async readTexturePixels(");
 const textureProbeBody = engineSource.slice(textureProbeStart, textureProbeStart + 3_000);
 assert.match(textureProbeBody, /copyTextureToBuffer/);
@@ -604,9 +619,9 @@ const mainSource = readFileSync(
   "utf8",
 );
 assert.equal(
-  (mainSource.match(/performanceTelemetryRevision: 46/g) ?? []).length,
+  (mainSource.match(/performanceTelemetryRevision: 47/g) ?? []).length,
   2,
-  "tipo persistito e runtime devono avanzare insieme alla revisione 46",
+  "tipo persistito e runtime devono avanzare insieme alla revisione 47",
 );
 assert.match(mainSource, /layerBakeStrategy: string;/);
 assert.match(mainSource, /layerCompositeStrategy: string;/);
@@ -694,8 +709,17 @@ assert.match(
 // switch before the awaited activation, restore a partially written TARGET under
 // the old cursor, then reactivate the original layer. Reversing the last two loses
 // pixels while CPU cursor/index state still looks correct.
+const prepareStart = engineSource.indexOf("private async prepareActiveLayerForSwitch(");
+const prepareBody = engineSource.slice(prepareStart, prepareStart + 1_300);
+assert.ok(
+  prepareBody.indexOf("await this.bakeActiveLayerForSwitch();")
+    < prepareBody.indexOf("await this.freezeActiveLayerToCold();"),
+  "la preparazione deve creare il bake prima di impacchettare il raw",
+);
+assert.match(prepareBody, /catch \(error\)[\s\S]*?this\.destroyLayerBake\(gpu\.bake\)/,
+  "un pack fallito deve rilasciare il bake di hand-off riuscito");
 const switchedDeclaration = cursorBody.indexOf("const switched =");
-const historyOutgoingBake = cursorBody.indexOf("await this.bakeActiveLayerForSwitch();");
+const historyOutgoingPrepare = cursorBody.indexOf("await this.prepareActiveLayerForSwitch();");
 const forwardIndexChange = cursorBody.indexOf("this.layerStack.setActiveIndex(targetIndex);");
 const forwardActivation = cursorBody.indexOf(
   'await this.activateLayer(previousActiveIndex, "history-replay");',
@@ -703,13 +727,17 @@ const forwardActivation = cursorBody.indexOf(
 assert.ok(switchedDeclaration >= 0 && switchedDeclaration < forwardActivation,
   "switched deve essere noto prima che activateLayer possa fallire");
 assert.ok(
-  historyOutgoingBake > switchedDeclaration && historyOutgoingBake < forwardIndexChange,
-  "Undo/Redo cross-layer deve congelare l'uscente prima di cambiare target",
+  historyOutgoingPrepare > switchedDeclaration && historyOutgoingPrepare < forwardIndexChange,
+  "Undo/Redo cross-layer deve preparare cold e bake prima di cambiare target",
 );
 const operationCatch = cursorBody.indexOf("catch (operationError)");
 const cursorRestore = cursorBody.indexOf("this.historyCursor = previousCursor;", operationCatch);
 const targetRestore = cursorBody.indexOf(
   "await this.rebuildActiveLayerFromHistory();",
+  operationCatch,
+);
+const rollbackPrepare = cursorBody.indexOf(
+  "await this.prepareActiveLayerForSwitch();",
   operationCatch,
 );
 const reverseIndex = cursorBody.indexOf(
@@ -724,23 +752,25 @@ assert.ok(
   operationCatch >= 0
     && cursorRestore > operationCatch
     && targetRestore > cursorRestore
-    && reverseIndex > targetRestore
+    && rollbackPrepare > targetRestore
+    && reverseIndex > rollbackPrepare
     && reverseActivation > reverseIndex,
-  "il rollback deve ripristinare target e cursore prima dello switch inverso completo",
+  "il rollback deve ripristinare, impacchettare e poi lasciare il target",
 );
 assert.match(cursorBody, /this\.historyStateInconsistent = true;/,
   "un rollback fallito deve alzare il latch fatale");
-assert.match(cursorBody, /bakeValid =\s*targetBakeWasValid/,
-  "un rollback byte-identico deve ripristinare anche la validità del bake preesistente");
+assert.match(cursorBody, /if \(switched && targetPreparedForRelease\)/,
+  "un pack fallito deve conservare il full-canvas e impedire lo switch inverso distruttivo");
 assert.match(cursorBody, /Ricarica la pagina prima di continuare/,
   "anche l'errore propagato alla UI deve dire che serve il reload");
 assert.match(cursorBody, /this\.historyBusy = this\.historyStateInconsistent;/,
   "il latch fatale deve mantenere bloccate le mutazioni");
 assert.match(cursorBody, /this\.historyReplayFaultQueue = \[\];/,
   "un fault point non consumato non deve contaminare la transazione successiva");
+assert.match(cursorBody, /this\.layerColdStorageFaultQueue = \[\];/,
+  "un fault cold non consumato non deve contaminare la transazione successiva");
 assert.match(engineSource, /inconsistent: this\.historyStateInconsistent/,
   "lo stato fatale deve essere osservabile dalla UI e dai test");
-
 // One fault point lands in the half-switch window, after engine/Blend changed
 // source but before the workbench; the other lands only after a real GPU submit.
 const activateStart = engineSource.indexOf("private async activateLayer(");
@@ -788,8 +818,8 @@ assert.match(mainSource, /window\.clearTimeout\(timeoutId\)/,
   "il timer dell'harness deve essere disarmato dopo successo o errore");
 assert.match(mainSource, /layerHistoryTestRunning = timedOut/,
   "dopo timeout la pagina deve restare bloccata perché Promise.race non cancella il test");
-assert.match(mainSource, /const failure = \{ version: 5, passed: false/);
-assert.match(layerHistoryGpuTestSource, /LAYER_HISTORY_GPU_TEST_VERSION = 5 as const/);
+assert.match(mainSource, /const failure = \{ version: 6, passed: false/);
+assert.match(layerHistoryGpuTestSource, /LAYER_HISTORY_GPU_TEST_VERSION = 6 as const/);
 assert.match(layerHistoryGpuTestSource, /measureActiveStyleBakeGap\(pRect\)/);
 assert.match(layerHistoryGpuTestSource, /engine\.injectLayerBakeFault\("after-candidate-submit"\)/);
 assert.match(layerHistoryGpuTestSource, /injectedBakeFailureReleasedCandidate/);
@@ -861,37 +891,39 @@ assert.match(ensureBody, /this\.rasterStrokeRenderer\.resizeScratch\(scratchExte
 // can reject. Rollback therefore has to run the complete activation path back
 // to the outgoing layer; rebinding only the texture is not sufficient.
 const selectMethodStart = engineSource.indexOf("async setActiveLayer(");
-const selectMethodBody = engineSource.slice(selectMethodStart, selectMethodStart + 2_200);
+const selectMethodBody = engineSource.slice(selectMethodStart, selectMethodStart + 2_600);
 assert.match(selectMethodBody, /activationStarted = true/);
+const selectPrepare = selectMethodBody.indexOf("await this.prepareActiveLayerForSwitch();");
+const selectIndexChange = selectMethodBody.indexOf("this.layerStack.setActiveIndex(index);");
 assert.ok(
-  selectMethodBody.indexOf("await this.bakeActiveLayerForSwitch();")
-    < selectMethodBody.indexOf("this.layerStack.setActiveIndex(index);"),
-  "setActiveLayer deve completare il bake prima di cambiare indice",
+  selectPrepare >= 0 && selectIndexChange > selectPrepare,
+  "setActiveLayer deve completare bake e pack prima di cambiare indice",
 );
 assert.match(selectMethodBody, /this\.layerStack\.setActiveIndex\(fromIndex\);[\s\S]*?await this\.activateLayer\(index\);/,
   "il rollback dello switch deve ritargettare tutti i sottosistemi");
 assert.match(selectMethodBody, /Stato incoerente dopo il cambio livello:[\s\S]*?Ricarica la pagina/,
   "un doppio fallimento dello switch deve alzare il latch fatale");
 const addMethodStart = engineSource.indexOf("async addLayer(");
-const addMethodBody = engineSource.slice(addMethodStart, addMethodStart + 2_800);
+const addMethodBody = engineSource.slice(addMethodStart, addMethodStart + 3_400);
+const addPrepare = addMethodBody.indexOf("await this.prepareActiveLayerForSwitch();");
+const addRecord = addMethodBody.indexOf("this.layerStack.add(name)");
 assert.ok(
-  addMethodBody.indexOf("await this.bakeActiveLayerForSwitch();")
-    < addMethodBody.indexOf("this.layerStack.add(name)"),
-  "addLayer deve congelare l'uscente prima di creare/selezionare il candidato",
+  addPrepare >= 0 && addRecord > addPrepare,
+  "addLayer deve congelare e impacchettare l'uscente prima del nuovo record",
 );
 assert.match(addMethodBody, /await this\.allocateLayerGpuResources\(/);
 assert.match(addMethodBody, /Stato incoerente dopo la creazione del livello:[\s\S]*?Ricarica la pagina/,
   "un doppio fallimento di addLayer deve alzare il latch fatale");
-assert.match(addMethodBody, /this\.layerStack\.setActiveIndex\(fromIndex\);[\s\S]*?this\.releaseFusedLayerBakes\(\);[\s\S]*?throw error;/,
-  "un OOM del nuovo mip 0 non deve lasciare residente il bake di hand-off");
-assert.match(addMethodBody, /await this\.activateLayer\(index\);[\s\S]*?this\.layerGpu\.delete\(record\.id\);[\s\S]*?this\.destroyLayerBake\(gpu\.bake\);[\s\S]*?gpu\.texture\.destroy\(\)/,
+assert.match(addMethodBody, /this\.releaseFusedLayerBakes\(\);\s*this\.releaseActiveColdDuplicate\(\);/,
+  "un OOM del nuovo mip 0 deve rilasciare bake e duplicato cold dell'attivo");
+assert.match(addMethodBody, /await this\.activateLayer\(index\);[\s\S]*?this\.layerGpu\.delete\(record\.id\);[\s\S]*?this\.destroyLayerGpuResources\(gpu\)/,
   "un livello fallito va distrutto solo dopo il ripristino completo");
 
 // Measurement setups reset the GLOBAL journal but clear only the active layer.
 assert.match(engineSource, /private get documentWideResetBlockedByLayers\(\): boolean/);
 assert.match(engineSource, /if \(this\.documentWideResetBlockedByLayers\) \{/);
-// Allocation must precede destruction, or an OOM partway through a format change
-// leaves the document with neither the old textures nor the new ones.
+// A format change allocates the one active full texture before destruction; the
+// inactive records are empty cold slots because the operation clears all layers.
 assert.ok(
   engineSource.indexOf("const replacement = new Map<number, LayerGpuResources>();")
     < engineSource.indexOf("const supersededLayerGpu = [...this.layerGpu.values()];"),
@@ -901,9 +933,9 @@ const recreateStart = engineSource.indexOf("private async recreateLayerResources
 const recreateBody = engineSource.slice(recreateStart, recreateStart + 30_000);
 assert.match(recreateBody, /runGpuAllocationTransaction\(\s*this\.device,\s*`Pipeline formato layer/,
   "anche pipeline e layout devono chiudere validation/OOM scope");
-assert.match(recreateBody, /for \(const record of this\.layerStack\.layers\)[\s\S]*?await this\.allocateLayerGpuResources\(/,
-  "ogni texture sostitutiva deve essere validata prima dello swap");
-assert.match(recreateBody, /for \(const gpu of replacement\.values\(\)\) \{\s*gpu\.texture\.destroy\(\);/,
+assert.match(recreateBody, /record\.id === this\.layerStack\.active\.id[\s\S]*?await this\.allocateLayerGpuResources\([\s\S]*?: this\.createColdLayerGpuResources\(\)/,
+  "il cambio formato deve allocare full solo per il livello attivo");
+assert.match(recreateBody, /for \(const gpu of replacement\.values\(\)\) \{\s*this\.destroyLayerGpuResources\(gpu\);/,
   "un fallimento deve eliminare tutti i candidati, incluso quello attivo");
 assert.doesNotMatch(recreateBody, /layerId !== this\.layerStack\.active\.id/,
   "il cleanup non può saltare il candidato del livello attivo");
@@ -933,31 +965,28 @@ assert.match(
   engineSource,
   /return this\.retargetEffectsWorkingSetInternal\(\s*layerView,\s*layerFormat,\s*contentBounds,\s*"public",\s*\)/,
 );
-// Telemetry has to sign the layer count, or runs with one and several layers
-// look equivalent in the log.
+// Telemetry has to sign both layer identity and actual hot/cold storage.
 assert.match(engineSource, /layerCount: this\.layerStack\.count/);
 assert.match(
   engineSource,
-  /layerMemoryMiB: \(this\.layerFormat === "rgba16float" \? 128 : 64\) \* this\.layerGpu\.size/,
+  /layerMemoryMiB:\s*gpuMemory\.layerBaseMiB\s*\+ gpuMemory\.layerColdMiB\s*\+ gpuMemory\.layerHydrationMiB/,
 );
 assert.match(mainSource, /layerCount: number;/);
 assert.match(mainSource, /activeLayerId: number;/);
 
-// Commit 14a must remain observational. The only live mutation is 32 B of CPU
-// metadata per layer; actual GPU allocation accounting and drawing stay intact.
 const layerStorageStudySource = readFileSync(
   new URL("../src/layer-storage-study.ts", import.meta.url),
   "utf8",
 );
 assert.match(
   layerStorageStudySource,
-  /measure-only-active-full-inactive-256-dirty-tiles-vs-aligned-bbox/,
+  /single-active-full-inactive-256-array-tiles-rehydrate-fold/,
 );
 assert.match(layerStorageStudySource, /"Occupied" deliberately means ANY non-zero byte/);
 assert.doesNotMatch(
   layerStorageStudySource,
   /GPUTexture|GPUBuffer|GPUDevice|GPUQueue/,
-  "lo studio puro non deve creare o nominare risorse WebGPU",
+  "la matematica delle tile deve restare pura e testabile senza WebGPU",
 );
 const mutationStart = engineSource.indexOf("private noteLayerMutation(");
 const mutationBody = engineSource.slice(mutationStart, mutationStart + 1_100);
@@ -971,7 +1000,40 @@ assert.match(
   /markLayerStorageRect\(this\.layerStack\.active\.storageTileMask, dirtyRect\)/,
   "ogni mutazione raw deve raggiungere il collo di bottiglia della maschera",
 );
-assert.match(engineSource, /private getLayerStorageStudy\(\): LayerStorageStudyStats/);
+const packStart = engineSource.indexOf("private async createLayerColdStorageCandidate(");
+const packBody = engineSource.slice(packStart, packStart + 4_300);
+assert.match(packBody, /depthOrArrayLayers: tileIndices\.length/);
+assert.match(packBody, /tileIndices\.forEach\(\(tileIndex, arrayLayer\) =>/);
+assert.match(packBody, /copyTextureToTexture\(/);
+assert.ok(
+  packBody.indexOf("await this.waitForGpuCapped(")
+    < packBody.indexOf('this.maybeInjectLayerColdStorageFault("after-pack-submit")'),
+  "il candidato cold non può essere pubblicato prima del completamento GPU",
+);
+const freezeStart = engineSource.indexOf("private async freezeActiveLayerToCold(");
+const freezeBody = engineSource.slice(freezeStart, freezeStart + 1_400);
+assert.match(freezeBody, /const candidate = await this\.createLayerColdStorageCandidate/);
+assert.match(freezeBody, /gpu\.cold = candidate;/);
+assert.match(freezeBody, /record\.storageTileMask\.set\(mask\)/);
+const hydrateStart = engineSource.indexOf("private async createHydratedLayerTexture(");
+const hydrateBody = engineSource.slice(hydrateStart, hydrateStart + 2_600);
+assert.match(hydrateBody, /this\.encodeLayerColdHydration\(encoder, cold, hot\)/);
+assert.match(hydrateBody, /await this\.waitForGpuCapped\(label\)/);
+assert.match(hydrateBody, /this\.liveLayerHydrationTextures\.set\(hot\.texture, memoryBytes\)/);
+const activateStorageBody = engineSource.slice(activateStart, activateEnd);
+assert.ok(
+  activateStorageBody.indexOf("await this.ensureActiveLayerHot(record);")
+    < activateStorageBody.indexOf("this.bindActiveLayerResources();"),
+  "il livello entrante deve essere reidratato prima di legare i renderer",
+);
+assert.ok(
+  activateStorageBody.indexOf("await this.rebuildMergedLayerSurfaces(caller);")
+    < activateStorageBody.indexOf("this.commitActiveLayerResidency(fromIndex);"),
+  "il full uscente può essere distrutto solo dopo il compositing riuscito",
+);
+assert.match(engineSource, /const layerColdMiB = baseResourcesAllocated/);
+assert.match(engineSource, /const layerHydrationMiB = \[\.\.\.this\.liveLayerHydrationTextures\.values\(\)\]/);
+assert.match(engineSource, /measurementOnly: false/);
 assert.match(
   engineSource,
   /projectedConservativeRawMiB = activeFullMiB \+ inactiveConservativeTileMiB/,
@@ -984,16 +1046,14 @@ assert.match(exactStudyBody, /await this\.readLayerPixels\(undefined, index\)/);
 assert.match(exactStudyBody, /compareLayerStorageMasks\(exactMask, record\.storageTileMask\)/);
 assert.match(exactStudyBody, /countedGpuMiBBefore/);
 assert.match(exactStudyBody, /countedGpuMiBAfter/);
-assert.match(exactStudyBody, /temporaryReadbackMiBBefore/);
-assert.match(exactStudyBody, /temporaryReadbackMiBAfter/);
 assert.match(exactStudyBody, /temporaryReadbackPeakMiB/);
 assert.match(layerHistoryGpuTestSource, /measureExactLayerStorageStudy\(\)/);
 assert.match(layerHistoryGpuTestSource, /conservativeTilesContainEveryExactTile/);
 assert.match(layerHistoryGpuTestSource, /exactReadbackReleasedItsTemporaryBuffers/);
-assert.match(layerHistoryGpuTestSource, /temporaryReadbackPeakMiB/);
-assert.match(mainSource, /performanceTelemetryRevision: 46/);
-assert.match(mainSource, /gpuMemoryLayerStudyTiles/);
-assert.match(mainSource, /gpuMemoryLayerStudyBbox/);
+assert.match(mainSource, /performanceTelemetryRevision: 47/);
+assert.match(mainSource, /gpuMemoryLayerCold/);
+assert.match(mainSource, /gpuMemoryLayerHydration/);
+assert.match(mainSource, /Raw livelli · effettivo/);
+assert.match(mainSource, /Memoria logica WebGPU realmente allocata/);
 assert.match(mainSource, /non è memoria allocata/);
-
 console.log("Layer stack verification passed.");

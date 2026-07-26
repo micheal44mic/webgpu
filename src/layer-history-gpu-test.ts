@@ -9,7 +9,7 @@ import {
   type LayerMemorySnapshot,
 } from "./layer-composite-gpu-test";
 
-export const LAYER_HISTORY_GPU_TEST_VERSION = 5 as const;
+export const LAYER_HISTORY_GPU_TEST_VERSION = 6 as const;
 
 interface PixelRect {
   x: number;
@@ -41,6 +41,17 @@ interface BakeRollbackProbe {
   bakeMemoryAfterMiB: number;
 }
 
+interface ColdStorageRollbackProbe {
+  threw: boolean;
+  layerCount: number;
+  activeLayerIndex: number;
+  workingSetMatchesActiveLayer: boolean;
+  rawLayerDifferingBytes: number;
+  layerBaseMiB: number;
+  layerColdMiB: number;
+  layerHydrationMiB: number;
+  layerBakeMiB: number;
+}
 export interface LayerHistoryGpuTestReport {
   version: typeof LAYER_HISTORY_GPU_TEST_VERSION;
   passed: boolean;
@@ -64,6 +75,10 @@ export interface LayerHistoryGpuTestReport {
   fwidthBakeGap: Awaited<ReturnType<BrushEngine["measureActiveStyleBakeGap"]>>;
   bakeRollback: BakeRollbackProbe;
   compositing: LayerCompositeGpuTestReport;
+  coldStorageRollback: {
+    pack: ColdStorageRollbackProbe;
+    hydrate: ColdStorageRollbackProbe;
+  };
   storageStudy: Awaited<ReturnType<BrushEngine["measureExactLayerStorageStudy"]>>;
   memory: {
     oneLayer: LayerMemorySnapshot;
@@ -123,6 +138,8 @@ function snapshotMemory(engine: BrushEngine): LayerMemorySnapshot {
   return {
     layerCount: stats.layerCount,
     layerBaseMiB: stats.gpuMemory.layerBaseMiB,
+    layerColdMiB: stats.gpuMemory.layerColdMiB,
+    layerHydrationMiB: stats.gpuMemory.layerHydrationMiB,
     layerMipChainMiB: stats.gpuMemory.layerMipChainMiB,
     layerBakeMiB: stats.gpuMemory.layerBakeMiB,
     layerCompositeMiB: stats.gpuMemory.layerCompositeMiB,
@@ -249,8 +266,55 @@ export async function runLayerHistoryGpuTest(
     bakeMemoryAfterMiB: statsAfterBakeFailure.gpuMemory.layerBakeMiB,
   };
 
+  engine.injectLayerColdStorageFault("after-pack-submit");
+  let packFailureWasReported = false;
+  try {
+    await engine.addLayer("Cold pack fault candidate");
+  } catch {
+    packFailureWasReported = true;
+  }
+  await engine.waitForIdle();
+  const statsAfterPackFailure = engine.getStats();
+  const rawAfterPackFailure = await engine.readLayerPixels(auditRect, 0);
+  const coldPackRollback: ColdStorageRollbackProbe = {
+    threw: packFailureWasReported,
+    layerCount: statsAfterPackFailure.layerCount,
+    activeLayerIndex: statsAfterPackFailure.activeLayerIndex,
+    workingSetMatchesActiveLayer: engine.effectsWorkingSetMatchesActiveLayer(),
+    rawLayerDifferingBytes: countDifferingBytes(layerABaseline, rawAfterPackFailure),
+    layerBaseMiB: statsAfterPackFailure.gpuMemory.layerBaseMiB,
+    layerColdMiB: statsAfterPackFailure.gpuMemory.layerColdMiB,
+    layerHydrationMiB: statsAfterPackFailure.gpuMemory.layerHydrationMiB,
+    layerBakeMiB: statsAfterPackFailure.gpuMemory.layerBakeMiB,
+  };
+
   await engine.addLayer("Test cronologia B");
   await engine.waitForIdle();
+  const layerABeforeHydrateFailure = await engine.readLayerPixels(auditRect, 0);
+  engine.injectLayerColdStorageFault("after-hydrate-submit");
+  let hydrateFailureWasReported = false;
+  try {
+    await engine.setActiveLayer(0);
+  } catch {
+    hydrateFailureWasReported = true;
+  }
+  await engine.waitForIdle();
+  const statsAfterHydrateFailure = engine.getStats();
+  const layerAAfterHydrateFailure = await engine.readLayerPixels(auditRect, 0);
+  const coldHydrateRollback: ColdStorageRollbackProbe = {
+    threw: hydrateFailureWasReported,
+    layerCount: statsAfterHydrateFailure.layerCount,
+    activeLayerIndex: statsAfterHydrateFailure.activeLayerIndex,
+    workingSetMatchesActiveLayer: engine.effectsWorkingSetMatchesActiveLayer(),
+    rawLayerDifferingBytes: countDifferingBytes(
+      layerABeforeHydrateFailure,
+      layerAAfterHydrateFailure,
+    ),
+    layerBaseMiB: statsAfterHydrateFailure.gpuMemory.layerBaseMiB,
+    layerColdMiB: statsAfterHydrateFailure.gpuMemory.layerColdMiB,
+    layerHydrationMiB: statsAfterHydrateFailure.gpuMemory.layerHydrationMiB,
+    layerBakeMiB: statsAfterHydrateFailure.gpuMemory.layerBakeMiB,
+  };
   const twoLayersMemory = snapshotMemory(engine);
   const fusedStyledLayer = await engine.readMergedLayerPixels("below", auditRect);
   const fusedStyledLayerVersusRawLayerA = countDifferingBytes(
@@ -392,6 +456,20 @@ export async function runLayerHistoryGpuTest(
     oneLayerHasOneRawPyramid: oneLayerMemory.layerCount === 1
       && oneLayerMemory.layerMipChainMiB > 21
       && oneLayerMemory.layerMipChainMiB < 22,
+    oneLayerHasOneHotAndNoCold:
+      Math.abs(oneLayerMemory.layerBaseMiB - 64) < 0.01
+      && oneLayerMemory.layerColdMiB < 0.01
+      && oneLayerMemory.layerHydrationMiB < 0.01,
+    twoLayersHaveOneHotAndSparseCold:
+      Math.abs(twoLayersMemory.layerBaseMiB - 64) < 0.01
+      && twoLayersMemory.layerColdMiB > 0
+      && twoLayersMemory.layerColdMiB < 64
+      && twoLayersMemory.layerHydrationMiB < 0.01,
+    fiveLayersHaveOneHotAndSparseCold:
+      Math.abs(compositing.fiveLayerMemory.layerBaseMiB - 64) < 0.01
+      && compositing.fiveLayerMemory.layerColdMiB > twoLayersMemory.layerColdMiB
+      && compositing.fiveLayerMemory.layerColdMiB < 4 * 64
+      && compositing.fiveLayerMemory.layerHydrationMiB < 0.01,
     twoLayersReleasedPerLayerBakes: twoLayersMemory.layerBakeMiB < 0.01,
     fiveLayersReleasedPerLayerBakes: compositing.fiveLayerMemory.layerBakeMiB < 0.01,
     twoAndFiveLayerMipMemoryIsConstant:
@@ -404,8 +482,8 @@ export async function runLayerHistoryGpuTest(
         twoLayersMemory.layerCompositeMiB
           - compositing.fiveLayerMemory.layerCompositeMiB,
       ) < 0.05,
-    fiveRawLayersCostExactlyFiveMipZeros:
-      Math.abs(compositing.fiveLayerMemory.layerBaseMiB - 320) < 0.05,
+    fiveEagerFullLayersWouldCost320MiB:
+      Math.abs(storageStudy.eagerFullRawMiB - 320) < 0.05,
   };
 
   const checks: Record<string, boolean> = {
@@ -421,8 +499,10 @@ export async function runLayerHistoryGpuTest(
     conservativeProjectionIsNoLargerThanBbox:
       storageStudy.projectedConservativeRawMiB
         <= storageStudy.projectedAlignedBboxRawMiB + 1e-6,
-    sparseHarnessWouldReduceRawLayerMemory:
-      storageStudy.projectedConservativeRawMiB < storageStudy.actualRawMiB,
+    actualColdStorageMatchesConservativeProjection:
+      Math.abs(storageStudy.actualRawMiB - storageStudy.projectedConservativeRawMiB) < 0.01,
+    sparseHarnessReducedRawLayerMemory:
+      storageStudy.actualRawMiB < storageStudy.eagerFullRawMiB,
     exactReadbackReleasedItsTemporaryBuffers: (() => {
       const expectedPeakMiB = storageStudy.bytesPerPixel === 8 ? 128 : 64;
       return storageStudy.temporaryReadbackMiBBefore === 0
@@ -446,6 +526,27 @@ export async function runLayerHistoryGpuTest(
     injectedBakeFailureDidNotPublishBake: !bakeRollback.bakeAllocatedAfterFailure,
     injectedBakeFailureReleasedCandidate:
       Math.abs(bakeRollback.bakeMemoryAfterMiB - bakeRollback.bakeMemoryBeforeMiB) < 0.01,
+    injectedColdPackFailureWasReported: coldPackRollback.threw,
+    coldPackFailureKeptOneActiveHotLayer:
+      coldPackRollback.layerCount === 1
+      && coldPackRollback.activeLayerIndex === 0
+      && Math.abs(coldPackRollback.layerBaseMiB - 64) < 0.01,
+    coldPackFailureKeptWorkingSet: coldPackRollback.workingSetMatchesActiveLayer,
+    coldPackFailureKeptRawPixels: coldPackRollback.rawLayerDifferingBytes === 0,
+    coldPackFailureReleasedEveryCandidate:
+      coldPackRollback.layerColdMiB < 0.01
+      && coldPackRollback.layerHydrationMiB < 0.01
+      && coldPackRollback.layerBakeMiB < 0.01,
+    injectedHydrationFailureWasReported: coldHydrateRollback.threw,
+    hydrationFailureRestoredIncomingSelection:
+      coldHydrateRollback.layerCount === 2
+      && coldHydrateRollback.activeLayerIndex === 1
+      && Math.abs(coldHydrateRollback.layerBaseMiB - 64) < 0.01,
+    hydrationFailureKeptWorkingSet: coldHydrateRollback.workingSetMatchesActiveLayer,
+    hydrationFailureKeptColdPixels: coldHydrateRollback.rawLayerDifferingBytes === 0,
+    hydrationFailureReleasedFullCandidate:
+      coldHydrateRollback.layerColdMiB > 0
+      && coldHydrateRollback.layerHydrationMiB < 0.01,
     successfulFusionContainsStyledResult: fusedStyledLayerVersusRawLayerA > 0,
     successfulFusionReleasedLayerBake:
       !releasedBakeAfterFusion.allocated
@@ -539,6 +640,10 @@ export async function runLayerHistoryGpuTest(
     differingBytes,
     fwidthBakeGap,
     bakeRollback,
+    coldStorageRollback: {
+      pack: coldPackRollback,
+      hydrate: coldHydrateRollback,
+    },
     compositing,
     storageStudy,
     memory: {

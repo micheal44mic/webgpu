@@ -1,5 +1,5 @@
-export const LAYER_STORAGE_STUDY_STRATEGY =
-  "measure-only-active-full-inactive-256-dirty-tiles-vs-aligned-bbox" as const;
+export const LAYER_STORAGE_STRATEGY =
+  "single-active-full-inactive-256-array-tiles-rehydrate-fold" as const;
 
 export const LAYER_STORAGE_TILE_SIZE = 256;
 export const LAYER_STORAGE_GRID_SIZE = 16;
@@ -131,6 +131,19 @@ export function countLayerStorageTiles(mask: LayerStorageTileMask): number {
     count += popcount32(word);
   }
   return count;
+}
+
+export function layerStorageTileIndices(mask: LayerStorageTileMask): number[] {
+  assertMask(mask);
+  const indices: number[] = [];
+  for (let tileIndex = 0; tileIndex < LAYER_STORAGE_TILE_COUNT; tileIndex += 1) {
+    const wordIndex = tileIndex >>> 5;
+    const bitIndex = tileIndex & 31;
+    if (((mask[wordIndex] >>> bitIndex) & 1) !== 0) {
+      indices.push(tileIndex);
+    }
+  }
+  return indices;
 }
 
 export function alignedBoundsTileCount(rect: LayerStorageRect | null): number {

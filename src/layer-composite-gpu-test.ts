@@ -18,6 +18,8 @@ type SampleKey = (typeof SAMPLE_KEYS)[number];
 type MemoryFields = Pick<
   EngineGpuMemoryStats,
   | "layerBaseMiB"
+  | "layerColdMiB"
+  | "layerHydrationMiB"
   | "layerMipChainMiB"
   | "layerBakeMiB"
   | "layerCompositeMiB"
@@ -247,6 +249,8 @@ function snapshotMemory(engine: BrushEngine): LayerMemorySnapshot {
   return {
     layerCount: stats.layerCount,
     layerBaseMiB: stats.gpuMemory.layerBaseMiB,
+    layerColdMiB: stats.gpuMemory.layerColdMiB,
+    layerHydrationMiB: stats.gpuMemory.layerHydrationMiB,
     layerMipChainMiB: stats.gpuMemory.layerMipChainMiB,
     layerBakeMiB: stats.gpuMemory.layerBakeMiB,
     layerCompositeMiB: stats.gpuMemory.layerCompositeMiB,
@@ -599,6 +603,13 @@ export async function runLayerCompositeGpuTest(
     zoomPresentationDidNotFallBackToChecker:
       zoom.presentationAtZoom.some((value, index) => value !== zoom.checkerAtZoom[index]),
     fiveLayersAllocated: fiveLayerMemory.layerCount === 5,
+    fiveLayersKeepOnlyOneHotFullCanvas:
+      Math.abs(fiveLayerMemory.layerBaseMiB - 64) < 0.01,
+    fiveLayerColdStoreIsSparse:
+      fiveLayerMemory.layerColdMiB > 0
+      && fiveLayerMemory.layerColdMiB < 4 * 64,
+    fiveLayerHydrationsWereReleased:
+      fiveLayerMemory.layerHydrationMiB < 0.01,
     fiveLayerBakesWereReleased:
       fiveLayerMemory.layerBakeMiB < 0.01
       && fiveLayerBakeStates.every((state) => !state.allocated && !state.valid),

@@ -313,7 +313,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 46;
+    performanceTelemetryRevision: 47;
   };
 }
 
@@ -390,6 +390,8 @@ const gpuMemoryRows: ReadonlyArray<
   readonly [string, NumericKeyOf<EngineStats["gpuMemory"]>]
 > = [
   ["gpuMemoryLayerBase", "layerBaseMiB"],
+  ["gpuMemoryLayerCold", "layerColdMiB"],
+  ["gpuMemoryLayerHydration", "layerHydrationMiB"],
   ["gpuMemoryLayerMips", "layerMipChainMiB"],
   ["gpuMemoryLayerBakes", "layerBakeMiB"],
   ["gpuMemoryLayerComposite", "layerCompositeMiB"],
@@ -669,7 +671,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 46,
+    performanceTelemetryRevision: 47,
     ...engineEnvironment,
   };
 }
@@ -1847,7 +1849,7 @@ async function runRequestedLayerHistoryTest(): Promise<void> {
       : "Cronologia livelli GPU ERRORE · consulta il report JSON.";
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const failure = { version: 5, passed: false, error: message };
+    const failure = { version: 6, passed: false, error: message };
     layerHistoryTestReport.textContent = JSON.stringify(failure, null, 2);
     layerHistoryTestDetails.hidden = false;
     layerHistoryTestDetails.open = true;
@@ -1914,8 +1916,8 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
 
   const storageStudy = stats.layerStorageStudy;
   const inactiveLayers = storageStudy.layers.filter((layer) => !layer.active);
-  const inactiveTileCount = inactiveLayers.reduce(
-    (total, layer) => total + layer.conservativeTileCount,
+  const coldTileCount = storageStudy.layers.reduce(
+    (total, layer) => total + layer.coldTileCount,
     0,
   );
   const inactiveBboxTileCount = inactiveLayers.reduce(
@@ -1923,29 +1925,31 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
     0,
   );
   const inactiveTileCapacity = inactiveLayers.length * storageStudy.tileCount;
+  const hotLayerCount = storageStudy.layers.filter((layer) => layer.hotAllocated).length;
+  const actualSavingsMiB = Math.max(
+    0,
+    storageStudy.eagerFullRawMiB - storageStudy.actualRawMiB,
+  );
   const formatStudy = (projectedMiB: number, savingsMiB: number) =>
     `${formatMemoryMiB(projectedMiB)} · −${formatMemoryMiB(savingsMiB)}`;
   const tileOutput = element<HTMLElement>("gpuMemoryLayerStudyTiles");
   const bboxOutput = element<HTMLElement>("gpuMemoryLayerStudyBbox");
   element<HTMLElement>("gpuMemoryLayerStudyTilesLabel").textContent =
-    `Studio cold · tile ${storageStudy.tileSizePx} · `
-    + `${inactiveTileCount}/${inactiveTileCapacity} inattive`;
+    `Raw livelli · effettivo · ${hotLayerCount} hot + `
+    + `${coldTileCount}/${inactiveTileCapacity} tile cold`;
   element<HTMLElement>("gpuMemoryLayerStudyBboxLabel").textContent =
-    `Studio cold · bbox ${storageStudy.tileSizePx} · `
+    `Confronto · bbox ${storageStudy.tileSizePx} · `
     + `${inactiveBboxTileCount}/${inactiveTileCapacity} inattive`;
-  tileOutput.textContent = formatStudy(
-    storageStudy.projectedConservativeRawMiB,
-    storageStudy.conservativeSavingsMiB,
-  );
+  tileOutput.textContent = formatStudy(storageStudy.actualRawMiB, actualSavingsMiB);
   bboxOutput.textContent = formatStudy(
     storageStudy.projectedAlignedBboxRawMiB,
     storageStudy.alignedBboxSavingsMiB,
   );
   tileOutput.title =
-    "Stima raw totale: attivo full-canvas più sole tile conservative degli inattivi; "
-    + "non è memoria allocata.";
+    "Memoria logica WebGPU realmente allocata per texture raw hot e cold; "
+    + "il risparmio è rispetto a un full-canvas per ogni livello.";
   bboxOutput.title =
-    "Stima raw totale: attivo full-canvas più bbox allineato degli inattivi; "
+    "Confronto teorico: attivo full-canvas più bbox allineato degli inattivi; "
     + "non è memoria allocata.";
 
   const scratchExtents: string[] = [];
@@ -2084,13 +2088,24 @@ function renderLayerList(stats: EngineStats): void {
     name.textContent = layer.name;
     const hint = document.createElement("span");
     hint.className = "layer-hint";
-    hint.textContent = layer.hasContent
-      ? `disegnato · ${layer.conservativeTileCount}/${stats.layerStorageStudy.tileCount} tile`
-      : "vuoto";
-    select.title = layer.hasContent
-      ? `Studio cold: ${layer.conservativeTileMiB.toFixed(2)} MiB tile conservative; `
-        + `${layer.alignedBboxMiB.toFixed(2)} MiB bbox allineato.`
-      : "Studio cold: 0 MiB se il livello diventa inattivo.";
+    const isActive = layer.id === stats.activeLayerId;
+    hint.textContent = isActive
+      ? `attivo · ${formatMemoryMiB(layer.actualRawMiB)} full`
+      : layer.hotAllocated
+        ? `hot di sicurezza · ${formatMemoryMiB(layer.actualRawMiB)} full`
+        : layer.hasContent
+          ? `cold · ${layer.coldTileCount}/${stats.layerStorageStudy.tileCount} tile · `
+            + formatMemoryMiB(layer.actualRawMiB)
+          : "cold · 0 MiB";
+    select.title = isActive
+      ? "Livello attivo: texture full-canvas 4096² pronta per disegnare senza paging."
+      : layer.hotAllocated
+        ? "Livello inattivo trattenuto full-canvas per preservare i pixel dopo un errore; "
+          + "un nuovo switch è bloccato finché il documento non torna coerente."
+        : layer.hasContent
+          ? `Livello inattivo: ${layer.coldTileCount} tile GPU realmente allocati; `
+            + `bbox teorico ${layer.alignedBboxMiB.toFixed(2)} MiB.`
+          : "Livello inattivo vuoto: nessuna texture raw allocata.";
     select.append(name, hint);
     select.onclick = () => { void selectLayer(index); };
 

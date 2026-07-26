@@ -688,6 +688,60 @@ successivo di prototipazione, non la conclusione che tile siano già migliori in
 latenza o memoria fisica su mobile.
 
 
+#### Commit 14b — cold storage GPU reale per i livelli inattivi
+
+La strategia corrente è
+`single-active-full-inactive-256-array-tiles-rehydrate-fold`. Solo il livello
+attivo conserva il mip `0` full-canvas (`64 MiB` RGBA8 / `128 MiB` RGBA16F),
+così il disegno non paga paging o pass per tile. Quando si lascia un livello,
+i tile conservativi `256×256` vengono copiati in una texture array compatta e
+la texture full viene distrutta soltanto dopo che il nuovo livello è stato
+reidratato e le superfici fuse sono state ricostruite con successo. Un livello
+inattivo vuoto non conserva alcuna texture raw.
+
+Lo switch è transazionale: il pack costruisce un candidato senza toccare il
+full autorevole; la reidratazione costruisce e popola un nuovo full prima di
+pubblicarlo. Se pack, hydrate o rebuild falliscono, candidato e temporanei sono
+distrutti e pixel, indice attivo e banco effetti tornano allo stato precedente.
+Gli inattivi vengono oggi reidratati temporaneamente anche durante il fold delle
+superfici `merged`; il fold diretto dai tile resta il passo di ottimizzazione
+successivo per ridurre la latenza con molti livelli, non una condizione di
+correttezza di questo commit.
+
+Telemetria rev `47`: `layerBaseMiB` conta soltanto i full hot,
+`layerColdMiB` i tile array inattivi e `layerHydrationMiB` i full temporanei.
+`layerMemoryMiB` e il totale GPU usano le allocazioni logiche reali; non sono
+una misura della residency fisica del driver. Il pannello distingue livello
+attivo, tile cold e un eventuale full trattenuto solo dal rollback di sicurezza.
+
+Run WebGPU finale su NVIDIA Ampere, RGBA8:
+
+| Stato | Full hot | Tile cold | Raw reale | Raw eager precedente |
+|---|---:|---:|---:|---:|
+| 1 livello | `64 MiB` | `0` | `64 MiB` | `64 MiB` |
+| 2 livelli | `64 MiB` | `1 MiB` | `65 MiB` | `128 MiB` |
+| 5 livelli | `64 MiB` | `11,5 MiB` | `75,5 MiB` | `320 MiB` |
+
+Nella fixture a cinque livelli il riferimento esatto richiederebbe `69 MiB`:
+la maschera conservativa non perde tile (`0` miss) e trattiene `26` tile extra,
+perciò il costo reale è `75,5 MiB` e il risparmio raw rispetto all'eager è
+`244,5 MiB`. A motore fermo `layerHydrationMiB` e `layerBakeMiB` tornano a
+`0`; mip condivisi e superfici fuse restano O(1) rispetto al numero di livelli.
+
+Harness GPU rev `6`: `128/128` controlli verdi. Le iniezioni di guasto dopo il
+submit di pack e hydrate propagano l'errore ma lasciano il livello byte-identico
+(`0` byte diversi), banco effetti coerente e nessun temporaneo vivo. Mutation
+gate: omettendo la distruzione del vecchio full l'harness diventa rosso
+(`Superficie merged below non allocata`); dopo il ripristino torna interamente
+verde. Golden invariato: mip `0` `8d5a75a6…`, mip derivati `9208e2a3…`, con gli
+stessi `25` mismatch e i tre diagnostici delta massimo `1` già documentati.
+
+Nella run finale lo switch a due livelli misura `97,1/25,8 ms`; lo stress a
+cinque livelli `403,8/403,0 ms`. Sono wall-clock di una sola GPU desktop, non
+una dichiarazione prestazionale né una validazione mobile. La memoria è
+promossa; il costo di fold/reidratazione con molti livelli resta il prossimo
+problema misurabile.
+
 #### Gate document-wide e cronologia da preservare
 
 | Operazione | Stato con `layerCount > 1` | Si sblocca con |
