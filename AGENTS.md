@@ -1307,23 +1307,38 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   completate, `36` eventi ordinati, tile cold effettivi `3328/3840`; reload
   completo ha ripristinato automaticamente il report completato.
 - Prima run iPhone reale del 27 luglio 2026: iPhone 15, iOS `18.7`, Safari
-  `26.5`, DPR `3`, viewport `365×364`, GPU `apple`. Completate le aggiunte fino
-  a `7` livelli: stabile `515,539 MiB`, massimo transitorio sopravvissuto
-  `579,539 MiB`. Safari ha terminato la pagina durante l'aggiunta del livello
-  `8`, partita da `515,539 MiB` con altri `56 MiB` cold richiesti; reload e
-  checkpoint server concordano su `status: interrupted`, step `7`.
-- Dalla progressione identica degli step `2–6`, l'ottavo livello avrebbe avuto
-  stabile logico `571,539 MiB` e picco di allocazione previsto `635,539 MiB`.
-  Il run colloca quindi il confine empirico corrente della memoria WebGPU
-  **conteggiata dal motore** fra il picco riuscito `579,539 MiB` e il picco
-  previsto dell'operazione fallita `635,539 MiB`. L'estremo superiore non è
-  misurato perché il processo è morto; memoria Safari/driver/swapchain resta
-  fuori dal contatore.
-- Non promuovere `579 MiB` come budget di prodotto: è il bordo già raggiunto,
-  non una zona sicura, e il jetsam varia con la pressione di sistema. Un primo
-  tetto prudente deve restare sensibilmente sotto (ordine `450–500 MiB` di
-  memoria logica conteggiata) e va deciso dall'utente prima di implementare
-  eviction/limite layer; ripetere il test può quantificare la variabilità.
+  `26.5`, DPR `3`, viewport `365×364`, GPU `apple`. L'harness rev `1` ha
+  completato le aggiunte fino a `7` livelli (`515,539 MiB` stabili,
+  `579,539 MiB` massimo conteggiato) e alla riapertura ha classificato la run
+  `interrupted` durante l'aggiunta del livello `8`. Questa classificazione
+  prova soltanto che una run rimasta `running` non ha scritto il checkpoint
+  successivo: non distingue jetsam, reload/navigazione, device loss, errore o
+  altra terminazione e quindi non misura da sola un limite di memoria.
+- Controprova manuale dell'utente sullo stesso iPhone: l'applicazione è rimasta
+  viva a `818,8 MiB` logici conteggiati e la chiusura è stata trovata soltanto
+  intorno a `1000 MiB`. Il pannello a `818,8 MiB` mostrava `1` layer hot da
+  `64,0 MiB`, `2057/2304` tile cold da `514,3 MiB`, raw layer effettivi
+  `578,3 MiB`, mip attivo/superfici fuse `42,7 MiB` e mip `0` fusi `64,0 MiB`.
+  Questo smentisce il confine precedentemente inferito
+  `579,539–635,539 MiB` e invalida la proposta derivata di un tetto
+  `450–500 MiB`; entrambi sono ritirati.
+- I circa `1000 MiB` sono il punto di chiusura empirico della sessione e del
+  dispositivo provati, non un budget sicuro né una costante iOS. Il budget di
+  prodotto dovrà mantenere margine sotto questo punto e coprire anche i picchi,
+  non soltanto il valore stabile della pill.
+- L'harness rev `1` alloca, copia e distrugge grandi texture a gradini separati
+  da soli `900 ms`. Il monitor sottrae subito una risorsa dopo
+  `GPUTexture.destroy()`, ma misura soltanto le dimensioni logiche create dal
+  motore e non la memoria fisica ancora trattenuta da Safari/driver. La
+  spiegazione principale da verificare per l'interruzione è quindi il churn
+  rapido con rilascio fisico differito, non il working set stabile mostrato
+  dalla pill. `waitForIdle`/`onSubmittedWorkDone()` prova il completamento FIFO
+  dei comandi, non che WebKit abbia già restituito quella memoria al sistema.
+- Risultato: la rev `1` è respinta come misura del limite stabile iPhone. Il
+  prossimo protocollo deve separare (a) residenza stabile, con gradini lenti e
+  intervalli lunghi, da (b) churn di aggiunta/cambio livello; deve inoltre
+  registrare separatamente `device.lost`, errori JS/WebGPU, reload/navigazione
+  e assenza di heartbeat, senza chiamarli tutti crash di memoria.
 - Verifiche: suite layer/history/stroke/grain/blend/thickness/effects-scratch/
   bevel/shadow/view verdi, TypeScript e build Vite verdi; handler D1 verificato
   in memoria per lista vuota, insert, lettura per id, upsert e lista più recente.
