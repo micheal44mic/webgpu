@@ -1444,3 +1444,22 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   `compression:verify`, `layers:verify` e TypeScript verdi. Il limite di un solo
   livello compresso resta intenzionalmente attivo in questa run: la v2 isola
   esclusivamente la semantica del fold transitorio.
+- Esperimento isolato multi-residenza del 27 luglio 2026, build
+  `worker-gzip-multi-distant-layers-adjacent-raw-v3`: rimosso il solo limite
+  globale a un compresso. Il selettore continua a scegliere un solo candidato
+  e il worker continua a processare un solo chunk per volta, ma al termine
+  pianifica il successivo livello raw a distanza `>=2`. Prima di pubblicare un
+  cambio livello, l'attivo viene reidratato hot e i due adiacenti eventualmente
+  compressi vengono riportati cold raw; tutti gli altri possono restare
+  compressi attraverso il fold transitorio v2.
+- Prova browser locale NVIDIA Ampere con sei livelli e cinque tratti reali:
+  attivo `6`, vicino `5` raw `9,0 MiB`; livelli `1–4` compressi insieme da
+  `7,5 + 8,8 + 9,0 + 8,8 = 34,1 MiB` GPU a circa `2,8 MiB` RAM. Selezionando
+  il livello compresso `3`, lo switch è terminato in `383 ms`: `2` e `4` sono
+  tornati cold raw, `3` hot, mentre `1` è rimasto compresso; dopo l'idle anche
+  il distante `5` è stato compresso. Il pannello nel mezzo riporta due
+  compressi (`16,5 MiB` raw → `1,4 MiB` RAM), cold GPU `17,5 MiB`, zero
+  reidratazione transitoria stabile e zero warning/errori. Verifiche
+  `compression:verify`, `layers:verify` e TypeScript verdi. Questa run isola
+  la politica multi-livello; l'interruzione di un job al gesto resta quella v1
+  e viene cambiata soltanto nell'esperimento successivo.

@@ -8051,7 +8051,6 @@ export class BrushEngine {
     if (
       !this.layerColdCompressionEnabled
       || this.layerFormat !== "rgba8unorm"
-      || [...this.layerGpu.values()].some((gpu) => gpu.compressed !== null)
     ) {
       return null;
     }
@@ -8087,6 +8086,22 @@ export class BrushEngine {
     return selected;
   }
 
+  private async ensureAdjacentLayerColdStorageResident(): Promise<void> {
+    const activeIndex = this.layerStack.activeIndex;
+    for (const index of [activeIndex - 1, activeIndex + 1]) {
+      if (index < 0 || index >= this.layerStack.count) {
+        continue;
+      }
+      const record = this.layerStack.at(index);
+      if (!record.hasContent) {
+        continue;
+      }
+      const gpu = this.requireLayerGpu(record.id);
+      if (gpu.compressed) {
+        await this.ensureLayerColdStorageResident(record, gpu);
+      }
+    }
+  }
   private cancelLayerColdCompressionIdle(): void {
     if (this.layerColdCompressionIdleTimer !== null) {
       window.clearTimeout(this.layerColdCompressionIdleTimer);
@@ -9753,6 +9768,7 @@ export class BrushEngine {
     const startedAt = performance.now();
     const record = this.layerStack.active;
     await this.ensureActiveLayerHot(record);
+    await this.ensureAdjacentLayerColdStorageResident();
     this.bindActiveLayerResources();
     this.layerContentBounds = record.contentBounds;
     this.layerHasContent = record.hasContent;

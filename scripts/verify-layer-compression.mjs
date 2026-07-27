@@ -122,7 +122,7 @@ assert.doesNotMatch(studyBody, /destroyLayerColdStorage/);
 assert.match(studyBody, /countedGpuMiBAfter - countedGpuMiBBefore/);
 assert.match(studyBody, /measureLosslessGzipChunk/);
 
-assert.match(clientSource, /worker-gzip-one-distant-layer-transient-fold-v2/);
+assert.match(clientSource, /worker-gzip-multi-distant-layers-adjacent-raw-v3/);
 assert.match(clientSource, /new Worker\(/);
 assert.match(clientSource, /layer-cold-compression-worker\.ts/);
 assert.match(clientSource, /this\.worker\.postMessage\(message, transfer\)/);
@@ -137,10 +137,19 @@ assert.match(workerSource, /hashCompressionBytes\(restored\)/);
 assert.match(workerSource, /workerScope\.postMessage\([\s\S]*?\[output\]\)/);
 assert.match(engineSource, /layerColdCompressionEnabled\?: boolean/);
 assert.match(engineSource, /LAYER_COLD_COMPRESSION_MINIMUM_DISTANCE/);
-assert.match(
+assert.doesNotMatch(
   engineSource,
   /\[\.\.\.this\.layerGpu\.values\(\)\]\.some\(\(gpu\) => gpu\.compressed !== null\)/,
-  "il primo esperimento può conservare al massimo un livello compresso",
+  "più livelli distanti devono poter restare compressi insieme",
+);
+assert.match(
+  engineSource,
+  /private async ensureAdjacentLayerColdStorageResident\([\s\S]*?activeIndex - 1[\s\S]*?activeIndex \+ 1[\s\S]*?ensureLayerColdStorageResident/,
+  "i due vicini devono essere riportati raw prima di pubblicare il cambio",
+);
+assert.match(
+  engineSource,
+  /await this\.ensureActiveLayerHot\(record\);[\s\S]*?await this\.ensureAdjacentLayerColdStorageResident\(\);/,
 );
 assert.match(engineSource, /compressOneDistantLayerInBackground/);
 assert.match(engineSource, /await client\.compress\(payload, tileByteLength\)/);
