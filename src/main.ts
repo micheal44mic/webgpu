@@ -24,6 +24,7 @@ import type {
   IphoneMemoryLimitProgress,
   IphoneMemoryLimitRun,
 } from "./iphone-memory-limit-test";
+import type { LayerCompressionStudyReport } from "./layer-compression-study";
 
 function element<T extends HTMLElement>(id: string): T {
   const result = document.getElementById(id);
@@ -74,6 +75,11 @@ const layerMemoryStressButton = element<HTMLButtonElement>("runLayerMemoryStress
 const layerMemoryStressResult = element<HTMLParagraphElement>("layerMemoryStressResult");
 const layerMemoryStressDetails = element<HTMLDetailsElement>("layerMemoryStressDetails");
 const layerMemoryStressReport = element<HTMLElement>("layerMemoryStressReport");
+const layerCompressionStudySection = element<HTMLElement>("layerCompressionStudySection");
+const layerCompressionStudyButton = element<HTMLButtonElement>("runLayerCompressionStudy");
+const layerCompressionStudyResult = element<HTMLParagraphElement>("layerCompressionStudyResult");
+const layerCompressionStudyDetails = element<HTMLDetailsElement>("layerCompressionStudyDetails");
+const layerCompressionStudyReport = element<HTMLElement>("layerCompressionStudyReport");
 const rasterStrokeGoldenSection = element<HTMLElement>("rasterStrokeGoldenSection");
 const rasterShadowGoldenButton = element<HTMLButtonElement>("runRasterShadowGolden");
 const rasterShadowGoldenResult = element<HTMLParagraphElement>("rasterShadowGoldenResult");
@@ -141,6 +147,7 @@ interface HumanStrokeRecording {
 const LEGACY_HUMAN_STROKE_STORAGE_KEY = "webgpu-brush-engine.human-stroke.v1";
 const HUMAN_STROKE_API_URL = "/api/human-stroke";
 const BENCHMARK_RUNS_API_URL = "/api/benchmark-runs";
+const LAYER_COMPRESSION_RUNS_API_URL = "/api/layer-compression-runs";
 
 interface BenchmarkRun {
   version: 1;
@@ -377,6 +384,8 @@ const layerHistoryTestRequested = import.meta.env.DEV
   && pageSearchParams.get("layerHistoryTest") === "1";
 const layerMemoryStressTestRequested =
   pageSearchParams.get("layerMemoryStressTest") === "1";
+const layerCompressionStudyRequested =
+  pageSearchParams.get("layerCompressionTest") === "1";
 const iphoneMemoryLimitTestRequested =
   pageSearchParams.get("iphoneMemoryLimitTest") === "1";
 const layerMemoryFixtureRequested =
@@ -386,6 +395,7 @@ const iphoneMemoryLimitServerRequired = !(
   && pageSearchParams.get("memoryLimitLocalOnly") === "1"
 );
 layerMemoryStressSection.hidden = !layerMemoryFixtureRequested;
+layerCompressionStudySection.hidden = !layerCompressionStudyRequested;
 iphoneMemoryDeviceControl.hidden = !iphoneMemoryLimitTestRequested;
 if (iphoneMemoryLimitTestRequested) {
   layerMemoryStressIntro.textContent =
@@ -424,6 +434,7 @@ const engine = new BrushEngine(canvas, {
 }, tipPreviewCanvas, {
   bevelBoundingFieldEnabled,
   layerMemoryStressTestEnabled: layerMemoryFixtureRequested,
+  layerCompressionTestEnabled: layerCompressionStudyRequested,
 });
 if (import.meta.env.DEV) {
   (window as Window & { __brushEngine?: BrushEngine }).__brushEngine = engine;
@@ -443,6 +454,8 @@ let effectsWorkbenchBenchmarkRunning = false;
 let layerHistoryTestRunning = false;
 let layerMemoryStressTestRunning = false;
 let layerMemoryStressTestCompleted = false;
+let layerCompressionStudyRunning = false;
+let layerCompressionStudyCompleted = false;
 let layerFormatChanging = false;
 let layerSwitching = false;
 let rasterStrokeChanging = false;
@@ -781,6 +794,26 @@ async function saveBenchmarkRun(run: BenchmarkRun): Promise<number> {
   });
   if (!response.ok) {
     throw new Error("Il risultato è visibile, ma non è stato possibile aggiungerlo al registro.");
+  }
+  const payload = await response.json() as { id?: unknown };
+  return typeof payload.id === "number" ? payload.id : 0;
+}
+
+async function saveLayerCompressionRun(
+  report: LayerCompressionStudyReport,
+): Promise<number> {
+  if (import.meta.env.DEV) {
+    return 0;
+  }
+  const response = await fetch(LAYER_COMPRESSION_RUNS_API_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(report),
+  });
+  if (!response.ok) {
+    throw new Error(
+      "Misura completata, ma il report non è stato salvato nel progetto.",
+    );
   }
   const payload = await response.json() as { id?: unknown };
   return typeof payload.id === "number" ? payload.id : 0;
@@ -1666,6 +1699,7 @@ function updateHumanStrokeControls(): void {
     || effectsWorkbenchBenchmarkRunning
     || layerHistoryTestRunning
     || layerMemoryStressTestRunning
+    || layerCompressionStudyRunning
     || layerFormatChanging
     || rasterStrokeChanging
     || rasterOuterShadowChanging
@@ -1722,6 +1756,7 @@ function operationLocked(): boolean {
     || effectsWorkbenchBenchmarkRunning
     || layerHistoryTestRunning
     || layerMemoryStressTestRunning
+    || layerCompressionStudyRunning
     || layerFormatChanging
     || rasterStrokeChanging
     || rasterOuterShadowChanging
@@ -1750,7 +1785,14 @@ function updateHistoryControls(): void {
     !layerMemoryFixtureRequested
     || !engineInitialized
     || layerMemoryStressTestRunning
+    || layerCompressionStudyRunning
     || layerMemoryStressTestCompleted
+    || locked;
+  layerCompressionStudyButton.disabled =
+    !layerCompressionStudyRequested
+    || !engineInitialized
+    || layerCompressionStudyRunning
+    || layerCompressionStudyCompleted
     || locked;
   iphoneMemoryDeviceLabel.disabled = locked || layerMemoryStressTestCompleted;
   layerFormatSelect.disabled = locked;
@@ -1764,6 +1806,7 @@ function updateHistoryControls(): void {
     benchmarkRunning || rasterShadowGoldenRunning || rasterStrokeGoldenRunning
     || effectsWorkbenchBenchmarkRunning || layerHistoryTestRunning
     || layerMemoryStressTestRunning
+    || layerCompressionStudyRunning
     || humanStrokeReplaying;
   for (const id of brushControlIds) {
     element<HTMLInputElement | HTMLSelectElement>(id).disabled = locked;
@@ -2044,6 +2087,9 @@ layerMemoryStressButton.addEventListener("click", () => {
   } else {
     void runRequestedLayerMemoryStressTest();
   }
+});
+layerCompressionStudyButton.addEventListener("click", () => {
+  void runRequestedLayerCompressionStudy();
 });
 clearLayerButton.addEventListener("click", () => {
   void clearLayerWithHistory();
@@ -2524,6 +2570,89 @@ async function runRequestedLayerMemoryStressTest(): Promise<void> {
     layerMemoryStressTestCompleted = true;
     historyState = engine.getHistoryState();
     syncActiveLayerControls();
+    updateHistoryControls();
+    updateHumanStrokeControls();
+    updateStats(engine.getStats());
+  }
+}
+
+async function runRequestedLayerCompressionStudy(): Promise<void> {
+  if (
+    !layerCompressionStudyRequested
+    || interactionLocked()
+    || layerCompressionStudyCompleted
+  ) {
+    return;
+  }
+
+  layerCompressionStudyRunning = true;
+  layerCompressionStudyDetails.hidden = true;
+  layerCompressionStudyResult.className = "result";
+  layerCompressionStudyResult.textContent =
+    "Leggo e comprimo i tile a blocchi da 1 MiB senza eliminare risorse…";
+  layerCompressionStudyButton.textContent = "Compressione in corso…";
+  setGpuMemoryPanelOpen(true);
+  updateHistoryControls();
+  updateHumanStrokeControls();
+  let completed = false;
+
+  try {
+    const report = await engine.measureLayerColdCompressionStudy((progress) => {
+      const percent = progress.totalTiles === 0
+        ? 0
+        : progress.completedTiles / progress.totalTiles * 100;
+      layerCompressionStudyResult.textContent =
+        `Livello ${progress.layerNumber}/${progress.layerCount} · `
+        + `${progress.layerName} · ${percent.toFixed(0)}% · `
+        + `${formatMemoryMiB(progress.rawMiB)} raw → `
+        + `${formatMemoryMiB(progress.adaptiveStoredMiB)} · `
+        + `risparmio ${progress.savingsPercent.toFixed(1)}%.`;
+    });
+    completed = true;
+    layerCompressionStudyReport.textContent = JSON.stringify(report, null, 2);
+    layerCompressionStudyDetails.hidden = false;
+    layerCompressionStudyDetails.open = true;
+    (
+      window as Window & {
+        __layerCompressionStudyReport?: LayerCompressionStudyReport;
+      }
+    ).__layerCompressionStudyReport = report;
+
+    let savedRunId = 0;
+    let saveFailure: string | null = null;
+    try {
+      savedRunId = await saveLayerCompressionRun(report);
+    } catch (error) {
+      saveFailure = error instanceof Error ? error.message : String(error);
+    }
+    const syntheticWarning = report.zeroTileCount > report.tileCount * 0.5
+      ? " Attenzione: oltre metà dei tile è vuota; lo stress sintetico non rappresenta un dipinto pieno."
+      : "";
+    const savedLabel = import.meta.env.DEV
+      ? " Report locale."
+      : saveFailure
+        ? ` ${saveFailure}`
+        : ` Report salvato nel progetto${savedRunId ? ` #${savedRunId}` : ""}.`;
+    layerCompressionStudyResult.className = saveFailure ? "result error" : "result ok";
+    layerCompressionStudyResult.textContent =
+      `Round-trip identico · ${formatMemoryMiB(report.rawMiB)} raw → `
+      + `${formatMemoryMiB(report.adaptiveStoredMiB)} · `
+      + `risparmio ${report.adaptiveSavingsPercent.toFixed(1)}% · `
+      + `encode ${(report.encodeMs / 1000).toFixed(2)} s · `
+      + `decode ${(report.decodeMs / 1000).toFixed(2)} s.`
+      + syntheticWarning
+      + savedLabel;
+    layerCompressionStudyButton.textContent = "Misura completata";
+  } catch (error) {
+    layerCompressionStudyResult.className = "result error";
+    layerCompressionStudyResult.textContent =
+      `Compressione non eseguita · ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+    layerCompressionStudyButton.textContent = "Riprova misura compressione";
+  } finally {
+    layerCompressionStudyRunning = false;
+    layerCompressionStudyCompleted = completed;
     updateHistoryControls();
     updateHumanStrokeControls();
     updateStats(engine.getStats());

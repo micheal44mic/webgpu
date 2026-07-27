@@ -342,6 +342,22 @@
               <pre id="layerMemoryStressReport" class="golden-report"></pre>
             </details>
           </div>
+          <div id="layerCompressionStudySection" hidden>
+            <p class="result">
+              Misura gzip lossless sui veri tile inattivi. Non elimina né
+              sostituisce alcuna risorsa del documento.
+            </p>
+            <button id="runLayerCompressionStudy" class="primary wide" type="button" disabled>
+              Misura compressione lossless
+            </button>
+            <p id="layerCompressionStudyResult" class="result" aria-live="polite">
+              Crea almeno due livelli con contenuto, poi avvia la misura.
+            </p>
+            <details id="layerCompressionStudyDetails" hidden>
+              <summary>Report compressione livelli</summary>
+              <pre id="layerCompressionStudyReport" class="golden-report"></pre>
+            </details>
+          </div>
         </section>
 
         <section id="rasterStrokeSection">

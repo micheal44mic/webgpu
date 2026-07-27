@@ -27,3 +27,18 @@ CREATE TABLE IF NOT EXISTS benchmark_runs (
   payload_json TEXT NOT NULL
 )
 `;
+
+/** Append-only lossless-compression measurements for inactive layer tiles. */
+export interface LayerCompressionRunRecord {
+  id: number;
+  createdAt: string;
+  payloadJson: string;
+}
+
+export const layerCompressionRunsSchemaSql = `
+CREATE TABLE IF NOT EXISTS layer_compression_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL
+)
+`;

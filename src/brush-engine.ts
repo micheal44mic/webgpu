@@ -143,6 +143,11 @@ import {
   layerStorageTileIndices,
   markLayerStorageRect,
 } from "./layer-storage-study";
+import type {
+  LayerCompressionLayerReport,
+  LayerCompressionStudyProgress,
+  LayerCompressionStudyReport,
+} from "./layer-compression-study";
 
 export type {
   RasterStrokePosition,
@@ -739,6 +744,11 @@ export interface BrushEngineOptions {
    * opted into that fixture before constructing the engine.
    */
   layerMemoryStressTestEnabled?: boolean;
+  /**
+   * Enables the query-gated, measurement-only lossless compression study.
+   * Normal sessions never read cold textures back to JavaScript.
+   */
+  layerCompressionTestEnabled?: boolean;
 }
 
 export interface LayerPoint {
@@ -1591,6 +1601,7 @@ export class BrushEngine {
   private readonly callbacks: EngineCallbacks;
   private readonly bevelBoundingFieldEnabled: boolean;
   private readonly layerMemoryStressTestEnabled: boolean;
+  private readonly layerCompressionTestEnabled: boolean;
 
   private adapter!: GPUAdapter;
   private device!: GPUDevice;
@@ -1994,6 +2005,7 @@ export class BrushEngine {
     this.callbacks = callbacks;
     this.bevelBoundingFieldEnabled = options.bevelBoundingFieldEnabled === true;
     this.layerMemoryStressTestEnabled = options.layerMemoryStressTestEnabled === true;
+    this.layerCompressionTestEnabled = options.layerCompressionTestEnabled === true;
     this.adaptivePreviewCanvas = adaptivePreviewCanvas;
     this.adaptiveSpacingMaxExtraPercentPoints =
       adaptiveSpacingMaxExtraPercentPointsForPlatform();
@@ -5047,6 +5059,276 @@ export class BrushEngine {
     };
   }
 
+  /**
+   * Measurement-only compression pass over the authoritative inactive tile
+   * arrays. It never replaces or destroys a cold texture.
+   */
+  async measureLayerColdCompressionStudy(
+    onProgress?: (progress: LayerCompressionStudyProgress) => void,
+  ): Promise<LayerCompressionStudyReport> {
+    if (!this.layerCompressionTestEnabled) {
+      throw new Error("Studio compressione livelli non abilitato per questa pagina.");
+    }
+    if (!this.initialized) {
+      throw new Error("Il motore non è ancora inizializzato.");
+    }
+    if (this.layerFormat !== "rgba8unorm") {
+      throw new Error("Lo studio compressione v1 richiede livelli RGBA8.");
+    }
+    if (this.activeStroke || this.historyBusy || this.layerSwitchBusy) {
+      throw new Error("La compressione richiede il motore fermo.");
+    }
+    if (
+      typeof CompressionStream !== "function"
+      || typeof DecompressionStream !== "function"
+    ) {
+      throw new Error("CompressionStream gzip non disponibile in questo browser.");
+    }
+
+    await this.waitForIdle();
+    if (this.devReadbackActiveBytes !== 0) {
+      throw new Error(
+        `Compressione avviata con ${this.devReadbackActiveBytes} byte readback ancora vivi.`,
+      );
+    }
+    this.devReadbackPeakBytes = 0;
+
+    const {
+      LAYER_COMPRESSION_CHUNK_TILE_COUNT,
+      LAYER_COMPRESSION_CODEC,
+      LAYER_COMPRESSION_STUDY_BUILD,
+      LAYER_COMPRESSION_STUDY_VERSION,
+      bytesToMiB,
+      combineCompressionHashes,
+      formatCompressionHash,
+      measureLosslessGzipChunk,
+    } = await import("./layer-compression-study");
+    const sources = this.layerStack.layers.flatMap((record, index) => {
+      if (index === this.layerStack.activeIndex) {
+        return [];
+      }
+      const gpu = this.requireLayerGpu(record.id);
+      if (record.hasContent && !gpu.cold) {
+        throw new Error(
+          `Livello inattivo ${record.id}: cold store autorevole mancante.`,
+        );
+      }
+      return gpu.cold ? [{ record, index, cold: gpu.cold }] : [];
+    });
+    if (sources.length === 0) {
+      throw new Error(
+        "Servono almeno due livelli e un livello inattivo con contenuto.",
+      );
+    }
+
+    const startedAt = performance.now();
+    const countedGpuMiBBefore = this.getGpuMemoryStats().countedTotalMiB;
+    const tileByteLength =
+      LAYER_STORAGE_TILE_SIZE * LAYER_STORAGE_TILE_SIZE * 4;
+    const totalTiles = sources.reduce(
+      (total, source) => total + source.cold.tileIndices.length,
+      0,
+    );
+    const layers: LayerCompressionLayerReport[] = [];
+    let completedTiles = 0;
+    let totalRawBytes = 0;
+    let totalGzipBytes = 0;
+    let totalAdaptiveBytes = 0;
+    let totalEncodeMs = 0;
+    let totalDecodeMs = 0;
+    let totalZeroTiles = 0;
+    let totalSolidTiles = 0;
+    let totalRawFallbackChunks = 0;
+    let totalChunkCount = 0;
+    let maximumLogicalChunkWorkingBytes = 0;
+
+    for (let sourceIndex = 0; sourceIndex < sources.length; sourceIndex += 1) {
+      const { record, index, cold } = sources[sourceIndex];
+      let rawBytes = 0;
+      let gzipBytes = 0;
+      let adaptiveBytes = 0;
+      let encodeMs = 0;
+      let decodeMs = 0;
+      let zeroTileCount = 0;
+      let solidTileCount = 0;
+      let rawFallbackChunks = 0;
+      let chunkCount = 0;
+      let sourceHash = 0x811c9dc5;
+      let restoredHash = 0x811c9dc5;
+
+      for (
+        let firstArrayLayer = 0;
+        firstArrayLayer < cold.tileIndices.length;
+        firstArrayLayer += LAYER_COMPRESSION_CHUNK_TILE_COUNT
+      ) {
+        const chunkTileCount = Math.min(
+          LAYER_COMPRESSION_CHUNK_TILE_COUNT,
+          cold.tileIndices.length - firstArrayLayer,
+        );
+        const payload = await this.readLayerColdStorageTiles(
+          cold,
+          firstArrayLayer,
+          chunkTileCount,
+          `compressione livello ${record.id}`,
+        );
+        const expectedBytes = chunkTileCount * tileByteLength;
+        if (payload.byteLength !== expectedBytes) {
+          throw new Error(
+            `Readback compressione livello ${record.id}: ${payload.byteLength} byte, `
+            + `attesi ${expectedBytes}.`,
+          );
+        }
+        const measurement = await measureLosslessGzipChunk(
+          payload,
+          tileByteLength,
+        );
+        rawBytes += measurement.rawBytes;
+        gzipBytes += measurement.gzipBytes;
+        adaptiveBytes += measurement.adaptiveStoredBytes;
+        encodeMs += measurement.encodeMs;
+        decodeMs += measurement.decodeMs;
+        zeroTileCount += measurement.zeroTileCount;
+        solidTileCount += measurement.solidTileCount;
+        rawFallbackChunks += measurement.usedRawFallback ? 1 : 0;
+        chunkCount += 1;
+        sourceHash = combineCompressionHashes(
+          sourceHash,
+          measurement.sourceHash,
+          measurement.rawBytes,
+        );
+        restoredHash = combineCompressionHashes(
+          restoredHash,
+          measurement.restoredHash,
+          measurement.rawBytes,
+        );
+        maximumLogicalChunkWorkingBytes = Math.max(
+          maximumLogicalChunkWorkingBytes,
+          measurement.rawBytes * 2 + measurement.gzipBytes,
+        );
+        completedTiles += chunkTileCount;
+        totalRawBytes += measurement.rawBytes;
+        totalGzipBytes += measurement.gzipBytes;
+        totalAdaptiveBytes += measurement.adaptiveStoredBytes;
+        totalEncodeMs += measurement.encodeMs;
+        totalDecodeMs += measurement.decodeMs;
+        totalZeroTiles += measurement.zeroTileCount;
+        totalSolidTiles += measurement.solidTileCount;
+        totalRawFallbackChunks += measurement.usedRawFallback ? 1 : 0;
+        totalChunkCount += 1;
+        onProgress?.({
+          layerNumber: sourceIndex + 1,
+          layerCount: sources.length,
+          layerName: record.name,
+          completedTiles,
+          totalTiles,
+          rawMiB: bytesToMiB(totalRawBytes),
+          adaptiveStoredMiB: bytesToMiB(totalAdaptiveBytes),
+          savingsPercent: totalRawBytes === 0
+            ? 0
+            : (1 - totalAdaptiveBytes / totalRawBytes) * 100,
+        });
+        if ((totalChunkCount & 3) === 0) {
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+        }
+      }
+
+      if (rawBytes !== cold.memoryBytes) {
+        throw new Error(
+          `Livello ${record.id}: misurati ${rawBytes} byte, cold store `
+          + `dichiara ${cold.memoryBytes}.`,
+        );
+      }
+      if (sourceHash !== restoredHash) {
+        throw new Error(`Livello ${record.id}: hash finale non identico.`);
+      }
+      const adaptiveSavings = rawBytes - adaptiveBytes;
+      layers.push({
+        index,
+        id: record.id,
+        name: record.name,
+        tileCount: cold.tileIndices.length,
+        chunkCount,
+        rawMiB: bytesToMiB(rawBytes),
+        gzipMiB: bytesToMiB(gzipBytes),
+        adaptiveStoredMiB: bytesToMiB(adaptiveBytes),
+        adaptiveSavingsMiB: bytesToMiB(adaptiveSavings),
+        adaptiveSavingsPercent: rawBytes === 0
+          ? 0
+          : adaptiveSavings / rawBytes * 100,
+        compressionRatio: adaptiveBytes === 0 ? 0 : rawBytes / adaptiveBytes,
+        encodeMs,
+        decodeMs,
+        zeroTileCount,
+        solidTileCount,
+        rawFallbackChunks,
+        sourceHash: formatCompressionHash(sourceHash),
+        restoredHash: formatCompressionHash(restoredHash),
+        byteIdentical: true,
+      });
+    }
+
+    if (this.devReadbackActiveBytes !== 0) {
+      throw new Error(
+        `Compressione terminata con ${this.devReadbackActiveBytes} byte readback vivi.`,
+      );
+    }
+    const countedGpuMiBAfter = this.getGpuMemoryStats().countedTotalMiB;
+    if (Math.abs(countedGpuMiBAfter - countedGpuMiBBefore) > 0.000_001) {
+      throw new Error(
+        `La diagnostica ha cambiato la memoria GPU conteggiata: `
+        + `${countedGpuMiBBefore} → ${countedGpuMiBAfter} MiB.`,
+      );
+    }
+    const adaptiveSavingsBytes = totalRawBytes - totalAdaptiveBytes;
+    return {
+      version: LAYER_COMPRESSION_STUDY_VERSION,
+      build: LAYER_COMPRESSION_STUDY_BUILD,
+      passed: true,
+      measurementOnly: true,
+      codec: LAYER_COMPRESSION_CODEC,
+      tileSizePx: LAYER_STORAGE_TILE_SIZE,
+      chunkTileCount: LAYER_COMPRESSION_CHUNK_TILE_COUNT,
+      layerFormat: "rgba8unorm",
+      bytesPerPixel: 4,
+      recordedAt: new Date().toISOString(),
+      elapsedMs: performance.now() - startedAt,
+      layerCount: this.layerStack.count,
+      inactiveLayerCount: this.layerStack.count - 1,
+      measuredLayerCount: layers.length,
+      tileCount: totalTiles,
+      chunkCount: totalChunkCount,
+      rawMiB: bytesToMiB(totalRawBytes),
+      gzipMiB: bytesToMiB(totalGzipBytes),
+      adaptiveStoredMiB: bytesToMiB(totalAdaptiveBytes),
+      adaptiveSavingsMiB: bytesToMiB(adaptiveSavingsBytes),
+      adaptiveSavingsPercent: totalRawBytes === 0
+        ? 0
+        : adaptiveSavingsBytes / totalRawBytes * 100,
+      compressionRatio: totalAdaptiveBytes === 0
+        ? 0
+        : totalRawBytes / totalAdaptiveBytes,
+      encodeMs: totalEncodeMs,
+      decodeMs: totalDecodeMs,
+      zeroTileCount: totalZeroTiles,
+      solidTileCount: totalSolidTiles,
+      rawFallbackChunks: totalRawFallbackChunks,
+      byteIdentical: true,
+      countedGpuMiBBefore,
+      countedGpuMiBAfter,
+      temporaryReadbackPeakMiB: bytesToMiB(this.devReadbackPeakBytes),
+      maximumLogicalChunkWorkingMiB: bytesToMiB(maximumLogicalChunkWorkingBytes),
+      environment: {
+        userAgent: navigator.userAgent,
+        platform: navigator.platform,
+        devicePixelRatio: window.devicePixelRatio,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+        gpuLabel: this.gpuLabel,
+      },
+      layers,
+    };
+  }
+
   getLayerBakeState(layerIndex: number): {
     allocated: boolean;
     valid: boolean;
@@ -5485,6 +5767,79 @@ export class BrushEngine {
       throw new Error("Contabilità readback GPU negativa.");
     }
   }
+  private async readLayerColdStorageTiles(
+    cold: LayerColdStorageResources,
+    firstArrayLayer: number,
+    arrayLayerCount: number,
+    label: string,
+  ): Promise<Uint8Array> {
+    if (
+      !Number.isInteger(firstArrayLayer)
+      || !Number.isInteger(arrayLayerCount)
+      || firstArrayLayer < 0
+      || arrayLayerCount < 1
+      || firstArrayLayer + arrayLayerCount > cold.tileIndices.length
+    ) {
+      throw new Error("Intervallo readback cold storage non valido.");
+    }
+    const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
+    const bytesPerRow = LAYER_STORAGE_TILE_SIZE * bytesPerPixel;
+    const rowsPerImage = LAYER_STORAGE_TILE_SIZE;
+    const readbackBytes = bytesPerRow * rowsPerImage * arrayLayerCount;
+    const readbackBuffer = this.device.createBuffer({
+      label: `Sonda ${label} tile ${firstArrayLayer}+${arrayLayerCount}`,
+      size: readbackBytes,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    this.devReadbackActiveBytes += readbackBytes;
+    this.devReadbackPeakBytes = Math.max(
+      this.devReadbackPeakBytes,
+      this.devReadbackActiveBytes,
+    );
+    let mapped = false;
+    try {
+      const encoder = this.device.createCommandEncoder({
+        label: `Sonda ${label}`,
+      });
+      encoder.copyTextureToBuffer(
+        {
+          texture: cold.texture,
+          origin: { x: 0, y: 0, z: firstArrayLayer },
+        },
+        { buffer: readbackBuffer, bytesPerRow, rowsPerImage },
+        {
+          width: LAYER_STORAGE_TILE_SIZE,
+          height: LAYER_STORAGE_TILE_SIZE,
+          depthOrArrayLayers: arrayLayerCount,
+        },
+      );
+      this.device.queue.submit([encoder.finish()]);
+      let timer = 0;
+      try {
+        await Promise.race([
+          readbackBuffer.mapAsync(GPUMapMode.READ),
+          new Promise<never>((_, reject) => {
+            timer = window.setTimeout(
+              () => reject(new Error(`Sonda ${label}: timeout readback dopo 30 s.`)),
+              30_000,
+            );
+          }),
+        ]);
+      } finally {
+        if (timer !== 0) {
+          window.clearTimeout(timer);
+        }
+      }
+      mapped = true;
+      return new Uint8Array(readbackBuffer.getMappedRange()).slice();
+    } finally {
+      if (mapped) {
+        readbackBuffer.unmap();
+      }
+      this.destroyTrackedReadbackBuffer(readbackBuffer, readbackBytes);
+    }
+  }
+
   private async readTexturePixels(
     target: GPUTexture,
     rect: DirtyRect | undefined,

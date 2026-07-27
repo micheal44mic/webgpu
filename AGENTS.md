@@ -1342,3 +1342,36 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
 - Verifiche: suite layer/history/stroke/grain/blend/thickness/effects-scratch/
   bevel/shadow/view verdi, TypeScript e build Vite verdi; handler D1 verificato
   in memoria per lista vuota, insert, lettura per id, upsert e lista più recente.
+
+### Studio compressione lossless dei livelli (measurement-only)
+
+- Esperimento isolato del 27 luglio 2026, non ancora storage runtime. Query
+  `?layerCompressionTest=1`, combinabile con lo stress livelli ma inerte nelle
+  sessioni normali. Build
+  `lossless-gzip-256-tile-1mib-streamed-measurement-v1`: legge soltanto gli
+  array texture cold dei livelli inattivi, quattro tile `256²` per volta
+  (`1 MiB` RGBA8), usa `CompressionStream("gzip")`, decomprime subito e
+  confronta ogni byte. Se gzip è più grande conserva nella proiezione il raw;
+  nessuna texture viene sostituita o distrutta.
+- Il report distingue raw, gzip e storage adattivo, tempi encode/decode, tile
+  zero/solid, fallback raw, hash sorgente/ripristinato, picco readback, working
+  set logico del chunk e memoria GPU prima/dopo. In produzione viene salvato
+  automaticamente in D1 tramite `/api/layer-compression-runs`.
+- Prova browser locale NVIDIA Ampere: un livello inattivo da `45` tile /
+  `11,25 MiB`, di cui `22` tile zero conservativi, misura
+  `0,969521 MiB` adattivi (`−91,382%`, `11,604×`), encode `323,7 ms`, decode
+  `57,9 ms`, elapsed `1151,6 ms`; hash `f3178e41` identico, readback massimo
+  `1 MiB`, working set logico massimo `2,258756 MiB`, totale GPU invariato
+  `189,280281 → 189,280281 MiB`. Cambio livello successivo riuscito in `88 ms`
+  e zero warning/errori console.
+- Il rapporto locale non è una previsione di prodotto: quasi metà dei tile del
+  campione era realmente zero. Il caso deterministico incomprimibile produce
+  `262244` byte gzip contro `262144` raw e attiva correttamente il fallback,
+  quindi la proiezione non cresce mai. Serve la run sull'iPhone con contenuto
+  pittorico reale prima di scegliere codec/cache o dichiarare memoria liberata.
+- Verifiche verdi: undici suite
+  (`stroke/grain/blend/thickness/history/layers/effects-scratch/bevel/shadow/view/compression`),
+  TypeScript, build Vite, schema/migrazione D1 `0004` e handler D1 in memoria.
+  Questa rev misura soltanto:
+  l'esperimento successivo, se approvato dai dati iPhone, sarà l'eviction
+  reversibile di un singolo livello lontano con verifica byte-identica.
