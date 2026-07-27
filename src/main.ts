@@ -343,7 +343,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet";
-    performanceTelemetryRevision: 51;
+    performanceTelemetryRevision: 54;
   };
 }
 
@@ -729,7 +729,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     viewRotationDegrees: Number(engine.getViewRotationDegrees().toFixed(3)),
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet",
-    performanceTelemetryRevision: 51,
+    performanceTelemetryRevision: 54,
     ...engineEnvironment,
   };
 }
@@ -2266,7 +2266,7 @@ async function runRequestedLayerHistoryTest(): Promise<void> {
       : "Cronologia livelli GPU ERRORE · consulta il report JSON.";
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const failure = { version: 6, passed: false, error: message };
+    const failure = { version: 10, passed: false, error: message };
     layerHistoryTestReport.textContent = JSON.stringify(failure, null, 2);
     layerHistoryTestDetails.hidden = false;
     layerHistoryTestDetails.open = true;

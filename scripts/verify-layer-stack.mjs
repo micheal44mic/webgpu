@@ -498,11 +498,15 @@ assert.match(destroyReadbackBody, /buffer\.destroy\(\)/, "il rilascio tracciato 
 assert.match(destroyReadbackBody, /this\.devReadbackActiveBytes -= size/,
   "il rilascio tracciato deve azzerare la residenza temporanea");
 
-// Steps 12–13: analytic bakes are transactional but transient. A successful
+// Steps 12–14: analytic bakes are transactional, transient and bounded by the
+// conservative union of every active effect's final-pixel domain. A successful
 // rebuild folds them into at most two persistent surfaces, then releases every
 // per-layer bake. Raw inactive layers own no mip chain.
-assert.match(engineSource, /LAYER_BAKE_STRATEGY =\s*\n\s*"transient-analytic-mip0-fused-into-two-merged-surfaces"/);
-assert.match(engineSource, /LAYER_COMPOSITE_STRATEGY =\s*\n\s*"merged-above-over-active-over-merged-below-source-over"/);
+assert.match(engineSource, /LAYER_BAKE_STRATEGY =\s*\n\s*"transient-analytic-bounded-visual-rect-no-handoff-residency-mip0-fused-into-two-merged-surfaces"/);
+assert.match(
+  engineSource,
+  /LAYER_COMPOSITE_STRATEGY =\s*\n\s*"merged-above-over-active-over-merged-below-source-over-evict-derived-before-rebuild-deferred-to-fold-fence-bounded-visual-rect"/,
+);
 assert.ok(
   (engineSource.match(/layerBakeStrategy: LAYER_BAKE_STRATEGY/g) ?? []).length >= 2,
   "stats e benchmark devono firmare la strategia dei bake",
@@ -514,8 +518,14 @@ assert.ok(
 const retargetStart = engineSource.indexOf("private async retargetEffectsWorkingSetInternal(");
 const retargetEnd = engineSource.indexOf("async benchmarkEffectsWorkingSet(", retargetStart);
 const retargetBody = engineSource.slice(retargetStart, retargetEnd);
-assert.match(retargetBody, /await this\.waitForGpuCapped\(`Retarget banco effetti #\$\{generation\}`\)/,
-  "i retarget riusati dalla fusione devono avere un timeout GPU");
+assert.match(retargetBody, /completionPolicy: LayerGpuCompletionPolicy = "await-immediately"/);
+assert.match(retargetBody, /rebuildDomain: LayerEffectsRebuildDomain = "full-document"/);
+assert.match(retargetBody, /styleStackRetargetBounds = rebuildDomain === "content-bounds"/,
+  "solo il fold inattivo può restringere il dominio del rebuild analitico");
+assert.match(retargetBody, /if \(completionPolicy === "await-immediately"\) \{\s*await this\.waitForIdle\(\);/,
+  "il retarget pubblico deve conservare il fence iniziale");
+assert.match(retargetBody, /if \(completionPolicy === "await-immediately"\) \{\s*await this\.waitForGpuCapped\(`Retarget banco effetti #\$\{generation\}`\);/,
+  "solo la catena fold può rinviare il timeout GPU al fence del record");
 const bakeCandidateStart = engineSource.indexOf("private async createLayerBakeCandidate(");
 const bakeCandidateEnd = engineSource.indexOf("private async bakeActiveLayerForSwitch(", bakeCandidateStart);
 const bakeCandidateBody = engineSource.slice(bakeCandidateStart, bakeCandidateEnd);
@@ -526,6 +536,10 @@ assert.match(bakeCandidateBody, /GPUTextureUsage\.TEXTURE_BINDING/);
 assert.match(bakeCandidateBody, /GPUTextureUsage\.COPY_SRC/);
 assert.match(bakeCandidateBody, /renderer\.encodeBake\(/,
   "la fusione deve partire dal compositore analitico promosso dal golden");
+assert.match(bakeCandidateBody, /const nonTransparentBounds = this\.layerCompositeVisualBounds\(record\)/);
+assert.match(bakeCandidateBody, /rect: nonTransparentBounds/,
+  "il bake analitico inattivo non deve tornare al dispatch 4096²");
+assert.match(bakeCandidateBody, /nonTransparentBounds: \{ \.\.\.nonTransparentBounds \}/);
 assert.match(bakeCandidateBody, /await this\.waitForGpuCapped\(`/,
   "ogni nuovo submit atteso deve avere un timeout");
 assert.match(bakeCandidateBody, /this\.maybeInjectLayerBakeFault\("after-candidate-submit"\)/);
@@ -538,6 +552,21 @@ const mergedEnd = engineSource.indexOf("private async restoreEffectsWorkbenchToA
 const mergedBody = engineSource.slice(mergedStart, mergedEnd);
 assert.match(mergedBody, /record\.visible && record\.opacity > 0 && record\.hasContent/);
 assert.match(mergedBody, /await this\.materializeLayerCompositeSource\(record, caller\)/);
+assert.match(
+  engineSource,
+  /private layerCompositeVisualBounds\([\s\S]*?rasterStrokeEffectRect[\s\S]*?rasterBevelEffectRect[\s\S]*?rasterOuterShadowEffectRect[\s\S]*?rasterInnerShadowEffectRect/,
+  "i bounds del bake devono unire Traccia, Smusso e le due Ombre",
+);
+assert.match(
+  engineSource,
+  /private async materializeLayerCompositeSource\([\s\S]*?"defer-to-fold-fence"[\s\S]*?"defer-to-fold-fence"[\s\S]*?"defer-to-fold-fence"/,
+  "hydrate, retarget e bake temporanei devono appartenere allo stesso fence del fold",
+);
+assert.ok(
+  mergedBody.indexOf("this.device.queue.submit([encoder.finish()]);")
+    < mergedBody.indexOf("await this.waitForGpuCapped(`Fold livello ${record.id}`);"),
+  "il fence unico del record deve seguire il submit del fold",
+);
 assert.match(mergedBody, /if \(first && record\.opacity >= 1\)/,
   "il primo livello opaco deve evitare il pass full-document");
 assert.match(mergedBody, /encoder\.copyTextureToTexture\(/,
@@ -550,6 +579,36 @@ assert.match(mergedBody, /this\.destroyLayerBake\(source\.transientBake\)/);
 assert.match(
   engineSource,
   /private async rebuildMergedLayerSurfaces\(\s*caller: EffectsRetargetCaller = "layer-switch",\s*\): Promise<void>/,
+);
+const rebuildMethodStart = engineSource.indexOf("private async rebuildMergedLayerSurfaces(");
+const rebuildMethodEnd = engineSource.indexOf("  async addLayer(", rebuildMethodStart);
+const rebuildMethodBody = engineSource.slice(rebuildMethodStart, rebuildMethodEnd);
+const rebuildFreeze = rebuildMethodBody.indexOf("this.layerPresentationFrozen = true;");
+const rebuildDestroyBelow = rebuildMethodBody.indexOf("this.destroyMergedSurface(previousBelow);");
+const rebuildDestroyAbove = rebuildMethodBody.indexOf("this.destroyMergedSurface(previousAbove);");
+const rebuildFirstCandidate = rebuildMethodBody.indexOf("candidateBelow = await this.buildMergedSurfaceCandidate(");
+assert.ok(
+  rebuildFreeze >= 0
+    && rebuildDestroyBelow > rebuildFreeze
+    && rebuildDestroyAbove > rebuildFreeze
+    && rebuildFirstCandidate > rebuildDestroyBelow
+    && rebuildFirstCandidate > rebuildDestroyAbove,
+  "le superfici fuse precedenti devono essere evacuate prima di allocare i candidati",
+);
+assert.match(
+  rebuildMethodBody,
+  /this\.rebuildLayerDisplayBindGroups\(\);[\s\S]*?this\.layerPresentationFrozen = false;/,
+  "la presentazione può ripartire solo dopo la pubblicazione dei nuovi bind group",
+);
+assert.match(
+  engineSource,
+  /private renderFrame\(timestamp: number\): void \{[\s\S]*?if \(this\.layerPresentationFrozen\) \{[\s\S]*?return;/,
+  "nessun frame deve referenziare view evacuate durante la ricostruzione",
+);
+assert.match(
+  engineSource,
+  /record\.visible = previousVisible;[\s\S]*?record\.opacity = previousOpacity;[\s\S]*?await this\.rebuildMergedLayerSurfaces\("layer-switch"\)/,
+  "il rollback dello stile deve ricostruire le superfici evacuate dai raw autorevoli",
 );
 assert.match(
   engineSource,
@@ -687,9 +746,9 @@ const mainSource = readFileSync(
   "utf8",
 );
 assert.equal(
-  (mainSource.match(/performanceTelemetryRevision: 51/g) ?? []).length,
+  (mainSource.match(/performanceTelemetryRevision: 54/g) ?? []).length,
   2,
-  "tipo persistito e runtime devono avanzare insieme alla revisione 51",
+  "tipo persistito e runtime devono avanzare insieme alla revisione 54",
 );
 assert.match(mainSource, /layerBakeStrategy: string;/);
 assert.match(mainSource, /layerCompositeStrategy: string;/);
@@ -779,15 +838,38 @@ assert.match(
 // switch before the awaited activation, restore a partially written TARGET under
 // the old cursor, then reactivate the original layer. Reversing the last two loses
 // pixels while CPU cursor/index state still looks correct.
-const prepareStart = engineSource.indexOf("private async prepareActiveLayerForSwitch(");
-const prepareBody = engineSource.slice(prepareStart, prepareStart + 1_300);
+const evictStart = engineSource.indexOf("private evictReconstructibleLayerResources(");
+const evictEnd = engineSource.indexOf("private encodeLayerColdHydration(", evictStart);
+const evictBody = engineSource.slice(evictStart, evictEnd);
+assert.match(
+  evictBody,
+  /if \(record\.hasContent && !gpu\.cold\)[\s\S]*?throw new Error/,
+  "un hot con contenuto non può essere evacuato senza cold autorevole",
+);
+const evictFreeze = evictBody.indexOf("this.layerPresentationFrozen = true;");
+const evictBake = evictBody.indexOf("this.destroyLayerBake(gpu.bake);");
+const evictHot = evictBody.indexOf("this.destroyLayerHot(gpu.hot);");
 assert.ok(
-  prepareBody.indexOf("await this.bakeActiveLayerForSwitch();")
-    < prepareBody.indexOf("await this.freezeActiveLayerToCold();"),
-  "la preparazione deve creare il bake prima di impacchettare il raw",
+  evictFreeze >= 0 && evictBake > evictFreeze && evictHot > evictBake,
+  "l'evizione deve congelare il display e liberare bake e hot in quest'ordine",
+);
+const prepareStart = engineSource.indexOf("private async prepareActiveLayerForSwitch(");
+const prepareBody = engineSource.slice(prepareStart, prepareStart + 1_800);
+assert.match(
+  prepareBody,
+  /if \(import\.meta\.env\.DEV && this\.layerBakeFaultQueue\.length > 0\) \{\s*await this\.bakeActiveLayerForSwitch\(\);/,
+  "il bake completo resta soltanto come sonda transazionale DEV",
+);
+const prepareFreeze = prepareBody.indexOf("await this.freezeActiveLayerToCold();");
+const prepareEvict = prepareBody.indexOf(
+  "this.evictReconstructibleLayerResources(this.layerStack.active);",
+);
+assert.ok(
+  prepareFreeze >= 0 && prepareEvict > prepareFreeze,
+  "la preparazione deve completare il cold autorevole prima dell'evizione",
 );
 assert.match(prepareBody, /catch \(error\)[\s\S]*?this\.destroyLayerBake\(gpu\.bake\)/,
-  "un pack fallito deve rilasciare il bake di hand-off riuscito");
+  "un pack fallito deve rilasciare l'eventuale bake della sonda DEV");
 const switchedDeclaration = cursorBody.indexOf("const switched =");
 const historyOutgoingPrepare = cursorBody.indexOf("await this.prepareActiveLayerForSwitch();");
 const forwardIndexChange = cursorBody.indexOf("this.layerStack.setActiveIndex(targetIndex);");
@@ -798,7 +880,7 @@ assert.ok(switchedDeclaration >= 0 && switchedDeclaration < forwardActivation,
   "switched deve essere noto prima che activateLayer possa fallire");
 assert.ok(
   historyOutgoingPrepare > switchedDeclaration && historyOutgoingPrepare < forwardIndexChange,
-  "Undo/Redo cross-layer deve preparare cold e bake prima di cambiare target",
+  "Undo/Redo cross-layer deve preparare il cold ed evacuare l'uscente prima del target",
 );
 const operationCatch = cursorBody.indexOf("catch (operationError)");
 const cursorRestore = cursorBody.indexOf("this.historyCursor = previousCursor;", operationCatch);
@@ -826,6 +908,14 @@ assert.ok(
     && reverseIndex > rollbackPrepare
     && reverseActivation > reverseIndex,
   "il rollback deve ripristinare, impacchettare e poi lasciare il target",
+);
+const rollbackEvict = cursorBody.indexOf(
+  "this.evictReconstructibleLayerResources(this.layerStack.at(targetIndex));",
+  operationCatch,
+);
+assert.ok(
+  rollbackEvict > rollbackPrepare && rollbackEvict < reverseIndex,
+  "il rollback history deve evacuare il target fallito prima di reidratare l'origine",
 );
 assert.match(cursorBody, /this\.historyStateInconsistent = true;/,
   "un rollback fallito deve alzare il latch fatale");
@@ -888,8 +978,11 @@ assert.match(mainSource, /window\.clearTimeout\(timeoutId\)/,
   "il timer dell'harness deve essere disarmato dopo successo o errore");
 assert.match(mainSource, /layerHistoryTestRunning = timedOut/,
   "dopo timeout la pagina deve restare bloccata perché Promise.race non cancella il test");
-assert.match(mainSource, /const failure = \{ version: 6, passed: false/);
-assert.match(layerHistoryGpuTestSource, /LAYER_HISTORY_GPU_TEST_VERSION = 6 as const/);
+assert.match(mainSource, /const failure = \{ version: 10, passed: false/);
+assert.match(layerHistoryGpuTestSource, /LAYER_HISTORY_GPU_TEST_VERSION = 10 as const/);
+assert.match(layerCompositeGpuTestSource, /fiveLayerSwitchMemoryPeaks/);
+assert.match(layerCompositeGpuTestSource, /fiveLayerMiddleSwitchMemoryPeaks/);
+assert.match(layerCompositeGpuTestSource, /measureMemoryPeakDuring/);
 assert.match(layerHistoryGpuTestSource, /measureActiveStyleBakeGap\(pRect\)/);
 assert.match(layerHistoryGpuTestSource, /engine\.injectLayerBakeFault\("after-candidate-submit"\)/);
 assert.match(layerHistoryGpuTestSource, /injectedBakeFailureReleasedCandidate/);
@@ -976,14 +1069,16 @@ const selectPrepare = selectMethodBody.indexOf("await this.prepareActiveLayerFor
 const selectIndexChange = selectMethodBody.indexOf("this.layerStack.setActiveIndex(index);");
 assert.ok(
   selectPrepare >= 0 && selectIndexChange > selectPrepare,
-  "setActiveLayer deve completare bake e pack prima di cambiare indice",
+  "setActiveLayer deve completare pack ed evizione prima di cambiare indice",
 );
+assert.match(selectMethodBody, /this\.evictReconstructibleLayerResources\(this\.layerStack\.at\(index\)\);[\s\S]*?this\.layerStack\.setActiveIndex\(fromIndex\);[\s\S]*?await this\.activateLayer\(index\);/,
+  "il rollback dello switch deve evacuare il target fallito prima di reidratare l'origine");
 assert.match(selectMethodBody, /this\.layerStack\.setActiveIndex\(fromIndex\);[\s\S]*?await this\.activateLayer\(index\);/,
   "il rollback dello switch deve ritargettare tutti i sottosistemi");
 assert.match(selectMethodBody, /Stato incoerente dopo il cambio livello:[\s\S]*?Ricarica la pagina/,
   "un doppio fallimento dello switch deve alzare il latch fatale");
 const addMethodStart = engineSource.indexOf("async addLayer(");
-const addMethodBody = engineSource.slice(addMethodStart, addMethodStart + 3_400);
+const addMethodBody = engineSource.slice(addMethodStart, addMethodStart + 4_400);
 const addPrepare = addMethodBody.indexOf("await this.prepareActiveLayerForSwitch();");
 const addRecord = addMethodBody.indexOf("this.layerStack.add(name)");
 assert.ok(
@@ -993,8 +1088,10 @@ assert.ok(
 assert.match(addMethodBody, /await this\.allocateLayerGpuResources\(/);
 assert.match(addMethodBody, /Stato incoerente dopo la creazione del livello:[\s\S]*?Ricarica la pagina/,
   "un doppio fallimento di addLayer deve alzare il latch fatale");
-assert.match(addMethodBody, /this\.releaseFusedLayerBakes\(\);\s*this\.releaseActiveColdDuplicate\(\);/,
-  "un OOM del nuovo mip 0 deve rilasciare bake e duplicato cold dell'attivo");
+assert.match(addMethodBody, /this\.layerStack\.remove\(index\);[\s\S]*?this\.layerStack\.setActiveIndex\(fromIndex\);[\s\S]*?await this\.activateLayer\(fromIndex\);/,
+  "un OOM del nuovo mip 0 deve reidratare l'uscente già evacuato");
+assert.match(addMethodBody, /this\.evictReconstructibleLayerResources\(record\);[\s\S]*?this\.layerStack\.setActiveIndex\(fromIndex\);[\s\S]*?await this\.activateLayer\(index\);/,
+  "il rollback di addLayer deve evacuare il nuovo hot prima di reidratare l'origine");
 assert.match(addMethodBody, /await this\.activateLayer\(index\);[\s\S]*?this\.layerGpu\.delete\(record\.id\);[\s\S]*?this\.destroyLayerGpuResources\(gpu\)/,
   "un livello fallito va distrutto solo dopo il ripristino completo");
 
@@ -1108,7 +1205,7 @@ assert.ok(
 assert.ok(
   activateStorageBody.indexOf("await this.rebuildMergedLayerSurfaces(caller);")
     < activateStorageBody.indexOf("this.commitActiveLayerResidency(fromIndex);"),
-  "il full uscente può essere distrutto solo dopo il compositing riuscito",
+  "il cold duplicato dell'attivo può essere rilasciato solo dopo il compositing riuscito",
 );
 assert.match(engineSource, /const layerColdMiB = baseResourcesAllocated/);
 assert.match(engineSource, /const layerHydrationMiB = \[\.\.\.this\.liveLayerHydrationTextures\.values\(\)\]/);
@@ -1126,10 +1223,22 @@ assert.match(exactStudyBody, /compareLayerStorageMasks\(exactMask, record\.stora
 assert.match(exactStudyBody, /countedGpuMiBBefore/);
 assert.match(exactStudyBody, /countedGpuMiBAfter/);
 assert.match(exactStudyBody, /temporaryReadbackPeakMiB/);
+assert.match(
+  layerCompositeGpuTestSource,
+  /compositeSchedulingAndBoundsSignatureMatches:[\s\S]*?deferred-to-fold-fence-bounded-visual-rect/,
+  "l'harness GPU deve firmare scheduling e bounds prima di leggere i tempi",
+);
+assert.match(
+  layerCompositeGpuTestSource,
+  /boundedBakeSignatureMatches:[\s\S]*?transient-analytic-bounded-visual-rect/,
+  "l'harness GPU deve firmare anche il bake bounded",
+);
+assert.match(layerCompositeGpuTestSource, /fiveLayerAnalyticBakeDomainWasBounded/);
+assert.match(layerCompositeGpuTestSource, /fiveLayerSwitchBreakdownIsConsistent/);
 assert.match(layerHistoryGpuTestSource, /measureExactLayerStorageStudy\(\)/);
 assert.match(layerHistoryGpuTestSource, /conservativeTilesContainEveryExactTile/);
 assert.match(layerHistoryGpuTestSource, /exactReadbackReleasedItsTemporaryBuffers/);
-assert.match(mainSource, /performanceTelemetryRevision: 51/);
+assert.match(mainSource, /performanceTelemetryRevision: 54/);
 assert.match(mainSource, /gpuMemoryLayerCold/);
 assert.match(mainSource, /gpuMemoryLayerHydration/);
 assert.match(mainSource, /Raw livelli · effettivo/);

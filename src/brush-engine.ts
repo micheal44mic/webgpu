@@ -821,6 +821,8 @@ interface MergedSurfaceResources {
   mipDownsampleBindGroups: GPUBindGroup[];
   validThroughLevel: number;
   layerCount: number;
+  foldedPixels: number;
+  analyticBakePixels: number;
 }
 
 interface LayerBakeResources {
@@ -829,6 +831,7 @@ interface LayerBakeResources {
   samplingView: GPUTextureView;
   memoryBytes: number;
   generation: number;
+  nonTransparentBounds: DirtyRect;
 }
 
 interface LayerColdStorageResources {
@@ -862,14 +865,24 @@ export type LayerColdStorageFaultPoint =
   | "after-pack-submit"
   | "after-hydrate-submit";
 
+type LayerGpuCompletionPolicy =
+  | "await-immediately"
+  | "defer-to-fold-fence";
+
+type LayerEffectsRebuildDomain =
+  | "full-document"
+  | "content-bounds";
+
 export interface LayerSwitchResult {
   fromIndex: number;
   toIndex: number;
   layerId: number;
   /** Wall clock across the whole switch, including the field rebuild. */
   totalMs: number;
-  /** The dominant term: retarget plus the full rebuild of the effect fields. */
+  /** The dominant incoming-layer term: retarget plus effect-field rebuild. */
   effectsMs: number;
+  /** Rebuild and transactional publication of mergedBelow/mergedAbove. */
+  compositeMs: number;
   /**
    * Generation of the effects working set after the retarget. Deliberately not a
    * "pyramid rebuilt through level" figure: the switch only invalidates the
@@ -1193,9 +1206,9 @@ const PRESENTATION_CACHE_STRATEGY = "persistent-full-resolution-screen-cache" as
 const PRESENTATION_TRANSFER_STRATEGY = "copy-texture-to-current-texture" as const;
 const PAINT_DISPLAY_PYRAMID_STRATEGY = "live-dirty-box-filter-mip-chain" as const;
 export const LAYER_BAKE_STRATEGY =
-  "transient-analytic-mip0-fused-into-two-merged-surfaces" as const;
+  "transient-analytic-bounded-visual-rect-no-handoff-residency-mip0-fused-into-two-merged-surfaces" as const;
 export const LAYER_COMPOSITE_STRATEGY =
-  "merged-above-over-active-over-merged-below-source-over" as const;
+  "merged-above-over-active-over-merged-below-source-over-evict-derived-before-rebuild-deferred-to-fold-fence-bounded-visual-rect" as const;
 const PAINT_DISPLAY_LOD_SELECTION_STRATEGY =
   "largest-power-of-two-without-upscaling" as const;
 const BRUSH_OPACITY_STRATEGY = "per-stamp-uniform-alpha-multiplier" as const;
@@ -1632,6 +1645,13 @@ export class BrushEngine {
    * a layer that is halfway through being swapped.
    */
   private layerSwitchBusy = false;
+
+  /**
+   * While reconstructible layer resources are evicted, keep presenting the last
+   * screen-space cache and submit no frame that could reference destroyed views.
+   * Every successful activation/rebuild clears the flag before requesting a frame.
+   */
+  private layerPresentationFrozen = false;
 
   /** Dev-only injections for post-submit rollback boundaries. */
   private layerBakeFaultQueue: LayerBakeFaultPoint[] = [];
@@ -4630,6 +4650,8 @@ export class BrushEngine {
     > | null = null,
     publish = true,
     maintainDisplayPyramid = true,
+    completionPolicy: LayerGpuCompletionPolicy = "await-immediately",
+    rebuildDomain: LayerEffectsRebuildDomain = "full-document",
   ): Promise<EffectsWorkbenchRetargetResult> {
     if (!this.initialized) {
       throw new Error("Il motore non è ancora inizializzato.");
@@ -4660,7 +4682,9 @@ export class BrushEngine {
       );
     }
 
-    await this.waitForIdle();
+    if (completionPolicy === "await-immediately") {
+      await this.waitForIdle();
+    }
     const strokeStyle = styles?.strokeStyle ?? this.rasterStrokeStyle;
     const bevelStyle = styles?.bevelStyle ?? this.rasterBevelStyle;
     const outerShadowStyle = styles?.outerShadowStyle ?? this.rasterOuterShadowStyle;
@@ -4675,6 +4699,10 @@ export class BrushEngine {
     const normalizedContentBounds = contentBounds === undefined
       ? fullDocumentRect
       : this.normalizeLayerRect(contentBounds);
+    const boundedContentRect = normalizedContentBounds ?? fullDocumentRect;
+    const styleStackRetargetBounds = rebuildDomain === "content-bounds"
+      ? boundedContentRect
+      : fullDocumentRect;
     const bevelRetargetContentBounds = this.bevelBoundingFieldEnabled
       ? normalizedContentBounds
       : fullDocumentRect;
@@ -4709,13 +4737,14 @@ export class BrushEngine {
           ? `Banco effetti retarget #${generation}: rebuild campo bbox`
           : `Banco effetti retarget #${generation}: rebuild documento completo`,
       });
-      // Stroke/mask/styled remain full-document in both variants. Only the
-      // heightfield receives the known source bounds in this PR.
+      // Public/active retargets preserve the full-document rebuild contract.
+      // Fold-only materialization may use the conservative visual-domain input:
+      // every buffer is still document-addressed, only dispatched work is bounded.
       const update = this.encodeRasterStrokeUpdate(
         encoder,
         "permanent",
-        fullDocumentRect,
-        fullDocumentRect,
+        styleStackRetargetBounds,
+        styleStackRetargetBounds,
         true,
         bevelRetargetContentBounds,
         this.bevelBoundingFieldEnabled,
@@ -4734,7 +4763,9 @@ export class BrushEngine {
       }
       this.device.queue.submit([encoder.finish()]);
       const submittedAt = performance.now();
-      await this.waitForGpuCapped(`Retarget banco effetti #${generation}`);
+      if (completionPolicy === "await-immediately") {
+        await this.waitForGpuCapped(`Retarget banco effetti #${generation}`);
+      }
       const completedAt = performance.now();
       const result: EffectsWorkbenchRetargetResult = {
         strategy: EFFECTS_WORKING_SET_STRATEGY,
@@ -4759,7 +4790,7 @@ export class BrushEngine {
         this.requestRender();
         this.publishStats();
       }
-      if (import.meta.env.DEV) {
+      if (import.meta.env.DEV && completionPolicy === "await-immediately") {
         console.info(
           this.bevelBoundingFieldEnabled
             ? "[EffectsWorkbench] retarget con campo Smusso bbox completato"
@@ -5044,13 +5075,27 @@ export class BrushEngine {
 
   getLayerCompositeState(): {
     selectedMipLevel: number;
-    below: { allocated: boolean; validThroughLevel: number; layerCount: number };
-    above: { allocated: boolean; validThroughLevel: number; layerCount: number };
+    below: {
+      allocated: boolean;
+      validThroughLevel: number;
+      layerCount: number;
+      foldedPixels: number;
+      analyticBakePixels: number;
+    };
+    above: {
+      allocated: boolean;
+      validThroughLevel: number;
+      layerCount: number;
+      foldedPixels: number;
+      analyticBakePixels: number;
+    };
   } {
     const describe = (surface: MergedSurfaceResources | null) => ({
       allocated: surface !== null,
       validThroughLevel: surface?.validThroughLevel ?? -1,
       layerCount: surface?.layerCount ?? 0,
+      foldedPixels: surface?.foldedPixels ?? 0,
+      analyticBakePixels: surface?.analyticBakePixels ?? 0,
     });
     return {
       selectedMipLevel: this.paintDisplaySelectedMipLevel,
@@ -7443,6 +7488,8 @@ export class BrushEngine {
         mipDownsampleBindGroups,
         validThroughLevel: 0,
         layerCount,
+        foldedPixels: 0,
+        analyticBakePixels: 0,
       };
     } catch (error) {
       this.destroyMergedSurfaceTexture(texture);
@@ -7640,6 +7687,21 @@ export class BrushEngine {
     gpu.cold = null;
   }
 
+  private evictReconstructibleLayerResources(record: LayerRecord): void {
+    const gpu = this.requireLayerGpu(record.id);
+    if (record.hasContent && !gpu.cold) {
+      throw new Error(
+        `Evizione livello ${record.id} rifiutata: cold store autorevole mancante.`,
+      );
+    }
+    this.layerPresentationFrozen = true;
+    this.destroyLayerBake(gpu.bake);
+    gpu.bake = null;
+    gpu.bakeValid = false;
+    this.destroyLayerHot(gpu.hot);
+    gpu.hot = null;
+  }
+
   private encodeLayerColdHydration(
     encoder: GPUCommandEncoder,
     cold: LayerColdStorageResources,
@@ -7672,7 +7734,11 @@ export class BrushEngine {
     gpu: LayerGpuResources,
     label: string,
     injectFault: boolean,
+    completionPolicy: LayerGpuCompletionPolicy = "await-immediately",
   ): Promise<LayerTextureResources> {
+    if (injectFault && completionPolicy !== "await-immediately") {
+      throw new Error("Il fault hydrate richiede il completamento GPU immediato.");
+    }
     const cold = gpu.cold;
     if (record.hasContent && !cold) {
       throw new Error(`Reidratazione livello ${record.id}: cold store mancante.`);
@@ -7690,9 +7756,11 @@ export class BrushEngine {
           const encoder = this.device.createCommandEncoder({ label });
           this.encodeLayerColdHydration(encoder, cold, hot);
           this.device.queue.submit([encoder.finish()]);
-          await this.waitForGpuCapped(label);
-          if (injectFault) {
-            this.maybeInjectLayerColdStorageFault("after-hydrate-submit");
+          if (completionPolicy === "await-immediately") {
+            await this.waitForGpuCapped(label);
+            if (injectFault) {
+              this.maybeInjectLayerColdStorageFault("after-hydrate-submit");
+            }
           }
         }
         return hot;
@@ -7772,13 +7840,18 @@ export class BrushEngine {
     record: LayerRecord,
     generation: number,
     injectBakeFault: boolean,
+    completionPolicy: LayerGpuCompletionPolicy = "await-immediately",
   ): Promise<LayerBakeResources> {
+    if (injectBakeFault && completionPolicy !== "await-immediately") {
+      throw new Error("Il fault bake richiede il completamento GPU immediato.");
+    }
     const renderer = this.rasterStrokeRenderer;
     if (!renderer) {
       throw new Error("Bake impossibile: compositore effetti non disponibile.");
     }
     const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
     const memoryBytes = LAYER_SIZE * LAYER_SIZE * bytesPerPixel;
+    const nonTransparentBounds = this.layerCompositeVisualBounds(record);
     return runGpuAllocationTransaction(
       this.device,
       `Bake analitico livello ${record.id}`,
@@ -7809,23 +7882,31 @@ export class BrushEngine {
           sourceMode: "permanent",
           style: record.strokeStyle,
           bevelStyle: record.bevelStyle,
+          rect: nonTransparentBounds,
         });
         this.device.queue.submit([encoder.finish()]);
-        await this.waitForGpuCapped(`Bake livello ${record.id}`);
-        if (injectBakeFault) {
-          this.maybeInjectLayerBakeFault("after-candidate-submit");
+        if (completionPolicy === "await-immediately") {
+          await this.waitForGpuCapped(`Bake livello ${record.id}`);
+          if (injectBakeFault) {
+            this.maybeInjectLayerBakeFault("after-candidate-submit");
+          }
         }
-        return { texture, storageView, samplingView, memoryBytes, generation };
+        return {
+          texture,
+          storageView,
+          samplingView,
+          memoryBytes,
+          generation,
+          nonTransparentBounds: { ...nonTransparentBounds },
+        };
       },
     );
   }
 
   /**
-   * Freezes the outgoing layer's analytic style stack before the shared effects
-   * workbench is retargeted. The candidate is published only after GPU completion
-   * so activation can consume it transactionally; the merged-surface commit then
-   * releases it. A failed candidate leaves the raw layer and every published
-   * merged surface intact and contributes zero steady-state bake memory.
+   * Builds the legacy hand-off bake only for DEV fault probes. Normal switches
+   * reconstruct inactive styling inside the bounded fold, avoiding this extra
+   * full-canvas residency while preserving the transactional failure boundary.
    */
   private async bakeActiveLayerForSwitch(): Promise<void> {
     try {
@@ -7840,19 +7921,25 @@ export class BrushEngine {
   }
 
   private async prepareActiveLayerForSwitch(): Promise<void> {
-    await this.bakeActiveLayerForSwitch();
+    // Keep the allocation-transaction fault probe, but normal switches no longer
+    // retain a 64 MiB hand-off bake while other inactive records are materialized.
+    if (import.meta.env.DEV && this.layerBakeFaultQueue.length > 0) {
+      await this.bakeActiveLayerForSwitch();
+    }
     try {
       await this.freezeActiveLayerToCold();
     } catch (error) {
-      // The raw full-canvas and workbench still point at the active layer, so a
-      // completed bake is only an abandoned hand-off candidate. Keep neither a
-      // memory leak nor a misleading valid flag after a failed cold pack.
+      // The raw full-canvas and workbench still point at the active layer. A dev
+      // hand-off candidate, if requested, is abandoned without touching residency.
       const gpu = this.requireLayerGpu(this.layerStack.active.id);
       this.destroyLayerBake(gpu.bake);
       gpu.bake = null;
       gpu.bakeValid = false;
       throw error;
     }
+    // The completed cold copy is now authoritative and byte-exact. Retaining the
+    // outgoing full texture and bake until commit caused the dangerous mobile peak.
+    this.evictReconstructibleLayerResources(this.layerStack.active);
   }
   private async bakeActiveLayerForSwitchAttempt(): Promise<void> {
     const record = this.layerStack.active;
@@ -8018,6 +8105,7 @@ export class BrushEngine {
     transientBake: LayerBakeResources | null;
     transientHydration: LayerTextureResources | null;
     nonTransparentBounds: DirtyRect;
+    analyticBakePixels: number;
   }> {
     const gpu = this.requireLayerGpu(record.id);
     const requirements = layerEffectRendererRequirements(
@@ -8032,10 +8120,9 @@ export class BrushEngine {
         view: gpu.bake.samplingView,
         transientBake: null,
         transientHydration: null,
-        // The analytic style stack may extend beyond the raw content bounds.
-        // Keep the full document until every mode has a proven visual-bounds
-        // helper; this path is still byte-identical and only for styled layers.
-        nonTransparentBounds: { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE },
+        nonTransparentBounds: { ...gpu.bake.nonTransparentBounds },
+        analyticBakePixels:
+          gpu.bake.nonTransparentBounds.width * gpu.bake.nonTransparentBounds.height,
       };
     }
 
@@ -8046,6 +8133,7 @@ export class BrushEngine {
         gpu,
         `Fold reidratazione livello ${record.id}`,
         false,
+        "defer-to-fold-fence",
       );
     const hot = gpu.hot ?? transientHydration;
     if (!hot) {
@@ -8063,6 +8151,7 @@ export class BrushEngine {
           width: LAYER_SIZE,
           height: LAYER_SIZE,
         },
+        analyticBakePixels: 0,
       };
     }
 
@@ -8076,14 +8165,23 @@ export class BrushEngine {
         record,
         false,
         false,
+        "defer-to-fold-fence",
+        "content-bounds",
       );
-      const transientBake = await this.createLayerBakeCandidate(record, 1, false);
+      const transientBake = await this.createLayerBakeCandidate(
+        record,
+        1,
+        false,
+        "defer-to-fold-fence",
+      );
       return {
         texture: transientBake.texture,
         view: transientBake.samplingView,
         transientBake,
         transientHydration,
-        nonTransparentBounds: { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE },
+        nonTransparentBounds: { ...transientBake.nonTransparentBounds },
+        analyticBakePixels:
+          transientBake.nonTransparentBounds.width * transientBake.nonTransparentBounds.height,
       };
     } catch (error) {
       this.destroyTransientLayerHydration(transientHydration);
@@ -8170,6 +8268,9 @@ export class BrushEngine {
         let first = true;
         for (const record of visibleRecords) {
           const source = await this.materializeLayerCompositeSource(record, caller);
+          surface.foldedPixels +=
+            source.nonTransparentBounds.width * source.nonTransparentBounds.height;
+          surface.analyticBakePixels += source.analyticBakePixels;
           try {
             const encoder = this.device.createCommandEncoder({
               label: `Fold layer ${record.id} into merged ${side}`,
@@ -8237,6 +8338,11 @@ export class BrushEngine {
               pass.end();
             }
             this.device.queue.submit([encoder.finish()]);
+            // Hydration, effect rebuild and analytic bake for this record were
+            // deliberately submitted without intermediate completion waits.
+            // Queue order preserves every dependency; this one bounded fence
+            // owns the whole chain and keeps only one record's full temporaries
+            // alive at a time.
             await this.waitForGpuCapped(`Fold livello ${record.id}`);
             first = false;
           } finally {
@@ -8292,14 +8398,22 @@ export class BrushEngine {
   }
 
   /**
-   * Rebuilds both sides off-screen and publishes them together. Until the last
-   * GPU completion succeeds, every display bind group still names the previous
-   * valid pair; an OOM, validation error or injected fault therefore cannot
-   * expose a half-updated stack.
+   * Rebuilds both derived sides while the last screen-space presentation remains
+   * frozen. Old merged textures are evicted before candidates are allocated, so
+   * mobile peak memory never contains both complete pairs. Raw hot/cold pixels are
+   * authoritative; an error is rolled back by reconstructing these caches.
    */
   private async rebuildMergedLayerSurfaces(
     caller: EffectsRetargetCaller = "layer-switch",
   ): Promise<void> {
+    const previousBelow = this.mergedBelow;
+    const previousAbove = this.mergedAbove;
+    this.layerPresentationFrozen = true;
+    this.mergedBelow = null;
+    this.mergedAbove = null;
+    this.destroyMergedSurface(previousBelow);
+    this.destroyMergedSurface(previousAbove);
+
     let candidateBelow: MergedSurfaceResources | null = null;
     let candidateAbove: MergedSurfaceResources | null = null;
     let activeWorkbenchRestored = false;
@@ -8318,17 +8432,14 @@ export class BrushEngine {
       activeWorkbenchRestored = true;
       this.maybeInjectLayerCompositeFault("after-candidate-submit");
 
-      const previousBelow = this.mergedBelow;
-      const previousAbove = this.mergedAbove;
       this.mergedBelow = candidateBelow;
       this.mergedAbove = candidateAbove;
       candidateBelow = null;
       candidateAbove = null;
       this.rebuildLayerDisplayBindGroups();
-      this.destroyMergedSurface(previousBelow);
-      this.destroyMergedSurface(previousAbove);
       this.releaseFusedLayerBakes();
       this.presentationCacheNeedsFullRebuild = true;
+      this.layerPresentationFrozen = false;
     } catch (error) {
       this.destroyMergedSurface(candidateBelow);
       this.destroyMergedSurface(candidateAbove);
@@ -8381,11 +8492,24 @@ export class BrushEngine {
         // GPU resources, which every later switch would trip over.
         this.layerStack.remove(index);
         this.layerStack.setActiveIndex(fromIndex);
-        // The outgoing bake was only a hand-off candidate for the switch. If
-        // allocating the new mip 0 fails before activation, no fusion consumes
-        // it, so release it explicitly and restore zero steady-state bake memory.
-        this.releaseFusedLayerBakes();
-        this.releaseActiveColdDuplicate();
+        try {
+          // The outgoing full texture was deliberately evicted after its exact
+          // cold copy completed. Rehydrate it and rebuild derived caches before
+          // reporting the allocation failure.
+          await this.activateLayer(fromIndex);
+        } catch (restoreError) {
+          const originalMessage = error instanceof Error ? error.message : String(error);
+          const restoreMessage = restoreError instanceof Error
+            ? restoreError.message
+            : String(restoreError);
+          this.latchDocumentStateInconsistent(
+            "Stato incoerente dopo l'allocazione del livello: ricarica prima di continuare.",
+          );
+          throw new Error(
+            `Creazione livello fallita: ${originalMessage}; ripristino fallito: ${restoreMessage}. `
+            + "Ricarica la pagina prima di continuare.",
+          );
+        }
         throw error;
       }
       try {
@@ -8394,10 +8518,11 @@ export class BrushEngine {
         // activateLayer mutates more than the selected index: it binds texture
         // fields, retargets Blend and the effect workbench, and loads content
         // metadata. Restore through the same complete path before discarding the
-        // candidate. If restoration itself fails, keep every resource alive so
-        // no renderer can be left pointing at a destroyed texture.
-        this.layerStack.setActiveIndex(fromIndex);
+        // candidate. Its blank full texture is reconstructible, so release it
+        // before rehydrating the outgoing layer and keep one hot mip 0 at a time.
         try {
+          this.evictReconstructibleLayerResources(record);
+          this.layerStack.setActiveIndex(fromIndex);
           await this.activateLayer(index);
         } catch (restoreError) {
           const originalMessage = error instanceof Error ? error.message : String(error);
@@ -8451,9 +8576,11 @@ export class BrushEngine {
       if (activationStarted) {
         // Restoring only the selected index and texture fields is insufficient:
         // Blend, content metadata and the effect workbench may already target the
-        // incoming layer. Run the complete activation path in reverse.
-        this.layerStack.setActiveIndex(fromIndex);
+        // incoming layer. Its cold store is still authoritative until commit, so
+        // evict the failed hot candidate before running activation in reverse.
         try {
+          this.evictReconstructibleLayerResources(this.layerStack.at(index));
+          this.layerStack.setActiveIndex(fromIndex);
           await this.activateLayer(index);
         } catch (restoreError) {
           const originalMessage = error instanceof Error ? error.message : String(error);
@@ -8522,10 +8649,10 @@ export class BrushEngine {
       record.visible = previousVisible;
       record.opacity = previousOpacity;
       try {
-        // This operation has no outer activation transaction to repair a
-        // half-retargeted workbench. Force a complete rebuild even when the CPU
-        // source pointer already looks active.
-        await this.restoreEffectsWorkbenchToActiveLayer("layer-switch", true);
+        // The old merged textures were deliberately evicted before allocation.
+        // Rebuild the reverted presentation from authoritative raw storage; the
+        // injected fault queue was cleared by the failed attempt.
+        await this.rebuildMergedLayerSurfaces("layer-switch");
       } catch (restoreError) {
         this.latchDocumentStateInconsistent(
           "Stato incoerente dopo il compositing: ricarica prima di continuare.",
@@ -8679,7 +8806,9 @@ export class BrushEngine {
       true,
     );
     const effectsMs = performance.now() - effectsStartedAt;
+    const compositeStartedAt = performance.now();
     await this.rebuildMergedLayerSurfaces(caller);
+    const compositeMs = performance.now() - compositeStartedAt;
     this.commitActiveLayerResidency(fromIndex);
 
     this.presentationCacheNeedsFullRebuild = true;
@@ -8692,6 +8821,7 @@ export class BrushEngine {
       layerId: record.id,
       totalMs: performance.now() - startedAt,
       effectsMs,
+      compositeMs,
       effectsGeneration: effects.generation,
       contentBoundsRestored: record.contentBounds !== null,
     };
@@ -9859,6 +9989,60 @@ export class BrushEngine {
     const maximumX = Math.max(left.x + left.width, right.x + right.width);
     const maximumY = Math.max(left.y + left.height, right.y + right.height);
     return { x, y, width: maximumX - x, height: maximumY - y };
+  }
+
+  /**
+   * Conservative final-pixel domain for an inactive analytic style stack.
+   * Each helper is already the authoritative invalidation bound for its effect;
+   * their union is therefore safe for both the sparse bake and the fold scissor.
+   */
+  private layerCompositeVisualBounds(record: LayerRecord): DirtyRect {
+    const fullDocumentRect: DirtyRect = {
+      x: 0,
+      y: 0,
+      width: LAYER_SIZE,
+      height: LAYER_SIZE,
+    };
+    const contentBounds = this.normalizeLayerRect(record.contentBounds);
+    if (!contentBounds) {
+      // `hasContent` with no bounds is inconsistent metadata. Preserve pixels by
+      // falling back to the old full-document contract.
+      return fullDocumentRect;
+    }
+
+    let bounds: DirtyRect | null = contentBounds;
+    const strokeStyle = normalizeRasterStrokeStyle(record.strokeStyle);
+    if (strokeStyle.enabled && strokeStyle.width > 0) {
+      bounds = this.mergeDirtyRects(
+        bounds,
+        this.rasterStrokeEffectRect(contentBounds, strokeStyle.width),
+      );
+    }
+
+    const bevelStyle = normalizeRasterBevelStyle(record.bevelStyle);
+    if (bevelStyle.enabled) {
+      bounds = this.mergeDirtyRects(
+        bounds,
+        this.rasterBevelEffectRect(contentBounds, bevelStyle),
+      );
+    }
+
+    const outerShadowStyle = normalizeRasterOuterShadowStyle(record.outerShadowStyle);
+    if (outerShadowStyle.enabled) {
+      bounds = this.mergeDirtyRects(
+        bounds,
+        this.rasterOuterShadowEffectRect(contentBounds, outerShadowStyle),
+      );
+    }
+
+    const innerShadowStyle = normalizeRasterInnerShadowStyle(record.innerShadowStyle);
+    if (innerShadowStyle.enabled) {
+      bounds = this.mergeDirtyRects(
+        bounds,
+        this.rasterInnerShadowEffectRect(contentBounds, innerShadowStyle),
+      );
+    }
+    return this.normalizeLayerRect(bounds) ?? fullDocumentRect;
   }
 
   private rasterStrokeEffectRect(
@@ -11215,6 +11399,12 @@ export class BrushEngine {
     if (!this.initialized) {
       return;
     }
+    if (this.layerPresentationFrozen) {
+      // The persistent screen cache already contains the last complete stack.
+      // Do not submit bind groups that may still name an evicted derived texture;
+      // the successful rebuild requests a fresh frame after publishing new views.
+      return;
+    }
 
     const resizeStart = performance.now();
     this.resizeCanvas();
@@ -11549,6 +11739,10 @@ export class BrushEngine {
         // the document instead of silently discarding the only valid copy.
         if (switched && targetPreparedForRelease) {
           try {
+            // A failed activation can leave the target hot while its pre-switch
+            // cold store is still authoritative. Release that reconstructible
+            // candidate before rehydrating the previous active layer.
+            this.evictReconstructibleLayerResources(this.layerStack.at(targetIndex));
             this.layerStack.setActiveIndex(previousActiveIndex);
             await this.activateLayer(targetIndex, "history-replay");
           } catch (restoreSwitchError) {

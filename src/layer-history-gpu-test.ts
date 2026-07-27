@@ -9,7 +9,7 @@ import {
   type LayerMemorySnapshot,
 } from "./layer-composite-gpu-test";
 
-export const LAYER_HISTORY_GPU_TEST_VERSION = 6 as const;
+export const LAYER_HISTORY_GPU_TEST_VERSION = 10 as const;
 
 interface PixelRect {
   x: number;

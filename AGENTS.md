@@ -584,7 +584,7 @@ documento+apron (`64,06 MiB` fissi) a inviluppo tile-aligned dei job + apron.
 - Non verificato: una sola GPU desktop. Su mobile il frame di crescita va
   rimisurato prima di considerare il default ON.
 
-### Livelli multipli (Fase 2, commit 13 locale non pubblicato)
+### Livelli multipli (Fase 2)
 
 Il modello CPU resta in `src/layer-stack.ts` (`npm run layers:verify`): record
 ordinati, id monotoni mai riusati, bounds/`hasContent`, visibilità, opacità e
@@ -595,10 +595,10 @@ costo eager per livello è soltanto il mip `0` autorevole: `64 MiB` RGBA8 o
 
 Architettura display candidata:
 
-- strategia bake
-  `transient-analytic-mip0-fused-into-two-merged-surfaces`;
-- strategia compositing
-  `merged-above-over-active-over-merged-below-source-over`;
+- strategia bake promossa 14e
+  `transient-analytic-bounded-visual-rect-no-handoff-residency-mip0-fused-into-two-merged-surfaces`;
+- strategia compositing promossa 14e
+  `merged-above-over-active-over-merged-below-source-over-evict-derived-before-rebuild-deferred-to-fold-fence-bounded-visual-rect`;
 - una sola piramide raw, riusata dal livello attivo (`21,33 MiB` RGBA8,
   `42,67 MiB` RGBA16F);
 - al massimo due superfici fuse, `mergedBelow` e `mergedAbove`. Ciascuna ha mip
@@ -613,9 +613,11 @@ Architettura display candidata:
 
 Il fold evita il pass full-document per il primo livello opaco: copia
 byte-esattamente la sorgente nella superficie nuova e limita la copia ai
-`contentBounds` conservativi quando la sorgente è raw. I bake analitici restano
-full-document finché non esiste un helper dimostrato per tutti gli aloni degli
-effetti. Gli altri fold source-over usano lo stesso rettangolo come scissor.
+`contentBounds` conservativi quando la sorgente è raw. Il candidato 14d limita
+anche il bake analitico all'unione dei bounds visivi autorevoli di Traccia,
+Smusso, Ombra esterna e Ombra interna; metadata incoerenti ricadono sul documento
+completo. Gli altri fold source-over usano lo stesso rettangolo come scissor.
+L'estensione è promossa dalla rev `8`; conservare il fallback full-document per metadata incoerenti.
 
 Il display esegue in lineare premoltiplicato
 `mergedAbove over (active * activeLayerAlpha over mergedBelow)`, poi scacchiera e
@@ -626,14 +628,15 @@ liberi della uniform da `48 byte`; cambiarle su un inattivo ricostruisce la
 superficie fusa interessata, mentre sull'attivo basta invalidare la cache di
 presentazione.
 
-La fusione è transazionale: costruisce entrambe le superfici candidate fuori
-schermo, ripristina il banco effetti sul record attivo, pubblica la coppia in un
-solo punto e soltanto dopo distrugge la coppia precedente. Un errore/OOM o il
-fault dev `injectLayerCompositeFault("after-candidate-submit")` distrugge i
-candidati e lascia pubblicati i byte vecchi. Le attese GPU nuove e il retarget
-usato dalla fusione hanno un tetto esplicito. Anche un OOM del mip `0` durante
-`addLayer` libera il bake di hand-off dell'uscente: nessun fallimento deve
-lasciare memoria bake residente. Se anche il retarget inverso fallisce, il
+La fusione è transazionale ma, dalla 14e, ha picco limitato: dopo GPU idle
+congela la presentazione sull'ultima cache screen-space completa, scollega e
+distrugge `mergedBelow/Above` precedenti, poi costruisce i candidati. Nessun
+frame può essere inviato mentre view evacuate potrebbero ancora essere legate.
+Sul successo pubblica i nuovi bind group e sblocca il display; su errore/OOM
+distrugge i candidati e la transazione esterna ricostruisce lo stato precedente
+dai raw hot/cold autorevoli. Anche il rollback di visibilità/opacità ricostruisce
+esplicitamente i fusi precedenti. Le attese GPU e il retarget usato dalla
+fusione hanno un tetto esplicito. Se anche il retarget inverso fallisce, il
 documento alza il latch fatale e richiede reload: non consente di continuare
 con un banco effetti dalla sorgente non dimostrata.
 
@@ -644,9 +647,13 @@ Undo/Redo `historyBusy` è già alto; degradare uno di questi passaggi al defaul
 `layer-switch` rifiuta il retarget e rompe soltanto i replay cross-layer con un
 inattivo stilizzato. `layers:verify` vincola l'intera catena.
 
-Gli stili restano accessori del record attivo. Lo switch persiste stato e bake
-dell'uscente, carica texture e metadati dell'entrante, ritargetta Blend e banco
-effetti, ricostruisce le due superfici fuse e invalida la cache. Smusso-only o
+Gli stili restano accessori del record attivo. Lo switch persiste stato e cold
+store esatto dell'uscente; dopo il fence evacua il suo hot full-canvas e
+l'eventuale bake, quindi reidrata l'entrante, ritargetta Blend e banco effetti,
+ricostruisce le due superfici fuse e invalida la cache. Il bake di hand-off non
+è più residente nel percorso normale; resta soltanto la sonda DEV per i fault
+transazionali. I bake analitici necessari al fold sono ancora creati uno alla
+volta e distrutti subito. Smusso-only o
 qualunque Ombra-only richiede comunque `RasterStrokeRenderer`, che è il
 compositore comune. La UI risincronizza Traccia/Smusso/Ombra esterna/Ombra
 interna a ogni cambio e ora espone selezione, visibilità e opacità
@@ -661,16 +668,19 @@ bbox OFF (non riutilizzarli come risultato del candidato):
 | switch con contenuto ed effetti | `151 – 215 ms` |
 | switch con effetti spenti | `3,6 – 4 ms` |
 
-Il candidato firma in telemetria rev `45` `layerCount`, `activeLayerId`,
-`layerBakeStrategy` e `layerCompositeStrategy`; `layerMemoryMiB` continua a
-contare soltanto i mip `0` raw e scala con i livelli. Le righe HUD distinte sono
-mip attivo+fusi, bake transitori e mip `0` fusi. Run con revisione/strategie
-diverse non sono aggregabili.
+La telemetria corrente rev `54` firma `layerCount`, `activeLayerId`,
+`layerBakeStrategy` e `layerCompositeStrategy`; `layerMemoryMiB` conta hot
+e cold reali. Le righe HUD distinte sono mip attivo+fusi, hydration temporanee,
+bake transitori e mip `0` fusi. Il pannello resta campionato ogni `500 ms`:
+può non mostrare un transitorio intero; l'harness rev `10` campiona invece le
+statistiche ogni `1 ms`. Run con revisione/strategie diverse non sono
+aggregabili.
 
-#### Harness permanente candidato (rev 4)
+#### Harness permanente corrente (rev 10)
 
 `/?layerHistoryTest=1` resta distruttivo e richiede una pagina dev nuova. Oltre
-alla cronologia bilaterale e ai rollback cross-layer già esistenti, la rev `4`:
+alla cronologia bilaterale e ai rollback cross-layer già esistenti, conserva i
+gate visivi introdotti dalla rev `4` e ora:
 
 - misura lo scarto tra display live `fwidth` e bake analitico sullo stesso rect,
   riportando pixel/byte differenti, delta massimo per canale e primo byte;
@@ -687,6 +697,10 @@ alla cronologia bilaterale e ai rollback cross-layer già esistenti, la rev `4`:
   lo confronta con due box filter CPU `2×2`;
 - costruisce cinque livelli con effetti, controlla bake rilasciati e memoria
   `1/2/5`, misura switch a due livelli e stress a cinque;
+- campiona ogni `1 ms` aggiunta, cima↔fondo e cima↔metà, riportando il massimo
+  di hot, cold, hydration, mip, bake, compositi e totale realmente conteggiato;
+- vincola i picchi estremi a una sola istanza per classe ricostruibile; nel mezzo
+  ammette soltanto i due compositi finali realmente necessari;
 - ha un tetto esterno di `180 s`; ogni nuovo submit atteso ha anche un timeout
   interno, così un blocco diventa un errore esplicito.
 
@@ -865,6 +879,171 @@ una dichiarazione prestazionale né una validazione mobile. La memoria è
 promossa; il costo di fold/reidratazione con molti livelli resta il prossimo
 problema misurabile.
 
+#### Esperimento 14c promosso — una sola barriera GPU per record del fold
+
+Esperimento isolato misurato e promosso il 27 luglio 2026. Non cambia tile,
+texture, formati, pixel, shader, ordine source-over, bake analitico, rollback o
+numero di allocazioni temporanee. Cambia soltanto la schedulazione interna della
+materializzazione di un livello inattivo: hydrate, retarget del banco effetti e
+bake vengono inviati in ordine FIFO senza `onSubmittedWorkDone()` intermedi; il
+submit del fold chiude la catena con un solo `waitForGpuCapped` per record. Il
+record successivo parte soltanto dopo quel fence, quindi restano vivi al massimo
+una hydration full e un bake full, come prima. Pack dell'uscente, hydrate del
+nuovo attivo, percorsi pubblici e fault injection conservano il completamento
+immediato.
+
+Baseline locale catturata prima della modifica con harness rev `6`, interamente
+verde: switch a cinque livelli `437,1/472,3 ms`, media `454,70 ms`; switch a due
+livelli `91,7/20,7 ms`; raw reale `75,5 MiB`, totale conteggiato fermo
+`245,387451 MiB`.
+
+La run GPU rev `7` restituita dall'utente è passata con tutti i `129` check veri,
+`compositing.passed: true` e firma esatta
+`merged-above-over-active-over-merged-below-source-over-deferred-to-fold-fence`.
+I riferimenti assoluti, i fold sopra/sotto, il fast path opaco, zoom, rollback e
+cronologia sono byte-identici o a delta zero dove previsto. Lo switch a cinque
+livelli misura `317,1/316,0 ms`, media `316,55 ms`: `−27,45%` e `−33,09%` sui
+due campioni, `−30,38%` sulla media (`−138,15 ms`). Lo switch a due livelli
+misura `86,2/19,4 ms`, circa `−6,0%/−6,3%` sulla baseline.
+
+La memoria specifica dei livelli resta invariata: raw reale `75,5 MiB`, stima
+esatta `69 MiB`, conservativa `75,5 MiB`; al termine hydration e bake sono
+entrambi `0 MiB`, base `64 MiB`, cold `11,5 MiB` e composito `64 MiB`. Il totale
+globale del run è `248,666260 MiB`, ma non viene usato per attribuire il delta a
+questo esperimento perché include risorse non specifiche dei livelli la cui
+residenza non è firmata tra le due catture. Tutti i gate di memoria del run sono
+verdi e la modifica non introduce nuove risorse.
+
+Verifiche statiche candidate verdi: `stroke:verify`, `grain:verify`,
+`blend:verify`, `thickness:verify`, `history:verify`, `layers:verify`,
+`effects-scratch:verify`, `bevel:verify`, `shadow:verify`, `view:verify`,
+TypeScript, `git diff --check` e build Vite temporanea (`379 ms`). La
+schedulazione 14c è quindi la nuova base per il prossimo esperimento. Non
+considerare però chiusa la latenza del cambio livello: `~316 ms` sul caso a
+cinque livelli resta percepibile; il passo successivo deve ridurre o eliminare
+la materializzazione full-canvas del record inattivo, senza sommare un'altra
+variabile nello stesso run e senza dichiarazioni iPhone.
+
+#### Esperimento 14d promosso — dominio visivo bounded per bake e fold
+
+Esperimento isolato misurato e promosso il 27 luglio 2026 sulla baseline 14c.
+Non cambia texture, formati, shader, blending, ordine source-over, parametri dei
+pennelli o allocazioni: la texture bake resta full-canvas e zero-initialized.
+Cambia soltanto il dominio di lavoro del percorso inattivo.
+
+Il renderer accettava già `RasterStrokeBakeOptions.rect` e i core esponevano già
+i bounds visivi conservativi usati dall'invalidazione di Traccia, Smusso, Ombra
+esterna e Ombra interna. `layerCompositeVisualBounds` ne calcola l'unione con i
+bounds raw; il bake scrive soltanto quel rettangolo e il fold usa lo stesso
+rettangolo per copy/scissor. Anche il rebuild Traccia del retarget temporaneo è
+limitato ai `contentBounds`; i retarget pubblici e del livello attivo conservano
+il contratto full-document. Se `hasContent` non ha bounds coerenti, il fallback è
+l'intero `4096²`: si perde solo la prestazione, mai un pixel.
+
+Firme promosse: bake
+`transient-analytic-bounded-visual-rect-mip0-fused-into-two-merged-surfaces`,
+compositing
+`merged-above-over-active-over-merged-below-source-over-deferred-to-fold-fence-bounded-visual-rect`,
+telemetria rev `53`, harness GPU rev `8`. Il report conta `foldedPixels` e
+`analyticBakePixels` e separa `effectsMs`, `compositeMs` e tempo residuo.
+
+Sei run candidate pulite (`12` switch) sono passate tutte con `133/133` check
+veri, firme esatte, riferimenti assoluti/fold/zoom/rollback byte-identici o delta
+zero e nessun residuo hydration/bake. Il dominio di quattro livelli è
+`1.225.344` pixel contro `67.108.864` del controllo full-document: `−98,17%`,
+ovvero `54,77×` meno pixel di bake/fold. La memoria A/B è identica: totale
+conteggiato `245,387451 MiB`, raw reale `75,5 MiB`, hydration e bake finali
+`0 MiB`.
+
+Controllo A/B sullo stesso codice, browser e GPU NVIDIA: un override temporaneo
+solo di misura ha ripristinato esattamente il dominio 14c `4096²`; tre run, sei
+switch, misurano `330,4–343,3 ms`, media `333,72 ms`, mediana `332,05 ms`.
+L'override ha fallito soltanto i due check che richiedono esplicitamente il
+dominio bounded, è stato rimosso e non compare nel codice finale. I dodici
+campioni 14d misurano media `251,46 ms`, mediana `237,75 ms`: `−24,65%` e
+`−28,40%` rispetto al controllo A/B. Undici campioni su dodici sono più veloci
+del migliore controllo; resta un outlier freddo a `406,8 ms`, quindi non
+nascondere il caso peggiore. Rispetto alla run 14c restituita dall'utente
+(`317,1/316,0 ms`, media `316,55 ms`) la media/mediana 14d migliorano di
+`−20,56%/−24,89%`.
+
+La run finale dopo la rimozione dell'override misura `220,1/211,4 ms`
+(media `215,75 ms`, `−31,84%` sulla 14c utente); il breakdown è
+`effectsMs 52,1/52,3`, `compositeMs 158,7/153,0`, residuo `9,3/6,1 ms`. Il
+bottleneck residuo è quindi il compositing per-record, non il retarget del
+livello attivo. `~211–242 ms` tipici restano percepibili e l'outlier impone di
+non considerare chiusa la latenza né fare dichiarazioni iPhone.
+
+Verifiche statiche verdi: `stroke:verify`, `grain:verify`, `blend:verify`,
+`thickness:verify`, `history:verify`, `layers:verify`, `effects-scratch:verify`,
+`bevel:verify`, `shadow:verify`, `view:verify`, TypeScript, `git diff --check` e
+build Vite finale (`452 ms`). La 14d è la nuova
+base del prossimo esperimento; non sommare un'altra variabile senza una nuova
+firma e un nuovo confronto.
+
+#### Esperimento 14e promosso — picco limitato durante add e cambio livello
+
+Esperimento isolato misurato il 27 luglio 2026 sulla baseline 14d. Non cambia
+texture, formati, shader, pixel, ordine source-over, parametri del pennello,
+contenuto cold o numero di superfici finali. Cambia soltanto l'ordine di vita
+delle risorse ricostruibili durante una transizione.
+
+Prima della 14e lo switch conservava contemporaneamente hot uscente, bake di
+hand-off e vecchie superfici fuse mentre allocava hot/hydration, bake e fusi
+nuovi. Il picco della fixture RGBA8 a cinque livelli conteneva quindi
+`layerBase 128 MiB`, `layerHydration 64`, `layerMipChain 64`,
+`layerBake 128` e `layerComposite 128`, anche quando il livello finale era
+in cima o in fondo e richiedeva una sola superficie fusa.
+
+La 14e esegue invece:
+
+1. pack esatto dell'uscente nel cold store e fence GPU;
+2. freeze della presentazione sull'ultima cache completa, poi distruzione di
+   hot e bake uscenti;
+3. distruzione dei fusi precedenti prima dei candidati;
+4. una sola hydration e un solo bake transitorio per volta durante il fold;
+5. pubblicazione dei nuovi bind group e sblocco del display soltanto a rebuild
+   completo.
+
+Un'attivazione fallita evacua il candidato hot prima di reidratare l'origine.
+Un OOM durante `addLayer` rimuove il record incompleto e riattiva l'uscente dal
+cold autorevole. Undo/Redo usa lo stesso ordine nel rollback. La guardia
+`layerPresentationFrozen` impedisce submit con view già distrutte; un doppio
+fallimento conserva il latch fatale già esistente.
+
+Misura browser WebGPU, telemetria rev `54`, harness rev `10`, campionamento
+`1 ms`:
+
+| Operazione | Baseline rev 9: prima → picco (delta) | 14e rev 10: prima → picco (delta) |
+|---|---:|---:|
+| aggiunta D | `243,867 → 586,200 (+342,333) MiB` | `243,867 → 372,867 (+129,000) MiB` |
+| aggiunta E | `244,867 → 586,700 (+341,833) MiB` | `244,867 → 373,367 (+128,500) MiB` |
+| cima → fondo | `245,367 → 587,700 (+342,333) MiB` | `245,367 → 374,367 (+129,000) MiB` |
+| fondo → cima | `240,367 → 587,700 (+347,333) MiB` | `240,367 → 374,367 (+134,000) MiB` |
+| cima → mezzo | non campionato nella rev 9 | `245,367 → 459,700 (+214,333) MiB` |
+| mezzo → cima | non campionato nella rev 9 | `330,700 → 374,367 (+43,667) MiB` |
+
+Su aggiunte e switch estremi il picco assoluto cala di `213,333 MiB`, circa
+`−36,3%`; l'escursione temporanea cala di circa `−61–62%`. Le massime 14e
+sono `base 64`, `hydration 64`, `bake 64`, `composite 64` e mip
+`42,667 MiB`: nessuna coppia vecchio+nuovo resta sovrapposta. Nel mezzo sono
+legittimi `128 MiB` di compositi e `64 MiB` di mip perché servono davvero un
+lato sotto e uno sopra; il test vieta comunque una terza copia.
+
+Il run finale passa `138/138` check: riferimenti assoluti, fold, zoom,
+cronologia, fault injection e rollback. Il rollback del compositing conserva
+`0` byte differenti e la sua memoria torna `128 → 128 MiB`. Le dieci suite
+`*:verify`, TypeScript, `git diff --check` e build Vite sono verdi. Lo switch
+a cinque livelli misura `287,1/289,7 ms`: questo singolo run non dimostra un
+guadagno di latenza e non va aggregato con la 14d; la promozione riguarda la
+sicurezza del picco.
+
+La segnalazione utente `~400 → ~900 MiB → ~400` con più effetti residenti è
+coerente con la sovrapposizione eliminata, ma gli assoluti non sono direttamente
+comparabili con la fixture. Il monitor conta memoria WebGPU logica, non residency
+fisica del driver/browser. Manca ancora una prova iPhone reale: non dichiarare
+eliminato il rischio di chiusura su iOS finché quella prova non viene eseguita.
+
 #### Gate document-wide e cronologia da preservare
 
 | Operazione | Stato con `layerCount > 1` | Si sblocca con |
@@ -947,7 +1126,12 @@ effetti unico retargetable, diagnostica same-view e benchmark
 retarget-vs-recreate · `42` pool scratch effetti fisico unico, extent/byte correnti,
 picco storico, shrink idle e firma dei layout aliasati · `43` campo Smusso bbox e
 relative allocazioni · `44` conteggio/id dei livelli e memoria raw moltiplicata ·
-`45` strategie bake/compositing a tre superfici e contabilità mip/fusione.
+`45` strategie bake/compositing a tre superfici e contabilità mip/fusione ·
+`46` studio tile cold contro bbox · `47` cold storage GPU reale e hydration ·
+`48` Ombre indipendenti · `49` Golden Ombre e scratch compositore ridotto ·
+`50` geometria Traccia lazy · `51` rotazione vista · `52` fence unico per
+record del fold · `53` dominio visivo bounded per bake/fold · `54` evizione
+prima della sostituzione e campionamento dei picchi add/switch.
 
 ## Strumento Blend dry (WebGPU)
 

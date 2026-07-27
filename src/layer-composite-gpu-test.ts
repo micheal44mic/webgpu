@@ -1,6 +1,9 @@
-import type {
-  BrushEngine,
-  EngineGpuMemoryStats,
+import {
+  LAYER_BAKE_STRATEGY,
+  LAYER_COMPOSITE_STRATEGY,
+  type BrushEngine,
+  type EngineGpuMemoryStats,
+  type LayerSwitchResult,
 } from "./brush-engine";
 import type { RasterStrokeStyle } from "./stroke-core";
 
@@ -30,6 +33,15 @@ export interface LayerMemorySnapshot extends MemoryFields {
   layerCount: number;
 }
 
+export interface LayerMemoryPeakMeasurement {
+  before: LayerMemorySnapshot;
+  peakTotal: LayerMemorySnapshot;
+  maxima: LayerMemorySnapshot;
+  after: LayerMemorySnapshot;
+  peakDeltaMiB: number;
+  sampleCount: number;
+}
+
 interface PixelComparison {
   actual: Rgba;
   expected: Rgba;
@@ -38,6 +50,8 @@ interface PixelComparison {
 }
 
 export interface LayerCompositeGpuTestReport {
+  bakeStrategy: typeof LAYER_BAKE_STRATEGY;
+  strategy: typeof LAYER_COMPOSITE_STRATEGY;
   passed: boolean;
   checks: Record<string, boolean>;
   samples: Record<SampleKey, {
@@ -83,7 +97,24 @@ export interface LayerCompositeGpuTestReport {
   };
   fiveLayerMemory: LayerMemorySnapshot;
   fiveLayerBakeStates: ReturnType<BrushEngine["getLayerBakeState"]>[];
+  fiveLayerCompositeState: ReturnType<BrushEngine["getLayerCompositeState"]>;
   fiveLayerSwitchMs: readonly [number, number];
+  fiveLayerSwitchBreakdown: readonly [
+    { totalMs: number; effectsMs: number; compositeMs: number; otherMs: number },
+    { totalMs: number; effectsMs: number; compositeMs: number; otherMs: number },
+  ];
+  fiveLayerSwitchMemoryPeaks: readonly [
+    LayerMemoryPeakMeasurement,
+    LayerMemoryPeakMeasurement,
+  ];
+  fiveLayerMiddleSwitchMemoryPeaks: readonly [
+    LayerMemoryPeakMeasurement,
+    LayerMemoryPeakMeasurement,
+  ];
+  layerAddMemoryPeaks: readonly [
+    LayerMemoryPeakMeasurement,
+    LayerMemoryPeakMeasurement,
+  ];
   nextTimeMs: number;
 }
 
@@ -256,6 +287,53 @@ function snapshotMemory(engine: BrushEngine): LayerMemorySnapshot {
     layerCompositeMiB: stats.gpuMemory.layerCompositeMiB,
     countedTotalMiB: stats.gpuMemory.countedTotalMiB,
   };
+}
+
+async function measureMemoryPeakDuring<T>(
+  engine: BrushEngine,
+  operation: () => Promise<T>,
+): Promise<{ result: T; memory: LayerMemoryPeakMeasurement }> {
+  const before = snapshotMemory(engine);
+  let peakTotal = before;
+  let maxima = { ...before };
+  let sampleCount = 0;
+  const sample = () => {
+    const current = snapshotMemory(engine);
+    sampleCount += 1;
+    if (current.countedTotalMiB > peakTotal.countedTotalMiB) {
+      peakTotal = current;
+    }
+    maxima = {
+      layerCount: Math.max(maxima.layerCount, current.layerCount),
+      layerBaseMiB: Math.max(maxima.layerBaseMiB, current.layerBaseMiB),
+      layerColdMiB: Math.max(maxima.layerColdMiB, current.layerColdMiB),
+      layerHydrationMiB: Math.max(maxima.layerHydrationMiB, current.layerHydrationMiB),
+      layerMipChainMiB: Math.max(maxima.layerMipChainMiB, current.layerMipChainMiB),
+      layerBakeMiB: Math.max(maxima.layerBakeMiB, current.layerBakeMiB),
+      layerCompositeMiB: Math.max(maxima.layerCompositeMiB, current.layerCompositeMiB),
+      countedTotalMiB: Math.max(maxima.countedTotalMiB, current.countedTotalMiB),
+    };
+  };
+  sample();
+  const timer = window.setInterval(sample, 1);
+  try {
+    const result = await operation();
+    sample();
+    const after = snapshotMemory(engine);
+    return {
+      result,
+      memory: {
+        before,
+        peakTotal,
+        maxima,
+        after,
+        peakDeltaMiB: peakTotal.countedTotalMiB - before.countedTotalMiB,
+        sampleCount,
+      },
+    };
+  } finally {
+    window.clearInterval(timer);
+  }
 }
 
 function downsample2x2(source: Uint8Array, width: number, height: number): Uint8Array {
@@ -537,10 +615,16 @@ export async function runLayerCompositeGpuTest(
   await engine.setActiveLayer(2);
   await engine.setRasterStrokeStyle(strokeStyle);
 
-  await engine.addLayer("Compositing D");
+  const addDMeasured = await measureMemoryPeakDuring(
+    engine,
+    () => engine.addLayer("Compositing D"),
+  );
   await engine.setRasterStrokeStyle(strokeStyle);
   await drawLine(engine, 2200, y, "#d43fe8", timeMs += 100);
-  await engine.addLayer("Compositing E");
+  const addEMeasured = await measureMemoryPeakDuring(
+    engine,
+    () => engine.addLayer("Compositing E"),
+  );
   await engine.setRasterStrokeStyle(strokeStyle);
   await drawLine(engine, 2320, y, "#f2a338", timeMs += 100);
   await engine.waitForIdle();
@@ -549,16 +633,88 @@ export async function runLayerCompositeGpuTest(
   const fiveLayerBakeStates = Array.from({ length: 5 }, (_, index) =>
     engine.getLayerBakeState(index)
   );
-  const toBottom = await engine.setActiveLayer(0);
-  const toTop = await engine.setActiveLayer(4);
+  const toBottomMeasured = await measureMemoryPeakDuring(
+    engine,
+    () => engine.setActiveLayer(0),
+  );
+  const toTopMeasured = await measureMemoryPeakDuring(
+    engine,
+    () => engine.setActiveLayer(4),
+  );
+  const toMiddleMeasured = await measureMemoryPeakDuring(
+    engine,
+    () => engine.setActiveLayer(2),
+  );
+  const middleToTopMeasured = await measureMemoryPeakDuring(
+    engine,
+    () => engine.setActiveLayer(4),
+  );
+  const toBottom = toBottomMeasured.result;
+  const toTop = toTopMeasured.result;
   await engine.waitForIdle();
   const fiveLayerSwitchMs = [
     toBottom?.totalMs ?? 0,
     toTop?.totalMs ?? 0,
   ] as const;
+  const summarizeSwitch = (result: LayerSwitchResult | null) => {
+    const totalMs = result?.totalMs ?? 0;
+    const effectsMs = result?.effectsMs ?? 0;
+    const compositeMs = result?.compositeMs ?? 0;
+    return {
+      totalMs,
+      effectsMs,
+      compositeMs,
+      otherMs: Math.max(0, totalMs - effectsMs - compositeMs),
+    };
+  };
+  const fiveLayerSwitchBreakdown = [
+    summarizeSwitch(toBottom),
+    summarizeSwitch(toTop),
+  ] as const;
+  const fiveLayerSwitchMemoryPeaks = [
+    toBottomMeasured.memory,
+    toTopMeasured.memory,
+  ] as const;
+  const fiveLayerMiddleSwitchMemoryPeaks = [
+    toMiddleMeasured.memory,
+    middleToTopMeasured.memory,
+  ] as const;
+  const layerAddMemoryPeaks = [
+    addDMeasured.memory,
+    addEMeasured.memory,
+  ] as const;
+  const fiveLayerCompositeState = engine.getLayerCompositeState();
 
   const alpha = (rgba: Rgba): number => rgba[3];
+  const edgeMemoryPeaks: readonly LayerMemoryPeakMeasurement[] = [
+    ...layerAddMemoryPeaks,
+    ...fiveLayerSwitchMemoryPeaks,
+  ];
+  const edgePeakResourcesAreBounded = edgeMemoryPeaks.every((entry) =>
+    entry.maxima.layerBaseMiB <= 64.01
+    && entry.maxima.layerHydrationMiB <= 64.01
+    && entry.maxima.layerMipChainMiB <= 42.68
+    && entry.maxima.layerBakeMiB <= 64.01
+    && entry.maxima.layerCompositeMiB <= 64.01
+    && entry.peakDeltaMiB <= 140.01
+  );
+  const middlePeakResourcesAreBounded =
+    fiveLayerMiddleSwitchMemoryPeaks.every((entry) =>
+      entry.maxima.layerBaseMiB <= 64.01
+      && entry.maxima.layerHydrationMiB <= 64.01
+      && entry.maxima.layerMipChainMiB <= 64.01
+      && entry.maxima.layerBakeMiB <= 64.01
+      && entry.maxima.layerCompositeMiB <= 128.01
+    )
+    && toMiddleMeasured.memory.peakDeltaMiB <= 220.01
+    && middleToTopMeasured.memory.peakDeltaMiB <= 140.01;
   const checks = {
+    boundedBakeSignatureMatches:
+      LAYER_BAKE_STRATEGY
+        === "transient-analytic-bounded-visual-rect-no-handoff-residency-mip0-fused-into-two-merged-surfaces",
+    compositeSchedulingAndBoundsSignatureMatches:
+      LAYER_COMPOSITE_STRATEGY
+        === "merged-above-over-active-over-merged-below-source-over-evict-derived-before-rebuild-deferred-to-fold-fence-bounded-visual-rect",
     belowOnlyHasOnlyLayerA:
       alpha(rawSamples.belowOnly.layerA) > 0
       && alpha(rawSamples.belowOnly.layerB) === 0
@@ -614,11 +770,47 @@ export async function runLayerCompositeGpuTest(
       fiveLayerMemory.layerBakeMiB < 0.01
       && fiveLayerBakeStates.every((state) => !state.allocated && !state.valid),
     fiveLayersUseOneFusedSide:
-      engine.getLayerCompositeState().below.layerCount === 4
-      && !engine.getLayerCompositeState().above.allocated,
+      fiveLayerCompositeState.below.layerCount === 4
+      && !fiveLayerCompositeState.above.allocated,
+    fiveLayerFoldDomainWasBounded:
+      fiveLayerCompositeState.below.foldedPixels > 0
+      && fiveLayerCompositeState.below.foldedPixels < 4 * 4096 * 4096,
+    fiveLayerAnalyticBakeDomainWasBounded:
+      fiveLayerCompositeState.below.analyticBakePixels > 0
+      && fiveLayerCompositeState.below.analyticBakePixels < 4 * 4096 * 4096,
+    fiveLayerSwitchBreakdownIsConsistent:
+      fiveLayerSwitchBreakdown.every((entry) =>
+        Number.isFinite(entry.totalMs)
+        && Number.isFinite(entry.effectsMs)
+        && Number.isFinite(entry.compositeMs)
+        && entry.totalMs + 0.01 >= entry.effectsMs + entry.compositeMs
+      ),
+    fiveLayerSwitchPeakSamplerObservedBothRuns:
+      fiveLayerSwitchMemoryPeaks.every((entry) =>
+        entry.sampleCount > 1
+        && Number.isFinite(entry.peakDeltaMiB)
+        && entry.maxima.countedTotalMiB + 1e-6 >= entry.before.countedTotalMiB
+      ),
+    fiveLayerMiddleSwitchPeakSamplerObservedBothRuns:
+      fiveLayerMiddleSwitchMemoryPeaks.every((entry) =>
+        entry.sampleCount > 1
+        && Number.isFinite(entry.peakDeltaMiB)
+        && entry.maxima.countedTotalMiB + 1e-6 >= entry.before.countedTotalMiB
+      ),
+    layerAddPeakSamplerObservedBothRuns:
+      layerAddMemoryPeaks.every((entry) =>
+        entry.sampleCount > 1
+        && Number.isFinite(entry.peakDeltaMiB)
+        && entry.maxima.countedTotalMiB + 1e-6 >= entry.before.countedTotalMiB
+      ),
+    edgeLayerTransitionsKeepOneCopyPerReconstructibleClass: edgePeakResourcesAreBounded,
+    middleLayerTransitionKeepsOnlyItsTwoFinalCompositeSides:
+      middlePeakResourcesAreBounded,
   };
 
   return {
+    bakeStrategy: LAYER_BAKE_STRATEGY,
+    strategy: LAYER_COMPOSITE_STRATEGY,
     passed: Object.values(checks).every(Boolean),
     checks,
     samples,
@@ -629,7 +821,12 @@ export async function runLayerCompositeGpuTest(
     zoom,
     fiveLayerMemory,
     fiveLayerBakeStates,
+    fiveLayerCompositeState,
     fiveLayerSwitchMs,
+    fiveLayerSwitchBreakdown,
+    fiveLayerSwitchMemoryPeaks,
+    fiveLayerMiddleSwitchMemoryPeaks,
+    layerAddMemoryPeaks,
     nextTimeMs: timeMs,
   };
 }

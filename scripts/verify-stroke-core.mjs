@@ -502,7 +502,13 @@ assert.match(workbenchSource, /this\._bevelRenderer\?\.retarget\(source\.view\)/
 assert.match(workbenchSource, /this\._strokeRenderer\?\.retarget\(source\.view, source\.format\)/);
 assert.match(engineSource, /async retargetEffectsWorkingSet\(/);
 assert.match(engineSource, /this\.rebuildRasterStrokeDisplayBindGroups\(\)/);
-assert.match(engineSource, /fullDocumentRect,\s*fullDocumentRect,\s*true/);
+assert.match(engineSource, /rebuildDomain: LayerEffectsRebuildDomain = "full-document"/);
+assert.match(
+  engineSource,
+  /styleStackRetargetBounds = rebuildDomain === "content-bounds"\s*\? boundedContentRect\s*: fullDocumentRect/,
+  "il retarget attivo/pubblico deve conservare il default documento completo",
+);
+assert.match(engineSource, /styleStackRetargetBounds,\s*styleStackRetargetBounds,\s*true/);
 assert.match(effectsBenchmarkSource, /destroy-recreate/);
 assert.match(effectsBenchmarkSource, /onSubmittedWorkDone\(\)/);
 assert.match(effectsBenchmarkSource, /4096|documentWidth/);
