@@ -1490,3 +1490,12 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   `compression:verify`, `layers:verify`, `grain:verify`, `view:verify` e
   TypeScript verdi. Resta da eseguire la matrice completa e la prova iPhone
   della build pubblicata prima di promuovere il runtime fuori dalla query.
+- Validazione finale locale della build Vite v4: undici suite verdi
+  (`stroke/grain/blend/thickness/history/layers/effects-scratch/bevel/shadow/view/compression`),
+  TypeScript e build production verdi. Sul bundle esatto, sei livelli con cinque
+  tratti hanno lasciato il `6` hot, il `5` vicino raw e quattro livelli
+  compressi insieme. Aggiungere il `7` ha conservato tutti e quattro i
+  compressi senza alcun ripristino. Selezionare il `3` compresso è terminato in
+  `439 ms`: `2/4` raw adiacenti, `1/5` compressi distanti. Un tratto successivo
+  ha conservato entrambi; zero warning/errori. La firma e i test sono pronti
+  per la pubblicazione query-gated, non per l'attivazione di default.
