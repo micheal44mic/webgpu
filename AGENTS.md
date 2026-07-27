@@ -1498,4 +1498,8 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   compressi senza alcun ripristino. Selezionare il `3` compresso è terminato in
   `439 ms`: `2/4` raw adiacenti, `1/5` compressi distanti. Un tratto successivo
   ha conservato entrambi; zero warning/errori. La firma e i test sono pronti
-  per la pubblicazione query-gated, non per l'attivazione di default.
+  per la pubblicazione query-gated, non per l'attivazione di default.- Pubblicazione Sites `85` riuscita il 27 luglio 2026. Smoke test sul bundle
+  production: tre livelli, due tratti reali; il livello distante è passato da
+  `9,0 MiB` cold GPU a `0,7 MiB` RAM e il pannello rev `56` è presente. Zero
+  warning/errori console. Questa prova conferma packaging/worker in produzione,
+  non sostituisce la prova iPhone di memoria e latenza.
