@@ -363,7 +363,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet";
-    performanceTelemetryRevision: 55;
+    performanceTelemetryRevision: 56;
   };
 }
 
@@ -785,7 +785,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     viewRotationDegrees: Number(engine.getViewRotationDegrees().toFixed(3)),
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet",
-    performanceTelemetryRevision: 55,
+    performanceTelemetryRevision: 56,
     ...engineEnvironment,
   };
 }
@@ -2971,10 +2971,17 @@ function renderLayerList(stats: EngineStats): void {
     const hint = document.createElement("span");
     hint.className = "layer-hint";
     const isActive = layer.id === stats.activeLayerId;
+    const compressionProgress = stats.layerColdCompressionProgress?.layerId === layer.id
+      ? stats.layerColdCompressionProgress
+      : null;
     hint.textContent = isActive
       ? `attivo · ${formatMemoryMiB(layer.actualRawMiB)} full`
       : layer.hotAllocated
         ? `hot di sicurezza · ${formatMemoryMiB(layer.actualRawMiB)} full`
+        : compressionProgress
+          ? `compressione · ${compressionProgress.completedTileCount}/`
+            + `${compressionProgress.totalTileCount} tile verificati`
+            + (compressionProgress.pausedByStroke ? " · pausa tratto" : "")
         : layer.compressed
           ? `compresso · raw ${formatMemoryMiB(layer.compressedRawMiB)} → `
             + `${formatMemoryMiB(layer.compressedCpuMiB)} RAM`
@@ -2987,6 +2994,9 @@ function renderLayerList(stats: EngineStats): void {
       : layer.hotAllocated
         ? "Livello inattivo trattenuto full-canvas per preservare i pixel dopo un errore; "
           + "un nuovo switch è bloccato finché il documento non torna coerente."
+        : compressionProgress
+          ? "Compressione lossless in background: i chunk verificati restano in RAM e "
+            + "il cold GPU rimane autorevole fino al completamento atomico."
         : layer.compressed
           ? "Livello lontano compresso senza perdita nel Web Worker; i tile GPU sono stati "
             + "liberati e saranno verificati e ripristinati prima dell'uso."

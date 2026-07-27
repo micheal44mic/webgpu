@@ -122,7 +122,7 @@ assert.doesNotMatch(studyBody, /destroyLayerColdStorage/);
 assert.match(studyBody, /countedGpuMiBAfter - countedGpuMiBBefore/);
 assert.match(studyBody, /measureLosslessGzipChunk/);
 
-assert.match(clientSource, /worker-gzip-multi-distant-layers-adjacent-raw-v3/);
+assert.match(clientSource, /worker-gzip-multi-distant-resumable-stroke-pause-v4/);
 assert.match(clientSource, /new Worker\(/);
 assert.match(clientSource, /layer-cold-compression-worker\.ts/);
 assert.match(clientSource, /this\.worker\.postMessage\(message, transfer\)/);
@@ -153,6 +153,49 @@ assert.match(
 );
 assert.match(engineSource, /compressOneDistantLayerInBackground/);
 assert.match(engineSource, /await client\.compress\(payload, tileByteLength\)/);
+const beginStrokeStart = engineSource.indexOf("beginStrokeAtLayer(point: LayerPoint)");
+const beginStrokeEnd = engineSource.indexOf("extendStroke(", beginStrokeStart);
+const beginStrokeBody = engineSource.slice(beginStrokeStart, beginStrokeEnd);
+assert.match(beginStrokeBody, /this\.pauseLayerColdCompressionIdle\(\)/);
+assert.doesNotMatch(
+  beginStrokeBody,
+  /this\.cancelLayerColdCompressionIdle\(\)/,
+  "un gesto non deve invalidare i chunk verificati del livello distante",
+);
+const pauseStart = engineSource.indexOf("private pauseLayerColdCompressionIdle(");
+const pauseEnd = engineSource.indexOf("private cancelLayerColdCompressionIdle(", pauseStart);
+const pauseBody = engineSource.slice(pauseStart, pauseEnd);
+assert.match(pauseBody, /clearLayerColdCompressionIdleTimer/);
+assert.doesNotMatch(pauseBody, /layerColdCompressionEpoch/);
+const runtimeCompressionStart = engineSource.indexOf(
+  "private async compressOneDistantLayerInBackground(",
+);
+const runtimeCompressionEnd = engineSource.indexOf(
+  "private async decompressLayerColdChunk(",
+  runtimeCompressionStart,
+);
+const runtimeCompressionBody = engineSource.slice(
+  runtimeCompressionStart,
+  runtimeCompressionEnd,
+);
+assert.match(runtimeCompressionBody, /progress\.chunks\.push\(result\.chunk\)/);
+assert.match(runtimeCompressionBody, /progress\.nextArrayLayer \+= chunkTileCount/);
+assert.match(
+  runtimeCompressionBody,
+  /if \(!this\.layerColdCompressionEngineIdle\(\)\) \{[\s\S]*?return;[\s\S]*?readLayerColdStorageTiles/,
+  "nessuna nuova lettura GPU deve partire mentre il motore non è idle",
+);
+assert.match(runtimeCompressionBody, /Compressione \$\{source\.record\.name\} in pausa/);
+assert.match(
+  engineSource,
+  /const delayMs = this\.layerColdCompressionProgress[\s\S]*?\? 0[\s\S]*?: LAYER_COLD_COMPRESSION_IDLE_DELAY_MS/,
+  "un job parziale deve riprendere subito dopo il lift",
+);
+assert.match(
+  engineSource,
+  /\+ \(this\.layerColdCompressionProgress\?\.storedBytes \?\? 0\)/,
+  "la RAM dei chunk parziali deve essere conteggiata",
+);
 assert.match(
   engineSource,
   /source\.gpu\.compressed = \{[\s\S]*?source\.gpu\.cold = null;[\s\S]*?destroyLayerColdStorage\(source\.cold\)/,
@@ -198,7 +241,11 @@ assert.doesNotMatch(
 );
 assert.match(mainSource, /pageSearchParams\.get\("layerCompressionRuntime"\) === "1"/);
 assert.match(mainSource, /layerColdCompressionEnabled: layerColdCompressionRequested/);
-assert.match(mainSource, /gpuMemoryLayerCompressed/);
+assert.match(mainSource, /gpuMemoryLayerCompressed/);assert.match(engineSource, /layerColdCompressionProgress: \{/);
+assert.match(engineSource, /completedTileCount: this\.layerColdCompressionProgress\.nextArrayLayer/);
+assert.match(engineSource, /pausedByStroke: this\.activeStroke !== null/);
+assert.match(mainSource, /compressione · \$\{compressionProgress\.completedTileCount\}/);
+assert.match(mainSource, /compressionProgress\.pausedByStroke \? " · pausa tratto"/);
 assert.match(indexSource, /Layer · compressi · RAM CPU/);
 assert.match(mainSource, /pageSearchParams\.get\("layerCompressionTest"\) === "1"/);
 assert.match(mainSource, /await engine\.measureLayerColdCompressionStudy/);

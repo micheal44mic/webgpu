@@ -467,6 +467,13 @@ export interface EngineStats {
   layerColdCompressionEnabled: boolean;
   layerColdCompressionRuntimeBuild: string | null;
   layerColdCompressionWorkerUnavailable: boolean;
+  layerColdCompressionProgress: {
+    layerId: number;
+    completedTileCount: number;
+    totalTileCount: number;
+    storedCpuMiB: number;
+    pausedByStroke: boolean;
+  } | null;
   rasterStrokeStyle: RasterStrokeStyle;
   rasterStrokePersistentMemoryMiB: number;
   rasterStrokeScratchMemoryMiB: number;
@@ -904,6 +911,18 @@ interface LayerCompressedColdStorageResources {
   encodeMs: number;
 }
 
+interface LayerColdCompressionProgress {
+  record: LayerRecord;
+  gpu: LayerGpuResources;
+  cold: LayerColdStorageResources;
+  chunks: LayerColdCompressedChunk[];
+  nextArrayLayer: number;
+  rawBytes: number;
+  storedBytes: number;
+  sourceHash: number;
+  encodeMs: number;
+  pauseReported: boolean;
+}
 type LayerGpuResources = {
   hot: LayerTextureResources | null;
   cold: LayerColdStorageResources | null;
@@ -1735,6 +1754,7 @@ export class BrushEngine {
   private layerColdCompressionIdleTimer: number | null = null;
   private layerColdCompressionEpoch = 0;
   private layerColdCompressionJobRunning = false;
+  private layerColdCompressionProgress: LayerColdCompressionProgress | null = null;
   private layerColdRestoreActiveBytes = 0;
 
   // Accessors rather than fields: every read site keeps working, and the styles
@@ -3419,7 +3439,7 @@ export class BrushEngine {
       );
       return;
     }
-    this.cancelLayerColdCompressionIdle();
+    this.pauseLayerColdCompressionIdle();
     const normalizedPoint: LayerPoint = {
       ...point,
       timeMs: Number.isFinite(point.timeMs) ? point.timeMs : performance.now(),
@@ -3896,9 +3916,11 @@ export class BrushEngine {
         0,
       ) / MEBIBYTE_BYTES
       : 0;
-    const layerCompressedCpuMiB = [...this.layerGpu.values()].reduce(
-      (total, gpu) => total + (gpu.compressed?.storedBytes ?? 0),
-      0,
+    const layerCompressedCpuMiB = (
+      [...this.layerGpu.values()].reduce(
+        (total, gpu) => total + (gpu.compressed?.storedBytes ?? 0),
+        0,
+      ) + (this.layerColdCompressionProgress?.storedBytes ?? 0)
     ) / MEBIBYTE_BYTES;
     const layerCompressedRawMiB = [...this.layerGpu.values()].reduce(
       (total, gpu) => total + (gpu.compressed?.rawBytes ?? 0),
@@ -4198,6 +4220,15 @@ export class BrushEngine {
         ? LAYER_COLD_COMPRESSION_RUNTIME_BUILD
         : null,
       layerColdCompressionWorkerUnavailable: this.layerColdCompressionWorkerUnavailable,
+      layerColdCompressionProgress: this.layerColdCompressionProgress
+        ? {
+          layerId: this.layerColdCompressionProgress.record.id,
+          completedTileCount: this.layerColdCompressionProgress.nextArrayLayer,
+          totalTileCount: this.layerColdCompressionProgress.cold.tileIndices.length,
+          storedCpuMiB: this.layerColdCompressionProgress.storedBytes / MEBIBYTE_BYTES,
+          pausedByStroke: this.activeStroke !== null,
+        }
+        : null,
       rasterStrokeStyle: copyRasterStrokeStyle(this.rasterStrokeStyle),
       rasterStrokePersistentMemoryMiB:
         (this.rasterStrokeRenderer?.persistentMemoryBytes ?? 0) / MEBIBYTE_BYTES,
@@ -8055,6 +8086,30 @@ export class BrushEngine {
       return null;
     }
     const activeIndex = this.layerStack.activeIndex;
+    const progress = this.layerColdCompressionProgress;
+    if (progress) {
+      const index = this.layerStack.layers.findIndex(
+        (record) => record.id === progress.record.id,
+      );
+      const distance = Math.abs(index - activeIndex);
+      if (
+        index >= 0
+        && distance >= LAYER_COLD_COMPRESSION_MINIMUM_DISTANCE
+        && progress.record.hasContent
+        && !progress.gpu.hot
+        && !progress.gpu.compressed
+        && progress.gpu.cold === progress.cold
+      ) {
+        return {
+          record: progress.record,
+          index,
+          gpu: progress.gpu,
+          cold: progress.cold,
+          distance,
+        };
+      }
+      this.layerColdCompressionProgress = null;
+    }
     let selected: {
       record: LayerRecord;
       index: number;
@@ -8102,12 +8157,21 @@ export class BrushEngine {
       }
     }
   }
-  private cancelLayerColdCompressionIdle(): void {
+  private clearLayerColdCompressionIdleTimer(): void {
     if (this.layerColdCompressionIdleTimer !== null) {
       window.clearTimeout(this.layerColdCompressionIdleTimer);
       this.layerColdCompressionIdleTimer = null;
     }
+  }
+
+  private pauseLayerColdCompressionIdle(): void {
+    this.clearLayerColdCompressionIdleTimer();
+  }
+
+  private cancelLayerColdCompressionIdle(): void {
+    this.clearLayerColdCompressionIdleTimer();
     this.layerColdCompressionEpoch += 1;
+    this.layerColdCompressionProgress = null;
   }
 
   private scheduleLayerColdCompression(): void {
@@ -8126,10 +8190,13 @@ export class BrushEngine {
       return;
     }
     const token = this.layerColdCompressionEpoch;
+    const delayMs = this.layerColdCompressionProgress
+      ? 0
+      : LAYER_COLD_COMPRESSION_IDLE_DELAY_MS;
     this.layerColdCompressionIdleTimer = window.setTimeout(() => {
       this.layerColdCompressionIdleTimer = null;
       void this.compressOneDistantLayerInBackground(token);
-    }, LAYER_COLD_COMPRESSION_IDLE_DELAY_MS);
+    }, delayMs);
   }
 
   private async requireLayerColdCompressionClient(
@@ -8167,6 +8234,27 @@ export class BrushEngine {
     if (!source) {
       return;
     }
+    let progress = this.layerColdCompressionProgress;
+    if (
+      !progress
+      || progress.record !== source.record
+      || progress.gpu !== source.gpu
+      || progress.cold !== source.cold
+    ) {
+      progress = {
+        record: source.record,
+        gpu: source.gpu,
+        cold: source.cold,
+        chunks: [],
+        nextArrayLayer: 0,
+        rawBytes: 0,
+        storedBytes: 0,
+        sourceHash: 0x811c9dc5,
+        encodeMs: 0,
+        pauseReported: false,
+      };
+      this.layerColdCompressionProgress = progress;
+    }
     this.layerColdCompressionJobRunning = true;
     const tileByteLength = LAYER_STORAGE_TILE_SIZE * LAYER_STORAGE_TILE_SIZE * 4;
     try {
@@ -8174,21 +8262,27 @@ export class BrushEngine {
       await this.waitForIdle();
       if (
         token !== this.layerColdCompressionEpoch
-        || !this.layerColdCompressionEngineIdle()
+        || this.layerColdCompressionProgress !== progress
         || source.gpu.cold !== source.cold
       ) {
         return;
       }
-      const chunks: LayerColdCompressedChunk[] = [];
-      let rawBytes = 0;
-      let storedBytes = 0;
-      let sourceHash = 0x811c9dc5;
-      let encodeMs = 0;
-      for (
-        let firstArrayLayer = 0;
-        firstArrayLayer < source.cold.tileIndices.length;
-        firstArrayLayer += 4
-      ) {
+      progress.pauseReported = false;
+      while (progress.nextArrayLayer < source.cold.tileIndices.length) {
+        if (
+          token !== this.layerColdCompressionEpoch
+          || this.layerColdCompressionProgress !== progress
+          || source.gpu.cold !== source.cold
+        ) {
+          return;
+        }
+        // Never enqueue a new GPU readback while a stroke or another engine
+        // mutation is active. A chunk already read may still finish in the
+        // worker; its verified result is retained below before pausing.
+        if (!this.layerColdCompressionEngineIdle()) {
+          return;
+        }
+        const firstArrayLayer = progress.nextArrayLayer;
         const chunkTileCount = Math.min(
           4,
           source.cold.tileIndices.length - firstArrayLayer,
@@ -8199,32 +8293,57 @@ export class BrushEngine {
           chunkTileCount,
           `worker compressione livello ${source.record.id}`,
         );
-        if (token !== this.layerColdCompressionEpoch) {
+        if (
+          token !== this.layerColdCompressionEpoch
+          || this.layerColdCompressionProgress !== progress
+          || source.gpu.cold !== source.cold
+        ) {
           return;
         }
         const result = await client.compress(payload, tileByteLength);
-        if (token !== this.layerColdCompressionEpoch) {
+        if (
+          token !== this.layerColdCompressionEpoch
+          || this.layerColdCompressionProgress !== progress
+          || source.gpu.cold !== source.cold
+        ) {
           return;
         }
-        chunks.push(result.chunk);
-        rawBytes += result.measurement.rawBytes;
-        storedBytes += result.chunk.storedBytes;
-        encodeMs += result.measurement.encodeMs;
-        sourceHash = combineCompressionHashes(
-          sourceHash,
+        progress.chunks.push(result.chunk);
+        progress.nextArrayLayer += chunkTileCount;
+        progress.rawBytes += result.measurement.rawBytes;
+        progress.storedBytes += result.chunk.storedBytes;
+        progress.encodeMs += result.measurement.encodeMs;
+        progress.sourceHash = combineCompressionHashes(
+          progress.sourceHash,
           result.measurement.sourceHash,
           result.measurement.rawBytes,
         );
+        if (!this.layerColdCompressionEngineIdle()) {
+          if (!progress.pauseReported) {
+            progress.pauseReported = true;
+            this.callbacks.onStatus?.(
+              `Compressione ${source.record.name} in pausa: `
+              + `${progress.nextArrayLayer}/${source.cold.tileIndices.length} tile verificati.`,
+              "working",
+            );
+          }
+          this.publishStats();
+          return;
+        }
       }
-      if (rawBytes !== source.cold.memoryBytes) {
+      if (!this.layerColdCompressionEngineIdle()) {
+        return;
+      }
+      if (progress.rawBytes !== source.cold.memoryBytes) {
         throw new Error(
-          `Compressione livello ${source.record.id}: ${rawBytes} byte letti, `
+          `Compressione livello ${source.record.id}: ${progress.rawBytes} byte letti, `
           + `${source.cold.memoryBytes} attesi.`,
         );
       }
       await this.waitForGpuCapped(`Evizione cold livello ${source.record.id}`);
       if (
         token !== this.layerColdCompressionEpoch
+        || this.layerColdCompressionProgress !== progress
         || !this.layerColdCompressionEngineIdle()
         || source.gpu.cold !== source.cold
         || source.gpu.compressed
@@ -8235,24 +8354,26 @@ export class BrushEngine {
       }
       source.gpu.compressed = {
         tileIndices: [...source.cold.tileIndices],
-        chunks,
-        rawBytes,
-        storedBytes,
-        sourceHash,
+        chunks: [...progress.chunks],
+        rawBytes: progress.rawBytes,
+        storedBytes: progress.storedBytes,
+        sourceHash: progress.sourceHash,
         generation: source.cold.generation,
-        encodeMs,
+        encodeMs: progress.encodeMs,
       };
       source.gpu.cold = null;
+      this.layerColdCompressionProgress = null;
       this.destroyLayerColdStorage(source.cold);
       this.callbacks.onStatus?.(
         `${source.record.name} compresso in background: `
-        + `${(rawBytes / MEBIBYTE_BYTES).toFixed(1)} MiB GPU → `
-        + `${(storedBytes / MEBIBYTE_BYTES).toFixed(1)} MiB RAM.`,
+        + `${(progress.rawBytes / MEBIBYTE_BYTES).toFixed(1)} MiB GPU → `
+        + `${(progress.storedBytes / MEBIBYTE_BYTES).toFixed(1)} MiB RAM.`,
         "ok",
       );
       this.publishStats();
     } catch (error) {
       if (token === this.layerColdCompressionEpoch) {
+        this.layerColdCompressionProgress = null;
         this.layerColdCompressionWorkerUnavailable = true;
         this.layerColdCompressionClient?.dispose();
         this.layerColdCompressionClient = null;
@@ -8268,7 +8389,6 @@ export class BrushEngine {
       this.scheduleLayerColdCompression();
     }
   }
-
   private async decompressLayerColdChunk(
     chunk: LayerColdCompressedChunk,
   ): Promise<Uint8Array> {

@@ -1162,7 +1162,10 @@ relative allocazioni · `44` conteggio/id dei livelli e memoria raw moltiplicata
 `48` Ombre indipendenti · `49` Golden Ombre e scratch compositore ridotto ·
 `50` geometria Traccia lazy · `51` rotazione vista · `52` fence unico per
 record del fold · `53` dominio visivo bounded per bake/fold · `54` evizione
-prima della sostituzione e campionamento dei picchi add/switch.
+prima della sostituzione e campionamento dei picchi add/switch · `55` worker
+lossless per un solo livello distante, RAM compressa separata e ripristino
+atomico · `56` fold transitorio dei compressi, multi-residenza con vicini raw e
+progresso worker sospendibile/riprendibile ai tratti.
 
 ## Strumento Blend dry (WebGPU)
 
@@ -1463,3 +1466,27 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   `compression:verify`, `layers:verify` e TypeScript verdi. Questa run isola
   la politica multi-livello; l'interruzione di un job al gesto resta quella v1
   e viene cambiata soltanto nell'esperimento successivo.
+- Esperimento isolato pausa/ripresa del 27 luglio 2026, build
+  `worker-gzip-multi-distant-resumable-stroke-pause-v4`, telemetria rev `56`.
+  Il progresso di un livello (cold/generazione, chunk verificati, prossimo array
+  layer, hash e byte) sopravvive al gesto. Il pointer-down cancella soltanto il
+  timer idle: non incrementa l'epoch. Prima di ogni nuovo readback il main thread
+  richiede motore idle; se il readback era già partito, il worker può terminare
+  gzip/gunzip/hash, il risultato viene aggiunto al progresso e poi il job si
+  ferma. Al lift un progresso esistente usa delay `0`, mentre un livello nuovo
+  conserva i `1500 ms` idle. Add/switch/delete/settings continuano invece a
+  invalidare epoch e progresso, perché possono cambiare identità o distanza del
+  cold autorevole.
+- La UI mostra `compressione · completati/totali tile verificati` e aggiunge
+  `pausa tratto` mentre il dito è giù. I byte dei chunk parziali sono inclusi
+  nella riga RAM CPU ma restano esclusi dal totale GPU; il cold GPU viene
+  distrutto soltanto al commit atomico dell'intero livello.
+- Prova browser locale NVIDIA Ampere sulla fixture stress da `256` tile: il job
+  era visibile a `44/256`; durante un tratto mantenuto attivo ha terminato il
+  chunk già acquisito e si è fermato a `76/256`, con status e badge
+  `pausa tratto`. Dopo il lift il primo campione osservato era `124/256`, non
+  `0/256`: i chunk completati non sono stati rifatti. Il livello ha poi concluso
+  l'eviction e la sequenza multi-livello è proseguita; zero warning/errori.
+  `compression:verify`, `layers:verify`, `grain:verify`, `view:verify` e
+  TypeScript verdi. Resta da eseguire la matrice completa e la prova iPhone
+  della build pubblicata prima di promuovere il runtime fuori dalla query.
