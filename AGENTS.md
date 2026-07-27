@@ -1511,8 +1511,13 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   fino a `waitForIdle()`, quindi copre texture hot, superfici fuse, effetti,
   presentazione del nuovo frame e completamento della coda GPU. Il `finally` lo
   rimuove anche sugli errori; il livello già attivo non produce un lampeggio.
-  Sfondo pieno e spinner piccolo, senza blur/backdrop full-screen che potrebbe
-  creare una superficie aggiuntiva costosa su iPhone. Pixel, compressione e
-  contabilità memoria del motore non cambiano. Undici suite, TypeScript e build
-  Vite production verdi; `layers:verify` vincola paint iniziale, attesa GPU,
-  cleanup e applicazione sia a switch sia ad add.
+  La prima pubblicazione Sites `87` usava uno sfondo pieno; l'utente l'ha
+  rifiutata perché sembrava un ricaricamento dell'intera app. Il candidato
+  successivo mantiene visibile il disegno con velo `rgba(9,11,15,0.38)`, blur
+  screen-space transitorio di `3 px` e una piccola scheda semitrasparente per
+  spinner/testo. Il blur è limitato al viewport e alla durata dello switch, ma
+  appartiene al compositore WebKit e non è incluso nel monitor memoria del
+  motore. Pixel, compressione e contabilità WebGPU non cambiano. Undici suite,
+  TypeScript e build Vite production verdi; `layers:verify` vincola paint
+  iniziale, attesa GPU, cleanup, stile non opaco e applicazione sia a switch sia
+  ad add.

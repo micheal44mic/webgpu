@@ -788,13 +788,22 @@ assert.match(
 );
 assert.match(stylesSource, /\.layer-loading-overlay \{[\s\S]*?position: fixed;[\s\S]*?inset: 0;/);
 assert.match(stylesSource, /\.layer-loading-overlay\[hidden\] \{\s*display: none;/);
+const loadingStyles = stylesSource.slice(
+  stylesSource.indexOf(".layer-loading-overlay {"),
+  stylesSource.indexOf(".layer-loading-overlay[hidden]"),
+);
+assert.match(loadingStyles, /background: rgba\(9, 11, 15, 0\.38\);/);
+assert.match(loadingStyles, /-webkit-backdrop-filter: blur\(3px\);/);
+assert.match(loadingStyles, /backdrop-filter: blur\(3px\);/);
 assert.doesNotMatch(
-  stylesSource.slice(
-    stylesSource.indexOf(".layer-loading-overlay {"),
-    stylesSource.indexOf(".layer-loading-overlay[hidden]"),
-  ),
-  /backdrop-filter|filter:/,
-  "il loader fullscreen non deve introdurre una superficie di blur su iPhone",
+  loadingStyles,
+  /background: #0d0f13;/,
+  "il loader non deve più sembrare un ricaricamento opaco dell'intera app",
+);
+assert.match(
+  stylesSource,
+  /\.layer-loading-content \{[\s\S]*?background: rgba\(20, 23, 31, 0\.84\);/,
+  "spinner e testo devono restare in una piccola scheda semitrasparente",
 );
 const loadingStart = mainSource.indexOf("async function showLayerLoading(");
 const loadingBody = mainSource.slice(loadingStart, loadingStart + 900);
