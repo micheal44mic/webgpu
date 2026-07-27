@@ -2274,6 +2274,27 @@ export class BrushEngine {
     }
   }
 
+  /**
+   * The coverage buffer is captured both by renderer-owned compute bind groups
+   * and by the engine-owned direct LOD-0 display bind groups. Keep the swap
+   * atomic from the frame scheduler's point of view: after the renderer moves
+   * between real geometry and its placeholder, no display bind group may keep
+   * referencing the buffer that was just destroyed.
+   */
+  private async setRasterStrokeGeometryEnabled(enabled: boolean): Promise<boolean> {
+    const renderer = this.rasterStrokeRenderer;
+    if (!renderer) {
+      return false;
+    }
+    const changed = await renderer.setStrokeGeometryEnabled(enabled);
+    if (!changed) {
+      return false;
+    }
+    this.rasterStrokeCoverageValid = false;
+    this.rebuildRasterStrokeDisplayBindGroups();
+    return true;
+  }
+
   private requireEffectsWorkbench(): EffectsWorkbench {
     if (!this.effectsWorkbench) {
       throw new Error("Banco effetti non inizializzato per il layer attivo.");
@@ -2287,9 +2308,7 @@ export class BrushEngine {
       this.rasterStrokeStyle.enabled && styleWidth > 0,
   ): Promise<RasterStrokeRenderer> {
     if (this.rasterStrokeRenderer) {
-      if (await this.rasterStrokeRenderer.setStrokeGeometryEnabled(strokeGeometryActive)) {
-        this.rasterStrokeCoverageValid = false;
-      }
+      await this.setRasterStrokeGeometryEnabled(strokeGeometryActive);
       return this.rasterStrokeRenderer;
     }
     const scratchExtent = rasterStrokeScratchExtentForRenderer(
@@ -2582,9 +2601,7 @@ export class BrushEngine {
           || this.rasterOuterShadowStyle.enabled
           || this.rasterInnerShadowStyle.enabled
         ) {
-          if (await this.rasterStrokeRenderer?.setStrokeGeometryEnabled(false)) {
-            this.rasterStrokeCoverageValid = false;
-          }
+          await this.setRasterStrokeGeometryEnabled(false);
           this.rasterStrokePendingComposeRect = this.rasterStrokeEffectRect(
             this.layerContentBounds,
             previous.width,
@@ -2624,9 +2641,7 @@ export class BrushEngine {
           await this.ensureRasterStrokeRenderer(previous.width, true);
         }
         if (this.rasterStrokeRenderer) {
-          if (await this.rasterStrokeRenderer.setStrokeGeometryEnabled(previousActive)) {
-            this.rasterStrokeCoverageValid = false;
-          }
+          await this.setRasterStrokeGeometryEnabled(previousActive);
           const previousScratchExtent = rasterStrokeScratchExtentForRenderer(
             previousActive,
             previous.width,
@@ -8609,9 +8624,7 @@ export class BrushEngine {
         renderer.resizeScratch(scratchExtent);
       }
     } else if (this.rasterStrokeRenderer) {
-      if (await this.rasterStrokeRenderer.setStrokeGeometryEnabled(false)) {
-        this.rasterStrokeCoverageValid = false;
-      }
+      await this.setRasterStrokeGeometryEnabled(false);
       if (this.rasterStrokeRenderer.scratchExtent !== RASTER_STROKE_COMPOSITOR_ONLY_SCRATCH_EXTENT) {
         this.rasterStrokeRenderer.resizeScratch(RASTER_STROKE_COMPOSITOR_ONLY_SCRATCH_EXTENT);
       }

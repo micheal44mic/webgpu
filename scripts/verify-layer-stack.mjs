@@ -961,7 +961,7 @@ assert.match(
 assert.match(ensureBody, /record\.strokeStyle\.enabled && record\.strokeStyle\.width > 0/,
   "un compositore senza Traccia deve usare lo scratch minimo");
 assert.match(ensureBody, /renderer\.resizeScratch\(scratchExtent\)/);
-assert.match(ensureBody, /setStrokeGeometryEnabled\(false\)/,
+assert.match(ensureBody, /setRasterStrokeGeometryEnabled\(false\)/,
   "un livello senza Traccia deve liberare la geometria residente condivisa");
 assert.match(engineSource, /strokeGeometryEnabled: strokeGeometryActive/,
   "la creazione del compositore deve rispettare la Traccia del livello entrante");

@@ -443,8 +443,38 @@ assert.match(
 assert.match(rendererSource, /this\.rebuildIndirectGateBindGroup\(\)/);
 assert.match(rendererSource, /Encode Traccia rifiutato: le risorse geometriche non sono allocate/);
 assert.match(engineSource, /strokeGeometryEnabled: strokeGeometryActive/);
-assert.match(engineSource, /await this\.rasterStrokeRenderer\.setStrokeGeometryEnabled/);
-assert.match(engineSource, /setStrokeGeometryEnabled\(false\)/);
+const geometrySwapHelperStart = engineSource.indexOf(
+  "private async setRasterStrokeGeometryEnabled(",
+);
+assert.notEqual(
+  geometrySwapHelperStart,
+  -1,
+  "Il lifecycle geometria Traccia deve passare dall'helper che aggiorna anche il display.",
+);
+const geometrySwapHelperBody = engineSource.slice(
+  geometrySwapHelperStart,
+  geometrySwapHelperStart + 1_200,
+);
+assert.match(
+  geometrySwapHelperBody,
+  /await renderer\.setStrokeGeometryEnabled\(enabled\)/,
+);
+assert.match(
+  geometrySwapHelperBody,
+  /this\.rebuildRasterStrokeDisplayBindGroups\(\)/,
+  "Lo swap real buffer/placeholder deve ricostruire i bind group display esterni.",
+);
+assert.ok(
+  geometrySwapHelperBody.indexOf("await renderer.setStrokeGeometryEnabled(enabled)")
+    < geometrySwapHelperBody.indexOf("this.rebuildRasterStrokeDisplayBindGroups()"),
+  "I bind group display vanno ricostruiti dopo che il renderer ha pubblicato il nuovo buffer.",
+);
+assert.equal(
+  engineSource.match(/\.setStrokeGeometryEnabled\(/g)?.length,
+  1,
+  "Nessun call site deve bypassare l'helper engine del lifecycle geometria Traccia.",
+);
+assert.match(engineSource, /await this\.setRasterStrokeGeometryEnabled\(false\)/);
 assert.match(engineSource, /rasterStrokeGeometryResident/);
 assert.match(rendererSource, /parameters\.scratchExtent/);
 assert.match(rendererSource, /resizeScratch\(requestedExtent: number\)/);

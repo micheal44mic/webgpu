@@ -473,6 +473,18 @@ Paint:
   sono passati senza warning/errori WebGPU. Allocazione sotto transazione GPU,
   rilascio solo dopo idle e bind group ricostruiti a ogni scambio. Strategia:
   `allocate-on-stroke-enable-release-when-idle-disabled`.
+- Fix lifecycle display del 27 luglio 2026: la prima implementazione ricostruiva
+  i bind group compute interni quando coverage reale e placeholder si
+  scambiavano, ma non i tre bind group display LOD 0 posseduti dal motore. Con
+  Traccia e Ombra esterna attive, Traccia OFF lasciava quindi il display legato
+  al coverage appena distrutto e il canvas diventava nero fino alla ricreazione
+  del compositore. `setRasterStrokeGeometryEnabled` centralizza ora tutti gli
+  swap (toggle, rollback e cambio livello), invalida la coverage e ricostruisce
+  subito i bind group display esterni. Verifica runtime NVIDIA Ampere:
+  Traccia/Ombra `ON/ON → OFF/ON → ON/ON`, immagine e ombra sempre visibili,
+  memoria `165,1→131,6→165,1 MiB`, zero warning/errori. Dieci suite `*:verify`,
+  TypeScript, build Vite e `git diff --check` verdi; controllo statico nuovo
+  vieta call site che bypassino l'helper.
 - Prova percettiva dell'utente approvata il 27 luglio 2026 sulla build locale:
   Ombra esterna e Ombra interna, controlli e risultato visivo sono stati
   giudicati «perfetti». L'approvazione promuove il gate percettivo del candidato
