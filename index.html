@@ -314,10 +314,23 @@
             Ogni livello conserva Traccia, Ombra esterna, Ombra interna e Smusso.
           </p>
           <div id="layerMemoryStressSection" hidden>
-            <p class="result">
+            <p id="layerMemoryStressIntro" class="result">
               Prova distruttiva su pagina nuova: prepara circa 1000 MiB di
               risorse WebGPU reali. Al termine i livelli restano selezionabili.
             </p>
+            <label id="iphoneMemoryDeviceControl" class="control" hidden>
+              <span>
+                Modello iPhone (facoltativo)
+                <small>Serve solo a riconoscere il risultato salvato.</small>
+              </span>
+              <input
+                id="iphoneMemoryDeviceLabel"
+                type="text"
+                maxlength="80"
+                autocomplete="off"
+                placeholder="es. iPhone 15 Pro"
+              />
+            </label>
             <button id="runLayerMemoryStress" class="primary wide" type="button" disabled>
               Prepara stress memoria ~1000 MiB
             </button>

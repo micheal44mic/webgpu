@@ -41,6 +41,10 @@ const HUMAN_STROKE_ID = "canonical";
 const HUMAN_STROKE_PRESET_REVISION = 3;
 const BENCHMARK_RUNS_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS benchmark_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)";
 const BENCHMARK_RUNS_INDEX_SQL = "CREATE INDEX IF NOT EXISTS benchmark_runs_created_at_idx ON benchmark_runs (created_at DESC)";
+const IPHONE_MEMORY_LIMIT_BUILD = "iphone-real-layer-cold-tiles-checkpoint-before-each-operation-v1";
+const IPHONE_MEMORY_LIMIT_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS iphone_memory_limit_runs (id TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, status TEXT NOT NULL, payload_json TEXT NOT NULL)";
+const IPHONE_MEMORY_LIMIT_INDEX_SQL = "CREATE INDEX IF NOT EXISTS iphone_memory_limit_runs_updated_at_idx ON iphone_memory_limit_runs (updated_at DESC)";
+const IPHONE_MEMORY_LIMIT_STATUSES = new Set(["running", "completed", "interrupted", "error"]);
 
 function jsonResponse(payload, status = 200) {
   return new Response(JSON.stringify(payload), {
@@ -60,6 +64,13 @@ async function ensureBenchmarkRunsSchema(db) {
   await db.batch([
     db.prepare(BENCHMARK_RUNS_SCHEMA_SQL),
     db.prepare(BENCHMARK_RUNS_INDEX_SQL),
+  ]);
+}
+
+async function ensureIphoneMemoryLimitSchema(db) {
+  await db.batch([
+    db.prepare(IPHONE_MEMORY_LIMIT_SCHEMA_SQL),
+    db.prepare(IPHONE_MEMORY_LIMIT_INDEX_SQL),
   ]);
 }
 
@@ -230,6 +241,93 @@ async function handleBenchmarkRuns(request, env) {
   return new Response(null, { status: 405, headers: { Allow: "GET, POST" } });
 }
 
+async function handleIphoneMemoryLimitRuns(request, env) {
+  if (!env.DB) {
+    return jsonResponse({ error: "Archivio limite iPhone non disponibile." }, 503);
+  }
+
+  await ensureIphoneMemoryLimitSchema(env.DB);
+
+  if (request.method === "POST") {
+    const contentLength = Number(request.headers.get("Content-Length") ?? "0");
+    if (contentLength > 100_000) {
+      return jsonResponse({ error: "Il checkpoint del limite iPhone è troppo grande." }, 413);
+    }
+
+    const payload = await request.json();
+    if (
+      !payload
+      || payload.version !== 1
+      || payload.build !== IPHONE_MEMORY_LIMIT_BUILD
+      || typeof payload.runId !== "string"
+      || !/^iphone-[a-z0-9-]{12,80}$/i.test(payload.runId)
+      || typeof payload.createdAt !== "string"
+      || typeof payload.updatedAt !== "string"
+      || !IPHONE_MEMORY_LIMIT_STATUSES.has(payload.status)
+      || !payload.plan
+      || !payload.environment
+      || !Array.isArray(payload.events)
+      || payload.events.length > 64
+      || !Number.isFinite(payload.lastSafeMiB)
+      || !Number.isFinite(payload.highestObservedPeakMiB)
+      || !payload.latestMemory
+    ) {
+      return jsonResponse({ error: "Il checkpoint del limite iPhone non è valido." }, 400);
+    }
+
+    const payloadJson = JSON.stringify(payload);
+    if (payloadJson.length > 100_000) {
+      return jsonResponse({ error: "Il checkpoint del limite iPhone è troppo grande." }, 413);
+    }
+
+    await env.DB
+      .prepare("INSERT INTO iphone_memory_limit_runs (id, created_at, updated_at, status, payload_json) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, status = excluded.status, payload_json = excluded.payload_json")
+      .bind(payload.runId, payload.createdAt, payload.updatedAt, payload.status, payloadJson)
+      .run();
+    return jsonResponse({
+      runId: payload.runId,
+      status: payload.status,
+      updatedAt: payload.updatedAt,
+    }, 201);
+  }
+
+  if (request.method === "GET") {
+    const url = new URL(request.url);
+    const runId = url.searchParams.get("id");
+    if (runId) {
+      if (!/^iphone-[a-z0-9-]{12,80}$/i.test(runId)) {
+        return jsonResponse({ error: "Identificativo run non valido." }, 400);
+      }
+      const record = await env.DB
+        .prepare("SELECT payload_json FROM iphone_memory_limit_runs WHERE id = ?1")
+        .bind(runId)
+        .first();
+      if (!record) {
+        return jsonResponse({ error: "Run limite iPhone non trovata." }, 404);
+      }
+      return jsonResponse({ run: JSON.parse(record.payload_json) });
+    }
+
+    const requestedLimit = Number(url.searchParams.get("limit") ?? "20");
+    const limit = Math.min(
+      100,
+      Math.max(1, Number.isFinite(requestedLimit) ? Math.floor(requestedLimit) : 20),
+    );
+    const result = await env.DB
+      .prepare("SELECT payload_json FROM iphone_memory_limit_runs ORDER BY updated_at DESC LIMIT ?1")
+      .bind(limit)
+      .all();
+    const runs = (result.results ?? []).map((record) => JSON.parse(record.payload_json));
+    return jsonResponse({
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      runs,
+    });
+  }
+
+  return new Response(null, { status: 405, headers: { Allow: "GET, POST" } });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -240,6 +338,10 @@ export default {
 
     if (url.pathname === "/api/benchmark-runs") {
       return handleBenchmarkRuns(request, env);
+    }
+
+    if (url.pathname === "/api/iphone-memory-limit-runs") {
+      return handleIphoneMemoryLimitRuns(request, env);
     }
 
     if (

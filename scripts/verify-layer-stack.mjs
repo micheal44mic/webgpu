@@ -1259,19 +1259,77 @@ assert.doesNotMatch(
   /import\.meta\.env\.DEV/,
   "la pagina pubblicata deve poter avviare lo stress solo tramite query esplicita",
 );
-assert.match(mainSource, /layerMemoryStressTestEnabled: layerMemoryStressTestRequested/);
+assert.match(mainSource, /layerMemoryStressTestEnabled: layerMemoryFixtureRequested/);
 assert.match(mainSource, /await import\("\.\/layer-memory-stress-test"\)/);
 assert.match(mainSource, /layerMemoryStressTestCompleted = true/);
 assert.match(mainSource, /stressSampler = window\.setInterval/);
-assert.match(engineSource, /async seedActiveLayerMemoryStress\(markerIndex: number\)/);
+assert.match(engineSource, /async seedActiveLayerMemoryStress\([\s\S]*?storageTileCount = LAYER_STORAGE_TILE_COUNT/);
 const memoryStressSeedStart = engineSource.indexOf("async seedActiveLayerMemoryStress(");
-const memoryStressSeedBody = engineSource.slice(memoryStressSeedStart, memoryStressSeedStart + 2_500);
+const memoryStressSeedBody = engineSource.slice(memoryStressSeedStart, memoryStressSeedStart + 4_000);
 assert.match(memoryStressSeedBody, /this\.layerMemoryStressTestEnabled/);
 assert.match(memoryStressSeedBody, /const markerSize = 64/);
-assert.match(memoryStressSeedBody, /storageTileMask\.fill\(0xffffffff\)/);
+assert.match(memoryStressSeedBody, /storageTileMask\.fill\(0\)/);
+assert.match(memoryStressSeedBody, /markStorageTile\(markerTileIndex\)/);
 assert.match(layerMemoryStressSource, /LAYER_MEMORY_STRESS_TARGET_MIB = 1000/);
 assert.match(layerMemoryStressSource, /initial\.layerCount !== 1/);
 assert.match(layerMemoryStressSource, /layer\.coldTileCount !== 256/);
 assert.match(layerMemoryStressSource, /layer\.conservativeTileCount !== 256/);
 assert.match(layerMemoryStressSource, /manualSwitchReady: true/);
+
+// The iPhone fixture advances in real cold-tile increments and writes a remote
+// checkpoint before each allocation/switch. A restored page converts the last
+// pending attempt into an interrupted result, so the user never has to copy it.
+const iphoneMemoryLimitSource = readFileSync(
+  new URL("../src/iphone-memory-limit-test.ts", import.meta.url),
+  "utf8",
+);
+const sitesBuildSource = readFileSync(
+  new URL("../scripts/prepare-sites-build.mjs", import.meta.url),
+  "utf8",
+);
+const iphoneMemoryMigrationSource = readFileSync(
+  new URL("../.openai/drizzle/0003_iphone_memory_limit_runs.sql", import.meta.url),
+  "utf8",
+);
+assert.match(iphoneMemoryLimitSource,
+  /iphone-real-layer-cold-tiles-checkpoint-before-each-operation-v1/);
+const iphoneStoragePlanMatch = iphoneMemoryLimitSource.match(
+  /IPHONE_MEMORY_LIMIT_STORAGE_TILE_PLAN = Object\.freeze\(\[([\s\S]*?)\]\)/,
+);
+assert.ok(iphoneStoragePlanMatch);
+const iphoneStorageTilePlan = [...iphoneStoragePlanMatch[1].matchAll(/\d+/g)]
+  .map((match) => Number(match[0]));
+assert.equal(iphoneStorageTilePlan.length, LAYER_STACK_MAXIMUM - 1);
+assert.equal(
+  iphoneStorageTilePlan.reduce((sum, tileCount) => sum + tileCount, 0),
+  3_328,
+);
+assert.ok(iphoneStorageTilePlan.every(
+  (tileCount) => Number.isInteger(tileCount) && tileCount > 0 && tileCount <= 256,
+));
+assert.match(mainSource, /pageSearchParams\.get\("iphoneMemoryLimitTest"\) === "1"/);
+assert.match(mainSource, /recoverRequestedIphoneMemoryLimitTest/);
+assert.match(mainSource, /serverRequired: iphoneMemoryLimitServerRequired/);
+assert.match(mainSource, /salvato nel progetto/);
+assert.match(iphoneMemoryLimitSource, /LOCAL_STORAGE_KEY/);
+assert.match(iphoneMemoryLimitSource, /publishRunIdToHash\(run\.runId\)/);
+assert.match(iphoneMemoryLimitSource, /recoverInterruptedIphoneMemoryLimitRun/);
+assert.match(iphoneMemoryLimitSource, /kind: "interrupted"/);
+assert.match(iphoneMemoryLimitSource, /\n\s+"switch-middle",/);
+assert.match(iphoneMemoryLimitSource, /\n\s+"switch-top",/);
+const firstIphoneAttempt = iphoneMemoryLimitSource.indexOf('kind: "attempt"');
+const firstIphoneCheckpoint = iphoneMemoryLimitSource.indexOf(
+  "await postCheckpoint(run, serverRequired)",
+  firstIphoneAttempt,
+);
+const firstIphoneAllocation = iphoneMemoryLimitSource.indexOf(
+  "await engine.seedActiveLayerMemoryStress(planIndex, storageTileCount)",
+  firstIphoneAttempt,
+);
+assert.ok(firstIphoneAttempt >= 0 && firstIphoneCheckpoint > firstIphoneAttempt);
+assert.ok(firstIphoneAllocation > firstIphoneCheckpoint);
+assert.match(sitesBuildSource, /handleIphoneMemoryLimitRuns/);
+assert.match(sitesBuildSource, /\/api\/iphone-memory-limit-runs/);
+assert.match(sitesBuildSource, /ON CONFLICT\(id\) DO UPDATE/);
+assert.match(iphoneMemoryMigrationSource, /CREATE TABLE IF NOT EXISTS iphone_memory_limit_runs/);
 console.log("Layer stack verification passed.");

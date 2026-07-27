@@ -8467,10 +8467,14 @@ export class BrushEngine {
   }
   /**
    * Gives the dedicated memory fixture a tiny visible marker while deliberately
-   * reserving every raw-storage tile. The option gate prevents normal sessions
-   * from manufacturing this pessimistic state accidentally.
+   * reserving an exact number of raw-storage tiles. The default keeps the
+   * original full-layer stress fixture unchanged; the iPhone staircase passes
+   * smaller counts so every checkpoint advances by a known amount.
    */
-  async seedActiveLayerMemoryStress(markerIndex: number): Promise<void> {
+  async seedActiveLayerMemoryStress(
+    markerIndex: number,
+    storageTileCount = LAYER_STORAGE_TILE_COUNT,
+  ): Promise<void> {
     if (!this.layerMemoryStressTestEnabled) {
       throw new Error("Stress memoria livelli non abilitato per questa pagina.");
     }
@@ -8482,6 +8486,15 @@ export class BrushEngine {
     }
     if (this.styleStackActive()) {
       throw new Error("Disattiva Traccia, Smusso e Ombre prima dello stress memoria.");
+    }
+    if (
+      !Number.isInteger(storageTileCount)
+      || storageTileCount < 1
+      || storageTileCount > LAYER_STORAGE_TILE_COUNT
+    ) {
+      throw new Error(
+        `Numero tile stress non valido: ${storageTileCount}; atteso 1-${LAYER_STORAGE_TILE_COUNT}.`,
+      );
     }
     this.assertLayerSwitchAllowed();
     await this.waitForIdle();
@@ -8512,11 +8525,30 @@ export class BrushEngine {
     const markerRect = { x, y, width: markerSize, height: markerSize };
     this.layerHasContent = true;
     this.noteLayerMutation(markerRect, false);
-    // The marker remains tiny so merged-surface rebuilds stay interactive, but
-    // every inactive layer deliberately reserves all 256 cold tiles. This
-    // isolates memory headroom from fill-rate and gives later manual switches
-    // the same 64 MiB raw capacity per RGBA8 layer as a full document.
-    this.layerStack.active.storageTileMask.fill(0xffffffff);
+    // The marker remains tiny so merged-surface rebuilds stay interactive. Its
+    // real tile is always included, then deterministic additional tiles are
+    // marked until the requested cold-store capacity is reached.
+    const storageTileMask = this.layerStack.active.storageTileMask;
+    storageTileMask.fill(0);
+    const markerTileIndex =
+      Math.floor(y / LAYER_STORAGE_TILE_SIZE) * LAYER_STORAGE_GRID_SIZE
+      + Math.floor(x / LAYER_STORAGE_TILE_SIZE);
+    const markStorageTile = (tileIndex: number): void => {
+      const wordIndex = tileIndex >>> 5;
+      storageTileMask[wordIndex] |= 1 << (tileIndex & 31);
+    };
+    markStorageTile(markerTileIndex);
+    let markedTileCount = 1;
+    for (
+      let tileIndex = 0;
+      tileIndex < LAYER_STORAGE_TILE_COUNT && markedTileCount < storageTileCount;
+      tileIndex += 1
+    ) {
+      if (tileIndex !== markerTileIndex) {
+        markStorageTile(tileIndex);
+        markedTileCount += 1;
+      }
+    }
     this.persistActiveLayerState();
     this.paintDisplayMipValidThroughLevel = 0;
     this.presentationCacheNeedsFullRebuild = true;

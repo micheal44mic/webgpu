@@ -19,6 +19,11 @@ import {
   type RasterOuterShadowStyle,
   type RasterInnerShadowStyle,
 } from "./brush-engine";
+import type {
+  IphoneMemoryLimitEvent,
+  IphoneMemoryLimitProgress,
+  IphoneMemoryLimitRun,
+} from "./iphone-memory-limit-test";
 
 function element<T extends HTMLElement>(id: string): T {
   const result = document.getElementById(id);
@@ -62,6 +67,9 @@ const layerList = element<HTMLElement>("layerList");
 const addLayerButton = element<HTMLButtonElement>("addLayer");
 const layerSwitchResult = element<HTMLParagraphElement>("layerSwitchResult");
 const layerMemoryStressSection = element<HTMLElement>("layerMemoryStressSection");
+const layerMemoryStressIntro = element<HTMLParagraphElement>("layerMemoryStressIntro");
+const iphoneMemoryDeviceControl = element<HTMLElement>("iphoneMemoryDeviceControl");
+const iphoneMemoryDeviceLabel = element<HTMLInputElement>("iphoneMemoryDeviceLabel");
 const layerMemoryStressButton = element<HTMLButtonElement>("runLayerMemoryStress");
 const layerMemoryStressResult = element<HTMLParagraphElement>("layerMemoryStressResult");
 const layerMemoryStressDetails = element<HTMLDetailsElement>("layerMemoryStressDetails");
@@ -369,7 +377,25 @@ const layerHistoryTestRequested = import.meta.env.DEV
   && pageSearchParams.get("layerHistoryTest") === "1";
 const layerMemoryStressTestRequested =
   pageSearchParams.get("layerMemoryStressTest") === "1";
-layerMemoryStressSection.hidden = !layerMemoryStressTestRequested;
+const iphoneMemoryLimitTestRequested =
+  pageSearchParams.get("iphoneMemoryLimitTest") === "1";
+const layerMemoryFixtureRequested =
+  layerMemoryStressTestRequested || iphoneMemoryLimitTestRequested;
+const iphoneMemoryLimitServerRequired = !(
+  import.meta.env.DEV
+  && pageSearchParams.get("memoryLimitLocalOnly") === "1"
+);
+layerMemoryStressSection.hidden = !layerMemoryFixtureRequested;
+iphoneMemoryDeviceControl.hidden = !iphoneMemoryLimitTestRequested;
+if (iphoneMemoryLimitTestRequested) {
+  layerMemoryStressIntro.textContent =
+    "Ricerca distruttiva del limite di questo iPhone: sale a gradini reali e "
+    + "salva nel progetto un checkpoint prima e dopo ogni operazione. Se Safari "
+    + "chiude la pagina, non devi copiare nulla.";
+  layerMemoryStressButton.textContent = "Trova e salva il limite di questo iPhone";
+  layerMemoryStressResult.textContent =
+    "Pronto. Tieni questa pagina in primo piano finché termina o Safari la chiude.";
+}
 const engine = new BrushEngine(canvas, {
   onStatus(message, kind) {
     statusElement.textContent = message;
@@ -397,7 +423,7 @@ const engine = new BrushEngine(canvas, {
   },
 }, tipPreviewCanvas, {
   bevelBoundingFieldEnabled,
-  layerMemoryStressTestEnabled: layerMemoryStressTestRequested,
+  layerMemoryStressTestEnabled: layerMemoryFixtureRequested,
 });
 if (import.meta.env.DEV) {
   (window as Window & { __brushEngine?: BrushEngine }).__brushEngine = engine;
@@ -1721,11 +1747,12 @@ function updateHistoryControls(): void {
   rasterStrokeGoldenButton.disabled = locked;
   effectsWorkbenchBenchmarkButton.disabled = locked;
   layerMemoryStressButton.disabled =
-    !layerMemoryStressTestRequested
+    !layerMemoryFixtureRequested
     || !engineInitialized
     || layerMemoryStressTestRunning
     || layerMemoryStressTestCompleted
     || locked;
+  iphoneMemoryDeviceLabel.disabled = locked || layerMemoryStressTestCompleted;
   layerFormatSelect.disabled = locked;
   fitViewButton.disabled = locked;
   zoomInButton.disabled = locked;
@@ -2012,7 +2039,11 @@ gpuMemoryClose.addEventListener("click", () => {
   gpuMemoryToggle.focus();
 });
 layerMemoryStressButton.addEventListener("click", () => {
-  void runRequestedLayerMemoryStressTest();
+  if (iphoneMemoryLimitTestRequested) {
+    void runRequestedIphoneMemoryLimitTest();
+  } else {
+    void runRequestedLayerMemoryStressTest();
+  }
 });
 clearLayerButton.addEventListener("click", () => {
   void clearLayerWithHistory();
@@ -2252,6 +2283,165 @@ if (import.meta.env.DEV) {
       updateHumanStrokeControls();
     }
   });
+}
+
+function iphoneMemoryOperationLabel(event: IphoneMemoryLimitEvent): string {
+  switch (event.operation) {
+    case "add-layer":
+      return `aggiunta livello ${event.targetLayerCount ?? "?"}`
+        + (event.storageMiB === undefined ? "" : ` (+${formatMemoryMiB(event.storageMiB)} raw)`);
+    case "arm-final-layer":
+      return "preparazione del livello finale";
+    case "switch-middle":
+      return `cambio al livello centrale ${(event.targetLayerIndex ?? 0) + 1}`;
+    case "switch-top":
+      return `ritorno al livello superiore ${(event.targetLayerIndex ?? 0) + 1}`;
+  }
+}
+
+function showIphoneMemoryLimitRun(
+  run: IphoneMemoryLimitRun,
+  openDetails = false,
+): void {
+  layerMemoryStressReport.textContent = JSON.stringify(run, null, 2);
+  layerMemoryStressDetails.hidden = false;
+  layerMemoryStressDetails.open = openDetails;
+  (
+    window as Window & { __iphoneMemoryLimitRun?: IphoneMemoryLimitRun }
+  ).__iphoneMemoryLimitRun = run;
+}
+
+function updateIphoneMemoryLimitProgress(progress: IphoneMemoryLimitProgress): void {
+  const { run, event, completedOperations, totalOperations } = progress;
+  showIphoneMemoryLimitRun(run);
+  updateStats(engine.getStats());
+  const operation = iphoneMemoryOperationLabel(event);
+  if (event.kind === "attempt") {
+    layerMemoryStressResult.className = "result";
+    layerMemoryStressResult.textContent =
+      `Checkpoint salvato nel progetto · provo ${operation} · `
+      + `ultimo sicuro ${formatMemoryMiB(run.lastSafeMiB)} · `
+      + `${completedOperations}/${totalOperations}`;
+    return;
+  }
+  if (event.kind === "completed") {
+    layerMemoryStressResult.className = "result ok";
+    layerMemoryStressResult.textContent =
+      `${operation} riuscita e salvata · sicuro ${formatMemoryMiB(run.lastSafeMiB)}`
+      + ` · picco ${formatMemoryMiB(run.highestObservedPeakMiB)}`
+      + ` · ${completedOperations}/${totalOperations}`;
+    return;
+  }
+  layerMemoryStressResult.className = "result error";
+  layerMemoryStressResult.textContent =
+    `${operation} interrotta · ultimo sicuro ${formatMemoryMiB(run.lastSafeMiB)}`
+    + " · risultato già salvato nel progetto.";
+}
+
+async function recoverRequestedIphoneMemoryLimitTest(): Promise<void> {
+  if (!iphoneMemoryLimitTestRequested) {
+    return;
+  }
+  try {
+    const { recoverInterruptedIphoneMemoryLimitRun } = await import(
+      "./iphone-memory-limit-test"
+    );
+    const run = await recoverInterruptedIphoneMemoryLimitRun(
+      iphoneMemoryLimitServerRequired,
+    );
+    if (!run) {
+      return;
+    }
+    showIphoneMemoryLimitRun(run, true);
+    const latestEvent = run.events.at(-1);
+    const operation = latestEvent
+      ? iphoneMemoryOperationLabel(latestEvent)
+      : "operazione sconosciuta";
+    if (run.status === "completed") {
+      layerMemoryStressResult.className = "result ok";
+      layerMemoryStressResult.textContent =
+        `Test precedente completato e salvato · ${formatMemoryMiB(run.lastSafeMiB)} sicuri`
+        + ` · picco ${formatMemoryMiB(run.highestObservedPeakMiB)}.`;
+    } else if (run.status === "interrupted") {
+      layerMemoryStressResult.className = "result error";
+      layerMemoryStressResult.textContent =
+        `Chiusura precedente rilevata durante ${operation} · ultimo checkpoint sicuro `
+        + `${formatMemoryMiB(run.lastSafeMiB)}. È già tutto salvato nel progetto.`;
+    } else {
+      layerMemoryStressResult.className = "result error";
+      layerMemoryStressResult.textContent =
+        `Test precedente ${run.status} durante ${operation} · ultimo sicuro `
+        + `${formatMemoryMiB(run.lastSafeMiB)}. Il report è salvato.`;
+    }
+    layerMemoryStressButton.textContent = "Avvia un nuovo test del limite";
+  } catch (error) {
+    layerMemoryStressResult.className = "result error";
+    layerMemoryStressResult.textContent =
+      `Impossibile rileggere il checkpoint salvato · ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+  }
+}
+
+async function runRequestedIphoneMemoryLimitTest(): Promise<void> {
+  if (
+    !iphoneMemoryLimitTestRequested
+    || interactionLocked()
+    || layerMemoryStressTestCompleted
+  ) {
+    return;
+  }
+
+  layerMemoryStressTestRunning = true;
+  layerMemoryStressDetails.hidden = true;
+  layerMemoryStressResult.className = "result";
+  layerMemoryStressResult.textContent =
+    "Creo il test e salvo il primo checkpoint nel progetto…";
+  layerMemoryStressButton.textContent = "Ricerca limite in corso…";
+  setGpuMemoryPanelOpen(true);
+  updateHistoryControls();
+  updateHumanStrokeControls();
+  let latestRun: IphoneMemoryLimitRun | null = null;
+
+  try {
+    const { runIphoneMemoryLimitTest } = await import("./iphone-memory-limit-test");
+    const report = await runIphoneMemoryLimitTest(engine, {
+      deviceLabel: iphoneMemoryDeviceLabel.value,
+      serverRequired: iphoneMemoryLimitServerRequired,
+      onProgress(progress) {
+        latestRun = progress.run;
+        updateIphoneMemoryLimitProgress(progress);
+      },
+    });
+    latestRun = report;
+    showIphoneMemoryLimitRun(report, true);
+    layerMemoryStressResult.className = "result ok";
+    layerMemoryStressResult.textContent =
+      `Test completo e salvato nel progetto · ${formatMemoryMiB(report.lastSafeMiB)} sicuri`
+      + ` · picco ${formatMemoryMiB(report.highestObservedPeakMiB)}`
+      + " · cambi centro/sopra riusciti.";
+    layerMemoryStressButton.textContent = "Test completato e salvato";
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (latestRun) {
+      showIphoneMemoryLimitRun(latestRun, true);
+    }
+    layerMemoryStressResult.className = "result error";
+    layerMemoryStressResult.textContent =
+      `Test interrotto · ${message}`
+      + (latestRun
+        ? ` · ultimo sicuro ${formatMemoryMiB(latestRun.lastSafeMiB)}; report salvato.`
+        : "");
+    layerMemoryStressButton.textContent = "Test interrotto — ricarica per riprovare";
+  } finally {
+    layerMemoryStressTestRunning = false;
+    layerMemoryStressTestCompleted = true;
+    historyState = engine.getHistoryState();
+    syncActiveLayerControls();
+    updateHistoryControls();
+    updateHumanStrokeControls();
+    updateStats(engine.getStats());
+  }
 }
 
 async function runRequestedLayerMemoryStressTest(): Promise<void> {
@@ -2714,7 +2904,7 @@ async function selectLayer(index: number): Promise<void> {
   let stressPeakMiB: number | null = null;
   let stressSampler = 0;
   let stressSwitchSummary: string | null = null;
-  if (layerMemoryStressTestRequested && layerMemoryStressTestCompleted) {
+  if (layerMemoryFixtureRequested && layerMemoryStressTestCompleted) {
     stressPeakMiB = engine.getStats().gpuMemory.countedTotalMiB;
     stressSampler = window.setInterval(() => {
       stressPeakMiB = Math.max(
@@ -3391,8 +3581,15 @@ void engine.initialize()
     engineInitialized = true;
     historyState = engine.getHistoryState();
     layerHistoryTestRunning = layerHistoryTestRequested;
+    layerMemoryStressTestRunning = iphoneMemoryLimitTestRequested;
     updateHistoryControls();
     updateHumanStrokeControls();
+    if (iphoneMemoryLimitTestRequested) {
+      await recoverRequestedIphoneMemoryLimitTest();
+      layerMemoryStressTestRunning = false;
+      updateHistoryControls();
+      updateHumanStrokeControls();
+    }
     if (layerHistoryTestRequested) {
       await runRequestedLayerHistoryTest();
     }

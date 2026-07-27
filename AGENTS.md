@@ -1279,3 +1279,38 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   build e runtime WebGPU locale (+15°, reset, layout 390 px, zero log errori).
   Restano prova percettiva touch/iPhone e misura pacing: nessun guadagno
   prestazionale dichiarato e candidato non ancora promosso dall'utente.
+
+### Ricerca empirica del limite memoria iPhone (diagnostica pubblicabile)
+
+- Il limite Safari/iOS non è una costante per modello: il jetsam è un limite
+  morbido di processo e varia anche con la pressione di memoria del sistema.
+  Non usare quindi un numero trovato online come soglia di prodotto; misurare
+  l'iPhone reale e mantenere poi margine rispetto all'ultimo punto sicuro.
+- Query isolata `?iphoneMemoryLimitTest=1`, distinta dallo stress storico
+  `?layerMemoryStressTest=1`. È abilitata solo dalla query esplicita e non
+  modifica sessioni normali. Richiede pagina nuova, RGBA8, un livello vuoto ed
+  effetti disattivati.
+- Scala reale rev `1`: `15` aggiunte fino al cap di `16` livelli; quattordici
+  livelli uscenti conservano `224/256` tile (`56 MiB`) e uno `192/256`
+  (`48 MiB`), totale cold `3328` tile / `832 MiB`. Il livello finale viene
+  armato a `192` tile, poi il test seleziona automaticamente centro e cima.
+- Prima e dopo **ogni** aggiunta, arm e cambio livello viene salvato l'intero
+  checkpoint in D1 tramite `/api/iphone-memory-limit-runs`; `runId` resta
+  anche nell'hash URL e in storage locale. Se Safari termina la pagina,
+  l'ultimo record server conserva già valore sicuro e operazione tentata; alla
+  riapertura una run ancora `running` diventa `interrupted`. Il risultato è
+  interrogabile dal progetto senza copia manuale dell'utente.
+- Verifica locale NVIDIA Ampere del 27 luglio 2026, query local-only: `16`
+  livelli, stabile finale `1010,030 MiB`, picco aggiunta finale `1074,030 MiB`;
+  cambio cima→centro stabile `1087,364 MiB`, picco `1207,364 MiB`; ritorno in
+  cima stabile `1010,030 MiB`, picco `1143,364 MiB`. Tutte le `18` operazioni
+  completate, `36` eventi ordinati, tile cold effettivi `3328/3840`; reload
+  completo ha ripristinato automaticamente il report completato.
+- Questi numeri desktop verificano harness, contabilità e picchi, **non** il
+  limite iPhone. La soglia iPhone resta aperta finché l'utente non esegue la
+  build pubblicata sul dispositivo; interpretare l'ultimo picco completato e
+  il successivo `attempt` come intervallo empirico, poi scegliere un tetto di
+  prodotto sensibilmente inferiore.
+- Verifiche: suite layer/history/stroke/grain/blend/thickness/effects-scratch/
+  bevel/shadow/view verdi, TypeScript e build Vite verdi; handler D1 verificato
+  in memoria per lista vuota, insert, lettura per id, upsert e lista più recente.
