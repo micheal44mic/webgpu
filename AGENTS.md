@@ -1306,11 +1306,24 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   cima stabile `1010,030 MiB`, picco `1143,364 MiB`. Tutte le `18` operazioni
   completate, `36` eventi ordinati, tile cold effettivi `3328/3840`; reload
   completo ha ripristinato automaticamente il report completato.
-- Questi numeri desktop verificano harness, contabilità e picchi, **non** il
-  limite iPhone. La soglia iPhone resta aperta finché l'utente non esegue la
-  build pubblicata sul dispositivo; interpretare l'ultimo picco completato e
-  il successivo `attempt` come intervallo empirico, poi scegliere un tetto di
-  prodotto sensibilmente inferiore.
+- Prima run iPhone reale del 27 luglio 2026: iPhone 15, iOS `18.7`, Safari
+  `26.5`, DPR `3`, viewport `365×364`, GPU `apple`. Completate le aggiunte fino
+  a `7` livelli: stabile `515,539 MiB`, massimo transitorio sopravvissuto
+  `579,539 MiB`. Safari ha terminato la pagina durante l'aggiunta del livello
+  `8`, partita da `515,539 MiB` con altri `56 MiB` cold richiesti; reload e
+  checkpoint server concordano su `status: interrupted`, step `7`.
+- Dalla progressione identica degli step `2–6`, l'ottavo livello avrebbe avuto
+  stabile logico `571,539 MiB` e picco di allocazione previsto `635,539 MiB`.
+  Il run colloca quindi il confine empirico corrente della memoria WebGPU
+  **conteggiata dal motore** fra il picco riuscito `579,539 MiB` e il picco
+  previsto dell'operazione fallita `635,539 MiB`. L'estremo superiore non è
+  misurato perché il processo è morto; memoria Safari/driver/swapchain resta
+  fuori dal contatore.
+- Non promuovere `579 MiB` come budget di prodotto: è il bordo già raggiunto,
+  non una zona sicura, e il jetsam varia con la pressione di sistema. Un primo
+  tetto prudente deve restare sensibilmente sotto (ordine `450–500 MiB` di
+  memoria logica conteggiata) e va deciso dall'utente prima di implementare
+  eviction/limite layer; ripetere il test può quantificare la variabilità.
 - Verifiche: suite layer/history/stroke/grain/blend/thickness/effects-scratch/
   bevel/shadow/view verdi, TypeScript e build Vite verdi; handler D1 verificato
   in memoria per lista vuota, insert, lettura per id, upsert e lista più recente.
