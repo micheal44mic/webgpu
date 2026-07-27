@@ -1375,3 +1375,11 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   Questa rev misura soltanto:
   l'esperimento successivo, se approvato dai dati iPhone, sarà l'eviction
   reversibile di un singolo livello lontano con verifica byte-identica.
+- Pubblicazione Sites `83`, run D1 `#1` di controllo desktop end-to-end:
+  `105` tile / `26,25 MiB` raw, di cui `49` zero, diventano
+  `2,358823 MiB` adattivi (`−91,014%`); encode `394,3 ms`, decode `96,4 ms`,
+  elapsed `1000,5 ms`, hash `a0a9ec15` identico, readback massimo `1 MiB`,
+  working set logico `2,238097 MiB` e GPU conteggiata invariata
+  `204,280281 → 204,280281 MiB`. Il report è stato salvato automaticamente e
+  la console non contiene warning/errori. Anche questo campione contiene molti
+  tile vuoti: non sostituisce la run pittorica reale su iPhone.
