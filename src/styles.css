@@ -122,6 +122,18 @@ button.wide {
   padding-inline: 9px;
 }
 
+#viewRotation {
+  min-width: 54px;
+  color: #c7ccd6;
+  font-variant-numeric: tabular-nums;
+}
+
+#viewRotation.snapped {
+  border-color: #6877ff;
+  background: #293260;
+  color: #ffffff;
+}
+
 #toggleControls[aria-expanded="true"] {
   border-color: #5c6dff;
   background: #293260;
@@ -280,6 +292,14 @@ select {
 
 #gpuCanvas.panning {
   cursor: grabbing;
+}
+
+#gpuCanvas.rotation-ready {
+  cursor: grab;
+}
+
+#gpuCanvas.rotating {
+  cursor: ew-resize;
 }
 
 .hint {
@@ -594,6 +614,10 @@ select {
     min-width: 34px;
     min-height: 34px;
     padding-inline: 7px;
+  }
+
+  .desktop-rotation-control {
+    display: none;
   }
 
   .hint {

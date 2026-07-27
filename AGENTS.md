@@ -1034,3 +1034,21 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   nella sezione Paint. Effetto combinato: i due pool grossi non idle non
   restano mai residenti insieme — selezionare il Blend libera il glaze e
   viceversa.
+- Rotazione vista (candidato del 27 luglio 2026): il gesto a due dita combina
+  pan, pinch e rotazione attorno al centro delle dita; magnete a `0°` con
+  ingresso `≤3°` e rilascio `>7°`, mantenendo separato l'angolo grezzo per
+  poter uscire dallo snap senza salti. Desktop: pulsanti `−15° / 0° / +15°`
+  e `R + trascina` per la rotazione libera. È una camera display-only: layer,
+  stamp, ordine e blending non cambiano. Le quattro varianti display
+  (permanent, tail, Light/M1 Glaze e style stack) applicano la stessa inversa;
+  input pennello, pan/zoom ancorati, dirty rect e tip preview usano la
+  trasformazione corrispondente. Il display uniform resta esattamente `48 B`:
+  gli `8 B` prima usati da `layerSize` contengono `cos/sin`, mentre la misura
+  `4096²` deriva dalle texture già collegate; nessuna nuova texture/buffer e
+  delta memoria deterministico `0 B / 0 MiB`. Durante il gesto la cache
+  screen-space fa rebuild completo; a vista ferma la dirty rect usa l'AABB dei
+  quattro angoli ruotati. Telemetria rev `51`, con angolo firmato per run.
+  Verificati round-trip/ancora/snap/ABI, tutte le suite statiche, TypeScript,
+  build e runtime WebGPU locale (+15°, reset, layout 390 px, zero log errori).
+  Restano prova percettiva touch/iPhone e misura pacing: nessun guadagno
+  prestazionale dichiarato e candidato non ancora promosso dall'utente.

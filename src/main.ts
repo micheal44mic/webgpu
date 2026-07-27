@@ -92,6 +92,9 @@ const redoStrokeButton = element<HTMLButtonElement>("redoStroke");
 const fitViewButton = element<HTMLButtonElement>("fitView");
 const zoomInButton = element<HTMLButtonElement>("zoomIn");
 const zoomOutButton = element<HTMLButtonElement>("zoomOut");
+const rotateViewLeftButton = element<HTMLButtonElement>("rotateViewLeft");
+const viewRotationButton = element<HTMLButtonElement>("viewRotation");
+const rotateViewRightButton = element<HTMLButtonElement>("rotateViewRight");
 const benchmarkStampsInput = element<HTMLInputElement>("benchmarkStamps");
 const gpuMemoryPanel = element<HTMLElement>("gpuMemoryPanel");
 const gpuMemoryToggle = element<HTMLButtonElement>("gpuMemoryToggle");
@@ -180,6 +183,7 @@ interface BenchmarkRun {
     connection: string | null;
     canvasWidth: number;
     canvasHeight: number;
+    viewRotationDegrees: number;
     layerSize: number;
     layerFormat: LayerFormat;
     effectsWorkingSetStrategy: string;
@@ -338,8 +342,8 @@ interface BenchmarkRun {
     historyReplayStrategy: StrokePerformanceProfile["historyReplayStrategy"];
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
-    touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 50;
+    touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet";
+    performanceTelemetryRevision: 51;
   };
 }
 
@@ -370,6 +374,9 @@ const engine = new BrushEngine(canvas, {
     historyState = state;
     updateHistoryControls();
     updateHumanStrokeControls();
+  },
+  onViewRotationChange(degrees, snappedToZero) {
+    updateViewRotationControl(degrees, snappedToZero);
   },
   onActiveLayerChange(activeIndex) {
     // A global undo can move the active layer on its own. Without resyncing, the
@@ -500,6 +507,21 @@ function configureBrushToolUi(
     element<HTMLElement>(id).hidden = blend;
   }
   element<HTMLElement>("blendControls").hidden = !blend;
+}
+
+function updateViewRotationControl(degrees: number, snappedToZero: boolean): void {
+  const rounded = Math.abs(degrees) < 0.05 ? 0 : Math.round(degrees * 10) / 10;
+  const formatted = (Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1))
+    .replace(".", ",");
+  viewRotationButton.textContent = `${formatted}°`;
+  viewRotationButton.classList.toggle("snapped", snappedToZero && rounded === 0);
+  viewRotationButton.setAttribute(
+    "aria-label",
+    `Rotazione vista ${formatted} gradi; premi per azzerare`,
+  );
+  viewRotationButton.title = snappedToZero && rounded === 0
+    ? "Rotazione agganciata a 0°"
+    : `Rotazione vista ${formatted}° · premi per azzerare`;
 }
 
 function setControlsPanelOpen(open: boolean): void {
@@ -704,9 +726,10 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     hardwareConcurrency: navigator.hardwareConcurrency || null,
     deviceMemoryGiB: navigatorWithMetrics.deviceMemory ?? null,
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
+    viewRotationDegrees: Number(engine.getViewRotationDegrees().toFixed(3)),
     controlsLayoutStrategy: "full-stage-overlay-drawer",
-    touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 50,
+    touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet",
+    performanceTelemetryRevision: 51,
     ...engineEnvironment,
   };
 }
@@ -1686,6 +1709,9 @@ function updateHistoryControls(): void {
   fitViewButton.disabled = locked;
   zoomInButton.disabled = locked;
   zoomOutButton.disabled = locked;
+  rotateViewLeftButton.disabled = locked;
+  viewRotationButton.disabled = locked;
+  rotateViewRightButton.disabled = locked;
   toggleControlsButton.disabled =
     benchmarkRunning || rasterShadowGoldenRunning || rasterStrokeGoldenRunning
     || effectsWorkbenchBenchmarkRunning || layerHistoryTestRunning
@@ -1985,6 +2011,21 @@ zoomInButton.addEventListener("click", () => {
 zoomOutButton.addEventListener("click", () => {
   if (!interactionLocked() && activePointerId === null) {
     engine.zoomBy(1 / 1.35);
+  }
+});
+rotateViewLeftButton.addEventListener("click", () => {
+  if (!interactionLocked() && activePointerId === null) {
+    engine.rotateViewBy(-Math.PI / 12);
+  }
+});
+viewRotationButton.addEventListener("click", () => {
+  if (!interactionLocked() && activePointerId === null) {
+    engine.resetViewRotation();
+  }
+});
+rotateViewRightButton.addEventListener("click", () => {
+  if (!interactionLocked() && activePointerId === null) {
+    engine.rotateViewBy(Math.PI / 12);
   }
 });
 
@@ -2874,9 +2915,12 @@ function toPointerSample(event: PointerEvent): PointerSample {
 }
 
 let activePointerId: number | null = null;
-let pointerMode: "paint" | "pan" | "touch-navigation" | null = null;
+let pointerMode: "paint" | "pan" | "rotate" | "touch-navigation" | null = null;
 let lastPanClientX = 0;
 let lastPanClientY = 0;
+
+let lastRotateClientX = 0;
+let rotateShortcutHeld = false;
 
 interface TouchContact {
   clientX: number;
@@ -2887,6 +2931,7 @@ interface TouchNavigationGesture {
   centerX: number;
   centerY: number;
   distance: number;
+  angle: number;
 }
 
 const activeTouchContacts = new Map<number, TouchContact>();
@@ -2903,6 +2948,7 @@ function currentTouchNavigationGesture(): TouchNavigationGesture | null {
     centerX: (first.clientX + second.clientX) * 0.5,
     centerY: (first.clientY + second.clientY) * 0.5,
     distance: Math.max(1, Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY)),
+    angle: Math.atan2(second.clientY - first.clientY, second.clientX - first.clientX),
   };
 }
 
@@ -2924,6 +2970,7 @@ function enterTouchNavigation(): void {
       }
       cancelHumanStrokeRecordingForNavigation();
     }
+    engine.beginViewRotationGesture();
     pointerMode = "touch-navigation";
     canvas.classList.add("panning");
   }
@@ -2961,11 +3008,18 @@ canvas.addEventListener("pointerdown", (event) => {
       clientY: event.clientY,
     });
   }
+  const shouldRotate = event.pointerType === "mouse"
+    && event.button === 0
+    && rotateShortcutHeld;
   const shouldPan = event.shiftKey || event.button === 1 || event.button === 2;
-  pointerMode = shouldPan ? "pan" : "paint";
+  pointerMode = shouldRotate ? "rotate" : shouldPan ? "pan" : "paint";
   canvas.setPointerCapture(event.pointerId);
 
-  if (pointerMode === "pan") {
+  if (pointerMode === "rotate") {
+    engine.beginViewRotationGesture();
+    canvas.classList.add("rotating");
+    lastRotateClientX = event.clientX;
+  } else if (pointerMode === "pan") {
     canvas.classList.add("panning");
     lastPanClientX = event.clientX;
     lastPanClientY = event.clientY;
@@ -3013,6 +3067,11 @@ canvas.addEventListener("pointermove", (event) => {
             nextGesture.centerY,
           );
         }
+        const rawRotationDelta = nextGesture.angle - previousGesture.angle;
+        const rotationDelta = Math.atan2(Math.sin(rawRotationDelta), Math.cos(rawRotationDelta));
+        if (Math.abs(rotationDelta) > 0.0001) {
+          engine.rotateViewBy(rotationDelta, nextGesture.centerX, nextGesture.centerY);
+        }
       }
       touchNavigationGesture = nextGesture;
       return;
@@ -3024,6 +3083,12 @@ canvas.addEventListener("pointermove", (event) => {
   }
 
   event.preventDefault();
+  if (pointerMode === "rotate") {
+    const deltaRadians = (event.clientX - lastRotateClientX) * Math.PI / 720;
+    engine.rotateViewBy(deltaRadians);
+    lastRotateClientX = event.clientX;
+    return;
+  }
   if (pointerMode === "pan") {
     engine.panByClientDelta(event.clientX - lastPanClientX, event.clientY - lastPanClientY);
     lastPanClientX = event.clientX;
@@ -3053,6 +3118,7 @@ function finishPointer(event: PointerEvent): void {
     touchNavigationGesture = currentTouchNavigationGesture();
 
     if (activeTouchContacts.size === 0) {
+      engine.endViewRotationGesture();
       canvas.classList.remove("panning");
       pointerMode = null;
       historyState = engine.getHistoryState();
@@ -3069,8 +3135,10 @@ function finishPointer(event: PointerEvent): void {
   if (pointerMode === "paint") {
     engine.endStroke(event.timeStamp);
     void finishHumanStrokeRecording(event.type === "pointerup");
+  } else if (pointerMode === "rotate") {
+    engine.endViewRotationGesture();
   }
-  canvas.classList.remove("panning");
+  canvas.classList.remove("panning", "rotating");
   pointerMode = null;
   activePointerId = null;
   touchNavigationGesture = null;
@@ -3083,6 +3151,41 @@ canvas.addEventListener("pointerup", finishPointer);
 canvas.addEventListener("pointercancel", finishPointer);
 canvas.addEventListener("lostpointercapture", finishPointer);
 canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+
+function keyboardEventTargetsEditable(target: EventTarget | null): boolean {
+  const elementTarget = target instanceof Element ? target : null;
+  return Boolean(elementTarget?.closest("input, textarea, select, [contenteditable]"));
+}
+
+window.addEventListener("keydown", (event) => {
+  if (
+    event.defaultPrevented
+    || event.isComposing
+    || event.altKey
+    || event.ctrlKey
+    || event.metaKey
+    || event.key.toLowerCase() !== "r"
+    || keyboardEventTargetsEditable(event.target)
+  ) {
+    return;
+  }
+  rotateShortcutHeld = true;
+  canvas.classList.add("rotation-ready");
+  event.preventDefault();
+});
+
+window.addEventListener("keyup", (event) => {
+  if (event.key.toLowerCase() !== "r") {
+    return;
+  }
+  rotateShortcutHeld = false;
+  canvas.classList.remove("rotation-ready");
+});
+
+window.addEventListener("blur", () => {
+  rotateShortcutHeld = false;
+  canvas.classList.remove("rotation-ready");
+});
 
 window.addEventListener("keydown", (event) => {
   if (

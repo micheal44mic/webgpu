@@ -722,6 +722,7 @@ export interface EngineCallbacks {
   onStatus?: (message: string, kind: "working" | "ok" | "error") => void;
   onStats?: (stats: EngineStats) => void;
   onHistoryChange?: (state: HistoryState) => void;
+  onViewRotationChange?: (degrees: number, snappedToZero: boolean) => void;
   /**
    * A global undo can move the active layer, so the UI has to be told: without
    * this the layer panel would keep highlighting the layer the user left.
@@ -1316,6 +1317,8 @@ const SHAPE_OCCUPANCY_MAP_BYTES = SHAPE_OCCUPANCY_WORDS_PER_MAP * 4;
 const BRUSH_UNIFORM_BYTES = 96;
 const GRAIN_UNIFORM_BYTES = 32;
 const DISPLAY_UNIFORM_BYTES = 48;
+const VIEW_ROTATION_SNAP_ENTER_RADIANS = 3 * Math.PI / 180;
+const VIEW_ROTATION_SNAP_RELEASE_RADIANS = 7 * Math.PI / 180;
 const LAYER_COMPOSITE_UNIFORM_BYTES = 16;
 const LIGHT_GLAZE_UNIFORM_BYTES = 32;
 const THICKNESS_TAIL_UNIFORM_BYTES = 32;
@@ -1328,6 +1331,18 @@ const STATIC_PAINT_BUFFER_BYTES =
   + LIGHT_GLAZE_UNIFORM_BYTES
   + MAX_STAMPS_PER_BATCH * STAMP_STRIDE_BYTES * 2
   + SHAPE_OCCUPANCY_MAP_BYTES * SHAPE_OCCUPANCY_MAP_COUNT;
+
+function normalizeViewRotation(angle: number): number {
+  if (!Number.isFinite(angle)) {
+    return 0;
+  }
+  const turn = Math.PI * 2;
+  let normalized = (angle + Math.PI) % turn;
+  if (normalized < 0) {
+    normalized += turn;
+  }
+  return normalized - Math.PI;
+}
 
 function isStrokeGlazeBlendMode(mode: BlendMode): boolean {
   return mode === "light-glaze" || mode === "m1-glaze";
@@ -1916,6 +1931,12 @@ export class BrushEngine {
   private viewCenterX = LAYER_SIZE * 0.5;
   private viewCenterY = LAYER_SIZE * 0.5;
   private zoom = 1;
+  private viewRotation = 0;
+  private viewRotationCos = 1;
+  private viewRotationSin = 0;
+  private viewRotationGestureRaw = 0;
+  private viewRotationGestureActive = false;
+  private viewRotationSnappedToZero = true;
   private hasFittedView = false;
 
   private totalBaseStamps = 0;
@@ -3113,7 +3134,10 @@ export class BrushEngine {
     const height = Math.max(1, this.canvas.height);
     this.viewCenterX = LAYER_SIZE * 0.5;
     this.viewCenterY = LAYER_SIZE * 0.5;
-    this.zoom = Math.max(0.01, Math.min(width / LAYER_SIZE, height / LAYER_SIZE) * 0.94);
+    const rotatedLayerSpan = LAYER_SIZE
+      * (Math.abs(this.viewRotationCos) + Math.abs(this.viewRotationSin));
+    this.zoom = Math.max(
+      0.01, Math.min(width / rotatedLayerSpan, height / rotatedLayerSpan) * 0.94);
     this.hasFittedView = true;
     this.displayDirty = true;
     this.presentationCacheNeedsFullRebuild = true;
@@ -3130,8 +3154,12 @@ export class BrushEngine {
     this.zoom = clamp(this.zoom * factor, 0.02, 64);
 
     const screen = this.clientToCanvasPixels(anchorClientX, anchorClientY);
-    this.viewCenterX = anchorBefore.x - (screen.x - this.canvas.width * 0.5) / this.zoom;
-    this.viewCenterY = anchorBefore.y - (screen.y - this.canvas.height * 0.5) / this.zoom;
+    const anchorOffset = this.canvasOffsetToLayerOffset(
+      screen.x - this.canvas.width * 0.5,
+      screen.y - this.canvas.height * 0.5,
+    );
+    this.viewCenterX = anchorBefore.x - anchorOffset.x;
+    this.viewCenterY = anchorBefore.y - anchorOffset.y;
     this.displayDirty = true;
     this.presentationCacheNeedsFullRebuild = true;
     this.requestRender();
@@ -3142,10 +3170,111 @@ export class BrushEngine {
     const rectangle = this.canvas.getBoundingClientRect();
     const scaleX = this.canvas.width / Math.max(1, rectangle.width);
     const scaleY = this.canvas.height / Math.max(1, rectangle.height);
-    this.viewCenterX -= (deltaClientX * scaleX) / this.zoom;
-    this.viewCenterY -= (deltaClientY * scaleY) / this.zoom;
+    const layerDelta = this.canvasOffsetToLayerOffset(
+      deltaClientX * scaleX,
+      deltaClientY * scaleY,
+    );
+    this.viewCenterX -= layerDelta.x;
+    this.viewCenterY -= layerDelta.y;
     this.displayDirty = true;
     this.presentationCacheNeedsFullRebuild = true;
+    this.requestRender();
+  }
+
+  getViewRotationDegrees(): number {
+    return this.viewRotation * 180 / Math.PI;
+  }
+
+  beginViewRotationGesture(): void {
+    if (this.viewRotationGestureActive) {
+      return;
+    }
+    this.viewRotationGestureActive = true;
+    this.viewRotationGestureRaw = this.viewRotation;
+    this.viewRotationSnappedToZero = Math.abs(this.viewRotation) < 1e-7;
+  }
+
+  rotateViewBy(
+    deltaRadians: number,
+    anchorClientX?: number,
+    anchorClientY?: number,
+  ): void {
+    if (!Number.isFinite(deltaRadians) || Math.abs(deltaRadians) < 1e-12) {
+      return;
+    }
+    const ownsGesture = !this.viewRotationGestureActive;
+    if (ownsGesture) {
+      this.beginViewRotationGesture();
+    }
+
+    this.viewRotationGestureRaw = normalizeViewRotation(
+      this.viewRotationGestureRaw + deltaRadians,
+    );
+    const distanceFromZero = Math.abs(this.viewRotationGestureRaw);
+    if (this.viewRotationSnappedToZero) {
+      if (distanceFromZero > VIEW_ROTATION_SNAP_RELEASE_RADIANS) {
+        this.viewRotationSnappedToZero = false;
+      }
+    } else if (distanceFromZero <= VIEW_ROTATION_SNAP_ENTER_RADIANS) {
+      this.viewRotationSnappedToZero = true;
+    }
+
+    this.applyViewRotation(
+      this.viewRotationSnappedToZero ? 0 : this.viewRotationGestureRaw,
+      anchorClientX,
+      anchorClientY,
+    );
+    if (ownsGesture) {
+      this.endViewRotationGesture();
+    }
+  }
+
+  endViewRotationGesture(): void {
+    if (!this.viewRotationGestureActive) {
+      return;
+    }
+    this.viewRotationGestureActive = false;
+    this.viewRotationGestureRaw = this.viewRotationSnappedToZero ? 0 : this.viewRotation;
+  }
+
+  resetViewRotation(): void {
+    this.viewRotationGestureActive = false;
+    this.viewRotationGestureRaw = 0;
+    this.viewRotationSnappedToZero = true;
+    this.applyViewRotation(0);
+  }
+
+  private applyViewRotation(
+    angle: number,
+    anchorClientX?: number,
+    anchorClientY?: number,
+  ): void {
+    const normalizedAngle = normalizeViewRotation(angle);
+    if (Math.abs(normalizedAngle - this.viewRotation) < 1e-12) {
+      return;
+    }
+    this.invalidateAdaptivePreview();
+    const rectangle = this.canvas.getBoundingClientRect();
+    const resolvedAnchorX = anchorClientX ?? rectangle.left + rectangle.width * 0.5;
+    const resolvedAnchorY = anchorClientY ?? rectangle.top + rectangle.height * 0.5;
+    const anchorBefore = this.clientToLayer(resolvedAnchorX, resolvedAnchorY);
+    const screen = this.clientToCanvasPixels(resolvedAnchorX, resolvedAnchorY);
+
+    this.viewRotation = normalizedAngle;
+    this.viewRotationCos = Math.cos(normalizedAngle);
+    this.viewRotationSin = Math.sin(normalizedAngle);
+    const anchorOffset = this.canvasOffsetToLayerOffset(
+      screen.x - this.canvas.width * 0.5,
+      screen.y - this.canvas.height * 0.5,
+    );
+    this.viewCenterX = anchorBefore.x - anchorOffset.x;
+    this.viewCenterY = anchorBefore.y - anchorOffset.y;
+    this.displayDirty = true;
+    this.presentationCacheNeedsFullRebuild = true;
+    this.callbacks.onViewRotationChange?.(
+      this.getViewRotationDegrees(),
+      this.viewRotationSnappedToZero,
+    );
     this.requestRender();
   }
 
@@ -4946,6 +5075,12 @@ export class BrushEngine {
     this.viewCenterX = centerX;
     this.viewCenterY = centerY;
     this.zoom = clamp(zoom, 0.02, 64);
+    this.viewRotation = 0;
+    this.viewRotationCos = 1;
+    this.viewRotationSin = 0;
+    this.viewRotationGestureRaw = 0;
+    this.viewRotationGestureActive = false;
+    this.viewRotationSnappedToZero = true;
     this.hasFittedView = true;
     this.presentationCacheNeedsFullRebuild = true;
     this.displayDirty = true;
@@ -4953,8 +5088,8 @@ export class BrushEngine {
   }
 
   private async readPresentationLayerRect(rect: DirtyRect): Promise<Uint8Array> {
-    if (Math.abs(this.zoom - 1) > 1e-6) {
-      throw new Error("La sonda rettangolare richiede zoom 1:1.");
+    if (Math.abs(this.zoom - 1) > 1e-6 || Math.abs(this.viewRotation) > 1e-7) {
+      throw new Error("La sonda rettangolare richiede zoom 1:1 e rotazione zero.");
     }
     await this.waitForIdle();
     if (!this.presentationCacheTexture) {
@@ -4970,12 +5105,9 @@ export class BrushEngine {
     ) {
       throw new Error("Rettangolo della sonda presentazione non valido.");
     }
-    const canvasX = Math.round(
-      (x + 0.5 - this.viewCenterX) + this.canvas.width * 0.5 - 0.5,
-    );
-    const canvasY = Math.round(
-      (y + 0.5 - this.viewCenterY) + this.canvas.height * 0.5 - 0.5,
-    );
+    const canvasPosition = this.layerToCanvasPixels(x + 0.5, y + 0.5);
+    const canvasX = Math.round(canvasPosition.x - 0.5);
+    const canvasY = Math.round(canvasPosition.y - 0.5);
     if (
       canvasX < 0 || canvasY < 0
       || canvasX + width > this.canvas.width
@@ -5048,12 +5180,9 @@ export class BrushEngine {
     if (!this.presentationCacheTexture) {
       throw new Error("Cache di presentazione non allocata.");
     }
-    const canvasX = Math.round(
-      (x + 0.5 - this.viewCenterX) * this.zoom + this.canvas.width * 0.5 - 0.5,
-    );
-    const canvasY = Math.round(
-      (y + 0.5 - this.viewCenterY) * this.zoom + this.canvas.height * 0.5 - 0.5,
-    );
+    const canvasPosition = this.layerToCanvasPixels(x + 0.5, y + 0.5);
+    const canvasX = Math.round(canvasPosition.x - 0.5);
+    const canvasY = Math.round(canvasPosition.y - 0.5);
     if (
       canvasX < 0 || canvasY < 0
       || canvasX >= this.canvas.width || canvasY >= this.canvas.height
@@ -5139,6 +5268,12 @@ export class BrushEngine {
       centerX: this.viewCenterX,
       centerY: this.viewCenterY,
       zoom: this.zoom,
+      rotation: this.viewRotation,
+      rotationCos: this.viewRotationCos,
+      rotationSin: this.viewRotationSin,
+      rotationGestureRaw: this.viewRotationGestureRaw,
+      rotationGestureActive: this.viewRotationGestureActive,
+      rotationSnappedToZero: this.viewRotationSnappedToZero,
       hasFittedView: this.hasFittedView,
     };
     let candidate: LayerBakeResources | null = null;
@@ -5146,6 +5281,12 @@ export class BrushEngine {
       this.viewCenterX = rect.x + rect.width * 0.5;
       this.viewCenterY = rect.y + rect.height * 0.5;
       this.zoom = 1;
+      this.viewRotation = 0;
+      this.viewRotationCos = 1;
+      this.viewRotationSin = 0;
+      this.viewRotationGestureRaw = 0;
+      this.viewRotationGestureActive = false;
+      this.viewRotationSnappedToZero = true;
       this.hasFittedView = true;
       this.presentationCacheNeedsFullRebuild = true;
       this.displayDirty = true;
@@ -5255,6 +5396,12 @@ export class BrushEngine {
       this.viewCenterX = previousView.centerX;
       this.viewCenterY = previousView.centerY;
       this.zoom = previousView.zoom;
+      this.viewRotation = previousView.rotation;
+      this.viewRotationCos = previousView.rotationCos;
+      this.viewRotationSin = previousView.rotationSin;
+      this.viewRotationGestureRaw = previousView.rotationGestureRaw;
+      this.viewRotationGestureActive = previousView.rotationGestureActive;
+      this.viewRotationSnappedToZero = previousView.rotationSnappedToZero;
       this.hasFittedView = previousView.hasFittedView;
       this.presentationCacheNeedsFullRebuild = true;
       this.displayDirty = true;
@@ -10466,8 +10613,8 @@ export class BrushEngine {
   private writeDisplayUniforms(selectedMipLevel = this.paintDisplaySelectedMipLevel): void {
     this.displayUniformUpload[0] = this.canvas.width;
     this.displayUniformUpload[1] = this.canvas.height;
-    this.displayUniformUpload[2] = LAYER_SIZE;
-    this.displayUniformUpload[3] = LAYER_SIZE;
+    this.displayUniformUpload[2] = this.viewRotationCos;
+    this.displayUniformUpload[3] = this.viewRotationSin;
     this.displayUniformUpload[4] = this.viewCenterX;
     this.displayUniformUpload[5] = this.viewCenterY;
     this.displayUniformUpload[6] = this.zoom;
@@ -10549,10 +10696,14 @@ export class BrushEngine {
     const layerTop = dirtyRect.y - layerMargin;
     const layerRight = dirtyRect.x + dirtyRect.width + layerMargin;
     const layerBottom = dirtyRect.y + dirtyRect.height + layerMargin;
-    const canvasLeft = (layerLeft - this.viewCenterX) * this.zoom + width * 0.5;
-    const canvasTop = (layerTop - this.viewCenterY) * this.zoom + height * 0.5;
-    const canvasRight = (layerRight - this.viewCenterX) * this.zoom + width * 0.5;
-    const canvasBottom = (layerBottom - this.viewCenterY) * this.zoom + height * 0.5;
+    const topLeft = this.layerToCanvasPixels(layerLeft, layerTop);
+    const topRight = this.layerToCanvasPixels(layerRight, layerTop);
+    const bottomLeft = this.layerToCanvasPixels(layerLeft, layerBottom);
+    const bottomRight = this.layerToCanvasPixels(layerRight, layerBottom);
+    const canvasLeft = Math.min(topLeft.x, topRight.x, bottomLeft.x, bottomRight.x);
+    const canvasTop = Math.min(topLeft.y, topRight.y, bottomLeft.y, bottomRight.y);
+    const canvasRight = Math.max(topLeft.x, topRight.x, bottomLeft.x, bottomRight.x);
+    const canvasBottom = Math.max(topLeft.y, topRight.y, bottomLeft.y, bottomRight.y);
 
     const x = Math.max(0, Math.floor(Math.min(canvasLeft, canvasRight)) - canvasMargin);
     const y = Math.max(0, Math.floor(Math.min(canvasTop, canvasBottom)) - canvasMargin);
@@ -10583,11 +10734,42 @@ export class BrushEngine {
     };
   }
 
+  private canvasOffsetToLayerOffset(deltaX: number, deltaY: number): { x: number; y: number } {
+    const scaledX = deltaX / this.zoom;
+    const scaledY = deltaY / this.zoom;
+    return {
+      x: this.viewRotationCos * scaledX + this.viewRotationSin * scaledY,
+      y: -this.viewRotationSin * scaledX + this.viewRotationCos * scaledY,
+    };
+  }
+
+  private layerOffsetToCanvasOffset(deltaX: number, deltaY: number): { x: number; y: number } {
+    return {
+      x: (this.viewRotationCos * deltaX - this.viewRotationSin * deltaY) * this.zoom,
+      y: (this.viewRotationSin * deltaX + this.viewRotationCos * deltaY) * this.zoom,
+    };
+  }
+
+  private layerToCanvasPixels(layerX: number, layerY: number): { x: number; y: number } {
+    const offset = this.layerOffsetToCanvasOffset(
+      layerX - this.viewCenterX,
+      layerY - this.viewCenterY,
+    );
+    return {
+      x: this.canvas.width * 0.5 + offset.x,
+      y: this.canvas.height * 0.5 + offset.y,
+    };
+  }
+
   private clientToLayer(clientX: number, clientY: number): { x: number; y: number } {
     const screen = this.clientToCanvasPixels(clientX, clientY);
+    const offset = this.canvasOffsetToLayerOffset(
+      screen.x - this.canvas.width * 0.5,
+      screen.y - this.canvas.height * 0.5,
+    );
     return {
-      x: this.viewCenterX + (screen.x - this.canvas.width * 0.5) / this.zoom,
-      y: this.viewCenterY + (screen.y - this.canvas.height * 0.5) / this.zoom,
+      x: this.viewCenterX + offset.x,
+      y: this.viewCenterY + offset.y,
     };
   }
 
@@ -12679,11 +12861,15 @@ export class BrushEngine {
           candidateSettings,
           baseHsl,
         );
+        const centerOffsetX = centerX - this.viewCenterX;
+        const centerOffsetY = centerY - this.viewCenterY;
         copies.push({
-          x: (centerX - this.viewCenterX) * layerToCssX + cssWidth * 0.5,
-          y: (centerY - this.viewCenterY) * layerToCssY + cssHeight * 0.5,
+          x: (this.viewRotationCos * centerOffsetX - this.viewRotationSin * centerOffsetY)
+            * layerToCssX + cssWidth * 0.5,
+          y: (this.viewRotationSin * centerOffsetX + this.viewRotationCos * centerOffsetY)
+            * layerToCssY + cssHeight * 0.5,
           radius: Math.max(0.25, radius * radiusScale),
-          rotation,
+          rotation: rotation + this.viewRotation,
           alpha,
           candidateIndex,
           red,

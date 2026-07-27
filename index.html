@@ -42,6 +42,27 @@
           <button id="zoomOut" type="button" title="Riduci zoom">−</button>
           <button id="fitView" type="button">Fit</button>
           <button id="zoomIn" type="button" title="Aumenta zoom">+</button>
+          <button
+            id="rotateViewLeft"
+            class="desktop-rotation-control"
+            type="button"
+            aria-label="Ruota vista di 15 gradi a sinistra"
+            title="Ruota vista −15° (oppure R + trascina)"
+          >−15°</button>
+          <button
+            id="viewRotation"
+            class="desktop-rotation-control snapped"
+            type="button"
+            aria-label="Rotazione vista 0 gradi; premi per azzerare"
+            title="Rotazione vista 0° · premi per azzerare"
+          >0°</button>
+          <button
+            id="rotateViewRight"
+            class="desktop-rotation-control"
+            type="button"
+            aria-label="Ruota vista di 15 gradi a destra"
+            title="Ruota vista +15° (oppure R + trascina)"
+          >+15°</button>
           <button id="clearLayer" class="danger" type="button">Pulisci</button>
         </div>
       </header>
@@ -735,7 +756,7 @@
       <main class="stage">
         <canvas id="gpuCanvas" aria-label="Canvas di disegno WebGPU"></canvas>
         <canvas id="tipPreviewCanvas" aria-hidden="true"></canvas>
-        <div class="hint">Un dito disegna · due dita spostano e fanno zoom · Shift/medio/destro per pan · rotella per zoom</div>
+        <div class="hint">Un dito disegna · due dita spostano, fanno zoom e ruotano · desktop: R + trascina</div>
 
         <aside id="gpuMemoryMonitor" class="gpu-memory-monitor" aria-label="Memoria GPU conteggiata">
           <section id="gpuMemoryPanel" class="gpu-memory-panel" hidden>

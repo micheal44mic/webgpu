@@ -603,7 +603,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
 export const displayShader = /* wgsl */ `
 struct DisplayUniforms {
   canvasSize: vec2<f32>,
-  layerSize: vec2<f32>,
+  viewRotation: vec2<f32>,
   viewCenter: vec2<f32>,
   zoom: f32,
   checkerSize: f32,
@@ -701,17 +701,22 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 
 @fragment
 fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
-  let layerPosition = display.viewCenter
-    + (fragmentPosition.xy - display.canvasSize * 0.5) / display.zoom;
+  let displayOffset = (fragmentPosition.xy - display.canvasSize * 0.5) / display.zoom;
+  let layerOffset = vec2<f32>(
+    display.viewRotation.x * displayOffset.x + display.viewRotation.y * displayOffset.y,
+    -display.viewRotation.y * displayOffset.x + display.viewRotation.x * displayOffset.y
+  );
+  let layerPosition = display.viewCenter + layerOffset;
+  let layerSize = vec2<f32>(textureDimensions(activeLayerBase, 0));
 
   let insideLayer = all(layerPosition >= vec2<f32>(0.0))
-    && all(layerPosition < display.layerSize);
+    && all(layerPosition < layerSize);
 
   if (!insideLayer) {
     return vec4<f32>(vec3<f32>(0.055), 1.0);
   }
 
-  let uv = clamp((layerPosition + vec2<f32>(0.5)) / display.layerSize, vec2<f32>(0.0), vec2<f32>(1.0));
+  let uv = clamp((layerPosition + vec2<f32>(0.5)) / layerSize, vec2<f32>(0.0), vec2<f32>(1.0));
   let paint = composeLayerStack(sampleActiveLayer(uv), uv);
 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
@@ -730,7 +735,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
 export const thicknessTailDisplayShader = /* wgsl */ `
 struct DisplayUniforms {
   canvasSize: vec2<f32>,
-  layerSize: vec2<f32>,
+  viewRotation: vec2<f32>,
   viewCenter: vec2<f32>,
   zoom: f32,
   checkerSize: f32,
@@ -838,18 +843,23 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 
 @fragment
 fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
-  let layerPosition = display.viewCenter
-    + (fragmentPosition.xy - display.canvasSize * 0.5) / display.zoom;
+  let displayOffset = (fragmentPosition.xy - display.canvasSize * 0.5) / display.zoom;
+  let layerOffset = vec2<f32>(
+    display.viewRotation.x * displayOffset.x + display.viewRotation.y * displayOffset.y,
+    -display.viewRotation.y * displayOffset.x + display.viewRotation.x * displayOffset.y
+  );
+  let layerPosition = display.viewCenter + layerOffset;
+  let layerSize = vec2<f32>(textureDimensions(activeLayerBase, 0));
 
   let insideLayer = all(layerPosition >= vec2<f32>(0.0))
-    && all(layerPosition < display.layerSize);
+    && all(layerPosition < layerSize);
 
   if (!insideLayer) {
     return vec4<f32>(vec3<f32>(0.055), 1.0);
   }
 
   let layerUv = clamp(
-    (layerPosition + vec2<f32>(0.5)) / display.layerSize,
+    (layerPosition + vec2<f32>(0.5)) / layerSize,
     vec2<f32>(0.0),
     vec2<f32>(1.0)
   );
@@ -894,7 +904,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
 export const lightGlazeDisplayShader = /* wgsl */ `
 struct DisplayUniforms {
   canvasSize: vec2<f32>,
-  layerSize: vec2<f32>,
+  viewRotation: vec2<f32>,
   viewCenter: vec2<f32>,
   zoom: f32,
   checkerSize: f32,
@@ -1055,17 +1065,22 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 
 @fragment
 fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
-  let layerPosition = display.viewCenter
-    + (fragmentPosition.xy - display.canvasSize * 0.5) / display.zoom;
+  let displayOffset = (fragmentPosition.xy - display.canvasSize * 0.5) / display.zoom;
+  let layerOffset = vec2<f32>(
+    display.viewRotation.x * displayOffset.x + display.viewRotation.y * displayOffset.y,
+    -display.viewRotation.y * displayOffset.x + display.viewRotation.x * displayOffset.y
+  );
+  let layerPosition = display.viewCenter + layerOffset;
+  let layerSize = vec2<f32>(textureDimensions(layerTexture, 0));
 
   let insideLayer = all(layerPosition >= vec2<f32>(0.0))
-    && all(layerPosition < display.layerSize);
+    && all(layerPosition < layerSize);
 
   if (!insideLayer) {
     return vec4<f32>(vec3<f32>(0.055), 1.0);
   }
 
-  let uv = clamp((layerPosition + vec2<f32>(0.5)) / display.layerSize, vec2<f32>(0.0), vec2<f32>(1.0));
+  let uv = clamp((layerPosition + vec2<f32>(0.5)) / layerSize, vec2<f32>(0.0), vec2<f32>(1.0));
   var paint: vec4<f32>;
   if (display.selectedMipLevel < 0.5) {
     // Reproduce sampling of the quantized committed mip 0: compose and encode

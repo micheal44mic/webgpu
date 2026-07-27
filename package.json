@@ -16,7 +16,8 @@
     "stroke:verify": "node scripts/verify-stroke-core.mjs",
     "effects-scratch:verify": "node scripts/verify-effects-scratch-pool.mjs",
     "bevel:verify": "node scripts/verify-bevel-core.mjs",
-    "shadow:verify": "node scripts/verify-shadow-core.mjs"
+    "shadow:verify": "node scripts/verify-shadow-core.mjs",
+    "view:verify": "node scripts/verify-view-rotation.mjs"
   },
   "devDependencies": {
     "@webgpu/types": "0.1.71",
