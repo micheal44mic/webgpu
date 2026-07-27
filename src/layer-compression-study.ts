@@ -20,6 +20,14 @@ export interface LayerCompressionChunkMeasurement {
   usedRawFallback: boolean;
 }
 
+export type LayerCompressionStorage = "gzip" | "raw";
+
+export interface LosslessLayerCompressionChunk {
+  storage: LayerCompressionStorage;
+  bytes: Uint8Array;
+  measurement: LayerCompressionChunkMeasurement;
+}
+
 export interface LayerCompressionLayerReport {
   index: number;
   id: number;
@@ -97,17 +105,14 @@ export interface LayerCompressionStudyProgress {
   savingsPercent: number;
 }
 
-function fnv1a(bytes: Uint8Array): number {
+
+export function hashCompressionBytes(bytes: Uint8Array): number {
   let hash = 0x811c9dc5;
   for (const value of bytes) {
     hash ^= value;
     hash = Math.imul(hash, 0x01000193);
   }
   return hash >>> 0;
-}
-
-function formatHash(value: number): string {
-  return value.toString(16).padStart(8, "0");
 }
 
 export function combineCompressionHashes(
@@ -121,6 +126,10 @@ export function combineCompressionHashes(
   hash ^= byteLength >>> 0;
   return Math.imul(hash, 0x01000193) >>> 0;
 }
+function formatHash(value: number): string {
+  return value.toString(16).padStart(8, "0");
+}
+
 
 export function formatCompressionHash(value: number): string {
   return formatHash(value);
@@ -214,8 +223,15 @@ export async function measureLosslessGzipChunk(
   bytes: Uint8Array,
   tileByteLength: number,
 ): Promise<LayerCompressionChunkMeasurement> {
+  return (await compressLosslessGzipChunk(bytes, tileByteLength)).measurement;
+}
+
+export async function compressLosslessGzipChunk(
+  bytes: Uint8Array,
+  tileByteLength: number,
+): Promise<LosslessLayerCompressionChunk> {
   const classification = classifyTiles(bytes, tileByteLength);
-  const sourceHash = fnv1a(bytes);
+  const sourceHash = hashCompressionBytes(bytes);
   const encodeStart = performance.now();
   const compressed = await gzipBytes(bytes);
   const encodeMs = performance.now() - encodeStart;
@@ -234,11 +250,12 @@ export async function measureLosslessGzipChunk(
       );
     }
   }
-  const restoredHash = fnv1a(restored);
+  const restoredHash = hashCompressionBytes(restored);
   if (restoredHash !== sourceHash) {
     throw new Error("Hash gzip diverso nonostante il confronto byte-per-byte.");
   }
-  return {
+  const usedRawFallback = compressed.byteLength >= bytes.byteLength;
+  const measurement: LayerCompressionChunkMeasurement = {
     rawBytes: bytes.byteLength,
     gzipBytes: compressed.byteLength,
     adaptiveStoredBytes: Math.min(bytes.byteLength, compressed.byteLength),
@@ -248,7 +265,12 @@ export async function measureLosslessGzipChunk(
     sourceHash,
     restoredHash,
     byteIdentical: true,
-    usedRawFallback: compressed.byteLength >= bytes.byteLength,
+    usedRawFallback,
+  };
+  return {
+    storage: usedRawFallback ? "raw" : "gzip",
+    bytes: usedRawFallback ? bytes : compressed,
+    measurement,
   };
 }
 

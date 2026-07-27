@@ -363,7 +363,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet";
-    performanceTelemetryRevision: 54;
+    performanceTelemetryRevision: 55;
   };
 }
 
@@ -386,6 +386,8 @@ const layerMemoryStressTestRequested =
   pageSearchParams.get("layerMemoryStressTest") === "1";
 const layerCompressionStudyRequested =
   pageSearchParams.get("layerCompressionTest") === "1";
+const layerColdCompressionRequested =
+  pageSearchParams.get("layerCompressionRuntime") === "1";
 const iphoneMemoryLimitTestRequested =
   pageSearchParams.get("iphoneMemoryLimitTest") === "1";
 const layerMemoryFixtureRequested =
@@ -435,6 +437,7 @@ const engine = new BrushEngine(canvas, {
   bevelBoundingFieldEnabled,
   layerMemoryStressTestEnabled: layerMemoryFixtureRequested,
   layerCompressionTestEnabled: layerCompressionStudyRequested,
+  layerColdCompressionEnabled: layerColdCompressionRequested,
 });
 if (import.meta.env.DEV) {
   (window as Window & { __brushEngine?: BrushEngine }).__brushEngine = engine;
@@ -479,6 +482,7 @@ const gpuMemoryRows: ReadonlyArray<
 > = [
   ["gpuMemoryLayerBase", "layerBaseMiB"],
   ["gpuMemoryLayerCold", "layerColdMiB"],
+  ["gpuMemoryLayerCompressed", "layerCompressedCpuMiB"],
   ["gpuMemoryLayerHydration", "layerHydrationMiB"],
   ["gpuMemoryLayerMips", "layerMipChainMiB"],
   ["gpuMemoryLayerBakes", "layerBakeMiB"],
@@ -781,7 +785,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     viewRotationDegrees: Number(engine.getViewRotationDegrees().toFixed(3)),
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet",
-    performanceTelemetryRevision: 54,
+    performanceTelemetryRevision: 55,
     ...engineEnvironment,
   };
 }
@@ -2767,6 +2771,13 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
     (total, layer) => total + layer.coldTileCount,
     0,
   );
+  const compressedLayerCount = storageStudy.layers.filter(
+    (layer) => layer.compressed,
+  ).length;
+  const compressedRawMiB = storageStudy.layers.reduce(
+    (total, layer) => total + layer.compressedRawMiB,
+    0,
+  );
   const inactiveBboxTileCount = inactiveLayers.reduce(
     (total, layer) => total + layer.alignedBboxTileCount,
     0,
@@ -2783,7 +2794,10 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
   const bboxOutput = element<HTMLElement>("gpuMemoryLayerStudyBbox");
   element<HTMLElement>("gpuMemoryLayerStudyTilesLabel").textContent =
     `Raw livelli · effettivo · ${hotLayerCount} hot + `
-    + `${coldTileCount}/${inactiveTileCapacity} tile cold`;
+    + `${coldTileCount}/${inactiveTileCapacity} tile cold`
+    + (compressedLayerCount > 0
+      ? ` + ${compressedLayerCount} compresso (${formatMemoryMiB(compressedRawMiB)} raw)`
+      : "");
   element<HTMLElement>("gpuMemoryLayerStudyBboxLabel").textContent =
     `Confronto · bbox ${storageStudy.tileSizePx} · `
     + `${inactiveBboxTileCount}/${inactiveTileCapacity} inattive`;
@@ -2794,7 +2808,8 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
   );
   tileOutput.title =
     "Memoria logica WebGPU realmente allocata per texture raw hot e cold; "
-    + "il risparmio è rispetto a un full-canvas per ogni livello.";
+    + "i livelli compressi sono RAM CPU separata ed esclusa dal totale GPU. "
+    + "Il risparmio è rispetto a un full-canvas per ogni livello.";
   bboxOutput.title =
     "Confronto teorico: attivo full-canvas più bbox allineato degli inattivi; "
     + "non è memoria allocata.";
@@ -2960,19 +2975,25 @@ function renderLayerList(stats: EngineStats): void {
       ? `attivo · ${formatMemoryMiB(layer.actualRawMiB)} full`
       : layer.hotAllocated
         ? `hot di sicurezza · ${formatMemoryMiB(layer.actualRawMiB)} full`
-        : layer.hasContent
-          ? `cold · ${layer.coldTileCount}/${stats.layerStorageStudy.tileCount} tile · `
-            + formatMemoryMiB(layer.actualRawMiB)
-          : "cold · 0 MiB";
+        : layer.compressed
+          ? `compresso · raw ${formatMemoryMiB(layer.compressedRawMiB)} → `
+            + `${formatMemoryMiB(layer.compressedCpuMiB)} RAM`
+          : layer.hasContent
+            ? `cold · ${layer.coldTileCount}/${stats.layerStorageStudy.tileCount} tile · `
+              + formatMemoryMiB(layer.actualRawMiB)
+            : "cold · 0 MiB";
     select.title = isActive
       ? "Livello attivo: texture full-canvas 4096² pronta per disegnare senza paging."
       : layer.hotAllocated
         ? "Livello inattivo trattenuto full-canvas per preservare i pixel dopo un errore; "
           + "un nuovo switch è bloccato finché il documento non torna coerente."
-        : layer.hasContent
-          ? `Livello inattivo: ${layer.coldTileCount} tile GPU realmente allocati; `
-            + `bbox teorico ${layer.alignedBboxMiB.toFixed(2)} MiB.`
-          : "Livello inattivo vuoto: nessuna texture raw allocata.";
+        : layer.compressed
+          ? "Livello lontano compresso senza perdita nel Web Worker; i tile GPU sono stati "
+            + "liberati e saranno verificati e ripristinati prima dell'uso."
+          : layer.hasContent
+            ? `Livello inattivo: ${layer.coldTileCount} tile GPU realmente allocati; `
+              + `bbox teorico ${layer.alignedBboxMiB.toFixed(2)} MiB.`
+            : "Livello inattivo vuoto: nessuna texture raw allocata.";
     select.append(name, hint);
     select.onclick = () => { void selectLayer(index); };
 

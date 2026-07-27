@@ -1383,3 +1383,48 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   `204,280281 → 204,280281 MiB`. Il report è stato salvato automaticamente e
   la console non contiene warning/errori. Anche questo campione contiene molti
   tile vuoti: non sostituisce la run pittorica reale su iPhone.
+- Run iPhone D1 `#2` del 27 luglio 2026, Safari su iPhone / Apple GPU:
+  cinque livelli, quattro cold misurati, `530` tile / `132,5 MiB` raw diventano
+  `19,315562 MiB` gzip/adattivi (`−85,422%`, `6,860×`), zero fallback raw.
+  I `161/530` tile zero valgono `40,25 MiB`; attribuendo conservativamente
+  tutti i byte compressi ai restanti `92,25 MiB`, anche il solo contenuto
+  non-zero risparmia almeno `79,06%` (`4,776×`). Encode totale `1783 ms`,
+  decode `179 ms`, elapsed diagnostico `4973 ms`; per livello encode
+  `117–668 ms`, decode `11–62 ms`. Tutti gli hash sono identici, readback
+  massimo `1 MiB`, working set logico `2,294702 MiB` e GPU conteggiata
+  invariata `437,077560 → 437,077560 MiB`.
+- Decisione conseguente: l'encode non può stare nel percorso sincrono di cambio
+  livello; il primo esperimento runtime comprimerà in background e libererà
+  soltanto un singolo livello distante, mantenendo intatti i vicini. Il
+  ripristino deve decomprimere e ricaricare prima della selezione, verificare
+  byte/hash e mostrare separatamente GPU liberata e RAM CPU compressa.
+- Primo candidato runtime implementato il 27 luglio 2026, ancora query-gated e
+  non promosso: `?layerCompressionRuntime=1`, build
+  `worker-gzip-one-distant-layer-idle-atomic-v1`. Dopo `1500 ms` idle sceglie
+  al massimo un livello RGBA8 inattivo a distanza `>=2` dall'attivo; attivo e
+  vicini restano raw. Legge quattro tile / `1 MiB` alla volta e trasferisce
+  l'ownership dell'`ArrayBuffer` a un Web Worker, che esegue gzip, gunzip,
+  confronto byte-per-byte e hash. Il thread principale fa soltanto readback e
+  upload WebGPU; un gesto o una mutazione annulla l'epoch dopo il chunk in
+  corso.
+- L'eviction è atomica: il cold GPU resta autorevole finché tutti i chunk sono
+  compressi e verificati, l'identità generazione/cold è ancora corrente e il
+  motore è di nuovo idle. Se Worker o `CompressionStream` non sono disponibili
+  prima dell'eviction, non esiste fallback sul main thread e i tile GPU restano
+  intatti. Il ripristino conserva sempre una copia dei byte compressi mentre li
+  trasferisce al worker, verifica lunghezza/hash per chunk e aggregati, carica
+  una texture cold candidata e libera la RAM compressa soltanto dopo il fence
+  GPU; un errore distrugge la candidata e conserva lo storage compresso.
+- Telemetria rev `55`: la riga `Layer · compressi · RAM CPU` mostra i byte
+  compressi ma resta esclusa dal totale GPU, come la Cronologia. La lista
+  livelli mostra raw equivalente e RAM; la reidratazione conteggia anche la
+  texture cold candidata durante il ripristino. Il raw liberato resta visibile
+  separatamente e non viene sommato come residenza.
+- Prova browser locale NVIDIA Ampere: tre livelli con due tratti reali; il
+  livello distante è passato da `10,5 MiB` cold GPU a `0,8 MiB` RAM senza
+  bloccare l'interfaccia. La selezione successiva lo ha ripristinato dal worker
+  ed è terminata in `200 ms`; il disegno composito è rimasto visivamente
+  invariato e la console non contiene warning/errori. Undici suite, TypeScript
+  e build Vite verdi; il bundle worker è separato (`3,15 kB`). Questa non è
+  ancora una prova iPhone né una promozione: il prossimo passo è pubblicare la
+  query e misurare reattività, memoria stabile e costo del primo cambio su iOS.

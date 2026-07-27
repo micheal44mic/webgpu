@@ -816,6 +816,7 @@
             <dl class="gpu-memory-list">
               <div data-memory-row><dt>Layer · attivo full-canvas</dt><dd id="gpuMemoryLayerBase">—</dd></div>
               <div data-memory-row><dt>Layer · inattivi cold tile</dt><dd id="gpuMemoryLayerCold">—</dd></div>
+              <div data-memory-row><dt>Layer · compressi · RAM CPU</dt><dd id="gpuMemoryLayerCompressed">—</dd></div>
               <div data-memory-row><dt>Layer · reidratazione transitoria</dt><dd id="gpuMemoryLayerHydration">—</dd></div>
               <div class="gpu-memory-study" data-memory-study-row><dt id="gpuMemoryLayerStudyTilesLabel">Raw livelli · hot + cold effettivo</dt><dd id="gpuMemoryLayerStudyTiles">—</dd></div>
               <div class="gpu-memory-study" data-memory-study-row><dt id="gpuMemoryLayerStudyBboxLabel">Confronto · bbox 256</dt><dd id="gpuMemoryLayerStudyBbox">—</dd></div>
@@ -843,7 +844,7 @@
               <div data-memory-row><dt>Coda spessore</dt><dd id="gpuMemoryThicknessTail">—</dd></div>
               <div class="gpu-memory-group-start" data-memory-row><dt>Cronologia stamp · RAM CPU</dt><dd id="gpuMemoryHistory">—</dd></div>
             </dl>
-            <p class="gpu-memory-note">Stima delle allocazioni note. Le due righe «Studio cold» simulano soltanto la memoria raw con attivo full-canvas e inattivi compatti: non sono allocate né sommate al totale. Il pool scratch corrente è conteggiato una sola volta; il picco è storico e non viene sommato. La riga Cronologia è RAM CPU ed è esclusa dal totale GPU. Non include swapchain, pipeline, driver o memoria del browser.</p>
+            <p class="gpu-memory-note">Stima delle allocazioni note. Le due righe «Studio cold» simulano soltanto la memoria raw con attivo full-canvas e inattivi compatti: non sono allocate né sommate al totale. Il pool scratch corrente è conteggiato una sola volta; il picco è storico e non viene sommato. Le righe Layer compressi e Cronologia sono RAM CPU ed escluse dal totale GPU. Non include swapchain, pipeline, driver o memoria del browser.</p>
           </section>
 
           <button

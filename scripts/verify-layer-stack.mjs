@@ -746,7 +746,7 @@ const mainSource = readFileSync(
   "utf8",
 );
 assert.equal(
-  (mainSource.match(/performanceTelemetryRevision: 54/g) ?? []).length,
+  (mainSource.match(/performanceTelemetryRevision: 55/g) ?? []).length,
   2,
   "tipo persistito e runtime devono avanzare insieme alla revisione 54",
 );
@@ -843,8 +843,8 @@ const evictEnd = engineSource.indexOf("private encodeLayerColdHydration(", evict
 const evictBody = engineSource.slice(evictStart, evictEnd);
 assert.match(
   evictBody,
-  /if \(record\.hasContent && !gpu\.cold\)[\s\S]*?throw new Error/,
-  "un hot con contenuto non può essere evacuato senza cold autorevole",
+  /if \(record\.hasContent && !gpu\.cold && !gpu\.compressed\)[\s\S]*?throw new Error/,
+  "un hot con contenuto non può essere evacuato senza storage raw o compresso autorevole",
 );
 const evictFreeze = evictBody.indexOf("this.layerPresentationFrozen = true;");
 const evictBake = evictBody.indexOf("this.destroyLayerBake(gpu.bake);");
@@ -1208,7 +1208,7 @@ assert.ok(
   "il cold duplicato dell'attivo può essere rilasciato solo dopo il compositing riuscito",
 );
 assert.match(engineSource, /const layerColdMiB = baseResourcesAllocated/);
-assert.match(engineSource, /const layerHydrationMiB = \[\.\.\.this\.liveLayerHydrationTextures\.values\(\)\]/);
+assert.match(engineSource, /const layerHydrationMiB = \([\s\S]*?this\.layerColdRestoreActiveBytes/);
 assert.match(engineSource, /measurementOnly: false/);
 assert.match(
   engineSource,
@@ -1238,8 +1238,9 @@ assert.match(layerCompositeGpuTestSource, /fiveLayerSwitchBreakdownIsConsistent/
 assert.match(layerHistoryGpuTestSource, /measureExactLayerStorageStudy\(\)/);
 assert.match(layerHistoryGpuTestSource, /conservativeTilesContainEveryExactTile/);
 assert.match(layerHistoryGpuTestSource, /exactReadbackReleasedItsTemporaryBuffers/);
-assert.match(mainSource, /performanceTelemetryRevision: 54/);
+assert.match(mainSource, /performanceTelemetryRevision: 55/);
 assert.match(mainSource, /gpuMemoryLayerCold/);
+assert.match(mainSource, /gpuMemoryLayerCompressed/);
 assert.match(mainSource, /gpuMemoryLayerHydration/);
 assert.match(mainSource, /Raw livelli · effettivo/);
 assert.match(mainSource, /Memoria logica WebGPU realmente allocata/);

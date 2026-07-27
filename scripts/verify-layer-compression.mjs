@@ -6,7 +6,9 @@ import {
   LAYER_COMPRESSION_STUDY_BUILD,
   LAYER_COMPRESSION_STUDY_VERSION,
   combineCompressionHashes,
+  compressLosslessGzipChunk,
   formatCompressionHash,
+  hashCompressionBytes,
   measureLosslessGzipChunk,
 } from "../src/layer-compression-study.ts";
 
@@ -35,6 +37,13 @@ assert.equal(classifiedMeasurement.zeroTileCount, 1);
 assert.equal(classifiedMeasurement.solidTileCount, 2);
 assert.equal(classifiedMeasurement.sourceHash, classifiedMeasurement.restoredHash);
 assert.ok(classifiedMeasurement.adaptiveStoredBytes <= classified.byteLength);
+const classifiedPayload = await compressLosslessGzipChunk(classified, tinyTileBytes);
+assert.equal(classifiedPayload.storage, "gzip");
+assert.equal(classifiedPayload.measurement.sourceHash, hashCompressionBytes(classified));
+assert.equal(
+  classifiedPayload.bytes.byteLength,
+  classifiedPayload.measurement.adaptiveStoredBytes,
+);
 
 const realTileBytes = 256 * 256 * 4;
 const zeros = new Uint8Array(realTileBytes);
@@ -55,6 +64,9 @@ for (let index = 0; index < noisy.length; index += 1) {
 const noisyMeasurement = await measureLosslessGzipChunk(noisy, realTileBytes);
 assert.equal(noisyMeasurement.byteIdentical, true);
 assert.ok(noisyMeasurement.adaptiveStoredBytes <= noisy.byteLength);
+const noisyPayload = await compressLosslessGzipChunk(noisy, realTileBytes);
+assert.equal(noisyPayload.storage, "raw");
+assert.equal(noisyPayload.bytes.byteLength, noisy.byteLength);
 
 const combinedSource = combineCompressionHashes(
   0x811c9dc5,
@@ -74,6 +86,14 @@ const engineSource = readFileSync(
   "utf8",
 );
 const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const workerSource = readFileSync(
+  new URL("../src/layer-cold-compression-worker.ts", import.meta.url),
+  "utf8",
+);
+const clientSource = readFileSync(
+  new URL("../src/layer-cold-compression-client.ts", import.meta.url),
+  "utf8",
+);
 const indexSource = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const sitesSource = readFileSync(
   new URL("../scripts/prepare-sites-build.mjs", import.meta.url),
@@ -102,6 +122,51 @@ assert.doesNotMatch(studyBody, /destroyLayerColdStorage/);
 assert.match(studyBody, /countedGpuMiBAfter - countedGpuMiBBefore/);
 assert.match(studyBody, /measureLosslessGzipChunk/);
 
+assert.match(clientSource, /worker-gzip-one-distant-layer-idle-atomic-v1/);
+assert.match(clientSource, /new Worker\(/);
+assert.match(clientSource, /layer-cold-compression-worker\.ts/);
+assert.match(clientSource, /this\.worker\.postMessage\(message, transfer\)/);
+assert.match(
+  clientSource,
+  /const workerCopy = chunk\.bytes\.slice\(0\)/,
+  "la decompressione non deve trasferire l'unica copia compressa autorevole",
+);
+assert.match(workerSource, /typeof CompressionStream === "function"/);
+assert.match(workerSource, /compressLosslessGzipChunk/);
+assert.match(workerSource, /hashCompressionBytes\(restored\)/);
+assert.match(workerSource, /workerScope\.postMessage\([\s\S]*?\[output\]\)/);
+assert.match(engineSource, /layerColdCompressionEnabled\?: boolean/);
+assert.match(engineSource, /LAYER_COLD_COMPRESSION_MINIMUM_DISTANCE/);
+assert.match(
+  engineSource,
+  /\[\.\.\.this\.layerGpu\.values\(\)\]\.some\(\(gpu\) => gpu\.compressed !== null\)/,
+  "il primo esperimento può conservare al massimo un livello compresso",
+);
+assert.match(engineSource, /compressOneDistantLayerInBackground/);
+assert.match(engineSource, /await client\.compress\(payload, tileByteLength\)/);
+assert.match(
+  engineSource,
+  /source\.gpu\.compressed = \{[\s\S]*?source\.gpu\.cold = null;[\s\S]*?destroyLayerColdStorage\(source\.cold\)/,
+  "il cold GPU può essere distrutto solo dopo la pubblicazione atomica dei byte compressi",
+);
+assert.match(engineSource, /await this\.ensureLayerColdStorageResident\(record, gpu\)/);
+assert.match(engineSource, /await this\.decompressLayerColdChunk\(chunk\)/);
+assert.match(engineSource, /restoredHash !== compressed\.sourceHash/);
+assert.match(engineSource, /await this\.waitForGpuCapped\(`Upload cold compresso livello/);
+assert.match(engineSource, /gpu\.cold = \{[\s\S]*?gpu\.compressed = null/);
+assert.match(engineSource, /const layerCompressedCpuMiB =/);
+const countedStart = engineSource.indexOf("const countedTotalMiB = [");
+const countedEnd = engineSource.indexOf("].reduce", countedStart);
+assert.ok(countedStart >= 0 && countedEnd > countedStart);
+assert.doesNotMatch(
+  engineSource.slice(countedStart, countedEnd),
+  /layerCompressedCpuMiB/,
+  "la RAM compressa non deve gonfiare il totale GPU conteggiato",
+);
+assert.match(mainSource, /pageSearchParams\.get\("layerCompressionRuntime"\) === "1"/);
+assert.match(mainSource, /layerColdCompressionEnabled: layerColdCompressionRequested/);
+assert.match(mainSource, /gpuMemoryLayerCompressed/);
+assert.match(indexSource, /Layer · compressi · RAM CPU/);
 assert.match(mainSource, /pageSearchParams\.get\("layerCompressionTest"\) === "1"/);
 assert.match(mainSource, /await engine\.measureLayerColdCompressionStudy/);
 assert.match(mainSource, /saveLayerCompressionRun\(report\)/);

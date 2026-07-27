@@ -168,7 +168,7 @@ assert.match(mainSource, /engine\.beginViewRotationGesture\(\)/);
 assert.match(mainSource, /engine\.endViewRotationGesture\(\)/);
 assert.match(mainSource, /rotateShortcutHeld/);
 assert.match(mainSource, /deltaRadians = \(event\.clientX - lastRotateClientX\) \* Math\.PI \/ 720/);
-assert.equal((mainSource.match(/performanceTelemetryRevision: 54/g) ?? []).length, 2);
+assert.equal((mainSource.match(/performanceTelemetryRevision: 55/g) ?? []).length, 2);
 assert.match(mainSource, /viewRotationDegrees: Number\(engine\.getViewRotationDegrees\(\)\.toFixed\(3\)\)/,
   "ogni benchmark deve firmare l'angolo della vista");
 assert.equal((mainSource.match(/two-finger-pan-pinch-rotate-zero-magnet/g) ?? []).length, 2);
