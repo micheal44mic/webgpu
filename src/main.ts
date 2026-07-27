@@ -61,6 +61,11 @@ const benchmarkResult = element<HTMLParagraphElement>("benchmarkResult");
 const layerList = element<HTMLElement>("layerList");
 const addLayerButton = element<HTMLButtonElement>("addLayer");
 const layerSwitchResult = element<HTMLParagraphElement>("layerSwitchResult");
+const layerMemoryStressSection = element<HTMLElement>("layerMemoryStressSection");
+const layerMemoryStressButton = element<HTMLButtonElement>("runLayerMemoryStress");
+const layerMemoryStressResult = element<HTMLParagraphElement>("layerMemoryStressResult");
+const layerMemoryStressDetails = element<HTMLDetailsElement>("layerMemoryStressDetails");
+const layerMemoryStressReport = element<HTMLElement>("layerMemoryStressReport");
 const rasterStrokeGoldenSection = element<HTMLElement>("rasterStrokeGoldenSection");
 const rasterShadowGoldenButton = element<HTMLButtonElement>("runRasterShadowGolden");
 const rasterShadowGoldenResult = element<HTMLParagraphElement>("rasterShadowGoldenResult");
@@ -362,6 +367,9 @@ const pageSearchParams = new URLSearchParams(window.location.search);
 const bevelBoundingFieldEnabled = pageSearchParams.get("bevelField") === "bbox";
 const layerHistoryTestRequested = import.meta.env.DEV
   && pageSearchParams.get("layerHistoryTest") === "1";
+const layerMemoryStressTestRequested =
+  pageSearchParams.get("layerMemoryStressTest") === "1";
+layerMemoryStressSection.hidden = !layerMemoryStressTestRequested;
 const engine = new BrushEngine(canvas, {
   onStatus(message, kind) {
     statusElement.textContent = message;
@@ -387,7 +395,10 @@ const engine = new BrushEngine(canvas, {
     layerSwitchResult.textContent =
       `Undo/Redo ha selezionato il livello ${activeIndex + 1}.`;
   },
-}, tipPreviewCanvas, { bevelBoundingFieldEnabled });
+}, tipPreviewCanvas, {
+  bevelBoundingFieldEnabled,
+  layerMemoryStressTestEnabled: layerMemoryStressTestRequested,
+});
 if (import.meta.env.DEV) {
   (window as Window & { __brushEngine?: BrushEngine }).__brushEngine = engine;
 }
@@ -404,6 +415,8 @@ let rasterShadowGoldenRunning = false;
 let rasterStrokeGoldenRunning = false;
 let effectsWorkbenchBenchmarkRunning = false;
 let layerHistoryTestRunning = false;
+let layerMemoryStressTestRunning = false;
+let layerMemoryStressTestCompleted = false;
 let layerFormatChanging = false;
 let layerSwitching = false;
 let rasterStrokeChanging = false;
@@ -1626,6 +1639,7 @@ function updateHumanStrokeControls(): void {
     || rasterStrokeGoldenRunning
     || effectsWorkbenchBenchmarkRunning
     || layerHistoryTestRunning
+    || layerMemoryStressTestRunning
     || layerFormatChanging
     || rasterStrokeChanging
     || rasterOuterShadowChanging
@@ -1681,6 +1695,7 @@ function operationLocked(): boolean {
     || rasterStrokeGoldenRunning
     || effectsWorkbenchBenchmarkRunning
     || layerHistoryTestRunning
+    || layerMemoryStressTestRunning
     || layerFormatChanging
     || rasterStrokeChanging
     || rasterOuterShadowChanging
@@ -1705,6 +1720,12 @@ function updateHistoryControls(): void {
   rasterShadowGoldenButton.disabled = locked;
   rasterStrokeGoldenButton.disabled = locked;
   effectsWorkbenchBenchmarkButton.disabled = locked;
+  layerMemoryStressButton.disabled =
+    !layerMemoryStressTestRequested
+    || !engineInitialized
+    || layerMemoryStressTestRunning
+    || layerMemoryStressTestCompleted
+    || locked;
   layerFormatSelect.disabled = locked;
   fitViewButton.disabled = locked;
   zoomInButton.disabled = locked;
@@ -1715,6 +1736,7 @@ function updateHistoryControls(): void {
   toggleControlsButton.disabled =
     benchmarkRunning || rasterShadowGoldenRunning || rasterStrokeGoldenRunning
     || effectsWorkbenchBenchmarkRunning || layerHistoryTestRunning
+    || layerMemoryStressTestRunning
     || humanStrokeReplaying;
   for (const id of brushControlIds) {
     element<HTMLInputElement | HTMLSelectElement>(id).disabled = locked;
@@ -1989,6 +2011,9 @@ gpuMemoryClose.addEventListener("click", () => {
   setGpuMemoryPanelOpen(false);
   gpuMemoryToggle.focus();
 });
+layerMemoryStressButton.addEventListener("click", () => {
+  void runRequestedLayerMemoryStressTest();
+});
 clearLayerButton.addEventListener("click", () => {
   void clearLayerWithHistory();
 });
@@ -2227,6 +2252,92 @@ if (import.meta.env.DEV) {
       updateHumanStrokeControls();
     }
   });
+}
+
+async function runRequestedLayerMemoryStressTest(): Promise<void> {
+  if (
+    !layerMemoryStressTestRequested
+    || interactionLocked()
+    || layerMemoryStressTestCompleted
+  ) {
+    return;
+  }
+
+  layerMemoryStressTestRunning = true;
+  layerMemoryStressDetails.hidden = true;
+  layerMemoryStressResult.className = "result";
+  layerMemoryStressResult.textContent =
+    "Preparazione memoria reale dei livelli… non chiudere questa pagina.";
+  layerMemoryStressButton.textContent = "Stress memoria in corso…";
+  setGpuMemoryPanelOpen(true);
+  updateHistoryControls();
+  updateHumanStrokeControls();
+
+  try {
+    const {
+      LAYER_MEMORY_STRESS_TARGET_MIB,
+      runLayerMemoryStressTest,
+    } = await import("./layer-memory-stress-test");
+    const report = await runLayerMemoryStressTest(
+      engine,
+      LAYER_MEMORY_STRESS_TARGET_MIB,
+      (progress) => {
+        updateStats(engine.getStats());
+        const action = progress.phase === "add"
+          ? "Aggiungo il prossimo livello"
+          : progress.phase === "seed"
+            ? "Preparo il livello attivo"
+            : "Preparazione completata";
+        layerMemoryStressResult.textContent =
+          `${action} · ${progress.layerCount} livelli · `
+          + `${formatMemoryMiB(progress.countedTotalMiB)} / `
+          + `${formatMemoryMiB(progress.targetMiB)} · `
+          + `picco osservato ${formatMemoryMiB(progress.peakCountedTotalMiB)}`;
+      },
+    );
+    layerMemoryStressReport.textContent = JSON.stringify(report, null, 2);
+    layerMemoryStressDetails.hidden = false;
+    layerMemoryStressDetails.open = true;
+    (
+      window as Window & { __layerMemoryStressTestReport?: typeof report }
+    ).__layerMemoryStressTestReport = report;
+    layerMemoryStressResult.className = "result ok";
+    layerMemoryStressResult.textContent =
+      `Stress pronto · ${formatMemoryMiB(report.countedTotalMiB)} su `
+      + `${report.layerCount} livelli. Ora seleziona livelli in alto, in basso `
+      + "e al centro: l'interfaccia è di nuovo sbloccata.";
+    layerMemoryStressButton.textContent = "Stress completato — cambia i livelli";
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const stats = engine.getStats();
+    const currentHistory = engine.getHistoryState();
+    const failure = {
+      version: 1,
+      passed: false,
+      error: message,
+      layerCount: stats.layerCount,
+      activeLayerIndex: stats.activeLayerIndex,
+      gpuMemory: stats.gpuMemory,
+      manualSwitchReady: !currentHistory.busy && !currentHistory.inconsistent,
+    };
+    layerMemoryStressReport.textContent = JSON.stringify(failure, null, 2);
+    layerMemoryStressDetails.hidden = false;
+    layerMemoryStressDetails.open = true;
+    (
+      window as Window & { __layerMemoryStressTestReport?: typeof failure }
+    ).__layerMemoryStressTestReport = failure;
+    layerMemoryStressResult.className = "result error";
+    layerMemoryStressResult.textContent = `Stress memoria interrotto · ${message}`;
+    layerMemoryStressButton.textContent = "Stress interrotto — ricarica per riprovare";
+  } finally {
+    layerMemoryStressTestRunning = false;
+    layerMemoryStressTestCompleted = true;
+    historyState = engine.getHistoryState();
+    syncActiveLayerControls();
+    updateHistoryControls();
+    updateHumanStrokeControls();
+    updateStats(engine.getStats());
+  }
 }
 
 async function runRequestedLayerHistoryTest(): Promise<void> {
@@ -2600,6 +2711,18 @@ async function selectLayer(index: number): Promise<void> {
   if (layerSwitching || interactionLocked()) {
     return;
   }
+  let stressPeakMiB: number | null = null;
+  let stressSampler = 0;
+  let stressSwitchSummary: string | null = null;
+  if (layerMemoryStressTestRequested && layerMemoryStressTestCompleted) {
+    stressPeakMiB = engine.getStats().gpuMemory.countedTotalMiB;
+    stressSampler = window.setInterval(() => {
+      stressPeakMiB = Math.max(
+        stressPeakMiB ?? 0,
+        engine.getStats().gpuMemory.countedTotalMiB,
+      );
+    }, 5);
+  }
   layerSwitching = true;
   updateHistoryControls();
   try {
@@ -2609,13 +2732,33 @@ async function selectLayer(index: number): Promise<void> {
       ? `Livello ${result.toIndex + 1} attivo in ${result.totalMs.toFixed(0)} ms`
         + ` (campi effetti ${result.effectsMs.toFixed(0)} ms).`
       : "Livello già attivo.";
+    stressSwitchSummary = result
+      ? `Cambio manuale ${result.fromIndex + 1}→${result.toIndex + 1}`
+        + ` in ${result.totalMs.toFixed(0)} ms`
+      : "Livello già attivo";
   } catch (error) {
     layerSwitchResult.textContent = error instanceof Error
       ? error.message
       : "Cambio livello non riuscito.";
+    stressSwitchSummary = "Cambio manuale interrotto";
   } finally {
+    if (stressSampler !== 0) {
+      window.clearInterval(stressSampler);
+      stressPeakMiB = Math.max(
+        stressPeakMiB ?? 0,
+        engine.getStats().gpuMemory.countedTotalMiB,
+      );
+    }
     layerSwitching = false;
     updateHistoryControls();
+    updateStats(engine.getStats());
+    if (stressPeakMiB !== null && stressSwitchSummary) {
+      const finalMiB = engine.getStats().gpuMemory.countedTotalMiB;
+      layerMemoryStressResult.className = "result ok";
+      layerMemoryStressResult.textContent =
+        `${stressSwitchSummary} · picco osservato ${formatMemoryMiB(stressPeakMiB)}`
+        + ` · finale ${formatMemoryMiB(finalMiB)}. Continua con alto, basso e centro.`;
+    }
   }
 }
 

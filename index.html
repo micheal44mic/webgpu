@@ -313,6 +313,22 @@
           <p id="layerSwitchResult" class="result" aria-live="polite">
             Ogni livello conserva Traccia, Ombra esterna, Ombra interna e Smusso.
           </p>
+          <div id="layerMemoryStressSection" hidden>
+            <p class="result">
+              Prova distruttiva su pagina nuova: prepara circa 1000 MiB di
+              risorse WebGPU reali. Al termine i livelli restano selezionabili.
+            </p>
+            <button id="runLayerMemoryStress" class="primary wide" type="button" disabled>
+              Prepara stress memoria ~1000 MiB
+            </button>
+            <p id="layerMemoryStressResult" class="result" aria-live="polite">
+              Pronto. Avvia una sola volta, poi cambia livello manualmente.
+            </p>
+            <details id="layerMemoryStressDetails" hidden>
+              <summary>Report stress memoria livelli</summary>
+              <pre id="layerMemoryStressReport" class="golden-report"></pre>
+            </details>
+          </div>
         </section>
 
         <section id="rasterStrokeSection">

@@ -732,6 +732,13 @@ export interface EngineCallbacks {
 
 export interface BrushEngineOptions {
   bevelBoundingFieldEnabled?: boolean;
+  /**
+   * Enables the destructive, query-gated layer memory stress fixture. Normal
+   * application sessions never need to reserve deliberately pessimistic cold
+   * tile capacity, so the public helper remains unavailable unless the page
+   * opted into that fixture before constructing the engine.
+   */
+  layerMemoryStressTestEnabled?: boolean;
 }
 
 export interface LayerPoint {
@@ -1583,6 +1590,7 @@ export class BrushEngine {
   private readonly canvas: HTMLCanvasElement;
   private readonly callbacks: EngineCallbacks;
   private readonly bevelBoundingFieldEnabled: boolean;
+  private readonly layerMemoryStressTestEnabled: boolean;
 
   private adapter!: GPUAdapter;
   private device!: GPUDevice;
@@ -1985,6 +1993,7 @@ export class BrushEngine {
     this.canvas = canvas;
     this.callbacks = callbacks;
     this.bevelBoundingFieldEnabled = options.bevelBoundingFieldEnabled === true;
+    this.layerMemoryStressTestEnabled = options.layerMemoryStressTestEnabled === true;
     this.adaptivePreviewCanvas = adaptivePreviewCanvas;
     this.adaptiveSpacingMaxExtraPercentPoints =
       adaptiveSpacingMaxExtraPercentPointsForPlatform();
@@ -8456,6 +8465,66 @@ export class BrushEngine {
       }
     }
   }
+  /**
+   * Gives the dedicated memory fixture a tiny visible marker while deliberately
+   * reserving every raw-storage tile. The option gate prevents normal sessions
+   * from manufacturing this pessimistic state accidentally.
+   */
+  async seedActiveLayerMemoryStress(markerIndex: number): Promise<void> {
+    if (!this.layerMemoryStressTestEnabled) {
+      throw new Error("Stress memoria livelli non abilitato per questa pagina.");
+    }
+    if (!this.initialized) {
+      throw new Error("Il motore non è ancora inizializzato.");
+    }
+    if (this.layerFormat !== "rgba8unorm") {
+      throw new Error("Lo stress memoria da 1000 MiB richiede il formato RGBA8.");
+    }
+    if (this.styleStackActive()) {
+      throw new Error("Disattiva Traccia, Smusso e Ombre prima dello stress memoria.");
+    }
+    this.assertLayerSwitchAllowed();
+    await this.waitForIdle();
+
+    const markerSize = 64;
+    const gridColumn = markerIndex % 4;
+    const gridRow = Math.floor(markerIndex / 4) % 4;
+    const x = 512 + gridColumn * 896;
+    const y = 512 + gridRow * 896;
+    const red = 72 + (markerIndex * 73) % 176;
+    const green = 72 + (markerIndex * 109) % 176;
+    const blue = 72 + (markerIndex * 151) % 176;
+    const pixels = new Uint8Array(markerSize * markerSize * 4);
+    for (let offset = 0; offset < pixels.length; offset += 4) {
+      pixels[offset] = red;
+      pixels[offset + 1] = green;
+      pixels[offset + 2] = blue;
+      pixels[offset + 3] = 255;
+    }
+    this.device.queue.writeTexture(
+      { texture: this.layerTexture, origin: { x, y, z: 0 } },
+      pixels,
+      { bytesPerRow: markerSize * 4, rowsPerImage: markerSize },
+      { width: markerSize, height: markerSize, depthOrArrayLayers: 1 },
+    );
+    await this.waitForGpuCapped(`Marker stress memoria livello ${markerIndex + 1}`);
+
+    const markerRect = { x, y, width: markerSize, height: markerSize };
+    this.layerHasContent = true;
+    this.noteLayerMutation(markerRect, false);
+    // The marker remains tiny so merged-surface rebuilds stay interactive, but
+    // every inactive layer deliberately reserves all 256 cold tiles. This
+    // isolates memory headroom from fill-rate and gives later manual switches
+    // the same 64 MiB raw capacity per RGBA8 layer as a full document.
+    this.layerStack.active.storageTileMask.fill(0xffffffff);
+    this.persistActiveLayerState();
+    this.paintDisplayMipValidThroughLevel = 0;
+    this.presentationCacheNeedsFullRebuild = true;
+    this.displayDirty = true;
+    this.requestRender();
+    this.publishStats();
+  }
+
   /**
    * Adds a layer above the active one and selects it.
    *

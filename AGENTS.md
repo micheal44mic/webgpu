@@ -1044,6 +1044,37 @@ comparabili con la fixture. Il monitor conta memoria WebGPU logica, non residenc
 fisica del driver/browser. Manca ancora una prova iPhone reale: non dichiarare
 eliminato il rischio di chiusura su iOS finché quella prova non viene eseguita.
 
+#### Fixture manuale ~1 GiB per la prova iPhone
+
+Il 27 luglio 2026 è stata aggiunta una pagina diagnostica esplicita,
+`/?layerMemoryStressTest=1`, disponibile anche nella build pubblicata ma mai
+avviata automaticamente. Richiede una pagina nuova RGBA8 e un click: solo per
+questa query scrive un marker `64×64` diverso su ogni livello e forza la
+maschera conservativa a tutti i `256` tile. Ogni inattivo alloca quindi davvero
+`64 MiB` cold, mentre i bounds visivi restano piccoli per non confondere lo
+stress di memoria con un fold full-document. Durante il setup le altre
+mutazioni sono bloccate; alla fine la UI viene sbloccata e i livelli restano
+selezionabili. Un campionatore `5 ms` riporta anche il picco dei cambi manuali.
+
+Run locale NVIDIA Ampere, RGBA8: setup passato in `1.743,1 ms`, `14` livelli,
+totale fermo `1010,030 MiB` e picco osservato `1074,030 MiB`. Breakdown fermo:
+raw attivo `64`, cold `832`, mip condivisi `42,667`, composito `64`,
+hydration/bake `0 MiB`. Tutti i tredici inattivi hanno `256/256` tile cold e
+anche l'attivo ha la maschera `256/256` pronta per il primo cambio.
+
+| Cambio manuale | Tempo | Picco osservato | Finale |
+|---|---:|---:|---:|
+| cima `14` → fondo `1` | `236 ms` | `1138,0 MiB` | `1010,0 MiB` |
+| fondo `1` → mezzo `7` | `304 ms` | `1223,4 MiB` | `1095,4 MiB` |
+| mezzo `7` → cima `14` | `255 ms` | `1159,3 MiB` | `1010,0 MiB` |
+
+Il finale più alto nel mezzo è previsto: esistono contemporaneamente un lato
+fuso sotto e uno sopra, quindi rispetto all'estremo restano `+64 MiB` di mip
+`0` composito e `+21,333 MiB` di piramide. La pagina non si è bloccata e la
+console non ha riportato warning/errori WebGPU. È solo una prova desktop della
+contabilità logica: l'esito iPhone e l'eventuale chiusura di Safari restano da
+misurare dall'utente.
+
 #### Gate document-wide e cronologia da preservare
 
 | Operazione | Stato con `layerCount > 1` | Si sblocca con |

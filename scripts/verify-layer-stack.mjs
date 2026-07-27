@@ -1244,4 +1244,34 @@ assert.match(mainSource, /gpuMemoryLayerHydration/);
 assert.match(mainSource, /Raw livelli · effettivo/);
 assert.match(mainSource, /Memoria logica WebGPU realmente allocata/);
 assert.match(mainSource, /non è memoria allocata/);
+
+// The production-query stress fixture must be explicit, isolated and leave the
+// ordinary layer controls available after it has built real ~1 GiB residency.
+const layerMemoryStressSource = readFileSync(
+  new URL("../src/layer-memory-stress-test.ts", import.meta.url),
+  "utf8",
+);
+assert.match(mainSource, /pageSearchParams\.get\("layerMemoryStressTest"\) === "1"/);
+const memoryStressGateStart = mainSource.indexOf("const layerMemoryStressTestRequested");
+const memoryStressGateBody = mainSource.slice(memoryStressGateStart, memoryStressGateStart + 180);
+assert.doesNotMatch(
+  memoryStressGateBody,
+  /import\.meta\.env\.DEV/,
+  "la pagina pubblicata deve poter avviare lo stress solo tramite query esplicita",
+);
+assert.match(mainSource, /layerMemoryStressTestEnabled: layerMemoryStressTestRequested/);
+assert.match(mainSource, /await import\("\.\/layer-memory-stress-test"\)/);
+assert.match(mainSource, /layerMemoryStressTestCompleted = true/);
+assert.match(mainSource, /stressSampler = window\.setInterval/);
+assert.match(engineSource, /async seedActiveLayerMemoryStress\(markerIndex: number\)/);
+const memoryStressSeedStart = engineSource.indexOf("async seedActiveLayerMemoryStress(");
+const memoryStressSeedBody = engineSource.slice(memoryStressSeedStart, memoryStressSeedStart + 2_500);
+assert.match(memoryStressSeedBody, /this\.layerMemoryStressTestEnabled/);
+assert.match(memoryStressSeedBody, /const markerSize = 64/);
+assert.match(memoryStressSeedBody, /storageTileMask\.fill\(0xffffffff\)/);
+assert.match(layerMemoryStressSource, /LAYER_MEMORY_STRESS_TARGET_MIB = 1000/);
+assert.match(layerMemoryStressSource, /initial\.layerCount !== 1/);
+assert.match(layerMemoryStressSource, /layer\.coldTileCount !== 256/);
+assert.match(layerMemoryStressSource, /layer\.conservativeTileCount !== 256/);
+assert.match(layerMemoryStressSource, /manualSwitchReady: true/);
 console.log("Layer stack verification passed.");
