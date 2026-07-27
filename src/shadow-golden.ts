@@ -287,6 +287,7 @@ export async function runRasterShadowGolden(
       lightGlazeUniformBuffer,
       thicknessTailUniformBuffer,
       scratchExtent: 8,
+      strokeGeometryEnabled: false,
       readbackEnabled: true,
     });
     outerRenderer = await RasterShadowRenderer.create({

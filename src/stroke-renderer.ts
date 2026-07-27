@@ -15,11 +15,14 @@ import {
 } from "./bevel-core";
 import type { RasterBevelFieldState } from "./bevel-renderer";
 import type { EffectsScratchLease, EffectsScratchPool } from "./effects-scratch-pool";
+import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 
 export const RASTER_STROKE_RENDERER_BUILD =
-  "style-stack-webgpu-v13-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even";
+  "style-stack-webgpu-v14-lazy-stroke-geometry-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even";
 export const RASTER_STROKE_COVERAGE_STRATEGY =
-  "persistent-packed-r8-style-coverage" as const;
+  "lazy-packed-r8-style-coverage-while-stroke-enabled" as const;
+export const RASTER_STROKE_GEOMETRY_STORAGE_STRATEGY =
+  "allocate-on-stroke-enable-release-when-idle-disabled" as const;
 export const RASTER_STROKE_DISTANCE_STORAGE_STRATEGY =
   "register-only-during-coverage-resolve" as const;
 export const RASTER_STROKE_MUTATION_GATE_STRATEGY =
@@ -43,6 +46,7 @@ export interface RasterStrokeRendererOptions {
   lightGlazeUniformBuffer: GPUBuffer;
   thicknessTailUniformBuffer: GPUBuffer;
   scratchExtent?: number;
+  strokeGeometryEnabled?: boolean;
   readbackEnabled?: boolean;
   bevelBoundingFieldEnabled?: boolean;
   /** Golden-only compile mutation; never set by the application renderer. */
@@ -1390,6 +1394,9 @@ export class RasterStrokeRenderer {
     const renderer = new RasterStrokeRenderer(options);
     try {
       await renderer.initialize();
+      if (options.strokeGeometryEnabled !== false) {
+        await renderer.setStrokeGeometryEnabled(true);
+      }
       return renderer;
     } catch (error) {
       renderer.destroy();
@@ -1401,11 +1408,7 @@ export class RasterStrokeRenderer {
   readonly samplingView: GPUTextureView;
   readonly mipViews: readonly GPUTextureView[];
   readonly styledMipLevelCount: number;
-  readonly persistentMemoryBytes: number;
   readonly styledMemoryBytes: number;
-  readonly coverageMemoryBytes: number;
-  readonly thresholdMaskMemoryBytes: number;
-  readonly controlMemoryBytes: number;
 
   private readonly device: GPUDevice;
   private readonly scratchPool: EffectsScratchPool;
@@ -1444,10 +1447,20 @@ export class RasterStrokeRenderer {
   private readonly indirectTemplateUpload = new Uint32Array(
     PARAMETER_CAPACITY * INDIRECT_ARGUMENT_WORDS,
   );
-  private readonly coverageBuffer: GPUBuffer;
-  private readonly thresholdMaskBuffer: GPUBuffer;
-  private readonly changeStateBuffer: GPUBuffer;
-  private readonly indirectArgumentsBuffer: GPUBuffer;
+  private readonly fullCoverageMemoryBytes: number;
+  private readonly fullThresholdMaskMemoryBytes: number;
+  private readonly fullChangeStateMemoryBytes: number;
+  private readonly fullIndirectArgumentsMemoryBytes: number;
+  private readonly baseControlMemoryBytes: number;
+  private readonly coveragePlaceholderBuffer: GPUBuffer;
+  private readonly thresholdMaskPlaceholderBuffer: GPUBuffer;
+  private readonly changeStatePlaceholderBuffer: GPUBuffer;
+  private readonly indirectArgumentsPlaceholderBuffer: GPUBuffer;
+  private strokeCoverageBuffer: GPUBuffer | null = null;
+  private strokeThresholdMaskBuffer: GPUBuffer | null = null;
+  private strokeChangeStateBuffer: GPUBuffer | null = null;
+  private strokeIndirectArgumentsBuffer: GPUBuffer | null = null;
+  private strokeGeometryResourcesAllocated = false;
   private readonly coarseStyledTexture: GPUTexture;
   private readonly coarseStyledStorageView: GPUTextureView;
   private readonly readbackStyledTexture: GPUTexture | null;
@@ -1564,33 +1577,37 @@ export class RasterStrokeRenderer {
     const coverageWordCount = Math.ceil(
       this.documentWidth * this.documentHeight / COVERAGE_WORD_PIXELS,
     );
-    this.coverageBuffer = this.device.createBuffer({
-      label: "Traccia persistent packed R8 coverage",
-      size: coverageWordCount * 4,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
     const thresholdMaskWordCount = Math.ceil(
       this.documentWidth / THRESHOLD_MASK_WORD_BITS,
     ) * this.documentHeight;
     const thresholdMaskBytes = thresholdMaskWordCount * 4;
-    this.thresholdMaskBuffer = this.device.createBuffer({
-      label: "Traccia persistent alpha-threshold bit mask",
-      size: thresholdMaskBytes,
+    const changeStateBytes = 4;
+    const indirectArgumentsBytes = PARAMETER_CAPACITY * INDIRECT_ARGUMENT_BYTES;
+    this.fullCoverageMemoryBytes = coverageWordCount * 4;
+    this.fullThresholdMaskMemoryBytes = thresholdMaskBytes;
+    this.fullChangeStateMemoryBytes = changeStateBytes;
+    this.fullIndirectArgumentsMemoryBytes = indirectArgumentsBytes;
+    this.coveragePlaceholderBuffer = this.device.createBuffer({
+      label: "Traccia disabled coverage placeholder",
+      size: 4,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    const changeStateBytes = 4;
-    this.changeStateBuffer = this.device.createBuffer({
-      label: "Traccia threshold-or-coverage-overlap change flags",
-      size: changeStateBytes,
+    this.thresholdMaskPlaceholderBuffer = this.device.createBuffer({
+      label: "Traccia disabled threshold-mask placeholder",
+      size: 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.changeStatePlaceholderBuffer = this.device.createBuffer({
+      label: "Traccia disabled change-state placeholder",
+      size: 4,
       usage:
         GPUBufferUsage.STORAGE
         | GPUBufferUsage.COPY_DST
         | (this.readbackEnabled ? GPUBufferUsage.COPY_SRC : 0),
     });
-    const indirectArgumentsBytes = PARAMETER_CAPACITY * INDIRECT_ARGUMENT_BYTES;
-    this.indirectArgumentsBuffer = this.device.createBuffer({
-      label: "Traccia threshold-or-coverage-gated indirect dispatch arguments",
-      size: indirectArgumentsBytes,
+    this.indirectArgumentsPlaceholderBuffer = this.device.createBuffer({
+      label: "Traccia disabled indirect-arguments placeholder",
+      size: INDIRECT_ARGUMENT_BYTES,
       usage:
         GPUBufferUsage.STORAGE
         | GPUBufferUsage.INDIRECT
@@ -1721,17 +1738,38 @@ export class RasterStrokeRenderer {
         * Math.max(1, this.documentHeight >> mipLevel);
     }
     this.styledMemoryBytes = styledPixels * bytesPerPixel;
-    this.coverageMemoryBytes = coverageWordCount * 4;
-    this.thresholdMaskMemoryBytes = thresholdMaskBytes;
-    this.controlMemoryBytes = parameterBufferBytes
+    this.baseControlMemoryBytes = parameterBufferBytes
       + DISPLAY_PARAMETER_BYTES * 3
-      + changeStateBytes
-      + indirectArgumentsBytes
-      + this.bevelUniformBytes + 4 + 68;
-    this.persistentMemoryBytes = this.coverageMemoryBytes
+      + this.bevelUniformBytes
+      + 4 + 68
+      + 4 + 4 + 4 + INDIRECT_ARGUMENT_BYTES;
+  }
+
+  get persistentMemoryBytes(): number {
+    return this.coverageMemoryBytes
       + this.styledMemoryBytes
       + this.thresholdMaskMemoryBytes
       + this.controlMemoryBytes;
+  }
+
+  get coverageMemoryBytes(): number {
+    return this.strokeGeometryResourcesAllocated ? this.fullCoverageMemoryBytes : 0;
+  }
+
+  get thresholdMaskMemoryBytes(): number {
+    return this.strokeGeometryResourcesAllocated ? this.fullThresholdMaskMemoryBytes : 0;
+  }
+
+  get controlMemoryBytes(): number {
+    return this.baseControlMemoryBytes + (
+      this.strokeGeometryResourcesAllocated
+        ? this.fullChangeStateMemoryBytes + this.fullIndirectArgumentsMemoryBytes
+        : 0
+    );
+  }
+
+  get strokeGeometryEnabled(): boolean {
+    return this.strokeGeometryResourcesAllocated;
   }
 
   get scratchExtent(): number {
@@ -1740,6 +1778,179 @@ export class RasterStrokeRenderer {
 
   get scratchMemoryBytes(): number {
     return this._scratchMemoryBytes;
+  }
+
+  private get coverageBuffer(): GPUBuffer {
+    return this.strokeCoverageBuffer ?? this.coveragePlaceholderBuffer;
+  }
+
+  private get thresholdMaskBuffer(): GPUBuffer {
+    return this.strokeThresholdMaskBuffer ?? this.thresholdMaskPlaceholderBuffer;
+  }
+
+  private get changeStateBuffer(): GPUBuffer {
+    return this.strokeChangeStateBuffer ?? this.changeStatePlaceholderBuffer;
+  }
+
+  private get indirectArgumentsBuffer(): GPUBuffer {
+    return this.strokeIndirectArgumentsBuffer ?? this.indirectArgumentsPlaceholderBuffer;
+  }
+
+  private allocateStrokeGeometryResourcesUnchecked(): boolean {
+    if (this.strokeGeometryResourcesAllocated) {
+      return false;
+    }
+    let coverage: GPUBuffer | null = null;
+    let thresholdMask: GPUBuffer | null = null;
+    let changeState: GPUBuffer | null = null;
+    let indirectArguments: GPUBuffer | null = null;
+    try {
+      coverage = this.device.createBuffer({
+        label: "Traccia persistent packed R8 coverage",
+        size: this.fullCoverageMemoryBytes,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+      thresholdMask = this.device.createBuffer({
+        label: "Traccia persistent alpha-threshold bit mask",
+        size: this.fullThresholdMaskMemoryBytes,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+      changeState = this.device.createBuffer({
+        label: "Traccia threshold-or-coverage-overlap change flags",
+        size: this.fullChangeStateMemoryBytes,
+        usage:
+          GPUBufferUsage.STORAGE
+          | GPUBufferUsage.COPY_DST
+          | (this.readbackEnabled ? GPUBufferUsage.COPY_SRC : 0),
+      });
+      indirectArguments = this.device.createBuffer({
+        label: "Traccia threshold-or-coverage-gated indirect dispatch arguments",
+        size: this.fullIndirectArgumentsMemoryBytes,
+        usage:
+          GPUBufferUsage.STORAGE
+          | GPUBufferUsage.INDIRECT
+          | GPUBufferUsage.COPY_DST,
+      });
+    } catch (error) {
+      coverage?.destroy();
+      thresholdMask?.destroy();
+      changeState?.destroy();
+      indirectArguments?.destroy();
+      throw error;
+    }
+    this.strokeCoverageBuffer = coverage;
+    this.strokeThresholdMaskBuffer = thresholdMask;
+    this.strokeChangeStateBuffer = changeState;
+    this.strokeIndirectArgumentsBuffer = indirectArguments;
+    this.strokeGeometryResourcesAllocated = true;
+    try {
+      this.rebuildStrokeGeometryBindGroups();
+    } catch (error) {
+      this.strokeCoverageBuffer = null;
+      this.strokeThresholdMaskBuffer = null;
+      this.strokeChangeStateBuffer = null;
+      this.strokeIndirectArgumentsBuffer = null;
+      this.strokeGeometryResourcesAllocated = false;
+      this.rebuildStrokeGeometryBindGroups();
+      coverage.destroy();
+      thresholdMask.destroy();
+      changeState.destroy();
+      indirectArguments.destroy();
+      throw error;
+    }
+    return true;
+  }
+  private async allocateStrokeGeometryResources(): Promise<boolean> {
+    if (this.strokeGeometryResourcesAllocated) {
+      return false;
+    }
+    return runGpuAllocationTransaction(
+      this.device,
+      "Allocazione geometria Traccia",
+      (transaction) => {
+        const allocated = this.allocateStrokeGeometryResourcesUnchecked();
+        transaction.deferRollback(() => {
+          if (allocated && this.strokeGeometryResourcesAllocated) {
+            this.releaseStrokeGeometryResources();
+          }
+        });
+        return allocated;
+      },
+    );
+  }
+
+
+  private releaseStrokeGeometryResources(): boolean {
+    if (!this.strokeGeometryResourcesAllocated) {
+      return false;
+    }
+    const coverage = this.strokeCoverageBuffer;
+    const thresholdMask = this.strokeThresholdMaskBuffer;
+    const changeState = this.strokeChangeStateBuffer;
+    const indirectArguments = this.strokeIndirectArgumentsBuffer;
+    this.strokeCoverageBuffer = null;
+    this.strokeThresholdMaskBuffer = null;
+    this.strokeChangeStateBuffer = null;
+    this.strokeIndirectArgumentsBuffer = null;
+    this.strokeGeometryResourcesAllocated = false;
+    try {
+      this.rebuildStrokeGeometryBindGroups();
+    } catch (error) {
+      this.strokeCoverageBuffer = coverage;
+      this.strokeThresholdMaskBuffer = thresholdMask;
+      this.strokeChangeStateBuffer = changeState;
+      this.strokeIndirectArgumentsBuffer = indirectArguments;
+      this.strokeGeometryResourcesAllocated = true;
+      this.rebuildStrokeGeometryBindGroups();
+      throw error;
+    }
+    coverage?.destroy();
+    thresholdMask?.destroy();
+    changeState?.destroy();
+    indirectArguments?.destroy();
+    return true;
+  }
+
+  private rebuildStrokeGeometryBindGroups(): void {
+    if (!this.seedBindGroupLayout) {
+      return;
+    }
+    this.rebuildSourceBindGroups(0);
+    this.rebuildSourceBindGroups(1);
+    this.rebuildSourceBindGroups(2);
+    this.rebuildIndirectGateBindGroup();
+  }
+
+  private rebuildIndirectGateBindGroup(): void {
+    if (!this.indirectGateBindGroupLayout) {
+      return;
+    }
+    this.indirectGateBindGroup = this.device.createBindGroup({
+      label: "Traccia indirect dispatch gate bind group",
+      layout: this.indirectGateBindGroupLayout,
+      entries: [
+        {
+          binding: 0,
+          resource: {
+            buffer: this.parameterBuffer,
+            offset: 0,
+            size: PARAMETER_BYTES,
+          },
+        },
+        { binding: 1, resource: { buffer: this.changeStateBuffer } },
+        { binding: 2, resource: { buffer: this.indirectArgumentsBuffer } },
+      ],
+    });
+  }
+
+  /** Disabling is valid only after the caller has awaited GPU idle. */
+  async setStrokeGeometryEnabled(enabled: boolean): Promise<boolean> {
+    if (this.destroyed) {
+      throw new Error("Renderer Traccia già distrutto.");
+    }
+    return enabled
+      ? await this.allocateStrokeGeometryResources()
+      : this.releaseStrokeGeometryResources();
   }
 
   retarget(
@@ -1773,6 +1984,11 @@ export class RasterStrokeRenderer {
   encodeBake(options: RasterStrokeBakeOptions): RasterStrokeBakeResult {
     if (this.destroyed) {
       throw new Error("Renderer Traccia già distrutto.");
+    }
+    if (options.style.enabled && options.style.width > 0 && !this.strokeGeometryEnabled) {
+      throw new Error(
+        "Bake Traccia rifiutato: le risorse geometriche non sono allocate.",
+      );
     }
     if (!this.readbackComposePipeline) {
       throw new Error("Pipeline bake mip 0 Traccia non inizializzata.");
@@ -2059,6 +2275,9 @@ export class RasterStrokeRenderer {
     if (!this.readbackEnabled) {
       throw new Error("Readback Traccia non abilitato per questo renderer.");
     }
+    if (!this.strokeGeometryEnabled) {
+      throw new Error("Readback Traccia rifiutato: le risorse geometriche non sono allocate.");
+    }
     const readbackBuffer = this.device.createBuffer({
       label: "Traccia golden change-state flag readback",
       size: 4,
@@ -2317,22 +2536,7 @@ export class RasterStrokeRenderer {
     }
 
     this.rebuildScratchBindGroups();
-    this.indirectGateBindGroup = this.device.createBindGroup({
-      label: "Traccia indirect dispatch gate bind group",
-      layout: this.indirectGateBindGroupLayout,
-      entries: [
-        {
-          binding: 0,
-          resource: {
-            buffer: this.parameterBuffer,
-            offset: 0,
-            size: PARAMETER_BYTES,
-          },
-        },
-        { binding: 1, resource: { buffer: this.changeStateBuffer } },
-        { binding: 2, resource: { buffer: this.indirectArgumentsBuffer } },
-      ],
-    });
+    this.rebuildIndirectGateBindGroup();
   }
 
   setLightGlazeView(view: GPUTextureView | null): void {
@@ -2716,6 +2920,11 @@ export class RasterStrokeRenderer {
     if (this.destroyed) {
       throw new Error("Renderer Traccia già distrutto.");
     }
+    if (options.style.enabled && options.style.width > 0 && !this.strokeGeometryEnabled) {
+      throw new Error(
+        "Encode Traccia rifiutato: le risorse geometriche non sono allocate.",
+      );
+    }
     this.syncScratchBindGroups();
     const rebuildRect = wordAlignedCoverageRect(
       options.rebuildRect,
@@ -2922,10 +3131,10 @@ export class RasterStrokeRenderer {
       || options.clearStyled
       || (jobs.length > 0 && !useThresholdGate),
     );
-    if (options.clearStyled) {
+    if (options.clearStyled && this.strokeGeometryEnabled) {
       options.encoder.clearBuffer(this.coverageBuffer);
     }
-    if (resetThresholdMask) {
+    if (resetThresholdMask && this.strokeGeometryEnabled) {
       options.encoder.clearBuffer(this.thresholdMaskBuffer);
     }
     if (thresholdRect) {
@@ -3163,10 +3372,14 @@ export class RasterStrokeRenderer {
     this.displayParameterBuffers[0].destroy();
     this.displayParameterBuffers[1].destroy();
     this.displayParameterBuffers[2].destroy();
-    this.coverageBuffer.destroy();
-    this.thresholdMaskBuffer.destroy();
-    this.changeStateBuffer.destroy();
-    this.indirectArgumentsBuffer.destroy();
+    this.strokeCoverageBuffer?.destroy();
+    this.strokeThresholdMaskBuffer?.destroy();
+    this.strokeChangeStateBuffer?.destroy();
+    this.strokeIndirectArgumentsBuffer?.destroy();
+    this.coveragePlaceholderBuffer.destroy();
+    this.thresholdMaskPlaceholderBuffer.destroy();
+    this.changeStatePlaceholderBuffer.destroy();
+    this.indirectArgumentsPlaceholderBuffer.destroy();
     this.coarseStyledTexture.destroy();
     this.readbackStyledTexture?.destroy();
     this.dummyTexture.destroy();

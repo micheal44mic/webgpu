@@ -33,6 +33,7 @@ import {
 } from "./thickness-dynamics";
 import {
   RASTER_STROKE_COVERAGE_STRATEGY,
+  RASTER_STROKE_GEOMETRY_STORAGE_STRATEGY,
   RASTER_STROKE_DISTANCE_STORAGE_STRATEGY,
   RASTER_STROKE_MUTATION_GATE_STRATEGY,
   RASTER_STROKE_STYLED_STORAGE_STRATEGY,
@@ -2265,6 +2266,9 @@ export class BrushEngine {
       this.rasterStrokeStyle.enabled && styleWidth > 0,
   ): Promise<RasterStrokeRenderer> {
     if (this.rasterStrokeRenderer) {
+      if (await this.rasterStrokeRenderer.setStrokeGeometryEnabled(strokeGeometryActive)) {
+        this.rasterStrokeCoverageValid = false;
+      }
       return this.rasterStrokeRenderer;
     }
     const scratchExtent = rasterStrokeScratchExtentForRenderer(
@@ -2280,6 +2284,7 @@ export class BrushEngine {
       lightGlazeUniformBuffer: this.lightGlazeUniformBuffer,
       thicknessTailUniformBuffer: this.thicknessTailDisplayUniformBuffer,
       scratchExtent,
+      strokeGeometryEnabled: strokeGeometryActive,
       scratchPool: this.requireEffectsWorkbench().scratchPool,
       bevelBoundingFieldEnabled: this.bevelBoundingFieldEnabled,
     });
@@ -2481,7 +2486,9 @@ export class BrushEngine {
     }
     if (
       rasterStrokeStylesEqual(normalized, this.rasterStrokeStyle)
-      && (!normalizedActive || this.rasterStrokeRenderer)
+      && (normalizedActive
+        ? this.rasterStrokeRenderer?.strokeGeometryEnabled === true
+        : this.rasterStrokeRenderer?.strokeGeometryEnabled !== true)
     ) {
       return true;
     }
@@ -2509,14 +2516,25 @@ export class BrushEngine {
     try {
       if (nextActive) {
         const scratchExtent = rasterStrokeScratchExtentForWidth(normalized.width);
-        if (!this.rasterStrokeRenderer) {
-          this.callbacks.onStatus?.("Preparo la Traccia WebGPU…", "working");
+        const rendererNeedsCreation = !this.rasterStrokeRenderer;
+        const geometryNeedsAllocation =
+          !this.rasterStrokeRenderer?.strokeGeometryEnabled;
+        const scratchNeedsResize = Boolean(
+          this.rasterStrokeRenderer
+          && this.rasterStrokeRenderer.scratchExtent !== scratchExtent,
+        );
+        if (rendererNeedsCreation || geometryNeedsAllocation || scratchNeedsResize) {
+          this.callbacks.onStatus?.(
+            rendererNeedsCreation || geometryNeedsAllocation
+              ? "Preparo la geometria della Traccia WebGPU…"
+              : "Adatto la memoria scratch della Traccia…",
+            "working",
+          );
           await this.waitForIdle();
-          await this.ensureRasterStrokeRenderer(normalized.width, true);
-        } else if (this.rasterStrokeRenderer.scratchExtent !== scratchExtent) {
-          this.callbacks.onStatus?.("Adatto la memoria scratch della Traccia…", "working");
-          await this.waitForIdle();
-          this.rasterStrokeRenderer.resizeScratch(scratchExtent);
+          const renderer = await this.ensureRasterStrokeRenderer(normalized.width, true);
+          if (renderer.scratchExtent !== scratchExtent) {
+            renderer.resizeScratch(scratchExtent);
+          }
         }
       }
 
@@ -2543,6 +2561,9 @@ export class BrushEngine {
           || this.rasterOuterShadowStyle.enabled
           || this.rasterInnerShadowStyle.enabled
         ) {
+          if (await this.rasterStrokeRenderer?.setStrokeGeometryEnabled(false)) {
+            this.rasterStrokeCoverageValid = false;
+          }
           this.rasterStrokePendingComposeRect = this.rasterStrokeEffectRect(
             this.layerContentBounds,
             previous.width,
@@ -2577,6 +2598,25 @@ export class BrushEngine {
       return true;
     } catch (error) {
       this.rasterStrokeStyle = previous;
+      try {
+        if (previousActive && !this.rasterStrokeRenderer) {
+          await this.ensureRasterStrokeRenderer(previous.width, true);
+        }
+        if (this.rasterStrokeRenderer) {
+          if (await this.rasterStrokeRenderer.setStrokeGeometryEnabled(previousActive)) {
+            this.rasterStrokeCoverageValid = false;
+          }
+          const previousScratchExtent = rasterStrokeScratchExtentForRenderer(
+            previousActive,
+            previous.width,
+          );
+          if (this.rasterStrokeRenderer.scratchExtent !== previousScratchExtent) {
+            this.rasterStrokeRenderer.resizeScratch(previousScratchExtent);
+          }
+        }
+      } catch (restoreError) {
+        console.error("Ripristino risorse Traccia non riuscito", restoreError);
+      }
       if (
         !previousActive
         && !this.rasterBevelStyle.enabled
@@ -5778,6 +5818,8 @@ export class BrushEngine {
     rasterStrokeCoverageMemoryMiB: number;
     rasterStrokeScratchMemoryMiB: number;
     rasterStrokeCoverageStrategy: typeof RASTER_STROKE_COVERAGE_STRATEGY;
+    rasterStrokeGeometryStorageStrategy: typeof RASTER_STROKE_GEOMETRY_STORAGE_STRATEGY;
+    rasterStrokeGeometryResident: boolean;
     rasterStrokeStyledStorageStrategy: typeof RASTER_STROKE_STYLED_STORAGE_STRATEGY;
     rasterStrokeDistanceStorageStrategy: typeof RASTER_STROKE_DISTANCE_STORAGE_STRATEGY;
     rasterStrokeMutationGateStrategy: typeof RASTER_STROKE_MUTATION_GATE_STRATEGY;
@@ -5954,6 +5996,8 @@ export class BrushEngine {
       rasterStrokeScratchMemoryMiB:
         (this.rasterStrokeRenderer?.scratchMemoryBytes ?? 0) / (1024 * 1024),
       rasterStrokeCoverageStrategy: RASTER_STROKE_COVERAGE_STRATEGY,
+      rasterStrokeGeometryStorageStrategy: RASTER_STROKE_GEOMETRY_STORAGE_STRATEGY,
+      rasterStrokeGeometryResident: this.rasterStrokeRenderer?.strokeGeometryEnabled ?? false,
       rasterStrokeStyledStorageStrategy: RASTER_STROKE_STYLED_STORAGE_STRATEGY,
       rasterStrokeDistanceStorageStrategy: RASTER_STROKE_DISTANCE_STORAGE_STRATEGY,
       rasterStrokeMutationGateStrategy: RASTER_STROKE_MUTATION_GATE_STRATEGY,
@@ -8381,9 +8425,11 @@ export class BrushEngine {
    * renderer sits at the 1024 tier needs the resize that setRasterStrokeStyle
    * would have done.
    *
-   * Renderers are deliberately NOT released when the incoming layer does not use
-   * them: the working set is shared and singular, so keeping it costs nothing per
-   * layer, while releasing and rebuilding would add cost to every switch.
+   * Renderer shells are deliberately NOT released when the incoming layer does
+   * not use them: the working set is shared and singular, so keeping it costs
+   * nothing per layer. Heavy Traccia-only geometry does follow the incoming
+   * style, while the small placeholders keep the shared compositor bind groups
+   * valid without rebuilding every pipeline on each switch.
    */
   private async ensureEffectRenderersForRecord(record: LayerRecord): Promise<void> {
     const requirements = layerEffectRendererRequirements(
@@ -8408,19 +8454,20 @@ export class BrushEngine {
         strokeGeometryActive,
         requirements.strokeWidth,
       );
-      if (!this.rasterStrokeRenderer) {
-        await this.ensureRasterStrokeRenderer(
-          requirements.strokeWidth,
-          strokeGeometryActive,
-        );
-      } else if (this.rasterStrokeRenderer.scratchExtent !== scratchExtent) {
-        this.rasterStrokeRenderer.resizeScratch(scratchExtent);
+      const renderer = await this.ensureRasterStrokeRenderer(
+        requirements.strokeWidth,
+        strokeGeometryActive,
+      );
+      if (renderer.scratchExtent !== scratchExtent) {
+        renderer.resizeScratch(scratchExtent);
       }
-    } else if (
-      this.rasterStrokeRenderer
-      && this.rasterStrokeRenderer.scratchExtent !== RASTER_STROKE_COMPOSITOR_ONLY_SCRATCH_EXTENT
-    ) {
-      this.rasterStrokeRenderer.resizeScratch(RASTER_STROKE_COMPOSITOR_ONLY_SCRATCH_EXTENT);
+    } else if (this.rasterStrokeRenderer) {
+      if (await this.rasterStrokeRenderer.setStrokeGeometryEnabled(false)) {
+        this.rasterStrokeCoverageValid = false;
+      }
+      if (this.rasterStrokeRenderer.scratchExtent !== RASTER_STROKE_COMPOSITOR_ONLY_SCRATCH_EXTENT) {
+        this.rasterStrokeRenderer.resizeScratch(RASTER_STROKE_COMPOSITOR_ONLY_SCRATCH_EXTENT);
+      }
     }
     this.rasterOuterShadowRenderer?.updateStyle(record.outerShadowStyle);
     this.rasterInnerShadowRenderer?.updateStyle(record.innerShadowStyle);

@@ -188,7 +188,7 @@ Paint:
   seed, JFA, resolve, compositing e piramide mip restano sulla GPU. Non esiste
   un campo distanza residente: la distanza Q10.6 vive nei registri del resolve
   e viene convertita subito in coverage R8, packed quattro pixel per `u32` in
-  un buffer persistente da `16 MiB`.
+  un buffer da `16 MiB`, residente soltanto mentre la Traccia è abilitata.
 - Il risultato styled full-resolution non è più residente: a LOD `0` il
   fragment shader ricostruisce e quantizza direttamente i quattro texel da
   layer + coverage; restano materializzati solo i mip logici `1–12`, circa
@@ -196,11 +196,20 @@ Paint:
   compose GPU e i livelli superiori derivano da quello, così uno zoom-out non
   dipende da un ricalcolo tardivo. Il renderer golden temporaneo conserva un
   mip `0` separato solo per readback e non viene allocato nell'uso normale.
-- Lo scratch dual-seed resta adattivo alla width: `1024²` (`16 MiB`) fino a
+- Con Traccia attiva, lo scratch dual-seed resta adattivo alla width: `1024²`
+  (`16 MiB`) fino a
   `128 px`, `2048²` (`64 MiB`) da `129` a `512 px`; mask alpha e controllo
   costano ~`2,52 MiB`. Totale aggiuntivo v5 a width `≤128`: ~`55,9 MiB`
   RGBA8 o ~`77,2 MiB` RGBA16F; oltre `128`: ~`103,9 MiB` o ~`125,2 MiB`.
   Tutto resta lazy e viene liberato alla disabilitazione.
+- Ciclo di vita geometria Traccia rev `50`:
+  `allocate-on-stroke-enable-release-when-idle-disabled`. Coverage packed R8,
+  mask soglia, flag gate e argomenti indirect (`18,023441 MiB` totali) sono
+  allocati in una transazione WebGPU quando la Traccia passa ON e distrutti
+  soltanto dopo GPU idle quando passa OFF. Quattro placeholder validi per
+  complessivi `24 byte` mantengono i bind group del compositore Ombre/Smusso;
+  styled mip `1+` e parametri comuni restano residenti perché servono agli altri
+  effetti.
 - La coverage è specifica di width/position: quei due cambi stile ricostruiscono
   l'area del contenuto (inclusa l'estensione del vecchio stile); il solo colore
   ricompone senza JFA. Durante il disegno il gate GPU controlla sia i cambi di
@@ -411,7 +420,7 @@ Paint:
   `raster-shadow-core-webgpu-v1-morphology-then-gaussian`, renderer
   `raster-shadow-webgpu-v1-independent-packed-r8-morphology-gaussian` e
   style stack
-  `style-stack-webgpu-v13-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even`.
+  `style-stack-webgpu-v14-lazy-stroke-geometry-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even`.
   Ogni record livello conserva separatamente entrambi gli stili; cambiare o
   disattivare un'ombra non modifica i pixel autorevoli del layer.
 - Parametri Ombra esterna: attivazione, `Normal` oppure `Multiply` nero,
@@ -453,6 +462,17 @@ Paint:
   di `1500 ms`, riporta il pool a `0,6 MiB`. Il matte e le altre risorse
   persistenti non sono cambiati. Strategia firmata:
   `compositor-only-8-otherwise-width-tiered-1024-through-128-or-2048`.
+- Secondo esperimento isolato memoria del 27 luglio 2026: coverage R8 Traccia,
+  mask soglia, flag gate e indirect sono ora lazy insieme al toggle Traccia
+  (`18,023441 MiB` liberati), mentre il compositore resta sui placeholder.
+  Con sola Ombra esterna il totale scende `149,6→131,6 MiB`; con entrambe
+  `166,1→148,1 MiB`; tutti gli effetti OFF restano `92,7 MiB`. Nel runtime,
+  Traccia ON riporta le righe a coverage `16,0 MiB`, mask/controllo `2,5 MiB`
+  e pool `16,0 MiB`; OFF torna rispettivamente a `0`, `0,5` e `0,6 MiB`.
+  Due cicli ON/OFF (`131,6↔165,1` con esterna; `148,1↔181,6` con entrambe)
+  sono passati senza warning/errori WebGPU. Allocazione sotto transazione GPU,
+  rilascio solo dopo idle e bind group ricostruiti a ogni scambio. Strategia:
+  `allocate-on-stroke-enable-release-when-idle-disabled`.
 - Prova percettiva dell'utente approvata il 27 luglio 2026 sulla build locale:
   Ombra esterna e Ombra interna, controlli e risultato visivo sono stati
   giudicati «perfetti». L'approvazione promuove il gate percettivo del candidato
@@ -464,15 +484,16 @@ Paint:
   combinata ripetuta) e mip `0–8`, cioè `54` hash. Baseline vincolante in
   `goldens/raster-shadow-rgba8-v1.json`: combinato mip `0`
   `2b812a001c7951ea…`, combinato catena mip `f5bcd1e4caee360a…`.
-  Prima e dopo la riduzione scratch: `baselineMatches: true`, ripetizione
+  Prima e dopo entrambe le riduzioni memoria: `baselineMatches: true`, ripetizione
   combinata identica e zero warning/errori WebGPU. Il comando UI è separato da
   quello della Traccia e non tocca il disegno dell'utente.
 - Con entrambe le ombre OFF il fast path conserva il vecchio shader: Golden
   canonico mip `0` ancora `8d5a75a6…`; il combinato mip resta
   `9208e2a3…` con gli stessi `25` mismatch e i tre diagnostici delta massimo
-  `1` già aperti, quindi non sono stati nascosti o rigenerati. Telemetria rev
-  `49` firma build, strategie, stili, source mode, conteggi pass/build, extent
-  scratch e le quattro righe memoria dedicate.
+  `1` già aperti; bake mip `0`, gate e i tre retarget restano verdi, quindi il
+  lifecycle non ha nascosto o rigenerato la baseline. Telemetria rev `50` firma
+  anche strategia e residenza della geometria Traccia, oltre a build, stili,
+  source mode, conteggi pass/build, extent scratch e righe memoria dedicate.
 - Verifiche finali locali: `shadow:verify`, `effects-scratch:verify`,
   `history:verify`, `layers:verify`, `stroke:verify`, `bevel:verify`,
   `grain:verify`, `blend:verify`, `thickness:verify`, TypeScript e build Vite.
@@ -490,7 +511,7 @@ Paint:
   per la sorgente attiva. Il numero di working set resta quindi O(1) rispetto ai layer futuri; questa fase
   non introduce ancora layer multipli.
 - Build correnti: style stack
-  `style-stack-webgpu-v13-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even`,
+  `style-stack-webgpu-v14-lazy-stroke-geometry-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even`,
   Smusso
   `raster-bevel-webgpu-v4-shared-effects-scratch-retargetable-layer-heightfield-v2-r32f-segment-jfa-workgroup-gaussian-gpu-gate`
   e Ombre

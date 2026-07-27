@@ -198,6 +198,8 @@ interface BenchmarkRun {
     rasterStrokeCoverageMemoryMiB: number;
     rasterStrokeScratchMemoryMiB: number;
     rasterStrokeCoverageStrategy: string;
+    rasterStrokeGeometryStorageStrategy: string;
+    rasterStrokeGeometryResident: boolean;
     rasterStrokeStyledStorageStrategy: string;
     rasterStrokeDistanceStorageStrategy: string;
     rasterStrokeMutationGateStrategy: string;
@@ -337,7 +339,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch";
-    performanceTelemetryRevision: 49;
+    performanceTelemetryRevision: 50;
   };
 }
 
@@ -704,7 +706,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection: navigatorWithMetrics.connection?.effectiveType ?? navigatorWithMetrics.connection?.type ?? null,
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch",
-    performanceTelemetryRevision: 49,
+    performanceTelemetryRevision: 50,
     ...engineEnvironment,
   };
 }

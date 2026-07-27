@@ -318,6 +318,7 @@ assert.match(goldenSource, /outer-soft-linear/);
 assert.match(goldenSource, /inner-hard-cone-noise/);
 assert.match(goldenSource, /outer-inner-combined-restored/);
 assert.match(goldenSource, /scratchExtent: 8/);
+assert.match(goldenSource, /strokeGeometryEnabled: false/);
 assert.match(goldenSource, /baselineMatches: baselineMismatches\.length === 0/);
 assert.match(engineSource, /async runRasterShadowGolden\(\)/);
 assert.match(mainSource, /id="runRasterShadowGolden"|runRasterShadowGolden/);

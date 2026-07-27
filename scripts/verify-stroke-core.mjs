@@ -386,7 +386,7 @@ const goldenMipBaseline = JSON.parse(readFileSync(
 ));
 assert.match(
   rendererSource,
-  /style-stack-webgpu-v13-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even/,
+  /style-stack-webgpu-v14-lazy-stroke-geometry-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even/,
 );
 assert.ok(
   rendererSource.indexOf("bevelNode(base, position)")
@@ -423,7 +423,29 @@ assert.match(
   /composeRect = this\.mergeDirtyRects\(composeRect, mutationRect\);/,
 );
 assert.match(engineSource, /conditionalComposeRect = rebuildRect;/);
-assert.match(rendererSource, /this\.controlMemoryBytes = parameterBufferBytes/);
+assert.match(rendererSource, /allocate-on-stroke-enable-release-when-idle-disabled/);
+assert.match(rendererSource, /strokeGeometryEnabled\?: boolean/);
+assert.match(rendererSource, /options\.strokeGeometryEnabled !== false/);
+assert.match(rendererSource, /private async allocateStrokeGeometryResources\(\): Promise<boolean>/);
+assert.match(rendererSource, /runGpuAllocationTransaction\(/);
+assert.match(rendererSource, /private releaseStrokeGeometryResources\(\): boolean/);
+assert.match(rendererSource, /async setStrokeGeometryEnabled\(enabled: boolean\): Promise<boolean>/);
+assert.match(rendererSource, /return this\.strokeCoverageBuffer \?\? this\.coveragePlaceholderBuffer/);
+assert.match(rendererSource, /return this\.strokeThresholdMaskBuffer \?\? this\.thresholdMaskPlaceholderBuffer/);
+assert.match(
+  rendererSource,
+  /this\.strokeGeometryResourcesAllocated \? this\.fullCoverageMemoryBytes : 0/,
+);
+assert.match(
+  rendererSource,
+  /this\.strokeGeometryResourcesAllocated \? this\.fullThresholdMaskMemoryBytes : 0/,
+);
+assert.match(rendererSource, /this\.rebuildIndirectGateBindGroup\(\)/);
+assert.match(rendererSource, /Encode Traccia rifiutato: le risorse geometriche non sono allocate/);
+assert.match(engineSource, /strokeGeometryEnabled: strokeGeometryActive/);
+assert.match(engineSource, /await this\.rasterStrokeRenderer\.setStrokeGeometryEnabled/);
+assert.match(engineSource, /setStrokeGeometryEnabled\(false\)/);
+assert.match(engineSource, /rasterStrokeGeometryResident/);
 assert.match(rendererSource, /parameters\.scratchExtent/);
 assert.match(rendererSource, /resizeScratch\(requestedExtent: number\)/);
 assert.match(rendererSource, /readbackEnabled\?: boolean/);

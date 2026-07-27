@@ -687,9 +687,9 @@ const mainSource = readFileSync(
   "utf8",
 );
 assert.equal(
-  (mainSource.match(/performanceTelemetryRevision: 49/g) ?? []).length,
+  (mainSource.match(/performanceTelemetryRevision: 50/g) ?? []).length,
   2,
-  "tipo persistito e runtime devono avanzare insieme alla revisione 49",
+  "tipo persistito e runtime devono avanzare insieme alla revisione 50",
 );
 assert.match(mainSource, /layerBakeStrategy: string;/);
 assert.match(mainSource, /layerCompositeStrategy: string;/);
@@ -948,7 +948,7 @@ assert.match(
   "activateLayer deve garantire i renderer del livello entrante",
 );
 const ensureStart = engineSource.indexOf("private async ensureEffectRenderersForRecord(");
-const ensureBody = engineSource.slice(ensureStart, ensureStart + 1_400);
+const ensureBody = engineSource.slice(ensureStart, ensureStart + 1_800);
 assert.match(ensureBody, /layerEffectRendererRequirements\(/,
   "la decisione Smusso-only deve passare dall'invariante testato");
 assert.match(ensureBody, /if \(requirements\.needsStrokeRenderer\)/,
@@ -960,7 +960,11 @@ assert.match(
 );
 assert.match(ensureBody, /record\.strokeStyle\.enabled && record\.strokeStyle\.width > 0/,
   "un compositore senza Traccia deve usare lo scratch minimo");
-assert.match(ensureBody, /this\.rasterStrokeRenderer\.resizeScratch\(scratchExtent\)/);
+assert.match(ensureBody, /renderer\.resizeScratch\(scratchExtent\)/);
+assert.match(ensureBody, /setStrokeGeometryEnabled\(false\)/,
+  "un livello senza Traccia deve liberare la geometria residente condivisa");
+assert.match(engineSource, /strokeGeometryEnabled: strokeGeometryActive/,
+  "la creazione del compositore deve rispettare la Traccia del livello entrante");
 
 // A failed activation mutates Blend, effects and live content fields before it
 // can reject. Rollback therefore has to run the complete activation path back
@@ -1125,7 +1129,7 @@ assert.match(exactStudyBody, /temporaryReadbackPeakMiB/);
 assert.match(layerHistoryGpuTestSource, /measureExactLayerStorageStudy\(\)/);
 assert.match(layerHistoryGpuTestSource, /conservativeTilesContainEveryExactTile/);
 assert.match(layerHistoryGpuTestSource, /exactReadbackReleasedItsTemporaryBuffers/);
-assert.match(mainSource, /performanceTelemetryRevision: 49/);
+assert.match(mainSource, /performanceTelemetryRevision: 50/);
 assert.match(mainSource, /gpuMemoryLayerCold/);
 assert.match(mainSource, /gpuMemoryLayerHydration/);
 assert.match(mainSource, /Raw livelli · effettivo/);
