@@ -59,6 +59,7 @@ function formatMemoryMiB(value: number): string {
 
 const canvas = element<HTMLCanvasElement>("gpuCanvas");
 const tipPreviewCanvas = element<HTMLCanvasElement>("tipPreviewCanvas");
+const appElement = element<HTMLElement>("app");
 const controlsPanel = element<HTMLElement>("controlsPanel");
 const toggleControlsButton = element<HTMLButtonElement>("toggleControls");
 const statusElement = element<HTMLParagraphElement>("status");
@@ -67,6 +68,8 @@ const benchmarkResult = element<HTMLParagraphElement>("benchmarkResult");
 const layerList = element<HTMLElement>("layerList");
 const addLayerButton = element<HTMLButtonElement>("addLayer");
 const layerSwitchResult = element<HTMLParagraphElement>("layerSwitchResult");
+const layerLoadingOverlay = element<HTMLElement>("layerLoadingOverlay");
+const layerLoadingLabel = element<HTMLParagraphElement>("layerLoadingLabel");
 const layerMemoryStressSection = element<HTMLElement>("layerMemoryStressSection");
 const layerMemoryStressIntro = element<HTMLParagraphElement>("layerMemoryStressIntro");
 const iphoneMemoryDeviceControl = element<HTMLElement>("iphoneMemoryDeviceControl");
@@ -2915,6 +2918,21 @@ function syncActiveLayerControls(): void {
   updateRasterBevelControlAvailability();
 }
 
+async function showLayerLoading(message: string): Promise<void> {
+  layerLoadingLabel.textContent = message;
+  layerLoadingOverlay.hidden = false;
+  appElement.setAttribute("aria-busy", "true");
+  // The second callback starts only after the browser had a chance to paint
+  // the overlay. One requestAnimationFrame alone resumes before that paint.
+  await nextAnimationFrame();
+  await nextAnimationFrame();
+}
+
+function hideLayerLoading(): void {
+  layerLoadingOverlay.hidden = true;
+  appElement.removeAttribute("aria-busy");
+}
+
 function renderLayerList(stats: EngineStats): void {
   const locked = interactionLocked() || layerSwitching;
   addLayerButton.disabled = locked || stats.layers.length >= 16;
@@ -3061,6 +3079,10 @@ async function selectLayer(index: number): Promise<void> {
   if (layerSwitching || interactionLocked()) {
     return;
   }
+  if (index === engine.getStats().activeLayerIndex) {
+    layerSwitchResult.textContent = "Livello già attivo.";
+    return;
+  }
   let stressPeakMiB: number | null = null;
   let stressSampler = 0;
   let stressSwitchSummary: string | null = null;
@@ -3076,8 +3098,12 @@ async function selectLayer(index: number): Promise<void> {
   layerSwitching = true;
   updateHistoryControls();
   try {
+    await showLayerLoading("Caricamento livello…");
     const result = await engine.setActiveLayer(index);
     syncActiveLayerControls();
+    // activateLayer has restored textures, composites and effects at this
+    // point; waitForIdle also presents the resulting frame before uncovering it.
+    await engine.waitForIdle();
     layerSwitchResult.textContent = result
       ? `Livello ${result.toIndex + 1} attivo in ${result.totalMs.toFixed(0)} ms`
         + ` (campi effetti ${result.effectsMs.toFixed(0)} ms).`
@@ -3099,6 +3125,7 @@ async function selectLayer(index: number): Promise<void> {
         engine.getStats().gpuMemory.countedTotalMiB,
       );
     }
+    hideLayerLoading();
     layerSwitching = false;
     updateHistoryControls();
     updateStats(engine.getStats());
@@ -3119,8 +3146,10 @@ addLayerButton.addEventListener("click", async () => {
   layerSwitching = true;
   updateHistoryControls();
   try {
+    await showLayerLoading("Creazione livello…");
     const result = await engine.addLayer();
     syncActiveLayerControls();
+    await engine.waitForIdle();
     layerSwitchResult.textContent =
       `Livello ${result.toIndex + 1} creato e attivo in ${result.totalMs.toFixed(0)} ms.`;
   } catch (error) {
@@ -3128,6 +3157,7 @@ addLayerButton.addEventListener("click", async () => {
       ? error.message
       : "Creazione livello non riuscita.";
   } finally {
+    hideLayerLoading();
     layerSwitching = false;
     updateHistoryControls();
   }

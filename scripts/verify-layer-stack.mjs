@@ -745,6 +745,14 @@ const mainSource = readFileSync(
   new URL("../src/main.ts", import.meta.url),
   "utf8",
 );
+const indexSource = readFileSync(
+  new URL("../index.html", import.meta.url),
+  "utf8",
+);
+const stylesSource = readFileSync(
+  new URL("../src/styles.css", import.meta.url),
+  "utf8",
+);
 assert.equal(
   (mainSource.match(/performanceTelemetryRevision: 56/g) ?? []).length,
   2,
@@ -764,7 +772,7 @@ assert.match(syncBody, /syncRasterBevelControls\(engine\.getRasterBevelStyle\(\)
 const selectStart = mainSource.indexOf("async function selectLayer(");
 assert.notEqual(selectStart, -1, "selectLayer deve esistere");
 assert.match(
-  mainSource.slice(selectStart, selectStart + 900),
+  mainSource.slice(selectStart, selectStart + 1_400),
   /await engine\.setActiveLayer\(index\);\s*syncActiveLayerControls\(\);/,
   "il cambio livello deve risincronizzare i controlli degli effetti",
 );
@@ -773,6 +781,45 @@ assert.match(
   /const result = await engine\.addLayer\(\);\s*syncActiveLayerControls\(\);/,
   "anche la creazione di un livello deve risincronizzare i controlli",
 );
+assert.match(
+  indexSource,
+  /id="layerLoadingOverlay"[\s\S]*?role="status"[\s\S]*?aria-live="polite"[\s\S]*?hidden/,
+  "il cambio livello deve avere un indicatore fullscreen annunciato e inizialmente nascosto",
+);
+assert.match(stylesSource, /\.layer-loading-overlay \{[\s\S]*?position: fixed;[\s\S]*?inset: 0;/);
+assert.match(stylesSource, /\.layer-loading-overlay\[hidden\] \{\s*display: none;/);
+assert.doesNotMatch(
+  stylesSource.slice(
+    stylesSource.indexOf(".layer-loading-overlay {"),
+    stylesSource.indexOf(".layer-loading-overlay[hidden]"),
+  ),
+  /backdrop-filter|filter:/,
+  "il loader fullscreen non deve introdurre una superficie di blur su iPhone",
+);
+const loadingStart = mainSource.indexOf("async function showLayerLoading(");
+const loadingBody = mainSource.slice(loadingStart, loadingStart + 900);
+assert.match(loadingBody, /layerLoadingOverlay\.hidden = false;/);
+assert.match(
+  loadingBody,
+  /await nextAnimationFrame\(\);\s*await nextAnimationFrame\(\);/,
+  "il loader deve ricevere un paint prima del lavoro di cambio livello",
+);
+assert.match(loadingBody, /layerLoadingOverlay\.hidden = true;/);
+const selectUiBody = mainSource.slice(selectStart, selectStart + 2_300);
+assert.match(
+  selectUiBody,
+  /await showLayerLoading\("Caricamento livello…"\);[\s\S]*?await engine\.setActiveLayer\(index\);[\s\S]*?await engine\.waitForIdle\(\);/,
+  "il loader dello switch deve coprire anche presentazione e completamento GPU",
+);
+assert.match(selectUiBody, /finally \{[\s\S]*?hideLayerLoading\(\);/);
+const addUiStart = mainSource.indexOf('addLayerButton.addEventListener("click"');
+const addUiBody = mainSource.slice(addUiStart, addUiStart + 1_300);
+assert.match(
+  addUiBody,
+  /await showLayerLoading\("Creazione livello…"\);[\s\S]*?await engine\.addLayer\(\);[\s\S]*?await engine\.waitForIdle\(\);/,
+  "anche il nuovo livello deve restare coperto finché il frame è pronto",
+);
+assert.match(addUiBody, /finally \{[\s\S]*?hideLayerLoading\(\);/);
 
 // The record's hasContent is only written back when a layer stops being active,
 // so reading it for the ACTIVE layer would report "empty" while the user paints.
