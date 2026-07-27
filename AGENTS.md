@@ -1428,3 +1428,19 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   e build Vite verdi; il bundle worker è separato (`3,15 kB`). Questa non è
   ancora una prova iPhone né una promozione: il prossimo passo è pubblicare la
   query e misurare reattività, memoria stabile e costo del primo cambio su iOS.
+- Esperimento isolato successivo del 27 luglio 2026, build
+  `worker-gzip-one-distant-layer-transient-fold-v2`: un livello compresso usato
+  soltanto per ricostruire le superfici fuse non viene più promosso a cold GPU
+  permanente. Ogni chunk viene verificato dal worker e scritto direttamente
+  nella singola texture hot transitoria già prevista dal fold; il fence unico
+  per record copre upload, eventuali effetti e compositing, poi la texture viene
+  distrutta. I byte compressi restano autorevoli e residenti in RAM. Soltanto
+  la selezione reale del livello conserva il percorso di ripristino cold→hot e
+  libera lo storage compresso dopo la pubblicazione.
+- Prova browser locale NVIDIA Ampere: con tre livelli il distante è passato da
+  `9,0 MiB` GPU a `0,7 MiB` RAM. L'aggiunta del quarto livello ha ricostruito il
+  fold lasciando lo stesso livello marcato compresso, senza messaggio di
+  ripristino e senza cold GPU persistente; zero warning/errori. Verifiche
+  `compression:verify`, `layers:verify` e TypeScript verdi. Il limite di un solo
+  livello compresso resta intenzionalmente attivo in questa run: la v2 isola
+  esclusivamente la semantica del fold transitorio.

@@ -8525,6 +8525,75 @@ export class BrushEngine {
     });
   }
 
+  private async uploadCompressedLayerIntoHot(
+    record: LayerRecord,
+    gpu: LayerGpuResources,
+    compressed: LayerCompressedColdStorageResources,
+    hot: LayerTextureResources,
+  ): Promise<void> {
+    const tileByteLength = LAYER_STORAGE_TILE_SIZE * LAYER_STORAGE_TILE_SIZE * 4;
+    let firstTile = 0;
+    let restoredBytes = 0;
+    let restoredHash = 0x811c9dc5;
+    for (const chunk of compressed.chunks) {
+      const restored = await this.decompressLayerColdChunk(chunk);
+      if (
+        gpu.compressed !== compressed
+        || gpu.cold
+        || restored.byteLength !== chunk.rawBytes
+        || restored.byteLength % tileByteLength !== 0
+      ) {
+        throw new Error(`Reidratazione transitoria livello ${record.id} non valida.`);
+      }
+      const chunkTileCount = restored.byteLength / tileByteLength;
+      if (firstTile + chunkTileCount > compressed.tileIndices.length) {
+        throw new Error(`Chunk transitorio livello ${record.id} oltre i tile attesi.`);
+      }
+      for (let chunkTile = 0; chunkTile < chunkTileCount; chunkTile += 1) {
+        const tileIndex = compressed.tileIndices[firstTile + chunkTile];
+        const tileX = tileIndex % LAYER_STORAGE_GRID_SIZE;
+        const tileY = Math.floor(tileIndex / LAYER_STORAGE_GRID_SIZE);
+        const byteOffset = chunkTile * tileByteLength;
+        this.device.queue.writeTexture(
+          {
+            texture: hot.texture,
+            origin: {
+              x: tileX * LAYER_STORAGE_TILE_SIZE,
+              y: tileY * LAYER_STORAGE_TILE_SIZE,
+              z: 0,
+            },
+          },
+          restored.subarray(byteOffset, byteOffset + tileByteLength),
+          {
+            bytesPerRow: LAYER_STORAGE_TILE_SIZE * 4,
+            rowsPerImage: LAYER_STORAGE_TILE_SIZE,
+          },
+          {
+            width: LAYER_STORAGE_TILE_SIZE,
+            height: LAYER_STORAGE_TILE_SIZE,
+            depthOrArrayLayers: 1,
+          },
+        );
+      }
+      firstTile += chunkTileCount;
+      restoredBytes += restored.byteLength;
+      restoredHash = combineCompressionHashes(
+        restoredHash,
+        chunk.sourceHash,
+        restored.byteLength,
+      );
+    }
+    if (
+      gpu.compressed !== compressed
+      || gpu.cold
+      || firstTile !== compressed.tileIndices.length
+      || restoredBytes !== compressed.rawBytes
+      || restoredHash !== compressed.sourceHash
+    ) {
+      throw new Error(`Integrità transitoria livello ${record.id} non valida.`);
+    }
+  }
+
   private async createHydratedLayerTexture(
     record: LayerRecord,
     gpu: LayerGpuResources,
@@ -8535,9 +8604,14 @@ export class BrushEngine {
     if (injectFault && completionPolicy !== "await-immediately") {
       throw new Error("Il fault hydrate richiede il completamento GPU immediato.");
     }
-    await this.ensureLayerColdStorageResident(record, gpu);
+    const transientCompressed = completionPolicy === "defer-to-fold-fence"
+      ? gpu.compressed
+      : null;
+    if (!transientCompressed) {
+      await this.ensureLayerColdStorageResident(record, gpu);
+    }
     const cold = gpu.cold;
-    if (record.hasContent && !cold) {
+    if (record.hasContent && !cold && !transientCompressed) {
       throw new Error(`Reidratazione livello ${record.id}: cold store mancante.`);
     }
     const memoryBytes = LAYER_SIZE * LAYER_SIZE
@@ -8549,7 +8623,9 @@ export class BrushEngine {
         const hot = this.allocateLayerTexture(this.layerFormat);
         this.liveLayerHydrationTextures.set(hot.texture, memoryBytes);
         transaction.deferRollback(() => this.destroyTransientLayerHydration(hot));
-        if (cold) {
+        if (transientCompressed) {
+          await this.uploadCompressedLayerIntoHot(record, gpu, transientCompressed, hot);
+        } else if (cold) {
           const encoder = this.device.createCommandEncoder({ label });
           this.encodeLayerColdHydration(encoder, cold, hot);
           this.device.queue.submit([encoder.finish()]);

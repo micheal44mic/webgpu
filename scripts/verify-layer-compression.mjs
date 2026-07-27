@@ -122,7 +122,7 @@ assert.doesNotMatch(studyBody, /destroyLayerColdStorage/);
 assert.match(studyBody, /countedGpuMiBAfter - countedGpuMiBBefore/);
 assert.match(studyBody, /measureLosslessGzipChunk/);
 
-assert.match(clientSource, /worker-gzip-one-distant-layer-idle-atomic-v1/);
+assert.match(clientSource, /worker-gzip-one-distant-layer-transient-fold-v2/);
 assert.match(clientSource, /new Worker\(/);
 assert.match(clientSource, /layer-cold-compression-worker\.ts/);
 assert.match(clientSource, /this\.worker\.postMessage\(message, transfer\)/);
@@ -148,6 +148,30 @@ assert.match(
   engineSource,
   /source\.gpu\.compressed = \{[\s\S]*?source\.gpu\.cold = null;[\s\S]*?destroyLayerColdStorage\(source\.cold\)/,
   "il cold GPU può essere distrutto solo dopo la pubblicazione atomica dei byte compressi",
+);
+const transientHydrationStart = engineSource.indexOf(
+  "private async uploadCompressedLayerIntoHot(",
+);
+const transientHydrationEnd = engineSource.indexOf(
+  "private async createHydratedLayerTexture(",
+  transientHydrationStart,
+);
+assert.ok(transientHydrationStart >= 0 && transientHydrationEnd > transientHydrationStart);
+const transientHydrationBody = engineSource.slice(
+  transientHydrationStart,
+  transientHydrationEnd,
+);
+assert.match(transientHydrationBody, /await this\.decompressLayerColdChunk\(chunk\)/);
+assert.match(transientHydrationBody, /this\.device\.queue\.writeTexture/);
+assert.match(transientHydrationBody, /restoredHash !== compressed\.sourceHash/);
+assert.doesNotMatch(
+  transientHydrationBody,
+  /gpu\.compressed = null/,
+  "il fold transitorio deve conservare lo storage compresso autorevole",
+);
+assert.match(
+  engineSource,
+  /const transientCompressed = completionPolicy === "defer-to-fold-fence"[\s\S]*?if \(!transientCompressed\) \{[\s\S]*?ensureLayerColdStorageResident/,
 );
 assert.match(engineSource, /await this\.ensureLayerColdStorageResident\(record, gpu\)/);
 assert.match(engineSource, /await this\.decompressLayerColdChunk\(chunk\)/);
