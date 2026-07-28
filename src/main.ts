@@ -299,6 +299,14 @@ interface BenchmarkRun {
     activeLayerId: number;
     countedGpuMemoryMiB: number;
     vectorTextPresentationMiB: number;
+    vectorTextAdaptiveZoomStrategy: string | null;
+    vectorTextAdaptiveZoomEnabled: boolean;
+    vectorTextZoomRenderMode: string | null;
+    vectorTextZoomFastModeArmed: boolean;
+    vectorTextZoomFastActivationCount: number;
+    vectorTextZoomExactRecoveryCount: number;
+    vectorTextZoomLastTriggerRenderMs: number;
+    vectorTextZoomLastTriggerEndToEndMs: number;
     mixedSceneStrategy: string | null;
     mixedSceneItemCount: number;
     mixedSceneTextNodeCount: number;
@@ -413,7 +421,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet";
-    performanceTelemetryRevision: 57;
+    performanceTelemetryRevision: 58;
   };
 }
 
@@ -859,6 +867,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
   const stats = engine.getStats();
   const scene = stats.mixedScene;
   const session = mixedMemoryBenchmarkReport;
+  const vectorTextDiagnostics = vectorTextPrototype?.getDiagnostics() ?? null;
   return {
     userAgent: navigator.userAgent,
     platform: navigator.platform,
@@ -875,9 +884,21 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     viewRotationDegrees: Number(engine.getViewRotationDegrees().toFixed(3)),
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet",
-    performanceTelemetryRevision: 57,
+    performanceTelemetryRevision: 58,
     countedGpuMemoryMiB: stats.gpuMemory.countedTotalMiB,
     vectorTextPresentationMiB: stats.gpuMemory.vectorTextPresentationMiB,
+    vectorTextAdaptiveZoomStrategy: vectorTextDiagnostics?.adaptiveZoomStrategy ?? null,
+    vectorTextAdaptiveZoomEnabled: vectorTextDiagnostics?.adaptiveZoomEnabled ?? false,
+    vectorTextZoomRenderMode: vectorTextDiagnostics?.zoomRenderMode ?? null,
+    vectorTextZoomFastModeArmed: vectorTextDiagnostics?.zoomFastModeArmed ?? false,
+    vectorTextZoomFastActivationCount:
+      vectorTextDiagnostics?.zoomFastActivationCount ?? 0,
+    vectorTextZoomExactRecoveryCount:
+      vectorTextDiagnostics?.zoomExactRecoveryCount ?? 0,
+    vectorTextZoomLastTriggerRenderMs:
+      vectorTextDiagnostics?.lastAdaptiveZoomTriggerRenderMs ?? 0,
+    vectorTextZoomLastTriggerEndToEndMs:
+      vectorTextDiagnostics?.lastAdaptiveZoomTriggerEndToEndMs ?? 0,
     mixedSceneStrategy: scene?.strategy ?? null,
     mixedSceneItemCount: scene?.items.length ?? 0,
     mixedSceneTextNodeCount:
@@ -2596,42 +2617,48 @@ async function runMixedMemoryZoomProbe(): Promise<MixedMemoryZoomProbe> {
   if (!controller) {
     throw new Error("Controller testo non disponibile per il probe zoom.");
   }
-  const factors = [1.15, 1.15, 1.15, 1 / 1.15, 1 / 1.15, 1 / 1.15, 1.35, 1 / 1.35];
-  const vectorRenderMs: number[] = [];
-  const endToEndMs: number[] = [];
+  controller.setAdaptiveZoomEnabled(false);
+  try {
+    const factors =
+      [1.15, 1.15, 1.15, 1 / 1.15, 1 / 1.15, 1 / 1.15, 1.35, 1 / 1.35];
+    const vectorRenderMs: number[] = [];
+    const endToEndMs: number[] = [];
 
-  engine.fitView();
-  await nextAnimationFrame();
-  await nextAnimationFrame();
-  await engine.waitForIdle();
-
-  for (const factor of factors) {
-    const before = controller.getDiagnostics();
-    const startedAt = performance.now();
-    engine.zoomBy(factor);
-    const rendered = await waitForVectorTextRenderAfter(before.renderCount);
+    engine.fitView();
+    await nextAnimationFrame();
+    await nextAnimationFrame();
     await engine.waitForIdle();
-    vectorRenderMs.push(rendered.lastRenderMs);
-    endToEndMs.push(performance.now() - startedAt);
+
+    for (const factor of factors) {
+      const before = controller.getDiagnostics();
+      const startedAt = performance.now();
+      engine.zoomBy(factor);
+      const rendered = await waitForVectorTextRenderAfter(before.renderCount);
+      await engine.waitForIdle();
+      vectorRenderMs.push(rendered.lastRenderMs);
+      endToEndMs.push(performance.now() - startedAt);
+    }
+
+    engine.fitView();
+    await nextAnimationFrame();
+    await nextAnimationFrame();
+    await engine.waitForIdle();
+
+    return {
+      version: 1,
+      factors,
+      vectorRenderMs,
+      endToEndMs,
+      vectorRenderP50Ms: percentile(vectorRenderMs, 0.5),
+      vectorRenderP95Ms: percentile(vectorRenderMs, 0.95),
+      vectorRenderMaxMs: Math.max(...vectorRenderMs),
+      endToEndP50Ms: percentile(endToEndMs, 0.5),
+      endToEndP95Ms: percentile(endToEndMs, 0.95),
+      endToEndMaxMs: Math.max(...endToEndMs),
+    };
+  } finally {
+    controller.setAdaptiveZoomEnabled(true);
   }
-
-  engine.fitView();
-  await nextAnimationFrame();
-  await nextAnimationFrame();
-  await engine.waitForIdle();
-
-  return {
-    version: 1,
-    factors,
-    vectorRenderMs,
-    endToEndMs,
-    vectorRenderP50Ms: percentile(vectorRenderMs, 0.5),
-    vectorRenderP95Ms: percentile(vectorRenderMs, 0.95),
-    vectorRenderMaxMs: Math.max(...vectorRenderMs),
-    endToEndP50Ms: percentile(endToEndMs, 0.5),
-    endToEndP95Ms: percentile(endToEndMs, 0.95),
-    endToEndMaxMs: Math.max(...endToEndMs),
-  };
 }
 
 async function runRequestedMixedMemoryBenchmark(): Promise<void> {

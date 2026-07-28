@@ -860,6 +860,37 @@ select {
   contain: strict;
 }
 
+.vector-text-zoom-mode {
+  position: absolute;
+  z-index: 3;
+  top: 12px;
+  left: 12px;
+  max-width: calc(100% - 24px);
+  padding: 7px 10px;
+  border: 1px solid rgba(139, 151, 178, 0.36);
+  border-radius: 999px;
+  background: rgba(17, 20, 29, 0.88);
+  color: #cbd2e8;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.24);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  pointer-events: none;
+  user-select: none;
+  backdrop-filter: blur(8px);
+}
+
+.vector-text-zoom-mode[data-mode="fast"] {
+  border-color: rgba(255, 183, 77, 0.62);
+  background: rgba(57, 38, 13, 0.92);
+  color: #ffd08a;
+}
+
+.vector-text-zoom-mode[hidden] {
+  display: none;
+}
+
 #vectorTextInteractionCanvas {
   position: absolute;
   z-index: 1;

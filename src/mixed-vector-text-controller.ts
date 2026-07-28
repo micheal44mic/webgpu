@@ -35,6 +35,14 @@ import {
   VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY,
   VectorTextSingleShadowBlurRenderer,
 } from "./vector-text-single-shadow";
+import {
+  VECTOR_TEXT_ADAPTIVE_ZOOM_SETTLE_MS,
+  VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
+  VectorTextAdaptiveZoomDetector,
+  type VectorTextZoomFrameAssessment,
+} from "./vector-text-adaptive-zoom";
+
+type VectorTextZoomRenderMode = "precise" | "fast";
 
 
 export interface MixedVectorTextHost {
@@ -47,6 +55,7 @@ export interface MixedVectorTextHost {
     placement: VectorTextPlacement,
   ): VectorTextGpuPresentationStats;
   clearVectorTextPresentation(placement?: VectorTextPlacement): void;
+  setVectorTextFastPresentationEnabled(enabled: boolean): void;
   addVectorTextNode(
     seed: VectorTextNodeSeed,
     name?: string,
@@ -68,6 +77,16 @@ export interface MixedVectorTextDiagnostics {
   blockShadowStrategy: typeof VECTOR_TEXT_BLOCK_SHADOW_STRATEGY;
   singleShadowStrategy: typeof VECTOR_TEXT_SINGLE_SHADOW_STRATEGY;
   singleShadowBlurStrategy: typeof VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY;
+  adaptiveZoomStrategy: typeof VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY;
+  adaptiveZoomEnabled: boolean;
+  zoomRenderMode: VectorTextZoomRenderMode;
+  zoomFastModeArmed: boolean;
+  zoomSlowFrameStreak: number;
+  zoomFastActivationCount: number;
+  zoomExactRecoveryCount: number;
+  lastViewRenderEndToEndMs: number;
+  lastAdaptiveZoomTriggerRenderMs: number;
+  lastAdaptiveZoomTriggerEndToEndMs: number;
   selectedKey: MixedSceneItem["key"] | null;
   textNodeCount: number;
   renderCount: number;
@@ -276,6 +295,7 @@ export class MixedVectorTextController {
   private readonly moveDownButton = requiredElement<HTMLButtonElement>("moveVectorTextDown");
   private readonly resetButton = requiredElement<HTMLButtonElement>("vectorTextReset");
   private readonly status = requiredElement<HTMLElement>("vectorTextStatus");
+  private readonly zoomModeIndicator = requiredElement<HTMLElement>("vectorTextZoomMode");
 
   private readonly presentationContext: CanvasRenderingContext2D;
   private readonly interactionContext: CanvasRenderingContext2D;
@@ -301,6 +321,23 @@ export class MixedVectorTextController {
   private viewportTextureCount = 0;
   private renderedTextRunKeys = new Set<VectorTextPlacement>();
   private sceneOperationBusy = false;
+  private readonly adaptiveZoomDetector = new VectorTextAdaptiveZoomDetector();
+  private adaptiveZoomEnabled = true;
+  private zoomRenderMode: VectorTextZoomRenderMode = "precise";
+  private adaptiveZoomFastArmed = false;
+  private pendingViewRender = false;
+  private pendingViewRenderStartedAt = 0;
+  private viewIdleTimer: number | null = null;
+  private fastRecoveryRequest: number | null = null;
+  private fastOverlayRequest: number | null = null;
+  private exitFastAfterScheduledRender = false;
+  private zoomFastActivationCount = 0;
+  private zoomExactRecoveryCount = 0;
+  private lastViewRenderEndToEndMs = 0;
+  private lastAdaptiveZoomTriggerRenderMs = 0;
+  private lastAdaptiveZoomTriggerEndToEndMs = 0;
+  private lastExactCanvasWidth = 0;
+  private lastExactCanvasHeight = 0;
 
   constructor(private readonly host: MixedVectorTextHost) {
     const presentationContext = this.presentationCanvas.getContext("2d", {
@@ -322,6 +359,8 @@ export class MixedVectorTextController {
     await this.fontGeometry.preload();
     this.section.hidden = false;
     this.presentationCanvas.hidden = false;
+    this.zoomModeIndicator.hidden = false;
+    this.updateAdaptiveZoomIndicator();
     this.bindControls();
     const initialSnapshot = this.host.getMixedSceneSnapshot();
     if (!initialSnapshot) {
@@ -334,6 +373,13 @@ export class MixedVectorTextController {
   }
 
   syncScene(snapshot: MixedSceneSnapshot): void {
+    this.adaptiveZoomFastArmed = false;
+    this.adaptiveZoomDetector.reset();
+    this.clearViewIdleTimer();
+    this.cancelFastRecovery();
+    if (this.zoomRenderMode === "fast") {
+      this.exitFastAfterScheduledRender = true;
+    }
     const interaction = this.activeInteraction;
     const interactionStillTargetsSelection =
       interaction !== null
@@ -389,9 +435,61 @@ export class MixedVectorTextController {
   }
 
   scheduleViewSync(): void {
-    if (this.snapshot?.items.some((item) => item.kind === "text")) {
+    if (!this.snapshot?.items.some((item) => item.kind === "text")) {
+      return;
+    }
+    const view = this.host.getVectorTextViewState();
+    this.armViewIdleTimer();
+    const canvasSizeChanged =
+      this.lastExactCanvasWidth > 0
+      && (
+        view.canvasWidth !== this.lastExactCanvasWidth
+        || view.canvasHeight !== this.lastExactCanvasHeight
+      );
+    if (
+      canvasSizeChanged
+      && (this.zoomRenderMode === "fast" || this.adaptiveZoomFastArmed)
+    ) {
+      this.adaptiveZoomFastArmed = false;
+      this.adaptiveZoomDetector.reset();
+      if (this.zoomRenderMode === "fast") {
+        this.exitFastAfterScheduledRender = true;
+      }
+      this.markPendingViewRender();
+      this.scheduleRender();
+      return;
+    }
+
+    if (
+      this.adaptiveZoomEnabled
+      && (this.zoomRenderMode === "fast" || this.adaptiveZoomFastArmed)
+    ) {
+      this.cancelFastRecovery();
+      if (this.zoomRenderMode !== "fast") {
+        this.enterFastZoomMode();
+      }
+      this.scheduleFastInteractionOverlay();
+      return;
+    }
+
+    this.markPendingViewRender();
+    this.scheduleRender();
+  }
+
+  setAdaptiveZoomEnabled(enabled: boolean): void {
+    if (this.adaptiveZoomEnabled === enabled) {
+      return;
+    }
+    this.adaptiveZoomEnabled = enabled;
+    this.adaptiveZoomFastArmed = false;
+    this.adaptiveZoomDetector.reset();
+    this.clearViewIdleTimer();
+    this.cancelFastRecovery();
+    if (!enabled && this.zoomRenderMode === "fast") {
+      this.exitFastAfterScheduledRender = true;
       this.scheduleRender();
     }
+    this.updateAdaptiveZoomIndicator();
   }
 
   getDiagnostics(): MixedVectorTextDiagnostics {
@@ -404,6 +502,16 @@ export class MixedVectorTextController {
       blockShadowStrategy: VECTOR_TEXT_BLOCK_SHADOW_VECTOR_STRATEGY,
       singleShadowStrategy: VECTOR_TEXT_SINGLE_SHADOW_STRATEGY,
       singleShadowBlurStrategy: VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY,
+      adaptiveZoomStrategy: VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
+      adaptiveZoomEnabled: this.adaptiveZoomEnabled,
+      zoomRenderMode: this.zoomRenderMode,
+      zoomFastModeArmed: this.adaptiveZoomFastArmed,
+      zoomSlowFrameStreak: this.adaptiveZoomDetector.streak,
+      zoomFastActivationCount: this.zoomFastActivationCount,
+      zoomExactRecoveryCount: this.zoomExactRecoveryCount,
+      lastViewRenderEndToEndMs: this.lastViewRenderEndToEndMs,
+      lastAdaptiveZoomTriggerRenderMs: this.lastAdaptiveZoomTriggerRenderMs,
+      lastAdaptiveZoomTriggerEndToEndMs: this.lastAdaptiveZoomTriggerEndToEndMs,
       selectedKey: this.snapshot?.selectedKey ?? null,
       textNodeCount: this.snapshot?.items.filter((item) => item.kind === "text").length ?? 0,
       renderCount: this.renderCount,
@@ -736,6 +844,143 @@ export class MixedVectorTextController {
     });
   }
 
+  private markPendingViewRender(): void {
+    if (!this.pendingViewRender) {
+      this.pendingViewRenderStartedAt = performance.now();
+    }
+    this.pendingViewRender = true;
+  }
+
+  private clearViewIdleTimer(): void {
+    if (this.viewIdleTimer !== null) {
+      window.clearTimeout(this.viewIdleTimer);
+      this.viewIdleTimer = null;
+    }
+  }
+
+  private armViewIdleTimer(): void {
+    this.clearViewIdleTimer();
+    if (!this.adaptiveZoomEnabled) {
+      return;
+    }
+    this.viewIdleTimer = window.setTimeout(() => {
+      this.viewIdleTimer = null;
+      if (this.zoomRenderMode === "fast") {
+        this.requestFastRecovery();
+        return;
+      }
+      this.adaptiveZoomFastArmed = false;
+      this.adaptiveZoomDetector.reset();
+      this.updateAdaptiveZoomIndicator();
+    }, VECTOR_TEXT_ADAPTIVE_ZOOM_SETTLE_MS);
+  }
+
+  private cancelFastRecovery(): void {
+    if (this.fastRecoveryRequest !== null) {
+      cancelAnimationFrame(this.fastRecoveryRequest);
+      this.fastRecoveryRequest = null;
+    }
+  }
+
+  private requestFastRecovery(): void {
+    if (
+      this.fastRecoveryRequest !== null
+      || this.zoomRenderMode !== "fast"
+    ) {
+      return;
+    }
+    this.fastRecoveryRequest = requestAnimationFrame(() => {
+      this.fastRecoveryRequest = null;
+      if (this.zoomRenderMode === "fast") {
+        this.renderNow("recovery");
+      }
+    });
+  }
+
+  private enterFastZoomMode(): void {
+    if (this.zoomRenderMode === "fast") {
+      return;
+    }
+    this.zoomRenderMode = "fast";
+    this.adaptiveZoomFastArmed = false;
+    this.adaptiveZoomDetector.reset();
+    this.zoomFastActivationCount += 1;
+    this.host.setVectorTextFastPresentationEnabled(true);
+    this.updateAdaptiveZoomIndicator();
+  }
+
+  private finishFastZoomMode(): void {
+    if (this.zoomRenderMode !== "fast") {
+      return;
+    }
+    this.zoomRenderMode = "precise";
+    this.adaptiveZoomFastArmed = false;
+    this.adaptiveZoomDetector.reset();
+    this.zoomExactRecoveryCount += 1;
+    this.clearViewIdleTimer();
+    this.cancelFastRecovery();
+    this.host.setVectorTextFastPresentationEnabled(false);
+    this.updateAdaptiveZoomIndicator();
+  }
+
+  private handleAdaptiveZoomAssessment(
+    assessment: VectorTextZoomFrameAssessment,
+    renderMs: number,
+    endToEndMs: number,
+  ): void {
+    if (!assessment.shouldArmFastMode) {
+      return;
+    }
+    this.adaptiveZoomFastArmed = true;
+    this.lastAdaptiveZoomTriggerRenderMs = renderMs;
+    this.lastAdaptiveZoomTriggerEndToEndMs = endToEndMs;
+    this.armViewIdleTimer();
+    this.updateAdaptiveZoomIndicator();
+  }
+
+  private updateAdaptiveZoomIndicator(): void {
+    const triggerMs = Math.max(
+      this.lastAdaptiveZoomTriggerRenderMs,
+      this.lastAdaptiveZoomTriggerEndToEndMs,
+    );
+    this.zoomModeIndicator.dataset.mode = this.zoomRenderMode;
+    this.zoomModeIndicator.dataset.enabled = String(this.adaptiveZoomEnabled);
+    this.zoomModeIndicator.dataset.activations = String(this.zoomFastActivationCount);
+    this.zoomModeIndicator.dataset.triggerMs = triggerMs.toFixed(2);
+    if (this.zoomRenderMode === "fast") {
+      this.zoomModeIndicator.textContent =
+        `Zoom testo · rapido · ${Math.round(triggerMs)} ms`;
+      this.zoomModeIndicator.title =
+        "Cache testo congelate e riproiettate sulla GPU; qualità piena al termine del gesto.";
+      return;
+    }
+    this.zoomModeIndicator.textContent = "Zoom testo · preciso";
+    this.zoomModeIndicator.title = this.adaptiveZoomEnabled
+      ? "Il fallback rapido si attiva soltanto quando i frame dello zoom sono lenti."
+      : "Fallback rapido sospeso per una misurazione esatta.";
+  }
+
+  private scheduleFastInteractionOverlay(): void {
+    if (this.fastOverlayRequest !== null) {
+      return;
+    }
+    this.fastOverlayRequest = requestAnimationFrame(() => {
+      this.fastOverlayRequest = null;
+      if (this.zoomRenderMode !== "fast") {
+        return;
+      }
+      const view = this.host.getVectorTextViewState();
+      this.syncCanvasSizes(view);
+      const selectedNode = this.selectedTextNode();
+      if (selectedNode) {
+        this.metrics = this.measureText(selectedNode);
+        this.renderInteractionOverlay(view, selectedNode);
+      } else {
+        this.clearInteractionOverlay(view);
+      }
+    });
+  }
+
   private syncCanvasSizes(view: VectorTextViewState): void {
     for (const canvas of [this.presentationCanvas, this.interactionCanvas]) {
       if (canvas.width !== view.canvasWidth || canvas.height !== view.canvasHeight) {
@@ -924,7 +1169,14 @@ export class MixedVectorTextController {
     context.setTransform(a, b, c, d, e, f);
   }
 
-  private renderNow(): void {
+  private renderNow(origin: "scheduled" | "recovery" = "scheduled"): void {
+    const wasViewRender = this.pendingViewRender;
+    const viewRenderStartedAt = this.pendingViewRenderStartedAt;
+    this.pendingViewRender = false;
+    this.pendingViewRenderStartedAt = 0;
+    const shouldExitFastAfterRender =
+      origin === "recovery" || this.exitFastAfterScheduledRender;
+    this.exitFastAfterScheduledRender = false;
     const startedAt = performance.now();
     const view = this.host.getVectorTextViewState();
     this.syncCanvasSizes(view);
@@ -1021,12 +1273,40 @@ export class MixedVectorTextController {
       this.clearInteractionOverlay(view);
     }
 
-    this.lastRenderMs = performance.now() - startedAt;
+    const finishedAt = performance.now();
+    this.lastRenderMs = finishedAt - startedAt;
+    this.lastExactCanvasWidth = view.canvasWidth;
+    this.lastExactCanvasHeight = view.canvasHeight;
     this.renderSamples.push(this.lastRenderMs);
     if (this.renderSamples.length > FRAME_SAMPLE_LIMIT) {
       this.renderSamples.splice(0, this.renderSamples.length - FRAME_SAMPLE_LIMIT);
     }
     this.renderCount += 1;
+    if (shouldExitFastAfterRender && this.zoomRenderMode === "fast") {
+      this.finishFastZoomMode();
+    }
+    if (wasViewRender) {
+      this.lastViewRenderEndToEndMs = Math.max(
+        this.lastRenderMs,
+        finishedAt - (viewRenderStartedAt || startedAt),
+      );
+      if (
+        this.adaptiveZoomEnabled
+        && this.zoomRenderMode === "precise"
+        && !shouldExitFastAfterRender
+      ) {
+        const assessment = this.adaptiveZoomDetector.observe({
+          renderMs: this.lastRenderMs,
+          endToEndMs: this.lastViewRenderEndToEndMs,
+        });
+        this.handleAdaptiveZoomAssessment(
+          assessment,
+          this.lastRenderMs,
+          this.lastViewRenderEndToEndMs,
+        );
+      }
+    }
+    this.updateAdaptiveZoomIndicator();
     this.updateStatus(view, selectedNode);
   }
 

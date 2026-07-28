@@ -1506,6 +1506,7 @@ const SHAPE_OCCUPANCY_MAP_BYTES = SHAPE_OCCUPANCY_WORDS_PER_MAP * 4;
 const BRUSH_UNIFORM_BYTES = 96;
 const GRAIN_UNIFORM_BYTES = 32;
 const DISPLAY_UNIFORM_BYTES = 64;
+const VECTOR_TEXT_CAPTURE_UNIFORM_BYTES = 32;
 const VIEW_ROTATION_SNAP_ENTER_RADIANS = 3 * Math.PI / 180;
 const VIEW_ROTATION_SNAP_RELEASE_RADIANS = 7 * Math.PI / 180;
 const LAYER_COMPOSITE_UNIFORM_BYTES = 32;
@@ -1515,6 +1516,7 @@ const STATIC_PAINT_BUFFER_BYTES =
   BRUSH_UNIFORM_BYTES * 2
   + GRAIN_UNIFORM_BYTES
   + DISPLAY_UNIFORM_BYTES
+  + VECTOR_TEXT_CAPTURE_UNIFORM_BYTES
   + LAYER_COMPOSITE_UNIFORM_BYTES
   + THICKNESS_TAIL_UNIFORM_BYTES
   + LIGHT_GLAZE_UNIFORM_BYTES
@@ -1941,6 +1943,8 @@ export class BrushEngine {
   private presentationCacheWidth = 0;
   private presentationCacheHeight = 0;
   private presentationCacheNeedsFullRebuild = true;
+  private vectorTextCaptureView: VectorTextViewState | null = null;
+  private vectorTextFastPresentationEnabled = false;
   private mixedSceneLinearTexture: GPUTexture | null = null;
   private mixedSceneLinearView: GPUTextureView | null = null;
   private mixedSceneLinearWidth = 0;
@@ -2011,6 +2015,7 @@ export class BrushEngine {
   private thicknessTailBrushUniformBuffer!: GPUBuffer;
   private grainUniformBuffer!: GPUBuffer;
   private displayUniformBuffer!: GPUBuffer;
+  private vectorTextCaptureUniformBuffer!: GPUBuffer;
   private thicknessTailDisplayUniformBuffer!: GPUBuffer;
   private lightGlazeUniformBuffer!: GPUBuffer;
   private instanceBuffer!: GPUBuffer;
@@ -2148,6 +2153,7 @@ export class BrushEngine {
   private readonly thicknessTailBrushUniformUpload = new ArrayBuffer(BRUSH_UNIFORM_BYTES);
   private readonly grainUniformUpload = new Float32Array(GRAIN_UNIFORM_BYTES / 4);
   private readonly displayUniformUpload = new Float32Array(DISPLAY_UNIFORM_BYTES / 4);
+  private readonly vectorTextCaptureUniformUpload = new Float32Array(8);
   private layerCompositeUniformBuffer!: GPUBuffer;
   private readonly thicknessTailDisplayUniformUpload = new ArrayBuffer(
     THICKNESS_TAIL_UNIFORM_BYTES,
@@ -3466,6 +3472,58 @@ export class BrushEngine {
   private notifyViewChange(): void {
     this.callbacks.onViewChange?.(this.getVectorTextViewState());
   }
+
+  private writeVectorTextCaptureUniforms(): void {
+    const view = this.vectorTextCaptureView ?? this.getVectorTextViewState();
+    const upload = this.vectorTextCaptureUniformUpload;
+    upload[0] = view.canvasWidth;
+    upload[1] = view.canvasHeight;
+    upload[2] = view.rotationCos;
+    upload[3] = view.rotationSin;
+    upload[4] = view.centerX;
+    upload[5] = view.centerY;
+    upload[6] = view.zoom;
+    upload[7] = this.vectorTextFastPresentationEnabled ? 1 : 0;
+    this.device.queue.writeBuffer(
+      this.vectorTextCaptureUniformBuffer,
+      0,
+      upload,
+    );
+  }
+
+  private captureVectorTextPresentationView(): void {
+    const next = this.getVectorTextViewState();
+    const previous = this.vectorTextCaptureView;
+    if (
+      previous
+      && previous.canvasWidth === next.canvasWidth
+      && previous.canvasHeight === next.canvasHeight
+      && previous.centerX === next.centerX
+      && previous.centerY === next.centerY
+      && previous.zoom === next.zoom
+      && previous.rotationCos === next.rotationCos
+      && previous.rotationSin === next.rotationSin
+    ) {
+      return;
+    }
+    this.vectorTextCaptureView = next;
+    this.writeVectorTextCaptureUniforms();
+  }
+
+  setVectorTextFastPresentationEnabled(enabled: boolean): void {
+    if (!this.vectorTextPrototypeEnabled || !this.initialized) {
+      return;
+    }
+    const next = enabled && this.vectorTextCaptureView !== null;
+    if (this.vectorTextFastPresentationEnabled === next) {
+      return;
+    }
+    this.vectorTextFastPresentationEnabled = next;
+    this.writeVectorTextCaptureUniforms();
+    this.displayDirty = true;
+    this.presentationCacheNeedsFullRebuild = true;
+    this.requestRender();
+  }
   updateVectorTextPresentation(
     source: HTMLCanvasElement,
     placement: VectorTextPlacement,
@@ -3480,6 +3538,7 @@ export class BrushEngine {
         `Cache testo ${source.width}×${source.height} diversa dal viewport ${width}×${height}.`,
       );
     }
+    this.captureVectorTextPresentationView();
     const texture = this.ensureVectorTextPresentationTexture(width, height, placement);
     this.device.queue.copyExternalImageToTexture(
       { source },
@@ -3547,6 +3606,9 @@ export class BrushEngine {
     ) {
       this.vectorTextTextureWidth = 0;
       this.vectorTextTextureHeight = 0;
+      this.vectorTextCaptureView = null;
+      this.vectorTextFastPresentationEnabled = false;
+      this.writeVectorTextCaptureUniforms();
     }
     if (legacyBindingsChanged) {
       this.rebuildVectorTextDisplayBindGroup();
@@ -7300,6 +7362,11 @@ export class BrushEngine {
       size: DISPLAY_UNIFORM_BYTES,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    this.vectorTextCaptureUniformBuffer = this.device.createBuffer({
+      label: "Adaptive vector text capture view uniforms",
+      size: VECTOR_TEXT_CAPTURE_UNIFORM_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
 
     this.layerCompositeUniformBuffer = this.device.createBuffer({
       label: "Layer composite opacity",
@@ -8010,7 +8077,10 @@ export class BrushEngine {
       this.mixedSceneTextSegmentBindGroupLayout = this.device.createBindGroupLayout({
         label: "Mixed scene text segment bind group layout",
         entries: [
-          { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+          { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+          { binding: 1, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+          { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+          { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
         ],
       });
       this.mixedScenePresentBindGroupLayout = this.device.createBindGroupLayout({
@@ -13298,7 +13368,12 @@ export class BrushEngine {
         const bindGroup = this.device.createBindGroup({
           label: `Vector text ${key} segment bind group`,
           layout,
-          entries: [{ binding: 0, resource: view }],
+          entries: [
+            { binding: 0, resource: { buffer: this.displayUniformBuffer } },
+            { binding: 1, resource: { buffer: this.vectorTextCaptureUniformBuffer } },
+            { binding: 2, resource: view },
+            { binding: 3, resource: this.sampler },
+          ],
         });
         this.vectorTextRunTextures.set(key, { texture, view, bindGroup });
         return texture;

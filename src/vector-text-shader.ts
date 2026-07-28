@@ -3,14 +3,15 @@ import { mergedSurfaceSamplingShader } from "./merged-surface-shader";
 /**
  * Kittl/Fabric-style semantic text presentation.
  *
- * Text remains an ordered semantic object on the CPU. Every view or text
- * change rerasterizes each contiguous text run into a viewport-sized sRGB
- * cache. A separate ordered RGBA16F compositor interleaves those runs with raster runs.
- * Selection is drawn by a separate interaction canvas and never changes the
- * pixels used for presentation.
+ * Text remains an ordered semantic object on the CPU. Exact view and text
+ * changes rasterize each contiguous text run into a viewport-sized sRGB
+ * cache. Under measured frame pressure, continuous view changes temporarily
+ * reproject the frozen caches on the GPU; idle recovery rasterizes the exact
+ * final view. A separate RGBA16F compositor preserves raster/text ordering,
+ * while selection stays in an independent interaction canvas.
  */
 export const VECTOR_TEXT_PRESENTATION_STRATEGY =
-  "semantic-text-run-viewport-rgba8-srgb-segmented-rgba16f-scene-v4" as const;
+  "semantic-text-run-viewport-rgba8-srgb-segmented-rgba16f-adaptive-zoom-v5" as const;
 
 export const vectorTextDisplayShader = /* wgsl */ `
 struct DisplayUniforms {

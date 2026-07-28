@@ -1941,7 +1941,7 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   Vite verdi. QA conservata in `design-qa.md`. Non ancora committata,
   pubblicata né provata su touch/iPhone.
 
-### Scenario misto 800 MiB · testo/raster (benchmark rev 57)
+### Scenario misto 800 MiB · testo/raster (benchmark rev 58)
 
 - Limiti applicativi correnti, indipendenti dal dispositivo: massimo `64` nodi
   testo semantici (`VECTOR_TEXT_NODE_MAXIMUM`) e `16` livelli raster
@@ -1976,10 +1976,32 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   GPU idle p95 `25,1→163,8 ms` (`6,5×`). Lo scenario massimo resta modificabile
   e non genera errori, ma **non è fluido nello zoom** neppure sul desktop: usare
   questi limiti come stress/OOM envelope, non come budget consigliato.
-- La telemetria passa a rev `57` e firma working set totale, memoria testo GPU,
-  conteggi scena/stili/run, memoria browser logica, baseline/carico zoom e
-  rapporti di rallentamento. Le run benchmark rev `56` o precedenti non vanno
-  aggregate con queste. Tutte le 13 suite, TypeScript e build Vite production
-  sono verdi; nessun warning/error browser oltre ai log informativi noti.
-  Replay umano paired e prova fisica iPhone restano da eseguire sulla build
-  HTTPS: non dichiarare ancora l'impatto sul tratto né un limite sicuro iPhone.
+- La rev `57` firmava working set totale, memoria testo GPU, conteggi
+  scena/stili/run, memoria browser logica, baseline/carico zoom e rapporti di
+  rallentamento. Le run benchmark rev `56` o precedenti non vanno aggregate con
+  quelle misure esatte.
+- Fallback zoom testo adattivo implementato il 28 luglio 2026, strategia
+  `exact-until-frame-pressure-then-frozen-viewport-gpu-reprojection-idle-reraster-v1`.
+  Il detector osserva soltanto i render esatti causati dalla vista: arma dopo
+  due frame consecutivi con raster testo `≥20 ms` o end-to-end `≥36 ms`, oppure
+  dopo un solo frame severo `≥40/60 ms`. Dal cambio vista successivo conserva
+  le cache RGBA8 già presenti e le riproietta sulla GPU tramite le matrici di
+  vista catturata/corrente; dopo `250 ms` senza input ridisegna una volta tutti
+  i testi alla vista esatta e disattiva la riproiezione.
+- Il percorso preciso e i suoi pixel restano invariati. Il modo rapido non crea
+  copie dei nodi né nuove cache testo: aggiunge solo una uniform da `32 byte`.
+  Durante il gesto usa però lo snapshot filtrato della viewport precedente e
+  un'area appena rivelata fuori da quella viewport può restare trasparente fino
+  al recupero esatto; l'HUD espone sempre `Zoom testo · preciso/rapido`.
+- Il probe zoom canonico sospende esplicitamente il fallback, così continua a
+  misurare il costo esatto ed è confrontabile con rev `57`. Sul desktop NVIDIA
+  leggero, cinque cambi zoom consecutivi hanno dato ultimo render `0,30 ms`,
+  p95 `0,50 ms` e zero attivazioni; nello stress `800,9 MiB` il renderer testo
+  esatto è rimasto circa a p95 `12 ms`, quindi correttamente non si è attivato
+  con le soglie production. Una prova controllata con soglie temporaneamente
+  abbassate ha attraversato `preciso→rapido→preciso`, compilato ed eseguito il
+  nuovo ramo WGSL e recuperato il raster esatto dopo idle; le soglie di test
+  sono state subito ripristinate.
+- La telemetria passa a rev `58` e aggiunge strategia, modo corrente,
+  armamento, streak, attivazioni/recuperi e tempi trigger. Tutte le 13 suite,
+  TypeScript e build Vite production sono verdi. La run fisica iPhone con il

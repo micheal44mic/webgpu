@@ -57,6 +57,14 @@ import {
   MIXED_SCENE_COMPOSITOR_STRATEGY,
   MIXED_SCENE_LINEAR_FORMAT,
 } from "../src/mixed-scene-compositor-shader.ts";
+import {
+  VECTOR_TEXT_ADAPTIVE_ZOOM_SEVERE_RENDER_MS,
+  VECTOR_TEXT_ADAPTIVE_ZOOM_SETTLE_MS,
+  VECTOR_TEXT_ADAPTIVE_ZOOM_SLOW_FRAME_COUNT,
+  VECTOR_TEXT_ADAPTIVE_ZOOM_SLOW_RENDER_MS,
+  VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
+  VectorTextAdaptiveZoomDetector,
+} from "../src/vector-text-adaptive-zoom.ts";
 
 const read = (relativePath) =>
   fs.readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
@@ -151,11 +159,44 @@ assert.ok(
 assert.equal(MIXED_SCENE_LINEAR_FORMAT, "rgba16float");
 assert.equal(
   MIXED_SCENE_COMPOSITOR_STRATEGY,
-  "ordered-raster-text-runs-rgba16f-viewport-source-over-v1",
+  "ordered-raster-text-runs-rgba16f-viewport-source-over-adaptive-text-reproject-v2",
 );
 assert.equal(
   VECTOR_TEXT_OUTLINE_STRATEGY,
   "canvas2d-glyph-stroke-semantic-viewport-zero-document-cache-v2",
+);
+
+assert.equal(
+  VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
+  "exact-until-frame-pressure-then-frozen-viewport-gpu-reprojection-idle-reraster-v1",
+);
+assert.equal(VECTOR_TEXT_ADAPTIVE_ZOOM_SLOW_RENDER_MS, 20);
+assert.equal(VECTOR_TEXT_ADAPTIVE_ZOOM_SEVERE_RENDER_MS, 40);
+assert.equal(VECTOR_TEXT_ADAPTIVE_ZOOM_SLOW_FRAME_COUNT, 2);
+assert.equal(VECTOR_TEXT_ADAPTIVE_ZOOM_SETTLE_MS, 250);
+const adaptiveZoomDetector = new VectorTextAdaptiveZoomDetector();
+assert.equal(
+  adaptiveZoomDetector.observe({ renderMs: 19, endToEndMs: 30 }).shouldArmFastMode,
+  false,
+);
+assert.equal(
+  adaptiveZoomDetector.observe({ renderMs: 22, endToEndMs: 30 }).shouldArmFastMode,
+  false,
+);
+assert.equal(
+  adaptiveZoomDetector.observe({ renderMs: 21, endToEndMs: 30 }).shouldArmFastMode,
+  true,
+);
+adaptiveZoomDetector.reset();
+assert.equal(adaptiveZoomDetector.streak, 0);
+assert.equal(
+  adaptiveZoomDetector.observe({ renderMs: 41, endToEndMs: 30 }).shouldArmFastMode,
+  true,
+);
+adaptiveZoomDetector.reset();
+assert.equal(
+  adaptiveZoomDetector.observe({ renderMs: 8, endToEndMs: 61 }).shouldArmFastMode,
+  true,
 );
 assert.equal(VECTOR_TEXT_OUTLINE_WIDTH_MAXIMUM, 100);
 assert.equal(VECTOR_TEXT_OUTLINE_MITER_LIMIT, 4);
@@ -350,13 +391,35 @@ assert.match(sceneSource, /key: `text-run:\$\{items\.map/);
 assert.match(engineSource, /canPaintSelectedSceneItem\(\)/);
 
 assert.match(shaderSource,
-  /semantic-text-run-viewport-rgba8-srgb-segmented-rgba16f-scene-v4/);
+  /semantic-text-run-viewport-rgba8-srgb-segmented-rgba16f-adaptive-zoom-v5/);
 assert.match(mixedCompositorSource,
-  /ordered-raster-text-runs-rgba16f-viewport-source-over-v1/);
+  /ordered-raster-text-runs-rgba16f-viewport-source-over-adaptive-text-reproject-v2/);
 assert.match(mixedCompositorSource, /MIXED_SCENE_LINEAR_FORMAT = "rgba16float"/);
 assert.match(mixedCompositorSource, /textureSampleLevel\(sourceTexture, sourceSampler, uv, lod\)/);
 assert.match(mixedCompositorSource, /return textureLoad\(sourceTexture, pixel, 0\)/);
 assert.match(mixedCompositorSource, /let paint = textureLoad\(sceneTexture, pixel, 0\)/);
+assert.match(mixedCompositorSource, /struct TextCaptureUniforms/);
+assert.match(mixedCompositorSource, /if \(capture\.fastMode < 0\.5\)/);
+assert.match(mixedCompositorSource, /let sourcePixel = capture\.canvasSize \* 0\.5/);
+assert.match(mixedCompositorSource,
+  /sourcePixel \/ sourceDimensions,[\s\S]*0\.0[\s\S]*\);/);
+assert.match(engineSource, /const VECTOR_TEXT_CAPTURE_UNIFORM_BYTES = 32/);
+assert.match(engineSource, /private vectorTextCaptureView: VectorTextViewState \| null/);
+assert.match(engineSource, /setVectorTextFastPresentationEnabled\(enabled: boolean\)/);
+assert.match(engineSource, /captureVectorTextPresentationView\(\)/);
+assert.match(engineSource,
+  /binding: 1, resource: \{ buffer: this\.vectorTextCaptureUniformBuffer \}/);
+assert.match(controllerSource, /new VectorTextAdaptiveZoomDetector\(\)/);
+assert.match(controllerSource, /this\.enterFastZoomMode\(\)/);
+assert.match(controllerSource, /this\.renderNow\("recovery"\)/);
+assert.match(controllerSource,
+  /window\.setTimeout\([\s\S]*VECTOR_TEXT_ADAPTIVE_ZOOM_SETTLE_MS/);
+assert.match(controllerSource, /this\.host\.setVectorTextFastPresentationEnabled\(true\)/);
+assert.match(controllerSource, /this\.host\.setVectorTextFastPresentationEnabled\(false\)/);
+assert.match(mainSource,
+  /controller\.setAdaptiveZoomEnabled\(false\)[\s\S]*finally[\s\S]*setAdaptiveZoomEnabled\(true\)/);
+assert.match(htmlSource, /id="vectorTextZoomMode"/);
+assert.match(styleSource, /\.vector-text-zoom-mode\[data-mode="fast"\]/);
 assert.match(mixedCompositorSource, /linearToSrgb\(compositedLinear\)/);
 assert.equal((effectShaderSource.match(/fn activeFragmentMain\(/g) ?? []).length, 3);
 assert.equal((strokeRendererSource.match(/fn activeFragmentMain\(/g) ?? []).length, 1);
@@ -485,6 +548,7 @@ for (const id of [
   "moveVectorTextUp",
   "vectorTextReset",
   "vectorTextStatus",
+  "vectorTextZoomMode",
   "vectorTextPresentationCanvas",
   "vectorTextInteractionCanvas",
   "gpuMemoryVectorText",

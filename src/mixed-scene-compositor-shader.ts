@@ -1,5 +1,5 @@
 export const MIXED_SCENE_COMPOSITOR_STRATEGY =
-  "ordered-raster-text-runs-rgba16f-viewport-source-over-v1" as const;
+  "ordered-raster-text-runs-rgba16f-viewport-source-over-adaptive-text-reproject-v2" as const;
 
 export const MIXED_SCENE_LINEAR_FORMAT = "rgba16float" as const;
 
@@ -88,7 +88,19 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
 `;
 
 export const mixedSceneTextSegmentShader = /* wgsl */ `
-@group(0) @binding(0) var sourceTexture: texture_2d<f32>;
+${displayUniformsShader}
+struct TextCaptureUniforms {
+  canvasSize: vec2<f32>,
+  viewRotation: vec2<f32>,
+  viewCenter: vec2<f32>,
+  zoom: f32,
+  fastMode: f32,
+};
+
+@group(0) @binding(0) var<uniform> display: DisplayUniforms;
+@group(0) @binding(1) var<uniform> capture: TextCaptureUniforms;
+@group(0) @binding(2) var sourceTexture: texture_2d<f32>;
+@group(0) @binding(3) var sourceSampler: sampler;
 
 ${fullscreenVertexShader}
 
@@ -96,11 +108,32 @@ ${fullscreenVertexShader}
 fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
   let dimensions = vec2<i32>(textureDimensions(sourceTexture, 0));
   let pixel = vec2<i32>(fragmentPosition.xy);
-  let inside = all(pixel >= vec2<i32>(0)) && all(pixel < dimensions);
-  if (!inside) {
+  if (capture.fastMode < 0.5) {
+    let inside = all(pixel >= vec2<i32>(0)) && all(pixel < dimensions);
+    if (!inside) {
+      return vec4<f32>(0.0);
+    }
+    return textureLoad(sourceTexture, pixel, 0);
+  }
+
+  let layerPosition = layerPositionAt(fragmentPosition.xy);
+  let layerDelta = layerPosition - capture.viewCenter;
+  let sourcePixel = capture.canvasSize * 0.5 + capture.zoom * vec2<f32>(
+    capture.viewRotation.x * layerDelta.x - capture.viewRotation.y * layerDelta.y,
+    capture.viewRotation.y * layerDelta.x + capture.viewRotation.x * layerDelta.y
+  );
+  let sourceDimensions = vec2<f32>(dimensions);
+  let insideSource = all(sourcePixel >= vec2<f32>(0.0))
+    && all(sourcePixel < sourceDimensions);
+  if (!insideSource) {
     return vec4<f32>(0.0);
   }
-  return textureLoad(sourceTexture, pixel, 0);
+  return textureSampleLevel(
+    sourceTexture,
+    sourceSampler,
+    sourcePixel / sourceDimensions,
+    0.0
+  );
 }
 `;
 
