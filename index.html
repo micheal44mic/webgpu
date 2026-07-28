@@ -324,11 +324,9 @@
           <label class="control">
             <span>Font</span>
             <select id="vectorTextFontFamily">
-              <option value="Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif">
-                Impact / condensato
-              </option>
-              <option value="'Arial Black', Arial, sans-serif">Arial Black</option>
-              <option value="Georgia, 'Times New Roman', serif">Georgia</option>
+              <option value="Anton">Anton / condensato</option>
+              <option value="Bebas Neue">Bebas Neue</option>
+              <option value="Poppins">Poppins</option>
             </select>
           </label>
 
@@ -381,6 +379,164 @@
             <p class="vector-text-outline-note">
               0 px disattiva la traccia. Effetto del nodo testo, senza un nuovo canvas 4096².
             </p>
+          </fieldset>
+
+          <fieldset class="vector-text-effect-controls">
+            <legend>Ombra testo</legend>
+            <label class="check-control">
+              <input id="vectorTextSingleShadowEnabled" type="checkbox" />
+              <span>
+                Ombra singola
+                <small>Una sola sagoma offset con blur della maschera alfa.</small>
+              </span>
+            </label>
+            <div id="vectorTextSingleShadowParameters" hidden>
+              <label class="control color-control">
+                <span>Colore</span>
+                <input id="vectorTextSingleShadowColor" type="color" value="#727272" />
+              </label>
+              <label class="control">
+                <span>
+                  Opacità <output id="vectorTextSingleShadowOpacityOut">100%</output>
+                </span>
+                <input
+                  id="vectorTextSingleShadowOpacity"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value="100"
+                />
+              </label>
+              <label class="control">
+                <span>
+                  Offset <output id="vectorTextSingleShadowOffsetOut">54</output>
+                </span>
+                <input
+                  id="vectorTextSingleShadowOffset"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value="54"
+                />
+              </label>
+              <label class="control">
+                <span>
+                  Angolo <output id="vectorTextSingleShadowAngleOut">−180°</output>
+                </span>
+                <input
+                  id="vectorTextSingleShadowAngle"
+                  type="range"
+                  min="-180"
+                  max="180"
+                  step="1"
+                  value="-180"
+                />
+              </label>
+              <label class="control">
+                <span>
+                  Blur <output id="vectorTextSingleShadowBlurOut">6</output>
+                </span>
+                <input
+                  id="vectorTextSingleShadowBlur"
+                  type="range"
+                  min="0"
+                  max="300"
+                  step="1"
+                  value="6"
+                />
+              </label>
+              <label class="control">
+                <span>
+                  Outline Width
+                  <output id="vectorTextSingleShadowOutlineWidthOut">0 px</output>
+                </span>
+                <input
+                  id="vectorTextSingleShadowOutlineWidth"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value="0"
+                  disabled
+                />
+              </label>
+              <p class="vector-text-effect-note">
+                La mask usa una ROI adattiva e uno scratch condiviso. Il blur
+                non entra nella bbox del testo e Outline Width resta a 0.
+              </p>
+            </div>
+            <label class="check-control">
+              <input id="vectorTextBlockShadowEnabled" type="checkbox" checked />
+              <span>
+                Block Shadow
+                <small>Estrusione piena della sagoma, come nel riferimento Kittl.</small>
+              </span>
+            </label>
+            <div id="vectorTextBlockShadowParameters">
+              <label class="control color-control">
+                <span>Colore</span>
+                <input id="vectorTextBlockShadowColor" type="color" value="#727272" />
+              </label>
+              <label class="control">
+                <span>
+                  Opacità <output id="vectorTextBlockShadowOpacityOut">100%</output>
+                </span>
+                <input
+                  id="vectorTextBlockShadowOpacity"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value="100"
+                />
+              </label>
+              <label class="control">
+                <span>
+                  Offset <output id="vectorTextBlockShadowOffsetOut">23</output>
+                </span>
+                <input
+                  id="vectorTextBlockShadowOffset"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value="23"
+                />
+              </label>
+              <label class="control">
+                <span>
+                  Angolo <output id="vectorTextBlockShadowAngleOut">−104°</output>
+                </span>
+                <input
+                  id="vectorTextBlockShadowAngle"
+                  type="range"
+                  min="-180"
+                  max="180"
+                  step="1"
+                  value="-104"
+                />
+              </label>
+              <label class="control">
+                <span>
+                  Outline Width
+                  <output id="vectorTextBlockShadowOutlineWidthOut">0 px</output>
+                </span>
+                <input
+                  id="vectorTextBlockShadowOutlineWidth"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value="0"
+                />
+              </label>
+              <p class="vector-text-effect-note">
+                Una sola silhouette vettoriale estrusa, dallo stesso core di
+                paint-webgpu-m1: nessuna pila di copie e nessun canvas aggiuntivo.
+              </p>
+            </div>
           </fieldset>
 
           <div class="vector-text-actions">

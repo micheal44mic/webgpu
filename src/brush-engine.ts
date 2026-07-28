@@ -4072,6 +4072,46 @@ export class BrushEngine {
     return true;
   }
 
+  /**
+   * Clears only the hot raster reserved for the query-gated mixed memory
+   * benchmark. The seeded cold rasters and every vector node remain resident,
+   * so repeated canonical replays measure the same working set. Normal
+   * documents must keep using resetDocument(), whose multi-layer guard remains
+   * unchanged.
+   */
+  resetActiveLayerForMemoryBenchmark(): boolean {
+    if (!this.layerMemoryStressTestEnabled || !this.mixedSceneStack) {
+      throw new Error("Reset benchmark misto non abilitato per questa pagina.");
+    }
+    if (this.historyBusy || this.layerSwitchBusy) {
+      return false;
+    }
+    this.cancelLayerColdCompressionIdle();
+    if (this.frameRequest !== null) {
+      cancelAnimationFrame(this.frameRequest);
+      this.frameRequest = null;
+    }
+    this.pendingStamps.length = 0;
+    this.pendingBlendBatches.length = 0;
+    this.activeStroke = null;
+    this.abandonLightGlazeSession();
+    this.invalidateAdaptivePreview();
+    this.resetHistoryState();
+    this.clearRequested = true;
+    this.displayDirty = true;
+    this.presentationCacheNeedsFullRebuild = true;
+    this.layerHasContent = false;
+    this.layerContentBounds = null;
+    clearLayerStorageTileMask(this.layerStack.active.storageTileMask);
+    this.persistActiveLayerState();
+    this.requestRender();
+    this.publishHistoryState();
+    this.scheduleEffectsScratchShrink();
+    this.scheduleBevelFieldShrink();
+    this.scheduleLayerColdCompression();
+    return true;
+  }
+
   async undo(): Promise<boolean> {
     return this.moveHistoryCursor(-1);
   }
@@ -10541,6 +10581,30 @@ export class BrushEngine {
       (scene) => scene.addTextAboveSelection(seed, name),
     );
     return { ...node };
+  }
+
+  /**
+   * Fixture-only batch insertion: sixty-four semantic text nodes are committed
+   * through one scene transaction and one merged-surface rebuild instead of
+   * paying that setup cost once per node. Rendering and document order are the
+   * same as repeated addVectorTextNode() calls.
+   */
+  async addVectorTextNodesBatch(
+    entries: readonly {
+      seed: VectorTextNodeSeed;
+      name?: string;
+    }[],
+  ): Promise<readonly Readonly<VectorTextNode>[]> {
+    if (!this.layerMemoryStressTestEnabled) {
+      throw new Error("Batch testi benchmark non abilitata per questa pagina.");
+    }
+    if (entries.length === 0) {
+      return [];
+    }
+    const nodes = await this.mutateMixedScenePresentation((scene) =>
+      entries.map((entry) => scene.addTextAboveSelection(entry.seed, entry.name))
+    );
+    return nodes.map((node) => ({ ...node }));
   }
 
   async setActiveMixedSceneItem(

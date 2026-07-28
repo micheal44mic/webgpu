@@ -26,6 +26,7 @@ import type {
 } from "./iphone-memory-limit-test";
 import type { LayerCompressionStudyReport } from "./layer-compression-study";
 import { MixedVectorTextController } from "./mixed-vector-text-controller";
+import type { MixedMemoryBenchmarkReport } from "./mixed-memory-benchmark";
 
 function element<T extends HTMLElement>(id: string): T {
   const result = document.getElementById(id);
@@ -130,6 +131,29 @@ type HumanStrokeTestBlendMode = "normal" | "m1-glaze";
 type HumanStrokeTestGrainMode = Extract<GrainMode, "off" | "texturized">;
 type HumanStrokeBackgroundStrategy = "transparent" | "multicolor-horizontal-stripes-v1";
 type BlendScratchState = "not-applicable" | "cold" | "warm";
+
+interface MixedMemoryZoomProbe {
+  readonly version: 1;
+  readonly factors: readonly number[];
+  readonly vectorRenderMs: readonly number[];
+  readonly endToEndMs: readonly number[];
+  readonly vectorRenderP50Ms: number;
+  readonly vectorRenderP95Ms: number;
+  readonly vectorRenderMaxMs: number;
+  readonly endToEndP50Ms: number;
+  readonly endToEndP95Ms: number;
+  readonly endToEndMaxMs: number;
+}
+
+interface MixedMemoryBenchmarkSessionReport extends MixedMemoryBenchmarkReport {
+  readonly browserCanvasLogicalMiB: number;
+  readonly vectorCpuKnownLogicalMiB: number;
+  readonly knownLogicalWorkingSetMiB: number;
+  readonly baselineZoomProbe: MixedMemoryZoomProbe;
+  readonly zoomProbe: MixedMemoryZoomProbe;
+  readonly zoomVectorP95SlowdownRatio: number;
+  readonly zoomEndToEndP95SlowdownRatio: number;
+}
 
 interface HumanStrokePoint extends LayerPoint {
   timeMs: number;
@@ -273,6 +297,28 @@ interface BenchmarkRun {
     layerMemoryMiB: number;
     layerCount: number;
     activeLayerId: number;
+    countedGpuMemoryMiB: number;
+    vectorTextPresentationMiB: number;
+    mixedSceneStrategy: string | null;
+    mixedSceneItemCount: number;
+    mixedSceneTextNodeCount: number;
+    mixedMemoryBenchmarkStrategy: string;
+    mixedMemoryBenchmarkReady: boolean;
+    mixedMemoryBenchmarkTargetMiB: number;
+    mixedMemoryBenchmarkRasterLayerCount: number;
+    mixedMemoryBenchmarkTextNodeCount: number;
+    mixedMemoryBenchmarkTextRunCount: number;
+    mixedMemoryBenchmarkBlockShadowTextCount: number;
+    mixedMemoryBenchmarkSingleShadowTextCount: number;
+    mixedMemoryBenchmarkBrowserCanvasLogicalMiB: number;
+    mixedMemoryBenchmarkVectorCpuKnownLogicalMiB: number;
+    mixedMemoryBenchmarkKnownLogicalWorkingSetMiB: number;
+    mixedMemoryBenchmarkBaselineZoomVectorRenderP95Ms: number;
+    mixedMemoryBenchmarkBaselineZoomEndToEndP95Ms: number;
+    mixedMemoryBenchmarkZoomVectorRenderP95Ms: number;
+    mixedMemoryBenchmarkZoomEndToEndP95Ms: number;
+    mixedMemoryBenchmarkZoomVectorP95SlowdownRatio: number;
+    mixedMemoryBenchmarkZoomEndToEndP95SlowdownRatio: number;
     layerBakeStrategy: string;
     layerCompositeStrategy: string;
     layerStorageStudy: EngineStats["layerStorageStudy"];
@@ -367,7 +413,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet";
-    performanceTelemetryRevision: 56;
+    performanceTelemetryRevision: 57;
   };
 }
 
@@ -388,6 +434,8 @@ const layerHistoryTestRequested = import.meta.env.DEV
   && pageSearchParams.get("layerHistoryTest") === "1";
 const layerMemoryStressTestRequested =
   pageSearchParams.get("layerMemoryStressTest") === "1";
+const mixedMemoryBenchmarkRequested =
+  pageSearchParams.get("mixedMemoryBenchmark") === "1";
 const layerCompressionStudyRequested =
   pageSearchParams.get("layerCompressionTest") === "1";
 const layerColdCompressionRequested =
@@ -395,10 +443,13 @@ const layerColdCompressionRequested =
 const iphoneMemoryLimitTestRequested =
   pageSearchParams.get("iphoneMemoryLimitTest") === "1";
 const vectorTextPrototypeRequested =
-  pageSearchParams.get("vectorTextTest") === "1";
+  pageSearchParams.get("vectorTextTest") === "1"
+  || mixedMemoryBenchmarkRequested;
 element<HTMLElement>("gpuMemoryVectorTextRow").hidden = !vectorTextPrototypeRequested;
 const layerMemoryFixtureRequested =
-  layerMemoryStressTestRequested || iphoneMemoryLimitTestRequested;
+  layerMemoryStressTestRequested
+  || iphoneMemoryLimitTestRequested
+  || mixedMemoryBenchmarkRequested;
 const iphoneMemoryLimitServerRequired = !(
   import.meta.env.DEV
   && pageSearchParams.get("memoryLimitLocalOnly") === "1"
@@ -406,7 +457,16 @@ const iphoneMemoryLimitServerRequired = !(
 layerMemoryStressSection.hidden = !layerMemoryFixtureRequested;
 layerCompressionStudySection.hidden = !layerCompressionStudyRequested;
 iphoneMemoryDeviceControl.hidden = !iphoneMemoryLimitTestRequested;
-if (iphoneMemoryLimitTestRequested) {
+if (mixedMemoryBenchmarkRequested) {
+  layerMemoryStressIntro.textContent =
+    "Scenario ripetibile: 64 testi visibili (32 Block Shadow e 32 ombre blur), "
+    + "nove gruppi testo separati dai raster e risorse reali fino a circa "
+    + "800 MiB GPU conteggiati. Al termine misura lo zoom e sblocca la stessa "
+    + "traccia umana canonica.";
+  layerMemoryStressButton.textContent = "Prepara scenario misto ~800 MiB";
+  layerMemoryStressResult.textContent =
+    "Pronto. La preparazione è distruttiva e va eseguita una sola volta su pagina nuova.";
+} else if (iphoneMemoryLimitTestRequested) {
   layerMemoryStressIntro.textContent =
     "Ricerca distruttiva del limite di questo iPhone: sale a gradini reali e "
     + "salva nel progetto un checkpoint prima e dopo ogni operazione. Se Safari "
@@ -482,6 +542,7 @@ let effectsWorkbenchBenchmarkRunning = false;
 let layerHistoryTestRunning = false;
 let layerMemoryStressTestRunning = false;
 let layerMemoryStressTestCompleted = false;
+let mixedMemoryBenchmarkReport: MixedMemoryBenchmarkSessionReport | null = null;
 let layerCompressionStudyRunning = false;
 let layerCompressionStudyCompleted = false;
 let layerFormatChanging = false;
@@ -795,6 +856,9 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     connection?: { effectiveType?: string; type?: string };
   };
   const engineEnvironment = engine.getBenchmarkEnvironment();
+  const stats = engine.getStats();
+  const scene = stats.mixedScene;
+  const session = mixedMemoryBenchmarkReport;
   return {
     userAgent: navigator.userAgent,
     platform: navigator.platform,
@@ -811,7 +875,41 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     viewRotationDegrees: Number(engine.getViewRotationDegrees().toFixed(3)),
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet",
-    performanceTelemetryRevision: 56,
+    performanceTelemetryRevision: 57,
+    countedGpuMemoryMiB: stats.gpuMemory.countedTotalMiB,
+    vectorTextPresentationMiB: stats.gpuMemory.vectorTextPresentationMiB,
+    mixedSceneStrategy: scene?.strategy ?? null,
+    mixedSceneItemCount: scene?.items.length ?? 0,
+    mixedSceneTextNodeCount:
+      scene?.items.filter((item) => item.kind === "text").length ?? 0,
+    mixedMemoryBenchmarkStrategy: session?.strategy ?? "off",
+    mixedMemoryBenchmarkReady: session !== null,
+    mixedMemoryBenchmarkTargetMiB: session?.targetMiB ?? 0,
+    mixedMemoryBenchmarkRasterLayerCount: session?.rasterLayerCount ?? 0,
+    mixedMemoryBenchmarkTextNodeCount: session?.textNodeCount ?? 0,
+    mixedMemoryBenchmarkTextRunCount: session?.textRunCount ?? 0,
+    mixedMemoryBenchmarkBlockShadowTextCount:
+      session?.blockShadowTextCount ?? 0,
+    mixedMemoryBenchmarkSingleShadowTextCount:
+      session?.singleShadowTextCount ?? 0,
+    mixedMemoryBenchmarkBrowserCanvasLogicalMiB:
+      session?.browserCanvasLogicalMiB ?? 0,
+    mixedMemoryBenchmarkVectorCpuKnownLogicalMiB:
+      session?.vectorCpuKnownLogicalMiB ?? 0,
+    mixedMemoryBenchmarkKnownLogicalWorkingSetMiB:
+      session?.knownLogicalWorkingSetMiB ?? stats.gpuMemory.countedTotalMiB,
+    mixedMemoryBenchmarkBaselineZoomVectorRenderP95Ms:
+      session?.baselineZoomProbe.vectorRenderP95Ms ?? 0,
+    mixedMemoryBenchmarkBaselineZoomEndToEndP95Ms:
+      session?.baselineZoomProbe.endToEndP95Ms ?? 0,
+    mixedMemoryBenchmarkZoomVectorRenderP95Ms:
+      session?.zoomProbe.vectorRenderP95Ms ?? 0,
+    mixedMemoryBenchmarkZoomEndToEndP95Ms:
+      session?.zoomProbe.endToEndP95Ms ?? 0,
+    mixedMemoryBenchmarkZoomVectorP95SlowdownRatio:
+      session?.zoomVectorP95SlowdownRatio ?? 0,
+    mixedMemoryBenchmarkZoomEndToEndP95SlowdownRatio:
+      session?.zoomEndToEndP95SlowdownRatio ?? 0,
     ...engineEnvironment,
   };
 }
@@ -1746,6 +1844,8 @@ function updateHumanStrokeControls(): void {
     || rasterOuterShadowChanging
     || rasterInnerShadowChanging
     || rasterBevelChanging;
+  const mixedMemoryBenchmarkNotReady =
+    mixedMemoryBenchmarkRequested && mixedMemoryBenchmarkReport === null;
   recordHumanStrokeButton.disabled = operationLocked
     || humanStrokeLoading
     || humanStrokeSaving
@@ -1760,12 +1860,14 @@ function updateHumanStrokeControls(): void {
     || !humanStrokeBenchmark
     || humanStrokeLoading
     || humanStrokeSaving
-    || humanStrokeReplaying;
+    || humanStrokeReplaying
+    || mixedMemoryBenchmarkNotReady;
   playBlendHumanStrokeButton.disabled = operationLocked
     || !humanStrokeBenchmark
     || humanStrokeLoading
     || humanStrokeSaving
-    || humanStrokeReplaying;
+    || humanStrokeReplaying
+    || mixedMemoryBenchmarkNotReady;
   humanStrokeTestVariantSelect.disabled = operationLocked
     || humanStrokeLoading
     || humanStrokeSaving
@@ -2123,7 +2225,9 @@ gpuMemoryClose.addEventListener("click", () => {
   gpuMemoryToggle.focus();
 });
 layerMemoryStressButton.addEventListener("click", () => {
-  if (iphoneMemoryLimitTestRequested) {
+  if (mixedMemoryBenchmarkRequested) {
+    void runRequestedMixedMemoryBenchmark();
+  } else if (iphoneMemoryLimitTestRequested) {
     void runRequestedIphoneMemoryLimitTest();
   } else {
     void runRequestedLayerMemoryStressTest();
@@ -2467,6 +2571,199 @@ async function recoverRequestedIphoneMemoryLimitTest(): Promise<void> {
       `Impossibile rileggere il checkpoint salvato · ${
         error instanceof Error ? error.message : String(error)
       }`;
+  }
+}
+
+async function waitForVectorTextRenderAfter(
+  previousRenderCount: number,
+): Promise<ReturnType<MixedVectorTextController["getDiagnostics"]>> {
+  const controller = vectorTextPrototype;
+  if (!controller) {
+    throw new Error("Controller testo non disponibile per il probe zoom.");
+  }
+  for (let frame = 0; frame < 24; frame += 1) {
+    await nextAnimationFrame();
+    const diagnostics = controller.getDiagnostics();
+    if (diagnostics.renderCount > previousRenderCount) {
+      return diagnostics;
+    }
+  }
+  throw new Error("Il testo non ha completato il ridisegno dello zoom.");
+}
+
+async function runMixedMemoryZoomProbe(): Promise<MixedMemoryZoomProbe> {
+  const controller = vectorTextPrototype;
+  if (!controller) {
+    throw new Error("Controller testo non disponibile per il probe zoom.");
+  }
+  const factors = [1.15, 1.15, 1.15, 1 / 1.15, 1 / 1.15, 1 / 1.15, 1.35, 1 / 1.35];
+  const vectorRenderMs: number[] = [];
+  const endToEndMs: number[] = [];
+
+  engine.fitView();
+  await nextAnimationFrame();
+  await nextAnimationFrame();
+  await engine.waitForIdle();
+
+  for (const factor of factors) {
+    const before = controller.getDiagnostics();
+    const startedAt = performance.now();
+    engine.zoomBy(factor);
+    const rendered = await waitForVectorTextRenderAfter(before.renderCount);
+    await engine.waitForIdle();
+    vectorRenderMs.push(rendered.lastRenderMs);
+    endToEndMs.push(performance.now() - startedAt);
+  }
+
+  engine.fitView();
+  await nextAnimationFrame();
+  await nextAnimationFrame();
+  await engine.waitForIdle();
+
+  return {
+    version: 1,
+    factors,
+    vectorRenderMs,
+    endToEndMs,
+    vectorRenderP50Ms: percentile(vectorRenderMs, 0.5),
+    vectorRenderP95Ms: percentile(vectorRenderMs, 0.95),
+    vectorRenderMaxMs: Math.max(...vectorRenderMs),
+    endToEndP50Ms: percentile(endToEndMs, 0.5),
+    endToEndP95Ms: percentile(endToEndMs, 0.95),
+    endToEndMaxMs: Math.max(...endToEndMs),
+  };
+}
+
+async function runRequestedMixedMemoryBenchmark(): Promise<void> {
+  if (
+    !mixedMemoryBenchmarkRequested
+    || interactionLocked()
+    || layerMemoryStressTestCompleted
+  ) {
+    return;
+  }
+
+  layerMemoryStressTestRunning = true;
+  layerMemoryStressDetails.hidden = true;
+  layerMemoryStressResult.className = "result";
+  layerMemoryStressResult.textContent =
+    "Creo 64 testi e i raster reali fino a circa 800 MiB… non cambiare scheda.";
+  layerMemoryStressButton.textContent = "Scenario misto in preparazione…";
+  setGpuMemoryPanelOpen(true);
+  updateHistoryControls();
+  updateHumanStrokeControls();
+
+  try {
+    layerMemoryStressResult.textContent =
+      "Misuro prima lo stesso zoom con un raster e un testo…";
+    const baselineZoomProbe = await runMixedMemoryZoomProbe();
+    layerMemoryStressResult.textContent =
+      "Baseline zoom acquisita. Creo 64 testi e i raster reali…";
+    const {
+      MIXED_MEMORY_BENCHMARK_TARGET_MIB,
+      runMixedMemoryBenchmark,
+    } = await import("./mixed-memory-benchmark");
+    const setup = await runMixedMemoryBenchmark(
+      engine,
+      MIXED_MEMORY_BENCHMARK_TARGET_MIB,
+      (progress) => {
+        updateStats(engine.getStats());
+        const action = progress.phase === "text"
+          ? "Preparo testi e ombre"
+          : progress.phase === "raster"
+            ? "Alloco i raster"
+            : progress.phase === "complete"
+              ? "Working set pronto"
+              : "Stabilizzo la scena";
+        layerMemoryStressResult.textContent =
+          `${action} · ${progress.textNodeCount}/64 testi · `
+          + `${progress.rasterLayerCount} raster · `
+          + `${formatMemoryMiB(progress.countedTotalMiB)} / `
+          + `${formatMemoryMiB(progress.targetMiB)} · picco `
+          + formatMemoryMiB(progress.peakCountedTotalMiB);
+      },
+    );
+
+    layerMemoryStressResult.textContent =
+      "Working set pronto. Misuro otto cambi zoom con tutti i testi visibili…";
+    const zoomProbe = await runMixedMemoryZoomProbe();
+    const diagnostics = vectorTextPrototype?.getDiagnostics();
+    if (!diagnostics) {
+      throw new Error("Diagnostica testo non disponibile dopo la preparazione.");
+    }
+    const browserCanvasLogicalMiB =
+      diagnostics.viewportCanvasLogicalMiB
+      + diagnostics.singleShadowBrowserLogicalMiB;
+    const vectorCpuKnownLogicalMiB =
+      diagnostics.vectorFontLogicalMiB
+      + diagnostics.blockShadowPathLogicalMiB;
+    const zoomVectorP95SlowdownRatio = baselineZoomProbe.vectorRenderP95Ms > 0
+      ? zoomProbe.vectorRenderP95Ms / baselineZoomProbe.vectorRenderP95Ms
+      : 0;
+    const zoomEndToEndP95SlowdownRatio = baselineZoomProbe.endToEndP95Ms > 0
+      ? zoomProbe.endToEndP95Ms / baselineZoomProbe.endToEndP95Ms
+      : 0;
+    const report: MixedMemoryBenchmarkSessionReport = {
+      ...setup,
+      browserCanvasLogicalMiB,
+      vectorCpuKnownLogicalMiB,
+      knownLogicalWorkingSetMiB:
+        setup.countedTotalMiB
+        + browserCanvasLogicalMiB
+        + vectorCpuKnownLogicalMiB,
+      baselineZoomProbe,
+      zoomProbe,
+      zoomVectorP95SlowdownRatio,
+      zoomEndToEndP95SlowdownRatio,
+    };
+    mixedMemoryBenchmarkReport = report;
+    layerMemoryStressReport.textContent = JSON.stringify(report, null, 2);
+    layerMemoryStressDetails.hidden = false;
+    layerMemoryStressDetails.open = true;
+    (
+      window as Window & {
+        __mixedMemoryBenchmarkReport?: MixedMemoryBenchmarkSessionReport;
+      }
+    ).__mixedMemoryBenchmarkReport = report;
+    layerMemoryStressResult.className = "result ok";
+    layerMemoryStressResult.textContent =
+      `Scenario pronto · ${formatMemoryMiB(report.countedTotalMiB)} GPU conteggiati`
+      + ` · ${formatMemoryMiB(report.browserCanvasLogicalMiB)} canvas browser`
+      + ` · ${report.textNodeCount} testi / ${report.textRunCount} gruppi`
+      + ` · zoom testo p95 ${report.baselineZoomProbe.vectorRenderP95Ms.toFixed(1)}`
+      + `→${report.zoomProbe.vectorRenderP95Ms.toFixed(1)} ms`
+      + ` (${report.zoomVectorP95SlowdownRatio.toFixed(1)}×)`
+      + ` · zoom end-to-end p95 ${report.baselineZoomProbe.endToEndP95Ms.toFixed(1)}`
+      + `→${report.zoomProbe.endToEndP95Ms.toFixed(1)} ms`
+      + ` (${report.zoomEndToEndP95SlowdownRatio.toFixed(1)}×)`
+      + " · ora premi Play tratto registrato.";
+    layerMemoryStressButton.textContent = "Scenario misto pronto";
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const stats = engine.getStats();
+    const failure = {
+      version: 1,
+      passed: false,
+      error: message,
+      layerCount: stats.layerCount,
+      textNodeCount:
+        stats.mixedScene?.items.filter((item) => item.kind === "text").length ?? 0,
+      gpuMemory: stats.gpuMemory,
+    };
+    layerMemoryStressReport.textContent = JSON.stringify(failure, null, 2);
+    layerMemoryStressDetails.hidden = false;
+    layerMemoryStressDetails.open = true;
+    layerMemoryStressResult.className = "result error";
+    layerMemoryStressResult.textContent = `Scenario misto interrotto · ${message}`;
+    layerMemoryStressButton.textContent = "Scenario interrotto — ricarica per riprovare";
+  } finally {
+    layerMemoryStressTestRunning = false;
+    layerMemoryStressTestCompleted = true;
+    historyState = engine.getHistoryState();
+    syncActiveLayerControls();
+    updateHistoryControls();
+    updateHumanStrokeControls();
+    updateStats(engine.getStats());
   }
 }
 
@@ -3101,8 +3398,16 @@ function renderMixedSceneList(
       const outlineHint = node.outlineWidth > 0
         ? ` · traccia ${Math.round(node.outlineWidth)} px`
         : "";
+      const blockShadowHint = node.blockShadowEnabled
+        ? ` · Block Shadow ${Math.round(node.blockShadowOffset)}`
+        : "";
+      const singleShadowHint = node.singleShadowEnabled
+        ? ` · Ombra singola ${Math.round(node.singleShadowOffset)} / blur `
+          + `${Math.round(node.singleShadowBlur)}`
+        : "";
       hint.textContent =
-        `testo vettoriale · ${Math.round(node.fontSize)} px · oggetto separato${outlineHint}`;
+        `testo vettoriale · ${Math.round(node.fontSize)} px · oggetto separato`
+        + `${outlineHint}${blockShadowHint}${singleShadowHint}`;
       select.title =
         "Nodo testo semantico: selezionandolo il pennello non può modificare i suoi pixel.";
       select.onclick = () => {
@@ -3529,7 +3834,11 @@ async function replayHumanStroke(replayTool: BrushSettings["tool"] = "paint"): P
   try {
     await engine.waitForIdle();
     engine.resetStrokeRandomSeed();
-    if (!engine.resetDocument()) {
+    const resetSucceeded = mixedMemoryBenchmarkRequested
+      ? mixedMemoryBenchmarkReport !== null
+        && engine.resetActiveLayerForMemoryBenchmark()
+      : engine.resetDocument();
+    if (!resetSucceeded) {
       throw new Error("Il documento è occupato da un'operazione Undo/Redo.");
     }
     await engine.waitForIdle();

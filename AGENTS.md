@@ -1861,3 +1861,125 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   warning build sul chunk principale oltre 500 kB resta quello noto e non è
   causato dalla gerarchia. Prova mouse desktop completata; nessuna prova fisica
   touch/iPhone, nessuna pubblicazione e nessuna dichiarazione prestazionale.
+
+### Block Shadow vettoriale testo (candidato locale)
+
+- Correzione richiesta dall'utente il 28 luglio 2026 dopo il rifiuto della
+  prima sweep raster. Il riferimento autorevole non è una serie di copie del
+  testo: è il core già approvato in `paint-webgpu-m1/geom/vector-shadow-3d.js`.
+  Il file è stato portato senza modifiche con SHA-256
+  `9A2676D7B510DAA9A01A95E7191409AFA2A48AA58198179A52071D63EE5F4FD0`;
+  la strategia firmata è
+  `paint-webgpu-m1-shadow3d-v2-single-extruded-vector-silhouette`.
+- I glifi provengono ora da outline OpenType locali. `opentype.js 1.3.4`
+  costruisce un solo PathData per testo; il core canonizza contorni esterni e
+  buchi, spezza le curve soltanto ai cambi del lato esposto e aggiunge la
+  geometria laterale verso il vettore offset/angolo. Canvas2D riempie quindi
+  una sola `Path2D` vettoriale: nessuna sweep, nessun `fillText` ripetuto e
+  nessun canvas/texture Block Shadow. Font locali inclusi: Anton, Bebas Neue e
+  Poppins, con relative licenze OFL.
+- Contratto UI del riferimento Kittl: default Block Shadow ON, colore
+  `#727272`, opacità `100%`, Offset `23`, Angolo `-104°`, Outline Width `0`.
+  L'offset è diretto in coordinate locali, non proporzionale al font. Il segno
+  Y viene adattato soltanto fra angolo cartesiano e canvas.
+- Vincolo esplicito dell'utente: Block Shadow è un effetto visivo e **non
+  modifica bbox, maniglie, hit target o centro di trasformazione del testo**.
+  Il verifier estrae `textCorners()` e vieta dipendenze da Block Shadow o
+  outline. Prova browser ON/OFF: lo stesso rettangolo e le stesse quattro
+  maniglie; l'ombra può estendersi fuori senza spostarle.
+- `Outline Width` dell'ombra usa lo stesso valore diretto del core originale:
+  il ramo stroke esiste soltanto per `> 0`; a `0` non viene impostata una
+  larghezza minima, non viene raddoppiato il valore e non parte alcuno stroke.
+  Browser verificato con output `0 px`, prova temporanea a `12 px` e ritorno a
+  `0 px`, bbox invariata.
+- Misura browser pulita, viewport `1280×668`: Block Shadow aggiunge `0 MiB`
+  GPU e il PathData estruso corrente `STREETWEAR` pesa `11,6 KiB` CPU logici.
+  La cache è una sola per nodo/stato e viene azzerata quando il toggle passa
+  OFF; tornando ON viene ricostruita senza conservare le varianti precedenti.
+  I tre file font precaricati pesano insieme `392.528 byte` (`0,374 MiB`) e
+  sono condivisi da tutti i testi/effetti. Le due cache browser preesistenti
+  restano `6,52 MiB` logici e le cache GPU testo+accumulatore `9,79 MiB`;
+  `Path2D`, oggetti OpenType e backing fisici del browser non sono misurabili e
+  non vengono stimati come memoria residente certa.
+- Verifiche: tredici suite, TypeScript e build Vite production verdi. Build
+  include i tre TTF (`61,40 + 160,31 + 170,81 kB`); il warning chunk oltre
+  `500 kB` resta quello noto. Nuova scheda browser finale senza warning/errori
+  console o WebGPU. Nessuna prova fisica touch/iPhone, nessuna pubblicazione e
+  nessun commit di questo candidato.
+
+### Ombra singola testo vettoriale (Canvas2D, candidata)
+
+- Implementata il 28 luglio 2026 dopo confronto diretto con Kittl. Il modello
+  mantiene una sola maschera offset, con colore, opacità, Offset `0–100`,
+  Angolo `−180°…180°` e Blur `0–300`; Outline Width resta forzata e
+  disabilitata a `0`. Il preset iniziale riproduce i valori osservati:
+  `#727272`, `100%`, Offset `54`, Angolo `−180°`, Blur `6`.
+- Strategia
+  `paint-webgpu-m1-single-shadow-plan-roi-canvas2d-native-gaussian-v1`:
+  rasterizza una sola silhouette in una ROI stretta dei glifi, applica il blur
+  nativo Canvas2D sull'alpha e compone il testo sorgente nitido sopra. Non crea
+  copie ripetute del nodo e non modifica la bbox semantica/selezionabile.
+  Blur `0` usa direttamente il profilo vettoriale traslato e non conserva
+  alcuna cache raster.
+- Il planner e i limiti derivano dal prototipo locale
+  `paint-webgpu-m1/geom/vector-shadow-blur-renderer.js`: supporto
+  `blur × 3 + 1`, sigma massimo `8 px`, raggio kernel massimo `24 px`, ROI
+  massimo `4M` pixel, texture massima `4096` e cache matte massima `32 MiB`.
+  Uno scratch condiviso è limitato a `16 MiB`.
+- Ombra singola e Block Shadow sono mutuamente esclusive. Disattivare l'effetto
+  o portare Blur a `0` rilascia matte e scratch; cambiare solo offset, angolo
+  od opacità riusa la maschera. Il costo appartiene alla cache logica del
+  browser, non alle risorse WebGPU contate dal motore: `+0 MiB` GPU.
+- Misure sul browser desktop corrente, viewport `1138×912`: Blur `6` in vista
+  Fit usa `0,18 MiB` logici (`1` matte + scratch); ad alto zoom usa
+  `1,97 MiB`. Blur `0` torna a `0,00 MiB`. Il confronto visivo affiancato con
+  Kittl conferma una sola sagoma, bordo ammorbidito, nucleo pieno, sorgente
+  nitida sopra e bbox invariata. Nessun warning/error in console.
+- Verifiche del 28 luglio: tutte le `13` suite (`stroke`, `grain`, `blend`,
+  `thickness`, `history`, `layers`, `effects-scratch`, `bevel`, `shadow`,
+  `view`, `compression`, `vector-text`, `mixed-scene`), TypeScript e build
+  Vite verdi. QA conservata in `design-qa.md`. Non ancora committata,
+  pubblicata né provata su touch/iPhone.
+
+### Scenario misto 800 MiB · testo/raster (benchmark rev 57)
+
+- Limiti applicativi correnti, indipendenti dal dispositivo: massimo `64` nodi
+  testo semantici (`VECTOR_TEXT_NODE_MAXIMUM`) e `16` livelli raster
+  (`LAYER_STACK_MAXIMUM`). Non sono una promessa di fluidità: i testi contigui
+  condividono una cache RGBA8 di viewport, mentre ogni run testo separata da un
+  raster richiede una cache viewport distinta; lo zoom ridisegna inoltre tutti
+  i glifi e le ombre visibili.
+- Fixture query-gated `?mixedMemoryBenchmark=1`, strategia
+  `mixed-raster-vector-64-text-nine-runs-counted-gpu-800mib-v1`: pagina nuova
+  RGBA8, `64` testi visibili in griglia (`32` Block Shadow vettoriali e `32`
+  Ombre singole Blur `6`, Outline Width sempre `0`), `9` run testo e raster con
+  cold store reali fino a `800 MiB` GPU conteggiati. L'ultimo cold store viene
+  regolato a tile da `0,25 MiB`; un raster finale vuoto resta attivo per la
+  traccia canonica. Inserimento batch dei testi solo nella fixture, così la
+  preparazione non paga 56 rebuild intermedi; ordine e rendering finali sono
+  uguali alle normali aggiunte.
+- Il replay umano usa nella sola fixture
+  `resetActiveLayerForMemoryBenchmark`: pulisce esclusivamente il raster caldo
+  di lavoro e la cronologia del replay, preservando cold raster, testi, cache e
+  ordine. Il guard multi-layer di `resetDocument()` resta invariato nelle
+  sessioni normali. La traccia, Count, size, spacing, flow, hardness, jitter,
+  seed, stamp e blending non cambiano.
+- Prova desktop NVIDIA Ampere del 28 luglio, stessa pagina e viewport fra il
+  probe scarico e carico: `12` raster, `64` testi, `9` run; steady GPU
+  `800,923 MiB`, picco transitorio setup `864,923 MiB`, canvas browser logici
+  `7,631 MiB`, font+PathData noti `0,521 MiB`, working set logico noto
+  `809,075 MiB`. Breakdown finale principale: raster attivo `64 MiB`, cold
+  `663,25 MiB`, cache GPU testo `41,067 MiB`, mip `22,193 MiB`, superfici fuse
+  `2,578 MiB`, cache schermo `3,733 MiB`.
+- Probe zoom accoppiato (otto fattori identici, Fit ripristinato): CPU del
+  renderer testo p95 `0,6→9,9 ms` (`16,5×`); completamento end-to-end fino a
+  GPU idle p95 `25,1→163,8 ms` (`6,5×`). Lo scenario massimo resta modificabile
+  e non genera errori, ma **non è fluido nello zoom** neppure sul desktop: usare
+  questi limiti come stress/OOM envelope, non come budget consigliato.
+- La telemetria passa a rev `57` e firma working set totale, memoria testo GPU,
+  conteggi scena/stili/run, memoria browser logica, baseline/carico zoom e
+  rapporti di rallentamento. Le run benchmark rev `56` o precedenti non vanno
+  aggregate con queste. Tutte le 13 suite, TypeScript e build Vite production
+  sono verdi; nessun warning/error browser oltre ai log informativi noti.
+  Replay umano paired e prova fisica iPhone restano da eseguire sulla build
+  HTTPS: non dichiarare ancora l'impatto sul tratto né un limite sicuro iPhone.

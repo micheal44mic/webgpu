@@ -799,7 +799,8 @@ select {
   box-shadow: 0 0 0 2px rgba(104, 119, 255, 0.18);
 }
 
-.vector-text-outline-controls {
+.vector-text-outline-controls,
+.vector-text-effect-controls {
   min-width: 0;
   margin: 2px 0 13px;
   padding: 10px 10px 8px;
@@ -808,7 +809,8 @@ select {
   background: #131820;
 }
 
-.vector-text-outline-controls legend {
+.vector-text-outline-controls legend,
+.vector-text-effect-controls legend {
   padding: 0 6px;
   color: #cbd0d9;
   font-size: 0.75rem;
@@ -817,11 +819,18 @@ select {
   text-transform: uppercase;
 }
 
-.vector-text-outline-note {
+.vector-text-outline-note,
+.vector-text-effect-note {
   margin: -2px 0 2px;
   color: #8f97a5;
   font-size: 0.72rem;
   line-height: 1.4;
+}
+
+#vectorTextSingleShadowParameters + .check-control {
+  margin-top: 10px;
+  padding-top: 12px;
+  border-top: 1px solid #303746;
 }
 
 .vector-text-actions {

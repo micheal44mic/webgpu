@@ -4,9 +4,12 @@ import type {
 } from "./brush-engine";
 import {
   MIXED_SCENE_STACK_STRATEGY,
+  VECTOR_TEXT_BLOCK_SHADOW_STRATEGY,
   VECTOR_TEXT_OUTLINE_MITER_LIMIT,
   VECTOR_TEXT_OUTLINE_STRATEGY,
+  VECTOR_TEXT_SINGLE_SHADOW_STRATEGY,
   vectorTextOutlineCanvasLineWidth,
+  vectorTextSingleShadowLocalVector,
   type MixedSceneItem,
   type VectorTextNode,
   type VectorTextNodeSeed,
@@ -21,6 +24,17 @@ import type {
   VectorTextPlacement,
   VectorTextViewState,
 } from "./vector-text-prototype";
+import {
+  VECTOR_TEXT_BLOCK_SHADOW_VECTOR_STRATEGY,
+  VectorTextFontGeometryRegistry,
+  buildVectorTextBlockShadowGeometry,
+  type VectorTextBlockShadowGeometry,
+  type VectorTextOutlineGeometry,
+} from "./vector-text-font-geometry";
+import {
+  VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY,
+  VectorTextSingleShadowBlurRenderer,
+} from "./vector-text-single-shadow";
 
 
 export interface MixedVectorTextHost {
@@ -51,6 +65,9 @@ export interface MixedVectorTextDiagnostics {
   sceneStrategy: typeof MIXED_SCENE_STACK_STRATEGY;
   livePresentationStrategy: typeof VECTOR_TEXT_PRESENTATION_STRATEGY;
   outlineStrategy: typeof VECTOR_TEXT_OUTLINE_STRATEGY;
+  blockShadowStrategy: typeof VECTOR_TEXT_BLOCK_SHADOW_STRATEGY;
+  singleShadowStrategy: typeof VECTOR_TEXT_SINGLE_SHADOW_STRATEGY;
+  singleShadowBlurStrategy: typeof VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY;
   selectedKey: MixedSceneItem["key"] | null;
   textNodeCount: number;
   renderCount: number;
@@ -59,6 +76,12 @@ export interface MixedVectorTextDiagnostics {
   liveGpuMemoryMiB: number;
   viewportTextureCount: number;
   viewportCanvasLogicalMiB: number;
+  vectorFontLogicalMiB: number;
+  blockShadowPathLogicalMiB: number;
+  singleShadowBrowserLogicalMiB: number;
+  singleShadowCacheLogicalMiB: number;
+  singleShadowScratchLogicalMiB: number;
+  singleShadowCacheEntries: number;
 }
 
 interface Point {
@@ -72,6 +95,13 @@ interface TextMetricsBox {
   right: number;
   bottom: number;
   baseline: number;
+}
+
+interface CachedTextGeometry {
+  outlineKey: string;
+  outline: VectorTextOutlineGeometry;
+  blockShadowKey: string | null;
+  blockShadow: VectorTextBlockShadowGeometry | null;
 }
 
 type TransformHandle = "north-west" | "north-east" | "south-east" | "south-west";
@@ -168,6 +198,78 @@ export class MixedVectorTextController {
   private readonly outlineJoinSelect = requiredElement<HTMLSelectElement>(
     "vectorTextOutlineJoin",
   );
+  private readonly blockShadowEnabledInput = requiredElement<HTMLInputElement>(
+    "vectorTextBlockShadowEnabled",
+  );
+  private readonly blockShadowParameters = requiredElement<HTMLElement>(
+    "vectorTextBlockShadowParameters",
+  );
+  private readonly blockShadowColorInput = requiredElement<HTMLInputElement>(
+    "vectorTextBlockShadowColor",
+  );
+  private readonly blockShadowOpacityInput = requiredElement<HTMLInputElement>(
+    "vectorTextBlockShadowOpacity",
+  );
+  private readonly blockShadowOpacityOutput = requiredElement<HTMLOutputElement>(
+    "vectorTextBlockShadowOpacityOut",
+  );
+  private readonly blockShadowOffsetInput = requiredElement<HTMLInputElement>(
+    "vectorTextBlockShadowOffset",
+  );
+  private readonly blockShadowOffsetOutput = requiredElement<HTMLOutputElement>(
+    "vectorTextBlockShadowOffsetOut",
+  );
+  private readonly blockShadowAngleInput = requiredElement<HTMLInputElement>(
+    "vectorTextBlockShadowAngle",
+  );
+  private readonly blockShadowAngleOutput = requiredElement<HTMLOutputElement>(
+    "vectorTextBlockShadowAngleOut",
+  );
+  private readonly blockShadowOutlineWidthInput = requiredElement<HTMLInputElement>(
+    "vectorTextBlockShadowOutlineWidth",
+  );
+  private readonly blockShadowOutlineWidthOutput = requiredElement<HTMLOutputElement>(
+    "vectorTextBlockShadowOutlineWidthOut",
+  );
+  private readonly singleShadowEnabledInput = requiredElement<HTMLInputElement>(
+    "vectorTextSingleShadowEnabled",
+  );
+  private readonly singleShadowParameters = requiredElement<HTMLElement>(
+    "vectorTextSingleShadowParameters",
+  );
+  private readonly singleShadowColorInput = requiredElement<HTMLInputElement>(
+    "vectorTextSingleShadowColor",
+  );
+  private readonly singleShadowOpacityInput = requiredElement<HTMLInputElement>(
+    "vectorTextSingleShadowOpacity",
+  );
+  private readonly singleShadowOpacityOutput = requiredElement<HTMLOutputElement>(
+    "vectorTextSingleShadowOpacityOut",
+  );
+  private readonly singleShadowOffsetInput = requiredElement<HTMLInputElement>(
+    "vectorTextSingleShadowOffset",
+  );
+  private readonly singleShadowOffsetOutput = requiredElement<HTMLOutputElement>(
+    "vectorTextSingleShadowOffsetOut",
+  );
+  private readonly singleShadowAngleInput = requiredElement<HTMLInputElement>(
+    "vectorTextSingleShadowAngle",
+  );
+  private readonly singleShadowAngleOutput = requiredElement<HTMLOutputElement>(
+    "vectorTextSingleShadowAngleOut",
+  );
+  private readonly singleShadowBlurInput = requiredElement<HTMLInputElement>(
+    "vectorTextSingleShadowBlur",
+  );
+  private readonly singleShadowBlurOutput = requiredElement<HTMLOutputElement>(
+    "vectorTextSingleShadowBlurOut",
+  );
+  private readonly singleShadowOutlineWidthInput = requiredElement<HTMLInputElement>(
+    "vectorTextSingleShadowOutlineWidth",
+  );
+  private readonly singleShadowOutlineWidthOutput = requiredElement<HTMLOutputElement>(
+    "vectorTextSingleShadowOutlineWidthOut",
+  );
   private readonly addButton = requiredElement<HTMLButtonElement>("addVectorText");
   private readonly deleteButton = requiredElement<HTMLButtonElement>("deleteVectorText");
   private readonly moveUpButton = requiredElement<HTMLButtonElement>("moveVectorTextUp");
@@ -177,6 +279,10 @@ export class MixedVectorTextController {
 
   private readonly presentationContext: CanvasRenderingContext2D;
   private readonly interactionContext: CanvasRenderingContext2D;
+  private readonly fontGeometry = new VectorTextFontGeometryRegistry();
+  private readonly geometryByNodeId = new Map<number, CachedTextGeometry>();
+  private readonly singleShadowBlurRenderer =
+    new VectorTextSingleShadowBlurRenderer();
 
   private snapshot: MixedSceneSnapshot | null = null;
   private metrics: TextMetricsBox = {
@@ -213,6 +319,7 @@ export class MixedVectorTextController {
   }
 
   async initialize(): Promise<void> {
+    await this.fontGeometry.preload();
     this.section.hidden = false;
     this.presentationCanvas.hidden = false;
     this.bindControls();
@@ -232,6 +339,32 @@ export class MixedVectorTextController {
       interaction !== null
       && snapshot.selectedKey === `text:${interaction.startModel.id}`;
     this.snapshot = snapshot;
+    const liveTextNodeIds = new Set(
+      snapshot.items
+        .filter((item) => item.kind === "text")
+        .map((item) => item.textNode.id),
+    );
+    for (const id of this.geometryByNodeId.keys()) {
+      if (!liveTextNodeIds.has(id)) {
+        this.geometryByNodeId.delete(id);
+      }
+    }
+    this.singleShadowBlurRenderer.retainNodes(liveTextNodeIds);
+    for (const item of snapshot.items) {
+      if (item.kind !== "text") {
+        continue;
+      }
+      if (!item.textNode.blockShadowEnabled) {
+        const geometry = this.geometryByNodeId.get(item.textNode.id);
+        if (geometry) {
+          geometry.blockShadowKey = null;
+          geometry.blockShadow = null;
+        }
+      }
+      if (!item.textNode.singleShadowEnabled || item.textNode.singleShadowBlur <= 0) {
+        this.singleShadowBlurRenderer.invalidateNode(item.textNode.id);
+      }
+    }
     // Pointer-driven model updates publish a fresh scene snapshot on every
     // move. Cancelling unconditionally here used to terminate resize/move/
     // rotate after the first tiny delta. Preserve the gesture while its exact
@@ -263,10 +396,14 @@ export class MixedVectorTextController {
 
   getDiagnostics(): MixedVectorTextDiagnostics {
     const view = this.host.getVectorTextViewState();
+    const singleShadowLedger = this.singleShadowBlurRenderer.ledger();
     return {
       sceneStrategy: MIXED_SCENE_STACK_STRATEGY,
       livePresentationStrategy: VECTOR_TEXT_PRESENTATION_STRATEGY,
       outlineStrategy: VECTOR_TEXT_OUTLINE_STRATEGY,
+      blockShadowStrategy: VECTOR_TEXT_BLOCK_SHADOW_VECTOR_STRATEGY,
+      singleShadowStrategy: VECTOR_TEXT_SINGLE_SHADOW_STRATEGY,
+      singleShadowBlurStrategy: VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY,
       selectedKey: this.snapshot?.selectedKey ?? null,
       textNodeCount: this.snapshot?.items.filter((item) => item.kind === "text").length ?? 0,
       renderCount: this.renderCount,
@@ -276,18 +413,39 @@ export class MixedVectorTextController {
       viewportTextureCount: this.viewportTextureCount,
       viewportCanvasLogicalMiB:
         view.canvasWidth * view.canvasHeight * 4 * 2 / MEBIBYTE_BYTES,
+      vectorFontLogicalMiB: this.fontGeometry.logicalFontBytes / MEBIBYTE_BYTES,
+      blockShadowPathLogicalMiB: this.blockShadowPathLogicalMiB(),
+      singleShadowBrowserLogicalMiB:
+        singleShadowLedger.browserBytes / MEBIBYTE_BYTES,
+      singleShadowCacheLogicalMiB:
+        singleShadowLedger.cacheBytes / MEBIBYTE_BYTES,
+      singleShadowScratchLogicalMiB:
+        singleShadowLedger.scratchBytes / MEBIBYTE_BYTES,
+      singleShadowCacheEntries: singleShadowLedger.entries,
     };
   }
 
   private defaultSeed(index: number): VectorTextNodeSeed {
     return {
       text: index === 0 ? "STREETWEAR" : `TESTO ${index + 1}`,
-      fontFamily: "Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif",
+      fontFamily: "Anton",
       fontSize: 360,
-      color: index % 2 === 0 ? "#f4c95d" : "#f47c5d",
+      color: index === 0 ? "#111111" : "#f47c5d",
       outlineWidth: 0,
       outlineColor: "#111111",
       outlineJoin: "round",
+      blockShadowEnabled: index === 0,
+      blockShadowColor: "#727272",
+      blockShadowOpacity: 1,
+      blockShadowOffset: 23,
+      blockShadowAngle: -104,
+      blockShadowOutlineWidth: 0,
+      singleShadowEnabled: false,
+      singleShadowColor: "#727272",
+      singleShadowOpacity: 1,
+      singleShadowOffset: 54,
+      singleShadowAngle: -180,
+      singleShadowBlur: 6,
       x: this.host.layerSize * 0.5 + index * 90,
       y: this.host.layerSize * 0.5 + index * 110,
       scale: 1,
@@ -332,6 +490,66 @@ export class MixedVectorTextController {
       this.updateSelectedNode({
         outlineJoin: this.outlineJoinSelect.value as VectorTextOutlineJoin,
       });
+    });
+    this.blockShadowEnabledInput.addEventListener("change", () => {
+      const enabled = this.blockShadowEnabledInput.checked;
+      this.blockShadowParameters.hidden = !enabled;
+      this.updateSelectedNode(enabled
+        ? { blockShadowEnabled: true, singleShadowEnabled: false }
+        : { blockShadowEnabled: false });
+    });
+    this.blockShadowColorInput.addEventListener("input", () => {
+      this.updateSelectedNode({ blockShadowColor: this.blockShadowColorInput.value });
+    });
+    this.blockShadowOpacityInput.addEventListener("input", () => {
+      const opacityPercent = Number(this.blockShadowOpacityInput.value);
+      this.blockShadowOpacityOutput.value = `${Math.round(opacityPercent)}%`;
+      this.updateSelectedNode({ blockShadowOpacity: opacityPercent / 100 });
+    });
+    this.blockShadowOffsetInput.addEventListener("input", () => {
+      const offset = Number(this.blockShadowOffsetInput.value);
+      this.blockShadowOffsetOutput.value = String(Math.round(offset));
+      this.updateSelectedNode({ blockShadowOffset: offset });
+    });
+    this.blockShadowAngleInput.addEventListener("input", () => {
+      const angle = Number(this.blockShadowAngleInput.value);
+      this.blockShadowAngleOutput.value = `${Math.round(angle)}°`;
+      this.updateSelectedNode({ blockShadowAngle: angle });
+    });
+    this.blockShadowOutlineWidthInput.addEventListener("input", () => {
+      const outlineWidth = Number(this.blockShadowOutlineWidthInput.value);
+      this.blockShadowOutlineWidthOutput.value = `${Math.round(outlineWidth)} px`;
+      this.updateSelectedNode({ blockShadowOutlineWidth: outlineWidth });
+    });
+    this.singleShadowEnabledInput.addEventListener("change", () => {
+      const enabled = this.singleShadowEnabledInput.checked;
+      this.singleShadowParameters.hidden = !enabled;
+      this.updateSelectedNode(enabled
+        ? { singleShadowEnabled: true, blockShadowEnabled: false }
+        : { singleShadowEnabled: false });
+    });
+    this.singleShadowColorInput.addEventListener("input", () => {
+      this.updateSelectedNode({ singleShadowColor: this.singleShadowColorInput.value });
+    });
+    this.singleShadowOpacityInput.addEventListener("input", () => {
+      const opacityPercent = Number(this.singleShadowOpacityInput.value);
+      this.singleShadowOpacityOutput.value = `${Math.round(opacityPercent)}%`;
+      this.updateSelectedNode({ singleShadowOpacity: opacityPercent / 100 });
+    });
+    this.singleShadowOffsetInput.addEventListener("input", () => {
+      const offset = Number(this.singleShadowOffsetInput.value);
+      this.singleShadowOffsetOutput.value = String(Math.round(offset));
+      this.updateSelectedNode({ singleShadowOffset: offset });
+    });
+    this.singleShadowAngleInput.addEventListener("input", () => {
+      const angle = Number(this.singleShadowAngleInput.value);
+      this.singleShadowAngleOutput.value = `${Math.round(angle)}°`;
+      this.updateSelectedNode({ singleShadowAngle: angle });
+    });
+    this.singleShadowBlurInput.addEventListener("input", () => {
+      const blur = Number(this.singleShadowBlurInput.value);
+      this.singleShadowBlurOutput.value = String(Math.round(blur));
+      this.updateSelectedNode({ singleShadowBlur: blur });
     });
     this.addButton.addEventListener("click", () => {
       void this.runSceneOperation(async () => {
@@ -446,12 +664,27 @@ export class MixedVectorTextController {
     this.outlineWidthInput.disabled = disabled;
     this.outlineColorInput.disabled = disabled;
     this.outlineJoinSelect.disabled = disabled;
+    this.blockShadowEnabledInput.disabled = disabled;
+    this.blockShadowColorInput.disabled = disabled;
+    this.blockShadowOpacityInput.disabled = disabled;
+    this.blockShadowOffsetInput.disabled = disabled;
+    this.blockShadowAngleInput.disabled = disabled;
+    this.blockShadowOutlineWidthInput.disabled = disabled;
+    this.singleShadowEnabledInput.disabled = disabled;
+    this.singleShadowColorInput.disabled = disabled;
+    this.singleShadowOpacityInput.disabled = disabled;
+    this.singleShadowOffsetInput.disabled = disabled;
+    this.singleShadowAngleInput.disabled = disabled;
+    this.singleShadowBlurInput.disabled = disabled;
+    this.singleShadowOutlineWidthInput.disabled = true;
     this.resetButton.disabled = disabled;
     this.deleteButton.disabled = disabled;
     this.moveUpButton.disabled = disabled;
     this.moveDownButton.disabled = disabled;
     this.addButton.disabled = this.sceneOperationBusy;
     if (!node) {
+      this.blockShadowParameters.hidden = true;
+      this.singleShadowParameters.hidden = true;
       this.status.textContent =
         "Raster selezionato: il pennello è attivo. «Aggiungi testo» crea un livello separato.";
       return;
@@ -465,6 +698,32 @@ export class MixedVectorTextController {
     this.outlineWidthOutput.value = `${Math.round(node.outlineWidth)} px`;
     this.outlineColorInput.value = node.outlineColor;
     this.outlineJoinSelect.value = node.outlineJoin;
+    this.blockShadowEnabledInput.checked = node.blockShadowEnabled;
+    this.blockShadowParameters.hidden = !node.blockShadowEnabled;
+    this.blockShadowColorInput.value = node.blockShadowColor;
+    this.blockShadowOpacityInput.value = String(node.blockShadowOpacity * 100);
+    this.blockShadowOpacityOutput.value = `${Math.round(node.blockShadowOpacity * 100)}%`;
+    this.blockShadowOffsetInput.value = String(node.blockShadowOffset);
+    this.blockShadowOffsetOutput.value = String(Math.round(node.blockShadowOffset));
+    this.blockShadowAngleInput.value = String(node.blockShadowAngle);
+    this.blockShadowAngleOutput.value = `${Math.round(node.blockShadowAngle)}°`;
+    this.blockShadowOutlineWidthInput.value = String(node.blockShadowOutlineWidth);
+    this.blockShadowOutlineWidthOutput.value =
+      `${Math.round(node.blockShadowOutlineWidth)} px`;
+    this.singleShadowEnabledInput.checked = node.singleShadowEnabled;
+    this.singleShadowParameters.hidden = !node.singleShadowEnabled;
+    this.singleShadowColorInput.value = node.singleShadowColor;
+    this.singleShadowOpacityInput.value = String(node.singleShadowOpacity * 100);
+    this.singleShadowOpacityOutput.value =
+      `${Math.round(node.singleShadowOpacity * 100)}%`;
+    this.singleShadowOffsetInput.value = String(node.singleShadowOffset);
+    this.singleShadowOffsetOutput.value = String(Math.round(node.singleShadowOffset));
+    this.singleShadowAngleInput.value = String(node.singleShadowAngle);
+    this.singleShadowAngleOutput.value = `${Math.round(node.singleShadowAngle)}°`;
+    this.singleShadowBlurInput.value = String(node.singleShadowBlur);
+    this.singleShadowBlurOutput.value = String(Math.round(node.singleShadowBlur));
+    this.singleShadowOutlineWidthInput.value = "0";
+    this.singleShadowOutlineWidthOutput.value = "0 px";
   }
 
   private scheduleRender(): void {
@@ -490,61 +749,165 @@ export class MixedVectorTextController {
     context: CanvasRenderingContext2D,
     node: Readonly<VectorTextNode>,
   ): void {
-    context.font = `900 ${node.fontSize}px ${node.fontFamily}`;
-    context.textAlign = "center";
-    context.textBaseline = "alphabetic";
     context.lineJoin = node.outlineJoin;
     context.lineCap = "butt";
-    context.lineWidth = Math.max(
-      0.0001,
-      vectorTextOutlineCanvasLineWidth(node.outlineWidth),
-    );
+    context.lineWidth = vectorTextOutlineCanvasLineWidth(node.outlineWidth);
     context.miterLimit = VECTOR_TEXT_OUTLINE_MITER_LIMIT;
+  }
+
+  private geometryForNode(
+    node: Readonly<VectorTextNode>,
+  ): CachedTextGeometry {
+    const outlineKey = `${node.fontFamily}\u0000${node.fontSize}\u0000${node.text}`;
+    const cached = this.geometryByNodeId.get(node.id);
+    if (cached?.outlineKey === outlineKey) {
+      return cached;
+    }
+    const created: CachedTextGeometry = {
+      outlineKey,
+      outline: this.fontGeometry.outline(
+        node.fontFamily,
+        node.text,
+        node.fontSize,
+      ),
+      blockShadowKey: null,
+      blockShadow: null,
+    };
+    this.geometryByNodeId.set(node.id, created);
+    return created;
+  }
+
+  private blockShadowGeometryForNode(
+    node: Readonly<VectorTextNode>,
+    geometry: CachedTextGeometry,
+  ): VectorTextBlockShadowGeometry {
+    const key = `${geometry.outlineKey}\u0000${node.blockShadowOffset}`
+      + `\u0000${node.blockShadowAngle}`;
+    if (geometry.blockShadowKey !== key || !geometry.blockShadow) {
+      geometry.blockShadowKey = key;
+      geometry.blockShadow = buildVectorTextBlockShadowGeometry(
+        geometry.outline,
+        node.blockShadowOffset,
+        node.blockShadowAngle,
+      );
+    }
+    return geometry.blockShadow;
+  }
+
+  private blockShadowPathLogicalMiB(): number {
+    let bytes = 0;
+    for (const geometry of this.geometryByNodeId.values()) {
+      bytes += geometry.blockShadow?.logicalBytes ?? 0;
+    }
+    return bytes / MEBIBYTE_BYTES;
+  }
+
+  private drawBlockShadow(
+    target: CanvasRenderingContext2D,
+    node: Readonly<VectorTextNode>,
+    geometry: CachedTextGeometry,
+  ): boolean {
+    if (
+      !node.blockShadowEnabled
+      || node.blockShadowOpacity <= 0
+      || node.opacity <= 0
+    ) {
+      return false;
+    }
+    const blockShadow = this.blockShadowGeometryForNode(node, geometry);
+    target.save();
+    target.globalAlpha = node.opacity * node.blockShadowOpacity;
+    target.globalCompositeOperation = "source-over";
+    target.fillStyle = node.blockShadowColor;
+    target.strokeStyle = node.blockShadowColor;
+    target.lineJoin = node.outlineJoin === "round" ? "round" : "miter";
+    target.lineCap = "butt";
+    target.miterLimit = VECTOR_TEXT_OUTLINE_MITER_LIMIT;
+    if (node.blockShadowOutlineWidth > 0) {
+      // Valore diretto come nel core paint-webgpu-m1: zero significa zero,
+      // senza minimo implicito e senza raddoppio Canvas2D.
+      target.lineWidth = node.blockShadowOutlineWidth;
+      target.stroke(blockShadow.canvasPath);
+    }
+    target.fill(blockShadow.canvasPath);
+    target.restore();
+    return true;
+  }
+
+  private drawSingleShadow(
+    target: CanvasRenderingContext2D,
+    node: Readonly<VectorTextNode>,
+    geometry: CachedTextGeometry,
+    view: VectorTextViewState,
+  ): boolean {
+    if (
+      !node.singleShadowEnabled
+      || node.singleShadowOpacity <= 0
+      || node.opacity <= 0
+    ) {
+      this.singleShadowBlurRenderer.invalidateNode(node.id);
+      return false;
+    }
+    const vector = vectorTextSingleShadowLocalVector(
+      node.singleShadowOffset,
+      node.singleShadowAngle,
+    );
+    const opacity = node.opacity * node.singleShadowOpacity;
+    if (node.singleShadowBlur > 0) {
+      return this.singleShadowBlurRenderer.draw(target, {
+        nodeId: node.id,
+        geometryKey: geometry.outlineKey,
+        path: geometry.outline.canvasPath,
+        bounds: {
+          left: geometry.outline.inkLeft,
+          top: geometry.outline.inkTop,
+          right: geometry.outline.inkRight,
+          bottom: geometry.outline.inkBottom,
+        },
+        color: node.singleShadowColor,
+        opacity,
+        blur: node.singleShadowBlur,
+        offsetX: vector.x,
+        offsetY: vector.y,
+        pixelScale: Math.max(0.0001, Math.abs(view.zoom * node.scale)),
+      });
+    }
+
+    this.singleShadowBlurRenderer.invalidateNode(node.id);
+    target.save();
+    target.globalAlpha = opacity;
+    target.globalCompositeOperation = "source-over";
+    target.translate(vector.x, vector.y);
+    target.fillStyle = node.singleShadowColor;
+    target.fill(geometry.outline.canvasPath);
+    target.restore();
+    return true;
   }
 
   private drawText(
     context: CanvasRenderingContext2D,
     node: Readonly<VectorTextNode>,
-    baseline: number,
+    geometry: CachedTextGeometry,
     opacity: number,
   ): void {
     this.configureTextContext(context, node);
     context.globalAlpha = opacity;
     if (node.outlineWidth > 0) {
       context.strokeStyle = node.outlineColor;
-      context.strokeText(node.text, 0, baseline);
+      context.stroke(geometry.outline.canvasPath);
     }
     context.fillStyle = node.color;
-    context.fillText(node.text, 0, baseline);
+    context.fill(geometry.outline.canvasPath);
   }
 
   private measureText(node: Readonly<VectorTextNode>): TextMetricsBox {
-    const context = this.presentationContext;
-    context.save();
-    context.setTransform(1, 0, 0, 1, 0, 0);
-    this.configureTextContext(context, node);
-    const measurement = context.measureText(node.text);
-    const ascent = Math.max(
-      1,
-      measurement.actualBoundingBoxAscent || node.fontSize * 0.78,
-    );
-    const descent = Math.max(
-      1,
-      measurement.actualBoundingBoxDescent || node.fontSize * 0.22,
-    );
-    const width = Math.max(
-      1,
-      measurement.actualBoundingBoxLeft + measurement.actualBoundingBoxRight
-        || measurement.width,
-    );
-    const baseline = (ascent - descent) * 0.5;
-    context.restore();
+    const outline = this.geometryForNode(node).outline;
     return {
-      left: -width * 0.5,
-      top: -(ascent + descent) * 0.5,
-      right: width * 0.5,
-      bottom: (ascent + descent) * 0.5,
-      baseline,
+      left: outline.left,
+      top: outline.top,
+      right: outline.right,
+      bottom: outline.bottom,
+      baseline: outline.baseline,
     };
   }
 
@@ -622,12 +985,14 @@ export class MixedVectorTextController {
         context.clearRect(0, 0, view.canvasWidth, view.canvasHeight);
         this.setViewTransform(context, view);
         for (const node of nodes) {
-          const metrics = this.measureText(node);
+          const geometry = this.geometryForNode(node);
           context.save();
           context.translate(node.x, node.y);
           context.rotate(node.rotation);
           context.scale(node.scale, node.scale);
-          this.drawText(context, node, metrics.baseline, node.opacity);
+          this.drawSingleShadow(context, node, geometry, view);
+          this.drawBlockShadow(context, node, geometry);
+          this.drawText(context, node, geometry, node.opacity);
           context.restore();
         }
         context.restore();
@@ -671,14 +1036,21 @@ export class MixedVectorTextController {
   ): void {
     const viewportCanvasLogicalMiB =
       view.canvasWidth * view.canvasHeight * 4 * 2 / MEBIBYTE_BYTES;
+    const vectorFontLogicalMiB = this.fontGeometry.logicalFontBytes / MEBIBYTE_BYTES;
+    const blockShadowPathLogicalMiB = this.blockShadowPathLogicalMiB();
+    const singleShadowLedger = this.singleShadowBlurRenderer.ledger();
+    const singleShadowBrowserLogicalMiB =
+      singleShadowLedger.browserBytes / MEBIBYTE_BYTES;
+    const browserCanvasLogicalMiB =
+      viewportCanvasLogicalMiB + singleShadowBrowserLogicalMiB;
     const cacheLabel = `${this.viewportTextureCount} cache GPU viewport`;
     const timing = `render ${this.lastRenderMs.toFixed(2)} ms `
       + `(p95 ${percentile(this.renderSamples, 0.95).toFixed(2)} ms)`;
     if (!node) {
       this.status.textContent =
         `Raster selezionato · testi semantici nel canvas di viewport · ${cacheLabel} `
-        + `${this.liveGpuMemoryMiB.toFixed(2)} MiB · 2 canvas browser `
-        + `${viewportCanvasLogicalMiB.toFixed(2)} MiB · ${timing}.`;
+        + `${this.liveGpuMemoryMiB.toFixed(2)} MiB · canvas browser `
+        + `${browserCanvasLogicalMiB.toFixed(2)} MiB · ${timing}.`;
       return;
     }
 
@@ -694,10 +1066,25 @@ export class MixedVectorTextController {
     const outline = node.outlineWidth > 0
       ? `traccia ${Math.round(node.outlineWidth)} px ${OUTLINE_JOIN_LABELS[node.outlineJoin]}`
       : "traccia off";
+    const blockShadow = node.blockShadowEnabled
+      ? `Block Shadow vettoriale ${Math.round(node.blockShadowOffset)} @ `
+        + `${Math.round(node.blockShadowAngle)}° · path `
+        + `${(blockShadowPathLogicalMiB * 1024).toFixed(1)} KiB · GPU +0 MiB`
+      : "Block Shadow off";
+    const singleShadow = node.singleShadowEnabled
+      ? `Ombra singola ${Math.round(node.singleShadowOffset)} @ `
+        + `${Math.round(node.singleShadowAngle)}° · blur `
+        + `${Math.round(node.singleShadowBlur)} · cache browser `
+        + `${singleShadowBrowserLogicalMiB.toFixed(2)} MiB `
+        + `(${singleShadowLedger.entries} matte + scratch) · GPU effetto +0 MiB`
+      : "Ombra singola off";
     this.status.textContent =
       `${node.name} · oggetto testo ${placement} · ${cacheLabel} `
-      + `${this.liveGpuMemoryMiB.toFixed(2)} MiB · 2 canvas browser `
-      + `${viewportCanvasLogicalMiB.toFixed(2)} MiB · ${outline} · ${timing}.`;
+      + `${this.liveGpuMemoryMiB.toFixed(2)} MiB · canvas browser `
+      + `${browserCanvasLogicalMiB.toFixed(2)} MiB · font vettoriali `
+      + `${vectorFontLogicalMiB.toFixed(2)} MiB · ${outline} · ${blockShadow} · `
+      + `${singleShadow} · `
+      + `${timing}.`;
   }
   private layerToCanvas(point: Point, view: VectorTextViewState): Point {
     const deltaX = point.x - view.centerX;

@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   MIXED_SCENE_STACK_STRATEGY,
   MixedSceneStack,
   VECTOR_TEXT_NODE_MAXIMUM,
 } from "../src/mixed-scene-stack.ts";
+import {
+  MIXED_MEMORY_BENCHMARK_INTERLEAVED_TEXT_RUNS,
+  MIXED_MEMORY_BENCHMARK_STRATEGY,
+  MIXED_MEMORY_BENCHMARK_TARGET_MIB,
+  mixedMemoryBenchmarkTextSeed,
+} from "../src/mixed-memory-benchmark-model.ts";
 
 const seed = (text = "STREETWEAR") => ({
   text,
@@ -13,6 +20,18 @@ const seed = (text = "STREETWEAR") => ({
   outlineWidth: 0,
   outlineColor: "#111111",
   outlineJoin: "round",
+  blockShadowEnabled: true,
+  blockShadowColor: "#727272",
+  blockShadowOpacity: 1,
+  blockShadowOffset: 23,
+  blockShadowAngle: -104,
+  blockShadowOutlineWidth: 0,
+  singleShadowEnabled: false,
+  singleShadowColor: "#727272",
+  singleShadowOpacity: 1,
+  singleShadowOffset: 54,
+  singleShadowAngle: -180,
+  singleShadowBlur: 6,
   x: 2048,
   y: 2048,
   scale: 1,
@@ -120,6 +139,16 @@ assert.equal(
     outlineWidth: 999,
     outlineColor: "#123456",
     outlineJoin: "bevel",
+    blockShadowOpacity: 2,
+    blockShadowOffset: 999,
+    blockShadowAngle: -999,
+    blockShadowOutlineWidth: 999,
+    singleShadowEnabled: true,
+    singleShadowColor: "#654321",
+    singleShadowOpacity: 2,
+    singleShadowOffset: 999,
+    singleShadowAngle: 999,
+    singleShadowBlur: 999,
   });
   assert.equal(stack.textById(1).text, "UPDATED");
   assert.equal(stack.textById(1).x, 100);
@@ -128,6 +157,16 @@ assert.equal(
   assert.equal(stack.textById(1).outlineWidth, 100);
   assert.equal(stack.textById(1).outlineColor, "#123456");
   assert.equal(stack.textById(1).outlineJoin, "bevel");
+  assert.equal(stack.textById(1).blockShadowOpacity, 1);
+  assert.equal(stack.textById(1).blockShadowOffset, 100);
+  assert.equal(stack.textById(1).blockShadowAngle, -180);
+  assert.equal(stack.textById(1).blockShadowOutlineWidth, 100);
+  assert.equal(stack.textById(1).singleShadowEnabled, true);
+  assert.equal(stack.textById(1).singleShadowColor, "#654321");
+  assert.equal(stack.textById(1).singleShadowOpacity, 1);
+  assert.equal(stack.textById(1).singleShadowOffset, 100);
+  assert.equal(stack.textById(1).singleShadowAngle, 180);
+  assert.equal(stack.textById(1).singleShadowBlur, 300);
   assert.equal(stack.setTextOpacity(1, -4), true);
   assert.equal(stack.textById(1).opacity, 0);
   assert.equal(stack.setTextVisibility(1, false), true);
@@ -190,6 +229,38 @@ assert.equal(
   }
   assert.equal(stack.textCount, VECTOR_TEXT_NODE_MAXIMUM);
   assert.throws(() => stack.addTextAboveSelection(seed("overflow")), /Massimo/);
+}
+
+{
+  assert.equal(
+    MIXED_MEMORY_BENCHMARK_STRATEGY,
+    "mixed-raster-vector-64-text-nine-runs-counted-gpu-800mib-v1",
+  );
+  assert.equal(MIXED_MEMORY_BENCHMARK_TARGET_MIB, 800);
+  assert.equal(MIXED_MEMORY_BENCHMARK_INTERLEAVED_TEXT_RUNS, 8);
+  const stressSeeds = Array.from(
+    { length: VECTOR_TEXT_NODE_MAXIMUM },
+    (_, index) => mixedMemoryBenchmarkTextSeed(index, 4096),
+  );
+  assert.equal(stressSeeds.filter((entry) => entry.blockShadowEnabled).length, 32);
+  assert.equal(stressSeeds.filter((entry) => entry.singleShadowEnabled).length, 32);
+  assert(stressSeeds.every((entry) => entry.outlineWidth === 0));
+  assert(stressSeeds.every((entry) => entry.blockShadowOutlineWidth === 0));
+  assert(stressSeeds.every((entry) => entry.x > 0 && entry.x < 4096));
+  assert(stressSeeds.every((entry) => entry.y > 0 && entry.y < 4096));
+
+  const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  const engineSource = readFileSync(
+    new URL("../src/brush-engine.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(mainSource, /pageSearchParams\.get\("mixedMemoryBenchmark"\) === "1"/);
+  assert.match(mainSource, /runRequestedMixedMemoryBenchmark/);
+  assert.match(mainSource, /runMixedMemoryZoomProbe/);
+  assert.match(mainSource, /resetActiveLayerForMemoryBenchmark/);
+  assert.match(mainSource, /mixedMemoryBenchmarkKnownLogicalWorkingSetMiB/);
+  assert.match(engineSource, /async addVectorTextNodesBatch\(/);
+  assert.match(engineSource, /resetActiveLayerForMemoryBenchmark\(\)/);
 }
 
 console.log("Mixed raster/text scene stack verification passed.");

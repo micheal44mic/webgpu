@@ -7,6 +7,22 @@ export const VECTOR_TEXT_OUTLINE_MITER_LIMIT = 4;
 
 export type VectorTextOutlineJoin = "bevel" | "miter" | "round";
 
+export const VECTOR_TEXT_BLOCK_SHADOW_STRATEGY =
+  "paint-webgpu-m1-shadow3d-v2-single-extruded-vector-silhouette" as const;
+export const VECTOR_TEXT_BLOCK_SHADOW_OFFSET_MINIMUM = 0;
+export const VECTOR_TEXT_BLOCK_SHADOW_OFFSET_MAXIMUM = 100;
+export const VECTOR_TEXT_BLOCK_SHADOW_ANGLE_MINIMUM = -180;
+export const VECTOR_TEXT_BLOCK_SHADOW_ANGLE_MAXIMUM = 180;
+
+export const VECTOR_TEXT_SINGLE_SHADOW_STRATEGY =
+  "paint-webgpu-m1-shadow3d-v2-single-offset-mask-with-blur" as const;
+export const VECTOR_TEXT_SINGLE_SHADOW_OFFSET_MINIMUM = 0;
+export const VECTOR_TEXT_SINGLE_SHADOW_OFFSET_MAXIMUM = 100;
+export const VECTOR_TEXT_SINGLE_SHADOW_ANGLE_MINIMUM = -180;
+export const VECTOR_TEXT_SINGLE_SHADOW_ANGLE_MAXIMUM = 180;
+export const VECTOR_TEXT_SINGLE_SHADOW_BLUR_MINIMUM = 0;
+export const VECTOR_TEXT_SINGLE_SHADOW_BLUR_MAXIMUM = 300;
+
 export function normalizeVectorTextOutlineWidth(width: number): number {
   const finite = Number.isFinite(width) ? width : VECTOR_TEXT_OUTLINE_WIDTH_MINIMUM;
   return Math.min(
@@ -39,6 +55,97 @@ export function vectorTextOutlineLocalReach(
     : outsideWidth;
 }
 
+export function normalizeVectorTextBlockShadowOpacity(opacity: number): number {
+  const finite = Number.isFinite(opacity) ? opacity : 1;
+  return Math.min(1, Math.max(0, finite));
+}
+
+export function normalizeVectorTextBlockShadowOffset(offset: number): number {
+  const finite = Number.isFinite(offset)
+    ? offset
+    : VECTOR_TEXT_BLOCK_SHADOW_OFFSET_MINIMUM;
+  return Math.min(
+    VECTOR_TEXT_BLOCK_SHADOW_OFFSET_MAXIMUM,
+    Math.max(VECTOR_TEXT_BLOCK_SHADOW_OFFSET_MINIMUM, finite),
+  );
+}
+
+export function normalizeVectorTextBlockShadowAngle(angle: number): number {
+  const finite = Number.isFinite(angle) ? angle : 0;
+  return Math.min(
+    VECTOR_TEXT_BLOCK_SHADOW_ANGLE_MAXIMUM,
+    Math.max(VECTOR_TEXT_BLOCK_SHADOW_ANGLE_MINIMUM, finite),
+  );
+}
+
+export function vectorTextBlockShadowLocalReach(
+  _fontSize: number,
+  offset: number,
+): number {
+  return normalizeVectorTextBlockShadowOffset(offset);
+}
+
+export function vectorTextBlockShadowLocalVector(
+  fontSize: number,
+  offset: number,
+  angleDegrees: number,
+): { x: number; y: number } {
+  const reach = vectorTextBlockShadowLocalReach(fontSize, offset);
+  const angleRadians = normalizeVectorTextBlockShadowAngle(angleDegrees)
+    * Math.PI / 180;
+  return {
+    x: Math.cos(angleRadians) * reach,
+    // Kittl espone l'angolo in coordinate cartesiane: gli angoli negativi
+    // puntano verso il basso nel canvas, il cui asse Y cresce verso il basso.
+    y: -Math.sin(angleRadians) * reach,
+  };
+}
+
+export function normalizeVectorTextSingleShadowOpacity(opacity: number): number {
+  return normalizeVectorTextBlockShadowOpacity(opacity);
+}
+
+export function normalizeVectorTextSingleShadowOffset(offset: number): number {
+  const finite = Number.isFinite(offset)
+    ? offset
+    : VECTOR_TEXT_SINGLE_SHADOW_OFFSET_MINIMUM;
+  return Math.min(
+    VECTOR_TEXT_SINGLE_SHADOW_OFFSET_MAXIMUM,
+    Math.max(VECTOR_TEXT_SINGLE_SHADOW_OFFSET_MINIMUM, finite),
+  );
+}
+
+export function normalizeVectorTextSingleShadowAngle(angle: number): number {
+  const finite = Number.isFinite(angle) ? angle : 0;
+  return Math.min(
+    VECTOR_TEXT_SINGLE_SHADOW_ANGLE_MAXIMUM,
+    Math.max(VECTOR_TEXT_SINGLE_SHADOW_ANGLE_MINIMUM, finite),
+  );
+}
+
+export function normalizeVectorTextSingleShadowBlur(blur: number): number {
+  const finite = Number.isFinite(blur)
+    ? blur
+    : VECTOR_TEXT_SINGLE_SHADOW_BLUR_MINIMUM;
+  return Math.min(
+    VECTOR_TEXT_SINGLE_SHADOW_BLUR_MAXIMUM,
+    Math.max(VECTOR_TEXT_SINGLE_SHADOW_BLUR_MINIMUM, finite),
+  );
+}
+
+export function vectorTextSingleShadowLocalVector(
+  offset: number,
+  angleDegrees: number,
+): { x: number; y: number } {
+  const reach = normalizeVectorTextSingleShadowOffset(offset);
+  const angleRadians = normalizeVectorTextSingleShadowAngle(angleDegrees)
+    * Math.PI / 180;
+  return {
+    x: Math.cos(angleRadians) * reach,
+    y: -Math.sin(angleRadians) * reach,
+  };
+}
+
 export const MIXED_SCENE_STACK_STRATEGY =
   "heterogeneous-bottom-up-raster-text-segmented-composition-selected-insertion-v3" as const;
 
@@ -68,6 +175,18 @@ export interface VectorTextNode {
   outlineWidth: number;
   outlineColor: string;
   outlineJoin: VectorTextOutlineJoin;
+  blockShadowEnabled: boolean;
+  blockShadowColor: string;
+  blockShadowOpacity: number;
+  blockShadowOffset: number;
+  blockShadowAngle: number;
+  blockShadowOutlineWidth: number;
+  singleShadowEnabled: boolean;
+  singleShadowColor: string;
+  singleShadowOpacity: number;
+  singleShadowOffset: number;
+  singleShadowAngle: number;
+  singleShadowBlur: number;
   x: number;
   y: number;
   scale: number;
@@ -82,6 +201,18 @@ export interface VectorTextNodeSeed {
   outlineWidth: number;
   outlineColor: string;
   outlineJoin: VectorTextOutlineJoin;
+  blockShadowEnabled: boolean;
+  blockShadowColor: string;
+  blockShadowOpacity: number;
+  blockShadowOffset: number;
+  blockShadowAngle: number;
+  blockShadowOutlineWidth: number;
+  singleShadowEnabled: boolean;
+  singleShadowColor: string;
+  singleShadowOpacity: number;
+  singleShadowOffset: number;
+  singleShadowAngle: number;
+  singleShadowBlur: number;
   x: number;
   y: number;
   scale: number;
@@ -243,6 +374,32 @@ export class MixedSceneStack {
       outlineWidth: normalizeVectorTextOutlineWidth(seed.outlineWidth),
       outlineColor: seed.outlineColor,
       outlineJoin: normalizeVectorTextOutlineJoin(seed.outlineJoin),
+      blockShadowEnabled: seed.blockShadowEnabled,
+      blockShadowColor: seed.blockShadowColor,
+      blockShadowOpacity: normalizeVectorTextBlockShadowOpacity(
+        seed.blockShadowOpacity,
+      ),
+      blockShadowOffset: normalizeVectorTextBlockShadowOffset(
+        seed.blockShadowOffset,
+      ),
+      blockShadowAngle: normalizeVectorTextBlockShadowAngle(seed.blockShadowAngle),
+      blockShadowOutlineWidth: normalizeVectorTextOutlineWidth(
+        seed.blockShadowOutlineWidth,
+      ),
+      singleShadowEnabled: seed.singleShadowEnabled,
+      singleShadowColor: seed.singleShadowColor,
+      singleShadowOpacity: normalizeVectorTextSingleShadowOpacity(
+        seed.singleShadowOpacity,
+      ),
+      singleShadowOffset: normalizeVectorTextSingleShadowOffset(
+        seed.singleShadowOffset,
+      ),
+      singleShadowAngle: normalizeVectorTextSingleShadowAngle(
+        seed.singleShadowAngle,
+      ),
+      singleShadowBlur: normalizeVectorTextSingleShadowBlur(
+        seed.singleShadowBlur,
+      ),
       x: seed.x,
       y: seed.y,
       scale: seed.scale,
@@ -366,6 +523,58 @@ export class MixedSceneStack {
     }
     if (update.outlineJoin !== undefined) {
       node.outlineJoin = normalizeVectorTextOutlineJoin(update.outlineJoin);
+    }
+    if (update.blockShadowEnabled !== undefined) {
+      node.blockShadowEnabled = update.blockShadowEnabled;
+    }
+    if (update.blockShadowColor !== undefined) {
+      node.blockShadowColor = update.blockShadowColor;
+    }
+    if (update.blockShadowOpacity !== undefined) {
+      node.blockShadowOpacity = normalizeVectorTextBlockShadowOpacity(
+        update.blockShadowOpacity,
+      );
+    }
+    if (update.blockShadowOffset !== undefined) {
+      node.blockShadowOffset = normalizeVectorTextBlockShadowOffset(
+        update.blockShadowOffset,
+      );
+    }
+    if (update.blockShadowAngle !== undefined) {
+      node.blockShadowAngle = normalizeVectorTextBlockShadowAngle(
+        update.blockShadowAngle,
+      );
+    }
+    if (update.blockShadowOutlineWidth !== undefined) {
+      node.blockShadowOutlineWidth = normalizeVectorTextOutlineWidth(
+        update.blockShadowOutlineWidth,
+      );
+    }
+    if (update.singleShadowEnabled !== undefined) {
+      node.singleShadowEnabled = update.singleShadowEnabled;
+    }
+    if (update.singleShadowColor !== undefined) {
+      node.singleShadowColor = update.singleShadowColor;
+    }
+    if (update.singleShadowOpacity !== undefined) {
+      node.singleShadowOpacity = normalizeVectorTextSingleShadowOpacity(
+        update.singleShadowOpacity,
+      );
+    }
+    if (update.singleShadowOffset !== undefined) {
+      node.singleShadowOffset = normalizeVectorTextSingleShadowOffset(
+        update.singleShadowOffset,
+      );
+    }
+    if (update.singleShadowAngle !== undefined) {
+      node.singleShadowAngle = normalizeVectorTextSingleShadowAngle(
+        update.singleShadowAngle,
+      );
+    }
+    if (update.singleShadowBlur !== undefined) {
+      node.singleShadowBlur = normalizeVectorTextSingleShadowBlur(
+        update.singleShadowBlur,
+      );
     }
     if (update.x !== undefined) {
       node.x = update.x;
