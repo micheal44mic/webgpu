@@ -23,6 +23,11 @@ import {
   unionMergedSurfaceRects,
 } from "../src/merged-surface-bounds.ts";
 
+import {
+  MIXED_SCENE_COMPOSITOR_STRATEGY,
+  MIXED_SCENE_LINEAR_FORMAT,
+} from "../src/mixed-scene-compositor-shader.ts";
+
 const read = (relativePath) =>
   fs.readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
 
@@ -32,6 +37,7 @@ const controllerSource = read("src/mixed-vector-text-controller.ts");
 const sceneSource = read("src/mixed-scene-stack.ts");
 const shaderSource = read("src/vector-text-shader.ts");
 const mergedSurfaceShaderSource = read("src/merged-surface-shader.ts");
+const mixedCompositorSource = read("src/mixed-scene-compositor-shader.ts");
 const effectShaderSource = read("src/shaders.ts");
 const strokeRendererSource = read("src/stroke-renderer.ts");
 const htmlSource = read("index.html");
@@ -101,14 +107,19 @@ for (const local of [
 }
 
 const viewportMiB = viewport.width * viewport.height * 4 / (1024 * 1024);
-const dualViewportMiB = viewportMiB * 2;
+const commonSegmentedViewportMiB = viewportMiB * 3;
 const fullLayerMiB = layerSize * layerSize * 4 / (1024 * 1024);
 assert.ok(viewportMiB < 5);
-assert.ok(dualViewportMiB < 10);
 assert.equal(fullLayerMiB, 64);
-assert.ok(dualViewportMiB < fullLayerMiB / 6,
-  "anche entrambe le cache testo devono restare molto sotto un layer 4096²");
-
+assert.ok(
+  commonSegmentedViewportMiB < fullLayerMiB / 4,
+  "una cache testo RGBA8 più il compositore RGBA16F devono restare sotto 16 MiB",
+);
+assert.equal(MIXED_SCENE_LINEAR_FORMAT, "rgba16float");
+assert.equal(
+  MIXED_SCENE_COMPOSITOR_STRATEGY,
+  "ordered-raster-text-runs-rgba16f-viewport-source-over-v1",
+);
 assert.equal(
   VECTOR_TEXT_OUTLINE_STRATEGY,
   "canvas2d-glyph-stroke-semantic-viewport-zero-document-cache-v2",
@@ -125,7 +136,7 @@ assert.equal(vectorTextOutlineLocalReach(25, "miter"), 100);
 
 assert.equal(
   MIXED_MERGED_SURFACE_STORAGE_STRATEGY,
-  "mixed-raster-bbox-document-mips-vector-viewport-v3",
+  "mixed-raster-run-bbox-document-mips-segmented-vector-viewport-v4",
 );
 assert.equal(MIXED_MERGED_SURFACE_ALIGNMENT, 64);
 assert.equal(MIXED_MERGED_SURFACE_TRANSPARENT_GUARD, 64);
@@ -163,52 +174,62 @@ assert.ok(croppedMergedMemory.totalBytes < fullMergedMemory.totalBytes / 30);
 
 assert.match(mainSource, /pageSearchParams\.get\("vectorTextTest"\) === "1"/);
 assert.match(mainSource, /new MixedVectorTextController\(engine\)/);
+assert.match(mainSource, /if \(!responseHasJsonContent\(response\)\) \{[\s\S]*return null;/,
+  "il dev server HTML fallback non deve apparire come errore JSON");
 assert.match(engineSource, /if \(this\.vectorTextPrototypeEnabled\)/);
-assert.match(engineSource, /private vectorTextBelowTexture: GPUTexture \| null = null/);
-assert.match(engineSource, /private vectorTextAboveTexture: GPUTexture \| null = null/);
+assert.match(engineSource, /private readonly vectorTextRunTextures = new Map/);
+assert.match(engineSource, /private mixedSceneLinearTexture: GPUTexture \| null = null/);
 assert.match(engineSource, /format: "rgba8unorm-srgb"/);
+assert.match(engineSource, /format: MIXED_SCENE_LINEAR_FORMAT/);
 assert.match(engineSource, /copyExternalImageToTexture\(/);
 assert.match(engineSource, /premultipliedAlpha: true/);
-assert.match(engineSource, /vectorTextTextureCount \* this\.vectorTextTextureWidth/);
+assert.match(engineSource, /this\.vectorTextRunTextures\.size/);
+assert.match(engineSource, /this\.mixedSceneLinearWidth \* this\.mixedSceneLinearHeight \* 8/);
 assert.match(engineSource, /clearVectorTextPresentation\(placement\?: VectorTextPlacement\)/);
-assert.match(engineSource, /binding: 6, resource: belowView \?\? this\.transparentLayerView/);
-assert.match(engineSource, /binding: 7, resource: aboveView \?\? this\.transparentLayerView/);
-assert.match(engineSource, /entryPoint: "fragmentMain"/);
+assert.match(engineSource, /this\.mixedSceneStack\.compositionSegments\(/);
+assert.match(engineSource, /for \(const segment of this\.mixedSceneCompositionSegments\)/);
+assert.match(engineSource, /candidate\.key === segment\.key/);
+assert.match(engineSource, /this\.vectorTextRunTextures\.get\(segment\.key\)/);
+assert.match(engineSource, /srcFactor: "one"[\s\S]*dstFactor: "one-minus-src-alpha"/);
+assert.equal(
+  (engineSource.match(/this\.encodeMixedSceneSegmentedPresentation\(/g) ?? []).length,
+  3,
+  "live Light Glaze, commit e display normale devono usare lo stesso ordine segmentato",
+);
+assert.equal(
+  (engineSource.match(/entryPoint: "activeFragmentMain"/g) ?? []).length,
+  4,
+  "base, Traccia/effetti, tail e Light Glaze richiedono una sorgente attiva trasparente",
+);
+assert.match(engineSource, /kind: "raster-stroke", sourceMode: "light-glaze"/);
+assert.match(engineSource, /kind: "raster-stroke", sourceMode: "permanent"/);
+assert.match(engineSource, /sourceMode: thicknessTailFrame \? "thickness-tail" : "permanent"/);
+assert.match(engineSource, /if \(!requiresFullRebuild\) \{[\s\S]*scenePass\.setPipeline\(clearPipeline\)/);
 assert.doesNotMatch(engineSource, /VectorTextPatch|vectorTextPatch|adaptiveMergedSurfaceBounds/);
 assert.doesNotMatch(engineSource, /scheduleMixedMergedViewRefresh|refreshMixedMergedSurfacesForView/);
 assert.match(engineSource, /alignedMergedSurfaceBounds\(contentBounds, LAYER_SIZE\)/);
-assert.match(engineSource, /resolutionScale: 1/);
 assert.match(engineSource,
   /items\.filter\([\s\S]*item is Extract<MixedSceneItem, \{ kind: "raster" \}>/,
   "le cache documento devono contenere solo raster");
 assert.match(engineSource, /addRasterAboveSelection\(record\.id\)/);
 assert.match(sceneSource, /this\.orderedItems\.splice\(selectedIndex \+ 1, 0, item\)/,
   "il nuovo raster deve nascere immediatamente sopra l'elemento selezionato");
+assert.match(sceneSource, /compositionSegments\(activeRasterLayerId: number\)/);
+assert.match(sceneSource, /key: `raster-run:\$\{items\.map/);
+assert.match(sceneSource, /key: `text-run:\$\{items\.map/);
 assert.match(engineSource, /canPaintSelectedSceneItem\(\)/);
 
-assert.match(shaderSource, /@binding\(6\) var vectorTextBelowTexture/);
-assert.match(shaderSource, /@binding\(7\) var vectorTextAboveTexture/);
 assert.match(shaderSource,
-  /paint = sourceOver\(vectorBelow, paint\);\s*paint = sourceOver\(activePaint[\s\S]*paint = sourceOver\(vectorAbove, paint\);/,
-  "l'ordine deve essere raster sotto → testo sotto → raster attivo → testo sopra");
-assert.doesNotMatch(shaderSource, /fragmentBelowActive|fragmentAboveActive/);
-assert.match(shaderSource,
-  /semantic-text-dual-viewport-rgba8-srgb-cache-all-display-paths-v3/);
-assert.match(strokeRendererSource, /@group\(0\) @binding\(1\) var vectorTextBelowTexture/);
-assert.match(strokeRendererSource, /@group\(0\) @binding\(2\) var vectorTextAboveTexture/);
-assert.match(strokeRendererSource,
-  /sampleViewportTexture\(vectorTextBelowTexture[\s\S]*activePaint[\s\S]*sampleViewportTexture\(vectorTextAboveTexture/,
-  "Traccia/Ombre/Smusso devono conservare il testo sotto e sopra il raster attivo");
-assert.equal((effectShaderSource.match(/@group\(0\) @binding\(8\) var vectorTextBelowTexture/g) ?? []).length, 2);
-assert.equal((effectShaderSource.match(/@group\(0\) @binding\(9\) var vectorTextAboveTexture/g) ?? []).length, 2);
-assert.equal((effectShaderSource.match(/sampleViewportTexture\(vectorTextBelowTexture/g) ?? []).length, 2);
-assert.equal((effectShaderSource.match(/sampleViewportTexture\(vectorTextAboveTexture/g) ?? []).length, 2);
-assert.match(engineSource, /rebuildVectorTextDependentDisplayBindGroups\(\)/);
-assert.match(engineSource, /binding: 8, resource: belowView/);
-assert.match(engineSource, /binding: 9, resource: aboveView/);
-assert.match(engineSource,
-  /session\.hasContent[\s\S]*this\.lightGlazeDisplayPipeline[\s\S]*this\.vectorTextDisplayPipeline/,
-  "anche i frame Light Glaze senza contenuto devono usare il compositore testo");
+  /semantic-text-run-viewport-rgba8-srgb-segmented-rgba16f-scene-v4/);
+assert.match(mixedCompositorSource,
+  /ordered-raster-text-runs-rgba16f-viewport-source-over-v1/);
+assert.match(mixedCompositorSource, /MIXED_SCENE_LINEAR_FORMAT = "rgba16float"/);
+assert.match(mixedCompositorSource, /textureSampleLevel\(sourceTexture, sourceSampler, uv, lod\)/);
+assert.match(mixedCompositorSource, /return textureLoad\(sourceTexture, pixel, 0\)/);
+assert.match(mixedCompositorSource, /let paint = textureLoad\(sceneTexture, pixel, 0\)/);
+assert.match(mixedCompositorSource, /linearToSrgb\(compositedLinear\)/);
+assert.equal((effectShaderSource.match(/fn activeFragmentMain\(/g) ?? []).length, 3);
+assert.equal((strokeRendererSource.match(/fn activeFragmentMain\(/g) ?? []).length, 1);
 assert.match(mergedSurfaceShaderSource,
   /resolutionScale = max\(display\.hasMergedBelow, 1\.0\)/);
 assert.match(mergedSurfaceShaderSource,
@@ -216,14 +237,15 @@ assert.match(mergedSurfaceShaderSource,
 assert.doesNotMatch(mergedSurfaceShaderSource, /resolutionScale = 4\.0/);
 
 assert.match(controllerSource, /requestAnimationFrame\(/);
-assert.match(controllerSource, /const groups: readonly/);
-assert.match(controllerSource, /placement: "below-active"/);
-assert.match(controllerSource, /placement: "above-active"/);
-assert.match(controllerSource, /snapshot\.items\.slice\(0, activeRasterIndex\)/);
-assert.match(controllerSource, /snapshot\.items\.slice\(activeRasterIndex \+ 1\)/);
-assert.match(controllerSource, /\.filter\(\(item\) => item\.kind === "text"\)/);
+assert.match(controllerSource, /placement: `text-run:\$\{nodes\.map/);
+assert.match(controllerSource, /for \(const item of snapshot\.items\)/);
+assert.match(controllerSource, /if \(item\.kind === "text"\)[\s\S]*flushTextRun\(\)/,
+  "ogni confine raster deve chiudere il run testo corrente");
+assert.match(controllerSource, /this\.renderedTextRunKeys/);
+assert.match(controllerSource, /this\.host\.clearVectorTextPresentation\(previousKey\)/);
 assert.match(controllerSource, /this\.host\.clearVectorTextPresentation\(group\.placement\)/);
 assert.match(controllerSource, /this\.host\.updateVectorTextPresentation\(/);
+assert.match(controllerSource, /view\.canvasWidth \* view\.canvasHeight \* 8/);
 assert.match(controllerSource, /context\.setTransform\(a, b, c, d, e, f\)/);
 assert.match(controllerSource, /context\.lineJoin = node\.outlineJoin/);
 assert.match(controllerSource, /context\.miterLimit = VECTOR_TEXT_OUTLINE_MITER_LIMIT/);
@@ -242,7 +264,6 @@ assert.doesNotMatch(controllerSource,
 assert.match(controllerSource,
   /interaction\.startModel\.scale \* distance \/ interaction\.startDistance/);
 assert.doesNotMatch(controllerSource, /createTexture|GPUTexture/);
-
 assert.doesNotMatch(htmlSource, /gpuMemoryVectorTextPatch/);
 assert.match(htmlSource, /id="gpuMemoryVectorText"/);
 for (const id of [
@@ -274,7 +295,7 @@ assert.equal(packageJson.scripts["vector-text:verify"], "node scripts/verify-vec
 assert.equal(packageJson.scripts["mixed-scene:verify"], "node scripts/verify-mixed-scene-stack.mjs");
 
 console.log(
-  "Testo semantico verificato: stesso renderer selezionato/statico, cache dual viewport, "
-  + "raster documento separati, stack effetti coerente e inserimento subito sopra; "
-  + `${dualViewportMiB.toFixed(2)} MiB massimi nel viewport di prova contro 64 MiB full-canvas.`,
+  "Testo semantico verificato: ordine documento invariabile al raster attivo, "
+  + "cache per run, compositore lineare, effetti coerenti e inserimento subito sopra; "
+  + `${commonSegmentedViewportMiB.toFixed(2)} MiB nel caso comune contro 64 MiB full-canvas.`,
 );

@@ -30,10 +30,19 @@ import {
 import {
   MIXED_SCENE_STACK_STRATEGY,
   MixedSceneStack,
+  type MixedSceneCompositionSegment,
   type MixedSceneItem,
   type VectorTextNode,
   type VectorTextNodeSeed,
 } from "./mixed-scene-stack";
+import {
+  MIXED_SCENE_COMPOSITOR_STRATEGY,
+  MIXED_SCENE_LINEAR_FORMAT,
+  mixedSceneClearShader,
+  mixedScenePresentShader,
+  mixedSceneRasterSegmentShader,
+  mixedSceneTextSegmentShader,
+} from "./mixed-scene-compositor-shader";
 import {
   MIXED_MERGED_SURFACE_MAX_DISPLAY_MIP,
   MIXED_MERGED_SURFACE_STORAGE_STRATEGY,
@@ -949,6 +958,25 @@ interface MergedSurfaceResources {
   foldedPixels: number;
   analyticBakePixels: number;
 }
+
+interface MixedSceneRasterSegmentResources {
+  key: Extract<MixedSceneCompositionSegment, { kind: "raster-run" }>["key"];
+  surface: MergedSurfaceResources;
+  uniformBuffer: GPUBuffer;
+  bindGroup: GPUBindGroup;
+}
+
+interface VectorTextRunTextureResources {
+  texture: GPUTexture;
+  view: GPUTextureView;
+  bindGroup: GPUBindGroup;
+}
+
+type MixedSceneActivePresentation =
+  | { kind: "base" }
+  | { kind: "thickness-tail" }
+  | { kind: "light-glaze" }
+  | { kind: "raster-stroke"; sourceMode: RasterStrokeSourceMode };
 
 interface LayerBakeResources {
   texture: GPUTexture;
@@ -1902,6 +1930,8 @@ export class BrushEngine {
   private transparentLayerView!: GPUTextureView;
   private mergedBelow: MergedSurfaceResources | null = null;
   private mergedAbove: MergedSurfaceResources | null = null;
+  private mixedSceneCompositionSegments: readonly MixedSceneCompositionSegment[] = [];
+  private mixedSceneRasterSegments: MixedSceneRasterSegmentResources[] = [];
   private paintMipViews: GPUTextureView[] = [];
   private paintMipDownsampleBindGroups: GPUBindGroup[] = [];
   private paintDisplayMipValidThroughLevel = 0;
@@ -1911,6 +1941,15 @@ export class BrushEngine {
   private presentationCacheWidth = 0;
   private presentationCacheHeight = 0;
   private presentationCacheNeedsFullRebuild = true;
+  private mixedSceneLinearTexture: GPUTexture | null = null;
+  private mixedSceneLinearView: GPUTextureView | null = null;
+  private mixedSceneLinearWidth = 0;
+  private mixedSceneLinearHeight = 0;
+  private mixedScenePresentBindGroup: GPUBindGroup | null = null;
+  private readonly vectorTextRunTextures = new Map<
+    Extract<VectorTextPlacement, `text-run:${string}`>,
+    VectorTextRunTextureResources
+  >();
   private vectorTextBelowTexture: GPUTexture | null = null;
   private vectorTextBelowView: GPUTextureView | null = null;
   private vectorTextAboveTexture: GPUTexture | null = null;
@@ -2008,6 +2047,9 @@ export class BrushEngine {
   private grainBrushOccupancyBindGroupLayout!: GPUBindGroupLayout;
   private displayBindGroupLayout!: GPUBindGroupLayout;
   private vectorTextDisplayBindGroupLayout: GPUBindGroupLayout | null = null;
+  private mixedSceneRasterSegmentBindGroupLayout: GPUBindGroupLayout | null = null;
+  private mixedSceneTextSegmentBindGroupLayout: GPUBindGroupLayout | null = null;
+  private mixedScenePresentBindGroupLayout: GPUBindGroupLayout | null = null;
   private rasterStrokeDisplayScreenBindGroupLayout!: GPUBindGroupLayout;
   private rasterStrokeDisplaySourceBindGroupLayout!: GPUBindGroupLayout;
   private thicknessTailDisplayBindGroupLayout!: GPUBindGroupLayout;
@@ -2043,6 +2085,10 @@ export class BrushEngine {
   private texturizedGrainShaderModule!: GPUShaderModule;
   private displayShaderModule!: GPUShaderModule;
   private vectorTextDisplayShaderModule: GPUShaderModule | null = null;
+  private mixedSceneRasterSegmentShaderModule: GPUShaderModule | null = null;
+  private mixedSceneTextSegmentShaderModule: GPUShaderModule | null = null;
+  private mixedSceneClearShaderModule: GPUShaderModule | null = null;
+  private mixedScenePresentShaderModule: GPUShaderModule | null = null;
   private rasterStrokeDisplayShaderModule!: GPUShaderModule;
   private thicknessTailDisplayShaderModule!: GPUShaderModule;
   private lightGlazeDisplayShaderModule!: GPUShaderModule;
@@ -2070,6 +2116,14 @@ export class BrushEngine {
   private grainM1GlazeShapeOccupancyPipeline!: GPURenderPipeline;
   private displayPipeline!: GPURenderPipeline;
   private vectorTextDisplayPipeline: GPURenderPipeline | null = null;
+  private mixedSceneClearPipeline: GPURenderPipeline | null = null;
+  private mixedSceneRasterSegmentPipeline: GPURenderPipeline | null = null;
+  private mixedSceneTextSegmentPipeline: GPURenderPipeline | null = null;
+  private mixedScenePresentPipeline: GPURenderPipeline | null = null;
+  private mixedSceneActiveDisplayPipeline: GPURenderPipeline | null = null;
+  private mixedSceneActiveRasterStrokeDisplayPipeline: GPURenderPipeline | null = null;
+  private mixedSceneActiveThicknessTailDisplayPipeline: GPURenderPipeline | null = null;
+  private mixedSceneActiveLightGlazeDisplayPipeline: GPURenderPipeline | null = null;
   private rasterStrokeDisplayPipeline!: GPURenderPipeline;
   private thicknessTailDisplayPipeline!: GPURenderPipeline;
   private lightGlazeDisplayPipeline!: GPURenderPipeline;
@@ -3436,7 +3490,6 @@ export class BrushEngine {
       },
       { width, height, depthOrArrayLayers: 1 },
     );
-    this.rebuildVectorTextDisplayBindGroup();
     this.displayDirty = true;
     this.presentationCacheNeedsFullRebuild = true;
     this.requestRender();
@@ -3451,6 +3504,7 @@ export class BrushEngine {
 
   clearVectorTextPresentation(placement?: VectorTextPlacement): void {
     let changed = false;
+    let legacyBindingsChanged = false;
     if (!placement || placement === "below-active") {
       const texture = this.vectorTextBelowTexture;
       this.vectorTextBelowTexture = null;
@@ -3458,6 +3512,7 @@ export class BrushEngine {
       if (texture) {
         texture.destroy();
         changed = true;
+        legacyBindingsChanged = true;
       }
     }
     if (!placement || placement === "above-active") {
@@ -3467,13 +3522,35 @@ export class BrushEngine {
       if (texture) {
         texture.destroy();
         changed = true;
+        legacyBindingsChanged = true;
       }
     }
-    if (!this.vectorTextBelowTexture && !this.vectorTextAboveTexture) {
+    if (!placement) {
+      for (const resources of this.vectorTextRunTextures.values()) {
+        resources.texture.destroy();
+        changed = true;
+      }
+      this.vectorTextRunTextures.clear();
+    } else if (placement.startsWith("text-run:")) {
+      const key = placement as Extract<VectorTextPlacement, `text-run:${string}`>;
+      const resources = this.vectorTextRunTextures.get(key);
+      if (resources) {
+        resources.texture.destroy();
+        this.vectorTextRunTextures.delete(key);
+        changed = true;
+      }
+    }
+    if (
+      !this.vectorTextBelowTexture
+      && !this.vectorTextAboveTexture
+      && this.vectorTextRunTextures.size === 0
+    ) {
       this.vectorTextTextureWidth = 0;
       this.vectorTextTextureHeight = 0;
     }
-    this.rebuildVectorTextDisplayBindGroup();
+    if (legacyBindingsChanged) {
+      this.rebuildVectorTextDisplayBindGroup();
+    }
     if (changed && this.initialized) {
       this.displayDirty = true;
       this.presentationCacheNeedsFullRebuild = true;
@@ -4197,11 +4274,16 @@ export class BrushEngine {
       ? this.presentationCacheWidth * this.presentationCacheHeight * 4 / MEBIBYTE_BYTES
       : 0;
     const vectorTextTextureCount = Number(Boolean(this.vectorTextBelowTexture))
-      + Number(Boolean(this.vectorTextAboveTexture));
-    const vectorTextPresentationMiB = vectorTextTextureCount > 0
+      + Number(Boolean(this.vectorTextAboveTexture))
+      + this.vectorTextRunTextures.size;
+    const vectorTextViewportMiB = vectorTextTextureCount > 0
       ? vectorTextTextureCount * this.vectorTextTextureWidth
         * this.vectorTextTextureHeight * 4 / MEBIBYTE_BYTES
       : 0;
+    const mixedSceneLinearMiB = this.mixedSceneLinearTexture
+      ? this.mixedSceneLinearWidth * this.mixedSceneLinearHeight * 8 / MEBIBYTE_BYTES
+      : 0;
+    const vectorTextPresentationMiB = vectorTextViewportMiB + mixedSceneLinearMiB;
     const rasterStrokeStyledMiB =
       (rasterStroke?.styledMemoryBytes ?? 0) / MEBIBYTE_BYTES;
     const rasterStrokeCoverageMiB =
@@ -7828,10 +7910,41 @@ export class BrushEngine {
         label: "Dual viewport vector text mixed-layer display WGSL",
         code: vectorTextDisplayShader,
       });
-      await this.assertShaderCompiled(
-        this.vectorTextDisplayShaderModule,
-        "dual viewport vector text mixed-layer display",
-      );
+      this.mixedSceneRasterSegmentShaderModule = this.device.createShaderModule({
+        label: "Mixed scene raster segment WGSL",
+        code: mixedSceneRasterSegmentShader,
+      });
+      this.mixedSceneTextSegmentShaderModule = this.device.createShaderModule({
+        label: "Mixed scene text segment WGSL",
+        code: mixedSceneTextSegmentShader,
+      });
+      this.mixedSceneClearShaderModule = this.device.createShaderModule({
+        label: "Mixed scene partial clear WGSL",
+        code: mixedSceneClearShader,
+      });
+      this.mixedScenePresentShaderModule = this.device.createShaderModule({
+        label: "Mixed scene checker presentation WGSL",
+        code: mixedScenePresentShader,
+      });
+      await Promise.all([
+        this.assertShaderCompiled(
+          this.vectorTextDisplayShaderModule,
+          "dual viewport vector text mixed-layer display",
+        ),
+        this.assertShaderCompiled(
+          this.mixedSceneRasterSegmentShaderModule,
+          "mixed scene raster segment",
+        ),
+        this.assertShaderCompiled(
+          this.mixedSceneTextSegmentShaderModule,
+          "mixed scene text segment",
+        ),
+        this.assertShaderCompiled(this.mixedSceneClearShaderModule, "mixed scene partial clear"),
+        this.assertShaderCompiled(
+          this.mixedScenePresentShaderModule,
+          "mixed scene checker presentation",
+        ),
+      ]);
       this.vectorTextDisplayBindGroupLayout = this.device.createBindGroupLayout({
         label: "Dual viewport vector text mixed-layer display bind group layout",
         entries: [
@@ -7843,6 +7956,28 @@ export class BrushEngine {
           { binding: 5, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
           { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
           { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        ],
+      });
+      this.mixedSceneRasterSegmentBindGroupLayout = this.device.createBindGroupLayout({
+        label: "Mixed scene raster segment bind group layout",
+        entries: [
+          { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+          { binding: 1, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+          { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+          { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+        ],
+      });
+      this.mixedSceneTextSegmentBindGroupLayout = this.device.createBindGroupLayout({
+        label: "Mixed scene text segment bind group layout",
+        entries: [
+          { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        ],
+      });
+      this.mixedScenePresentBindGroupLayout = this.device.createBindGroupLayout({
+        label: "Mixed scene presentation bind group layout",
+        entries: [
+          { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+          { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
         ],
       });
       const vectorTextPipelineLayout = this.device.createPipelineLayout({
@@ -7860,6 +7995,87 @@ export class BrushEngine {
           module: this.vectorTextDisplayShaderModule,
           entryPoint: "fragmentMain",
           targets: [{ format: this.canvasFormat }],
+        },
+        primitive: { topology: "triangle-list" },
+      });
+      const sourceOverBlend: GPUBlendState = {
+        color: {
+          srcFactor: "one",
+          dstFactor: "one-minus-src-alpha",
+          operation: "add",
+        },
+        alpha: {
+          srcFactor: "one",
+          dstFactor: "one-minus-src-alpha",
+          operation: "add",
+        },
+      };
+      const mixedRasterPipelineLayout = this.device.createPipelineLayout({
+        label: "Mixed scene raster segment pipeline layout",
+        bindGroupLayouts: [this.mixedSceneRasterSegmentBindGroupLayout],
+      });
+      this.mixedSceneRasterSegmentPipeline = this.device.createRenderPipeline({
+        label: "Mixed scene raster segment source-over pipeline",
+        layout: mixedRasterPipelineLayout,
+        vertex: { module: this.mixedSceneRasterSegmentShaderModule, entryPoint: "vertexMain" },
+        fragment: {
+          module: this.mixedSceneRasterSegmentShaderModule,
+          entryPoint: "fragmentMain",
+          targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: sourceOverBlend }],
+        },
+        primitive: { topology: "triangle-list" },
+      });
+      const mixedTextPipelineLayout = this.device.createPipelineLayout({
+        label: "Mixed scene text segment pipeline layout",
+        bindGroupLayouts: [this.mixedSceneTextSegmentBindGroupLayout],
+      });
+      this.mixedSceneTextSegmentPipeline = this.device.createRenderPipeline({
+        label: "Mixed scene text segment source-over pipeline",
+        layout: mixedTextPipelineLayout,
+        vertex: { module: this.mixedSceneTextSegmentShaderModule, entryPoint: "vertexMain" },
+        fragment: {
+          module: this.mixedSceneTextSegmentShaderModule,
+          entryPoint: "fragmentMain",
+          targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: sourceOverBlend }],
+        },
+        primitive: { topology: "triangle-list" },
+      });
+      this.mixedSceneClearPipeline = this.device.createRenderPipeline({
+        label: "Mixed scene partial transparent clear pipeline",
+        layout: this.device.createPipelineLayout({
+          label: "Mixed scene partial transparent clear pipeline layout",
+          bindGroupLayouts: [],
+        }),
+        vertex: { module: this.mixedSceneClearShaderModule, entryPoint: "vertexMain" },
+        fragment: {
+          module: this.mixedSceneClearShaderModule,
+          entryPoint: "fragmentMain",
+          targets: [{ format: MIXED_SCENE_LINEAR_FORMAT }],
+        },
+        primitive: { topology: "triangle-list" },
+      });
+      this.mixedScenePresentPipeline = this.device.createRenderPipeline({
+        label: "Mixed scene checker presentation pipeline",
+        layout: this.device.createPipelineLayout({
+          label: "Mixed scene checker presentation pipeline layout",
+          bindGroupLayouts: [this.mixedScenePresentBindGroupLayout],
+        }),
+        vertex: { module: this.mixedScenePresentShaderModule, entryPoint: "vertexMain" },
+        fragment: {
+          module: this.mixedScenePresentShaderModule,
+          entryPoint: "fragmentMain",
+          targets: [{ format: this.canvasFormat }],
+        },
+        primitive: { topology: "triangle-list" },
+      });
+      this.mixedSceneActiveDisplayPipeline = this.device.createRenderPipeline({
+        label: "Mixed scene active base layer source-over pipeline",
+        layout: displayPipelineLayout,
+        vertex: { module: this.displayShaderModule, entryPoint: "vertexMain" },
+        fragment: {
+          module: this.displayShaderModule,
+          entryPoint: "activeFragmentMain",
+          targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: sourceOverBlend }],
         },
         primitive: { topology: "triangle-list" },
       });
@@ -7885,6 +8101,33 @@ export class BrushEngine {
       },
       primitive: { topology: "triangle-list" },
     });
+    if (this.vectorTextPrototypeEnabled) {
+      this.mixedSceneActiveRasterStrokeDisplayPipeline = this.device.createRenderPipeline({
+        label: "Mixed scene active Traccia/effects source-over pipeline",
+        layout: rasterStrokeDisplayPipelineLayout,
+        vertex: { module: this.rasterStrokeDisplayShaderModule, entryPoint: "vertexMain" },
+        fragment: {
+          module: this.rasterStrokeDisplayShaderModule,
+          entryPoint: "activeFragmentMain",
+          targets: [{
+            format: MIXED_SCENE_LINEAR_FORMAT,
+            blend: {
+              color: {
+                srcFactor: "one",
+                dstFactor: "one-minus-src-alpha",
+                operation: "add",
+              },
+              alpha: {
+                srcFactor: "one",
+                dstFactor: "one-minus-src-alpha",
+                operation: "add",
+              },
+            },
+          }],
+        },
+        primitive: { topology: "triangle-list" },
+      });
+    }
 
     const thicknessTailDisplayPipelineLayout = this.device.createPipelineLayout({
       label: "Predictive thickness tail display pipeline layout",
@@ -7904,6 +8147,33 @@ export class BrushEngine {
       },
       primitive: { topology: "triangle-list" },
     });
+    if (this.vectorTextPrototypeEnabled) {
+      this.mixedSceneActiveThicknessTailDisplayPipeline = this.device.createRenderPipeline({
+        label: "Mixed scene active thickness tail source-over pipeline",
+        layout: thicknessTailDisplayPipelineLayout,
+        vertex: { module: this.thicknessTailDisplayShaderModule, entryPoint: "vertexMain" },
+        fragment: {
+          module: this.thicknessTailDisplayShaderModule,
+          entryPoint: "activeFragmentMain",
+          targets: [{
+            format: MIXED_SCENE_LINEAR_FORMAT,
+            blend: {
+              color: {
+                srcFactor: "one",
+                dstFactor: "one-minus-src-alpha",
+                operation: "add",
+              },
+              alpha: {
+                srcFactor: "one",
+                dstFactor: "one-minus-src-alpha",
+                operation: "add",
+              },
+            },
+          }],
+        },
+        primitive: { topology: "triangle-list" },
+      });
+    }
 
     const lightGlazeDisplayPipelineLayout = this.device.createPipelineLayout({
       label: "Light Glaze live display pipeline layout",
@@ -7923,6 +8193,33 @@ export class BrushEngine {
       },
       primitive: { topology: "triangle-list" },
     });
+    if (this.vectorTextPrototypeEnabled) {
+      this.mixedSceneActiveLightGlazeDisplayPipeline = this.device.createRenderPipeline({
+        label: "Mixed scene active Light Glaze source-over pipeline",
+        layout: lightGlazeDisplayPipelineLayout,
+        vertex: { module: this.lightGlazeDisplayShaderModule, entryPoint: "vertexMain" },
+        fragment: {
+          module: this.lightGlazeDisplayShaderModule,
+          entryPoint: "activeFragmentMain",
+          targets: [{
+            format: MIXED_SCENE_LINEAR_FORMAT,
+            blend: {
+              color: {
+                srcFactor: "one",
+                dstFactor: "one-minus-src-alpha",
+                operation: "add",
+              },
+              alpha: {
+                srcFactor: "one",
+                dstFactor: "one-minus-src-alpha",
+                operation: "add",
+              },
+            },
+          }],
+        },
+        primitive: { topology: "triangle-list" },
+      });
+    }
   }
 
   private async createGrainTextureResources(): Promise<GrainTextureResources> {
@@ -9688,6 +9985,16 @@ export class BrushEngine {
         Math.max(selectedMipLevel, this.requiredMergedSurfaceMipLevel(this.mergedAbove)),
       );
     }
+    for (const segment of this.mixedSceneRasterSegments) {
+      passes += this.encodeMergedSurfacePyramid(
+        encoder,
+        segment.surface,
+        Math.max(
+          selectedMipLevel,
+          this.requiredMergedSurfaceMipLevel(segment.surface),
+        ),
+      );
+    }
     return passes;
   }
   private destroyMergedSurfaceTexture(texture: GPUTexture): void {
@@ -9699,6 +10006,62 @@ export class BrushEngine {
     if (surface) {
       this.destroyMergedSurfaceTexture(surface.texture);
     }
+  }
+
+  private createMixedSceneRasterSegmentResources(
+    key: Extract<MixedSceneCompositionSegment, { kind: "raster-run" }>["key"],
+    surface: MergedSurfaceResources,
+  ): MixedSceneRasterSegmentResources {
+    const layout = this.mixedSceneRasterSegmentBindGroupLayout;
+    if (!layout) {
+      throw new Error("Layout del compositore raster/testo non inizializzato.");
+    }
+    const uniformBuffer = this.device.createBuffer({
+      label: `Mixed scene raster segment ${key} uniforms`,
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    try {
+      this.device.queue.writeBuffer(
+        uniformBuffer,
+        0,
+        new Float32Array([
+          surface.bounds.x,
+          surface.bounds.y,
+          surface.resolutionScale,
+          0,
+        ]),
+      );
+      const bindGroup = this.device.createBindGroup({
+        label: `Mixed scene raster segment ${key} bind group`,
+        layout,
+        entries: [
+          { binding: 0, resource: { buffer: this.displayUniformBuffer } },
+          { binding: 1, resource: { buffer: uniformBuffer } },
+          { binding: 2, resource: surface.samplingView },
+          { binding: 3, resource: this.sampler },
+        ],
+      });
+      return { key, surface, uniformBuffer, bindGroup };
+    } catch (error) {
+      uniformBuffer.destroy();
+      throw error;
+    }
+  }
+
+  private destroyMixedSceneRasterSegment(
+    segment: MixedSceneRasterSegmentResources,
+  ): void {
+    segment.uniformBuffer.destroy();
+    this.destroyMergedSurface(segment.surface);
+  }
+
+  private clearMixedSceneRasterSegments(): void {
+    for (const segment of this.mixedSceneRasterSegments) {
+      this.destroyMixedSceneRasterSegment(segment);
+    }
+    this.mixedSceneRasterSegments = [];
+    this.mixedSceneCompositionSegments = [];
   }
 
   private async foldRasterRecordIntoMergedSurface(
@@ -10006,12 +10369,50 @@ export class BrushEngine {
     this.mergedAbove = null;
     this.destroyMergedSurface(previousBelow);
     this.destroyMergedSurface(previousAbove);
+    this.clearMixedSceneRasterSegments();
 
     let candidateBelow: MergedSurfaceResources | null = null;
     let candidateAbove: MergedSurfaceResources | null = null;
+    const candidateMixedSegments: MixedSceneRasterSegmentResources[] = [];
+    let candidateCompositionSegments: readonly MixedSceneCompositionSegment[] = [];
     let activeWorkbenchRestored = false;
     try {
-      if (this.mixedSceneStack) {
+      if (this.mixedSceneStack?.textCount) {
+        candidateCompositionSegments = this.mixedSceneStack.compositionSegments(
+          this.layerStack.active.id,
+        );
+        const activePosition = candidateCompositionSegments.findIndex(
+          (segment) => segment.kind === "active-raster",
+        );
+        for (
+          let index = 0;
+          index < candidateCompositionSegments.length;
+          index += 1
+        ) {
+          const segment = candidateCompositionSegments[index];
+          if (segment.kind !== "raster-run") {
+            continue;
+          }
+          const side = index < activePosition ? "below" : "above";
+          const surface = await this.buildMixedMergedSurfaceCandidate(
+            segment.items,
+            side,
+            caller,
+            view,
+          );
+          if (!surface) {
+            continue;
+          }
+          try {
+            candidateMixedSegments.push(
+              this.createMixedSceneRasterSegmentResources(segment.key, surface),
+            );
+          } catch (error) {
+            this.destroyMergedSurface(surface);
+            throw error;
+          }
+        }
+      } else if (this.mixedSceneStack) {
         const partition = this.mixedSceneStack.partitionAroundRaster(
           this.layerStack.active.id,
         );
@@ -10041,6 +10442,8 @@ export class BrushEngine {
 
       this.mergedBelow = candidateBelow;
       this.mergedAbove = candidateAbove;
+      this.mixedSceneRasterSegments = candidateMixedSegments;
+      this.mixedSceneCompositionSegments = candidateCompositionSegments;
       candidateBelow = null;
       candidateAbove = null;
       this.rebuildLayerDisplayBindGroups();
@@ -10050,6 +10453,9 @@ export class BrushEngine {
     } catch (error) {
       this.destroyMergedSurface(candidateBelow);
       this.destroyMergedSurface(candidateAbove);
+      for (const segment of candidateMixedSegments) {
+        this.destroyMixedSceneRasterSegment(segment);
+      }
       if (!activeWorkbenchRestored) {
         // A failed retarget may already have changed sourceView before its GPU
         // rebuild failed. Force the reverse retarget instead of trusting the
@@ -10063,7 +10469,6 @@ export class BrushEngine {
       }
     }
   }
-
   private requireMixedSceneStack(): MixedSceneStack {
     if (!this.mixedSceneStack) {
       throw new Error("Scena raster/testo non abilitata per questa pagina.");
@@ -11483,6 +11888,7 @@ export class BrushEngine {
     const supersededTransparentTexture = this.transparentLayerTexture;
     const supersededMergedBelow = this.mergedBelow;
     const supersededMergedAbove = this.mergedAbove;
+    const supersededMixedSceneRasterSegments = this.mixedSceneRasterSegments;
     this.layerGpu.clear();
     for (const [layerId, gpu] of replacement) {
       this.layerGpu.set(layerId, gpu);
@@ -11504,6 +11910,10 @@ export class BrushEngine {
     this.transparentLayerView = nextTransparentView;
     this.mergedBelow = null;
     this.mergedAbove = null;
+    this.mixedSceneRasterSegments = [];
+    this.mixedSceneCompositionSegments = this.mixedSceneStack?.textCount
+      ? this.mixedSceneStack.compositionSegments(this.layerStack.active.id)
+      : [];
     this.normalPipeline = normalPipeline;
     this.additivePipeline = additivePipeline;
     this.shapeNormalPipeline = shapeNormalPipeline;
@@ -11546,6 +11956,9 @@ export class BrushEngine {
     supersededTransparentTexture?.destroy();
     this.destroyMergedSurface(supersededMergedBelow);
     this.destroyMergedSurface(supersededMergedAbove);
+    for (const segment of supersededMixedSceneRasterSegments) {
+      this.destroyMixedSceneRasterSegment(segment);
+    }
     for (const gpu of supersededLayerGpu) {
       this.destroyLayerGpuResources(gpu);
     }
@@ -12775,14 +13188,60 @@ export class BrushEngine {
       this.vectorTextTextureWidth !== width
       || this.vectorTextTextureHeight !== height
     ) {
+      const legacyBindingsChanged = Boolean(
+        this.vectorTextBelowTexture || this.vectorTextAboveTexture,
+      );
       this.vectorTextBelowTexture?.destroy();
       this.vectorTextAboveTexture?.destroy();
+      for (const resources of this.vectorTextRunTextures.values()) {
+        resources.texture.destroy();
+      }
+      this.vectorTextRunTextures.clear();
       this.vectorTextBelowTexture = null;
       this.vectorTextBelowView = null;
       this.vectorTextAboveTexture = null;
       this.vectorTextAboveView = null;
       this.vectorTextTextureWidth = width;
       this.vectorTextTextureHeight = height;
+      if (legacyBindingsChanged) {
+        this.rebuildVectorTextDisplayBindGroup();
+      }
+    }
+
+    if (placement.startsWith("text-run:")) {
+      const key = placement as Extract<VectorTextPlacement, `text-run:${string}`>;
+      const existingRun = this.vectorTextRunTextures.get(key);
+      if (existingRun) {
+        return existingRun.texture;
+      }
+      const layout = this.mixedSceneTextSegmentBindGroupLayout;
+      if (!layout) {
+        throw new Error("Layout delle cache testo segmentate non inizializzato.");
+      }
+      const texture = this.device.createTexture({
+        label: `Vector text ${key} viewport cache ${width}×${height}`,
+        size: { width, height, depthOrArrayLayers: 1 },
+        format: "rgba8unorm-srgb",
+        usage:
+          GPUTextureUsage.COPY_DST
+          | GPUTextureUsage.RENDER_ATTACHMENT
+          | GPUTextureUsage.TEXTURE_BINDING,
+      });
+      try {
+        const view = texture.createView({
+          label: `Vector text ${key} viewport cache view`,
+        });
+        const bindGroup = this.device.createBindGroup({
+          label: `Vector text ${key} segment bind group`,
+          layout,
+          entries: [{ binding: 0, resource: view }],
+        });
+        this.vectorTextRunTextures.set(key, { texture, view, bindGroup });
+        return texture;
+      } catch (error) {
+        texture.destroy();
+        throw error;
+      }
     }
 
     const existing = placement === "below-active"
@@ -12814,9 +13273,63 @@ export class BrushEngine {
     this.rebuildVectorTextDisplayBindGroup();
     return texture;
   }
+
+  private ensureMixedSceneLinearTexture(width: number, height: number): void {
+    if (!this.mixedSceneStack?.textCount) {
+      this.mixedSceneLinearTexture?.destroy();
+      this.mixedSceneLinearTexture = null;
+      this.mixedSceneLinearView = null;
+      this.mixedSceneLinearWidth = 0;
+      this.mixedSceneLinearHeight = 0;
+      this.mixedScenePresentBindGroup = null;
+      return;
+    }
+    if (
+      this.mixedSceneLinearTexture
+      && this.mixedSceneLinearView
+      && this.mixedSceneLinearWidth === width
+      && this.mixedSceneLinearHeight === height
+    ) {
+      return;
+    }
+    const layout = this.mixedScenePresentBindGroupLayout;
+    if (!layout) {
+      throw new Error("Layout di presentazione della scena mista non inizializzato.");
+    }
+    const oldTexture = this.mixedSceneLinearTexture;
+    const texture = this.device.createTexture({
+      label: `Ordered mixed scene linear cache ${width}×${height}`,
+      size: { width, height, depthOrArrayLayers: 1 },
+      format: MIXED_SCENE_LINEAR_FORMAT,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    try {
+      const view = texture.createView({ label: "Ordered mixed scene linear cache view" });
+      const bindGroup = this.device.createBindGroup({
+        label: "Ordered mixed scene checker presentation bind group",
+        layout,
+        entries: [
+          { binding: 0, resource: { buffer: this.displayUniformBuffer } },
+          { binding: 1, resource: view },
+        ],
+      });
+      this.mixedSceneLinearTexture = texture;
+      this.mixedSceneLinearView = view;
+      this.mixedSceneLinearWidth = width;
+      this.mixedSceneLinearHeight = height;
+      this.mixedScenePresentBindGroup = bindGroup;
+      this.presentationCacheNeedsFullRebuild = true;
+      oldTexture?.destroy();
+    } catch (error) {
+      texture.destroy();
+      throw error;
+    }
+  }
+
   private ensurePresentationCacheTexture(): void {
     const width = Math.max(1, this.canvas.width);
     const height = Math.max(1, this.canvas.height);
+    this.ensureMixedSceneLinearTexture(width, height);
     if (
       this.presentationCacheTexture
       && this.presentationCacheView
@@ -12842,6 +13355,135 @@ export class BrushEngine {
     oldTexture?.destroy();
   }
 
+  private encodeMixedSceneSegmentedPresentation(
+    encoder: GPUCommandEncoder,
+    presentationDirtyRect: DirtyRect,
+    requiresFullRebuild: boolean,
+    activePresentation: MixedSceneActivePresentation,
+    label: string,
+  ): void {
+    const linearView = this.mixedSceneLinearView;
+    const presentBindGroup = this.mixedScenePresentBindGroup;
+    const clearPipeline = this.mixedSceneClearPipeline;
+    const rasterPipeline = this.mixedSceneRasterSegmentPipeline;
+    const textPipeline = this.mixedSceneTextSegmentPipeline;
+    const presentPipeline = this.mixedScenePresentPipeline;
+    if (
+      !this.mixedSceneStack?.textCount
+      || !linearView
+      || !presentBindGroup
+      || !clearPipeline
+      || !rasterPipeline
+      || !textPipeline
+      || !presentPipeline
+      || !this.presentationCacheView
+    ) {
+      throw new Error("Compositore segmentato raster/testo non pronto.");
+    }
+
+    const scenePass = encoder.beginRenderPass({
+      label: `${label} · ${MIXED_SCENE_COMPOSITOR_STRATEGY}`,
+      colorAttachments: [
+        {
+          view: linearView,
+          loadOp: requiresFullRebuild ? "clear" : "load",
+          storeOp: "store",
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        },
+      ],
+    });
+    scenePass.setScissorRect(
+      presentationDirtyRect.x,
+      presentationDirtyRect.y,
+      presentationDirtyRect.width,
+      presentationDirtyRect.height,
+    );
+    if (!requiresFullRebuild) {
+      scenePass.setPipeline(clearPipeline);
+      scenePass.draw(3, 1, 0, 0);
+    }
+
+    for (const segment of this.mixedSceneCompositionSegments) {
+      if (segment.kind === "raster-run") {
+        const resources = this.mixedSceneRasterSegments.find(
+          (candidate) => candidate.key === segment.key,
+        );
+        if (resources) {
+          scenePass.setPipeline(rasterPipeline);
+          scenePass.setBindGroup(0, resources.bindGroup);
+          scenePass.draw(3, 1, 0, 0);
+        }
+        continue;
+      }
+      if (segment.kind === "text-run") {
+        const resources = this.vectorTextRunTextures.get(segment.key);
+        if (resources) {
+          scenePass.setPipeline(textPipeline);
+          scenePass.setBindGroup(0, resources.bindGroup);
+          scenePass.draw(3, 1, 0, 0);
+        }
+        continue;
+      }
+
+      if (activePresentation.kind === "raster-stroke") {
+        const pipeline = this.mixedSceneActiveRasterStrokeDisplayPipeline;
+        const sourceBindGroup = this.rasterStrokeDisplayBindGroups.get(
+          activePresentation.sourceMode,
+        );
+        if (!pipeline || !sourceBindGroup) {
+          throw new Error("Pipeline del raster attivo con effetti non pronta.");
+        }
+        scenePass.setPipeline(pipeline);
+        scenePass.setBindGroup(0, this.rasterStrokeDisplayScreenBindGroup);
+        scenePass.setBindGroup(1, sourceBindGroup);
+      } else if (activePresentation.kind === "thickness-tail") {
+        const pipeline = this.mixedSceneActiveThicknessTailDisplayPipeline;
+        if (!pipeline || !this.thicknessTailDisplayBindGroup) {
+          throw new Error("Pipeline del tail attivo non pronta.");
+        }
+        scenePass.setPipeline(pipeline);
+        scenePass.setBindGroup(0, this.thicknessTailDisplayBindGroup);
+      } else if (activePresentation.kind === "light-glaze") {
+        const pipeline = this.mixedSceneActiveLightGlazeDisplayPipeline;
+        if (!pipeline || !this.lightGlazeDisplayBindGroup) {
+          throw new Error("Pipeline Light Glaze del raster attivo non pronta.");
+        }
+        scenePass.setPipeline(pipeline);
+        scenePass.setBindGroup(0, this.lightGlazeDisplayBindGroup);
+      } else {
+        const pipeline = this.mixedSceneActiveDisplayPipeline;
+        if (!pipeline) {
+          throw new Error("Pipeline base del raster attivo non pronta.");
+        }
+        scenePass.setPipeline(pipeline);
+        scenePass.setBindGroup(0, this.displayBindGroup);
+      }
+      scenePass.draw(3, 1, 0, 0);
+    }
+    scenePass.end();
+
+    const presentPass = encoder.beginRenderPass({
+      label: `${label} · checker finale`,
+      colorAttachments: [
+        {
+          view: this.presentationCacheView,
+          loadOp: requiresFullRebuild ? "clear" : "load",
+          storeOp: "store",
+          clearValue: { r: 0.02, g: 0.02, b: 0.025, a: 1 },
+        },
+      ],
+    });
+    presentPass.setPipeline(presentPipeline);
+    presentPass.setBindGroup(0, presentBindGroup);
+    presentPass.setScissorRect(
+      presentationDirtyRect.x,
+      presentationDirtyRect.y,
+      presentationDirtyRect.width,
+      presentationDirtyRect.height,
+    );
+    presentPass.draw(3, 1, 0, 0);
+    presentPass.end();
+  }
   private layerDirtyRectToPresentationRect(
     dirtyRect: DirtyRect,
     selectedMipLevel: number,
@@ -15569,52 +16211,69 @@ export class BrushEngine {
           }
           const lod0FullRebuildCpuEncodingStart = requiresFullRebuild
             && displaySelectedMipLevel === 0 ? performance.now() : 0;
-          const displayPass = encoder.beginRenderPass({
-            label: requiresFullRebuild
-              ? "Rebuild presentation cache with live Light Glaze"
-              : "Update presentation cache with live Light Glaze",
-            colorAttachments: [
-              {
-                view: this.presentationCacheView!,
-                loadOp: requiresFullRebuild ? "clear" : "load",
-                storeOp: "store",
-                clearValue: { r: 0.02, g: 0.02, b: 0.025, a: 1 },
-              },
-            ],
-          });
-          displayPass.setPipeline(
-            rasterStrokeActive
-              ? this.rasterStrokeDisplayPipeline
+          if (this.mixedSceneStack?.textCount) {
+            const activePresentation: MixedSceneActivePresentation = rasterStrokeActive
+              ? { kind: "raster-stroke", sourceMode: "light-glaze" }
               : session.hasContent
-                ? this.lightGlazeDisplayPipeline
-                : this.vectorTextDisplayPipeline && this.vectorTextDisplayBindGroup
-                  ? this.vectorTextDisplayPipeline
-                  : this.displayPipeline,
-          );
-          if (rasterStrokeActive) {
-            displayPass.setBindGroup(0, this.rasterStrokeDisplayScreenBindGroup);
-            displayPass.setBindGroup(
-              1,
-              this.rasterStrokeDisplayBindGroups.get("light-glaze")!,
+                ? { kind: "light-glaze" }
+                : { kind: "base" };
+            this.encodeMixedSceneSegmentedPresentation(
+              encoder,
+              presentationDirtyRect,
+              requiresFullRebuild,
+              activePresentation,
+              requiresFullRebuild
+                ? "Rebuild segmented presentation cache with live Light Glaze"
+                : "Update segmented presentation cache with live Light Glaze",
             );
           } else {
-            displayPass.setBindGroup(
-              0,
-              session.hasContent
-                ? this.lightGlazeDisplayBindGroup!
-                : this.vectorTextDisplayBindGroup ?? this.displayBindGroup,
+            const displayPass = encoder.beginRenderPass({
+              label: requiresFullRebuild
+                ? "Rebuild presentation cache with live Light Glaze"
+                : "Update presentation cache with live Light Glaze",
+              colorAttachments: [
+                {
+                  view: this.presentationCacheView!,
+                  loadOp: requiresFullRebuild ? "clear" : "load",
+                  storeOp: "store",
+                  clearValue: { r: 0.02, g: 0.02, b: 0.025, a: 1 },
+                },
+              ],
+            });
+            displayPass.setPipeline(
+              rasterStrokeActive
+                ? this.rasterStrokeDisplayPipeline
+                : session.hasContent
+                  ? this.lightGlazeDisplayPipeline
+                  : this.vectorTextDisplayPipeline && this.vectorTextDisplayBindGroup
+                    ? this.vectorTextDisplayPipeline
+                    : this.displayPipeline,
             );
+            if (rasterStrokeActive) {
+              displayPass.setBindGroup(0, this.rasterStrokeDisplayScreenBindGroup);
+              displayPass.setBindGroup(
+                1,
+                this.rasterStrokeDisplayBindGroups.get("light-glaze")!,
+              );
+            } else {
+              displayPass.setBindGroup(
+                0,
+                session.hasContent
+                  ? this.lightGlazeDisplayBindGroup!
+                  : this.vectorTextDisplayBindGroup ?? this.displayBindGroup,
+              );
+            }
+            if (!requiresFullRebuild) {
+              displayPass.setScissorRect(
+                presentationDirtyRect.x,
+                presentationDirtyRect.y,
+                presentationDirtyRect.width,
+                presentationDirtyRect.height,
+              );
+            }
+            displayPass.draw(3, 1, 0, 0);
+            displayPass.end();
           }
-          if (!requiresFullRebuild) {
-            displayPass.setScissorRect(
-              presentationDirtyRect.x,
-              presentationDirtyRect.y,
-              presentationDirtyRect.width,
-              presentationDirtyRect.height,
-            );
-          }
-          displayPass.draw(3, 1, 0, 0);
-          displayPass.end();
           presentationCacheWasUpdated = true;
           if (lod0FullRebuildCpuEncodingStart > 0) {
             const elapsed = performance.now() - lod0FullRebuildCpuEncodingStart;
@@ -15737,45 +16396,59 @@ export class BrushEngine {
           }
           const lod0FullRebuildCpuEncodingStart = requiresFullRebuild
             && displaySelectedMipLevel === 0 ? performance.now() : 0;
-          const displayPass = encoder.beginRenderPass({
-            label: requiresFullRebuild
-              ? "Rebuild canonical presentation cache after Light Glaze commit"
-              : "Canonicalize Light Glaze presentation cache after commit",
-            colorAttachments: [
-              {
-                view: this.presentationCacheView!,
-                loadOp: requiresFullRebuild ? "clear" : "load",
-                storeOp: "store",
-                clearValue: { r: 0.02, g: 0.02, b: 0.025, a: 1 },
-              },
-            ],
-          });
-          displayPass.setPipeline(
-            rasterStrokeActive
-              ? this.rasterStrokeDisplayPipeline
-              : this.vectorTextDisplayPipeline && this.vectorTextDisplayBindGroup
-                ? this.vectorTextDisplayPipeline
-                : this.displayPipeline,
-          );
-          if (rasterStrokeActive) {
-            displayPass.setBindGroup(0, this.rasterStrokeDisplayScreenBindGroup);
-            displayPass.setBindGroup(
-              1,
-              this.rasterStrokeDisplayBindGroups.get("permanent")!,
+          if (this.mixedSceneStack?.textCount) {
+            this.encodeMixedSceneSegmentedPresentation(
+              encoder,
+              presentationDirtyRect,
+              requiresFullRebuild,
+              rasterStrokeActive
+                ? { kind: "raster-stroke", sourceMode: "permanent" }
+                : { kind: "base" },
+              requiresFullRebuild
+                ? "Rebuild segmented canonical cache after Light Glaze commit"
+                : "Canonicalize segmented Light Glaze cache after commit",
             );
           } else {
-            displayPass.setBindGroup(0, this.vectorTextDisplayBindGroup ?? this.displayBindGroup);
-          }
-          if (!requiresFullRebuild) {
-            displayPass.setScissorRect(
-              presentationDirtyRect.x,
-              presentationDirtyRect.y,
-              presentationDirtyRect.width,
-              presentationDirtyRect.height,
+            const displayPass = encoder.beginRenderPass({
+              label: requiresFullRebuild
+                ? "Rebuild canonical presentation cache after Light Glaze commit"
+                : "Canonicalize Light Glaze presentation cache after commit",
+              colorAttachments: [
+                {
+                  view: this.presentationCacheView!,
+                  loadOp: requiresFullRebuild ? "clear" : "load",
+                  storeOp: "store",
+                  clearValue: { r: 0.02, g: 0.02, b: 0.025, a: 1 },
+                },
+              ],
+            });
+            displayPass.setPipeline(
+              rasterStrokeActive
+                ? this.rasterStrokeDisplayPipeline
+                : this.vectorTextDisplayPipeline && this.vectorTextDisplayBindGroup
+                  ? this.vectorTextDisplayPipeline
+                  : this.displayPipeline,
             );
+            if (rasterStrokeActive) {
+              displayPass.setBindGroup(0, this.rasterStrokeDisplayScreenBindGroup);
+              displayPass.setBindGroup(
+                1,
+                this.rasterStrokeDisplayBindGroups.get("permanent")!,
+              );
+            } else {
+              displayPass.setBindGroup(0, this.vectorTextDisplayBindGroup ?? this.displayBindGroup);
+            }
+            if (!requiresFullRebuild) {
+              displayPass.setScissorRect(
+                presentationDirtyRect.x,
+                presentationDirtyRect.y,
+                presentationDirtyRect.width,
+                presentationDirtyRect.height,
+              );
+            }
+            displayPass.draw(3, 1, 0, 0);
+            displayPass.end();
           }
-          displayPass.draw(3, 1, 0, 0);
-          displayPass.end();
           presentationCacheWasUpdated = true;
           if (lod0FullRebuildCpuEncodingStart > 0) {
             const elapsed = performance.now() - lod0FullRebuildCpuEncodingStart;
@@ -16244,54 +16917,74 @@ export class BrushEngine {
         }
         const lod0FullRebuildCpuEncodingStart = requiresFullRebuild
           && displaySelectedMipLevel === 0 ? performance.now() : 0;
-        const displayPass = encoder.beginRenderPass({
-          label: requiresFullRebuild
-            ? "Rebuild persistent presentation cache"
-            : "Update persistent presentation cache dirty rect",
-          colorAttachments: [
-            {
-              view: this.presentationCacheView!,
-              loadOp: requiresFullRebuild ? "clear" : "load",
-              storeOp: "store",
-              clearValue: { r: 0.02, g: 0.02, b: 0.025, a: 1 },
-            },
-          ],
-        });
-        displayPass.setPipeline(
-          rasterStrokeActive
-            ? this.rasterStrokeDisplayPipeline
+        if (this.mixedSceneStack?.textCount) {
+          const activePresentation: MixedSceneActivePresentation = rasterStrokeActive
+            ? {
+              kind: "raster-stroke",
+              sourceMode: thicknessTailFrame ? "thickness-tail" : "permanent",
+            }
             : thicknessTailFrame
-              ? this.thicknessTailDisplayPipeline
-              : useVectorTextDisplay
-                ? vectorTextDisplayPipeline!
-                : this.displayPipeline,
-        );
-        if (rasterStrokeActive) {
-          displayPass.setBindGroup(0, this.rasterStrokeDisplayScreenBindGroup);
-          displayPass.setBindGroup(
-            1,
-            this.rasterStrokeDisplayBindGroups.get(
-              thicknessTailFrame ? "thickness-tail" : "permanent",
-            )!,
+              ? { kind: "thickness-tail" }
+              : { kind: "base" };
+          this.encodeMixedSceneSegmentedPresentation(
+            encoder,
+            presentationDirtyRect,
+            requiresFullRebuild,
+            activePresentation,
+            requiresFullRebuild
+              ? "Rebuild segmented persistent presentation cache"
+              : "Update segmented persistent presentation cache dirty rect",
           );
-        } else if (useVectorTextDisplay) {
-          displayPass.setBindGroup(0, this.vectorTextDisplayBindGroup!);
         } else {
-          displayPass.setBindGroup(
-            0,
-            thicknessTailFrame ? this.thicknessTailDisplayBindGroup! : this.displayBindGroup,
+          const displayPass = encoder.beginRenderPass({
+            label: requiresFullRebuild
+              ? "Rebuild persistent presentation cache"
+              : "Update persistent presentation cache dirty rect",
+            colorAttachments: [
+              {
+                view: this.presentationCacheView!,
+                loadOp: requiresFullRebuild ? "clear" : "load",
+                storeOp: "store",
+                clearValue: { r: 0.02, g: 0.02, b: 0.025, a: 1 },
+              },
+            ],
+          });
+          displayPass.setPipeline(
+            rasterStrokeActive
+              ? this.rasterStrokeDisplayPipeline
+              : thicknessTailFrame
+                ? this.thicknessTailDisplayPipeline
+                : useVectorTextDisplay
+                  ? vectorTextDisplayPipeline!
+                  : this.displayPipeline,
           );
+          if (rasterStrokeActive) {
+            displayPass.setBindGroup(0, this.rasterStrokeDisplayScreenBindGroup);
+            displayPass.setBindGroup(
+              1,
+              this.rasterStrokeDisplayBindGroups.get(
+                thicknessTailFrame ? "thickness-tail" : "permanent",
+              )!,
+            );
+          } else if (useVectorTextDisplay) {
+            displayPass.setBindGroup(0, this.vectorTextDisplayBindGroup!);
+          } else {
+            displayPass.setBindGroup(
+              0,
+              thicknessTailFrame ? this.thicknessTailDisplayBindGroup! : this.displayBindGroup,
+            );
+          }
+          if (!requiresFullRebuild) {
+            displayPass.setScissorRect(
+              presentationDirtyRect.x,
+              presentationDirtyRect.y,
+              presentationDirtyRect.width,
+              presentationDirtyRect.height,
+            );
+          }
+          displayPass.draw(3, 1, 0, 0);
+          displayPass.end();
         }
-        if (!requiresFullRebuild) {
-          displayPass.setScissorRect(
-            presentationDirtyRect.x,
-            presentationDirtyRect.y,
-            presentationDirtyRect.width,
-            presentationDirtyRect.height,
-          );
-        }
-        displayPass.draw(3, 1, 0, 0);
-        displayPass.end();
 
         presentationCacheWasUpdated = true;
         if (lod0FullRebuildCpuEncodingStart > 0) {

@@ -157,8 +157,10 @@ assert.equal((displayShaders.match(/  mergedAboveOrigin: vec2<f32>,/g) ?? []).le
   "tutte le varianti display devono ricevere l'origine del bbox superiore");
 assert.equal((displayShaders.match(/  viewRotation: vec2<f32>,/g) ?? []).length, 4,
   "tutte le varianti display devono condividere la stessa ABI di rotazione");
-assert.equal((displayShaders.match(/let displayOffset =/g) ?? []).length, 4,
-  "tutte le varianti display devono applicare la trasformazione inversa");
+assert.equal((displayShaders.match(/let displayOffset =/g) ?? []).length, 8,
+  "entry point canonico e active-only devono applicare la stessa trasformazione inversa");
+assert.equal((displayShaders.match(/fn activeFragmentMain\(/g) ?? []).length, 4,
+  "ogni variante display deve offrire la sorgente trasparente al compositore segmentato");
 assert.doesNotMatch(displayShaders, /display\.layerSize/,
   "la dimensione layer deve essere ricavata senza allargare l'uniform");
 assert.ok((displayShaders.match(/textureDimensions\(activeLayerBase, 0\)/g) ?? []).length >= 2);

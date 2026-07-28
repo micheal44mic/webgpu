@@ -40,7 +40,7 @@ export function vectorTextOutlineLocalReach(
 }
 
 export const MIXED_SCENE_STACK_STRATEGY =
-  "heterogeneous-bottom-up-raster-text-single-selection-selected-insertion-v2" as const;
+  "heterogeneous-bottom-up-raster-text-segmented-composition-selected-insertion-v3" as const;
 
 export const VECTOR_TEXT_NODE_MAXIMUM = 64;
 
@@ -93,6 +93,23 @@ export interface MixedScenePartition {
   activeRaster: MixedSceneItem & { kind: "raster" };
   above: readonly MixedSceneItem[];
 }
+
+export type MixedSceneCompositionSegment =
+  | {
+    readonly key: `raster-run:${string}`;
+    readonly kind: "raster-run";
+    readonly items: readonly (MixedSceneItem & { kind: "raster" })[];
+  }
+  | {
+    readonly key: `active-raster:${number}`;
+    readonly kind: "active-raster";
+    readonly item: MixedSceneItem & { kind: "raster" };
+  }
+  | {
+    readonly key: `text-run:${string}`;
+    readonly kind: "text-run";
+    readonly items: readonly (MixedSceneItem & { kind: "text" })[];
+  };
 
 export interface MixedSceneState {
   readonly items: readonly MixedSceneItem[];
@@ -380,5 +397,71 @@ export class MixedSceneStack {
       activeRaster,
       above: this.orderedItems.slice(index + 1),
     };
+  }
+
+  /**
+   * Produces the exact bottom-up scene order while extracting the one raster
+   * that remains hot and editable. Adjacent inactive rasters and adjacent text
+   * nodes are grouped, but a raster/text boundary is never flattened away.
+   */
+  compositionSegments(activeRasterLayerId: number): readonly MixedSceneCompositionSegment[] {
+    const activeKey = `raster:${activeRasterLayerId}` as const;
+    const activeItem = this.itemByKey(activeKey);
+    if (activeItem.kind !== "raster") {
+      throw new Error(`Elemento ${activeKey} non è raster.`);
+    }
+
+    const segments: MixedSceneCompositionSegment[] = [];
+    let rasterRun: (MixedSceneItem & { kind: "raster" })[] = [];
+    let textRun: (MixedSceneItem & { kind: "text" })[] = [];
+    const flushRasterRun = () => {
+      if (rasterRun.length === 0) {
+        return;
+      }
+      const items = rasterRun;
+      rasterRun = [];
+      segments.push({
+        key: `raster-run:${items.map((item) => item.rasterLayerId).join(",")}`,
+        kind: "raster-run",
+        items,
+      });
+    };
+    const flushTextRun = () => {
+      if (textRun.length === 0) {
+        return;
+      }
+      const items = textRun;
+      textRun = [];
+      segments.push({
+        key: `text-run:${items.map((item) => item.textNodeId).join(",")}`,
+        kind: "text-run",
+        items,
+      });
+    };
+
+    for (const item of this.orderedItems) {
+      if (item.kind === "raster" && item.rasterLayerId === activeRasterLayerId) {
+        flushRasterRun();
+        flushTextRun();
+        segments.push({
+          key: `active-raster:${item.rasterLayerId}`,
+          kind: "active-raster",
+          item,
+        });
+      } else if (item.kind === "raster") {
+        flushTextRun();
+        rasterRun.push(item);
+      } else {
+        flushRasterRun();
+        textRun.push(item);
+      }
+    }
+    flushRasterRun();
+    flushTextRun();
+
+    if (!segments.some((segment) => segment.kind === "active-raster")) {
+      throw new Error(`Raster attivo ${activeRasterLayerId} assente dalla composizione.`);
+    }
+    return segments;
   }
 }

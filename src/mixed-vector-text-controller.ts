@@ -193,6 +193,7 @@ export class MixedVectorTextController {
   private renderSamples: number[] = [];
   private liveGpuMemoryMiB = 0;
   private viewportTextureCount = 0;
+  private renderedTextRunKeys = new Set<VectorTextPlacement>();
   private sceneOperationBusy = false;
 
   constructor(private readonly host: MixedVectorTextHost) {
@@ -571,27 +572,45 @@ export class MixedVectorTextController {
     let textureCount = 0;
     if (!snapshot) {
       this.host.clearVectorTextPresentation();
+      this.renderedTextRunKeys.clear();
     } else {
-      const activeRasterIndex = snapshot.items.findIndex(
-        (item) => item.kind === "raster"
-          && item.rasterLayerId === snapshot.activeRasterLayerId,
-      );
-      if (activeRasterIndex < 0) {
-        throw new Error("Raster attivo assente dalla scena testo/raster.");
-      }
-      const groups: readonly {
+      const groups: {
         placement: VectorTextPlacement;
-        items: typeof snapshot.items;
-      }[] = [
-        { placement: "below-active", items: snapshot.items.slice(0, activeRasterIndex) },
-        { placement: "above-active", items: snapshot.items.slice(activeRasterIndex + 1) },
-      ];
+        nodes: Readonly<VectorTextNode>[];
+      }[] = [];
+      let pendingNodes: Readonly<VectorTextNode>[] = [];
+      const flushTextRun = () => {
+        if (pendingNodes.length === 0) {
+          return;
+        }
+        const nodes = pendingNodes;
+        pendingNodes = [];
+        groups.push({
+          placement: `text-run:${nodes.map((node) => node.id).join(",")}`,
+          nodes,
+        });
+      };
+      for (const item of snapshot.items) {
+        if (item.kind === "text") {
+          pendingNodes.push(item.textNode);
+        } else {
+          flushTextRun();
+        }
+      }
+      flushTextRun();
+
+      const nextRunKeys = new Set(groups.map((group) => group.placement));
+      for (const previousKey of this.renderedTextRunKeys) {
+        if (!nextRunKeys.has(previousKey)) {
+          this.host.clearVectorTextPresentation(previousKey);
+        }
+      }
+      this.renderedTextRunKeys = nextRunKeys;
 
       for (const group of groups) {
-        const nodes = group.items
-          .filter((item) => item.kind === "text")
-          .map((item) => item.textNode)
-          .filter((node) => node.visible && node.opacity > 0 && node.text.length > 0);
+        const nodes = group.nodes.filter(
+          (node) => node.visible && node.opacity > 0 && node.text.length > 0,
+        );
         if (nodes.length === 0) {
           this.host.clearVectorTextPresentation(group.placement);
           continue;
@@ -622,6 +641,12 @@ export class MixedVectorTextController {
       }
     }
 
+    if (snapshot?.items.some((item) => item.kind === "text")) {
+      // The exact heterogeneous order is accumulated once in a linear
+      // RGBA16F viewport target before the checkerboard presentation pass.
+      gpuMemoryMiB += view.canvasWidth * view.canvasHeight * 8 / MEBIBYTE_BYTES;
+      textureCount += 1;
+    }
     this.liveGpuMemoryMiB = gpuMemoryMiB;
     this.viewportTextureCount = textureCount;
     if (selectedNode) {

@@ -1812,3 +1812,52 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   `view`, `compression`, `vector-text`, `mixed-scene`), TypeScript e build
   Vite production verdi. Il solo warning build è la dimensione del chunk già
   nota; revisione pronta per la pubblicazione Sites.
+### Compositore segmentato raster/testo (candidato locale)
+
+- Revisione del 28 luglio 2026. Questa sezione supera il limite del precedente
+  compositore duale. Stack CPU
+  `heterogeneous-bottom-up-raster-text-segmented-composition-selected-insertion-v3`
+  e compositore GPU
+  `ordered-raster-text-runs-rgba16f-viewport-source-over-v1`: l'ordine
+  bottom-up del documento viene diviso in run contigui raster, raster attivo e
+  run di testo, poi ricomposto nello stesso ordine con source-over
+  premoltiplicato. La gerarchia visiva non dipende più dal raster attivo.
+- I run raster inattivi restano superfici fuse ritagliate in coordinate
+  documento; ogni run testo usa una cache `rgba8unorm-srgb` di solo viewport.
+  L'accumulatore ordinato è un'unica texture viewport `rgba16float`, lazy e
+  presente soltanto quando esiste testo. Il pass finale aggiunge scacchiera e
+  conversione display. Non esiste alcuna texture testo `4096²` e il raster
+  attivo autorevole resta l'unica voce full-canvas da `64,0 MiB` in RGBA8.
+- Misura reale NVIDIA Ampere, viewport utile `1258×860`: caso comune con un run
+  testo `12,38 MiB` GPU (`4,13 MiB` RGBA8 testo + `8,25 MiB` RGBA16F lineare);
+  due run testo separati da un raster `16,51 MiB` (due RGBA8 + un RGBA16F).
+  Sono misure di residenza logica, non un benchmark di velocità.
+- Riproduzione del bug originale: ordine UI top-down
+  `Testo 1 → Livello 2 → Livello 1`, pennellata blu su Livello 2. Il testo è
+  rimasto sopra sia con Livello 2 attivo sia con Livello 1 attivo. Caso generale
+  provato con ordine
+  `Testo 1 → Livello 2 → Testo 2 → Livello 1`: Testo 1 è rimasto sopra la
+  pennellata e Testo 2 sotto, invariati passando fra i due raster. A forte zoom
+  i testi sono rimasti rirasterizzati e lisci.
+- Inserimento verificato: con Testo 1 selezionato, Aggiungi livello raster ha
+  prodotto esattamente `Livello 2 → Testo 1 → Livello 1`; il nuovo raster è
+  attivo. Otto alternanze raster/testo con un singolo clic hanno dato `8/8`
+  selezioni corrette; ulteriori alternanze fra i raster non hanno modificato
+  l'ordine DOM né quello visivo.
+- I pass active-only sono collegati a base, Traccia/Ombre/Smusso, coda spessore
+  e Light Glaze. La prova browser ha trovato e corretto un errore WGSL reale:
+  `fwidth` era chiamato dopo un ramo non uniforme nell'entrypoint active-only
+  degli effetti; il campionamento derivativo viene ora calcolato prima del
+  ramo, come nel pass canonico. Traccia e Light Glaze erano già stati provati
+  con testo sovrapposto dopo il fix, senza perdita di gerarchia.
+- Il dev server Vite che risponde `index.html` alla GET opzionale
+  `/api/human-stroke` non genera più il falso errore JSON: una risposta 200 non
+  JSON viene trattata come fixture assente. La UI mostra correttamente
+  «Nessun tratto di riferimento».
+- Verifica finale: tutte le tredici suite (`stroke`, `grain`, `blend`,
+  `thickness`, `history`, `layers`, `effects-scratch`, `bevel`, `shadow`,
+  `view`, `compression`, `vector-text`, `mixed-scene`), TypeScript e build Vite
+  production verdi. Browser finale senza warning/errori console o WebGPU. Il
+  warning build sul chunk principale oltre 500 kB resta quello noto e non è
+  causato dalla gerarchia. Prova mouse desktop completata; nessuna prova fisica
+  touch/iPhone, nessuna pubblicazione e nessuna dichiarazione prestazionale.

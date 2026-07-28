@@ -730,6 +730,30 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
 
   return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
 }
+
+@fragment
+fn activeFragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let displayOffset = (fragmentPosition.xy - display.canvasSize * 0.5) / display.zoom;
+  let layerOffset = vec2<f32>(
+    display.viewRotation.x * displayOffset.x + display.viewRotation.y * displayOffset.y,
+    -display.viewRotation.y * displayOffset.x + display.viewRotation.x * displayOffset.y
+  );
+  let layerPosition = display.viewCenter + layerOffset;
+  let layerSize = vec2<f32>(textureDimensions(activeLayerBase, 0));
+  let insideLayer = all(layerPosition >= vec2<f32>(0.0))
+    && all(layerPosition < layerSize);
+  if (!insideLayer) {
+    return vec4<f32>(0.0);
+  }
+  let uv = clamp(
+    (layerPosition + vec2<f32>(0.5)) / layerSize,
+    vec2<f32>(0.0),
+    vec2<f32>(1.0)
+  );
+  return sampleActiveLayer(uv) * display.activeLayerAlpha;
+}
 `;
 
 // Predictive thickness tails use the exact brush pipeline in a transparent,
@@ -921,6 +945,52 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
 
   return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
+}
+
+@fragment
+fn activeFragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let displayOffset = (fragmentPosition.xy - display.canvasSize * 0.5) / display.zoom;
+  let layerOffset = vec2<f32>(
+    display.viewRotation.x * displayOffset.x + display.viewRotation.y * displayOffset.y,
+    -display.viewRotation.y * displayOffset.x + display.viewRotation.x * displayOffset.y
+  );
+  let layerPosition = display.viewCenter + layerOffset;
+  let layerSize = vec2<f32>(textureDimensions(activeLayerBase, 0));
+  let insideLayer = all(layerPosition >= vec2<f32>(0.0))
+    && all(layerPosition < layerSize);
+  if (!insideLayer) {
+    return vec4<f32>(0.0);
+  }
+
+  let layerUv = clamp(
+    (layerPosition + vec2<f32>(0.5)) / layerSize,
+    vec2<f32>(0.0),
+    vec2<f32>(1.0)
+  );
+  let permanentPaint = samplePermanentLayer(layerUv);
+  var paint = permanentPaint;
+  let tailPosition = layerPosition - tail.origin;
+  let insideTail = all(tailPosition >= vec2<f32>(0.0))
+    && all(tailPosition < tail.textureSize);
+  if (insideTail) {
+    let tailUv = clamp(
+      (tailPosition + vec2<f32>(0.5)) / tail.textureSize,
+      vec2<f32>(0.0),
+      vec2<f32>(1.0)
+    );
+    let transientPaint = textureSampleLevel(tailTexture, layerSampler, tailUv, 0.0);
+    if (tail.compositionMode == 1u) {
+      paint = vec4<f32>(
+        permanentPaint.rgb + transientPaint.rgb,
+        transientPaint.a + permanentPaint.a * (1.0 - transientPaint.a)
+      );
+    } else {
+      paint = transientPaint + permanentPaint * (1.0 - transientPaint.a);
+    }
+  }
+  return paint * display.activeLayerAlpha;
 }
 `;
 
@@ -1157,6 +1227,42 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
 
   return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
+}
+
+@fragment
+fn activeFragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let displayOffset = (fragmentPosition.xy - display.canvasSize * 0.5) / display.zoom;
+  let layerOffset = vec2<f32>(
+    display.viewRotation.x * displayOffset.x + display.viewRotation.y * displayOffset.y,
+    -display.viewRotation.y * displayOffset.x + display.viewRotation.x * displayOffset.y
+  );
+  let layerPosition = display.viewCenter + layerOffset;
+  let layerSize = vec2<f32>(textureDimensions(layerTexture, 0));
+  let insideLayer = all(layerPosition >= vec2<f32>(0.0))
+    && all(layerPosition < layerSize);
+  if (!insideLayer) {
+    return vec4<f32>(0.0);
+  }
+
+  let uv = clamp(
+    (layerPosition + vec2<f32>(0.5)) / layerSize,
+    vec2<f32>(0.0),
+    vec2<f32>(1.0)
+  );
+  var paint: vec4<f32>;
+  if (display.selectedMipLevel < 0.5) {
+    paint = sampleCompositedLayerLinear(uv);
+  } else {
+    paint = textureSampleLevel(
+      compositedMipTexture,
+      layerSampler,
+      uv,
+      display.selectedMipLevel - 1.0
+    );
+  }
+  return paint * display.activeLayerAlpha;
 }
 `;
 

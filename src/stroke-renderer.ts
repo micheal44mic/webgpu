@@ -1292,6 +1292,44 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
   return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
 }
+
+@fragment
+fn activeFragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let displayOffset = (fragmentPosition.xy - display.canvasSize * 0.5) / display.zoom;
+  let layerOffset = vec2<f32>(
+    display.viewRotation.x * displayOffset.x + display.viewRotation.y * displayOffset.y,
+    -display.viewRotation.y * displayOffset.x + display.viewRotation.x * displayOffset.y
+  );
+  let layerPosition = display.viewCenter + layerOffset;
+  let layerSize = vec2<f32>(DOCUMENT_SIZE);
+  let insideLayer = all(layerPosition >= vec2<f32>(0.0))
+    && all(layerPosition < layerSize);
+
+  // directStyledSample uses fwidth, so it must execute before the per-fragment
+  // document-bounds branch just like the canonical presentation entry point.
+  var paint: vec4<f32>;
+  if (display.selectedMipLevel < 0.5) {
+    paint = directStyledSample(layerPosition);
+  } else {
+    let uv = clamp(
+      (layerPosition + vec2<f32>(0.5)) / layerSize,
+      vec2<f32>(0.0),
+      vec2<f32>(1.0)
+    );
+    paint = textureSampleLevel(
+      coarseStyledTexture,
+      layerSampler,
+      uv,
+      display.selectedMipLevel - 1.0
+    );
+  }
+  if (!insideLayer) {
+    return vec4<f32>(0.0);
+  }
+  return paint * display.activeLayerAlpha;
+}
 `;
 }
 function thresholdMaskShader(

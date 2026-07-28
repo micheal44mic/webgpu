@@ -955,6 +955,11 @@ function clearLegacyHumanStrokeBenchmark(): void {
   } catch {}
 }
 
+function responseHasJsonContent(response: Response): boolean {
+  return response.headers.get("content-type")?.toLowerCase().includes("application/json")
+    ?? false;
+}
+
 async function requestCanonicalHumanStroke(): Promise<HumanStrokeBenchmark | null> {
   const response = await fetch(HUMAN_STROKE_API_URL, { cache: "no-store" });
   if (response.status === 404) {
@@ -962,6 +967,12 @@ async function requestCanonicalHumanStroke(): Promise<HumanStrokeBenchmark | nul
   }
   if (!response.ok) {
     throw new Error("Impossibile caricare il tratto umano di riferimento.");
+  }
+  // The plain Vite development server falls back to index.html for unknown
+  // GET routes. Treat that 200 HTML response as an absent optional fixture,
+  // rather than surfacing its JSON parser error in the benchmark panel.
+  if (!responseHasJsonContent(response)) {
+    return null;
   }
   return parseHumanStrokeBenchmark(await response.json());
 }
@@ -979,7 +990,7 @@ async function saveCanonicalHumanStroke(benchmark: HumanStrokeBenchmark): Promis
       return existing;
     }
   }
-  if (!response.ok) {
+  if (!response.ok || !responseHasJsonContent(response)) {
     throw new Error("Impossibile fissare il tratto umano di riferimento.");
   }
   const saved = parseHumanStrokeBenchmark(await response.json());

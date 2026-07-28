@@ -6,12 +6,12 @@ export interface MergedSurfaceRect {
 }
 
 /**
- * Mixed-scene merged surfaces contain raster records only. They are derived
- * document-space caches at one texel per document pixel; semantic text never
- * enters them and is rerasterized independently at viewport resolution.
+ * Mixed-scene merged surfaces contain one contiguous raster run each. They are
+ * derived cropped document-space caches; semantic text never enters them and
+ * is rerasterized independently at viewport resolution.
  */
 export const MIXED_MERGED_SURFACE_STORAGE_STRATEGY =
-  "mixed-raster-bbox-document-mips-vector-viewport-v3" as const;
+  "mixed-raster-run-bbox-document-mips-segmented-vector-viewport-v4" as const;
 export const MIXED_MERGED_SURFACE_ALIGNMENT = 64;
 export const MIXED_MERGED_SURFACE_TRANSPARENT_GUARD = 64;
 export const MIXED_MERGED_SURFACE_MAX_DISPLAY_MIP = 5;

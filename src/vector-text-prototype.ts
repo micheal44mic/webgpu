@@ -3,7 +3,10 @@ import {
   VECTOR_TEXT_PRESENTATION_STRATEGY,
 } from "./vector-text-shader";
 
-export type VectorTextPlacement = "below-active" | "above-active";
+export type VectorTextPlacement =
+  | "below-active"
+  | "above-active"
+  | `text-run:${string}`;
 
 export interface VectorTextViewState {
   canvasWidth: number;

@@ -18,10 +18,37 @@ const seed = (text = "STREETWEAR") => ({
   scale: 1,
   rotation: 0,
 });
+const flattenedCompositionKeys = (segments) => segments.flatMap((segment) => {
+  if (segment.kind === "active-raster") {
+    return [segment.item.key];
+  }
+  return segment.items.map((item) => item.key);
+});
+
+const assertCompositionPreservesDocumentOrder = (stack, activeRasterLayerId) => {
+  const segments = stack.compositionSegments(activeRasterLayerId);
+  assert.deepEqual(
+    flattenedCompositionKeys(segments),
+    stack.items.map((item) => item.key),
+    `la composizione con raster ${activeRasterLayerId} attivo non deve cambiare gerarchia`,
+  );
+  assert.equal(
+    segments.filter((segment) => segment.kind === "active-raster").length,
+    1,
+  );
+  for (let index = 1; index < segments.length; index += 1) {
+    assert.notEqual(
+      segments[index - 1].kind,
+      segments[index].kind,
+      "due run adiacenti dello stesso tipo devono essere fusi",
+    );
+  }
+  return segments;
+};
 
 assert.equal(
   MIXED_SCENE_STACK_STRATEGY,
-  "heterogeneous-bottom-up-raster-text-single-selection-selected-insertion-v2",
+  "heterogeneous-bottom-up-raster-text-segmented-composition-selected-insertion-v3",
 );
 
 {
@@ -74,6 +101,16 @@ assert.equal(
     stack.partitionAroundRaster(2).above.map((item) => item.key),
     ["text:2"],
   );
+  const activeOneSegments = assertCompositionPreservesDocumentOrder(stack, 1);
+  assert.deepEqual(
+    activeOneSegments.map((segment) => segment.key),
+    ["text-run:1", "active-raster:1", "raster-run:2", "text-run:2"],
+  );
+  const activeTwoSegments = assertCompositionPreservesDocumentOrder(stack, 2);
+  assert.deepEqual(
+    activeTwoSegments.map((segment) => segment.key),
+    ["text-run:1", "raster-run:1", "active-raster:2", "text-run:2"],
+  );
 
   stack.updateText(1, {
     text: "UPDATED",
@@ -118,6 +155,7 @@ assert.equal(
   const stack = new MixedSceneStack([1]);
   assert.throws(() => stack.select("text:99"), /inesistente/);
   assert.throws(() => stack.partitionAroundRaster(99), /assente/);
+  assert.throws(() => stack.compositionSegments(99), /inesistente|assente/);
   stack.addRasterAboveSelection(2);
   assert.throws(() => stack.addRasterAboveSelection(2), /già presente/);
 }
