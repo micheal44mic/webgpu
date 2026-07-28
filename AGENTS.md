@@ -1521,3 +1521,294 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   TypeScript e build Vite production verdi; `layers:verify` vincola paint
   iniziale, attesa GPU, cleanup, stile non opaco e applicazione sia a switch sia
   ad add.
+
+### Testo vettoriale misto ai livelli raster (prima prova locale, superata)
+
+- Questa prima prova con un solo testo e un semplice ordine relativo al raster
+  è conservata come misura storica. È stata sostituita nello stesso giorno
+  dalla scena eterogenea descritta nella sezione successiva.
+- Prototipo query-gated implementato il 27 luglio 2026 su
+  `?vectorTextTest=1`; resta solo locale e **non è stato pubblicato**. Il nodo
+  autorevole è semantico (`testo`, famiglia/font size, colore, posizione,
+  scala, rotazione e ordine relativo) e non possiede una texture documento
+  `4096²`. Canvas2D rasterizza di nuovo soltanto la vista corrente in una cache
+  transitoria; editing, zoom, pan e rotazione sono coalesciati a un upload per
+  `requestAnimationFrame`.
+- La cache GPU è `rgba8unorm-srgb` viewport-size con
+  `COPY_DST | RENDER_ATTACHMENT | TEXTURE_BINDING`; un display shader dedicato
+  compone in premoltiplicato `mergedBelow → testo → raster attivo →
+  mergedAbove` oppure `mergedBelow → raster attivo → testo → mergedAbove`.
+  Il primo smoke test ha scoperto una texture sempre trasparente: mancava
+  `RENDER_ATTACHMENT`, richiesto da `copyExternalImageToTexture`. Il flag è
+  stato aggiunto e `vector-text:verify` lo vincola esplicitamente.
+- Smoke test WebGPU su NVIDIA Ampere, viewport `988×860`: cache testo GPU
+  `3,24 MiB`, due backing Canvas2D logici `6,48 MiB` gestiti dal browser e totale GPU
+  conteggiato a effetti off `95,9 MiB`. Il costo GPU del testo dipende quindi
+  dal viewport e non dal numero di pixel del documento; un layer RGBA8
+  `4096²` resterebbe `64 MiB`. I backing Canvas2D sono dichiarati nel pannello
+  del prototipo ma, correttamente, non sommati al contatore WebGPU; la loro
+  residenza fisica CPU/GPU resta opaca al browser e non viene dichiarata.
+- Prova di ordine reale: un disco blu sul raster attivo ha coperto il testo in
+  modalità `below-active`; cambiando a `above-active`, i glifi hanno coperto il
+  disco. Con un secondo livello, il precedente è diventato cold
+  (`20/256` tile, `5,0 MiB`), il nuovo è rimasto full `64 MiB`, il testo è
+  rimasto `3,24 MiB` e il totale conteggiato è stato `186,3 MiB`. Un secondo
+  disco sul nuovo attivo ha confermato la sequenza raster–testo–raster.
+  Due incrementi di zoom e una rotazione vista di `15°` hanno mantenuto cache
+  e maniglie allineate.
+- Il timer del controller (raster Canvas2D + richiesta upload + overlay, non
+  tempo GPU) ha mostrato `0,4–0,5 ms` negli aggiornamenti fermi, p95
+  `2,7 ms` nella breve sequenza interattiva e un singolo aggiornamento a
+  `4,1 ms` dopo zoom/rotazione. Sono misure desktop esplorative, non una run
+  canonica e non autorizzano conclusioni su iPhone.
+- Limiti intenzionali del candidato: un solo nodo dimostrativo, ordine
+  relativo al raster attivo e nessuna persistenza nel modello eterogeneo della
+  pila. Il percorso dedicato è attivo solo con style stack raster e tail
+  transitorio spenti; Traccia/Ombre/Smusso, Light/M1 Glaze live, font
+  incorporati, shaping/outlines espliciti, undo del nodo, più nodi e worker
+  `OffscreenCanvas` restano da integrare. La sorgente resta semantica e viene
+  rerasterizzata a ogni scala, ma questo non è ancora il renderer testo
+  production.
+- Verifiche verdi: `vector-text:verify`, `view:verify`, `layers:verify`,
+  `compression:verify`, `history:verify`, `effects-scratch:verify`,
+  `stroke:verify`, `grain:verify`, `blend:verify`, `thickness:verify`,
+  `bevel:verify`, `shadow:verify`, TypeScript e build Vite production. La
+  build è stata generata soltanto in locale; nessuna versione Sites è stata
+  salvata o distribuita.
+
+### Scena eterogenea raster/testo vettoriale (candidato locale)
+
+- Correzione architetturale richiesta dall'utente il 27 luglio 2026, sempre
+  query-gated da `?vectorTextTest=1` e **non pubblicata**. La strategia
+  `heterogeneous-bottom-up-raster-text-single-selection-monotonic-ids-v1`
+  mantiene un unico stack ordinato di riferimenti `raster:N` e nodi
+  `text:N`. Il raster continua a essere autorevole nel `LayerStack` esistente;
+  ciascun testo è invece un oggetto semantico distinto con contenuto, font,
+  dimensione, colore, trasformazione, visibilità, opacità e posizione nello
+  stack. Testo e pennello non condividono pixel né journal Undo/Redo.
+- Esiste una sola selezione della scena. Se è raster, i controlli testo sono
+  disabilitati, l'overlay di trasformazione è realmente `display:none` e il
+  pennello riceve gli eventi. Se è testo, il canvas di interazione intercetta
+  soltanto spostamento/scalatura/rotazione e `beginStroke` possiede anche un
+  guard nel motore. Prova desktop reale: un gesto sul raster ha prodotto
+  `2663` stamp; lo stesso tipo di trascinamento dopo la selezione del testo ha
+  lasciato il contatore a `2663`. L'eliminazione del testo selezionato torna
+  atomicamente al raster e sincronizza sia controlli sia messaggio UI.
+- La UI permette più testi, aggiunta, eliminazione, visibilità, opacità e
+  riordino sopra/sotto i raster nello stesso elenco. Verificati localmente due
+  testi separati, ordine `testo → testo → raster`, poi
+  `testo → raster → testo`, selezione di ogni tipo ed eliminazione del secondo
+  testo. Nessun warning o errore console/WebGPU.
+- Il testo selezionato usa una sola cache live `rgba8unorm-srgb` grande quanto
+  il viewport. I testi non selezionati vengono piegati in ordine nelle
+  superfici fuse già previste sotto/sopra il raster attivo tramite **un'unica
+  patch sRGB limitata ai glifi**, riutilizzata sequenzialmente: non esiste una
+  texture `4096²` per ogni testo. `copyExternalImageToTexture` richiede
+  `COPY_DST | RENDER_ATTACHMENT | TEXTURE_BINDING`; il flag
+  `RENDER_ATTACHMENT` è vincolato dal verifier perché Chromium altrimenti
+  copia una patch trasparente.
+- Il primo cambio selezione restava bloccato dopo che fold e mip erano già
+  conclusi: Chromium non completava `popErrorScope` con una copia da canvas
+  racchiusa in uno scope WebGPU di lunga durata. Ora la transazione copre
+  soltanto l'allocazione della superficie; fold, fence e mip vivono fuori
+  dallo scope e distruggono esplicitamente il candidato in caso di errore.
+- Misure desktop NVIDIA Ampere, viewport `988×860`, RGBA8 ed effetti spenti:
+  testo selezionato `96,0 MiB`; un solo lato statico `178,0 MiB`; un testo
+  selezionato più un altro statico sullo stesso lato `181,3 MiB`; testi statici
+  presenti sia sotto sia sopra il raster `263,4 MiB`. La cache live vale
+  `3,26 MiB` e il picco della patch condivisa osservato `3,03 MiB`. Aggiungere
+  testi sullo **stesso lato** non aggiunge una superficie full-document per
+  testo; occupare entrambi i lati richiede però due superfici fuse complete.
+  Questa seconda superficie è il rischio memoria ancora aperto per iPhone e
+  deve essere il prossimo esperimento isolato prima delle ombre testo.
+- Verifiche finali verdi:
+  `mixed-scene:verify`, `vector-text:verify`, `layers:verify`,
+  `stroke:verify`, `grain:verify`, `blend:verify`, `thickness:verify`,
+  `history:verify`, `effects-scratch:verify`, `bevel:verify`,
+  `shadow:verify`, `view:verify`, `compression:verify`, TypeScript e build
+  Vite production. Non sono ancora implementati effetti/ombre del testo,
+  font incorporati, persistenza documento o Undo/Redo semantico del testo;
+  non è stata eseguita alcuna prova iPhone e non è stata salvata o distribuita
+  alcuna versione Sites.
+- Fix deadlock aggiunta raster del 28 luglio 2026. Riprodotto nel browser
+  locale: il nuovo record e il cold uscente comparivano correttamente
+  (`Livello 2` attivo, `Livello 1` cold anche con `256` tile), ma overlay e
+  controlli restavano bloccati oltre `10 s`, senza warning/errori WebGPU.
+  L'ultima fase raggiunta era l'ingresso nel retarget del banco effetti.
+- Root cause: `prepareActiveLayerForSwitch()` evacuava l'hot uscente e poneva
+  `layerPresentationFrozen = true`; subito dopo il ramo scena mista chiamava
+  `clearVectorTextPresentation()`, che impostava `displayDirty` e richiedeva un
+  frame. Il frame congelato usciva intenzionalmente senza pulire `displayDirty`,
+  mentre il retarget successivo entrava in `waitForIdle()`: entrambe le parti
+  aspettavano per sempre una condizione che non poteva cambiare.
+- Correzione isolata: selezione e partizione del nuovo raster continuano a
+  essere aggiornate prima dell'attivazione, ma la texture live del testo viene
+  rilasciata soltanto dopo che `activateLayer()` ha ricostruito i lati statici
+  e sbloccato la presentazione. Il rollback conserva così anche la preview
+  precedente. `layers:verify` vincola esplicitamente questo ordine.
+- Prova browser post-fix: aggiunta a documento vuoto terminata in `218 ms`;
+  dopo un tratto reale, aggiunta successiva terminata in `80 ms`, con il
+  precedente correttamente cold su `90` tile. Overlay chiuso, controlli
+  riabilitati e zero warning/errori. Tredici suite, TypeScript e build Vite
+  production verdi. Misure esplorative desktop, non benchmark prestazionale;
+  nessuna pubblicazione Sites.
+- Fix trasformazioni testo del 28 luglio 2026. Il ridimensionamento, e per la
+  stessa causa anche spostamento/rotazione, applicavano soltanto il primo
+  piccolo delta del gesto. `updateVectorTextNode()` pubblica correttamente una
+  nuova snapshot dopo ogni `pointermove`; `MixedVectorTextController.syncScene`
+  azzerava però incondizionatamente `activeInteraction`, quindi tutti gli
+  eventi successivi dello stesso pointer venivano ignorati.
+- La sincronizzazione conserva ora il gesto quando `selectedKey` identifica
+  ancora esattamente `text:${startModel.id}`. Cambio selezione, eliminazione o
+  altra modifica strutturale continuano ad annullarlo e a rimuovere le classi
+  di cursore. Il rapporto di scala resta ancorato a modello e distanza
+  catturati al `pointerdown`, senza accumulo incrementale.
+- Prova browser locale: dal reset `360 px`, un drag multipunto della maniglia
+  sud-est ha portato il riquadro da circa `170` a oltre `520` CSS px di
+  larghezza, seguendo l'intero percorso; il reset successivo ha ripristinato
+  posizione, scala e rotazione iniziali. Memoria conteggiata invariata a
+  `95,9 MiB`, zero warning/errori. `vector-text:verify` vincola la conservazione
+  dell'interazione e l'assenza del vecchio reset incondizionato; scena mista,
+  livelli e TypeScript verdi. Nessuna pubblicazione Sites.
+
+- Fix inserimento raster sopra la selezione del 28 luglio 2026. Riprodotto il
+  bug con `Testo 1` selezionato: l'elenco top-down diventava
+  `Testo 1 → Livello 2 → Livello 1`, perché `addLayer()` ancorava la scena
+  mista all'ultimo raster attivo e ignorava la selezione eterogenea.
+  `MixedSceneStack` usa ora la strategia
+  `heterogeneous-bottom-up-raster-text-single-selection-selected-insertion-v2`:
+  `addRasterAboveSelection()` inserisce subito dopo l'unico item selezionato,
+  sia esso testo o raster, quindi il risultato reale è
+  `Livello 2 → Testo 1 → Livello 1`.
+- La verifica memoria separata ha confermato che il full-canvas visibile con il
+  testo selezionato non è una duplicazione: `64,0 MiB` sono l'unico mip `0`
+  autorevole del raster di lavoro, `21,3 MiB` i suoi mip e `2,9 MiB` la cache
+  testo viewport; superfici fuse `0 MiB`, totale locale `95,2 MiB`. Evacuare il
+  raster richiederebbe una materializzazione equivalente per mostrarlo e una
+  reidratazione al ritorno al pennello, senza risparmio stabile. La UI lo chiama
+  quindi «raster di lavoro» e dichiara che il pennello è sospeso mentre resta
+  selezionato il testo.
+- Prova browser post-fix: aggiunta completata in `168 ms`, overlay chiuso,
+  nuovo raster selezionato immediatamente sopra il testo e zero warning/errori.
+  Il totale successivo `177,7 MiB` include la superficie statica necessaria a
+  comporre il testo sotto il nuovo raster attivo; non è stato usato come
+  benchmark. Tredici suite (`stroke`, `grain`, `blend`, `thickness`, `history`,
+  `layers`, `effects-scratch`, `bevel`, `shadow`, `view`, `compression`,
+  `vector-text`, `mixed-scene`), TypeScript e build Vite production verdi.
+  Nessuna pubblicazione Sites.
+
+- Fix click intermittenti sui livelli del 28 luglio 2026. Misura browser
+  pre-fix sul raster e sul testo: durante `1,1 s` di refresh il pulsante restava
+  abilitato, ma il primo figlio sotto il puntatore veniva rimosso
+  (`sameChild: false`, `originalStillConnected: false`). `updateStats()` gira
+  ogni `500 ms` e i due renderer svuotavano `.layer-select` per ricreare nome e
+  hint; se il refresh cadeva fra `pointerdown` e `pointerup`, il browser poteva
+  annullare il click nativo.
+- `createLayerRow()` crea ora una sola volta i due span stabili; sia la scena
+  raster/testo sia la lista raster aggiornano solo testo e attributi. Le righe
+  vengono sostituite soltanto quando cambia davvero la struttura o l'ordine
+  dello stack. La stessa correzione copre il click sintetizzato dal touch, ma
+  non è ancora stata eseguita una prova fisica su dispositivo touch.
+- Prova browser post-fix: nome e hint di raster e testo sono rimasti gli stessi
+  nodi connessi attraverso più refresh; `16/16` click alternati raster↔testo
+  hanno prodotto ogni volta `aria-current=true` solo sul bersaglio. Zero
+  warning/errori. Il verifier testo vincola l'assenza di ricostruzione dei nodi;
+  tredici suite, TypeScript e build Vite production verdi. Nessuna
+  pubblicazione Sites.
+### Traccia testo parametrica (candidato locale)
+
+- Implementazione del 28 luglio 2026, query-gated da `?vectorTextTest=1` e non
+  pubblicata. Ispezione effettuata esclusivamente nella pagina Kittl aperta:
+  sul testo selezionato `Outline Width` usa il dominio `0–100`; `Text
+  Decoration` è una famiglia distinta di righe/tagli e non va confusa con il
+  contorno. Kittl non espone nel pannello corrente la forma delle giunzioni. Il
+  progetto Kittl è stato ripristinato allo stato iniziale dopo l'ispezione.
+- Strategia locale
+  `canvas2d-glyph-stroke-shared-bounded-patch-zero-extra-gpu-storage-v1`.
+  Ogni nodo testo conserva `outlineWidth`, `outlineColor` e `outlineJoin`;
+  larghezza `0–100 px`, con tre giunzioni richieste: `bevel` («Squadrata»),
+  `miter` («A punta») e `round` («Tonda»). Il miter limit è `4`: conserva le
+  punte usuali e pone un limite deterministico ai picchi patologici.
+- La traccia è rasterizzata analiticamente con `strokeText` prima di `fillText`.
+  Il valore UI descrive la parte esterna visibile, quindi il line width Canvas2D
+  è il doppio. Il testo selezionato riusa la cache viewport esistente e viene
+  rirasterizzato alla risoluzione dello schermo anche allo zoom; i testi statici
+  riusano l'unica patch sRGB ritagliata ai glifi, ampliata conservativamente per
+  width/join e poi piegata nella superficie fusa esistente. Nessuna texture,
+  buffer o superficie GPU viene aggiunta dalla traccia.
+- Lifecycle CPU aggiunto dopo la misura: il canvas nasce `1×1`, eliminando
+  anche il default browser `300×150` (`0,17 MiB`), e viene riportato a `1×1`
+  appena il fold ha terminato copia e fence GPU, anche su errore di copia o
+  texture, senza invalidare `lastPatchBounds` e senza trattenere il backing del
+  picco. Nel caso reale `STREETWEAR`, `360 px`, miter `40 px`, il picco GPU
+  necessario è `6,4 MiB` e torna subito a `0`; il canvas CPU condiviso passava
+  da `6,44 MiB` residente a `0,00 MiB` dopo il rilascio.
+- Prova browser NVIDIA Ampere: totale selezione testo `97,7 MiB` sia con traccia
+  OFF sia con miter `40 px`; cache testo `4,13 MiB`, quindi GPU aggiuntiva
+  persistente `0 MiB`. Al Fit, dopo un run pulito, ultimo render `0,70 ms` e p95
+  `0,90 ms`; il controllo a forte zoom è rimasto nitido. Selezionando il raster,
+  la composizione statica conserva correttamente la traccia e misura
+  `178,9 MiB`, totale che include la superficie fusa già prevista; tornando al
+  testo rientra a `97,7 MiB`. Misure esplorative, non benchmark prestazionale.
+- Zero warning/errori browser. Tredici suite, TypeScript e build Vite production
+  verdi. Le tre forme sono state provate con mouse; nessuna prova touch/iPhone e
+  nessuna pubblicazione Sites.
+### Testo semantico viewport dopo ispezione JSON/canvas Kittl
+
+- Revisione del 28 luglio 2026, query-gated da `?vectorTextTest=1`.
+  La pagina Kittl già aperta è stata ispezionata senza ricerca web e
+  senza leggere cookie/storage: il progetto usa due canvas Fabric viewport
+  (`lower-canvas` e `upper-canvas`) entrambi `968×912`, dimensione invariata fra
+  zoom `41%` e `800%`. Il bundle osservato dichiara Fabric.js `5.2.1`. I cinque
+  JSON path pubblici caricati dalla pagina sono oggetti semantici con `type:
+  "path"`, comandi geometrici `path`, dimensioni, fill/stroke, `strokeUniform`,
+  `transform` e `pathOffset`; la richiesta JSON principale del design risponde
+  `403` fuori dalla sessione, quindi non è stata inventata né dichiarata la sua
+  struttura protetta.
+- La precedente patch testo in coordinate documento e la relativa superficie
+  adattiva sono state rimosse. Strategia corrente
+  `semantic-text-dual-viewport-rgba8-srgb-cache-all-display-paths-v3`: il nodo
+  CPU resta semantico e tutti i testi visibili vengono rirasterizzati con la
+  trasformazione corrente in al massimo due cache `rgba8unorm-srgb` grandi
+  quanto il viewport, una sotto e una sopra il raster attivo. La selezione usa
+  soltanto il canvas di interazione; selezionato e statico condividono quindi
+  gli stessi pixel. Nessuna texture testo `4096²`, nessun patch document-space
+  e nessun rebuild dei raster a zoom/pan.
+- Viewport NVIDIA Ampere `1258×860`: una cache testo misura `4,13 MiB`, entrambe
+  `8,25 MiB`; i due backing Canvas2D logici misurano insieme `8,25 MiB`. Il
+  totale default osservato è `97,7 MiB`. I `64,0 MiB` mostrati quando il testo è
+  selezionato restano il solo mip `0` autorevole del raster di lavoro, non una
+  copia del testo. A forte zoom i bordi del fill e della traccia restano
+  rirasterizzati alla risoluzione viewport, mentre la scacchiera/raster conserva
+  naturalmente i propri texel.
+- Traccia testo corrente
+  `canvas2d-glyph-stroke-semantic-viewport-zero-document-cache-v2`: width
+  `0–100`, `bevel`/Squadrata, `miter`/A punta con limit `4`, `round`/Tonda.
+  Prova reale width `24`: tutte e tre le forme hanno prodotto pixel distinti
+  (`48.398`, `29.044` e `41.977` canali diversi nei tre confronti a coppie) e
+  sono rimaste nitide ad alto zoom; selezionare il raster rimuove solo i
+  controlli, non cambia la geometria.
+- I compositori Traccia/Ombre/Smusso, Light Glaze live e coda spessore ora
+  ricevono le stesse due cache testo e applicano l'ordine
+  `mergedBelow → testo sotto → raster attivo → testo sopra → mergedAbove`.
+  Prima del fix, attivare Traccia raster nascondeva il testo. Dopo il fix sono
+  passate prove reali con Traccia raster ON (testo sia sopra sia sotto), un
+  tratto Light Glaze e una pennellata con spessore finale `0%`; testo sempre
+  visibile, zero warning/errori WebGPU. Totali esplorativi: Traccia `153,5 MiB`,
+  Light Glaze `183,0 MiB`, coda dopo rilascio `100,2 MiB`; gli aumenti sono le
+  risorse lazy degli effetti, la cache testo resta `4,13 MiB`. Non sono
+  benchmark prestazionali.
+- Inserimento reale: selezionando `Testo 1`, il nuovo `Livello 2` nasce
+  immediatamente sopra quel testo e diventa attivo. Dodici alternanze con un
+  solo clic raster↔testo hanno dato `12/12` `aria-current` corretti. La prova
+  mouse non sostituisce ancora un test fisico touch/iPhone.
+- Limite noto del candidato: le due cache preservano esattamente il rapporto di
+  ogni testo con il raster attivo e coprono il caso d'inserimento richiesto; una
+  sequenza arbitraria con più raster inattivi e più testi alternati sullo stesso
+  lato richiederà un compositore segmentato prima di poter dichiarare parità
+  completa con l'ordine oggetti di Kittl. Non dichiarare ancora questa parità.
+- Verifica pre-pubblicazione: tredici suite (`stroke`, `grain`, `blend`,
+  `thickness`, `history`, `layers`, `effects-scratch`, `bevel`, `shadow`,
+  `view`, `compression`, `vector-text`, `mixed-scene`), TypeScript e build
+  Vite production verdi. Il solo warning build è la dimensione del chunk già
+  nota; revisione pronta per la pubblicazione Sites.

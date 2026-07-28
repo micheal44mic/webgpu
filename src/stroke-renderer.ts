@@ -1,3 +1,4 @@
+import { mergedSurfaceSamplingShader } from "./merged-surface-shader";
 import {
   jfaScheduleForExtent,
   type RasterStrokeRect,
@@ -1119,6 +1120,9 @@ struct DisplayUniforms {
   hasMergedBelow: f32,
   hasMergedAbove: f32,
   activeLayerAlpha: f32,
+  mergedBelowOrigin: vec2<f32>,
+  mergedAboveOrigin: vec2<f32>,
+
 };
 
 struct VertexOutput {
@@ -1126,6 +1130,8 @@ struct VertexOutput {
 };
 
 @group(0) @binding(0) var<uniform> display: DisplayUniforms;
+@group(0) @binding(1) var vectorTextBelowTexture: texture_2d<f32>;
+@group(0) @binding(2) var vectorTextAboveTexture: texture_2d<f32>;
 ${shaderSourceCommon(documentWidth, documentHeight, 1)}
 ${strokeCompositionShaderSource(
   documentWidth, 1, 5, 8, 9, 10, 11, 12, 13, 14, "fragment", bevelBoundingFieldEnabled,
@@ -1170,17 +1176,36 @@ fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
   return source + destination * (1.0 - source.a);
 }
 
-fn composeLayerStack(activePaint: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {
+fn sampleViewportTexture(
+  source: texture_2d<f32>,
+  fragmentPosition: vec2<f32>
+) -> vec4<f32> {
+  let dimensions = vec2<i32>(textureDimensions(source, 0));
+  let pixel = clamp(vec2<i32>(fragmentPosition), vec2<i32>(0), dimensions - vec2<i32>(1));
+  return textureLoad(source, pixel, 0);
+}
+
+${mergedSurfaceSamplingShader}
+fn composeLayerStack(
+  activePaint: vec4<f32>,
+  layerPosition: vec2<f32>,
+  fragmentPosition: vec2<f32>
+) -> vec4<f32> {
   var paint = vec4<f32>(0.0);
   if (display.hasMergedBelow > 0.5) {
-    paint = textureSampleLevel(mergedBelowTexture, layerSampler, uv, display.selectedMipLevel);
+    paint = sampleMergedBelow(layerPosition);
   }
+  paint = sourceOver(
+    sampleViewportTexture(vectorTextBelowTexture, fragmentPosition),
+    paint
+  );
   paint = sourceOver(activePaint * display.activeLayerAlpha, paint);
+  paint = sourceOver(
+    sampleViewportTexture(vectorTextAboveTexture, fragmentPosition),
+    paint
+  );
   if (display.hasMergedAbove > 0.5) {
-    paint = sourceOver(
-      textureSampleLevel(mergedAboveTexture, layerSampler, uv, display.selectedMipLevel),
-      paint
-    );
+    paint = sourceOver(sampleMergedAbove(layerPosition), paint);
   }
   return paint;
 }
@@ -1258,7 +1283,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     vec2<f32>(0.0),
     vec2<f32>(1.0)
   );
-  paint = composeLayerStack(paint, uv);
+  paint = composeLayerStack(paint, layerPosition, fragmentPosition.xy);
 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;

@@ -754,6 +754,15 @@ select {
   color: #eaf2ff;
 }
 
+.layer-row.is-text-node .layer-select {
+  border-color: rgba(151, 126, 255, 0.48);
+}
+
+.layer-row.is-text-node .layer-select[aria-current="true"] {
+  border-color: #9b83ff;
+  background: rgba(110, 87, 210, 0.13);
+}
+
 .layer-hint {
   color: #8b929e;
   font-size: 0.72rem;
@@ -771,4 +780,107 @@ select {
 .layer-opacity input {
   width: 100%;
   min-width: 0;
+}
+
+/* Prototipo query-gated: sorgente semantica, cache raster solo viewport. */
+#vectorTextPrototypeSection input[type="text"] {
+  width: 100%;
+  min-height: 36px;
+  padding: 0 9px;
+  border: 1px solid #343945;
+  border-radius: 9px;
+  outline: none;
+  background: #11151c;
+  color: #f4f5f7;
+}
+
+#vectorTextPrototypeSection input[type="text"]:focus {
+  border-color: #6877ff;
+  box-shadow: 0 0 0 2px rgba(104, 119, 255, 0.18);
+}
+
+.vector-text-outline-controls {
+  min-width: 0;
+  margin: 2px 0 13px;
+  padding: 10px 10px 8px;
+  border: 1px solid #303746;
+  border-radius: 10px;
+  background: #131820;
+}
+
+.vector-text-outline-controls legend {
+  padding: 0 6px;
+  color: #cbd0d9;
+  font-size: 0.75rem;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.vector-text-outline-note {
+  margin: -2px 0 2px;
+  color: #8f97a5;
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.vector-text-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.72fr);
+  gap: 7px;
+  margin-bottom: 10px;
+}
+
+.vector-text-actions #vectorTextReset {
+  grid-column: 1 / -1;
+}
+
+#vectorTextStatus {
+  line-height: 1.45;
+}
+
+#vectorTextPresentationCanvas {
+  position: absolute;
+  top: -10000px;
+  left: -10000px;
+  display: block;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+  contain: strict;
+}
+
+#vectorTextInteractionCanvas {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#vectorTextInteractionCanvas[hidden] {
+  display: none;
+}
+
+#vectorTextInteractionCanvas.is-editing {
+  pointer-events: auto;
+  cursor: move;
+}
+
+#vectorTextInteractionCanvas.is-scale {
+  cursor: nwse-resize;
+}
+
+#vectorTextInteractionCanvas.is-pan {
+  cursor: grabbing;
+}
+
+#vectorTextInteractionCanvas.is-rotate {
+  cursor: grabbing;
 }

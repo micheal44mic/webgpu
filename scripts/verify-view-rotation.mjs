@@ -116,8 +116,8 @@ assert.notEqual(magnet.display, 0, "il magnete non deve riagganciare fuori dalla
 applyMagnet(magnet, -2);
 assert.equal(magnet.display, 0, "entro 3° il magnete deve tornare a zero esatto");
 
-assert.match(engineSource, /const DISPLAY_UNIFORM_BYTES = 48;/,
-  "la rotazione non deve aumentare il buffer display");
+assert.match(engineSource, /const DISPLAY_UNIFORM_BYTES = 64;/,
+  "rotazione e origin merged condividono la ABI display da 64 byte");
 assert.match(engineSource, /displayUniformUpload\[2\] = this\.viewRotationCos/);
 assert.match(engineSource, /displayUniformUpload\[3\] = this\.viewRotationSin/);
 assert.match(engineSource, /displayUniformUpload\[4\] = this\.viewCenterX/);
@@ -151,6 +151,10 @@ assert.match(engineSource, /rotation: rotation \+ this\.viewRotation/,
 const displayShaders = `${shaderSource}\n${strokeRendererSource}`;
 assert.equal((displayShaders.match(/struct DisplayUniforms/g) ?? []).length, 4,
   "devono restare quattro varianti display");
+assert.equal((displayShaders.match(/  mergedBelowOrigin: vec2<f32>,/g) ?? []).length, 4,
+  "tutte le varianti display devono ricevere l'origine del bbox inferiore");
+assert.equal((displayShaders.match(/  mergedAboveOrigin: vec2<f32>,/g) ?? []).length, 4,
+  "tutte le varianti display devono ricevere l'origine del bbox superiore");
 assert.equal((displayShaders.match(/  viewRotation: vec2<f32>,/g) ?? []).length, 4,
   "tutte le varianti display devono condividere la stessa ABI di rotazione");
 assert.equal((displayShaders.match(/let displayOffset =/g) ?? []).length, 4,
@@ -182,4 +186,4 @@ assert.match(styleSource, /\.desktop-rotation-control\s*\{\s*display: none;/s,
   "i controlli desktop non devono affollare la barra mobile");
 assert.equal(packageJson.scripts["view:verify"], "node scripts/verify-view-rotation.mjs");
 
-console.log("Rotazione vista verificata: round-trip, ancora, magnete 0°, ABI 48 B, mobile e desktop.");
+console.log("Rotazione vista verificata: round-trip, ancora, magnete 0°, ABI 64 B, mobile e desktop.");

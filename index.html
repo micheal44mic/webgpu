@@ -304,11 +304,102 @@
           </label>
         </section>
 
+        <section id="vectorTextPrototypeSection" hidden>
+          <h2>Testo vettoriale · livello separato</h2>
+          <p class="result">
+            Il testo non condivide mai i pixel o la cronologia del pennello.
+          </p>
+
+          <label class="control">
+            <span>Testo</span>
+            <input
+              id="vectorTextValue"
+              type="text"
+              maxlength="80"
+              autocomplete="off"
+              value="STREETWEAR"
+            />
+          </label>
+
+          <label class="control">
+            <span>Font</span>
+            <select id="vectorTextFontFamily">
+              <option value="Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif">
+                Impact / condensato
+              </option>
+              <option value="'Arial Black', Arial, sans-serif">Arial Black</option>
+              <option value="Georgia, 'Times New Roman', serif">Georgia</option>
+            </select>
+          </label>
+
+          <label class="control">
+            <span>
+              Dimensione <output id="vectorTextFontSizeOut">360 px</output>
+            </span>
+            <input
+              id="vectorTextFontSize"
+              type="range"
+              min="80"
+              max="1200"
+              step="1"
+              value="360"
+            />
+          </label>
+
+          <label class="control color-control">
+            <span>Colore</span>
+            <input id="vectorTextColor" type="color" value="#f4c95d" />
+          </label>
+
+          <fieldset class="vector-text-outline-controls">
+            <legend>Traccia testo</legend>
+            <label class="control">
+              <span>
+                Spessore <output id="vectorTextOutlineWidthOut">0 px</output>
+              </span>
+              <input
+                id="vectorTextOutlineWidth"
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                value="0"
+              />
+            </label>
+            <label class="control color-control">
+              <span>Colore traccia</span>
+              <input id="vectorTextOutlineColor" type="color" value="#111111" />
+            </label>
+            <label class="control">
+              <span>Forma angoli</span>
+              <select id="vectorTextOutlineJoin">
+                <option value="bevel">Squadrata</option>
+                <option value="miter">A punta</option>
+                <option value="round" selected>Tonda</option>
+              </select>
+            </label>
+            <p class="vector-text-outline-note">
+              0 px disattiva la traccia. Effetto del nodo testo, senza un nuovo canvas 4096².
+            </p>
+          </fieldset>
+
+          <div class="vector-text-actions">
+            <button id="addVectorText" class="primary" type="button">Aggiungi testo</button>
+            <button id="deleteVectorText" type="button">Elimina testo</button>
+            <button id="moveVectorTextDown" type="button">Sposta sotto</button>
+            <button id="moveVectorTextUp" type="button">Sposta sopra</button>
+            <button id="vectorTextReset" type="button">Reimposta</button>
+          </div>
+          <p id="vectorTextStatus" class="result" aria-live="polite">
+            Preparazione dei livelli testo…
+          </p>
+        </section>
+
         <section id="layerSection">
           <h2>Livelli</h2>
           <div id="layerList" class="layer-list"></div>
           <button id="addLayer" class="wide" type="button">
-            Aggiungi livello
+            Aggiungi livello raster
           </button>
           <p id="layerSwitchResult" class="result" aria-live="polite">
             Ogni livello conserva Traccia, Ombra esterna, Ombra interna e Smusso.
@@ -800,6 +891,8 @@
 
       <main class="stage">
         <canvas id="gpuCanvas" aria-label="Canvas di disegno WebGPU"></canvas>
+        <canvas id="vectorTextPresentationCanvas" aria-hidden="true" hidden></canvas>
+        <canvas id="vectorTextInteractionCanvas" aria-label="Selezione del testo vettoriale" hidden></canvas>
         <canvas id="tipPreviewCanvas" aria-hidden="true"></canvas>
         <div class="hint">Un dito disegna · due dita spostano, fanno zoom e ruotano · desktop: R + trascina</div>
 
@@ -814,7 +907,7 @@
             </header>
             <p class="gpu-memory-subtitle">Risorse WebGPU create dal motore</p>
             <dl class="gpu-memory-list">
-              <div data-memory-row><dt>Layer · attivo full-canvas</dt><dd id="gpuMemoryLayerBase">—</dd></div>
+              <div data-memory-row><dt>Layer · raster di lavoro full-canvas</dt><dd id="gpuMemoryLayerBase">—</dd></div>
               <div data-memory-row><dt>Layer · inattivi cold tile</dt><dd id="gpuMemoryLayerCold">—</dd></div>
               <div data-memory-row><dt>Layer · compressi · RAM CPU</dt><dd id="gpuMemoryLayerCompressed">—</dd></div>
               <div data-memory-row><dt>Layer · reidratazione transitoria</dt><dd id="gpuMemoryLayerHydration">—</dd></div>
@@ -824,6 +917,8 @@
               <div data-memory-row><dt>Bake livelli · transitori</dt><dd id="gpuMemoryLayerBakes">—</dd></div>
               <div data-memory-row><dt>Livelli fusi · mip 0</dt><dd id="gpuMemoryLayerComposite">—</dd></div>
               <div data-memory-row><dt>Grain M1</dt><dd id="gpuMemoryGrain">—</dd></div>
+              <div id="gpuMemoryVectorTextRow" data-memory-row hidden><dt>Testo vettoriale · cache schermo</dt><dd id="gpuMemoryVectorText">—</dd></div>
+
               <div data-memory-row><dt>Shape 2K</dt><dd id="gpuMemoryShape">—</dd></div>
               <div data-memory-row><dt>Buffer Paint</dt><dd id="gpuMemoryPaintBuffers">—</dd></div>
               <div data-memory-row><dt>Cache schermo</dt><dd id="gpuMemoryPresentation">—</dd></div>

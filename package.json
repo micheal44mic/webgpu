@@ -18,7 +18,9 @@
     "bevel:verify": "node scripts/verify-bevel-core.mjs",
     "shadow:verify": "node scripts/verify-shadow-core.mjs",
     "view:verify": "node scripts/verify-view-rotation.mjs",
-    "compression:verify": "node scripts/verify-layer-compression.mjs"
+    "compression:verify": "node scripts/verify-layer-compression.mjs",
+    "vector-text:verify": "node scripts/verify-vector-text.mjs",
+    "mixed-scene:verify": "node scripts/verify-mixed-scene-stack.mjs"
   },
   "devDependencies": {
     "@webgpu/types": "0.1.71",

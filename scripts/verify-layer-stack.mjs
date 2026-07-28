@@ -547,7 +547,11 @@ assert.match(engineSource, /private readonly liveLayerBakeTextures = new Map<GPU
 assert.match(engineSource, /transaction\.deferRollback\(\(\) => this\.destroyLayerBakeTexture\(texture\)\)/,
   "il fault post-submit deve rendere osservabile anche il rilascio del candidato");
 
-const mergedStart = engineSource.indexOf("private async buildMergedSurfaceCandidate(");
+// Il percorso raster è condiviso anche dallo stack misto; includi l'helper
+// estratto nel corpo verificato, non soltanto il wrapper legacy.
+const mergedStart = engineSource.indexOf(
+  "private async foldRasterRecordIntoMergedSurface(",
+);
 const mergedEnd = engineSource.indexOf("private async restoreEffectsWorkbenchToActiveLayer(", mergedStart);
 const mergedBody = engineSource.slice(mergedStart, mergedEnd);
 assert.match(mergedBody, /record\.visible && record\.opacity > 0 && record\.hasContent/);
@@ -567,18 +571,23 @@ assert.ok(
     < mergedBody.indexOf("await this.waitForGpuCapped(`Fold livello ${record.id}`);"),
   "il fence unico del record deve seguire il submit del fold",
 );
-assert.match(mergedBody, /if \(first && record\.opacity >= 1\)/,
+assert.match(mergedBody, /if \(first && record\.opacity >= 1 && surface\.resolutionScale === 1\)/,
   "il primo livello opaco deve evitare il pass full-document");
 assert.match(mergedBody, /encoder\.copyTextureToTexture\(/,
   "il percorso veloce deve conservare esattamente i texel sorgente");
 assert.match(mergedBody, /pass\.setScissorRect\(/,
   "i fold renderizzati devono restare limitati ai bounds conservativi");
-assert.match(mergedBody, /new Float32Array\(\[record\.opacity, 0, 0, 0\]\)/);
+assert.match(mergedBody, /new ArrayBuffer\(LAYER_COMPOSITE_UNIFORM_BYTES\)/);
+assert.match(mergedBody, /uniformF32\[0\] = surface\.bounds\.x/);
+assert.match(mergedBody, /uniformF32\[1\] = surface\.bounds\.y/);
+assert.match(mergedBody, /uniformF32\[2\] = surface\.resolutionScale/);
+assert.match(mergedBody, /uniformF32\[3\] = record\.opacity/);
+assert.match(mergedBody, /mergedSurfacePhysicalRect\(/);
 assert.match(mergedBody, /this\.layerCompositePipeline/);
 assert.match(mergedBody, /this\.destroyLayerBake\(source\.transientBake\)/);
 assert.match(
   engineSource,
-  /private async rebuildMergedLayerSurfaces\(\s*caller: EffectsRetargetCaller = "layer-switch",\s*\): Promise<void>/,
+  /private async rebuildMergedLayerSurfaces\(\s*caller: EffectsRetargetCaller = "layer-switch",\s*view: VectorTextViewState = this\.getVectorTextViewState\(\),\s*\): Promise<void>/,
 );
 const rebuildMethodStart = engineSource.indexOf("private async rebuildMergedLayerSurfaces(");
 const rebuildMethodEnd = engineSource.indexOf("  async addLayer(", rebuildMethodStart);
@@ -617,7 +626,7 @@ assert.match(
 );
 assert.match(
   engineSource,
-  /buildMergedSurfaceCandidate\([\s\S]*?caller: EffectsRetargetCaller,[\s\S]*?materializeLayerCompositeSource\(record, caller\)/,
+  /foldRasterRecordIntoMergedSurface\([\s\S]*?caller: EffectsRetargetCaller,[\s\S]*?materializeLayerCompositeSource\(record, caller\)/,
 );
 assert.match(
   engineSource,
@@ -633,7 +642,7 @@ assert.match(engineSource, /private latchDocumentStateInconsistent\(message: str
 assert.match(engineSource, /this\.historyStateInconsistent = true;[\s\S]*?this\.historyBusy = true;/,
   "il latch documentale deve bloccare ogni mutazione successiva");
 assert.match(engineSource, /this\.releaseFusedLayerBakes\(\)/);
-assert.match(engineSource, /private readonly liveMergedSurfaceTextures = new Set<GPUTexture>\(\)/);
+assert.match(engineSource, /private readonly liveMergedSurfaceTextures = new Map<GPUTexture, MergedSurfaceResources>\(\)/);
 assert.match(engineSource, /layerCompositeMiB/,
   "le superfici fuse e i bake transitori devono avere righe di memoria distinte");
 const compositePipelineStart = engineSource.indexOf("const layerCompositePipeline = this.device.createRenderPipeline(");
@@ -654,7 +663,11 @@ assert.match(allocationBody, /mipLevelCount: 1/,
 assert.match(allocationBody, /private allocateActiveLayerDisplayPyramid\(/);
 assert.match(allocationBody, /mipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT - 1/);
 assert.match(allocationBody, /private allocateMergedSurface\(/);
-assert.match(allocationBody, /mipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT/);
+assert.match(allocationBody, /const mipLevelCount = mergedSurfaceMipLevelCount\(physicalBounds\)/);
+assert.match(allocationBody, /const textureWidth = normalizedBounds\.width \* resolutionScale/);
+assert.match(allocationBody, /const textureHeight = normalizedBounds\.height \* resolutionScale/);
+assert.match(allocationBody, /mip0MemoryBytes: memory\.mip0Bytes/);
+assert.match(allocationBody, /mipChainMemoryBytes: memory\.mipChainBytes/);
 assert.match(allocationBody, /GPUTextureUsage\.COPY_DST/,
   "la superficie fusa deve accettare il percorso veloce byte-esatto");
 assert.match(
@@ -669,34 +682,51 @@ assert.equal(
 );
 
 // Every display path receives below/active/above before checkerboard and sRGB.
-assert.match(engineSource, /this\.displayUniformUpload\[9\] = this\.mergedBelow \? 1 : 0/);
-assert.match(engineSource, /this\.displayUniformUpload\[10\] = this\.mergedAbove \? 1 : 0/);
+assert.match(engineSource, /this\.displayUniformUpload\[9\] = this\.mergedBelow\?\.resolutionScale \?\? 0/);
+assert.match(engineSource, /this\.displayUniformUpload\[10\] = this\.mergedAbove\?\.resolutionScale \?\? 0/);
 assert.match(engineSource, /this\.displayUniformUpload\[11\] = this\.layerStack\.active\.visible/);
+assert.match(engineSource, /this\.displayUniformUpload\[12\] = this\.mergedBelow\?\.bounds\.x \?\? 0/);
+assert.match(engineSource, /this\.displayUniformUpload\[15\] = this\.mergedAbove\?\.bounds\.y \?\? 0/);
 const shaderSource = readFileSync(new URL("../src/shaders.ts", import.meta.url), "utf8");
-assert.match(shaderSource, /fn composeLayerStack\(activePaint: vec4<f32>, uv: vec2<f32>\)/);
-assert.match(shaderSource, /paint = sourceOver\(activePaint \* display\.activeLayerAlpha, paint\)/);
-assert.match(shaderSource, /textureSampleLevel\(mergedAboveTexture[\s\S]*?paint\s*\)/);
-assert.equal(
-  (shaderSource.match(/fn composeLayerStack\(activePaint: vec4<f32>, uv: vec2<f32>\)/g) ?? []).length,
-  3,
-  "display base, coda e Light Glaze devono comporre tutti la stessa terna",
+const mergedSurfaceShaderSource = readFileSync(
+  new URL("../src/merged-surface-shader.ts", import.meta.url),
+  "utf8",
 );
-assert.match(shaderSource, /composeLayerStack\(sampleActiveLayer\(uv\), uv\)/);
-assert.match(shaderSource, /paint = composeLayerStack\(paint, layerUv\);/);
-assert.match(shaderSource, /paint = composeLayerStack\(paint, uv\);/);
+assert.match(shaderSource, /fn composeLayerStack\(activePaint: vec4<f32>, layerPosition: vec2<f32>\)/);
+assert.match(shaderSource, /paint = sourceOver\(activePaint \* display\.activeLayerAlpha, paint\)/);
+assert.match(mergedSurfaceShaderSource, /sampleMergedAbove\(layerPosition/);
+assert.match(mergedSurfaceShaderSource, /layerPosition - display\.mergedAboveOrigin/);
+assert.equal(
+  (shaderSource.match(/fn composeLayerStack\(activePaint: vec4<f32>, layerPosition: vec2<f32>\)/g) ?? []).length,
+  1,
+  "il display base conserva la firma raster senza texture testo",
+);
+assert.equal(
+  (shaderSource.match(/fn composeLayerStack\(\s*activePaint: vec4<f32>,\s*layerPosition: vec2<f32>,\s*fragmentPosition: vec2<f32>/g) ?? []).length,
+  2,
+  "coda e Light Glaze devono accettare le coordinate viewport del testo",
+);
+assert.match(shaderSource, /composeLayerStack\(sampleActiveLayer\(uv\), layerPosition\)/);
+assert.equal(
+  (shaderSource.match(/paint = composeLayerStack\(paint, layerPosition, fragmentPosition\.xy\);/g) ?? []).length,
+  2,
+  "coda e Light Glaze devono comporre merged e testo in coordinate documento\/viewport",
+);
 const strokeRendererSource = readFileSync(
   new URL("../src/stroke-renderer.ts", import.meta.url),
   "utf8",
 );
-assert.match(strokeRendererSource, /paint = composeLayerStack\(paint, uv\);/);
+assert.match(strokeRendererSource, /paint = composeLayerStack\(paint, layerPosition, fragmentPosition\.xy\);/);
 assert.match(strokeRendererSource, /@group\(1\) @binding\(15\) var mergedBelowTexture/);
 assert.match(strokeRendererSource, /@group\(1\) @binding\(16\) var mergedAboveTexture/);
 assert.ok(
-  shaderSource.indexOf("paint = composeLayerStack(paint, layerUv);")
-    < shaderSource.indexOf("let checkerCell", shaderSource.indexOf("paint = composeLayerStack(paint, layerUv);")),
-  "la coda spessore deve comporre i layer prima della scacchiera e della conversione sRGB",
-);
-// All four effect styles must live on the layer record, not on the engine, or a
+  shaderSource.indexOf("paint = composeLayerStack(paint, layerPosition, fragmentPosition.xy);")
+    < shaderSource.indexOf(
+      "let checkerCell",
+      shaderSource.indexOf("paint = composeLayerStack(paint, layerPosition, fragmentPosition.xy);"),
+    ),
+  "la coda spessore deve comporre layer e testo prima della scacchiera e della conversione sRGB",
+);// All four effect styles must live on the layer record, not on the engine, or a
 // switch would show the outgoing layer's effects on the incoming one.
 // Accessors keep existing call sites working while making the styles
 // follow the active layer by construction rather than by remembering to copy.
@@ -1134,14 +1164,29 @@ assert.match(selectMethodBody, /this\.layerStack\.setActiveIndex\(fromIndex\);[\
 assert.match(selectMethodBody, /Stato incoerente dopo il cambio livello:[\s\S]*?Ricarica la pagina/,
   "un doppio fallimento dello switch deve alzare il latch fatale");
 const addMethodStart = engineSource.indexOf("async addLayer(");
-const addMethodBody = engineSource.slice(addMethodStart, addMethodStart + 4_400);
+// La transazione include ora anche il rollback dello stack misto raster/testo.
+const addMethodBody = engineSource.slice(addMethodStart, addMethodStart + 6_000);
 const addPrepare = addMethodBody.indexOf("await this.prepareActiveLayerForSwitch();");
 const addRecord = addMethodBody.indexOf("this.layerStack.add(name)");
 assert.ok(
   addPrepare >= 0 && addRecord > addPrepare,
   "addLayer deve congelare e impacchettare l'uscente prima del nuovo record",
 );
+assert.match(
+  addMethodBody,
+  /this\.mixedSceneStack\.addRasterAboveSelection\(record\.id\)/,
+  "nella scena mista il nuovo raster deve seguire la selezione, incluso un testo",
+);
 assert.match(addMethodBody, /await this\.allocateLayerGpuResources\(/);
+const addActivation = addMethodBody.indexOf(
+  "const result = await this.activateLayer(fromIndex);",
+);
+const addLiveTextClear = addMethodBody.indexOf("this.clearVectorTextPresentation();");
+assert.ok(
+  addActivation >= 0 && addLiveTextClear > addActivation,
+  "addLayer deve liberare la preview testo soltanto dopo che activateLayer ha "
+    + "sbloccato la presentazione, altrimenti waitForIdle resta su displayDirty",
+);
 assert.match(addMethodBody, /Stato incoerente dopo la creazione del livello:[\s\S]*?Ricarica la pagina/,
   "un doppio fallimento di addLayer deve alzare il latch fatale");
 assert.match(addMethodBody, /this\.layerStack\.remove\(index\);[\s\S]*?this\.layerStack\.setActiveIndex\(fromIndex\);[\s\S]*?await this\.activateLayer\(fromIndex\);/,

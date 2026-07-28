@@ -23,6 +23,35 @@ import {
   thicknessTailDisplayShader,
 } from "./shaders";
 import {
+  vectorTextDisplayShader,
+  VECTOR_TEXT_PRESENTATION_STRATEGY,
+} from "./vector-text-shader";
+
+import {
+  MIXED_SCENE_STACK_STRATEGY,
+  MixedSceneStack,
+  type MixedSceneItem,
+  type VectorTextNode,
+  type VectorTextNodeSeed,
+} from "./mixed-scene-stack";
+import {
+  MIXED_MERGED_SURFACE_MAX_DISPLAY_MIP,
+  MIXED_MERGED_SURFACE_STORAGE_STRATEGY,
+  alignedMergedSurfaceBounds,
+  intersectMergedSurfaceRects,
+  mergedSurfaceLocalRect,
+  mergedSurfaceMemoryBytes,
+  mergedSurfaceMipLevelCount,
+  mergedSurfacePhysicalRect,
+  unionMergedSurfaceRects,
+  type MergedSurfaceRect,
+} from "./merged-surface-bounds";
+import type {
+  VectorTextGpuPresentationStats,
+  VectorTextPlacement,
+  VectorTextViewState,
+} from "./vector-text-prototype";
+import {
   THICKNESS_DYNAMICS_STRATEGY,
   THICKNESS_TAPER_WINDOW_MS,
   endThicknessRadius,
@@ -317,6 +346,26 @@ export interface PointerSample {
   timeMs: number;
 }
 
+export interface MixedSceneSnapshot {
+  strategy: typeof MIXED_SCENE_STACK_STRATEGY;
+  selectedKey: MixedSceneItem["key"];
+  activeRasterLayerId: number;
+  previewTextNodeId: number | null;
+  items: readonly (
+    | {
+      key: `raster:${number}`;
+      kind: "raster";
+      rasterLayerId: number;
+      rasterLayerIndex: number;
+    }
+    | {
+      key: `text:${number}`;
+      kind: "text";
+      textNode: Readonly<VectorTextNode>;
+    }
+  )[];
+}
+
 export interface EngineGpuMemoryStats {
   layerBaseMiB: number;
   layerColdMiB: number;
@@ -331,6 +380,7 @@ export interface EngineGpuMemoryStats {
   shapeTextureMiB: number;
   paintBuffersMiB: number;
   presentationCacheMiB: number;
+  vectorTextPresentationMiB: number;
   rasterStrokeStyledMiB: number;
   rasterStrokeCoverageMiB: number;
   rasterStrokeMaskAndControlMiB: number;
@@ -440,6 +490,7 @@ export interface EngineStats {
   layerMemoryMiB: number;
   layerCount: number;
   activeLayerId: number;
+  mixedScene: MixedSceneSnapshot | null;
   layerBakeStrategy: typeof LAYER_BAKE_STRATEGY;
   layerCompositeStrategy: typeof LAYER_COMPOSITE_STRATEGY;
   layerStorageStudy: LayerStorageStudyStats;
@@ -766,6 +817,8 @@ export interface EngineCallbacks {
   onStats?: (stats: EngineStats) => void;
   onHistoryChange?: (state: HistoryState) => void;
   onViewRotationChange?: (degrees: number, snappedToZero: boolean) => void;
+  onViewChange?: (state: VectorTextViewState) => void;
+  onMixedSceneChange?: (snapshot: MixedSceneSnapshot) => void;
   /**
    * A global undo can move the active layer, so the UI has to be told: without
    * this the layer panel would keep highlighting the layer the user left.
@@ -792,6 +845,12 @@ export interface BrushEngineOptions {
    * cold store may move from GPU tiles to lossless CPU bytes in a worker.
    */
   layerColdCompressionEnabled?: boolean;
+  /**
+   * Enables the local, query-gated mixed raster/vector text prototype. The
+   * ordinary application does not compile its extra pipeline or allocate its
+   * viewport texture.
+   */
+  vectorTextPrototypeEnabled?: boolean;
 }
 
 export interface LayerPoint {
@@ -879,6 +938,12 @@ interface MergedSurfaceResources {
   samplingView: GPUTextureView;
   mipViews: GPUTextureView[];
   mipDownsampleBindGroups: GPUBindGroup[];
+  bounds: DirtyRect;
+  resolutionScale: number;
+  textureWidth: number;
+  textureHeight: number;
+  mip0MemoryBytes: number;
+  mipChainMemoryBytes: number;
   validThroughLevel: number;
   layerCount: number;
   foldedPixels: number;
@@ -1412,10 +1477,10 @@ const SHAPE_OCCUPANCY_MAX_COVERAGE_RATIO = 0.5;
 const SHAPE_OCCUPANCY_MAP_BYTES = SHAPE_OCCUPANCY_WORDS_PER_MAP * 4;
 const BRUSH_UNIFORM_BYTES = 96;
 const GRAIN_UNIFORM_BYTES = 32;
-const DISPLAY_UNIFORM_BYTES = 48;
+const DISPLAY_UNIFORM_BYTES = 64;
 const VIEW_ROTATION_SNAP_ENTER_RADIANS = 3 * Math.PI / 180;
 const VIEW_ROTATION_SNAP_RELEASE_RADIANS = 7 * Math.PI / 180;
-const LAYER_COMPOSITE_UNIFORM_BYTES = 16;
+const LAYER_COMPOSITE_UNIFORM_BYTES = 32;
 const LIGHT_GLAZE_UNIFORM_BYTES = 32;
 const THICKNESS_TAIL_UNIFORM_BYTES = 32;
 const STATIC_PAINT_BUFFER_BYTES =
@@ -1669,6 +1734,7 @@ export class BrushEngine {
   private readonly layerMemoryStressTestEnabled: boolean;
   private readonly layerCompressionTestEnabled: boolean;
   private readonly layerColdCompressionEnabled: boolean;
+  private readonly vectorTextPrototypeEnabled: boolean;
 
   private adapter!: GPUAdapter;
   private device!: GPUDevice;
@@ -1715,6 +1781,9 @@ export class BrushEngine {
     innerShadowStyle: copyRasterInnerShadowStyle(DEFAULT_RASTER_INNER_SHADOW_STYLE),
   }));
 
+  private readonly mixedSceneStack: MixedSceneStack | null;
+  private vectorTextPreviewExcludedNodeId: number | null = null;
+
   /**
    * GPU resources per layer, keyed by the record's stable id. Ids are never
    * reused after a delete, so an entry can never be handed to a different layer
@@ -1744,7 +1813,7 @@ export class BrushEngine {
   private layerCompositeFaultQueue: LayerCompositeFaultPoint[] = [];
   private layerColdStorageFaultQueue: LayerColdStorageFaultPoint[] = [];
   private readonly liveLayerBakeTextures = new Map<GPUTexture, number>();
-  private readonly liveMergedSurfaceTextures = new Set<GPUTexture>();
+  private readonly liveMergedSurfaceTextures = new Map<GPUTexture, MergedSurfaceResources>();
   private readonly liveLayerHydrationTextures = new Map<GPUTexture, number>();
   /** Dev probe buffers are excluded from counted GPU memory, so track them separately. */
   private devReadbackActiveBytes = 0;
@@ -1842,6 +1911,13 @@ export class BrushEngine {
   private presentationCacheWidth = 0;
   private presentationCacheHeight = 0;
   private presentationCacheNeedsFullRebuild = true;
+  private vectorTextBelowTexture: GPUTexture | null = null;
+  private vectorTextBelowView: GPUTextureView | null = null;
+  private vectorTextAboveTexture: GPUTexture | null = null;
+  private vectorTextAboveView: GPUTextureView | null = null;
+  private vectorTextTextureWidth = 0;
+  private vectorTextTextureHeight = 0;
+  private vectorTextDisplayBindGroup: GPUBindGroup | null = null;
   private lightGlazeTexture: GPUTexture | null = null;
   private lightGlazeCompositeMipTexture: GPUTexture | null = null;
   private lightGlazeView: GPUTextureView | null = null;
@@ -1931,6 +2007,7 @@ export class BrushEngine {
   private grainBrushBindGroupLayout!: GPUBindGroupLayout;
   private grainBrushOccupancyBindGroupLayout!: GPUBindGroupLayout;
   private displayBindGroupLayout!: GPUBindGroupLayout;
+  private vectorTextDisplayBindGroupLayout: GPUBindGroupLayout | null = null;
   private rasterStrokeDisplayScreenBindGroupLayout!: GPUBindGroupLayout;
   private rasterStrokeDisplaySourceBindGroupLayout!: GPUBindGroupLayout;
   private thicknessTailDisplayBindGroupLayout!: GPUBindGroupLayout;
@@ -1965,6 +2042,7 @@ export class BrushEngine {
   private brushShaderModule!: GPUShaderModule;
   private texturizedGrainShaderModule!: GPUShaderModule;
   private displayShaderModule!: GPUShaderModule;
+  private vectorTextDisplayShaderModule: GPUShaderModule | null = null;
   private rasterStrokeDisplayShaderModule!: GPUShaderModule;
   private thicknessTailDisplayShaderModule!: GPUShaderModule;
   private lightGlazeDisplayShaderModule!: GPUShaderModule;
@@ -1991,6 +2069,7 @@ export class BrushEngine {
   private grainM1GlazeShapePipeline!: GPURenderPipeline;
   private grainM1GlazeShapeOccupancyPipeline!: GPURenderPipeline;
   private displayPipeline!: GPURenderPipeline;
+  private vectorTextDisplayPipeline: GPURenderPipeline | null = null;
   private rasterStrokeDisplayPipeline!: GPURenderPipeline;
   private thicknessTailDisplayPipeline!: GPURenderPipeline;
   private lightGlazeDisplayPipeline!: GPURenderPipeline;
@@ -2081,6 +2160,10 @@ export class BrushEngine {
     this.layerMemoryStressTestEnabled = options.layerMemoryStressTestEnabled === true;
     this.layerCompressionTestEnabled = options.layerCompressionTestEnabled === true;
     this.layerColdCompressionEnabled = options.layerColdCompressionEnabled === true;
+    this.vectorTextPrototypeEnabled = options.vectorTextPrototypeEnabled === true;
+    this.mixedSceneStack = this.vectorTextPrototypeEnabled
+      ? new MixedSceneStack(this.layerStack.layers.map((record) => record.id))
+      : null;
     this.adaptivePreviewCanvas = adaptivePreviewCanvas;
     this.adaptiveSpacingMaxExtraPercentPoints =
       adaptiveSpacingMaxExtraPercentPointsForPlatform();
@@ -3257,10 +3340,146 @@ export class BrushEngine {
     if (!this.hasFittedView) {
       this.fitView();
     } else {
+      this.notifyViewChange();
       this.requestRender();
     }
   }
 
+  getVectorTextViewState(): VectorTextViewState {
+    return {
+      canvasWidth: Math.max(1, this.canvas.width),
+      canvasHeight: Math.max(1, this.canvas.height),
+      cssWidth: Math.max(1, this.canvasCssWidth),
+      cssHeight: Math.max(1, this.canvasCssHeight),
+      centerX: this.viewCenterX,
+      centerY: this.viewCenterY,
+      zoom: this.zoom,
+      rotationRadians: this.viewRotation,
+      rotationCos: this.viewRotationCos,
+      rotationSin: this.viewRotationSin,
+    };
+  }
+
+  private createMixedSceneSnapshot(): MixedSceneSnapshot | null {
+    const scene = this.mixedSceneStack;
+    if (!scene) {
+      return null;
+    }
+    return {
+      strategy: MIXED_SCENE_STACK_STRATEGY,
+      selectedKey: scene.selected.key,
+      activeRasterLayerId: this.layerStack.active.id,
+      previewTextNodeId: this.vectorTextPreviewExcludedNodeId,
+      items: scene.items.map((item) => {
+        if (item.kind === "raster") {
+          const rasterLayerIndex = this.layerStack.indexOfId(item.rasterLayerId);
+          if (rasterLayerIndex < 0) {
+            throw new Error(
+              `Raster ${item.rasterLayerId} presente nella scena ma assente dallo stack GPU.`,
+            );
+          }
+          return {
+            key: item.key,
+            kind: item.kind,
+            rasterLayerId: item.rasterLayerId,
+            rasterLayerIndex,
+          };
+        }
+        return {
+          key: item.key,
+          kind: item.kind,
+          textNode: { ...scene.textById(item.textNodeId) },
+        };
+      }),
+    };
+  }
+
+  getMixedSceneSnapshot(): MixedSceneSnapshot | null {
+    return this.createMixedSceneSnapshot();
+  }
+
+  private publishMixedScene(): void {
+    const snapshot = this.createMixedSceneSnapshot();
+    if (snapshot) {
+      this.callbacks.onMixedSceneChange?.(snapshot);
+    }
+  }
+
+  canPaintSelectedSceneItem(): boolean {
+    return this.mixedSceneStack?.selected.kind !== "text";
+  }
+
+  private notifyViewChange(): void {
+    this.callbacks.onViewChange?.(this.getVectorTextViewState());
+  }
+  updateVectorTextPresentation(
+    source: HTMLCanvasElement,
+    placement: VectorTextPlacement,
+  ): VectorTextGpuPresentationStats {
+    if (!this.vectorTextPrototypeEnabled || !this.initialized) {
+      throw new Error("Prototipo testo vettoriale non abilitato per questa pagina.");
+    }
+    const width = Math.max(1, this.canvas.width);
+    const height = Math.max(1, this.canvas.height);
+    if (source.width !== width || source.height !== height) {
+      throw new Error(
+        `Cache testo ${source.width}×${source.height} diversa dal viewport ${width}×${height}.`,
+      );
+    }
+    const texture = this.ensureVectorTextPresentationTexture(width, height, placement);
+    this.device.queue.copyExternalImageToTexture(
+      { source },
+      {
+        texture,
+        premultipliedAlpha: true,
+        colorSpace: "srgb",
+      },
+      { width, height, depthOrArrayLayers: 1 },
+    );
+    this.rebuildVectorTextDisplayBindGroup();
+    this.displayDirty = true;
+    this.presentationCacheNeedsFullRebuild = true;
+    this.requestRender();
+    return {
+      strategy: VECTOR_TEXT_PRESENTATION_STRATEGY,
+      width,
+      height,
+      gpuMemoryMiB: width * height * 4 / MEBIBYTE_BYTES,
+      placement,
+    };
+  }
+
+  clearVectorTextPresentation(placement?: VectorTextPlacement): void {
+    let changed = false;
+    if (!placement || placement === "below-active") {
+      const texture = this.vectorTextBelowTexture;
+      this.vectorTextBelowTexture = null;
+      this.vectorTextBelowView = null;
+      if (texture) {
+        texture.destroy();
+        changed = true;
+      }
+    }
+    if (!placement || placement === "above-active") {
+      const texture = this.vectorTextAboveTexture;
+      this.vectorTextAboveTexture = null;
+      this.vectorTextAboveView = null;
+      if (texture) {
+        texture.destroy();
+        changed = true;
+      }
+    }
+    if (!this.vectorTextBelowTexture && !this.vectorTextAboveTexture) {
+      this.vectorTextTextureWidth = 0;
+      this.vectorTextTextureHeight = 0;
+    }
+    this.rebuildVectorTextDisplayBindGroup();
+    if (changed && this.initialized) {
+      this.displayDirty = true;
+      this.presentationCacheNeedsFullRebuild = true;
+      this.requestRender();
+    }
+  }
   fitView(): void {
     this.invalidateAdaptivePreview();
     const width = Math.max(1, this.canvas.width);
@@ -3274,6 +3493,7 @@ export class BrushEngine {
     this.hasFittedView = true;
     this.displayDirty = true;
     this.presentationCacheNeedsFullRebuild = true;
+    this.notifyViewChange();
     this.requestRender();
   }
 
@@ -3295,6 +3515,7 @@ export class BrushEngine {
     this.viewCenterY = anchorBefore.y - anchorOffset.y;
     this.displayDirty = true;
     this.presentationCacheNeedsFullRebuild = true;
+    this.notifyViewChange();
     this.requestRender();
   }
 
@@ -3311,6 +3532,7 @@ export class BrushEngine {
     this.viewCenterY -= layerDelta.y;
     this.displayDirty = true;
     this.presentationCacheNeedsFullRebuild = true;
+    this.notifyViewChange();
     this.requestRender();
   }
 
@@ -3408,6 +3630,7 @@ export class BrushEngine {
       this.getViewRotationDegrees(),
       this.viewRotationSnappedToZero,
     );
+    this.notifyViewChange();
     this.requestRender();
   }
 
@@ -3419,6 +3642,13 @@ export class BrushEngine {
     // layerSwitchBusy is held across the switch's awaits, so a pointerdown
     // landing mid-switch cannot start a stroke on a half-swapped layer.
     if (this.historyBusy || this.activeStroke || this.layerSwitchBusy) {
+      return;
+    }
+    if (!this.canPaintSelectedSceneItem()) {
+      this.callbacks.onStatus?.(
+        "Il testo è selezionato: scegli un livello raster per usare il pennello.",
+        "working",
+      );
       return;
     }
     if (this.settings.grainMode !== "off" && !this.grainResident) {
@@ -3932,24 +4162,29 @@ export class BrushEngine {
         0,
       ) + this.layerColdRestoreActiveBytes
     ) / MEBIBYTE_BYTES;
-    // Exactly one raw-layer pyramid follows the active layer. Each allocated
-    // merged side owns one additional chain, independent of how many inactive
-    // layers were folded into it.
-    const mergedSurfaceCount = this.liveMergedSurfaceTextures.size;
+    // Exactly one full raw-layer pyramid follows the active layer. Mixed-scene
+    // merged sides report their real cropped mip bytes instead of charging a
+    // full 4096² chain per side.
+    const mergedSurfaces = [...this.liveMergedSurfaceTextures.values()];
+    const mergedMipChainMiB = mergedSurfaces.reduce(
+      (total, surface) => total + surface.mipChainMemoryBytes,
+      0,
+    ) / MEBIBYTE_BYTES;
     const layerMipChainMiB = baseResourcesAllocated
-      ? paintDisplayPyramidAdditionalMemoryMiB(this.layerFormat)
-        * (1 + mergedSurfaceCount)
+      ? paintDisplayPyramidAdditionalMemoryMiB(this.layerFormat) + mergedMipChainMiB
       : 0;
-    // Per-layer analytic bakes exist only inside a transaction. The two fused
-    // mip-0 surfaces are accounted separately so a steady document reports
-    // zero resident layer bakes regardless of how many styled layers it owns.
+    // Per-layer analytic bakes exist only inside a transaction. Merged mip 0
+    // is accounted from its actual allocation bounds, including candidates.
     const transientBakeMiB = [...this.liveLayerBakeTextures.values()].reduce(
       (total, bytes) => total + bytes,
       0,
     ) / MEBIBYTE_BYTES;
     const layerBakeMiB = baseResourcesAllocated ? transientBakeMiB : 0;
     const layerCompositeMiB = baseResourcesAllocated
-      ? layerBaseMemoryMiB(this.layerFormat) * mergedSurfaceCount
+      ? mergedSurfaces.reduce(
+        (total, surface) => total + surface.mip0MemoryBytes,
+        0,
+      ) / MEBIBYTE_BYTES
       : 0;
     const grainTextureMiB = baseResourcesAllocated && this.grainResident
       ? GRAIN_TEXTURE_PIXEL_COUNT * 4 / MEBIBYTE_BYTES
@@ -3960,6 +4195,12 @@ export class BrushEngine {
     const paintBuffersMiB = baseResourcesAllocated ? staticPaintBufferMemoryMiB() : 0;
     const presentationCacheMiB = this.presentationCacheTexture
       ? this.presentationCacheWidth * this.presentationCacheHeight * 4 / MEBIBYTE_BYTES
+      : 0;
+    const vectorTextTextureCount = Number(Boolean(this.vectorTextBelowTexture))
+      + Number(Boolean(this.vectorTextAboveTexture));
+    const vectorTextPresentationMiB = vectorTextTextureCount > 0
+      ? vectorTextTextureCount * this.vectorTextTextureWidth
+        * this.vectorTextTextureHeight * 4 / MEBIBYTE_BYTES
       : 0;
     const rasterStrokeStyledMiB =
       (rasterStroke?.styledMemoryBytes ?? 0) / MEBIBYTE_BYTES;
@@ -4023,6 +4264,7 @@ export class BrushEngine {
       shapeTextureMiB,
       paintBuffersMiB,
       presentationCacheMiB,
+      vectorTextPresentationMiB,
       rasterStrokeStyledMiB,
       rasterStrokeCoverageMiB,
       rasterStrokeMaskAndControlMiB,
@@ -4051,6 +4293,7 @@ export class BrushEngine {
       shapeTextureMiB,
       paintBuffersMiB,
       presentationCacheMiB,
+      vectorTextPresentationMiB,
       rasterStrokeStyledMiB,
       rasterStrokeCoverageMiB,
       rasterStrokeMaskAndControlMiB,
@@ -4180,6 +4423,7 @@ export class BrushEngine {
         gpuMemory.layerBaseMiB
         + gpuMemory.layerColdMiB
         + gpuMemory.layerHydrationMiB,
+      mixedScene: this.createMixedSceneSnapshot(),
       layerCount: this.layerStack.count,
       activeLayerId: this.layerStack.active.id,
       layerBakeStrategy: LAYER_BAKE_STRATEGY,
@@ -5487,36 +5731,58 @@ export class BrushEngine {
   }
 
   getLayerCompositeState(): {
+    storageStrategy: typeof MIXED_MERGED_SURFACE_STORAGE_STRATEGY;
     selectedMipLevel: number;
     below: {
       allocated: boolean;
+      bounds: DirtyRect | null;
+      resolutionScale: number;
+      textureWidth: number;
+      textureHeight: number;
+      mipLevelCount: number;
       validThroughLevel: number;
       layerCount: number;
       foldedPixels: number;
       analyticBakePixels: number;
+      mip0MiB: number;
+      mipChainMiB: number;
     };
     above: {
       allocated: boolean;
+      bounds: DirtyRect | null;
+      resolutionScale: number;
+      textureWidth: number;
+      textureHeight: number;
+      mipLevelCount: number;
       validThroughLevel: number;
       layerCount: number;
       foldedPixels: number;
       analyticBakePixels: number;
+      mip0MiB: number;
+      mipChainMiB: number;
     };
   } {
     const describe = (surface: MergedSurfaceResources | null) => ({
       allocated: surface !== null,
+      bounds: surface ? { ...surface.bounds } : null,
+      resolutionScale: surface?.resolutionScale ?? 1,
+      textureWidth: surface?.textureWidth ?? 0,
+      textureHeight: surface?.textureHeight ?? 0,
+      mipLevelCount: surface?.mipViews.length ?? 0,
       validThroughLevel: surface?.validThroughLevel ?? -1,
       layerCount: surface?.layerCount ?? 0,
       foldedPixels: surface?.foldedPixels ?? 0,
       analyticBakePixels: surface?.analyticBakePixels ?? 0,
+      mip0MiB: (surface?.mip0MemoryBytes ?? 0) / MEBIBYTE_BYTES,
+      mipChainMiB: (surface?.mipChainMemoryBytes ?? 0) / MEBIBYTE_BYTES,
     });
     return {
+      storageStrategy: MIXED_MERGED_SURFACE_STORAGE_STRATEGY,
       selectedMipLevel: this.paintDisplaySelectedMipLevel,
       below: describe(this.mergedBelow),
       above: describe(this.mergedAbove),
     };
   }
-
   async readMergedLayerPixels(
     side: "below" | "above",
     rect?: DirtyRect,
@@ -5530,6 +5796,11 @@ export class BrushEngine {
     if (!surface) {
       throw new Error(`Superficie merged ${side} non allocata.`);
     }
+    if (!Number.isInteger(mipLevel) || mipLevel < 0 || mipLevel >= surface.mipViews.length) {
+      throw new Error(
+        `Mip merged ${side} ${mipLevel} fuori da 0–${surface.mipViews.length - 1}.`,
+      );
+    }
     if (mipLevel > surface.validThroughLevel && completePyramid) {
       const encoder = this.device.createCommandEncoder({
         label: `Complete merged ${side} pyramid for readback`,
@@ -5538,7 +5809,31 @@ export class BrushEngine {
       this.device.queue.submit([encoder.finish()]);
       await this.waitForGpuCapped(`Readback merged ${side}`);
     }
-    return this.readTexturePixels(surface.texture, rect, `merged ${side}`, mipLevel);
+    const mipScale = 2 ** mipLevel;
+    const localRect = rect
+      ? {
+        x: Math.floor(
+          (rect.x - surface.bounds.x) * surface.resolutionScale / mipScale,
+        ),
+        y: Math.floor(
+          (rect.y - surface.bounds.y) * surface.resolutionScale / mipScale,
+        ),
+        width: Math.max(
+          1,
+          Math.ceil(rect.width * surface.resolutionScale / mipScale),
+        ),
+        height: Math.max(
+          1,
+          Math.ceil(rect.height * surface.resolutionScale / mipScale),
+        ),
+      }
+      : undefined;
+    return this.readTexturePixels(
+      surface.texture,
+      localRect,
+      `merged ${side}`,
+      mipLevel,
+    );
   }
 
   setLayerCompositeTestView(centerX: number, centerY: number, zoom = 1): void {
@@ -5557,6 +5852,7 @@ export class BrushEngine {
     this.hasFittedView = true;
     this.presentationCacheNeedsFullRebuild = true;
     this.displayDirty = true;
+    this.notifyViewChange();
     this.requestRender();
   }
 
@@ -7066,11 +7362,15 @@ export class BrushEngine {
     });
     this.rasterStrokeDisplayScreenBindGroupLayout = this.device.createBindGroupLayout({
       label: "Traccia display screen bind group layout",
-      entries: [{
-        binding: 0,
-        visibility: GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      }],
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+      ],
     });
     this.rasterStrokeDisplaySourceBindGroupLayout = this.device.createBindGroupLayout({
       label: "Traccia direct LOD 0 and coarse mip display source layout",
@@ -7126,12 +7426,6 @@ export class BrushEngine {
         { binding: 16, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
       ],
     });
-    this.rasterStrokeDisplayScreenBindGroup = this.device.createBindGroup({
-      label: "Traccia display screen bind group",
-      layout: this.rasterStrokeDisplayScreenBindGroupLayout,
-      entries: [{ binding: 0, resource: { buffer: this.displayUniformBuffer } }],
-    });
-
     this.lightGlazeDisplayBindGroupLayout = this.device.createBindGroupLayout({
       label: "Light Glaze live display bind group layout",
       entries: [
@@ -7167,6 +7461,8 @@ export class BrushEngine {
         },
         { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
         { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        { binding: 8, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        { binding: 9, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
       ],
     });
     this.thicknessTailDisplayBindGroupLayout = this.device.createBindGroupLayout({
@@ -7200,6 +7496,8 @@ export class BrushEngine {
         { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
         { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
         { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        { binding: 8, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        { binding: 9, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
       ],
     });
     const grainLayoutEntries: GPUBindGroupLayoutEntry[] = [
@@ -7525,6 +7823,47 @@ export class BrushEngine {
       primitive: { topology: "triangle-list" },
     });
 
+    if (this.vectorTextPrototypeEnabled) {
+      this.vectorTextDisplayShaderModule = this.device.createShaderModule({
+        label: "Dual viewport vector text mixed-layer display WGSL",
+        code: vectorTextDisplayShader,
+      });
+      await this.assertShaderCompiled(
+        this.vectorTextDisplayShaderModule,
+        "dual viewport vector text mixed-layer display",
+      );
+      this.vectorTextDisplayBindGroupLayout = this.device.createBindGroupLayout({
+        label: "Dual viewport vector text mixed-layer display bind group layout",
+        entries: [
+          { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+          { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+          { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+          { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+          { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+          { binding: 5, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+          { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+          { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        ],
+      });
+      const vectorTextPipelineLayout = this.device.createPipelineLayout({
+        label: "Dual viewport vector text mixed-layer display pipeline layout",
+        bindGroupLayouts: [this.vectorTextDisplayBindGroupLayout],
+      });
+      this.vectorTextDisplayPipeline = this.device.createRenderPipeline({
+        label: "Dual viewport vector text mixed-layer display pipeline",
+        layout: vectorTextPipelineLayout,
+        vertex: {
+          module: this.vectorTextDisplayShaderModule,
+          entryPoint: "vertexMain",
+        },
+        fragment: {
+          module: this.vectorTextDisplayShaderModule,
+          entryPoint: "fragmentMain",
+          targets: [{ format: this.canvasFormat }],
+        },
+        primitive: { topology: "triangle-list" },
+      });
+    }
     const rasterStrokeDisplayPipelineLayout = this.device.createPipelineLayout({
       label: "Traccia display pipeline layout",
       bindGroupLayouts: [
@@ -7932,16 +8271,48 @@ export class BrushEngine {
     }
   }
 
-  /** Full mip chain for one fused side of the active layer. */
+  /** Derived side cache at a view-adaptive texel density. */
   private allocateMergedSurface(
     format: LayerFormat,
     side: "below" | "above",
     layerCount: number,
+    bounds: DirtyRect = { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE },
+    resolutionScale = 1,
   ): MergedSurfaceResources {
+    const normalizedBounds = this.normalizeLayerRect(bounds);
+    if (!normalizedBounds) {
+      throw new Error(`Merged ${side}: bounds di allocazione non validi.`);
+    }
+    if (
+      !Number.isInteger(resolutionScale)
+      || resolutionScale < 1
+      || resolutionScale > 64
+    ) {
+      throw new Error(`Merged ${side}: densità ${resolutionScale} non valida.`);
+    }
+    const textureWidth = normalizedBounds.width * resolutionScale;
+    const textureHeight = normalizedBounds.height * resolutionScale;
+    const maximumTextureExtent = this.device.limits.maxTextureDimension2D;
+    if (textureWidth > maximumTextureExtent || textureHeight > maximumTextureExtent) {
+      throw new Error(
+        `Merged ${side}: ${textureWidth}×${textureHeight} supera il limite `
+        + `${maximumTextureExtent} della GPU.`,
+      );
+    }
+    const physicalBounds = { width: textureWidth, height: textureHeight };
+    const mipLevelCount = mergedSurfaceMipLevelCount(physicalBounds);
+    const memory = mergedSurfaceMemoryBytes(
+      physicalBounds,
+      format === "rgba16float" ? 8 : 4,
+    );
     const texture = this.device.createTexture({
-      label: `Merged ${side} surface (${layerCount} layers) ${format}`,
-      size: { width: LAYER_SIZE, height: LAYER_SIZE, depthOrArrayLayers: 1 },
-      mipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT,
+      label:
+        `Merged ${side} surface (${layerCount} layers) ${format} `
+        + `${textureWidth}×${textureHeight} (${normalizedBounds.width}×`
+        + `${normalizedBounds.height} doc @ ${resolutionScale}x) `
+        + `@ ${normalizedBounds.x},${normalizedBounds.y}`,
+      size: { width: textureWidth, height: textureHeight, depthOrArrayLayers: 1 },
+      mipLevelCount,
       format,
       usage:
         GPUTextureUsage.RENDER_ATTACHMENT
@@ -7949,11 +8320,12 @@ export class BrushEngine {
         | GPUTextureUsage.COPY_DST
         | GPUTextureUsage.COPY_SRC,
     });
-    this.liveMergedSurfaceTextures.add(texture);
     try {
-      const samplingView = texture.createView({ label: `Merged ${side} sampling chain ${format}` });
+      const samplingView = texture.createView({
+        label: `Merged ${side} sampling chain ${format}`,
+      });
       const mipViews = Array.from(
-        { length: PAINT_DISPLAY_MIP_LEVEL_COUNT },
+        { length: mipLevelCount },
         (_, mipLevel) => texture.createView({
           label: `Merged ${side} mip ${mipLevel} ${format}`,
           baseMipLevel: mipLevel,
@@ -7967,22 +8339,29 @@ export class BrushEngine {
           entries: [{ binding: 0, resource: sourceView }],
         }),
       );
-      return {
+      const surface: MergedSurfaceResources = {
         texture,
         samplingView,
         mipViews,
         mipDownsampleBindGroups,
+        bounds: { ...normalizedBounds },
+        resolutionScale,
+        textureWidth,
+        textureHeight,
+        mip0MemoryBytes: memory.mip0Bytes,
+        mipChainMemoryBytes: memory.mipChainBytes,
         validThroughLevel: 0,
         layerCount,
         foldedPixels: 0,
         analyticBakePixels: 0,
       };
+      this.liveMergedSurfaceTextures.set(texture, surface);
+      return surface;
     } catch (error) {
-      this.destroyMergedSurfaceTexture(texture);
+      texture.destroy();
       throw error;
     }
   }
-
   private async allocateLayerGpuResources(
     format: LayerFormat,
     label: string,
@@ -9009,7 +9388,83 @@ export class BrushEngine {
     );
   }
 
-  /** Every display path sees the same below/active/above surface triplet. */
+  /** Rebinds every transient/effect display path to the semantic text caches. */
+  private rebuildVectorTextDependentDisplayBindGroups(): void {
+    const belowView = this.vectorTextBelowView ?? this.transparentLayerView;
+    const aboveView = this.vectorTextAboveView ?? this.transparentLayerView;
+    this.rasterStrokeDisplayScreenBindGroup = this.device.createBindGroup({
+      label: "Traccia display screen + semantic text bind group",
+      layout: this.rasterStrokeDisplayScreenBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.displayUniformBuffer } },
+        { binding: 1, resource: belowView },
+        { binding: 2, resource: aboveView },
+      ],
+    });
+    if (this.thicknessTailView) {
+      this.thicknessTailDisplayBindGroup = this.device.createBindGroup({
+        label: "Predictive thickness tail mixed-scene display bind group",
+        layout: this.thicknessTailDisplayBindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: this.displayUniformBuffer } },
+          { binding: 1, resource: this.layerView },
+          { binding: 2, resource: this.sampler },
+          { binding: 3, resource: this.thicknessTailView },
+          { binding: 4, resource: { buffer: this.thicknessTailDisplayUniformBuffer } },
+          { binding: 5, resource: this.activeLayerDisplayPyramid.samplingView },
+          { binding: 6, resource: this.mergedBelowView() },
+          { binding: 7, resource: this.mergedAboveView() },
+          { binding: 8, resource: belowView },
+          { binding: 9, resource: aboveView },
+        ],
+      });
+    }
+    if (this.lightGlazeView && this.lightGlazeSamplingView) {
+      this.lightGlazeDisplayBindGroup = this.device.createBindGroup({
+        label: "Light Glaze mixed-scene live display bind group",
+        layout: this.lightGlazeDisplayBindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: this.displayUniformBuffer } },
+          { binding: 1, resource: this.layerView },
+          { binding: 2, resource: this.lightGlazeView },
+          { binding: 3, resource: this.sampler },
+          { binding: 4, resource: { buffer: this.lightGlazeUniformBuffer } },
+          { binding: 5, resource: this.lightGlazeSamplingView },
+          { binding: 6, resource: this.mergedBelowView() },
+          { binding: 7, resource: this.mergedAboveView() },
+          { binding: 8, resource: belowView },
+          { binding: 9, resource: aboveView },
+        ],
+      });
+    }
+  }
+
+  /** Every display path sees the same below/text/active/text/above triplet. */
+  private rebuildVectorTextDisplayBindGroup(): void {
+    const layout = this.vectorTextDisplayBindGroupLayout;
+    const belowView = this.vectorTextBelowView;
+    const aboveView = this.vectorTextAboveView;
+    if (!layout || (!belowView && !aboveView)) {
+      this.vectorTextDisplayBindGroup = null;
+    } else {
+      this.vectorTextDisplayBindGroup = this.device.createBindGroup({
+        label: "Dual viewport vector text mixed-layer display bind group",
+        layout,
+        entries: [
+          { binding: 0, resource: { buffer: this.displayUniformBuffer } },
+          { binding: 1, resource: this.layerView },
+          { binding: 2, resource: this.activeLayerDisplayPyramid.samplingView },
+          { binding: 3, resource: this.mergedBelowView() },
+          { binding: 4, resource: this.mergedAboveView() },
+          { binding: 5, resource: this.sampler },
+          { binding: 6, resource: belowView ?? this.transparentLayerView },
+          { binding: 7, resource: aboveView ?? this.transparentLayerView },
+        ],
+      });
+    }
+    this.rebuildVectorTextDependentDisplayBindGroups();
+  }
+
   private rebuildLayerDisplayBindGroups(): void {
     this.displayBindGroup = this.device.createBindGroup({
       label: "Three-surface layer display bind group",
@@ -9023,41 +9478,9 @@ export class BrushEngine {
         { binding: 5, resource: this.sampler },
       ],
     });
-    if (this.thicknessTailView) {
-      this.thicknessTailDisplayBindGroup = this.device.createBindGroup({
-        label: "Predictive thickness tail three-surface display bind group",
-        layout: this.thicknessTailDisplayBindGroupLayout,
-        entries: [
-          { binding: 0, resource: { buffer: this.displayUniformBuffer } },
-          { binding: 1, resource: this.layerView },
-          { binding: 2, resource: this.sampler },
-          { binding: 3, resource: this.thicknessTailView },
-          { binding: 4, resource: { buffer: this.thicknessTailDisplayUniformBuffer } },
-          { binding: 5, resource: this.activeLayerDisplayPyramid.samplingView },
-          { binding: 6, resource: this.mergedBelowView() },
-          { binding: 7, resource: this.mergedAboveView() },
-        ],
-      });
-    }
-    if (this.lightGlazeView && this.lightGlazeSamplingView) {
-      this.lightGlazeDisplayBindGroup = this.device.createBindGroup({
-        label: "Light Glaze three-surface live display bind group",
-        layout: this.lightGlazeDisplayBindGroupLayout,
-        entries: [
-          { binding: 0, resource: { buffer: this.displayUniformBuffer } },
-          { binding: 1, resource: this.layerView },
-          { binding: 2, resource: this.lightGlazeView },
-          { binding: 3, resource: this.sampler },
-          { binding: 4, resource: { buffer: this.lightGlazeUniformBuffer } },
-          { binding: 5, resource: this.lightGlazeSamplingView },
-          { binding: 6, resource: this.mergedBelowView() },
-          { binding: 7, resource: this.mergedAboveView() },
-        ],
-      });
-    }
+    this.rebuildVectorTextDisplayBindGroup();
     this.rebuildRasterStrokeDisplayBindGroups();
   }
-
   /** Points the engine's active-layer fields at one layer's resources. */
   private bindActiveLayerResources(): void {
     const hot = this.requireLayerHot(this.layerStack.active.id);
@@ -9198,15 +9621,33 @@ export class BrushEngine {
     }
   }
 
+  private mergedSurfaceSamplingLod(surface: MergedSurfaceResources): number {
+    return Math.max(
+      0,
+      Math.log2(surface.resolutionScale / Math.max(this.zoom, 1e-6)),
+    );
+  }
+
+  private requiredMergedSurfaceMipLevel(surface: MergedSurfaceResources): number {
+    return Math.min(
+      surface.mipViews.length - 1,
+      Math.ceil(this.mergedSurfaceSamplingLod(surface)),
+    );
+  }
+
   private encodeMergedSurfacePyramid(
     encoder: GPUCommandEncoder,
     surface: MergedSurfaceResources,
     selectedMipLevel: number,
   ): number {
     let passes = 0;
+    const targetMipLevel = Math.min(
+      selectedMipLevel,
+      surface.mipViews.length - 1,
+    );
     for (
       let mipLevel = surface.validThroughLevel + 1;
-      mipLevel <= selectedMipLevel;
+      mipLevel <= targetMipLevel;
       mipLevel += 1
     ) {
       const pass = encoder.beginRenderPass({
@@ -9224,7 +9665,7 @@ export class BrushEngine {
       pass.end();
       passes += 1;
     }
-    surface.validThroughLevel = Math.max(surface.validThroughLevel, selectedMipLevel);
+    surface.validThroughLevel = Math.max(surface.validThroughLevel, targetMipLevel);
     return passes;
   }
 
@@ -9234,10 +9675,18 @@ export class BrushEngine {
   ): number {
     let passes = 0;
     if (this.mergedBelow) {
-      passes += this.encodeMergedSurfacePyramid(encoder, this.mergedBelow, selectedMipLevel);
+      passes += this.encodeMergedSurfacePyramid(
+        encoder,
+        this.mergedBelow,
+        Math.max(selectedMipLevel, this.requiredMergedSurfaceMipLevel(this.mergedBelow)),
+      );
     }
     if (this.mergedAbove) {
-      passes += this.encodeMergedSurfacePyramid(encoder, this.mergedAbove, selectedMipLevel);
+      passes += this.encodeMergedSurfacePyramid(
+        encoder,
+        this.mergedAbove,
+        Math.max(selectedMipLevel, this.requiredMergedSurfaceMipLevel(this.mergedAbove)),
+      );
     }
     return passes;
   }
@@ -9250,6 +9699,119 @@ export class BrushEngine {
     if (surface) {
       this.destroyMergedSurfaceTexture(surface.texture);
     }
+  }
+
+  private async foldRasterRecordIntoMergedSurface(
+    surface: MergedSurfaceResources,
+    record: LayerRecord,
+    side: "below" | "above",
+    caller: EffectsRetargetCaller,
+    first: boolean,
+  ): Promise<boolean> {
+    const source = await this.materializeLayerCompositeSource(record, caller);
+    const sourceRect = intersectMergedSurfaceRects(
+      source.nonTransparentBounds,
+      surface.bounds,
+      LAYER_SIZE,
+    );
+    if (!sourceRect) {
+      this.destroyLayerBake(source.transientBake);
+      this.destroyTransientLayerHydration(source.transientHydration);
+      return false;
+    }
+    const destinationRect = mergedSurfacePhysicalRect(
+      sourceRect,
+      surface.bounds,
+      surface.resolutionScale,
+    );
+    surface.foldedPixels += destinationRect.width * destinationRect.height;
+    surface.analyticBakePixels += source.analyticBakePixels;
+    try {
+      const encoder = this.device.createCommandEncoder({
+        label: `Fold layer ${record.id} into merged ${side}`,
+      });
+      if (first && record.opacity >= 1 && surface.resolutionScale === 1) {
+        // A fresh WebGPU texture is zero-initialized. For the common
+        // singleton/opaque side at 1x, copy only the visible source rectangle.
+        encoder.copyTextureToTexture(
+          {
+            texture: source.texture,
+            origin: { x: sourceRect.x, y: sourceRect.y, z: 0 },
+          },
+          {
+            texture: surface.texture,
+            origin: { x: destinationRect.x, y: destinationRect.y, z: 0 },
+          },
+          {
+            width: sourceRect.width,
+            height: sourceRect.height,
+            depthOrArrayLayers: 1,
+          },
+        );
+      } else {
+        const uniformUpload = new ArrayBuffer(LAYER_COMPOSITE_UNIFORM_BYTES);
+        const uniformU32 = new Uint32Array(uniformUpload);
+        const uniformF32 = new Float32Array(uniformUpload);
+        uniformF32[0] = surface.bounds.x;
+        uniformF32[1] = surface.bounds.y;
+        uniformF32[2] = surface.resolutionScale;
+        uniformF32[3] = record.opacity;
+        uniformU32[4] = LAYER_SIZE;
+        uniformU32[5] = LAYER_SIZE;
+        this.device.queue.writeBuffer(
+          this.layerCompositeUniformBuffer,
+          0,
+          uniformUpload,
+        );
+        const bindGroup = this.device.createBindGroup({
+          label: `Fold layer ${record.id} into merged ${side}`,
+          layout: this.layerCompositeBindGroupLayout,
+          entries: [
+            { binding: 0, resource: source.view },
+            { binding: 1, resource: { buffer: this.layerCompositeUniformBuffer } },
+          ],
+        });
+        const pass = encoder.beginRenderPass({
+          label: `Source-over layer ${record.id} into merged ${side}`,
+          colorAttachments: [{
+            view: surface.mipViews[0],
+            loadOp: first ? "clear" : "load",
+            storeOp: "store",
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          }],
+        });
+        pass.setPipeline(this.layerCompositePipeline);
+        pass.setBindGroup(0, bindGroup);
+        pass.setScissorRect(
+          destinationRect.x,
+          destinationRect.y,
+          destinationRect.width,
+          destinationRect.height,
+        );
+        pass.draw(3, 1, 0, 0);
+        pass.end();
+      }
+      this.device.queue.submit([encoder.finish()]);
+      // Queue order owns hydration, effect rebuild, analytic bake and fold.
+      // Keeping one bounded fence releases each record's full temporaries
+      // before the following scene item is materialized.
+      await this.waitForGpuCapped(`Fold livello ${record.id}`);
+      return true;
+    } finally {
+      this.destroyLayerBake(source.transientBake);
+      this.destroyTransientLayerHydration(source.transientHydration);
+    }
+  }
+
+  private mixedSceneItemIsVisible(item: MixedSceneItem): boolean {
+    if (item.kind !== "raster") {
+      return false;
+    }
+    const record = this.layerStack.byId(item.rasterLayerId);
+    if (!record) {
+      throw new Error(`Raster ${item.rasterLayerId} assente durante il compositing.`);
+    }
+    return record.visible && record.opacity > 0 && record.hasContent;
   }
   private async buildMergedSurfaceCandidate(
     records: readonly LayerRecord[],
@@ -9276,88 +9838,8 @@ export class BrushEngine {
 
         let first = true;
         for (const record of visibleRecords) {
-          const source = await this.materializeLayerCompositeSource(record, caller);
-          surface.foldedPixels +=
-            source.nonTransparentBounds.width * source.nonTransparentBounds.height;
-          surface.analyticBakePixels += source.analyticBakePixels;
-          try {
-            const encoder = this.device.createCommandEncoder({
-              label: `Fold layer ${record.id} into merged ${side}`,
-            });
-            if (first && record.opacity >= 1) {
-              // A fresh WebGPU texture is zero-initialized. For the common
-              // singleton/opaque side, copy only the conservative non-transparent
-              // bounds instead of shading all 16.8 million document pixels.
-              // copyTextureToTexture is exact for both RGBA8 and RGBA16F.
-              encoder.copyTextureToTexture(
-                {
-                  texture: source.texture,
-                  origin: {
-                    x: source.nonTransparentBounds.x,
-                    y: source.nonTransparentBounds.y,
-                    z: 0,
-                  },
-                },
-                {
-                  texture: surface.texture,
-                  origin: {
-                    x: source.nonTransparentBounds.x,
-                    y: source.nonTransparentBounds.y,
-                    z: 0,
-                  },
-                },
-                {
-                  width: source.nonTransparentBounds.width,
-                  height: source.nonTransparentBounds.height,
-                  depthOrArrayLayers: 1,
-                },
-              );
-            } else {
-              this.device.queue.writeBuffer(
-                this.layerCompositeUniformBuffer,
-                0,
-                new Float32Array([record.opacity, 0, 0, 0]),
-              );
-              const bindGroup = this.device.createBindGroup({
-                label: `Fold layer ${record.id} into merged ${side}`,
-                layout: this.layerCompositeBindGroupLayout,
-                entries: [
-                  { binding: 0, resource: source.view },
-                  { binding: 1, resource: { buffer: this.layerCompositeUniformBuffer } },
-                ],
-              });
-              const pass = encoder.beginRenderPass({
-                label: `Source-over layer ${record.id} into merged ${side}`,
-                colorAttachments: [{
-                  view: surface.mipViews[0],
-                  loadOp: first ? "clear" : "load",
-                  storeOp: "store",
-                  clearValue: { r: 0, g: 0, b: 0, a: 0 },
-                }],
-              });
-              pass.setPipeline(this.layerCompositePipeline);
-              pass.setBindGroup(0, bindGroup);
-              pass.setScissorRect(
-                source.nonTransparentBounds.x,
-                source.nonTransparentBounds.y,
-                source.nonTransparentBounds.width,
-                source.nonTransparentBounds.height,
-              );
-              pass.draw(3, 1, 0, 0);
-              pass.end();
-            }
-            this.device.queue.submit([encoder.finish()]);
-            // Hydration, effect rebuild and analytic bake for this record were
-            // deliberately submitted without intermediate completion waits.
-            // Queue order preserves every dependency; this one bounded fence
-            // owns the whole chain and keeps only one record's full temporaries
-            // alive at a time.
-            await this.waitForGpuCapped(`Fold livello ${record.id}`);
-            first = false;
-          } finally {
-            this.destroyLayerBake(source.transientBake);
-            this.destroyTransientLayerHydration(source.transientHydration);
-          }
+          await this.foldRasterRecordIntoMergedSurface(surface, record, side, caller, first);
+          first = false;
         }
 
         if (this.paintDisplaySelectedMipLevel > 0) {
@@ -9377,6 +9859,107 @@ export class BrushEngine {
     );
   }
 
+  private async buildMixedMergedSurfaceCandidate(
+    items: readonly MixedSceneItem[],
+    side: "below" | "above",
+    caller: EffectsRetargetCaller,
+    view: VectorTextViewState,
+  ): Promise<MergedSurfaceResources | null> {
+    const rasterItems = items.filter(
+      (item): item is Extract<MixedSceneItem, { kind: "raster" }> => item.kind === "raster",
+    );
+    const boundedItems = rasterItems
+      .filter((item) => this.mixedSceneItemIsVisible(item))
+      .map((item) => {
+        const record = this.layerStack.byId(item.rasterLayerId);
+        if (!record) {
+          throw new Error(`Raster ${item.rasterLayerId} assente durante il calcolo bounds.`);
+        }
+        return { item, bounds: this.layerCompositeVisualBounds(record) };
+      })
+      .filter((entry): entry is {
+        item: Extract<MixedSceneItem, { kind: "raster" }>;
+        bounds: DirtyRect;
+      } => entry.bounds !== null);
+    if (boundedItems.length === 0) {
+      return null;
+    }
+
+    const contentBounds = unionMergedSurfaceRects(
+      boundedItems.map((entry) => entry.bounds as MergedSurfaceRect),
+      LAYER_SIZE,
+    );
+    if (!contentBounds) {
+      return null;
+    }
+    const allocation = {
+      bounds: alignedMergedSurfaceBounds(contentBounds, LAYER_SIZE),
+      resolutionScale: 1,
+    } as const;
+    const visibleItems = boundedItems.filter((entry) =>
+      intersectMergedSurfaceRects(entry.bounds, allocation.bounds, LAYER_SIZE) !== null
+    );
+    if (visibleItems.length === 0) {
+      return null;
+    }
+
+    const requiredInitialMip = Math.min(
+      MIXED_MERGED_SURFACE_MAX_DISPLAY_MIP,
+      Math.ceil(Math.max(0, Math.log2(1 / Math.max(view.zoom, 1e-6)))),
+    );
+    if (mergedSurfaceMipLevelCount(allocation.bounds) <= requiredInitialMip) {
+      throw new Error("Superficie merged raster priva dei mip display richiesti.");
+    }
+    const surface = await runGpuAllocationTransaction(
+      this.device,
+      `Merged raster ${side} allocation · ${MIXED_MERGED_SURFACE_STORAGE_STRATEGY}`,
+      (transaction) => {
+        const allocated = this.allocateMergedSurface(
+          this.layerFormat,
+          side,
+          visibleItems.length,
+          allocation.bounds,
+          allocation.resolutionScale,
+        );
+        transaction.deferRollback(() => this.destroyMergedSurface(allocated));
+        return allocated;
+      },
+    );
+    try {
+      let first = true;
+      for (const { item } of visibleItems) {
+        const record = this.layerStack.byId(item.rasterLayerId);
+        if (!record) {
+          throw new Error(`Raster ${item.rasterLayerId} assente durante il fold.`);
+        }
+        const didFold = await this.foldRasterRecordIntoMergedSurface(
+          surface,
+          record,
+          side,
+          caller,
+          first,
+        );
+        first = first && !didFold;
+      }
+      if (first) {
+        this.destroyMergedSurface(surface);
+        return null;
+      }
+      const initialMipLevel = this.requiredMergedSurfaceMipLevel(surface);
+      if (initialMipLevel > 0) {
+        const encoder = this.device.createCommandEncoder({
+          label: `Build merged raster ${side} display pyramid`,
+        });
+        this.encodeMergedSurfacePyramid(encoder, surface, initialMipLevel);
+        this.device.queue.submit([encoder.finish()]);
+        await this.waitForGpuCapped(`Piramide merged raster ${side}`);
+      }
+      return surface;
+    } catch (error) {
+      this.destroyMergedSurface(surface);
+      throw error;
+    }
+  }
   private async restoreEffectsWorkbenchToActiveLayer(
     caller: EffectsRetargetCaller = "layer-switch",
     force = false,
@@ -9414,6 +9997,7 @@ export class BrushEngine {
    */
   private async rebuildMergedLayerSurfaces(
     caller: EffectsRetargetCaller = "layer-switch",
+    view: VectorTextViewState = this.getVectorTextViewState(),
   ): Promise<void> {
     const previousBelow = this.mergedBelow;
     const previousAbove = this.mergedAbove;
@@ -9427,16 +10011,30 @@ export class BrushEngine {
     let candidateAbove: MergedSurfaceResources | null = null;
     let activeWorkbenchRestored = false;
     try {
-      candidateBelow = await this.buildMergedSurfaceCandidate(
-        this.layerStack.below(),
-        "below",
-        caller,
-      );
-      candidateAbove = await this.buildMergedSurfaceCandidate(
-        this.layerStack.above(),
-        "above",
-        caller,
-      );
+      if (this.mixedSceneStack) {
+        const partition = this.mixedSceneStack.partitionAroundRaster(
+          this.layerStack.active.id,
+        );
+        candidateBelow = await this.buildMixedMergedSurfaceCandidate(
+          partition.below,
+          "below",
+          caller,
+          view,
+        );
+        candidateAbove = await this.buildMixedMergedSurfaceCandidate(
+          partition.above,
+          "above",
+          caller,
+          view,
+        );
+      } else {
+        candidateBelow = await this.buildMergedSurfaceCandidate(
+          this.layerStack.below(), "below", caller,
+        );
+        candidateAbove = await this.buildMergedSurfaceCandidate(
+          this.layerStack.above(), "above", caller,
+        );
+      }
       await this.restoreEffectsWorkbenchToActiveLayer(caller);
       activeWorkbenchRestored = true;
       this.maybeInjectLayerCompositeFault("after-candidate-submit");
@@ -9465,6 +10063,182 @@ export class BrushEngine {
       }
     }
   }
+
+  private requireMixedSceneStack(): MixedSceneStack {
+    if (!this.mixedSceneStack) {
+      throw new Error("Scena raster/testo non abilitata per questa pagina.");
+    }
+    return this.mixedSceneStack;
+  }
+
+  private async mutateMixedScenePresentation<Result>(
+    mutate: (scene: MixedSceneStack) => Result,
+  ): Promise<Result> {
+    if (!this.initialized) {
+      throw new Error("Il motore non è ancora inizializzato.");
+    }
+    const scene = this.requireMixedSceneStack();
+    this.assertLayerSwitchAllowed();
+    this.cancelLayerColdCompressionIdle();
+    this.layerSwitchBusy = true;
+    const previousState = scene.captureState();
+    const previousExcludedNodeId = this.vectorTextPreviewExcludedNodeId;
+    try {
+      this.callbacks.onStatus?.("Preparazione della scena raster/testo…", "working");
+      await this.waitForIdle();
+      const result = mutate(scene);
+      const selected = scene.selected;
+      this.vectorTextPreviewExcludedNodeId = selected.kind === "text"
+        ? selected.textNodeId
+        : null;
+      this.clearVectorTextPresentation();
+      this.callbacks.onStatus?.("Composizione dei livelli raster/testo…", "working");
+      await this.rebuildMergedLayerSurfaces("layer-switch");
+      this.callbacks.onStatus?.("Scena raster/testo pronta.", "ok");
+      this.presentationCacheNeedsFullRebuild = true;
+      this.displayDirty = true;
+      this.requestRender();
+      return result;
+    } catch (error) {
+      scene.restoreState(previousState);
+      this.vectorTextPreviewExcludedNodeId = previousExcludedNodeId;
+      this.clearVectorTextPresentation();
+      try {
+        await this.rebuildMergedLayerSurfaces("layer-switch");
+      } catch (restoreError) {
+        this.latchDocumentStateInconsistent(
+          "Stato incoerente dopo la modifica della scena mista: ricarica la pagina.",
+        );
+        const originalMessage = error instanceof Error ? error.message : String(error);
+        const restoreMessage = restoreError instanceof Error
+          ? restoreError.message
+          : String(restoreError);
+        throw new Error(
+          `Modifica scena fallita (${originalMessage}) e ripristino fallito `
+          + `(${restoreMessage}). Ricarica la pagina.`,
+        );
+      }
+      throw error;
+    } finally {
+      this.layerSwitchBusy = false;
+      this.scheduleLayerColdCompression();
+      this.publishMixedScene();
+      this.publishHistoryState();
+      this.publishStats();
+    }
+  }
+
+  async addVectorTextNode(
+    seed: VectorTextNodeSeed,
+    name?: string,
+  ): Promise<Readonly<VectorTextNode>> {
+    const node = await this.mutateMixedScenePresentation(
+      (scene) => scene.addTextAboveSelection(seed, name),
+    );
+    return { ...node };
+  }
+
+  async setActiveMixedSceneItem(
+    key: MixedSceneItem["key"],
+  ): Promise<LayerSwitchResult | null> {
+    const scene = this.requireMixedSceneStack();
+    const item = scene.itemByKey(key);
+    if (item.kind === "raster") {
+      const index = this.layerStack.indexOfId(item.rasterLayerId);
+      if (index < 0) {
+        throw new Error(`Raster ${item.rasterLayerId} assente dallo stack GPU.`);
+      }
+      if (scene.selected.key === key && index === this.layerStack.activeIndex) {
+        return null;
+      }
+      if (index === this.layerStack.activeIndex) {
+        await this.mutateMixedScenePresentation((mutableScene) => {
+          mutableScene.select(key);
+        });
+        return null;
+      }
+
+      this.assertLayerSwitchAllowed();
+      const previousState = scene.captureState();
+      const previousExcludedNodeId = this.vectorTextPreviewExcludedNodeId;
+      scene.select(key);
+      this.vectorTextPreviewExcludedNodeId = null;
+      this.clearVectorTextPresentation();
+      try {
+        return await this.setActiveLayer(index);
+      } catch (error) {
+        scene.restoreState(previousState);
+        this.vectorTextPreviewExcludedNodeId = previousExcludedNodeId;
+        try {
+          await this.mutateMixedScenePresentation(() => undefined);
+        } catch (restoreError) {
+          this.latchDocumentStateInconsistent(
+            "Stato incoerente dopo la selezione raster: ricarica la pagina.",
+          );
+          const originalMessage = error instanceof Error ? error.message : String(error);
+          const restoreMessage = restoreError instanceof Error
+            ? restoreError.message
+            : String(restoreError);
+          throw new Error(
+            `Selezione raster fallita (${originalMessage}) e ripristino fallito `
+            + `(${restoreMessage}). Ricarica la pagina.`,
+          );
+        }
+        throw error;
+      } finally {
+        this.publishMixedScene();
+        this.publishStats();
+      }
+    }
+    if (scene.selected.key === key) {
+      return null;
+    }
+    await this.mutateMixedScenePresentation((mutableScene) => {
+      mutableScene.select(key);
+    });
+    return null;
+  }
+
+  updateVectorTextNode(
+    id: number,
+    update: Partial<Omit<VectorTextNode, "id" | "visible" | "opacity">>,
+  ): Readonly<VectorTextNode> {
+    const scene = this.requireMixedSceneStack();
+    const selected = scene.selected;
+    if (selected.kind !== "text" || selected.textNodeId !== id) {
+      throw new Error("È modificabile soltanto il nodo testo selezionato.");
+    }
+    const node = scene.updateText(id, update);
+    this.publishMixedScene();
+    this.publishStats();
+    return { ...node };
+  }
+
+  async setVectorTextNodeVisibility(id: number, visible: boolean): Promise<boolean> {
+    return this.mutateMixedScenePresentation(
+      (scene) => scene.setTextVisibility(id, Boolean(visible)),
+    );
+  }
+
+  async setVectorTextNodeOpacity(id: number, opacity: number): Promise<boolean> {
+    return this.mutateMixedScenePresentation(
+      (scene) => scene.setTextOpacity(id, opacity),
+    );
+  }
+
+  async moveVectorTextNode(id: number, delta: -1 | 1): Promise<boolean> {
+    return this.mutateMixedScenePresentation(
+      (scene) => scene.moveText(id, delta),
+    );
+  }
+
+  async deleteVectorTextNode(id: number): Promise<Readonly<VectorTextNode>> {
+    const removed = await this.mutateMixedScenePresentation(
+      (scene) => scene.deleteText(id, this.layerStack.active.id),
+    );
+    return { ...removed };
+  }
+
   /**
    * Gives the dedicated memory fixture a tiny visible marker while deliberately
    * reserving an exact number of raw-storage tiles. The default keeps the
@@ -9579,11 +10353,17 @@ export class BrushEngine {
     this.layerSwitchBusy = true;
     try {
       await this.waitForIdle();
+      const mixedSceneState = this.mixedSceneStack?.captureState() ?? null;
+      const previousExcludedNodeId = this.vectorTextPreviewExcludedNodeId;
       const fromIndex = this.layerStack.activeIndex;
       this.persistActiveLayerState();
       await this.prepareActiveLayerForSwitch();
       const index = this.layerStack.add(name);
       const record = this.layerStack.at(index);
+      if (this.mixedSceneStack) {
+        this.mixedSceneStack.addRasterAboveSelection(record.id);
+        this.vectorTextPreviewExcludedNodeId = null;
+      }
       let gpu: LayerGpuResources;
       try {
         gpu = await this.allocateLayerGpuResources(
@@ -9596,6 +10376,10 @@ export class BrushEngine {
         // GPU resources, which every later switch would trip over.
         this.layerStack.remove(index);
         this.layerStack.setActiveIndex(fromIndex);
+        if (this.mixedSceneStack && mixedSceneState) {
+          this.mixedSceneStack.restoreState(mixedSceneState);
+          this.vectorTextPreviewExcludedNodeId = previousExcludedNodeId;
+        }
         try {
           // The outgoing full texture was deliberately evicted after its exact
           // cold copy completed. Rehydrate it and rebuild derived caches before
@@ -9617,7 +10401,14 @@ export class BrushEngine {
         throw error;
       }
       try {
-        return await this.activateLayer(fromIndex);
+        const result = await this.activateLayer(fromIndex);
+        // prepareActiveLayerForSwitch freezes presentation. Clearing the live
+        // text texture before activation marks displayDirty while frozen, so
+        // the effect retarget's waitForIdle can never drain it. The new mixed
+        // partition already excludes no text; release the old live preview only
+        // after activation has rebuilt the static sides and unfrozen rendering.
+        this.clearVectorTextPresentation();
+        return result;
       } catch (error) {
         // activateLayer mutates more than the selected index: it binds texture
         // fields, retargets Blend and the effect workbench, and loads content
@@ -9626,6 +10417,10 @@ export class BrushEngine {
         // before rehydrating the outgoing layer and keep one hot mip 0 at a time.
         try {
           this.evictReconstructibleLayerResources(record);
+          if (this.mixedSceneStack && mixedSceneState) {
+            this.mixedSceneStack.restoreState(mixedSceneState);
+            this.vectorTextPreviewExcludedNodeId = previousExcludedNodeId;
+          }
           this.layerStack.setActiveIndex(fromIndex);
           await this.activateLayer(index);
         } catch (restoreError) {
@@ -9654,6 +10449,7 @@ export class BrushEngine {
       }
       this.publishHistoryState();
       this.publishStats();
+      this.publishMixedScene();
     }
   }
 
@@ -9887,6 +10683,11 @@ export class BrushEngine {
   ): Promise<LayerSwitchResult> {
     const startedAt = performance.now();
     const record = this.layerStack.active;
+    if (this.mixedSceneStack && caller === "history-replay") {
+      this.mixedSceneStack.select(`raster:${record.id}`);
+      this.vectorTextPreviewExcludedNodeId = null;
+      this.clearVectorTextPresentation();
+    }
     await this.ensureActiveLayerHot(record);
     await this.ensureAdjacentLayerColdStorageResident();
     this.bindActiveLayerResources();
@@ -9925,6 +10726,7 @@ export class BrushEngine {
     this.displayDirty = true;
     this.requestRender();
     this.publishStats();
+    this.publishMixedScene();
     return {
       fromIndex,
       toIndex: this.layerStack.activeIndex,
@@ -10796,6 +11598,8 @@ export class BrushEngine {
         { binding: 5, resource: this.activeLayerDisplayPyramid.samplingView },
         { binding: 6, resource: this.mergedBelowView() },
         { binding: 7, resource: this.mergedAboveView() },
+        { binding: 8, resource: this.vectorTextBelowView ?? this.transparentLayerView },
+        { binding: 9, resource: this.vectorTextAboveView ?? this.transparentLayerView },
       ],
     });
 
@@ -10912,6 +11716,8 @@ export class BrushEngine {
         { binding: 5, resource: samplingView },
         { binding: 6, resource: this.mergedBelowView() },
         { binding: 7, resource: this.mergedAboveView() },
+        { binding: 8, resource: this.vectorTextBelowView ?? this.transparentLayerView },
+        { binding: 9, resource: this.vectorTextAboveView ?? this.transparentLayerView },
       ],
     });
     const compositeBindGroup = this.device.createBindGroup({
@@ -11927,11 +12733,16 @@ export class BrushEngine {
     this.displayUniformUpload[6] = this.zoom;
     this.displayUniformUpload[7] = 96;
     this.displayUniformUpload[8] = selectedMipLevel;
-    this.displayUniformUpload[9] = this.mergedBelow ? 1 : 0;
-    this.displayUniformUpload[10] = this.mergedAbove ? 1 : 0;
+    this.displayUniformUpload[9] = this.mergedBelow?.resolutionScale ?? 0;
+    this.displayUniformUpload[10] = this.mergedAbove?.resolutionScale ?? 0;
     this.displayUniformUpload[11] = this.layerStack.active.visible
       ? clamp(this.layerStack.active.opacity, 0, 1)
       : 0;
+    this.displayUniformUpload[12] = this.mergedBelow?.bounds.x ?? 0;
+    this.displayUniformUpload[13] = this.mergedBelow?.bounds.y ?? 0;
+    this.displayUniformUpload[14] = this.mergedAbove?.bounds.x ?? 0;
+    this.displayUniformUpload[15] = this.mergedAbove?.bounds.y ?? 0;
+
     this.device.queue.writeBuffer(this.displayUniformBuffer, 0, this.displayUniformUpload);
   }
 
@@ -11955,6 +12766,54 @@ export class BrushEngine {
     );
   }
 
+  private ensureVectorTextPresentationTexture(
+    width: number,
+    height: number,
+    placement: VectorTextPlacement,
+  ): GPUTexture {
+    if (
+      this.vectorTextTextureWidth !== width
+      || this.vectorTextTextureHeight !== height
+    ) {
+      this.vectorTextBelowTexture?.destroy();
+      this.vectorTextAboveTexture?.destroy();
+      this.vectorTextBelowTexture = null;
+      this.vectorTextBelowView = null;
+      this.vectorTextAboveTexture = null;
+      this.vectorTextAboveView = null;
+      this.vectorTextTextureWidth = width;
+      this.vectorTextTextureHeight = height;
+    }
+
+    const existing = placement === "below-active"
+      ? this.vectorTextBelowTexture
+      : this.vectorTextAboveTexture;
+    if (existing) {
+      return existing;
+    }
+
+    const texture = this.device.createTexture({
+      label: `Vector text ${placement} viewport cache ${width}×${height}`,
+      size: { width, height, depthOrArrayLayers: 1 },
+      format: "rgba8unorm-srgb",
+      usage:
+        GPUTextureUsage.COPY_DST
+        | GPUTextureUsage.RENDER_ATTACHMENT
+        | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    const view = texture.createView({
+      label: `Vector text ${placement} viewport cache view`,
+    });
+    if (placement === "below-active") {
+      this.vectorTextBelowTexture = texture;
+      this.vectorTextBelowView = view;
+    } else {
+      this.vectorTextAboveTexture = texture;
+      this.vectorTextAboveView = view;
+    }
+    this.rebuildVectorTextDisplayBindGroup();
+    return texture;
+  }
   private ensurePresentationCacheTexture(): void {
     const width = Math.max(1, this.canvas.width);
     const height = Math.max(1, this.canvas.height);
@@ -14726,7 +15585,11 @@ export class BrushEngine {
           displayPass.setPipeline(
             rasterStrokeActive
               ? this.rasterStrokeDisplayPipeline
-              : session.hasContent ? this.lightGlazeDisplayPipeline : this.displayPipeline,
+              : session.hasContent
+                ? this.lightGlazeDisplayPipeline
+                : this.vectorTextDisplayPipeline && this.vectorTextDisplayBindGroup
+                  ? this.vectorTextDisplayPipeline
+                  : this.displayPipeline,
           );
           if (rasterStrokeActive) {
             displayPass.setBindGroup(0, this.rasterStrokeDisplayScreenBindGroup);
@@ -14737,7 +15600,9 @@ export class BrushEngine {
           } else {
             displayPass.setBindGroup(
               0,
-              session.hasContent ? this.lightGlazeDisplayBindGroup! : this.displayBindGroup,
+              session.hasContent
+                ? this.lightGlazeDisplayBindGroup!
+                : this.vectorTextDisplayBindGroup ?? this.displayBindGroup,
             );
           }
           if (!requiresFullRebuild) {
@@ -14886,7 +15751,11 @@ export class BrushEngine {
             ],
           });
           displayPass.setPipeline(
-            rasterStrokeActive ? this.rasterStrokeDisplayPipeline : this.displayPipeline,
+            rasterStrokeActive
+              ? this.rasterStrokeDisplayPipeline
+              : this.vectorTextDisplayPipeline && this.vectorTextDisplayBindGroup
+                ? this.vectorTextDisplayPipeline
+                : this.displayPipeline,
           );
           if (rasterStrokeActive) {
             displayPass.setBindGroup(0, this.rasterStrokeDisplayScreenBindGroup);
@@ -14895,7 +15764,7 @@ export class BrushEngine {
               this.rasterStrokeDisplayBindGroups.get("permanent")!,
             );
           } else {
-            displayPass.setBindGroup(0, this.displayBindGroup);
+            displayPass.setBindGroup(0, this.vectorTextDisplayBindGroup ?? this.displayBindGroup);
           }
           if (!requiresFullRebuild) {
             displayPass.setScissorRect(
@@ -15355,6 +16224,14 @@ export class BrushEngine {
           )
           : null;
 
+      const vectorTextDisplayPipeline = this.vectorTextDisplayPipeline;
+      const useVectorTextDisplay = Boolean(
+        (this.vectorTextBelowTexture || this.vectorTextAboveTexture)
+        && !rasterStrokeActive
+        && !thicknessTailFrame
+        && this.vectorTextDisplayBindGroup
+        && vectorTextDisplayPipeline,
+      );
       if (presentationDirtyRect) {
         this.encodeMergedDisplayPyramids(encoder, displaySelectedMipLevel);
         this.writeDisplayUniforms(displaySelectedMipLevel);
@@ -15383,7 +16260,11 @@ export class BrushEngine {
         displayPass.setPipeline(
           rasterStrokeActive
             ? this.rasterStrokeDisplayPipeline
-            : thicknessTailFrame ? this.thicknessTailDisplayPipeline : this.displayPipeline,
+            : thicknessTailFrame
+              ? this.thicknessTailDisplayPipeline
+              : useVectorTextDisplay
+                ? vectorTextDisplayPipeline!
+                : this.displayPipeline,
         );
         if (rasterStrokeActive) {
           displayPass.setBindGroup(0, this.rasterStrokeDisplayScreenBindGroup);
@@ -15393,6 +16274,8 @@ export class BrushEngine {
               thicknessTailFrame ? "thickness-tail" : "permanent",
             )!,
           );
+        } else if (useVectorTextDisplay) {
+          displayPass.setBindGroup(0, this.vectorTextDisplayBindGroup!);
         } else {
           displayPass.setBindGroup(
             0,

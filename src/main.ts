@@ -25,6 +25,7 @@ import type {
   IphoneMemoryLimitRun,
 } from "./iphone-memory-limit-test";
 import type { LayerCompressionStudyReport } from "./layer-compression-study";
+import { MixedVectorTextController } from "./mixed-vector-text-controller";
 
 function element<T extends HTMLElement>(id: string): T {
   const result = document.getElementById(id);
@@ -393,6 +394,9 @@ const layerColdCompressionRequested =
   pageSearchParams.get("layerCompressionRuntime") === "1";
 const iphoneMemoryLimitTestRequested =
   pageSearchParams.get("iphoneMemoryLimitTest") === "1";
+const vectorTextPrototypeRequested =
+  pageSearchParams.get("vectorTextTest") === "1";
+element<HTMLElement>("gpuMemoryVectorTextRow").hidden = !vectorTextPrototypeRequested;
 const layerMemoryFixtureRequested =
   layerMemoryStressTestRequested || iphoneMemoryLimitTestRequested;
 const iphoneMemoryLimitServerRequired = !(
@@ -411,6 +415,7 @@ if (iphoneMemoryLimitTestRequested) {
   layerMemoryStressResult.textContent =
     "Pronto. Tieni questa pagina in primo piano finché termina o Safari la chiude.";
 }
+let vectorTextPrototype: MixedVectorTextController | null = null;
 const engine = new BrushEngine(canvas, {
   onStatus(message, kind) {
     statusElement.textContent = message;
@@ -427,12 +432,28 @@ const engine = new BrushEngine(canvas, {
   onViewRotationChange(degrees, snappedToZero) {
     updateViewRotationControl(degrees, snappedToZero);
   },
+  onViewChange() {
+    vectorTextPrototype?.scheduleViewSync();
+  },
+  onMixedSceneChange(snapshot) {
+    vectorTextPrototype?.syncScene(snapshot);
+    const selectedItem = snapshot.items.find(
+      (item) => item.key === snapshot.selectedKey,
+    );
+    layerSwitchResult.textContent = selectedItem?.kind === "text"
+      ? "Testo selezionato: pennello sospeso; il raster di lavoro resta caldo."
+      : "Raster selezionato: pennello attivo.";
+  },
   onActiveLayerChange(activeIndex) {
     // A global undo can move the active layer on its own. Without resyncing, the
     // panel would keep highlighting the layer the user left and the four effect
     // controls would show that layer's styles while the brush paints on
     // another one.
     syncActiveLayerControls();
+    const mixedSnapshot = engine.getMixedSceneSnapshot();
+    if (mixedSnapshot) {
+      vectorTextPrototype?.syncScene(mixedSnapshot);
+    }
     layerSwitchResult.textContent =
       `Undo/Redo ha selezionato il livello ${activeIndex + 1}.`;
   },
@@ -440,6 +461,7 @@ const engine = new BrushEngine(canvas, {
   bevelBoundingFieldEnabled,
   layerMemoryStressTestEnabled: layerMemoryFixtureRequested,
   layerCompressionTestEnabled: layerCompressionStudyRequested,
+  vectorTextPrototypeEnabled: vectorTextPrototypeRequested,
   layerColdCompressionEnabled: layerColdCompressionRequested,
 });
 if (import.meta.env.DEV) {
@@ -493,6 +515,7 @@ const gpuMemoryRows: ReadonlyArray<
   ["gpuMemoryGrain", "grainTextureMiB"],
   ["gpuMemoryShape", "shapeTextureMiB"],
   ["gpuMemoryPaintBuffers", "paintBuffersMiB"],
+  ["gpuMemoryVectorText", "vectorTextPresentationMiB"],
   ["gpuMemoryPresentation", "presentationCacheMiB"],
   ["gpuMemoryStrokeStyled", "rasterStrokeStyledMiB"],
   ["gpuMemoryStrokeCoverage", "rasterStrokeCoverageMiB"],
@@ -2933,29 +2956,211 @@ function hideLayerLoading(): void {
   appElement.removeAttribute("aria-busy");
 }
 
+function createLayerRow(): HTMLDivElement {
+  const row = document.createElement("div");
+  const visibility = document.createElement("button");
+  visibility.type = "button";
+  visibility.className = "layer-visibility";
+  const select = document.createElement("button");
+  select.type = "button";
+  select.className = "layer-select";
+  const name = document.createElement("span");
+  name.className = "layer-name";
+  const hint = document.createElement("span");
+  hint.className = "layer-hint";
+  // updateStats runs every 500 ms. Keep the descendants under the pointer
+  // attached so a refresh between pointerdown and pointerup cannot cancel click.
+  select.append(name, hint);
+  const opacity = document.createElement("label");
+  opacity.className = "layer-opacity";
+  const range = document.createElement("input");
+  range.type = "range";
+  range.min = "0";
+  range.max = "100";
+  range.step = "1";
+  const output = document.createElement("output");
+  opacity.append(range, output);
+  row.append(visibility, select, opacity);
+  return row;
+}
+
+function renderMixedSceneList(
+  stats: EngineStats,
+  scene: NonNullable<EngineStats["mixedScene"]>,
+): void {
+  const locked = interactionLocked() || layerSwitching;
+  addLayerButton.disabled = locked || stats.layers.length >= 16;
+  const selectedItem = scene.items.find((item) => item.key === scene.selectedKey);
+  const textSelected = selectedItem?.kind === "text";
+  const ordered = [...scene.items].reverse();
+  const rowsMatch = layerList.childElementCount === ordered.length
+    && ordered.every(
+      (item, position) =>
+        (layerList.children[position] as HTMLElement | undefined)?.dataset.sceneKey
+        === item.key,
+    );
+  if (!rowsMatch) {
+    layerList.replaceChildren(...ordered.map((item) => {
+      const row = createLayerRow();
+      row.dataset.sceneKey = item.key;
+      return row;
+    }));
+  }
+
+  ordered.forEach((item, position) => {
+    const row = layerList.children[position] as HTMLDivElement;
+    const visibility = row.querySelector<HTMLButtonElement>(".layer-visibility")!;
+    const select = row.querySelector<HTMLButtonElement>(".layer-select")!;
+    const name = row.querySelector<HTMLSpanElement>(".layer-name")!;
+    const hint = row.querySelector<HTMLSpanElement>(".layer-hint")!;
+    const range = row.querySelector<HTMLInputElement>("input[type=range]")!;
+    const output = row.querySelector<HTMLOutputElement>("output")!;
+    const selected = item.key === scene.selectedKey;
+
+    row.className = `layer-row ${item.kind === "text" ? "is-text-node" : "is-raster-node"}`;
+    select.disabled = locked;
+    select.setAttribute("aria-current", String(selected));
+
+    if (item.kind === "raster") {
+      const layer = stats.layers[item.rasterLayerIndex];
+      if (!layer) {
+        throw new Error(`Raster ${item.rasterLayerId} senza statistiche.`);
+      }
+      visibility.disabled = locked;
+      visibility.textContent = layer.visible ? "●" : "○";
+      visibility.setAttribute("aria-pressed", String(layer.visible));
+      visibility.setAttribute(
+        "aria-label",
+        `${layer.visible ? "Nascondi" : "Mostra"} ${layer.name}`,
+      );
+      visibility.onclick = () => {
+        void changeLayerVisibility(item.rasterLayerIndex, !layer.visible);
+      };
+
+      name.textContent = layer.name;
+      const isActiveRaster = layer.id === scene.activeRasterLayerId;
+      const compressionProgress = stats.layerColdCompressionProgress?.layerId === layer.id
+        ? stats.layerColdCompressionProgress
+        : null;
+      hint.textContent = isActiveRaster
+        ? textSelected
+          ? `raster di lavoro · ${formatMemoryMiB(layer.actualRawMiB)}`
+          : `raster attivo · ${formatMemoryMiB(layer.actualRawMiB)}`
+        : compressionProgress
+          ? `raster · compressione ${compressionProgress.completedTileCount}/`
+            + `${compressionProgress.totalTileCount}`
+          : layer.compressed
+            ? `raster compresso · ${formatMemoryMiB(layer.compressedCpuMiB)} RAM`
+            : layer.hasContent
+              ? `raster cold · ${layer.coldTileCount} tile · `
+                + formatMemoryMiB(layer.actualRawMiB)
+              : "raster cold · 0 MiB";
+      select.title = isActiveRaster
+        ? textSelected
+          ? "Raster di lavoro: resta full-canvas per mostrare i pixel e riprendere "
+            + "il pennello senza reidratazione; la selezione resta sul testo."
+          : "Livello raster attivo: il pennello scrive soltanto qui."
+        : "Livello raster separato: selezionalo per attivare il pennello.";
+      select.onclick = () => {
+        void selectMixedSceneItem(item.key);
+      };
+
+      range.disabled = locked;
+      range.value = String(Math.round(layer.opacity * 100));
+      range.setAttribute("aria-label", `Opacità ${layer.name}`);
+      output.value = `${range.value}%`;
+      range.oninput = () => { output.value = `${range.value}%`; };
+      range.onchange = () => {
+        void changeLayerOpacity(item.rasterLayerIndex, Number(range.value) / 100);
+      };
+    } else {
+      const node = item.textNode;
+      visibility.disabled = locked;
+      visibility.textContent = node.visible ? "◆" : "◇";
+      visibility.setAttribute("aria-pressed", String(node.visible));
+      visibility.setAttribute(
+        "aria-label",
+        `${node.visible ? "Nascondi" : "Mostra"} ${node.name}`,
+      );
+      visibility.onclick = () => {
+        void changeVectorTextVisibility(node.id, !node.visible);
+      };
+
+      name.textContent = node.name;
+      const outlineHint = node.outlineWidth > 0
+        ? ` · traccia ${Math.round(node.outlineWidth)} px`
+        : "";
+      hint.textContent =
+        `testo vettoriale · ${Math.round(node.fontSize)} px · oggetto separato${outlineHint}`;
+      select.title =
+        "Nodo testo semantico: selezionandolo il pennello non può modificare i suoi pixel.";
+      select.onclick = () => {
+        void selectMixedSceneItem(item.key);
+      };
+
+      range.disabled = locked;
+      range.value = String(Math.round(node.opacity * 100));
+      range.setAttribute("aria-label", `Opacità ${node.name}`);
+      output.value = `${range.value}%`;
+      range.oninput = () => { output.value = `${range.value}%`; };
+      range.onchange = () => {
+        void changeVectorTextOpacity(node.id, Number(range.value) / 100);
+      };
+    }
+  });
+}
+
+async function changeVectorTextVisibility(id: number, visible: boolean): Promise<void> {
+  if (layerSwitching || interactionLocked()) {
+    return;
+  }
+  layerSwitching = true;
+  updateHistoryControls();
+  try {
+    await engine.setVectorTextNodeVisibility(id, visible);
+    layerSwitchResult.textContent = visible ? "Testo mostrato." : "Testo nascosto.";
+  } catch (error) {
+    layerSwitchResult.textContent = error instanceof Error
+      ? error.message
+      : "Visibilità del testo non aggiornata.";
+  } finally {
+    layerSwitching = false;
+    updateHistoryControls();
+    updateStats(engine.getStats());
+  }
+}
+
+async function changeVectorTextOpacity(id: number, opacity: number): Promise<void> {
+  if (layerSwitching || interactionLocked()) {
+    return;
+  }
+  layerSwitching = true;
+  updateHistoryControls();
+  try {
+    await engine.setVectorTextNodeOpacity(id, opacity);
+    layerSwitchResult.textContent = `Opacità testo ${Math.round(opacity * 100)}%.`;
+  } catch (error) {
+    layerSwitchResult.textContent = error instanceof Error
+      ? error.message
+      : "Opacità del testo non aggiornata.";
+  } finally {
+    layerSwitching = false;
+    updateHistoryControls();
+    updateStats(engine.getStats());
+  }
+}
+
 function renderLayerList(stats: EngineStats): void {
+  if (stats.mixedScene) {
+    renderMixedSceneList(stats, stats.mixedScene);
+    return;
+  }
   const locked = interactionLocked() || layerSwitching;
   addLayerButton.disabled = locked || stats.layers.length >= 16;
   if (layerList.childElementCount !== stats.layers.length) {
     layerList.replaceChildren(...stats.layers.map(() => {
-      const row = document.createElement("div");
+      const row = createLayerRow();
       row.className = "layer-row";
-      const visibility = document.createElement("button");
-      visibility.type = "button";
-      visibility.className = "layer-visibility";
-      const select = document.createElement("button");
-      select.type = "button";
-      select.className = "layer-select";
-      const opacity = document.createElement("label");
-      opacity.className = "layer-opacity";
-      const range = document.createElement("input");
-      range.type = "range";
-      range.min = "0";
-      range.max = "100";
-      range.step = "1";
-      const output = document.createElement("output");
-      opacity.append(range, output);
-      row.append(visibility, select, opacity);
       return row;
     }));
   }
@@ -2967,6 +3172,8 @@ function renderLayerList(stats: EngineStats): void {
     const row = layerList.children[position] as HTMLDivElement;
     const visibility = row.querySelector<HTMLButtonElement>(".layer-visibility")!;
     const select = row.querySelector<HTMLButtonElement>(".layer-select")!;
+    const name = row.querySelector<HTMLSpanElement>(".layer-name")!;
+    const hint = row.querySelector<HTMLSpanElement>(".layer-hint")!;
     const range = row.querySelector<HTMLInputElement>("input[type=range]")!;
     const output = row.querySelector<HTMLOutputElement>("output")!;
 
@@ -2983,11 +3190,7 @@ function renderLayerList(stats: EngineStats): void {
 
     select.disabled = locked;
     select.setAttribute("aria-current", index === stats.activeLayerIndex ? "true" : "false");
-    select.textContent = "";
-    const name = document.createElement("span");
     name.textContent = layer.name;
-    const hint = document.createElement("span");
-    hint.className = "layer-hint";
     const isActive = layer.id === stats.activeLayerId;
     const compressionProgress = stats.layerColdCompressionProgress?.layerId === layer.id
       ? stats.layerColdCompressionProgress
@@ -3022,7 +3225,6 @@ function renderLayerList(stats: EngineStats): void {
             ? `Livello inattivo: ${layer.coldTileCount} tile GPU realmente allocati; `
               + `bbox teorico ${layer.alignedBboxMiB.toFixed(2)} MiB.`
             : "Livello inattivo vuoto: nessuna texture raw allocata.";
-    select.append(name, hint);
     select.onclick = () => { void selectLayer(index); };
 
     range.disabled = locked;
@@ -3075,6 +3277,59 @@ async function changeLayerOpacity(index: number, opacity: number): Promise<void>
     updateStats(engine.getStats());
   }
 }
+
+async function selectMixedSceneItem(
+  key: NonNullable<EngineStats["mixedScene"]>["selectedKey"],
+): Promise<void> {
+  if (layerSwitching || interactionLocked()) {
+    return;
+  }
+  const scene = engine.getStats().mixedScene;
+  if (!scene) {
+    return;
+  }
+  if (scene.selectedKey === key) {
+    layerSwitchResult.textContent = "Livello già selezionato.";
+    return;
+  }
+  const item = scene.items.find((candidate) => candidate.key === key);
+  if (!item) {
+    layerSwitchResult.textContent = "Livello non trovato.";
+    return;
+  }
+
+  layerSwitching = true;
+  updateHistoryControls();
+  try {
+    await showLayerLoading(
+      item.kind === "raster" ? "Caricamento raster…" : "Preparazione testo…",
+    );
+    const result = await engine.setActiveMixedSceneItem(key);
+    if (item.kind === "raster") {
+      syncActiveLayerControls();
+    }
+    await engine.waitForIdle();
+    const snapshot = engine.getMixedSceneSnapshot();
+    if (snapshot) {
+      vectorTextPrototype?.syncScene(snapshot);
+    }
+    layerSwitchResult.textContent = item.kind === "text"
+      ? "Testo selezionato: pennello sospeso; il raster di lavoro resta caldo."
+      : result
+        ? `Raster ${result.toIndex + 1} attivo in ${result.totalMs.toFixed(0)} ms.`
+        : "Raster selezionato: pennello attivo.";
+  } catch (error) {
+    layerSwitchResult.textContent = error instanceof Error
+      ? error.message
+      : "Selezione del livello non riuscita.";
+  } finally {
+    hideLayerLoading();
+    layerSwitching = false;
+    updateHistoryControls();
+    updateStats(engine.getStats());
+  }
+}
+
 async function selectLayer(index: number): Promise<void> {
   if (layerSwitching || interactionLocked()) {
     return;
@@ -3769,6 +4024,15 @@ void loadCanonicalHumanStroke();
 void engine.initialize()
   .then(async () => {
     engineInitialized = true;
+    if (vectorTextPrototypeRequested) {
+      vectorTextPrototype = new MixedVectorTextController(engine);
+      await vectorTextPrototype.initialize();
+      if (import.meta.env.DEV) {
+        (window as Window & {
+          __vectorTextPrototype?: MixedVectorTextController;
+        }).__vectorTextPrototype = vectorTextPrototype;
+      }
+    }
     historyState = engine.getHistoryState();
     layerHistoryTestRunning = layerHistoryTestRequested;
     layerMemoryStressTestRunning = iphoneMemoryLimitTestRequested;
