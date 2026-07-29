@@ -1,8 +1,5 @@
 import opentype from "opentype.js";
-import {
-  buildShadow3dPath,
-  type Shadow3dPathData,
-} from "./vector-shadow-3d.js";
+import type { Shadow3dPathData } from "./vector-shadow-3d.js";
 
 interface OpenTypeCommand {
   type?: string;
@@ -53,7 +50,6 @@ interface LoadedVectorTextFont {
 
 export interface VectorTextOutlineGeometry {
   pathData: Shadow3dPathData;
-  canvasPath: Path2D;
   left: number;
   top: number;
   right: number;
@@ -66,16 +62,8 @@ export interface VectorTextOutlineGeometry {
   logicalBytes: number;
 }
 
-export interface VectorTextBlockShadowGeometry {
-  pathData: Shadow3dPathData;
-  canvasPath: Path2D;
-  logicalBytes: number;
-}
-
 export const VECTOR_TEXT_FONT_GEOMETRY_STRATEGY =
-  "local-opentype-outline-canvas-path-v1" as const;
-export const VECTOR_TEXT_BLOCK_SHADOW_VECTOR_STRATEGY =
-  "paint-webgpu-m1-shadow3d-v2-single-extruded-vector-silhouette" as const;
+  "local-opentype-outline-pathdata-v2" as const;
 
 export const VECTOR_TEXT_FONT_MANIFEST: readonly VectorTextFontEntry[] = [
   {
@@ -104,52 +92,6 @@ function finiteCoordinate(value: number | undefined): number {
 
 export function vectorPathLogicalBytes(path: Shadow3dPathData): number {
   return path.verbs.byteLength + path.coords.byteLength + path.contourOffsets.byteLength;
-}
-
-export function vectorPathDataToCanvasPath(path: Shadow3dPathData): Path2D {
-  const canvasPath = new Path2D();
-  let coordinateOffset = 0;
-  for (const verb of path.verbs) {
-    if (verb === 0) {
-      canvasPath.moveTo(
-        path.coords[coordinateOffset],
-        path.coords[coordinateOffset + 1],
-      );
-      coordinateOffset += 2;
-    } else if (verb === 1) {
-      canvasPath.lineTo(
-        path.coords[coordinateOffset],
-        path.coords[coordinateOffset + 1],
-      );
-      coordinateOffset += 2;
-    } else if (verb === 2) {
-      canvasPath.quadraticCurveTo(
-        path.coords[coordinateOffset],
-        path.coords[coordinateOffset + 1],
-        path.coords[coordinateOffset + 2],
-        path.coords[coordinateOffset + 3],
-      );
-      coordinateOffset += 4;
-    } else if (verb === 3) {
-      canvasPath.bezierCurveTo(
-        path.coords[coordinateOffset],
-        path.coords[coordinateOffset + 1],
-        path.coords[coordinateOffset + 2],
-        path.coords[coordinateOffset + 3],
-        path.coords[coordinateOffset + 4],
-        path.coords[coordinateOffset + 5],
-      );
-      coordinateOffset += 6;
-    } else if (verb === 4) {
-      canvasPath.closePath();
-    } else {
-      throw new Error(`Verbo outline testo non supportato: ${verb}`);
-    }
-  }
-  if (coordinateOffset !== path.coords.length) {
-    throw new Error("Coordinate outline testo incoerenti.");
-  }
-  return canvasPath;
 }
 
 function buildOutlineGeometry(
@@ -234,7 +176,6 @@ function buildOutlineGeometry(
   };
   return {
     pathData,
-    canvasPath: vectorPathDataToCanvasPath(pathData),
     left: rawLeft - centerX,
     top: rawTop - centerY,
     right: rawRight - centerX,
@@ -244,31 +185,6 @@ function buildOutlineGeometry(
     inkRight: finiteCoordinate(box.x2) - centerX,
     inkBottom: finiteCoordinate(box.y2) - centerY,
     baseline: -centerY,
-    logicalBytes: vectorPathLogicalBytes(pathData),
-  };
-}
-
-export function buildVectorTextBlockShadowGeometry(
-  outline: VectorTextOutlineGeometry,
-  offset: number,
-  angleDegrees: number,
-): VectorTextBlockShadowGeometry {
-  const pathData = buildShadow3dPath(
-    outline.pathData,
-    {
-      enabled: true,
-      mode: "3d",
-      offset: Math.max(0, Number.isFinite(offset) ? offset : 0),
-      // Il core originale usa Y cartesiana; il canvas cresce verso il basso.
-      angle: -(Number.isFinite(angleDegrees) ? angleDegrees : 0),
-      outlineWidth: 0,
-      outlineJoin: 0,
-    },
-    { tolerance: 0.3 },
-  );
-  return {
-    pathData,
-    canvasPath: vectorPathDataToCanvasPath(pathData),
     logicalBytes: vectorPathLogicalBytes(pathData),
   };
 }

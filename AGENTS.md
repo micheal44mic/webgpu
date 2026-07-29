@@ -2005,3 +2005,55 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
 - La telemetria passa a rev `58` e aggiunge strategia, modo corrente,
   armamento, streak, attivazioni/recuperi e tempi trigger. Tutte le 13 suite,
   TypeScript e build Vite production sono verdi. La run fisica iPhone con il
+  nuovo percorso vettoriale resta aperta. Il candidato di riproiezione bitmap
+  descritto sopra è superato dal renderer seguente e non è più raggiungibile
+  dal controller testo.
+
+### Testo vettoriale GPU analitico + effetti Worker (candidato del 28 luglio 2026)
+
+- Percorso corrente sempre vettoriale durante zoom e selezione: sorgente e
+  ombra singola con Blur `0` usano Slug analitico per l'intero nodo; Traccia,
+  Block Shadow e relativo outline sono insiemi canonici Clipper64 compilati in
+  un Worker e triangolati con Earcut. Strategie firmate:
+  `semantic-vector-gpu-runs-slug-clipper-msaa4-rgba16f-v6`,
+  `webgpu-clipper64-worker-outside-offset-native-round-bevel-exact-miter4-v4`,
+  `webgpu-clipper64-worker-canonical-swept-union-mesh-v4` e
+  `webgpu-slug-zero-blur-or-r8-separable-gaussian-v2`.
+- Il Blur dell'ombra singola non usa più Canvas2D: Slug genera una mask R8,
+  due pass GPU eseguono il Gaussian separabile e la cache R8 viene composta
+  premoltiplicata dietro il testo. La canvas di presentazione resta nascosta a
+  `1×1`; Canvas2D sopravvive soltanto sull'overlay di hit-test/maniglie, mai
+  come immagine del testo. Il depth/stencil testo inutilizzato è stato rimosso;
+  fill, Slug e compositing blur usano MSAA `4×` e source-over premoltiplicato.
+- LOD degli effetti dipende dal sigma reale vista×nodo. Esiste al massimo una
+  richiesta Worker attiva; per ogni effetto resta solo l'ultima richiesta in
+  coda, una mesh già più fine serve anche lo zoom-out e lo swap alla nuova mesh
+  è atomico. Durante un tratto Paint non si sostituisce la mesh visualizzata.
+  Non esiste più il fallback bitmap adattivo che poteva mostrare regioni vuote
+  e completarle dopo il gesto.
+- Robustezza geometrica verificata con NonZero/EvenOdd, outer+hole+island,
+  contour sovrapposti e tangenti, bow-tie ad area algebrica zero, duplicati,
+  quasi-collineari e curve quadratiche/cubiche a lunghezza zero. Le curve
+  cubiche degeneri vengono scartate prima del packing Slug. `Outline Width 0`
+  è un no-op vero e non invia job; ombre e outline restano esclusi dalla bbox
+  semantica del testo.
+- Prova browser finale con quattro nodi distinti: `STREETWEAR` con Block Shadow
+  e outline `0`; `BOLD 8@` con Traccia bevel `18` e ombra singola Blur `18`;
+  `ÁRCADE` con Traccia miter `12`, Block Shadow `40` e outline ombra `8`;
+  `O R A` con ombra singola netta Blur `0` e Traccia `0`. A zoom Fit e
+  ravvicinato, curve, fori, miter/bevel e lati dell'estrusione risultano continui
+  senza seam o linee parassite. Screenshot in `artifacts/vector-text-*.png`.
+- Stress interattivo locale: `24` eventi zoom alternati in sei raffiche e
+  trascinamento Paint avviato subito dopo l'ultimo evento. Il frame catturato
+  conserva tutti e quattro i testi completi e il nuovo tratto; indicatore
+  `Zoom testo · vettoriale GPU`. Dopo lo stress: Worker `0` in attesa, `0`
+  errori, p95 renderer mostrato `2,0 ms`; il caso blur riporta `0,06 MiB` per
+  una matte+scratch GPU. I `13,7 s` della sequenza includono l'overhead del
+  controllo browser e non sono un benchmark di latenza. Nessun nuovo warning o
+  errore console/WebGPU nell'intervallo della prova.
+- Verifiche verdi: TypeScript, `vector-text:verify`, `mixed-scene:verify`,
+  `view:verify`, `stroke`, `shadow`, `bevel`, `effects-scratch`, `grain`,
+  `blend`, `thickness`, `layers`, `history`, `compression` e build Vite
+  production. Il solo warning build è il chunk principale oltre `500 kB`, già
+  noto. Candidato non committato, non pubblicato e non ancora provato su
+  iPhone/touch fisico.

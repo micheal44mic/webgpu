@@ -56,10 +56,36 @@ import {
   type MergedSurfaceRect,
 } from "./merged-surface-bounds";
 import type {
+  VectorTextGpuDraw,
   VectorTextGpuPresentationStats,
+  VectorTextGpuSlugBlurDraw,
   VectorTextPlacement,
   VectorTextViewState,
 } from "./vector-text-prototype";
+import {
+  VECTOR_TEXT_GPU_BLUR_COMPOSITE_UNIFORM_BYTES,
+  VECTOR_TEXT_GPU_BLUR_FILTER_UNIFORM_BYTES,
+  VECTOR_TEXT_GPU_BLUR_FORMAT,
+  VECTOR_TEXT_GPU_RENDER_STRATEGY,
+  VECTOR_TEXT_GPU_SAMPLE_COUNT,
+  VECTOR_TEXT_GPU_TARGET_FORMAT,
+  VECTOR_TEXT_GPU_UNIFORM_BYTES,
+  VECTOR_TEXT_GPU_UNIFORM_FLOATS,
+  VECTOR_TEXT_GPU_UNIFORM_STRIDE,
+  vectorTextGpuBlurCompositeShader,
+  vectorTextGpuGaussianBlurShader,
+  vectorTextGpuShader,
+} from "./vector-text-gpu-shader";
+import {
+  VECTOR_TEXT_SLUG_GPU_RENDER_STRATEGY,
+  VECTOR_TEXT_SLUG_UNIFORM_BYTES,
+  vectorTextSlugGpuShader,
+} from "./vector-text-slug-gpu-shader";
+import {
+  createVectorTextGpuMeshResources,
+  createVectorTextGpuSlugResources,
+  destroyVectorTextGpuResources,
+} from "./vector-text-gpu-resources";
 import {
   THICKNESS_DYNAMICS_STRATEGY,
   THICKNESS_TAPER_WINDOW_MS,
@@ -970,6 +996,53 @@ interface VectorTextRunTextureResources {
   texture: GPUTexture;
   view: GPUTextureView;
   bindGroup: GPUBindGroup;
+
+  lastBounds: DirtyRect | null;
+  initialized: boolean;
+}
+
+interface VectorTextGpuMeshResources {
+  revision: string;
+  kind: "mesh";
+  vertexBuffer: GPUBuffer;
+  indexBuffer: GPUBuffer;
+  indexCount: number;
+  memoryBytes: number;
+}
+
+interface VectorTextGpuSlugResources {
+  kind: "slug";
+  revision: string;
+  curveTexture: GPUTexture;
+  bandTexture: GPUTexture;
+  bindGroup: GPUBindGroup;
+  curveCount: number;
+  memoryBytes: number;
+}
+
+type VectorTextGpuDrawResources =
+  | VectorTextGpuMeshResources
+  | VectorTextGpuSlugResources;
+
+interface VectorTextGpuBlurCacheResources {
+  texture: GPUTexture;
+  view: GPUTextureView;
+  compositeBindGroup: GPUBindGroup;
+  width: number;
+  height: number;
+  memoryBytes: number;
+  needsBuild: boolean;
+}
+
+interface VectorTextGpuPendingRun {
+  placement: Extract<VectorTextPlacement, `text-run:${string}`>;
+  resources: VectorTextRunTextureResources;
+  draws: readonly VectorTextGpuDraw[];
+  drawResources: readonly VectorTextGpuDrawResources[];
+  blurResources: readonly (VectorTextGpuBlurCacheResources | null)[];
+  view: VectorTextViewState;
+
+  bounds: DirtyRect;
 }
 
 type MixedSceneActivePresentation =
@@ -1507,6 +1580,7 @@ const BRUSH_UNIFORM_BYTES = 96;
 const GRAIN_UNIFORM_BYTES = 32;
 const DISPLAY_UNIFORM_BYTES = 64;
 const VECTOR_TEXT_CAPTURE_UNIFORM_BYTES = 32;
+const VECTOR_TEXT_GPU_MAXIMUM_DRAWS = 512;
 const VIEW_ROTATION_SNAP_ENTER_RADIANS = 3 * Math.PI / 180;
 const VIEW_ROTATION_SNAP_RELEASE_RADIANS = 7 * Math.PI / 180;
 const LAYER_COMPOSITE_UNIFORM_BYTES = 32;
@@ -1954,7 +2028,42 @@ export class BrushEngine {
     Extract<VectorTextPlacement, `text-run:${string}`>,
     VectorTextRunTextureResources
   >();
+  private readonly vectorTextGpuMeshes =
+    new Map<string, VectorTextGpuDrawResources>();
+  private readonly vectorTextGpuBlurCaches =
+    new Map<string, VectorTextGpuBlurCacheResources>();
+  private readonly vectorTextGpuPendingRuns: VectorTextGpuPendingRun[] = [];
+  private vectorTextGpuMsaaTexture: GPUTexture | null = null;
+  private vectorTextGpuMsaaView: GPUTextureView | null = null;
+  private vectorTextGpuResolvedTexture: GPUTexture | null = null;
+  private vectorTextGpuResolvedView: GPUTextureView | null = null;
+  private vectorTextGpuScratchWidth = 0;
+  private vectorTextGpuScratchHeight = 0;
+  private vectorTextGpuUniformBuffer: GPUBuffer | null = null;
+  private vectorTextGpuUniformBindGroup: GPUBindGroup | null = null;
+  private readonly vectorTextGpuUniformUpload = new Float32Array(
+    VECTOR_TEXT_GPU_MAXIMUM_DRAWS * VECTOR_TEXT_GPU_UNIFORM_STRIDE / 4,
+  );
   private vectorTextBelowTexture: GPUTexture | null = null;
+  private readonly vectorTextGpuUniformUploadUnsigned = new Uint32Array(
+    this.vectorTextGpuUniformUpload.buffer,
+  );
+  private vectorTextGpuBlurScratchATexture: GPUTexture | null = null;
+  private vectorTextGpuBlurScratchAView: GPUTextureView | null = null;
+  private vectorTextGpuBlurScratchBTexture: GPUTexture | null = null;
+  private vectorTextGpuBlurScratchBView: GPUTextureView | null = null;
+  private vectorTextGpuBlurScratchWidth = 0;
+  private vectorTextGpuBlurScratchHeight = 0;
+  private vectorTextGpuBlurFilterUniformBuffer: GPUBuffer | null = null;
+  private readonly vectorTextGpuBlurFilterUniformUpload = new Float32Array(
+    VECTOR_TEXT_GPU_MAXIMUM_DRAWS * VECTOR_TEXT_GPU_UNIFORM_STRIDE / 4,
+  );
+  private readonly vectorTextGpuBlurFilterUniformUploadUnsigned = new Uint32Array(
+    this.vectorTextGpuBlurFilterUniformUpload.buffer,
+  );
+  private vectorTextGpuBlurFilterBindGroupAToB: GPUBindGroup | null = null;
+  private vectorTextGpuBlurFilterBindGroupBToA: GPUBindGroup | null = null;
+  private vectorTextGpuBlurSampler: GPUSampler | null = null;
   private vectorTextBelowView: GPUTextureView | null = null;
   private vectorTextAboveTexture: GPUTexture | null = null;
   private vectorTextAboveView: GPUTextureView | null = null;
@@ -2054,7 +2163,11 @@ export class BrushEngine {
   private vectorTextDisplayBindGroupLayout: GPUBindGroupLayout | null = null;
   private mixedSceneRasterSegmentBindGroupLayout: GPUBindGroupLayout | null = null;
   private mixedSceneTextSegmentBindGroupLayout: GPUBindGroupLayout | null = null;
+  private vectorTextGpuSlugBindGroupLayout: GPUBindGroupLayout | null = null;
   private mixedScenePresentBindGroupLayout: GPUBindGroupLayout | null = null;
+  private vectorTextGpuUniformBindGroupLayout: GPUBindGroupLayout | null = null;
+  private vectorTextGpuBlurFilterBindGroupLayout: GPUBindGroupLayout | null = null;
+  private vectorTextGpuBlurCompositeBindGroupLayout: GPUBindGroupLayout | null = null;
   private rasterStrokeDisplayScreenBindGroupLayout!: GPUBindGroupLayout;
   private rasterStrokeDisplaySourceBindGroupLayout!: GPUBindGroupLayout;
   private thicknessTailDisplayBindGroupLayout!: GPUBindGroupLayout;
@@ -2089,7 +2202,11 @@ export class BrushEngine {
   private brushShaderModule!: GPUShaderModule;
   private texturizedGrainShaderModule!: GPUShaderModule;
   private displayShaderModule!: GPUShaderModule;
+  private vectorTextGpuSlugShaderModule: GPUShaderModule | null = null;
   private vectorTextDisplayShaderModule: GPUShaderModule | null = null;
+  private vectorTextGpuShaderModule: GPUShaderModule | null = null;
+  private vectorTextGpuGaussianBlurShaderModule: GPUShaderModule | null = null;
+  private vectorTextGpuBlurCompositeShaderModule: GPUShaderModule | null = null;
   private mixedSceneRasterSegmentShaderModule: GPUShaderModule | null = null;
   private mixedSceneTextSegmentShaderModule: GPUShaderModule | null = null;
   private mixedSceneClearShaderModule: GPUShaderModule | null = null;
@@ -2119,8 +2236,15 @@ export class BrushEngine {
   private grainM1GlazePipeline!: GPURenderPipeline;
   private grainM1GlazeShapePipeline!: GPURenderPipeline;
   private grainM1GlazeShapeOccupancyPipeline!: GPURenderPipeline;
+  private vectorTextGpuSlugPipeline: GPURenderPipeline | null = null;
   private displayPipeline!: GPURenderPipeline;
   private vectorTextDisplayPipeline: GPURenderPipeline | null = null;
+  private vectorTextGpuFillPipeline: GPURenderPipeline | null = null;
+  private vectorTextGpuBlurMaskPipeline: GPURenderPipeline | null = null;
+  private vectorTextGpuBlurHorizontalPipeline: GPURenderPipeline | null = null;
+  private vectorTextGpuBlurVerticalPipeline: GPURenderPipeline | null = null;
+  private vectorTextGpuBlurCompositePipeline: GPURenderPipeline | null = null;
+  private vectorTextGpuClearPipeline: GPURenderPipeline | null = null;
   private mixedSceneClearPipeline: GPURenderPipeline | null = null;
   private mixedSceneRasterSegmentPipeline: GPURenderPipeline | null = null;
   private mixedSceneTextSegmentPipeline: GPURenderPipeline | null = null;
@@ -3420,6 +3544,10 @@ export class BrushEngine {
     };
   }
 
+  isPaintStrokeActive(): boolean {
+    return this.activeStroke !== null;
+  }
+
   private createMixedSceneSnapshot(): MixedSceneSnapshot | null {
     const scene = this.mixedSceneStack;
     if (!scene) {
@@ -3558,7 +3686,887 @@ export class BrushEngine {
       height,
       gpuMemoryMiB: width * height * 4 / MEBIBYTE_BYTES,
       placement,
+      blurGpuMemoryMiB: 0,
+      blurCacheEntries: 0,
     };
+  }
+
+  private ensureVectorTextGpuScratch(width: number, height: number): void {
+    if (
+      this.vectorTextGpuMsaaTexture
+      && this.vectorTextGpuMsaaView
+      && this.vectorTextGpuResolvedTexture
+      && this.vectorTextGpuResolvedView
+      && this.vectorTextGpuScratchWidth === width
+      && this.vectorTextGpuScratchHeight === height
+    ) {
+      return;
+    }
+    this.vectorTextGpuMsaaTexture?.destroy();
+    this.vectorTextGpuResolvedTexture?.destroy();
+    this.vectorTextGpuMsaaTexture = this.device.createTexture({
+      label: `Vector text shared MSAA4 color ${width}×${height}`,
+      size: { width, height, depthOrArrayLayers: 1 },
+      sampleCount: VECTOR_TEXT_GPU_SAMPLE_COUNT,
+      format: VECTOR_TEXT_GPU_TARGET_FORMAT,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    this.vectorTextGpuMsaaView = this.vectorTextGpuMsaaTexture.createView({
+      label: "Vector text shared MSAA4 color view",
+    });
+    this.vectorTextGpuResolvedTexture = this.device.createTexture({
+      label: `Vector text shared resolved crop ${width}×${height}`,
+      size: { width, height, depthOrArrayLayers: 1 },
+      format: VECTOR_TEXT_GPU_TARGET_FORMAT,
+      usage:
+        GPUTextureUsage.RENDER_ATTACHMENT
+        | GPUTextureUsage.COPY_SRC,
+    });
+    this.vectorTextGpuResolvedView = this.vectorTextGpuResolvedTexture.createView({
+      label: "Vector text shared resolved crop view",
+    });
+    this.vectorTextGpuScratchWidth = width;
+    this.vectorTextGpuScratchHeight = height;
+  }
+
+  private releaseVectorTextGpuScratch(): void {
+    this.vectorTextGpuMsaaTexture?.destroy();
+    this.vectorTextGpuResolvedTexture?.destroy();
+    this.vectorTextGpuMsaaTexture = null;
+    this.vectorTextGpuMsaaView = null;
+    this.vectorTextGpuResolvedTexture = null;
+    this.vectorTextGpuResolvedView = null;
+    this.vectorTextGpuScratchWidth = 0;
+    this.vectorTextGpuScratchHeight = 0;
+  }
+
+  private ensureVectorTextGpuResource(
+    draw: VectorTextGpuDraw,
+  ): VectorTextGpuDrawResources {
+    const revision = draw.mode === "mesh-direct"
+      ? draw.mesh.revision
+      : draw.slug.revision;
+    const existing = this.vectorTextGpuMeshes.get(draw.meshKey);
+    if (
+      existing
+      && existing.revision === revision
+      && existing.kind === (draw.mode === "mesh-direct" ? "mesh" : "slug")
+    ) {
+      return existing;
+    }
+    let created: VectorTextGpuDrawResources;
+    if (draw.mode === "mesh-direct") {
+      created = createVectorTextGpuMeshResources(this.device, draw);
+    } else {
+      const uniformBuffer = this.vectorTextGpuUniformBuffer;
+      const layout = this.vectorTextGpuSlugBindGroupLayout;
+      if (!uniformBuffer || !layout) {
+        throw new Error("Layout Slug del testo vettoriale non inizializzato.");
+      }
+      created = createVectorTextGpuSlugResources(
+        this.device,
+        draw,
+        uniformBuffer,
+        layout,
+        VECTOR_TEXT_SLUG_UNIFORM_BYTES,
+      );
+    }
+    this.vectorTextGpuMeshes.set(draw.meshKey, created);
+    if (existing) {
+      destroyVectorTextGpuResources(existing);
+    }
+    return created;
+  }
+
+  private ensureVectorTextGpuBlurCache(
+    draw: VectorTextGpuSlugBlurDraw,
+  ): VectorTextGpuBlurCacheResources {
+    const existing = this.vectorTextGpuBlurCaches.get(draw.blurKey);
+    if (
+      existing
+      && existing.width === draw.blurWidth
+      && existing.height === draw.blurHeight
+    ) {
+      return existing;
+    }
+    if (existing) {
+      existing.texture.destroy();
+      this.vectorTextGpuBlurCaches.delete(draw.blurKey);
+    }
+    const layout = this.vectorTextGpuBlurCompositeBindGroupLayout;
+    const uniformBuffer = this.vectorTextGpuUniformBuffer;
+    const sampler = this.vectorTextGpuBlurSampler;
+    if (!layout || !uniformBuffer || !sampler) {
+      throw new Error("Compositore GPU del blur testo non inizializzato.");
+    }
+    const texture = this.device.createTexture({
+      label: `Vector text GPU blur cache ${draw.blurKey} ${draw.blurWidth}×${draw.blurHeight}`,
+      size: {
+        width: draw.blurWidth,
+        height: draw.blurHeight,
+        depthOrArrayLayers: 1,
+      },
+      format: VECTOR_TEXT_GPU_BLUR_FORMAT,
+      usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    try {
+      const view = texture.createView({
+        label: `Vector text GPU blur cache view ${draw.blurKey}`,
+      });
+      const compositeBindGroup = this.device.createBindGroup({
+        label: `Vector text GPU blur composite ${draw.blurKey}`,
+        layout,
+        entries: [
+          {
+            binding: 0,
+            resource: {
+              buffer: uniformBuffer,
+              offset: 0,
+              size: VECTOR_TEXT_GPU_BLUR_COMPOSITE_UNIFORM_BYTES,
+            },
+          },
+          { binding: 1, resource: view },
+          { binding: 2, resource: sampler },
+        ],
+      });
+      const created: VectorTextGpuBlurCacheResources = {
+        texture,
+        view,
+        compositeBindGroup,
+        width: draw.blurWidth,
+        height: draw.blurHeight,
+        memoryBytes: draw.blurWidth * draw.blurHeight,
+        needsBuild: true,
+      };
+      this.vectorTextGpuBlurCaches.set(draw.blurKey, created);
+      return created;
+    } catch (error) {
+      texture.destroy();
+      throw error;
+    }
+  }
+
+  private ensureVectorTextGpuBlurScratch(width: number, height: number): void {
+    const requiredWidth = Math.max(1, Math.ceil(width));
+    const requiredHeight = Math.max(1, Math.ceil(height));
+    if (
+      this.vectorTextGpuBlurScratchATexture
+      && this.vectorTextGpuBlurScratchAView
+      && this.vectorTextGpuBlurScratchBTexture
+      && this.vectorTextGpuBlurScratchBView
+      && this.vectorTextGpuBlurFilterBindGroupAToB
+      && this.vectorTextGpuBlurFilterBindGroupBToA
+      && this.vectorTextGpuBlurScratchWidth >= requiredWidth
+      && this.vectorTextGpuBlurScratchHeight >= requiredHeight
+    ) {
+      return;
+    }
+    this.releaseVectorTextGpuBlurScratch();
+    const layout = this.vectorTextGpuBlurFilterBindGroupLayout;
+    const uniformBuffer = this.vectorTextGpuBlurFilterUniformBuffer;
+    if (!layout || !uniformBuffer) {
+      throw new Error("Filtro GPU del blur testo non inizializzato.");
+    }
+    const textureDescriptor: GPUTextureDescriptor = {
+      size: {
+        width: requiredWidth,
+        height: requiredHeight,
+        depthOrArrayLayers: 1,
+      },
+      format: VECTOR_TEXT_GPU_BLUR_FORMAT,
+      usage:
+        GPUTextureUsage.RENDER_ATTACHMENT
+        | GPUTextureUsage.TEXTURE_BINDING
+        | GPUTextureUsage.COPY_SRC,
+    };
+    const textureA = this.device.createTexture({
+      ...textureDescriptor,
+      label: `Vector text GPU blur scratch A ${requiredWidth}×${requiredHeight}`,
+    });
+    const textureB = this.device.createTexture({
+      ...textureDescriptor,
+      label: `Vector text GPU blur scratch B ${requiredWidth}×${requiredHeight}`,
+    });
+    try {
+      const viewA = textureA.createView({ label: "Vector text GPU blur scratch A view" });
+      const viewB = textureB.createView({ label: "Vector text GPU blur scratch B view" });
+      const uniformEntry: GPUBindGroupEntry = {
+        binding: 0,
+        resource: {
+          buffer: uniformBuffer,
+          offset: 0,
+          size: VECTOR_TEXT_GPU_BLUR_FILTER_UNIFORM_BYTES,
+        },
+      };
+      this.vectorTextGpuBlurFilterBindGroupAToB = this.device.createBindGroup({
+        label: "Vector text GPU blur horizontal A to B",
+        layout,
+        entries: [uniformEntry, { binding: 1, resource: viewA }],
+      });
+      this.vectorTextGpuBlurFilterBindGroupBToA = this.device.createBindGroup({
+        label: "Vector text GPU blur vertical B to A",
+        layout,
+        entries: [uniformEntry, { binding: 1, resource: viewB }],
+      });
+      this.vectorTextGpuBlurScratchATexture = textureA;
+      this.vectorTextGpuBlurScratchAView = viewA;
+      this.vectorTextGpuBlurScratchBTexture = textureB;
+      this.vectorTextGpuBlurScratchBView = viewB;
+      this.vectorTextGpuBlurScratchWidth = requiredWidth;
+      this.vectorTextGpuBlurScratchHeight = requiredHeight;
+    } catch (error) {
+      textureA.destroy();
+      textureB.destroy();
+      throw error;
+    }
+  }
+
+  private releaseVectorTextGpuBlurScratch(): void {
+    this.vectorTextGpuBlurScratchATexture?.destroy();
+    this.vectorTextGpuBlurScratchBTexture?.destroy();
+    this.vectorTextGpuBlurScratchATexture = null;
+    this.vectorTextGpuBlurScratchAView = null;
+    this.vectorTextGpuBlurScratchBTexture = null;
+    this.vectorTextGpuBlurScratchBView = null;
+    this.vectorTextGpuBlurScratchWidth = 0;
+    this.vectorTextGpuBlurScratchHeight = 0;
+    this.vectorTextGpuBlurFilterBindGroupAToB = null;
+    this.vectorTextGpuBlurFilterBindGroupBToA = null;
+  }
+
+  private writeVectorTextGpuBlurSourceUniform(
+    draw: VectorTextGpuSlugBlurDraw,
+    drawIndex: number,
+  ): void {
+    const base = drawIndex * VECTOR_TEXT_GPU_UNIFORM_STRIDE / 4;
+    const upload = this.vectorTextGpuUniformUpload;
+    upload.fill(0, base, base + VECTOR_TEXT_GPU_UNIFORM_STRIDE / 4);
+    upload[base] = draw.blurWidth;
+    upload[base + 1] = draw.blurHeight;
+    upload[base + 2] = 1;
+    upload[base + 4] = (draw.blurBounds[0] + draw.blurBounds[2]) * 0.5;
+    upload[base + 5] = (draw.blurBounds[1] + draw.blurBounds[3]) * 0.5;
+    upload[base + 6] = draw.blurScale;
+    upload[base + 10] = 1;
+    upload[base + 12] = 1;
+    upload[base + 13] = draw.slug.originX;
+    upload[base + 14] = draw.slug.originY;
+    upload[base + 16] = 1;
+    upload[base + 17] = 1;
+    upload[base + 18] = 1;
+    upload[base + 19] = 1;
+    upload[base + 22] = draw.blurWidth;
+    upload[base + 23] = draw.blurHeight;
+    upload[base + 24] = draw.slug.left;
+    upload[base + 25] = draw.slug.top;
+    upload[base + 26] = draw.slug.right;
+    upload[base + 27] = draw.slug.bottom;
+    upload[base + 28] = draw.slug.bandScaleX;
+    upload[base + 29] = draw.slug.bandScaleY;
+    upload[base + 30] = draw.slug.bandOffsetX;
+    upload[base + 31] = draw.slug.bandOffsetY;
+    const unsigned = this.vectorTextGpuUniformUploadUnsigned;
+    unsigned[base + 32] = draw.slug.horizontalHeaderBase;
+    unsigned[base + 33] = draw.slug.verticalHeaderBase;
+    unsigned[base + 34] = draw.slug.horizontalBandCount;
+    unsigned[base + 35] = draw.slug.verticalBandCount;
+    unsigned[base + 36] = draw.slug.curveTexture.logWidth;
+    unsigned[base + 37] = draw.slug.bandTexture.logWidth;
+  }
+
+  private writeVectorTextGpuBlurFilterUniform(
+    draw: VectorTextGpuSlugBlurDraw,
+    filterIndex: number,
+  ): void {
+    const base = filterIndex * VECTOR_TEXT_GPU_UNIFORM_STRIDE / 4;
+    const upload = this.vectorTextGpuBlurFilterUniformUpload;
+    const unsigned = this.vectorTextGpuBlurFilterUniformUploadUnsigned;
+    upload.fill(0, base, base + VECTOR_TEXT_GPU_UNIFORM_STRIDE / 4);
+    unsigned[base] = draw.blurWidth;
+    unsigned[base + 1] = draw.blurHeight;
+    unsigned[base + 2] = draw.blurRadius;
+    const sigma = Math.max(0.01, draw.blurSigmaPixels);
+    const weights = new Float64Array(draw.blurRadius + 1);
+    let normalizer = 0;
+    for (let index = 0; index <= draw.blurRadius; index += 1) {
+      const weight = Math.exp(-0.5 * (index / sigma) ** 2);
+      weights[index] = weight;
+      normalizer += index === 0 ? weight : weight * 2;
+    }
+    for (let index = 0; index <= draw.blurRadius; index += 1) {
+      upload[base + 4 + index] = weights[index] / normalizer;
+    }
+  }
+
+  private vectorTextGpuBlurMemoryBytes(): number {
+    const cacheBytes = [...this.vectorTextGpuBlurCaches.values()].reduce(
+      (total, resources) => total + resources.memoryBytes,
+      0,
+    );
+    const scratchBytes = this.vectorTextGpuBlurScratchATexture
+      ? this.vectorTextGpuBlurScratchWidth * this.vectorTextGpuBlurScratchHeight * 2
+      : 0;
+    return cacheBytes + scratchBytes;
+  }
+  private writeVectorTextGpuDrawUniform(
+    draw: VectorTextGpuDraw,
+    view: VectorTextViewState,
+    drawIndex: number,
+    targetBounds: DirtyRect,
+  ): void {
+    const base = drawIndex * VECTOR_TEXT_GPU_UNIFORM_STRIDE / 4;
+    const upload = this.vectorTextGpuUniformUpload;
+    upload.fill(0, base, base + VECTOR_TEXT_GPU_UNIFORM_STRIDE / 4);
+    upload[base] = view.canvasWidth;
+    upload[base + 1] = view.canvasHeight;
+    upload[base + 2] = view.rotationCos;
+    upload[base + 3] = view.rotationSin;
+    upload[base + 4] = view.centerX;
+    upload[base + 5] = view.centerY;
+    upload[base + 6] = view.zoom;
+    upload[base + 8] = draw.x;
+    upload[base + 9] = draw.y;
+    upload[base + 10] = Math.cos(draw.rotation);
+    upload[base + 11] = Math.sin(draw.rotation);
+    upload[base + 12] = draw.scale;
+    upload[base + 13] = draw.localOffsetX;
+    upload[base + 14] = draw.localOffsetY;
+    upload[base + 16] = draw.color[0];
+    upload[base + 20] = targetBounds.x;
+    upload[base + 21] = targetBounds.y;
+    upload[base + 22] = this.vectorTextGpuScratchWidth;
+    upload[base + 23] = this.vectorTextGpuScratchHeight;
+    upload[base + 17] = draw.color[1];
+    upload[base + 18] = draw.color[2];
+    upload[base + 19] = draw.opacity;
+    if (draw.mode !== "mesh-direct") {
+      const shapeBounds = draw.mode === "slug-blur"
+        ? draw.blurBounds
+        : [draw.slug.left, draw.slug.top, draw.slug.right, draw.slug.bottom] as const;
+      upload[base + 24] = shapeBounds[0];
+      upload[base + 25] = shapeBounds[1];
+      upload[base + 26] = shapeBounds[2];
+      upload[base + 27] = shapeBounds[3];
+      upload[base + 28] = draw.slug.bandScaleX;
+      upload[base + 29] = draw.slug.bandScaleY;
+      upload[base + 30] = draw.slug.bandOffsetX;
+      upload[base + 31] = draw.slug.bandOffsetY;
+      const unsigned = this.vectorTextGpuUniformUploadUnsigned;
+      unsigned[base + 32] = draw.slug.horizontalHeaderBase;
+      unsigned[base + 33] = draw.slug.verticalHeaderBase;
+      unsigned[base + 34] = draw.slug.horizontalBandCount;
+      unsigned[base + 35] = draw.slug.verticalBandCount;
+      unsigned[base + 36] = draw.slug.curveTexture.logWidth;
+      unsigned[base + 37] = draw.slug.bandTexture.logWidth;
+    }
+  }
+
+  private vectorTextGpuRunBounds(
+    draws: readonly VectorTextGpuDraw[],
+    view: VectorTextViewState,
+  ): DirtyRect {
+    let left = Number.POSITIVE_INFINITY;
+    let top = Number.POSITIVE_INFINITY;
+    let right = Number.NEGATIVE_INFINITY;
+    let bottom = Number.NEGATIVE_INFINITY;
+    for (const draw of draws) {
+      const cosine = Math.cos(draw.rotation);
+      const sine = Math.sin(draw.rotation);
+      const bounds = draw.mode === "slug-blur"
+        ? draw.blurBounds
+        : draw.mode === "mesh-direct"
+          ? [draw.mesh.left, draw.mesh.top, draw.mesh.right, draw.mesh.bottom] as const
+          : [draw.slug.left, draw.slug.top, draw.slug.right, draw.slug.bottom] as const;
+      const localCorners = [
+        [bounds[0], bounds[1]],
+        [bounds[2], bounds[1]],
+        [bounds[2], bounds[3]],
+        [bounds[0], bounds[3]],
+      ] as const;
+      for (const [sourceX, sourceY] of localCorners) {
+        const localX = (sourceX + draw.localOffsetX) * draw.scale;
+        const localY = (sourceY + draw.localOffsetY) * draw.scale;
+        const layerX = draw.x + cosine * localX - sine * localY;
+        const layerY = draw.y + sine * localX + cosine * localY;
+        const deltaX = layerX - view.centerX;
+        const deltaY = layerY - view.centerY;
+        const canvasX = view.canvasWidth * 0.5 + view.zoom * (
+          view.rotationCos * deltaX - view.rotationSin * deltaY
+        );
+        const canvasY = view.canvasHeight * 0.5 + view.zoom * (
+          view.rotationSin * deltaX + view.rotationCos * deltaY
+        );
+        left = Math.min(left, canvasX);
+        top = Math.min(top, canvasY);
+        right = Math.max(right, canvasX);
+        bottom = Math.max(bottom, canvasY);
+      }
+    }
+    if (!Number.isFinite(left)) {
+      return { x: 0, y: 0, width: 1, height: 1 };
+    }
+    const margin = 2;
+    const x = Math.max(0, Math.floor(left - margin));
+    const y = Math.max(0, Math.floor(top - margin));
+    const clippedRight = Math.min(view.canvasWidth, Math.ceil(right + margin));
+    const clippedBottom = Math.min(view.canvasHeight, Math.ceil(bottom + margin));
+    return {
+      x: Math.min(view.canvasWidth - 1, x),
+      y: Math.min(view.canvasHeight - 1, y),
+      width: Math.max(1, clippedRight - x),
+      height: Math.max(1, clippedBottom - y),
+    };
+  }
+
+  private vectorTextGpuClearBounds(
+    first: DirtyRect | null,
+    second: DirtyRect,
+  ): DirtyRect {
+    if (!first) {
+      return second;
+    }
+    const x = Math.min(first.x, second.x);
+    const y = Math.min(first.y, second.y);
+    const right = Math.max(
+      first.x + first.width,
+      second.x + second.width,
+    );
+    const bottom = Math.max(
+      first.y + first.height,
+      second.y + second.height,
+    );
+    return { x, y, width: right - x, height: bottom - y };
+  }
+
+  updateVectorTextGpuPresentation(
+    placement: VectorTextPlacement,
+    draws: readonly VectorTextGpuDraw[],
+  ): VectorTextGpuPresentationStats {
+    if (!this.vectorTextPrototypeEnabled || !this.initialized) {
+      throw new Error("Renderer testo vettoriale GPU non abilitato.");
+    }
+    if (!placement.startsWith("text-run:")) {
+      throw new Error("Il renderer GPU richiede un run testo segmentato.");
+    }
+    if (draws.length > VECTOR_TEXT_GPU_MAXIMUM_DRAWS) {
+      throw new Error(
+        `Troppe draw call testo (${draws.length}/${VECTOR_TEXT_GPU_MAXIMUM_DRAWS}).`,
+      );
+    }
+    const width = Math.max(1, this.canvas.width);
+    const height = Math.max(1, this.canvas.height);
+
+    this.captureVectorTextPresentationView();
+    this.ensureVectorTextPresentationTexture(width, height, placement);
+    const key =
+      placement as Extract<VectorTextPlacement, `text-run:${string}`>;
+    const resources = this.vectorTextRunTextures.get(key);
+    if (!resources) {
+      throw new Error(`Run testo GPU ${placement} non allocato.`);
+    }
+    const view = this.getVectorTextViewState();
+    const drawResources = draws.map(
+      (draw) => this.ensureVectorTextGpuResource(draw),
+    );
+    const blurResources = draws.map((draw) =>
+      draw.mode === "slug-blur"
+        ? this.ensureVectorTextGpuBlurCache(draw)
+        : null,
+    );
+    const bounds = this.vectorTextGpuRunBounds(draws, view);
+
+    this.vectorTextGpuPendingRuns.push({
+      placement: key,
+      resources,
+      draws,
+      drawResources,
+      blurResources,
+      view,
+      bounds,
+    });
+
+    let geometryBytes = 0;
+    const uniqueDrawResources = new Set(drawResources);
+    for (const resourcesForDraw of uniqueDrawResources) {
+      geometryBytes += resourcesForDraw.memoryBytes;
+    }
+    return {
+      strategy: VECTOR_TEXT_PRESENTATION_STRATEGY,
+      width,
+      height,
+      gpuMemoryMiB:
+        (
+          width * height * 4
+          + geometryBytes
+        )
+        / MEBIBYTE_BYTES,
+      placement,
+      blurGpuMemoryMiB: this.vectorTextGpuBlurMemoryBytes() / MEBIBYTE_BYTES,
+      blurCacheEntries: this.vectorTextGpuBlurCaches.size,
+    };
+  }
+
+  private flushVectorTextGpuPresentations(): void {
+    if (this.vectorTextGpuPendingRuns.length === 0) {
+      return;
+    }
+    let scratchWidth = 1;
+    let scratchHeight = 1;
+    let blurScratchWidth = 0;
+    let blurScratchHeight = 0;
+    for (const run of this.vectorTextGpuPendingRuns) {
+      scratchWidth = Math.max(scratchWidth, run.bounds.width);
+      scratchHeight = Math.max(scratchHeight, run.bounds.height);
+      for (let index = 0; index < run.draws.length; index += 1) {
+        const draw = run.draws[index];
+        const cache = run.blurResources[index];
+        if (draw.mode === "slug-blur" && cache?.needsBuild) {
+          blurScratchWidth = Math.max(blurScratchWidth, draw.blurWidth);
+          blurScratchHeight = Math.max(blurScratchHeight, draw.blurHeight);
+        }
+      }
+    }
+    this.ensureVectorTextGpuScratch(scratchWidth, scratchHeight);
+    if (blurScratchWidth > 0 && blurScratchHeight > 0) {
+      this.ensureVectorTextGpuBlurScratch(blurScratchWidth, blurScratchHeight);
+    }
+
+    const uniformBuffer = this.vectorTextGpuUniformBuffer;
+    const uniformBindGroup = this.vectorTextGpuUniformBindGroup;
+    const filterUniformBuffer = this.vectorTextGpuBlurFilterUniformBuffer;
+    const msaaView = this.vectorTextGpuMsaaView;
+    const resolvedTexture = this.vectorTextGpuResolvedTexture;
+    const resolvedView = this.vectorTextGpuResolvedView;
+    const fillPipeline = this.vectorTextGpuFillPipeline;
+    const slugPipeline = this.vectorTextGpuSlugPipeline;
+    const blurMaskPipeline = this.vectorTextGpuBlurMaskPipeline;
+    const blurHorizontalPipeline = this.vectorTextGpuBlurHorizontalPipeline;
+    const blurVerticalPipeline = this.vectorTextGpuBlurVerticalPipeline;
+    const blurCompositePipeline = this.vectorTextGpuBlurCompositePipeline;
+    const clearPipeline = this.vectorTextGpuClearPipeline;
+    if (
+      !uniformBuffer
+      || !uniformBindGroup
+      || !filterUniformBuffer
+      || !msaaView
+      || !resolvedTexture
+      || !resolvedView
+      || !fillPipeline
+      || !slugPipeline
+      || !blurMaskPipeline
+      || !blurHorizontalPipeline
+      || !blurVerticalPipeline
+      || !blurCompositePipeline
+      || !clearPipeline
+    ) {
+      throw new Error("Pipeline batch del testo vettoriale GPU non pronta.");
+    }
+
+    const totalMainDraws = this.vectorTextGpuPendingRuns.reduce(
+      (total, run) => total + run.draws.length,
+      0,
+    );
+    if (totalMainDraws > VECTOR_TEXT_GPU_MAXIMUM_DRAWS) {
+      throw new Error(
+        `Batch testo GPU oltre ${VECTOR_TEXT_GPU_MAXIMUM_DRAWS} draw call.`,
+      );
+    }
+    let mainDrawIndex = 0;
+    for (const run of this.vectorTextGpuPendingRuns) {
+      for (const draw of run.draws) {
+        this.writeVectorTextGpuDrawUniform(
+          draw,
+          run.view,
+          mainDrawIndex,
+          run.bounds,
+        );
+        mainDrawIndex += 1;
+      }
+    }
+
+    const blurBuilds: {
+      draw: VectorTextGpuSlugBlurDraw;
+      resources: VectorTextGpuSlugResources;
+      cache: VectorTextGpuBlurCacheResources;
+      sourceUniformIndex: number;
+      filterIndex: number;
+    }[] = [];
+    const queuedCaches = new Set<VectorTextGpuBlurCacheResources>();
+    let nextSourceUniformIndex = totalMainDraws;
+    for (const run of this.vectorTextGpuPendingRuns) {
+      for (let index = 0; index < run.draws.length; index += 1) {
+        const draw = run.draws[index];
+        const drawResources = run.drawResources[index];
+        const cache = run.blurResources[index];
+        if (
+          draw.mode !== "slug-blur"
+          || !cache?.needsBuild
+          || queuedCaches.has(cache)
+        ) {
+          continue;
+        }
+        if (drawResources.kind !== "slug") {
+          throw new Error("Risorsa Slug incoerente con la mask blur GPU.");
+        }
+        if (nextSourceUniformIndex >= VECTOR_TEXT_GPU_MAXIMUM_DRAWS) {
+          throw new Error(
+            `Uniform testo GPU oltre ${VECTOR_TEXT_GPU_MAXIMUM_DRAWS} slot.`,
+          );
+        }
+        const filterIndex = blurBuilds.length;
+        this.writeVectorTextGpuBlurSourceUniform(
+          draw,
+          nextSourceUniformIndex,
+        );
+        this.writeVectorTextGpuBlurFilterUniform(draw, filterIndex);
+        blurBuilds.push({
+          draw,
+          resources: drawResources,
+          cache,
+          sourceUniformIndex: nextSourceUniformIndex,
+          filterIndex,
+        });
+        queuedCaches.add(cache);
+        nextSourceUniformIndex += 1;
+      }
+    }
+
+    if (nextSourceUniformIndex > 0) {
+      this.device.queue.writeBuffer(
+        uniformBuffer,
+        0,
+        this.vectorTextGpuUniformUpload,
+        0,
+        nextSourceUniformIndex * VECTOR_TEXT_GPU_UNIFORM_STRIDE / 4,
+      );
+    }
+    if (blurBuilds.length > 0) {
+      this.device.queue.writeBuffer(
+        filterUniformBuffer,
+        0,
+        this.vectorTextGpuBlurFilterUniformUpload,
+        0,
+        blurBuilds.length * VECTOR_TEXT_GPU_UNIFORM_STRIDE / 4,
+      );
+    }
+
+    const encoder = this.device.createCommandEncoder({
+      label: `Vector text GPU batched exact redraw · ${this.vectorTextGpuPendingRuns.length} runs`,
+    });
+
+    if (blurBuilds.length > 0) {
+      const scratchATexture = this.vectorTextGpuBlurScratchATexture;
+      const scratchAView = this.vectorTextGpuBlurScratchAView;
+      const scratchBView = this.vectorTextGpuBlurScratchBView;
+      const filterAToB = this.vectorTextGpuBlurFilterBindGroupAToB;
+      const filterBToA = this.vectorTextGpuBlurFilterBindGroupBToA;
+      if (
+        !scratchATexture
+        || !scratchAView
+        || !scratchBView
+        || !filterAToB
+        || !filterBToA
+      ) {
+        throw new Error("Scratch GPU del blur testo non pronto.");
+      }
+      for (const build of blurBuilds) {
+        const width = build.draw.blurWidth;
+        const height = build.draw.blurHeight;
+        const sourcePass = encoder.beginRenderPass({
+          label: `Vector text GPU blur analytic mask ${build.draw.blurKey}`,
+          colorAttachments: [{
+            view: scratchAView,
+            loadOp: "clear",
+            storeOp: "store",
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          }],
+        });
+        sourcePass.setViewport(0, 0, width, height, 0, 1);
+        sourcePass.setScissorRect(0, 0, width, height);
+        sourcePass.setPipeline(blurMaskPipeline);
+        sourcePass.setBindGroup(
+          0,
+          build.resources.bindGroup,
+          [build.sourceUniformIndex * VECTOR_TEXT_GPU_UNIFORM_STRIDE],
+        );
+        sourcePass.draw(6, 1, 0, 0);
+        sourcePass.end();
+
+        const filterOffset = build.filterIndex * VECTOR_TEXT_GPU_UNIFORM_STRIDE;
+        const horizontalPass = encoder.beginRenderPass({
+          label: `Vector text GPU blur horizontal ${build.draw.blurKey}`,
+          colorAttachments: [{
+            view: scratchBView,
+            loadOp: "clear",
+            storeOp: "store",
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          }],
+        });
+        horizontalPass.setViewport(0, 0, width, height, 0, 1);
+        horizontalPass.setScissorRect(0, 0, width, height);
+        horizontalPass.setPipeline(blurHorizontalPipeline);
+        horizontalPass.setBindGroup(0, filterAToB, [filterOffset]);
+        horizontalPass.draw(3, 1, 0, 0);
+        horizontalPass.end();
+
+        const verticalPass = encoder.beginRenderPass({
+          label: `Vector text GPU blur vertical ${build.draw.blurKey}`,
+          colorAttachments: [{
+            view: scratchAView,
+            loadOp: "clear",
+            storeOp: "store",
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          }],
+        });
+        verticalPass.setViewport(0, 0, width, height, 0, 1);
+        verticalPass.setScissorRect(0, 0, width, height);
+        verticalPass.setPipeline(blurVerticalPipeline);
+        verticalPass.setBindGroup(0, filterBToA, [filterOffset]);
+        verticalPass.draw(3, 1, 0, 0);
+        verticalPass.end();
+
+        encoder.copyTextureToTexture(
+          { texture: scratchATexture },
+          { texture: build.cache.texture },
+          { width, height, depthOrArrayLayers: 1 },
+        );
+        build.cache.needsBuild = false;
+      }
+    }
+
+    let drawOffset = 0;
+    for (const run of this.vectorTextGpuPendingRuns) {
+      const pass = encoder.beginRenderPass({
+        label: `Vector text GPU exact camera redraw ${run.placement}`,
+        colorAttachments: [
+          {
+            view: msaaView,
+            resolveTarget: resolvedView,
+            loadOp: "clear",
+            storeOp: "discard",
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          },
+        ],
+      });
+
+      for (let index = 0; index < run.draws.length; index += 1) {
+        const draw = run.draws[index];
+        const resourcesForDraw = run.drawResources[index];
+        const blurResources = run.blurResources[index];
+        const uniformIndex = drawOffset + index;
+        if (draw.opacity <= 0) {
+          continue;
+        }
+        const dynamicOffset = uniformIndex * VECTOR_TEXT_GPU_UNIFORM_STRIDE;
+        if (draw.mode === "slug-blur") {
+          if (!blurResources) {
+            throw new Error("Cache GPU del blur testo mancante.");
+          }
+          pass.setPipeline(blurCompositePipeline);
+          pass.setBindGroup(0, blurResources.compositeBindGroup, [dynamicOffset]);
+          pass.draw(6, 1, 0, 0);
+        } else if (draw.mode === "mesh-direct") {
+          if (resourcesForDraw.kind !== "mesh") {
+            throw new Error("Risorsa mesh testo incoerente con la draw call.");
+          }
+          if (resourcesForDraw.indexCount === 0) {
+            continue;
+          }
+          pass.setPipeline(fillPipeline);
+          pass.setBindGroup(0, uniformBindGroup, [dynamicOffset]);
+          pass.setVertexBuffer(0, resourcesForDraw.vertexBuffer);
+          pass.setIndexBuffer(resourcesForDraw.indexBuffer, "uint32");
+          pass.drawIndexed(resourcesForDraw.indexCount, 1, 0, 0, 0);
+        } else {
+          if (resourcesForDraw.kind !== "slug") {
+            throw new Error("Risorsa Slug testo incoerente con la draw call.");
+          }
+          if (resourcesForDraw.curveCount === 0) {
+            continue;
+          }
+          pass.setPipeline(slugPipeline);
+          pass.setBindGroup(0, resourcesForDraw.bindGroup, [dynamicOffset]);
+          pass.draw(6, 1, 0, 0);
+        }
+      }
+      pass.end();
+
+      const wasInitialized = run.resources.initialized;
+      const clearBounds = this.vectorTextGpuClearBounds(
+        run.resources.lastBounds,
+        run.bounds,
+      );
+      const clearPass = encoder.beginRenderPass({
+        label: `Vector text GPU clear old crop ${run.placement}`,
+        colorAttachments: [
+          {
+            view: run.resources.view,
+            loadOp: wasInitialized ? "load" : "clear",
+            storeOp: "store",
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          },
+        ],
+      });
+      if (wasInitialized) {
+        clearPass.setPipeline(clearPipeline);
+        clearPass.setScissorRect(
+          clearBounds.x,
+          clearBounds.y,
+          clearBounds.width,
+          clearBounds.height,
+        );
+        clearPass.draw(3, 1, 0, 0);
+      }
+      clearPass.end();
+      encoder.copyTextureToTexture(
+        {
+          texture: resolvedTexture,
+          origin: { x: 0, y: 0, z: 0 },
+        },
+        {
+          texture: run.resources.texture,
+          origin: { x: run.bounds.x, y: run.bounds.y, z: 0 },
+        },
+        {
+          width: run.bounds.width,
+          height: run.bounds.height,
+          depthOrArrayLayers: 1,
+        },
+      );
+      run.resources.lastBounds = run.bounds;
+      run.resources.initialized = true;
+      drawOffset += run.draws.length;
+    }
+    this.vectorTextGpuPendingRuns.length = 0;
+    this.device.queue.submit([encoder.finish()]);
+    this.displayDirty = true;
+    this.presentationCacheNeedsFullRebuild = true;
+    this.requestRender();
+  }
+  pruneVectorTextGpuMeshes(activeMeshKeys: ReadonlySet<string>): void {
+    this.flushVectorTextGpuPresentations();
+    for (const [key, resources] of this.vectorTextGpuMeshes) {
+      if (activeMeshKeys.has(key)) {
+        continue;
+      }
+      destroyVectorTextGpuResources(resources);
+      this.vectorTextGpuMeshes.delete(key);
+    }
+    let activeBlurCacheCount = 0;
+    for (const [key, resources] of this.vectorTextGpuBlurCaches) {
+      if (activeMeshKeys.has(key)) {
+        activeBlurCacheCount += 1;
+        continue;
+      }
+      resources.texture.destroy();
+      this.vectorTextGpuBlurCaches.delete(key);
+    }
+    if (activeBlurCacheCount === 0) {
+      this.releaseVectorTextGpuBlurScratch();
+    }
+    if (activeMeshKeys.size === 0) {
+      this.releaseVectorTextGpuScratch();
+    }
   }
 
   clearVectorTextPresentation(placement?: VectorTextPlacement): void {
@@ -3604,6 +4612,18 @@ export class BrushEngine {
       && !this.vectorTextAboveTexture
       && this.vectorTextRunTextures.size === 0
     ) {
+      if (!placement) {
+        for (const resources of this.vectorTextGpuMeshes.values()) {
+          destroyVectorTextGpuResources(resources);
+        }
+        this.vectorTextGpuMeshes.clear();
+        for (const resources of this.vectorTextGpuBlurCaches.values()) {
+          resources.texture.destroy();
+        }
+        this.vectorTextGpuBlurCaches.clear();
+      }
+      this.releaseVectorTextGpuBlurScratch();
+      this.releaseVectorTextGpuScratch();
       this.vectorTextTextureWidth = 0;
       this.vectorTextTextureHeight = 0;
       this.vectorTextCaptureView = null;
@@ -4382,10 +5402,25 @@ export class BrushEngine {
       ? vectorTextTextureCount * this.vectorTextTextureWidth
         * this.vectorTextTextureHeight * 4 / MEBIBYTE_BYTES
       : 0;
+    const vectorTextBlurMiB =
+      this.vectorTextGpuBlurMemoryBytes() / MEBIBYTE_BYTES;
+    const vectorTextGpuScratchMiB = this.vectorTextGpuMsaaTexture
+      ? this.vectorTextGpuScratchWidth * this.vectorTextGpuScratchHeight
+        * 4 * (VECTOR_TEXT_GPU_SAMPLE_COUNT + 1) / MEBIBYTE_BYTES
+      : 0;
+    const vectorTextGpuGeometryMiB = [...this.vectorTextGpuMeshes.values()]
+      .reduce((total, resources) => total + resources.memoryBytes, 0)
+      / MEBIBYTE_BYTES;
+
     const mixedSceneLinearMiB = this.mixedSceneLinearTexture
       ? this.mixedSceneLinearWidth * this.mixedSceneLinearHeight * 8 / MEBIBYTE_BYTES
       : 0;
-    const vectorTextPresentationMiB = vectorTextViewportMiB + mixedSceneLinearMiB;
+    const vectorTextPresentationMiB =
+      vectorTextViewportMiB
+      + vectorTextBlurMiB
+      + vectorTextGpuScratchMiB
+      + vectorTextGpuGeometryMiB
+      + mixedSceneLinearMiB;
     const rasterStrokeStyledMiB =
       (rasterStroke?.styledMemoryBytes ?? 0) / MEBIBYTE_BYTES;
     const rasterStrokeCoverageMiB =
@@ -8052,6 +9087,7 @@ export class BrushEngine {
           "mixed scene checker presentation",
         ),
       ]);
+      await this.initializeVectorTextGpuRenderer();
       this.vectorTextDisplayBindGroupLayout = this.device.createBindGroupLayout({
         label: "Dual viewport vector text mixed-layer display bind group layout",
         entries: [
@@ -8108,7 +9144,20 @@ export class BrushEngine {
         },
         primitive: { topology: "triangle-list" },
       });
-      const sourceOverBlend: GPUBlendState = {
+      this.vectorTextGpuBlurFilterUniformBuffer = this.device.createBuffer({
+      label: `Vector text GPU blur filter uniforms ${VECTOR_TEXT_GPU_MAXIMUM_DRAWS}`,
+      size: VECTOR_TEXT_GPU_MAXIMUM_DRAWS * VECTOR_TEXT_GPU_UNIFORM_STRIDE,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.vectorTextGpuBlurSampler = this.device.createSampler({
+      label: "Vector text GPU blur linear clamp sampler",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
+      magFilter: "linear",
+      minFilter: "linear",
+    });
+
+    const sourceOverBlend: GPUBlendState = {
         color: {
           srcFactor: "one",
           dstFactor: "one-minus-src-alpha",
@@ -13313,6 +14362,323 @@ export class BrushEngine {
     );
   }
 
+  private async initializeVectorTextGpuRenderer(): Promise<void> {
+    this.vectorTextGpuShaderModule = this.device.createShaderModule({
+      label: `Vector text geometry WGSL · ${VECTOR_TEXT_GPU_RENDER_STRATEGY}`,
+      code: vectorTextGpuShader,
+    });
+    this.vectorTextGpuSlugShaderModule = this.device.createShaderModule({
+      label: `Vector text Slug WGSL · ${VECTOR_TEXT_SLUG_GPU_RENDER_STRATEGY}`,
+      code: vectorTextSlugGpuShader,
+    });
+
+    this.vectorTextGpuGaussianBlurShaderModule = this.device.createShaderModule({
+      label: "Vector text GPU separable Gaussian blur WGSL",
+      code: vectorTextGpuGaussianBlurShader,
+    });
+    this.vectorTextGpuBlurCompositeShaderModule = this.device.createShaderModule({
+      label: "Vector text GPU blurred mask composite WGSL",
+      code: vectorTextGpuBlurCompositeShader,
+    });
+    await Promise.all([
+      this.assertShaderCompiled(
+        this.vectorTextGpuShaderModule,
+        "vector text indexed geometry",
+      ),
+      this.assertShaderCompiled(
+        this.vectorTextGpuSlugShaderModule,
+        "vector text Slug analytic source fill",
+      ),
+
+      this.assertShaderCompiled(
+        this.vectorTextGpuGaussianBlurShaderModule,
+        "vector text separable Gaussian blur",
+      ),
+      this.assertShaderCompiled(
+        this.vectorTextGpuBlurCompositeShaderModule,
+        "vector text blurred mask composite",
+      ),
+    ]);
+
+    this.vectorTextGpuUniformBindGroupLayout =
+      this.device.createBindGroupLayout({
+        label: "Vector text dynamic draw uniform bind group layout",
+        entries: [
+          {
+            binding: 0,
+            visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+            buffer: {
+              type: "uniform",
+              hasDynamicOffset: true,
+              minBindingSize: VECTOR_TEXT_GPU_UNIFORM_BYTES,
+            },
+          },
+        ],
+      });
+
+    this.vectorTextGpuBlurFilterBindGroupLayout =
+      this.device.createBindGroupLayout({
+        label: "Vector text GPU blur filter bind group layout",
+        entries: [
+          {
+            binding: 0,
+            visibility: GPUShaderStage.FRAGMENT,
+            buffer: {
+              type: "uniform",
+              hasDynamicOffset: true,
+              minBindingSize: VECTOR_TEXT_GPU_BLUR_FILTER_UNIFORM_BYTES,
+            },
+          },
+          {
+            binding: 1,
+            visibility: GPUShaderStage.FRAGMENT,
+            texture: { sampleType: "float" },
+          },
+        ],
+      });
+    this.vectorTextGpuBlurCompositeBindGroupLayout =
+      this.device.createBindGroupLayout({
+        label: "Vector text GPU blur composite bind group layout",
+        entries: [
+          {
+            binding: 0,
+            visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+            buffer: {
+              type: "uniform",
+              hasDynamicOffset: true,
+              minBindingSize: VECTOR_TEXT_GPU_BLUR_COMPOSITE_UNIFORM_BYTES,
+            },
+          },
+          {
+            binding: 1,
+            visibility: GPUShaderStage.FRAGMENT,
+            texture: { sampleType: "float" },
+          },
+          {
+            binding: 2,
+            visibility: GPUShaderStage.FRAGMENT,
+            sampler: { type: "filtering" },
+          },
+        ],
+      });
+    this.vectorTextGpuSlugBindGroupLayout =
+      this.device.createBindGroupLayout({
+        label: "Vector text Slug dynamic uniform and data textures layout",
+        entries: [
+          {
+            binding: 0,
+            visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+            buffer: {
+              type: "uniform",
+              hasDynamicOffset: true,
+              minBindingSize: VECTOR_TEXT_SLUG_UNIFORM_BYTES,
+            },
+          },
+          {
+            binding: 1,
+            visibility: GPUShaderStage.FRAGMENT,
+            texture: { sampleType: "unfilterable-float" },
+          },
+          {
+            binding: 2,
+            visibility: GPUShaderStage.FRAGMENT,
+            texture: { sampleType: "uint" },
+          },
+        ],
+      });
+
+    this.vectorTextGpuUniformBuffer = this.device.createBuffer({
+      label: `Vector text dynamic uniforms ${VECTOR_TEXT_GPU_MAXIMUM_DRAWS}`,
+      size: VECTOR_TEXT_GPU_MAXIMUM_DRAWS * VECTOR_TEXT_GPU_UNIFORM_STRIDE,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.vectorTextGpuUniformBindGroup = this.device.createBindGroup({
+      label: "Vector text dynamic uniform bind group",
+      layout: this.vectorTextGpuUniformBindGroupLayout,
+      entries: [
+        {
+          binding: 0,
+          resource: {
+            buffer: this.vectorTextGpuUniformBuffer,
+            offset: 0,
+            size: VECTOR_TEXT_GPU_UNIFORM_BYTES,
+          },
+        },
+      ],
+    });
+
+    this.vectorTextGpuBlurFilterUniformBuffer = this.device.createBuffer({
+      label: `Vector text GPU blur filter uniforms ${VECTOR_TEXT_GPU_MAXIMUM_DRAWS}`,
+      size: VECTOR_TEXT_GPU_MAXIMUM_DRAWS * VECTOR_TEXT_GPU_UNIFORM_STRIDE,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.vectorTextGpuBlurSampler = this.device.createSampler({
+      label: "Vector text GPU blur linear clamp sampler",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
+      magFilter: "linear",
+      minFilter: "linear",
+    });
+
+    const sourceOverBlend: GPUBlendState = {
+      color: {
+        srcFactor: "one",
+        dstFactor: "one-minus-src-alpha",
+        operation: "add",
+      },
+      alpha: {
+        srcFactor: "one",
+        dstFactor: "one-minus-src-alpha",
+        operation: "add",
+      },
+    };
+    const vertex: GPUVertexState = {
+      module: this.vectorTextGpuShaderModule,
+      entryPoint: "vertexMain",
+      buffers: [
+        {
+          arrayStride: 8,
+          attributes: [
+            {
+              shaderLocation: 0,
+              offset: 0,
+              format: "float32x2",
+            },
+          ],
+        },
+      ],
+    };
+    const textLayout = this.device.createPipelineLayout({
+      label: "Vector text geometry pipeline layout",
+      bindGroupLayouts: [this.vectorTextGpuUniformBindGroupLayout],
+    });
+
+    this.vectorTextGpuFillPipeline = this.device.createRenderPipeline({
+      label: "Vector text indexed fill MSAA4 source-over pipeline",
+      layout: textLayout,
+      vertex,
+      fragment: {
+        module: this.vectorTextGpuShaderModule,
+        entryPoint: "fragmentMain",
+        targets: [
+          { format: VECTOR_TEXT_GPU_TARGET_FORMAT, blend: sourceOverBlend },
+        ],
+      },
+      primitive: { topology: "triangle-list" },
+      multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
+    });
+
+    const slugLayout = this.device.createPipelineLayout({
+      label: "Vector text Slug pipeline layout",
+      bindGroupLayouts: [this.vectorTextGpuSlugBindGroupLayout],
+    });
+    this.vectorTextGpuSlugPipeline = this.device.createRenderPipeline({
+      label: "Vector text whole-node Slug source fill MSAA4 source-over pipeline",
+      layout: slugLayout,
+      vertex: {
+        module: this.vectorTextGpuSlugShaderModule,
+        entryPoint: "vertexMain",
+      },
+      fragment: {
+        module: this.vectorTextGpuSlugShaderModule,
+        entryPoint: "fragmentMain",
+        targets: [
+          { format: VECTOR_TEXT_GPU_TARGET_FORMAT, blend: sourceOverBlend },
+        ],
+      },
+      primitive: { topology: "triangle-list", cullMode: "none" },
+      multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
+    });
+
+    this.vectorTextGpuBlurMaskPipeline = this.device.createRenderPipeline({
+      label: "Vector text analytic Slug mask for GPU blur",
+      layout: slugLayout,
+      vertex: {
+        module: this.vectorTextGpuSlugShaderModule,
+        entryPoint: "vertexMain",
+      },
+      fragment: {
+        module: this.vectorTextGpuSlugShaderModule,
+        entryPoint: "fragmentMain",
+        targets: [{ format: VECTOR_TEXT_GPU_BLUR_FORMAT }],
+      },
+      primitive: { topology: "triangle-list", cullMode: "none" },
+    });
+
+    const blurFilterLayout = this.device.createPipelineLayout({
+      label: "Vector text GPU Gaussian filter pipeline layout",
+      bindGroupLayouts: [this.vectorTextGpuBlurFilterBindGroupLayout],
+    });
+    this.vectorTextGpuBlurHorizontalPipeline = this.device.createRenderPipeline({
+      label: "Vector text GPU Gaussian horizontal pipeline",
+      layout: blurFilterLayout,
+      vertex: {
+        module: this.vectorTextGpuGaussianBlurShaderModule,
+        entryPoint: "vertexMain",
+      },
+      fragment: {
+        module: this.vectorTextGpuGaussianBlurShaderModule,
+        entryPoint: "horizontalMain",
+        targets: [{ format: VECTOR_TEXT_GPU_BLUR_FORMAT }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+    this.vectorTextGpuBlurVerticalPipeline = this.device.createRenderPipeline({
+      label: "Vector text GPU Gaussian vertical pipeline",
+      layout: blurFilterLayout,
+      vertex: {
+        module: this.vectorTextGpuGaussianBlurShaderModule,
+        entryPoint: "vertexMain",
+      },
+      fragment: {
+        module: this.vectorTextGpuGaussianBlurShaderModule,
+        entryPoint: "verticalMain",
+        targets: [{ format: VECTOR_TEXT_GPU_BLUR_FORMAT }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+    this.vectorTextGpuBlurCompositePipeline = this.device.createRenderPipeline({
+      label: "Vector text GPU blurred mask MSAA4 source-over composite",
+      layout: this.device.createPipelineLayout({
+        label: "Vector text GPU blur composite pipeline layout",
+        bindGroupLayouts: [this.vectorTextGpuBlurCompositeBindGroupLayout],
+      }),
+      vertex: {
+        module: this.vectorTextGpuBlurCompositeShaderModule,
+        entryPoint: "vertexMain",
+      },
+      fragment: {
+        module: this.vectorTextGpuBlurCompositeShaderModule,
+        entryPoint: "fragmentMain",
+        targets: [
+          { format: VECTOR_TEXT_GPU_TARGET_FORMAT, blend: sourceOverBlend },
+        ],
+      },
+      primitive: { topology: "triangle-list" },
+      multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
+    });
+    if (!this.mixedSceneClearShaderModule) {
+      throw new Error("Shader clear trasparente non inizializzato.");
+    }
+    this.vectorTextGpuClearPipeline = this.device.createRenderPipeline({
+      label: "Vector text cropped run transparent clear pipeline",
+      layout: this.device.createPipelineLayout({
+        label: "Vector text cropped run transparent clear pipeline layout",
+        bindGroupLayouts: [],
+      }),
+      vertex: {
+        module: this.mixedSceneClearShaderModule,
+        entryPoint: "vertexMain",
+      },
+      fragment: {
+        module: this.mixedSceneClearShaderModule,
+        entryPoint: "fragmentMain",
+        targets: [{ format: VECTOR_TEXT_GPU_TARGET_FORMAT }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+  }
+
   private ensureVectorTextPresentationTexture(
     width: number,
     height: number,
@@ -13375,7 +14741,13 @@ export class BrushEngine {
             { binding: 3, resource: this.sampler },
           ],
         });
-        this.vectorTextRunTextures.set(key, { texture, view, bindGroup });
+        this.vectorTextRunTextures.set(key, {
+          texture,
+          view,
+          bindGroup,
+          lastBounds: null,
+          initialized: false,
+        });
         return texture;
       } catch (error) {
         texture.destroy();

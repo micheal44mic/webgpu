@@ -1,5 +1,5 @@
 export const MIXED_SCENE_COMPOSITOR_STRATEGY =
-  "ordered-raster-text-runs-rgba16f-viewport-source-over-adaptive-text-reproject-v2" as const;
+  "ordered-raster-vector-gpu-runs-rgba16f-viewport-source-over-v3" as const;
 
 export const MIXED_SCENE_LINEAR_FORMAT = "rgba16float" as const;
 

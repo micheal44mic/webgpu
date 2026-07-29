@@ -2,6 +2,8 @@ import type { PointerSample } from "./brush-engine";
 import {
   VECTOR_TEXT_PRESENTATION_STRATEGY,
 } from "./vector-text-shader";
+import type { VectorTextGpuMeshData } from "./vector-text-effect-geometry";
+import type { VectorTextSlugData } from "./vector-text-slug";
 
 export type VectorTextPlacement =
   | "below-active"
@@ -27,7 +29,48 @@ export interface VectorTextGpuPresentationStats {
   height: number;
   gpuMemoryMiB: number;
   placement: VectorTextPlacement;
+  blurGpuMemoryMiB: number;
+  blurCacheEntries: number;
 }
+
+interface VectorTextGpuDrawBase {
+  readonly meshKey: string;
+  readonly x: number;
+  readonly y: number;
+  readonly scale: number;
+  readonly rotation: number;
+  readonly localOffsetX: number;
+  readonly localOffsetY: number;
+  readonly color: readonly [number, number, number];
+  readonly opacity: number;
+}
+
+export interface VectorTextGpuMeshDraw extends VectorTextGpuDrawBase {
+  readonly mode: "mesh-direct";
+  readonly mesh: VectorTextGpuMeshData;
+}
+
+export interface VectorTextGpuSlugDraw extends VectorTextGpuDrawBase {
+  readonly mode: "slug-direct";
+  readonly slug: VectorTextSlugData;
+}
+
+export interface VectorTextGpuSlugBlurDraw extends VectorTextGpuDrawBase {
+  readonly mode: "slug-blur";
+  readonly slug: VectorTextSlugData;
+  readonly blurKey: string;
+  readonly blurBounds: readonly [number, number, number, number];
+  readonly blurWidth: number;
+  readonly blurHeight: number;
+  readonly blurScale: number;
+  readonly blurSigmaPixels: number;
+  readonly blurRadius: number;
+}
+
+export type VectorTextGpuDraw =
+  | VectorTextGpuMeshDraw
+  | VectorTextGpuSlugDraw
+  | VectorTextGpuSlugBlurDraw;
 
 export interface VectorTextPrototypeHost {
   readonly layerSize: number;

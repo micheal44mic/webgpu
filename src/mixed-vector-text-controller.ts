@@ -5,10 +5,9 @@ import type {
 import {
   MIXED_SCENE_STACK_STRATEGY,
   VECTOR_TEXT_BLOCK_SHADOW_STRATEGY,
-  VECTOR_TEXT_OUTLINE_MITER_LIMIT,
   VECTOR_TEXT_OUTLINE_STRATEGY,
   VECTOR_TEXT_SINGLE_SHADOW_STRATEGY,
-  vectorTextOutlineCanvasLineWidth,
+  vectorTextBlockShadowLocalVector,
   vectorTextSingleShadowLocalVector,
   type MixedSceneItem,
   type VectorTextNode,
@@ -20,29 +19,38 @@ import {
   VECTOR_TEXT_PRESENTATION_STRATEGY,
 } from "./vector-text-shader";
 import type {
+  VectorTextGpuDraw,
   VectorTextGpuPresentationStats,
   VectorTextPlacement,
   VectorTextViewState,
 } from "./vector-text-prototype";
 import {
-  VECTOR_TEXT_BLOCK_SHADOW_VECTOR_STRATEGY,
   VectorTextFontGeometryRegistry,
-  buildVectorTextBlockShadowGeometry,
-  type VectorTextBlockShadowGeometry,
   type VectorTextOutlineGeometry,
 } from "./vector-text-font-geometry";
 import {
-  VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY,
-  VectorTextSingleShadowBlurRenderer,
-} from "./vector-text-single-shadow";
+  VECTOR_TEXT_GPU_GEOMETRY_STRATEGY,
+  type VectorTextGpuMeshData,
+} from "./vector-text-effect-geometry";
+import { VectorTextEffectCompilerClient } from "./vector-text-effect-client";
 import {
-  VECTOR_TEXT_ADAPTIVE_ZOOM_SETTLE_MS,
-  VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
-  VectorTextAdaptiveZoomDetector,
-  type VectorTextZoomFrameAssessment,
-} from "./vector-text-adaptive-zoom";
+  buildVectorTextSlugData,
+  vectorTextPathRevision,
+  type VectorTextSlugData,
+} from "./vector-text-slug";
+import {
+  vectorTextLodForSigma,
+} from "./vector-text-lod";
+import {
+  VECTOR_TEXT_SLUG_GPU_RENDER_STRATEGY,
+} from "./vector-text-slug-gpu-shader";
+import {
+  VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY,
+  planVectorTextSingleShadowBlur,
+} from "./vector-text-single-shadow";
+import { VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY } from "./vector-text-adaptive-zoom";
 
-type VectorTextZoomRenderMode = "precise" | "fast";
+
 
 
 export interface MixedVectorTextHost {
@@ -50,12 +58,13 @@ export interface MixedVectorTextHost {
   getVectorTextViewState(): VectorTextViewState;
   getMixedSceneSnapshot(): MixedSceneSnapshot | null;
   toLayerPoint(sample: PointerSample): { x: number; y: number };
-  updateVectorTextPresentation(
-    source: HTMLCanvasElement,
+  updateVectorTextGpuPresentation(
     placement: VectorTextPlacement,
+    draws: readonly VectorTextGpuDraw[],
   ): VectorTextGpuPresentationStats;
+  isPaintStrokeActive(): boolean;
   clearVectorTextPresentation(placement?: VectorTextPlacement): void;
-  setVectorTextFastPresentationEnabled(enabled: boolean): void;
+  pruneVectorTextGpuMeshes(activeMeshKeys: ReadonlySet<string>): void;
   addVectorTextNode(
     seed: VectorTextNodeSeed,
     name?: string,
@@ -79,7 +88,7 @@ export interface MixedVectorTextDiagnostics {
   singleShadowBlurStrategy: typeof VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY;
   adaptiveZoomStrategy: typeof VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY;
   adaptiveZoomEnabled: boolean;
-  zoomRenderMode: VectorTextZoomRenderMode;
+  zoomRenderMode: "precise";
   zoomFastModeArmed: boolean;
   zoomSlowFrameStreak: number;
   zoomFastActivationCount: number;
@@ -100,7 +109,13 @@ export interface MixedVectorTextDiagnostics {
   singleShadowBrowserLogicalMiB: number;
   singleShadowCacheLogicalMiB: number;
   singleShadowScratchLogicalMiB: number;
+  singleShadowGpuLogicalMiB: number;
   singleShadowCacheEntries: number;
+  gpuGeometryStrategy: typeof VECTOR_TEXT_GPU_GEOMETRY_STRATEGY;
+  gpuRenderStrategy: typeof VECTOR_TEXT_SLUG_GPU_RENDER_STRATEGY;
+  effectWorkerPendingJobs: number;
+  effectWorkerFailedJobs: number;
+  effectWorkerLastError: string | null;
 }
 
 interface Point {
@@ -119,8 +134,8 @@ interface TextMetricsBox {
 interface CachedTextGeometry {
   outlineKey: string;
   outline: VectorTextOutlineGeometry;
-  blockShadowKey: string | null;
-  blockShadow: VectorTextBlockShadowGeometry | null;
+  sourceRevision: string;
+  slug: VectorTextSlugData;
 }
 
 type TransformHandle = "north-west" | "north-east" | "south-east" | "south-west";
@@ -167,6 +182,22 @@ function percentile(values: readonly number[], ratio: number): number {
   }
   const ordered = [...values].sort((a, b) => a - b);
   return ordered[Math.min(ordered.length - 1, Math.floor((ordered.length - 1) * ratio))];
+}
+
+function srgbChannelToLinear(value: number): number {
+  const normalized = Math.min(1, Math.max(0, value));
+  return normalized <= 0.04045
+    ? normalized / 12.92
+    : ((normalized + 0.055) / 1.055) ** 2.4;
+}
+
+function gpuLinearColor(color: string): readonly [number, number, number] {
+  const normalized = /^#[0-9a-f]{6}$/i.test(color) ? color.slice(1) : "000000";
+  return [
+    srgbChannelToLinear(Number.parseInt(normalized.slice(0, 2), 16) / 255),
+    srgbChannelToLinear(Number.parseInt(normalized.slice(2, 4), 16) / 255),
+    srgbChannelToLinear(Number.parseInt(normalized.slice(4, 6), 16) / 255),
+  ];
 }
 
 function pointDistance(first: Point, second: Point): number {
@@ -297,12 +328,12 @@ export class MixedVectorTextController {
   private readonly status = requiredElement<HTMLElement>("vectorTextStatus");
   private readonly zoomModeIndicator = requiredElement<HTMLElement>("vectorTextZoomMode");
 
-  private readonly presentationContext: CanvasRenderingContext2D;
   private readonly interactionContext: CanvasRenderingContext2D;
   private readonly fontGeometry = new VectorTextFontGeometryRegistry();
   private readonly geometryByNodeId = new Map<number, CachedTextGeometry>();
-  private readonly singleShadowBlurRenderer =
-    new VectorTextSingleShadowBlurRenderer();
+  private readonly effectCompiler: VectorTextEffectCompilerClient;
+  private effectReadyIdleTimer: number | null = null;
+  private effectReadyRenderPending = false;
 
   private snapshot: MixedSceneSnapshot | null = null;
   private metrics: TextMetricsBox = {
@@ -318,47 +349,35 @@ export class MixedVectorTextController {
   private lastRenderMs = 0;
   private renderSamples: number[] = [];
   private liveGpuMemoryMiB = 0;
+  private singleShadowGpuMemoryMiB = 0;
+  private singleShadowGpuCacheEntries = 0;
   private viewportTextureCount = 0;
   private renderedTextRunKeys = new Set<VectorTextPlacement>();
   private sceneOperationBusy = false;
-  private readonly adaptiveZoomDetector = new VectorTextAdaptiveZoomDetector();
-  private adaptiveZoomEnabled = true;
-  private zoomRenderMode: VectorTextZoomRenderMode = "precise";
-  private adaptiveZoomFastArmed = false;
   private pendingViewRender = false;
   private pendingViewRenderStartedAt = 0;
-  private viewIdleTimer: number | null = null;
-  private fastRecoveryRequest: number | null = null;
-  private fastOverlayRequest: number | null = null;
-  private exitFastAfterScheduledRender = false;
-  private zoomFastActivationCount = 0;
-  private zoomExactRecoveryCount = 0;
   private lastViewRenderEndToEndMs = 0;
-  private lastAdaptiveZoomTriggerRenderMs = 0;
-  private lastAdaptiveZoomTriggerEndToEndMs = 0;
-  private lastExactCanvasWidth = 0;
-  private lastExactCanvasHeight = 0;
 
   constructor(private readonly host: MixedVectorTextHost) {
-    const presentationContext = this.presentationCanvas.getContext("2d", {
-      alpha: true,
-      desynchronized: true,
-    });
     const interactionContext = this.interactionCanvas.getContext("2d", {
       alpha: true,
       desynchronized: true,
     });
-    if (!presentationContext || !interactionContext) {
-      throw new Error("Canvas2D non disponibile per la scena testo/raster.");
+    if (!interactionContext) {
+      throw new Error("Canvas2D non disponibile per l'overlay di interazione testo.");
     }
-    this.presentationContext = presentationContext;
     this.interactionContext = interactionContext;
+    this.effectCompiler = new VectorTextEffectCompilerClient(() => {
+      this.handleEffectResourceReady();
+    });
   }
 
   async initialize(): Promise<void> {
     await this.fontGeometry.preload();
     this.section.hidden = false;
-    this.presentationCanvas.hidden = false;
+    this.presentationCanvas.width = 1;
+    this.presentationCanvas.height = 1;
+    this.presentationCanvas.hidden = true;
     this.zoomModeIndicator.hidden = false;
     this.updateAdaptiveZoomIndicator();
     this.bindControls();
@@ -373,13 +392,6 @@ export class MixedVectorTextController {
   }
 
   syncScene(snapshot: MixedSceneSnapshot): void {
-    this.adaptiveZoomFastArmed = false;
-    this.adaptiveZoomDetector.reset();
-    this.clearViewIdleTimer();
-    this.cancelFastRecovery();
-    if (this.zoomRenderMode === "fast") {
-      this.exitFastAfterScheduledRender = true;
-    }
     const interaction = this.activeInteraction;
     const interactionStillTargetsSelection =
       interaction !== null
@@ -395,22 +407,7 @@ export class MixedVectorTextController {
         this.geometryByNodeId.delete(id);
       }
     }
-    this.singleShadowBlurRenderer.retainNodes(liveTextNodeIds);
-    for (const item of snapshot.items) {
-      if (item.kind !== "text") {
-        continue;
-      }
-      if (!item.textNode.blockShadowEnabled) {
-        const geometry = this.geometryByNodeId.get(item.textNode.id);
-        if (geometry) {
-          geometry.blockShadowKey = null;
-          geometry.blockShadow = null;
-        }
-      }
-      if (!item.textNode.singleShadowEnabled || item.textNode.singleShadowBlur <= 0) {
-        this.singleShadowBlurRenderer.invalidateNode(item.textNode.id);
-      }
-    }
+
     // Pointer-driven model updates publish a fresh scene snapshot on every
     // move. Cancelling unconditionally here used to terminate resize/move/
     // rotate after the first tiny delta. Preserve the gesture while its exact
@@ -438,80 +435,33 @@ export class MixedVectorTextController {
     if (!this.snapshot?.items.some((item) => item.kind === "text")) {
       return;
     }
-    const view = this.host.getVectorTextViewState();
-    this.armViewIdleTimer();
-    const canvasSizeChanged =
-      this.lastExactCanvasWidth > 0
-      && (
-        view.canvasWidth !== this.lastExactCanvasWidth
-        || view.canvasHeight !== this.lastExactCanvasHeight
-      );
-    if (
-      canvasSizeChanged
-      && (this.zoomRenderMode === "fast" || this.adaptiveZoomFastArmed)
-    ) {
-      this.adaptiveZoomFastArmed = false;
-      this.adaptiveZoomDetector.reset();
-      if (this.zoomRenderMode === "fast") {
-        this.exitFastAfterScheduledRender = true;
-      }
-      this.markPendingViewRender();
-      this.scheduleRender();
-      return;
-    }
-
-    if (
-      this.adaptiveZoomEnabled
-      && (this.zoomRenderMode === "fast" || this.adaptiveZoomFastArmed)
-    ) {
-      this.cancelFastRecovery();
-      if (this.zoomRenderMode !== "fast") {
-        this.enterFastZoomMode();
-      }
-      this.scheduleFastInteractionOverlay();
-      return;
-    }
-
     this.markPendingViewRender();
     this.scheduleRender();
   }
 
-  setAdaptiveZoomEnabled(enabled: boolean): void {
-    if (this.adaptiveZoomEnabled === enabled) {
-      return;
-    }
-    this.adaptiveZoomEnabled = enabled;
-    this.adaptiveZoomFastArmed = false;
-    this.adaptiveZoomDetector.reset();
-    this.clearViewIdleTimer();
-    this.cancelFastRecovery();
-    if (!enabled && this.zoomRenderMode === "fast") {
-      this.exitFastAfterScheduledRender = true;
-      this.scheduleRender();
-    }
+  setAdaptiveZoomEnabled(_enabled: boolean): void {
     this.updateAdaptiveZoomIndicator();
   }
-
   getDiagnostics(): MixedVectorTextDiagnostics {
     const view = this.host.getVectorTextViewState();
-    const singleShadowLedger = this.singleShadowBlurRenderer.ledger();
+    const effectDiagnostics = this.effectCompiler.diagnostics();
     return {
       sceneStrategy: MIXED_SCENE_STACK_STRATEGY,
       livePresentationStrategy: VECTOR_TEXT_PRESENTATION_STRATEGY,
       outlineStrategy: VECTOR_TEXT_OUTLINE_STRATEGY,
-      blockShadowStrategy: VECTOR_TEXT_BLOCK_SHADOW_VECTOR_STRATEGY,
+      blockShadowStrategy: VECTOR_TEXT_BLOCK_SHADOW_STRATEGY,
       singleShadowStrategy: VECTOR_TEXT_SINGLE_SHADOW_STRATEGY,
       singleShadowBlurStrategy: VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY,
       adaptiveZoomStrategy: VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
-      adaptiveZoomEnabled: this.adaptiveZoomEnabled,
-      zoomRenderMode: this.zoomRenderMode,
-      zoomFastModeArmed: this.adaptiveZoomFastArmed,
-      zoomSlowFrameStreak: this.adaptiveZoomDetector.streak,
-      zoomFastActivationCount: this.zoomFastActivationCount,
-      zoomExactRecoveryCount: this.zoomExactRecoveryCount,
+      adaptiveZoomEnabled: false,
+      zoomRenderMode: "precise",
+      zoomFastModeArmed: false,
+      zoomSlowFrameStreak: 0,
+      zoomFastActivationCount: 0,
+      zoomExactRecoveryCount: 0,
       lastViewRenderEndToEndMs: this.lastViewRenderEndToEndMs,
-      lastAdaptiveZoomTriggerRenderMs: this.lastAdaptiveZoomTriggerRenderMs,
-      lastAdaptiveZoomTriggerEndToEndMs: this.lastAdaptiveZoomTriggerEndToEndMs,
+      lastAdaptiveZoomTriggerRenderMs: 0,
+      lastAdaptiveZoomTriggerEndToEndMs: 0,
       selectedKey: this.snapshot?.selectedKey ?? null,
       textNodeCount: this.snapshot?.items.filter((item) => item.kind === "text").length ?? 0,
       renderCount: this.renderCount,
@@ -520,16 +470,19 @@ export class MixedVectorTextController {
       liveGpuMemoryMiB: this.liveGpuMemoryMiB,
       viewportTextureCount: this.viewportTextureCount,
       viewportCanvasLogicalMiB:
-        view.canvasWidth * view.canvasHeight * 4 * 2 / MEBIBYTE_BYTES,
+        view.canvasWidth * view.canvasHeight * 4 / MEBIBYTE_BYTES,
       vectorFontLogicalMiB: this.fontGeometry.logicalFontBytes / MEBIBYTE_BYTES,
       blockShadowPathLogicalMiB: this.blockShadowPathLogicalMiB(),
-      singleShadowBrowserLogicalMiB:
-        singleShadowLedger.browserBytes / MEBIBYTE_BYTES,
-      singleShadowCacheLogicalMiB:
-        singleShadowLedger.cacheBytes / MEBIBYTE_BYTES,
-      singleShadowScratchLogicalMiB:
-        singleShadowLedger.scratchBytes / MEBIBYTE_BYTES,
-      singleShadowCacheEntries: singleShadowLedger.entries,
+      singleShadowBrowserLogicalMiB: 0,
+      singleShadowCacheLogicalMiB: 0,
+      singleShadowScratchLogicalMiB: 0,
+      singleShadowGpuLogicalMiB: this.singleShadowGpuMemoryMiB,
+      singleShadowCacheEntries: this.singleShadowGpuCacheEntries,
+      gpuGeometryStrategy: VECTOR_TEXT_GPU_GEOMETRY_STRATEGY,
+      gpuRenderStrategy: VECTOR_TEXT_SLUG_GPU_RENDER_STRATEGY,
+      effectWorkerPendingJobs: effectDiagnostics.pendingJobs,
+      effectWorkerFailedJobs: effectDiagnostics.failedJobs,
+      effectWorkerLastError: effectDiagnostics.lastError,
     };
   }
 
@@ -834,6 +787,34 @@ export class MixedVectorTextController {
     this.singleShadowOutlineWidthOutput.value = "0 px";
   }
 
+  private handleEffectResourceReady(): void {
+    if (this.host.isPaintStrokeActive()) {
+      this.effectReadyRenderPending = true;
+      this.armEffectReadyIdleCheck();
+      return;
+    }
+    this.effectReadyRenderPending = false;
+    this.scheduleRender();
+  }
+
+  private armEffectReadyIdleCheck(): void {
+    if (this.effectReadyIdleTimer !== null) {
+      return;
+    }
+    this.effectReadyIdleTimer = window.setTimeout(() => {
+      this.effectReadyIdleTimer = null;
+      if (!this.effectReadyRenderPending) {
+        return;
+      }
+      if (this.host.isPaintStrokeActive()) {
+        this.armEffectReadyIdleCheck();
+      } else {
+        this.effectReadyRenderPending = false;
+        this.scheduleRender();
+      }
+    }, 32);
+  }
+
   private scheduleRender(): void {
     if (this.renderRequest !== null) {
       return;
@@ -851,153 +832,23 @@ export class MixedVectorTextController {
     this.pendingViewRender = true;
   }
 
-  private clearViewIdleTimer(): void {
-    if (this.viewIdleTimer !== null) {
-      window.clearTimeout(this.viewIdleTimer);
-      this.viewIdleTimer = null;
-    }
-  }
-
-  private armViewIdleTimer(): void {
-    this.clearViewIdleTimer();
-    if (!this.adaptiveZoomEnabled) {
-      return;
-    }
-    this.viewIdleTimer = window.setTimeout(() => {
-      this.viewIdleTimer = null;
-      if (this.zoomRenderMode === "fast") {
-        this.requestFastRecovery();
-        return;
-      }
-      this.adaptiveZoomFastArmed = false;
-      this.adaptiveZoomDetector.reset();
-      this.updateAdaptiveZoomIndicator();
-    }, VECTOR_TEXT_ADAPTIVE_ZOOM_SETTLE_MS);
-  }
-
-  private cancelFastRecovery(): void {
-    if (this.fastRecoveryRequest !== null) {
-      cancelAnimationFrame(this.fastRecoveryRequest);
-      this.fastRecoveryRequest = null;
-    }
-  }
-
-  private requestFastRecovery(): void {
-    if (
-      this.fastRecoveryRequest !== null
-      || this.zoomRenderMode !== "fast"
-    ) {
-      return;
-    }
-    this.fastRecoveryRequest = requestAnimationFrame(() => {
-      this.fastRecoveryRequest = null;
-      if (this.zoomRenderMode === "fast") {
-        this.renderNow("recovery");
-      }
-    });
-  }
-
-  private enterFastZoomMode(): void {
-    if (this.zoomRenderMode === "fast") {
-      return;
-    }
-    this.zoomRenderMode = "fast";
-    this.adaptiveZoomFastArmed = false;
-    this.adaptiveZoomDetector.reset();
-    this.zoomFastActivationCount += 1;
-    this.host.setVectorTextFastPresentationEnabled(true);
-    this.updateAdaptiveZoomIndicator();
-  }
-
-  private finishFastZoomMode(): void {
-    if (this.zoomRenderMode !== "fast") {
-      return;
-    }
-    this.zoomRenderMode = "precise";
-    this.adaptiveZoomFastArmed = false;
-    this.adaptiveZoomDetector.reset();
-    this.zoomExactRecoveryCount += 1;
-    this.clearViewIdleTimer();
-    this.cancelFastRecovery();
-    this.host.setVectorTextFastPresentationEnabled(false);
-    this.updateAdaptiveZoomIndicator();
-  }
-
-  private handleAdaptiveZoomAssessment(
-    assessment: VectorTextZoomFrameAssessment,
-    renderMs: number,
-    endToEndMs: number,
-  ): void {
-    if (!assessment.shouldArmFastMode) {
-      return;
-    }
-    this.adaptiveZoomFastArmed = true;
-    this.lastAdaptiveZoomTriggerRenderMs = renderMs;
-    this.lastAdaptiveZoomTriggerEndToEndMs = endToEndMs;
-    this.armViewIdleTimer();
-    this.updateAdaptiveZoomIndicator();
-  }
-
   private updateAdaptiveZoomIndicator(): void {
-    const triggerMs = Math.max(
-      this.lastAdaptiveZoomTriggerRenderMs,
-      this.lastAdaptiveZoomTriggerEndToEndMs,
-    );
-    this.zoomModeIndicator.dataset.mode = this.zoomRenderMode;
-    this.zoomModeIndicator.dataset.enabled = String(this.adaptiveZoomEnabled);
-    this.zoomModeIndicator.dataset.activations = String(this.zoomFastActivationCount);
-    this.zoomModeIndicator.dataset.triggerMs = triggerMs.toFixed(2);
-    if (this.zoomRenderMode === "fast") {
-      this.zoomModeIndicator.textContent =
-        `Zoom testo · rapido · ${Math.round(triggerMs)} ms`;
-      this.zoomModeIndicator.title =
-        "Cache testo congelate e riproiettate sulla GPU; qualità piena al termine del gesto.";
-      return;
-    }
-    this.zoomModeIndicator.textContent = "Zoom testo · preciso";
-    this.zoomModeIndicator.title = this.adaptiveZoomEnabled
-      ? "Il fallback rapido si attiva soltanto quando i frame dello zoom sono lenti."
-      : "Fallback rapido sospeso per una misurazione esatta.";
+    this.zoomModeIndicator.dataset.mode = "precise";
+    this.zoomModeIndicator.dataset.enabled = "false";
+    this.zoomModeIndicator.dataset.activations = "0";
+    this.zoomModeIndicator.dataset.triggerMs = "0.00";
+    this.zoomModeIndicator.textContent = "Zoom testo · vettoriale GPU";
+    this.zoomModeIndicator.title =
+      "I contorni OpenType restano Slug/mesh WebGPU durante ogni zoom; nessuna cache bitmap viene ingrandita.";
   }
-
-  private scheduleFastInteractionOverlay(): void {
-    if (this.fastOverlayRequest !== null) {
-      return;
-    }
-    this.fastOverlayRequest = requestAnimationFrame(() => {
-      this.fastOverlayRequest = null;
-      if (this.zoomRenderMode !== "fast") {
-        return;
-      }
-      const view = this.host.getVectorTextViewState();
-      this.syncCanvasSizes(view);
-      const selectedNode = this.selectedTextNode();
-      if (selectedNode) {
-        this.metrics = this.measureText(selectedNode);
-        this.renderInteractionOverlay(view, selectedNode);
-      } else {
-        this.clearInteractionOverlay(view);
-      }
-    });
-  }
-
   private syncCanvasSizes(view: VectorTextViewState): void {
-    for (const canvas of [this.presentationCanvas, this.interactionCanvas]) {
-      if (canvas.width !== view.canvasWidth || canvas.height !== view.canvasHeight) {
-        canvas.width = view.canvasWidth;
-        canvas.height = view.canvasHeight;
-      }
+    if (
+      this.interactionCanvas.width !== view.canvasWidth
+      || this.interactionCanvas.height !== view.canvasHeight
+    ) {
+      this.interactionCanvas.width = view.canvasWidth;
+      this.interactionCanvas.height = view.canvasHeight;
     }
-  }
-
-  private configureTextContext(
-    context: CanvasRenderingContext2D,
-    node: Readonly<VectorTextNode>,
-  ): void {
-    context.lineJoin = node.outlineJoin;
-    context.lineCap = "butt";
-    context.lineWidth = vectorTextOutlineCanvasLineWidth(node.outlineWidth);
-    context.miterLimit = VECTOR_TEXT_OUTLINE_MITER_LIMIT;
   }
 
   private geometryForNode(
@@ -1008,143 +859,285 @@ export class MixedVectorTextController {
     if (cached?.outlineKey === outlineKey) {
       return cached;
     }
+    const outline = this.fontGeometry.outline(
+      node.fontFamily,
+      node.text,
+      node.fontSize,
+    );
+    const sourceRevision = vectorTextPathRevision(outline.pathData);
     const created: CachedTextGeometry = {
       outlineKey,
-      outline: this.fontGeometry.outline(
-        node.fontFamily,
-        node.text,
-        node.fontSize,
-      ),
-      blockShadowKey: null,
-      blockShadow: null,
+      outline,
+      sourceRevision,
+      slug: buildVectorTextSlugData(outline.pathData, sourceRevision),
     };
     this.geometryByNodeId.set(node.id, created);
     return created;
   }
 
-  private blockShadowGeometryForNode(
+  private effectLodForNode(
     node: Readonly<VectorTextNode>,
-    geometry: CachedTextGeometry,
-  ): VectorTextBlockShadowGeometry {
-    const key = `${geometry.outlineKey}\u0000${node.blockShadowOffset}`
-      + `\u0000${node.blockShadowAngle}`;
-    if (geometry.blockShadowKey !== key || !geometry.blockShadow) {
-      geometry.blockShadowKey = key;
-      geometry.blockShadow = buildVectorTextBlockShadowGeometry(
-        geometry.outline,
-        node.blockShadowOffset,
-        node.blockShadowAngle,
-      );
-    }
-    return geometry.blockShadow;
+    view: VectorTextViewState,
+  ) {
+    return vectorTextLodForSigma(Math.abs(node.scale * view.zoom));
   }
 
-  private blockShadowPathLogicalMiB(): number {
-    let bytes = 0;
-    for (const geometry of this.geometryByNodeId.values()) {
-      bytes += geometry.blockShadow?.logicalBytes ?? 0;
-    }
-    return bytes / MEBIBYTE_BYTES;
-  }
-
-  private drawBlockShadow(
-    target: CanvasRenderingContext2D,
-    node: Readonly<VectorTextNode>,
-    geometry: CachedTextGeometry,
-  ): boolean {
-    if (
-      !node.blockShadowEnabled
-      || node.blockShadowOpacity <= 0
-      || node.opacity <= 0
-    ) {
-      return false;
-    }
-    const blockShadow = this.blockShadowGeometryForNode(node, geometry);
-    target.save();
-    target.globalAlpha = node.opacity * node.blockShadowOpacity;
-    target.globalCompositeOperation = "source-over";
-    target.fillStyle = node.blockShadowColor;
-    target.strokeStyle = node.blockShadowColor;
-    target.lineJoin = node.outlineJoin === "round" ? "round" : "miter";
-    target.lineCap = "butt";
-    target.miterLimit = VECTOR_TEXT_OUTLINE_MITER_LIMIT;
-    if (node.blockShadowOutlineWidth > 0) {
-      // Valore diretto come nel core paint-webgpu-m1: zero significa zero,
-      // senza minimo implicito e senza raddoppio Canvas2D.
-      target.lineWidth = node.blockShadowOutlineWidth;
-      target.stroke(blockShadow.canvasPath);
-    }
-    target.fill(blockShadow.canvasPath);
-    target.restore();
-    return true;
-  }
-
-  private drawSingleShadow(
-    target: CanvasRenderingContext2D,
+  private effectMeshForNode(
     node: Readonly<VectorTextNode>,
     geometry: CachedTextGeometry,
     view: VectorTextViewState,
-  ): boolean {
-    if (
-      !node.singleShadowEnabled
-      || node.singleShadowOpacity <= 0
-      || node.opacity <= 0
-    ) {
-      this.singleShadowBlurRenderer.invalidateNode(node.id);
-      return false;
-    }
+    slotName: string,
+    effect: Parameters<VectorTextEffectCompilerClient["meshForSlot"]>[4],
+    liveSlots: Set<string>,
+  ): VectorTextGpuMeshData | null {
+    const slotKey = `text:${node.id}:${slotName}`;
+    liveSlots.add(slotKey);
+    return this.effectCompiler.meshForSlot(
+      slotKey,
+      geometry.sourceRevision,
+      geometry.outline.pathData,
+      this.effectLodForNode(node, view),
+      effect,
+      !this.host.isPaintStrokeActive(),
+    );
+  }
+
+  private slugDraw(
+    node: Readonly<VectorTextNode>,
+    meshKey: string,
+    slug: VectorTextSlugData,
+    color: string,
+    opacity: number,
+    localOffsetX = 0,
+    localOffsetY = 0,
+  ): VectorTextGpuDraw {
+    return {
+      mode: "slug-direct",
+      meshKey,
+      slug,
+      x: node.x,
+      y: node.y,
+      scale: node.scale,
+      rotation: node.rotation,
+      localOffsetX: slug.originX + localOffsetX,
+      localOffsetY: slug.originY + localOffsetY,
+      color: gpuLinearColor(color),
+      opacity: Math.min(1, Math.max(0, opacity)),
+    };
+  }
+
+  private meshDraw(
+    node: Readonly<VectorTextNode>,
+    meshKey: string,
+    mesh: VectorTextGpuMeshData,
+    color: string,
+    opacity: number,
+  ): VectorTextGpuDraw {
+    return {
+      mode: "mesh-direct",
+      meshKey,
+      mesh,
+      x: node.x,
+      y: node.y,
+      scale: node.scale,
+      rotation: node.rotation,
+      localOffsetX: mesh.originX,
+      localOffsetY: mesh.originY,
+      color: gpuLinearColor(color),
+      opacity: Math.min(1, Math.max(0, opacity)),
+    };
+  }
+
+  private slugBlurDraw(
+    node: Readonly<VectorTextNode>,
+    geometry: CachedTextGeometry,
+    view: VectorTextViewState,
+  ): VectorTextGpuDraw {
+    const requestedPixelScale = Math.max(
+      1 / 32,
+      Math.abs(view.zoom * node.scale),
+    );
+    const bucketScale = 2 ** Math.ceil(Math.log2(requestedPixelScale));
+    const plan = planVectorTextSingleShadowBlur(
+      {
+        left: geometry.outline.inkLeft,
+        top: geometry.outline.inkTop,
+        right: geometry.outline.inkRight,
+        bottom: geometry.outline.inkBottom,
+      },
+      node.singleShadowBlur,
+      bucketScale,
+    );
     const vector = vectorTextSingleShadowLocalVector(
       node.singleShadowOffset,
       node.singleShadowAngle,
     );
-    const opacity = node.opacity * node.singleShadowOpacity;
-    if (node.singleShadowBlur > 0) {
-      return this.singleShadowBlurRenderer.draw(target, {
-        nodeId: node.id,
-        geometryKey: geometry.outlineKey,
-        path: geometry.outline.canvasPath,
-        bounds: {
-          left: geometry.outline.inkLeft,
-          top: geometry.outline.inkTop,
-          right: geometry.outline.inkRight,
-          bottom: geometry.outline.inkBottom,
-        },
-        color: node.singleShadowColor,
-        opacity,
-        blur: node.singleShadowBlur,
-        offsetX: vector.x,
-        offsetY: vector.y,
-        pixelScale: Math.max(0.0001, Math.abs(view.zoom * node.scale)),
-      });
-    }
-
-    this.singleShadowBlurRenderer.invalidateNode(node.id);
-    target.save();
-    target.globalAlpha = opacity;
-    target.globalCompositeOperation = "source-over";
-    target.translate(vector.x, vector.y);
-    target.fillStyle = node.singleShadowColor;
-    target.fill(geometry.outline.canvasPath);
-    target.restore();
-    return true;
+    const blurKey = [
+      "vector-text-gpu-blur-v1",
+      node.id,
+      geometry.sourceRevision,
+      node.singleShadowBlur.toFixed(4),
+      plan.width,
+      plan.height,
+      plan.scale.toFixed(8),
+      plan.sigmaPixels.toFixed(8),
+      plan.radius,
+    ].join(":");
+    return {
+      mode: "slug-blur",
+      meshKey: `text:${node.id}:slug`,
+      slug: geometry.slug,
+      blurKey,
+      blurBounds: [
+        plan.bounds[0],
+        plan.bounds[1],
+        plan.bounds[2],
+        plan.bounds[3],
+      ],
+      blurWidth: plan.width,
+      blurHeight: plan.height,
+      blurScale: plan.scale,
+      blurSigmaPixels: plan.sigmaPixels,
+      blurRadius: plan.radius,
+      x: node.x,
+      y: node.y,
+      scale: node.scale,
+      rotation: node.rotation,
+      localOffsetX: vector.x,
+      localOffsetY: vector.y,
+      color: gpuLinearColor(node.singleShadowColor),
+      opacity: Math.min(
+        1,
+        Math.max(0, node.opacity * node.singleShadowOpacity),
+      ),
+    };
   }
-
-  private drawText(
-    context: CanvasRenderingContext2D,
+  private appendGpuDrawsForNode(
+    draws: VectorTextGpuDraw[],
     node: Readonly<VectorTextNode>,
     geometry: CachedTextGeometry,
-    opacity: number,
+    view: VectorTextViewState,
+    liveSlots: Set<string>,
   ): void {
-    this.configureTextContext(context, node);
-    context.globalAlpha = opacity;
-    if (node.outlineWidth > 0) {
-      context.strokeStyle = node.outlineColor;
-      context.stroke(geometry.outline.canvasPath);
+    if (node.singleShadowEnabled && node.singleShadowOpacity > 0) {
+      if (node.singleShadowBlur > 0) {
+        draws.push(this.slugBlurDraw(node, geometry, view));
+      } else {
+        const vector = vectorTextSingleShadowLocalVector(
+          node.singleShadowOffset,
+          node.singleShadowAngle,
+        );
+        draws.push(this.slugDraw(
+          node,
+          `text:${node.id}:slug`,
+          geometry.slug,
+          node.singleShadowColor,
+          node.opacity * node.singleShadowOpacity,
+          vector.x,
+          vector.y,
+        ));
+      }
     }
-    context.fillStyle = node.color;
-    context.fill(geometry.outline.canvasPath);
+
+    if (node.blockShadowEnabled && node.blockShadowOpacity > 0) {
+      const vector = vectorTextBlockShadowLocalVector(
+        node.fontSize,
+        node.blockShadowOffset,
+        node.blockShadowAngle,
+      );
+      if (node.blockShadowOutlineWidth > 0) {
+        const mesh = this.effectMeshForNode(
+          node,
+          geometry,
+          view,
+          "block-outline",
+          {
+            kind: "block-outline",
+            vectorX: vector.x,
+            vectorY: vector.y,
+            width: node.blockShadowOutlineWidth,
+            join: node.outlineJoin,
+          },
+          liveSlots,
+        );
+        if (mesh) {
+          draws.push(this.meshDraw(
+            node,
+            `text:${node.id}:block-outline`,
+            mesh,
+            node.blockShadowColor,
+            node.opacity * node.blockShadowOpacity,
+          ));
+        }
+      }
+      if (Math.hypot(vector.x, vector.y) <= Number.EPSILON) {
+        draws.push(this.slugDraw(
+          node,
+          `text:${node.id}:slug`,
+          geometry.slug,
+          node.blockShadowColor,
+          node.opacity * node.blockShadowOpacity,
+        ));
+      } else {
+        const mesh = this.effectMeshForNode(
+          node,
+          geometry,
+          view,
+          "block",
+          {
+            kind: "block",
+            vectorX: vector.x,
+            vectorY: vector.y,
+          },
+          liveSlots,
+        );
+        if (mesh) {
+          draws.push(this.meshDraw(
+            node,
+            `text:${node.id}:block`,
+            mesh,
+            node.blockShadowColor,
+            node.opacity * node.blockShadowOpacity,
+          ));
+        }
+      }
+    }
+
+    if (node.outlineWidth > 0) {
+      const mesh = this.effectMeshForNode(
+        node,
+        geometry,
+        view,
+        "outline",
+        {
+          kind: "source-outline",
+          width: node.outlineWidth,
+          join: node.outlineJoin,
+        },
+        liveSlots,
+      );
+      if (mesh) {
+        draws.push(this.meshDraw(
+          node,
+          `text:${node.id}:outline`,
+          mesh,
+          node.outlineColor,
+          node.opacity,
+        ));
+      }
+    }
+    draws.push(this.slugDraw(
+      node,
+      `text:${node.id}:slug`,
+      geometry.slug,
+      node.color,
+      node.opacity,
+    ));
   }
 
+  private blockShadowPathLogicalMiB(): number {
+    return 0;
+  }
   private measureText(node: Readonly<VectorTextNode>): TextMetricsBox {
     const outline = this.geometryForNode(node).outline;
     return {
@@ -1156,27 +1149,11 @@ export class MixedVectorTextController {
     };
   }
 
-  private setViewTransform(
-    context: CanvasRenderingContext2D,
-    view: VectorTextViewState,
-  ): void {
-    const a = view.rotationCos * view.zoom;
-    const b = view.rotationSin * view.zoom;
-    const c = -view.rotationSin * view.zoom;
-    const d = view.rotationCos * view.zoom;
-    const e = view.canvasWidth * 0.5 - a * view.centerX - c * view.centerY;
-    const f = view.canvasHeight * 0.5 - b * view.centerX - d * view.centerY;
-    context.setTransform(a, b, c, d, e, f);
-  }
-
-  private renderNow(origin: "scheduled" | "recovery" = "scheduled"): void {
+  private renderNow(): void {
     const wasViewRender = this.pendingViewRender;
     const viewRenderStartedAt = this.pendingViewRenderStartedAt;
     this.pendingViewRender = false;
     this.pendingViewRenderStartedAt = 0;
-    const shouldExitFastAfterRender =
-      origin === "recovery" || this.exitFastAfterScheduledRender;
-    this.exitFastAfterScheduledRender = false;
     const startedAt = performance.now();
     const view = this.host.getVectorTextViewState();
     this.syncCanvasSizes(view);
@@ -1184,7 +1161,11 @@ export class MixedVectorTextController {
     const selectedNode = this.selectedTextNode();
 
     let gpuMemoryMiB = 0;
+    let blurGpuMemoryMiB = 0;
+    let blurGpuCacheEntries = 0;
     let textureCount = 0;
+    const activeMeshKeys = new Set<string>();
+    const liveEffectSlots = new Set<string>();
     if (!snapshot) {
       this.host.clearVectorTextPresentation();
       this.renderedTextRunKeys.clear();
@@ -1231,32 +1212,45 @@ export class MixedVectorTextController {
           continue;
         }
 
-        const context = this.presentationContext;
-        context.save();
-        context.setTransform(1, 0, 0, 1, 0, 0);
-        context.clearRect(0, 0, view.canvasWidth, view.canvasHeight);
-        this.setViewTransform(context, view);
+        const draws: VectorTextGpuDraw[] = [];
         for (const node of nodes) {
           const geometry = this.geometryForNode(node);
-          context.save();
-          context.translate(node.x, node.y);
-          context.rotate(node.rotation);
-          context.scale(node.scale, node.scale);
-          this.drawSingleShadow(context, node, geometry, view);
-          this.drawBlockShadow(context, node, geometry);
-          this.drawText(context, node, geometry, node.opacity);
-          context.restore();
+          this.appendGpuDrawsForNode(
+            draws,
+            node,
+            geometry,
+            view,
+            liveEffectSlots,
+          );
         }
-        context.restore();
 
-        const stats = this.host.updateVectorTextPresentation(
-          this.presentationCanvas,
+        for (const draw of draws) {
+          activeMeshKeys.add(draw.meshKey);
+          if (draw.mode === "slug-blur") {
+            activeMeshKeys.add(draw.blurKey);
+          }
+        }
+        const stats = this.host.updateVectorTextGpuPresentation(
           group.placement,
+          draws,
         );
         gpuMemoryMiB += stats.gpuMemoryMiB;
+        blurGpuMemoryMiB = Math.max(
+          blurGpuMemoryMiB,
+          stats.blurGpuMemoryMiB,
+        );
+        blurGpuCacheEntries = Math.max(
+          blurGpuCacheEntries,
+          stats.blurCacheEntries,
+        );
         textureCount += 1;
       }
     }
+    this.effectCompiler.retainSlots(liveEffectSlots);
+    this.host.pruneVectorTextGpuMeshes(activeMeshKeys);
+    gpuMemoryMiB += blurGpuMemoryMiB;
+    this.singleShadowGpuMemoryMiB = blurGpuMemoryMiB;
+    this.singleShadowGpuCacheEntries = blurGpuCacheEntries;
 
     if (snapshot?.items.some((item) => item.kind === "text")) {
       // The exact heterogeneous order is accumulated once in a linear
@@ -1275,38 +1269,17 @@ export class MixedVectorTextController {
 
     const finishedAt = performance.now();
     this.lastRenderMs = finishedAt - startedAt;
-    this.lastExactCanvasWidth = view.canvasWidth;
-    this.lastExactCanvasHeight = view.canvasHeight;
     this.renderSamples.push(this.lastRenderMs);
     if (this.renderSamples.length > FRAME_SAMPLE_LIMIT) {
       this.renderSamples.splice(0, this.renderSamples.length - FRAME_SAMPLE_LIMIT);
     }
     this.renderCount += 1;
-    if (shouldExitFastAfterRender && this.zoomRenderMode === "fast") {
-      this.finishFastZoomMode();
-    }
     if (wasViewRender) {
       this.lastViewRenderEndToEndMs = Math.max(
         this.lastRenderMs,
         finishedAt - (viewRenderStartedAt || startedAt),
       );
-      if (
-        this.adaptiveZoomEnabled
-        && this.zoomRenderMode === "precise"
-        && !shouldExitFastAfterRender
-      ) {
-        const assessment = this.adaptiveZoomDetector.observe({
-          renderMs: this.lastRenderMs,
-          endToEndMs: this.lastViewRenderEndToEndMs,
-        });
-        this.handleAdaptiveZoomAssessment(
-          assessment,
-          this.lastRenderMs,
-          this.lastViewRenderEndToEndMs,
-        );
-      }
-    }
-    this.updateAdaptiveZoomIndicator();
+    }    this.updateAdaptiveZoomIndicator();
     this.updateStatus(view, selectedNode);
   }
 
@@ -1315,22 +1288,21 @@ export class MixedVectorTextController {
     node: Readonly<VectorTextNode> | null,
   ): void {
     const viewportCanvasLogicalMiB =
-      view.canvasWidth * view.canvasHeight * 4 * 2 / MEBIBYTE_BYTES;
+      view.canvasWidth * view.canvasHeight * 4 / MEBIBYTE_BYTES;
     const vectorFontLogicalMiB = this.fontGeometry.logicalFontBytes / MEBIBYTE_BYTES;
-    const blockShadowPathLogicalMiB = this.blockShadowPathLogicalMiB();
-    const singleShadowLedger = this.singleShadowBlurRenderer.ledger();
-    const singleShadowBrowserLogicalMiB =
-      singleShadowLedger.browserBytes / MEBIBYTE_BYTES;
-    const browserCanvasLogicalMiB =
-      viewportCanvasLogicalMiB + singleShadowBrowserLogicalMiB;
+    const effectDiagnostics = this.effectCompiler.diagnostics();
+    const browserCanvasLogicalMiB = viewportCanvasLogicalMiB;
     const cacheLabel = `${this.viewportTextureCount} cache GPU viewport`;
     const timing = `render ${this.lastRenderMs.toFixed(2)} ms `
       + `(p95 ${percentile(this.renderSamples, 0.95).toFixed(2)} ms)`;
+    const effectLabel = `Worker effetti ${effectDiagnostics.pendingJobs} in attesa · `
+      + `${effectDiagnostics.readyJobs} pronti · ${effectDiagnostics.failedJobs} errori`
+      + (effectDiagnostics.lastError ? ` · ${effectDiagnostics.lastError}` : "");
     if (!node) {
       this.status.textContent =
         `Raster selezionato · testi semantici nel canvas di viewport · ${cacheLabel} `
         + `${this.liveGpuMemoryMiB.toFixed(2)} MiB · canvas browser `
-        + `${browserCanvasLogicalMiB.toFixed(2)} MiB · ${timing}.`;
+        + `${browserCanvasLogicalMiB.toFixed(2)} MiB · ${effectLabel} · ${timing}.`;
       return;
     }
 
@@ -1348,23 +1320,23 @@ export class MixedVectorTextController {
       : "traccia off";
     const blockShadow = node.blockShadowEnabled
       ? `Block Shadow vettoriale ${Math.round(node.blockShadowOffset)} @ `
-        + `${Math.round(node.blockShadowAngle)}° · path `
-        + `${(blockShadowPathLogicalMiB * 1024).toFixed(1)} KiB · GPU +0 MiB`
+        + `${Math.round(node.blockShadowAngle)}° · mesh Worker + WebGPU`
       : "Block Shadow off";
     const singleShadow = node.singleShadowEnabled
       ? `Ombra singola ${Math.round(node.singleShadowOffset)} @ `
         + `${Math.round(node.singleShadowAngle)}° · blur `
-        + `${Math.round(node.singleShadowBlur)} · cache browser `
-        + `${singleShadowBrowserLogicalMiB.toFixed(2)} MiB `
-        + `(${singleShadowLedger.entries} matte + scratch) · GPU effetto +0 MiB`
+        + `${Math.round(node.singleShadowBlur)} · `
+        + (node.singleShadowBlur > 0
+          ? `Gaussian WebGPU ${this.singleShadowGpuMemoryMiB.toFixed(2)} MiB `
+            + `(${this.singleShadowGpuCacheEntries} matte + scratch GPU)`
+          : "Slug vettoriale WebGPU, nessuna bitmap")
       : "Ombra singola off";
     this.status.textContent =
       `${node.name} · oggetto testo ${placement} · ${cacheLabel} `
       + `${this.liveGpuMemoryMiB.toFixed(2)} MiB · canvas browser `
       + `${browserCanvasLogicalMiB.toFixed(2)} MiB · font vettoriali `
       + `${vectorFontLogicalMiB.toFixed(2)} MiB · ${outline} · ${blockShadow} · `
-      + `${singleShadow} · `
-      + `${timing}.`;
+      + `${singleShadow} · ${effectLabel} · ${timing}.`;
   }
   private layerToCanvas(point: Point, view: VectorTextViewState): Point {
     const deltaX = point.x - view.centerX;

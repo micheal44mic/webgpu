@@ -1,5 +1,5 @@
 export const VECTOR_TEXT_OUTLINE_STRATEGY =
-  "canvas2d-glyph-stroke-semantic-viewport-zero-document-cache-v2" as const;
+  "webgpu-clipper64-worker-outside-offset-native-round-bevel-exact-miter4-v4" as const;
 
 export const VECTOR_TEXT_OUTLINE_WIDTH_MINIMUM = 0;
 export const VECTOR_TEXT_OUTLINE_WIDTH_MAXIMUM = 100;
@@ -8,14 +8,14 @@ export const VECTOR_TEXT_OUTLINE_MITER_LIMIT = 4;
 export type VectorTextOutlineJoin = "bevel" | "miter" | "round";
 
 export const VECTOR_TEXT_BLOCK_SHADOW_STRATEGY =
-  "paint-webgpu-m1-shadow3d-v2-single-extruded-vector-silhouette" as const;
+  "webgpu-clipper64-worker-canonical-swept-union-mesh-v4" as const;
 export const VECTOR_TEXT_BLOCK_SHADOW_OFFSET_MINIMUM = 0;
 export const VECTOR_TEXT_BLOCK_SHADOW_OFFSET_MAXIMUM = 100;
 export const VECTOR_TEXT_BLOCK_SHADOW_ANGLE_MINIMUM = -180;
 export const VECTOR_TEXT_BLOCK_SHADOW_ANGLE_MAXIMUM = 180;
 
 export const VECTOR_TEXT_SINGLE_SHADOW_STRATEGY =
-  "paint-webgpu-m1-shadow3d-v2-single-offset-mask-with-blur" as const;
+  "webgpu-slug-zero-blur-or-r8-separable-gaussian-v2" as const;
 export const VECTOR_TEXT_SINGLE_SHADOW_OFFSET_MINIMUM = 0;
 export const VECTOR_TEXT_SINGLE_SHADOW_OFFSET_MAXIMUM = 100;
 export const VECTOR_TEXT_SINGLE_SHADOW_ANGLE_MINIMUM = -180;
@@ -39,17 +39,11 @@ export function normalizeVectorTextOutlineJoin(
     : "round";
 }
 
-export function vectorTextOutlineCanvasLineWidth(width: number): number {
-  // Canvas2D centra lo stroke sul contorno del glifo. Raddoppiare qui fa sì
-  // che il valore UI descriva lo spessore realmente visibile fuori dal fill.
-  return normalizeVectorTextOutlineWidth(width) * 2;
-}
-
 export function vectorTextOutlineLocalReach(
   width: number,
   join: VectorTextOutlineJoin,
 ): number {
-  const outsideWidth = vectorTextOutlineCanvasLineWidth(width) * 0.5;
+  const outsideWidth = normalizeVectorTextOutlineWidth(width);
   return normalizeVectorTextOutlineJoin(join) === "miter"
     ? outsideWidth * VECTOR_TEXT_OUTLINE_MITER_LIMIT
     : outsideWidth;
