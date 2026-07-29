@@ -14,6 +14,7 @@ import {
 } from "./vector-text-lod";
 
 interface PendingEffect {
+  readonly slotKey: string;
   readonly cacheKey: string;
   readonly effectIdentity: string;
   readonly sourceRevision: string;
@@ -41,6 +42,14 @@ export interface VectorTextEffectClientDiagnostics {
   readonly failedJobs: number;
   readonly lastError: string | null;
 }
+
+export interface VectorTextEffectMeshResult {
+  readonly mesh: VectorTextGpuMeshData | null;
+  readonly matchesRequestedIdentity: boolean;
+}
+
+const MAXIMUM_READY_EFFECT_CACHE_ENTRIES = 48;
+const MAXIMUM_REGISTERED_PATHS = 128;
 
 function effectIdentity(
   sourceRevision: string,
@@ -99,9 +108,10 @@ export class VectorTextEffectCompilerClient {
   private readonly registeredPaths = new Set<string>();
   private readonly pendingByRequest = new Map<number, PendingEffect>();
   private readonly pendingKeys = new Set<string>();
-  private readonly queuedByIdentity = new Map<string, QueuedEffect>();
+  private readonly queuedBySlot = new Map<string, QueuedEffect>();
   private readonly readyByKey = new Map<string, ReadyEffect>();
   private readonly displayedBySlot = new Map<string, DisplayedEffect>();
+  private readonly desiredKeyBySlot = new Map<string, string>();
   private activeRequestId: number | null = null;
   private nextRequestId = 1;
   private failedJobs = 0;
@@ -127,24 +137,31 @@ export class VectorTextEffectCompilerClient {
     lod: VectorTextLod,
     effect: VectorTextEffectDescription,
     allowAtomicSwap: boolean,
-  ): VectorTextGpuMeshData | null {
+  ): VectorTextEffectMeshResult {
     const identity = effectIdentity(sourceRevision, effect);
     const key = cacheKey(identity, lod);
+    this.desiredKeyBySlot.set(slotKey, key);
     this.registerPath(sourceRevision, path);
 
-    const displayed = this.displayedBySlot.get(slotKey);
-    if (displayed && displayed.sourceRevision !== sourceRevision) {
-      this.displayedBySlot.delete(slotKey);
-    }
     const current = this.displayedBySlot.get(slotKey);
     const currentAlreadyFiner =
       current?.effectIdentity === identity
       && current.lodBucket >= lod.bucket;
     if (!currentAlreadyFiner) {
-      this.requestEffect(key, identity, sourceRevision, lod, effect);
+      this.requestEffect(
+        slotKey,
+        key,
+        identity,
+        sourceRevision,
+        lod,
+        effect,
+      );
     }
     if (!allowAtomicSwap) {
-      return current?.mesh ?? null;
+      return {
+        mesh: current?.mesh ?? null,
+        matchesRequestedIdentity: current?.effectIdentity === identity,
+      };
     }
 
     const ready = this.readyByKey.get(key);
@@ -158,19 +175,37 @@ export class VectorTextEffectCompilerClient {
     ) {
       this.displayedBySlot.set(slotKey, { ...ready, slotKey });
       this.pruneReadyLods(identity, ready.lodBucket);
-      return ready.mesh;
+      return {
+        mesh: ready.mesh,
+        matchesRequestedIdentity: true,
+      };
     }
-    return current?.mesh ?? null;
+    return {
+      mesh: current?.mesh ?? null,
+      matchesRequestedIdentity: current?.effectIdentity === identity,
+    };
   }
 
   clearSlot(slotKey: string): void {
     this.displayedBySlot.delete(slotKey);
+    this.desiredKeyBySlot.delete(slotKey);
+    const queued = this.queuedBySlot.get(slotKey);
+    if (queued) {
+      this.pendingKeys.delete(queued.cacheKey);
+      this.queuedBySlot.delete(slotKey);
+    }
+    this.pruneRegisteredPaths();
   }
 
   retainSlots(liveSlots: ReadonlySet<string>): void {
-    for (const slot of this.displayedBySlot.keys()) {
+    const knownSlots = new Set([
+      ...this.displayedBySlot.keys(),
+      ...this.desiredKeyBySlot.keys(),
+      ...this.queuedBySlot.keys(),
+    ]);
+    for (const slot of knownSlots) {
       if (!liveSlots.has(slot)) {
-        this.displayedBySlot.delete(slot);
+        this.clearSlot(slot);
       }
     }
   }
@@ -178,7 +213,7 @@ export class VectorTextEffectCompilerClient {
   diagnostics(): VectorTextEffectClientDiagnostics {
     return {
       registeredPaths: this.registeredPaths.size,
-      pendingJobs: this.pendingByRequest.size + this.queuedByIdentity.size,
+      pendingJobs: this.pendingByRequest.size + this.queuedBySlot.size,
       readyJobs: this.readyByKey.size,
       displayedSlots: this.displayedBySlot.size,
       failedJobs: this.failedJobs,
@@ -191,6 +226,8 @@ export class VectorTextEffectCompilerClient {
     path: Shadow3dPathData,
   ): void {
     if (this.registeredPaths.has(revision)) {
+      this.registeredPaths.delete(revision);
+      this.registeredPaths.add(revision);
       return;
     }
     const verbs = new Uint8Array(path.verbs);
@@ -212,19 +249,52 @@ export class VectorTextEffectCompilerClient {
       contourOffsets.buffer,
     ]);
     this.registeredPaths.add(revision);
+    this.pruneRegisteredPaths();
+  }
+
+  private pruneRegisteredPaths(): void {
+    if (this.registeredPaths.size <= MAXIMUM_REGISTERED_PATHS) {
+      return;
+    }
+    const protectedRevisions = new Set([
+      ...[...this.pendingByRequest.values()].map((value) => value.sourceRevision),
+      ...[...this.queuedBySlot.values()].map((value) => value.sourceRevision),
+      ...[...this.displayedBySlot.values()].map((value) => value.sourceRevision),
+    ]);
+    for (const revision of this.registeredPaths) {
+      if (this.registeredPaths.size <= MAXIMUM_REGISTERED_PATHS) {
+        break;
+      }
+      if (protectedRevisions.has(revision)) {
+        continue;
+      }
+      const message: VectorTextEffectWorkerRequest = {
+        type: "release-path",
+        revision,
+      };
+      this.worker.postMessage(message);
+      this.registeredPaths.delete(revision);
+    }
   }
 
   private requestEffect(
+    slotKey: string,
     key: string,
     identity: string,
     sourceRevision: string,
     lod: VectorTextLod,
     effect: VectorTextEffectDescription,
   ): void {
+    const superseded = this.queuedBySlot.get(slotKey);
+    if (superseded && superseded.cacheKey !== key) {
+      this.pendingKeys.delete(superseded.cacheKey);
+      this.queuedBySlot.delete(slotKey);
+    }
     if (this.readyByKey.has(key) || this.pendingKeys.has(key)) {
       return;
     }
     const queued: QueuedEffect = {
+      slotKey,
       cacheKey: key,
       effectIdentity: identity,
       sourceRevision,
@@ -232,11 +302,7 @@ export class VectorTextEffectCompilerClient {
       lod,
       effect,
     };
-    const superseded = this.queuedByIdentity.get(identity);
-    if (superseded) {
-      this.pendingKeys.delete(superseded.cacheKey);
-    }
-    this.queuedByIdentity.set(identity, queued);
+    this.queuedBySlot.set(slotKey, queued);
     this.pendingKeys.add(key);
     this.pumpQueue();
   }
@@ -245,12 +311,12 @@ export class VectorTextEffectCompilerClient {
     if (this.activeRequestId !== null) {
       return;
     }
-    const next = this.queuedByIdentity.entries().next();
+    const next = this.queuedBySlot.entries().next();
     if (next.done) {
       return;
     }
-    const [identity, queued] = next.value;
-    this.queuedByIdentity.delete(identity);
+    const [slotKey, queued] = next.value;
+    this.queuedBySlot.delete(slotKey);
     const requestId = this.nextRequestId;
     this.nextRequestId += 1;
     this.activeRequestId = requestId;
@@ -281,12 +347,17 @@ export class VectorTextEffectCompilerClient {
     if (response.type === "effect-failed") {
       this.failedJobs += 1;
       this.lastError = response.message;
-    } else {
+    } else if (
+      [...this.desiredKeyBySlot.values()].some(
+        (desiredKey) => desiredKey === response.cacheKey,
+      )
+    ) {
       this.readyByKey.set(response.cacheKey, {
         ...pending,
         mesh: response.mesh,
       });
     }
+    this.pruneRegisteredPaths();
     this.onResourceReady();
     this.pumpQueue();
   }
@@ -303,6 +374,20 @@ export class VectorTextEffectCompilerClient {
       ));
     for (const [key] of entries.slice(3)) {
       this.readyByKey.delete(key);
+    }
+    if (this.readyByKey.size <= MAXIMUM_READY_EFFECT_CACHE_ENTRIES) {
+      return;
+    }
+    const displayedKeys = new Set(
+      [...this.displayedBySlot.values()].map((value) => value.cacheKey),
+    );
+    for (const key of this.readyByKey.keys()) {
+      if (this.readyByKey.size <= MAXIMUM_READY_EFFECT_CACHE_ENTRIES) {
+        break;
+      }
+      if (!displayedKeys.has(key)) {
+        this.readyByKey.delete(key);
+      }
     }
   }
 }

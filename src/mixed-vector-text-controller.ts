@@ -34,7 +34,10 @@ import {
   VECTOR_TEXT_GPU_GEOMETRY_STRATEGY,
   type VectorTextGpuMeshData,
 } from "./vector-text-effect-geometry";
-import { VectorTextEffectCompilerClient } from "./vector-text-effect-client";
+import {
+  VectorTextEffectCompilerClient,
+  type VectorTextEffectMeshResult,
+} from "./vector-text-effect-client";
 import {
   buildVectorTextSlugData,
   vectorTextPathRevision,
@@ -124,6 +127,8 @@ export interface MixedVectorTextDiagnostics {
   effectWorkerPendingJobs: number;
   effectWorkerFailedJobs: number;
   effectWorkerLastError: string | null;
+  atomicEffectHoldCount: number;
+  atomicEffectPendingNodes: number;
 }
 
 interface Point {
@@ -413,6 +418,11 @@ export class MixedVectorTextController {
   private readonly interactionContext: CanvasRenderingContext2D;
   private readonly fontGeometry = new VectorTextFontGeometryRegistry();
   private readonly geometryByNodeId = new Map<number, CachedTextGeometry>();
+  private readonly displayedDrawsByNodeId = new Map<
+    number,
+    readonly VectorTextGpuDraw[]
+  >();
+  private readonly displayedMetricsByNodeId = new Map<number, TextMetricsBox>();
   private readonly effectCompiler: VectorTextEffectCompilerClient;
   private effectReadyIdleTimer: number | null = null;
   private effectReadyRenderPending = false;
@@ -439,6 +449,8 @@ export class MixedVectorTextController {
   private pendingViewRender = false;
   private pendingViewRenderStartedAt = 0;
   private lastViewRenderEndToEndMs = 0;
+  private atomicEffectHoldCount = 0;
+  private atomicEffectPendingNodes = 0;
 
   constructor(private readonly host: MixedVectorTextHost) {
     const interactionContext = this.interactionCanvas.getContext("2d", {
@@ -487,6 +499,8 @@ export class MixedVectorTextController {
     for (const id of this.geometryByNodeId.keys()) {
       if (!liveTextNodeIds.has(id)) {
         this.geometryByNodeId.delete(id);
+        this.displayedDrawsByNodeId.delete(id);
+        this.displayedMetricsByNodeId.delete(id);
       }
     }
 
@@ -567,6 +581,8 @@ export class MixedVectorTextController {
       effectWorkerPendingJobs: effectDiagnostics.pendingJobs,
       effectWorkerFailedJobs: effectDiagnostics.failedJobs,
       effectWorkerLastError: effectDiagnostics.lastError,
+      atomicEffectHoldCount: this.atomicEffectHoldCount,
+      atomicEffectPendingNodes: this.atomicEffectPendingNodes,
     };
   }
 
@@ -1104,7 +1120,7 @@ export class MixedVectorTextController {
     slotName: string,
     effect: Parameters<VectorTextEffectCompilerClient["meshForSlot"]>[4],
     liveSlots: Set<string>,
-  ): VectorTextGpuMeshData | null {
+  ): VectorTextEffectMeshResult {
     const slotKey = `text:${node.id}:${slotName}`;
     liveSlots.add(slotKey);
     return this.effectCompiler.meshForSlot(
@@ -1308,13 +1324,27 @@ export class MixedVectorTextController {
       blurRadius: plan.radius,
     };
   }
+  private retargetDisplayedDraws(
+    draws: readonly VectorTextGpuDraw[],
+    node: Readonly<VectorTextNode>,
+  ): VectorTextGpuDraw[] {
+    return draws.map((draw): VectorTextGpuDraw => ({
+      ...draw,
+      x: node.x,
+      y: node.y,
+      scale: node.scale,
+      rotation: node.rotation,
+    }));
+  }
+
   private appendGpuDrawsForNode(
     draws: VectorTextGpuDraw[],
     node: Readonly<VectorTextNode>,
     geometry: CachedTextGeometry,
     view: VectorTextViewState,
     liveSlots: Set<string>,
-  ): void {
+  ): boolean {
+    let allEffectsReady = true;
     if (node.singleShadowEnabled && node.singleShadowOpacity > 0) {
       if (node.singleShadowBlur > 0) {
         draws.push(this.slugBlurDraw(node, geometry, view));
@@ -1342,7 +1372,7 @@ export class MixedVectorTextController {
         node.blockShadowAngle,
       );
       if (node.blockShadowOutlineWidth > 0) {
-        const mesh = this.effectMeshForNode(
+        const meshResult = this.effectMeshForNode(
           node,
           geometry,
           view,
@@ -1356,11 +1386,13 @@ export class MixedVectorTextController {
           },
           liveSlots,
         );
-        if (mesh) {
+        allEffectsReady =
+          allEffectsReady && meshResult.matchesRequestedIdentity;
+        if (meshResult.mesh) {
           draws.push(this.meshDraw(
             node,
             `text:${node.id}:block-outline`,
-            mesh,
+            meshResult.mesh,
             node.blockShadowColor,
             node.opacity * node.blockShadowOpacity,
           ));
@@ -1375,7 +1407,7 @@ export class MixedVectorTextController {
           node.opacity * node.blockShadowOpacity,
         ));
       } else {
-        const mesh = this.effectMeshForNode(
+        const meshResult = this.effectMeshForNode(
           node,
           geometry,
           view,
@@ -1387,11 +1419,13 @@ export class MixedVectorTextController {
           },
           liveSlots,
         );
-        if (mesh) {
+        allEffectsReady =
+          allEffectsReady && meshResult.matchesRequestedIdentity;
+        if (meshResult.mesh) {
           draws.push(this.meshDraw(
             node,
             `text:${node.id}:block`,
-            mesh,
+            meshResult.mesh,
             node.blockShadowColor,
             node.opacity * node.blockShadowOpacity,
           ));
@@ -1408,7 +1442,7 @@ export class MixedVectorTextController {
         node.outlineColor,
       );
       const outlineSlot = fuseOutlineAndFill ? "outline-fill" : "outline";
-      const mesh = this.effectMeshForNode(
+      const meshResult = this.effectMeshForNode(
         node,
         geometry,
         view,
@@ -1421,11 +1455,13 @@ export class MixedVectorTextController {
         },
         liveSlots,
       );
-      if (mesh) {
+      allEffectsReady =
+        allEffectsReady && meshResult.matchesRequestedIdentity;
+      if (meshResult.mesh) {
         draws.push(this.meshDraw(
           node,
           `text:${node.id}:${outlineSlot}`,
-          mesh,
+          meshResult.mesh,
           node.outlineColor,
           node.opacity,
         ));
@@ -1444,6 +1480,7 @@ export class MixedVectorTextController {
     if (node.innerShadowEnabled && node.innerShadowOpacity > 0) {
       draws.push(this.slugInnerShadowDraw(node, geometry, view));
     }
+    return allEffectsReady;
   }
 
   private blockShadowPathLogicalMiB(): number {
@@ -1477,6 +1514,7 @@ export class MixedVectorTextController {
     let textureCount = 0;
     const activeMeshKeys = new Set<string>();
     const liveEffectSlots = new Set<string>();
+    let atomicEffectPendingNodes = 0;
     if (!snapshot) {
       this.host.clearVectorTextPresentation();
       this.renderedTextRunKeys.clear();
@@ -1518,6 +1556,12 @@ export class MixedVectorTextController {
         const nodes = group.nodes.filter(
           (node) => node.visible && node.opacity > 0 && node.text.length > 0,
         );
+        for (const node of group.nodes) {
+          if (!node.visible || node.opacity <= 0 || node.text.length === 0) {
+            this.displayedDrawsByNodeId.delete(node.id);
+            this.displayedMetricsByNodeId.delete(node.id);
+          }
+        }
         if (nodes.length === 0) {
           this.host.clearVectorTextPresentation(group.placement);
           continue;
@@ -1526,13 +1570,32 @@ export class MixedVectorTextController {
         const draws: VectorTextGpuDraw[] = [];
         for (const node of nodes) {
           const geometry = this.geometryForNode(node);
-          this.appendGpuDrawsForNode(
-            draws,
+          const candidateDraws: VectorTextGpuDraw[] = [];
+          const allEffectsReady = this.appendGpuDrawsForNode(
+            candidateDraws,
             node,
             geometry,
             view,
             liveEffectSlots,
           );
+          const displayedDraws = this.displayedDrawsByNodeId.get(node.id);
+          if (allEffectsReady || !displayedDraws) {
+            this.displayedDrawsByNodeId.set(node.id, candidateDraws);
+            this.displayedMetricsByNodeId.set(node.id, {
+              left: geometry.outline.left,
+              top: geometry.outline.top,
+              right: geometry.outline.right,
+              bottom: geometry.outline.bottom,
+              baseline: geometry.outline.baseline,
+            });
+            draws.push(...candidateDraws);
+          } else {
+            atomicEffectPendingNodes += 1;
+            this.atomicEffectHoldCount += 1;
+            const retargeted = this.retargetDisplayedDraws(displayedDraws, node);
+            this.displayedDrawsByNodeId.set(node.id, retargeted);
+            draws.push(...retargeted);
+          }
         }
 
         for (const draw of draws) {
@@ -1560,6 +1623,9 @@ export class MixedVectorTextController {
         textureCount += 1;
       }
     }
+    this.atomicEffectPendingNodes = atomicEffectPendingNodes;
+    this.status.dataset.atomicEffectPendingNodes = String(atomicEffectPendingNodes);
+    this.status.dataset.atomicEffectHoldCount = String(this.atomicEffectHoldCount);
     this.effectCompiler.retainSlots(liveEffectSlots);
     this.host.pruneVectorTextGpuMeshes(activeMeshKeys);
     gpuMemoryMiB += blurGpuMemoryMiB;
@@ -1575,7 +1641,8 @@ export class MixedVectorTextController {
     this.liveGpuMemoryMiB = gpuMemoryMiB;
     this.viewportTextureCount = textureCount;
     if (selectedNode) {
-      this.metrics = this.measureText(selectedNode);
+      this.metrics = this.displayedMetricsByNodeId.get(selectedNode.id)
+        ?? this.measureText(selectedNode);
       this.renderInteractionOverlay(view, selectedNode);
     } else {
       this.clearInteractionOverlay(view);
@@ -1605,6 +1672,10 @@ export class MixedVectorTextController {
       view.canvasWidth * view.canvasHeight * 4 / MEBIBYTE_BYTES;
     const vectorFontLogicalMiB = this.fontGeometry.logicalFontBytes / MEBIBYTE_BYTES;
     const effectDiagnostics = this.effectCompiler.diagnostics();
+    this.status.dataset.effectRegisteredPaths = String(
+      effectDiagnostics.registeredPaths,
+    );
+    this.status.dataset.effectReadyJobs = String(effectDiagnostics.readyJobs);
     const browserCanvasLogicalMiB = viewportCanvasLogicalMiB;
     const cacheLabel = `${this.viewportTextureCount} cache GPU viewport`;
     const timing = `render ${this.lastRenderMs.toFixed(2)} ms `

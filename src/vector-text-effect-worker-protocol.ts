@@ -14,6 +14,11 @@ export interface RegisterVectorTextPathMessage {
   readonly path: VectorTextWorkerPathData;
 }
 
+export interface ReleaseVectorTextPathMessage {
+  readonly type: "release-path";
+  readonly revision: string;
+}
+
 export interface BuildVectorTextEffectMessage {
   readonly type: "build-effect";
   readonly requestId: number;
@@ -25,6 +30,7 @@ export interface BuildVectorTextEffectMessage {
 
 export type VectorTextEffectWorkerRequest =
   | RegisterVectorTextPathMessage
+  | ReleaseVectorTextPathMessage
   | BuildVectorTextEffectMessage;
 
 export interface VectorTextEffectReadyMessage {

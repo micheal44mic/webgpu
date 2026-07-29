@@ -100,6 +100,7 @@ const engineSource = read("src/brush-engine.ts");
 const controllerSource = read("src/mixed-vector-text-controller.ts");
 const clientSource = read("src/vector-text-effect-client.ts");
 const workerSource = read("src/vector-text-effect-worker.ts");
+const workerProtocolSource = read("src/vector-text-effect-worker-protocol.ts");
 const geometrySource = read("src/vector-text-effect-geometry.ts");
 const curveSource = read("src/vector-text-curve-utils.ts");
 const slugSource = read("src/vector-text-slug.ts");
@@ -280,7 +281,7 @@ assert.equal(
 );
 assert.equal(
   VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
-  "disabled-always-vector-lod-worker-atomic-swap-v2",
+  "disabled-vector-lod-worker-node-atomic-latest-only-v3",
 );
 assert.equal(
   VECTOR_TEXT_OUTLINE_STRATEGY,
@@ -828,7 +829,7 @@ assert.match(controllerSource, /this\.presentationCanvas\.width = 1/);
 assert.match(controllerSource, /this\.presentationCanvas\.hidden = true/);
 assert.doesNotMatch(controllerSource, /VectorTextAdaptiveZoomDetector|enterFastZoomMode|finishFastZoomMode|scheduleFastInteractionOverlay/);
 assert.match(controllerSource, /setAdaptiveZoomEnabled\(_enabled: boolean\): void \{[\s\S]*updateAdaptiveZoomIndicator\(\)/);
-assert.match(adaptiveSource, /disabled-always-vector-lod-worker-atomic-swap-v2/);
+assert.match(adaptiveSource, /disabled-vector-lod-worker-node-atomic-latest-only-v3/);
 assert.doesNotMatch(adaptiveSource, /shouldArmFastMode|frozen-viewport/);
 assert.match(controllerSource, /if \(node\.outlineWidth > 0\) \{[\s\S]*kind: "source-outline"/);
 assert.match(controllerSource, /if \(node\.blockShadowOutlineWidth > 0\) \{[\s\S]*kind: "block-outline"/);
@@ -837,11 +838,23 @@ assert.match(controllerSource, /else \{[\s\S]*this\.slugDraw\(/);
 assert.match(controllerSource, /Slug vettoriale WebGPU, nessuna bitmap/);
 assert.doesNotMatch(fontGeometrySource, /Path2D|canvasPath|buildShadow3dPath/);
 assert.match(clientSource, /private activeRequestId: number \| null = null/);
-assert.match(clientSource, /private readonly queuedByIdentity = new Map/);
-assert.match(clientSource, /this\.queuedByIdentity\.set\(identity, queued\)/);
+assert.match(clientSource, /private readonly queuedBySlot = new Map/);
+assert.match(clientSource, /this\.queuedBySlot\.set\(slotKey, queued\)/);
+assert.match(clientSource, /desiredKeyBySlot\.values\(\)[\s\S]*desiredKey === response\.cacheKey/);
 assert.match(clientSource, /currentAlreadyFiner[\s\S]*current\.lodBucket >= lod\.bucket/);
 assert.match(clientSource, /if \(!currentAlreadyFiner\) \{[\s\S]*this\.requestEffect/);
-assert.match(clientSource, /return current\?\.mesh \?\? null/);
+assert.match(clientSource, /matchesRequestedIdentity: current\?\.effectIdentity === identity/);
+assert.doesNotMatch(clientSource, /displayed\.sourceRevision !== sourceRevision/);
+assert.match(clientSource, /MAXIMUM_READY_EFFECT_CACHE_ENTRIES = 48/);
+assert.match(clientSource, /MAXIMUM_REGISTERED_PATHS = 128/);
+assert.match(clientSource, /protectedRevisions/);
+assert.match(clientSource, /type: "release-path"/);
+assert.match(workerProtocolSource, /ReleaseVectorTextPathMessage/);
+assert.match(workerSource, /message\.type === "release-path"[\s\S]*paths\.delete/);
+assert.match(controllerSource, /displayedDrawsByNodeId/);
+assert.match(controllerSource, /allEffectsReady \|\| !displayedDraws/);
+assert.match(controllerSource, /retargetDisplayedDraws\(displayedDraws, node\)/);
+assert.match(controllerSource, /dataset\.atomicEffectPendingNodes/);
 assert.match(workerSource, /postMessage\([\s\S]*mesh\.vertices\.buffer[\s\S]*mesh\.indices\.buffer/);
 assert.match(geometrySource, /const MITER_LIMIT = 4/);
 assert.match(geometrySource, /Il contratto richiede bevel, non square/);
@@ -941,5 +954,5 @@ assert.equal(packageJson.scripts["vector-text:verify"], "node scripts/verify-vec
 
 console.log(
   "Testo vettoriale verificato: Arch/Circle/Wave Kittl, Slug analitico, Clipper64/Worker, outline fused senza seam, 0 no-op, "
-  + "Block Shadow canonica, blur Gaussian R8 GPU, LOD atomici e nessun fallback bitmap.",
+  + "Block Shadow canonica, blur Gaussian R8 GPU, swap di nodo atomici, coda latest-only e nessun fallback bitmap.",
 );

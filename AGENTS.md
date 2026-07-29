@@ -176,7 +176,7 @@ Paint:
 
 ### Trasformazioni testo vettoriale Kittl (WebGPU)
 
-- Implementate localmente il 29 luglio 2026, non ancora committate né
+- Implementate il 29 luglio 2026 e congelate nel checkpoint `598d4b8`; non
   pubblicate. Strategia
   `kittl-compatible-centered-arch-wave-cubic-distance-warp-circle-rigid-glyph-v2`.
   Il bundle pubblico Kittl `index.2bd1e2cd.js` è stato verificato direttamente:
@@ -212,6 +212,30 @@ Paint:
   visibile e l'opacità del nodo non viene applicata due volte. Strategie
   `webgpu-clipper64-worker-outside-offset-aa-overlap1px-same-color-fused-round-bevel-miter4-v6`
   e `clipper64-nonzero-worker-native-round-bevel-exact-miter-aa-overlap-same-color-union-earcut-v6`.
+- Candidato live/no-flash successivo a `598d4b8`, non ancora committato né
+  pubblicato: il client non elimina più la mesh mostrata quando cambia la
+  source revision. Ogni nodo conserva draw complete e bbox dell’ultima
+  revisione pronta; se Traccia o Block Shadow sono ancora nel Worker, vecchia
+  revisione, fill ed effetti restano insieme e vengono sostituiti soltanto
+  quando tutti gli effetti richiesti coincidono. Posizione, scala e rotazione
+  continuano invece a retargettare le draw conservate, quindi l’interazione
+  resta live senza mostrare fill nudo, traccia mancante o bbox anticipata. Firma
+  `disabled-vector-lod-worker-node-atomic-latest-only-v3`.
+- La coda Worker è ora latest-only per slot: durante uno slider sostituisce il
+  job non ancora iniziato, scarta la risposta del job attivo se non è più la
+  revisione desiderata e non riproduce le forme intermedie in ritardo. La cache
+  di mesh pronte conserva al massimo 48 entrate non mostrate; i path registrati
+  sono LRU con tetto 128, protezione dei job/display attivi e messaggio esplicito
+  `release-path` al Worker. I tetti possono essere superati solo dalle risorse
+  effettivamente mostrate o in volo, mai da storico stale.
+- QA no-flash locale: 48 cambi Arch rapidi hanno esercitato 96 hold atomici;
+  sweep combinati di Traccia/Block Shadow/forme altri 72; Wave con colori
+  diversi e sweep Traccia altri 111. Con un testo da 195 caratteri è stato
+  catturato un frame mentre il Worker era ancora pending: il nodo precedente
+  completo è rimasto visibile, senza sparizione parziale. Stress di 145 source
+  revision uniche: `registeredPaths=128`, `readyJobs=48`, coda finale zero,
+  Worker zero errori e console pulita; revisione evicted poi richiesta di nuovo
+  senza errore. Sono prove funzionali non una baseline prestazionale iPhone.
 - QA locale: quattro testi (Normal, Arch, Circle, Wave) con font ed effetti
   diversi, screenshot isolati, confronto visivo diretto con Kittl per Wave 35%,
   Circle normale e Circle invertito, controllo ad alto zoom senza curve

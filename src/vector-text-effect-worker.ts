@@ -22,6 +22,10 @@ self.onmessage = (
     paths.set(message.revision, message.path);
     return;
   }
+  if (message.type === "release-path") {
+    paths.delete(message.revision);
+    return;
+  }
 
   const path = paths.get(message.revision);
   if (!path) {
