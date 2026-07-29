@@ -176,8 +176,9 @@ Paint:
 
 ### Trasformazioni testo vettoriale Kittl (WebGPU)
 
-- Implementate il 29 luglio 2026 e congelate nel checkpoint `598d4b8`; non
-  pubblicate. Strategia
+- Arch/Wave/Circle implementate il 29 luglio 2026 e congelate nel checkpoint
+  `598d4b8`; il successivo comportamento live/no-flash è congelato in
+  `76359f6`. Nessuno dei due checkpoint è stato pubblicato. Strategia
   `kittl-compatible-centered-arch-wave-cubic-distance-warp-circle-rigid-glyph-v2`.
   Il bundle pubblico Kittl `index.2bd1e2cd.js` è stato verificato direttamente:
   non si tratta di una ricostruzione basata soltanto su screenshot.
@@ -212,8 +213,8 @@ Paint:
   visibile e l'opacità del nodo non viene applicata due volte. Strategie
   `webgpu-clipper64-worker-outside-offset-aa-overlap1px-same-color-fused-round-bevel-miter4-v6`
   e `clipper64-nonzero-worker-native-round-bevel-exact-miter-aa-overlap-same-color-union-earcut-v6`.
-- Candidato live/no-flash successivo a `598d4b8`, non ancora committato né
-  pubblicato: il client non elimina più la mesh mostrata quando cambia la
+- Checkpoint live/no-flash `76359f6`, non pubblicato: il client non elimina più
+  la mesh mostrata quando cambia la
   source revision. Ogni nodo conserva draw complete e bbox dell’ultima
   revisione pronta; se Traccia o Block Shadow sono ancora nel Worker, vecchia
   revisione, fill ed effetti restano insieme e vengono sostituiti soltanto
@@ -228,6 +229,47 @@ Paint:
   sono LRU con tetto 128, protezione dei job/display attivi e messaggio esplicito
   `release-path` al Worker. I tetti possono essere superati solo dalle risorse
   effettivamente mostrate o in volo, mai da storico stale.
+- Distort è incluso nel checkpoint corrente e resta **non pubblicato**. Il
+  bundle pubblico Kittl corrente `index.22e45a9c.js` è stato
+  letto e il comportamento è stato verificato anche trascinando realmente i
+  controlli nell’editor: l’interfaccia espone 6 vertici e 4 maniglie Bézier
+  (Kittl conserva internamente 10 record di coordinate). I vertici centrali
+  superiore/inferiore traslano entrambe le proprie maniglie; trascinare una
+  maniglia ruota quella opposta di 180° conservandone la lunghezza. Maiusc
+  blocca il delta sull’asse dominante.
+- Il mapper Distort replica la classe `H1` di Kittl: quattro cubiche di bordo,
+  lunghezze per i breakpoint superiore e inferiore, separatore obliquo fra i
+  due breakpoint, rapporto X sul lato selezionato e interpolazione
+  superiore→inferiore con il rapporto Y nella bbox di inchiostro sorgente.
+  Ogni anchor e maniglia OpenType viene rimappata senza cambiare verbi,
+  winding o numero di curve; il risultato resta quindi Slug/WebGPU anche allo
+  zoom e alimenta la stessa Traccia, Block Shadow, Ombra singola e Ombra
+  interna degli altri modi.
+- Reset ricostruisce una gabbia rettangolare sulla bbox del path deformato
+  corrente e resta in modalità Modifica, come Kittl. Aggiungere o togliere
+  lettere non sposta la gabbia: la nuova bbox sorgente viene rimappata nello
+  stesso inviluppo. QA locale verificata con `STREETWEAR`, `XX` e
+  `STREETWEAR PLUS 2026`, trascinamento del vertice centrale e di entrambe le
+  classi di maniglia, traccia rossa `12 px`, Block Shadow, Ombra singola,
+  Ombra interna, zoom alto e reset. Coda Worker finale zero, zero errori e
+  console browser pulita; è una prova funzionale desktop, non un benchmark
+  prestazionale né una prova iPhone.
+- Fix artefatti Slug del 29 luglio, incluso nello stesso checkpoint e
+  **non pubblicato**:
+  i triangoli/denti periodici visibili sui bordi del fill Distort restavano con
+  Traccia a 0 e Block Shadow disattivata, quindi non provenivano dalle mesh
+  Clipper degli effetti. Una quadratica esattamente lineare in f64 può perdere
+  la collinearità quando i suoi tre punti vengono convertiti separatamente in
+  f32; l'epsilon precedente seguiva soltanto lo span corto del segmento e non
+  l'ULP delle coordinate assolute. I solver orizzontale e verticale usano ora
+  anche la magnitudine delle coordinate sorgente per scegliere in sicurezza
+  l'interpolazione lineare, senza cambiare le curve con curvatura visibile.
+  La regressione numerica riproduce `3,0518e-5` di seconda differenza contro
+  `9,5367e-7` della vecchia soglia e `2,8613e-4` della nuova. Strategia
+  `webgpu-slug-source-clipper-effect-mesh-msaa4-stable-lines-absolute-f32-scale-v5`.
+  QA browser a Wave 100% e zoom massimo 64x: bordo diagonale pulito anche
+  senza overlay, Worker effetti zero errori. `vector-text:verify`, TypeScript,
+  tutte le verifiche core/mixed-scene e la build Vite di produzione sono verdi.
 - QA no-flash locale: 48 cambi Arch rapidi hanno esercitato 96 hold atomici;
   sweep combinati di Traccia/Block Shadow/forme altri 72; Wave con colori
   diversi e sweep Traccia altri 111. Con un testo da 195 caratteri è stato

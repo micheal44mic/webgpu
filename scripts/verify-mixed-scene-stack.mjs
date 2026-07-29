@@ -95,6 +95,7 @@ assert.equal(
   assert.equal(first.transformCurve, 80);
   assert.equal(first.circleRadiusPercent, 50);
   assert.equal(first.circleInverted, false);
+  assert.equal(first.distortPoints, null);
   assert.deepEqual(
     stack.items.map((item) => item.key),
     ["raster:1", "text:1", "text:2"],
@@ -202,6 +203,31 @@ assert.equal(
   assert.equal(stack.textById(1).innerShadowOffset, 100);
   assert.equal(stack.textById(1).innerShadowAngle, -180);
   assert.equal(stack.textById(1).innerShadowBlur, 300);
+
+  const distortPoints = [
+    { x: -500, y: -200 },
+    { x: 0, y: -240 },
+    { x: 500, y: -200 },
+    { x: 500, y: 200 },
+    { x: 0, y: 240 },
+    { x: -500, y: 200 },
+    { x: -250, y: -240 },
+    { x: 250, y: -240 },
+    { x: -250, y: 240 },
+    { x: 250, y: 240 },
+  ];
+  stack.updateText(1, { transformType: "distort", distortPoints });
+  assert.equal(stack.textById(1).transformType, "distort");
+  assert.deepEqual(stack.textById(1).distortPoints, distortPoints);
+  assert.notEqual(stack.textById(1).distortPoints, distortPoints);
+  const distortState = stack.captureState();
+  stack.updateText(1, {
+    distortPoints: distortPoints.map((point) => ({ x: point.x + 99, y: point.y })),
+  });
+  stack.restoreState(distortState);
+  assert.deepEqual(stack.textById(1).distortPoints, distortPoints);
+  assert.notEqual(stack.textById(1).distortPoints, distortState.textNodes[0].distortPoints);
+
   assert.equal(stack.setTextOpacity(1, -4), true);
   assert.equal(stack.textById(1).opacity, 0);
   assert.equal(stack.setTextVisibility(1, false), true);

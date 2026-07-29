@@ -8,8 +8,10 @@ import {
   transformVectorTextPathAffine,
   vectorTextCircleAffine,
   vectorTextCircleEnvelopeBounds,
+  vectorTextDistortBounds,
   vectorTextPathBounds,
   warpVectorTextPathAlongCurve,
+  warpVectorTextPathFreeForm,
   type VectorTextBounds,
   type VectorTextPoint,
   type VectorTextTransformParameters,
@@ -98,7 +100,7 @@ export interface VectorTextOutlineGeometry {
 }
 
 export const VECTOR_TEXT_FONT_GEOMETRY_STRATEGY =
-  "local-opentype-outline-kittl-transform-v3" as const;
+  "local-opentype-outline-kittl-transform-v4-distort" as const;
 
 export const VECTOR_TEXT_FONT_MANIFEST: readonly VectorTextFontEntry[] = [
   {
@@ -298,6 +300,27 @@ function finalizedGeometry(
   };
 }
 
+function geometryAtLocalOrigin(
+  pathData: Shadow3dPathData,
+  logicalBounds: VectorTextBounds,
+  inkBounds: VectorTextBounds,
+): VectorTextOutlineGeometry {
+  return {
+    pathData,
+    left: logicalBounds.left,
+    top: logicalBounds.top,
+    right: logicalBounds.right,
+    bottom: logicalBounds.bottom,
+    inkLeft: inkBounds.left,
+    inkTop: inkBounds.top,
+    inkRight: inkBounds.right,
+    inkBottom: inkBounds.bottom,
+    baseline: 0,
+    logicalBytes: vectorPathLogicalBytes(pathData),
+    guide: null,
+  };
+}
+
 function curveEnvelopeBounds(
   guide: ReturnType<typeof buildVectorTextCurveGuide>,
   width: number,
@@ -353,6 +376,30 @@ function buildOutlineGeometry(
       raw.inkBounds,
       0,
       null,
+    );
+  }
+
+  if (transform.type === "distort") {
+    if (!transform.distortPoints) {
+      return finalizedGeometry(
+        raw.pathData,
+        logicalBounds,
+        raw.inkBounds,
+        0,
+        null,
+      );
+    }
+    const transformedPath = warpVectorTextPathFreeForm(
+      raw.pathData,
+      raw.inkBounds,
+      transform.distortPoints,
+    );
+    const transformedInk = vectorTextPathBounds(transformedPath);
+    const envelope = vectorTextDistortBounds(transform.distortPoints);
+    return geometryAtLocalOrigin(
+      transformedPath,
+      unionBounds(envelope, transformedInk),
+      transformedInk,
     );
   }
 

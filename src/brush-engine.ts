@@ -30,6 +30,7 @@ import {
 import {
   MIXED_SCENE_STACK_STRATEGY,
   MixedSceneStack,
+  cloneVectorTextNode,
   type MixedSceneCompositionSegment,
   type MixedSceneItem,
   type VectorTextNode,
@@ -3585,7 +3586,7 @@ export class BrushEngine {
         return {
           key: item.key,
           kind: item.kind,
-          textNode: { ...scene.textById(item.textNodeId) },
+          textNode: cloneVectorTextNode(scene.textById(item.textNodeId)),
         };
       }),
     };

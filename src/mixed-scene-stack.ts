@@ -1,7 +1,9 @@
 import {
   normalizeVectorTextCircleRadiusPercent,
+  normalizeVectorTextDistortPoints,
   normalizeVectorTextTransformCurve,
   normalizeVectorTextTransformType,
+  type VectorTextDistortPoints,
   type VectorTextTransformType,
 } from "./vector-text-transform.ts";
 
@@ -209,6 +211,7 @@ export interface VectorTextNode {
   transformCurve: number;
   circleRadiusPercent: number;
   circleInverted: boolean;
+  distortPoints: VectorTextDistortPoints | null;
   outlineWidth: number;
   outlineColor: string;
   outlineJoin: VectorTextOutlineJoin;
@@ -245,6 +248,7 @@ export interface VectorTextNodeSeed {
   transformCurve?: number;
   circleRadiusPercent?: number;
   circleInverted?: boolean;
+  distortPoints?: VectorTextDistortPoints | null;
   outlineWidth: number;
   outlineColor: string;
   outlineJoin: VectorTextOutlineJoin;
@@ -270,6 +274,15 @@ export interface VectorTextNodeSeed {
   y: number;
   scale: number;
   rotation: number;
+}
+
+export function cloneVectorTextNode(
+  node: Readonly<VectorTextNode>,
+): VectorTextNode {
+  return {
+    ...node,
+    distortPoints: normalizeVectorTextDistortPoints(node.distortPoints),
+  };
 }
 
 export interface MixedScenePartition {
@@ -380,7 +393,7 @@ export class MixedSceneStack {
   captureState(): MixedSceneState {
     return {
       items: this.orderedItems.map((item) => ({ ...item })),
-      textNodes: [...this.textNodes.values()].map((node) => ({ ...node })),
+      textNodes: [...this.textNodes.values()].map(cloneVectorTextNode),
       selectedKey: this.selectedKey,
       nextTextNodeId: this.nextTextNodeId,
     };
@@ -402,6 +415,7 @@ export class MixedSceneStack {
           node.circleRadiusPercent,
         ),
         circleInverted: node.circleInverted === true,
+        distortPoints: normalizeVectorTextDistortPoints(node.distortPoints),
       });
     }
     this.selectedKey = state.selectedKey;
@@ -438,6 +452,7 @@ export class MixedSceneStack {
         seed.circleRadiusPercent,
       ),
       circleInverted: seed.circleInverted === true,
+      distortPoints: normalizeVectorTextDistortPoints(seed.distortPoints),
       outlineWidth: normalizeVectorTextOutlineWidth(seed.outlineWidth),
       outlineColor: seed.outlineColor,
       outlineJoin: normalizeVectorTextOutlineJoin(seed.outlineJoin),
@@ -605,6 +620,9 @@ export class MixedSceneStack {
     }
     if (update.circleInverted !== undefined) {
       node.circleInverted = update.circleInverted === true;
+    }
+    if (update.distortPoints !== undefined) {
+      node.distortPoints = normalizeVectorTextDistortPoints(update.distortPoints);
     }
     if (update.outlineWidth !== undefined) {
       node.outlineWidth = normalizeVectorTextOutlineWidth(update.outlineWidth);

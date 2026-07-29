@@ -6,7 +6,7 @@
  */
 
 export const VECTOR_TEXT_SLUG_GPU_RENDER_STRATEGY =
-  "webgpu-slug-source-clipper-effect-mesh-msaa4-stable-lines-v4" as const;
+  "webgpu-slug-source-clipper-effect-mesh-msaa4-stable-lines-absolute-f32-scale-v5" as const;
 export const VECTOR_TEXT_SLUG_UNIFORM_FLOATS = 44;
 export const VECTOR_TEXT_SLUG_UNIFORM_BYTES =
   VECTOR_TEXT_SLUG_UNIFORM_FLOATS * 4;
@@ -124,20 +124,24 @@ fn calcRootCode(y1: f32, y2: f32, y3: f32) -> u32 {
 
 fn solveHorizontalPolynomial(
   p12: vec4<f32>,
-  p3: vec2<f32>
+  p3: vec2<f32>,
+  sourceCoordinateScale: f32
 ) -> vec2<f32> {
   let a = p12.xy - p12.zw * 2.0 + p3;
   let b = p12.xy - p12.zw;
   let linearScale = max(
-    1.0,
+    sourceCoordinateScale,
     max(
-      abs(p12.y - p12.w),
-      max(abs(p12.w - p3.y), abs(p12.y - p3.y))
+      1.0,
+      max(
+        abs(p12.y - p12.w),
+        max(abs(p12.w - p3.y), abs(p12.y - p3.y))
+      )
     )
   );
-  // Midpoints that are exact in f64 need not remain exact after rgba32float
-  // upload. Treat only a few f32 ulps of second difference as a line and use
-  // endpoint interpolation, avoiding the unstable near-zero quadratic root.
+  // Midpoints that are exact in f64 need not remain exact after three
+  // independent rgba32float conversions. The roundoff follows the absolute
+  // source-coordinate magnitude, not the much smaller segment span.
   if (abs(a.y) <= linearScale / 1048576.0) {
     let denominator = p12.y - p3.y;
     if (abs(denominator) <= linearScale / 16777216.0) {
@@ -159,15 +163,19 @@ fn solveHorizontalPolynomial(
 
 fn solveVerticalPolynomial(
   p12: vec4<f32>,
-  p3: vec2<f32>
+  p3: vec2<f32>,
+  sourceCoordinateScale: f32
 ) -> vec2<f32> {
   let a = p12.xy - p12.zw * 2.0 + p3;
   let b = p12.xy - p12.zw;
   let linearScale = max(
-    1.0,
+    sourceCoordinateScale,
     max(
-      abs(p12.x - p12.z),
-      max(abs(p12.z - p3.x), abs(p12.x - p3.x))
+      1.0,
+      max(
+        abs(p12.x - p12.z),
+        max(abs(p12.z - p3.x), abs(p12.x - p3.x))
+      )
     )
   );
   if (abs(a.x) <= linearScale / 1048576.0) {
@@ -233,9 +241,10 @@ fn slugCoverage(renderCoordinate: vec2<f32>) -> f32 {
     curveIndex += 1u
   ) {
     let curveLinear = loadBand(horizontalHeader.y + curveIndex).x;
-    let p12 = loadCurve(curveLinear)
-      - vec4<f32>(renderCoordinate, renderCoordinate);
-    let p3 = loadCurve(curveLinear + 1u).xy - renderCoordinate;
+    let source12 = loadCurve(curveLinear);
+    let source3 = loadCurve(curveLinear + 1u).xy;
+    let p12 = source12 - vec4<f32>(renderCoordinate, renderCoordinate);
+    let p3 = source3 - renderCoordinate;
     if (
       max(max(p12.x, p12.z), p3.x) * pixelsPerLocal.x < -0.5
     ) {
@@ -243,7 +252,15 @@ fn slugCoverage(renderCoordinate: vec2<f32>) -> f32 {
     }
     let code = calcRootCode(p12.y, p12.w, p3.y);
     if (code != 0u) {
-      let roots = solveHorizontalPolynomial(p12, p3) * pixelsPerLocal.x;
+      let sourceCoordinateScale = max(
+        1.0,
+        max(abs(source12.y), max(abs(source12.w), abs(source3.y)))
+      );
+      let roots = solveHorizontalPolynomial(
+        p12,
+        p3,
+        sourceCoordinateScale
+      ) * pixelsPerLocal.x;
       if ((code & 1u) != 0u) {
         horizontalCoverage += clamp(roots.x + 0.5, 0.0, 1.0);
         horizontalWeight = max(
@@ -272,9 +289,10 @@ fn slugCoverage(renderCoordinate: vec2<f32>) -> f32 {
     curveIndex += 1u
   ) {
     let curveLinear = loadBand(verticalHeader.y + curveIndex).x;
-    let p12 = loadCurve(curveLinear)
-      - vec4<f32>(renderCoordinate, renderCoordinate);
-    let p3 = loadCurve(curveLinear + 1u).xy - renderCoordinate;
+    let source12 = loadCurve(curveLinear);
+    let source3 = loadCurve(curveLinear + 1u).xy;
+    let p12 = source12 - vec4<f32>(renderCoordinate, renderCoordinate);
+    let p3 = source3 - renderCoordinate;
     if (
       max(max(p12.y, p12.w), p3.y) * pixelsPerLocal.y < -0.5
     ) {
@@ -282,7 +300,15 @@ fn slugCoverage(renderCoordinate: vec2<f32>) -> f32 {
     }
     let code = calcRootCode(p12.x, p12.z, p3.x);
     if (code != 0u) {
-      let roots = solveVerticalPolynomial(p12, p3) * pixelsPerLocal.y;
+      let sourceCoordinateScale = max(
+        1.0,
+        max(abs(source12.x), max(abs(source12.z), abs(source3.x)))
+      );
+      let roots = solveVerticalPolynomial(
+        p12,
+        p3,
+        sourceCoordinateScale
+      ) * pixelsPerLocal.y;
       if ((code & 1u) != 0u) {
         verticalCoverage -= clamp(roots.x + 0.5, 0.0, 1.0);
         verticalWeight = max(

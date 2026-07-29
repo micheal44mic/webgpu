@@ -867,6 +867,36 @@ select {
   box-shadow: inset 0 0 0 1px rgba(126, 139, 255, 0.22);
 }
 
+.vector-text-distort-note {
+  margin: 0 0 8px;
+  color: #9aa2b0;
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.vector-text-distort-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+  margin-bottom: 10px;
+}
+
+.vector-text-distort-actions button {
+  min-height: 34px;
+  border: 1px solid #3b4352;
+  border-radius: 8px;
+  background: #171c25;
+  color: #d5d9e2;
+  font-weight: 700;
+}
+
+.vector-text-distort-actions button:hover:not(:disabled),
+.vector-text-distort-actions button[aria-pressed="true"] {
+  border-color: #6e7cff;
+  background: rgba(91, 108, 255, 0.2);
+  color: #f4f5ff;
+}
+
 .vector-text-circle-direction {
   margin: 2px 0 8px;
 }
@@ -957,6 +987,11 @@ select {
 
 #vectorTextInteractionCanvas.is-pan {
   cursor: grabbing;
+}
+
+#vectorTextInteractionCanvas.is-distort-editing:not(.is-pan),
+#vectorTextInteractionCanvas.is-distort {
+  cursor: crosshair;
 }
 
 #vectorTextInteractionCanvas.is-rotate {

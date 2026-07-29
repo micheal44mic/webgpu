@@ -80,13 +80,19 @@ import {
 import {
   VECTOR_TEXT_TRANSFORM_STRATEGY,
   buildVectorTextCurveGuide,
+  defaultVectorTextDistortPoints,
+  moveVectorTextDistortPoint,
   normalizeVectorTextCircleRadiusPercent,
+  normalizeVectorTextDistortPoints,
   normalizeVectorTextTransformCurve,
   normalizeVectorTextTransformParameters,
   transformVectorTextPathAffine,
   vectorTextCircleAffine,
   vectorTextCirclePlacement,
+  vectorTextDistortBounds,
   warpVectorTextPathAlongCurve,
+  warpVectorTextPathFreeForm,
+  warpVectorTextPointFreeForm,
 } from "../src/vector-text-transform.ts";
 import {
   MIXED_SCENE_COMPOSITOR_STRATEGY,
@@ -310,7 +316,7 @@ assert.equal(
 assert.equal(VECTOR_TEXT_GEOMETRY_COMPILER_VERSION, "clipper64-nonzero-lod-worker-v6");
 assert.equal(
   VECTOR_TEXT_SLUG_GPU_RENDER_STRATEGY,
-  "webgpu-slug-source-clipper-effect-mesh-msaa4-stable-lines-v4",
+  "webgpu-slug-source-clipper-effect-mesh-msaa4-stable-lines-absolute-f32-scale-v5",
 );
 assert.equal(
   VECTOR_TEXT_SLUG_COMPILER_VERSION,
@@ -326,11 +332,11 @@ assert.equal(
 );
 assert.equal(
   VECTOR_TEXT_FONT_GEOMETRY_STRATEGY,
-  "local-opentype-outline-kittl-transform-v3",
+  "local-opentype-outline-kittl-transform-v4-distort",
 );
 assert.equal(
   VECTOR_TEXT_TRANSFORM_STRATEGY,
-  "kittl-compatible-centered-arch-wave-cubic-distance-warp-circle-rigid-glyph-v2",
+  "kittl-compatible-centered-arch-wave-distort-six-vertex-four-handle-cubic-distance-warp-circle-rigid-glyph-v3",
 );
 assert.equal(packageJson.dependencies["clipper2-ts"], "2.0.1-18");
 assert.equal(packageJson.dependencies.earcut, "^3.0.2");
@@ -388,7 +394,112 @@ assert.deepEqual(normalizeVectorTextTransformParameters(undefined), {
   curve: 80,
   circleRadiusPercent: 50,
   circleInverted: false,
+  distortPoints: null,
 });
+const distortSourceBounds = { left: 0, top: 0, right: 1000, bottom: 400 };
+const defaultDistort = defaultVectorTextDistortPoints(distortSourceBounds);
+assert.equal(defaultDistort.length, 10);
+assert.deepEqual(defaultDistort[0], { x: 0, y: 0 });
+assert.deepEqual(defaultDistort[1], { x: 500, y: 0 });
+assert.deepEqual(defaultDistort[2], { x: 1000, y: 0 });
+assert.deepEqual(defaultDistort[3], { x: 1000, y: 400 });
+assert.deepEqual(defaultDistort[4], { x: 500, y: 400 });
+assert.deepEqual(defaultDistort[5], { x: 0, y: 400 });
+assert.equal(normalizeVectorTextDistortPoints(defaultDistort)?.length, 10);
+assert.equal(normalizeVectorTextDistortPoints(defaultDistort.slice(0, 9)), null);
+assert.equal(normalizeVectorTextTransformParameters({ type: "distort" }).type, "distort");
+for (const point of [
+  { x: 0, y: 0 },
+  { x: 500, y: 0 },
+  { x: 1000, y: 0 },
+  { x: 0, y: 400 },
+  { x: 500, y: 400 },
+  { x: 1000, y: 400 },
+  { x: 250, y: 200 },
+  { x: 750, y: 200 },
+]) {
+  const mapped = warpVectorTextPointFreeForm(
+    point,
+    distortSourceBounds,
+    defaultDistort,
+  );
+  assert.ok(Math.abs(mapped.x - point.x) < 1e-8);
+  assert.ok(Math.abs(mapped.y - point.y) < 1e-8);
+}
+assert.deepEqual(vectorTextDistortBounds(defaultDistort), distortSourceBounds);
+
+const raisedTopMiddle = moveVectorTextDistortPoint(
+  defaultDistort,
+  1,
+  { x: 500, y: -120 },
+);
+assert.deepEqual(raisedTopMiddle[1], { x: 500, y: -120 });
+assert.deepEqual(raisedTopMiddle[6], { x: 250, y: -120 });
+assert.deepEqual(raisedTopMiddle[7], { x: 750, y: -120 });
+assert.deepEqual(defaultDistort[1], { x: 500, y: 0 });
+
+const bentTopHandle = moveVectorTextDistortPoint(
+  defaultDistort,
+  6,
+  { x: 400, y: 100 },
+);
+const movedHandleVector = {
+  x: bentTopHandle[6].x - bentTopHandle[1].x,
+  y: bentTopHandle[6].y - bentTopHandle[1].y,
+};
+const mirroredHandleVector = {
+  x: bentTopHandle[7].x - bentTopHandle[1].x,
+  y: bentTopHandle[7].y - bentTopHandle[1].y,
+};
+assert.ok(Math.abs(
+  movedHandleVector.x * mirroredHandleVector.y
+    - movedHandleVector.y * mirroredHandleVector.x,
+) < 1e-8);
+assert.ok(
+  movedHandleVector.x * mirroredHandleVector.x
+    + movedHandleVector.y * mirroredHandleVector.y < 0,
+);
+assert.ok(Math.abs(Math.hypot(
+  mirroredHandleVector.x,
+  mirroredHandleVector.y,
+) - 250) < 1e-8, "la maniglia opposta conserva la propria lunghezza");
+
+const shortTextCenter = warpVectorTextPointFreeForm(
+  { x: 100, y: 50 },
+  { left: 0, top: 0, right: 200, bottom: 100 },
+  raisedTopMiddle,
+);
+const longTextCenter = warpVectorTextPointFreeForm(
+  { x: 700, y: 250 },
+  { left: 0, top: 0, right: 1400, bottom: 500 },
+  raisedTopMiddle,
+);
+assert.ok(Math.abs(shortTextCenter.x - longTextCenter.x) < 1e-8);
+assert.ok(Math.abs(shortTextCenter.y - longTextCenter.y) < 1e-8);
+
+const distortControlPath = {
+  verbs: new Uint8Array([0, 3, 4]),
+  coords: new Float64Array([0, 0, 250, 100, 750, 300, 1000, 400]),
+  contourOffsets: new Uint32Array([0]),
+  fillRule: 0,
+};
+const distortedControlPath = warpVectorTextPathFreeForm(
+  distortControlPath,
+  distortSourceBounds,
+  raisedTopMiddle,
+);
+assert.deepEqual([...distortedControlPath.verbs], [...distortControlPath.verbs]);
+assert.deepEqual(
+  [...distortedControlPath.contourOffsets],
+  [...distortControlPath.contourOffsets],
+);
+assert.equal(distortedControlPath.coords.length, distortControlPath.coords.length);
+assert.ok(
+  [...distortedControlPath.coords].some(
+    (value, index) => Math.abs(value - distortControlPath.coords[index]) > 1e-6,
+  ),
+);
+
 const archGuide = buildVectorTextCurveGuide("arch", 1000, 400, 80);
 const archStart = archGuide.pointAtDistance(0);
 const archMiddle = archGuide.pointAtDistance(500);
@@ -752,6 +863,38 @@ assert.match(slugShaderSource, /length\(vec2<f32>\([\s\S]*dpdx/);
 assert.match(slugShaderSource, /let alpha = coverage \* slug\.color\.a/);
 assert.match(slugShaderSource, /vec4<f32>\(slug\.color\.rgb \* alpha, alpha\)/);
 assert.match(slugShaderSource, /abs\(a\.y\) <= linearScale \/ 1048576\.0/);
+assert.equal(
+  slugShaderSource.match(/sourceCoordinateScale: f32/g)?.length,
+  2,
+);
+assert.match(
+  slugShaderSource,
+  /max\(abs\(source12\.y\), max\(abs\(source12\.w\), abs\(source3\.y\)\)\)/,
+);
+assert.match(
+  slugShaderSource,
+  /max\(abs\(source12\.x\), max\(abs\(source12\.z\), abs\(source3\.x\)\)\)/,
+);
+const f32LineStart = Math.fround(300.00003);
+const f32LineMiddle = Math.fround(300.01503);
+const f32LineEnd = Math.fround(300.03003);
+const f32LineSecondDifference = Math.abs(
+  f32LineStart - f32LineMiddle * 2 + f32LineEnd,
+);
+const f32LineSpanScale = Math.max(
+  1,
+  Math.abs(f32LineStart - f32LineMiddle),
+  Math.abs(f32LineMiddle - f32LineEnd),
+  Math.abs(f32LineStart - f32LineEnd),
+);
+const f32LineAbsoluteScale = Math.max(
+  1,
+  Math.abs(f32LineStart),
+  Math.abs(f32LineMiddle),
+  Math.abs(f32LineEnd),
+);
+assert.ok(f32LineSecondDifference > f32LineSpanScale / 1048576);
+assert.ok(f32LineSecondDifference <= f32LineAbsoluteScale / 1048576);
 assert.doesNotMatch(slugSource, /perGlyph|glyphQuads|one quad per glyph/i);
 assert.match(curveSource, /throw new Error\([\s\S]*depth/i);
 
@@ -953,6 +1096,6 @@ assert.match(mainSource, /__vectorTextPrototype = vectorTextPrototype/);
 assert.equal(packageJson.scripts["vector-text:verify"], "node scripts/verify-vector-text.mjs");
 
 console.log(
-  "Testo vettoriale verificato: Arch/Circle/Wave Kittl, Slug analitico, Clipper64/Worker, outline fused senza seam, 0 no-op, "
+  "Testo vettoriale verificato: Distort/Arch/Circle/Wave Kittl, Slug analitico, Clipper64/Worker, outline fused senza seam, 0 no-op, "
   + "Block Shadow canonica, blur Gaussian R8 GPU, swap di nodo atomici, coda latest-only e nessun fallback bitmap.",
 );

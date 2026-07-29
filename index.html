@@ -353,9 +353,20 @@
             <legend>Trasformazione testo</legend>
             <div class="vector-text-transform-grid" role="group" aria-label="Tipo di trasformazione">
               <button id="vectorTextTransformNone" type="button" class="is-selected" aria-pressed="true">Normale</button>
+              <button id="vectorTextTransformDistort" type="button" aria-pressed="false">Distort</button>
               <button id="vectorTextTransformArch" type="button" aria-pressed="false">Arch</button>
               <button id="vectorTextTransformCircle" type="button" aria-pressed="false">Circle</button>
               <button id="vectorTextTransformWave" type="button" aria-pressed="false">Wave</button>
+            </div>
+            <div id="vectorTextTransformDistortParameters" hidden>
+              <p class="vector-text-distort-note">
+                Sposta i 6 vertici e le 4 maniglie Bézier. Maiusc blocca il gesto
+                sull’asse dominante; il testo nuovo resta dentro la stessa gabbia.
+              </p>
+              <div class="vector-text-distort-actions">
+                <button id="vectorTextDistortReset" type="button">Reset</button>
+                <button id="vectorTextDistortEdit" type="button" aria-pressed="false">Modifica</button>
+              </div>
             </div>
             <div id="vectorTextTransformCurveParameters" hidden>
               <label class="control">
@@ -395,8 +406,8 @@
               </label>
             </div>
             <p class="vector-text-transform-note">
-              Arch/Wave deformano anchor e maniglie delle Bézier; Circle ruota
-              ogni glifo rigidamente. Il path risultante resta Slug/WebGPU anche allo zoom.
+              Distort, Arch e Wave deformano anchor e maniglie delle Bézier;
+              Circle ruota ogni glifo rigidamente. Il path resta Slug/WebGPU anche allo zoom.
             </p>
           </fieldset>
 

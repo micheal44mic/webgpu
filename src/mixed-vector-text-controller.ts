@@ -8,6 +8,7 @@ import {
   VECTOR_TEXT_INNER_SHADOW_STRATEGY,
   VECTOR_TEXT_OUTLINE_STRATEGY,
   VECTOR_TEXT_SINGLE_SHADOW_STRATEGY,
+  cloneVectorTextNode,
   vectorTextBlockShadowLocalVector,
   vectorTextInnerShadowLocalVector,
   vectorTextSingleShadowLocalVector,
@@ -56,6 +57,9 @@ import {
 import { VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY } from "./vector-text-adaptive-zoom";
 import {
   VECTOR_TEXT_TRANSFORM_STRATEGY,
+  defaultVectorTextDistortPoints,
+  moveVectorTextDistortPoint,
+  type VectorTextDistortPoints,
   type VectorTextTransformType,
 } from "./vector-text-transform.ts";
 
@@ -152,7 +156,7 @@ interface CachedTextGeometry {
 }
 
 type TransformHandle = "north-west" | "north-east" | "south-east" | "south-west";
-type InteractionMode = "move" | "scale" | "rotate" | "pan";
+type InteractionMode = "move" | "scale" | "rotate" | "pan" | "distort";
 
 interface ActiveInteraction {
   pointerId: number;
@@ -162,6 +166,7 @@ interface ActiveInteraction {
   startModel: VectorTextNode;
   startDistance: number;
   startAngle: number;
+  distortPointIndex: number | null;
 }
 
 const MEBIBYTE_BYTES = 1024 * 1024;
@@ -186,7 +191,7 @@ function requiredElement<ElementType extends HTMLElement>(id: string): ElementTy
 }
 
 function copyNode(node: Readonly<VectorTextNode>): VectorTextNode {
-  return { ...node };
+  return cloneVectorTextNode(node);
 }
 
 function percentile(values: readonly number[], ratio: number): number {
@@ -260,6 +265,9 @@ export class MixedVectorTextController {
   private readonly transformNoneButton = requiredElement<HTMLButtonElement>(
     "vectorTextTransformNone",
   );
+  private readonly transformDistortButton = requiredElement<HTMLButtonElement>(
+    "vectorTextTransformDistort",
+  );
   private readonly transformArchButton = requiredElement<HTMLButtonElement>(
     "vectorTextTransformArch",
   );
@@ -268,6 +276,15 @@ export class MixedVectorTextController {
   );
   private readonly transformWaveButton = requiredElement<HTMLButtonElement>(
     "vectorTextTransformWave",
+  );
+  private readonly transformDistortParameters = requiredElement<HTMLElement>(
+    "vectorTextTransformDistortParameters",
+  );
+  private readonly distortResetButton = requiredElement<HTMLButtonElement>(
+    "vectorTextDistortReset",
+  );
+  private readonly distortEditButton = requiredElement<HTMLButtonElement>(
+    "vectorTextDistortEdit",
   );
   private readonly transformCurveParameters = requiredElement<HTMLElement>(
     "vectorTextTransformCurveParameters",
@@ -451,6 +468,7 @@ export class MixedVectorTextController {
   private lastViewRenderEndToEndMs = 0;
   private atomicEffectHoldCount = 0;
   private atomicEffectPendingNodes = 0;
+  private distortEditingNodeId: number | null = null;
 
   constructor(private readonly host: MixedVectorTextHost) {
     const interactionContext = this.interactionCanvas.getContext("2d", {
@@ -516,12 +534,25 @@ export class MixedVectorTextController {
         "is-scale",
         "is-rotate",
         "is-pan",
+        "is-distort",
       );
     }
     const node = this.selectedTextNode();
     const textSelected = node !== null;
+    if (
+      !node
+      || node.id !== this.distortEditingNodeId
+      || node.transformType !== "distort"
+      || !node.distortPoints
+    ) {
+      this.distortEditingNodeId = null;
+    }
     this.interactionCanvas.hidden = !textSelected;
     this.interactionCanvas.classList.toggle("is-editing", textSelected);
+    this.interactionCanvas.classList.toggle(
+      "is-distort-editing",
+      this.distortEditingNodeId !== null,
+    );
     this.interactionCanvas.setAttribute("aria-hidden", String(!textSelected));
     this.syncControlsFromSelection(node);
     this.scheduleRender();
@@ -596,6 +627,7 @@ export class MixedVectorTextController {
       transformCurve: 80,
       circleRadiusPercent: 50,
       circleInverted: false,
+      distortPoints: null,
       outlineWidth: 0,
       outlineColor: "#111111",
       outlineJoin: "round",
@@ -633,6 +665,63 @@ export class MixedVectorTextController {
     return selected?.kind === "text" ? selected.textNode : null;
   }
 
+  private defaultDistortPointsForNode(
+    node: Readonly<VectorTextNode>,
+  ): VectorTextDistortPoints {
+    const outline = this.geometryForNode(node).outline;
+    return defaultVectorTextDistortPoints({
+      left: outline.inkLeft,
+      top: outline.inkTop,
+      right: outline.inkRight,
+      bottom: outline.inkBottom,
+    });
+  }
+
+  private activateTransform(transformType: VectorTextTransformType): void {
+    const node = this.selectedTextNode();
+    if (!node) {
+      return;
+    }
+    if (transformType === "distort") {
+      if (node.transformType === "distort" && node.distortPoints) {
+        return;
+      }
+      this.distortEditingNodeId = null;
+      this.updateSelectedNode({
+        transformType,
+        distortPoints: this.defaultDistortPointsForNode(node),
+      });
+      return;
+    }
+    this.distortEditingNodeId = null;
+    this.updateSelectedNode({ transformType, distortPoints: null });
+  }
+
+  private resetDistort(): void {
+    const node = this.selectedTextNode();
+    if (!node || node.transformType !== "distort") {
+      return;
+    }
+    this.updateSelectedNode({
+      distortPoints: this.defaultDistortPointsForNode(node),
+    });
+  }
+
+  private toggleDistortEditing(): void {
+    const node = this.selectedTextNode();
+    if (!node || node.transformType !== "distort" || !node.distortPoints) {
+      return;
+    }
+    this.distortEditingNodeId = this.distortEditingNodeId === node.id
+      ? null
+      : node.id;
+    this.syncControlsFromSelection(node);
+    this.interactionCanvas.classList.toggle(
+      "is-distort-editing",
+      this.distortEditingNodeId !== null,
+    );
+    this.scheduleRender();
+  }
 
   private bindControls(): void {
     this.textInput.addEventListener("input", () => {
@@ -654,15 +743,22 @@ export class MixedVectorTextController {
       HTMLButtonElement,
     ][] = [
       ["none", this.transformNoneButton],
+      ["distort", this.transformDistortButton],
       ["arch", this.transformArchButton],
       ["circle", this.transformCircleButton],
       ["wave", this.transformWaveButton],
     ];
     for (const [transformType, button] of transformButtons) {
       button.addEventListener("click", () => {
-        this.updateSelectedNode({ transformType });
+        this.activateTransform(transformType);
       });
     }
+    this.distortResetButton.addEventListener("click", () => {
+      this.resetDistort();
+    });
+    this.distortEditButton.addEventListener("click", () => {
+      this.toggleDistortEditing();
+    });
     this.transformCurveInput.addEventListener("input", () => {
       const transformCurve = Number(this.transformCurveInput.value);
       this.transformCurveOutput.value = transformCurve.toFixed(0) + "%";
@@ -890,9 +986,12 @@ export class MixedVectorTextController {
     this.fontSizeInput.disabled = disabled;
     this.colorInput.disabled = disabled;
     this.transformNoneButton.disabled = disabled;
+    this.transformDistortButton.disabled = disabled;
     this.transformArchButton.disabled = disabled;
     this.transformCircleButton.disabled = disabled;
     this.transformWaveButton.disabled = disabled;
+    this.distortResetButton.disabled = disabled;
+    this.distortEditButton.disabled = disabled;
     this.transformCurveInput.disabled = disabled;
     this.circleRadiusInput.disabled = disabled;
     this.circleInvertedInput.disabled = disabled;
@@ -924,6 +1023,7 @@ export class MixedVectorTextController {
     this.moveDownButton.disabled = disabled;
     this.addButton.disabled = this.sceneOperationBusy;
     if (!node) {
+      this.transformDistortParameters.hidden = true;
       this.transformCurveParameters.hidden = true;
       this.transformCircleParameters.hidden = true;
       this.blockShadowParameters.hidden = true;
@@ -943,6 +1043,7 @@ export class MixedVectorTextController {
       HTMLButtonElement,
     ][] = [
       ["none", this.transformNoneButton],
+      ["distort", this.transformDistortButton],
       ["arch", this.transformArchButton],
       ["circle", this.transformCircleButton],
       ["wave", this.transformWaveButton],
@@ -952,6 +1053,10 @@ export class MixedVectorTextController {
       button.classList.toggle("is-selected", selected);
       button.setAttribute("aria-pressed", String(selected));
     }
+    this.transformDistortParameters.hidden = node.transformType !== "distort";
+    const distortEditing = node.id === this.distortEditingNodeId;
+    this.distortEditButton.textContent = distortEditing ? "Conferma" : "Modifica";
+    this.distortEditButton.setAttribute("aria-pressed", String(distortEditing));
     this.transformCurveParameters.hidden =
       node.transformType !== "arch" && node.transformType !== "wave";
     this.transformCircleParameters.hidden = node.transformType !== "circle";
@@ -1079,6 +1184,9 @@ export class MixedVectorTextController {
       node.transformCurve,
       node.circleRadiusPercent,
       node.circleInverted ? 1 : 0,
+      node.distortPoints
+        ? node.distortPoints.flatMap((point) => [point.x, point.y]).join(",")
+        : "-",
     ].join("\u0000");
     const cached = this.geometryByNodeId.get(node.id);
     if (cached?.outlineKey === outlineKey) {
@@ -1093,6 +1201,7 @@ export class MixedVectorTextController {
         curve: node.transformCurve,
         circleRadiusPercent: node.circleRadiusPercent,
         circleInverted: node.circleInverted,
+        distortPoints: node.distortPoints,
       },
     );
     const sourceRevision = vectorTextPathRevision(outline.pathData);
@@ -1702,11 +1811,13 @@ export class MixedVectorTextController {
       : "sopra il raster attivo";
     const transformLabel = node.transformType === "none"
       ? "trasformazione off"
-      : node.transformType === "circle"
-        ? "Circle Kittl " + Math.round(node.circleRadiusPercent) + "%"
-          + (node.circleInverted ? " invertito" : "")
-        : (node.transformType === "arch" ? "Arch" : "Wave")
-          + " Kittl " + Math.round(node.transformCurve) + "%";
+      : node.transformType === "distort"
+        ? "Distort Kittl · 6 vertici + 4 maniglie"
+        : node.transformType === "circle"
+          ? "Circle Kittl " + Math.round(node.circleRadiusPercent) + "%"
+            + (node.circleInverted ? " invertito" : "")
+          : (node.transformType === "arch" ? "Arch" : "Wave")
+            + " Kittl " + Math.round(node.transformCurve) + "%";
     const outline = node.outlineWidth > 0
       ? `traccia ${Math.round(node.outlineWidth)} px ${OUTLINE_JOIN_LABELS[node.outlineJoin]}`
       : "traccia off";
@@ -1758,6 +1869,18 @@ export class MixedVectorTextController {
     return {
       x: node.x + cosine * scaledX - sine * scaledY,
       y: node.y + sine * scaledX + cosine * scaledY,
+    };
+  }
+
+  private layerToLocal(point: Point, node: Readonly<VectorTextNode>): Point {
+    const deltaX = point.x - node.x;
+    const deltaY = point.y - node.y;
+    const cosine = Math.cos(node.rotation);
+    const sine = Math.sin(node.rotation);
+    const safeScale = Math.max(Number.EPSILON, Math.abs(node.scale));
+    return {
+      x: (cosine * deltaX + sine * deltaY) / safeScale,
+      y: (-sine * deltaX + cosine * deltaY) / safeScale,
     };
   }
 
@@ -1862,12 +1985,111 @@ export class MixedVectorTextController {
     context.restore();
   }
 
+  private distortCanvasPoints(
+    view: VectorTextViewState,
+    node: Readonly<VectorTextNode>,
+  ): readonly Point[] {
+    if (!node.distortPoints) {
+      return [];
+    }
+    return node.distortPoints.map((point) =>
+      this.layerToCanvas(this.localToLayer(point, node), view));
+  }
+
+  private renderDistortEditingOverlay(
+    context: CanvasRenderingContext2D,
+    view: VectorTextViewState,
+    node: Readonly<VectorTextNode>,
+  ): void {
+    const points = this.distortCanvasPoints(view, node);
+    if (points.length !== 10) {
+      return;
+    }
+    const backingPerCssPixel = view.canvasWidth / Math.max(1, view.cssWidth);
+    const lineWidth = Math.max(1, 1.25 * backingPerCssPixel);
+    const anchorRadius = HANDLE_RADIUS_CSS_PX * backingPerCssPixel;
+    const bezierRadius = Math.max(3, 5 * backingPerCssPixel);
+    context.save();
+    context.lineWidth = lineWidth;
+    context.setLineDash([]);
+
+    context.strokeStyle = "rgba(141, 154, 255, 0.7)";
+    context.beginPath();
+    context.moveTo(points[1].x, points[1].y);
+    context.lineTo(points[6].x, points[6].y);
+    context.moveTo(points[1].x, points[1].y);
+    context.lineTo(points[7].x, points[7].y);
+    context.moveTo(points[4].x, points[4].y);
+    context.lineTo(points[8].x, points[8].y);
+    context.moveTo(points[4].x, points[4].y);
+    context.lineTo(points[9].x, points[9].y);
+    context.stroke();
+
+    context.strokeStyle = "#8d9aff";
+    context.beginPath();
+    context.moveTo(points[0].x, points[0].y);
+    context.bezierCurveTo(
+      points[0].x,
+      points[0].y,
+      points[6].x,
+      points[6].y,
+      points[1].x,
+      points[1].y,
+    );
+    context.bezierCurveTo(
+      points[7].x,
+      points[7].y,
+      points[2].x,
+      points[2].y,
+      points[2].x,
+      points[2].y,
+    );
+    context.lineTo(points[3].x, points[3].y);
+    context.bezierCurveTo(
+      points[3].x,
+      points[3].y,
+      points[9].x,
+      points[9].y,
+      points[4].x,
+      points[4].y,
+    );
+    context.bezierCurveTo(
+      points[8].x,
+      points[8].y,
+      points[5].x,
+      points[5].y,
+      points[5].x,
+      points[5].y,
+    );
+    context.closePath();
+    context.stroke();
+
+    for (let index = 0; index < points.length; index += 1) {
+      const point = points[index];
+      const radius = index < 6 ? anchorRadius : bezierRadius;
+      context.fillStyle = index < 6 ? "#f7f8ff" : "#9aa6ff";
+      context.beginPath();
+      context.arc(point.x, point.y, radius, 0, Math.PI * 2);
+      context.fill();
+      context.stroke();
+    }
+    context.restore();
+  }
+
   private renderInteractionOverlay(
     view: VectorTextViewState,
     node: Readonly<VectorTextNode>,
   ): void {
     this.clearInteractionOverlay(view);
     const context = this.interactionContext;
+    if (
+      node.transformType === "distort"
+      && node.distortPoints
+      && this.distortEditingNodeId === node.id
+    ) {
+      this.renderDistortEditingOverlay(context, view, node);
+      return;
+    }
     const corners = this.textCorners(view, node);
     const rotationHandle = this.rotationHandle(corners, view, node);
     const topCenter = {
@@ -1956,6 +2178,26 @@ export class MixedVectorTextController {
     return index >= 0 ? handles[index] : null;
   }
 
+  private hitDistortPoint(
+    point: Point,
+    view: VectorTextViewState,
+    node: Readonly<VectorTextNode>,
+  ): number | null {
+    const backingPerCssPixel = view.canvasWidth / Math.max(1, view.cssWidth);
+    const hitRadius = HANDLE_HIT_RADIUS_CSS_PX * backingPerCssPixel;
+    const controls = this.distortCanvasPoints(view, node);
+    let closestIndex: number | null = null;
+    let closestDistance = Number.POSITIVE_INFINITY;
+    for (let index = 0; index < controls.length; index += 1) {
+      const distance = pointDistance(point, controls[index]);
+      if (distance <= hitRadius && distance < closestDistance) {
+        closestIndex = index;
+        closestDistance = distance;
+      }
+    }
+    return closestIndex;
+  }
+
   private onPointerDown(event: PointerEvent): void {
     const node = this.selectedTextNode();
     if (!node || this.activeInteraction) {
@@ -1964,18 +2206,31 @@ export class MixedVectorTextController {
     const view = this.host.getVectorTextViewState();
     const canvasPoint = this.eventCanvasPoint(event);
     const layerPoint = this.eventLayerPoint(event);
-    const corners = this.textCorners(view, node);
-    const handle = this.hitHandle(canvasPoint, corners, view, node);
-    const shouldPan = event.shiftKey || event.button === 1 || event.button === 2;
+    const isDistortEditing =
+      node.transformType === "distort"
+      && node.distortPoints !== null
+      && this.distortEditingNodeId === node.id;
+    const corners = isDistortEditing ? [] : this.textCorners(view, node);
+    const handle = isDistortEditing
+      ? null
+      : this.hitHandle(canvasPoint, corners, view, node);
+    const distortPointIndex = isDistortEditing
+      ? this.hitDistortPoint(canvasPoint, view, node)
+      : null;
+    const shouldPan = event.button === 1
+      || event.button === 2
+      || (!isDistortEditing && event.shiftKey);
     const mode: InteractionMode | null = shouldPan
       ? "pan"
-      : handle === "rotate"
-        ? "rotate"
-        : handle
-          ? "scale"
-          : pointInConvexPolygon(canvasPoint, corners)
-            ? "move"
-            : null;
+      : isDistortEditing
+        ? distortPointIndex === null ? null : "distort"
+        : handle === "rotate"
+          ? "rotate"
+          : handle
+            ? "scale"
+            : pointInConvexPolygon(canvasPoint, corners)
+              ? "move"
+              : null;
     if (!mode) {
       return;
     }
@@ -1991,8 +2246,43 @@ export class MixedVectorTextController {
       startModel: copyNode(node),
       startDistance: Math.max(1e-6, pointDistance(layerPoint, center)),
       startAngle: Math.atan2(layerPoint.y - center.y, layerPoint.x - center.x),
+      distortPointIndex,
     };
     this.interactionCanvas.classList.add(`is-${mode}`);
+  }
+
+  private movedDistortPoints(
+    interaction: ActiveInteraction,
+    layerPoint: Point,
+    lockAxis: boolean,
+  ): VectorTextDistortPoints | null {
+    const startPoints = interaction.startModel.distortPoints;
+    const pointIndex = interaction.distortPointIndex;
+    if (!startPoints || pointIndex === null) {
+      return null;
+    }
+    const startLocal = this.layerToLocal(
+      interaction.startLayer,
+      interaction.startModel,
+    );
+    const currentLocal = this.layerToLocal(layerPoint, interaction.startModel);
+    let deltaX = currentLocal.x - startLocal.x;
+    let deltaY = currentLocal.y - startLocal.y;
+    if (lockAxis) {
+      if (Math.abs(deltaX) >= Math.abs(deltaY)) {
+        deltaY = 0;
+      } else {
+        deltaX = 0;
+      }
+    }
+    return moveVectorTextDistortPoint(
+      startPoints,
+      pointIndex,
+      {
+        x: startPoints[pointIndex].x + deltaX,
+        y: startPoints[pointIndex].y + deltaY,
+      },
+    );
   }
 
   private onPointerMove(event: PointerEvent): void {
@@ -2010,6 +2300,19 @@ export class MixedVectorTextController {
     }
 
     const layerPoint = this.eventLayerPoint(event);
+    if (interaction.mode === "distort") {
+      const distortPoints = this.movedDistortPoints(
+        interaction,
+        layerPoint,
+        event.shiftKey,
+      );
+      if (distortPoints) {
+        this.host.updateVectorTextNode(interaction.startModel.id, {
+          distortPoints,
+        });
+      }
+      return;
+    }
     if (interaction.mode === "move") {
       this.updateSelectedNode({
         x: interaction.startModel.x + layerPoint.x - interaction.startLayer.x,
@@ -2050,6 +2353,7 @@ export class MixedVectorTextController {
       "is-scale",
       "is-rotate",
       "is-pan",
+      "is-distort",
     );
     this.activeInteraction = null;
     this.scheduleRender();

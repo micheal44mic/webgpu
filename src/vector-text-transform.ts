@@ -1,15 +1,21 @@
 import type { Shadow3dPathData } from "./vector-shadow-3d.js";
 
 export const VECTOR_TEXT_TRANSFORM_STRATEGY =
-  "kittl-compatible-centered-arch-wave-cubic-distance-warp-circle-rigid-glyph-v2" as const;
+  "kittl-compatible-centered-arch-wave-distort-six-vertex-four-handle-cubic-distance-warp-circle-rigid-glyph-v3" as const;
 
-export type VectorTextTransformType = "none" | "arch" | "circle" | "wave";
+export type VectorTextTransformType =
+  | "none"
+  | "distort"
+  | "arch"
+  | "circle"
+  | "wave";
 
 export interface VectorTextTransformParameters {
   readonly type: VectorTextTransformType;
   readonly curve: number;
   readonly circleRadiusPercent: number;
   readonly circleInverted: boolean;
+  readonly distortPoints: VectorTextDistortPoints | null;
 }
 
 export interface VectorTextPoint {
@@ -23,6 +29,19 @@ export interface VectorTextBounds {
   readonly right: number;
   readonly bottom: number;
 }
+
+export type VectorTextDistortPoints = readonly [
+  topLeftVertex: VectorTextPoint,
+  topMiddleVertex: VectorTextPoint,
+  topRightVertex: VectorTextPoint,
+  bottomRightVertex: VectorTextPoint,
+  bottomMiddleVertex: VectorTextPoint,
+  bottomLeftVertex: VectorTextPoint,
+  topLeftHandle: VectorTextPoint,
+  topRightHandle: VectorTextPoint,
+  bottomLeftHandle: VectorTextPoint,
+  bottomRightHandle: VectorTextPoint,
+];
 
 export interface VectorTextCurveGuide {
   readonly kind: "curve";
@@ -94,9 +113,52 @@ function finite(value: number, fallback: number): number {
 export function normalizeVectorTextTransformType(
   type: VectorTextTransformType | string | undefined,
 ): VectorTextTransformType {
-  return type === "arch" || type === "circle" || type === "wave"
+  return type === "distort"
+    || type === "arch"
+    || type === "circle"
+    || type === "wave"
     ? type
     : "none";
+}
+
+export function normalizeVectorTextDistortPoints(
+  points: readonly VectorTextPoint[] | null | undefined,
+): VectorTextDistortPoints | null {
+  if (
+    !points
+    || points.length !== 10
+    || points.some((point) =>
+      !Number.isFinite(point?.x) || !Number.isFinite(point?.y))
+  ) {
+    return null;
+  }
+  return points.map((point) => ({
+    x: point.x,
+    y: point.y,
+  })) as unknown as VectorTextDistortPoints;
+}
+
+export function defaultVectorTextDistortPoints(
+  bounds: VectorTextBounds,
+): VectorTextDistortPoints {
+  const left = finite(bounds.left, 0);
+  const top = finite(bounds.top, 0);
+  const right = finite(bounds.right, left + 1);
+  const bottom = finite(bounds.bottom, top + 1);
+  const width = right - left;
+  const middleX = left + width * 0.5;
+  return [
+    { x: left, y: top },
+    { x: middleX, y: top },
+    { x: right, y: top },
+    { x: right, y: bottom },
+    { x: middleX, y: bottom },
+    { x: left, y: bottom },
+    { x: left + width * 0.25, y: top },
+    { x: left + width * 0.75, y: top },
+    { x: left + width * 0.25, y: bottom },
+    { x: left + width * 0.75, y: bottom },
+  ];
 }
 
 export function normalizeVectorTextTransformCurve(curve: number | undefined): number {
@@ -134,6 +196,9 @@ export function normalizeVectorTextTransformParameters(
       parameters?.circleRadiusPercent,
     ),
     circleInverted: parameters?.circleInverted === true,
+    distortPoints: normalizeVectorTextDistortPoints(
+      parameters?.distortPoints,
+    ),
   };
 }
 
@@ -341,6 +406,237 @@ export function warpVectorTextPathAlongCurve(
     );
     coords[index] = curvePoint.x;
     coords[index + 1] = curvePoint.y + point.y - sourceOriginY;
+  }
+  return {
+    verbs: path.verbs.slice(),
+    coords,
+    contourOffsets: path.contourOffsets.slice(),
+    fillRule: path.fillRule,
+  };
+}
+
+function clampUnit(value: number): number {
+  return Math.min(1, Math.max(0, finite(value, 0)));
+}
+
+function interpolatePoint(
+  first: VectorTextPoint,
+  second: VectorTextPoint,
+  ratio: number,
+): VectorTextPoint {
+  return {
+    x: first.x + (second.x - first.x) * ratio,
+    y: first.y + (second.y - first.y) * ratio,
+  };
+}
+
+interface PreparedCubicSegment {
+  readonly samples: readonly CurveSample[];
+  readonly length: number;
+}
+
+function prepareCubicSegment(segment: CubicSegment): PreparedCubicSegment {
+  const sampled = sampledCurvePath([segment]);
+  return {
+    samples: sampled.samples,
+    length: sampled.length,
+  };
+}
+
+function preparedCubicPointAtLengthRatio(
+  prepared: PreparedCubicSegment,
+  ratio: number,
+): VectorTextPoint {
+  return pointAtSampledDistance(
+    prepared.samples,
+    prepared.length,
+    prepared.length * clampUnit(ratio),
+  );
+}
+
+export function moveVectorTextDistortPoint(
+  points: VectorTextDistortPoints,
+  pointIndex: number,
+  target: VectorTextPoint,
+): VectorTextDistortPoints {
+  const next = normalizeVectorTextDistortPoints(points)!;
+  if (
+    !Number.isInteger(pointIndex)
+    || pointIndex < 0
+    || pointIndex >= next.length
+    || !Number.isFinite(target.x)
+    || !Number.isFinite(target.y)
+  ) {
+    return next;
+  }
+  const mutable = next as unknown as VectorTextPoint[];
+  const original = points[pointIndex];
+  const deltaX = target.x - original.x;
+  const deltaY = target.y - original.y;
+  mutable[pointIndex] = { x: target.x, y: target.y };
+
+  if (pointIndex === 1 || pointIndex === 4) {
+    const handles = pointIndex === 1 ? [6, 7] : [8, 9];
+    for (const handleIndex of handles) {
+      mutable[handleIndex] = {
+        x: points[handleIndex].x + deltaX,
+        y: points[handleIndex].y + deltaY,
+      };
+    }
+  }
+
+  const mirrorHandle = (
+    firstHandle: number,
+    secondHandle: number,
+    anchorIndex: number,
+  ) => {
+    if (pointIndex !== firstHandle && pointIndex !== secondHandle) {
+      return;
+    }
+    const oppositeIndex = pointIndex === firstHandle
+      ? secondHandle
+      : firstHandle;
+    const anchor = points[anchorIndex];
+    const directionX = target.x - anchor.x;
+    const directionY = target.y - anchor.y;
+    const directionLength = Math.hypot(directionX, directionY);
+    if (directionLength <= Number.EPSILON) {
+      return;
+    }
+    const oppositeLength = pointDistance(points[oppositeIndex], anchor);
+    mutable[oppositeIndex] = {
+      x: anchor.x - directionX / directionLength * oppositeLength,
+      y: anchor.y - directionY / directionLength * oppositeLength,
+    };
+  };
+  mirrorHandle(6, 7, 1);
+  mirrorHandle(8, 9, 4);
+  return next;
+}
+
+export function vectorTextDistortBoundaryPath(
+  points: VectorTextDistortPoints,
+): Shadow3dPathData {
+  const [topLeft, topMiddle, topRight, bottomRight, bottomMiddle, bottomLeft,
+    topHandleLeft, topHandleRight, bottomHandleLeft, bottomHandleRight] = points;
+  return {
+    verbs: new Uint8Array([0, 3, 3, 1, 3, 3, 1, 4]),
+    coords: new Float64Array([
+      topLeft.x, topLeft.y,
+      topLeft.x, topLeft.y,
+      topHandleLeft.x, topHandleLeft.y,
+      topMiddle.x, topMiddle.y,
+      topHandleRight.x, topHandleRight.y,
+      topRight.x, topRight.y,
+      topRight.x, topRight.y,
+      bottomRight.x, bottomRight.y,
+      bottomRight.x, bottomRight.y,
+      bottomHandleRight.x, bottomHandleRight.y,
+      bottomMiddle.x, bottomMiddle.y,
+      bottomHandleLeft.x, bottomHandleLeft.y,
+      bottomLeft.x, bottomLeft.y,
+      bottomLeft.x, bottomLeft.y,
+      topLeft.x, topLeft.y,
+    ]),
+    contourOffsets: new Uint32Array([0]),
+    fillRule: 0,
+  };
+}
+
+export function vectorTextDistortBounds(
+  points: VectorTextDistortPoints,
+): VectorTextBounds {
+  return vectorTextPathBounds(vectorTextDistortBoundaryPath(points));
+}
+
+// Kittl H1: split the source bbox with the line joining two length-weighted
+// breakpoints, normalize X inside the selected half, sample its top/bottom
+// cubics at the same arc-length ratio, then interpolate them by source Y.
+function createVectorTextFreeFormMapper(
+  sourceBounds: VectorTextBounds,
+  points: VectorTextDistortPoints,
+): (point: VectorTextPoint) => VectorTextPoint {
+  const [topLeft, topMiddle, topRight, bottomRight, bottomMiddle, bottomLeft,
+    topHandleLeft, topHandleRight, bottomHandleLeft, bottomHandleRight] = points;
+  const topLeftCurve = prepareCubicSegment({
+    p0: topLeft,
+    p1: topLeft,
+    p2: topHandleLeft,
+    p3: topMiddle,
+  });
+  const topRightCurve = prepareCubicSegment({
+    p0: topMiddle,
+    p1: topHandleRight,
+    p2: topRight,
+    p3: topRight,
+  });
+  const bottomLeftCurve = prepareCubicSegment({
+    p0: bottomLeft,
+    p1: bottomLeft,
+    p2: bottomHandleLeft,
+    p3: bottomMiddle,
+  });
+  const bottomRightCurve = prepareCubicSegment({
+    p0: bottomMiddle,
+    p1: bottomHandleRight,
+    p2: bottomRight,
+    p3: bottomRight,
+  });
+  const sourceWidth = Math.max(Number.EPSILON, sourceBounds.right - sourceBounds.left);
+  const sourceHeight = Math.max(Number.EPSILON, sourceBounds.bottom - sourceBounds.top);
+  const topBreakpointX = sourceBounds.left + sourceWidth
+    * topLeftCurve.length
+    / Math.max(Number.EPSILON, topLeftCurve.length + topRightCurve.length);
+  const bottomBreakpointX = sourceBounds.left + sourceWidth
+    * bottomLeftCurve.length
+    / Math.max(Number.EPSILON, bottomLeftCurve.length + bottomRightCurve.length);
+  return (point: VectorTextPoint): VectorTextPoint => {
+    const verticalRatio = clampUnit((point.y - sourceBounds.top) / sourceHeight);
+    const breakpointX = topBreakpointX
+      + (bottomBreakpointX - topBreakpointX) * verticalRatio;
+    const onLeft = point.x <= breakpointX;
+    const horizontalRatio = onLeft
+      ? clampUnit(
+        (point.x - sourceBounds.left)
+        / Math.max(Number.EPSILON, breakpointX - sourceBounds.left),
+      )
+      : clampUnit(
+        (point.x - breakpointX)
+        / Math.max(Number.EPSILON, sourceBounds.right - breakpointX),
+      );
+    const targetTop = preparedCubicPointAtLengthRatio(
+      onLeft ? topLeftCurve : topRightCurve,
+      horizontalRatio,
+    );
+    const targetBottom = preparedCubicPointAtLengthRatio(
+      onLeft ? bottomLeftCurve : bottomRightCurve,
+      horizontalRatio,
+    );
+    return interpolatePoint(targetTop, targetBottom, verticalRatio);
+  };
+}
+
+export function warpVectorTextPointFreeForm(
+  point: VectorTextPoint,
+  sourceBounds: VectorTextBounds,
+  points: VectorTextDistortPoints,
+): VectorTextPoint {
+  return createVectorTextFreeFormMapper(sourceBounds, points)(point);
+}
+
+export function warpVectorTextPathFreeForm(
+  path: Shadow3dPathData,
+  sourceBounds: VectorTextBounds,
+  points: VectorTextDistortPoints,
+): Shadow3dPathData {
+  const coords = new Float64Array(path.coords.length);
+  const transformPoint = createVectorTextFreeFormMapper(sourceBounds, points);
+  for (let index = 0; index < path.coords.length; index += 2) {
+    const transformed = transformPoint(
+      { x: path.coords[index], y: path.coords[index + 1] },
+    );
+    coords[index] = transformed.x;
+    coords[index + 1] = transformed.y;
   }
   return {
     verbs: path.verbs.slice(),
