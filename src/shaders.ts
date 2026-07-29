@@ -666,6 +666,16 @@ fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
 
 fn sampleActiveLayer(uv: vec2<f32>) -> vec4<f32> {
   if (display.selectedMipLevel < 0.5) {
+    if (rasterPixelViewEnabled(1.0)) {
+      return textureLoad(
+        activeLayerBase,
+        rasterPixelViewTexel(
+          uv,
+          vec2<i32>(textureDimensions(activeLayerBase, 0))
+        ),
+        0
+      );
+    }
     return textureSampleLevel(activeLayerBase, layerSampler, uv, 0.0);
   }
   return textureSampleLevel(
@@ -844,6 +854,16 @@ fn sampleViewportTexture(
 
 fn samplePermanentLayer(uv: vec2<f32>) -> vec4<f32> {
   if (display.selectedMipLevel < 0.5) {
+    if (rasterPixelViewEnabled(1.0)) {
+      return textureLoad(
+        activeLayerBase,
+        rasterPixelViewTexel(
+          uv,
+          vec2<i32>(textureDimensions(activeLayerBase, 0))
+        ),
+        0
+      );
+    }
     return textureSampleLevel(activeLayerBase, layerSampler, uv, 0.0);
   }
   return textureSampleLevel(
@@ -852,6 +872,20 @@ fn samplePermanentLayer(uv: vec2<f32>) -> vec4<f32> {
     uv,
     display.selectedMipLevel - 1.0
   );
+}
+
+fn sampleTailLayer(uv: vec2<f32>) -> vec4<f32> {
+  if (rasterPixelViewEnabled(1.0)) {
+    return textureLoad(
+      tailTexture,
+      rasterPixelViewTexel(
+        uv,
+        vec2<i32>(textureDimensions(tailTexture, 0))
+      ),
+      0
+    );
+  }
+  return textureSampleLevel(tailTexture, layerSampler, uv, 0.0);
 }
 
 ${mergedSurfaceSamplingShader}
@@ -926,7 +960,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
       vec2<f32>(0.0),
       vec2<f32>(1.0)
     );
-    let transientPaint = textureSampleLevel(tailTexture, layerSampler, tailUv, 0.0);
+    let transientPaint = sampleTailLayer(tailUv);
     if (tail.compositionMode == 1u) {
       paint = vec4<f32>(
         permanentPaint.rgb + transientPaint.rgb,
@@ -980,7 +1014,7 @@ fn activeFragmentMain(
       vec2<f32>(0.0),
       vec2<f32>(1.0)
     );
-    let transientPaint = textureSampleLevel(tailTexture, layerSampler, tailUv, 0.0);
+    let transientPaint = sampleTailLayer(tailUv);
     if (tail.compositionMode == 1u) {
       paint = vec4<f32>(
         permanentPaint.rgb + transientPaint.rgb,
@@ -1171,6 +1205,11 @@ fn sampleCompositedLayerLinear(uv: vec2<f32>) -> vec4<f32> {
   );
 }
 
+fn sampleCompositedLayerNearest(uv: vec2<f32>) -> vec4<f32> {
+  let dimensions = vec2<i32>(textureDimensions(layerTexture, 0));
+  return compositedLayerTexel(rasterPixelViewTexel(uv, dimensions));
+}
+
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   let positions = array<vec2<f32>, 3>(
@@ -1206,7 +1245,11 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   if (display.selectedMipLevel < 0.5) {
     // Reproduce sampling of the quantized committed mip 0: compose and encode
     // each neighboring layer texel first, then apply the sampler's bilinear mix.
-    paint = sampleCompositedLayerLinear(uv);
+    if (rasterPixelViewEnabled(1.0)) {
+      paint = sampleCompositedLayerNearest(uv);
+    } else {
+      paint = sampleCompositedLayerLinear(uv);
+    }
   } else {
     // Mip 1+ of compositedMipTexture stores box-filtered final compositing.
     // Sampling that pyramid avoids compose(filter(base), filter(stroke)),
@@ -1253,7 +1296,11 @@ fn activeFragmentMain(
   );
   var paint: vec4<f32>;
   if (display.selectedMipLevel < 0.5) {
-    paint = sampleCompositedLayerLinear(uv);
+    if (rasterPixelViewEnabled(1.0)) {
+      paint = sampleCompositedLayerNearest(uv);
+    } else {
+      paint = sampleCompositedLayerLinear(uv);
+    }
   } else {
     paint = textureSampleLevel(
       compositedMipTexture,

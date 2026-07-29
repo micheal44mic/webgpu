@@ -1411,6 +1411,22 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   Restano prova percettiva touch/iPhone e misura pacing: nessun guadagno
   prestazionale dichiarato e candidato non ancora promosso dall'utente.
 
+- Vista pixel raster (candidato locale del 29 luglio 2026): la pill in alto a
+  destra mostra lo zoom reale della camera; da `581%` incluso passa a
+  `581% · PIXEL` e tutti i soli ingressi raster mip `0` usano `textureLoad`
+  nearest sul texel autorevole. Sotto soglia restano i sampler lineari e i mip
+  correnti. Sono coperti livello permanent, coda spessore, Light/M1 Glaze,
+  style stack con Traccia/Ombre/Smusso, superfici fuse e run raster del
+  compositore misto. Testo e SVG continuano invece a essere ridisegnati come
+  Slug/mesh WebGPU screen-space e non vengono pixelati. Strategia
+  `display-only-nearest-raster-at-581-percent-v1`: solo presentazione, nessuna
+  mutazione del documento, nuova texture/buffer o crescita memoria (`0 MiB`).
+  Il badge usa floor sopra il `100%`, quindi non dichiara `581%` prima della
+  soglia reale. QA browser locale: `430%` ancora smussato, `581%` con badge
+  PIXEL e texel raster netti mentre il bordo vettoriale resta continuo; ritorno
+  sotto soglia immediato. Build production e verifiche `view`, `vector-text`,
+  `mixed-scene`, `stroke`, `shadow`, `thickness`, `layers` e `history` verdi.
+  Candidato non committato e non pubblicato su richiesta dell'utente.
 ### Ricerca empirica del limite memoria iPhone (diagnostica pubblicabile)
 
 - Il limite Safari/iOS non è una costante per modello: il jetsam è un limite

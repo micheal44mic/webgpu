@@ -76,6 +76,16 @@ fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
 
 fn sampleActiveLayer(uv: vec2<f32>) -> vec4<f32> {
   if (display.selectedMipLevel < 0.5) {
+    if (rasterPixelViewEnabled(1.0)) {
+      return textureLoad(
+        activeLayerBase,
+        rasterPixelViewTexel(
+          uv,
+          vec2<i32>(textureDimensions(activeLayerBase, 0))
+        ),
+        0
+      );
+    }
     return textureSampleLevel(activeLayerBase, layerSampler, uv, 0.0);
   }
   return textureSampleLevel(

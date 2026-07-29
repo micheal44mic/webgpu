@@ -27,6 +27,10 @@ import type {
 import type { LayerCompressionStudyReport } from "./layer-compression-study";
 import { MixedVectorTextController } from "./mixed-vector-text-controller";
 import type { MixedMemoryBenchmarkReport } from "./mixed-memory-benchmark";
+import {
+  RASTER_PIXEL_VIEW_PERCENT_THRESHOLD,
+  rasterPixelViewEnabled,
+} from "./raster-pixel-view.ts";
 
 function element<T extends HTMLElement>(id: string): T {
   const result = document.getElementById(id);
@@ -116,6 +120,7 @@ const redoStrokeButton = element<HTMLButtonElement>("redoStroke");
 const fitViewButton = element<HTMLButtonElement>("fitView");
 const zoomInButton = element<HTMLButtonElement>("zoomIn");
 const zoomOutButton = element<HTMLButtonElement>("zoomOut");
+const viewZoomPercentOutput = element<HTMLOutputElement>("viewZoomPercent");
 const rotateViewLeftButton = element<HTMLButtonElement>("rotateViewLeft");
 const viewRotationButton = element<HTMLButtonElement>("viewRotation");
 const rotateViewRightButton = element<HTMLButtonElement>("rotateViewRight");
@@ -505,7 +510,8 @@ const engine = new BrushEngine(canvas, {
   onViewRotationChange(degrees, snappedToZero) {
     updateViewRotationControl(degrees, snappedToZero);
   },
-  onViewChange() {
+  onViewChange(state) {
+    updateViewZoomControl(state.zoom);
     vectorTextPrototype?.scheduleViewSync();
   },
   onMixedSceneChange(snapshot) {
@@ -678,6 +684,28 @@ function updateViewRotationControl(degrees: number, snappedToZero: boolean): voi
   viewRotationButton.title = snappedToZero && rounded === 0
     ? "Rotazione agganciata a 0°"
     : `Rotazione vista ${formatted}° · premi per azzerare`;
+}
+
+function updateViewZoomControl(zoom: number): void {
+  const percent = Math.max(0, Number.isFinite(zoom) ? zoom * 100 : 0);
+  const rounded = percent < 100
+    ? Math.round(percent * 10) / 10
+    : Math.floor(percent + 1e-6);
+  const formatted = (percent < 100 ? rounded.toFixed(1) : rounded.toFixed(0))
+    .replace(".", ",");
+  const multiplier = zoom.toFixed(2).replace(".", ",");
+  const pixelViewEnabled = rasterPixelViewEnabled(zoom);
+  const label = pixelViewEnabled ? `${formatted}% · PIXEL` : `${formatted}%`;
+  viewZoomPercentOutput.value = label;
+  viewZoomPercentOutput.textContent = label;
+  viewZoomPercentOutput.dataset.mode = pixelViewEnabled ? "pixel" : "smooth";
+  viewZoomPercentOutput.setAttribute(
+    "aria-label",
+    `Zoom vista ${formatted}%; pixel raster ${pixelViewEnabled ? "visibili" : "smussati"}`,
+  );
+  viewZoomPercentOutput.title = pixelViewEnabled
+    ? `Pixel raster reali attivi da ${RASTER_PIXEL_VIEW_PERCENT_THRESHOLD}% · ${multiplier}×`
+    : `Zoom vista ${formatted}% · pixel reali da ${RASTER_PIXEL_VIEW_PERCENT_THRESHOLD}%`;
 }
 
 function setControlsPanelOpen(open: boolean): void {
@@ -4448,6 +4476,7 @@ setGpuMemoryPanelOpen(false);
 setControlsPanelOpen(true);
 configureBrushToolUi("paint", false);
 updateControlOutputs();
+updateViewZoomControl(engine.getVectorTextViewState().zoom);
 engine.setBrushSettings(readBrushSettings());
 updateHumanStrokeControls();
 updateHistoryControls();

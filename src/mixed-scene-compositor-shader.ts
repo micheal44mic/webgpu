@@ -1,5 +1,7 @@
+import { rasterPixelViewShaderHelpers } from "./raster-pixel-view.ts";
+
 export const MIXED_SCENE_COMPOSITOR_STRATEGY =
-  "ordered-raster-vector-gpu-runs-rgba16f-viewport-source-over-v3" as const;
+  "ordered-raster-vector-gpu-runs-rgba16f-viewport-source-over-raster-nearest-at-581pct-v4" as const;
 
 export const MIXED_SCENE_LINEAR_FORMAT = "rgba16float" as const;
 
@@ -59,6 +61,7 @@ struct SegmentUniforms {
 @group(0) @binding(2) var sourceTexture: texture_2d<f32>;
 @group(0) @binding(3) var sourceSampler: sampler;
 
+${rasterPixelViewShaderHelpers}
 ${fullscreenVertexShader}
 
 @fragment
@@ -83,6 +86,16 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     0.0,
     maximumLod
   );
+  if (rasterPixelViewEnabled(resolutionScale)) {
+    return textureLoad(
+      sourceTexture,
+      rasterPixelViewTexel(
+        uv,
+        vec2<i32>(textureDimensions(sourceTexture, 0))
+      ),
+      0
+    );
+  }
   return textureSampleLevel(sourceTexture, sourceSampler, uv, lod);
 }
 `;
@@ -101,6 +114,7 @@ struct TextCaptureUniforms {
 @group(0) @binding(1) var<uniform> capture: TextCaptureUniforms;
 @group(0) @binding(2) var sourceTexture: texture_2d<f32>;
 @group(0) @binding(3) var sourceSampler: sampler;
+
 
 ${fullscreenVertexShader}
 

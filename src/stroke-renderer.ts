@@ -19,7 +19,7 @@ import type { EffectsScratchLease, EffectsScratchPool } from "./effects-scratch-
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 
 export const RASTER_STROKE_RENDERER_BUILD =
-  "style-stack-webgpu-v14-lazy-stroke-geometry-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-native-unorm-round-even";
+  "style-stack-webgpu-v15-lazy-stroke-geometry-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-nearest-raster-at-581pct-native-unorm-round-even";
 export const RASTER_STROKE_COVERAGE_STRATEGY =
   "lazy-packed-r8-style-coverage-while-stroke-enabled" as const;
 export const RASTER_STROKE_GEOMETRY_STORAGE_STRATEGY =
@@ -1233,6 +1233,16 @@ fn directStyledSample(layerPosition: vec2<f32>) -> vec4<f32> {
   return mix(mix(p00, p10, fraction.x), mix(p01, p11, fraction.x), fraction.y);
 }
 
+fn directStyledNearestSample(layerPosition: vec2<f32>) -> vec4<f32> {
+  let maximumCoordinate = DOCUMENT_SIZE - vec2<i32>(1);
+  let position = clamp(
+    vec2<i32>(floor(layerPosition + vec2<f32>(0.5))),
+    vec2<i32>(0),
+    maximumCoordinate
+  );
+  return quantizeLayer(styledTexel(position));
+}
+
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   let positions = array<vec2<f32>, 3>(
@@ -1259,7 +1269,11 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
 
   var paint: vec4<f32>;
   if (display.selectedMipLevel < 0.5) {
-    paint = directStyledSample(layerPosition);
+    if (rasterPixelViewEnabled(1.0)) {
+      paint = directStyledNearestSample(layerPosition);
+    } else {
+      paint = directStyledSample(layerPosition);
+    }
   } else {
     let uv = clamp(
       (layerPosition + vec2<f32>(0.5)) / layerSize,
@@ -1311,7 +1325,11 @@ fn activeFragmentMain(
   // document-bounds branch just like the canonical presentation entry point.
   var paint: vec4<f32>;
   if (display.selectedMipLevel < 0.5) {
-    paint = directStyledSample(layerPosition);
+    if (rasterPixelViewEnabled(1.0)) {
+      paint = directStyledNearestSample(layerPosition);
+    } else {
+      paint = directStyledSample(layerPosition);
+    }
   } else {
     let uv = clamp(
       (layerPosition + vec2<f32>(0.5)) / layerSize,

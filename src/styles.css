@@ -1035,6 +1035,37 @@ select {
   display: none;
 }
 
+.view-zoom-percent {
+  position: absolute;
+  z-index: 3;
+  top: 12px;
+  right: max(12px, env(safe-area-inset-right));
+  min-width: 74px;
+  padding: 8px 11px;
+  border: 1px solid rgba(139, 151, 178, 0.42);
+  border-radius: 999px;
+  background: rgba(17, 20, 29, 0.9);
+  color: #f4f6ff;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28);
+  font-size: 13px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  text-align: center;
+  pointer-events: none;
+  user-select: none;
+  backdrop-filter: blur(8px);
+}
+
+.view-zoom-percent[data-mode="pixel"] {
+  min-width: 118px;
+  border-color: rgba(107, 226, 177, 0.72);
+  background: rgba(13, 49, 39, 0.94);
+  color: #b9f8da;
+  box-shadow: 0 4px 20px rgba(19, 136, 92, 0.24);
+}
+
 #vectorTextInteractionCanvas {
   position: absolute;
   z-index: 1;

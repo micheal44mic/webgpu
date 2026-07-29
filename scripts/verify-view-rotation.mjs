@@ -1,11 +1,21 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import {
+  RASTER_PIXEL_VIEW_PERCENT_THRESHOLD,
+  RASTER_PIXEL_VIEW_STRATEGY,
+  RASTER_PIXEL_VIEW_ZOOM_THRESHOLD,
+  rasterPixelViewEnabled,
+} from "../src/raster-pixel-view.ts";
 
 const read = (relativePath) => fs.readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
 const engineSource = read("src/brush-engine.ts");
 const mainSource = read("src/main.ts");
 const shaderSource = read("src/shaders.ts");
 const strokeRendererSource = read("src/stroke-renderer.ts");
+const mergedSurfaceSource = read("src/merged-surface-shader.ts");
+const mixedSceneCompositorSource = read("src/mixed-scene-compositor-shader.ts");
+const vectorTextShaderSource = read("src/vector-text-shader.ts");
+const pixelViewSource = read("src/raster-pixel-view.ts");
 const htmlSource = read("index.html");
 const styleSource = read("src/styles.css");
 const packageJson = JSON.parse(read("package.json"));
@@ -186,6 +196,52 @@ assert.match(htmlSource, /due dita spostano, fanno zoom e ruotano/);
 assert.match(styleSource, /#gpuCanvas\.rotating/);
 assert.match(styleSource, /\.desktop-rotation-control\s*\{\s*display: none;/s,
   "i controlli desktop non devono affollare la barra mobile");
+assert.equal(RASTER_PIXEL_VIEW_PERCENT_THRESHOLD, 581);
+assert.equal(RASTER_PIXEL_VIEW_ZOOM_THRESHOLD, 5.81);
+assert.equal(RASTER_PIXEL_VIEW_STRATEGY, "display-only-nearest-raster-at-581-percent-v1");
+assert.equal(rasterPixelViewEnabled(5.809999), false,
+  "sotto il 581% il raster deve restare smussato");
+assert.equal(rasterPixelViewEnabled(5.81), true,
+  "al 581% esatto deve iniziare la vista pixel raster");
+assert.equal(rasterPixelViewEnabled(Number.NaN), false);
+assert.match(pixelViewSource, /display\.zoom >= RASTER_PIXEL_VIEW_ZOOM_THRESHOLD/);
+assert.match(pixelViewSource, /resolutionScale <= 1\.0001/,
+  "le catture vettoriali supersampled non devono essere pixelate");
+assert.match(pixelViewSource, /vec2<i32>\(floor\(uv \* vec2<f32>\(dimensions\)\)\)/,
+  "nearest deve selezionare un texel reale senza interpolazione");
+assert.match(htmlSource, /id="viewZoomPercent"/);
+assert.match(htmlSource, /data-mode="smooth"/);
+assert.match(styleSource, /\.view-zoom-percent\[data-mode="pixel"\]/);
+assert.match(mainSource, /Math\.floor\(percent \+ 1e-6\)/,
+  "il badge non deve mostrare 581% prima della soglia reale");
+assert.match(mainSource, /pixelViewEnabled \? `\$\{formatted\}% · PIXEL`/);
+assert.match(mainSource, /rasterPixelViewEnabled\(zoom\)/);
+
+assert.equal((mergedSurfaceSource.match(/rasterPixelViewEnabled\(resolutionScale\)/g) ?? []).length, 2,
+  "entrambe le superfici raster unite devono usare nearest sopra soglia");
+assert.match(mixedSceneCompositorSource, /ordered-raster-vector-gpu-runs-rgba16f-viewport-source-over-raster-nearest-at-581pct-v4/);
+const mixedRasterSegment = mixedSceneCompositorSource.slice(
+  mixedSceneCompositorSource.indexOf("export const mixedSceneRasterSegmentShader"),
+  mixedSceneCompositorSource.indexOf("export const mixedSceneTextSegmentShader"),
+);
+const mixedTextSegment = mixedSceneCompositorSource.slice(
+  mixedSceneCompositorSource.indexOf("export const mixedSceneTextSegmentShader"),
+  mixedSceneCompositorSource.indexOf("export const mixedSceneClearShader"),
+);
+assert.match(mixedRasterSegment, /rasterPixelViewEnabled\(resolutionScale\)/,
+  "le run raster del compositore misto devono mostrare texel reali");
+assert.doesNotMatch(mixedTextSegment, /rasterPixelViewEnabled/,
+  "le run testo/SVG devono restare vettoriali");
+assert.match(vectorTextShaderSource, /sampleViewportTexture[\s\S]*textureLoad\(source, pixel, 0\)/,
+  "le superfici vettoriali screen-space devono restare analitiche e nitide");
+assert.ok((shaderSource.match(/rasterPixelViewEnabled\(1\.0\)/g) ?? []).length >= 5,
+  "base, tail e glaze devono condividere la vista pixel raster");
+assert.equal((strokeRendererSource.match(/directStyledNearestSample\(layerPosition\)/g) ?? []).length, 2,
+  "effetti raster e active-only devono usare lo stesso nearest");
+assert.match(strokeRendererSource, /display-nearest-raster-at-581pct/);
+assert.doesNotMatch(pixelViewSource, /createTexture|createBuffer|writeTexture|copyTexture/,
+  "la modalità pixel deve essere solo display e non allocare o mutare risorse");
+
 assert.equal(packageJson.scripts["view:verify"], "node scripts/verify-view-rotation.mjs");
 
-console.log("Rotazione vista verificata: round-trip, ancora, magnete 0°, ABI 64 B, mobile e desktop.");
+console.log("Vista verificata: rotazione, zoom reale e nearest raster dal 581% senza pixelare testo/SVG.");
