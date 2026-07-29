@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { area } from "clipper2-ts";
+import { area, difference, FillRule } from "clipper2-ts";
 
 import {
   VECTOR_TEXT_BLOCK_SHADOW_STRATEGY,
@@ -37,6 +37,7 @@ import {
 } from "../src/vector-text-curve-utils.ts";
 import {
   VECTOR_TEXT_GPU_GEOMETRY_STRATEGY,
+  VECTOR_TEXT_BLOCK_INNER_OVERLAP_PIXELS,
   VECTOR_TEXT_OUTLINE_INNER_OVERLAP_PIXELS,
   buildOutsideVectorTextOutline,
   buildVectorTextBlockSet,
@@ -302,7 +303,7 @@ assert.equal(
 );
 assert.equal(
   VECTOR_TEXT_BLOCK_SHADOW_STRATEGY,
-  "webgpu-clipper64-worker-visible-swept-union-mesh-v5",
+  "webgpu-clipper64-worker-visible-swept-union-separate-clipped-overlap2px-mesh-v8",
 );
 assert.equal(
   VECTOR_TEXT_SINGLE_SHADOW_STRATEGY,
@@ -318,9 +319,9 @@ assert.equal(
 );
 assert.equal(
   VECTOR_TEXT_GPU_GEOMETRY_STRATEGY,
-  "clipper64-nonzero-worker-native-round-bevel-exact-miter-aa-overlap-same-color-union-visible-block-earcut-v7",
+  "clipper64-nonzero-worker-native-round-bevel-exact-miter-aa-overlap-same-color-union-visible-block-separate-clipped-overlap2px-earcut-v10",
 );
-assert.equal(VECTOR_TEXT_GEOMETRY_COMPILER_VERSION, "clipper64-nonzero-lod-worker-v7");
+assert.equal(VECTOR_TEXT_GEOMETRY_COMPILER_VERSION, "clipper64-nonzero-lod-worker-v10");
 assert.equal(
   VECTOR_TEXT_SLUG_GPU_RENDER_STRATEGY,
   "webgpu-slug-source-clipper-effect-mesh-msaa4-stable-lines-absolute-f32-scale-v5",
@@ -745,6 +746,7 @@ assertTriangulation(tangentContours, lod, "tangent contours");
 // Outline: zero è un vero no-op; round/bevel e miter producono regioni canoniche.
 // La mesh runtime sovrappone 1 px sotto il fill analitico senza cambiare il bordo esterno.
 assert.equal(VECTOR_TEXT_OUTLINE_INNER_OVERLAP_PIXELS, 1);
+assert.equal(VECTOR_TEXT_BLOCK_INNER_OVERLAP_PIXELS, 2);
 assert.equal(
   compileVectorTextEffect(
     sourceRectangle,
@@ -833,17 +835,51 @@ assert.ok(blockSet.top <= rectangleSet.top);
 assert.ok(blockSet.right >= rectangleSet.right + vectorX);
 assert.ok(blockSet.bottom >= rectangleSet.bottom + vectorY);
 assertTriangulation(blockSet, lod, "block shadow");
-const visibleBlockSet = buildVisibleVectorTextBlockSet(
+const visibleBlockWithoutOverlap = buildVisibleVectorTextBlockSet(
   rectangleSet,
   vectorX,
   vectorY,
 );
-assertCanonical(visibleBlockSet, "visible block shadow");
-assertTriangulation(visibleBlockSet, lod, "visible block shadow");
+const blockInnerOverlap = Math.max(
+  1,
+  Math.round(
+    VECTOR_TEXT_BLOCK_INNER_OVERLAP_PIXELS
+      / lod.bucketScale
+      * lod.integerScale,
+  ),
+);
+const visibleBlockSet = buildVisibleVectorTextBlockSet(
+  rectangleSet,
+  vectorX,
+  vectorY,
+  blockInnerOverlap,
+);
+assertCanonical(visibleBlockSet, "visible block shadow overlap");
+assertTriangulation(visibleBlockSet, lod, "visible block shadow overlap");
+assert.ok(
+  canonicalArea(visibleBlockSet, lod.integerScale)
+    > canonicalArea(visibleBlockWithoutOverlap, lod.integerScale),
+  "le pareti devono sovrapporsi al fill nella sola zona nascosta",
+);
 assert.ok(
   canonicalArea(visibleBlockSet, lod.integerScale)
     < canonicalArea(blockSet, lod.integerScale),
   "la faccia sorgente nascosta non deve restare nel fill della Block Shadow",
+);
+assert.deepEqual(
+  {
+    left: visibleBlockSet.left,
+    top: visibleBlockSet.top,
+    right: visibleBlockSet.right,
+    bottom: visibleBlockSet.bottom,
+  },
+  {
+    left: visibleBlockWithoutOverlap.left,
+    top: visibleBlockWithoutOverlap.top,
+    right: visibleBlockWithoutOverlap.right,
+    bottom: visibleBlockWithoutOverlap.bottom,
+  },
+  "l'overlap nascosto non deve cambiare la bbox della mesh visibile",
 );
 assert.deepEqual(
   {
@@ -867,6 +903,16 @@ const blockMesh = compileVectorTextEffect(
   "block",
 );
 assert.ok(blockMesh);
+assert.equal(
+  compileVectorTextEffect(
+    sourceRectangle,
+    lod,
+    { kind: "block", vectorX: 0, vectorY: 0 },
+    "block-zero",
+  ),
+  null,
+  "offset zero non deve generare una faccia nascosta",
+);
 assert.ok(
   Math.abs(
     meshTriangleArea(blockMesh)
@@ -877,6 +923,79 @@ assert.ok(
 const blockBounds = absoluteMeshBounds(blockMesh);
 assert.ok(blockBounds.right >= 142.99);
 assert.ok(blockBounds.bottom >= 116.99);
+const longSeventyDegreeVector = vectorTextBlockShadowLocalVector(0, 100, 70);
+for (const [directionX, directionY] of [
+  [23, 0],
+  [-23, 0],
+  [0, 17],
+  [0, -17],
+  [23, 17],
+  [-23, 17],
+  [23, -17],
+  [-23, -17],
+  [longSeventyDegreeVector.x, longSeventyDegreeVector.y],
+]) {
+  const quantizedX = Math.round(directionX * lod.integerScale);
+  const quantizedY = Math.round(directionY * lod.integerScale);
+  const fullDirectionBlock = buildVectorTextBlockSet(
+    oppositeNested,
+    quantizedX,
+    quantizedY,
+  );
+  const visibleDirectionBlock = buildVisibleVectorTextBlockSet(
+    oppositeNested,
+    quantizedX,
+    quantizedY,
+  );
+  const overlappedDirectionBlock = buildVisibleVectorTextBlockSet(
+    oppositeNested,
+    quantizedX,
+    quantizedY,
+    blockInnerOverlap,
+  );
+  assertCanonical(overlappedDirectionBlock, `block overlap ${directionX},${directionY}`);
+  assertTriangulation(
+    overlappedDirectionBlock,
+    lod,
+    `block overlap ${directionX},${directionY}`,
+  );
+  assert.equal(
+    difference(visibleDirectionBlock.paths, overlappedDirectionBlock.paths, FillRule.NonZero).length,
+    0,
+    `l'overlap sottrae triangoli visibili per ${directionX},${directionY}`,
+  );
+  assert.equal(
+    difference(overlappedDirectionBlock.paths, fullDirectionBlock.paths, FillRule.NonZero).length,
+    0,
+    `l'overlap esce dallo sweep completo per ${directionX},${directionY}`,
+  );
+
+  assert.ok(
+    canonicalArea(overlappedDirectionBlock, lod.integerScale)
+      >= canonicalArea(visibleDirectionBlock, lod.integerScale),
+    `overlap nascosto mancante per ${directionX},${directionY}`,
+  );
+  assert.ok(
+    canonicalArea(overlappedDirectionBlock, lod.integerScale)
+      < canonicalArea(fullDirectionBlock, lod.integerScale),
+    `la faccia sorgente è rientrata per ${directionX},${directionY}`,
+  );
+  assert.deepEqual(
+    {
+      left: overlappedDirectionBlock.left,
+      top: overlappedDirectionBlock.top,
+      right: overlappedDirectionBlock.right,
+      bottom: overlappedDirectionBlock.bottom,
+    },
+    {
+      left: visibleDirectionBlock.left,
+      top: visibleDirectionBlock.top,
+      right: visibleDirectionBlock.right,
+      bottom: visibleDirectionBlock.bottom,
+    },
+    `l'overlap cambia bbox per ${directionX},${directionY}`,
+  );
+}
 const blockOutlineMesh = compileVectorTextEffect(
   sourceRectangle,
   lod,
@@ -1047,8 +1166,10 @@ assert.match(clientSource, /private activeRequestId: number \| null = null/);
 assert.match(clientSource, /private readonly queuedBySlot = new Map/);
 assert.match(clientSource, /this\.queuedBySlot\.set\(slotKey, queued\)/);
 assert.match(clientSource, /desiredKeyBySlot\.values\(\)[\s\S]*desiredKey === response\.cacheKey/);
-assert.match(clientSource, /currentAlreadyFiner[\s\S]*current\.lodBucket >= lod\.bucket/);
-assert.match(clientSource, /if \(!currentAlreadyFiner\) \{[\s\S]*this\.requestEffect/);
+assert.match(clientSource, /requiresExactEffectLod[\s\S]*effect\.kind === "block"[\s\S]*effect\.kind === "block-outline"/);
+assert.match(clientSource, /currentAlreadySuitable[\s\S]*current\.lodBucket === lod\.bucket[\s\S]*current\.lodBucket >= lod\.bucket/);
+assert.match(clientSource, /if \(!currentAlreadySuitable\) \{[\s\S]*this\.requestEffect/);
+assert.match(clientSource, /\|\| exactLod[\s\S]*ready\.lodBucket >= current\.lodBucket/);
 assert.match(clientSource, /matchesRequestedIdentity: current\?\.effectIdentity === identity/);
 assert.doesNotMatch(clientSource, /displayed\.sourceRevision !== sourceRevision/);
 assert.match(clientSource, /MAXIMUM_READY_EFFECT_CACHE_ENTRIES = 48/);
@@ -1067,6 +1188,8 @@ assert.match(geometrySource, /Il contratto richiede bevel, non square/);
 assert.match(geometrySource, /exactCrossSign\(vectorX, vectorY, edgeX, edgeY\) <= 0/);
 assert.match(geometrySource, /canonicalSetFromPaths\(pieces\)/);
 assert.match(geometrySource, /ClipType\.Difference/);
+assert.match(geometrySource, /ClipType\.Intersection/);
+assert.match(geometrySource, /overlapPieces/);
 assert.match(geometrySource, /triangulationDeviation > 1e-8/);
 assert.match(geometrySource, /if \(quantized\.length >= 3\)/);
 

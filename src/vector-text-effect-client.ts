@@ -108,6 +108,15 @@ function cacheKey(
   ].join(":");
 }
 
+function requiresExactEffectLod(effect: VectorTextEffectDescription): boolean {
+  return effect.kind === "block"
+    || effect.kind === "block-outline"
+    || (
+      effect.kind === "source-outline"
+      && effect.includeFill !== true
+    );
+}
+
 export class VectorTextEffectCompilerClient {
   private readonly worker = new Worker(
     new URL("./vector-text-effect-worker.ts", import.meta.url),
@@ -152,10 +161,13 @@ export class VectorTextEffectCompilerClient {
     this.registerPath(sourceRevision, path);
 
     const current = this.displayedBySlot.get(slotKey);
-    const currentAlreadyFiner =
+    const exactLod = requiresExactEffectLod(effect);
+    const currentAlreadySuitable =
       current?.effectIdentity === identity
-      && current.lodBucket >= lod.bucket;
-    if (!currentAlreadyFiner) {
+      && (exactLod
+        ? current.lodBucket === lod.bucket
+        : current.lodBucket >= lod.bucket);
+    if (!currentAlreadySuitable) {
       this.requestEffect(
         slotKey,
         key,
@@ -178,6 +190,7 @@ export class VectorTextEffectCompilerClient {
       && (
         !current
         || current.effectIdentity !== identity
+        || exactLod
         || ready.lodBucket >= current.lodBucket
       )
     ) {

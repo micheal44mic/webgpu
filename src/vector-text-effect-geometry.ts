@@ -28,8 +28,9 @@ import {
 } from "./vector-text-lod.ts";
 
 export const VECTOR_TEXT_GPU_GEOMETRY_STRATEGY =
-  "clipper64-nonzero-worker-native-round-bevel-exact-miter-aa-overlap-same-color-union-visible-block-earcut-v7" as const;
+  "clipper64-nonzero-worker-native-round-bevel-exact-miter-aa-overlap-same-color-union-visible-block-separate-clipped-overlap2px-earcut-v10" as const;
 export const VECTOR_TEXT_OUTLINE_INNER_OVERLAP_PIXELS = 1;
+export const VECTOR_TEXT_BLOCK_INNER_OVERLAP_PIXELS = 2;
 
 export interface VectorTextGpuMeshData {
   readonly revision: string;
@@ -734,21 +735,22 @@ export function buildVisibleVectorTextBlockSet(
   canonicalFill: CanonicalPolygonSet,
   vectorX: number,
   vectorY: number,
+  innerOverlap = 0,
 ): CanonicalPolygonSet {
   if (vectorX === 0 && vectorY === 0) {
     return canonicalFill;
   }
 
-  // The analytic source fill is drawn after this mesh. Starting from the
-  // translated face removes the coincident trailing edge that could leak
-  // through because the mesh and Slug renderer calculate coverage differently.
-  // The exposed walls still overlap below the source on the extrusion side.
+  // Keep each visible wall exact. The hidden overlap is a separate local band:
+  // moving the wall's source vertices would shear it and cut triangular gaps
+  // from concave corners whenever the extrusion has a tangential component.
   const pieces: Paths64 = canonicalFill.paths.map((ring) =>
     ring.map((value) => ({
       x: value.x + vectorX,
       y: value.y + vectorY,
     }))
   );
+  const overlapPieces: Paths64 = [];
   for (const ring of canonicalFill.paths) {
     for (let index = 0; index < ring.length; index += 1) {
       const start = ring[index];
@@ -764,9 +766,32 @@ export function buildVisibleVectorTextBlockSet(
         { x: end.x + vectorX, y: end.y + vectorY },
         end,
       ]);
+      if (!(innerOverlap > 0)) {
+        continue;
+      }
+      const innerStart = rightOffset(start, edgeX, edgeY, -innerOverlap);
+      const innerEnd = rightOffset(end, edgeX, edgeY, -innerOverlap);
+      pushPositivePiece(overlapPieces, [
+        innerStart,
+        start,
+        end,
+        innerEnd,
+      ]);
     }
   }
-  return canonicalSetFromPaths(pieces);
+  const visible = canonicalSetFromPaths(pieces);
+  if (overlapPieces.length === 0) {
+    return visible;
+  }
+  const hiddenOverlap = canonicalSetFromTree(executeClipper(
+    overlapPieces,
+    ClipType.Intersection,
+    canonicalFill.paths,
+  ));
+  return canonicalSetFromPaths([
+    ...visible.paths,
+    ...hiddenOverlap.paths,
+  ]);
 }
 
 export function triangulateCanonicalVectorTextSet(
@@ -904,10 +929,22 @@ export function compileVectorTextEffect(
     const vectorX = Math.round(effect.vectorX * lod.integerScale);
     const vectorY = Math.round(effect.vectorY * lod.integerScale);
     if (effect.kind === "block") {
+      if (vectorX === 0 && vectorY === 0) {
+        return null;
+      }
+      const blockInnerOverlap = Math.max(
+        1,
+        Math.round(
+          VECTOR_TEXT_BLOCK_INNER_OVERLAP_PIXELS
+          / lod.bucketScale
+          * lod.integerScale,
+        ),
+      );
       result = buildVisibleVectorTextBlockSet(
         canonicalFill,
         vectorX,
         vectorY,
+        blockInnerOverlap,
       );
     } else {
       const block = buildVectorTextBlockSet(

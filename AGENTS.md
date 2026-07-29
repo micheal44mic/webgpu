@@ -2161,7 +2161,7 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   un Worker e triangolati con Earcut. Strategie firmate:
   `semantic-vector-gpu-runs-slug-clipper-msaa4-rgba16f-v6`,
   `webgpu-clipper64-worker-outside-offset-native-round-bevel-exact-miter4-v4`,
-  `webgpu-clipper64-worker-visible-swept-union-mesh-v5` e
+  `webgpu-clipper64-worker-visible-swept-union-separate-clipped-overlap2px-mesh-v8` e
   `webgpu-slug-zero-blur-or-r8-separable-gaussian-v2`.
 - Il Blur dell'ombra singola non usa più Canvas2D: Slug genera una mask R8,
   due pass GPU eseguono il Gaussian separabile e la cache R8 viene composta
@@ -2171,10 +2171,13 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   fill, Slug e compositing blur usano MSAA `4×` e source-over premoltiplicato.
 - LOD degli effetti dipende dal sigma reale vista×nodo. Esiste al massimo una
   richiesta Worker attiva; per ogni effetto resta solo l'ultima richiesta in
-  coda, una mesh già più fine serve anche lo zoom-out e lo swap alla nuova mesh
-  è atomico. Durante un tratto Paint non si sostituisce la mesh visualizzata.
-  Non esiste più il fallback bitmap adattivo che poteva mostrare regioni vuote
-  e completarle dopo il gesto.
+  coda e lo swap alla nuova mesh è atomico. Le mesh senza guardia screen-space
+  già più fini servono anche lo zoom-out; Block Shadow, outline Block e outline
+  sorgente separato richiedono invece il bucket esatto, perché la banda nascosta
+  deve restare `1–2 px` fisici anche tornando da uno zoom alto. La mesh corrente
+  rimane visibile mentre il Worker prepara quella corretta. Durante un tratto
+  Paint non si sostituisce la mesh visualizzata. Non esiste più il fallback
+  bitmap adattivo che poteva mostrare regioni vuote e completarle dopo il gesto.
 - Robustezza geometrica verificata con NonZero/EvenOdd, outer+hole+island,
   contour sovrapposti e tangenti, bow-tie ad area algebrica zero, duplicati,
   quasi-collineari e curve quadratiche/cubiche a lunghezza zero. Le curve
@@ -2207,25 +2210,41 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
 
 - Fix Block Shadow del 29 luglio 2026, dopo segnalazione visiva su sfondo
   scuro: il fill della mesh non conserva più la faccia sorgente completa sotto
-  il riempimento Slug. Quella sovrapposizione aveva un bordo coincidente
-  rasterizzato con coverage MSAA diversa e poteva far trapelare il colore
-  dell'ombra sui lati posteriori quando `Outline Width = 0`. Il fill corrente
-  usa la faccia traslata più le sole pareti esposte; l'unione completa resta
-  esclusivamente per calcolare l'outline della Block Shadow. Offset `0` non
-  invia alcun draw nascosto, per testo e SVG.
+  il riempimento Slug. Quel bordo coincidente, rasterizzato con coverage MSAA
+  diversa, poteva far trapelare il colore dell'ombra sui lati posteriori con
+  `Outline Width = 0`. Il fill usa la faccia traslata più le sole pareti esposte;
+  l'unione completa resta per l'outline Block. Offset `0` non invia alcun draw
+  nascosto, sia per testo sia per SVG.
+- La seconda sonda, fill e shadow entrambi `#111111` su fondo rosso, ha isolato
+  un distacco a `70°` con offset `100`: la prima guardia spostava verso l'interno
+  gli estremi della parete lunga e la deformava, sottraendo due triangoli quando
+  il vettore aveva componente tangenziale. La correzione finale conserva sempre
+  la parete esatta e aggiunge separatamente una banda locale di `2 px` fisici,
+  ritagliata con Clipper64 dentro il fill sorgente e poi unita alla mesh visibile.
+  L'overlap è quindi solo nascosto: non sottrae geometria visibile, non esce
+  dallo sweep completo e non modifica profilo esterno o bbox.
+- Gli effetti con guardia screen-space accettano ora anche un bucket LOD più
+  basso dopo lo zoom-out. La mesh più fine già visibile resta sullo schermo finché
+  il Worker latest-only prepara la sostituzione atomica; durante Paint non viene
+  sostituita. La sequenza `119%→723%→119%` mantiene così la guardia fisica senza
+  reintrodurre tagli o fallback bitmap.
 - La bbox semantica, le maniglie e l'hit-test restano quelli del sorgente; al
   preset `23 @ -104°` resta invariato anche l'inviluppo visibile dell'effetto.
-  Il compilatore Worker passa a
-  `clipper64-nonzero-lod-worker-v7` e la strategia geometrica a
-  `clipper64-nonzero-worker-native-round-bevel-exact-miter-aa-overlap-same-color-union-visible-block-earcut-v7`,
-  così nessuna cache v6 può riutilizzare la mesh precedente. Il ramo fill evita
-  inoltre la seconda unione Clipper che serviva soltanto all'outline.
-- QA browser dopo HMR/build: `STREETWEAR`, fill nero, shadow grigia, outline
-  sorgente e Block entrambi `0`; angoli `-104°` e `0°`, offset `23` e `0`, zoom
-  `217%` e `723%`. I lati posteriori restano puliti, le pareti compaiono solo
-  nella direzione dell'estrusione e offset zero non lascia aloni; Worker
-  effetti `0` errori. Tutte le 13 suite e la build production sono verdi; resta
-  il solo warning noto del chunk oltre `500 kB`. Nessuna pubblicazione.
+  Il compilatore passa a `clipper64-nonzero-lod-worker-v10`, la strategia
+  geometrica a
+  `clipper64-nonzero-worker-native-round-bevel-exact-miter-aa-overlap-same-color-union-visible-block-separate-clipped-overlap2px-earcut-v10`
+  e la Block Shadow a
+  `webgpu-clipper64-worker-visible-swept-union-separate-clipped-overlap2px-mesh-v8`;
+  le cache precedenti non possono riutilizzare la mesh difettosa.
+- QA browser: `E` isolata e `STREETWEAR`, outline sorgente/Block `0`, offset
+  `100`, angoli `-70/20/70/140°`, colori uguali e shadow grigia su rosso pieno,
+  zoom `119%/217%/723%` anche in ciclo zoom-in/out; inoltre SVG semantico a due
+  colori con `29` contorni e `850` comandi. Nessuna fessura sulle concavità e
+  nessun alone sul lato posteriore. Il fondo rosso era temporaneo ed è stato
+  rimosso. Il verifier impone ora `baseVisible − overlap = ∅` e
+  `overlap − fullBlock = ∅` su otto direzioni, `70°/100`, hole e bbox. Tutte le
+  13 suite, TypeScript e build production sono verdi; resta il solo warning noto
+  del chunk oltre `500 kB`. Nessun commit e nessuna pubblicazione.
 
 ### Ombra interna del riempimento testo (candidato locale del 29 luglio 2026)
 
