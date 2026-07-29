@@ -1091,7 +1091,11 @@ assert.match(
   htmlSource,
   /id="vectorTextSingleShadowOutlineWidth"[\s\S]*?value="0"[\s\S]*?disabled/,
 );
-assert.match(mainSource, /pageSearchParams\.get\("vectorTextTest"\) === "1"/);
+assert.match(mainSource, /const vectorTextEditorEnabled = true/);
+assert.match(mainSource, /vectorTextPrototypeEnabled: vectorTextEditorEnabled/);
+assert.match(mainSource, /if \(vectorTextEditorEnabled\)/);
+assert.doesNotMatch(mainSource, /pageSearchParams\.get\("vectorTextTest"\)/);
+assert.doesNotMatch(mainSource, /innerShadowTest/);
 assert.match(mainSource, /__vectorTextPrototype = vectorTextPrototype/);
 assert.equal(packageJson.scripts["vector-text:verify"], "node scripts/verify-vector-text.mjs");
 

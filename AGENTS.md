@@ -178,7 +178,8 @@ Paint:
 
 - Arch/Wave/Circle implementate il 29 luglio 2026 e congelate nel checkpoint
   `598d4b8`; il successivo comportamento live/no-flash è congelato in
-  `76359f6`. Nessuno dei due checkpoint è stato pubblicato. Strategia
+  `76359f6`. Entrambi sono confluiti nel commit `30a1cb9`, pubblicato su
+  Sites `94` dietro il gate di collaudo `?vectorTextTest=1`. Strategia
   `kittl-compatible-centered-arch-wave-cubic-distance-warp-circle-rigid-glyph-v2`.
   Il bundle pubblico Kittl `index.2bd1e2cd.js` è stato verificato direttamente:
   non si tratta di una ricostruzione basata soltanto su screenshot.
@@ -213,7 +214,7 @@ Paint:
   visibile e l'opacità del nodo non viene applicata due volte. Strategie
   `webgpu-clipper64-worker-outside-offset-aa-overlap1px-same-color-fused-round-bevel-miter4-v6`
   e `clipper64-nonzero-worker-native-round-bevel-exact-miter-aa-overlap-same-color-union-earcut-v6`.
-- Checkpoint live/no-flash `76359f6`, non pubblicato: il client non elimina più
+- Checkpoint live/no-flash `76359f6`, pubblicato tramite `30a1cb9`: il client non elimina più
   la mesh mostrata quando cambia la
   source revision. Ogni nodo conserva draw complete e bbox dell’ultima
   revisione pronta; se Traccia o Block Shadow sono ancora nel Worker, vecchia
@@ -229,7 +230,8 @@ Paint:
   sono LRU con tetto 128, protezione dei job/display attivi e messaggio esplicito
   `release-path` al Worker. I tetti possono essere superati solo dalle risorse
   effettivamente mostrate o in volo, mai da storico stale.
-- Distort è incluso nel checkpoint corrente e resta **non pubblicato**. Il
+- Distort è incluso in `30a1cb9` ed è pubblicato su Sites `94` dietro il
+  precedente gate di collaudo. Il
   bundle pubblico Kittl corrente `index.22e45a9c.js` è stato
   letto e il comportamento è stato verificato anche trascinando realmente i
   controlli nell’editor: l’interfaccia espone 6 vertici e 4 maniglie Bézier
@@ -254,8 +256,7 @@ Paint:
   Ombra interna, zoom alto e reset. Coda Worker finale zero, zero errori e
   console browser pulita; è una prova funzionale desktop, non un benchmark
   prestazionale né una prova iPhone.
-- Fix artefatti Slug del 29 luglio, incluso nello stesso checkpoint e
-  **non pubblicato**:
+- Fix artefatti Slug del 29 luglio, incluso nello stesso commit pubblicato:
   i triangoli/denti periodici visibili sui bordi del fill Distort restavano con
   Traccia a 0 e Block Shadow disattivata, quindi non provenivano dalle mesh
   Clipper degli effetti. Una quadratica esattamente lineare in f64 può perdere
@@ -293,6 +294,13 @@ Paint:
   come benchmark iPhone o come nuova baseline canonica.
 - Verifiche verdi: `npm run mixed-scene:verify`,
   `npm run vector-text:verify`, TypeScript e build Vite di produzione.
+- Promozione link pulito del 29 luglio 2026: l'editor testo vettoriale è ora
+  inizializzato nell'app ordinaria senza query string; comprende livelli testo,
+  Traccia, Ombra singola/interna, Block Shadow e Distort/Arch/Circle/Wave.
+  `?innerShadowTest=1` non aveva alcun lettore nel sorgente ed era un suffisso
+  inerte. Restano query-gated soltanto fixture e benchmark distruttivi
+  (`mixedMemoryBenchmark`, stress memoria/compressione e relativi profili);
+  non fanno parte dell'esperienza editor normale.
 
 ### Traccia raster M1 (WebGPU)
 

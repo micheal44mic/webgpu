@@ -452,10 +452,8 @@ const layerColdCompressionRequested =
   pageSearchParams.get("layerCompressionRuntime") === "1";
 const iphoneMemoryLimitTestRequested =
   pageSearchParams.get("iphoneMemoryLimitTest") === "1";
-const vectorTextPrototypeRequested =
-  pageSearchParams.get("vectorTextTest") === "1"
-  || mixedMemoryBenchmarkRequested;
-element<HTMLElement>("gpuMemoryVectorTextRow").hidden = !vectorTextPrototypeRequested;
+const vectorTextEditorEnabled = true;
+element<HTMLElement>("gpuMemoryVectorTextRow").hidden = false;
 const layerMemoryFixtureRequested =
   layerMemoryStressTestRequested
   || iphoneMemoryLimitTestRequested
@@ -536,7 +534,7 @@ const engine = new BrushEngine(canvas, {
   bevelBoundingFieldEnabled,
   layerMemoryStressTestEnabled: layerMemoryFixtureRequested,
   layerCompressionTestEnabled: layerCompressionStudyRequested,
-  vectorTextPrototypeEnabled: vectorTextPrototypeRequested,
+  vectorTextPrototypeEnabled: vectorTextEditorEnabled,
   layerColdCompressionEnabled: layerColdCompressionRequested,
 });
 if (import.meta.env.DEV) {
@@ -4381,7 +4379,7 @@ void loadCanonicalHumanStroke();
 void engine.initialize()
   .then(async () => {
     engineInitialized = true;
-    if (vectorTextPrototypeRequested) {
+    if (vectorTextEditorEnabled) {
       vectorTextPrototype = new MixedVectorTextController(engine);
       await vectorTextPrototype.initialize();
       if (import.meta.env.DEV) {

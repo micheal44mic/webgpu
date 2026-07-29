@@ -886,9 +886,8 @@ export interface BrushEngineOptions {
    */
   layerColdCompressionEnabled?: boolean;
   /**
-   * Enables the local, query-gated mixed raster/vector text prototype. The
-   * ordinary application does not compile its extra pipeline or allocate its
-   * viewport texture.
+   * Enables the integrated mixed raster/vector text editor and its viewport
+   * pipelines. Callers may still disable it in isolated engine tests.
    */
   vectorTextPrototypeEnabled?: boolean;
 }
