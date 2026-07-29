@@ -7,8 +7,13 @@ import {
 } from "../src/mixed-scene-stack.ts";
 import {
   MIXED_MEMORY_BENCHMARK_INTERLEAVED_TEXT_RUNS,
+  MIXED_MEMORY_BENCHMARK_STAGED_INTERLEAVED_TILE_COUNT,
+  MIXED_MEMORY_BENCHMARK_STAGED_STRATEGY,
+  MIXED_MEMORY_BENCHMARK_STAGED_TARGET_MIB,
+  MIXED_MEMORY_BENCHMARK_STAGED_TEXT_BATCH_SIZE,
   MIXED_MEMORY_BENCHMARK_STRATEGY,
   MIXED_MEMORY_BENCHMARK_TARGET_MIB,
+  mixedMemoryBenchmarkStrategy,
   mixedMemoryBenchmarkTextSeed,
 } from "../src/mixed-memory-benchmark-model.ts";
 
@@ -237,6 +242,21 @@ assert.equal(
     "mixed-raster-vector-64-text-nine-runs-counted-gpu-800mib-v1",
   );
   assert.equal(MIXED_MEMORY_BENCHMARK_TARGET_MIB, 800);
+  assert.equal(
+    MIXED_MEMORY_BENCHMARK_STAGED_STRATEGY,
+    "mixed-raster-vector-64-text-nine-runs-counted-gpu-600mib-staged-v1",
+  );
+  assert.equal(MIXED_MEMORY_BENCHMARK_STAGED_TARGET_MIB, 600);
+  assert.equal(MIXED_MEMORY_BENCHMARK_STAGED_INTERLEAVED_TILE_COUNT, 128);
+  assert.equal(MIXED_MEMORY_BENCHMARK_STAGED_TEXT_BATCH_SIZE, 8);
+  assert.equal(
+    mixedMemoryBenchmarkStrategy(800),
+    MIXED_MEMORY_BENCHMARK_STRATEGY,
+  );
+  assert.equal(
+    mixedMemoryBenchmarkStrategy(600),
+    MIXED_MEMORY_BENCHMARK_STAGED_STRATEGY,
+  );
   assert.equal(MIXED_MEMORY_BENCHMARK_INTERLEAVED_TEXT_RUNS, 8);
   const stressSeeds = Array.from(
     { length: VECTOR_TEXT_NODE_MAXIMUM },
@@ -255,6 +275,7 @@ assert.equal(
     "utf8",
   );
   assert.match(mainSource, /pageSearchParams\.get\("mixedMemoryBenchmark"\) === "1"/);
+  assert.match(mainSource, /pageSearchParams\.get\("mixedMemoryTargetMiB"\) === "600"/);
   assert.match(mainSource, /runRequestedMixedMemoryBenchmark/);
   assert.match(mainSource, /runMixedMemoryZoomProbe/);
   assert.match(mainSource, /resetActiveLayerForMemoryBenchmark/);

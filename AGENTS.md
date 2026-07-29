@@ -2055,5 +2055,33 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   `view:verify`, `stroke`, `shadow`, `bevel`, `effects-scratch`, `grain`,
   `blend`, `thickness`, `layers`, `history`, `compression` e build Vite
   production. Il solo warning build è il chunk principale oltre `500 kB`, già
-  noto. Candidato non committato, non pubblicato e non ancora provato su
-  iPhone/touch fisico.
+  noto. Il candidato GPU è nel commit `449fda1` ed è stato pubblicato come Sites
+  `92`; l'utente ha confermato su iPhone che il testo GPU non presenta il lag
+  precedente. La fixture automatica da `800 MiB` ha però chiuso Safari durante
+  la preparazione, prima del report: il limite osservato include quindi il
+  picco transitorio di setup e non misura il solo working set steady-state.
+
+### Scenario misto staged 600 MiB · candidato rev 59
+
+- Profilo aggiuntivo selezionato da
+  `?mixedMemoryBenchmark=1&mixedMemoryTargetMiB=600`; il default da `800 MiB`
+  conserva percorso, target e firma rev 58. La nuova firma è
+  `mixed-raster-vector-64-text-nine-runs-counted-gpu-600mib-staged-v1`.
+- Il percorso staged mantiene `64` testi, `32` Block Shadow, `32` ombre Blur e
+  `9` run testo, ma usa `128` tile (`32 MiB`) per ciascuno degli otto cold store
+  intermedi invece di `256`; i `56` testi restanti vengono creati in sette
+  batch da `8`, con due frame visibili e GPU idle fra i batch.
+- Il profilo `800 MiB` continua a usare cold store intermedi da `256` tile e un
+  unico batch dei testi restanti, così le run canoniche precedenti non cambiano.
+- Prova locale NVIDIA Ampere del 29 luglio: scenario completato in `3,936 s`,
+  `13` raster, `64` testi, `9` run, steady GPU `600,930 MiB` e picco setup
+  `664,930 MiB`; il raster finale è vuoto e attivo, con contratto replay pronto.
+- Breakdown principale: raster attivo `64 MiB`, cold raster `463,25 MiB`, cache
+  GPU testo `40,671 MiB`, mip `22,411 MiB`, cache schermo `3,262 MiB`, superfici
+  fuse `3,234 MiB`; tile cold `[128×8, 256×3, 61]`.
+- Probe zoom accoppiato locale: renderer testo p95 `0,9→2,5 ms` (`2,8×`) ed
+  end-to-end p95 `31,8→23,0 ms` (`0,7×`). Questi numeri verificano soltanto il
+  desktop e non vanno presentati come prestazione iPhone.
+- Il report firma target, strategia, picco e conteggi. La prova fisica iPhone
+  della preparazione a `600 MiB` e del Play tratto registrato resta aperta;
+  non dichiarare risolto il limite Safari prima del risultato dell'utente.

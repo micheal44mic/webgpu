@@ -11,15 +11,24 @@ import { LAYER_STACK_MAXIMUM } from "./layer-stack";
 import {
   MIXED_MEMORY_BENCHMARK_INTERLEAVED_TEXT_RUNS,
   MIXED_MEMORY_BENCHMARK_REPORT_VERSION,
-  MIXED_MEMORY_BENCHMARK_STRATEGY,
+  MIXED_MEMORY_BENCHMARK_STAGED_INTERLEAVED_TILE_COUNT,
+  MIXED_MEMORY_BENCHMARK_STAGED_TARGET_MIB,
+  MIXED_MEMORY_BENCHMARK_STAGED_TEXT_BATCH_SIZE,
   MIXED_MEMORY_BENCHMARK_TARGET_MIB,
+  mixedMemoryBenchmarkStrategy,
+  type MixedMemoryBenchmarkStrategy,
   mixedMemoryBenchmarkTextSeed,
 } from "./mixed-memory-benchmark-model";
 export {
   MIXED_MEMORY_BENCHMARK_INTERLEAVED_TEXT_RUNS,
   MIXED_MEMORY_BENCHMARK_REPORT_VERSION,
+  MIXED_MEMORY_BENCHMARK_STAGED_INTERLEAVED_TILE_COUNT,
+  MIXED_MEMORY_BENCHMARK_STAGED_STRATEGY,
+  MIXED_MEMORY_BENCHMARK_STAGED_TARGET_MIB,
+  MIXED_MEMORY_BENCHMARK_STAGED_TEXT_BATCH_SIZE,
   MIXED_MEMORY_BENCHMARK_STRATEGY,
   MIXED_MEMORY_BENCHMARK_TARGET_MIB,
+  mixedMemoryBenchmarkStrategy,
   mixedMemoryBenchmarkTextSeed,
 } from "./mixed-memory-benchmark-model";
 
@@ -43,7 +52,7 @@ export interface MixedMemoryBenchmarkSwitchSample {
 export interface MixedMemoryBenchmarkReport {
   readonly version: typeof MIXED_MEMORY_BENCHMARK_REPORT_VERSION;
   readonly passed: true;
-  readonly strategy: typeof MIXED_MEMORY_BENCHMARK_STRATEGY;
+  readonly strategy: MixedMemoryBenchmarkStrategy;
   readonly targetMiB: number;
   readonly rasterLayerMaximum: typeof LAYER_STACK_MAXIMUM;
   readonly textNodeMaximum: typeof VECTOR_TEXT_NODE_MAXIMUM;
@@ -118,6 +127,19 @@ export async function runMixedMemoryBenchmark(
   targetMiB = MIXED_MEMORY_BENCHMARK_TARGET_MIB,
   onProgress?: (progress: MixedMemoryBenchmarkProgress) => void,
 ): Promise<MixedMemoryBenchmarkReport> {
+  if (
+    targetMiB !== MIXED_MEMORY_BENCHMARK_TARGET_MIB
+    && targetMiB !== MIXED_MEMORY_BENCHMARK_STAGED_TARGET_MIB
+  ) {
+    throw new Error(
+      `Target scenario misto non supportato: ${targetMiB} MiB.`,
+    );
+  }
+  const stagedProfile =
+    targetMiB === MIXED_MEMORY_BENCHMARK_STAGED_TARGET_MIB;
+  const interleavedStorageTileCount = stagedProfile
+    ? MIXED_MEMORY_BENCHMARK_STAGED_INTERLEAVED_TILE_COUNT
+    : 256;
   const initial = engine.getStats();
   const initialScene = engine.getMixedSceneSnapshot();
   if (
@@ -172,15 +194,20 @@ export async function runMixedMemoryBenchmark(
     await settleVisibleScene(engine);
 
     // Otto testi separati da raster producono otto cache viewport distinte.
-    // Ogni raster uscente conserva tutti i 256 tile reali (64 MiB RGBA8).
+    // Il profilo canonico conserva 256 tile per raster; quello staged da
+    // 600 MiB ne usa 128 per non superare il budget prima che testi e ombre
+    // siano completamente residenti.
     for (
       let textIndex = 1;
       textIndex < MIXED_MEMORY_BENCHMARK_INTERLEAVED_TEXT_RUNS;
       textIndex += 1
     ) {
       publishProgress("raster");
-      await engine.seedActiveLayerMemoryStress(textIndex - 1, 256);
-      storageTileCounts.push(256);
+      await engine.seedActiveLayerMemoryStress(
+        textIndex - 1,
+        interleavedStorageTileCount,
+      );
+      storageTileCounts.push(interleavedStorageTileCount);
       const switchResult = await engine.addLayer(`Stress raster ${textIndex + 1}`);
       setupSwitches.push(compactSwitch(switchResult));
       await engine.addVectorTextNode(
@@ -196,9 +223,9 @@ export async function runMixedMemoryBenchmark(
     // vuoto e attivo, pronto a ricevere la traccia canonica.
     await engine.seedActiveLayerMemoryStress(
       MIXED_MEMORY_BENCHMARK_INTERLEAVED_TEXT_RUNS - 1,
-      256,
+      interleavedStorageTileCount,
     );
-    storageTileCounts.push(256);
+    storageTileCounts.push(interleavedStorageTileCount);
     const blankSwitch = await engine.addLayer(
       `Stress raster ${MIXED_MEMORY_BENCHMARK_INTERLEAVED_TEXT_RUNS + 1}`,
     );
@@ -219,10 +246,26 @@ export async function runMixedMemoryBenchmark(
         };
       },
     );
-    await engine.addVectorTextNodesBatch(remainingTextSeeds);
-    await settleVisibleScene(engine);
-    sampleMemory();
-    publishProgress("text");
+    const remainingTextBatches = stagedProfile
+      ? Array.from(
+        {
+          length: Math.ceil(
+            remainingTextSeeds.length
+            / MIXED_MEMORY_BENCHMARK_STAGED_TEXT_BATCH_SIZE,
+          ),
+        },
+        (_, batchIndex) => remainingTextSeeds.slice(
+          batchIndex * MIXED_MEMORY_BENCHMARK_STAGED_TEXT_BATCH_SIZE,
+          (batchIndex + 1) * MIXED_MEMORY_BENCHMARK_STAGED_TEXT_BATCH_SIZE,
+        ),
+      )
+      : [remainingTextSeeds];
+    for (const batch of remainingTextBatches) {
+      await engine.addVectorTextNodesBatch(batch);
+      await settleVisibleScene(engine);
+      sampleMemory();
+      publishProgress("text");
+    }
 
     // La batch seleziona l'ultimo testo; riattiva il raster vuoto affinché il
     // pennello e il replay umano restino disponibili.
@@ -231,7 +274,7 @@ export async function runMixedMemoryBenchmark(
     await settleVisibleScene(engine);
 
     // I tile cold sono quantizzati a 0,25 MiB. L'ultimo raster usa solo i tile
-    // necessari per avvicinarsi a 800 MiB, poi un nuovo raster vuoto diventa
+    // necessari per avvicinarsi al target, poi un nuovo raster vuoto diventa
     // il target del replay. L'eventuale overshoot resta limitato alle piccole
     // superfici derivate del marker e alle cache viewport già conteggiate.
     while ((stats = engine.getStats()).gpuMemory.countedTotalMiB < targetMiB) {
@@ -288,7 +331,7 @@ export async function runMixedMemoryBenchmark(
     return {
       version: MIXED_MEMORY_BENCHMARK_REPORT_VERSION,
       passed: true,
-      strategy: MIXED_MEMORY_BENCHMARK_STRATEGY,
+      strategy: mixedMemoryBenchmarkStrategy(targetMiB),
       targetMiB,
       rasterLayerMaximum: LAYER_STACK_MAXIMUM,
       textNodeMaximum: VECTOR_TEXT_NODE_MAXIMUM,

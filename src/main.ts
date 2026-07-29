@@ -444,6 +444,8 @@ const layerMemoryStressTestRequested =
   pageSearchParams.get("layerMemoryStressTest") === "1";
 const mixedMemoryBenchmarkRequested =
   pageSearchParams.get("mixedMemoryBenchmark") === "1";
+const mixedMemoryBenchmarkTargetMiB =
+  pageSearchParams.get("mixedMemoryTargetMiB") === "600" ? 600 : 800;
 const layerCompressionStudyRequested =
   pageSearchParams.get("layerCompressionTest") === "1";
 const layerColdCompressionRequested =
@@ -469,9 +471,14 @@ if (mixedMemoryBenchmarkRequested) {
   layerMemoryStressIntro.textContent =
     "Scenario ripetibile: 64 testi visibili (32 Block Shadow e 32 ombre blur), "
     + "nove gruppi testo separati dai raster e risorse reali fino a circa "
-    + "800 MiB GPU conteggiati. Al termine misura lo zoom e sblocca la stessa "
+    + `${mixedMemoryBenchmarkTargetMiB} MiB GPU conteggiati. `
+    + (mixedMemoryBenchmarkTargetMiB === 600
+      ? "Creazione staged in piccoli gruppi per limitare il picco su iPhone. "
+      : "")
+    + "Al termine misura lo zoom e sblocca la stessa "
     + "traccia umana canonica.";
-  layerMemoryStressButton.textContent = "Prepara scenario misto ~800 MiB";
+  layerMemoryStressButton.textContent =
+    `Prepara scenario misto ~${mixedMemoryBenchmarkTargetMiB} MiB`;
   layerMemoryStressResult.textContent =
     "Pronto. La preparazione è distruttiva e va eseguita una sola volta su pagina nuova.";
 } else if (iphoneMemoryLimitTestRequested) {
@@ -2674,7 +2681,8 @@ async function runRequestedMixedMemoryBenchmark(): Promise<void> {
   layerMemoryStressDetails.hidden = true;
   layerMemoryStressResult.className = "result";
   layerMemoryStressResult.textContent =
-    "Creo 64 testi e i raster reali fino a circa 800 MiB… non cambiare scheda.";
+    `Creo 64 testi e i raster reali fino a circa `
+    + `${mixedMemoryBenchmarkTargetMiB} MiB… non cambiare scheda.`;
   layerMemoryStressButton.textContent = "Scenario misto in preparazione…";
   setGpuMemoryPanelOpen(true);
   updateHistoryControls();
@@ -2686,13 +2694,11 @@ async function runRequestedMixedMemoryBenchmark(): Promise<void> {
     const baselineZoomProbe = await runMixedMemoryZoomProbe();
     layerMemoryStressResult.textContent =
       "Baseline zoom acquisita. Creo 64 testi e i raster reali…";
-    const {
-      MIXED_MEMORY_BENCHMARK_TARGET_MIB,
-      runMixedMemoryBenchmark,
-    } = await import("./mixed-memory-benchmark");
+    const { runMixedMemoryBenchmark } =
+      await import("./mixed-memory-benchmark");
     const setup = await runMixedMemoryBenchmark(
       engine,
-      MIXED_MEMORY_BENCHMARK_TARGET_MIB,
+      mixedMemoryBenchmarkTargetMiB,
       (progress) => {
         updateStats(engine.getStats());
         const action = progress.phase === "text"

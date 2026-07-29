@@ -1,8 +1,25 @@
 export const MIXED_MEMORY_BENCHMARK_STRATEGY =
   "mixed-raster-vector-64-text-nine-runs-counted-gpu-800mib-v1" as const;
+export const MIXED_MEMORY_BENCHMARK_STAGED_STRATEGY =
+  "mixed-raster-vector-64-text-nine-runs-counted-gpu-600mib-staged-v1" as const;
 export const MIXED_MEMORY_BENCHMARK_TARGET_MIB = 800;
+export const MIXED_MEMORY_BENCHMARK_STAGED_TARGET_MIB = 600;
+export const MIXED_MEMORY_BENCHMARK_STAGED_INTERLEAVED_TILE_COUNT = 128;
+export const MIXED_MEMORY_BENCHMARK_STAGED_TEXT_BATCH_SIZE = 8;
 export const MIXED_MEMORY_BENCHMARK_INTERLEAVED_TEXT_RUNS = 8;
 export const MIXED_MEMORY_BENCHMARK_REPORT_VERSION = 1;
+
+export type MixedMemoryBenchmarkStrategy =
+  | typeof MIXED_MEMORY_BENCHMARK_STRATEGY
+  | typeof MIXED_MEMORY_BENCHMARK_STAGED_STRATEGY;
+
+export function mixedMemoryBenchmarkStrategy(
+  targetMiB: number,
+): MixedMemoryBenchmarkStrategy {
+  return targetMiB === MIXED_MEMORY_BENCHMARK_STAGED_TARGET_MIB
+    ? MIXED_MEMORY_BENCHMARK_STAGED_STRATEGY
+    : MIXED_MEMORY_BENCHMARK_STRATEGY;
+}
 
 export interface MixedMemoryBenchmarkTextSeed {
   text: string;
