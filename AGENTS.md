@@ -2082,6 +2082,14 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
 - Probe zoom accoppiato locale: renderer testo p95 `0,9→2,5 ms` (`2,8×`) ed
   end-to-end p95 `31,8→23,0 ms` (`0,7×`). Questi numeri verificano soltanto il
   desktop e non vanno presentati come prestazione iPhone.
+- Pubblicato su Sites `93` dal commit `8cda468` e verificato sulla URL di
+  produzione: profilo staged riconosciuto, setup completato ancora a
+  `600,9 MiB`, `64` testi / `9` run; zoom p95 testo `1,1→1,7 ms` ed end-to-end
+  `40,5→20,9 ms`. Il replay canonico Base/Normal/Grain Off è terminato e ha
+  salvato la run `#87`: coda GPU `11,30 ms`, CPU frame p95 `3,50 ms`, submit
+  p95 `0,40 ms`, `132,0` FPS medi, `19` frame oltre `20 ms`, presentazione
+  `6866,20 ms`, spacing adattivo `1,00→1,25%` e `9700` stamp base. È una prova
+  desktop della build pubblicata, non una prova iPhone.
 - Il report firma target, strategia, picco e conteggi. La prova fisica iPhone
   della preparazione a `600 MiB` e del Play tratto registrato resta aperta;
   non dichiarare risolto il limite Safari prima del risultato dell'utente.
