@@ -2,6 +2,8 @@ import type {
   VectorTextGpuMeshDraw,
   VectorTextGpuSlugBlurDraw,
   VectorTextGpuSlugDraw,
+  VectorTextGpuSlugInnerShadowBlurDraw,
+  VectorTextGpuSlugInnerShadowDirectDraw,
 } from "./vector-text-prototype";
 
 export interface CreatedVectorTextGpuMeshResources {
@@ -59,7 +61,11 @@ export function createVectorTextGpuMeshResources(
 
 export function createVectorTextGpuSlugResources(
   device: GPUDevice,
-  draw: VectorTextGpuSlugDraw | VectorTextGpuSlugBlurDraw,
+  draw:
+    | VectorTextGpuSlugDraw
+    | VectorTextGpuSlugBlurDraw
+    | VectorTextGpuSlugInnerShadowDirectDraw
+    | VectorTextGpuSlugInnerShadowBlurDraw,
   uniformBuffer: GPUBuffer,
   bindGroupLayout: GPUBindGroupLayout,
   uniformBytes: number,

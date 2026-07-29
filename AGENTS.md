@@ -2061,6 +2061,39 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   la preparazione, prima del report: il limite osservato include quindi il
   picco transitorio di setup e non misura il solo working set steady-state.
 
+### Ombra interna del riempimento testo (candidato locale del 29 luglio 2026)
+
+- Effetto vettoriale non distruttivo e indipendente da Ombra singola/Block
+  Shadow. Strategia modello
+  `webgpu-slug-analytic-fill-clip-zero-blur-or-r8-separable-gaussian-v1`;
+  core GPU `slug-analytic-fill-times-inverse-shifted-mask-v1`.
+- Formula premoltiplicata: `fill(p) × [1 − shiftedFill(p)]` a Blur `0` e
+  `fill(p) × [1 − Gaussian(fill)(p − offset)]` con Blur positivo. La prima
+  variante valuta due coverage Slug analitiche nello stesso fragment e non
+  alloca bitmap; la seconda riusa il planner ROI e i due pass Gaussian R8 già
+  usati dall’ombra singola, poi ritaglia di nuovo con la coverage Slug esatta.
+- Il matte contiene soltanto `Gaussian(fill)`: colore, opacità, direzione e
+  clipping vengono applicati in compositing. Ombra esterna e interna con
+  identici sorgente, Blur e LOD condividono quindi la stessa cache R8; una
+  prova browser ha confermato `1 matte + scratch GPU`, non due.
+- Ordine del nodo: ombre esterne/Block dietro, Traccia esterna, riempimento,
+  Ombra interna sopra il solo riempimento. `vectorTextGpuRunBounds()` continua
+  a usare i bounds Slug sorgente per entrambe le varianti interne e
+  `textCorners()` non legge lo stile: blur, offset e colore non modificano bbox,
+  maniglie o hit-test.
+- UI per nodo: toggle indipendente, colore, opacità, offset `0–100`, angolo
+  `−180–180°` e Blur `0–300`; default OFF, nero, `65%`, offset `12`, angolo
+  `−135°`, Blur `12`.
+- Prova browser locale NVIDIA Ampere: fill giallo, Traccia tonda blu `18 px`,
+  ombra interna rossa con Blur `0`/`24`, Block Shadow e poi Ombra singola
+  combinata. Il colore interno resta interamente dentro il riempimento, la
+  Traccia non viene contaminata, fori e curve sono continui. Sei zoom-out e
+  sei zoom-in consecutivi: render testo p95 mostrato `2,0 ms`, Worker `0` in
+  attesa, nessun warning/errore console o WebGPU. È verifica locale, non una
+  run canonica né una misura iPhone.
+- Verifiche verdi: TypeScript/build Vite production, `vector-text:verify`,
+  `mixed-scene:verify` e `git diff --check`. Candidato lasciato volutamente
+  non committato e non pubblicato su richiesta dell’utente.
 ### Scenario misto staged 600 MiB · candidato rev 59
 
 - Profilo aggiuntivo selezionato da

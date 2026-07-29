@@ -1,0 +1,17 @@
+
+> webgpu-brush-engine-prototype@0.1.0 dev
+> vite --host 0.0.0.0 --port 4312
+
+Port 4312 is in use, trying another one...
+
+  [32m[1mVITE[22m v8.1.5[39m  [2mready in [0m[1m581[22m[2m[0m ms[22m
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m4313[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.0.21:[1m4313[22m/[39m
+[2m[32m  ➜[39m[22m[2m  press [22m[1mh + enter[22m[2m to show help[22m
+[2m23:34:57[22m [36m[1m[vite][22m[39m changed tsconfig file detected: C:/Users/michi/Downloads/webgpu-brush-engine-source/.codex-tmp/node-verifiable-vector-modules/old/tsconfig.json - Clearing cache and forcing full-reload to ensure TypeScript is compiled with updated config values.
+[2m23:34:57[22m [36m[1m[vite][22m[39m changed tsconfig file detected: C:/Users/michi/Downloads/webgpu-brush-engine-source/.codex-tmp/node-verifiable-vector-modules/new/tsconfig.json - Clearing cache and forcing full-reload to ensure TypeScript is compiled with updated config values.
+[2m23:34:57[22m [36m[1m[vite][22m[39m changed tsconfig file detected: C:/Users/michi/Downloads/webgpu-brush-engine-source/tsconfig.json - Clearing cache and forcing full-reload to ensure TypeScript is compiled with updated config values.
+[2m23:52:59[22m [36m[1m[vite][22m[39m changed tsconfig file detected: C:/Users/michi/Downloads/webgpu-brush-engine-source/.codex-tmp/node-verifiable-vector-modules/old/tsconfig.json - Clearing cache and forcing full-reload to ensure TypeScript is compiled with updated config values.
+[2m23:52:59[22m [36m[1m[vite][22m[39m changed tsconfig file detected: C:/Users/michi/Downloads/webgpu-brush-engine-source/.codex-tmp/node-verifiable-vector-modules/new/tsconfig.json - Clearing cache and forcing full-reload to ensure TypeScript is compiled with updated config values.
+[2m06:20:51[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2mindex.html[22m

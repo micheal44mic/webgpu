@@ -41,6 +41,12 @@ export interface MixedMemoryBenchmarkTextSeed {
   singleShadowOffset: number;
   singleShadowAngle: number;
   singleShadowBlur: number;
+  innerShadowEnabled: boolean;
+  innerShadowColor: string;
+  innerShadowOpacity: number;
+  innerShadowOffset: number;
+  innerShadowAngle: number;
+  innerShadowBlur: number;
   x: number;
   y: number;
   scale: number;
@@ -89,6 +95,12 @@ export function mixedMemoryBenchmarkTextSeed(
     singleShadowOffset: 54,
     singleShadowAngle: -180,
     singleShadowBlur: 6,
+    innerShadowEnabled: false,
+    innerShadowColor: "#000000",
+    innerShadowOpacity: 0.65,
+    innerShadowOffset: 12,
+    innerShadowAngle: -135,
+    innerShadowBlur: 12,
     x: margin + (column + 0.5) * span / 8,
     y: margin + (row + 0.7) * span / 8,
     scale: 1,

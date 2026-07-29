@@ -7,7 +7,7 @@
 
 export const VECTOR_TEXT_SLUG_GPU_RENDER_STRATEGY =
   "webgpu-slug-source-clipper-effect-mesh-msaa4-stable-lines-v4" as const;
-export const VECTOR_TEXT_SLUG_UNIFORM_FLOATS = 40;
+export const VECTOR_TEXT_SLUG_UNIFORM_FLOATS = 44;
 export const VECTOR_TEXT_SLUG_UNIFORM_BYTES =
   VECTOR_TEXT_SLUG_UNIFORM_FLOATS * 4;
 
@@ -23,6 +23,7 @@ struct SlugUniforms {
   bandTransform: vec4<f32>,
   bandBasesAndCounts: vec4<u32>,
   textureLogWidths: vec4<u32>,
+  effectSampleOffset: vec4<f32>,
 };
 
 struct SlugVertexOutput {

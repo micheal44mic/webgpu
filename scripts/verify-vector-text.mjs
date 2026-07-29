@@ -8,6 +8,7 @@ import {
   VECTOR_TEXT_OUTLINE_STRATEGY,
   VECTOR_TEXT_OUTLINE_WIDTH_MAXIMUM,
   VECTOR_TEXT_SINGLE_SHADOW_STRATEGY,
+  VECTOR_TEXT_INNER_SHADOW_STRATEGY,
   normalizeVectorTextBlockShadowAngle,
   normalizeVectorTextBlockShadowOffset,
   normalizeVectorTextBlockShadowOpacity,
@@ -17,10 +18,15 @@ import {
   normalizeVectorTextSingleShadowBlur,
   normalizeVectorTextSingleShadowOffset,
   normalizeVectorTextSingleShadowOpacity,
+  normalizeVectorTextInnerShadowAngle,
+  normalizeVectorTextInnerShadowBlur,
+  normalizeVectorTextInnerShadowOffset,
+  normalizeVectorTextInnerShadowOpacity,
   vectorTextBlockShadowLocalReach,
   vectorTextBlockShadowLocalVector,
   vectorTextOutlineLocalReach,
   vectorTextSingleShadowLocalVector,
+  vectorTextInnerShadowLocalVector,
 } from "../src/mixed-scene-stack.ts";
 import {
   VECTOR_TEXT_FONT_GEOMETRY_STRATEGY,
@@ -87,6 +93,7 @@ const curveSource = read("src/vector-text-curve-utils.ts");
 const slugSource = read("src/vector-text-slug.ts");
 const slugShaderSource = read("src/vector-text-slug-gpu-shader.ts");
 const gpuShaderSource = read("src/vector-text-gpu-shader.ts");
+const innerShadowShaderSource = read("src/vector-text-inner-shadow-gpu-shader.ts");
 const gpuResourcesSource = read("src/vector-text-gpu-resources.ts");
 const singleShadowSource = read("src/vector-text-single-shadow.ts");
 const fontGeometrySource = read("src/vector-text-font-geometry.ts");
@@ -275,6 +282,10 @@ assert.equal(
   "webgpu-slug-zero-blur-or-r8-separable-gaussian-v2",
 );
 assert.equal(
+  VECTOR_TEXT_INNER_SHADOW_STRATEGY,
+  "webgpu-slug-analytic-fill-clip-zero-blur-or-r8-separable-gaussian-v1",
+);
+assert.equal(
   VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY,
   "webgpu-slug-r8-mask-separable-gaussian-roi-cache-v2",
 );
@@ -333,6 +344,17 @@ assert.equal(normalizeVectorTextSingleShadowBlur(-1), 0);
 assert.equal(normalizeVectorTextSingleShadowBlur(999), 300);
 const sharpShadow = vectorTextSingleShadowLocalVector(54, -180);
 assert.ok(Math.abs(sharpShadow.x + 54) < 1e-9);
+assert.equal(normalizeVectorTextInnerShadowOpacity(-1), 0);
+assert.equal(normalizeVectorTextInnerShadowOpacity(2), 1);
+assert.equal(normalizeVectorTextInnerShadowOffset(-1), 0);
+assert.equal(normalizeVectorTextInnerShadowOffset(999), 100);
+assert.equal(normalizeVectorTextInnerShadowAngle(-999), -180);
+assert.equal(normalizeVectorTextInnerShadowAngle(999), 180);
+assert.equal(normalizeVectorTextInnerShadowBlur(-1), 0);
+assert.equal(normalizeVectorTextInnerShadowBlur(999), 300);
+const innerShadowVector = vectorTextInnerShadowLocalVector(12, -135);
+assert.ok(Math.abs(innerShadowVector.x + 8.485281) < 1e-6);
+assert.ok(Math.abs(innerShadowVector.y - 8.485281) < 1e-6);
 assert.ok(Math.abs(sharpShadow.y) < 1e-9);
 
 // LOD: errore in pixel monotono e bound sotto 0,1 px fino a 64×.
@@ -569,6 +591,41 @@ assert.match(gpuShaderSource, /sourceTexture: texture_2d<f32>/);
 assert.match(gpuShaderSource, /horizontalMain/);
 assert.match(gpuShaderSource, /verticalMain/);
 assert.match(gpuShaderSource, /textureSample\(blurredMask, blurredSampler, input\.uv\)\.r/);
+assert.match(innerShadowShaderSource, /innerShadowDirectFragmentMain/);
+assert.match(innerShadowShaderSource, /innerShadowBlurFragmentMain/);
+assert.match(
+  innerShadowShaderSource,
+  /fillCoverage \* \(1\.0 - shiftedFillCoverage\)/,
+);
+assert.match(
+  innerShadowShaderSource,
+  /fillCoverage \* \(1\.0 - clamp\(shiftedBlurredFill/,
+);
+assert.match(innerShadowShaderSource, /slug\.effectSampleOffset\.xy/);
+assert.match(innerShadowShaderSource, /textureSampleLevel\(/);
+assert.doesNotMatch(innerShadowShaderSource, /Canvas|createElement|getContext/);
+
+const appendDrawsStart = controllerSource.indexOf("  private appendGpuDrawsForNode(");
+const appendDrawsEnd = controllerSource.indexOf(
+  "  private blockShadowPathLogicalMiB(",
+  appendDrawsStart,
+);
+const appendDrawsSource = controllerSource.slice(appendDrawsStart, appendDrawsEnd);
+assert.ok(appendDrawsStart >= 0 && appendDrawsEnd > appendDrawsStart);
+assert.ok(
+  appendDrawsSource.indexOf("this.slugInnerShadowDraw")
+    > appendDrawsSource.lastIndexOf("draws.push(this.slugDraw("),
+  "l’ombra interna deve essere composta dopo il riempimento",
+);
+const runBoundsStart = engineSource.indexOf("  private vectorTextGpuRunBounds(");
+const runBoundsEnd = engineSource.indexOf(
+  "  private vectorTextGpuClearBounds(",
+  runBoundsStart,
+);
+const runBoundsSource = engineSource.slice(runBoundsStart, runBoundsEnd);
+assert.doesNotMatch(runBoundsSource, /slug-inner-shadow/);
+assert.match(engineSource, /Vector text inner shadow direct Slug MSAA4/);
+assert.match(engineSource, /Vector text inner shadow blurred Slug clip MSAA4/);
 
 // Controller/Worker: sempre GPU, scambio atomico, coda coalescente e bbox semantica.
 assert.match(controllerSource, /updateVectorTextGpuPresentation\(/);
@@ -653,6 +710,13 @@ for (const id of [
   "vectorTextSingleShadowOffset",
   "vectorTextSingleShadowAngle",
   "vectorTextSingleShadowBlur",
+  "vectorTextInnerShadowEnabled",
+  "vectorTextInnerShadowParameters",
+  "vectorTextInnerShadowColor",
+  "vectorTextInnerShadowOpacity",
+  "vectorTextInnerShadowOffset",
+  "vectorTextInnerShadowAngle",
+  "vectorTextInnerShadowBlur",
   "vectorTextSingleShadowOutlineWidth",
   "addVectorText",
   "deleteVectorText",

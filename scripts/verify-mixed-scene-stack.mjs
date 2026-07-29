@@ -37,6 +37,12 @@ const seed = (text = "STREETWEAR") => ({
   singleShadowOffset: 54,
   singleShadowAngle: -180,
   singleShadowBlur: 6,
+  innerShadowEnabled: false,
+  innerShadowColor: "#000000",
+  innerShadowOpacity: 0.65,
+  innerShadowOffset: 12,
+  innerShadowAngle: -135,
+  innerShadowBlur: 12,
   x: 2048,
   y: 2048,
   scale: 1,
@@ -154,6 +160,12 @@ assert.equal(
     singleShadowOffset: 999,
     singleShadowAngle: 999,
     singleShadowBlur: 999,
+    innerShadowEnabled: true,
+    innerShadowColor: "#abcdef",
+    innerShadowOpacity: 2,
+    innerShadowOffset: 999,
+    innerShadowAngle: -999,
+    innerShadowBlur: 999,
   });
   assert.equal(stack.textById(1).text, "UPDATED");
   assert.equal(stack.textById(1).x, 100);
@@ -172,6 +184,12 @@ assert.equal(
   assert.equal(stack.textById(1).singleShadowOffset, 100);
   assert.equal(stack.textById(1).singleShadowAngle, 180);
   assert.equal(stack.textById(1).singleShadowBlur, 300);
+  assert.equal(stack.textById(1).innerShadowEnabled, true);
+  assert.equal(stack.textById(1).innerShadowColor, "#abcdef");
+  assert.equal(stack.textById(1).innerShadowOpacity, 1);
+  assert.equal(stack.textById(1).innerShadowOffset, 100);
+  assert.equal(stack.textById(1).innerShadowAngle, -180);
+  assert.equal(stack.textById(1).innerShadowBlur, 300);
   assert.equal(stack.setTextOpacity(1, -4), true);
   assert.equal(stack.textById(1).opacity, 0);
   assert.equal(stack.setTextVisibility(1, false), true);

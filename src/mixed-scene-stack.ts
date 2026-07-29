@@ -23,6 +23,15 @@ export const VECTOR_TEXT_SINGLE_SHADOW_ANGLE_MAXIMUM = 180;
 export const VECTOR_TEXT_SINGLE_SHADOW_BLUR_MINIMUM = 0;
 export const VECTOR_TEXT_SINGLE_SHADOW_BLUR_MAXIMUM = 300;
 
+export const VECTOR_TEXT_INNER_SHADOW_STRATEGY =
+  "webgpu-slug-analytic-fill-clip-zero-blur-or-r8-separable-gaussian-v1" as const;
+export const VECTOR_TEXT_INNER_SHADOW_OFFSET_MINIMUM = 0;
+export const VECTOR_TEXT_INNER_SHADOW_OFFSET_MAXIMUM = 100;
+export const VECTOR_TEXT_INNER_SHADOW_ANGLE_MINIMUM = -180;
+export const VECTOR_TEXT_INNER_SHADOW_ANGLE_MAXIMUM = 180;
+export const VECTOR_TEXT_INNER_SHADOW_BLUR_MINIMUM = 0;
+export const VECTOR_TEXT_INNER_SHADOW_BLUR_MAXIMUM = 300;
+
 export function normalizeVectorTextOutlineWidth(width: number): number {
   const finite = Number.isFinite(width) ? width : VECTOR_TEXT_OUTLINE_WIDTH_MINIMUM;
   return Math.min(
@@ -140,6 +149,29 @@ export function vectorTextSingleShadowLocalVector(
   };
 }
 
+export function normalizeVectorTextInnerShadowOpacity(opacity: number): number {
+  return normalizeVectorTextSingleShadowOpacity(opacity);
+}
+
+export function normalizeVectorTextInnerShadowOffset(offset: number): number {
+  return normalizeVectorTextSingleShadowOffset(offset);
+}
+
+export function normalizeVectorTextInnerShadowAngle(angle: number): number {
+  return normalizeVectorTextSingleShadowAngle(angle);
+}
+
+export function normalizeVectorTextInnerShadowBlur(blur: number): number {
+  return normalizeVectorTextSingleShadowBlur(blur);
+}
+
+export function vectorTextInnerShadowLocalVector(
+  offset: number,
+  angleDegrees: number,
+): { x: number; y: number } {
+  return vectorTextSingleShadowLocalVector(offset, angleDegrees);
+}
+
 export const MIXED_SCENE_STACK_STRATEGY =
   "heterogeneous-bottom-up-raster-text-segmented-composition-selected-insertion-v3" as const;
 
@@ -181,6 +213,12 @@ export interface VectorTextNode {
   singleShadowOffset: number;
   singleShadowAngle: number;
   singleShadowBlur: number;
+  innerShadowEnabled: boolean;
+  innerShadowColor: string;
+  innerShadowOpacity: number;
+  innerShadowOffset: number;
+  innerShadowAngle: number;
+  innerShadowBlur: number;
   x: number;
   y: number;
   scale: number;
@@ -207,6 +245,12 @@ export interface VectorTextNodeSeed {
   singleShadowOffset: number;
   singleShadowAngle: number;
   singleShadowBlur: number;
+  innerShadowEnabled: boolean;
+  innerShadowColor: string;
+  innerShadowOpacity: number;
+  innerShadowOffset: number;
+  innerShadowAngle: number;
+  innerShadowBlur: number;
   x: number;
   y: number;
   scale: number;
@@ -394,6 +438,16 @@ export class MixedSceneStack {
       singleShadowBlur: normalizeVectorTextSingleShadowBlur(
         seed.singleShadowBlur,
       ),
+      innerShadowEnabled: seed.innerShadowEnabled,
+      innerShadowColor: seed.innerShadowColor,
+      innerShadowOpacity: normalizeVectorTextInnerShadowOpacity(
+        seed.innerShadowOpacity,
+      ),
+      innerShadowOffset: normalizeVectorTextInnerShadowOffset(
+        seed.innerShadowOffset,
+      ),
+      innerShadowAngle: normalizeVectorTextInnerShadowAngle(seed.innerShadowAngle),
+      innerShadowBlur: normalizeVectorTextInnerShadowBlur(seed.innerShadowBlur),
       x: seed.x,
       y: seed.y,
       scale: seed.scale,
@@ -568,6 +622,32 @@ export class MixedSceneStack {
     if (update.singleShadowBlur !== undefined) {
       node.singleShadowBlur = normalizeVectorTextSingleShadowBlur(
         update.singleShadowBlur,
+      );
+    }
+    if (update.innerShadowEnabled !== undefined) {
+      node.innerShadowEnabled = update.innerShadowEnabled;
+    }
+    if (update.innerShadowColor !== undefined) {
+      node.innerShadowColor = update.innerShadowColor;
+    }
+    if (update.innerShadowOpacity !== undefined) {
+      node.innerShadowOpacity = normalizeVectorTextInnerShadowOpacity(
+        update.innerShadowOpacity,
+      );
+    }
+    if (update.innerShadowOffset !== undefined) {
+      node.innerShadowOffset = normalizeVectorTextInnerShadowOffset(
+        update.innerShadowOffset,
+      );
+    }
+    if (update.innerShadowAngle !== undefined) {
+      node.innerShadowAngle = normalizeVectorTextInnerShadowAngle(
+        update.innerShadowAngle,
+      );
+    }
+    if (update.innerShadowBlur !== undefined) {
+      node.innerShadowBlur = normalizeVectorTextInnerShadowBlur(
+        update.innerShadowBlur,
       );
     }
     if (update.x !== undefined) {

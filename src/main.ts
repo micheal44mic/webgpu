@@ -3438,9 +3438,13 @@ function renderMixedSceneList(
         ? ` · Ombra singola ${Math.round(node.singleShadowOffset)} / blur `
           + `${Math.round(node.singleShadowBlur)}`
         : "";
+      const innerShadowHint = node.innerShadowEnabled
+        ? ` · Ombra interna ${Math.round(node.innerShadowOffset)} / blur `
+          + `${Math.round(node.innerShadowBlur)}`
+        : "";
       hint.textContent =
         `testo vettoriale · ${Math.round(node.fontSize)} px · oggetto separato`
-        + `${outlineHint}${blockShadowHint}${singleShadowHint}`;
+        + `${outlineHint}${blockShadowHint}${singleShadowHint}${innerShadowHint}`;
       select.title =
         "Nodo testo semantico: selezionandolo il pennello non può modificare i suoi pixel.";
       select.onclick = () => {

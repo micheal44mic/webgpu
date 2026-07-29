@@ -468,6 +468,75 @@
               </p>
             </div>
             <label class="check-control">
+              <input id="vectorTextInnerShadowEnabled" type="checkbox" />
+              <span>
+                Ombra interna riempimento
+                <small>Incisa esclusivamente dentro l’alpha del testo.</small>
+              </span>
+            </label>
+            <div id="vectorTextInnerShadowParameters" hidden>
+              <label class="control color-control">
+                <span>Colore</span>
+                <input id="vectorTextInnerShadowColor" type="color" value="#000000" />
+              </label>
+              <label class="control">
+                <span>
+                  Opacità <output id="vectorTextInnerShadowOpacityOut">65%</output>
+                </span>
+                <input
+                  id="vectorTextInnerShadowOpacity"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value="65"
+                />
+              </label>
+              <label class="control">
+                <span>
+                  Offset <output id="vectorTextInnerShadowOffsetOut">12</output>
+                </span>
+                <input
+                  id="vectorTextInnerShadowOffset"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value="12"
+                />
+              </label>
+              <label class="control">
+                <span>
+                  Angolo <output id="vectorTextInnerShadowAngleOut">−135°</output>
+                </span>
+                <input
+                  id="vectorTextInnerShadowAngle"
+                  type="range"
+                  min="-180"
+                  max="180"
+                  step="1"
+                  value="-135"
+                />
+              </label>
+              <label class="control">
+                <span>
+                  Blur <output id="vectorTextInnerShadowBlurOut">12</output>
+                </span>
+                <input
+                  id="vectorTextInnerShadowBlur"
+                  type="range"
+                  min="0"
+                  max="300"
+                  step="1"
+                  value="12"
+                />
+              </label>
+              <p class="vector-text-effect-note">
+                La coverage Slug ritaglia l’effetto nel riempimento originale:
+                traccia, maniglie e bbox semantica restano invariate.
+              </p>
+            </div>
+            <label class="check-control">
               <input id="vectorTextBlockShadowEnabled" type="checkbox" checked />
               <span>
                 Block Shadow

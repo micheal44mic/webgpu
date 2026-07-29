@@ -5,9 +5,11 @@ import type {
 import {
   MIXED_SCENE_STACK_STRATEGY,
   VECTOR_TEXT_BLOCK_SHADOW_STRATEGY,
+  VECTOR_TEXT_INNER_SHADOW_STRATEGY,
   VECTOR_TEXT_OUTLINE_STRATEGY,
   VECTOR_TEXT_SINGLE_SHADOW_STRATEGY,
   vectorTextBlockShadowLocalVector,
+  vectorTextInnerShadowLocalVector,
   vectorTextSingleShadowLocalVector,
   type MixedSceneItem,
   type VectorTextNode,
@@ -85,6 +87,7 @@ export interface MixedVectorTextDiagnostics {
   outlineStrategy: typeof VECTOR_TEXT_OUTLINE_STRATEGY;
   blockShadowStrategy: typeof VECTOR_TEXT_BLOCK_SHADOW_STRATEGY;
   singleShadowStrategy: typeof VECTOR_TEXT_SINGLE_SHADOW_STRATEGY;
+  innerShadowStrategy: typeof VECTOR_TEXT_INNER_SHADOW_STRATEGY;
   singleShadowBlurStrategy: typeof VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY;
   adaptiveZoomStrategy: typeof VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY;
   adaptiveZoomEnabled: boolean;
@@ -320,6 +323,39 @@ export class MixedVectorTextController {
   private readonly singleShadowOutlineWidthOutput = requiredElement<HTMLOutputElement>(
     "vectorTextSingleShadowOutlineWidthOut",
   );
+  private readonly innerShadowEnabledInput = requiredElement<HTMLInputElement>(
+    "vectorTextInnerShadowEnabled",
+  );
+  private readonly innerShadowParameters = requiredElement<HTMLElement>(
+    "vectorTextInnerShadowParameters",
+  );
+  private readonly innerShadowColorInput = requiredElement<HTMLInputElement>(
+    "vectorTextInnerShadowColor",
+  );
+  private readonly innerShadowOpacityInput = requiredElement<HTMLInputElement>(
+    "vectorTextInnerShadowOpacity",
+  );
+  private readonly innerShadowOpacityOutput = requiredElement<HTMLOutputElement>(
+    "vectorTextInnerShadowOpacityOut",
+  );
+  private readonly innerShadowOffsetInput = requiredElement<HTMLInputElement>(
+    "vectorTextInnerShadowOffset",
+  );
+  private readonly innerShadowOffsetOutput = requiredElement<HTMLOutputElement>(
+    "vectorTextInnerShadowOffsetOut",
+  );
+  private readonly innerShadowAngleInput = requiredElement<HTMLInputElement>(
+    "vectorTextInnerShadowAngle",
+  );
+  private readonly innerShadowAngleOutput = requiredElement<HTMLOutputElement>(
+    "vectorTextInnerShadowAngleOut",
+  );
+  private readonly innerShadowBlurInput = requiredElement<HTMLInputElement>(
+    "vectorTextInnerShadowBlur",
+  );
+  private readonly innerShadowBlurOutput = requiredElement<HTMLOutputElement>(
+    "vectorTextInnerShadowBlurOut",
+  );
   private readonly addButton = requiredElement<HTMLButtonElement>("addVectorText");
   private readonly deleteButton = requiredElement<HTMLButtonElement>("deleteVectorText");
   private readonly moveUpButton = requiredElement<HTMLButtonElement>("moveVectorTextUp");
@@ -451,6 +487,7 @@ export class MixedVectorTextController {
       outlineStrategy: VECTOR_TEXT_OUTLINE_STRATEGY,
       blockShadowStrategy: VECTOR_TEXT_BLOCK_SHADOW_STRATEGY,
       singleShadowStrategy: VECTOR_TEXT_SINGLE_SHADOW_STRATEGY,
+      innerShadowStrategy: VECTOR_TEXT_INNER_SHADOW_STRATEGY,
       singleShadowBlurStrategy: VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY,
       adaptiveZoomStrategy: VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
       adaptiveZoomEnabled: false,
@@ -507,6 +544,12 @@ export class MixedVectorTextController {
       singleShadowOffset: 54,
       singleShadowAngle: -180,
       singleShadowBlur: 6,
+      innerShadowEnabled: false,
+      innerShadowColor: "#000000",
+      innerShadowOpacity: 0.65,
+      innerShadowOffset: 12,
+      innerShadowAngle: -135,
+      innerShadowBlur: 12,
       x: this.host.layerSize * 0.5 + index * 90,
       y: this.host.layerSize * 0.5 + index * 110,
       scale: 1,
@@ -611,6 +654,34 @@ export class MixedVectorTextController {
       const blur = Number(this.singleShadowBlurInput.value);
       this.singleShadowBlurOutput.value = String(Math.round(blur));
       this.updateSelectedNode({ singleShadowBlur: blur });
+    });
+    this.innerShadowEnabledInput.addEventListener("change", () => {
+      const enabled = this.innerShadowEnabledInput.checked;
+      this.innerShadowParameters.hidden = !enabled;
+      this.updateSelectedNode({ innerShadowEnabled: enabled });
+    });
+    this.innerShadowColorInput.addEventListener("input", () => {
+      this.updateSelectedNode({ innerShadowColor: this.innerShadowColorInput.value });
+    });
+    this.innerShadowOpacityInput.addEventListener("input", () => {
+      const opacityPercent = Number(this.innerShadowOpacityInput.value);
+      this.innerShadowOpacityOutput.value = `${Math.round(opacityPercent)}%`;
+      this.updateSelectedNode({ innerShadowOpacity: opacityPercent / 100 });
+    });
+    this.innerShadowOffsetInput.addEventListener("input", () => {
+      const offset = Number(this.innerShadowOffsetInput.value);
+      this.innerShadowOffsetOutput.value = String(Math.round(offset));
+      this.updateSelectedNode({ innerShadowOffset: offset });
+    });
+    this.innerShadowAngleInput.addEventListener("input", () => {
+      const angle = Number(this.innerShadowAngleInput.value);
+      this.innerShadowAngleOutput.value = `${Math.round(angle)}°`;
+      this.updateSelectedNode({ innerShadowAngle: angle });
+    });
+    this.innerShadowBlurInput.addEventListener("input", () => {
+      const blur = Number(this.innerShadowBlurInput.value);
+      this.innerShadowBlurOutput.value = String(Math.round(blur));
+      this.updateSelectedNode({ innerShadowBlur: blur });
     });
     this.addButton.addEventListener("click", () => {
       void this.runSceneOperation(async () => {
@@ -737,6 +808,12 @@ export class MixedVectorTextController {
     this.singleShadowOffsetInput.disabled = disabled;
     this.singleShadowAngleInput.disabled = disabled;
     this.singleShadowBlurInput.disabled = disabled;
+    this.innerShadowEnabledInput.disabled = disabled;
+    this.innerShadowColorInput.disabled = disabled;
+    this.innerShadowOpacityInput.disabled = disabled;
+    this.innerShadowOffsetInput.disabled = disabled;
+    this.innerShadowAngleInput.disabled = disabled;
+    this.innerShadowBlurInput.disabled = disabled;
     this.singleShadowOutlineWidthInput.disabled = true;
     this.resetButton.disabled = disabled;
     this.deleteButton.disabled = disabled;
@@ -746,6 +823,7 @@ export class MixedVectorTextController {
     if (!node) {
       this.blockShadowParameters.hidden = true;
       this.singleShadowParameters.hidden = true;
+      this.innerShadowParameters.hidden = true;
       this.status.textContent =
         "Raster selezionato: il pennello è attivo. «Aggiungi testo» crea un livello separato.";
       return;
@@ -785,6 +863,18 @@ export class MixedVectorTextController {
     this.singleShadowBlurOutput.value = String(Math.round(node.singleShadowBlur));
     this.singleShadowOutlineWidthInput.value = "0";
     this.singleShadowOutlineWidthOutput.value = "0 px";
+    this.innerShadowEnabledInput.checked = node.innerShadowEnabled;
+    this.innerShadowParameters.hidden = !node.innerShadowEnabled;
+    this.innerShadowColorInput.value = node.innerShadowColor;
+    this.innerShadowOpacityInput.value = String(node.innerShadowOpacity * 100);
+    this.innerShadowOpacityOutput.value =
+      `${Math.round(node.innerShadowOpacity * 100)}%`;
+    this.innerShadowOffsetInput.value = String(node.innerShadowOffset);
+    this.innerShadowOffsetOutput.value = String(Math.round(node.innerShadowOffset));
+    this.innerShadowAngleInput.value = String(node.innerShadowAngle);
+    this.innerShadowAngleOutput.value = `${Math.round(node.innerShadowAngle)}°`;
+    this.innerShadowBlurInput.value = String(node.innerShadowBlur);
+    this.innerShadowBlurOutput.value = String(Math.round(node.innerShadowBlur));
   }
 
   private handleEffectResourceReady(): void {
@@ -1012,6 +1102,87 @@ export class MixedVectorTextController {
       ),
     };
   }
+  private slugInnerShadowDraw(
+    node: Readonly<VectorTextNode>,
+    geometry: CachedTextGeometry,
+    view: VectorTextViewState,
+  ): VectorTextGpuDraw {
+    const vector = vectorTextInnerShadowLocalVector(
+      node.innerShadowOffset,
+      node.innerShadowAngle,
+    );
+    const common = {
+      meshKey: `text:${node.id}:slug`,
+      slug: geometry.slug,
+      x: node.x,
+      y: node.y,
+      scale: node.scale,
+      rotation: node.rotation,
+      // The inner-shadow shader keeps the quad on the source glyph. This is
+      // the Slug packing origin, not a visual offset and therefore not bbox.
+      localOffsetX: geometry.slug.originX,
+      localOffsetY: geometry.slug.originY,
+      sampleOffsetX: vector.x,
+      sampleOffsetY: vector.y,
+      color: gpuLinearColor(node.innerShadowColor),
+      opacity: Math.min(
+        1,
+        Math.max(0, node.opacity * node.innerShadowOpacity),
+      ),
+    } as const;
+    if (node.innerShadowBlur <= 0) {
+      return {
+        mode: "slug-inner-shadow-direct",
+        ...common,
+      };
+    }
+
+    const requestedPixelScale = Math.max(
+      1 / 32,
+      Math.abs(view.zoom * node.scale),
+    );
+    const bucketScale = 2 ** Math.ceil(Math.log2(requestedPixelScale));
+    const plan = planVectorTextSingleShadowBlur(
+      {
+        left: geometry.outline.inkLeft,
+        top: geometry.outline.inkTop,
+        right: geometry.outline.inkRight,
+        bottom: geometry.outline.inkBottom,
+      },
+      node.innerShadowBlur,
+      bucketScale,
+    );
+    // The cache contains only G(fill). It is deliberately shareable with an
+    // outer shadow using the same source, sigma and LOD; color and direction
+    // are applied later and never duplicate the R8 matte.
+    const blurKey = [
+      "vector-text-gpu-blur-v1",
+      node.id,
+      geometry.sourceRevision,
+      node.innerShadowBlur.toFixed(4),
+      plan.width,
+      plan.height,
+      plan.scale.toFixed(8),
+      plan.sigmaPixels.toFixed(8),
+      plan.radius,
+    ].join(":");
+    return {
+      mode: "slug-inner-shadow-blur",
+      ...common,
+      blurKey,
+      blurBounds: [
+        plan.bounds[0],
+        plan.bounds[1],
+        plan.bounds[2],
+        plan.bounds[3],
+      ],
+      blurWidth: plan.width,
+      blurHeight: plan.height,
+      blurScale: plan.scale,
+      blurSigmaPixels: plan.sigmaPixels,
+      blurRadius: plan.radius,
+    };
+  }
   private appendGpuDrawsForNode(
     draws: VectorTextGpuDraw[],
     node: Readonly<VectorTextNode>,
@@ -1133,6 +1304,9 @@ export class MixedVectorTextController {
       node.color,
       node.opacity,
     ));
+    if (node.innerShadowEnabled && node.innerShadowOpacity > 0) {
+      draws.push(this.slugInnerShadowDraw(node, geometry, view));
+    }
   }
 
   private blockShadowPathLogicalMiB(): number {
@@ -1226,7 +1400,10 @@ export class MixedVectorTextController {
 
         for (const draw of draws) {
           activeMeshKeys.add(draw.meshKey);
-          if (draw.mode === "slug-blur") {
+          if (
+            draw.mode === "slug-blur"
+            || draw.mode === "slug-inner-shadow-blur"
+          ) {
             activeMeshKeys.add(draw.blurKey);
           }
         }
@@ -1331,12 +1508,20 @@ export class MixedVectorTextController {
             + `(${this.singleShadowGpuCacheEntries} matte + scratch GPU)`
           : "Slug vettoriale WebGPU, nessuna bitmap")
       : "Ombra singola off";
+    const innerShadow = node.innerShadowEnabled
+      ? `Ombra interna ${Math.round(node.innerShadowOffset)} @ `
+        + `${Math.round(node.innerShadowAngle)}° · blur `
+        + `${Math.round(node.innerShadowBlur)} · `
+        + (node.innerShadowBlur > 0
+          ? "matte R8 + clipping Slug WebGPU"
+          : "doppia coverage Slug WebGPU, nessuna bitmap")
+      : "Ombra interna off";
     this.status.textContent =
       `${node.name} · oggetto testo ${placement} · ${cacheLabel} `
       + `${this.liveGpuMemoryMiB.toFixed(2)} MiB · canvas browser `
       + `${browserCanvasLogicalMiB.toFixed(2)} MiB · font vettoriali `
       + `${vectorFontLogicalMiB.toFixed(2)} MiB · ${outline} · ${blockShadow} · `
-      + `${singleShadow} · ${effectLabel} · ${timing}.`;
+      + `${singleShadow} · ${innerShadow} · ${effectLabel} · ${timing}.`;
   }
   private layerToCanvas(point: Point, view: VectorTextViewState): Point {
     const deltaX = point.x - view.centerX;
