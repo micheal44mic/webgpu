@@ -28,7 +28,7 @@ import {
 } from "./vector-text-lod.ts";
 
 export const VECTOR_TEXT_GPU_GEOMETRY_STRATEGY =
-  "clipper64-nonzero-worker-native-round-bevel-exact-miter-aa-overlap-same-color-union-earcut-v6" as const;
+  "clipper64-nonzero-worker-native-round-bevel-exact-miter-aa-overlap-same-color-union-visible-block-earcut-v7" as const;
 export const VECTOR_TEXT_OUTLINE_INNER_OVERLAP_PIXELS = 1;
 
 export interface VectorTextGpuMeshData {
@@ -730,6 +730,45 @@ export function buildVectorTextBlockSet(
   return canonicalSetFromPaths(pieces);
 }
 
+export function buildVisibleVectorTextBlockSet(
+  canonicalFill: CanonicalPolygonSet,
+  vectorX: number,
+  vectorY: number,
+): CanonicalPolygonSet {
+  if (vectorX === 0 && vectorY === 0) {
+    return canonicalFill;
+  }
+
+  // The analytic source fill is drawn after this mesh. Starting from the
+  // translated face removes the coincident trailing edge that could leak
+  // through because the mesh and Slug renderer calculate coverage differently.
+  // The exposed walls still overlap below the source on the extrusion side.
+  const pieces: Paths64 = canonicalFill.paths.map((ring) =>
+    ring.map((value) => ({
+      x: value.x + vectorX,
+      y: value.y + vectorY,
+    }))
+  );
+  for (const ring of canonicalFill.paths) {
+    for (let index = 0; index < ring.length; index += 1) {
+      const start = ring[index];
+      const end = ring[(index + 1) % ring.length];
+      const edgeX = end.x - start.x;
+      const edgeY = end.y - start.y;
+      if (exactCrossSign(vectorX, vectorY, edgeX, edgeY) <= 0) {
+        continue;
+      }
+      pushPositivePiece(pieces, [
+        start,
+        { x: start.x + vectorX, y: start.y + vectorY },
+        { x: end.x + vectorX, y: end.y + vectorY },
+        end,
+      ]);
+    }
+  }
+  return canonicalSetFromPaths(pieces);
+}
+
 export function triangulateCanonicalVectorTextSet(
   set: CanonicalPolygonSet,
   integerScale: number,
@@ -864,20 +903,26 @@ export function compileVectorTextEffect(
   } else {
     const vectorX = Math.round(effect.vectorX * lod.integerScale);
     const vectorY = Math.round(effect.vectorY * lod.integerScale);
-    const block = buildVectorTextBlockSet(
-      canonicalFill,
-      vectorX,
-      vectorY,
-    );
-    result = effect.kind === "block"
-      ? block
-      : buildOutsideVectorTextOutline(
+    if (effect.kind === "block") {
+      result = buildVisibleVectorTextBlockSet(
+        canonicalFill,
+        vectorX,
+        vectorY,
+      );
+    } else {
+      const block = buildVectorTextBlockSet(
+        canonicalFill,
+        vectorX,
+        vectorY,
+      );
+      result = buildOutsideVectorTextOutline(
         block,
         Math.round(effect.width * lod.integerScale),
         effect.join,
         arcTolerance,
         outlineInnerOverlap,
       );
+    }
   }
   if (!result || result.groups.length === 0) {
     return null;

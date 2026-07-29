@@ -1719,17 +1719,7 @@ export class MixedVectorTextController {
           ));
         }
       }
-      if (Math.hypot(vector.x, vector.y) <= Number.EPSILON) {
-        if (silhouetteMesh) {
-          draws.push(this.meshDraw(
-            node,
-            `svg:${node.id}:silhouette-fill`,
-            silhouetteMesh,
-            node.blockShadowColor,
-            node.opacity * node.blockShadowOpacity,
-          ));
-        }
-      } else {
+      if (Math.hypot(vector.x, vector.y) > Number.EPSILON) {
         const result = this.effectMeshForSvgPath(
           node,
           node.document.silhouetteRevision,
@@ -2082,15 +2072,7 @@ export class MixedVectorTextController {
           ));
         }
       }
-      if (Math.hypot(vector.x, vector.y) <= Number.EPSILON) {
-        draws.push(this.slugDraw(
-          node,
-          `text:${node.id}:slug`,
-          geometry.slug,
-          node.blockShadowColor,
-          node.opacity * node.blockShadowOpacity,
-        ));
-      } else {
+      if (Math.hypot(vector.x, vector.y) > Number.EPSILON) {
         const meshResult = this.effectMeshForNode(
           node,
           geometry,

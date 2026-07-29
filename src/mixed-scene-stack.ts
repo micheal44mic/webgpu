@@ -21,7 +21,7 @@ export const VECTOR_TEXT_OUTLINE_MITER_LIMIT = 4;
 export type VectorTextOutlineJoin = "bevel" | "miter" | "round";
 
 export const VECTOR_TEXT_BLOCK_SHADOW_STRATEGY =
-  "webgpu-clipper64-worker-canonical-swept-union-mesh-v4" as const;
+  "webgpu-clipper64-worker-visible-swept-union-mesh-v5" as const;
 export const VECTOR_TEXT_BLOCK_SHADOW_OFFSET_MINIMUM = 0;
 export const VECTOR_TEXT_BLOCK_SHADOW_OFFSET_MAXIMUM = 100;
 export const VECTOR_TEXT_BLOCK_SHADOW_ANGLE_MINIMUM = -180;

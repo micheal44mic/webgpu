@@ -40,6 +40,7 @@ import {
   VECTOR_TEXT_OUTLINE_INNER_OVERLAP_PIXELS,
   buildOutsideVectorTextOutline,
   buildVectorTextBlockSet,
+  buildVisibleVectorTextBlockSet,
   canonicalizeVectorTextPath,
   compileVectorTextEffect,
   triangulateCanonicalVectorTextSet,
@@ -301,7 +302,7 @@ assert.equal(
 );
 assert.equal(
   VECTOR_TEXT_BLOCK_SHADOW_STRATEGY,
-  "webgpu-clipper64-worker-canonical-swept-union-mesh-v4",
+  "webgpu-clipper64-worker-visible-swept-union-mesh-v5",
 );
 assert.equal(
   VECTOR_TEXT_SINGLE_SHADOW_STRATEGY,
@@ -317,9 +318,9 @@ assert.equal(
 );
 assert.equal(
   VECTOR_TEXT_GPU_GEOMETRY_STRATEGY,
-  "clipper64-nonzero-worker-native-round-bevel-exact-miter-aa-overlap-same-color-union-earcut-v6",
+  "clipper64-nonzero-worker-native-round-bevel-exact-miter-aa-overlap-same-color-union-visible-block-earcut-v7",
 );
-assert.equal(VECTOR_TEXT_GEOMETRY_COMPILER_VERSION, "clipper64-nonzero-lod-worker-v6");
+assert.equal(VECTOR_TEXT_GEOMETRY_COMPILER_VERSION, "clipper64-nonzero-lod-worker-v7");
 assert.equal(
   VECTOR_TEXT_SLUG_GPU_RENDER_STRATEGY,
   "webgpu-slug-source-clipper-effect-mesh-msaa4-stable-lines-absolute-f32-scale-v5",
@@ -832,6 +833,33 @@ assert.ok(blockSet.top <= rectangleSet.top);
 assert.ok(blockSet.right >= rectangleSet.right + vectorX);
 assert.ok(blockSet.bottom >= rectangleSet.bottom + vectorY);
 assertTriangulation(blockSet, lod, "block shadow");
+const visibleBlockSet = buildVisibleVectorTextBlockSet(
+  rectangleSet,
+  vectorX,
+  vectorY,
+);
+assertCanonical(visibleBlockSet, "visible block shadow");
+assertTriangulation(visibleBlockSet, lod, "visible block shadow");
+assert.ok(
+  canonicalArea(visibleBlockSet, lod.integerScale)
+    < canonicalArea(blockSet, lod.integerScale),
+  "la faccia sorgente nascosta non deve restare nel fill della Block Shadow",
+);
+assert.deepEqual(
+  {
+    left: visibleBlockSet.left,
+    top: visibleBlockSet.top,
+    right: visibleBlockSet.right,
+    bottom: visibleBlockSet.bottom,
+  },
+  {
+    left: blockSet.left,
+    top: blockSet.top,
+    right: blockSet.right,
+    bottom: blockSet.bottom,
+  },
+  "rimuovere la faccia sorgente non deve cambiare la bbox dell'effetto",
+);
 const blockMesh = compileVectorTextEffect(
   sourceRectangle,
   lod,
@@ -839,6 +867,13 @@ const blockMesh = compileVectorTextEffect(
   "block",
 );
 assert.ok(blockMesh);
+assert.ok(
+  Math.abs(
+    meshTriangleArea(blockMesh)
+      - canonicalArea(visibleBlockSet, lod.integerScale),
+  ) <= 1e-5,
+  "la mesh Block Shadow deve usare faccia traslata e pareti esposte",
+);
 const blockBounds = absoluteMeshBounds(blockMesh);
 assert.ok(blockBounds.right >= 142.99);
 assert.ok(blockBounds.bottom >= 116.99);
@@ -995,6 +1030,15 @@ assert.match(adaptiveSource, /disabled-vector-lod-worker-node-atomic-latest-only
 assert.doesNotMatch(adaptiveSource, /shouldArmFastMode|frozen-viewport/);
 assert.match(controllerSource, /if \(node\.outlineWidth > 0\) \{[\s\S]*kind: "source-outline"/);
 assert.match(controllerSource, /if \(node\.blockShadowOutlineWidth > 0\) \{[\s\S]*kind: "block-outline"/);
+assert.equal(
+  (controllerSource.match(/Math\.hypot\(vector\.x, vector\.y\) > Number\.EPSILON/g) ?? []).length,
+  2,
+  "testo e SVG devono saltare la faccia Block Shadow completamente nascosta a offset zero",
+);
+assert.doesNotMatch(
+  controllerSource,
+  /Math\.hypot\(vector\.x, vector\.y\) <= Number\.EPSILON/,
+);
 assert.match(controllerSource, /node\.singleShadowBlur > 0[\s\S]*this\.slugBlurDraw/);
 assert.match(controllerSource, /else \{[\s\S]*this\.slugDraw\(/);
 assert.match(controllerSource, /Testi OpenType e SVG restano Slug\/mesh WebGPU/);

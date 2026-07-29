@@ -2161,7 +2161,7 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   un Worker e triangolati con Earcut. Strategie firmate:
   `semantic-vector-gpu-runs-slug-clipper-msaa4-rgba16f-v6`,
   `webgpu-clipper64-worker-outside-offset-native-round-bevel-exact-miter4-v4`,
-  `webgpu-clipper64-worker-canonical-swept-union-mesh-v4` e
+  `webgpu-clipper64-worker-visible-swept-union-mesh-v5` e
   `webgpu-slug-zero-blur-or-r8-separable-gaussian-v2`.
 - Il Blur dell'ombra singola non usa più Canvas2D: Slug genera una mask R8,
   due pass GPU eseguono il Gaussian separabile e la cache R8 viene composta
@@ -2204,6 +2204,28 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   precedente. La fixture automatica da `800 MiB` ha però chiuso Safari durante
   la preparazione, prima del report: il limite osservato include quindi il
   picco transitorio di setup e non misura il solo working set steady-state.
+
+- Fix Block Shadow del 29 luglio 2026, dopo segnalazione visiva su sfondo
+  scuro: il fill della mesh non conserva più la faccia sorgente completa sotto
+  il riempimento Slug. Quella sovrapposizione aveva un bordo coincidente
+  rasterizzato con coverage MSAA diversa e poteva far trapelare il colore
+  dell'ombra sui lati posteriori quando `Outline Width = 0`. Il fill corrente
+  usa la faccia traslata più le sole pareti esposte; l'unione completa resta
+  esclusivamente per calcolare l'outline della Block Shadow. Offset `0` non
+  invia alcun draw nascosto, per testo e SVG.
+- La bbox semantica, le maniglie e l'hit-test restano quelli del sorgente; al
+  preset `23 @ -104°` resta invariato anche l'inviluppo visibile dell'effetto.
+  Il compilatore Worker passa a
+  `clipper64-nonzero-lod-worker-v7` e la strategia geometrica a
+  `clipper64-nonzero-worker-native-round-bevel-exact-miter-aa-overlap-same-color-union-visible-block-earcut-v7`,
+  così nessuna cache v6 può riutilizzare la mesh precedente. Il ramo fill evita
+  inoltre la seconda unione Clipper che serviva soltanto all'outline.
+- QA browser dopo HMR/build: `STREETWEAR`, fill nero, shadow grigia, outline
+  sorgente e Block entrambi `0`; angoli `-104°` e `0°`, offset `23` e `0`, zoom
+  `217%` e `723%`. I lati posteriori restano puliti, le pareti compaiono solo
+  nella direzione dell'estrusione e offset zero non lascia aloni; Worker
+  effetti `0` errori. Tutte le 13 suite e la build production sono verdi; resta
+  il solo warning noto del chunk oltre `500 kB`. Nessuna pubblicazione.
 
 ### Ombra interna del riempimento testo (candidato locale del 29 luglio 2026)
 
