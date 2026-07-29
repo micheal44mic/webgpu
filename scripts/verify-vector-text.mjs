@@ -37,6 +37,7 @@ import {
 } from "../src/vector-text-curve-utils.ts";
 import {
   VECTOR_TEXT_GPU_GEOMETRY_STRATEGY,
+  VECTOR_TEXT_OUTLINE_INNER_OVERLAP_PIXELS,
   buildOutsideVectorTextOutline,
   buildVectorTextBlockSet,
   canonicalizeVectorTextPath,
@@ -77,6 +78,17 @@ import {
   VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
 } from "../src/vector-text-adaptive-zoom.ts";
 import {
+  VECTOR_TEXT_TRANSFORM_STRATEGY,
+  buildVectorTextCurveGuide,
+  normalizeVectorTextCircleRadiusPercent,
+  normalizeVectorTextTransformCurve,
+  normalizeVectorTextTransformParameters,
+  transformVectorTextPathAffine,
+  vectorTextCircleAffine,
+  vectorTextCirclePlacement,
+  warpVectorTextPathAlongCurve,
+} from "../src/vector-text-transform.ts";
+import {
   MIXED_SCENE_COMPOSITOR_STRATEGY,
   MIXED_SCENE_LINEAR_FORMAT,
 } from "../src/mixed-scene-compositor-shader.ts";
@@ -97,6 +109,7 @@ const innerShadowShaderSource = read("src/vector-text-inner-shadow-gpu-shader.ts
 const gpuResourcesSource = read("src/vector-text-gpu-resources.ts");
 const singleShadowSource = read("src/vector-text-single-shadow.ts");
 const fontGeometrySource = read("src/vector-text-font-geometry.ts");
+const transformSource = read("src/vector-text-transform.ts");
 const adaptiveSource = read("src/vector-text-adaptive-zoom.ts");
 const mainSource = read("src/main.ts");
 const htmlSource = read("index.html");
@@ -271,7 +284,7 @@ assert.equal(
 );
 assert.equal(
   VECTOR_TEXT_OUTLINE_STRATEGY,
-  "webgpu-clipper64-worker-outside-offset-native-round-bevel-exact-miter4-v4",
+  "webgpu-clipper64-worker-outside-offset-aa-overlap1px-same-color-fused-round-bevel-miter4-v6",
 );
 assert.equal(
   VECTOR_TEXT_BLOCK_SHADOW_STRATEGY,
@@ -291,9 +304,9 @@ assert.equal(
 );
 assert.equal(
   VECTOR_TEXT_GPU_GEOMETRY_STRATEGY,
-  "clipper64-nonzero-worker-native-round-bevel-exact-miter-earcut-v4",
+  "clipper64-nonzero-worker-native-round-bevel-exact-miter-aa-overlap-same-color-union-earcut-v6",
 );
-assert.equal(VECTOR_TEXT_GEOMETRY_COMPILER_VERSION, "clipper64-nonzero-lod-worker-v4");
+assert.equal(VECTOR_TEXT_GEOMETRY_COMPILER_VERSION, "clipper64-nonzero-lod-worker-v6");
 assert.equal(
   VECTOR_TEXT_SLUG_GPU_RENDER_STRATEGY,
   "webgpu-slug-source-clipper-effect-mesh-msaa4-stable-lines-v4",
@@ -310,7 +323,14 @@ assert.equal(
   MIXED_SCENE_COMPOSITOR_STRATEGY,
   "ordered-raster-vector-gpu-runs-rgba16f-viewport-source-over-v3",
 );
-assert.equal(VECTOR_TEXT_FONT_GEOMETRY_STRATEGY, "local-opentype-outline-pathdata-v2");
+assert.equal(
+  VECTOR_TEXT_FONT_GEOMETRY_STRATEGY,
+  "local-opentype-outline-kittl-transform-v3",
+);
+assert.equal(
+  VECTOR_TEXT_TRANSFORM_STRATEGY,
+  "kittl-compatible-centered-arch-wave-cubic-distance-warp-circle-rigid-glyph-v2",
+);
 assert.equal(packageJson.dependencies["clipper2-ts"], "2.0.1-18");
 assert.equal(packageJson.dependencies.earcut, "^3.0.2");
 assert.ok(!fs.existsSync(new URL("../src/vector-path-gpu-geometry.ts", import.meta.url)));
@@ -356,6 +376,146 @@ const innerShadowVector = vectorTextInnerShadowLocalVector(12, -135);
 assert.ok(Math.abs(innerShadowVector.x + 8.485281) < 1e-6);
 assert.ok(Math.abs(innerShadowVector.y - 8.485281) < 1e-6);
 assert.ok(Math.abs(sharpShadow.y) < 1e-9);
+
+// Trasformazioni: stessi preset/contratti osservati nel bundle Kittl.
+assert.equal(normalizeVectorTextTransformCurve(-999), -100);
+assert.equal(normalizeVectorTextTransformCurve(999), 100);
+assert.equal(normalizeVectorTextCircleRadiusPercent(1), 16);
+assert.equal(normalizeVectorTextCircleRadiusPercent(999), 200);
+assert.deepEqual(normalizeVectorTextTransformParameters(undefined), {
+  type: "none",
+  curve: 80,
+  circleRadiusPercent: 50,
+  circleInverted: false,
+});
+const archGuide = buildVectorTextCurveGuide("arch", 1000, 400, 80);
+const archStart = archGuide.pointAtDistance(0);
+const archMiddle = archGuide.pointAtDistance(500);
+assert.ok(archMiddle.y < archStart.y, "Arch positivo deve sollevare il centro");
+const centeredArchOffset = (archGuide.length - 1000) * 0.5;
+const centeredArchLeft = archGuide.pointAtDistance(centeredArchOffset);
+const centeredArchMiddle = archGuide.pointAtDistance(centeredArchOffset + 500);
+const centeredArchRight = archGuide.pointAtDistance(centeredArchOffset + 1000);
+assert.ok(
+  Math.abs(centeredArchLeft.x + centeredArchRight.x) < 1e-7,
+  "Arch centrato deve avere estremi X speculari",
+);
+assert.ok(
+  Math.abs(centeredArchLeft.y - centeredArchRight.y) < 1e-7,
+  "Arch centrato deve avere estremi alla stessa altezza",
+);
+assert.ok(
+  Math.abs(centeredArchMiddle.x) < 1e-7,
+  "Il centro del testo deve cadere sull'apice dell'Arch",
+);
+for (const curve of [-100, -47, 0, 47, 100]) {
+  const symmetricGuide = buildVectorTextCurveGuide("arch", 1000, 400, curve);
+  const symmetricOffset = (symmetricGuide.length - 1000) * 0.5;
+  const leftPoint = symmetricGuide.pointAtDistance(symmetricOffset);
+  const middlePoint = symmetricGuide.pointAtDistance(symmetricOffset + 500);
+  const rightPoint = symmetricGuide.pointAtDistance(symmetricOffset + 1000);
+  assert.ok(Math.abs(leftPoint.x + rightPoint.x) < 1e-7);
+  assert.ok(Math.abs(leftPoint.y - rightPoint.y) < 1e-7);
+  assert.ok(Math.abs(middlePoint.x) < 1e-7);
+}
+const invertedArchGuide = buildVectorTextCurveGuide("arch", 1000, 400, -80);
+assert.ok(
+  invertedArchGuide.pointAtDistance(500).y
+    > invertedArchGuide.pointAtDistance(0).y,
+  "Arch negativo deve invertire la curva",
+);
+const waveGuide = buildVectorTextCurveGuide("wave", 1000, 400, 80);
+assert.notEqual(
+  Math.round(waveGuide.pointAtDistance(0).y),
+  Math.round(waveGuide.pointAtDistance(900).y),
+);
+const controlPath = {
+  verbs: new Uint8Array([0, 3, 4]),
+  coords: new Float64Array([0, 10, 250, 20, 750, 30, 1000, 40]),
+  contourOffsets: new Uint32Array([0]),
+  fillRule: 0,
+};
+const warpedControlPath = warpVectorTextPathAlongCurve(
+  controlPath,
+  archGuide,
+  0,
+);
+assert.deepEqual([...warpedControlPath.verbs], [...controlPath.verbs]);
+assert.deepEqual(
+  [...warpedControlPath.contourOffsets],
+  [...controlPath.contourOffsets],
+);
+assert.equal(warpedControlPath.coords.length, controlPath.coords.length);
+for (let index = 0; index < controlPath.coords.length; index += 2) {
+  const guidePoint = archGuide.pointAtDistance(controlPath.coords[index]);
+  assert.ok(Math.abs(warpedControlPath.coords[index] - guidePoint.x) < 1e-8);
+  assert.ok(
+    Math.abs(
+      warpedControlPath.coords[index + 1]
+        - (guidePoint.y + controlPath.coords[index + 1]),
+    ) < 1e-8,
+  );
+}
+const centeredControlPath = warpVectorTextPathAlongCurve(
+  {
+    verbs: new Uint8Array([0, 1, 1]),
+    coords: new Float64Array([0, 0, 500, 0, 1000, 0]),
+    contourOffsets: new Uint32Array([0]),
+    fillRule: 0,
+  },
+  archGuide,
+  0,
+  0,
+  centeredArchOffset,
+);
+assert.ok(
+  Math.abs(centeredControlPath.coords[0] + centeredControlPath.coords[4]) < 1e-7,
+  "Il warp centrato deve conservare la simmetria X",
+);
+assert.ok(
+  Math.abs(centeredControlPath.coords[1] - centeredControlPath.coords[5]) < 1e-7,
+  "Il warp centrato deve conservare la simmetria Y",
+);
+const circleStart = vectorTextCirclePlacement(0, 0, 100, false);
+assert.ok(Math.abs(circleStart.targetX) < 1e-9);
+assert.ok(Math.abs(circleStart.targetY + 100) < 1e-9);
+assert.ok(Math.abs(circleStart.rotation) < 1e-9);
+const circleQuarter = vectorTextCirclePlacement(Math.PI * 50, 0, 100, false);
+assert.ok(Math.abs(circleQuarter.targetX - 100) < 1e-9);
+assert.ok(Math.abs(circleQuarter.targetY) < 1e-9);
+assert.ok(Math.abs(circleQuarter.rotation - Math.PI / 2) < 1e-9);
+const invertedCircleStart = vectorTextCirclePlacement(0, 0, 100, true);
+assert.ok(Math.abs(invertedCircleStart.targetX) < 1e-9);
+assert.ok(Math.abs(invertedCircleStart.targetY - 100) < 1e-9);
+assert.ok(Math.abs(invertedCircleStart.rotation) < 1e-9);
+const circlePivotPath = {
+  verbs: new Uint8Array([0]),
+  coords: new Float64Array([50, -20]),
+  contourOffsets: new Uint32Array([0]),
+  fillRule: 0,
+};
+const circlePivotPlacement = vectorTextCirclePlacement(50, 0, 100, false);
+const mappedCirclePivot = transformVectorTextPathAffine(
+  circlePivotPath,
+  vectorTextCircleAffine(50, -20, 0, 100, false),
+);
+assert.ok(
+  Math.abs(mappedCirclePivot.coords[0] - circlePivotPlacement.targetX) < 1e-9,
+);
+assert.ok(
+  Math.abs(mappedCirclePivot.coords[1] - circlePivotPlacement.targetY) < 1e-9,
+);
+assert.match(transformSource, /arch:[\s\S]*x: 0\.5, y: 0\.65/);
+assert.match(transformSource, /wave:[\s\S]*x: 0\.8, y: 0\.5/);
+assert.match(transformSource, /verbs: path\.verbs\.slice\(\)/);
+assert.doesNotMatch(transformSource, /flatten|polygon/i);
+assert.match(fontGeometrySource, /font\.getPaths\(/);
+assert.match(controllerSource, /node\.transformType/);
+assert.match(controllerSource, /includeFill: fuseOutlineAndFill/);
+assert.match(controllerSource, /if \(!sourceFillCoveredByOutline\)/);
+assert.match(clientSource, /include-fill/);
+assert.match(controllerSource, /rotation: 0,/);
+assert.doesNotMatch(controllerSource, /rotation: index === 0/);
 
 // LOD: errore in pixel monotono e bound sotto 0,1 px fino a 64×.
 assert.equal(VECTOR_TEXT_MAXIMUM_VECTOR_ZOOM, 64);
@@ -464,6 +624,8 @@ assertCanonical(tangentContours, "tangent contours");
 assertTriangulation(tangentContours, lod, "tangent contours");
 
 // Outline: zero è un vero no-op; round/bevel e miter producono regioni canoniche.
+// La mesh runtime sovrappone 1 px sotto il fill analitico senza cambiare il bordo esterno.
+assert.equal(VECTOR_TEXT_OUTLINE_INNER_OVERLAP_PIXELS, 1);
 assert.equal(
   compileVectorTextEffect(
     sourceRectangle,
@@ -484,6 +646,20 @@ for (const join of ["round", "bevel", "miter"]) {
   assertCanonical(outlineSet, `outline-${join}`);
   assert.ok(canonicalArea(outlineSet, lod.integerScale) > 0);
   const outlineMesh = assertTriangulation(outlineSet, lod, `outline-${join}`);
+  const seamSafeOutlineSet = buildOutsideVectorTextOutline(
+    rectangleSet,
+    10 * lod.integerScale,
+    join,
+    Math.max(1, Math.round(lod.roundArcSagittaTolerance * lod.integerScale)),
+    VECTOR_TEXT_OUTLINE_INNER_OVERLAP_PIXELS * lod.integerScale,
+  );
+  assert.ok(seamSafeOutlineSet);
+  assertCanonical(seamSafeOutlineSet, `outline-seam-safe-${join}`);
+  assert.ok(
+    canonicalArea(seamSafeOutlineSet, lod.integerScale)
+      > canonicalArea(outlineSet, lod.integerScale),
+    "l'overlap interno deve chiudere la fessura AA",
+  );
   const bounds = absoluteMeshBounds(outlineMesh);
   assert.ok(bounds.left <= -9.99);
   assert.ok(bounds.right >= 129.99);
@@ -495,6 +671,22 @@ for (const join of ["round", "bevel", "miter"]) {
   );
   assert.ok(compiled);
   assert.equal(compiled.lodBucket, lod.bucket);
+  assert.ok(
+    meshTriangleArea(compiled) > meshTriangleArea(outlineMesh),
+    "la mesh compilata deve includere l'overlap nascosto sotto il fill",
+  );
+  const fused = compileVectorTextEffect(
+    sourceRectangle,
+    lod,
+    { kind: "source-outline", width: 10, join, includeFill: true },
+    `fused-${join}`,
+  );
+  assert.ok(fused);
+  assert.ok(
+    meshTriangleArea(fused) > meshTriangleArea(compiled),
+    "fill e outline dello stesso colore devono diventare una sola unione",
+  );
+  assert.deepEqual(absoluteMeshBounds(fused), absoluteMeshBounds(compiled));
 }
 
 // Block Shadow: F, F+v e le side wall appartengono a una sola unione.
@@ -695,6 +887,17 @@ for (const id of [
   "vectorTextFontFamily",
   "vectorTextFontSize",
   "vectorTextColor",
+  "vectorTextTransformNone",
+  "vectorTextTransformArch",
+  "vectorTextTransformCircle",
+  "vectorTextTransformWave",
+  "vectorTextTransformCurveParameters",
+  "vectorTextTransformCurve",
+  "vectorTextTransformCurveOut",
+  "vectorTextTransformCircleParameters",
+  "vectorTextCircleRadius",
+  "vectorTextCircleRadiusOut",
+  "vectorTextCircleInverted",
   "vectorTextOutlineWidth",
   "vectorTextOutlineColor",
   "vectorTextOutlineJoin",
@@ -737,6 +940,6 @@ assert.match(mainSource, /__vectorTextPrototype = vectorTextPrototype/);
 assert.equal(packageJson.scripts["vector-text:verify"], "node scripts/verify-vector-text.mjs");
 
 console.log(
-  "Testo vettoriale verificato: Slug analitico, Clipper64/Worker, outline 0 no-op, "
+  "Testo vettoriale verificato: Arch/Circle/Wave Kittl, Slug analitico, Clipper64/Worker, outline fused senza seam, 0 no-op, "
   + "Block Shadow canonica, blur Gaussian R8 GPU, LOD atomici e nessun fallback bitmap.",
 );

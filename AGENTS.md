@@ -174,6 +174,60 @@ Paint:
   Spessore` e `Pressure → size/alpha` sono stati **rimossi** su richiesta:
   la pressione resta nei dati come campo inerte, `controls.w` azzerato.
 
+### Trasformazioni testo vettoriale Kittl (WebGPU)
+
+- Implementate localmente il 29 luglio 2026, non ancora committate né
+  pubblicate. Strategia
+  `kittl-compatible-centered-arch-wave-cubic-distance-warp-circle-rigid-glyph-v2`.
+  Il bundle pubblico Kittl `index.2bd1e2cd.js` è stato verificato direttamente:
+  non si tratta di una ricostruzione basata soltanto su screenshot.
+- Arch e Wave usano gli stessi sette punti normalizzati di Kittl (due Bézier
+  cubiche), la stessa normalizzazione Curve `-100..100` e lo stesso epsilon
+  a `0%`. Come `H5.transformCustom`, ogni anchor/maniglia OpenType viene
+  mappata con la distanza X lungo la curva; verbi, numero di curve e winding
+  restano invariati. Il layout è centrato sulla lunghezza reale della curva
+  restituita da `getLineLength`, non sulla sola proiezione X: gli estremi di
+  Arch restano quindi speculari e il centro del testo cade sull'apice.
+  Nessuna tassellazione o bitmap viene generata allo zoom.
+- Circle replica `HH`: line length `2πr`, testo centrato sulla circonferenza,
+  pivot per glifo al centro della bbox di inchiostro e a
+  `baseline - xHeight/2`, trasformazione affine rigida per glifo e
+  Direction Inverted sull'arco inferiore. Il default `r = width/2` coincide
+  con `calculateControlPoints(width,height,0)`; la UI locale aggiunge anche
+  un controllo esplicito del raggio.
+- Il path trasformato è la sorgente autorevole comune a fill Slug, Traccia,
+  Block Shadow, Ombra singola e Ombra interna. La bbox semantica viene
+  ricalcolata sulla trasformazione ma continua a escludere outline e ombre.
+  Le guide Arch/Wave/Circle vivono soltanto nell'overlay Canvas2D di selezione;
+  i pixel del testo restano WebGPU. Il seed del primo testo non applica più la
+  precedente rotazione decorativa nascosta di `-4°`: Arch nasce orizzontale e
+  simmetrico, mentre la rotazione manuale del nodo resta indipendente.
+- Fix Traccia testo del 29 luglio: l'anello Clipper finiva esattamente sul
+  bordo del fill Slug e le due coverage (mesh MSAA e Bézier analitica) potevano
+  lasciare una fessura subpixel. Con colori diversi il bordo interno della
+  traccia prosegue ora sotto il fill con una guardia LOD di `1 px`, senza
+  cambiare larghezza o bbox esterne. Se riempimento e traccia hanno lo stesso
+  colore lineare, il Worker compila direttamente la loro unione espansa e il
+  renderer emette una sola draw: nessuna frontiera di compositing può restare
+  visibile e l'opacità del nodo non viene applicata due volte. Strategie
+  `webgpu-clipper64-worker-outside-offset-aa-overlap1px-same-color-fused-round-bevel-miter4-v6`
+  e `clipper64-nonzero-worker-native-round-bevel-exact-miter-aa-overlap-same-color-union-earcut-v6`.
+- QA locale: quattro testi (Normal, Arch, Circle, Wave) con font ed effetti
+  diversi, screenshot isolati, confronto visivo diretto con Kittl per Wave 35%,
+  Circle normale e Circle invertito, controllo ad alto zoom senza curve
+  seghettate. Dopo la correzione Arch è stato ricontrollato affiancato a Kittl
+  al `47%`, con sweep di simmetria `-100/-47/0/47/100`, zoom rapido e console
+  pulita; screenshot locale `vector-text-qa-arch-centered.png`. La Traccia
+  nero-su-nero da `24 px` è stata verificata senza overlay su Normal, Arch,
+  Wave e Circle, più rosso-su-nero per controllare il bordo esterno; Worker e
+  console a zero errori. Screenshot `vector-text-outline-same-color-fused.png`
+  e `vector-text-outline-contrast-after.png`. Stress non canonico 8 zoom-in + 8 zoom-out con quattro testi:
+  render p95 `2,20 ms`, Worker effetti `0` errori e nessun nuovo
+  warning/error browser sul desktop NVIDIA corrente. Non leggere questo numero
+  come benchmark iPhone o come nuova baseline canonica.
+- Verifiche verdi: `npm run mixed-scene:verify`,
+  `npm run vector-text:verify`, TypeScript e build Vite di produzione.
+
 ### Traccia raster M1 (WebGPU)
 
 - Stile di default equivalente al progetto M1: disattivato, `14 px`, esterno,

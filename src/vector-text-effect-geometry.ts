@@ -28,7 +28,8 @@ import {
 } from "./vector-text-lod.ts";
 
 export const VECTOR_TEXT_GPU_GEOMETRY_STRATEGY =
-  "clipper64-nonzero-worker-native-round-bevel-exact-miter-earcut-v4" as const;
+  "clipper64-nonzero-worker-native-round-bevel-exact-miter-aa-overlap-same-color-union-earcut-v6" as const;
+export const VECTOR_TEXT_OUTLINE_INNER_OVERLAP_PIXELS = 1;
 
 export interface VectorTextGpuMeshData {
   readonly revision: string;
@@ -49,6 +50,7 @@ export type VectorTextEffectDescription =
       readonly kind: "source-outline";
       readonly width: number;
       readonly join: VectorTextOutlineJoin;
+      readonly includeFill?: boolean;
     }
   | {
       readonly kind: "block";
@@ -649,6 +651,7 @@ export function buildOutsideVectorTextOutline(
   width: number,
   join: VectorTextOutlineJoin,
   arcTolerance: number,
+  innerOverlap = 0,
 ): CanonicalPolygonSet | null {
   if (!(width > 0)) {
     return null;
@@ -659,10 +662,26 @@ export function buildOutsideVectorTextOutline(
     join,
     arcTolerance,
   );
+  // The analytic Slug fill and the MSAA polygon outline do not have identical
+  // edge samples. Move only the hidden inner edge of the outline underneath
+  // the fill; the visible outside width and its joins remain unchanged.
+  const contractedPaths = innerOverlap > 0
+    ? inflatePaths(
+      canonicalFill.paths,
+      -innerOverlap,
+      JoinType.Miter,
+      EndType.Polygon,
+      MITER_LIMIT,
+      arcTolerance,
+    )
+    : canonicalFill.paths;
+  if (contractedPaths.length === 0) {
+    return expanded;
+  }
   return canonicalSetFromTree(executeClipper(
     expanded.paths,
     ClipType.Difference,
-    canonicalFill.paths,
+    contractedPaths,
   ));
 }
 
@@ -802,15 +821,36 @@ export function compileVectorTextEffect(
     1,
     Math.round(lod.roundArcSagittaTolerance * lod.integerScale),
   );
+  const outlineInnerOverlap = outlineRadius > 0
+    ? Math.max(
+      1,
+      Math.min(
+        Math.round(outlineRadius * lod.integerScale),
+        Math.round(
+          VECTOR_TEXT_OUTLINE_INNER_OVERLAP_PIXELS
+          / lod.bucketScale
+          * lod.integerScale,
+        ),
+      ),
+    )
+    : 0;
 
   let result: CanonicalPolygonSet | null;
   if (effect.kind === "source-outline") {
-    result = buildOutsideVectorTextOutline(
-      canonicalFill,
-      Math.round(effect.width * lod.integerScale),
-      effect.join,
-      arcTolerance,
-    );
+    result = effect.includeFill === true
+      ? buildExpandedVectorTextSet(
+        canonicalFill,
+        Math.round(effect.width * lod.integerScale),
+        effect.join,
+        arcTolerance,
+      )
+      : buildOutsideVectorTextOutline(
+        canonicalFill,
+        Math.round(effect.width * lod.integerScale),
+        effect.join,
+        arcTolerance,
+        outlineInnerOverlap,
+      );
   } else {
     const vectorX = Math.round(effect.vectorX * lod.integerScale);
     const vectorY = Math.round(effect.vectorY * lod.integerScale);
@@ -826,6 +866,7 @@ export function compileVectorTextEffect(
         Math.round(effect.width * lod.integerScale),
         effect.join,
         arcTolerance,
+        outlineInnerOverlap,
       );
   }
   if (!result || result.groups.length === 0) {

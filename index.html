@@ -349,6 +349,57 @@
             <input id="vectorTextColor" type="color" value="#f4c95d" />
           </label>
 
+          <fieldset class="vector-text-transform-controls">
+            <legend>Trasformazione testo</legend>
+            <div class="vector-text-transform-grid" role="group" aria-label="Tipo di trasformazione">
+              <button id="vectorTextTransformNone" type="button" class="is-selected" aria-pressed="true">Normale</button>
+              <button id="vectorTextTransformArch" type="button" aria-pressed="false">Arch</button>
+              <button id="vectorTextTransformCircle" type="button" aria-pressed="false">Circle</button>
+              <button id="vectorTextTransformWave" type="button" aria-pressed="false">Wave</button>
+            </div>
+            <div id="vectorTextTransformCurveParameters" hidden>
+              <label class="control">
+                <span>
+                  Curve <output id="vectorTextTransformCurveOut">80%</output>
+                </span>
+                <input
+                  id="vectorTextTransformCurve"
+                  type="range"
+                  min="-100"
+                  max="100"
+                  step="1"
+                  value="80"
+                />
+              </label>
+            </div>
+            <div id="vectorTextTransformCircleParameters" hidden>
+              <label class="control">
+                <span>
+                  Raggio <output id="vectorTextCircleRadiusOut">50%</output>
+                </span>
+                <input
+                  id="vectorTextCircleRadius"
+                  type="range"
+                  min="16"
+                  max="200"
+                  step="1"
+                  value="50"
+                />
+              </label>
+              <label class="check-control vector-text-circle-direction">
+                <input id="vectorTextCircleInverted" type="checkbox" />
+                <span>
+                  Direction Inverted
+                  <small>Inverte lato e direzione della circonferenza.</small>
+                </span>
+              </label>
+            </div>
+            <p class="vector-text-transform-note">
+              Arch/Wave deformano anchor e maniglie delle Bézier; Circle ruota
+              ogni glifo rigidamente. Il path risultante resta Slug/WebGPU anche allo zoom.
+            </p>
+          </fieldset>
+
           <fieldset class="vector-text-outline-controls">
             <legend>Traccia testo</legend>
             <label class="control">

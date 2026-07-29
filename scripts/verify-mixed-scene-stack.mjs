@@ -91,6 +91,10 @@ assert.equal(
   const second = stack.addTextAboveSelection(seed("SECOND"));
   assert.equal(first.id, 1);
   assert.equal(second.id, 2);
+  assert.equal(first.transformType, "none");
+  assert.equal(first.transformCurve, 80);
+  assert.equal(first.circleRadiusPercent, 50);
+  assert.equal(first.circleInverted, false);
   assert.deepEqual(
     stack.items.map((item) => item.key),
     ["raster:1", "text:1", "text:2"],
@@ -147,6 +151,10 @@ assert.equal(
     x: 100,
     y: 200,
     opacity: 2,
+    transformType: "wave",
+    transformCurve: 999,
+    circleRadiusPercent: 1,
+    circleInverted: true,
     outlineWidth: 999,
     outlineColor: "#123456",
     outlineJoin: "bevel",
@@ -171,6 +179,10 @@ assert.equal(
   assert.equal(stack.textById(1).x, 100);
   assert.equal(stack.textById(1).y, 200);
   assert.equal(stack.textById(1).opacity, 1);
+  assert.equal(stack.textById(1).transformType, "wave");
+  assert.equal(stack.textById(1).transformCurve, 100);
+  assert.equal(stack.textById(1).circleRadiusPercent, 16);
+  assert.equal(stack.textById(1).circleInverted, true);
   assert.equal(stack.textById(1).outlineWidth, 100);
   assert.equal(stack.textById(1).outlineColor, "#123456");
   assert.equal(stack.textById(1).outlineJoin, "bevel");

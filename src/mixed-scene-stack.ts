@@ -1,5 +1,12 @@
+import {
+  normalizeVectorTextCircleRadiusPercent,
+  normalizeVectorTextTransformCurve,
+  normalizeVectorTextTransformType,
+  type VectorTextTransformType,
+} from "./vector-text-transform.ts";
+
 export const VECTOR_TEXT_OUTLINE_STRATEGY =
-  "webgpu-clipper64-worker-outside-offset-native-round-bevel-exact-miter4-v4" as const;
+  "webgpu-clipper64-worker-outside-offset-aa-overlap1px-same-color-fused-round-bevel-miter4-v6" as const;
 
 export const VECTOR_TEXT_OUTLINE_WIDTH_MINIMUM = 0;
 export const VECTOR_TEXT_OUTLINE_WIDTH_MAXIMUM = 100;
@@ -198,6 +205,10 @@ export interface VectorTextNode {
   fontFamily: string;
   fontSize: number;
   color: string;
+  transformType: VectorTextTransformType;
+  transformCurve: number;
+  circleRadiusPercent: number;
+  circleInverted: boolean;
   outlineWidth: number;
   outlineColor: string;
   outlineJoin: VectorTextOutlineJoin;
@@ -230,6 +241,10 @@ export interface VectorTextNodeSeed {
   fontFamily: string;
   fontSize: number;
   color: string;
+  transformType?: VectorTextTransformType;
+  transformCurve?: number;
+  circleRadiusPercent?: number;
+  circleInverted?: boolean;
   outlineWidth: number;
   outlineColor: string;
   outlineJoin: VectorTextOutlineJoin;
@@ -379,7 +394,15 @@ export class MixedSceneStack {
     );
     this.textNodes.clear();
     for (const node of state.textNodes) {
-      this.textNodes.set(node.id, { ...node });
+      this.textNodes.set(node.id, {
+        ...node,
+        transformType: normalizeVectorTextTransformType(node.transformType),
+        transformCurve: normalizeVectorTextTransformCurve(node.transformCurve),
+        circleRadiusPercent: normalizeVectorTextCircleRadiusPercent(
+          node.circleRadiusPercent,
+        ),
+        circleInverted: node.circleInverted === true,
+      });
     }
     this.selectedKey = state.selectedKey;
     this.nextTextNodeId = state.nextTextNodeId;
@@ -409,6 +432,12 @@ export class MixedSceneStack {
       fontFamily: seed.fontFamily,
       fontSize: seed.fontSize,
       color: seed.color,
+      transformType: normalizeVectorTextTransformType(seed.transformType),
+      transformCurve: normalizeVectorTextTransformCurve(seed.transformCurve),
+      circleRadiusPercent: normalizeVectorTextCircleRadiusPercent(
+        seed.circleRadiusPercent,
+      ),
+      circleInverted: seed.circleInverted === true,
       outlineWidth: normalizeVectorTextOutlineWidth(seed.outlineWidth),
       outlineColor: seed.outlineColor,
       outlineJoin: normalizeVectorTextOutlineJoin(seed.outlineJoin),
@@ -562,6 +591,20 @@ export class MixedSceneStack {
     }
     if (update.color !== undefined) {
       node.color = update.color;
+    }
+    if (update.transformType !== undefined) {
+      node.transformType = normalizeVectorTextTransformType(update.transformType);
+    }
+    if (update.transformCurve !== undefined) {
+      node.transformCurve = normalizeVectorTextTransformCurve(update.transformCurve);
+    }
+    if (update.circleRadiusPercent !== undefined) {
+      node.circleRadiusPercent = normalizeVectorTextCircleRadiusPercent(
+        update.circleRadiusPercent,
+      );
+    }
+    if (update.circleInverted !== undefined) {
+      node.circleInverted = update.circleInverted === true;
     }
     if (update.outlineWidth !== undefined) {
       node.outlineWidth = normalizeVectorTextOutlineWidth(update.outlineWidth);

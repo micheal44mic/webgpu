@@ -51,6 +51,10 @@ import {
   planVectorTextSingleShadowBlur,
 } from "./vector-text-single-shadow";
 import { VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY } from "./vector-text-adaptive-zoom";
+import {
+  VECTOR_TEXT_TRANSFORM_STRATEGY,
+  type VectorTextTransformType,
+} from "./vector-text-transform.ts";
 
 
 
@@ -90,6 +94,7 @@ export interface MixedVectorTextDiagnostics {
   innerShadowStrategy: typeof VECTOR_TEXT_INNER_SHADOW_STRATEGY;
   singleShadowBlurStrategy: typeof VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY;
   adaptiveZoomStrategy: typeof VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY;
+  transformStrategy: typeof VECTOR_TEXT_TRANSFORM_STRATEGY;
   adaptiveZoomEnabled: boolean;
   zoomRenderMode: "precise";
   zoomFastModeArmed: boolean;
@@ -203,6 +208,14 @@ function gpuLinearColor(color: string): readonly [number, number, number] {
   ];
 }
 
+function sameGpuLinearColor(first: string, second: string): boolean {
+  const firstLinear = gpuLinearColor(first);
+  const secondLinear = gpuLinearColor(second);
+  return firstLinear[0] === secondLinear[0]
+    && firstLinear[1] === secondLinear[1]
+    && firstLinear[2] === secondLinear[2];
+}
+
 function pointDistance(first: Point, second: Point): number {
   return Math.hypot(first.x - second.x, first.y - second.y);
 }
@@ -239,6 +252,39 @@ export class MixedVectorTextController {
   private readonly fontSizeInput = requiredElement<HTMLInputElement>("vectorTextFontSize");
   private readonly fontSizeOutput = requiredElement<HTMLOutputElement>("vectorTextFontSizeOut");
   private readonly colorInput = requiredElement<HTMLInputElement>("vectorTextColor");
+  private readonly transformNoneButton = requiredElement<HTMLButtonElement>(
+    "vectorTextTransformNone",
+  );
+  private readonly transformArchButton = requiredElement<HTMLButtonElement>(
+    "vectorTextTransformArch",
+  );
+  private readonly transformCircleButton = requiredElement<HTMLButtonElement>(
+    "vectorTextTransformCircle",
+  );
+  private readonly transformWaveButton = requiredElement<HTMLButtonElement>(
+    "vectorTextTransformWave",
+  );
+  private readonly transformCurveParameters = requiredElement<HTMLElement>(
+    "vectorTextTransformCurveParameters",
+  );
+  private readonly transformCurveInput = requiredElement<HTMLInputElement>(
+    "vectorTextTransformCurve",
+  );
+  private readonly transformCurveOutput = requiredElement<HTMLOutputElement>(
+    "vectorTextTransformCurveOut",
+  );
+  private readonly transformCircleParameters = requiredElement<HTMLElement>(
+    "vectorTextTransformCircleParameters",
+  );
+  private readonly circleRadiusInput = requiredElement<HTMLInputElement>(
+    "vectorTextCircleRadius",
+  );
+  private readonly circleRadiusOutput = requiredElement<HTMLOutputElement>(
+    "vectorTextCircleRadiusOut",
+  );
+  private readonly circleInvertedInput = requiredElement<HTMLInputElement>(
+    "vectorTextCircleInverted",
+  );
   private readonly outlineWidthInput = requiredElement<HTMLInputElement>(
     "vectorTextOutlineWidth",
   );
@@ -490,6 +536,7 @@ export class MixedVectorTextController {
       innerShadowStrategy: VECTOR_TEXT_INNER_SHADOW_STRATEGY,
       singleShadowBlurStrategy: VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY,
       adaptiveZoomStrategy: VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
+      transformStrategy: VECTOR_TEXT_TRANSFORM_STRATEGY,
       adaptiveZoomEnabled: false,
       zoomRenderMode: "precise",
       zoomFastModeArmed: false,
@@ -529,6 +576,10 @@ export class MixedVectorTextController {
       fontFamily: "Anton",
       fontSize: 360,
       color: index === 0 ? "#111111" : "#f47c5d",
+      transformType: "none",
+      transformCurve: 80,
+      circleRadiusPercent: 50,
+      circleInverted: false,
       outlineWidth: 0,
       outlineColor: "#111111",
       outlineJoin: "round",
@@ -553,7 +604,7 @@ export class MixedVectorTextController {
       x: this.host.layerSize * 0.5 + index * 90,
       y: this.host.layerSize * 0.5 + index * 110,
       scale: 1,
-      rotation: index === 0 ? -4 * Math.PI / 180 : 0,
+      rotation: 0,
     };
   }
 
@@ -581,6 +632,35 @@ export class MixedVectorTextController {
     });
     this.colorInput.addEventListener("input", () => {
       this.updateSelectedNode({ color: this.colorInput.value });
+    });
+    const transformButtons: readonly [
+      VectorTextTransformType,
+      HTMLButtonElement,
+    ][] = [
+      ["none", this.transformNoneButton],
+      ["arch", this.transformArchButton],
+      ["circle", this.transformCircleButton],
+      ["wave", this.transformWaveButton],
+    ];
+    for (const [transformType, button] of transformButtons) {
+      button.addEventListener("click", () => {
+        this.updateSelectedNode({ transformType });
+      });
+    }
+    this.transformCurveInput.addEventListener("input", () => {
+      const transformCurve = Number(this.transformCurveInput.value);
+      this.transformCurveOutput.value = transformCurve.toFixed(0) + "%";
+      this.updateSelectedNode({ transformCurve });
+    });
+    this.circleRadiusInput.addEventListener("input", () => {
+      const circleRadiusPercent = Number(this.circleRadiusInput.value);
+      this.circleRadiusOutput.value = circleRadiusPercent.toFixed(0) + "%";
+      this.updateSelectedNode({ circleRadiusPercent });
+    });
+    this.circleInvertedInput.addEventListener("change", () => {
+      this.updateSelectedNode({
+        circleInverted: this.circleInvertedInput.checked,
+      });
     });
     this.outlineWidthInput.addEventListener("input", () => {
       const outlineWidth = Number(this.outlineWidthInput.value);
@@ -793,6 +873,13 @@ export class MixedVectorTextController {
     this.fontFamilySelect.disabled = disabled;
     this.fontSizeInput.disabled = disabled;
     this.colorInput.disabled = disabled;
+    this.transformNoneButton.disabled = disabled;
+    this.transformArchButton.disabled = disabled;
+    this.transformCircleButton.disabled = disabled;
+    this.transformWaveButton.disabled = disabled;
+    this.transformCurveInput.disabled = disabled;
+    this.circleRadiusInput.disabled = disabled;
+    this.circleInvertedInput.disabled = disabled;
     this.outlineWidthInput.disabled = disabled;
     this.outlineColorInput.disabled = disabled;
     this.outlineJoinSelect.disabled = disabled;
@@ -821,6 +908,8 @@ export class MixedVectorTextController {
     this.moveDownButton.disabled = disabled;
     this.addButton.disabled = this.sceneOperationBusy;
     if (!node) {
+      this.transformCurveParameters.hidden = true;
+      this.transformCircleParameters.hidden = true;
       this.blockShadowParameters.hidden = true;
       this.singleShadowParameters.hidden = true;
       this.innerShadowParameters.hidden = true;
@@ -833,6 +922,28 @@ export class MixedVectorTextController {
     this.fontSizeInput.value = String(node.fontSize);
     this.fontSizeOutput.value = `${Math.round(node.fontSize)} px`;
     this.colorInput.value = node.color;
+    const transformButtons: readonly [
+      VectorTextTransformType,
+      HTMLButtonElement,
+    ][] = [
+      ["none", this.transformNoneButton],
+      ["arch", this.transformArchButton],
+      ["circle", this.transformCircleButton],
+      ["wave", this.transformWaveButton],
+    ];
+    for (const [transformType, button] of transformButtons) {
+      const selected = node.transformType === transformType;
+      button.classList.toggle("is-selected", selected);
+      button.setAttribute("aria-pressed", String(selected));
+    }
+    this.transformCurveParameters.hidden =
+      node.transformType !== "arch" && node.transformType !== "wave";
+    this.transformCircleParameters.hidden = node.transformType !== "circle";
+    this.transformCurveInput.value = String(node.transformCurve);
+    this.transformCurveOutput.value = Math.round(node.transformCurve) + "%";
+    this.circleRadiusInput.value = String(node.circleRadiusPercent);
+    this.circleRadiusOutput.value = Math.round(node.circleRadiusPercent) + "%";
+    this.circleInvertedInput.checked = node.circleInverted;
     this.outlineWidthInput.value = String(node.outlineWidth);
     this.outlineWidthOutput.value = `${Math.round(node.outlineWidth)} px`;
     this.outlineColorInput.value = node.outlineColor;
@@ -944,7 +1055,15 @@ export class MixedVectorTextController {
   private geometryForNode(
     node: Readonly<VectorTextNode>,
   ): CachedTextGeometry {
-    const outlineKey = `${node.fontFamily}\u0000${node.fontSize}\u0000${node.text}`;
+    const outlineKey = [
+      node.fontFamily,
+      node.fontSize,
+      node.text,
+      node.transformType,
+      node.transformCurve,
+      node.circleRadiusPercent,
+      node.circleInverted ? 1 : 0,
+    ].join("\u0000");
     const cached = this.geometryByNodeId.get(node.id);
     if (cached?.outlineKey === outlineKey) {
       return cached;
@@ -953,6 +1072,12 @@ export class MixedVectorTextController {
       node.fontFamily,
       node.text,
       node.fontSize,
+      {
+        type: node.transformType,
+        curve: node.transformCurve,
+        circleRadiusPercent: node.circleRadiusPercent,
+        circleInverted: node.circleInverted,
+      },
     );
     const sourceRevision = vectorTextPathRevision(outline.pathData);
     const created: CachedTextGeometry = {
@@ -1274,36 +1399,48 @@ export class MixedVectorTextController {
       }
     }
 
+    // Equal linear colors are rendered as one expanded union: there is no
+    // second fill pass, hence no internal AA/compositing boundary to reveal.
+    let sourceFillCoveredByOutline = false;
     if (node.outlineWidth > 0) {
+      const fuseOutlineAndFill = sameGpuLinearColor(
+        node.color,
+        node.outlineColor,
+      );
+      const outlineSlot = fuseOutlineAndFill ? "outline-fill" : "outline";
       const mesh = this.effectMeshForNode(
         node,
         geometry,
         view,
-        "outline",
+        outlineSlot,
         {
           kind: "source-outline",
           width: node.outlineWidth,
           join: node.outlineJoin,
+          includeFill: fuseOutlineAndFill,
         },
         liveSlots,
       );
       if (mesh) {
         draws.push(this.meshDraw(
           node,
-          `text:${node.id}:outline`,
+          `text:${node.id}:${outlineSlot}`,
           mesh,
           node.outlineColor,
           node.opacity,
         ));
+        sourceFillCoveredByOutline = fuseOutlineAndFill;
       }
     }
-    draws.push(this.slugDraw(
-      node,
-      `text:${node.id}:slug`,
-      geometry.slug,
-      node.color,
-      node.opacity,
-    ));
+    if (!sourceFillCoveredByOutline) {
+      draws.push(this.slugDraw(
+        node,
+        `text:${node.id}:slug`,
+        geometry.slug,
+        node.color,
+        node.opacity,
+      ));
+    }
     if (node.innerShadowEnabled && node.innerShadowOpacity > 0) {
       draws.push(this.slugInnerShadowDraw(node, geometry, view));
     }
@@ -1492,6 +1629,13 @@ export class MixedVectorTextController {
     const placement = textIndex < rasterIndex
       ? "sotto il raster attivo"
       : "sopra il raster attivo";
+    const transformLabel = node.transformType === "none"
+      ? "trasformazione off"
+      : node.transformType === "circle"
+        ? "Circle Kittl " + Math.round(node.circleRadiusPercent) + "%"
+          + (node.circleInverted ? " invertito" : "")
+        : (node.transformType === "arch" ? "Arch" : "Wave")
+          + " Kittl " + Math.round(node.transformCurve) + "%";
     const outline = node.outlineWidth > 0
       ? `traccia ${Math.round(node.outlineWidth)} px ${OUTLINE_JOIN_LABELS[node.outlineJoin]}`
       : "traccia off";
@@ -1520,7 +1664,8 @@ export class MixedVectorTextController {
       `${node.name} · oggetto testo ${placement} · ${cacheLabel} `
       + `${this.liveGpuMemoryMiB.toFixed(2)} MiB · canvas browser `
       + `${browserCanvasLogicalMiB.toFixed(2)} MiB · font vettoriali `
-      + `${vectorFontLogicalMiB.toFixed(2)} MiB · ${outline} · ${blockShadow} · `
+      + `${vectorFontLogicalMiB.toFixed(2)} MiB · ${transformLabel} · ${outline} · `
+      + `${blockShadow} · `
       + `${singleShadow} · ${innerShadow} · ${effectLabel} · ${timing}.`;
   }
   private layerToCanvas(point: Point, view: VectorTextViewState): Point {
@@ -1589,6 +1734,63 @@ export class MixedVectorTextController {
     context.restore();
   }
 
+  private renderTransformGuide(
+    context: CanvasRenderingContext2D,
+    view: VectorTextViewState,
+    node: Readonly<VectorTextNode>,
+  ): void {
+    const guide = this.geometryForNode(node).outline.guide;
+    if (!guide) {
+      return;
+    }
+    const backingPerCssPixel = view.canvasWidth / Math.max(1, view.cssWidth);
+    const lineWidth = Math.max(1, 1.25 * backingPerCssPixel);
+    const markerRadius = Math.max(2, 3 * backingPerCssPixel);
+    context.save();
+    context.strokeStyle = "rgba(103, 126, 255, 0.92)";
+    context.fillStyle = "#6f83ff";
+    context.lineWidth = lineWidth;
+    context.setLineDash([5 * backingPerCssPixel, 4 * backingPerCssPixel]);
+    if (guide.kind === "curve") {
+      const points = guide.points.map((point) =>
+        this.layerToCanvas(this.localToLayer(point, node), view));
+      context.beginPath();
+      context.moveTo(points[0].x, points[0].y);
+      for (let index = 1; index < points.length; index += 1) {
+        context.lineTo(points[index].x, points[index].y);
+      }
+      context.stroke();
+      context.setLineDash([]);
+      for (const index of [0, 16, 32, 48, 64]) {
+        const point = points[index];
+        context.beginPath();
+        context.arc(point.x, point.y, markerRadius, 0, Math.PI * 2);
+        context.fill();
+      }
+    } else {
+      const center = this.layerToCanvas(
+        this.localToLayer({ x: guide.centerX, y: guide.centerY }, node),
+        view,
+      );
+      const edge = this.layerToCanvas(
+        this.localToLayer({
+          x: guide.centerX + guide.radius,
+          y: guide.centerY,
+        }, node),
+        view,
+      );
+      const radius = pointDistance(center, edge);
+      context.beginPath();
+      context.arc(center.x, center.y, radius, 0, Math.PI * 2);
+      context.stroke();
+      context.setLineDash([]);
+      context.beginPath();
+      context.arc(center.x, center.y, markerRadius, 0, Math.PI * 2);
+      context.fill();
+    }
+    context.restore();
+  }
+
   private renderInteractionOverlay(
     view: VectorTextViewState,
     node: Readonly<VectorTextNode>,
@@ -1605,6 +1807,7 @@ export class MixedVectorTextController {
     const lineWidth = Math.max(1, 1.25 * backingPerCssPixel);
     const handleRadius = HANDLE_RADIUS_CSS_PX * backingPerCssPixel;
 
+    this.renderTransformGuide(context, view, node);
     context.save();
     context.strokeStyle = "#8d9aff";
     context.fillStyle = "#f7f8ff";

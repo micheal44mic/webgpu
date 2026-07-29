@@ -53,6 +53,7 @@ function effectIdentity(
       effect.kind,
       vectorTextFloat64Key(effect.width),
       effect.join,
+      effect.includeFill === true ? "include-fill" : "outside-ring",
       "miter-limit-4",
     ].join(":");
   }
