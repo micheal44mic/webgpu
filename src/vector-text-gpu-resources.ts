@@ -1,5 +1,5 @@
 import type {
-  VectorTextGpuMeshDraw,
+  VectorTextGpuDraw,
   VectorTextGpuSlugBlurDraw,
   VectorTextGpuSlugDraw,
   VectorTextGpuSlugInnerShadowBlurDraw,
@@ -31,7 +31,7 @@ export type CreatedVectorTextGpuResources =
 
 export function createVectorTextGpuMeshResources(
   device: GPUDevice,
-  draw: VectorTextGpuMeshDraw,
+  draw: Extract<VectorTextGpuDraw, { readonly mesh: unknown }>,
 ): CreatedVectorTextGpuMeshResources {
   const vertexBuffer = device.createBuffer({
     label: `Vector text ${draw.meshKey} vertices`,

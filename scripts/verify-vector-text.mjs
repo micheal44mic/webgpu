@@ -78,6 +78,11 @@ import {
   VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
 } from "../src/vector-text-adaptive-zoom.ts";
 import {
+  VECTOR_SVG_IMPORT_STRATEGY,
+  VECTOR_SVG_MAXIMUM_COMMANDS,
+  VECTOR_SVG_MAXIMUM_SOURCE_BYTES,
+} from "../src/vector-svg-import.ts";
+import {
   VECTOR_TEXT_TRANSFORM_STRATEGY,
   buildVectorTextCurveGuide,
   defaultVectorTextDistortPoints,
@@ -118,6 +123,7 @@ const singleShadowSource = read("src/vector-text-single-shadow.ts");
 const fontGeometrySource = read("src/vector-text-font-geometry.ts");
 const transformSource = read("src/vector-text-transform.ts");
 const adaptiveSource = read("src/vector-text-adaptive-zoom.ts");
+const svgSource = read("src/vector-svg-import.ts");
 const mainSource = read("src/main.ts");
 const htmlSource = read("index.html");
 const packageJson = JSON.parse(read("package.json"));
@@ -747,6 +753,19 @@ assert.equal(
   ),
   null,
 );
+const sourceFillMesh = compileVectorTextEffect(
+  sourceRectangle,
+  lod,
+  { kind: "source-fill" },
+  "source-fill",
+);
+assert.ok(sourceFillMesh);
+assert.deepEqual(absoluteMeshBounds(sourceFillMesh), {
+  left: 0,
+  top: 0,
+  right: 120,
+  bottom: 100,
+});
 for (const join of ["round", "bevel", "miter"]) {
   const outlineSet = buildOutsideVectorTextOutline(
     rectangleSet,
@@ -978,7 +997,7 @@ assert.match(controllerSource, /if \(node\.outlineWidth > 0\) \{[\s\S]*kind: "so
 assert.match(controllerSource, /if \(node\.blockShadowOutlineWidth > 0\) \{[\s\S]*kind: "block-outline"/);
 assert.match(controllerSource, /node\.singleShadowBlur > 0[\s\S]*this\.slugBlurDraw/);
 assert.match(controllerSource, /else \{[\s\S]*this\.slugDraw\(/);
-assert.match(controllerSource, /Slug vettoriale WebGPU, nessuna bitmap/);
+assert.match(controllerSource, /Testi OpenType e SVG restano Slug\/mesh WebGPU/);
 assert.doesNotMatch(fontGeometrySource, /Path2D|canvasPath|buildShadow3dPath/);
 assert.match(clientSource, /private activeRequestId: number \| null = null/);
 assert.match(clientSource, /private readonly queuedBySlot = new Map/);
@@ -994,8 +1013,8 @@ assert.match(clientSource, /protectedRevisions/);
 assert.match(clientSource, /type: "release-path"/);
 assert.match(workerProtocolSource, /ReleaseVectorTextPathMessage/);
 assert.match(workerSource, /message\.type === "release-path"[\s\S]*paths\.delete/);
-assert.match(controllerSource, /displayedDrawsByNodeId/);
-assert.match(controllerSource, /allEffectsReady \|\| !displayedDraws/);
+assert.match(controllerSource, /displayedDrawsByNodeKey/);
+assert.match(controllerSource, /if \(allEffectsReady\) \{[\s\S]*else if \(displayedDraws\)/);
 assert.match(controllerSource, /retargetDisplayedDraws\(displayedDraws, node\)/);
 assert.match(controllerSource, /dataset\.atomicEffectPendingNodes/);
 assert.match(workerSource, /postMessage\([\s\S]*mesh\.vertices\.buffer[\s\S]*mesh\.indices\.buffer/);
@@ -1030,6 +1049,24 @@ assert.match(engineSource, /if \(activeBlurCacheCount === 0\) \{[\s\S]*releaseVe
 assert.doesNotMatch(controllerSource, /document\.createElement\("canvas"\)/);
 assert.doesNotMatch(controllerSource, /strokeText\(|fillText\(|canvasPath/);
 
+// SVG: parser semantico sicuro, palette modificabile e gli stessi effetti mesh GPU.
+assert.equal(VECTOR_SVG_IMPORT_STRATEGY, "sanitized-semantic-svg-solid-paints-worker-lod-mesh-webgpu-v1");
+assert.equal(VECTOR_SVG_MAXIMUM_SOURCE_BYTES, 5 * 1024 * 1024);
+assert.equal(VECTOR_SVG_MAXIMUM_COMMANDS, 500_000);
+assert.match(svgSource, /const SAFE_ELEMENTS = new Set/);
+assert.match(svgSource, /"path", "rect", "circle", "ellipse", "line", "polyline", "polygon"/);
+assert.match(svgSource, /Elemento SVG non supportato o non sicuro/);
+assert.match(svgSource, /Handler evento SVG non consentito/);
+assert.match(svgSource, /Riferimenti href non consentiti/);
+assert.doesNotMatch(svgSource, /innerHTML|insertAdjacentHTML|eval\(/);
+assert.match(controllerSource, /parseVectorSvg\(source, sourceName\)/);
+assert.match(controllerSource, /this\.svgFileInput\.files\?\.\[0\]/);
+assert.match(controllerSource, /kind: "source-fill"/);
+assert.match(controllerSource, /this\.svgBlurDraw/);
+assert.match(controllerSource, /kind === "outer"[\s\S]*mode: "mesh-blur"[\s\S]*mode: "mesh-inner-shadow-blur"/);
+assert.match(gpuShaderSource, /fn blurMaskVertexMain/);
+assert.match(gpuShaderSource, /fn meshInnerShadowFragmentMain/);
+
 // UI e font locali.
 assert.equal(VECTOR_TEXT_FONT_MANIFEST.length, 3);
 const fontLogicalBytes = VECTOR_TEXT_FONT_MANIFEST.reduce(
@@ -1039,6 +1076,13 @@ const fontLogicalBytes = VECTOR_TEXT_FONT_MANIFEST.reduce(
 assert.equal(fontLogicalBytes, 392_528);
 for (const id of [
   "vectorTextPrototypeSection",
+  "vectorSvgLoadExample",
+  "vectorSvgImportButton",
+  "vectorSvgFileInput",
+  "vectorSvgImportStatus",
+  "vectorSvgSelectedControls",
+  "vectorSvgSourceSummary",
+  "vectorSvgPalette",
   "vectorTextValue",
   "vectorTextFontFamily",
   "vectorTextFontSize",
@@ -1101,5 +1145,5 @@ assert.equal(packageJson.scripts["vector-text:verify"], "node scripts/verify-vec
 
 console.log(
   "Testo vettoriale verificato: Distort/Arch/Circle/Wave Kittl, Slug analitico, Clipper64/Worker, outline fused senza seam, 0 no-op, "
-  + "Block Shadow canonica, blur Gaussian R8 GPU, swap di nodo atomici, coda latest-only e nessun fallback bitmap.",
+  + "Block Shadow canonica, SVG semantici sanitizzati con palette/effetti GPU, blur Gaussian R8 GPU, swap di nodo atomici, coda latest-only e nessun fallback bitmap.",
 );

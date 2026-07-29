@@ -55,6 +55,14 @@ function effectIdentity(
   sourceRevision: string,
   effect: VectorTextEffectDescription,
 ): string {
+  if (effect.kind === "source-fill") {
+    return [
+      VECTOR_TEXT_GEOMETRY_COMPILER_VERSION,
+      sourceRevision,
+      effect.kind,
+    ].join(":");
+  }
+
   if (effect.kind === "source-outline") {
     return [
       VECTOR_TEXT_GEOMETRY_COMPILER_VERSION,

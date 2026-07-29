@@ -2222,6 +2222,51 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
 - Verifiche verdi: TypeScript/build Vite production, `vector-text:verify`,
   `mixed-scene:verify` e `git diff --check`. Candidato lasciato volutamente
   non committato e non pubblicato su richiesta dell’utente.
+### Importazione SVG vettoriale GPU (candidato locale del 29 luglio 2026)
+
+- Aggiunti un pulsante per il file di esempio e un selettore file SVG reale nel
+  pannello vettoriale sempre disponibile. Ogni import crea un nodo `svg`
+  separato nella pila mista, con visibilità, opacità, ordine, undo/redo,
+  spostamento, scala e rotazione come il testo; non converte il documento in un
+  canvas 4096².
+- Strategia `sanitized-semantic-svg-solid-paints-worker-lod-mesh-webgpu-v1`:
+  il parser conserva path Bézier e colori solidi, normalizza trasformazioni e
+  forme (`path`, `rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon`),
+  poi il Worker costruisce mesh LOD che restano WebGPU/MSAA durante lo zoom.
+  Palette originale e campi HEX sono modificabili per colore.
+- Gli SVG riusano lo stack effetti vettoriale: Traccia esterna
+  round/bevel/miter, Ombra singola con Gaussian R8, Ombra interna ritagliata
+  dal riempimento e Block Shadow estrusa. Le mask blur mesh condividono planner,
+  scratch e cache GPU già usati dal testo; bbox/maniglie restano quelle della
+  geometria sorgente.
+- Contratto di sicurezza: limite sorgente `5 MiB` e `500000` comandi; rifiuto
+  di script/elementi non ammessi, handler evento, href, URL esterni,
+  DOCTYPE/ENTITY, filter/mask/clip-path, gradienti/pattern e tracce sorgente.
+  Le tracce originali vanno convertite in fill; nell'app si può poi applicare
+  la Traccia vettoriale non distruttiva. Fill-rule misti nello stesso oggetto
+  sono per ora rifiutati esplicitamente.
+- File utente `image (5) copiaasd.svg`: `0,018 MiB` sorgente, `2` colori,
+  `29` contorni, `850` comandi e `0,074 MiB` di dati vettoriali CPU. Nel
+  viewport desktop finale il contatore del nodo riporta `11,40 MiB` GPU senza
+  effetti, `12,29 MiB` con Traccia 14 + Ombra singola + Ombra interna e
+  `12,37 MiB` con Traccia 14 + Block Shadow + Ombra interna. Questi valori
+  includono due cache viewport, mesh e matte e quindi dipendono dal viewport;
+  non sono la sola dimensione del file.
+- QA browser aggiuntiva con un secondo SVG indipendente: CSS, trasformazione,
+  rettangolo arrotondato, cerchio, arco, Bézier e quattro colori; palette,
+  Traccia, entrambe le ombre, Block Shadow, move/scale/rotate e zoom rapido
+  verificati visivamente senza curve seghettate né errori console/WebGPU. Un
+  file con `<script>`/`onload` è stato respinto mantenendo il livello valido.
+- Fix palette SVG del 29 luglio: il picker colore mantiene ora lo stesso nodo DOM
+  durante gli eventi `input`, sincronizza il campo HEX in tempo reale e usa
+  `change` come fallback Safari/iPhone. Probe browser con tre colori consecutivi
+  (`#1F7AE0` → `#35B56A` → `#E0529C`) ha mantenuto il controllo attivo e
+  connesso dopo ogni variazione; build, `vector-text:verify` e diff check verdi.
+- Verifiche verdi: build production/TypeScript, `vector-text:verify`,
+  `mixed-scene:verify`, `stroke:verify`, `shadow:verify`, `layers:verify`,
+  `history:verify`, `view:verify`, `effects-scratch:verify`, `blend:verify`,
+  `grain:verify`, `thickness:verify`, `bevel:verify`, `compression:verify` e
+  `git diff --check`. Candidato non committato e non pubblicato, come richiesto.
 ### Scenario misto staged 600 MiB · candidato rev 59
 
 - Profilo aggiuntivo selezionato da

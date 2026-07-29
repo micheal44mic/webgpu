@@ -30,9 +30,12 @@ import {
 import {
   MIXED_SCENE_STACK_STRATEGY,
   MixedSceneStack,
+  cloneVectorSvgNode,
   cloneVectorTextNode,
   type MixedSceneCompositionSegment,
   type MixedSceneItem,
+  type VectorSvgNode,
+  type VectorSvgNodeSeed,
   type VectorTextNode,
   type VectorTextNodeSeed,
 } from "./mixed-scene-stack";
@@ -59,7 +62,7 @@ import {
 import type {
   VectorTextGpuDraw,
   VectorTextGpuPresentationStats,
-  VectorTextGpuSlugBlurSourceDraw,
+  VectorTextGpuBlurSourceDraw,
   VectorTextPlacement,
   VectorTextViewState,
 } from "./vector-text-prototype";
@@ -402,6 +405,11 @@ export interface MixedSceneSnapshot {
       key: `text:${number}`;
       kind: "text";
       textNode: Readonly<VectorTextNode>;
+    }
+    | {
+      key: `svg:${number}`;
+      kind: "svg";
+      svgNode: Readonly<VectorSvgNode>;
     }
   )[];
 }
@@ -1027,6 +1035,28 @@ interface VectorTextGpuSlugResources {
 type VectorTextGpuDrawResources =
   | VectorTextGpuMeshResources
   | VectorTextGpuSlugResources;
+
+type VectorTextGpuMeshSourceDraw = Extract<
+  VectorTextGpuDraw,
+  { readonly mesh: unknown }
+>;
+
+function vectorTextGpuDrawUsesMesh(
+  draw: VectorTextGpuDraw,
+): draw is VectorTextGpuMeshSourceDraw {
+  return draw.mode === "mesh-direct"
+    || draw.mode === "mesh-blur"
+    || draw.mode === "mesh-inner-shadow-blur";
+}
+
+function vectorTextGpuDrawUsesBlur(
+  draw: VectorTextGpuDraw,
+): draw is VectorTextGpuBlurSourceDraw {
+  return draw.mode === "slug-blur"
+    || draw.mode === "slug-inner-shadow-blur"
+    || draw.mode === "mesh-blur"
+    || draw.mode === "mesh-inner-shadow-blur";
+}
 
 interface VectorTextGpuBlurCacheResources {
   texture: GPUTexture;
@@ -2248,11 +2278,13 @@ export class BrushEngine {
   private vectorTextDisplayPipeline: GPURenderPipeline | null = null;
   private vectorTextGpuFillPipeline: GPURenderPipeline | null = null;
   private vectorTextGpuBlurMaskPipeline: GPURenderPipeline | null = null;
+  private vectorTextGpuMeshBlurMaskPipeline: GPURenderPipeline | null = null;
   private vectorTextGpuBlurHorizontalPipeline: GPURenderPipeline | null = null;
   private vectorTextGpuBlurVerticalPipeline: GPURenderPipeline | null = null;
   private vectorTextGpuBlurCompositePipeline: GPURenderPipeline | null = null;
   private vectorTextGpuInnerShadowDirectPipeline: GPURenderPipeline | null = null;
   private vectorTextGpuInnerShadowBlurPipeline: GPURenderPipeline | null = null;
+  private vectorTextGpuMeshInnerShadowBlurPipeline: GPURenderPipeline | null = null;
   private vectorTextGpuClearPipeline: GPURenderPipeline | null = null;
   private mixedSceneClearPipeline: GPURenderPipeline | null = null;
   private mixedSceneRasterSegmentPipeline: GPURenderPipeline | null = null;
@@ -3582,10 +3614,17 @@ export class BrushEngine {
             rasterLayerIndex,
           };
         }
+        if (item.kind === "text") {
+          return {
+            key: item.key,
+            kind: item.kind,
+            textNode: cloneVectorTextNode(scene.textById(item.textNodeId)),
+          };
+        }
         return {
           key: item.key,
           kind: item.kind,
-          textNode: cloneVectorTextNode(scene.textById(item.textNodeId)),
+          svgNode: cloneVectorSvgNode(scene.svgById(item.svgNodeId)),
         };
       }),
     };
@@ -3603,7 +3642,7 @@ export class BrushEngine {
   }
 
   canPaintSelectedSceneItem(): boolean {
-    return this.mixedSceneStack?.selected.kind !== "text";
+    return this.mixedSceneStack?.selected.kind === "raster";
   }
 
   private notifyViewChange(): void {
@@ -3752,19 +3791,18 @@ export class BrushEngine {
   private ensureVectorTextGpuResource(
     draw: VectorTextGpuDraw,
   ): VectorTextGpuDrawResources {
-    const revision = draw.mode === "mesh-direct"
-      ? draw.mesh.revision
-      : draw.slug.revision;
+    const usesMesh = vectorTextGpuDrawUsesMesh(draw);
+    const revision = usesMesh ? draw.mesh.revision : draw.slug.revision;
     const existing = this.vectorTextGpuMeshes.get(draw.meshKey);
     if (
       existing
       && existing.revision === revision
-      && existing.kind === (draw.mode === "mesh-direct" ? "mesh" : "slug")
+      && existing.kind === (usesMesh ? "mesh" : "slug")
     ) {
       return existing;
     }
     let created: VectorTextGpuDrawResources;
-    if (draw.mode === "mesh-direct") {
+    if (usesMesh) {
       created = createVectorTextGpuMeshResources(this.device, draw);
     } else {
       const uniformBuffer = this.vectorTextGpuUniformBuffer;
@@ -3788,7 +3826,7 @@ export class BrushEngine {
   }
 
   private ensureVectorTextGpuBlurCache(
-    draw: VectorTextGpuSlugBlurSourceDraw,
+    draw: VectorTextGpuBlurSourceDraw,
   ): VectorTextGpuBlurCacheResources {
     const existing = this.vectorTextGpuBlurCaches.get(draw.blurKey);
     if (
@@ -3954,7 +3992,7 @@ export class BrushEngine {
   }
 
   private writeVectorTextGpuBlurSourceUniform(
-    draw: VectorTextGpuSlugBlurSourceDraw,
+    draw: VectorTextGpuBlurSourceDraw,
     drawIndex: number,
   ): void {
     const base = drawIndex * VECTOR_TEXT_GPU_UNIFORM_STRIDE / 4;
@@ -3968,18 +4006,23 @@ export class BrushEngine {
     upload[base + 6] = draw.blurScale;
     upload[base + 10] = 1;
     upload[base + 12] = 1;
-    upload[base + 13] = draw.slug.originX;
-    upload[base + 14] = draw.slug.originY;
     upload[base + 16] = 1;
     upload[base + 17] = 1;
     upload[base + 18] = 1;
     upload[base + 19] = 1;
     upload[base + 22] = draw.blurWidth;
     upload[base + 23] = draw.blurHeight;
-    upload[base + 24] = draw.slug.left;
-    upload[base + 25] = draw.slug.top;
-    upload[base + 26] = draw.slug.right;
-    upload[base + 27] = draw.slug.bottom;
+    upload[base + 24] = draw.blurBounds[0];
+    upload[base + 25] = draw.blurBounds[1];
+    upload[base + 26] = draw.blurBounds[2];
+    upload[base + 27] = draw.blurBounds[3];
+    if (vectorTextGpuDrawUsesMesh(draw)) {
+      upload[base + 13] = draw.mesh.originX;
+      upload[base + 14] = draw.mesh.originY;
+      return;
+    }
+    upload[base + 13] = draw.slug.originX;
+    upload[base + 14] = draw.slug.originY;
     upload[base + 28] = draw.slug.bandScaleX;
     upload[base + 29] = draw.slug.bandScaleY;
     upload[base + 30] = draw.slug.bandOffsetX;
@@ -3992,9 +4035,8 @@ export class BrushEngine {
     unsigned[base + 36] = draw.slug.curveTexture.logWidth;
     unsigned[base + 37] = draw.slug.bandTexture.logWidth;
   }
-
   private writeVectorTextGpuBlurFilterUniform(
-    draw: VectorTextGpuSlugBlurSourceDraw,
+    draw: VectorTextGpuBlurSourceDraw,
     filterIndex: number,
   ): void {
     const base = filterIndex * VECTOR_TEXT_GPU_UNIFORM_STRIDE / 4;
@@ -4051,45 +4093,54 @@ export class BrushEngine {
     upload[base + 13] = draw.localOffsetX;
     upload[base + 14] = draw.localOffsetY;
     upload[base + 16] = draw.color[0];
+    upload[base + 17] = draw.color[1];
+    upload[base + 18] = draw.color[2];
+    upload[base + 19] = draw.opacity;
     upload[base + 20] = targetBounds.x;
     upload[base + 21] = targetBounds.y;
     upload[base + 22] = this.vectorTextGpuScratchWidth;
     upload[base + 23] = this.vectorTextGpuScratchHeight;
-    upload[base + 17] = draw.color[1];
-    upload[base + 18] = draw.color[2];
-    upload[base + 19] = draw.opacity;
-    if (draw.mode !== "mesh-direct") {
-      const shapeBounds = (
-        draw.mode === "slug-blur"
-        || draw.mode === "slug-inner-shadow-blur"
-      )
-        ? draw.blurBounds
-        : [draw.slug.left, draw.slug.top, draw.slug.right, draw.slug.bottom] as const;
-      upload[base + 24] = shapeBounds[0];
-      upload[base + 25] = shapeBounds[1];
-      upload[base + 26] = shapeBounds[2];
-      upload[base + 27] = shapeBounds[3];
-      upload[base + 28] = draw.slug.bandScaleX;
-      upload[base + 29] = draw.slug.bandScaleY;
-      upload[base + 30] = draw.slug.bandOffsetX;
-      upload[base + 31] = draw.slug.bandOffsetY;
-      const unsigned = this.vectorTextGpuUniformUploadUnsigned;
-      unsigned[base + 32] = draw.slug.horizontalHeaderBase;
-      unsigned[base + 33] = draw.slug.verticalHeaderBase;
-      unsigned[base + 34] = draw.slug.horizontalBandCount;
-      unsigned[base + 35] = draw.slug.verticalBandCount;
-      unsigned[base + 36] = draw.slug.curveTexture.logWidth;
-      unsigned[base + 37] = draw.slug.bandTexture.logWidth;
-      if (
-        draw.mode === "slug-inner-shadow-direct"
-        || draw.mode === "slug-inner-shadow-blur"
-      ) {
-        upload[base + 40] = draw.sampleOffsetX;
-        upload[base + 41] = draw.sampleOffsetY;
+
+    if (vectorTextGpuDrawUsesMesh(draw)) {
+      if (vectorTextGpuDrawUsesBlur(draw)) {
+        upload[base + 24] = draw.blurBounds[0];
+        upload[base + 25] = draw.blurBounds[1];
+        upload[base + 26] = draw.blurBounds[2];
+        upload[base + 27] = draw.blurBounds[3];
       }
+      if (draw.mode === "mesh-inner-shadow-blur") {
+        upload[base + 28] = draw.sampleOffsetX;
+        upload[base + 29] = draw.sampleOffsetY;
+      }
+      return;
+    }
+
+    const shapeBounds = vectorTextGpuDrawUsesBlur(draw)
+      ? draw.blurBounds
+      : [draw.slug.left, draw.slug.top, draw.slug.right, draw.slug.bottom] as const;
+    upload[base + 24] = shapeBounds[0];
+    upload[base + 25] = shapeBounds[1];
+    upload[base + 26] = shapeBounds[2];
+    upload[base + 27] = shapeBounds[3];
+    upload[base + 28] = draw.slug.bandScaleX;
+    upload[base + 29] = draw.slug.bandScaleY;
+    upload[base + 30] = draw.slug.bandOffsetX;
+    upload[base + 31] = draw.slug.bandOffsetY;
+    const unsigned = this.vectorTextGpuUniformUploadUnsigned;
+    unsigned[base + 32] = draw.slug.horizontalHeaderBase;
+    unsigned[base + 33] = draw.slug.verticalHeaderBase;
+    unsigned[base + 34] = draw.slug.horizontalBandCount;
+    unsigned[base + 35] = draw.slug.verticalBandCount;
+    unsigned[base + 36] = draw.slug.curveTexture.logWidth;
+    unsigned[base + 37] = draw.slug.bandTexture.logWidth;
+    if (
+      draw.mode === "slug-inner-shadow-direct"
+      || draw.mode === "slug-inner-shadow-blur"
+    ) {
+      upload[base + 40] = draw.sampleOffsetX;
+      upload[base + 41] = draw.sampleOffsetY;
     }
   }
-
   private vectorTextGpuRunBounds(
     draws: readonly VectorTextGpuDraw[],
     view: VectorTextViewState,
@@ -4101,9 +4152,9 @@ export class BrushEngine {
     for (const draw of draws) {
       const cosine = Math.cos(draw.rotation);
       const sine = Math.sin(draw.rotation);
-      const bounds = draw.mode === "slug-blur"
+      const bounds = vectorTextGpuDrawUsesBlur(draw)
         ? draw.blurBounds
-        : draw.mode === "mesh-direct"
+        : vectorTextGpuDrawUsesMesh(draw)
           ? [draw.mesh.left, draw.mesh.top, draw.mesh.right, draw.mesh.bottom] as const
           : [draw.slug.left, draw.slug.top, draw.slug.right, draw.slug.bottom] as const;
       const localCorners = [
@@ -4198,10 +4249,7 @@ export class BrushEngine {
       (draw) => this.ensureVectorTextGpuResource(draw),
     );
     const blurResources = draws.map((draw) =>
-      (
-        draw.mode === "slug-blur"
-        || draw.mode === "slug-inner-shadow-blur"
-      )
+      vectorTextGpuDrawUsesBlur(draw)
         ? this.ensureVectorTextGpuBlurCache(draw)
         : null,
     );
@@ -4252,10 +4300,7 @@ export class BrushEngine {
       for (let index = 0; index < run.draws.length; index += 1) {
         const draw = run.draws[index];
         const cache = run.blurResources[index];
-        if (
-          (draw.mode === "slug-blur" || draw.mode === "slug-inner-shadow-blur")
-          && cache?.needsBuild
-        ) {
+        if (vectorTextGpuDrawUsesBlur(draw) && cache?.needsBuild) {
           blurScratchWidth = Math.max(blurScratchWidth, draw.blurWidth);
           blurScratchHeight = Math.max(blurScratchHeight, draw.blurHeight);
         }
@@ -4275,11 +4320,13 @@ export class BrushEngine {
     const fillPipeline = this.vectorTextGpuFillPipeline;
     const slugPipeline = this.vectorTextGpuSlugPipeline;
     const blurMaskPipeline = this.vectorTextGpuBlurMaskPipeline;
+    const meshBlurMaskPipeline = this.vectorTextGpuMeshBlurMaskPipeline;
     const blurHorizontalPipeline = this.vectorTextGpuBlurHorizontalPipeline;
     const blurVerticalPipeline = this.vectorTextGpuBlurVerticalPipeline;
     const blurCompositePipeline = this.vectorTextGpuBlurCompositePipeline;
     const innerShadowDirectPipeline = this.vectorTextGpuInnerShadowDirectPipeline;
     const innerShadowBlurPipeline = this.vectorTextGpuInnerShadowBlurPipeline;
+    const meshInnerShadowBlurPipeline = this.vectorTextGpuMeshInnerShadowBlurPipeline;
     const clearPipeline = this.vectorTextGpuClearPipeline;
     if (
       !uniformBuffer
@@ -4291,11 +4338,13 @@ export class BrushEngine {
       || !fillPipeline
       || !slugPipeline
       || !blurMaskPipeline
+      || !meshBlurMaskPipeline
       || !blurHorizontalPipeline
       || !blurVerticalPipeline
       || !blurCompositePipeline
       || !innerShadowDirectPipeline
       || !innerShadowBlurPipeline
+      || !meshInnerShadowBlurPipeline
       || !clearPipeline
     ) {
       throw new Error("Pipeline batch del testo vettoriale GPU non pronta.");
@@ -4324,8 +4373,8 @@ export class BrushEngine {
     }
 
     const blurBuilds: {
-      draw: VectorTextGpuSlugBlurSourceDraw;
-      resources: VectorTextGpuSlugResources;
+      draw: VectorTextGpuBlurSourceDraw;
+      resources: VectorTextGpuDrawResources;
       cache: VectorTextGpuBlurCacheResources;
       sourceUniformIndex: number;
       filterIndex: number;
@@ -4338,17 +4387,14 @@ export class BrushEngine {
         const drawResources = run.drawResources[index];
         const cache = run.blurResources[index];
         if (
-          (
-            draw.mode !== "slug-blur"
-            && draw.mode !== "slug-inner-shadow-blur"
-          )
+          !vectorTextGpuDrawUsesBlur(draw)
           || !cache?.needsBuild
           || queuedCaches.has(cache)
         ) {
           continue;
         }
-        if (drawResources.kind !== "slug") {
-          throw new Error("Risorsa Slug incoerente con la mask blur GPU.");
+        if (drawResources.kind !== (vectorTextGpuDrawUsesMesh(draw) ? "mesh" : "slug")) {
+          throw new Error("Risorsa vettoriale incoerente con la mask blur GPU.");
         }
         if (nextSourceUniformIndex >= VECTOR_TEXT_GPU_MAXIMUM_DRAWS) {
           throw new Error(
@@ -4425,13 +4471,25 @@ export class BrushEngine {
         });
         sourcePass.setViewport(0, 0, width, height, 0, 1);
         sourcePass.setScissorRect(0, 0, width, height);
-        sourcePass.setPipeline(blurMaskPipeline);
-        sourcePass.setBindGroup(
-          0,
-          build.resources.bindGroup,
-          [build.sourceUniformIndex * VECTOR_TEXT_GPU_UNIFORM_STRIDE],
-        );
-        sourcePass.draw(6, 1, 0, 0);
+        const sourceDynamicOffset =
+          build.sourceUniformIndex * VECTOR_TEXT_GPU_UNIFORM_STRIDE;
+        if (vectorTextGpuDrawUsesMesh(build.draw)) {
+          if (build.resources.kind !== "mesh") {
+            throw new Error("Mesh SVG incoerente con la mask blur GPU.");
+          }
+          sourcePass.setPipeline(meshBlurMaskPipeline);
+          sourcePass.setBindGroup(0, uniformBindGroup, [sourceDynamicOffset]);
+          sourcePass.setVertexBuffer(0, build.resources.vertexBuffer);
+          sourcePass.setIndexBuffer(build.resources.indexBuffer, "uint32");
+          sourcePass.drawIndexed(build.resources.indexCount, 1, 0, 0, 0);
+        } else {
+          if (build.resources.kind !== "slug") {
+            throw new Error("Slug incoerente con la mask blur GPU.");
+          }
+          sourcePass.setPipeline(blurMaskPipeline);
+          sourcePass.setBindGroup(0, build.resources.bindGroup, [sourceDynamicOffset]);
+          sourcePass.draw(6, 1, 0, 0);
+        }
         sourcePass.end();
 
         const filterOffset = build.filterIndex * VECTOR_TEXT_GPU_UNIFORM_STRIDE;
@@ -4500,9 +4558,9 @@ export class BrushEngine {
           continue;
         }
         const dynamicOffset = uniformIndex * VECTOR_TEXT_GPU_UNIFORM_STRIDE;
-        if (draw.mode === "slug-blur") {
+        if (draw.mode === "slug-blur" || draw.mode === "mesh-blur") {
           if (!blurResources) {
-            throw new Error("Cache GPU del blur testo mancante.");
+            throw new Error("Cache GPU del blur vettoriale mancante.");
           }
           pass.setPipeline(blurCompositePipeline);
           pass.setBindGroup(0, blurResources.compositeBindGroup, [dynamicOffset]);
@@ -4531,9 +4589,25 @@ export class BrushEngine {
           pass.setBindGroup(0, resourcesForDraw.bindGroup, [dynamicOffset]);
           pass.setBindGroup(1, blurResources.innerShadowBindGroup);
           pass.draw(6, 1, 0, 0);
+        } else if (draw.mode === "mesh-inner-shadow-blur") {
+          if (!blurResources) {
+            throw new Error("Cache GPU dell’ombra interna SVG mancante.");
+          }
+          if (resourcesForDraw.kind !== "mesh") {
+            throw new Error("Risorsa mesh incoerente con l’ombra interna SVG.");
+          }
+          if (resourcesForDraw.indexCount === 0) {
+            continue;
+          }
+          pass.setPipeline(meshInnerShadowBlurPipeline);
+          pass.setBindGroup(0, uniformBindGroup, [dynamicOffset]);
+          pass.setBindGroup(1, blurResources.innerShadowBindGroup);
+          pass.setVertexBuffer(0, resourcesForDraw.vertexBuffer);
+          pass.setIndexBuffer(resourcesForDraw.indexBuffer, "uint32");
+          pass.drawIndexed(resourcesForDraw.indexCount, 1, 0, 0, 0);
         } else if (draw.mode === "mesh-direct") {
           if (resourcesForDraw.kind !== "mesh") {
-            throw new Error("Risorsa mesh testo incoerente con la draw call.");
+            throw new Error("Risorsa mesh vettoriale incoerente con la draw call.");
           }
           if (resourcesForDraw.indexCount === 0) {
             continue;
@@ -11602,7 +11676,7 @@ export class BrushEngine {
     let candidateCompositionSegments: readonly MixedSceneCompositionSegment[] = [];
     let activeWorkbenchRestored = false;
     try {
-      if (this.mixedSceneStack?.textCount) {
+      if (this.mixedSceneStack?.vectorCount) {
         candidateCompositionSegments = this.mixedSceneStack.compositionSegments(
           this.layerStack.active.id,
         );
@@ -11868,6 +11942,55 @@ export class BrushEngine {
     return { ...node };
   }
 
+  async addVectorSvgNode(
+    seed: VectorSvgNodeSeed,
+    name?: string,
+  ): Promise<Readonly<VectorSvgNode>> {
+    const node = await this.mutateMixedScenePresentation(
+      (scene) => scene.addSvgAboveSelection(seed, name),
+    );
+    return cloneVectorSvgNode(node);
+  }
+
+  updateVectorSvgNode(
+    id: number,
+    update: Partial<Omit<VectorSvgNode, "id" | "document" | "visible" | "opacity">>,
+  ): Readonly<VectorSvgNode> {
+    const scene = this.requireMixedSceneStack();
+    const selected = scene.selected;
+    if (selected.kind !== "svg" || selected.svgNodeId !== id) {
+      throw new Error("È modificabile soltanto il nodo SVG selezionato.");
+    }
+    const node = scene.updateSvg(id, update);
+    this.publishMixedScene();
+    this.publishStats();
+    return cloneVectorSvgNode(node);
+  }
+
+  async setVectorSvgNodeVisibility(id: number, visible: boolean): Promise<boolean> {
+    return this.mutateMixedScenePresentation(
+      (scene) => scene.setSvgVisibility(id, Boolean(visible)),
+    );
+  }
+
+  async setVectorSvgNodeOpacity(id: number, opacity: number): Promise<boolean> {
+    return this.mutateMixedScenePresentation(
+      (scene) => scene.setSvgOpacity(id, opacity),
+    );
+  }
+
+  async moveVectorSvgNode(id: number, delta: -1 | 1): Promise<boolean> {
+    return this.mutateMixedScenePresentation(
+      (scene) => scene.moveSvg(id, delta),
+    );
+  }
+
+  async deleteVectorSvgNode(id: number): Promise<Readonly<VectorSvgNode>> {
+    const removed = await this.mutateMixedScenePresentation(
+      (scene) => scene.deleteSvg(id, this.layerStack.active.id),
+    );
+    return cloneVectorSvgNode(removed);
+  }
   async setVectorTextNodeVisibility(id: number, visible: boolean): Promise<boolean> {
     return this.mutateMixedScenePresentation(
       (scene) => scene.setTextVisibility(id, Boolean(visible)),
@@ -13160,7 +13283,7 @@ export class BrushEngine {
     this.mergedBelow = null;
     this.mergedAbove = null;
     this.mixedSceneRasterSegments = [];
-    this.mixedSceneCompositionSegments = this.mixedSceneStack?.textCount
+    this.mixedSceneCompositionSegments = this.mixedSceneStack?.vectorCount
       ? this.mixedSceneStack.compositionSegments(this.layerStack.active.id)
       : [];
     this.normalPipeline = normalPipeline;
@@ -14694,6 +14817,21 @@ export class BrushEngine {
       },
       primitive: { topology: "triangle-list", cullMode: "none" },
     });
+    this.vectorTextGpuMeshBlurMaskPipeline = this.device.createRenderPipeline({
+      label: "Vector mesh union mask for GPU blur",
+      layout: textLayout,
+      vertex: {
+        module: this.vectorTextGpuShaderModule,
+        entryPoint: "blurMaskVertexMain",
+        buffers: vertex.buffers,
+      },
+      fragment: {
+        module: this.vectorTextGpuShaderModule,
+        entryPoint: "blurMaskFragmentMain",
+        targets: [{ format: VECTOR_TEXT_GPU_BLUR_FORMAT }],
+      },
+      primitive: { topology: "triangle-list", cullMode: "none" },
+    });
 
     const blurFilterLayout = this.device.createPipelineLayout({
       label: "Vector text GPU Gaussian filter pipeline layout",
@@ -14781,6 +14919,30 @@ export class BrushEngine {
       fragment: {
         module: this.vectorTextGpuInnerShadowShaderModule,
         entryPoint: "innerShadowBlurFragmentMain",
+        targets: [
+          { format: VECTOR_TEXT_GPU_TARGET_FORMAT, blend: sourceOverBlend },
+        ],
+      },
+      primitive: { topology: "triangle-list", cullMode: "none" },
+      multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
+    });
+    this.vectorTextGpuMeshInnerShadowBlurPipeline = this.device.createRenderPipeline({
+      label: "Vector SVG inner shadow mesh clip MSAA4 source-over",
+      layout: this.device.createPipelineLayout({
+        label: "Vector SVG inner shadow mesh pipeline layout",
+        bindGroupLayouts: [
+          this.vectorTextGpuUniformBindGroupLayout,
+          this.vectorTextGpuInnerShadowBindGroupLayout,
+        ],
+      }),
+      vertex: {
+        module: this.vectorTextGpuShaderModule,
+        entryPoint: "meshInnerShadowVertexMain",
+        buffers: vertex.buffers,
+      },
+      fragment: {
+        module: this.vectorTextGpuShaderModule,
+        entryPoint: "meshInnerShadowFragmentMain",
         targets: [
           { format: VECTOR_TEXT_GPU_TARGET_FORMAT, blend: sourceOverBlend },
         ],
@@ -14917,7 +15079,7 @@ export class BrushEngine {
   }
 
   private ensureMixedSceneLinearTexture(width: number, height: number): void {
-    if (!this.mixedSceneStack?.textCount) {
+    if (!this.mixedSceneStack?.vectorCount) {
       this.mixedSceneLinearTexture?.destroy();
       this.mixedSceneLinearTexture = null;
       this.mixedSceneLinearView = null;
@@ -15011,7 +15173,7 @@ export class BrushEngine {
     const textPipeline = this.mixedSceneTextSegmentPipeline;
     const presentPipeline = this.mixedScenePresentPipeline;
     if (
-      !this.mixedSceneStack?.textCount
+      !this.mixedSceneStack?.vectorCount
       || !linearView
       || !presentBindGroup
       || !clearPipeline
@@ -17853,7 +18015,7 @@ export class BrushEngine {
           }
           const lod0FullRebuildCpuEncodingStart = requiresFullRebuild
             && displaySelectedMipLevel === 0 ? performance.now() : 0;
-          if (this.mixedSceneStack?.textCount) {
+          if (this.mixedSceneStack?.vectorCount) {
             const activePresentation: MixedSceneActivePresentation = rasterStrokeActive
               ? { kind: "raster-stroke", sourceMode: "light-glaze" }
               : session.hasContent
@@ -18038,7 +18200,7 @@ export class BrushEngine {
           }
           const lod0FullRebuildCpuEncodingStart = requiresFullRebuild
             && displaySelectedMipLevel === 0 ? performance.now() : 0;
-          if (this.mixedSceneStack?.textCount) {
+          if (this.mixedSceneStack?.vectorCount) {
             this.encodeMixedSceneSegmentedPresentation(
               encoder,
               presentationDirtyRect,
@@ -18559,7 +18721,7 @@ export class BrushEngine {
         }
         const lod0FullRebuildCpuEncodingStart = requiresFullRebuild
           && displaySelectedMipLevel === 0 ? performance.now() : 0;
-        if (this.mixedSceneStack?.textCount) {
+        if (this.mixedSceneStack?.vectorCount) {
           const activePresentation: MixedSceneActivePresentation = rasterStrokeActive
             ? {
               kind: "raster-stroke",

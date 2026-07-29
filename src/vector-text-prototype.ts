@@ -50,6 +50,31 @@ export interface VectorTextGpuMeshDraw extends VectorTextGpuDrawBase {
   readonly mesh: VectorTextGpuMeshData;
 }
 
+export interface VectorTextGpuMeshBlurDraw extends VectorTextGpuDrawBase {
+  readonly mode: "mesh-blur";
+  readonly mesh: VectorTextGpuMeshData;
+  readonly blurKey: string;
+  readonly blurBounds: readonly [number, number, number, number];
+  readonly blurWidth: number;
+  readonly blurHeight: number;
+  readonly blurScale: number;
+  readonly blurSigmaPixels: number;
+  readonly blurRadius: number;
+}
+
+export interface VectorTextGpuMeshInnerShadowBlurDraw extends VectorTextGpuDrawBase {
+  readonly mode: "mesh-inner-shadow-blur";
+  readonly mesh: VectorTextGpuMeshData;
+  readonly blurKey: string;
+  readonly blurBounds: readonly [number, number, number, number];
+  readonly blurWidth: number;
+  readonly blurHeight: number;
+  readonly blurScale: number;
+  readonly blurSigmaPixels: number;
+  readonly blurRadius: number;
+  readonly sampleOffsetX: number;
+  readonly sampleOffsetY: number;
+}
 export interface VectorTextGpuSlugDraw extends VectorTextGpuDrawBase {
   readonly mode: "slug-direct";
   readonly slug: VectorTextSlugData;
@@ -90,12 +115,16 @@ export interface VectorTextGpuSlugInnerShadowBlurDraw
   readonly sampleOffsetY: number;
 }
 
-export type VectorTextGpuSlugBlurSourceDraw =
+export type VectorTextGpuBlurSourceDraw =
+  | VectorTextGpuMeshBlurDraw
+  | VectorTextGpuMeshInnerShadowBlurDraw
   | VectorTextGpuSlugBlurDraw
   | VectorTextGpuSlugInnerShadowBlurDraw;
 
 export type VectorTextGpuDraw =
   | VectorTextGpuMeshDraw
+  | VectorTextGpuMeshBlurDraw
+  | VectorTextGpuMeshInnerShadowBlurDraw
   | VectorTextGpuSlugDraw
   | VectorTextGpuSlugBlurDraw
   | VectorTextGpuSlugInnerShadowDirectDraw

@@ -6,6 +6,10 @@ import {
   type VectorTextDistortPoints,
   type VectorTextTransformType,
 } from "./vector-text-transform.ts";
+import {
+  cloneVectorSvgDocument,
+  type VectorSvgDocument,
+} from "./vector-svg-import.ts";
 
 export const VECTOR_TEXT_OUTLINE_STRATEGY =
   "webgpu-clipper64-worker-outside-offset-aa-overlap1px-same-color-fused-round-bevel-miter4-v6" as const;
@@ -182,9 +186,10 @@ export function vectorTextInnerShadowLocalVector(
 }
 
 export const MIXED_SCENE_STACK_STRATEGY =
-  "heterogeneous-bottom-up-raster-text-segmented-composition-selected-insertion-v3" as const;
+  "heterogeneous-bottom-up-raster-vector-segmented-composition-selected-insertion-v4" as const;
 
 export const VECTOR_TEXT_NODE_MAXIMUM = 64;
+export const VECTOR_SVG_NODE_MAXIMUM = 64;
 
 export type MixedSceneItem =
   | {
@@ -196,7 +201,15 @@ export type MixedSceneItem =
     readonly key: `text:${number}`;
     readonly kind: "text";
     readonly textNodeId: number;
+  }
+  | {
+    readonly key: `svg:${number}`;
+    readonly kind: "svg";
+    readonly svgNodeId: number;
   };
+
+export type MixedSceneVectorItem = Exclude<MixedSceneItem, { readonly kind: "raster" }>;
+
 
 export interface VectorTextNode {
   readonly id: number;
@@ -276,6 +289,78 @@ export interface VectorTextNodeSeed {
   rotation: number;
 }
 
+export interface VectorSvgNode {
+  readonly id: number;
+  name: string;
+  visible: boolean;
+  opacity: number;
+  document: VectorSvgDocument;
+  paintColors: string[];
+  outlineWidth: number;
+  outlineColor: string;
+  outlineJoin: VectorTextOutlineJoin;
+  blockShadowEnabled: boolean;
+  blockShadowColor: string;
+  blockShadowOpacity: number;
+  blockShadowOffset: number;
+  blockShadowAngle: number;
+  blockShadowOutlineWidth: number;
+  singleShadowEnabled: boolean;
+  singleShadowColor: string;
+  singleShadowOpacity: number;
+  singleShadowOffset: number;
+  singleShadowAngle: number;
+  singleShadowBlur: number;
+  innerShadowEnabled: boolean;
+  innerShadowColor: string;
+  innerShadowOpacity: number;
+  innerShadowOffset: number;
+  innerShadowAngle: number;
+  innerShadowBlur: number;
+  x: number;
+  y: number;
+  scale: number;
+  rotation: number;
+}
+
+export interface VectorSvgNodeSeed {
+  document: VectorSvgDocument;
+  paintColors?: readonly string[];
+  outlineWidth?: number;
+  outlineColor?: string;
+  outlineJoin?: VectorTextOutlineJoin;
+  blockShadowEnabled?: boolean;
+  blockShadowColor?: string;
+  blockShadowOpacity?: number;
+  blockShadowOffset?: number;
+  blockShadowAngle?: number;
+  blockShadowOutlineWidth?: number;
+  singleShadowEnabled?: boolean;
+  singleShadowColor?: string;
+  singleShadowOpacity?: number;
+  singleShadowOffset?: number;
+  singleShadowAngle?: number;
+  singleShadowBlur?: number;
+  innerShadowEnabled?: boolean;
+  innerShadowColor?: string;
+  innerShadowOpacity?: number;
+  innerShadowOffset?: number;
+  innerShadowAngle?: number;
+  innerShadowBlur?: number;
+  x: number;
+  y: number;
+  scale: number;
+  rotation: number;
+}
+
+export function cloneVectorSvgNode(node: Readonly<VectorSvgNode>): VectorSvgNode {
+  return {
+    ...node,
+    document: cloneVectorSvgDocument(node.document),
+    paintColors: [...node.paintColors],
+  };
+}
+
 export function cloneVectorTextNode(
   node: Readonly<VectorTextNode>,
 ): VectorTextNode {
@@ -305,14 +390,16 @@ export type MixedSceneCompositionSegment =
   | {
     readonly key: `text-run:${string}`;
     readonly kind: "text-run";
-    readonly items: readonly (MixedSceneItem & { kind: "text" })[];
+    readonly items: readonly MixedSceneVectorItem[];
   };
 
 export interface MixedSceneState {
   readonly items: readonly MixedSceneItem[];
   readonly textNodes: readonly VectorTextNode[];
   readonly selectedKey: MixedSceneItem["key"];
+  readonly svgNodes: readonly VectorSvgNode[];
   readonly nextTextNodeId: number;
+  readonly nextSvgNodeId: number;
 }
 
 function rasterItem(rasterLayerId: number): MixedSceneItem & { kind: "raster" } {
@@ -331,6 +418,14 @@ function textItem(textNodeId: number): MixedSceneItem & { kind: "text" } {
   };
 }
 
+function svgItem(svgNodeId: number): MixedSceneItem & { kind: "svg" } {
+  return {
+    key: `svg:${svgNodeId}`,
+    kind: "svg",
+    svgNodeId,
+  };
+}
+
 function clampOpacity(opacity: number): number {
   return Math.min(1, Math.max(0, Number.isFinite(opacity) ? opacity : 1));
 }
@@ -341,8 +436,10 @@ export class MixedSceneStack {
   private readonly orderedItems: MixedSceneItem[];
   private readonly textNodes = new Map<number, VectorTextNode>();
   private selectedKey: MixedSceneItem["key"];
+  private readonly svgNodes = new Map<number, VectorSvgNode>();
   private nextTextNodeId = 1;
 
+  private nextSvgNodeId = 1;
   constructor(rasterLayerIds: readonly number[]) {
     if (rasterLayerIds.length === 0) {
       throw new Error("La scena mista richiede almeno un livello raster.");
@@ -370,6 +467,14 @@ export class MixedSceneStack {
     return this.textNodes.size;
   }
 
+  get svgCount(): number {
+    return this.svgNodes.size;
+  }
+
+  get vectorCount(): number {
+    return this.textNodes.size + this.svgNodes.size;
+  }
+
   itemByKey(key: MixedSceneItem["key"]): MixedSceneItem {
     const item = this.orderedItems.find((candidate) => candidate.key === key);
     if (!item) {
@@ -386,6 +491,14 @@ export class MixedSceneStack {
     return node;
   }
 
+  svgById(id: number): VectorSvgNode {
+    const node = this.svgNodes.get(id);
+    if (!node) {
+      throw new Error(`SVG ${id} inesistente.`);
+    }
+    return node;
+  }
+
   indexOfKey(key: MixedSceneItem["key"]): number {
     return this.orderedItems.findIndex((item) => item.key === key);
   }
@@ -394,11 +507,12 @@ export class MixedSceneStack {
     return {
       items: this.orderedItems.map((item) => ({ ...item })),
       textNodes: [...this.textNodes.values()].map(cloneVectorTextNode),
+      svgNodes: [...this.svgNodes.values()].map(cloneVectorSvgNode),
       selectedKey: this.selectedKey,
       nextTextNodeId: this.nextTextNodeId,
+      nextSvgNodeId: this.nextSvgNodeId,
     };
   }
-
   restoreState(state: MixedSceneState): void {
     this.orderedItems.splice(
       0,
@@ -418,8 +532,13 @@ export class MixedSceneStack {
         distortPoints: normalizeVectorTextDistortPoints(node.distortPoints),
       });
     }
+    this.svgNodes.clear();
+    for (const node of state.svgNodes) {
+      this.svgNodes.set(node.id, cloneVectorSvgNode(node));
+    }
     this.selectedKey = state.selectedKey;
     this.nextTextNodeId = state.nextTextNodeId;
+    this.nextSvgNodeId = state.nextSvgNodeId;
   }
 
   select(key: MixedSceneItem["key"]): boolean {
@@ -504,6 +623,70 @@ export class MixedSceneStack {
     return node;
   }
 
+  addSvgAboveSelection(seed: VectorSvgNodeSeed, name?: string): VectorSvgNode {
+    if (this.svgNodes.size >= VECTOR_SVG_NODE_MAXIMUM) {
+      throw new Error(`Massimo ${VECTOR_SVG_NODE_MAXIMUM} SVG raggiunto.`);
+    }
+    const id = this.nextSvgNodeId;
+    this.nextSvgNodeId += 1;
+    const documentValue = cloneVectorSvgDocument(seed.document);
+    const paintColors = documentValue.paints.map((paint, index) => (
+      seed.paintColors?.[index] ?? paint.color
+    ));
+    const node: VectorSvgNode = {
+      id,
+      name: name?.trim() || documentValue.sourceName || `SVG ${id}`,
+      visible: true,
+      opacity: 1,
+      document: documentValue,
+      paintColors,
+      outlineWidth: normalizeVectorTextOutlineWidth(seed.outlineWidth ?? 0),
+      outlineColor: seed.outlineColor ?? "#111111",
+      outlineJoin: normalizeVectorTextOutlineJoin(seed.outlineJoin ?? "round"),
+      blockShadowEnabled: seed.blockShadowEnabled === true,
+      blockShadowColor: seed.blockShadowColor ?? "#727272",
+      blockShadowOpacity: normalizeVectorTextBlockShadowOpacity(seed.blockShadowOpacity ?? 1),
+      blockShadowOffset: normalizeVectorTextBlockShadowOffset(seed.blockShadowOffset ?? 23),
+      blockShadowAngle: normalizeVectorTextBlockShadowAngle(seed.blockShadowAngle ?? -104),
+      blockShadowOutlineWidth: normalizeVectorTextOutlineWidth(seed.blockShadowOutlineWidth ?? 0),
+      singleShadowEnabled: seed.singleShadowEnabled === true,
+      singleShadowColor: seed.singleShadowColor ?? "#000000",
+      singleShadowOpacity: normalizeVectorTextSingleShadowOpacity(seed.singleShadowOpacity ?? 0.55),
+      singleShadowOffset: normalizeVectorTextSingleShadowOffset(seed.singleShadowOffset ?? 24),
+      singleShadowAngle: normalizeVectorTextSingleShadowAngle(seed.singleShadowAngle ?? -135),
+      singleShadowBlur: normalizeVectorTextSingleShadowBlur(seed.singleShadowBlur ?? 12),
+      innerShadowEnabled: seed.innerShadowEnabled === true,
+      innerShadowColor: seed.innerShadowColor ?? "#000000",
+      innerShadowOpacity: normalizeVectorTextInnerShadowOpacity(seed.innerShadowOpacity ?? 0.55),
+      innerShadowOffset: normalizeVectorTextInnerShadowOffset(seed.innerShadowOffset ?? 12),
+      innerShadowAngle: normalizeVectorTextInnerShadowAngle(seed.innerShadowAngle ?? -135),
+      innerShadowBlur: normalizeVectorTextInnerShadowBlur(seed.innerShadowBlur ?? 12),
+      x: seed.x,
+      y: seed.y,
+      scale: seed.scale,
+      rotation: seed.rotation,
+    };
+    const selectedIndex = this.indexOfKey(this.selectedKey);
+    this.orderedItems.splice(selectedIndex + 1, 0, svgItem(id));
+    this.svgNodes.set(id, node);
+    this.selectedKey = `svg:${id}`;
+    return node;
+  }
+
+  deleteSvg(id: number, fallbackRasterLayerId: number): VectorSvgNode {
+    const node = this.svgById(id);
+    const key = `svg:${id}` as const;
+    const index = this.indexOfKey(key);
+    if (index < 0) throw new Error(`Elemento SVG ${id} assente dalla pila.`);
+    this.orderedItems.splice(index, 1);
+    this.svgNodes.delete(id);
+    if (this.selectedKey === key) {
+      const fallbackKey = `raster:${fallbackRasterLayerId}` as const;
+      this.itemByKey(fallbackKey);
+      this.selectedKey = fallbackKey;
+    }
+    return node;
+  }
   deleteText(id: number, fallbackRasterLayerId: number): VectorTextNode {
     const node = this.textById(id);
     const key = `text:${id}` as const;
@@ -726,6 +909,72 @@ export class MixedSceneStack {
     return node;
   }
 
+  moveSvg(id: number, delta: -1 | 1): boolean {
+    this.svgById(id);
+    const key = `svg:${id}` as const;
+    const from = this.indexOfKey(key);
+    const to = from + delta;
+    if (to < 0 || to >= this.orderedItems.length) return false;
+    const [item] = this.orderedItems.splice(from, 1);
+    this.orderedItems.splice(to, 0, item);
+    return true;
+  }
+
+  setSvgVisibility(id: number, visible: boolean): boolean {
+    const node = this.svgById(id);
+    if (node.visible === visible) return false;
+    node.visible = visible;
+    return true;
+  }
+
+  setSvgOpacity(id: number, opacity: number): boolean {
+    const node = this.svgById(id);
+    const normalized = clampOpacity(opacity);
+    if (node.opacity === normalized) return false;
+    node.opacity = normalized;
+    return true;
+  }
+
+  updateSvg(
+    id: number,
+    update: Partial<Omit<VectorSvgNode, "id" | "document">>,
+  ): VectorSvgNode {
+    const node = this.svgById(id);
+    if (update.name !== undefined) node.name = update.name;
+    if (update.visible !== undefined) node.visible = update.visible;
+    if (update.opacity !== undefined) node.opacity = clampOpacity(update.opacity);
+    if (update.paintColors !== undefined) {
+      node.paintColors = node.document.paints.map((paint, index) => (
+        update.paintColors?.[index] ?? node.paintColors[index] ?? paint.color
+      ));
+    }
+    if (update.outlineWidth !== undefined) node.outlineWidth = normalizeVectorTextOutlineWidth(update.outlineWidth);
+    if (update.outlineColor !== undefined) node.outlineColor = update.outlineColor;
+    if (update.outlineJoin !== undefined) node.outlineJoin = normalizeVectorTextOutlineJoin(update.outlineJoin);
+    if (update.blockShadowEnabled !== undefined) node.blockShadowEnabled = update.blockShadowEnabled;
+    if (update.blockShadowColor !== undefined) node.blockShadowColor = update.blockShadowColor;
+    if (update.blockShadowOpacity !== undefined) node.blockShadowOpacity = normalizeVectorTextBlockShadowOpacity(update.blockShadowOpacity);
+    if (update.blockShadowOffset !== undefined) node.blockShadowOffset = normalizeVectorTextBlockShadowOffset(update.blockShadowOffset);
+    if (update.blockShadowAngle !== undefined) node.blockShadowAngle = normalizeVectorTextBlockShadowAngle(update.blockShadowAngle);
+    if (update.blockShadowOutlineWidth !== undefined) node.blockShadowOutlineWidth = normalizeVectorTextOutlineWidth(update.blockShadowOutlineWidth);
+    if (update.singleShadowEnabled !== undefined) node.singleShadowEnabled = update.singleShadowEnabled;
+    if (update.singleShadowColor !== undefined) node.singleShadowColor = update.singleShadowColor;
+    if (update.singleShadowOpacity !== undefined) node.singleShadowOpacity = normalizeVectorTextSingleShadowOpacity(update.singleShadowOpacity);
+    if (update.singleShadowOffset !== undefined) node.singleShadowOffset = normalizeVectorTextSingleShadowOffset(update.singleShadowOffset);
+    if (update.singleShadowAngle !== undefined) node.singleShadowAngle = normalizeVectorTextSingleShadowAngle(update.singleShadowAngle);
+    if (update.singleShadowBlur !== undefined) node.singleShadowBlur = normalizeVectorTextSingleShadowBlur(update.singleShadowBlur);
+    if (update.innerShadowEnabled !== undefined) node.innerShadowEnabled = update.innerShadowEnabled;
+    if (update.innerShadowColor !== undefined) node.innerShadowColor = update.innerShadowColor;
+    if (update.innerShadowOpacity !== undefined) node.innerShadowOpacity = normalizeVectorTextInnerShadowOpacity(update.innerShadowOpacity);
+    if (update.innerShadowOffset !== undefined) node.innerShadowOffset = normalizeVectorTextInnerShadowOffset(update.innerShadowOffset);
+    if (update.innerShadowAngle !== undefined) node.innerShadowAngle = normalizeVectorTextInnerShadowAngle(update.innerShadowAngle);
+    if (update.innerShadowBlur !== undefined) node.innerShadowBlur = normalizeVectorTextInnerShadowBlur(update.innerShadowBlur);
+    if (update.x !== undefined) node.x = update.x;
+    if (update.y !== undefined) node.y = update.y;
+    if (update.scale !== undefined) node.scale = update.scale;
+    if (update.rotation !== undefined) node.rotation = update.rotation;
+    return node;
+  }
   partitionAroundRaster(activeRasterLayerId: number): MixedScenePartition {
     const key = `raster:${activeRasterLayerId}` as const;
     const index = this.indexOfKey(key);
@@ -757,7 +1006,7 @@ export class MixedSceneStack {
 
     const segments: MixedSceneCompositionSegment[] = [];
     let rasterRun: (MixedSceneItem & { kind: "raster" })[] = [];
-    let textRun: (MixedSceneItem & { kind: "text" })[] = [];
+    let textRun: MixedSceneVectorItem[] = [];
     const flushRasterRun = () => {
       if (rasterRun.length === 0) {
         return;
@@ -777,7 +1026,7 @@ export class MixedSceneStack {
       const items = textRun;
       textRun = [];
       segments.push({
-        key: `text-run:${items.map((item) => item.textNodeId).join(",")}`,
+        key: `text-run:${items.map((item) => item.key).join(",")}`,
         kind: "text-run",
         items,
       });

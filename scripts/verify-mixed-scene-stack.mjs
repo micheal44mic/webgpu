@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import {
   MIXED_SCENE_STACK_STRATEGY,
   MixedSceneStack,
+  VECTOR_SVG_NODE_MAXIMUM,
   VECTOR_TEXT_NODE_MAXIMUM,
 } from "../src/mixed-scene-stack.ts";
 import {
@@ -48,6 +49,46 @@ const seed = (text = "STREETWEAR") => ({
   scale: 1,
   rotation: 0,
 });
+const svgDocument = (sourceName = "fixture.svg") => {
+  const path = {
+    verbs: new Uint8Array([0, 1, 1, 1, 4]),
+    coords: new Float64Array([0, 0, 10, 0, 10, 10, 0, 10]),
+    contourOffsets: new Uint32Array([0]),
+    fillRule: 0,
+  };
+  return {
+    strategy: "sanitized-semantic-svg-solid-paints-worker-lod-mesh-webgpu-v1",
+    sourceName,
+    sourceBytes: 128,
+    sourceHash: `hash:${sourceName}`,
+    sourceRevision: `source:${sourceName}`,
+    viewBox: [0, 0, 10, 10],
+    bounds: { left: 0, top: 0, right: 10, bottom: 10 },
+    width: 10,
+    height: 10,
+    paints: [{
+      id: 0,
+      color: "#ff5500",
+      opacity: 1,
+      fillRule: 0,
+      path,
+      revision: `paint:${sourceName}`,
+    }],
+    silhouettePath: path,
+    silhouetteRevision: `silhouette:${sourceName}`,
+    elementCount: 1,
+    contourCount: 1,
+    commandCount: 5,
+    logicalVectorBytes: 128,
+  };
+};
+const svgSeed = (sourceName = "fixture.svg") => ({
+  document: svgDocument(sourceName),
+  x: 2048,
+  y: 2048,
+  scale: 1,
+  rotation: 0,
+});
 const flattenedCompositionKeys = (segments) => segments.flatMap((segment) => {
   if (segment.kind === "active-raster") {
     return [segment.item.key];
@@ -78,7 +119,7 @@ const assertCompositionPreservesDocumentOrder = (stack, activeRasterLayerId) => 
 
 assert.equal(
   MIXED_SCENE_STACK_STRATEGY,
-  "heterogeneous-bottom-up-raster-text-segmented-composition-selected-insertion-v3",
+  "heterogeneous-bottom-up-raster-vector-segmented-composition-selected-insertion-v4",
 );
 
 {
@@ -139,12 +180,12 @@ assert.equal(
   const activeOneSegments = assertCompositionPreservesDocumentOrder(stack, 1);
   assert.deepEqual(
     activeOneSegments.map((segment) => segment.key),
-    ["text-run:1", "active-raster:1", "raster-run:2", "text-run:2"],
+    ["text-run:text:1", "active-raster:1", "raster-run:2", "text-run:text:2"],
   );
   const activeTwoSegments = assertCompositionPreservesDocumentOrder(stack, 2);
   assert.deepEqual(
     activeTwoSegments.map((segment) => segment.key),
-    ["text-run:1", "raster-run:1", "active-raster:2", "text-run:2"],
+    ["text-run:text:1", "raster-run:1", "active-raster:2", "text-run:text:2"],
   );
 
   stack.updateText(1, {
@@ -250,6 +291,64 @@ assert.equal(
 }
 
 {
+  const stack = new MixedSceneStack([1]);
+  const svg = stack.addSvgAboveSelection(svgSeed("logo.svg"));
+  assert.equal(svg.id, 1);
+  assert.equal(svg.name, "logo.svg");
+  assert.equal(stack.svgCount, 1);
+  assert.equal(stack.vectorCount, 1);
+  assert.deepEqual(stack.items.map((item) => item.key), ["raster:1", "svg:1"]);
+  assert.equal(stack.selected.key, "svg:1");
+  assert.equal(svg.paintColors[0], "#ff5500");
+  assert.equal(svg.outlineWidth, 0);
+  assert.equal(svg.blockShadowEnabled, false);
+
+  stack.updateSvg(1, {
+    paintColors: ["#123456"],
+    outlineWidth: 999,
+    blockShadowEnabled: true,
+    blockShadowOffset: 999,
+    singleShadowEnabled: true,
+    singleShadowBlur: 999,
+    innerShadowEnabled: true,
+    innerShadowBlur: 999,
+    opacity: 2,
+  });
+  assert.equal(stack.svgById(1).paintColors[0], "#123456");
+  assert.equal(stack.svgById(1).outlineWidth, 100);
+  assert.equal(stack.svgById(1).blockShadowEnabled, true);
+  assert.equal(stack.svgById(1).blockShadowOffset, 100);
+  assert.equal(stack.svgById(1).singleShadowBlur, 300);
+  assert.equal(stack.svgById(1).innerShadowBlur, 300);
+  assert.equal(stack.svgById(1).opacity, 1);
+
+  const captured = stack.captureState();
+  stack.updateSvg(1, { paintColors: ["#abcdef"], x: 100 });
+  stack.restoreState(captured);
+  assert.equal(stack.svgById(1).paintColors[0], "#123456");
+  assert.equal(stack.svgById(1).x, 2048);
+  assert.notEqual(stack.svgById(1).document, captured.svgNodes[0].document);
+
+  stack.addTextAboveSelection(seed("ABOVE SVG"));
+  assert.equal(stack.vectorCount, 2);
+  assert.deepEqual(
+    stack.compositionSegments(1).map((segment) => segment.key),
+    ["active-raster:1", "text-run:svg:1,text:1"],
+  );
+  assert.equal(stack.moveSvg(1, 1), true);
+  assert.deepEqual(stack.items.map((item) => item.key), ["raster:1", "text:1", "svg:1"]);
+  assert.equal(stack.setSvgVisibility(1, false), true);
+  assert.equal(stack.setSvgVisibility(1, false), false);
+  assert.equal(stack.setSvgOpacity(1, -1), true);
+  assert.equal(stack.svgById(1).opacity, 0);
+  stack.select("svg:1");
+  const deleted = stack.deleteSvg(1, 1);
+  assert.equal(deleted.id, 1);
+  assert.equal(stack.selected.key, "raster:1");
+  assert.equal(stack.svgCount, 0);
+}
+
+{
   assert.throws(() => new MixedSceneStack([]), /almeno un livello raster/);
   assert.throws(() => new MixedSceneStack([1, 1]), /univoci/);
   const stack = new MixedSceneStack([1]);
@@ -290,6 +389,15 @@ assert.equal(
   }
   assert.equal(stack.textCount, VECTOR_TEXT_NODE_MAXIMUM);
   assert.throws(() => stack.addTextAboveSelection(seed("overflow")), /Massimo/);
+}
+
+{
+  const stack = new MixedSceneStack([1]);
+  for (let index = 0; index < VECTOR_SVG_NODE_MAXIMUM; index += 1) {
+    stack.addSvgAboveSelection(svgSeed(`S${index}.svg`));
+  }
+  assert.equal(stack.svgCount, VECTOR_SVG_NODE_MAXIMUM);
+  assert.throws(() => stack.addSvgAboveSelection(svgSeed("overflow.svg")), /Massimo/);
 }
 
 {
@@ -340,4 +448,4 @@ assert.equal(
   assert.match(engineSource, /resetActiveLayerForMemoryBenchmark\(\)/);
 }
 
-console.log("Mixed raster/text scene stack verification passed.");
+console.log("Mixed raster/vector scene stack verification passed.");

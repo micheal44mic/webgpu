@@ -3330,7 +3330,7 @@ function renderMixedSceneList(
   const locked = interactionLocked() || layerSwitching;
   addLayerButton.disabled = locked || stats.layers.length >= 16;
   const selectedItem = scene.items.find((item) => item.key === scene.selectedKey);
-  const textSelected = selectedItem?.kind === "text";
+  const textSelected = selectedItem?.kind !== "raster";
   const ordered = [...scene.items].reverse();
   const rowsMatch = layerList.childElementCount === ordered.length
     && ordered.every(
@@ -3356,7 +3356,7 @@ function renderMixedSceneList(
     const output = row.querySelector<HTMLOutputElement>("output")!;
     const selected = item.key === scene.selectedKey;
 
-    row.className = `layer-row ${item.kind === "text" ? "is-text-node" : "is-raster-node"}`;
+    row.className = `layer-row ${item.kind === "raster" ? "is-raster-node" : "is-text-node"}`;
     select.disabled = locked;
     select.setAttribute("aria-current", String(selected));
 
@@ -3412,7 +3412,7 @@ function renderMixedSceneList(
       range.onchange = () => {
         void changeLayerOpacity(item.rasterLayerIndex, Number(range.value) / 100);
       };
-    } else {
+    } else if (item.kind === "text") {
       const node = item.textNode;
       visibility.disabled = locked;
       visibility.textContent = node.visible ? "◆" : "◇";
@@ -3457,7 +3457,49 @@ function renderMixedSceneList(
       range.onchange = () => {
         void changeVectorTextOpacity(node.id, Number(range.value) / 100);
       };
-    }
+    } else {
+      const node = item.svgNode;
+      visibility.disabled = locked;
+      visibility.textContent = node.visible ? "◆" : "◇";
+      visibility.setAttribute("aria-pressed", String(node.visible));
+      visibility.setAttribute(
+        "aria-label",
+        `${node.visible ? "Nascondi" : "Mostra"} ${node.name}`,
+      );
+      visibility.onclick = () => {
+        void changeVectorSvgVisibility(node.id, !node.visible);
+      };
+
+      name.textContent = node.name;
+      const sourceMiB = node.document.sourceBytes / (1024 * 1024);
+      const outlineHint = node.outlineWidth > 0
+        ? ` · traccia ${Math.round(node.outlineWidth)} px`
+        : "";
+      const blockShadowHint = node.blockShadowEnabled
+        ? ` · Block Shadow ${Math.round(node.blockShadowOffset)}`
+        : "";
+      const singleShadowHint = node.singleShadowEnabled
+        ? ` · ombra ${Math.round(node.singleShadowBlur)}`
+        : "";
+      const innerShadowHint = node.innerShadowEnabled
+        ? ` · ombra interna ${Math.round(node.innerShadowBlur)}`
+        : "";
+      hint.textContent = `SVG vettoriale · ${node.document.paints.length} colori · `
+        + `${sourceMiB.toFixed(3)} MiB sorgente`
+        + `${outlineHint}${blockShadowHint}${singleShadowHint}${innerShadowHint}`;
+      select.title = "Nodo SVG semantico GPU: colori ed effetti restano modificabili.";
+      select.onclick = () => {
+        void selectMixedSceneItem(item.key);
+      };
+
+      range.disabled = locked;
+      range.value = String(Math.round(node.opacity * 100));
+      range.setAttribute("aria-label", `Opacità ${node.name}`);
+      output.value = `${range.value}%`;
+      range.oninput = () => { output.value = `${range.value}%`; };
+      range.onchange = () => {
+        void changeVectorSvgOpacity(node.id, Number(range.value) / 100);
+      };    }
   });
 }
 
@@ -3501,6 +3543,41 @@ async function changeVectorTextOpacity(id: number, opacity: number): Promise<voi
   }
 }
 
+async function changeVectorSvgVisibility(id: number, visible: boolean): Promise<void> {
+  if (layerSwitching || interactionLocked()) return;
+  layerSwitching = true;
+  updateHistoryControls();
+  try {
+    await engine.setVectorSvgNodeVisibility(id, visible);
+    layerSwitchResult.textContent = visible ? "SVG mostrato." : "SVG nascosto.";
+  } catch (error) {
+    layerSwitchResult.textContent = error instanceof Error
+      ? error.message
+      : "Visibilità SVG non aggiornata.";
+  } finally {
+    layerSwitching = false;
+    updateHistoryControls();
+    updateStats(engine.getStats());
+  }
+}
+
+async function changeVectorSvgOpacity(id: number, opacity: number): Promise<void> {
+  if (layerSwitching || interactionLocked()) return;
+  layerSwitching = true;
+  updateHistoryControls();
+  try {
+    await engine.setVectorSvgNodeOpacity(id, opacity);
+    layerSwitchResult.textContent = `Opacità SVG ${Math.round(opacity * 100)}%.`;
+  } catch (error) {
+    layerSwitchResult.textContent = error instanceof Error
+      ? error.message
+      : "Opacità SVG non aggiornata.";
+  } finally {
+    layerSwitching = false;
+    updateHistoryControls();
+    updateStats(engine.getStats());
+  }
+}
 function renderLayerList(stats: EngineStats): void {
   if (stats.mixedScene) {
     renderMixedSceneList(stats, stats.mixedScene);

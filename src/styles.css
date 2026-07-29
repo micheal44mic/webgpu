@@ -782,6 +782,82 @@ select {
   min-width: 0;
 }
 
+.vector-svg-import-card,
+.vector-svg-selected {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0 13px;
+  padding: 10px;
+  border: 1px solid #303746;
+  border-radius: 10px;
+  background: linear-gradient(145deg, #151b25, #11161e);
+}
+
+.vector-svg-import-card .result,
+.vector-svg-selected .result {
+  margin: 0;
+}
+
+.vector-svg-selected h3 {
+  margin: 0;
+  color: #dce1eb;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.vector-svg-palette {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.vector-svg-color-row {
+  min-width: 0;
+  margin: 0;
+  padding: 7px;
+  border: 1px solid #2d3441;
+  border-radius: 8px;
+  background: #10151d;
+}
+
+.vector-svg-color-row > .vector-svg-color-title {
+  overflow: hidden;
+  color: #aab2c0;
+  font-size: 0.7rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vector-svg-color-row input[type="color"] {
+  width: 42px;
+  min-height: 34px;
+  flex: 0 0 42px;
+}
+
+.vector-svg-color-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.vector-svg-color-row input[type="text"] {
+  width: 0;
+  min-width: 0;
+  height: 34px;
+  flex: 1 1 0;
+  padding: 0 7px;
+  border: 1px solid #343945;
+  border-radius: 7px;
+  background: #11151c;
+  color: #eef1f6;
+  font: 0.7rem/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  text-transform: uppercase;
+}
+
+.vector-svg-color-row input[type="text"][aria-invalid="true"] {
+  border-color: #c25c68;
+}
 /* Prototipo query-gated: sorgente semantica, cache raster solo viewport. */
 #vectorTextPrototypeSection input[type="text"] {
   width: 100%;

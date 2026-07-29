@@ -47,6 +47,9 @@ export interface VectorTextGpuMeshData {
 
 export type VectorTextEffectDescription =
   | {
+      readonly kind: "source-fill";
+    }
+  | {
       readonly kind: "source-outline";
       readonly width: number;
       readonly join: VectorTextOutlineJoin;
@@ -764,7 +767,12 @@ export function triangulateCanonicalVectorTextSet(
       );
     }
     const base = absoluteVertices.length / 2;
-    absoluteVertices.push(...flat);
+    // A complex imported SVG can contain hundreds of thousands of flattened
+    // coordinates. Spreading that array exceeds the JavaScript argument limit
+    // in Chromium and crashes the worker even though the mesh itself is valid.
+    for (const coordinate of flat) {
+      absoluteVertices.push(coordinate);
+    }
     for (const index of localIndices) {
       indices.push(base + index);
     }
@@ -836,7 +844,9 @@ export function compileVectorTextEffect(
     : 0;
 
   let result: CanonicalPolygonSet | null;
-  if (effect.kind === "source-outline") {
+  if (effect.kind === "source-fill") {
+    result = canonicalFill;
+  } else if (effect.kind === "source-outline") {
     result = effect.includeFill === true
       ? buildExpandedVectorTextSet(
         canonicalFill,

@@ -3,7 +3,7 @@ export const VECTOR_TEXT_GPU_RENDER_STRATEGY =
 
 export const VECTOR_TEXT_GPU_TARGET_FORMAT: GPUTextureFormat = "rgba8unorm-srgb";
 export const VECTOR_TEXT_GPU_SAMPLE_COUNT = 4;
-export const VECTOR_TEXT_GPU_UNIFORM_FLOATS = 24;
+export const VECTOR_TEXT_GPU_UNIFORM_FLOATS = 32;
 export const VECTOR_TEXT_GPU_UNIFORM_BYTES = VECTOR_TEXT_GPU_UNIFORM_FLOATS * 4;
 export const VECTOR_TEXT_GPU_UNIFORM_STRIDE = 256;
 export const VECTOR_TEXT_GPU_BLUR_FORMAT: GPUTextureFormat = "r8unorm";
@@ -18,6 +18,8 @@ struct TextUniforms {
   scaleAndLocalOffset: vec4<f32>,
   color: vec4<f32>,
   targetOriginAndSize: vec4<f32>,
+  shapeBounds: vec4<f32>,
+  effectSampleOffset: vec4<f32>,
 };
 
 struct VertexInput {
@@ -65,6 +67,80 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 @fragment
 fn fragmentMain() -> @location(0) vec4<f32> {
   return vec4<f32>(text.color.rgb * text.color.a, text.color.a);
+}
+
+@vertex
+fn blurMaskVertexMain(input: VertexInput) -> VertexOutput {
+  let absoluteLocal = input.localPosition + text.scaleAndLocalOffset.yz;
+  let span = max(text.shapeBounds.zw - text.shapeBounds.xy, vec2<f32>(1.0e-8));
+  let uv = (absoluteLocal - text.shapeBounds.xy) / span;
+  var output: VertexOutput;
+  output.position = vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0);
+  return output;
+}
+
+@fragment
+fn blurMaskFragmentMain() -> @location(0) vec4<f32> {
+  return vec4<f32>(1.0);
+}
+
+struct MeshInnerShadowVertexOutput {
+  @builtin(position) position: vec4<f32>,
+  @location(0) absoluteLocalPosition: vec2<f32>,
+};
+
+@vertex
+fn meshInnerShadowVertexMain(input: VertexInput) -> MeshInnerShadowVertexOutput {
+  let canvasSize = text.canvasAndViewRotation.xy;
+  let viewRotation = text.canvasAndViewRotation.zw;
+  let viewCenter = text.viewCenterAndZoom.xy;
+  let zoom = text.viewCenterAndZoom.z;
+  let absoluteLocal = input.localPosition + text.scaleAndLocalOffset.yz;
+  let local = absoluteLocal * text.scaleAndLocalOffset.x;
+  let nodeRotation = text.nodePositionAndRotation.zw;
+  let layerPosition = text.nodePositionAndRotation.xy + vec2<f32>(
+    nodeRotation.x * local.x - nodeRotation.y * local.y,
+    nodeRotation.y * local.x + nodeRotation.x * local.y
+  );
+  let layerDelta = layerPosition - viewCenter;
+  let canvasPosition = canvasSize * 0.5 + zoom * vec2<f32>(
+    viewRotation.x * layerDelta.x - viewRotation.y * layerDelta.y,
+    viewRotation.y * layerDelta.x + viewRotation.x * layerDelta.y
+  );
+  let targetPosition = canvasPosition - text.targetOriginAndSize.xy;
+  let targetSize = text.targetOriginAndSize.zw;
+  var output: MeshInnerShadowVertexOutput;
+  output.position = vec4<f32>(
+    targetPosition.x / targetSize.x * 2.0 - 1.0,
+    1.0 - targetPosition.y / targetSize.y * 2.0,
+    0.0,
+    1.0
+  );
+  output.absoluteLocalPosition = absoluteLocal;
+  return output;
+}
+
+@group(1) @binding(0) var meshInnerBlurredMask: texture_2d<f32>;
+@group(1) @binding(1) var meshInnerBlurredSampler: sampler;
+
+@fragment
+fn meshInnerShadowFragmentMain(
+  input: MeshInnerShadowVertexOutput
+) -> @location(0) vec4<f32> {
+  let shiftedPosition = input.absoluteLocalPosition - text.effectSampleOffset.xy;
+  let span = max(text.shapeBounds.zw - text.shapeBounds.xy, vec2<f32>(1.0e-8));
+  let uv = (shiftedPosition - text.shapeBounds.xy) / span;
+  var shiftedMask = 0.0;
+  if (all(uv >= vec2<f32>(0.0)) && all(uv <= vec2<f32>(1.0))) {
+    shiftedMask = textureSampleLevel(
+      meshInnerBlurredMask,
+      meshInnerBlurredSampler,
+      uv,
+      0.0
+    ).r;
+  }
+  let alpha = (1.0 - clamp(shiftedMask, 0.0, 1.0)) * text.color.a;
+  return vec4<f32>(text.color.rgb * alpha, alpha);
 }
 `;
 

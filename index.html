@@ -305,11 +305,30 @@
         </section>
 
         <section id="vectorTextPrototypeSection" hidden>
-          <h2>Testo vettoriale · livello separato</h2>
+          <h2>Testo e SVG vettoriali · livelli separati</h2>
           <p class="result">
             Il testo non condivide mai i pixel o la cronologia del pennello.
           </p>
 
+          <div class="vector-svg-import-card">
+            <button id="vectorSvgLoadExample" class="primary wide" type="button">
+              Carica SVG di esempio
+            </button>
+            <button id="vectorSvgImportButton" class="wide" type="button">
+              Importa un altro SVG…
+            </button>
+            <input
+              id="vectorSvgFileInput"
+              type="file"
+              accept=".svg,image/svg+xml"
+              hidden
+            />
+            <p id="vectorSvgImportStatus" class="result" aria-live="polite">
+              Importazione vettoriale sicura: path e colori restano modificabili.
+            </p>
+          </div>
+
+          <div id="vectorTextSpecificControls">
           <label class="control">
             <span>Testo</span>
             <input
@@ -410,9 +429,16 @@
               Circle ruota ogni glifo rigidamente. Il path resta Slug/WebGPU anche allo zoom.
             </p>
           </fieldset>
+          </div>
+
+          <div id="vectorSvgSelectedControls" class="vector-svg-selected" hidden>
+            <h3>SVG selezionato</h3>
+            <p id="vectorSvgSourceSummary" class="result"></p>
+            <div id="vectorSvgPalette" class="vector-svg-palette"></div>
+          </div>
 
           <fieldset class="vector-text-outline-controls">
-            <legend>Traccia testo</legend>
+            <legend>Traccia vettore</legend>
             <label class="control">
               <span>
                 Spessore <output id="vectorTextOutlineWidthOut">0 px</output>
@@ -439,12 +465,12 @@
               </select>
             </label>
             <p class="vector-text-outline-note">
-              0 px disattiva la traccia. Effetto del nodo testo, senza un nuovo canvas 4096².
+              0 px disattiva la traccia. Effetto del nodo vettoriale, senza un nuovo canvas 4096².
             </p>
           </fieldset>
 
           <fieldset class="vector-text-effect-controls">
-            <legend>Ombra testo</legend>
+            <legend>Ombre vettore</legend>
             <label class="check-control">
               <input id="vectorTextSingleShadowEnabled" type="checkbox" />
               <span>
