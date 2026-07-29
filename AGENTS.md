@@ -2090,6 +2090,18 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   p95 `0,40 ms`, `132,0` FPS medi, `19` frame oltre `20 ms`, presentazione
   `6866,20 ms`, spacing adattivo `1,00→1,25%` e `9700` stamp base. È una prova
   desktop della build pubblicata, non una prova iPhone.
-- Il report firma target, strategia, picco e conteggi. La prova fisica iPhone
-  della preparazione a `600 MiB` e del Play tratto registrato resta aperta;
-  non dichiarare risolto il limite Safari prima del risultato dell'utente.
+- Run fisica iPhone `#88` del 29 luglio completata sulla build Sites `93`:
+  iPhone OS `18.7`, Safari `26.5`, DPR `3`, GPU `apple`, `12` raster, `64`
+  testi / `9` run, `600,905 MiB` GPU conteggiati e working set logico noto
+  `606,031 MiB`. Safari non ha chiuso la pagina durante setup né replay.
+- Probe zoom iPhone: renderer testo p95 `1→3 ms`; end-to-end p95 `19→31 ms`.
+  Replay Base/Normal/Grain Off: `8863` stamp base / `141808` copie fisiche,
+  CPU frame p95 `1 ms`, intervallo render p95 `17 ms`, media `58,42 FPS`,
+  `10` frame ritardati, input delay p95 `16 ms`, completamento GPU finale
+  `18 ms` e presentazione `30 ms` dopo l'ultimo input consegnato.
+- Due completion lente hanno portato lo spacing adattivo `1,00→1,50%`; nessun
+  timeout e nessuna attivazione della tip preview. Questo promuove `600 MiB
+  staged` come punto funzionante su questo iPhone per una run, non come limite
+  universale o budget production. Poiché rispetto al fallimento da `800 MiB`
+  sono cambiati sia target sia staging, la causa non è ancora isolata: il
+  prossimo gradino scientificamente confrontabile è `700 MiB staged`.
