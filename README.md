@@ -190,6 +190,6 @@ npm run grain:verify
 
 ## Cosa non è ancora incluso
 
-Questo è un benchmark del brush core, non ancora un clone completo di Procreate. Mancano tile sparse, più layer, smudge, wet mix e salvataggio del documento.
+Questo è un prototipo del brush core WebGPU, non un clone completo di Procreate.
 
 Gli esperimenti tiled delle run `#23` e `#25` e lo scratch sulla dirty rectangle della run `#27` sono stati misurati e bocciati. Il runtime pubblicato è tornato alla baseline monolitica della run `#19`; metriche, diagnosi e motivazioni dei rollback sono conservate in `AGENTS.md`.

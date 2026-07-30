@@ -50,9 +50,8 @@ un solo tap esegue esattamente `3` casi sulla stessa traccia canonica:
 Grain `Off`. Preset: size `750 px`, spacing `1%`, Count `16`,
 Flow/Opacity/Hardness `100%`, Blend Intensity fisso `1×` e jitter canonico del
 profilo Base. Il report include firme, stamp base/copie fisiche, pacing, memoria
-stabile e picco logico transitorio old+new per caso. Wet Mix non partecipa alla
-suite rev `4`. Non
-promuovere una nuova baseline finché la suite non passa sulla traccia canonica
+stabile e picco logico transitorio old+new per caso. Non promuovere una nuova
+baseline finché la suite non passa sulla traccia canonica
 reale su iPhone; non aggregare i suoi risultati con la vecchia matrice rev `2`.
 Non aggregare mai run di varianti diverse. Con lo spacing adattivo attivo,
 `spacingPercent: 1` **non** implica più `12107` stamp: leggere sempre
@@ -179,46 +178,16 @@ Paint:
   e fanno tendere il risultato al 100%. Evidenze SHA-256: `523F8A5E…`
   (spacing) e `BF084072…` (jitter). La regressione `npm run intense:verify`
   vincola routing, Count, jitter/scatter e la serie numerica misurata.
-- **Wet Mix Ruwa rev `2` (30 luglio 2026)** sostituisce interamente il modello
-  Procreate rev `1`: i controlli pubblici sono ora Color Blending, Dilution,
-  Color Spread, Length, Wet Flow, Buildup e Drying. Il pannello è disponibile
-  sia con Uniformed Glaze sia con Intense Blending; Light Glaze non lo espone.
-  `Disattivato` conserva i sette valori ma lascia byte-invariato il percorso dry;
-  ogni modifica manuale seleziona `Personalizzato`.
-- I tre preset applicano soltanto i sette valori Wet e non toccano Size, Count,
-  Spacing, Flow, Opacity, Hardness, Shape, Grain o jitter: Ruwa Wet 1 =
-  `100/0/30/62/100/0/0`, Wet 2 = `100/0/41/25/100/0/0`, Wet 3 =
-  `27/0/26/78/75/0/0` nell'ordine Blending/Dilution/Spread/Length/Wet Flow/
-  Buildup/Drying. Il nome del preset è metadata UI/history; i sette numeri
-  restano autorevoli per replay.
-- Il renderer Wet resta interamente WebGPU e riusa la sequenza
-  `gather → (pickup → deposit)×N → scatter`, ma il vecchio carrier medio `vec4`
-  è sostituito da un reservoir spaziale encoded-sRGB `32×32`, ping-pong e
-  indipendente per ciascuna delle 24 copie fisiche (`48` slot, ~`0,75 MiB`).
-  Count, ordine stamp, random stream 5/6/7, jitter e Shape scatter restano quelli
-  del generatore Paint. Nessun pixel viene letto o miscelato dalla CPU.
-- Le rate sono normalizzate sulla distanza percorsa, non sul numero di stamp:
-  `rateDab = 1 − (1−rate)^min(distance/max(0,5·radius,1),16)`. Quindi un dab
-  fermo dopo il primo non accumula artificialmente. Drying riduce il paint
-  supply; `spreadEff = spread·supply`; lo scambio usa
-  `max(blending·(1−length), spreadEff)`; Dilution usa `rateDab(dilution²)`;
-  Wet Flow interpola reservoir legato alla punta e pigmento advettato; Buildup
-  usa una coating law separata e deposita esattamente zero sul primo dab.
-- Con Wet attivo, Uniformed e Intense condividono intenzionalmente lo stesso
-  renderer fisico live e scrivono direttamente nel layer; il rendering scelto
-  determina il percorso dry quando Wet è disattivato. Il Wet è attivo soltanto
-  con preset diverso da Off/revisione `2` e almeno uno fra Blending, Dilution o
-  Spread maggiore di epsilon.
-- Scratch adattivo: `1664` (~`52,9 MiB`) per Blend dry, `2304` (~`102 MiB`
-  inclusa la griglia reservoir) per Wet Ruwa. `configureScratchSize` cambia
-  famiglia solo a motore idle o all'inizio di replay; il reservoir viene
-  azzerato logicamente a ogni gesture e invalidato al retarget del livello.
-  La regressione `npm run wet:verify` vincola preset, sette slider, routing
-  Uniformed+Intense, normalizzazione per distanza, 24 reservoir lane, shader
-  encoded-sRGB, Buildup e rimozione dei vecchi campi Charge/Attack/Pull/Grade/
-  Blur. TypeScript, build Vite e tutte le verifiche core risultano verdi; non è
-  ancora una prova visiva o prestazionale iPhone e non va dichiarata parità
-  spettrale/pixel con Ruwa.
+- I tre rendering Paint non espongono simulazioni fluide aggiuntive: Light
+  Glaze, Uniformed Glaze e Intense Blending usano esclusivamente i rispettivi
+  percorsi autorevoli descritti sopra. Il tool Blend resta separato e solo dry.
+- Pulizia del 30 luglio 2026: rimossi pannello, preset, campi ABI/history,
+  routing, scratch dedicato, shader e verifiche della simulazione fluida
+  aggiuntiva; `blend-renderer.ts` e `blend-shaders.ts` sono tornati al checkpoint
+  dry `d802356`, senza modificare i tre percorsi Paint. TypeScript, quindici
+  verifiche, ricerca dei residui attivi e build Vite risultano verdi. QA locale:
+  un tratto con Light, Uniformed, Intense e Blend dry, incluse le transizioni di
+  risorsa e il ritorno a Paint, con console priva di warning/errori.
 - Ciclo di vita: Light usa R8; Uniformed e Intense usano RGBA16F. Le risorse
   sono pre-riscaldate alla selezione, lazy rispetto all'avvio, attese da
   benchmark/Undo/Redo e rilasciate in idle. Allocazione e retarget dei bind group
@@ -256,14 +225,7 @@ Paint:
   selezionato: sul nodo testo il pennello viene rifiutato e la run riporta `0`
   stamp. Resta da eseguire su iPhone prima di promuovere una baseline. Non
   dichiarare parità pixel completa con Procreate né vantaggi prestazionali: la
-  misura dry resta valida, mentre le vecchie misure Wet Procreate appartengono
-  alla rev `1` rimossa e non vincolano il modello Ruwa rev `2`.
-- Le prove browser Wet Procreate del 30 luglio 2026 (trasporto, live→lift,
-  Undo/Redo e fit 02/03/04/06/RETEST-A) sono ora **storiche rev `1`** e non
-  descrivono il Wet Ruwa rev `2`. La nuova revisione ha al momento verifiche
-  statiche/numeriche, TypeScript e build verdi; QA pixel, replay browser,
-  profilo prestazionale e prova iPhone devono essere rifatti prima di promuovere
-  qualunque baseline o dichiarare parità visiva.
+  misura dry valida soltanto la legge di deposito osservata.
 - QA browser desktop del 30 luglio 2026: con nero, Flow `50%`, Opacity `100%`,
   Count `1`, spacing `5%`, Light resta semitrasparente mentre Uniformed e
   Intense raggiungono il nero con le sovrapposizioni. Catture durante il
@@ -1445,8 +1407,8 @@ progresso worker sospendibile/riprendibile ai tratti.
 
 ## Strumento Blend dry (WebGPU)
 
-Port del Blend proprietario di `paint-webgpu-m1`, solo modalità **dry** (non
-aggiungere Wet senza richiesta esplicita). Tool separato (`tool: "blend"`),
+Port del Blend proprietario di `paint-webgpu-m1`, solo modalità **dry**. Tool
+separato (`tool: "blend"`),
 non un blend mode del Paint.
 
 Fatti invarianti del modello:

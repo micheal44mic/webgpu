@@ -14,29 +14,17 @@ import {
   type DryBlendStep,
 } from "./blend-core";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
-import {
-  ruwaWetBuildupCoatPerDab,
-  ruwaWetRatePerDab,
-} from "./wet-mix";
 
 const BLEND_UNIFORM_BYTES = 192;
 const BLEND_MAX_BATCHES_PER_SUBMIT = 256;
 // Ring of persistent carrier slots: slot i feeds step i, the step writes i+1.
 // The ring only needs to out-size a single submit so read/write never collide.
 const BLEND_CARRIER_SLOT_COUNT = 4096;
-const RUWA_WET_RESERVOIR_GRID_SIZE = 32;
-const RUWA_WET_RESERVOIR_TRACK_COUNT = 24;
-const RUWA_WET_RESERVOIR_SLOT_COUNT = RUWA_WET_RESERVOIR_TRACK_COUNT * 2;
-const RUWA_WET_RESERVOIR_TEXELS_PER_SLOT =
-  RUWA_WET_RESERVOIR_GRID_SIZE * RUWA_WET_RESERVOIR_GRID_SIZE;
 
 export const DRY_BLEND_RENDERER_BUILD =
-  "dry-blend-webgpu-v4-ruwa-spatial-reservoir";
-
-export type DryBlendRenderMode = "dry-blend" | "ruwa-wet";
+  "dry-blend-webgpu-v3-compute-fused-sweep";
 
 export interface DryBlendRenderSettings {
-  renderMode?: DryBlendRenderMode;
   shape: "circle" | "shape";
   grainMode: "off" | "texturized" | "moving";
   grainScale: number;
@@ -49,13 +37,6 @@ export interface DryBlendRenderSettings {
   hardness: number;
   blendStretch: number;
   blendPaint: number;
-  wetBlending?: number;
-  wetDilution?: number;
-  wetSpread?: number;
-  wetLength?: number;
-  wetFlow?: number;
-  wetBuildup?: number;
-  wetDrying?: number;
 }
 
 export interface DryBlendRenderBatch {
@@ -65,10 +46,6 @@ export interface DryBlendRenderBatch {
   readonly empty: boolean;
   readonly readRect: BlendRect;
   readonly writeRect: BlendRect;
-  /** Encoded-sRGB colour of this physical Paint copy, including Color Dynamics. */
-  readonly paintColor?: string;
-  /** Independent spatial reservoir lane for this physical Count copy. */
-  readonly reservoirTrackId?: number;
 }
 
 export interface DryBlendSubmitResult {
@@ -100,7 +77,6 @@ interface ScratchResources {
   stateBuffer: GPUBuffer;
   coverageBuffer: GPUBuffer;
   carrierBuffer: GPUBuffer;
-  wetReservoirBuffer: GPUBuffer;
   gatherBindGroup: GPUBindGroup;
   pickupBindGroup: GPUBindGroup;
   depositBindGroups: Record<
@@ -156,18 +132,6 @@ function hexToLinearRgb(hex: string): readonly [number, number, number] {
     srgbChannelToLinear(Number.parseInt(normalized.slice(0, 2), 16) / 255),
     srgbChannelToLinear(Number.parseInt(normalized.slice(2, 4), 16) / 255),
     srgbChannelToLinear(Number.parseInt(normalized.slice(4, 6), 16) / 255),
-  ];
-}
-
-function hexToSrgbRgb(hex: string): readonly [number, number, number] {
-  const normalized = hex.trim().replace(/^#/, "");
-  if (!/^[0-9a-fA-F]{6}$/.test(normalized)) {
-    throw new Error(`Colore HEX Wet Mix non valido: ${hex}`);
-  }
-  return [
-    Number.parseInt(normalized.slice(0, 2), 16) / 255,
-    Number.parseInt(normalized.slice(2, 4), 16) / 255,
-    Number.parseInt(normalized.slice(4, 6), 16) / 255,
   ];
 }
 
@@ -235,7 +199,7 @@ export class DryBlendRenderer {
   private readonly shapeMaskSampler: GPUSampler;
   private grainTextureView: GPUTextureView;
   private readonly grainSamplers: DryBlendRendererOptions["grainSamplers"];
-  private scratchSize: number;
+  private readonly scratchSize: number;
   private readonly uniformStride: number;
   private readonly uniformUpload: ArrayBuffer;
   private readonly uniformBuffer: GPUBuffer;
@@ -252,12 +216,6 @@ export class DryBlendRenderer {
   private activeHistoryActionId: number | null = null;
   private carrierCursor = 0;
   private carrierValid = false;
-  private readonly wetTrackValid = new Uint8Array(RUWA_WET_RESERVOIR_TRACK_COUNT);
-  private readonly wetTrackPhase = new Uint8Array(RUWA_WET_RESERVOIR_TRACK_COUNT);
-  private readonly wetTrackX = new Float32Array(RUWA_WET_RESERVOIR_TRACK_COUNT);
-  private readonly wetTrackY = new Float32Array(RUWA_WET_RESERVOIR_TRACK_COUNT);
-  private readonly wetTrackRadius = new Float32Array(RUWA_WET_RESERVOIR_TRACK_COUNT);
-  private readonly wetTrackSupply = new Float32Array(RUWA_WET_RESERVOIR_TRACK_COUNT);
   private destroyed = false;
 
   private constructor(options: DryBlendRendererOptions) {
@@ -336,7 +294,6 @@ export class DryBlendRenderer {
         dynamicUniformEntry(GPUShaderStage.COMPUTE),
         storageEntry(1, GPUShaderStage.COMPUTE, true),
         storageEntry(2, GPUShaderStage.COMPUTE, false),
-        storageEntry(3, GPUShaderStage.COMPUTE, false),
       ],
     });
     this.depositBindGroupLayout = this.device.createBindGroupLayout({
@@ -350,7 +307,6 @@ export class DryBlendRenderer {
         computeSampler(5),
         computeTexture(6),
         computeSampler(7),
-        storageEntry(8, GPUShaderStage.COMPUTE, true),
       ],
     });
     this.scatterBindGroupLayout = this.device.createBindGroupLayout({
@@ -455,29 +411,6 @@ export class DryBlendRenderer {
     this.activeHistoryActionId = historyActionId;
     this.carrierCursor = 0;
     this.carrierValid = false;
-    this.wetTrackValid.fill(0);
-    this.wetTrackPhase.fill(0);
-    this.wetTrackSupply.fill(1);
-  }
-
-  /**
-   * Lo scratch del Blend dry resta 1664; il percorso Intense Wet richiede
-   * 2304 per una Shape ruotata da 1500 px più l'alone del Blur. La taglia si
-   * cambia soltanto a scratch libero o fra un tratto e l'altro: il carrier
-   * ring vive nello scratch e non può sopravvivere alla riallocazione.
-   */
-  configureScratchSize(size: number): void {
-    this.assertAlive();
-    const next = Math.max(DRY_BLEND_DEFAULT_SCRATCH_SIZE, Math.ceil(size));
-    if (next === this.scratchSize) {
-      return;
-    }
-    // Il chiamante garantisce che nessun tratto sia attivo: un carrier di un
-    // tratto già concluso può essere scartato, beginStroke lo azzera comunque.
-    if (this.scratch) {
-      this.releaseScratch();
-    }
-    this.scratchSize = next;
   }
 
   submit(
@@ -494,27 +427,6 @@ export class DryBlendRenderer {
     }
     if (this.activeHistoryActionId !== historyActionId) {
       this.beginStroke(historyActionId);
-    }
-    // Un replay può chiedere dab Wet più larghi dello scratch corrente (per
-    // esempio cronologia Intense Wet mentre è selezionato il Blend dry): la
-    // crescita avviene solo a inizio tratto, quando il carrier è vuoto.
-    let requiredScratch = this.scratchSize;
-    for (const batch of batches) {
-      if (!batch.empty) {
-        requiredScratch = Math.max(
-          requiredScratch,
-          batch.readRect.width,
-          batch.readRect.height,
-        );
-      }
-    }
-    if (requiredScratch > this.scratchSize) {
-      if (this.carrierValid) {
-        throw new Error(
-          "Lo scratch Blend non può crescere durante un tratto attivo.",
-        );
-      }
-      this.configureScratchSize(requiredScratch);
     }
     const startedAt = performance.now();
     const scratch = this.ensureScratchResources();
@@ -572,10 +484,7 @@ export class DryBlendRenderer {
         const dynamicOffset = (group.start + index) * this.uniformStride;
         computePass.setPipeline(this.pickupPipeline);
         computePass.setBindGroup(0, scratch.pickupBindGroup, [dynamicOffset]);
-        const wetGridWorkgroups = settings.renderMode === "ruwa-wet"
-          ? RUWA_WET_RESERVOIR_GRID_SIZE / 8
-          : 1;
-        computePass.dispatchWorkgroups(wetGridWorkgroups, wetGridWorkgroups);
+        computePass.dispatchWorkgroups(1);
         computePass.setPipeline(this.depositPipeline);
         computePass.setBindGroup(
           0,
@@ -635,11 +544,7 @@ export class DryBlendRenderer {
     const stateBytes = pixels * 16;
     const coverageBytes = pixels * 4;
     const carrierBytes = BLEND_CARRIER_SLOT_COUNT * 16;
-    const wetReservoirBytes = RUWA_WET_RESERVOIR_SLOT_COUNT
-      * RUWA_WET_RESERVOIR_TEXELS_PER_SLOT
-      * 16;
-    return (stateBytes + coverageBytes + carrierBytes + wetReservoirBytes
-      + this.uniformUpload.byteLength)
+    return (stateBytes + coverageBytes + carrierBytes + this.uniformUpload.byteLength)
       / (1024 * 1024);
   }
 
@@ -665,10 +570,8 @@ export class DryBlendRenderer {
     this.scratch.stateBuffer.destroy();
     this.scratch.coverageBuffer.destroy();
     this.scratch.carrierBuffer.destroy();
-    this.scratch.wetReservoirBuffer.destroy();
     this.scratch = null;
     this.carrierValid = false;
-    this.wetTrackValid.fill(0);
     return true;
   }
 
@@ -682,7 +585,6 @@ export class DryBlendRenderer {
       this.scratch.stateBuffer.destroy();
       this.scratch.coverageBuffer.destroy();
       this.scratch.carrierBuffer.destroy();
-      this.scratch.wetReservoirBuffer.destroy();
       this.scratch = null;
     }
   }
@@ -768,7 +670,7 @@ export class DryBlendRenderer {
     groups: readonly BlendStepGroup[],
     settings: DryBlendRenderSettings,
   ): void {
-    const wetMode = settings.renderMode === "ruwa-wet";
+    const paintColor = hexToLinearRgb(settings.color);
     const grainPolarity = settings.grainInvert ? -1 : 1;
     const grainScale = clamp(settings.grainScale, 0.1, 4);
     const grainMode = settings.grainMode === "moving"
@@ -777,106 +679,18 @@ export class DryBlendRenderer {
     const filtering = settings.grainFiltering === "no"
       ? 0
       : settings.grainFiltering === "classic" ? 1 : 2;
-    const wetBlending = wetMode ? clamp(settings.wetBlending ?? 0, 0, 1) : 0;
-    const wetDilution = wetMode ? clamp(settings.wetDilution ?? 0, 0, 1) : 0;
-    const wetSpread = wetMode ? clamp(settings.wetSpread ?? 0, 0, 1) : 0;
-    const wetLength = wetMode ? clamp(settings.wetLength ?? 0.5, 0, 1) : 0;
-    const wetFlow = wetMode ? clamp(settings.wetFlow ?? 0.75, 0, 1) : 0;
-    const wetBuildup = wetMode ? clamp(settings.wetBuildup ?? 0, 0, 1) : 0;
-    const wetDrying = wetMode ? clamp(settings.wetDrying ?? 0, 0, 1) : 0;
 
     for (const group of groups) {
       for (let member = 0; member < group.count; member += 1) {
         const index = group.start + member;
         const batch = batches[index];
         const step = batch.steps[0];
-        let readSlot = this.carrierCursor;
-        let writeSlot = (this.carrierCursor + 1) % BLEND_CARRIER_SLOT_COUNT;
-        let hasPrevious = this.carrierValid || index > 0;
-        let travelX = 0;
-        let travelY = 0;
-        let travelDistance = step.distance;
-        let pickupRate = clamp(step.warpStrength, 0, 1);
-        let drainRate = 0;
-        let effectiveSpread = 0;
-        let depositRate = clamp(step.flow, 0, 1);
-        let coatPerDab = -1;
-        let paintSupply = 1;
-
-        if (wetMode) {
-          const track = clamp(
-            Math.trunc(batch.reservoirTrackId ?? 0),
-            0,
-            RUWA_WET_RESERVOIR_TRACK_COUNT - 1,
-          );
-          hasPrevious = this.wetTrackValid[track] !== 0;
-          travelX = hasPrevious ? step.toX - this.wetTrackX[track] : 0;
-          travelY = hasPrevious ? step.toY - this.wetTrackY[track] : 0;
-          travelDistance = Math.hypot(travelX, travelY);
-          const radius = Math.max(
-            0.5,
-            Math.min(step.toHalfWidth, step.toHalfHeight),
-          );
-          const previousSupply = hasPrevious ? this.wetTrackSupply[track] : 1;
-          const dryingPerDab = hasPrevious
-            ? ruwaWetRatePerDab(wetDrying, travelDistance, radius)
-            : 0;
-          paintSupply = previousSupply * (1 - dryingPerDab);
-          effectiveSpread = wetSpread * paintSupply;
-          const exchange = Math.max(
-            wetBlending * (1 - wetLength),
-            effectiveSpread,
-          );
-          pickupRate = hasPrevious
-            ? ruwaWetRatePerDab(exchange, travelDistance, radius)
-            : 1;
-          drainRate = hasPrevious
-            ? ruwaWetRatePerDab(
-              wetDilution * wetDilution,
-              travelDistance,
-              radius,
-            )
-            : 0;
-          depositRate = hasPrevious
-            ? ruwaWetRatePerDab(step.flow, travelDistance, radius)
-            : clamp(step.flow, 0, 1);
-          coatPerDab = wetBuildup > 0.001
-            ? paintSupply * (hasPrevious
-              ? ruwaWetBuildupCoatPerDab(
-                wetBuildup,
-                travelDistance,
-                Math.max(0.5, this.wetTrackRadius[track] || radius),
-              )
-              : 0)
-            : -1;
-
-          const phase = this.wetTrackPhase[track];
-          readSlot = track * 2 + phase;
-          writeSlot = track * 2 + (1 - phase);
-          this.wetTrackValid[track] = 1;
-          this.wetTrackPhase[track] = 1 - phase;
-          this.wetTrackX[track] = step.toX;
-          this.wetTrackY[track] = step.toY;
-          this.wetTrackRadius[track] = radius;
-          this.wetTrackSupply[track] = paintSupply;
-        } else {
-          this.carrierCursor = writeSlot;
-        }
-
-        const paintColor = wetMode
-          ? hexToSrgbRgb(batch.paintColor ?? settings.color)
-          : hexToLinearRgb(settings.color);
+        const carrierReadSlot = this.carrierCursor;
+        const carrierWriteSlot = (this.carrierCursor + 1) % BLEND_CARRIER_SLOT_COUNT;
+        this.carrierCursor = carrierWriteSlot;
         const offset = index * this.uniformStride;
-        const floats = new Float32Array(
-          this.uniformUpload,
-          offset,
-          BLEND_UNIFORM_BYTES / 4,
-        );
-        const unsigned = new Uint32Array(
-          this.uniformUpload,
-          offset,
-          BLEND_UNIFORM_BYTES / 4,
-        );
+        const floats = new Float32Array(this.uniformUpload, offset, BLEND_UNIFORM_BYTES / 4);
+        const unsigned = new Uint32Array(this.uniformUpload, offset, BLEND_UNIFORM_BYTES / 4);
         floats.fill(0);
         floats[0] = this.documentWidth;
         floats[1] = this.documentHeight;
@@ -895,31 +709,23 @@ export class DryBlendRenderer {
         floats[14] = step.fromAngle;
         floats[15] = step.toAngle;
         floats[16] = clamp(settings.hardness, 0, 1);
-        floats[17] = wetMode ? depositRate : clamp(step.flow, 0, 1);
-        floats[18] = wetMode ? travelX : step.spacing;
-        floats[19] = wetMode ? travelY : step.arcStart;
-        floats[20] = wetMode ? travelDistance : step.distance;
+        floats[17] = clamp(step.flow, 0, 1);
+        floats[18] = step.spacing;
+        floats[19] = step.arcStart;
+        floats[20] = step.distance;
         floats[21] = step.diameter;
-        floats[22] = wetMode ? pickupRate : clamp(step.warpStrength, 0, 1);
-        floats[23] = wetMode
-          ? wetDilution
-          : blendStretchCoefficient(settings.blendStretch);
+        floats[22] = clamp(step.warpStrength, 0, 1);
+        floats[23] = blendStretchCoefficient(settings.blendStretch);
         floats[24] = 1 / (2500 * grainScale);
-        floats[25] = wetMode
-          ? coatPerDab
-          : blendPaintCoefficient(settings.blendPaint);
+        floats[25] = blendPaintCoefficient(settings.blendPaint);
         floats[26] = clamp(settings.grainDepth, 0, 1);
         floats[27] = clamp(settings.grainBrightness, -1, 1) * grainPolarity;
         floats[28] = (1 + clamp(settings.grainContrast, -1, 1)) * grainPolarity;
-        floats[29] = wetMode ? drainRate : 0;
-        floats[30] = wetMode ? effectiveSpread : 0;
-        floats[31] = wetMode ? wetFlow : 0;
+        floats[31] = 0;
         floats[32] = paintColor[0];
         floats[33] = paintColor[1];
         floats[34] = paintColor[2];
-        floats[35] = wetMode
-          ? wetDilution <= 0.001 ? paintSupply : 0
-          : 1;
+        floats[35] = 1;
         floats[36] = batch.writeRect.x - group.readRect.x;
         floats[37] = batch.writeRect.y - group.readRect.y;
         floats[38] = batch.writeRect.width;
@@ -927,11 +733,11 @@ export class DryBlendRenderer {
         unsigned[40] = settings.shape === "shape" ? 1 : 0;
         unsigned[41] = grainMode;
         unsigned[42] = filtering;
-        unsigned[43] = hasPrevious ? 1 : 0;
-        unsigned[44] = readSlot;
-        unsigned[45] = writeSlot;
+        unsigned[43] = this.carrierValid || index > 0 ? 1 : 0;
+        unsigned[44] = carrierReadSlot;
+        unsigned[45] = carrierWriteSlot;
         unsigned[46] = this.scratchSize;
-        unsigned[47] = wetMode ? 1 : 0;
+        unsigned[47] = 0;
       }
     }
   }
@@ -940,7 +746,6 @@ export class DryBlendRenderer {
     stateBuffer: GPUBuffer,
     coverageBuffer: GPUBuffer,
     carrierBuffer: GPUBuffer,
-    wetReservoirBuffer: GPUBuffer,
   ): ScratchResources["depositBindGroups"] {
     const uniformEntry = {
       binding: 0,
@@ -968,7 +773,6 @@ export class DryBlendRenderer {
             { binding: 5, resource: this.shapeMaskSampler },
             { binding: 6, resource: this.grainTextureView },
             { binding: 7, resource: this.grainSamplers[mode][filtering] },
-            { binding: 8, resource: { buffer: wetReservoirBuffer } },
           ],
         });
       }
@@ -998,7 +802,7 @@ export class DryBlendRenderer {
   /**
    * Points the renderer at a different paint layer.
    *
-   * Blend only ever wets the active layer, so one instance is retargeted rather
+   * Blend only ever affects the active layer, so one instance is retargeted rather
    * than one instance per layer — the same shape EffectsWorkbench uses. The
    * carrier is invalidated because it holds pigment picked up from the outgoing
    * layer: seeding the first step of a stroke on the incoming layer with that
@@ -1035,7 +839,6 @@ export class DryBlendRenderer {
       });
     }
     this.carrierValid = false;
-    this.wetTrackValid.fill(0);
   }
 
   private rebuildResidentDepositBindGroups(): void {
@@ -1044,7 +847,6 @@ export class DryBlendRenderer {
         this.scratch.stateBuffer,
         this.scratch.coverageBuffer,
         this.scratch.carrierBuffer,
-        this.scratch.wetReservoirBuffer,
       );
     }
   }
@@ -1067,13 +869,6 @@ export class DryBlendRenderer {
     const carrierBuffer = this.device.createBuffer({
       label: "Blend dry carrier ring",
       size: BLEND_CARRIER_SLOT_COUNT * 16,
-      usage: GPUBufferUsage.STORAGE,
-    });
-    const wetReservoirBuffer = this.device.createBuffer({
-      label: "Ruwa Wet spatial reservoir 24x2x32x32",
-      size: RUWA_WET_RESERVOIR_SLOT_COUNT
-        * RUWA_WET_RESERVOIR_TEXELS_PER_SLOT
-        * 16,
       usage: GPUBufferUsage.STORAGE,
     });
     const uniformEntry = {
@@ -1105,14 +900,12 @@ export class DryBlendRenderer {
         uniformEntry,
         bufferEntry(1, stateBuffer),
         bufferEntry(2, carrierBuffer),
-        bufferEntry(3, wetReservoirBuffer),
       ],
     });
     const depositBindGroups = this.createDepositBindGroups(
       stateBuffer,
       coverageBuffer,
       carrierBuffer,
-      wetReservoirBuffer,
     );
     const scatterBindGroup = this.device.createBindGroup({
       label: "Blend dry scatter bind group",
@@ -1127,7 +920,6 @@ export class DryBlendRenderer {
       stateBuffer,
       coverageBuffer,
       carrierBuffer,
-      wetReservoirBuffer,
       gatherBindGroup,
       pickupBindGroup,
       depositBindGroups,

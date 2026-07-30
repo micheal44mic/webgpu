@@ -17,14 +17,14 @@ struct BlendUniforms {
   validAndFrom: vec4<f32>,        // group ROI size W,H; step from X,Y
   toAndFromHalfSize: vec4<f32>,   // step to X,Y; from half size W,H
   toHalfSizeAndAngles: vec4<f32>, // to half size W,H; from angle, to angle
-  maskControls: vec4<f32>,        // dry: hardness/flow/spacing/arc; Wet: hardness/deposit/travel XY
-  transportControls: vec4<f32>,   // dry: distance/diameter/strength/stretch; Wet: distance/diameter/pickup/dilution
-  grainControls: vec4<f32>,       // grain scale, dry paint or Wet coat, depth, brightness
-  grainAffineAndPhase: vec4<f32>, // contrast; Wet drain, spread and advection
-  paintColor: vec4<f32>,           // RGB plus Wet paint-supply gate
+  maskControls: vec4<f32>,        // hardness, flow, spacing, arc start
+  transportControls: vec4<f32>,   // distance, diameter, strength, stretch
+  grainControls: vec4<f32>,       // grain scale, paint, grain depth, grain brightness
+  grainAffineAndPhase: vec4<f32>, // grain contrast, 0, 0, alpha floor
+  paintColor: vec4<f32>,
   depositRect: vec4<f32>,         // step write rect in group-local pixels X,Y,W,H
   options: vec4<u32>,             // shape custom, grain mode, filtering, has previous
-  slots: vec4<u32>,               // carrier/reservoir read, write, scratch stride, mode
+  slots: vec4<u32>,               // carrier read slot, carrier write slot, scratch row stride, 0
 };
 
 @group(0) @binding(0) var<uniform> blend: BlendUniforms;
@@ -43,60 +43,6 @@ fn validSize() -> vec2<i32> {
 
 fn stateIndex(pixel: vec2<i32>) -> u32 {
   return u32(pixel.y) * blend.slots.z + u32(pixel.x);
-}
-
-fn wetMode() -> bool {
-  return blend.slots.w == 1u;
-}
-
-fn srgbToLinearChannel(value: f32) -> f32 {
-  let channel = clamp(value, 0.0, 1.0);
-  return select(
-    pow((channel + 0.055) / 1.055, 2.4),
-    channel / 12.92,
-    channel <= 0.04045
-  );
-}
-
-fn linearToSrgbChannel(value: f32) -> f32 {
-  let channel = clamp(value, 0.0, 1.0);
-  return select(
-    1.055 * pow(channel, 1.0 / 2.4) - 0.055,
-    channel * 12.92,
-    channel <= 0.0031308
-  );
-}
-
-fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
-  return vec3<f32>(
-    linearToSrgbChannel(value.r),
-    linearToSrgbChannel(value.g),
-    linearToSrgbChannel(value.b)
-  );
-}
-
-fn srgbToLinear(value: vec3<f32>) -> vec3<f32> {
-  return vec3<f32>(
-    srgbToLinearChannel(value.r),
-    srgbToLinearChannel(value.g),
-    srgbToLinearChannel(value.b)
-  );
-}
-
-fn premultipliedLinearToEncodedSrgb(value: vec4<f32>) -> vec4<f32> {
-  let alpha = clamp(value.a, 0.0, 1.0);
-  if (alpha <= 0.000001) {
-    return vec4<f32>(0.0);
-  }
-  return vec4<f32>(linearToSrgb(value.rgb / alpha) * alpha, alpha);
-}
-
-fn premultipliedEncodedSrgbToLinear(value: vec4<f32>) -> vec4<f32> {
-  let alpha = clamp(value.a, 0.0, 1.0);
-  if (alpha <= 0.000001) {
-    return vec4<f32>(0.0);
-  }
-  return vec4<f32>(srgbToLinear(value.rgb / alpha) * alpha, alpha);
 }
 
 @vertex
@@ -167,8 +113,7 @@ fn gatherMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   // The source WebGL renderer's sRGB conversions must not be repeated here.
   let value = textureLoad(canonicalLayer, documentPixel, 0);
   let alpha = clamp(value.a, 0.0, 1.0);
-  let clean = vec4<f32>(clamp(value.rgb, vec3<f32>(0.0), vec3<f32>(alpha)), alpha);
-  stateBuffer[index] = select(clean, premultipliedLinearToEncodedSrgb(clean), wetMode());
+  stateBuffer[index] = vec4<f32>(clamp(value.rgb, vec3<f32>(0.0), vec3<f32>(alpha)), alpha);
 }
 `;
 
@@ -180,60 +125,8 @@ ${blendUniformsWgsl}
 
 @group(0) @binding(1) var<storage, read> stateBuffer: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read_write> carrierBuffer: array<vec4<f32>>;
-@group(0) @binding(3) var<storage, read_write> wetReservoirBuffer: array<vec4<f32>>;
 
 ${blendStateSamplingWgsl}
-
-const RUWA_WET_GRID_SIZE: u32 = 32u;
-const RUWA_WET_TEXELS_PER_SLOT: u32 = RUWA_WET_GRID_SIZE * RUWA_WET_GRID_SIZE;
-
-fn reservoirIndex(slot: u32, pixel: vec2<u32>) -> u32 {
-  return slot * RUWA_WET_TEXELS_PER_SLOT
-    + pixel.y * RUWA_WET_GRID_SIZE
-    + pixel.x;
-}
-
-fn cleanReservoir(slot: u32, pixel: vec2<i32>) -> vec4<f32> {
-  if (
-    any(pixel < vec2<i32>(0))
-    || any(pixel >= vec2<i32>(i32(RUWA_WET_GRID_SIZE)))
-  ) {
-    return vec4<f32>(0.0);
-  }
-  let value = wetReservoirBuffer[reservoirIndex(slot, vec2<u32>(pixel))];
-  let alpha = clamp(value.a, 0.0, 1.0);
-  return vec4<f32>(clamp(value.rgb, vec3<f32>(0.0), vec3<f32>(alpha)), alpha);
-}
-
-fn sampleReservoir(slot: u32, uv: vec2<f32>) -> vec4<f32> {
-  if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) {
-    return vec4<f32>(0.0);
-  }
-  let position = uv * f32(RUWA_WET_GRID_SIZE) - vec2<f32>(0.5);
-  let lower = vec2<i32>(floor(position));
-  let interpolation = fract(position);
-  return mix(
-    mix(
-      cleanReservoir(slot, lower),
-      cleanReservoir(slot, lower + vec2<i32>(1, 0)),
-      interpolation.x
-    ),
-    mix(
-      cleanReservoir(slot, lower + vec2<i32>(0, 1)),
-      cleanReservoir(slot, lower + vec2<i32>(1, 1)),
-      interpolation.x
-    ),
-    interpolation.y
-  );
-}
-
-fn straightRgb(value: vec4<f32>) -> vec3<f32> {
-  return select(
-    vec3<f32>(0.0),
-    clamp(value.rgb / max(value.a, 0.000001), vec3<f32>(0.0), vec3<f32>(1.0)),
-    value.a > 0.000001
-  );
-}
 
 var<workgroup> pickupSums: array<vec4<f32>, 64>;
 var<workgroup> pickupTotals: array<f32, 64>;
@@ -242,90 +135,7 @@ var<workgroup> pickupTotals: array<f32, 64>;
 fn pickupMain(
   @builtin(local_invocation_id) lid: vec3<u32>,
   @builtin(local_invocation_index) threadIndex: u32,
-  @builtin(global_invocation_id) gid: vec3<u32>,
 ) {
-  if (wetMode()) {
-    let uv = (vec2<f32>(gid.xy) + vec2<f32>(0.5)) / f32(RUWA_WET_GRID_SIZE);
-    let normalized = uv * 2.0 - vec2<f32>(1.0);
-    let halfSize = max(blend.toHalfSizeAndAngles.xy, vec2<f32>(0.001));
-    let local = normalized * halfSize;
-    let angle = blend.toHalfSizeAndAngles.w;
-    let cosine = cos(angle);
-    let sine = sin(angle);
-    let documentPosition = blend.toAndFromHalfSize.xy + vec2<f32>(
-      cosine * local.x - sine * local.y,
-      sine * local.x + cosine * local.y
-    );
-
-    var tipCoverage = 1.0;
-    if (blend.options.x == 0u) {
-      let radiusSquared = dot(normalized, normalized);
-      let hardness = clamp(blend.maskControls.x, 0.0, 1.0);
-      let innerEdge = min(hardness * hardness, 0.999);
-      tipCoverage = 1.0 - smoothstep(innerEdge, 1.0, radiusSquared);
-    }
-
-    var canvas = vec4<f32>(0.0);
-    if (
-      all(documentPosition >= vec2<f32>(0.0))
-      && all(documentPosition < blend.documentAndRoi.xy)
-    ) {
-      let sampleDocumentPosition = clamp(
-        documentPosition,
-        vec2<f32>(0.5),
-        blend.documentAndRoi.xy - vec2<f32>(0.5)
-      );
-      canvas = sampleState(sampleDocumentPosition - blend.documentAndRoi.zw);
-    }
-
-    var previous = vec4<f32>(0.0);
-    var advected = vec4<f32>(0.0);
-    if (blend.options.w != 0u) {
-      previous = cleanReservoir(blend.slots.x, vec2<i32>(gid.xy));
-      let travel = blend.maskControls.zw;
-      let localTravel = vec2<f32>(
-        cosine * travel.x + sine * travel.y,
-        -sine * travel.x + cosine * travel.y
-      );
-      let previousDocumentLocal = local + localTravel;
-      let previousUv = previousDocumentLocal / (2.0 * halfSize) + vec2<f32>(0.5);
-      advected = sampleReservoir(blend.slots.x, previousUv);
-    }
-
-    let exchangeCoverage = tipCoverage
-      * clamp(blend.transportControls.z, 0.0, 1.0);
-    let spread = clamp(blend.grainAffineAndPhase.z, 0.0, 1.0);
-    let drain = clamp(blend.grainAffineAndPhase.y, 0.0, 1.0);
-    let advection = clamp(blend.grainAffineAndPhase.w, 0.0, 1.0);
-    let canvasWeight = exchangeCoverage * (1.0 - spread) * canvas.a;
-    let penWeight = tipCoverage * spread * clamp(blend.paintColor.a, 0.0, 1.0);
-    let remainder = max(1.0 - canvasWeight - penWeight, 0.0) * (1.0 - drain);
-    let previousWeight = remainder * (1.0 - advection) * previous.a;
-    let advectedWeight = remainder * advection * advected.a;
-    let total = canvasWeight + penWeight + previousWeight + advectedWeight;
-
-    var result = vec4<f32>(0.0);
-    if (total > 0.000001) {
-      let straight = (
-        straightRgb(canvas) * canvasWeight
-        + clamp(blend.paintColor.rgb, vec3<f32>(0.0), vec3<f32>(1.0)) * penWeight
-        + straightRgb(previous) * previousWeight
-        + straightRgb(advected) * advectedWeight
-      ) / total;
-      var alpha = clamp(
-        max(total, max(canvas.a * exchangeCoverage, max(previous.a, advected.a))),
-        0.0,
-        1.0
-      );
-      if (penWeight > 0.000001) {
-        alpha = 1.0;
-      }
-      result = vec4<f32>(clamp(straight, vec3<f32>(0.0), vec3<f32>(1.0)) * alpha, alpha);
-    }
-    wetReservoirBuffer[reservoirIndex(blend.slots.y, gid.xy)] = result;
-    return;
-  }
-
   let angle = blend.toHalfSizeAndAngles.z;
   let cosine = cos(angle);
   let sine = sin(angle);
@@ -348,6 +158,9 @@ fn pickupMain(
       all(documentPosition >= vec2<f32>(0.0))
       && all(documentPosition < blend.documentAndRoi.xy)
     ) {
+      // Outside the authoritative document is not transparent pigment.
+      // Clamp only the bilinear lookup so a valid edge tap cannot mix with
+      // the zero-filled scratch texels that surround the document.
       let sampleDocumentPosition = clamp(
         documentPosition,
         vec2<f32>(0.5),
@@ -398,6 +211,7 @@ fn pickupMain(
   );
 }
 `;
+
 export const blendDepositShader = /* wgsl */ `
 ${blendUniformsWgsl}
 
@@ -408,52 +222,8 @@ ${blendUniformsWgsl}
 @group(0) @binding(5) var shapeSampler: sampler;
 @group(0) @binding(6) var grainTexture: texture_2d<f32>;
 @group(0) @binding(7) var grainSampler: sampler;
-@group(0) @binding(8) var<storage, read> wetReservoirBuffer: array<vec4<f32>>;
 
 ${blendStateSamplingWgsl}
-
-const RUWA_WET_GRID_SIZE: u32 = 32u;
-const RUWA_WET_TEXELS_PER_SLOT: u32 = RUWA_WET_GRID_SIZE * RUWA_WET_GRID_SIZE;
-
-fn wetReservoirIndex(slot: u32, pixel: vec2<u32>) -> u32 {
-  return slot * RUWA_WET_TEXELS_PER_SLOT
-    + pixel.y * RUWA_WET_GRID_SIZE
-    + pixel.x;
-}
-
-fn cleanWetReservoir(slot: u32, pixel: vec2<i32>) -> vec4<f32> {
-  if (
-    any(pixel < vec2<i32>(0))
-    || any(pixel >= vec2<i32>(i32(RUWA_WET_GRID_SIZE)))
-  ) {
-    return vec4<f32>(0.0);
-  }
-  let value = wetReservoirBuffer[wetReservoirIndex(slot, vec2<u32>(pixel))];
-  let alpha = clamp(value.a, 0.0, 1.0);
-  return vec4<f32>(clamp(value.rgb, vec3<f32>(0.0), vec3<f32>(alpha)), alpha);
-}
-
-fn sampleWetReservoir(slot: u32, uv: vec2<f32>) -> vec4<f32> {
-  if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) {
-    return vec4<f32>(0.0);
-  }
-  let position = uv * f32(RUWA_WET_GRID_SIZE) - vec2<f32>(0.5);
-  let lower = vec2<i32>(floor(position));
-  let interpolation = fract(position);
-  return mix(
-    mix(
-      cleanWetReservoir(slot, lower),
-      cleanWetReservoir(slot, lower + vec2<i32>(1, 0)),
-      interpolation.x
-    ),
-    mix(
-      cleanWetReservoir(slot, lower + vec2<i32>(0, 1)),
-      cleanWetReservoir(slot, lower + vec2<i32>(1, 1)),
-      interpolation.x
-    ),
-    interpolation.y
-  );
-}
 
 const GRAIN_MIP_LEVEL_COUNT: u32 = 12u;
 
@@ -508,12 +278,7 @@ fn customAt(documentPosition: vec2<f32>, interpolation: f32) -> CustomSample {
     result.coverage = 0.0;
     return result;
   }
-  result.coverage = textureSampleLevel(
-    shapeTexture,
-    shapeSampler,
-    local.uv,
-    0.0
-  ).r;
+  result.coverage = textureSampleLevel(shapeTexture, shapeSampler, local.uv, 0.0).r;
   return result;
 }
 
@@ -608,23 +373,6 @@ fn depositMain(@builtin(global_invocation_id) gid: vec3<u32>) {
       1.0 + antialiasWidth,
       normalizedRadius
     );
-    if (wetMode()) {
-      // Parità con il fragment Paint del cerchio: smoothstep sul raggio al
-      // quadrato con innerEdge = hardness^2, così un parametro Wet appena
-      // sopra il neutro non cambia il profilo del bordo dello stamp.
-      let radiusSquared = normalizedRadius * normalizedRadius;
-      let squaredAntialias = max(3.2 / max(radius, 0.001), 0.00001);
-      let hardnessWet = clamp(blend.maskControls.x, 0.0, 1.0);
-      let innerEdge = min(
-        hardnessWet * hardnessWet,
-        1.0 - squaredAntialias
-      );
-      coverage = 1.0 - smoothstep(
-        innerEdge,
-        1.0 + squaredAntialias,
-        radiusSquared
-      );
-    }
   } else {
     var selected = customAt(documentPosition, closest);
     coverage = selected.coverage;
@@ -641,15 +389,10 @@ fn depositMain(@builtin(global_invocation_id) gid: vec3<u32>) {
         bestLocal.brushPixels = candidate.brushPixels;
       }
     }
-    if (wetMode()) {
-      // Parità con shapeCoverage del Paint: mix(mask^2, mask, hardness).
-      let hardnessWet = clamp(blend.maskControls.x, 0.0, 1.0);
-      coverage = mix(coverage * coverage, coverage, hardnessWet);
-    }
   }
 
   let spacing = blend.maskControls.z;
-  if (!wetMode() && spacing > 1.0) {
+  if (spacing > 1.0) {
     let period = max(1.0, blend.transportControls.y * spacing);
     let support = max(0.5, blend.transportControls.y * 0.5);
     let arcPosition = blend.maskControls.w
@@ -707,43 +450,6 @@ fn depositMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
 
   let index = stateIndex(pixel);
-
-  if (wetMode()) {
-    if (finalCoverage <= 0.0) {
-      return;
-    }
-    let reservoir = sampleWetReservoir(blend.slots.y, bestLocal.uv);
-    let reservoirAlpha = clamp(reservoir.a, 0.0, 1.0);
-    if (reservoirAlpha <= 0.000001) {
-      return;
-    }
-    let reservoirStraight = clamp(
-      reservoir.rgb / reservoirAlpha,
-      vec3<f32>(0.0),
-      vec3<f32>(1.0)
-    );
-    let coatPerDab = blend.grainControls.y;
-    var rate = finalCoverage;
-    if (coatPerDab >= 0.0) {
-      // Buildup has its own distance-normalized coating law. Its first dab is
-      // exactly zero, avoiding the stationary start blob of stamp accumulation.
-      rate = clamp(coverage * grainCoverage * coatPerDab, 0.0, 1.0);
-    }
-    let sourceAlpha = clamp(reservoirAlpha * rate, 0.0, 1.0);
-    if (sourceAlpha <= 0.000001) {
-      return;
-    }
-    let canvas = cleanState(pixel);
-    let source = vec4<f32>(reservoirStraight * sourceAlpha, sourceAlpha);
-    let mixed = source + canvas * (1.0 - sourceAlpha);
-    let resultAlpha = clamp(mixed.a, 0.0, 1.0);
-    coverageBuffer[index] = max(coverageBuffer[index], sourceAlpha);
-    stateBuffer[index] = vec4<f32>(
-      clamp(mixed.rgb, vec3<f32>(0.0), vec3<f32>(resultAlpha)),
-      resultAlpha
-    );
-    return;
-  }
   if (finalCoverage > 0.0) {
     coverageBuffer[index] = max(coverageBuffer[index], finalCoverage);
   }
@@ -758,10 +464,7 @@ fn depositMain(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   let canvas = cleanState(pixel);
   let carrier = carrierBuffer[blend.slots.y];
-  let loaded = vec4<f32>(
-    clamp(blend.paintColor.rgb, vec3<f32>(0.0), vec3<f32>(1.0)),
-    1.0
-  );
+  let loaded = vec4<f32>(clamp(blend.paintColor.rgb, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
   let pigment = mix(
     carrier,
     loaded,
@@ -800,7 +503,6 @@ fn scatterFragment(@builtin(position) fragmentPosition: vec4<f32>) -> @location(
 
   let value = stateBuffer[stateIndex(localPixel)];
   let alpha = clamp(value.a, 0.0, 1.0);
-  let clean = vec4<f32>(clamp(value.rgb, vec3<f32>(0.0), vec3<f32>(alpha)), alpha);
-  return select(clean, premultipliedEncodedSrgbToLinear(clean), wetMode());
+  return vec4<f32>(clamp(value.rgb, vec3<f32>(0.0), vec3<f32>(alpha)), alpha);
 }
 `;

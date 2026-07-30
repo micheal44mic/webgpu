@@ -223,7 +223,7 @@ assert.equal(tapPlanner.pushSample(point(200.001, 300.001, 20, 1)).stationary, t
 assert.equal(tapPlanner.finish().stationary, true);
 assert.equal(tapPlanner.buildNextBatch(), null);
 
-// Blend only ever wets the active layer, so switching layers retargets one
+// Blend only ever affects the active layer, so switching layers retargets one
 // instance instead of paying for one per layer — the shape EffectsWorkbench
 // already uses.
 assert.match(

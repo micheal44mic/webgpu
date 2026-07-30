@@ -3,7 +3,6 @@ import { decodeGrayscalePng8 } from "./png-mask";
 import {
   createDryBlendPlanner,
   DRY_BLEND_CORE_BUILD,
-  DRY_BLEND_DEFAULT_SCRATCH_SIZE,
   DRY_BLEND_SCRATCH_LIFECYCLE_STRATEGY,
   type DryBlendPlanner,
 } from "./blend-core";
@@ -12,12 +11,6 @@ import {
   cloneDryBlendRenderBatch,
   type DryBlendRenderBatch,
 } from "./blend-renderer";
-import {
-  DEFAULT_RUWA_WET_PARAMETERS,
-  RUWA_WET_MIX_REVISION,
-  isWetPresetId,
-  type WetPresetId,
-} from "./wet-mix";
 import {
   brushShader,
   displayShader,
@@ -384,20 +377,6 @@ export interface BrushSettings {
   hardness: number;
   blendIntensity: number;
   blendMode: BlendMode;
-  wetMixEnabled: boolean;
-  wetPresetId: WetPresetId;
-  wetBlending: number;
-  wetDilution: number;
-  wetSpread: number;
-  wetLength: number;
-  wetFlow: number;
-  wetBuildup: number;
-  wetDrying: number;
-  /**
-   * Revision 0/1 are legacy history recorded before the Ruwa-style model.
-   * Revision 2 opts into the spatial-reservoir renderer.
-   */
-  wetMixRevision?: number;
   blendStretch: number;
   blendPaint: number;
   // Retained only for history/settings ABI compatibility; always normalized to 1.
@@ -1531,8 +1510,6 @@ const MAX_STAMPS_PER_BATCH = 65_536;
 // continua a proteggere il frame time sulle size grandi.
 const DRY_BLEND_FRAME_PIXEL_BUDGET = 24_000_000;
 const DRY_BLEND_MAX_BATCHES_PER_FRAME = 256;
-// Covers a 1500 px rotated Shape plus the conservative compute ROI margin.
-const RUWA_WET_SCRATCH_SIZE = 2304;
 const STAMP_VERTICES_PER_COPY = 4;
 const STAMP_GEOMETRY = "quad" as const;
 const CIRCLE_FRAGMENT_COVERAGE_STRATEGY = "generic-smoothstep" as const;
@@ -1732,31 +1709,13 @@ function lightGlazeStrategyForBlendMode(mode: BlendMode): LightGlazeStrategy {
     : UNIFORMED_GLAZE_STRATEGY;
 }
 
-const WET_NEUTRAL_EPSILON = 1e-6;
-
-function usesRuwaWetRenderer(settings: BrushSettings): boolean {
-  return settings.tool === "paint"
-    && (
-      settings.blendMode === "uniformed-glaze"
-      || settings.blendMode === "intense-blending"
-    )
-    && settings.wetMixEnabled
-    && (settings.wetMixRevision ?? 0) >= RUWA_WET_MIX_REVISION
-    && (
-      settings.wetBlending > WET_NEUTRAL_EPSILON
-      || settings.wetDilution > WET_NEUTRAL_EPSILON
-      || settings.wetSpread > WET_NEUTRAL_EPSILON
-    );
-}
-
 function usesStrokeGlazeRenderer(settings: BrushSettings): boolean {
   return settings.tool === "paint"
-    && isStrokeGlazeBlendMode(settings.blendMode)
-    && !usesRuwaWetRenderer(settings);
+    && isStrokeGlazeBlendMode(settings.blendMode);
 }
 
 function usesBlendRenderer(settings: BrushSettings): boolean {
-  return settings.tool === "blend" || usesRuwaWetRenderer(settings);
+  return settings.tool === "blend";
 }
 
 function paintDisplayPyramidAdditionalMemoryMiB(format: LayerFormat): number {
@@ -1963,10 +1922,6 @@ export const defaultBrushSettings: BrushSettings = {
   hardness: 0.88,
   blendIntensity: 1,
   blendMode: "light-glaze",
-  wetMixEnabled: false,
-  wetPresetId: "off",
-  ...DEFAULT_RUWA_WET_PARAMETERS,
-  wetMixRevision: RUWA_WET_MIX_REVISION,
   blendStretch: 0.18,
   blendPaint: 0.14,
   jitterMaster: 1,
@@ -2611,7 +2566,6 @@ export class BrushEngine {
 
     this.initialized = true;
     if (usesBlendRenderer(this.settings)) {
-      this.prepareBlendScratchForSettings();
       this.blendRenderer?.prewarmScratch();
     }
     if (
@@ -2700,27 +2654,6 @@ export class BrushEngine {
       // Kept in the history ABI only. Rendering now has one unambiguous Flow control.
       blendIntensity: 1,
       blendMode,
-      wetMixEnabled: typeof next.wetMixEnabled === "boolean"
-        ? next.wetMixEnabled
-        : this.settings.wetMixEnabled,
-      wetPresetId: isWetPresetId(next.wetPresetId)
-        ? next.wetPresetId
-        : this.settings.wetPresetId,
-      wetBlending: clamp(next.wetBlending ?? this.settings.wetBlending, 0, 1),
-      wetDilution: clamp(next.wetDilution ?? this.settings.wetDilution, 0, 1),
-      wetSpread: clamp(next.wetSpread ?? this.settings.wetSpread, 0, 1),
-      wetLength: clamp(next.wetLength ?? this.settings.wetLength, 0, 1),
-      wetFlow: clamp(next.wetFlow ?? this.settings.wetFlow, 0, 1),
-      wetBuildup: clamp(next.wetBuildup ?? this.settings.wetBuildup, 0, 1),
-      wetDrying: clamp(next.wetDrying ?? this.settings.wetDrying, 0, 1),
-      wetMixRevision: Math.max(
-        0,
-        Math.trunc(
-          next.wetMixRevision
-            ?? this.settings.wetMixRevision
-            ?? RUWA_WET_MIX_REVISION,
-        ),
-      ),
       blendStretch: clamp(next.blendStretch ?? this.settings.blendStretch, 0, 1),
       blendPaint: clamp(next.blendPaint ?? this.settings.blendPaint, 0, 1),
       // Legacy presets may still carry this field, but the four Color Dynamics
@@ -2742,9 +2675,6 @@ export class BrushEngine {
         ? this.lightGlazeStorageModeFor(this.settings.blendMode)
         : "none";
 
-      // Wet scratch and glaze accumulators are mutually exclusive. Release the
-      // deselected family before prewarming the selected one so an iPhone never
-      // pays a needless 101 MiB + 153 MiB transition peak.
       if (!glazeSelected) {
         this.maybeReleaseIdleLightGlazeResources();
       }
@@ -2752,10 +2682,7 @@ export class BrushEngine {
         this.maybeReleaseIdleBlendScratch();
       }
       if (nextUsesBlendRenderer) {
-        // Prewarm on selection so allocation never lands inside the first
-        // stroke. La taglia dipende dal percorso: 1664 per il Blend dry,
-        // 2304 per Intense Wet (Shape 1500 px ruotata + alone Blur).
-        this.prepareBlendScratchForSettings();
+        // Prewarm on selection so allocation never lands inside the first stroke.
         this.blendRenderer?.prewarmScratch();
       }
       if (
@@ -3675,7 +3602,6 @@ export class BrushEngine {
       let renderingPrewarmWarning: string | null = null;
       try {
         if (usesBlendRenderer(this.settings)) {
-          this.prepareBlendScratchForSettings();
           this.blendRenderer?.prewarmScratch();
         }
         if (usesStrokeGlazeRenderer(this.settings)) {
@@ -5228,8 +5154,7 @@ export class BrushEngine {
     }
     this.adaptivePreviewForceStroke = tool === "paint"
       && ADAPTIVE_PREVIEW_FORCE
-      && !lightGlazeSettings
-      && !usesRuwaWetRenderer(this.settings);
+      && !lightGlazeSettings;
     const historyActionId = this.nextHistoryActionId++;
     const thicknessSource = lightGlazeSettings ?? this.settings;
     const thicknessSettings = {
@@ -6323,21 +6248,6 @@ export class BrushEngine {
         this.scheduleBevelFieldShrink();
       }
     }
-  }
-
-  // Sceglie la taglia scratch del renderer Blend per il percorso corrente:
-  // 1664 (~52,9 MiB) per il Blend dry, 2304 (~101,3 MiB) per Intense Wet.
-  // Con un tratto o un replay attivi la richiesta viene rimandata: ci pensa
-  // la crescita automatica dentro submit() all'inizio del tratto successivo.
-  private prepareBlendScratchForSettings(): void {
-    if (!this.blendRenderer || this.activeStroke !== null || this.historyBusy) {
-      return;
-    }
-    this.blendRenderer.configureScratchSize(
-      usesRuwaWetRenderer(this.settings)
-        ? RUWA_WET_SCRATCH_SIZE
-        : DRY_BLEND_DEFAULT_SCRATCH_SIZE,
-    );
   }
 
   // Lo scratch Blend (~53 MiB) resta residente solo mentre lo strumento è
@@ -16677,20 +16587,7 @@ export class BrushEngine {
         availableBatchSize += 1;
       }
     }
-    let maximumPaintBatchSize = MAX_STAMPS_PER_BATCH;
-    if (usesRuwaWetRenderer(this.settings)) {
-      const physicalCopies = clamp(Math.round(this.settings.count), 1, 24);
-      const wetDiameter = this.settings.size + 6;
-      const estimatedPixelsPerBaseStamp = wetDiameter * wetDiameter * physicalCopies * 2;
-      maximumPaintBatchSize = Math.max(
-        1,
-        Math.min(
-          Math.floor(DRY_BLEND_MAX_BATCHES_PER_FRAME / physicalCopies),
-          Math.floor(DRY_BLEND_FRAME_PIXEL_BUDGET / Math.max(1, estimatedPixelsPerBaseStamp)),
-        ),
-      );
-    }
-    const batchSize = Math.min(availableBatchSize, maximumPaintBatchSize);
+    const batchSize = Math.min(availableBatchSize, MAX_STAMPS_PER_BATCH);
     const batch = batchSize > 0 ? this.pendingStamps.splice(0, batchSize) : [];
     let blendBatch: PendingBlendBatch[] = [];
     if (!lightGlazeSession && batch.length === 0 && this.pendingBlendBatches.length > 0) {
@@ -19332,208 +19229,6 @@ export class BrushEngine {
     };
   }
 
-  private buildRuwaWetRenderBatches(
-    stamps: readonly Stamp[],
-    settings: BrushSettings,
-  ): DryBlendRenderBatch[] {
-    const batches: DryBlendRenderBatch[] = [];
-    const count = clamp(Math.round(settings.count), 1, 24);
-    const baseHsl = hexToHsl(settings.color);
-    const flowOpacity = clamp(settings.flow * settings.opacity, 0, 1);
-
-    for (const stamp of stamps) {
-      const stampX = Math.fround(stamp.x);
-      const stampY = Math.fround(stamp.y);
-      const radius = Math.max(0.5, Math.fround(stamp.radius));
-      const directionXRaw = Math.fround(stamp.directionX);
-      const directionYRaw = Math.fround(stamp.directionY);
-      const directionLength = Math.hypot(directionXRaw, directionYRaw);
-      const directionX = directionLength > 0.0001 ? directionXRaw / directionLength : 1;
-      const directionY = directionLength > 0.0001 ? directionYRaw / directionLength : 0;
-
-      for (let copyIndex = 0; copyIndex < count; copyIndex += 1) {
-        const copySeed = previewHash32(
-          (stamp.seed ^ Math.imul(copyIndex, 0x85ebca6b)) >>> 0,
-        );
-        const linearOffset = (previewRandom01(copySeed, 5) - 0.5)
-          * 4
-          * Math.fround(stamp.radius)
-          * Math.fround(settings.positionJitterLinear);
-        const lateralOffset = (previewRandom01(copySeed, 6) - 0.5)
-          * 4
-          * Math.fround(stamp.radius)
-          * Math.fround(settings.positionJitterLateral);
-        const centerX = stampX + directionX * linearOffset - directionY * lateralOffset;
-        const centerY = stampY + directionY * linearOffset + directionX * lateralOffset;
-        const angle = settings.shape === "shape"
-          ? (previewRandom01(copySeed, 7) - 0.5) * Math.PI * 2 * settings.shapeScatter
-          : 0;
-        const extent = settings.shape === "shape"
-          ? radius * (Math.abs(Math.cos(angle)) + Math.abs(Math.sin(angle)))
-          : radius;
-        const margin = 3;
-        const minimumX = clamp(Math.floor(centerX - extent - margin), 0, LAYER_SIZE);
-        const minimumY = clamp(Math.floor(centerY - extent - margin), 0, LAYER_SIZE);
-        const maximumX = clamp(Math.ceil(centerX + extent + margin), 0, LAYER_SIZE);
-        const maximumY = clamp(Math.ceil(centerY + extent + margin), 0, LAYER_SIZE);
-        if (maximumX <= minimumX || maximumY <= minimumY) {
-          continue;
-        }
-        const rect = {
-          x: minimumX,
-          y: minimumY,
-          width: maximumX - minimumX,
-          height: maximumY - minimumY,
-        };
-        const colorSeed = settings.jitterPerCopy
-          ? copySeed
-          : previewHash32(stamp.seed);
-        const [red, green, blue] = this.adaptivePreviewRgb(colorSeed, settings, baseHsl);
-        const paintColor = `#${red.toString(16).padStart(2, "0")}${green
-          .toString(16).padStart(2, "0")}${blue.toString(16).padStart(2, "0")}`;
-        const diameter = radius * 2;
-        batches.push({
-          build: DRY_BLEND_CORE_BUILD,
-          stepCount: 1,
-          steps: [{
-            fromX: centerX,
-            fromY: centerY,
-            toX: centerX,
-            toY: centerY,
-            dirX: directionX,
-            dirY: directionY,
-            distance: 0,
-            fromDiameter: diameter,
-            toDiameter: diameter,
-            diameter,
-            fromHalfWidth: radius,
-            fromHalfHeight: radius,
-            toHalfWidth: radius,
-            toHalfHeight: radius,
-            fromAngle: angle,
-            toAngle: angle,
-            angle,
-            warpStrength: 1,
-            flow: flowOpacity,
-            spacing: 0,
-            arcStart: 0,
-            arcEnd: 0,
-            speed: 0,
-            minX: minimumX,
-            minY: minimumY,
-            maxX: maximumX,
-            maxY: maximumY,
-            maxHalo: margin,
-          }],
-          empty: false,
-          readRect: { ...rect },
-          writeRect: { ...rect },
-          paintColor,
-          reservoirTrackId: copyIndex,
-        });
-      }
-    }
-    return batches;
-  }
-
-  private submitRuwaWetImmediate(
-    stamps: readonly Stamp[],
-    clearLayer: boolean,
-    settings: BrushSettings,
-    present = true,
-    replayBatch: PaintHistoryRenderBatch | null = null,
-  ): SubmitTiming {
-    const renderer = this.blendRenderer;
-    if (!renderer) {
-      throw new Error("Renderer Wet Mix GPU non inizializzato.");
-    }
-    if (!usesRuwaWetRenderer(settings)) {
-      throw new Error("Wet Mix Ruwa richiesto fuori da Uniformed/Intense.");
-    }
-    if (replayBatch && replayBatch.shapeMaskIdentity !== this.shapeMaskIdentity) {
-      throw new Error("La Shape Wet Mix usata dalla cronologia non corrisponde alla risorsa corrente.");
-    }
-    const expectedGrainIdentity = this.isTexturizedGrainActive(settings)
-      ? this.grainTextureIdentity
-      : null;
-    if (replayBatch && replayBatch.grainTextureIdentity !== expectedGrainIdentity) {
-      throw new Error("Il Grain Wet Mix usato dalla cronologia non corrisponde alla risorsa corrente.");
-    }
-    const actionIds = [...new Set(stamps.map((stamp) => stamp.historyActionId))];
-    if (actionIds.length > 1) {
-      throw new Error("Un submit Wet Mix non può contenere più gesture.");
-    }
-    const historyActionId = actionIds[0] ?? this.activeStroke?.historyActionId ?? 0;
-    const wetSettings = {
-      ...settings,
-      renderMode: "ruwa-wet" as const,
-    };
-    let wetCpuMs = 0;
-    let wetDirtyRect: DirtyRect | null = null;
-    let wetScissorPixels = 0;
-    let submittedAnyBatch = false;
-    const physicalCopiesPerBaseStamp = clamp(Math.round(settings.count), 1, 24);
-    const baseStampsPerBuild = Math.max(
-      1,
-      Math.floor(renderer.maximumBatchesPerSubmit / physicalCopiesPerBaseStamp),
-    );
-    for (
-      let baseStart = 0;
-      baseStart < stamps.length;
-      baseStart += baseStampsPerBuild
-    ) {
-      const batches = this.buildRuwaWetRenderBatches(
-        stamps.slice(baseStart, baseStart + baseStampsPerBuild),
-        settings,
-      );
-      wetScissorPixels += batches.reduce(
-        (total, batch) => total + batch.readRect.width * batch.readRect.height,
-        0,
-      );
-      for (
-        let start = 0;
-        start < batches.length;
-        start += renderer.maximumBatchesPerSubmit
-      ) {
-        const chunk = batches.slice(start, start + renderer.maximumBatchesPerSubmit);
-        const result = renderer.submit(
-          chunk,
-          wetSettings,
-          historyActionId,
-          clearLayer && !submittedAnyBatch,
-        );
-        submittedAnyBatch = true;
-        wetCpuMs += result.cpuMs;
-        wetDirtyRect = this.mergeDirtyRects(wetDirtyRect, result.dirtyRect);
-      }
-    }
-    if (!submittedAnyBatch && clearLayer) {
-      const result = renderer.submit([], wetSettings, historyActionId, true);
-      wetCpuMs += result.cpuMs;
-      wetDirtyRect = result.dirtyRect;
-    }
-    if (clearLayer) {
-      this.presentationCacheNeedsFullRebuild = true;
-      this.paintDisplayMipValidThroughLevel = 0;
-    }
-    const timing = this.submitImmediate(
-      [],
-      false,
-      settings,
-      present,
-      null,
-      wetDirtyRect,
-      clearLayer,
-    );
-    return {
-      ...timing,
-      totalCpuMs: timing.totalCpuMs + wetCpuMs,
-      brushEncodingMs: timing.brushEncodingMs + wetCpuMs,
-      scissorPixels: wetScissorPixels,
-      dirtyRect: wetDirtyRect,
-      shapeOccupancySelection: null,
-    };
-  }
   private submitBlendImmediate(
     batches: readonly DryBlendRenderBatch[],
     clearLayer: boolean,
@@ -19616,9 +19311,6 @@ export class BrushEngine {
     externalDirtyRect: DirtyRect | null = null,
     externalLayerCleared = false,
   ): SubmitTiming {
-    if (usesRuwaWetRenderer(settings) && (stamps.length > 0 || clearLayer)) {
-      return this.submitRuwaWetImmediate(stamps, clearLayer, settings, present, replayBatch);
-    }
     if (usesStrokeGlazeRenderer(settings)) {
       if (this.lightGlazeSession) {
         return this.submitLightGlazeImmediate(stamps, clearLayer, settings, present, replayBatch);

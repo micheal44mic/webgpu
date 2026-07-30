@@ -1,7 +1,7 @@
 // Pure CPU core for the proprietary dry Blend brush.
 //
-// This module intentionally contains no DOM, WebGPU, renderer, history, or Wet
-// reservoir code. Its output is a deterministic stream of continuous sweep
+// This module intentionally contains no DOM, WebGPU, renderer, or history code.
+// Its output is a deterministic stream of continuous sweep
 // segments plus the conservative ROI needed by the later GPU port.
 
 export const DRY_BLEND_CORE_BUILD = "dry-blend-continuous-core-v1-pressure-inert";

@@ -59,7 +59,7 @@ assert(
 const modeRouting = section(
   engine,
   "function lightGlazeStrategyForBlendMode",
-  "const WET_NEUTRAL_EPSILON",
+  "function usesStrokeGlazeRenderer",
 );
 assert.match(
   modeRouting,
