@@ -20,11 +20,11 @@ struct BlendUniforms {
   maskControls: vec4<f32>,        // hardness, flow, spacing, arc start
   transportControls: vec4<f32>,   // distance, diameter, strength, stretch
   grainControls: vec4<f32>,       // grain scale, paint, grain depth, grain brightness
-  grainAffineAndPhase: vec4<f32>, // grain contrast, 0, 0, alpha floor
+  grainAffineAndPhase: vec4<f32>, // grain contrast, Wet dilution, Grade, Wet charge
   paintColor: vec4<f32>,
   depositRect: vec4<f32>,         // step write rect in group-local pixels X,Y,W,H
   options: vec4<u32>,             // shape custom, grain mode, filtering, has previous
-  slots: vec4<u32>,               // carrier read slot, carrier write slot, scratch row stride, 0
+  slots: vec4<u32>,               // carrier read, carrier write, scratch stride, mode (0 dry / 1 Wet)
 };
 
 @group(0) @binding(0) var<uniform> blend: BlendUniforms;
@@ -43,6 +43,60 @@ fn validSize() -> vec2<i32> {
 
 fn stateIndex(pixel: vec2<i32>) -> u32 {
   return u32(pixel.y) * blend.slots.z + u32(pixel.x);
+}
+
+fn wetMode() -> bool {
+  return blend.slots.w == 1u;
+}
+
+fn srgbToLinearChannel(value: f32) -> f32 {
+  let channel = clamp(value, 0.0, 1.0);
+  return select(
+    pow((channel + 0.055) / 1.055, 2.4),
+    channel / 12.92,
+    channel <= 0.04045
+  );
+}
+
+fn linearToSrgbChannel(value: f32) -> f32 {
+  let channel = clamp(value, 0.0, 1.0);
+  return select(
+    1.055 * pow(channel, 1.0 / 2.4) - 0.055,
+    channel * 12.92,
+    channel <= 0.0031308
+  );
+}
+
+fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    linearToSrgbChannel(value.r),
+    linearToSrgbChannel(value.g),
+    linearToSrgbChannel(value.b)
+  );
+}
+
+fn srgbToLinear(value: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    srgbToLinearChannel(value.r),
+    srgbToLinearChannel(value.g),
+    srgbToLinearChannel(value.b)
+  );
+}
+
+fn premultipliedLinearToEncodedSrgb(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) {
+    return vec4<f32>(0.0);
+  }
+  return vec4<f32>(linearToSrgb(value.rgb / alpha) * alpha, alpha);
+}
+
+fn premultipliedEncodedSrgbToLinear(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) {
+    return vec4<f32>(0.0);
+  }
+  return vec4<f32>(srgbToLinear(value.rgb / alpha) * alpha, alpha);
 }
 
 @vertex
@@ -113,7 +167,8 @@ fn gatherMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   // The source WebGL renderer's sRGB conversions must not be repeated here.
   let value = textureLoad(canonicalLayer, documentPixel, 0);
   let alpha = clamp(value.a, 0.0, 1.0);
-  stateBuffer[index] = vec4<f32>(clamp(value.rgb, vec3<f32>(0.0), vec3<f32>(alpha)), alpha);
+  let clean = vec4<f32>(clamp(value.rgb, vec3<f32>(0.0), vec3<f32>(alpha)), alpha);
+  stateBuffer[index] = select(clean, premultipliedLinearToEncodedSrgb(clean), wetMode());
 }
 `;
 
@@ -190,6 +245,35 @@ fn pickupMain(
   let total = pickupTotals[0u];
   let hasPickup = total > 0.0;
   var pigment = sum / max(total, 0.000001);
+
+  if (wetMode()) {
+    // Serbatoio Wet misurato su Procreate (test 04/05/06 del 30 luglio 2026):
+    // parte carico del colore pennello in proporzione a Charge, non si scarica
+    // lungo il tratto, e Pull riempie soltanto la capacità residua con il
+    // pigmento della tela. Un pennello pieno trasporta lo stesso colore senza
+    // decadimento; il passaggio su zone trasparenti non lo lava.
+    var previous = vec4<f32>(
+      clamp(blend.paintColor.rgb, vec3<f32>(0.0), vec3<f32>(1.0))
+        * blend.grainAffineAndPhase.w,
+      clamp(blend.grainAffineAndPhase.w, 0.0, 1.0)
+    );
+    if (blend.options.w != 0u) {
+      previous = carrierBuffer[blend.slots.x];
+    }
+    var updated = previous;
+    if (hasPickup) {
+      let vacancy = max(0.0, 1.0 - previous.a);
+      let pull = clamp(blend.transportControls.w, 0.0, 1.0);
+      updated = previous + pigment * (pull * vacancy);
+    }
+    let updatedAlpha = clamp(updated.a, 0.0, 1.0);
+    carrierBuffer[blend.slots.y] = vec4<f32>(
+      clamp(updated.rgb, vec3<f32>(0.0), vec3<f32>(updatedAlpha)),
+      updatedAlpha
+    );
+    return;
+  }
+
   if (blend.options.w != 0u) {
     let previous = carrierBuffer[blend.slots.x];
     if (hasPickup) {
@@ -278,7 +362,17 @@ fn customAt(documentPosition: vec2<f32>, interpolation: f32) -> CustomSample {
     result.coverage = 0.0;
     return result;
   }
-  result.coverage = textureSampleLevel(shapeTexture, shapeSampler, local.uv, 0.0).r;
+  let wetShapeLod = select(
+    0.0,
+    clamp(blend.paintColor.a, 0.0, 1.0) * 5.0,
+    wetMode()
+  );
+  result.coverage = textureSampleLevel(
+    shapeTexture,
+    shapeSampler,
+    local.uv,
+    wetShapeLod
+  ).r;
   return result;
 }
 
@@ -373,6 +467,23 @@ fn depositMain(@builtin(global_invocation_id) gid: vec3<u32>) {
       1.0 + antialiasWidth,
       normalizedRadius
     );
+    if (wetMode()) {
+      // Parità con il fragment Paint del cerchio: smoothstep sul raggio al
+      // quadrato con innerEdge = hardness^2, così un parametro Wet appena
+      // sopra il neutro non cambia il profilo del bordo dello stamp.
+      let radiusSquared = normalizedRadius * normalizedRadius;
+      let squaredAntialias = max(3.2 / max(radius, 0.001), 0.00001);
+      let hardnessWet = clamp(blend.maskControls.x, 0.0, 1.0);
+      let innerEdge = min(
+        hardnessWet * hardnessWet,
+        1.0 - squaredAntialias
+      );
+      coverage = 1.0 - smoothstep(
+        innerEdge,
+        1.0 + squaredAntialias,
+        radiusSquared
+      );
+    }
   } else {
     var selected = customAt(documentPosition, closest);
     coverage = selected.coverage;
@@ -388,6 +499,11 @@ fn depositMain(@builtin(global_invocation_id) gid: vec3<u32>) {
         bestLocal.uv = candidate.uv;
         bestLocal.brushPixels = candidate.brushPixels;
       }
+    }
+    if (wetMode()) {
+      // Parità con shapeCoverage del Paint: mix(mask^2, mask, hardness).
+      let hardnessWet = clamp(blend.maskControls.x, 0.0, 1.0);
+      coverage = mix(coverage * coverage, coverage, hardnessWet);
     }
   }
 
@@ -436,6 +552,17 @@ fn depositMain(@builtin(global_invocation_id) gid: vec3<u32>) {
     grainCoverage = adjustedGrainCoverage(grainUv, grainUvDx, grainUvDy);
   }
 
+  if (wetMode()) {
+    let grade = clamp(blend.grainAffineAndPhase.z, 0.0, 1.0);
+    let gradeHalfWidth = max(0.001, (1.0 - grade) * 0.5);
+    let gradedCoverage = smoothstep(
+      0.5 - gradeHalfWidth,
+      0.5 + gradeHalfWidth,
+      coverage
+    );
+    coverage = mix(coverage, gradedCoverage, grade);
+  }
+
   let documentPixel = vec2<i32>(floor(documentPosition));
   var finalCoverage = 0.0;
   if (
@@ -450,6 +577,76 @@ fn depositMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
 
   let index = stateIndex(pixel);
+
+  if (wetMode()) {
+    // Modello Wet calibrato sulle misure Procreate del 30 luglio 2026
+    // (test 02/03/04/06 + RETEST-A): su tela vuota il deposito è pieno; sopra
+    // pigmento esistente è fortemente soppresso, salvo Charge alto (ricopre)
+    // o Pull alto (trasporta). Il pigmento depositato è la media pesata fra
+    // pennello fresco (disponibilità Attack·Dilution) e carrier trasportato.
+    if (finalCoverage <= 0.0) {
+      return;
+    }
+    let attack = clamp(blend.transportControls.z, 0.0, 1.0);
+    let pull = clamp(blend.transportControls.w, 0.0, 1.0);
+    let dilution = clamp(blend.grainAffineAndPhase.y, 0.0, 1.0);
+    let charge = clamp(blend.grainAffineAndPhase.w, 0.0, 1.0);
+    let freshAvailability = clamp(blend.grainControls.y, 0.0, 1.0);
+    let carrier = carrierBuffer[blend.slots.y];
+    let carrierAmount = clamp(carrier.a, 0.0, 1.0);
+    let pigmentTotal = freshAvailability + carrierAmount;
+    if (pigmentTotal <= 0.00001) {
+      return;
+    }
+    let canvas = cleanState(pixel);
+    let waterKeep = 1.0 - 0.9 * dilution;
+    let chargeSquared = charge * charge;
+    let opaqueRate = clamp(
+      0.06 * (0.15 + 0.85 * attack) * waterKeep * waterKeep
+        + chargeSquared * chargeSquared * chargeSquared
+        + pull * pull,
+      0.0,
+      1.0
+    );
+    let freshWeight = freshAvailability / pigmentTotal;
+    let freshAlpha = 1.0 - 0.06 * dilution * (1.0 - charge);
+    let alphaOut = mix(1.0, freshAlpha, freshWeight);
+    // Fisica del film misurata (test 03/04 vs RETEST-A): il tratto riempie a
+    // piena velocità finché il pixel resta sotto l'alpha del proprio film;
+    // la soppressione opaqueRate vale solo per il pigmento già a livello.
+    let vacancy = select(0.0, 1.0, canvas.a < alphaOut - 0.000001);
+    let rate = clamp(finalCoverage * mix(opaqueRate, 1.0, vacancy), 0.0, 1.0);
+    if (rate <= 0.0) {
+      return;
+    }
+    var carrierStraight = clamp(
+      blend.paintColor.rgb,
+      vec3<f32>(0.0),
+      vec3<f32>(1.0)
+    );
+    if (carrierAmount > 0.00001) {
+      carrierStraight = clamp(
+        carrier.rgb / carrierAmount,
+        vec3<f32>(0.0),
+        vec3<f32>(1.0)
+      );
+    }
+    let straight = mix(
+      carrierStraight,
+      clamp(blend.paintColor.rgb, vec3<f32>(0.0), vec3<f32>(1.0)),
+      freshWeight
+    );
+    let pigment = vec4<f32>(straight * alphaOut, alphaOut);
+    let mixed = mix(canvas, pigment, rate);
+    let resultAlpha = clamp(mixed.a, 0.0, 1.0);
+    coverageBuffer[index] = max(coverageBuffer[index], rate);
+    stateBuffer[index] = vec4<f32>(
+      clamp(mixed.rgb, vec3<f32>(0.0), vec3<f32>(resultAlpha)),
+      resultAlpha
+    );
+    return;
+  }
+
   if (finalCoverage > 0.0) {
     coverageBuffer[index] = max(coverageBuffer[index], finalCoverage);
   }
@@ -464,7 +661,10 @@ fn depositMain(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   let canvas = cleanState(pixel);
   let carrier = carrierBuffer[blend.slots.y];
-  let loaded = vec4<f32>(clamp(blend.paintColor.rgb, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
+  let loaded = vec4<f32>(
+    clamp(blend.paintColor.rgb, vec3<f32>(0.0), vec3<f32>(1.0)),
+    1.0
+  );
   let pigment = mix(
     carrier,
     loaded,
@@ -503,6 +703,7 @@ fn scatterFragment(@builtin(position) fragmentPosition: vec4<f32>) -> @location(
 
   let value = stateBuffer[stateIndex(localPixel)];
   let alpha = clamp(value.a, 0.0, 1.0);
-  return vec4<f32>(clamp(value.rgb, vec3<f32>(0.0), vec3<f32>(alpha)), alpha);
+  let clean = vec4<f32>(clamp(value.rgb, vec3<f32>(0.0), vec3<f32>(alpha)), alpha);
+  return select(clean, premultipliedEncodedSrgbToLinear(clean), wetMode());
 }
 `;

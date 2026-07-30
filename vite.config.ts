@@ -1,5 +1,53 @@
-import { defineConfig } from "vite";
+import { readFile, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { defineConfig, type Plugin } from "vite";
+
+// In produzione /api/human-stroke è servito dal worker Sites (D1). In dev il
+// fixture canonico vive in .tmp-canonical-human-stroke.json: senza questo
+// middleware la suite rendering one-tap resta disabilitata in locale.
+function devHumanStrokeApi(): Plugin {
+  const fixturePath = resolve(__dirname, ".tmp-canonical-human-stroke.json");
+  return {
+    name: "dev-human-stroke-api",
+    configureServer(server) {
+      server.middlewares.use("/api/human-stroke", (request, response, next) => {
+        if (request.method === "GET") {
+          readFile(fixturePath, "utf8").then(
+            (payload) => {
+              response.setHeader("Content-Type", "application/json");
+              response.end(payload);
+            },
+            () => {
+              response.statusCode = 404;
+              response.end();
+            },
+          );
+          return;
+        }
+        if (request.method === "POST") {
+          const chunks: Buffer[] = [];
+          request.on("data", (chunk) => chunks.push(chunk));
+          request.on("end", () => {
+            writeFile(fixturePath, Buffer.concat(chunks).toString("utf8")).then(
+              () => {
+                response.statusCode = 204;
+                response.end();
+              },
+              () => {
+                response.statusCode = 500;
+                response.end();
+              },
+            );
+          });
+          return;
+        }
+        next();
+      });
+    },
+  };
+}
 
 export default defineConfig({
   base: "./",
+  plugins: [devHumanStrokeApi()],
 });

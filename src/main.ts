@@ -724,15 +724,14 @@ function configureBrushToolUi(
     element<HTMLElement>(id).hidden = blend;
   }
   element<HTMLElement>("blendControls").hidden = !blend;
-  // Wet Mix needs an ordered per-stamp transport renderer before it can be
-  // combined faithfully with Count, jitter and Shape scatter. Keep it hidden
-  // instead of exposing controls that the measured Intense deposit core ignores.
-  element<HTMLElement>("intenseBlendingControls").hidden = true;
+  updateRenderingModeControlAvailability();
 }
 
 function updateRenderingModeControlAvailability(): void {
   const blendTool = activeBrushTool === "blend";
-  element<HTMLElement>("intenseBlendingControls").hidden = true;
+  const intenseSelected = !blendTool
+    && element<HTMLSelectElement>("blendMode").value === "intense-blending";
+  element<HTMLElement>("intenseBlendingControls").hidden = !intenseSelected;
   const size = element<HTMLInputElement>("brushSize");
   size.max = blendTool ? "1024" : "1500";
   if (rangeValue("brushSize") > Number(size.max)) {
@@ -826,7 +825,9 @@ function readBrushSettings(): BrushSettings {
     wetCharge: rangeValue("wetCharge") / 100,
     wetAttack: rangeValue("wetAttack") / 100,
     wetPull: rangeValue("wetPull") / 100,
+    wetGrade: rangeValue("wetGrade") / 100,
     wetBlur: rangeValue("wetBlur") / 100,
+    wetMixRevision: 1,
     blendStretch: rangeValue("blendStretch") / 100,
     blendPaint: rangeValue("blendPaint") / 100,
     // Legacy history ABI field. Individual Color Dynamics controls are direct.
@@ -863,6 +864,7 @@ function updateControlOutputs(): void {
   element<HTMLOutputElement>("wetChargeOut").value = `${rangeValue("wetCharge").toFixed(0)}%`;
   element<HTMLOutputElement>("wetAttackOut").value = `${rangeValue("wetAttack").toFixed(0)}%`;
   element<HTMLOutputElement>("wetPullOut").value = `${rangeValue("wetPull").toFixed(0)}%`;
+  element<HTMLOutputElement>("wetGradeOut").value = `${rangeValue("wetGrade").toFixed(0)}%`;
   element<HTMLOutputElement>("wetBlurOut").value = `${rangeValue("wetBlur").toFixed(0)}%`;
   element<HTMLOutputElement>("blendStretchOut").value = `${rangeValue("blendStretch").toFixed(0)}%`;
   element<HTMLOutputElement>("blendPaintOut").value = `${rangeValue("blendPaint").toFixed(0)}%`;
@@ -1145,11 +1147,15 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
     : 0.14;
   const unitSetting = (value: number | undefined, fallback: number): number =>
     Number.isFinite(value) ? Math.min(1, Math.max(0, value as number)) : fallback;
-  const wetDilution = unitSetting(benchmark.settings.wetDilution, 0.5);
-  const wetCharge = unitSetting(benchmark.settings.wetCharge, 0.5);
-  const wetAttack = unitSetting(benchmark.settings.wetAttack, 0.5);
-  const wetPull = unitSetting(benchmark.settings.wetPull, 0.5);
+  const wetDilution = unitSetting(benchmark.settings.wetDilution, 0);
+  const wetCharge = unitSetting(benchmark.settings.wetCharge, 1);
+  const wetAttack = unitSetting(benchmark.settings.wetAttack, 0);
+  const wetPull = unitSetting(benchmark.settings.wetPull, 0);
+  const wetGrade = unitSetting(benchmark.settings.wetGrade, 0);
   const wetBlur = unitSetting(benchmark.settings.wetBlur, 0);
+  const wetMixRevision = Number.isFinite(benchmark.settings.wetMixRevision)
+    ? Math.max(0, Math.trunc(benchmark.settings.wetMixRevision as number))
+    : 0;
   const settingsWithoutLegacyDynamics = {
     ...benchmark.settings,
   } as BrushSettings & {
@@ -1186,7 +1192,9 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
       wetCharge,
       wetAttack,
       wetPull,
+      wetGrade,
       wetBlur,
+      wetMixRevision,
       blendStretch,
       blendPaint,
     },
@@ -1790,10 +1798,11 @@ function applySettingsToControls(settings: BrushSettings): void {
     ? settings.blendMode
     : "light-glaze";
   setControlValue("blendMode", renderingMode);
-  setControlValue("wetDilution", (settings.wetDilution ?? 0.5) * 100);
-  setControlValue("wetCharge", (settings.wetCharge ?? 0.5) * 100);
-  setControlValue("wetAttack", (settings.wetAttack ?? 0.5) * 100);
-  setControlValue("wetPull", (settings.wetPull ?? 0.5) * 100);
+  setControlValue("wetDilution", (settings.wetDilution ?? 0) * 100);
+  setControlValue("wetCharge", (settings.wetCharge ?? 1) * 100);
+  setControlValue("wetAttack", (settings.wetAttack ?? 0) * 100);
+  setControlValue("wetPull", (settings.wetPull ?? 0) * 100);
+  setControlValue("wetGrade", (settings.wetGrade ?? 0) * 100);
   setControlValue("wetBlur", (settings.wetBlur ?? 0) * 100);
   setControlValue("blendStretch", (settings.blendStretch ?? 0.18) * 100);
   setControlValue("blendPaint", (settings.blendPaint ?? 0.14) * 100);
@@ -1828,10 +1837,11 @@ function applyHumanStrokePreset(): BrushSettings {
   setControlValue("opacity", 100);
   setControlValue("hardness", 100);
   setControlValue("blendMode", "light-glaze");
-  setControlValue("wetDilution", 50);
-  setControlValue("wetCharge", 50);
-  setControlValue("wetAttack", 50);
-  setControlValue("wetPull", 50);
+  setControlValue("wetDilution", 0);
+  setControlValue("wetCharge", 100);
+  setControlValue("wetAttack", 0);
+  setControlValue("wetPull", 0);
+  setControlValue("wetGrade", 0);
   setControlValue("wetBlur", 0);
   setControlValue("blendStretch", 18);
   setControlValue("blendPaint", 14);
@@ -1871,11 +1881,13 @@ function humanStrokeTestSettings(
     opacity: 1,
     blendIntensity: 1,
     blendMode,
-    wetDilution: 0.5,
-    wetCharge: 0.5,
-    wetAttack: 0.5,
-    wetPull: 0.5,
+    wetDilution: 0,
+    wetCharge: 1,
+    wetAttack: 0,
+    wetPull: 0,
+    wetGrade: 0,
     wetBlur: 0,
+    wetMixRevision: 1,
     blendStretch: 0.18,
     blendPaint: 0.14,
     grainMode,
@@ -1931,11 +1943,13 @@ function humanStrokeBlendTestSettings(benchmark: HumanStrokeBenchmark): BrushSet
     hardness: 1,
     blendIntensity: 1,
     blendMode: "normal",
-    wetDilution: 0.5,
-    wetCharge: 0.5,
-    wetAttack: 0.5,
-    wetPull: 0.5,
+    wetDilution: 0,
+    wetCharge: 1,
+    wetAttack: 0,
+    wetPull: 0,
+    wetGrade: 0,
     wetBlur: 0,
+    wetMixRevision: 1,
     blendStretch: 0.2,
     blendPaint: 0,
     jitterMaster: 1,
@@ -2264,6 +2278,7 @@ const brushControlIds = [
   "wetCharge",
   "wetAttack",
   "wetPull",
+  "wetGrade",
   "wetBlur",
   "blendStretch",
   "blendPaint",
@@ -4043,9 +4058,21 @@ function updateRenderingModeMemoryHint(stats: EngineStats): void {
     : mode === "intense-blending"
       ? "Intense Blending"
       : "Light Glaze";
-  const dedicatedMiB = stats.gpuMemory.lightGlazeMiB;
+  const wetMixActive = mode === "intense-blending" && (
+    rangeValue("wetDilution") > 0.0001
+    || rangeValue("wetCharge") < 99.9999
+    || rangeValue("wetAttack") > 0.0001
+    || rangeValue("wetPull") > 0.0001
+    || rangeValue("wetGrade") > 0.0001
+    || rangeValue("wetBlur") > 0.0001
+  );
+  const dedicatedMiB = wetMixActive
+    ? stats.gpuMemory.blendRendererMiB
+    : stats.gpuMemory.lightGlazeMiB;
   const modelHint = mode === "intense-blending"
-    ? " · stamp fisici source-over · Wet Mix in calibrazione separata"
+    ? wetMixActive
+      ? " · scratch Wet live · nessuna ricomposizione al lift"
+      : " · stamp fisici source-over · percorso neutro rapido"
     : "";
   renderingModeMemoryHint.textContent =
     `${label} · memoria GPU dedicata residente ${formatMemoryMiB(dedicatedMiB)}`
@@ -4548,9 +4575,12 @@ async function runRenderingModeSuite(): Promise<void> {
           + `, attese ${expectedPhysicalCopies}.`,
         );
       }
+      // L'uniform buffer del renderer Blend (0,0625 MiB) esiste dalla
+      // costruzione del motore: il guard deve scattare solo se Intense
+      // neutro alloca davvero lo scratch (>= 52,9 MiB).
       if (
         suiteCase.blendMode === "intense-blending"
-        && result.memoryAfter.blendRendererMiB > 0.001
+        && result.memoryAfter.blendRendererMiB > 1
       ) {
         throw new Error(
           `Intense ha allocato ${result.memoryAfter.blendRendererMiB.toFixed(3)} MiB`
@@ -4571,7 +4601,7 @@ async function runRenderingModeSuite(): Promise<void> {
         && results.length === renderingModeSuiteCases.length
         && results
           .filter((result) => result.run.benchmark.testBlendMode === "intense-blending")
-          .every((result) => result.memoryAfter.blendRendererMiB <= 0.001),
+          .every((result) => result.memoryAfter.blendRendererMiB <= 1),
       strategy: "canonical-human-stroke-base-spacing-1-three-renderings-one-tap-v4",
       execution: {
         order: renderingModeSuiteCases.map((suiteCase) => suiteCase.blendMode),
