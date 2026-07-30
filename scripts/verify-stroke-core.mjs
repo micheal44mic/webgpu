@@ -404,7 +404,7 @@ assert.match(
   rendererSource,
   /round\(clamp\(value, vec4<f32>\(0\.0\), vec4<f32>\(1\.0\)\) \* 255\.0\) \/ 255\.0/,
 );
-assert.match(rendererSource, /fn storedM1Coverage/);
+assert.match(rendererSource, /fn storedLightCoverage/);
 assert.match(rendererSource, /pack2x16float\(vec2<f32>\(coverage, 0\.0\)\)/);
 assert.match(rendererSource, /Traccia styled derived mip 1\+/);
 assert.match(engineSource, /rasterStrokeDisplayPipeline/);

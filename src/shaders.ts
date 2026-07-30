@@ -251,7 +251,7 @@ fn premultipliedEncodedSrgbPaint(input: VertexOutput, coverage: f32) -> vec4<f32
 
 fn quantizedCoveragePaint(input: VertexOutput, coverage: f32) -> vec4<f32> {
   let alpha = paintAlpha(input, coverage);
-  // M1 Glaze stores only the exactly quantized red coverage channel in an
+  // Light Glaze stores only the exactly quantized red coverage channel in an
   // r8unorm attachment. The vec4 output keeps this entry point valid for WGSL;
   // the render target writes only its red component.
   let quantized = unpack4x8unorm(pack4x8unorm(vec4<f32>(alpha))).r;
@@ -1225,7 +1225,7 @@ fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
   return vec4<f32>(redGreen, blueAlpha);
 }
 
-fn storedM1Coverage(value: f32) -> f32 {
+fn storedLightCoverage(value: f32) -> f32 {
   let coverage = clamp(value, 0.0, 1.0);
   // The previous RGBA16F accumulator stored the already R8-quantized coverage
   // as half-float. Reapply that storage conversion after loading the R8 mask
@@ -1257,7 +1257,7 @@ fn encodedSrgbPremultipliedToLinear(value: vec4<f32>) -> vec4<f32> {
 fn resolvedStrokePaint(accumulatedStroke: vec4<f32>) -> vec4<f32> {
   let opacity = clamp(lightGlaze.opacity, 0.0, 1.0);
   if (lightGlaze.accumulationMode == 1u) {
-    let coverage = storedM1Coverage(accumulatedStroke.r);
+    let coverage = storedLightCoverage(accumulatedStroke.r);
     return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
   }
   return accumulatedStroke * opacity;
@@ -1449,7 +1449,7 @@ fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
   return vec4<f32>(redGreen, blueAlpha);
 }
 
-fn storedM1Coverage(value: f32) -> f32 {
+fn storedLightCoverage(value: f32) -> f32 {
   let coverage = clamp(value, 0.0, 1.0);
   // The previous RGBA16F accumulator stored the already R8-quantized coverage
   // as half-float. Reapply that storage conversion after loading the R8 mask
@@ -1512,7 +1512,7 @@ fn encodedSrgbPremultipliedToLinear(value: vec4<f32>) -> vec4<f32> {
 fn resolvedStrokePaint(accumulatedStroke: vec4<f32>) -> vec4<f32> {
   let opacity = clamp(lightGlaze.opacity, 0.0, 1.0);
   if (lightGlaze.accumulationMode == 1u) {
-    let coverage = storedM1Coverage(accumulatedStroke.r);
+    let coverage = storedLightCoverage(accumulatedStroke.r);
     return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
   }
   return accumulatedStroke * opacity;
@@ -1598,7 +1598,7 @@ fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
   return vec4<f32>(redGreen, blueAlpha);
 }
 
-fn storedM1Coverage(value: f32) -> f32 {
+fn storedLightCoverage(value: f32) -> f32 {
   let coverage = clamp(value, 0.0, 1.0);
   if (lightGlaze.formatCode == 1u) {
     return unpack2x16float(pack2x16float(vec2<f32>(coverage, 0.0))).x;
@@ -1658,7 +1658,7 @@ fn encodedSrgbPremultipliedToLinear(value: vec4<f32>) -> vec4<f32> {
 fn resolvedStrokePaint(accumulatedStroke: vec4<f32>) -> vec4<f32> {
   let opacity = clamp(lightGlaze.opacity, 0.0, 1.0);
   if (lightGlaze.accumulationMode == 1u) {
-    let coverage = storedM1Coverage(accumulatedStroke.r);
+    let coverage = storedLightCoverage(accumulatedStroke.r);
     return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
   }
   return accumulatedStroke * opacity;
@@ -1718,7 +1718,7 @@ struct VertexOutput {
 @group(0) @binding(0) var strokeTexture: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> lightGlaze: LightGlazeUniforms;
 
-fn storedM1Coverage(value: f32) -> f32 {
+fn storedLightCoverage(value: f32) -> f32 {
   let coverage = clamp(value, 0.0, 1.0);
   if (lightGlaze.formatCode == 1u) {
     return unpack2x16float(pack2x16float(vec2<f32>(coverage, 0.0))).x;
@@ -1744,7 +1744,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   let source = textureLoad(strokeTexture, vec2<i32>(fragmentPosition.xy), 0);
   let opacity = clamp(lightGlaze.opacity, 0.0, 1.0);
   if (lightGlaze.accumulationMode == 1u) {
-    let coverage = storedM1Coverage(source.r);
+    let coverage = storedLightCoverage(source.r);
     return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
   }
   // Mode 2 (Intense encoded-sRGB) must never use this fixed-function

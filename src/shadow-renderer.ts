@@ -202,7 +202,7 @@ fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
   return vec4<f32>(redGreen, blueAlpha);
 }
 
-fn storedM1Coverage(value: f32) -> f32 {
+fn storedLightCoverage(value: f32) -> f32 {
   let coverage = clamp(value, 0.0, 1.0);
   if (lightGlaze.formatCode == 1u) {
     return unpack2x16float(pack2x16float(vec2<f32>(coverage, 0.0))).x;
@@ -262,7 +262,7 @@ fn encodedSrgbPremultipliedToLinear(value: vec4<f32>) -> vec4<f32> {
 fn resolvedLightGlaze(accumulatedStroke: vec4<f32>) -> vec4<f32> {
   let opacity = clamp(lightGlaze.opacity, 0.0, 1.0);
   if (lightGlaze.accumulationMode == 1u) {
-    let coverage = storedM1Coverage(accumulatedStroke.r);
+    let coverage = storedLightCoverage(accumulatedStroke.r);
     return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
   }
   return accumulatedStroke * opacity;

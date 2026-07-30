@@ -110,7 +110,7 @@ assert.equal(
 const pipelineBlock = section(
   engine,
   "const createRgba16FloatGlazePipeline",
-  "const createM1GlazePipeline",
+  "const createLightNoBuildUpPipeline",
 );
 assert(
   pipelineBlock.includes('format: "rgba16float"')

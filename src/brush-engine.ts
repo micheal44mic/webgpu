@@ -333,6 +333,7 @@ export type GrainAdaptivePreviewStrategy =
   | "disabled-semantic-mismatch-probe-spacing-active";
 export type LightGlazeStrategy =
   | "uniformed-linear-rgba16float-live-composite-mips-single-commit"
+  | "light-r8-max-per-gesture-source-over-between-gestures"
   | "m1-r8-quantized-max-coverage-plus-composited-mips-single-commit"
   | "intense-physical-stamps-source-over-srgb-rgba16float-live-single-commit";
 export type LightGlazeAdaptivePreviewStrategy = "disabled-semantic-mismatch";
@@ -1553,8 +1554,10 @@ const GRAIN_PIPELINE_STRATEGY = "separate-opt-in-pipelines" as const;
 const GRAIN_COVERAGE_STRATEGY = "post-tip-coverage-pre-alpha-multiply" as const;
 const GRAIN_ADAPTIVE_PREVIEW_STRATEGY =
   "disabled-semantic-mismatch-probe-spacing-active" as const;
-const LIGHT_GLAZE_STRATEGY =
+const UNIFORMED_GLAZE_STRATEGY =
   "uniformed-linear-rgba16float-live-composite-mips-single-commit" as const;
+const LIGHT_GLAZE_STRATEGY =
+  "light-r8-max-per-gesture-source-over-between-gestures" as const;
 const M1_GLAZE_STRATEGY =
   "m1-r8-quantized-max-coverage-plus-composited-mips-single-commit" as const;
 const INTENSE_BLENDING_STAMP_STRATEGY =
@@ -1712,9 +1715,12 @@ function lightGlazeStrategyForBlendMode(mode: BlendMode): LightGlazeStrategy {
   if (mode === "intense-blending") {
     return INTENSE_BLENDING_STAMP_STRATEGY;
   }
-  return mode === "light-glaze" || mode === "m1-glaze"
+  if (mode === "light-glaze") {
+    return LIGHT_GLAZE_STRATEGY;
+  }
+  return mode === "m1-glaze"
     ? M1_GLAZE_STRATEGY
-    : LIGHT_GLAZE_STRATEGY;
+    : UNIFORMED_GLAZE_STRATEGY;
 }
 
 const INTENSE_WET_MIX_REVISION = 1;
@@ -2400,12 +2406,12 @@ export class BrushEngine {
   private grainIntenseBlendingPipeline!: GPURenderPipeline;
   private grainIntenseBlendingShapePipeline!: GPURenderPipeline;
   private grainIntenseBlendingShapeOccupancyPipeline!: GPURenderPipeline;
-  private m1GlazePipeline!: GPURenderPipeline;
-  private m1GlazeShapePipeline!: GPURenderPipeline;
-  private m1GlazeShapeOccupancyPipeline!: GPURenderPipeline;
-  private grainM1GlazePipeline!: GPURenderPipeline;
-  private grainM1GlazeShapePipeline!: GPURenderPipeline;
-  private grainM1GlazeShapeOccupancyPipeline!: GPURenderPipeline;
+  private lightNoBuildUpPipeline!: GPURenderPipeline;
+  private lightNoBuildUpShapePipeline!: GPURenderPipeline;
+  private lightNoBuildUpShapeOccupancyPipeline!: GPURenderPipeline;
+  private grainLightNoBuildUpPipeline!: GPURenderPipeline;
+  private grainLightNoBuildUpShapePipeline!: GPURenderPipeline;
+  private grainLightNoBuildUpShapeOccupancyPipeline!: GPURenderPipeline;
   private vectorTextGpuSlugPipeline: GPURenderPipeline | null = null;
   private displayPipeline!: GPURenderPipeline;
   private vectorTextDisplayPipeline: GPURenderPipeline | null = null;
@@ -12863,12 +12869,12 @@ export class BrushEngine {
       grainIntenseBlendingPipeline,
       grainIntenseBlendingShapePipeline,
       grainIntenseBlendingShapeOccupancyPipeline,
-      m1GlazePipeline,
-      m1GlazeShapePipeline,
-      m1GlazeShapeOccupancyPipeline,
-      grainM1GlazePipeline,
-      grainM1GlazeShapePipeline,
-      grainM1GlazeShapeOccupancyPipeline,
+      lightNoBuildUpPipeline,
+      lightNoBuildUpShapePipeline,
+      lightNoBuildUpShapeOccupancyPipeline,
+      grainLightNoBuildUpPipeline,
+      grainLightNoBuildUpShapePipeline,
+      grainLightNoBuildUpShapeOccupancyPipeline,
       lightGlazeCompositeMipPipeline,
       lightGlazeCompositePipeline,
       lightGlazeCommitTilePipeline,
@@ -13413,7 +13419,7 @@ export class BrushEngine {
       "shapeVertexMain",
       "encodedSrgbShapeOccupancyFragmentMain",
     );
-    const createM1GlazePipeline = (
+    const createLightNoBuildUpPipeline = (
       label: string,
       layout: GPUPipelineLayout,
       fragmentModule: GPUShaderModule,
@@ -13452,43 +13458,43 @@ export class BrushEngine {
       },
       primitive: { topology: "triangle-strip" },
     });
-    const m1GlazePipeline = createM1GlazePipeline(
-      `Brush M1 Glaze circle MAX coverage r8unorm`,
+    const lightNoBuildUpPipeline = createLightNoBuildUpPipeline(
+      `Light Glaze circle MAX per gesture r8unorm`,
       brushPipelineLayout,
       this.brushShaderModule,
       "vertexMain",
       "coverageFragmentMain",
     );
-    const m1GlazeShapePipeline = createM1GlazePipeline(
-      `Brush M1 Glaze Shape MAX coverage r8unorm`,
+    const lightNoBuildUpShapePipeline = createLightNoBuildUpPipeline(
+      `Light Glaze Shape MAX per gesture r8unorm`,
       brushPipelineLayout,
       this.brushShaderModule,
       "shapeVertexMain",
       "shapeCoverageFragmentMain",
     );
-    const m1GlazeShapeOccupancyPipeline = createM1GlazePipeline(
-      `Brush M1 Glaze Shape occupancy MAX coverage r8unorm`,
+    const lightNoBuildUpShapeOccupancyPipeline = createLightNoBuildUpPipeline(
+      `Light Glaze Shape occupancy MAX per gesture r8unorm`,
       brushOccupancyPipelineLayout,
       this.brushShaderModule,
       "shapeVertexMain",
       "shapeOccupancyCoverageFragmentMain",
     );
-    const grainM1GlazePipeline = createM1GlazePipeline(
-      `Brush M1 Glaze Texturized circle MAX coverage r8unorm`,
+    const grainLightNoBuildUpPipeline = createLightNoBuildUpPipeline(
+      `Light Glaze Texturized circle MAX per gesture r8unorm`,
       grainBrushPipelineLayout,
       this.texturizedGrainShaderModule,
       "vertexMain",
       "coverageFragmentMain",
     );
-    const grainM1GlazeShapePipeline = createM1GlazePipeline(
-      `Brush M1 Glaze Texturized Shape MAX coverage r8unorm`,
+    const grainLightNoBuildUpShapePipeline = createLightNoBuildUpPipeline(
+      `Light Glaze Texturized Shape MAX per gesture r8unorm`,
       grainBrushPipelineLayout,
       this.texturizedGrainShaderModule,
       "shapeVertexMain",
       "shapeCoverageFragmentMain",
     );
-    const grainM1GlazeShapeOccupancyPipeline = createM1GlazePipeline(
-      `Brush M1 Glaze Texturized Shape occupancy MAX coverage r8unorm`,
+    const grainLightNoBuildUpShapeOccupancyPipeline = createLightNoBuildUpPipeline(
+      `Light Glaze Texturized Shape occupancy MAX per gesture r8unorm`,
       grainBrushOccupancyPipelineLayout,
       this.texturizedGrainShaderModule,
       "shapeVertexMain",
@@ -13611,12 +13617,12 @@ export class BrushEngine {
           grainIntenseBlendingPipeline,
           grainIntenseBlendingShapePipeline,
           grainIntenseBlendingShapeOccupancyPipeline,
-          m1GlazePipeline,
-          m1GlazeShapePipeline,
-          m1GlazeShapeOccupancyPipeline,
-          grainM1GlazePipeline,
-          grainM1GlazeShapePipeline,
-          grainM1GlazeShapeOccupancyPipeline,
+          lightNoBuildUpPipeline,
+          lightNoBuildUpShapePipeline,
+          lightNoBuildUpShapeOccupancyPipeline,
+          grainLightNoBuildUpPipeline,
+          grainLightNoBuildUpShapePipeline,
+          grainLightNoBuildUpShapeOccupancyPipeline,
           lightGlazeCompositeMipPipeline,
           lightGlazeCompositePipeline,
           lightGlazeCommitTilePipeline,
@@ -13798,12 +13804,12 @@ export class BrushEngine {
     this.grainIntenseBlendingPipeline = grainIntenseBlendingPipeline;
     this.grainIntenseBlendingShapePipeline = grainIntenseBlendingShapePipeline;
     this.grainIntenseBlendingShapeOccupancyPipeline = grainIntenseBlendingShapeOccupancyPipeline;
-    this.m1GlazePipeline = m1GlazePipeline;
-    this.m1GlazeShapePipeline = m1GlazeShapePipeline;
-    this.m1GlazeShapeOccupancyPipeline = m1GlazeShapeOccupancyPipeline;
-    this.grainM1GlazePipeline = grainM1GlazePipeline;
-    this.grainM1GlazeShapePipeline = grainM1GlazeShapePipeline;
-    this.grainM1GlazeShapeOccupancyPipeline = grainM1GlazeShapeOccupancyPipeline;
+    this.lightNoBuildUpPipeline = lightNoBuildUpPipeline;
+    this.lightNoBuildUpShapePipeline = lightNoBuildUpShapePipeline;
+    this.lightNoBuildUpShapeOccupancyPipeline = lightNoBuildUpShapeOccupancyPipeline;
+    this.grainLightNoBuildUpPipeline = grainLightNoBuildUpPipeline;
+    this.grainLightNoBuildUpShapePipeline = grainLightNoBuildUpShapePipeline;
+    this.grainLightNoBuildUpShapeOccupancyPipeline = grainLightNoBuildUpShapeOccupancyPipeline;
     this.lightGlazeCompositeMipPipeline = lightGlazeCompositeMipPipeline;
     this.lightGlazeCompositePipeline = lightGlazeCompositePipeline;
     this.lightGlazeCommitTilePipeline = lightGlazeCommitTilePipeline;
@@ -14460,7 +14466,7 @@ export class BrushEngine {
 
   private writeLightGlazeUniforms(
     opacity: number,
-    accumulationMode: "source-over" | "m1-max-coverage" | "encoded-srgb-source-over",
+    accumulationMode: "source-over" | "light-no-build-up" | "encoded-srgb-source-over",
     tintLinear: readonly [number, number, number] | null,
   ): void {
     const upload = new ArrayBuffer(LIGHT_GLAZE_UNIFORM_BYTES);
@@ -14468,7 +14474,10 @@ export class BrushEngine {
     const unsigned = new Uint32Array(upload);
     floats[0] = Number.isFinite(opacity) ? clamp(opacity, 0, 1) : 1;
     unsigned[1] = this.layerFormat === "rgba16float" ? 1 : 0;
-    unsigned[2] = accumulationMode === "m1-max-coverage"
+    // Mode 1 is the public Light contract: Flow belongs to each candidate
+    // deposit, the R8 attachment keeps only MAX during pointer-down, and this
+    // Opacity value is consumed once when the gesture is composited at lift.
+    unsigned[2] = accumulationMode === "light-no-build-up"
       ? 1
       : accumulationMode === "encoded-srgb-source-over"
         ? 2
@@ -18559,7 +18568,7 @@ export class BrushEngine {
       throw new Error("Risorse rendering glaze mancanti durante il rendering.");
     }
     const grainActive = this.isTexturizedGrainActive(settings);
-    const m1Glaze = settings.blendMode === "light-glaze"
+    const lightNoBuildUp = settings.blendMode === "light-glaze"
       || settings.blendMode === "m1-glaze";
 
     const cpuStart = performance.now();
@@ -18567,7 +18576,11 @@ export class BrushEngine {
       this.ensurePresentationCacheTexture();
     }
     const intenseBlending = settings.blendMode === "intense-blending";
-    // Light/Uniformed apply Opacity once to the whole completed gesture.
+    // Light: Flow enters each candidate deposit, but MAX — never source-over —
+    // combines every physical stamp belonging to this pointer-down. Opacity is
+    // deliberately forced to 1 here and applied exactly once at lift. A later
+    // pointer-down starts a fresh accumulator and source-overs at its own lift.
+    // Uniformed also applies Opacity once to its completed gesture.
     // Intense applies it to every physical deposit: overlapping stamps then
     // converge by ordinary premultiplied source-over, exactly like the
     // measured Procreate spacing/jitter fixtures.
@@ -18579,7 +18592,7 @@ export class BrushEngine {
     if (grainActive) {
       this.writeGrainUniforms(settings);
     }
-    if (m1Glaze && session.tintLinear === null && stamps.length > 0) {
+    if (lightNoBuildUp && session.tintLinear === null && stamps.length > 0) {
       const [red, green, blue] = this.adaptivePreviewRgb(
         previewHash32(stamps[0].seed),
         settings,
@@ -18592,8 +18605,8 @@ export class BrushEngine {
     }
     this.writeLightGlazeUniforms(
       intenseBlending ? 1 : settings.opacity,
-      m1Glaze
-        ? "m1-max-coverage"
+      lightNoBuildUp
+        ? "light-no-build-up"
         : intenseBlending
           ? "encoded-srgb-source-over"
           : "source-over",
@@ -18709,18 +18722,18 @@ export class BrushEngine {
         const isShape = settings.shape === "shape";
         const shapeOccupancyMip = submittedShapeOccupancySelection?.selectedMipLevel ?? null;
         const useShapeOccupancy = isShape && shapeOccupancyMip !== null;
-        const pipeline = m1Glaze
+        const pipeline = lightNoBuildUp
           ? grainActive
             ? isShape
               ? useShapeOccupancy
-                ? this.grainM1GlazeShapeOccupancyPipeline
-                : this.grainM1GlazeShapePipeline
-              : this.grainM1GlazePipeline
+                ? this.grainLightNoBuildUpShapeOccupancyPipeline
+                : this.grainLightNoBuildUpShapePipeline
+              : this.grainLightNoBuildUpPipeline
             : isShape
               ? useShapeOccupancy
-                ? this.m1GlazeShapeOccupancyPipeline
-                : this.m1GlazeShapePipeline
-              : this.m1GlazePipeline
+                ? this.lightNoBuildUpShapeOccupancyPipeline
+                : this.lightNoBuildUpShapePipeline
+              : this.lightNoBuildUpPipeline
           : intenseBlending
             ? grainActive
               ? isShape

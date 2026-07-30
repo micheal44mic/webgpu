@@ -9,6 +9,7 @@
     "preview": "vite preview --host 0.0.0.0",
     "benchmark:sync": "node scripts/sync-benchmark-runs.mjs",
     "blend:verify": "node scripts/verify-blend-core.mjs",
+    "light:verify": "node scripts/verify-light-glaze.mjs",
     "intense:verify": "node scripts/verify-intense-blending.mjs",
     "grain:verify": "node scripts/verify-grain-phase1.mjs",
     "thickness:verify": "node scripts/verify-thickness-dynamics.mjs",

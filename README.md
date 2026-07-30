@@ -15,8 +15,8 @@ Prototipo TypeScript senza framework per verificare l'architettura di un motore 
 - Color jitter deterministico in HSL: Hue, Saturation, Lightness e Darkness.
 - Jitter di posizione lineare e laterale, indipendente per ogni copia fisica.
 - Color jitter condiviso dal gruppo oppure indipendente per copia.
-- Blend normale premoltiplicato, modalità additiva intensa, Light Glaze e
-  M1 Glaze non accumulativo.
+- Tre rendering pubblici separati: Light Glaze, Uniformed Glaze e Intense
+  Blending. Il vecchio nome `m1-glaze` resta solo per il replay storico.
 - Scissor rectangle sul rettangolo sporco del batch.
 - Canvas a tutta area con pannelli sovrapposti richiudibili; i pannelli si chiudono automaticamente quando parte un test.
 - Un dito disegna, due dita eseguono pan e pinch-zoom; restano disponibili zoom, pan, fit, clear e benchmark sintetico.
@@ -75,30 +75,36 @@ Registra per ogni dispositivo:
 
 `GPU completion` è misurato con `queue.onSubmittedWorkDone()`: include il lavoro già in coda e la presentazione, quindi è utile per confrontare dispositivi e modalità, ma non equivale a una timestamp query hardware isolata.
 
-## Interpretazione del flow
+## Flow e Opacity in Light Glaze
 
-In questo prototipo `Flow` è l'alpha di **ogni copia fisica** prima di pressione, copertura e `Blend intensity`. Per esempio, con flow 7% e Count 24, quando le copie sono sovrapposte al centro:
+In Light Glaze, `Flow` regola quanto colore e texture può depositare una singola
+stampa candidata. Indichiamo con `D_i(x)` quel deposito, dopo punta, texture e
+risposta del Flow. Le stampe della stessa gesture non vengono mai composte fra
+loro con source-over: per ogni pixel l'accumulatore conserva soltanto il
+deposito candidato più forte incontrato mentre il dito resta abbassato.
 
 ```text
-1 - (1 - 0.07)^24 ≈ 82.5%
+C_gesture(x) = max_i(D_i(x))
 ```
 
-Con spacing 1%, gruppi successivi si sovrappongono molto e il tratto raggiunge rapidamente l'opacità. Questo è voluto per rendere evidente il costo dell'overdraw e la differenza tra flow per copia e opacità complessiva.
+Questa formula vincola il non-accumulo, non presume ancora che la curva numerica
+del Flow sia lineare o già calibrata pixel-per-pixel su Procreate.
+`Opacity` viene applicata una volta sola a `C_gesture`, non a ogni stampa. Count,
+spacing e sovrapposizione non possono quindi far crescere progressivamente il
+deposito della stessa gesture; una stampa successiva può soltanto sostituire un
+valore più debole con un singolo valore candidato più forte.
 
-`Opacità` è un controllo separato. In `Normal premultiplied` e `Intense additive`
-moltiplica l'alpha e il colore premoltiplicato di ogni stamp dopo il Flow. In
-`Light Glaze`, invece, il Flow costruisce la coverage dentro una texture
-temporanea per-stroke e Opacità viene applicata una sola volta all'intera
-pennellata: una pennellata non può superare quel limite, mentre pennellate
-distinte continuano a sovrapporsi normalmente.
+Al rilascio, il risultato viene committato una volta nel livello permanente.
+Una nuova gesture usa un accumulatore vuoto e, al proprio rilascio, viene
+composita normalmente sopra il risultato precedente:
 
-`M1 Glaze — non accumulativo` replica la semantica `cov8` di M1: durante una
-singola pennellata conserva per ogni pixel la coverage R8 massima, non la somma
-o il source-over degli stamp. In formula, `C(x) = maxᵢ coverageᵢ(x)`. Un solo
-colore viene scelto per l'intero tratto e tinta e Opacità sono applicate una
-volta al resolve. Due pennellate separate continuano invece a compositarsi
-normalmente sul layer. `Light Glaze` resta disponibile e invariato per il
-confronto.
+```text
+A_nuova = A_gesture + A_precedente × (1 - A_gesture)
+```
+
+Di conseguenza, la ripetizione dentro una gesture non accumula; due gesture
+separate invece sì. Questa regola appartiene soltanto a Light Glaze: Uniformed
+Glaze e Intense Blending hanno motori distinti e verranno calibrati separatamente.
 
 La texture Light Glaze viene allocata soltanto al primo uso della modalità. Il
 mip 0 conserva l'accumulatore raw dello stroke; i mip successivi conservano il
@@ -146,8 +152,8 @@ Depth. È incorporato nei coefficienti affini già caricati nella uniform: con
 Invert spento i valori GPU restano identici, mentre acceso non aggiunge rami,
 pipeline, binding o operazioni al fragment WGSL. Il campione moltiplica la
 coverage dopo Circle/Shape e prima di flow, pressione, alpha e blending. Il
-percorso copre Circle, Shape e occupancy, Normal, Additive, Light Glaze e M1
-Glaze. `Off` continua a selezionare il modulo WGSL e le pipeline legacy senza
+percorso copre Circle, Shape e occupancy nei tre rendering pubblici. `Off`
+continua a selezionare il modulo WGSL e le pipeline legacy senza
 binding o ramo Grain.
 
 Undo/Redo conserva impostazioni e identità dell'asset. Con Grain attivo la tip
@@ -161,10 +167,11 @@ replay prestazionale iPhone Moving non è usato: il selettore Grain offre
 `Off — senza texture` e `Texturized — Fixed M1`. Quando Fixed è selezionato
 usa Scale `140%`, Depth `100%`, Brightness/Contrast `0`, Improved e Multiply.
 Invert viene forzato spento per conservare le baseline `#70–#73`.
-Il selettore di blending applica l'intensità prevista dalla relativa modalità:
+La suite pubblica mantiene l'intensità interna neutra `1×` e confronta:
 
-1. `Normal accumulativo — 4×`;
-2. `M1 Glaze non accumulativo — 1×`.
+1. `Light Glaze`;
+2. `Uniformed Glaze`;
+3. `Intense Blending`.
 
 Size, spacing, Count, flow, hardness, jitter, seed, pressione, traccia e ordine
 degli stamp partono dai valori canonici. Per misurare il costo della texture
@@ -174,9 +181,10 @@ isola il costo della texture e va dichiarato come tale. Le run devono essere
 eseguite dall'utente sullo stesso iPhone con **Play tratto registrato**; build e
 smoke locali non sono risultati prestazionali e non sostituiscono la baseline.
 
-L'asset e le invarianti statiche si verificano con:
+Il contratto Light e le invarianti Grain si verificano con:
 
 ```bash
+npm run light:verify
 npm run grain:verify
 ```
 

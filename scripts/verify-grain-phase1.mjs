@@ -221,23 +221,24 @@ assert(engine.includes('"allocate-on-shape-select-release-when-idle-unused"')
   && engine.includes("Shape placeholder 1×1 while released"),
   "Shape 2K lifecycle (lazy alla selezione, rilascio quando inutilizzata) mancante");
 assert(engine.includes('operation: "max"')
-  && engine.includes("m1GlazePipeline")
-  && engine.includes("grainM1GlazePipeline"),
-  "Pipeline MAX coverage M1 Glaze assenti.");
+  && engine.includes("lightNoBuildUpPipeline")
+  && engine.includes("grainLightNoBuildUpPipeline"),
+  "Pipeline MAX coverage Light Glaze assenti.");
 assert(shaders.includes("unpack4x8unorm(pack4x8unorm")
+  && engine.includes("light-r8-max-per-gesture-source-over-between-gestures")
   && engine.includes("m1-r8-quantized-max-coverage-plus-composited-mips-single-commit")
   && engine.includes('format: "r8unorm"')
   && engine.includes("lightGlazeCompositeMipTexture")
   && engine.includes('storageMode === "r8-coverage"'),
   "Semantica coverage R8 nativa M1 e mip compositati separati assenti.");
 assert(engine.includes("session.tintLinear")
-  && engine.includes('"m1-max-coverage"'),
-  "Tint per tratto e resolve M1 Glaze non collegati.");
+  && engine.includes('"light-no-build-up"'),
+  "Tint per gesture e resolve Light Glaze non collegati.");
 assert(shaders.includes("@group(0) @binding(5) var compositedMipTexture")
   && shaders.includes("display.selectedMipLevel - 1.0")
   && engine.includes("lightGlazeMipDownsampleBindGroups[mipLevel - 2]"),
   "Catena mip compositata separata Light/M1 Glaze non collegata correttamente.");
-assert(shaders.includes("fn storedM1Coverage(value: f32)")
+assert(shaders.includes("fn storedLightCoverage(value: f32)")
   && shaders.includes("pack2x16float(vec2<f32>(coverage, 0.0))"),
   "Compatibilità esatta del vecchio accumulatore M1 RGBA16F assente.");
 

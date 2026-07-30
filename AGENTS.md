@@ -125,11 +125,27 @@ Paint:
   **Uniformed Glaze** e **Intense Blending**. Il vecchio slider Blend Intensity
   è rimosso: l'ABI/history conserva il campo ma il motore lo forza a `1×`, così
   Flow e Opacity non hanno un secondo moltiplicatore ambiguo.
-- **Light Glaze pubblico** usa l'accumulatore coverage `r8unorm` `4096²` con
-  blending `MAX`, tinta unica campionata a inizio gesto, mip finali
-  `compose→filter` e commit unico al lift. È il percorso storicamente chiamato
-  `M1 Glaze`: `37,3 MiB` dedicati in RGBA8 (`16 + 21,3`) o `58,7 MiB` in
-  RGBA16F (`16 + 42,7`).
+- **Light Glaze pubblico** ha ora un contratto e una firma propri:
+  `light-r8-max-per-gesture-source-over-between-gestures`. Ogni pointer-down
+  parte da un accumulatore coverage `r8unorm` `4096²` vuoto; Flow partecipa al
+  deposito candidato del singolo stamp, ma tutti gli stamp fisici della stessa
+  gesture vengono combinati soltanto con `MAX`, mai con source-over. Opacity è
+  forzata a `1` durante gli stamp e applicata una sola volta al risultato della
+  gesture. Al lift avviene un solo commit source-over nel layer permanente; il
+  pointer-down successivo riparte da un accumulatore vuoto e può quindi
+  aumentare il colore già committato. `m1-glaze` resta soltanto un alias di
+  replay storico, non l'identità del rendering pubblico. Mip finali
+  `compose→filter`; memoria dedicata `37,3 MiB` in RGBA8 (`16 + 21,3`) o
+  `58,7 MiB` in RGBA16F (`16 + 42,7`).
+- QA browser locale non canonica del 30 luglio 2026, Circle/Grain Off/jitter
+  zero/size `200`: con Flow `50%`, Opacity `50%`, la cattura presentation di
+  Count `1` e quella di Count `24` sovrapposto nella stessa gesture sono
+  identiche su tutta l'area raster (`0` pixel diversi); il centro passa da
+  `[232,232,232]` a `[204,204,204]` in entrambi i casi. Una seconda gesture
+  porta il centro a `[179,179,179]` e modifica `1585` pixel visibili. Con Flow
+  e Opacity `100%`, Count `1` e `24` restano identici e il centro è `[0,0,0]`.
+  `npm run light:verify` vincola inoltre numericamente MAX intra-gesture,
+  source-over inter-gesture, routing R8, Opacity singola e lifecycle al lift.
 - **Uniformed Glaze pubblico** usa sempre un accumulatore autorevole RGBA16F
   per-stroke `4096²`: gli stamp accumulano source-over in lineare con Flow,
   mentre Opacity viene applicata una sola volta all'intera gesture. Display,
