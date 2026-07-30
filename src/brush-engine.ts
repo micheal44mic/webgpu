@@ -15,6 +15,7 @@ import {
   displayShader,
   grainMipShader,
   layerCompositeShader,
+  lightGlazeCommitTileShader,
   lightGlazeCompositeMipShader,
   lightGlazeCompositeShader,
   lightGlazeDisplayShader,
@@ -246,7 +247,19 @@ export type {
 } from "./stroke-core";
 
 
-export type BlendMode = "normal" | "additive" | "light-glaze" | "m1-glaze";
+/**
+ * The UI exposes only the three measured rendering modes. The legacy values
+ * remain accepted so old history/benchmark payloads can still be replayed:
+ * `m1-glaze` is the old internal name for Light Glaze MAX coverage, while
+ * `normal`/`additive` are retained for deterministic internal/background work.
+ */
+export type BlendMode =
+  | "light-glaze"
+  | "uniformed-glaze"
+  | "intense-blending"
+  | "normal"
+  | "additive"
+  | "m1-glaze";
 export type BrushTool = "paint" | "blend";
 export type LayerFormat = "rgba8unorm" | "rgba16float";
 export type BrushShape = "circle" | "shape";
@@ -317,10 +330,11 @@ export type GrainAdaptivePreviewStrategy =
   | "legacy"
   | "disabled-semantic-mismatch-probe-spacing-active";
 export type LightGlazeStrategy =
-  | "lazy-stroke-mip0-format-quantized-composite-mips-single-commit"
-  | "m1-r8-quantized-max-coverage-plus-composited-mips-single-commit";
+  | "uniformed-linear-rgba16float-live-composite-mips-single-commit"
+  | "m1-r8-quantized-max-coverage-plus-composited-mips-single-commit"
+  | "intense-physical-stamps-source-over-srgb-rgba16float-live-single-commit";
 export type LightGlazeAdaptivePreviewStrategy = "disabled-semantic-mismatch";
-export type LightGlazeStorageMode = "none" | "rgba-stroke" | "r8-coverage";
+export type LightGlazeStorageMode = "none" | "rgba16float-stroke" | "r8-coverage";
 export type AdaptiveSpacingTriggerReason = "probe-timeout" | "slow-completion";
 export type AdaptivePreviewConcreteActivationReason =
   | "probe-timeout"
@@ -361,8 +375,14 @@ export interface BrushSettings {
   hardness: number;
   blendIntensity: number;
   blendMode: BlendMode;
+  wetDilution: number;
+  wetCharge: number;
+  wetAttack: number;
+  wetPull: number;
+  wetBlur: number;
   blendStretch: number;
   blendPaint: number;
+  // Retained only for history/settings ABI compatibility; always normalized to 1.
   jitterMaster: number;
   hueJitterDegrees: number;
   saturationJitter: number;
@@ -454,6 +474,7 @@ export interface EngineGpuMemoryStats {
   rasterBevelFieldShrinkCount: number;
   blendRendererMiB: number;
   lightGlazeMiB: number;
+  lightGlazeTransitionPeakMiB: number;
   thicknessTailMiB: number;
   // RAM CPU del journal Undo/Redo (32 B per stamp): mostrata nel monitor ma
   // esclusa dal totale GPU conteggiato.
@@ -959,6 +980,22 @@ interface LightGlazeSession {
   commitRequested: boolean;
   mipValidThroughLevel: number;
   tintLinear: [number, number, number] | null;
+}
+
+interface LightGlazeResourceSet {
+  storageMode: LightGlazeStorageMode;
+  texture: GPUTexture;
+  compositeMipTexture: GPUTexture;
+  view: GPUTextureView;
+  samplingView: GPUTextureView;
+  compositeMipViews: GPUTextureView[];
+  downsampleBindGroups: GPUBindGroup[];
+  compositeMipBindGroup: GPUBindGroup;
+  displayBindGroup: GPUBindGroup;
+  compositeBindGroup: GPUBindGroup;
+  commitTileTexture: GPUTexture | null;
+  commitTileView: GPUTextureView | null;
+  commitTileBindGroup: GPUBindGroup | null;
 }
 
 interface DirtyRect {
@@ -1507,9 +1544,11 @@ const GRAIN_COVERAGE_STRATEGY = "post-tip-coverage-pre-alpha-multiply" as const;
 const GRAIN_ADAPTIVE_PREVIEW_STRATEGY =
   "disabled-semantic-mismatch-probe-spacing-active" as const;
 const LIGHT_GLAZE_STRATEGY =
-  "lazy-stroke-mip0-format-quantized-composite-mips-single-commit" as const;
+  "uniformed-linear-rgba16float-live-composite-mips-single-commit" as const;
 const M1_GLAZE_STRATEGY =
   "m1-r8-quantized-max-coverage-plus-composited-mips-single-commit" as const;
+const INTENSE_BLENDING_STAMP_STRATEGY =
+  "intense-physical-stamps-source-over-srgb-rgba16float-live-single-commit" as const;
 const LIGHT_GLAZE_ADAPTIVE_PREVIEW_STRATEGY = "disabled-semantic-mismatch" as const;
 const LIGHT_GLAZE_STORAGE_LIFECYCLE_STRATEGY =
   "allocate-on-glaze-select-release-when-idle-deselected" as const;
@@ -1620,6 +1659,13 @@ const VIEW_ROTATION_SNAP_ENTER_RADIANS = 3 * Math.PI / 180;
 const VIEW_ROTATION_SNAP_RELEASE_RADIANS = 7 * Math.PI / 180;
 const LAYER_COMPOSITE_UNIFORM_BYTES = 32;
 const LIGHT_GLAZE_UNIFORM_BYTES = 32;
+const LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BYTES = 16;
+const LIGHT_GLAZE_COMMIT_TILE_UNIFORM_STRIDE_BYTES = 256;
+const LIGHT_GLAZE_COMMIT_TILE_EXTENT = 1024;
+const LIGHT_GLAZE_COMMIT_TILE_SLOT_COUNT =
+  (LAYER_SIZE / LIGHT_GLAZE_COMMIT_TILE_EXTENT) ** 2;
+const LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BUFFER_BYTES =
+  LIGHT_GLAZE_COMMIT_TILE_UNIFORM_STRIDE_BYTES * LIGHT_GLAZE_COMMIT_TILE_SLOT_COUNT;
 const THICKNESS_TAIL_UNIFORM_BYTES = 32;
 const STATIC_PAINT_BUFFER_BYTES =
   BRUSH_UNIFORM_BYTES * 2
@@ -1629,6 +1675,7 @@ const STATIC_PAINT_BUFFER_BYTES =
   + LAYER_COMPOSITE_UNIFORM_BYTES
   + THICKNESS_TAIL_UNIFORM_BYTES
   + LIGHT_GLAZE_UNIFORM_BYTES
+  + LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BUFFER_BYTES
   + MAX_STAMPS_PER_BATCH * STAMP_STRIDE_BYTES * 2
   + SHAPE_OCCUPANCY_MAP_BYTES * SHAPE_OCCUPANCY_MAP_COUNT;
 
@@ -1645,11 +1692,23 @@ function normalizeViewRotation(angle: number): number {
 }
 
 function isStrokeGlazeBlendMode(mode: BlendMode): boolean {
-  return mode === "light-glaze" || mode === "m1-glaze";
+  return mode === "light-glaze"
+    || mode === "uniformed-glaze"
+    || mode === "intense-blending"
+    || mode === "m1-glaze";
 }
 
 function lightGlazeStrategyForBlendMode(mode: BlendMode): LightGlazeStrategy {
-  return mode === "m1-glaze" ? M1_GLAZE_STRATEGY : LIGHT_GLAZE_STRATEGY;
+  if (mode === "intense-blending") {
+    return INTENSE_BLENDING_STAMP_STRATEGY;
+  }
+  return mode === "light-glaze" || mode === "m1-glaze"
+    ? M1_GLAZE_STRATEGY
+    : LIGHT_GLAZE_STRATEGY;
+}
+
+function usesBlendRenderer(settings: Pick<BrushSettings, "tool" | "blendMode">): boolean {
+  return settings.tool === "blend";
 }
 
 function paintDisplayPyramidAdditionalMemoryMiB(format: LayerFormat): number {
@@ -1675,8 +1734,12 @@ function lightGlazeAdditionalMemoryMiB(
   }
   const accumulatorMiB = storageMode === "r8-coverage"
     ? LAYER_SIZE * LAYER_SIZE / MEBIBYTE_BYTES
-    : layerBaseMemoryMiB(format);
-  return accumulatorMiB + paintDisplayPyramidAdditionalMemoryMiB(format);
+    : 128;
+  const commitTileMiB = storageMode === "rgba16float-stroke"
+    ? LIGHT_GLAZE_COMMIT_TILE_EXTENT * LIGHT_GLAZE_COMMIT_TILE_EXTENT
+      * (format === "rgba16float" ? 8 : 4) / MEBIBYTE_BYTES
+    : 0;
+  return accumulatorMiB + paintDisplayPyramidAdditionalMemoryMiB(format) + commitTileMiB;
 }
 
 function shapeTextureMemoryMiB(): number {
@@ -1851,7 +1914,12 @@ export const defaultBrushSettings: BrushSettings = {
   opacity: 1,
   hardness: 0.88,
   blendIntensity: 1,
-  blendMode: "normal",
+  blendMode: "light-glaze",
+  wetDilution: 0.5,
+  wetCharge: 0.5,
+  wetAttack: 0.5,
+  wetPull: 0.5,
+  wetBlur: 0,
   blendStretch: 0.18,
   blendPaint: 0.14,
   jitterMaster: 1,
@@ -2114,9 +2182,17 @@ export class BrushEngine {
   private lightGlazeCompositeMipBindGroup: GPUBindGroup | null = null;
   private lightGlazeDisplayBindGroup: GPUBindGroup | null = null;
   private lightGlazeCompositeBindGroup: GPUBindGroup | null = null;
+  private lightGlazeCommitTileTexture: GPUTexture | null = null;
+  private lightGlazeCommitTileView: GPUTextureView | null = null;
+  private lightGlazeCommitTileBindGroup: GPUBindGroup | null = null;
   private lightGlazeSession: LightGlazeSession | null = null;
+  private lightGlazeStaleRect: DirtyRect | null = null;
   private lightGlazeStorageAllocated = false;
   private lightGlazeStorageMode: LightGlazeStorageMode = "none";
+  private lightGlazeLoadingPromise: Promise<void> | null = null;
+  private lightGlazeLoadingStorageMode: LightGlazeStorageMode = "none";
+  private lightGlazeDesiredStorageMode: LightGlazeStorageMode = "none";
+  private lightGlazeTransitionPeakMiB = 0;
   private thicknessTailTexture: GPUTexture | null = null;
   private thicknessTailView: GPUTextureView | null = null;
   private thicknessTailDisplayBindGroup: GPUBindGroup | null = null;
@@ -2162,6 +2238,7 @@ export class BrushEngine {
   private vectorTextCaptureUniformBuffer!: GPUBuffer;
   private thicknessTailDisplayUniformBuffer!: GPUBuffer;
   private lightGlazeUniformBuffer!: GPUBuffer;
+  private lightGlazeCommitTileUniformBuffer!: GPUBuffer;
   private instanceBuffer!: GPUBuffer;
   private thicknessTailInstanceBuffer!: GPUBuffer;
   private shapeOccupancyUniformBuffers: GPUBuffer[] = [];
@@ -2210,6 +2287,7 @@ export class BrushEngine {
   private lightGlazeDisplayBindGroupLayout!: GPUBindGroupLayout;
   private lightGlazeCompositeMipBindGroupLayout!: GPUBindGroupLayout;
   private lightGlazeCompositeBindGroupLayout!: GPUBindGroupLayout;
+  private lightGlazeCommitTileBindGroupLayout!: GPUBindGroupLayout;
   private paintMipDownsampleBindGroupLayout!: GPUBindGroupLayout;
   private layerCompositeBindGroupLayout!: GPUBindGroupLayout;
   private brushBindGroup!: GPUBindGroup;
@@ -2253,6 +2331,8 @@ export class BrushEngine {
   private lightGlazeDisplayShaderModule!: GPUShaderModule;
   private lightGlazeCompositeMipShaderModule!: GPUShaderModule;
   private lightGlazeCompositeShaderModule!: GPUShaderModule;
+  private lightGlazeCommitTileShaderModule!: GPUShaderModule;
+  private lightGlazeClearShaderModule!: GPUShaderModule;
   private paintMipDownsampleShaderModule!: GPUShaderModule;
   private layerCompositeShaderModule!: GPUShaderModule;
   private normalPipeline!: GPURenderPipeline;
@@ -2267,6 +2347,18 @@ export class BrushEngine {
   private grainShapeAdditivePipeline!: GPURenderPipeline;
   private grainShapeOccupancyNormalPipeline!: GPURenderPipeline;
   private grainShapeOccupancyAdditivePipeline!: GPURenderPipeline;
+  private uniformedGlazePipeline!: GPURenderPipeline;
+  private uniformedGlazeShapePipeline!: GPURenderPipeline;
+  private uniformedGlazeShapeOccupancyPipeline!: GPURenderPipeline;
+  private grainUniformedGlazePipeline!: GPURenderPipeline;
+  private grainUniformedGlazeShapePipeline!: GPURenderPipeline;
+  private grainUniformedGlazeShapeOccupancyPipeline!: GPURenderPipeline;
+  private intenseBlendingPipeline!: GPURenderPipeline;
+  private intenseBlendingShapePipeline!: GPURenderPipeline;
+  private intenseBlendingShapeOccupancyPipeline!: GPURenderPipeline;
+  private grainIntenseBlendingPipeline!: GPURenderPipeline;
+  private grainIntenseBlendingShapePipeline!: GPURenderPipeline;
+  private grainIntenseBlendingShapeOccupancyPipeline!: GPURenderPipeline;
   private m1GlazePipeline!: GPURenderPipeline;
   private m1GlazeShapePipeline!: GPURenderPipeline;
   private m1GlazeShapeOccupancyPipeline!: GPURenderPipeline;
@@ -2299,6 +2391,9 @@ export class BrushEngine {
   private lightGlazeDisplayPipeline!: GPURenderPipeline;
   private lightGlazeCompositeMipPipeline!: GPURenderPipeline;
   private lightGlazeCompositePipeline!: GPURenderPipeline;
+  private lightGlazeCommitTilePipeline!: GPURenderPipeline;
+  private lightGlazeClearR8Pipeline!: GPURenderPipeline;
+  private lightGlazeClearRgba16FloatPipeline!: GPURenderPipeline;
   private paintMipDownsamplePipeline!: GPURenderPipeline;
   private layerCompositePipeline!: GPURenderPipeline;
 
@@ -2468,6 +2563,15 @@ export class BrushEngine {
     this.writeBrushUniforms();
 
     this.initialized = true;
+    if (usesBlendRenderer(this.settings)) {
+      this.blendRenderer?.prewarmScratch();
+    }
+    if (
+      this.settings.tool === "paint"
+      && isStrokeGlazeBlendMode(this.settings.blendMode)
+    ) {
+      await this.ensureLightGlazeResources(this.settings.blendMode);
+    }
     if (this.settings.grainMode !== "off") {
       this.requestGrainLoad();
     }
@@ -2492,10 +2596,18 @@ export class BrushEngine {
       );
     }
     this.flushPendingWorkBeforeSettingsChange();
-    const previousTool = this.settings.tool;
+    const previousUsesBlendRenderer = usesBlendRenderer(this.settings);
     const tool = next.tool === "paint" || next.tool === "blend"
       ? next.tool
       : this.settings.tool;
+    const blendMode = next.blendMode === "normal"
+      || next.blendMode === "additive"
+      || next.blendMode === "light-glaze"
+      || next.blendMode === "uniformed-glaze"
+      || next.blendMode === "intense-blending"
+      || next.blendMode === "m1-glaze"
+      ? next.blendMode
+      : this.settings.blendMode;
     this.settings = {
       ...this.settings,
       ...next,
@@ -2523,7 +2635,11 @@ export class BrushEngine {
         ? next.grainBlendMode
         : this.settings.grainBlendMode,
       count: clamp(Math.round(next.count ?? this.settings.count), 1, 24),
-      size: clamp(next.size ?? this.settings.size, tool === "blend" ? 1 : 4, tool === "blend" ? 1024 : 1500),
+      size: clamp(
+        next.size ?? this.settings.size,
+        tool === "blend" ? 1 : 4,
+        tool === "blend" ? 1024 : 1500,
+      ),
       spacingPercent: clamp(
         next.spacingPercent ?? this.settings.spacingPercent,
         tool === "blend" ? 1 : 0.25,
@@ -2534,16 +2650,19 @@ export class BrushEngine {
       flow: clamp(next.flow ?? this.settings.flow, 0.001, 1),
       opacity: clamp(next.opacity ?? this.settings.opacity, 0, 1),
       hardness: clamp(next.hardness ?? this.settings.hardness, 0, 1),
-      blendIntensity: clamp(next.blendIntensity ?? this.settings.blendIntensity, 0.1, 4),
-      blendMode: next.blendMode === "normal"
-        || next.blendMode === "additive"
-        || next.blendMode === "light-glaze"
-        || next.blendMode === "m1-glaze"
-        ? next.blendMode
-        : this.settings.blendMode,
+      // Kept in the history ABI only. Rendering now has one unambiguous Flow control.
+      blendIntensity: 1,
+      blendMode,
+      wetDilution: clamp(next.wetDilution ?? this.settings.wetDilution, 0, 1),
+      wetCharge: clamp(next.wetCharge ?? this.settings.wetCharge, 0, 1),
+      wetAttack: clamp(next.wetAttack ?? this.settings.wetAttack, 0, 1),
+      wetPull: clamp(next.wetPull ?? this.settings.wetPull, 0, 1),
+      wetBlur: clamp(next.wetBlur ?? this.settings.wetBlur, 0, 1),
       blendStretch: clamp(next.blendStretch ?? this.settings.blendStretch, 0, 1),
       blendPaint: clamp(next.blendPaint ?? this.settings.blendPaint, 0, 1),
-      jitterMaster: clamp(next.jitterMaster ?? this.settings.jitterMaster, 0, 1),
+      // Legacy presets may still carry this field, but the four Color Dynamics
+      // controls are authoritative and must never be scaled a second time.
+      jitterMaster: 1,
       hueJitterDegrees: clamp(next.hueJitterDegrees ?? this.settings.hueJitterDegrees, 0, 180),
       saturationJitter: clamp(next.saturationJitter ?? this.settings.saturationJitter, 0, 1),
       lightnessJitter: clamp(next.lightnessJitter ?? this.settings.lightnessJitter, 0, 1),
@@ -2554,22 +2673,23 @@ export class BrushEngine {
     this.prepareAdaptivePreviewShapePalette(this.settings);
 
     if (this.initialized) {
-      if (tool !== previousTool) {
-        if (tool === "blend") {
-          // L'allocazione avviene al select così l'eventuale costo del driver
-          // cade sul click UI e mai dentro la prima pennellata.
-          this.blendRenderer?.prewarmScratch();
-        } else {
-          this.maybeReleaseIdleBlendScratch();
-        }
+      const nextUsesBlendRenderer = usesBlendRenderer(this.settings);
+      if (nextUsesBlendRenderer && !previousUsesBlendRenderer) {
+        // Prewarm on selection so allocation never lands inside the first stroke.
+        this.blendRenderer?.prewarmScratch();
+      } else if (!nextUsesBlendRenderer && previousUsesBlendRenderer) {
+        this.maybeReleaseIdleBlendScratch();
       }
       const glazeSelected = tool === "paint"
         && isStrokeGlazeBlendMode(this.settings.blendMode);
+      this.lightGlazeDesiredStorageMode = glazeSelected
+        ? this.lightGlazeStorageModeFor(this.settings.blendMode)
+        : "none";
       if (glazeSelected) {
         // Prewarm al select del blending glaze (gestisce anche il cambio di
         // storage rgba↔r8); con sessione o tratto attivi provvede il frame.
         if (!this.lightGlazeSession && !this.activeStroke) {
-          this.ensureLightGlazeResources(this.settings.blendMode);
+          this.requestLightGlazeResources(this.settings.blendMode);
         }
       } else {
         this.maybeReleaseIdleLightGlazeResources();
@@ -4968,6 +5088,23 @@ export class BrushEngine {
       );
       return;
     }
+    if (
+      this.settings.tool === "paint"
+      && isStrokeGlazeBlendMode(this.settings.blendMode)
+      && (
+        this.lightGlazeLoadingPromise !== null
+        || !this.lightGlazeResourcesMatch(
+          this.lightGlazeStorageModeFor(this.settings.blendMode),
+        )
+      )
+    ) {
+      this.requestLightGlazeResources(this.settings.blendMode);
+      this.callbacks.onStatus?.(
+        "Rendering glaze in preparazione: riprova tra un istante…",
+        "working",
+      );
+      return;
+    }
     this.pauseLayerColdCompressionIdle();
     const normalizedPoint: LayerPoint = {
       ...point,
@@ -4989,7 +5126,7 @@ export class BrushEngine {
       this.rasterInnerShadowRenderer?.prewarmWorkspace(this.rasterInnerShadowStyle);
     }
     this.invalidateAdaptivePreview();
-    const tool = this.settings.tool;
+    const tool: BrushTool = this.settings.tool;
     const lightGlazeSettings = tool === "paint" && isStrokeGlazeBlendMode(this.settings.blendMode)
       ? { ...this.settings }
       : null;
@@ -5368,6 +5505,9 @@ export class BrushEngine {
     if (this.settings.grainMode !== "off") {
       await this.ensureGrainResources();
     }
+    if (isStrokeGlazeBlendMode(this.settings.blendMode)) {
+      await this.ensureLightGlazeResources(this.settings.blendMode);
+    }
 
     const count = clamp(Math.round(baseStampCount), 1, Math.min(12_000, MAX_STAMPS_PER_BATCH));
     this.invalidateAdaptivePreview();
@@ -5678,6 +5818,7 @@ export class BrushEngine {
       rasterBevelFieldAllocationCount: rasterBevelField.allocationCount,
       rasterBevelFieldShrinkCount: rasterBevelField.shrinkCount,
       lightGlazeMiB,
+      lightGlazeTransitionPeakMiB: this.lightGlazeTransitionPeakMiB,
       thicknessTailMiB,
       historyCpuMiB,
       countedTotalMiB,
@@ -5765,6 +5906,10 @@ export class BrushEngine {
       alignedBboxSavingsMiB: Math.max(0, eagerFullRawMiB - projectedAlignedBboxRawMiB),
       layers,
     };
+  }
+
+  resetLightGlazeTransitionPeak(): void {
+    this.lightGlazeTransitionPeakMiB = 0;
   }
 
   getStats(): EngineStats {
@@ -6093,7 +6238,7 @@ export class BrushEngine {
   private maybeReleaseIdleBlendScratch(): void {
     if (
       !this.initialized
-      || this.settings.tool === "blend"
+      || usesBlendRenderer(this.settings)
       || this.activeStroke !== null
       || this.historyBusy
       || this.pendingBlendBatches.length > 0
@@ -6105,7 +6250,7 @@ export class BrushEngine {
     }
   }
 
-  // Lo storage Light Glaze (fino a ~85,3 MiB) resta residente solo mentre un
+  // Lo storage dei rendering glaze resta residente solo mentre uno di questi
   // blending glaze è selezionato sul Paint. Mai rilasciare con sessione o
   // tratto attivi, replay in corso o stamp in coda: la sessione vive
   // nell'accumulatore fino al commit.
@@ -6115,6 +6260,7 @@ export class BrushEngine {
       || !this.lightGlazeStorageAllocated
       || (this.settings.tool === "paint"
         && isStrokeGlazeBlendMode(this.settings.blendMode))
+      || this.lightGlazeLoadingPromise !== null
       || this.lightGlazeSession !== null
       || this.activeStroke !== null
       || this.historyBusy
@@ -7717,6 +7863,9 @@ export class BrushEngine {
       throw new Error("Il motore non è ancora inizializzato.");
     }
 
+    while (this.lightGlazeLoadingPromise) {
+      await this.lightGlazeLoadingPromise;
+    }
     while (this.grainLoadingPromise) {
       await this.grainLoadingPromise;
     }
@@ -8560,6 +8709,11 @@ export class BrushEngine {
       size: LIGHT_GLAZE_UNIFORM_BYTES,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    this.lightGlazeCommitTileUniformBuffer = this.device.createBuffer({
+      label: "High precision glaze commit tile source origin",
+      size: LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BUFFER_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
 
     this.instanceBuffer = this.device.createBuffer({
       label: "Stamp instance storage",
@@ -8932,6 +9086,35 @@ export class BrushEngine {
         },
       ],
     });
+    this.lightGlazeCommitTileBindGroupLayout = this.device.createBindGroupLayout({
+      label: "High precision glaze exact tile commit bind group layout",
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float", viewDimension: "2d" },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float", viewDimension: "2d" },
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        },
+        {
+          binding: 3,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: {
+            type: "uniform",
+            hasDynamicOffset: true,
+            minBindingSize: LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BYTES,
+          },
+        },
+      ],
+    });
     this.paintMipDownsampleBindGroupLayout = this.device.createBindGroupLayout({
       label: "Paint display mip downsample bind group layout",
       entries: [{
@@ -9140,6 +9323,14 @@ export class BrushEngine {
       label: "Light Glaze final composite WGSL",
       code: lightGlazeCompositeShader,
     });
+    this.lightGlazeCommitTileShaderModule = this.device.createShaderModule({
+      label: "High precision glaze exact tile commit WGSL",
+      code: lightGlazeCommitTileShader,
+    });
+    this.lightGlazeClearShaderModule = this.device.createShaderModule({
+      label: "Rendering glaze dirty-region clear WGSL",
+      code: mixedSceneClearShader,
+    });
     this.paintMipDownsampleShaderModule = this.device.createShaderModule({
       label: "Paint display mip downsample WGSL",
       code: paintMipDownsampleShader,
@@ -9163,10 +9354,47 @@ export class BrushEngine {
         "Light Glaze composited mip 1",
       ),
       this.assertShaderCompiled(this.lightGlazeCompositeShaderModule, "Light Glaze final composite"),
+      this.assertShaderCompiled(
+        this.lightGlazeCommitTileShaderModule,
+        "High precision glaze exact tile commit",
+      ),
+      this.assertShaderCompiled(
+        this.lightGlazeClearShaderModule,
+        "rendering glaze dirty-region clear",
+      ),
       this.assertShaderCompiled(this.paintMipDownsampleShaderModule, "paint display mip downsample"),
       this.assertShaderCompiled(this.layerCompositeShaderModule, "layer source-over fold"),
     ]);
 
+    const lightGlazeClearPipelineLayout = this.device.createPipelineLayout({
+      label: "Rendering glaze dirty-region clear pipeline layout",
+      bindGroupLayouts: [],
+    });
+    const createLightGlazeClearPipeline = (
+      label: string,
+      format: GPUTextureFormat,
+    ): GPURenderPipeline => this.device.createRenderPipeline({
+      label,
+      layout: lightGlazeClearPipelineLayout,
+      vertex: {
+        module: this.lightGlazeClearShaderModule,
+        entryPoint: "vertexMain",
+      },
+      fragment: {
+        module: this.lightGlazeClearShaderModule,
+        entryPoint: "fragmentMain",
+        targets: [{ format }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+    this.lightGlazeClearR8Pipeline = createLightGlazeClearPipeline(
+      "Light Glaze R8 stale dirty-region clear pipeline",
+      "r8unorm",
+    );
+    this.lightGlazeClearRgba16FloatPipeline = createLightGlazeClearPipeline(
+      "Uniformed/Intense RGBA16F stale dirty-region clear pipeline",
+      "rgba16float",
+    );
     const displayPipelineLayout = this.device.createPipelineLayout({
       label: "Display pipeline layout",
       bindGroupLayouts: [this.displayBindGroupLayout],
@@ -12533,6 +12761,18 @@ export class BrushEngine {
       grainShapeAdditivePipeline,
       grainShapeOccupancyNormalPipeline,
       grainShapeOccupancyAdditivePipeline,
+      uniformedGlazePipeline,
+      uniformedGlazeShapePipeline,
+      uniformedGlazeShapeOccupancyPipeline,
+      grainUniformedGlazePipeline,
+      grainUniformedGlazeShapePipeline,
+      grainUniformedGlazeShapeOccupancyPipeline,
+      intenseBlendingPipeline,
+      intenseBlendingShapePipeline,
+      intenseBlendingShapeOccupancyPipeline,
+      grainIntenseBlendingPipeline,
+      grainIntenseBlendingShapePipeline,
+      grainIntenseBlendingShapeOccupancyPipeline,
       m1GlazePipeline,
       m1GlazeShapePipeline,
       m1GlazeShapeOccupancyPipeline,
@@ -12541,6 +12781,7 @@ export class BrushEngine {
       grainM1GlazeShapeOccupancyPipeline,
       lightGlazeCompositeMipPipeline,
       lightGlazeCompositePipeline,
+      lightGlazeCommitTilePipeline,
       paintMipDownsamplePipeline,
       layerCompositePipeline,
     } = await runGpuAllocationTransaction(
@@ -12578,6 +12819,10 @@ export class BrushEngine {
     const lightGlazeCompositePipelineLayout = this.device.createPipelineLayout({
       label: `Light Glaze final composite pipeline layout ${format}`,
       bindGroupLayouts: [this.lightGlazeCompositeBindGroupLayout],
+    });
+    const lightGlazeCommitTilePipelineLayout = this.device.createPipelineLayout({
+      label: `High precision glaze exact tile commit pipeline layout ${format}`,
+      bindGroupLayouts: [this.lightGlazeCommitTileBindGroupLayout],
     });
 
     const normalPipeline = this.device.createRenderPipeline({
@@ -12952,6 +13197,132 @@ export class BrushEngine {
       primitive: { topology: "triangle-strip" },
     });
 
+    const createRgba16FloatGlazePipeline = (
+      label: string,
+      layout: GPUPipelineLayout,
+      fragmentModule: GPUShaderModule,
+      vertexEntryPoint: "vertexMain" | "shapeVertexMain",
+      fragmentEntryPoint:
+        | "fragmentMain"
+        | "shapeFragmentMain"
+        | "shapeOccupancyFragmentMain"
+        | "encodedSrgbFragmentMain"
+        | "encodedSrgbShapeFragmentMain"
+        | "encodedSrgbShapeOccupancyFragmentMain",
+    ): GPURenderPipeline => this.device.createRenderPipeline({
+      label,
+      layout,
+      vertex: {
+        module: this.brushShaderModule,
+        entryPoint: vertexEntryPoint,
+      },
+      fragment: {
+        module: fragmentModule,
+        entryPoint: fragmentEntryPoint,
+        targets: [{
+          format: "rgba16float",
+          blend: {
+            color: {
+              operation: "add",
+              srcFactor: "one",
+              dstFactor: "one-minus-src-alpha",
+            },
+            alpha: {
+              operation: "add",
+              srcFactor: "one",
+              dstFactor: "one-minus-src-alpha",
+            },
+          },
+        }],
+      },
+      primitive: { topology: "triangle-strip" },
+    });
+
+    const uniformedGlazePipeline = createRgba16FloatGlazePipeline(
+      "Uniformed Glaze circle linear source-over rgba16float",
+      brushPipelineLayout,
+      this.brushShaderModule,
+      "vertexMain",
+      "fragmentMain",
+    );
+    const uniformedGlazeShapePipeline = createRgba16FloatGlazePipeline(
+      "Uniformed Glaze Shape linear source-over rgba16float",
+      brushPipelineLayout,
+      this.brushShaderModule,
+      "shapeVertexMain",
+      "shapeFragmentMain",
+    );
+    const uniformedGlazeShapeOccupancyPipeline = createRgba16FloatGlazePipeline(
+      "Uniformed Glaze Shape occupancy linear source-over rgba16float",
+      brushOccupancyPipelineLayout,
+      this.brushShaderModule,
+      "shapeVertexMain",
+      "shapeOccupancyFragmentMain",
+    );
+    const grainUniformedGlazePipeline = createRgba16FloatGlazePipeline(
+      "Uniformed Glaze Texturized circle linear source-over rgba16float",
+      grainBrushPipelineLayout,
+      this.texturizedGrainShaderModule,
+      "vertexMain",
+      "fragmentMain",
+    );
+    const grainUniformedGlazeShapePipeline = createRgba16FloatGlazePipeline(
+      "Uniformed Glaze Texturized Shape linear source-over rgba16float",
+      grainBrushPipelineLayout,
+      this.texturizedGrainShaderModule,
+      "shapeVertexMain",
+      "shapeFragmentMain",
+    );
+    const grainUniformedGlazeShapeOccupancyPipeline = createRgba16FloatGlazePipeline(
+      "Uniformed Glaze Texturized Shape occupancy linear source-over rgba16float",
+      grainBrushOccupancyPipelineLayout,
+      this.texturizedGrainShaderModule,
+      "shapeVertexMain",
+      "shapeOccupancyFragmentMain",
+    );
+
+    const intenseBlendingPipeline = createRgba16FloatGlazePipeline(
+      "Intense Blending circle encoded-sRGB source-over rgba16float",
+      brushPipelineLayout,
+      this.brushShaderModule,
+      "vertexMain",
+      "encodedSrgbFragmentMain",
+    );
+    const intenseBlendingShapePipeline = createRgba16FloatGlazePipeline(
+      "Intense Blending Shape encoded-sRGB source-over rgba16float",
+      brushPipelineLayout,
+      this.brushShaderModule,
+      "shapeVertexMain",
+      "encodedSrgbShapeFragmentMain",
+    );
+    const intenseBlendingShapeOccupancyPipeline = createRgba16FloatGlazePipeline(
+      "Intense Blending Shape occupancy encoded-sRGB source-over rgba16float",
+      brushOccupancyPipelineLayout,
+      this.brushShaderModule,
+      "shapeVertexMain",
+      "encodedSrgbShapeOccupancyFragmentMain",
+    );
+    const grainIntenseBlendingPipeline = createRgba16FloatGlazePipeline(
+      "Intense Blending Texturized circle encoded-sRGB source-over rgba16float",
+      grainBrushPipelineLayout,
+      this.texturizedGrainShaderModule,
+      "vertexMain",
+      "encodedSrgbFragmentMain",
+    );
+    const grainIntenseBlendingShapePipeline = createRgba16FloatGlazePipeline(
+      "Intense Blending Texturized Shape encoded-sRGB source-over rgba16float",
+      grainBrushPipelineLayout,
+      this.texturizedGrainShaderModule,
+      "shapeVertexMain",
+      "encodedSrgbShapeFragmentMain",
+    );
+    const grainIntenseBlendingShapeOccupancyPipeline = createRgba16FloatGlazePipeline(
+      "Intense Blending Texturized Shape occupancy encoded-sRGB source-over rgba16float",
+      grainBrushOccupancyPipelineLayout,
+      this.texturizedGrainShaderModule,
+      "shapeVertexMain",
+      "encodedSrgbShapeOccupancyFragmentMain",
+    );
     const createM1GlazePipeline = (
       label: string,
       layout: GPUPipelineLayout,
@@ -13080,6 +13451,20 @@ export class BrushEngine {
       primitive: { topology: "triangle-list" },
     });
 
+    const lightGlazeCommitTilePipeline = this.device.createRenderPipeline({
+      label: `High precision glaze exact tile commit ${format}`,
+      layout: lightGlazeCommitTilePipelineLayout,
+      vertex: {
+        module: this.lightGlazeCommitTileShaderModule,
+        entryPoint: "vertexMain",
+      },
+      fragment: {
+        module: this.lightGlazeCommitTileShaderModule,
+        entryPoint: "fragmentMain",
+        targets: [{ format }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
     const paintMipDownsamplePipeline = this.device.createRenderPipeline({
       label: `Paint display mip downsample ${format}`,
       layout: paintMipDownsamplePipelineLayout,
@@ -13124,6 +13509,18 @@ export class BrushEngine {
           grainShapeAdditivePipeline,
           grainShapeOccupancyNormalPipeline,
           grainShapeOccupancyAdditivePipeline,
+          uniformedGlazePipeline,
+          uniformedGlazeShapePipeline,
+          uniformedGlazeShapeOccupancyPipeline,
+          grainUniformedGlazePipeline,
+          grainUniformedGlazeShapePipeline,
+          grainUniformedGlazeShapeOccupancyPipeline,
+          intenseBlendingPipeline,
+          intenseBlendingShapePipeline,
+          intenseBlendingShapeOccupancyPipeline,
+          grainIntenseBlendingPipeline,
+          grainIntenseBlendingShapePipeline,
+          grainIntenseBlendingShapeOccupancyPipeline,
           m1GlazePipeline,
           m1GlazeShapePipeline,
           m1GlazeShapeOccupancyPipeline,
@@ -13132,6 +13529,7 @@ export class BrushEngine {
           grainM1GlazeShapeOccupancyPipeline,
           lightGlazeCompositeMipPipeline,
           lightGlazeCompositePipeline,
+          lightGlazeCommitTilePipeline,
           paintMipDownsamplePipeline,
           layerCompositePipeline,
         };
@@ -13298,6 +13696,18 @@ export class BrushEngine {
     this.grainShapeAdditivePipeline = grainShapeAdditivePipeline;
     this.grainShapeOccupancyNormalPipeline = grainShapeOccupancyNormalPipeline;
     this.grainShapeOccupancyAdditivePipeline = grainShapeOccupancyAdditivePipeline;
+    this.uniformedGlazePipeline = uniformedGlazePipeline;
+    this.uniformedGlazeShapePipeline = uniformedGlazeShapePipeline;
+    this.uniformedGlazeShapeOccupancyPipeline = uniformedGlazeShapeOccupancyPipeline;
+    this.grainUniformedGlazePipeline = grainUniformedGlazePipeline;
+    this.grainUniformedGlazeShapePipeline = grainUniformedGlazeShapePipeline;
+    this.grainUniformedGlazeShapeOccupancyPipeline = grainUniformedGlazeShapeOccupancyPipeline;
+    this.intenseBlendingPipeline = intenseBlendingPipeline;
+    this.intenseBlendingShapePipeline = intenseBlendingShapePipeline;
+    this.intenseBlendingShapeOccupancyPipeline = intenseBlendingShapeOccupancyPipeline;
+    this.grainIntenseBlendingPipeline = grainIntenseBlendingPipeline;
+    this.grainIntenseBlendingShapePipeline = grainIntenseBlendingShapePipeline;
+    this.grainIntenseBlendingShapeOccupancyPipeline = grainIntenseBlendingShapeOccupancyPipeline;
     this.m1GlazePipeline = m1GlazePipeline;
     this.m1GlazeShapePipeline = m1GlazeShapePipeline;
     this.m1GlazeShapeOccupancyPipeline = m1GlazeShapeOccupancyPipeline;
@@ -13306,6 +13716,7 @@ export class BrushEngine {
     this.grainM1GlazeShapeOccupancyPipeline = grainM1GlazeShapeOccupancyPipeline;
     this.lightGlazeCompositeMipPipeline = lightGlazeCompositeMipPipeline;
     this.lightGlazeCompositePipeline = lightGlazeCompositePipeline;
+    this.lightGlazeCommitTilePipeline = lightGlazeCommitTilePipeline;
     this.paintMipDownsamplePipeline = paintMipDownsamplePipeline;
     this.layerCompositePipeline = layerCompositePipeline;
     this.layerFormat = format;
@@ -13417,11 +13828,14 @@ export class BrushEngine {
     this.thicknessTailPresentedRect = null;
   }
 
-  private ensureLightGlazeResources(blendMode: BlendMode): void {
-    const storageMode: LightGlazeStorageMode = blendMode === "m1-glaze"
+  private lightGlazeStorageModeFor(blendMode: BlendMode): LightGlazeStorageMode {
+    return blendMode === "light-glaze" || blendMode === "m1-glaze"
       ? "r8-coverage"
-      : "rgba-stroke";
-    if (
+      : "rgba16float-stroke";
+  }
+
+  private lightGlazeResourcesMatch(storageMode: LightGlazeStorageMode): boolean {
+    return Boolean(
       this.lightGlazeTexture
       && this.lightGlazeCompositeMipTexture
       && this.lightGlazeView
@@ -13429,102 +13843,392 @@ export class BrushEngine {
       && this.lightGlazeCompositeMipBindGroup
       && this.lightGlazeDisplayBindGroup
       && this.lightGlazeCompositeBindGroup
+      && (
+        storageMode === "r8-coverage"
+        || (
+          this.lightGlazeCommitTileTexture
+          && this.lightGlazeCommitTileView
+          && this.lightGlazeCommitTileBindGroup
+        )
+      )
       && this.lightGlazeStorageMode === storageMode
-    ) {
-      return;
-    }
-    if (this.lightGlazeTexture || this.lightGlazeCompositeMipTexture) {
-      this.destroyLightGlazeResources();
-    }
-
-    const accumulatorFormat: GPUTextureFormat = storageMode === "r8-coverage"
-      ? "r8unorm"
-      : this.layerFormat;
-    const texture = this.device.createTexture({
-      label: `Lazy Light Glaze stroke accumulator ${accumulatorFormat}`,
-      size: { width: LAYER_SIZE, height: LAYER_SIZE, depthOrArrayLayers: 1 },
-      format: accumulatorFormat,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-    });
-    const compositeMipTexture = this.device.createTexture({
-      label: `Lazy Light Glaze composited logical mip 1+ ${this.layerFormat}`,
-      size: {
-        width: Math.max(1, LAYER_SIZE >> 1),
-        height: Math.max(1, LAYER_SIZE >> 1),
-        depthOrArrayLayers: 1,
-      },
-      mipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT - 1,
-      format: this.layerFormat,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-    });
-    const view = texture.createView({
-      label: "Light Glaze authoritative stroke mip 0",
-    });
-    const samplingView = compositeMipTexture.createView({
-      label: "Light Glaze final-composite logical mip 1+ sampling chain",
-      baseMipLevel: 0,
-      mipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT - 1,
-    });
-    const compositeMipViews = Array.from(
-      { length: PAINT_DISPLAY_MIP_LEVEL_COUNT - 1 },
-      (_, mipIndex) => compositeMipTexture.createView({
-        label: `Light Glaze final-composite logical mip ${mipIndex + 1}`,
-        baseMipLevel: mipIndex,
-        mipLevelCount: 1,
-      }),
     );
-    const downsampleBindGroups = compositeMipViews
-      .slice(0, -1)
-      .map((sourceView, sourceMipIndex) => this.device.createBindGroup({
-        label: `Light Glaze logical mip ${sourceMipIndex + 1} to ${sourceMipIndex + 2}`,
-        layout: this.paintMipDownsampleBindGroupLayout,
-        entries: [{ binding: 0, resource: sourceView }],
-      }));
-    const compositeMipBindGroup = this.device.createBindGroup({
-      label: "Light Glaze permanent + stroke to composited logical mip 1",
-      layout: this.lightGlazeCompositeMipBindGroupLayout,
-      entries: [
-        { binding: 0, resource: this.layerView },
-        { binding: 1, resource: view },
-        { binding: 2, resource: { buffer: this.lightGlazeUniformBuffer } },
-      ],
-    });
-    const displayBindGroup = this.device.createBindGroup({
-      label: "Light Glaze live display bind group",
-      layout: this.lightGlazeDisplayBindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: this.displayUniformBuffer } },
-        { binding: 1, resource: this.layerSamplingView },
-        { binding: 2, resource: view },
-        { binding: 3, resource: this.sampler },
-        { binding: 4, resource: { buffer: this.lightGlazeUniformBuffer } },
-        { binding: 5, resource: samplingView },
-        { binding: 6, resource: this.mergedBelowView() },
-        { binding: 7, resource: this.mergedAboveView() },
-        { binding: 8, resource: this.vectorTextBelowView ?? this.transparentLayerView },
-        { binding: 9, resource: this.vectorTextAboveView ?? this.transparentLayerView },
-      ],
-    });
-    const compositeBindGroup = this.device.createBindGroup({
-      label: "Light Glaze final composite bind group",
-      layout: this.lightGlazeCompositeBindGroupLayout,
-      entries: [
-        { binding: 0, resource: view },
-        { binding: 1, resource: { buffer: this.lightGlazeUniformBuffer } },
-      ],
-    });
+  }
 
-    this.lightGlazeTexture = texture;
-    this.lightGlazeCompositeMipTexture = compositeMipTexture;
+  private requestLightGlazeResources(blendMode: BlendMode): void {
+    void this.ensureLightGlazeResources(blendMode).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      this.callbacks.onStatus?.(`Rendering glaze non disponibile: ${message}`, "error");
+    });
+  }
+
+  private ensureLightGlazeResources(blendMode: BlendMode): Promise<void> {
+    const storageMode = this.lightGlazeStorageModeFor(blendMode);
+    this.lightGlazeDesiredStorageMode = storageMode;
+
+    const inFlight = this.lightGlazeLoadingPromise;
+    if (inFlight) {
+      const inFlightMode = this.lightGlazeLoadingStorageMode;
+      return inFlight.then(
+        () => {
+          if (this.lightGlazeDesiredStorageMode !== storageMode) {
+            return;
+          }
+          return this.ensureLightGlazeResources(blendMode);
+        },
+        (error: unknown) => {
+          if (
+            this.lightGlazeDesiredStorageMode === storageMode
+            && inFlightMode === storageMode
+          ) {
+            throw error;
+          }
+          if (this.lightGlazeDesiredStorageMode === storageMode) {
+            return this.ensureLightGlazeResources(blendMode);
+          }
+        },
+      );
+    }
+    if (this.lightGlazeResourcesMatch(storageMode)) {
+      return Promise.resolve();
+    }
+
+    const loading = (async () => {
+      const steadyTotalMiB = this.getGpuMemoryStats().countedTotalMiB;
+      let resources: LightGlazeResourceSet;
+      try {
+        resources = await runGpuAllocationTransaction(
+          this.device,
+          `Allocazione rendering glaze ${storageMode}`,
+          (transaction) => {
+            const candidate = this.createLightGlazeResourceSet(storageMode);
+            this.lightGlazeTransitionPeakMiB = Math.max(
+              this.lightGlazeTransitionPeakMiB,
+              steadyTotalMiB + lightGlazeAdditionalMemoryMiB(this.layerFormat, storageMode),
+            );
+            transaction.deferRollback(() => this.destroyLightGlazeResourceSet(candidate));
+            return candidate;
+          },
+        );
+      } catch (error) {
+        if (this.lightGlazeDesiredStorageMode !== storageMode) {
+          return;
+        }
+        throw error;
+      }
+
+      if (this.lightGlazeDesiredStorageMode !== storageMode) {
+        this.destroyLightGlazeResourceSet(resources);
+        return;
+      }
+
+      const previous = this.currentLightGlazeResourceSet();
+      const previousStaleRect = this.lightGlazeStaleRect
+        ? { ...this.lightGlazeStaleRect }
+        : null;
+      await runGpuAllocationTransaction(
+        this.device,
+        `Retarget rendering glaze ${storageMode}`,
+        (transaction) => {
+          transaction.deferRollback(() => {
+            this.applyLightGlazeResourceSet(previous);
+            this.lightGlazeStaleRect = previousStaleRect;
+            this.destroyLightGlazeResourceSet(resources);
+          });
+          this.applyLightGlazeResourceSet(resources);
+          this.lightGlazeStaleRect = null;
+        },
+      );
+
+      if (
+        this.lightGlazeDesiredStorageMode !== storageMode
+        && previous
+        && previous.storageMode === this.lightGlazeDesiredStorageMode
+      ) {
+        try {
+          await runGpuAllocationTransaction(
+            this.device,
+            `Ripristino rendering glaze ${previous.storageMode}`,
+            (transaction) => {
+              transaction.deferRollback(() => {
+                this.applyLightGlazeResourceSet(resources);
+                this.lightGlazeStaleRect = null;
+              });
+              this.applyLightGlazeResourceSet(previous);
+              this.lightGlazeStaleRect = previousStaleRect;
+            },
+          );
+          this.destroyLightGlazeResourceSet(resources);
+          this.publishStats();
+          return;
+        } catch (error) {
+          this.destroyLightGlazeResourceSet(previous);
+          throw error;
+        }
+      }
+
+      this.destroyLightGlazeResourceSet(previous);
+      this.publishStats();
+    })();
+    const tracked = loading.finally(() => {
+      if (this.lightGlazeLoadingPromise === tracked) {
+        this.lightGlazeLoadingPromise = null;
+        this.lightGlazeLoadingStorageMode = "none";
+        const selectedGlaze = this.settings.tool === "paint"
+          && isStrokeGlazeBlendMode(this.settings.blendMode);
+        if (
+          selectedGlaze
+          && !this.historyBusy
+          && !this.lightGlazeSession
+          && !this.activeStroke
+          && !this.lightGlazeResourcesMatch(
+            this.lightGlazeStorageModeFor(this.settings.blendMode),
+          )
+        ) {
+          this.requestLightGlazeResources(this.settings.blendMode);
+        } else {
+          this.maybeReleaseIdleLightGlazeResources();
+        }
+      }
+    });
+    this.lightGlazeLoadingPromise = tracked;
+    this.lightGlazeLoadingStorageMode = storageMode;
+    return tracked;
+  }
+  private createLightGlazeResourceSet(
+    storageMode: LightGlazeStorageMode,
+  ): LightGlazeResourceSet {
+    const {
+      texture,
+      compositeMipTexture,
+      view,
+      samplingView,
+      compositeMipViews,
+      downsampleBindGroups,
+      compositeMipBindGroup,
+      displayBindGroup,
+      compositeBindGroup,
+      commitTileTexture,
+      commitTileView,
+      commitTileBindGroup,
+    } = (() => {
+      let texture: GPUTexture | null = null;
+      let compositeMipTexture: GPUTexture | null = null;
+      let commitTileTexture: GPUTexture | null = null;
+      let commitTileView: GPUTextureView | null = null;
+      let commitTileBindGroup: GPUBindGroup | null = null;
+      try {
+        const accumulatorFormat: GPUTextureFormat = storageMode === "r8-coverage"
+          ? "r8unorm"
+          : "rgba16float";
+        texture = this.device.createTexture({
+          label: `Lazy Light Glaze stroke accumulator ${accumulatorFormat}`,
+          size: { width: LAYER_SIZE, height: LAYER_SIZE, depthOrArrayLayers: 1 },
+          format: accumulatorFormat,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+        });
+        compositeMipTexture = this.device.createTexture({
+          label: `Lazy Light Glaze composited logical mip 1+ ${this.layerFormat}`,
+          size: {
+            width: Math.max(1, LAYER_SIZE >> 1),
+            height: Math.max(1, LAYER_SIZE >> 1),
+            depthOrArrayLayers: 1,
+          },
+          mipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT - 1,
+          format: this.layerFormat,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+        });
+        const view = texture.createView({
+          label: "Light Glaze authoritative stroke mip 0",
+        });
+        const samplingView = compositeMipTexture.createView({
+          label: "Light Glaze final-composite logical mip 1+ sampling chain",
+          baseMipLevel: 0,
+          mipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT - 1,
+        });
+        const compositeMipViews = Array.from(
+          { length: PAINT_DISPLAY_MIP_LEVEL_COUNT - 1 },
+          (_, mipIndex) => compositeMipTexture!.createView({
+            label: `Light Glaze final-composite logical mip ${mipIndex + 1}`,
+            baseMipLevel: mipIndex,
+            mipLevelCount: 1,
+          }),
+        );
+        const downsampleBindGroups = compositeMipViews
+          .slice(0, -1)
+          .map((sourceView, sourceMipIndex) => this.device.createBindGroup({
+            label: `Light Glaze logical mip ${sourceMipIndex + 1} to ${sourceMipIndex + 2}`,
+            layout: this.paintMipDownsampleBindGroupLayout,
+            entries: [{ binding: 0, resource: sourceView }],
+          }));
+        const compositeMipBindGroup = this.device.createBindGroup({
+          label: "Light Glaze permanent + stroke to composited logical mip 1",
+          layout: this.lightGlazeCompositeMipBindGroupLayout,
+          entries: [
+            { binding: 0, resource: this.layerView },
+            { binding: 1, resource: view },
+            { binding: 2, resource: { buffer: this.lightGlazeUniformBuffer } },
+          ],
+        });
+        const displayBindGroup = this.device.createBindGroup({
+          label: "Light Glaze live display bind group",
+          layout: this.lightGlazeDisplayBindGroupLayout,
+          entries: [
+            { binding: 0, resource: { buffer: this.displayUniformBuffer } },
+            { binding: 1, resource: this.layerSamplingView },
+            { binding: 2, resource: view },
+            { binding: 3, resource: this.sampler },
+            { binding: 4, resource: { buffer: this.lightGlazeUniformBuffer } },
+            { binding: 5, resource: samplingView },
+            { binding: 6, resource: this.mergedBelowView() },
+            { binding: 7, resource: this.mergedAboveView() },
+            { binding: 8, resource: this.vectorTextBelowView ?? this.transparentLayerView },
+            { binding: 9, resource: this.vectorTextAboveView ?? this.transparentLayerView },
+          ],
+        });
+        const compositeBindGroup = this.device.createBindGroup({
+          label: "Light Glaze final composite bind group",
+          layout: this.lightGlazeCompositeBindGroupLayout,
+          entries: [
+            { binding: 0, resource: view },
+            { binding: 1, resource: { buffer: this.lightGlazeUniformBuffer } },
+          ],
+        });
+
+        if (storageMode === "rgba16float-stroke") {
+          if (
+            LIGHT_GLAZE_COMMIT_TILE_UNIFORM_STRIDE_BYTES
+              % this.device.limits.minUniformBufferOffsetAlignment !== 0
+          ) {
+            throw new Error(
+              "Allineamento uniform dinamico non supportato dal commit tile glaze ad alta precisione.",
+            );
+          }
+          commitTileTexture = this.device.createTexture({
+            label: `High precision glaze exact commit tile ${this.layerFormat}`,
+            size: {
+              width: LIGHT_GLAZE_COMMIT_TILE_EXTENT,
+              height: LIGHT_GLAZE_COMMIT_TILE_EXTENT,
+              depthOrArrayLayers: 1,
+            },
+            format: this.layerFormat,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+          });
+          commitTileView = commitTileTexture.createView({
+            label: "High precision glaze exact commit tile view",
+          });
+          commitTileBindGroup = this.device.createBindGroup({
+            label: "High precision glaze exact commit tile bind group",
+            layout: this.lightGlazeCommitTileBindGroupLayout,
+            entries: [
+              { binding: 0, resource: this.layerView },
+              { binding: 1, resource: view },
+              { binding: 2, resource: { buffer: this.lightGlazeUniformBuffer } },
+              {
+                binding: 3,
+                resource: {
+                  buffer: this.lightGlazeCommitTileUniformBuffer,
+                  offset: 0,
+                  size: LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BYTES,
+                },
+              },
+            ],
+          });
+        }
+
+        return {
+          texture: texture!,
+          compositeMipTexture: compositeMipTexture!,
+          view,
+          samplingView,
+          compositeMipViews,
+          downsampleBindGroups,
+          compositeMipBindGroup,
+          displayBindGroup,
+          compositeBindGroup,
+          commitTileTexture,
+          commitTileView,
+          commitTileBindGroup,
+        };
+      } catch (error) {
+        commitTileTexture?.destroy();
+        compositeMipTexture?.destroy();
+        texture?.destroy();
+        throw error;
+      }
+    })();
+    return {
+      storageMode,
+      texture,
+      compositeMipTexture,
+      view,
+      samplingView,
+      compositeMipViews,
+      downsampleBindGroups,
+      compositeMipBindGroup,
+      displayBindGroup,
+      compositeBindGroup,
+      commitTileTexture,
+      commitTileView,
+      commitTileBindGroup,
+    };
+  }
+
+  private currentLightGlazeResourceSet(): LightGlazeResourceSet | null {
+    if (
+      !this.lightGlazeStorageAllocated
+      || this.lightGlazeStorageMode === "none"
+      || !this.lightGlazeTexture
+      || !this.lightGlazeCompositeMipTexture
+      || !this.lightGlazeView
+      || !this.lightGlazeSamplingView
+      || !this.lightGlazeCompositeMipBindGroup
+      || !this.lightGlazeDisplayBindGroup
+      || !this.lightGlazeCompositeBindGroup
+    ) {
+      return null;
+    }
+    return {
+      storageMode: this.lightGlazeStorageMode,
+      texture: this.lightGlazeTexture,
+      compositeMipTexture: this.lightGlazeCompositeMipTexture,
+      view: this.lightGlazeView,
+      samplingView: this.lightGlazeSamplingView,
+      compositeMipViews: this.lightGlazeMipViews.slice(1),
+      downsampleBindGroups: [...this.lightGlazeMipDownsampleBindGroups],
+      compositeMipBindGroup: this.lightGlazeCompositeMipBindGroup,
+      displayBindGroup: this.lightGlazeDisplayBindGroup,
+      compositeBindGroup: this.lightGlazeCompositeBindGroup,
+      commitTileTexture: this.lightGlazeCommitTileTexture,
+      commitTileView: this.lightGlazeCommitTileView,
+      commitTileBindGroup: this.lightGlazeCommitTileBindGroup,
+    };
+  }
+
+  private destroyLightGlazeResourceSet(resources: LightGlazeResourceSet | null): void {
+    resources?.commitTileTexture?.destroy();
+    resources?.compositeMipTexture.destroy();
+    resources?.texture.destroy();
+  }
+
+  private applyLightGlazeResourceSet(resources: LightGlazeResourceSet | null): void {
+    const view = resources?.view ?? null;
+    this.lightGlazeTexture = resources?.texture ?? null;
+    this.lightGlazeCompositeMipTexture = resources?.compositeMipTexture ?? null;
     this.lightGlazeView = view;
-    this.lightGlazeSamplingView = samplingView;
-    this.lightGlazeMipViews = [view, ...compositeMipViews];
-    this.lightGlazeMipDownsampleBindGroups = downsampleBindGroups;
-    this.lightGlazeCompositeMipBindGroup = compositeMipBindGroup;
-    this.lightGlazeDisplayBindGroup = displayBindGroup;
-    this.lightGlazeCompositeBindGroup = compositeBindGroup;
-    this.lightGlazeStorageAllocated = true;
-    this.lightGlazeStorageMode = storageMode;
+    this.lightGlazeSamplingView = resources?.samplingView ?? null;
+    this.lightGlazeMipViews = resources
+      ? [resources.view, ...resources.compositeMipViews]
+      : [];
+    this.lightGlazeMipDownsampleBindGroups = resources?.downsampleBindGroups ?? [];
+    this.lightGlazeCompositeMipBindGroup = resources?.compositeMipBindGroup ?? null;
+    this.lightGlazeDisplayBindGroup = resources?.displayBindGroup ?? null;
+    this.lightGlazeCompositeBindGroup = resources?.compositeBindGroup ?? null;
+    this.lightGlazeCommitTileTexture = resources?.commitTileTexture ?? null;
+    this.lightGlazeCommitTileView = resources?.commitTileView ?? null;
+    this.lightGlazeCommitTileBindGroup = resources?.commitTileBindGroup ?? null;
+    this.lightGlazeStorageAllocated = resources !== null;
+    this.lightGlazeStorageMode = resources?.storageMode ?? "none";
     this.rasterStrokeRenderer?.setLightGlazeView(view);
     this.rasterBevelRenderer?.setLightGlazeView(view);
     this.rasterOuterShadowRenderer?.setLightGlazeView(view);
@@ -13538,8 +14242,10 @@ export class BrushEngine {
     this.rasterInnerShadowRenderer?.setLightGlazeView(null);
     this.rebuildRasterStrokeDisplayBindGroups();
     this.lightGlazeSession = null;
+    this.lightGlazeStaleRect = null;
     this.lightGlazeTexture?.destroy();
     this.lightGlazeCompositeMipTexture?.destroy();
+    this.lightGlazeCommitTileTexture?.destroy();
     this.lightGlazeTexture = null;
     this.lightGlazeCompositeMipTexture = null;
     this.lightGlazeView = null;
@@ -13549,6 +14255,9 @@ export class BrushEngine {
     this.lightGlazeCompositeMipBindGroup = null;
     this.lightGlazeDisplayBindGroup = null;
     this.lightGlazeCompositeBindGroup = null;
+    this.lightGlazeCommitTileTexture = null;
+    this.lightGlazeCommitTileView = null;
+    this.lightGlazeCommitTileBindGroup = null;
     this.lightGlazeStorageAllocated = false;
     this.lightGlazeStorageMode = "none";
   }
@@ -13557,16 +14266,18 @@ export class BrushEngine {
     if (this.lightGlazeSession) {
       throw new Error("Un tratto Light Glaze precedente non è ancora stato finalizzato.");
     }
-    this.ensureLightGlazeResources(settings.blendMode);
+    const storageMode = this.lightGlazeStorageModeFor(settings.blendMode);
+    if (!this.lightGlazeResourcesMatch(storageMode)) {
+      throw new Error("Risorse rendering glaze non pronte all'inizio della pennellata.");
+    }
     this.lightGlazeSession = {
       historyActionId,
       settings: {
         ...settings,
         opacity: Number.isFinite(settings.opacity) ? clamp(settings.opacity, 0, 1) : 1,
-        blendMode: settings.blendMode === "m1-glaze" ? "m1-glaze" : "light-glaze",
       },
       dirtyRect: null,
-      needsClear: true,
+      needsClear: this.lightGlazeStaleRect !== null,
       hasContent: false,
       endRequested: false,
       commitRequested: false,
@@ -13579,6 +14290,10 @@ export class BrushEngine {
     if (!this.lightGlazeSession) {
       return;
     }
+    this.lightGlazeStaleRect = this.mergeDirtyRects(
+      this.lightGlazeStaleRect,
+      this.lightGlazeSession.dirtyRect,
+    );
     this.lightGlazeSession = null;
     // The screen cache may contain the transient live composite. Any caller
     // that abandons a stroke (reset, cancel or failure) must rebuild it before
@@ -13649,7 +14364,7 @@ export class BrushEngine {
 
   private writeLightGlazeUniforms(
     opacity: number,
-    accumulationMode: "source-over" | "m1-max-coverage",
+    accumulationMode: "source-over" | "m1-max-coverage" | "encoded-srgb-source-over",
     tintLinear: readonly [number, number, number] | null,
   ): void {
     const upload = new ArrayBuffer(LIGHT_GLAZE_UNIFORM_BYTES);
@@ -13657,7 +14372,11 @@ export class BrushEngine {
     const unsigned = new Uint32Array(upload);
     floats[0] = Number.isFinite(opacity) ? clamp(opacity, 0, 1) : 1;
     unsigned[1] = this.layerFormat === "rgba16float" ? 1 : 0;
-    unsigned[2] = accumulationMode === "m1-max-coverage" ? 1 : 0;
+    unsigned[2] = accumulationMode === "m1-max-coverage"
+      ? 1
+      : accumulationMode === "encoded-srgb-source-over"
+        ? 2
+        : 0;
     floats[4] = tintLinear?.[0] ?? 0;
     floats[5] = tintLinear?.[1] ?? 0;
     floats[6] = tintLinear?.[2] ?? 0;
@@ -14315,7 +15034,6 @@ export class BrushEngine {
     floats.fill(0);
 
     const [hue, saturation, lightness] = hexToHsl(settings.color);
-    const jitterMaster = settings.jitterMaster;
 
     floats[0] = targetWidth;
     floats[1] = targetHeight;
@@ -14328,13 +15046,14 @@ export class BrushEngine {
     // Feeding opacity through that existing lane keeps Normal at 100% on the
     // same shader and pipeline path while extending Normal/Additive exactly.
     floats[7] = Number.isFinite(settings.opacity) ? clamp(settings.opacity, 0, 1) : 1;
-    floats[8] = (settings.hueJitterDegrees / 360) * jitterMaster;
-    floats[9] = settings.saturationJitter * jitterMaster;
-    floats[10] = settings.lightnessJitter * jitterMaster;
-    floats[11] = settings.darknessJitter * jitterMaster;
+    floats[8] = settings.hueJitterDegrees / 360;
+    floats[9] = settings.saturationJitter;
+    floats[10] = settings.lightnessJitter;
+    floats[11] = settings.darknessJitter;
     floats[12] = settings.flow;
     floats[13] = settings.hardness;
-    floats[14] = settings.blendIntensity;
+    // Legacy ABI lane: Blend Intensity is permanently neutralized.
+    floats[14] = 1;
     // Keep the uniform ABI stable; pressure-to-alpha has been removed.
     floats[15] = 0;
     floats[16] = settings.positionJitterLinear;
@@ -16343,6 +17062,7 @@ export class BrushEngine {
           }
 
           if (isStrokeGlazeBlendMode(batch.settings.blendMode)) {
+            await this.ensureLightGlazeResources(batch.settings.blendMode);
             const actionId = replayStamps[0].historyActionId;
             if (replayStamps.some((stamp) => stamp.historyActionId !== actionId)) {
               throw new Error("Un batch Light Glaze storico contiene più pennellate.");
@@ -16557,20 +17277,16 @@ export class BrushEngine {
     settings: BrushSettings,
     baseHsl: readonly [number, number, number] = hexToHsl(settings.color),
   ): [number, number, number] {
-    const jitterMaster = settings.jitterMaster;
     const hueDelta = (previewRandom01(colorSeed, 1) - 0.5)
       * 2
-      * (settings.hueJitterDegrees / 360)
-      * jitterMaster;
+      * (settings.hueJitterDegrees / 360);
     const saturationDelta = (previewRandom01(colorSeed, 2) - 0.5)
       * 2
-      * settings.saturationJitter
-      * jitterMaster;
+      * settings.saturationJitter;
     const lightnessDelta = (previewRandom01(colorSeed, 3) - 0.5)
       * 2
-      * settings.lightnessJitter
-      * jitterMaster;
-    const darkness = previewRandom01(colorSeed, 4) * settings.darknessJitter * jitterMaster;
+      * settings.lightnessJitter;
+    const darkness = previewRandom01(colorSeed, 4) * settings.darknessJitter;
     const lightnessBeforeDarkness = clamp(baseHsl[2] + lightnessDelta, 0, 1);
     return previewHslToRgb(
       baseHsl[0] + hueDelta,
@@ -16586,7 +17302,6 @@ export class BrushEngine {
     }
     const key = [
       settings.color,
-      settings.jitterMaster,
       settings.hueJitterDegrees,
       settings.saturationJitter,
       settings.lightnessJitter,
@@ -17448,9 +18163,7 @@ export class BrushEngine {
       const directionY = directionLength > 0.0001 ? directionYRaw / directionLength : 0;
       const baseHsl = hexToHsl(candidateSettings.color);
       const alpha = clamp(
-        candidateSettings.flow
-          * candidateSettings.opacity
-          * candidateSettings.blendIntensity,
+        candidateSettings.flow * candidateSettings.opacity,
         0,
         0.999999,
       ) * ADAPTIVE_PREVIEW_ALPHA_SCALE;
@@ -17732,17 +18445,28 @@ export class BrushEngine {
     if (replayBatch && replayBatch.grainTextureIdentity !== expectedGrainIdentity) {
       throw new Error("Il Grain usato dalla cronologia non corrisponde alla risorsa corrente.");
     }
-    this.ensureLightGlazeResources(settings.blendMode);
+    const storageMode = this.lightGlazeStorageModeFor(settings.blendMode);
+    if (!this.lightGlazeResourcesMatch(storageMode)) {
+      throw new Error("Risorse rendering glaze mancanti durante il rendering.");
+    }
     const grainActive = this.isTexturizedGrainActive(settings);
-    const m1Glaze = settings.blendMode === "m1-glaze";
+    const m1Glaze = settings.blendMode === "light-glaze"
+      || settings.blendMode === "m1-glaze";
 
     const cpuStart = performance.now();
     if (present) {
       this.ensurePresentationCacheTexture();
     }
-    // Flow, coverage and jitter remain per stamp. Opacity is applied
-    // exactly once to the accumulated stroke by the live/final compositors.
-    this.writeBrushUniforms({ ...settings, opacity: 1, blendMode: "normal" });
+    const intenseBlending = settings.blendMode === "intense-blending";
+    // Light/Uniformed apply Opacity once to the whole completed gesture.
+    // Intense applies it to every physical deposit: overlapping stamps then
+    // converge by ordinary premultiplied source-over, exactly like the
+    // measured Procreate spacing/jitter fixtures.
+    this.writeBrushUniforms({
+      ...settings,
+      opacity: intenseBlending ? settings.opacity : 1,
+      blendMode: "normal",
+    });
     if (grainActive) {
       this.writeGrainUniforms(settings);
     }
@@ -17758,8 +18482,12 @@ export class BrushEngine {
       ];
     }
     this.writeLightGlazeUniforms(
-      settings.opacity,
-      m1Glaze ? "m1-max-coverage" : "source-over",
+      intenseBlending ? 1 : settings.opacity,
+      m1Glaze
+        ? "m1-max-coverage"
+        : intenseBlending
+          ? "encoded-srgb-source-over"
+          : "source-over",
       session.tintLinear,
     );
 
@@ -17772,6 +18500,7 @@ export class BrushEngine {
     let scissorPixels = 0;
     let submittedDirtyRect: DirtyRect | null = null;
     let submittedShapeOccupancySelection: ShapeOccupancySelection | null = null;
+    let lightGlazeClearEncoded = false;
     let presentationCacheFullRebuilds = 0;
     let presentationCachePartialUpdates = 0;
     let presentationCacheOffscreenSkips = 0;
@@ -17842,15 +18571,30 @@ export class BrushEngine {
 
       const brushPass = encoder.beginRenderPass({
         label: "Accumulate Light Glaze stroke",
-        colorAttachments: [
-          {
-            view: this.lightGlazeView!,
-            loadOp: session.needsClear ? "clear" : "load",
-            storeOp: "store",
-            clearValue: { r: 0, g: 0, b: 0, a: 0 },
-          },
-        ],
+        colorAttachments: [{
+          view: this.lightGlazeView!,
+          loadOp: "load",
+          storeOp: "store",
+        }],
       });
+      if (session.needsClear) {
+        const staleRect = this.lightGlazeStaleRect;
+        if (staleRect) {
+          brushPass.setPipeline(
+            this.lightGlazeStorageMode === "r8-coverage"
+              ? this.lightGlazeClearR8Pipeline
+              : this.lightGlazeClearRgba16FloatPipeline,
+          );
+          brushPass.setScissorRect(
+            staleRect.x,
+            staleRect.y,
+            staleRect.width,
+            staleRect.height,
+          );
+          brushPass.draw(3, 1, 0, 0);
+        }
+        lightGlazeClearEncoded = true;
+      }
       if (submittedDirtyRect) {
         scissorPixels = submittedDirtyRect.width * submittedDirtyRect.height;
         const isShape = settings.shape === "shape";
@@ -17868,17 +18612,29 @@ export class BrushEngine {
                 ? this.m1GlazeShapeOccupancyPipeline
                 : this.m1GlazeShapePipeline
               : this.m1GlazePipeline
-          : grainActive
-            ? isShape
-              ? useShapeOccupancy
-                ? this.grainShapeOccupancyNormalPipeline
-                : this.grainShapeNormalPipeline
-              : this.grainNormalPipeline
-            : isShape
-              ? useShapeOccupancy
-                ? this.shapeOccupancyNormalPipeline
-                : this.shapeNormalPipeline
-              : this.normalPipeline;
+          : intenseBlending
+            ? grainActive
+              ? isShape
+                ? useShapeOccupancy
+                  ? this.grainIntenseBlendingShapeOccupancyPipeline
+                  : this.grainIntenseBlendingShapePipeline
+                : this.grainIntenseBlendingPipeline
+              : isShape
+                ? useShapeOccupancy
+                  ? this.intenseBlendingShapeOccupancyPipeline
+                  : this.intenseBlendingShapePipeline
+                : this.intenseBlendingPipeline
+            : grainActive
+              ? isShape
+                ? useShapeOccupancy
+                  ? this.grainUniformedGlazeShapeOccupancyPipeline
+                  : this.grainUniformedGlazeShapePipeline
+                : this.grainUniformedGlazePipeline
+              : isShape
+                ? useShapeOccupancy
+                  ? this.uniformedGlazeShapeOccupancyPipeline
+                  : this.uniformedGlazeShapePipeline
+                : this.uniformedGlazePipeline;
         brushPass.setPipeline(pipeline);
         brushPass.setBindGroup(
           0,
@@ -17913,7 +18669,6 @@ export class BrushEngine {
         }
       }
       brushPass.end();
-      session.needsClear = false;
       session.hasContent = session.hasContent || submittedDirtyRect !== null;
       session.dirtyRect = this.mergeDirtyRects(session.dirtyRect, submittedDirtyRect);
       lightGlazeBatches = 1;
@@ -18105,26 +18860,106 @@ export class BrushEngine {
     if (session.commitRequested) {
       if (session.hasContent && session.dirtyRect) {
         const compositeStart = performance.now();
-        const compositePass = encoder.beginRenderPass({
-          label: "Commit complete Light Glaze stroke once",
-          colorAttachments: [
-            {
-              view: this.layerView,
-              loadOp: "load",
-              storeOp: "store",
-            },
-          ],
-        });
-        compositePass.setPipeline(this.lightGlazeCompositePipeline);
-        compositePass.setBindGroup(0, this.lightGlazeCompositeBindGroup!);
-        compositePass.setScissorRect(
-          session.dirtyRect.x,
-          session.dirtyRect.y,
-          session.dirtyRect.width,
-          session.dirtyRect.height,
-        );
-        compositePass.draw(3, 1, 0, 0);
-        compositePass.end();
+        if (
+          session.settings.blendMode === "uniformed-glaze"
+          || session.settings.blendMode === "intense-blending"
+        ) {
+          if (
+            !this.lightGlazeCommitTileTexture
+            || !this.lightGlazeCommitTileView
+            || !this.lightGlazeCommitTileBindGroup
+          ) {
+            throw new Error("Scratch tile Intense Blending non disponibile al commit.");
+          }
+          const tileUniformUpload = new Uint32Array(
+            LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BUFFER_BYTES / Uint32Array.BYTES_PER_ELEMENT,
+          );
+          let tileIndex = 0;
+          const dirtyRight = session.dirtyRect.x + session.dirtyRect.width;
+          const dirtyBottom = session.dirtyRect.y + session.dirtyRect.height;
+          for (
+            let tileY = session.dirtyRect.y;
+            tileY < dirtyBottom;
+            tileY += LIGHT_GLAZE_COMMIT_TILE_EXTENT
+          ) {
+            for (
+              let tileX = session.dirtyRect.x;
+              tileX < dirtyRight;
+              tileX += LIGHT_GLAZE_COMMIT_TILE_EXTENT
+            ) {
+              if (tileIndex >= LIGHT_GLAZE_COMMIT_TILE_SLOT_COUNT) {
+                throw new Error("Numero di tile Intense Blending oltre il limite del documento.");
+              }
+              const tileWidth = Math.min(
+                LIGHT_GLAZE_COMMIT_TILE_EXTENT,
+                dirtyRight - tileX,
+              );
+              const tileHeight = Math.min(
+                LIGHT_GLAZE_COMMIT_TILE_EXTENT,
+                dirtyBottom - tileY,
+              );
+              const uniformWordOffset = (
+                tileIndex * LIGHT_GLAZE_COMMIT_TILE_UNIFORM_STRIDE_BYTES
+              ) / Uint32Array.BYTES_PER_ELEMENT;
+              tileUniformUpload[uniformWordOffset] = tileX;
+              tileUniformUpload[uniformWordOffset + 1] = tileY;
+
+              const tilePass = encoder.beginRenderPass({
+                label: `Commit high precision glaze tile ${tileIndex}`,
+                colorAttachments: [{
+                  view: this.lightGlazeCommitTileView,
+                  loadOp: "load",
+                  storeOp: "store",
+                }],
+              });
+              tilePass.setPipeline(this.lightGlazeCommitTilePipeline);
+              tilePass.setBindGroup(
+                0,
+                this.lightGlazeCommitTileBindGroup,
+                [tileIndex * LIGHT_GLAZE_COMMIT_TILE_UNIFORM_STRIDE_BYTES],
+              );
+              tilePass.setViewport(0, 0, tileWidth, tileHeight, 0, 1);
+              tilePass.setScissorRect(0, 0, tileWidth, tileHeight);
+              tilePass.draw(3, 1, 0, 0);
+              tilePass.end();
+              encoder.copyTextureToTexture(
+                { texture: this.lightGlazeCommitTileTexture },
+                {
+                  texture: this.layerTexture,
+                  origin: { x: tileX, y: tileY, z: 0 },
+                },
+                { width: tileWidth, height: tileHeight, depthOrArrayLayers: 1 },
+              );
+              tileIndex += 1;
+            }
+          }
+          this.device.queue.writeBuffer(
+            this.lightGlazeCommitTileUniformBuffer,
+            0,
+            tileUniformUpload,
+          );
+        } else {
+          const compositePass = encoder.beginRenderPass({
+            label: "Commit complete Light Glaze stroke once",
+            colorAttachments: [
+              {
+                view: this.layerView,
+                loadOp: "load",
+                storeOp: "store",
+              },
+            ],
+          });
+          compositePass.setPipeline(this.lightGlazeCompositePipeline);
+          compositePass.setBindGroup(0, this.lightGlazeCompositeBindGroup!);
+          compositePass.setScissorRect(
+            session.dirtyRect.x,
+            session.dirtyRect.y,
+            session.dirtyRect.width,
+            session.dirtyRect.height,
+          );
+          compositePass.draw(3, 1, 0, 0);
+          compositePass.end();
+        }
         brushEncodingMs += performance.now() - compositeStart;
         lightGlazeCommits = 1;
         lightGlazeCompositePixels = session.dirtyRect.width * session.dirtyRect.height;
@@ -18295,11 +19130,27 @@ export class BrushEngine {
     const submitStart = performance.now();
     this.device.queue.submit([encoder.finish()]);
     commandSubmitMs = performance.now() - submitStart;
+    if (lightGlazeClearEncoded) {
+      session.needsClear = false;
+      this.lightGlazeStaleRect = null;
+    }
     if (present && presentationCacheWasUpdated) {
       this.presentationCacheNeedsFullRebuild = false;
     }
     if (session.commitRequested) {
+      if (session.hasContent && session.dirtyRect) {
+        this.lightGlazeStaleRect = { ...session.dirtyRect };
+      }
       this.lightGlazeSession = null;
+      if (
+        this.settings.tool === "paint"
+        && isStrokeGlazeBlendMode(this.settings.blendMode)
+        && !this.lightGlazeResourcesMatch(
+          this.lightGlazeStorageModeFor(this.settings.blendMode),
+        )
+      ) {
+        this.requestLightGlazeResources(this.settings.blendMode);
+      }
     }
     // Restore the current UI settings after the ordered Light Glaze submit so
     // a following Normal/Additive frame sees the ordinary uniform contents.
@@ -18436,7 +19287,11 @@ export class BrushEngine {
         return this.submitLightGlazeImmediate(stamps, clearLayer, settings, present, replayBatch);
       }
       if (stamps.length > 0) {
-        throw new Error("Stamp Light Glaze senza sessione per-stroke.");
+        const actionIds = [...new Set(stamps.map((stamp) => stamp.historyActionId))];
+        throw new Error(
+          `Stamp Light Glaze senza sessione per-stroke: mode=${settings.blendMode}; `
+          + `batch=${actionIds.join(",")}; active=${this.activeStroke?.historyActionId ?? "none"}.`,
+        );
       }
     }
     const grainActive = this.isTexturizedGrainActive(settings);

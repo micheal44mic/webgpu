@@ -102,6 +102,22 @@ fn srgbToLinear(value: vec3<f32>) -> vec3<f32> {
   );
 }
 
+fn linearToSrgbChannel(value: f32) -> f32 {
+  let clamped = clamp(value, 0.0, 1.0);
+  if (clamped <= 0.0031308) {
+    return clamped * 12.92;
+  }
+  return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
+}
+
+fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    linearToSrgbChannel(value.r),
+    linearToSrgbChannel(value.g),
+    linearToSrgbChannel(value.b)
+  );
+}
+
 fn jitteredLinearColorFromCopySeed(copySeed: u32) -> vec3<f32> {
   let hueDelta = (random01(copySeed, 1u) - 0.5) * 2.0 * brush.jitter.x;
   let saturationDelta = (random01(copySeed, 2u) - 0.5) * 2.0 * brush.jitter.y;
@@ -228,6 +244,11 @@ fn premultipliedPaint(input: VertexOutput, coverage: f32) -> vec4<f32> {
   return vec4<f32>(input.pointColor * alpha, alpha);
 }
 
+fn premultipliedEncodedSrgbPaint(input: VertexOutput, coverage: f32) -> vec4<f32> {
+  let alpha = paintAlpha(input, coverage);
+  return vec4<f32>(linearToSrgb(input.pointColor) * alpha, alpha);
+}
+
 fn quantizedCoveragePaint(input: VertexOutput, coverage: f32) -> vec4<f32> {
   let alpha = paintAlpha(input, coverage);
   // M1 Glaze stores only the exactly quantized red coverage channel in an
@@ -273,6 +294,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 
 @fragment
+fn encodedSrgbFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  return premultipliedEncodedSrgbPaint(input, circleCoverage(input));
+}
+
+@fragment
 fn coverageFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   return quantizedCoveragePaint(input, circleCoverage(input));
 }
@@ -280,6 +306,11 @@ fn coverageFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 @fragment
 fn shapeFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   return premultipliedPaint(input, shapeCoverage(input));
+}
+
+@fragment
+fn encodedSrgbShapeFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  return premultipliedEncodedSrgbPaint(input, shapeCoverage(input));
 }
 
 @fragment
@@ -322,6 +353,13 @@ fn occupiedShapeCoverage(input: VertexOutput) -> f32 {
 @fragment
 fn shapeOccupancyFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   return premultipliedPaint(input, occupiedShapeCoverage(input));
+}
+
+@fragment
+fn encodedSrgbShapeOccupancyFragmentMain(
+  input: VertexOutput
+) -> @location(0) vec4<f32> {
+  return premultipliedEncodedSrgbPaint(input, occupiedShapeCoverage(input));
 }
 
 @fragment
@@ -459,6 +497,27 @@ fn premultipliedPaint(input: FragmentInput, coverage: f32) -> vec4<f32> {
   return vec4<f32>(input.pointColor * alpha, alpha);
 }
 
+fn linearToSrgbChannel(value: f32) -> f32 {
+  let clamped = clamp(value, 0.0, 1.0);
+  if (clamped <= 0.0031308) {
+    return clamped * 12.92;
+  }
+  return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
+}
+
+fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    linearToSrgbChannel(value.r),
+    linearToSrgbChannel(value.g),
+    linearToSrgbChannel(value.b)
+  );
+}
+
+fn premultipliedEncodedSrgbPaint(input: FragmentInput, coverage: f32) -> vec4<f32> {
+  let alpha = paintAlpha(input, coverage);
+  return vec4<f32>(linearToSrgb(input.pointColor) * alpha, alpha);
+}
+
 fn quantizedCoveragePaint(input: FragmentInput, coverage: f32) -> vec4<f32> {
   let alpha = paintAlpha(input, coverage);
   let quantized = unpack4x8unorm(pack4x8unorm(vec4<f32>(alpha))).r;
@@ -497,6 +556,11 @@ fn fragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
 }
 
 @fragment
+fn encodedSrgbFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
+  return premultipliedEncodedSrgbPaint(input, circleGrainCoverage(input));
+}
+
+@fragment
 fn coverageFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
   return quantizedCoveragePaint(input, circleGrainCoverage(input));
 }
@@ -524,6 +588,11 @@ fn shapeGrainCoverage(input: FragmentInput) -> f32 {
 @fragment
 fn shapeFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
   return premultipliedPaint(input, shapeGrainCoverage(input));
+}
+
+@fragment
+fn encodedSrgbShapeFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
+  return premultipliedEncodedSrgbPaint(input, shapeGrainCoverage(input));
 }
 
 @fragment
@@ -561,6 +630,13 @@ fn occupiedShapeGrainCoverage(input: FragmentInput) -> f32 {
 @fragment
 fn shapeOccupancyFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
   return premultipliedPaint(input, occupiedShapeGrainCoverage(input));
+}
+
+@fragment
+fn encodedSrgbShapeOccupancyFragmentMain(
+  input: FragmentInput
+) -> @location(0) vec4<f32> {
+  return premultipliedEncodedSrgbPaint(input, occupiedShapeGrainCoverage(input));
 }
 
 @fragment
@@ -1160,6 +1236,24 @@ fn storedM1Coverage(value: f32) -> f32 {
   return coverage;
 }
 
+fn linearPremultipliedToEncodedSrgb(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.0) {
+    return vec4<f32>(0.0);
+  }
+  let straightLinear = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(linearToSrgb(straightLinear) * alpha, alpha);
+}
+
+fn encodedSrgbPremultipliedToLinear(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.0) {
+    return vec4<f32>(0.0);
+  }
+  let straightSrgb = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(srgbToLinear(straightSrgb) * alpha, alpha);
+}
+
 fn resolvedStrokePaint(accumulatedStroke: vec4<f32>) -> vec4<f32> {
   let opacity = clamp(lightGlaze.opacity, 0.0, 1.0);
   if (lightGlaze.accumulationMode == 1u) {
@@ -1169,11 +1263,23 @@ fn resolvedStrokePaint(accumulatedStroke: vec4<f32>) -> vec4<f32> {
   return accumulatedStroke * opacity;
 }
 
+fn compositeLightGlazeOverPermanent(
+  permanentPaint: vec4<f32>,
+  accumulatedStroke: vec4<f32>
+) -> vec4<f32> {
+  let strokePaint = resolvedStrokePaint(accumulatedStroke);
+  if (lightGlaze.accumulationMode == 2u) {
+    let permanentEncoded = linearPremultipliedToEncodedSrgb(permanentPaint);
+    let compositedEncoded = strokePaint + permanentEncoded * (1.0 - strokePaint.a);
+    return quantizeLayer(encodedSrgbPremultipliedToLinear(compositedEncoded));
+  }
+  return quantizeLayer(strokePaint + permanentPaint * (1.0 - strokePaint.a));
+}
+
 fn compositedLayerTexel(position: vec2<i32>) -> vec4<f32> {
   let permanentPaint = textureLoad(layerTexture, position, 0);
   let accumulatedStroke = textureLoad(strokeTexture, position, 0);
-  let strokePaint = resolvedStrokePaint(accumulatedStroke);
-  return quantizeLayer(strokePaint + permanentPaint * (1.0 - strokePaint.a));
+  return compositeLightGlazeOverPermanent(permanentPaint, accumulatedStroke);
 }
 
 fn sampleCompositedLayerLinear(uv: vec2<f32>) -> vec4<f32> {
@@ -1354,6 +1460,55 @@ fn storedM1Coverage(value: f32) -> f32 {
   return coverage;
 }
 
+fn srgbToLinearChannel(value: f32) -> f32 {
+  if (value <= 0.04045) {
+    return value / 12.92;
+  }
+  return pow((value + 0.055) / 1.055, 2.4);
+}
+
+fn srgbToLinear(value: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    srgbToLinearChannel(value.r),
+    srgbToLinearChannel(value.g),
+    srgbToLinearChannel(value.b)
+  );
+}
+
+fn linearToSrgbChannel(value: f32) -> f32 {
+  let clamped = clamp(value, 0.0, 1.0);
+  if (clamped <= 0.0031308) {
+    return clamped * 12.92;
+  }
+  return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
+}
+
+fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    linearToSrgbChannel(value.r),
+    linearToSrgbChannel(value.g),
+    linearToSrgbChannel(value.b)
+  );
+}
+
+fn linearPremultipliedToEncodedSrgb(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.0) {
+    return vec4<f32>(0.0);
+  }
+  let straightLinear = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(linearToSrgb(straightLinear) * alpha, alpha);
+}
+
+fn encodedSrgbPremultipliedToLinear(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.0) {
+    return vec4<f32>(0.0);
+  }
+  let straightSrgb = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(srgbToLinear(straightSrgb) * alpha, alpha);
+}
+
 fn resolvedStrokePaint(accumulatedStroke: vec4<f32>) -> vec4<f32> {
   let opacity = clamp(lightGlaze.opacity, 0.0, 1.0);
   if (lightGlaze.accumulationMode == 1u) {
@@ -1361,6 +1516,19 @@ fn resolvedStrokePaint(accumulatedStroke: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
   }
   return accumulatedStroke * opacity;
+}
+
+fn compositeLightGlazeOverPermanent(
+  permanentPaint: vec4<f32>,
+  accumulatedStroke: vec4<f32>
+) -> vec4<f32> {
+  let strokePaint = resolvedStrokePaint(accumulatedStroke);
+  if (lightGlaze.accumulationMode == 2u) {
+    let permanentEncoded = linearPremultipliedToEncodedSrgb(permanentPaint);
+    let compositedEncoded = strokePaint + permanentEncoded * (1.0 - strokePaint.a);
+    return quantizeLayer(encodedSrgbPremultipliedToLinear(compositedEncoded));
+  }
+  return quantizeLayer(strokePaint + permanentPaint * (1.0 - strokePaint.a));
 }
 
 @vertex
@@ -1379,8 +1547,7 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 fn compositedSource(sourcePosition: vec2<i32>) -> vec4<f32> {
   let permanentPaint = textureLoad(permanentTexture, sourcePosition, 0);
   let accumulatedStroke = textureLoad(strokeTexture, sourcePosition, 0);
-  let strokePaint = resolvedStrokePaint(accumulatedStroke);
-  return quantizeLayer(strokePaint + permanentPaint * (1.0 - strokePaint.a));
+  return compositeLightGlazeOverPermanent(permanentPaint, accumulatedStroke);
 }
 
 @fragment
@@ -1395,6 +1562,142 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
 }
 `;
 
+// Intense Blending cannot use fixed-function blending against the permanent
+// linear layer: Procreate's measured law performs source-over in encoded sRGB.
+// This tile resolver reads both inputs, evaluates the exact live formula, and
+// writes layer-format pixels to a small preallocated copy scratch.
+export const lightGlazeCommitTileShader = /* wgsl */ `
+struct LightGlazeUniforms {
+  opacity: f32,
+  formatCode: u32,
+  accumulationMode: u32,
+  _pad1: u32,
+  tintLinear: vec4<f32>,
+};
+
+struct CommitTileUniforms {
+  sourceOrigin: vec2<u32>,
+  _pad0: vec2<u32>,
+};
+
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+};
+
+@group(0) @binding(0) var permanentTexture: texture_2d<f32>;
+@group(0) @binding(1) var strokeTexture: texture_2d<f32>;
+@group(0) @binding(2) var<uniform> lightGlaze: LightGlazeUniforms;
+@group(0) @binding(3) var<uniform> commitTile: CommitTileUniforms;
+
+fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
+  if (lightGlaze.formatCode == 0u) {
+    return round(clamp(value, vec4<f32>(0.0), vec4<f32>(1.0)) * 255.0) / 255.0;
+  }
+  let redGreen = unpack2x16float(pack2x16float(value.rg));
+  let blueAlpha = unpack2x16float(pack2x16float(value.ba));
+  return vec4<f32>(redGreen, blueAlpha);
+}
+
+fn storedM1Coverage(value: f32) -> f32 {
+  let coverage = clamp(value, 0.0, 1.0);
+  if (lightGlaze.formatCode == 1u) {
+    return unpack2x16float(pack2x16float(vec2<f32>(coverage, 0.0))).x;
+  }
+  return coverage;
+}
+
+fn srgbToLinearChannel(value: f32) -> f32 {
+  if (value <= 0.04045) {
+    return value / 12.92;
+  }
+  return pow((value + 0.055) / 1.055, 2.4);
+}
+
+fn srgbToLinear(value: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    srgbToLinearChannel(value.r),
+    srgbToLinearChannel(value.g),
+    srgbToLinearChannel(value.b)
+  );
+}
+
+fn linearToSrgbChannel(value: f32) -> f32 {
+  let clamped = clamp(value, 0.0, 1.0);
+  if (clamped <= 0.0031308) {
+    return clamped * 12.92;
+  }
+  return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
+}
+
+fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    linearToSrgbChannel(value.r),
+    linearToSrgbChannel(value.g),
+    linearToSrgbChannel(value.b)
+  );
+}
+
+fn linearPremultipliedToEncodedSrgb(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.0) {
+    return vec4<f32>(0.0);
+  }
+  let straightLinear = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(linearToSrgb(straightLinear) * alpha, alpha);
+}
+
+fn encodedSrgbPremultipliedToLinear(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.0) {
+    return vec4<f32>(0.0);
+  }
+  let straightSrgb = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(srgbToLinear(straightSrgb) * alpha, alpha);
+}
+
+fn resolvedStrokePaint(accumulatedStroke: vec4<f32>) -> vec4<f32> {
+  let opacity = clamp(lightGlaze.opacity, 0.0, 1.0);
+  if (lightGlaze.accumulationMode == 1u) {
+    let coverage = storedM1Coverage(accumulatedStroke.r);
+    return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
+  }
+  return accumulatedStroke * opacity;
+}
+
+fn compositeLightGlazeOverPermanent(
+  permanentPaint: vec4<f32>,
+  accumulatedStroke: vec4<f32>
+) -> vec4<f32> {
+  let strokePaint = resolvedStrokePaint(accumulatedStroke);
+  if (lightGlaze.accumulationMode == 2u) {
+    let permanentEncoded = linearPremultipliedToEncodedSrgb(permanentPaint);
+    let compositedEncoded = strokePaint + permanentEncoded * (1.0 - strokePaint.a);
+    return quantizeLayer(encodedSrgbPremultipliedToLinear(compositedEncoded));
+  }
+  return quantizeLayer(strokePaint + permanentPaint * (1.0 - strokePaint.a));
+}
+
+@vertex
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+  let positions = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>( 3.0, -1.0),
+    vec2<f32>(-1.0,  3.0)
+  );
+  var output: VertexOutput;
+  output.position = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
+  return output;
+}
+
+@fragment
+fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
+  let sourcePosition = vec2<i32>(commitTile.sourceOrigin) + vec2<i32>(fragmentPosition.xy);
+  return compositeLightGlazeOverPermanent(
+    textureLoad(permanentTexture, sourcePosition, 0),
+    textureLoad(strokeTexture, sourcePosition, 0)
+  );
+}
+`;
 // The final Light Glaze commit reads the already accumulated per-stroke pixel
 // one-to-one and lets fixed-function premultiplied source-over blend it into
 // the permanent layer. Applying opacity here caps this stroke's source alpha,
@@ -1443,6 +1746,12 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   if (lightGlaze.accumulationMode == 1u) {
     let coverage = storedM1Coverage(source.r);
     return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
+  }
+  // Mode 2 (Intense encoded-sRGB) must never use this fixed-function
+  // destination blend. Uniformed and Intense are resolved by the exact tile
+  // shader, which samples both the permanent layer and the stroke.
+  if (lightGlaze.accumulationMode == 2u) {
+    return vec4<f32>(0.0);
   }
   return source * opacity;
 }

@@ -1035,6 +1035,42 @@ select {
   display: none;
 }
 
+.rendering-suite-progress {
+  position: absolute;
+  z-index: 4;
+  top: 54px;
+  left: 12px;
+  max-width: min(560px, calc(100% - 24px));
+  padding: 9px 12px;
+  border: 1px solid rgba(104, 119, 255, 0.72);
+  border-radius: 12px;
+  background: rgba(26, 31, 67, 0.94);
+  color: #eef0ff;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.34);
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.35;
+  pointer-events: none;
+  user-select: none;
+  backdrop-filter: blur(8px);
+}
+
+.rendering-suite-progress[data-state="complete"] {
+  border-color: rgba(107, 226, 177, 0.72);
+  background: rgba(13, 49, 39, 0.94);
+  color: #b9f8da;
+}
+
+.rendering-suite-progress[data-state="error"] {
+  border-color: rgba(238, 117, 130, 0.72);
+  background: rgba(65, 24, 31, 0.94);
+  color: #ffd3d9;
+}
+
+.rendering-suite-progress[hidden] {
+  display: none;
+}
+
 .view-zoom-percent {
   position: absolute;
   z-index: 3;

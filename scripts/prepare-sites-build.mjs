@@ -38,7 +38,7 @@ await writeFile(
   `const INDEX_HTML = ${JSON.stringify(indexHtml)};
 const HUMAN_STROKE_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS human_stroke_benchmark (id TEXT PRIMARY KEY NOT NULL CHECK (id = 'canonical'), payload_json TEXT NOT NULL, captured_at TEXT NOT NULL)";
 const HUMAN_STROKE_ID = "canonical";
-const HUMAN_STROKE_PRESET_REVISION = 3;
+const HUMAN_STROKE_PRESET_REVISION = 4;
 const BENCHMARK_RUNS_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS benchmark_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)";
 const BENCHMARK_RUNS_INDEX_SQL = "CREATE INDEX IF NOT EXISTS benchmark_runs_created_at_idx ON benchmark_runs (created_at DESC)";
 const IPHONE_MEMORY_LIMIT_BUILD = "iphone-real-layer-cold-tiles-checkpoint-before-each-operation-v1";
@@ -91,7 +91,7 @@ function normalizeHumanStrokeBenchmark(payload) {
 
   if (
     payload.presetRevision === HUMAN_STROKE_PRESET_REVISION &&
-    payload.settings.blendIntensity === 4 &&
+    payload.settings.blendIntensity === 1 &&
     !Object.hasOwn(payload.settings, "speedThickness") &&
     !Object.hasOwn(payload.settings, "pressureSize") &&
     !Object.hasOwn(payload.settings, "pressureOpacity")
@@ -101,7 +101,7 @@ function normalizeHumanStrokeBenchmark(payload) {
 
   const settings = {
     ...payload.settings,
-    blendIntensity: 4,
+    blendIntensity: 1,
   };
   delete settings.speedThickness;
   delete settings.pressureSize;

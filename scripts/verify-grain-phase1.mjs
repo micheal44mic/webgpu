@@ -195,8 +195,18 @@ assert(engine.includes('const GRAIN_TEXTURE_SIZE = 2500;')
 assert(engine.includes('"rgba8-native-2500-fixed-coverage-multiply"')
   && engine.includes('"rgba8-native-2500-moving-coverage-multiply"'),
   "Marker Fixed/Moving nativi assenti.");
-assert(engine.includes('export type BlendMode = "normal" | "additive" | "light-glaze" | "m1-glaze"'),
-  "Blend mode M1 Glaze assente.");
+assert(engine.includes('export type BlendMode =')
+  && engine.includes('| "light-glaze"')
+  && engine.includes('| "uniformed-glaze"')
+  && engine.includes('| "intense-blending"')
+  && engine.includes('| "m1-glaze"'),
+  "I tre rendering pubblici o la compatibilità M1 storica sono assenti.");
+const glazeSessionSource = engine.match(
+  /private startLightGlazeSession[\s\S]*?private abandonLightGlazeSession/,
+)?.[0] ?? "";
+assert(glazeSessionSource.includes("...settings")
+  && !glazeSessionSource.includes("blendMode: settings.blendMode"),
+  "La sessione glaze rinomina la modalità pubblica e può scambiare lo storage durante il tratto.");
 assert(engine.includes('"allocate-on-glaze-select-release-when-idle-deselected"')
   && engine.includes("maybeReleaseIdleLightGlazeResources"),
   "Light Glaze storage lifecycle (alloca al select, rilascia al deselect) mancante");
@@ -239,20 +249,20 @@ const compositedRgba8MiB = compositedMipPixels * 4 / (1024 * 1024);
 const compositedRgba16MiB = compositedMipPixels * 8 / (1024 * 1024);
 const m1Rgba8MiB = 16 + compositedRgba8MiB;
 const m1Rgba16MiB = 16 + compositedRgba16MiB;
-const lightRgba8MiB = 64 + compositedRgba8MiB;
-const lightRgba16MiB = 128 + compositedRgba16MiB;
+const highPrecisionRgba8MiB = 128 + compositedRgba8MiB + 4;
+const highPrecisionRgba16MiB = 128 + compositedRgba16MiB + 8;
 assert(Number(m1Rgba8MiB.toFixed(1)) === 37.3,
   `Memoria M1 RGBA8 ${m1Rgba8MiB.toFixed(1)} MiB, attesi 37.3.`);
 assert(Number(m1Rgba16MiB.toFixed(1)) === 58.7,
   `Memoria M1 RGBA16F ${m1Rgba16MiB.toFixed(1)} MiB, attesi 58.7.`);
-assert(Number(lightRgba8MiB.toFixed(1)) === 85.3,
-  `Memoria Light RGBA8 ${lightRgba8MiB.toFixed(1)} MiB, attesi 85.3.`);
-assert(Number(lightRgba16MiB.toFixed(1)) === 170.7,
-  `Memoria Light RGBA16F ${lightRgba16MiB.toFixed(1)} MiB, attesi 170.7.`);
-assert(Number((lightRgba8MiB - m1Rgba8MiB).toFixed(1)) === 48.0,
-  "Risparmio M1 RGBA8 diverso da 48.0 MiB.");
-assert(Number((lightRgba16MiB - m1Rgba16MiB).toFixed(1)) === 112.0,
-  "Risparmio M1 RGBA16F diverso da 112.0 MiB.");
+assert(Number(highPrecisionRgba8MiB.toFixed(1)) === 153.3,
+  `Memoria high-precision su RGBA8 ${highPrecisionRgba8MiB.toFixed(1)} MiB, attesi 153.3.`);
+assert(Number(highPrecisionRgba16MiB.toFixed(1)) === 178.7,
+  `Memoria high-precision su RGBA16F ${highPrecisionRgba16MiB.toFixed(1)} MiB, attesi 178.7.`);
+assert(Number((highPrecisionRgba8MiB - m1Rgba8MiB).toFixed(1)) === 116.0,
+  "Delta high-precision vs M1 RGBA8 diverso da 116.0 MiB.");
+assert(Number((highPrecisionRgba16MiB - m1Rgba16MiB).toFixed(1)) === 120.0,
+  "Delta high-precision vs M1 RGBA16F diverso da 120.0 MiB.");
 assert(engine.includes("grainTextureIdentity") && engine.includes("expectedGrainIdentity"),
   "Identità Grain non protetta nel journal/replay.");
 assert(engine.includes("const polarity = settings.grainInvert ? -1 : 1")
@@ -267,9 +277,11 @@ assert(main.includes('setControlValue("grainMode", "off")'),
 assert(main.includes('benchmark.settings.grainMode === "moving"'),
   "La normalizzazione delle impostazioni manuali Moving è assente.");
 assert(main.includes('type HumanStrokeTestGrainMode = Extract<GrainMode, "off" | "texturized">')
-  && main.includes('blendIntensity: blendMode === "m1-glaze" ? 1 : 4')
-  && main.includes('humanStrokeTestGrainModeSelect.value === "texturized" ? "texturized" : "off"'),
-  "Il replay iPhone non espone correttamente Grain Off/Fixed o le intensità Normal 4× / M1 1×.");
+  && main.includes('type HumanStrokeTestBlendMode = "light-glaze" | "uniformed-glaze" | "intense-blending"')
+  && main.includes('blendIntensity: 1')
+  && main.includes('humanStrokeTestGrainModeSelect.value === "texturized" ? "texturized" : "off"')
+  && main.includes('canonical-human-stroke-base-spacing-1-three-renderings-one-tap-v4'),
+  "Il replay iPhone non espone i tre rendering e la suite Base/Grain Off one-tap rev4.");
 assert(html.includes('value="texturized">Texturized — Fixed M1')
   && html.includes('value="moving">Texturized — Moving M1'),
   "Le due impostazioni Grain M1 non sono esposte nella UI.");
@@ -277,13 +289,14 @@ assert(html.includes('id="grainInvert" type="checkbox"')
   && main.includes('grainInvert: element<HTMLInputElement>("grainInvert").checked')
   && main.includes('element<HTMLInputElement>("grainInvert").checked = false'),
   "Il controllo Invert Grain o il default canonico Off non sono collegati.");
-assert(html.includes('value="m1-glaze">M1 Glaze — non accumulativo'),
-  "M1 Glaze non è esposto nella UI.");
-assert(html.includes('value="normal">Normal accumulativo — 4×')
-  && html.includes('value="m1-glaze">M1 Glaze non accumulativo — 1×')
+assert(html.includes('value="light-glaze">Light Glaze')
+  && html.includes('value="uniformed-glaze">Uniformed Glaze')
+  && html.includes('value="intense-blending">Intense Blending'),
+  "I tre rendering finali non sono esposti nella UI.");
+assert(html.includes('id="runRenderingModeSuite"')
   && html.includes('value="off">Off — senza texture')
   && html.includes('value="texturized">Texturized — Fixed M1 (fisso)'),
-  "La matrice iPhone Normal 4× / M1 1× con Grain Off/Fixed non è esposta correttamente.");
+  "La suite iPhone one-tap con Grain Off/Fixed non è esposta correttamente.");
 assert(main.includes("performanceTelemetryRevision: 58"),
   "Revisione telemetria compositing livelli attesa assente.");
 
@@ -307,7 +320,7 @@ console.log(JSON.stringify({
     movingIgnoresScaleControl: true,
     invertUsesExistingAffineUniforms: true,
     iphoneReplayOffersOffOrFixedTexturized: true,
-    iphoneReplayUsesNormal4xAndM1Glaze1x: true,
+    iphoneReplayUsesThreeFinalRenderingsAtFixedIntensity1x: true,
     m1GlazeUsesR8QuantizedMaxCoverage: true,
     legacyLightGlazePreserved: true,
     canonicalReplayForcesGrainOff: true,

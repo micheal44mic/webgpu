@@ -210,6 +210,55 @@ fn storedM1Coverage(value: f32) -> f32 {
   return coverage;
 }
 
+fn srgbToLinearChannel(value: f32) -> f32 {
+  if (value <= 0.04045) {
+    return value / 12.92;
+  }
+  return pow((value + 0.055) / 1.055, 2.4);
+}
+
+fn srgbToLinear(value: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    srgbToLinearChannel(value.r),
+    srgbToLinearChannel(value.g),
+    srgbToLinearChannel(value.b)
+  );
+}
+
+fn linearToSrgbChannel(value: f32) -> f32 {
+  let clamped = clamp(value, 0.0, 1.0);
+  if (clamped <= 0.0031308) {
+    return clamped * 12.92;
+  }
+  return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
+}
+
+fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    linearToSrgbChannel(value.r),
+    linearToSrgbChannel(value.g),
+    linearToSrgbChannel(value.b)
+  );
+}
+
+fn linearPremultipliedToEncodedSrgb(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.0) {
+    return vec4<f32>(0.0);
+  }
+  let straightLinear = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(linearToSrgb(straightLinear) * alpha, alpha);
+}
+
+fn encodedSrgbPremultipliedToLinear(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.0) {
+    return vec4<f32>(0.0);
+  }
+  let straightSrgb = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(srgbToLinear(straightSrgb) * alpha, alpha);
+}
+
 fn resolvedLightGlaze(accumulatedStroke: vec4<f32>) -> vec4<f32> {
   let opacity = clamp(lightGlaze.opacity, 0.0, 1.0);
   if (lightGlaze.accumulationMode == 1u) {
@@ -219,14 +268,29 @@ fn resolvedLightGlaze(accumulatedStroke: vec4<f32>) -> vec4<f32> {
   return accumulatedStroke * opacity;
 }
 
+fn compositeLightGlazeOverPermanent(
+  permanentPaint: vec4<f32>,
+  accumulatedStroke: vec4<f32>
+) -> vec4<f32> {
+  let strokePaint = resolvedLightGlaze(accumulatedStroke);
+  if (lightGlaze.accumulationMode == 2u) {
+    let permanentEncoded = linearPremultipliedToEncodedSrgb(permanentPaint);
+    let compositedEncoded = strokePaint + permanentEncoded * (1.0 - strokePaint.a);
+    return quantizeLayer(encodedSrgbPremultipliedToLinear(compositedEncoded));
+  }
+  return quantizeLayer(strokePaint + permanentPaint * (1.0 - strokePaint.a));
+}
+
 fn sourceTexel(position: vec2<i32>) -> vec4<f32> {
   if (!insideDocument(position)) {
     return vec4<f32>(0.0);
   }
   let permanentPaint = textureLoad(permanentTexture, position, 0);
   if (parameters.sourceMode == 1u) {
-    let strokePaint = resolvedLightGlaze(textureLoad(transientTexture, position, 0));
-    return quantizeLayer(strokePaint + permanentPaint * (1.0 - strokePaint.a));
+    return compositeLightGlazeOverPermanent(
+      permanentPaint,
+      textureLoad(transientTexture, position, 0)
+    );
   }
   if (parameters.sourceMode == 2u) {
     let tailOrigin = vec2<i32>(thicknessTail.origin);

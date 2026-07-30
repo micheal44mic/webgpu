@@ -109,7 +109,13 @@ const layerHistoryTestReport = element<HTMLElement>("layerHistoryTestReport");
 const recordHumanStrokeButton = element<HTMLButtonElement>("recordHumanStroke");
 const playHumanStrokeButton = element<HTMLButtonElement>("playHumanStroke");
 const playBlendHumanStrokeButton = element<HTMLButtonElement>("playBlendHumanStroke");
+const runRenderingModeSuiteButton = element<HTMLButtonElement>("runRenderingModeSuite");
 const humanStrokeResult = element<HTMLParagraphElement>("humanStrokeResult");
+const renderingModeSuiteResult = element<HTMLParagraphElement>("renderingModeSuiteResult");
+const renderingModeSuiteDetails = element<HTMLDetailsElement>("renderingModeSuiteDetails");
+const renderingModeSuiteReport = element<HTMLElement>("renderingModeSuiteReport");
+const renderingModeSuiteProgress = element<HTMLOutputElement>("renderingModeSuiteProgress");
+const renderingModeMemoryHint = element<HTMLParagraphElement>("renderingModeMemoryHint");
 const humanStrokeTestVariantSelect = element<HTMLSelectElement>("humanStrokeTestVariant");
 const humanStrokeTestBlendModeSelect = element<HTMLSelectElement>("humanStrokeTestBlendMode");
 const humanStrokeTestGrainModeSelect = element<HTMLSelectElement>("humanStrokeTestGrainMode");
@@ -132,10 +138,52 @@ const gpuMemoryChevron = element<HTMLElement>("gpuMemoryChevron");
 const gpuMemoryDelta = element<HTMLElement>("gpuMemoryDelta");
 
 type HumanStrokeTestVariant = "base" | "fur" | "blend";
-type HumanStrokeTestBlendMode = "normal" | "m1-glaze";
+type HumanStrokeTestBlendMode = "light-glaze" | "uniformed-glaze" | "intense-blending";
 type HumanStrokeTestGrainMode = Extract<GrainMode, "off" | "texturized">;
 type HumanStrokeBackgroundStrategy = "transparent" | "multicolor-horizontal-stripes-v1";
 type BlendScratchState = "not-applicable" | "cold" | "warm";
+type BenchmarkBlendMode = HumanStrokeTestBlendMode | "not-applicable";
+
+interface RenderingModeMemorySnapshot {
+  countedTotalMiB: number;
+  countedTotalTransitionPeakMiB: number;
+  renderingStorageMiB: number;
+  lightGlazeMiB: number;
+  intenseBlendingMiB: number;
+  blendRendererMiB: number;
+  grainTextureMiB: number;
+  shapeTextureMiB: number;
+  layerFormat: LayerFormat;
+}
+
+interface HumanStrokeReplayOptions {
+  replayTool?: BrushSettings["tool"];
+  testVariant?: HumanStrokeTestVariant;
+  testBlendMode?: HumanStrokeTestBlendMode;
+  testGrainMode?: HumanStrokeTestGrainMode;
+  settingsOverride?: Partial<BrushSettings>;
+  suiteRevision?: 1 | 2 | 3 | 4 | null;
+  suiteCaseId?: string | null;
+  suiteCaseLabel?: string | null;
+}
+
+interface HumanStrokeReplayResult {
+  run: BenchmarkRun;
+  runId: number;
+  saveError: string | null;
+  label: string;
+  memoryBefore: RenderingModeMemorySnapshot;
+  memoryAfter: RenderingModeMemorySnapshot;
+}
+
+interface RenderingModeSuiteCase {
+  id: string;
+  label: string;
+  blendMode: HumanStrokeTestBlendMode;
+  variant: Exclude<HumanStrokeTestVariant, "blend">;
+  grainMode: HumanStrokeTestGrainMode;
+  overrides: Partial<BrushSettings>;
+}
 
 interface MixedMemoryZoomProbe {
   readonly version: 1;
@@ -179,6 +227,8 @@ interface HumanStrokeRecording {
 
 const LEGACY_HUMAN_STROKE_STORAGE_KEY = "webgpu-brush-engine.human-stroke.v1";
 const HUMAN_STROKE_API_URL = "/api/human-stroke";
+const CANONICAL_HUMAN_STROKE_FINGERPRINT = "18982412";
+const CANONICAL_HUMAN_STROKE_POINT_COUNT = 1_583;
 const BENCHMARK_RUNS_API_URL = "/api/benchmark-runs";
 const LAYER_COMPRESSION_RUNS_API_URL = "/api/layer-compression-runs";
 
@@ -198,8 +248,13 @@ interface BenchmarkRun {
     inputGapsOver33Ms: number;
     testVariant: HumanStrokeTestVariant;
     testTool: BrushSettings["tool"];
-    testBlendMode: HumanStrokeTestBlendMode;
+    testBlendMode: BenchmarkBlendMode;
     testGrainMode: HumanStrokeTestGrainMode;
+    renderingSuiteRevision: 1 | 2 | 3 | 4 | null;
+    renderingSuiteCaseId: string | null;
+    renderingSuiteCaseLabel: string | null;
+    renderingMemoryBeforeReplay: RenderingModeMemorySnapshot;
+    renderingMemoryAfterReplay: RenderingModeMemorySnapshot;
     backgroundStrategy: HumanStrokeBackgroundStrategy;
     blendScratchStateBeforeReplay: BlendScratchState;
     blendScratchMemoryMiBBeforeReplay: number;
@@ -552,6 +607,7 @@ let humanStrokeRecording: HumanStrokeRecording | null = null;
 let humanStrokeRecordingArmed = false;
 let humanStrokeReplayFrame: number | null = null;
 let humanStrokeReplaying = false;
+let renderingModeSuiteRunning = false;
 let humanStrokeLoading = true;
 let humanStrokeSaving = false;
 let benchmarkRunning = false;
@@ -660,7 +716,6 @@ function configureBrushToolUi(
     "shapeScatterControl",
     "countControl",
     "opacityControl",
-    "paintBlendIntensityControl",
     "paintBlendModeControl",
     "thicknessSection",
     "colorJitterSection",
@@ -669,6 +724,20 @@ function configureBrushToolUi(
     element<HTMLElement>(id).hidden = blend;
   }
   element<HTMLElement>("blendControls").hidden = !blend;
+  // Wet Mix needs an ordered per-stamp transport renderer before it can be
+  // combined faithfully with Count, jitter and Shape scatter. Keep it hidden
+  // instead of exposing controls that the measured Intense deposit core ignores.
+  element<HTMLElement>("intenseBlendingControls").hidden = true;
+}
+
+function updateRenderingModeControlAvailability(): void {
+  const blendTool = activeBrushTool === "blend";
+  element<HTMLElement>("intenseBlendingControls").hidden = true;
+  const size = element<HTMLInputElement>("brushSize");
+  size.max = blendTool ? "1024" : "1500";
+  if (rangeValue("brushSize") > Number(size.max)) {
+    setControlValue("brushSize", Number(size.max));
+  }
 }
 
 function updateViewRotationControl(degrees: number, snappedToZero: boolean): void {
@@ -750,11 +819,18 @@ function readBrushSettings(): BrushSettings {
     flow: rangeValue("flow") / 100,
     opacity: rangeValue("opacity") / 100,
     hardness: rangeValue("hardness") / 100,
-    blendIntensity: rangeValue("blendIntensity"),
+    // Kept fixed in the engine/history ABI; Flow is the only deposit control.
+    blendIntensity: 1,
     blendMode: element<HTMLSelectElement>("blendMode").value as BrushSettings["blendMode"],
+    wetDilution: rangeValue("wetDilution") / 100,
+    wetCharge: rangeValue("wetCharge") / 100,
+    wetAttack: rangeValue("wetAttack") / 100,
+    wetPull: rangeValue("wetPull") / 100,
+    wetBlur: rangeValue("wetBlur") / 100,
     blendStretch: rangeValue("blendStretch") / 100,
     blendPaint: rangeValue("blendPaint") / 100,
-    jitterMaster: rangeValue("jitterMaster") / 100,
+    // Legacy history ABI field. Individual Color Dynamics controls are direct.
+    jitterMaster: 1,
     hueJitterDegrees: rangeValue("hueJitter"),
     saturationJitter: rangeValue("saturationJitter") / 100,
     lightnessJitter: rangeValue("lightnessJitter") / 100,
@@ -783,10 +859,13 @@ function updateControlOutputs(): void {
   element<HTMLOutputElement>("flowOut").value = `${rangeValue("flow").toFixed(1).replace(".0", "")}%`;
   element<HTMLOutputElement>("opacityOut").value = `${rangeValue("opacity").toFixed(1).replace(".0", "")}%`;
   element<HTMLOutputElement>("hardnessOut").value = `${rangeValue("hardness").toFixed(0)}%`;
-  element<HTMLOutputElement>("blendIntensityOut").value = `${rangeValue("blendIntensity").toFixed(2)}×`;
+  element<HTMLOutputElement>("wetDilutionOut").value = `${rangeValue("wetDilution").toFixed(0)}%`;
+  element<HTMLOutputElement>("wetChargeOut").value = `${rangeValue("wetCharge").toFixed(0)}%`;
+  element<HTMLOutputElement>("wetAttackOut").value = `${rangeValue("wetAttack").toFixed(0)}%`;
+  element<HTMLOutputElement>("wetPullOut").value = `${rangeValue("wetPull").toFixed(0)}%`;
+  element<HTMLOutputElement>("wetBlurOut").value = `${rangeValue("wetBlur").toFixed(0)}%`;
   element<HTMLOutputElement>("blendStretchOut").value = `${rangeValue("blendStretch").toFixed(0)}%`;
   element<HTMLOutputElement>("blendPaintOut").value = `${rangeValue("blendPaint").toFixed(0)}%`;
-  element<HTMLOutputElement>("jitterMasterOut").value = `${rangeValue("jitterMaster").toFixed(0)}%`;
   element<HTMLOutputElement>("hueJitterOut").value = `${rangeValue("hueJitter").toFixed(0)}°`;
   element<HTMLOutputElement>("saturationJitterOut").value = `${rangeValue("saturationJitter").toFixed(0)}%`;
   element<HTMLOutputElement>("lightnessJitterOut").value = `${rangeValue("lightnessJitter").toFixed(0)}%`;
@@ -820,6 +899,7 @@ function updateControlOutputs(): void {
 
 function applyBrushControls(): void {
   captureActiveToolControls();
+  updateRenderingModeControlAvailability();
   updateControlOutputs();
   updateGrainControlAvailability();
   engine.setBrushSettings(readBrushSettings());
@@ -854,6 +934,12 @@ function fingerprintHumanStroke(points: readonly HumanStrokePoint[]): string {
     }
   }
   return hash.toString(16).padStart(8, "0");
+}
+
+function humanStrokeMatchesCanonical(benchmark: HumanStrokeBenchmark | null): boolean {
+  return benchmark !== null
+    && benchmark.points.length === CANONICAL_HUMAN_STROKE_POINT_COUNT
+    && fingerprintHumanStroke(benchmark.points) === CANONICAL_HUMAN_STROKE_FINGERPRINT;
 }
 
 function summarizeHumanStrokeMotion(points: readonly HumanStrokePoint[]): {
@@ -969,6 +1055,9 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
 }
 
 async function saveBenchmarkRun(run: BenchmarkRun): Promise<number> {
+  if (import.meta.env.DEV) {
+    return 0;
+  }
   const response = await fetch(BENCHMARK_RUNS_API_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1014,11 +1103,13 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
   const opacity = Number.isFinite(benchmark.settings.opacity)
     ? Math.min(1, Math.max(0, benchmark.settings.opacity))
     : 1;
-  const blendMode = benchmark.settings.blendMode === "additive"
+  const blendMode = benchmark.settings.blendMode === "uniformed-glaze"
+    || benchmark.settings.blendMode === "intense-blending"
     || benchmark.settings.blendMode === "light-glaze"
     || benchmark.settings.blendMode === "m1-glaze"
+    || benchmark.settings.blendMode === "additive"
     ? benchmark.settings.blendMode
-    : "normal";
+    : "light-glaze";
   const grainMode = benchmark.settings.grainMode === "texturized"
     || benchmark.settings.grainMode === "moving"
     ? benchmark.settings.grainMode
@@ -1052,6 +1143,13 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
   const blendPaint = Number.isFinite(benchmark.settings.blendPaint)
     ? Math.min(1, Math.max(0, benchmark.settings.blendPaint))
     : 0.14;
+  const unitSetting = (value: number | undefined, fallback: number): number =>
+    Number.isFinite(value) ? Math.min(1, Math.max(0, value as number)) : fallback;
+  const wetDilution = unitSetting(benchmark.settings.wetDilution, 0.5);
+  const wetCharge = unitSetting(benchmark.settings.wetCharge, 0.5);
+  const wetAttack = unitSetting(benchmark.settings.wetAttack, 0.5);
+  const wetPull = unitSetting(benchmark.settings.wetPull, 0.5);
+  const wetBlur = unitSetting(benchmark.settings.wetBlur, 0);
   const settingsWithoutLegacyDynamics = {
     ...benchmark.settings,
   } as BrushSettings & {
@@ -1082,7 +1180,13 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
       startThickness,
       endThickness,
       opacity,
+      blendIntensity: 1,
       blendMode,
+      wetDilution,
+      wetCharge,
+      wetAttack,
+      wetPull,
+      wetBlur,
       blendStretch,
       blendPaint,
     },
@@ -1130,6 +1234,10 @@ async function requestCanonicalHumanStroke(): Promise<HumanStrokeBenchmark | nul
 }
 
 async function saveCanonicalHumanStroke(benchmark: HumanStrokeBenchmark): Promise<HumanStrokeBenchmark> {
+  if (import.meta.env.DEV) {
+    window.localStorage.setItem(LEGACY_HUMAN_STROKE_STORAGE_KEY, JSON.stringify(benchmark));
+    return benchmark;
+  }
   const response = await fetch(HUMAN_STROKE_API_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1166,6 +1274,11 @@ async function loadCanonicalHumanStroke(): Promise<void> {
 
     const legacy = loadLegacyHumanStrokeBenchmark();
     if (legacy) {
+      if (import.meta.env.DEV) {
+        humanStrokeBenchmark = legacy;
+        humanStrokeResult.textContent = describeHumanStrokeBenchmark(legacy);
+        return;
+      }
       humanStrokeResult.textContent = "Fissaggio del tratto che avevi già registrato…";
       humanStrokeBenchmark = await saveCanonicalHumanStroke(legacy);
       clearLegacyHumanStrokeBenchmark();
@@ -1672,11 +1785,18 @@ function applySettingsToControls(settings: BrushSettings): void {
   setControlValue("flow", settings.flow * 100);
   setControlValue("opacity", (settings.opacity ?? 1) * 100);
   setControlValue("hardness", settings.hardness * 100);
-  setControlValue("blendIntensity", settings.blendIntensity);
-  setControlValue("blendMode", settings.blendMode);
+  const renderingMode = settings.blendMode === "uniformed-glaze"
+    || settings.blendMode === "intense-blending"
+    ? settings.blendMode
+    : "light-glaze";
+  setControlValue("blendMode", renderingMode);
+  setControlValue("wetDilution", (settings.wetDilution ?? 0.5) * 100);
+  setControlValue("wetCharge", (settings.wetCharge ?? 0.5) * 100);
+  setControlValue("wetAttack", (settings.wetAttack ?? 0.5) * 100);
+  setControlValue("wetPull", (settings.wetPull ?? 0.5) * 100);
+  setControlValue("wetBlur", (settings.wetBlur ?? 0) * 100);
   setControlValue("blendStretch", (settings.blendStretch ?? 0.18) * 100);
   setControlValue("blendPaint", (settings.blendPaint ?? 0.14) * 100);
-  setControlValue("jitterMaster", settings.jitterMaster * 100);
   setControlValue("hueJitter", settings.hueJitterDegrees);
   setControlValue("saturationJitter", settings.saturationJitter * 100);
   setControlValue("lightnessJitter", settings.lightnessJitter * 100);
@@ -1707,11 +1827,14 @@ function applyHumanStrokePreset(): BrushSettings {
   setControlValue("flow", 100);
   setControlValue("opacity", 100);
   setControlValue("hardness", 100);
-  setControlValue("blendIntensity", 4);
-  setControlValue("blendMode", "normal");
+  setControlValue("blendMode", "light-glaze");
+  setControlValue("wetDilution", 50);
+  setControlValue("wetCharge", 50);
+  setControlValue("wetAttack", 50);
+  setControlValue("wetPull", 50);
+  setControlValue("wetBlur", 0);
   setControlValue("blendStretch", 18);
   setControlValue("blendPaint", 14);
-  setControlValue("jitterMaster", 100);
   setControlValue("hueJitter", 180);
   setControlValue("saturationJitter", 100);
   element<HTMLInputElement>("jitterPerCopy").checked = true;
@@ -1726,7 +1849,10 @@ function selectedHumanStrokeTestVariant(): HumanStrokeTestVariant {
 }
 
 function selectedHumanStrokeTestBlendMode(): HumanStrokeTestBlendMode {
-  return humanStrokeTestBlendModeSelect.value === "m1-glaze" ? "m1-glaze" : "normal";
+  const value = humanStrokeTestBlendModeSelect.value;
+  return value === "uniformed-glaze" || value === "intense-blending"
+    ? value
+    : "light-glaze";
 }
 
 function selectedHumanStrokeTestGrainMode(): HumanStrokeTestGrainMode {
@@ -1743,8 +1869,13 @@ function humanStrokeTestSettings(
     ...benchmark.settings,
     tool: "paint",
     opacity: 1,
-    blendIntensity: blendMode === "m1-glaze" ? 1 : 4,
+    blendIntensity: 1,
     blendMode,
+    wetDilution: 0.5,
+    wetCharge: 0.5,
+    wetAttack: 0.5,
+    wetPull: 0.5,
+    wetBlur: 0,
     blendStretch: 0.18,
     blendPaint: 0.14,
     grainMode,
@@ -1800,9 +1931,14 @@ function humanStrokeBlendTestSettings(benchmark: HumanStrokeBenchmark): BrushSet
     hardness: 1,
     blendIntensity: 1,
     blendMode: "normal",
+    wetDilution: 0.5,
+    wetCharge: 0.5,
+    wetAttack: 0.5,
+    wetPull: 0.5,
+    wetBlur: 0,
     blendStretch: 0.2,
     blendPaint: 0,
-    jitterMaster: 0,
+    jitterMaster: 1,
     hueJitterDegrees: 0,
     saturationJitter: 0,
     lightnessJitter: 0,
@@ -1819,9 +1955,11 @@ function humanStrokeTestLabel(
   grainMode: HumanStrokeTestGrainMode,
 ): string {
   const variantLabel = variant === "fur" ? "Fur" : "Base";
-  const blendLabel = blendMode === "m1-glaze"
-    ? "M1 Glaze non accumulativo · 1×"
-    : "Normal accumulativo · 4×";
+  const blendLabel = blendMode === "uniformed-glaze"
+    ? "Uniformed Glaze"
+    : blendMode === "intense-blending"
+      ? "Intense Blending"
+      : "Light Glaze";
   const grainLabel = grainMode === "texturized" ? "Grain Fixed M1" : "Grain Off";
   return `${variantLabel} · ${blendLabel} · ${grainLabel}`;
 }
@@ -1854,7 +1992,7 @@ async function prepareBlendBenchmarkBackground(replaySettings: BrushSettings): P
     hardness: 1,
     blendIntensity: 1,
     blendMode: "normal",
-    jitterMaster: 0,
+    jitterMaster: 1,
     hueJitterDegrees: 0,
     saturationJitter: 0,
     lightnessJitter: 0,
@@ -1897,7 +2035,8 @@ function updateHumanStrokeControls(): void {
     || rasterStrokeChanging
     || rasterOuterShadowChanging
     || rasterInnerShadowChanging
-    || rasterBevelChanging;
+    || rasterBevelChanging
+    || renderingModeSuiteRunning;
   const mixedMemoryBenchmarkNotReady =
     mixedMemoryBenchmarkRequested && mixedMemoryBenchmarkReport === null;
   recordHumanStrokeButton.disabled = operationLocked
@@ -1922,6 +2061,15 @@ function updateHumanStrokeControls(): void {
     || humanStrokeSaving
     || humanStrokeReplaying
     || mixedMemoryBenchmarkNotReady;
+  runRenderingModeSuiteButton.disabled = operationLocked
+    || !humanStrokeMatchesCanonical(humanStrokeBenchmark)
+    || humanStrokeLoading
+    || humanStrokeSaving
+    || humanStrokeReplaying
+    || mixedMemoryBenchmarkNotReady;
+  runRenderingModeSuiteButton.textContent = renderingModeSuiteRunning
+    ? "Suite rendering in corso…"
+    : "Confronta 3 rendering · Base 1% · 1 tap";
   humanStrokeTestVariantSelect.disabled = operationLocked
     || humanStrokeLoading
     || humanStrokeSaving
@@ -1959,6 +2107,7 @@ function operationLocked(): boolean {
     || rasterOuterShadowChanging
     || rasterInnerShadowChanging
     || rasterBevelChanging
+    || renderingModeSuiteRunning
     || humanStrokeReplaying
     || humanStrokeSaving;
 }
@@ -2004,6 +2153,7 @@ function updateHistoryControls(): void {
     || effectsWorkbenchBenchmarkRunning || layerHistoryTestRunning
     || layerMemoryStressTestRunning
     || layerCompressionStudyRunning
+    || renderingModeSuiteRunning
     || humanStrokeReplaying;
   for (const id of brushControlIds) {
     element<HTMLInputElement | HTMLSelectElement>(id).disabled = locked;
@@ -2109,11 +2259,14 @@ const brushControlIds = [
   "flow",
   "opacity",
   "hardness",
-  "blendIntensity",
   "blendMode",
+  "wetDilution",
+  "wetCharge",
+  "wetAttack",
+  "wetPull",
+  "wetBlur",
   "blendStretch",
   "blendPaint",
-  "jitterMaster",
   "hueJitter",
   "saturationJitter",
   "lightnessJitter",
@@ -3147,7 +3300,11 @@ playHumanStrokeButton.addEventListener("click", () => {
 });
 
 playBlendHumanStrokeButton.addEventListener("click", () => {
-  void replayHumanStroke("blend");
+  void replayHumanStroke({ replayTool: "blend" });
+});
+
+runRenderingModeSuiteButton.addEventListener("click", () => {
+  void runRenderingModeSuite();
 });
 
 function updateGpuMemoryPanel(stats: EngineStats): void {
@@ -3874,8 +4031,31 @@ addLayerButton.addEventListener("click", async () => {
   }
 });
 
+function updateRenderingModeMemoryHint(stats: EngineStats): void {
+  if (activeBrushTool !== "paint") {
+    renderingModeMemoryHint.textContent =
+      `Blend dry · scratch residente ${formatMemoryMiB(stats.gpuMemory.blendRendererMiB)}`;
+    return;
+  }
+  const mode = element<HTMLSelectElement>("blendMode").value;
+  const label = mode === "uniformed-glaze"
+    ? "Uniformed Glaze"
+    : mode === "intense-blending"
+      ? "Intense Blending"
+      : "Light Glaze";
+  const dedicatedMiB = stats.gpuMemory.lightGlazeMiB;
+  const modelHint = mode === "intense-blending"
+    ? " · stamp fisici source-over · Wet Mix in calibrazione separata"
+    : "";
+  renderingModeMemoryHint.textContent =
+    `${label} · memoria GPU dedicata residente ${formatMemoryMiB(dedicatedMiB)}`
+    + ` · totale motore ${formatMemoryMiB(stats.gpuMemory.countedTotalMiB)}`
+    + modelHint;
+}
+
 function updateStats(stats: EngineStats): void {
   renderLayerList(stats);
+  updateRenderingModeMemoryHint(stats);
   element<HTMLElement>("fpsStat").textContent = String(stats.fps);
   element<HTMLElement>("cpuStat").textContent = stats.lastCpuFrameMs.toFixed(2) + " ms";
   element<HTMLElement>("stampStat").textContent = formatInteger(stats.totalBaseStamps);
@@ -3942,24 +4122,111 @@ async function finishHumanStrokeRecording(shouldSave: boolean): Promise<void> {
   updateHumanStrokeControls();
 }
 
-async function replayHumanStroke(replayTool: BrushSettings["tool"] = "paint"): Promise<void> {
+const RENDERING_MODE_SUITE_REVISION = 4 as const;
+const RENDERING_SUITE_CANONICAL_OVERRIDES: Partial<BrushSettings> = {
+  size: 750,
+  spacingPercent: 1,
+  count: 16,
+  flow: 1,
+  opacity: 1,
+  hardness: 1,
+  blendIntensity: 1,
+};
+
+const renderingModeSuiteCases: readonly RenderingModeSuiteCase[] = [
+  {
+    id: "light-base-grain-off",
+    label: "Light Glaze · Base · Grain Off · spacing 1%",
+    blendMode: "light-glaze",
+    variant: "base",
+    grainMode: "off",
+    overrides: { ...RENDERING_SUITE_CANONICAL_OVERRIDES },
+  },
+  {
+    id: "uniformed-base-grain-off",
+    label: "Uniformed Glaze · Base · Grain Off · spacing 1%",
+    blendMode: "uniformed-glaze",
+    variant: "base",
+    grainMode: "off",
+    overrides: { ...RENDERING_SUITE_CANONICAL_OVERRIDES },
+  },
+  {
+    id: "intense-base-grain-off",
+    label: "Intense Blending · Base · Grain Off · spacing 1%",
+    blendMode: "intense-blending",
+    variant: "base",
+    grainMode: "off",
+    overrides: { ...RENDERING_SUITE_CANONICAL_OVERRIDES },
+  },
+];
+function captureRenderingModeMemory(
+  blendMode: BenchmarkBlendMode,
+): RenderingModeMemorySnapshot {
+  const stats = engine.getStats();
+  const renderingStorageMiB = blendMode === "light-glaze"
+    || blendMode === "uniformed-glaze"
+    || blendMode === "intense-blending"
+    ? stats.gpuMemory.lightGlazeMiB
+    : 0;
+  return {
+    countedTotalMiB: stats.gpuMemory.countedTotalMiB,
+    countedTotalTransitionPeakMiB: Math.max(
+      stats.gpuMemory.countedTotalMiB,
+      stats.gpuMemory.lightGlazeTransitionPeakMiB,
+    ),
+    renderingStorageMiB,
+    lightGlazeMiB: stats.gpuMemory.lightGlazeMiB,
+    intenseBlendingMiB: blendMode === "intense-blending"
+      ? stats.gpuMemory.lightGlazeMiB
+      : 0,
+    blendRendererMiB: stats.gpuMemory.blendRendererMiB,
+    grainTextureMiB: stats.gpuMemory.grainTextureMiB,
+    shapeTextureMiB: stats.gpuMemory.shapeTextureMiB,
+    layerFormat: stats.layerFormat,
+  };
+}
+
+async function replayHumanStroke(
+  options: HumanStrokeReplayOptions = {},
+): Promise<HumanStrokeReplayResult | null> {
   const benchmark = humanStrokeBenchmark;
-  if (!benchmark || humanStrokeReplaying || interactionLocked()) {
-    return;
+  const replayTool = options.replayTool ?? "paint";
+  const suiteInternal = renderingModeSuiteRunning
+    && options.suiteRevision === RENDERING_MODE_SUITE_REVISION
+    && typeof options.suiteCaseId === "string";
+  if (!benchmark || humanStrokeReplaying || (!suiteInternal && interactionLocked())) {
+    return null;
   }
 
   const testVariant: HumanStrokeTestVariant = replayTool === "blend"
     ? "blend"
-    : selectedHumanStrokeTestVariant();
-  const testBlendMode = replayTool === "blend" ? "normal" : selectedHumanStrokeTestBlendMode();
-  const testGrainMode = replayTool === "blend" ? "off" : selectedHumanStrokeTestGrainMode();
-  const replaySettings = replayTool === "blend"
+    : options.testVariant ?? selectedHumanStrokeTestVariant();
+  const testBlendMode: BenchmarkBlendMode = replayTool === "blend"
+    ? "not-applicable"
+    : options.testBlendMode ?? selectedHumanStrokeTestBlendMode();
+  const testGrainMode = replayTool === "blend"
+    ? "off"
+    : options.testGrainMode ?? selectedHumanStrokeTestGrainMode();
+  const paintBlendMode = testBlendMode === "not-applicable"
+    ? "light-glaze"
+    : testBlendMode;
+  const paintVariant = testVariant === "fur" ? "fur" : "base";
+  const baseReplaySettings = replayTool === "blend"
     ? humanStrokeBlendTestSettings(benchmark)
-    : humanStrokeTestSettings(benchmark, testVariant, testBlendMode, testGrainMode);
-  const testLabel = replayTool === "blend"
-    ? BLEND_REPLAY_LABEL
-    : humanStrokeTestLabel(testVariant, testBlendMode, testGrainMode);
-  const backgroundStrategy: HumanStrokeBackgroundStrategy = replayTool === "blend"
+    : humanStrokeTestSettings(benchmark, paintVariant, paintBlendMode, testGrainMode);
+  const replaySettings: BrushSettings = {
+    ...baseReplaySettings,
+    ...options.settingsOverride,
+    tool: replayTool,
+    blendMode: replayTool === "blend" ? baseReplaySettings.blendMode : paintBlendMode,
+    blendIntensity: 1,
+  };
+  const testLabel = options.suiteCaseLabel
+    ?? (replayTool === "blend"
+      ? BLEND_REPLAY_LABEL
+      : humanStrokeTestLabel(paintVariant, paintBlendMode, testGrainMode));
+  const carrierReplay = replayTool === "blend";
+  const backgroundStrategy: HumanStrokeBackgroundStrategy = carrierReplay
     ? "multicolor-horizontal-stripes-v1"
     : "transparent";
 
@@ -3968,10 +4235,12 @@ async function replayHumanStroke(replayTool: BrushSettings["tool"] = "paint"): P
   benchmarkButton.disabled = true;
   updateHumanStrokeControls();
   updateHistoryControls();
-  applySettingsToControls(replaySettings);
   humanStrokeResult.textContent = `Riproduzione test ${testLabel} in corso…`;
 
   try {
+    await engine.waitForIdle();
+    engine.resetLightGlazeTransitionPeak();
+    applySettingsToControls(replaySettings);
     await engine.waitForIdle();
     engine.resetStrokeRandomSeed();
     const resetSucceeded = mixedMemoryBenchmarkRequested
@@ -3982,15 +4251,17 @@ async function replayHumanStroke(replayTool: BrushSettings["tool"] = "paint"): P
       throw new Error("Il documento è occupato da un'operazione Undo/Redo.");
     }
     await engine.waitForIdle();
-    if (replayTool === "blend") {
-      humanStrokeResult.textContent = "Preparazione dello sfondo multicolore Blend…";
+    if (carrierReplay) {
+      humanStrokeResult.textContent = `Preparazione sfondo multicolore · ${testLabel}…`;
       await prepareBlendBenchmarkBackground(replaySettings);
       engine.resetStrokeRandomSeed();
       humanStrokeResult.textContent = `Riproduzione test ${testLabel} in corso…`;
     }
 
+    await engine.waitForIdle();
+    const memoryBefore = captureRenderingModeMemory(testBlendMode);
     const blendRuntimeBeforeReplay = engine.getBlendRuntimeState();
-    const blendScratchStateBeforeReplay: BlendScratchState = replayTool === "blend"
+    const blendScratchStateBeforeReplay: BlendScratchState = carrierReplay
       ? blendRuntimeBeforeReplay.scratchAllocated ? "warm" : "cold"
       : "not-applicable";
 
@@ -4012,8 +4283,8 @@ async function replayHumanStroke(replayTool: BrushSettings["tool"] = "paint"): P
         const duePoints: HumanStrokePoint[] = [];
 
         while (
-          nextPointIndex < benchmark.points.length &&
-          benchmark.points[nextPointIndex].timeMs <= elapsed
+          nextPointIndex < benchmark.points.length
+          && benchmark.points[nextPointIndex].timeMs <= elapsed
         ) {
           inputDelays.push(Math.max(0, elapsed - benchmark.points[nextPointIndex].timeMs));
           duePoints.push(benchmark.points[nextPointIndex]);
@@ -4049,9 +4320,10 @@ async function replayHumanStroke(replayTool: BrushSettings["tool"] = "paint"): P
       throw new Error("Profilo del tratto non disponibile.");
     }
     const after = engine.getStats();
+    const memoryAfter = captureRenderingModeMemory(testBlendMode);
     const blendRuntimeAfterReplay = engine.getBlendRuntimeState();
     const baseStamps = Math.max(0, after.totalBaseStamps - before.totalBaseStamps);
-    const physicalOperations = replayTool === "blend"
+    const physicalOperations = carrierReplay
       ? baseStamps
       : baseStamps * replaySettings.count;
     const playback = {
@@ -4078,9 +4350,14 @@ async function replayHumanStroke(replayTool: BrushSettings["tool"] = "paint"): P
         traceDurationMs: lastPoint.timeMs,
         ...summarizeHumanStrokeMotion(benchmark.points),
         testVariant,
-        testTool: replayTool,
+        testTool: replaySettings.tool,
         testBlendMode,
         testGrainMode,
+        renderingSuiteRevision: options.suiteRevision ?? null,
+        renderingSuiteCaseId: options.suiteCaseId ?? null,
+        renderingSuiteCaseLabel: options.suiteCaseLabel ?? null,
+        renderingMemoryBeforeReplay: memoryBefore,
+        renderingMemoryAfterReplay: memoryAfter,
         backgroundStrategy,
         blendScratchStateBeforeReplay,
         blendScratchMemoryMiBBeforeReplay: blendRuntimeBeforeReplay.scratchMemoryMiB,
@@ -4091,39 +4368,63 @@ async function replayHumanStroke(replayTool: BrushSettings["tool"] = "paint"): P
       performance: performanceProfile,
       environment: collectBenchmarkEnvironment(),
     };
-    const runId = await saveBenchmarkRun(run);
+    let runId = 0;
+    let saveError: string | null = null;
+    try {
+      runId = await saveBenchmarkRun(run);
+    } catch (error) {
+      saveError = error instanceof Error ? error.message : String(error);
+    }
 
     humanStrokeResult.textContent = [
       `Test ${testLabel}`,
       `Tratto ${formatDuration(lastPoint.timeMs)}`,
       `${formatInteger(benchmark.points.length)} campioni`,
-      replayTool === "blend"
-        ? `${formatInteger(baseStamps)} segmenti Blend dry`
+      carrierReplay
+        ? `${formatInteger(baseStamps)} segmenti carrier GPU`
         : `${formatInteger(baseStamps)} stamps base`,
-      replayTool === "blend"
+      carrierReplay
         ? `scratch ${blendScratchStateBeforeReplay} → ${blendRuntimeAfterReplay.scratchMemoryMiB.toFixed(1)} MiB`
         : `${formatInteger(physicalOperations)} copie fisiche`,
+      carrierReplay
+        ? `memoria Blend ${blendRuntimeAfterReplay.scratchMemoryMiB.toFixed(1)} MiB`
+        : `memoria rendering ${memoryAfter.renderingStorageMiB.toFixed(1)} MiB`,
       `coda GPU ${playback.inputToGpuCompletionMs.toFixed(2)} ms`,
       `CPU frame p95 ${performanceProfile.renderFrameTotalP95Ms.toFixed(2)} ms`,
       `submit p95 ${performanceProfile.submitImmediateP95Ms.toFixed(2)} ms`,
       `display mip ${performanceProfile.paintDisplaySelectedMipLevel} / ${formatInteger(performanceProfile.paintDisplayPyramidPasses)} pass`,
-      replayTool === "blend"
-        ? "preview tip n/a Blend"
+      carrierReplay
+        ? "preview tip n/a carrier compute"
         : performanceProfile.adaptivePreviewActivations > 0
-        ? `preview tip ${formatInteger(performanceProfile.adaptivePreviewBaseStampsDrawn)} stamp / ${performanceProfile.adaptivePreviewJsTotalMs.toFixed(2)} ms JS`
-        : "preview tip non attivata",
-      replayTool === "blend"
-        ? `spacing Blend ${replaySettings.spacingPercent.toFixed(2)}%`
+          ? `preview tip ${formatInteger(performanceProfile.adaptivePreviewBaseStampsDrawn)} stamp / ${performanceProfile.adaptivePreviewJsTotalMs.toFixed(2)} ms JS`
+          : "preview tip non attivata",
+      carrierReplay
+        ? `spacing carrier ${replaySettings.spacingPercent.toFixed(2)}%`
         : `spacing adattivo ${performanceProfile.adaptiveSpacingInitialPercent.toFixed(2)}→${performanceProfile.adaptiveSpacingFinalPercent.toFixed(2)}% / ${performanceProfile.adaptiveSpacingIncreaseCount} step`,
       `history CPU ${formatInteger(performanceProfile.historyCapturedBaseStamps)} stamp / ${formatInteger(performanceProfile.historyCapturedBatches)} batch`,
       `FPS medi ${performanceProfile.averageRenderFps.toFixed(1)}`,
       `${formatInteger(performanceProfile.delayedRenderFrames)} frame >20 ms`,
       `presentazione ${playback.endToPresentedMs.toFixed(2)} ms`,
-      runId > 0 ? `run #${runId} salvata` : "run salvata",
+      saveError
+        ? `misura valida · registro non salvato: ${saveError}`
+        : runId > 0 ? `run #${runId} salvata` : "run locale completata",
     ].join(" · ");
+
+    return {
+      run,
+      runId,
+      saveError,
+      label: testLabel,
+      memoryBefore,
+      memoryAfter,
+    };
   } catch (error) {
     engine.finishStrokePerformanceProfile();
     humanStrokeResult.textContent = error instanceof Error ? error.message : String(error);
+    if (suiteInternal) {
+      throw error;
+    }
+    return null;
   } finally {
     humanStrokeReplaying = false;
     benchmarkButton.disabled = false;
@@ -4133,6 +4434,263 @@ async function replayHumanStroke(replayTool: BrushSettings["tool"] = "paint"): P
   }
 }
 
+function renderingSuiteModeSummary(
+  results: readonly HumanStrokeReplayResult[],
+  blendMode: HumanStrokeTestBlendMode,
+): {
+  blendMode: HumanStrokeTestBlendMode;
+  caseCount: number;
+  renderingStorageMiB: number;
+  countedTotalSteadyMiB: number;
+  countedTotalTransitionPeakMiB: number;
+  cpuFrameP95WorstMs: number;
+  gpuQueueTailWorstMs: number;
+  endToPresentedWorstMs: number;
+} {
+  const selected = results.filter(
+    (result) => result.run.benchmark.testBlendMode === blendMode,
+  );
+  return {
+    blendMode,
+    caseCount: selected.length,
+    renderingStorageMiB: Math.max(
+      0,
+      ...selected.map((result) => result.memoryAfter.renderingStorageMiB),
+    ),
+    countedTotalSteadyMiB: Math.max(
+      0,
+      ...selected.map((result) => result.memoryAfter.countedTotalMiB),
+    ),
+    countedTotalTransitionPeakMiB: Math.max(
+      0,
+      ...selected.map((result) => result.memoryAfter.countedTotalTransitionPeakMiB),
+    ),
+    cpuFrameP95WorstMs: Math.max(
+      0,
+      ...selected.map((result) => result.run.performance.renderFrameTotalP95Ms),
+    ),
+    gpuQueueTailWorstMs: Math.max(
+      0,
+      ...selected.map((result) => result.run.playback.inputToGpuCompletionMs),
+    ),
+    endToPresentedWorstMs: Math.max(
+      0,
+      ...selected.map((result) => result.run.playback.endToPresentedMs),
+    ),
+  };
+}
+
+async function runRenderingModeSuite(): Promise<void> {
+  if (
+    !humanStrokeBenchmark
+    || renderingModeSuiteRunning
+    || humanStrokeReplaying
+    || interactionLocked()
+  ) {
+    return;
+  }
+
+  const benchmark = humanStrokeBenchmark;
+  const traceFingerprint = fingerprintHumanStroke(benchmark.points);
+  const tracePointCount = benchmark.points.length;
+  const traceMatchesCanonical = traceFingerprint === CANONICAL_HUMAN_STROKE_FINGERPRINT
+    && tracePointCount === CANONICAL_HUMAN_STROKE_POINT_COUNT;
+
+  renderingModeSuiteRunning = true;
+  renderingModeSuiteDetails.hidden = true;
+  renderingModeSuiteReport.textContent = "";
+  renderingModeSuiteResult.className = "result";
+  renderingModeSuiteProgress.hidden = false;
+  renderingModeSuiteProgress.dataset.state = "running";
+  renderingModeSuiteProgress.textContent =
+    `Suite rendering · 0/${renderingModeSuiteCases.length} · preparazione…`;
+  setControlsPanelOpen(false);
+  updateHumanStrokeControls();
+  updateHistoryControls();
+  const startedAt = performance.now();
+  const results: HumanStrokeReplayResult[] = [];
+
+  try {
+    if (!traceMatchesCanonical) {
+      throw new Error(
+        `Traccia non canonica: attesa ${CANONICAL_HUMAN_STROKE_FINGERPRINT}`
+        + `/${CANONICAL_HUMAN_STROKE_POINT_COUNT}, ricevuta ${traceFingerprint}/${tracePointCount}.`,
+      );
+    }
+    for (let index = 0; index < renderingModeSuiteCases.length; index += 1) {
+      const suiteCase = renderingModeSuiteCases[index];
+      const progressText = [
+        `Suite rendering ${index + 1}/${renderingModeSuiteCases.length}`,
+        suiteCase.label,
+        "non chiudere la pagina",
+      ].join(" · ");
+      renderingModeSuiteResult.textContent = progressText;
+      renderingModeSuiteProgress.textContent = progressText;
+      await nextAnimationFrame();
+      const result = await replayHumanStroke({
+        replayTool: "paint",
+        testVariant: suiteCase.variant,
+        testBlendMode: suiteCase.blendMode,
+        testGrainMode: suiteCase.grainMode,
+        settingsOverride: suiteCase.overrides,
+        suiteRevision: RENDERING_MODE_SUITE_REVISION,
+        suiteCaseId: suiteCase.id,
+        suiteCaseLabel: suiteCase.label,
+      });
+      if (!result) {
+        throw new Error(`La suite non ha prodotto il caso ${suiteCase.id}.`);
+      }
+      const expectedPhysicalCopies = result.run.performance.baseStamps
+        * result.run.benchmark.settings.count;
+      if (result.run.performance.physicalCopies !== expectedPhysicalCopies) {
+        throw new Error(
+          `${suiteCase.id}: copie fisiche ${result.run.performance.physicalCopies}`
+          + `, attese ${expectedPhysicalCopies}.`,
+        );
+      }
+      if (
+        suiteCase.blendMode === "intense-blending"
+        && result.memoryAfter.blendRendererMiB > 0.001
+      ) {
+        throw new Error(
+          `Intense ha allocato ${result.memoryAfter.blendRendererMiB.toFixed(3)} MiB`
+          + " dello scratch Blend dry.",
+        );
+      }
+      results.push(result);
+    }
+
+    const modeSummaries = [
+      renderingSuiteModeSummary(results, "light-glaze"),
+      renderingSuiteModeSummary(results, "uniformed-glaze"),
+      renderingSuiteModeSummary(results, "intense-blending"),
+    ];
+    const report = {
+      version: RENDERING_MODE_SUITE_REVISION,
+      passed: traceMatchesCanonical
+        && results.length === renderingModeSuiteCases.length
+        && results
+          .filter((result) => result.run.benchmark.testBlendMode === "intense-blending")
+          .every((result) => result.memoryAfter.blendRendererMiB <= 0.001),
+      strategy: "canonical-human-stroke-base-spacing-1-three-renderings-one-tap-v4",
+      execution: {
+        order: renderingModeSuiteCases.map((suiteCase) => suiteCase.blendMode),
+        prewarmedBeforeEachReplay: true,
+        rgbaStorageReusedFromUniformedToIntense: true,
+        rankingCaveat: "single ordered pass; compare signatures and pacing, not an absolute ranking",
+      },
+      semantics: {
+        wetMixImplemented: false,
+        wetMixIncludedInBenchmark: false,
+        flowAndOpacityAtOneMakeUniformedAndIntensePixelsEquivalent: true,
+        behaviorRegression: "separate Flow/Opacity-below-1 overlap fixture",
+      },
+      completedAt: new Date().toISOString(),
+      durationMs: performance.now() - startedAt,
+      trace: {
+        fingerprint: traceFingerprint,
+        expectedFingerprint: CANONICAL_HUMAN_STROKE_FINGERPRINT,
+        pointCount: tracePointCount,
+        expectedPointCount: CANONICAL_HUMAN_STROKE_POINT_COUNT,
+        matchesCanonical: traceMatchesCanonical,
+        durationMs: benchmark.points.at(-1)?.timeMs ?? 0,
+      },
+      caseCount: results.length,
+      expectedCaseCount: renderingModeSuiteCases.length,
+      allRunsSaved: results.every((result) => result.saveError === null),
+      memoryByRendering: modeSummaries,
+      cases: results.map((result, index) => ({
+        id: result.run.benchmark.renderingSuiteCaseId,
+        label: result.label,
+        runId: result.runId,
+        saveError: result.saveError,
+        blendMode: result.run.benchmark.testBlendMode,
+        variant: result.run.benchmark.testVariant,
+        grainMode: result.run.benchmark.testGrainMode,
+        executionIndex: index,
+        storageClass: result.run.benchmark.testBlendMode === "light-glaze"
+          ? "r8-coverage"
+          : "rgba16float-stroke",
+        storageReusedFromPreviousCase: index === 2,
+        settings: {
+          flow: result.run.benchmark.settings.flow,
+          opacity: result.run.benchmark.settings.opacity,
+          spacingPercent: result.run.benchmark.settings.spacingPercent,
+          count: result.run.benchmark.settings.count,
+          positionJitterLateral: result.run.benchmark.settings.positionJitterLateral,
+          positionJitterLinear: result.run.benchmark.settings.positionJitterLinear,
+          shapeScatter: result.run.benchmark.settings.shapeScatter,
+        },
+        memoryBefore: result.memoryBefore,
+        memoryAfter: result.memoryAfter,
+        performance: {
+          baseStamps: result.run.performance.baseStamps,
+          physicalCopies: result.run.performance.physicalCopies,
+          adaptiveSpacingInitialPercent:
+            result.run.performance.adaptiveSpacingInitialPercent,
+          adaptiveSpacingFinalPercent:
+            result.run.performance.adaptiveSpacingFinalPercent,
+          adaptiveSpacingIncreaseCount:
+            result.run.performance.adaptiveSpacingIncreaseCount,
+          adaptiveSpacingEvents: result.run.performance.adaptiveSpacingEvents,
+          cpuFrameP95Ms: result.run.performance.renderFrameTotalP95Ms,
+          submitP95Ms: result.run.performance.submitImmediateP95Ms,
+          gpuQueueTailMs: result.run.playback.inputToGpuCompletionMs,
+          endToPresentedMs: result.run.playback.endToPresentedMs,
+          averageRenderFps: result.run.performance.averageRenderFps,
+          delayedRenderFrames: result.run.performance.delayedRenderFrames,
+        },
+      })),
+    };
+    renderingModeSuiteReport.textContent = JSON.stringify(report, null, 2);
+    renderingModeSuiteDetails.hidden = false;
+    renderingModeSuiteDetails.open = true;
+    (
+      window as Window & { __renderingModeSuiteReport?: typeof report }
+    ).__renderingModeSuiteReport = report;
+    renderingModeSuiteResult.className = "result ok";
+    renderingModeSuiteResult.textContent = [
+      `Suite completa · ${results.length}/${renderingModeSuiteCases.length} casi`,
+      ...modeSummaries.map((summary) =>
+        `${summary.blendMode} ${summary.renderingStorageMiB.toFixed(1)} MiB dedicati`
+        + ` / ${summary.countedTotalSteadyMiB.toFixed(1)} MiB stabili`
+        + ` / ${summary.countedTotalTransitionPeakMiB.toFixed(1)} MiB picco transizione`),
+      `durata ${formatDuration(report.durationMs)}`,
+    ].join(" · ");
+    renderingModeSuiteProgress.dataset.state = "complete";
+    renderingModeSuiteProgress.textContent = renderingModeSuiteResult.textContent;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const failure = {
+      version: RENDERING_MODE_SUITE_REVISION,
+      passed: false,
+      strategy: "canonical-human-stroke-base-spacing-1-three-renderings-one-tap-v4",
+      trace: {
+        fingerprint: traceFingerprint,
+        expectedFingerprint: CANONICAL_HUMAN_STROKE_FINGERPRINT,
+        pointCount: tracePointCount,
+        expectedPointCount: CANONICAL_HUMAN_STROKE_POINT_COUNT,
+        matchesCanonical: traceMatchesCanonical,
+      },
+      completedCases: results.length,
+      expectedCaseCount: renderingModeSuiteCases.length,
+      error: message,
+    };
+    renderingModeSuiteReport.textContent = JSON.stringify(failure, null, 2);
+    renderingModeSuiteDetails.hidden = false;
+    renderingModeSuiteDetails.open = true;
+    renderingModeSuiteResult.className = "result error";
+    renderingModeSuiteResult.textContent =
+      `Suite interrotta dopo ${results.length}/${renderingModeSuiteCases.length} casi · ${message}`;
+    renderingModeSuiteProgress.dataset.state = "error";
+    renderingModeSuiteProgress.textContent = renderingModeSuiteResult.textContent;
+  } finally {
+    renderingModeSuiteRunning = false;
+    historyState = engine.getHistoryState();
+    updateHistoryControls();
+    updateHumanStrokeControls();
+  }
+}
 function normalizedPressure(event: PointerEvent): number {
   if (event.pointerType === "mouse") {
     return 1;

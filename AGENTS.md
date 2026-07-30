@@ -38,17 +38,22 @@ Avvertenze di misura permanenti:
 
 ## Benchmark canonico e baseline
 
-**Play tratto registrato**: traccia umana fissa, fingerprint `18982412`,
-`1583` punti. Preset (revisione `3`): size `750 px`, spacing `1%`, Count `16`,
-flow/hardness `100%`, blend intensity `4×`, Opacità `100%`, jitter come
-registrato, pressione ininfluente. Selettori indipendenti:
+**Play tratto registrato — protocollo storico rev `3`**: traccia umana fissa,
+fingerprint `18982412`, `1583` punti. Il preset storico usa size `750 px`,
+spacing `1%`, Count `16`, flow/hardness `100%`, blend intensity `4×`, Opacità
+`100%`, jitter come registrato e pressione ininfluente. Le run storiche
+Normal/M1/Light restano leggibili ma non sono aggregabili con la nuova suite.
 
-- variante `Base` (cerchio, jitter posizione 100%) / `Fur` (Shape 2K, scatter
-  100%, jitter posizione 0%);
-- Grain `Off` / `Fixed M1` (Scale 140%, Depth 100%, Improved, Multiply);
-- blending `Normal 4×` / `M1 Glaze non accumulativo 1×` (esiste anche la
-  variante Light Glaze del selettore blending del replay).
-
+**Suite rendering pubblica rev `4` — candidata per il prossimo run iPhone**:
+un solo tap esegue esattamente `3` casi sulla stessa traccia canonica:
+`Light Glaze`, `Uniformed Glaze` e `Intense Blending`, tutti `Base` (cerchio),
+Grain `Off`. Preset: size `750 px`, spacing `1%`, Count `16`,
+Flow/Opacity/Hardness `100%`, Blend Intensity fisso `1×` e jitter canonico del
+profilo Base. Il report include firme, stamp base/copie fisiche, pacing, memoria
+stabile e picco logico transitorio old+new per caso. Wet Mix non partecipa alla
+suite rev `4`. Non
+promuovere una nuova baseline finché la suite non passa sulla traccia canonica
+reale su iPhone; non aggregare i suoi risultati con la vecchia matrice rev `2`.
 Non aggregare mai run di varianti diverse. Con lo spacing adattivo attivo,
 `spacingPercent: 1` **non** implica più `12107` stamp: leggere sempre
 `adaptiveSpacingEvents`, spacing finale e numero di stamp.
@@ -80,6 +85,10 @@ Paint:
 - Quad `triangle-strip` da 4 vertici per copia (passo 3, run `#11`: `+3%` FPS,
   p95 `−16%`). Fragment con coverage generica `smoothstep`.
 - Riuso esatto di `copySeed` per il jitter colore (passo 6, `#16`).
+- Color Dynamics non ha più il moltiplicatore ambiguo «Intensità globale»:
+  Hue, Saturation, Lightness e Darkness sono controlli diretti. Il campo
+  `jitterMaster` resta nell'ABI/history per compatibilità, ma viene normalizzato
+  a `1` e non partecipa più né alle uniform GPU né alla preview Canvas2D.
 - Dirty rect direzionale conservativo sui jitter di posizione (passo 7, `#19`:
   `−36,6%` area scissor, FPS invariati; mantenuto come base per binning
   futuro, non come vittoria FPS).
@@ -112,27 +121,99 @@ Paint:
   `#53`: coda finale `−91,6%`, p95 `26→17 ms` con `−25%` stamp. Il tetto
   Android esteso non basta su ARM Valhall (`#59/#60`: resta a secondi di
   ritardo) — su quel dispositivo serve altro, non più spacing.
-- Opacità per-stamp (moltiplica l'alpha già presente nella uniform, ABI
-  invariata) + **Light Glaze**: accumulatore RGBA per-stroke lazy `4096²`, mip
-  finali compositati `compose→filter` separati e commit unico al lift con cap
-  Opacità sull'intera pennellata. Costa ~`85,3 MiB` RGBA8 o ~`170,7 MiB`
-  RGBA16F. **M1 Glaze non accumulativo**: accumulatore coverage R8 a un solo
-  mip (`16 MiB`) con blending `MAX`, tinta unica campionata a inizio tratto e
-  gli stessi mip finali compositati; totale ~`37,3 MiB` RGBA8 o ~`58,7 MiB`
-  RGBA16F. Le risorse sono lazy e il cambio modo distrugge il formato precedente,
-  quindi Light e M1 non sono residenti insieme. Non unire le due strategie.
-- Ciclo di vita storage glaze (sperimentale rev `39`, da validare):
-  `LIGHT_GLAZE_STORAGE_LIFECYCLE_STRATEGY =
-  "allocate-on-glaze-select-release-when-idle-deselected"`. Lo storage viene
-  allocato quando si seleziona un blending glaze sul Paint (prewarm al click,
-  gestisce anche lo scambio rgba↔r8) e rilasciato da
-  `maybeReleaseIdleLightGlazeResources` quando il glaze non è più selezionato
-  e il motore è fermo — mai con sessione o tratto attivi, replay in corso o
-  stamp in coda. Il replay Undo/Redo rialloca da solo e il frame successivo
-  rilascia di nuovo. Pixel e commit invariati; cambia solo la residenza
-  (−85,3 o −37,3 MiB quando si torna a Normal/Additive).
-  `#70–#73` descrivono la semantica originale accettata; lo storage R8 corrente
-  resta sperimentale finché non passa Golden GPU e prova percettiva.
+- Il selettore Rendering pubblico espone soltanto **Light Glaze**,
+  **Uniformed Glaze** e **Intense Blending**. Il vecchio slider Blend Intensity
+  è rimosso: l'ABI/history conserva il campo ma il motore lo forza a `1×`, così
+  Flow e Opacity non hanno un secondo moltiplicatore ambiguo.
+- **Light Glaze pubblico** usa l'accumulatore coverage `r8unorm` `4096²` con
+  blending `MAX`, tinta unica campionata a inizio gesto, mip finali
+  `compose→filter` e commit unico al lift. È il percorso storicamente chiamato
+  `M1 Glaze`: `37,3 MiB` dedicati in RGBA8 (`16 + 21,3`) o `58,7 MiB` in
+  RGBA16F (`16 + 42,7`).
+- **Uniformed Glaze pubblico** usa sempre un accumulatore autorevole RGBA16F
+  per-stroke `4096²`: gli stamp accumulano source-over in lineare con Flow,
+  mentre Opacity viene applicata una sola volta all'intera gesture. Display,
+  mip compositati ed effetti leggono lo stesso risultato live; al lift un
+  resolver esatto a tile `1024²` campiona permanente+stroke e copia i pixel nel
+  layer, quindi non cambia formula. Strategia firmata:
+  `uniformed-linear-rgba16float-live-composite-mips-single-commit`. Memoria
+  dedicata: `153,3 MiB` su layer RGBA8 (`128 + 21,3 + 4`) o `178,7 MiB` su
+  layer RGBA16F (`128 + 42,7 + 8`).
+- **Intense Blending pubblico** riusa la stessa classe di storage RGBA16F di
+  Uniformed, ma conserva colori e source-over in sRGB codificato, come misurato
+  su Procreate. Flow e Opacity moltiplicano ogni stamp fisico e non esiste un
+  secondo cap finale. Il display live converte il permanente lineare in sRGB
+  premoltiplicato, compone lo stroke, poi torna al formato lineare del layer;
+  mip, Traccia, Smusso e Ombre usano la stessa formula. Il resolver a tile al
+  lift esegue esattamente la stessa composizione. Strategia firmata:
+  `intense-physical-stamps-source-over-srgb-rgba16float-live-single-commit`.
+- Intense resta un vero tool Paint e attraversa il generatore standard: spacing,
+  Count, jitter lineare/laterale per copia, Shape scatter, Shape mask, Grain,
+  history, Undo/Redo e batching GPU sono gli stessi degli altri rendering.
+  Non viene più rinominato come tool Blend e non alloca lo scratch carrier del
+  Blend dry. Memoria dedicata: `153,3 MiB` su layer RGBA8 o `178,7 MiB` su
+  layer RGBA16F, identica a Uniformed; passando fra i due modi la stessa texture
+  RGBA16F e lo stesso tile vengono riutilizzati.
+- Misura Procreate del 30 luglio 2026, configurazione dry Intense controllata:
+  i PNG opachi su nero mostrano plateau interni `46 → 84 → 114/115 → 140 →
+  160/161 → 178 → 191/192`. Coincidono entro un codice con la ricorrenza
+  source-over `C_n = 255·[1-(1-46/255)^n]` per `n=1…7`: ogni stamp fisico
+  accumula anche dentro la stessa gesture; Flow e Opacity agiscono sul deposito,
+  non come cap finale. Spacing basso e jitter/scatter creano più sovrapposizioni
+  e fanno tendere il risultato al 100%. Evidenze SHA-256: `523F8A5E…`
+  (spacing) e `BF084072…` (jitter). La regressione `npm run intense:verify`
+  vincola routing, Count, jitter/scatter e la serie numerica misurata.
+- **Wet Mix e Grade non sono ancora implementati nel percorso Intense fisico**:
+  i controlli Dilution/Charge/Attack/Pull/Grade/Blur restano fuori dalla UI.
+  Prelievo e trasporto corretti con Count, jitter e scatter richiedono ordine
+  per-stamp deterministico e ping-pong/tile binning; riusare la vecchia sweep
+  continua cambierebbe la geometria e il risultato. Il vecchio esperimento
+  carrier rev `1` è stato rimosso anche dagli shader Blend per preservare pixel
+  e prestazioni della baseline Blend dry `#76`.
+- Ciclo di vita: Light usa R8; Uniformed e Intense usano RGBA16F. Le risorse
+  sono pre-riscaldate alla selezione, lazy rispetto all'avvio, attese da
+  benchmark/Undo/Redo e rilasciate in idle. Allocazione e retarget dei bind group
+  passano in due transazioni WebGPU sotto scope `validation` + `out-of-memory`;
+  la vecchia famiglia resta viva fino alla validazione finale e il rollback
+  reinstalla il vecchio resource set prima di distruggere la candidata. Un gate
+  blocca ogni pointer-down finché la transizione è in volo e una richiesta
+  latest-only impedisce che `R8→RGBA→R8` pubblichi la famiglia obsoleta. Il fault
+  injection OOM del retarget resta ancora da aggiungere: non descrivere il
+  rollback come provato su iPhone. Durante il cambio esiste un picco logico
+  old+new di circa `190,6 MiB` su layer RGBA8 o `237,4 MiB` su RGBA16F; la suite
+  rev `4` lo separa dal totale stabile. Se il dispositivo non lo regge, il
+  cambio viene rifiutato e il vecchio rendering resta residente.
+- L'accumulatore autorevole non viene più pulito per intero a ogni gesto: dopo
+  il commit si conserva la dirty rect del solo tratto precedente e il gesto
+  successivo la azzera con un draw GPU scissored nello stesso render pass dei
+  nuovi stamp, evitando anche una seconda frontiera attachment load/store. Un
+  tap non provoca quindi più un clear di tutti i `4096²` texel RGBA16F; nuova
+  texture, annullamento e cambio storage mantengono la stessa semantica zero.
+- `blendIntensity` resta soltanto nel tipo/history ABI per compatibilità, ma la
+  uniform GPU e la preview lo fissano sempre a `1`; anche una cronologia legacy
+  con `4×` non può più riattivarlo. Il payload canonico remoto è revisionato a
+  preset `4` e normalizzato a `1×`.
+- La suite rev `4` Base/Grain Off/spacing `1%` è pronta ma non costituisce una
+  baseline finché non viene eseguita sulla traccia canonica reale e poi su
+  iPhone. Non dichiarare ancora parità pixel completa con Procreate né vantaggi
+  prestazionali: la misura dry valida la legge di deposito, non Wet Mix.
+- QA browser desktop del 30 luglio 2026: con nero, Flow `50%`, Opacity `100%`,
+  Count `1`, spacing `5%`, Light resta semitrasparente mentre Uniformed e
+  Intense raggiungono il nero con le sovrapposizioni. Catture durante il
+  pointer-down dimostrano che entrambi i modi RGBA16F sono visibili prima del
+  lift; nelle regioni ormai fuori dall'influenza degli stamp futuri, confronto
+  live→post-lift: Intense `22.500/22.500` canali identici e Uniformed
+  `4.050/4.050`, delta massimo `0`; dopo il consolidamento lifecycle, una nuova
+  regione Intense conta `64.800/64.800` canali identici, ancora delta `0`.
+  Rosso al `50%` sopra verde opaco in Intense
+  produce `[127,128,0]`, coerente con source-over sRGB atteso `[128,128,0]` e
+  non con il riferimento lineare `[188,188,0]`. Nessun warning/error WebGPU.
+- La suite ha trovato un difetto reale nel passaggio Light→Uniformed: la sessione
+  Uniformed veniva rinominata con l'identificatore storico `light-glaze`; la
+  prima submission reinterpretava il nome pubblico come Light R8, scambiava lo
+  storage e distruggeva la sessione attiva. Ora l'identità pubblica viene
+  preservata fino al commit e `grain:verify` contiene una regressione statica
+  vincolante. Diagnostica invariant: modo, batch e numero di sessioni attive.
 - Grain M1 nativo: asset originale `graincottonfleece.PNG` RGBA `2500×2500`
   (SHA-256 `9AA1CE07…`), luma `0.299/0.587/0.114`, 12 mip NPOT generati in
   WGSL allo startup (~`31,8 MiB`). Fixed = UV layer; Moving = UV stamp (Scale
@@ -429,7 +510,7 @@ Paint:
   input di compositing. Risparmio deterministico rispetto allo storage Light/RGBA:
   `48,0 MiB` in RGBA8 e `112,0 MiB` in RGBA16F. Light Glaze tradizionale resta
   invariato. La telemetria riporta il modo attivo
-  (`r8-coverage`/`rgba-stroke`) e la relativa memoria.
+  (`r8-coverage`/`rgba16float-stroke`) e la relativa memoria.
 - Telemetria rev `37`: firma il nuovo modo di storage M1 e la sua contabilità.
   La diagnostica Golden rev `2` usa una vera sorgente R8 per il caso M1.
 - Golden GPU v5 pre-fix eseguito dall'utente il 24 luglio 2026: tutti i sette
