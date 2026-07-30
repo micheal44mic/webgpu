@@ -1207,7 +1207,7 @@ assert.ok(
   "il cambio formato deve allocare prima di distruggere",
 );
 const recreateStart = engineSource.indexOf("private async recreateLayerResources(");
-const recreateBody = engineSource.slice(recreateStart, recreateStart + 30_000);
+const recreateBody = engineSource.slice(recreateStart, recreateStart + 50_000);
 assert.match(recreateBody, /runGpuAllocationTransaction\(\s*this\.device,\s*`Pipeline formato layer/,
   "anche pipeline e layout devono chiudere validation/OOM scope");
 assert.match(recreateBody, /record\.id === this\.layerStack\.active\.id[\s\S]*?await this\.allocateLayerGpuResources\([\s\S]*?: this\.createColdLayerGpuResources\(\)/,

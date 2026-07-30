@@ -31,6 +31,14 @@ import {
   RASTER_PIXEL_VIEW_PERCENT_THRESHOLD,
   rasterPixelViewEnabled,
 } from "./raster-pixel-view.ts";
+import {
+  DEFAULT_RUWA_WET_PARAMETERS,
+  RUWA_WET_MIX_REVISION,
+  RUWA_WET_PARAMETER_KEYS,
+  isWetPresetId,
+  wetPresetParameters,
+  type WetPresetId,
+} from "./wet-mix";
 
 function element<T extends HTMLElement>(id: string): T {
   const result = document.getElementById(id);
@@ -729,9 +737,11 @@ function configureBrushToolUi(
 
 function updateRenderingModeControlAvailability(): void {
   const blendTool = activeBrushTool === "blend";
-  const intenseSelected = !blendTool
-    && element<HTMLSelectElement>("blendMode").value === "intense-blending";
-  element<HTMLElement>("intenseBlendingControls").hidden = !intenseSelected;
+  const renderingMode = element<HTMLSelectElement>("blendMode").value;
+  const wetAvailable = !blendTool && (
+    renderingMode === "uniformed-glaze" || renderingMode === "intense-blending"
+  );
+  element<HTMLElement>("wetMixControls").hidden = !wetAvailable;
   const size = element<HTMLInputElement>("brushSize");
   size.max = blendTool ? "1024" : "1500";
   if (rangeValue("brushSize") > Number(size.max)) {
@@ -821,13 +831,18 @@ function readBrushSettings(): BrushSettings {
     // Kept fixed in the engine/history ABI; Flow is the only deposit control.
     blendIntensity: 1,
     blendMode: element<HTMLSelectElement>("blendMode").value as BrushSettings["blendMode"],
+    wetMixEnabled: element<HTMLSelectElement>("wetPreset").value !== "off",
+    wetPresetId: isWetPresetId(element<HTMLSelectElement>("wetPreset").value)
+      ? element<HTMLSelectElement>("wetPreset").value as WetPresetId
+      : "off",
+    wetBlending: rangeValue("wetBlending") / 100,
     wetDilution: rangeValue("wetDilution") / 100,
-    wetCharge: rangeValue("wetCharge") / 100,
-    wetAttack: rangeValue("wetAttack") / 100,
-    wetPull: rangeValue("wetPull") / 100,
-    wetGrade: rangeValue("wetGrade") / 100,
-    wetBlur: rangeValue("wetBlur") / 100,
-    wetMixRevision: 1,
+    wetSpread: rangeValue("wetSpread") / 100,
+    wetLength: rangeValue("wetLength") / 100,
+    wetFlow: rangeValue("wetFlow") / 100,
+    wetBuildup: rangeValue("wetBuildup") / 100,
+    wetDrying: rangeValue("wetDrying") / 100,
+    wetMixRevision: RUWA_WET_MIX_REVISION,
     blendStretch: rangeValue("blendStretch") / 100,
     blendPaint: rangeValue("blendPaint") / 100,
     // Legacy history ABI field. Individual Color Dynamics controls are direct.
@@ -860,12 +875,13 @@ function updateControlOutputs(): void {
   element<HTMLOutputElement>("flowOut").value = `${rangeValue("flow").toFixed(1).replace(".0", "")}%`;
   element<HTMLOutputElement>("opacityOut").value = `${rangeValue("opacity").toFixed(1).replace(".0", "")}%`;
   element<HTMLOutputElement>("hardnessOut").value = `${rangeValue("hardness").toFixed(0)}%`;
+  element<HTMLOutputElement>("wetBlendingOut").value = `${rangeValue("wetBlending").toFixed(0)}%`;
   element<HTMLOutputElement>("wetDilutionOut").value = `${rangeValue("wetDilution").toFixed(0)}%`;
-  element<HTMLOutputElement>("wetChargeOut").value = `${rangeValue("wetCharge").toFixed(0)}%`;
-  element<HTMLOutputElement>("wetAttackOut").value = `${rangeValue("wetAttack").toFixed(0)}%`;
-  element<HTMLOutputElement>("wetPullOut").value = `${rangeValue("wetPull").toFixed(0)}%`;
-  element<HTMLOutputElement>("wetGradeOut").value = `${rangeValue("wetGrade").toFixed(0)}%`;
-  element<HTMLOutputElement>("wetBlurOut").value = `${rangeValue("wetBlur").toFixed(0)}%`;
+  element<HTMLOutputElement>("wetSpreadOut").value = `${rangeValue("wetSpread").toFixed(0)}%`;
+  element<HTMLOutputElement>("wetLengthOut").value = `${rangeValue("wetLength").toFixed(0)}%`;
+  element<HTMLOutputElement>("wetFlowOut").value = `${rangeValue("wetFlow").toFixed(0)}%`;
+  element<HTMLOutputElement>("wetBuildupOut").value = `${rangeValue("wetBuildup").toFixed(0)}%`;
+  element<HTMLOutputElement>("wetDryingOut").value = `${rangeValue("wetDrying").toFixed(0)}%`;
   element<HTMLOutputElement>("blendStretchOut").value = `${rangeValue("blendStretch").toFixed(0)}%`;
   element<HTMLOutputElement>("blendPaintOut").value = `${rangeValue("blendPaint").toFixed(0)}%`;
   element<HTMLOutputElement>("hueJitterOut").value = `${rangeValue("hueJitter").toFixed(0)}°`;
@@ -1145,17 +1161,6 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
   const blendPaint = Number.isFinite(benchmark.settings.blendPaint)
     ? Math.min(1, Math.max(0, benchmark.settings.blendPaint))
     : 0.14;
-  const unitSetting = (value: number | undefined, fallback: number): number =>
-    Number.isFinite(value) ? Math.min(1, Math.max(0, value as number)) : fallback;
-  const wetDilution = unitSetting(benchmark.settings.wetDilution, 0);
-  const wetCharge = unitSetting(benchmark.settings.wetCharge, 1);
-  const wetAttack = unitSetting(benchmark.settings.wetAttack, 0);
-  const wetPull = unitSetting(benchmark.settings.wetPull, 0);
-  const wetGrade = unitSetting(benchmark.settings.wetGrade, 0);
-  const wetBlur = unitSetting(benchmark.settings.wetBlur, 0);
-  const wetMixRevision = Number.isFinite(benchmark.settings.wetMixRevision)
-    ? Math.max(0, Math.trunc(benchmark.settings.wetMixRevision as number))
-    : 0;
   const settingsWithoutLegacyDynamics = {
     ...benchmark.settings,
   } as BrushSettings & {
@@ -1188,13 +1193,10 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
       opacity,
       blendIntensity: 1,
       blendMode,
-      wetDilution,
-      wetCharge,
-      wetAttack,
-      wetPull,
-      wetGrade,
-      wetBlur,
-      wetMixRevision,
+      wetMixEnabled: false,
+      wetPresetId: "off",
+      ...DEFAULT_RUWA_WET_PARAMETERS,
+      wetMixRevision: RUWA_WET_MIX_REVISION,
       blendStretch,
       blendPaint,
     },
@@ -1798,12 +1800,15 @@ function applySettingsToControls(settings: BrushSettings): void {
     ? settings.blendMode
     : "light-glaze";
   setControlValue("blendMode", renderingMode);
-  setControlValue("wetDilution", (settings.wetDilution ?? 0) * 100);
-  setControlValue("wetCharge", (settings.wetCharge ?? 1) * 100);
-  setControlValue("wetAttack", (settings.wetAttack ?? 0) * 100);
-  setControlValue("wetPull", (settings.wetPull ?? 0) * 100);
-  setControlValue("wetGrade", (settings.wetGrade ?? 0) * 100);
-  setControlValue("wetBlur", (settings.wetBlur ?? 0) * 100);
+  const wetPresetId = settings.wetMixEnabled
+    ? isWetPresetId(settings.wetPresetId) && settings.wetPresetId !== "off"
+      ? settings.wetPresetId
+      : "custom"
+    : "off";
+  setControlValue("wetPreset", wetPresetId);
+  for (const key of RUWA_WET_PARAMETER_KEYS) {
+    setControlValue(key, (settings[key] ?? DEFAULT_RUWA_WET_PARAMETERS[key]) * 100);
+  }
   setControlValue("blendStretch", (settings.blendStretch ?? 0.18) * 100);
   setControlValue("blendPaint", (settings.blendPaint ?? 0.14) * 100);
   setControlValue("hueJitter", settings.hueJitterDegrees);
@@ -1837,12 +1842,10 @@ function applyHumanStrokePreset(): BrushSettings {
   setControlValue("opacity", 100);
   setControlValue("hardness", 100);
   setControlValue("blendMode", "light-glaze");
-  setControlValue("wetDilution", 0);
-  setControlValue("wetCharge", 100);
-  setControlValue("wetAttack", 0);
-  setControlValue("wetPull", 0);
-  setControlValue("wetGrade", 0);
-  setControlValue("wetBlur", 0);
+  setControlValue("wetPreset", "off");
+  for (const key of RUWA_WET_PARAMETER_KEYS) {
+    setControlValue(key, DEFAULT_RUWA_WET_PARAMETERS[key] * 100);
+  }
   setControlValue("blendStretch", 18);
   setControlValue("blendPaint", 14);
   setControlValue("hueJitter", 180);
@@ -1881,13 +1884,10 @@ function humanStrokeTestSettings(
     opacity: 1,
     blendIntensity: 1,
     blendMode,
-    wetDilution: 0,
-    wetCharge: 1,
-    wetAttack: 0,
-    wetPull: 0,
-    wetGrade: 0,
-    wetBlur: 0,
-    wetMixRevision: 1,
+    wetMixEnabled: false,
+    wetPresetId: "off",
+    ...DEFAULT_RUWA_WET_PARAMETERS,
+    wetMixRevision: RUWA_WET_MIX_REVISION,
     blendStretch: 0.18,
     blendPaint: 0.14,
     grainMode,
@@ -1943,13 +1943,10 @@ function humanStrokeBlendTestSettings(benchmark: HumanStrokeBenchmark): BrushSet
     hardness: 1,
     blendIntensity: 1,
     blendMode: "normal",
-    wetDilution: 0,
-    wetCharge: 1,
-    wetAttack: 0,
-    wetPull: 0,
-    wetGrade: 0,
-    wetBlur: 0,
-    wetMixRevision: 1,
+    wetMixEnabled: false,
+    wetPresetId: "off",
+    ...DEFAULT_RUWA_WET_PARAMETERS,
+    wetMixRevision: RUWA_WET_MIX_REVISION,
     blendStretch: 0.2,
     blendPaint: 0,
     jitterMaster: 1,
@@ -2274,12 +2271,8 @@ const brushControlIds = [
   "opacity",
   "hardness",
   "blendMode",
-  "wetDilution",
-  "wetCharge",
-  "wetAttack",
-  "wetPull",
-  "wetGrade",
-  "wetBlur",
+  "wetPreset",
+  ...RUWA_WET_PARAMETER_KEYS,
   "blendStretch",
   "blendPaint",
   "hueJitter",
@@ -2292,11 +2285,34 @@ const brushControlIds = [
 ] as const;
 
 for (const id of brushControlIds) {
-  if (id === "brushTool") {
+  if (
+    id === "brushTool"
+    || id === "wetPreset"
+    || RUWA_WET_PARAMETER_KEYS.some((key) => key === id)
+  ) {
     continue;
   }
   element<HTMLInputElement | HTMLSelectElement>(id).addEventListener("input", applyBrushControls);
   element<HTMLInputElement | HTMLSelectElement>(id).addEventListener("change", applyBrushControls);
+}
+
+element<HTMLSelectElement>("wetPreset").addEventListener("change", () => {
+  const rawPresetId = element<HTMLSelectElement>("wetPreset").value;
+  const presetId: WetPresetId = isWetPresetId(rawPresetId) ? rawPresetId : "off";
+  const parameters = wetPresetParameters(presetId);
+  if (parameters) {
+    for (const key of RUWA_WET_PARAMETER_KEYS) {
+      setControlValue(key, parameters[key] * 100);
+    }
+  }
+  applyBrushControls();
+});
+
+for (const key of RUWA_WET_PARAMETER_KEYS) {
+  element<HTMLInputElement>(key).addEventListener("input", () => {
+    setControlValue("wetPreset", "custom");
+    applyBrushControls();
+  });
 }
 
 element<HTMLInputElement>("rasterStrokeEnabled").addEventListener("change", () => {
@@ -4058,22 +4074,22 @@ function updateRenderingModeMemoryHint(stats: EngineStats): void {
     : mode === "intense-blending"
       ? "Intense Blending"
       : "Light Glaze";
-  const wetMixActive = mode === "intense-blending" && (
-    rangeValue("wetDilution") > 0.0001
-    || rangeValue("wetCharge") < 99.9999
-    || rangeValue("wetAttack") > 0.0001
-    || rangeValue("wetPull") > 0.0001
-    || rangeValue("wetGrade") > 0.0001
-    || rangeValue("wetBlur") > 0.0001
-  );
+  const wetMixAvailable = mode === "uniformed-glaze" || mode === "intense-blending";
+  const wetMixActive = wetMixAvailable
+    && element<HTMLSelectElement>("wetPreset").value !== "off"
+    && (
+      rangeValue("wetBlending") > 0.0001
+      || rangeValue("wetDilution") > 0.0001
+      || rangeValue("wetSpread") > 0.0001
+    );
   const dedicatedMiB = wetMixActive
     ? stats.gpuMemory.blendRendererMiB
     : stats.gpuMemory.lightGlazeMiB;
-  const modelHint = mode === "intense-blending"
-    ? wetMixActive
-      ? " · scratch Wet live · nessuna ricomposizione al lift"
-      : " · stamp fisici source-over · percorso neutro rapido"
-    : "";
+  const modelHint = wetMixActive
+    ? " · serbatoio spaziale Ruwa 32×32 per copia · compute GPU live"
+    : mode === "intense-blending"
+      ? " · stamp fisici source-over · Wet disattivato"
+      : "";
   renderingModeMemoryHint.textContent =
     `${label} · memoria GPU dedicata residente ${formatMemoryMiB(dedicatedMiB)}`
     + ` · totale motore ${formatMemoryMiB(stats.gpuMemory.countedTotalMiB)}`

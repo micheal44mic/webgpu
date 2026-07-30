@@ -11,6 +11,7 @@
     "blend:verify": "node scripts/verify-blend-core.mjs",
     "light:verify": "node scripts/verify-light-glaze.mjs",
     "intense:verify": "node scripts/verify-intense-blending.mjs",
+    "wet:verify": "node scripts/verify-intense-blending.mjs",
     "grain:verify": "node scripts/verify-grain-phase1.mjs",
     "thickness:verify": "node scripts/verify-thickness-dynamics.mjs",
     "history:verify": "node scripts/verify-history-journal.mjs",

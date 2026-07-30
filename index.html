@@ -137,12 +137,27 @@
           </label>
           <p id="renderingModeMemoryHint" class="result">Memoria rendering: inizializzazione…</p>
 
-          <div id="intenseBlendingControls" hidden>
+          <div id="wetMixControls" hidden>
             <p class="result">
-              Wet Mix GPU · live: il neutro misurato su Procreate è Dilution 0 · Charge 100 ·
-              Attack 0 e usa il percorso Intense rapido; ogni scostamento attiva il serbatoio
-              colore della gesture.
+              Wet Mix Ruwa · serbatoio spaziale WebGPU: pickup, trasporto e deposito
+              restano sulla GPU. I preset modificano soltanto questi sette parametri,
+              senza cambiare Size, Count, Spacing, Flow o Hardness.
             </p>
+
+            <label class="control">
+              <span>Preset Wet</span>
+              <select id="wetPreset">
+                <option value="off">Disattivato</option>
+                <option value="ruwa-wet-1">Ruwa Wet 1</option>
+                <option value="ruwa-wet-2">Ruwa Wet 2</option>
+                <option value="ruwa-wet-3">Ruwa Wet 3</option>
+                <option value="custom">Personalizzato</option>
+              </select>
+            </label>
+            <label class="control">
+              <span>Color Blending <output id="wetBlendingOut">0%</output></span>
+              <input id="wetBlending" type="range" min="0" max="100" step="1" value="0" />
+            </label>
 
             <label class="control">
               <span>Dilution <output id="wetDilutionOut">0%</output></span>
@@ -150,28 +165,27 @@
             </label>
 
             <label class="control">
-              <span>Charge <output id="wetChargeOut">100%</output></span>
-              <input id="wetCharge" type="range" min="0" max="100" step="1" value="100" />
+              <span>Color Spread <output id="wetSpreadOut">0%</output></span>
+              <input id="wetSpread" type="range" min="0" max="100" step="1" value="0" />
             </label>
 
             <label class="control">
-              <span>Attack <output id="wetAttackOut">0%</output></span>
-              <input id="wetAttack" type="range" min="0" max="100" step="1" value="0" />
+              <span>Length <output id="wetLengthOut">50%</output></span>
+              <input id="wetLength" type="range" min="0" max="100" step="1" value="50" />
             </label>
 
             <label class="control">
-              <span>Pull <output id="wetPullOut">0%</output></span>
-              <input id="wetPull" type="range" min="0" max="100" step="1" value="0" />
+              <span>Wet Flow <output id="wetFlowOut">75%</output></span>
+              <input id="wetFlow" type="range" min="0" max="100" step="1" value="75" />
             </label>
 
             <label class="control">
-              <span>Grade <output id="wetGradeOut">0%</output></span>
-              <input id="wetGrade" type="range" min="0" max="100" step="1" value="0" />
+              <span>Buildup <output id="wetBuildupOut">0%</output></span>
+              <input id="wetBuildup" type="range" min="0" max="100" step="1" value="0" />
             </label>
-
             <label class="control">
-              <span>Blur <output id="wetBlurOut">0%</output></span>
-              <input id="wetBlur" type="range" min="0" max="100" step="1" value="0" />
+              <span>Drying <output id="wetDryingOut">0%</output></span>
+              <input id="wetDrying" type="range" min="0" max="100" step="1" value="0" />
             </label>
           </div>
 

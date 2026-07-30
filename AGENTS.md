@@ -179,52 +179,46 @@ Paint:
   e fanno tendere il risultato al 100%. Evidenze SHA-256: `523F8A5E…`
   (spacing) e `BF084072…` (jitter). La regressione `npm run intense:verify`
   vincola routing, Count, jitter/scatter e la serie numerica misurata.
-- **Wet Mix GPU live nel percorso Intense (30 luglio 2026)**: Dilution, Charge,
-  Attack, Pull, Grade e Blur sono pubblici sotto il selettore Intense. Il
-  **neutro misurato è Dilution 0 · Charge 100 · Attack 0 · Pull 0 · Grade 0 ·
-  Blur 0** (la configurazione del pennello AUDIT-1): con quei valori il routing
-  resta il percorso Intense dry RGBA16F, byte-identico e veloce; ogni
-  scostamento instrada gli stamp fisici nel renderer compute del Blend
-  (gather→pickup→deposit→scatter) con un dab per copia fisica in ordine
-  deterministico. Count, Spacing, jitter lineare/laterale e Shape scatter
-  replicano esattamente i random stream WGSL 5/6/7 del generatore Paint; la
-  coverage wet replica le formule del fragment Paint (cerchio in r² con
-  innerEdge=hardness², Shape `mix(mask², mask, hardness)`), così il confine
-  neutro→wet non cambia il profilo del bordo.
-- Modello Wet calibrato sui PNG Procreate del 30 luglio (test 02/03/04/06 +
-  RETEST-A, cartella `procreate-audit/intense-blending-guides` e file
-  `*-fatto.png` in Downloads): su tela vuota il deposito è pieno
-  indipendentemente da Dilution/Attack/Charge (03: otto corsie tutte a 255; 04:
-  plateau 244 con Dilution 75 e Charge ≤50, 255 con Charge 100 — riprodotto da
-  `freshAlpha = 1 − 0.06·dilution·(1−charge)`); **nessun esaurimento del Charge
-  lungo il tratto** (04: profilo piatto su 1144 px, quindi niente envelope a
-  ordinali); sopra pigmento esistente il deposito è soppresso
-  (`opaqueRate = 0.06·(0.15+0.85·attack)·(1−0.9·dilution)² + charge⁶ + pull²`,
-  RETEST-A: tinta ≤3% per dab) con riempimento "a livello film" (deposito pieno
-  finché `canvas.a < alphaOut`); il serbatoio parte carico del colore pennello
-  in proporzione a Charge, il pickup riempie solo la capacità residua
-  (`carrier += picked·pull·vacancy`) e il trasporto non decade (06: pigmento
-  raccolto trascinato per 600+ px a piena forza, zero colore pennello con
-  Attack 0 + Dilution 100). Colori e mixing restano in encoded sRGB
-  (gather/scatter convertono linear↔sRGB). Blur = approssimazione a bordo
-  morbido (hardness ×(1−0.92·blur), LOD mip della Shape ×5, raggio ×1.07): il
-  riferimento 07 non è stato misurato, non dichiarare parità. Le costanti sono
-  un fit qualitativo delle misure, non parità pixel Procreate.
-- Scratch Blend adattivo: 1664 (~`52,9 MiB`) per il Blend dry, 2304
-  (~`101,3 MiB`, Shape 1500 px ruotata + alone Blur) solo con Wet non neutro
-  selezionato; `configureScratchSize` al select (mai con tratto attivo, crescita
-  automatica a inizio tratto per i replay) e famiglie mutuamente esclusive con
-  l'accumulatore glaze: neutro `153,3` + `0,06`, Wet `101,4` + `0`, Blend dry
-  `52,9` + `0`, verificati live. Il Wet scrive direttamente nel layer: **nessuna
-  ricomposizione al lift** (misurato: 0/140.800 byte diversi live→post-lift) e
-  Undo/Redo replay byte-identico anche attraverso il tratto di trasporto
-  (0 byte di delta su doppio undo/redo). `intense:verify` vincola formule WGSL,
-  neutro AUDIT-1, scratch adattivo e replica numerica del modello (serie
-  neutra = plateau misurati 46→192, plateau 244/255, trasporto, soppressione
-  RETEST-A); è stato dimostrato fallire mutando la costante di dilution.
-- Il vecchio esperimento carrier rev `1` resta rimosso; il Blend dry usa gli
-  stessi shader con branch `wetMode()` inerti e la baseline `#76` non cambia
-  né pixel né memoria (52,9 MiB).
+- **Wet Mix Ruwa rev `2` (30 luglio 2026)** sostituisce interamente il modello
+  Procreate rev `1`: i controlli pubblici sono ora Color Blending, Dilution,
+  Color Spread, Length, Wet Flow, Buildup e Drying. Il pannello è disponibile
+  sia con Uniformed Glaze sia con Intense Blending; Light Glaze non lo espone.
+  `Disattivato` conserva i sette valori ma lascia byte-invariato il percorso dry;
+  ogni modifica manuale seleziona `Personalizzato`.
+- I tre preset applicano soltanto i sette valori Wet e non toccano Size, Count,
+  Spacing, Flow, Opacity, Hardness, Shape, Grain o jitter: Ruwa Wet 1 =
+  `100/0/30/62/100/0/0`, Wet 2 = `100/0/41/25/100/0/0`, Wet 3 =
+  `27/0/26/78/75/0/0` nell'ordine Blending/Dilution/Spread/Length/Wet Flow/
+  Buildup/Drying. Il nome del preset è metadata UI/history; i sette numeri
+  restano autorevoli per replay.
+- Il renderer Wet resta interamente WebGPU e riusa la sequenza
+  `gather → (pickup → deposit)×N → scatter`, ma il vecchio carrier medio `vec4`
+  è sostituito da un reservoir spaziale encoded-sRGB `32×32`, ping-pong e
+  indipendente per ciascuna delle 24 copie fisiche (`48` slot, ~`0,75 MiB`).
+  Count, ordine stamp, random stream 5/6/7, jitter e Shape scatter restano quelli
+  del generatore Paint. Nessun pixel viene letto o miscelato dalla CPU.
+- Le rate sono normalizzate sulla distanza percorsa, non sul numero di stamp:
+  `rateDab = 1 − (1−rate)^min(distance/max(0,5·radius,1),16)`. Quindi un dab
+  fermo dopo il primo non accumula artificialmente. Drying riduce il paint
+  supply; `spreadEff = spread·supply`; lo scambio usa
+  `max(blending·(1−length), spreadEff)`; Dilution usa `rateDab(dilution²)`;
+  Wet Flow interpola reservoir legato alla punta e pigmento advettato; Buildup
+  usa una coating law separata e deposita esattamente zero sul primo dab.
+- Con Wet attivo, Uniformed e Intense condividono intenzionalmente lo stesso
+  renderer fisico live e scrivono direttamente nel layer; il rendering scelto
+  determina il percorso dry quando Wet è disattivato. Il Wet è attivo soltanto
+  con preset diverso da Off/revisione `2` e almeno uno fra Blending, Dilution o
+  Spread maggiore di epsilon.
+- Scratch adattivo: `1664` (~`52,9 MiB`) per Blend dry, `2304` (~`102 MiB`
+  inclusa la griglia reservoir) per Wet Ruwa. `configureScratchSize` cambia
+  famiglia solo a motore idle o all'inizio di replay; il reservoir viene
+  azzerato logicamente a ogni gesture e invalidato al retarget del livello.
+  La regressione `npm run wet:verify` vincola preset, sette slider, routing
+  Uniformed+Intense, normalizzazione per distanza, 24 reservoir lane, shader
+  encoded-sRGB, Buildup e rimozione dei vecchi campi Charge/Attack/Pull/Grade/
+  Blur. TypeScript, build Vite e tutte le verifiche core risultano verdi; non è
+  ancora una prova visiva o prestazionale iPhone e non va dichiarata parità
+  spettrale/pixel con Ruwa.
 - Ciclo di vita: Light usa R8; Uniformed e Intense usano RGBA16F. Le risorse
   sono pre-riscaldate alla selezione, lazy rispetto all'avvio, attese da
   benchmark/Undo/Redo e rilasciate in idle. Allocazione e retarget dei bind group
@@ -262,20 +256,14 @@ Paint:
   selezionato: sul nodo testo il pennello viene rifiutato e la run riporta `0`
   stamp. Resta da eseguire su iPhone prima di promuovere una baseline. Non
   dichiarare parità pixel completa con Procreate né vantaggi prestazionali: la
-  misura dry valida la legge di deposito e le misure wet 02/03/04/06/RETEST-A
-  vincolano segni e ordini di grandezza del modello, non i byte.
-- QA browser Wet del 30 luglio 2026 (readback numerici `readLayerPixels`, tutti
-  i jitter — inclusi i Color Dynamics di default 12/18/12/18 — azzerati:
-  campionare senza azzerarli produce falsi "degradi" per-gesto, deterministici
-  per sequenza di seed): neutro rosso `255,0,0,255` uniforme; trasporto
-  P100/D100/C0/A0 = rosso puro per 600 px sopra il blu senza magenta;
-  live→lift `0` byte diversi su `140.800`; Undo→Redo e doppio Undo/Redo
-  byte-identici; Shape 2K + Count `8` + scatter `100%` + jitter 60/60 e nove
-  combinazioni estreme dei sei parametri senza errori device; tratto Wet
-  spacing `1%` size `750` Count `4` lungo 2400 px in `597 ms` totali; replay
-  umano canonico su Intense neutro `8100` stamp / `129.600` copie, FPS medi
-  `134`. Un tratto avviato durante il retarget glaze↔Wet viene rifiutato con
-  status esplicito e zero pixel scritti.
+  misura dry resta valida, mentre le vecchie misure Wet Procreate appartengono
+  alla rev `1` rimossa e non vincolano il modello Ruwa rev `2`.
+- Le prove browser Wet Procreate del 30 luglio 2026 (trasporto, live→lift,
+  Undo/Redo e fit 02/03/04/06/RETEST-A) sono ora **storiche rev `1`** e non
+  descrivono il Wet Ruwa rev `2`. La nuova revisione ha al momento verifiche
+  statiche/numeriche, TypeScript e build verdi; QA pixel, replay browser,
+  profilo prestazionale e prova iPhone devono essere rifatti prima di promuovere
+  qualunque baseline o dichiarare parità visiva.
 - QA browser desktop del 30 luglio 2026: con nero, Flow `50%`, Opacity `100%`,
   Count `1`, spacing `5%`, Light resta semitrasparente mentre Uniformed e
   Intense raggiungono il nero con le sovrapposizioni. Catture durante il

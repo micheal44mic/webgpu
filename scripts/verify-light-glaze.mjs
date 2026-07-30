@@ -59,7 +59,7 @@ assert(
 const modeRouting = section(
   engine,
   "function lightGlazeStrategyForBlendMode",
-  "const INTENSE_WET_MIX_REVISION",
+  "const WET_NEUTRAL_EPSILON",
 );
 assert.match(
   modeRouting,

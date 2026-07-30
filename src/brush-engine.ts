@@ -13,6 +13,12 @@ import {
   type DryBlendRenderBatch,
 } from "./blend-renderer";
 import {
+  DEFAULT_RUWA_WET_PARAMETERS,
+  RUWA_WET_MIX_REVISION,
+  isWetPresetId,
+  type WetPresetId,
+} from "./wet-mix";
+import {
   brushShader,
   displayShader,
   grainMipShader,
@@ -378,15 +384,18 @@ export interface BrushSettings {
   hardness: number;
   blendIntensity: number;
   blendMode: BlendMode;
+  wetMixEnabled: boolean;
+  wetPresetId: WetPresetId;
+  wetBlending: number;
   wetDilution: number;
-  wetCharge: number;
-  wetAttack: number;
-  wetPull: number;
-  wetGrade: number;
-  wetBlur: number;
+  wetSpread: number;
+  wetLength: number;
+  wetFlow: number;
+  wetBuildup: number;
+  wetDrying: number;
   /**
-   * Revision 0 means legacy history recorded while Wet controls were inert.
-   * Revision 1 opts into the ordered per-physical-stamp Wet renderer.
+   * Revision 0/1 are legacy history recorded before the Ruwa-style model.
+   * Revision 2 opts into the spatial-reservoir renderer.
    */
   wetMixRevision?: number;
   blendStretch: number;
@@ -1522,8 +1531,8 @@ const MAX_STAMPS_PER_BATCH = 65_536;
 // continua a proteggere il frame time sulle size grandi.
 const DRY_BLEND_FRAME_PIXEL_BUDGET = 24_000_000;
 const DRY_BLEND_MAX_BATCHES_PER_FRAME = 256;
-// Covers a 1500 px rotated Shape plus the Wet Blur halo without changing Paint size.
-const INTENSE_WET_SCRATCH_SIZE = 2304;
+// Covers a 1500 px rotated Shape plus the conservative compute ROI margin.
+const RUWA_WET_SCRATCH_SIZE = 2304;
 const STAMP_VERTICES_PER_COPY = 4;
 const STAMP_GEOMETRY = "quad" as const;
 const CIRCLE_FRAGMENT_COVERAGE_STRATEGY = "generic-smoothstep" as const;
@@ -1723,37 +1732,31 @@ function lightGlazeStrategyForBlendMode(mode: BlendMode): LightGlazeStrategy {
     : UNIFORMED_GLAZE_STRATEGY;
 }
 
-const INTENSE_WET_MIX_REVISION = 1;
 const WET_NEUTRAL_EPSILON = 1e-6;
 
-// Il neutro Wet replica la configurazione del pennello AUDIT-1 misurato su
-// Procreate (Dilution 0 · Charge 100 · Attack 0 · Pull 0 · Grade 0 · Blur 0):
-// con quei valori il modello Wet coincide esattamente con il source-over sRGB
-// del percorso Intense dry, anche sopra pigmento esistente.
-function intenseWetMixIsNeutral(settings: BrushSettings): boolean {
-  return settings.wetDilution <= WET_NEUTRAL_EPSILON
-    && settings.wetCharge >= 1 - WET_NEUTRAL_EPSILON
-    && settings.wetAttack <= WET_NEUTRAL_EPSILON
-    && settings.wetPull <= WET_NEUTRAL_EPSILON
-    && settings.wetGrade <= WET_NEUTRAL_EPSILON
-    && settings.wetBlur <= WET_NEUTRAL_EPSILON;
-}
-
-function usesIntenseWetRenderer(settings: BrushSettings): boolean {
+function usesRuwaWetRenderer(settings: BrushSettings): boolean {
   return settings.tool === "paint"
-    && settings.blendMode === "intense-blending"
-    && (settings.wetMixRevision ?? 0) >= INTENSE_WET_MIX_REVISION
-    && !intenseWetMixIsNeutral(settings);
+    && (
+      settings.blendMode === "uniformed-glaze"
+      || settings.blendMode === "intense-blending"
+    )
+    && settings.wetMixEnabled
+    && (settings.wetMixRevision ?? 0) >= RUWA_WET_MIX_REVISION
+    && (
+      settings.wetBlending > WET_NEUTRAL_EPSILON
+      || settings.wetDilution > WET_NEUTRAL_EPSILON
+      || settings.wetSpread > WET_NEUTRAL_EPSILON
+    );
 }
 
 function usesStrokeGlazeRenderer(settings: BrushSettings): boolean {
   return settings.tool === "paint"
     && isStrokeGlazeBlendMode(settings.blendMode)
-    && !usesIntenseWetRenderer(settings);
+    && !usesRuwaWetRenderer(settings);
 }
 
 function usesBlendRenderer(settings: BrushSettings): boolean {
-  return settings.tool === "blend" || usesIntenseWetRenderer(settings);
+  return settings.tool === "blend" || usesRuwaWetRenderer(settings);
 }
 
 function paintDisplayPyramidAdditionalMemoryMiB(format: LayerFormat): number {
@@ -1960,13 +1963,10 @@ export const defaultBrushSettings: BrushSettings = {
   hardness: 0.88,
   blendIntensity: 1,
   blendMode: "light-glaze",
-  wetDilution: 0,
-  wetCharge: 1,
-  wetAttack: 0,
-  wetPull: 0,
-  wetGrade: 0,
-  wetBlur: 0,
-  wetMixRevision: 1,
+  wetMixEnabled: false,
+  wetPresetId: "off",
+  ...DEFAULT_RUWA_WET_PARAMETERS,
+  wetMixRevision: RUWA_WET_MIX_REVISION,
   blendStretch: 0.18,
   blendPaint: 0.14,
   jitterMaster: 1,
@@ -2700,15 +2700,26 @@ export class BrushEngine {
       // Kept in the history ABI only. Rendering now has one unambiguous Flow control.
       blendIntensity: 1,
       blendMode,
+      wetMixEnabled: typeof next.wetMixEnabled === "boolean"
+        ? next.wetMixEnabled
+        : this.settings.wetMixEnabled,
+      wetPresetId: isWetPresetId(next.wetPresetId)
+        ? next.wetPresetId
+        : this.settings.wetPresetId,
+      wetBlending: clamp(next.wetBlending ?? this.settings.wetBlending, 0, 1),
       wetDilution: clamp(next.wetDilution ?? this.settings.wetDilution, 0, 1),
-      wetCharge: clamp(next.wetCharge ?? this.settings.wetCharge, 0, 1),
-      wetAttack: clamp(next.wetAttack ?? this.settings.wetAttack, 0, 1),
-      wetPull: clamp(next.wetPull ?? this.settings.wetPull, 0, 1),
-      wetGrade: clamp(next.wetGrade ?? this.settings.wetGrade, 0, 1),
-      wetBlur: clamp(next.wetBlur ?? this.settings.wetBlur, 0, 1),
+      wetSpread: clamp(next.wetSpread ?? this.settings.wetSpread, 0, 1),
+      wetLength: clamp(next.wetLength ?? this.settings.wetLength, 0, 1),
+      wetFlow: clamp(next.wetFlow ?? this.settings.wetFlow, 0, 1),
+      wetBuildup: clamp(next.wetBuildup ?? this.settings.wetBuildup, 0, 1),
+      wetDrying: clamp(next.wetDrying ?? this.settings.wetDrying, 0, 1),
       wetMixRevision: Math.max(
         0,
-        Math.trunc(next.wetMixRevision ?? this.settings.wetMixRevision ?? 0),
+        Math.trunc(
+          next.wetMixRevision
+            ?? this.settings.wetMixRevision
+            ?? RUWA_WET_MIX_REVISION,
+        ),
       ),
       blendStretch: clamp(next.blendStretch ?? this.settings.blendStretch, 0, 1),
       blendPaint: clamp(next.blendPaint ?? this.settings.blendPaint, 0, 1),
@@ -5218,7 +5229,7 @@ export class BrushEngine {
     this.adaptivePreviewForceStroke = tool === "paint"
       && ADAPTIVE_PREVIEW_FORCE
       && !lightGlazeSettings
-      && !usesIntenseWetRenderer(this.settings);
+      && !usesRuwaWetRenderer(this.settings);
     const historyActionId = this.nextHistoryActionId++;
     const thicknessSource = lightGlazeSettings ?? this.settings;
     const thicknessSettings = {
@@ -6323,8 +6334,8 @@ export class BrushEngine {
       return;
     }
     this.blendRenderer.configureScratchSize(
-      usesIntenseWetRenderer(this.settings)
-        ? INTENSE_WET_SCRATCH_SIZE
+      usesRuwaWetRenderer(this.settings)
+        ? RUWA_WET_SCRATCH_SIZE
         : DRY_BLEND_DEFAULT_SCRATCH_SIZE,
     );
   }
@@ -16667,9 +16678,9 @@ export class BrushEngine {
       }
     }
     let maximumPaintBatchSize = MAX_STAMPS_PER_BATCH;
-    if (usesIntenseWetRenderer(this.settings)) {
+    if (usesRuwaWetRenderer(this.settings)) {
       const physicalCopies = clamp(Math.round(this.settings.count), 1, 24);
-      const wetDiameter = this.settings.size * (1 + this.settings.wetBlur * 0.07) + 6;
+      const wetDiameter = this.settings.size + 6;
       const estimatedPixelsPerBaseStamp = wetDiameter * wetDiameter * physicalCopies * 2;
       maximumPaintBatchSize = Math.max(
         1,
@@ -19321,7 +19332,7 @@ export class BrushEngine {
     };
   }
 
-  private buildIntenseWetRenderBatches(
+  private buildRuwaWetRenderBatches(
     stamps: readonly Stamp[],
     settings: BrushSettings,
   ): DryBlendRenderBatch[] {
@@ -19329,12 +19340,11 @@ export class BrushEngine {
     const count = clamp(Math.round(settings.count), 1, 24);
     const baseHsl = hexToHsl(settings.color);
     const flowOpacity = clamp(settings.flow * settings.opacity, 0, 1);
-    const blurScale = 1 + clamp(settings.wetBlur, 0, 1) * 0.07;
 
     for (const stamp of stamps) {
       const stampX = Math.fround(stamp.x);
       const stampY = Math.fround(stamp.y);
-      const radius = Math.max(0.5, Math.fround(stamp.radius)) * blurScale;
+      const radius = Math.max(0.5, Math.fround(stamp.radius));
       const directionXRaw = Math.fround(stamp.directionX);
       const directionYRaw = Math.fround(stamp.directionY);
       const directionLength = Math.hypot(directionXRaw, directionYRaw);
@@ -19419,13 +19429,14 @@ export class BrushEngine {
           readRect: { ...rect },
           writeRect: { ...rect },
           paintColor,
+          reservoirTrackId: copyIndex,
         });
       }
     }
     return batches;
   }
 
-  private submitIntenseWetImmediate(
+  private submitRuwaWetImmediate(
     stamps: readonly Stamp[],
     clearLayer: boolean,
     settings: BrushSettings,
@@ -19436,8 +19447,8 @@ export class BrushEngine {
     if (!renderer) {
       throw new Error("Renderer Wet Mix GPU non inizializzato.");
     }
-    if (!usesIntenseWetRenderer(settings)) {
-      throw new Error("Wet Mix richiesto fuori da Intense Blending.");
+    if (!usesRuwaWetRenderer(settings)) {
+      throw new Error("Wet Mix Ruwa richiesto fuori da Uniformed/Intense.");
     }
     if (replayBatch && replayBatch.shapeMaskIdentity !== this.shapeMaskIdentity) {
       throw new Error("La Shape Wet Mix usata dalla cronologia non corrisponde alla risorsa corrente.");
@@ -19455,7 +19466,7 @@ export class BrushEngine {
     const historyActionId = actionIds[0] ?? this.activeStroke?.historyActionId ?? 0;
     const wetSettings = {
       ...settings,
-      renderMode: "intense-wet" as const,
+      renderMode: "ruwa-wet" as const,
     };
     let wetCpuMs = 0;
     let wetDirtyRect: DirtyRect | null = null;
@@ -19471,7 +19482,7 @@ export class BrushEngine {
       baseStart < stamps.length;
       baseStart += baseStampsPerBuild
     ) {
-      const batches = this.buildIntenseWetRenderBatches(
+      const batches = this.buildRuwaWetRenderBatches(
         stamps.slice(baseStart, baseStart + baseStampsPerBuild),
         settings,
       );
@@ -19605,8 +19616,8 @@ export class BrushEngine {
     externalDirtyRect: DirtyRect | null = null,
     externalLayerCleared = false,
   ): SubmitTiming {
-    if (usesIntenseWetRenderer(settings) && (stamps.length > 0 || clearLayer)) {
-      return this.submitIntenseWetImmediate(stamps, clearLayer, settings, present, replayBatch);
+    if (usesRuwaWetRenderer(settings) && (stamps.length > 0 || clearLayer)) {
+      return this.submitRuwaWetImmediate(stamps, clearLayer, settings, present, replayBatch);
     }
     if (usesStrokeGlazeRenderer(settings)) {
       if (this.lightGlazeSession) {

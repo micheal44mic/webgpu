@@ -11,6 +11,7 @@ const shadowRenderer = read("../src/shadow-renderer.ts");
 const blendCore = read("../src/blend-core.ts");
 const blendRenderer = read("../src/blend-renderer.ts");
 const blendShaders = read("../src/blend-shaders.ts");
+const wetMix = read("../src/wet-mix.ts");
 const html = read("../index.html");
 const sitesBuild = read("./prepare-sites-build.mjs");
 
@@ -56,20 +57,23 @@ assert(
 
 const blendRendererRouting = section(
   engine,
-  "function usesBlendRenderer",
+  "function usesRuwaWetRenderer",
   "function paintDisplayPyramidAdditionalMemoryMiB",
 );
 assert(
-  blendRendererRouting.includes('return settings.tool === "blend" || usesIntenseWetRenderer(settings);'),
-  "Il renderer carrier deve appartenere al Blend dry o al solo Intense Wet non neutro.",
+  blendRendererRouting.includes('settings.blendMode === "uniformed-glaze"')
+    && blendRendererRouting.includes('settings.blendMode === "intense-blending"')
+    && blendRendererRouting.includes("settings.wetMixEnabled")
+    && blendRendererRouting.includes("RUWA_WET_MIX_REVISION")
+    && blendRendererRouting.includes('return settings.tool === "blend" || usesRuwaWetRenderer(settings);'),
+  "Il Wet Ruwa non è instradato in Uniformed e Intense con un gate esplicito.",
 );
 assert(
-  engine.includes('&& !usesIntenseWetRenderer(settings);'),
-  "Il percorso Intense neutro non è più separato dal renderer Wet.",
+  engine.includes("&& !usesRuwaWetRenderer(settings);"),
+  "Il percorso dry non è separato dal renderer Wet Ruwa.",
 );
 assert(!engine.includes("const usesIntenseBlending"), "È rimasto il vecchio carrier Intense.");
 assert(!engine.includes('intenseBlending ? "blend"'), "Intense viene rinominato come Blend.");
-
 const submit = section(
   engine,
   "private submitLightGlazeImmediate",
@@ -274,12 +278,6 @@ assert(
   "Il report suite non distingue R8 da RGBA16F.",
 );
 assert(
-  main.includes('element<HTMLElement>("intenseBlendingControls").hidden = !intenseSelected;')
-    && main.includes("wetMixRevision: 1")
-    && html.includes('id="wetGrade"'),
-  "I controlli Wet Mix/Grade non seguono la selezione Intense o non sono revisionati.",
-);
-assert(
   html.includes("Confronta 3 rendering · Base 1% · 1 tap")
     && html.includes("Rendering · Light / Uniformed / Intense")
     && html.includes("Blend / Wet Mix · scratch")
@@ -293,26 +291,26 @@ assert(
   "Il vecchio esperimento carrier Intense altera ancora il Blend dry.",
 );
 assert(
-  engine.includes("function intenseWetMixIsNeutral")
-    && engine.includes("function usesIntenseWetRenderer")
-    && engine.includes("private buildIntenseWetRenderBatches")
-    && engine.includes("private submitIntenseWetImmediate")
+  engine.includes("function usesRuwaWetRenderer")
+    && engine.includes("private buildRuwaWetRenderBatches")
+    && engine.includes("private submitRuwaWetImmediate")
     && engine.includes("baseStampsPerBuild")
+    && engine.includes("reservoirTrackId: copyIndex")
     && engine.includes("previewRandom01(copySeed, 5)")
     && engine.includes("previewRandom01(copySeed, 6)")
     && engine.includes("previewRandom01(copySeed, 7)"),
-  "Routing o ordine fisico Count/jitter/scatter Wet incompleto.",
+  "Routing o ordine fisico Count/jitter/scatter Wet Ruwa incompleto.",
 );
 assert(
-  blendRenderer.includes('export type DryBlendRenderMode = "dry-blend" | "intense-wet"')
-    && !blendRenderer.includes("wetDabOrdinal")
-    && !blendRenderer.includes("wetChargeEnvelope")
-    && blendRenderer.includes("const wetFreshAvailability")
-    && blendRenderer.includes("hexToSrgbRgb")
+  blendRenderer.includes('export type DryBlendRenderMode = "dry-blend" | "ruwa-wet"')
+    && blendRenderer.includes("RUWA_WET_RESERVOIR_GRID_SIZE = 32")
+    && blendRenderer.includes("RUWA_WET_RESERVOIR_TRACK_COUNT = 24")
+    && blendRenderer.includes("wetReservoirBuffer")
+    && blendRenderer.includes("ruwaWetRatePerDab")
+    && blendRenderer.includes("ruwaWetBuildupCoatPerDab")
     && blendRenderer.includes("configureScratchSize")
-    && blendRenderer.includes("options.scratchSize ?? DRY_BLEND_DEFAULT_SCRATCH_SIZE")
     && blendRenderer.includes("unsigned[47] = wetMode ? 1 : 0;"),
-  "Serbatoio Wet statico, scratch adattivo o discriminante del renderer incompleti.",
+  "Serbatoio spaziale, normalizzazione per distanza o scratch adattivo incompleti.",
 );
 const scratchSizing = section(
   engine,
@@ -320,151 +318,76 @@ const scratchSizing = section(
   "private maybeReleaseIdleBlendScratch",
 );
 assert(
-  scratchSizing.includes("INTENSE_WET_SCRATCH_SIZE")
+  scratchSizing.includes("RUWA_WET_SCRATCH_SIZE")
     && scratchSizing.includes("DRY_BLEND_DEFAULT_SCRATCH_SIZE")
-    && !engine.includes("scratchSize: INTENSE_WET_SCRATCH_SIZE,"),
+    && !engine.includes("scratchSize: RUWA_WET_SCRATCH_SIZE,"),
   "Lo scratch Blend dry non torna a 1664 quando il Wet non è selezionato.",
 );
 assert(
   blendShaders.includes("fn premultipliedLinearToEncodedSrgb")
     && blendShaders.includes("fn premultipliedEncodedSrgbToLinear")
-    && blendShaders.includes("let grade = clamp(blend.grainAffineAndPhase.z")
-    && blendShaders.includes("updated = previous + pigment * (pull * vacancy);")
-    && blendShaders.includes("let opaqueRate = clamp(")
-    && blendShaders.includes("+ chargeSquared * chargeSquared * chargeSquared")
-    && blendShaders.includes("let rate = clamp(finalCoverage * mix(opaqueRate, 1.0, vacancy), 0.0, 1.0);")
-    && blendShaders.includes("let freshAlpha = 1.0 - 0.06 * dilution * (1.0 - charge);")
-    && blendShaders.includes("innerEdge")
+    && blendShaders.includes("fn sampleReservoir")
+    && blendShaders.includes("fn sampleWetReservoir")
+    && blendShaders.includes("previousDocumentLocal = local + localTravel")
+    && blendShaders.includes("let canvasWeight = exchangeCoverage")
+    && blendShaders.includes("let advectedWeight = remainder * advection")
+    && blendShaders.includes("let coatPerDab = blend.grainControls.y")
     && blendShaders.includes("mix(coverage * coverage, coverage, hardnessWet)"),
-  "Color space, serbatoio, soppressione su pigmento o parità coverage Wet WGSL incompleti.",
+  "Color space, reservoir/advezione, Buildup o coverage Wet WGSL incompleti.",
+);
+for (const id of [
+  "wetBlending",
+  "wetDilution",
+  "wetSpread",
+  "wetLength",
+  "wetFlow",
+  "wetBuildup",
+  "wetDrying",
+]) {
+  assert(html.includes(`id="${id}"`), `Controllo Wet pubblico mancante: ${id}`);
+}
+for (const preset of ["ruwa-wet-1", "ruwa-wet-2", "ruwa-wet-3"]) {
+  assert(html.includes(`value="${preset}"`), `Preset Wet pubblico mancante: ${preset}`);
+  assert(wetMix.includes(`"${preset}": Object.freeze({`), `Valori preset mancanti: ${preset}`);
+}
+assert(
+  wetMix.includes("wetBlending: 1,")
+    && wetMix.includes("wetSpread: 0.3,")
+    && wetMix.includes("wetLength: 0.62,")
+    && wetMix.includes("wetSpread: 0.41,")
+    && wetMix.includes("wetLength: 0.25,")
+    && wetMix.includes("wetBlending: 0.27,")
+    && wetMix.includes("wetSpread: 0.26,")
+    && wetMix.includes("wetLength: 0.78,")
+    && wetMix.includes("wetFlow: 0.75,"),
+  "I tre preset Ruwa non conservano i sette valori pubblicati.",
 );
 assert(
-  html.includes('id="wetDilution"')
-    && html.includes('id="wetCharge"')
-    && html.includes('id="wetAttack"')
-    && html.includes('id="wetPull"')
-    && html.includes('id="wetGrade"')
-    && html.includes('id="wetBlur"')
-    && html.includes('id="wetDilution" type="range" min="0" max="100" step="1" value="0"')
-    && html.includes('id="wetCharge" type="range" min="0" max="100" step="1" value="100"')
-    && html.includes('id="wetAttack" type="range" min="0" max="100" step="1" value="0"'),
-  "Controlli Wet pubblici o neutro misurato (Charge 100 · Attack 0) incompleti.",
+  main.includes('element<HTMLElement>("wetMixControls").hidden = !wetAvailable;')
+    && main.includes('renderingMode === "uniformed-glaze" || renderingMode === "intense-blending"')
+    && main.includes('setControlValue("wetPreset", "custom")')
+    && main.includes("wetPresetParameters(presetId)")
+    && main.includes("wetMixRevision: RUWA_WET_MIX_REVISION"),
+  "UI Wet, preset atomici o passaggio automatico a Personalizzato incompleti.",
 );
 assert(
-  engine.includes("settings.wetCharge >= 1 - WET_NEUTRAL_EPSILON")
-    && engine.includes("settings.wetAttack <= WET_NEUTRAL_EPSILON"),
-  "Il neutro Wet non coincide con la configurazione AUDIT-1 misurata.",
+  !html.includes('id="wetCharge"')
+    && !html.includes('id="wetAttack"')
+    && !html.includes('id="wetPull"')
+    && !html.includes('id="wetGrade"')
+    && !html.includes('id="wetBlur"'),
+  "Sono rimasti controlli del vecchio modello Procreate.",
 );
 
-// Replica JS del deposito Wet WGSL: stesse formule di blend-shaders.ts.
-// `carrierOverride` simula il carrier dopo un pickup (test di trasporto).
-const wetDeposit = (canvas, params, coverage, carrierOverride = null) => {
-  const { dilution, charge, attack, pull, brush } = params;
-  const freshAvailability = Math.max(0, attack * (1 - dilution * 0.9));
-  const carrier = carrierOverride ?? { rgb: brush * charge, a: charge };
-  const pigmentTotal = freshAvailability + carrier.a;
-  if (pigmentTotal <= 0.00001) {
-    return canvas;
-  }
-  const waterKeep = 1 - 0.9 * dilution;
-  const chargeSquared = charge * charge;
-  const opaqueRate = Math.min(1, Math.max(0,
-    0.06 * (0.15 + 0.85 * attack) * waterKeep * waterKeep
-      + chargeSquared * chargeSquared * chargeSquared
-      + pull * pull));
-  const freshWeight = freshAvailability / pigmentTotal;
-  const freshAlpha = 1 - 0.06 * dilution * (1 - charge);
-  const alphaOut = 1 * (1 - freshWeight) + freshAlpha * freshWeight;
-  const vacancy = canvas.a < alphaOut - 0.000001 ? 1 : 0;
-  const rate = Math.min(1, coverage * (opaqueRate + (1 - opaqueRate) * vacancy));
-  const carrierStraight = carrier.a > 0.00001 ? carrier.rgb / carrier.a : brush;
-  const straight = carrierStraight * (1 - freshWeight) + brush * freshWeight;
-  return {
-    rgb: canvas.rgb * (1 - rate) + straight * alphaOut * rate,
-    a: canvas.a * (1 - rate) + alphaOut * rate,
-  };
+const wetRatePerDab = (rate, distance, radius) => {
+  if (rate <= 0) return 0;
+  if (rate >= 1) return 1;
+  const travel = Math.min(Math.max(0, distance) / Math.max(0.5 * radius, 1), 16);
+  return 1 - (1 - rate) ** travel;
 };
-
-// 1) Neutro (AUDIT-1): la serie sui pixel vuoti deve coincidere con i plateau
-//    Procreate misurati del percorso dry (46 → 192 per n = 1…7).
-{
-  const neutral = { dilution: 0, charge: 1, attack: 0, pull: 0, brush: 1 };
-  let px = { rgb: 0, a: 0 };
-  const series = [];
-  for (let n = 1; n <= 7; n += 1) {
-    px = wetDeposit(px, neutral, 46 / 255);
-    series.push(Math.round(px.a * 255));
-  }
-  assert.deepEqual(
-    series,
-    [46, 84, 115, 140, 161, 178, 192],
-    "Il neutro Wet non riproduce la serie source-over misurata su Procreate.",
-  );
-}
-
-// 2) Test 04 misurato: Dilution 75 · Charge 0 · Attack 100 su layer vuoto
-//    satura ad alpha 244; con Charge 100 satura a 255.
-{
-  const diluted = { dilution: 0.75, charge: 0, attack: 1, pull: 0, brush: 1 };
-  let px = { rgb: 0, a: 0 };
-  for (let n = 0; n < 64; n += 1) {
-    px = wetDeposit(px, diluted, 0.5);
-  }
-  assert.equal(
-    Math.round(px.a * 255),
-    244,
-    "Dilution 75 senza Charge deve saturare al plateau 244 misurato.",
-  );
-  const charged = { dilution: 0.75, charge: 1, attack: 1, pull: 0, brush: 1 };
-  px = { rgb: 0, a: 0 };
-  for (let n = 0; n < 64; n += 1) {
-    px = wetDeposit(px, charged, 0.5);
-  }
-  assert.equal(
-    Math.round(px.a * 255),
-    255,
-    "Charge 100 deve riportare il plateau a 255 come misurato.",
-  );
-}
-
-// 3) Test 06 misurato: Attack 0 · Dilution 100 · Charge 0 · Pull 100 con il
-//    carrier riempito dal pickup (rosso) ricopre a piena forza il pigmento
-//    esistente (blu) senza alcuna traccia del colore pennello (magenta).
-{
-  const transport = { dilution: 1, charge: 0, attack: 0, pull: 1, brush: 0 };
-  const opaqueBlue = { rgb: 0, a: 1 };
-  const pickedRed = { rgb: 1, a: 1 };
-  const result = wetDeposit(opaqueBlue, transport, 1, pickedRed);
-  assert(
-    result.rgb > 0.999 && result.a > 0.999,
-    "Il trasporto Pull 100 deve ricoprire a piena forza il pigmento esistente.",
-  );
-  const freshAvailability = 0 * (1 - 1 * 0.9);
-  assert.equal(
-    freshAvailability,
-    0,
-    "Attack 0 + Dilution 100 deve azzerare il colore fresco (niente magenta).",
-  );
-}
-
-// 4) RETEST-A misurato: sopra pigmento opaco, con Charge 50 e Pull 0 il
-//    colore depositato per dab resta sotto il 2% (tinta appena percettibile),
-//    e Dilution lo riduce ulteriormente.
-{
-  const base = { dilution: 0, charge: 0.5, attack: 0.5, pull: 0, brush: 1 };
-  const opaque = { rgb: 0, a: 1 };
-  const perDab = wetDeposit(opaque, base, 0.125).rgb;
-  assert(
-    perDab > 0 && perDab < 0.02,
-    "Sopra pigmento opaco con Charge 50 il colore depositato per dab deve restare sotto il 2%.",
-  );
-  const withDilution = wetDeposit(opaque, { ...base, dilution: 1 }, 0.125).rgb;
-  assert(
-    withDilution < perDab,
-    "Dilution deve ridurre il deposito sopra pigmento esistente (RETEST-A).",
-  );
-}
-
+assert.equal(wetRatePerDab(0.5, 0, 100), 0, "Un dab fermo non deve accumulare Wet.");
+assert.equal(wetRatePerDab(0.5, 50, 100), 0.5, "La rate per mezzo raggio è errata.");
+assert.equal(wetRatePerDab(0.5, 100, 100), 0.75, "La rate non è stabile sulla distanza.");
 const sourceOverByte = (sourceByte, count) => Math.round(
   255 * (1 - (1 - sourceByte / 255) ** count),
 );
@@ -506,4 +429,4 @@ assert.deepEqual(
   "Rosso 50% su verde non produce il discriminante sRGB atteso.",
 );
 
-console.log("Intense Blending live high-precision verification passed.");
+console.log("Intense dry + Ruwa Wet spatial reservoir verification passed.");
