@@ -127,6 +127,7 @@ const fontGeometrySource = read("src/vector-text-font-geometry.ts");
 const transformSource = read("src/vector-text-transform.ts");
 const adaptiveSource = read("src/vector-text-adaptive-zoom.ts");
 const svgSource = read("src/vector-svg-import.ts");
+const vectorRasterSource = read("src/engine-vector-raster-runtime.ts");
 const mainSource = read("src/main.ts");
 const htmlSource = read("index.html");
 const packageJson = JSON.parse(read("package.json"));
@@ -1220,6 +1221,13 @@ assert.match(clientSource, /currentAlreadySuitable[\s\S]*current\.lodBucket === 
 assert.match(clientSource, /if \(!currentAlreadySuitable\) \{[\s\S]*this\.requestEffect/);
 assert.match(clientSource, /\|\| exactLod[\s\S]*ready\.lodBucket >= current\.lodBucket/);
 assert.match(clientSource, /matchesRequestedIdentity: current\?\.effectIdentity === identity/);
+assert.match(clientSource, /matchesRequestedLod: currentAlreadySuitable/);
+assert.match(controllerSource, /!requireRequestedLod \|\| result\.matchesRequestedLod/);
+assert.match(clientSource, /private readonly pinnedSlots = new Set<string>\(\)/);
+assert.match(clientSource, /!liveSlots\.has\(slot\) && !this\.pinnedSlots\.has\(slot\)/);
+assert.match(controllerSource, /slotNamespace = pinForRasterization \? "svg-raster" : "svg"/);
+assert.match(controllerSource, /this\.effectCompiler\.pinSlot\(slotKey\)/);
+assert.match(controllerSource, /finally \{[\s\S]*releasePinnedSlot\(slot\)/);
 assert.doesNotMatch(clientSource, /displayed\.sourceRevision !== sourceRevision/);
 assert.match(clientSource, /MAXIMUM_READY_EFFECT_CACHE_ENTRIES = 48/);
 assert.match(clientSource, /MAXIMUM_REGISTERED_PATHS = 128/);
@@ -1283,6 +1291,74 @@ assert.match(controllerSource, /kind === "outer"[\s\S]*mode: "mesh-blur"[\s\S]*m
 assert.match(gpuShaderSource, /fn blurMaskVertexMain/);
 assert.match(gpuShaderSource, /fn meshInnerShadowFragmentMain/);
 
+// Rasterizzazione vettoriale autorevole: SVG mesh e testo Slug usano target
+// RGBA8 lineare, MSAA 4x, blocchi allineati ai tile e seed tiled Undo/Redo.
+assert.match(
+  vectorRasterSource,
+  /semantic-vector-slug-mesh-webgpu-linear-rgba8-msaa4-512-tile-chunks-history-seed-v2/,
+);
+assert.match(vectorRasterSource, /VECTOR_RASTER_FORMAT = "rgba8unorm"/);
+assert.match(vectorRasterSource, /VECTOR_RASTER_CHUNK_SIZE = LAYER_STORAGE_TILE_SIZE \* 2/);
+assert.match(vectorRasterSource, /sampleCount: VECTOR_TEXT_GPU_SAMPLE_COUNT/);
+assert.match(vectorRasterSource, /entryPoint: "fragmentMain"/);
+assert.match(vectorRasterSource, /slugInnerShadowDirect/);
+assert.match(vectorRasterSource, /slugInnerShadowBlur/);
+assert.match(vectorRasterSource, /meshInnerShadowBlur/);
+assert.match(vectorRasterSource, /createLayerColdStorageCandidate\(/);
+assert.match(vectorRasterSource, /encodeLayerColdHydration\(/);
+assert.match(vectorRasterSource, /markLayerStorageRect\(/);
+assert.match(vectorRasterSource, /replaceVectorWithRaster\(/);
+assert.match(vectorRasterSource, /replaceRasterWithVector\(/);
+assert.match(vectorRasterSource, /rgba16float non viene convertito implicitamente/);
+assert.doesNotMatch(
+  vectorRasterSource,
+  /CanvasRenderingContext2D|copyExternalImageToTexture|drawImage\(/,
+  "la rasterizzazione non deve introdurre un fallback bitmap/Canvas2D",
+);
+assert.match(controllerSource, /async rasterizeSelectedSvg\(\)/);
+assert.match(controllerSource, /await this\.host\.rasterizeVectorSvgNode\(svgId, draws\)/);
+assert.match(controllerSource, /async rasterizeSelectedText\(\)/);
+assert.match(controllerSource, /await this\.host\.rasterizeVectorTextNode\(textId, draws\)/);
+assert.match(controllerSource, /slotNamespace = pinForRasterization \? "text-raster" : "text"/);
+assert.match(controllerSource, /!requireRequestedLod \|\| result\.matchesRequestedLod/);
+assert.match(controllerSource, /resourceRevisionValue\(\)/);
+assert.match(controllerSource, /private sceneOperationRenderDeferred = false/);
+assert.match(
+  controllerSource,
+  /renderNow\(\): void \{[\s\S]*this\.sceneOperationBusy[\s\S]*this\.sceneOperationRenderDeferred = true/,
+);
+assert.match(
+  controllerSource,
+  /if \(this\.sceneOperationRenderDeferred\) \{[\s\S]*this\.scheduleRender\(\)/,
+);
+assert.match(clientSource, /waitForResourceReady\(/);
+assert.match(engineSource, /kind: "vector-rasterize"/);
+assert.match(engineSource, /destroyVectorRasterHistorySeed\(/);
+assert.match(engineSource, /this\.vectorTextGpuPendingRuns\.length = 0/);
+assert.match(engineSource, /this\.vectorTextGpuPendingRuns\.splice\(index, 1\)/);
+assert.match(vectorRasterSource, /activateLayer\([^;]*"structural-history"\)/);
+assert.match(
+  engineSource,
+  /caller === "history-replay" \|\| caller === "structural-history"/,
+);
+const redoVectorStart = vectorRasterSource.indexOf("async function redoVectorRasterization(");
+const redoVectorBody = vectorRasterSource.slice(redoVectorStart, redoVectorStart + 4_500);
+const redoVectorTry = redoVectorBody.indexOf("try {");
+const redoVectorHydration = redoVectorBody.indexOf("gpu = await hydrateHistorySeed");
+assert.ok(
+  redoVectorStart >= 0 && redoVectorTry >= 0 && redoVectorHydration > redoVectorTry,
+  "l'OOM di reidratazione Redo deve attraversare il rollback strutturale",
+);
+assert.match(
+  redoVectorBody,
+  /if \(gpu\) destroyLayerGpuResources\(engine, gpu\)/,
+  "il rollback Redo deve accettare una candidata fallita prima dell'allocazione",
+);
+
+assert.match(htmlSource, /id="vectorSvgRasterize"/);
+assert.match(htmlSource, /id="vectorTextRasterize"/);
+assert.match(htmlSource, /id="vectorTextRasterStatus"/);
+
 // UI e font locali.
 assert.equal(VECTOR_TEXT_FONT_MANIFEST.length, 3);
 const fontLogicalBytes = VECTOR_TEXT_FONT_MANIFEST.reduce(
@@ -1299,6 +1375,9 @@ for (const id of [
   "vectorSvgSelectedControls",
   "vectorSvgSourceSummary",
   "vectorSvgPalette",
+  "vectorSvgRasterize",
+  "vectorTextRasterize",
+  "vectorTextRasterStatus",
   "vectorTextValue",
   "vectorTextFontFamily",
   "vectorTextFontSize",

@@ -95,6 +95,31 @@ const newStack = () => new LayerStack(createStyles);
   assert.equal(stack.activeIndex, 1);
 }
 
+// Structural history needs exact-position insertion and identity-preserving
+// reattachment of the detached raster record.
+{
+  const stack = newStack();
+  const insertedIndex = stack.insertAt(0, "Raster vettore");
+  assert.equal(insertedIndex, 0);
+  assert.deepEqual(stack.layers.map((layer) => layer.id), [2, 1]);
+  assert.equal(stack.active.id, 2);
+
+  const detached = stack.remove(0);
+  assert.equal(detached.id, 2);
+  const attachedIndex = stack.attach(detached, 1);
+  assert.equal(attachedIndex, 1);
+  assert.equal(stack.at(attachedIndex), detached, "il record storico va riusato, non clonato");
+  assert.equal(stack.active, detached);
+  assert.deepEqual(stack.layers.map((layer) => layer.id), [1, 2]);
+  assert.throws(
+    () => stack.attach(detached, 0),
+    /già presente/,
+    "lo stesso record non può essere collegato due volte",
+  );
+  assert.throws(() => stack.insertAt(-1), /fuori intervallo/);
+  assert.throws(() => stack.insertAt(stack.count + 1), /fuori intervallo/);
+}
+
 // THE aliasing invariant: two records must never share one style object, or
 // editing the bevel on one layer would silently change it on another. This is
 // the whole point of per-layer effect state.
@@ -1274,16 +1299,20 @@ assert.match(
 assert.match(engineSource, /async setLayerFormat\([\s\S]*?this\.layerSwitchBusy/);
 assert.match(engineSource, /async benchmarkEffectsWorkingSet\([\s\S]*?this\.layerSwitchBusy/);
 // Each caller's exemption is named rather than passed as an unreadable boolean.
-// A layer switch may cross layerSwitchBusy because that flag is its own; only
-// cross-layer undo may cross historyBusy, because it IS the history transaction.
-assert.match(engineSource, /type EffectsRetargetCaller = "public" \| "layer-switch" \| "history-replay";/);
-assert.match(engineSource, /\(!duringLayerSwitch && engine\.layerSwitchBusy\)/,
-  "solo i retarget interni possono attraversare il lock di switch");
-assert.match(engineSource, /\(!duringHistoryReplay && engine\.historyBusy\)/,
-  "solo l'undo cross-layer può attraversare historyBusy");
+// A layer switch may cross layerSwitchBusy because that flag is its own;
+// history replay and structural SVG history may cross historyBusy because they
+// are the history transaction.
 assert.match(
   engineSource,
-  /const duringHistoryReplay = caller === "history-replay";/,
+  /type EffectsRetargetCaller =[\s\S]*?\| "public"[\s\S]*?\| "layer-switch"[\s\S]*?\| "history-replay"[\s\S]*?\| "structural-history";/,
+);
+assert.match(engineSource, /\(!duringLayerSwitch && engine\.layerSwitchBusy\)/,
+  "solo i retarget interni possono attraversare il lock di switch");
+assert.match(engineSource, /\(!duringHistoryTransaction && engine\.historyBusy\)/,
+  "solo le transazioni history nominate possono attraversare historyBusy");
+assert.match(
+  engineSource,
+  /const duringHistoryTransaction =[\s\S]*?caller === "history-replay" \|\| caller === "structural-history";/,
 );
 // The public entry point must never grant itself an exemption.
 assert.match(

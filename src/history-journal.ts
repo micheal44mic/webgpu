@@ -1,5 +1,5 @@
 export const HISTORY_JOURNAL_STRATEGY =
-  "global-order-per-layer-clear-barrier" as const;
+  "global-order-per-layer-clear-barrier-vector-seed-v3" as const;
 
 /**
  * One entry of the global journal. `layerId` is what makes a single stack usable
@@ -9,7 +9,7 @@ export const HISTORY_JOURNAL_STRATEGY =
 export type JournalAction =
   | {
     id: number;
-    kind: "stroke" | "clear";
+    kind: "stroke" | "clear" | "vector-rasterize";
     layerId: number;
   }
   | {
@@ -79,7 +79,11 @@ export function hasVisibleContent(
   cursor: number,
   layerId?: number,
 ): boolean {
-  return visibleStrokeIds(actions, cursor, layerId).size > 0;
+  const first = firstVisibleActionIndex(actions, cursor, layerId);
+  return actions.slice(first, Math.max(0, Math.min(cursor, actions.length))).some(
+    (action) => action.kind !== "vector" && action.kind !== "clear"
+      && (layerId === undefined || action.layerId === layerId),
+  );
 }
 
 /**
@@ -126,11 +130,13 @@ export function historyStepTargetsMissingLayer(
   liveLayerIds: ReadonlySet<number>,
 ): boolean {
   const action = delta < 0 ? actions[cursor - 1] : actions[cursor];
-  return Boolean(
-    action
-    && action.kind !== "vector"
-    && !liveLayerIds.has(action.layerId),
-  );
+  if (!action || action.kind === "vector") return false;
+  if (action.kind === "vector-rasterize") {
+    return delta < 0
+      ? !liveLayerIds.has(action.layerId)
+      : liveLayerIds.has(action.layerId);
+  }
+  return !liveLayerIds.has(action.layerId);
 }
 
 /** Layers that still have visible content, for "is the document empty" checks. */
@@ -140,7 +146,7 @@ export function layersWithVisibleContent(
 ): Set<number> {
   const layers = new Set<number>();
   for (const action of actions.slice(0, Math.max(0, Math.min(cursor, actions.length)))) {
-    if (action.kind === "stroke") {
+    if (action.kind === "stroke" || action.kind === "vector-rasterize") {
       layers.add(action.layerId);
     }
   }

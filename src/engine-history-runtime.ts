@@ -1,7 +1,11 @@
 import type { BrushEngine } from "./brush-engine";
-import { evictReconstructibleLayerResources } from "./engine-cold-storage";
+import {
+  encodeLayerColdHydration,
+  evictReconstructibleLayerResources,
+} from "./engine-cold-storage";
 import {
   hasVisibleContent,
+  firstVisibleActionIndex,
   historyStepTargetsMissingLayer,
   selectLayerReplay,
 } from "./history-journal";
@@ -15,9 +19,20 @@ import {
 import { type PendingBlendBatch } from "./engine-stroke-types";
 import { type SubmitTiming } from "./engine-stats";
 import { compactDryBlendHistoryGeometry } from "./blend-renderer";
-import { vectorHistoryStatesEqual, type HistoryRenderBatch } from "./engine-history-types";
+import {
+  vectorHistoryStatesEqual,
+  type HistoryRenderBatch,
+  type VectorRasterizeHistoryAction,
+} from "./engine-history-types";
 import { type GpuHistorySlice } from "./gpu-history-storage";
 import { type HistoryReplayFaultPoint } from "./engine-types";
+import {
+  applyVectorRasterizeHistory,
+  destroyVectorRasterHistorySeed,
+} from "./engine-vector-raster-runtime";
+import { mergeDirtyRects } from "./engine-geometry";
+import { markLayerStorageRect } from "./layer-storage-study";
+import { restoreEffectsWorkbenchToActiveLayer } from "./engine-layer-runtime";
 
 export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Promise<boolean> {
   if (
@@ -59,7 +74,9 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
   engine.historyBusy = true;
   engine.publishHistoryState();
   engine.callbacks.onStatus?.(
-    crossedAction.kind === "vector"
+    crossedAction.kind === "vector-rasterize"
+      ? delta < 0 ? "Undo: ripristino del vettore…" : "Redo: rasterizzazione vettoriale…"
+      : crossedAction.kind === "vector"
       ? delta < 0 ? "Undo: ripristino del vettore…" : "Redo: ripristino del vettore…"
       : delta < 0
         ? "Undo: ricostruzione del layer…"
@@ -72,6 +89,18 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
     // Eventuali rami Redo già invalidati vengono liberati soltanto dentro
     // un'operazione esplicita, mai durante o subito dopo una pennellata.
     compactDiscardedHistory(engine);
+    if (crossedAction.kind === "vector-rasterize") {
+      await applyVectorRasterizeHistory(engine, crossedAction, delta);
+      engine.historyCursor = nextCursor;
+      if (engine.activeStrokeProfile) {
+        engine.activeStrokeProfile.historyReplayOperations += 1;
+      }
+      engine.callbacks.onStatus?.(
+        delta < 0 ? "Undo rasterizzazione vettoriale completato." : "Redo rasterizzazione vettoriale completato.",
+        "ok",
+      );
+      return true;
+    }
     if (crossedAction.kind === "vector") {
       await applyVectorHistoryState(engine, 
         delta < 0 ? crossedAction.delta.before : crossedAction.delta.after,
@@ -210,6 +239,18 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
     engine.historyBatches,
     layerId,
   );
+  const firstVisibleIndex = firstVisibleActionIndex(
+    engine.historyActions,
+    engine.historyCursor,
+    layerId,
+  );
+  let seedAction: VectorRasterizeHistoryAction | null = null;
+  for (let index = firstVisibleIndex; index < engine.historyCursor; index += 1) {
+    const action = engine.historyActions[index];
+    if (action.kind === "vector-rasterize" && action.layerId === layerId) {
+      seedAction = action;
+    }
+  }
   if (layerBatches.some((batch) => batch.grainTextureIdentity !== null)) {
     await engine.ensureGrainResources();
   }
@@ -254,13 +295,34 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
   }
 
   try {
-    if (lastVisibleBatchIndex < 0) {
-      engine.submitImmediate([], true, engine.settings, true, null);
+    if (seedAction) {
+      engine.submitImmediate(
+        [],
+        true,
+        engine.settings,
+        lastVisibleBatchIndex < 0,
+        null,
+      );
       observeReplaySubmit();
       await yieldReplaySubmit();
+      const hot = engine.requireLayerGpu(layerId).hot;
+      if (!hot) throw new Error("Texture hot mancante per il seed raster vettoriale.");
+      const encoder = engine.device.createCommandEncoder({
+        label: `Replay seed tiled raster vettoriale livello ${layerId}`,
+      });
+      encodeLayerColdHydration(encoder, seedAction.seed, hot);
+      engine.device.queue.submit([encoder.finish()]);
+      await yieldReplaySubmit();
+    }
+    if (lastVisibleBatchIndex < 0) {
+      if (!seedAction) {
+        engine.submitImmediate([], true, engine.settings, true, null);
+        observeReplaySubmit();
+        await yieldReplaySubmit();
+      }
     } else {
       const firstVisibleBatch = layerBatches[firstVisibleBatchIndex];
-      if (!firstVisibleBatch.clearLayer) {
+      if (!seedAction && !firstVisibleBatch.clearLayer) {
         // Il clear originale era un pass separato (per esempio dopo
         // "Pulisci"): manteniamo quel confine prima del primo batch visibile.
         engine.submitImmediate([], true, firstVisibleBatch.settings, false, null);
@@ -276,7 +338,7 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
           }
           engine.submitBlendImmediate(
             batch.batches,
-            batch.clearLayer,
+            seedAction ? false : batch.clearLayer,
             batch.settings,
             batch.actionId,
             index === lastVisibleBatchIndex,
@@ -311,7 +373,7 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
         engine.writeBrushUniforms(batch.settings);
         engine.submitImmediate(
           [],
-          batch.clearLayer,
+          seedAction ? false : batch.clearLayer,
           batch.settings,
           index === lastVisibleBatchIndex,
           batch,
@@ -339,9 +401,32 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
   }
 
   engine.clearRequested = false;
-  engine.displayDirty = false;
-  engine.layerHasContent = lastVisibleBatchIndex >= 0;
+  const record = engine.layerStack.active;
+  if (seedAction) {
+    let replayBounds = { ...seedAction.baseBounds };
+    record.storageTileMask.set(seedAction.baseTileMask);
+    for (const batch of layerBatches) {
+      if (!visibleIds.has(batch.actionId) || !batch.dirtyRect) continue;
+      replayBounds = mergeDirtyRects(replayBounds, batch.dirtyRect) ?? replayBounds;
+      markLayerStorageRect(record.storageTileMask, batch.dirtyRect);
+    }
+    engine.layerContentBounds = replayBounds;
+  } else if (lastVisibleBatchIndex < 0) {
+    engine.layerContentBounds = null;
+    record.storageTileMask.fill(0);
+  }
+  engine.layerHasContent = seedAction !== null || lastVisibleBatchIndex >= 0;
+  record.contentBounds = engine.layerContentBounds;
+  record.hasContent = engine.layerHasContent;
   await engine.waitForGpuCapped("Completamento replay Undo/Redo", 60_000);
+  if (seedAction) {
+    await restoreEffectsWorkbenchToActiveLayer(engine, "history-replay", true);
+    engine.displayDirty = true;
+    engine.presentationCacheNeedsFullRebuild = true;
+    engine.requestRender();
+  } else {
+    engine.displayDirty = false;
+  }
 }
 
 export async function applyVectorHistoryState(engine: BrushEngine, 
@@ -487,6 +572,19 @@ export function compactDiscardedHistory(engine: BrushEngine): void {
   engine.historyBatches = retainedBatches;
   engine.historyStoredBaseStamps = retainedStampCount;
   engine.historyCompactionPending = false;
+  const retainedVectorRasterIds = new Set(
+    engine.historyActions
+      .filter((action) => action.kind === "vector-rasterize")
+      .map((action) => action.id),
+  );
+  const releasedVectorRasterActions = new Set<VectorRasterizeHistoryAction>();
+  for (const action of engine.discardedVectorRasterHistoryActions) {
+    if (!retainedVectorRasterIds.has(action.id) && !releasedVectorRasterActions.has(action)) {
+      destroyVectorRasterHistorySeed(action);
+      releasedVectorRasterActions.add(action);
+    }
+  }
+  engine.discardedVectorRasterHistoryActions = [];
   scheduleHistoryGpuTrim(engine);
 }
 
@@ -531,7 +629,7 @@ export function historyStepTargetLayerIndex(engine: BrushEngine, delta: -1 | 1):
   const action = delta < 0
     ? engine.historyActions[engine.historyCursor - 1]
     : engine.historyActions[engine.historyCursor];
-  if (!action || action.kind === "vector") {
+  if (!action || action.kind === "vector" || action.kind === "vector-rasterize") {
     return null;
   }
   const index = engine.layerStack.indexOfId(action.layerId);
@@ -541,6 +639,11 @@ export function historyStepTargetLayerIndex(engine: BrushEngine, delta: -1 | 1):
 export function truncateRedoHistory(engine: BrushEngine): void {
   if (engine.historyCursor >= engine.historyActions.length) {
     return;
+  }
+  for (const action of engine.historyActions.slice(engine.historyCursor)) {
+    if (action.kind === "vector-rasterize") {
+      engine.discardedVectorRasterHistoryActions.push(action);
+    }
   }
   engine.historyActions.length = engine.historyCursor;
 

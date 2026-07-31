@@ -180,7 +180,7 @@ export function vectorTextInnerShadowLocalVector(
 }
 
 export const MIXED_SCENE_STACK_STRATEGY =
-  "heterogeneous-bottom-up-raster-vector-segmented-composition-selected-insertion-v4" as const;
+  "heterogeneous-bottom-up-raster-vector-segmented-composition-vector-raster-replacement-v6" as const;
 
 export const VECTOR_TEXT_NODE_MAXIMUM = 64;
 export const VECTOR_SVG_NODE_MAXIMUM = 64;
@@ -870,6 +870,90 @@ export class MixedSceneStack {
     return item;
   }
 
+  /**
+   * Atomically replaces one semantic vector item with its raster layer at the
+   * identical heterogeneous scene index.
+   */
+  replaceVectorWithRaster(
+    key: MixedSceneVectorKey,
+    rasterLayerId: number,
+  ): number {
+    const raster = rasterItem(rasterLayerId);
+    const rasterKey = raster.key;
+    if (this.indexOfKey(rasterKey) >= 0) {
+      throw new Error("Raster " + rasterLayerId + " già presente nella scena.");
+    }
+    const index = this.indexOfKey(key);
+    if (index < 0) {
+      throw new Error("Vettore " + key + " assente dalla scena.");
+    }
+    const item = this.orderedItems[index];
+    if (item.kind === "text") {
+      this.textById(item.textNodeId);
+      this.textNodes.delete(item.textNodeId);
+    } else if (item.kind === "svg") {
+      this.svgById(item.svgNodeId);
+      this.svgNodes.delete(item.svgNodeId);
+    } else {
+      throw new Error("Elemento " + key + " non è vettoriale.");
+    }
+    this.orderedItems.splice(index, 1, raster);
+    this.selectedKey = rasterKey;
+    return index;
+  }
+
+  /** Exact inverse used by Undo for a vector-to-raster replacement. */
+  replaceRasterWithVector(
+    rasterLayerId: number,
+    state: MixedSceneVectorHistoryState,
+  ): number {
+    if (!state.node) {
+      throw new Error("Stato vettoriale storico vuoto nel ripristino raster.");
+    }
+    const restoresText = state.key.startsWith("text:");
+    if (
+      (restoresText && !("text" in state.node))
+      || (!restoresText && "text" in state.node)
+    ) {
+      throw new Error("Nodo storico incompatibile con " + state.key + ".");
+    }
+    const rasterKey = rasterItem(rasterLayerId).key;
+    const index = this.indexOfKey(rasterKey);
+    if (index < 0) {
+      throw new Error("Raster " + rasterLayerId + " assente dalla scena.");
+    }
+    if (this.indexOfKey(state.key) >= 0) {
+      throw new Error("Vettore storico " + state.key + " già presente nella scena.");
+    }
+    if (restoresText) {
+      const node = cloneVectorTextNode(state.node as VectorTextNode);
+      this.orderedItems.splice(index, 1, textItem(node.id));
+      this.textNodes.set(node.id, node);
+      this.nextTextNodeId = Math.max(this.nextTextNodeId, node.id + 1);
+    } else {
+      const node = cloneVectorSvgNodeForHistory(state.node as VectorSvgNode);
+      this.orderedItems.splice(index, 1, svgItem(node.id));
+      this.svgNodes.set(node.id, node);
+      this.nextSvgNodeId = Math.max(this.nextSvgNodeId, node.id + 1);
+    }
+    this.selectedKey = state.key;
+    return index;
+  }
+
+  /** Number of raster records strictly below a heterogeneous scene index. */
+  rasterIndexForSceneIndex(sceneIndex: number): number {
+    if (
+      !Number.isInteger(sceneIndex)
+      || sceneIndex < 0
+      || sceneIndex > this.orderedItems.length
+    ) {
+      throw new Error("Indice scena " + sceneIndex + " fuori intervallo.");
+    }
+    return this.orderedItems
+      .slice(0, sceneIndex)
+      .filter((item) => item.kind === "raster")
+      .length;
+  }
   removeRaster(rasterLayerId: number, fallbackRasterLayerId: number): MixedSceneItem {
     const key = `raster:${rasterLayerId}` as const;
     const index = this.indexOfKey(key);

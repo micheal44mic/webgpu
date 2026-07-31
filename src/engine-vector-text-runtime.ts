@@ -1361,6 +1361,8 @@ export function writeVectorTextGpuDrawUniform(engine: BrushEngine,
   view: VectorTextViewState,
   drawIndex: number,
   targetBounds: DirtyRect,
+  targetWidth = engine.vectorTextGpuScratchWidth,
+  targetHeight = engine.vectorTextGpuScratchHeight,
 ): void {
   const base = drawIndex * VECTOR_TEXT_GPU_UNIFORM_STRIDE / 4;
   const upload = engine.vectorTextGpuUniformUpload;
@@ -1385,8 +1387,8 @@ export function writeVectorTextGpuDrawUniform(engine: BrushEngine,
   upload[base + 19] = draw.opacity;
   upload[base + 20] = targetBounds.x;
   upload[base + 21] = targetBounds.y;
-  upload[base + 22] = engine.vectorTextGpuScratchWidth;
-  upload[base + 23] = engine.vectorTextGpuScratchHeight;
+  upload[base + 22] = targetWidth;
+  upload[base + 23] = targetHeight;
 
   if (vectorTextGpuDrawUsesMesh(draw)) {
     if (vectorTextGpuDrawUsesBlur(draw)) {

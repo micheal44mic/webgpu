@@ -420,12 +420,25 @@
               Circle ruota ogni glifo rigidamente. Il path resta Slug/WebGPU anche allo zoom.
             </p>
           </fieldset>
+
+          <button id="vectorTextRasterize" class="primary wide" type="button">
+            Rasterizza testo in livello RGBA8
+          </button>
+          <p id="vectorTextRasterStatus" class="result" aria-live="polite">
+            Slug analitico alla risoluzione documento · MSAA 4× · tile 256 px.
+          </p>
           </div>
 
           <div id="vectorSvgSelectedControls" class="vector-svg-selected" hidden>
             <h3>SVG selezionato</h3>
             <p id="vectorSvgSourceSummary" class="result"></p>
             <div id="vectorSvgPalette" class="vector-svg-palette"></div>
+            <button id="vectorSvgRasterize" class="primary wide" type="button">
+              Rasterizza SVG in livello RGBA8
+            </button>
+            <p class="result">
+              Qualità massima WebGPU: MSAA 4× e blocchi allineati ai tile 256 px.
+            </p>
           </div>
 
           <fieldset class="vector-text-outline-controls">

@@ -14,6 +14,8 @@ import type {
 } from "./mixed-scene-stack";
 import type { ShapeOccupancySelection } from "./shape-occupancy";
 import { MAX_STAMPS_PER_BATCH, STAMP_STRIDE_BYTES } from "./engine-limits";
+import type { LayerColdStorageResources } from "./engine-layer-resources";
+import type { LayerRecord } from "./layer-stack";
 
 export interface RasterHistoryAction {
   id: number;
@@ -27,7 +29,23 @@ export interface VectorHistoryAction {
   delta: MixedSceneVectorHistoryDelta;
 }
 
-export type HistoryAction = RasterHistoryAction | VectorHistoryAction;
+export interface VectorRasterizeHistoryAction {
+  id: number;
+  kind: "vector-rasterize";
+  sourceKind: "text" | "svg";
+  layerId: number;
+  layerRecord: LayerRecord;
+  rasterLayerIndex: number;
+  vectorState: MixedSceneVectorHistoryState;
+  seed: LayerColdStorageResources;
+  baseBounds: DirtyRect;
+  baseTileMask: Uint32Array;
+}
+
+export type HistoryAction =
+  | RasterHistoryAction
+  | VectorHistoryAction
+  | VectorRasterizeHistoryAction;
 
 export interface ActiveVectorHistoryEdit {
   key: MixedSceneVectorKey;

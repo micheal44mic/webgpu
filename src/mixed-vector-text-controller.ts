@@ -91,6 +91,10 @@ export interface MixedVectorTextHost {
   ): Readonly<VectorTextNode>;
   moveVectorTextNode(id: number, delta: -1 | 1): Promise<boolean>;
   deleteVectorTextNode(id: number): Promise<Readonly<VectorTextNode>>;
+  rasterizeVectorTextNode(
+    id: number,
+    draws: readonly VectorTextGpuDraw[],
+  ): Promise<{ layerId: number; chunkCount: number; tileCount: number }>;
   addVectorSvgNode(
     seed: VectorSvgNodeSeed,
     name?: string,
@@ -101,6 +105,10 @@ export interface MixedVectorTextHost {
   ): Readonly<VectorSvgNode>;
   moveVectorSvgNode(id: number, delta: -1 | 1): Promise<boolean>;
   deleteVectorSvgNode(id: number): Promise<Readonly<VectorSvgNode>>;
+  rasterizeVectorSvgNode(
+    id: number,
+    draws: readonly VectorTextGpuDraw[],
+  ): Promise<{ layerId: number; chunkCount: number; tileCount: number }>;
   zoomBy(factor: number, clientX?: number, clientY?: number): void;
   panByClientDelta(deltaClientX: number, deltaClientY: number): void;
 }
@@ -290,6 +298,12 @@ export class MixedVectorTextController {
   private readonly textSpecificControls = requiredElement<HTMLElement>(
     "vectorTextSpecificControls",
   );
+  private readonly textRasterizeButton = requiredElement<HTMLButtonElement>(
+    "vectorTextRasterize",
+  );
+  private readonly textRasterStatus = requiredElement<HTMLElement>(
+    "vectorTextRasterStatus",
+  );
   private readonly svgSelectedControls = requiredElement<HTMLElement>(
     "vectorSvgSelectedControls",
   );
@@ -297,6 +311,9 @@ export class MixedVectorTextController {
     "vectorSvgSourceSummary",
   );
   private readonly svgPalette = requiredElement<HTMLElement>("vectorSvgPalette");
+  private readonly svgRasterizeButton = requiredElement<HTMLButtonElement>(
+    "vectorSvgRasterize",
+  );
   private readonly svgLoadExampleButton = requiredElement<HTMLButtonElement>(
     "vectorSvgLoadExample",
   );
@@ -515,6 +532,7 @@ export class MixedVectorTextController {
   private viewportTextureCount = 0;
   private renderedTextRunKeys = new Set<VectorTextPlacement>();
   private sceneOperationBusy = false;
+  private sceneOperationRenderDeferred = false;
   private pendingViewRender = false;
   private pendingViewRenderStartedAt = 0;
   private lastViewRenderEndToEndMs = 0;
@@ -781,6 +799,10 @@ export class MixedVectorTextController {
     } finally {
       this.sceneOperationBusy = false;
       this.syncControlsFromSelection(this.selectedVectorNode());
+      if (this.sceneOperationRenderDeferred) {
+        this.sceneOperationRenderDeferred = false;
+        this.scheduleRender();
+      }
     }
   }
 
@@ -918,6 +940,156 @@ export class MixedVectorTextController {
     return node && !isTextNode(node) ? node : null;
   }
 
+  private vectorRasterView(): VectorTextViewState {
+    return {
+      canvasWidth: this.host.layerSize,
+      canvasHeight: this.host.layerSize,
+      cssWidth: this.host.layerSize,
+      cssHeight: this.host.layerSize,
+      centerX: this.host.layerSize * 0.5,
+      centerY: this.host.layerSize * 0.5,
+      zoom: 1,
+      rotationRadians: 0,
+      rotationCos: 1,
+      rotationSin: 0,
+    };
+  }
+
+  private setTextRasterStatus(message: string, failed = false): void {
+    this.textRasterStatus.textContent = message;
+    this.textRasterStatus.classList.toggle("error", failed);
+    this.textRasterStatus.classList.toggle("ok", !failed);
+  }
+
+  private async rasterizeSelectedText(): Promise<void> {
+    const selected = this.selectedTextNode();
+    if (!selected || selected.text.length === 0) return;
+    const textId = selected.id;
+    await this.runSceneOperation(async () => {
+      this.setTextRasterStatus(
+        "Preparazione del testo alla risoluzione documento…",
+      );
+      const view = this.vectorRasterView();
+      const rasterSlots = new Set<string>();
+      try {
+        for (;;) {
+          const revision = this.effectCompiler.resourceRevisionValue();
+          const current = this.selectedTextNode();
+          if (!current || current.id !== textId) {
+            throw new Error(
+              "Il testo selezionato è cambiato durante la rasterizzazione.",
+            );
+          }
+          if (current.text.length === 0) {
+            throw new Error("Il testo vuoto non contiene pixel da rasterizzare.");
+          }
+          const rasterNode = cloneVectorTextNode(current);
+          rasterNode.opacity = 1;
+          const geometry = this.geometryForNode(rasterNode);
+          const draws: VectorTextGpuDraw[] = [];
+          const allEffectsReady = this.appendGpuDrawsForNode(
+            draws,
+            rasterNode,
+            geometry,
+            view,
+            rasterSlots,
+            true,
+          );
+          if (allEffectsReady) {
+            this.setTextRasterStatus(
+              "Rasterizzazione WebGPU di " + current.name + "…",
+            );
+            const result = await this.host.rasterizeVectorTextNode(textId, draws);
+            const message =
+              current.name + " rasterizzato in RGBA8 · MSAA 4× · "
+              + result.chunkCount + " blocchi 512 px · "
+              + result.tileCount + " tile 256 px.";
+            this.setTextRasterStatus(message);
+            this.status.textContent = message;
+            return;
+          }
+          const diagnostics = this.effectCompiler.diagnostics();
+          if (diagnostics.pendingJobs === 0 && diagnostics.lastError) {
+            throw new Error(
+              "Preparazione mesh testo fallita: " + diagnostics.lastError,
+            );
+          }
+          await this.effectCompiler.waitForResourceReady(revision);
+        }
+      } catch (error) {
+        this.setTextRasterStatus(
+          error instanceof Error
+            ? error.message
+            : "Rasterizzazione testo non riuscita.",
+          true,
+        );
+        throw error;
+      } finally {
+        for (const slot of rasterSlots) {
+          this.effectCompiler.releasePinnedSlot(slot);
+        }
+      }
+    });
+  }
+
+  private async rasterizeSelectedSvg(): Promise<void> {
+    const selected = this.selectedSvgNode();
+    if (!selected) return;
+    const svgId = selected.id;
+    await this.runSceneOperation(async () => {
+      this.setSvgImportStatus("Preparazione delle mesh SVG alla risoluzione documento…");
+      const view = this.vectorRasterView();
+      const rasterSlots = new Set<string>();
+      try {
+        for (;;) {
+          const revision = this.effectCompiler.resourceRevisionValue();
+          const current = this.selectedSvgNode();
+          if (!current || current.id !== svgId) {
+            throw new Error("L’SVG selezionato è cambiato durante la rasterizzazione.");
+          }
+          const rasterNode = cloneVectorSvgNode(current);
+          rasterNode.opacity = 1;
+          const draws: VectorTextGpuDraw[] = [];
+          const allEffectsReady = this.appendGpuDrawsForSvgNode(
+            draws,
+            rasterNode,
+            view,
+            rasterSlots,
+            true,
+          );
+          if (allEffectsReady) {
+            this.setSvgImportStatus(
+              `Rasterizzazione WebGPU di ${current.name}…`,
+            );
+            const result = await this.host.rasterizeVectorSvgNode(svgId, draws);
+            this.setSvgImportStatus(
+              `${current.name} rasterizzato in RGBA8 · MSAA 4× · `
+              + `${result.chunkCount} blocchi 512 px · ${result.tileCount} tile 256 px.`,
+            );
+            return;
+          }
+          const diagnostics = this.effectCompiler.diagnostics();
+          if (diagnostics.pendingJobs === 0 && diagnostics.lastError) {
+            throw new Error(
+              `Preparazione mesh SVG fallita: ${diagnostics.lastError}`,
+            );
+          }
+          await this.effectCompiler.waitForResourceReady(revision);
+        }
+      } catch (error) {
+        this.setSvgImportStatus(
+          error instanceof Error ? error.message : "Rasterizzazione SVG non riuscita.",
+          true,
+        );
+        throw error;
+      } finally {
+        for (const slot of rasterSlots) {
+          this.effectCompiler.releasePinnedSlot(slot);
+        }
+      }
+    });
+  }
+
   private defaultDistortPointsForNode(
     node: Readonly<VectorTextNode>,
   ): VectorTextDistortPoints {
@@ -989,6 +1161,12 @@ export class MixedVectorTextController {
       })();
     });
     this.svgImportButton.addEventListener("click", () => this.svgFileInput.click());
+    this.textRasterizeButton.addEventListener("click", () => {
+      void this.rasterizeSelectedText();
+    });
+    this.svgRasterizeButton.addEventListener("click", () => {
+      void this.rasterizeSelectedSvg();
+    });
     this.svgFileInput.addEventListener("change", () => {
       const file = this.svgFileInput.files?.[0];
       this.svgFileInput.value = "";
@@ -1284,6 +1462,10 @@ export class MixedVectorTextController {
     } finally {
       this.sceneOperationBusy = false;
       this.syncControlsFromSelection(this.selectedVectorNode());
+      if (this.sceneOperationRenderDeferred) {
+        this.sceneOperationRenderDeferred = false;
+        this.scheduleRender();
+      }
     }
   }
 
@@ -1313,6 +1495,9 @@ export class MixedVectorTextController {
     this.svgSelectedControls.hidden = !svgNode;
     this.svgLoadExampleButton.disabled = this.sceneOperationBusy;
     this.svgImportButton.disabled = this.sceneOperationBusy;
+    this.svgRasterizeButton.disabled = !svgNode || this.sceneOperationBusy;
+    this.textRasterizeButton.disabled =
+      !textNode || textNode.text.length === 0 || this.sceneOperationBusy;
     this.textInput.disabled = textDisabled;
     this.fontFamilySelect.disabled = textDisabled;
     this.fontSizeInput.disabled = textDisabled;
@@ -1575,9 +1760,12 @@ export class MixedVectorTextController {
     slotName: string,
     effect: Parameters<VectorTextEffectCompilerClient["meshForSlot"]>[4],
     liveSlots: Set<string>,
+    pinForRasterization = false,
   ): VectorTextEffectMeshResult {
-    const slotKey = `text:${node.id}:${slotName}`;
+    const slotNamespace = pinForRasterization ? "text-raster" : "text";
+    const slotKey = slotNamespace + ":" + node.id + ":" + slotName;
     liveSlots.add(slotKey);
+    if (pinForRasterization) this.effectCompiler.pinSlot(slotKey);
     return this.effectCompiler.meshForSlot(
       slotKey,
       geometry.sourceRevision,
@@ -1596,9 +1784,12 @@ export class MixedVectorTextController {
     slotName: string,
     effect: Parameters<VectorTextEffectCompilerClient["meshForSlot"]>[4],
     liveSlots: Set<string>,
+    pinForRasterization = false,
   ): VectorTextEffectMeshResult {
-    const slotKey = `svg:${node.id}:${slotName}`;
+    const slotNamespace = pinForRasterization ? "svg-raster" : "svg";
+    const slotKey = `${slotNamespace}:${node.id}:${slotName}`;
     liveSlots.add(slotKey);
+    if (pinForRasterization) this.effectCompiler.pinSlot(slotKey);
     return this.effectCompiler.meshForSlot(
       slotKey,
       sourceRevision,
@@ -1680,8 +1871,12 @@ export class MixedVectorTextController {
     node: Readonly<VectorSvgNode>,
     view: VectorTextViewState,
     liveSlots: Set<string>,
+    requireRequestedLod = false,
   ): boolean {
     let allEffectsReady = true;
+    const effectIsReady = (result: VectorTextEffectMeshResult): boolean =>
+      result.matchesRequestedIdentity
+      && (!requireRequestedLod || result.matchesRequestedLod);
     const silhouetteResult = this.effectMeshForSvgPath(
       node,
       node.document.silhouetteRevision,
@@ -1690,8 +1885,9 @@ export class MixedVectorTextController {
       "silhouette-fill",
       { kind: "source-fill" },
       liveSlots,
+      requireRequestedLod,
     );
-    allEffectsReady = allEffectsReady && silhouetteResult.matchesRequestedIdentity;
+    allEffectsReady = allEffectsReady && effectIsReady(silhouetteResult);
     const silhouetteMesh = silhouetteResult.mesh;
 
     if (node.singleShadowEnabled && node.singleShadowOpacity > 0 && silhouetteMesh) {
@@ -1735,8 +1931,9 @@ export class MixedVectorTextController {
             join: node.outlineJoin,
           },
           liveSlots,
+          requireRequestedLod,
         );
-        allEffectsReady = allEffectsReady && result.matchesRequestedIdentity;
+        allEffectsReady = allEffectsReady && effectIsReady(result);
         if (result.mesh) {
           draws.push(this.meshDraw(
             node,
@@ -1756,8 +1953,9 @@ export class MixedVectorTextController {
           "block",
           { kind: "block", vectorX: vector.x, vectorY: vector.y },
           liveSlots,
+          requireRequestedLod,
         );
-        allEffectsReady = allEffectsReady && result.matchesRequestedIdentity;
+        allEffectsReady = allEffectsReady && effectIsReady(result);
         if (result.mesh) {
           draws.push(this.meshDraw(
             node,
@@ -1790,8 +1988,9 @@ export class MixedVectorTextController {
           includeFill: fuseOutlineAndFill,
         },
         liveSlots,
+        requireRequestedLod,
       );
-      allEffectsReady = allEffectsReady && result.matchesRequestedIdentity;
+      allEffectsReady = allEffectsReady && effectIsReady(result);
       if (result.mesh) {
         draws.push(this.meshDraw(
           node,
@@ -1814,8 +2013,9 @@ export class MixedVectorTextController {
           `paint:${index}:fill`,
           { kind: "source-fill" },
           liveSlots,
+          requireRequestedLod,
         );
-        allEffectsReady = allEffectsReady && result.matchesRequestedIdentity;
+        allEffectsReady = allEffectsReady && effectIsReady(result);
         if (result.mesh) {
           draws.push(this.meshDraw(
             node,
@@ -2045,8 +2245,12 @@ export class MixedVectorTextController {
     geometry: CachedTextGeometry,
     view: VectorTextViewState,
     liveSlots: Set<string>,
+    requireRequestedLod = false,
   ): boolean {
     let allEffectsReady = true;
+    const effectIsReady = (result: VectorTextEffectMeshResult): boolean =>
+      result.matchesRequestedIdentity
+      && (!requireRequestedLod || result.matchesRequestedLod);
     if (node.singleShadowEnabled && node.singleShadowOpacity > 0) {
       if (node.singleShadowBlur > 0) {
         draws.push(this.slugBlurDraw(node, geometry, view));
@@ -2087,9 +2291,10 @@ export class MixedVectorTextController {
             join: node.outlineJoin,
           },
           liveSlots,
+          requireRequestedLod,
         );
         allEffectsReady =
-          allEffectsReady && meshResult.matchesRequestedIdentity;
+          allEffectsReady && effectIsReady(meshResult);
         if (meshResult.mesh) {
           draws.push(this.meshDraw(
             node,
@@ -2112,9 +2317,10 @@ export class MixedVectorTextController {
             vectorY: vector.y,
           },
           liveSlots,
+          requireRequestedLod,
         );
         allEffectsReady =
-          allEffectsReady && meshResult.matchesRequestedIdentity;
+          allEffectsReady && effectIsReady(meshResult);
         if (meshResult.mesh) {
           draws.push(this.meshDraw(
             node,
@@ -2148,9 +2354,10 @@ export class MixedVectorTextController {
           includeFill: fuseOutlineAndFill,
         },
         liveSlots,
+        requireRequestedLod,
       );
       allEffectsReady =
-        allEffectsReady && meshResult.matchesRequestedIdentity;
+        allEffectsReady && effectIsReady(meshResult);
       if (meshResult.mesh) {
         draws.push(this.meshDraw(
           node,
@@ -2192,6 +2399,10 @@ export class MixedVectorTextController {
   }
 
   private renderNow(): void {
+    if (this.sceneOperationBusy) {
+      this.sceneOperationRenderDeferred = true;
+      return;
+    }
     const wasViewRender = this.pendingViewRender;
     const viewRenderStartedAt = this.pendingViewRenderStartedAt;
     this.pendingViewRender = false;

@@ -121,7 +121,7 @@ const assertCompositionPreservesDocumentOrder = (stack, activeRasterLayerId) => 
 
 assert.equal(
   MIXED_SCENE_STACK_STRATEGY,
-  "heterogeneous-bottom-up-raster-vector-segmented-composition-selected-insertion-v4",
+  "heterogeneous-bottom-up-raster-vector-segmented-composition-vector-raster-replacement-v6",
 );
 
 // A vector-only edit must keep exact raster runs resident. Crossing a raster
@@ -151,6 +151,62 @@ assert.equal(
     [],
     "un cambio del raster attivo deve rifiutare ogni riuso vettoriale",
   );
+}
+
+// SVG -> raster is a same-slot structural replacement. Undo restores the
+// compact semantic SVG state and Redo can use the same exact slot again.
+{
+  const stack = new MixedSceneStack([1, 2]);
+  stack.select("raster:1");
+  const svg = stack.addSvgAboveSelection(svgSeed("raster-source.svg"));
+  const svgKey = `svg:${svg.id}`;
+  const historyState = stack.captureVectorHistoryState(svgKey);
+  const sceneIndex = stack.indexOfKey(svgKey);
+  assert.equal(stack.rasterIndexForSceneIndex(sceneIndex), 1);
+
+  assert.equal(stack.replaceVectorWithRaster(svgKey, 99), sceneIndex);
+  assert.deepEqual(
+    stack.items.map((item) => item.key),
+    ["raster:1", "raster:99", "raster:2"],
+  );
+  assert.equal(stack.selected.key, "raster:99");
+  assert.throws(() => stack.svgById(svg.id), /inesistente/);
+
+  assert.equal(stack.replaceRasterWithVector(99, historyState), sceneIndex);
+  assert.deepEqual(
+    stack.items.map((item) => item.key),
+    ["raster:1", svgKey, "raster:2"],
+  );
+  assert.equal(stack.selected.key, svgKey);
+  assert.equal(stack.svgById(svg.id).document.sourceName, "raster-source.svg");
+  assert.equal(stack.rasterIndexForSceneIndex(stack.items.length), 2);
+  assert.throws(() => stack.rasterIndexForSceneIndex(-1), /fuori intervallo/);
+}
+
+// Text -> raster uses the same structural slot and restores the exact semantic
+// node, including its editable text payload, on Undo.
+{
+  const stack = new MixedSceneStack([1, 2]);
+  stack.select("raster:1");
+  const text = stack.addTextAboveSelection(seed("RASTER TEXT"));
+  const textKey = "text:" + text.id;
+  const historyState = stack.captureVectorHistoryState(textKey);
+  const sceneIndex = stack.indexOfKey(textKey);
+
+  assert.equal(stack.replaceVectorWithRaster(textKey, 77), sceneIndex);
+  assert.deepEqual(
+    stack.items.map((item) => item.key),
+    ["raster:1", "raster:77", "raster:2"],
+  );
+  assert.throws(() => stack.textById(text.id), /inesistente/);
+
+  assert.equal(stack.replaceRasterWithVector(77, historyState), sceneIndex);
+  assert.deepEqual(
+    stack.items.map((item) => item.key),
+    ["raster:1", textKey, "raster:2"],
+  );
+  assert.equal(stack.selected.key, textKey);
+  assert.equal(stack.textById(text.id).text, "RASTER TEXT");
 }
 
 {

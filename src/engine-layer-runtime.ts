@@ -1098,15 +1098,16 @@ export async function retargetEffectsWorkingSetInternal(engine: BrushEngine,
     throw new Error("Il motore non è ancora inizializzato.");
   }
   // Each caller's exemption is spelled out rather than hidden behind booleans.
-  // A layer switch legitimately runs while layerSwitchBusy is its own flag, and
-  // cross-layer undo legitimately runs while historyBusy is high because it IS
-  // the history transaction — that is the whole reason it cannot go through the
-  // public method.
+  // A layer switch legitimately runs while layerSwitchBusy is its own flag;
+  // cross-layer replay and structural vector history legitimately run while
+  // historyBusy is high because each is the current history transaction, so
+  // neither can go through the public method.
   const duringLayerSwitch = caller !== "public";
-  const duringHistoryReplay = caller === "history-replay";
+  const duringHistoryTransaction =
+    caller === "history-replay" || caller === "structural-history";
   if (
     engine.activeStroke
-    || (!duringHistoryReplay && engine.historyBusy)
+    || (!duringHistoryTransaction && engine.historyBusy)
     || (!duringLayerSwitch && engine.layerSwitchBusy)
     || engine.rasterStrokeBusy
     || engine.rasterBevelBusy

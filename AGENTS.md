@@ -2666,3 +2666,41 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   universale o budget production. Poiché rispetto al fallimento da `800 MiB`
   sono cambiati sia target sia staging, la causa non è ancora isolata: il
   prossimo gradino scientificamente confrontabile è `700 MiB staged`.
+
+### Rasterizzazione vettori -> livello RGBA8 tiled (candidato locale 31 luglio 2026)
+
+- La conversione esplicita copre ora sia il nodo SVG sia il testo selezionato e
+  produce un livello raster RGBA8 autorevole. RGBA16F non partecipa a questo
+  percorso e viene rifiutato dal runtime dedicato.
+- Strategia
+  semantic-vector-slug-mesh-webgpu-linear-rgba8-msaa4-512-tile-chunks-history-seed-v2,
+  senza fallback Canvas2D, screenshot o bitmap intermedia.
+- Il testo conserva il riempimento Slug analitico fino al render finale; Traccia,
+  Block Shadow e le ombre riusano le draw WebGPU esistenti. SVG ed effetti testo
+  vengono bloccati al LOD esatto della risoluzione documento, indipendente dallo
+  zoom corrente della viewport.
+- Il job rasterizza con MSAA 4x in blocchi da 512 px e copia il risultato nel
+  layer 4096 al confine dei tile da 256 px. Opacita e visibilita passano dal nodo
+  semantico al record raster, mentre i pixel del job sono renderizzati a opacita
+  unitaria per non applicarla due volte.
+- La conversione conserva la posizione esatta nella pila mista e seleziona il
+  nuovo livello per il pennello soltanto dopo il completamento atomico delle
+  copie. L'azione cronologica unica vector-rasterize registra il tipo sorgente,
+  testo o SVG, e il relativo stato semantico compatto.
+- Undo/Redo e replay usano un seed freddo indipendente composto soltanto dai tile
+  coperti; ripristinano lo stesso record di layer e lo stesso nodo vettoriale
+  senza duplicare array di pixel sul CPU.
+- Restano attive le due difese di lifecycle trovate dalla QA SVG: le draw
+  vettoriali viewport gia accodate vengono eliminate prima di distruggere le
+  risorse e il retarget del banco effetti usa structural-history.
+- QA browser locale NVIDIA Ampere, testo con Slug, Traccia 12 px, Block Shadow e
+  Ombra interna blur 12: conversione riuscita in 8 blocchi da 512 px e 16 tile
+  da 256 px. Undo ha ripristinato il testo semantico con tutti gli effetti e Redo
+  il raster nello stesso slot; console priva di warning/errori WebGPU.
+- La precedente QA SVG resta valida: esempio rasterizzato in 8 blocchi e 24 tile
+  (64 MiB hot + 6 MiB seed tiled), con Undo/Redo nello stesso slot e Worker
+  finale vuoto.
+- Verifiche finali verdi dopo l'estensione al testo: TypeScript, tutte e
+  quindici le suite *:verify, git diff --check e build Vite production con
+  preparazione del pacchetto Sites. Candidato locale, non committato e non
+  pubblicato.

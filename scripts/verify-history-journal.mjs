@@ -12,11 +12,12 @@ import {
   visibleStrokeIds,
 } from "../src/history-journal.ts";
 
-assert.equal(HISTORY_JOURNAL_STRATEGY, "global-order-per-layer-clear-barrier");
+assert.equal(HISTORY_JOURNAL_STRATEGY, "global-order-per-layer-clear-barrier-vector-seed-v3");
 
 const stroke = (id, layerId) => ({ id, kind: "stroke", layerId });
 const clear = (id, layerId) => ({ id, kind: "clear", layerId });
 const vector = (id) => ({ id, kind: "vector" });
+const vectorRasterize = (id, layerId) => ({ id, kind: "vector-rasterize", layerId });
 
 // With one layer the module must reproduce the engine's current behaviour
 // exactly: scan back to the most recent clear, everything after it is visible.
@@ -159,6 +160,40 @@ const vector = (id) => ({ id, kind: "vector" });
   assert.deepEqual([...layersWithVisibleContent(actions, 3)], [1]);
   assert.deepEqual([...layersWithVisibleContent(actions, 2)].sort(), [1, 2]);
   assert.deepEqual([...layersWithVisibleContent(actions, 0)], []);
+}
+
+// Rasterizing a semantic vector seeds raster content without inventing a stroke batch.
+// A later clear hides the seed, while undoing that clear reveals it again.
+{
+  const actions = [vectorRasterize(1, 7), stroke(2, 7), clear(3, 7)];
+  assert.equal(hasVisibleContent(actions, 1, 7), true);
+  assert.deepEqual([...visibleStrokeIds(actions, 1, 7)], []);
+  assert.deepEqual([...layersWithVisibleContent(actions, 1)], [7]);
+  assert.equal(hasVisibleContent(actions, 3, 7), false);
+  assert.equal(hasVisibleContent(actions, 2, 7), true);
+  assert.deepEqual([...visibleStrokeIds(actions, 2, 7)], [2]);
+}
+
+// Structural Undo needs the generated raster to be live so it can replace it
+// with the original vector. Structural Redo is the inverse and requires it absent.
+{
+  const actions = [vectorRasterize(1, 9)];
+  assert.equal(
+    historyStepTargetsMissingLayer(actions, 1, -1, new Set([9])),
+    false,
+  );
+  assert.equal(
+    historyStepTargetsMissingLayer(actions, 1, -1, new Set()),
+    true,
+  );
+  assert.equal(
+    historyStepTargetsMissingLayer(actions, 0, 1, new Set()),
+    false,
+  );
+  assert.equal(
+    historyStepTargetsMissingLayer(actions, 0, 1, new Set([9])),
+    true,
+  );
 }
 
 

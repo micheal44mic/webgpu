@@ -176,14 +176,37 @@ export class LayerStack {
    * does and what the user expects after pressing "add".
    */
   add(name?: string): number {
+    return this.insertAt(this._activeIndex + 1, name);
+  }
+
+  insertAt(index: number, name?: string): number {
     if (this.records.length >= LAYER_STACK_MAXIMUM) {
       throw new Error(
         `Massimo ${LAYER_STACK_MAXIMUM} livelli raggiunto.`,
       );
     }
-    const index = this._activeIndex + 1;
+    if (!Number.isInteger(index) || index < 0 || index > this.records.length) {
+      throw new Error(`Indice inserimento livello ${index} fuori intervallo.`);
+    }
     this.records.splice(index, 0, this.createRecord(name ?? `Livello ${this.nextId}`));
     this._activeIndex = index;
+    return index;
+  }
+
+  /** Reattaches the exact detached record retained by structural history. */
+  attach(record: LayerRecord, index: number): number {
+    if (this.records.length >= LAYER_STACK_MAXIMUM) {
+      throw new Error(`Massimo ${LAYER_STACK_MAXIMUM} livelli raggiunto.`);
+    }
+    if (!Number.isInteger(index) || index < 0 || index > this.records.length) {
+      throw new Error(`Indice reinserimento livello ${index} fuori intervallo.`);
+    }
+    if (this.indexOfId(record.id) >= 0) {
+      throw new Error(`Livello ${record.id} già presente nello stack.`);
+    }
+    this.records.splice(index, 0, record);
+    this._activeIndex = index;
+    this.nextId = Math.max(this.nextId, record.id + 1);
     return index;
   }
 

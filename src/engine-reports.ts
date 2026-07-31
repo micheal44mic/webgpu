@@ -806,8 +806,17 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     usedLogicalBytes: 0,
     pageCount: 0,
   };
-  const historyGpuMiB = historyGpu.allocatedBytes / MEBIBYTE_BYTES;
-  const historyGpuUsedMiB = historyGpu.usedLogicalBytes / MEBIBYTE_BYTES;
+  const historyActionsHoldingGpu = new Set([
+    ...engine.historyActions,
+    ...engine.discardedVectorRasterHistoryActions,
+  ]);
+  let historyRasterSeedBytes = 0;
+  for (const action of historyActionsHoldingGpu) {
+    if (action.kind === "vector-rasterize") historyRasterSeedBytes += action.seed.memoryBytes;
+  }
+  const historyGpuMiB = (historyGpu.allocatedBytes + historyRasterSeedBytes) / MEBIBYTE_BYTES;
+  const historyGpuUsedMiB =
+    (historyGpu.usedLogicalBytes + historyRasterSeedBytes) / MEBIBYTE_BYTES;
   const countedTotalMiB = [
     layerBaseMiB,
     layerMipChainMiB,

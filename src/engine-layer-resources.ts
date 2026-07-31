@@ -99,7 +99,11 @@ export type LayerGpuResources = {
  * different set of legitimate exemptions from the "engine must be idle" guard,
  * and naming them beats threading booleans that nobody can read back.
  */
-export type EffectsRetargetCaller = "public" | "layer-switch" | "history-replay";
+export type EffectsRetargetCaller =
+  | "public"
+  | "layer-switch"
+  | "history-replay"
+  | "structural-history";
 
 export type LayerGpuCompletionPolicy =
   | "await-immediately"

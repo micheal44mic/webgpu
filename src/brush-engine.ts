@@ -275,6 +275,7 @@ import {
   type BlendHistoryRenderBatch,
   type HistoryAction,
   type HistoryRenderBatch,
+  type VectorRasterizeHistoryAction,
   type PaintHistoryRenderBatch,
   resolvePaintHistoryStampCount,
   vectorHistoryStatesEqual,
@@ -549,6 +550,10 @@ import {
   scheduleHistoryGpuTrim,
   truncateRedoHistory,
 } from "./engine-history-runtime";
+import {
+  destroyVectorRasterHistorySeed,
+  rasterizeVectorNodeToLayer,
+} from "./engine-vector-raster-runtime";
 import {
   applyLightGlazeResourceSet,
   createLightGlazeResourceSet,
@@ -1208,6 +1213,7 @@ export class BrushEngine {
   historyActions: HistoryAction[] = [];
   historyCursor = 0;
   nextHistoryActionId = 1;
+  discardedVectorRasterHistoryActions: VectorRasterizeHistoryAction[] = [];
   historyBatches: HistoryRenderBatch[] = [];
   historyStoredBaseStamps = 0;
   historyCompactionPending = false;
@@ -2495,6 +2501,19 @@ export class BrushEngine {
     placement?: VectorTextPlacement,
     deferDisplayInvalidation = false,
   ): void {
+    // A queued vector run owns references to the textures and mesh buffers
+    // released below. Drop it before destroying those resources, otherwise a
+    // later controller flush can submit stale GPU objects after a vector-to-raster
+    // transaction has already removed the semantic node.
+    if (!placement) {
+      this.vectorTextGpuPendingRuns.length = 0;
+    } else {
+      for (let index = this.vectorTextGpuPendingRuns.length - 1; index >= 0; index -= 1) {
+        if (this.vectorTextGpuPendingRuns[index].placement === placement) {
+          this.vectorTextGpuPendingRuns.splice(index, 1);
+        }
+      }
+    }
     let changed = false;
     let legacyBindingsChanged = false;
     if (!placement || placement === "below-active") {
@@ -4788,6 +4807,50 @@ export class BrushEngine {
     );
     return cloneVectorSvgNode(removed);
   }
+  private async rasterizeVectorNode(
+    sourceKind: VectorRasterizeHistoryAction["sourceKind"],
+    id: number,
+    draws: readonly VectorTextGpuDraw[],
+  ): Promise<{ layerId: number; chunkCount: number; tileCount: number }> {
+    const converted = await rasterizeVectorNodeToLayer(
+      this,
+      sourceKind,
+      id,
+      draws,
+    );
+    truncateRedoHistory(this);
+    this.historyActions.push({
+      id: this.nextHistoryActionId++,
+      kind: "vector-rasterize",
+      ...converted.history,
+    });
+    this.historyCursor = this.historyActions.length;
+    if (this.activeStrokeProfile) {
+      this.activeStrokeProfile.historyCommittedActions += 1;
+    }
+    this.publishHistoryState();
+    this.publishStats();
+    return {
+      layerId: converted.history.layerId,
+      chunkCount: converted.chunkCount,
+      tileCount: converted.tileCount,
+    };
+  }
+
+  async rasterizeVectorTextNode(
+    id: number,
+    draws: readonly VectorTextGpuDraw[],
+  ): Promise<{ layerId: number; chunkCount: number; tileCount: number }> {
+    return this.rasterizeVectorNode("text", id, draws);
+  }
+
+  async rasterizeVectorSvgNode(
+    id: number,
+    draws: readonly VectorTextGpuDraw[],
+  ): Promise<{ layerId: number; chunkCount: number; tileCount: number }> {
+    return this.rasterizeVectorNode("svg", id, draws);
+  }
+
   async setVectorTextNodeVisibility(id: number, visible: boolean): Promise<boolean> {
     return mutateMixedScenePresentation(this, 
       (scene) => scene.setTextVisibility(id, Boolean(visible)),
@@ -6382,6 +6445,16 @@ export class BrushEngine {
   }
 
   resetHistoryState(): void {
+    const vectorRasterActions = new Set([
+      ...this.historyActions,
+      ...this.discardedVectorRasterHistoryActions,
+    ]);
+    for (const action of vectorRasterActions) {
+      if (action.kind === "vector-rasterize") {
+        destroyVectorRasterHistorySeed(action);
+      }
+    }
+    this.discardedVectorRasterHistoryActions = [];
     if (this.historyGpuStorage) {
       this.historyGpuStorage.releaseAll();
       scheduleHistoryGpuTrim(this);

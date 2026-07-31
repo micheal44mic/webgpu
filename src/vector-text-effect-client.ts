@@ -46,6 +46,7 @@ export interface VectorTextEffectClientDiagnostics {
 export interface VectorTextEffectMeshResult {
   readonly mesh: VectorTextGpuMeshData | null;
   readonly matchesRequestedIdentity: boolean;
+  readonly matchesRequestedLod: boolean;
 }
 
 const MAXIMUM_READY_EFFECT_CACHE_ENTRIES = 48;
@@ -129,10 +130,13 @@ export class VectorTextEffectCompilerClient {
   private readonly readyByKey = new Map<string, ReadyEffect>();
   private readonly displayedBySlot = new Map<string, DisplayedEffect>();
   private readonly desiredKeyBySlot = new Map<string, string>();
+  private readonly pinnedSlots = new Set<string>();
   private activeRequestId: number | null = null;
   private nextRequestId = 1;
   private failedJobs = 0;
   private lastError: string | null = null;
+  private resourceRevision = 0;
+  private readonly resourceWaiters = new Set<() => void>();
 
   constructor(private readonly onResourceReady: () => void) {
     this.worker.onmessage = (
@@ -143,7 +147,7 @@ export class VectorTextEffectCompilerClient {
     this.worker.onerror = (event): void => {
       this.failedJobs += 1;
       this.lastError = event.message || "Worker geometria testo interrotto.";
-      this.onResourceReady();
+      this.notifyResourceReady();
     };
   }
 
@@ -163,7 +167,8 @@ export class VectorTextEffectCompilerClient {
     const current = this.displayedBySlot.get(slotKey);
     const exactLod = requiresExactEffectLod(effect);
     const currentAlreadySuitable =
-      current?.effectIdentity === identity
+      current !== undefined
+      && current.effectIdentity === identity
       && (exactLod
         ? current.lodBucket === lod.bucket
         : current.lodBucket >= lod.bucket);
@@ -181,6 +186,7 @@ export class VectorTextEffectCompilerClient {
       return {
         mesh: current?.mesh ?? null,
         matchesRequestedIdentity: current?.effectIdentity === identity,
+        matchesRequestedLod: currentAlreadySuitable,
       };
     }
 
@@ -199,12 +205,23 @@ export class VectorTextEffectCompilerClient {
       return {
         mesh: ready.mesh,
         matchesRequestedIdentity: true,
+        matchesRequestedLod: true,
       };
     }
     return {
       mesh: current?.mesh ?? null,
       matchesRequestedIdentity: current?.effectIdentity === identity,
+      matchesRequestedLod: currentAlreadySuitable,
     };
+  }
+
+  pinSlot(slotKey: string): void {
+    this.pinnedSlots.add(slotKey);
+  }
+
+  releasePinnedSlot(slotKey: string): void {
+    this.pinnedSlots.delete(slotKey);
+    this.clearSlot(slotKey);
   }
 
   clearSlot(slotKey: string): void {
@@ -225,7 +242,7 @@ export class VectorTextEffectCompilerClient {
       ...this.queuedBySlot.keys(),
     ]);
     for (const slot of knownSlots) {
-      if (!liveSlots.has(slot)) {
+      if (!liveSlots.has(slot) && !this.pinnedSlots.has(slot)) {
         this.clearSlot(slot);
       }
     }
@@ -242,6 +259,35 @@ export class VectorTextEffectCompilerClient {
     };
   }
 
+  resourceRevisionValue(): number {
+    return this.resourceRevision;
+  }
+
+  waitForResourceReady(afterRevision: number, timeoutMs = 30_000): Promise<number> {
+    if (this.resourceRevision !== afterRevision) {
+      return Promise.resolve(this.resourceRevision);
+    }
+    return new Promise<number>((resolve, reject) => {
+      const finish = () => {
+        window.clearTimeout(timer);
+        this.resourceWaiters.delete(finish);
+        resolve(this.resourceRevision);
+      };
+      const timer = window.setTimeout(() => {
+        this.resourceWaiters.delete(finish);
+        reject(new Error("Timeout durante la preparazione esatta delle mesh vettoriali."));
+      }, timeoutMs);
+      this.resourceWaiters.add(finish);
+    });
+  }
+
+  private notifyResourceReady(): void {
+    this.resourceRevision += 1;
+    this.onResourceReady();
+    const waiters = [...this.resourceWaiters];
+    this.resourceWaiters.clear();
+    waiters.forEach((resolve) => resolve());
+  }
   private registerPath(
     revision: string,
     path: Shadow3dPathData,
@@ -379,7 +425,7 @@ export class VectorTextEffectCompilerClient {
       });
     }
     this.pruneRegisteredPaths();
-    this.onResourceReady();
+    this.notifyResourceReady();
     this.pumpQueue();
   }
 
