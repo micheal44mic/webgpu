@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { readEngineSource } from "./engine-source.mjs";
 import {
   RASTER_PIXEL_VIEW_PERCENT_THRESHOLD,
   RASTER_PIXEL_VIEW_STRATEGY,
@@ -8,7 +9,7 @@ import {
 } from "../src/raster-pixel-view.ts";
 
 const read = (relativePath) => fs.readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
-const engineSource = read("src/brush-engine.ts");
+const engineSource = readEngineSource();
 const mainSource = read("src/main.ts");
 const shaderSource = read("src/shaders.ts");
 const strokeRendererSource = read("src/stroke-renderer.ts");
@@ -135,26 +136,32 @@ assert.match(engineSource, /displayUniformUpload\[5\] = this\.viewCenterY/);
 assert.match(engineSource, /VIEW_ROTATION_SNAP_ENTER_RADIANS = 3 \* Math\.PI \/ 180/);
 assert.match(engineSource, /VIEW_ROTATION_SNAP_RELEASE_RADIANS = 7 \* Math\.PI \/ 180/);
 
-const rotationMethods = engineSource.slice(
+// L'API di rotazione vive nella classe, l'applicazione dell'angolo in
+// `engine-runtime-misc`: la sezione deve coprirle entrambe.
+const rotationApi = engineSource.slice(
   engineSource.indexOf("  beginViewRotationGesture(): void"),
   engineSource.indexOf("  beginStroke(sample: PointerSample): void"),
 );
+const applyRotationStart = engineSource.indexOf("export function applyViewRotation(");
+const rotationMethods = rotationApi
+  + engineSource.slice(applyRotationStart, applyRotationStart + 3_000);
 assert.ok(rotationMethods.length > 0, "API di rotazione vista non trovata");
 assert.doesNotMatch(rotationMethods, /createTexture|createBuffer/,
   "la rotazione non deve allocare texture o buffer");
 assert.match(rotationMethods, /presentationCacheNeedsFullRebuild = true/,
   "ogni cambio angolo deve invalidare la cache screen-space");
-assert.match(rotationMethods, /anchorBefore = this\.clientToLayer/,
+assert.match(rotationMethods, /anchorBefore = clientToLayer\(engine,/,
   "la rotazione deve conservare il punto sotto il gesto");
 
 const dirtyRectTransform = engineSource.slice(
-  engineSource.indexOf("  private layerDirtyRectToPresentationRect("),
-  engineSource.indexOf("  toLayerPoint(sample: PointerSample)"),
+  engineSource.indexOf("export function layerDirtyRectToPresentationRect("),
+  engineSource.indexOf("export function encodeMergedSurfacePyramid("),
 );
-assert.equal((dirtyRectTransform.match(/this\.layerToCanvasPixels\(/g) ?? []).length, 4,
+assert.equal((dirtyRectTransform.match(/layerToCanvasPixels\(engine,/g) ?? []).length, 4,
   "lo scissor ruotato deve includere tutti e quattro gli angoli");
-assert.match(engineSource, /private canvasOffsetToLayerOffset/);
-assert.match(engineSource, /private layerOffsetToCanvasOffset/);
+// Ancorate alla dichiarazione: una riga di import soddisfarebbe il solo nome.
+assert.match(engineSource, /export function canvasOffsetToLayerOffset\(engine: BrushEngine/);
+assert.match(engineSource, /export function layerOffsetToCanvasOffset\(engine: BrushEngine/);
 assert.match(engineSource, /rotation: rotation \+ this\.viewRotation/,
   "la tip preview Shape deve ruotare insieme alla vista");
 

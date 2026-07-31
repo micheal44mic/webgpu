@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { readEngineSource } from "./engine-source.mjs";
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
-const engine = read("../src/brush-engine.ts");
+const engine = readEngineSource();
 const shaders = read("../src/shaders.ts");
 const html = read("../index.html");
 
@@ -74,8 +75,8 @@ assert.match(
 
 const storageRouting = section(
   engine,
-  "private lightGlazeStorageModeFor",
-  "private lightGlazeResourcesMatch",
+  "export function lightGlazeStorageModeFor",
+  "export function isTexturizedGrainActive",
 );
 assert.match(
   storageRouting,
@@ -105,7 +106,7 @@ assert.match(maxPipeline, /Light Glaze Texturized circle MAX per gesture r8unorm
 const submit = section(
   engine,
   "private submitLightGlazeImmediate",
-  "private submitBlendImmediate",
+  "submitBlendImmediate",
 );
 for (const requirement of [
   'const lightNoBuildUp = settings.blendMode === "light-glaze"',
@@ -141,7 +142,9 @@ const beginStroke = section(engine, "beginStrokeAtLayer", "extendStroke(");
 assert.match(beginStroke, /this\.startLightGlazeSession\(historyActionId, lightGlazeSettings\)/);
 const endStroke = section(engine, "endStroke(timeMs?", "cancelStrokeBeforeRender");
 assert.match(endStroke, /this\.lightGlazeSession\.endRequested = true/);
-const renderFrame = section(engine, "private renderFrame", "private recordRenderedFrame");
+// Ancorato alla firma del metodo: il solo nome atterrerebbe in un commento
+// JSDoc migliaia di righe prima, allargando la sezione a mezzo motore.
+const renderFrame = section(engine, "  renderFrame(timestamp: number): void", "recordRenderedFrame(");
 assert.match(
   renderFrame,
   /let hasPendingStampForGesture = false[\s\S]*for \(let index = batchSize;[\s\S]*commitRequested = lightGlazeSession\.endRequested[\s\S]*&& !hasPendingStampForGesture/,

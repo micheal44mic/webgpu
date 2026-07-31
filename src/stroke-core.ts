@@ -5,13 +5,11 @@
 // WebGL implementation in paint-webgpu-m1. This module has no DOM or WebGPU
 // dependency and can therefore act as the oracle for the WebGPU port.
 
-export const RASTER_STROKE_CORE_BUILD =
-  "raster-stroke-core-v1-m1-q10.6-extent-jfa" as const;
 export const RASTER_STROKE_TILE_SIZE = 256;
 export const RASTER_STROKE_MAX_WIDTH = 512;
 export const RASTER_STROKE_DISTANCE_SCALE = 64;
 export const RASTER_STROKE_MAX_DISTANCE = 1023;
-export const RASTER_STROKE_MAX_BUILD_EXTENT = 4096;
+
 export const RASTER_STROKE_ALPHA_THRESHOLD = 127.5 / 255;
 export const RASTER_STROKE_JFA_TIE_ORDER = "yx" as const;
 export const RASTER_STROKE_JFA_TIE_EPSILON = 1e-5;

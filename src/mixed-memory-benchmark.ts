@@ -1,8 +1,6 @@
-import type {
-  BrushEngine,
-  EngineGpuMemoryStats,
-  LayerSwitchResult,
-} from "./brush-engine";
+import type { BrushEngine } from "./brush-engine";
+import type { EngineGpuMemoryStats } from "./engine-stats";
+import type { LayerSwitchResult } from "./engine-types";
 import {
   VECTOR_TEXT_NODE_MAXIMUM,
   type VectorTextNode,

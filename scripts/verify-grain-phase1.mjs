@@ -2,11 +2,11 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { readEngineSource } from "./engine-source.mjs";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const assetPath = path.join(projectRoot, "graincottonfleece.PNG");
 const shaderPath = path.join(projectRoot, "src", "shaders.ts");
-const enginePath = path.join(projectRoot, "src", "brush-engine.ts");
 const mainPath = path.join(projectRoot, "src", "main.ts");
 const htmlPath = path.join(projectRoot, "index.html");
 const expectedSize = 2500;
@@ -186,7 +186,7 @@ assert(grainUniformLayout.size === 32,
 assert(grainUniformLayout.offsets.coordinateMode === 20,
   `Offset coordinateMode ${grainUniformLayout.offsets.coordinateMode}, atteso 20.`);
 
-const engine = fs.readFileSync(enginePath, "utf8");
+const engine = readEngineSource();
 assert(engine.includes('fetch(new URL("../graincottonfleece.PNG", import.meta.url))'),
   "Il runtime non carica l'asset M1 originale.");
 assert(engine.includes('const GRAIN_TEXTURE_SIZE = 2500;')
@@ -202,7 +202,7 @@ assert(engine.includes('export type BlendMode =')
   && engine.includes('| "m1-glaze"'),
   "I tre rendering pubblici o la compatibilità M1 storica sono assenti.");
 const glazeSessionSource = engine.match(
-  /private startLightGlazeSession[\s\S]*?private abandonLightGlazeSession/,
+  /startLightGlazeSession\(historyActionId: number, settings: BrushSettings\)[\s\S]*?abandonLightGlazeSession\(\): void/,
 )?.[0] ?? "";
 assert(glazeSessionSource.includes("...settings")
   && !glazeSessionSource.includes("blendMode: settings.blendMode"),

@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { readEngineSource } from "./engine-source.mjs";
 import {
   MIXED_SCENE_STACK_STRATEGY,
   MixedSceneStack,
   VECTOR_SVG_NODE_MAXIMUM,
   VECTOR_TEXT_NODE_MAXIMUM,
+  reusableMixedSceneRasterRunKeys,
 } from "../src/mixed-scene-stack.ts";
 import {
   MIXED_MEMORY_BENCHMARK_INTERLEAVED_TEXT_RUNS,
@@ -121,6 +123,35 @@ assert.equal(
   MIXED_SCENE_STACK_STRATEGY,
   "heterogeneous-bottom-up-raster-vector-segmented-composition-selected-insertion-v4",
 );
+
+// A vector-only edit must keep exact raster runs resident. Crossing a raster
+// invalidates only the groups whose membership changed, never an unrelated run.
+{
+  const stack = new MixedSceneStack([1, 2, 3, 4]);
+  stack.select("raster:2");
+  const text = stack.addTextAboveSelection(seed("CACHE"));
+  const before = stack.compositionSegments(2);
+  stack.updateText(text.id, { text: "CACHE UPDATED", opacity: 0.75 });
+  const propertyEdit = stack.compositionSegments(2);
+  assert.deepEqual(
+    [...reusableMixedSceneRasterRunKeys(before, propertyEdit)],
+    ["raster-run:1", "raster-run:3,4"],
+    "un edit vettoriale non deve ricostruire raster-run identici",
+  );
+
+  assert.equal(stack.moveText(text.id, 1), true);
+  const crossedRaster = stack.compositionSegments(2);
+  assert.deepEqual(
+    [...reusableMixedSceneRasterRunKeys(propertyEdit, crossedRaster)],
+    ["raster-run:1"],
+    "attraversare raster 3 deve invalidare solo il vecchio gruppo 3,4",
+  );
+  assert.deepEqual(
+    [...reusableMixedSceneRasterRunKeys(crossedRaster, stack.compositionSegments(3))],
+    [],
+    "un cambio del raster attivo deve rifiutare ogni riuso vettoriale",
+  );
+}
 
 {
   const stack = new MixedSceneStack([1]);
@@ -482,10 +513,7 @@ assert.equal(
   assert(stressSeeds.every((entry) => entry.y > 0 && entry.y < 4096));
 
   const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
-  const engineSource = readFileSync(
-    new URL("../src/brush-engine.ts", import.meta.url),
-    "utf8",
-  );
+  const engineSource = readEngineSource();
   assert.match(mainSource, /pageSearchParams\.get\("mixedMemoryBenchmark"\) === "1"/);
   assert.match(mainSource, /pageSearchParams\.get\("mixedMemoryTargetMiB"\) === "600"/);
   assert.match(mainSource, /runRequestedMixedMemoryBenchmark/);
@@ -494,6 +522,52 @@ assert.equal(
   assert.match(mainSource, /mixedMemoryBenchmarkKnownLogicalWorkingSetMiB/);
   assert.match(engineSource, /async addVectorTextNodesBatch\(/);
   assert.match(engineSource, /resetActiveLayerForMemoryBenchmark\(\)/);
+  assert.match(
+    engineSource,
+    /if \(legacyBindingsChanged && !deferDisplayInvalidation\)/,
+    "il clear transazionale non deve creare bind group contro texture evitte",
+  );
+  assert.match(
+    engineSource,
+    /if \(changed && this\.initialized && !deferDisplayInvalidation\)/,
+    "il clear transazionale non deve schedulare frame mentre la scena è congelata",
+  );
+  assert(
+    (engineSource.match(/reuseUnchangedRasterRuns: true/g) ?? []).length >= 4,
+    "mutazioni e Undo/Redo vettoriali devono riusare i raster-run anche nel rollback",
+  );
+  assert.match(
+    engineSource,
+    /this\.mixedSceneRasterSegments = survivingPreviousSegments;/,
+    "un rebuild fallito deve lasciare raggiungibili i raster-run riutilizzabili",
+  );
+  assert.match(
+    engineSource,
+    /if \(!reusedCandidateSegments\.has\(segment\)\)/,
+    "il rollback non deve distruggere risorse raster riusate",
+  );
+  assert.match(
+    engineSource,
+    /if \(this\.layerPresentationFrozen\) \{[\s\S]*?Presentazione congelata con lavoro render pendente/,
+    "waitForIdle deve fallire subito invece di attendere il watchdog per 10 secondi",
+  );
+  assert.match(
+    engineSource,
+    /async rebuildMergedLayerSurfaces\([\s\S]*?if \(hasPendingRenderWork\(this\)\) \{[\s\S]*?il render deve essere fermo prima del freeze/,
+    "la transazione deve rifiutare lavoro render pendente prima di evacuare risorse",
+  );
+  const rasterSelection = engineSource.slice(
+    engineSource.indexOf("async setActiveMixedSceneItem"),
+    engineSource.indexOf("  updateVectorTextNode("),
+  );
+  const rasterSelectionDrain = rasterSelection.indexOf("await this.waitForIdle();");
+  const rasterSelectionClear = rasterSelection.indexOf(
+    "clearVectorTextPresentationForTransaction(this);",
+  );
+  assert(
+    rasterSelectionDrain >= 0 && rasterSelectionClear > rasterSelectionDrain,
+    "la selezione raster deve drenare il frame prima del clear transazionale",
+  );
 }
 
 console.log("Mixed raster/vector scene stack verification passed.");

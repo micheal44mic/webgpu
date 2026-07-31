@@ -924,29 +924,6 @@ export function shiftVectorTextPath(
   };
 }
 
-export function vectorTextRectanglePath(
-  left: number,
-  top: number,
-  right: number,
-  bottom: number,
-): Shadow3dPathData {
-  return {
-    verbs: new Uint8Array([0, 1, 1, 1, 4]),
-    coords: new Float64Array([
-      left,
-      top,
-      right,
-      top,
-      right,
-      bottom,
-      left,
-      bottom,
-    ]),
-    contourOffsets: new Uint32Array([0]),
-    fillRule: 0,
-  };
-}
-
 export function vectorTextCircleEnvelopeBounds(
   left: number,
   top: number,

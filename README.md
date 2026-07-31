@@ -122,7 +122,8 @@ ancorata al layer.
 
 ## Grain M1: Fixed e Moving
 
-Il vecchio derivato `grain-cotton-fleece-2048.png` non è più usato. Il runtime
+Il vecchio derivato `grain-cotton-fleece-2048.png` è stato rimosso: non era più
+usato da nessuna parte. Il runtime
 carica direttamente `graincottonfleece.PNG`, byte per byte uguale all'asset di
 M1. Il file reale non è 4K: misura **2500 × 2500 px**, è RGBA8, conserva il
 profilo ICC originale e ha SHA-256

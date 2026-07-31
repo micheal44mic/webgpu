@@ -1,10 +1,7 @@
-import {
-  LAYER_BAKE_STRATEGY,
-  LAYER_COMPOSITE_STRATEGY,
-  type BrushEngine,
-  type EngineGpuMemoryStats,
-  type LayerSwitchResult,
-} from "./brush-engine";
+import type { BrushEngine } from "./brush-engine";
+import type { EngineGpuMemoryStats } from "./engine-stats";
+import { LAYER_BAKE_STRATEGY, LAYER_COMPOSITE_STRATEGY } from "./engine-strategies";
+import type { LayerSwitchResult } from "./engine-types";
 import type { RasterStrokeStyle } from "./stroke-core";
 
 interface PixelRect {

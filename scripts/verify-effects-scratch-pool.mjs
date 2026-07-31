@@ -3,15 +3,15 @@ import fs from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import path from "node:path";
 import process from "node:process";
+import { readEngineSource } from "./engine-source.mjs";
 
 const root = process.cwd();
 const poolPath = path.join(root, "src", "effects-scratch-pool.ts");
-const enginePath = path.join(root, "src", "brush-engine.ts");
 const bevelPath = path.join(root, "src", "bevel-renderer.ts");
 const strokePath = path.join(root, "src", "stroke-renderer.ts");
 const shadowPath = path.join(root, "src", "shadow-renderer.ts");
 const poolSource = fs.readFileSync(poolPath, "utf8");
-const engineSource = fs.readFileSync(enginePath, "utf8");
+const engineSource = readEngineSource();
 const bevelSource = fs.readFileSync(bevelPath, "utf8");
 const strokeSource = fs.readFileSync(strokePath, "utf8");
 const shadowSource = fs.readFileSync(shadowPath, "utf8");
@@ -177,7 +177,7 @@ assert.equal(EFFECTS_SCRATCH_POOL_IDLE_SHRINK_DELAY_MS, 1_500);
 
 assert.match(
   engineSource,
-  /canReallocateScratch:\s*\(\)\s*=>\s*this\.activeStroke\s*===\s*null/,
+  /canReallocateScratch:\s*\(\)\s*=>\s*engine\.activeStroke\s*===\s*null/,
 );
 assert.match(engineSource, /EFFECTS_SCRATCH_POOL_IDLE_SHRINK_DELAY_MS/);
 assert.match(engineSource, /await this\.device\.queue\.onSubmittedWorkDone\(\)/);

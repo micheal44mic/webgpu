@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { area, difference, FillRule } from "clipper2-ts";
+import { readEngineSource } from "./engine-source.mjs";
 
 import {
   VECTOR_TEXT_BLOCK_SHADOW_STRATEGY,
@@ -109,7 +110,7 @@ import {
 const read = (relativePath) =>
   fs.readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
 
-const engineSource = read("src/brush-engine.ts");
+const engineSource = readEngineSource();
 const controllerSource = read("src/mixed-vector-text-controller.ts");
 const clientSource = read("src/vector-text-effect-client.ts");
 const workerSource = read("src/vector-text-effect-worker.ts");
@@ -1176,7 +1177,21 @@ assert.match(
 assert.match(engineSource, /beginVectorHistoryEdit\(\): boolean/);
 assert.match(engineSource, /commitVectorHistoryEdit\(\): boolean/);
 assert.match(engineSource, /kind: "vector"[\s\S]*delta: MixedSceneVectorHistoryDelta/);
-assert.match(engineSource, /action\.kind === "vector"[\s\S]*restoreVectorHistoryState/);
+// Non un'asserzione di ordine sulla concatenazione (che codificherebbe solo la
+// posizione dei moduli): due presenze distinte, con il ripristino vincolato a
+// stare dentro la funzione che applica lo stato vettoriale.
+assert.match(engineSource, /action\.kind === "vector"/);
+const applyVectorStart = engineSource.indexOf("export async function applyVectorHistoryState(");
+const applyVectorEnd = engineSource.indexOf("\nexport ", applyVectorStart + 1);
+assert.ok(
+  applyVectorStart >= 0 && applyVectorEnd > applyVectorStart,
+  "applyVectorHistoryState non delimitabile",
+);
+assert.match(
+  engineSource.slice(applyVectorStart, applyVectorEnd),
+  /restoreVectorHistoryState\(/,
+  "l'applicazione dello stato vettoriale deve ripristinare la scena",
+);
 assert.doesNotMatch(controllerSource, /VectorTextAdaptiveZoomDetector|enterFastZoomMode|finishFastZoomMode|scheduleFastInteractionOverlay/);
 assert.match(controllerSource, /setAdaptiveZoomEnabled\(_enabled: boolean\): void \{[\s\S]*updateAdaptiveZoomIndicator\(\)/);
 assert.match(adaptiveSource, /disabled-vector-lod-worker-node-atomic-latest-only-v3/);

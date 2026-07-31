@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { readEngineSource } from "./engine-source.mjs";
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
-const engine = read("../src/brush-engine.ts");
+const engine = readEngineSource();
 const main = read("../src/main.ts");
 const shaders = read("../src/shaders.ts");
 const strokeRenderer = read("../src/stroke-renderer.ts");
@@ -13,11 +14,20 @@ const blendRenderer = read("../src/blend-renderer.ts");
 const html = read("../index.html");
 const sitesBuild = read("./prepare-sites-build.mjs");
 
+// Il motore è diviso in più moduli concatenati da `readEngineSource()`: un
+// marcatore disallineato non deve più poter allargare la finestra a mezzo
+// sorgente, altrimenti l'asserzione passa senza verificare più nulla.
+const SECTION_MAXIMUM_BYTES = 40_000;
 const section = (source, start, end) => {
   const startIndex = source.indexOf(start);
   assert.notEqual(startIndex, -1, `Sezione iniziale assente: ${start}`);
   const endIndex = source.indexOf(end, startIndex + start.length);
   assert.notEqual(endIndex, -1, `Sezione finale assente: ${end}`);
+  assert.ok(
+    endIndex - startIndex <= SECTION_MAXIMUM_BYTES,
+    `Marcatore disallineato: la sezione ${start} → ${end} misura `
+    + `${endIndex - startIndex} byte, oltre il limite di ${SECTION_MAXIMUM_BYTES}.`,
+  );
   return source.slice(startIndex, endIndex);
 };
 
@@ -58,7 +68,7 @@ assert(!engine.includes('intenseBlending ? "blend"'), "Intense viene rinominato 
 const submit = section(
   engine,
   "private submitLightGlazeImmediate",
-  "private submitBlendImmediate",
+  "submitBlendImmediate",
 );
 for (const requirement of [
   'const intenseBlending = settings.blendMode === "intense-blending";',
@@ -166,17 +176,17 @@ assert(
 );
 const glazeAllocation = section(
   engine,
-  "private ensureLightGlazeResources",
-  "private destroyLightGlazeResources",
+  "ensureLightGlazeResources(blendMode: BlendMode)",
+  "  startLightGlazeSession(historyActionId: number",
 );
 assert(
   glazeAllocation.includes("this.lightGlazeDesiredStorageMode = storageMode;")
     && glazeAllocation.includes("this.lightGlazeLoadingStorageMode")
     && glazeAllocation.includes("`Retarget rendering glaze ${storageMode}`")
     && glazeAllocation.includes("`Ripristino rendering glaze ${previous.storageMode}`")
-    && glazeAllocation.includes("this.currentLightGlazeResourceSet()")
-    && glazeAllocation.includes("this.applyLightGlazeResourceSet(previous)")
-    && glazeAllocation.includes("this.destroyLightGlazeResourceSet(resources)"),
+    && glazeAllocation.includes("currentLightGlazeResourceSet(this)")
+    && glazeAllocation.includes("applyLightGlazeResourceSet(this, previous)")
+    && glazeAllocation.includes("destroyLightGlazeResourceSet(resources)"),
   "Transazione/rollback/latest-only dello storage glaze incompleti.",
 );
 assert(
@@ -186,7 +196,7 @@ assert(
 );
 assert(
   engine.includes("while (this.lightGlazeLoadingPromise)")
-    && engine.includes("await this.ensureLightGlazeResources(batch.settings.blendMode);")
+    && engine.includes("await engine.ensureLightGlazeResources(batch.settings.blendMode);")
     && engine.includes("Rendering glaze in preparazione: riprova tra un istante"),
   "Prewarm/attesa delle risorse glaze asincrone incompleta.",
 );

@@ -1,7 +1,5 @@
 export const RASTER_SHADOW_CORE_BUILD =
   "raster-shadow-core-webgpu-v1-morphology-then-gaussian";
-export const RASTER_SHADOW_STYLE_BUILD =
-  "raster-shadow-style-v1-independent-outer-inner";
 
 export const RASTER_SHADOW_TILE_SIZE = 256;
 export const RASTER_SHADOW_MAX_SIZE = 250;

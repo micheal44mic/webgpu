@@ -1,24 +1,27 @@
 import "./styles.css";
 import {
   BrushEngine,
-  type BrushSettings,
-  type EngineStats,
-  type HistoryState,
-  type LayerPoint,
-  type LayerFormat,
-  type PointerSample,
-  type FragmentCoverageStrategy,
-  type GrainMode,
-  type ShapeMaskDecodeStrategy,
-  type ShapeOccupancyFallbackReason,
-  type ShapeSamplingStrategy,
-  type StampGeometry,
-  type StrokePerformanceProfile,
-  type RasterStrokeStyle,
   type RasterBevelStyle,
-  type RasterOuterShadowStyle,
   type RasterInnerShadowStyle,
+  type RasterOuterShadowStyle,
+  type RasterStrokeStyle,
 } from "./brush-engine";
+import type { EngineStats, StrokePerformanceProfile } from "./engine-stats";
+import type {
+  FragmentCoverageStrategy,
+  ShapeMaskDecodeStrategy,
+  ShapeSamplingStrategy,
+  StampGeometry,
+} from "./engine-strategies";
+import type {
+  BrushSettings,
+  GrainMode,
+  HistoryState,
+  LayerFormat,
+  LayerPoint,
+  PointerSample,
+} from "./engine-types";
+import type { ShapeOccupancyFallbackReason } from "./shape-occupancy";
 import type {
   IphoneMemoryLimitEvent,
   IphoneMemoryLimitProgress,

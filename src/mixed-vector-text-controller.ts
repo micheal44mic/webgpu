@@ -1,7 +1,4 @@
-import type {
-  MixedSceneSnapshot,
-  PointerSample,
-} from "./brush-engine";
+import type { MixedSceneSnapshot, PointerSample } from "./engine-types";
 import {
   MIXED_SCENE_STACK_STRATEGY,
   VECTOR_TEXT_BLOCK_SHADOW_STRATEGY,
@@ -29,7 +26,7 @@ import type {
   VectorTextGpuPresentationStats,
   VectorTextPlacement,
   VectorTextViewState,
-} from "./vector-text-prototype";
+} from "./vector-text-types";
 import {
   VectorTextFontGeometryRegistry,
   type VectorTextOutlineGeometry,

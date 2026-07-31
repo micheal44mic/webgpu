@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { readEngineSource } from "./engine-source.mjs";
 import {
   DEFAULT_RASTER_INNER_SHADOW_STYLE,
   DEFAULT_RASTER_OUTER_SHADOW_STYLE,
@@ -255,10 +256,7 @@ assert.match(
 );
 assert.doesNotMatch(compositorSource, /coverage \+ noise \* amount/);
 
-const engineSource = readFileSync(
-  new URL("../src/brush-engine.ts", import.meta.url),
-  "utf8",
-);
+const engineSource = readEngineSource();
 assert.match(engineSource, /async setRasterOuterShadowStyle\(style: unknown\)/);
 assert.match(engineSource, /async setRasterInnerShadowStyle\(style: unknown\)/);
 assert.match(engineSource, /outerShadowStyle: RasterOuterShadowStyle/);

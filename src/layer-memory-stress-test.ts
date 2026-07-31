@@ -1,8 +1,6 @@
-import {
-  BrushEngine,
-  type EngineGpuMemoryStats,
-  type LayerSwitchResult,
-} from "./brush-engine";
+import type { BrushEngine } from "./brush-engine";
+import type { EngineGpuMemoryStats } from "./engine-stats";
+import type { LayerSwitchResult } from "./engine-types";
 import { LAYER_STACK_MAXIMUM } from "./layer-stack";
 
 export const LAYER_MEMORY_STRESS_TARGET_MIB = 1000;

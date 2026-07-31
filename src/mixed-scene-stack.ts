@@ -38,12 +38,6 @@ export const VECTOR_TEXT_SINGLE_SHADOW_BLUR_MAXIMUM = 300;
 
 export const VECTOR_TEXT_INNER_SHADOW_STRATEGY =
   "webgpu-slug-analytic-fill-clip-zero-blur-or-r8-separable-gaussian-v1" as const;
-export const VECTOR_TEXT_INNER_SHADOW_OFFSET_MINIMUM = 0;
-export const VECTOR_TEXT_INNER_SHADOW_OFFSET_MAXIMUM = 100;
-export const VECTOR_TEXT_INNER_SHADOW_ANGLE_MINIMUM = -180;
-export const VECTOR_TEXT_INNER_SHADOW_ANGLE_MAXIMUM = 180;
-export const VECTOR_TEXT_INNER_SHADOW_BLUR_MINIMUM = 0;
-export const VECTOR_TEXT_INNER_SHADOW_BLUR_MAXIMUM = 300;
 
 export function normalizeVectorTextOutlineWidth(width: number): number {
   const finite = Number.isFinite(width) ? width : VECTOR_TEXT_OUTLINE_WIDTH_MINIMUM;
@@ -209,7 +203,6 @@ export type MixedSceneItem =
   };
 
 export type MixedSceneVectorItem = Exclude<MixedSceneItem, { readonly kind: "raster" }>;
-
 
 export interface VectorTextNode {
   readonly id: number;
@@ -402,6 +395,55 @@ export type MixedSceneCompositionSegment =
     readonly kind: "text-run";
     readonly items: readonly MixedSceneVectorItem[];
   };
+
+export type MixedSceneRasterRunKey =
+  Extract<MixedSceneCompositionSegment, { readonly kind: "raster-run" }>["key"];
+
+/**
+ * Returns the raster-run caches that remain byte-identical across a vector-only
+ * scene mutation. Reuse is intentionally refused when the active raster changes
+ * or when a run crosses from one side of it to the other.
+ */
+export function reusableMixedSceneRasterRunKeys(
+  previous: readonly MixedSceneCompositionSegment[],
+  next: readonly MixedSceneCompositionSegment[],
+): ReadonlySet<MixedSceneRasterRunKey> {
+  const previousActiveIndex = previous.findIndex(
+    (segment) => segment.kind === "active-raster",
+  );
+  const nextActiveIndex = next.findIndex(
+    (segment) => segment.kind === "active-raster",
+  );
+  if (previousActiveIndex < 0 || nextActiveIndex < 0) {
+    return new Set();
+  }
+  const previousActive = previous[previousActiveIndex];
+  const nextActive = next[nextActiveIndex];
+  if (
+    previousActive.kind !== "active-raster"
+    || nextActive.kind !== "active-raster"
+    || previousActive.key !== nextActive.key
+  ) {
+    return new Set();
+  }
+
+  const previousSides = new Map<MixedSceneRasterRunKey, "below" | "above">();
+  previous.forEach((segment, index) => {
+    if (segment.kind === "raster-run") {
+      previousSides.set(segment.key, index < previousActiveIndex ? "below" : "above");
+    }
+  });
+  const reusable = new Set<MixedSceneRasterRunKey>();
+  next.forEach((segment, index) => {
+    if (
+      segment.kind === "raster-run"
+      && previousSides.get(segment.key) === (index < nextActiveIndex ? "below" : "above")
+    ) {
+      reusable.add(segment.key);
+    }
+  });
+  return reusable;
+}
 
 export interface MixedSceneState {
   readonly items: readonly MixedSceneItem[];

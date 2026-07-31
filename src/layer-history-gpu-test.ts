@@ -1,8 +1,5 @@
-import type {
-  BrushEngine,
-  HistoryReplayFaultPoint,
-  HistoryState,
-} from "./brush-engine";
+import type { BrushEngine } from "./brush-engine";
+import type { HistoryReplayFaultPoint, HistoryState } from "./engine-types";
 import {
   runLayerCompositeGpuTest,
   type LayerCompositeGpuTestReport,

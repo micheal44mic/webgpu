@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { readEngineSource } from "./engine-source.mjs";
 import {
   THICKNESS_TAPER_WINDOW_MS,
   endThicknessFactor,
@@ -40,10 +41,7 @@ const slowTailLengthPx = 0.25 * THICKNESS_TAPER_WINDOW_MS;
 const fastTailLengthPx = 2 * THICKNESS_TAPER_WINDOW_MS;
 assert.equal(fastTailLengthPx / slowTailLengthPx, 8);
 
-const brushEngineSource = readFileSync(
-  new URL("../src/brush-engine.ts", import.meta.url),
-  "utf8",
-);
+const brushEngineSource = readEngineSource();
 const shaderSource = readFileSync(new URL("../src/shaders.ts", import.meta.url), "utf8");
 const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
 const indexHtmlSource = readFileSync(new URL("../index.html", import.meta.url), "utf8");

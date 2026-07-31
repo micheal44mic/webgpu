@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { readEngineSource } from "./engine-source.mjs";
 import {
   HISTORY_JOURNAL_STRATEGY,
   firstVisibleActionIndex,
@@ -260,7 +261,7 @@ const vector = (id) => ({ id, kind: "vector" });
 }
 
 {
-  const engine = readFileSync(new URL("../src/brush-engine.ts", import.meta.url), "utf8");
+  const engine = readEngineSource();
   const blendRenderer = readFileSync(
     new URL("../src/blend-renderer.ts", import.meta.url),
     "utf8",
@@ -288,7 +289,7 @@ const vector = (id) => ({ id, kind: "vector" });
   assert(engine.includes("historyGpuMiB,"));
   assert(engine.includes("historyGpuUsedMiB,"));
   assert(engine.includes("historyGpuPageCount: historyGpu.pageCount"));
-  assert(engine.includes("this.historyGpuStorage.releaseMany(discardedSlices)"));
+  assert(engine.includes("engine.historyGpuStorage.releaseMany(discardedSlices)"));
   assert(engine.includes("lastVisiblePaintBatchIndexByAction"));
   assert(
     engine.indexOf("historyGpuMiB,", engine.indexOf("const countedTotalMiB")) >= 0,
@@ -309,6 +310,35 @@ const vector = (id) => ({ id, kind: "vector" });
   assert(main.includes("historyGpuUsedMiB"));
   assert(html.includes('id="gpuMemoryHistoryLabel"'));
   assert(html.includes("La cronologia raster mostra pagine GPU riservate"));
+
+  const vectorMutation = engine.slice(
+    engine.indexOf("export async function mutateMixedScenePresentation"),
+    engine.indexOf("export function ensureVectorTextGpuBlurCache"),
+  );
+  const vectorHistoryApply = engine.slice(
+    engine.indexOf("export async function applyVectorHistoryState"),
+    engine.indexOf("export function recordBlendHistoryBatch"),
+  );
+  const layerActivation = engine.slice(
+    engine.indexOf("  async activateLayer("),
+    engine.indexOf("  destroyThicknessTailOverlayResources(): void"),
+  );
+  for (const [label, source] of [
+    ["mutazione vettoriale", vectorMutation],
+    ["Undo/Redo vettoriale", vectorHistoryApply],
+  ]) {
+    assert(source.includes("clearVectorTextPresentationForTransaction(engine)"),
+      `${label}: il clear deve restare transazionale`);
+    assert(source.includes("reuseUnchangedRasterRuns: true"),
+      `${label}: i raster-run invariati devono restare residenti`);
+    assert(!/(this|engine)\.clearVectorTextPresentation\(\);/.test(source),
+      `${label}: un clear normale riaprirebbe il ciclo freeze/waitForIdle`);
+  }
+  assert.match(
+    layerActivation,
+    /caller === "history-replay"[\s\S]*?clearVectorTextPresentationForTransaction\(this\)/,
+    "il cambio layer attraversato dalla cronologia non deve invalidare mentre è congelato",
+  );
 }
 
 console.log("History journal and GPU payload verification passed.");

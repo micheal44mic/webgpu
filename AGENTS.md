@@ -77,6 +77,100 @@ strip 4 vertici, `#14` telemetria v2, `#19` monolitica finale (commit
 telemetria probe, `#53/#54` spacing adattivo, `#61/#63` piramide mip + fix
 stale.
 
+## Struttura del sorgente del motore (31 luglio 2026)
+
+`src/brush-engine.ts` non è più un file unico: **20.758 → 8.810 righe (−58%)**.
+La classe `BrushEngine` conserva lo stato e il percorso caldo del tratto; tutto
+il resto vive in moduli dedicati:
+
+| modulo | contenuto |
+|---|---|
+| `engine-types` | tipi pubblici e `defaultBrushSettings` |
+| `engine-strategies` | tutte le firme di strategia e il routing dei blend mode |
+| `engine-stats` | forme dei report di telemetria |
+| `engine-limits` | dimensioni, budget, taglie degli uniform |
+| `engine-math` | funzioni numeriche pure |
+| `engine-memory-model` | costo in MiB di ogni risorsa |
+| `engine-geometry` | rect sporchi, mip, bounding box |
+| `engine-gpu-utils` | attesa shader, descrizione adapter |
+| `engine-stamp-upload` | impacchettamento stamp e uniform pennello |
+| `engine-reports` | corpi di benchmark, stats, studi e diagnostica |
+| `engine-cold-storage` | archiviazione fredda e compressione livelli |
+| `engine-layer-runtime` | allocazione livelli, merged surface, bake, compositing |
+| `engine-vector-text-runtime` | presentazione GPU del testo vettoriale e scena mista |
+| `engine-history-runtime` | cursore cronologia, replay, stato vettoriale |
+| `engine-glaze-runtime` | risorse e sessione Light/Uniformed/Intense |
+| `engine-adaptive-preview-runtime` | sonde e patch dell'anteprima adattiva |
+| `engine-resource-setup` | creazione risorse statiche e renderer effetti |
+| `engine-runtime-misc` | rotazione vista, coordinate, lifecycle geometria Traccia |
+| `engine-*-types`, `engine-*-resources` | record interni e risorse GPU |
+| `shape-occupancy`, `shape-mask-decode`, `adaptive-preview-runtime`, `vector-text-types` | domini specifici |
+
+Convenzione sulla visibilità, dichiarata sopra la classe e da rispettare:
+
+- `private` = dettaglio della classe;
+- **senza modificatore** = interno al motore, condiviso con i moduli `engine-*`.
+  Non è API pubblica: fuori da `src/engine-*.ts` non va usato;
+- i metodi API (quelli chiamati da `main.ts`, benchmark e strumenti DEV)
+  restano metodi della classe anche quando il corpo è stato spostato: nel corpo
+  resta la sola chiamata alla funzione estratta, così la firma non cambia mai.
+
+**Il percorso caldo per tratto non è stato toccato e non va toccato**:
+`submitImmediate`, `submitLightGlazeImmediate`, `encodeRasterStrokeUpdate`,
+`renderFrame` e i loro aiutanti per stamp restano nella classe. Nessun buffer,
+batch, encoder, ordine degli stamp o allocazione per tratto è cambiato.
+
+Le suite `*:verify` non leggono più `brush-engine.ts` da sola: usano
+`scripts/engine-source.mjs`, che concatena la classe e i moduli estratti
+elencati in `ENGINE_SOURCE_FILES`. **Quando si estrae un nuovo modulo dal
+motore va aggiunto a quella lista**, altrimenti le verifiche statiche smettono
+di vederne il contenuto. L'helper fallisce apposta se un modulo elencato non è
+più importato da `brush-engine.ts`, così la lista non invecchia in silenzio.
+
+Prove raccolte durante lo spostamento, tutte su questa macchina:
+
+- le 238 dichiarazioni spostate fuori dalla classe sono risultate identiche
+  byte per byte all'originale (solo il prefisso `export` aggiunto a 174), e a
+  quel punto il corpo della classe era ancora invariato a 722.376 byte;
+- golden pixel Traccia confrontato A/B con un worktree su `HEAD`: hash
+  `8d5a75a6…f6dcb0`, **identico prima e dopo** ogni fase, comprese le nove
+  estrazioni di metodi. Attenzione: su questa macchina il verdetto è "Golden
+  diverso" **anche sul codice non modificato**, perché la baseline
+  `goldens/raster-stroke-rgba8-v1.json` è stata catturata su un altro
+  dispositivo. Il confronto valido è fra le due run, non col file;
+- `tsc --noEmit`, le quindici suite `*:verify` e `npm run build` verdi dopo
+  ogni fase.
+
+Costo pagato, da tenere presente: circa 340 membri hanno perso `private`. In
+TypeScript è solo un'annotazione di compilazione, quindi a runtime non cambia
+nulla, ma l'incapsulamento ora sta al confine dei moduli e non più a quello
+della classe. Le suite `*:verify` che asserivano `private X` sono state
+aggiornate alla forma nuova, non rimosse.
+
+Codice morto rimosso (verificato con grep su tutto il repo, markdown compreso,
+una sola occorrenza = la dichiarazione): **36 export** inutilizzati — 26 in
+`bevel-core`, 2 in `stroke-core`, 1 in `shadow-core`, 1 in
+`vector-text-transform`, 6 in `mixed-scene-stack` — più due helper privati
+rimasti orfani in `bevel-core`, e la classe `VectorTextPrototype` (554 righe)
+superata da `mixed-vector-text-controller`, che usa gli stessi id DOM (due dei
+quali non esistevano più in `index.html`, quindi il costruttore avrebbe
+comunque lanciato). Il file residuo, soli contratti di tipo, è stato rinominato
+`src/vector-text-types.ts`.
+
+Audit avversariale del refactoring (5 revisori indipendenti, 31/07/2026). Ha
+trovato e fatto correggere: un delegante `Promise<void>` senza `await`
+(`seedActiveLayerMemoryStress`, 6 chiamanti vivi che proseguivano in anticipo)
+più due latenti; cinque asserzioni indebolite in silenzio, tra cui due finestre
+di sezione collassate a `slice(start, -1)` perché il marcatore di fine non
+esisteva più, e alcuni `doesNotMatch` diventati infalsificabili perché
+cercavano `this.X` dentro moduli dove `this` non compare mai. Da qui due
+difese permanenti: `assertSection()` in `verify-layer-stack` e il limite di
+dimensione in `section()` di `verify-intense-blending` fanno fallire una
+sezione disallineata invece di lasciarla passare; `readEngineSource()` fallisce
+se esiste un `src/engine-*.ts` non registrato in `ENGINE_SOURCE_FILES`.
+I negativi ora usano l'alternanza `(this|engine)\.` perché il ricevitore
+dipende da dove vive il codice.
+
 ## Stato attuale del motore (tutto ciò che è attivo)
 
 Paint:
@@ -425,7 +519,7 @@ Paint:
   inerte. Restano query-gated soltanto fixture e benchmark distruttivi
   (`mixedMemoryBenchmark`, stress memoria/compressione e relativi profili);
   non fanno parte dell'esperienza editor normale.
-- Modifica locale del 30 luglio 2026, **non committata e non pubblicata**: una
+- Commit locale `75ee363` del 30 luglio 2026, **non pubblicato**: una
   pagina nuova contiene soltanto `Livello 1`; nessun `Testo 1` viene creato
   all'avvio. Il testo nasce esclusivamente da «Aggiungi testo» e la stessa
   azione è annullabile/ripristinabile.
@@ -451,7 +545,7 @@ Paint:
   blocco e console browser `0` warning/error. Tutti i verifier npm, TypeScript
   e build Vite production sono verdi. È QA desktop funzionale, non una prova
   iPhone né una baseline.
-- Modifica locale del 30 luglio 2026, **non committata e non pubblicata**:
+- Commit locale `75ee363` del 30 luglio 2026, **non pubblicato**:
   cronologia raster GPU-only per il payload, con prewarm di una pagina da
   `2 MiB`, crescita paginata e rilascio dei rami Redo invalidati fuori dal
   percorso della pennellata. QA browser su Light, Uniformed, Intense e Blend
@@ -460,6 +554,27 @@ Paint:
   scendere da `0,4` a `0,3 MiB` alla compattazione; un replay raster stabilizzato
   prima/dopo Undo+Redo ha prodotto lo stesso PNG SHA-256
   `abb2c732764efa90d67dadb22c3a2b7b298be958b1971abf69de5432fc3a6147`.
+- Modifica locale del 31 luglio 2026, **non committata e non pubblicata**: risolto
+  il blocco comune a Undo/Redo cross-layer e spostamento testo sopra/sotto raster
+  con effetti. Il `clear` delle cache vettoriali dentro una transazione non
+  schedula più un frame e non ricrea bind group contro view già evacuate; il
+  render viene invalidato una sola volta dopo pubblicazione e un rollback
+  riuscito. `waitForIdle` ricontrolla il lavoro arrivato durante il fence GPU e,
+  se trova lavoro render mentre la presentazione è congelata, fallisce subito
+  invece di attendere il watchdog da `10 s`.
+- Le mutazioni e la cronologia vettoriale riusano ora le superfici dei
+  `raster-run` con chiave, raster attivo e lato invariati. I run obsoleti vengono
+  distrutti prima di allocare i sostituti; in caso di errore i run riusabili
+  restano raggiungibili per il rebuild di rollback e non vengono distrutti due
+  volte. Attraversare un raster ricostruisce soltanto i gruppi la cui appartenenza
+  cambia; un cambio del raster attivo rifiuta ogni riuso. Il banco WebGPU di
+  Traccia/Smusso/Ombre resta singolo e retargetable: la memoria persistente per
+  layer è cold storage/contenuto e cache raster, non una copia del banco effetti.
+- Verifica solo codice, come richiesto: tutti i `15` verifier npm, TypeScript e
+  build Vite production verdi. Aggiunte regressioni su riuso parziale, rifiuto
+  del riuso al cambio raster attivo, clear transazionale, rollback delle risorse
+  e fail-fast freeze/pending. Nessuna QA browser, screenshot o misura iPhone;
+  quindi non dichiarare ancora una conferma interattiva o prestazionale.
   Anche il benchmark sintetico da `2000` stamp è rimasto annullabile. Tutti i
   `15` verifier npm, TypeScript e build Vite production sono verdi. È QA
   desktop funzionale: non dimostra guadagni prestazionali né copre iPhone.

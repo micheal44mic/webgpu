@@ -1,8 +1,6 @@
-import type {
-  BrushEngine,
-  EngineStats,
-  LayerSwitchResult,
-} from "./brush-engine";
+import type { BrushEngine } from "./brush-engine";
+import type { EngineStats } from "./engine-stats";
+import type { LayerSwitchResult } from "./engine-types";
 import { LAYER_STACK_MAXIMUM } from "./layer-stack";
 
 export const IPHONE_MEMORY_LIMIT_TEST_VERSION = 1 as const;

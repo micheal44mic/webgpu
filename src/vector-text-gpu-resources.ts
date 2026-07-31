@@ -4,7 +4,7 @@ import type {
   VectorTextGpuSlugDraw,
   VectorTextGpuSlugInnerShadowBlurDraw,
   VectorTextGpuSlugInnerShadowDirectDraw,
-} from "./vector-text-prototype";
+} from "./vector-text-types";
 
 export interface CreatedVectorTextGpuMeshResources {
   readonly kind: "mesh";

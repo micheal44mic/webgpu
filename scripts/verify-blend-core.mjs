@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { readEngineSource } from "./engine-source.mjs";
 import {
   DEFAULT_DRY_BLEND_CONTROLS,
   DRY_BLEND_CORE_BUILD,
@@ -58,10 +59,7 @@ assert.match(blendPickupShader, /let sampleDocumentPosition = clamp\(/);
 assert.match(blendPickupShader, /var pigment = sum \/ max\(total, 0\.000001\)/);
 assert.match(blendPickupShader, /else \{\s*\/\/ A completely off-canvas step[\s\S]*?pigment = previous;/);
 
-const brushEngineSource = await readFile(
-  new URL("../src/brush-engine.ts", import.meta.url),
-  "utf8",
-);
+const brushEngineSource = readEngineSource();
 assert.match(
   brushEngineSource,
   /const DRY_BLEND_FRAME_PIXEL_BUDGET = 24_000_000;/,
@@ -84,10 +82,13 @@ assert.equal(
   "allocate-on-tool-select-release-when-idle-deselected",
 );
 assert.match(brushEngineSource, /this\.blendRenderer\?\.prewarmScratch\(\);/);
-assert.match(brushEngineSource, /private maybeReleaseIdleBlendScratch\(\): void/);
 assert.match(
   brushEngineSource,
-  /\|\| this\.pendingBlendBatches\.length > 0\s*\n\s*\) \{\s*\n\s*return;/,
+  /export function maybeReleaseIdleBlendScratch\(engine: BrushEngine\): void/,
+);
+assert.match(
+  brushEngineSource,
+  /\|\| engine\.pendingBlendBatches\.length > 0\s*\n\s*\) \{\s*\n\s*return;/,
 );
 assert.match(
   brushEngineSource,

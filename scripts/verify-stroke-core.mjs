@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { readEngineSource } from "./engine-source.mjs";
 import {
   DEFAULT_RASTER_STROKE_STYLE,
   RASTER_STROKE_ALPHA_THRESHOLD,
@@ -348,10 +349,7 @@ const rendererSource = readFileSync(
   new URL("../src/stroke-renderer.ts", import.meta.url),
   "utf8",
 );
-const engineSource = readFileSync(
-  new URL("../src/brush-engine.ts", import.meta.url),
-  "utf8",
-);
+const engineSource = readEngineSource();
 const workbenchSource = readFileSync(
   new URL("../src/effects-workbench.ts", import.meta.url),
   "utf8",
@@ -420,7 +418,7 @@ assert.ok(
 assert.match(engineSource, /changeDetectionRect = mutationRect;/);
 assert.match(
   engineSource,
-  /composeRect = this\.mergeDirtyRects\(composeRect, mutationRect\);/,
+  /composeRect = mergeDirtyRects\(composeRect, mutationRect\);/,
 );
 assert.match(engineSource, /conditionalComposeRect = rebuildRect;/);
 assert.match(rendererSource, /allocate-on-stroke-enable-release-when-idle-disabled/);
@@ -444,7 +442,7 @@ assert.match(rendererSource, /this\.rebuildIndirectGateBindGroup\(\)/);
 assert.match(rendererSource, /Encode Traccia rifiutato: le risorse geometriche non sono allocate/);
 assert.match(engineSource, /strokeGeometryEnabled: strokeGeometryActive/);
 const geometrySwapHelperStart = engineSource.indexOf(
-  "private async setRasterStrokeGeometryEnabled(",
+  "export async function setRasterStrokeGeometryEnabled(",
 );
 assert.notEqual(
   geometrySwapHelperStart,
@@ -461,12 +459,12 @@ assert.match(
 );
 assert.match(
   geometrySwapHelperBody,
-  /this\.rebuildRasterStrokeDisplayBindGroups\(\)/,
+  /engine\.rebuildRasterStrokeDisplayBindGroups\(\)/,
   "Lo swap real buffer/placeholder deve ricostruire i bind group display esterni.",
 );
 assert.ok(
   geometrySwapHelperBody.indexOf("await renderer.setStrokeGeometryEnabled(enabled)")
-    < geometrySwapHelperBody.indexOf("this.rebuildRasterStrokeDisplayBindGroups()"),
+    < geometrySwapHelperBody.indexOf("engine.rebuildRasterStrokeDisplayBindGroups()"),
   "I bind group display vanno ricostruiti dopo che il renderer ha pubblicato il nuovo buffer.",
 );
 assert.equal(
@@ -474,7 +472,7 @@ assert.equal(
   1,
   "Nessun call site deve bypassare l'helper engine del lifecycle geometria Traccia.",
 );
-assert.match(engineSource, /await this\.setRasterStrokeGeometryEnabled\(false\)/);
+assert.match(engineSource, /await setRasterStrokeGeometryEnabled\(this, false\)/);
 assert.match(engineSource, /rasterStrokeGeometryResident/);
 assert.match(rendererSource, /parameters\.scratchExtent/);
 assert.match(rendererSource, /resizeScratch\(requestedExtent: number\)/);
@@ -607,7 +605,10 @@ assert.match(engineSource, /rasterStrokeScratchExtentForWidth\(normalized\.width
 assert.match(mainSource, /gpuMemoryEffectsScratchLabel/);
 assert.match(htmlSource, /gpuMemoryEffectsScratchPeak/);
 assert.match(engineSource, /effectsScratchPoolMiB/);
-assert.match(engineSource, /private getGpuMemoryStats\(\): EngineGpuMemoryStats/);
+assert.match(
+  engineSource,
+  /export function getGpuMemoryStats\(engine: BrushEngine\): EngineGpuMemoryStats/,
+);
 assert.match(engineSource, /countedTotalMiB/);
 assert.match(mainSource, /const gpuMemoryRows:/);
 assert.match(mainSource, /gpuMemoryDelta\.textContent/);

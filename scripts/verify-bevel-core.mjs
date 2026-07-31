@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
+import { readEngineSource } from "./engine-source.mjs";
 import {
   DEFAULT_RASTER_BEVEL_STYLE,
   RASTER_BEVEL_HEIGHTFIELD_CALIBRATION,
@@ -343,7 +344,7 @@ const bboxGoldenSource = readFileSync(
 );
 assert(rendererSource.includes("raster-bevel-webgpu-v5-bbox-field-shared-effects-scratch-retargetable-layer"));
 assert(rendererSource.includes("shared-effects-pool-roi-split-common-segment-arenas-grow-until-idle-shrink"));
-const engineSource = readFileSync(new URL("../src/brush-engine.ts", import.meta.url), "utf8");
+const engineSource = readEngineSource();
 assert(rendererSource.includes("texture_storage_2d<r32float, write>"));
 assert(rendererSource.includes("marching"));
 assert(rendererSource.includes("segmentDistance"));
@@ -363,7 +364,7 @@ assert.match(rendererSource, /this\.rebuildBindGroups\(\)/);
 assert(workbenchSource.includes("single-retargetable-active-layer-source"));
 assert(benchmarkSource.includes("clearHeight: true"));
 assert(benchmarkSource.includes("clearStyled: true"));
-assert(engineSource.includes("this.rasterBevelRenderer?.workspaceMemoryBytes"));
+assert(engineSource.includes("engine.rasterBevelRenderer?.workspaceMemoryBytes"));
 assert.match(
   engineSource,
   /retargetEffectsWorkingSet\([\s\S]*contentBounds: DirtyRect \| null \| undefined/,
