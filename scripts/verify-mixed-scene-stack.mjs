@@ -348,6 +348,54 @@ assert.equal(
   assert.equal(stack.svgCount, 0);
 }
 
+// The global journal stores one affected vector node, its order and selection:
+// unrelated nodes and immutable SVG path data are never duplicated per action.
+{
+  const stack = new MixedSceneStack([1]);
+  const textBeforeAdd = stack.captureVectorHistoryState("text:1");
+  const text = stack.addTextAboveSelection(seed("HISTORY"));
+  const textAfterAdd = stack.captureVectorHistoryState("text:1");
+  assert.equal(textBeforeAdd.node, null);
+  assert.equal(textBeforeAdd.index, -1);
+  assert.equal(textAfterAdd.node?.id, text.id);
+
+  stack.restoreVectorHistoryState(textBeforeAdd);
+  assert.equal(stack.textCount, 0);
+  assert.equal(stack.selected.key, "raster:1");
+  stack.restoreVectorHistoryState(textAfterAdd);
+  assert.equal(stack.textById(text.id).text, "HISTORY");
+  assert.notEqual(stack.textById(text.id), textAfterAdd.node);
+
+  const textBeforeEdit = stack.captureVectorHistoryState("text:1");
+  stack.updateText(text.id, { text: "EDITED", x: 321, y: 654 });
+  const textAfterEdit = stack.captureVectorHistoryState("text:1");
+  stack.restoreVectorHistoryState(textBeforeEdit);
+  assert.equal(stack.textById(text.id).text, "HISTORY");
+  assert.equal(stack.textById(text.id).x, 2048);
+  stack.restoreVectorHistoryState(textAfterEdit);
+  assert.equal(stack.textById(text.id).text, "EDITED");
+  assert.equal(stack.textById(text.id).x, 321);
+
+  stack.select("raster:1");
+  const svgBeforeAdd = stack.captureVectorHistoryState("svg:1");
+  const svg = stack.addSvgAboveSelection(svgSeed("history.svg"));
+  const svgAfterAdd = stack.captureVectorHistoryState("svg:1");
+  assert.equal(svgBeforeAdd.node, null);
+  assert.equal(svgAfterAdd.node?.document, stack.svgById(svg.id).document);
+  stack.updateSvg(svg.id, { paintColors: ["#abcdef"], x: 777 });
+  stack.restoreVectorHistoryState(svgAfterAdd);
+  assert.equal(stack.svgById(svg.id).paintColors[0], "#ff5500");
+  assert.equal(stack.svgById(svg.id).x, 2048);
+  assert.notEqual(stack.svgById(svg.id), svgAfterAdd.node);
+  assert.equal(
+    stack.svgById(svg.id).document,
+    svgAfterAdd.node.document,
+    "il documento SVG immutabile deve essere condiviso dalla cronologia compatta",
+  );
+  stack.restoreVectorHistoryState(svgBeforeAdd);
+  assert.equal(stack.svgCount, 0);
+}
+
 {
   assert.throws(() => new MixedSceneStack([]), /almeno un livello raster/);
   assert.throws(() => new MixedSceneStack([1, 1]), /univoci/);

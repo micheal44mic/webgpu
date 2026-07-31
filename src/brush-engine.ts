@@ -9,8 +9,15 @@ import {
 import {
   DryBlendRenderer,
   cloneDryBlendRenderBatch,
+  compactDryBlendHistoryGeometry,
+  type DryBlendHistoryGeometry,
   type DryBlendRenderBatch,
 } from "./blend-renderer";
+import {
+  GPU_HISTORY_STORAGE_STRATEGY,
+  GpuHistoryStorage,
+  type GpuHistorySlice,
+} from "./gpu-history-storage";
 import {
   brushShader,
   displayShader,
@@ -36,6 +43,9 @@ import {
   cloneVectorTextNode,
   type MixedSceneCompositionSegment,
   type MixedSceneItem,
+  type MixedSceneVectorHistoryDelta,
+  type MixedSceneVectorHistoryState,
+  type MixedSceneVectorKey,
   type VectorSvgNode,
   type VectorSvgNodeSeed,
   type VectorTextNode,
@@ -290,9 +300,9 @@ export type ShapeSamplingStrategy =
   | "coarse-occupancy-bitmask"
   | "mixed";
 export type ShapeMaskDecodeStrategy = "png-gray8-direct" | "canvas-fallback";
-export type HistoryStorageStrategy = "cpu-render-batch-journal";
-export type HistoryReplayStrategy = "clear-and-stable-gpu-replay";
-export type HistoryStampRetentionStrategy = "shared-immutable-references";
+export type HistoryStorageStrategy = typeof GPU_HISTORY_STORAGE_STRATEGY;
+export type HistoryReplayStrategy = "clear-and-gpu-buffer-copy-replay";
+export type HistoryStampRetentionStrategy = "gpu-only-packed-payload-no-cpu-stamp-arrays";
 export type PresentationCacheStrategy = "persistent-full-resolution-screen-cache";
 export type PresentationTransferStrategy = "copy-texture-to-current-texture";
 export type PaintDisplayPyramidStrategy = "live-dirty-box-filter-mip-chain";
@@ -473,9 +483,9 @@ export interface EngineGpuMemoryStats {
   lightGlazeMiB: number;
   lightGlazeTransitionPeakMiB: number;
   thicknessTailMiB: number;
-  // RAM CPU del journal Undo/Redo (32 B per stamp): mostrata nel monitor ma
-  // esclusa dal totale GPU conteggiato.
-  historyCpuMiB: number;
+  historyGpuMiB: number;
+  historyGpuUsedMiB: number;
+  historyGpuPageCount: number;
   countedTotalMiB: number;
 }
 
@@ -1285,22 +1295,53 @@ interface ShapeOccupancySelection {
   candidateCoverageRatio: number;
 }
 
-interface HistoryAction {
+interface RasterHistoryAction {
   id: number;
   kind: "stroke" | "clear";
-  /**
-   * Which layer the action belongs to. The stack stays global so undo walks the
-   * user's actions in the order they happened, but visibility is resolved per
-   * layer: a clear on one layer must not hide another layer's strokes.
-   */
   layerId: number;
+}
+
+interface VectorHistoryAction {
+  id: number;
+  kind: "vector";
+  delta: MixedSceneVectorHistoryDelta;
+}
+
+type HistoryAction = RasterHistoryAction | VectorHistoryAction;
+
+interface ActiveVectorHistoryEdit {
+  key: MixedSceneVectorKey;
+  before: MixedSceneVectorHistoryState;
+}
+
+function vectorHistoryStatesEqual(
+  left: MixedSceneVectorHistoryState,
+  right: MixedSceneVectorHistoryState,
+): boolean {
+  if (
+    left.key !== right.key
+    || left.index !== right.index
+    || left.selectedKey !== right.selectedKey
+  ) {
+    return false;
+  }
+  if (!left.node || !right.node) return left.node === right.node;
+  if (left.key.startsWith("text:")) {
+    return JSON.stringify(left.node) === JSON.stringify(right.node);
+  }
+  const { document: _leftDocument, ...leftNode } = left.node as VectorSvgNode;
+  const { document: _rightDocument, ...rightNode } = right.node as VectorSvgNode;
+  return JSON.stringify(leftNode) === JSON.stringify(rightNode);
 }
 
 interface PaintHistoryRenderBatch {
   kind: "paint";
+  actionId: number;
   layerId: number;
   settings: BrushSettings;
-  stamps: Stamp[];
+  stampCount: number;
+  firstSeed: number;
+  gpuSlice: GpuHistorySlice;
   clearLayer: boolean;
   dirtyRect: DirtyRect | null;
   shapeOccupancySelection: ShapeOccupancySelection | null;
@@ -1313,7 +1354,8 @@ interface BlendHistoryRenderBatch {
   actionId: number;
   layerId: number;
   settings: BrushSettings;
-  batches: DryBlendRenderBatch[];
+  batches: DryBlendHistoryGeometry[];
+  gpuSlice: GpuHistorySlice;
   clearLayer: boolean;
   dirtyRect: DirtyRect | null;
   shapeMaskIdentity: number;
@@ -1366,6 +1408,7 @@ interface SubmitTiming {
   grainPhysicalCopies: number;
   grainCircleBatches: number;
   grainShapeBatches: number;
+  historyGpuSlice: GpuHistorySlice | null;
 }
 
 interface RenderFrameTiming {
@@ -1620,9 +1663,10 @@ function adaptiveSpacingMaxExtraPercentPointsForPlatform(): number {
     ? ADAPTIVE_SPACING_ANDROID_MAX_EXTRA_PERCENT_POINTS
     : ADAPTIVE_SPACING_MAX_EXTRA_PERCENT_POINTS;
 }
-const HISTORY_STORAGE_STRATEGY = "cpu-render-batch-journal" as const;
-const HISTORY_REPLAY_STRATEGY = "clear-and-stable-gpu-replay" as const;
-const HISTORY_STAMP_RETENTION_STRATEGY = "shared-immutable-references" as const;
+const HISTORY_STORAGE_STRATEGY = GPU_HISTORY_STORAGE_STRATEGY;
+const HISTORY_REPLAY_STRATEGY = "clear-and-gpu-buffer-copy-replay" as const;
+const HISTORY_STAMP_RETENTION_STRATEGY =
+  "gpu-only-packed-payload-no-cpu-stamp-arrays" as const;
 const SHAPE_MASK_SIZE = 2048;
 const GRAIN_TEXTURE_SIZE = 2500;
 const GRAIN_TEXTURE_MIP_LEVEL_COUNT = Math.floor(Math.log2(GRAIN_TEXTURE_SIZE)) + 1;
@@ -1947,6 +1991,9 @@ export class BrushEngine {
 
   private adapter!: GPUAdapter;
   private device!: GPUDevice;
+  private deviceLostError: Error | null = null;
+  private deviceLostSignal: Promise<Error> = new Promise(() => undefined);
+  private renderFrameError: Error | null = null;
   private context!: GPUCanvasContext;
   private canvasFormat!: GPUTextureFormat;
 
@@ -2435,6 +2482,9 @@ export class BrushEngine {
   private historyCompactionPending = false;
   private historyBusy = false;
   private historyStateInconsistent = false;
+  private activeVectorHistoryEdit: ActiveVectorHistoryEdit | null = null;
+  private historyGpuStorage!: GpuHistoryStorage;
+  private historyGpuTrimGeneration = 0;
   private layerHasContent = false;
 
   private frameRequest: number | null = null;
@@ -2534,10 +2584,18 @@ export class BrushEngine {
     }
 
     this.device = await adapter.requestDevice();
-    this.device.lost.then((info) => {
+    this.deviceLostSignal = this.device.lost.then((info) => {
       this.invalidateAdaptivePreview();
       const reason = info.message || info.reason;
+      const error = new Error(`Device WebGPU perso: ${reason}`);
+      this.deviceLostError = error;
+      this.renderFrameError ??= error;
+      if (this.frameRequest !== null) {
+        cancelAnimationFrame(this.frameRequest);
+        this.frameRequest = null;
+      }
       this.callbacks.onStatus?.(`Device WebGPU perso: ${reason}`, "error");
+      return error;
     });
 
     const context = this.canvas.getContext("webgpu") as GPUCanvasContext | null;
@@ -2560,6 +2618,8 @@ export class BrushEngine {
     this.prepareAdaptivePreviewShapePalette(this.settings);
     await this.recreateLayerResources(this.layerFormat);
 
+    this.historyGpuStorage = new GpuHistoryStorage(this.device);
+    this.historyGpuStorage.prewarm();
     this.resizeCanvas();
     this.fitView();
     this.writeBrushUniforms();
@@ -5078,12 +5138,13 @@ export class BrushEngine {
   beginStrokeAtLayer(point: LayerPoint): void {
     // layerSwitchBusy is held across the switch's awaits, so a pointerdown
     // landing mid-switch cannot start a stroke on a half-swapped layer.
+    if (this.activeVectorHistoryEdit) return;
     if (this.historyBusy || this.activeStroke || this.layerSwitchBusy) {
       return;
     }
     if (!this.canPaintSelectedSceneItem()) {
       this.callbacks.onStatus?.(
-        "Il testo è selezionato: scegli un livello raster per usare il pennello.",
+        "Un vettore è selezionato: scegli un livello raster per usare il pennello.",
         "working",
       );
       return;
@@ -5350,6 +5411,7 @@ export class BrushEngine {
       || this.activeStroke
       || this.historyBusy
       || this.layerSwitchBusy
+      || this.activeVectorHistoryEdit
     ) {
       return false;
     }
@@ -5414,7 +5476,7 @@ export class BrushEngine {
   }
 
   resetDocument(): boolean {
-    if (this.historyBusy || this.layerSwitchBusy) {
+    if (this.historyBusy || this.layerSwitchBusy || this.activeVectorHistoryEdit) {
       return false;
     }
     if (this.documentWideResetBlockedByLayers) {
@@ -5460,7 +5522,7 @@ export class BrushEngine {
     if (!this.layerMemoryStressTestEnabled || !this.mixedSceneStack) {
       throw new Error("Reset benchmark misto non abilitato per questa pagina.");
     }
-    if (this.historyBusy || this.layerSwitchBusy) {
+    if (this.historyBusy || this.layerSwitchBusy || this.activeVectorHistoryEdit) {
       return false;
     }
     this.cancelLayerColdCompressionIdle();
@@ -5501,7 +5563,7 @@ export class BrushEngine {
     if (!this.initialized) {
       throw new Error("Il motore non è ancora inizializzato.");
     }
-    if (this.historyBusy || this.activeStroke || this.layerSwitchBusy) {
+    if (this.historyBusy || this.activeStroke || this.layerSwitchBusy || this.activeVectorHistoryEdit) {
       throw new Error("Concludi prima il tratto o l'operazione Undo/Redo.");
     }
     if (this.documentWideResetBlockedByLayers) {
@@ -5561,13 +5623,18 @@ export class BrushEngine {
 
     // Il benchmark resta escluso dalle proprie misure di history, ma il suo
     // risultato visibile diventa comunque un'unica azione annullabile.
+    const benchmarkHistorySlice = this.captureCurrentInstanceBufferForHistory(
+      stamps.length,
+      `Benchmark Paint · ${stamps.length} stamp`,
+    );
+    await this.device.queue.onSubmittedWorkDone();
     const historyActionId = this.nextHistoryActionId++;
     for (const stamp of stamps) {
       stamp.historyActionId = historyActionId;
     }
     this.historyActions.push({ id: historyActionId, kind: "stroke", layerId: this.layerStack.active.id });
     this.historyCursor = this.historyActions.length;
-    this.recordHistoryBatch(stamps, benchmarkSettings, timing, true);
+    this.recordHistoryBatch(stamps, benchmarkSettings, timing, true, benchmarkHistorySlice);
 
     this.totalBaseStamps += stamps.length;
     this.avoidedLogicalDraws += stamps.length * Math.max(0, benchmarkSettings.count - 1);
@@ -5768,8 +5835,13 @@ export class BrushEngine {
       ? this.thicknessTailTextureWidth * this.thicknessTailTextureHeight
         * bytesPerPixel / MEBIBYTE_BYTES
       : 0;
-    const historyCpuMiB =
-      this.historyStoredBaseStamps * STAMP_STRIDE_BYTES / MEBIBYTE_BYTES;
+    const historyGpu = this.historyGpuStorage?.stats() ?? {
+      allocatedBytes: 0,
+      usedLogicalBytes: 0,
+      pageCount: 0,
+    };
+    const historyGpuMiB = historyGpu.allocatedBytes / MEBIBYTE_BYTES;
+    const historyGpuUsedMiB = historyGpu.usedLogicalBytes / MEBIBYTE_BYTES;
     const countedTotalMiB = [
       layerBaseMiB,
       layerMipChainMiB,
@@ -5792,6 +5864,7 @@ export class BrushEngine {
       rasterBevelHeightMiB,
       rasterBevelLutAndControlMiB,
       rasterOuterShadowMatteMiB,
+      historyGpuMiB,
       rasterOuterShadowControlMiB,
       rasterInnerShadowMatteMiB,
       rasterInnerShadowControlMiB,
@@ -5838,7 +5911,9 @@ export class BrushEngine {
       lightGlazeMiB,
       lightGlazeTransitionPeakMiB: this.lightGlazeTransitionPeakMiB,
       thicknessTailMiB,
-      historyCpuMiB,
+      historyGpuMiB,
+      historyGpuUsedMiB,
+      historyGpuPageCount: historyGpu.pageCount,
       countedTotalMiB,
     };
   }
@@ -6442,7 +6517,7 @@ export class BrushEngine {
     const action = delta < 0
       ? this.historyActions[this.historyCursor - 1]
       : this.historyActions[this.historyCursor];
-    if (!action) {
+    if (!action || action.kind === "vector") {
       return null;
     }
     const index = this.layerStack.indexOfId(action.layerId);
@@ -7875,6 +7950,87 @@ export class BrushEngine {
     return runRasterShadowGolden(this.device);
   }
 
+  private hasPendingRenderWork(): boolean {
+    return this.frameRequest !== null
+      || this.pendingStamps.length > 0
+      || this.pendingBlendBatches.length > 0
+      || this.clearRequested
+      || this.displayDirty
+      || Boolean(this.lightGlazeSession?.commitRequested)
+      || Boolean(this.lightGlazeSession?.endRequested)
+      || this.thicknessTailPreviewEligible()
+      || this.thicknessTailPresentedRect !== null;
+  }
+
+  private renderProgressSignature(): string {
+    return [
+      this.frameRequest === null ? 0 : 1,
+      this.pendingStamps.length,
+      this.pendingBlendBatches.length,
+      Number(this.clearRequested),
+      Number(this.displayDirty),
+      Number(Boolean(this.lightGlazeSession?.commitRequested)),
+      Number(Boolean(this.lightGlazeSession?.endRequested)),
+      Number(this.layerPresentationFrozen),
+    ].join(":");
+  }
+
+  private throwIfRenderUnavailable(): void {
+    if (this.deviceLostError) {
+      throw this.deviceLostError;
+    }
+    if (this.renderFrameError) {
+      throw this.renderFrameError;
+    }
+  }
+
+  private async waitForRenderPump(): Promise<void> {
+    this.throwIfRenderUnavailable();
+    if (
+      this.hasPendingRenderWork()
+      && !this.layerPresentationFrozen
+      && this.frameRequest === null
+    ) {
+      this.requestRender();
+    }
+    let timer = 0;
+    let wakeFrame = 0;
+    let timedOut = false;
+    try {
+      await Promise.race([
+        new Promise<void>((resolve) => {
+          wakeFrame = requestAnimationFrame(() => {
+            wakeFrame = 0;
+            resolve();
+          });
+        }),
+        new Promise<void>((resolve) => {
+          timer = window.setTimeout(() => {
+            timedOut = true;
+            timer = 0;
+            resolve();
+          }, 50);
+        }),
+        this.deviceLostSignal.then((error) => Promise.reject(error)),
+      ]);
+    } finally {
+      if (timer !== 0) window.clearTimeout(timer);
+      if (wakeFrame !== 0) cancelAnimationFrame(wakeFrame);
+    }
+    if (
+      timedOut
+      && this.hasPendingRenderWork()
+      && !this.layerPresentationFrozen
+    ) {
+      if (this.frameRequest !== null) {
+        cancelAnimationFrame(this.frameRequest);
+        this.frameRequest = null;
+      }
+      this.runRenderFrame(performance.now());
+    }
+    this.throwIfRenderUnavailable();
+  }
+
   async waitForIdle(): Promise<void> {
     if (!this.initialized) {
       throw new Error("Il motore non è ancora inizializzato.");
@@ -7889,18 +8045,23 @@ export class BrushEngine {
     while (this.shapeLoadingPromise) {
       await this.shapeLoadingPromise;
     }
-    while (
-      this.frameRequest !== null ||
-      this.pendingStamps.length > 0 ||
-      this.pendingBlendBatches.length > 0 ||
-      this.clearRequested ||
-      this.displayDirty ||
-      Boolean(this.lightGlazeSession?.commitRequested)
-    ) {
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    this.throwIfRenderUnavailable();
+    let progressSignature = this.renderProgressSignature();
+    let lastProgressAt = performance.now();
+    while (this.hasPendingRenderWork()) {
+      await this.waitForRenderPump();
+      const nextSignature = this.renderProgressSignature();
+      if (nextSignature !== progressSignature) {
+        progressSignature = nextSignature;
+        lastProgressAt = performance.now();
+      } else if (performance.now() - lastProgressAt > 10_000) {
+        throw new Error(
+          "Il motore non avanza da 10 secondi; Undo/Redo è stato interrotto in sicurezza.",
+        );
+      }
     }
 
-    await this.device.queue.onSubmittedWorkDone();
+    await this.waitForGpuCapped("Attesa completamento motore", 60_000);
     this.retireAdaptivePreviewAfterGpuIdle();
   }
 
@@ -8735,13 +8896,13 @@ export class BrushEngine {
     this.instanceBuffer = this.device.createBuffer({
       label: "Stamp instance storage",
       size: MAX_STAMPS_PER_BATCH * STAMP_STRIDE_BYTES,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
     });
 
     this.thicknessTailInstanceBuffer = this.device.createBuffer({
       label: "Predictive thickness tail instance storage",
       size: MAX_STAMPS_PER_BATCH * STAMP_STRIDE_BYTES,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
     });
 
     this.sampler = this.device.createSampler({
@@ -11333,10 +11494,12 @@ export class BrushEngine {
   }
 
   private async waitForGpuCapped(label: string, timeoutMs = 30_000): Promise<void> {
+    this.throwIfRenderUnavailable();
     let timer = 0;
     try {
       await Promise.race([
         this.device.queue.onSubmittedWorkDone(),
+        this.deviceLostSignal.then((error) => Promise.reject(error)),
         new Promise<never>((_, reject) => {
           timer = window.setTimeout(
             () => reject(new Error(`${label}: timeout GPU dopo ${timeoutMs} ms.`)),
@@ -11349,6 +11512,7 @@ export class BrushEngine {
         window.clearTimeout(timer);
       }
     }
+    this.throwIfRenderUnavailable();
   }
 
   injectLayerCompositeFault(...faultPoints: LayerCompositeFaultPoint[]): void {
@@ -12020,8 +12184,72 @@ export class BrushEngine {
     return this.mixedSceneStack;
   }
 
+  private recordVectorHistoryAction(
+    before: MixedSceneVectorHistoryState,
+    after: MixedSceneVectorHistoryState,
+  ): boolean {
+    if (vectorHistoryStatesEqual(before, after)) {
+      return false;
+    }
+    this.truncateRedoHistory();
+    this.historyActions.push({
+      id: this.nextHistoryActionId++,
+      kind: "vector",
+      delta: { before, after },
+    });
+    this.historyCursor = this.historyActions.length;
+    if (this.activeStrokeProfile) {
+      this.activeStrokeProfile.historyCommittedActions += 1;
+    }
+    return true;
+  }
+
+  beginVectorHistoryEdit(): boolean {
+    if (
+      !this.initialized
+      || this.activeStroke !== null
+      || this.historyBusy
+      || this.layerSwitchBusy
+      || this.historyStateInconsistent
+    ) {
+      return false;
+    }
+    const scene = this.requireMixedSceneStack();
+    const selected = scene.selected;
+    if (selected.kind === "raster") {
+      return false;
+    }
+    const key = selected.key;
+    if (this.activeVectorHistoryEdit) {
+      return this.activeVectorHistoryEdit.key === key;
+    }
+    this.activeVectorHistoryEdit = {
+      key,
+      before: scene.captureVectorHistoryState(key),
+    };
+    this.publishHistoryState();
+    return true;
+  }
+
+  commitVectorHistoryEdit(): boolean {
+    const edit = this.activeVectorHistoryEdit;
+    if (!edit) {
+      return false;
+    }
+    const scene = this.requireMixedSceneStack();
+    this.activeVectorHistoryEdit = null;
+    const after = scene.captureVectorHistoryState(edit.key);
+    const changed = this.recordVectorHistoryAction(edit.before, after);
+    this.publishHistoryState();
+    return changed;
+  }
+
   private async mutateMixedScenePresentation<Result>(
     mutate: (scene: MixedSceneStack) => Result,
+    history?: {
+      targetKey?: MixedSceneVectorKey;
+      addedKey?: (result: Result) => MixedSceneVectorKey;
+    },
   ): Promise<Result> {
     if (!this.initialized) {
       throw new Error("Il motore non è ancora inizializzato.");
@@ -12031,6 +12259,9 @@ export class BrushEngine {
     this.cancelLayerColdCompressionIdle();
     this.layerSwitchBusy = true;
     const previousState = scene.captureState();
+    const historyBefore = history?.targetKey
+      ? scene.captureVectorHistoryState(history.targetKey)
+      : null;
     const previousExcludedNodeId = this.vectorTextPreviewExcludedNodeId;
     try {
       this.callbacks.onStatus?.("Preparazione della scena raster/testo…", "working");
@@ -12047,6 +12278,22 @@ export class BrushEngine {
       this.presentationCacheNeedsFullRebuild = true;
       this.displayDirty = true;
       this.requestRender();
+      if (history) {
+        const targetKey = history.targetKey ?? history.addedKey?.(result);
+        if (!targetKey) {
+          throw new Error("Target vettoriale mancante per la cronologia.");
+        }
+        const before = historyBefore ?? {
+          key: targetKey,
+          index: -1,
+          selectedKey: previousState.selectedKey,
+          node: null,
+        } satisfies MixedSceneVectorHistoryState;
+        this.recordVectorHistoryAction(
+          before,
+          scene.captureVectorHistoryState(targetKey),
+        );
+      }
       return result;
     } catch (error) {
       scene.restoreState(previousState);
@@ -12083,6 +12330,9 @@ export class BrushEngine {
   ): Promise<Readonly<VectorTextNode>> {
     const node = await this.mutateMixedScenePresentation(
       (scene) => scene.addTextAboveSelection(seed, name),
+      {
+        addedKey: (added) => `text:${added.id}`,
+      },
     );
     return { ...node };
   }
@@ -12172,16 +12422,41 @@ export class BrushEngine {
     return null;
   }
 
+  private assertVectorUpdateAllowed(key: MixedSceneVectorKey): void {
+    if (
+      !this.initialized
+      || this.activeStroke !== null
+      || this.lightGlazeSession !== null
+      || this.historyBusy
+      || this.layerSwitchBusy
+      || this.historyStateInconsistent
+    ) {
+      throw new Error("La modifica vettoriale richiede il motore fermo.");
+    }
+    if (this.activeVectorHistoryEdit && this.activeVectorHistoryEdit.key !== key) {
+      throw new Error("Concludi prima la modifica vettoriale corrente.");
+    }
+  }
+
   updateVectorTextNode(
     id: number,
     update: Partial<Omit<VectorTextNode, "id" | "visible" | "opacity">>,
   ): Readonly<VectorTextNode> {
     const scene = this.requireMixedSceneStack();
+    const key = `text:${id}` as const;
+    this.assertVectorUpdateAllowed(key);
     const selected = scene.selected;
     if (selected.kind !== "text" || selected.textNodeId !== id) {
       throw new Error("È modificabile soltanto il nodo testo selezionato.");
     }
+    const before = this.activeVectorHistoryEdit
+      ? null
+      : scene.captureVectorHistoryState(key);
     const node = scene.updateText(id, update);
+    if (before) {
+      this.recordVectorHistoryAction(before, scene.captureVectorHistoryState(key));
+      this.publishHistoryState();
+    }
     this.publishMixedScene();
     this.publishStats();
     return { ...node };
@@ -12193,6 +12468,9 @@ export class BrushEngine {
   ): Promise<Readonly<VectorSvgNode>> {
     const node = await this.mutateMixedScenePresentation(
       (scene) => scene.addSvgAboveSelection(seed, name),
+      {
+        addedKey: (added) => `svg:${added.id}`,
+      },
     );
     return cloneVectorSvgNode(node);
   }
@@ -12202,11 +12480,20 @@ export class BrushEngine {
     update: Partial<Omit<VectorSvgNode, "id" | "document" | "visible" | "opacity">>,
   ): Readonly<VectorSvgNode> {
     const scene = this.requireMixedSceneStack();
+    const key = `svg:${id}` as const;
+    this.assertVectorUpdateAllowed(key);
     const selected = scene.selected;
     if (selected.kind !== "svg" || selected.svgNodeId !== id) {
       throw new Error("È modificabile soltanto il nodo SVG selezionato.");
     }
+    const before = this.activeVectorHistoryEdit
+      ? null
+      : scene.captureVectorHistoryState(key);
     const node = scene.updateSvg(id, update);
+    if (before) {
+      this.recordVectorHistoryAction(before, scene.captureVectorHistoryState(key));
+      this.publishHistoryState();
+    }
     this.publishMixedScene();
     this.publishStats();
     return cloneVectorSvgNode(node);
@@ -12215,48 +12502,56 @@ export class BrushEngine {
   async setVectorSvgNodeVisibility(id: number, visible: boolean): Promise<boolean> {
     return this.mutateMixedScenePresentation(
       (scene) => scene.setSvgVisibility(id, Boolean(visible)),
+      { targetKey: `svg:${id}` },
     );
   }
 
   async setVectorSvgNodeOpacity(id: number, opacity: number): Promise<boolean> {
     return this.mutateMixedScenePresentation(
       (scene) => scene.setSvgOpacity(id, opacity),
+      { targetKey: `svg:${id}` },
     );
   }
 
   async moveVectorSvgNode(id: number, delta: -1 | 1): Promise<boolean> {
     return this.mutateMixedScenePresentation(
       (scene) => scene.moveSvg(id, delta),
+      { targetKey: `svg:${id}` },
     );
   }
 
   async deleteVectorSvgNode(id: number): Promise<Readonly<VectorSvgNode>> {
     const removed = await this.mutateMixedScenePresentation(
       (scene) => scene.deleteSvg(id, this.layerStack.active.id),
+      { targetKey: `svg:${id}` },
     );
     return cloneVectorSvgNode(removed);
   }
   async setVectorTextNodeVisibility(id: number, visible: boolean): Promise<boolean> {
     return this.mutateMixedScenePresentation(
       (scene) => scene.setTextVisibility(id, Boolean(visible)),
+      { targetKey: `text:${id}` },
     );
   }
 
   async setVectorTextNodeOpacity(id: number, opacity: number): Promise<boolean> {
     return this.mutateMixedScenePresentation(
       (scene) => scene.setTextOpacity(id, opacity),
+      { targetKey: `text:${id}` },
     );
   }
 
   async moveVectorTextNode(id: number, delta: -1 | 1): Promise<boolean> {
     return this.mutateMixedScenePresentation(
       (scene) => scene.moveText(id, delta),
+      { targetKey: `text:${id}` },
     );
   }
 
   async deleteVectorTextNode(id: number): Promise<Readonly<VectorTextNode>> {
     const removed = await this.mutateMixedScenePresentation(
       (scene) => scene.deleteText(id, this.layerStack.active.id),
+      { targetKey: `text:${id}` },
     );
     return { ...removed };
   }
@@ -12610,6 +12905,7 @@ export class BrushEngine {
       this.activeStroke
       || this.lightGlazeSession
       || this.historyBusy
+      || this.activeVectorHistoryEdit
       || this.layerSwitchBusy
       || this.rasterStrokeBusy
       || this.rasterBevelBusy
@@ -16543,14 +16839,43 @@ export class BrushEngine {
     this.requestRender();
   }
 
+  private handleRenderFrameError(error: unknown): void {
+    const normalized = error instanceof Error
+      ? error
+      : new Error(String(error));
+    if (this.frameRequest !== null) {
+      cancelAnimationFrame(this.frameRequest);
+      this.frameRequest = null;
+    }
+    if (!this.renderFrameError) {
+      this.renderFrameError = normalized;
+      this.historyStateInconsistent = true;
+      this.historyBusy = true;
+      this.invalidateAdaptivePreview();
+      this.publishHistoryState();
+      this.callbacks.onStatus?.(
+        `Rendering WebGPU interrotto: ${normalized.message}. Ricarica la pagina.`,
+        "error",
+      );
+    }
+  }
+
+  private runRenderFrame(timestamp: number): void {
+    try {
+      this.renderFrame(timestamp);
+    } catch (error) {
+      this.handleRenderFrameError(error);
+    }
+  }
+
   private requestRender(): void {
-    if (!this.initialized) {
+    if (!this.initialized || this.renderFrameError || this.deviceLostError) {
       return;
     }
     if (this.frameRequest !== null) {
       return;
     }
-    this.frameRequest = requestAnimationFrame((timestamp) => this.renderFrame(timestamp));
+    this.frameRequest = requestAnimationFrame((timestamp) => this.runRenderFrame(timestamp));
   }
 
   private renderFrame(timestamp: number): void {
@@ -16588,7 +16913,7 @@ export class BrushEngine {
       }
     }
     const batchSize = Math.min(availableBatchSize, MAX_STAMPS_PER_BATCH);
-    const batch = batchSize > 0 ? this.pendingStamps.splice(0, batchSize) : [];
+    const batch = batchSize > 0 ? this.pendingStamps.slice(0, batchSize) : [];
     let blendBatch: PendingBlendBatch[] = [];
     if (!lightGlazeSession && batch.length === 0 && this.pendingBlendBatches.length > 0) {
       const first = this.pendingBlendBatches[0];
@@ -16607,13 +16932,21 @@ export class BrushEngine {
         remainingPixelBudget -= batchCost;
         blendBatchSize += 1;
       }
-      blendBatch = this.pendingBlendBatches.splice(0, blendBatchSize);
+      blendBatch = this.pendingBlendBatches.slice(0, blendBatchSize);
     }
     if (lightGlazeSession) {
+      let hasPendingStampForGesture = false;
+      for (let index = batchSize; index < this.pendingStamps.length; index += 1) {
+        if (
+          this.pendingStamps[index].historyActionId
+          === lightGlazeSession.historyActionId
+        ) {
+          hasPendingStampForGesture = true;
+          break;
+        }
+      }
       lightGlazeSession.commitRequested = lightGlazeSession.endRequested
-        && !this.pendingStamps.some(
-          (stamp) => stamp.historyActionId === lightGlazeSession.historyActionId,
-        );
+        && !hasPendingStampForGesture;
     }
     const batchExtractionMs = performance.now() - batchExtractionStart;
     const shouldSubmit = this.clearRequested
@@ -16641,6 +16974,12 @@ export class BrushEngine {
         blendBatch[0].actionId,
       )
       : this.submitImmediate(batch, clearLayer, renderSettings);
+    if (batch.length > 0) {
+      this.pendingStamps.splice(0, batch.length);
+    }
+    if (blendBatch.length > 0) {
+      this.pendingBlendBatches.splice(0, blendBatch.length);
+    }
     this.lastCpuFrameMs = performance.now() - start;
 
     if (blendBatch.length > 0) {
@@ -16706,29 +17045,45 @@ export class BrushEngine {
     settings: BrushSettings,
     timing: SubmitTiming,
     clearLayer: boolean,
+    capturedSlice: GpuHistorySlice | null = timing.historyGpuSlice,
   ): void {
-    // pendingStamps riceve soltanto stamp interattivi e quindi ogni batch live
-    // è interamente storico. Il benchmark sintetico usa submitImmediate()
-    // direttamente e non passa da qui: evitiamo così una copia per frame.
     if (batch.length === 0 || batch[0].historyActionId === 0) {
       return;
+    }
+    const actionId = batch[0].historyActionId;
+    if (batch.at(-1)?.historyActionId !== actionId) {
+      if (capturedSlice) this.historyGpuStorage.release(capturedSlice);
+      throw new Error("Un batch Paint storico contiene più pennellate.");
+    }
+    if (!capturedSlice) {
+      throw new Error("Payload GPU della cronologia Paint mancante.");
+    }
+    const expectedBytes = batch.length * STAMP_STRIDE_BYTES;
+    if (capturedSlice.logicalBytes !== expectedBytes) {
+      this.historyGpuStorage.release(capturedSlice);
+      throw new Error(
+        `Payload GPU Paint ${capturedSlice.logicalBytes} B, attesi ${expectedBytes} B.`,
+      );
     }
 
     if (
       this.activeStroke
-      && batch.some((stamp) => stamp.historyActionId === this.activeStroke?.historyActionId)
+      && actionId === this.activeStroke.historyActionId
     ) {
       this.activeStroke.submitted = true;
     }
 
     this.historyBatches.push({
       kind: "paint",
+      actionId,
       // Safe to read the active layer here because switching is refused while a
       // stroke is open (assertLayerSwitchAllowed), so the layer that recorded
       // the stamps is still the active one when the batch is stored.
       layerId: this.layerStack.active.id,
       settings,
-      stamps: batch,
+      stampCount: batch.length,
+      firstSeed: batch[0].seed,
+      gpuSlice: capturedSlice,
       clearLayer,
       dirtyRect: timing.dirtyRect,
       shapeOccupancySelection: timing.shapeOccupancySelection,
@@ -16751,9 +17106,27 @@ export class BrushEngine {
     }
     this.historyActions.length = this.historyCursor;
 
-    // Il primo stamp dopo un Undo deve restare O(1): gli array abbandonati
+    // Il primo stamp dopo un Undo deve restare O(1): i payload abbandonati
     // vengono esclusi subito e liberati alla prossima operazione esplicita.
     this.historyCompactionPending = true;
+  }
+
+
+  private scheduleHistoryGpuTrim(): void {
+    const generation = ++this.historyGpuTrimGeneration;
+    void this.device.queue.onSubmittedWorkDone().then(() => {
+      if (
+        generation !== this.historyGpuTrimGeneration
+        || !this.initialized
+        || this.deviceLostError
+      ) {
+        return;
+      }
+      this.historyGpuStorage.trimEmptyPages(true);
+      this.publishStats();
+    }).catch(() => {
+      // device.lost è già gestito dal gate globale del motore.
+    });
   }
 
   private compactDiscardedHistory(): void {
@@ -16768,30 +17141,23 @@ export class BrushEngine {
     );
 
     const retainedBatches: HistoryRenderBatch[] = [];
+    const discardedSlices: GpuHistorySlice[] = [];
     let retainedStampCount = 0;
     for (const batch of this.historyBatches) {
-      if (batch.kind === "blend") {
-        if (!retainedActionIds.has(batch.actionId)) {
-          continue;
-        }
-        retainedBatches.push(batch);
-        retainedStampCount += batch.batches.length;
+      if (!retainedActionIds.has(batch.actionId)) {
+        discardedSlices.push(batch.gpuSlice);
         continue;
       }
-      const retainedStamps = batch.stamps.filter(
-        (stamp) => retainedActionIds.has(stamp.historyActionId),
-      );
-      if (retainedStamps.length === 0) {
-        continue;
-      }
-      retainedBatches.push(retainedStamps.length === batch.stamps.length
-        ? batch
-        : { ...batch, stamps: retainedStamps });
-      retainedStampCount += retainedStamps.length;
+      retainedBatches.push(batch);
+      retainedStampCount += batch.kind === "paint"
+        ? batch.stampCount
+        : batch.batches.length;
     }
+    this.historyGpuStorage.releaseMany(discardedSlices);
     this.historyBatches = retainedBatches;
     this.historyStoredBaseStamps = retainedStampCount;
     this.historyCompactionPending = false;
+    this.scheduleHistoryGpuTrim();
   }
 
   private hasVisibleHistoryContent(layerId?: number): boolean {
@@ -16799,16 +17165,78 @@ export class BrushEngine {
   }
 
   private resetHistoryState(): void {
+    if (this.historyGpuStorage) {
+      this.historyGpuStorage.releaseAll();
+      this.scheduleHistoryGpuTrim();
+    }
     this.historyActions = [];
     this.historyCursor = 0;
     this.nextHistoryActionId = 1;
     this.historyBatches = [];
     this.historyStoredBaseStamps = 0;
     this.historyCompactionPending = false;
+    this.activeVectorHistoryEdit = null;
+  }
+
+  private async applyVectorHistoryState(
+    target: MixedSceneVectorHistoryState,
+  ): Promise<void> {
+    const scene = this.requireMixedSceneStack();
+    const previousState = scene.captureVectorHistoryState(target.key);
+    const previousExcludedNodeId = this.vectorTextPreviewExcludedNodeId;
+    const selectedKey = target.selectedKey.startsWith("raster:")
+      ? `raster:${this.layerStack.active.id}` as const
+      : target.selectedKey;
+    const normalizedTarget = selectedKey === target.selectedKey
+      ? target
+      : { ...target, selectedKey };
+    this.layerSwitchBusy = true;
+    try {
+      scene.restoreVectorHistoryState(normalizedTarget);
+      const selected = scene.selected;
+      this.vectorTextPreviewExcludedNodeId = selected.kind === "text"
+        ? selected.textNodeId
+        : null;
+      this.clearVectorTextPresentation();
+      await this.rebuildMergedLayerSurfaces("layer-switch");
+      this.presentationCacheNeedsFullRebuild = true;
+      this.displayDirty = true;
+      this.requestRender();
+    } catch (error) {
+      scene.restoreVectorHistoryState(previousState);
+      this.vectorTextPreviewExcludedNodeId = previousExcludedNodeId;
+      this.clearVectorTextPresentation();
+      try {
+        await this.rebuildMergedLayerSurfaces("layer-switch");
+      } catch (restoreError) {
+        this.latchDocumentStateInconsistent(
+          "Stato incoerente dopo Undo/Redo vettoriale: ricarica la pagina.",
+        );
+        const originalMessage = error instanceof Error ? error.message : String(error);
+        const restoreMessage = restoreError instanceof Error
+          ? restoreError.message
+          : String(restoreError);
+        throw new Error(
+          `Undo/Redo vettoriale fallito (${originalMessage}) e ripristino fallito `
+          + `(${restoreMessage}). Ricarica la pagina.`,
+        );
+      }
+      throw error;
+    } finally {
+      this.layerSwitchBusy = false;
+      this.scheduleLayerColdCompression();
+      this.publishMixedScene();
+      this.publishStats();
+    }
   }
 
   private async moveHistoryCursor(delta: -1 | 1): Promise<boolean> {
-    if (!this.initialized || this.activeStroke || this.historyBusy) {
+    if (
+      !this.initialized
+      || this.activeStroke
+      || this.historyBusy
+      || this.activeVectorHistoryEdit
+    ) {
       return false;
     }
     if (this.layerSwitchBusy) {
@@ -16818,6 +17246,10 @@ export class BrushEngine {
     if (nextCursor < 0 || nextCursor > this.historyActions.length) {
       return false;
     }
+    const crossedAction = delta < 0
+      ? this.historyActions[this.historyCursor - 1]
+      : this.historyActions[this.historyCursor];
+    if (!crossedAction) return false;
     // The refusal lives here as well as in getHistoryState: reporting
     // canUndo=false only greys out a button, and the API is reachable directly.
     // Only a vanished layer is refused now — a step into another live layer moves
@@ -16838,7 +17270,11 @@ export class BrushEngine {
     this.historyBusy = true;
     this.publishHistoryState();
     this.callbacks.onStatus?.(
-      delta < 0 ? "Undo: ricostruzione del layer…" : "Redo: ricostruzione del layer…",
+      crossedAction.kind === "vector"
+        ? delta < 0 ? "Undo: ripristino del vettore…" : "Redo: ripristino del vettore…"
+        : delta < 0
+          ? "Undo: ricostruzione del layer…"
+          : "Redo: ricostruzione del layer…",
       "working",
     );
 
@@ -16847,6 +17283,17 @@ export class BrushEngine {
       // Eventuali rami Redo già invalidati vengono liberati soltanto dentro
       // un'operazione esplicita, mai durante o subito dopo una pennellata.
       this.compactDiscardedHistory();
+      if (crossedAction.kind === "vector") {
+        await this.applyVectorHistoryState(
+          delta < 0 ? crossedAction.delta.before : crossedAction.delta.after,
+        );
+        this.historyCursor = nextCursor;
+        if (this.activeStrokeProfile) {
+          this.activeStrokeProfile.historyReplayOperations += 1;
+        }
+        this.callbacks.onStatus?.(delta < 0 ? "Undo completato." : "Redo completato.", "ok");
+        return true;
+      }
       // Cross-layer Undo/Redo is one transaction: switch, move the cursor, replay.
       // Any failure restores the target pixels under the OLD cursor before moving
       // the active layer back. Reversing that order would strand a partially
@@ -17027,6 +17474,7 @@ export class BrushEngine {
     this.blendRenderer?.beginStroke(0);
     let firstVisibleBatchIndex = -1;
     let lastVisibleBatchIndex = -1;
+    const lastVisiblePaintBatchIndexByAction = new Map<number, number>();
     let firstReplaySubmitObserved = false;
     const observeReplaySubmit = (): void => {
       if (firstReplaySubmitObserved) {
@@ -17035,11 +17483,17 @@ export class BrushEngine {
       firstReplaySubmitObserved = true;
       this.maybeInjectHistoryReplayFault("after-first-replay-submit");
     };
+    let replaySubmissionCount = 0;
+    const yieldReplaySubmit = async (): Promise<void> => {
+      replaySubmissionCount += 1;
+      if (replaySubmissionCount % 8 === 0) {
+        await this.waitForGpuCapped("Replay Undo/Redo", 60_000);
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+      }
+    };
     for (let index = 0; index < layerBatches.length; index += 1) {
       const batch = layerBatches[index];
-      const visible = batch.kind === "blend"
-        ? visibleIds.has(batch.actionId)
-        : batch.stamps.some((stamp) => visibleIds.has(stamp.historyActionId));
+      const visible = visibleIds.has(batch.actionId);
       if (!visible) {
         continue;
       }
@@ -17047,12 +17501,16 @@ export class BrushEngine {
         firstVisibleBatchIndex = index;
       }
       lastVisibleBatchIndex = index;
+      if (batch.kind === "paint") {
+        lastVisiblePaintBatchIndexByAction.set(batch.actionId, index);
+      }
     }
 
     try {
       if (lastVisibleBatchIndex < 0) {
         this.submitImmediate([], true, this.settings, true, null);
         observeReplaySubmit();
+        await yieldReplaySubmit();
       } else {
         const firstVisibleBatch = layerBatches[firstVisibleBatchIndex];
         if (!firstVisibleBatch.clearLayer) {
@@ -17060,6 +17518,7 @@ export class BrushEngine {
           // "Pulisci"): manteniamo quel confine prima del primo batch visibile.
           this.submitImmediate([], true, firstVisibleBatch.settings, false, null);
           observeReplaySubmit();
+          await yieldReplaySubmit();
         }
 
         for (let index = firstVisibleBatchIndex; index <= lastVisibleBatchIndex; index += 1) {
@@ -17077,40 +17536,23 @@ export class BrushEngine {
               batch,
             );
             observeReplaySubmit();
+            await yieldReplaySubmit();
             continue;
           }
-          const allVisible = batch.stamps.every((stamp) => visibleIds.has(stamp.historyActionId));
-          const replayStamps = allVisible
-            ? batch.stamps
-            : batch.stamps.filter((stamp) => visibleIds.has(stamp.historyActionId));
-          if (replayStamps.length === 0) {
+          if (!visibleIds.has(batch.actionId)) {
             continue;
           }
 
           if (usesStrokeGlazeRenderer(batch.settings)) {
             await this.ensureLightGlazeResources(batch.settings.blendMode);
-            const actionId = replayStamps[0].historyActionId;
-            if (replayStamps.some((stamp) => stamp.historyActionId !== actionId)) {
-              throw new Error("Un batch Light Glaze storico contiene più pennellate.");
-            }
+            const actionId = batch.actionId;
             if (!this.lightGlazeSession) {
               this.startLightGlazeSession(actionId, batch.settings);
             } else if (this.lightGlazeSession.historyActionId !== actionId) {
               throw new Error("Ordine storico Light Glaze non valido.");
             }
-            let hasLaterBatchForAction = false;
-            for (let nextIndex = index + 1; nextIndex <= lastVisibleBatchIndex; nextIndex += 1) {
-              const nextBatch = layerBatches[nextIndex];
-              if (
-                nextBatch.kind === "paint"
-                && nextBatch.stamps.some(
-                  (stamp) => stamp.historyActionId === actionId && visibleIds.has(actionId),
-                )
-              ) {
-                hasLaterBatchForAction = true;
-                break;
-              }
-            }
+            const hasLaterBatchForAction =
+              (lastVisiblePaintBatchIndexByAction.get(actionId) ?? index) > index;
             const replaySession = this.lightGlazeSession;
             if (!replaySession) {
               throw new Error("Sessione Light Glaze storica non inizializzata.");
@@ -17121,13 +17563,14 @@ export class BrushEngine {
 
           this.writeBrushUniforms(batch.settings);
           this.submitImmediate(
-            replayStamps,
+            [],
             batch.clearLayer,
             batch.settings,
             index === lastVisibleBatchIndex,
             batch,
           );
           observeReplaySubmit();
+          await yieldReplaySubmit();
         }
         if (this.lightGlazeSession) {
           throw new Error("La ricostruzione storica ha lasciato un tratto Light Glaze aperto.");
@@ -17143,12 +17586,15 @@ export class BrushEngine {
       if (this.isTexturizedGrainActive(this.settings)) {
         this.writeGrainUniforms(this.settings);
       }
+      if (usesStrokeGlazeRenderer(this.settings)) {
+        await this.ensureLightGlazeResources(this.settings.blendMode);
+      }
     }
 
     this.clearRequested = false;
     this.displayDirty = false;
     this.layerHasContent = lastVisibleBatchIndex >= 0;
-    await this.device.queue.onSubmittedWorkDone();
+    await this.waitForGpuCapped("Completamento replay Undo/Redo", 60_000);
   }
 
   private selectShapeOccupancy(minimumRadius: number): ShapeOccupancySelection {
@@ -17272,7 +17718,22 @@ export class BrushEngine {
     }
     const actionId = pending[0].actionId;
     if (pending.some((entry) => entry.actionId !== actionId)) {
+      if (timing.historyGpuSlice) this.historyGpuStorage.release(timing.historyGpuSlice);
       throw new Error("Un batch storico Blend contiene più pennellate.");
+    }
+    const renderer = this.blendRenderer;
+    const capturedSlice = timing.historyGpuSlice;
+    if (!renderer || !capturedSlice) {
+      if (capturedSlice) this.historyGpuStorage.release(capturedSlice);
+      throw new Error("Payload GPU della cronologia Blend mancante.");
+    }
+    const batches = pending.map((entry) => compactDryBlendHistoryGeometry(entry.batch));
+    const expectedBytes = renderer.historyUniformBytes(batches);
+    if (capturedSlice.logicalBytes !== expectedBytes) {
+      this.historyGpuStorage.release(capturedSlice);
+      throw new Error(
+        `Payload GPU Blend ${capturedSlice.logicalBytes} B, attesi ${expectedBytes} B.`,
+      );
     }
     if (this.activeStroke?.historyActionId === actionId) {
       this.activeStroke.submitted = true;
@@ -17283,7 +17744,8 @@ export class BrushEngine {
       actionId,
       layerId: this.layerStack.active.id,
       settings,
-      batches: pending.map((entry) => entry.batch),
+      batches,
+      gpuSlice: capturedSlice,
       clearLayer,
       dirtyRect: timing.dirtyRect,
       shapeMaskIdentity: this.shapeMaskIdentity,
@@ -18447,6 +18909,105 @@ export class BrushEngine {
     this.recordAdaptivePreviewJsFrame(startedAt, false);
   }
 
+  private resolvePaintHistoryStampCount(
+    stamps: readonly Stamp[],
+    replayBatch: PaintHistoryRenderBatch | null,
+  ): number {
+    if (!replayBatch) {
+      return stamps.length;
+    }
+    if (stamps.length !== 0) {
+      throw new Error("Il replay Paint GPU non deve conservare stamp sul CPU.");
+    }
+    if (
+      !Number.isInteger(replayBatch.stampCount)
+      || replayBatch.stampCount <= 0
+      || replayBatch.stampCount > MAX_STAMPS_PER_BATCH
+    ) {
+      throw new RangeError("Conteggio stamp della cronologia GPU non valido.");
+    }
+    const expectedBytes = replayBatch.stampCount * STAMP_STRIDE_BYTES;
+    if (replayBatch.gpuSlice.logicalBytes !== expectedBytes) {
+      throw new Error(
+        `Payload GPU Paint ${replayBatch.gpuSlice.logicalBytes} B, `
+        + `attesi ${expectedBytes} B.`,
+      );
+    }
+    return replayBatch.stampCount;
+  }
+
+  private encodePaintHistoryReplay(
+    encoder: GPUCommandEncoder,
+    replayBatch: PaintHistoryRenderBatch | null,
+  ): void {
+    if (!replayBatch) {
+      return;
+    }
+    encoder.copyBufferToBuffer(
+      replayBatch.gpuSlice.buffer,
+      replayBatch.gpuSlice.offsetBytes,
+      this.instanceBuffer,
+      0,
+      replayBatch.gpuSlice.logicalBytes,
+    );
+  }
+
+  private encodePaintHistoryCapture(
+    encoder: GPUCommandEncoder,
+    stamps: readonly Stamp[],
+    label: string,
+  ): GpuHistorySlice | null {
+    if (stamps.length === 0 || stamps[0].historyActionId === 0) {
+      return null;
+    }
+    const actionId = stamps[0].historyActionId;
+    if (stamps.at(-1)?.historyActionId !== actionId) {
+      throw new Error("Un submit Paint live contiene più pennellate.");
+    }
+    const byteLength = stamps.length * STAMP_STRIDE_BYTES;
+    const slice = this.historyGpuStorage.allocate(
+      byteLength,
+      `${label} · azione ${actionId} · ${stamps.length} stamp`,
+    );
+    try {
+      encoder.copyBufferToBuffer(
+        this.instanceBuffer,
+        0,
+        slice.buffer,
+        slice.offsetBytes,
+        byteLength,
+      );
+      return slice;
+    } catch (error) {
+      this.historyGpuStorage.release(slice);
+      throw error;
+    }
+  }
+
+  private captureCurrentInstanceBufferForHistory(
+    stampCount: number,
+    label: string,
+  ): GpuHistorySlice {
+    const byteLength = stampCount * STAMP_STRIDE_BYTES;
+    const slice = this.historyGpuStorage.allocate(byteLength, label);
+    try {
+      const encoder = this.device.createCommandEncoder({
+        label: "Cattura GPU cronologia benchmark",
+      });
+      encoder.copyBufferToBuffer(
+        this.instanceBuffer,
+        0,
+        slice.buffer,
+        slice.offsetBytes,
+        byteLength,
+      );
+      this.device.queue.submit([encoder.finish()]);
+      return slice;
+    } catch (error) {
+      this.historyGpuStorage.release(slice);
+      throw error;
+    }
+  }
   private submitLightGlazeImmediate(
     stamps: readonly Stamp[],
     clearLayer: boolean,
@@ -18459,6 +19020,7 @@ export class BrushEngine {
       this.presentationCacheNeedsFullRebuild = true;
     }
     const session = this.lightGlazeSession;
+    const stampCount = this.resolvePaintHistoryStampCount(stamps, replayBatch);
     if (!session || !isStrokeGlazeBlendMode(session.settings.blendMode)) {
       throw new Error("Sessione Light Glaze mancante durante il rendering.");
     }
@@ -18500,9 +19062,10 @@ export class BrushEngine {
     if (grainActive) {
       this.writeGrainUniforms(settings);
     }
-    if (lightNoBuildUp && session.tintLinear === null && stamps.length > 0) {
+    const firstSeed = replayBatch?.firstSeed ?? stamps[0]?.seed;
+    if (lightNoBuildUp && session.tintLinear === null && firstSeed !== undefined) {
       const [red, green, blue] = this.adaptivePreviewRgb(
-        previewHash32(stamps[0].seed),
+        previewHash32(firstSeed),
         settings,
       );
       session.tintLinear = [
@@ -18579,25 +19142,30 @@ export class BrushEngine {
       this.noteLayerMutation(null, true);
     }
 
-    if (stamps.length > 0) {
-      const packingStart = performance.now();
-      const packedDirtyRect = this.packStamps(stamps, settings);
-      submittedDirtyRect = replayBatch ? replayBatch.dirtyRect : packedDirtyRect;
-      stampPackingMs = performance.now() - packingStart;
-      const uploadStart = performance.now();
-      this.device.queue.writeBuffer(
-        this.instanceBuffer,
-        0,
-        this.instanceUpload,
-        0,
-        stamps.length * STAMP_STRIDE_BYTES,
-      );
-      if (settings.shape === "shape") {
-        submittedShapeOccupancySelection = replayBatch
+    if (stampCount > 0) {
+      if (replayBatch) {
+        submittedDirtyRect = replayBatch.dirtyRect;
+        submittedShapeOccupancySelection = settings.shape === "shape"
           ? replayBatch.shapeOccupancySelection
-          : this.selectShapeOccupancy(this.packedMinimumRadius);
+          : null;
+        this.encodePaintHistoryReplay(encoder, replayBatch);
+      } else {
+        const packingStart = performance.now();
+        submittedDirtyRect = this.packStamps(stamps, settings);
+        stampPackingMs = performance.now() - packingStart;
+        const uploadStart = performance.now();
+        this.device.queue.writeBuffer(
+          this.instanceBuffer,
+          0,
+          this.instanceUpload,
+          0,
+          stampCount * STAMP_STRIDE_BYTES,
+        );
+        if (settings.shape === "shape") {
+          submittedShapeOccupancySelection = this.selectShapeOccupancy(this.packedMinimumRadius);
+        }
+        instanceUploadMs = performance.now() - uploadStart;
       }
-      instanceUploadMs = performance.now() - uploadStart;
 
       const brushPass = encoder.beginRenderPass({
         label: "Accumulate Light Glaze stroke",
@@ -18689,11 +19257,11 @@ export class BrushEngine {
         if (isShape && submittedShapeOccupancySelection && !replayBatch) {
           this.recordShapeSampling(submittedShapeOccupancySelection);
         }
-        brushPass.draw(STAMP_VERTICES_PER_COPY, stamps.length * settings.count, 0, 0);
+        brushPass.draw(STAMP_VERTICES_PER_COPY, stampCount * settings.count, 0, 0);
         if (grainActive) {
           grainBatches = 1;
-          grainBaseStamps = stamps.length;
-          grainPhysicalCopies = stamps.length * settings.count;
+          grainBaseStamps = stampCount;
+          grainPhysicalCopies = stampCount * settings.count;
           grainCircleBatches = isShape ? 0 : 1;
           grainShapeBatches = isShape ? 1 : 0;
         }
@@ -18705,7 +19273,7 @@ export class BrushEngine {
     }
     brushEncodingMs += performance.now() - brushEncodingStart;
 
-    if (!present && (clearLayer || stamps.length > 0 || session.commitRequested)) {
+    if (!present && (clearLayer || stampCount > 0 || session.commitRequested)) {
       this.presentationCacheNeedsFullRebuild = true;
       this.paintDisplayMipValidThroughLevel = 0;
       this.deferRasterStrokeMutation(clearLayer);
@@ -19157,8 +19725,21 @@ export class BrushEngine {
       displayEncodingMs += performance.now() - displayEncodingStart;
     }
 
+    let historyGpuSlice: GpuHistorySlice | null = null;
     const submitStart = performance.now();
-    this.device.queue.submit([encoder.finish()]);
+    try {
+      if (!replayBatch) {
+        historyGpuSlice = this.encodePaintHistoryCapture(
+          encoder,
+          stamps,
+          "Paint glaze",
+        );
+      }
+      this.device.queue.submit([encoder.finish()]);
+    } catch (error) {
+      if (historyGpuSlice) this.historyGpuStorage.release(historyGpuSlice);
+      throw error;
+    }
     commandSubmitMs = performance.now() - submitStart;
     if (lightGlazeClearEncoded) {
       session.needsClear = false;
@@ -19226,11 +19807,12 @@ export class BrushEngine {
       grainPhysicalCopies,
       grainCircleBatches,
       grainShapeBatches,
+      historyGpuSlice,
     };
   }
 
   private submitBlendImmediate(
-    batches: readonly DryBlendRenderBatch[],
+    batches: readonly DryBlendHistoryGeometry[],
     clearLayer: boolean,
     settings: BrushSettings,
     historyActionId: number,
@@ -19240,6 +19822,9 @@ export class BrushEngine {
     const renderer = this.blendRenderer;
     if (!renderer) {
       throw new Error("Renderer WebGPU Blend dry non inizializzato.");
+    }
+    if (replayBatch && replayBatch.actionId !== historyActionId) {
+      throw new Error("Azione Blend GPU non coerente con il batch storico.");
     }
     if (replayBatch && replayBatch.shapeMaskIdentity !== this.shapeMaskIdentity) {
       throw new Error("La Shape Blend usata dalla cronologia non corrisponde alla risorsa corrente.");
@@ -19251,55 +19836,101 @@ export class BrushEngine {
       throw new Error("Il Grain Blend usato dalla cronologia non corrisponde alla risorsa corrente.");
     }
 
+    const historyBytes = renderer.historyUniformBytes(batches);
+    let historyGpuSlice: GpuHistorySlice | null = null;
+    if (replayBatch) {
+      if (replayBatch.gpuSlice.logicalBytes !== historyBytes) {
+        throw new Error(
+          `Payload GPU Blend ${replayBatch.gpuSlice.logicalBytes} B, attesi ${historyBytes} B.`,
+        );
+      }
+    } else if (historyActionId !== 0 && historyBytes > 0) {
+      historyGpuSlice = this.historyGpuStorage.allocate(
+        historyBytes,
+        `Blend dry · azione ${historyActionId} · ${batches.length} batch`,
+      );
+    }
+
     // Il renderer accetta al massimo maximumBatchesPerSubmit batch per submit;
     // il drenaggio per frame può superarlo, quindi qui si spezza in chunk.
     let blendCpuMs = 0;
     let blendDirtyRect: DirtyRect | null = null;
-    if (batches.length === 0) {
-      const blendTiming = renderer.submit(batches, settings, historyActionId, clearLayer);
-      blendCpuMs = blendTiming.cpuMs;
-      blendDirtyRect = blendTiming.dirtyRect;
-    } else {
-      for (
-        let start = 0;
-        start < batches.length;
-        start += renderer.maximumBatchesPerSubmit
-      ) {
-        const chunk = batches.slice(start, start + renderer.maximumBatchesPerSubmit);
-        const chunkTiming = renderer.submit(
-          chunk,
-          settings,
-          historyActionId,
-          clearLayer && start === 0,
-        );
-        blendCpuMs += chunkTiming.cpuMs;
-        blendDirtyRect = this.mergeDirtyRects(blendDirtyRect, chunkTiming.dirtyRect);
+    let historyByteOffset = 0;
+    try {
+      if (batches.length === 0) {
+        const blendTiming = renderer.submit(batches, settings, historyActionId, clearLayer);
+        blendCpuMs = blendTiming.cpuMs;
+        blendDirtyRect = blendTiming.dirtyRect;
+      } else {
+        for (
+          let start = 0;
+          start < batches.length;
+          start += renderer.maximumBatchesPerSubmit
+        ) {
+          const chunk = batches.slice(start, start + renderer.maximumBatchesPerSubmit);
+          const chunkBytes = renderer.historyUniformBytes(chunk);
+          const sourceSlice = replayBatch?.gpuSlice ?? historyGpuSlice;
+          const historyTransfer = sourceSlice && chunkBytes > 0
+            ? replayBatch
+              ? {
+                replay: {
+                  buffer: sourceSlice.buffer,
+                  offsetBytes: sourceSlice.offsetBytes + historyByteOffset,
+                  sizeBytes: chunkBytes,
+                },
+              }
+              : {
+                capture: {
+                  buffer: sourceSlice.buffer,
+                  offsetBytes: sourceSlice.offsetBytes + historyByteOffset,
+                  sizeBytes: chunkBytes,
+                },
+              }
+            : null;
+          const chunkTiming = renderer.submit(
+            chunk,
+            settings,
+            historyActionId,
+            clearLayer && start === 0,
+            historyTransfer,
+          );
+          historyByteOffset += chunkBytes;
+          blendCpuMs += chunkTiming.cpuMs;
+          blendDirtyRect = this.mergeDirtyRects(blendDirtyRect, chunkTiming.dirtyRect);
+        }
       }
+      if (historyByteOffset !== historyBytes) {
+        throw new Error("Offset del payload storico Blend non coerente.");
+      }
+      if (clearLayer) {
+        this.presentationCacheNeedsFullRebuild = true;
+        this.paintDisplayMipValidThroughLevel = 0;
+      }
+      const timing = this.submitImmediate(
+        [],
+        false,
+        settings,
+        present,
+        null,
+        blendDirtyRect,
+        clearLayer,
+      );
+      return {
+        ...timing,
+        totalCpuMs: timing.totalCpuMs + blendCpuMs,
+        brushEncodingMs: timing.brushEncodingMs + blendCpuMs,
+        scissorPixels: batches.reduce(
+          (total, batch) => total + batch.readRect.width * batch.readRect.height,
+          0,
+        ),
+        dirtyRect: blendDirtyRect,
+        shapeOccupancySelection: null,
+        historyGpuSlice,
+      };
+    } catch (error) {
+      if (historyGpuSlice) this.historyGpuStorage.release(historyGpuSlice);
+      throw error;
     }
-    if (clearLayer) {
-      this.presentationCacheNeedsFullRebuild = true;
-      this.paintDisplayMipValidThroughLevel = 0;
-    }
-    const timing = this.submitImmediate(
-      [],
-      false,
-      settings,
-      present,
-      null,
-      blendDirtyRect,
-      clearLayer,
-    );
-    return {
-      ...timing,
-      totalCpuMs: timing.totalCpuMs + blendCpuMs,
-      brushEncodingMs: timing.brushEncodingMs + blendCpuMs,
-      scissorPixels: batches.reduce(
-        (total, batch) => total + batch.readRect.width * batch.readRect.height,
-        0,
-      ),
-      dirtyRect: blendDirtyRect,
-      shapeOccupancySelection: null,
-    };
   }
 
   private submitImmediate(
@@ -19311,12 +19942,15 @@ export class BrushEngine {
     externalDirtyRect: DirtyRect | null = null,
     externalLayerCleared = false,
   ): SubmitTiming {
+    const stampCount = this.resolvePaintHistoryStampCount(stamps, replayBatch);
     if (usesStrokeGlazeRenderer(settings)) {
       if (this.lightGlazeSession) {
         return this.submitLightGlazeImmediate(stamps, clearLayer, settings, present, replayBatch);
       }
-      if (stamps.length > 0) {
-        const actionIds = [...new Set(stamps.map((stamp) => stamp.historyActionId))];
+      if (stampCount > 0) {
+        const actionIds = replayBatch
+          ? [replayBatch.actionId]
+          : [...new Set(stamps.map((stamp) => stamp.historyActionId))];
         throw new Error(
           `Stamp Light Glaze senza sessione per-stroke: mode=${settings.blendMode}; `
           + `batch=${actionIds.join(",")}; active=${this.activeStroke?.historyActionId ?? "none"}.`,
@@ -19379,28 +20013,33 @@ export class BrushEngine {
       throw new Error("Il Grain usato dalla cronologia non corrisponde alla risorsa corrente.");
     }
 
-    if (clearLayer || stamps.length > 0) {
+    if (clearLayer || stampCount > 0) {
       let dirtyRect: DirtyRect | null = null;
       let shapeOccupancySelection: ShapeOccupancySelection | null = null;
-      if (stamps.length > 0) {
-        const packingStart = performance.now();
-        const packedDirtyRect = this.packStamps(stamps, settings);
-        dirtyRect = replayBatch ? replayBatch.dirtyRect : packedDirtyRect;
-        stampPackingMs = performance.now() - packingStart;
-        const uploadStart = performance.now();
-        this.device.queue.writeBuffer(
-          this.instanceBuffer,
-          0,
-          this.instanceUpload,
-          0,
-          stamps.length * STAMP_STRIDE_BYTES,
-        );
-        if (settings.shape === "shape") {
-          shapeOccupancySelection = replayBatch
+      if (stampCount > 0) {
+        if (replayBatch) {
+          dirtyRect = replayBatch.dirtyRect;
+          shapeOccupancySelection = settings.shape === "shape"
             ? replayBatch.shapeOccupancySelection
-            : this.selectShapeOccupancy(this.packedMinimumRadius);
+            : null;
+          this.encodePaintHistoryReplay(encoder, replayBatch);
+        } else {
+          const packingStart = performance.now();
+          dirtyRect = this.packStamps(stamps, settings);
+          stampPackingMs = performance.now() - packingStart;
+          const uploadStart = performance.now();
+          this.device.queue.writeBuffer(
+            this.instanceBuffer,
+            0,
+            this.instanceUpload,
+            0,
+            stampCount * STAMP_STRIDE_BYTES,
+          );
+          if (settings.shape === "shape") {
+            shapeOccupancySelection = this.selectShapeOccupancy(this.packedMinimumRadius);
+          }
+          instanceUploadMs = performance.now() - uploadStart;
         }
-        instanceUploadMs = performance.now() - uploadStart;
       }
       submittedDirtyRect = dirtyRect;
       submittedShapeOccupancySelection = shapeOccupancySelection;
@@ -19418,7 +20057,7 @@ export class BrushEngine {
         ],
       });
 
-      if (stamps.length > 0 && dirtyRect) {
+      if (stampCount > 0 && dirtyRect) {
         scissorPixels = dirtyRect.width * dirtyRect.height;
         const isShape = settings.shape === "shape";
         const shapeOccupancyMip = shapeOccupancySelection?.selectedMipLevel ?? null;
@@ -19463,11 +20102,11 @@ export class BrushEngine {
         if (isShape && shapeOccupancySelection && !replayBatch) {
           this.recordShapeSampling(shapeOccupancySelection);
         }
-        brushPass.draw(STAMP_VERTICES_PER_COPY, stamps.length * settings.count, 0, 0);
+        brushPass.draw(STAMP_VERTICES_PER_COPY, stampCount * settings.count, 0, 0);
         if (grainActive) {
           grainBatches = 1;
-          grainBaseStamps = stamps.length;
-          grainPhysicalCopies = stamps.length * settings.count;
+          grainBaseStamps = stampCount;
+          grainPhysicalCopies = stampCount * settings.count;
           grainCircleBatches = isShape ? 0 : 1;
           grainShapeBatches = isShape ? 1 : 0;
         }
@@ -19487,7 +20126,7 @@ export class BrushEngine {
       brushEncodingMs += performance.now() - thicknessTailEncodingStart;
     }
 
-    if (!present && (clearLayer || stamps.length > 0 || externalDirtyRect || externalLayerCleared)) {
+    if (!present && (clearLayer || stampCount > 0 || externalDirtyRect || externalLayerCleared)) {
       // Una ricostruzione Undo/Redo omette i display intermedi. La cache non
       // deve quindi essere riutilizzata finché l'ultimo batch non la ricrea.
       this.presentationCacheNeedsFullRebuild = true;
@@ -19708,8 +20347,21 @@ export class BrushEngine {
       displayEncodingMs = performance.now() - displayEncodingStart;
     }
 
+    let historyGpuSlice: GpuHistorySlice | null = null;
     const submitStart = performance.now();
-    this.device.queue.submit([encoder.finish()]);
+    try {
+      if (!replayBatch) {
+        historyGpuSlice = this.encodePaintHistoryCapture(
+          encoder,
+          stamps,
+          "Paint",
+        );
+      }
+      this.device.queue.submit([encoder.finish()]);
+    } catch (error) {
+      if (historyGpuSlice) this.historyGpuStorage.release(historyGpuSlice);
+      throw error;
+    }
     commandSubmitMs = performance.now() - submitStart;
     if (present && presentationCacheWasUpdated) {
       this.presentationCacheNeedsFullRebuild = false;
@@ -19757,6 +20409,7 @@ export class BrushEngine {
       grainPhysicalCopies,
       grainCircleBatches,
       grainShapeBatches,
+      historyGpuSlice,
     };
   }
 

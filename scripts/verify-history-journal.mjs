@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   HISTORY_JOURNAL_STRATEGY,
   firstVisibleActionIndex,
@@ -14,6 +15,7 @@ assert.equal(HISTORY_JOURNAL_STRATEGY, "global-order-per-layer-clear-barrier");
 
 const stroke = (id, layerId) => ({ id, kind: "stroke", layerId });
 const clear = (id, layerId) => ({ id, kind: "clear", layerId });
+const vector = (id) => ({ id, kind: "vector" });
 
 // With one layer the module must reproduce the engine's current behaviour
 // exactly: scan back to the most recent clear, everything after it is visible.
@@ -158,4 +160,155 @@ const clear = (id, layerId) => ({ id, kind: "clear", layerId });
   assert.deepEqual([...layersWithVisibleContent(actions, 0)], []);
 }
 
-console.log("History journal verification passed.");
+
+// Vector entries share the global order but never become raster content,
+// clear barriers or missing-layer failures.
+{
+  const actions = [
+    stroke(1, 1),
+    vector(2),
+    stroke(3, 2),
+    vector(4),
+    clear(5, 2),
+  ];
+  assert.deepEqual([...visibleStrokeIds(actions, 4)], [1, 3]);
+  assert.deepEqual([...visibleStrokeIds(actions, 5, 1)], [1]);
+  assert.deepEqual([...visibleStrokeIds(actions, 5, 2)], []);
+  assert.deepEqual([...layersWithVisibleContent(actions, 4)].sort(), [1, 2]);
+  assert.equal(
+    historyStepTargetsMissingLayer(actions, 2, -1, new Set([1])),
+    false,
+    "un'azione vettoriale non deve richiedere un layer raster",
+  );
+  assert.equal(
+    historyStepTargetsMissingLayer(actions, 1, 1, new Set([1])),
+    false,
+    "anche il Redo vettoriale deve ignorare la vita dei layer raster",
+  );
+}
+
+
+// La cronologia raster autorevole deve vivere in buffer GPU paginati: sul CPU
+// restano soltanto metadati piccoli per l'ordine globale e il replay.
+{
+  globalThis.GPUBufferUsage ??= { COPY_SRC: 1, COPY_DST: 2 };
+  const { GPU_HISTORY_PAGE_BYTES, GpuHistoryStorage } = await import(
+    "../src/gpu-history-storage.ts"
+  );
+  const buffers = [];
+  const device = {
+    createBuffer(descriptor) {
+      const buffer = {
+        descriptor,
+        destroyed: false,
+        destroy() {
+          this.destroyed = true;
+        },
+      };
+      buffers.push(buffer);
+      return buffer;
+    },
+  };
+  const storage = new GpuHistoryStorage(device);
+  storage.prewarm();
+  assert.deepEqual(storage.stats(), {
+    allocatedBytes: GPU_HISTORY_PAGE_BYTES,
+    usedLogicalBytes: 0,
+    usedReservedBytes: 0,
+    freeBytes: GPU_HISTORY_PAGE_BYTES,
+    pageCount: 1,
+    sliceCount: 0,
+  });
+  const first = storage.allocate(32, "paint");
+  storage.trimEmptyPages(true);
+  assert.equal(
+    storage.stats().pageCount,
+    1,
+    "una pagina standard viva è già la pagina calda e non va duplicata",
+  );
+  const second = storage.allocate(GPU_HISTORY_PAGE_BYTES, "second-page");
+  assert.equal(storage.stats().allocatedBytes, GPU_HISTORY_PAGE_BYTES * 2);
+  assert.equal(storage.stats().usedLogicalBytes, GPU_HISTORY_PAGE_BYTES + 32);
+  assert.equal(storage.releaseMany([first, second, first]), 2);
+  assert.equal(storage.release(first), false, "una slice non può essere liberata due volte");
+  assert.equal(storage.release(second), false, "releaseMany deve liberare entrambe le pagine");
+  storage.trimEmptyPages(true);
+  assert.equal(storage.stats().allocatedBytes, GPU_HISTORY_PAGE_BYTES);
+  assert.equal(storage.stats().pageCount, 1);
+  assert.equal(buffers.filter((buffer) => buffer.destroyed).length, 1);
+  const aligned = storage.allocate(5, "alignment");
+  assert.equal(aligned.logicalBytes, 5);
+  assert.equal(aligned.reservedBytes, 8);
+  storage.destroy();
+  assert.equal(buffers.every((buffer) => buffer.destroyed), true);
+
+  const oversizedStorage = new GpuHistoryStorage(device);
+  oversizedStorage.prewarm();
+  oversizedStorage.trimEmptyPages(false);
+  const oversized = oversizedStorage.allocate(
+    GPU_HISTORY_PAGE_BYTES + 4,
+    "oversized-live-page",
+  );
+  oversizedStorage.trimEmptyPages(true);
+  assert.equal(
+    oversizedStorage.stats().pageCount,
+    2,
+    "una slice oversized viva deve avere comunque una pagina standard calda",
+  );
+  assert.equal(oversizedStorage.release(oversized), true);
+  oversizedStorage.destroy();
+}
+
+{
+  const engine = readFileSync(new URL("../src/brush-engine.ts", import.meta.url), "utf8");
+  const blendRenderer = readFileSync(
+    new URL("../src/blend-renderer.ts", import.meta.url),
+    "utf8",
+  );
+  const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const paintBatch = engine.slice(
+    engine.indexOf("interface PaintHistoryRenderBatch"),
+    engine.indexOf("interface BlendHistoryRenderBatch"),
+  );
+  assert(!paintBatch.includes("stamps:"), "La storia Paint non deve trattenere array Stamp CPU.");
+  assert(paintBatch.includes("gpuSlice: GpuHistorySlice"));
+  assert(paintBatch.includes("stampCount: number"));
+  assert(engine.includes('"gpu-only-packed-payload-no-cpu-stamp-arrays"'));
+  assert(engine.includes('"clear-and-gpu-buffer-copy-replay"'));
+  assert(engine.includes("replayBatch.gpuSlice.buffer"));
+  assert(engine.includes("this.instanceBuffer,"));
+  assert(engine.includes("slice.buffer,"));
+  assert(
+    engine.includes(
+      "GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST",
+    ),
+    "Il buffer stamp deve poter essere copiato nella cronologia GPU.",
+  );
+  assert(engine.includes("historyGpuMiB,"));
+  assert(engine.includes("historyGpuUsedMiB,"));
+  assert(engine.includes("historyGpuPageCount: historyGpu.pageCount"));
+  assert(engine.includes("this.historyGpuStorage.releaseMany(discardedSlices)"));
+  assert(engine.includes("lastVisiblePaintBatchIndexByAction"));
+  assert(
+    engine.indexOf("historyGpuMiB,", engine.indexOf("const countedTotalMiB")) >= 0,
+    "Le pagine GPU della cronologia devono essere incluse nel totale.",
+  );
+  const blendGeometry = blendRenderer.slice(
+    blendRenderer.indexOf("export interface DryBlendHistoryGeometry"),
+    blendRenderer.indexOf("export interface DryBlendGpuCopyRegion"),
+  );
+  assert(!blendGeometry.includes("steps:"), "La storia Blend non deve trattenere step CPU.");
+  assert(blendRenderer.includes("historyTransfer.replay.buffer"));
+  assert(blendRenderer.includes("historyTransfer.capture.buffer"));
+  assert(main.includes('["gpuMemoryHistory", "historyGpuMiB"]'));
+  assert(!engine.includes("runHistoryCapturePerformanceProbe"));
+  assert(!main.includes("runHistoryPerformanceProbeDev"));
+  assert(main.includes("history GPU"));
+  assert(!main.includes("history CPU"));
+  assert(main.includes("historyGpuUsedMiB"));
+  assert(html.includes('id="gpuMemoryHistoryLabel"'));
+  assert(html.includes("La cronologia raster mostra pagine GPU riservate"));
+}
+
+console.log("History journal and GPU payload verification passed.");

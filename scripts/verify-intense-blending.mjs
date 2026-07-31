@@ -65,7 +65,7 @@ for (const requirement of [
   "opacity: intenseBlending ? settings.opacity : 1",
   "intenseBlending ? 1 : settings.opacity",
   '"encoded-srgb-source-over"',
-  "stamps.length * settings.count",
+  "stampCount * settings.count",
   "this.intenseBlendingPipeline",
   "this.intenseBlendingShapePipeline",
   "this.intenseBlendingShapeOccupancyPipeline",

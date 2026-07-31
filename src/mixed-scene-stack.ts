@@ -361,6 +361,16 @@ export function cloneVectorSvgNode(node: Readonly<VectorSvgNode>): VectorSvgNode
   };
 }
 
+function cloneVectorSvgNodeForHistory(
+  node: Readonly<VectorSvgNode>,
+): VectorSvgNode {
+  return {
+    ...node,
+    document: node.document,
+    paintColors: [...node.paintColors],
+  };
+}
+
 export function cloneVectorTextNode(
   node: Readonly<VectorTextNode>,
 ): VectorTextNode {
@@ -400,6 +410,29 @@ export interface MixedSceneState {
   readonly svgNodes: readonly VectorSvgNode[];
   readonly nextTextNodeId: number;
   readonly nextSvgNodeId: number;
+}
+
+export type MixedSceneVectorKey =
+  | Extract<MixedSceneItem, { readonly kind: "text" }>["key"]
+  | Extract<MixedSceneItem, { readonly kind: "svg" }>["key"];
+
+/**
+ * Compact, single-node state used by the global Undo/Redo journal.
+ *
+ * Vector documents can be large, so history stores only the node affected by
+ * one operation, its position and the selection around that operation. Raster
+ * layers and unrelated vector nodes are deliberately not duplicated.
+ */
+export interface MixedSceneVectorHistoryState {
+  readonly key: MixedSceneVectorKey;
+  readonly index: number;
+  readonly selectedKey: MixedSceneItem["key"];
+  readonly node: VectorTextNode | VectorSvgNode | null;
+}
+
+export interface MixedSceneVectorHistoryDelta {
+  readonly before: MixedSceneVectorHistoryState;
+  readonly after: MixedSceneVectorHistoryState;
 }
 
 function rasterItem(rasterLayerId: number): MixedSceneItem & { kind: "raster" } {
@@ -539,6 +572,81 @@ export class MixedSceneStack {
     this.selectedKey = state.selectedKey;
     this.nextTextNodeId = state.nextTextNodeId;
     this.nextSvgNodeId = state.nextSvgNodeId;
+  }
+
+  captureVectorHistoryState(
+    key: MixedSceneVectorKey,
+    selectedKeyWhenAbsent: MixedSceneItem["key"] = this.selectedKey,
+  ): MixedSceneVectorHistoryState {
+    const index = this.indexOfKey(key);
+    if (index < 0) {
+      return {
+        key,
+        index: -1,
+        selectedKey: selectedKeyWhenAbsent,
+        node: null,
+      };
+    }
+    const item = this.orderedItems[index];
+    const node = item.kind === "text"
+      ? cloneVectorTextNode(this.textById(item.textNodeId))
+      : item.kind === "svg"
+        ? cloneVectorSvgNodeForHistory(this.svgById(item.svgNodeId))
+        : null;
+    if (!node) {
+      throw new Error(`Elemento ${key} non è un nodo vettoriale.`);
+    }
+    return {
+      key,
+      index,
+      selectedKey: this.selectedKey,
+      node,
+    };
+  }
+
+  restoreVectorHistoryState(state: MixedSceneVectorHistoryState): void {
+    const existingIndex = this.indexOfKey(state.key);
+    if (existingIndex >= 0) {
+      const [existing] = this.orderedItems.splice(existingIndex, 1);
+      if (existing.kind === "text") {
+        this.textNodes.delete(existing.textNodeId);
+      } else if (existing.kind === "svg") {
+        this.svgNodes.delete(existing.svgNodeId);
+      } else {
+        throw new Error(`Elemento ${state.key} non è un nodo vettoriale.`);
+      }
+    }
+
+    if (state.node) {
+      const keyKind = state.key.startsWith("text:") ? "text" : "svg";
+      if (
+        (keyKind === "text" && !("text" in state.node))
+        || (keyKind === "svg" && "text" in state.node)
+      ) {
+        throw new Error(`Nodo storico incompatibile con ${state.key}.`);
+      }
+      const insertionIndex = Math.max(
+        0,
+        Math.min(state.index, this.orderedItems.length),
+      );
+      if (keyKind === "text") {
+        const node = cloneVectorTextNode(state.node as VectorTextNode);
+        this.textNodes.set(node.id, node);
+        this.orderedItems.splice(insertionIndex, 0, textItem(node.id));
+        this.nextTextNodeId = Math.max(this.nextTextNodeId, node.id + 1);
+      } else {
+        const node = cloneVectorSvgNodeForHistory(state.node as VectorSvgNode);
+        this.svgNodes.set(node.id, node);
+        this.orderedItems.splice(insertionIndex, 0, svgItem(node.id));
+        this.nextSvgNodeId = Math.max(this.nextSvgNodeId, node.id + 1);
+      }
+    }
+
+    this.selectedKey = this.indexOfKey(state.selectedKey) >= 0
+      ? state.selectedKey
+      : this.orderedItems.find((item) => item.kind === "raster")?.key
+        ?? this.orderedItems[0]?.key
+        ?? state.selectedKey;
   }
 
   select(key: MixedSceneItem["key"]): boolean {

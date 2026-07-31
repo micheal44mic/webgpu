@@ -82,6 +82,8 @@ export interface MixedVectorTextHost {
   isPaintStrokeActive(): boolean;
   clearVectorTextPresentation(placement?: VectorTextPlacement): void;
   pruneVectorTextGpuMeshes(activeMeshKeys: ReadonlySet<string>): void;
+  beginVectorHistoryEdit(): boolean;
+  commitVectorHistoryEdit(): boolean;
   addVectorTextNode(
     seed: VectorTextNodeSeed,
     name?: string,
@@ -551,9 +553,6 @@ export class MixedVectorTextController {
       throw new Error("Il motore non ha creato la scena mista.");
     }
     this.syncScene(initialSnapshot);
-    if (!initialSnapshot.items.some((item) => item.kind === "text")) {
-      await this.host.addVectorTextNode(this.defaultSeed(0), "Testo 1");
-    }
   }
 
   syncScene(snapshot: MixedSceneSnapshot): void {
@@ -788,6 +787,23 @@ export class MixedVectorTextController {
     }
   }
 
+  private bindVectorHistoryControl(control: HTMLElement): void {
+    const begin = () => { this.host.beginVectorHistoryEdit(); };
+    const commit = () => { this.host.commitVectorHistoryEdit(); };
+    control.addEventListener("focus", begin);
+    control.addEventListener("pointerdown", begin);
+    if (control instanceof HTMLInputElement && control.type === "range") {
+      control.addEventListener("pointerup", commit);
+      control.addEventListener("pointercancel", commit);
+      control.addEventListener("keydown", begin);
+      control.addEventListener("keyup", commit);
+      control.addEventListener("blur", commit);
+      return;
+    }
+    control.addEventListener("change", commit);
+    control.addEventListener("blur", commit);
+  }
+
   private renderSvgPalette(node: Readonly<VectorSvgNode> | null): void {
     if (!node) {
       this.svgPalette.replaceChildren();
@@ -876,6 +892,8 @@ export class MixedVectorTextController {
         hexInput.value = (current?.paintColors[index] ?? input.value).toUpperCase();
         hexInput.removeAttribute("aria-invalid");
       });
+      this.bindVectorHistoryControl(input);
+      this.bindVectorHistoryControl(hexInput);
       const picker = document.createElement("span");
       picker.className = "vector-svg-color-picker";
       picker.append(input, hexInput);
@@ -1207,6 +1225,19 @@ export class MixedVectorTextController {
         });
       }
     });
+
+    const historyControls: readonly HTMLElement[] = [
+      this.textInput, this.fontFamilySelect, this.fontSizeInput, this.colorInput,
+      this.transformCurveInput, this.circleRadiusInput, this.circleInvertedInput,
+      this.outlineWidthInput, this.outlineColorInput, this.outlineJoinSelect,
+      this.blockShadowEnabledInput, this.blockShadowColorInput, this.blockShadowOpacityInput,
+      this.blockShadowOffsetInput, this.blockShadowAngleInput, this.blockShadowOutlineWidthInput,
+      this.singleShadowEnabledInput, this.singleShadowColorInput, this.singleShadowOpacityInput,
+      this.singleShadowOffsetInput, this.singleShadowAngleInput, this.singleShadowBlurInput,
+      this.innerShadowEnabledInput, this.innerShadowColorInput, this.innerShadowOpacityInput,
+      this.innerShadowOffsetInput, this.innerShadowAngleInput, this.innerShadowBlurInput,
+    ];
+    for (const control of historyControls) this.bindVectorHistoryControl(control);
 
     this.interactionCanvas.addEventListener("pointerdown", (event) => {
       this.onPointerDown(event);
@@ -2807,6 +2838,9 @@ export class MixedVectorTextController {
               ? "move"
               : null;
     if (!mode) return;
+    if (mode !== "pan" && !this.host.beginVectorHistoryEdit()) {
+      return;
+    }
 
     event.preventDefault();
     this.interactionCanvas.setPointerCapture(event.pointerId);
@@ -2927,6 +2961,9 @@ export class MixedVectorTextController {
       "is-distort",
     );
     this.activeInteraction = null;
+    if (interaction.mode !== "pan") {
+      this.host.commitVectorHistoryEdit();
+    }
     this.scheduleRender();
   }
 }

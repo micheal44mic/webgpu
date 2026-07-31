@@ -144,8 +144,8 @@ assert.match(endStroke, /this\.lightGlazeSession\.endRequested = true/);
 const renderFrame = section(engine, "private renderFrame", "private recordRenderedFrame");
 assert.match(
   renderFrame,
-  /commitRequested = lightGlazeSession\.endRequested[\s\S]*!this\.pendingStamps\.some/,
-  "Il commit Light può partire prima dell'ultimo stamp della gesture.",
+  /let hasPendingStampForGesture = false[\s\S]*for \(let index = batchSize;[\s\S]*commitRequested = lightGlazeSession\.endRequested[\s\S]*&& !hasPendingStampForGesture/,
+  "Il commit Light deve attendere ogni stamp non incluso nel batch finale della gesture.",
 );
 
 assert.match(

@@ -1143,6 +1143,40 @@ assert.equal((controllerSource.match(/getContext\("2d"/g) ?? []).length, 1);
 assert.match(controllerSource, /this\.interactionCanvas\.getContext\("2d"/);
 assert.match(controllerSource, /this\.presentationCanvas\.width = 1/);
 assert.match(controllerSource, /this\.presentationCanvas\.hidden = true/);
+const controllerInitializeStart = controllerSource.indexOf("  async initialize(): Promise<void> {");
+const controllerInitializeEnd = controllerSource.indexOf(
+  "\n  syncScene(",
+  controllerInitializeStart,
+);
+assert.ok(
+  controllerInitializeStart >= 0 && controllerInitializeEnd > controllerInitializeStart,
+);
+const controllerInitializeSource = controllerSource.slice(
+  controllerInitializeStart,
+  controllerInitializeEnd,
+);
+assert.doesNotMatch(
+  controllerInitializeSource,
+  /addVectorTextNode|defaultSeed/,
+  "l'avvio non deve creare automaticamente un livello testo",
+);
+assert.match(controllerSource, /private bindVectorHistoryControl\(control: HTMLElement\)/);
+assert.match(
+  controllerSource,
+  /control\.type === "range"[\s\S]*pointerup[\s\S]*pointercancel[\s\S]*keyup[\s\S]*blur/,
+);
+assert.match(
+  controllerSource,
+  /mode !== "pan" && !this\.host\.beginVectorHistoryEdit\(\)/,
+);
+assert.match(
+  controllerSource,
+  /interaction\.mode !== "pan"[\s\S]*this\.host\.commitVectorHistoryEdit\(\)/,
+);
+assert.match(engineSource, /beginVectorHistoryEdit\(\): boolean/);
+assert.match(engineSource, /commitVectorHistoryEdit\(\): boolean/);
+assert.match(engineSource, /kind: "vector"[\s\S]*delta: MixedSceneVectorHistoryDelta/);
+assert.match(engineSource, /action\.kind === "vector"[\s\S]*restoreVectorHistoryState/);
 assert.doesNotMatch(controllerSource, /VectorTextAdaptiveZoomDetector|enterFastZoomMode|finishFastZoomMode|scheduleFastInteractionOverlay/);
 assert.match(controllerSource, /setAdaptiveZoomEnabled\(_enabled: boolean\): void \{[\s\S]*updateAdaptiveZoomIndicator\(\)/);
 assert.match(adaptiveSource, /disabled-vector-lod-worker-node-atomic-latest-only-v3/);

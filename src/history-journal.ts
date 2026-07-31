@@ -6,11 +6,16 @@ export const HISTORY_JOURNAL_STRATEGY =
  * across layers: the order stays global, so undo walks the user's actions in the
  * order they happened, but visibility is resolved per layer.
  */
-export interface JournalAction {
-  id: number;
-  kind: "stroke" | "clear";
-  layerId: number;
-}
+export type JournalAction =
+  | {
+    id: number;
+    kind: "stroke" | "clear";
+    layerId: number;
+  }
+  | {
+    id: number;
+    kind: "vector";
+  };
 
 export interface JournalBatch {
   layerId: number;
@@ -121,7 +126,11 @@ export function historyStepTargetsMissingLayer(
   liveLayerIds: ReadonlySet<number>,
 ): boolean {
   const action = delta < 0 ? actions[cursor - 1] : actions[cursor];
-  return Boolean(action) && !liveLayerIds.has(action.layerId);
+  return Boolean(
+    action
+    && action.kind !== "vector"
+    && !liveLayerIds.has(action.layerId),
+  );
 }
 
 /** Layers that still have visible content, for "is the document empty" checks. */

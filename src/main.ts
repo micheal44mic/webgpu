@@ -576,6 +576,8 @@ const engine = new BrushEngine(canvas, {
     );
     layerSwitchResult.textContent = selectedItem?.kind === "text"
       ? "Testo selezionato: pennello sospeso; il raster di lavoro resta caldo."
+      : selectedItem?.kind === "svg"
+        ? "SVG selezionato: pennello sospeso; il raster di lavoro resta caldo."
       : "Raster selezionato: pennello attivo.";
   },
   onActiveLayerChange(activeIndex) {
@@ -667,7 +669,7 @@ const gpuMemoryRows: ReadonlyArray<
   ["gpuMemoryBlend", "blendRendererMiB"],
   ["gpuMemoryLightGlaze", "lightGlazeMiB"],
   ["gpuMemoryThicknessTail", "thicknessTailMiB"],
-  ["gpuMemoryHistory", "historyCpuMiB"],
+  ["gpuMemoryHistory", "historyGpuMiB"],
 ];
 
 const toolControlSnapshots: Record<
@@ -3263,6 +3265,14 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
     output.textContent = formatMemoryMiB(value);
     output.parentElement?.classList.toggle("memory-zero", value < 0.05);
   }
+  const historyPageCount = stats.gpuMemory.historyGpuPageCount;
+  const historyLabel = element<HTMLElement>("gpuMemoryHistoryLabel");
+  historyLabel.textContent = `Cronologia raster · GPU · ${historyPageCount} `
+    + `${historyPageCount === 1 ? "pagina" : "pagine"} · `
+    + `usati ${formatMemoryMiB(stats.gpuMemory.historyGpuUsedMiB)}`;
+  historyLabel.title =
+    "La cifra a destra è la memoria GPU realmente riservata in pagine; "
+    + "«usati» è il payload logico attualmente residente nelle pagine.";
 
   const storageStudy = stats.layerStorageStudy;
   const inactiveLayers = storageStudy.layers.filter((layer) => !layer.active);
@@ -3464,7 +3474,7 @@ function renderMixedSceneList(
   const locked = interactionLocked() || layerSwitching;
   addLayerButton.disabled = locked || stats.layers.length >= 16;
   const selectedItem = scene.items.find((item) => item.key === scene.selectedKey);
-  const textSelected = selectedItem?.kind !== "raster";
+  const vectorSelected = selectedItem !== undefined && selectedItem.kind !== "raster";
   const ordered = [...scene.items].reverse();
   const rowsMatch = layerList.childElementCount === ordered.length
     && ordered.every(
@@ -3516,7 +3526,7 @@ function renderMixedSceneList(
         ? stats.layerColdCompressionProgress
         : null;
       hint.textContent = isActiveRaster
-        ? textSelected
+        ? vectorSelected
           ? `raster di lavoro · ${formatMemoryMiB(layer.actualRawMiB)}`
           : `raster attivo · ${formatMemoryMiB(layer.actualRawMiB)}`
         : compressionProgress
@@ -3529,7 +3539,7 @@ function renderMixedSceneList(
                 + formatMemoryMiB(layer.actualRawMiB)
               : "raster cold · 0 MiB";
       select.title = isActiveRaster
-        ? textSelected
+        ? vectorSelected
           ? "Raster di lavoro: resta full-canvas per mostrare i pixel e riprendere "
             + "il pennello senza reidratazione; la selezione resta sul testo."
           : "Livello raster attivo: il pennello scrive soltanto qui."
@@ -4349,7 +4359,7 @@ async function replayHumanStroke(
       carrierReplay
         ? `spacing carrier ${replaySettings.spacingPercent.toFixed(2)}%`
         : `spacing adattivo ${performanceProfile.adaptiveSpacingInitialPercent.toFixed(2)}→${performanceProfile.adaptiveSpacingFinalPercent.toFixed(2)}% / ${performanceProfile.adaptiveSpacingIncreaseCount} step`,
-      `history CPU ${formatInteger(performanceProfile.historyCapturedBaseStamps)} stamp / ${formatInteger(performanceProfile.historyCapturedBatches)} batch`,
+      `history GPU ${formatInteger(performanceProfile.historyCapturedBaseStamps)} stamp / ${formatInteger(performanceProfile.historyCapturedBatches)} batch`,
       `FPS medi ${performanceProfile.averageRenderFps.toFixed(1)}`,
       `${formatInteger(performanceProfile.delayedRenderFrames)} frame >20 ms`,
       `presentazione ${playback.endToPresentedMs.toFixed(2)} ms`,

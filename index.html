@@ -26,7 +26,7 @@
           <button
             id="undoStroke"
             type="button"
-            aria-label="Annulla ultimo tratto"
+            aria-label="Annulla ultima azione"
             aria-keyshortcuts="Control+Z Meta+Z"
             title="Annulla (Ctrl/⌘+Z)"
             disabled
@@ -34,7 +34,7 @@
           <button
             id="redoStroke"
             type="button"
-            aria-label="Ripristina ultimo tratto"
+            aria-label="Ripristina ultima azione"
             aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z"
             title="Ripristina (Ctrl/⌘+Shift+Z)"
             disabled
@@ -297,7 +297,8 @@
         <section id="vectorTextPrototypeSection" hidden>
           <h2>Testo e SVG vettoriali · livelli separati</h2>
           <p class="result">
-            Il testo non condivide mai i pixel o la cronologia del pennello.
+            Testo, SVG e raster restano oggetti separati ma condividono una
+            timeline Undo/Redo ordinata per gesto.
           </p>
 
           <div class="vector-svg-import-card">
@@ -1267,9 +1268,9 @@
               <div class="gpu-memory-group-start" data-memory-row><dt>Blend dry · scratch</dt><dd id="gpuMemoryBlend">—</dd></div>
               <div data-memory-row><dt>Rendering · Light / Uniformed / Intense</dt><dd id="gpuMemoryLightGlaze">—</dd></div>
               <div data-memory-row><dt>Coda spessore</dt><dd id="gpuMemoryThicknessTail">—</dd></div>
-              <div class="gpu-memory-group-start" data-memory-row><dt>Cronologia stamp · RAM CPU</dt><dd id="gpuMemoryHistory">—</dd></div>
+              <div class="gpu-memory-group-start" data-memory-row><dt id="gpuMemoryHistoryLabel">Cronologia raster · GPU</dt><dd id="gpuMemoryHistory">—</dd></div>
             </dl>
-            <p class="gpu-memory-note">Stima delle allocazioni note. Le due righe «Studio cold» simulano soltanto la memoria raw con attivo full-canvas e inattivi compatti: non sono allocate né sommate al totale. Il pool scratch corrente è conteggiato una sola volta; il picco è storico e non viene sommato. La riga Layer compressi include anche i chunk verificati di un job in pausa; insieme alla Cronologia è RAM CPU esclusa dal totale GPU. Non include swapchain, pipeline, driver o memoria del browser.</p>
+            <p class="gpu-memory-note">Stima delle allocazioni note. Le due righe «Studio cold» simulano soltanto la memoria raw con attivo full-canvas e inattivi compatti: non sono allocate né sommate al totale. Il pool scratch corrente è conteggiato una sola volta; il picco è storico e non viene sommato. La cronologia raster mostra pagine GPU riservate e payload usato ed è inclusa nel totale; Layer compressi resta RAM CPU esclusa. Non include swapchain, pipeline, driver o memoria del browser.</p>
           </section>
 
           <button

@@ -95,9 +95,23 @@ Paint:
   SHA-256 `69978b6e…`) + pre-mappa di occupazione conservativa `256²` sui mip
   `0–4` con fallback automatico (radius `<128`, LOD `>4`, copertura `>50%`).
   Run `#32`: `+18,5%` FPS, coda finale `−96,9%`, frame lenti `−89%`.
-- Undo/Redo: journal CPU dei batch inviati, replay GPU solo su richiesta
-  (`#33/#34`: costo nullo sul tratto). Limite di memoria della cronologia
-  ancora aperto per uso prolungato.
+- Undo/Redo usa ora una sola timeline globale ordinata per azione raster e
+  vettoriale. Il payload raster autorevole non conserva più array `Stamp` o
+  step sul CPU: vive packed in buffer GPU paginati da `2 MiB` (`32 B` per stamp
+  Paint e uniform dinamiche per Blend dry), con strategia
+  `gpu-resident-paged-packed-payload-copy-replay`. Sul CPU restano soltanto i
+  metadati necessari a ordine, impostazioni, dirty rect e slice. Il submit live
+  conserva i byte con una copia buffer→buffer GPU; Undo/Redo li ricopia nei
+  buffer istanze/uniformi prima degli stessi shader, senza repack o upload CPU
+  (`clear-and-gpu-buffer-copy-replay`). Testo e SVG registrano delta compatti
+  del solo nodo interessato, posizione nello stack e selezione, condividendo il
+  documento SVG immutabile invece di duplicarne path e typed array. Il limite
+  di memoria della cronologia raster resta aperto per uso prolungato.
+- La cronologia vettoriale è **per gesto**, non per evento intermedio: una
+  digitazione fino a blur/change, un trascinamento di posizione/scala/rotazione
+  o Distort e una sessione slider producono al massimo un'azione; un gesto che
+  termina byte-equivalente allo stato iniziale non crea storia né cancella il
+  Redo. Pan e semplice selezione non entrano nella cronologia.
 - UI full-canvas con cassetto overlay e navigazione a due dita; il canvas più
   grande costò `−30%` FPS (`#35/#36`), recuperati da…
 - …cache di presentazione persistente screen-space: display shader eseguito
@@ -411,6 +425,62 @@ Paint:
   inerte. Restano query-gated soltanto fixture e benchmark distruttivi
   (`mixedMemoryBenchmark`, stress memoria/compressione e relativi profili);
   non fanno parte dell'esperienza editor normale.
+- Modifica locale del 30 luglio 2026, **non committata e non pubblicata**: una
+  pagina nuova contiene soltanto `Livello 1`; nessun `Testo 1` viene creato
+  all'avvio. Il testo nasce esclusivamente da «Aggiungi testo» e la stessa
+  azione è annullabile/ripristinabile.
+- Robustezza Undo/Redo raster: le eccezioni del frame RAF vengono catturate e
+  rese stato esplicito invece di lasciare l'app sospesa; `waitForIdle` pompa il
+  lavoro anche se RAF non arriva, ha fallback a `50 ms`, watchdog di mancato
+  progresso, attese GPU limitate e race con `device.lost`. I batch pending
+  vengono rimossi solo dopo una submission riuscita; il replay cede il main
+  thread ogni 8 submit e ripristina il rendering glaze selezionato. Il commit
+  Light nel batch finale aspetta tutti gli stamp fuori dal batch corrente e
+  viene codificato dopo quegli stamp nello stesso encoder.
+- QA browser locale desktop: add/delete testo e SVG ripetuti tre volte con
+  Undo/Redo; digitazione completa in una voce; colore SVG, Traccia, join,
+  Block/Ombra singola/Ombra interna, visibilità, opacità, ordine e reset; uno
+  slider `23→31→44→68→91` torna direttamente a `23`. Un drag posizione con 24
+  pointermove torna interamente all'origine con un solo Undo; un gesto
+  `360→420→360` non crea storia e conserva il Redo. Timeline mista
+  raster→aggiunta testo→edit testo→raster verificata in entrambi i versi.
+  Light, Uniformed e Intense hanno superato loop normali e Undo immediato dopo
+  il tap (almeno `7/5/7` cicli per modalità). Il percorso dell'errore originale
+  è stato stressato con 16 sequenze Light tratto→cambio Flow/Count oppure nuovo
+  tratto, seguite da 3 Undo/Redo e 6 passaggi Light/Uniformed/Intense: nessun
+  blocco e console browser `0` warning/error. Tutti i verifier npm, TypeScript
+  e build Vite production sono verdi. È QA desktop funzionale, non una prova
+  iPhone né una baseline.
+- Modifica locale del 30 luglio 2026, **non committata e non pubblicata**:
+  cronologia raster GPU-only per il payload, con prewarm di una pagina da
+  `2 MiB`, crescita paginata e rilascio dei rami Redo invalidati fuori dal
+  percorso della pennellata. QA browser su Light, Uniformed, Intense e Blend
+  dry, poi `3` Undo e `3` Redo consecutivi: tutti completati e console a zero
+  warning/error. L'invalidazione di un ramo Redo ha mostrato il payload logico
+  scendere da `0,4` a `0,3 MiB` alla compattazione; un replay raster stabilizzato
+  prima/dopo Undo+Redo ha prodotto lo stesso PNG SHA-256
+  `abb2c732764efa90d67dadb22c3a2b7b298be958b1971abf69de5432fc3a6147`.
+  Anche il benchmark sintetico da `2000` stamp è rimasto annullabile. Tutti i
+  `15` verifier npm, TypeScript e build Vite production sono verdi. È QA
+  desktop funzionale: non dimostra guadagni prestazionali né copre iPhone.
+- Misura locale controllata della stessa modifica, poi rimossa dal prodotto:
+  `2000` stamp Base/Count 1/Circle, `64.000 B` copiati, submit finale con commit
+  glaze, `12` coppie ABBA per modalità ripetute due volte. La cattura live GPU
+  differisce dal controllo senza storia di `0…+0,1 ms` al p50 e resta entro il
+  rumore del timer al p95: nessuna regressione CPU stabile al lift su questo
+  desktop. Il replay buffer→buffer evita il repack/upload CPU: vantaggio p50
+  ripetuto di `0,2 ms` Light, `0,1 ms` Uniformed e `0…0,1 ms` Intense.
+  `timestamp-query` non è disponibile sulla GPU corrente; i tempi basati su
+  `onSubmittedWorkDone()` contengono l'intera coda e jitter callback e non hanno
+  mostrato un delta GPU stabile. Non estrapolare questi numeri a iPhone.
+- Ottimizzazioni sicure misurate senza cambiare pixel o parametri: contabilità
+  memoria O(1), rilascio multiplo con un solo merge per pagina, lookup O(B) del
+  batch glaze finale invece della scansione O(B²), controlli action-id O(1) e
+  ricerca pending senza array temporanei. Sulla suite canonica desktop, nelle
+  sole run con firma esatta `12107` stamp e spacing `1%`, il p95 CPU osservato
+  passa circa `1,4→1,1–1,2 ms` Light, `1,4→1,2 ms` Uniformed e
+  `1,3→1,1–1,2 ms` Intense. È evidenza locale, non una nuova baseline né una
+  prova di vantaggio GPU isolato.
 
 ### Traccia raster M1 (WebGPU)
 
@@ -466,12 +536,15 @@ Paint:
   WebGPU create dal motore; non misura residency fisica e non include swapchain,
   pipeline/driver, RAM o memoria del browser. Il report include ora
   anche la strategia di storage styled v5.
-- Riga «Cronologia stamp · RAM CPU» (con rev `39`): mostra il journal Undo/Redo
-  (`historyStoredBaseStamps × 32 B`), unica voce CPU del pannello, **esclusa**
-  dal totale GPU e dal badge di variazione. Rende visibile la crescita della
-  cronologia — il tetto per l'uso prolungato resta un problema aperto. Le altre
-  voci non conteggiate (swapchain, driver, tip preview) restano fuori perché
-  sarebbero stime, non contabilità deterministica.
+- Riga «Cronologia raster · GPU»: mostra a destra i byte realmente riservati
+  dai buffer WebGPU paginati, mentre l'etichetta riporta numero di pagine e
+  payload logico usato. Una pagina calda da `2 MiB` è preallocata anche con
+  storia vuota; una pagina standard già viva conta già come pagina calda, quindi
+  il trim non ne aggiunge una seconda vuota. Le pagine sono incluse nel totale GPU
+  e nel badge di variazione.
+  «Layer compressi» resta l'unica riga RAM CPU esclusa dal totale. Il pannello
+  contabilizza le allocazioni richieste al browser, non la residency fisica
+  nascosta dal driver; il tetto della storia per uso prolungato resta aperto.
 - Non esiste ancora una run canonica di prestazioni né la prova iPhone: non
   dichiarare guadagni di velocità né considerare conclusa la Traccia. Le run rev
   `35` riportano stile, build, strategie coverage/styled/distanza/gate, extent

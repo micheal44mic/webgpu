@@ -47,6 +47,25 @@ export interface DryBlendRenderBatch {
   readonly readRect: BlendRect;
   readonly writeRect: BlendRect;
 }
+export interface DryBlendHistoryGeometry {
+  readonly build: typeof DRY_BLEND_CORE_BUILD;
+  readonly stepCount: 1;
+  readonly empty: boolean;
+  readonly readRect: BlendRect;
+  readonly writeRect: BlendRect;
+}
+
+export interface DryBlendGpuCopyRegion {
+  readonly buffer: GPUBuffer;
+  readonly offsetBytes: number;
+  readonly sizeBytes: number;
+}
+
+export interface DryBlendHistoryTransfer {
+  readonly capture?: DryBlendGpuCopyRegion;
+  readonly replay?: DryBlendGpuCopyRegion;
+}
+
 
 export interface DryBlendSubmitResult {
   dirtyRect: BlendRect | null;
@@ -155,6 +174,24 @@ export function cloneDryBlendRenderBatch(batch: DryBlendBatch): DryBlendRenderBa
   };
 }
 
+export function compactDryBlendHistoryGeometry(
+  batch: DryBlendRenderBatch,
+): DryBlendHistoryGeometry {
+  return {
+    empty: batch.empty,
+    build: batch.build,
+    stepCount: 1,
+    readRect: cloneRect(batch.readRect),
+    writeRect: cloneRect(batch.writeRect),
+  };
+}
+
+function isDryBlendRenderBatch(
+  batch: DryBlendRenderBatch | DryBlendHistoryGeometry,
+): batch is DryBlendRenderBatch {
+  return "steps" in batch;
+}
+
 async function assertShaderModules(
   modules: readonly { label: string; module: GPUShaderModule }[],
 ): Promise<void> {
@@ -239,7 +276,7 @@ export class DryBlendRenderer {
     this.uniformBuffer = this.device.createBuffer({
       label: "Blend dry dynamic uniforms",
       size: this.uniformUpload.byteLength,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
     });
   }
 
@@ -414,10 +451,11 @@ export class DryBlendRenderer {
   }
 
   submit(
-    batches: readonly DryBlendRenderBatch[],
+    batches: readonly (DryBlendRenderBatch | DryBlendHistoryGeometry)[],
     settings: DryBlendRenderSettings,
     historyActionId: number,
     clearLayer: boolean,
+    historyTransfer: DryBlendHistoryTransfer | null = null,
   ): DryBlendSubmitResult {
     this.assertAlive();
     if (batches.length > BLEND_MAX_BATCHES_PER_SUBMIT) {
@@ -435,8 +473,23 @@ export class DryBlendRenderer {
       this.validateBatch(batch);
     }
     const groups = this.buildStepGroups(renderable);
-    this.populateUniforms(renderable, groups, settings);
-    if (renderable.length > 0) {
+    const historyBytes = renderable.length * this.uniformStride;
+    if (historyTransfer?.capture && historyTransfer.replay) {
+      throw new Error("Il transfer Blend non può catturare e riprodurre insieme.");
+    }
+    if (historyTransfer?.replay) {
+      if (historyTransfer.replay.sizeBytes !== historyBytes) {
+        throw new Error(
+          `Payload Blend storico ${historyTransfer.replay.sizeBytes} B, attesi ${historyBytes} B.`,
+        );
+      }
+    } else {
+      if (!renderable.every(isDryBlendRenderBatch)) {
+        throw new Error("Replay Blend privo del payload uniform GPU.");
+      }
+      this.populateUniforms(renderable, groups, settings);
+    }
+    if (renderable.length > 0 && !historyTransfer?.replay) {
       this.device.queue.writeBuffer(
         this.uniformBuffer,
         0,
@@ -451,6 +504,30 @@ export class DryBlendRenderer {
     });
     let passCount = 0;
     let dirtyRect: BlendRect | null = null;
+    if (historyTransfer?.replay && historyBytes > 0) {
+      encoder.copyBufferToBuffer(
+        historyTransfer.replay.buffer,
+        historyTransfer.replay.offsetBytes,
+        this.uniformBuffer,
+        0,
+        historyBytes,
+      );
+    } else if (historyTransfer?.capture && historyBytes > 0) {
+      if (historyTransfer.capture.sizeBytes !== historyBytes) {
+        throw new Error(
+          `Destinazione Blend storica ${historyTransfer.capture.sizeBytes} B, `
+          + `attesi ${historyBytes} B.`,
+        );
+      }
+      encoder.copyBufferToBuffer(
+        this.uniformBuffer,
+        0,
+        historyTransfer.capture.buffer,
+        historyTransfer.capture.offsetBytes,
+        historyBytes,
+      );
+    }
+
 
     if (clearLayer) {
       const clearPass = encoder.beginRenderPass({
@@ -553,6 +630,12 @@ export class DryBlendRenderer {
       ? this.memoryMiB()
       : this.uniformUpload.byteLength / (1024 * 1024);
   }
+  historyUniformBytes(
+    batches: readonly DryBlendHistoryGeometry[],
+  ): number {
+    return batches.filter((batch) => !batch.empty).length * this.uniformStride;
+  }
+
 
   prewarmScratch(): boolean {
     this.assertAlive();
@@ -595,7 +678,7 @@ export class DryBlendRenderer {
     }
   }
 
-  private validateBatch(batch: DryBlendRenderBatch): void {
+  private validateBatch(batch: DryBlendHistoryGeometry): void {
     if (batch.build !== DRY_BLEND_CORE_BUILD || batch.stepCount !== 1) {
       throw new Error("Batch Blend dry incompatibile.");
     }
@@ -633,7 +716,7 @@ export class DryBlendRenderer {
   }
 
   private buildStepGroups(
-    renderable: readonly DryBlendRenderBatch[],
+    renderable: readonly DryBlendHistoryGeometry[],
   ): BlendStepGroup[] {
     const groups: BlendStepGroup[] = [];
     let current: BlendStepGroup | null = null;
