@@ -1834,7 +1834,11 @@ export function mixedSceneItemIsVisible(engine: BrushEngine, item: MixedSceneIte
 export function publishMixedScene(engine: BrushEngine): void {
   const snapshot = engine.createMixedSceneSnapshot();
   if (snapshot) {
-    engine.callbacks.onMixedSceneChange?.(snapshot);
+    try {
+      engine.callbacks.onMixedSceneChange?.(snapshot);
+    } catch (error) {
+      console.error("Observer scena mista ignorato per preservare la transazione:", error);
+    }
   }
 }
 

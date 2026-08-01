@@ -97,6 +97,17 @@ export interface PointerSample {
   timeMs: number;
 }
 
+/** Compact document-space geometry for the live raster Transform overlay. */
+export interface RasterTransformSnapshot {
+  layerId: number;
+  x: number;
+  y: number;
+  scale: number;
+  rotation: number;
+  sourceBounds: DirtyRect;
+  resultBounds: DirtyRect | null;
+}
+
 export interface MixedSceneSnapshot {
   strategy: typeof MIXED_SCENE_STACK_STRATEGY;
   selectedKey: MixedSceneItem["key"];
@@ -108,6 +119,10 @@ export interface MixedSceneSnapshot {
       kind: "raster";
       rasterLayerId: number;
       rasterLayerIndex: number;
+      rasterLayerName: string;
+      rasterHasContent: boolean;
+      rasterContentBounds: DirtyRect | null;
+      rasterTransform: RasterTransformSnapshot | null;
     }
     | {
       key: `text:${number}`;

@@ -10,6 +10,7 @@ import type {
   MixedSceneVectorHistoryDelta,
   MixedSceneVectorHistoryState,
   MixedSceneVectorKey,
+  MixedSceneItem,
   RasterImageNode,
   VectorSvgNode,
 } from "./mixed-scene-stack";
@@ -30,23 +31,108 @@ export interface VectorHistoryAction {
   delta: MixedSceneVectorHistoryDelta;
 }
 
-export interface VectorRasterizeHistoryAction {
+/**
+ * Common authoritative checkpoint retained by raster actions.
+ *
+ * The seed always describes the pixels AFTER the action. A null seed is valid
+ * only when the resulting layer is empty; bounds and tile metadata must then
+ * be empty as well. Keeping this contract explicit prevents replay from
+ * accidentally treating a transform as a geometric node layered over pixels.
+ */
+export interface RasterHistoryCheckpoint {
+  layerId: number;
+  seed: LayerColdStorageResources | null;
+  baseBounds: DirtyRect | null;
+  baseTileMask: Uint32Array;
+}
+
+export interface VectorRasterizeHistoryAction extends RasterHistoryCheckpoint {
   id: number;
   kind: "vector-rasterize";
   sourceKind: "text" | "svg";
-  layerId: number;
   layerRecord: LayerRecord;
   rasterLayerIndex: number;
   vectorState: MixedSceneVectorHistoryState;
   seed: LayerColdStorageResources;
   baseBounds: DirtyRect;
-  baseTileMask: Uint32Array;
 }
+
+export interface RasterImportSourceMetadata {
+  sourceName: string;
+  mimeType: string;
+  width: number;
+  height: number;
+}
+
+/** A decoded image is immediately materialized as a normal raster layer. */
+export interface RasterImportHistoryAction extends RasterHistoryCheckpoint {
+  id: number;
+  kind: "raster-import";
+  layerRecord: LayerRecord;
+  rasterLayerIndex: number;
+  sceneIndex: number;
+  selectedKeyBefore: MixedSceneItem["key"];
+  activeRasterLayerIdBefore: number;
+  seed: LayerColdStorageResources;
+  baseBounds: DirtyRect;
+  source: RasterImportSourceMetadata;
+}
+
+export type RasterTransformMatrix = readonly [
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+];
+
+/**
+ * A raster transform stores its exact post-Apply tiled pixels. The affine
+ * matrix is diagnostic/UI metadata; Undo/Redo hydrates `seed` and never
+ * resamples the layer a second time.
+ */
+interface RasterTransformHistoryActionMetadata {
+  id: number;
+  kind: "raster-transform";
+  layerId: number;
+  baseTileMask: Uint32Array;
+  /** Handle/pivot geometry, separate from filtered raster support in baseBounds. */
+  geometryBounds: DirtyRect | null;
+  matrix: RasterTransformMatrix;
+  filterStrategy: string;
+}
+
+export type RasterTransformHistoryAction = RasterTransformHistoryActionMetadata & (
+  | {
+    seed: LayerColdStorageResources;
+    baseBounds: DirtyRect;
+  }
+  | {
+    seed: null;
+    baseBounds: null;
+  }
+);
+
+export type RasterHistoryCheckpointAction =
+  | VectorRasterizeHistoryAction
+  | RasterImportHistoryAction
+  | RasterTransformHistoryAction;
 
 export type HistoryAction =
   | RasterHistoryAction
   | VectorHistoryAction
-  | VectorRasterizeHistoryAction;
+  | VectorRasterizeHistoryAction
+  | RasterImportHistoryAction
+  | RasterTransformHistoryAction;
+
+export function isRasterHistoryCheckpointAction(
+  action: HistoryAction,
+): action is RasterHistoryCheckpointAction {
+  return action.kind === "vector-rasterize"
+    || action.kind === "raster-import"
+    || action.kind === "raster-transform";
+}
 
 export interface ActiveVectorHistoryEdit {
   key: MixedSceneVectorKey;

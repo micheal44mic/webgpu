@@ -955,8 +955,8 @@ assert.notEqual(rebuildStart, -1, "il replay deve dichiarare di ricostruire il l
 const rebuildBody = engineSource.slice(rebuildStart, rebuildStart + 1_500);
 assert.match(
   rebuildBody,
-  /\} = selectLayerReplay\(\s*engine\.historyActions,\s*engine\.historyCursor,\s*engine\.historyBatches,\s*layerId,\s*\)/,
-  "il replay reale deve usare il selettore per-livello testato",
+  /\} = selectLayerReplayAfterCheckpoint\(\s*engine\.historyActions,\s*engine\.historyCursor,\s*engine\.historyBatches,\s*layerId,\s*\)/,
+  "il replay reale deve usare il selettore per-livello checkpoint-aware testato",
 );
 // Nothing in the replay may index the unfiltered array, or a single stray index
 // would reintroduce another layer's batch.

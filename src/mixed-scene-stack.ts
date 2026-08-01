@@ -1067,6 +1067,28 @@ export class MixedSceneStack {
     return item;
   }
 
+  /** Reattaches a structural-history raster at its exact heterogeneous index. */
+  insertRasterAt(
+    newRasterLayerId: number,
+    sceneIndex: number,
+    select = true,
+  ): MixedSceneItem {
+    if (this.indexOfKey(`raster:${newRasterLayerId}`) >= 0) {
+      throw new Error(`Raster ${newRasterLayerId} già presente nella scena.`);
+    }
+    if (
+      !Number.isInteger(sceneIndex)
+      || sceneIndex < 0
+      || sceneIndex > this.orderedItems.length
+    ) {
+      throw new Error(`Indice scena ${sceneIndex} fuori intervallo.`);
+    }
+    const item = rasterItem(newRasterLayerId);
+    this.orderedItems.splice(sceneIndex, 0, item);
+    if (select) this.selectedKey = item.key;
+    return item;
+  }
+
   /**
    * Atomically replaces one semantic item with its raster layer at the
    * identical heterogeneous scene index. The legacy method name is preserved

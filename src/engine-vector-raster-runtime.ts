@@ -712,7 +712,7 @@ export async function rasterizeVectorNodeToLayer(
     }
     await engine.activateLayer(previousIndexAfterInsertion, "layer-switch");
     engine.clearVectorTextPresentation();
-    engine.callbacks.onActiveLayerChange?.(engine.layerStack.activeIndex);
+    engine.publishActiveLayerChange();
     return {
       history: {
         sourceKind,
@@ -876,7 +876,7 @@ async function undoVectorRasterization(
   engine.layerGpu.delete(action.layerId);
   destroyLayerGpuResources(engine, gpu);
   engine.clearVectorTextPresentation();
-  engine.callbacks.onActiveLayerChange?.(engine.layerStack.activeIndex);
+  engine.publishActiveLayerChange();
 }
 
 async function redoVectorRasterization(
@@ -907,7 +907,7 @@ async function redoVectorRasterization(
     const previousIndexAfterInsertion = engine.layerStack.indexOfId(originalActiveId);
     await engine.activateLayer(previousIndexAfterInsertion, "structural-history");
     engine.clearVectorTextPresentation();
-    engine.callbacks.onActiveLayerChange?.(engine.layerStack.activeIndex);
+    engine.publishActiveLayerChange();
   } catch (error) {
     const rollbackErrors: unknown[] = [];
     try {

@@ -57,15 +57,27 @@ import {
   type VectorTextNode,
   type VectorTextNodeSeed,
 } from "./mixed-scene-stack";
-import type { RasterImageGpuResource } from "./engine-raster-image-runtime";
+import type {
+  NativeRasterImageImportResult,
+  NativeRasterImageHistorySeed,
+  RasterImageGpuResource,
+} from "./engine-raster-image-runtime";
 import {
   deleteRasterImageNode,
+  destroyRasterImportHistorySeed,
   importRasterImageFile as importRasterImageFileRuntime,
   moveRasterImageNode,
   setRasterImageNodeOpacity,
   setRasterImageNodeVisibility,
   updateRasterImageNode,
 } from "./engine-raster-image-runtime";
+import {
+  beginRasterLayerTransform as beginRasterLayerTransformRuntime,
+  cancelRasterLayerTransform as cancelRasterLayerTransformRuntime,
+  commitRasterLayerTransform as commitRasterLayerTransformRuntime,
+  updateRasterLayerTransform as updateRasterLayerTransformRuntime,
+  type ActiveRasterTransformSession,
+} from "./engine-raster-transform-runtime";
 import {
   MIXED_SCENE_COMPOSITOR_STRATEGY,
   MIXED_SCENE_LINEAR_FORMAT,
@@ -289,6 +301,8 @@ import {
   type FillHistoryRenderBatch,
   type HistoryAction,
   type HistoryRenderBatch,
+  type RasterImportHistoryAction,
+  type RasterTransformHistoryAction,
   type VectorRasterizeHistoryAction,
   type PaintHistoryRenderBatch,
   resolvePaintHistoryStampCount,
@@ -1258,12 +1272,15 @@ export class BrushEngine {
   historyCursor = 0;
   nextHistoryActionId = 1;
   discardedVectorRasterHistoryActions: VectorRasterizeHistoryAction[] = [];
+  discardedRasterImportHistoryActions: RasterImportHistoryAction[] = [];
+  discardedRasterTransformHistoryActions: RasterTransformHistoryAction[] = [];
   historyBatches: HistoryRenderBatch[] = [];
   historyStoredBaseStamps = 0;
   historyCompactionPending = false;
   historyBusy = false;
   historyStateInconsistent = false;
   activeVectorHistoryEdit: ActiveVectorHistoryEdit | null = null;
+  activeRasterTransformSession: ActiveRasterTransformSession | null = null;
   historyGpuStorage!: GpuHistoryStorage;
   historyGpuTrimGeneration = 0;
   layerHasContent = false;
@@ -2363,11 +2380,31 @@ export class BrushEngine {
               `Raster ${item.rasterLayerId} presente nella scena ma assente dallo stack GPU.`,
             );
           }
+          const record = this.layerStack.at(rasterLayerIndex);
+          const transform = this.activeRasterTransformSession?.layerId === record.id
+            ? {
+              layerId: record.id,
+              x: this.activeRasterTransformSession.sourcePivot.x
+                + this.activeRasterTransformSession.transform.translationX,
+              y: this.activeRasterTransformSession.sourcePivot.y
+                + this.activeRasterTransformSession.transform.translationY,
+              scale: this.activeRasterTransformSession.transform.scale,
+              rotation: this.activeRasterTransformSession.transform.rotation,
+              sourceBounds: { ...this.activeRasterTransformSession.sourceBounds },
+              resultBounds: this.activeRasterTransformSession.resultBounds
+                ? { ...this.activeRasterTransformSession.resultBounds }
+                : null,
+            }
+            : null;
           return {
             key: item.key,
             kind: item.kind,
             rasterLayerId: item.rasterLayerId,
             rasterLayerIndex,
+            rasterLayerName: record.name,
+            rasterHasContent: record.hasContent,
+            rasterContentBounds: record.contentBounds ? { ...record.contentBounds } : null,
+            rasterTransform: transform,
           };
         }
         if (item.kind === "text") {
@@ -3364,7 +3401,9 @@ export class BrushEngine {
       cursor: this.historyCursor,
       storedBaseStamps: this.historyStoredBaseStamps,
       logicalStampBytes: this.historyStoredBaseStamps * STAMP_STRIDE_BYTES,
-      openEdit: this.activeVectorHistoryEdit?.scope ?? null,
+      openEdit: this.activeRasterTransformSession
+        ? "transform"
+        : this.activeVectorHistoryEdit?.scope ?? null,
     };
   }
 
@@ -4931,8 +4970,73 @@ export class BrushEngine {
     return cloneVectorSvgNode(removed);
   }
 
-  async importRasterImageFile(file: File): Promise<Readonly<RasterImageNode>> {
-    return importRasterImageFileRuntime(this, file);
+  async importRasterImageFile(file: File): Promise<Readonly<NativeRasterImageImportResult>> {
+    const imported = await importRasterImageFileRuntime(this, file, (history) => {
+      this.commitRasterImportHistory(history);
+    });
+    return imported;
+  }
+
+  commitRasterImportHistory(history: NativeRasterImageHistorySeed): void {
+    const actionId = this.nextHistoryActionId;
+    // All allocations precede the point that invalidates Redo.
+    const action: RasterImportHistoryAction = {
+      id: actionId,
+      kind: "raster-import",
+      layerId: history.layerRecord.id,
+      layerRecord: history.layerRecord,
+      rasterLayerIndex: history.rasterLayerIndex,
+      sceneIndex: history.sceneIndex,
+      selectedKeyBefore: history.selectedKeyBefore,
+      activeRasterLayerIdBefore: history.activeRasterLayerIdBefore,
+      seed: history.seed,
+      baseBounds: { ...history.baseBounds },
+      baseTileMask: history.baseTileMask.slice(),
+      source: { ...history.source },
+    };
+    const cursorBefore = this.historyCursor;
+    const redoActions = this.historyActions.slice(cursorBefore);
+    const discardedVectorLength = this.discardedVectorRasterHistoryActions.length;
+    const discardedImportLength = this.discardedRasterImportHistoryActions.length;
+    const discardedTransformLength = this.discardedRasterTransformHistoryActions.length;
+    const compactionPendingBefore = this.historyCompactionPending;
+    try {
+      truncateRedoHistory(this);
+      this.historyActions.push(action);
+      this.nextHistoryActionId = actionId + 1;
+      this.historyCursor = this.historyActions.length;
+      if (this.activeStrokeProfile) {
+        this.activeStrokeProfile.historyCommittedActions += 1;
+      }
+    } catch (error) {
+      this.historyActions.length = cursorBefore;
+      for (const redoAction of redoActions) this.historyActions.push(redoAction);
+      this.historyCursor = cursorBefore;
+      this.nextHistoryActionId = actionId;
+      this.discardedVectorRasterHistoryActions.length = discardedVectorLength;
+      this.discardedRasterImportHistoryActions.length = discardedImportLength;
+      this.discardedRasterTransformHistoryActions.length = discardedTransformLength;
+      this.historyCompactionPending = compactionPendingBefore;
+      throw error;
+    }
+  }
+
+  beginRasterLayerTransform() {
+    return beginRasterLayerTransformRuntime(this);
+  }
+
+  updateRasterLayerTransform(
+    update: Parameters<typeof updateRasterLayerTransformRuntime>[1],
+  ) {
+    return updateRasterLayerTransformRuntime(this, update);
+  }
+
+  commitRasterLayerTransform(): Promise<boolean> {
+    return commitRasterLayerTransformRuntime(this);
+  }
+
+  cancelRasterLayerTransform(): Promise<boolean> {
+    return cancelRasterLayerTransformRuntime(this);
   }
 
   updateRasterImageNode(
@@ -5113,6 +5217,10 @@ export class BrushEngine {
       }
       try {
         const result = await this.activateLayer(fromIndex);
+        // Adding a layer is an intentional non-journal document mutation. A
+        // pending Redo contains absolute structural ordering from the state
+        // before this insertion and must not survive it.
+        truncateRedoHistory(this);
         // prepareActiveLayerForSwitch freezes presentation. Clearing the live
         // text texture before activation marks displayDirty while frozen, so
         // the effect retarget's waitForIdle can never drain it. The new mixed
@@ -6648,13 +6756,21 @@ export class BrushEngine {
     const vectorRasterActions = new Set([
       ...this.historyActions,
       ...this.discardedVectorRasterHistoryActions,
+      ...this.discardedRasterImportHistoryActions,
+      ...this.discardedRasterTransformHistoryActions,
     ]);
     for (const action of vectorRasterActions) {
       if (action.kind === "vector-rasterize") {
         destroyVectorRasterHistorySeed(action);
+      } else if (action.kind === "raster-import") {
+        destroyRasterImportHistorySeed(action);
+      } else if (action.kind === "raster-transform") {
+        destroyLayerColdStorage(action.seed);
       }
     }
     this.discardedVectorRasterHistoryActions = [];
+    this.discardedRasterImportHistoryActions = [];
+    this.discardedRasterTransformHistoryActions = [];
     if (this.historyGpuStorage) {
       this.historyGpuStorage.releaseAll();
       scheduleHistoryGpuTrim(this);
@@ -9135,11 +9251,35 @@ export class BrushEngine {
   }
 
   publishStats(): void {
-    this.callbacks.onStats?.(getStats(this));
+    try {
+      this.callbacks.onStats?.(getStats(this));
+    } catch (error) {
+      console.error("Observer statistiche ignorato per preservare la transazione:", error);
+    }
   }
 
   publishHistoryState(): void {
-    this.callbacks.onHistoryChange?.(this.getHistoryState());
+    try {
+      this.callbacks.onHistoryChange?.(this.getHistoryState());
+    } catch (error) {
+      console.error("Observer cronologia ignorato per preservare la transazione:", error);
+    }
+  }
+
+  publishActiveLayerChange(): void {
+    try {
+      this.callbacks.onActiveLayerChange?.(this.layerStack.activeIndex);
+    } catch (error) {
+      console.error("Observer livello attivo ignorato per preservare la transazione:", error);
+    }
+  }
+
+  publishStatus(message: string, kind: "working" | "ok" | "error"): void {
+    try {
+      this.callbacks.onStatus?.(message, kind);
+    } catch (error) {
+      console.error("Observer stato ignorato per preservare la transazione:", error);
+    }
   }
 
 }

@@ -6,19 +6,29 @@ import {
   firstVisibleActionIndex,
   hasVisibleContent,
   historyStepTargetsMissingLayer,
+  latestLayerReplayCheckpoint,
   layersWithVisibleContent,
   selectLayerReplay,
+  selectLayerReplayAfterCheckpoint,
   selectBatchesForLayer,
+  visibleRasterBatchActionIdsAfterCheckpoint,
   visibleStrokeIds,
 } from "../src/history-journal.ts";
 
-assert.equal(HISTORY_JOURNAL_STRATEGY, "global-order-per-layer-clear-barrier-vector-seed-fill-v4");
+assert.equal(HISTORY_JOURNAL_STRATEGY, "global-order-per-layer-clear-barrier-raster-checkpoints-v5");
 
 const stroke = (id, layerId) => ({ id, kind: "stroke", layerId });
 const fill = (id, layerId) => ({ id, kind: "fill", layerId });
 const clear = (id, layerId) => ({ id, kind: "clear", layerId });
 const vector = (id) => ({ id, kind: "vector" });
 const vectorRasterize = (id, layerId) => ({ id, kind: "vector-rasterize", layerId });
+const rasterImport = (id, layerId) => ({ id, kind: "raster-import", layerId });
+const rasterTransform = (id, layerId, hasContent = true) => ({
+  id,
+  kind: "raster-transform",
+  layerId,
+  baseBounds: hasContent ? { x: 0, y: 0, width: 1, height: 1 } : null,
+});
 
 // With one layer the module must reproduce the engine's current behaviour
 // exactly: scan back to the most recent clear, everything after it is visible.
@@ -30,6 +40,67 @@ const vectorRasterize = (id, layerId) => ({ id, kind: "vector-rasterize", layerI
   assert.equal(firstVisibleActionIndex(actions, 2), 0);
   assert.deepEqual([...visibleStrokeIds(actions, 2)], [1, 2]);
   assert.equal(hasVisibleContent(actions, 0), false);
+}
+
+// Raster transforms are post-action checkpoints, not overlay nodes. A later
+// brush batch replays after the checkpoint; Undoing the transform exposes the
+// earlier stroke again without replaying it on top of the transformed seed.
+{
+  const actions = [
+    stroke(1, 1),
+    rasterTransform(2, 1),
+    stroke(3, 2),
+    fill(4, 1),
+  ];
+  const checkpoint = latestLayerReplayCheckpoint(actions, 4, 1);
+  assert.equal(checkpoint?.action.id, 2);
+  assert.equal(checkpoint?.actionIndex, 1);
+  assert.deepEqual(
+    [...visibleRasterBatchActionIdsAfterCheckpoint(actions, 4, 1)],
+    [4],
+  );
+  const batches = [
+    { actionId: 1, layerId: 1, value: "before" },
+    { actionId: 3, layerId: 2, value: "foreign" },
+    { actionId: 4, layerId: 1, value: "after" },
+  ];
+  const replay = selectLayerReplayAfterCheckpoint(actions, 4, batches, 1);
+  assert.equal(replay.checkpoint?.action.id, 2);
+  assert.equal(replay.firstReplayActionIndex, 2);
+  assert.deepEqual(replay.batches.map((batch) => batch.value), ["after"]);
+  assert.deepEqual([...replay.visibleStrokeIds], [4]);
+
+  const beforeTransform = selectLayerReplayAfterCheckpoint(actions, 1, batches, 1);
+  assert.equal(beforeTransform.checkpoint, null);
+  assert.deepEqual(beforeTransform.batches.map((batch) => batch.value), ["before"]);
+}
+
+// Only a checkpoint after the latest per-layer Clear can seed replay. A
+// checkpoint belonging to another interleaved layer is never considered.
+{
+  const actions = [
+    rasterImport(1, 1),
+    rasterTransform(2, 2),
+    clear(3, 1),
+    stroke(4, 1),
+    rasterTransform(5, 1),
+  ];
+  assert.equal(latestLayerReplayCheckpoint(actions, 2, 1)?.action.id, 1);
+  assert.equal(latestLayerReplayCheckpoint(actions, 4, 1), null);
+  assert.equal(latestLayerReplayCheckpoint(actions, 5, 1)?.action.id, 5);
+}
+
+// A transform may legitimately produce an empty raster. It remains an action
+// and a replay checkpoint, but the content reducer must report the layer empty
+// until a later Paint/Fill action adds pixels again.
+{
+  const actions = [stroke(1, 7), rasterTransform(2, 7, false), stroke(3, 8)];
+  assert.equal(hasVisibleContent(actions, 2, 7), false);
+  assert.equal(hasVisibleContent(actions, 3, 8), true);
+  assert.equal(hasVisibleContent(actions, 3), true);
+  assert.deepEqual([...layersWithVisibleContent(actions, 3)], [8]);
+  assert.equal(latestLayerReplayCheckpoint(actions, 2, 7)?.action.id, 2);
+  assert.equal(hasVisibleContent([...actions, stroke(4, 7)], 4, 7), true);
 }
 
 // Fill is raster content in the same ordered journal, but keeps its own GPU
@@ -208,6 +279,22 @@ const vectorRasterize = (id, layerId) => ({ id, kind: "vector-rasterize", layerI
   );
 }
 
+// Import is structural too: Undo requires the generated raster to be live,
+// while Redo requires it absent. Transform is non-structural and always targets
+// an existing raster layer in either direction.
+{
+  const imported = [rasterImport(1, 12)];
+  assert.equal(historyStepTargetsMissingLayer(imported, 1, -1, new Set([12])), false);
+  assert.equal(historyStepTargetsMissingLayer(imported, 1, -1, new Set()), true);
+  assert.equal(historyStepTargetsMissingLayer(imported, 0, 1, new Set()), false);
+  assert.equal(historyStepTargetsMissingLayer(imported, 0, 1, new Set([12])), true);
+
+  const transformed = [rasterTransform(1, 12)];
+  assert.equal(historyStepTargetsMissingLayer(transformed, 1, -1, new Set([12])), false);
+  assert.equal(historyStepTargetsMissingLayer(transformed, 0, 1, new Set([12])), false);
+  assert.equal(historyStepTargetsMissingLayer(transformed, 1, -1, new Set()), true);
+}
+
 
 // Vector entries share the global order but never become raster content,
 // clear barriers or missing-layer failures.
@@ -357,6 +444,31 @@ const vectorRasterize = (id, layerId) => ({ id, kind: "vector-rasterize", layerI
   assert(main.includes("historyGpuUsedMiB"));
   assert(html.includes('id="gpuMemoryHistoryLabel"'));
   assert(html.includes("La cronologia raster mostra pagine GPU riservate"));
+
+  const moveCursor = engine.slice(
+    engine.indexOf("export async function moveHistoryCursor"),
+    engine.indexOf("export async function rebuildActiveLayerFromHistory"),
+  );
+  assert.match(engine, /publishStatus\(message: string, kind:[\s\S]{0,220}catch \(error\)/);
+  assert.doesNotMatch(
+    moveCursor,
+    /callbacks\.onStatus/,
+    "gli observer UI non devono lasciare historyBusy bloccato prima del finally",
+  );
+  assert.match(
+    moveCursor,
+    /await rebuildActiveLayerFromHistory\(engine\);[\s\S]{0,4200}publishRasterSceneAfterUnlock = true;[\s\S]{0,2500}engine\.historyBusy = engine\.historyStateInconsistent;[\s\S]{0,250}publishMixedScene\(engine\);[\s\S]{0,120}engine\.publishStats\(\);/,
+    "il replay raster deve aggiornare la bbox dell'overlay dopo Undo/Redo",
+  );
+  const addLayer = engine.slice(
+    engine.indexOf("  async addLayer("),
+    engine.indexOf("  async setActiveLayer("),
+  );
+  assert.match(
+    addLayer,
+    /const result = await this\.activateLayer\(fromIndex\);[\s\S]{0,300}truncateRedoHistory\(this\);/,
+    "un nuovo livello non journalled deve invalidare gli indici strutturali del Redo",
+  );
 
   const rasterReplay = engine.slice(
     engine.indexOf("export async function rebuildActiveLayerFromHistory"),

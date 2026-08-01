@@ -19,7 +19,7 @@ const runtimeSource = readFileSync(
   "utf8",
 );
 const shaderSource = readFileSync(
-  new URL("../src/raster-image-shader.ts", import.meta.url),
+  new URL("../src/raster-image-layer-import-shader.ts", import.meta.url),
   "utf8",
 );
 const controllerSource = readFileSync(
@@ -31,10 +31,6 @@ const engineSource = readFileSync(
   "utf8",
 );
 const htmlSource = readFileSync(new URL("../index.html", import.meta.url), "utf8");
-const uploadTextureSource = runtimeSource.slice(
-  runtimeSource.indexOf("const uploadTexture = engine.device.createTexture"),
-  runtimeSource.indexOf("const uniformBuffer = engine.device.createBuffer"),
-);
 
 function u32be(value) {
   return [(value >>> 24) & 255, (value >>> 16) & 255, (value >>> 8) & 255, value & 255];
@@ -309,33 +305,72 @@ await assert.rejects(
 
 assert.match(runtimeSource, /copyExternalImageToTexture\(/);
 assert.match(runtimeSource, /premultipliedAlpha: false/);
-assert.match(uploadTextureSource, /GPUTextureUsage\.COPY_DST/);
 assert.match(
-  uploadTextureSource,
-  /GPUTextureUsage\.RENDER_ATTACHMENT/,
+  runtimeSource,
+  /GPUTextureUsage\.COPY_DST[\s\S]{0,100}GPUTextureUsage\.TEXTURE_BINDING[\s\S]{0,100}GPUTextureUsage\.RENDER_ATTACHMENT/,
   "copyExternalImageToTexture destination must allow Dawn's render path",
 );
 assert.match(runtimeSource, /format: "rgba8unorm-srgb"/);
 assert.match(runtimeSource, /GPUTextureUsage\.RENDER_ATTACHMENT/);
-assert.match(runtimeSource, /rasterImageMipmapPipeline/);
-assert.match(runtimeSource, /rasterImagePremultiplyPipeline/);
-assert.match(runtimeSource, /rasterImageLayerBounds/);
-assert.match(runtimeSource, /semanticPresentationDirtyRect = mergeDirtyRects/);
+assert.match(runtimeSource, /allocateLayerGpuResources\(/);
+assert.match(runtimeSource, /createLayerColdStorageCandidate\(/);
+assert.match(runtimeSource, /scene\.addRasterAboveSelection\(record\.id\)/);
+assert.match(runtimeSource, /record\.storageTileMask\.fill\(0\)/);
+assert.match(runtimeSource, /markLayerStorageRect\(record\.storageTileMask, bounds\)/);
+assert.match(runtimeSource, /applyRasterImportHistory/);
+assert.match(runtimeSource, /insertRasterAt\(action\.layerId, sceneInsertionIndex/);
+assert.match(runtimeSource, /action\.rasterLayerIndex = targetIndex/);
+assert.match(runtimeSource, /action\.sceneIndex = currentSceneIndex/);
+assert.match(runtimeSource, /activeRasterLayerIdBefore/);
+assert.match(runtimeSource, /rollback Undo import fallito/);
+assert.match(runtimeSource, /rollback Redo import fallito/);
+const redoImportStart = runtimeSource.indexOf("async function redoRasterImport(");
+const redoImportEnd = runtimeSource.indexOf("export async function applyRasterImportHistory", redoImportStart);
+assert.notEqual(redoImportStart, -1);
+assert.notEqual(redoImportEnd, -1);
+const redoImportSource = runtimeSource.slice(redoImportStart, redoImportEnd);
+assert.match(
+  redoImportSource,
+  /prepareActiveLayerForSwitch\(\);[\s\S]{0,3000}if \(attached\)[\s\S]{0,1500}else \{[\s\S]{0,500}engine\.layerStack\.setActiveIndex\(originalIndex\);[\s\S]{0,120}await engine\.activateLayer\(previousIndex, "structural-history"\);/,
+  "Redo pre-attach rollback must always rehydrate the prepared original layer",
+);
+assert.doesNotMatch(
+  redoImportSource,
+  /else \{[\s\S]{0,300}if \(engine\.layerStack\.active\.id !== originalActiveId\)/,
+  "Redo must not skip original activation merely because its selected id did not change",
+);
 assert.match(runtimeSource, /runGpuAllocationTransaction\(/);
 assert.match(runtimeSource, /preflight: \(inspection\)/);
 assert.match(runtimeSource, /RASTER_IMAGE_MAXIMUM_IMPORT_PEAK_BYTES/);
 assert.match(runtimeSource, /RASTER_IMAGE_MAXIMUM_TOTAL_GPU_BYTES/);
-assert.match(runtimeSource, /rasterImageGpuMemoryBytes\(engine\)/);
+assert.match(runtimeSource, /nativeRasterImportResidentBytes\(engine\)/);
+assert.match(runtimeSource, /engine\.getStats\(\)\.gpuMemory\.countedTotalMiB/);
+assert.match(runtimeSource, /export function rasterImageGpuMemoryBytes/);
 assert.match(runtimeSource, /rasterImageImportsInFlight/);
-assert.match(runtimeSource, /finally \{\s*releaseDecodedRasterImage\(decoded\)/);
+assert.match(runtimeSource, /if \(decoded\) releaseDecodedRasterImage\(decoded\)/);
 assert.match(engineSource, /sweepRasterImageGpuResources\(\): number/);
 assert.doesNotMatch(runtimeSource, /CanvasRenderingContext2D|getContext\("2d"\)|drawImage\(/);
+assert.doesNotMatch(runtimeSource, /addImageAboveSelection\(/);
 assert.match(shaderSource, /textureSampleGrad\(/);
 assert.match(shaderSource, /fragmentPremultiplyMain/);
 assert.match(shaderSource, /straightLinear\.rgb \* straightLinear\.a/);
 assert.match(shaderSource, /texelOverlap/);
 assert.match(shaderSource, /for \(var y = 0; y < 3/);
-assert.match(shaderSource, /source \* clamp\(image\.opacity/);
+assert.match(engineSource, /kind: "raster-import"/);
+assert.match(engineSource, /commitRasterImportHistory\(history/);
+assert.match(runtimeSource, /commitHistory\(historySeed\);[\s\S]{0,100}seed = null/);
+assert.match(engineSource, /publishActiveLayerChange\(\): void \{[\s\S]{0,240}catch \(error\)/);
+assert.doesNotMatch(runtimeSource, /callbacks\.onActiveLayerChange/);
+const publicResultStart = runtimeSource.indexOf("export interface NativeRasterImageImportResult");
+const publicResultEnd = runtimeSource.indexOf("export type RasterImageImportResult", publicResultStart);
+assert.notEqual(publicResultStart, -1);
+assert.notEqual(publicResultEnd, -1);
+assert.doesNotMatch(
+  runtimeSource.slice(publicResultStart, publicResultEnd),
+  /history|GPUTexture|LayerRecord|LayerColdStorageResources/,
+  "the public import DTO must not expose authoritative history/GPU ownership",
+);
+assert.match(engineSource, /beginRasterLayerTransform\(\)/);
 
 assert.match(engineSource, /beginVectorHistoryEdit\(scope: "property" \| "transform"/);
 assert.match(engineSource, /async cancelVectorHistoryEdit\(\): Promise<boolean>/);
@@ -345,6 +380,9 @@ assert.match(
   "Cancel must keep the global edit gate until async rollback succeeds",
 );
 assert.match(controllerSource, /beginVectorHistoryEdit\("transform"\)/);
+assert.match(controllerSource, /beginRasterLayerTransform\(\)/);
+assert.match(controllerSource, /commitRasterLayerTransform\(\)/);
+assert.match(controllerSource, /cancelRasterLayerTransform\(\)/);
 assert.match(controllerSource, /private async applyTransformSession/);
 assert.match(controllerSource, /private async cancelTransformSession/);
 assert.match(controllerSource, /private abortActiveTransformInteraction/);
@@ -353,14 +391,11 @@ assert.match(controllerSource, /event\.key === "Enter"/);
 assert.match(controllerSource, /paletteLocked = this\.sceneOperationBusy \|\| this\.transformSessionOpen/);
 assert.match(controllerSource, /private enterTouchNavigation\(\)/);
 assert.match(controllerSource, /this\.host\.rotateViewBy\(/);
-assert.match(controllerSource, /imageTransformOnly/);
-assert.match(
-  controllerSource,
-  /item\.kind === "image"[\s\S]{0,120}item\.imageNode\.visible && item\.imageNode\.opacity > 0/,
-);
+assert.match(controllerSource, /kind: "raster-layer"/);
+assert.match(controllerSource, /importata subito come raster/);
 assert.match(htmlSource, /option value="transform">Trasforma/);
 assert.match(htmlSource, /id="transformApply"/);
 assert.match(htmlSource, /id="transformCancel"/);
 assert.match(htmlSource, /accept="\.png,\.jpg,\.jpeg,\.webp,\.avif/);
 
-console.log("Raster image import, WebGPU mip/compositor and transform transaction verified.");
+console.log("Native raster image import and shared Transform transaction verified.");

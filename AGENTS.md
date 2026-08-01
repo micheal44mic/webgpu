@@ -2871,58 +2871,73 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   tile del target e UI. Nessuna nuova misura prestazionale o QA browser è stata
   attribuita a questo passo; candidato locale non committato e non pubblicato.
 
-### Immagini raster semantiche e Trasforma transazionale (1 agosto 2026)
+### Import raster nativo e Trasforma raster WebGPU (1 agosto 2026)
 
 - L'importazione esterna accetta immagini statiche PNG, JPEG/JPG, WebP e AVIF
   quando il decoder nativo del browser supporta il formato. La strategia
   `byte-sniff-static-png-jpeg-webp-avif-create-image-bitmap-v1` verifica i byte,
-  non la sola estensione/MIME, e rifiuta esplicitamente APNG, WebP animati,
-  sequenze AVIF e JPEG concatenati/MPO. Non esistono fallback Canvas2D, decoder
-  JavaScript, ridimensionamenti automatici o conversioni silenziose.
-- Ogni immagine resta un nodo semantico indipendente nello stack misto, con
-  visibilità, opacità, ordine, posizione, scala e rotazione. Strategia stack
-  `heterogeneous-bottom-up-raster-vector-image-segmented-composition-vector-raster-replacement-v7`:
-  un'immagine visibile interrompe le run raster/vettoriali ed è composta nel suo
-  slot esatto; un nodo nascosto o a opacità zero non crea pass o barriere.
-- Storage firmato
-  `immutable-rgba8unorm-srgb-linear-premultiplied-full-mips-history-reachable-sweep-v2`:
-  il bitmap decodificato viene caricato una sola volta, premoltiplicato in
-  lineare sulla GPU e conservato come `rgba8unorm-srgb` immutabile con catena mip
-  completa. Le risorse vengono liberate soltanto quando non sono più raggiunte
-  né dalla scena, né da Undo/Redo, né da una transazione aperta.
-- La piramide usa
-  `webgpu-straight-srgb-to-linear-premultiplied-exact-area-npot-mips-v2`:
-  filtro area esatto anche sui bordi NPOT, senza halo scuri da alpha straight.
-  Il display usa quad WebGPU premoltiplicati, trilineare e anisotropia `8`; oltre
-  la soglia pixel della vista (`581%`) passa a mip 0 nearest per mostrare i texel
-  fedelmente. Nessun pixel dell'immagine viene compositato sul CPU.
-- Il tool Canvas `Trasforma` lavora su testo, SVG e immagini. Il primo gesto
-  apre una sola edit globale; spostamento, scala e rotazione possono continuare
-  per più gesti e producono una sola azione soltanto con `Applica`. `Annulla` o
-  `Esc` ripristinano atomicamente lo stato iniziale senza sporcare Undo/Redo;
-  `Invio` applica soltanto fuori da un drag. Durante la sessione palette,
-  selezione, livelli e altri tool restano bloccati. Due dita continuano a
-  navigare pan/zoom/rotazione della vista senza entrare nella cronologia.
-- Il percorso interattivo aggiorna direttamente il solo uniform buffer della
-  trasformazione, riusandone l'upload quando invariato; la cache di presentazione
-  invalida l'unione conservativa fra bbox precedente e nuova, anche fuori dal
-  documento. Non vengono ricreate texture o mip durante il gesto.
-- Limiti senza fallback: file sorgente `64 MiB`, singolo asset GPU `256 MiB`,
-  totale immagini raggiungibili da scena+cronologia `256 MiB` e picco logico
-  aggregato d'importazione `384 MiB`. Quest'ultimo comprende residente già
-  esistente, bitmap decodificata, copia completa d'ispezione, texture temporanea
-  di upload, mip finali e uniform. Il controllo avviene prima del decode e di
-  nuovo prima dell'allocazione; importazioni concorrenti sullo stesso motore
-  vengono rifiutate.
-- Verifica finale: `tsc --noEmit`, tutte le diciassette suite `*:verify`,
-  `git diff --check` e build Vite production con preparazione Sites verdi.
-  Sono inclusi test numerici NPOT, soglia memoria `5016/5017`, terza immagine
-  4K, parser/decoder/cleanup, stack invisibile, resource sweep, dirty rect e
-  transazione Apply/Cancel/Undo/Redo. Non è stata eseguita una nuova misura
-  prestazionale canonica iPhone né una QA browser attribuita a questo passo.
-- Fix di compatibilità Dawn/WebGPU del collaudo import: la texture temporanea
-  destinazione di `copyExternalImageToTexture` dichiara ora insieme
-  `COPY_DST`, `TEXTURE_BINDING` e `RENDER_ATTACHMENT`. Il flag aggiuntivo è una
-  capability richiesta dal percorso di copia esterna e non introduce un pass o
-  un'allocazione supplementare; `image:verify`, TypeScript e build production
-  includono la regressione statica dedicata.
+  non la sola estensione/MIME, e rifiuta APNG, WebP animati, sequenze AVIF e
+  JPEG concatenati/MPO. Non esistono fallback Canvas2D/CPU, decoder JavaScript,
+  ridimensionamenti automatici o conversioni silenziose.
+- L'immagine decodificata diventa immediatamente un normale `LayerRecord`
+  raster del documento: non viene più creato un nodo immagine semantico. La GPU
+  converte sRGB straight in lineare premoltiplicato, scrive la texture hot del
+  livello, genera le mip necessarie, marca i tile occupati e crea il seed cold
+  autorevole per Undo/Redo. Da quel momento brush, riempimento, effetti,
+  riferimento, visibilità e stack usano esattamente lo stesso percorso degli
+  altri livelli raster.
+- La texture temporanea destinazione di `copyExternalImageToTexture` dichiara
+  `COPY_DST | TEXTURE_BINDING | RENDER_ATTACHMENT`, come richiesto da Dawn. Le
+  mip NPOT usano filtro area esatto su alpha premoltiplicato e vengono generate
+  soltanto fino al LOD richiesto per l'inserimento; nessun pixel passa dal CPU.
+- Limiti senza fallback: file sorgente `64 MiB`, singola importazione residente
+  `256 MiB` e picco logico complessivo `384 MiB`. Il controllo aggrega le
+  importazioni ancora raggiungibili da scena o cronologia, la memoria GPU già
+  contata, l'eventuale cold uscente e il picco decode/upload/hot/seed; una
+  seconda importazione concorrente viene rifiutata.
+- Il tool Canvas `Trasforma` usa ora lo stesso percorso raster per ogni livello
+  non vettoriale, non soltanto per le immagini importate. All'apertura copia una
+  sola volta la bbox tile realmente occupata in uno scratch WebGPU immutabile,
+  aggiunge una guardia trasparente di `2 px` e genera la sua piramide mip NPOT.
+  Durante spostamento, scala e rotazione aggiorna soltanto un uniform buffer da
+  `64 B`; un solo frame latest-only esegue l'inversa affine. Poiché WebGPU non
+  espone `clamp-to-border`, lo shader ricostruisce il bordo trasparente a ogni
+  mip con due `textureSampleLevel` e trilineare esplicita; su ingrandimento o
+  LOD intero un ramo draw-uniforme salta la seconda fetch. Il footprint è
+  isotropo perché la trasformazione ammette solo scala uniforme+rotazione.
+- La bbox geometrica dell'overlay resta separata dal supporto raster effettivo:
+  non incorpora guardie artificiali, mentre dirty rect, storage tile, effetti e
+  checkpoint conservano la `samplingBounds` scale/rotation-aware che comprende
+  davvero i texel filtrati. Questo evita sia il taglio dei bordi ingranditi sia
+  halo dei mip profondi da `clamp-to-edge`, e mantiene live, Apply e Redo
+  byte-coerenti anche se la sola coda del filtro entra nel documento. La
+  cronologia conserva inoltre `geometryBounds` separatamente dal raster
+  filtrato, così una successiva sessione Trasforma recupera lo stesso pivot e
+  overlay; se dopo la trasformazione intervengono Paint o Riempimento torna
+  invece alla bbox reale del contenuto. Identità e traslazioni intere a scala
+  `1` usano padding zero, quindi non allargano bbox o tile.
+- `Applica` materializza il risultato raster e pubblica un solo checkpoint
+  globale; `Annulla`/`Esc` ripristinano esattamente mip 0 senza aggiungere storia.
+  Tutte le allocazioni di checkpoint, azione e maschera precedono il taglio del
+  Redo. Gli errori di rollback conservano le risorse ancora necessarie e
+  bloccano nuove modifiche invece di distruggere lo scratch o lasciare scena,
+  selezione e livello attivo divergenti.
+- Gli observer UI di stato, statistiche, storia, scena e livello attivo sono
+  non-fallibili rispetto alle transazioni: un errore viene loggato ma non può
+  lasciare `historyBusy` bloccato o separare cursore e documento. Il replay
+  raster ripubblica inoltre la bbox dopo Undo/Redo, così l'overlay Trasforma non
+  resta stale. `Aggiungi livello`, che non è ancora un'azione journalled,
+  invalida un eventuale ramo Redo soltanto dopo l'attivazione riuscita.
+- Le pipeline di trasformazione vengono create sotto scope WebGPU validation +
+  OOM e soltanto per il `LayerFormat` attivo. L'obiettivo prestazionale e di QA
+  è RGBA8; RGBA16F rimane compatibilità passiva e non riceve precompilazione o
+  ottimizzazioni dedicate, perché è previsto che venga rimosso.
+- Verifica finale su questa macchina: `tsc --noEmit`, tutte le diciotto suite
+  `*:verify`, `git diff --check` e build Vite production/Sites verdi. Le
+  regressioni coprono decoder e cleanup, budget aggregati, tile, guardia e bbox,
+  ABI affine, frame latest-only, transazioni Apply/Cancel, Undo/Redo strutturale
+  e rollback. QA browser desktop reale su NVIDIA Ampere/RGBA8: import PNG
+  `512×512`, sessione Trasforma, drag, Applica, Undo, Annulla della sessione
+  modale riaperta e Redo; overlay e posizione tornano coerenti e la console
+  resta priva di warning/errori. È prova funzionale, non benchmark; non sono
+  state eseguite una misura canonica iPhone o una pubblicazione Sites.

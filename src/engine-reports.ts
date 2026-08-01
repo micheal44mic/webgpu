@@ -772,7 +772,10 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     + vectorTextGpuScratchMiB
     + vectorTextGpuGeometryMiB
     + mixedSceneLinearMiB;
-  const rasterImageMiB = rasterImageGpuMemoryBytes(engine) / MEBIBYTE_BYTES;
+  const rasterImageMiB = (
+    rasterImageGpuMemoryBytes(engine)
+    + (engine.activeRasterTransformSession?.memoryBytes ?? 0)
+  ) / MEBIBYTE_BYTES;
   const rasterStrokeStyledMiB =
     (rasterStroke?.styledMemoryBytes ?? 0) / MEBIBYTE_BYTES;
   const rasterStrokeCoverageMiB =
@@ -831,10 +834,18 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
   const historyActionsHoldingGpu = new Set([
     ...engine.historyActions,
     ...engine.discardedVectorRasterHistoryActions,
+    ...engine.discardedRasterImportHistoryActions,
+    ...engine.discardedRasterTransformHistoryActions,
   ]);
   let historyRasterSeedBytes = 0;
   for (const action of historyActionsHoldingGpu) {
-    if (action.kind === "vector-rasterize") historyRasterSeedBytes += action.seed.memoryBytes;
+    if (
+      action.kind === "vector-rasterize"
+      || action.kind === "raster-import"
+      || action.kind === "raster-transform"
+    ) {
+      historyRasterSeedBytes += action.seed?.memoryBytes ?? 0;
+    }
   }
   const historyGpuMiB = (historyGpu.allocatedBytes + historyRasterSeedBytes) / MEBIBYTE_BYTES;
   const historyGpuUsedMiB =

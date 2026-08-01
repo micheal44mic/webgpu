@@ -1,5 +1,5 @@
 export const HISTORY_JOURNAL_STRATEGY =
-  "global-order-per-layer-clear-barrier-vector-seed-fill-v4" as const;
+  "global-order-per-layer-clear-barrier-raster-checkpoints-v5" as const;
 
 /**
  * One entry of the global journal. `layerId` is what makes a single stack usable
@@ -9,8 +9,20 @@ export const HISTORY_JOURNAL_STRATEGY =
 export type JournalAction =
   | {
     id: number;
-    kind: "stroke" | "fill" | "clear" | "vector-rasterize";
+    kind: "stroke" | "fill" | "clear";
     layerId: number;
+  }
+  | {
+    id: number;
+    kind: "vector-rasterize" | "raster-import";
+    layerId: number;
+  }
+  | {
+    id: number;
+    kind: "raster-transform";
+    layerId: number;
+    /** Null means that Apply moved every resulting pixel outside the document. */
+    baseBounds: unknown | null;
   }
   | {
     id: number;
@@ -18,12 +30,33 @@ export type JournalAction =
   };
 
 export interface JournalBatch {
+  actionId: number;
   layerId: number;
 }
 
 export interface LayerReplaySelection<T extends JournalBatch> {
   batches: T[];
   visibleStrokeIds: Set<number>;
+}
+
+export type JournalCheckpointAction<TAction extends JournalAction = JournalAction> = Extract<
+  TAction,
+  { kind: "vector-rasterize" | "raster-import" | "raster-transform" }
+>;
+
+export interface LayerReplayCheckpoint<TAction extends JournalAction = JournalAction> {
+  action: JournalCheckpointAction<TAction>;
+  actionIndex: number;
+}
+
+export interface LayerReplayAfterCheckpointSelection<
+  T extends JournalBatch,
+  TAction extends JournalAction = JournalAction,
+>
+  extends LayerReplaySelection<T> {
+  checkpoint: LayerReplayCheckpoint<TAction> | null;
+  /** First global action that still needs batch replay. */
+  firstReplayActionIndex: number;
 }
 
 /**
@@ -79,11 +112,81 @@ export function hasVisibleContent(
   cursor: number,
   layerId?: number,
 ): boolean {
-  const first = firstVisibleActionIndex(actions, cursor, layerId);
-  return actions.slice(first, Math.max(0, Math.min(cursor, actions.length))).some(
-    (action) => action.kind !== "vector" && action.kind !== "clear"
-      && (layerId === undefined || action.layerId === layerId),
-  );
+  const end = Math.max(0, Math.min(cursor, actions.length));
+  const contentByLayer = new Map<number, boolean>();
+  for (let index = 0; index < end; index += 1) {
+    const action = actions[index];
+    if (action.kind === "vector") continue;
+    if (layerId !== undefined && action.layerId !== layerId) continue;
+    if (action.kind === "clear") {
+      contentByLayer.set(action.layerId, false);
+    } else if (action.kind === "raster-transform") {
+      contentByLayer.set(action.layerId, action.baseBounds !== null);
+    } else {
+      contentByLayer.set(action.layerId, true);
+    }
+  }
+  return layerId === undefined
+    ? [...contentByLayer.values()].some(Boolean)
+    : contentByLayer.get(layerId) ?? false;
+}
+
+/** Latest post-action tiled checkpoint after this layer's most recent Clear. */
+export function latestLayerReplayCheckpoint<TAction extends JournalAction>(
+  actions: readonly TAction[],
+  cursor: number,
+  layerId: number,
+): LayerReplayCheckpoint<TAction> | null {
+  const end = Math.max(0, Math.min(cursor, actions.length));
+  const first = firstVisibleActionIndex(actions, end, layerId);
+  let checkpoint: LayerReplayCheckpoint<TAction> | null = null;
+  for (let index = first; index < end; index += 1) {
+    const action = actions[index];
+    if (
+      action.kind !== "vector"
+      && action.layerId === layerId
+      && (
+        action.kind === "vector-rasterize"
+        || action.kind === "raster-import"
+        || action.kind === "raster-transform"
+      )
+    ) {
+      checkpoint = {
+        action: action as JournalCheckpointAction<TAction>,
+        actionIndex: index,
+      };
+    }
+  }
+  return checkpoint;
+}
+
+/** Paint/Blend/Fill action ids that must run after hydrating the latest seed. */
+export function visibleRasterBatchActionIdsAfterCheckpoint<TAction extends JournalAction>(
+  actions: readonly TAction[],
+  cursor: number,
+  layerId: number,
+  checkpoint: LayerReplayCheckpoint<TAction> | null = latestLayerReplayCheckpoint(
+    actions,
+    cursor,
+    layerId,
+  ),
+): Set<number> {
+  const end = Math.max(0, Math.min(cursor, actions.length));
+  const first = checkpoint
+    ? checkpoint.actionIndex + 1
+    : firstVisibleActionIndex(actions, end, layerId);
+  const visible = new Set<number>();
+  for (let index = first; index < end; index += 1) {
+    const action = actions[index];
+    if (
+      action.kind !== "vector"
+      && action.layerId === layerId
+      && (action.kind === "stroke" || action.kind === "fill")
+    ) {
+      visible.add(action.id);
+    }
+  }
+  return visible;
 }
 
 /**
@@ -117,6 +220,39 @@ export function selectLayerReplay<T extends JournalBatch>(
 }
 
 /**
+ * Checkpoint-aware replay selector. The legacy selector above deliberately
+ * remains unchanged until the engine runtime migrates, while this helper makes
+ * the new ordering executable and independently testable.
+ */
+export function selectLayerReplayAfterCheckpoint<
+  T extends JournalBatch,
+  TAction extends JournalAction,
+>(
+  actions: readonly TAction[],
+  cursor: number,
+  batches: readonly T[],
+  layerId: number,
+): LayerReplayAfterCheckpointSelection<T, TAction> {
+  const checkpoint = latestLayerReplayCheckpoint(actions, cursor, layerId);
+  const visibleIds = visibleRasterBatchActionIdsAfterCheckpoint(
+    actions,
+    cursor,
+    layerId,
+    checkpoint,
+  );
+  return {
+    checkpoint,
+    firstReplayActionIndex: checkpoint
+      ? checkpoint.actionIndex + 1
+      : firstVisibleActionIndex(actions, cursor, layerId),
+    batches: selectBatchesForLayer(batches, layerId).filter((batch) =>
+      visibleIds.has(batch.actionId)
+    ),
+    visibleStrokeIds: visibleIds,
+  };
+}
+
+/**
  * True when undo/redo would cross an action whose layer no longer exists.
  *
  * Crossing into another LIVE layer is supported: the active layer moves with the
@@ -131,7 +267,7 @@ export function historyStepTargetsMissingLayer(
 ): boolean {
   const action = delta < 0 ? actions[cursor - 1] : actions[cursor];
   if (!action || action.kind === "vector") return false;
-  if (action.kind === "vector-rasterize") {
+  if (action.kind === "vector-rasterize" || action.kind === "raster-import") {
     return delta < 0
       ? !liveLayerIds.has(action.layerId)
       : liveLayerIds.has(action.layerId);
@@ -150,6 +286,8 @@ export function layersWithVisibleContent(
       action.kind === "stroke"
       || action.kind === "fill"
       || action.kind === "vector-rasterize"
+      || action.kind === "raster-import"
+      || action.kind === "raster-transform"
     ) {
       layers.add(action.layerId);
     }

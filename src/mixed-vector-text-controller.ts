@@ -1,4 +1,8 @@
-import type { MixedSceneSnapshot, PointerSample } from "./engine-types";
+import type {
+  MixedSceneSnapshot,
+  PointerSample,
+  RasterTransformSnapshot,
+} from "./engine-types";
 import {
   MIXED_SCENE_STACK_STRATEGY,
   VECTOR_TEXT_BLOCK_SHADOW_STRATEGY,
@@ -111,13 +115,28 @@ export interface MixedVectorTextHost {
     id: number,
     draws: readonly VectorTextGpuDraw[],
   ): Promise<{ layerId: number; chunkCount: number; tileCount: number }>;
-  importRasterImageFile(file: File): Promise<Readonly<RasterImageNode>>;
+  importRasterImageFile(file: File): Promise<{
+    layerId: number;
+    name: string;
+    sourceName: string;
+    mimeType: string;
+    sourceWidth: number;
+    sourceHeight: number;
+    sourceBytes: number;
+    tileCount: number;
+  }>;
   updateRasterImageNode(
     id: number,
     update: Partial<Omit<RasterImageNode, "id" | "kind" | "document" | "visible" | "opacity">>,
   ): Readonly<RasterImageNode>;
   moveRasterImageNode(id: number, delta: -1 | 1): Promise<boolean>;
   deleteRasterImageNode(id: number): Promise<Readonly<RasterImageNode>>;
+  beginRasterLayerTransform(): Promise<RasterTransformSnapshot | null>;
+  updateRasterLayerTransform(
+    update: Partial<Pick<RasterTransformSnapshot, "x" | "y" | "scale" | "rotation">>,
+  ): RasterTransformSnapshot;
+  commitRasterLayerTransform(): Promise<boolean>;
+  cancelRasterLayerTransform(): Promise<boolean>;
   zoomBy(factor: number, clientX?: number, clientY?: number): void;
   panByClientDelta(deltaClientX: number, deltaClientY: number): void;
   beginViewRotationGesture(): void;
@@ -175,6 +194,12 @@ interface Point {
 
 type VectorDrawableNode = VectorTextNode | VectorSvgNode;
 type VectorSceneNode = VectorDrawableNode | RasterImageNode;
+interface RasterLayerTransformNode extends RasterTransformSnapshot {
+  kind: "raster-layer";
+  id: number;
+  name: string;
+}
+type TransformSceneNode = VectorSceneNode | RasterLayerTransformNode;
 type VectorSceneNodeUpdate =
   | Partial<Omit<VectorTextNode, "id" | "visible" | "opacity">>
   | Partial<Omit<VectorSvgNode, "id" | "document" | "visible" | "opacity">>
@@ -203,7 +228,7 @@ interface ActiveInteraction {
   mode: InteractionMode;
   startClient: Point;
   startLayer: Point;
-  startModel: VectorSceneNode;
+  startModel: TransformSceneNode;
   startDistance: number;
   startAngle: number;
   distortPointIndex: number | null;
@@ -242,16 +267,22 @@ function requiredElement<ElementType extends HTMLElement>(id: string): ElementTy
   return found as ElementType;
 }
 
-function isTextNode(node: Readonly<VectorSceneNode>): node is Readonly<VectorTextNode> {
+function isTextNode(node: Readonly<TransformSceneNode>): node is Readonly<VectorTextNode> {
   return node.kind === "text";
 }
 
-function isSvgNode(node: Readonly<VectorSceneNode>): node is Readonly<VectorSvgNode> {
+function isSvgNode(node: Readonly<TransformSceneNode>): node is Readonly<VectorSvgNode> {
   return node.kind === "svg";
 }
 
-function isImageNode(node: Readonly<VectorSceneNode>): node is Readonly<RasterImageNode> {
+function isImageNode(node: Readonly<TransformSceneNode>): node is Readonly<RasterImageNode> {
   return node.kind === "image";
+}
+
+function isRasterLayerTransformNode(
+  node: Readonly<TransformSceneNode>,
+): node is Readonly<RasterLayerTransformNode> {
+  return node.kind === "raster-layer";
 }
 
 function vectorNodeKey(
@@ -270,6 +301,22 @@ function copyNode(node: Readonly<VectorSceneNode>): VectorSceneNode {
     : isSvgNode(node)
       ? cloneVectorSvgNode(node)
       : { ...node, document: { ...node.document } };
+}
+
+function transformNodeKey(node: Readonly<TransformSceneNode>): MixedSceneSnapshot["selectedKey"] {
+  return isRasterLayerTransformNode(node)
+    ? `raster:${node.layerId}`
+    : vectorNodeKey(node);
+}
+
+function copyTransformNode(node: Readonly<TransformSceneNode>): TransformSceneNode {
+  return isRasterLayerTransformNode(node)
+    ? {
+      ...node,
+      sourceBounds: { ...node.sourceBounds },
+      resultBounds: node.resultBounds ? { ...node.resultBounds } : null,
+    }
+    : copyNode(node);
 }
 
 function percentile(values: readonly number[], ratio: number): number {
@@ -605,6 +652,9 @@ export class MixedVectorTextController {
   private distortEditingNodeId: number | null = null;
   private transformToolActive = false;
   private transformSessionOpen = false;
+  private transformSessionKind: "vector" | "raster" | null = null;
+  private rasterTransformPreparing = false;
+  private rasterTransformRecoveryOnly = false;
   private transformCommitBusy = false;
   private readonly touchContacts = new Map<number, Point>();
   private touchNavigationGesture: TouchNavigationGesture | null = null;
@@ -645,7 +695,7 @@ export class MixedVectorTextController {
       return;
     }
     this.transformToolActive = active;
-    const hasSelection = this.selectedVectorNode() !== null;
+    const hasSelection = this.selectedTransformNode() !== null;
     this.interactionCanvas.hidden = !active || !hasSelection;
     this.interactionCanvas.classList.toggle("is-editing", active && hasSelection);
     this.interactionCanvas.setAttribute(
@@ -654,21 +704,54 @@ export class MixedVectorTextController {
     );
     this.updateTransformCommitUi();
     this.scheduleRender();
+    if (active) void this.prepareSelectedRasterTransform();
   }
 
   private updateTransformCommitUi(): void {
     this.transformCommitBar.hidden = !this.transformSessionOpen;
-    this.transformApplyButton.disabled = this.transformCommitBusy;
+    this.transformApplyButton.disabled =
+      this.transformCommitBusy || this.rasterTransformRecoveryOnly;
     this.transformCancelButton.disabled = this.transformCommitBusy;
   }
 
+  private rasterTransformSessionStillOpen(): boolean {
+    const snapshot = this.host.getMixedSceneSnapshot();
+    if (!snapshot) return false;
+    const selected = snapshot.items.find((item) => item.key === snapshot.selectedKey);
+    return selected?.kind === "raster" && selected.rasterTransform !== null;
+  }
+
   private async applyTransformSession(): Promise<void> {
-    if (!this.transformSessionOpen || this.transformCommitBusy || this.activeInteraction) return;
+    if (
+      !this.transformSessionOpen
+      || this.transformCommitBusy
+      || this.activeInteraction
+      || this.rasterTransformRecoveryOnly
+    ) return;
+    const rasterSession = this.transformSessionKind === "raster";
     this.transformCommitBusy = true;
     this.updateTransformCommitUi();
     try {
-      this.host.commitVectorHistoryEdit();
+      if (rasterSession) {
+        await this.host.commitRasterLayerTransform();
+      } else {
+        this.host.commitVectorHistoryEdit();
+      }
       this.transformSessionOpen = false;
+      this.transformSessionKind = null;
+      this.rasterTransformRecoveryOnly = false;
+    } catch (error) {
+      // A successful rollback closes the GPU transaction; a failed rollback
+      // deliberately retains the immutable scratch for a recovery-only Cancel.
+      if (rasterSession) {
+        const retained = this.rasterTransformSessionStillOpen();
+        this.transformSessionOpen = retained;
+        this.transformSessionKind = retained ? "raster" : null;
+        this.rasterTransformRecoveryOnly = retained;
+      }
+      this.status.textContent = error instanceof Error
+        ? `Applicazione Trasforma non riuscita: ${error.message}`
+        : "Applicazione Trasforma non riuscita.";
     } finally {
       this.transformCommitBusy = false;
       this.updateTransformCommitUi();
@@ -679,15 +762,26 @@ export class MixedVectorTextController {
 
   private async cancelTransformSession(): Promise<void> {
     if (!this.transformSessionOpen || this.transformCommitBusy || this.activeInteraction) return;
+    const rasterSession = this.transformSessionKind === "raster";
     this.transformCommitBusy = true;
     this.updateTransformCommitUi();
     try {
-      const cancelled = await this.host.cancelVectorHistoryEdit();
+      const cancelled = rasterSession
+        ? await this.host.cancelRasterLayerTransform()
+        : await this.host.cancelVectorHistoryEdit();
       if (!cancelled) {
         throw new Error("Nessuna trasformazione aperta da annullare.");
       }
       this.transformSessionOpen = false;
+      this.transformSessionKind = null;
+      this.rasterTransformRecoveryOnly = false;
     } catch (error) {
+      if (rasterSession) {
+        const retained = this.rasterTransformSessionStillOpen();
+        this.transformSessionOpen = retained;
+        this.transformSessionKind = retained ? "raster" : null;
+        this.rasterTransformRecoveryOnly = retained;
+      }
       this.status.textContent = error instanceof Error
         ? `Annullamento Trasforma non riuscito: ${error.message}`
         : "Annullamento Trasforma non riuscito.";
@@ -729,7 +823,7 @@ export class MixedVectorTextController {
     const interaction = this.activeInteraction;
     const interactionStillTargetsSelection =
       interaction !== null
-      && snapshot.selectedKey === vectorNodeKey(interaction.startModel);
+      && snapshot.selectedKey === transformNodeKey(interaction.startModel);
     this.snapshot = snapshot;
     const liveTextNodeIds = new Set(
       snapshot.items
@@ -762,8 +856,9 @@ export class MixedVectorTextController {
       );
     }
     const node = this.selectedVectorNode();
+    const transformNode = this.selectedTransformNode();
     const textNode = node && isTextNode(node) ? node : null;
-    const vectorSelected = node !== null;
+    const transformSelected = transformNode !== null;
     if (
       !textNode
       || textNode.id !== this.distortEditingNodeId
@@ -772,10 +867,10 @@ export class MixedVectorTextController {
     ) {
       this.distortEditingNodeId = null;
     }
-    this.interactionCanvas.hidden = !this.transformToolActive || !vectorSelected;
+    this.interactionCanvas.hidden = !this.transformToolActive || !transformSelected;
     this.interactionCanvas.classList.toggle(
       "is-editing",
-      this.transformToolActive && vectorSelected,
+      this.transformToolActive && transformSelected,
     );
     this.interactionCanvas.classList.toggle(
       "is-distort-editing",
@@ -783,7 +878,7 @@ export class MixedVectorTextController {
     );
     this.interactionCanvas.setAttribute(
       "aria-hidden",
-      String(!this.transformToolActive || !vectorSelected),
+      String(!this.transformToolActive || !transformSelected),
     );
     this.syncControlsFromSelection(node);
     if (imageTransformOnly && node && isImageNode(node)) {
@@ -802,11 +897,9 @@ export class MixedVectorTextController {
     } else {
       this.scheduleRender();
     }
+    if (this.transformToolActive) void this.prepareSelectedRasterTransform();
   }
   scheduleViewSync(): void {
-    if (!this.snapshot?.items.some((item) => item.kind !== "raster")) {
-      return;
-    }
     this.markPendingViewRender();
     this.scheduleRender();
   }
@@ -994,11 +1087,12 @@ export class MixedVectorTextController {
     this.setImageImportStatus(`Decodifica di ${file.name}…`);
     this.syncControlsFromSelection(this.selectedVectorNode());
     try {
-      const node = await this.host.importRasterImageFile(file);
-      const sourceMiB = node.document.sourceBytes / MEBIBYTE_BYTES;
+      const imported = await this.host.importRasterImageFile(file);
+      const sourceMiB = imported.sourceBytes / MEBIBYTE_BYTES;
       this.setImageImportStatus(
-        `${node.name} importata · ${node.document.width}×${node.document.height} px · `
-        + `${sourceMiB.toFixed(2)} MiB file · mipmap WebGPU pronta.`,
+        `${imported.name} importata subito come raster · `
+        + `${imported.sourceWidth}×${imported.sourceHeight} px · ${imported.tileCount} tile · `
+        + `${sourceMiB.toFixed(2)} MiB file. Pennello, Riempimento ed effetti già attivi.`,
       );
     } catch (error) {
       this.setImageImportStatus(
@@ -1140,6 +1234,81 @@ export class MixedVectorTextController {
     if (selected?.kind === "svg") return selected.svgNode;
     if (selected?.kind === "image") return selected.imageNode;
     return null;
+  }
+
+  private selectedTransformNode(): Readonly<TransformSceneNode> | null {
+    const vector = this.selectedVectorNode();
+    if (vector) return vector;
+    const snapshot = this.snapshot;
+    if (!snapshot) return null;
+    const selected = snapshot.items.find((item) => item.key === snapshot.selectedKey);
+    if (selected?.kind !== "raster" || !selected.rasterHasContent) return null;
+    const transform = selected.rasterTransform;
+    const bounds = transform?.sourceBounds ?? selected.rasterContentBounds;
+    if (!bounds) return null;
+    const centerX = bounds.x + bounds.width * 0.5;
+    const centerY = bounds.y + bounds.height * 0.5;
+    return {
+      kind: "raster-layer",
+      id: selected.rasterLayerId,
+      layerId: selected.rasterLayerId,
+      name: selected.rasterLayerName,
+      x: transform?.x ?? centerX,
+      y: transform?.y ?? centerY,
+      scale: transform?.scale ?? 1,
+      rotation: transform?.rotation ?? 0,
+      sourceBounds: { ...bounds },
+      resultBounds: transform?.resultBounds
+        ? { ...transform.resultBounds }
+        : { ...bounds },
+    };
+  }
+
+  private async prepareSelectedRasterTransform(): Promise<void> {
+    const node = this.selectedTransformNode();
+    if (
+      !this.transformToolActive
+      || !node
+      || !isRasterLayerTransformNode(node)
+      || this.transformSessionOpen
+      || this.rasterTransformPreparing
+    ) {
+      return;
+    }
+    this.rasterTransformPreparing = true;
+    this.status.textContent = `Preparo Trasforma GPU per ${node.name}…`;
+    try {
+      const state = await this.host.beginRasterLayerTransform();
+      if (!state) return;
+      const current = this.selectedTransformNode();
+      if (
+        !this.transformToolActive
+        || !current
+        || !isRasterLayerTransformNode(current)
+        || current.layerId !== state.layerId
+      ) {
+        await this.host.cancelRasterLayerTransform();
+        return;
+      }
+      this.transformSessionOpen = true;
+      this.transformSessionKind = "raster";
+      this.rasterTransformRecoveryOnly = false;
+      this.updateTransformCommitUi();
+      this.scheduleRender();
+    } catch (error) {
+      const retained = this.rasterTransformSessionStillOpen();
+      if (retained) {
+        this.transformSessionOpen = true;
+        this.transformSessionKind = "raster";
+        this.rasterTransformRecoveryOnly = true;
+        this.updateTransformCommitUi();
+      }
+      this.status.textContent = error instanceof Error
+        ? error.message
+        : "Trasforma raster WebGPU non disponibile.";
+    } finally {
+      this.rasterTransformPreparing = false;
+    }
   }
 
   private selectedTextNode(): Readonly<VectorTextNode> | null {
@@ -1747,6 +1916,17 @@ export class MixedVectorTextController {
         >,
       );
     }
+  }
+
+  private updateTransformNode(
+    node: Readonly<TransformSceneNode>,
+    update: Partial<Pick<RasterTransformSnapshot, "x" | "y" | "scale" | "rotation">>,
+  ): void {
+    if (isRasterLayerTransformNode(node)) {
+      this.host.updateRasterLayerTransform(update);
+      return;
+    }
+    this.updateSelectedNode(update as VectorSceneNodeUpdate);
   }
 
   private syncControlsFromSelection(node: Readonly<VectorSceneNode> | null): void {
@@ -2705,6 +2885,7 @@ export class MixedVectorTextController {
     this.syncCanvasSizes(view);
     const snapshot = this.snapshot;
     const selectedNode = this.selectedVectorNode();
+    const selectedTransformNode = this.selectedTransformNode();
 
     let gpuMemoryMiB = 0;
     let blurGpuMemoryMiB = 0;
@@ -2850,28 +3031,41 @@ export class MixedVectorTextController {
     }
     this.liveGpuMemoryMiB = gpuMemoryMiB;
     this.viewportTextureCount = textureCount;
-    if (selectedNode) {
-      const key = vectorNodeKey(selectedNode);
-      this.metrics = this.displayedMetricsByNodeKey.get(key)
-        ?? (isTextNode(selectedNode)
-          ? this.measureText(selectedNode)
-          : isSvgNode(selectedNode)
+    if (selectedTransformNode) {
+      if (isRasterLayerTransformNode(selectedTransformNode)) {
+        const source = selectedTransformNode.sourceBounds;
+        const centerX = source.x + source.width * 0.5;
+        const centerY = source.y + source.height * 0.5;
+        this.metrics = {
+          left: source.x - centerX,
+          top: source.y - centerY,
+          right: source.x + source.width - centerX,
+          bottom: source.y + source.height - centerY,
+          baseline: 0,
+        };
+      } else {
+        const key = vectorNodeKey(selectedTransformNode);
+        this.metrics = this.displayedMetricsByNodeKey.get(key)
+        ?? (isTextNode(selectedTransformNode)
+          ? this.measureText(selectedTransformNode)
+          : isSvgNode(selectedTransformNode)
             ? {
-            left: selectedNode.document.bounds.left,
-            top: selectedNode.document.bounds.top,
-            right: selectedNode.document.bounds.right,
-            bottom: selectedNode.document.bounds.bottom,
+            left: selectedTransformNode.document.bounds.left,
+            top: selectedTransformNode.document.bounds.top,
+            right: selectedTransformNode.document.bounds.right,
+            bottom: selectedTransformNode.document.bounds.bottom,
             baseline: 0,
           }
             : {
-              left: -selectedNode.document.width * 0.5,
-              top: -selectedNode.document.height * 0.5,
-              right: selectedNode.document.width * 0.5,
-              bottom: selectedNode.document.height * 0.5,
+              left: -selectedTransformNode.document.width * 0.5,
+              top: -selectedTransformNode.document.height * 0.5,
+              right: selectedTransformNode.document.width * 0.5,
+              bottom: selectedTransformNode.document.height * 0.5,
               baseline: 0,
             });
+      }
       if (this.transformToolActive) {
-        this.renderInteractionOverlay(view, selectedNode);
+        this.renderInteractionOverlay(view, selectedTransformNode);
       } else {
         this.clearInteractionOverlay(view);
       }
@@ -2991,7 +3185,7 @@ export class MixedVectorTextController {
     };
   }
 
-  private localToLayer(point: Point, node: Readonly<VectorSceneNode>): Point {
+  private localToLayer(point: Point, node: Readonly<TransformSceneNode>): Point {
     const scaledX = point.x * node.scale;
     const scaledY = point.y * node.scale;
     const cosine = Math.cos(node.rotation);
@@ -3002,7 +3196,7 @@ export class MixedVectorTextController {
     };
   }
 
-  private layerToLocal(point: Point, node: Readonly<VectorSceneNode>): Point {
+  private layerToLocal(point: Point, node: Readonly<TransformSceneNode>): Point {
     const deltaX = point.x - node.x;
     const deltaY = point.y - node.y;
     const cosine = Math.cos(node.rotation);
@@ -3016,7 +3210,7 @@ export class MixedVectorTextController {
 
   private textCorners(
     view: VectorTextViewState,
-    node: Readonly<VectorSceneNode>,
+    node: Readonly<TransformSceneNode>,
   ): readonly Point[] {
     const localCorners: readonly Point[] = [
       { x: this.metrics.left, y: this.metrics.top },
@@ -3032,7 +3226,7 @@ export class MixedVectorTextController {
   private rotationHandle(
     corners: readonly Point[],
     view: VectorTextViewState,
-    node: Readonly<VectorSceneNode>,
+    node: Readonly<TransformSceneNode>,
   ): Point {
     const topCenter = {
       x: (corners[0].x + corners[1].x) * 0.5,
@@ -3208,7 +3402,7 @@ export class MixedVectorTextController {
 
   private renderInteractionOverlay(
     view: VectorTextViewState,
-    node: Readonly<VectorSceneNode>,
+    node: Readonly<TransformSceneNode>,
   ): void {
     this.clearInteractionOverlay(view);
     const context = this.interactionContext;
@@ -3291,7 +3485,7 @@ export class MixedVectorTextController {
     point: Point,
     corners: readonly Point[],
     view: VectorTextViewState,
-    node: Readonly<VectorSceneNode>,
+    node: Readonly<TransformSceneNode>,
   ): TransformHandle | "rotate" | null {
     const backingPerCssPixel = view.canvasWidth / Math.max(1, view.cssWidth);
     const hitRadius = HANDLE_HIT_RADIUS_CSS_PX * backingPerCssPixel;
@@ -3348,7 +3542,7 @@ export class MixedVectorTextController {
       return;
     }
     if (interaction.mode !== "pan") {
-      this.updateSelectedNode({
+      this.updateTransformNode(interaction.startModel, {
         x: interaction.startModel.x,
         y: interaction.startModel.y,
         scale: interaction.startModel.scale,
@@ -3372,6 +3566,7 @@ export class MixedVectorTextController {
     if (!interaction.openedTransformSession || !this.transformSessionOpen) return;
     this.host.commitVectorHistoryEdit();
     this.transformSessionOpen = false;
+    this.transformSessionKind = null;
     this.updateTransformCommitUi();
     this.syncControlsFromSelection(this.selectedVectorNode());
   }
@@ -3426,7 +3621,8 @@ export class MixedVectorTextController {
   }
 
   private onPointerDown(event: PointerEvent): void {
-    const node = this.selectedVectorNode();
+    if (this.transformCommitBusy || this.rasterTransformRecoveryOnly) return;
+    const node = this.selectedTransformNode();
     if (!this.transformToolActive || !node) return;
     if (event.pointerType === "touch") {
       event.preventDefault();
@@ -3473,14 +3669,22 @@ export class MixedVectorTextController {
     if (!mode) return;
     let openedTransformSession = false;
     if (mode !== "pan") {
-      openedTransformSession = !this.transformSessionOpen;
-      if (!this.host.beginVectorHistoryEdit("transform")) {
-        return;
-      }
-      if (!this.transformSessionOpen) {
-        this.transformSessionOpen = true;
-        this.updateTransformCommitUi();
-        this.syncControlsFromSelection(node);
+      if (isRasterLayerTransformNode(node)) {
+        if (!this.transformSessionOpen || this.transformSessionKind !== "raster") {
+          void this.prepareSelectedRasterTransform();
+          return;
+        }
+      } else {
+        openedTransformSession = !this.transformSessionOpen;
+        if (!this.host.beginVectorHistoryEdit("transform")) {
+          return;
+        }
+        if (!this.transformSessionOpen) {
+          this.transformSessionOpen = true;
+          this.transformSessionKind = "vector";
+          this.updateTransformCommitUi();
+          this.syncControlsFromSelection(node);
+        }
       }
     }
 
@@ -3492,7 +3696,7 @@ export class MixedVectorTextController {
       mode,
       startClient: { x: event.clientX, y: event.clientY },
       startLayer: layerPoint,
-      startModel: copyNode(node),
+      startModel: copyTransformNode(node),
       startDistance: Math.max(1e-6, pointDistance(layerPoint, center)),
       startAngle: Math.atan2(layerPoint.y - center.y, layerPoint.x - center.x),
       distortPointIndex,
@@ -3570,7 +3774,7 @@ export class MixedVectorTextController {
       return;
     }
     if (interaction.mode === "move") {
-      this.updateSelectedNode({
+      this.updateTransformNode(interaction.startModel, {
         x: interaction.startModel.x + layerPoint.x - interaction.startLayer.x,
         y: interaction.startModel.y + layerPoint.y - interaction.startLayer.y,
       });
@@ -3579,7 +3783,7 @@ export class MixedVectorTextController {
         x: interaction.startModel.x,
         y: interaction.startModel.y,
       });
-      this.updateSelectedNode({
+      this.updateTransformNode(interaction.startModel, {
         scale: Math.min(
           MAXIMUM_SCALE,
           Math.max(
@@ -3593,7 +3797,7 @@ export class MixedVectorTextController {
         layerPoint.y - interaction.startModel.y,
         layerPoint.x - interaction.startModel.x,
       );
-      this.updateSelectedNode({
+      this.updateTransformNode(interaction.startModel, {
         rotation: interaction.startModel.rotation + angle - interaction.startAngle,
       });
     }
