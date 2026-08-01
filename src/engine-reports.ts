@@ -59,6 +59,7 @@ import {
 } from "./engine-stats";
 import { EFFECTS_WORKING_SET_STRATEGY } from "./effects-workbench";
 import { EFFECTS_SCRATCH_POOL_STRATEGY } from "./effects-scratch-pool";
+import { rasterImageGpuMemoryBytes } from "./engine-raster-image-runtime";
 import {
   RASTER_STROKE_COMPACT_SCRATCH_MAX_WIDTH,
   RASTER_STROKE_SCRATCH_STRATEGY,
@@ -771,6 +772,7 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     + vectorTextGpuScratchMiB
     + vectorTextGpuGeometryMiB
     + mixedSceneLinearMiB;
+  const rasterImageMiB = rasterImageGpuMemoryBytes(engine) / MEBIBYTE_BYTES;
   const rasterStrokeStyledMiB =
     (rasterStroke?.styledMemoryBytes ?? 0) / MEBIBYTE_BYTES;
   const rasterStrokeCoverageMiB =
@@ -849,6 +851,7 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     paintBuffersMiB,
     presentationCacheMiB,
     vectorTextPresentationMiB,
+    rasterImageMiB,
     rasterStrokeStyledMiB,
     rasterStrokeCoverageMiB,
     rasterStrokeMaskAndControlMiB,
@@ -880,6 +883,7 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     paintBuffersMiB,
     presentationCacheMiB,
     vectorTextPresentationMiB,
+    rasterImageMiB,
     rasterStrokeStyledMiB,
     rasterStrokeCoverageMiB,
     rasterStrokeMaskAndControlMiB,

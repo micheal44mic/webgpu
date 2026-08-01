@@ -500,6 +500,7 @@ let historyState: HistoryState = {
   cursor: 0,
   storedBaseStamps: 0,
   logicalStampBytes: 0,
+  openEdit: null,
 };
 
 const pageSearchParams = new URLSearchParams(window.location.search);
@@ -520,6 +521,7 @@ const iphoneMemoryLimitTestRequested =
   pageSearchParams.get("iphoneMemoryLimitTest") === "1";
 const vectorTextEditorEnabled = true;
 element<HTMLElement>("gpuMemoryVectorTextRow").hidden = false;
+element<HTMLElement>("gpuMemoryRasterImageRow").hidden = false;
 const layerMemoryFixtureRequested =
   layerMemoryStressTestRequested
   || iphoneMemoryLimitTestRequested
@@ -584,7 +586,9 @@ const engine = new BrushEngine(canvas, {
       ? "Testo selezionato: pennello sospeso; il raster di lavoro resta caldo."
       : selectedItem?.kind === "svg"
         ? "SVG selezionato: pennello sospeso; il raster di lavoro resta caldo."
-      : "Raster selezionato: pennello attivo.";
+        : selectedItem?.kind === "image"
+          ? "Immagine selezionata: pennello sospeso; usa Trasforma e poi Applica o Annulla."
+          : "Raster selezionato: pennello attivo.";
   },
   onActiveLayerChange(activeIndex) {
     // A global undo can move the active layer on its own. Without resyncing, the
@@ -640,7 +644,7 @@ let controlsPanelOpen = true;
 let gpuMemoryPanelOpen = false;
 let previousGpuMemoryTotalMiB: number | null = null;
 let gpuMemoryDeltaTimer: number | null = null;
-type CanvasTool = BrushSettings["tool"] | "fill";
+type CanvasTool = BrushSettings["tool"] | "fill" | "transform";
 let activeBrushTool: BrushSettings["tool"] = "paint";
 let activeCanvasTool: CanvasTool = "paint";
 
@@ -662,6 +666,7 @@ const gpuMemoryRows: ReadonlyArray<
   ["gpuMemoryShape", "shapeTextureMiB"],
   ["gpuMemoryPaintBuffers", "paintBuffersMiB"],
   ["gpuMemoryVectorText", "vectorTextPresentationMiB"],
+  ["gpuMemoryRasterImage", "rasterImageMiB"],
   ["gpuMemoryPresentation", "presentationCacheMiB"],
   ["gpuMemoryStrokeStyled", "rasterStrokeStyledMiB"],
   ["gpuMemoryStrokeCoverage", "rasterStrokeCoverageMiB"],
@@ -708,12 +713,14 @@ function configureBrushToolUi(
     restoreSnapshot
     && previousCanvasTool !== tool
     && previousCanvasTool !== "fill"
+    && previousCanvasTool !== "transform"
   ) {
     captureActiveToolControls();
   }
   activeCanvasTool = tool;
   const fill = tool === "fill";
-  if (!fill) {
+  const transform = tool === "transform";
+  if (!fill && !transform) {
     activeBrushTool = tool;
   }
   setControlValue("brushTool", tool);
@@ -725,7 +732,7 @@ function configureBrushToolUi(
   spacing.min = blend ? "1" : "0.25";
   spacing.max = blend ? "400" : "25";
   spacing.step = blend ? "1" : "0.25";
-  if (restoreSnapshot && !fill && previousBrushTool !== tool) {
+  if (restoreSnapshot && !fill && !transform && previousBrushTool !== tool) {
     const snapshot = toolControlSnapshots[tool];
     setControlValue("brushSize", snapshot.size);
     setControlValue("spacing", snapshot.spacing);
@@ -741,7 +748,7 @@ function configureBrushToolUi(
     "colorJitterSection",
     "positionJitterSection",
   ]) {
-    element<HTMLElement>(id).hidden = blend || fill;
+    element<HTMLElement>(id).hidden = blend || fill || transform;
   }
   for (const id of [
     "brushShapeControl",
@@ -752,10 +759,11 @@ function configureBrushToolUi(
     "grainSection",
     "renderingModeMemoryHint",
   ]) {
-    element<HTMLElement>(id).hidden = fill;
+    element<HTMLElement>(id).hidden = fill || transform;
   }
   element<HTMLElement>("fillToleranceControl").hidden = !fill;
   element<HTMLElement>("blendControls").hidden = !blend;
+  vectorTextPrototype?.setTransformToolActive(transform);
   updateRenderingModeControlAvailability();
   if (engineInitialized) {
     void engine.setFillToolSelected(fill).then((ready) => {
@@ -768,7 +776,7 @@ function configureBrushToolUi(
 }
 
 function updateRenderingModeControlAvailability(): void {
-  if (activeCanvasTool === "fill") return;
+  if (activeCanvasTool === "fill" || activeCanvasTool === "transform") return;
   const blendTool = activeBrushTool === "blend";
   const size = element<HTMLInputElement>("brushSize");
   size.max = blendTool ? "1024" : "1500";
@@ -2090,6 +2098,7 @@ function updateHumanStrokeControls(): void {
 function operationLocked(): boolean {
   return !engineInitialized
     || layerSwitching
+    || historyState.openEdit === "transform"
     || historyUiBusy
     || historyState.busy
     || benchmarkRunning
@@ -2118,6 +2127,7 @@ function updateHistoryControls(): void {
   undoStrokeButton.disabled = locked || !historyState.canUndo;
   redoStrokeButton.disabled = locked || !historyState.canRedo;
   clearLayerButton.disabled = locked;
+  element<HTMLSelectElement>("brushTool").disabled = locked;
   const paintToolInactive = activeCanvasTool !== "paint";
   benchmarkButton.disabled = locked || paintToolInactive;
   benchmarkStampsInput.disabled = locked || paintToolInactive;
@@ -2409,9 +2419,11 @@ element<HTMLSelectElement>("brushTool").addEventListener("change", () => {
     ? "blend"
     : selected === "fill"
       ? "fill"
+      : selected === "transform"
+        ? "transform"
       : "paint";
   configureBrushToolUi(tool, true);
-  if (tool !== "fill") {
+  if (tool === "paint" || tool === "blend") {
     applyBrushControls();
   } else {
     updateControlOutputs();
@@ -3557,7 +3569,11 @@ function renderMixedSceneList(
     const output = row.querySelector<HTMLOutputElement>("output")!;
     const selected = item.key === scene.selectedKey;
 
-    row.className = `layer-row ${item.kind === "raster" ? "is-raster-node" : "is-text-node"}`;
+    row.className = `layer-row ${item.kind === "raster"
+      ? "is-raster-node"
+      : item.kind === "image"
+        ? "is-image-node"
+        : "is-text-node"}`;
     reference.hidden = item.kind !== "raster";
     reference.onclick = null;
     select.disabled = locked;
@@ -3680,7 +3696,7 @@ function renderMixedSceneList(
       range.onchange = () => {
         void changeVectorTextOpacity(node.id, Number(range.value) / 100);
       };
-    } else {
+    } else if (item.kind === "svg") {
       const node = item.svgNode;
       visibility.disabled = locked;
       visibility.textContent = node.visible ? "◆" : "◇";
@@ -3722,7 +3738,39 @@ function renderMixedSceneList(
       range.oninput = () => { output.value = `${range.value}%`; };
       range.onchange = () => {
         void changeVectorSvgOpacity(node.id, Number(range.value) / 100);
-      };    }
+      };
+    } else {
+      const node = item.imageNode;
+      visibility.disabled = locked;
+      visibility.textContent = node.visible ? "▣" : "□";
+      visibility.setAttribute("aria-pressed", String(node.visible));
+      visibility.setAttribute(
+        "aria-label",
+        `${node.visible ? "Nascondi" : "Mostra"} ${node.name}`,
+      );
+      visibility.onclick = () => {
+        void changeRasterImageVisibility(node.id, !node.visible);
+      };
+
+      name.textContent = node.name;
+      const sourceMiB = node.document.sourceBytes / (1024 * 1024);
+      hint.textContent = `immagine · ${node.document.width}×${node.document.height} px · `
+        + `${sourceMiB.toFixed(2)} MiB · mipmap WebGPU`;
+      select.title =
+        "Immagine non distruttiva: seleziona Trasforma, poi Applica o Annulla.";
+      select.onclick = () => {
+        void selectMixedSceneItem(item.key);
+      };
+
+      range.disabled = locked;
+      range.value = String(Math.round(node.opacity * 100));
+      range.setAttribute("aria-label", `Opacità ${node.name}`);
+      output.value = `${range.value}%`;
+      range.oninput = () => { output.value = `${range.value}%`; };
+      range.onchange = () => {
+        void changeRasterImageOpacity(node.id, Number(range.value) / 100);
+      };
+    }
   });
 }
 
@@ -3951,6 +3999,42 @@ async function changeLayerOpacity(index: number, opacity: number): Promise<void>
   }
 }
 
+async function changeRasterImageVisibility(id: number, visible: boolean): Promise<void> {
+  if (layerSwitching || interactionLocked()) return;
+  layerSwitching = true;
+  updateHistoryControls();
+  try {
+    await engine.setRasterImageNodeVisibility(id, visible);
+    layerSwitchResult.textContent = visible ? "Immagine mostrata." : "Immagine nascosta.";
+  } catch (error) {
+    layerSwitchResult.textContent = error instanceof Error
+      ? error.message
+      : "Visibilità immagine non aggiornata.";
+  } finally {
+    layerSwitching = false;
+    updateHistoryControls();
+    updateStats(engine.getStats());
+  }
+}
+
+async function changeRasterImageOpacity(id: number, opacity: number): Promise<void> {
+  if (layerSwitching || interactionLocked()) return;
+  layerSwitching = true;
+  updateHistoryControls();
+  try {
+    await engine.setRasterImageNodeOpacity(id, opacity);
+    layerSwitchResult.textContent = `Opacità immagine ${Math.round(opacity * 100)}%.`;
+  } catch (error) {
+    layerSwitchResult.textContent = error instanceof Error
+      ? error.message
+      : "Opacità immagine non aggiornata.";
+  } finally {
+    layerSwitching = false;
+    updateHistoryControls();
+    updateStats(engine.getStats());
+  }
+}
+
 async function changeLayerReference(index: number, enabled: boolean): Promise<void> {
   if (layerSwitching || interactionLocked()) {
     return;
@@ -4009,7 +4093,11 @@ async function selectMixedSceneItem(
   updateHistoryControls();
   try {
     await showLayerLoading(
-      item.kind === "raster" ? "Caricamento raster…" : "Preparazione testo…",
+      item.kind === "raster"
+        ? "Caricamento raster…"
+        : item.kind === "image"
+          ? "Preparazione immagine WebGPU…"
+          : "Preparazione vettore…",
     );
     const result = await engine.setActiveMixedSceneItem(key);
     if (item.kind === "raster") {
@@ -4022,9 +4110,13 @@ async function selectMixedSceneItem(
     }
     layerSwitchResult.textContent = item.kind === "text"
       ? "Testo selezionato: pennello sospeso; il raster di lavoro resta caldo."
-      : result
-        ? `Raster ${result.toIndex + 1} attivo in ${result.totalMs.toFixed(0)} ms.`
-        : "Raster selezionato: pennello attivo.";
+      : item.kind === "svg"
+        ? "SVG selezionato: usa Trasforma oppure modifica colori ed effetti."
+        : item.kind === "image"
+          ? "Immagine selezionata: scegli Trasforma, poi Applica o Annulla."
+          : result
+            ? `Raster ${result.toIndex + 1} attivo in ${result.totalMs.toFixed(0)} ms.`
+            : "Raster selezionato: pennello attivo.";
   } catch (error) {
     layerSwitchResult.textContent = error instanceof Error
       ? error.message
@@ -4816,7 +4908,7 @@ function toPointerSample(event: PointerEvent): PointerSample {
 }
 
 let activePointerId: number | null = null;
-let pointerMode: "paint" | "fill" | "pan" | "rotate" | "touch-navigation" | null = null;
+let pointerMode: "paint" | "fill" | "transform" | "pan" | "rotate" | "touch-navigation" | null = null;
 let lastPanClientX = 0;
 let lastPanClientY = 0;
 
@@ -4924,6 +5016,8 @@ canvas.addEventListener("pointerdown", (event) => {
       ? "pan"
       : activeCanvasTool === "fill"
         ? "fill"
+        : activeCanvasTool === "transform"
+          ? "transform"
         : "paint";
   canvas.setPointerCapture(event.pointerId);
 
@@ -4939,6 +5033,9 @@ canvas.addEventListener("pointerdown", (event) => {
     fillPointerStartX = event.clientX;
     fillPointerStartY = event.clientY;
     fillPointerMoved = false;
+  } else if (pointerMode === "transform") {
+    // Le maniglie semantiche vivono sull’overlay; sul raster sottostante il
+    // tool Trasforma non deve mai avviare una pennellata.
   } else {
     const sample = toPointerSample(event);
     if (humanStrokeRecordingArmed) {
@@ -5018,6 +5115,9 @@ canvas.addEventListener("pointermove", (event) => {
     ) > 8) {
       fillPointerMoved = true;
     }
+    return;
+  }
+  if (pointerMode === "transform") {
     return;
   }
 

@@ -77,6 +77,7 @@
               <option value="paint">Paint</option>
               <option value="blend">Blend — dry</option>
               <option value="fill">Riempimento</option>
+              <option value="transform">Trasforma</option>
             </select>
           </label>
 
@@ -304,7 +305,7 @@
         </section>
 
         <section id="vectorTextPrototypeSection" hidden>
-          <h2>Testo e SVG vettoriali · livelli separati</h2>
+          <h2>Testo, SVG e immagini · livelli separati</h2>
           <p class="result">
             Testo, SVG e raster restano oggetti separati ma condividono una
             timeline Undo/Redo ordinata per gesto.
@@ -325,6 +326,21 @@
             />
             <p id="vectorSvgImportStatus" class="result" aria-live="polite">
               Importazione vettoriale sicura: path e colori restano modificabili.
+            </p>
+          </div>
+
+          <div class="vector-image-import-card">
+            <button id="rasterImageImportButton" class="primary wide" type="button">
+              Importa immagine…
+            </button>
+            <input
+              id="rasterImageFileInput"
+              type="file"
+              accept=".png,.jpg,.jpeg,.webp,.avif,image/png,image/jpeg,image/webp,image/avif"
+              hidden
+            />
+            <p id="rasterImageImportStatus" class="result" aria-live="polite">
+              PNG, JPEG, WebP e AVIF statici · texture e mipmap generate in WebGPU.
             </p>
           </div>
 
@@ -447,6 +463,14 @@
             </button>
             <p class="result">
               Qualità massima WebGPU: MSAA 4× e blocchi allineati ai tile 256 px.
+            </p>
+          </div>
+
+          <div id="rasterImageSelectedControls" class="vector-image-selected" hidden>
+            <h3>Immagine selezionata</h3>
+            <p id="rasterImageSourceSummary" class="result"></p>
+            <p class="result">
+              Scegli Trasforma per spostare, ridimensionare o ruotare; Applica crea un solo Undo.
             </p>
           </div>
 
@@ -1225,7 +1249,12 @@
       <main class="stage">
         <canvas id="gpuCanvas" aria-label="Canvas di disegno WebGPU"></canvas>
         <canvas id="vectorTextPresentationCanvas" aria-hidden="true" hidden></canvas>
-        <canvas id="vectorTextInteractionCanvas" aria-label="Selezione del testo vettoriale" hidden></canvas>
+        <canvas id="vectorTextInteractionCanvas" aria-label="Selezione e trasformazione degli elementi" hidden></canvas>
+        <div id="transformCommitBar" class="transform-commit-bar" role="toolbar" aria-label="Conferma trasformazione" hidden>
+          <span>Trasforma</span>
+          <button id="transformCancel" type="button">Annulla</button>
+          <button id="transformApply" class="primary" type="button">Applica</button>
+        </div>
         <canvas id="tipPreviewCanvas" aria-hidden="true"></canvas>
         <output
           id="viewZoomPercent"
@@ -1271,6 +1300,7 @@
               <div data-memory-row><dt>Livelli fusi · mip 0</dt><dd id="gpuMemoryLayerComposite">—</dd></div>
               <div data-memory-row><dt>Grain M1</dt><dd id="gpuMemoryGrain">—</dd></div>
               <div id="gpuMemoryVectorTextRow" data-memory-row hidden><dt>Testo vettoriale · cache schermo</dt><dd id="gpuMemoryVectorText">—</dd></div>
+              <div id="gpuMemoryRasterImageRow" data-memory-row hidden><dt>Immagini · texture e mipmap</dt><dd id="gpuMemoryRasterImage">—</dd></div>
 
               <div data-memory-row><dt>Shape 2K</dt><dd id="gpuMemoryShape">—</dd></div>
               <div data-memory-row><dt>Buffer Paint</dt><dd id="gpuMemoryPaintBuffers">—</dd></div>

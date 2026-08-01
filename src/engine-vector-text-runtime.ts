@@ -56,6 +56,7 @@ import {
   destroyVectorTextGpuResources,
 } from "./vector-text-gpu-resources";
 import { recordVectorHistoryAction } from "./engine-history-runtime";
+import { rasterImageBindGroupForNode } from "./engine-raster-image-runtime";
 
 export async function initializeVectorTextGpuRenderer(engine: BrushEngine): Promise<void> {
   engine.vectorTextGpuShaderModule = engine.device.createShaderModule({
@@ -888,14 +889,16 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
   const clearPipeline = engine.mixedSceneClearPipeline;
   const rasterPipeline = engine.mixedSceneRasterSegmentPipeline;
   const textPipeline = engine.mixedSceneTextSegmentPipeline;
+  const imagePipeline = engine.rasterImageMixedScenePipeline;
   const presentPipeline = engine.mixedScenePresentPipeline;
   if (
-    !engine.mixedSceneStack?.vectorCount
+    !engine.mixedSceneStack?.visibleSemanticCount
     || !linearView
     || !presentBindGroup
     || !clearPipeline
     || !rasterPipeline
     || !textPipeline
+    || !imagePipeline
     || !presentPipeline
     || !engine.presentationCacheView
   ) {
@@ -945,7 +948,20 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
       }
       continue;
     }
+    if (segment.kind === "image") {
+      const node = engine.mixedSceneStack.imageById(segment.item.imageNodeId);
+      const bindGroup = rasterImageBindGroupForNode(engine, node);
+      if (bindGroup) {
+        scenePass.setPipeline(imagePipeline);
+        scenePass.setBindGroup(0, bindGroup);
+        scenePass.draw(4, 1, 0, 0);
+      }
+      continue;
+    }
 
+    if (segment.kind !== "active-raster") {
+      continue;
+    }
     if (activePresentation.kind === "raster-stroke") {
       const pipeline = engine.mixedSceneActiveRasterStrokeDisplayPipeline;
       const sourceBindGroup = engine.rasterStrokeDisplayBindGroups.get(
@@ -1432,7 +1448,7 @@ export function writeVectorTextGpuDrawUniform(engine: BrushEngine,
 }
 
 export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number, height: number): void {
-  if (!engine.mixedSceneStack?.vectorCount) {
+  if (!engine.mixedSceneStack?.visibleSemanticCount) {
     engine.mixedSceneLinearTexture?.destroy();
     engine.mixedSceneLinearTexture = null;
     engine.mixedSceneLinearView = null;

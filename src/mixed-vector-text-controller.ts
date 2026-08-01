@@ -11,6 +11,7 @@ import {
   vectorTextInnerShadowLocalVector,
   vectorTextSingleShadowLocalVector,
   type MixedSceneItem,
+  type RasterImageNode,
   type VectorSvgNode,
   type VectorSvgNodeSeed,
   type VectorTextNode,
@@ -79,8 +80,9 @@ export interface MixedVectorTextHost {
   isPaintStrokeActive(): boolean;
   clearVectorTextPresentation(placement?: VectorTextPlacement): void;
   pruneVectorTextGpuMeshes(activeMeshKeys: ReadonlySet<string>): void;
-  beginVectorHistoryEdit(): boolean;
+  beginVectorHistoryEdit(scope?: "property" | "transform"): boolean;
   commitVectorHistoryEdit(): boolean;
+  cancelVectorHistoryEdit(): Promise<boolean>;
   addVectorTextNode(
     seed: VectorTextNodeSeed,
     name?: string,
@@ -109,8 +111,18 @@ export interface MixedVectorTextHost {
     id: number,
     draws: readonly VectorTextGpuDraw[],
   ): Promise<{ layerId: number; chunkCount: number; tileCount: number }>;
+  importRasterImageFile(file: File): Promise<Readonly<RasterImageNode>>;
+  updateRasterImageNode(
+    id: number,
+    update: Partial<Omit<RasterImageNode, "id" | "kind" | "document" | "visible" | "opacity">>,
+  ): Readonly<RasterImageNode>;
+  moveRasterImageNode(id: number, delta: -1 | 1): Promise<boolean>;
+  deleteRasterImageNode(id: number): Promise<Readonly<RasterImageNode>>;
   zoomBy(factor: number, clientX?: number, clientY?: number): void;
   panByClientDelta(deltaClientX: number, deltaClientY: number): void;
+  beginViewRotationGesture(): void;
+  rotateViewBy(deltaRadians: number, clientX?: number, clientY?: number): void;
+  endViewRotationGesture(): void;
 }
 
 export interface MixedVectorTextDiagnostics {
@@ -161,10 +173,12 @@ interface Point {
   y: number;
 }
 
-type VectorSceneNode = VectorTextNode | VectorSvgNode;
+type VectorDrawableNode = VectorTextNode | VectorSvgNode;
+type VectorSceneNode = VectorDrawableNode | RasterImageNode;
 type VectorSceneNodeUpdate =
   | Partial<Omit<VectorTextNode, "id" | "visible" | "opacity">>
-  | Partial<Omit<VectorSvgNode, "id" | "document" | "visible" | "opacity">>;
+  | Partial<Omit<VectorSvgNode, "id" | "document" | "visible" | "opacity">>
+  | Partial<Omit<RasterImageNode, "id" | "kind" | "document" | "visible" | "opacity">>;
 
 interface TextMetricsBox {
   left: number;
@@ -193,6 +207,14 @@ interface ActiveInteraction {
   startDistance: number;
   startAngle: number;
   distortPointIndex: number | null;
+  openedTransformSession: boolean;
+}
+
+interface TouchNavigationGesture {
+  centerX: number;
+  centerY: number;
+  distance: number;
+  angle: number;
 }
 
 const MEBIBYTE_BYTES = 1024 * 1024;
@@ -221,15 +243,33 @@ function requiredElement<ElementType extends HTMLElement>(id: string): ElementTy
 }
 
 function isTextNode(node: Readonly<VectorSceneNode>): node is Readonly<VectorTextNode> {
-  return "text" in node;
+  return node.kind === "text";
 }
 
-function vectorNodeKey(node: Readonly<VectorSceneNode>): `text:${number}` | `svg:${number}` {
-  return isTextNode(node) ? `text:${node.id}` : `svg:${node.id}`;
+function isSvgNode(node: Readonly<VectorSceneNode>): node is Readonly<VectorSvgNode> {
+  return node.kind === "svg";
+}
+
+function isImageNode(node: Readonly<VectorSceneNode>): node is Readonly<RasterImageNode> {
+  return node.kind === "image";
+}
+
+function vectorNodeKey(
+  node: Readonly<VectorSceneNode>,
+): `text:${number}` | `svg:${number}` | `image:${number}` {
+  return node.kind === "text"
+    ? `text:${node.id}`
+    : node.kind === "svg"
+      ? `svg:${node.id}`
+      : `image:${node.id}`;
 }
 
 function copyNode(node: Readonly<VectorSceneNode>): VectorSceneNode {
-  return isTextNode(node) ? cloneVectorTextNode(node) : cloneVectorSvgNode(node);
+  return isTextNode(node)
+    ? cloneVectorTextNode(node)
+    : isSvgNode(node)
+      ? cloneVectorSvgNode(node)
+      : { ...node, document: { ...node.document } };
 }
 
 function percentile(values: readonly number[], ratio: number): number {
@@ -325,6 +365,30 @@ export class MixedVectorTextController {
   );
   private readonly svgImportStatus = requiredElement<HTMLElement>(
     "vectorSvgImportStatus",
+  );
+  private readonly imageImportButton = requiredElement<HTMLButtonElement>(
+    "rasterImageImportButton",
+  );
+  private readonly imageFileInput = requiredElement<HTMLInputElement>(
+    "rasterImageFileInput",
+  );
+  private readonly imageImportStatus = requiredElement<HTMLElement>(
+    "rasterImageImportStatus",
+  );
+  private readonly imageSelectedControls = requiredElement<HTMLElement>(
+    "rasterImageSelectedControls",
+  );
+  private readonly imageSourceSummary = requiredElement<HTMLElement>(
+    "rasterImageSourceSummary",
+  );
+  private readonly transformCommitBar = requiredElement<HTMLElement>(
+    "transformCommitBar",
+  );
+  private readonly transformApplyButton = requiredElement<HTMLButtonElement>(
+    "transformApply",
+  );
+  private readonly transformCancelButton = requiredElement<HTMLButtonElement>(
+    "transformCancel",
   );
   private readonly textInput = requiredElement<HTMLInputElement>("vectorTextValue");
   private readonly fontFamilySelect = requiredElement<HTMLSelectElement>("vectorTextFontFamily");
@@ -539,6 +603,12 @@ export class MixedVectorTextController {
   private atomicEffectHoldCount = 0;
   private atomicEffectPendingNodes = 0;
   private distortEditingNodeId: number | null = null;
+  private transformToolActive = false;
+  private transformSessionOpen = false;
+  private transformCommitBusy = false;
+  private readonly touchContacts = new Map<number, Point>();
+  private touchNavigationGesture: TouchNavigationGesture | null = null;
+  private touchNavigationActive = false;
 
   constructor(private readonly host: MixedVectorTextHost) {
     const interactionContext = this.interactionCanvas.getContext("2d", {
@@ -570,7 +640,92 @@ export class MixedVectorTextController {
     this.syncScene(initialSnapshot);
   }
 
+  setTransformToolActive(active: boolean): void {
+    if (!active && this.transformSessionOpen) {
+      return;
+    }
+    this.transformToolActive = active;
+    const hasSelection = this.selectedVectorNode() !== null;
+    this.interactionCanvas.hidden = !active || !hasSelection;
+    this.interactionCanvas.classList.toggle("is-editing", active && hasSelection);
+    this.interactionCanvas.setAttribute(
+      "aria-hidden",
+      String(!active || !hasSelection),
+    );
+    this.updateTransformCommitUi();
+    this.scheduleRender();
+  }
+
+  private updateTransformCommitUi(): void {
+    this.transformCommitBar.hidden = !this.transformSessionOpen;
+    this.transformApplyButton.disabled = this.transformCommitBusy;
+    this.transformCancelButton.disabled = this.transformCommitBusy;
+  }
+
+  private async applyTransformSession(): Promise<void> {
+    if (!this.transformSessionOpen || this.transformCommitBusy || this.activeInteraction) return;
+    this.transformCommitBusy = true;
+    this.updateTransformCommitUi();
+    try {
+      this.host.commitVectorHistoryEdit();
+      this.transformSessionOpen = false;
+    } finally {
+      this.transformCommitBusy = false;
+      this.updateTransformCommitUi();
+      this.syncControlsFromSelection(this.selectedVectorNode());
+      this.scheduleRender();
+    }
+  }
+
+  private async cancelTransformSession(): Promise<void> {
+    if (!this.transformSessionOpen || this.transformCommitBusy || this.activeInteraction) return;
+    this.transformCommitBusy = true;
+    this.updateTransformCommitUi();
+    try {
+      const cancelled = await this.host.cancelVectorHistoryEdit();
+      if (!cancelled) {
+        throw new Error("Nessuna trasformazione aperta da annullare.");
+      }
+      this.transformSessionOpen = false;
+    } catch (error) {
+      this.status.textContent = error instanceof Error
+        ? `Annullamento Trasforma non riuscito: ${error.message}`
+        : "Annullamento Trasforma non riuscito.";
+    } finally {
+      this.transformCommitBusy = false;
+      this.updateTransformCommitUi();
+      this.syncControlsFromSelection(this.selectedVectorNode());
+      this.scheduleRender();
+    }
+  }
+
+  private abortActiveTransformInteraction(): void {
+    const interaction = this.activeInteraction;
+    if (!interaction) return;
+    if (interaction.mode !== "pan") {
+      this.restoreInteractionStart(interaction);
+    }
+    this.clearActiveInteraction(interaction);
+    if (this.interactionCanvas.hasPointerCapture(interaction.pointerId)) {
+      this.interactionCanvas.releasePointerCapture(interaction.pointerId);
+    }
+    this.scheduleRender();
+  }
+
   syncScene(snapshot: MixedSceneSnapshot): void {
+    const previousSnapshot = this.snapshot;
+    const previousSelected = previousSnapshot?.items.find(
+      (item) => item.key === previousSnapshot.selectedKey,
+    );
+    const nextSelected = snapshot.items.find((item) => item.key === snapshot.selectedKey);
+    const imageTransformOnly = Boolean(
+      this.transformSessionOpen
+      && previousSelected?.kind === "image"
+      && nextSelected?.kind === "image"
+      && previousSelected.imageNode.id === nextSelected.imageNode.id
+      && previousSnapshot?.items.length === snapshot.items.length
+      && previousSnapshot.items.every((item, index) => item.key === snapshot.items[index]?.key),
+    );
     const interaction = this.activeInteraction;
     const interactionStillTargetsSelection =
       interaction !== null
@@ -617,15 +772,36 @@ export class MixedVectorTextController {
     ) {
       this.distortEditingNodeId = null;
     }
-    this.interactionCanvas.hidden = !vectorSelected;
-    this.interactionCanvas.classList.toggle("is-editing", vectorSelected);
+    this.interactionCanvas.hidden = !this.transformToolActive || !vectorSelected;
+    this.interactionCanvas.classList.toggle(
+      "is-editing",
+      this.transformToolActive && vectorSelected,
+    );
     this.interactionCanvas.classList.toggle(
       "is-distort-editing",
       this.distortEditingNodeId !== null,
     );
-    this.interactionCanvas.setAttribute("aria-hidden", String(!vectorSelected));
+    this.interactionCanvas.setAttribute(
+      "aria-hidden",
+      String(!this.transformToolActive || !vectorSelected),
+    );
     this.syncControlsFromSelection(node);
-    this.scheduleRender();
+    if (imageTransformOnly && node && isImageNode(node)) {
+      const view = this.host.getVectorTextViewState();
+      this.syncCanvasSizes(view);
+      this.metrics = {
+        left: -node.document.width * 0.5,
+        top: -node.document.height * 0.5,
+        right: node.document.width * 0.5,
+        bottom: node.document.height * 0.5,
+        baseline: 0,
+      };
+      if (this.transformToolActive) this.renderInteractionOverlay(view, node);
+      else this.clearInteractionOverlay(view);
+      this.updateStatus(view, node);
+    } else {
+      this.scheduleRender();
+    }
   }
   scheduleViewSync(): void {
     if (!this.snapshot?.items.some((item) => item.kind !== "raster")) {
@@ -806,6 +982,39 @@ export class MixedVectorTextController {
     }
   }
 
+  private setImageImportStatus(message: string, failed = false): void {
+    this.imageImportStatus.textContent = message;
+    this.imageImportStatus.classList.toggle("error", failed);
+    this.imageImportStatus.classList.toggle("ok", !failed);
+  }
+
+  private async importImageFile(file: File): Promise<void> {
+    if (this.sceneOperationBusy || this.transformSessionOpen) return;
+    this.sceneOperationBusy = true;
+    this.setImageImportStatus(`Decodifica di ${file.name}…`);
+    this.syncControlsFromSelection(this.selectedVectorNode());
+    try {
+      const node = await this.host.importRasterImageFile(file);
+      const sourceMiB = node.document.sourceBytes / MEBIBYTE_BYTES;
+      this.setImageImportStatus(
+        `${node.name} importata · ${node.document.width}×${node.document.height} px · `
+        + `${sourceMiB.toFixed(2)} MiB file · mipmap WebGPU pronta.`,
+      );
+    } catch (error) {
+      this.setImageImportStatus(
+        error instanceof Error ? error.message : "Importazione immagine non riuscita.",
+        true,
+      );
+    } finally {
+      this.sceneOperationBusy = false;
+      this.syncControlsFromSelection(this.selectedVectorNode());
+      if (this.sceneOperationRenderDeferred) {
+        this.sceneOperationRenderDeferred = false;
+        this.scheduleRender();
+      }
+    }
+  }
+
   private bindVectorHistoryControl(control: HTMLElement): void {
     const begin = () => { this.host.beginVectorHistoryEdit(); };
     const commit = () => { this.host.commitVectorHistoryEdit(); };
@@ -829,7 +1038,8 @@ export class MixedVectorTextController {
       delete this.svgPalette.dataset.signature;
       return;
     }
-    const signature = `${node.id}:${node.document.paints.length}:${this.sceneOperationBusy}`;
+    const paletteLocked = this.sceneOperationBusy || this.transformSessionOpen;
+    const signature = `${node.id}:${node.document.paints.length}:${paletteLocked}`;
     if (this.svgPalette.dataset.signature === signature) {
       const colorInputs = this.svgPalette.querySelectorAll<HTMLInputElement>(
         'input[type="color"]',
@@ -842,11 +1052,11 @@ export class MixedVectorTextController {
         const hexInput = hexInputs[index];
         const color = (node.paintColors[index] ?? paint.color).toLowerCase();
         if (colorInput) {
-          colorInput.disabled = this.sceneOperationBusy;
+          colorInput.disabled = paletteLocked;
           if (document.activeElement !== colorInput) colorInput.value = color;
         }
         if (hexInput) {
-          hexInput.disabled = this.sceneOperationBusy;
+          hexInput.disabled = paletteLocked;
           if (document.activeElement !== hexInput) {
             hexInput.value = color.toUpperCase();
             hexInput.removeAttribute("aria-invalid");
@@ -867,7 +1077,7 @@ export class MixedVectorTextController {
       input.type = "color";
       input.value = node.paintColors[index] ?? paint.color;
       input.setAttribute("aria-label", `Colore SVG ${index + 1}`);
-      input.disabled = this.sceneOperationBusy;
+      input.disabled = paletteLocked;
       const hexInput = document.createElement("input");
       hexInput.type = "text";
       hexInput.inputMode = "text";
@@ -875,8 +1085,9 @@ export class MixedVectorTextController {
       hexInput.value = input.value.toUpperCase();
       hexInput.spellcheck = false;
       hexInput.setAttribute("aria-label", `HEX colore SVG ${index + 1}`);
-      hexInput.disabled = this.sceneOperationBusy;
+      hexInput.disabled = paletteLocked;
       const commitColor = (color: string) => {
+        if (this.sceneOperationBusy || this.transformSessionOpen) return;
         if (!/^#[0-9a-f]{6}$/i.test(color)) return;
         const current = this.selectedSvgNode();
         if (!current || current.id !== node.id) return;
@@ -927,6 +1138,7 @@ export class MixedVectorTextController {
     const selected = snapshot.items.find((item) => item.key === snapshot.selectedKey);
     if (selected?.kind === "text") return selected.textNode;
     if (selected?.kind === "svg") return selected.svgNode;
+    if (selected?.kind === "image") return selected.imageNode;
     return null;
   }
 
@@ -937,7 +1149,12 @@ export class MixedVectorTextController {
 
   private selectedSvgNode(): Readonly<VectorSvgNode> | null {
     const node = this.selectedVectorNode();
-    return node && !isTextNode(node) ? node : null;
+    return node && isSvgNode(node) ? node : null;
+  }
+
+  private selectedImageNode(): Readonly<RasterImageNode> | null {
+    const node = this.selectedVectorNode();
+    return node && isImageNode(node) ? node : null;
   }
 
   private vectorRasterView(): VectorTextViewState {
@@ -1149,6 +1366,31 @@ export class MixedVectorTextController {
   }
 
   private bindControls(): void {
+    this.imageImportButton.addEventListener("click", () => this.imageFileInput.click());
+    this.imageFileInput.addEventListener("change", () => {
+      const file = this.imageFileInput.files?.[0];
+      this.imageFileInput.value = "";
+      if (file) void this.importImageFile(file);
+    });
+    this.transformApplyButton.addEventListener("click", () => {
+      void this.applyTransformSession();
+    });
+    this.transformCancelButton.addEventListener("click", () => {
+      void this.cancelTransformSession();
+    });
+    window.addEventListener("keydown", (event) => {
+      if (!this.transformSessionOpen || event.defaultPrevented || event.isComposing) return;
+      const target = event.target instanceof Element ? event.target : null;
+      const editable = Boolean(target?.closest("input, textarea, select, [contenteditable]"));
+      if (event.key === "Escape") {
+        event.preventDefault();
+        this.abortActiveTransformInteraction();
+        void this.cancelTransformSession();
+      } else if (event.key === "Enter" && !editable && !this.activeInteraction) {
+        event.preventDefault();
+        void this.applyTransformSession();
+      }
+    });
     this.svgLoadExampleButton.addEventListener("click", () => {
       void (async () => {
         try {
@@ -1345,7 +1587,8 @@ export class MixedVectorTextController {
       if (!node) return;
       void this.runSceneOperation(async () => {
         if (isTextNode(node)) await this.host.deleteVectorTextNode(node.id);
-        else await this.host.deleteVectorSvgNode(node.id);
+        else if (isSvgNode(node)) await this.host.deleteVectorSvgNode(node.id);
+        else await this.host.deleteRasterImageNode(node.id);
       });
     });
     this.moveUpButton.addEventListener("click", () => {
@@ -1353,7 +1596,8 @@ export class MixedVectorTextController {
       if (!node) return;
       void this.runSceneOperation(async () => {
         if (isTextNode(node)) await this.host.moveVectorTextNode(node.id, 1);
-        else await this.host.moveVectorSvgNode(node.id, 1);
+        else if (isSvgNode(node)) await this.host.moveVectorSvgNode(node.id, 1);
+        else await this.host.moveRasterImageNode(node.id, 1);
       });
     });
     this.moveDownButton.addEventListener("click", () => {
@@ -1361,7 +1605,8 @@ export class MixedVectorTextController {
       if (!node) return;
       void this.runSceneOperation(async () => {
         if (isTextNode(node)) await this.host.moveVectorTextNode(node.id, -1);
-        else await this.host.moveVectorSvgNode(node.id, -1);
+        else if (isSvgNode(node)) await this.host.moveVectorSvgNode(node.id, -1);
+        else await this.host.moveRasterImageNode(node.id, -1);
       });
     });
     this.resetButton.addEventListener("click", () => {
@@ -1369,7 +1614,7 @@ export class MixedVectorTextController {
       if (!node) return;
       if (isTextNode(node)) {
         this.updateSelectedNode(this.defaultSeed(Math.max(0, node.id - 1)));
-      } else {
+      } else if (isSvgNode(node)) {
         const defaults = this.defaultSvgSeed(node.document);
         this.updateSelectedNode({
           outlineWidth: defaults.outlineWidth,
@@ -1397,6 +1642,18 @@ export class MixedVectorTextController {
           y: defaults.y,
           scale: defaults.scale,
           rotation: defaults.rotation,
+        });
+      } else {
+        const fitScale = Math.min(
+          1,
+          this.host.layerSize * 0.8
+            / Math.max(node.document.width, node.document.height),
+        );
+        this.updateSelectedNode({
+          x: this.host.layerSize * 0.5,
+          y: this.host.layerSize * 0.5,
+          scale: fitScale,
+          rotation: 0,
         });
       }
     });
@@ -1477,27 +1734,39 @@ export class MixedVectorTextController {
         node.id,
         update as Partial<Omit<VectorTextNode, "id" | "visible" | "opacity">>,
       );
-    } else {
+    } else if (isSvgNode(node)) {
       this.host.updateVectorSvgNode(
         node.id,
         update as Partial<Omit<VectorSvgNode, "id" | "document" | "visible" | "opacity">>,
+      );
+    } else {
+      this.host.updateRasterImageNode(
+        node.id,
+        update as Partial<
+          Omit<RasterImageNode, "id" | "kind" | "document" | "visible" | "opacity">
+        >,
       );
     }
   }
 
   private syncControlsFromSelection(node: Readonly<VectorSceneNode> | null): void {
-    const disabled = !node || this.sceneOperationBusy;
+    const interactionLocked = this.sceneOperationBusy || this.transformSessionOpen;
     const textNode = node && isTextNode(node) ? node : null;
-    const svgNode = node && !isTextNode(node) ? node : null;
-    const textDisabled = !textNode || this.sceneOperationBusy;
+    const svgNode = node && isSvgNode(node) ? node : null;
+    const imageNode = node && isImageNode(node) ? node : null;
+    const vectorDisabled = (!textNode && !svgNode) || interactionLocked;
+    const actionDisabled = !node || interactionLocked;
+    const textDisabled = !textNode || interactionLocked;
 
     this.textSpecificControls.hidden = !textNode;
     this.svgSelectedControls.hidden = !svgNode;
-    this.svgLoadExampleButton.disabled = this.sceneOperationBusy;
-    this.svgImportButton.disabled = this.sceneOperationBusy;
-    this.svgRasterizeButton.disabled = !svgNode || this.sceneOperationBusy;
+    this.imageSelectedControls.hidden = !imageNode;
+    this.svgLoadExampleButton.disabled = interactionLocked;
+    this.svgImportButton.disabled = interactionLocked;
+    this.imageImportButton.disabled = interactionLocked;
+    this.svgRasterizeButton.disabled = !svgNode || interactionLocked;
     this.textRasterizeButton.disabled =
-      !textNode || textNode.text.length === 0 || this.sceneOperationBusy;
+      !textNode || textNode.text.length === 0 || interactionLocked;
     this.textInput.disabled = textDisabled;
     this.fontFamilySelect.disabled = textDisabled;
     this.fontSizeInput.disabled = textDisabled;
@@ -1512,35 +1781,43 @@ export class MixedVectorTextController {
     this.transformCurveInput.disabled = textDisabled;
     this.circleRadiusInput.disabled = textDisabled;
     this.circleInvertedInput.disabled = textDisabled;
-    this.outlineWidthInput.disabled = disabled;
-    this.outlineColorInput.disabled = disabled;
-    this.outlineJoinSelect.disabled = disabled;
-    this.blockShadowEnabledInput.disabled = disabled;
-    this.blockShadowColorInput.disabled = disabled;
-    this.blockShadowOpacityInput.disabled = disabled;
-    this.blockShadowOffsetInput.disabled = disabled;
-    this.blockShadowAngleInput.disabled = disabled;
-    this.blockShadowOutlineWidthInput.disabled = disabled;
-    this.singleShadowEnabledInput.disabled = disabled;
-    this.singleShadowColorInput.disabled = disabled;
-    this.singleShadowOpacityInput.disabled = disabled;
-    this.singleShadowOffsetInput.disabled = disabled;
-    this.singleShadowAngleInput.disabled = disabled;
-    this.singleShadowBlurInput.disabled = disabled;
-    this.innerShadowEnabledInput.disabled = disabled;
-    this.innerShadowColorInput.disabled = disabled;
-    this.innerShadowOpacityInput.disabled = disabled;
-    this.innerShadowOffsetInput.disabled = disabled;
-    this.innerShadowAngleInput.disabled = disabled;
-    this.innerShadowBlurInput.disabled = disabled;
+    this.outlineWidthInput.disabled = vectorDisabled;
+    this.outlineColorInput.disabled = vectorDisabled;
+    this.outlineJoinSelect.disabled = vectorDisabled;
+    this.blockShadowEnabledInput.disabled = vectorDisabled;
+    this.blockShadowColorInput.disabled = vectorDisabled;
+    this.blockShadowOpacityInput.disabled = vectorDisabled;
+    this.blockShadowOffsetInput.disabled = vectorDisabled;
+    this.blockShadowAngleInput.disabled = vectorDisabled;
+    this.blockShadowOutlineWidthInput.disabled = vectorDisabled;
+    this.singleShadowEnabledInput.disabled = vectorDisabled;
+    this.singleShadowColorInput.disabled = vectorDisabled;
+    this.singleShadowOpacityInput.disabled = vectorDisabled;
+    this.singleShadowOffsetInput.disabled = vectorDisabled;
+    this.singleShadowAngleInput.disabled = vectorDisabled;
+    this.singleShadowBlurInput.disabled = vectorDisabled;
+    this.innerShadowEnabledInput.disabled = vectorDisabled;
+    this.innerShadowColorInput.disabled = vectorDisabled;
+    this.innerShadowOpacityInput.disabled = vectorDisabled;
+    this.innerShadowOffsetInput.disabled = vectorDisabled;
+    this.innerShadowAngleInput.disabled = vectorDisabled;
+    this.innerShadowBlurInput.disabled = vectorDisabled;
     this.singleShadowOutlineWidthInput.disabled = true;
-    this.resetButton.disabled = disabled;
-    this.deleteButton.disabled = disabled;
-    this.moveUpButton.disabled = disabled;
-    this.moveDownButton.disabled = disabled;
-    this.addButton.disabled = this.sceneOperationBusy;
-    this.deleteButton.textContent = svgNode ? "Elimina SVG" : "Elimina testo";
-    this.resetButton.textContent = svgNode ? "Reimposta SVG" : "Reimposta";
+    this.resetButton.disabled = actionDisabled;
+    this.deleteButton.disabled = actionDisabled;
+    this.moveUpButton.disabled = actionDisabled;
+    this.moveDownButton.disabled = actionDisabled;
+    this.addButton.disabled = interactionLocked;
+    this.deleteButton.textContent = imageNode
+      ? "Elimina immagine"
+      : svgNode
+        ? "Elimina SVG"
+        : "Elimina testo";
+    this.resetButton.textContent = imageNode
+      ? "Reimposta immagine"
+      : svgNode
+        ? "Reimposta SVG"
+        : "Reimposta";
 
     if (!node) {
       this.transformDistortParameters.hidden = true;
@@ -1551,7 +1828,7 @@ export class MixedVectorTextController {
       this.innerShadowParameters.hidden = true;
       this.renderSvgPalette(null);
       this.status.textContent =
-        "Raster selezionato: il pennello è attivo. Puoi aggiungere testo o importare un SVG.";
+        "Raster selezionato: il pennello è attivo. Puoi aggiungere testo, SVG o immagini.";
       return;
     }
 
@@ -1598,7 +1875,23 @@ export class MixedVectorTextController {
         + `${svgNode.document.contourCount} contorni · ${svgNode.document.commandCount} comandi · `
         + `${sourceMiB.toFixed(3)} MiB file · ${vectorMiB.toFixed(3)} MiB vettori CPU.`;
       this.renderSvgPalette(svgNode);
+    } else if (imageNode) {
+      this.transformDistortParameters.hidden = true;
+      this.transformCurveParameters.hidden = true;
+      this.transformCircleParameters.hidden = true;
+      this.blockShadowParameters.hidden = true;
+      this.singleShadowParameters.hidden = true;
+      this.innerShadowParameters.hidden = true;
+      this.renderSvgPalette(null);
+      const sourceMiB = imageNode.document.sourceBytes / MEBIBYTE_BYTES;
+      this.imageSourceSummary.textContent =
+        `${imageNode.document.sourceName} · ${imageNode.document.width}×`
+        + `${imageNode.document.height} px · ${sourceMiB.toFixed(2)} MiB · `
+        + `${imageNode.document.mimeType.replace("image/", "").toUpperCase()} · mipmap GPU.`;
+      return;
     }
+
+    if (isImageNode(node)) return;
 
     this.outlineWidthInput.value = String(node.outlineWidth);
     this.outlineWidthOutput.value = `${Math.round(node.outlineWidth)} px`;
@@ -2426,9 +2719,9 @@ export class MixedVectorTextController {
     } else {
       const groups: {
         placement: VectorTextPlacement;
-        nodes: Readonly<VectorSceneNode>[];
+        nodes: Readonly<VectorDrawableNode>[];
       }[] = [];
-      let pendingNodes: Readonly<VectorSceneNode>[] = [];
+      let pendingNodes: Readonly<VectorDrawableNode>[] = [];
       const flushVectorRun = () => {
         if (pendingNodes.length === 0) return;
         const nodes = pendingNodes;
@@ -2441,7 +2734,9 @@ export class MixedVectorTextController {
       for (const item of snapshot.items) {
         if (item.kind === "text") pendingNodes.push(item.textNode);
         else if (item.kind === "svg") pendingNodes.push(item.svgNode);
-        else flushVectorRun();
+        else if (item.kind === "image") {
+          if (item.imageNode.visible && item.imageNode.opacity > 0) flushVectorRun();
+        } else flushVectorRun();
       }
       flushVectorRun();
 
@@ -2491,7 +2786,7 @@ export class MixedVectorTextController {
               bottom: geometry.outline.bottom,
               baseline: geometry.outline.baseline,
             };
-          } else {
+          } else if (isSvgNode(node)) {
             allEffectsReady = this.appendGpuDrawsForSvgNode(
               candidateDraws,
               node,
@@ -2505,6 +2800,8 @@ export class MixedVectorTextController {
               bottom: node.document.bounds.bottom,
               baseline: 0,
             };
+          } else {
+            continue;
           }
           const displayedDraws = this.displayedDrawsByNodeKey.get(key);
           if (allEffectsReady) {
@@ -2558,14 +2855,26 @@ export class MixedVectorTextController {
       this.metrics = this.displayedMetricsByNodeKey.get(key)
         ?? (isTextNode(selectedNode)
           ? this.measureText(selectedNode)
-          : {
+          : isSvgNode(selectedNode)
+            ? {
             left: selectedNode.document.bounds.left,
             top: selectedNode.document.bounds.top,
             right: selectedNode.document.bounds.right,
             bottom: selectedNode.document.bounds.bottom,
             baseline: 0,
-          });
-      this.renderInteractionOverlay(view, selectedNode);
+          }
+            : {
+              left: -selectedNode.document.width * 0.5,
+              top: -selectedNode.document.height * 0.5,
+              right: selectedNode.document.width * 0.5,
+              bottom: selectedNode.document.height * 0.5,
+              baseline: 0,
+            });
+      if (this.transformToolActive) {
+        this.renderInteractionOverlay(view, selectedNode);
+      } else {
+        this.clearInteractionOverlay(view);
+      }
     } else {
       this.clearInteractionOverlay(view);
     }
@@ -2616,6 +2925,15 @@ export class MixedVectorTextController {
       (item) => item.kind === "raster" && item.rasterLayerId === snapshot.activeRasterLayerId,
     );
     const placement = vectorIndex < rasterIndex ? "sotto il raster attivo" : "sopra il raster attivo";
+    if (isImageNode(node)) {
+      const sourceMiB = node.document.sourceBytes / MEBIBYTE_BYTES;
+      this.status.textContent =
+        `${node.name} · immagine ${placement} · ${node.document.width}×`
+        + `${node.document.height} px · file ${sourceMiB.toFixed(2)} MiB · `
+        + `texture/mipmap WebGPU · scala ${(node.scale * 100).toFixed(1)}% · `
+        + `rotazione ${(node.rotation * 180 / Math.PI).toFixed(1)}° · ${timing}.`;
+      return;
+    }
     const outline = node.outlineWidth > 0
       ? `traccia ${Math.round(node.outlineWidth)} px ${OUTLINE_JOIN_LABELS[node.outlineJoin]}`
       : "traccia off";
@@ -2631,7 +2949,7 @@ export class MixedVectorTextController {
         + `${Math.round(node.innerShadowAngle)}° · blur ${Math.round(node.innerShadowBlur)}`
       : "ombra interna off";
 
-    if (!isTextNode(node)) {
+    if (isSvgNode(node)) {
       const sourceMiB = node.document.sourceBytes / MEBIBYTE_BYTES;
       const cpuVectorMiB = node.document.logicalVectorBytes / MEBIBYTE_BYTES;
       this.status.textContent =
@@ -3011,9 +3329,116 @@ export class MixedVectorTextController {
     return closestIndex;
   }
 
+  private currentTouchNavigationGesture(): TouchNavigationGesture | null {
+    if (this.touchContacts.size < 2) return null;
+    const [first, second] = [...this.touchContacts.values()];
+    const deltaX = second.x - first.x;
+    const deltaY = second.y - first.y;
+    return {
+      centerX: (first.x + second.x) * 0.5,
+      centerY: (first.y + second.y) * 0.5,
+      distance: Math.max(1e-6, Math.hypot(deltaX, deltaY)),
+      angle: Math.atan2(deltaY, deltaX),
+    };
+  }
+
+  private restoreInteractionStart(interaction: ActiveInteraction): void {
+    if (interaction.mode === "distort" && isTextNode(interaction.startModel)) {
+      this.updateSelectedNode({ distortPoints: interaction.startModel.distortPoints });
+      return;
+    }
+    if (interaction.mode !== "pan") {
+      this.updateSelectedNode({
+        x: interaction.startModel.x,
+        y: interaction.startModel.y,
+        scale: interaction.startModel.scale,
+        rotation: interaction.startModel.rotation,
+      });
+    }
+  }
+
+  private clearActiveInteraction(interaction: ActiveInteraction): void {
+    this.interactionCanvas.classList.remove(
+      "is-move",
+      "is-scale",
+      "is-rotate",
+      "is-pan",
+      "is-distort",
+    );
+    if (this.activeInteraction === interaction) this.activeInteraction = null;
+  }
+
+  private closeNewNoopTransformSession(interaction: ActiveInteraction): void {
+    if (!interaction.openedTransformSession || !this.transformSessionOpen) return;
+    this.host.commitVectorHistoryEdit();
+    this.transformSessionOpen = false;
+    this.updateTransformCommitUi();
+    this.syncControlsFromSelection(this.selectedVectorNode());
+  }
+
+  private enterTouchNavigation(): void {
+    const interaction = this.activeInteraction;
+    if (interaction) {
+      this.restoreInteractionStart(interaction);
+      this.clearActiveInteraction(interaction);
+      this.closeNewNoopTransformSession(interaction);
+    }
+    if (!this.touchNavigationActive) {
+      this.touchNavigationActive = true;
+      this.host.beginViewRotationGesture();
+    }
+    this.touchNavigationGesture = this.currentTouchNavigationGesture();
+  }
+
+  private updateTouchNavigation(): void {
+    const nextGesture = this.currentTouchNavigationGesture();
+    const previousGesture = this.touchNavigationGesture;
+    if (!nextGesture || !previousGesture) {
+      this.touchNavigationGesture = nextGesture;
+      return;
+    }
+    const deltaX = nextGesture.centerX - previousGesture.centerX;
+    const deltaY = nextGesture.centerY - previousGesture.centerY;
+    if (Math.abs(deltaX) > 0.01 || Math.abs(deltaY) > 0.01) {
+      this.host.panByClientDelta(deltaX, deltaY);
+    }
+    const zoomFactor = nextGesture.distance / previousGesture.distance;
+    if (Number.isFinite(zoomFactor) && Math.abs(zoomFactor - 1) > 0.0001) {
+      this.host.zoomBy(
+        Math.min(2, Math.max(0.5, zoomFactor)),
+        nextGesture.centerX,
+        nextGesture.centerY,
+      );
+    }
+    const rawRotationDelta = nextGesture.angle - previousGesture.angle;
+    const rotationDelta = Math.atan2(
+      Math.sin(rawRotationDelta),
+      Math.cos(rawRotationDelta),
+    );
+    if (Math.abs(rotationDelta) > 0.0001) {
+      this.host.rotateViewBy(
+        rotationDelta,
+        nextGesture.centerX,
+        nextGesture.centerY,
+      );
+    }
+    this.touchNavigationGesture = nextGesture;
+  }
+
   private onPointerDown(event: PointerEvent): void {
     const node = this.selectedVectorNode();
-    if (!node || this.activeInteraction) return;
+    if (!this.transformToolActive || !node) return;
+    if (event.pointerType === "touch") {
+      event.preventDefault();
+      this.touchContacts.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      this.interactionCanvas.setPointerCapture(event.pointerId);
+      if (this.touchContacts.size >= 2) {
+        this.enterTouchNavigation();
+        return;
+      }
+    }
+    if (this.touchNavigationActive) return;
+    if (this.activeInteraction) return;
     const view = this.host.getVectorTextViewState();
     const canvasPoint = this.eventCanvasPoint(event);
     const layerPoint = this.eventLayerPoint(event);
@@ -3046,8 +3471,17 @@ export class MixedVectorTextController {
               ? "move"
               : null;
     if (!mode) return;
-    if (mode !== "pan" && !this.host.beginVectorHistoryEdit()) {
-      return;
+    let openedTransformSession = false;
+    if (mode !== "pan") {
+      openedTransformSession = !this.transformSessionOpen;
+      if (!this.host.beginVectorHistoryEdit("transform")) {
+        return;
+      }
+      if (!this.transformSessionOpen) {
+        this.transformSessionOpen = true;
+        this.updateTransformCommitUi();
+        this.syncControlsFromSelection(node);
+      }
     }
 
     event.preventDefault();
@@ -3062,6 +3496,7 @@ export class MixedVectorTextController {
       startDistance: Math.max(1e-6, pointDistance(layerPoint, center)),
       startAngle: Math.atan2(layerPoint.y - center.y, layerPoint.x - center.x),
       distortPointIndex,
+      openedTransformSession,
     };
     this.interactionCanvas.classList.add(`is-${mode}`);
   }
@@ -3101,6 +3536,14 @@ export class MixedVectorTextController {
   }
 
   private onPointerMove(event: PointerEvent): void {
+    if (event.pointerType === "touch" && this.touchContacts.has(event.pointerId)) {
+      this.touchContacts.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (this.touchNavigationActive) {
+        event.preventDefault();
+        this.updateTouchNavigation();
+        return;
+      }
+    }
     const interaction = this.activeInteraction;
     if (!interaction || event.pointerId !== interaction.pointerId) {
       return;
@@ -3157,20 +3600,30 @@ export class MixedVectorTextController {
   }
 
   private finishPointer(event: PointerEvent): void {
+    const hadTouchContact = event.pointerType === "touch"
+      && this.touchContacts.delete(event.pointerId);
+    if (hadTouchContact && this.touchNavigationActive) {
+      event.preventDefault();
+      if (this.touchContacts.size < 2) {
+        this.touchNavigationActive = false;
+        this.touchNavigationGesture = null;
+        this.host.endViewRotationGesture();
+      } else {
+        this.touchNavigationGesture = this.currentTouchNavigationGesture();
+      }
+      return;
+    }
     const interaction = this.activeInteraction;
     if (!interaction || event.pointerId !== interaction.pointerId) {
       return;
     }
-    this.interactionCanvas.classList.remove(
-      "is-move",
-      "is-scale",
-      "is-rotate",
-      "is-pan",
-      "is-distort",
-    );
-    this.activeInteraction = null;
-    if (interaction.mode !== "pan") {
-      this.host.commitVectorHistoryEdit();
+    this.clearActiveInteraction(interaction);
+    if (
+      interaction.mode !== "pan"
+      && (event.type === "pointercancel" || event.type === "lostpointercapture")
+    ) {
+      this.restoreInteractionStart(interaction);
+      this.closeNewNoopTransformSession(interaction);
     }
     this.scheduleRender();
   }

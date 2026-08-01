@@ -205,6 +205,7 @@ export async function fillAtClientPoint(
       kind: "fill",
       layerId: record.id,
     });
+    engine.sweepRasterImageGpuResources();
     const batch: FillHistoryRenderBatch = {
       kind: "fill",
       actionId,

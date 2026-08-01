@@ -37,6 +37,7 @@ export const ENGINE_SOURCE_FILES = Object.freeze([
   "shape-mask-decode.ts",
   "engine-reports.ts",
   "engine-vector-text-runtime.ts",
+  "engine-raster-image-runtime.ts",
   "engine-vector-raster-runtime.ts",
   "engine-history-runtime.ts",
   "engine-fill-runtime.ts",

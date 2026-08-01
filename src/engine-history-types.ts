@@ -10,6 +10,7 @@ import type {
   MixedSceneVectorHistoryDelta,
   MixedSceneVectorHistoryState,
   MixedSceneVectorKey,
+  RasterImageNode,
   VectorSvgNode,
 } from "./mixed-scene-stack";
 import type { ShapeOccupancySelection } from "./shape-occupancy";
@@ -50,6 +51,7 @@ export type HistoryAction =
 export interface ActiveVectorHistoryEdit {
   key: MixedSceneVectorKey;
   before: MixedSceneVectorHistoryState;
+  scope: "property" | "transform";
 }
 
 export function vectorHistoryStatesEqual(
@@ -64,8 +66,14 @@ export function vectorHistoryStatesEqual(
     return false;
   }
   if (!left.node || !right.node) return left.node === right.node;
-  if (left.key.startsWith("text:")) {
+  if (left.node.kind !== right.node.kind) return false;
+  if (left.node.kind === "text") {
     return JSON.stringify(left.node) === JSON.stringify(right.node);
+  }
+  if (left.node.kind === "image") {
+    const { document: _leftDocument, ...leftNode } = left.node as RasterImageNode;
+    const { document: _rightDocument, ...rightNode } = right.node as RasterImageNode;
+    return JSON.stringify(leftNode) === JSON.stringify(rightNode);
   }
   const { document: _leftDocument, ...leftNode } = left.node as VectorSvgNode;
   const { document: _rightDocument, ...rightNode } = right.node as VectorSvgNode;

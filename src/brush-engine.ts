@@ -41,6 +41,7 @@ import {
 import {
   MIXED_SCENE_STACK_STRATEGY,
   MixedSceneStack,
+  cloneRasterImageNode,
   cloneVectorSvgNode,
   cloneVectorTextNode,
   reusableMixedSceneRasterRunKeys,
@@ -50,11 +51,21 @@ import {
   type MixedSceneVectorHistoryDelta,
   type MixedSceneVectorHistoryState,
   type MixedSceneVectorKey,
+  type RasterImageNode,
   type VectorSvgNode,
   type VectorSvgNodeSeed,
   type VectorTextNode,
   type VectorTextNodeSeed,
 } from "./mixed-scene-stack";
+import type { RasterImageGpuResource } from "./engine-raster-image-runtime";
+import {
+  deleteRasterImageNode,
+  importRasterImageFile as importRasterImageFileRuntime,
+  moveRasterImageNode,
+  setRasterImageNodeOpacity,
+  setRasterImageNodeVisibility,
+  updateRasterImageNode,
+} from "./engine-raster-image-runtime";
 import {
   MIXED_SCENE_COMPOSITOR_STRATEGY,
   MIXED_SCENE_LINEAR_FORMAT,
@@ -543,6 +554,7 @@ import {
   writeVectorTextCaptureUniforms,
 } from "./engine-vector-text-runtime";
 import {
+  applyVectorHistoryState,
   compactDiscardedHistory,
   hasVisibleHistoryContent,
   historyStepBlockedByLayer,
@@ -930,6 +942,8 @@ export class BrushEngine {
   mixedSceneLinearWidth = 0;
   mixedSceneLinearHeight = 0;
   mixedScenePresentBindGroup: GPUBindGroup | null = null;
+  readonly rasterImageGpuResources = new Map<string, RasterImageGpuResource>();
+  nextRasterImageAssetId = 1;
   readonly vectorTextRunTextures = new Map<
     Extract<VectorTextPlacement, `text-run:${string}`>,
     VectorTextRunTextureResources
@@ -1078,6 +1092,8 @@ export class BrushEngine {
   vectorTextDisplayBindGroupLayout: GPUBindGroupLayout | null = null;
   mixedSceneRasterSegmentBindGroupLayout: GPUBindGroupLayout | null = null;
   mixedSceneTextSegmentBindGroupLayout: GPUBindGroupLayout | null = null;
+  rasterImageMipmapBindGroupLayout: GPUBindGroupLayout | null = null;
+  rasterImageMixedSceneBindGroupLayout: GPUBindGroupLayout | null = null;
   vectorTextGpuSlugBindGroupLayout: GPUBindGroupLayout | null = null;
   mixedScenePresentBindGroupLayout: GPUBindGroupLayout | null = null;
   vectorTextGpuUniformBindGroupLayout: GPUBindGroupLayout | null = null;
@@ -1128,6 +1144,8 @@ export class BrushEngine {
   vectorTextGpuInnerShadowShaderModule: GPUShaderModule | null = null;
   mixedSceneRasterSegmentShaderModule: GPUShaderModule | null = null;
   mixedSceneTextSegmentShaderModule: GPUShaderModule | null = null;
+  rasterImageMipmapShaderModule: GPUShaderModule | null = null;
+  rasterImageMixedSceneShaderModule: GPUShaderModule | null = null;
   mixedSceneClearShaderModule: GPUShaderModule | null = null;
   mixedScenePresentShaderModule: GPUShaderModule | null = null;
   rasterStrokeDisplayShaderModule!: GPUShaderModule;
@@ -1187,11 +1205,15 @@ export class BrushEngine {
   mixedSceneClearPipeline: GPURenderPipeline | null = null;
   mixedSceneRasterSegmentPipeline: GPURenderPipeline | null = null;
   mixedSceneTextSegmentPipeline: GPURenderPipeline | null = null;
+  rasterImageMipmapPipeline: GPURenderPipeline | null = null;
+  rasterImagePremultiplyPipeline: GPURenderPipeline | null = null;
+  rasterImageMixedScenePipeline: GPURenderPipeline | null = null;
   mixedScenePresentPipeline: GPURenderPipeline | null = null;
   mixedSceneActiveDisplayPipeline: GPURenderPipeline | null = null;
   mixedSceneActiveRasterStrokeDisplayPipeline: GPURenderPipeline | null = null;
   mixedSceneActiveThicknessTailDisplayPipeline: GPURenderPipeline | null = null;
   mixedSceneActiveLightGlazeDisplayPipeline: GPURenderPipeline | null = null;
+  rasterImageSampler: GPUSampler | null = null;
   rasterStrokeDisplayPipeline!: GPURenderPipeline;
   thicknessTailDisplayPipeline!: GPURenderPipeline;
   lightGlazeDisplayPipeline!: GPURenderPipeline;
@@ -1249,6 +1271,7 @@ export class BrushEngine {
   frameRequest: number | null = null;
   clearRequested = true;
   displayDirty = true;
+  semanticPresentationDirtyRect: DirtyRect | null = null;
   initialized = false;
 
   viewCenterX = LAYER_SIZE * 0.5;
@@ -2354,10 +2377,17 @@ export class BrushEngine {
             textNode: cloneVectorTextNode(scene.textById(item.textNodeId)),
           };
         }
+        if (item.kind === "svg") {
+          return {
+            key: item.key,
+            kind: item.kind,
+            svgNode: cloneVectorSvgNode(scene.svgById(item.svgNodeId)),
+          };
+        }
         return {
           key: item.key,
           kind: item.kind,
-          svgNode: cloneVectorSvgNode(scene.svgById(item.svgNodeId)),
+          imageNode: cloneRasterImageNode(scene.imageById(item.imageNodeId)),
         };
       }),
     };
@@ -2935,6 +2965,7 @@ export class BrushEngine {
         this.requestRender();
       }
       if (historyChanged) {
+        this.sweepRasterImageGpuResources();
         this.publishHistoryState();
       }
       this.scheduleLayerColdCompression();
@@ -2971,6 +3002,7 @@ export class BrushEngine {
       this.requestRender();
     }
     if (historyChanged) {
+      this.sweepRasterImageGpuResources();
       this.publishHistoryState();
     }
     this.scheduleLayerColdCompression();
@@ -3077,6 +3109,7 @@ export class BrushEngine {
           layerId: this.layerStack.active.id,
         });
         this.historyCursor = this.historyActions.length;
+        this.sweepRasterImageGpuResources();
         compactDiscardedHistory(this);
         if (this.activeStrokeProfile) {
           this.activeStrokeProfile.historyCommittedActions += 1;
@@ -3318,9 +3351,11 @@ export class BrushEngine {
   getHistoryState(): HistoryState {
     return {
       canUndo: !this.historyBusy
+        && !this.activeVectorHistoryEdit
         && this.historyCursor > 0
         && !historyStepBlockedByLayer(this, -1),
       canRedo: !this.historyBusy
+        && !this.activeVectorHistoryEdit
         && this.historyCursor < this.historyActions.length
         && !historyStepBlockedByLayer(this, 1),
       busy: this.historyBusy,
@@ -3329,6 +3364,7 @@ export class BrushEngine {
       cursor: this.historyCursor,
       storedBaseStamps: this.historyStoredBaseStamps,
       logicalStampBytes: this.historyStoredBaseStamps * STAMP_STRIDE_BYTES,
+      openEdit: this.activeVectorHistoryEdit?.scope ?? null,
     };
   }
 
@@ -4494,7 +4530,7 @@ export class BrushEngine {
     const previousMixedSegments = this.mixedSceneRasterSegments;
     const previousCompositionSegments = this.mixedSceneCompositionSegments;
     let candidateCompositionSegments: readonly MixedSceneCompositionSegment[] = [];
-    if (this.mixedSceneStack?.vectorCount) {
+    if (this.mixedSceneStack?.visibleSemanticCount) {
       // Compute the new plan before evicting anything. A malformed scene must
       // leave the complete previous presentation untouched.
       candidateCompositionSegments = this.mixedSceneStack.compositionSegments(
@@ -4538,7 +4574,7 @@ export class BrushEngine {
     let activeWorkbenchRestored = false;
     let candidatePublished = false;
     try {
-      if (this.mixedSceneStack?.vectorCount) {
+      if (this.mixedSceneStack?.visibleSemanticCount) {
         const activePosition = candidateCompositionSegments.findIndex(
           (segment) => segment.kind === "active-raster",
         );
@@ -4647,7 +4683,7 @@ export class BrushEngine {
     return recordVectorHistoryAction(this, before, after);
   }
 
-  beginVectorHistoryEdit(): boolean {
+  beginVectorHistoryEdit(scope: "property" | "transform" = "property"): boolean {
     if (
       !this.initialized
       || this.activeStroke !== null
@@ -4664,11 +4700,13 @@ export class BrushEngine {
     }
     const key = selected.key;
     if (this.activeVectorHistoryEdit) {
-      return this.activeVectorHistoryEdit.key === key;
+      return this.activeVectorHistoryEdit.key === key
+        && this.activeVectorHistoryEdit.scope === scope;
     }
     this.activeVectorHistoryEdit = {
       key,
       before: scene.captureVectorHistoryState(key),
+      scope,
     };
     this.publishHistoryState();
     return true;
@@ -4685,6 +4723,20 @@ export class BrushEngine {
     const changed = recordVectorHistoryAction(this, edit.before, after);
     this.publishHistoryState();
     return changed;
+  }
+
+  async cancelVectorHistoryEdit(): Promise<boolean> {
+    const edit = this.activeVectorHistoryEdit;
+    if (!edit) {
+      return false;
+    }
+    await applyVectorHistoryState(this, edit.before);
+    if (this.activeVectorHistoryEdit !== edit) {
+      throw new Error("La transazione Trasforma è cambiata durante il ripristino.");
+    }
+    this.activeVectorHistoryEdit = null;
+    this.publishHistoryState();
+    return true;
   }
 
   async addVectorTextNode(
@@ -4795,7 +4847,7 @@ export class BrushEngine {
   ): Readonly<VectorTextNode> {
     const scene = requireMixedSceneStack(this);
     const key = `text:${id}` as const;
-    assertVectorUpdateAllowed(this, key);
+    assertVectorUpdateAllowed(this, key, Object.keys(update));
     const selected = scene.selected;
     if (selected.kind !== "text" || selected.textNodeId !== id) {
       throw new Error("È modificabile soltanto il nodo testo selezionato.");
@@ -4832,7 +4884,7 @@ export class BrushEngine {
   ): Readonly<VectorSvgNode> {
     const scene = requireMixedSceneStack(this);
     const key = `svg:${id}` as const;
-    assertVectorUpdateAllowed(this, key);
+    assertVectorUpdateAllowed(this, key, Object.keys(update));
     const selected = scene.selected;
     if (selected.kind !== "svg" || selected.svgNodeId !== id) {
       throw new Error("È modificabile soltanto il nodo SVG selezionato.");
@@ -4878,6 +4930,36 @@ export class BrushEngine {
     );
     return cloneVectorSvgNode(removed);
   }
+
+  async importRasterImageFile(file: File): Promise<Readonly<RasterImageNode>> {
+    return importRasterImageFileRuntime(this, file);
+  }
+
+  updateRasterImageNode(
+    id: number,
+    update: Partial<
+      Omit<RasterImageNode, "id" | "kind" | "document" | "visible" | "opacity">
+    >,
+  ): Readonly<RasterImageNode> {
+    return updateRasterImageNode(this, id, update);
+  }
+
+  async setRasterImageNodeVisibility(id: number, visible: boolean): Promise<boolean> {
+    return setRasterImageNodeVisibility(this, id, visible);
+  }
+
+  async setRasterImageNodeOpacity(id: number, opacity: number): Promise<boolean> {
+    return setRasterImageNodeOpacity(this, id, opacity);
+  }
+
+  async moveRasterImageNode(id: number, delta: -1 | 1): Promise<boolean> {
+    return moveRasterImageNode(this, id, delta);
+  }
+
+  async deleteRasterImageNode(id: number): Promise<Readonly<RasterImageNode>> {
+    return deleteRasterImageNode(this, id);
+  }
+
   private async rasterizeVectorNode(
     sourceKind: VectorRasterizeHistoryAction["sourceKind"],
     id: number,
@@ -4896,6 +4978,7 @@ export class BrushEngine {
       ...converted.history,
     });
     this.historyCursor = this.historyActions.length;
+    this.sweepRasterImageGpuResources();
     if (this.activeStrokeProfile) {
       this.activeStrokeProfile.historyCommittedActions += 1;
     }
@@ -6583,6 +6666,52 @@ export class BrushEngine {
     this.historyStoredBaseStamps = 0;
     this.historyCompactionPending = false;
     this.activeVectorHistoryEdit = null;
+    this.sweepRasterImageGpuResources();
+  }
+
+  sweepRasterImageGpuResources(): number {
+    const retainedAssetIds = new Set<string>();
+    const retainNode = (node: VectorTextNode | VectorSvgNode | RasterImageNode | null) => {
+      if (node?.kind === "image") retainedAssetIds.add(node.document.assetId);
+    };
+    const scene = this.mixedSceneStack;
+    if (scene) {
+      for (const item of scene.items) {
+        if (item.kind === "image") {
+          retainedAssetIds.add(scene.imageById(item.imageNodeId).document.assetId);
+        }
+      }
+    }
+    for (const action of this.historyActions) {
+      if (action.kind === "vector") {
+        retainNode(action.delta.before.node);
+        retainNode(action.delta.after.node);
+      } else if (action.kind === "vector-rasterize") {
+        retainNode(action.vectorState.node);
+      }
+    }
+    for (const action of this.discardedVectorRasterHistoryActions) {
+      retainNode(action.vectorState.node);
+    }
+    for (const action of this.activeStroke?.redoActionsBeforeStroke ?? []) {
+      if (action.kind === "vector") {
+        retainNode(action.delta.before.node);
+        retainNode(action.delta.after.node);
+      } else if (action.kind === "vector-rasterize") {
+        retainNode(action.vectorState.node);
+      }
+    }
+    retainNode(this.activeVectorHistoryEdit?.before.node ?? null);
+
+    let released = 0;
+    for (const [assetId, resource] of this.rasterImageGpuResources) {
+      if (retainedAssetIds.has(assetId)) continue;
+      resource.uniformBuffer.destroy();
+      resource.texture.destroy();
+      this.rasterImageGpuResources.delete(assetId);
+      released += 1;
+    }
+    return released;
   }
 
   /**
@@ -7852,7 +7981,7 @@ export class BrushEngine {
           }
           const lod0FullRebuildCpuEncodingStart = requiresFullRebuild
             && displaySelectedMipLevel === 0 ? performance.now() : 0;
-          if (this.mixedSceneStack?.vectorCount) {
+          if (this.mixedSceneStack?.visibleSemanticCount) {
             const activePresentation: MixedSceneActivePresentation = rasterStrokeActive
               ? { kind: "raster-stroke", sourceMode: "light-glaze" }
               : session.hasContent
@@ -8117,7 +8246,7 @@ export class BrushEngine {
           }
           const lod0FullRebuildCpuEncodingStart = requiresFullRebuild
             && displaySelectedMipLevel === 0 ? performance.now() : 0;
-          if (this.mixedSceneStack?.vectorCount) {
+          if (this.mixedSceneStack?.visibleSemanticCount) {
             encodeMixedSceneSegmentedPresentation(this, 
               encoder,
               presentationDirtyRect,
@@ -8639,7 +8768,7 @@ export class BrushEngine {
         && !rasterStrokeActive
         && !thicknessTailFrame
         && !useVectorTextDisplay
-        && !this.mixedSceneStack?.vectorCount;
+        && !this.mixedSceneStack?.visibleSemanticCount;
       const transientMutationRect = mergeDirtyRects(
         this.thicknessTailPresentedRect,
         thicknessTailFrame?.dirtyRect ?? null,
@@ -8709,8 +8838,11 @@ export class BrushEngine {
         : mergeDirtyRects(
           submittedDirtyRect,
           mergeDirtyRects(
-            this.thicknessTailPresentedRect,
-            thicknessTailFrame?.dirtyRect ?? null,
+            this.semanticPresentationDirtyRect,
+            mergeDirtyRects(
+              this.thicknessTailPresentedRect,
+              thicknessTailFrame?.dirtyRect ?? null,
+            ),
           ),
         );
       const presentationDirtyRect = requiresFullRebuild
@@ -8736,7 +8868,7 @@ export class BrushEngine {
         }
         const lod0FullRebuildCpuEncodingStart = requiresFullRebuild
           && displaySelectedMipLevel === 0 ? performance.now() : 0;
-        if (this.mixedSceneStack?.vectorCount) {
+        if (this.mixedSceneStack?.visibleSemanticCount) {
           const activePresentation: MixedSceneActivePresentation = rasterStrokeActive
             ? {
               kind: "raster-stroke",
@@ -8861,6 +8993,7 @@ export class BrushEngine {
       this.presentationCacheNeedsFullRebuild = false;
     }
     if (present) {
+      this.semanticPresentationDirtyRect = null;
       this.thicknessTailPresentedRect = thicknessTailFrame
         ? { ...thicknessTailFrame.dirtyRect }
         : null;

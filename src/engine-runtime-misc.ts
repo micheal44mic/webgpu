@@ -21,6 +21,10 @@ import {
   mixedSceneRasterSegmentShader,
   mixedSceneTextSegmentShader,
 } from "./mixed-scene-compositor-shader";
+import {
+  rasterImageMipmapShader,
+  rasterImageMixedSceneShader,
+} from "./raster-image-shader";
 import { assertShaderCompiled } from "./engine-gpu-utils";
 import { vectorTextDisplayShader } from "./vector-text-shader";
 import { initializeVectorTextGpuRenderer } from "./engine-vector-text-runtime";
@@ -225,6 +229,14 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
       label: "Mixed scene checker presentation WGSL",
       code: mixedScenePresentShader,
     });
+    engine.rasterImageMipmapShaderModule = engine.device.createShaderModule({
+      label: "Raster image premultiplied sRGB mipmap WGSL",
+      code: rasterImageMipmapShader,
+    });
+    engine.rasterImageMixedSceneShaderModule = engine.device.createShaderModule({
+      label: "Raster image mixed-scene WGSL",
+      code: rasterImageMixedSceneShader,
+    });
     await Promise.all([
       assertShaderCompiled(
         engine.vectorTextDisplayShaderModule,
@@ -242,6 +254,14 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
       assertShaderCompiled(
         engine.mixedScenePresentShaderModule,
         "mixed scene checker presentation",
+      ),
+      assertShaderCompiled(
+        engine.rasterImageMipmapShaderModule,
+        "raster image premultiplied mipmap",
+      ),
+      assertShaderCompiled(
+        engine.rasterImageMixedSceneShaderModule,
+        "raster image mixed-scene compositor",
       ),
     ]);
     await initializeVectorTextGpuRenderer(engine);
@@ -282,6 +302,38 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
       ],
+    });
+    engine.rasterImageMipmapBindGroupLayout = engine.device.createBindGroupLayout({
+      label: "Raster image mipmap bind group layout",
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+      ],
+    });
+    engine.rasterImageMixedSceneBindGroupLayout = engine.device.createBindGroupLayout({
+      label: "Raster image mixed-scene bind group layout",
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+      ],
+    });
+    engine.rasterImageSampler = engine.device.createSampler({
+      label: "Raster image trilinear clamp sampler",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
+      magFilter: "linear",
+      minFilter: "linear",
+      mipmapFilter: "linear",
+      maxAnisotropy: 8,
     });
     const vectorTextPipelineLayout = engine.device.createPipelineLayout({
       label: "Dual viewport vector text mixed-layer display pipeline layout",
@@ -355,6 +407,57 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
         targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: sourceOverBlend }],
       },
       primitive: { topology: "triangle-list" },
+    });
+    engine.rasterImageMipmapPipeline = engine.device.createRenderPipeline({
+      label: "Raster image premultiplied sRGB mipmap pipeline",
+      layout: engine.device.createPipelineLayout({
+        label: "Raster image mipmap pipeline layout",
+        bindGroupLayouts: [engine.rasterImageMipmapBindGroupLayout],
+      }),
+      vertex: {
+        module: engine.rasterImageMipmapShaderModule,
+        entryPoint: "vertexMain",
+      },
+      fragment: {
+        module: engine.rasterImageMipmapShaderModule,
+        entryPoint: "fragmentMain",
+        targets: [{ format: "rgba8unorm-srgb" }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+    engine.rasterImagePremultiplyPipeline = engine.device.createRenderPipeline({
+      label: "Raster image straight-sRGB to linear-premultiplied pipeline",
+      layout: engine.device.createPipelineLayout({
+        label: "Raster image premultiply pipeline layout",
+        bindGroupLayouts: [engine.rasterImageMipmapBindGroupLayout],
+      }),
+      vertex: {
+        module: engine.rasterImageMipmapShaderModule,
+        entryPoint: "vertexMain",
+      },
+      fragment: {
+        module: engine.rasterImageMipmapShaderModule,
+        entryPoint: "fragmentPremultiplyMain",
+        targets: [{ format: "rgba8unorm-srgb" }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+    engine.rasterImageMixedScenePipeline = engine.device.createRenderPipeline({
+      label: "Raster image mixed-scene trilinear source-over pipeline",
+      layout: engine.device.createPipelineLayout({
+        label: "Raster image mixed-scene pipeline layout",
+        bindGroupLayouts: [engine.rasterImageMixedSceneBindGroupLayout],
+      }),
+      vertex: {
+        module: engine.rasterImageMixedSceneShaderModule,
+        entryPoint: "vertexMain",
+      },
+      fragment: {
+        module: engine.rasterImageMixedSceneShaderModule,
+        entryPoint: "fragmentMain",
+        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: sourceOverBlend }],
+      },
+      primitive: { topology: "triangle-strip", cullMode: "none" },
     });
     engine.mixedSceneClearPipeline = engine.device.createRenderPipeline({
       label: "Mixed scene partial transparent clear pipeline",
@@ -922,7 +1025,11 @@ export function rasterStrokeEffectRect(engine: BrushEngine,
     : null;
 }
 
-export function assertVectorUpdateAllowed(engine: BrushEngine, key: MixedSceneVectorKey): void {
+export function assertVectorUpdateAllowed(
+  engine: BrushEngine,
+  key: MixedSceneVectorKey,
+  updatedKeys: readonly string[] = [],
+): void {
   if (
     !engine.initialized
     || engine.activeStroke !== null
@@ -935,6 +1042,18 @@ export function assertVectorUpdateAllowed(engine: BrushEngine, key: MixedSceneVe
   }
   if (engine.activeVectorHistoryEdit && engine.activeVectorHistoryEdit.key !== key) {
     throw new Error("Concludi prima la modifica vettoriale corrente.");
+  }
+  if (
+    engine.activeVectorHistoryEdit?.scope === "transform"
+    && updatedKeys.some((updatedKey) => ![
+      "x",
+      "y",
+      "scale",
+      "rotation",
+      "distortPoints",
+    ].includes(updatedKey))
+  ) {
+    throw new Error("Trasforma accetta soltanto geometria fino ad Applica o Annulla.");
   }
 }
 

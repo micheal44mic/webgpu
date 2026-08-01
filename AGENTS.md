@@ -2870,3 +2870,53 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   senza fallback, preservazione hot nello switch, separazione sorgente/target,
   tile del target e UI. Nessuna nuova misura prestazionale o QA browser è stata
   attribuita a questo passo; candidato locale non committato e non pubblicato.
+
+### Immagini raster semantiche e Trasforma transazionale (1 agosto 2026)
+
+- L'importazione esterna accetta immagini statiche PNG, JPEG/JPG, WebP e AVIF
+  quando il decoder nativo del browser supporta il formato. La strategia
+  `byte-sniff-static-png-jpeg-webp-avif-create-image-bitmap-v1` verifica i byte,
+  non la sola estensione/MIME, e rifiuta esplicitamente APNG, WebP animati,
+  sequenze AVIF e JPEG concatenati/MPO. Non esistono fallback Canvas2D, decoder
+  JavaScript, ridimensionamenti automatici o conversioni silenziose.
+- Ogni immagine resta un nodo semantico indipendente nello stack misto, con
+  visibilità, opacità, ordine, posizione, scala e rotazione. Strategia stack
+  `heterogeneous-bottom-up-raster-vector-image-segmented-composition-vector-raster-replacement-v7`:
+  un'immagine visibile interrompe le run raster/vettoriali ed è composta nel suo
+  slot esatto; un nodo nascosto o a opacità zero non crea pass o barriere.
+- Storage firmato
+  `immutable-rgba8unorm-srgb-linear-premultiplied-full-mips-history-reachable-sweep-v2`:
+  il bitmap decodificato viene caricato una sola volta, premoltiplicato in
+  lineare sulla GPU e conservato come `rgba8unorm-srgb` immutabile con catena mip
+  completa. Le risorse vengono liberate soltanto quando non sono più raggiunte
+  né dalla scena, né da Undo/Redo, né da una transazione aperta.
+- La piramide usa
+  `webgpu-straight-srgb-to-linear-premultiplied-exact-area-npot-mips-v2`:
+  filtro area esatto anche sui bordi NPOT, senza halo scuri da alpha straight.
+  Il display usa quad WebGPU premoltiplicati, trilineare e anisotropia `8`; oltre
+  la soglia pixel della vista (`581%`) passa a mip 0 nearest per mostrare i texel
+  fedelmente. Nessun pixel dell'immagine viene compositato sul CPU.
+- Il tool Canvas `Trasforma` lavora su testo, SVG e immagini. Il primo gesto
+  apre una sola edit globale; spostamento, scala e rotazione possono continuare
+  per più gesti e producono una sola azione soltanto con `Applica`. `Annulla` o
+  `Esc` ripristinano atomicamente lo stato iniziale senza sporcare Undo/Redo;
+  `Invio` applica soltanto fuori da un drag. Durante la sessione palette,
+  selezione, livelli e altri tool restano bloccati. Due dita continuano a
+  navigare pan/zoom/rotazione della vista senza entrare nella cronologia.
+- Il percorso interattivo aggiorna direttamente il solo uniform buffer della
+  trasformazione, riusandone l'upload quando invariato; la cache di presentazione
+  invalida l'unione conservativa fra bbox precedente e nuova, anche fuori dal
+  documento. Non vengono ricreate texture o mip durante il gesto.
+- Limiti senza fallback: file sorgente `64 MiB`, singolo asset GPU `256 MiB`,
+  totale immagini raggiungibili da scena+cronologia `256 MiB` e picco logico
+  aggregato d'importazione `384 MiB`. Quest'ultimo comprende residente già
+  esistente, bitmap decodificata, copia completa d'ispezione, texture temporanea
+  di upload, mip finali e uniform. Il controllo avviene prima del decode e di
+  nuovo prima dell'allocazione; importazioni concorrenti sullo stesso motore
+  vengono rifiutate.
+- Verifica finale: `tsc --noEmit`, tutte le diciassette suite `*:verify`,
+  `git diff --check` e build Vite production con preparazione Sites verdi.
+  Sono inclusi test numerici NPOT, soglia memoria `5016/5017`, terza immagine
+  4K, parser/decoder/cleanup, stack invisibile, resource sweep, dirty rect e
+  transazione Apply/Cancel/Undo/Redo. Non è stata eseguita una nuova misura
+  prestazionale canonica iPhone né una QA browser attribuita a questo passo.

@@ -1034,7 +1034,7 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
   engine.mergedBelow = null;
   engine.mergedAbove = null;
   engine.mixedSceneRasterSegments = [];
-  engine.mixedSceneCompositionSegments = engine.mixedSceneStack?.vectorCount
+  engine.mixedSceneCompositionSegments = engine.mixedSceneStack?.visibleSemanticCount
     ? engine.mixedSceneStack.compositionSegments(engine.layerStack.active.id)
     : [];
   engine.normalPipeline = normalPipeline;

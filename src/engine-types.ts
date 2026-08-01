@@ -9,6 +9,7 @@ import type { DirtyRect } from "./engine-stroke-types";
 import {
   MIXED_SCENE_STACK_STRATEGY,
   type MixedSceneItem,
+  type RasterImageNode,
   type VectorSvgNode,
   type VectorTextNode,
 } from "./mixed-scene-stack";
@@ -118,6 +119,11 @@ export interface MixedSceneSnapshot {
       kind: "svg";
       svgNode: Readonly<VectorSvgNode>;
     }
+    | {
+      key: `image:${number}`;
+      kind: "image";
+      imageNode: Readonly<RasterImageNode>;
+    }
   )[];
 }
 
@@ -131,6 +137,8 @@ export interface HistoryState {
   cursor: number;
   storedBaseStamps: number;
   logicalStampBytes: number;
+  /** Proprietà continue o Trasforma aperti: Undo/Redo restano bloccati. */
+  openEdit: "property" | "transform" | null;
 }
 
 export interface BenchmarkResult {

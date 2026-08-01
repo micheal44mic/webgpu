@@ -1169,14 +1169,26 @@ assert.match(
 );
 assert.match(
   controllerSource,
-  /mode !== "pan" && !this\.host\.beginVectorHistoryEdit\(\)/,
+  /this\.host\.beginVectorHistoryEdit\("transform"\)/,
 );
 assert.match(
   controllerSource,
-  /interaction\.mode !== "pan"[\s\S]*this\.host\.commitVectorHistoryEdit\(\)/,
+  /private async applyTransformSession\(\)[\s\S]*this\.host\.commitVectorHistoryEdit\(\)/,
 );
-assert.match(engineSource, /beginVectorHistoryEdit\(\): boolean/);
+assert.match(
+  controllerSource,
+  /private async cancelTransformSession\(\)[\s\S]*this\.host\.cancelVectorHistoryEdit\(\)/,
+);
+assert.doesNotMatch(
+  controllerSource.slice(
+    controllerSource.indexOf("  private finishPointer(event: PointerEvent): void {"),
+  ),
+  /this\.host\.commitVectorHistoryEdit\(\)/,
+  "pointerup non deve creare una voce Undo prima di Applica",
+);
+assert.match(engineSource, /beginVectorHistoryEdit\(scope: "property" \| "transform" = "property"\): boolean/);
 assert.match(engineSource, /commitVectorHistoryEdit\(\): boolean/);
+assert.match(engineSource, /async cancelVectorHistoryEdit\(\): Promise<boolean>/);
 assert.match(engineSource, /kind: "vector"[\s\S]*delta: MixedSceneVectorHistoryDelta/);
 // Non un'asserzione di ordine sulla concatenazione (che codificherebbe solo la
 // posizione dei moduli): due presenze distinte, con il ripristino vincolato a

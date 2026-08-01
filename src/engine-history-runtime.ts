@@ -636,6 +636,7 @@ export function compactDiscardedHistory(engine: BrushEngine): void {
     }
   }
   engine.discardedVectorRasterHistoryActions = [];
+  engine.sweepRasterImageGpuResources();
   scheduleHistoryGpuTrim(engine);
 }
 
@@ -653,6 +654,7 @@ export function recordVectorHistoryAction(engine: BrushEngine,
     delta: { before, after },
   });
   engine.historyCursor = engine.historyActions.length;
+  engine.sweepRasterImageGpuResources();
   if (engine.activeStrokeProfile) {
     engine.activeStrokeProfile.historyCommittedActions += 1;
   }

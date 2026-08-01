@@ -180,10 +180,11 @@ export function vectorTextInnerShadowLocalVector(
 }
 
 export const MIXED_SCENE_STACK_STRATEGY =
-  "heterogeneous-bottom-up-raster-vector-segmented-composition-vector-raster-replacement-v6" as const;
+  "heterogeneous-bottom-up-raster-vector-image-segmented-composition-vector-raster-replacement-v7" as const;
 
 export const VECTOR_TEXT_NODE_MAXIMUM = 64;
 export const VECTOR_SVG_NODE_MAXIMUM = 64;
+export const RASTER_IMAGE_NODE_MAXIMUM = 64;
 
 export type MixedSceneItem =
   | {
@@ -200,12 +201,19 @@ export type MixedSceneItem =
     readonly key: `svg:${number}`;
     readonly kind: "svg";
     readonly svgNodeId: number;
+  }
+  | {
+    readonly key: `image:${number}`;
+    readonly kind: "image";
+    readonly imageNodeId: number;
   };
 
-export type MixedSceneVectorItem = Exclude<MixedSceneItem, { readonly kind: "raster" }>;
+export type MixedSceneVectorItem = Extract<MixedSceneItem, { readonly kind: "text" | "svg" }>;
+export type MixedSceneSemanticItem = Exclude<MixedSceneItem, { readonly kind: "raster" }>;
 
 export interface VectorTextNode {
   readonly id: number;
+  readonly kind: "text";
   name: string;
   visible: boolean;
   opacity: number;
@@ -284,6 +292,7 @@ export interface VectorTextNodeSeed {
 
 export interface VectorSvgNode {
   readonly id: number;
+  readonly kind: "svg";
   name: string;
   visible: boolean;
   opacity: number;
@@ -346,6 +355,66 @@ export interface VectorSvgNodeSeed {
   rotation: number;
 }
 
+/**
+ * Immutable metadata for a decoded raster asset. The Blob, ImageBitmap and
+ * GPUTexture deliberately live in the engine asset registry, so scene
+ * snapshots and Undo/Redo can share this tiny record without retaining or
+ * cloning pixel payloads.
+ */
+export interface RasterImageDocument {
+  readonly assetId: string;
+  readonly sourceName: string;
+  readonly mimeType: string;
+  readonly sourceBytes: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+export interface RasterImageNode {
+  readonly id: number;
+  readonly kind: "image";
+  name: string;
+  visible: boolean;
+  opacity: number;
+  document: RasterImageDocument;
+  x: number;
+  y: number;
+  scale: number;
+  rotation: number;
+}
+
+export interface RasterImageNodeSeed {
+  document: RasterImageDocument;
+  x: number;
+  y: number;
+  scale: number;
+  rotation: number;
+}
+
+export function cloneRasterImageDocument(
+  documentValue: Readonly<RasterImageDocument>,
+): RasterImageDocument {
+  return { ...documentValue };
+}
+
+export function cloneRasterImageNode(
+  node: Readonly<RasterImageNode>,
+): RasterImageNode {
+  return {
+    ...node,
+    document: cloneRasterImageDocument(node.document),
+  };
+}
+
+function cloneRasterImageNodeForHistory(
+  node: Readonly<RasterImageNode>,
+): RasterImageNode {
+  return {
+    ...node,
+    document: node.document,
+  };
+}
+
 export function cloneVectorSvgNode(node: Readonly<VectorSvgNode>): VectorSvgNode {
   return {
     ...node,
@@ -394,6 +463,11 @@ export type MixedSceneCompositionSegment =
     readonly key: `text-run:${string}`;
     readonly kind: "text-run";
     readonly items: readonly MixedSceneVectorItem[];
+  }
+  | {
+    readonly key: `image:${number}`;
+    readonly kind: "image";
+    readonly item: MixedSceneItem & { readonly kind: "image" };
   };
 
 export type MixedSceneRasterRunKey =
@@ -450,13 +524,16 @@ export interface MixedSceneState {
   readonly textNodes: readonly VectorTextNode[];
   readonly selectedKey: MixedSceneItem["key"];
   readonly svgNodes: readonly VectorSvgNode[];
+  readonly imageNodes: readonly RasterImageNode[];
   readonly nextTextNodeId: number;
   readonly nextSvgNodeId: number;
+  readonly nextImageNodeId: number;
 }
 
 export type MixedSceneVectorKey =
   | Extract<MixedSceneItem, { readonly kind: "text" }>["key"]
-  | Extract<MixedSceneItem, { readonly kind: "svg" }>["key"];
+  | Extract<MixedSceneItem, { readonly kind: "svg" }>["key"]
+  | Extract<MixedSceneItem, { readonly kind: "image" }>["key"];
 
 /**
  * Compact, single-node state used by the global Undo/Redo journal.
@@ -469,7 +546,7 @@ export interface MixedSceneVectorHistoryState {
   readonly key: MixedSceneVectorKey;
   readonly index: number;
   readonly selectedKey: MixedSceneItem["key"];
-  readonly node: VectorTextNode | VectorSvgNode | null;
+  readonly node: VectorTextNode | VectorSvgNode | RasterImageNode | null;
 }
 
 export interface MixedSceneVectorHistoryDelta {
@@ -501,6 +578,20 @@ function svgItem(svgNodeId: number): MixedSceneItem & { kind: "svg" } {
   };
 }
 
+function imageItem(imageNodeId: number): MixedSceneItem & { kind: "image" } {
+  return {
+    key: `image:${imageNodeId}`,
+    kind: "image",
+    imageNodeId,
+  };
+}
+
+function semanticKindForKey(key: MixedSceneVectorKey): MixedSceneSemanticItem["kind"] {
+  if (key.startsWith("text:")) return "text";
+  if (key.startsWith("svg:")) return "svg";
+  return "image";
+}
+
 function clampOpacity(opacity: number): number {
   return Math.min(1, Math.max(0, Number.isFinite(opacity) ? opacity : 1));
 }
@@ -512,9 +603,11 @@ export class MixedSceneStack {
   private readonly textNodes = new Map<number, VectorTextNode>();
   private selectedKey: MixedSceneItem["key"];
   private readonly svgNodes = new Map<number, VectorSvgNode>();
+  private readonly imageNodes = new Map<number, RasterImageNode>();
   private nextTextNodeId = 1;
 
   private nextSvgNodeId = 1;
+  private nextImageNodeId = 1;
   constructor(rasterLayerIds: readonly number[]) {
     if (rasterLayerIds.length === 0) {
       throw new Error("La scena mista richiede almeno un livello raster.");
@@ -546,8 +639,32 @@ export class MixedSceneStack {
     return this.svgNodes.size;
   }
 
+  get imageCount(): number {
+    return this.imageNodes.size;
+  }
+
+  get semanticCount(): number {
+    return this.textNodes.size + this.svgNodes.size + this.imageNodes.size;
+  }
+
+  get visibleSemanticCount(): number {
+    let count = 0;
+    for (const node of this.textNodes.values()) {
+      if (node.visible && node.opacity > 0 && node.text.length > 0) count += 1;
+    }
+    for (const node of this.svgNodes.values()) {
+      if (node.visible && node.opacity > 0) count += 1;
+    }
+    for (const node of this.imageNodes.values()) {
+      if (node.visible && node.opacity > 0) count += 1;
+    }
+    return count;
+  }
+
   get vectorCount(): number {
-    return this.textNodes.size + this.svgNodes.size;
+    // Compatibility alias: legacy callers use vectorCount as the gate for the
+    // heterogeneous semantic compositor. Images must keep that gate open too.
+    return this.semanticCount;
   }
 
   itemByKey(key: MixedSceneItem["key"]): MixedSceneItem {
@@ -574,6 +691,14 @@ export class MixedSceneStack {
     return node;
   }
 
+  imageById(id: number): RasterImageNode {
+    const node = this.imageNodes.get(id);
+    if (!node) {
+      throw new Error(`Immagine ${id} inesistente.`);
+    }
+    return node;
+  }
+
   indexOfKey(key: MixedSceneItem["key"]): number {
     return this.orderedItems.findIndex((item) => item.key === key);
   }
@@ -583,9 +708,11 @@ export class MixedSceneStack {
       items: this.orderedItems.map((item) => ({ ...item })),
       textNodes: [...this.textNodes.values()].map(cloneVectorTextNode),
       svgNodes: [...this.svgNodes.values()].map(cloneVectorSvgNode),
+      imageNodes: [...this.imageNodes.values()].map(cloneRasterImageNode),
       selectedKey: this.selectedKey,
       nextTextNodeId: this.nextTextNodeId,
       nextSvgNodeId: this.nextSvgNodeId,
+      nextImageNodeId: this.nextImageNodeId,
     };
   }
   restoreState(state: MixedSceneState): void {
@@ -598,6 +725,7 @@ export class MixedSceneStack {
     for (const node of state.textNodes) {
       this.textNodes.set(node.id, {
         ...node,
+        kind: "text",
         transformType: normalizeVectorTextTransformType(node.transformType),
         transformCurve: normalizeVectorTextTransformCurve(node.transformCurve),
         circleRadiusPercent: normalizeVectorTextCircleRadiusPercent(
@@ -609,11 +737,16 @@ export class MixedSceneStack {
     }
     this.svgNodes.clear();
     for (const node of state.svgNodes) {
-      this.svgNodes.set(node.id, cloneVectorSvgNode(node));
+      this.svgNodes.set(node.id, { ...cloneVectorSvgNode(node), kind: "svg" });
+    }
+    this.imageNodes.clear();
+    for (const node of state.imageNodes) {
+      this.imageNodes.set(node.id, { ...cloneRasterImageNode(node), kind: "image" });
     }
     this.selectedKey = state.selectedKey;
     this.nextTextNodeId = state.nextTextNodeId;
     this.nextSvgNodeId = state.nextSvgNodeId;
+    this.nextImageNodeId = state.nextImageNodeId;
   }
 
   captureVectorHistoryState(
@@ -634,7 +767,9 @@ export class MixedSceneStack {
       ? cloneVectorTextNode(this.textById(item.textNodeId))
       : item.kind === "svg"
         ? cloneVectorSvgNodeForHistory(this.svgById(item.svgNodeId))
-        : null;
+        : item.kind === "image"
+          ? cloneRasterImageNodeForHistory(this.imageById(item.imageNodeId))
+          : null;
     if (!node) {
       throw new Error(`Elemento ${key} non è un nodo vettoriale.`);
     }
@@ -654,17 +789,16 @@ export class MixedSceneStack {
         this.textNodes.delete(existing.textNodeId);
       } else if (existing.kind === "svg") {
         this.svgNodes.delete(existing.svgNodeId);
+      } else if (existing.kind === "image") {
+        this.imageNodes.delete(existing.imageNodeId);
       } else {
-        throw new Error(`Elemento ${state.key} non è un nodo vettoriale.`);
+        throw new Error(`Elemento ${state.key} non è un nodo semantico.`);
       }
     }
 
     if (state.node) {
-      const keyKind = state.key.startsWith("text:") ? "text" : "svg";
-      if (
-        (keyKind === "text" && !("text" in state.node))
-        || (keyKind === "svg" && "text" in state.node)
-      ) {
+      const keyKind = semanticKindForKey(state.key);
+      if (state.node.kind !== keyKind) {
         throw new Error(`Nodo storico incompatibile con ${state.key}.`);
       }
       const insertionIndex = Math.max(
@@ -676,11 +810,16 @@ export class MixedSceneStack {
         this.textNodes.set(node.id, node);
         this.orderedItems.splice(insertionIndex, 0, textItem(node.id));
         this.nextTextNodeId = Math.max(this.nextTextNodeId, node.id + 1);
-      } else {
+      } else if (keyKind === "svg") {
         const node = cloneVectorSvgNodeForHistory(state.node as VectorSvgNode);
         this.svgNodes.set(node.id, node);
         this.orderedItems.splice(insertionIndex, 0, svgItem(node.id));
         this.nextSvgNodeId = Math.max(this.nextSvgNodeId, node.id + 1);
+      } else {
+        const node = cloneRasterImageNodeForHistory(state.node as RasterImageNode);
+        this.imageNodes.set(node.id, node);
+        this.orderedItems.splice(insertionIndex, 0, imageItem(node.id));
+        this.nextImageNodeId = Math.max(this.nextImageNodeId, node.id + 1);
       }
     }
 
@@ -708,6 +847,7 @@ export class MixedSceneStack {
     this.nextTextNodeId += 1;
     const node: VectorTextNode = {
       id,
+      kind: "text",
       name: name?.trim() || `Testo ${id}`,
       visible: true,
       opacity: 1,
@@ -785,6 +925,7 @@ export class MixedSceneStack {
     ));
     const node: VectorSvgNode = {
       id,
+      kind: "svg",
       name: name?.trim() || documentValue.sourceName || `SVG ${id}`,
       visible: true,
       opacity: 1,
@@ -823,6 +964,46 @@ export class MixedSceneStack {
     return node;
   }
 
+  addImageAboveSelection(
+    seed: RasterImageNodeSeed,
+    name?: string,
+  ): RasterImageNode {
+    if (this.imageNodes.size >= RASTER_IMAGE_NODE_MAXIMUM) {
+      throw new Error(`Massimo ${RASTER_IMAGE_NODE_MAXIMUM} immagini raggiunto.`);
+    }
+    if (
+      !seed.document.assetId.trim()
+      || !Number.isInteger(seed.document.width)
+      || seed.document.width <= 0
+      || !Number.isInteger(seed.document.height)
+      || seed.document.height <= 0
+      || !Number.isInteger(seed.document.sourceBytes)
+      || seed.document.sourceBytes < 0
+    ) {
+      throw new Error("Metadati dell’immagine raster non validi.");
+    }
+    const id = this.nextImageNodeId;
+    this.nextImageNodeId += 1;
+    const documentValue = cloneRasterImageDocument(seed.document);
+    const node: RasterImageNode = {
+      id,
+      kind: "image",
+      name: name?.trim() || documentValue.sourceName || `Immagine ${id}`,
+      visible: true,
+      opacity: 1,
+      document: documentValue,
+      x: seed.x,
+      y: seed.y,
+      scale: seed.scale,
+      rotation: seed.rotation,
+    };
+    const selectedIndex = this.indexOfKey(this.selectedKey);
+    this.orderedItems.splice(selectedIndex + 1, 0, imageItem(id));
+    this.imageNodes.set(id, node);
+    this.selectedKey = `image:${id}`;
+    return node;
+  }
+
   deleteSvg(id: number, fallbackRasterLayerId: number): VectorSvgNode {
     const node = this.svgById(id);
     const key = `svg:${id}` as const;
@@ -837,6 +1018,22 @@ export class MixedSceneStack {
     }
     return node;
   }
+
+  deleteImage(id: number, fallbackRasterLayerId: number): RasterImageNode {
+    const node = this.imageById(id);
+    const key = `image:${id}` as const;
+    const index = this.indexOfKey(key);
+    if (index < 0) throw new Error(`Elemento immagine ${id} assente dalla pila.`);
+    this.orderedItems.splice(index, 1);
+    this.imageNodes.delete(id);
+    if (this.selectedKey === key) {
+      const fallbackKey = `raster:${fallbackRasterLayerId}` as const;
+      this.itemByKey(fallbackKey);
+      this.selectedKey = fallbackKey;
+    }
+    return node;
+  }
+
   deleteText(id: number, fallbackRasterLayerId: number): VectorTextNode {
     const node = this.textById(id);
     const key = `text:${id}` as const;
@@ -871,8 +1068,9 @@ export class MixedSceneStack {
   }
 
   /**
-   * Atomically replaces one semantic vector item with its raster layer at the
-   * identical heterogeneous scene index.
+   * Atomically replaces one semantic item with its raster layer at the
+   * identical heterogeneous scene index. The legacy method name is preserved
+   * because text/SVG rasterization already uses it.
    */
   replaceVectorWithRaster(
     key: MixedSceneVectorKey,
@@ -885,7 +1083,7 @@ export class MixedSceneStack {
     }
     const index = this.indexOfKey(key);
     if (index < 0) {
-      throw new Error("Vettore " + key + " assente dalla scena.");
+      throw new Error("Elemento semantico " + key + " assente dalla scena.");
     }
     const item = this.orderedItems[index];
     if (item.kind === "text") {
@@ -894,8 +1092,11 @@ export class MixedSceneStack {
     } else if (item.kind === "svg") {
       this.svgById(item.svgNodeId);
       this.svgNodes.delete(item.svgNodeId);
+    } else if (item.kind === "image") {
+      this.imageById(item.imageNodeId);
+      this.imageNodes.delete(item.imageNodeId);
     } else {
-      throw new Error("Elemento " + key + " non è vettoriale.");
+      throw new Error("Elemento " + key + " non è semantico.");
     }
     this.orderedItems.splice(index, 1, raster);
     this.selectedKey = rasterKey;
@@ -910,11 +1111,8 @@ export class MixedSceneStack {
     if (!state.node) {
       throw new Error("Stato vettoriale storico vuoto nel ripristino raster.");
     }
-    const restoresText = state.key.startsWith("text:");
-    if (
-      (restoresText && !("text" in state.node))
-      || (!restoresText && "text" in state.node)
-    ) {
+    const restoredKind = semanticKindForKey(state.key);
+    if (state.node.kind !== restoredKind) {
       throw new Error("Nodo storico incompatibile con " + state.key + ".");
     }
     const rasterKey = rasterItem(rasterLayerId).key;
@@ -925,16 +1123,21 @@ export class MixedSceneStack {
     if (this.indexOfKey(state.key) >= 0) {
       throw new Error("Vettore storico " + state.key + " già presente nella scena.");
     }
-    if (restoresText) {
+    if (restoredKind === "text") {
       const node = cloneVectorTextNode(state.node as VectorTextNode);
       this.orderedItems.splice(index, 1, textItem(node.id));
       this.textNodes.set(node.id, node);
       this.nextTextNodeId = Math.max(this.nextTextNodeId, node.id + 1);
-    } else {
+    } else if (restoredKind === "svg") {
       const node = cloneVectorSvgNodeForHistory(state.node as VectorSvgNode);
       this.orderedItems.splice(index, 1, svgItem(node.id));
       this.svgNodes.set(node.id, node);
       this.nextSvgNodeId = Math.max(this.nextSvgNodeId, node.id + 1);
+    } else {
+      const node = cloneRasterImageNodeForHistory(state.node as RasterImageNode);
+      this.orderedItems.splice(index, 1, imageItem(node.id));
+      this.imageNodes.set(node.id, node);
+      this.nextImageNodeId = Math.max(this.nextImageNodeId, node.id + 1);
     }
     this.selectedKey = state.key;
     return index;
@@ -1209,6 +1412,48 @@ export class MixedSceneStack {
     if (update.rotation !== undefined) node.rotation = update.rotation;
     return node;
   }
+
+  moveImage(id: number, delta: -1 | 1): boolean {
+    this.imageById(id);
+    const key = `image:${id}` as const;
+    const from = this.indexOfKey(key);
+    const to = from + delta;
+    if (to < 0 || to >= this.orderedItems.length) return false;
+    const [item] = this.orderedItems.splice(from, 1);
+    this.orderedItems.splice(to, 0, item);
+    return true;
+  }
+
+  setImageVisibility(id: number, visible: boolean): boolean {
+    const node = this.imageById(id);
+    if (node.visible === visible) return false;
+    node.visible = visible;
+    return true;
+  }
+
+  setImageOpacity(id: number, opacity: number): boolean {
+    const node = this.imageById(id);
+    const normalized = clampOpacity(opacity);
+    if (node.opacity === normalized) return false;
+    node.opacity = normalized;
+    return true;
+  }
+
+  updateImage(
+    id: number,
+    update: Partial<Omit<RasterImageNode, "id" | "document">>,
+  ): RasterImageNode {
+    const node = this.imageById(id);
+    if (update.name !== undefined) node.name = update.name;
+    if (update.visible !== undefined) node.visible = update.visible;
+    if (update.opacity !== undefined) node.opacity = clampOpacity(update.opacity);
+    if (update.x !== undefined) node.x = update.x;
+    if (update.y !== undefined) node.y = update.y;
+    if (update.scale !== undefined) node.scale = update.scale;
+    if (update.rotation !== undefined) node.rotation = update.rotation;
+    return node;
+  }
+
   partitionAroundRaster(activeRasterLayerId: number): MixedScenePartition {
     const key = `raster:${activeRasterLayerId}` as const;
     const index = this.indexOfKey(key);
@@ -1228,8 +1473,10 @@ export class MixedSceneStack {
 
   /**
    * Produces the exact bottom-up scene order while extracting the one raster
-   * that remains hot and editable. Adjacent inactive rasters and adjacent text
-   * nodes are grouped, but a raster/text boundary is never flattened away.
+   * that remains hot and editable. Adjacent inactive rasters and adjacent
+   * vector nodes are grouped. Every visible semantic raster image is emitted
+   * as its own segment and therefore interrupts both kinds of run; hidden or
+   * fully transparent images do not split neighboring runs.
    */
   compositionSegments(activeRasterLayerId: number): readonly MixedSceneCompositionSegment[] {
     const activeKey = `raster:${activeRasterLayerId}` as const;
@@ -1278,6 +1525,18 @@ export class MixedSceneStack {
       } else if (item.kind === "raster") {
         flushTextRun();
         rasterRun.push(item);
+      } else if (item.kind === "image") {
+        const image = this.imageById(item.imageNodeId);
+        if (!image.visible || image.opacity <= 0) {
+          continue;
+        }
+        flushRasterRun();
+        flushTextRun();
+        segments.push({
+          key: item.key,
+          kind: "image",
+          item,
+        });
       } else {
         flushRasterRun();
         textRun.push(item);

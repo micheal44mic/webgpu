@@ -782,6 +782,15 @@ select {
   background: rgba(110, 87, 210, 0.13);
 }
 
+.layer-row.is-image-node .layer-select {
+  border-color: rgba(87, 196, 164, 0.48);
+}
+
+.layer-row.is-image-node .layer-select[aria-current="true"] {
+  border-color: #65d6b2;
+  background: rgba(51, 161, 128, 0.14);
+}
+
 .layer-hint {
   color: #8b929e;
   font-size: 0.72rem;
@@ -802,7 +811,9 @@ select {
 }
 
 .vector-svg-import-card,
-.vector-svg-selected {
+.vector-svg-selected,
+.vector-image-import-card,
+.vector-image-selected {
   display: grid;
   gap: 8px;
   margin: 4px 0 13px;
@@ -813,11 +824,14 @@ select {
 }
 
 .vector-svg-import-card .result,
-.vector-svg-selected .result {
+.vector-svg-selected .result,
+.vector-image-import-card .result,
+.vector-image-selected .result {
   margin: 0;
 }
 
-.vector-svg-selected h3 {
+.vector-svg-selected h3,
+.vector-image-selected h3 {
   margin: 0;
   color: #dce1eb;
   font-size: 0.78rem;
@@ -1158,4 +1172,40 @@ select {
 
 #vectorTextInteractionCanvas.is-rotate {
   cursor: grabbing;
+}
+
+.transform-commit-bar {
+  position: absolute;
+  z-index: 8;
+  top: 14px;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 6px 8px 6px 13px;
+  transform: translateX(-50%);
+  border: 1px solid rgba(117, 130, 157, 0.7);
+  border-radius: 12px;
+  background: rgba(15, 19, 27, 0.94);
+  color: #eef2f8;
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.38);
+  backdrop-filter: blur(12px);
+}
+
+.transform-commit-bar[hidden] {
+  display: none;
+}
+
+.transform-commit-bar span {
+  margin-right: 3px;
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.transform-commit-bar button {
+  min-height: 32px;
+  padding: 6px 11px;
 }

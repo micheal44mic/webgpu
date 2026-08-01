@@ -4,6 +4,7 @@ import { readEngineSource } from "./engine-source.mjs";
 import {
   MIXED_SCENE_STACK_STRATEGY,
   MixedSceneStack,
+  RASTER_IMAGE_NODE_MAXIMUM,
   VECTOR_SVG_NODE_MAXIMUM,
   VECTOR_TEXT_NODE_MAXIMUM,
   reusableMixedSceneRasterRunKeys,
@@ -91,8 +92,22 @@ const svgSeed = (sourceName = "fixture.svg") => ({
   scale: 1,
   rotation: 0,
 });
+const imageSeed = (assetId = "asset:1", sourceName = "fixture.png") => ({
+  document: {
+    assetId,
+    sourceName,
+    mimeType: "image/png",
+    sourceBytes: 1024,
+    width: 640,
+    height: 480,
+  },
+  x: 2048,
+  y: 2048,
+  scale: 1,
+  rotation: 0,
+});
 const flattenedCompositionKeys = (segments) => segments.flatMap((segment) => {
-  if (segment.kind === "active-raster") {
+  if (segment.kind === "active-raster" || segment.kind === "image") {
     return [segment.item.key];
   }
   return segment.items.map((item) => item.key);
@@ -121,8 +136,9 @@ const assertCompositionPreservesDocumentOrder = (stack, activeRasterLayerId) => 
 
 assert.equal(
   MIXED_SCENE_STACK_STRATEGY,
-  "heterogeneous-bottom-up-raster-vector-segmented-composition-vector-raster-replacement-v6",
+  "heterogeneous-bottom-up-raster-vector-image-segmented-composition-vector-raster-replacement-v7",
 );
+assert.equal(RASTER_IMAGE_NODE_MAXIMUM, 64);
 
 // A vector-only edit must keep exact raster runs resident. Crossing a raster
 // invalidates only the groups whose membership changed, never an unrelated run.
@@ -375,6 +391,57 @@ assert.equal(
     stack.items.map((item) => item.key),
     ["raster:1", "text:2"],
   );
+}
+
+{
+  const stack = new MixedSceneStack([1, 2]);
+  const image = stack.addImageAboveSelection(imageSeed(), "Foto");
+  assert.equal(image.kind, "image");
+  assert.equal(stack.imageCount, 1);
+  assert.equal(stack.semanticCount, 1);
+  assert.equal(stack.visibleSemanticCount, 1);
+  assert.equal(stack.vectorCount, 1);
+  stack.addTextAboveSelection(seed("SOPRA"));
+  stack.select("raster:2");
+  stack.addSvgAboveSelection(svgSeed("logo-over.svg"));
+  assert.deepEqual(
+    stack.compositionSegments(1).map((segment) => segment.key),
+    ["active-raster:1", "image:1", "text-run:text:1", "raster-run:2", "text-run:svg:1"],
+    "un’immagine deve interrompere le run senza cambiare l’ordine del documento",
+  );
+  assertCompositionPreservesDocumentOrder(stack, 1);
+
+  const before = stack.captureVectorHistoryState("image:1");
+  stack.updateImage(image.id, { x: 777, y: 333, scale: 2, rotation: 0.5 });
+  const after = stack.captureVectorHistoryState("image:1");
+  assert.equal(after.node?.document, stack.imageById(image.id).document);
+  stack.restoreVectorHistoryState(before);
+  assert.equal(stack.imageById(image.id).x, 2048);
+  assert.equal(stack.imageById(image.id).document, before.node.document);
+  stack.restoreVectorHistoryState(after);
+  assert.equal(stack.imageById(image.id).x, 777);
+  assert.equal(stack.setImageVisibility(image.id, false), true);
+  assert.equal(stack.visibleSemanticCount, 2);
+  assert.deepEqual(
+    stack.compositionSegments(1).map((segment) => segment.key),
+    ["active-raster:1", "text-run:text:1", "raster-run:2", "text-run:svg:1"],
+    "un’immagine nascosta non deve spezzare o moltiplicare le run",
+  );
+  assert.equal(stack.setImageVisibility(image.id, true), true);
+  assert.equal(stack.setImageOpacity(image.id, 0), true);
+  assert.equal(stack.visibleSemanticCount, 2);
+  assert.deepEqual(
+    stack.compositionSegments(1).map((segment) => segment.key),
+    ["active-raster:1", "text-run:text:1", "raster-run:2", "text-run:svg:1"],
+    "un’immagine trasparente non deve spezzare o moltiplicare le run",
+  );
+  assert.equal(stack.setImageOpacity(image.id, 0.25), true);
+  assert.equal(stack.moveImage(image.id, 1), true);
+  stack.select("image:1");
+  const deleted = stack.deleteImage(image.id, 1);
+  assert.equal(deleted.id, image.id);
+  assert.equal(stack.imageCount, 0);
+  assert.equal(stack.selected.key, "raster:1");
 }
 
 {
