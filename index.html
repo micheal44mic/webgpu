@@ -76,10 +76,11 @@
             <select id="brushTool">
               <option value="paint">Paint</option>
               <option value="blend">Blend — dry</option>
+              <option value="fill">Riempimento</option>
             </select>
           </label>
 
-          <label class="control">
+          <label id="brushShapeControl" class="control">
             <span>Forma</span>
             <select id="brushShape">
               <option value="circle">Cerchio</option>
@@ -97,12 +98,20 @@
             <input id="brushColor" type="color" value="#ff5b35" />
           </label>
 
-          <label class="control">
+          <label id="fillToleranceControl" class="control" hidden>
+            <span>
+              Tolleranza <output id="fillToleranceOut">10,0%</output>
+              <small>Confronto RGBA in sRGB; la regione resta sul livello selezionato.</small>
+            </span>
+            <input id="fillTolerance" type="range" min="0" max="100" step="0.1" value="10" />
+          </label>
+
+          <label id="brushSizeControl" class="control">
             <span>Dimensione <output id="brushSizeOut">96 px</output></span>
             <input id="brushSize" type="range" min="4" max="1500" step="1" value="96" />
           </label>
 
-          <label class="control">
+          <label id="spacingControl" class="control">
             <span>Spacing <output id="spacingOut">1.00%</output></span>
             <input id="spacing" type="range" min="0.25" max="25" step="0.25" value="1" />
           </label>
@@ -112,7 +121,7 @@
             <input id="count" type="range" min="1" max="24" step="1" value="24" />
           </label>
 
-          <label class="control">
+          <label id="flowControl" class="control">
             <span>Flow <output id="flowOut">7%</output></span>
             <input id="flow" type="range" min="0.1" max="100" step="0.1" value="7" />
           </label>
@@ -122,7 +131,7 @@
             <input id="opacity" type="range" min="0" max="100" step="0.1" value="100" />
           </label>
 
-          <label class="control">
+          <label id="hardnessControl" class="control">
             <span>Hardness <output id="hardnessOut">88%</output></span>
             <input id="hardness" type="range" min="0" max="100" step="1" value="88" />
           </label>
@@ -179,7 +188,7 @@
 
         </section>
 
-        <section>
+        <section id="grainSection">
           <h2>Grain</h2>
 
           <label class="control">
@@ -1238,7 +1247,7 @@
           aria-live="polite"
           hidden
         >Zoom testo · preciso</div>
-        <div class="hint">Un dito disegna · due dita spostano, fanno zoom e ruotano · desktop: R + trascina</div>
+        <div class="hint">Un dito disegna o riempie · due dita spostano, fanno zoom e ruotano · desktop: R + trascina</div>
 
         <aside id="gpuMemoryMonitor" class="gpu-memory-monitor" aria-label="Memoria GPU conteggiata">
           <section id="gpuMemoryPanel" class="gpu-memory-panel" hidden>
@@ -1279,6 +1288,7 @@
               <div data-memory-row><dt>Smusso · LUT e controllo</dt><dd id="gpuMemoryBevelControl">—</dd></div>
 
               <div class="gpu-memory-group-start" data-memory-row><dt>Blend dry · scratch</dt><dd id="gpuMemoryBlend">—</dd></div>
+              <div data-memory-row><dt>Riempimento · scratch CCL</dt><dd id="gpuMemoryFill">—</dd></div>
               <div data-memory-row><dt>Rendering · Light / Uniformed / Intense</dt><dd id="gpuMemoryLightGlaze">—</dd></div>
               <div data-memory-row><dt>Coda spessore</dt><dd id="gpuMemoryThicknessTail">—</dd></div>
               <div class="gpu-memory-group-start" data-memory-row><dt id="gpuMemoryHistoryLabel">Cronologia raster · GPU</dt><dd id="gpuMemoryHistory">—</dd></div>

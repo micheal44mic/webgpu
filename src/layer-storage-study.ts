@@ -1,5 +1,5 @@
 export const LAYER_STORAGE_STRATEGY =
-  "single-active-full-inactive-256-array-tiles-rehydrate-fold" as const;
+  "single-active-plus-optional-reference-full-inactive-256-array-tiles-rehydrate-fold" as const;
 
 export const LAYER_STORAGE_TILE_SIZE = 256;
 export const LAYER_STORAGE_GRID_SIZE = 16;

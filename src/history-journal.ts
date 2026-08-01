@@ -1,5 +1,5 @@
 export const HISTORY_JOURNAL_STRATEGY =
-  "global-order-per-layer-clear-barrier-vector-seed-v3" as const;
+  "global-order-per-layer-clear-barrier-vector-seed-fill-v4" as const;
 
 /**
  * One entry of the global journal. `layerId` is what makes a single stack usable
@@ -9,7 +9,7 @@ export const HISTORY_JOURNAL_STRATEGY =
 export type JournalAction =
   | {
     id: number;
-    kind: "stroke" | "clear" | "vector-rasterize";
+    kind: "stroke" | "fill" | "clear" | "vector-rasterize";
     layerId: number;
   }
   | {
@@ -64,7 +64,7 @@ export function visibleStrokeIds(
   const visible = new Set<number>();
   for (let index = first; index < end; index += 1) {
     const action = actions[index];
-    if (action.kind !== "stroke") {
+    if (action.kind !== "stroke" && action.kind !== "fill") {
       continue;
     }
     if (layerId === undefined || action.layerId === layerId) {
@@ -146,7 +146,11 @@ export function layersWithVisibleContent(
 ): Set<number> {
   const layers = new Set<number>();
   for (const action of actions.slice(0, Math.max(0, Math.min(cursor, actions.length)))) {
-    if (action.kind === "stroke" || action.kind === "vector-rasterize") {
+    if (
+      action.kind === "stroke"
+      || action.kind === "fill"
+      || action.kind === "vector-rasterize"
+    ) {
       layers.add(action.layerId);
     }
   }

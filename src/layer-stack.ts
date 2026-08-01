@@ -10,7 +10,7 @@ import type {
 import type { LayerStorageTileMask } from "./layer-storage-study";
 
 export const LAYER_STACK_STRATEGY =
-  "ordered-records-single-active-index-monotonic-ids" as const;
+  "ordered-records-single-active-single-reference-monotonic-ids" as const;
 
 /**
  * Each layer owns only its authoritative 4096² mip-0 texture. Display mips are
@@ -108,6 +108,7 @@ export class LayerStack {
   private readonly records: LayerRecord[] = [];
   private readonly createStyles: LayerStyleFactory;
   private _activeIndex = 0;
+  private _referenceLayerId: number | null = null;
   private nextId = 1;
 
   constructor(createStyles: LayerStyleFactory) {
@@ -153,6 +154,33 @@ export class LayerStack {
 
   get active(): LayerRecord {
     return this.records[this._activeIndex];
+  }
+
+  /** At most one raster layer can drive Fill connectivity for the document. */
+  get referenceLayerId(): number | null {
+    return this._referenceLayerId;
+  }
+
+  get reference(): LayerRecord | null {
+    if (this._referenceLayerId === null) {
+      return null;
+    }
+    const record = this.byId(this._referenceLayerId);
+    if (!record) {
+      throw new Error(
+        `Invariante Riferimento violata: livello ${this._referenceLayerId} assente.`,
+      );
+    }
+    return record;
+  }
+
+  setReferenceIndex(index: number | null): boolean {
+    const nextId = index === null ? null : this.at(index).id;
+    if (nextId === this._referenceLayerId) {
+      return false;
+    }
+    this._referenceLayerId = nextId;
+    return true;
   }
 
   at(index: number): LayerRecord {
@@ -221,6 +249,9 @@ export class LayerStack {
     }
     const removed = this.at(index);
     this.records.splice(index, 1);
+    if (removed.id === this._referenceLayerId) {
+      this._referenceLayerId = null;
+    }
     if (this._activeIndex > index) {
       this._activeIndex -= 1;
     } else if (this._activeIndex === index) {

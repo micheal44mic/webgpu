@@ -719,9 +719,13 @@ select {
 
 .layer-row {
   display: grid;
-  grid-template-columns: 30px minmax(0, 1fr) 76px;
+  grid-template-columns: 30px 38px minmax(0, 1fr) 76px;
   align-items: center;
   gap: 5px;
+}
+
+.layer-row.is-text-node {
+  grid-template-columns: 30px minmax(0, 1fr) 76px;
 }
 
 .layer-row button {
@@ -737,6 +741,21 @@ select {
 
 .layer-visibility[aria-pressed="false"] {
   color: #626a76;
+}
+
+.layer-reference {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: #6f7784;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.layer-reference[aria-pressed="true"] {
+  border-color: #f0b45d;
+  background: rgba(240, 180, 93, 0.14);
+  color: #ffd394;
 }
 
 .layer-select {

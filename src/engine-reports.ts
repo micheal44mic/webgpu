@@ -88,6 +88,7 @@ import {
 } from "./shadow-core";
 import { RASTER_SHADOW_STORAGE_STRATEGY, RASTER_SHADOW_WORKSPACE_STRATEGY } from "./shadow-renderer";
 import { DRY_BLEND_SCRATCH_LIFECYCLE_STRATEGY } from "./blend-core";
+import { FILL_REFERENCE_LAYER_STRATEGY } from "./fill-core";
 import { type ShapeOccupancyFallbackReason } from "./shape-occupancy";
 import {
   THICKNESS_DYNAMICS_STRATEGY,
@@ -165,6 +166,9 @@ export function getBenchmarkEnvironment(engine: BrushEngine): {
   layerMemoryMiB: number;
   layerCount: number;
   activeLayerId: number;
+  referenceLayerId: number | null;
+  fillReferenceLayerStrategy: typeof FILL_REFERENCE_LAYER_STRATEGY;
+  fillReferenceLayerMiB: number;
   layerBakeStrategy: typeof LAYER_BAKE_STRATEGY;
   layerCompositeStrategy: typeof LAYER_COMPOSITE_STRATEGY;
   layerStorageStudy: LayerStorageStudyStats;
@@ -339,6 +343,13 @@ export function getBenchmarkEnvironment(engine: BrushEngine): {
     layerMemoryMiB: layerStorageStudy.actualRawMiB,
     layerCount: engine.layerStack.count,
     activeLayerId: engine.layerStack.active.id,
+    referenceLayerId: engine.layerStack.referenceLayerId,
+    fillReferenceLayerStrategy: FILL_REFERENCE_LAYER_STRATEGY,
+    fillReferenceLayerMiB:
+      engine.layerStack.referenceLayerId !== null
+        && engine.layerStack.referenceLayerId !== engine.layerStack.active.id
+        ? layerBaseMemoryMiB(engine.layerFormat)
+        : 0,
     layerBakeStrategy: LAYER_BAKE_STRATEGY,
     layerCompositeStrategy: LAYER_COMPOSITE_STRATEGY,
     layerStorageStudy,
@@ -550,6 +561,13 @@ export function getStats(engine: BrushEngine): EngineStats {
     mixedScene: engine.createMixedSceneSnapshot(),
     layerCount: engine.layerStack.count,
     activeLayerId: engine.layerStack.active.id,
+    referenceLayerId: engine.layerStack.referenceLayerId,
+    fillReferenceLayerStrategy: FILL_REFERENCE_LAYER_STRATEGY,
+    fillReferenceLayerMiB:
+      engine.layerStack.referenceLayerId !== null
+        && engine.layerStack.referenceLayerId !== engine.layerStack.active.id
+        ? layerBaseMemoryMiB(engine.layerFormat)
+        : 0,
     layerBakeStrategy: LAYER_BAKE_STRATEGY,
     layerCompositeStrategy: LAYER_COMPOSITE_STRATEGY,
     layerStorageStudy,
@@ -561,6 +579,7 @@ export function getStats(engine: BrushEngine): EngineStats {
         name: record.name,
         visible: record.visible,
         opacity: record.opacity,
+        reference: record.id === engine.layerStack.referenceLayerId,
         // The record's copy is only written back when the layer stops being
         // active, so for the active one the engine field is the live truth.
         // Reading the record here would report "empty" while the user paints.
@@ -794,6 +813,7 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     shrinkCount: 0,
   };
   const blendRendererMiB = engine.blendRenderer?.allocatedMemoryMiB() ?? 0;
+  const fillRendererMiB = (engine.fillRenderer?.residentBytes ?? 0) / MEBIBYTE_BYTES;
   const lightGlazeMiB = engine.lightGlazeStorageAllocated
     ? lightGlazeAdditionalMemoryMiB(engine.layerFormat, engine.lightGlazeStorageMode)
     : 0;
@@ -834,6 +854,7 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     rasterStrokeMaskAndControlMiB,
     effectsScratchPoolMiB,
     blendRendererMiB,
+    fillRendererMiB,
     lightGlazeMiB,
     thicknessTailMiB,
     rasterBevelHeightMiB,
@@ -869,6 +890,7 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     effectsScratchOuterShadowExtent,
     effectsScratchInnerShadowExtent,
     blendRendererMiB,
+    fillRendererMiB,
     rasterBevelHeightMiB,
     rasterBevelLutAndControlMiB,
     rasterOuterShadowMatteMiB,
@@ -1296,6 +1318,11 @@ export function getLayerStorageStudy(engine: BrushEngine): LayerStorageStudyStat
     bytesPerPixel,
   );
   const activeId = engine.layerStack.active.id;
+  const referenceId = engine.layerStack.referenceLayerId;
+  const fullResidentIds = new Set<number>([activeId]);
+  if (referenceId !== null) {
+    fullResidentIds.add(referenceId);
+  }
   const layers = engine.layerStack.layers.map((record): LayerStorageLayerEstimate => {
     const gpu = engine.layerGpu.get(record.id);
     const active = record.id === activeId;
@@ -1318,6 +1345,7 @@ export function getLayerStorageStudy(engine: BrushEngine): LayerStorageStudyStat
       id: record.id,
       name: record.name,
       active,
+      reference: record.id === referenceId,
       hasContent,
       conservativeTileCount,
       hotAllocated,
@@ -1337,20 +1365,21 @@ export function getLayerStorageStudy(engine: BrushEngine): LayerStorageStudyStat
       ),
     };
   });
-  const inactive = layers.filter((layer) => !layer.active);
-  const inactiveConservativeTileMiB = inactive.reduce(
+  const coldProjected = layers.filter((layer) => !fullResidentIds.has(layer.id));
+  const inactiveConservativeTileMiB = coldProjected.reduce(
     (total, layer) => total + layer.conservativeTileMiB,
     0,
   );
-  const inactiveAlignedBboxMiB = inactive.reduce(
+  const inactiveAlignedBboxMiB = coldProjected.reduce(
     (total, layer) => total + layer.alignedBboxMiB,
     0,
   );
   const eagerFullRawMiB = fullLayerMiB * engine.layerGpu.size;
   const actualRawMiB = layers.reduce((total, layer) => total + layer.actualRawMiB, 0);
-  const activeFullMiB = engine.layerGpu.size > 0 ? fullLayerMiB : 0;
-  const projectedConservativeRawMiB = activeFullMiB + inactiveConservativeTileMiB;
-  const projectedAlignedBboxRawMiB = activeFullMiB + inactiveAlignedBboxMiB;
+  const residentFullCount = engine.layerGpu.size > 0 ? fullResidentIds.size : 0;
+  const residentFullMiB = fullLayerMiB * residentFullCount;
+  const projectedConservativeRawMiB = residentFullMiB + inactiveConservativeTileMiB;
+  const projectedAlignedBboxRawMiB = residentFullMiB + inactiveAlignedBboxMiB;
   return {
     strategy: LAYER_STORAGE_STRATEGY,
     measurementOnly: false,
@@ -1360,7 +1389,8 @@ export function getLayerStorageStudy(engine: BrushEngine): LayerStorageStudyStat
     bytesPerPixel,
     fullLayerMiB,
     actualRawMiB,
-    inactiveFullMiB: fullLayerMiB * Math.max(0, engine.layerGpu.size - 1),
+    inactiveFullMiB:
+      fullLayerMiB * Math.max(0, engine.layerGpu.size - residentFullCount),
     eagerFullRawMiB,
     inactiveConservativeTileMiB,
     inactiveAlignedBboxMiB,
@@ -1417,11 +1447,15 @@ export async function measureExactLayerStorageStudy(engine: BrushEngine): Promis
     });
   }
 
+  const fullResidentIds = new Set<number>([engine.layerStack.active.id]);
+  if (engine.layerStack.referenceLayerId !== null) {
+    fullResidentIds.add(engine.layerStack.referenceLayerId);
+  }
   const inactiveExactMiB = layers
-    .filter((layer) => !layer.active)
+    .filter((layer) => !fullResidentIds.has(layer.id))
     .reduce((total, layer) => total + layer.exactTileMiB, 0);
-  const activeFullMiB = engine.layerGpu.size > 0 ? estimate.fullLayerMiB : 0;
-  const projectedExactRawMiB = activeFullMiB + inactiveExactMiB;
+  const residentFullMiB = estimate.fullLayerMiB * fullResidentIds.size;
+  const projectedExactRawMiB = residentFullMiB + inactiveExactMiB;
   const countedGpuMiBAfter = getGpuMemoryStats(engine).countedTotalMiB;
   const temporaryReadbackBytesAfter = engine.devReadbackActiveBytes;
   const temporaryReadbackPeakBytes = engine.devReadbackPeakBytes;

@@ -360,6 +360,9 @@ interface BenchmarkRun {
     layerMemoryMiB: number;
     layerCount: number;
     activeLayerId: number;
+    referenceLayerId: number | null;
+    fillReferenceLayerStrategy: string;
+    fillReferenceLayerMiB: number;
     countedGpuMemoryMiB: number;
     vectorTextPresentationMiB: number;
     vectorTextAdaptiveZoomStrategy: string | null;
@@ -484,7 +487,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet";
-    performanceTelemetryRevision: 58;
+    performanceTelemetryRevision: 59;
   };
 }
 
@@ -637,7 +640,9 @@ let controlsPanelOpen = true;
 let gpuMemoryPanelOpen = false;
 let previousGpuMemoryTotalMiB: number | null = null;
 let gpuMemoryDeltaTimer: number | null = null;
+type CanvasTool = BrushSettings["tool"] | "fill";
 let activeBrushTool: BrushSettings["tool"] = "paint";
+let activeCanvasTool: CanvasTool = "paint";
 
 type NumericKeyOf<T> = {
   [Key in keyof T]-?: T[Key] extends number ? Key : never;
@@ -670,6 +675,7 @@ const gpuMemoryRows: ReadonlyArray<
   ["gpuMemoryBevelHeight", "rasterBevelHeightMiB"],
   ["gpuMemoryBevelControl", "rasterBevelLutAndControlMiB"],
   ["gpuMemoryBlend", "blendRendererMiB"],
+  ["gpuMemoryFill", "fillRendererMiB"],
   ["gpuMemoryLightGlaze", "lightGlazeMiB"],
   ["gpuMemoryThicknessTail", "thicknessTailMiB"],
   ["gpuMemoryHistory", "historyGpuMiB"],
@@ -693,14 +699,23 @@ function captureActiveToolControls(): void {
 }
 
 function configureBrushToolUi(
-  tool: BrushSettings["tool"],
+  tool: CanvasTool,
   restoreSnapshot: boolean,
 ): void {
-  const previousTool = activeBrushTool;
-  if (restoreSnapshot && previousTool !== tool) {
+  const previousCanvasTool = activeCanvasTool;
+  const previousBrushTool = activeBrushTool;
+  if (
+    restoreSnapshot
+    && previousCanvasTool !== tool
+    && previousCanvasTool !== "fill"
+  ) {
     captureActiveToolControls();
   }
-  activeBrushTool = tool;
+  activeCanvasTool = tool;
+  const fill = tool === "fill";
+  if (!fill) {
+    activeBrushTool = tool;
+  }
   setControlValue("brushTool", tool);
   const blend = tool === "blend";
   const size = element<HTMLInputElement>("brushSize");
@@ -710,7 +725,7 @@ function configureBrushToolUi(
   spacing.min = blend ? "1" : "0.25";
   spacing.max = blend ? "400" : "25";
   spacing.step = blend ? "1" : "0.25";
-  if (restoreSnapshot && previousTool !== tool) {
+  if (restoreSnapshot && !fill && previousBrushTool !== tool) {
     const snapshot = toolControlSnapshots[tool];
     setControlValue("brushSize", snapshot.size);
     setControlValue("spacing", snapshot.spacing);
@@ -726,13 +741,34 @@ function configureBrushToolUi(
     "colorJitterSection",
     "positionJitterSection",
   ]) {
-    element<HTMLElement>(id).hidden = blend;
+    element<HTMLElement>(id).hidden = blend || fill;
   }
+  for (const id of [
+    "brushShapeControl",
+    "brushSizeControl",
+    "spacingControl",
+    "flowControl",
+    "hardnessControl",
+    "grainSection",
+    "renderingModeMemoryHint",
+  ]) {
+    element<HTMLElement>(id).hidden = fill;
+  }
+  element<HTMLElement>("fillToleranceControl").hidden = !fill;
   element<HTMLElement>("blendControls").hidden = !blend;
   updateRenderingModeControlAvailability();
+  if (engineInitialized) {
+    void engine.setFillToolSelected(fill).then((ready) => {
+      if (!ready && activeCanvasTool === "fill" && engine.fillToolSelected === false) {
+        configureBrushToolUi(activeBrushTool, false);
+        applyBrushControls();
+      }
+    });
+  }
 }
 
 function updateRenderingModeControlAvailability(): void {
+  if (activeCanvasTool === "fill") return;
   const blendTool = activeBrushTool === "blend";
   const size = element<HTMLInputElement>("brushSize");
   size.max = blendTool ? "1024" : "1500";
@@ -798,7 +834,7 @@ function setGpuMemoryPanelOpen(open: boolean): void {
 
 function readBrushSettings(): BrushSettings {
   return {
-    tool: element<HTMLSelectElement>("brushTool").value === "blend" ? "blend" : "paint",
+    tool: activeBrushTool,
     shape: element<HTMLSelectElement>("brushShape").value as BrushSettings["shape"],
     shapeScatter: rangeValue("shapeScatter") / 100,
     grainMode: element<HTMLSelectElement>("grainMode").value as BrushSettings["grainMode"],
@@ -838,6 +874,8 @@ function readBrushSettings(): BrushSettings {
 }
 
 function updateControlOutputs(): void {
+  element<HTMLOutputElement>("fillToleranceOut").value =
+    `${rangeValue("fillTolerance").toFixed(1).replace(".", ",")}%`;
   element<HTMLOutputElement>("shapeScatterOut").value = `${rangeValue("shapeScatter").toFixed(0)}%`;
   element<HTMLOutputElement>("grainScaleOut").value = `${rangeValue("grainScale").toFixed(0)}%`;
   element<HTMLOutputElement>("grainDepthOut").value = `${rangeValue("grainDepth").toFixed(0)}%`;
@@ -994,7 +1032,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     viewRotationDegrees: Number(engine.getViewRotationDegrees().toFixed(3)),
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet",
-    performanceTelemetryRevision: 58,
+    performanceTelemetryRevision: 59,
     countedGpuMemoryMiB: stats.gpuMemory.countedTotalMiB,
     vectorTextPresentationMiB: stats.gpuMemory.vectorTextPresentationMiB,
     vectorTextAdaptiveZoomStrategy: vectorTextDiagnostics?.adaptiveZoomStrategy ?? null,
@@ -2080,9 +2118,9 @@ function updateHistoryControls(): void {
   undoStrokeButton.disabled = locked || !historyState.canUndo;
   redoStrokeButton.disabled = locked || !historyState.canRedo;
   clearLayerButton.disabled = locked;
-  const blendToolActive = activeBrushTool === "blend";
-  benchmarkButton.disabled = locked || blendToolActive;
-  benchmarkStampsInput.disabled = locked || blendToolActive;
+  const paintToolInactive = activeCanvasTool !== "paint";
+  benchmarkButton.disabled = locked || paintToolInactive;
+  benchmarkStampsInput.disabled = locked || paintToolInactive;
   rasterShadowGoldenButton.disabled = locked;
   rasterStrokeGoldenButton.disabled = locked;
   effectsWorkbenchBenchmarkButton.disabled = locked;
@@ -2210,6 +2248,7 @@ const brushControlIds = [
   "grainMode",
   ...grainParameterControlIds,
   "brushColor",
+  "fillTolerance",
   "brushSize",
   "spacing",
   "startThickness",
@@ -2365,9 +2404,18 @@ for (const id of rasterBevelChangeControlIds) {
 }
 
 element<HTMLSelectElement>("brushTool").addEventListener("change", () => {
-  const tool = element<HTMLSelectElement>("brushTool").value === "blend" ? "blend" : "paint";
+  const selected = element<HTMLSelectElement>("brushTool").value;
+  const tool: CanvasTool = selected === "blend"
+    ? "blend"
+    : selected === "fill"
+      ? "fill"
+      : "paint";
   configureBrushToolUi(tool, true);
-  applyBrushControls();
+  if (tool !== "fill") {
+    applyBrushControls();
+  } else {
+    updateControlOutputs();
+  }
   updateHistoryControls();
 });
 
@@ -3279,6 +3327,7 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
 
   const storageStudy = stats.layerStorageStudy;
   const inactiveLayers = storageStudy.layers.filter((layer) => !layer.active);
+  const coldEligibleLayers = inactiveLayers.filter((layer) => !layer.reference);
   const coldTileCount = storageStudy.layers.reduce(
     (total, layer) => total + layer.coldTileCount,
     0,
@@ -3290,11 +3339,11 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
     (total, layer) => total + layer.compressedRawMiB,
     0,
   );
-  const inactiveBboxTileCount = inactiveLayers.reduce(
+  const inactiveBboxTileCount = coldEligibleLayers.reduce(
     (total, layer) => total + layer.alignedBboxTileCount,
     0,
   );
-  const inactiveTileCapacity = inactiveLayers.length * storageStudy.tileCount;
+  const inactiveTileCapacity = coldEligibleLayers.length * storageStudy.tileCount;
   const hotLayerCount = storageStudy.layers.filter((layer) => layer.hotAllocated).length;
   const actualSavingsMiB = Math.max(
     0,
@@ -3312,7 +3361,7 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
       : "");
   element<HTMLElement>("gpuMemoryLayerStudyBboxLabel").textContent =
     `Confronto · bbox ${storageStudy.tileSizePx} · `
-    + `${inactiveBboxTileCount}/${inactiveTileCapacity} inattive`;
+    + `${inactiveBboxTileCount}/${inactiveTileCapacity} livelli cold`;
   tileOutput.textContent = formatStudy(storageStudy.actualRawMiB, actualSavingsMiB);
   bboxOutput.textContent = formatStudy(
     storageStudy.projectedAlignedBboxRawMiB,
@@ -3323,8 +3372,8 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
     + "i livelli compressi sono RAM CPU separata ed esclusa dal totale GPU. "
     + "Il risparmio è rispetto a un full-canvas per ogni livello.";
   bboxOutput.title =
-    "Confronto teorico: attivo full-canvas più bbox allineato degli inattivi; "
-    + "non è memoria allocata.";
+    "Confronto teorico: attivo e Riferimento full-canvas, più bbox allineato "
+    + "degli altri livelli inattivi; non è memoria allocata.";
 
   const scratchExtents: string[] = [];
   if (stats.gpuMemory.effectsScratchStrokeExtent > 0) {
@@ -3447,6 +3496,10 @@ function createLayerRow(): HTMLDivElement {
   const visibility = document.createElement("button");
   visibility.type = "button";
   visibility.className = "layer-visibility";
+  const reference = document.createElement("button");
+  reference.type = "button";
+  reference.className = "layer-reference";
+  reference.textContent = "R";
   const select = document.createElement("button");
   select.type = "button";
   select.className = "layer-select";
@@ -3466,7 +3519,7 @@ function createLayerRow(): HTMLDivElement {
   range.step = "1";
   const output = document.createElement("output");
   opacity.append(range, output);
-  row.append(visibility, select, opacity);
+  row.append(visibility, reference, select, opacity);
   return row;
 }
 
@@ -3496,6 +3549,7 @@ function renderMixedSceneList(
   ordered.forEach((item, position) => {
     const row = layerList.children[position] as HTMLDivElement;
     const visibility = row.querySelector<HTMLButtonElement>(".layer-visibility")!;
+    const reference = row.querySelector<HTMLButtonElement>(".layer-reference")!;
     const select = row.querySelector<HTMLButtonElement>(".layer-select")!;
     const name = row.querySelector<HTMLSpanElement>(".layer-name")!;
     const hint = row.querySelector<HTMLSpanElement>(".layer-hint")!;
@@ -3504,6 +3558,8 @@ function renderMixedSceneList(
     const selected = item.key === scene.selectedKey;
 
     row.className = `layer-row ${item.kind === "raster" ? "is-raster-node" : "is-text-node"}`;
+    reference.hidden = item.kind !== "raster";
+    reference.onclick = null;
     select.disabled = locked;
     select.setAttribute("aria-current", String(selected));
 
@@ -3525,13 +3581,29 @@ function renderMixedSceneList(
 
       name.textContent = layer.name;
       const isActiveRaster = layer.id === scene.activeRasterLayerId;
+      reference.disabled = locked || !selected || !isActiveRaster;
+      reference.setAttribute("aria-pressed", String(layer.reference));
+      reference.setAttribute(
+        "aria-label",
+        `${layer.reference ? "Disattiva" : "Imposta"} Riferimento per ${layer.name}`,
+      );
+      reference.title = layer.reference
+        ? "Riferimento attivo: il Riempimento legge i confini da questo raster."
+        : isActiveRaster && selected
+          ? "Usa questo raster come sorgente full-residente del Riempimento."
+          : "Seleziona prima il raster per impostarlo come Riferimento.";
+      reference.onclick = () => {
+        void changeLayerReference(item.rasterLayerIndex, !layer.reference);
+      };
       const compressionProgress = stats.layerColdCompressionProgress?.layerId === layer.id
         ? stats.layerColdCompressionProgress
         : null;
-      hint.textContent = isActiveRaster
+      const residencyHint = isActiveRaster
         ? vectorSelected
           ? `raster di lavoro · ${formatMemoryMiB(layer.actualRawMiB)}`
           : `raster attivo · ${formatMemoryMiB(layer.actualRawMiB)}`
+        : layer.reference && layer.hotAllocated
+          ? `raster full-residente · ${formatMemoryMiB(layer.actualRawMiB)}`
         : compressionProgress
           ? `raster · compressione ${compressionProgress.completedTileCount}/`
             + `${compressionProgress.totalTileCount}`
@@ -3541,11 +3613,15 @@ function renderMixedSceneList(
               ? `raster cold · ${layer.coldTileCount} tile · `
                 + formatMemoryMiB(layer.actualRawMiB)
               : "raster cold · 0 MiB";
+      hint.textContent = `${layer.reference ? "riferimento · " : ""}${residencyHint}`;
       select.title = isActiveRaster
         ? vectorSelected
           ? "Raster di lavoro: resta full-canvas per mostrare i pixel e riprendere "
             + "il pennello senza reidratazione; la selezione resta sul testo."
           : "Livello raster attivo: il pennello scrive soltanto qui."
+        : layer.reference && layer.hotAllocated
+          ? "Raster Riferimento full-residente: il Riempimento legge qui i confini "
+            + "senza reidratazione o copie."
         : "Livello raster separato: selezionalo per attivare il pennello.";
       select.onclick = () => {
         void selectMixedSceneItem(item.key);
@@ -3746,6 +3822,7 @@ function renderLayerList(stats: EngineStats): void {
     const index = stats.layers.length - 1 - position;
     const row = layerList.children[position] as HTMLDivElement;
     const visibility = row.querySelector<HTMLButtonElement>(".layer-visibility")!;
+    const reference = row.querySelector<HTMLButtonElement>(".layer-reference")!;
     const select = row.querySelector<HTMLButtonElement>(".layer-select")!;
     const name = row.querySelector<HTMLSpanElement>(".layer-name")!;
     const hint = row.querySelector<HTMLSpanElement>(".layer-hint")!;
@@ -3767,11 +3844,28 @@ function renderLayerList(stats: EngineStats): void {
     select.setAttribute("aria-current", index === stats.activeLayerIndex ? "true" : "false");
     name.textContent = layer.name;
     const isActive = layer.id === stats.activeLayerId;
+    reference.hidden = false;
+    reference.disabled = locked || !isActive;
+    reference.setAttribute("aria-pressed", String(layer.reference));
+    reference.setAttribute(
+      "aria-label",
+      `${layer.reference ? "Disattiva" : "Imposta"} Riferimento per ${layer.name}`,
+    );
+    reference.title = layer.reference
+      ? "Riferimento attivo: il Riempimento legge i confini da questo raster."
+      : isActive
+        ? "Usa questo raster come sorgente full-residente del Riempimento."
+        : "Seleziona prima il raster per impostarlo come Riferimento.";
+    reference.onclick = () => {
+      void changeLayerReference(index, !layer.reference);
+    };
     const compressionProgress = stats.layerColdCompressionProgress?.layerId === layer.id
       ? stats.layerColdCompressionProgress
       : null;
-    hint.textContent = isActive
+    const residencyHint = isActive
       ? `attivo · ${formatMemoryMiB(layer.actualRawMiB)} full`
+      : layer.reference && layer.hotAllocated
+        ? `full-residente · ${formatMemoryMiB(layer.actualRawMiB)} full`
       : layer.hotAllocated
         ? `hot di sicurezza · ${formatMemoryMiB(layer.actualRawMiB)} full`
         : compressionProgress
@@ -3781,12 +3875,16 @@ function renderLayerList(stats: EngineStats): void {
         : layer.compressed
           ? `compresso · raw ${formatMemoryMiB(layer.compressedRawMiB)} → `
             + `${formatMemoryMiB(layer.compressedCpuMiB)} RAM`
-          : layer.hasContent
+        : layer.hasContent
             ? `cold · ${layer.coldTileCount}/${stats.layerStorageStudy.tileCount} tile · `
               + formatMemoryMiB(layer.actualRawMiB)
             : "cold · 0 MiB";
+    hint.textContent = `${layer.reference ? "riferimento · " : ""}${residencyHint}`;
     select.title = isActive
       ? "Livello attivo: texture full-canvas 4096² pronta per disegnare senza paging."
+      : layer.reference && layer.hotAllocated
+        ? "Livello Riferimento: texture full-canvas 4096² sempre residente; il "
+          + "Riempimento legge qui i confini senza reidratazione o copie."
       : layer.hotAllocated
         ? "Livello inattivo trattenuto full-canvas per preservare i pixel dopo un errore; "
           + "un nuovo switch è bloccato finché il documento non torna coerente."
@@ -3847,6 +3945,40 @@ async function changeLayerOpacity(index: number, opacity: number): Promise<void>
       ? error.message
       : "Opacità del livello non aggiornata.";
   } finally {
+    layerSwitching = false;
+    updateHistoryControls();
+    updateStats(engine.getStats());
+  }
+}
+
+async function changeLayerReference(index: number, enabled: boolean): Promise<void> {
+  if (layerSwitching || interactionLocked()) {
+    return;
+  }
+  if (index !== engine.getStats().activeLayerIndex) {
+    layerSwitchResult.textContent =
+      "Seleziona prima il livello raster da impostare come Riferimento.";
+    return;
+  }
+  layerSwitching = true;
+  updateHistoryControls();
+  try {
+    await showLayerLoading(
+      enabled ? "Preparo il Riferimento GPU…" : "Rilascio il Riferimento GPU…",
+    );
+    const changed = await engine.setLayerReference(index, enabled);
+    const layer = engine.getStats().layers[index];
+    layerSwitchResult.textContent = changed
+      ? enabled
+        ? `${layer?.name ?? "Livello"} è ora il Riferimento del Riempimento.`
+        : "Riferimento disattivato: il Riempimento usa il livello selezionato."
+      : "Impostazione Riferimento già attiva.";
+  } catch (error) {
+    layerSwitchResult.textContent = error instanceof Error
+      ? error.message
+      : "Riferimento GPU non aggiornato.";
+  } finally {
+    hideLayerLoading();
     layerSwitching = false;
     updateHistoryControls();
     updateStats(engine.getStats());
@@ -3994,6 +4126,17 @@ addLayerButton.addEventListener("click", async () => {
 });
 
 function updateRenderingModeMemoryHint(stats: EngineStats): void {
+  if (activeCanvasTool === "fill") {
+    const referenceMemory = stats.fillReferenceLayerMiB > 0
+      ? ` · riferimento hot ${formatMemoryMiB(stats.fillReferenceLayerMiB)}`
+      : stats.referenceLayerId !== null
+        ? " · riferimento sul raster attivo"
+        : " · sorgente raster attivo";
+    renderingModeMemoryHint.textContent =
+      `Riempimento · scratch residente ${formatMemoryMiB(stats.gpuMemory.fillRendererMiB)}`
+      + referenceMemory;
+    return;
+  }
   if (activeBrushTool !== "paint") {
     renderingModeMemoryHint.textContent =
       `Blend dry · scratch residente ${formatMemoryMiB(stats.gpuMemory.blendRendererMiB)}`;
@@ -4673,12 +4816,15 @@ function toPointerSample(event: PointerEvent): PointerSample {
 }
 
 let activePointerId: number | null = null;
-let pointerMode: "paint" | "pan" | "rotate" | "touch-navigation" | null = null;
+let pointerMode: "paint" | "fill" | "pan" | "rotate" | "touch-navigation" | null = null;
 let lastPanClientX = 0;
 let lastPanClientY = 0;
 
 let lastRotateClientX = 0;
 let rotateShortcutHeld = false;
+let fillPointerStartX = 0;
+let fillPointerStartY = 0;
+let fillPointerMoved = false;
 
 interface TouchContact {
   clientX: number;
@@ -4727,6 +4873,8 @@ function enterTouchNavigation(): void {
         engine.endStroke();
       }
       cancelHumanStrokeRecordingForNavigation();
+    } else if (pointerMode === "fill") {
+      fillPointerMoved = true;
     }
     engine.beginViewRotationGesture();
     pointerMode = "touch-navigation";
@@ -4770,7 +4918,13 @@ canvas.addEventListener("pointerdown", (event) => {
     && event.button === 0
     && rotateShortcutHeld;
   const shouldPan = event.shiftKey || event.button === 1 || event.button === 2;
-  pointerMode = shouldRotate ? "rotate" : shouldPan ? "pan" : "paint";
+  pointerMode = shouldRotate
+    ? "rotate"
+    : shouldPan
+      ? "pan"
+      : activeCanvasTool === "fill"
+        ? "fill"
+        : "paint";
   canvas.setPointerCapture(event.pointerId);
 
   if (pointerMode === "rotate") {
@@ -4781,6 +4935,10 @@ canvas.addEventListener("pointerdown", (event) => {
     canvas.classList.add("panning");
     lastPanClientX = event.clientX;
     lastPanClientY = event.clientY;
+  } else if (pointerMode === "fill") {
+    fillPointerStartX = event.clientX;
+    fillPointerStartY = event.clientY;
+    fillPointerMoved = false;
   } else {
     const sample = toPointerSample(event);
     if (humanStrokeRecordingArmed) {
@@ -4853,6 +5011,15 @@ canvas.addEventListener("pointermove", (event) => {
     lastPanClientY = event.clientY;
     return;
   }
+  if (pointerMode === "fill") {
+    if (Math.hypot(
+      event.clientX - fillPointerStartX,
+      event.clientY - fillPointerStartY,
+    ) > 8) {
+      fillPointerMoved = true;
+    }
+    return;
+  }
 
   const eventWithCoalescing = event as PointerEvent & {
     getCoalescedEvents?: () => PointerEvent[];
@@ -4890,6 +5057,17 @@ function finishPointer(event: PointerEvent): void {
     return;
   }
 
+  const fillRequest = pointerMode === "fill"
+    && event.type === "pointerup"
+    && !fillPointerMoved
+    ? {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      tolerance: rangeValue("fillTolerance"),
+      color: element<HTMLInputElement>("brushColor").value,
+    }
+    : null;
+
   if (pointerMode === "paint") {
     engine.endStroke(event.timeStamp);
     void finishHumanStrokeRecording(event.type === "pointerup");
@@ -4900,9 +5078,24 @@ function finishPointer(event: PointerEvent): void {
   pointerMode = null;
   activePointerId = null;
   touchNavigationGesture = null;
+  fillPointerMoved = false;
   historyState = engine.getHistoryState();
   updateHistoryControls();
   updateHumanStrokeControls();
+  if (fillRequest) {
+    void engine.fillAtClientPoint(
+      fillRequest.clientX,
+      fillRequest.clientY,
+      fillRequest.tolerance,
+      fillRequest.color,
+    ).catch((error) => {
+      console.error("Riempimento WebGPU non riuscito", error);
+    }).finally(() => {
+      historyState = engine.getHistoryState();
+      updateHistoryControls();
+      updateHumanStrokeControls();
+    });
+  }
 }
 
 canvas.addEventListener("pointerup", finishPointer);

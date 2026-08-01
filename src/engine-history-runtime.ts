@@ -251,10 +251,14 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
       seedAction = action;
     }
   }
-  if (layerBatches.some((batch) => batch.grainTextureIdentity !== null)) {
+  if (layerBatches.some(
+    (batch) => batch.kind !== "fill" && batch.grainTextureIdentity !== null,
+  )) {
     await engine.ensureGrainResources();
   }
-  if (layerBatches.some((batch) => batch.settings.shape === "shape")) {
+  if (layerBatches.some(
+    (batch) => batch.kind !== "fill" && batch.settings.shape === "shape",
+  )) {
     await engine.ensureShapeResources();
   }
   // Force the first historical Blend action to reset its persistent carrier,
@@ -325,13 +329,28 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
       if (!seedAction && !firstVisibleBatch.clearLayer) {
         // Il clear originale era un pass separato (per esempio dopo
         // "Pulisci"): manteniamo quel confine prima del primo batch visibile.
-        engine.submitImmediate([], true, firstVisibleBatch.settings, false, null);
+        engine.submitImmediate(
+          [],
+          true,
+          firstVisibleBatch.kind === "fill" ? engine.settings : firstVisibleBatch.settings,
+          false,
+          null,
+        );
         observeReplaySubmit();
         await yieldReplaySubmit();
       }
 
       for (let index = firstVisibleBatchIndex; index <= lastVisibleBatchIndex; index += 1) {
         const batch = layerBatches[index];
+        if (batch.kind === "fill") {
+          if (!visibleIds.has(batch.actionId)) {
+            continue;
+          }
+          await engine.submitFillHistoryBatch(batch, index === lastVisibleBatchIndex);
+          observeReplaySubmit();
+          await yieldReplaySubmit();
+          continue;
+        }
         if (batch.kind === "blend") {
           if (!visibleIds.has(batch.actionId)) {
             continue;
@@ -408,7 +427,13 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
     for (const batch of layerBatches) {
       if (!visibleIds.has(batch.actionId) || !batch.dirtyRect) continue;
       replayBounds = mergeDirtyRects(replayBounds, batch.dirtyRect) ?? replayBounds;
-      markLayerStorageRect(record.storageTileMask, batch.dirtyRect);
+      if (batch.kind === "fill") {
+        for (let index = 0; index < batch.tileMask.length; index += 1) {
+          record.storageTileMask[index] |= batch.tileMask[index];
+        }
+      } else {
+        markLayerStorageRect(record.storageTileMask, batch.dirtyRect);
+      }
     }
     engine.layerContentBounds = replayBounds;
   } else if (lastVisibleBatchIndex < 0) {
@@ -551,7 +576,7 @@ export function compactDiscardedHistory(engine: BrushEngine): void {
 
   const retainedActionIds = new Set(
     engine.historyActions
-      .filter((action) => action.kind === "stroke")
+      .filter((action) => action.kind === "stroke" || action.kind === "fill")
       .map((action) => action.id),
   );
 
@@ -566,7 +591,9 @@ export function compactDiscardedHistory(engine: BrushEngine): void {
     retainedBatches.push(batch);
     retainedStampCount += batch.kind === "paint"
       ? batch.stampCount
-      : batch.batches.length;
+      : batch.kind === "blend"
+        ? batch.batches.length
+        : 0;
   }
   engine.historyGpuStorage.releaseMany(discardedSlices);
   engine.historyBatches = retainedBatches;

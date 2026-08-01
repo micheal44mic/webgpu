@@ -12,9 +12,10 @@ import {
   visibleStrokeIds,
 } from "../src/history-journal.ts";
 
-assert.equal(HISTORY_JOURNAL_STRATEGY, "global-order-per-layer-clear-barrier-vector-seed-v3");
+assert.equal(HISTORY_JOURNAL_STRATEGY, "global-order-per-layer-clear-barrier-vector-seed-fill-v4");
 
 const stroke = (id, layerId) => ({ id, kind: "stroke", layerId });
+const fill = (id, layerId) => ({ id, kind: "fill", layerId });
 const clear = (id, layerId) => ({ id, kind: "clear", layerId });
 const vector = (id) => ({ id, kind: "vector" });
 const vectorRasterize = (id, layerId) => ({ id, kind: "vector-rasterize", layerId });
@@ -29,6 +30,17 @@ const vectorRasterize = (id, layerId) => ({ id, kind: "vector-rasterize", layerI
   assert.equal(firstVisibleActionIndex(actions, 2), 0);
   assert.deepEqual([...visibleStrokeIds(actions, 2)], [1, 2]);
   assert.equal(hasVisibleContent(actions, 0), false);
+}
+
+// Fill is raster content in the same ordered journal, but keeps its own GPU
+// bitmask payload instead of pretending to be a brush stroke.
+{
+  const actions = [stroke(1, 1), fill(2, 1), fill(3, 2), clear(4, 1)];
+  assert.deepEqual([...visibleStrokeIds(actions, 3, 1)], [1, 2]);
+  assert.deepEqual([...visibleStrokeIds(actions, 3, 2)], [3]);
+  assert.deepEqual([...visibleStrokeIds(actions, 4, 1)], []);
+  assert.deepEqual([...layersWithVisibleContent(actions, 3)].sort(), [1, 2]);
+  assert.equal(hasVisibleContent(actions, 3, 2), true);
 }
 
 // THE behavioural change: clearing layer B must not hide layer A's strokes.

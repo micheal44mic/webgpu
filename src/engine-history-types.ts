@@ -19,7 +19,7 @@ import type { LayerRecord } from "./layer-stack";
 
 export interface RasterHistoryAction {
   id: number;
-  kind: "stroke" | "clear";
+  kind: "stroke" | "fill" | "clear";
   layerId: number;
 }
 
@@ -100,7 +100,25 @@ export interface BlendHistoryRenderBatch {
   grainTextureIdentity: number | null;
 }
 
-export type HistoryRenderBatch = PaintHistoryRenderBatch | BlendHistoryRenderBatch;
+export interface FillHistoryRenderBatch {
+  kind: "fill";
+  actionId: number;
+  layerId: number;
+  /** Diagnostic only: replay is authoritative from gpuSlice, never from source. */
+  sourceLayerId: number;
+  color: string;
+  linearColor: readonly [number, number, number, number];
+  tolerancePercent: number;
+  gpuSlice: GpuHistorySlice;
+  clearLayer: false;
+  dirtyRect: DirtyRect;
+  tileMask: Uint32Array;
+}
+
+export type HistoryRenderBatch =
+  | PaintHistoryRenderBatch
+  | BlendHistoryRenderBatch
+  | FillHistoryRenderBatch;
 
 export function resolvePaintHistoryStampCount(
   stamps: readonly Stamp[],

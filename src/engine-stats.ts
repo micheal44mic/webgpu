@@ -9,6 +9,7 @@ import type {
 import type { RasterBevelRect, RasterBevelStyle } from "./bevel-core";
 import { EFFECTS_SCRATCH_POOL_STRATEGY } from "./effects-scratch-pool";
 import { EFFECTS_WORKING_SET_STRATEGY } from "./effects-workbench";
+import { FILL_REFERENCE_LAYER_STRATEGY } from "./fill-core";
 import { lightGlazeAdditionalMemoryMiB, paintDisplayPyramidAdditionalMemoryMiB } from "./engine-memory-model";
 import {
   LAYER_BAKE_STRATEGY,
@@ -95,6 +96,7 @@ export interface EngineGpuMemoryStats {
   rasterBevelFieldAllocationCount: number;
   rasterBevelFieldShrinkCount: number;
   blendRendererMiB: number;
+  fillRendererMiB: number;
   lightGlazeMiB: number;
   lightGlazeTransitionPeakMiB: number;
   thicknessTailMiB: number;
@@ -108,6 +110,7 @@ export interface LayerStorageLayerEstimate {
   id: number;
   name: string;
   active: boolean;
+  reference: boolean;
   hasContent: boolean;
   hotAllocated: boolean;
   coldTileCount: number;
@@ -181,6 +184,10 @@ export interface EngineStats {
   layerMemoryMiB: number;
   layerCount: number;
   activeLayerId: number;
+  referenceLayerId: number | null;
+  fillReferenceLayerStrategy: typeof FILL_REFERENCE_LAYER_STRATEGY;
+  /** Extra full mip 0 retained only when Reference differs from active. */
+  fillReferenceLayerMiB: number;
   mixedScene: MixedSceneSnapshot | null;
   layerBakeStrategy: typeof LAYER_BAKE_STRATEGY;
   layerCompositeStrategy: typeof LAYER_COMPOSITE_STRATEGY;
@@ -190,6 +197,7 @@ export interface EngineStats {
     name: string;
     visible: boolean;
     opacity: number;
+    reference: boolean;
     hasContent: boolean;
     hotAllocated: boolean;
     coldTileCount: number;

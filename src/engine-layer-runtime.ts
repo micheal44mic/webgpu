@@ -1696,6 +1696,138 @@ export async function setLayerPresentation(engine: BrushEngine,
   }
 }
 
+export function resolveFillSource(engine: BrushEngine): {
+  record: LayerRecord;
+  view: GPUTextureView;
+} {
+  const reference = engine.layerStack.reference;
+  const record = reference === null ? engine.layerStack.active : reference;
+  // `reference` throws for a stale identity and requireLayerHot throws for a
+  // non-resident texture. Neither invariant violation may degrade to sampling
+  // the active destination: no fallback is part of the public strategy.
+  return {
+    record,
+    view: requireLayerHot(engine, record.id).samplingView,
+  };
+}
+
+export function retargetFillRendererSource(engine: BrushEngine): void {
+  if (!engine.fillRenderer) {
+    return;
+  }
+  engine.fillRenderer.setSourceSamplingView(resolveFillSource(engine).view);
+}
+
+interface ReferenceLayerDemotion {
+  readonly record: LayerRecord;
+  readonly gpu: LayerGpuResources;
+  readonly hot: LayerTextureResources;
+  readonly cold: Awaited<ReturnType<typeof createLayerColdStorageCandidate>> | null;
+  readonly mask: Uint32Array;
+}
+
+async function createReferenceLayerDemotion(
+  engine: BrushEngine,
+  record: LayerRecord,
+): Promise<ReferenceLayerDemotion> {
+  const gpu = engine.requireLayerGpu(record.id);
+  const hot = requireLayerHot(engine, record.id);
+  const mask = coldStorageMaskForRecord(record);
+  if (!record.hasContent) {
+    return { record, gpu, hot, cold: null, mask };
+  }
+  const generation = Math.max(
+    gpu.cold?.generation ?? 0,
+    gpu.compressed?.generation ?? 0,
+  ) + 1;
+  const cold = await createLayerColdStorageCandidate(
+    engine,
+    record,
+    hot,
+    mask,
+    generation,
+  );
+  return { record, gpu, hot, cold, mask };
+}
+
+/**
+ * Promotes only the active raster layer to Reference. When another reference
+ * was kept full-resident, it is packed to authoritative cold tiles before its
+ * hot texture is released. Any allocation failure leaves the old reference and
+ * both source bindings untouched: there is deliberately no slower fallback.
+ */
+export async function setLayerReference(
+  engine: BrushEngine,
+  index: number,
+  enabled: boolean,
+): Promise<boolean> {
+  if (!engine.initialized) {
+    throw new Error("Il motore non è ancora inizializzato.");
+  }
+  const requested = engine.layerStack.at(index);
+  const previousReference = engine.layerStack.reference;
+  if (enabled && previousReference?.id === requested.id) {
+    return false;
+  }
+  if (!enabled && previousReference?.id !== requested.id) {
+    return false;
+  }
+  if (requested.id !== engine.layerStack.active.id) {
+    throw new Error("Seleziona il livello raster prima di impostarlo come Riferimento.");
+  }
+
+  engine.assertLayerSwitchAllowed();
+  engine.cancelLayerColdCompressionIdle();
+  engine.layerSwitchBusy = true;
+  let demotion: ReferenceLayerDemotion | null = null;
+  let referenceChanged = false;
+  try {
+    await engine.waitForIdle();
+    if (
+      enabled
+      && previousReference
+      && previousReference.id !== requested.id
+    ) {
+      demotion = await createReferenceLayerDemotion(engine, previousReference);
+    }
+
+    engine.layerStack.setReferenceIndex(enabled ? index : null);
+    referenceChanged = true;
+    retargetFillRendererSource(engine);
+
+    if (demotion) {
+      const supersededCold = demotion.gpu.cold;
+      demotion.gpu.cold = demotion.cold;
+      demotion.gpu.compressed = null;
+      demotion.record.storageTileMask.set(demotion.mask);
+      destroyLayerColdStorage(supersededCold);
+      destroyLayerHot(demotion.hot);
+      demotion.gpu.hot = null;
+      // Ownership moved into gpu.cold; the catch path must not destroy it.
+      demotion = null;
+    }
+    referenceChanged = false;
+    engine.publishStats();
+    return true;
+  } catch (error) {
+    if (referenceChanged) {
+      const previousIndex = previousReference
+        ? engine.layerStack.indexOfId(previousReference.id)
+        : -1;
+      engine.layerStack.setReferenceIndex(previousIndex >= 0 ? previousIndex : null);
+      retargetFillRendererSource(engine);
+    }
+    if (demotion?.cold) {
+      destroyLayerColdStorage(demotion.cold);
+    }
+    throw error;
+  } finally {
+    engine.layerSwitchBusy = false;
+    engine.scheduleLayerColdCompression();
+    engine.publishStats();
+  }
+}
+
 export async function shrinkEffectsScratchAfterIdle(engine: BrushEngine): Promise<void> {
   if (
     engine.effectsScratchShrinkInFlight
@@ -2112,6 +2244,11 @@ export function commitActiveLayerResidency(engine: BrushEngine, fromIndex: numbe
 
   const previousRecord = engine.layerStack.at(fromIndex);
   if (previousRecord.id === engine.layerStack.active.id) {
+    return;
+  }
+  if (previousRecord.id === engine.layerStack.referenceLayerId) {
+    // Fill must sample the reference immediately on every target layer. Its
+    // authoritative mip 0 therefore remains full-resident by contract.
     return;
   }
   const previousGpu = engine.requireLayerGpu(previousRecord.id);

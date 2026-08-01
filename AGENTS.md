@@ -99,6 +99,7 @@ il resto vive in moduli dedicati:
 | `engine-layer-runtime` | allocazione livelli, merged surface, bake, compositing |
 | `engine-vector-text-runtime` | presentazione GPU del testo vettoriale e scena mista |
 | `engine-history-runtime` | cursore cronologia, replay, stato vettoriale |
+| `engine-fill-runtime` | lifecycle, transazione e replay del Riempimento GPU |
 | `engine-glaze-runtime` | risorse e sessione Light/Uniformed/Intense |
 | `engine-adaptive-preview-runtime` | sonde e patch dell'anteprima adattiva |
 | `engine-resource-setup` | creazione risorse statiche e renderer effetti |
@@ -1254,13 +1255,14 @@ latenza o memoria fisica su mobile.
 #### Commit 14b — cold storage GPU reale per i livelli inattivi
 
 La strategia corrente è
-`single-active-full-inactive-256-array-tiles-rehydrate-fold`. Solo il livello
-attivo conserva il mip `0` full-canvas (`64 MiB` RGBA8 / `128 MiB` RGBA16F),
-così il disegno non paga paging o pass per tile. Quando si lascia un livello,
-i tile conservativi `256×256` vengono copiati in una texture array compatta e
-la texture full viene distrutta soltanto dopo che il nuovo livello è stato
-reidratato e le superfici fuse sono state ricostruite con successo. Un livello
-inattivo vuoto non conserva alcuna texture raw.
+`single-active-plus-optional-reference-full-inactive-256-array-tiles-rehydrate-fold`.
+Il livello attivo conserva sempre il mip `0` full-canvas (`64 MiB` RGBA8 /
+`128 MiB` RGBA16F); se esiste un Riferimento distinto, anche quello resta
+full-resident per il Riempimento. Tutti gli altri livelli usano il percorso
+cold originale: i tile conservativi `256×256` vengono copiati in una texture
+array compatta e la texture full viene distrutta soltanto dopo che il nuovo
+livello è stato reidratato e le superfici fuse sono state ricostruite con
+successo. Un livello inattivo vuoto non conserva alcuna texture raw.
 
 Lo switch è transazionale: il pack costruisce un candidato senza toccare il
 full autorevole; la reidratazione costruisce e popola un nuovo full prima di
@@ -1591,7 +1593,9 @@ record del fold · `53` dominio visivo bounded per bake/fold · `54` evizione
 prima della sostituzione e campionamento dei picchi add/switch · `55` worker
 lossless per un solo livello distante, RAM compressa separata e ripristino
 atomico · `56` fold transitorio dei compressi, multi-residenza con vicini raw e
-progresso worker sospendibile/riprendibile ai tratti.
+progresso worker sospendibile/riprendibile ai tratti · `57` scenario misto e
+working set esatto · `58` telemetria del renderer testo rapido/esatto · `59`
+Riempimento GPU con sorgente Riferimento, residenza e memoria dedicata.
 
 ## Strumento Blend dry (WebGPU)
 
@@ -2704,3 +2708,97 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   quindici le suite *:verify, git diff --check e build Vite production con
   preparazione del pacchetto Sites. Candidato locale, non committato e non
   pubblicato.
+
+### Riempimento connesso WebGPU (candidato locale 31 luglio 2026)
+
+- Nuovo strumento Canvas `Riempimento`, separato dall'ABI Paint/Blend. Un tap
+  senza trascinamento riempie esclusivamente il livello raster selezionato;
+  testo e SVG vengono rifiutati senza mutare il documento. Il controllo espone
+  una tolleranza `0–100%`, normalizzata con tetto effettivo `97,6%`.
+- Strategia
+  `webgpu-hierarchical-ccl-4-connected-straight-srgb-alpha-bitmask-v2`:
+  confronto sul colore straight sRGB più alpha, connettività esatta a quattro
+  direzioni e nessun readback dei pixel. La CPU riceve soltanto `64 B` di
+  metadati finali (conteggio, bounds e maschera tile).
+- Il CCL gerarchico divide il layer `4096²` in `65536` blocchi `16×16`: label
+  locali u8 packed, union-find globale, selezione 1-bit e lista dei soli blocchi
+  attivi per il draw indiretto. Il pass di unione visita soltanto i due bordi
+  utili con `16` thread per blocco (`1.048.576` invocazioni), invece di
+  rilanciare tutti i `16.777.216` pixel.
+- Lo scratch residente è `50,5 MiB`, allocato transazionalmente quando si
+  seleziona Fill e rilasciato dopo `1,5 s` di inattività quando si torna a un
+  altro tool. Pipeline e uniform buffer restano caldi. Sono controllati prima
+  dell'allocazione limiti compute, storage binding e `9232 B` di workgroup
+  storage; il prewarm è condiviso, quindi selezioni/tap rapidi non possono
+  duplicare l'allocazione.
+- Ogni azione conserva nella cronologia GPU la sola maschera autorevole da
+  `2 MiB` (`1 bit/pixel`). Undo/Redo copia GPU→GPU la maschera, ricostruisce la
+  lista blocchi in compute e ridisegna senza rieseguire il flood fill o fare
+  repack CPU. Il journal globale è revisionato a
+  `global-order-per-layer-clear-barrier-vector-seed-fill-v4`.
+- La maschera degli storage tile `256²` viene prodotta esattamente sulla GPU e
+  OR-ata nel record del livello: non si promuovono tile vuoti soltanto perché
+  ricadono nella bounding box. Effetti, mip e cache di presentazione riusano il
+  percorso autorevole già esistente tramite dirty rect; il percorso caldo delle
+  pennellate (`submitImmediate` e generazione stamp) non contiene diramazioni
+  Fill.
+- La mutazione live viene registrata nella timeline solo dopo il completamento
+  GPU. Un errore dopo il commit tenta il rebuild della storia visibile; se anche
+  il rollback fallisce, il documento viene bloccato come incoerente. Cambio
+  formato e cambio livello attendono il prewarm in volo e retargettano sempre
+  la view più recente.
+- QA browser locale non canonica su NVIDIA Ampere: fill completo `4096²` =
+  `16.777.216` pixel e `256` tile in `223,3 ms` al primo caso RGBA8 della
+  sessione, `95,2 ms` in un caso RGBA8 caldo, `233,0 ms` su un secondo livello
+  appena creato e `306,3 ms` dopo ricreazione RGBA16F. Sono latenze end-to-end
+  mostrate dall'app, comprendono coda FIFO e callback JS e non isolano il tempo
+  GPU.
+- Nella stessa QA due fill pieni di colori diversi sono rimasti isolati sui due
+  livelli; il livello inattivo ha riportato `raster cold · 256 tile`; Undo ha
+  svuotato soltanto il secondo livello e Redo lo ha ripristinato. Il cambio a
+  Paint ha liberato `50,5 MiB`; ogni fill ha aggiunto `2 MiB` di history.
+  Verificato anche il cambio RGBA8↔RGBA16F, con console finale senza warning o
+  errori WebGPU.
+- TypeScript, tutte le sedici suite `*:verify`, `git diff --check` e build Vite
+  production con pacchetto Sites sono verdi. Candidato locale non committato e
+  non pubblicato. Le misure non sono una baseline iPhone, né una prova di
+  parità pixel completa o di superiorità prestazionale rispetto a Procreate.
+
+### Livello Riferimento per Riempimento (candidato locale 1 agosto 2026)
+
+- Un solo raster può essere marcato `Riferimento`; l'identità segue il record
+  anche riordinando lo stack e viene rimossa insieme al record. La UI espone il
+  pulsante `R` sulla riga raster selezionata. Senza Riferimento, la sorgente del
+  Riempimento resta il raster attivo, come prima.
+- Strategia firmata
+  `single-raster-reference-full-resident-gpu-source-separate-active-target-no-fallback-v1`.
+  Il compute CCL campiona direttamente il mip `0` raw del Riferimento, mentre
+  il render commit scrive esclusivamente la view del livello attivo. Non esiste
+  copia texture sorgente→destinazione, readback dei pixel, paging per fill o
+  reidratazione sul tap; la maschera tile prodotta dal fill aggiorna soltanto il
+  record di destinazione.
+- Se il Riferimento è diverso dall'attivo, rimangono residenti esattamente due
+  full texture autorevoli: costo aggiuntivo `64 MiB` in RGBA8 o `128 MiB` in
+  RGBA16F. Il cambio livello preserva l'hot del Riferimento; cambiare
+  Riferimento costruisce prima il cold autorevole del precedente e lo libera
+  soltanto dopo il completamento GPU. Se l'allocazione fallisce, identità e
+  binding precedenti restano intatti e l'errore viene propagato: nessun
+  fallback lento o silenzioso sul livello attivo.
+- Il bind group compute cambia soltanto quando cambia davvero la texture
+  sorgente; i fill successivi sulla stessa coppia Riferimento/destinazione non
+  pagano rebuild o copie. Un'identità stale o un Riferimento non residente sono
+  errori d'invariante espliciti, non condizioni di degradazione.
+- Undo/Redo continua a usare la maschera GPU autorevole da `2 MiB`: il replay
+  non ricalcola la connettività e quindi non cambia se il Riferimento viene
+  modificato dopo l'azione. `sourceLayerId` resta nel batch solo come
+  diagnostica; il target autorevole resta `layerId`.
+- Telemetria rev `59`: `referenceLayerId`, strategia, MiB extra e flag
+  per-layer; le proiezioni cold escludono attivo e Riferimento, mentre la
+  memoria effettiva conta entrambe le texture hot. Il cambio formato, che
+  azzera tutti i raster e ricrea soltanto l'attivo, azzera anche il Riferimento.
+- Verificati TypeScript, tutte le sedici suite `*:verify`, `git diff --check` e
+  build Vite production con preparazione del pacchetto Sites, comprese
+  regressioni sull'ordine transazionale candidate→publish→destroy, rollback
+  senza fallback, preservazione hot nello switch, separazione sorgente/target,
+  tile del target e UI. Nessuna nuova misura prestazionale o QA browser è stata
+  attribuita a questo passo; candidato locale non committato e non pubblicato.

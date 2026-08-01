@@ -13,6 +13,8 @@ import {
   type DryBlendHistoryGeometry,
   type DryBlendRenderBatch,
 } from "./blend-renderer";
+import type { FillRenderer } from "./fill-renderer";
+import { FILL_REFERENCE_LAYER_STRATEGY } from "./fill-core";
 import {
   GPU_HISTORY_STORAGE_STRATEGY,
   GpuHistoryStorage,
@@ -273,6 +275,7 @@ import {
 import {
   type ActiveVectorHistoryEdit,
   type BlendHistoryRenderBatch,
+  type FillHistoryRenderBatch,
   type HistoryAction,
   type HistoryRenderBatch,
   type VectorRasterizeHistoryAction,
@@ -551,6 +554,13 @@ import {
   truncateRedoHistory,
 } from "./engine-history-runtime";
 import {
+  ensureFillRenderer,
+  fillAtClientPoint,
+  setFillToolSelected,
+  submitFillHistoryBatch,
+  type FillOperationResult,
+} from "./engine-fill-runtime";
+import {
   destroyVectorRasterHistorySeed,
   rasterizeVectorNodeToLayer,
 } from "./engine-vector-raster-runtime";
@@ -607,8 +617,10 @@ import {
   rebuildLayerDisplayBindGroups,
   recreateLayerResources,
   releaseFusedLayerBakes,
+  retargetFillRendererSource,
   restoreEffectsWorkbenchToActiveLayer,
   retargetEffectsWorkingSetInternal,
+  setLayerReference,
   setLayerPresentation,
   shrinkEffectsScratchAfterIdle,
 } from "./engine-layer-runtime";
@@ -738,6 +750,10 @@ export class BrushEngine {
   layerView!: GPUTextureView;
   layerSamplingView!: GPUTextureView;
   blendRenderer: DryBlendRenderer | null = null;
+  fillRenderer: FillRenderer | null = null;
+  fillRendererLoadingPromise: Promise<FillRenderer> | null = null;
+  fillToolSelected = false;
+  fillScratchReleaseTimer: number | null = null;
   effectsWorkbench: EffectsWorkbench | null = null;
   effectsScratchShrinkTimer: number | null = null;
   effectsScratchShrinkInFlight = false;
@@ -2156,8 +2172,18 @@ export class BrushEngine {
     this.callbacks.onStatus?.(`Ricreo il layer in formato ${format}…`, "working");
     try {
       await this.waitForIdle();
+      if (this.fillRendererLoadingPromise) {
+        await this.fillRendererLoadingPromise;
+      }
+      await this.fillRenderer?.waitForPrewarm();
       await recreateLayerResources(this, format);
+      // The format transaction clears every raster record and allocates only
+      // the active mip 0. A previous Reference designation would otherwise
+      // point at a deliberately non-resident, now-empty source.
+      this.layerStack.setReferenceIndex(null);
       this.layerFormat = format;
+      this.fillRenderer?.destroy();
+      this.fillRenderer = null;
       let renderingPrewarmWarning: string | null = null;
       try {
         if (usesBlendRenderer(this.settings)) {
@@ -2165,6 +2191,10 @@ export class BrushEngine {
         }
         if (usesStrokeGlazeRenderer(this.settings)) {
           await this.ensureLightGlazeResources(this.settings.blendMode);
+        }
+        if (this.fillToolSelected) {
+          const renderer = await ensureFillRenderer(this);
+          await renderer.prewarm();
         }
       } catch (prewarmError) {
         renderingPrewarmWarning = prewarmError instanceof Error
@@ -2333,6 +2363,26 @@ export class BrushEngine {
 
   canPaintSelectedSceneItem(): boolean {
     return this.mixedSceneStack?.selected.kind === "raster";
+  }
+
+  setFillToolSelected(selected: boolean): Promise<boolean> {
+    return setFillToolSelected(this, selected);
+  }
+
+  fillAtClientPoint(
+    clientX: number,
+    clientY: number,
+    tolerancePercent: number,
+    color: string,
+  ): Promise<FillOperationResult | null> {
+    return fillAtClientPoint(this, clientX, clientY, tolerancePercent, color);
+  }
+
+  submitFillHistoryBatch(
+    batch: FillHistoryRenderBatch,
+    present: boolean,
+  ): Promise<void> {
+    return submitFillHistoryBatch(this, batch, present);
   }
 
   notifyViewChange(): void {
@@ -3926,6 +3976,9 @@ export class BrushEngine {
     layerMemoryMiB: number;
     layerCount: number;
     activeLayerId: number;
+    referenceLayerId: number | null;
+    fillReferenceLayerStrategy: typeof FILL_REFERENCE_LAYER_STRATEGY;
+    fillReferenceLayerMiB: number;
     layerBakeStrategy: typeof LAYER_BAKE_STRATEGY;
     layerCompositeStrategy: typeof LAYER_COMPOSITE_STRATEGY;
     layerStorageStudy: LayerStorageStudyStats;
@@ -4347,6 +4400,18 @@ export class BrushEngine {
     // retain a 64 MiB hand-off bake while other inactive records are materialized.
     if (import.meta.env.DEV && this.layerBakeFaultQueue.length > 0) {
       await bakeActiveLayerForSwitch(this);
+    }
+    if (this.layerStack.active.id === this.layerStack.referenceLayerId) {
+      // The Reference layer is the zero-copy Fill source. Keep its raw mip 0
+      // authoritative and full-resident while another raster becomes active.
+      // Presentation still freezes until activation atomically retargets every
+      // consumer, and derived bakes remain reconstructible.
+      this.layerPresentationFrozen = true;
+      const gpu = this.requireLayerGpu(this.layerStack.active.id);
+      this.destroyLayerBake(gpu.bake);
+      gpu.bake = null;
+      gpu.bakeValid = false;
+      return;
     }
     try {
       await freezeActiveLayerToCold(this);
@@ -5075,6 +5140,10 @@ export class BrushEngine {
     return setLayerPresentation(this, index, undefined, clamp(opacity, 0, 1));
   }
 
+  async setLayerReference(index: number, enabled: boolean): Promise<boolean> {
+    return setLayerReference(this, index, Boolean(enabled));
+  }
+
   latchDocumentStateInconsistent(message: string): void {
     this.historyStateInconsistent = true;
     this.historyBusy = true;
@@ -5149,6 +5218,7 @@ export class BrushEngine {
     // incremental maintenance would refine stale garbage. Force a full rebuild.
     this.paintDisplayMipValidThroughLevel = 0;
     this.blendRenderer?.retarget(this.layerView, this.layerSamplingView);
+    retargetFillRendererSource(this);
     if (caller === "history-replay") {
       // After the engine fields and Blend have moved, but before the workbench
       // does: this is the half-switched state the transaction must recover from.

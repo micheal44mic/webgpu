@@ -47,7 +47,7 @@ import {
 
 assert.equal(
   LAYER_STACK_STRATEGY,
-  "ordered-records-single-active-index-monotonic-ids",
+  "ordered-records-single-active-single-reference-monotonic-ids",
 );
 
 // Stand-in for the engine's real factory: shape-compatible, and deliberately
@@ -77,6 +77,28 @@ const newStack = () => new LayerStack(createStyles);
   assert.equal(stack.active.contentBounds, null);
   assert.deepEqual(stack.below(), []);
   assert.deepEqual(stack.above(), []);
+}
+
+// Reference is a document-wide identity, never a per-row combination: setting
+// another raster moves the flag, reorder preserves it and removal clears it.
+{
+  const stack = newStack();
+  assert.equal(stack.referenceLayerId, null);
+  assert.equal(stack.reference, null);
+  assert.equal(stack.setReferenceIndex(0), true);
+  assert.equal(stack.setReferenceIndex(0), false);
+  assert.equal(stack.reference, stack.at(0));
+  const second = stack.add();
+  assert.equal(stack.setReferenceIndex(second), true);
+  const referenceId = stack.referenceLayerId;
+  stack.move(second, 0);
+  assert.equal(stack.referenceLayerId, referenceId);
+  assert.equal(stack.reference?.id, referenceId);
+  const referenceIndex = stack.indexOfId(referenceId);
+  stack.remove(referenceIndex);
+  assert.equal(stack.referenceLayerId, null);
+  assert.equal(stack.reference, null);
+  assert.throws(() => stack.setReferenceIndex(99), /fuori intervallo/);
 }
 
 // add() inserts ABOVE the active layer and selects the new one.
@@ -255,11 +277,11 @@ const newStack = () => new LayerStack(createStyles);
   assert.throws(() => stack.add(), /Massimo/);
 }
 
-// Commit 14b keeps one active full canvas and stores each inactive layer as a
-// deterministic 256² texture array keyed by the 32-byte conservative mask.
+// Fill Reference adds at most one second full canvas; every other inactive
+// layer remains a deterministic 256² tile array.
 assert.equal(
   LAYER_STORAGE_STRATEGY,
-  "single-active-full-inactive-256-array-tiles-rehydrate-fold",
+  "single-active-plus-optional-reference-full-inactive-256-array-tiles-rehydrate-fold",
 );
 assert.equal(LAYER_STORAGE_GRID_SIZE, 16);
 assert.equal(LAYER_STORAGE_TILE_COUNT, 256);
@@ -838,9 +860,9 @@ const stylesSource = readFileSync(
   "utf8",
 );
 assert.equal(
-  (mainSource.match(/performanceTelemetryRevision: 58/g) ?? []).length,
+  (mainSource.match(/performanceTelemetryRevision: 59/g) ?? []).length,
   2,
-  "tipo persistito e runtime devono avanzare insieme alla revisione 54",
+  "tipo persistito e runtime devono avanzare insieme alla revisione 59",
 );
 assert.match(mainSource, /layerBakeStrategy: string;/);
 assert.match(mainSource, /layerCompositeStrategy: string;/);
@@ -1009,6 +1031,11 @@ assert.match(
   /if \(import\.meta\.env\.DEV && this\.layerBakeFaultQueue\.length > 0\) \{\s*await bakeActiveLayerForSwitch\(this\);/,
   "il bake completo resta soltanto come sonda transazionale DEV",
 );
+assert.match(
+  prepareBody,
+  /this\.layerStack\.active\.id === this\.layerStack\.referenceLayerId[\s\S]*?this\.layerPresentationFrozen = true;[\s\S]*?return;/,
+  "il riferimento deve restare hot e autorevole quando si attiva la destinazione",
+);
 const prepareFreeze = prepareBody.indexOf("await freezeActiveLayerToCold(this);");
 const prepareEvict = prepareBody.indexOf(
   "evictReconstructibleLayerResources(this, this.layerStack.active);",
@@ -1019,6 +1046,68 @@ assert.ok(
 );
 assert.match(prepareBody, /catch \(error\)[\s\S]*?this\.destroyLayerBake\(gpu\.bake\)/,
   "un pack fallito deve rilasciare l'eventuale bake della sonda DEV");
+
+// Moving the one Reference identity is a strict GPU-residency transaction.
+// The outgoing Reference becomes cold only after its candidate has completed;
+// allocation failure restores the old identity and never substitutes a slower
+// source. This protects the no-fallback contract from a future refactor.
+const referenceSetStart = engineSource.indexOf("export async function setLayerReference(");
+const referenceSetEnd = engineSource.indexOf(
+  "export async function shrinkEffectsScratchAfterIdle(",
+  referenceSetStart,
+);
+assertSection("setLayerReference", referenceSetStart, referenceSetEnd);
+const referenceSetBody = engineSource.slice(referenceSetStart, referenceSetEnd);
+const referenceCandidate = referenceSetBody.indexOf(
+  "demotion = await createReferenceLayerDemotion(engine, previousReference);",
+);
+const referenceIdentityChange = referenceSetBody.indexOf(
+  "engine.layerStack.setReferenceIndex(enabled ? index : null);",
+);
+const referenceColdPublish = referenceSetBody.indexOf(
+  "demotion.gpu.cold = demotion.cold;",
+);
+const referenceHotDestroy = referenceSetBody.indexOf("destroyLayerHot(demotion.hot);");
+assert.ok(
+  referenceCandidate >= 0
+    && referenceCandidate < referenceIdentityChange
+    && referenceIdentityChange < referenceColdPublish
+    && referenceColdPublish < referenceHotDestroy,
+  "il nuovo cold deve completarsi prima del cambio identità e l'hot uscente va distrutto per ultimo",
+);
+assert.match(
+  referenceSetBody,
+  /catch \(error\) \{[\s\S]*?if \(referenceChanged\) \{[\s\S]*?setReferenceIndex\(previousIndex >= 0 \? previousIndex : null\);[\s\S]*?retargetFillRendererSource\(engine\);/,
+  "un errore prima del commit deve ripristinare identità e sorgente Fill precedenti",
+);
+assert.match(
+  referenceSetBody,
+  /if \(demotion\?\.cold\) \{\s*destroyLayerColdStorage\(demotion\.cold\);\s*\}[\s\S]*?throw error;/,
+  "il candidato non pubblicato va distrutto e l'errore deve propagarsi senza fallback",
+);
+assert.doesNotMatch(
+  referenceSetBody,
+  /ensureActiveLayerHot|createHydratedLayerTexture|setReferenceIndex\(null\)[\s\S]*?return true/,
+  "il cambio Riferimento non deve reidratare o degradare silenziosamente sull'attivo",
+);
+
+const residencyCommitStart = engineSource.indexOf(
+  "export function commitActiveLayerResidency(",
+);
+const residencyCommitEnd = engineSource.indexOf(
+  "export function rebuildActiveLayerPyramidBindings(",
+  residencyCommitStart,
+);
+assertSection("commitActiveLayerResidency", residencyCommitStart, residencyCommitEnd);
+const residencyCommitBody = engineSource.slice(residencyCommitStart, residencyCommitEnd);
+const referenceResidencyGate = residencyCommitBody.indexOf(
+  "previousRecord.id === engine.layerStack.referenceLayerId",
+);
+const outgoingHotDestroy = residencyCommitBody.indexOf("destroyLayerHot(previousGpu.hot);");
+assert.ok(
+  referenceResidencyGate >= 0 && outgoingHotDestroy > referenceResidencyGate,
+  "il commit dello switch deve uscire prima di distruggere l'hot del Riferimento",
+);
 const switchedDeclaration = cursorBody.indexOf("const switched =");
 const historyOutgoingPrepare = cursorBody.indexOf("await engine.prepareActiveLayerForSwitch();");
 const forwardIndexChange = cursorBody.indexOf("engine.layerStack.setActiveIndex(targetIndex);");
@@ -1334,7 +1423,7 @@ const layerStorageStudySource = readFileSync(
 );
 assert.match(
   layerStorageStudySource,
-  /single-active-full-inactive-256-array-tiles-rehydrate-fold/,
+  /single-active-plus-optional-reference-full-inactive-256-array-tiles-rehydrate-fold/,
 );
 assert.match(layerStorageStudySource, /"Occupied" deliberately means ANY non-zero byte/);
 assert.doesNotMatch(
@@ -1390,8 +1479,8 @@ assert.match(engineSource, /const layerHydrationMiB = \([\s\S]*?engine\.layerCol
 assert.match(engineSource, /measurementOnly: false/);
 assert.match(
   engineSource,
-  /projectedConservativeRawMiB = activeFullMiB \+ inactiveConservativeTileMiB/,
-  "la proiezione deve conservare il livello attivo full-canvas",
+  /projectedConservativeRawMiB = residentFullMiB \+ inactiveConservativeTileMiB/,
+  "la proiezione deve conservare attivo e riferimento full-canvas",
 );
 const exactStudyStart = engineSource.indexOf("export async function measureExactLayerStorageStudy(");
 const exactStudyBody = engineSource.slice(exactStudyStart, exactStudyStart + 4_500);
@@ -1416,7 +1505,7 @@ assert.match(layerCompositeGpuTestSource, /fiveLayerSwitchBreakdownIsConsistent/
 assert.match(layerHistoryGpuTestSource, /measureExactLayerStorageStudy\(\)/);
 assert.match(layerHistoryGpuTestSource, /conservativeTilesContainEveryExactTile/);
 assert.match(layerHistoryGpuTestSource, /exactReadbackReleasedItsTemporaryBuffers/);
-assert.match(mainSource, /performanceTelemetryRevision: 58/);
+assert.match(mainSource, /performanceTelemetryRevision: 59/);
 assert.match(mainSource, /gpuMemoryLayerCold/);
 assert.match(mainSource, /gpuMemoryLayerCompressed/);
 assert.match(mainSource, /gpuMemoryLayerHydration/);
