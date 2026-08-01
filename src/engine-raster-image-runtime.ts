@@ -167,7 +167,10 @@ async function createRasterImageGpuResource(
         label: `Raster image ${assetId} straight-sRGB upload`,
         size: { width, height, depthOrArrayLayers: 1 },
         format: "rgba8unorm-srgb",
-        usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
+        usage:
+          GPUTextureUsage.COPY_DST
+          | GPUTextureUsage.TEXTURE_BINDING
+          | GPUTextureUsage.RENDER_ATTACHMENT,
       });
       transaction.deferRollback(() => uploadTexture.destroy());
       const uniformBuffer = engine.device.createBuffer({

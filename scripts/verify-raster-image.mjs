@@ -31,6 +31,10 @@ const engineSource = readFileSync(
   "utf8",
 );
 const htmlSource = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const uploadTextureSource = runtimeSource.slice(
+  runtimeSource.indexOf("const uploadTexture = engine.device.createTexture"),
+  runtimeSource.indexOf("const uniformBuffer = engine.device.createBuffer"),
+);
 
 function u32be(value) {
   return [(value >>> 24) & 255, (value >>> 16) & 255, (value >>> 8) & 255, value & 255];
@@ -305,6 +309,12 @@ await assert.rejects(
 
 assert.match(runtimeSource, /copyExternalImageToTexture\(/);
 assert.match(runtimeSource, /premultipliedAlpha: false/);
+assert.match(uploadTextureSource, /GPUTextureUsage\.COPY_DST/);
+assert.match(
+  uploadTextureSource,
+  /GPUTextureUsage\.RENDER_ATTACHMENT/,
+  "copyExternalImageToTexture destination must allow Dawn's render path",
+);
 assert.match(runtimeSource, /format: "rgba8unorm-srgb"/);
 assert.match(runtimeSource, /GPUTextureUsage\.RENDER_ATTACHMENT/);
 assert.match(runtimeSource, /rasterImageMipmapPipeline/);

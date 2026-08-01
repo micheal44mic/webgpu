@@ -2920,3 +2920,9 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   4K, parser/decoder/cleanup, stack invisibile, resource sweep, dirty rect e
   transazione Apply/Cancel/Undo/Redo. Non è stata eseguita una nuova misura
   prestazionale canonica iPhone né una QA browser attribuita a questo passo.
+- Fix di compatibilità Dawn/WebGPU del collaudo import: la texture temporanea
+  destinazione di `copyExternalImageToTexture` dichiara ora insieme
+  `COPY_DST`, `TEXTURE_BINDING` e `RENDER_ATTACHMENT`. Il flag aggiuntivo è una
+  capability richiesta dal percorso di copia esterna e non introduce un pass o
+  un'allocazione supplementare; `image:verify`, TypeScript e build production
+  includono la regressione statica dedicata.
