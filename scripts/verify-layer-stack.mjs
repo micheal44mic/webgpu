@@ -768,21 +768,21 @@ const mergedSurfaceShaderSource = readFileSync(
   new URL("../src/merged-surface-shader.ts", import.meta.url),
   "utf8",
 );
-assert.match(shaderSource, /fn composeLayerStack\(activePaint: vec4<f32>, layerPosition: vec2<f32>\)/);
+assert.match(shaderSource, /fn composeLayerStackSamples\(/);
 assert.match(shaderSource, /paint = sourceOver\(activePaint \* display\.activeLayerAlpha, paint\)/);
 assert.match(mergedSurfaceShaderSource, /sampleMergedAbove\(layerPosition/);
 assert.match(mergedSurfaceShaderSource, /layerPosition - display\.mergedAboveOrigin/);
 assert.equal(
-  (shaderSource.match(/fn composeLayerStack\(activePaint: vec4<f32>, layerPosition: vec2<f32>\)/g) ?? []).length,
+  (shaderSource.match(/fn composeLayerStackSamples\(/g) ?? []).length,
   1,
-  "il display base conserva la firma raster senza texture testo",
+  "il display base deve avere un solo compositore per i campioni raster",
 );
 assert.equal(
   (shaderSource.match(/fn composeLayerStack\(\s*activePaint: vec4<f32>,\s*layerPosition: vec2<f32>,\s*fragmentPosition: vec2<f32>/g) ?? []).length,
   2,
   "coda e Light Glaze devono accettare le coordinate viewport del testo",
 );
-assert.match(shaderSource, /composeLayerStack\(sampleActiveLayer\(uv\), layerPosition\)/);
+assert.match(shaderSource, /composeLayerStackSamples\(activePaint, belowPaint, abovePaint\)/);
 assert.equal(
   (shaderSource.match(/paint = composeLayerStack\(paint, layerPosition, fragmentPosition\.xy\);/g) ?? []).length,
   2,

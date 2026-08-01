@@ -3,6 +3,8 @@ export const RASTER_PIXEL_VIEW_ZOOM_THRESHOLD =
   RASTER_PIXEL_VIEW_PERCENT_THRESHOLD / 100;
 export const RASTER_PIXEL_VIEW_STRATEGY =
   "display-only-nearest-raster-at-581-percent-v1" as const;
+export const RASTER_SMOOTH_LAYER_COMPOSITE_STRATEGY =
+  "lod0-edge-plus-final-stack-mips-compose-before-filter-v3" as const;
 
 export function rasterPixelViewEnabled(zoom: number): boolean {
   return Number.isFinite(zoom) && zoom >= RASTER_PIXEL_VIEW_ZOOM_THRESHOLD;

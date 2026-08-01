@@ -212,9 +212,12 @@ Paint:
 - …cache di presentazione persistente screen-space: display shader eseguito
   solo sulla dirty region, poi `copyTextureToTexture` alla swapchain
   (`#37/#38`: Base `+46%` FPS vs `#35`, migliore anche delle vecchie baseline).
-- Piramide mip live del layer per il display ridotto: 13 livelli, box filter
-  `2×2` su premoltiplicato, LOD `floor(log2(1/zoom))` senza upscaling, rebuild
-  atomico della cache al cambio LOD (`#61`: nessun costo misurabile).
+- Piramide mip live condivisa per il display ridotto: 13 livelli, box filter
+  `2×2` su premoltiplicato, LOD `floor(log2(1/zoom))` senza upscaling e rebuild
+  atomico della cache al cambio LOD (`#61`: nessun costo misurabile). Nel
+  display raster diretto con almeno due superfici, mip `1+` contiene ora il
+  composito finale below→active→above costruito prima del filtro; negli altri
+  percorsi conserva il contenuto `active-only` (strategia v3 descritta sotto).
 - Tip preview Canvas2D (backpressure GPU): max `2` stamp in una patch
   `≤384×384` CSS a metà risoluzione, budget JS `1,25 ms`, commit atomico da
   scratch. Trigger: probe ogni `4` submission, timeout `60 ms` o due
@@ -1724,11 +1727,76 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   `display-only-nearest-raster-at-581-percent-v1`: solo presentazione, nessuna
   mutazione del documento, nuova texture/buffer o crescita memoria (`0 MiB`).
   Il badge usa floor sopra il `100%`, quindi non dichiara `581%` prima della
-  soglia reale. QA browser locale: `430%` ancora smussato, `581%` con badge
-  PIXEL e texel raster netti mentre il bordo vettoriale resta continuo; ritorno
-  sotto soglia immediato. Build production e verifiche `view`, `vector-text`,
-  `mixed-scene`, `stroke`, `shadow`, `thickness`, `layers` e `history` verdi.
-  Candidato non committato e non pubblicato su richiesta dell'utente.
+  soglia reale. La soglia è stata temporaneamente anticipata al `100%` durante
+  la diagnosi del 1 agosto, ma l'utente l'ha rifiutata perché spostava il
+  problema: quel tentativo è completamente ritirato. Runtime ricontrollato a
+  `535%` senza PIXEL e `723% · PIXEL`, zero warning/errori WebGPU. Candidato
+  non committato e non pubblicato su richiesta dell'utente.
+- Fix alone fra Riempimento e Riferimento, candidato locale 1 agosto 2026. Due
+  catture dello stesso bordo mostravano a `555%` una fascia scura e a
+  `645% · PIXEL` nessun texel nero: sopra il `100%` il mip selezionato è ancora
+  `0`, quindi non era una mipmap. La bilineare filtrava separatamente il giallo
+  attivo e il nero coincidente sottostante, poi source-over ricomponeva due
+  coverage già mediate. Il campione centrale osservato `[215,225,139]`
+  coincide con il modello giallo `#EEFF00` sopra nero sopra bianco a coverage
+  `0,5` (`[215,225,137]` teorico).
+- Le nuove catture arancione/nero confermano la stessa causa: il PNG `645%`
+  contiene texel reali `[224,39,0]`, `[188,31,0]`, `[137,20,0]`, mentre a
+  `555%` compaiono componenti blu/grigie pur avendo entrambi gli estremi blu
+  zero. Quel colore è impossibile interpolando il composito finale e prova che
+  l'alpha filtrato separatamente lasciava trapelare lo sfondo.
+- Strategia finale
+  `lod0-edge-plus-final-stack-mips-compose-before-filter-v3`. Finché il LOD
+  selezionato è `0` — quindi anche fra circa `50%` e `100%`, non soltanto in
+  ingrandimento — i quattro texel coincidenti di active/below/above vengono
+  composti per-texel e soltanto i quattro risultati premoltiplicati vengono
+  interpolati. Il golden numerico passa da `[215,225,137]` alla transizione
+  corretta `[247,255,188]`, senza mutare texture autorevoli, mask Fill, tile o
+  history.
+- Da mip logico `1` in poi, la piramide condivisa del livello attivo cambia
+  contenuto in modo esplicito da `active-only` a `final-raster-stack`: il primo
+  livello carica i quattro texel documento da merged below, active e merged
+  above, esegue source-over nel loro ordine reale e poi media i quattro
+  compositi. I mip successivi riusano lo stesso downsample esatto `2×2`. Il
+  display usa un entrypoint dedicato che campiona quel risultato finale senza
+  ricomporre i merged una seconda volta.
+- Il primo gate v1 guardava soltanto il gradiente dell'attivo sopra un merged
+  inferiore: non copriva il comune stack con Reference sopra il livello Fill.
+  Il v3 continua a sommare `fwidth` di active, below e above, quindi rileva il
+  bordo indipendentemente dall'ordine. Il candidato LOD `0` dipende soltanto da
+  uniform (almeno due superfici, sotto PIXEL e merged `1×`): le derivate vengono
+  valutate in controllo uniforme prima di `insideLayer`; nei frame non
+  candidati i sample restano dopo il reject del documento. Il vecchio gate
+  `zoom >= 1` è stato rimosso: non forza mip `0`, perché il percorso resta
+  vincolato a `selectedMipLevel < 0.5`; quando il selettore passa davvero a mip
+  `1`, entra la piramide final-stack.
+- Nessuna texture o buffer aggiuntivo e delta memoria permanente conteggiata
+  `0 MiB`: viene riusata la piramide già residente (`21,3 MiB` RGBA8 o
+  `42,7 MiB` RGBA16F). Esistono una pipeline e un bind group nuovi; a zoom
+  ridotto il pass composito sostituisce il vecchio primo downsample active e
+  permette di saltare i mip separati merged, quindi non aggiunge pass alla
+  catena diretta e può eliminarne uno o due. Il mode switch invalida piramide e
+  cache atomicamente. Mixed scene, vettori, thickness tail, glaze live e style
+  stack conservano `active-only`, evitando duplicazioni o riordini.
+- QA browser locale NVIDIA Ampere, stesso SVG raster Reference: Fill verde sul
+  raster sotto e sul raster sopra, osservato a `161%`, `119%`, `88,5%`,
+  `48,6%` (mip `1`) e `19,7%` (mip `2`), senza il salto/aloncino prodotto dal
+  filtraggio separato. Una sottile scuritura verde esattamente sotto un texel
+  nero antialiasato del Reference superiore resta corretta source-over e non va
+  cancellata: per alpha nero `25/50/75%` il verde sRGB atteso è circa
+  `225/188/137`.
+- Nella stessa QA, un Fill magenta eseguito direttamente sul raster seed del
+  Reference viene ora annullato ripristinando il nero originale e rifatto con
+  Redo ripristinando il magenta; i pulsanti conservano lo stato corretto. La
+  causa era la presentazione del clear prima della reidratazione seed: il clear
+  è ora sempre nascosto e, nel caso seed-only, dopo hydration passa una sola
+  presentazione autorevole con invalidazione mip/effetti/cache.
+- Compilazione runtime WebGPU pulita; il verifier vincola ordine uniforme,
+  composizione prima del filtro, content-mode, primo mip final-stack e replay
+  seed-only. TypeScript, tutte le sedici suite `*:verify`, `git diff --check` e
+  build Vite production con preparazione Sites verdi. Nessun benchmark iPhone:
+  non dichiarare impatto prestazionale nullo o vantaggio misurato. Candidato
+  locale non committato e non pubblicato.
 ### Ricerca empirica del limite memoria iPhone (diagnostica pubblicabile)
 
 - Il limite Safari/iOS non è una costante per modello: il jetsam è un limite

@@ -516,6 +516,15 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
       texture: { sampleType: "float", viewDimension: "2d" },
     }],
   });
+  engine.paintStackCompositeMipBindGroupLayout = engine.device.createBindGroupLayout({
+    label: "Final raster stack composited mip 1 bind group layout",
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+      { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+      { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+    ],
+  });
   engine.layerCompositeBindGroupLayout = engine.device.createBindGroupLayout({
     label: "Layer source-over fold bind group layout",
     entries: [

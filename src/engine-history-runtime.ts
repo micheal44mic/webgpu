@@ -300,11 +300,16 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
 
   try {
     if (seedAction) {
+      // Never publish the empty texture between clearing the previous live
+      // state and hydrating the immutable vector-raster seed. In particular,
+      // Undoing a Fill made directly on a Reference layer can leave no visible
+      // render batch after the seed; presenting here would make the clear the
+      // last authoritative cache update and the restored SVG would disappear.
       engine.submitImmediate(
         [],
         true,
         engine.settings,
-        lastVisibleBatchIndex < 0,
+        false,
         null,
       );
       observeReplaySubmit();
@@ -317,6 +322,25 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
       encodeLayerColdHydration(encoder, seedAction.seed, hot);
       engine.device.queue.submit([encoder.finish()]);
       await yieldReplaySubmit();
+
+      if (lastVisibleBatchIndex < 0) {
+        // The queue now contains clear -> exact tiled hydration. Run the normal
+        // presentation/effects path once on that final state rather than
+        // relying on a later RAF to notice a raw texture copy. The external
+        // clear flag invalidates every derived pixel; baseBounds then restores
+        // the conservative content domain of the seed in the same submit.
+        engine.submitImmediate(
+          [],
+          false,
+          engine.settings,
+          true,
+          null,
+          seedAction.baseBounds,
+          true,
+        );
+        observeReplaySubmit();
+        await yieldReplaySubmit();
+      }
     }
     if (lastVisibleBatchIndex < 0) {
       if (!seedAction) {

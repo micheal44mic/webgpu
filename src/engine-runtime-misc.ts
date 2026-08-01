@@ -8,6 +8,7 @@ import {
   lightGlazeCompositeShader,
   lightGlazeDisplayShader,
   paintMipDownsampleShader,
+  paintStackCompositeMipShader,
   texturizedGrainShader,
   thicknessTailDisplayShader,
 } from "./shaders";
@@ -101,6 +102,10 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
     label: "Paint display mip downsample WGSL",
     code: paintMipDownsampleShader,
   });
+  engine.paintStackCompositeMipShaderModule = engine.device.createShaderModule({
+    label: "Final raster stack composited mip 1 WGSL",
+    code: paintStackCompositeMipShader,
+  });
   engine.layerCompositeShaderModule = engine.device.createShaderModule({
     label: "Layer source-over fold WGSL",
     code: layerCompositeShader,
@@ -129,6 +134,10 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
       "rendering glaze dirty-region clear",
     ),
     assertShaderCompiled(engine.paintMipDownsampleShaderModule, "paint display mip downsample"),
+    assertShaderCompiled(
+      engine.paintStackCompositeMipShaderModule,
+      "final raster stack composited mip 1",
+    ),
     assertShaderCompiled(engine.layerCompositeShaderModule, "layer source-over fold"),
   ]);
 
@@ -176,6 +185,20 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
     fragment: {
       module: engine.displayShaderModule,
       entryPoint: "fragmentMain",
+      targets: [{ format: engine.canvasFormat }],
+    },
+    primitive: { topology: "triangle-list" },
+  });
+  engine.finalRasterStackDisplayPipeline = engine.device.createRenderPipeline({
+    label: "Final raster stack mip display pipeline",
+    layout: displayPipelineLayout,
+    vertex: {
+      module: engine.displayShaderModule,
+      entryPoint: "vertexMain",
+    },
+    fragment: {
+      module: engine.displayShaderModule,
+      entryPoint: "finalStackFragmentMain",
       targets: [{ format: engine.canvasFormat }],
     },
     primitive: { topology: "triangle-list" },

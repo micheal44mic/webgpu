@@ -5,6 +5,7 @@ import {
   RASTER_PIXEL_VIEW_PERCENT_THRESHOLD,
   RASTER_PIXEL_VIEW_STRATEGY,
   RASTER_PIXEL_VIEW_ZOOM_THRESHOLD,
+  RASTER_SMOOTH_LAYER_COMPOSITE_STRATEGY,
   rasterPixelViewEnabled,
 } from "../src/raster-pixel-view.ts";
 
@@ -166,16 +167,16 @@ assert.match(engineSource, /rotation: rotation \+ this\.viewRotation/,
   "la tip preview Shape deve ruotare insieme alla vista");
 
 const displayShaders = `${shaderSource}\n${strokeRendererSource}`;
-assert.equal((displayShaders.match(/struct DisplayUniforms/g) ?? []).length, 4,
-  "devono restare quattro varianti display");
-assert.equal((displayShaders.match(/  mergedBelowOrigin: vec2<f32>,/g) ?? []).length, 4,
-  "tutte le varianti display devono ricevere l'origine del bbox inferiore");
-assert.equal((displayShaders.match(/  mergedAboveOrigin: vec2<f32>,/g) ?? []).length, 4,
-  "tutte le varianti display devono ricevere l'origine del bbox superiore");
-assert.equal((displayShaders.match(/  viewRotation: vec2<f32>,/g) ?? []).length, 4,
-  "tutte le varianti display devono condividere la stessa ABI di rotazione");
-assert.equal((displayShaders.match(/let displayOffset =/g) ?? []).length, 8,
-  "entry point canonico e active-only devono applicare la stessa trasformazione inversa");
+assert.equal((displayShaders.match(/struct DisplayUniforms/g) ?? []).length, 5,
+  "le quattro varianti display e il compositore mip devono condividere l'ABI");
+assert.equal((displayShaders.match(/  mergedBelowOrigin: vec2<f32>,/g) ?? []).length, 5,
+  "display e compositore mip devono ricevere l'origine del bbox inferiore");
+assert.equal((displayShaders.match(/  mergedAboveOrigin: vec2<f32>,/g) ?? []).length, 5,
+  "display e compositore mip devono ricevere l'origine del bbox superiore");
+assert.equal((displayShaders.match(/  viewRotation: vec2<f32>,/g) ?? []).length, 5,
+  "display e compositore mip devono condividere la stessa ABI di rotazione");
+assert.equal((displayShaders.match(/let displayOffset =/g) ?? []).length, 9,
+  "entry point canonico, final-stack e active-only devono applicare la stessa trasformazione inversa");
 assert.equal((displayShaders.match(/fn activeFragmentMain\(/g) ?? []).length, 4,
   "ogni variante display deve offrire la sorgente trasparente al compositore segmentato");
 assert.doesNotMatch(displayShaders, /display\.layerSize/,
@@ -206,10 +207,18 @@ assert.match(styleSource, /\.desktop-rotation-control\s*\{\s*display: none;/s,
 assert.equal(RASTER_PIXEL_VIEW_PERCENT_THRESHOLD, 581);
 assert.equal(RASTER_PIXEL_VIEW_ZOOM_THRESHOLD, 5.81);
 assert.equal(RASTER_PIXEL_VIEW_STRATEGY, "display-only-nearest-raster-at-581-percent-v1");
+assert.equal(
+  RASTER_SMOOTH_LAYER_COMPOSITE_STRATEGY,
+  "lod0-edge-plus-final-stack-mips-compose-before-filter-v3",
+);
 assert.equal(rasterPixelViewEnabled(5.809999), false,
-  "sotto il 581% il raster deve restare smussato");
+  "sotto il 581% il raster deve restare nella vista morbida fedele");
 assert.equal(rasterPixelViewEnabled(5.81), true,
   "al 581% esatto deve iniziare la vista pixel raster");
+assert.equal(rasterPixelViewEnabled(5.55), false,
+  "il 555% deve conservare il comportamento morbido richiesto dall'utente");
+assert.equal(rasterPixelViewEnabled(6.45), true,
+  "il 645% deve mostrare i texel nearest come prima");
 assert.equal(rasterPixelViewEnabled(Number.NaN), false);
 assert.match(pixelViewSource, /display\.zoom >= RASTER_PIXEL_VIEW_ZOOM_THRESHOLD/);
 assert.match(pixelViewSource, /resolutionScale <= 1\.0001/,
@@ -249,6 +258,141 @@ assert.match(strokeRendererSource, /display-nearest-raster-at-581pct/);
 assert.doesNotMatch(pixelViewSource, /createTexture|createBuffer|writeTexture|copyTexture/,
   "la modalità pixel deve essere solo display e non allocare o mutare risorse");
 
+// A coincident yellow fill over a black Reference must be composed at each
+// document texel before the smooth-view interpolation. Filtering the two alpha
+// edges independently produces the exact dark fringe observed in the capture.
+const displayShaderStart = shaderSource.indexOf("export const displayShader");
+const displayShaderEnd = shaderSource.indexOf(
+  "export const thicknessTailDisplayShader",
+  displayShaderStart,
+);
+assert.ok(displayShaderStart >= 0 && displayShaderEnd > displayShaderStart);
+const baseDisplayShader = shaderSource.slice(displayShaderStart, displayShaderEnd);
+assert.match(
+  baseDisplayShader,
+  /if \(jointFilteringCandidate\) \{[\s\S]*belowPaint = sampleMergedBelow\(layerPosition\)[\s\S]*abovePaint = sampleMergedAbove\(layerPosition\)[\s\S]*stackAlphaGradient = fwidth/,
+  "active, below e above devono essere campionati nel candidato uniforme prima delle derivate",
+);
+assert.match(baseDisplayShader, /fn sampleCompositedLayerStackLinear\(/);
+assert.match(
+  baseDisplayShader,
+  /compositedLayerStackTexel\(lower\)[\s\S]*compositedLayerStackTexel\(lower \+ vec2<i32>\(1, 1\)\)[\s\S]*return mix\(/,
+  "i quattro texel devono essere composti prima della bilineare finale",
+);
+assert.match(
+  baseDisplayShader,
+  /let lodZeroSmooth = display\.selectedMipLevel < 0\.5\s*&& !rasterPixelViewEnabled\(1\.0\);/,
+  "la correzione LOD 0 deve coprire anche lo zoom sotto il 100% prima del primo mip",
+);
+assert.match(
+  baseDisplayShader,
+  /stackAlphaGradient = fwidth\(activePaint\.a\)\s*\+ fwidth\(belowPaint\.a\)\s*\+ fwidth\(abovePaint\.a\);/,
+  "il gradiente alpha deve includere active, below e above",
+);
+assert.match(
+  baseDisplayShader,
+  /multipleSurfaces[\s\S]*stackAlphaGradient > 0\.00001/,
+  "il percorso costoso richiede più superfici e un gradiente alpha",
+);
+const stackAlphaDerivativeIndex = baseDisplayShader.indexOf(
+  "stackAlphaGradient = fwidth(activePaint.a)",
+);
+const nonUniformInsideLayerIndex = baseDisplayShader.indexOf(
+  "let insideLayer = all(layerPosition >= vec2<f32>(0.0))",
+);
+assert.ok(
+  stackAlphaDerivativeIndex >= 0
+    && nonUniformInsideLayerIndex > stackAlphaDerivativeIndex,
+  "tutti i fwidth devono precedere il ramo insideLayer non uniforme",
+);
+const deferredFastSamplingIndex = baseDisplayShader.indexOf(
+  "if (!jointFilteringCandidate)",
+);
+assert.ok(
+  deferredFastSamplingIndex > nonUniformInsideLayerIndex,
+  "fuori dal candidato edge-only i sample devono restare dopo il reject del documento",
+);
+assert.match(
+  baseDisplayShader,
+  /var paint = composeLayerStackSamples[\s\S]*if \(needsJointLayerFiltering\(stackAlphaGradient\)\)[\s\S]*paint = sampleCompositedLayerStackLinear\(layerPosition\)/,
+  "interni e trasparenti devono conservare il percorso veloce esistente",
+);
+assert.doesNotMatch(
+  baseDisplayShader,
+  /select\([\s\S]{0,200}sampleCompositedLayerStackLinear/,
+  "WGSL select valuterebbe anche il ramo costoso su ogni pixel",
+);
+
+const stackMipShaderStart = shaderSource.indexOf("export const paintStackCompositeMipShader");
+assert.ok(stackMipShaderStart >= 0, "shader final-stack mip 1 mancante");
+const stackMipShader = shaderSource.slice(stackMipShaderStart);
+assert.match(
+  stackMipShader,
+  /fn compositedDocumentTexel[\s\S]*loadMergedBelow\(pixel\)[\s\S]*textureLoad\(activeLayerBase, pixel, 0\) \* display\.activeLayerAlpha[\s\S]*loadMergedAbove\(pixel\)/,
+  "mip 1 deve comporre below, active e above per ogni texel documento",
+);
+assert.match(
+  stackMipShader,
+  /let p00 = compositedDocumentTexel\(sourceOrigin\)[\s\S]*let p11 = compositedDocumentTexel\(sourceOrigin \+ vec2<i32>\(1, 1\)\)[\s\S]*return \(p00 \+ p10 \+ p01 \+ p11\) \* 0\.25/,
+  "mip 1 deve mediare quattro risultati finali premoltiplicati",
+);
+assert.match(baseDisplayShader, /fn finalStackFragmentMain\(/);
+assert.match(
+  baseDisplayShader,
+  /fn finalStackFragmentMain[\s\S]*textureSampleLevel\([\s\S]*activeLayerPyramid[\s\S]*max\(display\.selectedMipLevel - 1\.0, 0\.0\)/,
+  "il display final-stack deve campionare la piramide già composta senza un secondo source-over",
+);
+assert.match(
+  engineSource,
+  /content === "final-raster-stack" && mipLevel === 1[\s\S]*setPipeline\(this\.paintStackCompositeMipPipeline\)[\s\S]*mipLevel - 1/,
+  "solo mip 1 usa il compositore; i livelli successivi riusano il downsample 2x2",
+);
+assert.match(
+  engineSource,
+  /if \(!useFinalRasterStackMip\) \{\s*encodeMergedDisplayPyramids/,
+  "il path final-stack non deve costruire mip merged che non campiona",
+);
+
+const srgbToLinear = (value) => {
+  const normalized = value / 255;
+  return normalized <= 0.04045
+    ? normalized / 12.92
+    : ((normalized + 0.055) / 1.055) ** 2.4;
+};
+const linearToSrgbByte = (value) => Math.round(255 * (
+  value <= 0.0031308
+    ? value * 12.92
+    : 1.055 * Math.max(0, Math.min(1, value)) ** (1 / 2.4) - 0.055
+));
+const mixColor = (outside, inside, coverage) => outside.map(
+  (value, index) => value * (1 - coverage) + inside[index] * coverage,
+);
+const sourceOver = (source, destination) => source.map(
+  (value, index) => value + destination[index] * (1 - source[3]),
+);
+const yellow = [srgbToLinear(238), 1, 0, 1];
+const black = [0, 0, 0, 1];
+const white = [1, 1, 1, 1];
+const transparent = [0, 0, 0, 0];
+const half = 0.5;
+const independentlyFiltered = sourceOver(
+  mixColor(transparent, yellow, half),
+  mixColor(white, black, half),
+);
+const jointlyFiltered = mixColor(
+  sourceOver(transparent, white),
+  sourceOver(yellow, black),
+  half,
+);
+const oldFringeRgb = independentlyFiltered.slice(0, 3).map(linearToSrgbByte);
+const correctedRgb = jointlyFiltered.slice(0, 3).map(linearToSrgbByte);
+assert.deepEqual(oldFringeRgb, [215, 225, 137]);
+assert.deepEqual(correctedRgb, [247, 255, 188]);
+assert(correctedRgb[0] > oldFringeRgb[0] && correctedRgb[1] === 255,
+  "la transizione corretta non deve scendere sotto entrambi i colori finali");
+
 assert.equal(packageJson.scripts["view:verify"], "node scripts/verify-view-rotation.mjs");
 
-console.log("Vista verificata: rotazione, zoom reale e nearest raster dal 581% senza pixelare testo/SVG.");
+console.log(
+  "Vista verificata: soglia 581% invariata e active/below/above composti per texel prima della bilineare.",
+);

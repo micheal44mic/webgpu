@@ -358,6 +358,41 @@ const vectorRasterize = (id, layerId) => ({ id, kind: "vector-rasterize", layerI
   assert(html.includes('id="gpuMemoryHistoryLabel"'));
   assert(html.includes("La cronologia raster mostra pagine GPU riservate"));
 
+  const rasterReplay = engine.slice(
+    engine.indexOf("export async function rebuildActiveLayerFromHistory"),
+    engine.indexOf("export async function applyVectorHistoryState"),
+  );
+  const seedBranchStart = rasterReplay.indexOf("if (seedAction) {");
+  const seedClear = rasterReplay.indexOf(
+    "engine.submitImmediate(\n        [],\n        true,\n        engine.settings,\n        false,\n        null,",
+    seedBranchStart,
+  );
+  const seedHydration = rasterReplay.indexOf(
+    "encodeLayerColdHydration(encoder, seedAction.seed, hot);",
+    seedClear,
+  );
+  const seedOnlyPresentation = rasterReplay.indexOf(
+    "if (lastVisibleBatchIndex < 0) {",
+    seedHydration,
+  );
+  const seedOnlyDirtyBounds = rasterReplay.indexOf(
+    "seedAction.baseBounds,\n          true,",
+    seedOnlyPresentation,
+  );
+  assert(
+    seedBranchStart >= 0
+      && seedClear > seedBranchStart
+      && seedHydration > seedClear
+      && seedOnlyPresentation > seedHydration
+      && seedOnlyDirtyBounds > seedOnlyPresentation,
+    "Undo Fill sul raster vettoriale deve fare clear nascosto, hydration e una sola presentazione del seed",
+  );
+  assert.doesNotMatch(
+    rasterReplay.slice(seedBranchStart, seedHydration),
+    /lastVisibleBatchIndex < 0/,
+    "il clear precedente al seed non deve mai diventare la presentazione finale",
+  );
+
   const vectorMutation = engine.slice(
     engine.indexOf("export async function mutateMixedScenePresentation"),
     engine.indexOf("export function ensureVectorTextGpuBlurCache"),

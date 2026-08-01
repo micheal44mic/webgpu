@@ -763,16 +763,97 @@ fn sampleActiveLayer(uv: vec2<f32>) -> vec4<f32> {
 }
 
 ${mergedSurfaceSamplingShader}
-fn composeLayerStack(activePaint: vec4<f32>, layerPosition: vec2<f32>) -> vec4<f32> {
-  var paint = vec4<f32>(0.0);
-  if (display.hasMergedBelow > 0.5) {
-    paint = sampleMergedBelow(layerPosition);
-  }
+fn composeLayerStackSamples(
+  activePaint: vec4<f32>,
+  belowPaint: vec4<f32>,
+  abovePaint: vec4<f32>
+) -> vec4<f32> {
+  var paint = belowPaint;
   paint = sourceOver(activePaint * display.activeLayerAlpha, paint);
-  if (display.hasMergedAbove > 0.5) {
-    paint = sourceOver(sampleMergedAbove(layerPosition), paint);
-  }
+  paint = sourceOver(abovePaint, paint);
   return paint;
+}
+
+fn loadActiveDocumentTexel(documentPixel: vec2<i32>) -> vec4<f32> {
+  return textureLoad(activeLayerBase, documentPixel, 0);
+}
+
+fn loadMergedBelowDocumentTexel(documentPixel: vec2<i32>) -> vec4<f32> {
+  if (display.hasMergedBelow < 0.5) {
+    return vec4<f32>(0.0);
+  }
+  let localPixel = documentPixel - vec2<i32>(display.mergedBelowOrigin);
+  let dimensions = vec2<i32>(textureDimensions(mergedBelowTexture, 0));
+  let inside = all(localPixel >= vec2<i32>(0)) && all(localPixel < dimensions);
+  if (!inside) {
+    return vec4<f32>(0.0);
+  }
+  return textureLoad(mergedBelowTexture, localPixel, 0);
+}
+
+fn loadMergedAboveDocumentTexel(documentPixel: vec2<i32>) -> vec4<f32> {
+  if (display.hasMergedAbove < 0.5) {
+    return vec4<f32>(0.0);
+  }
+  let localPixel = documentPixel - vec2<i32>(display.mergedAboveOrigin);
+  let dimensions = vec2<i32>(textureDimensions(mergedAboveTexture, 0));
+  let inside = all(localPixel >= vec2<i32>(0)) && all(localPixel < dimensions);
+  if (!inside) {
+    return vec4<f32>(0.0);
+  }
+  return textureLoad(mergedAboveTexture, localPixel, 0);
+}
+
+fn compositedLayerStackTexel(documentPixel: vec2<i32>) -> vec4<f32> {
+  let dimensions = vec2<i32>(textureDimensions(activeLayerBase, 0));
+  let pixel = clamp(documentPixel, vec2<i32>(0), dimensions - vec2<i32>(1));
+  return composeLayerStackSamples(
+    loadActiveDocumentTexel(pixel),
+    loadMergedBelowDocumentTexel(pixel),
+    loadMergedAboveDocumentTexel(pixel)
+  );
+}
+
+// Hardware bilinear filtering is linear, but source-over is not: filtering
+// coincident layer edges independently lets the covered lower color leak into
+// the transition. Compose the four document texels first, then interpolate the
+// final premultiplied results. This is used only where any participating
+// stack surface has an alpha gradient.
+fn sampleCompositedLayerStackLinear(layerPosition: vec2<f32>) -> vec4<f32> {
+  let lower = vec2<i32>(floor(layerPosition));
+  let interpolation = fract(layerPosition);
+  let p00 = compositedLayerStackTexel(lower);
+  let p10 = compositedLayerStackTexel(lower + vec2<i32>(1, 0));
+  let p01 = compositedLayerStackTexel(lower + vec2<i32>(0, 1));
+  let p11 = compositedLayerStackTexel(lower + vec2<i32>(1, 1));
+  return mix(
+    mix(p00, p10, interpolation.x),
+    mix(p01, p11, interpolation.x),
+    interpolation.y
+  );
+}
+
+fn mergedSurfacesUseDocumentResolution() -> bool {
+  return display.hasMergedBelow <= 1.0001
+    && display.hasMergedAbove <= 1.0001;
+}
+
+fn jointLayerFilteringCandidate() -> bool {
+  let lodZeroSmooth = display.selectedMipLevel < 0.5
+    && !rasterPixelViewEnabled(1.0);
+  let activePresent = display.activeLayerAlpha > 0.0;
+  let belowPresent = display.hasMergedBelow > 0.5;
+  let abovePresent = display.hasMergedAbove > 0.5;
+  let multipleSurfaces = (activePresent && (belowPresent || abovePresent))
+    || (belowPresent && abovePresent);
+  return lodZeroSmooth
+    && mergedSurfacesUseDocumentResolution()
+    && multipleSurfaces;
+}
+
+fn needsJointLayerFiltering(stackAlphaGradient: f32) -> bool {
+  return jointLayerFilteringCandidate()
+    && stackAlphaGradient > 0.00001;
 }
 
 @vertex
@@ -797,6 +878,26 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   );
   let layerPosition = display.viewCenter + layerOffset;
   let layerSize = vec2<f32>(textureDimensions(activeLayerBase, 0));
+  let uv = clamp((layerPosition + vec2<f32>(0.5)) / layerSize, vec2<f32>(0.0), vec2<f32>(1.0));
+  let jointFilteringCandidate = jointLayerFilteringCandidate();
+  var activePaint = vec4<f32>(0.0);
+  var belowPaint = vec4<f32>(0.0);
+  var abovePaint = vec4<f32>(0.0);
+  var stackAlphaGradient = 0.0;
+  if (jointFilteringCandidate) {
+    activePaint = sampleActiveLayer(uv);
+    if (display.hasMergedBelow > 0.5) {
+      belowPaint = sampleMergedBelow(layerPosition);
+    }
+    if (display.hasMergedAbove > 0.5) {
+      abovePaint = sampleMergedAbove(layerPosition);
+    }
+    // The candidate depends only on uniforms, so derivatives remain in
+    // uniform control flow and still precede the position-dependent return.
+    stackAlphaGradient = fwidth(activePaint.a)
+      + fwidth(belowPaint.a)
+      + fwidth(abovePaint.a);
+  }
 
   let insideLayer = all(layerPosition >= vec2<f32>(0.0))
     && all(layerPosition < layerSize);
@@ -805,8 +906,20 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     return vec4<f32>(vec3<f32>(0.055), 1.0);
   }
 
-  let uv = clamp((layerPosition + vec2<f32>(0.5)) / layerSize, vec2<f32>(0.0), vec2<f32>(1.0));
-  let paint = composeLayerStack(sampleActiveLayer(uv), layerPosition);
+  if (!jointFilteringCandidate) {
+    activePaint = sampleActiveLayer(uv);
+    if (display.hasMergedBelow > 0.5) {
+      belowPaint = sampleMergedBelow(layerPosition);
+    }
+    if (display.hasMergedAbove > 0.5) {
+      abovePaint = sampleMergedAbove(layerPosition);
+    }
+  }
+
+  var paint = composeLayerStackSamples(activePaint, belowPaint, abovePaint);
+  if (needsJointLayerFiltering(stackAlphaGradient)) {
+    paint = sampleCompositedLayerStackLinear(layerPosition);
+  }
 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
@@ -814,6 +927,45 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   let backgroundLinear = srgbToLinear(backgroundSrgb);
   let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
 
+  return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
+}
+
+// Mip 1+ can store the already-composited raster stack. This entry point is
+// selected only for that content mode, so the filtered result must not be
+// source-over composited with the merged surfaces a second time.
+@fragment
+fn finalStackFragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let displayOffset = (fragmentPosition.xy - display.canvasSize * 0.5) / display.zoom;
+  let layerOffset = vec2<f32>(
+    display.viewRotation.x * displayOffset.x + display.viewRotation.y * displayOffset.y,
+    -display.viewRotation.y * displayOffset.x + display.viewRotation.x * displayOffset.y
+  );
+  let layerPosition = display.viewCenter + layerOffset;
+  let layerSize = vec2<f32>(textureDimensions(activeLayerBase, 0));
+  let insideLayer = all(layerPosition >= vec2<f32>(0.0))
+    && all(layerPosition < layerSize);
+  if (!insideLayer) {
+    return vec4<f32>(vec3<f32>(0.055), 1.0);
+  }
+
+  let uv = clamp(
+    (layerPosition + vec2<f32>(0.5)) / layerSize,
+    vec2<f32>(0.0),
+    vec2<f32>(1.0)
+  );
+  let paint = textureSampleLevel(
+    activeLayerPyramid,
+    layerSampler,
+    uv,
+    max(display.selectedMipLevel - 1.0, 0.0)
+  );
+  let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
+  let checkerParity = (checkerCell.x + checkerCell.y) & 1;
+  let backgroundSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
+  let backgroundLinear = srgbToLinear(backgroundSrgb);
+  let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
   return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
 }
 
@@ -1855,6 +2007,98 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     min(sourceOrigin + vec2<i32>(1, 1), maximumCoordinate),
     0
   );
+  return (p00 + p10 + p01 + p11) * 0.25;
+}
+`;
+
+// Builds logical mip 1 from the final raster stack, not from each layer in
+// isolation. Source-over is nonlinear: averaging the independently filtered
+// layers and composing them later creates dark/color fringes at coincident
+// antialiased edges. The following mip levels can use the ordinary exact 2x2
+// downsampler because mip 1 already contains final premultiplied pixels.
+export const paintStackCompositeMipShader = /* wgsl */ `
+struct DisplayUniforms {
+  canvasSize: vec2<f32>,
+  viewRotation: vec2<f32>,
+  viewCenter: vec2<f32>,
+  zoom: f32,
+  checkerSize: f32,
+  selectedMipLevel: f32,
+  hasMergedBelow: f32,
+  hasMergedAbove: f32,
+  activeLayerAlpha: f32,
+  mergedBelowOrigin: vec2<f32>,
+  mergedAboveOrigin: vec2<f32>,
+};
+
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+};
+
+@group(0) @binding(0) var<uniform> display: DisplayUniforms;
+@group(0) @binding(1) var activeLayerBase: texture_2d<f32>;
+@group(0) @binding(2) var mergedBelowTexture: texture_2d<f32>;
+@group(0) @binding(3) var mergedAboveTexture: texture_2d<f32>;
+
+fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
+  return source + destination * (1.0 - source.a);
+}
+
+fn loadMergedBelow(documentPixel: vec2<i32>) -> vec4<f32> {
+  if (display.hasMergedBelow < 0.5) {
+    return vec4<f32>(0.0);
+  }
+  let localPixel = documentPixel - vec2<i32>(display.mergedBelowOrigin);
+  let dimensions = vec2<i32>(textureDimensions(mergedBelowTexture, 0));
+  if (any(localPixel < vec2<i32>(0)) || any(localPixel >= dimensions)) {
+    return vec4<f32>(0.0);
+  }
+  return textureLoad(mergedBelowTexture, localPixel, 0);
+}
+
+fn loadMergedAbove(documentPixel: vec2<i32>) -> vec4<f32> {
+  if (display.hasMergedAbove < 0.5) {
+    return vec4<f32>(0.0);
+  }
+  let localPixel = documentPixel - vec2<i32>(display.mergedAboveOrigin);
+  let dimensions = vec2<i32>(textureDimensions(mergedAboveTexture, 0));
+  if (any(localPixel < vec2<i32>(0)) || any(localPixel >= dimensions)) {
+    return vec4<f32>(0.0);
+  }
+  return textureLoad(mergedAboveTexture, localPixel, 0);
+}
+
+fn compositedDocumentTexel(documentPixel: vec2<i32>) -> vec4<f32> {
+  let dimensions = vec2<i32>(textureDimensions(activeLayerBase, 0));
+  let pixel = clamp(documentPixel, vec2<i32>(0), dimensions - vec2<i32>(1));
+  var paint = loadMergedBelow(pixel);
+  paint = sourceOver(
+    textureLoad(activeLayerBase, pixel, 0) * display.activeLayerAlpha,
+    paint
+  );
+  paint = sourceOver(loadMergedAbove(pixel), paint);
+  return paint;
+}
+
+@vertex
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+  let positions = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>( 3.0, -1.0),
+    vec2<f32>(-1.0,  3.0)
+  );
+  var output: VertexOutput;
+  output.position = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
+  return output;
+}
+
+@fragment
+fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
+  let sourceOrigin = vec2<i32>(fragmentPosition.xy) * 2;
+  let p00 = compositedDocumentTexel(sourceOrigin);
+  let p10 = compositedDocumentTexel(sourceOrigin + vec2<i32>(1, 0));
+  let p01 = compositedDocumentTexel(sourceOrigin + vec2<i32>(0, 1));
+  let p11 = compositedDocumentTexel(sourceOrigin + vec2<i32>(1, 1));
   return (p00 + p10 + p01 + p11) * 0.25;
 }
 `;

@@ -116,6 +116,7 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
     lightGlazeCompositePipeline,
     lightGlazeCommitTilePipeline,
     paintMipDownsamplePipeline,
+    paintStackCompositeMipPipeline,
     layerCompositePipeline,
   } = await runGpuAllocationTransaction(
     engine.device,
@@ -140,6 +141,10 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
   const paintMipDownsamplePipelineLayout = engine.device.createPipelineLayout({
     label: `Paint display mip downsample pipeline layout ${format}`,
     bindGroupLayouts: [engine.paintMipDownsampleBindGroupLayout],
+  });
+  const paintStackCompositeMipPipelineLayout = engine.device.createPipelineLayout({
+    label: `Final raster stack composited mip 1 pipeline layout ${format}`,
+    bindGroupLayouts: [engine.paintStackCompositeMipBindGroupLayout],
   });
   const layerCompositePipelineLayout = engine.device.createPipelineLayout({
     label: `Layer source-over fold pipeline layout ${format}`,
@@ -812,6 +817,20 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
     },
     primitive: { topology: "triangle-list" },
   });
+  const paintStackCompositeMipPipeline = engine.device.createRenderPipeline({
+    label: `Final raster stack composited mip 1 ${format}`,
+    layout: paintStackCompositeMipPipelineLayout,
+    vertex: {
+      module: engine.paintStackCompositeMipShaderModule,
+      entryPoint: "vertexMain",
+    },
+    fragment: {
+      module: engine.paintStackCompositeMipShaderModule,
+      entryPoint: "fragmentMain",
+      targets: [{ format }],
+    },
+    primitive: { topology: "triangle-list" },
+  });
   const layerCompositePipeline = engine.device.createRenderPipeline({
     label: `Layer source-over fold ${format}`,
     layout: layerCompositePipelineLayout,
@@ -864,6 +883,7 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
         lightGlazeCompositePipeline,
         lightGlazeCommitTilePipeline,
         paintMipDownsamplePipeline,
+        paintStackCompositeMipPipeline,
         layerCompositePipeline,
       };
     },
@@ -1051,6 +1071,7 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
   engine.lightGlazeCompositePipeline = lightGlazeCompositePipeline;
   engine.lightGlazeCommitTilePipeline = lightGlazeCommitTilePipeline;
   engine.paintMipDownsamplePipeline = paintMipDownsamplePipeline;
+  engine.paintStackCompositeMipPipeline = paintStackCompositeMipPipeline;
   engine.layerCompositePipeline = layerCompositePipeline;
   engine.layerFormat = format;
   rebuildActiveLayerPyramidBindings(engine);
@@ -1059,6 +1080,7 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
   // quantization that the removed full-resolution styled texture applied.
   engine.writeLightGlazeUniforms(1, "source-over", null);
   engine.paintDisplayMipValidThroughLevel = 0;
+  engine.paintDisplayPyramidContent = "active-only";
   engine.paintDisplaySelectedMipLevel = 0;
   engine.presentationCacheNeedsFullRebuild = true;
   releaseRasterStrokeRenderer(engine);
@@ -1660,6 +1682,10 @@ export async function setLayerPresentation(engine: BrushEngine,
     await engine.waitForIdle();
     record.visible = nextVisible;
     record.opacity = nextOpacity;
+    // In final-stack mode the active opacity/visibility is baked into mip 1;
+    // inactive-layer changes rebuild the merged view below. Both cases must
+    // invalidate the shared display pyramid before the next presentation.
+    engine.paintDisplayMipValidThroughLevel = 0;
     if (index !== engine.layerStack.activeIndex) {
       await engine.rebuildMergedLayerSurfaces();
     }
@@ -2231,6 +2257,20 @@ export function rebuildLayerDisplayBindGroups(engine: BrushEngine): void {
       { binding: 5, resource: engine.sampler },
     ],
   });
+  engine.paintStackCompositeMipBindGroup = engine.device.createBindGroup({
+    label: "Final raster stack composited mip 1 bind group",
+    layout: engine.paintStackCompositeMipBindGroupLayout,
+    entries: [
+      { binding: 0, resource: { buffer: engine.displayUniformBuffer } },
+      { binding: 1, resource: engine.layerView },
+      { binding: 2, resource: engine.mergedBelowView() },
+      { binding: 3, resource: engine.mergedAboveView() },
+    ],
+  });
+  // Mip 1 may currently contain a fold of the previous active/merged views.
+  // Resource retargeting therefore invalidates the shared pyramid regardless
+  // of its current content mode.
+  engine.paintDisplayMipValidThroughLevel = 0;
   rebuildVectorTextDisplayBindGroup(engine);
   engine.rebuildRasterStrokeDisplayBindGroups();
 }
