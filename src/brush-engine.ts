@@ -2381,6 +2381,11 @@ export class BrushEngine {
             );
           }
           const record = this.layerStack.at(rasterLayerIndex);
+          const rasterIsActive = record.id === this.layerStack.active.id;
+          const rasterHasContent = rasterIsActive ? this.layerHasContent : record.hasContent;
+          const rasterContentBounds = rasterIsActive
+            ? this.layerContentBounds
+            : record.contentBounds;
           const transform = this.activeRasterTransformSession?.layerId === record.id
             ? {
               layerId: record.id,
@@ -2402,8 +2407,8 @@ export class BrushEngine {
             rasterLayerId: item.rasterLayerId,
             rasterLayerIndex,
             rasterLayerName: record.name,
-            rasterHasContent: record.hasContent,
-            rasterContentBounds: record.contentBounds ? { ...record.contentBounds } : null,
+            rasterHasContent,
+            rasterContentBounds: rasterContentBounds ? { ...rasterContentBounds } : null,
             rasterTransform: transform,
           };
         }

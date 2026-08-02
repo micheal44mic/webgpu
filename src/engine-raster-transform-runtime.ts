@@ -346,10 +346,11 @@ export async function beginRasterLayerTransform(
       + `ma raster attivo ${record.id}.`,
     );
   }
+  engine.assertLayerSwitchAllowed();
+  engine.persistActiveLayerState();
   if (!record.hasContent || !record.contentBounds) {
     throw new Error("Il livello raster selezionato è vuoto.");
   }
-  engine.assertLayerSwitchAllowed();
   engine.cancelLayerColdCompressionIdle();
   engine.historyBusy = true;
   engine.publishHistoryState();

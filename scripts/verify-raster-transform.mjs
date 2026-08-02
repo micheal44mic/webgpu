@@ -262,9 +262,18 @@ const controllerSource = readFileSync(
   new URL("../src/mixed-vector-text-controller.ts", import.meta.url),
   "utf8",
 );
+const brushEngineSource = readFileSync(
+  new URL("../src/brush-engine.ts", import.meta.url),
+  "utf8",
+);
 assert.doesNotMatch(mathSource, /GPU(?:Device|Texture|Buffer|Queue)/);
 assert.doesNotMatch(mathSource, /CanvasRenderingContext|ImageBitmap/);
 assert.match(runtimeSource, /RASTER_TRANSFORM_TRANSPARENT_GUARD_PX = 2/);
+assert.match(
+  runtimeSource,
+  /engine\.assertLayerSwitchAllowed\(\);\s*engine\.persistActiveLayerState\(\);\s*if \(!record\.hasContent \|\| !record\.contentBounds\)/,
+  "l'apertura GPU deve sincronizzare il raster attivo appena dipinto prima del controllo contenuto",
+);
 assert.match(runtimeSource, /origin: \{[\s\S]{0,120}RASTER_TRANSFORM_TRANSPARENT_GUARD_PX/);
 assert.match(runtimeSource, /padding: 0/);
 assert.match(runtimeSource, /rasterTransformSamplingPadding\(transform\)/);
@@ -289,5 +298,15 @@ assert.match(runtimeSource, /const action: RasterTransformHistoryAction[\s\S]{0,
 assert.match(runtimeSource, /released|destroyLayerColdStorage\(seed\)/);
 assert.match(controllerSource, /if \(this\.transformCommitBusy \|\| this\.rasterTransformRecoveryOnly\) return/);
 assert.match(controllerSource, /rasterTransformRecoveryOnly/);
+assert.match(
+  controllerSource,
+  /setTransformToolActive\(active: boolean\): void \{[\s\S]{0,260}const latestSnapshot = this\.host\.getMixedSceneSnapshot\(\);[\s\S]{0,120}this\.syncScene\(latestSnapshot\);[\s\S]{0,120}this\.transformToolActive = active;/,
+  "l'ingresso in Trasforma deve aggiornare la scena dopo l'ultimo gesto raster",
+);
+assert.match(
+  brushEngineSource,
+  /const rasterIsActive = record\.id === this\.layerStack\.active\.id;[\s\S]{0,240}const rasterHasContent = rasterIsActive \? this\.layerHasContent : record\.hasContent;[\s\S]{0,240}const rasterContentBounds = rasterIsActive[\s\S]{0,120}\? this\.layerContentBounds[\s\S]{0,120}: record\.contentBounds;/,
+  "Trasforma deve leggere contenuto e bbox vivi del livello raster attivo appena dipinto",
+);
 
 console.log("Raster transform math/shader verification passed.");

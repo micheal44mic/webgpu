@@ -2932,6 +2932,14 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   OOM e soltanto per il `LayerFormat` attivo. L'obiettivo prestazionale e di QA
   è RGBA8; RGBA16F rimane compatibilità passiva e non riceve precompilazione o
   ottimizzazioni dedicate, perché è previsto che venga rimosso.
+- Follow-up del 2 agosto: il record del livello attivo riceveva `hasContent` e
+  `contentBounds` soltanto quando il livello diventava inattivo. Subito dopo un
+  gesto Paint la scena Trasforma poteva quindi considerarlo vuoto fino al primo
+  cambio livello. L'ingresso nel tool ora richiede uno snapshot fresco, lo
+  snapshot usa i campi raster live per il livello attivo e il runtime li
+  persiste al confine della sessione prima del controllo; nessun lavoro è stato
+  aggiunto al percorso caldo del tratto. `transform:verify` vincola tutti e tre
+  i punti.
 - Verifica finale su questa macchina: `tsc --noEmit`, tutte le diciotto suite
   `*:verify`, `git diff --check` e build Vite production/Sites verdi. Le
   regressioni coprono decoder e cleanup, budget aggregati, tile, guardia e bbox,
@@ -2939,5 +2947,9 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   e rollback. QA browser desktop reale su NVIDIA Ampere/RGBA8: import PNG
   `512×512`, sessione Trasforma, drag, Applica, Undo, Annulla della sessione
   modale riaperta e Redo; overlay e posizione tornano coerenti e la console
-  resta priva di warning/errori. È prova funzionale, non benchmark; non sono
-  state eseguite una misura canonica iPhone o una pubblicazione Sites.
+  resta priva di warning/errori. Follow-up reale: Paint su un livello vuoto,
+  ingresso immediato in Trasforma senza cambiare layer, drag+Applica, creazione
+  e Paint su un secondo raster, apertura/Annulla e ritorno al primo livello
+  cold ancora in Trasforma; entrambe le sessioni mostrano Applica/Annulla e lo
+  stato GPU pronto. È prova funzionale, non benchmark; non sono state eseguite
+  una misura canonica iPhone o una pubblicazione Sites.

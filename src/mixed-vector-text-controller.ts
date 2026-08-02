@@ -694,6 +694,10 @@ export class MixedVectorTextController {
     if (!active && this.transformSessionOpen) {
       return;
     }
+    if (active) {
+      const latestSnapshot = this.host.getMixedSceneSnapshot();
+      if (latestSnapshot) this.syncScene(latestSnapshot);
+    }
     this.transformToolActive = active;
     const hasSelection = this.selectedTransformNode() !== null;
     this.interactionCanvas.hidden = !active || !hasSelection;
