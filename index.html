@@ -752,7 +752,8 @@
             Aggiungi livello raster
           </button>
           <p id="layerSwitchResult" class="result" aria-live="polite">
-            Ogni livello conserva Traccia, Ombra esterna, Ombra interna e Smusso.
+            Ogni livello conserva Sovrapposizione colore, Traccia, Ombra esterna,
+            Ombra interna e Smusso.
           </p>
           <div id="layerMemoryStressSection" hidden>
             <p id="layerMemoryStressIntro" class="result">
@@ -798,6 +799,50 @@
               <summary>Report compressione livelli</summary>
               <pre id="layerCompressionStudyReport" class="golden-report"></pre>
             </details>
+          </div>
+        </section>
+
+        <section id="rasterColorOverlaySection">
+          <h2>Sovrapposizione colore</h2>
+
+          <label class="check-control">
+            <input
+              id="rasterColorOverlayEnabled"
+              type="checkbox"
+              aria-controls="rasterColorOverlayParameters"
+              aria-expanded="false"
+            />
+            <span>
+              Colore sul contenuto raster
+              <small>Effetto WebGPU non distruttivo: l’alpha originale resta invariato.</small>
+            </span>
+          </label>
+
+          <div id="rasterColorOverlayParameters" hidden>
+            <label class="control color-control">
+              <span>Colore</span>
+              <input id="rasterColorOverlayColor" type="color" value="#000000" />
+            </label>
+
+            <label class="control" for="rasterColorOverlayOpacity">
+              <span>
+                Opacità
+                <output id="rasterColorOverlayOpacityOut" for="rasterColorOverlayOpacity">100%</output>
+              </span>
+              <input
+                id="rasterColorOverlayOpacity"
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                value="100"
+              />
+            </label>
+
+            <p class="result">
+              Il colore viene composto in WebGPU senza riscrivere i pixel del livello;
+              trasparenza e bordi raster restano quelli della sorgente.
+            </p>
           </div>
         </section>
 
@@ -1242,7 +1287,9 @@
             <div><dt>Memoria GPU conteggiata</dt><dd id="memoryStat">—</dd></div>
             <div><dt>GPU</dt><dd id="gpuStat">—</dd></div>
           </dl>
-          <p id="status" class="status">Inizializzazione WebGPU…</p>
+          <p id="status" class="status" role="status" aria-live="polite">
+            Inizializzazione WebGPU…
+          </p>
         </section>
       </aside>
 

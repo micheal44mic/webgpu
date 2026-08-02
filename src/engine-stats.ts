@@ -55,6 +55,10 @@ import {
 import type { RasterInnerShadowStyle, RasterOuterShadowStyle } from "./shadow-core";
 import type { ShapeOccupancyFallbackReason, ShapeOccupancySelection } from "./shape-occupancy";
 import type { RasterStrokeStyle } from "./stroke-core";
+import {
+  RASTER_COLOR_OVERLAY_STRATEGY,
+  type RasterColorOverlayStyle,
+} from "./raster-color-overlay-core";
 import type { ThicknessDynamicsStrategy } from "./thickness-dynamics";
 
 export interface EngineGpuMemoryStats {
@@ -225,6 +229,9 @@ export interface EngineStats {
     storedCpuMiB: number;
     pausedByStroke: boolean;
   } | null;
+  rasterColorOverlayStyle: RasterColorOverlayStyle;
+  rasterColorOverlayStrategy: typeof RASTER_COLOR_OVERLAY_STRATEGY;
+  rasterColorOverlayScratchMemoryMiB: 0;
   rasterStrokeStyle: RasterStrokeStyle;
   rasterStrokePersistentMemoryMiB: number;
   rasterStrokeScratchMemoryMiB: number;

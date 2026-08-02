@@ -30,6 +30,20 @@ import {
   copyRasterOuterShadowStyle,
 } from "../src/shadow-core.ts";
 import {
+  DEFAULT_RASTER_COLOR_OVERLAY_STYLE,
+  RASTER_COLOR_OVERLAY_EFFECT_ID,
+  RASTER_COLOR_OVERLAY_SCRATCH_BYTES,
+  RASTER_COLOR_OVERLAY_STRATEGY,
+  compositeRasterColorOverlayPixel,
+  copyRasterColorOverlayStyle,
+  linearChannelToSrgbColorOverlay,
+  normalizeRasterColorOverlayStyle,
+  rasterColorOverlayColorFromHex,
+  rasterColorOverlayColorToHex,
+  rasterColorOverlayStylesEqual,
+  srgbChannelToLinearColorOverlay,
+} from "../src/raster-color-overlay-core.ts";
+import {
   LAYER_STORAGE_GRID_SIZE,
   LAYER_STORAGE_MASK_WORD_COUNT,
   LAYER_STORAGE_STRATEGY,
@@ -50,6 +64,110 @@ assert.equal(
   "ordered-records-single-active-single-reference-monotonic-ids",
 );
 
+// Color Overlay is a pure alpha-preserving style, not another full-canvas
+// resource owner. Its CPU oracle and color conversions pin the contract before
+// the same equation is embedded into the shared raster-effects compositor.
+{
+  assert.equal(
+    RASTER_COLOR_OVERLAY_STRATEGY,
+    "analytic-linear-alpha-preserving-color-overlay-zero-scratch-v1",
+  );
+  assert.equal(RASTER_COLOR_OVERLAY_EFFECT_ID, "color-overlay");
+  assert.equal(RASTER_COLOR_OVERLAY_SCRATCH_BYTES, 0);
+  assert.deepEqual(DEFAULT_RASTER_COLOR_OVERLAY_STYLE, {
+    enabled: false,
+    color: [0, 0, 0],
+    opacity: 100,
+  });
+
+  const middleGray = rasterColorOverlayColorFromHex(" #808080 ");
+  assert.ok(Math.abs(middleGray[0] - 0.21586050011389926) < 1e-15);
+  assert.deepEqual(middleGray, [middleGray[0], middleGray[0], middleGray[0]]);
+  assert.equal(rasterColorOverlayColorToHex(middleGray), "#808080");
+  assert.equal(rasterColorOverlayColorToHex([1, 0, 0.5]), "#ff00bc");
+  assert.equal(srgbChannelToLinearColorOverlay(0), 0);
+  assert.equal(srgbChannelToLinearColorOverlay(1), 1);
+  assert.equal(linearChannelToSrgbColorOverlay(0), 0);
+  assert.ok(Math.abs(linearChannelToSrgbColorOverlay(1) - 1) < 1e-15);
+  assert.throws(
+    () => rasterColorOverlayColorFromHex("#abcd"),
+    /HEX della sovrapposizione non valido/,
+  );
+  assert.throws(
+    () => srgbChannelToLinearColorOverlay(Number.NaN),
+    /deve essere finito/,
+  );
+
+  // Every 8-bit channel survives the sRGB HEX -> linear -> sRGB HEX roundtrip.
+  for (let byte = 0; byte <= 255; byte += 1) {
+    const encoded = byte.toString(16).padStart(2, "0");
+    const hex = `#${encoded}${encoded}${encoded}`;
+    assert.equal(rasterColorOverlayColorToHex(
+      rasterColorOverlayColorFromHex(hex),
+    ), hex);
+  }
+
+  assert.deepEqual(normalizeRasterColorOverlayStyle({
+    enabled: true,
+    color: new Float32Array([-1, 0.25, 2]),
+    opacity: 130,
+  }), {
+    enabled: true,
+    color: [0, 0.25, 1],
+    opacity: 100,
+  });
+  assert.deepEqual(normalizeRasterColorOverlayStyle({
+    enabled: "true",
+    color: "non-un-colore",
+    opacity: Number.NaN,
+  }), {
+    enabled: false,
+    color: [0, 0, 0],
+    opacity: 100,
+  });
+  assert.ok(rasterColorOverlayStylesEqual(
+    { enabled: false, color: [-2, 0, 0], opacity: 120 },
+    DEFAULT_RASTER_COLOR_OVERLAY_STYLE,
+  ));
+  const copy = copyRasterColorOverlayStyle({
+    enabled: true,
+    color: "#ff0000",
+    opacity: 35,
+  });
+  assert.deepEqual(copy, { enabled: true, color: [1, 0, 0], opacity: 35 });
+  assert.notEqual(copy.color, DEFAULT_RASTER_COLOR_OVERLAY_STYLE.color);
+
+  const base = [0.1, 0.2, 0.3, 0.4];
+  assert.deepEqual(
+    compositeRasterColorOverlayPixel(base, DEFAULT_RASTER_COLOR_OVERLAY_STYLE),
+    base,
+  );
+  const composed = compositeRasterColorOverlayPixel(base, {
+    enabled: true,
+    color: [1, 0, 0],
+    opacity: 25,
+  });
+  assert.ok(Math.abs(composed[0] - 0.175) < 1e-15);
+  assert.ok(Math.abs(composed[1] - 0.15) < 1e-15);
+  assert.ok(Math.abs(composed[2] - 0.225) < 1e-15);
+  assert.equal(composed[3], base[3], "Color Overlay non può cambiare alpha");
+  assert.deepEqual(compositeRasterColorOverlayPixel([0, 0, 0, 0], {
+    enabled: true,
+    color: [1, 1, 1],
+    opacity: 100,
+  }), [0, 0, 0, 0], "un pixel trasparente non può diventare occupato");
+
+  const colorOverlayCoreSource = readFileSync(
+    new URL("../src/raster-color-overlay-core.ts", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    colorOverlayCoreSource,
+    /GPUTexture|GPUBuffer|GPUDevice|GPUQueue|document\.|window\./,
+    "il contratto Color Overlay deve restare puro e testabile senza WebGPU/DOM",
+  );
+}
+
 // Stand-in for the engine's real factory: shape-compatible, and deliberately
 // returning a fresh object graph on every call so the tests below can tell
 // "the stack asked for new styles" apart from "the stack reused one object".
@@ -61,6 +179,7 @@ const createStyles = () => {
     bevelStyle: { enabled: false, mode: "inner", technique: "smooth", size: 32, soften: 4 },
     outerShadowStyle: copyRasterOuterShadowStyle(DEFAULT_RASTER_OUTER_SHADOW_STYLE),
     innerShadowStyle: copyRasterInnerShadowStyle(DEFAULT_RASTER_INNER_SHADOW_STYLE),
+    colorOverlayStyle: copyRasterColorOverlayStyle(DEFAULT_RASTER_COLOR_OVERLAY_STYLE),
   };
 };
 const newStack = () => new LayerStack(createStyles);
@@ -75,6 +194,10 @@ const newStack = () => new LayerStack(createStyles);
   assert.equal(stack.active.opacity, 1);
   assert.equal(stack.active.hasContent, false);
   assert.equal(stack.active.contentBounds, null);
+  assert.deepEqual(
+    stack.active.colorOverlayStyle,
+    DEFAULT_RASTER_COLOR_OVERLAY_STYLE,
+  );
   assert.deepEqual(stack.below(), []);
   assert.deepEqual(stack.above(), []);
 }
@@ -153,14 +276,17 @@ const newStack = () => new LayerStack(createStyles);
   assert.notEqual(first.bevelStyle, second.bevelStyle);
   assert.notEqual(first.outerShadowStyle, second.outerShadowStyle);
   assert.notEqual(first.innerShadowStyle, second.innerShadowStyle);
+  assert.notEqual(first.colorOverlayStyle, second.colorOverlayStyle);
   assert.notEqual(first.outerShadowStyle.color, second.outerShadowStyle.color);
   assert.notEqual(first.innerShadowStyle.color, second.innerShadowStyle.color);
   assert.notEqual(first.strokeStyle.color, second.strokeStyle.color);
+  assert.notEqual(first.colorOverlayStyle.color, second.colorOverlayStyle.color);
   first.bevelStyle.size = 47;
   first.strokeStyle.width = 93;
   first.strokeStyle.color[0] = 0.125;
   first.outerShadowStyle.size = 61;
   first.innerShadowStyle.choke = 42;
+  first.colorOverlayStyle.color[1] = 0.75;
   assert.notEqual(second.bevelStyle.size, 47, "bevelStyle è aliasato fra livelli");
   assert.notEqual(second.strokeStyle.width, 93, "strokeStyle è aliasato fra livelli");
   assert.notEqual(
@@ -177,6 +303,11 @@ const newStack = () => new LayerStack(createStyles);
     second.innerShadowStyle.choke,
     42,
     "innerShadowStyle è aliasato fra livelli",
+  );
+  assert.notEqual(
+    second.colorOverlayStyle.color[1],
+    0.75,
+    "il colore Color Overlay è aliasato fra livelli",
   );
   // And neither may alias the frozen defaults.
   assert.doesNotThrow(() => { second.bevelStyle.size = 3; });
@@ -429,6 +560,8 @@ assert.throws(
       needsBevelRenderer: true,
       needsOuterShadowRenderer: false,
       needsInnerShadowRenderer: false,
+      needsColorOverlayRenderer: false,
+      colorOverlayScratchBytes: 0,
       strokeWidth: 14,
     },
   );
@@ -458,6 +591,8 @@ assert.throws(
       needsBevelRenderer: false,
       needsOuterShadowRenderer: true,
       needsInnerShadowRenderer: false,
+      needsColorOverlayRenderer: false,
+      colorOverlayScratchBytes: 0,
       strokeWidth: 14,
     },
   );
@@ -469,6 +604,35 @@ assert.throws(
       { enabled: true },
     ).needsInnerShadowRenderer,
     true,
+  );
+  assert.deepEqual(
+    layerEffectRendererRequirements(
+      { enabled: false, width: 14 },
+      { enabled: false },
+      { enabled: false },
+      { enabled: false },
+      { enabled: true, opacity: 65 },
+    ),
+    {
+      needsStrokeRenderer: true,
+      needsBevelRenderer: false,
+      needsOuterShadowRenderer: false,
+      needsInnerShadowRenderer: false,
+      needsColorOverlayRenderer: true,
+      colorOverlayScratchBytes: 0,
+      strokeWidth: 14,
+    },
+  );
+  assert.equal(
+    layerEffectRendererRequirements(
+      { enabled: false, width: 14 },
+      { enabled: false },
+      { enabled: false },
+      { enabled: false },
+      { enabled: true, opacity: 0 },
+    ).needsStrokeRenderer,
+    false,
+    "opacity zero non deve trattenere il compositore condiviso",
   );
 }
 
@@ -802,7 +966,8 @@ assert.ok(
       shaderSource.indexOf("paint = composeLayerStack(paint, layerPosition, fragmentPosition.xy);"),
     ),
   "la coda spessore deve comporre layer e testo prima della scacchiera e della conversione sRGB",
-);// All four effect styles must live on the layer record, not on the engine, or a
+);
+// All five effect styles must live on the layer record, not on the engine, or a
 // switch would show the outgoing layer's effects on the incoming one.
 // Accessors keep existing call sites working while making the styles
 // follow the active layer by construction rather than by remembering to copy.
@@ -822,6 +987,10 @@ assert.match(
 assert.match(
   engineSource,
   /get rasterInnerShadowStyle\(\): RasterInnerShadowStyle \{\s*return this\.layerStack\.active\.innerShadowStyle;/,
+);
+assert.match(
+  engineSource,
+  /get rasterColorOverlayStyle\(\): RasterColorOverlayStyle \{\s*return this\.layerStack\.active\.colorOverlayStyle;/,
 );
 assert.doesNotMatch(
   engineSource,
@@ -843,6 +1012,29 @@ assert.doesNotMatch(
   /(private )?rasterInnerShadowStyle: RasterInnerShadowStyle =/,
   "lo stile Ombra interna non può tornare a essere un campo del motore",
 );
+const colorOverlaySetterStart = engineSource.indexOf(
+  "async setRasterColorOverlayStyle(",
+);
+const colorOverlaySetterEnd = engineSource.indexOf(
+  "async setRasterStrokeStyle(",
+  colorOverlaySetterStart,
+);
+assert.notEqual(colorOverlaySetterStart, -1);
+assert.notEqual(colorOverlaySetterEnd, -1);
+const colorOverlaySetterBody = engineSource.slice(
+  colorOverlaySetterStart,
+  colorOverlaySetterEnd,
+);
+assert.match(
+  colorOverlaySetterBody,
+  /if \(rendererWillBeReleased\) \{\s*await this\.waitForIdle\(\);/,
+  "solo la distruzione del compositore può imporre queue-idle a Color Overlay",
+);
+assert.match(
+  colorOverlaySetterBody,
+  /previousDisplayUsesStyle !== nextDisplayUsesStyle/,
+  "un cambio colore caldo non deve ricostruire tutta la cache di presentazione",
+);
 
 // After a switch the effect controls must be re-read from the engine, or the
 // panel would show the outgoing layer's Traccia and Smusso while the brush
@@ -860,9 +1052,9 @@ const stylesSource = readFileSync(
   "utf8",
 );
 assert.equal(
-  (mainSource.match(/performanceTelemetryRevision: 59/g) ?? []).length,
+  (mainSource.match(/performanceTelemetryRevision: 60/g) ?? []).length,
   2,
-  "tipo persistito e runtime devono avanzare insieme alla revisione 59",
+  "tipo persistito e runtime devono avanzare insieme alla revisione 60",
 );
 assert.match(mainSource, /layerBakeStrategy: string;/);
 assert.match(mainSource, /layerCompositeStrategy: string;/);
@@ -871,6 +1063,7 @@ assert.match(mainSource, /async function changeLayerOpacity\(/);
 assert.match(mainSource, /function syncActiveLayerControls\(\): void \{/);
 const syncStart = mainSource.indexOf("function syncActiveLayerControls(");
 const syncBody = mainSource.slice(syncStart, syncStart + 600);
+assert.match(syncBody, /syncRasterColorOverlayControls\(engine\.getRasterColorOverlayStyle\(\)\)/);
 assert.match(syncBody, /syncRasterStrokeControls\(engine\.getRasterStrokeStyle\(\)\)/);
 assert.match(syncBody, /syncRasterOuterShadowControls\(engine\.getRasterOuterShadowStyle\(\)\)/);
 assert.match(syncBody, /syncRasterInnerShadowControls\(engine\.getRasterInnerShadowStyle\(\)\)/);
@@ -886,6 +1079,16 @@ assert.match(
   mainSource,
   /const result = await engine\.addLayer\(\);\s*syncActiveLayerControls\(\);/,
   "anche la creazione di un livello deve risincronizzare i controlli",
+);
+assert.match(
+  mainSource,
+  /function rasterColorOverlayTargetIsSelected\(\): boolean \{[\s\S]*?engine\.canPaintSelectedSceneItem\(\);/,
+  "Color Overlay deve essere modificabile solo quando è selezionato un raster",
+);
+assert.match(
+  mainSource,
+  /\|\| !rasterColorOverlayTargetIsSelected\(\)/,
+  "il commit UI non può ricadere sul raster di lavoro sotto un nodo vettoriale",
 );
 assert.match(
   indexSource,
@@ -1505,7 +1708,7 @@ assert.match(layerCompositeGpuTestSource, /fiveLayerSwitchBreakdownIsConsistent/
 assert.match(layerHistoryGpuTestSource, /measureExactLayerStorageStudy\(\)/);
 assert.match(layerHistoryGpuTestSource, /conservativeTilesContainEveryExactTile/);
 assert.match(layerHistoryGpuTestSource, /exactReadbackReleasedItsTemporaryBuffers/);
-assert.match(mainSource, /performanceTelemetryRevision: 59/);
+assert.match(mainSource, /performanceTelemetryRevision: 60/);
 assert.match(mainSource, /gpuMemoryLayerCold/);
 assert.match(mainSource, /gpuMemoryLayerCompressed/);
 assert.match(mainSource, /gpuMemoryLayerHydration/);

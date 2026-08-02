@@ -2968,3 +2968,45 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   cold ancora in Trasforma; entrambe le sessioni mostrano Applica/Annulla e lo
   stato GPU pronto. È prova funzionale, non benchmark; non sono state eseguite
   una misura canonica iPhone o una pubblicazione Sites.
+
+### Sovrapposizione colore raster non distruttiva (2 agosto 2026)
+
+- Aggiunto lo stile per-layer `Sovrapposizione colore`, separato dal tool
+  Riempimento connesso. La strategia firmata è
+  `analytic-linear-alpha-preserving-color-overlay-zero-scratch-v1`: il colore
+  UI sRGB viene convertito in lineare e il compositore usa pixel
+  premoltiplicati, `rgb' = mix(rgb, coloreLineare × alpha, opacità)` e
+  `alpha' = alpha`. Pixel trasparenti, coverage morbida e antialias restano
+  quindi invariati; l'effetto non può creare nuovi tile o contenuto.
+- L'ordine comune è `sorgente → Sovrapposizione colore → Ombra interna →
+  Smusso → Traccia → Ombra esterna`. Display diretto LOD 0, mip derivate,
+  preview live, bake dei livelli inattivi, merged surfaces e trasformazioni
+  raster attraversano lo stesso parametro WGSL. Lo stile segue il
+  `LayerRecord`, incluse immagini importate già raster e cambi livello; non
+  riscrive mai mip 0 autorevole.
+- Nessuna texture, buffer o regione scratch è dedicata all'overlay. Se il
+  compositore effetti non era già residente, la prima attivazione deve però
+  creare la sua mip chain condivisa: nella QA RGBA8 il totale contato è passato
+  da `132,0` a `153,9 MiB` (`+21,9 MiB`) ed è tornato a `132,0 MiB` a opacità
+  `0%` quando l'overlay era l'unico effetto. Questo è costo condiviso del banco
+  effetti, non scratch Color Overlay; in RGBA16F resta il costo passivo già
+  definito dalla stessa chain.
+- Il ramo WGSL disattivato è uniforme e restituisce subito il texel base, senza
+  eseguire multiply/mix RGB per ogni pixel degli altri effetti. Un cambio caldo
+  di colore o opacità non attende più `queue.onSubmittedWorkDone()` e non forza
+  una ricostruzione full-screen: ricompone soltanto la dirty rect del contenuto
+  e invalida le mip derivate necessarie. La coda GPU viene attesa soltanto prima
+  di distruggere il compositore condiviso.
+- Come Traccia, Smusso e Ombre raster correnti, la modifica dei parametri dello
+  stile non è una voce della timeline globale; Undo/Redo continua a operare
+  sulle mutazioni raster sottostanti e l'effetto viene ricalcolato sul risultato.
+  La telemetria è salita a rev `60` e registra stile, strategia e scratch
+  dedicato `0` per impedire confronti con run che non riportavano l'overlay.
+- QA browser desktop reale su NVIDIA Ampere/RGBA8: campione Paint con bordo
+  morbido, overlay al `100%`, `50%`, `0%` e `75%`, conversione colore live,
+  rilascio memoria a zero, nuovo livello con stile predefinito e ritorno al
+  livello originale con colore/opacità ripristinati. Shader WGSL compilato e
+  console priva di warning/errori. TypeScript, tutte le diciotto suite
+  `*:verify`, `git diff --check` e build Vite production/Sites verdi. È QA
+  funzionale desktop, non un benchmark canonico o una misura iPhone; candidato
+  locale non ancora pubblicato.

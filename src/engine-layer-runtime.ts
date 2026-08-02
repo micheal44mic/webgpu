@@ -58,6 +58,7 @@ import { type VectorTextViewState } from "./vector-text-types";
 import { normalizeRasterBevelStyle } from "./bevel-core";
 import { normalizeRasterInnerShadowStyle, normalizeRasterOuterShadowStyle } from "./shadow-core";
 import { normalizeRasterStrokeStyle } from "./stroke-core";
+import { normalizeRasterColorOverlayStyle } from "./raster-color-overlay-core";
 import { effectsScratchCanShrink, effectsScratchShrinkIsWorthwhile } from "./effects-scratch-pool";
 import {
   destroyThicknessTailOverlayResources,
@@ -1109,7 +1110,11 @@ export async function retargetEffectsWorkingSetInternal(engine: BrushEngine,
   caller: EffectsRetargetCaller,
   styles: Pick<
     LayerRecord,
-    "strokeStyle" | "bevelStyle" | "outerShadowStyle" | "innerShadowStyle"
+    | "strokeStyle"
+    | "bevelStyle"
+    | "outerShadowStyle"
+    | "innerShadowStyle"
+    | "colorOverlayStyle"
   > | null = null,
   publish = true,
   maintainDisplayPyramid = true,
@@ -1153,6 +1158,8 @@ export async function retargetEffectsWorkingSetInternal(engine: BrushEngine,
   const bevelStyle = styles?.bevelStyle ?? engine.rasterBevelStyle;
   const outerShadowStyle = styles?.outerShadowStyle ?? engine.rasterOuterShadowStyle;
   const innerShadowStyle = styles?.innerShadowStyle ?? engine.rasterInnerShadowStyle;
+  const colorOverlayStyle = styles?.colorOverlayStyle
+    ?? engine.rasterColorOverlayStyle;
   const fullDocumentRect: DirtyRect = {
     x: 0,
     y: 0,
@@ -1217,6 +1224,7 @@ export async function retargetEffectsWorkingSetInternal(engine: BrushEngine,
       outerShadowStyle,
       innerShadowStyle,
       normalizedContentBounds,
+      colorOverlayStyle,
     );
     if (maintainDisplayPyramid) {
       encodeRasterStrokeDisplayPyramid(engine, 
@@ -1492,6 +1500,7 @@ export async function materializeLayerCompositeSource(engine: BrushEngine,
     normalizeRasterBevelStyle(record.bevelStyle),
     normalizeRasterOuterShadowStyle(record.outerShadowStyle),
     normalizeRasterInnerShadowStyle(record.innerShadowStyle),
+    normalizeRasterColorOverlayStyle(record.colorOverlayStyle),
   );
   if (gpu.bake && gpu.bakeValid) {
     return {
@@ -2009,6 +2018,7 @@ export async function bakeActiveLayerForSwitchAttempt(engine: BrushEngine): Prom
     normalizeRasterBevelStyle(record.bevelStyle),
     normalizeRasterOuterShadowStyle(record.outerShadowStyle),
     normalizeRasterInnerShadowStyle(record.innerShadowStyle),
+    normalizeRasterColorOverlayStyle(record.colorOverlayStyle),
   );
   if (!engine.layerHasContent || !requirements.needsStrokeRenderer) {
     const previous = gpu.bake;

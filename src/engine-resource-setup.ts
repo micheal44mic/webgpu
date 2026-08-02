@@ -44,6 +44,10 @@ import {
 import { layerEffectRendererRequirements, type LayerRecord } from "./layer-stack";
 import { normalizeRasterBevelStyle } from "./bevel-core";
 import { normalizeRasterInnerShadowStyle, normalizeRasterOuterShadowStyle } from "./shadow-core";
+import {
+  RASTER_COLOR_OVERLAY_EFFECT_ID,
+  normalizeRasterColorOverlayStyle,
+} from "./raster-color-overlay-core";
 import { THICKNESS_TAPER_WINDOW_MS, endThicknessRadius } from "./thickness-dynamics";
 import { RasterShadowRenderer } from "./shadow-renderer";
 import { RasterBevelRenderer } from "./bevel-renderer";
@@ -1030,7 +1034,14 @@ export async function ensureEffectRenderersForRecord(engine: BrushEngine, record
     normalizeRasterBevelStyle(record.bevelStyle),
     normalizeRasterOuterShadowStyle(record.outerShadowStyle),
     normalizeRasterInnerShadowStyle(record.innerShadowStyle),
+    normalizeRasterColorOverlayStyle(record.colorOverlayStyle),
   );
+  const scratchPool = engine.requireEffectsWorkbench().scratchPool;
+  if (requirements.needsColorOverlayRenderer) {
+    scratchPool.declareEffect(RASTER_COLOR_OVERLAY_EFFECT_ID, []);
+  } else {
+    scratchPool.releaseRequirement(RASTER_COLOR_OVERLAY_EFFECT_ID);
+  }
   if (requirements.needsBevelRenderer && !engine.rasterBevelRenderer) {
     await ensureRasterBevelRenderer(engine);
   }

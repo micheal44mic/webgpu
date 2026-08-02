@@ -34,6 +34,11 @@ import {
   RASTER_PIXEL_VIEW_PERCENT_THRESHOLD,
   rasterPixelViewEnabled,
 } from "./raster-pixel-view.ts";
+import {
+  rasterColorOverlayColorFromHex,
+  rasterColorOverlayColorToHex,
+  type RasterColorOverlayStyle,
+} from "./raster-color-overlay-core";
 
 function element<T extends HTMLElement>(id: string): T {
   const result = document.getElementById(id);
@@ -307,6 +312,9 @@ interface BenchmarkRun {
     effectsScratchPoolAllocationCount: number;
     effectsScratchPoolShrinkCount: number;
     effectsScratchPoolRequirementsBytes: Readonly<Record<string, number>>;
+    rasterColorOverlayStyle: RasterColorOverlayStyle;
+    rasterColorOverlayStrategy: string;
+    rasterColorOverlayScratchMemoryMiB: 0;
     rasterStrokeRendererBuild: string | null;
     rasterStrokeStyle: RasterStrokeStyle;
     rasterStrokePersistentMemoryMiB: number;
@@ -487,7 +495,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet";
-    performanceTelemetryRevision: 59;
+    performanceTelemetryRevision: 60;
   };
 }
 
@@ -579,6 +587,7 @@ const engine = new BrushEngine(canvas, {
   },
   onMixedSceneChange(snapshot) {
     vectorTextPrototype?.syncScene(snapshot);
+    updateRasterColorOverlayControlAvailability();
     const selectedItem = snapshot.items.find(
       (item) => item.key === snapshot.selectedKey,
     );
@@ -592,7 +601,7 @@ const engine = new BrushEngine(canvas, {
   },
   onActiveLayerChange(activeIndex) {
     // A global undo can move the active layer on its own. Without resyncing, the
-    // panel would keep highlighting the layer the user left and the four effect
+    // panel would keep highlighting the layer the user left and the raster effect
     // controls would show that layer's styles while the brush paints on
     // another one.
     syncActiveLayerControls();
@@ -634,6 +643,7 @@ let layerCompressionStudyRunning = false;
 let layerCompressionStudyCompleted = false;
 let layerFormatChanging = false;
 let layerSwitching = false;
+let rasterColorOverlayChanging = false;
 let rasterStrokeChanging = false;
 let historyUiBusy = false;
 let rasterBevelChanging = false;
@@ -1040,7 +1050,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     viewRotationDegrees: Number(engine.getViewRotationDegrees().toFixed(3)),
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet",
-    performanceTelemetryRevision: 59,
+    performanceTelemetryRevision: 60,
     countedGpuMemoryMiB: stats.gpuMemory.countedTotalMiB,
     vectorTextPresentationMiB: stats.gpuMemory.vectorTextPresentationMiB,
     vectorTextAdaptiveZoomStrategy: vectorTextDiagnostics?.adaptiveZoomStrategy ?? null,
@@ -1322,6 +1332,94 @@ async function loadCanonicalHumanStroke(): Promise<void> {
 
 function setControlValue(id: string, value: string | number): void {
   element<HTMLInputElement | HTMLSelectElement>(id).value = String(value);
+}
+
+function readRasterColorOverlayStyle(): RasterColorOverlayStyle {
+  return {
+    enabled: element<HTMLInputElement>("rasterColorOverlayEnabled").checked,
+    color: rasterColorOverlayColorFromHex(
+      element<HTMLInputElement>("rasterColorOverlayColor").value,
+    ),
+    opacity: rangeValue("rasterColorOverlayOpacity"),
+  };
+}
+
+function updateRasterColorOverlayOutput(): void {
+  element<HTMLOutputElement>("rasterColorOverlayOpacityOut").value =
+    `${rangeValue("rasterColorOverlayOpacity").toFixed(0)}%`;
+}
+
+function rasterColorOverlayTargetIsSelected(): boolean {
+  return engine.getMixedSceneSnapshot() === null
+    || engine.canPaintSelectedSceneItem();
+}
+
+function syncRasterColorOverlayControls(style: RasterColorOverlayStyle): void {
+  const enabledControl = element<HTMLInputElement>("rasterColorOverlayEnabled");
+  enabledControl.checked = style.enabled;
+  enabledControl.setAttribute("aria-expanded", String(style.enabled));
+  setControlValue(
+    "rasterColorOverlayColor",
+    rasterColorOverlayColorToHex(style.color),
+  );
+  setControlValue("rasterColorOverlayOpacity", style.opacity);
+  element<HTMLElement>("rasterColorOverlayParameters").hidden = !style.enabled;
+  updateRasterColorOverlayOutput();
+}
+
+const rasterColorOverlayControlIds = [
+  "rasterColorOverlayEnabled",
+  "rasterColorOverlayColor",
+  "rasterColorOverlayOpacity",
+] as const;
+
+function updateRasterColorOverlayControlAvailability(
+  locked = interactionLocked(),
+): void {
+  const enabled = element<HTMLInputElement>("rasterColorOverlayEnabled").checked;
+  const rasterTargetSelected = rasterColorOverlayTargetIsSelected();
+  element<HTMLInputElement>("rasterColorOverlayEnabled").setAttribute(
+    "aria-expanded",
+    String(enabled),
+  );
+  element<HTMLElement>("rasterColorOverlayParameters").hidden = !enabled;
+  for (const id of rasterColorOverlayControlIds) {
+    element<HTMLInputElement>(id).disabled =
+      locked
+      || rasterColorOverlayChanging
+      || !rasterTargetSelected
+      || (id !== "rasterColorOverlayEnabled" && !enabled);
+  }
+}
+
+async function applyRasterColorOverlayControls(): Promise<void> {
+  if (
+    !engineInitialized
+    || rasterColorOverlayChanging
+    || activePointerId !== null
+    || !rasterColorOverlayTargetIsSelected()
+  ) {
+    syncRasterColorOverlayControls(engine.getRasterColorOverlayStyle());
+    updateRasterColorOverlayControlAvailability();
+    return;
+  }
+  rasterColorOverlayChanging = true;
+  updateHistoryControls();
+  updateHumanStrokeControls();
+  try {
+    const accepted = await engine.setRasterColorOverlayStyle(
+      readRasterColorOverlayStyle(),
+    );
+    if (!accepted) {
+      syncRasterColorOverlayControls(engine.getRasterColorOverlayStyle());
+    }
+  } catch {
+    syncRasterColorOverlayControls(engine.getRasterColorOverlayStyle());
+  } finally {
+    rasterColorOverlayChanging = false;
+    updateHistoryControls();
+    updateHumanStrokeControls();
+  }
 }
 
 function rasterStrokeColorFromHex(value: string): RasterStrokeStyle["color"] {
@@ -2037,6 +2135,7 @@ function updateHumanStrokeControls(): void {
     || layerMemoryStressTestRunning
     || layerCompressionStudyRunning
     || layerFormatChanging
+    || rasterColorOverlayChanging
     || rasterStrokeChanging
     || rasterOuterShadowChanging
     || rasterInnerShadowChanging
@@ -2109,6 +2208,7 @@ function operationLocked(): boolean {
     || layerMemoryStressTestRunning
     || layerCompressionStudyRunning
     || layerFormatChanging
+    || rasterColorOverlayChanging
     || rasterStrokeChanging
     || rasterOuterShadowChanging
     || rasterInnerShadowChanging
@@ -2166,6 +2266,7 @@ function updateHistoryControls(): void {
     element<HTMLInputElement | HTMLSelectElement>(id).disabled = locked;
   }
   updateGrainControlAvailability(locked);
+  updateRasterColorOverlayControlAvailability(locked);
   updateRasterStrokeControlAvailability(locked);
   updateRasterOuterShadowControlAvailability(locked);
   updateRasterInnerShadowControlAvailability(locked);
@@ -2286,6 +2387,20 @@ for (const id of brushControlIds) {
   element<HTMLInputElement | HTMLSelectElement>(id).addEventListener("input", applyBrushControls);
   element<HTMLInputElement | HTMLSelectElement>(id).addEventListener("change", applyBrushControls);
 }
+
+element<HTMLInputElement>("rasterColorOverlayEnabled").addEventListener("change", () => {
+  updateRasterColorOverlayControlAvailability();
+  void applyRasterColorOverlayControls();
+});
+element<HTMLInputElement>("rasterColorOverlayColor").addEventListener("change", () => {
+  void applyRasterColorOverlayControls();
+});
+element<HTMLInputElement>("rasterColorOverlayOpacity").addEventListener("input", () => {
+  updateRasterColorOverlayOutput();
+});
+element<HTMLInputElement>("rasterColorOverlayOpacity").addEventListener("change", () => {
+  void applyRasterColorOverlayControls();
+});
 
 element<HTMLInputElement>("rasterStrokeEnabled").addEventListener("change", () => {
   updateRasterStrokeControlAvailability();
@@ -2516,6 +2631,7 @@ layerFormatSelect.addEventListener("change", async () => {
     layerFormatSelect.value = engine.getStats().layerFormat;
   } finally {
     layerFormatChanging = false;
+    syncRasterColorOverlayControls(engine.getRasterColorOverlayStyle());
     syncRasterStrokeControls(engine.getRasterStrokeStyle());
     syncRasterOuterShadowControls(engine.getRasterOuterShadowStyle());
     syncRasterInnerShadowControls(engine.getRasterInnerShadowStyle());
@@ -3478,10 +3594,12 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
  * would show the outgoing layer's settings while painting on the incoming one.
  */
 function syncActiveLayerControls(): void {
+  syncRasterColorOverlayControls(engine.getRasterColorOverlayStyle());
   syncRasterStrokeControls(engine.getRasterStrokeStyle());
   syncRasterOuterShadowControls(engine.getRasterOuterShadowStyle());
   syncRasterInnerShadowControls(engine.getRasterInnerShadowStyle());
   syncRasterBevelControls(engine.getRasterBevelStyle());
+  updateRasterColorOverlayControlAvailability();
   updateRasterStrokeControlAvailability();
   updateRasterOuterShadowControlAvailability();
   updateRasterInnerShadowControlAvailability();
@@ -5281,6 +5399,7 @@ canvas.addEventListener(
 const resizeObserver = new ResizeObserver(() => engine.resizeCanvas());
 resizeObserver.observe(canvas);
 
+syncRasterColorOverlayControls(engine.getRasterColorOverlayStyle());
 syncRasterStrokeControls(engine.getRasterStrokeStyle());
 syncRasterOuterShadowControls(engine.getRasterOuterShadowStyle());
 syncRasterInnerShadowControls(engine.getRasterInnerShadowStyle());

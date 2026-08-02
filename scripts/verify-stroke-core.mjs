@@ -38,6 +38,11 @@ import {
   unpackRasterStrokeDistanceQ10_6,
   unpackRasterStrokeFixedDistanceFromUnorm,
 } from "../src/stroke-core.ts";
+import {
+  DEFAULT_RASTER_COLOR_OVERLAY_STYLE,
+  compositeRasterColorOverlayPixel,
+  normalizeRasterColorOverlayStyle,
+} from "../src/raster-color-overlay-core.ts";
 
 const approx = (actual, expected, epsilon = 1e-12) => {
   assert.ok(
@@ -82,6 +87,38 @@ const copiedStyle = copyRasterStrokeStyle(DEFAULT_RASTER_STROKE_STYLE);
 assert.notEqual(copiedStyle.color, DEFAULT_RASTER_STROKE_STYLE.color);
 assert.equal(rasterStrokeStylesEqual(copiedStyle, DEFAULT_RASTER_STROKE_STYLE), true);
 assert.equal(rasterStrokeStylesEqual(copiedStyle, { ...copiedStyle, width: 15 }), false);
+
+// Normal Color Overlay changes premultiplied RGB only: source alpha is the
+// clipping mask and must remain byte-identical for every opacity.
+assert.deepEqual(DEFAULT_RASTER_COLOR_OVERLAY_STYLE, {
+  enabled: false,
+  color: [0, 0, 0],
+  opacity: 100,
+});
+const normalizedColorOverlay = normalizeRasterColorOverlayStyle({
+  enabled: true,
+  color: [0.8, 0.2, 0.1],
+  opacity: 25,
+});
+const overlaidPixel = compositeRasterColorOverlayPixel(
+  [0.12, 0.24, 0.06, 0.5],
+  normalizedColorOverlay,
+);
+approx(overlaidPixel[0], 0.19);
+approx(overlaidPixel[1], 0.205);
+approx(overlaidPixel[2], 0.0575);
+assert.equal(overlaidPixel[3], 0.5);
+assert.deepEqual(
+  compositeRasterColorOverlayPixel(
+    [0.12, 0.24, 0.06, 0.5],
+    { ...normalizedColorOverlay, enabled: false },
+  ),
+  [0.12, 0.24, 0.06, 0.5],
+);
+assert.deepEqual(
+  compositeRasterColorOverlayPixel([0, 0, 0, 0], normalizedColorOverlay),
+  [0, 0, 0, 0],
+);
 
 assert.equal(
   RASTER_STROKE_SCRATCH_STRATEGY,
@@ -384,8 +421,34 @@ const goldenMipBaseline = JSON.parse(readFileSync(
 ));
 assert.match(
   rendererSource,
-  /style-stack-webgpu-v15-lazy-stroke-geometry-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-nearest-raster-at-581pct-native-unorm-round-even/,
+  /style-stack-webgpu-v16-alpha-clipped-normal-color-overlay-before-inner-shadow-bevel-stroke-lazy-stroke-geometry-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-nearest-raster-at-581pct-native-unorm-round-even/,
 );
+assert.match(rendererSource, /const PARAMETER_BYTES = 96/);
+assert.ok(
+  (rendererSource.match(/colorOverlay: vec4<f32>/g) ?? []).length === 3,
+  "Ogni copia WGSL di StrokeParameters deve mantenere la stessa ABI da 96 B.",
+);
+assert.match(
+  rendererSource,
+  /mix\(base\.rgb, parameters\.colorOverlay\.rgb \* base\.a, opacity\)/,
+);
+assert.match(
+  rendererSource,
+  /if \(opacity <= 0\.0\) \{\s*return base;/,
+  "Color Overlay disattivata deve saltare il lavoro RGB per-pixel.",
+);
+assert.match(
+  rendererSource,
+  /let base = colorOverlayNode\(sourceTexel\(position\)\)/,
+);
+assert.ok(
+  rendererSource.indexOf("let base = colorOverlayNode(sourceTexel(position))")
+    < rendererSource.indexOf("let shadowedBase = innerShadowNode(base, position)"),
+  "Color Overlay deve precedere Ombra interna, Smusso e Traccia.",
+);
+assert.match(rendererSource, /colorOverlayStyle\?: RasterColorOverlayStyle/);
+assert.match(rendererSource, /this\.displayParameterUploadF32\[23\] = colorOverlayStyle\.enabled/);
+assert.match(rendererSource, /this\.parameterUploadF32\[word \+ 23\] = colorOverlayStyle\.enabled/);
 assert.ok(
   rendererSource.indexOf("bevelNode(base, position)")
     < rendererSource.indexOf("combinedStrokeNode(base.a, node, coverage)"),
@@ -615,7 +678,7 @@ assert.match(mainSource, /gpuMemoryDelta\.textContent/);
 assert.match(htmlSource, /id="gpuMemoryMonitor"/);
 assert.match(stylesSource, /\.gpu-memory-panel/);
 
-const traceControlBytes = 2_048 * 256 + 80 * 3 + 4 + 2_048 * 12 + 4;
+const traceControlBytes = 2_048 * 256 + 96 * 3 + 4 + 2_048 * 12 + 4;
 let traceStyledPixels = 0;
 for (let mipLevel = 1; mipLevel < 13; mipLevel += 1) {
   traceStyledPixels += Math.max(1, 4_096 >> mipLevel) ** 2;

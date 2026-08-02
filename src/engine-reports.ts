@@ -67,6 +67,11 @@ import {
   type RasterStrokeStyle,
 } from "./stroke-core";
 import {
+  RASTER_COLOR_OVERLAY_STRATEGY,
+  copyRasterColorOverlayStyle,
+  type RasterColorOverlayStyle,
+} from "./raster-color-overlay-core";
+import {
   RASTER_STROKE_COVERAGE_STRATEGY,
   RASTER_STROKE_DISTANCE_STORAGE_STRATEGY,
   RASTER_STROKE_GEOMETRY_STORAGE_STRATEGY,
@@ -184,6 +189,9 @@ export function getBenchmarkEnvironment(engine: BrushEngine): {
   effectsScratchPoolAllocationCount: number;
   effectsScratchPoolShrinkCount: number;
   effectsScratchPoolRequirementsBytes: Readonly<Record<string, number>>;
+  rasterColorOverlayStyle: RasterColorOverlayStyle;
+  rasterColorOverlayStrategy: typeof RASTER_COLOR_OVERLAY_STRATEGY;
+  rasterColorOverlayScratchMemoryMiB: 0;
   rasterStrokeRendererBuild: string | null;
   rasterStrokeStyle: RasterStrokeStyle;
   rasterStrokePersistentMemoryMiB: number;
@@ -365,6 +373,11 @@ export function getBenchmarkEnvironment(engine: BrushEngine): {
     effectsScratchPoolAllocationCount: effectsScratch?.allocationCount ?? 0,
     effectsScratchPoolShrinkCount: effectsScratch?.shrinkCount ?? 0,
     effectsScratchPoolRequirementsBytes: effectsScratch?.requirements ?? {},
+    rasterColorOverlayStyle: copyRasterColorOverlayStyle(
+      engine.rasterColorOverlayStyle,
+    ),
+    rasterColorOverlayStrategy: RASTER_COLOR_OVERLAY_STRATEGY,
+    rasterColorOverlayScratchMemoryMiB: 0,
     timestampQueriesSupported: engine.device?.features.has("timestamp-query") ?? false,
     rasterStrokeRendererBuild: engine.rasterStrokeRenderer?.build ?? null,
     rasterStrokeStyle: copyRasterStrokeStyle(engine.rasterStrokeStyle),
@@ -617,6 +630,11 @@ export function getStats(engine: BrushEngine): EngineStats {
         pausedByStroke: engine.activeStroke !== null,
       }
       : null,
+    rasterColorOverlayStyle: copyRasterColorOverlayStyle(
+      engine.rasterColorOverlayStyle,
+    ),
+    rasterColorOverlayStrategy: RASTER_COLOR_OVERLAY_STRATEGY,
+    rasterColorOverlayScratchMemoryMiB: 0,
     rasterStrokeStyle: copyRasterStrokeStyle(engine.rasterStrokeStyle),
     rasterStrokePersistentMemoryMiB:
       (engine.rasterStrokeRenderer?.persistentMemoryBytes ?? 0) / MEBIBYTE_BYTES,
@@ -1788,7 +1806,7 @@ export async function benchmarkEffectsWorkingSet(engine: BrushEngine,
     || engine.rasterInnerShadowRenderer
   ) {
     throw new Error(
-      "Disattiva Traccia, Smusso e Ombre prima del benchmark per evitare due working set residenti.",
+      "Disattiva Sovrapposizione colore, Traccia, Smusso e Ombre prima del benchmark per evitare due working set residenti.",
     );
   }
 
@@ -2292,7 +2310,9 @@ export async function seedActiveLayerMemoryStress(engine: BrushEngine,
     throw new Error("Lo stress memoria da 1000 MiB richiede il formato RGBA8.");
   }
   if (engine.styleStackActive()) {
-    throw new Error("Disattiva Traccia, Smusso e Ombre prima dello stress memoria.");
+    throw new Error(
+      "Disattiva Sovrapposizione colore, Traccia, Smusso e Ombre prima dello stress memoria.",
+    );
   }
   if (
     !Number.isInteger(storageTileCount)

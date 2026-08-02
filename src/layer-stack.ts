@@ -7,6 +7,7 @@ import type {
   RasterInnerShadowStyle,
   RasterOuterShadowStyle,
 } from "./shadow-core";
+import type { RasterColorOverlayStyle } from "./raster-color-overlay-core";
 import type { LayerStorageTileMask } from "./layer-storage-study";
 
 export const LAYER_STACK_STRATEGY =
@@ -52,6 +53,7 @@ export interface LayerRecord {
   bevelStyle: RasterBevelStyle;
   outerShadowStyle: RasterOuterShadowStyle;
   innerShadowStyle: RasterInnerShadowStyle;
+  colorOverlayStyle: RasterColorOverlayStyle;
 }
 
 export interface LayerEffectRendererRequirements {
@@ -59,6 +61,9 @@ export interface LayerEffectRendererRequirements {
   needsBevelRenderer: boolean;
   needsOuterShadowRenderer: boolean;
   needsInnerShadowRenderer: boolean;
+  needsColorOverlayRenderer: boolean;
+  /** Color Overlay is analytic and owns no incremental scratch allocation. */
+  colorOverlayScratchBytes: 0;
   strokeWidth: number;
 }
 
@@ -72,19 +77,28 @@ export function layerEffectRendererRequirements(
   bevelStyle: Pick<RasterBevelStyle, "enabled">,
   outerShadowStyle: Pick<RasterOuterShadowStyle, "enabled"> = { enabled: false },
   innerShadowStyle: Pick<RasterInnerShadowStyle, "enabled"> = { enabled: false },
+  colorOverlayStyle: Pick<RasterColorOverlayStyle, "enabled" | "opacity"> = {
+    enabled: false,
+    opacity: 100,
+  },
 ): LayerEffectRendererRequirements {
   const needsBevelRenderer = bevelStyle.enabled;
   const needsOuterShadowRenderer = outerShadowStyle.enabled;
   const needsInnerShadowRenderer = innerShadowStyle.enabled;
+  const needsColorOverlayRenderer =
+    colorOverlayStyle.enabled && colorOverlayStyle.opacity > 0;
   return {
     needsStrokeRenderer:
       (strokeStyle.enabled && strokeStyle.width > 0)
       || needsBevelRenderer
       || needsOuterShadowRenderer
-      || needsInnerShadowRenderer,
+      || needsInnerShadowRenderer
+      || needsColorOverlayRenderer,
     needsBevelRenderer,
     needsOuterShadowRenderer,
     needsInnerShadowRenderer,
+    needsColorOverlayRenderer,
+    colorOverlayScratchBytes: 0,
     strokeWidth: strokeStyle.width,
   };
 }
@@ -100,6 +114,7 @@ export type LayerStyleFactory = () => {
   bevelStyle: RasterBevelStyle;
   outerShadowStyle: RasterOuterShadowStyle;
   innerShadowStyle: RasterInnerShadowStyle;
+  colorOverlayStyle: RasterColorOverlayStyle;
 };
 
 export class LayerStack {
@@ -124,6 +139,7 @@ export class LayerStack {
       bevelStyle,
       outerShadowStyle,
       innerShadowStyle,
+      colorOverlayStyle,
     } = this.createStyles();
     return {
       id,
@@ -137,6 +153,7 @@ export class LayerStack {
       bevelStyle,
       outerShadowStyle,
       innerShadowStyle,
+      colorOverlayStyle,
     };
   }
 

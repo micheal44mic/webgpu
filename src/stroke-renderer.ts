@@ -17,9 +17,13 @@ import {
 import type { RasterBevelFieldState } from "./bevel-renderer";
 import type { EffectsScratchLease, EffectsScratchPool } from "./effects-scratch-pool";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
+import {
+  DEFAULT_RASTER_COLOR_OVERLAY_STYLE,
+  type RasterColorOverlayStyle,
+} from "./raster-color-overlay-core";
 
 export const RASTER_STROKE_RENDERER_BUILD =
-  "style-stack-webgpu-v15-lazy-stroke-geometry-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-nearest-raster-at-581pct-native-unorm-round-even";
+  "style-stack-webgpu-v16-alpha-clipped-normal-color-overlay-before-inner-shadow-bevel-stroke-lazy-stroke-geometry-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-nearest-raster-at-581pct-native-unorm-round-even";
 export const RASTER_STROKE_COVERAGE_STRATEGY =
   "lazy-packed-r8-style-coverage-while-stroke-enabled" as const;
 export const RASTER_STROKE_GEOMETRY_STORAGE_STRATEGY =
@@ -58,6 +62,7 @@ export interface RasterStrokeEncodeOptions {
   encoder: GPUCommandEncoder;
   style: RasterStrokeStyle;
   bevelStyle?: RasterBevelStyle;
+  colorOverlayStyle?: RasterColorOverlayStyle;
   sourceMode: RasterStrokeSourceMode;
   rebuildRect?: RasterStrokeRect | null;
   changeDetectionRect?: RasterStrokeRect | null;
@@ -86,6 +91,7 @@ export interface RasterStrokeBakeOptions {
   targetView: GPUTextureView;
   style: RasterStrokeStyle;
   bevelStyle?: RasterBevelStyle;
+  colorOverlayStyle?: RasterColorOverlayStyle;
   sourceMode?: RasterStrokeSourceMode;
   rect?: RasterStrokeRect | null;
 }
@@ -115,7 +121,7 @@ type ScratchIndex = 0 | 1;
 
 const DEFAULT_SCRATCH_EXTENT = 2048;
 const WORKGROUP_SIZE = 8;
-const PARAMETER_BYTES = 80;
+const PARAMETER_BYTES = 96;
 const DISPLAY_PARAMETER_BYTES = PARAMETER_BYTES;
 const BEVEL_DOCUMENT_UNIFORM_BYTES = 80;
 const BEVEL_BOUNDING_FIELD_UNIFORM_BYTES = 112;
@@ -246,6 +252,7 @@ struct StrokeParameters {
   scratchExtent: u32,
   strokeEnabled: u32,
   styleColor: vec4<f32>,
+  colorOverlay: vec4<f32>,
 };
 
 struct LightGlazeUniforms {
@@ -445,6 +452,7 @@ struct StrokeParameters {
   scratchExtent: u32,
   strokeEnabled: u32,
   styleColor: vec4<f32>,
+  colorOverlay: vec4<f32>,
 };
 
 const INVALID_SEED: u32 = ${INVALID_PACKED_SEED}u;
@@ -1038,8 +1046,26 @@ fn innerShadowNode(base: vec4<f32>, position: vec2<i32>) -> vec4<f32> {
   return vec4<f32>(mix(straight, effectColor, weight) * base.a, base.a);
 }
 
+fn colorOverlayNode(base: vec4<f32>) -> vec4<f32> {
+  let opacity = clamp(parameters.colorOverlay.a, 0.0, 1.0);
+  // The condition depends only on a uniform, so every invocation takes the
+  // same branch. Disabled Color Overlay therefore adds no RGB multiply/mix to
+  // the hot style-stack pixel path.
+  if (opacity <= 0.0) {
+    return base;
+  }
+  return vec4<f32>(
+    mix(base.rgb, parameters.colorOverlay.rgb * base.a, opacity),
+    base.a
+  );
+}
+
 fn styledTexel(position: vec2<i32>) -> vec4<f32> {
-  let base = sourceTexel(position);
+  // Photoshop-style Normal Color Overlay is alpha-clipped and therefore
+  // changes only premultiplied RGB. Applying it to the virtual base here makes
+  // Inner Shadow, Bevel and Stroke consume the recolored node while preserving
+  // the source alpha byte-for-byte and without allocating another surface.
+  let base = colorOverlayNode(sourceTexel(position));
   var coverage = 0.0;
   if (parameters.strokeEnabled == 1u) {
     coverage = f32(loadCoverageByte(position)) / 255.0;
@@ -1467,6 +1493,7 @@ struct StrokeParameters {
   scratchExtent: u32,
   strokeEnabled: u32,
   styleColor: vec4<f32>,
+  colorOverlay: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> parameters: StrokeParameters;
@@ -2130,14 +2157,21 @@ export class RasterStrokeRenderer {
     const sourceMode = options.sourceMode ?? "permanent";
     const mode = sourceModeCode(sourceMode);
     const bevelStyle = options.bevelStyle ?? DEFAULT_RASTER_BEVEL_STYLE;
-    this.updateDisplayParameters(sourceMode, options.style, bevelStyle);
+    const colorOverlayStyle = options.colorOverlayStyle
+      ?? DEFAULT_RASTER_COLOR_OVERLAY_STYLE;
+    this.updateDisplayParameters(
+      sourceMode,
+      options.style,
+      bevelStyle,
+      colorOverlayStyle,
+    );
     this.updateBevelParameters(bevelStyle);
     this.writeParameters(0, {
       targetX: rect.x,
       targetY: rect.y,
       targetWidth: rect.width,
       targetHeight: rect.height,
-    }, 0, mode, options.style);
+    }, 0, mode, options.style, colorOverlayStyle);
     this.device.queue.writeBuffer(
       this.parameterBuffer,
       0,
@@ -2958,6 +2992,7 @@ export class RasterStrokeRenderer {
     sourceMode: RasterStrokeSourceMode,
     style: RasterStrokeStyle,
     bevelStyle: RasterBevelStyle = DEFAULT_RASTER_BEVEL_STYLE,
+    colorOverlayStyle: RasterColorOverlayStyle = DEFAULT_RASTER_COLOR_OVERLAY_STYLE,
   ): void {
     if (this.destroyed) {
       throw new Error("Renderer Traccia già distrutto.");
@@ -2972,6 +3007,12 @@ export class RasterStrokeRenderer {
     this.displayParameterUploadF32[18] = style.color[2];
     this.displayParameterUploadF32[19] = style.color[3];
     this.displayParameterUploadU32[15] = style.enabled && style.width > 0 ? 1 : 0;
+    this.displayParameterUploadF32[20] = colorOverlayStyle.color[0];
+    this.displayParameterUploadF32[21] = colorOverlayStyle.color[1];
+    this.displayParameterUploadF32[22] = colorOverlayStyle.color[2];
+    this.displayParameterUploadF32[23] = colorOverlayStyle.enabled
+      ? clamp(colorOverlayStyle.opacity, 0, 100) / 100
+      : 0;
     this.updateBevelParameters(bevelStyle);
     this.device.queue.writeBuffer(
       this.displayParameterBuffers[mode],
@@ -2986,6 +3027,7 @@ export class RasterStrokeRenderer {
     step: number,
     mode: SourceModeCode,
     style: RasterStrokeStyle,
+    colorOverlayStyle: RasterColorOverlayStyle = DEFAULT_RASTER_COLOR_OVERLAY_STYLE,
   ): number {
     if (slot >= PARAMETER_CAPACITY) {
       throw new Error(`Troppi dispatch Traccia in un frame: ${slot + 1}.`);
@@ -3011,6 +3053,12 @@ export class RasterStrokeRenderer {
     this.parameterUploadF32[word + 17] = style.color[1];
     this.parameterUploadF32[word + 18] = style.color[2];
     this.parameterUploadF32[word + 19] = style.color[3];
+    this.parameterUploadF32[word + 20] = colorOverlayStyle.color[0];
+    this.parameterUploadF32[word + 21] = colorOverlayStyle.color[1];
+    this.parameterUploadF32[word + 22] = colorOverlayStyle.color[2];
+    this.parameterUploadF32[word + 23] = colorOverlayStyle.enabled
+      ? clamp(colorOverlayStyle.opacity, 0, 100) / 100
+      : 0;
     return slot + 1;
   }
 
@@ -3067,10 +3115,13 @@ export class RasterStrokeRenderer {
       this.documentHeight,
     );
     const mode = sourceModeCode(options.sourceMode);
+    const colorOverlayStyle = options.colorOverlayStyle
+      ?? DEFAULT_RASTER_COLOR_OVERLAY_STYLE;
     this.updateDisplayParameters(
       options.sourceMode,
       options.style,
       options.bevelStyle ?? DEFAULT_RASTER_BEVEL_STYLE,
+      colorOverlayStyle,
     );
 
     const jobs = rebuildRect ? this.buildJobs(rebuildRect, options.style.width) : [];
@@ -3161,7 +3212,14 @@ export class RasterStrokeRenderer {
     for (let index = 0; index < jobs.length; index += 1) {
       const job = jobs[index];
       const seed = parameterSlot;
-      parameterSlot = this.writeParameters(parameterSlot, job, 0, mode, options.style);
+      parameterSlot = this.writeParameters(
+        parameterSlot,
+        job,
+        0,
+        mode,
+        options.style,
+        colorOverlayStyle,
+      );
       const jfa: number[] = [];
       for (const step of schedules[index]) {
         jfa.push(parameterSlot);
@@ -3171,10 +3229,18 @@ export class RasterStrokeRenderer {
           step,
           mode,
           options.style,
+          colorOverlayStyle,
         );
       }
       const resolve = parameterSlot;
-      parameterSlot = this.writeParameters(parameterSlot, job, 0, mode, options.style);
+      parameterSlot = this.writeParameters(
+        parameterSlot,
+        job,
+        0,
+        mode,
+        options.style,
+        colorOverlayStyle,
+      );
       jobSlots.push({ seed, jfa, resolve });
     }
 
@@ -3186,7 +3252,7 @@ export class RasterStrokeRenderer {
         targetY: thresholdRect.y,
         targetWidth: thresholdRect.width,
         targetHeight: thresholdRect.height,
-      }, 0, mode, options.style);
+      }, 0, mode, options.style, colorOverlayStyle);
     }
     let gateSlot = -1;
     if (useThresholdGate) {
@@ -3194,7 +3260,7 @@ export class RasterStrokeRenderer {
       parameterSlot = this.writeParameters(parameterSlot, {
         targetWidth: indirectArgumentCount,
         targetHeight: 1,
-      }, 0, mode, options.style);
+      }, 0, mode, options.style, colorOverlayStyle);
     }
     const coarseDirectComposeSlots = coarseDirectComposeRects.map((rect) => {
       const slot = parameterSlot;
@@ -3203,7 +3269,7 @@ export class RasterStrokeRenderer {
         targetY: rect.y,
         targetWidth: rect.width,
         targetHeight: rect.height,
-      }, 0, mode, options.style);
+      }, 0, mode, options.style, colorOverlayStyle);
       return slot;
     });
     let coarseConditionalComposeSlot = -1;
@@ -3214,7 +3280,7 @@ export class RasterStrokeRenderer {
         targetY: coarseConditionalComposeRect.y,
         targetWidth: coarseConditionalComposeRect.width,
         targetHeight: coarseConditionalComposeRect.height,
-      }, 0, mode, options.style);
+      }, 0, mode, options.style, colorOverlayStyle);
     }
     const readbackComposeSlots = readbackComposeRects.map((rect) => {
       const slot = parameterSlot;
@@ -3223,7 +3289,7 @@ export class RasterStrokeRenderer {
         targetY: rect.y,
         targetWidth: rect.width,
         targetHeight: rect.height,
-      }, 0, mode, options.style);
+      }, 0, mode, options.style, colorOverlayStyle);
       return slot;
     });
 
