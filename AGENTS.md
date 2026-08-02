@@ -2968,6 +2968,15 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   cold ancora in Trasforma; entrambe le sessioni mostrano Applica/Annulla e lo
   stato GPU pronto. È prova funzionale, non benchmark; non sono state eseguite
   una misura canonica iPhone o una pubblicazione Sites.
+- Correzione orientamento import del 2 agosto: il quad del blit finale associava
+  `V=0` ai vertici clip inferiori e rifletteva verticalmente il bitmap prima di
+  renderlo autorevole nel livello. Ora i vertici superiori campionano `V=0` e
+  quelli inferiori `V=1`; la rotazione raster resta invariata e positiva in
+  senso orario nello spazio documento Y-down. Strategia aggiornata a
+  `decoded-straight-srgb-transient-exact-npot-mips-linear-premultiplied-top-left-native-layer-v2`.
+  `image:verify` vincola l'associazione vertici/UV; `image:verify`,
+  `transform:verify`, TypeScript, build Vite/Sites e avvio WebGPU locale senza
+  warning/errori sono verdi.
 
 ### Sovrapposizione colore raster non distruttiva (2 agosto 2026)
 

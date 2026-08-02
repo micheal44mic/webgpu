@@ -10,7 +10,7 @@
  */
 
 export const RASTER_IMAGE_LAYER_IMPORT_STRATEGY =
-  "decoded-straight-srgb-transient-exact-npot-mips-linear-premultiplied-native-layer-v1" as const;
+  "decoded-straight-srgb-transient-exact-npot-mips-linear-premultiplied-top-left-native-layer-v2" as const;
 
 export const rasterImageLayerUploadShader = /* wgsl */ `
 struct VertexOutput {
@@ -103,11 +103,14 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
     vec2<f32>(-1.0,  1.0),
     vec2<f32>( 1.0,  1.0)
   );
+  // Clip-space Y grows upward, while decoded image V grows downward. Pair the
+  // bottom clip vertices with V=1 and the top vertices with V=0 so the bitmap
+  // enters the document without a vertical reflection.
   let texcoords = array<vec2<f32>, 4>(
-    vec2<f32>(0.0, 0.0),
-    vec2<f32>(1.0, 0.0),
     vec2<f32>(0.0, 1.0),
-    vec2<f32>(1.0, 1.0)
+    vec2<f32>(1.0, 1.0),
+    vec2<f32>(0.0, 0.0),
+    vec2<f32>(1.0, 0.0)
   );
   var output: VertexOutput;
   output.position = vec4<f32>(positions[vertexIndex], 0.0, 1.0);

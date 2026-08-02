@@ -8,6 +8,10 @@ import {
   releaseDecodedRasterImage,
 } from "../src/raster-image-import.ts";
 import {
+  RASTER_IMAGE_LAYER_IMPORT_STRATEGY,
+  rasterImageLayerBlitShader,
+} from "../src/raster-image-layer-import-shader.ts";
+import {
   planRasterImageMemory,
   rasterImageMipChainBytes,
   RASTER_IMAGE_UNIFORM_BYTES,
@@ -124,6 +128,15 @@ function structuralAvif(width, height, auxiliaryDimensions = null) {
 assert.equal(
   RASTER_IMAGE_IMPORT_STRATEGY,
   "byte-sniff-static-png-jpeg-webp-avif-create-image-bitmap-v1",
+);
+assert.equal(
+  RASTER_IMAGE_LAYER_IMPORT_STRATEGY,
+  "decoded-straight-srgb-transient-exact-npot-mips-linear-premultiplied-top-left-native-layer-v2",
+);
+assert.match(
+  rasterImageLayerBlitShader,
+  /let texcoords = array<vec2<f32>, 4>\(\s*vec2<f32>\(0\.0, 1\.0\),\s*vec2<f32>\(1\.0, 1\.0\),\s*vec2<f32>\(0\.0, 0\.0\),\s*vec2<f32>\(1\.0, 0\.0\)/,
+  "il blit deve associare il bordo superiore del framebuffer a V=0 della bitmap",
 );
 
 assert.deepEqual(planRasterImageMemory(1, 1, 7), {
