@@ -18,13 +18,6 @@ export interface RasterImageMemoryBudget {
   readonly logicalImportPeakBytes: number;
 }
 
-export interface RasterImageAggregateMemoryBudget {
-  readonly asset: RasterImageMemoryBudget;
-  readonly existingResidentBytes: number;
-  readonly resultingResidentBytes: number;
-  readonly aggregateLogicalImportPeakBytes: number;
-}
-
 function requirePositiveDimension(value: number, label: string): number {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new Error(`${label} deve essere un intero positivo sicuro.`);
@@ -101,30 +94,5 @@ export function planRasterImageMemory(
     decodedBitmapBytes,
     inspectionBytes,
     logicalImportPeakBytes,
-  });
-}
-
-export function planRasterImageAggregateMemory(
-  existingResidentBytes: number,
-  width: number,
-  height: number,
-  sourceBytes: number,
-): RasterImageAggregateMemoryBudget {
-  if (!Number.isSafeInteger(existingResidentBytes) || existingResidentBytes < 0) {
-    throw new Error("I byte GPU già residenti devono essere un intero sicuro non negativo.");
-  }
-  const asset = planRasterImageMemory(width, height, sourceBytes);
-  const resultingResidentBytes = existingResidentBytes + asset.residentGpuBytes;
-  const aggregateLogicalImportPeakBytes = existingResidentBytes
-    + asset.logicalImportPeakBytes;
-  if (!Number.isSafeInteger(resultingResidentBytes)
-    || !Number.isSafeInteger(aggregateLogicalImportPeakBytes)) {
-    throw new Error("La memoria aggregata delle immagini supera l’intervallo sicuro.");
-  }
-  return Object.freeze({
-    asset,
-    existingResidentBytes,
-    resultingResidentBytes,
-    aggregateLogicalImportPeakBytes,
   });
 }

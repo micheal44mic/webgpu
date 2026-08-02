@@ -69,7 +69,6 @@ export { RASTER_IMAGE_UNIFORM_BYTES } from "./raster-image-budget";
 export const RASTER_IMAGE_MAXIMUM_ENCODED_BYTES = 64 * 1024 * 1024;
 export const RASTER_IMAGE_MAXIMUM_GPU_BYTES = 256 * 1024 * 1024;
 export const RASTER_IMAGE_MAXIMUM_TOTAL_GPU_BYTES = 256 * 1024 * 1024;
-export const RASTER_IMAGE_MAXIMUM_IMPORT_PEAK_BYTES = 384 * 1024 * 1024;
 
 const rasterImageImportsInFlight = new WeakSet<BrushEngine>();
 
@@ -141,7 +140,7 @@ const pipelineCache = new WeakMap<GPUDevice, Map<LayerFormat, NativeImportPipeli
 
 function outputBoundsForImage(width: number, height: number): DirtyRect {
   const longestSide = Math.max(width, height);
-  const scale = Math.min(1, LAYER_SIZE * 0.8 / longestSide);
+  const scale = Math.min(1, LAYER_SIZE / longestSide);
   const outputWidth = Math.max(1, Math.min(LAYER_SIZE, Math.round(width * scale)));
   const outputHeight = Math.max(1, Math.min(LAYER_SIZE, Math.round(height * scale)));
   return {
@@ -171,35 +170,6 @@ function requiredImportMipLevelCount(
   );
 }
 
-function logicalNativeImportPeakBytes(
-  width: number,
-  height: number,
-  sourceBytes: number,
-  bounds: DirtyRect,
-  format: LayerFormat,
-): number {
-  const sourceBaseBytes = width * height * 4;
-  const sourceMipLevelCount = requiredImportMipLevelCount(width, height, bounds);
-  const layerBytesPerPixel = format === "rgba16float" ? 8 : 4;
-  const destinationLayerBytes = LAYER_SIZE * LAYER_SIZE * layerBytesPerPixel;
-  const historySeedBytes = tileCountForBounds(bounds)
-    * LAYER_STORAGE_TILE_SIZE
-    * LAYER_STORAGE_TILE_SIZE
-    * layerBytesPerPixel;
-  // Inspection buffer + decoded bitmap + straight upload + premultiplied mip
-  // chain + the new hot layer + its immutable sparse history seed.
-  const peak = sourceBytes
-    + sourceBaseBytes
-    + sourceBaseBytes
-    + rasterImageMipChainBytes(width, height, sourceMipLevelCount)
-    + destinationLayerBytes
-    + historySeedBytes;
-  if (!Number.isSafeInteger(peak)) {
-    throw new Error("Il picco logico dell’importazione supera l’intervallo sicuro.");
-  }
-  return peak;
-}
-
 function nativeRasterImportResidentBytes(engine: BrushEngine): number {
   const actions = new Set([
     ...engine.historyActions,
@@ -224,21 +194,8 @@ function nativeRasterImportResidentBytes(engine: BrushEngine): number {
   return bytes;
 }
 
-function outgoingActiveColdPeakBytes(engine: BrushEngine): number {
-  const gpu = engine.layerGpu.get(engine.layerStack.active.id);
-  if (!gpu?.hot || gpu.cold || !engine.layerStack.active.hasContent) return 0;
-  const bytesPerPixel = engine.layerFormat === "rgba16float" ? 8 : 4;
-  return countLayerStorageTiles(engine.layerStack.active.storageTileMask)
-    * LAYER_STORAGE_TILE_SIZE
-    * LAYER_STORAGE_TILE_SIZE
-    * bytesPerPixel;
-}
-
-function assertNativeRasterImportBudgets(
+function assertNativeRasterImportResidentBudget(
   engine: BrushEngine,
-  width: number,
-  height: number,
-  sourceBytes: number,
   bounds: DirtyRect,
 ): void {
   const bytesPerPixel = engine.layerFormat === "rgba16float" ? 8 : 4;
@@ -254,20 +211,6 @@ function assertNativeRasterImportBudgets(
       `Importazioni raster oltre il limite residente di `
       + `${RASTER_IMAGE_MAXIMUM_TOTAL_GPU_BYTES / MEBIBYTE_BYTES} MiB `
       + `(previsti ${(resultingImportResidentBytes / MEBIBYTE_BYTES).toFixed(1)} MiB).`,
-    );
-  }
-
-  const countedGpuBytes = Math.round(
-    engine.getStats().gpuMemory.countedTotalMiB * MEBIBYTE_BYTES,
-  );
-  const aggregatePeakBytes = countedGpuBytes
-    + outgoingActiveColdPeakBytes(engine)
-    + logicalNativeImportPeakBytes(width, height, sourceBytes, bounds, engine.layerFormat);
-  if (aggregatePeakBytes > RASTER_IMAGE_MAXIMUM_IMPORT_PEAK_BYTES) {
-    throw new Error(
-      `Immagine troppo grande per lo stato corrente: picco aggregato previsto `
-      + `${(aggregatePeakBytes / MEBIBYTE_BYTES).toFixed(1)} MiB; limite `
-      + `${RASTER_IMAGE_MAXIMUM_IMPORT_PEAK_BYTES / MEBIBYTE_BYTES} MiB.`,
     );
   }
 }
@@ -595,13 +538,7 @@ async function importRasterImageFileUnlocked(
             + `${(sourceMipBytes / 1024 / 1024).toFixed(1)} MiB.`,
           );
         }
-        assertNativeRasterImportBudgets(
-          engine,
-          inspection.encodedWidth,
-          inspection.encodedHeight,
-          inspection.sourceBytes,
-          bounds,
-        );
+        assertNativeRasterImportResidentBudget(engine, bounds);
       },
     });
 
@@ -618,13 +555,7 @@ async function importRasterImageFileUnlocked(
         + `richiederebbe ${(decodedMipBytes / 1024 / 1024).toFixed(1)} MiB.`,
       );
     }
-    assertNativeRasterImportBudgets(
-      engine,
-      metadata.width,
-      metadata.height,
-      metadata.sourceBytes,
-      bounds,
-    );
+    assertNativeRasterImportResidentBudget(engine, bounds);
     const scene = requireMixedSceneStack(engine);
     const originalActiveId = engine.layerStack.active.id;
     const selectedKeyBefore = scene.selected.key;
@@ -664,6 +595,11 @@ async function importRasterImageFileUnlocked(
       if (!hot) throw new Error("Texture hot del livello importato mancante.");
 
       transient = await encodeBitmapIntoLayer(engine, decoded.bitmap, hot, bounds);
+      // copyExternalImageToTexture captures the source at call time. Releasing
+      // the decoded surface here prevents it from overlapping the immutable
+      // Undo/Redo seed without adding a GPU fence to the import path.
+      releaseDecodedRasterImage(decoded);
+      decoded = null;
       record.contentBounds = { ...bounds };
       record.hasContent = true;
       record.storageTileMask.fill(0);

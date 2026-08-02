@@ -8,7 +8,6 @@ import {
   releaseDecodedRasterImage,
 } from "../src/raster-image-import.ts";
 import {
-  planRasterImageAggregateMemory,
   planRasterImageMemory,
   rasterImageMipChainBytes,
   RASTER_IMAGE_UNIFORM_BYTES,
@@ -161,25 +160,8 @@ assert.ok(
   decoderHeavyBudget.logicalImportPeakBytes > 384 * 1024 * 1024,
   "logical peak must include the decoded bitmap as well as upload and resident textures",
 );
-const importPeakCap = 384 * 1024 * 1024;
-assert.ok(
-  planRasterImageAggregateMemory(0, 5016, 5016, 64 * 1024 * 1024)
-    .aggregateLogicalImportPeakBytes <= importPeakCap,
-);
-assert.ok(
-  planRasterImageAggregateMemory(0, 5017, 5017, 64 * 1024 * 1024)
-    .aggregateLogicalImportPeakBytes > importPeakCap,
-  "the exact 384 MiB import boundary must reject the first over-budget square",
-);
 const one4k = planRasterImageMemory(4096, 4096, 1);
-const third4k = planRasterImageAggregateMemory(
-  one4k.residentGpuBytes * 2,
-  4096,
-  4096,
-  1,
-);
-assert.ok(third4k.resultingResidentBytes > 256 * 1024 * 1024);
-assert.ok(third4k.aggregateLogicalImportPeakBytes > importPeakCap);
+assert.equal(one4k.uploadTextureBytes, 64 * 1024 * 1024);
 
 const png = structuralPng(320, 240);
 const inspected = await inspectRasterImage(new Blob([png], { type: "image/png" }));
@@ -341,10 +323,18 @@ assert.doesNotMatch(
 );
 assert.match(runtimeSource, /runGpuAllocationTransaction\(/);
 assert.match(runtimeSource, /preflight: \(inspection\)/);
-assert.match(runtimeSource, /RASTER_IMAGE_MAXIMUM_IMPORT_PEAK_BYTES/);
 assert.match(runtimeSource, /RASTER_IMAGE_MAXIMUM_TOTAL_GPU_BYTES/);
 assert.match(runtimeSource, /nativeRasterImportResidentBytes\(engine\)/);
-assert.match(runtimeSource, /engine\.getStats\(\)\.gpuMemory\.countedTotalMiB/);
+assert.doesNotMatch(runtimeSource, /RASTER_IMAGE_MAXIMUM_IMPORT_PEAK_BYTES/);
+assert.doesNotMatch(runtimeSource, /picco aggregato previsto|engine\.getStats\(\)\.gpuMemory\.countedTotalMiB/);
+assert.match(runtimeSource, /const scale = Math\.min\(1, LAYER_SIZE \/ longestSide\)/);
+assert.doesNotMatch(runtimeSource, /LAYER_SIZE \* 0\.8/);
+assert.match(runtimeSource, /assertNativeRasterImportResidentBudget\(engine, bounds\)/);
+assert.match(
+  runtimeSource,
+  /transient = await encodeBitmapIntoLayer[\s\S]{0,600}releaseDecodedRasterImage\(decoded\);\s*decoded = null;[\s\S]{0,400}seed = await createLayerColdStorageCandidate/,
+  "la bitmap decodificata deve essere rilasciata prima del seed Undo/Redo",
+);
 assert.match(runtimeSource, /export function rasterImageGpuMemoryBytes/);
 assert.match(runtimeSource, /rasterImageImportsInFlight/);
 assert.match(runtimeSource, /if \(decoded\) releaseDecodedRasterImage\(decoded\)/);

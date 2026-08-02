@@ -2890,11 +2890,17 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   `COPY_DST | TEXTURE_BINDING | RENDER_ATTACHMENT`, come richiesto da Dawn. Le
   mip NPOT usano filtro area esatto su alpha premoltiplicato e vengono generate
   soltanto fino al LOD richiesto per l'inserimento; nessun pixel passa dal CPU.
-- Limiti senza fallback: file sorgente `64 MiB`, singola importazione residente
-  `256 MiB` e picco logico complessivo `384 MiB`. Il controllo aggrega le
-  importazioni ancora raggiungibili da scena o cronologia, la memoria GPU già
-  contata, l'eventuale cold uscente e il picco decode/upload/hot/seed; una
-  seconda importazione concorrente viene rifiutata.
+- Limiti senza fallback: file sorgente `64 MiB`, singola catena GPU
+  transitoria/source `256 MiB` e importazioni persistenti ancora raggiungibili
+  da scena o cronologia `256 MiB`. Non esiste più il falso tetto aggregato
+  `384 MiB`, che sommava al picco logico dell'import anche la memoria GPU già
+  residente dell'app e poteva rifiutare perfino una sorgente 2K. Ogni vera
+  allocazione resta sotto scope WebGPU validation + OOM e la transazione
+  esterna conserva il documento precedente in caso di fallimento. Il
+  `ImageBitmap` decodificato viene chiuso subito dopo la cattura della sorgente
+  da parte di `copyExternalImageToTexture`, prima di costruire il seed di
+  cronologia. Una sorgente fino a `4096×4096` resta ora 1:1 e può occupare tutto
+  il canvas; solo dimensioni superiori vengono adattate entro `4096²`.
 - Il tool Canvas `Trasforma` usa ora lo stesso percorso raster per ogni livello
   non vettoriale, non soltanto per le immagini importate. All'apertura copia una
   sola volta la bbox tile realmente occupata in uno scratch WebGPU immutabile,
@@ -2940,9 +2946,18 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   persiste al confine della sessione prima del controllo; nessun lavoro è stato
   aggiunto al percorso caldo del tratto. `transform:verify` vincola tutti e tre
   i punti.
+- Follow-up import 4K del 2 agosto: un PNG reale `4096×4096` è stato importato
+  1:1 su NVIDIA Ampere/RGBA8, ha occupato tutti i `256` tile e il livello hot ha
+  riportato esattamente `64,0 MiB`; il totale GPU contato dall'app dopo l'import
+  era `158,6 MiB`. Undo ha rimosso il livello e Redo lo ha ricostruito senza
+  errori. Finché l'azione è raggiungibile, il seed cold immutabile per la
+  cronologia può aggiungere fino ad altri `64 MiB` per un contenuto full-canvas:
+  `64 MiB` è quindi il costo della texture hot del livello, non necessariamente
+  l'intero costo persistente di livello più Undo/Redo.
 - Verifica finale su questa macchina: `tsc --noEmit`, tutte le diciotto suite
   `*:verify`, `git diff --check` e build Vite production/Sites verdi. Le
-  regressioni coprono decoder e cleanup, budget aggregati, tile, guardia e bbox,
+  regressioni coprono decoder e cleanup, limiti residenti, import 4K 1:1, tile,
+  guardia e bbox,
   ABI affine, frame latest-only, transazioni Apply/Cancel, Undo/Redo strutturale
   e rollback. QA browser desktop reale su NVIDIA Ampere/RGBA8: import PNG
   `512×512`, sessione Trasforma, drag, Applica, Undo, Annulla della sessione
