@@ -1476,7 +1476,10 @@ export class MixedSceneStack {
     return node;
   }
 
-  partitionAroundRaster(activeRasterLayerId: number): MixedScenePartition {
+  partitionAroundRaster(
+    activeRasterLayerId: number,
+    activeClippingUnitIds: readonly number[] = [],
+  ): MixedScenePartition {
     const key = `raster:${activeRasterLayerId}` as const;
     const index = this.indexOfKey(key);
     if (index < 0) {
@@ -1485,6 +1488,21 @@ export class MixedSceneStack {
     const activeRaster = this.orderedItems[index];
     if (activeRaster.kind !== "raster") {
       throw new Error(`Elemento ${key} non è raster.`);
+    }
+    if (activeClippingUnitIds.length > 1) {
+      const groupIndices = activeClippingUnitIds.map((id) =>
+        this.indexOfKey(`raster:${id}` as const));
+      if (
+        groupIndices.some((candidate) => candidate < 0)
+        || groupIndices.some((candidate, offset) => candidate !== groupIndices[0] + offset)
+      ) {
+        throw new Error("Il gruppo di ritaglio deve restare consecutivo anche nella scena mista.");
+      }
+      return {
+        below: this.orderedItems.slice(0, groupIndices[0]),
+        activeRaster,
+        above: this.orderedItems.slice(groupIndices[groupIndices.length - 1] + 1),
+      };
     }
     return {
       below: this.orderedItems.slice(0, index),
@@ -1500,11 +1518,27 @@ export class MixedSceneStack {
    * as its own segment and therefore interrupts both kinds of run; hidden or
    * fully transparent images do not split neighboring runs.
    */
-  compositionSegments(activeRasterLayerId: number): readonly MixedSceneCompositionSegment[] {
+  compositionSegments(
+    activeRasterLayerId: number,
+    activeClippingUnitIds: readonly number[] = [],
+  ): readonly MixedSceneCompositionSegment[] {
     const activeKey = `raster:${activeRasterLayerId}` as const;
     const activeItem = this.itemByKey(activeKey);
     if (activeItem.kind !== "raster") {
       throw new Error(`Elemento ${activeKey} non è raster.`);
+    }
+    const clippingGroup = activeClippingUnitIds.length > 1
+      ? [...activeClippingUnitIds]
+      : [];
+    const clippingGroupSet = new Set(clippingGroup);
+    if (clippingGroup.length > 0) {
+      const indices = clippingGroup.map((id) => this.indexOfKey(`raster:${id}` as const));
+      if (
+        indices.some((candidate) => candidate < 0)
+        || indices.some((candidate, offset) => candidate !== indices[0] + offset)
+      ) {
+        throw new Error("Il gruppo di ritaglio deve restare consecutivo anche nella scena mista.");
+      }
     }
 
     const segments: MixedSceneCompositionSegment[] = [];
@@ -1536,7 +1570,21 @@ export class MixedSceneStack {
     };
 
     for (const item of this.orderedItems) {
-      if (item.kind === "raster" && item.rasterLayerId === activeRasterLayerId) {
+      if (
+        item.kind === "raster"
+        && clippingGroupSet.has(item.rasterLayerId)
+      ) {
+        if (item.rasterLayerId !== clippingGroup[0]) {
+          continue;
+        }
+        flushRasterRun();
+        flushTextRun();
+        segments.push({
+          key: `active-raster:${activeRasterLayerId}`,
+          kind: "active-raster",
+          item: activeItem,
+        });
+      } else if (item.kind === "raster" && item.rasterLayerId === activeRasterLayerId) {
         flushRasterRun();
         flushTextRun();
         segments.push({

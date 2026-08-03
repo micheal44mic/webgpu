@@ -76,7 +76,10 @@ export const BRUSH_UNIFORM_BYTES = 96;
 
 export const GRAIN_UNIFORM_BYTES = 32;
 
-export const DISPLAY_UNIFORM_BYTES = 64;
+// The first 64 bytes retain the historical display ABI. The final 32 bytes
+// describe the one live clipping group (mode, parent opacity and two cropped
+// auxiliary surfaces) shared by every presentation shader.
+export const DISPLAY_UNIFORM_BYTES = 96;
 
 export const VECTOR_TEXT_CAPTURE_UNIFORM_BYTES = 32;
 
@@ -86,7 +89,10 @@ export const VIEW_ROTATION_SNAP_ENTER_RADIANS = 3 * Math.PI / 180;
 
 export const VIEW_ROTATION_SNAP_RELEASE_RADIANS = 7 * Math.PI / 180;
 
-export const LAYER_COMPOSITE_UNIFORM_BYTES = 32;
+// Destination origin/scale + opacity, followed by source origin/scale and
+// dimensions. This lets the same fold shader consume either a full document
+// layer or a cropped clipping-group carrier.
+export const LAYER_COMPOSITE_UNIFORM_BYTES = 48;
 
 export const LIGHT_GLAZE_UNIFORM_BYTES = 32;
 

@@ -1106,12 +1106,17 @@ Architettura display candidata:
 
 - strategia bake promossa 14e
   `transient-analytic-bounded-visual-rect-no-handoff-residency-mip0-fused-into-two-merged-surfaces`;
-- strategia compositing promossa 14e
-  `merged-above-over-active-over-merged-below-source-over-evict-derived-before-rebuild-deferred-to-fold-fence-bounded-visual-rect`;
+- strategia compositing corrente
+  `merged-above-over-isolated-active-clipping-group-over-merged-below-source-atop-live-prefix-suffix-compose-before-filter-parent-opacity-once-deferred-to-fold-fence-bounded-visual-rect`;
 - una sola piramide raw, riusata dal livello attivo (`21,33 MiB` RGBA8,
   `42,67 MiB` RGBA16F);
 - al massimo due superfici fuse, `mergedBelow` e `mergedAbove`. Ciascuna ha mip
   `0` più catena completa: `85,33 MiB` RGBA8 o `170,67 MiB` RGBA16F;
+- quando l'attivo appartiene a un gruppo di ritaglio, il gruppo viene escluso
+  in blocco dai due fusi generali. Fino a due superfici RGBA ritagliate
+  aggiuntive conservano il prefisso e il suffisso statici attorno all'attivo;
+  sono dimensionate sul bbox, hanno la propria piramide e sono contate nella
+  riga telemetrica compatibile `activeClippingMaskMiB`, ma non sono maschere R8;
 - nessun livello inattivo possiede una piramide propria. I bake analitici mip `0`
   vengono creati dentro la transazione, fusi in ordine bottom-up e distrutti
   subito; `layerBakeMiB` deve quindi tornare a `0` a motore fermo;
@@ -1129,13 +1134,40 @@ completo. Gli altri fold source-over usano lo stesso rettangolo come scissor.
 L'estensione è promossa dalla rev `8`; conservare il fallback full-document per metadata incoerenti.
 
 Il display esegue in lineare premoltiplicato
-`mergedAbove over (active * activeLayerAlpha over mergedBelow)`, poi scacchiera e
-conversione lineare→sRGB. Lo stesso ordine è cablato nei quattro percorsi:
-permanente, Light/M1 Glaze live, coda spessore e display diretto dello style
-stack. Visibilità e opacità dell'attivo passano nei tre slot prima
-liberi della uniform da `48 byte`; cambiarle su un inattivo ricostruisce la
-superficie fusa interessata, mentre sull'attivo basta invalidare la cache di
-presentazione.
+`mergedAbove over isolatedGroup over mergedBelow`, poi scacchiera e conversione
+lineare→sRGB. Senza ritaglio `isolatedGroup` coincide con l'attivo e conserva il
+fast path precedente. Con ritaglio, il livello base fornisce l'alpha matte
+**continuo** e ogni figlio contiguo viene composto in ordine con Porter-Duff
+source-atop; non esistono soglie, `discard` o quantizzazione binaria. L'alpha
+finale del gruppo resta esattamente quello del parent e l'opacità del parent
+viene applicata una sola volta, dopo tutti i figli. Se l'attivo è il parent, il
+suffisso contiene i figli; se è un figlio, il prefisso contiene parent e figli
+precedenti e il suffisso quelli successivi. Il texel live dell'attivo viene
+inserito fra i due nello stesso frame di presentazione, quindi pennello, Light
+Glaze e code provvisorie aggiornano il gruppo prima del lift senza rebuild
+differito della maschera. La stessa formula è cablata nel display permanente,
+Light live, coda spessore, style stack, testo/scena mista ed effetti. La uniform
+display è ora `96 byte`: include modo gruppo, opacità parent, scale e origini
+dei due bbox oltre alla vista e ai fusi generali.
+
+La piramide del gruppo rispetta `compose-before-filter`: il mip `1` compone
+quattro texel documento completi, incluso source-atop, e soltanto dopo esegue il
+box filter; i mip successivi filtrano quel risultato. Questo evita sia aloni sia
+salti di alpha ai cambi LOD. Il percorso live non genera una texture-maschera
+per stamp, non introduce readback CPU e non aspetta fence aggiuntivi: il costo
+caldo è il branch di gruppo e, quando presente, fino ai sample di prefisso e
+suffisso già residenti. La memoria aggiuntiva dipende dai bbox RGBA ritagliati,
+non dal numero di stamp.
+
+QA GPU locale del 3 agosto 2026 con `/?clippingGroupTest=1`: parent morbido,
+figlio nero e alpha parent `16/255` hanno prodotto il RGB atteso `203` con
+errore massimo `0`; durante un gesto Light sul parent il texel è cambiato da
+`[209,209,209,255]` a `[0,0,0,255]` **prima** del pointer-up e il valore
+committato è rimasto byte-identico. Il report ha passato contiguità, alpha
+continuo, aggiornamento live e live=commit; console priva di warning/errori
+WebGPU. Gli identificatori WGSL `active` sono stati rinominati perché riservati
+e ogni `fwidth` dei percorsi style/gruppo è valutato prima del ramo non uniforme
+`insideLayer`. TypeScript, tutte le suite `*:verify` e build Vite/Sites verdi.
 
 La fusione è transazionale ma, dalla 14e, ha picco limitato: dopo GPU idle
 congela la presentazione sull'ultima cache screen-space completa, scollega e

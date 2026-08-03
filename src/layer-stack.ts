@@ -11,7 +11,7 @@ import type { RasterColorOverlayStyle } from "./raster-color-overlay-core";
 import type { LayerStorageTileMask } from "./layer-storage-study";
 
 export const LAYER_STACK_STRATEGY =
-  "ordered-records-single-active-single-reference-monotonic-ids" as const;
+  "ordered-records-single-active-single-reference-contiguous-raster-clipping-groups-monotonic-ids" as const;
 
 /**
  * Each layer owns only its authoritative 4096² mip-0 texture. Display mips are
@@ -40,6 +40,11 @@ export interface LayerRecord {
   name: string;
   visible: boolean;
   opacity: number;
+  /**
+   * A clipping layer remains an ordinary editable raster. Its final
+   * premultiplied output is limited by the alpha of this parent raster.
+   */
+  clippingParentId: number | null;
   /** Conservative union of everything ever painted, in document space. */
   contentBounds: LayerRect | null;
   /**
@@ -146,6 +151,7 @@ export class LayerStack {
       name,
       visible: true,
       opacity: 1,
+      clippingParentId: null,
       contentBounds: null,
       storageTileMask: new Uint32Array(8),
       hasContent: false,
@@ -155,6 +161,65 @@ export class LayerStack {
       innerShadowStyle,
       colorOverlayStyle,
     };
+  }
+
+  /**
+   * A clipping relationship is valid only inside this raster stack: the base
+   * exists, stays strictly below every clipped raster and is not itself
+   * clipped. A base and all of its clipped rasters are one consecutive unit;
+   * no unrelated raster can be inserted between them. Checking a candidate
+   * order before publishing it keeps failed attach/reorder operations atomic
+   * instead of leaving a half-valid stack.
+   */
+  private assertClippingInvariants(records: readonly LayerRecord[]): void {
+    const indexById = new Map<number, number>();
+    records.forEach((record, index) => {
+      if (indexById.has(record.id)) {
+        throw new Error(`Livello ${record.id} duplicato nello stack.`);
+      }
+      indexById.set(record.id, index);
+    });
+    records.forEach((record, index) => {
+      if (record.clippingParentId === null) {
+        return;
+      }
+      const parentIndex = indexById.get(record.clippingParentId);
+      if (parentIndex === undefined) {
+        throw new Error(
+          `Parent raster ${record.clippingParentId} del livello ${record.id} assente.`,
+        );
+      }
+      if (parentIndex >= index) {
+        throw new Error(
+          `Il parent raster ${record.clippingParentId} deve restare sotto il livello ${record.id}.`,
+        );
+      }
+      const parent = records[parentIndex];
+      if (parent.clippingParentId !== null) {
+        throw new Error(
+          `Il parent raster ${parent.id} deve essere un livello base, non un ritaglio.`,
+        );
+      }
+    });
+    records.forEach((parent, parentIndex) => {
+      if (parent.clippingParentId !== null) {
+        return;
+      }
+      const dependentIndices: number[] = [];
+      records.forEach((record, index) => {
+        if (record.clippingParentId === parent.id) {
+          dependentIndices.push(index);
+        }
+      });
+      dependentIndices.forEach((dependentIndex, offset) => {
+        if (dependentIndex !== parentIndex + offset + 1) {
+          throw new Error(
+            `Il gruppo di ritaglio del parent raster ${parent.id} deve restare consecutivo: `
+              + "nessun raster estraneo può separare il parent dai suoi livelli ritagliati.",
+          );
+        }
+      });
+    });
   }
 
   get layers(): readonly LayerRecord[] {
@@ -212,16 +277,108 @@ export class LayerStack {
     return this.records.find((record) => record.id === id) ?? null;
   }
 
+  setClippingParent(index: number, parentId: number | null): boolean {
+    const record = this.at(index);
+    if (parentId !== null) {
+      const parent = this.byId(parentId);
+      if (!parent) {
+        throw new Error(`Parent raster ${parentId} assente.`);
+      }
+      if (parent.id === record.id) {
+        throw new Error("Un livello non può ritagliare sé stesso.");
+      }
+      if (parent.clippingParentId !== null) {
+        throw new Error("Il parent deve essere un livello raster base.");
+      }
+      if (this.indexOfId(parent.id) >= index) {
+        throw new Error("Il parent raster deve trovarsi sotto il livello ritagliato.");
+      }
+      if (this.clippingDependents(record.id).length > 0) {
+        throw new Error(
+          "Un livello base con ritagli collegati non può diventare a sua volta un ritaglio.",
+        );
+      }
+    }
+    if (record.clippingParentId === parentId) {
+      return false;
+    }
+    const previousParentId = record.clippingParentId;
+    record.clippingParentId = parentId;
+    try {
+      this.assertClippingInvariants(this.records);
+    } catch (error) {
+      record.clippingParentId = previousParentId;
+      throw error;
+    }
+    return true;
+  }
+
+  clippingParent(record: Readonly<LayerRecord>): LayerRecord | null {
+    if (record.clippingParentId === null) {
+      return null;
+    }
+    const parent = this.byId(record.clippingParentId);
+    if (!parent) {
+      throw new Error(
+        `Parent raster ${record.clippingParentId} del livello ${record.id} assente.`,
+      );
+    }
+    if (parent.clippingParentId !== null) {
+      throw new Error(
+        `Il parent raster ${parent.id} del livello ${record.id} non è un livello base.`,
+      );
+    }
+    const recordIndex = this.indexOfId(record.id);
+    if (recordIndex >= 0 && this.indexOfId(parent.id) >= recordIndex) {
+      throw new Error(
+        `Il parent raster ${parent.id} deve restare sotto il livello ${record.id}.`,
+      );
+    }
+    return parent;
+  }
+
+  clippingDependents(parentId: number): readonly LayerRecord[] {
+    return this.records.filter((record) => record.clippingParentId === parentId);
+  }
+
+  /**
+   * Returns the atomic raster-order unit containing `recordOrId`: either one
+   * ordinary raster, or the clipping base followed by every clipped child in
+   * bottom-to-top order. The returned array is fresh; the records retain their
+   * stable identities.
+   */
+  clippingUnit(
+    recordOrId: Readonly<LayerRecord> | number,
+  ): readonly LayerRecord[] {
+    const id = typeof recordOrId === "number" ? recordOrId : recordOrId.id;
+    const record = this.byId(id);
+    if (!record) {
+      throw new Error(`Livello ${id} assente dallo stack.`);
+    }
+    const parent = record.clippingParentId === null
+      ? record
+      : this.clippingParent(record);
+    if (!parent) {
+      throw new Error(`Parent raster del livello ${record.id} assente.`);
+    }
+    return [parent, ...this.clippingDependents(parent.id)];
+  }
+
   indexOfId(id: number): number {
     return this.records.findIndex((record) => record.id === id);
   }
 
   /**
-   * Inserts above the active layer and selects it, which is what every editor
-   * does and what the user expects after pressing "add".
+   * Inserts above the active clipping unit and selects it. For an ordinary
+   * raster the unit has one member, preserving the usual "insert above the
+   * selection" behavior. Treating a clipping group atomically prevents the
+   * transient unlinked record created by Add from splitting an existing group;
+   * it can then be attached as the new top child in a second atomic operation.
    */
   add(name?: string): number {
-    return this.insertAt(this._activeIndex + 1, name);
+    const unit = this.clippingUnit(this.active);
+    const lastIndex = this.indexOfId(unit[unit.length - 1].id);
+    return this.insertAt(lastIndex + 1, name);
   }
 
   insertAt(index: number, name?: string): number {
@@ -233,7 +390,17 @@ export class LayerStack {
     if (!Number.isInteger(index) || index < 0 || index > this.records.length) {
       throw new Error(`Indice inserimento livello ${index} fuori intervallo.`);
     }
-    this.records.splice(index, 0, this.createRecord(name ?? `Livello ${this.nextId}`));
+    const previousNextId = this.nextId;
+    const record = this.createRecord(name ?? `Livello ${this.nextId}`);
+    const candidate = [...this.records];
+    candidate.splice(index, 0, record);
+    try {
+      this.assertClippingInvariants(candidate);
+    } catch (error) {
+      this.nextId = previousNextId;
+      throw error;
+    }
+    this.records.splice(index, 0, record);
     this._activeIndex = index;
     return index;
   }
@@ -249,6 +416,9 @@ export class LayerStack {
     if (this.indexOfId(record.id) >= 0) {
       throw new Error(`Livello ${record.id} già presente nello stack.`);
     }
+    const candidate = [...this.records];
+    candidate.splice(index, 0, record);
+    this.assertClippingInvariants(candidate);
     this.records.splice(index, 0, record);
     this._activeIndex = index;
     this.nextId = Math.max(this.nextId, record.id + 1);
@@ -266,6 +436,15 @@ export class LayerStack {
     }
     const removed = this.at(index);
     this.records.splice(index, 1);
+    // A deleted base cannot leave serializable ids pointing at a layer that no
+    // longer exists. Its former clipped rasters remain ordinary editable
+    // rasters; deleting a clipped raster itself keeps its parent id on the
+    // detached history record so an exact reattach can restore the relation.
+    for (const record of this.records) {
+      if (record.clippingParentId === removed.id) {
+        record.clippingParentId = null;
+      }
+    }
     if (removed.id === this._referenceLayerId) {
       this._referenceLayerId = null;
     }
@@ -296,8 +475,11 @@ export class LayerStack {
       return false;
     }
     const activeId = this.active.id;
-    const [record] = this.records.splice(from, 1);
-    this.records.splice(to, 0, record);
+    const candidate = [...this.records];
+    const [record] = candidate.splice(from, 1);
+    candidate.splice(to, 0, record);
+    this.assertClippingInvariants(candidate);
+    this.records.splice(0, this.records.length, ...candidate);
     this._activeIndex = this.indexOfId(activeId);
     return true;
   }

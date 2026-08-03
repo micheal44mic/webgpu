@@ -318,6 +318,7 @@ import {
   vectorHistoryStatesEqual,
 } from "./engine-history-types";
 import type {
+  ActiveClippingGroupResources,
   DisplayPyramidResources,
   EffectsRetargetCaller,
   LayerBakeResources,
@@ -641,6 +642,7 @@ import {
   allocateLayerGpuResources,
   bakeActiveLayerForSwitch,
   bindActiveLayerResources,
+  buildActiveClippingGroupResources,
   buildMergedSurfaceCandidate,
   buildMixedMergedSurfaceCandidate,
   cancelEffectsScratchShrink,
@@ -649,6 +651,7 @@ import {
   commitActiveLayerResidency,
   destroyLayerBakeTexture,
   destroyLayerGpuResources,
+  destroyActiveClippingGroupResources,
   destroyMergedSurfaceTexture,
   effectsScratchCanShrinkNow,
   effectsScratchNeedsShrink,
@@ -969,13 +972,17 @@ export class BrushEngine {
   transparentLayerView!: GPUTextureView;
   mergedBelow: MergedSurfaceResources | null = null;
   mergedAbove: MergedSurfaceResources | null = null;
+  activeClippingGroup: ActiveClippingGroupResources | null = null;
   mixedSceneCompositionSegments: readonly MixedSceneCompositionSegment[] = [];
   mixedSceneRasterSegments: MixedSceneRasterSegmentResources[] = [];
   paintMipViews: GPUTextureView[] = [];
   paintMipDownsampleBindGroups: GPUBindGroup[] = [];
   paintStackCompositeMipBindGroup!: GPUBindGroup;
   paintDisplayMipValidThroughLevel = 0;
-  paintDisplayPyramidContent: "active-only" | "final-raster-stack" = "active-only";
+  paintDisplayPyramidContent:
+    | "active-only"
+    | "active-clipping-group"
+    | "final-raster-stack" = "active-only";
   paintDisplaySelectedMipLevel = 0;
   presentationCacheTexture: GPUTexture | null = null;
   presentationCacheView: GPUTextureView | null = null;
@@ -1276,7 +1283,9 @@ export class BrushEngine {
   lightGlazeClearRgba16FloatPipeline!: GPURenderPipeline;
   paintMipDownsamplePipeline!: GPURenderPipeline;
   paintStackCompositeMipPipeline!: GPURenderPipeline;
+  activeClippingGroupMipPipeline!: GPURenderPipeline;
   layerCompositePipeline!: GPURenderPipeline;
+  layerSourceAtopPipeline!: GPURenderPipeline;
 
   private readonly instanceUpload = new ArrayBuffer(MAX_STAMPS_PER_BATCH * STAMP_STRIDE_BYTES);
   readonly instanceUploadF32 = new Float32Array(this.instanceUpload);
@@ -1680,6 +1689,14 @@ export class BrushEngine {
     return this.mergedAbove?.samplingView ?? this.transparentLayerView;
   }
 
+  activeClippingPrefixView(): GPUTextureView {
+    return this.activeClippingGroup?.prefix?.samplingView ?? this.transparentLayerView;
+  }
+
+  activeClippingSuffixView(): GPUTextureView {
+    return this.activeClippingGroup?.suffix?.samplingView ?? this.transparentLayerView;
+  }
+
   rebuildRasterStrokeDisplayBindGroups(): void {
     const renderer = this.rasterStrokeRenderer;
     this.rasterStrokeDisplayBindGroups.clear();
@@ -1700,6 +1717,8 @@ export class BrushEngine {
           mode,
           this.mergedBelowView(),
           this.mergedAboveView(),
+          this.activeClippingPrefixView(),
+          this.activeClippingSuffixView(),
         ),
       );
     }
@@ -2584,6 +2603,7 @@ export class BrushEngine {
             rasterLayerId: item.rasterLayerId,
             rasterLayerIndex,
             rasterLayerName: record.name,
+            rasterClippingParentId: record.clippingParentId,
             rasterHasContent,
             rasterContentBounds: rasterContentBounds ? { ...rasterContentBounds } : null,
             rasterTransform: transform,
@@ -4807,12 +4827,18 @@ export class BrushEngine {
     const previousAbove = this.mergedAbove;
     const previousMixedSegments = this.mixedSceneRasterSegments;
     const previousCompositionSegments = this.mixedSceneCompositionSegments;
+    const previousActiveClippingGroup = this.activeClippingGroup;
+    const activeClippingUnit = this.layerStack.clippingUnit(this.layerStack.active.id);
+    const activeClippingUnitIds = activeClippingUnit.length > 1
+      ? activeClippingUnit.map((record) => record.id)
+      : [];
     let candidateCompositionSegments: readonly MixedSceneCompositionSegment[] = [];
     if (this.mixedSceneStack?.visibleSemanticCount) {
       // Compute the new plan before evicting anything. A malformed scene must
       // leave the complete previous presentation untouched.
       candidateCompositionSegments = this.mixedSceneStack.compositionSegments(
         this.layerStack.active.id,
+        activeClippingUnitIds,
       );
     }
     const reusableKeys = options.reuseUnchangedRasterRuns
@@ -4832,8 +4858,10 @@ export class BrushEngine {
     this.mergedAbove = null;
     this.mixedSceneRasterSegments = [];
     this.mixedSceneCompositionSegments = [];
+    this.activeClippingGroup = null;
     this.destroyMergedSurface(previousBelow);
     this.destroyMergedSurface(previousAbove);
+    destroyActiveClippingGroupResources(this, previousActiveClippingGroup);
     for (const segment of previousMixedSegments) {
       if (reusableKeys.has(segment.key) && !reusableSegments.has(segment.key)) {
         reusableSegments.set(segment.key, segment);
@@ -4847,11 +4875,13 @@ export class BrushEngine {
 
     let candidateBelow: MergedSurfaceResources | null = null;
     let candidateAbove: MergedSurfaceResources | null = null;
+    let candidateActiveClippingGroup: ActiveClippingGroupResources | null = null;
     const candidateMixedSegments: MixedSceneRasterSegmentResources[] = [];
     const reusedCandidateSegments = new Set<MixedSceneRasterSegmentResources>();
     let activeWorkbenchRestored = false;
     let candidatePublished = false;
     try {
+      candidateActiveClippingGroup = await buildActiveClippingGroupResources(this, caller);
       if (this.mixedSceneStack?.visibleSemanticCount) {
         const activePosition = candidateCompositionSegments.findIndex(
           (segment) => segment.kind === "active-raster",
@@ -4893,6 +4923,7 @@ export class BrushEngine {
       } else if (this.mixedSceneStack) {
         const partition = this.mixedSceneStack.partitionAroundRaster(
           this.layerStack.active.id,
+          activeClippingUnitIds,
         );
         candidateBelow = await buildMixedMergedSurfaceCandidate(this, 
           partition.below,
@@ -4907,11 +4938,13 @@ export class BrushEngine {
           view,
         );
       } else {
+        const activeUnitStart = this.layerStack.indexOfId(activeClippingUnit[0].id);
+        const activeUnitEnd = activeUnitStart + activeClippingUnit.length;
         candidateBelow = await buildMergedSurfaceCandidate(this, 
-          this.layerStack.below(), "below", caller,
+          this.layerStack.layers.slice(0, activeUnitStart), "below", caller,
         );
         candidateAbove = await buildMergedSurfaceCandidate(this, 
-          this.layerStack.above(), "above", caller,
+          this.layerStack.layers.slice(activeUnitEnd), "above", caller,
         );
       }
       await restoreEffectsWorkbenchToActiveLayer(this, caller);
@@ -4920,6 +4953,7 @@ export class BrushEngine {
 
       this.mergedBelow = candidateBelow;
       this.mergedAbove = candidateAbove;
+      this.activeClippingGroup = candidateActiveClippingGroup;
       this.mixedSceneRasterSegments = candidateMixedSegments;
       this.mixedSceneCompositionSegments = candidateCompositionSegments;
       rebuildLayerDisplayBindGroups(this);
@@ -4931,6 +4965,7 @@ export class BrushEngine {
       if (!candidatePublished) {
         this.mergedBelow = null;
         this.mergedAbove = null;
+        this.activeClippingGroup = null;
         // Keep only still-valid old runs reachable so the caller's rollback
         // rebuild can reuse them. Rendering remains frozen until that succeeds.
         this.mixedSceneRasterSegments = survivingPreviousSegments;
@@ -4938,6 +4973,7 @@ export class BrushEngine {
       }
       this.destroyMergedSurface(candidateBelow);
       this.destroyMergedSurface(candidateAbove);
+      destroyActiveClippingGroupResources(this, candidateActiveClippingGroup);
       for (const segment of candidateMixedSegments) {
         if (!reusedCandidateSegments.has(segment)) {
           destroyMixedSceneRasterSegment(this, segment);
@@ -5395,7 +5431,10 @@ export class BrushEngine {
    * which is right for a format change and fatal here. The 21 render pipelines
    * depend only on the format, so a new layer in the same format reuses them.
    */
-  async addLayer(name?: string): Promise<LayerSwitchResult> {
+  async addLayer(
+    name?: string,
+    clippingParentId: number | null = null,
+  ): Promise<LayerSwitchResult> {
     if (!this.initialized) {
       throw new Error("Il motore non è ancora inizializzato.");
     }
@@ -5409,13 +5448,46 @@ export class BrushEngine {
       await this.waitForIdle();
       const mixedSceneState = this.mixedSceneStack?.captureState() ?? null;
       const previousExcludedNodeId = this.vectorTextPreviewExcludedNodeId;
+      let clippingLayerInsertIndex: number | null = null;
+      let clippingSceneInsertIndex: number | null = null;
+      if (clippingParentId !== null) {
+        const parent = this.layerStack.byId(clippingParentId);
+        if (!parent || parent.clippingParentId !== null) {
+          throw new Error("Parent raster della maschera non valido.");
+        }
+        const unit = this.layerStack.clippingUnit(parent.id);
+        clippingLayerInsertIndex = this.layerStack.indexOfId(unit[unit.length - 1].id) + 1;
+        if (this.mixedSceneStack) {
+          const sceneIndices = unit.map((member) =>
+            this.mixedSceneStack!.indexOfKey(`raster:${member.id}` as const));
+          if (
+            sceneIndices.some((sceneIndex) => sceneIndex < 0)
+            || sceneIndices.some((sceneIndex, offset) =>
+              sceneIndex !== sceneIndices[0] + offset)
+          ) {
+            throw new Error(
+              `Il gruppo di ritaglio ${parent.id} non è consecutivo nella scena mista.`,
+            );
+          }
+          clippingSceneInsertIndex = sceneIndices[sceneIndices.length - 1] + 1;
+        }
+      }
       const fromIndex = this.layerStack.activeIndex;
       this.persistActiveLayerState();
       await this.prepareActiveLayerForSwitch();
-      const index = this.layerStack.add(name);
+      const index = clippingLayerInsertIndex === null
+        ? this.layerStack.add(name)
+        : this.layerStack.insertAt(clippingLayerInsertIndex, name);
       const record = this.layerStack.at(index);
+      if (clippingParentId !== null) {
+        this.layerStack.setClippingParent(index, clippingParentId);
+      }
       if (this.mixedSceneStack) {
-        this.mixedSceneStack.addRasterAboveSelection(record.id);
+        if (clippingSceneInsertIndex === null) {
+          this.mixedSceneStack.addRasterAboveSelection(record.id);
+        } else {
+          this.mixedSceneStack.insertRasterAt(record.id, clippingSceneInsertIndex);
+        }
         this.vectorTextPreviewExcludedNodeId = null;
       }
       let gpu: LayerGpuResources;
@@ -5574,6 +5646,30 @@ export class BrushEngine {
 
   async setLayerOpacity(index: number, opacity: number): Promise<boolean> {
     return setLayerPresentation(this, index, undefined, clamp(opacity, 0, 1));
+  }
+
+  /**
+   * Procreate-style clipping mask: create a normal raster immediately above
+   * the selected raster. The base directly underneath becomes its parent.
+   */
+  async addClippingMaskLayer(): Promise<LayerSwitchResult> {
+    const scene = requireMixedSceneStack(this);
+    const selected = scene.selected;
+    if (selected.kind !== "raster") {
+      throw new Error("Seleziona un livello raster per creare la maschera.");
+    }
+    const selectedIndex = this.layerStack.indexOfId(selected.rasterLayerId);
+    if (selectedIndex < 0 || selectedIndex !== this.layerStack.activeIndex) {
+      throw new Error("Il raster selezionato deve essere il livello attivo.");
+    }
+    const selectedRecord = this.layerStack.at(selectedIndex);
+    const parentId = selectedRecord.clippingParentId ?? selectedRecord.id;
+    const parent = this.layerStack.byId(parentId);
+    if (!parent || parent.clippingParentId !== null) {
+      throw new Error("Parent raster della maschera non valido.");
+    }
+    const ordinal = this.layerStack.clippingDependents(parent.id).length + 1;
+    return await this.addLayer(`Maschera ritaglio ${ordinal}`, parent.id);
   }
 
   async setLayerReference(index: number, enabled: boolean): Promise<boolean> {
@@ -6370,7 +6466,9 @@ export class BrushEngine {
       && selectedMipLevel > 0
       && this.finalRasterStackMipAvailable()
       ? "final-raster-stack"
-      : "active-only";
+      : selectedMipLevel > 0 && this.activeClippingGroup
+        ? "active-clipping-group"
+        : "active-only";
     if (content !== this.paintDisplayPyramidContent) {
       this.paintDisplayPyramidContent = content;
       this.paintDisplayMipValidThroughLevel = 0;
@@ -6386,7 +6484,7 @@ export class BrushEngine {
     let passes = 0;
     let updatedPixels = 0;
 
-    if (content === "final-raster-stack" && selectedMipLevel > 0) {
+    if (content !== "active-only" && selectedMipLevel > 0) {
       // The mip-1 compositor reads the same uniforms as the final display.
       // Queue writes precede the command-buffer submission even though the
       // render passes themselves are encoded first.
@@ -6425,6 +6523,9 @@ export class BrushEngine {
       });
       if (content === "final-raster-stack" && mipLevel === 1) {
         pass.setPipeline(this.paintStackCompositeMipPipeline);
+        pass.setBindGroup(0, this.paintStackCompositeMipBindGroup);
+      } else if (content === "active-clipping-group" && mipLevel === 1) {
+        pass.setPipeline(this.activeClippingGroupMipPipeline);
         pass.setBindGroup(0, this.paintStackCompositeMipBindGroup);
       } else {
         pass.setPipeline(this.paintMipDownsamplePipeline);
@@ -6490,6 +6591,19 @@ export class BrushEngine {
     this.displayUniformUpload[13] = this.mergedBelow?.bounds.y ?? 0;
     this.displayUniformUpload[14] = this.mergedAbove?.bounds.x ?? 0;
     this.displayUniformUpload[15] = this.mergedAbove?.bounds.y ?? 0;
+    const clippingGroup = this.activeClippingGroup;
+    this.displayUniformUpload[16] = clippingGroup?.mode === "active-parent"
+      ? 1
+      : clippingGroup?.mode === "active-child"
+        ? 2
+        : 0;
+    this.displayUniformUpload[17] = clippingGroup?.parentOpacity ?? 0;
+    this.displayUniformUpload[18] = clippingGroup?.prefix?.resolutionScale ?? 0;
+    this.displayUniformUpload[19] = clippingGroup?.suffix?.resolutionScale ?? 0;
+    this.displayUniformUpload[20] = clippingGroup?.prefix?.bounds.x ?? 0;
+    this.displayUniformUpload[21] = clippingGroup?.prefix?.bounds.y ?? 0;
+    this.displayUniformUpload[22] = clippingGroup?.suffix?.bounds.x ?? 0;
+    this.displayUniformUpload[23] = clippingGroup?.suffix?.bounds.y ?? 0;
 
     this.device.queue.writeBuffer(this.displayUniformBuffer, 0, this.displayUniformUpload);
   }
@@ -9442,6 +9556,9 @@ export class BrushEngine {
       ) {
         requestLightGlazeResources(this, this.settings.blendMode);
       }
+      // endStroke() runs before the deferred glaze commit reaches this submit.
+      // Re-fold clipped children now that the parent's authoritative pixels are
+      // actually in the layer, once per completed action and never per stamp.
     }
     // Restore the current UI settings after the ordered Light Glaze submit so
     // a following Normal/Additive frame sees the ordinary uniform contents.

@@ -791,6 +791,19 @@ select {
   background: rgba(51, 161, 128, 0.14);
 }
 
+.layer-row.is-clipping-mask .layer-select {
+  margin-left: 14px;
+  width: calc(100% - 14px);
+  border-left: 3px solid #6ea8fe;
+  background-image: linear-gradient(90deg, rgba(110, 168, 254, 0.12), transparent);
+}
+
+.layer-row.is-clipping-mask .layer-name::before {
+  content: "↳ ";
+  color: #8db8ff;
+  font-weight: 800;
+}
+
 .layer-hint {
   color: #8b929e;
   font-size: 0.72rem;

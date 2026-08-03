@@ -7,6 +7,7 @@ import {
 } from "./engine-types";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import {
+  type ActiveClippingGroupResources,
   type DisplayPyramidResources,
   type EffectsRetargetCaller,
   type LayerBakeResources,
@@ -118,7 +119,9 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
     lightGlazeCommitTilePipeline,
     paintMipDownsamplePipeline,
     paintStackCompositeMipPipeline,
+    activeClippingGroupMipPipeline,
     layerCompositePipeline,
+    layerSourceAtopPipeline,
   } = await runGpuAllocationTransaction(
     engine.device,
     `Pipeline formato layer ${format}`,
@@ -832,6 +835,20 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
     },
     primitive: { topology: "triangle-list" },
   });
+  const activeClippingGroupMipPipeline = engine.device.createRenderPipeline({
+    label: `Active clipping group composited mip 1 ${format}`,
+    layout: paintStackCompositeMipPipelineLayout,
+    vertex: {
+      module: engine.paintStackCompositeMipShaderModule,
+      entryPoint: "vertexMain",
+    },
+    fragment: {
+      module: engine.paintStackCompositeMipShaderModule,
+      entryPoint: "activeGroupFragmentMain",
+      targets: [{ format }],
+    },
+    primitive: { topology: "triangle-list" },
+  });
   const layerCompositePipeline = engine.device.createRenderPipeline({
     label: `Layer source-over fold ${format}`,
     layout: layerCompositePipelineLayout,
@@ -844,6 +861,27 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
         blend: {
           color: { operation: "add", srcFactor: "one", dstFactor: "one-minus-src-alpha" },
           alpha: { operation: "add", srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+        },
+      }],
+    },
+    primitive: { topology: "triangle-list" },
+  });
+  const layerSourceAtopPipeline = engine.device.createRenderPipeline({
+    label: `Clipping child source-atop fold ${format}`,
+    layout: layerCompositePipelineLayout,
+    vertex: { module: engine.layerCompositeShaderModule, entryPoint: "vertexMain" },
+    fragment: {
+      module: engine.layerCompositeShaderModule,
+      entryPoint: "fragmentMain",
+      targets: [{
+        format,
+        blend: {
+          color: {
+            operation: "add",
+            srcFactor: "dst-alpha",
+            dstFactor: "one-minus-src-alpha",
+          },
+          alpha: { operation: "add", srcFactor: "zero", dstFactor: "one" },
         },
       }],
     },
@@ -885,7 +923,9 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
         lightGlazeCommitTilePipeline,
         paintMipDownsamplePipeline,
         paintStackCompositeMipPipeline,
+        activeClippingGroupMipPipeline,
         layerCompositePipeline,
+        layerSourceAtopPipeline,
       };
     },
   );
@@ -1034,9 +1074,14 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
   engine.transparentLayerView = nextTransparentView;
   engine.mergedBelow = null;
   engine.mergedAbove = null;
+  destroyActiveClippingGroupResources(engine, engine.activeClippingGroup);
+  engine.activeClippingGroup = null;
   engine.mixedSceneRasterSegments = [];
   engine.mixedSceneCompositionSegments = engine.mixedSceneStack?.visibleSemanticCount
-    ? engine.mixedSceneStack.compositionSegments(engine.layerStack.active.id)
+    ? engine.mixedSceneStack.compositionSegments(
+      engine.layerStack.active.id,
+      engine.layerStack.clippingUnit(engine.layerStack.active.id).map((record) => record.id),
+    )
     : [];
   engine.normalPipeline = normalPipeline;
   engine.additivePipeline = additivePipeline;
@@ -1073,7 +1118,9 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
   engine.lightGlazeCommitTilePipeline = lightGlazeCommitTilePipeline;
   engine.paintMipDownsamplePipeline = paintMipDownsamplePipeline;
   engine.paintStackCompositeMipPipeline = paintStackCompositeMipPipeline;
+  engine.activeClippingGroupMipPipeline = activeClippingGroupMipPipeline;
   engine.layerCompositePipeline = layerCompositePipeline;
+  engine.layerSourceAtopPipeline = layerSourceAtopPipeline;
   engine.layerFormat = format;
   rebuildActiveLayerPyramidBindings(engine);
   rebuildLayerDisplayBindGroups(engine);
@@ -1279,6 +1326,445 @@ export async function retargetEffectsWorkingSetInternal(engine: BrushEngine,
   }
 }
 
+function writeLayerCompositeUniforms(
+  engine: BrushEngine,
+  destination: MergedSurfaceResources,
+  sourceOrigin: { x: number; y: number },
+  sourceScale: number,
+  sourceWidth: number,
+  sourceHeight: number,
+  opacity: number,
+): void {
+  const upload = new ArrayBuffer(LAYER_COMPOSITE_UNIFORM_BYTES);
+  const f32 = new Float32Array(upload);
+  const u32 = new Uint32Array(upload);
+  f32[0] = destination.bounds.x;
+  f32[1] = destination.bounds.y;
+  f32[2] = destination.resolutionScale;
+  f32[3] = opacity;
+  f32[4] = sourceOrigin.x;
+  f32[5] = sourceOrigin.y;
+  f32[6] = sourceScale;
+  u32[8] = sourceWidth;
+  u32[9] = sourceHeight;
+  engine.device.queue.writeBuffer(engine.layerCompositeUniformBuffer, 0, upload);
+}
+
+async function foldViewIntoMergedSurface(
+  engine: BrushEngine,
+  destination: MergedSurfaceResources,
+  sourceView: GPUTextureView,
+  sourceOrigin: { x: number; y: number },
+  sourceScale: number,
+  sourceWidth: number,
+  sourceHeight: number,
+  opacity: number,
+  documentRect: DirtyRect,
+  pipeline: GPURenderPipeline,
+  clearDestination: boolean,
+  label: string,
+): Promise<void> {
+  const clipped = intersectMergedSurfaceRects(
+    documentRect,
+    destination.bounds,
+    LAYER_SIZE,
+  );
+  if (!clipped) {
+    return;
+  }
+  const physicalRect = mergedSurfacePhysicalRect(
+    clipped,
+    destination.bounds,
+    destination.resolutionScale,
+  );
+  writeLayerCompositeUniforms(
+    engine,
+    destination,
+    sourceOrigin,
+    sourceScale,
+    sourceWidth,
+    sourceHeight,
+    opacity,
+  );
+  const bindGroup = engine.device.createBindGroup({
+    label,
+    layout: engine.layerCompositeBindGroupLayout,
+    entries: [
+      { binding: 0, resource: sourceView },
+      { binding: 1, resource: { buffer: engine.layerCompositeUniformBuffer } },
+    ],
+  });
+  const encoder = engine.device.createCommandEncoder({ label });
+  const pass = encoder.beginRenderPass({
+    label,
+    colorAttachments: [{
+      view: destination.mipViews[0],
+      loadOp: clearDestination ? "clear" : "load",
+      storeOp: "store",
+      clearValue: { r: 0, g: 0, b: 0, a: 0 },
+    }],
+  });
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0, bindGroup);
+  pass.setScissorRect(
+    physicalRect.x,
+    physicalRect.y,
+    physicalRect.width,
+    physicalRect.height,
+  );
+  pass.draw(3, 1, 0, 0);
+  pass.end();
+  engine.device.queue.submit([encoder.finish()]);
+  await engine.waitForGpuCapped(label);
+  destination.foldedPixels += physicalRect.width * physicalRect.height;
+}
+
+function recordHasLiveContent(engine: BrushEngine, record: LayerRecord): boolean {
+  return record.id === engine.layerStack.active.id
+    ? engine.layerHasContent
+    : record.hasContent;
+}
+
+function recordRawBounds(engine: BrushEngine, record: LayerRecord): DirtyRect | null {
+  return normalizeLayerRect(
+    record.id === engine.layerStack.active.id
+      ? engine.layerContentBounds
+      : record.contentBounds,
+  );
+}
+
+async function finalizeClippingAuxiliarySurface(
+  engine: BrushEngine,
+  surface: MergedSurfaceResources,
+  maintainMips: boolean,
+  label: string,
+): Promise<MergedSurfaceResources> {
+  if (!maintainMips) {
+    return surface;
+  }
+  const targetMip = requiredMergedSurfaceMipLevel(engine, surface);
+  if (targetMip <= 0) {
+    return surface;
+  }
+  const encoder = engine.device.createCommandEncoder({ label: `${label} mip` });
+  encodeMergedSurfacePyramid(engine, encoder, surface, targetMip);
+  engine.device.queue.submit([encoder.finish()]);
+  await engine.waitForGpuCapped(`${label} mip`);
+  return surface;
+}
+
+async function buildClippingOverlaySurface(
+  engine: BrushEngine,
+  records: readonly LayerRecord[],
+  caller: EffectsRetargetCaller,
+  requestedBounds: DirtyRect | null,
+  maintainMips: boolean,
+  label: string,
+): Promise<MergedSurfaceResources | null> {
+  const visible = records.filter(
+    (record) => record.visible
+      && record.opacity > 0
+      && recordHasLiveContent(engine, record),
+  );
+  if (visible.length === 0) {
+    return null;
+  }
+  const visualBounds = unionMergedSurfaceRects(
+    visible.map((record) => layerCompositeVisualBounds(engine, record)),
+    LAYER_SIZE,
+  );
+  const bounded = requestedBounds
+    ? visualBounds && intersectMergedSurfaceRects(visualBounds, requestedBounds, LAYER_SIZE)
+    : visualBounds;
+  if (!bounded) {
+    return null;
+  }
+  const surface = allocateMergedSurface(
+    engine,
+    engine.layerFormat,
+    "above",
+    visible.length,
+    alignedMergedSurfaceBounds(bounded, LAYER_SIZE),
+    1,
+  );
+  let first = true;
+  try {
+    for (const record of visible) {
+      const source = await materializeLayerCompositeSource(engine, record, caller);
+      try {
+        const rect = intersectMergedSurfaceRects(
+          source.nonTransparentBounds,
+          surface.bounds,
+          LAYER_SIZE,
+        );
+        if (!rect) {
+          continue;
+        }
+        await foldViewIntoMergedSurface(
+          engine,
+          surface,
+          source.view,
+          { x: 0, y: 0 },
+          1,
+          LAYER_SIZE,
+          LAYER_SIZE,
+          record.opacity,
+          rect,
+          engine.layerCompositePipeline,
+          first,
+          `${label} · layer ${record.id} source-over`,
+        );
+        surface.analyticBakePixels += source.analyticBakePixels;
+        first = false;
+      } finally {
+        engine.destroyLayerBake(source.transientBake);
+        destroyTransientLayerHydration(engine, source.transientHydration);
+      }
+    }
+    if (first) {
+      engine.destroyMergedSurface(surface);
+      return null;
+    }
+    return await finalizeClippingAuxiliarySurface(
+      engine,
+      surface,
+      maintainMips,
+      label,
+    );
+  } catch (error) {
+    engine.destroyMergedSurface(surface);
+    throw error;
+  }
+}
+
+async function buildClippingPrefixSurface(
+  engine: BrushEngine,
+  parent: LayerRecord,
+  children: readonly LayerRecord[],
+  caller: EffectsRetargetCaller,
+  maintainMips: boolean,
+  label: string,
+): Promise<MergedSurfaceResources | null> {
+  const parentBounds = recordRawBounds(engine, parent);
+  if (!recordHasLiveContent(engine, parent) || !parentBounds) {
+    return null;
+  }
+  const surface = allocateMergedSurface(
+    engine,
+    engine.layerFormat,
+    "below",
+    1 + children.length,
+    alignedMergedSurfaceBounds(parentBounds, LAYER_SIZE),
+    1,
+  );
+  let parentHydration: LayerTextureResources | null = null;
+  try {
+    const parentGpu = engine.requireLayerGpu(parent.id);
+    parentHydration = parentGpu.hot
+      ? null
+      : await createHydratedLayerTexture(
+        engine,
+        parent,
+        parentGpu,
+        `${label} · hydrate parent ${parent.id}`,
+        false,
+        "defer-to-fold-fence",
+      );
+    const parentHot = parentGpu.hot ?? parentHydration;
+    if (!parentHot) {
+      throw new Error(`Texture raw parent ${parent.id} non disponibile.`);
+    }
+    await foldViewIntoMergedSurface(
+      engine,
+      surface,
+      parentHot.view,
+      { x: 0, y: 0 },
+      1,
+      LAYER_SIZE,
+      LAYER_SIZE,
+      1,
+      parentBounds,
+      engine.layerCompositePipeline,
+      true,
+      `${label} · raw parent ${parent.id}`,
+    );
+    destroyTransientLayerHydration(engine, parentHydration);
+    parentHydration = null;
+
+    for (const child of children) {
+      if (!child.visible || child.opacity <= 0 || !recordHasLiveContent(engine, child)) {
+        continue;
+      }
+      const source = await materializeLayerCompositeSource(engine, child, caller);
+      try {
+        const rect = intersectMergedSurfaceRects(
+          source.nonTransparentBounds,
+          surface.bounds,
+          LAYER_SIZE,
+        );
+        if (!rect) {
+          continue;
+        }
+        await foldViewIntoMergedSurface(
+          engine,
+          surface,
+          source.view,
+          { x: 0, y: 0 },
+          1,
+          LAYER_SIZE,
+          LAYER_SIZE,
+          child.opacity,
+          rect,
+          engine.layerSourceAtopPipeline,
+          false,
+          `${label} · child ${child.id} source-atop`,
+        );
+        surface.analyticBakePixels += source.analyticBakePixels;
+      } finally {
+        engine.destroyLayerBake(source.transientBake);
+        destroyTransientLayerHydration(engine, source.transientHydration);
+      }
+    }
+    return await finalizeClippingAuxiliarySurface(
+      engine,
+      surface,
+      maintainMips,
+      label,
+    );
+  } catch (error) {
+    engine.destroyMergedSurface(surface);
+    throw error;
+  } finally {
+    destroyTransientLayerHydration(engine, parentHydration);
+  }
+}
+
+export async function buildActiveClippingGroupResources(
+  engine: BrushEngine,
+  caller: EffectsRetargetCaller,
+): Promise<ActiveClippingGroupResources | null> {
+  const unit = engine.layerStack.clippingUnit(engine.layerStack.active.id);
+  if (unit.length <= 1) {
+    return null;
+  }
+  const parent = unit[0];
+  const activeIndex = unit.findIndex((record) => record.id === engine.layerStack.active.id);
+  if (activeIndex < 0) {
+    throw new Error("Raster attivo assente dalla propria unità di ritaglio.");
+  }
+  const parentOpacity = parent.visible ? Math.min(1, Math.max(0, parent.opacity)) : 0;
+  if (activeIndex === 0) {
+    const suffix = await buildClippingOverlaySurface(
+      engine,
+      unit.slice(1),
+      caller,
+      null,
+      true,
+      `Gruppo ritaglio live parent ${parent.id}`,
+    );
+    return {
+      parentId: parent.id,
+      activeLayerId: parent.id,
+      mode: "active-parent",
+      parentOpacity,
+      prefix: null,
+      suffix,
+    };
+  }
+
+  const parentBounds = recordRawBounds(engine, parent);
+  const prefix = await buildClippingPrefixSurface(
+    engine,
+    parent,
+    unit.slice(1, activeIndex),
+    caller,
+    true,
+    `Gruppo ritaglio live prefix ${parent.id}→${engine.layerStack.active.id}`,
+  );
+  let suffix: MergedSurfaceResources | null = null;
+  try {
+    suffix = await buildClippingOverlaySurface(
+      engine,
+      unit.slice(activeIndex + 1),
+      caller,
+      parentBounds,
+      true,
+      `Gruppo ritaglio live suffix ${engine.layerStack.active.id}`,
+    );
+    return {
+      parentId: parent.id,
+      activeLayerId: engine.layerStack.active.id,
+      mode: "active-child",
+      parentOpacity,
+      prefix,
+      suffix,
+    };
+  } catch (error) {
+    engine.destroyMergedSurface(prefix);
+    throw error;
+  }
+}
+
+export function destroyActiveClippingGroupResources(
+  engine: BrushEngine,
+  group: ActiveClippingGroupResources | null | undefined,
+): void {
+  if (!group) {
+    return;
+  }
+  engine.destroyMergedSurface(group.prefix);
+  engine.destroyMergedSurface(group.suffix);
+}
+
+async function foldClippingGroupIntoMergedSurface(
+  engine: BrushEngine,
+  surface: MergedSurfaceResources,
+  unit: readonly LayerRecord[],
+  side: "below" | "above",
+  caller: EffectsRetargetCaller,
+  first: boolean,
+): Promise<boolean> {
+  const parent = unit[0];
+  if (!parent.visible || parent.opacity <= 0) {
+    return false;
+  }
+  const group = await buildClippingPrefixSurface(
+    engine,
+    parent,
+    unit.slice(1),
+    caller,
+    false,
+    `Fold gruppo ritaglio ${parent.id}`,
+  );
+  if (!group) {
+    return false;
+  }
+  try {
+    const rect = intersectMergedSurfaceRects(group.bounds, surface.bounds, LAYER_SIZE);
+    if (!rect) {
+      return false;
+    }
+    await foldViewIntoMergedSurface(
+      engine,
+      surface,
+      group.samplingView,
+      group.bounds,
+      group.resolutionScale,
+      group.textureWidth,
+      group.textureHeight,
+      parent.opacity,
+      rect,
+      engine.layerCompositePipeline,
+      first,
+      `Fold gruppo ritaglio ${parent.id} into merged ${side}`,
+    );
+    surface.analyticBakePixels += group.analyticBakePixels;
+    return true;
+  } finally {
+    engine.destroyMergedSurface(group);
+  }
+}
+
 export async function foldRasterRecordIntoMergedSurface(engine: BrushEngine, 
   surface: MergedSurfaceResources,
   record: LayerRecord,
@@ -1286,6 +1772,9 @@ export async function foldRasterRecordIntoMergedSurface(engine: BrushEngine,
   caller: EffectsRetargetCaller,
   first: boolean,
 ): Promise<boolean> {
+  if (record.clippingParentId !== null) {
+    throw new Error(`Il child ${record.id} deve essere foldato con il proprio gruppo.`);
+  }
   const source = await materializeLayerCompositeSource(engine, record, caller);
   const sourceRect = intersectMergedSurfaceRects(
     source.nonTransparentBounds,
@@ -1297,83 +1786,22 @@ export async function foldRasterRecordIntoMergedSurface(engine: BrushEngine,
     destroyTransientLayerHydration(engine, source.transientHydration);
     return false;
   }
-  const destinationRect = mergedSurfacePhysicalRect(
-    sourceRect,
-    surface.bounds,
-    surface.resolutionScale,
-  );
-  surface.foldedPixels += destinationRect.width * destinationRect.height;
   surface.analyticBakePixels += source.analyticBakePixels;
   try {
-    const encoder = engine.device.createCommandEncoder({
-      label: `Fold layer ${record.id} into merged ${side}`,
-    });
-    if (first && record.opacity >= 1 && surface.resolutionScale === 1) {
-      // A fresh WebGPU texture is zero-initialized. For the common
-      // singleton/opaque side at 1x, copy only the visible source rectangle.
-      encoder.copyTextureToTexture(
-        {
-          texture: source.texture,
-          origin: { x: sourceRect.x, y: sourceRect.y, z: 0 },
-        },
-        {
-          texture: surface.texture,
-          origin: { x: destinationRect.x, y: destinationRect.y, z: 0 },
-        },
-        {
-          width: sourceRect.width,
-          height: sourceRect.height,
-          depthOrArrayLayers: 1,
-        },
-      );
-    } else {
-      const uniformUpload = new ArrayBuffer(LAYER_COMPOSITE_UNIFORM_BYTES);
-      const uniformU32 = new Uint32Array(uniformUpload);
-      const uniformF32 = new Float32Array(uniformUpload);
-      uniformF32[0] = surface.bounds.x;
-      uniformF32[1] = surface.bounds.y;
-      uniformF32[2] = surface.resolutionScale;
-      uniformF32[3] = record.opacity;
-      uniformU32[4] = LAYER_SIZE;
-      uniformU32[5] = LAYER_SIZE;
-      engine.device.queue.writeBuffer(
-        engine.layerCompositeUniformBuffer,
-        0,
-        uniformUpload,
-      );
-      const bindGroup = engine.device.createBindGroup({
-        label: `Fold layer ${record.id} into merged ${side}`,
-        layout: engine.layerCompositeBindGroupLayout,
-        entries: [
-          { binding: 0, resource: source.view },
-          { binding: 1, resource: { buffer: engine.layerCompositeUniformBuffer } },
-        ],
-      });
-      const pass = encoder.beginRenderPass({
-        label: `Source-over layer ${record.id} into merged ${side}`,
-        colorAttachments: [{
-          view: surface.mipViews[0],
-          loadOp: first ? "clear" : "load",
-          storeOp: "store",
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
-        }],
-      });
-      pass.setPipeline(engine.layerCompositePipeline);
-      pass.setBindGroup(0, bindGroup);
-      pass.setScissorRect(
-        destinationRect.x,
-        destinationRect.y,
-        destinationRect.width,
-        destinationRect.height,
-      );
-      pass.draw(3, 1, 0, 0);
-      pass.end();
-    }
-    engine.device.queue.submit([encoder.finish()]);
-    // Queue order owns hydration, effect rebuild, analytic bake and fold.
-    // Keeping one bounded fence releases each record's full temporaries
-    // before the following scene item is materialized.
-    await engine.waitForGpuCapped(`Fold livello ${record.id}`);
+    await foldViewIntoMergedSurface(
+      engine,
+      surface,
+      source.view,
+      { x: 0, y: 0 },
+      1,
+      LAYER_SIZE,
+      LAYER_SIZE,
+      record.opacity,
+      sourceRect,
+      engine.layerCompositePipeline,
+      first,
+      `Fold livello ${record.id} into merged ${side}`,
+    );
     return true;
   } finally {
     engine.destroyLayerBake(source.transientBake);
@@ -1449,18 +1877,36 @@ export async function buildMixedMergedSurfaceCandidate(engine: BrushEngine,
   );
   try {
     let first = true;
+    const foldedGroupMembers = new Set<number>();
     for (const { item } of visibleItems) {
       const record = engine.layerStack.byId(item.rasterLayerId);
       if (!record) {
         throw new Error(`Raster ${item.rasterLayerId} assente durante il fold.`);
       }
-      const didFold = await foldRasterRecordIntoMergedSurface(engine, 
-        surface,
-        record,
-        side,
-        caller,
-        first,
-      );
+      if (foldedGroupMembers.has(record.id)) {
+        continue;
+      }
+      const unit = engine.layerStack.clippingUnit(record.id);
+      const didFold: boolean = unit.length > 1
+        ? await foldClippingGroupIntoMergedSurface(
+          engine,
+          surface,
+          unit,
+          side,
+          caller,
+          first,
+        )
+        : await foldRasterRecordIntoMergedSurface(
+          engine,
+          surface,
+          record,
+          side,
+          caller,
+          first,
+        );
+      if (unit.length > 1) {
+        unit.forEach((member) => foldedGroupMembers.add(member.id));
+      }
       first = first && !didFold;
     }
     if (first) {
@@ -1695,7 +2141,10 @@ export async function setLayerPresentation(engine: BrushEngine,
     // inactive-layer changes rebuild the merged view below. Both cases must
     // invalidate the shared display pyramid before the next presentation.
     engine.paintDisplayMipValidThroughLevel = 0;
-    if (index !== engine.layerStack.activeIndex) {
+    if (
+      index !== engine.layerStack.activeIndex
+      || engine.layerStack.clippingDependents(record.id).length > 0
+    ) {
       await engine.rebuildMergedLayerSurfaces();
     }
     engine.presentationCacheNeedsFullRebuild = true;
@@ -1987,9 +2436,38 @@ export async function buildMergedSurfaceCandidate(engine: BrushEngine,
       transaction.deferRollback(() => engine.destroyMergedSurface(surface));
 
       let first = true;
+      const foldedGroupMembers = new Set<number>();
       for (const record of visibleRecords) {
-        await foldRasterRecordIntoMergedSurface(engine, surface, record, side, caller, first);
-        first = false;
+        if (foldedGroupMembers.has(record.id)) {
+          continue;
+        }
+        const unit = engine.layerStack.clippingUnit(record.id);
+        const didFold: boolean = unit.length > 1
+          ? await foldClippingGroupIntoMergedSurface(
+            engine,
+            surface,
+            unit,
+            side,
+            caller,
+            first,
+          )
+          : await foldRasterRecordIntoMergedSurface(
+            engine,
+            surface,
+            record,
+            side,
+            caller,
+            first,
+          );
+        if (unit.length > 1) {
+          unit.forEach((member) => foldedGroupMembers.add(member.id));
+        }
+        first = first && !didFold;
+      }
+
+      if (first) {
+        engine.destroyMergedSurface(surface);
+        return null;
       }
 
       if (engine.paintDisplaySelectedMipLevel > 0) {
@@ -2265,6 +2743,8 @@ export function rebuildLayerDisplayBindGroups(engine: BrushEngine): void {
       { binding: 3, resource: engine.mergedBelowView() },
       { binding: 4, resource: engine.mergedAboveView() },
       { binding: 5, resource: engine.sampler },
+      { binding: 6, resource: engine.activeClippingPrefixView() },
+      { binding: 7, resource: engine.activeClippingSuffixView() },
     ],
   });
   engine.paintStackCompositeMipBindGroup = engine.device.createBindGroup({
@@ -2275,8 +2755,24 @@ export function rebuildLayerDisplayBindGroups(engine: BrushEngine): void {
       { binding: 1, resource: engine.layerView },
       { binding: 2, resource: engine.mergedBelowView() },
       { binding: 3, resource: engine.mergedAboveView() },
+      { binding: 4, resource: engine.activeClippingPrefixView() },
+      { binding: 5, resource: engine.activeClippingSuffixView() },
     ],
   });
+  if (engine.lightGlazeView) {
+    engine.lightGlazeCompositeMipBindGroup = engine.device.createBindGroup({
+      label: "Light Glaze group-aware composited logical mip 1",
+      layout: engine.lightGlazeCompositeMipBindGroupLayout,
+      entries: [
+        { binding: 0, resource: engine.layerView },
+        { binding: 1, resource: engine.lightGlazeView },
+        { binding: 2, resource: { buffer: engine.lightGlazeUniformBuffer } },
+        { binding: 3, resource: { buffer: engine.displayUniformBuffer } },
+        { binding: 4, resource: engine.activeClippingPrefixView() },
+        { binding: 5, resource: engine.activeClippingSuffixView() },
+      ],
+    });
+  }
   // Mip 1 may currently contain a fold of the previous active/merged views.
   // Resource retargeting therefore invalidates the shared pyramid regardless
   // of its current content mode.

@@ -66,6 +66,7 @@ import { STROKE_STABILIZATION_STRATEGY } from "./stroke-stabilization-core";
 export interface EngineGpuMemoryStats {
   layerBaseMiB: number;
   layerColdMiB: number;
+  activeClippingMaskMiB: number;
   // RAM CPU dei cold store compressi: visibile ma esclusa dal totale GPU.
   layerCompressedCpuMiB: number;
   layerCompressedRawMiB: number;
@@ -206,6 +207,7 @@ export interface EngineStats {
     visible: boolean;
     opacity: number;
     reference: boolean;
+    clippingParentId: number | null;
     hasContent: boolean;
     hotAllocated: boolean;
     coldTileCount: number;

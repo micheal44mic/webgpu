@@ -598,6 +598,7 @@ export function getStats(engine: BrushEngine): EngineStats {
         visible: record.visible,
         opacity: record.opacity,
         reference: record.id === engine.layerStack.referenceLayerId,
+        clippingParentId: record.clippingParentId,
         // The record's copy is only written back when the layer stops being
         // active, so for the active one the engine field is the live truth.
         // Reading the record here would report "empty" while the user paints.
@@ -737,7 +738,15 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
   // Exactly one full raw-layer pyramid follows the active layer. Mixed-scene
   // merged sides report their real cropped mip bytes instead of charging a
   // full 4096² chain per side.
-  const mergedSurfaces = [...engine.liveMergedSurfaceTextures.values()];
+  const activeClippingSurfaces = new Set(
+    [
+      engine.activeClippingGroup?.prefix,
+      engine.activeClippingGroup?.suffix,
+    ].filter((surface): surface is NonNullable<typeof surface> => Boolean(surface)),
+  );
+  const mergedSurfaces = [...engine.liveMergedSurfaceTextures.values()].filter(
+    (surface) => !activeClippingSurfaces.has(surface),
+  );
   const mergedMipChainMiB = mergedSurfaces.reduce(
     (total, surface) => total + surface.mipChainMemoryBytes,
     0,
@@ -844,6 +853,14 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
   const lightGlazeMiB = engine.lightGlazeStorageAllocated
     ? lightGlazeAdditionalMemoryMiB(engine.layerFormat, engine.lightGlazeStorageMode)
     : 0;
+  // Compatibility field name: it now accounts for the cropped RGBA prefix and
+  // suffix of the live clipping group, including their mip chains. Those
+  // surfaces are excluded from the generic merged-surface rows above so the
+  // total is never counted twice.
+  const activeClippingMaskMiB = [...activeClippingSurfaces].reduce(
+    (total, surface) => total + surface.mip0MemoryBytes + surface.mipChainMemoryBytes,
+    0,
+  ) / MEBIBYTE_BYTES;
   const stabilizationTailBytesPerPixel = engine.stabilizationSnapshotStorageMode
     === "r8-coverage" ? 1 : 8;
   const stabilizationTailMiB = engine.stabilizationSnapshotTexture
@@ -882,6 +899,7 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     layerBaseMiB,
     layerMipChainMiB,
     layerColdMiB,
+    activeClippingMaskMiB,
     layerHydrationMiB,
     layerBakeMiB,
     layerCompositeMiB,
@@ -913,6 +931,7 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     layerBaseMiB,
     layerMipChainMiB,
     layerColdMiB,
+    activeClippingMaskMiB,
     layerCompressedCpuMiB,
     layerCompressedRawMiB,
     layerHydrationMiB,

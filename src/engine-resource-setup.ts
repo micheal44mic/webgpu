@@ -273,6 +273,8 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
       { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
       { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
       { binding: 5, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+      { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+      { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
     ],
   });
   engine.rasterStrokeDisplayScreenBindGroupLayout = engine.device.createBindGroupLayout({
@@ -339,6 +341,8 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
       },
       { binding: 15, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
       { binding: 16, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+      { binding: 17, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+      { binding: 18, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
     ],
   });
   engine.lightGlazeDisplayBindGroupLayout = engine.device.createBindGroupLayout({
@@ -378,6 +382,8 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
       { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
       { binding: 8, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
       { binding: 9, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+      { binding: 10, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+      { binding: 11, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
     ],
   });
   engine.thicknessTailDisplayBindGroupLayout = engine.device.createBindGroupLayout({
@@ -413,6 +419,8 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
       { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
       { binding: 8, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
       { binding: 9, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+      { binding: 10, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+      { binding: 11, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
     ],
   });
   const grainLayoutEntries: GPUBindGroupLayoutEntry[] = [
@@ -466,6 +474,9 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
         visibility: GPUShaderStage.FRAGMENT,
         buffer: { type: "uniform" },
       },
+      { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+      { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+      { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
     ],
   });
   engine.lightGlazeCompositeBindGroupLayout = engine.device.createBindGroupLayout({
@@ -527,6 +538,8 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
       { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
       { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
       { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+      { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+      { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
     ],
   });
   engine.layerCompositeBindGroupLayout = engine.device.createBindGroupLayout({
@@ -949,6 +962,8 @@ export function ensureThicknessTailOverlayResources(engine: BrushEngine,
       { binding: 7, resource: engine.mergedAboveView() },
       { binding: 8, resource: engine.vectorTextBelowView ?? engine.transparentLayerView },
       { binding: 9, resource: engine.vectorTextAboveView ?? engine.transparentLayerView },
+      { binding: 10, resource: engine.activeClippingPrefixView() },
+      { binding: 11, resource: engine.activeClippingSuffixView() },
     ],
   });
 

@@ -90,6 +90,9 @@ export function createLightGlazeResourceSet(engine: BrushEngine,
           { binding: 0, resource: engine.layerView },
           { binding: 1, resource: view },
           { binding: 2, resource: { buffer: engine.lightGlazeUniformBuffer } },
+          { binding: 3, resource: { buffer: engine.displayUniformBuffer } },
+          { binding: 4, resource: engine.activeClippingPrefixView() },
+          { binding: 5, resource: engine.activeClippingSuffixView() },
         ],
       });
       const displayBindGroup = engine.device.createBindGroup({
@@ -106,6 +109,8 @@ export function createLightGlazeResourceSet(engine: BrushEngine,
           { binding: 7, resource: engine.mergedAboveView() },
           { binding: 8, resource: engine.vectorTextBelowView ?? engine.transparentLayerView },
           { binding: 9, resource: engine.vectorTextAboveView ?? engine.transparentLayerView },
+          { binding: 10, resource: engine.activeClippingPrefixView() },
+          { binding: 11, resource: engine.activeClippingSuffixView() },
         ],
       });
       const compositeBindGroup = engine.device.createBindGroup({

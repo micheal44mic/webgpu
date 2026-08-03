@@ -1,4 +1,5 @@
 import { mergedSurfaceSamplingShader } from "./merged-surface-shader";
+import { activeClippingGroupTexelShader } from "./clipping-group-shader";
 import {
   jfaScheduleForExtent,
   type RasterStrokeRect,
@@ -1212,7 +1213,12 @@ struct DisplayUniforms {
   activeLayerAlpha: f32,
   mergedBelowOrigin: vec2<f32>,
   mergedAboveOrigin: vec2<f32>,
-
+  clippingMode: f32,
+  clippingParentOpacity: f32,
+  clippingPrefixScale: f32,
+  clippingSuffixScale: f32,
+  clippingPrefixOrigin: vec2<f32>,
+  clippingSuffixOrigin: vec2<f32>,
 };
 
 struct VertexOutput {
@@ -1230,11 +1236,15 @@ ${strokeCompositionShaderSource(
 @group(1) @binding(7) var layerSampler: sampler;
 @group(1) @binding(15) var mergedBelowTexture: texture_2d<f32>;
 @group(1) @binding(16) var mergedAboveTexture: texture_2d<f32>;
+@group(1) @binding(17) var activeClippingPrefix: texture_2d<f32>;
+@group(1) @binding(18) var activeClippingSuffix: texture_2d<f32>;
 
 
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
   return source + destination * (1.0 - source.a);
 }
+
+${activeClippingGroupTexelShader}
 
 fn sampleViewportTexture(
   source: texture_2d<f32>,
@@ -1259,7 +1269,12 @@ fn composeLayerStack(
     sampleViewportTexture(vectorTextBelowTexture, fragmentPosition),
     paint
   );
-  paint = sourceOver(activePaint * display.activeLayerAlpha, paint);
+  let activeContribution = select(
+    activePaint,
+    activePaint * display.activeLayerAlpha,
+    display.clippingMode < 0.5
+  );
+  paint = sourceOver(activeContribution, paint);
   paint = sourceOver(
     sampleViewportTexture(vectorTextAboveTexture, fragmentPosition),
     paint
@@ -1303,6 +1318,70 @@ fn directStyledNearestSample(layerPosition: vec2<f32>) -> vec4<f32> {
   return quantizeLayer(styledTexel(position));
 }
 
+fn styledGroupTexel(position: vec2<i32>) -> vec4<f32> {
+  let maximumCoordinate = DOCUMENT_SIZE - vec2<i32>(1);
+  let pixel = clamp(position, vec2<i32>(0), maximumCoordinate);
+  return composeActiveClippingGroupTexel(quantizeLayer(styledTexel(pixel)), pixel);
+}
+
+fn directStyledGroupSample(layerPosition: vec2<f32>) -> vec4<f32> {
+  let origin = vec2<i32>(floor(layerPosition));
+  let fraction = fract(layerPosition);
+  let p00 = styledGroupTexel(origin);
+  let p10 = styledGroupTexel(origin + vec2<i32>(1, 0));
+  let p01 = styledGroupTexel(origin + vec2<i32>(0, 1));
+  let p11 = styledGroupTexel(origin + vec2<i32>(1, 1));
+  return mix(mix(p00, p10, fraction.x), mix(p01, p11, fraction.x), fraction.y);
+}
+
+fn sampleClippingAuxiliary(
+  source: texture_2d<f32>,
+  layerPosition: vec2<f32>,
+  origin: vec2<f32>,
+  scale: f32
+) -> vec4<f32> {
+  if (scale < 0.5) {
+    return vec4<f32>(0.0);
+  }
+  let dimensions = vec2<f32>(textureDimensions(source, 0));
+  let local = (layerPosition - origin) * scale;
+  if (any(local < vec2<f32>(0.0)) || any(local >= dimensions)) {
+    return vec4<f32>(0.0);
+  }
+  let uv = clamp((local + vec2<f32>(0.5)) / dimensions, vec2<f32>(0.0), vec2<f32>(1.0));
+  let lod = clamp(
+    display.selectedMipLevel - 1.0,
+    0.0,
+    f32(max(1u, textureNumLevels(source)) - 1u)
+  );
+  return textureSampleLevel(source, layerSampler, uv, lod);
+}
+
+fn composeStyledGroupSample(activePaint: vec4<f32>, layerPosition: vec2<f32>) -> vec4<f32> {
+  if (display.clippingMode < 0.5) {
+    return activePaint;
+  }
+  let suffix = sampleClippingAuxiliary(
+    activeClippingSuffix,
+    layerPosition,
+    display.clippingSuffixOrigin,
+    display.clippingSuffixScale
+  );
+  if (display.clippingMode < 1.5) {
+    return clippingSourceAtop(suffix, vec4<f32>(activePaint.rgb, activePaint.a))
+      * display.clippingParentOpacity;
+  }
+  var group = sampleClippingAuxiliary(
+    activeClippingPrefix,
+    layerPosition,
+    display.clippingPrefixOrigin,
+    display.clippingPrefixScale
+  );
+  group = clippingSourceAtop(activePaint * display.activeLayerAlpha, group);
+  group = clippingSourceAtop(suffix, group);
+  return group * display.clippingParentOpacity;
+}
+
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   let positions = array<vec2<f32>, 3>(
@@ -1330,9 +1409,21 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   var paint: vec4<f32>;
   if (display.selectedMipLevel < 0.5) {
     if (rasterPixelViewEnabled(1.0)) {
-      paint = directStyledNearestSample(layerPosition);
+      if (display.clippingMode > 0.5) {
+        let pixel = vec2<i32>(floor(layerPosition + vec2<f32>(0.5)));
+        paint = styledGroupTexel(pixel);
+      } else {
+        paint = directStyledNearestSample(layerPosition);
+      }
     } else {
-      paint = directStyledSample(layerPosition);
+      // styledTexel may evaluate fwidth for the bevel contour. Keep both the
+      // ordinary and clipping-group paths in uniform control flow, before the
+      // per-fragment document-bounds return below.
+      if (display.clippingMode > 0.5) {
+        paint = directStyledGroupSample(layerPosition);
+      } else {
+        paint = directStyledSample(layerPosition);
+      }
     }
   } else {
     let uv = clamp(
@@ -1346,17 +1437,15 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
       uv,
       display.selectedMipLevel - 1.0
     );
+    if (display.clippingMode > 0.5) {
+      paint = composeStyledGroupSample(paint, layerPosition);
+    }
   }
 
   if (!insideLayer) {
     return vec4<f32>(vec3<f32>(0.055), 1.0);
   }
 
-  let uv = clamp(
-    (layerPosition + vec2<f32>(0.5)) / layerSize,
-    vec2<f32>(0.0),
-    vec2<f32>(1.0)
-  );
   paint = composeLayerStack(paint, layerPosition, fragmentPosition.xy);
 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
@@ -1386,9 +1475,18 @@ fn activeFragmentMain(
   var paint: vec4<f32>;
   if (display.selectedMipLevel < 0.5) {
     if (rasterPixelViewEnabled(1.0)) {
-      paint = directStyledNearestSample(layerPosition);
+      if (display.clippingMode > 0.5) {
+        let pixel = vec2<i32>(floor(layerPosition + vec2<f32>(0.5)));
+        paint = styledGroupTexel(pixel);
+      } else {
+        paint = directStyledNearestSample(layerPosition);
+      }
     } else {
-      paint = directStyledSample(layerPosition);
+      if (display.clippingMode > 0.5) {
+        paint = directStyledGroupSample(layerPosition);
+      } else {
+        paint = directStyledSample(layerPosition);
+      }
     }
   } else {
     let uv = clamp(
@@ -1402,9 +1500,15 @@ fn activeFragmentMain(
       uv,
       display.selectedMipLevel - 1.0
     );
+    if (display.clippingMode > 0.5) {
+      paint = composeStyledGroupSample(paint, layerPosition);
+    }
   }
   if (!insideLayer) {
     return vec4<f32>(0.0);
+  }
+  if (display.clippingMode > 0.5) {
+    return paint;
   }
   return paint * display.activeLayerAlpha;
 }
@@ -2219,6 +2323,8 @@ export class RasterStrokeRenderer {
     sourceMode: RasterStrokeSourceMode,
     mergedBelowView: GPUTextureView,
     mergedAboveView: GPUTextureView,
+    activeClippingPrefixView: GPUTextureView,
+    activeClippingSuffixView: GPUTextureView,
   ): GPUBindGroup {
     const mode = sourceModeCode(sourceMode);
     return this.device.createBindGroup({
@@ -2242,6 +2348,8 @@ export class RasterStrokeRenderer {
         { binding: 14, resource: { buffer: this.innerShadowUniformBuffer } },
         { binding: 15, resource: mergedBelowView },
         { binding: 16, resource: mergedAboveView },
+        { binding: 17, resource: activeClippingPrefixView },
+        { binding: 18, resource: activeClippingSuffixView },
       ],
     });
   }

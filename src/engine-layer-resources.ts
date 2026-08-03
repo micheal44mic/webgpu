@@ -36,6 +36,21 @@ export interface MergedSurfaceResources {
   analyticBakePixels: number;
 }
 
+/**
+ * One clipping unit is presented as a single active raster segment. `prefix`
+ * contains the raw parent plus clipped siblings below the active child;
+ * `suffix` contains the ordinary source-over collapse of siblings above it.
+ * With the parent active only `suffix` is needed.
+ */
+export interface ActiveClippingGroupResources {
+  parentId: number;
+  activeLayerId: number;
+  mode: "active-parent" | "active-child";
+  parentOpacity: number;
+  prefix: MergedSurfaceResources | null;
+  suffix: MergedSurfaceResources | null;
+}
+
 export interface MixedSceneRasterSegmentResources {
   key: MixedSceneRasterRunKey;
   surface: MergedSurfaceResources;

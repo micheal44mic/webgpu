@@ -61,7 +61,7 @@ import {
 
 assert.equal(
   LAYER_STACK_STRATEGY,
-  "ordered-records-single-active-single-reference-monotonic-ids",
+  "ordered-records-single-active-single-reference-contiguous-raster-clipping-groups-monotonic-ids",
 );
 
 // Color Overlay is a pure alpha-preserving style, not another full-canvas
@@ -200,6 +200,206 @@ const newStack = () => new LayerStack(createStyles);
   );
   assert.deepEqual(stack.below(), []);
   assert.deepEqual(stack.above(), []);
+}
+
+// A clipping mask is still a normal raster record. Multiple upper rasters can
+// share one base parent. Parent identity is stable across valid reorder, a
+// parent always stays below its clips and clipping chains are impossible.
+{
+  const stack = newStack();
+  const parentId = stack.active.id;
+  const first = stack.add("Clip 1");
+  assert.equal(stack.setClippingParent(first, parentId), true);
+  const second = stack.add("Clip 2");
+  assert.equal(stack.setClippingParent(second, parentId), true);
+  const firstId = stack.at(first).id;
+  const secondId = stack.at(second).id;
+  assert.equal(stack.clippingParent(stack.at(first))?.id, parentId);
+  assert.deepEqual(
+    stack.clippingDependents(parentId).map((record) => record.id),
+    [firstId, secondId],
+  );
+  assert.deepEqual(
+    stack.clippingUnit(parentId).map((record) => record.id),
+    [parentId, firstId, secondId],
+  );
+  assert.deepEqual(
+    stack.clippingUnit(firstId).map((record) => record.id),
+    [parentId, firstId, secondId],
+    "un figlio risolve la stessa unità atomica del proprio parent",
+  );
+  assert.equal(stack.move(second, first), true);
+  assert.deepEqual(
+    stack.clippingDependents(parentId).map((record) => record.id),
+    [secondId, firstId],
+    "riordinare due ritagli conserva il parent stabile per id",
+  );
+  assert.throws(
+    () => stack.move(0, 2),
+    /deve restare sotto/,
+    "il parent non può essere spostato sopra i propri ritagli",
+  );
+  assert.deepEqual(
+    stack.layers.map((record) => record.id),
+    [parentId, secondId, firstId],
+    "un riordino non valido deve essere atomico",
+  );
+  assert.throws(
+    () => stack.move(1, 0),
+    /deve restare sotto/,
+    "un ritaglio non può essere spostato sotto il parent",
+  );
+  assert.throws(
+    () => stack.setClippingParent(0, stack.at(first).id),
+    /parent deve essere un livello raster base/i,
+  );
+  assert.throws(
+    () => stack.setClippingParent(0, 999),
+    /assente/,
+  );
+}
+
+// Parent and children are one consecutive raster-order unit. An unrelated
+// raster cannot be inserted or attached inside it, and a failed attempt must
+// leave order, selection and the monotonic next id unchanged.
+{
+  const stack = newStack();
+  const parentId = stack.active.id;
+  const first = stack.add("Clip 1");
+  stack.setClippingParent(first, parentId);
+  const second = stack.add("Clip 2");
+  stack.setClippingParent(second, parentId);
+  const groupIds = stack.layers.map((record) => record.id);
+  const activeId = stack.active.id;
+
+  assert.throws(
+    () => stack.insertAt(1, "Intruso"),
+    /gruppo di ritaglio.*consecutivo/i,
+  );
+  assert.deepEqual(stack.layers.map((record) => record.id), groupIds);
+  assert.equal(stack.active.id, activeId);
+
+  const detachedOrdinary = { ...newStack().active, id: 999 };
+  assert.throws(
+    () => stack.attach(detachedOrdinary, 2),
+    /gruppo di ritaglio.*consecutivo/i,
+  );
+  assert.deepEqual(stack.layers.map((record) => record.id), groupIds);
+  assert.equal(stack.active.id, activeId);
+
+  stack.setActiveIndex(0);
+  const third = stack.add("Clip 3");
+  assert.equal(third, 3, "Add dal parent inserisce sopra l'intera unità");
+  assert.equal(stack.setClippingParent(third, parentId), true);
+  const expandedGroupIds = [...groupIds, stack.active.id];
+  assert.deepEqual(
+    stack.clippingUnit(parentId).map((record) => record.id),
+    expandedGroupIds,
+    "il record appena aggiunto può diventare atomicamente il nuovo figlio superiore",
+  );
+
+  stack.setActiveIndex(1);
+  const outside = stack.add("Fuori gruppo");
+  assert.equal(outside, 4, "Add da un figlio inserisce sopra l'intera unità");
+  assert.deepEqual(
+    stack.layers.map((record) => record.id),
+    [...expandedGroupIds, stack.active.id],
+  );
+  assert.deepEqual(
+    stack.clippingUnit(stack.active).map((record) => record.id),
+    [stack.active.id],
+    "un raster ordinario resta un'unità di un solo elemento",
+  );
+}
+
+// Attaching a child across an unrelated raster and moving any record so that
+// it splits a group are rejected against a candidate copy, never half-applied.
+{
+  const stack = newStack();
+  const parentId = stack.active.id;
+  const unrelated = stack.add("Estraneo");
+  const child = stack.add("Figlio candidato");
+  const childId = stack.at(child).id;
+  assert.throws(
+    () => stack.setClippingParent(child, parentId),
+    /gruppo di ritaglio.*consecutivo/i,
+  );
+  assert.equal(stack.at(child).clippingParentId, null);
+  assert.deepEqual(stack.layers.map((record) => record.id), [parentId, 2, childId]);
+
+  stack.move(unrelated, child);
+  assert.equal(stack.setClippingParent(1, parentId), true);
+  const validOrder = stack.layers.map((record) => record.id);
+  const validActiveId = stack.active.id;
+  assert.throws(
+    () => stack.move(2, 1),
+    /gruppo di ritaglio.*consecutivo/i,
+  );
+  assert.deepEqual(stack.layers.map((record) => record.id), validOrder);
+  assert.equal(stack.active.id, validActiveId);
+}
+
+// The inverse chain is just as invalid: a base that already owns clipping
+// dependents cannot later become a clipping layer itself.
+{
+  const stack = newStack();
+  const lowerBaseId = stack.active.id;
+  const upperBase = stack.add("Base superiore");
+  const upperBaseId = stack.at(upperBase).id;
+  const clip = stack.add("Ritaglio superiore");
+  stack.setClippingParent(clip, upperBaseId);
+  assert.throws(
+    () => stack.setClippingParent(upperBase, lowerBaseId),
+    /ritagli collegati/,
+  );
+  assert.equal(stack.at(upperBase).clippingParentId, null);
+}
+
+// Removing a base detaches all of its children instead of leaving dangling ids.
+// Removing a child retains its parent id on the detached history record, and an
+// exact valid reattach restores that relationship.
+{
+  const stack = newStack();
+  const parentId = stack.active.id;
+  const first = stack.add("Clip 1");
+  stack.setClippingParent(first, parentId);
+  const detachedChild = stack.remove(first);
+  assert.equal(detachedChild.clippingParentId, parentId);
+  assert.equal(stack.attach(detachedChild, 1), 1);
+  assert.equal(stack.clippingParent(detachedChild)?.id, parentId);
+
+  const second = stack.add("Clip 2");
+  stack.setClippingParent(second, parentId);
+  const removedParent = stack.remove(0);
+  assert.equal(removedParent.id, parentId);
+  assert.deepEqual(
+    stack.layers.map((record) => record.clippingParentId),
+    [null, null],
+    "i figli del parent eliminato diventano raster ordinari",
+  );
+  assert.deepEqual(stack.clippingDependents(parentId), []);
+}
+
+// Structural-history attach validates the stored explicit id and the vertical
+// order before mutating the live stack. It cannot publish a dangling or
+// inverted relationship.
+{
+  const stack = newStack();
+  const parentId = stack.active.id;
+  const childIndex = stack.add("Clip storico");
+  stack.setClippingParent(childIndex, parentId);
+  const child = stack.remove(childIndex);
+  assert.throws(
+    () => stack.attach(child, 0),
+    /deve restare sotto/,
+  );
+  assert.equal(stack.count, 1, "attach fallito non deve mutare lo stack");
+  const missingParent = { ...child, id: 999, clippingParentId: 998 };
+  assert.throws(
+    () => stack.attach(missingParent, 1),
+    /assente/,
+  );
+  assert.equal(stack.count, 1);
 }
 
 // Reference is a document-wide identity, never a per-row combination: setting
@@ -686,9 +886,23 @@ assert.throws(
 // dropped submit leaves the previous image in place. Guard it against silent
 // removal, and against losing its dev gate.
 const engineSource = readEngineSource();
+const clippingGroupShaderSource = readFileSync(
+  new URL("../src/clipping-group-shader.ts", import.meta.url),
+  "utf8",
+);
 assert.match(
   engineSource,
   /async readLayerPixels\(rect\?: DirtyRect, layerIndex\?: number\): Promise<Uint8Array>/,
+);
+assert.match(
+  engineSource,
+  /rasterClippingParentId: record\.clippingParentId/,
+  "lo snapshot pubblico deve serializzare l'id stabile del parent, mai un indice di stack",
+);
+assert.match(
+  engineSource,
+  /rasterClippingParentId: number \| null/,
+  "lo snapshot distingue esplicitamente un raster ordinario da un ritaglio",
 );
 // Reading a NAMED layer is what makes the test bilateral: "A kept its pixels
 // while B was rebuilt" needs both records. Cold records are rehydrated only for
@@ -729,7 +943,7 @@ assert.match(destroyReadbackBody, /engine\.devReadbackActiveBytes -= size/,
 assert.match(engineSource, /LAYER_BAKE_STRATEGY =\s*\n\s*"transient-analytic-bounded-visual-rect-no-handoff-residency-mip0-fused-into-two-merged-surfaces"/);
 assert.match(
   engineSource,
-  /LAYER_COMPOSITE_STRATEGY =\s*\n\s*"merged-above-over-active-over-merged-below-source-over-evict-derived-before-rebuild-deferred-to-fold-fence-bounded-visual-rect"/,
+  /LAYER_COMPOSITE_STRATEGY =\s*\n\s*"merged-above-over-isolated-active-clipping-group-over-merged-below-source-atop-live-prefix-suffix-compose-before-filter-parent-opacity-once-deferred-to-fold-fence-bounded-visual-rect"/,
 );
 assert.ok(
   (engineSource.match(/layerBakeStrategy: LAYER_BAKE_STRATEGY/g) ?? []).length >= 2,
@@ -794,23 +1008,32 @@ assert.match(
   /export async function materializeLayerCompositeSource\([\s\S]*?"defer-to-fold-fence"[\s\S]*?"defer-to-fold-fence"[\s\S]*?"defer-to-fold-fence"/,
   "hydrate, retarget e bake temporanei devono appartenere allo stesso fence del fold",
 );
+const foldViewStart = engineSource.indexOf("async function foldViewIntoMergedSurface(");
+const foldViewEnd = engineSource.indexOf("function recordHasLiveContent(", foldViewStart);
+assertSection("fold view into merged surface", foldViewStart, foldViewEnd);
+const foldViewBody = engineSource.slice(foldViewStart, foldViewEnd);
 assert.ok(
-  mergedBody.indexOf("this.device.queue.submit([encoder.finish()]);")
-    < mergedBody.indexOf("await engine.waitForGpuCapped(`Fold livello ${record.id}`);"),
-  "il fence unico del record deve seguire il submit del fold",
+  foldViewBody.indexOf("engine.device.queue.submit([encoder.finish()]);")
+    < foldViewBody.indexOf("await engine.waitForGpuCapped(label);"),
+  "il fence unico del fold deve seguire il submit",
 );
-assert.match(mergedBody, /if \(first && record\.opacity >= 1 && surface\.resolutionScale === 1\)/,
-  "il primo livello opaco deve evitare il pass full-document");
-assert.match(mergedBody, /encoder\.copyTextureToTexture\(/,
-  "il percorso veloce deve conservare esattamente i texel sorgente");
-assert.match(mergedBody, /pass\.setScissorRect\(/,
+assert.match(foldViewBody, /pass\.setScissorRect\(/,
   "i fold renderizzati devono restare limitati ai bounds conservativi");
-assert.match(mergedBody, /new ArrayBuffer\(LAYER_COMPOSITE_UNIFORM_BYTES\)/);
-assert.match(mergedBody, /uniformF32\[0\] = surface\.bounds\.x/);
-assert.match(mergedBody, /uniformF32\[1\] = surface\.bounds\.y/);
-assert.match(mergedBody, /uniformF32\[2\] = surface\.resolutionScale/);
-assert.match(mergedBody, /uniformF32\[3\] = record\.opacity/);
-assert.match(mergedBody, /mergedSurfacePhysicalRect\(/);
+assert.match(foldViewBody, /loadOp: clearDestination \? "clear" : "load"/,
+  "il primo fold deve pulire la superficie e i successivi caricarla");
+const foldUniformStart = engineSource.indexOf("function writeLayerCompositeUniforms(");
+const foldUniformEnd = engineSource.indexOf("async function foldViewIntoMergedSurface(", foldUniformStart);
+assertSection("layer composite uniforms", foldUniformStart, foldUniformEnd);
+const foldUniformBody = engineSource.slice(foldUniformStart, foldUniformEnd);
+assert.match(foldUniformBody, /new ArrayBuffer\(LAYER_COMPOSITE_UNIFORM_BYTES\)/);
+assert.match(foldUniformBody, /f32\[0\] = destination\.bounds\.x/);
+assert.match(foldUniformBody, /f32\[1\] = destination\.bounds\.y/);
+assert.match(foldUniformBody, /f32\[2\] = destination\.resolutionScale/);
+assert.match(foldUniformBody, /f32\[3\] = opacity/);
+assert.match(foldUniformBody, /f32\[4\] = sourceOrigin\.x/);
+assert.match(foldUniformBody, /f32\[5\] = sourceOrigin\.y/);
+assert.match(foldUniformBody, /f32\[6\] = sourceScale/);
+assert.match(foldViewBody, /mergedSurfacePhysicalRect\(/);
 assert.match(mergedBody, /engine\.layerCompositePipeline/);
 assert.match(mergedBody, /engine\.destroyLayerBake\(source\.transientBake\)/);
 assert.match(
@@ -880,8 +1103,39 @@ assert.match(
   /srcFactor: "one", dstFactor: "one-minus-src-alpha"/,
   "la fusione deve usare source-over premoltiplicato",
 );
-assert.match(mergedBody, /loadOp: first \? "clear" : "load"/,
-  "il primo livello pulisce la superficie, i successivi si fondono sul risultato");
+const sourceAtopPipelineStart = engineSource.indexOf(
+  "const layerSourceAtopPipeline = engine.device.createRenderPipeline(",
+);
+const sourceAtopPipelineBody = engineSource.slice(sourceAtopPipelineStart, sourceAtopPipelineStart + 1_100);
+assert.match(sourceAtopPipelineBody, /srcFactor: "dst-alpha"/,
+  "il colore del child deve essere moltiplicato per l'alpha continuo del parent");
+assert.match(sourceAtopPipelineBody, /dstFactor: "one-minus-src-alpha"/);
+assert.match(sourceAtopPipelineBody, /alpha: \{ operation: "add", srcFactor: "zero", dstFactor: "one" \}/,
+  "source-atop deve conservare esattamente l'alpha del parent");
+assert.match(clippingGroupShaderSource, /let matte = clamp\(destination\.a, 0\.0, 1\.0\)/);
+assert.match(clippingGroupShaderSource, /source\.rgb \* matte \+ destination\.rgb \* \(1\.0 - sourceAlpha\)/);
+assert.match(clippingGroupShaderSource, /return group \* display\.clippingParentOpacity/,
+  "l'opacità del parent va applicata una sola volta al gruppo isolato");
+assert.doesNotMatch(clippingGroupShaderSource, /step\s*\(|threshold|discard/i,
+  "i bordi morbidi devono usare tutti i valori alpha, senza soglie");
+
+// Oracle premoltiplicato: anche con due child opachi il bordo al 25% del
+// parent resta al 25%, invece di crescere a ogni composizione.
+const sourceAtop = (source, destination) => {
+  const matte = destination[3];
+  return [
+    source[0] * matte + destination[0] * (1 - source[3]),
+    source[1] * matte + destination[1] * (1 - source[3]),
+    source[2] * matte + destination[2] * (1 - source[3]),
+    matte,
+  ];
+};
+const softParent = [0.25, 0, 0, 0.25];
+const firstClip = sourceAtop([0, 1, 0, 1], softParent);
+const secondClip = sourceAtop([0, 0, 1, 1], firstClip);
+assert.equal(firstClip[3], 0.25);
+assert.equal(secondClip[3], 0.25);
+assert.deepEqual(secondClip, [0, 0, 0.25, 0.25]);
 
 // Le allocazioni delle risorse di livello vivono in `engine-layer-runtime`:
 // la sezione parte dalla definizione, non dalla prima chiamata.
@@ -927,13 +1181,21 @@ assert.match(engineSource, /this\.displayUniformUpload\[10\] = this\.mergedAbove
 assert.match(engineSource, /this\.displayUniformUpload\[11\] = this\.layerStack\.active\.visible/);
 assert.match(engineSource, /this\.displayUniformUpload\[12\] = this\.mergedBelow\?\.bounds\.x \?\? 0/);
 assert.match(engineSource, /this\.displayUniformUpload\[15\] = this\.mergedAbove\?\.bounds\.y \?\? 0/);
+assert.match(engineSource, /this\.displayUniformUpload\[16\] = clippingGroup\?\.mode === "active-parent"/);
+assert.match(engineSource, /this\.displayUniformUpload\[17\] = clippingGroup\?\.parentOpacity \?\? 0/);
+assert.match(engineSource, /this\.displayUniformUpload\[18\] = clippingGroup\?\.prefix\?\.resolutionScale \?\? 0/);
+assert.match(engineSource, /this\.displayUniformUpload\[19\] = clippingGroup\?\.suffix\?\.resolutionScale \?\? 0/);
+assert.match(engineSource, /this\.displayUniformUpload\[23\] = clippingGroup\?\.suffix\?\.bounds\.y \?\? 0/);
 const shaderSource = readFileSync(new URL("../src/shaders.ts", import.meta.url), "utf8");
 const mergedSurfaceShaderSource = readFileSync(
   new URL("../src/merged-surface-shader.ts", import.meta.url),
   "utf8",
 );
 assert.match(shaderSource, /fn composeLayerStackSamples\(/);
-assert.match(shaderSource, /paint = sourceOver\(activePaint \* display\.activeLayerAlpha, paint\)/);
+assert.match(shaderSource, /return composeActiveClippingGroupTexel\(activeTexel, pixel\)/,
+  "il mip 0 deve comporre il gruppo live direttamente dal texel autorevole");
+assert.match(shaderSource, /let activeContribution = select\([\s\S]*?display\.clippingMode < 0\.5/,
+  "il compositore stack non deve applicare due volte l'opacità al gruppo isolato");
 assert.match(mergedSurfaceShaderSource, /sampleMergedAbove\(layerPosition/);
 assert.match(mergedSurfaceShaderSource, /layerPosition - display\.mergedAboveOrigin/);
 assert.equal(
@@ -1530,7 +1792,9 @@ assert.match(selectMethodBody, /Stato incoerente dopo il cambio livello:[\s\S]*?
   "un doppio fallimento dello switch deve alzare il latch fatale");
 const addMethodStart = engineSource.indexOf("async addLayer(");
 // La transazione include ora anche il rollback dello stack misto raster/testo.
-const addMethodBody = engineSource.slice(addMethodStart, addMethodStart + 6_000);
+const addMethodEnd = engineSource.indexOf("async setActiveLayer(", addMethodStart);
+assertSection("add layer", addMethodStart, addMethodEnd);
+const addMethodBody = engineSource.slice(addMethodStart, addMethodEnd);
 const addPrepare = addMethodBody.indexOf("await this.prepareActiveLayerForSwitch();");
 const addRecord = addMethodBody.indexOf("this.layerStack.add(name)");
 assert.ok(
@@ -1541,6 +1805,11 @@ assert.match(
   addMethodBody,
   /this\.mixedSceneStack\.addRasterAboveSelection\(record\.id\)/,
   "nella scena mista il nuovo raster deve seguire la selezione, incluso un testo",
+);
+assert.match(
+  addMethodBody,
+  /this\.mixedSceneStack\.insertRasterAt\(record\.id, clippingSceneInsertIndex\)/,
+  "una nuova maschera deve essere inserita sopra l'intero gruppo di ritaglio",
 );
 assert.match(addMethodBody, /await allocateLayerGpuResources\(this,/);
 const addActivation = addMethodBody.indexOf(

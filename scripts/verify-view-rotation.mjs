@@ -128,8 +128,8 @@ assert.notEqual(magnet.display, 0, "il magnete non deve riagganciare fuori dalla
 applyMagnet(magnet, -2);
 assert.equal(magnet.display, 0, "entro 3° il magnete deve tornare a zero esatto");
 
-assert.match(engineSource, /const DISPLAY_UNIFORM_BYTES = 64;/,
-  "rotazione e origin merged condividono la ABI display da 64 byte");
+assert.match(engineSource, /const DISPLAY_UNIFORM_BYTES = 96;/,
+  "rotazione, origin merged e gruppo di ritaglio condividono la ABI display da 96 byte");
 assert.match(engineSource, /displayUniformUpload\[2\] = this\.viewRotationCos/);
 assert.match(engineSource, /displayUniformUpload\[3\] = this\.viewRotationSin/);
 assert.match(engineSource, /displayUniformUpload\[4\] = this\.viewCenterX/);
@@ -167,14 +167,14 @@ assert.match(engineSource, /rotation: rotation \+ this\.viewRotation/,
   "la tip preview Shape deve ruotare insieme alla vista");
 
 const displayShaders = `${shaderSource}\n${strokeRendererSource}`;
-assert.equal((displayShaders.match(/struct DisplayUniforms/g) ?? []).length, 5,
-  "le quattro varianti display e il compositore mip devono condividere l'ABI");
-assert.equal((displayShaders.match(/  mergedBelowOrigin: vec2<f32>,/g) ?? []).length, 5,
-  "display e compositore mip devono ricevere l'origine del bbox inferiore");
-assert.equal((displayShaders.match(/  mergedAboveOrigin: vec2<f32>,/g) ?? []).length, 5,
-  "display e compositore mip devono ricevere l'origine del bbox superiore");
-assert.equal((displayShaders.match(/  viewRotation: vec2<f32>,/g) ?? []).length, 5,
-  "display e compositore mip devono condividere la stessa ABI di rotazione");
+assert.equal((displayShaders.match(/struct DisplayUniforms/g) ?? []).length, 6,
+  "le quattro varianti display e i due compositori mip devono condividere l'ABI");
+assert.equal((displayShaders.match(/  mergedBelowOrigin: vec2<f32>,/g) ?? []).length, 6,
+  "display e compositori mip devono ricevere l'origine del bbox inferiore");
+assert.equal((displayShaders.match(/  mergedAboveOrigin: vec2<f32>,/g) ?? []).length, 6,
+  "display e compositori mip devono ricevere l'origine del bbox superiore");
+assert.equal((displayShaders.match(/  viewRotation: vec2<f32>,/g) ?? []).length, 6,
+  "display e compositori mip devono condividere la stessa ABI di rotazione");
 assert.equal((displayShaders.match(/let displayOffset =/g) ?? []).length, 9,
   "entry point canonico, final-stack e active-only devono applicare la stessa trasformazione inversa");
 assert.equal((displayShaders.match(/fn activeFragmentMain\(/g) ?? []).length, 4,
@@ -328,8 +328,8 @@ assert.ok(stackMipShaderStart >= 0, "shader final-stack mip 1 mancante");
 const stackMipShader = shaderSource.slice(stackMipShaderStart);
 assert.match(
   stackMipShader,
-  /fn compositedDocumentTexel[\s\S]*loadMergedBelow\(pixel\)[\s\S]*textureLoad\(activeLayerBase, pixel, 0\) \* display\.activeLayerAlpha[\s\S]*loadMergedAbove\(pixel\)/,
-  "mip 1 deve comporre below, active e above per ogni texel documento",
+  /fn compositedDocumentTexel[\s\S]*loadMergedBelow\(pixel\)[\s\S]*composeActiveClippingGroupTexel\([\s\S]*textureLoad\(activeLayerBase, pixel, 0\)[\s\S]*loadMergedAbove\(pixel\)/,
+  "mip 1 deve comporre below, gruppo active e above per ogni texel documento",
 );
 assert.match(
   stackMipShader,

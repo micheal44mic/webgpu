@@ -1,4 +1,5 @@
 import { mergedSurfaceSamplingShader } from "./merged-surface-shader";
+import { activeClippingGroupTexelShader } from "./clipping-group-shader";
 
 export const brushShader = /* wgsl */ `
 const MAX_COUNT: u32 = 24u;
@@ -691,7 +692,12 @@ struct DisplayUniforms {
   activeLayerAlpha: f32,
   mergedBelowOrigin: vec2<f32>,
   mergedAboveOrigin: vec2<f32>,
-
+  clippingMode: f32,
+  clippingParentOpacity: f32,
+  clippingPrefixScale: f32,
+  clippingSuffixScale: f32,
+  clippingPrefixOrigin: vec2<f32>,
+  clippingSuffixOrigin: vec2<f32>,
 };
 
 struct VertexOutput {
@@ -704,6 +710,8 @@ struct VertexOutput {
 @group(0) @binding(3) var mergedBelowTexture: texture_2d<f32>;
 @group(0) @binding(4) var mergedAboveTexture: texture_2d<f32>;
 @group(0) @binding(5) var layerSampler: sampler;
+@group(0) @binding(6) var activeClippingPrefix: texture_2d<f32>;
+@group(0) @binding(7) var activeClippingSuffix: texture_2d<f32>;
 
 fn srgbToLinearChannel(value: f32) -> f32 {
   if (value <= 0.04045) {
@@ -740,17 +748,20 @@ fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
   return source + destination * (1.0 - source.a);
 }
 
+${activeClippingGroupTexelShader}
+
 fn sampleActiveLayer(uv: vec2<f32>) -> vec4<f32> {
   if (display.selectedMipLevel < 0.5) {
     if (rasterPixelViewEnabled(1.0)) {
-      return textureLoad(
-        activeLayerBase,
-        rasterPixelViewTexel(
-          uv,
-          vec2<i32>(textureDimensions(activeLayerBase, 0))
-        ),
-        0
+      let pixel = rasterPixelViewTexel(
+        uv,
+        vec2<i32>(textureDimensions(activeLayerBase, 0))
       );
+      let activeTexel = textureLoad(activeLayerBase, pixel, 0);
+      if (display.clippingMode < 0.5) {
+        return activeTexel;
+      }
+      return composeActiveClippingGroupTexel(activeTexel, pixel);
     }
     return textureSampleLevel(activeLayerBase, layerSampler, uv, 0.0);
   }
@@ -769,13 +780,22 @@ fn composeLayerStackSamples(
   abovePaint: vec4<f32>
 ) -> vec4<f32> {
   var paint = belowPaint;
-  paint = sourceOver(activePaint * display.activeLayerAlpha, paint);
+  let activeContribution = select(
+    activePaint,
+    activePaint * display.activeLayerAlpha,
+    display.clippingMode < 0.5
+  );
+  paint = sourceOver(activeContribution, paint);
   paint = sourceOver(abovePaint, paint);
   return paint;
 }
 
 fn loadActiveDocumentTexel(documentPixel: vec2<i32>) -> vec4<f32> {
-  return textureLoad(activeLayerBase, documentPixel, 0);
+  let activeTexel = textureLoad(activeLayerBase, documentPixel, 0);
+  if (display.clippingMode < 0.5) {
+    return activeTexel;
+  }
+  return composeActiveClippingGroupTexel(activeTexel, documentPixel);
 }
 
 fn loadMergedBelowDocumentTexel(documentPixel: vec2<i32>) -> vec4<f32> {
@@ -848,12 +868,12 @@ fn jointLayerFilteringCandidate() -> bool {
     || (belowPresent && abovePresent);
   return lodZeroSmooth
     && mergedSurfacesUseDocumentResolution()
-    && multipleSurfaces;
+    && (multipleSurfaces || display.clippingMode > 0.5);
 }
 
 fn needsJointLayerFiltering(stackAlphaGradient: f32) -> bool {
   return jointLayerFilteringCandidate()
-    && stackAlphaGradient > 0.00001;
+    && (display.clippingMode > 0.5 || stackAlphaGradient > 0.00001);
 }
 
 @vertex
@@ -990,7 +1010,26 @@ fn activeFragmentMain(
     vec2<f32>(0.0),
     vec2<f32>(1.0)
   );
-  return sampleActiveLayer(uv) * display.activeLayerAlpha;
+  if (display.selectedMipLevel >= 0.5 || rasterPixelViewEnabled(1.0)) {
+    let sampled = sampleActiveLayer(uv);
+    return select(
+      sampled,
+      sampled * display.activeLayerAlpha,
+      display.clippingMode < 0.5
+    );
+  }
+  let lower = vec2<i32>(floor(layerPosition));
+  let interpolation = fract(layerPosition);
+  let maximum = vec2<i32>(textureDimensions(activeLayerBase, 0)) - vec2<i32>(1);
+  let p00i = clamp(lower, vec2<i32>(0), maximum);
+  let p10i = clamp(lower + vec2<i32>(1, 0), vec2<i32>(0), maximum);
+  let p01i = clamp(lower + vec2<i32>(0, 1), vec2<i32>(0), maximum);
+  let p11i = clamp(lower + vec2<i32>(1, 1), vec2<i32>(0), maximum);
+  let p00 = composeActiveClippingGroupTexel(textureLoad(activeLayerBase, p00i, 0), p00i);
+  let p10 = composeActiveClippingGroupTexel(textureLoad(activeLayerBase, p10i, 0), p10i);
+  let p01 = composeActiveClippingGroupTexel(textureLoad(activeLayerBase, p01i, 0), p01i);
+  let p11 = composeActiveClippingGroupTexel(textureLoad(activeLayerBase, p11i, 0), p11i);
+  return mix(mix(p00, p10, interpolation.x), mix(p01, p11, interpolation.x), interpolation.y);
 }
 `;
 
@@ -1010,7 +1049,12 @@ struct DisplayUniforms {
   activeLayerAlpha: f32,
   mergedBelowOrigin: vec2<f32>,
   mergedAboveOrigin: vec2<f32>,
-
+  clippingMode: f32,
+  clippingParentOpacity: f32,
+  clippingPrefixScale: f32,
+  clippingSuffixScale: f32,
+  clippingPrefixOrigin: vec2<f32>,
+  clippingSuffixOrigin: vec2<f32>,
 };
 
 struct ThicknessTailUniforms {
@@ -1035,6 +1079,8 @@ struct VertexOutput {
 @group(0) @binding(7) var mergedAboveTexture: texture_2d<f32>;
 @group(0) @binding(8) var vectorTextBelowTexture: texture_2d<f32>;
 @group(0) @binding(9) var vectorTextAboveTexture: texture_2d<f32>;
+@group(0) @binding(10) var activeClippingPrefix: texture_2d<f32>;
+@group(0) @binding(11) var activeClippingSuffix: texture_2d<f32>;
 
 fn srgbToLinearChannel(value: f32) -> f32 {
   if (value <= 0.04045) {
@@ -1070,6 +1116,8 @@ fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
   return source + destination * (1.0 - source.a);
 }
+
+${activeClippingGroupTexelShader}
 
 fn sampleViewportTexture(
   source: texture_2d<f32>,
@@ -1116,6 +1164,38 @@ fn sampleTailLayer(uv: vec2<f32>) -> vec4<f32> {
   return textureSampleLevel(tailTexture, layerSampler, uv, 0.0);
 }
 
+fn tailActiveTexel(documentPixel: vec2<i32>) -> vec4<f32> {
+  let maximum = vec2<i32>(textureDimensions(activeLayerBase, 0)) - vec2<i32>(1);
+  let pixel = clamp(documentPixel, vec2<i32>(0), maximum);
+  let permanentPaint = textureLoad(activeLayerBase, pixel, 0);
+  let local = pixel - vec2<i32>(tail.origin);
+  let tailDimensions = vec2<i32>(tail.textureSize);
+  if (any(local < vec2<i32>(0)) || any(local >= tailDimensions)) {
+    return permanentPaint;
+  }
+  let transientPaint = textureLoad(tailTexture, local, 0);
+  if (tail.compositionMode == 1u) {
+    return vec4<f32>(
+      permanentPaint.rgb + transientPaint.rgb,
+      transientPaint.a + permanentPaint.a * (1.0 - transientPaint.a)
+    );
+  }
+  return transientPaint + permanentPaint * (1.0 - transientPaint.a);
+}
+
+fn sampleTailClippingGroupLinear(layerPosition: vec2<f32>) -> vec4<f32> {
+  let lower = vec2<i32>(floor(layerPosition));
+  let interpolation = fract(layerPosition);
+  let p10i = lower + vec2<i32>(1, 0);
+  let p01i = lower + vec2<i32>(0, 1);
+  let p11i = lower + vec2<i32>(1, 1);
+  let p00 = composeActiveClippingGroupTexel(tailActiveTexel(lower), lower);
+  let p10 = composeActiveClippingGroupTexel(tailActiveTexel(p10i), p10i);
+  let p01 = composeActiveClippingGroupTexel(tailActiveTexel(p01i), p01i);
+  let p11 = composeActiveClippingGroupTexel(tailActiveTexel(p11i), p11i);
+  return mix(mix(p00, p10, interpolation.x), mix(p01, p11, interpolation.x), interpolation.y);
+}
+
 ${mergedSurfaceSamplingShader}
 fn composeLayerStack(
   activePaint: vec4<f32>,
@@ -1130,7 +1210,12 @@ fn composeLayerStack(
     sampleViewportTexture(vectorTextBelowTexture, fragmentPosition),
     paint
   );
-  paint = sourceOver(activePaint * display.activeLayerAlpha, paint);
+  let activeContribution = select(
+    activePaint,
+    activePaint * display.activeLayerAlpha,
+    display.clippingMode < 0.5
+  );
+  paint = sourceOver(activeContribution, paint);
   paint = sourceOver(
     sampleViewportTexture(vectorTextAboveTexture, fragmentPosition),
     paint
@@ -1198,6 +1283,14 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
       paint = transientPaint + permanentPaint * (1.0 - transientPaint.a);
     }
   }
+  if (display.clippingMode > 0.5) {
+    if (rasterPixelViewEnabled(1.0)) {
+      let pixel = vec2<i32>(floor(layerPosition + vec2<f32>(0.5)));
+      paint = composeActiveClippingGroupTexel(tailActiveTexel(pixel), pixel);
+    } else {
+      paint = sampleTailClippingGroupLinear(layerPosition);
+    }
+  }
   paint = composeLayerStack(paint, layerPosition, fragmentPosition.xy);
 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
@@ -1252,6 +1345,13 @@ fn activeFragmentMain(
       paint = transientPaint + permanentPaint * (1.0 - transientPaint.a);
     }
   }
+  if (display.clippingMode > 0.5) {
+    if (rasterPixelViewEnabled(1.0)) {
+      let pixel = vec2<i32>(floor(layerPosition + vec2<f32>(0.5)));
+      return composeActiveClippingGroupTexel(tailActiveTexel(pixel), pixel);
+    }
+    return sampleTailClippingGroupLinear(layerPosition);
+  }
   return paint * display.activeLayerAlpha;
 }
 `;
@@ -1273,7 +1373,12 @@ struct DisplayUniforms {
   activeLayerAlpha: f32,
   mergedBelowOrigin: vec2<f32>,
   mergedAboveOrigin: vec2<f32>,
-
+  clippingMode: f32,
+  clippingParentOpacity: f32,
+  clippingPrefixScale: f32,
+  clippingSuffixScale: f32,
+  clippingPrefixOrigin: vec2<f32>,
+  clippingSuffixOrigin: vec2<f32>,
 };
 
 struct LightGlazeUniforms {
@@ -1298,6 +1403,8 @@ struct VertexOutput {
 @group(0) @binding(7) var mergedAboveTexture: texture_2d<f32>;
 @group(0) @binding(8) var vectorTextBelowTexture: texture_2d<f32>;
 @group(0) @binding(9) var vectorTextAboveTexture: texture_2d<f32>;
+@group(0) @binding(10) var activeClippingPrefix: texture_2d<f32>;
+@group(0) @binding(11) var activeClippingSuffix: texture_2d<f32>;
 
 fn srgbToLinearChannel(value: f32) -> f32 {
   if (value <= 0.04045) {
@@ -1334,6 +1441,8 @@ fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
   return source + destination * (1.0 - source.a);
 }
 
+${activeClippingGroupTexelShader}
+
 fn sampleViewportTexture(
   source: texture_2d<f32>,
   fragmentPosition: vec2<f32>
@@ -1357,7 +1466,12 @@ fn composeLayerStack(
     sampleViewportTexture(vectorTextBelowTexture, fragmentPosition),
     paint
   );
-  paint = sourceOver(activePaint * display.activeLayerAlpha, paint);
+  let activeContribution = select(
+    activePaint,
+    activePaint * display.activeLayerAlpha,
+    display.clippingMode < 0.5
+  );
+  paint = sourceOver(activeContribution, paint);
   paint = sourceOver(
     sampleViewportTexture(vectorTextAboveTexture, fragmentPosition),
     paint
@@ -1434,6 +1548,14 @@ fn compositedLayerTexel(position: vec2<i32>) -> vec4<f32> {
   return compositeLightGlazeOverPermanent(permanentPaint, accumulatedStroke);
 }
 
+fn compositedClippingGroupTexel(position: vec2<i32>) -> vec4<f32> {
+  let activeTexel = compositedLayerTexel(position);
+  if (display.clippingMode < 0.5) {
+    return activeTexel;
+  }
+  return composeActiveClippingGroupTexel(activeTexel, position);
+}
+
 fn sampleCompositedLayerLinear(uv: vec2<f32>) -> vec4<f32> {
   let dimensions = vec2<i32>(textureDimensions(layerTexture, 0));
   let maximumCoordinate = dimensions - vec2<i32>(1);
@@ -1466,6 +1588,21 @@ fn sampleCompositedLayerLinear(uv: vec2<f32>) -> vec4<f32> {
 fn sampleCompositedLayerNearest(uv: vec2<f32>) -> vec4<f32> {
   let dimensions = vec2<i32>(textureDimensions(layerTexture, 0));
   return compositedLayerTexel(rasterPixelViewTexel(uv, dimensions));
+}
+
+fn sampleCompositedClippingGroupLinear(layerPosition: vec2<f32>) -> vec4<f32> {
+  let lower = vec2<i32>(floor(layerPosition));
+  let interpolation = fract(layerPosition);
+  let maximum = vec2<i32>(textureDimensions(layerTexture, 0)) - vec2<i32>(1);
+  let p00i = clamp(lower, vec2<i32>(0), maximum);
+  let p10i = clamp(lower + vec2<i32>(1, 0), vec2<i32>(0), maximum);
+  let p01i = clamp(lower + vec2<i32>(0, 1), vec2<i32>(0), maximum);
+  let p11i = clamp(lower + vec2<i32>(1, 1), vec2<i32>(0), maximum);
+  let p00 = compositedClippingGroupTexel(p00i);
+  let p10 = compositedClippingGroupTexel(p10i);
+  let p01 = compositedClippingGroupTexel(p01i);
+  let p11 = compositedClippingGroupTexel(p11i);
+  return mix(mix(p00, p10, interpolation.x), mix(p01, p11, interpolation.x), interpolation.y);
 }
 
 @vertex
@@ -1519,6 +1656,17 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
       display.selectedMipLevel - 1.0
     );
   }
+  if (display.clippingMode > 0.5 && display.selectedMipLevel < 0.5) {
+    if (rasterPixelViewEnabled(1.0)) {
+      let pixel = rasterPixelViewTexel(
+        uv,
+        vec2<i32>(textureDimensions(layerTexture, 0))
+      );
+      paint = compositedClippingGroupTexel(pixel);
+    } else {
+      paint = sampleCompositedClippingGroupLinear(layerPosition);
+    }
+  }
   paint = composeLayerStack(paint, layerPosition, fragmentPosition.xy);
 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
@@ -1567,7 +1715,21 @@ fn activeFragmentMain(
       display.selectedMipLevel - 1.0
     );
   }
-  return paint * display.activeLayerAlpha;
+  if (display.clippingMode > 0.5 && display.selectedMipLevel < 0.5) {
+    if (rasterPixelViewEnabled(1.0)) {
+      let pixel = rasterPixelViewTexel(
+        uv,
+        vec2<i32>(textureDimensions(layerTexture, 0))
+      );
+      return compositedClippingGroupTexel(pixel);
+    }
+    return sampleCompositedClippingGroupLinear(layerPosition);
+  }
+  return select(
+    paint,
+    paint * display.activeLayerAlpha,
+    display.clippingMode < 0.5
+  );
 }
 `;
 
@@ -1576,6 +1738,26 @@ fn activeFragmentMain(
 // permanent/stroke source pairs independently and only then box-filters them.
 // Higher levels can use the ordinary premultiplied box downsampler.
 export const lightGlazeCompositeMipShader = /* wgsl */ `
+struct DisplayUniforms {
+  canvasSize: vec2<f32>,
+  viewRotation: vec2<f32>,
+  viewCenter: vec2<f32>,
+  zoom: f32,
+  checkerSize: f32,
+  selectedMipLevel: f32,
+  hasMergedBelow: f32,
+  hasMergedAbove: f32,
+  activeLayerAlpha: f32,
+  mergedBelowOrigin: vec2<f32>,
+  mergedAboveOrigin: vec2<f32>,
+  clippingMode: f32,
+  clippingParentOpacity: f32,
+  clippingPrefixScale: f32,
+  clippingSuffixScale: f32,
+  clippingPrefixOrigin: vec2<f32>,
+  clippingSuffixOrigin: vec2<f32>,
+};
+
 struct LightGlazeUniforms {
   opacity: f32,
   formatCode: u32,
@@ -1591,6 +1773,11 @@ struct VertexOutput {
 @group(0) @binding(0) var permanentTexture: texture_2d<f32>;
 @group(0) @binding(1) var strokeTexture: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> lightGlaze: LightGlazeUniforms;
+@group(0) @binding(3) var<uniform> display: DisplayUniforms;
+@group(0) @binding(4) var activeClippingPrefix: texture_2d<f32>;
+@group(0) @binding(5) var activeClippingSuffix: texture_2d<f32>;
+
+${activeClippingGroupTexelShader}
 
 fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
   if (lightGlaze.formatCode == 0u) {
@@ -1699,7 +1886,11 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 fn compositedSource(sourcePosition: vec2<i32>) -> vec4<f32> {
   let permanentPaint = textureLoad(permanentTexture, sourcePosition, 0);
   let accumulatedStroke = textureLoad(strokeTexture, sourcePosition, 0);
-  return compositeLightGlazeOverPermanent(permanentPaint, accumulatedStroke);
+  let activeTexel = compositeLightGlazeOverPermanent(permanentPaint, accumulatedStroke);
+  if (display.clippingMode < 0.5) {
+    return activeTexel;
+  }
+  return composeActiveClippingGroupTexel(activeTexel, sourcePosition);
 }
 
 @fragment
@@ -1914,11 +2105,14 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
 // renders the same texture subresource.
 export const layerCompositeShader = /* wgsl */ `
 struct LayerCompositeUniforms {
-  surfaceOrigin: vec2<f32>,
-  resolutionScale: f32,
+  destinationOrigin: vec2<f32>,
+  destinationScale: f32,
   opacity: f32,
+  sourceOrigin: vec2<f32>,
+  sourceScale: f32,
+  _pad0: f32,
   sourceDimensions: vec2<u32>,
-  _pad0: vec2<u32>,
+  _pad1: vec2<u32>,
 };
 
 struct VertexOutput {
@@ -1947,9 +2141,11 @@ fn loadSource(pixel: vec2<i32>) -> vec4<f32> {
 
 @fragment
 fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
-  let scale = max(layer.resolutionScale, 1.0);
+  let destinationScale = max(layer.destinationScale, 1.0);
+  let sourceScale = max(layer.sourceScale, 1.0);
   let targetPixel = fragmentPosition.xy - vec2<f32>(0.5);
-  let sourcePosition = layer.surfaceOrigin + targetPixel / scale;
+  let documentPosition = layer.destinationOrigin + targetPixel / destinationScale;
+  let sourcePosition = (documentPosition - layer.sourceOrigin) * sourceScale;
   let sourceFloor = floor(sourcePosition);
   let fraction = sourcePosition - sourceFloor;
   let origin = vec2<i32>(sourceFloor);
@@ -2029,6 +2225,12 @@ struct DisplayUniforms {
   activeLayerAlpha: f32,
   mergedBelowOrigin: vec2<f32>,
   mergedAboveOrigin: vec2<f32>,
+  clippingMode: f32,
+  clippingParentOpacity: f32,
+  clippingPrefixScale: f32,
+  clippingSuffixScale: f32,
+  clippingPrefixOrigin: vec2<f32>,
+  clippingSuffixOrigin: vec2<f32>,
 };
 
 struct VertexOutput {
@@ -2039,10 +2241,14 @@ struct VertexOutput {
 @group(0) @binding(1) var activeLayerBase: texture_2d<f32>;
 @group(0) @binding(2) var mergedBelowTexture: texture_2d<f32>;
 @group(0) @binding(3) var mergedAboveTexture: texture_2d<f32>;
+@group(0) @binding(4) var activeClippingPrefix: texture_2d<f32>;
+@group(0) @binding(5) var activeClippingSuffix: texture_2d<f32>;
 
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
   return source + destination * (1.0 - source.a);
 }
+
+${activeClippingGroupTexelShader}
 
 fn loadMergedBelow(documentPixel: vec2<i32>) -> vec4<f32> {
   if (display.hasMergedBelow < 0.5) {
@@ -2072,12 +2278,18 @@ fn compositedDocumentTexel(documentPixel: vec2<i32>) -> vec4<f32> {
   let dimensions = vec2<i32>(textureDimensions(activeLayerBase, 0));
   let pixel = clamp(documentPixel, vec2<i32>(0), dimensions - vec2<i32>(1));
   var paint = loadMergedBelow(pixel);
-  paint = sourceOver(
-    textureLoad(activeLayerBase, pixel, 0) * display.activeLayerAlpha,
-    paint
-  );
+  paint = sourceOver(composeActiveClippingGroupTexel(
+    textureLoad(activeLayerBase, pixel, 0),
+    pixel
+  ), paint);
   paint = sourceOver(loadMergedAbove(pixel), paint);
   return paint;
+}
+
+fn activeClippingGroupDocumentTexel(documentPixel: vec2<i32>) -> vec4<f32> {
+  let dimensions = vec2<i32>(textureDimensions(activeLayerBase, 0));
+  let pixel = clamp(documentPixel, vec2<i32>(0), dimensions - vec2<i32>(1));
+  return composeActiveClippingGroupTexel(textureLoad(activeLayerBase, pixel, 0), pixel);
 }
 
 @vertex
@@ -2099,6 +2311,18 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   let p10 = compositedDocumentTexel(sourceOrigin + vec2<i32>(1, 0));
   let p01 = compositedDocumentTexel(sourceOrigin + vec2<i32>(0, 1));
   let p11 = compositedDocumentTexel(sourceOrigin + vec2<i32>(1, 1));
+  return (p00 + p10 + p01 + p11) * 0.25;
+}
+
+@fragment
+fn activeGroupFragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let sourceOrigin = vec2<i32>(fragmentPosition.xy) * 2;
+  let p00 = activeClippingGroupDocumentTexel(sourceOrigin);
+  let p10 = activeClippingGroupDocumentTexel(sourceOrigin + vec2<i32>(1, 0));
+  let p01 = activeClippingGroupDocumentTexel(sourceOrigin + vec2<i32>(0, 1));
+  let p11 = activeClippingGroupDocumentTexel(sourceOrigin + vec2<i32>(1, 1));
   return (p00 + p10 + p01 + p11) * 0.25;
 }
 `;

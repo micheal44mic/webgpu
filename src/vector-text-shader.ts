@@ -1,4 +1,5 @@
 import { mergedSurfaceSamplingShader } from "./merged-surface-shader.ts";
+import { activeClippingGroupTexelShader } from "./clipping-group-shader.ts";
 
 /**
  * Presentazione ordinata raster/testo interamente GPU.
@@ -23,7 +24,12 @@ struct DisplayUniforms {
   activeLayerAlpha: f32,
   mergedBelowOrigin: vec2<f32>,
   mergedAboveOrigin: vec2<f32>,
-
+  clippingMode: f32,
+  clippingParentOpacity: f32,
+  clippingPrefixScale: f32,
+  clippingSuffixScale: f32,
+  clippingPrefixOrigin: vec2<f32>,
+  clippingSuffixOrigin: vec2<f32>,
 };
 
 struct VertexOutput {
@@ -38,6 +44,8 @@ struct VertexOutput {
 @group(0) @binding(5) var layerSampler: sampler;
 @group(0) @binding(6) var vectorTextBelowTexture: texture_2d<f32>;
 @group(0) @binding(7) var vectorTextAboveTexture: texture_2d<f32>;
+@group(0) @binding(8) var activeClippingPrefix: texture_2d<f32>;
+@group(0) @binding(9) var activeClippingSuffix: texture_2d<f32>;
 
 fn srgbToLinearChannel(value: f32) -> f32 {
   if (value <= 0.04045) {
@@ -74,17 +82,20 @@ fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
   return source + destination * (1.0 - source.a);
 }
 
+${activeClippingGroupTexelShader}
+
 fn sampleActiveLayer(uv: vec2<f32>) -> vec4<f32> {
   if (display.selectedMipLevel < 0.5) {
     if (rasterPixelViewEnabled(1.0)) {
-      return textureLoad(
-        activeLayerBase,
-        rasterPixelViewTexel(
-          uv,
-          vec2<i32>(textureDimensions(activeLayerBase, 0))
-        ),
-        0
+      let pixel = rasterPixelViewTexel(
+        uv,
+        vec2<i32>(textureDimensions(activeLayerBase, 0))
       );
+      let activeTexel = textureLoad(activeLayerBase, pixel, 0);
+      if (display.clippingMode < 0.5) {
+        return activeTexel;
+      }
+      return composeActiveClippingGroupTexel(activeTexel, pixel);
     }
     return textureSampleLevel(activeLayerBase, layerSampler, uv, 0.0);
   }
@@ -94,6 +105,21 @@ fn sampleActiveLayer(uv: vec2<f32>) -> vec4<f32> {
     uv,
     display.selectedMipLevel - 1.0
   );
+}
+
+fn sampleActiveClippingGroupLinear(layerPosition: vec2<f32>) -> vec4<f32> {
+  let lower = vec2<i32>(floor(layerPosition));
+  let interpolation = fract(layerPosition);
+  let maximum = vec2<i32>(textureDimensions(activeLayerBase, 0)) - vec2<i32>(1);
+  let p00i = clamp(lower, vec2<i32>(0), maximum);
+  let p10i = clamp(lower + vec2<i32>(1, 0), vec2<i32>(0), maximum);
+  let p01i = clamp(lower + vec2<i32>(0, 1), vec2<i32>(0), maximum);
+  let p11i = clamp(lower + vec2<i32>(1, 1), vec2<i32>(0), maximum);
+  let p00 = composeActiveClippingGroupTexel(textureLoad(activeLayerBase, p00i, 0), p00i);
+  let p10 = composeActiveClippingGroupTexel(textureLoad(activeLayerBase, p10i, 0), p10i);
+  let p01 = composeActiveClippingGroupTexel(textureLoad(activeLayerBase, p01i, 0), p01i);
+  let p11 = composeActiveClippingGroupTexel(textureLoad(activeLayerBase, p11i, 0), p11i);
+  return mix(mix(p00, p10, interpolation.x), mix(p01, p11, interpolation.x), interpolation.y);
 }
 
 fn sampleViewportTexture(
@@ -143,7 +169,14 @@ fn fragmentMain(
     vec2<f32>(0.0),
     vec2<f32>(1.0)
   );
-  let activePaint = sampleActiveLayer(uv);
+  var activePaint = sampleActiveLayer(uv);
+  if (
+    display.clippingMode > 0.5
+    && display.selectedMipLevel < 0.5
+    && !rasterPixelViewEnabled(1.0)
+  ) {
+    activePaint = sampleActiveClippingGroupLinear(layerPosition);
+  }
   let vectorBelow = sampleViewportTexture(vectorTextBelowTexture, fragmentPosition.xy);
   let vectorAbove = sampleViewportTexture(vectorTextAboveTexture, fragmentPosition.xy);
 
@@ -152,7 +185,12 @@ fn fragmentMain(
     paint = sampleMergedBelow(layerPosition);
   }
   paint = sourceOver(vectorBelow, paint);
-  paint = sourceOver(activePaint * display.activeLayerAlpha, paint);
+  let activeContribution = select(
+    activePaint,
+    activePaint * display.activeLayerAlpha,
+    display.clippingMode < 0.5
+  );
+  paint = sourceOver(activeContribution, paint);
   paint = sourceOver(vectorAbove, paint);
   if (display.hasMergedAbove > 0.5) {
     paint = sourceOver(sampleMergedAbove(layerPosition), paint);

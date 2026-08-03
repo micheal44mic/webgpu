@@ -81,6 +81,7 @@ const benchmarkButton = element<HTMLButtonElement>("runBenchmark");
 const benchmarkResult = element<HTMLParagraphElement>("benchmarkResult");
 const layerList = element<HTMLElement>("layerList");
 const addLayerButton = element<HTMLButtonElement>("addLayer");
+const addClippingMaskButton = element<HTMLButtonElement>("addClippingMask");
 const layerSwitchResult = element<HTMLParagraphElement>("layerSwitchResult");
 const layerLoadingOverlay = element<HTMLElement>("layerLoadingOverlay");
 const layerLoadingLabel = element<HTMLParagraphElement>("layerLoadingLabel");
@@ -516,6 +517,8 @@ const pageSearchParams = new URLSearchParams(window.location.search);
 const bevelBoundingFieldEnabled = pageSearchParams.get("bevelField") === "bbox";
 const layerHistoryTestRequested = import.meta.env.DEV
   && pageSearchParams.get("layerHistoryTest") === "1";
+const clippingGroupTestRequested = import.meta.env.DEV
+  && pageSearchParams.get("clippingGroupTest") === "1";
 const layerMemoryStressTestRequested =
   pageSearchParams.get("layerMemoryStressTest") === "1";
 const mixedMemoryBenchmarkRequested =
@@ -668,6 +671,7 @@ const gpuMemoryRows: ReadonlyArray<
 > = [
   ["gpuMemoryLayerBase", "layerBaseMiB"],
   ["gpuMemoryLayerCold", "layerColdMiB"],
+  ["gpuMemoryActiveClippingMask", "activeClippingMaskMiB"],
   ["gpuMemoryLayerCompressed", "layerCompressedCpuMiB"],
   ["gpuMemoryLayerHydration", "layerHydrationMiB"],
   ["gpuMemoryLayerMips", "layerMipChainMiB"],
@@ -3669,6 +3673,42 @@ function createLayerRow(): HTMLDivElement {
   return row;
 }
 
+async function runRequestedClippingGroupTest(): Promise<void> {
+  layerHistoryTestSection.hidden = false;
+  layerHistoryTestDetails.hidden = true;
+  layerHistoryTestResult.className = "result";
+  layerHistoryTestResult.textContent = "Test GPU gruppo di ritaglio live…";
+  try {
+    const { runClippingGroupGpuTest } = await import("./clipping-group-gpu-test");
+    const report = await runClippingGroupGpuTest(engine);
+    layerHistoryTestReport.textContent = JSON.stringify(report, null, 2);
+    layerHistoryTestDetails.hidden = false;
+    layerHistoryTestDetails.open = true;
+    (
+      window as Window & { __clippingGroupGpuTestReport?: typeof report }
+    ).__clippingGroupGpuTestReport = report;
+    layerHistoryTestResult.className = report.passed ? "result ok" : "result error";
+    layerHistoryTestResult.textContent = report.passed
+      ? "Gruppo ritaglio GPU OK · alpha morbido e parent live verificati."
+      : "Gruppo ritaglio GPU ERRORE · consulta il report JSON.";
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const failure = { version: 1, passed: false, error: message };
+    layerHistoryTestReport.textContent = JSON.stringify(failure, null, 2);
+    layerHistoryTestDetails.hidden = false;
+    layerHistoryTestDetails.open = true;
+    layerHistoryTestResult.className = "result error";
+    layerHistoryTestResult.textContent = `Gruppo ritaglio GPU ERRORE · ${message}`;
+  } finally {
+    layerHistoryTestRunning = false;
+    historyState = engine.getHistoryState();
+    syncActiveLayerControls();
+    updateHistoryControls();
+    updateHumanStrokeControls();
+    updateStats(engine.getStats());
+  }
+}
+
 function renderMixedSceneList(
   stats: EngineStats,
   scene: NonNullable<EngineStats["mixedScene"]>,
@@ -3677,6 +3717,10 @@ function renderMixedSceneList(
   addLayerButton.disabled = locked || stats.layers.length >= 16;
   const selectedItem = scene.items.find((item) => item.key === scene.selectedKey);
   const vectorSelected = selectedItem !== undefined && selectedItem.kind !== "raster";
+  addClippingMaskButton.disabled = locked
+    || stats.layers.length >= 16
+    || selectedItem?.kind !== "raster"
+    || selectedItem.rasterLayerId !== scene.activeRasterLayerId;
   const ordered = [...scene.items].reverse();
   const rowsMatch = layerList.childElementCount === ordered.length
     && ordered.every(
@@ -3704,7 +3748,9 @@ function renderMixedSceneList(
     const selected = item.key === scene.selectedKey;
 
     row.className = `layer-row ${item.kind === "raster"
-      ? "is-raster-node"
+      ? item.rasterClippingParentId === null
+        ? "is-raster-node"
+        : "is-raster-node is-clipping-mask"
       : item.kind === "image"
         ? "is-image-node"
         : "is-text-node"}`;
@@ -3731,6 +3777,9 @@ function renderMixedSceneList(
 
       name.textContent = layer.name;
       const isActiveRaster = layer.id === scene.activeRasterLayerId;
+      const clippingHint = item.rasterClippingParentId === null
+        ? ""
+        : `↳ ritaglio su Livello ${item.rasterClippingParentId} · `;
       reference.disabled = locked || !selected || !isActiveRaster;
       reference.setAttribute("aria-pressed", String(layer.reference));
       reference.setAttribute(
@@ -3763,7 +3812,8 @@ function renderMixedSceneList(
               ? `raster cold · ${layer.coldTileCount} tile · `
                 + formatMemoryMiB(layer.actualRawMiB)
               : "raster cold · 0 MiB";
-      hint.textContent = `${layer.reference ? "riferimento · " : ""}${residencyHint}`;
+      hint.textContent =
+        `${clippingHint}${layer.reference ? "riferimento · " : ""}${residencyHint}`;
       select.title = isActiveRaster
         ? vectorSelected
           ? "Raster di lavoro: resta full-canvas per mostrare i pixel e riprendere "
@@ -3990,6 +4040,7 @@ function renderLayerList(stats: EngineStats): void {
   }
   const locked = interactionLocked() || layerSwitching;
   addLayerButton.disabled = locked || stats.layers.length >= 16;
+  addClippingMaskButton.disabled = locked || stats.layers.length >= 16;
   if (layerList.childElementCount !== stats.layers.length) {
     layerList.replaceChildren(...stats.layers.map(() => {
       const row = createLayerRow();
@@ -4348,6 +4399,32 @@ addLayerButton.addEventListener("click", async () => {
     hideLayerLoading();
     layerSwitching = false;
     updateHistoryControls();
+  }
+});
+
+addClippingMaskButton.addEventListener("click", async () => {
+  if (layerSwitching || interactionLocked()) {
+    return;
+  }
+  layerSwitching = true;
+  updateHistoryControls();
+  try {
+    await showLayerLoading("Creazione maschera di ritaglio…");
+    const result = await engine.addClippingMaskLayer();
+    syncActiveLayerControls();
+    await engine.waitForIdle();
+    layerSwitchResult.textContent =
+      `Maschera raster creata sopra il parent in ${result.totalMs.toFixed(0)} ms. `
+      + "Pennello, Riempimento, effetti, tile e Undo/Redo restano quelli di un raster normale.";
+  } catch (error) {
+    layerSwitchResult.textContent = error instanceof Error
+      ? error.message
+      : "Maschera di ritaglio non creata.";
+  } finally {
+    hideLayerLoading();
+    layerSwitching = false;
+    updateHistoryControls();
+    updateStats(engine.getStats());
   }
 });
 
@@ -5454,7 +5531,10 @@ void engine.initialize()
       updateHistoryControls();
       updateHumanStrokeControls();
     }
-    if (layerHistoryTestRequested) {
+    if (clippingGroupTestRequested) {
+      layerHistoryTestRunning = true;
+      await runRequestedClippingGroupTest();
+    } else if (layerHistoryTestRequested) {
       await runRequestedLayerHistoryTest();
     }
   })

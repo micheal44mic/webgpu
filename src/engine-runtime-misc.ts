@@ -276,6 +276,8 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
         { binding: 5, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
         { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
         { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        { binding: 8, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        { binding: 9, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
       ],
     });
     engine.mixedSceneRasterSegmentBindGroupLayout = engine.device.createBindGroupLayout({

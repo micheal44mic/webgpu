@@ -119,7 +119,7 @@ export const LAYER_BAKE_STRATEGY =
   "transient-analytic-bounded-visual-rect-no-handoff-residency-mip0-fused-into-two-merged-surfaces" as const;
 
 export const LAYER_COMPOSITE_STRATEGY =
-  "merged-above-over-active-over-merged-below-source-over-evict-derived-before-rebuild-deferred-to-fold-fence-bounded-visual-rect" as const;
+  "merged-above-over-isolated-active-clipping-group-over-merged-below-source-atop-live-prefix-suffix-compose-before-filter-parent-opacity-once-deferred-to-fold-fence-bounded-visual-rect" as const;
 
 export const PAINT_DISPLAY_LOD_SELECTION_STRATEGY =
   "largest-power-of-two-without-upscaling" as const;

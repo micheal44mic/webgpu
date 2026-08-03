@@ -122,6 +122,8 @@ export interface MixedSceneSnapshot {
       rasterLayerId: number;
       rasterLayerIndex: number;
       rasterLayerName: string;
+      /** Null for a base raster; otherwise this ordinary raster is clipped by the parent alpha. */
+      rasterClippingParentId: number | null;
       rasterHasContent: boolean;
       rasterContentBounds: DirtyRect | null;
       rasterTransform: RasterTransformSnapshot | null;

@@ -1526,6 +1526,8 @@ export function rebuildVectorTextDependentDisplayBindGroups(engine: BrushEngine)
         { binding: 7, resource: engine.mergedAboveView() },
         { binding: 8, resource: belowView },
         { binding: 9, resource: aboveView },
+        { binding: 10, resource: engine.activeClippingPrefixView() },
+        { binding: 11, resource: engine.activeClippingSuffixView() },
       ],
     });
   }
@@ -1544,6 +1546,8 @@ export function rebuildVectorTextDependentDisplayBindGroups(engine: BrushEngine)
         { binding: 7, resource: engine.mergedAboveView() },
         { binding: 8, resource: belowView },
         { binding: 9, resource: aboveView },
+        { binding: 10, resource: engine.activeClippingPrefixView() },
+        { binding: 11, resource: engine.activeClippingSuffixView() },
       ],
     });
   }
@@ -1729,6 +1733,8 @@ export function rebuildVectorTextDisplayBindGroup(engine: BrushEngine): void {
         { binding: 5, resource: engine.sampler },
         { binding: 6, resource: belowView ?? engine.transparentLayerView },
         { binding: 7, resource: aboveView ?? engine.transparentLayerView },
+        { binding: 8, resource: engine.activeClippingPrefixView() },
+        { binding: 9, resource: engine.activeClippingSuffixView() },
       ],
     });
   }
