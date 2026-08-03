@@ -92,6 +92,7 @@ function normalizeHumanStrokeBenchmark(payload) {
   if (
     payload.presetRevision === HUMAN_STROKE_PRESET_REVISION &&
     payload.settings.blendIntensity === 1 &&
+    payload.settings.stabilization === 0 &&
     !Object.hasOwn(payload.settings, "speedThickness") &&
     !Object.hasOwn(payload.settings, "pressureSize") &&
     !Object.hasOwn(payload.settings, "pressureOpacity")
@@ -102,6 +103,7 @@ function normalizeHumanStrokeBenchmark(payload) {
   const settings = {
     ...payload.settings,
     blendIntensity: 1,
+    stabilization: 0,
   };
   delete settings.speedThickness;
   delete settings.pressureSize;

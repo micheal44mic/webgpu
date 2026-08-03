@@ -496,7 +496,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet";
-    performanceTelemetryRevision: 61;
+    performanceTelemetryRevision: 62;
   };
 }
 
@@ -693,6 +693,7 @@ const gpuMemoryRows: ReadonlyArray<
   ["gpuMemoryBlend", "blendRendererMiB"],
   ["gpuMemoryFill", "fillRendererMiB"],
   ["gpuMemoryLightGlaze", "lightGlazeMiB"],
+  ["gpuMemoryStabilizationTail", "stabilizationTailMiB"],
   ["gpuMemoryThicknessTail", "thicknessTailMiB"],
   ["gpuMemoryHistory", "historyGpuMiB"],
 ];
@@ -752,6 +753,7 @@ function configureBrushToolUi(
   }
   for (const id of [
     "shapeScatterControl",
+    "stabilizationControl",
     "countControl",
     "opacityControl",
     "paintBlendModeControl",
@@ -869,6 +871,7 @@ function readBrushSettings(): BrushSettings {
     color: element<HTMLInputElement>("brushColor").value,
     size: rangeValue("brushSize"),
     spacingPercent: rangeValue("spacing"),
+    stabilization: rangeValue("stabilization") / 100,
     startThickness: rangeValue("startThickness") / 100,
     endThickness: rangeValue("endThickness") / 100,
     count: rangeValue("count"),
@@ -906,6 +909,8 @@ function updateControlOutputs(): void {
     `${grainContrast > 0 ? "+" : ""}${grainContrast.toFixed(0)}%`;
   element<HTMLOutputElement>("brushSizeOut").value = `${rangeValue("brushSize").toFixed(0)} px`;
   element<HTMLOutputElement>("spacingOut").value = `${rangeValue("spacing").toFixed(2)}%`;
+  element<HTMLOutputElement>("stabilizationOut").value =
+    `${rangeValue("stabilization").toFixed(0)}%`;
   element<HTMLOutputElement>("startThicknessOut").value = `${rangeValue("startThickness").toFixed(0)}%`;
   element<HTMLOutputElement>("endThicknessOut").value = `${rangeValue("endThickness").toFixed(0)}%`;
   element<HTMLOutputElement>("countOut").value = rangeValue("count").toFixed(0);
@@ -1051,7 +1056,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     viewRotationDegrees: Number(engine.getViewRotationDegrees().toFixed(3)),
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet",
-    performanceTelemetryRevision: 61,
+    performanceTelemetryRevision: 62,
     countedGpuMemoryMiB: stats.gpuMemory.countedTotalMiB,
     vectorTextPresentationMiB: stats.gpuMemory.vectorTextPresentationMiB,
     vectorTextAdaptiveZoomStrategy: vectorTextDiagnostics?.adaptiveZoomStrategy ?? null,
@@ -1185,6 +1190,9 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
   const endThickness = Number.isFinite(benchmark.settings.endThickness)
     ? Math.min(2, Math.max(0, benchmark.settings.endThickness))
     : 1;
+  const stabilization = Number.isFinite(benchmark.settings.stabilization)
+    ? Math.min(1, Math.max(0, benchmark.settings.stabilization))
+    : 0;
   const blendStretch = Number.isFinite(benchmark.settings.blendStretch)
     ? Math.min(1, Math.max(0, benchmark.settings.blendStretch))
     : 0.18;
@@ -1218,6 +1226,7 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
       grainInvert,
       grainFiltering,
       grainBlendMode: "multiply",
+      stabilization,
       startThickness,
       endThickness,
       opacity,
@@ -1903,6 +1912,7 @@ function applySettingsToControls(settings: BrushSettings): void {
   setControlValue("brushColor", settings.color);
   setControlValue("brushSize", settings.size);
   setControlValue("spacing", settings.spacingPercent);
+  setControlValue("stabilization", (settings.stabilization ?? 0) * 100);
   setControlValue("startThickness", (settings.startThickness ?? 1) * 100);
   setControlValue("endThickness", (settings.endThickness ?? 1) * 100);
   setControlValue("count", settings.count);
@@ -1940,6 +1950,7 @@ function applyHumanStrokePreset(): BrushSettings {
   setControlValue("grainBlendMode", "multiply");
   setControlValue("brushSize", 750);
   setControlValue("spacing", 1);
+  setControlValue("stabilization", 0);
   setControlValue("startThickness", 100);
   setControlValue("endThickness", 100);
   setControlValue("count", 16);
@@ -1997,6 +2008,7 @@ function humanStrokeTestSettings(
     grainBlendMode: "multiply",
     shape: "circle",
     shapeScatter: 0,
+    stabilization: 0,
     startThickness: 1,
     endThickness: 1,
     positionJitterLateral: 1,
@@ -2032,6 +2044,7 @@ function humanStrokeBlendTestSettings(benchmark: HumanStrokeBenchmark): BrushSet
     grainBlendMode: "multiply",
     size: benchmark.settings.size,
     spacingPercent: 1,
+    stabilization: 0,
     startThickness: 1,
     endThickness: 1,
     count: 1,
@@ -2088,6 +2101,7 @@ async function prepareBlendBenchmarkBackground(replaySettings: BrushSettings): P
     grainMode: "off",
     size: 1500,
     spacingPercent: 15,
+    stabilization: 0,
     startThickness: 1,
     endThickness: 1,
     count: 1,
@@ -2363,6 +2377,7 @@ const brushControlIds = [
   "fillTolerance",
   "brushSize",
   "spacing",
+  "stabilization",
   "startThickness",
   "endThickness",
   "count",
@@ -4441,6 +4456,7 @@ const RENDERING_MODE_SUITE_REVISION = 4 as const;
 const RENDERING_SUITE_CANONICAL_OVERRIDES: Partial<BrushSettings> = {
   size: 750,
   spacingPercent: 1,
+  stabilization: 0,
   count: 16,
   flow: 1,
   opacity: 1,

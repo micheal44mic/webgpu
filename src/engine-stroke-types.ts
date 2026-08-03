@@ -8,6 +8,10 @@ import type { HistoryAction } from "./engine-history-types";
 import type { BrushSettings, BrushTool, LayerPoint } from "./engine-types";
 import type { ShapeOccupancySelection } from "./shape-occupancy";
 import type { CausalStrokeCurvePlanner } from "./stroke-curve-core";
+import type {
+  CausalFadedStrokeStabilizer,
+  StrokeStabilizationUpdate,
+} from "./stroke-stabilization-core";
 
 export interface Stamp {
   x: number;
@@ -50,6 +54,9 @@ export interface ActiveStroke {
   blendSettings: BrushSettings | null;
   blendPlanner: DryBlendPlanner | null;
   curvePlanner: CausalStrokeCurvePlanner | null;
+  stabilizer: CausalFadedStrokeStabilizer | null;
+  stabilizationUpdate: Readonly<StrokeStabilizationUpdate> | null;
+  stabilizationCommittedInput: LayerPoint;
 }
 
 export interface DirtyRect {
@@ -67,6 +74,14 @@ export interface PackedStampUpload {
 export interface ThicknessTailFrame {
   settings: BrushSettings;
   stamps: Stamp[];
+  dirtyRect: DirtyRect;
+  shapeOccupancySelection: ShapeOccupancySelection | null;
+  grainActive: boolean;
+}
+
+export interface StabilizationTailFrame {
+  settings: BrushSettings;
+  stampCount: number;
   dirtyRect: DirtyRect;
   shapeOccupancySelection: ShapeOccupancySelection | null;
   grainActive: boolean;

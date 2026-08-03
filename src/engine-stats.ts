@@ -61,6 +61,7 @@ import {
 } from "./raster-color-overlay-core";
 import type { ThicknessDynamicsStrategy } from "./thickness-dynamics";
 import { STROKE_CURVE_STRATEGY } from "./stroke-curve-core";
+import { STROKE_STABILIZATION_STRATEGY } from "./stroke-stabilization-core";
 
 export interface EngineGpuMemoryStats {
   layerBaseMiB: number;
@@ -105,6 +106,7 @@ export interface EngineGpuMemoryStats {
   fillRendererMiB: number;
   lightGlazeMiB: number;
   lightGlazeTransitionPeakMiB: number;
+  stabilizationTailMiB: number;
   thicknessTailMiB: number;
   historyGpuMiB: number;
   historyGpuUsedMiB: number;
@@ -293,6 +295,17 @@ export interface StrokePerformanceProfile {
   colorSeedStrategy: "reuse-position-copy-seed";
   dirtyRectStrategy: "directional-jitter-bounds";
   strokeCurveStrategy: typeof STROKE_CURVE_STRATEGY;
+  strokeStabilizationStrategy: typeof STROKE_STABILIZATION_STRATEGY;
+  strokeStabilizationAmount: number;
+  strokeStabilizationInputSamples: number;
+  strokeStabilizationMaturePoints: number;
+  strokeStabilizationForcedMaturePoints: number;
+  strokeStabilizationMaximumTailPoints: number;
+  strokeStabilizationTailFrames: number;
+  strokeStabilizationTailBaseStamps: number;
+  strokeStabilizationTailPhysicalCopies: number;
+  strokeStabilizationMaximumSnapshotPixels: number;
+  strokeStabilizationAdditionalMemoryMiB: number;
   strokeCurveInputSegments: number;
   strokeCurveSmoothedSegments: number;
   strokeCurveFlattenedSegments: number;
@@ -559,6 +572,16 @@ export interface MutableStrokePerformanceProfile {
   brushBatches: number;
   largestBatchStamps: number;
   estimatedScissorPixels: number;
+  strokeStabilizationAmount: number;
+  strokeStabilizationInputSamples: number;
+  strokeStabilizationMaturePoints: number;
+  strokeStabilizationForcedMaturePoints: number;
+  strokeStabilizationMaximumTailPoints: number;
+  strokeStabilizationTailFrames: number;
+  strokeStabilizationTailBaseStamps: number;
+  strokeStabilizationTailPhysicalCopies: number;
+  strokeStabilizationMaximumSnapshotPixels: number;
+  strokeStabilizationMaximumSnapshotBytes: number;
   strokeCurveInputSegments: number;
   strokeCurveSmoothedSegments: number;
   strokeCurveFlattenedSegments: number;

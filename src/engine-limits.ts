@@ -14,6 +14,8 @@ export const STAMP_STRIDE_BYTES = 32;
 
 export const MAX_STAMPS_PER_BATCH = 65_536;
 
+export const STABILIZATION_TAIL_TEXTURE_QUANTUM = 128;
+
 // Il drenaggio dei batch Blend è limitato dai pixel-pass per frame, non da un
 // conteggio fisso per size: col renderer compute un segmento costa il deposit
 // sulla propria writeRect più la quota di gather/scatter del gruppo (~2 pass

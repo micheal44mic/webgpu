@@ -57,6 +57,7 @@ export function packStampsIntoUpload(
   settings: BrushSettings,
   uploadF32: Float32Array,
   uploadU32: Uint32Array,
+  stampCount = stamps.length,
 ): PackedStampUpload {
   let minimumX = LAYER_SIZE;
   let minimumY = LAYER_SIZE;
@@ -70,7 +71,7 @@ export function packStampsIntoUpload(
       : Math.cos(maximumShapeAngle) + Math.sin(maximumShapeAngle)
     : 1;
 
-  for (let index = 0; index < stamps.length; index += 1) {
+  for (let index = 0; index < stampCount; index += 1) {
     const stamp = stamps[index];
     const base = index * (STAMP_STRIDE_BYTES / 4);
     uploadF32[base] = stamp.x;

@@ -105,6 +105,7 @@ il resto vive in moduli dedicati:
 | `engine-resource-setup` | creazione risorse statiche e renderer effetti |
 | `engine-runtime-misc` | rotazione vista, coordinate, lifecycle geometria Traccia |
 | `engine-*-types`, `engine-*-resources` | record interni e risorse GPU |
+| `stroke-curve-core`, `stroke-stabilization-core` | planner causali preallocati di curva e stabilizzazione Paint |
 | `shape-occupancy`, `shape-mask-decode`, `adaptive-preview-runtime`, `vector-text-types` | domini specifici |
 
 Convenzione sulla visibilità, dichiarata sopra la classe e da rispettare:
@@ -225,6 +226,45 @@ Paint:
   adattivo fermo `1,00→1,00%`, CPU frame p95 `1,10 ms`, submit p95 `0,40 ms`,
   probe coda FIFO `11,70 ms`, `137 FPS` medi e `15` frame oltre `20 ms`; è QA
   locale, non una nuova baseline e non una misura GPU isolata.
+- Stabilizzazione Paint aggiunta il 3 agosto 2026, esposta `0–100%` soltanto
+  nei tre rendering glaze pubblici. Strategia
+  `causal-linear-input-ema-speed-lag-mature-prefix-smoothstep-revision-tail-endpoint-exact-v1`:
+  un EMA causale integrato esattamente sul moto lineare crea un ritardo che
+  cresce con la velocità; la costante massima è `160 ms` e scala col quadrato
+  del controllo. La parte matura resta filtrata al 100%, mentre negli ultimi
+  `tau` millisecondi un smoothstep cubico porta la forza fino a `0%` sul
+  campione più recente. L'endpoint geometrico è quindi sempre quello raw sotto
+  il puntatore; `finish()` congela esattamente l'ultima geometria mostrata,
+  senza ageing al lift, catch-up o snap. A `0%` il ramo precedente è eseguito
+  direttamente e il planner non viene coinvolto.
+- La coda non viene committata e poi corretta: Light MAX e Uniformed/Intense
+  source-over non sono invertibili. L'accumulatore per-gesture contiene prefisso
+  maturo più ultima revisione; a ogni frame una texture patch dello stesso
+  formato ripristina il prefisso sotto la vecchia coda, vengono aggiunti una
+  volta gli stamp appena maturi, si salva il nuovo prefisso e infine si disegna
+  la coda latest-only con le pipeline WebGPU autorevoli di Shape, Grain, Count,
+  jitter e glaze. La patch è quantizzata a `128 px`, cresce geometricamente e
+  persiste fra gesti finché la stabilizzazione resta attiva; è R8 per Light e
+  RGBA16F per Uniformed/Intense, non una seconda texture `4096²` obbligatoria.
+  `stabilizationTailMiB` la include nel totale GPU contato e lo slider a zero la
+  rilascia quando il motore è idle.
+- Dirty rect provvisoria e autorevole sono separate: la prima invalida display,
+  mip ed effetti per cancellare ogni revisione precedente; soltanto la seconda
+  viene committata nel layer, marca tile/contenuto e alimenta il payload packed
+  Undo/Redo. Preview e risultato finale condividono clone dello stesso planner
+  Hermite, stato spacing e sequenza seed; la preview usa buffer già residenti e
+  oggetti Stamp riutilizzati. Il core usa typed array preallocati (circa
+  `0,17 MiB`) e non alloca per campione. Telemetria rev `62` registra forza,
+  campioni, punti maturi, frame/stamp/copie provvisori e massimo footprint della
+  patch; i benchmark canonici e le registrazioni legacy forzano esplicitamente
+  `0%`, quindi non cambiano in silenzio.
+- Verifica locale del 3 agosto: TypeScript, tutte le venti suite
+  `*:verify`, `git diff --check` e build Vite/Sites verdi. QA browser reale su
+  NVIDIA Ampere/RGBA8, Light, Circle `80 px`, spacing `1%`, Count `1`, Flow e
+  Hardness `100%`, jitter posizione/colore e Grain a zero, stabilizzazione
+  `100%`: curva continua, Undo e Redo completati, nessun warning/error browser
+  o WebGPU. È una prova funzionale desktop; non è ancora una misura canonica
+  iPhone né una pubblicazione.
 - Shape 2K: decodifica PNG grayscale deterministica (`png-gray8-direct`,
   SHA-256 `69978b6e…`) + pre-mappa di occupazione conservativa `256²` sui mip
   `0–4` con fallback automatico (radius `<128`, LOD `>4`, copertura `>50%`).

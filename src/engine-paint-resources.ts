@@ -9,7 +9,10 @@ import type { BrushSettings } from "./engine-types";
 export interface LightGlazeSession {
   historyActionId: number;
   settings: BrushSettings;
+  /** Union of temporary and authoritative pixels touched while presenting. */
   dirtyRect: DirtyRect | null;
+  /** Only stamps that will be retained in history and committed at lift. */
+  authoritativeDirtyRect: DirtyRect | null;
   needsClear: boolean;
   hasContent: boolean;
   endRequested: boolean;

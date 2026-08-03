@@ -473,6 +473,7 @@ import type {
   PackedStampUpload,
   PendingBlendBatch,
   Stamp,
+  StabilizationTailFrame,
   ThicknessTailFrame,
 } from "./engine-stroke-types";
 import {
@@ -517,6 +518,10 @@ import {
   evaluateStrokeCurveX,
   evaluateStrokeCurveY,
 } from "./stroke-curve-core";
+import {
+  CausalFadedStrokeStabilizer,
+  type StrokeStabilizationUpdate,
+} from "./stroke-stabilization-core";
 import {
   mergeDirtyRects,
   normalizeLayerRect,
@@ -609,7 +614,9 @@ import {
   createLightGlazeResourceSet,
   currentLightGlazeResourceSet,
   destroyLightGlazeResources,
+  destroyStrokeStabilizationSnapshot,
   encodeLightGlazeDisplayPyramid,
+  ensureStrokeStabilizationSnapshot,
   flushClosingLightGlazeSessionBeforeNewStroke,
   lightGlazeResourcesMatch,
   maybeReleaseIdleLightGlazeResources,
@@ -1050,6 +1057,11 @@ export class BrushEngine {
   private lightGlazeLoadingStorageMode: LightGlazeStorageMode = "none";
   private lightGlazeDesiredStorageMode: LightGlazeStorageMode = "none";
   lightGlazeTransitionPeakMiB = 0;
+  stabilizationSnapshotTexture: GPUTexture | null = null;
+  stabilizationSnapshotWidth = 0;
+  stabilizationSnapshotHeight = 0;
+  stabilizationSnapshotStorageMode: LightGlazeStorageMode = "none";
+  stabilizationSnapshotRect: DirtyRect | null = null;
   thicknessTailTexture: GPUTexture | null = null;
   thicknessTailView: GPUTextureView | null = null;
   thicknessTailDisplayBindGroup: GPUBindGroup | null = null;
@@ -1292,6 +1304,10 @@ export class BrushEngine {
   pendingStamps: Stamp[] = [];
   pendingBlendBatches: PendingBlendBatch[] = [];
   private readonly paintCurvePlanner = new CausalStrokeCurvePlanner();
+  private readonly paintStabilizer = new CausalFadedStrokeStabilizer();
+  private readonly stabilizationPreviewCurvePlanner = new CausalStrokeCurvePlanner();
+  private readonly stabilizationPreviewStamps: Stamp[] = [];
+  private stabilizationPreviewStampCount = 0;
   activeStroke: ActiveStroke | null = null;
   seedSequence = 1;
 
@@ -1532,6 +1548,7 @@ export class BrushEngine {
         tool === "blend" ? 1 : 0.25,
         tool === "blend" ? 400 : 25,
       ),
+      stabilization: clamp(next.stabilization ?? this.settings.stabilization, 0, 1),
       startThickness: clamp(next.startThickness ?? this.settings.startThickness, 0, 2),
       endThickness: clamp(next.endThickness ?? this.settings.endThickness, 0, 2),
       flow: clamp(next.flow ?? this.settings.flow, 0.001, 1),
@@ -1563,6 +1580,13 @@ export class BrushEngine {
 
       if (!glazeSelected) {
         maybeReleaseIdleLightGlazeResources(this);
+      }
+      if (
+        this.settings.stabilization === 0
+        && !this.activeStroke
+        && !this.lightGlazeSession
+      ) {
+        destroyStrokeStabilizationSnapshot(this);
       }
       if (!nextUsesBlendRenderer && previousUsesBlendRenderer) {
         maybeReleaseIdleBlendScratch(this);
@@ -3095,6 +3119,18 @@ export class BrushEngine {
     blendPlanner?.reset(normalizedPoint);
     const curvePlanner = tool === "paint" ? this.paintCurvePlanner : null;
     curvePlanner?.reset();
+    // Public Paint modes already own a per-gesture accumulator. Stabilization
+    // keeps only its recent tail revisionable in that accumulator; the exact
+    // zero setting deliberately stays on the pre-existing hot path below.
+    const stabilizer = tool === "paint"
+      && lightGlazeSettings
+      && lightGlazeSettings.stabilization > 0
+      ? this.paintStabilizer
+      : null;
+    const stabilizationUpdate = stabilizer?.begin(
+      normalizedPoint,
+      lightGlazeSettings?.stabilization ?? 0,
+    ) ?? null;
     this.activeStroke = {
       tool,
       lastInput: normalizedPoint,
@@ -3125,7 +3161,20 @@ export class BrushEngine {
       blendSettings: tool === "blend" ? { ...this.settings } : null,
       blendPlanner,
       curvePlanner,
+      stabilizer,
+      stabilizationUpdate,
+      // Separate mutable cursor for the authoritative stabilized prefix. It
+      // must never alias `lastInput`, which always remains the latest raw
+      // pointer sample.
+      stabilizationCommittedInput: { ...normalizedPoint },
     };
+    if (stabilizer && this.activeStrokeProfile) {
+      this.activeStrokeProfile.strokeStabilizationInputSamples += 1;
+      this.activeStrokeProfile.strokeStabilizationMaximumTailPoints = Math.max(
+        this.activeStrokeProfile.strokeStabilizationMaximumTailPoints,
+        stabilizationUpdate?.tailCount ?? 0,
+      );
+    }
     if (lightGlazeSettings) {
       this.startLightGlazeSession(historyActionId, lightGlazeSettings);
     }
@@ -3175,6 +3224,30 @@ export class BrushEngine {
       && (this.settings.blendMode === "normal" || this.settings.blendMode === "additive"),
     );
     if (endingStroke) {
+      if (endingStroke.stabilizer) {
+        const finalGeometry = endingStroke.stabilizer.finish();
+        endingStroke.stabilizationUpdate = finalGeometry;
+        if (this.activeStrokeProfile) {
+          this.activeStrokeProfile.strokeStabilizationMaturePoints += Math.max(
+            0,
+            finalGeometry.tailCount - 1,
+          );
+        }
+        // tail[0] is the already-authoritative seam. Committing tail[1..]
+        // materializes exactly the geometry that was visible immediately
+        // before pointer-up; no ageing, snap or catch-up segment is introduced.
+        for (let index = 1; index < finalGeometry.tailCount; index += 1) {
+          this.appendStabilizedMaturePoint(
+            finalGeometry.tailX[index],
+            finalGeometry.tailY[index],
+            finalGeometry.tailPressure[index],
+            finalGeometry.tailTimeMs[index],
+            endingStroke,
+          );
+        }
+        endingStroke.stabilizer = null;
+        endingStroke.stabilizationUpdate = null;
+      }
       const requestedLiftTime = Number.isFinite(timeMs)
         ? timeMs as number
         : endingStroke.lastInput.timeMs;
@@ -5773,9 +5846,13 @@ export class BrushEngine {
       throw new Error("Un tratto Light Glaze precedente non è ancora stato finalizzato.");
     }
     const storageMode = lightGlazeStorageModeFor(settings.blendMode);
+    if (storageMode === "none") {
+      throw new Error("Modalita storage glaze non valida durante il rendering.");
+    }
     if (!lightGlazeResourcesMatch(this, storageMode)) {
       throw new Error("Risorse rendering glaze non pronte all'inizio della pennellata.");
     }
+    this.stabilizationSnapshotRect = null;
     this.lightGlazeSession = {
       historyActionId,
       settings: {
@@ -5783,6 +5860,7 @@ export class BrushEngine {
         opacity: Number.isFinite(settings.opacity) ? clamp(settings.opacity, 0, 1) : 1,
       },
       dirtyRect: null,
+      authoritativeDirtyRect: null,
       needsClear: this.lightGlazeStaleRect !== null,
       hasContent: false,
       endRequested: false,
@@ -5800,6 +5878,7 @@ export class BrushEngine {
       this.lightGlazeStaleRect,
       this.lightGlazeSession.dirtyRect,
     );
+    this.stabilizationSnapshotRect = null;
     this.lightGlazeSession = null;
     // The screen cache may contain the transient live composite. Any caller
     // that abandons a stroke (reset, cancel or failure) must rebuild it before
@@ -6475,6 +6554,11 @@ export class BrushEngine {
       return;
     }
 
+    if (stroke.stabilizer) {
+      this.appendStabilizedPoint(point, stroke, generationStart);
+      return;
+    }
+
     const start = stroke.lastInput;
     const normalizedPoint: LayerPoint = {
       ...point,
@@ -6597,6 +6681,420 @@ export class BrushEngine {
     stroke.distanceSinceStamp = distanceSinceStamp;
     releaseHeldThicknessStamps(this, normalizedPoint.timeMs, false);
     recordStampGenerationTime(this, generationStart);
+  }
+
+  private appendStabilizedPoint(
+    point: LayerPoint,
+    stroke: ActiveStroke,
+    generationStart: number,
+  ): void {
+    const rawStart = stroke.lastInput;
+    const normalizedPoint: LayerPoint = {
+      ...point,
+      timeMs: Math.max(
+        rawStart.timeMs,
+        Number.isFinite(point.timeMs) ? point.timeMs : rawStart.timeMs,
+      ),
+    };
+    const update = stroke.stabilizer!.push(normalizedPoint);
+    stroke.lastInput = normalizedPoint;
+    stroke.stabilizationUpdate = update;
+    if (this.activeStrokeProfile) {
+      this.activeStrokeProfile.strokeStabilizationInputSamples += 1;
+      this.activeStrokeProfile.strokeStabilizationMaturePoints += update.matureCount;
+      this.activeStrokeProfile.strokeStabilizationForcedMaturePoints +=
+        update.forcedMatureCount;
+      this.activeStrokeProfile.strokeStabilizationMaximumTailPoints = Math.max(
+        this.activeStrokeProfile.strokeStabilizationMaximumTailPoints,
+        update.tailCount,
+      );
+    }
+
+    releaseHeldThicknessStamps(this, normalizedPoint.timeMs, false);
+    for (let index = 0; index < update.matureCount; index += 1) {
+      this.appendStabilizedMaturePoint(
+        update.matureX[index],
+        update.matureY[index],
+        update.maturePressure[index],
+        update.matureTimeMs[index],
+        stroke,
+      );
+    }
+    releaseHeldThicknessStamps(this, normalizedPoint.timeMs, false);
+
+    // Even when no point crossed the mature frontier, the latest-only GPU
+    // tail changed and must replace its previous revision on the next frame.
+    this.displayDirty = true;
+    this.requestRender();
+    recordStampGenerationTime(this, generationStart);
+  }
+
+  private appendStabilizedMaturePoint(
+    pointX: number,
+    pointY: number,
+    pointPressure: number,
+    pointTimeMs: number,
+    stroke: ActiveStroke,
+  ): void {
+    const start = stroke.stabilizationCommittedInput;
+    const normalizedTimeMs = Math.max(
+      start.timeMs,
+      Number.isFinite(pointTimeMs) ? pointTimeMs : start.timeMs,
+    );
+    const deltaX = pointX - start.x;
+    const deltaY = pointY - start.y;
+    const segmentLength = Math.hypot(deltaX, deltaY);
+    const deltaTimeMs = normalizedTimeMs - start.timeMs;
+
+    if (segmentLength <= 0.0001) {
+      start.x = pointX;
+      start.y = pointY;
+      start.pressure = pointPressure;
+      start.timeMs = normalizedTimeMs;
+      return;
+    }
+
+    const generationSettings = stroke.lightGlazeSettings ?? this.settings;
+    const spacing = Math.max(
+      0.1,
+      generationSettings.size * (stroke.adaptiveSpacingPercent / 100),
+    );
+    const curveSegment = stroke.curvePlanner?.plan(
+      start.x,
+      start.y,
+      pointX,
+      pointY,
+    );
+    if (!curveSegment) {
+      throw new Error("Planner curva Paint non disponibile per la stabilizzazione.");
+    }
+    if (this.activeStrokeProfile) {
+      this.activeStrokeProfile.strokeCurveInputSegments += 1;
+      this.activeStrokeProfile.strokeCurveFlattenedSegments +=
+        curveSegment.subdivisionCount;
+      if (curveSegment.smoothed) {
+        this.activeStrokeProfile.strokeCurveSmoothedSegments += 1;
+      }
+      if (curveSegment.sharpCornerBypass) {
+        this.activeStrokeProfile.strokeCurveSharpCornerBypasses += 1;
+      }
+    }
+
+    let distanceSinceStamp = stroke.distanceSinceStamp;
+    let generatedOnInputSegment = 0;
+    let stampLimitReached = false;
+    let curveStartX = start.x;
+    let curveStartY = start.y;
+    let parameterStart = 0;
+
+    for (
+      let subdivision = 1;
+      subdivision <= curveSegment.subdivisionCount;
+      subdivision += 1
+    ) {
+        const parameterEnd = subdivision / curveSegment.subdivisionCount;
+        const curveEndX = subdivision === curveSegment.subdivisionCount
+        ? pointX
+        : evaluateStrokeCurveX(curveSegment, parameterEnd);
+      const curveEndY = subdivision === curveSegment.subdivisionCount
+        ? pointY
+        : evaluateStrokeCurveY(curveSegment, parameterEnd);
+      const curveDeltaX = curveEndX - curveStartX;
+      const curveDeltaY = curveEndY - curveStartY;
+      const curveSegmentLength = Math.hypot(curveDeltaX, curveDeltaY);
+      let distanceAlongCurveSegment = 0;
+
+      if (curveSegmentLength > 0.0001) {
+        const directionX = curveDeltaX / curveSegmentLength;
+        const directionY = curveDeltaY / curveSegmentLength;
+        while (
+          !stampLimitReached
+          && distanceSinceStamp
+            + (curveSegmentLength - distanceAlongCurveSegment)
+            >= spacing
+        ) {
+          const distanceToNextStamp = spacing - distanceSinceStamp;
+          distanceAlongCurveSegment += distanceToNextStamp;
+          const localInterpolation = clamp(
+            distanceAlongCurveSegment / curveSegmentLength,
+            0,
+            1,
+          );
+          const curveParameter = parameterStart
+            + (parameterEnd - parameterStart) * localInterpolation;
+          emitStamp(this, {
+            x: curveStartX + curveDeltaX * localInterpolation,
+            y: curveStartY + curveDeltaY * localInterpolation,
+            pressure: start.pressure
+              + (pointPressure - start.pressure) * curveParameter,
+            timeMs: start.timeMs + deltaTimeMs * curveParameter,
+          }, directionX, directionY);
+          distanceSinceStamp = 0;
+          generatedOnInputSegment += 1;
+
+          if (generatedOnInputSegment >= MAX_STAMPS_PER_BATCH) {
+            stampLimitReached = true;
+            break;
+          }
+        }
+        distanceSinceStamp += Math.max(
+          0,
+          curveSegmentLength - distanceAlongCurveSegment,
+        );
+      }
+
+      curveStartX = curveEndX;
+      curveStartY = curveEndY;
+      parameterStart = parameterEnd;
+    }
+    if (stampLimitReached) {
+      distanceSinceStamp %= spacing;
+    }
+
+    start.x = pointX;
+    start.y = pointY;
+    start.pressure = pointPressure;
+    start.timeMs = normalizedTimeMs;
+    stroke.distanceSinceStamp = distanceSinceStamp;
+  }
+
+  private stabilizationPreviewStamp(index: number): Stamp {
+    let stamp = this.stabilizationPreviewStamps[index];
+    if (!stamp) {
+      stamp = {
+        x: 0,
+        y: 0,
+        radius: 0,
+        pressure: 1,
+        seed: 0,
+        directionX: 1,
+        directionY: 0,
+        historyActionId: 0,
+      };
+      this.stabilizationPreviewStamps[index] = stamp;
+    }
+    return stamp;
+  }
+
+  private prepareStabilizationTailFrame(
+    update: Readonly<StrokeStabilizationUpdate>,
+  ): StabilizationTailFrame | null {
+    const stroke = this.activeStroke;
+    if (
+      !stroke
+      || !stroke.stabilizer
+      || !stroke.lightGlazeSettings
+      || update.bypassed
+      || update.tailCount < 2
+    ) {
+      this.stabilizationPreviewStampCount = 0;
+      return null;
+    }
+
+    const settings = stroke.lightGlazeSettings;
+    const referenceTimeMs = Math.max(stroke.lastInput.timeMs, performance.now());
+    let stampCount = 0;
+
+    // End-thickness holdback and stabilization share the same provisional
+    // accumulator revision. Stamps already generated by the mature prefix keep
+    // their exact seed/position; only their live end-radius is recalculated.
+    for (
+      let heldIndex = stroke.heldThicknessHead;
+      heldIndex < stroke.heldThicknessStamps.length;
+      heldIndex += 1
+    ) {
+      const candidate = stroke.heldThicknessStamps[heldIndex];
+      const radius = endThicknessRadius(
+        candidate.baseRadius,
+        candidate.liveThicknessFactor,
+        stroke.thicknessSettings.endThickness,
+        Math.max(0, referenceTimeMs - candidate.timeMs),
+      );
+      if (!Number.isFinite(radius) || radius <= 0) {
+        continue;
+      }
+      if (stampCount >= MAX_STAMPS_PER_BATCH) {
+        throw new Error("Coda stabilizzazione oltre il buffer massimo di stamp.");
+      }
+      const target = this.stabilizationPreviewStamp(stampCount);
+      target.x = candidate.stamp.x;
+      target.y = candidate.stamp.y;
+      target.radius = radius;
+      target.pressure = candidate.stamp.pressure;
+      target.seed = candidate.stamp.seed;
+      target.directionX = candidate.stamp.directionX;
+      target.directionY = candidate.stamp.directionY;
+      target.historyActionId = candidate.stamp.historyActionId;
+      stampCount += 1;
+    }
+
+    const planner = this.stabilizationPreviewCurvePlanner;
+    if (!stroke.curvePlanner) {
+      throw new Error("Planner curva autorevole mancante nella stabilizzazione.");
+    }
+    planner.copyStateFrom(stroke.curvePlanner);
+    let distanceSinceStamp = stroke.distanceSinceStamp;
+    let seedSequence = this.seedSequence;
+    const spacing = Math.max(
+      0.1,
+      settings.size * (stroke.adaptiveSpacingPercent / 100),
+    );
+    let startX = update.tailX[0];
+    let startY = update.tailY[0];
+    let startPressure = update.tailPressure[0];
+    let startTimeMs = update.tailTimeMs[0];
+
+    const appendPreviewStamp = (
+      pointX: number,
+      pointY: number,
+      pointPressure: number,
+      pointTimeMs: number,
+      directionX: number,
+      directionY: number,
+    ): void => {
+      const pressure = clamp(pointPressure, 0.01, 1);
+      const baseRadius = Math.max(0.5, settings.size * 0.5);
+      const liveThicknessFactor = stroke.thicknessDynamicsNeutral
+        ? 1
+        : startThicknessFactor(
+          stroke.thicknessSettings.startThickness,
+          Math.max(0, pointTimeMs - stroke.startedAtMs),
+        );
+      const radius = stroke.thicknessTailHoldback
+        ? endThicknessRadius(
+          baseRadius,
+          liveThicknessFactor,
+          stroke.thicknessSettings.endThickness,
+          Math.max(0, referenceTimeMs - pointTimeMs),
+        )
+        : baseRadius * liveThicknessFactor;
+      const seed = (Math.imul(seedSequence++, 0x9e3779b1) ^ 0xa511e9b3) >>> 0;
+      if (!Number.isFinite(radius) || radius <= 0) {
+        return;
+      }
+      const jitterReach = radius * 2 * (
+        settings.positionJitterLinear + settings.positionJitterLateral
+      );
+      if (
+        pointX + radius + jitterReach < 0
+        || pointY + radius + jitterReach < 0
+        || pointX - radius - jitterReach >= LAYER_SIZE
+        || pointY - radius - jitterReach >= LAYER_SIZE
+      ) {
+        return;
+      }
+      if (stampCount >= MAX_STAMPS_PER_BATCH) {
+        throw new Error("Coda stabilizzazione oltre il buffer massimo di stamp.");
+      }
+      const stamp = this.stabilizationPreviewStamp(stampCount);
+      stamp.x = pointX;
+      stamp.y = pointY;
+      stamp.radius = radius;
+      stamp.pressure = pressure;
+      stamp.seed = seed;
+      stamp.directionX = directionX;
+      stamp.directionY = directionY;
+      stamp.historyActionId = stroke.historyActionId;
+      stampCount += 1;
+    };
+
+    for (let tailIndex = 1; tailIndex < update.tailCount; tailIndex += 1) {
+      const endX = update.tailX[tailIndex];
+      const endY = update.tailY[tailIndex];
+      const endPressure = update.tailPressure[tailIndex];
+      const endTimeMs = update.tailTimeMs[tailIndex];
+      const deltaTimeMs = Math.max(0, endTimeMs - startTimeMs);
+      const curveSegment = planner.plan(startX, startY, endX, endY);
+      let curveStartX = startX;
+      let curveStartY = startY;
+      let parameterStart = 0;
+
+      for (
+        let subdivision = 1;
+        subdivision <= curveSegment.subdivisionCount;
+        subdivision += 1
+      ) {
+        const parameterEnd = subdivision / curveSegment.subdivisionCount;
+        const curveEndX = subdivision === curveSegment.subdivisionCount
+          ? endX
+          : evaluateStrokeCurveX(curveSegment, parameterEnd);
+        const curveEndY = subdivision === curveSegment.subdivisionCount
+          ? endY
+          : evaluateStrokeCurveY(curveSegment, parameterEnd);
+        const curveDeltaX = curveEndX - curveStartX;
+        const curveDeltaY = curveEndY - curveStartY;
+        const curveLength = Math.hypot(curveDeltaX, curveDeltaY);
+        let distanceAlongCurve = 0;
+
+        if (curveLength > 0.0001) {
+          const directionX = curveDeltaX / curveLength;
+          const directionY = curveDeltaY / curveLength;
+          while (
+            distanceSinceStamp + (curveLength - distanceAlongCurve) >= spacing
+          ) {
+            const distanceToNextStamp = spacing - distanceSinceStamp;
+            distanceAlongCurve += distanceToNextStamp;
+            const localInterpolation = clamp(distanceAlongCurve / curveLength, 0, 1);
+            const curveParameter = parameterStart
+              + (parameterEnd - parameterStart) * localInterpolation;
+            appendPreviewStamp(
+              curveStartX + curveDeltaX * localInterpolation,
+              curveStartY + curveDeltaY * localInterpolation,
+              startPressure + (endPressure - startPressure) * curveParameter,
+              startTimeMs + deltaTimeMs * curveParameter,
+              directionX,
+              directionY,
+            );
+            distanceSinceStamp = 0;
+          }
+          distanceSinceStamp += Math.max(0, curveLength - distanceAlongCurve);
+        }
+        curveStartX = curveEndX;
+        curveStartY = curveEndY;
+        parameterStart = parameterEnd;
+      }
+      startX = endX;
+      startY = endY;
+      startPressure = endPressure;
+      startTimeMs = endTimeMs;
+    }
+
+    this.stabilizationPreviewStampCount = stampCount;
+    if (stampCount === 0) {
+      return null;
+    }
+    const packed = packStampsIntoUpload(
+      this.stabilizationPreviewStamps,
+      settings,
+      this.thicknessTailInstanceUploadF32,
+      this.thicknessTailInstanceUploadU32,
+      stampCount,
+    );
+    if (!packed.dirtyRect) {
+      return null;
+    }
+    const intenseBlending = settings.blendMode === "intense-blending";
+    this.writeThicknessTailBrushUniforms({
+      ...settings,
+      opacity: intenseBlending ? settings.opacity : 1,
+      blendMode: "normal",
+    }, LAYER_SIZE, LAYER_SIZE, 0, 0);
+    this.device.queue.writeBuffer(
+      this.thicknessTailInstanceBuffer,
+      0,
+      this.thicknessTailInstanceUpload,
+      0,
+      stampCount * STAMP_STRIDE_BYTES,
+    );
+    return {
+      settings,
+      stampCount,
+      dirtyRect: packed.dirtyRect,
+      shapeOccupancySelection: settings.shape === "shape"
+        ? this.selectShapeOccupancy(packed.minimumRadius)
+        : null,
+      grainActive: isTexturizedGrainActive(settings),
+    };
   }
 
   thicknessTailPreviewEligible(): boolean {
@@ -6749,6 +7247,90 @@ export class BrushEngine {
         profile.thicknessDynamicsPreviewMaximumTexturePixels,
         this.thicknessTailTextureWidth * this.thicknessTailTextureHeight,
       );
+    }
+  }
+
+  private encodeStabilizationTailFrame(
+    encoder: GPUCommandEncoder,
+    frame: StabilizationTailFrame,
+  ): void {
+    const settings = frame.settings;
+    const isShape = settings.shape === "shape";
+    const shapeOccupancyMip = frame.shapeOccupancySelection?.selectedMipLevel ?? null;
+    const useShapeOccupancy = isShape && shapeOccupancyMip !== null;
+    const lightNoBuildUp = settings.blendMode === "light-glaze"
+      || settings.blendMode === "m1-glaze";
+    const intenseBlending = settings.blendMode === "intense-blending";
+    const pipeline = lightNoBuildUp
+      ? frame.grainActive
+        ? isShape
+          ? useShapeOccupancy
+            ? this.grainLightNoBuildUpShapeOccupancyPipeline
+            : this.grainLightNoBuildUpShapePipeline
+          : this.grainLightNoBuildUpPipeline
+        : isShape
+          ? useShapeOccupancy
+            ? this.lightNoBuildUpShapeOccupancyPipeline
+            : this.lightNoBuildUpShapePipeline
+          : this.lightNoBuildUpPipeline
+      : intenseBlending
+        ? frame.grainActive
+          ? isShape
+            ? useShapeOccupancy
+              ? this.grainIntenseBlendingShapeOccupancyPipeline
+              : this.grainIntenseBlendingShapePipeline
+            : this.grainIntenseBlendingPipeline
+          : isShape
+            ? useShapeOccupancy
+              ? this.intenseBlendingShapeOccupancyPipeline
+              : this.intenseBlendingShapePipeline
+            : this.intenseBlendingPipeline
+        : frame.grainActive
+          ? isShape
+            ? useShapeOccupancy
+              ? this.grainUniformedGlazeShapeOccupancyPipeline
+              : this.grainUniformedGlazeShapePipeline
+            : this.grainUniformedGlazePipeline
+          : isShape
+            ? useShapeOccupancy
+              ? this.uniformedGlazeShapeOccupancyPipeline
+              : this.uniformedGlazeShapePipeline
+            : this.uniformedGlazePipeline;
+    const bindGroup = frame.grainActive
+      ? useShapeOccupancy
+        ? this.thicknessTailGrainBrushOccupancyBindGroups[
+          grainCoordinateMode(settings)
+        ][settings.grainFiltering][shapeOccupancyMip!]
+        : this.thicknessTailGrainBrushBindGroups[
+          grainCoordinateMode(settings)
+        ][settings.grainFiltering]
+      : useShapeOccupancy
+        ? this.thicknessTailBrushOccupancyBindGroups[shapeOccupancyMip!]
+        : this.thicknessTailBrushBindGroup;
+
+    const pass = encoder.beginRenderPass({
+      label: "Draw revisionable stabilization tail into gesture accumulator",
+      colorAttachments: [{
+        view: this.lightGlazeView!,
+        loadOp: "load",
+        storeOp: "store",
+      }],
+    });
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.setScissorRect(
+      frame.dirtyRect.x,
+      frame.dirtyRect.y,
+      frame.dirtyRect.width,
+      frame.dirtyRect.height,
+    );
+    pass.draw(STAMP_VERTICES_PER_COPY, frame.stampCount * settings.count, 0, 0);
+    pass.end();
+    if (this.activeStrokeProfile) {
+      this.activeStrokeProfile.strokeStabilizationTailFrames += 1;
+      this.activeStrokeProfile.strokeStabilizationTailBaseStamps += frame.stampCount;
+      this.activeStrokeProfile.strokeStabilizationTailPhysicalCopies +=
+        frame.stampCount * settings.count;
     }
   }
 
@@ -7999,12 +8581,57 @@ export class BrushEngine {
       throw new Error("Il Grain usato dalla cronologia non corrisponde alla risorsa corrente.");
     }
     const storageMode = lightGlazeStorageModeFor(settings.blendMode);
+    if (storageMode === "none") {
+      throw new Error("Modalita storage glaze non valida durante il rendering.");
+    }
     if (!lightGlazeResourcesMatch(this, storageMode)) {
       throw new Error("Risorse rendering glaze mancanti durante il rendering.");
     }
     const grainActive = isTexturizedGrainActive(settings);
     const lightNoBuildUp = settings.blendMode === "light-glaze"
       || settings.blendMode === "m1-glaze";
+    const stabilizationUpdate = present
+      && !replayBatch
+      && this.activeStroke?.historyActionId === session.historyActionId
+      && this.activeStroke.stabilizer
+      && this.activeStroke.stabilizationUpdate
+      && this.pendingStamps.length <= stampCount
+      ? this.activeStroke.stabilizationUpdate
+      : null;
+    const stabilizationFrame = stabilizationUpdate
+      ? this.prepareStabilizationTailFrame(stabilizationUpdate)
+      : null;
+    const stabilizationRestoreTexture = present
+      ? this.stabilizationSnapshotTexture
+      : null;
+    const stabilizationRestoreRect = present
+      ? this.stabilizationSnapshotRect
+      : null;
+    let retiredStabilizationSnapshot: GPUTexture | null = null;
+    if (stabilizationFrame) {
+      retiredStabilizationSnapshot = ensureStrokeStabilizationSnapshot(
+        this,
+        storageMode,
+        stabilizationFrame.dirtyRect.width,
+        stabilizationFrame.dirtyRect.height,
+      );
+      if (this.activeStrokeProfile) {
+        const snapshotPixels = this.stabilizationSnapshotWidth
+          * this.stabilizationSnapshotHeight;
+        const snapshotBytesPerPixel = storageMode === "r8-coverage" ? 1 : 8;
+        this.activeStrokeProfile.strokeStabilizationMaximumSnapshotPixels = Math.max(
+          this.activeStrokeProfile.strokeStabilizationMaximumSnapshotPixels,
+          snapshotPixels,
+        );
+        this.activeStrokeProfile.strokeStabilizationMaximumSnapshotBytes = Math.max(
+          this.activeStrokeProfile.strokeStabilizationMaximumSnapshotBytes,
+          snapshotPixels * snapshotBytesPerPixel,
+        );
+      }
+    }
+    if (stabilizationRestoreRect && !stabilizationRestoreTexture) {
+      throw new Error("Snapshot della coda stabilizzata mancante.");
+    }
 
     const cpuStart = performance.now();
     if (present) {
@@ -8027,7 +8654,9 @@ export class BrushEngine {
     if (grainActive) {
       this.writeGrainUniforms(settings);
     }
-    const firstSeed = replayBatch?.firstSeed ?? stamps[0]?.seed;
+    const firstSeed = replayBatch?.firstSeed
+      ?? stamps[0]?.seed
+      ?? (stabilizationFrame ? this.stabilizationPreviewStamps[0]?.seed : undefined);
     if (lightNoBuildUp && session.tintLinear === null && firstSeed !== undefined) {
       const [red, green, blue] = adaptivePreviewRgb(
         previewHash32(firstSeed),
@@ -8050,6 +8679,24 @@ export class BrushEngine {
     );
 
     const encoder = this.device.createCommandEncoder({ label: "Light Glaze frame encoder" });
+    if (stabilizationRestoreRect && stabilizationRestoreTexture) {
+      encoder.copyTextureToTexture(
+        { texture: stabilizationRestoreTexture },
+        {
+          texture: this.lightGlazeTexture!,
+          origin: {
+            x: stabilizationRestoreRect.x,
+            y: stabilizationRestoreRect.y,
+            z: 0,
+          },
+        },
+        {
+          width: stabilizationRestoreRect.width,
+          height: stabilizationRestoreRect.height,
+          depthOrArrayLayers: 1,
+        },
+      );
+    }
     let stampPackingMs = 0;
     let instanceUploadMs = 0;
     let brushEncodingMs = 0;
@@ -8057,6 +8704,7 @@ export class BrushEngine {
     let commandSubmitMs = 0;
     let scissorPixels = 0;
     let submittedDirtyRect: DirtyRect | null = null;
+    let liveDirtyRect: DirtyRect | null = stabilizationRestoreRect;
     let submittedShapeOccupancySelection: ShapeOccupancySelection | null = null;
     let lightGlazeClearEncoded = false;
     let presentationCacheFullRebuilds = 0;
@@ -8234,7 +8882,63 @@ export class BrushEngine {
       brushPass.end();
       session.hasContent = session.hasContent || submittedDirtyRect !== null;
       session.dirtyRect = mergeDirtyRects(session.dirtyRect, submittedDirtyRect);
+      session.authoritativeDirtyRect = mergeDirtyRects(
+        session.authoritativeDirtyRect,
+        submittedDirtyRect,
+      );
       lightGlazeBatches = 1;
+    }
+
+    if (stabilizationFrame && session.needsClear && stampCount === 0) {
+      const staleRect = this.lightGlazeStaleRect;
+      if (staleRect) {
+        const clearPass = encoder.beginRenderPass({
+          label: "Clear stale glaze before first stabilization-only frame",
+          colorAttachments: [{
+            view: this.lightGlazeView!,
+            loadOp: "load",
+            storeOp: "store",
+          }],
+        });
+        clearPass.setPipeline(
+          this.lightGlazeStorageMode === "r8-coverage"
+            ? this.lightGlazeClearR8Pipeline
+            : this.lightGlazeClearRgba16FloatPipeline,
+        );
+        clearPass.setScissorRect(staleRect.x, staleRect.y, staleRect.width, staleRect.height);
+        clearPass.draw(3, 1, 0, 0);
+        clearPass.end();
+      }
+      lightGlazeClearEncoded = true;
+    }
+
+    liveDirtyRect = mergeDirtyRects(liveDirtyRect, submittedDirtyRect);
+    if (stabilizationFrame) {
+      if (!this.stabilizationSnapshotTexture) {
+        throw new Error("Allocazione snapshot della stabilizzazione mancante.");
+      }
+      encoder.copyTextureToTexture(
+        {
+          texture: this.lightGlazeTexture!,
+          origin: {
+            x: stabilizationFrame.dirtyRect.x,
+            y: stabilizationFrame.dirtyRect.y,
+            z: 0,
+          },
+        },
+        { texture: this.stabilizationSnapshotTexture },
+        {
+          width: stabilizationFrame.dirtyRect.width,
+          height: stabilizationFrame.dirtyRect.height,
+          depthOrArrayLayers: 1,
+        },
+      );
+      this.encodeStabilizationTailFrame(encoder, stabilizationFrame);
+      session.hasContent = true;
+      session.dirtyRect = mergeDirtyRects(session.dirtyRect, stabilizationFrame.dirtyRect);
+      liveDirtyRect = mergeDirtyRects(liveDirtyRect, stabilizationFrame.dirtyRect);
+      scissorPixels += stabilizationFrame.dirtyRect.width
+        * stabilizationFrame.dirtyRect.height;
     }
     brushEncodingMs += performance.now() - brushEncodingStart;
 
@@ -8265,13 +8969,13 @@ export class BrushEngine {
           ? this.encodeRasterStrokeUpdate(
             encoder,
             "light-glaze",
-            submittedDirtyRect,
+            liveDirtyRect,
             mergeDirtyRects(this.layerContentBounds, session.dirtyRect),
             clearLayer,
           )
           : { dirtyRect: null, timing: null };
         if (rasterStrokeActive) {
-          if (clearLayer || submittedDirtyRect) {
+          if (clearLayer || liveDirtyRect) {
             this.paintDisplayMipValidThroughLevel = 0;
           }
           const rasterPyramidStart = performance.now();
@@ -8291,7 +8995,7 @@ export class BrushEngine {
           const glazePyramid = encodeLightGlazeDisplayPyramid(this, 
             encoder,
             session,
-            submittedDirtyRect,
+            liveDirtyRect,
             displaySelectedMipLevel,
           );
           lightGlazePyramidPasses += glazePyramid.passes;
@@ -8314,7 +9018,7 @@ export class BrushEngine {
         const requiresFullRebuild = this.presentationCacheNeedsFullRebuild || clearLayer;
         const presentationLayerDirtyRect = rasterStrokeActive
           ? rasterStrokeUpdate.dirtyRect
-          : submittedDirtyRect;
+          : liveDirtyRect;
         const presentationDirtyRect = requiresFullRebuild
           ? { x: 0, y: 0, width: this.canvas.width, height: this.canvas.height }
           : presentationLayerDirtyRect
@@ -8421,8 +9125,9 @@ export class BrushEngine {
       displayEncodingMs += performance.now() - displayEncodingStart;
     }
 
+    const authoritativeDirtyRect = session.authoritativeDirtyRect;
     if (session.commitRequested) {
-      if (session.hasContent && session.dirtyRect) {
+      if (session.hasContent && authoritativeDirtyRect) {
         const compositeStart = performance.now();
         if (
           session.settings.blendMode === "uniformed-glaze"
@@ -8439,15 +9144,15 @@ export class BrushEngine {
             LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BUFFER_BYTES / Uint32Array.BYTES_PER_ELEMENT,
           );
           let tileIndex = 0;
-          const dirtyRight = session.dirtyRect.x + session.dirtyRect.width;
-          const dirtyBottom = session.dirtyRect.y + session.dirtyRect.height;
+          const dirtyRight = authoritativeDirtyRect.x + authoritativeDirtyRect.width;
+          const dirtyBottom = authoritativeDirtyRect.y + authoritativeDirtyRect.height;
           for (
-            let tileY = session.dirtyRect.y;
+            let tileY = authoritativeDirtyRect.y;
             tileY < dirtyBottom;
             tileY += LIGHT_GLAZE_COMMIT_TILE_EXTENT
           ) {
             for (
-              let tileX = session.dirtyRect.x;
+              let tileX = authoritativeDirtyRect.x;
               tileX < dirtyRight;
               tileX += LIGHT_GLAZE_COMMIT_TILE_EXTENT
             ) {
@@ -8516,19 +9221,20 @@ export class BrushEngine {
           compositePass.setPipeline(this.lightGlazeCompositePipeline);
           compositePass.setBindGroup(0, this.lightGlazeCompositeBindGroup!);
           compositePass.setScissorRect(
-            session.dirtyRect.x,
-            session.dirtyRect.y,
-            session.dirtyRect.width,
-            session.dirtyRect.height,
+            authoritativeDirtyRect.x,
+            authoritativeDirtyRect.y,
+            authoritativeDirtyRect.width,
+            authoritativeDirtyRect.height,
           );
           compositePass.draw(3, 1, 0, 0);
           compositePass.end();
         }
         brushEncodingMs += performance.now() - compositeStart;
         lightGlazeCommits = 1;
-        lightGlazeCompositePixels = session.dirtyRect.width * session.dirtyRect.height;
+        lightGlazeCompositePixels = authoritativeDirtyRect.width
+          * authoritativeDirtyRect.height;
       }
-      this.noteLayerMutation(session.dirtyRect, false);
+      this.noteLayerMutation(authoritativeDirtyRect, false);
 
       if (present) {
         const canonicalDisplayStart = performance.now();
@@ -8544,7 +9250,7 @@ export class BrushEngine {
           : { dirtyRect: null, timing: null };
         const canonicalLayerDirtyRect = clearLayer
           ? { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE }
-          : session.dirtyRect;
+          : authoritativeDirtyRect;
         if (rasterStrokeActive) {
           this.paintDisplayMipValidThroughLevel = 0;
           const rasterPyramidStart = performance.now();
@@ -8705,9 +9411,17 @@ export class BrushEngine {
       this.device.queue.submit([encoder.finish()]);
     } catch (error) {
       if (historyGpuSlice) this.historyGpuStorage.release(historyGpuSlice);
+      retiredStabilizationSnapshot?.destroy();
+      this.stabilizationSnapshotRect = null;
       throw error;
     }
     commandSubmitMs = performance.now() - submitStart;
+    if (present) {
+      this.stabilizationSnapshotRect = stabilizationFrame
+        ? { ...stabilizationFrame.dirtyRect }
+        : null;
+    }
+    retiredStabilizationSnapshot?.destroy();
     if (lightGlazeClearEncoded) {
       session.needsClear = false;
       this.lightGlazeStaleRect = null;
@@ -8716,8 +9430,8 @@ export class BrushEngine {
       this.presentationCacheNeedsFullRebuild = false;
     }
     if (session.commitRequested) {
-      if (session.hasContent && session.dirtyRect) {
-        this.lightGlazeStaleRect = { ...session.dirtyRect };
+      if (session.hasContent && authoritativeDirtyRect) {
+        this.lightGlazeStaleRect = { ...authoritativeDirtyRect };
       }
       this.lightGlazeSession = null;
       if (

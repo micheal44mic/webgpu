@@ -60,6 +60,8 @@ export interface BrushSettings {
   color: string;
   size: number;
   spacingPercent: number;
+  /** Geometric stroke stabilization amount, normalized to 0..1. */
+  stabilization: number;
   startThickness: number;
   endThickness: number;
   count: number;
@@ -274,6 +276,7 @@ export const defaultBrushSettings: BrushSettings = {
   color: "#ff5b35",
   size: 96,
   spacingPercent: 1,
+  stabilization: 0,
   startThickness: 1,
   endThickness: 1,
   count: 24,

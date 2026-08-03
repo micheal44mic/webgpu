@@ -298,7 +298,7 @@ assert(html.includes('id="runRenderingModeSuite"')
   && html.includes('value="off">Off — senza texture')
   && html.includes('value="texturized">Texturized — Fixed M1 (fisso)'),
   "La suite iPhone one-tap con Grain Off/Fixed non è esposta correttamente.");
-assert(main.includes("performanceTelemetryRevision: 61"),
+assert(main.includes("performanceTelemetryRevision: 62"),
   "Revisione telemetria compositing livelli attesa assente.");
 
 console.log(JSON.stringify({

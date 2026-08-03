@@ -1,6 +1,7 @@
 import type { BrushEngine } from "./brush-engine";
 import { type BenchmarkResult, type BrushSettings, type LayerFormat } from "./engine-types";
 import { STROKE_CURVE_STRATEGY } from "./stroke-curve-core";
+import { STROKE_STABILIZATION_STRATEGY } from "./stroke-stabilization-core";
 import {
   ADAPTIVE_PREVIEW_STALE_FRAME_STRATEGY,
   ADAPTIVE_PREVIEW_STRATEGY,
@@ -843,6 +844,12 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
   const lightGlazeMiB = engine.lightGlazeStorageAllocated
     ? lightGlazeAdditionalMemoryMiB(engine.layerFormat, engine.lightGlazeStorageMode)
     : 0;
+  const stabilizationTailBytesPerPixel = engine.stabilizationSnapshotStorageMode
+    === "r8-coverage" ? 1 : 8;
+  const stabilizationTailMiB = engine.stabilizationSnapshotTexture
+    ? engine.stabilizationSnapshotWidth * engine.stabilizationSnapshotHeight
+      * stabilizationTailBytesPerPixel / MEBIBYTE_BYTES
+    : 0;
   const thicknessTailMiB = engine.thicknessTailTexture
     ? engine.thicknessTailTextureWidth * engine.thicknessTailTextureHeight
       * bytesPerPixel / MEBIBYTE_BYTES
@@ -891,6 +898,7 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     blendRendererMiB,
     fillRendererMiB,
     lightGlazeMiB,
+    stabilizationTailMiB,
     thicknessTailMiB,
     rasterBevelHeightMiB,
     rasterBevelLutAndControlMiB,
@@ -943,6 +951,7 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     rasterBevelFieldShrinkCount: rasterBevelField.shrinkCount,
     lightGlazeMiB,
     lightGlazeTransitionPeakMiB: engine.lightGlazeTransitionPeakMiB,
+    stabilizationTailMiB,
     thicknessTailMiB,
     historyGpuMiB,
     historyGpuUsedMiB,
@@ -980,6 +989,22 @@ export function finishStrokePerformanceProfile(engine: BrushEngine): StrokePerfo
     colorSeedStrategy: COLOR_SEED_STRATEGY,
     dirtyRectStrategy: DIRTY_RECT_STRATEGY,
     strokeCurveStrategy: STROKE_CURVE_STRATEGY,
+    strokeStabilizationStrategy: STROKE_STABILIZATION_STRATEGY,
+    strokeStabilizationAmount: profile.strokeStabilizationAmount,
+    strokeStabilizationInputSamples: profile.strokeStabilizationInputSamples,
+    strokeStabilizationMaturePoints: profile.strokeStabilizationMaturePoints,
+    strokeStabilizationForcedMaturePoints:
+      profile.strokeStabilizationForcedMaturePoints,
+    strokeStabilizationMaximumTailPoints:
+      profile.strokeStabilizationMaximumTailPoints,
+    strokeStabilizationTailFrames: profile.strokeStabilizationTailFrames,
+    strokeStabilizationTailBaseStamps: profile.strokeStabilizationTailBaseStamps,
+    strokeStabilizationTailPhysicalCopies:
+      profile.strokeStabilizationTailPhysicalCopies,
+    strokeStabilizationMaximumSnapshotPixels:
+      profile.strokeStabilizationMaximumSnapshotPixels,
+    strokeStabilizationAdditionalMemoryMiB:
+      profile.strokeStabilizationMaximumSnapshotBytes / MEBIBYTE_BYTES,
     strokeCurveInputSegments: profile.strokeCurveInputSegments,
     strokeCurveSmoothedSegments: profile.strokeCurveSmoothedSegments,
     strokeCurveFlattenedSegments: profile.strokeCurveFlattenedSegments,
@@ -1248,6 +1273,16 @@ export function startStrokePerformanceProfile(engine: BrushEngine): void {
     brushBatches: 0,
     largestBatchStamps: 0,
     estimatedScissorPixels: 0,
+    strokeStabilizationAmount: engine.settings.stabilization,
+    strokeStabilizationInputSamples: 0,
+    strokeStabilizationMaturePoints: 0,
+    strokeStabilizationForcedMaturePoints: 0,
+    strokeStabilizationMaximumTailPoints: 0,
+    strokeStabilizationTailFrames: 0,
+    strokeStabilizationTailBaseStamps: 0,
+    strokeStabilizationTailPhysicalCopies: 0,
+    strokeStabilizationMaximumSnapshotPixels: 0,
+    strokeStabilizationMaximumSnapshotBytes: 0,
     strokeCurveInputSegments: 0,
     strokeCurveSmoothedSegments: 0,
     strokeCurveFlattenedSegments: 0,

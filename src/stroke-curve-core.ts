@@ -151,6 +151,20 @@ export class CausalStrokeCurvePlanner {
     this.previousEndTangentY = 0;
   }
 
+  /**
+   * Copies only the preallocated planner state. A revisionable preview can
+   * therefore continue from the authoritative mature prefix without mutating
+   * the planner that will later commit that prefix.
+   */
+  copyStateFrom(source: CausalStrokeCurvePlanner): void {
+    this.hasPreviousDirection = source.hasPreviousDirection;
+    this.hasPredictedEndTangent = source.hasPredictedEndTangent;
+    this.previousDirectionX = source.previousDirectionX;
+    this.previousDirectionY = source.previousDirectionY;
+    this.previousEndTangentX = source.previousEndTangentX;
+    this.previousEndTangentY = source.previousEndTangentY;
+  }
+
   plan(
     startX: number,
     startY: number,

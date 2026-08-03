@@ -8,6 +8,7 @@ import {
   LIGHT_GLAZE_COMMIT_TILE_UNIFORM_STRIDE_BYTES,
   MAX_STAMPS_PER_BATCH,
   PAINT_DISPLAY_MIP_LEVEL_COUNT,
+  STABILIZATION_TAIL_TEXTURE_QUANTUM,
 } from "./engine-limits";
 import { type DirtyRect } from "./engine-stroke-types";
 import { paintMipDimensions } from "./engine-geometry";
@@ -43,7 +44,10 @@ export function createLightGlazeResourceSet(engine: BrushEngine,
         label: `Lazy Light Glaze stroke accumulator ${accumulatorFormat}`,
         size: { width: LAYER_SIZE, height: LAYER_SIZE, depthOrArrayLayers: 1 },
         format: accumulatorFormat,
-        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT
+          | GPUTextureUsage.TEXTURE_BINDING
+          | GPUTextureUsage.COPY_SRC
+          | GPUTextureUsage.COPY_DST,
       });
       compositeMipTexture = engine.device.createTexture({
         label: `Lazy Light Glaze composited logical mip 1+ ${engine.layerFormat}`,
@@ -315,9 +319,101 @@ export function destroyLightGlazeResources(engine: BrushEngine): void {
   engine.lightGlazeCommitTileBindGroup = null;
   engine.lightGlazeStorageAllocated = false;
   engine.lightGlazeStorageMode = "none";
+  destroyStrokeStabilizationSnapshot(engine);
+}
+
+export function destroyStrokeStabilizationSnapshot(engine: BrushEngine): void {
+  engine.stabilizationSnapshotTexture?.destroy();
+  engine.stabilizationSnapshotTexture = null;
+  engine.stabilizationSnapshotWidth = 0;
+  engine.stabilizationSnapshotHeight = 0;
+  engine.stabilizationSnapshotStorageMode = "none";
+  engine.stabilizationSnapshotRect = null;
+}
+
+/**
+ * Grows the prefix snapshot monotonically. The returned old texture may still
+ * be referenced by a restore copy already encoded by the caller; destroy it
+ * only after that command buffer has been submitted.
+ */
+export function ensureStrokeStabilizationSnapshot(
+  engine: BrushEngine,
+  storageMode: Exclude<LightGlazeStorageMode, "none">,
+  minimumWidth: number,
+  minimumHeight: number,
+): GPUTexture | null {
+  const roundedWidth = Math.min(
+    LAYER_SIZE,
+    Math.max(
+      STABILIZATION_TAIL_TEXTURE_QUANTUM,
+      Math.ceil(Math.max(1, minimumWidth) / STABILIZATION_TAIL_TEXTURE_QUANTUM)
+        * STABILIZATION_TAIL_TEXTURE_QUANTUM,
+    ),
+  );
+  const roundedHeight = Math.min(
+    LAYER_SIZE,
+    Math.max(
+      STABILIZATION_TAIL_TEXTURE_QUANTUM,
+      Math.ceil(Math.max(1, minimumHeight) / STABILIZATION_TAIL_TEXTURE_QUANTUM)
+        * STABILIZATION_TAIL_TEXTURE_QUANTUM,
+    ),
+  );
+  if (
+    engine.stabilizationSnapshotTexture
+    && engine.stabilizationSnapshotStorageMode === storageMode
+    && engine.stabilizationSnapshotWidth >= roundedWidth
+    && engine.stabilizationSnapshotHeight >= roundedHeight
+  ) {
+    return null;
+  }
+
+  const sameStorage = engine.stabilizationSnapshotStorageMode === storageMode;
+  // Geometric growth keeps allocation off the repeated pointer-frame path:
+  // a moving tail can cross many 128 px boundaries, but typically pays only
+  // logarithmically many reallocations over the lifetime of the resource.
+  const width = sameStorage && engine.stabilizationSnapshotWidth > 0
+    ? roundedWidth > engine.stabilizationSnapshotWidth
+      ? Math.min(
+        LAYER_SIZE,
+        Math.max(roundedWidth, engine.stabilizationSnapshotWidth * 2),
+      )
+      : engine.stabilizationSnapshotWidth
+    : roundedWidth;
+  const height = sameStorage && engine.stabilizationSnapshotHeight > 0
+    ? roundedHeight > engine.stabilizationSnapshotHeight
+      ? Math.min(
+        LAYER_SIZE,
+        Math.max(roundedHeight, engine.stabilizationSnapshotHeight * 2),
+      )
+      : engine.stabilizationSnapshotHeight
+    : roundedHeight;
+  const format: GPUTextureFormat = storageMode === "r8-coverage"
+    ? "r8unorm"
+    : "rgba16float";
+  const texture = engine.device.createTexture({
+    label: `Stabilization mature-prefix snapshot ${width}×${height} ${format}`,
+    size: { width, height, depthOrArrayLayers: 1 },
+    format,
+    usage: GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
+  });
+  const previous = engine.stabilizationSnapshotTexture;
+  engine.stabilizationSnapshotTexture = texture;
+  engine.stabilizationSnapshotWidth = width;
+  engine.stabilizationSnapshotHeight = height;
+  engine.stabilizationSnapshotStorageMode = storageMode;
+  return previous;
 }
 
 export function applyLightGlazeResourceSet(engine: BrushEngine, resources: LightGlazeResourceSet | null): void {
+  if (
+    !resources
+    || (
+      engine.stabilizationSnapshotStorageMode !== "none"
+      && engine.stabilizationSnapshotStorageMode !== resources.storageMode
+    )
+  ) {
+    destroyStrokeStabilizationSnapshot(engine);
+  }
   const view = resources?.view ?? null;
   engine.lightGlazeTexture = resources?.texture ?? null;
   engine.lightGlazeCompositeMipTexture = resources?.compositeMipTexture ?? null;

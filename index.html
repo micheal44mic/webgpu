@@ -117,6 +117,14 @@
             <input id="spacing" type="range" min="0.25" max="25" step="0.25" value="1" />
           </label>
 
+          <label id="stabilizationControl" class="control">
+            <span>
+              Stabilizzazione <output id="stabilizationOut">0%</output>
+              <small>La coda viene stabilizzata; la forza sfuma fino a 0% vicino al puntatore.</small>
+            </span>
+            <input id="stabilization" type="range" min="0" max="100" step="1" value="0" />
+          </label>
+
           <label id="countControl" class="control">
             <span>Count <output id="countOut">24</output></span>
             <input id="count" type="range" min="1" max="24" step="1" value="24" />
@@ -1367,6 +1375,7 @@
               <div class="gpu-memory-group-start" data-memory-row><dt>Blend dry · scratch</dt><dd id="gpuMemoryBlend">—</dd></div>
               <div data-memory-row><dt>Riempimento · scratch CCL</dt><dd id="gpuMemoryFill">—</dd></div>
               <div data-memory-row><dt>Rendering · Light / Uniformed / Intense</dt><dd id="gpuMemoryLightGlaze">—</dd></div>
+              <div data-memory-row><dt>Coda stabilizzazione</dt><dd id="gpuMemoryStabilizationTail">—</dd></div>
               <div data-memory-row><dt>Coda spessore</dt><dd id="gpuMemoryThicknessTail">—</dd></div>
               <div class="gpu-memory-group-start" data-memory-row><dt id="gpuMemoryHistoryLabel">Cronologia raster · GPU</dt><dd id="gpuMemoryHistory">—</dd></div>
             </dl>
