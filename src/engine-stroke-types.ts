@@ -7,6 +7,7 @@ import type { DryBlendRenderBatch } from "./blend-renderer";
 import type { HistoryAction } from "./engine-history-types";
 import type { BrushSettings, BrushTool, LayerPoint } from "./engine-types";
 import type { ShapeOccupancySelection } from "./shape-occupancy";
+import type { CausalStrokeCurvePlanner } from "./stroke-curve-core";
 
 export interface Stamp {
   x: number;
@@ -48,6 +49,7 @@ export interface ActiveStroke {
   lightGlazeSettings: BrushSettings | null;
   blendSettings: BrushSettings | null;
   blendPlanner: DryBlendPlanner | null;
+  curvePlanner: CausalStrokeCurvePlanner | null;
 }
 
 export interface DirtyRect {

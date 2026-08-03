@@ -427,6 +427,7 @@ interface BenchmarkRun {
     shapeStorageLifecycleStrategy: string;
     colorSeedStrategy: "reuse-position-copy-seed";
     dirtyRectStrategy: "directional-jitter-bounds";
+    strokeCurveStrategy: StrokePerformanceProfile["strokeCurveStrategy"];
     thicknessDynamicsStrategy: StrokePerformanceProfile["thicknessDynamicsStrategy"];
     thicknessDynamicsTaperWindowMs: number;
     thicknessDynamicsPreviewStrategy:
@@ -495,7 +496,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet";
-    performanceTelemetryRevision: 60;
+    performanceTelemetryRevision: 61;
   };
 }
 
@@ -1050,7 +1051,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     viewRotationDegrees: Number(engine.getViewRotationDegrees().toFixed(3)),
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet",
-    performanceTelemetryRevision: 60,
+    performanceTelemetryRevision: 61,
     countedGpuMemoryMiB: stats.gpuMemory.countedTotalMiB,
     vectorTextPresentationMiB: stats.gpuMemory.vectorTextPresentationMiB,
     vectorTextAdaptiveZoomStrategy: vectorTextDiagnostics?.adaptiveZoomStrategy ?? null,

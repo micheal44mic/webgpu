@@ -513,6 +513,11 @@ import {
 } from "./shape-occupancy";
 import { assertShaderCompiled, describeAdapter } from "./engine-gpu-utils";
 import {
+  CausalStrokeCurvePlanner,
+  evaluateStrokeCurveX,
+  evaluateStrokeCurveY,
+} from "./stroke-curve-core";
+import {
   mergeDirtyRects,
   normalizeLayerRect,
   paintMipDimensions,
@@ -1286,6 +1291,7 @@ export class BrushEngine {
   settings: BrushSettings = { ...defaultBrushSettings };
   pendingStamps: Stamp[] = [];
   pendingBlendBatches: PendingBlendBatch[] = [];
+  private readonly paintCurvePlanner = new CausalStrokeCurvePlanner();
   activeStroke: ActiveStroke | null = null;
   seedSequence = 1;
 
@@ -3087,6 +3093,8 @@ export class BrushEngine {
       })
       : null;
     blendPlanner?.reset(normalizedPoint);
+    const curvePlanner = tool === "paint" ? this.paintCurvePlanner : null;
+    curvePlanner?.reset();
     this.activeStroke = {
       tool,
       lastInput: normalizedPoint,
@@ -3116,6 +3124,7 @@ export class BrushEngine {
       lightGlazeSettings,
       blendSettings: tool === "blend" ? { ...this.settings } : null,
       blendPlanner,
+      curvePlanner,
     };
     if (lightGlazeSettings) {
       this.startLightGlazeSession(historyActionId, lightGlazeSettings);
@@ -4304,6 +4313,7 @@ export class BrushEngine {
     shapeStorageLifecycleStrategy: typeof SHAPE_STORAGE_LIFECYCLE_STRATEGY;
     colorSeedStrategy: typeof COLOR_SEED_STRATEGY;
     dirtyRectStrategy: typeof DIRTY_RECT_STRATEGY;
+    strokeCurveStrategy: StrokePerformanceProfile["strokeCurveStrategy"];
     thicknessDynamicsStrategy: ThicknessDynamicsStrategy;
     thicknessDynamicsTaperWindowMs: number;
     thicknessDynamicsPreviewStrategy: ThicknessDynamicsPreviewStrategy;
@@ -6491,31 +6501,98 @@ export class BrushEngine {
       0.1,
       generationSettings.size * (stroke.adaptiveSpacingPercent / 100),
     );
-    const directionX = deltaX / segmentLength;
-    const directionY = deltaY / segmentLength;
-    let distanceAlongSegment = 0;
-    let distanceSinceStamp = stroke.distanceSinceStamp;
-    let generatedOnSegment = 0;
-
-    while (distanceSinceStamp + (segmentLength - distanceAlongSegment) >= spacing) {
-      const distanceToNextStamp = spacing - distanceSinceStamp;
-      distanceAlongSegment += distanceToNextStamp;
-      const interpolation = clamp(distanceAlongSegment / segmentLength, 0, 1);
-      emitStamp(this, {
-        x: start.x + deltaX * interpolation,
-        y: start.y + deltaY * interpolation,
-        pressure: start.pressure + (normalizedPoint.pressure - start.pressure) * interpolation,
-        timeMs: start.timeMs + deltaTimeMs * interpolation,
-      }, directionX, directionY);
-      distanceSinceStamp = 0;
-      generatedOnSegment += 1;
-
-      if (generatedOnSegment >= MAX_STAMPS_PER_BATCH) {
-        break;
+    const curveSegment = stroke.curvePlanner?.plan(
+      start.x,
+      start.y,
+      normalizedPoint.x,
+      normalizedPoint.y,
+    );
+    if (!curveSegment) {
+      throw new Error("Planner curva Paint non disponibile.");
+    }
+    if (this.activeStrokeProfile) {
+      this.activeStrokeProfile.strokeCurveInputSegments += 1;
+      this.activeStrokeProfile.strokeCurveFlattenedSegments +=
+        curveSegment.subdivisionCount;
+      if (curveSegment.smoothed) {
+        this.activeStrokeProfile.strokeCurveSmoothedSegments += 1;
+      }
+      if (curveSegment.sharpCornerBypass) {
+        this.activeStrokeProfile.strokeCurveSharpCornerBypasses += 1;
       }
     }
 
-    distanceSinceStamp += Math.max(0, segmentLength - distanceAlongSegment);
+    let distanceSinceStamp = stroke.distanceSinceStamp;
+    let generatedOnInputSegment = 0;
+    let stampLimitReached = false;
+    let curveStartX = start.x;
+    let curveStartY = start.y;
+    let parameterStart = 0;
+
+    for (
+      let subdivision = 1;
+      subdivision <= curveSegment.subdivisionCount;
+      subdivision += 1
+    ) {
+      const parameterEnd = subdivision / curveSegment.subdivisionCount;
+      const curveEndX = subdivision === curveSegment.subdivisionCount
+        ? normalizedPoint.x
+        : evaluateStrokeCurveX(curveSegment, parameterEnd);
+      const curveEndY = subdivision === curveSegment.subdivisionCount
+        ? normalizedPoint.y
+        : evaluateStrokeCurveY(curveSegment, parameterEnd);
+      const curveDeltaX = curveEndX - curveStartX;
+      const curveDeltaY = curveEndY - curveStartY;
+      const curveSegmentLength = Math.hypot(curveDeltaX, curveDeltaY);
+      let distanceAlongCurveSegment = 0;
+
+      if (curveSegmentLength > 0.0001) {
+        const directionX = curveDeltaX / curveSegmentLength;
+        const directionY = curveDeltaY / curveSegmentLength;
+        while (
+          !stampLimitReached
+          && distanceSinceStamp
+            + (curveSegmentLength - distanceAlongCurveSegment)
+            >= spacing
+        ) {
+          const distanceToNextStamp = spacing - distanceSinceStamp;
+          distanceAlongCurveSegment += distanceToNextStamp;
+          const localInterpolation = clamp(
+            distanceAlongCurveSegment / curveSegmentLength,
+            0,
+            1,
+          );
+          const curveParameter = parameterStart
+            + (parameterEnd - parameterStart) * localInterpolation;
+          emitStamp(this, {
+            x: curveStartX + curveDeltaX * localInterpolation,
+            y: curveStartY + curveDeltaY * localInterpolation,
+            pressure: start.pressure
+              + (normalizedPoint.pressure - start.pressure) * curveParameter,
+            timeMs: start.timeMs + deltaTimeMs * curveParameter,
+          }, directionX, directionY);
+          distanceSinceStamp = 0;
+          generatedOnInputSegment += 1;
+
+          if (generatedOnInputSegment >= MAX_STAMPS_PER_BATCH) {
+            stampLimitReached = true;
+            break;
+          }
+        }
+        distanceSinceStamp += Math.max(
+          0,
+          curveSegmentLength - distanceAlongCurveSegment,
+        );
+      }
+
+      curveStartX = curveEndX;
+      curveStartY = curveEndY;
+      parameterStart = parameterEnd;
+    }
+    if (stampLimitReached) {
+      distanceSinceStamp %= spacing;
+    }
+
     stroke.lastInput = normalizedPoint;
     stroke.distanceSinceStamp = distanceSinceStamp;
     releaseHeldThicknessStamps(this, normalizedPoint.timeMs, false);

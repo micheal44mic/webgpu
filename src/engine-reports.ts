@@ -1,5 +1,6 @@
 import type { BrushEngine } from "./brush-engine";
 import { type BenchmarkResult, type BrushSettings, type LayerFormat } from "./engine-types";
+import { STROKE_CURVE_STRATEGY } from "./stroke-curve-core";
 import {
   ADAPTIVE_PREVIEW_STALE_FRAME_STRATEGY,
   ADAPTIVE_PREVIEW_STRATEGY,
@@ -267,6 +268,7 @@ export function getBenchmarkEnvironment(engine: BrushEngine): {
   shapeStorageLifecycleStrategy: typeof SHAPE_STORAGE_LIFECYCLE_STRATEGY;
   colorSeedStrategy: typeof COLOR_SEED_STRATEGY;
   dirtyRectStrategy: typeof DIRTY_RECT_STRATEGY;
+  strokeCurveStrategy: typeof STROKE_CURVE_STRATEGY;
   thicknessDynamicsStrategy: ThicknessDynamicsStrategy;
   thicknessDynamicsTaperWindowMs: number;
   thicknessDynamicsPreviewStrategy: ThicknessDynamicsPreviewStrategy;
@@ -478,6 +480,7 @@ export function getBenchmarkEnvironment(engine: BrushEngine): {
     shapeStorageLifecycleStrategy: SHAPE_STORAGE_LIFECYCLE_STRATEGY,
     colorSeedStrategy: COLOR_SEED_STRATEGY,
     dirtyRectStrategy: DIRTY_RECT_STRATEGY,
+    strokeCurveStrategy: STROKE_CURVE_STRATEGY,
     thicknessDynamicsStrategy: THICKNESS_DYNAMICS_STRATEGY,
     thicknessDynamicsTaperWindowMs: THICKNESS_TAPER_WINDOW_MS,
     thicknessDynamicsPreviewStrategy: THICKNESS_DYNAMICS_PREVIEW_STRATEGY,
@@ -976,6 +979,11 @@ export function finishStrokePerformanceProfile(engine: BrushEngine): StrokePerfo
     shapeOccupancyBitmaskBytes: SHAPE_OCCUPANCY_MAP_BYTES,
     colorSeedStrategy: COLOR_SEED_STRATEGY,
     dirtyRectStrategy: DIRTY_RECT_STRATEGY,
+    strokeCurveStrategy: STROKE_CURVE_STRATEGY,
+    strokeCurveInputSegments: profile.strokeCurveInputSegments,
+    strokeCurveSmoothedSegments: profile.strokeCurveSmoothedSegments,
+    strokeCurveFlattenedSegments: profile.strokeCurveFlattenedSegments,
+    strokeCurveSharpCornerBypasses: profile.strokeCurveSharpCornerBypasses,
     thicknessDynamicsStrategy: THICKNESS_DYNAMICS_STRATEGY,
     thicknessDynamicsTaperWindowMs: THICKNESS_TAPER_WINDOW_MS,
     thicknessDynamicsHeldBaseStamps: profile.thicknessDynamicsHeldBaseStamps,
@@ -1240,6 +1248,10 @@ export function startStrokePerformanceProfile(engine: BrushEngine): void {
     brushBatches: 0,
     largestBatchStamps: 0,
     estimatedScissorPixels: 0,
+    strokeCurveInputSegments: 0,
+    strokeCurveSmoothedSegments: 0,
+    strokeCurveFlattenedSegments: 0,
+    strokeCurveSharpCornerBypasses: 0,
     thicknessDynamicsHeldBaseStamps: 0,
     thicknessDynamicsMaximumHeldBaseStamps: 0,
     thicknessDynamicsReleasedDuringStroke: 0,

@@ -1052,9 +1052,9 @@ const stylesSource = readFileSync(
   "utf8",
 );
 assert.equal(
-  (mainSource.match(/performanceTelemetryRevision: 60/g) ?? []).length,
+  (mainSource.match(/performanceTelemetryRevision: 61/g) ?? []).length,
   2,
-  "tipo persistito e runtime devono avanzare insieme alla revisione 60",
+  "tipo persistito e runtime devono avanzare insieme alla revisione 61",
 );
 assert.match(mainSource, /layerBakeStrategy: string;/);
 assert.match(mainSource, /layerCompositeStrategy: string;/);
@@ -1708,7 +1708,7 @@ assert.match(layerCompositeGpuTestSource, /fiveLayerSwitchBreakdownIsConsistent/
 assert.match(layerHistoryGpuTestSource, /measureExactLayerStorageStudy\(\)/);
 assert.match(layerHistoryGpuTestSource, /conservativeTilesContainEveryExactTile/);
 assert.match(layerHistoryGpuTestSource, /exactReadbackReleasedItsTemporaryBuffers/);
-assert.match(mainSource, /performanceTelemetryRevision: 60/);
+assert.match(mainSource, /performanceTelemetryRevision: 61/);
 assert.match(mainSource, /gpuMemoryLayerCold/);
 assert.match(mainSource, /gpuMemoryLayerCompressed/);
 assert.match(mainSource, /gpuMemoryLayerHydration/);

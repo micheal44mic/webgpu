@@ -116,10 +116,13 @@ Convenzione sulla visibilità, dichiarata sopra la classe e da rispettare:
   restano metodi della classe anche quando il corpo è stato spostato: nel corpo
   resta la sola chiamata alla funzione estratta, così la firma non cambia mai.
 
-**Il percorso caldo per tratto non è stato toccato e non va toccato**:
+**Il percorso caldo GPU per tratto non è stato toccato dal refactoring e non
+va toccato senza un esperimento isolato**:
 `submitImmediate`, `submitLightGlazeImmediate`, `encodeRasterStrokeUpdate`,
 `renderFrame` e i loro aiutanti per stamp restano nella classe. Nessun buffer,
-batch, encoder, ordine degli stamp o allocazione per tratto è cambiato.
+batch o encoder era cambiato durante quell'estrazione. Il planner curva Paint
+del 3 agosto 2026 opera a monte, nella generazione causale delle posizioni, e
+ha una misura e una firma proprie descritte sotto.
 
 Le suite `*:verify` non leggono più `brush-engine.ts` da sola: usano
 `scripts/engine-source.mjs`, che concatena la classe e i moduli estratti
@@ -186,6 +189,42 @@ Paint:
 - Dirty rect direzionale conservativo sui jitter di posizione (passo 7, `#19`:
   `−36,6%` area scissor, FPS invariati; mantenuto come base per binning
   futuro, non come vittoria FPS).
+- Le curve Paint non uniscono più i campioni grezzi con sole corde: il planner
+  Hermite causale endpoint-exact
+  `causal-endpoint-exact-predictive-hermite-corrective-tangents-quarter-pixel-target-v1`
+  produce ogni segmento appena arriva il suo endpoint, senza look-ahead né un
+  intervallo aggiuntivo di latenza. Predice la tangente finale dal turn
+  osservato, corregge subito una previsione incoerente oltre `15°`, conserva
+  gli angoli intenzionali oltre `60°` e linearizza la cubica con target
+  conservativo `≤0,25 px` (cap di sicurezza `512`, sufficiente anche a un
+  attraversamento di `192000 px` a `59°`). È rounding fedele dei segmenti:
+  passa per ogni input e non è un filtro che cancella il micro-jitter. Lo
+  spacing è esatto sulla micro-poligonale subpixel autorevole, non sulla
+  lunghezza analitica della cubica; sulla traccia canonica la poligonale misura
+  `9,353 px` meno dell'arco ad alta risoluzione. Count, seed, `emitStamp`,
+  shader, batching GPU, glaze, taper e payload
+  Undo/Redo restano quelli autorevoli; Blend dry è escluso. Il solo stato
+  aggiunto è un planner preallocato una volta nel motore e resettato a ogni
+  gesto (nessuna risorsa GPU, allocazione per gesto o allocazione per segmento).
+  La tangente è continua quando la previsione resta coerente; correzioni e
+  angoli intenzionali introducono apposta un raccordo non-C1 per evitare hook.
+- Misura locale del 3 agosto 2026 sulla traccia canonica rev `3`, prima dello
+  spacing adattivo: `1565` segmenti non nulli diventano `4417` microcorde,
+  lunghezza `+0,0884%` e stamp base `12107→12117` (`+10`, `+0,083%`); con
+  Count `16` sono `+160` copie fisiche e la history packed cresce di soli
+  `320 B`. Bound massimo osservato `0,249974 px`. Microbenchmark Node desktop:
+  costo aggiunto `~0,207 µs` per input non nullo, circa `0,324 ms` sull'intera
+  traccia di `1583` punti/`6,8 s`; non è una misura iPhone. QA browser reale,
+  Circle `80 px`, spacing `1%`, Count `1`, jitter/Grain off: il cerchio a `25`
+  punti non mostra più i lati e coincide visivamente con quello a `181` punti
+  in Light, Uniformed e Intense; Undo e Redo ripristinano lo stesso risultato.
+  Telemetria `61` firma strategia e contatori; `stroke-curve:verify` blocca
+  causalità, endpoint, soglie scale-invariant, bound, batch invariance,
+  routing Paint/Blend e regressione canonica opzionale. Replay canonico Light
+  reale nella stessa app desktop: `12117` stamp / `193872` copie, spacing
+  adattivo fermo `1,00→1,00%`, CPU frame p95 `1,10 ms`, submit p95 `0,40 ms`,
+  probe coda FIFO `11,70 ms`, `137 FPS` medi e `15` frame oltre `20 ms`; è QA
+  locale, non una nuova baseline e non una misura GPU isolata.
 - Shape 2K: decodifica PNG grayscale deterministica (`png-gray8-direct`,
   SHA-256 `69978b6e…`) + pre-mappa di occupazione conservativa `256²` sui mip
   `0–4` con fallback automatico (radius `<128`, LOD `>4`, copertura `>50%`).

@@ -17,6 +17,7 @@
     "history:verify": "node scripts/verify-history-journal.mjs",
     "layers:verify": "node scripts/verify-layer-stack.mjs",
     "stroke:verify": "node scripts/verify-stroke-core.mjs",
+    "stroke-curve:verify": "node scripts/verify-stroke-curve.mjs",
     "effects-scratch:verify": "node scripts/verify-effects-scratch-pool.mjs",
     "bevel:verify": "node scripts/verify-bevel-core.mjs",
     "shadow:verify": "node scripts/verify-shadow-core.mjs",

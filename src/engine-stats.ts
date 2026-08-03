@@ -60,6 +60,7 @@ import {
   type RasterColorOverlayStyle,
 } from "./raster-color-overlay-core";
 import type { ThicknessDynamicsStrategy } from "./thickness-dynamics";
+import { STROKE_CURVE_STRATEGY } from "./stroke-curve-core";
 
 export interface EngineGpuMemoryStats {
   layerBaseMiB: number;
@@ -291,6 +292,11 @@ export interface StrokePerformanceProfile {
   shapeOccupancyBitmaskBytes: number;
   colorSeedStrategy: "reuse-position-copy-seed";
   dirtyRectStrategy: "directional-jitter-bounds";
+  strokeCurveStrategy: typeof STROKE_CURVE_STRATEGY;
+  strokeCurveInputSegments: number;
+  strokeCurveSmoothedSegments: number;
+  strokeCurveFlattenedSegments: number;
+  strokeCurveSharpCornerBypasses: number;
   thicknessDynamicsStrategy: ThicknessDynamicsStrategy;
   thicknessDynamicsTaperWindowMs: number;
   thicknessDynamicsHeldBaseStamps: number;
@@ -553,6 +559,10 @@ export interface MutableStrokePerformanceProfile {
   brushBatches: number;
   largestBatchStamps: number;
   estimatedScissorPixels: number;
+  strokeCurveInputSegments: number;
+  strokeCurveSmoothedSegments: number;
+  strokeCurveFlattenedSegments: number;
+  strokeCurveSharpCornerBypasses: number;
   thicknessDynamicsHeldBaseStamps: number;
   thicknessDynamicsMaximumHeldBaseStamps: number;
   thicknessDynamicsReleasedDuringStroke: number;
