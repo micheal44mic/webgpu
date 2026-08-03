@@ -38,6 +38,7 @@ import { clearLayerStorageTileMask } from "./layer-storage-study";
 import {
   destroyMixedSceneRasterSegment,
   mixedSceneItemIsVisible,
+  publishMixedScene,
   rebuildVectorTextDisplayBindGroup,
 } from "./engine-vector-text-runtime";
 import { type DirtyRect } from "./engine-stroke-types";
@@ -2111,6 +2112,112 @@ export function allocateMergedSurface(engine: BrushEngine,
   } catch (error) {
     texture.destroy();
     throw error;
+  }
+}
+
+function assertMixedSceneClippingMergeIsAdjacent(
+  engine: BrushEngine,
+  index: number,
+): void {
+  const scene = engine.mixedSceneStack;
+  if (!scene) {
+    return;
+  }
+  const record = engine.layerStack.at(index);
+  if (record.clippingParentId !== null) {
+    return;
+  }
+  if (index === 0) {
+    throw new Error(
+      "Per creare una maschera serve un livello raster immediatamente sotto.",
+    );
+  }
+  const lowerUnit = engine.layerStack.clippingUnit(engine.layerStack.at(index - 1));
+  const upperUnit = engine.layerStack.clippingUnit(record);
+  const lowerIndices = lowerUnit.map((member) =>
+    scene.indexOfKey(`raster:${member.id}` as const));
+  const upperIndices = upperUnit.map((member) =>
+    scene.indexOfKey(`raster:${member.id}` as const));
+  const isConsecutive = (indices: readonly number[]) =>
+    indices.every((candidate, offset) => (
+      candidate >= 0 && candidate === indices[0] + offset
+    ));
+  if (
+    !isConsecutive(lowerIndices)
+    || !isConsecutive(upperIndices)
+    || upperIndices[0] !== lowerIndices[lowerIndices.length - 1] + 1
+  ) {
+    throw new Error(
+      "La maschera richiede un raster immediatamente sotto: sposta prima eventuali "
+      + "livelli vettoriali che separano i due gruppi.",
+    );
+  }
+}
+
+/**
+ * Changes only clipping structure; authoritative pixels, tile masks and layer
+ * residency remain untouched. The two merged sides and the active prefix /
+ * suffix are rebuilt transactionally from those authoritative resources.
+ */
+export async function setLayerClipping(
+  engine: BrushEngine,
+  index: number,
+  enabled: boolean,
+): Promise<boolean> {
+  if (!engine.initialized) {
+    throw new Error("Il motore non è ancora inizializzato.");
+  }
+  const record = engine.layerStack.at(index);
+  const previousEnabled = record.clippingParentId !== null;
+  if (previousEnabled === enabled) {
+    return false;
+  }
+  engine.assertLayerSwitchAllowed();
+  engine.cancelLayerColdCompressionIdle();
+  engine.layerSwitchBusy = true;
+  let changed = false;
+  try {
+    await engine.waitForIdle();
+    if (enabled) {
+      assertMixedSceneClippingMergeIsAdjacent(engine, index);
+    }
+    engine.persistActiveLayerState();
+    changed = engine.layerStack.setClippingEnabled(index, enabled);
+    await engine.rebuildMergedLayerSurfaces();
+    engine.paintDisplayMipValidThroughLevel = 0;
+    engine.presentationCacheNeedsFullRebuild = true;
+    engine.displayDirty = true;
+    engine.requestRender();
+    return changed;
+  } catch (error) {
+    if (changed) {
+      try {
+        engine.layerStack.setClippingEnabled(index, previousEnabled);
+        await engine.rebuildMergedLayerSurfaces("layer-switch");
+        engine.paintDisplayMipValidThroughLevel = 0;
+        engine.presentationCacheNeedsFullRebuild = true;
+        engine.displayDirty = true;
+        engine.requestRender();
+      } catch (restoreError) {
+        engine.latchDocumentStateInconsistent(
+          "Stato incoerente dopo il cambio maschera: ricarica prima di continuare.",
+        );
+        const originalMessage = error instanceof Error ? error.message : String(error);
+        const restoreMessage = restoreError instanceof Error
+          ? restoreError.message
+          : String(restoreError);
+        throw new Error(
+          `Maschera non aggiornata (${originalMessage}) e ripristino fallito `
+          + `(${restoreMessage}). Ricarica la pagina prima di continuare.`,
+        );
+      }
+    }
+    throw error;
+  } finally {
+    engine.layerSwitchBusy = false;
+    engine.scheduleLayerColdCompression();
+    engine.publishStats();
+    publishMixedScene(engine);
   }
 }
 

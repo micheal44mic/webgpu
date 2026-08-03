@@ -1169,6 +1169,27 @@ WebGPU. Gli identificatori WGSL `active` sono stati rinominati perché riservati
 e ogni `fwidth` dei percorsi style/gruppo è valutato prima del ramo non uniforme
 `insideLayer`. TypeScript, tutte le suite `*:verify` e build Vite/Sites verdi.
 
+UI maschere aggiornata il 3 agosto 2026: il vecchio pulsante globale «Crea
+maschera» è rimosso e ogni riga raster espone il toggle `M`, utilizzabile anche
+su un livello già creato e inattivo. L'attivazione unisce l'intera unità della
+riga alla base raster contigua sotto di essa: più `M` consecutive ricevono lo
+stesso `clippingParentId`, e due gruppi adiacenti vengono fusi senza perdere i
+figli superiori. La disattivazione divide invece il gruppo in quel punto: la
+riga diventa una nuova base e tutte le maschere sopra vengono riparentate a
+essa, così un secondo click ricostruisce esattamente il gruppo precedente. Il
+bottom raster ha `M` disabilitata; nella scena mista anche un vettore interposto
+blocca il merge invece di essere riordinato implicitamente.
+
+`setLayerClipping` non modifica pixel, tile, effetti o residenza autorevole:
+attende l'idle, cambia atomicamente soltanto i parent id, ricostruisce lati
+fusi/prefisso/suffisso WebGPU e invalida mip/presentazione. Se il rebuild fallisce
+esegue il toggle inverso e ricostruisce lo stato derivato precedente; un secondo
+fallimento alza il latch documentale. QA browser reale: `Livello 2` già creato
+è stato collegato da inattivo a `Livello 1`, poi `Livello 3` ha condiviso la
+stessa base; scollegando `Livello 2`, `Livello 3` è passato alla nuova base `2`,
+e riattivandolo entrambi sono tornati alla base `1`. Console pulita. Regressioni
+`layers`, `mixed-scene`, `history`, `view`, TypeScript e build Vite/Sites verdi.
+
 La fusione è transazionale ma, dalla 14e, ha picco limitato: dopo GPU idle
 congela la presentazione sull'ultima cache screen-space completa, scollega e
 distrugge `mergedBelow/Above` precedenti, poi costruisce i candidati. Nessun

@@ -719,12 +719,13 @@ select {
 
 .layer-row {
   display: grid;
-  grid-template-columns: 30px 38px minmax(0, 1fr) 76px;
+  grid-template-columns: 30px 34px 34px minmax(0, 1fr) 76px;
   align-items: center;
   gap: 5px;
 }
 
-.layer-row.is-text-node {
+.layer-row.is-text-node,
+.layer-row.is-image-node {
   grid-template-columns: 30px minmax(0, 1fr) 76px;
 }
 
@@ -743,7 +744,8 @@ select {
   color: #626a76;
 }
 
-.layer-reference {
+.layer-reference,
+.layer-clipping {
   display: grid;
   place-items: center;
   padding: 0;
@@ -756,6 +758,12 @@ select {
   border-color: #f0b45d;
   background: rgba(240, 180, 93, 0.14);
   color: #ffd394;
+}
+
+.layer-clipping[aria-pressed="true"] {
+  border-color: #6ea8fe;
+  background: rgba(110, 168, 254, 0.16);
+  color: #b9d5ff;
 }
 
 .layer-select {

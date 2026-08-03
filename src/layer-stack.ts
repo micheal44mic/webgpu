@@ -313,6 +313,60 @@ export class LayerStack {
     return true;
   }
 
+  /**
+   * Toggles clipping on an existing raster without inserting or deleting it.
+   *
+   * Enabling joins the complete unit at `index` to the closest raster base
+   * directly below it. This also merges two adjacent clipping groups, so a
+   * base that already owns children can itself be turned into a mask without
+   * losing those children. Disabling splits the group at `index`: the selected
+   * raster becomes a new base and every sibling above it follows that new
+   * base. This is the nearest-unclipped-layer behavior expected by a row-level
+   * clipping toggle and makes the operation exactly reversible.
+   */
+  setClippingEnabled(index: number, enabled: boolean): boolean {
+    const record = this.at(index);
+    const currentlyEnabled = record.clippingParentId !== null;
+    if (currentlyEnabled === enabled) {
+      return false;
+    }
+    const previousParentIds = this.records.map((candidate) => candidate.clippingParentId);
+    try {
+      if (enabled) {
+        if (index === 0) {
+          throw new Error(
+            "Per creare una maschera serve un livello raster immediatamente sotto.",
+          );
+        }
+        const below = this.at(index - 1);
+        const parentId = below.clippingParentId ?? below.id;
+        const unit = [record, ...this.clippingDependents(record.id)];
+        for (const member of unit) {
+          member.clippingParentId = parentId;
+        }
+      } else {
+        const previousParentId = record.clippingParentId;
+        if (previousParentId === null) {
+          return false;
+        }
+        record.clippingParentId = null;
+        for (let siblingIndex = index + 1; siblingIndex < this.records.length; siblingIndex += 1) {
+          const sibling = this.records[siblingIndex];
+          if (sibling.clippingParentId === previousParentId) {
+            sibling.clippingParentId = record.id;
+          }
+        }
+      }
+      this.assertClippingInvariants(this.records);
+    } catch (error) {
+      this.records.forEach((candidate, candidateIndex) => {
+        candidate.clippingParentId = previousParentIds[candidateIndex];
+      });
+      throw error;
+    }
+    return true;
+  }
+
   clippingParent(record: Readonly<LayerRecord>): LayerRecord | null {
     if (record.clippingParentId === null) {
       return null;

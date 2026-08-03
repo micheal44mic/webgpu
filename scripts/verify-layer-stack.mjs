@@ -355,6 +355,76 @@ const newStack = () => new LayerStack(createStyles);
   assert.equal(stack.at(upperBase).clippingParentId, null);
 }
 
+// The row-level toggle works on rasters that already exist. Consecutive
+// enabled rows resolve the same nearest base, so one parent can own any number
+// of clipping masks without allocating special layer records.
+{
+  const stack = newStack();
+  const parentId = stack.active.id;
+  const first = stack.add("Esistente 1");
+  const firstId = stack.at(first).id;
+  const second = stack.add("Esistente 2");
+  const secondId = stack.at(second).id;
+  assert.equal(stack.setClippingEnabled(first, true), true);
+  assert.equal(stack.setClippingEnabled(second, true), true);
+  assert.equal(stack.setClippingEnabled(second, true), false, "toggle idempotente");
+  assert.deepEqual(
+    stack.clippingUnit(parentId).map((record) => record.id),
+    [parentId, firstId, secondId],
+  );
+  assert.deepEqual(
+    stack.layers.map((record) => record.clippingParentId),
+    [null, parentId, parentId],
+  );
+}
+
+// Disabling a middle mask splits the group at that row: the row becomes the
+// nearest base for all masks above. Enabling it again merges the two adjacent
+// units exactly, including a base that already owns children.
+{
+  const stack = newStack();
+  const baseId = stack.active.id;
+  const first = stack.add("Clip 1");
+  stack.setClippingEnabled(first, true);
+  const second = stack.add("Clip 2");
+  stack.setClippingEnabled(second, true);
+  const third = stack.add("Clip 3");
+  stack.setClippingEnabled(third, true);
+  const firstId = stack.at(first).id;
+  const secondId = stack.at(second).id;
+  const thirdId = stack.at(third).id;
+
+  assert.equal(stack.setClippingEnabled(second, false), true);
+  assert.deepEqual(
+    stack.layers.map((record) => record.clippingParentId),
+    [null, baseId, null, secondId],
+  );
+  assert.deepEqual(
+    stack.clippingUnit(baseId).map((record) => record.id),
+    [baseId, firstId],
+  );
+  assert.deepEqual(
+    stack.clippingUnit(secondId).map((record) => record.id),
+    [secondId, thirdId],
+  );
+
+  assert.equal(stack.setClippingEnabled(second, true), true);
+  assert.deepEqual(
+    stack.layers.map((record) => record.clippingParentId),
+    [null, baseId, baseId, baseId],
+    "riattivare il toggle deve ricostruire esattamente il gruppo unico",
+  );
+  assert.throws(
+    () => stack.setClippingEnabled(0, true),
+    /livello raster immediatamente sotto/i,
+  );
+  assert.deepEqual(
+    stack.layers.map((record) => record.clippingParentId),
+    [null, baseId, baseId, baseId],
+    "un toggle non valido deve lasciare intatti tutti i parent id",
+  );
+}
+
 // Removing a base detaches all of its children instead of leaving dangling ids.
 // Removing a child retains its parent id on the detached history record, and an
 // exact valid reattach restores that relationship.
@@ -953,6 +1023,24 @@ assert.ok(
   (engineSource.match(/layerCompositeStrategy: LAYER_COMPOSITE_STRATEGY/g) ?? []).length >= 2,
   "stats e benchmark devono firmare la strategia di compositing",
 );
+const clippingToggleStart = engineSource.indexOf("export async function setLayerClipping(");
+const clippingToggleEnd = engineSource.indexOf(
+  "export async function setLayerPresentation(",
+  clippingToggleStart,
+);
+assertSection("toggle maschera raster", clippingToggleStart, clippingToggleEnd);
+const clippingToggleBody = engineSource.slice(clippingToggleStart, clippingToggleEnd);
+assert.match(clippingToggleBody, /await engine\.waitForIdle\(\)/);
+assert.match(clippingToggleBody, /engine\.layerStack\.setClippingEnabled\(index, enabled\)/);
+assert.match(clippingToggleBody, /await engine\.rebuildMergedLayerSurfaces\(\)/,
+  "il toggle deve ricostruire gruppo attivo e lati fusi dalla relazione nuova");
+assert.match(
+  clippingToggleBody,
+  /engine\.layerStack\.setClippingEnabled\(index, previousEnabled\)[\s\S]*?await engine\.rebuildMergedLayerSurfaces\("layer-switch"\)/,
+  "un errore GPU deve ripristinare relazione e compositi precedenti",
+);
+assert.match(clippingToggleBody, /publishMixedScene\(engine\)/,
+  "la UI mista deve ricevere subito i nuovi parent id");
 const retargetStart = engineSource.indexOf("export async function retargetEffectsWorkingSetInternal(");
 const retargetEnd = engineSource.indexOf("export async function benchmarkEffectsWorkingSet(", retargetStart);
 const retargetBody = engineSource.slice(retargetStart, retargetEnd);
@@ -1322,6 +1410,23 @@ assert.match(mainSource, /layerBakeStrategy: string;/);
 assert.match(mainSource, /layerCompositeStrategy: string;/);
 assert.match(mainSource, /async function changeLayerVisibility\(/);
 assert.match(mainSource, /async function changeLayerOpacity\(/);
+assert.match(mainSource, /clipping\.className = "layer-clipping"/,
+  "ogni riga deve creare il proprio controllo maschera stabile");
+assert.match(mainSource, /async function changeLayerClipping\(/);
+assert.match(
+  mainSource,
+  /const changed = await engine\.setLayerClipping\(index, enabled\)/,
+  "il controllo per riga deve agire anche su un raster esistente, non crearne uno nuovo",
+);
+assert.match(mainSource, /Altre M consecutive useranno la stessa base/);
+assert.doesNotMatch(indexSource, /id="addClippingMask"/,
+  "il vecchio comando globale Crea maschera non deve restare duplicato");
+assert.match(
+  indexSource,
+  /Il tasto M di ogni raster attiva o disattiva la maschera/,
+);
+assert.match(stylesSource, /\.layer-clipping\[aria-pressed="true"\]/,
+  "lo stato maschera deve essere visibile direttamente nella riga");
 assert.match(mainSource, /function syncActiveLayerControls\(\): void \{/);
 const syncStart = mainSource.indexOf("function syncActiveLayerControls(");
 const syncBody = mainSource.slice(syncStart, syncStart + 600);

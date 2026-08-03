@@ -81,7 +81,6 @@ const benchmarkButton = element<HTMLButtonElement>("runBenchmark");
 const benchmarkResult = element<HTMLParagraphElement>("benchmarkResult");
 const layerList = element<HTMLElement>("layerList");
 const addLayerButton = element<HTMLButtonElement>("addLayer");
-const addClippingMaskButton = element<HTMLButtonElement>("addClippingMask");
 const layerSwitchResult = element<HTMLParagraphElement>("layerSwitchResult");
 const layerLoadingOverlay = element<HTMLElement>("layerLoadingOverlay");
 const layerLoadingLabel = element<HTMLParagraphElement>("layerLoadingLabel");
@@ -3650,6 +3649,10 @@ function createLayerRow(): HTMLDivElement {
   reference.type = "button";
   reference.className = "layer-reference";
   reference.textContent = "R";
+  const clipping = document.createElement("button");
+  clipping.type = "button";
+  clipping.className = "layer-clipping";
+  clipping.textContent = "M";
   const select = document.createElement("button");
   select.type = "button";
   select.className = "layer-select";
@@ -3669,7 +3672,7 @@ function createLayerRow(): HTMLDivElement {
   range.step = "1";
   const output = document.createElement("output");
   opacity.append(range, output);
-  row.append(visibility, reference, select, opacity);
+  row.append(visibility, reference, clipping, select, opacity);
   return row;
 }
 
@@ -3717,10 +3720,6 @@ function renderMixedSceneList(
   addLayerButton.disabled = locked || stats.layers.length >= 16;
   const selectedItem = scene.items.find((item) => item.key === scene.selectedKey);
   const vectorSelected = selectedItem !== undefined && selectedItem.kind !== "raster";
-  addClippingMaskButton.disabled = locked
-    || stats.layers.length >= 16
-    || selectedItem?.kind !== "raster"
-    || selectedItem.rasterLayerId !== scene.activeRasterLayerId;
   const ordered = [...scene.items].reverse();
   const rowsMatch = layerList.childElementCount === ordered.length
     && ordered.every(
@@ -3740,6 +3739,7 @@ function renderMixedSceneList(
     const row = layerList.children[position] as HTMLDivElement;
     const visibility = row.querySelector<HTMLButtonElement>(".layer-visibility")!;
     const reference = row.querySelector<HTMLButtonElement>(".layer-reference")!;
+    const clipping = row.querySelector<HTMLButtonElement>(".layer-clipping")!;
     const select = row.querySelector<HTMLButtonElement>(".layer-select")!;
     const name = row.querySelector<HTMLSpanElement>(".layer-name")!;
     const hint = row.querySelector<HTMLSpanElement>(".layer-hint")!;
@@ -3756,6 +3756,8 @@ function renderMixedSceneList(
         : "is-text-node"}`;
     reference.hidden = item.kind !== "raster";
     reference.onclick = null;
+    clipping.hidden = item.kind !== "raster";
+    clipping.onclick = null;
     select.disabled = locked;
     select.setAttribute("aria-current", String(selected));
 
@@ -3777,9 +3779,29 @@ function renderMixedSceneList(
 
       name.textContent = layer.name;
       const isActiveRaster = layer.id === scene.activeRasterLayerId;
+      const clippingEnabled = item.rasterClippingParentId !== null;
+      const sceneIndex = scene.items.findIndex((candidate) => candidate.key === item.key);
+      const hasAdjacentRasterBelow = sceneIndex > 0
+        && scene.items[sceneIndex - 1]?.kind === "raster";
       const clippingHint = item.rasterClippingParentId === null
         ? ""
         : `↳ ritaglio su Livello ${item.rasterClippingParentId} · `;
+      clipping.disabled = locked || (!clippingEnabled && !hasAdjacentRasterBelow);
+      clipping.setAttribute("aria-pressed", String(clippingEnabled));
+      clipping.setAttribute(
+        "aria-label",
+        `${clippingEnabled ? "Disattiva" : "Attiva"} maschera per ${layer.name}`,
+      );
+      clipping.title = clippingEnabled
+        ? "Scollega questo raster dalla base. Le eventuali maschere sopra resteranno "
+          + "collegate a questo livello, che diventerà la loro nuova base."
+        : hasAdjacentRasterBelow
+          ? "Ritaglia questo raster sul livello raster immediatamente sotto. Più M "
+            + "consecutive condividono automaticamente la stessa base."
+          : "Serve un livello raster immediatamente sotto; un vettore non può fare da base.";
+      clipping.onclick = () => {
+        void changeLayerClipping(item.rasterLayerIndex, !clippingEnabled);
+      };
       reference.disabled = locked || !selected || !isActiveRaster;
       reference.setAttribute("aria-pressed", String(layer.reference));
       reference.setAttribute(
@@ -4040,7 +4062,6 @@ function renderLayerList(stats: EngineStats): void {
   }
   const locked = interactionLocked() || layerSwitching;
   addLayerButton.disabled = locked || stats.layers.length >= 16;
-  addClippingMaskButton.disabled = locked || stats.layers.length >= 16;
   if (layerList.childElementCount !== stats.layers.length) {
     layerList.replaceChildren(...stats.layers.map(() => {
       const row = createLayerRow();
@@ -4056,11 +4077,16 @@ function renderLayerList(stats: EngineStats): void {
     const row = layerList.children[position] as HTMLDivElement;
     const visibility = row.querySelector<HTMLButtonElement>(".layer-visibility")!;
     const reference = row.querySelector<HTMLButtonElement>(".layer-reference")!;
+    const clipping = row.querySelector<HTMLButtonElement>(".layer-clipping")!;
     const select = row.querySelector<HTMLButtonElement>(".layer-select")!;
     const name = row.querySelector<HTMLSpanElement>(".layer-name")!;
     const hint = row.querySelector<HTMLSpanElement>(".layer-hint")!;
     const range = row.querySelector<HTMLInputElement>("input[type=range]")!;
     const output = row.querySelector<HTMLOutputElement>("output")!;
+
+    row.className = `layer-row is-raster-node${
+      layer.clippingParentId === null ? "" : " is-clipping-mask"
+    }`;
 
     visibility.disabled = locked;
     visibility.textContent = layer.visible ? "●" : "○";
@@ -4077,6 +4103,25 @@ function renderLayerList(stats: EngineStats): void {
     select.setAttribute("aria-current", index === stats.activeLayerIndex ? "true" : "false");
     name.textContent = layer.name;
     const isActive = layer.id === stats.activeLayerId;
+    const clippingEnabled = layer.clippingParentId !== null;
+    const hasRasterBelow = index > 0;
+    clipping.hidden = false;
+    clipping.disabled = locked || (!clippingEnabled && !hasRasterBelow);
+    clipping.setAttribute("aria-pressed", String(clippingEnabled));
+    clipping.setAttribute(
+      "aria-label",
+      `${clippingEnabled ? "Disattiva" : "Attiva"} maschera per ${layer.name}`,
+    );
+    clipping.title = clippingEnabled
+      ? "Scollega questo raster dalla base. Le eventuali maschere sopra resteranno "
+        + "collegate a questo livello, che diventerà la loro nuova base."
+      : hasRasterBelow
+        ? "Ritaglia questo raster sul livello immediatamente sotto. Più M consecutive "
+          + "condividono automaticamente la stessa base."
+        : "Serve un livello raster immediatamente sotto.";
+    clipping.onclick = () => {
+      void changeLayerClipping(index, !clippingEnabled);
+    };
     reference.hidden = false;
     reference.disabled = locked || !isActive;
     reference.setAttribute("aria-pressed", String(layer.reference));
@@ -4112,7 +4157,10 @@ function renderLayerList(stats: EngineStats): void {
             ? `cold · ${layer.coldTileCount}/${stats.layerStorageStudy.tileCount} tile · `
               + formatMemoryMiB(layer.actualRawMiB)
             : "cold · 0 MiB";
-    hint.textContent = `${layer.reference ? "riferimento · " : ""}${residencyHint}`;
+    const clippingHint = layer.clippingParentId === null
+      ? ""
+      : `↳ ritaglio su Livello ${layer.clippingParentId} · `;
+    hint.textContent = `${clippingHint}${layer.reference ? "riferimento · " : ""}${residencyHint}`;
     select.title = isActive
       ? "Livello attivo: texture full-canvas 4096² pronta per disegnare senza paging."
       : layer.reference && layer.hotAllocated
@@ -4178,6 +4226,42 @@ async function changeLayerOpacity(index: number, opacity: number): Promise<void>
       ? error.message
       : "Opacità del livello non aggiornata.";
   } finally {
+    layerSwitching = false;
+    updateHistoryControls();
+    updateStats(engine.getStats());
+  }
+}
+
+async function changeLayerClipping(index: number, enabled: boolean): Promise<void> {
+  if (layerSwitching || interactionLocked()) {
+    return;
+  }
+  const before = engine.getStats().layers[index];
+  layerSwitching = true;
+  updateHistoryControls();
+  try {
+    await showLayerLoading(
+      enabled ? "Collego la maschera di ritaglio…" : "Scollego la maschera di ritaglio…",
+    );
+    const changed = await engine.setLayerClipping(index, enabled);
+    const stats = engine.getStats();
+    const layer = stats.layers[index];
+    const parent = layer?.clippingParentId === null || layer?.clippingParentId === undefined
+      ? null
+      : stats.layers.find((candidate) => candidate.id === layer.clippingParentId) ?? null;
+    layerSwitchResult.textContent = changed
+      ? enabled
+        ? `${layer?.name ?? before?.name ?? "Livello"} ora è una maschera su `
+          + `${parent?.name ?? "il raster sotto"}. Altre M consecutive useranno la stessa base.`
+        : `${layer?.name ?? before?.name ?? "Livello"} ora è una base indipendente. `
+          + "Le eventuali maschere sopra restano collegate a questa nuova base."
+      : "Impostazione maschera già attiva.";
+  } catch (error) {
+    layerSwitchResult.textContent = error instanceof Error
+      ? error.message
+      : "Maschera di ritaglio non aggiornata.";
+  } finally {
+    hideLayerLoading();
     layerSwitching = false;
     updateHistoryControls();
     updateStats(engine.getStats());
@@ -4399,32 +4483,6 @@ addLayerButton.addEventListener("click", async () => {
     hideLayerLoading();
     layerSwitching = false;
     updateHistoryControls();
-  }
-});
-
-addClippingMaskButton.addEventListener("click", async () => {
-  if (layerSwitching || interactionLocked()) {
-    return;
-  }
-  layerSwitching = true;
-  updateHistoryControls();
-  try {
-    await showLayerLoading("Creazione maschera di ritaglio…");
-    const result = await engine.addClippingMaskLayer();
-    syncActiveLayerControls();
-    await engine.waitForIdle();
-    layerSwitchResult.textContent =
-      `Maschera raster creata sopra il parent in ${result.totalMs.toFixed(0)} ms. `
-      + "Pennello, Riempimento, effetti, tile e Undo/Redo restano quelli di un raster normale.";
-  } catch (error) {
-    layerSwitchResult.textContent = error instanceof Error
-      ? error.message
-      : "Maschera di ritaglio non creata.";
-  } finally {
-    hideLayerLoading();
-    layerSwitching = false;
-    updateHistoryControls();
-    updateStats(engine.getStats());
   }
 });
 

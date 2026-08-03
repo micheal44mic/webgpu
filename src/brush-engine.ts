@@ -670,6 +670,7 @@ import {
   retargetFillRendererSource,
   restoreEffectsWorkbenchToActiveLayer,
   retargetEffectsWorkingSetInternal,
+  setLayerClipping,
   setLayerReference,
   setLayerPresentation,
   shrinkEffectsScratchAfterIdle,
@@ -5646,6 +5647,10 @@ export class BrushEngine {
 
   async setLayerOpacity(index: number, opacity: number): Promise<boolean> {
     return setLayerPresentation(this, index, undefined, clamp(opacity, 0, 1));
+  }
+
+  async setLayerClipping(index: number, enabled: boolean): Promise<boolean> {
+    return setLayerClipping(this, index, Boolean(enabled));
   }
 
   /**
