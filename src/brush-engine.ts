@@ -236,6 +236,12 @@ import {
   layerEffectRendererRequirements,
   type LayerRecord,
 } from "./layer-stack";
+import { LAYER_BLEND_MODE_CODES, type LayerBlendMode } from "./layer-blend-modes";
+import type { LayerBlendTileCompositor } from "./layer-blend-tile-compositor";
+import {
+  encodeLayerBlendTilePresentation,
+  layerBlendTilePresentationRequired,
+} from "./engine-layer-blend-tile-runtime";
 import {
   hasVisibleContent,
   historyStepTargetsMissingLayer,
@@ -664,6 +670,8 @@ import {
   layerToCanvasPixels,
   maybeInjectLayerBakeFault,
   maybeInjectLayerCompositeFault,
+  mixedSceneSegmentLayerBlendMode,
+  orderedLayerBlendPresentationRequired,
   rebuildLayerDisplayBindGroups,
   recreateLayerResources,
   releaseFusedLayerBakes,
@@ -671,8 +679,10 @@ import {
   restoreEffectsWorkbenchToActiveLayer,
   retargetEffectsWorkingSetInternal,
   setLayerClipping,
+  setLayerBlendMode,
   setLayerReference,
   setLayerPresentation,
+  splitMixedSceneRasterRunsForLayerBlend,
   shrinkEffectsScratchAfterIdle,
 } from "./engine-layer-runtime";
 import {
@@ -997,6 +1007,16 @@ export class BrushEngine {
   mixedSceneLinearWidth = 0;
   mixedSceneLinearHeight = 0;
   mixedScenePresentBindGroup: GPUBindGroup | null = null;
+  mixedSceneBlendScratchTexture: GPUTexture | null = null;
+  mixedSceneBlendScratchView: GPUTextureView | null = null;
+  mixedSceneBlendOperandTexture: GPUTexture | null = null;
+  mixedSceneBlendOperandView: GPUTextureView | null = null;
+  mixedSceneBlendGroupTexture: GPUTexture | null = null;
+  mixedSceneBlendGroupView: GPUTextureView | null = null;
+  mixedSceneBlendFromLinearBindGroup: GPUBindGroup | null = null;
+  mixedSceneBlendFromScratchBindGroup: GPUBindGroup | null = null;
+  mixedSceneBlendFromGroupBindGroup: GPUBindGroup | null = null;
+  layerBlendTileCompositor: LayerBlendTileCompositor | null = null;
   readonly rasterImageGpuResources = new Map<string, RasterImageGpuResource>();
   nextRasterImageAssetId = 1;
   readonly vectorTextRunTextures = new Map<
@@ -1156,6 +1176,7 @@ export class BrushEngine {
   rasterImageMixedSceneBindGroupLayout: GPUBindGroupLayout | null = null;
   vectorTextGpuSlugBindGroupLayout: GPUBindGroupLayout | null = null;
   mixedScenePresentBindGroupLayout: GPUBindGroupLayout | null = null;
+  layerBlendCompositorBindGroupLayout: GPUBindGroupLayout | null = null;
   vectorTextGpuUniformBindGroupLayout: GPUBindGroupLayout | null = null;
   vectorTextGpuBlurFilterBindGroupLayout: GPUBindGroupLayout | null = null;
   vectorTextGpuBlurCompositeBindGroupLayout: GPUBindGroupLayout | null = null;
@@ -1170,6 +1191,7 @@ export class BrushEngine {
   paintMipDownsampleBindGroupLayout!: GPUBindGroupLayout;
   paintStackCompositeMipBindGroupLayout!: GPUBindGroupLayout;
   layerCompositeBindGroupLayout!: GPUBindGroupLayout;
+  layerBlendFoldBindGroupLayout!: GPUBindGroupLayout;
   brushBindGroup!: GPUBindGroup;
   thicknessTailBrushBindGroup!: GPUBindGroup;
   brushOccupancyBindGroups: GPUBindGroup[] = [];
@@ -1208,6 +1230,7 @@ export class BrushEngine {
   rasterImageMixedSceneShaderModule: GPUShaderModule | null = null;
   mixedSceneClearShaderModule: GPUShaderModule | null = null;
   mixedScenePresentShaderModule: GPUShaderModule | null = null;
+  layerBlendCompositorShaderModule: GPUShaderModule | null = null;
   rasterStrokeDisplayShaderModule!: GPUShaderModule;
   thicknessTailDisplayShaderModule!: GPUShaderModule;
   lightGlazeDisplayShaderModule!: GPUShaderModule;
@@ -1218,6 +1241,7 @@ export class BrushEngine {
   paintMipDownsampleShaderModule!: GPUShaderModule;
   paintStackCompositeMipShaderModule!: GPUShaderModule;
   layerCompositeShaderModule!: GPUShaderModule;
+  layerBlendFoldShaderModule!: GPUShaderModule;
   normalPipeline!: GPURenderPipeline;
   additivePipeline!: GPURenderPipeline;
   shapeNormalPipeline!: GPURenderPipeline;
@@ -1269,6 +1293,9 @@ export class BrushEngine {
   rasterImagePremultiplyPipeline: GPURenderPipeline | null = null;
   rasterImageMixedScenePipeline: GPURenderPipeline | null = null;
   mixedScenePresentPipeline: GPURenderPipeline | null = null;
+  layerBlendCompositorPipeline: GPURenderPipeline | null = null;
+  layerBlendCompositorUniformBuffer: GPUBuffer | null = null;
+  layerBlendCompositorUniformStride = 0;
   mixedSceneActiveDisplayPipeline: GPURenderPipeline | null = null;
   mixedSceneActiveRasterStrokeDisplayPipeline: GPURenderPipeline | null = null;
   mixedSceneActiveThicknessTailDisplayPipeline: GPURenderPipeline | null = null;
@@ -1287,6 +1314,7 @@ export class BrushEngine {
   activeClippingGroupMipPipeline!: GPURenderPipeline;
   layerCompositePipeline!: GPURenderPipeline;
   layerSourceAtopPipeline!: GPURenderPipeline;
+  layerBlendFoldPipeline!: GPURenderPipeline;
 
   private readonly instanceUpload = new ArrayBuffer(MAX_STAMPS_PER_BATCH * STAMP_STRIDE_BYTES);
   readonly instanceUploadF32 = new Float32Array(this.instanceUpload);
@@ -1680,6 +1708,19 @@ export class BrushEngine {
 
   styleStackActive(): boolean {
     return Boolean(this.rasterStrokeRenderer && this.styleStackNeedsCompositor());
+  }
+
+  usesOrderedScenePresentation(): boolean {
+    return Boolean(this.mixedSceneStack?.visibleSemanticCount)
+      || orderedLayerBlendPresentationRequired(this);
+  }
+
+  usesLayerBlendTilePresentation(): boolean {
+    return layerBlendTilePresentationRequired(this);
+  }
+
+  compositionSegmentBlendMode(segment: MixedSceneCompositionSegment): LayerBlendMode {
+    return mixedSceneSegmentLayerBlendMode(this, segment);
   }
 
   mergedBelowView(): GPUTextureView {
@@ -4834,12 +4875,15 @@ export class BrushEngine {
       ? activeClippingUnit.map((record) => record.id)
       : [];
     let candidateCompositionSegments: readonly MixedSceneCompositionSegment[] = [];
-    if (this.mixedSceneStack?.visibleSemanticCount) {
+    if (this.mixedSceneStack && this.usesOrderedScenePresentation()) {
       // Compute the new plan before evicting anything. A malformed scene must
       // leave the complete previous presentation untouched.
-      candidateCompositionSegments = this.mixedSceneStack.compositionSegments(
-        this.layerStack.active.id,
-        activeClippingUnitIds,
+      candidateCompositionSegments = splitMixedSceneRasterRunsForLayerBlend(
+        this,
+        this.mixedSceneStack.compositionSegments(
+          this.layerStack.active.id,
+          activeClippingUnitIds,
+        ),
       );
     }
     const reusableKeys = options.reuseUnchangedRasterRuns
@@ -4883,7 +4927,7 @@ export class BrushEngine {
     let candidatePublished = false;
     try {
       candidateActiveClippingGroup = await buildActiveClippingGroupResources(this, caller);
-      if (this.mixedSceneStack?.visibleSemanticCount) {
+      if (this.mixedSceneStack && this.usesOrderedScenePresentation()) {
         const activePosition = candidateCompositionSegments.findIndex(
           (segment) => segment.kind === "active-raster",
         );
@@ -5647,6 +5691,29 @@ export class BrushEngine {
 
   async setLayerOpacity(index: number, opacity: number): Promise<boolean> {
     return setLayerPresentation(this, index, undefined, clamp(opacity, 0, 1));
+  }
+
+  async setLayerBlendMode(index: number, blendMode: LayerBlendMode): Promise<boolean> {
+    const record = this.layerStack.at(index);
+    const before = record.blendMode;
+    const changed = await setLayerBlendMode(this, index, blendMode);
+    if (!changed) {
+      return false;
+    }
+    truncateRedoHistory(this);
+    this.historyActions.push({
+      id: this.nextHistoryActionId++,
+      kind: "layer-blend-mode",
+      layerId: record.id,
+      before,
+      after: blendMode,
+    });
+    this.historyCursor = this.historyActions.length;
+    if (this.activeStrokeProfile) {
+      this.activeStrokeProfile.historyCommittedActions += 1;
+    }
+    this.publishHistoryState();
+    return true;
   }
 
   async setLayerClipping(index: number, enabled: boolean): Promise<boolean> {
@@ -6600,7 +6667,7 @@ export class BrushEngine {
     this.displayUniformUpload[16] = clippingGroup?.mode === "active-parent"
       ? 1
       : clippingGroup?.mode === "active-child"
-        ? 2
+        ? 2 + LAYER_BLEND_MODE_CODES[this.layerStack.active.blendMode] / 64
         : 0;
     this.displayUniformUpload[17] = clippingGroup?.parentOpacity ?? 0;
     this.displayUniformUpload[18] = clippingGroup?.prefix?.resolutionScale ?? 0;
@@ -9093,7 +9160,9 @@ export class BrushEngine {
             clearLayer,
           )
           : { dirtyRect: null, timing: null };
-        if (rasterStrokeActive) {
+        const tileBlendOwnsPyramid = displaySelectedMipLevel > 0
+          && this.usesLayerBlendTilePresentation();
+        if (rasterStrokeActive && !tileBlendOwnsPyramid) {
           if (clearLayer || liveDirtyRect) {
             this.paintDisplayMipValidThroughLevel = 0;
           }
@@ -9110,7 +9179,7 @@ export class BrushEngine {
             : 0;
           paintDisplayPyramidUpdatedPixels += rasterPyramid.updatedPixels;
           paintDisplayPyramidEncodingMs += performance.now() - rasterPyramidStart;
-        } else if (session.hasContent) {
+        } else if (session.hasContent && !tileBlendOwnsPyramid) {
           const glazePyramid = encodeLightGlazeDisplayPyramid(this, 
             encoder,
             session,
@@ -9119,7 +9188,7 @@ export class BrushEngine {
           );
           lightGlazePyramidPasses += glazePyramid.passes;
           lightGlazePyramidUpdatedPixels += glazePyramid.updatedPixels;
-        } else {
+        } else if (!tileBlendOwnsPyramid) {
           const mainPyramid = this.encodePaintDisplayPyramid(
             encoder,
             clearLayer ? { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE } : null,
@@ -9145,7 +9214,9 @@ export class BrushEngine {
             : null;
 
         if (presentationDirtyRect) {
-          encodeMergedDisplayPyramids(this, encoder, displaySelectedMipLevel);
+          if (!tileBlendOwnsPyramid) {
+            encodeMergedDisplayPyramids(this, encoder, displaySelectedMipLevel);
+          }
           this.writeDisplayUniforms(displaySelectedMipLevel);
           if (rasterStrokeActive) {
             this.rasterStrokeRenderer!.updateDisplayParameters(
@@ -9157,21 +9228,35 @@ export class BrushEngine {
           }
           const lod0FullRebuildCpuEncodingStart = requiresFullRebuild
             && displaySelectedMipLevel === 0 ? performance.now() : 0;
-          if (this.mixedSceneStack?.visibleSemanticCount) {
+          if (this.usesOrderedScenePresentation()) {
             const activePresentation: MixedSceneActivePresentation = rasterStrokeActive
               ? { kind: "raster-stroke", sourceMode: "light-glaze" }
               : session.hasContent
                 ? { kind: "light-glaze" }
                 : { kind: "base" };
-            encodeMixedSceneSegmentedPresentation(this, 
-              encoder,
-              presentationDirtyRect,
-              requiresFullRebuild,
-              activePresentation,
-              requiresFullRebuild
-                ? "Rebuild segmented presentation cache with live Light Glaze"
-                : "Update segmented presentation cache with live Light Glaze",
-            );
+            const blendLabel = requiresFullRebuild
+              ? "Rebuild segmented presentation cache with live Light Glaze"
+              : "Update segmented presentation cache with live Light Glaze";
+            if (this.usesLayerBlendTilePresentation()) {
+              encodeLayerBlendTilePresentation(
+                this,
+                encoder,
+                presentationDirtyRect,
+                presentationLayerDirtyRect,
+                requiresFullRebuild,
+                activePresentation,
+                blendLabel,
+              );
+            } else {
+              encodeMixedSceneSegmentedPresentation(
+                this,
+                encoder,
+                presentationDirtyRect,
+                requiresFullRebuild,
+                activePresentation,
+                blendLabel,
+              );
+            }
           } else {
             const displayPass = encoder.beginRenderPass({
               label: requiresFullRebuild
@@ -9367,10 +9452,12 @@ export class BrushEngine {
             clearLayer,
           )
           : { dirtyRect: null, timing: null };
+        const tileBlendOwnsPyramid = displaySelectedMipLevel > 0
+          && this.usesLayerBlendTilePresentation();
         const canonicalLayerDirtyRect = clearLayer
           ? { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE }
           : authoritativeDirtyRect;
-        if (rasterStrokeActive) {
+        if (rasterStrokeActive && !tileBlendOwnsPyramid) {
           this.paintDisplayMipValidThroughLevel = 0;
           const rasterPyramidStart = performance.now();
           const rasterPyramid = encodeRasterStrokeDisplayPyramid(this, 
@@ -9385,7 +9472,7 @@ export class BrushEngine {
             : 0;
           paintDisplayPyramidUpdatedPixels += rasterPyramid.updatedPixels;
           paintDisplayPyramidEncodingMs += performance.now() - rasterPyramidStart;
-        } else {
+        } else if (!tileBlendOwnsPyramid) {
           const mainPyramid = this.encodePaintDisplayPyramid(
             encoder,
             canonicalLayerDirtyRect,
@@ -9413,7 +9500,9 @@ export class BrushEngine {
             ? layerDirtyRectToPresentationRect(this, presentationLayerDirtyRect, displaySelectedMipLevel)
             : null;
         if (presentationDirtyRect) {
-          encodeMergedDisplayPyramids(this, encoder, displaySelectedMipLevel);
+          if (!tileBlendOwnsPyramid) {
+            encodeMergedDisplayPyramids(this, encoder, displaySelectedMipLevel);
+          }
           this.writeDisplayUniforms(displaySelectedMipLevel);
           if (rasterStrokeActive) {
             this.rasterStrokeRenderer!.updateDisplayParameters(
@@ -9425,18 +9514,33 @@ export class BrushEngine {
           }
           const lod0FullRebuildCpuEncodingStart = requiresFullRebuild
             && displaySelectedMipLevel === 0 ? performance.now() : 0;
-          if (this.mixedSceneStack?.visibleSemanticCount) {
-            encodeMixedSceneSegmentedPresentation(this, 
-              encoder,
-              presentationDirtyRect,
-              requiresFullRebuild,
-              rasterStrokeActive
-                ? { kind: "raster-stroke", sourceMode: "permanent" }
-                : { kind: "base" },
-              requiresFullRebuild
-                ? "Rebuild segmented canonical cache after Light Glaze commit"
-                : "Canonicalize segmented Light Glaze cache after commit",
-            );
+          if (this.usesOrderedScenePresentation()) {
+            const activePresentation: MixedSceneActivePresentation = rasterStrokeActive
+              ? { kind: "raster-stroke", sourceMode: "permanent" }
+              : { kind: "base" };
+            const blendLabel = requiresFullRebuild
+              ? "Rebuild segmented canonical cache after Light Glaze commit"
+              : "Canonicalize segmented Light Glaze cache after commit";
+            if (this.usesLayerBlendTilePresentation()) {
+              encodeLayerBlendTilePresentation(
+                this,
+                encoder,
+                presentationDirtyRect,
+                presentationLayerDirtyRect,
+                requiresFullRebuild,
+                activePresentation,
+                blendLabel,
+              );
+            } else {
+              encodeMixedSceneSegmentedPresentation(
+                this,
+                encoder,
+                presentationDirtyRect,
+                requiresFullRebuild,
+                activePresentation,
+                blendLabel,
+              );
+            }
           } else {
             const displayPass = encoder.beginRenderPass({
               label: requiresFullRebuild
@@ -9958,7 +10062,7 @@ export class BrushEngine {
         && !rasterStrokeActive
         && !thicknessTailFrame
         && !useVectorTextDisplay
-        && !this.mixedSceneStack?.visibleSemanticCount;
+        && !this.usesOrderedScenePresentation();
       const transientMutationRect = mergeDirtyRects(
         this.thicknessTailPresentedRect,
         thicknessTailFrame?.dirtyRect ?? null,
@@ -9979,6 +10083,8 @@ export class BrushEngine {
           layerCleared,
         )
         : { dirtyRect: null, timing: null };
+      const tileBlendOwnsPyramid = displaySelectedMipLevel > 0
+        && this.usesLayerBlendTilePresentation();
 
       const baseDirtyRect = layerCleared
         ? { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE }
@@ -9986,7 +10092,7 @@ export class BrushEngine {
       if (layerCleared || (rasterStrokeActive && submittedDirtyRect)) {
         this.paintDisplayMipValidThroughLevel = 0;
       }
-      if (!rasterStrokeActive) {
+      if (!rasterStrokeActive && !tileBlendOwnsPyramid) {
         const pyramidTiming = this.encodePaintDisplayPyramid(
           encoder,
           baseDirtyRect,
@@ -10000,7 +10106,7 @@ export class BrushEngine {
         paintDisplayPyramidBaseDirtyPixels = pyramidTiming.baseDirtyPixels;
         paintDisplayPyramidUpdatedPixels = pyramidTiming.updatedPixels;
         paintDisplayPyramidEncodingMs = pyramidTiming.encodingMs;
-      } else {
+      } else if (!tileBlendOwnsPyramid) {
         const rasterPyramidStart = performance.now();
         const rasterPyramid = encodeRasterStrokeDisplayPyramid(this, 
           encoder,
@@ -10045,7 +10151,7 @@ export class BrushEngine {
           : null;
 
       if (presentationDirtyRect) {
-        if (!useFinalRasterStackMip) {
+        if (!useFinalRasterStackMip && !tileBlendOwnsPyramid) {
           encodeMergedDisplayPyramids(this, encoder, displaySelectedMipLevel);
         }
         this.writeDisplayUniforms(displaySelectedMipLevel);
@@ -10059,7 +10165,7 @@ export class BrushEngine {
         }
         const lod0FullRebuildCpuEncodingStart = requiresFullRebuild
           && displaySelectedMipLevel === 0 ? performance.now() : 0;
-        if (this.mixedSceneStack?.visibleSemanticCount) {
+        if (this.usesOrderedScenePresentation()) {
           const activePresentation: MixedSceneActivePresentation = rasterStrokeActive
             ? {
               kind: "raster-stroke",
@@ -10068,15 +10174,29 @@ export class BrushEngine {
             : thicknessTailFrame
               ? { kind: "thickness-tail" }
               : { kind: "base" };
-          encodeMixedSceneSegmentedPresentation(this, 
-            encoder,
-            presentationDirtyRect,
-            requiresFullRebuild,
-            activePresentation,
-            requiresFullRebuild
-              ? "Rebuild segmented persistent presentation cache"
-              : "Update segmented persistent presentation cache dirty rect",
-          );
+          const blendLabel = requiresFullRebuild
+            ? "Rebuild segmented persistent presentation cache"
+            : "Update segmented persistent presentation cache dirty rect";
+          if (this.usesLayerBlendTilePresentation()) {
+            encodeLayerBlendTilePresentation(
+              this,
+              encoder,
+              presentationDirtyRect,
+              presentationLayerDirtyRect,
+              requiresFullRebuild,
+              activePresentation,
+              blendLabel,
+            );
+          } else {
+            encodeMixedSceneSegmentedPresentation(
+              this,
+              encoder,
+              presentationDirtyRect,
+              requiresFullRebuild,
+              activePresentation,
+              blendLabel,
+            );
+          }
         } else {
           const displayPass = encoder.beginRenderPass({
             label: requiresFullRebuild

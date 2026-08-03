@@ -1,5 +1,5 @@
 export const HISTORY_JOURNAL_STRATEGY =
-  "global-order-per-layer-clear-barrier-raster-checkpoints-v5" as const;
+  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-blend-v6" as const;
 
 /**
  * One entry of the global journal. `layerId` is what makes a single stack usable
@@ -27,6 +27,11 @@ export type JournalAction =
   | {
     id: number;
     kind: "vector";
+  }
+  | {
+    id: number;
+    kind: "layer-blend-mode";
+    layerId: number;
   };
 
 export interface JournalBatch {
@@ -116,7 +121,7 @@ export function hasVisibleContent(
   const contentByLayer = new Map<number, boolean>();
   for (let index = 0; index < end; index += 1) {
     const action = actions[index];
-    if (action.kind === "vector") continue;
+    if (action.kind === "vector" || action.kind === "layer-blend-mode") continue;
     if (layerId !== undefined && action.layerId !== layerId) continue;
     if (action.kind === "clear") {
       contentByLayer.set(action.layerId, false);

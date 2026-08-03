@@ -39,7 +39,10 @@ import {
 } from "./engine-raster-image-runtime";
 import { mergeDirtyRects } from "./engine-geometry";
 import { markLayerStorageRect } from "./layer-storage-study";
-import { restoreEffectsWorkbenchToActiveLayer } from "./engine-layer-runtime";
+import {
+  restoreEffectsWorkbenchToActiveLayer,
+  setLayerBlendMode,
+} from "./engine-layer-runtime";
 
 export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Promise<boolean> {
   if (
@@ -86,6 +89,8 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
       ? delta < 0 ? "Undo: rimozione immagine raster…" : "Redo: ripristino immagine raster…"
       : crossedAction.kind === "vector-rasterize"
       ? delta < 0 ? "Undo: ripristino del vettore…" : "Redo: rasterizzazione vettoriale…"
+      : crossedAction.kind === "layer-blend-mode"
+      ? delta < 0 ? "Undo: fusione livello…" : "Redo: fusione livello…"
       : crossedAction.kind === "vector"
       ? delta < 0 ? "Undo: ripristino del vettore…" : "Redo: ripristino del vettore…"
       : delta < 0
@@ -119,6 +124,27 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
       }
       engine.publishStatus(
         delta < 0 ? "Undo importazione raster completato." : "Redo importazione raster completato.",
+        "ok",
+      );
+      return true;
+    }
+    if (crossedAction.kind === "layer-blend-mode") {
+      const index = engine.layerStack.indexOfId(crossedAction.layerId);
+      if (index < 0) {
+        throw new Error(`Livello ${crossedAction.layerId} della fusione non trovato.`);
+      }
+      await setLayerBlendMode(
+        engine,
+        index,
+        delta < 0 ? crossedAction.before : crossedAction.after,
+        true,
+      );
+      engine.historyCursor = nextCursor;
+      if (engine.activeStrokeProfile) {
+        engine.activeStrokeProfile.historyReplayOperations += 1;
+      }
+      engine.publishStatus(
+        delta < 0 ? "Undo fusione livello completato." : "Redo fusione livello completato.",
         "ok",
       );
       return true;

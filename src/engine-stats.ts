@@ -62,6 +62,7 @@ import {
 import type { ThicknessDynamicsStrategy } from "./thickness-dynamics";
 import { STROKE_CURVE_STRATEGY } from "./stroke-curve-core";
 import { STROKE_STABILIZATION_STRATEGY } from "./stroke-stabilization-core";
+import type { LayerBlendMode } from "./layer-blend-modes";
 
 export interface EngineGpuMemoryStats {
   layerBaseMiB: number;
@@ -206,6 +207,7 @@ export interface EngineStats {
     name: string;
     visible: boolean;
     opacity: number;
+    blendMode: LayerBlendMode;
     reference: boolean;
     clippingParentId: number | null;
     hasContent: boolean;

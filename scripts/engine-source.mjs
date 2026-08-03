@@ -45,6 +45,7 @@ export const ENGINE_SOURCE_FILES = Object.freeze([
   "engine-glaze-runtime.ts",
   "engine-adaptive-preview-runtime.ts",
   "engine-layer-runtime.ts",
+  "engine-layer-blend-tile-runtime.ts",
   "engine-resource-setup.ts",
   "engine-runtime-misc.ts",
 ]);

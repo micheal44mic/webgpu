@@ -95,6 +95,22 @@ export interface RasterStrokeBakeOptions {
   colorOverlayStyle?: RasterColorOverlayStyle;
   sourceMode?: RasterStrokeSourceMode;
   rect?: RasterStrokeRect | null;
+  /**
+   * Storage-space origin for `rect`. The default keeps the historical
+   * full-document mapping (`rect.x`, `rect.y`). A cropped/tiled caller can
+   * instead write the same authoritative document pixels starting at (0, 0)
+   * without changing any style/effect sampling coordinates.
+   */
+  targetStorageOrigin?: { x: number; y: number };
+  /**
+   * Dynamic-uniform slot used when several cropped bakes are encoded into one
+   * command buffer (for example the document-space layer-blend tile pass).
+   */
+  parameterSlot?: number;
+  /** Batch callers upload every populated bake slot with one final write. */
+  deferParameterUpload?: boolean;
+  /** Shared bevel/style uniforms were prepared once before this bake batch. */
+  sharedStylePrepared?: boolean;
 }
 
 export interface RasterStrokeBakeResult {
@@ -128,6 +144,7 @@ const BEVEL_DOCUMENT_UNIFORM_BYTES = 80;
 const BEVEL_BOUNDING_FIELD_UNIFORM_BYTES = 112;
 const PARAMETER_STRIDE = 256;
 const PARAMETER_CAPACITY = 2048;
+const BAKE_PARAMETER_CAPACITY = 32;
 const INVALID_PACKED_SEED = 0xffff_ffff;
 const THRESHOLD_MASK_WORD_BITS = 32;
 const COVERAGE_WORD_PIXELS = 4;
@@ -1156,7 +1173,8 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
     return;
   }
   let position = vec2<i32>(parameters.targetOrigin + globalId.xy);
-  textureStore(styledTexture, position, styledTexel(position));
+  let storagePosition = vec2<i32>(parameters.localTargetOrigin + globalId.xy);
+  textureStore(styledTexture, storagePosition, styledTexel(position));
 }
 `;
 }
@@ -1679,11 +1697,15 @@ export class RasterStrokeRenderer {
   private scratchPoolGeneration = -1;
   private scratchPoolLayoutVersion = -1;
   private readonly parameterBuffer: GPUBuffer;
+  private readonly bakeParameterBuffer: GPUBuffer;
   private readonly displayParameterBuffers: Record<SourceModeCode, GPUBuffer>;
   private readonly displayParameterUpload = new ArrayBuffer(DISPLAY_PARAMETER_BYTES);
   private readonly displayParameterUploadU32 = new Uint32Array(this.displayParameterUpload);
   private readonly displayParameterUploadF32 = new Float32Array(this.displayParameterUpload);
   private readonly parameterUpload = new ArrayBuffer(PARAMETER_CAPACITY * PARAMETER_STRIDE);
+  private readonly bakeParameterUpload = new ArrayBuffer(
+    BAKE_PARAMETER_CAPACITY * PARAMETER_STRIDE,
+  );
   private readonly bevelUniformBuffer: GPUBuffer;
   private readonly bevelUniformUpload: ArrayBuffer;
   private readonly bevelUniformUploadI32: Int32Array;
@@ -1751,6 +1773,7 @@ export class RasterStrokeRenderer {
   private composeBindGroups = new Map<SourceModeCode, GPUBindGroup>();
   private readbackComposeBindGroups = new Map<SourceModeCode, GPUBindGroup>();
   private thresholdMaskBindGroups = new Map<SourceModeCode, GPUBindGroup>();
+  private bakeBindGroups = new WeakMap<GPUTextureView, Map<SourceModeCode, GPUBindGroup>>();
   private destroyed = false;
 
   private constructor(options: RasterStrokeRendererOptions) {
@@ -1800,6 +1823,12 @@ export class RasterStrokeRenderer {
     this.parameterBuffer = this.device.createBuffer({
       label: "Traccia dynamic dispatch parameters",
       size: parameterBufferBytes,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    const bakeParameterBufferBytes = BAKE_PARAMETER_CAPACITY * PARAMETER_STRIDE;
+    this.bakeParameterBuffer = this.device.createBuffer({
+      label: "Traccia isolated tile-bake parameters",
+      size: bakeParameterBufferBytes,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     this.displayParameterBuffers = {
@@ -1990,6 +2019,7 @@ export class RasterStrokeRenderer {
     }
     this.styledMemoryBytes = styledPixels * bytesPerPixel;
     this.baseControlMemoryBytes = parameterBufferBytes
+      + bakeParameterBufferBytes
       + DISPLAY_PARAMETER_BYTES * 3
       + this.bevelUniformBytes
       + 4 + 68
@@ -2260,51 +2290,65 @@ export class RasterStrokeRenderer {
 
     const sourceMode = options.sourceMode ?? "permanent";
     const mode = sourceModeCode(sourceMode);
+    const parameterSlot = options.parameterSlot ?? 0;
+    if (
+      !Number.isSafeInteger(parameterSlot)
+      || parameterSlot < 0
+      || parameterSlot >= BAKE_PARAMETER_CAPACITY
+    ) {
+      throw new RangeError("Slot uniforme del bake Traccia non valido.");
+    }
+    const targetStorageOrigin = options.targetStorageOrigin ?? {
+      x: rect.x,
+      y: rect.y,
+    };
+    if (
+      !Number.isInteger(targetStorageOrigin.x)
+      || !Number.isInteger(targetStorageOrigin.y)
+      || targetStorageOrigin.x < 0
+      || targetStorageOrigin.y < 0
+    ) {
+      throw new RangeError("Origine storage del bake Traccia non valida.");
+    }
     const bevelStyle = options.bevelStyle ?? DEFAULT_RASTER_BEVEL_STYLE;
     const colorOverlayStyle = options.colorOverlayStyle
       ?? DEFAULT_RASTER_COLOR_OVERLAY_STYLE;
-    this.updateDisplayParameters(
-      sourceMode,
-      options.style,
-      bevelStyle,
-      colorOverlayStyle,
-    );
-    this.updateBevelParameters(bevelStyle);
-    this.writeParameters(0, {
+    if (!options.sharedStylePrepared) {
+      this.updateBevelParameters(bevelStyle);
+    }
+    this.writeParameters(parameterSlot, {
       targetX: rect.x,
       targetY: rect.y,
       targetWidth: rect.width,
       targetHeight: rect.height,
+      localTargetX: targetStorageOrigin.x,
+      localTargetY: targetStorageOrigin.y,
     }, 0, mode, options.style, colorOverlayStyle);
-    this.device.queue.writeBuffer(
-      this.parameterBuffer,
-      0,
-      this.parameterUpload,
-      0,
+    new Uint8Array(
+      this.bakeParameterUpload,
+      parameterSlot * PARAMETER_STRIDE,
       PARAMETER_STRIDE,
-    );
+    ).set(new Uint8Array(
+      this.parameterUpload,
+      parameterSlot * PARAMETER_STRIDE,
+      PARAMETER_STRIDE,
+    ));
+    if (!options.deferParameterUpload) {
+      this.device.queue.writeBuffer(
+        this.bakeParameterBuffer,
+        parameterSlot * PARAMETER_STRIDE,
+        this.bakeParameterUpload,
+        parameterSlot * PARAMETER_STRIDE,
+        PARAMETER_STRIDE,
+      );
+    }
 
-    const bindGroup = this.device.createBindGroup({
-      label: `Style stack layer bake mip 0 source mode ${sourceMode}`,
-      layout: this.composeBindGroupLayout,
-      entries: [
-        ...this.commonSourceEntries(mode),
-        { binding: 5, resource: { buffer: this.coverageBuffer } },
-        { binding: 6, resource: options.targetView },
-        { binding: 7, resource: this.bevelHeightView },
-        { binding: 8, resource: this.bevelGlossView },
-        { binding: 9, resource: { buffer: this.bevelUniformBuffer } },
-        { binding: 10, resource: { buffer: this.outerShadowCoverageBuffer } },
-        { binding: 11, resource: { buffer: this.outerShadowUniformBuffer } },
-        { binding: 12, resource: { buffer: this.innerShadowCoverageBuffer } },
-        { binding: 13, resource: { buffer: this.innerShadowUniformBuffer } },
-      ],
-    });
+    const bindGroup = this.bakeBindGroup(options.targetView, mode, sourceMode);
     const pass = options.encoder.beginComputePass({
       label: "Style stack layer bake analytic mip 0",
     });
     pass.setPipeline(this.readbackComposePipeline);
-    pass.setBindGroup(0, bindGroup, this.dynamicOffset(0));
+    pass.setBindGroup(0, bindGroup, this.dynamicOffset(parameterSlot));
     pass.dispatchWorkgroups(
       Math.ceil(rect.width / WORKGROUP_SIZE),
       Math.ceil(rect.height / WORKGROUP_SIZE),
@@ -2315,6 +2359,29 @@ export class RasterStrokeRenderer {
       pixels: rect.width * rect.height,
       dispatches: 1,
     };
+  }
+
+  prepareBakeStyle(bevelStyle: RasterBevelStyle = DEFAULT_RASTER_BEVEL_STYLE): void {
+    this.updateBevelParameters(bevelStyle);
+  }
+
+  flushBakeParameters(parameterCount: number): void {
+    if (
+      !Number.isSafeInteger(parameterCount)
+      || parameterCount < 0
+      || parameterCount > BAKE_PARAMETER_CAPACITY
+    ) {
+      throw new RangeError("Numero di slot bake Traccia non valido.");
+    }
+    if (parameterCount > 0) {
+      this.device.queue.writeBuffer(
+        this.bakeParameterBuffer,
+        0,
+        this.bakeParameterUpload,
+        0,
+        parameterCount * PARAMETER_STRIDE,
+      );
+    }
   }
 
   createDisplayBindGroup(
@@ -2966,12 +3033,15 @@ export class RasterStrokeRenderer {
     this.scratchPoolLayoutVersion = lease.layoutVersion;
   }
 
-  private commonSourceEntries(mode: SourceModeCode): GPUBindGroupEntry[] {
+  private commonSourceEntries(
+    mode: SourceModeCode,
+    parameterBuffer = this.parameterBuffer,
+  ): GPUBindGroupEntry[] {
     return [
       {
         binding: 0,
         resource: {
-          buffer: this.parameterBuffer,
+          buffer: parameterBuffer,
           offset: 0,
           size: PARAMETER_BYTES,
         },
@@ -2984,6 +3054,9 @@ export class RasterStrokeRenderer {
   }
 
   private rebuildSourceBindGroups(mode: SourceModeCode): void {
+    // Every bake group captures source/effect resources. Retargeting any one
+    // source invalidates the tiny target-view cache as a unit.
+    this.bakeBindGroups = new WeakMap();
     const scratchLease = this.requireScratchLease();
     this.seedBindGroups.set(mode, this.device.createBindGroup({
       label: `Traccia seed source mode ${mode}`,
@@ -3048,6 +3121,40 @@ export class RasterStrokeRenderer {
         { binding: 7, resource: { buffer: this.coverageBuffer } },
       ],
     }));
+  }
+
+  private bakeBindGroup(
+    targetView: GPUTextureView,
+    mode: SourceModeCode,
+    sourceMode: RasterStrokeSourceMode,
+  ): GPUBindGroup {
+    let byMode = this.bakeBindGroups.get(targetView);
+    if (!byMode) {
+      byMode = new Map();
+      this.bakeBindGroups.set(targetView, byMode);
+    }
+    const existing = byMode.get(mode);
+    if (existing) {
+      return existing;
+    }
+    const created = this.device.createBindGroup({
+      label: `Style stack layer bake mip 0 source mode ${sourceMode}`,
+      layout: this.composeBindGroupLayout,
+      entries: [
+        ...this.commonSourceEntries(mode, this.bakeParameterBuffer),
+        { binding: 5, resource: { buffer: this.coverageBuffer } },
+        { binding: 6, resource: targetView },
+        { binding: 7, resource: this.bevelHeightView },
+        { binding: 8, resource: this.bevelGlossView },
+        { binding: 9, resource: { buffer: this.bevelUniformBuffer } },
+        { binding: 10, resource: { buffer: this.outerShadowCoverageBuffer } },
+        { binding: 11, resource: { buffer: this.outerShadowUniformBuffer } },
+        { binding: 12, resource: { buffer: this.innerShadowCoverageBuffer } },
+        { binding: 13, resource: { buffer: this.innerShadowUniformBuffer } },
+      ],
+    });
+    byMode.set(mode, created);
+    return created;
   }
 
   private buildJobs(rect: RasterStrokeRect, width: number): BuildJob[] {
@@ -3662,6 +3769,7 @@ export class RasterStrokeRenderer {
     this.destroyed = true;
     this.scratchPool.releaseRequirement("stroke");
     this.parameterBuffer.destroy();
+    this.bakeParameterBuffer.destroy();
     this.bevelUniformBuffer.destroy();
     this.displayParameterBuffers[0].destroy();
     this.displayParameterBuffers[1].destroy();

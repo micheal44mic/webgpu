@@ -1516,7 +1516,7 @@ export class MixedSceneStack {
    * that remains hot and editable. Adjacent inactive rasters and adjacent
    * vector nodes are grouped. Every visible semantic raster image is emitted
    * as its own segment and therefore interrupts both kinds of run; hidden or
-   * fully transparent images do not split neighboring runs.
+   * fully transparent text, SVG and images do not split neighboring runs.
    */
   compositionSegments(
     activeRasterLayerId: number,
@@ -1608,6 +1608,12 @@ export class MixedSceneStack {
           item,
         });
       } else {
+        const vector = item.kind === "text"
+          ? this.textById(item.textNodeId)
+          : this.svgById(item.svgNodeId);
+        if (!vector.visible || vector.opacity <= 0) {
+          continue;
+        }
         flushRasterRun();
         textRun.push(item);
       }

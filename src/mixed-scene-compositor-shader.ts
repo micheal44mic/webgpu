@@ -53,7 +53,7 @@ ${displayUniformsShader}
 struct SegmentUniforms {
   origin: vec2<f32>,
   resolutionScale: f32,
-  _padding: f32,
+  opacity: f32,
 };
 
 @group(0) @binding(0) var<uniform> display: DisplayUniforms;
@@ -94,9 +94,9 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
         vec2<i32>(textureDimensions(sourceTexture, 0))
       ),
       0
-    );
+    ) * segment.opacity;
   }
-  return textureSampleLevel(sourceTexture, sourceSampler, uv, lod);
+  return textureSampleLevel(sourceTexture, sourceSampler, uv, lod) * segment.opacity;
 }
 `;
 

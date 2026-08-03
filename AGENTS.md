@@ -3151,3 +3151,58 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   `*:verify`, `git diff --check` e build Vite production/Sites verdi. È QA
   funzionale desktop, non un benchmark canonico o una misura iPhone; candidato
   locale non ancora pubblicato.
+
+### Metodi di fusione raster live WebGPU (3 agosto 2026)
+
+- Ogni riga raster espone ora il menu di fusione ordinato come Procreate 5.4:
+  `Multiply`, `Darken`, `Shade`, `Color Burn`, `Linear Burn`, `Darker Color`,
+  `Normal`, `Lighten`, `Screen`, `Color Dodge`, `Add`, `Lighter Color`,
+  `Overlay`, `Soft Light`, `Hard Light`, `Vivid Light`, `Linear Light`,
+  `Pin Light`, `Hard Mix`, `Difference`, `Exclusion`, `Subtract`, `Divide`,
+  `Hue`, `Saturation`, `Color` e `Luminosity`. I codici GPU `0..26` sono
+  stabili e condivisi da UI, storia e shader. Le formule seguono il modello
+  W3C su colori non premoltiplicati con compositing source-over; `Darker Color`
+  e `Lighter Color` confrontano la somma RGB totale, non i canali
+  indipendentemente. `Shade` è intenzionalmente marcato provvisorio: Procreate
+  lo documenta come compatibilità del vecchio Darken ma non pubblica la sua
+  formula, quindi non dichiarare ancora parità pixel con quel solo modo.
+- Su una scena solo raster, ogni modo non-Normal viene composto in spazio
+  documento prima di bilineare e mipmap: tile native fino a `1024²`, fold
+  ordinato GPU e piramide finale condivisa. Il percorso `Normal` conserva il
+  compositing fixed-function esistente e rilascia il compositore tile quando
+  nessun modo avanzato è attivo. Pan/zoom allo stesso LOD riusa la piramide
+  valida; a LOD 0 si processano viewport e dirty core reali, una tile coperta
+  interamente salta la copia ping-pong e il livello attivo senza effetti viene
+  letto direttamente senza bake compute.
+- I clipping layer conservano l'alpha del parent: i figli vengono applicati in
+  ordine con source-atop, incluso il loro metodo di fusione, mentre il gruppo
+  risultante entra nella scena esterna una sola volta con opacità e metodo del
+  parent. Un figlio nascosto non nasconde più parent o fratelli. Con testo/SVG
+  visibile, la compatibilità mixed-scene resta tutta GPU e usa un ping-pong
+  viewport separato anche per parent/figli avanzati; testo e SVG invisibili o
+  a opacità zero non spezzano le run. Questo percorso semantico è live ma
+  applica ancora la fusione agli operandi già filtrati in viewport: non va
+  descritto come equivalente document-pixel al percorso raster-only.
+- Il cambio modo prealloca e valida sotto scope WebGPU `validation` + OOM la
+  sola famiglia candidata (tile oppure viewport) prima di pubblicare metadata
+  e storia; in errore mantiene modo, superfici e risorse precedenti. La
+  cronologia registra una sola azione metadata `before/after`; mip 0 e tile
+  autorevoli del livello non vengono mai riscritti. Undo/Redo ricompone quindi
+  live lo stesso contenuto grezzo.
+- Il working set tile stabile è di tre texture `1024²` (circa `12 MiB` in
+  RGBA8 o `24 MiB` in RGBA16F) più ring uniformi; il fold statico può aggiungere
+  transitoriamente due scratch (`8/16 MiB`). Il percorso mixed-scene avanzato
+  usa quattro texture screen-space RGBA16F (canonica più tre peer ping-pong) e
+  un operando raster ritagliato; è il costo da considerare nelle scene con
+  testo/SVG. Il bake Traccia dei tile usa un buffer uniforme separato da quello
+  del display/live stroke e un solo upload di batch, eliminando l'alias fra
+  dispatch già codificati nello stesso submit.
+- QA browser desktop reale su NVIDIA Ampere/RGBA8, gate
+  `?layerBlendTest=1&semanticClipping=1`: tutti i 27 modi entro un codice del
+  riferimento CPU, clipping `Multiply→Screen`, parent e figli attivi,
+  figlio nascosto, suffissi con testo visibile, Undo/Redo e casi zoom `1,5×` e
+  `0,4×` passano; i due casi zoom distinguono esplicitamente blend-before-filter
+  dal risultato errato filter-before-blend. Nessun warning/error WebGPU in
+  console. TypeScript, tutte le ventuno suite `*:verify`, `git diff --check` e
+  build Vite production/Sites sono verdi. È QA funzionale desktop, non un
+  benchmark prestazionale canonico, una prova iPhone o una pubblicazione Sites.

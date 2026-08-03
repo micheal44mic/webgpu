@@ -61,7 +61,7 @@ import {
 
 assert.equal(
   LAYER_STACK_STRATEGY,
-  "ordered-records-single-active-single-reference-contiguous-raster-clipping-groups-monotonic-ids",
+  "ordered-records-single-active-single-reference-per-layer-blend-mode-contiguous-raster-clipping-groups-monotonic-ids",
 );
 
 // Color Overlay is a pure alpha-preserving style, not another full-canvas
@@ -192,6 +192,7 @@ const newStack = () => new LayerStack(createStyles);
   assert.equal(stack.active.id, 1);
   assert.equal(stack.active.visible, true);
   assert.equal(stack.active.opacity, 1);
+  assert.equal(stack.active.blendMode, "normal");
   assert.equal(stack.active.hasContent, false);
   assert.equal(stack.active.contentBounds, null);
   assert.deepEqual(
@@ -960,6 +961,45 @@ const clippingGroupShaderSource = readFileSync(
   new URL("../src/clipping-group-shader.ts", import.meta.url),
   "utf8",
 );
+const layerBlendTileRuntimeSource = readFileSync(
+  new URL("../src/engine-layer-blend-tile-runtime.ts", import.meta.url),
+  "utf8",
+);
+const strokeRendererBlendSource = readFileSync(
+  new URL("../src/stroke-renderer.ts", import.meta.url),
+  "utf8",
+);
+const mixedSceneStackSource = readFileSync(
+  new URL("../src/mixed-scene-stack.ts", import.meta.url),
+  "utf8",
+);
+const compositionSegmentsStart = mixedSceneStackSource.indexOf("  compositionSegments(");
+const compositionSegmentsReturn = mixedSceneStackSource.indexOf(
+  "    return segments;",
+  compositionSegmentsStart,
+);
+const compositionSegmentsEnd = compositionSegmentsReturn < 0
+  ? -1
+  : compositionSegmentsReturn + "    return segments;".length;
+assertSection(
+  "segmentazione scena mista",
+  compositionSegmentsStart,
+  compositionSegmentsEnd,
+);
+const compositionSegmentsBody = mixedSceneStackSource.slice(
+  compositionSegmentsStart,
+  compositionSegmentsEnd,
+);
+assert.match(
+  compositionSegmentsBody,
+  /const vector = item\.kind === "text"\s*\? this\.textById\(item\.textNodeId\)\s*: this\.svgById\(item\.svgNodeId\)/,
+  "la segmentazione deve consultare lo stato vivo sia del testo sia dell'SVG",
+);
+assert.match(
+  compositionSegmentsBody,
+  /if \(!vector\.visible \|\| vector\.opacity <= 0\) \{\s*continue;\s*\}[\s\S]*?flushRasterRun\(\);\s*textRun\.push\(item\)/,
+  "testo e SVG invisibili o trasparenti devono essere ignorati prima di spezzare le run",
+);
 assert.match(
   engineSource,
   /async readLayerPixels\(rect\?: DirtyRect, layerIndex\?: number\): Promise<Uint8Array>/,
@@ -1041,6 +1081,69 @@ assert.match(
 );
 assert.match(clippingToggleBody, /publishMixedScene\(engine\)/,
   "la UI mista deve ricevere subito i nuovi parent id");
+const layerBlendStart = engineSource.indexOf("export async function setLayerBlendMode(");
+const layerBlendEnd = engineSource.indexOf(
+  "export function resolveFillSource(",
+  layerBlendStart,
+);
+assertSection("fusione livello raster", layerBlendStart, layerBlendEnd);
+const layerBlendBody = engineSource.slice(layerBlendStart, layerBlendEnd);
+assert.match(layerBlendBody, /isLayerBlendMode\(blendMode\)/,
+  "l'API non deve accettare codici WGSL o stringhe arbitrarie");
+assert.match(layerBlendBody, /const previousBlendMode = record\.blendMode/);
+assert.match(layerBlendBody, /record\.blendMode = blendMode/);
+assert.ok(
+  layerBlendBody.indexOf("prewarmMixedSceneLinearTextureForLayerBlend(")
+    < layerBlendBody.indexOf("record.blendMode = blendMode"),
+  "cache ordered, ping-pong e tile devono superare validation/OOM prima dei metadata",
+);
+assert.match(
+  layerBlendBody,
+  /const visibleSemantics = Boolean\(engine\.mixedSceneStack\?\.visibleSemanticCount\)[\s\S]*?candidateNeedsTile = candidateAdvanced && !visibleSemantics[\s\S]*?candidateNeedsViewportBlend = candidateAdvanced && visibleSemantics/,
+  "il prewarm deve allocare soltanto la famiglia realmente usata dalla scena candidata",
+);
+assert.match(layerBlendBody, /await engine\.rebuildMergedLayerSurfaces\(\)/,
+  "il cambio deve diventare visibile tramite il compositing WebGPU");
+assert.match(
+  layerBlendBody,
+  /record\.blendMode = previousBlendMode;[\s\S]*?await engine\.rebuildMergedLayerSurfaces\("layer-switch"\)/,
+  "un errore GPU deve ripristinare metadata e superfici precedenti",
+);
+assert.match(
+  engineSource,
+  /async setLayerBlendMode\(index: number, blendMode: LayerBlendMode\): Promise<boolean>[\s\S]{0,1200}kind: "layer-blend-mode"[\s\S]{0,300}before,[\s\S]{0,200}after: blendMode/,
+  "una scelta riuscita deve produrre una sola azione before/after",
+);
+assert.match(
+  engineSource,
+  /export async function prewarmMixedSceneLinearTextureForLayerBlend\([\s\S]*?runGpuAllocationTransaction\([\s\S]*?oldTexture\?\.destroy\(\)/,
+  "il prewarm viewport deve pubblicare il candidato solo dopo i due error scope",
+);
+assert.match(
+  layerBlendTileRuntimeSource,
+  /runGpuAllocationTransaction\([\s\S]*?Renderer Traccia per compositore fusione livello[\s\S]*?deferRollback\(\(\) => releaseRasterStrokeRenderer\(engine, true\)\)/,
+  "anche l'attach finale del renderer Traccia deve restare transazionale",
+);
+assert.match(
+  strokeRendererBlendSource,
+  /const BAKE_PARAMETER_CAPACITY = 32;[\s\S]*?bakeParameterBuffer[\s\S]*?Traccia isolated tile-bake parameters/,
+  "i bake tile devono usare un ring GPU separato dai dispatch live Traccia",
+);
+assert.match(
+  strokeRendererBlendSource,
+  /encodeBake\([\s\S]*?deferParameterUpload[\s\S]*?this\.bakeParameterBuffer[\s\S]*?bakeBindGroup/,
+  "encodeBake non deve più riscrivere il parameterBuffer dei dispatch già codificati",
+);
+assert.match(
+  layerBlendTileRuntimeSource,
+  /prepareBakeStyle\(engine\.rasterBevelStyle\)[\s\S]*?deferParameterUpload: true[\s\S]*?sharedStylePrepared: true[\s\S]*?flushBakeParameters\(bakeParameterSlot\)/,
+  "il tile path deve preparare lo stile e caricare tutti i parametri bake una volta per frame",
+);
+assert.match(
+  engineSource,
+  /if \(crossedAction\.kind === "layer-blend-mode"\)[\s\S]{0,900}await setLayerBlendMode\([\s\S]{0,220}true,[\s\S]{0,180}engine\.historyCursor = nextCursor/,
+  "Undo/Redo deve cambiare solo compositing e avanzare il cursore dopo il successo",
+);
 const retargetStart = engineSource.indexOf("export async function retargetEffectsWorkingSetInternal(");
 const retargetEnd = engineSource.indexOf("export async function benchmarkEffectsWorkingSet(", retargetStart);
 const retargetBody = engineSource.slice(retargetStart, retargetEnd);
@@ -1109,20 +1212,50 @@ assert.match(foldViewBody, /pass\.setScissorRect\(/,
   "i fold renderizzati devono restare limitati ai bounds conservativi");
 assert.match(foldViewBody, /loadOp: clearDestination \? "clear" : "load"/,
   "il primo fold deve pulire la superficie e i successivi caricarla");
-const foldUniformStart = engineSource.indexOf("function writeLayerCompositeUniforms(");
+const foldUniformStart = engineSource.indexOf("function packLayerCompositeUniforms(");
 const foldUniformEnd = engineSource.indexOf("async function foldViewIntoMergedSurface(", foldUniformStart);
 assertSection("layer composite uniforms", foldUniformStart, foldUniformEnd);
 const foldUniformBody = engineSource.slice(foldUniformStart, foldUniformEnd);
 assert.match(foldUniformBody, /new ArrayBuffer\(LAYER_COMPOSITE_UNIFORM_BYTES\)/);
-assert.match(foldUniformBody, /f32\[0\] = destination\.bounds\.x/);
-assert.match(foldUniformBody, /f32\[1\] = destination\.bounds\.y/);
-assert.match(foldUniformBody, /f32\[2\] = destination\.resolutionScale/);
+assert.match(foldUniformBody, /f32\[0\] = destinationOrigin\.x/);
+assert.match(foldUniformBody, /f32\[1\] = destinationOrigin\.y/);
+assert.match(foldUniformBody, /f32\[2\] = destinationScale/);
 assert.match(foldUniformBody, /f32\[3\] = opacity/);
 assert.match(foldUniformBody, /f32\[4\] = sourceOrigin\.x/);
 assert.match(foldUniformBody, /f32\[5\] = sourceOrigin\.y/);
 assert.match(foldUniformBody, /f32\[6\] = sourceScale/);
+assert.match(foldUniformBody, /u32\[10\] = LAYER_BLEND_MODE_CODES\[blendMode\]/);
+assert.match(foldUniformBody, /u32\[11\] = operator === "source-atop" \? 1 : 0/);
+assert.match(
+  foldUniformBody,
+  /packLayerCompositeUniforms\([\s\S]*?destination\.bounds,[\s\S]*?destination\.resolutionScale,/,
+  "il wrapper Normal deve conservare l'ABI document-space originale",
+);
 assert.match(foldViewBody, /mergedSurfacePhysicalRect\(/);
-assert.match(mergedBody, /engine\.layerCompositePipeline/);
+assert.match(foldViewBody, /if \(blendMode === "normal"\)/,
+  "Normal deve conservare il percorso fixed-function senza scratch");
+assert.match(
+  foldViewBody,
+  /operator === "source-atop"[\s\S]*?engine\.layerSourceAtopPipeline[\s\S]*?engine\.layerCompositePipeline/,
+  "Normal deve scegliere le pipeline hardware source-atop/source-over preesistenti",
+);
+assert.match(foldViewBody, /engine\.layerBlendFoldPipeline/,
+  "i modi avanzati devono usare lo shader che campiona il backdrop");
+assert.match(foldViewBody, /binding: 0, resource: backdropScratchView/,
+  "il fold avanzato deve campionare il tile backdrop separato");
+assert.match(foldViewBody, /view: outputScratchView/,
+  "il fold avanzato non può campionare la propria render attachment");
+assert.match(foldViewBody, /destination\.blendFoldTileWidth/,
+  "la dirty rect deve essere suddivisa nei tile scratch riusabili");
+assert.match(foldViewBody, /packLayerCompositeUniforms\([\s\S]*?tile\.x \/ destination\.resolutionScale/,
+  "ogni tile deve conservare le coordinate document-space globali");
+assert.match(foldViewBody, /pass\.setBindGroup\(0, bindGroup, \[tileIndex \* uniformStride\]\)/,
+  "un solo upload deve alimentare i record uniform dinamici di tutti i tile");
+assert.equal(
+  (foldViewBody.match(/encoder\.copyTextureToTexture\(/g) ?? []).length,
+  2,
+  "ogni tile deve copiare canonical→backdrop e output→canonical",
+);
 assert.match(mergedBody, /engine\.destroyLayerBake\(source\.transientBake\)/);
 assert.match(
   engineSource,
@@ -1207,6 +1340,105 @@ assert.match(clippingGroupShaderSource, /return group \* display\.clippingParent
 assert.doesNotMatch(clippingGroupShaderSource, /step\s*\(|threshold|discard/i,
   "i bordi morbidi devono usare tutti i valori alpha, senza soglie");
 
+const clippingSuffixBuildStart = engineSource.indexOf(
+  "async function buildActiveClippingSuffixResources(",
+);
+const clippingSuffixBuildEnd = engineSource.indexOf(
+  "async function buildClippingPrefixSurface(",
+  clippingSuffixBuildStart,
+);
+assertSection(
+  "suffix ritaglio live ordinato",
+  clippingSuffixBuildStart,
+  clippingSuffixBuildEnd,
+);
+const clippingSuffixBuildBody = engineSource.slice(
+  clippingSuffixBuildStart,
+  clippingSuffixBuildEnd,
+);
+assert.match(
+  clippingSuffixBuildBody,
+  /visible\.every\(\(record\) => record\.blendMode === "normal"\)[\s\S]*?buildClippingOverlaySurface\(/,
+  "il suffix tutto-Normal deve conservare la superficie aggregata veloce",
+);
+assert.match(
+  clippingSuffixBuildBody,
+  /for \(const record of visible\)[\s\S]*?suffixSteps\.push\(\{[\s\S]*?blendMode: record\.blendMode,[\s\S]*?opacity: record\.opacity/,
+  "un suffix avanzato deve conservare modo e opacità di ogni child in ordine",
+);
+assert.match(
+  engineSource,
+  /buildClippingSuffixStepSurface\([\s\S]*?alignedMergedSurfaceBounds\(bounded, LAYER_SIZE\),[\s\S]*?1,[\s\S]*?false,[\s\S]*?foldViewIntoMergedSurface\([\s\S]*?\n\s*1,[\s\S]*?\n\s*bounded,[\s\S]*?"normal",[\s\S]*?"source-over"/,
+  "l'operando child deve essere mip0-only e non deve incorporare l'opacità",
+);
+assert.match(
+  engineSource,
+  /buildClippingSuffixStepSurface\([\s\S]*?runGpuAllocationTransaction\([\s\S]*?transaction\.deferRollback\(\(\) => engine\.destroyMergedSurface\(candidate\)\)/,
+  "validation/OOM di un operando child deve distruggere il candidato prima del rollback esterno",
+);
+assert.match(
+  layerBlendTileRuntimeSource,
+  /for \(const step of activeGroup\.suffixSteps\)[\s\S]*?step\.blendMode,[\s\S]*?step\.opacity,[\s\S]*?"source-atop"/,
+  "il tile runtime deve applicare i child avanzati source-atop nell'ordine dello stack",
+);
+assert.match(
+  layerBlendTileRuntimeSource,
+  /if \(activeGroup\?\.suffix\)[\s\S]*?sourceForSurface\(activeGroup\.suffix\),[\s\S]*?"normal",[\s\S]*?1,[\s\S]*?"source-atop"/,
+  "il tile runtime deve mantenere il fold unico per il suffix tutto-Normal",
+);
+assert.match(
+  layerBlendTileRuntimeSource,
+  /const corners = \[[\s\S]*?\[0, 0\],[\s\S]*?\[canvasWidth, 0\],[\s\S]*?\[0, canvasHeight\],[\s\S]*?\[canvasWidth, canvasHeight\]/,
+  "la ricostruzione LOD0 deve delimitare il viewport tramite tutti i quattro angoli",
+);
+assert.match(
+  layerBlendTileRuntimeSource,
+  /documentX = engine\.viewCenterX[\s\S]*?engine\.viewRotationCos \* displayX[\s\S]*?engine\.viewRotationSin \* displayY[\s\S]*?documentY = engine\.viewCenterY[\s\S]*?- engine\.viewRotationSin \* displayX[\s\S]*?engine\.viewRotationCos \* displayY/,
+  "la bbox visibile deve usare la stessa trasformazione inversa ruotata del display WGSL",
+);
+assert.match(layerBlendTileRuntimeSource, /const margin = 2;/,
+  "la bbox LOD0 deve conservare due pixel documento di margine");
+assert.match(
+  layerBlendTileRuntimeSource,
+  /reuseFinalPyramid[\s\S]*?: requiresFullRebuild[\s\S]*?selectedMipLevel === 0[\s\S]*?visibleLodZeroDocumentRect\(engine\)[\s\S]*?: fullDocumentRect/,
+  "ogni full rebuild LOD0 deve delimitarsi al viewport, indipendentemente dallo zoom",
+);
+assert.match(
+  layerBlendTileRuntimeSource,
+  /function dirtyTileCores\([\s\S]*?for \(let y = rect\.y; y < bottom; y \+= coreExtent\)[\s\S]*?for \(let x = rect\.x; x < right; x \+= coreExtent\)/,
+  "un update parziale deve partire dalla dirty reale, non dalla griglia globale da 1022 px",
+);
+assert.match(
+  layerBlendTileRuntimeSource,
+  /requireEvenEdges[\s\S]*?rect\.x % 2 !== 0[\s\S]*?rect\.y % 2 !== 0[\s\S]*?rect\.width % 2 !== 0[\s\S]*?rect\.height % 2 !== 0/,
+  "i chunk destinati al mip 1 devono conservare bordi document-space pari per il box 2×2",
+);
+assert.match(
+  layerBlendTileRuntimeSource,
+  /requiresFullRebuild[\s\S]*?selectedMipLevel > 0[\s\S]*?alignedTileCores\(documentRect, coreExtent\)[\s\S]*?: dirtyTileCores\(documentRect, coreExtent, false\)[\s\S]*?: dirtyTileCores\(documentRect, coreExtent, selectedMipLevel > 0\)/,
+  "solo i full rebuild mip 1+ devono restare agganciati alla griglia globale dei core",
+);
+assert.match(
+  layerBlendTileRuntimeSource,
+  /selectedMipLevel > 0[\s\S]*?\? core[\s\S]*?: clampDocumentRect\(expandRect\(core, 1\)\)!/,
+  "ogni chunk LOD0 deve mantenere l'apron bilineare di un pixel",
+);
+assert.match(
+  layerBlendTileRuntimeSource,
+  /targetRect: \{[\s\S]*?x: core\.x \/ 2,[\s\S]*?y: core\.y \/ 2,[\s\S]*?width: core\.width \/ 2,[\s\S]*?height: core\.height \/ 2/,
+  "il core mip pari deve essere ridotto esattamente sulla griglia 2×2",
+);
+assert.match(
+  engineSource,
+  /group\.suffixSteps\.forEach\(\(step\) => \{[\s\S]*?step\.viewportSegment\.uniformBuffer\.destroy\(\);[\s\S]*?engine\.destroyMergedSurface\(step\.surface\)/,
+  "distruzione e rollback devono rilasciare binding viewport e operando child",
+);
+assert.match(
+  engineSource,
+  /activeClippingGroup\?\.suffixSteps\.map\(\(step\) => step\.surface\)/,
+  "gli operandi child devono entrare nella contabilità GPU del gruppo live",
+);
+
 // Oracle premoltiplicato: anche con due child opachi il bordo al 25% del
 // parent resta al 25%, invece di crescere a ogni composizione.
 const sourceAtop = (source, destination) => {
@@ -1245,11 +1477,13 @@ assert.match(allocationBody, /mipLevelCount: 1/,
 // quindi l'asserzione sarebbe vera per costruzione. Restano i vincoli sul
 // contenuto, che sono l'unica cosa che può regredire.
 assert.match(allocationBody, /mipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT - 1/);
-assert.match(allocationBody, /const mipLevelCount = mergedSurfaceMipLevelCount\(physicalBounds\)/);
+assert.match(allocationBody, /const fullMipLevelCount = mergedSurfaceMipLevelCount\(physicalBounds\)/);
+assert.match(allocationBody, /const mipLevelCount = maintainMipChain \? fullMipLevelCount : 1/,
+  "gli operandi live-only devono poter evitare la piramide che non campionano");
 assert.match(allocationBody, /const textureWidth = normalizedBounds\.width \* resolutionScale/);
 assert.match(allocationBody, /const textureHeight = normalizedBounds\.height \* resolutionScale/);
 assert.match(allocationBody, /mip0MemoryBytes: memory\.mip0Bytes/);
-assert.match(allocationBody, /mipChainMemoryBytes: memory\.mipChainBytes/);
+assert.match(allocationBody, /mipChainMemoryBytes: maintainMipChain \? memory\.mipChainBytes : 0/);
 assert.match(allocationBody, /GPUTextureUsage\.COPY_DST/,
   "la superficie fusa deve accettare il percorso veloce byte-esatto");
 assert.match(
@@ -1410,6 +1644,15 @@ assert.match(mainSource, /layerBakeStrategy: string;/);
 assert.match(mainSource, /layerCompositeStrategy: string;/);
 assert.match(mainSource, /async function changeLayerVisibility\(/);
 assert.match(mainSource, /async function changeLayerOpacity\(/);
+assert.match(mainSource, /LAYER_BLEND_MODE_CATEGORIES/);
+assert.match(mainSource, /LAYER_BLEND_MODE_LABELS/);
+assert.match(mainSource, /blendMode\.className = "layer-blend-mode"/);
+assert.match(mainSource, /async function changeLayerBlendMode\(/);
+assert.match(
+  mainSource,
+  /await engine\.setLayerBlendMode\(index, blendMode\)/,
+  "la scelta UI deve pubblicare subito il modo, senza un pulsante Applica",
+);
 assert.match(mainSource, /clipping\.className = "layer-clipping"/,
   "ogni riga deve creare il proprio controllo maschera stabile");
 assert.match(mainSource, /async function changeLayerClipping\(/);

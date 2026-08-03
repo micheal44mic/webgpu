@@ -5,6 +5,7 @@
 import type { DirtyRect } from "./engine-stroke-types";
 import type { LayerColdCompressedChunk } from "./layer-cold-compression-client";
 import type { LayerRecord } from "./layer-stack";
+import type { LayerBlendMode } from "./layer-blend-modes";
 import type { MixedSceneRasterRunKey } from "./mixed-scene-stack";
 
 export interface LayerTextureResources {
@@ -24,6 +25,19 @@ export interface MergedSurfaceResources {
   samplingView: GPUTextureView;
   mipViews: GPUTextureView[];
   mipDownsampleBindGroups: GPUBindGroup[];
+  /**
+   * Lazily allocated 1024² backdrop/output tiles and dynamic uniforms used
+   * only while non-Normal layers are folded. They are never published and are
+   * released before the surface leaves its build transaction.
+   */
+  blendFoldBackdropScratchTexture: GPUTexture | null;
+  blendFoldBackdropScratchView: GPUTextureView | null;
+  blendFoldScratchTexture: GPUTexture | null;
+  blendFoldScratchView: GPUTextureView | null;
+  blendFoldUniformBuffer: GPUBuffer | null;
+  blendFoldUniformStride: number;
+  blendFoldTileWidth: number;
+  blendFoldTileHeight: number;
   bounds: DirtyRect;
   resolutionScale: number;
   textureWidth: number;
@@ -38,10 +52,21 @@ export interface MergedSurfaceResources {
 
 /**
  * One clipping unit is presented as a single active raster segment. `prefix`
- * contains the raw parent plus clipped siblings below the active child;
- * `suffix` contains the ordinary source-over collapse of siblings above it.
- * With the parent active only `suffix` is needed.
+ * contains the raw parent plus clipped siblings below the active child.
+ * An all-Normal upper suffix stays in the single aggregated `suffix` fast
+ * path. If any upper child owns an advanced blend mode, `suffixSteps` retains
+ * every visible child as an opacity-free operand so the live tile compositor
+ * can apply source-atop in exact stack order. With the parent active only the
+ * suffix representation is needed.
  */
+export interface ActiveClippingSuffixStepResources {
+  layerId: number;
+  blendMode: LayerBlendMode;
+  opacity: number;
+  surface: MergedSurfaceResources;
+  viewportSegment: MixedSceneRasterSegmentResources;
+}
+
 export interface ActiveClippingGroupResources {
   parentId: number;
   activeLayerId: number;
@@ -49,6 +74,7 @@ export interface ActiveClippingGroupResources {
   parentOpacity: number;
   prefix: MergedSurfaceResources | null;
   suffix: MergedSurfaceResources | null;
+  suffixSteps: readonly ActiveClippingSuffixStepResources[];
 }
 
 export interface MixedSceneRasterSegmentResources {

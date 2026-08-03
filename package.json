@@ -19,6 +19,7 @@
     "stroke:verify": "node scripts/verify-stroke-core.mjs",
     "stroke-curve:verify": "node scripts/verify-stroke-curve.mjs",
     "stabilization:verify": "node scripts/verify-stroke-stabilization.mjs && node scripts/verify-stabilization-ui.mjs",
+    "layer-blend:verify": "node scripts/verify-layer-blend-modes.mjs && node scripts/verify-layer-blend-compositor.mjs",
     "effects-scratch:verify": "node scripts/verify-effects-scratch-pool.mjs",
     "bevel:verify": "node scripts/verify-bevel-core.mjs",
     "shadow:verify": "node scripts/verify-shadow-core.mjs",

@@ -18,15 +18,15 @@ const sitesBuild = read("./prepare-sites-build.mjs");
 // marcatore disallineato non deve più poter allargare la finestra a mezzo
 // sorgente, altrimenti l'asserzione passa senza verificare più nulla.
 const SECTION_MAXIMUM_BYTES = 40_000;
-const section = (source, start, end) => {
+const section = (source, start, end, maximumBytes = SECTION_MAXIMUM_BYTES) => {
   const startIndex = source.indexOf(start);
   assert.notEqual(startIndex, -1, `Sezione iniziale assente: ${start}`);
   const endIndex = source.indexOf(end, startIndex + start.length);
   assert.notEqual(endIndex, -1, `Sezione finale assente: ${end}`);
   assert.ok(
-    endIndex - startIndex <= SECTION_MAXIMUM_BYTES,
+    endIndex - startIndex <= maximumBytes,
     `Marcatore disallineato: la sezione ${start} → ${end} misura `
-    + `${endIndex - startIndex} byte, oltre il limite di ${SECTION_MAXIMUM_BYTES}.`,
+    + `${endIndex - startIndex} byte, oltre il limite di ${maximumBytes}.`,
   );
   return source.slice(startIndex, endIndex);
 };
@@ -69,6 +69,10 @@ const submit = section(
   engine,
   "private submitLightGlazeImmediate",
   "submitBlendImmediate",
+  // Il routing di presentazione document-space dei blend di livello aggiunge
+  // tre rami espliciti al submit live; la finestra resta stretta sui due
+  // marcatori e conserva un tetto dedicato, appena sopra i 40.121 byte misurati.
+  41_000,
 );
 for (const requirement of [
   'const intenseBlending = settings.blendMode === "intense-blending";',

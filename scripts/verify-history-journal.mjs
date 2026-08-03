@@ -15,12 +15,22 @@ import {
   visibleStrokeIds,
 } from "../src/history-journal.ts";
 
-assert.equal(HISTORY_JOURNAL_STRATEGY, "global-order-per-layer-clear-barrier-raster-checkpoints-v5");
+assert.equal(
+  HISTORY_JOURNAL_STRATEGY,
+  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-blend-v6",
+);
 
 const stroke = (id, layerId) => ({ id, kind: "stroke", layerId });
 const fill = (id, layerId) => ({ id, kind: "fill", layerId });
 const clear = (id, layerId) => ({ id, kind: "clear", layerId });
 const vector = (id) => ({ id, kind: "vector" });
+const layerBlendMode = (id, layerId) => ({
+  id,
+  kind: "layer-blend-mode",
+  layerId,
+  before: "normal",
+  after: "multiply",
+});
 const vectorRasterize = (id, layerId) => ({ id, kind: "vector-rasterize", layerId });
 const rasterImport = (id, layerId) => ({ id, kind: "raster-import", layerId });
 const rasterTransform = (id, layerId, hasContent = true) => ({
@@ -40,6 +50,22 @@ const rasterTransform = (id, layerId, hasContent = true) => ({
   assert.equal(firstVisibleActionIndex(actions, 2), 0);
   assert.deepEqual([...visibleStrokeIds(actions, 2)], [1, 2]);
   assert.equal(hasVisibleContent(actions, 0), false);
+}
+
+// Blend-mode metadata is reversible document state, never raster content and
+// never a batch replay boundary. Crossing it still requires its live owner.
+{
+  const onlyMode = [layerBlendMode(1, 7)];
+  assert.equal(hasVisibleContent(onlyMode, 1), false);
+  assert.equal(hasVisibleContent(onlyMode, 1, 7), false);
+  assert.deepEqual([...layersWithVisibleContent(onlyMode, 1)], []);
+  assert.deepEqual([...visibleStrokeIds(onlyMode, 1, 7)], []);
+  assert.equal(historyStepTargetsMissingLayer(onlyMode, 1, -1, new Set([7])), false);
+  assert.equal(historyStepTargetsMissingLayer(onlyMode, 1, -1, new Set([8])), true);
+
+  const withPixels = [stroke(1, 7), layerBlendMode(2, 7)];
+  assert.equal(hasVisibleContent(withPixels, 2, 7), true);
+  assert.deepEqual([...visibleStrokeIds(withPixels, 2, 7)], [1]);
 }
 
 // Raster transforms are post-action checkpoints, not overlay nodes. A later

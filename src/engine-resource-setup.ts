@@ -549,6 +549,30 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
       { binding: 1, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
     ],
   });
+  engine.layerBlendFoldBindGroupLayout = engine.device.createBindGroupLayout({
+    label: "Advanced layer blend fold bind group layout",
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "unfilterable-float" },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "unfilterable-float" },
+      },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.FRAGMENT,
+        buffer: {
+          type: "uniform",
+          hasDynamicOffset: true,
+          minBindingSize: LAYER_COMPOSITE_UNIFORM_BYTES,
+        },
+      },
+    ],
+  });
 
   rebuildShapeBrushBindGroups(engine);
   rebuildGrainBrushBindGroups(engine);
@@ -1445,7 +1469,13 @@ export function releaseRasterInnerShadowRenderer(engine: BrushEngine): void {
   }
 }
 
-export function releaseRasterStrokeRenderer(engine: BrushEngine): void {
+export function releaseRasterStrokeRenderer(engine: BrushEngine, force = false): void {
+  if (engine.layerBlendTileCompositor && !force) {
+    // The live document-space compositor uses the same authoritative style
+    // shader to materialize only its current tile. Keep the compositor-only
+    // renderer resident while any advanced layer mode owns that working set.
+    return;
+  }
   engine.effectsWorkbench?.releaseStrokeRenderer();
   engine.rasterStrokeDisplayBindGroups.clear();
   engine.rasterStrokeMipDownsampleBindGroups = [];

@@ -349,7 +349,7 @@ assert.match(
 );
 assert.match(
   engineSource,
-  /if \(!useFinalRasterStackMip\) \{\s*encodeMergedDisplayPyramids/,
+  /if \(!useFinalRasterStackMip && !tileBlendOwnsPyramid\) \{\s*encodeMergedDisplayPyramids/,
   "il path final-stack non deve costruire mip merged che non campiona",
 );
 

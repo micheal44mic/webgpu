@@ -141,6 +141,7 @@ import {
   ADAPTIVE_SPACING_STEP_PERCENT_POINTS,
 } from "./adaptive-preview-runtime";
 import { LAYER_COLD_COMPRESSION_RUNTIME_BUILD } from "./layer-cold-compression-client";
+import { LAYER_BLEND_MODE_ORDER } from "./layer-blend-modes";
 import { VECTOR_TEXT_GPU_SAMPLE_COUNT } from "./vector-text-gpu-shader";
 import { average, maximum, percentile } from "./engine-math";
 import {
@@ -597,6 +598,7 @@ export function getStats(engine: BrushEngine): EngineStats {
         name: record.name,
         visible: record.visible,
         opacity: record.opacity,
+        blendMode: record.blendMode,
         reference: record.id === engine.layerStack.referenceLayerId,
         clippingParentId: record.clippingParentId,
         // The record's copy is only written back when the layer stops being
@@ -742,6 +744,7 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     [
       engine.activeClippingGroup?.prefix,
       engine.activeClippingGroup?.suffix,
+      ...(engine.activeClippingGroup?.suffixSteps.map((step) => step.surface) ?? []),
     ].filter((surface): surface is NonNullable<typeof surface> => Boolean(surface)),
   );
   const mergedSurfaces = [...engine.liveMergedSurfaceTextures.values()].filter(
@@ -794,15 +797,34 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     .reduce((total, resources) => total + resources.memoryBytes, 0)
     / MEBIBYTE_BYTES;
 
-  const mixedSceneLinearMiB = engine.mixedSceneLinearTexture
-    ? engine.mixedSceneLinearWidth * engine.mixedSceneLinearHeight * 8 / MEBIBYTE_BYTES
+  // The ordered scene owns one RGBA16F canonical cache. When semantic nodes
+  // keep advanced layer blending on the viewport path it also owns three
+  // equally-sized RGBA16F targets (scene ping-pong, isolated operand and the
+  // clipping-group ping-pong used only for ordered advanced children).
+  // The raster-only path instead owns the bounded native-format compositor:
+  // three 1024² tiles plus its GPU uniform rings. Count the resources that
+  // are actually resident, rather than inferring them from the current mode.
+  const mixedSceneTextureCount = Number(Boolean(engine.mixedSceneLinearTexture))
+    + Number(Boolean(engine.mixedSceneBlendScratchTexture))
+    + Number(Boolean(engine.mixedSceneBlendOperandTexture))
+    + Number(Boolean(engine.mixedSceneBlendGroupTexture));
+  const mixedSceneLinearMiB = mixedSceneTextureCount
+    * engine.mixedSceneLinearWidth * engine.mixedSceneLinearHeight
+    * 8 / MEBIBYTE_BYTES;
+  const layerBlendTileCompositorMiB =
+    (engine.layerBlendTileCompositor?.stableMemoryBytes ?? 0) / MEBIBYTE_BYTES;
+  const layerBlendCompositorControlMiB = engine.layerBlendCompositorUniformBuffer
+    ? engine.layerBlendCompositorUniformStride * LAYER_BLEND_MODE_ORDER.length
+      * 2 / MEBIBYTE_BYTES
     : 0;
   const vectorTextPresentationMiB =
     vectorTextViewportMiB
     + vectorTextBlurMiB
     + vectorTextGpuScratchMiB
     + vectorTextGpuGeometryMiB
-    + mixedSceneLinearMiB;
+    + mixedSceneLinearMiB
+    + layerBlendTileCompositorMiB
+    + layerBlendCompositorControlMiB;
   const rasterImageMiB = (
     rasterImageGpuMemoryBytes(engine)
     + (engine.activeRasterTransformSession?.memoryBytes ?? 0)
@@ -853,10 +875,10 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
   const lightGlazeMiB = engine.lightGlazeStorageAllocated
     ? lightGlazeAdditionalMemoryMiB(engine.layerFormat, engine.lightGlazeStorageMode)
     : 0;
-  // Compatibility field name: it now accounts for the cropped RGBA prefix and
-  // suffix of the live clipping group, including their mip chains. Those
-  // surfaces are excluded from the generic merged-surface rows above so the
-  // total is never counted twice.
+  // Compatibility field name: it now accounts for the cropped RGBA prefix,
+  // aggregated Normal suffix, or ordered mip-0 child operands of the live
+  // clipping group. Those surfaces are excluded from the generic merged rows
+  // above so the total is never counted twice.
   const activeClippingMaskMiB = [...activeClippingSurfaces].reduce(
     (total, surface) => total + surface.mip0MemoryBytes + surface.mipChainMemoryBytes,
     0,

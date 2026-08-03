@@ -18,6 +18,7 @@ import type { ShapeOccupancySelection } from "./shape-occupancy";
 import { MAX_STAMPS_PER_BATCH, STAMP_STRIDE_BYTES } from "./engine-limits";
 import type { LayerColdStorageResources } from "./engine-layer-resources";
 import type { LayerRecord } from "./layer-stack";
+import type { LayerBlendMode } from "./layer-blend-modes";
 
 export interface RasterHistoryAction {
   id: number;
@@ -29,6 +30,15 @@ export interface VectorHistoryAction {
   id: number;
   kind: "vector";
   delta: MixedSceneVectorHistoryDelta;
+}
+
+/** One reversible, non-destructive change to a raster layer's composition. */
+export interface LayerBlendModeHistoryAction {
+  id: number;
+  kind: "layer-blend-mode";
+  layerId: number;
+  before: LayerBlendMode;
+  after: LayerBlendMode;
 }
 
 /**
@@ -122,6 +132,7 @@ export type RasterHistoryCheckpointAction =
 export type HistoryAction =
   | RasterHistoryAction
   | VectorHistoryAction
+  | LayerBlendModeHistoryAction
   | VectorRasterizeHistoryAction
   | RasterImportHistoryAction
   | RasterTransformHistoryAction;

@@ -39,6 +39,11 @@ import {
   rasterColorOverlayColorToHex,
   type RasterColorOverlayStyle,
 } from "./raster-color-overlay-core";
+import {
+  LAYER_BLEND_MODE_CATEGORIES,
+  LAYER_BLEND_MODE_LABELS,
+  type LayerBlendMode,
+} from "./layer-blend-modes";
 
 function element<T extends HTMLElement>(id: string): T {
   const result = document.getElementById(id);
@@ -518,6 +523,8 @@ const layerHistoryTestRequested = import.meta.env.DEV
   && pageSearchParams.get("layerHistoryTest") === "1";
 const clippingGroupTestRequested = import.meta.env.DEV
   && pageSearchParams.get("clippingGroupTest") === "1";
+const layerBlendTestRequested = import.meta.env.DEV
+  && pageSearchParams.get("layerBlendTest") === "1";
 const layerMemoryStressTestRequested =
   pageSearchParams.get("layerMemoryStressTest") === "1";
 const mixedMemoryBenchmarkRequested =
@@ -3663,6 +3670,20 @@ function createLayerRow(): HTMLDivElement {
   // updateStats runs every 500 ms. Keep the descendants under the pointer
   // attached so a refresh between pointerdown and pointerup cannot cancel click.
   select.append(name, hint);
+  const blendMode = document.createElement("select");
+  blendMode.className = "layer-blend-mode";
+  blendMode.title = "Modalità fusione raster · compositing live WebGPU";
+  for (const category of LAYER_BLEND_MODE_CATEGORIES) {
+    const group = document.createElement("optgroup");
+    group.label = category.label;
+    for (const mode of category.modes) {
+      const option = document.createElement("option");
+      option.value = mode;
+      option.textContent = LAYER_BLEND_MODE_LABELS[mode];
+      group.append(option);
+    }
+    blendMode.append(group);
+  }
   const opacity = document.createElement("label");
   opacity.className = "layer-opacity";
   const range = document.createElement("input");
@@ -3672,7 +3693,7 @@ function createLayerRow(): HTMLDivElement {
   range.step = "1";
   const output = document.createElement("output");
   opacity.append(range, output);
-  row.append(visibility, reference, clipping, select, opacity);
+  row.append(visibility, reference, clipping, select, blendMode, opacity);
   return row;
 }
 
@@ -3712,6 +3733,60 @@ async function runRequestedClippingGroupTest(): Promise<void> {
   }
 }
 
+async function runRequestedLayerBlendTest(): Promise<void> {
+  let timeoutId = 0;
+  let timedOut = false;
+  layerHistoryTestSection.hidden = false;
+  layerHistoryTestDetails.hidden = true;
+  layerHistoryTestResult.className = "result";
+  layerHistoryTestResult.textContent = "Test GPU modalità fusione livello…";
+  try {
+    const { runLayerBlendGpuTest } = await import("./layer-blend-gpu-test");
+    const report = await Promise.race([
+      runLayerBlendGpuTest(engine),
+      new Promise<never>((_, reject) => {
+        timeoutId = window.setTimeout(() => {
+          timedOut = true;
+          reject(new Error(
+            "Test fusioni scaduto dopo 180 s: ricarica la pagina dev prima di continuare.",
+          ));
+        }, 180_000);
+      }),
+    ]);
+    layerHistoryTestReport.textContent = JSON.stringify(report, null, 2);
+    layerHistoryTestDetails.hidden = false;
+    layerHistoryTestDetails.open = true;
+    (
+      window as Window & { __layerBlendGpuTestReport?: typeof report }
+    ).__layerBlendGpuTestReport = report;
+    layerHistoryTestResult.className = report.passed ? "result ok" : "result error";
+    layerHistoryTestResult.textContent = report.passed
+      ? "Fusioni livello GPU OK · oracle, live, cronologia e clipping verificati."
+      : "Fusioni livello GPU ERRORE · consulta il report JSON.";
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const failure = { version: 1, passed: false, error: message };
+    layerHistoryTestReport.textContent = JSON.stringify(failure, null, 2);
+    layerHistoryTestDetails.hidden = false;
+    layerHistoryTestDetails.open = true;
+    (
+      window as Window & { __layerBlendGpuTestReport?: typeof failure }
+    ).__layerBlendGpuTestReport = failure;
+    layerHistoryTestResult.className = "result error";
+    layerHistoryTestResult.textContent = `Fusioni livello GPU ERRORE · ${message}`;
+  } finally {
+    if (timeoutId !== 0) {
+      window.clearTimeout(timeoutId);
+    }
+    layerHistoryTestRunning = timedOut;
+    historyState = engine.getHistoryState();
+    syncActiveLayerControls();
+    updateHistoryControls();
+    updateHumanStrokeControls();
+    updateStats(engine.getStats());
+  }
+}
+
 function renderMixedSceneList(
   stats: EngineStats,
   scene: NonNullable<EngineStats["mixedScene"]>,
@@ -3743,6 +3818,7 @@ function renderMixedSceneList(
     const select = row.querySelector<HTMLButtonElement>(".layer-select")!;
     const name = row.querySelector<HTMLSpanElement>(".layer-name")!;
     const hint = row.querySelector<HTMLSpanElement>(".layer-hint")!;
+    const blendMode = row.querySelector<HTMLSelectElement>(".layer-blend-mode")!;
     const range = row.querySelector<HTMLInputElement>("input[type=range]")!;
     const output = row.querySelector<HTMLOutputElement>("output")!;
     const selected = item.key === scene.selectedKey;
@@ -3758,6 +3834,8 @@ function renderMixedSceneList(
     reference.onclick = null;
     clipping.hidden = item.kind !== "raster";
     clipping.onclick = null;
+    blendMode.hidden = item.kind !== "raster";
+    blendMode.oninput = null;
     select.disabled = locked;
     select.setAttribute("aria-current", String(selected));
 
@@ -3847,6 +3925,19 @@ function renderMixedSceneList(
         : "Livello raster separato: selezionalo per attivare il pennello.";
       select.onclick = () => {
         void selectMixedSceneItem(item.key);
+      };
+
+      blendMode.disabled = locked;
+      blendMode.value = layer.blendMode;
+      blendMode.setAttribute("aria-label", `Fusione ${layer.name}`);
+      blendMode.title = layer.blendMode === "shade"
+        ? "Shade: formula provvisoria in attesa di calibrazione Procreate."
+        : `Fusione ${LAYER_BLEND_MODE_LABELS[layer.blendMode]} · live WebGPU`;
+      blendMode.oninput = () => {
+        void changeLayerBlendMode(
+          item.rasterLayerIndex,
+          blendMode.value as LayerBlendMode,
+        );
       };
 
       range.disabled = locked;
@@ -4081,6 +4172,7 @@ function renderLayerList(stats: EngineStats): void {
     const select = row.querySelector<HTMLButtonElement>(".layer-select")!;
     const name = row.querySelector<HTMLSpanElement>(".layer-name")!;
     const hint = row.querySelector<HTMLSpanElement>(".layer-hint")!;
+    const blendMode = row.querySelector<HTMLSelectElement>(".layer-blend-mode")!;
     const range = row.querySelector<HTMLInputElement>("input[type=range]")!;
     const output = row.querySelector<HTMLOutputElement>("output")!;
 
@@ -4181,6 +4273,17 @@ function renderLayerList(stats: EngineStats): void {
             : "Livello inattivo vuoto: nessuna texture raw allocata.";
     select.onclick = () => { void selectLayer(index); };
 
+    blendMode.hidden = false;
+    blendMode.disabled = locked;
+    blendMode.value = layer.blendMode;
+    blendMode.setAttribute("aria-label", `Fusione ${layer.name}`);
+    blendMode.title = layer.blendMode === "shade"
+      ? "Shade: formula provvisoria in attesa di calibrazione Procreate."
+      : `Fusione ${LAYER_BLEND_MODE_LABELS[layer.blendMode]} · live WebGPU`;
+    blendMode.oninput = () => {
+      void changeLayerBlendMode(index, blendMode.value as LayerBlendMode);
+    };
+
     range.disabled = locked;
     range.value = String(Math.round(layer.opacity * 100));
     range.setAttribute("aria-label", `Opacità ${layer.name}`);
@@ -4227,6 +4330,33 @@ async function changeLayerOpacity(index: number, opacity: number): Promise<void>
       : "Opacità del livello non aggiornata.";
   } finally {
     layerSwitching = false;
+    updateHistoryControls();
+    updateStats(engine.getStats());
+  }
+}
+
+async function changeLayerBlendMode(
+  index: number,
+  blendMode: LayerBlendMode,
+): Promise<void> {
+  if (layerSwitching || interactionLocked()) {
+    updateStats(engine.getStats());
+    return;
+  }
+  layerSwitching = true;
+  updateHistoryControls();
+  try {
+    const changed = await engine.setLayerBlendMode(index, blendMode);
+    layerSwitchResult.textContent = changed
+      ? `Fusione livello: ${LAYER_BLEND_MODE_LABELS[blendMode]}.`
+      : "Fusione livello già attiva.";
+  } catch (error) {
+    layerSwitchResult.textContent = error instanceof Error
+      ? error.message
+      : "Fusione del livello non aggiornata.";
+  } finally {
+    layerSwitching = false;
+    historyState = engine.getHistoryState();
     updateHistoryControls();
     updateStats(engine.getStats());
   }
@@ -5579,7 +5709,7 @@ void engine.initialize()
       }
     }
     historyState = engine.getHistoryState();
-    layerHistoryTestRunning = layerHistoryTestRequested;
+    layerHistoryTestRunning = layerHistoryTestRequested || layerBlendTestRequested;
     layerMemoryStressTestRunning = iphoneMemoryLimitTestRequested;
     updateHistoryControls();
     updateHumanStrokeControls();
@@ -5589,7 +5719,9 @@ void engine.initialize()
       updateHistoryControls();
       updateHumanStrokeControls();
     }
-    if (clippingGroupTestRequested) {
+    if (layerBlendTestRequested) {
+      await runRequestedLayerBlendTest();
+    } else if (clippingGroupTestRequested) {
       layerHistoryTestRunning = true;
       await runRequestedClippingGroupTest();
     } else if (layerHistoryTestRequested) {
@@ -5597,12 +5729,30 @@ void engine.initialize()
     }
   })
   .catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
     const secureContextHint = !window.isSecureContext
       ? " WebGPU richiede HTTPS oppure localhost; un indirizzo LAN in HTTP non è sufficiente."
       : "";
-    statusElement.textContent = `${error instanceof Error ? error.message : String(error)}${secureContextHint}`;
+    statusElement.textContent = `${message}${secureContextHint}`;
     statusElement.className = "status error";
     benchmarkButton.disabled = true;
+    if (layerBlendTestRequested) {
+      const failure = {
+        version: 1,
+        passed: false,
+        checks: { runtimeShaderCompilationGatePassed: false },
+        error: `${message}${secureContextHint}`,
+      } as const;
+      layerHistoryTestSection.hidden = false;
+      layerHistoryTestResult.className = "result error";
+      layerHistoryTestResult.textContent = `Fusioni livello GPU ERRORE · ${message}`;
+      layerHistoryTestReport.textContent = JSON.stringify(failure, null, 2);
+      layerHistoryTestDetails.hidden = false;
+      layerHistoryTestDetails.open = true;
+      (
+        window as Window & { __layerBlendGpuTestReport?: typeof failure }
+      ).__layerBlendGpuTestReport = failure;
+    }
     updateHistoryControls();
   });
 

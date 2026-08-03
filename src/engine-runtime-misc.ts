@@ -46,6 +46,13 @@ import {
 import { cloneDryBlendRenderBatch } from "./blend-renderer";
 import { type RasterStrokeRect } from "./stroke-core";
 import { type MixedSceneVectorKey } from "./mixed-scene-stack";
+import {
+  LAYER_BLEND_COMPOSITOR_UNIFORM_BYTE_SIZE,
+  LAYER_BLEND_COMPOSITOR_WGSL,
+  writeLayerBlendCompositorUniforms,
+} from "./layer-blend-compositor";
+import { LAYER_BLEND_MODE_ORDER } from "./layer-blend-modes";
+import { LAYER_BLEND_FOLD_WGSL } from "./layer-blend-fold-shader";
 import { packStampsIntoUpload } from "./engine-stamp-upload";
 import {
   rasterBevelInfluenceBounds,
@@ -114,6 +121,10 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
     label: "Layer source-over fold WGSL",
     code: layerCompositeShader,
   });
+  engine.layerBlendFoldShaderModule = engine.device.createShaderModule({
+    label: "Advanced document-space layer blend fold WGSL",
+    code: LAYER_BLEND_FOLD_WGSL,
+  });
   await Promise.all([
     assertShaderCompiled(engine.brushShaderModule, "brush"),
     assertShaderCompiled(engine.texturizedGrainShaderModule, "Texturized grain fragment"),
@@ -143,6 +154,10 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
       "final raster stack composited mip 1",
     ),
     assertShaderCompiled(engine.layerCompositeShaderModule, "layer source-over fold"),
+    assertShaderCompiled(
+      engine.layerBlendFoldShaderModule,
+      "advanced document-space layer blend fold",
+    ),
   ]);
 
   const lightGlazeClearPipelineLayout = engine.device.createPipelineLayout({
@@ -229,6 +244,10 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
       label: "Mixed scene checker presentation WGSL",
       code: mixedScenePresentShader,
     });
+    engine.layerBlendCompositorShaderModule = engine.device.createShaderModule({
+      label: "Ordered layer blend ping-pong WGSL",
+      code: LAYER_BLEND_COMPOSITOR_WGSL,
+    });
     engine.rasterImageMipmapShaderModule = engine.device.createShaderModule({
       label: "Raster image premultiplied sRGB mipmap WGSL",
       code: rasterImageMipmapShader,
@@ -254,6 +273,10 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
       assertShaderCompiled(
         engine.mixedScenePresentShaderModule,
         "mixed scene checker presentation",
+      ),
+      assertShaderCompiled(
+        engine.layerBlendCompositorShaderModule,
+        "ordered layer blend ping-pong",
       ),
       assertShaderCompiled(
         engine.rasterImageMipmapShaderModule,
@@ -305,6 +328,60 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
       ],
     });
+    engine.layerBlendCompositorBindGroupLayout = engine.device.createBindGroupLayout({
+      label: "Ordered layer blend ping-pong bind group layout",
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "unfilterable-float" },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "unfilterable-float" },
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: {
+            type: "uniform",
+            hasDynamicOffset: true,
+            minBindingSize: LAYER_BLEND_COMPOSITOR_UNIFORM_BYTE_SIZE,
+          },
+        },
+      ],
+    });
+    const blendUniformAlignment = engine.device.limits.minUniformBufferOffsetAlignment;
+    engine.layerBlendCompositorUniformStride = Math.ceil(
+      LAYER_BLEND_COMPOSITOR_UNIFORM_BYTE_SIZE / blendUniformAlignment,
+    ) * blendUniformAlignment;
+    const blendUniformRecordCount = LAYER_BLEND_MODE_ORDER.length * 2;
+    const blendUniformBytes = engine.layerBlendCompositorUniformStride
+      * blendUniformRecordCount;
+    engine.layerBlendCompositorUniformBuffer = engine.device.createBuffer({
+      label: `Ordered layer blend uniforms ${blendUniformRecordCount} records`,
+      size: blendUniformBytes,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    const blendUniformUpload = new Uint32Array(blendUniformBytes / 4);
+    const blendUniformWordStride = engine.layerBlendCompositorUniformStride / 4;
+    (["source-over", "source-atop"] as const).forEach((operator, operatorIndex) => {
+      LAYER_BLEND_MODE_ORDER.forEach((mode, modeIndex) => {
+        writeLayerBlendCompositorUniforms(
+          blendUniformUpload,
+          mode,
+          operator,
+          (operatorIndex * LAYER_BLEND_MODE_ORDER.length + modeIndex)
+            * blendUniformWordStride,
+        );
+      });
+    });
+    engine.device.queue.writeBuffer(
+      engine.layerBlendCompositorUniformBuffer,
+      0,
+      blendUniformUpload,
+    );
     engine.rasterImageMipmapBindGroupLayout = engine.device.createBindGroupLayout({
       label: "Raster image mipmap bind group layout",
       entries: [
@@ -486,6 +563,23 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
         module: engine.mixedScenePresentShaderModule,
         entryPoint: "fragmentMain",
         targets: [{ format: engine.canvasFormat }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+    engine.layerBlendCompositorPipeline = engine.device.createRenderPipeline({
+      label: "Ordered layer blend ping-pong pipeline",
+      layout: engine.device.createPipelineLayout({
+        label: "Ordered layer blend ping-pong pipeline layout",
+        bindGroupLayouts: [engine.layerBlendCompositorBindGroupLayout!],
+      }),
+      vertex: {
+        module: engine.layerBlendCompositorShaderModule!,
+        entryPoint: "layerBlendCompositorVertexMain",
+      },
+      fragment: {
+        module: engine.layerBlendCompositorShaderModule!,
+        entryPoint: "layerBlendCompositorFragmentMain",
+        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT }],
       },
       primitive: { topology: "triangle-list" },
     });

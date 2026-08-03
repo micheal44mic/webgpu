@@ -9,9 +9,10 @@ import type {
 } from "./shadow-core";
 import type { RasterColorOverlayStyle } from "./raster-color-overlay-core";
 import type { LayerStorageTileMask } from "./layer-storage-study";
+import type { LayerBlendMode } from "./layer-blend-modes";
 
 export const LAYER_STACK_STRATEGY =
-  "ordered-records-single-active-single-reference-contiguous-raster-clipping-groups-monotonic-ids" as const;
+  "ordered-records-single-active-single-reference-per-layer-blend-mode-contiguous-raster-clipping-groups-monotonic-ids" as const;
 
 /**
  * Each layer owns only its authoritative 4096² mip-0 texture. Display mips are
@@ -40,6 +41,8 @@ export interface LayerRecord {
   name: string;
   visible: boolean;
   opacity: number;
+  /** Non-destructive backdrop-dependent composition mode for this raster. */
+  blendMode: LayerBlendMode;
   /**
    * A clipping layer remains an ordinary editable raster. Its final
    * premultiplied output is limited by the alpha of this parent raster.
@@ -151,6 +154,7 @@ export class LayerStack {
       name,
       visible: true,
       opacity: 1,
+      blendMode: "normal",
       clippingParentId: null,
       contentBounds: null,
       storageTileMask: new Uint32Array(8),
