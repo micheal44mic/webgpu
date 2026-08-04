@@ -358,22 +358,23 @@ Paint:
   zero corrispondenze. Il filtro visita solo i quattordici elementi quando viene
   digitato testo o aperto il foglio: nessun polling o loop permanente.
   Ottavo follow-up: Layers è ora attivo e apre, in mutua esclusione con Tools,
-  una sidebar destra mobile con contenuto largo esattamente `120 px` (più la
-  sola safe area destra in landscape), agganciata sotto l'header, scrollabile,
+  un pannello mobile flottante largo `240 px`, staccato dall'header e dal bordo
+  destro, centrato verticalmente nello spazio utile e alto soltanto quanto
+  toolbar e layer presenti (fino al limite disponibile, poi scrollabile),
   senza ombre e con lo stesso fondo `#0d0f13`. La toolbar
   superiore usa le icone Lucide `Plus`, `Copy` e `SquareDashed`: `+` crea un
   vero raster, Mask crea una vera clipping mask sopra il raster selezionato,
   mentre Copy resta esplicitamente disabilitato. Lo stack misto è mostrato
   top-first; ogni riga seleziona il nodo autorevole, espone `R` soltanto sui
   raster e usa `Eye`/`EyeOff` per la visibilità di raster, testo, SVG e immagini.
-  Ogni card usa due righe: miniatura+nome leggibile sopra, poi `R` ed Eye a
-  destra con target `44×44 px`; il focus da tastiera è un outline interno
+  Ogni card usa una sola riga: miniatura, nome, `R` ed Eye; i controlli a destra
+  conservano target `44×44 px`. Il focus da tastiera è un outline interno
   arancione e non ripristina il contorno blu al tap.
   Il nodo selezionato ha il solo contorno `#dd5c35`; le etichette predefinite
   italiane vengono tradotte soltanto nella vista mobile (`Layer`, `Text`,
   `Image`, `Clipping Mask`) senza mutare nomi, history o ABI del documento.
-  Le miniature `28×28 px` sono intenzionalmente strutturali e cache-only: per
-  i raster rappresentano la bounding box del contenuto sul checkerboard; per i
+  Le miniature `52×52 px`, su tavola bianca, sono intenzionalmente strutturali
+  e cache-only: per i raster rappresentano la bounding box del contenuto; per i
   nodi semantici usano un piccolo campione di testo/colore. Non leggono texture
   `4096²`, non fanno GPU readback, non reidratano livelli cold e non aggiungono
   lavoro al percorso del pennello. Una dirty flag viene alzata soltanto da
