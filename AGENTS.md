@@ -288,6 +288,13 @@ Paint:
   Redo. Pan e semplice selezione non entrano nella cronologia.
 - UI full-canvas con cassetto overlay e navigazione a due dita; il canvas più
   grande costò `−30%` FPS (`#35/#36`), recuperati da…
+- Header telefono del 4 agosto 2026, attivo soltanto sotto `700 px`: overlay
+  completamente trasparente sul canvas, Home a sinistra e Tools/Livelli/Salva
+  a destra. Le quattro azioni sono per ora visual-only e disabilitate; icone
+  outline avorio `#f2f0e9` con sottotraccia antracite `#202226`, senza fondo,
+  bordo dell'header, blur o ombre. Tablet e desktop conservano la topbar
+  precedente. TypeScript, build Vite/Sites e `git diff --check` verdi; nessuna
+  misura prestazionale o QA fisica iPhone ancora eseguita.
 - …cache di presentazione persistente screen-space: display shader eseguito
   solo sulla dirty region, poi `copyTextureToTexture` alla swapchain
   (`#37/#38`: Base `+46%` FPS vs `#35`, migliore anche delle vecchie baseline).

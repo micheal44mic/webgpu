@@ -117,6 +117,10 @@ button.wide {
   gap: 6px;
 }
 
+.mobile-header {
+  display: none;
+}
+
 .topbar-actions button {
   min-width: 38px;
   padding-inline: 9px;
@@ -779,6 +783,91 @@ select {
   .gpu-memory-panel {
     width: min(300px, calc(100vw - 16px));
     max-height: 62dvh;
+  }
+}
+
+@media (max-width: 699px) {
+  #app {
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-areas: "stage";
+  }
+
+  .topbar {
+    position: absolute;
+    top: 0;
+    right: 0;
+    left: 0;
+    z-index: 5;
+    height: calc(56px + env(safe-area-inset-top));
+    padding: env(safe-area-inset-top) max(8px, env(safe-area-inset-right)) 0 max(8px, env(safe-area-inset-left));
+    border: 0;
+    background: transparent;
+    backdrop-filter: none;
+    pointer-events: none;
+  }
+
+  .desktop-brand,
+  .topbar-actions {
+    display: none;
+  }
+
+  .mobile-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    min-width: 0;
+    pointer-events: auto;
+  }
+
+  .mobile-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .mobile-header-action,
+  .mobile-header-action:disabled,
+  .mobile-header-action:disabled:hover {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 10px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    opacity: 1;
+    cursor: default;
+  }
+
+  .mobile-header-icon-sprite {
+    position: absolute;
+    width: 0;
+    height: 0;
+    overflow: hidden;
+  }
+
+  .mobile-header-icon {
+    display: block;
+    width: 24px;
+    height: 24px;
+    fill: none;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .mobile-header-icon-outline {
+    stroke: #202226;
+    stroke-width: 3.4;
+  }
+
+  .mobile-header-icon-face {
+    stroke: #f2f0e9;
+    stroke-width: 1.8;
   }
 }
 
