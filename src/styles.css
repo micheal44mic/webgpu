@@ -1027,6 +1027,10 @@ select {
     transition: none;
   }
 
+  .mobile-tools-sheet.is-search-focus-snap {
+    transition: none;
+  }
+
   .mobile-tools-sheet-handle,
   .mobile-tools-sheet-handle:hover,
   .mobile-tools-sheet-handle:active {

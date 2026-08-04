@@ -333,8 +333,12 @@ Paint:
   già nello snap alto. Il campo usa `16 px`, così Safari iPhone non applica lo
   zoom automatico al focus; lo zoom pagina al doppio tap è disabilitato tramite
   viewport e `touch-action: manipulation`, senza cambiare i gesti WebGPU del
-  canvas. Non esiste loop UI:
-  offset e snap vengono ricalcolati solo durante drag, apertura o resize. Tutte
+  canvas. Quinto follow-up: quando Search viene toccato dallo snap basso, il
+  foglio raggiunge lo snap alto senza transizione prima che Safari assegni il
+  focus; il focus programmatico usa `preventScroll`, evitando che lo snap del
+  foglio e il pan automatico della tastiera si sommino e portino la ricerca
+  fuori schermo. Se il foglio è già alto non viene riposizionato. Non esiste
+  loop UI: offset e snap vengono ricalcolati solo durante drag, apertura o resize. Tutte
   le suite `*:verify`, TypeScript, build Vite/Sites e `git diff --check` verdi;
   nessuna misura prestazionale o QA fisica iPhone ancora eseguita.
 - …cache di presentazione persistente screen-space: display shader eseguito

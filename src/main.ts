@@ -191,6 +191,7 @@ const mobileRedoButton = element<HTMLButtonElement>("mobileRedo");
 const mobileToolsMenuButton = element<HTMLButtonElement>("mobileToolsMenu");
 const mobileToolsSheet = element<HTMLElement>("mobileToolsSheet");
 const mobileToolsSheetHandle = element<HTMLButtonElement>("mobileToolsSheetHandle");
+const mobileToolsSearchField = element<HTMLLabelElement>("mobileToolsSearchField");
 const mobileToolsSearchInput = element<HTMLInputElement>("mobileToolsSearch");
 const mobileUiMediaQuery = window.matchMedia("(max-width: 699px)");
 const fitViewButton = element<HTMLButtonElement>("fitView");
@@ -1020,6 +1021,16 @@ function snapMobileToolsSheet(snap: MobileToolsSheetSnap): void {
   setMobileToolsSheetOffset(snap === "expanded" ? 0 : mobileToolsSheetPeekOffset());
 }
 
+function expandMobileToolsSheetForSearchFocus(): void {
+  if (!mobileToolsSheetOpen || mobileToolsSheetSnap === "expanded") return;
+  mobileToolsSheet.classList.add("is-search-focus-snap");
+  snapMobileToolsSheet("expanded");
+  void mobileToolsSearchInput.getBoundingClientRect();
+  requestAnimationFrame(() => {
+    mobileToolsSheet.classList.remove("is-search-focus-snap");
+  });
+}
+
 function setMobileToolsSheetOpen(open: boolean): void {
   if (open && !mobileUiMediaQuery.matches) return;
   mobileToolsSheetOpen = open;
@@ -1036,7 +1047,7 @@ function setMobileToolsSheetOpen(open: boolean): void {
     mobileToolsSheet.classList.add("is-open");
     return;
   }
-  mobileToolsSheet.classList.remove("is-open", "is-dragging");
+  mobileToolsSheet.classList.remove("is-open", "is-dragging", "is-search-focus-snap");
   mobileToolsSearchInput.blur();
   mobileToolsSheetDragPointerId = null;
 }
@@ -2902,10 +2913,21 @@ mobileToolsSheetHandle.addEventListener("click", () => {
   snapMobileToolsSheet(mobileToolsSheetSnap === "peek" ? "expanded" : "peek");
 });
 
-mobileToolsSearchInput.addEventListener("focus", () => {
-  if (mobileToolsSheetOpen && mobileToolsSheetSnap !== "expanded") {
-    snapMobileToolsSheet("expanded");
+mobileToolsSearchField.addEventListener("pointerdown", (event) => {
+  if (
+    !mobileToolsSheetOpen
+    || mobileToolsSheetSnap === "expanded"
+    || event.button !== 0
+  ) {
+    return;
   }
+  event.preventDefault();
+  expandMobileToolsSheetForSearchFocus();
+  mobileToolsSearchInput.focus({ preventScroll: true });
+});
+
+mobileToolsSearchInput.addEventListener("focus", () => {
+  expandMobileToolsSheetForSearchFocus();
 });
 
 mobileUiMediaQuery.addEventListener("change", (event) => {
