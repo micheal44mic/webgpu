@@ -187,7 +187,7 @@ export class MobileBrushStudioController {
 
   private openState = false;
   private activeBrushId = "current";
-  private activeBrushName = "Current Brush";
+  private activeBrushName = "Default Brush";
   private originalSettings: BrushSettings | null = null;
   private draftSettings: BrushSettings | null = null;
   private selectedTab: BrushStudioTab = "stroke";

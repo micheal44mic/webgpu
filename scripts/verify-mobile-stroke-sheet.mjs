@@ -21,6 +21,8 @@ for (const id of [
   "mobileStrokeColorInput",
   "mobileStrokeAlignmentButton",
   "mobileStrokeAlignmentMenu",
+  "mobileStrokeWidthInput",
+  "mobileStrokeWidthOut",
 ]) {
   assert.match(sheet, new RegExp(`id="${id}"`), `Manca #${id}.`);
 }
@@ -32,6 +34,17 @@ assert.match(
 );
 assert.match(sheet, /id="mobileStrokeTitle"[^>]*>Stroke<\/h2>/, "Il titolo visibile deve essere inglese.");
 assert.match(sheet, /id="mobileStrokeColorInput"[\s\S]*?type="color"[\s\S]*?aria-label="Stroke color"/);
+assert.match(
+  sheet,
+  /id="mobileStrokeWidthInput"[\s\S]*?type="range"[\s\S]*?min="0"[\s\S]*?max="512"[\s\S]*?step="1"[\s\S]*?value="14"[\s\S]*?aria-label="Stroke width"/,
+  "Width mobile deve riusare range, step e default del controllo desktop autorevole.",
+);
+assert.match(sheet, /id="mobileStrokeWidthOut"[\s\S]*?>14 px<\/output>/);
+assert.match(
+  html,
+  /id="rasterStrokeWidth" type="range" min="0" max="512" step="1" value="14"/,
+  "Il contratto Width desktop atteso dalla UI mobile deve restare 0–512 px a step 1.",
+);
 assert.match(
   sheet,
   /id="mobileStrokeAlignmentButton"[\s\S]*?aria-haspopup="listbox"[\s\S]*?aria-expanded="false"[\s\S]*?aria-controls="mobileStrokeAlignmentMenu"[\s\S]*?data-stroke-alignment="outside"/,
@@ -67,6 +80,16 @@ assert.match(
 );
 assert.match(css, /\.mobile-stroke-alignment-button[\s\S]*?height:\s*52px;/);
 assert.match(css, /\.mobile-stroke-alignment-menu button[\s\S]*?min-height:\s*44px;/);
+assert.match(
+  css,
+  /\.mobile-stroke-width-control input\[type="range"\][\s\S]*?height:\s*44px;[\s\S]*?accent-color:\s*#dd5c35;/,
+  "Width deve avere un target touch da 44 px e l'accento degli slider Brush Studio.",
+);
+assert.match(
+  css,
+  /@media \(max-height: 700px\)[\s\S]*?\.mobile-stroke-width-control\s*\{[\s\S]*?grid-template-columns:\s*auto auto minmax\(0, 1fr\);[\s\S]*?\.mobile-stroke-width-control input\[type="range"\][\s\S]*?grid-column:\s*3;/,
+  "Nel viewport 360×640 Width deve compattarsi in riga senza espandere il foglio.",
+);
 assert.match(css, /\.mobile-stroke-alignment-menu\[hidden\]\s*\{\s*display:\s*none;/);
 assert.match(
   css,
@@ -107,7 +130,17 @@ assert.match(
 assert.match(
   controller,
   /this\.applyFrame = requestAnimationFrame\([\s\S]*?this\.startApplyLoop\(\)/,
-  "Il colore live deve essere coalescente al massimo una volta per frame.",
+  "Colore e Width live devono essere coalescenti al massimo una volta per frame.",
+);
+assert.match(
+  controller,
+  /this\.widthInput\.addEventListener\("input", \(\) => this\.handleWidthInput\(\)\)[\s\S]*?this\.requestStyle\(\{ \.\.\.copiedStyle\(current\), width \}, true\);/,
+  "Width deve aggiornare lo stile autorevole usando la stessa coda RAF latest-only.",
+);
+assert.match(
+  controller,
+  /this\.widthOutput\.value = `\$\{rounded\} px`;[\s\S]*?aria-valuetext/,
+  "Valore visibile e valore accessibile di Width devono restare sincronizzati in pixel.",
 );
 assert.match(
   controller,

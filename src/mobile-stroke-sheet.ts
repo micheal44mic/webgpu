@@ -76,6 +76,8 @@ export class MobileStrokeSheetController {
   );
   readonly alignmentMenu = requiredElement<HTMLElement>("mobileStrokeAlignmentMenu");
   readonly alignmentValue = requiredElement<HTMLElement>("mobileStrokeAlignmentValue");
+  readonly widthInput = requiredElement<HTMLInputElement>("mobileStrokeWidthInput");
+  readonly widthOutput = requiredElement<HTMLOutputElement>("mobileStrokeWidthOut");
   readonly alignmentOptions = Array.from(
     this.alignmentMenu.querySelectorAll<HTMLButtonElement>("[data-stroke-alignment]"),
   );
@@ -146,6 +148,7 @@ export class MobileStrokeSheetController {
     this.colorInput.value = color;
     this.colorControl.style.setProperty("--mobile-stroke-color", color);
     this.colorInput.setAttribute("aria-label", `Stroke color ${color}`);
+    this.syncWidth(style.width);
     this.syncPosition(style.position);
   }
 
@@ -170,6 +173,8 @@ export class MobileStrokeSheetController {
 
     this.colorInput.addEventListener("input", () => this.handleColorInput());
     this.colorInput.addEventListener("change", () => this.handleColorInput());
+    this.widthInput.addEventListener("input", () => this.handleWidthInput());
+    this.widthInput.addEventListener("change", () => this.handleWidthInput());
 
     this.alignmentButton.addEventListener("click", () => {
       this.setAlignmentMenuOpen(!this.alignmentOpen);
@@ -240,6 +245,17 @@ export class MobileStrokeSheetController {
     this.requestStyle({ ...copiedStyle(current), color }, true);
   }
 
+  private handleWidthInput(): void {
+    const minimum = Number(this.widthInput.min);
+    const maximum = Number(this.widthInput.max);
+    const rawWidth = Number(this.widthInput.value);
+    if (!Number.isFinite(rawWidth)) return;
+    const width = Math.min(maximum, Math.max(minimum, rawWidth));
+    const current = this.pendingStyle ?? this.options.getStyle();
+    this.syncWidth(width);
+    this.requestStyle({ ...copiedStyle(current), width }, true);
+  }
+
   private requestStyle(style: RasterStrokeStyle, coalesceToFrame: boolean): void {
     this.pendingStyle = copiedStyle(style);
     if (!coalesceToFrame) {
@@ -284,6 +300,16 @@ export class MobileStrokeSheetController {
       option.setAttribute("aria-selected", String(selected));
       option.classList.toggle("is-selected", selected);
     }
+  }
+
+  private syncWidth(width: number): void {
+    const rounded = Math.round(width);
+    this.widthInput.value = String(rounded);
+    this.widthOutput.value = `${rounded} px`;
+    this.widthInput.setAttribute(
+      "aria-valuetext",
+      `${rounded} ${rounded === 1 ? "pixel" : "pixels"}`,
+    );
   }
 
   private setAlignmentMenuOpen(open: boolean): void {

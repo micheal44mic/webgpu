@@ -1732,8 +1732,23 @@ assert.match(
 );
 assert.match(
   indexSource,
-  /id="mobileCurrentBrushCard"[\s\S]*?Current Brush[\s\S]*?id="mobileBrushLibraryPreviewCanvas"/,
-  "finché non esistono preset, la library deve esporre solo il pennello corrente con preview",
+  /id="mobileCurrentBrushCard"[\s\S]*?Default Brush[\s\S]*?id="mobileBrushLibraryPreviewCanvas"/,
+  "lo slot legacy deve avere un nome reale e una preview propria",
+);
+assert.match(
+  mainSource,
+  /function mobileBrushLibraryVisibleBrushIds\(\)[\s\S]*?const visible = \[activeMobileBrushLibraryBrushId\][\s\S]*?brushId !== activeMobileBrushLibraryBrushId[\s\S]*?card\.dataset\.mobileBrushCategoryCard === mobileBrushLibraryCategory[\s\S]*?visible\.push\(brushId\)/,
+  "ogni categoria deve mostrare prima il pennello attivo e poi i propri pennelli non duplicati",
+);
+assert.match(
+  mainSource,
+  /function setMobileBrushLibraryCategory\(category:[\s\S]*?orderedVisibleCards[\s\S]*?activeMobileBrushLibraryBrushId[\s\S]*?dataset\.mobileBrushCategoryCard === category[\s\S]*?mobileBrushLibraryList\.append\(card\)/,
+  "la card attiva deve essere riordinata fisicamente al primo posto in ogni categoria",
+);
+assert.match(
+  mainSource,
+  /activeMobileBrushLibraryBrushId = brushId;[\s\S]*?setMobileBrushLibraryCategory\(mobileBrushLibraryCategoryForBrush\(brushId\)\)[\s\S]*?syncMobileBrushLibrarySelection\(\)/,
+  "la selezione deve aggiornare subito ordine e stato della categoria visibile",
 );
 assert.match(
   stylesSource,
@@ -1779,8 +1794,10 @@ const mobileBrushLibraryPreviewSource = mainSource.slice(
   mobileBrushLibraryPreviewStart,
   mobileBrushLibraryPreviewEnd,
 );
-assert.match(mobileBrushLibraryPreviewSource, /getContext\("2d"/);
-assert.match(mobileBrushLibraryPreviewSource, /engine\.renderBrushTipPreview\(/);
+assert.match(
+  mobileBrushLibraryPreviewSource,
+  /mobileBrushLibraryPreviewRenderer[\s\S]*?\.render\(/,
+);
 assert.doesNotMatch(
   mobileBrushLibraryPreviewSource,
   /setBrushSettings|queue\.submit|copyTextureToBuffer|mapAsync|onSubmittedWorkDone/,

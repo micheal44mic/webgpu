@@ -4,6 +4,7 @@ import {
   type MobileToolsSheetSnap,
 } from "./mobile-tools-sheet-gesture";
 import { MobileBrushStudioController } from "./mobile-brush-studio";
+import { MobileBrushLibraryPreviewRenderer } from "./brush-library-preview";
 import { MobileStrokeSheetController } from "./mobile-stroke-sheet";
 import {
   loadBrushStudioLibraryState,
@@ -62,13 +63,14 @@ import type {
   ShapeSamplingStrategy,
   StampGeometry,
 } from "./engine-strategies";
-import type {
-  BrushSettings,
-  GrainMode,
-  HistoryState,
-  LayerFormat,
-  LayerPoint,
-  PointerSample,
+import {
+  defaultBrushSettings,
+  type BrushSettings,
+  type GrainMode,
+  type HistoryState,
+  type LayerFormat,
+  type LayerPoint,
+  type PointerSample,
 } from "./engine-types";
 import { LAYER_SIZE } from "./engine-limits";
 import { LAYER_THUMBNAIL_SIZE } from "./layer-thumbnail-renderer";
@@ -810,7 +812,6 @@ const engine = new BrushEngine(canvas, {
   onStats(stats) {
     updateStats(stats);
     if (mobileBrushControlDrag) scheduleMobileBrushPreview();
-    if (mobileBrushLibraryOpen) markMobileBrushLibraryPreviewDirty();
     mobileBrushStudio?.notifyEngineUpdate();
   },
   onHistoryChange(state) {
@@ -937,14 +938,15 @@ let mobileBrushLibraryDragVelocityY = 0;
 let mobileBrushLibraryDragMoved = false;
 let mobileBrushLibraryPreviewFrame: number | null = null;
 let mobileBrushLibraryPreviewDirty = true;
-const mobileBrushLibraryTipCanvas = document.createElement("canvas");
-const mobilePencilBrushTipCanvas = document.createElement("canvas");
-const mobilePencilBrushGrainCanvas = document.createElement("canvas");
-const mobilePencilBrushGrainClipCanvas = document.createElement("canvas");
-let mobilePencilBrushTipReady = false;
-let mobilePencilBrushTipLoading = false;
-let mobilePencilBrushGrainReady = false;
-let mobilePencilBrushGrainLoading = false;
+let mobileBrushLibraryPreviewRevision = 0;
+const mobileBrushLibraryPreviewRenderer = new MobileBrushLibraryPreviewRenderer();
+if (import.meta.env.DEV) {
+  (window as Window & {
+    __mobileBrushLibraryPreviewStats?: () => ReturnType<
+      MobileBrushLibraryPreviewRenderer["stats"]
+    >;
+  }).__mobileBrushLibraryPreviewStats = () => mobileBrushLibraryPreviewRenderer.stats();
+}
 let mobileLayersPanelOpen = false;
 let mobileLayersRenderSignature = "";
 let mobileLayersRefreshRequested = true;
@@ -1460,291 +1462,85 @@ function setMobileBrushLibraryOffset(offsetPx: number): void {
 
 function markMobileBrushLibraryPreviewDirty(): void {
   mobileBrushLibraryPreviewDirty = true;
-  if (
-    mobileBrushLibraryOpen
-    && (mobileBrushLibraryCategory === "painting" || mobileBrushLibraryCategory === "pencil")
-  ) {
+  mobileBrushLibraryPreviewRevision += 1;
+  if (mobileBrushLibraryOpen) {
     scheduleMobileBrushLibraryPreview();
   }
 }
 
-function ensureMobilePencilBrushTip(): void {
-  if (!mobilePencilBrushTipReady && !mobilePencilBrushTipLoading) {
-    mobilePencilBrushTipLoading = true;
-    const image = new Image();
-    image.decoding = "async";
-    image.addEventListener("load", () => {
-      const size = 96;
-      mobilePencilBrushTipCanvas.width = size;
-      mobilePencilBrushTipCanvas.height = size;
-      const context = mobilePencilBrushTipCanvas.getContext("2d", {
-        alpha: true,
-        willReadFrequently: true,
-      });
-      if (!context) {
-        mobilePencilBrushTipLoading = false;
-        return;
-      }
-      context.clearRect(0, 0, size, size);
-      context.drawImage(image, 0, 0, size, size);
-      const pixels = context.getImageData(0, 0, size, size);
-      for (let offset = 0; offset < pixels.data.length; offset += 4) {
-        const luminance = (
-          pixels.data[offset] * 0.299
-          + pixels.data[offset + 1] * 0.587
-          + pixels.data[offset + 2] * 0.114
-        );
-        const sourceAlpha = pixels.data[offset + 3] / 255;
-        const coverage = Math.round((255 - luminance) * sourceAlpha);
-        pixels.data[offset] = 242;
-        pixels.data[offset + 1] = 240;
-        pixels.data[offset + 2] = 233;
-        pixels.data[offset + 3] = coverage;
-      }
-      context.clearRect(0, 0, size, size);
-      context.putImageData(pixels, 0, 0);
-      mobilePencilBrushTipReady = true;
-      mobilePencilBrushTipLoading = false;
-      markMobileBrushLibraryPreviewDirty();
-    }, { once: true });
-    image.addEventListener("error", () => {
-      mobilePencilBrushTipLoading = false;
-    }, { once: true });
-    image.src = new URL("../Shapepencil.png", import.meta.url).href;
-  }
-
-  if (!mobilePencilBrushGrainReady && !mobilePencilBrushGrainLoading) {
-    mobilePencilBrushGrainLoading = true;
-    const image = new Image();
-    image.decoding = "async";
-    image.addEventListener("load", () => {
-      const size = 128;
-      mobilePencilBrushGrainCanvas.width = size;
-      mobilePencilBrushGrainCanvas.height = size;
-      const context = mobilePencilBrushGrainCanvas.getContext("2d", {
-        alpha: true,
-        willReadFrequently: true,
-      });
-      if (!context) {
-        mobilePencilBrushGrainLoading = false;
-        return;
-      }
-      context.drawImage(image, 0, 0, size, size);
-      const pixels = context.getImageData(0, 0, size, size);
-      for (let offset = 0; offset < pixels.data.length; offset += 4) {
-        const luminance = Math.round(
-          pixels.data[offset] * 0.299
-          + pixels.data[offset + 1] * 0.587
-          + pixels.data[offset + 2] * 0.114,
-        );
-        pixels.data[offset] = 255;
-        pixels.data[offset + 1] = 255;
-        pixels.data[offset + 2] = 255;
-        // Grain alpha metadata is intentionally ignored, like the WGSL path.
-        pixels.data[offset + 3] = luminance;
-      }
-      context.putImageData(pixels, 0, 0);
-      mobilePencilBrushGrainReady = true;
-      mobilePencilBrushGrainLoading = false;
-      markMobileBrushLibraryPreviewDirty();
-    }, { once: true });
-    image.addEventListener("error", () => {
-      mobilePencilBrushGrainLoading = false;
-    }, { once: true });
-    image.src = new URL("../Grainpencil.png", import.meta.url).href;
-  }
+function mobileCurrentBrushFallback(
+  current: Readonly<BrushSettings>,
+): BrushSettings {
+  return {
+    ...defaultBrushSettings,
+    color: current.color,
+    tool: "paint",
+    hardness: 1,
+  };
 }
 
-function mobileBrushLibraryNoise(seed: number): number {
-  const value = Math.sin(seed * 12.9898 + 78.233) * 43_758.5453;
-  return value - Math.floor(value);
+function mobileBrushLibraryCanvasForBrush(
+  brushId: MobileBrushLibraryBrushId,
+): HTMLCanvasElement {
+  return brushId === PENCIL_BRUSH_PRESET.id
+    ? mobilePencilBrushPreviewCanvas
+    : mobileBrushLibraryPreviewCanvas;
+}
+
+function mobileBrushLibraryVisibleBrushIds(): MobileBrushLibraryBrushId[] {
+  const visible = [activeMobileBrushLibraryBrushId];
+  for (const card of mobileBrushLibraryCards) {
+    const brushId = card.dataset.mobileBrushId as MobileBrushLibraryBrushId | undefined;
+    if (
+      brushId
+      && brushId !== activeMobileBrushLibraryBrushId
+      && card.dataset.mobileBrushCategoryCard === mobileBrushLibraryCategory
+    ) {
+      visible.push(brushId);
+    }
+  }
+  return visible;
+}
+
+function mobileBrushLibrarySettingsForBrush(
+  brushId: MobileBrushLibraryBrushId,
+  currentSettings: Readonly<BrushSettings>,
+): BrushSettings {
+  const previewIsActive = brushId === activeMobileBrushLibraryBrushId;
+  const fallbackSettings = brushId === PENCIL_BRUSH_PRESET.id
+    ? resolveBrushPresetSettings(PENCIL_BRUSH_PRESET, currentSettings)
+    : mobileCurrentBrushFallback(currentSettings);
+  return previewIsActive
+    ? currentSettings
+    : mobileBrushStudio?.settingsSnapshot(brushId, fallbackSettings)
+      ?? fallbackSettings;
 }
 
 function renderMobileBrushLibraryPreview(): void {
-  const pencilPreview = mobileBrushLibraryCategory === "pencil";
-  const previewBrushId: MobileBrushLibraryBrushId = pencilPreview
-    ? PENCIL_BRUSH_PRESET.id
-    : "current";
-  const previewIsActive = previewBrushId === activeMobileBrushLibraryBrushId;
-  if (
-    !mobileBrushLibraryOpen
-    || (!pencilPreview && mobileBrushLibraryCategory !== "painting")
-    || !mobileBrushLibraryPreviewDirty
-    || !mobileUiMediaQuery.matches
-  ) {
-    return;
-  }
-  if (pencilPreview && !previewIsActive && !mobilePencilBrushTipReady) {
-    ensureMobilePencilBrushTip();
-    return;
-  }
-  const previewCanvas = pencilPreview
-    ? mobilePencilBrushPreviewCanvas
-    : mobileBrushLibraryPreviewCanvas;
-  const bounds = previewCanvas.getBoundingClientRect();
-  if (bounds.width <= 0 || bounds.height <= 0) return;
-
-  mobileBrushLibraryPreviewDirty = false;
-  const logicalWidth = Math.max(1, Math.round(bounds.width));
-  const logicalHeight = Math.max(1, Math.round(bounds.height));
-  const pixelRatio = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
-  const backingWidth = Math.max(1, Math.round(logicalWidth * pixelRatio));
-  const backingHeight = Math.max(1, Math.round(logicalHeight * pixelRatio));
-  if (
-    previewCanvas.width !== backingWidth
-    || previewCanvas.height !== backingHeight
-  ) {
-    previewCanvas.width = backingWidth;
-    previewCanvas.height = backingHeight;
-  }
-
-  const context = previewCanvas.getContext("2d", { alpha: true });
-  if (!context) return;
-  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-  context.globalAlpha = 1;
-  context.globalCompositeOperation = "source-over";
-  context.clearRect(0, 0, logicalWidth, logicalHeight);
-
+  if (!mobileBrushLibraryOpen || !mobileUiMediaQuery.matches) return;
   const currentSettings = engine.getSettings();
-  const fallbackSettings = pencilPreview
-    ? resolveBrushPresetSettings(PENCIL_BRUSH_PRESET, currentSettings)
-    : currentSettings;
-  const settings = previewIsActive
-    ? currentSettings
-    : mobileBrushStudio?.settingsSnapshot(previewBrushId, fallbackSettings)
-      ?? fallbackSettings;
-  const sizeRatio = Math.min(
-    1,
-    Math.max(0, Math.log10(Math.max(1, settings.size)) / 3),
-  );
-  const baseDiameter = Math.min(
-    logicalHeight * 0.78,
-    Math.max(11, logicalHeight * (0.26 + sizeRatio * 0.48)),
-  );
-  const tipCanvas = pencilPreview && !previewIsActive
-    ? mobilePencilBrushTipCanvas
-    : mobileBrushLibraryTipCanvas;
-  if (!pencilPreview || previewIsActive) {
-    const tipCssSize = 72;
-    engine.renderBrushTipPreview(
-      mobileBrushLibraryTipCanvas,
-      tipCssSize,
-      tipCssSize - 4,
-      1,
-    );
-  }
-
-  const startX = Math.max(4, baseDiameter * 0.45);
-  const endX = Math.max(startX + 1, logicalWidth - startX);
-  const pathLength = Math.max(1, endX - startX);
-  const spacingCssPixels = Math.max(
-    1.5,
-    baseDiameter * Math.max(0.25, settings.spacingPercent) / 100,
-  );
-  const stampCount = Math.min(112, Math.max(2, Math.ceil(pathLength / spacingCssPixels)));
-  const copiesPerStamp = Math.min(4, Math.max(1, Math.round(settings.count)));
-  const stampAlpha = Math.min(1, Math.max(0.035, settings.flow * settings.opacity));
-
-  context.imageSmoothingEnabled = true;
-  context.imageSmoothingQuality = "high";
-  for (let stampIndex = 0; stampIndex < stampCount; stampIndex += 1) {
-    const progress = stampCount === 1 ? 0 : stampIndex / (stampCount - 1);
-    const centerX = startX + pathLength * progress;
-    const phase = (progress * 1.35 - 0.12) * Math.PI;
-    const centerY = logicalHeight * (0.55 + Math.sin(phase) * 0.095);
-    const followAngle = settings.shapeRotation === "follow-stroke"
-      ? Math.atan2(
-        logicalHeight * 0.095 * Math.cos(phase) * 1.35 * Math.PI,
-        pathLength,
-      )
-      : 0;
-    const thickness = settings.startThickness
-      + (settings.endThickness - settings.startThickness) * progress;
-    const stampDiameter = Math.min(
-      logicalHeight * 0.9,
-      Math.max(3, baseDiameter * Math.max(0.05, thickness)),
-    );
-    for (let copyIndex = 0; copyIndex < copiesPerStamp; copyIndex += 1) {
-      const seed = stampIndex * 31 + copyIndex * 131 + 17;
-      const longitudinal = (
-        mobileBrushLibraryNoise(seed) - 0.5
-      ) * stampDiameter * settings.positionJitterLinear * 0.18;
-      const lateral = (
-        mobileBrushLibraryNoise(seed + 1) - 0.5
-      ) * stampDiameter * settings.positionJitterLateral * 0.3;
-      const rotation = followAngle + (
-        mobileBrushLibraryNoise(seed + 2) - 0.5
-      ) * Math.PI * 2 * settings.shapeScatter;
-      context.save();
-      context.globalAlpha = stampAlpha;
-      context.translate(centerX + longitudinal, centerY + lateral);
-      context.rotate(rotation);
-      context.drawImage(
-        tipCanvas,
-        -stampDiameter * 0.5,
-        -stampDiameter * 0.5,
-        stampDiameter,
-        stampDiameter,
-      );
-      context.restore();
-    }
-  }
-  if (
-    pencilPreview
-    && mobilePencilBrushGrainReady
-    && settings.grainMode !== "off"
-    && settings.grainAssetId === "pencil-grain"
-  ) {
-    // Movement 99% is almost a paper-locked roller. Multiplying the finished
-    // library stroke by the same grain gives a cheap representative preview;
-    // the authoritative canvas still samples it for every physical stamp.
-    const grainPeriod = Math.max(
-      logicalHeight,
-      baseDiameter * (
-        settings.grainScale * 800
-        / Math.max(1, settings.size)
-      ),
-    );
-    const firstX = -grainPeriod * 0.37;
-    const firstY = -grainPeriod * 0.58;
-    if (
-      mobilePencilBrushGrainClipCanvas.width !== logicalWidth
-      || mobilePencilBrushGrainClipCanvas.height !== logicalHeight
-    ) {
-      mobilePencilBrushGrainClipCanvas.width = logicalWidth;
-      mobilePencilBrushGrainClipCanvas.height = logicalHeight;
-    }
-    const grainContext = mobilePencilBrushGrainClipCanvas.getContext("2d", { alpha: true });
-    if (!grainContext) return;
-    grainContext.clearRect(0, 0, logicalWidth, logicalHeight);
-    grainContext.globalCompositeOperation = "source-over";
-    grainContext.globalAlpha = 1;
-    grainContext.imageSmoothingEnabled = true;
-    grainContext.imageSmoothingQuality = "high";
-    for (let y = firstY; y < logicalHeight; y += grainPeriod) {
-      for (let x = firstX; x < logicalWidth; x += grainPeriod) {
-        grainContext.drawImage(
-          mobilePencilBrushGrainCanvas,
-          x,
-          y,
-          grainPeriod,
-          grainPeriod,
-        );
+  const previewBrushIds = mobileBrushLibraryVisibleBrushIds();
+  const revision = mobileBrushLibraryPreviewRevision;
+  mobileBrushLibraryPreviewDirty = false;
+  void Promise.all(previewBrushIds.map((brushId) => (
+    mobileBrushLibraryPreviewRenderer.render(
+      brushId,
+      mobileBrushLibraryCanvasForBrush(brushId),
+      mobileBrushLibrarySettingsForBrush(brushId, currentSettings),
+    )
+  )))
+    .then(() => {
+      if (
+        mobileBrushLibraryOpen
+        && mobileBrushLibraryPreviewDirty
+        && revision !== mobileBrushLibraryPreviewRevision
+      ) {
+        scheduleMobileBrushLibraryPreview();
       }
-    }
-    context.save();
-    context.globalAlpha = settings.grainDepth;
-    context.globalCompositeOperation = "destination-in";
-    context.drawImage(
-      mobilePencilBrushGrainClipCanvas,
-      0,
-      0,
-      logicalWidth,
-      logicalHeight,
-    );
-    context.restore();
-  }
-  context.globalAlpha = 1;
+    })
+    .catch(() => {
+      // Keep the last compact bitmap; a later open retries missing CPU assets.
+    });
 }
 
 function scheduleMobileBrushLibraryPreview(): void {
@@ -1763,16 +1559,35 @@ function setMobileBrushLibraryCategory(category: MobileBrushLibraryCategory): vo
       String(button.dataset.mobileBrushCategory === category),
     );
   }
-  let visibleCards = 0;
+  const orderedVisibleCards = mobileBrushLibraryCards.filter((card) => (
+    card.dataset.mobileBrushId === activeMobileBrushLibraryBrushId
+  ));
+  orderedVisibleCards.push(...mobileBrushLibraryCards.filter((card) => (
+    card.dataset.mobileBrushId !== activeMobileBrushLibraryBrushId
+    && card.dataset.mobileBrushCategoryCard === category
+  )));
   for (const card of mobileBrushLibraryCards) {
-    const visible = card.dataset.mobileBrushCategoryCard === category;
+    const visible = orderedVisibleCards.includes(card);
     card.hidden = !visible;
-    if (visible) visibleCards += 1;
   }
+  for (const card of orderedVisibleCards) mobileBrushLibraryList.append(card);
+  for (const card of mobileBrushLibraryCards) {
+    if (!orderedVisibleCards.includes(card)) mobileBrushLibraryList.append(card);
+  }
+  const visibleCards = orderedVisibleCards.length;
   mobileBrushLibraryList.hidden = visibleCards === 0;
   mobileBrushLibraryEmpty.hidden = visibleCards !== 0;
-  if (category === "pencil") ensureMobilePencilBrushTip();
-  if (visibleCards > 0) markMobileBrushLibraryPreviewDirty();
+  if (visibleCards > 0) {
+    const needsPreview = mobileBrushLibraryPreviewDirty
+      || mobileBrushLibraryVisibleBrushIds().some((brushId) => {
+        const canvas = mobileBrushLibraryCanvasForBrush(brushId);
+        return !canvas.dataset.previewFingerprint
+          || canvas.dataset.previewSourceComplete !== "true";
+      });
+    if (needsPreview) {
+      scheduleMobileBrushLibraryPreview();
+    }
+  }
 }
 
 function syncMobileBrushLibrarySelection(): void {
@@ -1802,7 +1617,15 @@ function setMobileBrushLibraryOpen(open: boolean): void {
     setMobileBrushLibraryOffset(0);
     void mobileBrushLibrarySheet.offsetHeight;
     mobileBrushLibrarySheet.classList.add("is-open");
-    markMobileBrushLibraryPreviewDirty();
+    const needsPreview = mobileBrushLibraryPreviewDirty
+      || mobileBrushLibraryVisibleBrushIds().some((brushId) => {
+        const canvas = mobileBrushLibraryCanvasForBrush(brushId);
+        return !canvas.dataset.previewFingerprint
+          || canvas.dataset.previewSourceComplete !== "true";
+      });
+    if (needsPreview) {
+      scheduleMobileBrushLibraryPreview();
+    }
     syncMobileBrushControlsVisibility();
     return;
   }
@@ -3372,8 +3195,8 @@ mobileBrushStudio = new MobileBrushStudioController({
     activeMobileBrushLibraryBrushId = brushId === PENCIL_BRUSH_PRESET.id
       ? PENCIL_BRUSH_PRESET.id
       : "current";
-    mobileBrushLibraryCategory = mobileBrushLibraryCategoryForBrush(
-      activeMobileBrushLibraryBrushId,
+    setMobileBrushLibraryCategory(
+      mobileBrushLibraryCategoryForBrush(activeMobileBrushLibraryBrushId),
     );
     persistActiveMobileBrushLibraryBrush();
     syncMobileBrushLibrarySelection();
@@ -4251,7 +4074,7 @@ function mobileBrushLibraryName(brushId: MobileBrushLibraryBrushId): string {
     (candidate) => candidate.dataset.mobileBrushId === brushId,
   );
   return card?.querySelector<HTMLElement>(".mobile-brush-card-name")?.textContent?.trim()
-    || (brushId === PENCIL_BRUSH_PRESET.id ? PENCIL_BRUSH_PRESET.name : "Current Brush");
+    || (brushId === PENCIL_BRUSH_PRESET.id ? PENCIL_BRUSH_PRESET.name : "Default Brush");
 }
 
 function mobileBrushLibraryCategoryForBrush(
@@ -4284,13 +4107,13 @@ async function selectMobileBrushLibraryBrush(
   studio.rememberSettings(activeMobileBrushLibraryBrushId, currentSettings);
   const fallback = brushId === PENCIL_BRUSH_PRESET.id
     ? resolveBrushPresetSettings(PENCIL_BRUSH_PRESET, currentSettings)
-    : currentSettings;
+    : mobileCurrentBrushFallback(currentSettings);
   try {
     const settings = await studio.resolveBrushSettings(brushId, fallback);
     if (revision !== mobileBrushLibrarySelectionRevision) return;
     applySettingsToControls(settings);
     activeMobileBrushLibraryBrushId = brushId;
-    mobileBrushLibraryCategory = mobileBrushLibraryCategoryForBrush(brushId);
+    setMobileBrushLibraryCategory(mobileBrushLibraryCategoryForBrush(brushId));
     persistActiveMobileBrushLibraryBrush();
     syncMobileBrushLibrarySelection();
     markMobileBrushLibraryPreviewDirty();
@@ -4452,7 +4275,6 @@ window.addEventListener("resize", () => {
     }
     if (mobileBrushLibraryOpen && mobileBrushLibraryDragPointerId === null) {
       setMobileBrushLibraryOffset(0);
-      markMobileBrushLibraryPreviewDirty();
     }
     mobileBrushStudio?.handleResize();
     mobileStrokeSheet?.handleResize();
@@ -8471,14 +8293,14 @@ void engine.initialize()
       if (mobileUiMediaQuery.matches) {
         const fallback = activeMobileBrushLibraryBrushId === PENCIL_BRUSH_PRESET.id
           ? resolveBrushPresetSettings(PENCIL_BRUSH_PRESET, engine.getSettings())
-          : engine.getSettings();
+          : mobileCurrentBrushFallback(engine.getSettings());
         const restored = await mobileBrushStudio.resolveBrushSettings(
           activeMobileBrushLibraryBrushId,
           fallback,
         );
         applySettingsToControls(restored);
-        mobileBrushLibraryCategory = mobileBrushLibraryCategoryForBrush(
-          activeMobileBrushLibraryBrushId,
+        setMobileBrushLibraryCategory(
+          mobileBrushLibraryCategoryForBrush(activeMobileBrushLibraryBrushId),
         );
         syncMobileBrushLibrarySelection();
       } else {

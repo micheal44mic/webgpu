@@ -372,13 +372,13 @@
                   type="button"
                   data-mobile-brush-id="current"
                   data-mobile-brush-category-card="painting"
-                  aria-label="Current Brush, selected"
+                  aria-label="Default Brush, selected"
                   aria-pressed="true"
                 >
                   <span class="mobile-brush-card-selected" aria-hidden="true">
                     <i data-lucide="check"></i>
                   </span>
-                  <span class="mobile-brush-card-name">Current Brush</span>
+                  <span class="mobile-brush-card-name">Default Brush</span>
                   <canvas
                     id="mobileBrushLibraryPreviewCanvas"
                     class="mobile-brush-card-preview"
@@ -878,6 +878,28 @@
                 </button>
               </div>
             </div>
+
+            <label
+              class="mobile-stroke-width-control"
+              for="mobileStrokeWidthInput"
+            >
+              <span class="mobile-stroke-control-label">Width</span>
+              <output
+                id="mobileStrokeWidthOut"
+                for="mobileStrokeWidthInput"
+              >14 px</output>
+              <input
+                id="mobileStrokeWidthInput"
+                type="range"
+                min="0"
+                max="512"
+                step="1"
+                value="14"
+                aria-label="Stroke width"
+                aria-describedby="mobileStrokeWidthOut"
+                aria-valuetext="14 pixels"
+              />
+            </label>
           </div>
         </div>
       </aside>

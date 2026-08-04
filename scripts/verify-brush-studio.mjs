@@ -63,11 +63,11 @@ assert.match(
 assert.match(
   main,
   /mobileBrushStudio\.resolveBrushSettings\([\s\S]*?activeMobileBrushLibraryBrushId/,
-  "startup must restore the active brush instead of always forcing Current Brush",
+  "startup must restore the active brush instead of always forcing the legacy brush",
 );
 assert.match(
   main,
-  /previewIsActive[\s\S]*?settingsSnapshot\(previewBrushId, fallbackSettings\)/,
+  /function mobileBrushLibrarySettingsForBrush[\s\S]*?previewIsActive[\s\S]*?settingsSnapshot\(brushId, fallbackSettings\)/,
   "the library preview must use the saved per-card settings",
 );
 assert.match(

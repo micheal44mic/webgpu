@@ -575,6 +575,46 @@ Paint:
   drag verso il basso: soglie e chiusura sono coperte dalla regressione statica,
   ma la gesture resta da provare su Safari/iPhone fisico. TypeScript, build
   Vite/Sites, tutte le `25` suite `*:verify` e `git diff --check` sono verdi.
+  Diciannovesimo follow-up (4 agosto 2026): la Brush Library contiene due slot
+  distinti: `Pencil` è il preset nominato `m1m4-pencil-v1`, mentre
+  `Current Brush` è lo slot mutabile del pennello originale/legacy. Se lo slot
+  legacy non ha ancora un salvataggio, torna sempre a `defaultBrushSettings`
+  preservando soltanto il colore dell'artista; non può più ereditare Pencil
+  quando quest'ultima è attiva.
+  Le pennellate delle card usano ora il renderer CPU
+  `fixed-path-canvas2d-v2`: traiettoria cubica, seed intero e campioni sono
+  fissi, e il fingerprint include soltanto impostazioni e ID asset che
+  influenzano la miniatura. I due canvas DOM da `240×56` sono essi stessi la
+  cache, senza bitmap persistite o duplicate; LRU limitata a due card e quattro
+  sorgenti CPU ridotte a `64×64`. Il bound dei backing store è `243.200 B`
+  (`237,5 KiB`) steady e `296.960 B` (`290 KiB`) durante il solo hash pixel,
+  esclusi overhead degli oggetti browser e il decode transitorio dell'immagine.
+  Non esistono timer, polling, submission/readback GPU o texture grandi: la
+  riapertura è un cache hit, mentre `Done` o un cambiamento visivo/asset crea un
+  nuovo fingerprint. Rimosso l'invalidatore da `onStats`, che prima poteva
+  ridisegnare a ogni aggiornamento del motore; la card inattiva non legge più
+  per errore la tip dell'engine attivo. Shape/Grain built-in vengono caricati
+  lazy e ridotti; gli asset custom rileggono soltanto il Blob già autorevole in
+  IndexedDB, senza salvarne una seconda miniatura.
+  La preview resta intenzionalmente rappresentativa: simula Shape, Grain,
+  spacing, Count limitato, jitter e thickness, ma non è pixel-identica alle tre
+  formule WebGPU autorevoli. `brush-library-preview:verify` vincola fingerprint,
+  PRNG e hash pixel ripetuti, invalida sui parametri visivi/asset, ignora il
+  colore neutro, blocca lavoro GPU e fissa i limiti memoria. QA Safari/iPhone
+  fisico e misura prestazionale canonica restano da eseguire.
+  Ventesimo follow-up (4 agosto 2026): `Current Brush` non è più una terza
+  identità o una card confinata a Painting. Le due identità reali restano
+  `Pencil` (`m1m4-pencil-v1`) e `Default Brush` (ID persistente legacy
+  `current`); la card dell'identità attiva viene spostata al primo posto di
+  qualunque categoria aperta. Seguono soltanto le card native di quella
+  categoria diverse dall'attiva, quindi l'attiva non compare mai due volte;
+  Spray Paint mostra per ora la sola attiva. Il riordino avviene sugli stessi
+  due nodi DOM, canvas, record settings e voci LRU già esistenti: non crea
+  copie, bitmap o memoria aggiuntiva. Se la selezione cambia, ordine, categoria
+  e preview vengono riallineati immediatamente senza dover riaprire il foglio.
+  TypeScript, build Vite/Sites, tutte le `26` suite `*:verify` e
+  `git diff --check` sono verdi; resta da verificare il gesto su Safari/iPhone
+  fisico dopo la pubblicazione.
 - …cache di presentazione persistente screen-space: display shader eseguito
   solo sulla dirty region, poi `copyTextureToTexture` alla swapchain
   (`#37/#38`: Base `+46%` FPS vs `#35`, migliore anche delle vecchie baseline).
@@ -3677,3 +3717,15 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   Safari/iPhone. TypeScript, build Vite/Sites, `stroke-ui:verify`,
   `stroke:verify`, `layers:verify`, `effects-scratch:verify`,
   `history:verify` e `git diff --check` sono verdi. Non pubblicato.
+- Follow-up Width: sotto Color/Alignment il pannello espone ora la larghezza
+  autorevole `0–512 px`, step `1 px` e default `14 px`, identica al controllo
+  desktop. Input e output accessibile vengono aggiornati live al massimo una
+  volta per RAF e confluiscono nella stessa coda asincrona latest-only di
+  colore e allineamento, senza stato mobile separato o azioni history per
+  campione. Il foglio conserva esclusivamente lo snap peek: a viewport corti
+  (`≤700 px`) titolo e controlli si compattano e Width passa su una sola riga
+  mantenendo un target touch da `44 px`, senza aumentare l'altezza visibile.
+  QA browser locale passata a `393×852` e `360×640`, inclusi `0`, `256` e
+  `512 px`, sequenza rapida latest-only, mirror desktop e console pulita;
+  TypeScript, build Vite/Sites, suite Stroke/UI/scratch/history e
+  `git diff --check` verdi. Lo slider fisico resta da provare su Safari/iPhone.

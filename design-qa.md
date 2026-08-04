@@ -78,6 +78,38 @@
 
 final result: passed
 
+# Design QA — Mobile Stroke Width follow-up
+
+## Visual sources and normalization
+
+- Source visual truth: `C:\Users\michi\AppData\Local\Temp\codex-clipboard-96048357-6c18-426f-b404-95e937c8b95d.png` (`945 × 2048` pixels), showing the published Stroke sheet before Width was added.
+- Primary implementation: [mobile-stroke-width-393x852.png](design-qa-assets/mobile-stroke-width-393x852.png), captured at a `393 × 852` CSS viewport and density `1`.
+- Compact implementation: [mobile-stroke-width-360x640.png](design-qa-assets/mobile-stroke-width-360x640.png), captured at a `360 × 640` CSS viewport and density `1`.
+- Same-frame comparison: [mobile-stroke-width-reference-comparison.png](design-qa-assets/mobile-stroke-width-reference-comparison.png). The source was normalized from its approximately `2.4×` phone capture to `393 × 852`; Safari chrome and the different canvas contents are excluded from fidelity findings.
+- No separate focused crop was needed: labels, output, thumb, track, and full `44 px` hit area are all legible at original size in the primary comparison.
+- Compared state: sheet at its only peek snap, width `14 px`; source Alignment is `Inside`, implementation capture is `Outside`, an unrelated existing selectable state.
+
+## Findings
+
+- No actionable P0, P1, or P2 mismatch remains.
+- Fonts and typography: `Width` shares the existing muted field label and the value uses the product's orange accent with tabular numerals and an explicit `px` unit.
+- Spacing and layout rhythm: at `393 × 852`, the complete `44 px` slider ends at `827.23 px`, leaving it inside the viewport while the sheet remains exactly `222 px` tall. At `360 × 640`, the compact single-row form ends at `636.47 px`; the full touch target remains visible without root scroll or a higher sheet snap.
+- Colors and visual tokens: the range reuses `#dd5c35`, the dark sheet, off-white copy, and the existing Brush Studio focus treatment. No shadow or new surface was introduced.
+- Image and icon fidelity: Width needs no new icon or bitmap. Existing Lucide alignment icons are unchanged.
+- Copy and content: `Width`, `14 px`, and the accessible `14 pixels` value are English and use the engine's real unit.
+
+## Runtime checks
+
+- Authoritative range contract: `0–512 px`, step `1 px`, default `14 px`, identical to the desktop control and `RASTER_STROKE_MAX_WIDTH`.
+- Browser checks at minimum, midpoint, and maximum produced matching mobile/output/desktop states: `0 / 0 px / 0`, `256 / 256 px / 256`, and `512 / 512 px / 512`.
+- A rapid `32 → 480 → 77 → 321` sequence settled on `321 px` in both mobile and authoritative desktop mirrors, validating the RAF-coalesced latest-only path.
+- Sheet top remained `630 px` at `393 × 852` and `480.44 px` at `360 × 640`; `#app.scrollTop` remained `0`.
+- Browser console warnings/errors: none.
+- TypeScript, production Sites build, `stroke-ui:verify`, `stroke:verify`, `effects-scratch:verify`, `history:verify`, and `git diff --check`: passed.
+- Physical drag and slider touch behavior still require Safari/iPhone hardware QA.
+
+final result: passed
+
 # Design QA — Mobile Stroke Effect Sheet
 
 ## Visual sources and normalization
