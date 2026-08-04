@@ -1,6 +1,7 @@
 import "./styles.css";
 import {
   Blend,
+  Brush,
   Eraser,
   House,
   Layers3,
@@ -61,6 +62,7 @@ import type {
 createIcons({
   icons: {
     Blend,
+    Brush,
     Eraser,
     House,
     Layers3,
@@ -180,6 +182,7 @@ const brushColorInput = element<HTMLInputElement>("brushColor");
 const mobileBrushColorLabel = element<HTMLLabelElement>("mobileBrushColor");
 const mobileBrushColorInput = element<HTMLInputElement>("mobileBrushColorInput");
 const mobileBrushColorSwatch = element<HTMLElement>("mobileBrushColorSwatch");
+const mobilePaintButton = element<HTMLButtonElement>("mobilePaint");
 const mobileBlendButton = element<HTMLButtonElement>("mobileBlend");
 const mobileUndoButton = element<HTMLButtonElement>("mobileUndo");
 const mobileRedoButton = element<HTMLButtonElement>("mobileRedo");
@@ -855,6 +858,7 @@ function configureBrushToolUi(
     captureActiveToolControls();
   }
   activeCanvasTool = tool;
+  mobilePaintButton.setAttribute("aria-pressed", String(tool === "paint"));
   mobileBlendButton.setAttribute("aria-pressed", String(tool === "blend"));
   const fill = tool === "fill";
   const selection = tool === "selection";
@@ -2384,6 +2388,7 @@ function updateHistoryControls(): void {
   mobileRedoButton.disabled = locked || !historyState.canRedo;
   mobileBrushColorInput.disabled = locked;
   mobileBrushColorLabel.classList.toggle("is-disabled", locked);
+  mobilePaintButton.disabled = locked;
   mobileBlendButton.disabled = locked;
   clearLayerButton.disabled = locked;
   element<HTMLSelectElement>("brushTool").disabled = locked;
@@ -2804,11 +2809,19 @@ undoStrokeButton.addEventListener("click", () => {
 redoStrokeButton.addEventListener("click", () => {
   void runHistoryOperation("redo");
 });
-mobileBlendButton.addEventListener("click", () => {
-  if (mobileBlendButton.disabled) return;
+
+function selectMobileBrushTool(tool: BrushSettings["tool"]): void {
+  if (interactionLocked()) return;
   const brushToolSelect = element<HTMLSelectElement>("brushTool");
-  brushToolSelect.value = "blend";
+  brushToolSelect.value = tool;
   brushToolSelect.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+mobilePaintButton.addEventListener("click", () => {
+  selectMobileBrushTool("paint");
+});
+mobileBlendButton.addEventListener("click", () => {
+  selectMobileBrushTool("blend");
 });
 mobileUndoButton.addEventListener("click", () => {
   void runHistoryOperation("undo");

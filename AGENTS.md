@@ -310,9 +310,15 @@ Paint:
   autorevoli; la Gomma resta visual-only e disabilitata finché non esisterà una
   semantica di cancellazione nel motore. Tutte le icone mobile, incluse quelle
   dell'header, sono ora Lucide `1.28.0` importate singolarmente e condividono la
-  doppia traccia avorio/antracite. Tutte le suite `*:verify`, TypeScript, build
-  Vite/Sites e `git diff --check` verdi; nessuna misura prestazionale o QA
-  fisica iPhone ancora eseguita.
+  doppia traccia avorio/antracite. Secondo follow-up: inserito Pennello subito
+  sotto il colore; Pennello e Blend selezionano il tool reale e hanno icona
+  avorio soltanto quando attivi, mentre i tool inattivi e Undo/Redo non
+  disponibili usano grigio `#85888f`. Rimossi sia il contorno focus blu sia il
+  tap highlight mobile e anche il fondo di selezione: lo stato è espresso dal
+  solo colore dell'icona. La Gomma rimane grigia e disabilitata, non viene
+  rappresentata falsamente come attiva. Tutte le suite `*:verify`, TypeScript,
+  build Vite/Sites e `git diff --check` verdi; nessuna misura prestazionale o
+  QA fisica iPhone ancora eseguita.
 - …cache di presentazione persistente screen-space: display shader eseguito
   solo sulla dirty region, poi `copyTextureToTexture` alla swapchain
   (`#37/#38`: Base `+46%` FPS vs `#35`, migliore anche delle vecchie baseline).

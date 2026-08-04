@@ -136,10 +136,24 @@
           <span id="mobileBrushColorSwatch" class="mobile-color-swatch" aria-hidden="true"></span>
         </label>
         <button
+          id="mobilePaint"
+          class="mobile-tool-action"
+          type="button"
+          aria-label="Seleziona Pennello"
+          aria-pressed="true"
+          title="Pennello"
+        >
+          <span class="mobile-icon-stack" aria-hidden="true">
+            <i data-lucide="brush" class="mobile-icon-layer mobile-icon-outline"></i>
+            <i data-lucide="brush" class="mobile-icon-layer mobile-icon-face"></i>
+          </span>
+        </button>
+        <button
           id="mobileEraser"
           class="mobile-tool-action"
           type="button"
           aria-label="Gomma, non ancora disponibile"
+          aria-pressed="false"
           title="Gomma"
           disabled
         >

@@ -1,6 +1,7 @@
 :root {
   --app-background: #0d0f13;
   --mobile-icon-face: #f2f0e9;
+  --mobile-icon-inactive: #85888f;
   --mobile-icon-outline: #202226;
   color-scheme: dark;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -909,16 +910,22 @@ select {
     color: inherit;
     cursor: pointer;
     touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
   }
 
-  .mobile-tool-action[aria-pressed="true"] {
-    background: #242933;
+  .mobile-tool-action:focus,
+  .mobile-color-input:focus {
+    outline: none;
   }
 
-  .mobile-tool-action:focus-visible,
-  .mobile-color-action:focus-within {
-    outline: 2px solid #8791ff;
-    outline-offset: -3px;
+  .mobile-tool-action[aria-pressed="false"] .mobile-icon-face,
+  .mobile-tool-action:disabled .mobile-icon-face {
+    stroke: var(--mobile-icon-inactive);
+  }
+
+  .mobile-tool-action[aria-pressed="true"] .mobile-icon-face,
+  .mobile-tool-action:not(:disabled):not([aria-pressed]) .mobile-icon-face {
+    stroke: var(--mobile-icon-face);
   }
 
   .mobile-tool-action:disabled,
@@ -926,7 +933,7 @@ select {
   .mobile-tool-action.is-disabled {
     background: transparent;
     cursor: default;
-    opacity: 0.52;
+    opacity: 1;
   }
 
   .mobile-color-action,
@@ -944,6 +951,7 @@ select {
     border: 0;
     opacity: 0;
     cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
   }
 
   .mobile-color-input:disabled {
