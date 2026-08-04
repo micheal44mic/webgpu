@@ -25,7 +25,7 @@ registro D1, che è append-only.
 - Le icone dell'interfaccia provengono esclusivamente dal catalogo ufficiale
   **Lucide** (`https://lucide.dev/icons/`), pacchetto npm `lucide`, licenza
   ISC. Importare soltanto le icone nominate che servono, mantenere lo stile
-  outline Lucide da `24 px` con cap/join arrotondati e non mescolare altre
+  outline Lucide da `20 px` con cap/join arrotondati e non mescolare altre
   famiglie, emoji o SVG disegnati a mano. Sul canvas mobile usare la doppia
   traccia già definita in CSS: avorio `#f2f0e9` sopra antracite `#202226`,
   senza ombre.
@@ -316,9 +316,12 @@ Paint:
   disponibili usano grigio `#85888f`. Rimossi sia il contorno focus blu sia il
   tap highlight mobile e anche il fondo di selezione: lo stato è espresso dal
   solo colore dell'icona. La Gomma rimane grigia e disabilitata, non viene
-  rappresentata falsamente come attiva. Tutte le suite `*:verify`, TypeScript,
-  build Vite/Sites e `git diff --check` verdi; nessuna misura prestazionale o
-  QA fisica iPhone ancora eseguita.
+  rappresentata falsamente come attiva. Terzo follow-up: tutte le icone e il
+  selettore colore mobile sono `20×20 px`; altezza utile dell'header e larghezza
+  della rail sono entrambe `52 px` (l'header somma soltanto la safe area
+  superiore). Le aree touch restano `44×44 px`. Tutte le suite `*:verify`,
+  TypeScript, build Vite/Sites e `git diff --check` verdi; nessuna misura
+  prestazionale o QA fisica iPhone ancora eseguita.
 - …cache di presentazione persistente screen-space: display shader eseguito
   solo sulla dirty region, poi `copyTextureToTexture` alla swapchain
   (`#37/#38`: Base `+46%` FPS vs `#35`, migliore anche delle vecchie baseline).

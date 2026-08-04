@@ -806,7 +806,7 @@ select {
     right: 0;
     left: 0;
     z-index: 5;
-    height: calc(56px + env(safe-area-inset-top));
+    height: calc(52px + env(safe-area-inset-top));
     padding: env(safe-area-inset-top) max(8px, env(safe-area-inset-right)) 0 env(safe-area-inset-left);
     border: 0;
     background: transparent;
@@ -855,16 +855,16 @@ select {
   .mobile-icon-stack {
     position: relative;
     display: block;
-    width: 24px;
-    height: 24px;
+    width: 20px;
+    height: 20px;
   }
 
   .mobile-icon-layer {
     position: absolute;
     inset: 0;
     display: block;
-    width: 24px;
-    height: 24px;
+    width: 20px;
+    height: 20px;
     fill: none;
     stroke-linecap: round;
     stroke-linejoin: round;
@@ -886,9 +886,11 @@ select {
     top: 50%;
     left: 0;
     display: flex;
+    width: 52px;
     flex-direction: column;
+    align-items: center;
     gap: 2px;
-    padding: 6px 4px 6px max(4px, env(safe-area-inset-left));
+    padding: 6px 4px;
     border-radius: 0 12px 12px 0;
     background: var(--app-background);
     transform: translateY(-50%);
@@ -960,8 +962,8 @@ select {
 
   .mobile-color-swatch {
     display: block;
-    width: 25px;
-    height: 25px;
+    width: 20px;
+    height: 20px;
     border: 2px solid var(--mobile-icon-face);
     border-radius: 50%;
     outline: 1px solid var(--mobile-icon-outline);
