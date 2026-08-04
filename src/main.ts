@@ -7,6 +7,10 @@ import { MobileBrushStudioController } from "./mobile-brush-studio";
 import { MobileBrushLibraryPreviewRenderer } from "./brush-library-preview";
 import { MobileStrokeSheetController } from "./mobile-stroke-sheet";
 import {
+  MOBILE_RASTER_EFFECT_KIND_BY_CONTROL_ID,
+  MobileRasterEffectsSheetController,
+} from "./mobile-raster-effects-sheet";
+import {
   loadBrushStudioLibraryState,
   saveBrushStudioLibraryState,
 } from "./brush-studio-storage";
@@ -804,6 +808,7 @@ if (mixedMemoryBenchmarkRequested) {
 let vectorTextPrototype: MixedVectorTextController | null = null;
 let mobileBrushStudio: MobileBrushStudioController | null = null;
 let mobileStrokeSheet: MobileStrokeSheetController | null = null;
+let mobileRasterEffectsSheet: MobileRasterEffectsSheetController | null = null;
 const engine = new BrushEngine(canvas, {
   onStatus(message, kind) {
     statusElement.textContent = message;
@@ -1393,6 +1398,7 @@ function syncMobileBrushControlsVisibility(): void {
     || mobileToolsSheetOpen
     || mobileBrushLibraryOpen
     || mobileStrokeSheet?.isOpen === true
+    || mobileRasterEffectsSheet?.isOpen === true
     || mobileBrushStudio?.isOpen === true;
   if (suppressed && mobileBrushControlDrag) {
     finishMobileBrushControlDrag(true);
@@ -1605,6 +1611,7 @@ function setMobileBrushLibraryOpen(open: boolean): void {
   if (open && (!mobileUiMediaQuery.matches || activeCanvasTool !== "paint")) return;
   if (open && mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
   if (open && mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
+  if (open && mobileRasterEffectsSheet?.isOpen) mobileRasterEffectsSheet.close(false);
   if (open && mobileToolsSheetOpen) setMobileToolsSheetOpen(false);
   if (open && mobileLayersPanelOpen) setMobileLayersPanelOpen(false);
 
@@ -1908,6 +1915,7 @@ function setMobileLayersPanelOpen(open: boolean): void {
   if (open && !mobileUiMediaQuery.matches) return;
   if (open && mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
   if (open && mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
+  if (open && mobileRasterEffectsSheet?.isOpen) mobileRasterEffectsSheet.close(false);
   if (open && mobileToolsSheetOpen) {
     setMobileToolsSheetOpen(false);
   }
@@ -1948,6 +1956,7 @@ function setMobileToolsSheetOpen(open: boolean): void {
   if (open && !mobileUiMediaQuery.matches) return;
   if (open && mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
   if (open && mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
+  if (open && mobileRasterEffectsSheet?.isOpen) mobileRasterEffectsSheet.close(false);
   if (open && mobileLayersPanelOpen) {
     setMobileLayersPanelOpen(false);
   }
@@ -2608,7 +2617,9 @@ function updateRasterColorOverlayControlAvailability(
   }
 }
 
-async function applyRasterColorOverlayControls(): Promise<void> {
+async function applyRasterColorOverlayStyle(
+  style: RasterColorOverlayStyle,
+): Promise<boolean> {
   if (
     !engineInitialized
     || rasterColorOverlayChanging
@@ -2617,15 +2628,17 @@ async function applyRasterColorOverlayControls(): Promise<void> {
   ) {
     syncRasterColorOverlayControls(engine.getRasterColorOverlayStyle());
     updateRasterColorOverlayControlAvailability();
-    return;
+    return false;
   }
   rasterColorOverlayChanging = true;
+  syncRasterColorOverlayControls(style);
+  updateRasterColorOverlayControlAvailability();
+  syncMobileToolsMenuState();
   updateHistoryControls();
   updateHumanStrokeControls();
+  let accepted = false;
   try {
-    const accepted = await engine.setRasterColorOverlayStyle(
-      readRasterColorOverlayStyle(),
-    );
+    accepted = await engine.setRasterColorOverlayStyle(style);
     if (!accepted) {
       syncRasterColorOverlayControls(engine.getRasterColorOverlayStyle());
     }
@@ -2633,9 +2646,16 @@ async function applyRasterColorOverlayControls(): Promise<void> {
     syncRasterColorOverlayControls(engine.getRasterColorOverlayStyle());
   } finally {
     rasterColorOverlayChanging = false;
+    updateRasterColorOverlayControlAvailability();
+    syncMobileToolsMenuState();
     updateHistoryControls();
     updateHumanStrokeControls();
   }
+  return accepted;
+}
+
+async function applyRasterColorOverlayControls(): Promise<void> {
+  await applyRasterColorOverlayStyle(readRasterColorOverlayStyle());
 }
 
 function rasterStrokeColorFromHex(value: string): RasterStrokeStyle["color"] {
@@ -2829,17 +2849,23 @@ function updateRasterOuterShadowControlAvailability(locked = interactionLocked()
   }
 }
 
-async function applyRasterOuterShadowControls(): Promise<void> {
+async function applyRasterOuterShadowStyle(
+  style: RasterOuterShadowStyle,
+): Promise<boolean> {
   if (!engineInitialized || rasterOuterShadowChanging || activePointerId !== null) {
     syncRasterOuterShadowControls(engine.getRasterOuterShadowStyle());
     updateRasterOuterShadowControlAvailability();
-    return;
+    return false;
   }
   rasterOuterShadowChanging = true;
+  syncRasterOuterShadowControls(style);
+  updateRasterOuterShadowControlAvailability();
+  syncMobileToolsMenuState();
   updateHistoryControls();
   updateHumanStrokeControls();
+  let accepted = false;
   try {
-    const accepted = await engine.setRasterOuterShadowStyle(readRasterOuterShadowStyle());
+    accepted = await engine.setRasterOuterShadowStyle(style);
     if (!accepted) {
       syncRasterOuterShadowControls(engine.getRasterOuterShadowStyle());
     }
@@ -2847,9 +2873,16 @@ async function applyRasterOuterShadowControls(): Promise<void> {
     syncRasterOuterShadowControls(engine.getRasterOuterShadowStyle());
   } finally {
     rasterOuterShadowChanging = false;
+    updateRasterOuterShadowControlAvailability();
+    syncMobileToolsMenuState();
     updateHistoryControls();
     updateHumanStrokeControls();
   }
+  return accepted;
+}
+
+async function applyRasterOuterShadowControls(): Promise<void> {
+  await applyRasterOuterShadowStyle(readRasterOuterShadowStyle());
 }
 
 function readRasterInnerShadowStyle(): RasterInnerShadowStyle {
@@ -2925,17 +2958,23 @@ function updateRasterInnerShadowControlAvailability(locked = interactionLocked()
   }
 }
 
-async function applyRasterInnerShadowControls(): Promise<void> {
+async function applyRasterInnerShadowStyle(
+  style: RasterInnerShadowStyle,
+): Promise<boolean> {
   if (!engineInitialized || rasterInnerShadowChanging || activePointerId !== null) {
     syncRasterInnerShadowControls(engine.getRasterInnerShadowStyle());
     updateRasterInnerShadowControlAvailability();
-    return;
+    return false;
   }
   rasterInnerShadowChanging = true;
+  syncRasterInnerShadowControls(style);
+  updateRasterInnerShadowControlAvailability();
+  syncMobileToolsMenuState();
   updateHistoryControls();
   updateHumanStrokeControls();
+  let accepted = false;
   try {
-    const accepted = await engine.setRasterInnerShadowStyle(readRasterInnerShadowStyle());
+    accepted = await engine.setRasterInnerShadowStyle(style);
     if (!accepted) {
       syncRasterInnerShadowControls(engine.getRasterInnerShadowStyle());
     }
@@ -2943,9 +2982,16 @@ async function applyRasterInnerShadowControls(): Promise<void> {
     syncRasterInnerShadowControls(engine.getRasterInnerShadowStyle());
   } finally {
     rasterInnerShadowChanging = false;
+    updateRasterInnerShadowControlAvailability();
+    syncMobileToolsMenuState();
     updateHistoryControls();
     updateHumanStrokeControls();
   }
+  return accepted;
+}
+
+async function applyRasterInnerShadowControls(): Promise<void> {
+  await applyRasterInnerShadowStyle(readRasterInnerShadowStyle());
 }
 
 function rasterBevelColorFromHex(
@@ -3080,17 +3126,21 @@ function updateRasterBevelControlAvailability(locked = interactionLocked()): voi
   }
 }
 
-async function applyRasterBevelControls(): Promise<void> {
+async function applyRasterBevelStyle(style: RasterBevelStyle): Promise<boolean> {
   if (!engineInitialized || rasterBevelChanging || activePointerId !== null) {
     syncRasterBevelControls(engine.getRasterBevelStyle());
     updateRasterBevelControlAvailability();
-    return;
+    return false;
   }
   rasterBevelChanging = true;
+  syncRasterBevelControls(style);
+  updateRasterBevelControlAvailability();
+  syncMobileToolsMenuState();
   updateHistoryControls();
   updateHumanStrokeControls();
+  let accepted = false;
   try {
-    const accepted = await engine.setRasterBevelStyle(readRasterBevelStyle());
+    accepted = await engine.setRasterBevelStyle(style);
     if (!accepted) {
       syncRasterBevelControls(engine.getRasterBevelStyle());
     }
@@ -3098,9 +3148,16 @@ async function applyRasterBevelControls(): Promise<void> {
     syncRasterBevelControls(engine.getRasterBevelStyle());
   } finally {
     rasterBevelChanging = false;
+    updateRasterBevelControlAvailability();
+    syncMobileToolsMenuState();
     updateHistoryControls();
     updateHumanStrokeControls();
   }
+  return accepted;
+}
+
+async function applyRasterBevelControls(): Promise<void> {
+  await applyRasterBevelStyle(readRasterBevelStyle());
 }
 
 function setBrushAssetControlValue(
@@ -3188,6 +3245,7 @@ mobileBrushStudio = new MobileBrushStudioController({
   setBrushLibraryOpen: setMobileBrushLibraryOpen,
   onOpenChange: (open) => {
     if (open && mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
+    if (open && mobileRasterEffectsSheet?.isOpen) mobileRasterEffectsSheet.close(false);
     syncMobileBrushLibraryButtonState();
     syncMobileBrushControlsVisibility();
   },
@@ -3217,6 +3275,31 @@ mobileStrokeSheet = new MobileStrokeSheetController({
     setMobileLayersPanelOpen(false);
     setMobileBrushLibraryOpen(false);
     mobileBrushStudio?.cancel(false);
+    mobileRasterEffectsSheet?.close(false);
+    setControlsPanelOpen(false);
+  },
+  onOpenChange: () => {
+    syncMobileToolsMenuState();
+    syncMobileBrushControlsVisibility();
+  },
+});
+
+mobileRasterEffectsSheet = new MobileRasterEffectsSheetController({
+  mobileMediaQuery: mobileUiMediaQuery,
+  getColorOverlayStyle: () => engine.getRasterColorOverlayStyle(),
+  applyColorOverlayStyle: applyRasterColorOverlayStyle,
+  getOuterShadowStyle: () => engine.getRasterOuterShadowStyle(),
+  applyOuterShadowStyle: applyRasterOuterShadowStyle,
+  getInnerShadowStyle: () => engine.getRasterInnerShadowStyle(),
+  applyInnerShadowStyle: applyRasterInnerShadowStyle,
+  getBevelStyle: () => engine.getRasterBevelStyle(),
+  applyBevelStyle: applyRasterBevelStyle,
+  beforeOpen: () => {
+    setMobileToolsSheetOpen(false);
+    setMobileLayersPanelOpen(false);
+    setMobileBrushLibraryOpen(false);
+    mobileBrushStudio?.cancel(false);
+    mobileStrokeSheet?.close(false);
     setControlsPanelOpen(false);
   },
   onOpenChange: () => {
@@ -4248,6 +4331,7 @@ mobileUiMediaQuery.addEventListener("change", (event) => {
   setMobileLayersPanelOpen(false);
   setMobileBrushLibraryOpen(false);
   mobileStrokeSheet?.close(false);
+  mobileRasterEffectsSheet?.close(false);
   mobileBrushStudio?.cancel(false);
   setControlsPanelOpen(true);
   syncMobileBrushControlsVisibility();
@@ -4259,11 +4343,13 @@ window.addEventListener("resize", () => {
     && mobileBrushLibraryDragPointerId === null;
   const brushStudioNeedsLayout = mobileBrushStudio?.isOpen === true;
   const strokeSheetNeedsLayout = mobileStrokeSheet?.isOpen === true;
+  const rasterEffectsSheetNeedsLayout = mobileRasterEffectsSheet?.isOpen === true;
   if (
     !toolsNeedLayout
     && !brushLibraryNeedsLayout
     && !brushStudioNeedsLayout
     && !strokeSheetNeedsLayout
+    && !rasterEffectsSheetNeedsLayout
   ) return;
   if (mobileToolsSheetResizeFrame !== null) {
     cancelAnimationFrame(mobileToolsSheetResizeFrame);
@@ -4278,6 +4364,7 @@ window.addEventListener("resize", () => {
     }
     mobileBrushStudio?.handleResize();
     mobileStrokeSheet?.handleResize();
+    mobileRasterEffectsSheet?.handleResize();
   });
 });
 
@@ -4370,6 +4457,15 @@ for (const button of mobileToolsEffectButtons) {
     if (!control || control.disabled || !engineInitialized) return;
     if (controlId === "rasterStrokeEnabled" && mobileStrokeSheet) {
       mobileStrokeSheet.open();
+      return;
+    }
+    const effectKind = controlId
+      ? MOBILE_RASTER_EFFECT_KIND_BY_CONTROL_ID[
+        controlId as keyof typeof MOBILE_RASTER_EFFECT_KIND_BY_CONTROL_ID
+      ]
+      : undefined;
+    if (effectKind && mobileRasterEffectsSheet) {
+      mobileRasterEffectsSheet.open(effectKind);
       return;
     }
     control.click();
@@ -5401,6 +5497,7 @@ function syncActiveLayerControls(): void {
   syncRasterOuterShadowControls(engine.getRasterOuterShadowStyle());
   syncRasterInnerShadowControls(engine.getRasterInnerShadowStyle());
   syncRasterBevelControls(engine.getRasterBevelStyle());
+  mobileRasterEffectsSheet?.syncOpenStyle();
   updateRasterColorOverlayControlAvailability();
   updateRasterStrokeControlAvailability();
   updateRasterOuterShadowControlAvailability();
@@ -8277,6 +8374,7 @@ setControlsPanelOpen(!mobileUiMediaQuery.matches);
 setMobileToolsSheetOpen(false);
 setMobileBrushLibraryOpen(false);
 mobileStrokeSheet?.close(false);
+mobileRasterEffectsSheet?.close(false);
 setSelectionCombineMode("replace");
 updatePixelSelectionResult(engine.getPixelSelectionState());
 configureBrushToolUi("paint", false);

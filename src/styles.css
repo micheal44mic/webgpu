@@ -2291,7 +2291,325 @@ select {
     outline-offset: -3px;
   }
 
+  .mobile-raster-effect-sheet {
+    --mobile-tools-sheet-offset: calc(100% - clamp(160px, 26dvh, 240px));
+    --mobile-raster-effect-visible-height: clamp(160px, 26dvh, 240px);
+    --mobile-raster-effect-handle-height: 38px;
+  }
+
+  .mobile-raster-effect-sheet[hidden] {
+    display: none;
+  }
+
+  .mobile-raster-effect-sheet .mobile-tools-sheet-handle,
+  .mobile-raster-effect-sheet .mobile-tools-sheet-handle:hover,
+  .mobile-raster-effect-sheet .mobile-tools-sheet-handle:active {
+    min-height: var(--mobile-raster-effect-handle-height);
+    flex-basis: var(--mobile-raster-effect-handle-height);
+  }
+
+  .mobile-raster-effect-shell {
+    display: flex;
+    width: 100%;
+    height: max(
+      0px,
+      calc(
+        var(--mobile-raster-effect-visible-height)
+        - var(--mobile-raster-effect-handle-height)
+      )
+    );
+    min-height: 0;
+    flex: 0 0 auto;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--app-background);
+  }
+
+  .mobile-raster-effect-header {
+    display: grid;
+    min-height: 48px;
+    flex: 0 0 48px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    padding: 0 16px;
+    border-bottom: 1px solid #252932;
+    background: var(--app-background);
+  }
+
+  .mobile-raster-effect-header h2 {
+    overflow: hidden;
+    margin: 0;
+    color: var(--mobile-icon-face);
+    font-size: 13px;
+    font-weight: 650;
+    line-height: 1.2;
+    letter-spacing: 0.01em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-raster-effect-enabled {
+    position: relative;
+    display: flex;
+    min-width: 104px;
+    min-height: 44px;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    color: var(--mobile-icon-inactive);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .mobile-raster-effect-enabled input {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    opacity: 0;
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+  }
+
+  .mobile-raster-effect-switch {
+    position: relative;
+    display: block;
+    width: 38px;
+    height: 22px;
+    flex: 0 0 38px;
+    border: 1px solid #4a4e58;
+    border-radius: 999px;
+    background: #292c33;
+    transition: border-color 140ms ease, background-color 140ms ease;
+  }
+
+  .mobile-raster-effect-switch > span {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--mobile-icon-inactive);
+    transform: translateX(0);
+    transition: transform 140ms ease, background-color 140ms ease;
+  }
+
+  .mobile-raster-effect-enabled input:checked + .mobile-raster-effect-switch {
+    border-color: #dd5c35;
+    background: #dd5c35;
+  }
+
+  .mobile-raster-effect-enabled input:checked + .mobile-raster-effect-switch > span {
+    background: var(--mobile-icon-face);
+    transform: translateX(16px);
+  }
+
+  .mobile-raster-effect-enabled:focus-within .mobile-raster-effect-switch {
+    outline: 1px solid #dd5c35;
+    outline-offset: 2px;
+  }
+
+  .mobile-raster-effect-scroll {
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 8px 16px max(16px, env(safe-area-inset-bottom));
+    background: var(--app-background);
+    overscroll-behavior: contain;
+    scrollbar-color: #4a4e58 transparent;
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .mobile-raster-effect-content {
+    display: grid;
+    min-width: 0;
+    gap: 8px;
+  }
+
+  .mobile-raster-effect-group {
+    margin: 8px 0 0;
+    padding: 8px 2px 3px;
+    border-top: 1px solid #252932;
+    color: var(--mobile-icon-face);
+    font-size: 12px;
+    font-weight: 650;
+    line-height: 1.2;
+    letter-spacing: 0.01em;
+  }
+
+  .mobile-raster-effect-group:first-child {
+    margin-top: 0;
+    padding-top: 2px;
+    border-top: 0;
+  }
+
+  .mobile-raster-effect-range {
+    display: grid;
+    min-width: 0;
+    min-height: 58px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: 14px 44px;
+    align-items: center;
+    gap: 0 10px;
+    color: var(--mobile-icon-inactive);
+    font-size: 11px;
+    font-weight: 550;
+    line-height: 1;
+  }
+
+  .mobile-raster-effect-range output {
+    color: #dd5c35;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+
+  .mobile-raster-effect-range input[type="range"] {
+    width: 100%;
+    height: 44px;
+    grid-row: 2;
+    grid-column: 1 / -1;
+    margin: 0;
+    border: 0;
+    outline: none;
+    background: transparent;
+    accent-color: #dd5c35;
+    cursor: ew-resize;
+    touch-action: none;
+  }
+
+  .mobile-raster-effect-select {
+    display: grid;
+    min-width: 0;
+    min-height: 52px;
+    grid-template-columns: minmax(0, 1fr) minmax(136px, 48%);
+    align-items: center;
+    gap: 12px;
+    color: var(--mobile-icon-inactive);
+    font-size: 11px;
+    font-weight: 550;
+    line-height: 1.15;
+  }
+
+  .mobile-raster-effect-select select {
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    padding: 0 28px 0 10px;
+    border: 1px solid #343842;
+    border-radius: 10px;
+    outline: none;
+    background: #292c33;
+    color: var(--mobile-icon-face);
+    font-size: 13px;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .mobile-raster-effect-color {
+    display: grid;
+    min-width: 0;
+    min-height: 52px;
+    grid-template-columns: minmax(0, 1fr) 52px;
+    align-items: center;
+    gap: 12px;
+    color: var(--mobile-icon-inactive);
+    font-size: 11px;
+    font-weight: 550;
+    line-height: 1.15;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .mobile-raster-effect-color-disc {
+    position: relative;
+    display: grid;
+    width: 44px;
+    height: 44px;
+    justify-self: end;
+    place-items: center;
+    overflow: hidden;
+    border: 2px solid var(--mobile-icon-face);
+    border-radius: 50%;
+    outline: 1px solid var(--mobile-icon-outline);
+    outline-offset: 0;
+    background: var(--mobile-raster-effect-color, #000000);
+  }
+
+  .mobile-raster-effect-color input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    opacity: 0;
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .mobile-raster-effect-check {
+    display: flex;
+    min-width: 0;
+    min-height: 44px;
+    align-items: center;
+    gap: 11px;
+    color: var(--mobile-icon-face);
+    font-size: 12px;
+    font-weight: 550;
+    line-height: 1.2;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .mobile-raster-effect-check input {
+    width: 20px;
+    height: 20px;
+    flex: 0 0 20px;
+    margin: 0;
+    accent-color: #dd5c35;
+    cursor: pointer;
+  }
+
+  .mobile-raster-effect-range input:focus-visible,
+  .mobile-raster-effect-select select:focus-visible,
+  .mobile-raster-effect-color:focus-within .mobile-raster-effect-color-disc,
+  .mobile-raster-effect-check input:focus-visible {
+    border-radius: 8px;
+    outline: 1px solid #dd5c35;
+    outline-offset: 2px;
+  }
+
+  .mobile-raster-effect-content.is-disabled > * {
+    opacity: 0.42;
+  }
+
+  .mobile-raster-effect-content input:disabled,
+  .mobile-raster-effect-content select:disabled {
+    cursor: default;
+  }
+
   @media (max-height: 700px) {
+    .mobile-raster-effect-sheet {
+      --mobile-raster-effect-handle-height: 34px;
+    }
+
     .mobile-stroke-sheet .mobile-tools-sheet-handle {
       flex-basis: 34px;
       min-height: 34px;

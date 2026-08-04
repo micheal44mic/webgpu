@@ -18,6 +18,7 @@
     "brush-studio:verify": "node scripts/verify-brush-studio.mjs",
     "brush-library-preview:verify": "node scripts/verify-brush-library-preview.mjs",
     "stroke-ui:verify": "node scripts/verify-mobile-stroke-sheet.mjs",
+    "effects-ui:verify": "node scripts/verify-mobile-raster-effects-sheet.mjs",
     "thickness:verify": "node scripts/verify-thickness-dynamics.mjs",
     "history:verify": "node scripts/verify-history-journal.mjs",
     "layers:verify": "node scripts/verify-layer-stack.mjs",

@@ -3729,3 +3729,31 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   `512 px`, sequenza rapida latest-only, mirror desktop e console pulita;
   TypeScript, build Vite/Sites, suite Stroke/UI/scratch/history e
   `git diff --check` verdi. Lo slider fisico resta da provare su Safari/iPhone.
+
+### Pannelli mobile degli effetti raster (4 agosto 2026)
+
+- Le card `Color Overlay`, `Outer Shadow`, `Inner Shadow` e `Bevel` del foglio
+  Tools aprono ora un editor mobile condiviso e attivano l'effetto se necessario.
+  I primi tre restano esclusivamente allo snap basso
+  `clamp(160 px, 26dvh, 240 px)`; soltanto Bevel può salire allo snap expanded.
+  In entrambi gli snap il contenuto ha scroll verticale nativo separato dalla
+  maniglia, quindi anche Bevel può essere modificato in basso lasciando visibile
+  il canvas. Tap, Escape e trascinamento/flick verso il basso chiudono il foglio
+  senza disattivare l'effetto. Tutti gli altri pannelli mobile e i dischi
+  Size/Opacity sono mutuamente esclusivi con l'editor.
+- L'editor espone gli stessi record autorevoli e gli stessi setter già usati dal
+  desktop: colore/opacità per Color Overlay; Blend Mode, colore, opacità,
+  geometria, contour, anti-alias, noise e knockout per le ombre; tutti i 18
+  parametri esistenti di Bevel, inclusi Structure, Light, Gloss, Bevel Contour,
+  Fill, Highlight e Shadow. `useGlobalLight` delle ombre viene preservato ma non
+  inventato come controllo mobile perché non è esposto neppure dal desktop.
+  Non esistono renderer, texture, history o stato persistente duplicati e il
+  percorso caldo GPU del pennello non è stato modificato.
+- Range e color picker vengono coalesciati a un apply per frame e poi
+  serializzati con una coda versionata latest-only: una risposta asincrona
+  precedente non può sovrascrivere una modifica più recente. Il fallback
+  `change` copre anche Safari/WebKit quando il picker non emette `input`, senza
+  duplicare il commit quando è già presente la draft dello stesso controllo.
+  TypeScript, build Vite/Sites, tutte le `27` suite `*:verify`, inclusa la nuova
+  `effects-ui:verify`, e `git diff --check` sono verdi. Non sono ancora state
+  eseguite QA touch su Safari/iPhone fisico né una nuova pubblicazione Sites.
