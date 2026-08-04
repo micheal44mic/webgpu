@@ -237,6 +237,14 @@ const mobileAddLayerButton = element<HTMLButtonElement>("mobileAddLayer");
 const mobileCopyLayerButton = element<HTMLButtonElement>("mobileCopyLayer");
 const mobileAddMaskButton = element<HTMLButtonElement>("mobileAddMask");
 const mobileLayerList = element<HTMLElement>("mobileLayerList");
+const mobileBrushControls = element<HTMLElement>("mobileBrushControls");
+const mobileBrushSizeTrack = element<HTMLElement>("mobileBrushSizeTrack");
+const mobileBrushOpacityTrack = element<HTMLElement>("mobileBrushOpacityTrack");
+const mobileBrushSizeControl = element<HTMLElement>("mobileBrushSizeControl");
+const mobileBrushOpacityControl = element<HTMLElement>("mobileBrushOpacityControl");
+const mobileBrushPreview = element<HTMLElement>("mobileBrushPreview");
+const mobileBrushPreviewLabel = element<HTMLOutputElement>("mobileBrushPreviewLabel");
+const mobileBrushPreviewCanvas = element<HTMLCanvasElement>("mobileBrushPreviewCanvas");
 const mobileToolsCategories = Array.from(
   document.querySelectorAll<HTMLElement>("[data-mobile-tools-category]"),
 );
@@ -759,6 +767,7 @@ const engine = new BrushEngine(canvas, {
   },
   onStats(stats) {
     updateStats(stats);
+    if (mobileBrushControlDrag) scheduleMobileBrushPreview();
   },
   onHistoryChange(state) {
     historyState = state;
@@ -862,6 +871,17 @@ let mobileLayersPanelOpen = false;
 let mobileLayersRenderSignature = "";
 let mobileLayersRefreshRequested = true;
 let mobileLayersRefreshFrame: number | null = null;
+type MobileBrushControlKind = "size" | "opacity";
+interface MobileBrushControlDrag {
+  readonly kind: MobileBrushControlKind;
+  readonly pointerId: number;
+  readonly startClientY: number;
+  readonly startPercent: number;
+  readonly startInputValue: string;
+  readonly travelPixels: number;
+}
+let mobileBrushControlDrag: MobileBrushControlDrag | null = null;
+let mobileBrushPreviewFrame: number | null = null;
 interface MobileRasterThumbnailCacheEntry {
   readonly imageData: ImageData;
   readonly revision: number;
@@ -1067,6 +1087,9 @@ function configureBrushToolUi(
   updateSelectionMethodUi();
   vectorTextPrototype?.setTransformToolActive(transform);
   updateRenderingModeControlAvailability();
+  syncMobileBrushControlVisuals();
+  syncMobileBrushControlsVisibility();
+  syncMobileBrushControlAvailability();
   if (engineInitialized) {
     const method = selectedSelectionMethod();
     void (async () => {
@@ -1131,6 +1154,169 @@ function setControlsPanelOpen(open: boolean): void {
   toggleControlsButton.setAttribute("aria-expanded", String(open));
   toggleControlsButton.setAttribute("aria-label", open ? "Nascondi pannelli" : "Mostra pannelli");
   toggleControlsButton.title = open ? "Nascondi pannelli" : "Mostra pannelli";
+}
+
+const MOBILE_BRUSH_PREVIEW_CSS_SIZE = 124;
+const MOBILE_BRUSH_PREVIEW_MAX_TIP_CSS_PIXELS = 92;
+
+function clampMobileBrushPercent(value: number, minimum: number): number {
+  return Math.min(100, Math.max(minimum, Number.isFinite(value) ? value : minimum));
+}
+
+function mobileBrushControlElement(kind: MobileBrushControlKind): HTMLElement {
+  return kind === "size" ? mobileBrushSizeControl : mobileBrushOpacityControl;
+}
+
+function mobileBrushControlTrack(kind: MobileBrushControlKind): HTMLElement {
+  return kind === "size" ? mobileBrushSizeTrack : mobileBrushOpacityTrack;
+}
+
+function mobileBrushControlInput(kind: MobileBrushControlKind): HTMLInputElement {
+  return element<HTMLInputElement>(kind === "size" ? "brushSize" : "opacity");
+}
+
+function mobileBrushControlPercent(kind: MobileBrushControlKind): number {
+  const input = mobileBrushControlInput(kind);
+  const value = Number(input.value);
+  if (kind === "opacity") {
+    return clampMobileBrushPercent(value, 0);
+  }
+  const minimum = Number(input.min);
+  const maximum = Number(input.max);
+  if (!Number.isFinite(minimum) || !Number.isFinite(maximum) || maximum <= minimum) {
+    return 1;
+  }
+  const normalized = Math.min(1, Math.max(0, (value - minimum) / (maximum - minimum)));
+  return 1 + normalized * 99;
+}
+
+function setMobileBrushControlPercent(kind: MobileBrushControlKind, requested: number): void {
+  const input = mobileBrushControlInput(kind);
+  if (kind === "opacity") {
+    const percent = clampMobileBrushPercent(requested, 0);
+    input.value = (Math.round(percent * 10) / 10).toString();
+  } else {
+    const percent = clampMobileBrushPercent(requested, 1);
+    const minimum = Number(input.min);
+    const maximum = Number(input.max);
+    const normalized = (percent - 1) / 99;
+    input.value = Math.round(minimum + normalized * (maximum - minimum)).toString();
+  }
+  syncMobileBrushControlVisuals();
+}
+
+function syncMobileBrushControlVisual(kind: MobileBrushControlKind): void {
+  const control = mobileBrushControlElement(kind);
+  const percent = mobileBrushControlPercent(kind);
+  const roundedPercent = Math.round(percent);
+  const label = `${kind === "size" ? "Size" : "Opacity"} ${roundedPercent}%`;
+  control.style.setProperty(
+    "--mobile-brush-control-position",
+    `${(100 - percent).toFixed(3)}%`,
+  );
+  control.setAttribute("aria-valuenow", String(roundedPercent));
+  control.setAttribute("aria-valuetext", label);
+  if (kind === "size") {
+    const indicatorDiameter = Math.max(1, 18 * percent / 100);
+    control.style.setProperty(
+      "--mobile-brush-size-indicator",
+      `${indicatorDiameter.toFixed(2)}px`,
+    );
+  } else {
+    control.style.setProperty(
+      "--mobile-brush-opacity-indicator",
+      (percent / 100).toFixed(3),
+    );
+  }
+}
+
+function renderMobileBrushPreview(): void {
+  if (!mobileBrushControlDrag || !mobileUiMediaQuery.matches) return;
+  const kind = mobileBrushControlDrag.kind;
+  const percent = mobileBrushControlPercent(kind);
+  const diameter = kind === "size"
+    ? MOBILE_BRUSH_PREVIEW_MAX_TIP_CSS_PIXELS * percent / 100
+    : MOBILE_BRUSH_PREVIEW_MAX_TIP_CSS_PIXELS * 0.72;
+  const alpha = kind === "opacity" ? percent / 100 : 1;
+  engine.renderBrushTipPreview(
+    mobileBrushPreviewCanvas,
+    MOBILE_BRUSH_PREVIEW_CSS_SIZE,
+    diameter,
+    alpha,
+  );
+}
+
+function scheduleMobileBrushPreview(): void {
+  if (mobileBrushPreviewFrame !== null || !mobileBrushControlDrag) return;
+  mobileBrushPreviewFrame = requestAnimationFrame(() => {
+    mobileBrushPreviewFrame = null;
+    renderMobileBrushPreview();
+  });
+}
+
+function syncMobileBrushControlVisuals(): void {
+  syncMobileBrushControlVisual("size");
+  syncMobileBrushControlVisual("opacity");
+  if (mobileBrushControlDrag) {
+    const kind = mobileBrushControlDrag.kind;
+    mobileBrushPreviewLabel.value = `${kind === "size" ? "Size" : "Opacity"} ${
+      Math.round(mobileBrushControlPercent(kind))
+    }%`;
+    scheduleMobileBrushPreview();
+  }
+}
+
+function syncMobileBrushControlAvailability(locked = interactionLocked()): void {
+  const brushContext = activeCanvasTool === "paint" || activeCanvasTool === "blend";
+  const sizeDisabled = locked || !brushContext;
+  const opacityDisabled = locked || activeCanvasTool !== "paint";
+  for (const [control, disabled] of [
+    [mobileBrushSizeControl, sizeDisabled],
+    [mobileBrushOpacityControl, opacityDisabled],
+  ] as const) {
+    control.setAttribute("aria-disabled", String(disabled));
+    control.tabIndex = disabled ? -1 : 0;
+  }
+}
+
+function syncMobileBrushControlsVisibility(): void {
+  const brushContext = activeCanvasTool === "paint" || activeCanvasTool === "blend";
+  const suppressed = !mobileUiMediaQuery.matches
+    || !brushContext
+    || mobileLayersPanelOpen
+    || mobileToolsSheetOpen;
+  if (suppressed && mobileBrushControlDrag) {
+    finishMobileBrushControlDrag(true);
+  }
+  mobileBrushControls.classList.toggle("is-suppressed", suppressed);
+  mobileBrushControls.setAttribute("aria-hidden", String(suppressed));
+}
+
+function finishMobileBrushControlDrag(commit: boolean): void {
+  const drag = mobileBrushControlDrag;
+  if (!drag) return;
+  const control = mobileBrushControlElement(drag.kind);
+  mobileBrushControlDrag = null;
+  if (control.hasPointerCapture(drag.pointerId)) {
+    control.releasePointerCapture(drag.pointerId);
+  }
+  if (mobileBrushPreviewFrame !== null) {
+    cancelAnimationFrame(mobileBrushPreviewFrame);
+    mobileBrushPreviewFrame = null;
+  }
+  control.classList.remove("is-active");
+  mobileBrushControls.classList.remove("is-adjusting");
+  mobileBrushControls.removeAttribute("data-active");
+  mobileBrushPreview.setAttribute("aria-hidden", "true");
+  if (!commit) {
+    mobileBrushControlInput(drag.kind).value = drag.startInputValue;
+  }
+  if (mobileBrushControlInput(drag.kind).value !== drag.startInputValue) {
+    applyBrushControls();
+  } else {
+    syncMobileBrushControlVisuals();
+  }
+  updateHistoryControls();
 }
 
 function mobileToolsSheetPeekOffset(): number {
@@ -1350,6 +1536,7 @@ function setMobileLayersPanelOpen(open: boolean): void {
     void mobileLayersPanel.offsetWidth;
     mobileLayersPanel.classList.add("is-open");
     requestMobileLayerThumbnailCapture(0);
+    syncMobileBrushControlsVisibility();
     return;
   }
   mobileLayersPanel.classList.remove("is-open");
@@ -1359,6 +1546,7 @@ function setMobileLayersPanelOpen(open: boolean): void {
     cancelAnimationFrame(mobileLayersRefreshFrame);
     mobileLayersRefreshFrame = null;
   }
+  syncMobileBrushControlsVisibility();
 }
 
 function setMobileToolsSheetOpen(open: boolean): void {
@@ -1380,6 +1568,7 @@ function setMobileToolsSheetOpen(open: boolean): void {
     snapMobileToolsSheet("peek");
     void mobileToolsSheet.offsetHeight;
     mobileToolsSheet.classList.add("is-open");
+    syncMobileBrushControlsVisibility();
     return;
   }
   mobileToolsSheet.classList.remove("is-open", "is-dragging", "is-search-focus-snap");
@@ -1389,6 +1578,7 @@ function setMobileToolsSheetOpen(open: boolean): void {
     filterMobileTools();
   }
   mobileToolsSheetDragPointerId = null;
+  syncMobileBrushControlsVisibility();
 }
 
 function finishMobileToolsSheetDrag(
@@ -1535,6 +1725,7 @@ function updateControlOutputs(): void {
   updateRasterOuterShadowOutputs();
   updateRasterInnerShadowOutputs();
   element<HTMLOutputElement>("benchmarkStampsOut").value = formatInteger(rangeValue("benchmarkStamps"));
+  syncMobileBrushControlVisuals();
 }
 
 function applyBrushControls(): void {
@@ -2803,6 +2994,7 @@ function updateHumanStrokeControls(): void {
 function operationLocked(): boolean {
   return !engineInitialized
     || layerSwitching
+    || mobileBrushControlDrag !== null
     || historyState.openEdit === "transform"
     || historyUiBusy
     || historyState.busy
@@ -2896,6 +3088,8 @@ function updateHistoryControls(): void {
   updateRasterOuterShadowControlAvailability(locked);
   updateRasterInnerShadowControlAvailability(locked);
   updateRasterBevelControlAvailability(locked);
+  syncMobileBrushControlAvailability(locked);
+  syncMobileBrushControlsVisibility();
 }
 
 async function runHistoryOperation(operation: "undo" | "redo"): Promise<void> {
@@ -3225,6 +3419,95 @@ element<HTMLButtonElement>("selectionClear").addEventListener("click", () => {
 
 benchmarkStampsInput.addEventListener("input", updateControlOutputs);
 
+function startMobileBrushControlDrag(
+  kind: MobileBrushControlKind,
+  event: PointerEvent,
+): void {
+  const control = mobileBrushControlElement(kind);
+  if (
+    event.button !== 0
+    || mobileBrushControlDrag !== null
+    || interactionLocked()
+    || control.getAttribute("aria-disabled") === "true"
+  ) {
+    return;
+  }
+  event.preventDefault();
+  const travelPixels = mobileBrushControlTrack(kind).getBoundingClientRect().height;
+  if (!Number.isFinite(travelPixels) || travelPixels <= 0) return;
+  mobileBrushControlDrag = {
+    kind,
+    pointerId: event.pointerId,
+    startClientY: event.clientY,
+    startPercent: mobileBrushControlPercent(kind),
+    startInputValue: mobileBrushControlInput(kind).value,
+    travelPixels,
+  };
+  mobileBrushControls.dataset.active = kind;
+  mobileBrushControls.classList.add("is-adjusting");
+  mobileBrushPreview.setAttribute("aria-hidden", "false");
+  control.classList.add("is-active");
+  control.setPointerCapture(event.pointerId);
+  syncMobileBrushControlVisuals();
+}
+
+function moveMobileBrushControlDrag(event: PointerEvent): void {
+  const drag = mobileBrushControlDrag;
+  if (!drag || event.pointerId !== drag.pointerId) return;
+  event.preventDefault();
+  const deltaPercent = (event.clientY - drag.startClientY) / drag.travelPixels * 100;
+  setMobileBrushControlPercent(drag.kind, drag.startPercent - deltaPercent);
+}
+
+function finishMobileBrushControlPointer(event: PointerEvent): void {
+  if (!mobileBrushControlDrag || event.pointerId !== mobileBrushControlDrag.pointerId) return;
+  event.preventDefault();
+  finishMobileBrushControlDrag(true);
+}
+
+function handleMobileBrushControlKeydown(
+  kind: MobileBrushControlKind,
+  event: KeyboardEvent,
+): void {
+  const control = mobileBrushControlElement(kind);
+  if (
+    interactionLocked()
+    || control.getAttribute("aria-disabled") === "true"
+    || event.altKey
+    || event.ctrlKey
+    || event.metaKey
+  ) {
+    return;
+  }
+  const step = event.shiftKey ? 10 : 1;
+  const current = mobileBrushControlPercent(kind);
+  let next: number | null = null;
+  if (event.key === "ArrowUp" || event.key === "ArrowRight") next = current + step;
+  else if (event.key === "ArrowDown" || event.key === "ArrowLeft") next = current - step;
+  else if (event.key === "Home") next = 100;
+  else if (event.key === "End") next = kind === "size" ? 1 : 0;
+  if (next === null) return;
+  event.preventDefault();
+  setMobileBrushControlPercent(kind, next);
+  applyBrushControls();
+}
+
+for (const [control, kind] of [
+  [mobileBrushSizeControl, "size"],
+  [mobileBrushOpacityControl, "opacity"],
+] as const) {
+  control.addEventListener("pointerdown", (event) => {
+    startMobileBrushControlDrag(kind, event);
+  });
+  control.addEventListener("pointermove", moveMobileBrushControlDrag);
+  control.addEventListener("pointerup", finishMobileBrushControlPointer);
+  control.addEventListener("pointercancel", finishMobileBrushControlPointer);
+  control.addEventListener("lostpointercapture", finishMobileBrushControlPointer);
+  control.addEventListener("keydown", (event) => {
+    handleMobileBrushControlKeydown(kind, event);
+  });
+}
+
 mobileToolsMenuButton.addEventListener("click", () => {
   setMobileToolsSheetOpen(!mobileToolsSheetOpen);
 });
@@ -3317,11 +3600,15 @@ mobileToolsSearchInput.addEventListener("search", updateMobileToolsSearchResults
 mobileUiMediaQuery.addEventListener("change", (event) => {
   if (event.matches) {
     setControlsPanelOpen(false);
+    syncMobileBrushControlVisuals();
+    syncMobileBrushControlAvailability();
+    syncMobileBrushControlsVisibility();
     return;
   }
   setMobileToolsSheetOpen(false);
   setMobileLayersPanelOpen(false);
   setControlsPanelOpen(true);
+  syncMobileBrushControlsVisibility();
 });
 
 window.addEventListener("resize", () => {

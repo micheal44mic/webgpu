@@ -213,6 +213,75 @@
       </aside>
 
       <aside
+        id="mobileBrushControls"
+        class="mobile-brush-controls"
+        aria-label="Brush size and opacity"
+        aria-hidden="false"
+      >
+        <div id="mobileBrushSizeTrack" class="mobile-brush-control-track">
+          <div class="mobile-brush-control-range">
+            <div
+              id="mobileBrushSizeControl"
+              class="mobile-brush-control"
+              role="slider"
+              tabindex="0"
+              aria-label="Brush size"
+              aria-orientation="vertical"
+              aria-valuemin="1"
+              aria-valuemax="100"
+              aria-valuenow="7"
+              aria-valuetext="Size 7%"
+              data-mobile-brush-control="size"
+            >
+              <span class="mobile-brush-control-disc" aria-hidden="true">
+                <span class="mobile-brush-control-value"></span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div id="mobileBrushOpacityTrack" class="mobile-brush-control-track">
+          <div class="mobile-brush-control-range">
+            <div
+              id="mobileBrushOpacityControl"
+              class="mobile-brush-control"
+              role="slider"
+              tabindex="0"
+              aria-label="Brush opacity"
+              aria-orientation="vertical"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="100"
+              aria-valuetext="Opacity 100%"
+              data-mobile-brush-control="opacity"
+            >
+              <span class="mobile-brush-control-disc" aria-hidden="true">
+                <span class="mobile-brush-control-value"></span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <section
+          id="mobileBrushPreview"
+          class="mobile-brush-preview"
+          aria-hidden="true"
+        >
+          <header class="mobile-brush-preview-header">
+            <output id="mobileBrushPreviewLabel">Size 7%</output>
+          </header>
+          <div class="mobile-brush-preview-body">
+            <canvas
+              id="mobileBrushPreviewCanvas"
+              width="248"
+              height="248"
+              aria-hidden="true"
+            ></canvas>
+          </div>
+        </section>
+      </aside>
+
+      <aside
         id="mobileToolsSheet"
         class="mobile-tools-sheet"
         aria-label="Tools menu"

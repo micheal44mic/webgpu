@@ -1,44 +1,64 @@
-# Design QA — Ombra singola testo
+# Design QA — Mobile brush size and opacity controls
 
 ## Evidence
 
-- Reference: `C:\Users\michi\AppData\Local\Temp\vector-text-single-shadow-qa\reference-kittl-single-shadow-blur-6.jpg`
-- Implementation: `C:\Users\michi\AppData\Local\Temp\vector-text-single-shadow-qa\implementation-local-single-shadow-blur-6.jpg`
-- Focused comparison: `C:\Users\michi\AppData\Local\Temp\vector-text-single-shadow-qa\comparison-focused-single-shadow-blur-6.png`
-- Full comparison: `C:\Users\michi\AppData\Local\Temp\vector-text-single-shadow-qa\comparison-full-single-shadow-blur-6.png`
-- Browser viewport and screenshot size: `1138 × 912`, identical for reference and implementation.
+- Source visual truth:
+  - `C:\Users\michi\AppData\Local\Temp\codex-clipboard-8ac23c25-08a7-4881-9191-962c8d9dc4ce.png` — resting state.
+  - `C:\Users\michi\AppData\Local\Temp\codex-clipboard-a1f60da0-b3a5-4050-8d84-349b707eac30.png` — Size 50% active state.
+  - `C:\Users\michi\AppData\Local\Temp\codex-clipboard-481b4d29-efdf-40f7-882a-ac49d1d4330f.png` — Size 1% active state.
+- Browser-rendered implementation:
+  - `C:\Users\michi\Downloads\webgpu-brush-engine-source\artifacts\mobile-brush-controls-idle-final-430x932.png`.
+  - `C:\Users\michi\Downloads\webgpu-brush-engine-source\artifacts\mobile-brush-controls-size-active-postfix-430x932.png`.
+  - `C:\Users\michi\Downloads\webgpu-brush-engine-source\artifacts\mobile-brush-controls-size-min-postfix-430x932.png`.
+  - `C:\Users\michi\Downloads\webgpu-brush-engine-source\artifacts\mobile-brush-controls-opacity-393x852.png`.
+  - Compact responsive check: `C:\Users\michi\Downloads\webgpu-brush-engine-source\artifacts\mobile-brush-controls-idle-375x667.png`.
+- Full-state comparison: `C:\Users\michi\Downloads\webgpu-brush-engine-source\artifacts\mobile-brush-controls-reference-comparison.png`.
+- Focused control comparison: `C:\Users\michi\Downloads\webgpu-brush-engine-source\artifacts\mobile-brush-controls-focused-comparison.png`.
 
-## Compared state
+## Normalization and state
 
-- Kittl: single text shadow, color `#727272`, opacity `100%`, Offset `54`, Angle `-180°`, Blur `6`, Outline Width `0`.
-- Local app: the same shadow parameters, Block Shadow disabled, text selected at high zoom.
-- Comparison scope: the shadow behavior and its relationship to the source glyph and selection bounds. Kittl's project font, photographic canvas, editor chrome, and the local app's checkerboard are context rather than clone targets.
+- Source pixels: `1290 × 2796`, corresponding to `430 × 932` CSS px at `3×` density.
+- Primary implementation capture: `430 × 932` pixels at a `430 × 932` CSS viewport and device scale factor `1`.
+- The source was downsampled to `430 × 932` for equal-size comparison; no crop or aspect-ratio change was applied.
+- Additional implementation checks used `393 × 852` and `375 × 667` CSS viewports at density `1`.
+- Compared states: both controls resting; Size near 50%; Size at 1%; Opacity active; Paint/Blend availability; Tools and Layers overlays.
+- The control is intentionally mirrored to the right edge and uses the app's existing dark background because those were explicit product requirements, not fidelity defects.
 
 ## Findings
 
-- One offset silhouette is rendered; the implementation does not build repeated text copies.
-- Blur softens the silhouette's alpha edge while its central coverage stays full.
-- The source text remains sharp and is composited above the shadow.
-- Outline Width is fixed and disabled at `0`.
-- The text selection bounds are unchanged between Blur `0` and Blur `6`; neither offset nor blur expands the node bbox.
-- No P0, P1, or P2 visual mismatch was found in the scoped behavior.
+- No actionable P0, P1, or P2 mismatch remains.
+- Fonts and typography: the compact percentage label is readable, single-line, and uses the existing UI family/weight without truncation.
+- Spacing and layout rhythm: both 44 px discs remain half exposed at the right edge; their 52 × 56 px touch targets and vertical courses stay inside all tested viewports. The active panel remains within the canvas area.
+- Colors and tokens: neutral off-white, muted inactive gray, app-background panel, and `#dd5c35` active outline follow the established mobile tokens.
+- Image quality and asset fidelity: the preview is rendered on a dedicated DPR-aware Canvas2D surface from the selected tip shape and hardness; no placeholder image, GPU readback, or scaled raster asset is used.
+- Copy and content: labels are the requested English `Size N%` and `Opacity N%` values.
+- At 1%, the stamp preview becomes effectively invisible, matching the reference behavior; at mid size it scales visibly with the selected percentage.
+
+## Comparison history
+
+- Iteration 1 — P2: the active Size thumb could be visually covered by the preview panel in the first capture (`C:\Users\michi\Downloads\webgpu-brush-engine-source\artifacts\mobile-brush-controls-size-active-prefix-393x852.png`).
+  - Fix: assigned the active thumb stacking level above the preview panel.
+  - Post-fix evidence: `C:\Users\michi\Downloads\webgpu-brush-engine-source\artifacts\mobile-brush-controls-size-active-postfix-430x932.png` and the focused comparison show the orange-outlined thumb attached visibly to the panel edge.
+- Final pass: no further P0/P1/P2 issue was found in the normalized full-state or focused comparison.
 
 ## Interaction and runtime checks
 
-- Blur `0 → 6 → 0 → 6`: passed.
-- Block Shadow and Single Shadow mutual exclusion in both directions: passed.
-- Blur cache creation, release at Blur `0`/effect OFF, and rebuild: passed.
-- Fit view logical browser cache at Blur `6`: `0.18 MiB`.
-- High-zoom logical browser cache at Blur `6`: `1.97 MiB`.
-- App-owned GPU allocation attributable to this effect: `+0 MiB`.
-- Console warnings/errors after the interaction sequence: none.
+- Vertical drag changes Size and Opacity; horizontal position is ignored.
+- Size clamps to 1–100%; Opacity clamps to 0–100%; keyboard arrows, Home, and End are supported.
+- The visible value and inner disc update during the gesture; engine settings commit once at gesture end.
+- The preview uses a dedicated Canvas2D surface and one `requestAnimationFrame` at a time; the drawing hot path and WebGPU submissions are untouched during slider movement.
+- Size remains available for Paint and Blend; Opacity is disabled for Blend.
+- Controls are suppressed while the Tools sheet or Layers panel is open.
+- Browser console warnings/errors after the final initialized state: none.
+- TypeScript, production build, layer, grain, stroke, and history verification suites: passed.
 
-## Verification
+## Implementation checklist
 
-- All 13 project verification suites: passed.
-- TypeScript check and production Vite build: passed.
-- Build warning about the existing large main chunk is unchanged and unrelated to the effect.
+- [x] Right-edge resting controls and value indicators.
+- [x] Vertical drag, bounds, keyboard semantics, and ARIA values.
+- [x] Live Size/Opacity panel and actual tip preview.
+- [x] Paint/Blend and overlay integration.
+- [x] Compact mobile responsiveness.
+- [x] No per-move engine/GPU setting commits.
 
-## Result
-
-passed
+final result: passed

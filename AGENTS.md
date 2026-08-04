@@ -419,6 +419,21 @@ Paint:
   protezione doppio tap descritta sopra è coperta staticamente ma resta da
   provare su Safari/iPhone fisico. TypeScript/build Vite+Sites, tutte le `22`
   suite `*:verify` e `git diff --check` verdi.
+  Undicesimo follow-up: sul bordo destro mobile sono comparsi due controlli
+  verticali Size/Opacity con disco da `44 px` visibile a metà e target touch
+  `52×56 px`. Il trascinamento usa soltanto `clientY`, aggiorna valore, ARIA e
+  indicatore interno durante il gesto, poi applica le impostazioni autorevoli
+  una sola volta al rilascio; Size resta disponibile anche per Blend, mentre
+  Opacity segue il contratto Paint-only già esistente. Durante il gesto appare
+  un pannello `155×204 px` con etichetta inglese e singola impronta reale:
+  una Canvas2D dedicata, aggiornata al massimo una volta per RAF, riusa Shape e
+  Hardness correnti senza readback o submission GPU e senza toccare il percorso
+  caldo Paint. Tools e Layers sopprimono i controlli. QA browser locale passata
+  a `430×932`, `393×852` e `375×667`, inclusi Size `1%`/circa `50%`, Opacity,
+  Paint/Blend e overlay; console pulita. TypeScript, build Vite/Sites,
+  `layers:verify`, `grain:verify`, `stroke:verify`, `history:verify` e
+  `git diff --check` verdi. Non è ancora una QA Safari/iPhone fisico né una
+  misura prestazionale canonica.
 - …cache di presentazione persistente screen-space: display shader eseguito
   solo sulla dirty region, poi `copyTextureToTexture` alla swapchain
   (`#37/#38`: Base `+46%` FPS vs `#35`, migliore anche delle vecchie baseline).

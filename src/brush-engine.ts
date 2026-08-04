@@ -1592,6 +1592,70 @@ export class BrushEngine {
     return { ...this.settings };
   }
 
+  renderBrushTipPreview(
+    canvas: HTMLCanvasElement,
+    cssSize: number,
+    diameterCssPixels: number,
+    opacity = 1,
+  ): void {
+    const context = canvas.getContext("2d", { alpha: true });
+    if (!context) return;
+
+    const logicalSize = Math.max(1, Math.round(cssSize));
+    const pixelRatio = clamp(window.devicePixelRatio || 1, 1, 2);
+    const backingSize = Math.max(1, Math.round(logicalSize * pixelRatio));
+    if (canvas.width !== backingSize || canvas.height !== backingSize) {
+      canvas.width = backingSize;
+      canvas.height = backingSize;
+    }
+
+    context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+    context.globalAlpha = 1;
+    context.globalCompositeOperation = "source-over";
+    context.clearRect(0, 0, logicalSize, logicalSize);
+
+    const diameter = clamp(diameterCssPixels, 0, logicalSize - 4);
+    const alpha = clamp(opacity, 0, 1);
+    if (diameter <= 0 || alpha <= 0) return;
+
+    const left = (logicalSize - diameter) * 0.5;
+    const top = (logicalSize - diameter) * 0.5;
+    const neutralTipColor = "rgb(242 240 233)";
+    const shapeSprite = this.settings.shape === "shape"
+      ? this.adaptivePreviewShapePalette[0]?.sprite ?? this.adaptivePreviewShapeSprite
+      : null;
+
+    if (shapeSprite) {
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = "high";
+      context.drawImage(shapeSprite, left, top, diameter, diameter);
+      context.globalCompositeOperation = "source-in";
+      context.globalAlpha = alpha;
+      context.fillStyle = neutralTipColor;
+      context.fillRect(left, top, diameter, diameter);
+    } else {
+      const center = logicalSize * 0.5;
+      const radius = diameter * 0.5;
+      context.globalAlpha = alpha;
+      context.beginPath();
+      context.arc(center, center, radius, 0, Math.PI * 2);
+      if (this.settings.hardness >= 0.995) {
+        context.fillStyle = neutralTipColor;
+      } else {
+        const gradient = context.createRadialGradient(center, center, 0, center, center, radius);
+        const innerStop = clamp(this.settings.hardness, 0, 0.999);
+        gradient.addColorStop(0, neutralTipColor);
+        gradient.addColorStop(innerStop, neutralTipColor);
+        gradient.addColorStop(1, "rgb(242 240 233 / 0)");
+        context.fillStyle = gradient;
+      }
+      context.fill();
+    }
+
+    context.globalAlpha = 1;
+    context.globalCompositeOperation = "source-over";
+  }
+
   setBrushSettings(next: Partial<BrushSettings>): void {
     if (this.initialized && (this.layerSwitchBusy || this.historyBusy)) {
       throw new Error(

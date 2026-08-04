@@ -138,6 +138,10 @@ button.wide {
   display: none;
 }
 
+.mobile-brush-controls {
+  display: none;
+}
+
 .topbar-actions button {
   min-width: 38px;
   padding-inline: 9px;
@@ -1008,6 +1012,176 @@ select {
     outline: 1px solid var(--mobile-icon-outline);
     outline-offset: 0;
     background: #ff5b35;
+  }
+
+  .mobile-brush-controls {
+    position: absolute;
+    z-index: 5;
+    top: calc(64px + env(safe-area-inset-top));
+    right: 0;
+    bottom: max(12px, env(safe-area-inset-bottom));
+    display: block;
+    width: 52px;
+    pointer-events: none;
+    touch-action: none;
+    contain: layout style;
+  }
+
+  .mobile-brush-controls.is-suppressed {
+    visibility: hidden;
+  }
+
+  .mobile-brush-control-track {
+    position: absolute;
+    right: 0;
+    width: 52px;
+    height: clamp(132px, 23.9%, 204px);
+    pointer-events: none;
+  }
+
+  #mobileBrushSizeTrack {
+    top: 24%;
+  }
+
+  #mobileBrushOpacityTrack {
+    top: 55.8%;
+  }
+
+  .mobile-brush-control-range {
+    position: absolute;
+    inset: 0;
+  }
+
+  .mobile-brush-control {
+    --mobile-brush-control-position: 50%;
+    position: absolute;
+    z-index: 2;
+    top: var(--mobile-brush-control-position);
+    right: 0;
+    width: 52px;
+    height: 56px;
+    padding: 0;
+    outline: none;
+    cursor: ns-resize;
+    pointer-events: auto;
+    touch-action: none;
+    transform: translateY(-50%);
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-user-select: none;
+  }
+
+  .mobile-brush-control[aria-disabled="true"] {
+    cursor: default;
+    pointer-events: none;
+  }
+
+  .mobile-brush-control[aria-disabled="true"] .mobile-brush-control-disc {
+    border-color: var(--mobile-icon-inactive);
+  }
+
+  .mobile-brush-control[aria-disabled="true"] .mobile-brush-control-value {
+    background: var(--mobile-icon-inactive);
+  }
+
+  .mobile-brush-control-disc {
+    position: absolute;
+    top: 50%;
+    right: -22px;
+    display: grid;
+    width: 44px;
+    height: 44px;
+    place-items: center;
+    border: 1.5px solid var(--mobile-icon-face);
+    border-radius: 50%;
+    background: #292c33;
+    transform: translateY(-50%);
+  }
+
+  .mobile-brush-control-value {
+    display: block;
+    border-radius: 50%;
+    background: var(--mobile-icon-face);
+    pointer-events: none;
+  }
+
+  [data-mobile-brush-control="size"] .mobile-brush-control-value {
+    width: var(--mobile-brush-size-indicator, 2px);
+    height: var(--mobile-brush-size-indicator, 2px);
+  }
+
+  [data-mobile-brush-control="opacity"] .mobile-brush-control-value {
+    width: 18px;
+    height: 18px;
+    opacity: var(--mobile-brush-opacity-indicator, 1);
+  }
+
+  .mobile-brush-control:focus-visible .mobile-brush-control-disc,
+  .mobile-brush-control.is-active .mobile-brush-control-disc {
+    border-color: #dd5c35;
+  }
+
+  .mobile-brush-preview {
+    position: absolute;
+    z-index: 1;
+    right: 0;
+    display: grid;
+    width: min(155px, 44vw);
+    height: 204px;
+    grid-template-rows: 32px minmax(0, 1fr);
+    overflow: hidden;
+    border: 1px solid #343842;
+    border-right: 0;
+    border-radius: 18px 0 0 18px;
+    background: #191c22;
+    opacity: 0;
+    pointer-events: none;
+    visibility: hidden;
+  }
+
+  .mobile-brush-controls[data-active="size"] .mobile-brush-preview {
+    top: calc(24% - 8px);
+  }
+
+  .mobile-brush-controls[data-active="opacity"] .mobile-brush-preview {
+    top: calc(55.8% - 8px);
+  }
+
+  .mobile-brush-controls.is-adjusting .mobile-brush-preview {
+    opacity: 1;
+    visibility: visible;
+  }
+
+  .mobile-brush-preview-header {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    padding: 0 16px;
+    background: var(--app-background);
+    color: var(--mobile-icon-face);
+    font-size: 13px;
+    font-weight: 650;
+    line-height: 1;
+    letter-spacing: 0.005em;
+  }
+
+  .mobile-brush-preview-header output {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-brush-preview-body {
+    display: grid;
+    min-height: 0;
+    place-items: center;
+  }
+
+  #mobileBrushPreviewCanvas {
+    display: block;
+    width: 124px;
+    height: 124px;
+    pointer-events: none;
   }
 
   .mobile-tools-sheet {

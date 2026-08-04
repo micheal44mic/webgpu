@@ -1676,13 +1676,17 @@ assert.match(
 assert.match(mainSource, /MOBILE_DOUBLE_TAP_ZOOM_INTERVAL_MS = 350/);
 assert.match(mainSource, /document\.addEventListener\("touchend",[\s\S]*?passive: false/);
 assert.match(mainSource, /document\.addEventListener\("dblclick",[\s\S]*?preventDefault\(\)/);
+const mobileToolRailCssStart = stylesSource.indexOf("  .mobile-tool-rail {");
+const mobileToolRailCssEnd = stylesSource.indexOf("\n  }", mobileToolRailCssStart);
+assertSection("CSS mobile tool rail", mobileToolRailCssStart, mobileToolRailCssEnd);
+const mobileToolRailCss = stylesSource.slice(mobileToolRailCssStart, mobileToolRailCssEnd);
 assert.match(
-  stylesSource,
-  /\.mobile-tool-rail \{[\s\S]*?top: calc\(64px \+ env\(safe-area-inset-top\)\);[\s\S]*?bottom: max\(12px, env\(safe-area-inset-bottom\)\);[\s\S]*?margin-block: auto;/,
+  mobileToolRailCss,
+  /top: calc\(64px \+ env\(safe-area-inset-top\)\);[\s\S]*?bottom: max\(12px, env\(safe-area-inset-bottom\)\);[\s\S]*?margin-block: auto;/,
 );
 assert.doesNotMatch(
-  stylesSource,
-  /\.mobile-tool-rail \{[\s\S]*?top: 50%;[\s\S]*?transform: translateY\(-50%\);/,
+  mobileToolRailCss,
+  /top: 50%;|transform: translateY\(-50%\);/,
 );
 assert.match(
   stylesSource,
