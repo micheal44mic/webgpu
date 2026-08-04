@@ -332,10 +332,12 @@ Paint:
   grigio e bordo `#dd5c35`. Tap sulla maniglia alterna gli snap, Tools chiude
   interamente il foglio e il focus della ricerca lo espande soltanto se non è
   già nello snap alto. Il campo usa `16 px`, così Safari iPhone non applica lo
-  zoom automatico al focus; lo zoom pagina al doppio tap è disabilitato tramite
-  viewport e `touch-action: manipulation`, senza cambiare i gesti WebGPU del
-  canvas. Quinto follow-up: quando Search viene toccato dallo snap basso, il
-  foglio raggiunge lo snap alto senza transizione prima che Safari assegni il
+  zoom automatico al focus. Lo zoom pagina al doppio tap è bloccato su mobile
+  da viewport, superfici UI con `touch-action` restrittivo e un fallback
+  `touchend`/`dblclick` non-passive da `350 ms` e `32 px`; il multitouch resetta
+  subito il riconoscitore, quindi la navigazione WebGPU a due dita del canvas
+  resta invariata. Quinto follow-up: quando Search viene toccato dallo snap
+  basso, il foglio raggiunge lo snap alto senza transizione prima che Safari assegni il
   focus; il focus programmatico usa `preventScroll`, evitando che lo snap del
   foglio e il pan automatico della tastiera si sommino e portino la ricerca
   fuori schermo. Se il foglio è già alto non viene riposizionato. Non esiste
@@ -410,6 +412,13 @@ Paint:
   Lo shader viene compilato asincronicamente al primo uso e conserva il fallback
   se il dispositivo lo rifiuta; non sono ancora state eseguite misura canonica
   né QA fisica iPhone, quindi non dichiarare costo nullo misurato.
+  Decimo follow-up: un audit browser a viewport `390×844` ha misurato tutti i
+  contenuti della rail a `x=26 px`; la rail era però centrata sull'intero
+  viewport (`y=422`) e Layers nello spazio utile sotto l'header (`y=448`). Ora
+  condividono gli stessi vincoli top/bottom e lo stesso centro verticale. La
+  protezione doppio tap descritta sopra è coperta staticamente ma resta da
+  provare su Safari/iPhone fisico. TypeScript/build Vite+Sites, tutte le `22`
+  suite `*:verify` e `git diff --check` verdi.
 - …cache di presentazione persistente screen-space: display shader eseguito
   solo sulla dirty region, poi `copyTextureToTexture` alla swapchain
   (`#37/#38`: Base `+46%` FPS vs `#35`, migliore anche delle vecchie baseline).

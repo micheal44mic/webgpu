@@ -250,6 +250,63 @@ const mobileToolsEffectButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>("[data-mobile-effect-control]"),
 );
 const mobileUiMediaQuery = window.matchMedia("(max-width: 699px)");
+const MOBILE_DOUBLE_TAP_ZOOM_INTERVAL_MS = 350;
+const MOBILE_DOUBLE_TAP_ZOOM_DISTANCE_PX = 32;
+let previousMobileTouchEndTime = Number.NEGATIVE_INFINITY;
+let previousMobileTouchEndX = Number.NEGATIVE_INFINITY;
+let previousMobileTouchEndY = Number.NEGATIVE_INFINITY;
+
+function resetMobileDoubleTapZoomGuard(): void {
+  previousMobileTouchEndTime = Number.NEGATIVE_INFINITY;
+  previousMobileTouchEndX = Number.NEGATIVE_INFINITY;
+  previousMobileTouchEndY = Number.NEGATIVE_INFINITY;
+}
+
+document.addEventListener("touchstart", (event) => {
+  if (event.touches.length > 1) {
+    resetMobileDoubleTapZoomGuard();
+  }
+}, { capture: true, passive: true });
+
+document.addEventListener("touchcancel", resetMobileDoubleTapZoomGuard, {
+  capture: true,
+  passive: true,
+});
+
+document.addEventListener("touchend", (event) => {
+  if (
+    !mobileUiMediaQuery.matches
+    || event.touches.length !== 0
+    || event.changedTouches.length !== 1
+  ) {
+    resetMobileDoubleTapZoomGuard();
+    return;
+  }
+  const touch = event.changedTouches[0];
+  const elapsed = event.timeStamp - previousMobileTouchEndTime;
+  const distance = Math.hypot(
+    touch.clientX - previousMobileTouchEndX,
+    touch.clientY - previousMobileTouchEndY,
+  );
+  if (
+    elapsed > 0
+    && elapsed <= MOBILE_DOUBLE_TAP_ZOOM_INTERVAL_MS
+    && distance <= MOBILE_DOUBLE_TAP_ZOOM_DISTANCE_PX
+  ) {
+    event.preventDefault();
+    resetMobileDoubleTapZoomGuard();
+    return;
+  }
+  previousMobileTouchEndTime = event.timeStamp;
+  previousMobileTouchEndX = touch.clientX;
+  previousMobileTouchEndY = touch.clientY;
+}, { capture: true, passive: false });
+
+document.addEventListener("dblclick", (event) => {
+  if (mobileUiMediaQuery.matches) {
+    event.preventDefault();
+  }
+}, { capture: true, passive: false });
 const fitViewButton = element<HTMLButtonElement>("fitView");
 const zoomInButton = element<HTMLButtonElement>("zoomIn");
 const zoomOutButton = element<HTMLButtonElement>("zoomOut");

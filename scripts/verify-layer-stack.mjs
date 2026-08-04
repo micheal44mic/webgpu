@@ -1670,6 +1670,21 @@ assert.match(mainSource, /new ImageData\(imageBytes, capture\.width, capture\.he
 assert.match(stylesSource, /\.mobile-layers-panel \{[\s\S]*?right: 0;/);
 assert.match(stylesSource, /\.mobile-layer-thumbnail-canvas \{[\s\S]*?background: #ffffff;/);
 assert.match(
+  indexSource,
+  /minimum-scale=1\.0, maximum-scale=1\.0, user-scalable=no/,
+);
+assert.match(mainSource, /MOBILE_DOUBLE_TAP_ZOOM_INTERVAL_MS = 350/);
+assert.match(mainSource, /document\.addEventListener\("touchend",[\s\S]*?passive: false/);
+assert.match(mainSource, /document\.addEventListener\("dblclick",[\s\S]*?preventDefault\(\)/);
+assert.match(
+  stylesSource,
+  /\.mobile-tool-rail \{[\s\S]*?top: calc\(64px \+ env\(safe-area-inset-top\)\);[\s\S]*?bottom: max\(12px, env\(safe-area-inset-bottom\)\);[\s\S]*?margin-block: auto;/,
+);
+assert.doesNotMatch(
+  stylesSource,
+  /\.mobile-tool-rail \{[\s\S]*?top: 50%;[\s\S]*?transform: translateY\(-50%\);/,
+);
+assert.match(
   stylesSource,
   /\.mobile-layer-reference,[\s\S]*?\.mobile-layer-visibility \{[\s\S]*?align-self: center;[\s\S]*?justify-self: center;/,
 );
