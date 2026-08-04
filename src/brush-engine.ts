@@ -17,6 +17,11 @@ import type { FillRenderer } from "./fill-renderer";
 import { FILL_REFERENCE_LAYER_STRATEGY } from "./fill-core";
 import type { SelectionRenderer } from "./selection-renderer";
 import {
+  LAYER_THUMBNAIL_SIZE,
+  LayerThumbnailRenderer,
+  type LayerThumbnailPixels,
+} from "./layer-thumbnail-renderer";
+import {
   emptyPixelSelectionState,
   SELECTION_TILE_MASK_WORDS,
   type PixelSelectionState,
@@ -902,6 +907,7 @@ export class BrushEngine {
    * than the one it was allocated for.
    */
   readonly layerGpu = new Map<number, LayerGpuResources>();
+  layerThumbnailRenderer: LayerThumbnailRenderer | null = null;
 
   /**
    * Held for the WHOLE duration of a switch, awaits included.
@@ -3884,6 +3890,44 @@ export class BrushEngine {
       throw new Error("Il motore non è ancora inizializzato.");
     }
     await this.device.queue.onSubmittedWorkDone();
+  }
+
+  async captureActiveLayerThumbnail(): Promise<LayerThumbnailPixels & {
+    readonly layerId: number;
+  }> {
+    if (!this.initialized) {
+      throw new Error("Il motore non è ancora inizializzato.");
+    }
+    if (this.activeStroke || this.layerSwitchBusy || this.historyBusy) {
+      throw new Error("Miniatura rimandata finché il motore non torna inattivo.");
+    }
+    await this.waitForIdle();
+    if (this.activeStroke || this.layerSwitchBusy || this.historyBusy) {
+      throw new Error("Miniatura rimandata: è iniziata una nuova operazione.");
+    }
+
+    const layerId = this.layerStack.active.id;
+    if (!this.layerHasContent) {
+      return {
+        layerId,
+        width: LAYER_THUMBNAIL_SIZE,
+        height: LAYER_THUMBNAIL_SIZE,
+        rgba: new Uint8ClampedArray(LAYER_THUMBNAIL_SIZE * LAYER_THUMBNAIL_SIZE * 4),
+      };
+    }
+    if (!this.layerThumbnailRenderer) {
+      this.layerThumbnailRenderer = await LayerThumbnailRenderer.create(this.device);
+    }
+    if (
+      layerId !== this.layerStack.active.id
+      || this.activeStroke
+      || this.layerSwitchBusy
+      || this.historyBusy
+    ) {
+      throw new Error("Miniatura rimandata: il livello attivo è cambiato.");
+    }
+    const pixels = await this.layerThumbnailRenderer.capture(this.layerSamplingView);
+    return { layerId, ...pixels };
   }
 
   async retargetEffectsWorkingSet(

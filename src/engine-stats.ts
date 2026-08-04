@@ -79,6 +79,7 @@ export interface EngineGpuMemoryStats {
   shapeTextureMiB: number;
   paintBuffersMiB: number;
   presentationCacheMiB: number;
+  layerThumbnailMiB: number;
   vectorTextPresentationMiB: number;
   rasterImageMiB: number;
   rasterStrokeStyledMiB: number;

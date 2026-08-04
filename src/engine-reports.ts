@@ -780,6 +780,8 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
   const presentationCacheMiB = engine.presentationCacheTexture
     ? engine.presentationCacheWidth * engine.presentationCacheHeight * 4 / MEBIBYTE_BYTES
     : 0;
+  const layerThumbnailMiB =
+    (engine.layerThumbnailRenderer?.residentBytes ?? 0) / MEBIBYTE_BYTES;
   const vectorTextTextureCount = Number(Boolean(engine.vectorTextBelowTexture))
     + Number(Boolean(engine.vectorTextAboveTexture))
     + engine.vectorTextRunTextures.size;
@@ -931,6 +933,7 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     shapeTextureMiB,
     paintBuffersMiB,
     presentationCacheMiB,
+    layerThumbnailMiB,
     vectorTextPresentationMiB,
     rasterImageMiB,
     rasterStrokeStyledMiB,
@@ -966,6 +969,7 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     shapeTextureMiB,
     paintBuffersMiB,
     presentationCacheMiB,
+    layerThumbnailMiB,
     vectorTextPresentationMiB,
     rasterImageMiB,
     rasterStrokeStyledMiB,

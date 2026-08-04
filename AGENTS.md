@@ -358,8 +358,8 @@ Paint:
   zero corrispondenze. Il filtro visita solo i quattordici elementi quando viene
   digitato testo o aperto il foglio: nessun polling o loop permanente.
   Ottavo follow-up: Layers è ora attivo e apre, in mutua esclusione con Tools,
-  un pannello mobile flottante largo `240 px`, staccato dall'header e dal bordo
-  destro, centrato verticalmente nello spazio utile e alto soltanto quanto
+  un pannello mobile largo `240 px`, staccato dall'header ma agganciato al bordo
+  destro come la rail sinistra, centrato verticalmente nello spazio utile e alto soltanto quanto
   toolbar e layer presenti (fino al limite disponibile, poi scrollabile),
   senza ombre e con lo stesso fondo `#0d0f13`. La toolbar
   superiore usa le icone Lucide `Plus`, `Copy` e `SquareDashed`: `+` crea un
@@ -368,16 +368,27 @@ Paint:
   top-first; ogni riga seleziona il nodo autorevole, espone `R` soltanto sui
   raster e usa `Eye`/`EyeOff` per la visibilità di raster, testo, SVG e immagini.
   Ogni card usa una sola riga: miniatura, nome, `R` ed Eye; i controlli a destra
-  conservano target `44×44 px`. Il focus da tastiera è un outline interno
+  conservano target `44×44 px` e sono centrati esplicitamente sui due assi.
+  Il focus da tastiera è un outline interno
   arancione e non ripristina il contorno blu al tap.
   Il nodo selezionato ha il solo contorno `#dd5c35`; le etichette predefinite
   italiane vengono tradotte soltanto nella vista mobile (`Layer`, `Text`,
   `Image`, `Clipping Mask`) senza mutare nomi, history o ABI del documento.
-  Le miniature `52×52 px`, su tavola bianca, sono intenzionalmente strutturali
-  e cache-only: per i raster rappresentano la bounding box del contenuto; per i
-  nodi semantici usano un piccolo campione di testo/colore. Non leggono texture
-  `4096²`, non fanno GPU readback, non reidratano livelli cold e non aggiungono
-  lavoro al percorso del pennello. Una dirty flag viene alzata soltanto da
+  Le miniature raster `52×52 px`, su tavola bianca, mostrano ora una cattura
+  reale `64×64` del mip 0 autorevole. Strategia
+  `lazy-idle-gpu-area-sample-64-readback-cache-v1`: una pipeline lazy campiona
+  una griglia `8×8` dentro ciascuna delle `4096` celle della miniatura
+  (`262144` texture load), scrive un target RGBA8 da `16 KiB` e mappa soltanto
+  un buffer da `16 KiB`; target+buffer persistenti costano `32 KiB` GPU e la
+  cache CPU costa `16 KiB` per raster (`256 KiB` al massimo di 16 layer).
+  La cattura parte solo con pannello aperto, puntatore sollevato, history stabile
+  e nessun cambio layer; è coalescente e aggiorna l'attivo dopo il gesto. Non
+  reidrata mai un livello cold: ogni raster inattivo conserva l'ultima cattura
+  ottenuta quando era attivo, mentre prima della prima cattura resta il fallback
+  strutturale. La miniatura rappresenta i pixel raster autorevoli, non il
+  composito dello stack o gli effetti derivati; testo/SVG/immagine mantengono il
+  campione semantico. Il percorso caldo Paint e gli encoder autorevoli non sono
+  stati modificati. Una dirty flag viene alzata soltanto da
   apertura, history, mutazioni dello stack/scena e fine gesto; durante Paint,
   Transform, una proprietà continua o una transazione di cambio layer il
   renderer della sidebar esce prima di creare viste, array o stringhe e lascia
@@ -386,14 +397,19 @@ Paint:
   a pannello chiuso esce al primo booleano. Le
   righe DOM conservano identità finché chiavi e ordine restano invariati; un
   vero cambio stack le sostituisce atomicamente. Il contenuto viene aggiornato
-  soltanto se cambia la firma di stack/selezione/visibilità/contenuto;
-  una miniatura pixel-perfect richiederà un successivo esperimento GPU isolato.
+  soltanto se cambia la firma di stack/selezione/visibilità/contenuto/cache.
   Tutte le suite `*:verify`, TypeScript, build Vite/Sites e `git diff --check`
   verdi;
   nessuna misura prestazionale o QA fisica iPhone ancora eseguita.
   Dopo l'ottavo follow-up: TypeScript/build Vite+Sites, tutte le `22` suite
   `*:verify` e `git diff --check` verdi; nessuna nuova misura prestazionale o
   QA fisica iPhone eseguita.
+  Dopo il nono follow-up (miniature raster reali): TypeScript/build Vite+Sites,
+  tutte le `22` suite `*:verify`, la nuova regressione statica di scheduling,
+  contabilità memoria e assenza dal `pointermove`, più `git diff --check`, verdi.
+  Lo shader viene compilato asincronicamente al primo uso e conserva il fallback
+  se il dispositivo lo rifiuta; non sono ancora state eseguite misura canonica
+  né QA fisica iPhone, quindi non dichiarare costo nullo misurato.
 - …cache di presentazione persistente screen-space: display shader eseguito
   solo sulla dirty region, poi `copyTextureToTexture` alla swapchain
   (`#37/#38`: Base `+46%` FPS vs `#35`, migliore anche delle vecchie baseline).

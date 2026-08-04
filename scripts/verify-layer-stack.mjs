@@ -957,6 +957,10 @@ assert.throws(
 // dropped submit leaves the previous image in place. Guard it against silent
 // removal, and against losing its dev gate.
 const engineSource = readEngineSource();
+const layerThumbnailSource = readFileSync(
+  new URL("../src/layer-thumbnail-renderer.ts", import.meta.url),
+  "utf8",
+);
 const clippingGroupShaderSource = readFileSync(
   new URL("../src/clipping-group-shader.ts", import.meta.url),
   "utf8",
@@ -1634,6 +1638,48 @@ const indexSource = readFileSync(
 const stylesSource = readFileSync(
   new URL("../src/styles.css", import.meta.url),
   "utf8",
+);
+assert.match(layerThumbnailSource, /export const LAYER_THUMBNAIL_SIZE = 64 as const/);
+assert.match(layerThumbnailSource, /export const LAYER_THUMBNAIL_SAMPLE_GRID = 8 as const/);
+assert.match(
+  layerThumbnailSource,
+  /"lazy-idle-gpu-area-sample-64-readback-cache-v1" as const/,
+);
+assert.match(layerThumbnailSource, /copyTextureToBuffer\(/);
+assert.match(layerThumbnailSource, /GPUBufferUsage\.COPY_DST \| GPUBufferUsage\.MAP_READ/);
+assert.match(layerThumbnailSource, /readonly residentBytes = LAYER_THUMBNAIL_BYTE_LENGTH \* 2/);
+assert.match(
+  layerThumbnailSource,
+  /for \(var sampleY = 0; sampleY < \$\{LAYER_THUMBNAIL_SAMPLE_GRID\}/,
+);
+assert.match(
+  layerThumbnailSource,
+  /for \(var sampleX = 0; sampleX < \$\{LAYER_THUMBNAIL_SAMPLE_GRID\}/,
+);
+assert.doesNotMatch(
+  layerThumbnailSource,
+  /createHydratedLayerTexture|LayerColdStorage|onSubmittedWorkDone/,
+  "la miniatura non deve reidratare cold store o imporre un drain globale della coda",
+);
+assert.match(engineSource, /async captureActiveLayerThumbnail\(\)/);
+assert.match(engineSource, /engine\.layerThumbnailRenderer\?\.residentBytes/);
+assert.match(mainSource, /const mobileRasterThumbnailCache = new Map/);
+assert.match(mainSource, /activePointerId !== null[\s\S]*?historyState\.busy/);
+assert.match(mainSource, /function requestMobileLayerThumbnailCapture\(delayMs = 120\)/);
+assert.match(mainSource, /new ImageData\(imageBytes, capture\.width, capture\.height\)/);
+assert.match(stylesSource, /\.mobile-layers-panel \{[\s\S]*?right: 0;/);
+assert.match(stylesSource, /\.mobile-layer-thumbnail-canvas \{[\s\S]*?background: #ffffff;/);
+assert.match(
+  stylesSource,
+  /\.mobile-layer-reference,[\s\S]*?\.mobile-layer-visibility \{[\s\S]*?align-self: center;[\s\S]*?justify-self: center;/,
+);
+const pointerMoveStart = mainSource.indexOf('canvas.addEventListener("pointermove"');
+const pointerMoveEnd = mainSource.indexOf("function finishPointer(", pointerMoveStart);
+assert.ok(pointerMoveStart >= 0 && pointerMoveEnd > pointerMoveStart);
+assert.doesNotMatch(
+  mainSource.slice(pointerMoveStart, pointerMoveEnd),
+  /Thumbnail|thumbnail/,
+  "il pointermove Paint non deve conoscere né aggiornare le miniature",
 );
 assert.equal(
   (mainSource.match(/performanceTelemetryRevision: 62/g) ?? []).length,

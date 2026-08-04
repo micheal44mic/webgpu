@@ -53,6 +53,7 @@ import type {
   PointerSample,
 } from "./engine-types";
 import { LAYER_SIZE } from "./engine-limits";
+import { LAYER_THUMBNAIL_SIZE } from "./layer-thumbnail-renderer";
 import type { ShapeOccupancyFallbackReason } from "./shape-occupancy";
 import type {
   IphoneMemoryLimitEvent,
@@ -707,6 +708,7 @@ const engine = new BrushEngine(canvas, {
     requestMobileLayersRefresh();
     if (!state.busy && state.openEdit === null) {
       scheduleMobileLayersRefresh();
+      requestMobileLayerThumbnailCapture();
     }
     updateHistoryControls();
     updateHumanStrokeControls();
@@ -742,6 +744,7 @@ const engine = new BrushEngine(canvas, {
     // another one.
     syncActiveLayerControls();
     requestMobileLayersRefresh();
+    requestMobileLayerThumbnailCapture();
     const mixedSnapshot = engine.getMixedSceneSnapshot();
     if (mixedSnapshot) {
       vectorTextPrototype?.syncScene(mixedSnapshot);
@@ -802,6 +805,16 @@ let mobileLayersPanelOpen = false;
 let mobileLayersRenderSignature = "";
 let mobileLayersRefreshRequested = true;
 let mobileLayersRefreshFrame: number | null = null;
+interface MobileRasterThumbnailCacheEntry {
+  readonly imageData: ImageData;
+  readonly revision: number;
+}
+const mobileRasterThumbnailCache = new Map<number, MobileRasterThumbnailCacheEntry>();
+let mobileLayerThumbnailRevision = 0;
+let mobileLayerThumbnailCaptureTimer: number | null = null;
+let mobileLayerThumbnailCaptureRequested = false;
+let mobileLayerThumbnailCaptureInFlight = false;
+let mobileLayerThumbnailCaptureUnavailable = false;
 let gpuMemoryPanelOpen = false;
 let previousGpuMemoryTotalMiB: number | null = null;
 let gpuMemoryDeltaTimer: number | null = null;
@@ -832,6 +845,7 @@ const gpuMemoryRows: ReadonlyArray<
   ["gpuMemoryVectorText", "vectorTextPresentationMiB"],
   ["gpuMemoryRasterImage", "rasterImageMiB"],
   ["gpuMemoryPresentation", "presentationCacheMiB"],
+  ["gpuMemoryLayerThumbnail", "layerThumbnailMiB"],
   ["gpuMemoryStrokeStyled", "rasterStrokeStyledMiB"],
   ["gpuMemoryStrokeCoverage", "rasterStrokeCoverageMiB"],
   ["gpuMemoryStrokeControl", "rasterStrokeMaskAndControlMiB"],
@@ -1168,6 +1182,95 @@ function scheduleMobileLayersRefresh(): void {
   });
 }
 
+function cancelMobileLayerThumbnailCaptureTimer(): void {
+  if (mobileLayerThumbnailCaptureTimer === null) return;
+  window.clearTimeout(mobileLayerThumbnailCaptureTimer);
+  mobileLayerThumbnailCaptureTimer = null;
+}
+
+function requestMobileLayerThumbnailCapture(delayMs = 120): void {
+  if (
+    !mobileLayersPanelOpen
+    || !engineInitialized
+    || mobileLayerThumbnailCaptureUnavailable
+  ) {
+    return;
+  }
+  mobileLayerThumbnailCaptureRequested = true;
+  if (
+    mobileLayerThumbnailCaptureInFlight
+    || mobileLayerThumbnailCaptureTimer !== null
+  ) {
+    return;
+  }
+  mobileLayerThumbnailCaptureTimer = window.setTimeout(() => {
+    mobileLayerThumbnailCaptureTimer = null;
+    void captureRequestedMobileLayerThumbnail();
+  }, Math.max(0, delayMs));
+}
+
+async function captureRequestedMobileLayerThumbnail(): Promise<void> {
+  if (
+    !mobileLayerThumbnailCaptureRequested
+    || !mobileLayersPanelOpen
+    || !engineInitialized
+    || mobileLayerThumbnailCaptureUnavailable
+  ) {
+    return;
+  }
+  if (
+    activePointerId !== null
+    || layerSwitching
+    || historyState.openEdit !== null
+    || historyState.busy
+  ) {
+    requestMobileLayerThumbnailCapture(160);
+    return;
+  }
+
+  const stats = engine.getStats();
+  const activeLayer = stats.layers[stats.activeLayerIndex];
+  if (!activeLayer) return;
+  mobileLayerThumbnailCaptureRequested = false;
+  if (!activeLayer.hasContent) {
+    if (mobileRasterThumbnailCache.delete(activeLayer.id)) {
+      mobileLayersRenderSignature = "";
+      scheduleMobileLayersRefresh();
+    }
+    return;
+  }
+
+  mobileLayerThumbnailCaptureInFlight = true;
+  try {
+    const capture = await engine.captureActiveLayerThumbnail();
+    if (!engine.getStats().layers.some((layer) => layer.id === capture.layerId)) {
+      return;
+    }
+    mobileLayerThumbnailRevision += 1;
+    const imageBytes = new Uint8ClampedArray(capture.rgba.length);
+    imageBytes.set(capture.rgba);
+    mobileRasterThumbnailCache.set(capture.layerId, {
+      imageData: new ImageData(imageBytes, capture.width, capture.height),
+      revision: mobileLayerThumbnailRevision,
+    });
+    mobileLayersRenderSignature = "";
+    scheduleMobileLayersRefresh();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("rimandata") && mobileLayersPanelOpen) {
+      mobileLayerThumbnailCaptureRequested = true;
+    } else {
+      mobileLayerThumbnailCaptureUnavailable = true;
+      console.warn("Miniature raster GPU non disponibili; resta il fallback strutturale.", error);
+    }
+  } finally {
+    mobileLayerThumbnailCaptureInFlight = false;
+    if (mobileLayerThumbnailCaptureRequested) {
+      requestMobileLayerThumbnailCapture(160);
+    }
+  }
+}
+
 function setMobileLayersPanelOpen(open: boolean): void {
   if (open && !mobileUiMediaQuery.matches) return;
   if (open && mobileToolsSheetOpen) {
@@ -1189,9 +1292,12 @@ function setMobileLayersPanelOpen(open: boolean): void {
     }
     void mobileLayersPanel.offsetWidth;
     mobileLayersPanel.classList.add("is-open");
+    requestMobileLayerThumbnailCapture(0);
     return;
   }
   mobileLayersPanel.classList.remove("is-open");
+  mobileLayerThumbnailCaptureRequested = false;
+  cancelMobileLayerThumbnailCaptureTimer();
   if (mobileLayersRefreshFrame !== null) {
     cancelAnimationFrame(mobileLayersRefreshFrame);
     mobileLayersRefreshFrame = null;
@@ -4364,6 +4470,7 @@ interface MobileLayerView {
   readonly visible: boolean;
   readonly selected: boolean;
   readonly rasterIndex: number | null;
+  readonly rasterLayerId: number | null;
   readonly reference: boolean;
   readonly referenceAvailable: boolean;
   readonly hasContent: boolean;
@@ -4419,12 +4526,17 @@ function createMobileLayerRow(key: string): HTMLDivElement {
   const thumbnail = document.createElement("span");
   thumbnail.className = "mobile-layer-thumbnail";
   thumbnail.setAttribute("aria-hidden", "true");
+  const thumbnailCanvas = document.createElement("canvas");
+  thumbnailCanvas.className = "mobile-layer-thumbnail-canvas";
+  thumbnailCanvas.width = LAYER_THUMBNAIL_SIZE;
+  thumbnailCanvas.height = LAYER_THUMBNAIL_SIZE;
+  thumbnailCanvas.hidden = true;
   const thumbnailContent = document.createElement("span");
   thumbnailContent.className = "mobile-layer-thumbnail-content";
   thumbnailContent.hidden = true;
   const thumbnailGlyph = document.createElement("span");
   thumbnailGlyph.className = "mobile-layer-thumbnail-glyph";
-  thumbnail.append(thumbnailContent, thumbnailGlyph);
+  thumbnail.append(thumbnailCanvas, thumbnailContent, thumbnailGlyph);
 
   const name = document.createElement("span");
   name.className = "mobile-layer-name";
@@ -4458,6 +4570,7 @@ function mobileLayerViews(stats: EngineStats): MobileLayerView[] {
         visible: layer.visible,
         selected: index === stats.activeLayerIndex,
         rasterIndex: index,
+        rasterLayerId: layer.id,
         reference: layer.reference,
         referenceAvailable: index === stats.activeLayerIndex,
         hasContent: layer.hasContent,
@@ -4482,6 +4595,7 @@ function mobileLayerViews(stats: EngineStats): MobileLayerView[] {
         visible: layer.visible,
         selected,
         rasterIndex: item.rasterLayerIndex,
+        rasterLayerId: item.rasterLayerId,
         reference: layer.reference,
         referenceAvailable: selected && item.rasterLayerId === scene.activeRasterLayerId,
         hasContent: item.rasterHasContent,
@@ -4501,6 +4615,7 @@ function mobileLayerViews(stats: EngineStats): MobileLayerView[] {
         visible: node.visible,
         selected,
         rasterIndex: null,
+        rasterLayerId: null,
         reference: false,
         referenceAvailable: false,
         hasContent: node.text.trim().length > 0,
@@ -4519,6 +4634,7 @@ function mobileLayerViews(stats: EngineStats): MobileLayerView[] {
         visible: node.visible,
         selected,
         rasterIndex: null,
+        rasterLayerId: null,
         reference: false,
         referenceAvailable: false,
         hasContent: true,
@@ -4536,6 +4652,7 @@ function mobileLayerViews(stats: EngineStats): MobileLayerView[] {
       visible: node.visible,
       selected,
       rasterIndex: null,
+      rasterLayerId: null,
       reference: false,
       referenceAvailable: false,
       hasContent: true,
@@ -4562,6 +4679,9 @@ function mobileLayerListSignature(
       view.reference ? 1 : 0,
       view.referenceAvailable ? 1 : 0,
       view.hasContent ? 1 : 0,
+      view.rasterLayerId === null
+        ? ""
+        : mobileRasterThumbnailCache.get(view.rasterLayerId)?.revision ?? 0,
       bounds?.x ?? "",
       bounds?.y ?? "",
       bounds?.width ?? "",
@@ -4577,6 +4697,9 @@ function updateMobileLayerThumbnail(
   view: MobileLayerView,
 ): void {
   const bounds = view.contentBounds;
+  const cached = view.rasterLayerId === null
+    ? null
+    : mobileRasterThumbnailCache.get(view.rasterLayerId) ?? null;
   const signature = [
     view.kind,
     view.hasContent ? 1 : 0,
@@ -4586,6 +4709,7 @@ function updateMobileLayerThumbnail(
     bounds?.height ?? "",
     view.thumbnailGlyph,
     view.thumbnailColor ?? "",
+    cached?.revision ?? 0,
   ].join(":");
   if (thumbnail.dataset.thumbnailSignature === signature) return;
   thumbnail.dataset.thumbnailSignature = signature;
@@ -4593,6 +4717,9 @@ function updateMobileLayerThumbnail(
 
   const content = thumbnail.querySelector<HTMLSpanElement>(
     ".mobile-layer-thumbnail-content",
+  )!;
+  const canvas = thumbnail.querySelector<HTMLCanvasElement>(
+    ".mobile-layer-thumbnail-canvas",
   )!;
   const glyph = thumbnail.querySelector<HTMLSpanElement>(
     ".mobile-layer-thumbnail-glyph",
@@ -4604,7 +4731,13 @@ function updateMobileLayerThumbnail(
     thumbnail.style.removeProperty("--mobile-layer-thumbnail-color");
   }
 
-  content.hidden = view.kind !== "raster" || !view.hasContent;
+  canvas.hidden = cached === null;
+  if (cached) {
+    const context = canvas.getContext("2d", { alpha: true });
+    if (context) context.putImageData(cached.imageData, 0, 0);
+  }
+
+  content.hidden = cached !== null || view.kind !== "raster" || !view.hasContent;
   if (content.hidden) return;
   if (!bounds) {
     content.style.left = "26%";
@@ -4632,6 +4765,12 @@ function renderMobileLayerList(stats: EngineStats): void {
     || historyState.busy
   ) {
     return;
+  }
+  const liveRasterIds = new Set(stats.layers.map((layer) => layer.id));
+  for (const cachedLayerId of mobileRasterThumbnailCache.keys()) {
+    if (!liveRasterIds.has(cachedLayerId)) {
+      mobileRasterThumbnailCache.delete(cachedLayerId);
+    }
   }
   const locked = interactionLocked() || layerSwitching;
   const views = mobileLayerViews(stats);
@@ -6869,6 +7008,7 @@ function finishPointer(event: PointerEvent): void {
     }
     : null;
 
+  const completedPointerMode = pointerMode;
   if (pointerMode === "paint") {
     engine.endStroke(event.timeStamp);
     void finishHumanStrokeRecording(event.type === "pointerup");
@@ -6879,6 +7019,9 @@ function finishPointer(event: PointerEvent): void {
   pointerMode = null;
   activePointerId = null;
   scheduleMobileLayersRefresh();
+  if (completedPointerMode === "paint") {
+    requestMobileLayerThumbnailCapture();
+  }
   touchNavigationGesture = null;
   fillPointerMoved = false;
   selectionPointerMoved = false;
@@ -6898,6 +7041,7 @@ function finishPointer(event: PointerEvent): void {
       historyState = engine.getHistoryState();
       updateHistoryControls();
       updateHumanStrokeControls();
+      requestMobileLayerThumbnailCapture();
     });
   }
   if (selectionTapRequest) {
@@ -7142,6 +7286,7 @@ void engine.initialize()
     }
     syncMobileToolsMenuState();
     historyState = engine.getHistoryState();
+    requestMobileLayerThumbnailCapture(0);
     layerHistoryTestRunning = layerHistoryTestRequested || layerBlendTestRequested;
     layerMemoryStressTestRunning = iphoneMemoryLimitTestRequested;
     updateHistoryControls();

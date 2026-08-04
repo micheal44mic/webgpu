@@ -1217,10 +1217,10 @@ select {
     position: absolute;
     z-index: 6;
     top: calc(64px + env(safe-area-inset-top));
-    right: max(12px, env(safe-area-inset-right));
+    right: 0;
     bottom: max(12px, env(safe-area-inset-bottom));
     display: flex;
-    width: min(240px, calc(100% - 24px));
+    width: min(calc(240px + env(safe-area-inset-right)), 100%);
     height: fit-content;
     max-height: calc(
       100% - 76px - env(safe-area-inset-top) - env(safe-area-inset-bottom)
@@ -1228,12 +1228,13 @@ select {
     min-height: 0;
     flex-direction: column;
     overflow: hidden;
+    padding-right: env(safe-area-inset-right);
     margin-block: auto;
-    border-radius: 12px;
+    border-radius: 12px 0 0 12px;
     background: var(--app-background);
     pointer-events: none;
     visibility: hidden;
-    transform: translate3d(calc(100% + 24px), 0, 0);
+    transform: translate3d(100%, 0, 0);
     transition:
       transform 180ms cubic-bezier(0.22, 0.72, 0.24, 1),
       visibility 0s linear 180ms;
@@ -1385,6 +1386,20 @@ select {
     background: rgba(45, 48, 54, 0.68);
   }
 
+  .mobile-layer-thumbnail-canvas {
+    position: absolute;
+    z-index: 1;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+    background: #ffffff;
+  }
+
+  .mobile-layer-thumbnail-canvas[hidden] {
+    display: none;
+  }
+
   .mobile-layer-thumbnail-glyph {
     position: relative;
     z-index: 1;
@@ -1411,6 +1426,8 @@ select {
     display: grid;
     width: 44px;
     height: 44px;
+    align-self: center;
+    justify-self: center;
     place-items: center;
   }
 
@@ -1424,6 +1441,7 @@ select {
     color: var(--mobile-icon-inactive);
     font-size: 11px;
     font-weight: 700;
+    line-height: 1;
   }
 
   .mobile-layer-visibility {
