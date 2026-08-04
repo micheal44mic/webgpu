@@ -16,6 +16,7 @@
     "grain:verify": "node scripts/verify-grain-phase1.mjs",
     "brush-presets:verify": "node scripts/verify-brush-presets.mjs",
     "brush-studio:verify": "node scripts/verify-brush-studio.mjs",
+    "stroke-ui:verify": "node scripts/verify-mobile-stroke-sheet.mjs",
     "thickness:verify": "node scripts/verify-thickness-dynamics.mjs",
     "history:verify": "node scripts/verify-history-journal.mjs",
     "layers:verify": "node scripts/verify-layer-stack.mjs",

@@ -78,6 +78,46 @@
 
 final result: passed
 
+# Design QA — Mobile Stroke Effect Sheet
+
+## Visual sources and normalization
+
+- Source visual truth: `C:\Users\michi\AppData\Local\Temp\codex-clipboard-ffd73bba-7aed-43a6-bf79-b5f44f50f204.png` (`554 × 186` pixels).
+- Primary implementation: [mobile-stroke-sheet-393x852.png](design-qa-assets/mobile-stroke-sheet-393x852.png), captured at a `393 × 852` CSS viewport and density `1`.
+- Open dropdown: [mobile-stroke-alignment-menu-393x852.png](design-qa-assets/mobile-stroke-alignment-menu-393x852.png).
+- Compact implementation: [mobile-stroke-sheet-360x640.png](design-qa-assets/mobile-stroke-sheet-360x640.png), captured at a `360 × 640` CSS viewport and density `1`.
+- Focused same-frame comparison: [mobile-stroke-reference-comparison.png](design-qa-assets/mobile-stroke-reference-comparison.png). The implementation control was cropped to `285 × 96` and bicubic-scaled to the source frame's `554 × 186` pixels; their aspect ratios differ by less than `0.5%`.
+- Compared states: sheet at its only open snap, default `Outside`, alignment listbox open, and committed `Inside` selection.
+
+## Findings
+
+- No actionable P0, P1, or P2 mismatch remains.
+- Fonts and typography: `Stroke`, field labels, and alignment values use the existing mobile UI family and hierarchy. The implementation label is deliberately firmer than the reference's generic system font to remain consistent with every existing tool surface.
+- Spacing and layout rhythm: the sheet exposes exactly `222 px` at `393 × 852` (`top = 630 px`) and `166 px` at `360 × 640` (`top = 474 px`), matching the Tools peek formula `clamp(160 px, 26dvh, 240 px)`. Controls end at `614.23 px` in the compact viewport, with no clipping or root scroll (`app.scrollTop = 0`).
+- Colors and visual tokens: background `#0d0f13`, neutral card `#292c33`, off-white icon/text, muted labels, and orange focus/selection reuse the established mobile tokens. There are no shadows or decorative gradients.
+- Image and icon fidelity: the source's square affordance and dropdown marker are represented by official Lucide `SquareDashed`, `ChevronDown`, and `Check` icons. No inline SVG, CSS drawing, emoji, or raster placeholder was introduced.
+- Copy and content: all visible copy is English: `Stroke`, `Color`, `Alignment`, `Outside`, `Inside`, and `Centered`. The UI label `Centered` maps to the authoritative engine value `center`.
+- The focused comparison confirms the reference's dark rounded card, left square icon, central value, and right-side dropdown affordance while adapting the control to the product's smaller mobile density.
+
+## Comparison history
+
+- Initial QA found one P2 semantic mismatch: the tool card still announced `Toggle Stroke`, although its new behavior opens and activates the settings rather than toggling the effect off.
+  - Fix: changed the accessible name to `Open Stroke settings` and added a static regression.
+  - Post-fix evidence: the initialized compact browser state exposes the corrected action; `stroke-ui:verify` passes.
+- Final focused and full-view comparisons found no remaining P0/P1/P2 issue.
+
+## Interaction and runtime checks
+
+- Opening Stroke from the filtered Tools result closes Tools and opens this sheet at the low snap; it never opens at the expanded Tools position.
+- Selecting `Inside` updates the trigger and the authoritative desktop mirror: `data-stroke-alignment = inside` and `#rasterStrokePosition = inside`.
+- The listbox exposes exactly three options with one selected state, keyboard focus, outside-click/Escape closure, and 44 px option targets.
+- An upward synthetic drag left the measured sheet top unchanged at `630 px`, confirming the no-expand clamp.
+- Handle tap closes the sheet and restores `aria-hidden = true`. The in-app browser could not reliably synthesize a captured-pointer release for the downward drag; deterministic controller assertions cover the `36 px` close threshold and the same code remains to be checked on physical Safari/iPhone.
+- Browser console warnings/errors after initialization: none.
+- All `25` `*:verify` suites (including `stroke-ui:verify`), TypeScript, production Sites build, and `git diff --check`: passed.
+
+final result: passed
+
 # Design QA — Mobile Brush Library
 
 ## Scope and evidence

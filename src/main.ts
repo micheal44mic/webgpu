@@ -4,6 +4,7 @@ import {
   type MobileToolsSheetSnap,
 } from "./mobile-tools-sheet-gesture";
 import { MobileBrushStudioController } from "./mobile-brush-studio";
+import { MobileStrokeSheetController } from "./mobile-stroke-sheet";
 import {
   loadBrushStudioLibraryState,
   saveBrushStudioLibraryState,
@@ -13,6 +14,7 @@ import {
   Box,
   Brush,
   Check,
+  ChevronDown,
   CircleDashed,
   CircleDotDashed,
   Copy,
@@ -102,6 +104,7 @@ createIcons({
     Box,
     Brush,
     Check,
+    ChevronDown,
     CircleDashed,
     CircleDotDashed,
     Copy,
@@ -798,6 +801,7 @@ if (mixedMemoryBenchmarkRequested) {
 }
 let vectorTextPrototype: MixedVectorTextController | null = null;
 let mobileBrushStudio: MobileBrushStudioController | null = null;
+let mobileStrokeSheet: MobileStrokeSheetController | null = null;
 const engine = new BrushEngine(canvas, {
   onStatus(message, kind) {
     statusElement.textContent = message;
@@ -1386,6 +1390,7 @@ function syncMobileBrushControlsVisibility(): void {
     || mobileLayersPanelOpen
     || mobileToolsSheetOpen
     || mobileBrushLibraryOpen
+    || mobileStrokeSheet?.isOpen === true
     || mobileBrushStudio?.isOpen === true;
   if (suppressed && mobileBrushControlDrag) {
     finishMobileBrushControlDrag(true);
@@ -1784,6 +1789,7 @@ function syncMobileBrushLibrarySelection(): void {
 function setMobileBrushLibraryOpen(open: boolean): void {
   if (open && (!mobileUiMediaQuery.matches || activeCanvasTool !== "paint")) return;
   if (open && mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
+  if (open && mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
   if (open && mobileToolsSheetOpen) setMobileToolsSheetOpen(false);
   if (open && mobileLayersPanelOpen) setMobileLayersPanelOpen(false);
 
@@ -2078,6 +2084,7 @@ async function captureRequestedMobileLayerThumbnail(): Promise<void> {
 function setMobileLayersPanelOpen(open: boolean): void {
   if (open && !mobileUiMediaQuery.matches) return;
   if (open && mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
+  if (open && mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
   if (open && mobileToolsSheetOpen) {
     setMobileToolsSheetOpen(false);
   }
@@ -2117,6 +2124,7 @@ function setMobileLayersPanelOpen(open: boolean): void {
 function setMobileToolsSheetOpen(open: boolean): void {
   if (open && !mobileUiMediaQuery.matches) return;
   if (open && mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
+  if (open && mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
   if (open && mobileLayersPanelOpen) {
     setMobileLayersPanelOpen(false);
   }
@@ -2863,17 +2871,21 @@ function updateRasterStrokeControlAvailability(locked = interactionLocked()): vo
   }
 }
 
-async function applyRasterStrokeControls(): Promise<void> {
+async function applyRasterStrokeStyle(style: RasterStrokeStyle): Promise<boolean> {
   if (!engineInitialized || rasterStrokeChanging || activePointerId !== null) {
     syncRasterStrokeControls(engine.getRasterStrokeStyle());
     updateRasterStrokeControlAvailability();
-    return;
+    return false;
   }
   rasterStrokeChanging = true;
+  syncRasterStrokeControls(style);
+  updateRasterStrokeControlAvailability();
+  syncMobileToolsMenuState();
   updateHistoryControls();
   updateHumanStrokeControls();
+  let accepted = false;
   try {
-    const accepted = await engine.setRasterStrokeStyle(readRasterStrokeStyle());
+    accepted = await engine.setRasterStrokeStyle(style);
     if (!accepted) {
       syncRasterStrokeControls(engine.getRasterStrokeStyle());
     }
@@ -2881,9 +2893,16 @@ async function applyRasterStrokeControls(): Promise<void> {
     syncRasterStrokeControls(engine.getRasterStrokeStyle());
   } finally {
     rasterStrokeChanging = false;
+    updateRasterStrokeControlAvailability();
+    syncMobileToolsMenuState();
     updateHistoryControls();
     updateHumanStrokeControls();
   }
+  return accepted;
+}
+
+async function applyRasterStrokeControls(): Promise<void> {
+  await applyRasterStrokeStyle(readRasterStrokeStyle());
 }
 
 function rasterShadowColorFromHex(value: string): [number, number, number] {
@@ -3344,7 +3363,8 @@ mobileBrushStudio = new MobileBrushStudioController({
   mobileMediaQuery: mobileUiMediaQuery,
   applySettings: applySettingsToControls,
   setBrushLibraryOpen: setMobileBrushLibraryOpen,
-  onOpenChange: () => {
+  onOpenChange: (open) => {
+    if (open && mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
     syncMobileBrushLibraryButtonState();
     syncMobileBrushControlsVisibility();
   },
@@ -3362,6 +3382,23 @@ mobileBrushStudio = new MobileBrushStudioController({
   onStatus: (message, kind) => {
     statusElement.textContent = message;
     statusElement.className = `status ${kind === "working" ? "" : kind}`;
+  },
+});
+
+mobileStrokeSheet = new MobileStrokeSheetController({
+  mobileMediaQuery: mobileUiMediaQuery,
+  getStyle: () => engine.getRasterStrokeStyle(),
+  applyStyle: applyRasterStrokeStyle,
+  beforeOpen: () => {
+    setMobileToolsSheetOpen(false);
+    setMobileLayersPanelOpen(false);
+    setMobileBrushLibraryOpen(false);
+    mobileBrushStudio?.cancel(false);
+    setControlsPanelOpen(false);
+  },
+  onOpenChange: () => {
+    syncMobileToolsMenuState();
+    syncMobileBrushControlsVisibility();
   },
 });
 
@@ -4387,6 +4424,7 @@ mobileUiMediaQuery.addEventListener("change", (event) => {
   setMobileToolsSheetOpen(false);
   setMobileLayersPanelOpen(false);
   setMobileBrushLibraryOpen(false);
+  mobileStrokeSheet?.close(false);
   mobileBrushStudio?.cancel(false);
   setControlsPanelOpen(true);
   syncMobileBrushControlsVisibility();
@@ -4397,7 +4435,13 @@ window.addEventListener("resize", () => {
   const brushLibraryNeedsLayout = mobileBrushLibraryOpen
     && mobileBrushLibraryDragPointerId === null;
   const brushStudioNeedsLayout = mobileBrushStudio?.isOpen === true;
-  if (!toolsNeedLayout && !brushLibraryNeedsLayout && !brushStudioNeedsLayout) return;
+  const strokeSheetNeedsLayout = mobileStrokeSheet?.isOpen === true;
+  if (
+    !toolsNeedLayout
+    && !brushLibraryNeedsLayout
+    && !brushStudioNeedsLayout
+    && !strokeSheetNeedsLayout
+  ) return;
   if (mobileToolsSheetResizeFrame !== null) {
     cancelAnimationFrame(mobileToolsSheetResizeFrame);
   }
@@ -4411,6 +4455,7 @@ window.addEventListener("resize", () => {
       markMobileBrushLibraryPreviewDirty();
     }
     mobileBrushStudio?.handleResize();
+    mobileStrokeSheet?.handleResize();
   });
 });
 
@@ -4501,6 +4546,10 @@ for (const button of mobileToolsEffectButtons) {
       ? document.getElementById(controlId) as HTMLInputElement | null
       : null;
     if (!control || control.disabled || !engineInitialized) return;
+    if (controlId === "rasterStrokeEnabled" && mobileStrokeSheet) {
+      mobileStrokeSheet.open();
+      return;
+    }
     control.click();
     syncMobileToolsMenuState();
   });
@@ -5526,6 +5575,7 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
 function syncActiveLayerControls(): void {
   syncRasterColorOverlayControls(engine.getRasterColorOverlayStyle());
   syncRasterStrokeControls(engine.getRasterStrokeStyle());
+  mobileStrokeSheet?.sync(engine.getRasterStrokeStyle());
   syncRasterOuterShadowControls(engine.getRasterOuterShadowStyle());
   syncRasterInnerShadowControls(engine.getRasterInnerShadowStyle());
   syncRasterBevelControls(engine.getRasterBevelStyle());
@@ -8404,6 +8454,7 @@ setGpuMemoryPanelOpen(false);
 setControlsPanelOpen(!mobileUiMediaQuery.matches);
 setMobileToolsSheetOpen(false);
 setMobileBrushLibraryOpen(false);
+mobileStrokeSheet?.close(false);
 setSelectionCombineMode("replace");
 updatePixelSelectionResult(engine.getPixelSelectionState());
 configureBrushToolUi("paint", false);

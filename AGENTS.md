@@ -551,6 +551,30 @@ Paint:
   e riapertura tornata a `67 px`, console senza warning/errori. TypeScript,
   build Vite/Sites, tutte le `24` suite `*:verify` e `git diff --check` verdi.
   Resta da fare la stessa QA su Safari/iPhone fisico.
+  Diciottesimo follow-up (4 agosto 2026): la card `Stroke` del foglio Tools non
+  è più un toggle distruttivo; apre e, se necessario, attiva l'effetto raster
+  autorevole. Il pannello mobile si presenta esclusivamente allo stesso snap
+  basso di Tools (`clamp(160 px, 26dvh, 240 px)`), non può essere trascinato
+  verso l'alto e chiude con tap sulla maniglia, trascinamento di `36 px` o
+  flick di almeno `28 px` a `0,45 px/ms`. Tools, Layers, Brush Library e Brush
+  Studio vengono chiusi prima dell'apertura; Size/Opacity sono soppressi.
+  Il pannello espone titolo inglese `Stroke`, color picker nativo con disco
+  reale e un listbox accessibile `Outside`, `Inside`, `Centered`; l'ultima label
+  mappa al valore ABI `center`. Trigger, opzioni e focus mantengono target da
+  almeno `44 px`, icone Lucide, fondo `#0d0f13`, card `#292c33`, accento
+  `#dd5c35`, nessuna ombra o gradiente. Le modifiche colore vengono coalescate
+  a un RAF e tutte le mutazioni sono serializzate latest-only attraverso
+  `setRasterStrokeStyle`: nessun renderer o stato effetto parallelo e nessuna
+  modifica al percorso caldo Paint.
+  QA browser locale: a `393×852` il top misura `630 px` (`222 px` visibili), a
+  `360×640` misura `474 px` (`166 px` visibili), con contenuto entro `614,23 px`
+  e `#app.scrollTop = 0`. Selezionando `Inside`, trigger e controllo desktop
+  autorevole riportano entrambi `inside`; un drag sintetico verso l'alto non
+  cambia il top e la console resta senza warning/errori. Il backend del browser
+  non ha completato in modo affidabile il rilascio di un pointer catturato nel
+  drag verso il basso: soglie e chiusura sono coperte dalla regressione statica,
+  ma la gesture resta da provare su Safari/iPhone fisico. TypeScript, build
+  Vite/Sites, tutte le `25` suite `*:verify` e `git diff --check` sono verdi.
 - …cache di presentazione persistente screen-space: display shader eseguito
   solo sulla dirty region, poi `copyTextureToTexture` alla swapchain
   (`#37/#38`: Base `+46%` FPS vs `#35`, migliore anche delle vecchie baseline).
@@ -3628,3 +3652,28 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   produrre un'azione Undo visivamente vuota; i pixel presentati restano
   corretti. È QA funzionale desktop, non benchmark canonico, prova iPhone o
   pubblicazione Sites.
+
+### Pannello mobile Stroke (4 agosto 2026)
+
+- La card `Stroke` del foglio Tools non è più un semplice toggle: chiude Tools,
+  Layers, Brush Library e Brush Studio, attiva l'effetto se necessario e apre
+  un foglio mobile dedicato allo stesso snap basso di Tools (`clamp(160–240 px,
+  26dvh)`). Il trascinamento verso l'alto viene clampato allo snap iniziale:
+  il pannello non possiede uno stato expanded. Tap sulla maniglia, Escape o un
+  trascinamento/flick verso il basso lo chiudono senza disattivare l'effetto.
+- Il pannello riusa esclusivamente `getRasterStrokeStyle()` e
+  `setRasterStrokeStyle()`: non esiste un secondo stato né un renderer mobile.
+  Il colore usa il picker nativo e viene applicato live con coalescenza a un
+  solo RAF e una coda asincrona latest-only; gli effetti raster non producono
+  azioni history per ogni campione. Il menu Alignment mappa esattamente
+  `Outside → outside`, `Inside → inside`, `Centered → center`, espone
+  listbox/option ARIA e si chiude su scelta, Escape o pointer esterno.
+- QA browser locale a `393×852`: foglio visibile `222 px`, Tools chiuso,
+  effetto realmente attivo, colore `#33aa66` sincronizzato col controllo
+  autorevole, Inside e Centered sincronizzati col select desktop, dropdown
+  aperto sopra il foglio e console senza warning/errori. Escape del listbox e
+  del foglio verificati; la sintesi pointer del browser è diventata
+  indisponibile dopo un reload, quindi il drag fisico resta da provare su
+  Safari/iPhone. TypeScript, build Vite/Sites, `stroke-ui:verify`,
+  `stroke:verify`, `layers:verify`, `effects-scratch:verify`,
+  `history:verify` e `git diff --check` sono verdi. Non pubblicato.
