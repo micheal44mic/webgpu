@@ -28,6 +28,7 @@ export interface DryBlendRenderSettings {
   shape: "circle" | "shape";
   grainMode: "off" | "texturized" | "moving";
   grainScale: number;
+  grainMovement: number;
   grainDepth: number;
   grainBrightness: number;
   grainContrast: number;
@@ -85,6 +86,8 @@ interface DryBlendRendererOptions {
   shapeMaskView: GPUTextureView;
   shapeMaskSampler: GPUSampler;
   grainTextureView: GPUTextureView;
+  grainTextureWidth: number;
+  grainTextureMipLevelCount: number;
   grainSamplers: Record<
     "fixed" | "moving",
     Record<"no" | "classic" | "improved", GPUSampler>
@@ -235,6 +238,8 @@ export class DryBlendRenderer {
   private shapeMaskView: GPUTextureView;
   private readonly shapeMaskSampler: GPUSampler;
   private grainTextureView: GPUTextureView;
+  private grainTextureWidth: number;
+  private grainTextureMipLevelCount: number;
   private readonly grainSamplers: DryBlendRendererOptions["grainSamplers"];
   private readonly scratchSize: number;
   private readonly uniformStride: number;
@@ -265,6 +270,11 @@ export class DryBlendRenderer {
     this.shapeMaskView = options.shapeMaskView;
     this.shapeMaskSampler = options.shapeMaskSampler;
     this.grainTextureView = options.grainTextureView;
+    this.grainTextureWidth = Math.max(1, Math.round(options.grainTextureWidth));
+    this.grainTextureMipLevelCount = Math.max(
+      1,
+      Math.round(options.grainTextureMipLevelCount),
+    );
     this.grainSamplers = options.grainSamplers;
     this.scratchSize = options.scratchSize ?? DRY_BLEND_DEFAULT_SCRATCH_SIZE;
     this.uniformStride = Math.ceil(
@@ -544,7 +554,9 @@ export class DryBlendRenderer {
     }
 
     const workgroups = (pixels: number): number => Math.ceil(pixels / 8);
-    const grainMode = settings.grainMode === "moving" ? "moving" : "fixed";
+    const grainMode = settings.grainMode === "moving" && settings.grainMovement <= 0
+      ? "moving"
+      : "fixed";
     for (const group of groups) {
       const groupOffset = group.start * this.uniformStride;
       const computePass = encoder.beginComputePass({
@@ -799,11 +811,13 @@ export class DryBlendRenderer {
         floats[21] = step.diameter;
         floats[22] = clamp(step.warpStrength, 0, 1);
         floats[23] = blendStretchCoefficient(settings.blendStretch);
-        floats[24] = 1 / (2500 * grainScale);
+        floats[24] = 1 / (this.grainTextureWidth * grainScale);
         floats[25] = blendPaintCoefficient(settings.blendPaint);
         floats[26] = clamp(settings.grainDepth, 0, 1);
         floats[27] = clamp(settings.grainBrightness, -1, 1) * grainPolarity;
         floats[28] = (1 + clamp(settings.grainContrast, -1, 1)) * grainPolarity;
+        floats[29] = clamp(settings.grainMovement, 0, 1);
+        floats[30] = this.grainTextureMipLevelCount;
         floats[31] = 0;
         floats[32] = paintColor[0];
         floats[33] = paintColor[1];
@@ -865,12 +879,21 @@ export class DryBlendRenderer {
 
   // Il ciclo di vita del Grain scambia la texture (placeholder ↔ M1): i
   // deposit bind group residenti vanno ricostruiti sulla view nuova.
-  setGrainTextureView(view: GPUTextureView): void {
-    if (this.destroyed || this.grainTextureView === view) {
+  setGrainTextureView(
+    view: GPUTextureView,
+    width = this.grainTextureWidth,
+    mipLevelCount = this.grainTextureMipLevelCount,
+  ): void {
+    if (this.destroyed) {
       return;
     }
+    const normalizedWidth = Math.max(1, Math.round(width));
+    const normalizedMipLevelCount = Math.max(1, Math.round(mipLevelCount));
+    const viewChanged = this.grainTextureView !== view;
     this.grainTextureView = view;
-    this.rebuildResidentDepositBindGroups();
+    this.grainTextureWidth = normalizedWidth;
+    this.grainTextureMipLevelCount = normalizedMipLevelCount;
+    if (viewChanged) this.rebuildResidentDepositBindGroups();
   }
 
   // Idem per la maschera Shape (placeholder ↔ 2K residente).

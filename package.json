@@ -14,6 +14,7 @@
     "fill:verify": "node scripts/verify-fill.mjs",
     "selection:verify": "node scripts/verify-selection.mjs",
     "grain:verify": "node scripts/verify-grain-phase1.mjs",
+    "brush-presets:verify": "node scripts/verify-brush-presets.mjs",
     "thickness:verify": "node scripts/verify-thickness-dynamics.mjs",
     "history:verify": "node scripts/verify-history-journal.mjs",
     "layers:verify": "node scripts/verify-layer-stack.mjs",

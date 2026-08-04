@@ -44,6 +44,10 @@ import {
   type RasterOuterShadowStyle,
   type RasterStrokeStyle,
 } from "./brush-engine";
+import {
+  PENCIL_BRUSH_PRESET,
+  resolveBrushPresetSettings,
+} from "./brush-presets";
 import type { EngineStats, StrokePerformanceProfile } from "./engine-stats";
 import type {
   FragmentCoverageStrategy,
@@ -259,12 +263,19 @@ const mobileBrushLibrarySheet = element<HTMLElement>("mobileBrushLibrarySheet");
 const mobileBrushLibraryHandle = element<HTMLButtonElement>("mobileBrushLibraryHandle");
 const mobileBrushLibraryList = element<HTMLElement>("mobileBrushLibraryList");
 const mobileBrushLibraryEmpty = element<HTMLParagraphElement>("mobileBrushLibraryEmpty");
+const mobilePencilBrushCard = element<HTMLButtonElement>("mobilePencilBrushCard");
+const mobilePencilBrushPreviewCanvas = element<HTMLCanvasElement>(
+  "mobilePencilBrushPreviewCanvas",
+);
 const mobileCurrentBrushCard = element<HTMLButtonElement>("mobileCurrentBrushCard");
 const mobileBrushLibraryPreviewCanvas = element<HTMLCanvasElement>(
   "mobileBrushLibraryPreviewCanvas",
 );
 const mobileBrushLibraryCategoryButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>("[data-mobile-brush-category]"),
+);
+const mobileBrushLibraryCards = Array.from(
+  document.querySelectorAll<HTMLButtonElement>("[data-mobile-brush-id]"),
 );
 const mobileToolsCategories = Array.from(
   document.querySelectorAll<HTMLElement>("[data-mobile-tools-category]"),
@@ -707,7 +718,7 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet";
-    performanceTelemetryRevision: 62;
+    performanceTelemetryRevision: 63;
   };
 }
 
@@ -893,8 +904,10 @@ let mobileToolsSheetDragVelocityY = 0;
 let mobileToolsSheetDragMoved = false;
 let mobileToolsSheetResizeFrame: number | null = null;
 type MobileBrushLibraryCategory = "pencil" | "painting" | "spray-paint";
+type MobileBrushLibraryBrushId = "m1m4-pencil-v1" | "current";
 let mobileBrushLibraryOpen = false;
 let mobileBrushLibraryCategory: MobileBrushLibraryCategory = "painting";
+let activeMobileBrushLibraryBrushId: MobileBrushLibraryBrushId = "current";
 let mobileBrushLibraryOffsetPx = 0;
 let mobileBrushLibraryDragPointerId: number | null = null;
 let mobileBrushLibraryDragStartY = 0;
@@ -906,6 +919,13 @@ let mobileBrushLibraryDragMoved = false;
 let mobileBrushLibraryPreviewFrame: number | null = null;
 let mobileBrushLibraryPreviewDirty = true;
 const mobileBrushLibraryTipCanvas = document.createElement("canvas");
+const mobilePencilBrushTipCanvas = document.createElement("canvas");
+const mobilePencilBrushGrainCanvas = document.createElement("canvas");
+const mobilePencilBrushGrainClipCanvas = document.createElement("canvas");
+let mobilePencilBrushTipReady = false;
+let mobilePencilBrushTipLoading = false;
+let mobilePencilBrushGrainReady = false;
+let mobilePencilBrushGrainLoading = false;
 let mobileLayersPanelOpen = false;
 let mobileLayersRenderSignature = "";
 let mobileLayersRefreshRequested = true;
@@ -1102,6 +1122,8 @@ function configureBrushToolUi(
   }
   for (const id of [
     "shapeScatterControl",
+    "shapeSourceControl",
+    "shapeRotationControl",
     "stabilizationControl",
     "countControl",
     "opacityControl",
@@ -1410,8 +1432,98 @@ function setMobileBrushLibraryOffset(offsetPx: number): void {
 
 function markMobileBrushLibraryPreviewDirty(): void {
   mobileBrushLibraryPreviewDirty = true;
-  if (mobileBrushLibraryOpen && mobileBrushLibraryCategory === "painting") {
+  if (
+    mobileBrushLibraryOpen
+    && (mobileBrushLibraryCategory === "painting" || mobileBrushLibraryCategory === "pencil")
+  ) {
     scheduleMobileBrushLibraryPreview();
+  }
+}
+
+function ensureMobilePencilBrushTip(): void {
+  if (!mobilePencilBrushTipReady && !mobilePencilBrushTipLoading) {
+    mobilePencilBrushTipLoading = true;
+    const image = new Image();
+    image.decoding = "async";
+    image.addEventListener("load", () => {
+      const size = 96;
+      mobilePencilBrushTipCanvas.width = size;
+      mobilePencilBrushTipCanvas.height = size;
+      const context = mobilePencilBrushTipCanvas.getContext("2d", {
+        alpha: true,
+        willReadFrequently: true,
+      });
+      if (!context) {
+        mobilePencilBrushTipLoading = false;
+        return;
+      }
+      context.clearRect(0, 0, size, size);
+      context.drawImage(image, 0, 0, size, size);
+      const pixels = context.getImageData(0, 0, size, size);
+      for (let offset = 0; offset < pixels.data.length; offset += 4) {
+        const luminance = (
+          pixels.data[offset] * 0.299
+          + pixels.data[offset + 1] * 0.587
+          + pixels.data[offset + 2] * 0.114
+        );
+        const sourceAlpha = pixels.data[offset + 3] / 255;
+        const coverage = Math.round((255 - luminance) * sourceAlpha);
+        pixels.data[offset] = 242;
+        pixels.data[offset + 1] = 240;
+        pixels.data[offset + 2] = 233;
+        pixels.data[offset + 3] = coverage;
+      }
+      context.clearRect(0, 0, size, size);
+      context.putImageData(pixels, 0, 0);
+      mobilePencilBrushTipReady = true;
+      mobilePencilBrushTipLoading = false;
+      markMobileBrushLibraryPreviewDirty();
+    }, { once: true });
+    image.addEventListener("error", () => {
+      mobilePencilBrushTipLoading = false;
+    }, { once: true });
+    image.src = new URL("../Shapepencil.png", import.meta.url).href;
+  }
+
+  if (!mobilePencilBrushGrainReady && !mobilePencilBrushGrainLoading) {
+    mobilePencilBrushGrainLoading = true;
+    const image = new Image();
+    image.decoding = "async";
+    image.addEventListener("load", () => {
+      const size = 128;
+      mobilePencilBrushGrainCanvas.width = size;
+      mobilePencilBrushGrainCanvas.height = size;
+      const context = mobilePencilBrushGrainCanvas.getContext("2d", {
+        alpha: true,
+        willReadFrequently: true,
+      });
+      if (!context) {
+        mobilePencilBrushGrainLoading = false;
+        return;
+      }
+      context.drawImage(image, 0, 0, size, size);
+      const pixels = context.getImageData(0, 0, size, size);
+      for (let offset = 0; offset < pixels.data.length; offset += 4) {
+        const luminance = Math.round(
+          pixels.data[offset] * 0.299
+          + pixels.data[offset + 1] * 0.587
+          + pixels.data[offset + 2] * 0.114,
+        );
+        pixels.data[offset] = 255;
+        pixels.data[offset + 1] = 255;
+        pixels.data[offset + 2] = 255;
+        // Grain alpha metadata is intentionally ignored, like the WGSL path.
+        pixels.data[offset + 3] = luminance;
+      }
+      context.putImageData(pixels, 0, 0);
+      mobilePencilBrushGrainReady = true;
+      mobilePencilBrushGrainLoading = false;
+      markMobileBrushLibraryPreviewDirty();
+    }, { once: true });
+    image.addEventListener("error", () => {
+      mobilePencilBrushGrainLoading = false;
+    }, { once: true });
+    image.src = new URL("../Grainpencil.png", import.meta.url).href;
   }
 }
 
@@ -1421,15 +1533,23 @@ function mobileBrushLibraryNoise(seed: number): number {
 }
 
 function renderMobileBrushLibraryPreview(): void {
+  const pencilPreview = mobileBrushLibraryCategory === "pencil";
   if (
     !mobileBrushLibraryOpen
-    || mobileBrushLibraryCategory !== "painting"
+    || (!pencilPreview && mobileBrushLibraryCategory !== "painting")
     || !mobileBrushLibraryPreviewDirty
     || !mobileUiMediaQuery.matches
   ) {
     return;
   }
-  const bounds = mobileBrushLibraryPreviewCanvas.getBoundingClientRect();
+  if (pencilPreview && !mobilePencilBrushTipReady) {
+    ensureMobilePencilBrushTip();
+    return;
+  }
+  const previewCanvas = pencilPreview
+    ? mobilePencilBrushPreviewCanvas
+    : mobileBrushLibraryPreviewCanvas;
+  const bounds = previewCanvas.getBoundingClientRect();
   if (bounds.width <= 0 || bounds.height <= 0) return;
 
   mobileBrushLibraryPreviewDirty = false;
@@ -1439,21 +1559,24 @@ function renderMobileBrushLibraryPreview(): void {
   const backingWidth = Math.max(1, Math.round(logicalWidth * pixelRatio));
   const backingHeight = Math.max(1, Math.round(logicalHeight * pixelRatio));
   if (
-    mobileBrushLibraryPreviewCanvas.width !== backingWidth
-    || mobileBrushLibraryPreviewCanvas.height !== backingHeight
+    previewCanvas.width !== backingWidth
+    || previewCanvas.height !== backingHeight
   ) {
-    mobileBrushLibraryPreviewCanvas.width = backingWidth;
-    mobileBrushLibraryPreviewCanvas.height = backingHeight;
+    previewCanvas.width = backingWidth;
+    previewCanvas.height = backingHeight;
   }
 
-  const context = mobileBrushLibraryPreviewCanvas.getContext("2d", { alpha: true });
+  const context = previewCanvas.getContext("2d", { alpha: true });
   if (!context) return;
   context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
   context.globalAlpha = 1;
   context.globalCompositeOperation = "source-over";
   context.clearRect(0, 0, logicalWidth, logicalHeight);
 
-  const settings = engine.getSettings();
+  const currentSettings = engine.getSettings();
+  const settings = pencilPreview
+    ? resolveBrushPresetSettings(PENCIL_BRUSH_PRESET, currentSettings)
+    : currentSettings;
   const sizeRatio = Math.min(
     1,
     Math.max(0, Math.log10(Math.max(1, settings.size)) / 3),
@@ -1462,13 +1585,16 @@ function renderMobileBrushLibraryPreview(): void {
     logicalHeight * 0.78,
     Math.max(11, logicalHeight * (0.26 + sizeRatio * 0.48)),
   );
-  const tipCssSize = 72;
-  engine.renderBrushTipPreview(
-    mobileBrushLibraryTipCanvas,
-    tipCssSize,
-    tipCssSize - 4,
-    1,
-  );
+  const tipCanvas = pencilPreview ? mobilePencilBrushTipCanvas : mobileBrushLibraryTipCanvas;
+  if (!pencilPreview) {
+    const tipCssSize = 72;
+    engine.renderBrushTipPreview(
+      mobileBrushLibraryTipCanvas,
+      tipCssSize,
+      tipCssSize - 4,
+      1,
+    );
+  }
 
   const startX = Math.max(4, baseDiameter * 0.45);
   const endX = Math.max(startX + 1, logicalWidth - startX);
@@ -1486,10 +1612,14 @@ function renderMobileBrushLibraryPreview(): void {
   for (let stampIndex = 0; stampIndex < stampCount; stampIndex += 1) {
     const progress = stampCount === 1 ? 0 : stampIndex / (stampCount - 1);
     const centerX = startX + pathLength * progress;
-    const centerY = logicalHeight * (
-      0.55
-      + Math.sin((progress * 1.35 - 0.12) * Math.PI) * 0.095
-    );
+    const phase = (progress * 1.35 - 0.12) * Math.PI;
+    const centerY = logicalHeight * (0.55 + Math.sin(phase) * 0.095);
+    const followAngle = settings.shapeRotation === "follow-stroke"
+      ? Math.atan2(
+        logicalHeight * 0.095 * Math.cos(phase) * 1.35 * Math.PI,
+        pathLength,
+      )
+      : 0;
     const thickness = settings.startThickness
       + (settings.endThickness - settings.startThickness) * progress;
     const stampDiameter = Math.min(
@@ -1504,7 +1634,7 @@ function renderMobileBrushLibraryPreview(): void {
       const lateral = (
         mobileBrushLibraryNoise(seed + 1) - 0.5
       ) * stampDiameter * settings.positionJitterLateral * 0.3;
-      const rotation = (
+      const rotation = followAngle + (
         mobileBrushLibraryNoise(seed + 2) - 0.5
       ) * Math.PI * 2 * settings.shapeScatter;
       context.save();
@@ -1512,7 +1642,7 @@ function renderMobileBrushLibraryPreview(): void {
       context.translate(centerX + longitudinal, centerY + lateral);
       context.rotate(rotation);
       context.drawImage(
-        mobileBrushLibraryTipCanvas,
+        tipCanvas,
         -stampDiameter * 0.5,
         -stampDiameter * 0.5,
         stampDiameter,
@@ -1520,6 +1650,56 @@ function renderMobileBrushLibraryPreview(): void {
       );
       context.restore();
     }
+  }
+  if (pencilPreview && mobilePencilBrushGrainReady) {
+    // Movement 99% is almost a paper-locked roller. Multiplying the finished
+    // library stroke by the same grain gives a cheap representative preview;
+    // the authoritative canvas still samples it for every physical stamp.
+    const grainPeriod = Math.max(
+      logicalHeight,
+      baseDiameter * (
+        PENCIL_BRUSH_PRESET.settings.grainScale * 800
+        / PENCIL_BRUSH_PRESET.settings.size
+      ),
+    );
+    const firstX = -grainPeriod * 0.37;
+    const firstY = -grainPeriod * 0.58;
+    if (
+      mobilePencilBrushGrainClipCanvas.width !== logicalWidth
+      || mobilePencilBrushGrainClipCanvas.height !== logicalHeight
+    ) {
+      mobilePencilBrushGrainClipCanvas.width = logicalWidth;
+      mobilePencilBrushGrainClipCanvas.height = logicalHeight;
+    }
+    const grainContext = mobilePencilBrushGrainClipCanvas.getContext("2d", { alpha: true });
+    if (!grainContext) return;
+    grainContext.clearRect(0, 0, logicalWidth, logicalHeight);
+    grainContext.globalCompositeOperation = "source-over";
+    grainContext.globalAlpha = 1;
+    grainContext.imageSmoothingEnabled = true;
+    grainContext.imageSmoothingQuality = "high";
+    for (let y = firstY; y < logicalHeight; y += grainPeriod) {
+      for (let x = firstX; x < logicalWidth; x += grainPeriod) {
+        grainContext.drawImage(
+          mobilePencilBrushGrainCanvas,
+          x,
+          y,
+          grainPeriod,
+          grainPeriod,
+        );
+      }
+    }
+    context.save();
+    context.globalAlpha = PENCIL_BRUSH_PRESET.settings.grainDepth;
+    context.globalCompositeOperation = "destination-in";
+    context.drawImage(
+      mobilePencilBrushGrainClipCanvas,
+      0,
+      0,
+      logicalWidth,
+      logicalHeight,
+    );
+    context.restore();
   }
   context.globalAlpha = 1;
 }
@@ -1540,10 +1720,27 @@ function setMobileBrushLibraryCategory(category: MobileBrushLibraryCategory): vo
       String(button.dataset.mobileBrushCategory === category),
     );
   }
-  const painting = category === "painting";
-  mobileBrushLibraryList.hidden = !painting;
-  mobileBrushLibraryEmpty.hidden = painting;
-  if (painting) markMobileBrushLibraryPreviewDirty();
+  let visibleCards = 0;
+  for (const card of mobileBrushLibraryCards) {
+    const visible = card.dataset.mobileBrushCategoryCard === category;
+    card.hidden = !visible;
+    if (visible) visibleCards += 1;
+  }
+  mobileBrushLibraryList.hidden = visibleCards === 0;
+  mobileBrushLibraryEmpty.hidden = visibleCards !== 0;
+  if (category === "pencil") ensureMobilePencilBrushTip();
+  if (visibleCards > 0) markMobileBrushLibraryPreviewDirty();
+}
+
+function syncMobileBrushLibrarySelection(): void {
+  for (const card of mobileBrushLibraryCards) {
+    const selected = card.dataset.mobileBrushId === activeMobileBrushLibraryBrushId;
+    card.classList.toggle("is-selected", selected);
+    card.setAttribute("aria-pressed", String(selected));
+    const name = card.querySelector<HTMLElement>(".mobile-brush-card-name")?.textContent
+      ?.trim() || "Brush";
+    card.setAttribute("aria-label", selected ? `${name}, selected` : name);
+  }
 }
 
 function setMobileBrushLibraryOpen(open: boolean): void {
@@ -1977,9 +2174,16 @@ function readBrushSettings(): BrushSettings {
   return {
     tool: activeBrushTool,
     shape: element<HTMLSelectElement>("brushShape").value as BrushSettings["shape"],
+    shapeAssetId:
+      element<HTMLSelectElement>("shapeSource").value as BrushSettings["shapeAssetId"],
+    shapeRotation:
+      element<HTMLSelectElement>("shapeRotation").value as BrushSettings["shapeRotation"],
     shapeScatter: rangeValue("shapeScatter") / 100,
     grainMode: element<HTMLSelectElement>("grainMode").value as BrushSettings["grainMode"],
+    grainAssetId:
+      element<HTMLSelectElement>("grainSource").value as BrushSettings["grainAssetId"],
     grainScale: rangeValue("grainScale") / 100,
+    grainMovement: rangeValue("grainMovement") / 100,
     grainDepth: rangeValue("grainDepth") / 100,
     grainBrightness: rangeValue("grainBrightness") / 100,
     grainContrast: rangeValue("grainContrast") / 100,
@@ -2022,6 +2226,8 @@ function updateControlOutputs(): void {
     `${rangeValue("selectionTolerance").toFixed(0)}/255`;
   element<HTMLOutputElement>("shapeScatterOut").value = `${rangeValue("shapeScatter").toFixed(0)}%`;
   element<HTMLOutputElement>("grainScaleOut").value = `${rangeValue("grainScale").toFixed(0)}%`;
+  element<HTMLOutputElement>("grainMovementOut").value =
+    `${rangeValue("grainMovement").toFixed(0)}%`;
   element<HTMLOutputElement>("grainDepthOut").value = `${rangeValue("grainDepth").toFixed(0)}%`;
   const grainBrightness = rangeValue("grainBrightness");
   element<HTMLOutputElement>("grainBrightnessOut").value =
@@ -2180,7 +2386,7 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     viewRotationDegrees: Number(engine.getViewRotationDegrees().toFixed(3)),
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet",
-    performanceTelemetryRevision: 62,
+    performanceTelemetryRevision: 63,
     countedGpuMemoryMiB: stats.gpuMemory.countedTotalMiB,
     vectorTextPresentationMiB: stats.gpuMemory.vectorTextPresentationMiB,
     vectorTextAdaptiveZoomStrategy: vectorTextDiagnostics?.adaptiveZoomStrategy ?? null,
@@ -3017,6 +3223,14 @@ function applySettingsToControls(settings: BrushSettings): void {
   const tool = settings.tool === "blend" ? "blend" : "paint";
   configureBrushToolUi(tool, false);
   setControlValue("brushShape", settings.shape === "shape" ? "shape" : "circle");
+  setControlValue(
+    "shapeSource",
+    settings.shapeAssetId === "pencil-shape" ? "pencil-shape" : "legacy-shape",
+  );
+  setControlValue(
+    "shapeRotation",
+    settings.shapeRotation === "follow-stroke" ? "follow-stroke" : "fixed",
+  );
   setControlValue("shapeScatter", (settings.shapeScatter ?? 0) * 100);
   setControlValue(
     "grainMode",
@@ -3024,7 +3238,12 @@ function applySettingsToControls(settings: BrushSettings): void {
       ? settings.grainMode
       : "off",
   );
+  setControlValue(
+    "grainSource",
+    settings.grainAssetId === "pencil-grain" ? "pencil-grain" : "legacy-grain",
+  );
   setControlValue("grainScale", (settings.grainScale ?? 1.4) * 100);
+  setControlValue("grainMovement", (settings.grainMovement ?? 0) * 100);
   setControlValue("grainDepth", (settings.grainDepth ?? 1) * 100);
   setControlValue("grainBrightness", (settings.grainBrightness ?? 0) * 100);
   setControlValue("grainContrast", (settings.grainContrast ?? 0) * 100);
@@ -3066,9 +3285,13 @@ function applySettingsToControls(settings: BrushSettings): void {
 function applyHumanStrokePreset(): BrushSettings {
   configureBrushToolUi("paint", false);
   setControlValue("brushShape", "circle");
+  setControlValue("shapeSource", "legacy-shape");
+  setControlValue("shapeRotation", "fixed");
   setControlValue("shapeScatter", 0);
   setControlValue("grainMode", "off");
+  setControlValue("grainSource", "legacy-grain");
   setControlValue("grainScale", 140);
+  setControlValue("grainMovement", 0);
   setControlValue("grainDepth", 100);
   setControlValue("grainBrightness", 0);
   setControlValue("grainContrast", 0);
@@ -3499,6 +3722,7 @@ function describeHumanStrokeBenchmark(benchmark: HumanStrokeBenchmark): string {
 
 const grainParameterControlIds = [
   "grainScale",
+  "grainMovement",
   "grainDepth",
   "grainBrightness",
   "grainContrast",
@@ -3511,15 +3735,17 @@ function updateGrainControlAvailability(locked = interactionLocked()): void {
   const grainMode = element<HTMLSelectElement>("grainMode").value;
   const active = grainMode === "texturized" || grainMode === "moving";
   element<HTMLElement>("grainParameters").hidden = !active;
+  element<HTMLElement>("grainMovementControl").hidden = grainMode !== "moving";
   for (const id of grainParameterControlIds) {
     element<HTMLInputElement | HTMLSelectElement>(id).disabled =
-      locked || !active || (id === "grainScale" && grainMode === "moving");
+      locked || !active || (id === "grainMovement" && grainMode !== "moving");
   }
 }
 
 const brushControlIds = [
   "brushTool",
   "brushShape",
+  "shapeRotation",
   "shapeScatter",
   "grainMode",
   ...grainParameterControlIds,
@@ -3900,8 +4126,19 @@ for (const button of mobileBrushLibraryCategoryButtons) {
 }
 
 mobileCurrentBrushCard.addEventListener("click", () => {
-  mobileCurrentBrushCard.classList.add("is-selected");
-  mobileCurrentBrushCard.setAttribute("aria-pressed", "true");
+  activeMobileBrushLibraryBrushId = "current";
+  syncMobileBrushLibrarySelection();
+  markMobileBrushLibraryPreviewDirty();
+});
+
+mobilePencilBrushCard.addEventListener("click", () => {
+  const settings = resolveBrushPresetSettings(
+    PENCIL_BRUSH_PRESET,
+    engine.getSettings(),
+  );
+  applySettingsToControls(settings);
+  activeMobileBrushLibraryBrushId = PENCIL_BRUSH_PRESET.id;
+  syncMobileBrushLibrarySelection();
   markMobileBrushLibraryPreviewDirty();
 });
 

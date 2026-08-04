@@ -15,6 +15,7 @@ import {
   SHAPE_OCCUPANCY_MAP_BYTES,
   SHAPE_OCCUPANCY_MAP_COUNT,
   SHAPE_OCCUPANCY_MAX_MIP,
+  SHAPE_OCCUPANCY_WORDS_PER_MAP,
   STAMP_STRIDE_BYTES,
   THICKNESS_TAIL_MAXIMUM_TEXTURE_DIMENSION,
   THICKNESS_TAIL_TEXTURE_QUANTUM,
@@ -22,13 +23,21 @@ import {
   VECTOR_TEXT_CAPTURE_UNIFORM_BYTES,
 } from "./engine-limits";
 import { type GrainFiltering } from "./engine-types";
+import type { BrushGrainAssetId, BrushShapeAssetId } from "./engine-types";
 import { type GrainTextureResources, type ShapeMaskResources } from "./engine-paint-resources";
+import {
+  grainAssetDescriptor,
+  mipLevelCountForSize,
+  rgba8MipChainBytes,
+  shapeAssetDescriptor,
+} from "./engine-brush-assets";
 import { grainMipShader } from "./shaders";
 import { assertShaderCompiled } from "./engine-gpu-utils";
 import { hashBytes } from "./engine-math";
 import {
   SHAPE_CANVAS_DECODE_STRATEGY,
   SHAPE_DIRECT_DECODE_STRATEGY,
+  isTexturizedGrainActive,
   usesBlendRenderer,
   type ShapeMaskDecodeStrategy,
 } from "./engine-strategies";
@@ -58,6 +67,7 @@ import {
   finishStaticResourceCreation,
   setRasterStrokeGeometryEnabled,
 } from "./engine-runtime-misc";
+import { prepareAdaptivePreviewShapePalette } from "./engine-adaptive-preview-runtime";
 
 export async function createStaticResources(engine: BrushEngine): Promise<void> {
   engine.brushUniformBuffer = engine.device.createBuffer({
@@ -587,10 +597,14 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
   await finishStaticResourceCreation(engine);
 }
 
-export async function createGrainTextureResources(engine: BrushEngine): Promise<GrainTextureResources> {
-  const response = await fetch(new URL("../graincottonfleece.PNG", import.meta.url));
+export async function createGrainTextureResources(
+  engine: BrushEngine,
+  assetId: BrushGrainAssetId,
+): Promise<GrainTextureResources> {
+  const asset = grainAssetDescriptor(assetId);
+  const response = await fetch(asset.url);
   if (!response.ok) {
-    throw new Error(`Impossibile caricare Cotton Fleece M1 originale (${response.status}).`);
+    throw new Error(`Impossibile caricare ${asset.sourceFile} (${response.status}).`);
   }
 
   const source = await response.arrayBuffer();
@@ -602,22 +616,23 @@ export async function createGrainTextureResources(engine: BrushEngine): Promise<
     premultiplyAlpha: "none",
   });
   const decodeMs = performance.now() - decodeStart;
-  if (bitmap.width !== GRAIN_TEXTURE_SIZE || bitmap.height !== GRAIN_TEXTURE_SIZE) {
+  if (bitmap.width !== asset.width || bitmap.height !== asset.height) {
     bitmap.close();
     throw new Error(
-      `Il grain M1 originale deve restare ${GRAIN_TEXTURE_SIZE}×${GRAIN_TEXTURE_SIZE}px; `
+      `${asset.sourceFile} deve restare ${asset.width}×${asset.height}px; `
       + `trovata ${bitmap.width}×${bitmap.height}px.`,
     );
   }
 
+  const mipLevelCount = mipLevelCountForSize(asset.width, asset.height);
   const texture = engine.device.createTexture({
-    label: "Cotton Fleece M1 original 2500 RGBA grain",
+    label: `${asset.sourceFile} native RGBA grain`,
     size: {
-      width: GRAIN_TEXTURE_SIZE,
-      height: GRAIN_TEXTURE_SIZE,
+      width: asset.width,
+      height: asset.height,
       depthOrArrayLayers: 1,
     },
-    mipLevelCount: GRAIN_TEXTURE_MIP_LEVEL_COUNT,
+    mipLevelCount,
     format: "rgba8unorm",
     usage:
       GPUTextureUsage.TEXTURE_BINDING
@@ -630,12 +645,23 @@ export async function createGrainTextureResources(engine: BrushEngine): Promise<
     { source: bitmap },
     { texture, mipLevel: 0, premultipliedAlpha: false, colorSpace: "srgb" },
     {
-      width: GRAIN_TEXTURE_SIZE,
-      height: GRAIN_TEXTURE_SIZE,
+      width: asset.width,
+      height: asset.height,
       depthOrArrayLayers: 1,
     },
   );
   const uploadMs = performance.now() - uploadStart;
+
+  const previewSize = 128;
+  const previewSprite = document.createElement("canvas");
+  previewSprite.width = previewSize;
+  previewSprite.height = previewSize;
+  const previewContext = previewSprite.getContext("2d");
+  if (previewContext) {
+    previewContext.imageSmoothingEnabled = true;
+    previewContext.imageSmoothingQuality = "high";
+    previewContext.drawImage(bitmap, 0, 0, previewSize, previewSize);
+  }
   bitmap.close();
 
   const mipBuildStart = performance.now();
@@ -684,7 +710,7 @@ export async function createGrainTextureResources(engine: BrushEngine): Promise<
   const encoder = engine.device.createCommandEncoder({
     label: "Cotton Fleece M1 full mip chain encoder",
   });
-  for (let mipLevel = 1; mipLevel < GRAIN_TEXTURE_MIP_LEVEL_COUNT; mipLevel += 1) {
+  for (let mipLevel = 1; mipLevel < mipLevelCount; mipLevel += 1) {
     const sourceView = texture.createView({
       label: `Cotton Fleece M1 mip ${mipLevel - 1} source`,
       baseMipLevel: mipLevel - 1,
@@ -724,18 +750,28 @@ export async function createGrainTextureResources(engine: BrushEngine): Promise<
   const mipBuildMs = performance.now() - mipBuildStart;
 
   return {
+    assetId,
     texture,
     identity: hashBytes(new Uint8Array(source)),
+    width: asset.width,
+    height: asset.height,
+    mipLevelCount,
+    memoryBytes: rgba8MipChainBytes(asset.width, asset.height),
+    previewSprite,
     decodeMs,
     mipBuildMs,
     uploadMs,
   };
 }
 
-export async function createShapeMaskResources(engine: BrushEngine): Promise<ShapeMaskResources> {
-  const response = await fetch(new URL("../Shape.png", import.meta.url));
+export async function createShapeMaskResources(
+  engine: BrushEngine,
+  assetId: BrushShapeAssetId,
+): Promise<ShapeMaskResources> {
+  const asset = shapeAssetDescriptor(assetId);
+  const response = await fetch(asset.url);
   if (!response.ok) {
-    throw new Error(`Impossibile caricare Shape.png (${response.status}).`);
+    throw new Error(`Impossibile caricare ${asset.sourceFile} (${response.status}).`);
   }
 
   const source = await response.arrayBuffer();
@@ -743,9 +779,10 @@ export async function createShapeMaskResources(engine: BrushEngine): Promise<Sha
   let decodeStrategy: ShapeMaskDecodeStrategy;
   try {
     const decoded = await decodeGrayscalePng8(source);
-    if (decoded.width !== SHAPE_MASK_SIZE || decoded.height !== SHAPE_MASK_SIZE) {
+    if (decoded.width !== asset.width || decoded.height !== asset.height) {
       throw new Error(
-        `Shape.png deve restare ${SHAPE_MASK_SIZE}×${SHAPE_MASK_SIZE}px; trovata ${decoded.width}×${decoded.height}px.`,
+        `${asset.sourceFile} deve restare ${asset.width}×${asset.height}px; `
+        + `trovata ${decoded.width}×${decoded.height}px.`,
       );
     }
     baseMask = decoded.pixels;
@@ -753,6 +790,17 @@ export async function createShapeMaskResources(engine: BrushEngine): Promise<Sha
   } catch {
     baseMask = await decodeShapeMaskWithCanvas(source);
     decodeStrategy = SHAPE_CANVAS_DECODE_STRATEGY;
+  }
+
+  if (baseMask.length !== SHAPE_MASK_SIZE * SHAPE_MASK_SIZE) {
+    throw new Error(
+      `${asset.sourceFile} deve produrre una maschera ${SHAPE_MASK_SIZE}×${SHAPE_MASK_SIZE}.`,
+    );
+  }
+  if (asset.decode.invertLuminance) {
+    for (let index = 0; index < baseMask.length; index += 1) {
+      baseMask[index] = 255 - baseMask[index];
+    }
   }
 
   const mipLevelCount = Math.log2(SHAPE_MASK_SIZE) + 1;
@@ -833,6 +881,7 @@ export async function createShapeMaskResources(engine: BrushEngine): Promise<Sha
     previewContext.putImageData(image, 0, 0);
   }
   return {
+    assetId,
     texture,
     decodeStrategy,
     identity: hashBytes(baseMask),
@@ -841,6 +890,87 @@ export async function createShapeMaskResources(engine: BrushEngine): Promise<Sha
     occupancyCoverageRatios: occupancy.coverageRatios,
     previewSprite,
   };
+}
+
+export function destroyShapeMaskResources(resources: ShapeMaskResources | null): void {
+  resources?.texture.destroy();
+}
+
+export function destroyGrainTextureResources(resources: GrainTextureResources | null): void {
+  resources?.texture.destroy();
+}
+
+export function applyShapeMaskResources(
+  engine: BrushEngine,
+  resources: ShapeMaskResources | null,
+): void {
+  engine.shapeResourceSet = resources;
+  engine.shapeMaskTexture = resources?.texture ?? null;
+  engine.shapeMaskView = resources
+    ? resources.texture.createView({ label: `${resources.assetId} mask view` })
+    : engine.shapeMaskPlaceholderView;
+  engine.shapeResident = resources !== null;
+  engine.shapeLoadedAssetId = resources?.assetId ?? null;
+  engine.shapeMaskDecodeStrategy = resources?.decodeStrategy ?? SHAPE_CANVAS_DECODE_STRATEGY;
+  engine.shapeMaskIdentity = resources?.identity ?? 0;
+
+  if (resources) {
+    engine.shapeOccupancyActiveCells = resources.occupancyActiveCells;
+    engine.shapeOccupancyCoverageRatios = resources.occupancyCoverageRatios;
+    engine.adaptivePreviewShapeSprite = resources.previewSprite;
+    engine.shapeOccupancyUniformBuffers.forEach((buffer, mipLevel) => {
+      const wordOffset = mipLevel * SHAPE_OCCUPANCY_WORDS_PER_MAP;
+      engine.device.queue.writeBuffer(
+        buffer,
+        0,
+        resources.occupancyWords.subarray(
+          wordOffset,
+          wordOffset + SHAPE_OCCUPANCY_WORDS_PER_MAP,
+        ),
+      );
+    });
+  } else {
+    engine.shapeOccupancyActiveCells = new Array<number>(SHAPE_OCCUPANCY_MAP_COUNT).fill(0);
+    engine.shapeOccupancyCoverageRatios = new Array<number>(SHAPE_OCCUPANCY_MAP_COUNT).fill(1);
+    engine.adaptivePreviewShapeSprite = null;
+  }
+  engine.adaptivePreviewShapePalette = [];
+  engine.adaptivePreviewShapePaletteKey = "";
+  rebuildShapeBrushBindGroups(engine);
+  rebuildGrainBrushBindGroups(engine);
+  engine.blendRenderer?.setShapeMaskView(engine.shapeMaskView);
+  prepareAdaptivePreviewShapePalette(engine, engine.settings);
+}
+
+export function applyGrainTextureResources(
+  engine: BrushEngine,
+  resources: GrainTextureResources | null,
+): void {
+  engine.grainResourceSet = resources;
+  engine.grainTexture = resources?.texture ?? null;
+  engine.grainTextureView = resources
+    ? resources.texture.createView({ label: `${resources.assetId} full mip view` })
+    : engine.grainPlaceholderView;
+  engine.grainResident = resources !== null;
+  engine.grainLoadedAssetId = resources?.assetId ?? null;
+  engine.grainTextureIdentity = resources?.identity ?? 0;
+  engine.grainTextureWidth = resources?.width ?? 1;
+  engine.grainTextureHeight = resources?.height ?? 1;
+  engine.grainTextureMipLevelCount = resources?.mipLevelCount ?? 1;
+  engine.grainTextureMemoryBytes = resources?.memoryBytes ?? 0;
+  engine.grainPreviewSprite = resources?.previewSprite ?? null;
+  engine.grainStartupDecodeMs = resources?.decodeMs ?? 0;
+  engine.grainStartupMipBuildMs = resources?.mipBuildMs ?? 0;
+  engine.grainStartupUploadMs = resources?.uploadMs ?? 0;
+  rebuildGrainBrushBindGroups(engine);
+  engine.blendRenderer?.setGrainTextureView(
+    engine.grainTextureView,
+    engine.grainTextureWidth,
+    engine.grainTextureMipLevelCount,
+  );
+  if (resources && isTexturizedGrainActive(engine.settings)) {
+    engine.writeGrainUniforms(engine.settings);
+  }
 }
 
 export function rebuildGrainBrushBindGroups(engine: BrushEngine): void {
@@ -1375,13 +1505,9 @@ export function maybeReleaseIdleShapeResources(engine: BrushEngine): void {
   ) {
     return;
   }
-  engine.shapeMaskTexture?.destroy();
-  engine.shapeMaskTexture = null;
-  engine.shapeMaskView = engine.shapeMaskPlaceholderView;
-  rebuildShapeBrushBindGroups(engine);
-  rebuildGrainBrushBindGroups(engine);
-  engine.blendRenderer?.setShapeMaskView(engine.shapeMaskPlaceholderView);
-  engine.shapeResident = false;
+  const previous = engine.shapeResourceSet;
+  applyShapeMaskResources(engine, null);
+  destroyShapeMaskResources(previous);
   engine.publishStats();
 }
 
@@ -1399,12 +1525,9 @@ export function maybeReleaseIdleGrainResources(engine: BrushEngine): void {
   ) {
     return;
   }
-  engine.grainTexture?.destroy();
-  engine.grainTexture = null;
-  engine.grainTextureView = engine.grainPlaceholderView;
-  rebuildGrainBrushBindGroups(engine);
-  engine.blendRenderer?.setGrainTextureView(engine.grainPlaceholderView);
-  engine.grainResident = false;
+  const previous = engine.grainResourceSet;
+  applyGrainTextureResources(engine, null);
+  destroyGrainTextureResources(previous);
   engine.publishStats();
 }
 

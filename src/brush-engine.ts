@@ -450,9 +450,12 @@ import {
   GRAIN_FIXED_STRATEGY,
   GRAIN_MIP_STRATEGY,
   GRAIN_MOVING_COORDINATE_STRATEGY,
+  GRAIN_MOVING_ROLLER_COORDINATE_STRATEGY,
   GRAIN_MOVING_STRATEGY,
   GRAIN_PIPELINE_STRATEGY,
   GRAIN_STORAGE_LIFECYCLE_STRATEGY,
+  PENCIL_GRAIN_FIXED_STRATEGY,
+  PENCIL_GRAIN_MOVING_STRATEGY,
   type GrainAdaptivePreviewStrategy,
   grainCoordinateMode,
   type GrainCoordinateStrategy,
@@ -506,7 +509,9 @@ import {
   type BenchmarkResult,
   type BlendMode,
   type BrushEngineOptions,
+  type BrushGrainAssetId,
   type BrushSettings,
+  type BrushShapeAssetId,
   type BrushTool,
   type EffectsWorkbenchRetargetResult,
   type EngineCallbacks,
@@ -522,6 +527,12 @@ import {
   type MixedSceneSnapshot,
   type PointerSample,
 } from "./engine-types";
+import {
+  grainAssetIdForSettings,
+  normalizeGrainAssetId,
+  normalizeShapeAssetId,
+  shapeAssetIdForSettings,
+} from "./engine-brush-assets";
 import {
   vectorTextGpuDrawUsesBlur,
   vectorTextGpuDrawUsesMesh,
@@ -718,10 +729,14 @@ import {
   shrinkEffectsScratchAfterIdle,
 } from "./engine-layer-runtime";
 import {
+  applyGrainTextureResources,
+  applyShapeMaskResources,
   createGrainTextureResources,
   createShapeMaskResources,
   createStaticResources,
   destroyThicknessTailOverlayResources,
+  destroyGrainTextureResources,
+  destroyShapeMaskResources,
   destroyTrackedReadbackBuffer,
   ensureEffectRenderersForRecord,
   ensurePresentationCacheTexture,
@@ -1186,27 +1201,40 @@ export class BrushEngine {
   shapeOccupancyUniformBuffers: GPUBuffer[] = [];
   sampler!: GPUSampler;
   shapeMaskTexture: GPUTexture | null = null;
+  shapeResourceSet: ShapeMaskResources | null = null;
   shapeMaskView!: GPUTextureView;
   shapeMaskPlaceholderTexture!: GPUTexture;
   shapeMaskPlaceholderView!: GPUTextureView;
   shapeResident = false;
   shapeLoadingPromise: Promise<void> | null = null;
+  shapeDesiredAssetId: BrushShapeAssetId = "legacy-shape";
+  shapeLoadingAssetId: BrushShapeAssetId | null = null;
+  shapeLoadedAssetId: BrushShapeAssetId | null = null;
   shapeMaskSampler!: GPUSampler;
   grainTexture: GPUTexture | null = null;
+  grainResourceSet: GrainTextureResources | null = null;
   grainTextureView!: GPUTextureView;
   grainPlaceholderTexture!: GPUTexture;
   grainPlaceholderView!: GPUTextureView;
   grainResident = false;
   grainLoadingPromise: Promise<void> | null = null;
+  grainDesiredAssetId: BrushGrainAssetId = "legacy-grain";
+  grainLoadingAssetId: BrushGrainAssetId | null = null;
+  grainLoadedAssetId: BrushGrainAssetId | null = null;
   grainSamplers!: Record<"fixed" | "moving", Record<GrainFiltering, GPUSampler>>;
   grainTextureIdentity = 0;
+  grainTextureWidth = GRAIN_TEXTURE_SIZE;
+  grainTextureHeight = GRAIN_TEXTURE_SIZE;
+  grainTextureMipLevelCount = GRAIN_TEXTURE_MIP_LEVEL_COUNT;
+  grainTextureMemoryBytes = GRAIN_TEXTURE_PIXEL_COUNT * 4;
+  grainPreviewSprite: HTMLCanvasElement | null = null;
   grainStartupDecodeMs = 0;
   grainStartupMipBuildMs = 0;
   grainStartupUploadMs = 0;
   shapeMaskDecodeStrategy: ShapeMaskDecodeStrategy = SHAPE_CANVAS_DECODE_STRATEGY;
   shapeMaskIdentity = 0;
-  private shapeOccupancyActiveCells = new Array<number>(SHAPE_OCCUPANCY_MAP_COUNT).fill(0);
-  private shapeOccupancyCoverageRatios = new Array<number>(SHAPE_OCCUPANCY_MAP_COUNT).fill(1);
+  shapeOccupancyActiveCells = new Array<number>(SHAPE_OCCUPANCY_MAP_COUNT).fill(0);
+  shapeOccupancyCoverageRatios = new Array<number>(SHAPE_OCCUPANCY_MAP_COUNT).fill(1);
   packedMinimumRadius = Number.POSITIVE_INFINITY;
 
   brushBindGroupLayout!: GPUBindGroupLayout;
@@ -1680,13 +1708,19 @@ export class BrushEngine {
       ...next,
       tool,
       shape: next.shape === "shape" || next.shape === "circle" ? next.shape : this.settings.shape,
+      shapeAssetId: normalizeShapeAssetId(next.shapeAssetId ?? this.settings.shapeAssetId),
+      shapeRotation: next.shapeRotation === "follow-stroke" || next.shapeRotation === "fixed"
+        ? next.shapeRotation
+        : this.settings.shapeRotation,
       shapeScatter: clamp(next.shapeScatter ?? this.settings.shapeScatter, 0, 1),
       grainMode: next.grainMode === "off"
         || next.grainMode === "texturized"
         || next.grainMode === "moving"
         ? next.grainMode
         : this.settings.grainMode,
+      grainAssetId: normalizeGrainAssetId(next.grainAssetId ?? this.settings.grainAssetId),
       grainScale: clamp(next.grainScale ?? this.settings.grainScale, 0.1, 4),
+      grainMovement: clamp(next.grainMovement ?? this.settings.grainMovement, 0, 1),
       grainDepth: clamp(next.grainDepth ?? this.settings.grainDepth, 0, 1),
       grainBrightness: clamp(next.grainBrightness ?? this.settings.grainBrightness, -1, 1),
       grainContrast: clamp(next.grainContrast ?? this.settings.grainContrast, -1, 1),
@@ -1704,7 +1738,9 @@ export class BrushEngine {
       count: clamp(Math.round(next.count ?? this.settings.count), 1, 24),
       size: clamp(
         next.size ?? this.settings.size,
-        tool === "blend" ? 1 : 4,
+        1,
+        // The public mobile control stops at 1000 px. Keep the historical
+        // internal headroom used by the canonical Blend background fixture.
         tool === "blend" ? 1024 : 1500,
       ),
       spacingPercent: clamp(
@@ -3287,20 +3323,32 @@ export class BrushEngine {
       );
       return;
     }
-    if (this.settings.grainMode !== "off" && !this.grainResident) {
+    if (
+      this.settings.grainMode !== "off"
+      && (
+        !this.grainResident
+        || this.grainLoadedAssetId !== grainAssetIdForSettings(this.settings)
+      )
+    ) {
       // Senza texture residente i pixel non sarebbero identici: il tratto
       // attende il load partito alla selezione del grain (o parte ora).
       requestGrainLoad(this);
       this.callbacks.onStatus?.(
-        "Grain M1 in caricamento: riprova tra un istante…",
+        "Grain in caricamento: riprova tra un istante…",
         "working",
       );
       return;
     }
-    if (this.settings.shape === "shape" && !this.shapeResident) {
+    if (
+      this.settings.shape === "shape"
+      && (
+        !this.shapeResident
+        || this.shapeLoadedAssetId !== shapeAssetIdForSettings(this.settings)
+      )
+    ) {
       requestShapeLoad(this);
       this.callbacks.onStatus?.(
-        "Shape 2K in caricamento: riprova tra un istante…",
+        "Shape in caricamento: riprova tra un istante…",
         "working",
       );
       return;
@@ -3824,76 +3872,240 @@ export class BrushEngine {
     }, RASTER_BEVEL_FIELD_IDLE_SHRINK_DELAY_MS);
   }
 
-  ensureGrainResources(): Promise<void> {
-    if (this.grainResident) {
+  ensureGrainResources(
+    requestedAssetId: BrushGrainAssetId = grainAssetIdForSettings(this.settings),
+  ): Promise<void> {
+    const assetId = normalizeGrainAssetId(requestedAssetId);
+    this.grainDesiredAssetId = assetId;
+    const inFlight = this.grainLoadingPromise;
+    if (inFlight) {
+      const inFlightAssetId = this.grainLoadingAssetId;
+      return inFlight.then(
+        () => {
+          if (this.grainDesiredAssetId !== assetId) return;
+          return this.ensureGrainResources(assetId);
+        },
+        (error: unknown) => {
+          if (this.grainDesiredAssetId === assetId && inFlightAssetId === assetId) {
+            throw error;
+          }
+          if (this.grainDesiredAssetId === assetId) {
+            return this.ensureGrainResources(assetId);
+          }
+        },
+      );
+    }
+    if (this.grainResident && this.grainLoadedAssetId === assetId) {
       return Promise.resolve();
     }
-    if (this.grainLoadingPromise) {
-      return this.grainLoadingPromise;
-    }
-    this.callbacks.onStatus?.("Carico la texture Grain M1…", "working");
+
+    const label = assetId === "pencil-grain" ? "Grain Pencil" : "Grain M1";
+    this.callbacks.onStatus?.(`Carico ${label}…`, "working");
     const loading = (async () => {
-      const resources = await createGrainTextureResources(this);
-      this.grainTexture = resources.texture;
-      this.grainTextureView = this.grainTexture.createView({
-        label: "Cotton Fleece M1 native grain full mip view",
-      });
-      this.grainTextureIdentity = resources.identity;
-      this.grainStartupDecodeMs = resources.decodeMs;
-      this.grainStartupMipBuildMs = resources.mipBuildMs;
-      this.grainStartupUploadMs = resources.uploadMs;
-      rebuildGrainBrushBindGroups(this);
-      this.blendRenderer?.setGrainTextureView(this.grainTextureView);
-      this.grainResident = true;
-      this.callbacks.onStatus?.("Grain M1 pronto.", "ok");
+      let resources: GrainTextureResources;
+      try {
+        resources = await runGpuAllocationTransaction(
+          this.device,
+          `Allocazione ${label}`,
+          async (transaction) => {
+            const candidate = await createGrainTextureResources(this, assetId);
+            transaction.deferRollback(() => destroyGrainTextureResources(candidate));
+            return candidate;
+          },
+        );
+      } catch (error) {
+        if (this.grainDesiredAssetId !== assetId) return;
+        throw error;
+      }
+
+      if (this.grainDesiredAssetId !== assetId) {
+        destroyGrainTextureResources(resources);
+        return;
+      }
+
+      const previous = this.grainResourceSet;
+      if (previous) {
+        await this.waitForGpuCapped("Cambio asset Grain", 60_000);
+      }
+      if (this.grainDesiredAssetId !== assetId) {
+        destroyGrainTextureResources(resources);
+        return;
+      }
+      await runGpuAllocationTransaction(
+        this.device,
+        `Retarget ${label}`,
+        (transaction) => {
+          transaction.deferRollback(() => destroyGrainTextureResources(resources));
+          transaction.deferRollback(() => applyGrainTextureResources(this, previous));
+          applyGrainTextureResources(this, resources);
+        },
+      );
+
+      if (this.grainDesiredAssetId !== assetId) {
+        try {
+          await runGpuAllocationTransaction(
+            this.device,
+            "Ripristino asset Grain precedente",
+            (transaction) => {
+              transaction.deferRollback(() => applyGrainTextureResources(this, resources));
+              applyGrainTextureResources(this, previous);
+            },
+          );
+          destroyGrainTextureResources(resources);
+          this.publishStats();
+          return;
+        } catch (error) {
+          destroyGrainTextureResources(previous);
+          throw error;
+        }
+      }
+
+      destroyGrainTextureResources(previous);
+      if (this.grainDesiredAssetId === assetId) {
+        this.callbacks.onStatus?.(`${label} pronto.`, "ok");
+      }
       this.publishStats();
     })();
-    this.grainLoadingPromise = loading.finally(() => {
+    let completedSuccessfully = false;
+    const tracked = loading.then(() => {
+      completedSuccessfully = true;
+    }).finally(() => {
+      if (this.grainLoadingPromise !== tracked) return;
       this.grainLoadingPromise = null;
+      this.grainLoadingAssetId = null;
+      const selectedAssetId = grainAssetIdForSettings(this.settings);
+      if (
+        completedSuccessfully
+        && !this.historyBusy
+        && isTexturizedGrainActive(this.settings)
+        && (this.grainLoadedAssetId !== selectedAssetId || !this.grainResident)
+      ) {
+        requestGrainLoad(this);
+      } else {
+        maybeReleaseIdleGrainResources(this);
+      }
     });
-    return this.grainLoadingPromise;
+    this.grainLoadingPromise = tracked;
+    this.grainLoadingAssetId = assetId;
+    return tracked;
   }
 
-  ensureShapeResources(): Promise<void> {
-    if (this.shapeResident) {
+  ensureShapeResources(
+    requestedAssetId: BrushShapeAssetId = shapeAssetIdForSettings(this.settings),
+  ): Promise<void> {
+    const assetId = normalizeShapeAssetId(requestedAssetId);
+    this.shapeDesiredAssetId = assetId;
+    const inFlight = this.shapeLoadingPromise;
+    if (inFlight) {
+      const inFlightAssetId = this.shapeLoadingAssetId;
+      return inFlight.then(
+        () => {
+          if (this.shapeDesiredAssetId !== assetId) return;
+          return this.ensureShapeResources(assetId);
+        },
+        (error: unknown) => {
+          if (this.shapeDesiredAssetId === assetId && inFlightAssetId === assetId) {
+            throw error;
+          }
+          if (this.shapeDesiredAssetId === assetId) {
+            return this.ensureShapeResources(assetId);
+          }
+        },
+      );
+    }
+    if (this.shapeResident && this.shapeLoadedAssetId === assetId) {
       return Promise.resolve();
     }
-    if (this.shapeLoadingPromise) {
-      return this.shapeLoadingPromise;
-    }
-    this.callbacks.onStatus?.("Carico la maschera Shape 2K…", "working");
+
+    const label = assetId === "pencil-shape" ? "Shape Pencil" : "Shape 2K";
+    this.callbacks.onStatus?.(`Carico ${label}…`, "working");
     const loading = (async () => {
-      const resources = await createShapeMaskResources(this);
-      this.shapeMaskTexture = resources.texture;
-      this.shapeMaskView = this.shapeMaskTexture.createView({ label: "Shape 2K mask view" });
-      this.shapeMaskDecodeStrategy = resources.decodeStrategy;
-      this.shapeMaskIdentity = resources.identity;
-      this.shapeOccupancyActiveCells = resources.occupancyActiveCells;
-      this.shapeOccupancyCoverageRatios = resources.occupancyCoverageRatios;
-      this.adaptivePreviewShapeSprite = resources.previewSprite;
-      this.shapeOccupancyUniformBuffers.forEach((buffer, mipLevel) => {
-        const wordOffset = mipLevel * SHAPE_OCCUPANCY_WORDS_PER_MAP;
-        this.device.queue.writeBuffer(
-          buffer,
-          0,
-          resources.occupancyWords.subarray(
-            wordOffset,
-            wordOffset + SHAPE_OCCUPANCY_WORDS_PER_MAP,
-          ),
+      let resources: ShapeMaskResources;
+      try {
+        resources = await runGpuAllocationTransaction(
+          this.device,
+          `Allocazione ${label}`,
+          async (transaction) => {
+            const candidate = await createShapeMaskResources(this, assetId);
+            transaction.deferRollback(() => destroyShapeMaskResources(candidate));
+            return candidate;
+          },
         );
-      });
-      rebuildShapeBrushBindGroups(this);
-      rebuildGrainBrushBindGroups(this);
-      this.blendRenderer?.setShapeMaskView(this.shapeMaskView);
-      prepareAdaptivePreviewShapePalette(this, this.settings);
-      this.shapeResident = true;
-      this.callbacks.onStatus?.("Shape 2K pronta.", "ok");
+      } catch (error) {
+        if (this.shapeDesiredAssetId !== assetId) return;
+        throw error;
+      }
+
+      if (this.shapeDesiredAssetId !== assetId) {
+        destroyShapeMaskResources(resources);
+        return;
+      }
+
+      const previous = this.shapeResourceSet;
+      if (previous) {
+        await this.waitForGpuCapped("Cambio asset Shape", 60_000);
+      }
+      if (this.shapeDesiredAssetId !== assetId) {
+        destroyShapeMaskResources(resources);
+        return;
+      }
+      await runGpuAllocationTransaction(
+        this.device,
+        `Retarget ${label}`,
+        (transaction) => {
+          transaction.deferRollback(() => destroyShapeMaskResources(resources));
+          transaction.deferRollback(() => applyShapeMaskResources(this, previous));
+          applyShapeMaskResources(this, resources);
+        },
+      );
+
+      if (this.shapeDesiredAssetId !== assetId) {
+        try {
+          await runGpuAllocationTransaction(
+            this.device,
+            "Ripristino asset Shape precedente",
+            (transaction) => {
+              transaction.deferRollback(() => applyShapeMaskResources(this, resources));
+              applyShapeMaskResources(this, previous);
+            },
+          );
+          destroyShapeMaskResources(resources);
+          this.publishStats();
+          return;
+        } catch (error) {
+          destroyShapeMaskResources(previous);
+          throw error;
+        }
+      }
+
+      destroyShapeMaskResources(previous);
+      if (this.shapeDesiredAssetId === assetId) {
+        this.callbacks.onStatus?.(`${label} pronta.`, "ok");
+      }
       this.publishStats();
     })();
-    this.shapeLoadingPromise = loading.finally(() => {
+    let completedSuccessfully = false;
+    const tracked = loading.then(() => {
+      completedSuccessfully = true;
+    }).finally(() => {
+      if (this.shapeLoadingPromise !== tracked) return;
       this.shapeLoadingPromise = null;
+      this.shapeLoadingAssetId = null;
+      const selectedAssetId = shapeAssetIdForSettings(this.settings);
+      if (
+        completedSuccessfully
+        && !this.historyBusy
+        && this.settings.shape === "shape"
+        && (this.shapeLoadedAssetId !== selectedAssetId || !this.shapeResident)
+      ) {
+        requestShapeLoad(this);
+      } else {
+        maybeReleaseIdleShapeResources(this);
+      }
     });
-    return this.shapeLoadingPromise;
+    this.shapeLoadingPromise = tracked;
+    this.shapeLoadingAssetId = assetId;
+    return tracked;
   }
 
   /**
@@ -6667,6 +6879,11 @@ export class BrushEngine {
     if (!isTexturizedGrainActive(settings)) {
       return GRAIN_DISABLED_STRATEGY;
     }
+    if (grainAssetIdForSettings(settings) === "pencil-grain") {
+      return settings.grainMode === "moving"
+        ? PENCIL_GRAIN_MOVING_STRATEGY
+        : PENCIL_GRAIN_FIXED_STRATEGY;
+    }
     return settings.grainMode === "moving" ? GRAIN_MOVING_STRATEGY : GRAIN_FIXED_STRATEGY;
   }
 
@@ -6674,16 +6891,17 @@ export class BrushEngine {
     if (!isTexturizedGrainActive(settings)) {
       return "none";
     }
-    return settings.grainMode === "moving"
-      ? GRAIN_MOVING_COORDINATE_STRATEGY
-      : GRAIN_FIXED_COORDINATE_STRATEGY;
+    if (settings.grainMode !== "moving") return GRAIN_FIXED_COORDINATE_STRATEGY;
+    return (settings.grainMovement ?? 0) > 0
+      ? GRAIN_MOVING_ROLLER_COORDINATE_STRATEGY
+      : GRAIN_MOVING_COORDINATE_STRATEGY;
   }
 
   grainSamplingStrategy(settings: BrushSettings): GrainSamplingStrategy {
     if (!isTexturizedGrainActive(settings)) {
       return "none";
     }
-    const moving = settings.grainMode === "moving";
+    const moving = settings.grainMode === "moving" && (settings.grainMovement ?? 0) <= 0;
     if (settings.grainFiltering === "no") {
       return moving ? "clamp-nearest" : "repeat-nearest";
     }
@@ -6699,7 +6917,7 @@ export class BrushEngine {
     floats.fill(0);
     const scale = clamp(settings.grainScale, 0.1, 4);
     const polarity = settings.grainInvert ? -1 : 1;
-    floats[0] = 1 / (GRAIN_TEXTURE_SIZE * scale);
+    floats[0] = 1 / (Math.max(1, this.grainTextureWidth) * scale);
     floats[1] = clamp(settings.grainDepth, 0, 1);
     // Folding inversion into the existing affine transform preserves the
     // fragment shader and its cost:
@@ -6710,7 +6928,12 @@ export class BrushEngine {
     unsigned[4] = settings.grainFiltering === "no"
       ? 0
       : settings.grainFiltering === "classic" ? 1 : 2;
-    unsigned[5] = settings.grainMode === "moving" ? 1 : 0;
+    const movement = clamp(settings.grainMovement ?? 0, 0, 1);
+    unsigned[5] = settings.grainMode === "moving"
+      ? movement > 0 ? 2 : 1
+      : 0;
+    unsigned[6] = Math.max(1, this.grainTextureMipLevelCount) >>> 0;
+    floats[7] = movement;
     this.device.queue.writeBuffer(this.grainUniformBuffer, 0, floats);
   }
 
@@ -8023,7 +8246,7 @@ export class BrushEngine {
       clearLayer,
       dirtyRect: timing.dirtyRect,
       shapeOccupancySelection: timing.shapeOccupancySelection,
-      shapeMaskIdentity: this.shapeMaskIdentity,
+      shapeMaskIdentity: settings.shape === "shape" ? this.shapeMaskIdentity : null,
       grainTextureIdentity: isTexturizedGrainActive(settings)
         ? this.grainTextureIdentity
         : null,
@@ -8737,7 +8960,15 @@ export class BrushEngine {
           + directionY * linearOffset
           + directionX * lateralOffset;
         const rotation = candidateSettings.shape === "shape"
-          ? (previewRandom01(copySeed, 7) - 0.5) * Math.PI * 2 * candidateSettings.shapeScatter
+          ? (
+              candidateSettings.shapeRotation === "follow-stroke"
+                ? Math.atan2(directionY, directionX)
+                : 0
+            )
+            + (previewRandom01(copySeed, 7) - 0.5)
+              * Math.PI
+              * 2
+              * candidateSettings.shapeScatter
           : 0;
         const colorSeed = candidateSettings.jitterPerCopy
           ? copySeed
@@ -9058,7 +9289,8 @@ export class BrushEngine {
     if (!session || !isStrokeGlazeBlendMode(session.settings.blendMode)) {
       throw new Error("Sessione Light Glaze mancante durante il rendering.");
     }
-    if (replayBatch && replayBatch.shapeMaskIdentity !== this.shapeMaskIdentity) {
+    const expectedShapeIdentity = settings.shape === "shape" ? this.shapeMaskIdentity : null;
+    if (replayBatch && replayBatch.shapeMaskIdentity !== expectedShapeIdentity) {
       throw new Error("La Shape usata dalla cronologia non corrisponde alla risorsa corrente.");
     }
     const expectedGrainIdentity = isTexturizedGrainActive(settings)
@@ -10039,7 +10271,8 @@ export class BrushEngine {
     if (replayBatch && replayBatch.actionId !== historyActionId) {
       throw new Error("Azione Blend GPU non coerente con il batch storico.");
     }
-    if (replayBatch && replayBatch.shapeMaskIdentity !== this.shapeMaskIdentity) {
+    const expectedShapeIdentity = settings.shape === "shape" ? this.shapeMaskIdentity : null;
+    if (replayBatch && replayBatch.shapeMaskIdentity !== expectedShapeIdentity) {
       throw new Error("La Shape Blend usata dalla cronologia non corrisponde alla risorsa corrente.");
     }
     const expectedGrainIdentity = isTexturizedGrainActive(settings)
@@ -10216,7 +10449,8 @@ export class BrushEngine {
     let grainCircleBatches = 0;
     let grainShapeBatches = 0;
 
-    if (replayBatch && replayBatch.shapeMaskIdentity !== this.shapeMaskIdentity) {
+    const expectedShapeIdentity = settings.shape === "shape" ? this.shapeMaskIdentity : null;
+    if (replayBatch && replayBatch.shapeMaskIdentity !== expectedShapeIdentity) {
       throw new Error("La Shape usata dalla cronologia non corrisponde alla risorsa corrente.");
     }
     const expectedGrainIdentity = isTexturizedGrainActive(settings)

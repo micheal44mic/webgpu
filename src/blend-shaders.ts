@@ -20,7 +20,7 @@ struct BlendUniforms {
   maskControls: vec4<f32>,        // hardness, flow, spacing, arc start
   transportControls: vec4<f32>,   // distance, diameter, strength, stretch
   grainControls: vec4<f32>,       // grain scale, paint, grain depth, grain brightness
-  grainAffineAndPhase: vec4<f32>, // grain contrast, 0, 0, alpha floor
+  grainAffineAndPhase: vec4<f32>, // grain contrast, movement, mip count, alpha floor
   paintColor: vec4<f32>,
   depositRect: vec4<f32>,         // step write rect in group-local pixels X,Y,W,H
   options: vec4<u32>,             // shape custom, grain mode, filtering, has previous
@@ -225,8 +225,6 @@ ${blendUniformsWgsl}
 
 ${blendStateSamplingWgsl}
 
-const GRAIN_MIP_LEVEL_COUNT: u32 = 12u;
-
 struct LocalSample {
   uv: vec2<f32>,
   brushPixels: vec2<f32>,
@@ -299,7 +297,7 @@ fn adjustedGrainCoverage(
     let mipLevel = u32(clamp(
       round(log2(max(footprint, 1.0))),
       0.0,
-      f32(GRAIN_MIP_LEVEL_COUNT - 1u)
+      max(1.0, blend.grainAffineAndPhase.z) - 1.0
     ));
     sourceSample = textureSampleLevel(
       grainTexture,
@@ -415,8 +413,8 @@ fn depositMain(@builtin(global_invocation_id) gid: vec3<u32>) {
     var grainUvDx: vec2<f32>;
     var grainUvDy: vec2<f32>;
     if (blend.options.y == 2u) {
-      // Moving maps one complete grain image to the selected brush footprint.
-      grainUv = bestLocal.uv;
+      // Movement 0 preserves the historical dragged/stamp-local mapping
+      // exactly. Higher values advance the roller in document space.
       let halfSize = max(
         mix(
           blend.toAndFromHalfSize.zw,
@@ -425,8 +423,22 @@ fn depositMain(@builtin(global_invocation_id) gid: vec3<u32>) {
         ),
         vec2<f32>(0.001)
       );
-      grainUvDx = vec2<f32>(0.5 / halfSize.x, 0.0);
-      grainUvDy = vec2<f32>(0.0, 0.5 / halfSize.y);
+      let movingUv = bestLocal.uv;
+      let movingUvDx = vec2<f32>(0.5 / halfSize.x, 0.0);
+      let movingUvDy = vec2<f32>(0.0, 0.5 / halfSize.y);
+      let movement = clamp(blend.grainAffineAndPhase.y, 0.0, 1.0);
+      if (movement <= 0.00001) {
+        grainUv = movingUv;
+        grainUvDx = movingUvDx;
+        grainUvDy = movingUvDy;
+      } else {
+        let fixedUv = documentPosition * blend.grainControls.x;
+        let fixedUvDx = vec2<f32>(blend.grainControls.x, 0.0);
+        let fixedUvDy = vec2<f32>(0.0, blend.grainControls.x);
+        grainUv = mix(movingUv, fixedUv, movement);
+        grainUvDx = mix(movingUvDx, fixedUvDx, movement);
+        grainUvDy = mix(movingUvDy, fixedUvDy, movement);
+      }
     } else {
       // Fixed is anchored to authoritative top-left layer coordinates.
       grainUv = documentPosition * blend.grainControls.x;

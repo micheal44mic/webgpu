@@ -171,8 +171,14 @@ assert(grainShader.includes("(input.position.xy + brush.renderTargetOrigin) * gr
   "Fixed M1 non è ancorato alle coordinate autorevoli del layer.");
 assert(grainShader.includes("input.localPosition * 0.5 + vec2<f32>(0.5)"),
   "Moving M1 non usa le coordinate locali dello stamp.");
-assert(grainShader.includes("grain.coordinateMode == 1u"),
+assert(grainShader.includes("grain.coordinateMode != 0u"),
   "Selezione Fixed/Moving assente dallo shader WGSL.");
+assert(grainShader.includes("if (movement <= 0.00001)")
+  && grainShader.includes("return input.localPosition * 0.5 + vec2<f32>(0.5)")
+  && grainShader.includes("return mix(movingUv, fixedUv, movement)"),
+  "Movement non conserva il vecchio Moving a zero o non interpola verso il roller.");
+assert(grainShader.includes("max(1u, grain.mipLevelCount) - 1u"),
+  "Il numero di mip Grain non è più dinamico nell'uniform.");
 assert(grainShader.includes("dot(sourceSample.rgb, vec3<f32>(0.299, 0.587, 0.114))"),
   "Luma RGB dell'asset M1 originale non trovata.");
 assert(grainShader.includes("shapeOccupancyCoverageFragmentMain")
@@ -187,10 +193,13 @@ assert(grainUniformLayout.offsets.coordinateMode === 20,
   `Offset coordinateMode ${grainUniformLayout.offsets.coordinateMode}, atteso 20.`);
 
 const engine = readEngineSource();
-assert(engine.includes('fetch(new URL("../graincottonfleece.PNG", import.meta.url))'),
-  "Il runtime non carica l'asset M1 originale.");
+assert(engine.includes('url: new URL("../graincottonfleece.PNG", import.meta.url)')
+  && engine.includes('url: new URL("../Grainpencil.png", import.meta.url)')
+  && engine.includes("fetch(asset.url)"),
+  "Il runtime non instrada gli asset Grain legacy e Pencil espliciti.");
 assert(engine.includes('const GRAIN_TEXTURE_SIZE = 2500;')
-  && engine.includes('format: "rgba8unorm"'),
+  && engine.includes('format: "rgba8unorm"')
+  && engine.includes("mipLevelCountForSize(asset.width, asset.height)"),
   "Dimensione/formato nativi del Grain non configurati.");
 assert(engine.includes('"rgba8-native-2500-fixed-coverage-multiply"')
   && engine.includes('"rgba8-native-2500-moving-coverage-multiply"'),
@@ -298,7 +307,7 @@ assert(html.includes('id="runRenderingModeSuite"')
   && html.includes('value="off">Off — senza texture')
   && html.includes('value="texturized">Texturized — Fixed M1 (fisso)'),
   "La suite iPhone one-tap con Grain Off/Fixed non è esposta correttamente.");
-assert(main.includes("performanceTelemetryRevision: 62"),
+assert(main.includes("performanceTelemetryRevision: 63"),
   "Revisione telemetria compositing livelli attesa assente.");
 
 console.log(JSON.stringify({
@@ -318,7 +327,8 @@ console.log(JSON.stringify({
     webGpuWgslOnlyRenderingPath: true,
     fixedUsesLayerCoordinates: true,
     movingUsesStampLocalCoordinates: true,
-    movingIgnoresScaleControl: true,
+    movingMovementZeroPreservesLegacyLocalMapping: true,
+    movingRollerUsesScaleControl: true,
     invertUsesExistingAffineUniforms: true,
     iphoneReplayOffersOffOrFixedTexturized: true,
     iphoneReplayUsesThreeFinalRenderingsAtFixedIntensity1x: true,

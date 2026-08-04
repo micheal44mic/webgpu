@@ -51,12 +51,15 @@ export type BrushOpacityStrategy = "per-stamp-uniform-alpha-multiplier";
 export type GrainStrategy =
   | "disabled-legacy-pipeline"
   | "rgba8-native-2500-fixed-coverage-multiply"
-  | "rgba8-native-2500-moving-coverage-multiply";
+  | "rgba8-native-2500-moving-coverage-multiply"
+  | "rgba8-native-800-fixed-coverage-multiply"
+  | "rgba8-native-800-moving-roller-coverage-multiply";
 
 export type GrainCoordinateStrategy =
   | "none"
   | "authoritative-layer-position"
-  | "stamp-local-position";
+  | "stamp-local-position"
+  | "stamp-local-to-layer-roller-interpolation";
 
 export type GrainSamplingStrategy =
   | "none"
@@ -132,9 +135,18 @@ export const GRAIN_FIXED_STRATEGY = "rgba8-native-2500-fixed-coverage-multiply" 
 
 export const GRAIN_MOVING_STRATEGY = "rgba8-native-2500-moving-coverage-multiply" as const;
 
+export const PENCIL_GRAIN_FIXED_STRATEGY =
+  "rgba8-native-800-fixed-coverage-multiply" as const;
+
+export const PENCIL_GRAIN_MOVING_STRATEGY =
+  "rgba8-native-800-moving-roller-coverage-multiply" as const;
+
 export const GRAIN_FIXED_COORDINATE_STRATEGY = "authoritative-layer-position" as const;
 
 export const GRAIN_MOVING_COORDINATE_STRATEGY = "stamp-local-position" as const;
+
+export const GRAIN_MOVING_ROLLER_COORDINATE_STRATEGY =
+  "stamp-local-to-layer-roller-interpolation" as const;
 
 export const GRAIN_MIP_STRATEGY = "webgpu-wgsl-linear-full-chain" as const;
 
@@ -232,5 +244,9 @@ export function isTexturizedGrainActive(settings: BrushSettings): boolean {
 }
 
 export function grainCoordinateMode(settings: BrushSettings): "fixed" | "moving" {
-  return settings.grainMode === "moving" ? "moving" : "fixed";
+  // Moving with Movement > 0 can leave the 0..1 stamp domain while rolling;
+  // use the existing repeat sampler. Movement 0 keeps the legacy clamp sampler.
+  return settings.grainMode === "moving" && (settings.grainMovement ?? 0) <= 0
+    ? "moving"
+    : "fixed";
 }

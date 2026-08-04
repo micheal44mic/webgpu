@@ -503,10 +503,10 @@ export function getBenchmarkEnvironment(engine: BrushEngine): {
     grainSamplingStrategy: engine.grainSamplingStrategy(engine.settings),
     grainMipStrategy: GRAIN_MIP_STRATEGY,
     grainTextureFormat: "rgba8unorm",
-    grainTextureWidth: GRAIN_TEXTURE_SIZE,
-    grainTextureHeight: GRAIN_TEXTURE_SIZE,
-    grainTextureMipLevelCount: GRAIN_TEXTURE_MIP_LEVEL_COUNT,
-    grainTextureMemoryMiB: GRAIN_TEXTURE_PIXEL_COUNT * 4 / (1024 * 1024),
+    grainTextureWidth: engine.grainTextureWidth,
+    grainTextureHeight: engine.grainTextureHeight,
+    grainTextureMipLevelCount: engine.grainTextureMipLevelCount,
+    grainTextureMemoryMiB: engine.grainTextureMemoryBytes / MEBIBYTE_BYTES,
     grainTextureIdentity: engine.grainTextureIdentity,
     grainPipelineStrategy: GRAIN_PIPELINE_STRATEGY,
     grainCoverageStrategy: isTexturizedGrainActive(engine.settings)
@@ -771,7 +771,7 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     ) / MEBIBYTE_BYTES
     : 0;
   const grainTextureMiB = baseResourcesAllocated && engine.grainResident
-    ? GRAIN_TEXTURE_PIXEL_COUNT * 4 / MEBIBYTE_BYTES
+    ? engine.grainTextureMemoryBytes / MEBIBYTE_BYTES
     : 0;
   const shapeTextureMiB = baseResourcesAllocated && engine.shapeResident
     ? shapeTextureMemoryMiB()
@@ -1116,10 +1116,10 @@ export function finishStrokePerformanceProfile(engine: BrushEngine): StrokePerfo
     grainSamplingStrategy: profile.grainSamplingStrategy,
     grainMipStrategy: GRAIN_MIP_STRATEGY,
     grainTextureFormat: "rgba8unorm",
-    grainTextureWidth: GRAIN_TEXTURE_SIZE,
-    grainTextureHeight: GRAIN_TEXTURE_SIZE,
-    grainTextureMipLevelCount: GRAIN_TEXTURE_MIP_LEVEL_COUNT,
-    grainTextureMemoryMiB: GRAIN_TEXTURE_PIXEL_COUNT * 4 / (1024 * 1024),
+    grainTextureWidth: engine.grainTextureWidth,
+    grainTextureHeight: engine.grainTextureHeight,
+    grainTextureMipLevelCount: engine.grainTextureMipLevelCount,
+    grainTextureMemoryMiB: engine.grainTextureMemoryBytes / MEBIBYTE_BYTES,
     grainTextureIdentity: engine.grainTextureIdentity,
     grainPipelineStrategy: GRAIN_PIPELINE_STRATEGY,
     grainCoverageStrategy: profile.grainCoverageStrategy,

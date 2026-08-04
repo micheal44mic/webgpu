@@ -49,7 +49,8 @@ export function populateBrushUniformUpload(
   unsigned[20] = settings.count >>> 0;
   unsigned[21] = settings.jitterPerCopy ? 1 : 0;
   unsigned[22] = settings.blendMode === "additive" ? 1 : 0;
-  unsigned[23] = 0;
+  // Previously unused ABI lane: opt-in base rotation along the stamp direction.
+  unsigned[23] = settings.shapeRotation === "follow-stroke" ? 1 : 0;
 }
 
 export function packStampsIntoUpload(
@@ -66,7 +67,7 @@ export function packStampsIntoUpload(
   let minimumRadius = Number.POSITIVE_INFINITY;
   const maximumShapeAngle = Math.PI * settings.shapeScatter;
   const shapeExtentFactor = settings.shape === "shape"
-    ? maximumShapeAngle >= Math.PI * 0.25
+    ? settings.shapeRotation === "follow-stroke" || maximumShapeAngle >= Math.PI * 0.25
       ? Math.SQRT2
       : Math.cos(maximumShapeAngle) + Math.sin(maximumShapeAngle)
     : 1;

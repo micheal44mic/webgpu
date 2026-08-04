@@ -58,6 +58,7 @@ import {
 import { LAYER_BLEND_MODE_ORDER } from "./layer-blend-modes";
 import { LAYER_BLEND_FOLD_WGSL } from "./layer-blend-fold-shader";
 import { packStampsIntoUpload } from "./engine-stamp-upload";
+import { grainAssetIdForSettings, shapeAssetIdForSettings } from "./engine-brush-assets";
 import {
   rasterBevelInfluenceBounds,
   rasterBevelVisualBounds,
@@ -1223,20 +1224,30 @@ export function packStamps(engine: BrushEngine, stamps: readonly Stamp[], settin
 }
 
 export function requestGrainLoad(engine: BrushEngine): void {
-  if (engine.grainResident || engine.grainLoadingPromise) {
+  const assetId = grainAssetIdForSettings(engine.settings);
+  engine.grainDesiredAssetId = assetId;
+  if (
+    (engine.grainResident && engine.grainLoadedAssetId === assetId)
+    || (engine.grainLoadingPromise && engine.grainLoadingAssetId === assetId)
+  ) {
     return;
   }
-  void engine.ensureGrainResources().catch((error) => {
+  void engine.ensureGrainResources(assetId).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     engine.callbacks.onStatus?.(`Grain M1 non disponibile: ${message}`, "error");
   });
 }
 
 export function requestShapeLoad(engine: BrushEngine): void {
-  if (engine.shapeResident || engine.shapeLoadingPromise) {
+  const assetId = shapeAssetIdForSettings(engine.settings);
+  engine.shapeDesiredAssetId = assetId;
+  if (
+    (engine.shapeResident && engine.shapeLoadedAssetId === assetId)
+    || (engine.shapeLoadingPromise && engine.shapeLoadingAssetId === assetId)
+  ) {
     return;
   }
-  void engine.ensureShapeResources().catch((error) => {
+  void engine.ensureShapeResources(assetId).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     engine.callbacks.onStatus?.(`Shape 2K non disponibile: ${message}`, "error");
   });

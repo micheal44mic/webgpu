@@ -345,9 +345,33 @@
             <section class="mobile-brush-library-brushes" aria-label="Brushes">
               <div id="mobileBrushLibraryList" class="mobile-brush-library-list">
                 <button
+                  id="mobilePencilBrushCard"
+                  class="mobile-brush-card"
+                  type="button"
+                  data-mobile-brush-id="m1m4-pencil-v1"
+                  data-mobile-brush-category-card="pencil"
+                  aria-label="Pencil"
+                  aria-pressed="false"
+                  hidden
+                >
+                  <span class="mobile-brush-card-selected" aria-hidden="true">
+                    <i data-lucide="check"></i>
+                  </span>
+                  <span class="mobile-brush-card-name">Pencil</span>
+                  <canvas
+                    id="mobilePencilBrushPreviewCanvas"
+                    class="mobile-brush-card-preview"
+                    width="480"
+                    height="112"
+                    aria-hidden="true"
+                  ></canvas>
+                </button>
+                <button
                   id="mobileCurrentBrushCard"
                   class="mobile-brush-card is-selected"
                   type="button"
+                  data-mobile-brush-id="current"
+                  data-mobile-brush-category-card="painting"
                   aria-label="Current Brush, selected"
                   aria-pressed="true"
                 >
@@ -726,6 +750,22 @@
             <input id="brushColor" type="color" value="#ff5b35" />
           </label>
 
+          <label id="shapeSourceControl" class="control">
+            <span>Shape Source</span>
+            <select id="shapeSource" disabled>
+              <option value="legacy-shape">Legacy Shape 2K</option>
+              <option value="pencil-shape">Pencil Shape 2K</option>
+            </select>
+          </label>
+
+          <label id="shapeRotationControl" class="control">
+            <span>Shape Rotation</span>
+            <select id="shapeRotation">
+              <option value="fixed">Fixed</option>
+              <option value="follow-stroke">Follow Stroke</option>
+            </select>
+          </label>
+
           <label id="fillToleranceControl" class="control" hidden>
             <span>
               Tolleranza <output id="fillToleranceOut">10,0%</output>
@@ -875,7 +915,8 @@
           <label class="control">
             <span>Sorgente</span>
             <select id="grainSource" disabled>
-              <option>Cotton Fleece M1 originale — 2500 px</option>
+              <option value="legacy-grain">Cotton Fleece M1 — 2500 px</option>
+              <option value="pencil-grain">Pencil Grain — 800 px</option>
             </select>
           </label>
 
@@ -892,9 +933,17 @@
             <label class="control">
               <span>
                 Scale <output id="grainScaleOut">140%</output>
-                <small>Come in M1: agisce su Fixed; Moving usa una texture completa per stamp.</small>
+                <small>Regola la dimensione della texture nel grain.</small>
               </span>
               <input id="grainScale" type="range" min="10" max="400" step="1" value="140" />
+            </label>
+
+            <label id="grainMovementControl" class="control" hidden>
+              <span>
+                Movement <output id="grainMovementOut">0%</output>
+                <small>0% trascina il grain; 100% si avvicina a Texturized.</small>
+              </span>
+              <input id="grainMovement" type="range" min="0" max="100" step="1" value="0" />
             </label>
 
             <label class="control">

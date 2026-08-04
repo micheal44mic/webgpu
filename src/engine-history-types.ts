@@ -202,7 +202,7 @@ export interface PaintHistoryRenderBatch {
   clearLayer: boolean;
   dirtyRect: DirtyRect | null;
   shapeOccupancySelection: ShapeOccupancySelection | null;
-  shapeMaskIdentity: number;
+  shapeMaskIdentity: number | null;
   grainTextureIdentity: number | null;
   selectionMask: SelectionHistoryMaskSnapshot | null;
 }
@@ -216,7 +216,7 @@ export interface BlendHistoryRenderBatch {
   gpuSlice: GpuHistorySlice;
   clearLayer: boolean;
   dirtyRect: DirtyRect | null;
-  shapeMaskIdentity: number;
+  shapeMaskIdentity: number | null;
   grainTextureIdentity: number | null;
 }
 

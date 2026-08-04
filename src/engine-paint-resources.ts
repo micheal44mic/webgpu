@@ -4,7 +4,11 @@
  */
 import type { LightGlazeStorageMode, ShapeMaskDecodeStrategy } from "./engine-strategies";
 import type { DirtyRect } from "./engine-stroke-types";
-import type { BrushSettings } from "./engine-types";
+import type {
+  BrushGrainAssetId,
+  BrushSettings,
+  BrushShapeAssetId,
+} from "./engine-types";
 
 export interface LightGlazeSession {
   historyActionId: number;
@@ -38,6 +42,7 @@ export interface LightGlazeResourceSet {
 }
 
 export interface ShapeMaskResources {
+  assetId: BrushShapeAssetId;
   texture: GPUTexture;
   decodeStrategy: ShapeMaskDecodeStrategy;
   identity: number;
@@ -48,8 +53,14 @@ export interface ShapeMaskResources {
 }
 
 export interface GrainTextureResources {
+  assetId: BrushGrainAssetId;
   texture: GPUTexture;
   identity: number;
+  width: number;
+  height: number;
+  mipLevelCount: number;
+  memoryBytes: number;
+  previewSprite: HTMLCanvasElement;
   decodeMs: number;
   mipBuildMs: number;
   uploadMs: number;

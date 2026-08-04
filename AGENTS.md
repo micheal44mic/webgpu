@@ -486,6 +486,23 @@ Paint:
   TypeScript/build Vite+Sites, `layers:verify`, `grain:verify`, `stroke:verify`,
   `history:verify` e `git diff --check` sono verdi; non è ancora una QA fisica
   Safari/iPhone né una misura prestazionale canonica.
+  Quindicesimo follow-up (4 agosto 2026): esiste ora il primo contratto preset
+  serializzabile, `m1m4-brush-preset-v1`. Ogni preset contiene un oggetto
+  `BrushSettings` completo salvo il colore, che viene sempre preservato: non
+  esiste logica di rendering legata al nome del preset e il futuro Brush Studio
+  userà lo stesso adapter. La categoria Pencil espone `m1m4-pencil-v1` con
+  Shape `Shapepencil.png` (nero = copertura), Grain `Grainpencil.png`, Size
+  `30 px`, Opacity/Flow `100%`, Intense Blending, Follow Stroke, Scatter `51%`,
+  Count `1`, Moving/Scale `43%`/Movement `99%`, Spacing `2%`, jitter posizione
+  lineare/laterale `10%`, spessore iniziale/finale `100%`/`60%` e Color
+  Dynamics a zero. La card mostra lazy una pennellata rappresentativa con la
+  vera Shape invertita e il Grain, senza submission o readback GPU; il click
+  applica il preset e Size/Opacity restano modificabili dai dischi laterali.
+  QA browser in iframe mobile `390×700`: preview visibile, tutti i valori DOM
+  esatti, asset pronti, tratto reale sul canvas e Size cambiata `30→419 px`
+  senza perdere gli asset; nessun warning/error. Le 23 suite `*:verify`, la
+  nuova `brush-presets:verify`, TypeScript e build Vite/Sites sono verdi. Non è
+  ancora una QA fisica Safari/iPhone né una misura prestazionale canonica.
 - …cache di presentazione persistente screen-space: display shader eseguito
   solo sulla dirty region, poi `copyTextureToTexture` alla swapchain
   (`#37/#38`: Base `+46%` FPS vs `#35`, migliore anche delle vecchie baseline).
@@ -632,21 +649,44 @@ Paint:
   storage e distruggeva la sessione attiva. Ora l'identità pubblica viene
   preservata fino al commit e `grain:verify` contiene una regressione statica
   vincolante. Diagnostica invariant: modo, batch e numero di sessioni attive.
-- Grain M1 nativo: asset originale `graincottonfleece.PNG` RGBA `2500×2500`
+- Preset e asset pennello sono ora capacità generiche di `BrushSettings`:
+  `shapeAssetId`, `shapeRotation`, `grainAssetId` e `grainMovement` entrano
+  nella stessa ABI usata da live paint e history. Il registro vincola file,
+  dimensioni, polarità e SHA-256. Follow Stroke riusa `Stamp.direction` e la
+  lane prima libera `options.w`, quindi `STAMP_STRIDE_BYTES=32` e
+  `BRUSH_UNIFORM_BYTES=96` non cambiano; i bound Shape diventano
+  conservativamente `sqrt(2)`. Grain Movement usa
+  `mix(stampLocalUv, layerRollerUv, movement)`: a zero conserva formula e
+  sampler clamp legacy byte-per-byte, sopra zero usa il sampler repeat e a
+  `100%` converge al mapping Texturized. `GrainUniforms` resta `32 B`, usando
+  le lane finali per mip count dinamico e Movement. Anche Blend dry riceve
+  width/mip/Movement tramite lane uniform prima inutilizzate; il caso legacy
+  a Movement zero conserva UV e sampler precedenti.
+- Gli scambi Shape/Grain sono lazy, transazionali e latest-only. La vecchia
+  risorsa resta valida durante allocazione/retarget e viene ripristinata se la
+  richiesta diventa stale; un pointer-down è rifiutato finché identità e asset
+  richiesti non coincidono. Undo/Redo carica gli asset per ogni batch, così
+  tratti legacy e Pencil possono convivere. `Shapepencil.png` viene invertita
+  sul CPU prima di mip, occupancy, hash e preview. `Grainpencil.png` resta
+  nativa `800×800`, crea `10` mip RGBA8 e occupa `3.413.260 B` (~`3,26 MiB`),
+  mentre la telemetria legge dimensioni/mip/memoria residenti dinamici ed è
+  revisionata a `63`.
+- Grain M1 nativo legacy: asset originale `graincottonfleece.PNG` RGBA `2500×2500`
   (SHA-256 `9AA1CE07…`), luma `0.299/0.587/0.114`, 12 mip NPOT generati in
-  WGSL allo startup (~`31,8 MiB`). Fixed = UV layer; Moving = UV stamp (Scale
-  disabilitato come in M1). Invert via segno dei coefficienti affini, nessun
-  ramo WGSL. Non ridimensionare l'asset senza richiesta esplicita.
+  WGSL (~`31,8 MiB`). Fixed = UV layer; Moving con Movement zero = UV stamp
+  legacy, dove Scale resta ininfluente; Movement sopra zero abilita il roller
+  e quindi Scale. Invert via segno dei coefficienti affini, nessun ramo WGSL.
+  Non ridimensionare l'asset senza richiesta esplicita.
 - Ciclo di vita Grain (sperimentale rev `39`, da validare):
   `GRAIN_STORAGE_LIFECYCLE_STRATEGY =
-  "allocate-on-grain-select-release-when-idle-unused"`. La texture non viene
-  più caricata allo startup: fetch/decodifica/mip (pipeline invariata, stessa
-  identità SHA) partono alla selezione di un grain mode; con mode `off` e
-  motore fermo la texture viene rilasciata (−31,8 MiB) e un placeholder 1×1
+  "allocate-on-grain-select-release-when-idle-unused"`. La texture selezionata
+  non viene caricata allo startup: fetch/decodifica/mip partono alla selezione
+  di un grain mode; con mode `off` e motore fermo viene rilasciata (−31,8 MiB
+  per legacy oppure −3,26 MiB per Pencil) e un placeholder 1×1
   bianco tiene validi i bind group, ricostruiti a ogni scambio
   (`rebuildGrainBrushBindGroups`, più `setGrainTextureView` sul renderer
-  Blend). Un tratto iniziato durante il load viene rifiutato con status
-  («Grain M1 in caricamento…»): mai disegnare col placeholder. `waitForIdle`
+  Blend). Un tratto iniziato durante il load viene rifiutato con status:
+  mai disegnare col placeholder. `waitForIdle`
   attende anche il load, quindi i replay benchmark restano corretti; il
   replay Undo/Redo ricarica da solo se un batch registra
   `grainTextureIdentity`. Identità e tempi di load restano riportati in
@@ -658,9 +698,9 @@ Paint:
   viene caricata alla selezione della Shape e rilasciata con Cerchio
   selezionato e motore fermo; un placeholder r8 1×1 bianco tiene validi tutti
   i bind group (base pennello + coda spessore + grain + deposit Blend,
-  ricostruiti da `rebuildShapeBrushBindGroups` e `setShapeMaskView`). Sprite
-  della tip preview, identità e statistiche di occupazione (CPU) sopravvivono
-  al rilascio; le mappe di occupazione GPU restano allocate (40 KiB) e
+  ricostruiti da `rebuildShapeBrushBindGroups` e `setShapeMaskView`). Sprite,
+  identità e statistiche di occupazione CPU appartengono al resource set
+  selezionato; le mappe di occupazione GPU restano allocate (40 KiB) e
   vengono riscritte al load. Tratti Shape durante il load rifiutati con
   status; `waitForIdle` attende anche questo load (replay benchmark Fur
   coperti); il replay Undo/Redo ricarica se un batch ha `shape === "shape"`.

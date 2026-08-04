@@ -44,6 +44,11 @@ import {
   setLayerBlendMode,
 } from "./engine-layer-runtime";
 import { restorePixelSelectionHistoryMask } from "./engine-selection-runtime";
+import { grainAssetIdForSettings, shapeAssetIdForSettings } from "./engine-brush-assets";
+import {
+  maybeReleaseIdleGrainResources,
+  maybeReleaseIdleShapeResources,
+} from "./engine-resource-setup";
 
 export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Promise<boolean> {
   if (
@@ -301,6 +306,10 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
     // reuses every engine-side mutation guard and the UI lock; a status message
     // alone would still let the user continue painting on incoherent resources.
     engine.historyBusy = engine.historyStateInconsistent;
+    if (!engine.historyStateInconsistent) {
+      maybeReleaseIdleShapeResources(engine);
+      maybeReleaseIdleGrainResources(engine);
+    }
     if (publishRasterSceneAfterUnlock && !engine.historyStateInconsistent) {
       publishMixedScene(engine);
       engine.publishStats();
@@ -332,16 +341,16 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
     layerId,
   );
   const seedAction = checkpoint?.action as RasterHistoryCheckpointAction | undefined;
-  if (layerBatches.some(
-    (batch) => batch.kind !== "fill" && batch.grainTextureIdentity !== null,
-  )) {
-    await engine.ensureGrainResources();
-  }
-  if (layerBatches.some(
-    (batch) => batch.kind !== "fill" && batch.settings.shape === "shape",
-  )) {
-    await engine.ensureShapeResources();
-  }
+  const ensureReplayBrushAssets = async (
+    settings: Exclude<HistoryRenderBatch, { kind: "fill" }>["settings"],
+  ): Promise<void> => {
+    if (settings.shape === "shape") {
+      await engine.ensureShapeResources(shapeAssetIdForSettings(settings));
+    }
+    if (isTexturizedGrainActive(settings)) {
+      await engine.ensureGrainResources(grainAssetIdForSettings(settings));
+    }
+  };
   // Force the first historical Blend action to reset its persistent carrier,
   // even when its numeric id matches the last live action rendered.
   engine.blendRenderer?.beginStroke(0);
@@ -456,6 +465,7 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
           if (!visibleIds.has(batch.actionId)) {
             continue;
           }
+          await ensureReplayBrushAssets(batch.settings);
           engine.submitBlendImmediate(
             batch.batches,
             seedAction ? false : batch.clearLayer,
@@ -471,6 +481,8 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
         if (!visibleIds.has(batch.actionId)) {
           continue;
         }
+
+        await ensureReplayBrushAssets(batch.settings);
 
         if (usesStrokeGlazeRenderer(batch.settings)) {
           await engine.ensureLightGlazeResources(batch.settings.blendMode);
@@ -513,7 +525,15 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
     // dopo tutti i batch storici e prima di un eventuale tratto successivo.
     engine.writeBrushUniforms(engine.settings);
     if (isTexturizedGrainActive(engine.settings)) {
+      await engine.ensureGrainResources(grainAssetIdForSettings(engine.settings));
       engine.writeGrainUniforms(engine.settings);
+    } else {
+      engine.grainDesiredAssetId = grainAssetIdForSettings(engine.settings);
+    }
+    if (engine.settings.shape === "shape") {
+      await engine.ensureShapeResources(shapeAssetIdForSettings(engine.settings));
+    } else {
+      engine.shapeDesiredAssetId = shapeAssetIdForSettings(engine.settings);
     }
     if (usesStrokeGlazeRenderer(engine.settings)) {
       await engine.ensureLightGlazeResources(engine.settings.blendMode);
@@ -658,7 +678,7 @@ export function recordBlendHistoryBatch(engine: BrushEngine,
     gpuSlice: capturedSlice,
     clearLayer,
     dirtyRect: timing.dirtyRect,
-    shapeMaskIdentity: engine.shapeMaskIdentity,
+    shapeMaskIdentity: settings.shape === "shape" ? engine.shapeMaskIdentity : null,
     grainTextureIdentity: isTexturizedGrainActive(settings)
       ? engine.grainTextureIdentity
       : null,

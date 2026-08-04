@@ -38,7 +38,13 @@ export type LayerFormat = "rgba8unorm" | "rgba16float";
 
 export type BrushShape = "circle" | "shape";
 
+export type BrushShapeAssetId = "legacy-shape" | "pencil-shape";
+
+export type BrushShapeRotation = "fixed" | "follow-stroke";
+
 export type GrainMode = "off" | "texturized" | "moving";
+
+export type BrushGrainAssetId = "legacy-grain" | "pencil-grain";
 
 export type GrainFiltering = "no" | "classic" | "improved";
 
@@ -49,9 +55,16 @@ export type AdaptiveSpacingTriggerReason = "probe-timeout" | "slow-completion";
 export interface BrushSettings {
   tool: BrushTool;
   shape: BrushShape;
+  /** Stable source identity; old settings without it normalize to legacy-shape. */
+  shapeAssetId: BrushShapeAssetId;
+  shapeRotation: BrushShapeRotation;
   shapeScatter: number;
   grainMode: GrainMode;
+  /** Stable source identity; old settings without it normalize to legacy-grain. */
+  grainAssetId: BrushGrainAssetId;
   grainScale: number;
+  /** Moving-grain roller amount: 0 drags with the stamp, 1 approaches Texturized. */
+  grainMovement: number;
   grainDepth: number;
   grainBrightness: number;
   grainContrast: number;
@@ -269,9 +282,13 @@ export interface LayerSwitchResult {
 export const defaultBrushSettings: BrushSettings = {
   tool: "paint",
   shape: "circle",
+  shapeAssetId: "legacy-shape",
+  shapeRotation: "fixed",
   shapeScatter: 0,
   grainMode: "off",
+  grainAssetId: "legacy-grain",
   grainScale: 1.4,
+  grainMovement: 0,
   grainDepth: 1,
   grainBrightness: 0,
   grainContrast: 0,

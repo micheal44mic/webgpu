@@ -204,8 +204,9 @@ fn shapeVertexMain(
 
   var geometryPosition = localPosition;
   let scatter = clamp(brush.positionJitter.z, 0.0, 1.0);
-  if (scatter > 0.00001) {
-    let angle = (random01(copySeed, 7u) - 0.5) * TAU * scatter;
+  let followAngle = select(0.0, atan2(direction.y, direction.x), brush.options.w == 1u);
+  if (scatter > 0.00001 || brush.options.w == 1u) {
+    let angle = followAngle + (random01(copySeed, 7u) - 0.5) * TAU * scatter;
     let cosine = cos(angle);
     let sine = sin(angle);
     geometryPosition = vec2<f32>(
@@ -374,7 +375,6 @@ fn shapeOccupancyCoverageFragmentMain(input: VertexOutput) -> @location(0) vec4<
 // and executing the exact previous shader entry points and bindings.
 export const texturizedGrainShader = /* wgsl */ `
 const SHAPE_OCCUPANCY_GRID_SIZE: u32 = 256u;
-const GRAIN_MIP_LEVEL_COUNT: u32 = 12u;
 
 struct BrushUniforms {
   layerSize: vec2<f32>,
@@ -393,8 +393,8 @@ struct GrainUniforms {
   contrastFactor: f32,
   filteringMode: u32,
   coordinateMode: u32,
-  _pad1: u32,
-  _pad2: u32,
+  mipLevelCount: u32,
+  movement: f32,
 };
 
 struct FragmentInput {
@@ -430,7 +430,7 @@ fn adjustedGrainCoverage(
     let mipLevel = u32(clamp(
       round(log2(max(footprint, 1.0))),
       0.0,
-      f32(GRAIN_MIP_LEVEL_COUNT - 1u)
+      f32(max(1u, grain.mipLevelCount) - 1u)
     ));
     // The No sampler uses nearest min/mag. Its mip filter is declared linear
     // only so it remains compatible with the shared filtering binding; an
@@ -462,11 +462,17 @@ fn adjustedGrainCoverage(
 }
 
 fn selectedGrainUv(input: FragmentInput) -> vec2<f32> {
-  if (grain.coordinateMode == 1u) {
-    // M1 Moving maps one full grain image to every physical stamp. Because
-    // localPosition is carried by the rotated support quad, the grain follows
-    // the stamp's translation, scale and rotation.
-    return input.localPosition * 0.5 + vec2<f32>(0.5);
+  if (grain.coordinateMode != 0u) {
+    // At zero, preserve the historical dragged/stamp-local mapping exactly.
+    // Increasing Movement advances the roller in authoritative layer space;
+    // 100% converges to Texturized, matching the Procreate control semantics.
+    let movement = clamp(grain.movement, 0.0, 1.0);
+    if (movement <= 0.00001) {
+      return input.localPosition * 0.5 + vec2<f32>(0.5);
+    }
+    let movingUv = input.localPosition * 0.5 + vec2<f32>(0.5);
+    let fixedUv = (input.position.xy + brush.renderTargetOrigin) * grain.inversePeriod;
+    return mix(movingUv, fixedUv, movement);
   }
   // Fixed/Texturized is paper grain in authoritative layer coordinates.
   return (input.position.xy + brush.renderTargetOrigin) * grain.inversePeriod;

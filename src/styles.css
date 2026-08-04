@@ -1492,6 +1492,10 @@ select {
     display: none;
   }
 
+  .mobile-brush-card[hidden] {
+    display: none;
+  }
+
   .mobile-brush-library-list {
     display: flex;
     min-width: 0;
@@ -1537,6 +1541,10 @@ select {
     width: 20px;
     height: 20px;
     color: #dd5c35;
+  }
+
+  .mobile-brush-card:not(.is-selected) .mobile-brush-card-selected {
+    visibility: hidden;
   }
 
   .mobile-brush-card-selected svg {

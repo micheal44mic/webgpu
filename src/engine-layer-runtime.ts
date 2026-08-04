@@ -1208,6 +1208,8 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
           shapeMaskView: engine.shapeMaskView,
           shapeMaskSampler: engine.shapeMaskSampler,
           grainTextureView: engine.grainTextureView,
+          grainTextureWidth: engine.grainTextureWidth,
+          grainTextureMipLevelCount: engine.grainTextureMipLevelCount,
           grainSamplers: engine.grainSamplers,
         });
         transaction.deferRollback(() => candidate.destroy());
