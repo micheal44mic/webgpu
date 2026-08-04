@@ -227,6 +227,60 @@ input[type="color"] {
   display: block;
 }
 
+.selection-controls {
+  min-width: 0;
+  margin: 0 0 14px;
+  padding: 12px;
+  border: 1px solid #303746;
+  border-radius: 10px;
+  background: #141923;
+}
+
+.selection-controls legend {
+  padding: 0 6px;
+  color: #aeb8d5;
+  font-size: 0.76rem;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+}
+
+.selection-combine {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.selection-combine button {
+  min-width: 0;
+  min-height: 42px;
+  padding-inline: 6px;
+  font-size: 0.72rem;
+}
+
+.selection-combine button[aria-pressed="true"] {
+  border-color: #7180ff;
+  background: #303d83;
+  color: #ffffff;
+}
+
+.selection-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-bottom: 10px;
+}
+
+.selection-actions > #selectionColorApply[hidden] + #selectionClear {
+  grid-column: 1 / -1;
+}
+
+.selection-keyboard-help {
+  margin: 8px 0 0;
+  color: #9097a4;
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
 select {
   width: 100%;
   min-height: 36px;
@@ -275,6 +329,32 @@ select {
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
+}
+
+#rasterSelectionOverlayCanvas,
+#rasterSelectionGestureCanvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#rasterSelectionOverlayCanvas {
+  z-index: 1;
+}
+
+#rasterSelectionGestureCanvas {
+  z-index: 2;
+}
+
+#rasterSelectionOverlayCanvas[hidden],
+#rasterSelectionGestureCanvas[hidden] {
+  display: none;
 }
 
 #tipPreviewCanvas {
@@ -1202,6 +1282,31 @@ select {
 #vectorTextInteractionCanvas.is-editing {
   pointer-events: auto;
   cursor: move;
+}
+
+#vectorTextInteractionCanvas.is-pixel-selection {
+  cursor: default;
+}
+
+#vectorTextInteractionCanvas.is-pixel-selection.is-move {
+  cursor: move;
+}
+
+#vectorTextInteractionCanvas:focus-visible {
+  outline: 3px solid rgba(141, 154, 255, 0.95);
+  outline-offset: -4px;
+}
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0 0 0 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
 }
 
 #vectorTextInteractionCanvas.is-scale {

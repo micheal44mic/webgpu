@@ -342,6 +342,19 @@ fn rebuildSelection(
 }
 `;
 
+export const fillSelectionIntersectionShader = /* wgsl */ `
+const FILL_MASK_WORDS: u32 = ${LAYER_SIZE * LAYER_SIZE / 32}u;
+
+@group(0) @binding(0) var<storage, read_write> fillMask: array<u32>;
+@group(0) @binding(1) var<storage, read> selectionMask: array<u32>;
+
+@compute @workgroup_size(256, 1, 1)
+fn intersectFillWithSelection(@builtin(global_invocation_id) global: vec3<u32>) {
+  if (global.x >= FILL_MASK_WORDS) { return; }
+  fillMask[global.x] = fillMask[global.x] & selectionMask[global.x];
+}
+`;
+
 export const fillRenderShader = /* wgsl */ `
 const LAYER_EXTENT: f32 = ${LAYER_SIZE}.0;
 const BLOCK_EXTENT: u32 = ${FILL_BLOCK_SIZE}u;

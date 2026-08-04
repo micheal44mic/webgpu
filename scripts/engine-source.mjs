@@ -42,6 +42,7 @@ export const ENGINE_SOURCE_FILES = Object.freeze([
   "engine-vector-raster-runtime.ts",
   "engine-history-runtime.ts",
   "engine-fill-runtime.ts",
+  "engine-selection-runtime.ts",
   "engine-glaze-runtime.ts",
   "engine-adaptive-preview-runtime.ts",
   "engine-layer-runtime.ts",

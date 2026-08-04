@@ -71,21 +71,38 @@ export class GpuHistoryStorage {
     }
   }
 
-  allocate(logicalBytes: number, label: string): GpuHistorySlice {
+  allocate(
+    logicalBytes: number,
+    label: string,
+    alignmentBytes = GPU_HISTORY_COPY_ALIGNMENT_BYTES,
+  ): GpuHistorySlice {
     this.assertAlive();
     if (!Number.isInteger(logicalBytes) || logicalBytes <= 0) {
       throw new RangeError("La slice della cronologia GPU deve contenere almeno un byte.");
     }
+    if (
+      !Number.isInteger(alignmentBytes)
+      || alignmentBytes < GPU_HISTORY_COPY_ALIGNMENT_BYTES
+      || (alignmentBytes & (alignmentBytes - 1)) !== 0
+    ) {
+      throw new RangeError("L'allineamento della cronologia GPU deve essere una potenza di due >= 4.");
+    }
     const reservedBytes = alignBytes(logicalBytes, GPU_HISTORY_COPY_ALIGNMENT_BYTES);
     let page: HistoryPage | null = null;
     let rangeIndex = -1;
+    let alignedOffsetBytes = -1;
     for (const candidate of this.pages) {
-      const candidateRangeIndex = candidate.freeRanges.findIndex(
-        (range) => range.sizeBytes >= reservedBytes,
-      );
+      const candidateRangeIndex = candidate.freeRanges.findIndex((range) => {
+        const alignedOffset = alignBytes(range.offsetBytes, alignmentBytes);
+        return alignedOffset + reservedBytes <= range.offsetBytes + range.sizeBytes;
+      });
       if (candidateRangeIndex >= 0) {
         page = candidate;
         rangeIndex = candidateRangeIndex;
+        alignedOffsetBytes = alignBytes(
+          candidate.freeRanges[candidateRangeIndex].offsetBytes,
+          alignmentBytes,
+        );
         break;
       }
     }
@@ -96,18 +113,29 @@ export class GpuHistoryStorage {
       ));
       this.pages.push(page);
       rangeIndex = 0;
+      alignedOffsetBytes = 0;
     }
     if (rangeIndex < 0) {
       throw new Error("Allocatore cronologia GPU incoerente: pagina senza spazio.");
     }
     const range = page.freeRanges[rangeIndex];
-    const offsetBytes = range.offsetBytes;
-    if (range.sizeBytes === reservedBytes) {
-      page.freeRanges.splice(rangeIndex, 1);
-    } else {
-      range.offsetBytes += reservedBytes;
-      range.sizeBytes -= reservedBytes;
+    const offsetBytes = alignedOffsetBytes;
+    const rangeEnd = range.offsetBytes + range.sizeBytes;
+    const allocationEnd = offsetBytes + reservedBytes;
+    const replacement: FreeRange[] = [];
+    if (offsetBytes > range.offsetBytes) {
+      replacement.push({
+        offsetBytes: range.offsetBytes,
+        sizeBytes: offsetBytes - range.offsetBytes,
+      });
     }
+    if (allocationEnd < rangeEnd) {
+      replacement.push({
+        offsetBytes: allocationEnd,
+        sizeBytes: rangeEnd - allocationEnd,
+      });
+    }
+    page.freeRanges.splice(rangeIndex, 1, ...replacement);
     page.liveSliceCount += 1;
     const slice: GpuHistorySlice = {
       id: this.nextSliceId++,
@@ -248,7 +276,7 @@ export class GpuHistoryStorage {
     const buffer = this.device.createBuffer({
       label: `Cronologia raster GPU · pagina ${id} · ${sizeBytes} B`,
       size: sizeBytes,
-      usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+      usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE,
     });
     this.allocatedBytes += sizeBytes;
     return {

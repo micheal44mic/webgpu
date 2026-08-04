@@ -107,6 +107,7 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
   const oldEffectsWorkbench = engine.effectsWorkbench;
   const previousScratchPeakBytes = oldEffectsWorkbench?.scratchPool.peakBytes ?? 0;
   const {
+    selectionPipelineByBase,
     normalPipeline,
     additivePipeline,
     shapeNormalPipeline,
@@ -165,6 +166,25 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
   const grainBrushOccupancyPipelineLayout = engine.device.createPipelineLayout({
     label: `Texturized grain occupancy pipeline layout ${format}`,
     bindGroupLayouts: [engine.grainBrushOccupancyBindGroupLayout],
+  });
+  const selectionBrushPipelineLayout = engine.device.createPipelineLayout({
+    label: `Brush con clip Selezione pixel ${format}`,
+    bindGroupLayouts: [engine.brushBindGroupLayout, engine.selectionMaskBindGroupLayout],
+  });
+  const selectionBrushOccupancyPipelineLayout = engine.device.createPipelineLayout({
+    label: `Brush occupancy con clip Selezione pixel ${format}`,
+    bindGroupLayouts: [engine.brushOccupancyBindGroupLayout, engine.selectionMaskBindGroupLayout],
+  });
+  const selectionGrainBrushPipelineLayout = engine.device.createPipelineLayout({
+    label: `Grain con clip Selezione pixel ${format}`,
+    bindGroupLayouts: [engine.grainBrushBindGroupLayout, engine.selectionMaskBindGroupLayout],
+  });
+  const selectionGrainBrushOccupancyPipelineLayout = engine.device.createPipelineLayout({
+    label: `Grain occupancy con clip Selezione pixel ${format}`,
+    bindGroupLayouts: [
+      engine.grainBrushOccupancyBindGroupLayout,
+      engine.selectionMaskBindGroupLayout,
+    ],
   });
   const paintMipDownsamplePipelineLayout = engine.device.createPipelineLayout({
     label: `Paint display mip downsample pipeline layout ${format}`,
@@ -771,6 +791,153 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
     "shapeOccupancyCoverageFragmentMain",
   );
 
+  const selectionPipelineByBase = new Map<GPURenderPipeline, GPURenderPipeline>();
+  const sourceOverBlend: GPUBlendState = {
+    color: { operation: "add", srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+    alpha: { operation: "add", srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+  };
+  const additiveBlend: GPUBlendState = {
+    color: { operation: "add", srcFactor: "one", dstFactor: "one" },
+    alpha: { operation: "add", srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+  };
+  const maximumBlend: GPUBlendState = {
+    color: { operation: "max", srcFactor: "one", dstFactor: "one" },
+    alpha: { operation: "max", srcFactor: "one", dstFactor: "one" },
+  };
+  interface SelectionPipelineVariant {
+    readonly base: GPURenderPipeline;
+    readonly label: string;
+    readonly layout: GPUPipelineLayout;
+    readonly fragmentModule: GPUShaderModule;
+    readonly vertexEntryPoint: string;
+    readonly fragmentEntryPoint: string;
+    readonly targetFormat: GPUTextureFormat;
+    readonly blend: GPUBlendState;
+  }
+  const registerSelectionPipeline = (variant: SelectionPipelineVariant): void => {
+    const selectedPipeline = engine.device.createRenderPipeline({
+      label: `${variant.label} · clip Selezione pixel`,
+      layout: variant.layout,
+      vertex: {
+        module: engine.brushShaderModule,
+        entryPoint: variant.vertexEntryPoint,
+      },
+      fragment: {
+        module: variant.fragmentModule,
+        entryPoint: variant.fragmentEntryPoint,
+        targets: [{ format: variant.targetFormat, blend: variant.blend }],
+      },
+      primitive: { topology: "triangle-strip" },
+    });
+    selectionPipelineByBase.set(variant.base, selectedPipeline);
+  };
+  const brushVariant = (
+    base: GPURenderPipeline,
+    label: string,
+    layout: GPUPipelineLayout,
+    vertexEntryPoint: string,
+    fragmentEntryPoint: string,
+    blend: GPUBlendState,
+  ): SelectionPipelineVariant => ({
+    base,
+    label,
+    layout,
+    fragmentModule: engine.selectionBrushShaderModule,
+    vertexEntryPoint,
+    fragmentEntryPoint,
+    targetFormat: format,
+    blend,
+  });
+  const grainVariant = (
+    base: GPURenderPipeline,
+    label: string,
+    layout: GPUPipelineLayout,
+    vertexEntryPoint: string,
+    fragmentEntryPoint: string,
+    blend: GPUBlendState,
+  ): SelectionPipelineVariant => ({
+    base,
+    label,
+    layout,
+    fragmentModule: engine.selectionTexturizedGrainShaderModule,
+    vertexEntryPoint,
+    fragmentEntryPoint,
+    targetFormat: format,
+    blend,
+  });
+  const selectionVariants: SelectionPipelineVariant[] = [
+    brushVariant(normalPipeline, "Brush normal", selectionBrushPipelineLayout, "vertexMain", "fragmentMain", sourceOverBlend),
+    brushVariant(additivePipeline, "Brush additive", selectionBrushPipelineLayout, "vertexMain", "fragmentMain", additiveBlend),
+    brushVariant(shapeNormalPipeline, "Brush Shape normal", selectionBrushPipelineLayout, "shapeVertexMain", "shapeFragmentMain", sourceOverBlend),
+    brushVariant(shapeAdditivePipeline, "Brush Shape additive", selectionBrushPipelineLayout, "shapeVertexMain", "shapeFragmentMain", additiveBlend),
+    brushVariant(shapeOccupancyNormalPipeline, "Brush Shape occupancy normal", selectionBrushOccupancyPipelineLayout, "shapeVertexMain", "shapeOccupancyFragmentMain", sourceOverBlend),
+    brushVariant(shapeOccupancyAdditivePipeline, "Brush Shape occupancy additive", selectionBrushOccupancyPipelineLayout, "shapeVertexMain", "shapeOccupancyFragmentMain", additiveBlend),
+    grainVariant(grainNormalPipeline, "Brush Grain normal", selectionGrainBrushPipelineLayout, "vertexMain", "fragmentMain", sourceOverBlend),
+    grainVariant(grainAdditivePipeline, "Brush Grain additive", selectionGrainBrushPipelineLayout, "vertexMain", "fragmentMain", additiveBlend),
+    grainVariant(grainShapeNormalPipeline, "Brush Grain Shape normal", selectionGrainBrushPipelineLayout, "shapeVertexMain", "shapeFragmentMain", sourceOverBlend),
+    grainVariant(grainShapeAdditivePipeline, "Brush Grain Shape additive", selectionGrainBrushPipelineLayout, "shapeVertexMain", "shapeFragmentMain", additiveBlend),
+    grainVariant(grainShapeOccupancyNormalPipeline, "Brush Grain Shape occupancy normal", selectionGrainBrushOccupancyPipelineLayout, "shapeVertexMain", "shapeOccupancyFragmentMain", sourceOverBlend),
+    grainVariant(grainShapeOccupancyAdditivePipeline, "Brush Grain Shape occupancy additive", selectionGrainBrushOccupancyPipelineLayout, "shapeVertexMain", "shapeOccupancyFragmentMain", additiveBlend),
+  ];
+  const addGlazeVariant = (
+    base: GPURenderPipeline,
+    label: string,
+    layout: GPUPipelineLayout,
+    fragmentModule: GPUShaderModule,
+    vertexEntryPoint: string,
+    fragmentEntryPoint: string,
+  ): void => {
+    selectionVariants.push({
+      base,
+      label,
+      layout,
+      fragmentModule,
+      vertexEntryPoint,
+      fragmentEntryPoint,
+      targetFormat: "rgba16float",
+      blend: sourceOverBlend,
+    });
+  };
+  addGlazeVariant(uniformedGlazePipeline, "Uniformed circle", selectionBrushPipelineLayout, engine.selectionBrushShaderModule, "vertexMain", "fragmentMain");
+  addGlazeVariant(uniformedGlazeShapePipeline, "Uniformed Shape", selectionBrushPipelineLayout, engine.selectionBrushShaderModule, "shapeVertexMain", "shapeFragmentMain");
+  addGlazeVariant(uniformedGlazeShapeOccupancyPipeline, "Uniformed Shape occupancy", selectionBrushOccupancyPipelineLayout, engine.selectionBrushShaderModule, "shapeVertexMain", "shapeOccupancyFragmentMain");
+  addGlazeVariant(grainUniformedGlazePipeline, "Uniformed Grain circle", selectionGrainBrushPipelineLayout, engine.selectionTexturizedGrainShaderModule, "vertexMain", "fragmentMain");
+  addGlazeVariant(grainUniformedGlazeShapePipeline, "Uniformed Grain Shape", selectionGrainBrushPipelineLayout, engine.selectionTexturizedGrainShaderModule, "shapeVertexMain", "shapeFragmentMain");
+  addGlazeVariant(grainUniformedGlazeShapeOccupancyPipeline, "Uniformed Grain Shape occupancy", selectionGrainBrushOccupancyPipelineLayout, engine.selectionTexturizedGrainShaderModule, "shapeVertexMain", "shapeOccupancyFragmentMain");
+  addGlazeVariant(intenseBlendingPipeline, "Intense circle", selectionBrushPipelineLayout, engine.selectionBrushShaderModule, "vertexMain", "encodedSrgbFragmentMain");
+  addGlazeVariant(intenseBlendingShapePipeline, "Intense Shape", selectionBrushPipelineLayout, engine.selectionBrushShaderModule, "shapeVertexMain", "encodedSrgbShapeFragmentMain");
+  addGlazeVariant(intenseBlendingShapeOccupancyPipeline, "Intense Shape occupancy", selectionBrushOccupancyPipelineLayout, engine.selectionBrushShaderModule, "shapeVertexMain", "encodedSrgbShapeOccupancyFragmentMain");
+  addGlazeVariant(grainIntenseBlendingPipeline, "Intense Grain circle", selectionGrainBrushPipelineLayout, engine.selectionTexturizedGrainShaderModule, "vertexMain", "encodedSrgbFragmentMain");
+  addGlazeVariant(grainIntenseBlendingShapePipeline, "Intense Grain Shape", selectionGrainBrushPipelineLayout, engine.selectionTexturizedGrainShaderModule, "shapeVertexMain", "encodedSrgbShapeFragmentMain");
+  addGlazeVariant(grainIntenseBlendingShapeOccupancyPipeline, "Intense Grain Shape occupancy", selectionGrainBrushOccupancyPipelineLayout, engine.selectionTexturizedGrainShaderModule, "shapeVertexMain", "encodedSrgbShapeOccupancyFragmentMain");
+
+  const addLightVariant = (
+    base: GPURenderPipeline,
+    label: string,
+    layout: GPUPipelineLayout,
+    fragmentModule: GPUShaderModule,
+    vertexEntryPoint: string,
+    fragmentEntryPoint: string,
+  ): void => {
+    selectionVariants.push({
+      base,
+      label,
+      layout,
+      fragmentModule,
+      vertexEntryPoint,
+      fragmentEntryPoint,
+      targetFormat: "r8unorm",
+      blend: maximumBlend,
+    });
+  };
+  addLightVariant(lightNoBuildUpPipeline, "Light circle", selectionBrushPipelineLayout, engine.selectionBrushShaderModule, "vertexMain", "coverageFragmentMain");
+  addLightVariant(lightNoBuildUpShapePipeline, "Light Shape", selectionBrushPipelineLayout, engine.selectionBrushShaderModule, "shapeVertexMain", "shapeCoverageFragmentMain");
+  addLightVariant(lightNoBuildUpShapeOccupancyPipeline, "Light Shape occupancy", selectionBrushOccupancyPipelineLayout, engine.selectionBrushShaderModule, "shapeVertexMain", "shapeOccupancyCoverageFragmentMain");
+  addLightVariant(grainLightNoBuildUpPipeline, "Light Grain circle", selectionGrainBrushPipelineLayout, engine.selectionTexturizedGrainShaderModule, "vertexMain", "coverageFragmentMain");
+  addLightVariant(grainLightNoBuildUpShapePipeline, "Light Grain Shape", selectionGrainBrushPipelineLayout, engine.selectionTexturizedGrainShaderModule, "shapeVertexMain", "shapeCoverageFragmentMain");
+  addLightVariant(grainLightNoBuildUpShapeOccupancyPipeline, "Light Grain Shape occupancy", selectionGrainBrushOccupancyPipelineLayout, engine.selectionTexturizedGrainShaderModule, "shapeVertexMain", "shapeOccupancyCoverageFragmentMain");
+  for (const variant of selectionVariants) registerSelectionPipeline(variant);
+
   const lightGlazeCompositeMipPipeline = engine.device.createRenderPipeline({
     label: `Light Glaze composited mip 1 ${format}`,
     layout: lightGlazeCompositeMipPipelineLayout,
@@ -930,6 +1097,7 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
     primitive: { topology: "triangle-list" },
   });
       return {
+        selectionPipelineByBase,
         normalPipeline,
         additivePipeline,
         shapeNormalPipeline,
@@ -1127,6 +1295,7 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
     )
     : [];
   engine.normalPipeline = normalPipeline;
+  engine.selectionPipelineByBase = selectionPipelineByBase;
   engine.additivePipeline = additivePipeline;
   engine.shapeNormalPipeline = shapeNormalPipeline;
   engine.shapeAdditivePipeline = shapeAdditivePipeline;
@@ -3704,6 +3873,7 @@ export function bindActiveLayerResources(engine: BrushEngine): void {
   engine.layerTexture = hot.texture;
   engine.layerView = hot.view;
   engine.layerSamplingView = hot.samplingView;
+  engine.selectionRenderer?.setSourceSamplingView(hot.samplingView);
   rebuildActiveLayerPyramidBindings(engine);
   rebuildLayerDisplayBindGroups(engine);
 }

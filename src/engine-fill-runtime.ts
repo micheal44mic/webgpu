@@ -23,6 +23,12 @@ export const FILL_SCRATCH_LIFECYCLE_STRATEGY =
   "allocate-on-fill-select-release-when-idle-unused" as const;
 export const FILL_SCRATCH_IDLE_RELEASE_MS = 1_500;
 
+function fillScratchRequired(engine: BrushEngine): boolean {
+  return engine.fillToolSelected
+    || engine.selectionBusy
+    || (engine.selectionToolSelected && engine.selectionMethod === "magic-wand");
+}
+
 export interface FillOperationResult extends FillAnalysis {
   readonly actionId: number;
   readonly sourceLayerId: number;
@@ -87,17 +93,17 @@ export async function setFillToolSelected(
 }
 
 export function scheduleFillScratchRelease(engine: BrushEngine): void {
-  if (!engine.initialized || engine.fillToolSelected || engine.fillScratchReleaseTimer !== null) {
+  if (!engine.initialized || fillScratchRequired(engine) || engine.fillScratchReleaseTimer !== null) {
     return;
   }
   engine.fillScratchReleaseTimer = window.setTimeout(() => {
     engine.fillScratchReleaseTimer = null;
-    if (engine.fillToolSelected || engine.historyBusy || engine.layerSwitchBusy) {
+    if (fillScratchRequired(engine) || engine.historyBusy || engine.layerSwitchBusy) {
       scheduleFillScratchRelease(engine);
       return;
     }
     void engine.device.queue.onSubmittedWorkDone().then(() => {
-      if (!engine.fillToolSelected && !engine.historyBusy && !engine.layerSwitchBusy) {
+      if (!fillScratchRequired(engine) && !engine.historyBusy && !engine.layerSwitchBusy) {
         engine.fillRenderer?.releaseScratch();
         engine.publishStats();
       } else {
@@ -121,6 +127,7 @@ export async function fillAtClientPoint(
     || !engine.fillToolSelected
     || engine.historyBusy
     || engine.layerSwitchBusy
+    || engine.selectionBusy
     || engine.activeStroke
     || engine.activeVectorHistoryEdit
   ) {
@@ -157,11 +164,18 @@ export async function fillAtClientPoint(
     renderer.setSourceSamplingView(source.view);
     const target = engine.layerStack.active;
     const linearColor = hexToLinearFillColor(color);
+    const selectionMask = engine.pixelSelectionState.selectedPixels > 0
+      ? engine.selectionRenderer?.maskBuffer ?? null
+      : null;
+    if (engine.pixelSelectionState.selectedPixels > 0 && !selectionMask) {
+      throw new Error("Selezione pixel attiva ma maschera GPU non residente.");
+    }
     const analysis = await renderer.analyze(
       seedX,
       seedY,
       normalizeFillTolerance(tolerancePercent),
       linearColor,
+      selectionMask,
     );
     const actionId = engine.nextHistoryActionId;
     historySlice = engine.historyGpuStorage.allocate(

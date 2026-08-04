@@ -872,6 +872,8 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
   };
   const blendRendererMiB = engine.blendRenderer?.allocatedMemoryMiB() ?? 0;
   const fillRendererMiB = (engine.fillRenderer?.residentBytes ?? 0) / MEBIBYTE_BYTES;
+  const selectionRendererMiB =
+    (engine.selectionRenderer?.residentBytes ?? 0) / MEBIBYTE_BYTES;
   const lightGlazeMiB = engine.lightGlazeStorageAllocated
     ? lightGlazeAdditionalMemoryMiB(engine.layerFormat, engine.lightGlazeStorageMode)
     : 0;
@@ -937,6 +939,7 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     effectsScratchPoolMiB,
     blendRendererMiB,
     fillRendererMiB,
+    selectionRendererMiB,
     lightGlazeMiB,
     stabilizationTailMiB,
     thicknessTailMiB,
@@ -976,6 +979,7 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     effectsScratchInnerShadowExtent,
     blendRendererMiB,
     fillRendererMiB,
+    selectionRendererMiB,
     rasterBevelHeightMiB,
     rasterBevelLutAndControlMiB,
     rasterOuterShadowMatteMiB,
@@ -1727,6 +1731,9 @@ export async function runBenchmark(engine: BrushEngine, baseStampCount: number):
   }
   if (engine.settings.tool === "blend") {
     throw new Error("Il benchmark GPU sintetico misura Paint: seleziona Pennello Paint.");
+  }
+  if (engine.pixelSelectionState.selectedPixels > 0) {
+    throw new Error("Deseleziona i pixel prima del benchmark Paint canonico.");
   }
   if (engine.lightGlazeSession) {
     await engine.waitForIdle();

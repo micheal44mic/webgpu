@@ -43,12 +43,14 @@ import {
   restoreEffectsWorkbenchToActiveLayer,
   setLayerBlendMode,
 } from "./engine-layer-runtime";
+import { restorePixelSelectionHistoryMask } from "./engine-selection-runtime";
 
 export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Promise<boolean> {
   if (
     !engine.initialized
     || engine.activeStroke
     || engine.historyBusy
+    || engine.selectionBusy
     || engine.activeVectorHistoryEdit
   ) {
     return false;
@@ -175,6 +177,26 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
       await engine.prepareActiveLayerForSwitch();
     }
     let replayAttempted = false;
+    let selectionRestored = false;
+    const selectionTransform = crossedAction.kind === "raster-transform"
+      && crossedAction.scope === "selection"
+      ? crossedAction
+      : null;
+    const targetSelection = selectionTransform
+      ? delta < 0 ? selectionTransform.selectionBefore : selectionTransform.selectionAfter
+      : null;
+    const expectedSelection = selectionTransform
+      ? delta < 0 ? selectionTransform.selectionAfter : selectionTransform.selectionBefore
+      : null;
+    // Selection edits are intentionally not journal actions. Restore the mask
+    // that travelled with this pixel transform only when the live mask still
+    // descends from the opposite side of the same transition. A later
+    // wand/lasso/color selection must survive raster Undo/Redo unchanged.
+    const selectionCompareAndSwap = Boolean(
+      targetSelection
+      && expectedSelection
+      && engine.pixelSelectionIdentity === expectedSelection.identity,
+    );
     try {
       if (switched) {
         engine.layerStack.setActiveIndex(targetIndex);
@@ -183,9 +205,22 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
       engine.historyCursor = nextCursor;
       replayAttempted = true;
       await rebuildActiveLayerFromHistory(engine);
+      if (selectionCompareAndSwap && targetSelection) {
+        await restorePixelSelectionHistoryMask(engine, targetSelection);
+        selectionRestored = true;
+      }
     } catch (operationError) {
       engine.historyCursor = previousCursor;
       const rollbackErrors: unknown[] = [];
+
+      if (selectionRestored && expectedSelection) {
+        try {
+          await restorePixelSelectionHistoryMask(engine, expectedSelection);
+          selectionRestored = false;
+        } catch (restoreSelectionError) {
+          rollbackErrors.push(restoreSelectionError);
+        }
+      }
 
       // If replay was entered, it may already have submitted a clear or one or
       // more batches. Restore the TARGET while it is still active and while the
@@ -648,6 +683,7 @@ export function compactDiscardedHistory(engine: BrushEngine): void {
 
   const retainedBatches: HistoryRenderBatch[] = [];
   const discardedSlices: GpuHistorySlice[] = [];
+  const discardedSelectionMaskSlices: GpuHistorySlice[] = [];
   let retainedStampCount = 0;
   for (const batch of engine.historyBatches) {
     if (!retainedActionIds.has(batch.actionId)) {
@@ -661,7 +697,23 @@ export function compactDiscardedHistory(engine: BrushEngine): void {
         ? batch.batches.length
         : 0;
   }
-  engine.historyGpuStorage.releaseMany(discardedSlices);
+  for (const actionId of engine.selectionHistoryMasksByAction.keys()) {
+    if (!retainedActionIds.has(actionId)) {
+      engine.selectionHistoryMasksByAction.delete(actionId);
+    }
+  }
+  const retainedSelectionSnapshots = new Set(engine.selectionHistoryMasksByAction.values());
+  for (const [revision, snapshot] of engine.selectionHistoryMasksByRevision) {
+    if (!retainedSelectionSnapshots.has(snapshot)) {
+      discardedSelectionMaskSlices.push(snapshot.gpuSlice);
+      engine.selectionHistoryMasksByRevision.delete(revision);
+      engine.selectionHistoryClipBindGroups.delete(snapshot.gpuSlice.id);
+    }
+  }
+  engine.historyGpuStorage.releaseMany([
+    ...discardedSlices,
+    ...discardedSelectionMaskSlices,
+  ]);
   engine.historyBatches = retainedBatches;
   engine.historyStoredBaseStamps = retainedStampCount;
   engine.historyCompactionPending = false;
@@ -697,9 +749,17 @@ export function compactDiscardedHistory(engine: BrushEngine): void {
       .map((action) => action.id),
   );
   const releasedTransformActions = new Set<RasterTransformHistoryAction>();
+  const releasedTransformSelectionSlices = new Set<number>();
   for (const action of engine.discardedRasterTransformHistoryActions) {
     if (!retainedTransformIds.has(action.id) && !releasedTransformActions.has(action)) {
       destroyLayerColdStorage(action.seed);
+      for (const snapshot of [action.selectionBefore, action.selectionAfter]) {
+        if (snapshot && !releasedTransformSelectionSlices.has(snapshot.gpuSlice.id)) {
+          engine.selectionHistoryClipBindGroups.delete(snapshot.gpuSlice.id);
+          engine.historyGpuStorage.release(snapshot.gpuSlice);
+          releasedTransformSelectionSlices.add(snapshot.gpuSlice.id);
+        }
+      }
       releasedTransformActions.add(action);
     }
   }

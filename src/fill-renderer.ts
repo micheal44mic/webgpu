@@ -30,7 +30,11 @@ import { LAYER_SIZE } from "./engine-limits";
 import type { LayerFormat } from "./engine-types";
 import type { GpuHistorySlice } from "./gpu-history-storage";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
-import { fillComputeShader, fillRenderShader } from "./fill-shaders";
+import {
+  fillComputeShader,
+  fillRenderShader,
+  fillSelectionIntersectionShader,
+} from "./fill-shaders";
 
 interface FillRendererOptions {
   readonly device: GPUDevice;
@@ -82,6 +86,7 @@ export class FillRenderer {
   readonly uniformBuffer: GPUBuffer;
   readonly computeBindGroupLayout: GPUBindGroupLayout;
   readonly renderBindGroupLayout: GPUBindGroupLayout;
+  readonly selectionIntersectionBindGroupLayout: GPUBindGroupLayout;
   private readonly layerFormat: LayerFormat;
   private sourceSamplingView: GPUTextureView;
   private classifyPipeline!: GPUComputePipeline;
@@ -89,6 +94,7 @@ export class FillRenderer {
   private compressPipeline!: GPUComputePipeline;
   private selectPipeline!: GPUComputePipeline;
   private rebuildPipeline!: GPUComputePipeline;
+  private selectionIntersectionPipeline!: GPUComputePipeline;
   private renderPipeline!: GPURenderPipeline;
   private scratch: FillScratchResources | null = null;
   private prewarmPromise: Promise<void> | null = null;
@@ -134,6 +140,13 @@ export class FillRenderer {
         { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
       ],
     });
+    this.selectionIntersectionBindGroupLayout = this.device.createBindGroupLayout({
+      label: "Riempimento · intersezione Selezione pixel",
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      ],
+    });
   }
 
   get resident(): boolean {
@@ -153,9 +166,14 @@ export class FillRenderer {
       label: "Riempimento · commit maschera",
       code: fillRenderShader,
     });
+    const intersectionModule = this.device.createShaderModule({
+      label: "Riempimento · intersezione con Selezione pixel",
+      code: fillSelectionIntersectionShader,
+    });
     await assertShaderModules([
       { label: "compute", module: computeModule },
       { label: "render", module: renderModule },
+      { label: "intersezione selezione", module: intersectionModule },
     ]);
     const computeLayout = this.device.createPipelineLayout({
       label: "Riempimento · compute pipeline layout",
@@ -164,6 +182,10 @@ export class FillRenderer {
     const renderLayout = this.device.createPipelineLayout({
       label: "Riempimento · render pipeline layout",
       bindGroupLayouts: [this.renderBindGroupLayout],
+    });
+    const intersectionLayout = this.device.createPipelineLayout({
+      label: "Riempimento · pipeline layout intersezione Selezione pixel",
+      bindGroupLayouts: [this.selectionIntersectionBindGroupLayout],
     });
     const computePipelines = await Promise.all([
       "classifyLocal",
@@ -183,6 +205,11 @@ export class FillRenderer {
       this.selectPipeline,
       this.rebuildPipeline,
     ] = computePipelines;
+    this.selectionIntersectionPipeline = await this.device.createComputePipelineAsync({
+      label: "Riempimento · candidato ∩ Selezione pixel",
+      layout: intersectionLayout,
+      compute: { module: intersectionModule, entryPoint: "intersectFillWithSelection" },
+    });
     this.renderPipeline = await this.device.createRenderPipelineAsync({
       label: `Riempimento · commit ${this.layerFormat}`,
       layout: renderLayout,
@@ -317,6 +344,7 @@ export class FillRenderer {
     seedY: number,
     tolerance: number,
     fillColor: readonly [number, number, number, number],
+    selectionMask: GPUBuffer | null = null,
   ): Promise<FillAnalysis> {
     await this.prewarm();
     const scratch = this.requireScratch();
@@ -364,14 +392,53 @@ export class FillRenderer {
     selectionPass.setPipeline(this.selectPipeline);
     selectionPass.dispatchWorkgroups(FILL_BLOCK_GRID_SIZE, FILL_BLOCK_GRID_SIZE);
     selectionPass.end();
-    encoder.copyBufferToBuffer(
-      scratch.metadata,
-      0,
-      scratch.readback,
-      0,
-      FILL_METADATA_BYTES,
-    );
+    if (!selectionMask) {
+      encoder.copyBufferToBuffer(
+        scratch.metadata,
+        0,
+        scratch.readback,
+        0,
+        FILL_METADATA_BYTES,
+      );
+    }
     this.device.queue.submit([encoder.finish()]);
+
+    if (selectionMask) {
+      const clippedMetadata = new Uint32Array(FILL_METADATA_WORDS);
+      clippedMetadata[FILL_META_MIN_X] = 0xffffffff;
+      clippedMetadata[FILL_META_MIN_Y] = 0xffffffff;
+      this.device.queue.writeBuffer(scratch.metadata, 0, clippedMetadata);
+      this.device.queue.writeBuffer(scratch.drawIndirect, 0, new Uint32Array([4, 0, 0, 0]));
+      const clipBindGroup = this.device.createBindGroup({
+        label: "Riempimento · bind candidato ∩ selezione",
+        layout: this.selectionIntersectionBindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: scratch.selectedMask } },
+          { binding: 1, resource: { buffer: selectionMask } },
+        ],
+      });
+      const clipEncoder = this.device.createCommandEncoder({
+        label: "Riempimento · applica Selezione pixel",
+      });
+      const clipPass = clipEncoder.beginComputePass({
+        label: "Riempimento · intersezione e sommario",
+      });
+      clipPass.setPipeline(this.selectionIntersectionPipeline);
+      clipPass.setBindGroup(0, clipBindGroup);
+      clipPass.dispatchWorkgroups(Math.ceil((LAYER_SIZE * LAYER_SIZE / 32) / 256));
+      clipPass.setPipeline(this.rebuildPipeline);
+      clipPass.setBindGroup(0, scratch.computeBindGroup);
+      clipPass.dispatchWorkgroups(FILL_BLOCK_GRID_SIZE, FILL_BLOCK_GRID_SIZE);
+      clipPass.end();
+      clipEncoder.copyBufferToBuffer(
+        scratch.metadata,
+        0,
+        scratch.readback,
+        0,
+        FILL_METADATA_BYTES,
+      );
+      this.device.queue.submit([clipEncoder.finish()]);
+    }
     await scratch.readback.mapAsync(GPUMapMode.READ, 0, FILL_METADATA_BYTES);
     const metadata = new Uint32Array(
       scratch.readback.getMappedRange(0, FILL_METADATA_BYTES).slice(0),
@@ -379,6 +446,9 @@ export class FillRenderer {
     scratch.readback.unmap();
     const selectedPixels = metadata[FILL_META_SELECTED_PIXELS];
     if (selectedPixels === 0) {
+      if (selectionMask) {
+        throw new Error("Il Riempimento non interseca la Selezione pixel attiva.");
+      }
       throw new Error(
         "Il seed del riempimento non appartiene ad alcuna componente "
         + `(componenti=${metadata[FILL_META_ACTIVE_COMPONENTS]}, `
@@ -406,6 +476,15 @@ export class FillRenderer {
       tileMask,
       queueCompletionMs: performance.now() - startedAt,
     };
+  }
+
+  /**
+   * Espone la candidate mask dell'ultima CCL a un altro runtime GPU. Il buffer
+   * resta di proprietà del renderer Fill e non deve sopravvivere a un nuovo
+   * analyze() o a releaseScratch().
+   */
+  getAnalyzedSelectionMaskBuffer(): GPUBuffer {
+    return this.requireScratch().selectedMask;
   }
 
   encodeLiveCommit(

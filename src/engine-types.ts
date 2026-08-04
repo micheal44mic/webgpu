@@ -15,6 +15,7 @@ import {
 } from "./mixed-scene-stack";
 import type { RasterShadowEncodeResult } from "./shadow-renderer";
 import type { RasterStrokeEncodeResult } from "./stroke-renderer";
+import type { PixelSelectionState } from "./selection-core";
 import type { VectorTextViewState } from "./vector-text-types";
 
 /**
@@ -102,6 +103,7 @@ export interface PointerSample {
 /** Compact document-space geometry for the live raster Transform overlay. */
 export interface RasterTransformSnapshot {
   layerId: number;
+  scope: "layer" | "selection";
   x: number;
   y: number;
   scale: number;
@@ -192,6 +194,7 @@ export interface EngineCallbacks {
   onViewRotationChange?: (degrees: number, snappedToZero: boolean) => void;
   onViewChange?: (state: VectorTextViewState) => void;
   onMixedSceneChange?: (snapshot: MixedSceneSnapshot) => void;
+  onPixelSelectionChange?: (state: PixelSelectionState) => void;
   /**
    * A global undo can move the active layer, so the UI has to be told: without
    * this the layer panel would keep highlighting the layer the user left.

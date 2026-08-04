@@ -2086,7 +2086,7 @@ assert.match(layerCompositeGpuTestSource, /opaqueRawFastPathIsByteExact/);
 assert.match(engineSource, /^ {2}layerSwitchBusy = false;$/m);
 assert.match(
   engineSource,
-  /if \(this\.historyBusy \|\| this\.activeStroke \|\| this\.layerSwitchBusy\) \{/,
+  /if \(this\.historyBusy \|\| this\.activeStroke \|\| this\.layerSwitchBusy \|\| this\.selectionBusy\) \{/,
   "beginStrokeAtLayer deve rifiutare durante uno switch",
 );
 assert.match(mainSource, /return !engineInitialized\s*\|\| layerSwitching/,

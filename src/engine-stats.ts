@@ -106,6 +106,7 @@ export interface EngineGpuMemoryStats {
   rasterBevelFieldShrinkCount: number;
   blendRendererMiB: number;
   fillRendererMiB: number;
+  selectionRendererMiB: number;
   lightGlazeMiB: number;
   lightGlazeTransitionPeakMiB: number;
   stabilizationTailMiB: number;

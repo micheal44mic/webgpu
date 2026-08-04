@@ -84,24 +84,37 @@ assert.match(
   "Light Glaze non usa l'accumulatore coverage R8 isolato per gesture.",
 );
 
-const maxPipeline = section(
+const baseMaxPipeline = section(
   engine,
   "const createLightNoBuildUpPipeline",
+  "const selectionPipelineByBase",
+);
+assert.equal(
+  (baseMaxPipeline.match(/operation: "max"/g) ?? []).length,
+  2,
+  "L'accumulatore Light base deve usare MAX per colore e alpha.",
+);
+assert.doesNotMatch(
+  baseMaxPipeline,
+  /one-minus-src-alpha/,
+  "Gli stamp base della stessa gesture non devono usare source-over.",
+);
+assert.match(baseMaxPipeline, /format: "r8unorm"/);
+assert.match(baseMaxPipeline, /Light Glaze circle MAX per gesture r8unorm/);
+assert.match(baseMaxPipeline, /Light Glaze Texturized circle MAX per gesture r8unorm/);
+
+const selectionMaxPipeline = section(
+  engine,
+  "const selectionPipelineByBase",
   "const lightGlazeCompositeMipPipeline",
 );
 assert.equal(
-  (maxPipeline.match(/operation: "max"/g) ?? []).length,
+  (selectionMaxPipeline.match(/operation: "max"/g) ?? []).length,
   2,
-  "L'accumulatore Light deve usare MAX per colore e alpha.",
+  "La variante Light con Selezione pixel deve conservare MAX per colore e alpha.",
 );
-assert.doesNotMatch(
-  maxPipeline,
-  /one-minus-src-alpha/,
-  "Gli stamp della stessa gesture non devono usare source-over.",
-);
-assert.match(maxPipeline, /format: "r8unorm"/);
-assert.match(maxPipeline, /Light Glaze circle MAX per gesture r8unorm/);
-assert.match(maxPipeline, /Light Glaze Texturized circle MAX per gesture r8unorm/);
+assert.match(selectionMaxPipeline, /maximumBlend/);
+assert.match(selectionMaxPipeline, /selectionPipelineByBase\.set\(variant\.base, selectedPipeline\)/);
 
 const submit = section(
   engine,

@@ -352,7 +352,7 @@ const rasterTransform = (id, layerId, hasContent = true) => ({
 // La cronologia raster autorevole deve vivere in buffer GPU paginati: sul CPU
 // restano soltanto metadati piccoli per l'ordine globale e il replay.
 {
-  globalThis.GPUBufferUsage ??= { COPY_SRC: 1, COPY_DST: 2 };
+  globalThis.GPUBufferUsage ??= { COPY_SRC: 1, COPY_DST: 2, STORAGE: 4 };
   const { GPU_HISTORY_PAGE_BYTES, GpuHistoryStorage } = await import(
     "../src/gpu-history-storage.ts"
   );
@@ -400,6 +400,12 @@ const rasterTransform = (id, layerId, hasContent = true) => ({
   const aligned = storage.allocate(5, "alignment");
   assert.equal(aligned.logicalBytes, 5);
   assert.equal(aligned.reservedBytes, 8);
+  const storageAligned = storage.allocate(12, "storage-alignment", 256);
+  assert.equal(storageAligned.offsetBytes % 256, 0);
+  assert.throws(
+    () => storage.allocate(4, "bad-alignment", 24),
+    /potenza di due/,
+  );
   storage.destroy();
   assert.equal(buffers.every((buffer) => buffer.destroyed), true);
 
@@ -426,6 +432,18 @@ const rasterTransform = (id, layerId, hasContent = true) => ({
     new URL("../src/blend-renderer.ts", import.meta.url),
     "utf8",
   );
+  const brushEngine = readFileSync(
+    new URL("../src/brush-engine.ts", import.meta.url),
+    "utf8",
+  );
+  const selectionRuntime = readFileSync(
+    new URL("../src/engine-selection-runtime.ts", import.meta.url),
+    "utf8",
+  );
+  const historyRuntime = readFileSync(
+    new URL("../src/engine-history-runtime.ts", import.meta.url),
+    "utf8",
+  );
   const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
   const paintBatch = engine.slice(
@@ -435,6 +453,7 @@ const rasterTransform = (id, layerId, hasContent = true) => ({
   assert(!paintBatch.includes("stamps:"), "La storia Paint non deve trattenere array Stamp CPU.");
   assert(paintBatch.includes("gpuSlice: GpuHistorySlice"));
   assert(paintBatch.includes("stampCount: number"));
+  assert(paintBatch.includes("selectionMask: SelectionHistoryMaskSnapshot | null"));
   assert(engine.includes('"gpu-only-packed-payload-no-cpu-stamp-arrays"'));
   assert(engine.includes('"clear-and-gpu-buffer-copy-replay"'));
   assert(engine.includes("replayBatch.gpuSlice.buffer"));
@@ -449,7 +468,33 @@ const rasterTransform = (id, layerId, hasContent = true) => ({
   assert(engine.includes("historyGpuMiB,"));
   assert(engine.includes("historyGpuUsedMiB,"));
   assert(engine.includes("historyGpuPageCount: historyGpu.pageCount"));
-  assert(engine.includes("engine.historyGpuStorage.releaseMany(discardedSlices)"));
+  assert(engine.includes("...discardedSelectionMaskSlices"));
+  assert(engine.includes("selectionHistoryMasksByAction"));
+  assert(engine.includes("selectionHistoryMasksByRevision"));
+  assert(selectionRuntime.includes("identity: engine.pixelSelectionIdentity"));
+  assert(selectionRuntime.includes("engine.selectionHistoryMasksByRevision.get(revision)"));
+  assert(selectionRuntime.includes("engine.selectionHistoryMasksByRevision.set(revision, snapshot)"));
+  const beginStroke = brushEngine.slice(
+    brushEngine.indexOf("  beginStrokeAtLayer(point: LayerPoint): void"),
+    brushEngine.indexOf("  extendStroke(sample: PointerSample): void"),
+  );
+  assert(
+    beginStroke.indexOf("capturePaintSelectionHistoryMask(this, historyActionId)") >= 0
+      && beginStroke.indexOf("capturePaintSelectionHistoryMask(this, historyActionId)")
+        < beginStroke.indexOf("this.nextHistoryActionId += 1"),
+    "Paint deve congelare la selezione storica prima di avanzare o renderizzare l'azione.",
+  );
+  const recordPaintBatch = brushEngine.slice(
+    brushEngine.indexOf("  recordHistoryBatch("),
+    brushEngine.indexOf("  resetHistoryState(): void"),
+  );
+  assert(recordPaintBatch.includes("this.selectionHistoryMasksByAction.get(actionId) ?? null"));
+  assert(!recordPaintBatch.includes("capturePaintSelectionHistoryMask("));
+  assert(historyRuntime.includes("engine.pixelSelectionIdentity === expectedSelection.identity"));
+  assert(historyRuntime.includes("await restorePixelSelectionHistoryMask(engine, targetSelection)"));
+  assert(historyRuntime.includes(
+    "wand/lasso/color selection must survive raster Undo/Redo unchanged",
+  ));
   assert(engine.includes("lastVisiblePaintBatchIndexByAction"));
   assert(
     engine.indexOf("historyGpuMiB,", engine.indexOf("const countedTotalMiB")) >= 0,

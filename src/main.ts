@@ -44,6 +44,12 @@ import {
   LAYER_BLEND_MODE_LABELS,
   type LayerBlendMode,
 } from "./layer-blend-modes";
+import type {
+  PixelSelectionState,
+  SelectionCombineMode,
+  SelectionMethod,
+  SelectionPoint,
+} from "./selection-core";
 
 function element<T extends HTMLElement>(id: string): T {
   const result = document.getElementById(id);
@@ -78,6 +84,20 @@ function formatMemoryMiB(value: number): string {
 
 const canvas = element<HTMLCanvasElement>("gpuCanvas");
 const tipPreviewCanvas = element<HTMLCanvasElement>("tipPreviewCanvas");
+const rasterSelectionOverlayCanvas = element<HTMLCanvasElement>(
+  "rasterSelectionOverlayCanvas",
+);
+const rasterSelectionGestureCanvas = element<HTMLCanvasElement>(
+  "rasterSelectionGestureCanvas",
+);
+const rasterSelectionGestureContextCandidate = rasterSelectionGestureCanvas.getContext("2d", {
+  alpha: true,
+});
+if (!rasterSelectionGestureContextCandidate) {
+  throw new Error("Canvas 2D provvisorio del lazo non disponibile.");
+}
+const rasterSelectionGestureContext: CanvasRenderingContext2D =
+  rasterSelectionGestureContextCandidate;
 const appElement = element<HTMLElement>("app");
 const controlsPanel = element<HTMLElement>("controlsPanel");
 const toggleControlsButton = element<HTMLButtonElement>("toggleControls");
@@ -595,6 +615,9 @@ const engine = new BrushEngine(canvas, {
     updateViewZoomControl(state.zoom);
     vectorTextPrototype?.scheduleViewSync();
   },
+  onPixelSelectionChange(state) {
+    updatePixelSelectionResult(state);
+  },
   onMixedSceneChange(snapshot) {
     vectorTextPrototype?.syncScene(snapshot);
     updateRasterColorOverlayControlAvailability();
@@ -628,7 +651,7 @@ const engine = new BrushEngine(canvas, {
   layerCompressionTestEnabled: layerCompressionStudyRequested,
   vectorTextPrototypeEnabled: vectorTextEditorEnabled,
   layerColdCompressionEnabled: layerColdCompressionRequested,
-});
+}, rasterSelectionOverlayCanvas);
 if (import.meta.env.DEV) {
   (window as Window & { __brushEngine?: BrushEngine }).__brushEngine = engine;
 }
@@ -660,13 +683,16 @@ let rasterBevelChanging = false;
 let rasterOuterShadowChanging = false;
 let rasterInnerShadowChanging = false;
 let engineInitialized = false;
+let selectionUiBusy = false;
 let controlsPanelOpen = true;
 let gpuMemoryPanelOpen = false;
 let previousGpuMemoryTotalMiB: number | null = null;
 let gpuMemoryDeltaTimer: number | null = null;
-type CanvasTool = BrushSettings["tool"] | "fill" | "transform";
+type CanvasTool = BrushSettings["tool"] | "fill" | "selection" | "transform";
 let activeBrushTool: BrushSettings["tool"] = "paint";
 let activeCanvasTool: CanvasTool = "paint";
+let selectionCombineMode: SelectionCombineMode = "replace";
+let toolConfigurationRevision = 0;
 
 type NumericKeyOf<T> = {
   [Key in keyof T]-?: T[Key] extends number ? Key : never;
@@ -702,6 +728,7 @@ const gpuMemoryRows: ReadonlyArray<
   ["gpuMemoryBevelControl", "rasterBevelLutAndControlMiB"],
   ["gpuMemoryBlend", "blendRendererMiB"],
   ["gpuMemoryFill", "fillRendererMiB"],
+  ["gpuMemorySelection", "selectionRendererMiB"],
   ["gpuMemoryLightGlaze", "lightGlazeMiB"],
   ["gpuMemoryStabilizationTail", "stabilizationTailMiB"],
   ["gpuMemoryThicknessTail", "thicknessTailMiB"],
@@ -725,24 +752,82 @@ function captureActiveToolControls(): void {
   };
 }
 
+function selectedSelectionMethod(): SelectionMethod {
+  const value = element<HTMLSelectElement>("selectionMethod").value;
+  return value === "lasso" || value === "color-range" ? value : "magic-wand";
+}
+
+function setSelectionCombineMode(mode: SelectionCombineMode): void {
+  selectionCombineMode = mode;
+  for (const [id, candidate] of [
+    ["selectionReplace", "replace"],
+    ["selectionAdd", "add"],
+    ["selectionSubtract", "subtract"],
+  ] as const) {
+    element<HTMLButtonElement>(id).setAttribute(
+      "aria-pressed",
+      String(mode === candidate),
+    );
+  }
+}
+
+function updateSelectionMethodUi(): void {
+  const method = selectedSelectionMethod();
+  const colorRange = method === "color-range";
+  element<HTMLElement>("selectionToleranceControl").hidden = method === "lasso";
+  element<HTMLElement>("selectionColorControl").hidden = !colorRange;
+  element<HTMLButtonElement>("selectionColorApply").hidden = !colorRange;
+  element<HTMLElement>("selectionKeyboardHelp").hidden = colorRange;
+  const canvasKeyboardEnabled = activeCanvasTool === "selection" && !colorRange;
+  canvas.tabIndex = canvasKeyboardEnabled ? 0 : -1;
+  if (canvasKeyboardEnabled) {
+    canvas.setAttribute("aria-describedby", "selectionKeyboardHelp");
+    canvas.setAttribute(
+      "aria-keyshortcuts",
+      "ArrowUp ArrowDown ArrowLeft ArrowRight Enter Space Escape",
+    );
+  } else {
+    canvas.removeAttribute("aria-describedby");
+    canvas.removeAttribute("aria-keyshortcuts");
+  }
+}
+
+function updatePixelSelectionResult(state: PixelSelectionState): void {
+  const result = element<HTMLParagraphElement>("selectionResult");
+  if (state.selectedPixels === 0) {
+    result.textContent = "Nessun pixel selezionato.";
+    return;
+  }
+  const bounds = state.bounds
+    ? ` · area ${state.bounds.width.toLocaleString("it-IT")}×`
+      + state.bounds.height.toLocaleString("it-IT")
+    : "";
+  result.textContent = `${state.selectedPixels.toLocaleString("it-IT")} pixel selezionati`
+    + ` · ${state.activeTiles} tile${bounds}.`;
+}
+
 function configureBrushToolUi(
   tool: CanvasTool,
   restoreSnapshot: boolean,
 ): void {
+  const configurationRevision = ++toolConfigurationRevision;
   const previousCanvasTool = activeCanvasTool;
   const previousBrushTool = activeBrushTool;
   if (
     restoreSnapshot
     && previousCanvasTool !== tool
     && previousCanvasTool !== "fill"
+    && previousCanvasTool !== "selection"
     && previousCanvasTool !== "transform"
   ) {
     captureActiveToolControls();
   }
   activeCanvasTool = tool;
   const fill = tool === "fill";
+  const selection = tool === "selection";
   const transform = tool === "transform";
-  if (!fill && !transform) {
+  if (!selection) cancelKeyboardSelectionGesture(true);
+  if (!fill && !selection && !transform) {
     activeBrushTool = tool;
   }
   setControlValue("brushTool", tool);
@@ -754,7 +839,7 @@ function configureBrushToolUi(
   spacing.min = blend ? "1" : "0.25";
   spacing.max = blend ? "400" : "25";
   spacing.step = blend ? "1" : "0.25";
-  if (restoreSnapshot && !fill && !transform && previousBrushTool !== tool) {
+  if (restoreSnapshot && !fill && !selection && !transform && previousBrushTool !== tool) {
     const snapshot = toolControlSnapshots[tool];
     setControlValue("brushSize", snapshot.size);
     setControlValue("spacing", snapshot.spacing);
@@ -771,7 +856,7 @@ function configureBrushToolUi(
     "colorJitterSection",
     "positionJitterSection",
   ]) {
-    element<HTMLElement>(id).hidden = blend || fill || transform;
+    element<HTMLElement>(id).hidden = blend || fill || selection || transform;
   }
   for (const id of [
     "brushShapeControl",
@@ -782,24 +867,50 @@ function configureBrushToolUi(
     "grainSection",
     "renderingModeMemoryHint",
   ]) {
-    element<HTMLElement>(id).hidden = fill || transform;
+    element<HTMLElement>(id).hidden = fill || selection || transform;
   }
+  element<HTMLElement>("brushColorControl").hidden = selection || transform;
   element<HTMLElement>("fillToleranceControl").hidden = !fill;
+  element<HTMLElement>("selectionControls").hidden = !selection;
   element<HTMLElement>("blendControls").hidden = !blend;
+  updateSelectionMethodUi();
   vectorTextPrototype?.setTransformToolActive(transform);
   updateRenderingModeControlAvailability();
   if (engineInitialized) {
-    void engine.setFillToolSelected(fill).then((ready) => {
-      if (!ready && activeCanvasTool === "fill" && engine.fillToolSelected === false) {
+    const method = selectedSelectionMethod();
+    void (async () => {
+      const fillReady = await engine.setFillToolSelected(fill);
+      if (
+        configurationRevision !== toolConfigurationRevision
+        || activeCanvasTool !== tool
+      ) {
+        return;
+      }
+      const selectionReady = await engine.setSelectionToolSelected(selection, method);
+      if (
+        configurationRevision !== toolConfigurationRevision
+        || activeCanvasTool !== tool
+        || (selection && selectedSelectionMethod() !== method)
+      ) {
+        return;
+      }
+      if (
+        (!fillReady && activeCanvasTool === "fill" && engine.fillToolSelected === false)
+        || (!selectionReady && activeCanvasTool === "selection")
+      ) {
         configureBrushToolUi(activeBrushTool, false);
         applyBrushControls();
       }
-    });
+    })();
   }
 }
 
 function updateRenderingModeControlAvailability(): void {
-  if (activeCanvasTool === "fill" || activeCanvasTool === "transform") return;
+  if (
+    activeCanvasTool === "fill"
+    || activeCanvasTool === "selection"
+    || activeCanvasTool === "transform"
+  ) return;
   const blendTool = activeBrushTool === "blend";
   const size = element<HTMLInputElement>("brushSize");
   size.max = blendTool ? "1024" : "1500";
@@ -908,6 +1019,8 @@ function readBrushSettings(): BrushSettings {
 function updateControlOutputs(): void {
   element<HTMLOutputElement>("fillToleranceOut").value =
     `${rangeValue("fillTolerance").toFixed(1).replace(".", ",")}%`;
+  element<HTMLOutputElement>("selectionToleranceOut").value =
+    `${rangeValue("selectionTolerance").toFixed(0)}/255`;
   element<HTMLOutputElement>("shapeScatterOut").value = `${rangeValue("shapeScatter").toFixed(0)}%`;
   element<HTMLOutputElement>("grainScaleOut").value = `${rangeValue("grainScale").toFixed(0)}%`;
   element<HTMLOutputElement>("grainDepthOut").value = `${rangeValue("grainDepth").toFixed(0)}%`;
@@ -2165,6 +2278,7 @@ function updateHumanStrokeControls(): void {
     || rasterOuterShadowChanging
     || rasterInnerShadowChanging
     || rasterBevelChanging
+    || selectionUiBusy
     || renderingModeSuiteRunning;
   const mixedMemoryBenchmarkNotReady =
     mixedMemoryBenchmarkRequested && mixedMemoryBenchmarkReport === null;
@@ -2238,6 +2352,7 @@ function operationLocked(): boolean {
     || rasterOuterShadowChanging
     || rasterInnerShadowChanging
     || rasterBevelChanging
+    || selectionUiBusy
     || renderingModeSuiteRunning
     || humanStrokeReplaying
     || humanStrokeSaving;
@@ -2289,6 +2404,18 @@ function updateHistoryControls(): void {
     || humanStrokeReplaying;
   for (const id of brushControlIds) {
     element<HTMLInputElement | HTMLSelectElement>(id).disabled = locked;
+  }
+  for (const id of ["selectionMethod", "selectionTolerance", "selectionColor"] as const) {
+    element<HTMLInputElement | HTMLSelectElement>(id).disabled = locked;
+  }
+  for (const id of [
+    "selectionReplace",
+    "selectionAdd",
+    "selectionSubtract",
+    "selectionColorApply",
+    "selectionClear",
+  ] as const) {
+    element<HTMLButtonElement>(id).disabled = locked;
   }
   updateGrainControlAvailability(locked);
   updateRasterColorOverlayControlAvailability(locked);
@@ -2560,6 +2687,8 @@ element<HTMLSelectElement>("brushTool").addEventListener("change", () => {
     ? "blend"
     : selected === "fill"
       ? "fill"
+      : selected === "selection"
+        ? "selection"
       : selected === "transform"
         ? "transform"
       : "paint";
@@ -2570,6 +2699,38 @@ element<HTMLSelectElement>("brushTool").addEventListener("change", () => {
     updateControlOutputs();
   }
   updateHistoryControls();
+});
+
+element<HTMLSelectElement>("selectionMethod").addEventListener("change", () => {
+  cancelKeyboardSelectionGesture(false);
+  updateSelectionMethodUi();
+  if (activeCanvasTool === "selection" && engineInitialized) {
+    configureBrushToolUi("selection", false);
+  }
+});
+element<HTMLInputElement>("selectionTolerance").addEventListener(
+  "input",
+  updateControlOutputs,
+);
+element<HTMLButtonElement>("selectionReplace").addEventListener("click", () => {
+  setSelectionCombineMode("replace");
+});
+element<HTMLButtonElement>("selectionAdd").addEventListener("click", () => {
+  setSelectionCombineMode("add");
+});
+element<HTMLButtonElement>("selectionSubtract").addEventListener("click", () => {
+  setSelectionCombineMode("subtract");
+});
+element<HTMLButtonElement>("selectionColorApply").addEventListener("click", () => {
+  if (activeCanvasTool !== "selection" || selectedSelectionMethod() !== "color-range") return;
+  void runPixelSelectionOperation(() => engine.selectPixelsByColor(
+    element<HTMLInputElement>("selectionColor").value,
+    rangeValue("selectionTolerance"),
+    selectionCombineMode,
+  ));
+});
+element<HTMLButtonElement>("selectionClear").addEventListener("click", () => {
+  void runPixelSelectionOperation(() => engine.clearPixelSelection());
 });
 
 benchmarkStampsInput.addEventListener("input", updateControlOutputs);
@@ -3733,6 +3894,25 @@ async function runRequestedClippingGroupTest(): Promise<void> {
   }
 }
 
+async function runPixelSelectionOperation(
+  operation: () => Promise<unknown>,
+): Promise<void> {
+  if (!engineInitialized || selectionUiBusy) return;
+  selectionUiBusy = true;
+  updateHistoryControls();
+  updateHumanStrokeControls();
+  try {
+    await operation();
+  } catch (error) {
+    console.error("Selezione pixel WebGPU non riuscita", error);
+  } finally {
+    selectionUiBusy = false;
+    updatePixelSelectionResult(engine.getPixelSelectionState());
+    updateHistoryControls();
+    updateHumanStrokeControls();
+  }
+}
+
 async function runRequestedLayerBlendTest(): Promise<void> {
   let timeoutId = 0;
   let timedOut = false;
@@ -4793,6 +4973,9 @@ async function replayHumanStroke(
   if (!benchmark || humanStrokeReplaying || (!suiteInternal && interactionLocked())) {
     return null;
   }
+  if (engine.getPixelSelectionState().selectedPixels > 0) {
+    throw new Error("Deseleziona i pixel prima di riprodurre il tratto canonico.");
+  }
 
   const testVariant: HumanStrokeTestVariant = replayTool === "blend"
     ? "blend"
@@ -5308,7 +5491,16 @@ function toPointerSample(event: PointerEvent): PointerSample {
 }
 
 let activePointerId: number | null = null;
-let pointerMode: "paint" | "fill" | "transform" | "pan" | "rotate" | "touch-navigation" | null = null;
+let pointerMode:
+  | "paint"
+  | "fill"
+  | "selection-tap"
+  | "selection-lasso"
+  | "transform"
+  | "pan"
+  | "rotate"
+  | "touch-navigation"
+  | null = null;
 let lastPanClientX = 0;
 let lastPanClientY = 0;
 
@@ -5317,6 +5509,138 @@ let rotateShortcutHeld = false;
 let fillPointerStartX = 0;
 let fillPointerStartY = 0;
 let fillPointerMoved = false;
+let selectionPointerStartX = 0;
+let selectionPointerStartY = 0;
+let selectionPointerMoved = false;
+let selectionTapMethod: SelectionMethod = "magic-wand";
+let lassoClientPoints: SelectionPoint[] = [];
+let lassoCombineMode: SelectionCombineMode = "replace";
+let selectionKeyboardCursorClientX = Number.NaN;
+let selectionKeyboardCursorClientY = Number.NaN;
+let selectionKeyboardCursorVisible = false;
+let selectionKeyboardLassoActive = false;
+
+function syncSelectionGestureCanvasSize(): void {
+  if (rasterSelectionGestureCanvas.width !== canvas.width) {
+    rasterSelectionGestureCanvas.width = canvas.width;
+  }
+  if (rasterSelectionGestureCanvas.height !== canvas.height) {
+    rasterSelectionGestureCanvas.height = canvas.height;
+  }
+}
+
+function clientPointToSelectionCanvas(point: SelectionPoint): SelectionPoint {
+  const rectangle = canvas.getBoundingClientRect();
+  return {
+    x: (point.x - rectangle.left) * canvas.width / Math.max(1, rectangle.width),
+    y: (point.y - rectangle.top) * canvas.height / Math.max(1, rectangle.height),
+  };
+}
+
+function ensureSelectionKeyboardCursor(): void {
+  const rectangle = canvas.getBoundingClientRect();
+  const minimumX = rectangle.left + 1;
+  const maximumX = Math.max(minimumX, rectangle.right - 1);
+  const minimumY = rectangle.top + 1;
+  const maximumY = Math.max(minimumY, rectangle.bottom - 1);
+  if (
+    !Number.isFinite(selectionKeyboardCursorClientX)
+    || !Number.isFinite(selectionKeyboardCursorClientY)
+  ) {
+    selectionKeyboardCursorClientX = rectangle.left + rectangle.width * 0.5;
+    selectionKeyboardCursorClientY = rectangle.top + rectangle.height * 0.5;
+  }
+  selectionKeyboardCursorClientX = Math.min(
+    maximumX,
+    Math.max(minimumX, selectionKeyboardCursorClientX),
+  );
+  selectionKeyboardCursorClientY = Math.min(
+    maximumY,
+    Math.max(minimumY, selectionKeyboardCursorClientY),
+  );
+}
+
+function drawLassoGesture(): void {
+  syncSelectionGestureCanvasSize();
+  rasterSelectionGestureContext.clearRect(
+    0,
+    0,
+    rasterSelectionGestureCanvas.width,
+    rasterSelectionGestureCanvas.height,
+  );
+  if (lassoClientPoints.length === 0 && !selectionKeyboardCursorVisible) {
+    rasterSelectionGestureCanvas.hidden = true;
+    return;
+  }
+  rasterSelectionGestureCanvas.hidden = false;
+  rasterSelectionGestureContext.save();
+  rasterSelectionGestureContext.lineCap = "round";
+  rasterSelectionGestureContext.lineJoin = "round";
+  const scale = canvas.width / Math.max(1, canvas.getBoundingClientRect().width);
+  if (lassoClientPoints.length > 0) {
+    rasterSelectionGestureContext.beginPath();
+    const first = clientPointToSelectionCanvas(lassoClientPoints[0]);
+    rasterSelectionGestureContext.moveTo(first.x, first.y);
+    for (let index = 1; index < lassoClientPoints.length; index += 1) {
+      const point = clientPointToSelectionCanvas(lassoClientPoints[index]);
+      rasterSelectionGestureContext.lineTo(point.x, point.y);
+    }
+    rasterSelectionGestureContext.setLineDash([5 * scale, 4 * scale]);
+    rasterSelectionGestureContext.lineWidth = 3 * scale;
+    rasterSelectionGestureContext.strokeStyle = "rgba(0, 0, 0, 0.9)";
+    rasterSelectionGestureContext.stroke();
+    rasterSelectionGestureContext.lineDashOffset = -4 * scale;
+    rasterSelectionGestureContext.lineWidth = 1.4 * scale;
+    rasterSelectionGestureContext.strokeStyle = "rgba(255, 255, 255, 0.96)";
+    rasterSelectionGestureContext.stroke();
+  }
+  if (selectionKeyboardCursorVisible) {
+    ensureSelectionKeyboardCursor();
+    const cursor = clientPointToSelectionCanvas({
+      x: selectionKeyboardCursorClientX,
+      y: selectionKeyboardCursorClientY,
+    });
+    const radius = 8 * scale;
+    rasterSelectionGestureContext.setLineDash([]);
+    rasterSelectionGestureContext.beginPath();
+    rasterSelectionGestureContext.arc(cursor.x, cursor.y, radius, 0, Math.PI * 2);
+    rasterSelectionGestureContext.moveTo(cursor.x - radius * 1.5, cursor.y);
+    rasterSelectionGestureContext.lineTo(cursor.x + radius * 1.5, cursor.y);
+    rasterSelectionGestureContext.moveTo(cursor.x, cursor.y - radius * 1.5);
+    rasterSelectionGestureContext.lineTo(cursor.x, cursor.y + radius * 1.5);
+    rasterSelectionGestureContext.lineWidth = 3 * scale;
+    rasterSelectionGestureContext.strokeStyle = "rgba(0, 0, 0, 0.92)";
+    rasterSelectionGestureContext.stroke();
+    rasterSelectionGestureContext.lineWidth = 1.25 * scale;
+    rasterSelectionGestureContext.strokeStyle = "rgba(255, 255, 255, 0.98)";
+    rasterSelectionGestureContext.stroke();
+  }
+  rasterSelectionGestureContext.restore();
+}
+
+function appendLassoClientPoint(clientX: number, clientY: number): void {
+  const previous = lassoClientPoints[lassoClientPoints.length - 1];
+  if (previous && Math.hypot(clientX - previous.x, clientY - previous.y) < 0.5) return;
+  lassoClientPoints.push({ x: clientX, y: clientY });
+}
+
+function clearLassoGesture(): void {
+  lassoClientPoints = [];
+  rasterSelectionGestureContext.clearRect(
+    0,
+    0,
+    rasterSelectionGestureCanvas.width,
+    rasterSelectionGestureCanvas.height,
+  );
+  if (selectionKeyboardCursorVisible) drawLassoGesture();
+  else rasterSelectionGestureCanvas.hidden = true;
+}
+
+function cancelKeyboardSelectionGesture(hideCursor: boolean): void {
+  selectionKeyboardLassoActive = false;
+  if (hideCursor) selectionKeyboardCursorVisible = false;
+  clearLassoGesture();
+}
 
 interface TouchContact {
   clientX: number;
@@ -5367,6 +5691,10 @@ function enterTouchNavigation(): void {
       cancelHumanStrokeRecordingForNavigation();
     } else if (pointerMode === "fill") {
       fillPointerMoved = true;
+    } else if (pointerMode === "selection-tap") {
+      selectionPointerMoved = true;
+    } else if (pointerMode === "selection-lasso") {
+      clearLassoGesture();
     }
     engine.beginViewRotationGesture();
     pointerMode = "touch-navigation";
@@ -5399,6 +5727,9 @@ canvas.addEventListener("pointerdown", (event) => {
   }
 
   event.preventDefault();
+  if (activeCanvasTool === "selection") {
+    cancelKeyboardSelectionGesture(true);
+  }
   activePointerId = event.pointerId;
   if (event.pointerType === "touch") {
     activeTouchContacts.set(event.pointerId, {
@@ -5416,6 +5747,10 @@ canvas.addEventListener("pointerdown", (event) => {
       ? "pan"
       : activeCanvasTool === "fill"
         ? "fill"
+        : activeCanvasTool === "selection"
+          ? selectedSelectionMethod() === "lasso"
+            ? "selection-lasso"
+            : "selection-tap"
         : activeCanvasTool === "transform"
           ? "transform"
         : "paint";
@@ -5433,6 +5768,16 @@ canvas.addEventListener("pointerdown", (event) => {
     fillPointerStartX = event.clientX;
     fillPointerStartY = event.clientY;
     fillPointerMoved = false;
+  } else if (pointerMode === "selection-tap") {
+    selectionPointerStartX = event.clientX;
+    selectionPointerStartY = event.clientY;
+    selectionPointerMoved = false;
+    selectionTapMethod = selectedSelectionMethod();
+  } else if (pointerMode === "selection-lasso") {
+    lassoClientPoints = [];
+    lassoCombineMode = selectionCombineMode;
+    appendLassoClientPoint(event.clientX, event.clientY);
+    drawLassoGesture();
   } else if (pointerMode === "transform") {
     // Le maniglie semantiche vivono sull’overlay; sul raster sottostante il
     // tool Trasforma non deve mai avviare una pennellata.
@@ -5517,6 +5862,25 @@ canvas.addEventListener("pointermove", (event) => {
     }
     return;
   }
+  if (pointerMode === "selection-tap") {
+    if (Math.hypot(
+      event.clientX - selectionPointerStartX,
+      event.clientY - selectionPointerStartY,
+    ) > 8) {
+      selectionPointerMoved = true;
+    }
+    return;
+  }
+  if (pointerMode === "selection-lasso") {
+    const coalesced = (
+      event as PointerEvent & { getCoalescedEvents?: () => PointerEvent[] }
+    ).getCoalescedEvents?.() ?? [];
+    for (const source of coalesced.length > 0 ? coalesced : [event]) {
+      appendLassoClientPoint(source.clientX, source.clientY);
+    }
+    drawLassoGesture();
+    return;
+  }
   if (pointerMode === "transform") {
     return;
   }
@@ -5567,6 +5931,27 @@ function finishPointer(event: PointerEvent): void {
       color: element<HTMLInputElement>("brushColor").value,
     }
     : null;
+  const selectionTapRequest = pointerMode === "selection-tap"
+    && selectionTapMethod === "magic-wand"
+    && event.type === "pointerup"
+    && !selectionPointerMoved
+    ? {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      tolerance: rangeValue("selectionTolerance"),
+      combineMode: selectionCombineMode,
+    }
+    : null;
+  if (pointerMode === "selection-lasso" && event.type === "pointerup") {
+    appendLassoClientPoint(event.clientX, event.clientY);
+  }
+  const lassoRequest = pointerMode === "selection-lasso"
+    && event.type === "pointerup"
+    ? {
+      points: lassoClientPoints.slice(),
+      combineMode: lassoCombineMode,
+    }
+    : null;
 
   if (pointerMode === "paint") {
     engine.endStroke(event.timeStamp);
@@ -5579,6 +5964,8 @@ function finishPointer(event: PointerEvent): void {
   activePointerId = null;
   touchNavigationGesture = null;
   fillPointerMoved = false;
+  selectionPointerMoved = false;
+  clearLassoGesture();
   historyState = engine.getHistoryState();
   updateHistoryControls();
   updateHumanStrokeControls();
@@ -5596,12 +5983,132 @@ function finishPointer(event: PointerEvent): void {
       updateHumanStrokeControls();
     });
   }
+  if (selectionTapRequest) {
+    void runPixelSelectionOperation(() => engine.selectConnectedAtClientPoint(
+      selectionTapRequest.clientX,
+      selectionTapRequest.clientY,
+      selectionTapRequest.tolerance,
+      selectionTapRequest.combineMode,
+    ));
+  } else if (lassoRequest) {
+    void runPixelSelectionOperation(() => engine.selectPixelsByClientLasso(
+      lassoRequest.points,
+      lassoRequest.combineMode,
+    ));
+  }
 }
 
 canvas.addEventListener("pointerup", finishPointer);
 canvas.addEventListener("pointercancel", finishPointer);
 canvas.addEventListener("lostpointercapture", finishPointer);
 canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+
+canvas.addEventListener("focus", () => {
+  if (
+    activeCanvasTool !== "selection"
+    || selectedSelectionMethod() === "color-range"
+    || activePointerId !== null
+  ) {
+    return;
+  }
+  selectionKeyboardCursorVisible = true;
+  ensureSelectionKeyboardCursor();
+  drawLassoGesture();
+});
+
+canvas.addEventListener("blur", () => {
+  cancelKeyboardSelectionGesture(true);
+});
+
+canvas.addEventListener("keydown", (event) => {
+  if (
+    activeCanvasTool !== "selection"
+    || selectedSelectionMethod() === "color-range"
+    || activePointerId !== null
+    || operationLocked()
+    || event.isComposing
+    || event.altKey
+    || event.ctrlKey
+    || event.metaKey
+  ) {
+    return;
+  }
+  const method = selectedSelectionMethod();
+  selectionKeyboardCursorVisible = true;
+  ensureSelectionKeyboardCursor();
+  const step = event.shiftKey ? 32 : 8;
+  let moved = true;
+  if (event.key === "ArrowLeft") selectionKeyboardCursorClientX -= step;
+  else if (event.key === "ArrowRight") selectionKeyboardCursorClientX += step;
+  else if (event.key === "ArrowUp") selectionKeyboardCursorClientY -= step;
+  else if (event.key === "ArrowDown") selectionKeyboardCursorClientY += step;
+  else moved = false;
+  if (moved) {
+    event.preventDefault();
+    ensureSelectionKeyboardCursor();
+    if (method === "lasso" && selectionKeyboardLassoActive) {
+      appendLassoClientPoint(
+        selectionKeyboardCursorClientX,
+        selectionKeyboardCursorClientY,
+      );
+    }
+    drawLassoGesture();
+    return;
+  }
+
+  if (event.key === "Escape" && method === "lasso" && selectionKeyboardLassoActive) {
+    event.preventDefault();
+    cancelKeyboardSelectionGesture(false);
+    statusElement.textContent = "Lazo da tastiera annullato.";
+    statusElement.className = "status";
+    return;
+  }
+
+  const activates = event.key === "Enter" || event.code === "Space";
+  if (!activates) return;
+  event.preventDefault();
+  if (method === "magic-wand") {
+    void runPixelSelectionOperation(() => engine.selectConnectedAtClientPoint(
+      selectionKeyboardCursorClientX,
+      selectionKeyboardCursorClientY,
+      rangeValue("selectionTolerance"),
+      selectionCombineMode,
+    ));
+    return;
+  }
+
+  if (event.code === "Space") {
+    if (!selectionKeyboardLassoActive) {
+      lassoClientPoints = [];
+      lassoCombineMode = selectionCombineMode;
+      selectionKeyboardLassoActive = true;
+      statusElement.textContent =
+        "Lazo da tastiera attivo: usa le frecce, Invio per chiudere, Esc per annullare.";
+      statusElement.className = "status";
+    }
+    appendLassoClientPoint(
+      selectionKeyboardCursorClientX,
+      selectionKeyboardCursorClientY,
+    );
+    drawLassoGesture();
+    return;
+  }
+
+  if (event.key === "Enter" && selectionKeyboardLassoActive) {
+    appendLassoClientPoint(
+      selectionKeyboardCursorClientX,
+      selectionKeyboardCursorClientY,
+    );
+    const points = lassoClientPoints.slice();
+    const combineMode = lassoCombineMode;
+    selectionKeyboardLassoActive = false;
+    clearLassoGesture();
+    void runPixelSelectionOperation(() => engine.selectPixelsByClientLasso(
+      points,
+      combineMode,
+    ));
+  }
+});
 
 function keyboardEventTargetsEditable(target: EventTarget | null): boolean {
   const elementTarget = target instanceof Element ? target : null;
@@ -5678,7 +6185,13 @@ canvas.addEventListener(
   { passive: false },
 );
 
-const resizeObserver = new ResizeObserver(() => engine.resizeCanvas());
+const resizeObserver = new ResizeObserver(() => {
+  engine.resizeCanvas();
+  syncSelectionGestureCanvasSize();
+  if (pointerMode === "selection-lasso" || selectionKeyboardCursorVisible) {
+    drawLassoGesture();
+  }
+});
 resizeObserver.observe(canvas);
 
 syncRasterColorOverlayControls(engine.getRasterColorOverlayStyle());
@@ -5688,6 +6201,8 @@ syncRasterInnerShadowControls(engine.getRasterInnerShadowStyle());
 syncRasterBevelControls(engine.getRasterBevelStyle());
 setGpuMemoryPanelOpen(false);
 setControlsPanelOpen(true);
+setSelectionCombineMode("replace");
+updatePixelSelectionResult(engine.getPixelSelectionState());
 configureBrushToolUi("paint", false);
 updateControlOutputs();
 updateViewZoomControl(engine.getVectorTextViewState().zoom);

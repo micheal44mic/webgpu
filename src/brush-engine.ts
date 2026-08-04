@@ -15,6 +15,16 @@ import {
 } from "./blend-renderer";
 import type { FillRenderer } from "./fill-renderer";
 import { FILL_REFERENCE_LAYER_STRATEGY } from "./fill-core";
+import type { SelectionRenderer } from "./selection-renderer";
+import {
+  emptyPixelSelectionState,
+  SELECTION_TILE_MASK_WORDS,
+  type PixelSelectionState,
+  type SelectionCombineMode,
+  type SelectionMethod,
+  type SelectionOperationResult,
+  type SelectionPoint,
+} from "./selection-core";
 import {
   GPU_HISTORY_STORAGE_STRATEGY,
   GpuHistoryStorage,
@@ -75,6 +85,7 @@ import {
   beginRasterLayerTransform as beginRasterLayerTransformRuntime,
   cancelRasterLayerTransform as cancelRasterLayerTransformRuntime,
   commitRasterLayerTransform as commitRasterLayerTransformRuntime,
+  nudgeRasterLayerTransform as nudgeRasterLayerTransformRuntime,
   updateRasterLayerTransform as updateRasterLayerTransformRuntime,
   type ActiveRasterTransformSession,
 } from "./engine-raster-transform-runtime";
@@ -318,6 +329,7 @@ import {
   type HistoryRenderBatch,
   type RasterImportHistoryAction,
   type RasterTransformHistoryAction,
+  type SelectionHistoryMaskSnapshot,
   type VectorRasterizeHistoryAction,
   type PaintHistoryRenderBatch,
   resolvePaintHistoryStampCount,
@@ -613,6 +625,21 @@ import {
   type FillOperationResult,
 } from "./engine-fill-runtime";
 import {
+  clearPixelSelection,
+  bindPaintPipelineWithPixelSelection,
+  capturePaintSelectionHistoryMask,
+  clipPaintDirtyRectToPixelSelection,
+  renderPixelSelectionOverlay,
+  releasePaintSelectionHistoryMask,
+  resetPixelSelectionState,
+  scheduleSelectionRendererRelease,
+  selectConnectedAtClientPoint,
+  selectionNeedsConnectedColorScratch,
+  selectPixelsByClientLasso,
+  selectPixelsByColor,
+  setSelectionToolSelected,
+} from "./engine-selection-runtime";
+import {
   destroyVectorRasterHistorySeed,
   rasterizeVectorNodeToLayer,
 } from "./engine-vector-raster-runtime";
@@ -798,6 +825,7 @@ export class BrushEngine {
   readonly layerCompressionTestEnabled: boolean;
   readonly layerColdCompressionEnabled: boolean;
   readonly vectorTextPrototypeEnabled: boolean;
+  readonly selectionOverlayCanvas: HTMLCanvasElement | null;
 
   private adapter!: GPUAdapter;
   device!: GPUDevice;
@@ -816,6 +844,17 @@ export class BrushEngine {
   fillRendererLoadingPromise: Promise<FillRenderer> | null = null;
   fillToolSelected = false;
   fillScratchReleaseTimer: number | null = null;
+  selectionRenderer: SelectionRenderer | null = null;
+  selectionRendererLoadingPromise: Promise<SelectionRenderer> | null = null;
+  selectionRendererReleaseTimer: number | null = null;
+  selectionOverlayFrameRequest: number | null = null;
+  selectionToolSelected = false;
+  selectionMethod: SelectionMethod = "magic-wand";
+  selectionBusy = false;
+  pixelSelectionState: PixelSelectionState = emptyPixelSelectionState();
+  pixelSelectionTileMask = new Uint32Array(SELECTION_TILE_MASK_WORDS);
+  pixelSelectionIdentity = 0;
+  nextPixelSelectionIdentity = 1;
   effectsWorkbench: EffectsWorkbench | null = null;
   effectsScratchShrinkTimer: number | null = null;
   effectsScratchShrinkInFlight = false;
@@ -1168,6 +1207,7 @@ export class BrushEngine {
   brushOccupancyBindGroupLayout!: GPUBindGroupLayout;
   grainBrushBindGroupLayout!: GPUBindGroupLayout;
   grainBrushOccupancyBindGroupLayout!: GPUBindGroupLayout;
+  selectionMaskBindGroupLayout!: GPUBindGroupLayout;
   displayBindGroupLayout!: GPUBindGroupLayout;
   vectorTextDisplayBindGroupLayout: GPUBindGroupLayout | null = null;
   mixedSceneRasterSegmentBindGroupLayout: GPUBindGroupLayout | null = null;
@@ -1217,6 +1257,8 @@ export class BrushEngine {
 
   brushShaderModule!: GPUShaderModule;
   texturizedGrainShaderModule!: GPUShaderModule;
+  selectionBrushShaderModule!: GPUShaderModule;
+  selectionTexturizedGrainShaderModule!: GPUShaderModule;
   displayShaderModule!: GPUShaderModule;
   vectorTextGpuSlugShaderModule: GPUShaderModule | null = null;
   vectorTextDisplayShaderModule: GPUShaderModule | null = null;
@@ -1272,6 +1314,7 @@ export class BrushEngine {
   grainLightNoBuildUpPipeline!: GPURenderPipeline;
   grainLightNoBuildUpShapePipeline!: GPURenderPipeline;
   grainLightNoBuildUpShapeOccupancyPipeline!: GPURenderPipeline;
+  selectionPipelineByBase = new Map<GPURenderPipeline, GPURenderPipeline>();
   vectorTextGpuSlugPipeline: GPURenderPipeline | null = null;
   displayPipeline!: GPURenderPipeline;
   finalRasterStackDisplayPipeline!: GPURenderPipeline;
@@ -1356,6 +1399,17 @@ export class BrushEngine {
   discardedRasterImportHistoryActions: RasterImportHistoryAction[] = [];
   discardedRasterTransformHistoryActions: RasterTransformHistoryAction[] = [];
   historyBatches: HistoryRenderBatch[] = [];
+  selectionHistoryMasksByAction = new Map<number, SelectionHistoryMaskSnapshot>();
+  selectionHistoryMasksByRevision = new Map<number, SelectionHistoryMaskSnapshot>();
+  selectionHistoryClipBindGroups = new Map<number, GPUBindGroup>();
+  selectionLiveClipBindGroup: {
+    revision: number;
+    buffer: GPUBuffer;
+    bindGroup: GPUBindGroup;
+  } | null = null;
+  selectionOverlaySuppressed = false;
+  selectionOverlayOffsetX = 0;
+  selectionOverlayOffsetY = 0;
   historyStoredBaseStamps = 0;
   historyCompactionPending = false;
   historyBusy = false;
@@ -1405,6 +1459,7 @@ export class BrushEngine {
     callbacks: EngineCallbacks = {},
     adaptivePreviewCanvas: HTMLCanvasElement | null = null,
     options: BrushEngineOptions = {},
+    selectionOverlayCanvas: HTMLCanvasElement | null = null,
   ) {
     this.canvas = canvas;
     this.callbacks = callbacks;
@@ -1413,6 +1468,7 @@ export class BrushEngine {
     this.layerCompressionTestEnabled = options.layerCompressionTestEnabled === true;
     this.layerColdCompressionEnabled = options.layerColdCompressionEnabled === true;
     this.vectorTextPrototypeEnabled = options.vectorTextPrototypeEnabled === true;
+    this.selectionOverlayCanvas = selectionOverlayCanvas;
     this.mixedSceneStack = this.vectorTextPrototypeEnabled
       ? new MixedSceneStack(this.layerStack.layers.map((record) => record.id))
       : null;
@@ -2441,7 +2497,13 @@ export class BrushEngine {
     if (format === this.layerFormat) {
       return true;
     }
-    if (!this.initialized || this.historyBusy || this.activeStroke || this.layerSwitchBusy) {
+    if (
+      !this.initialized
+      || this.historyBusy
+      || this.activeStroke
+      || this.layerSwitchBusy
+      || this.selectionBusy
+    ) {
       return false;
     }
 
@@ -2457,6 +2519,9 @@ export class BrushEngine {
         await this.fillRendererLoadingPromise;
       }
       await this.fillRenderer?.waitForPrewarm();
+      if (this.selectionRendererLoadingPromise) {
+        await this.selectionRendererLoadingPromise;
+      }
       await recreateLayerResources(this, format);
       // The format transaction clears every raster record and allocates only
       // the active mip 0. A previous Reference designation would otherwise
@@ -2465,6 +2530,9 @@ export class BrushEngine {
       this.layerFormat = format;
       this.fillRenderer?.destroy();
       this.fillRenderer = null;
+      this.selectionRenderer?.setSourceSamplingView(this.layerSamplingView);
+      this.selectionRenderer?.clearSelection();
+      resetPixelSelectionState(this);
       let renderingPrewarmWarning: string | null = null;
       let styleStackWarning: string | null = null;
       try {
@@ -2474,8 +2542,9 @@ export class BrushEngine {
         if (usesStrokeGlazeRenderer(this.settings)) {
           await this.ensureLightGlazeResources(this.settings.blendMode);
         }
-        if (this.fillToolSelected) {
+        if (selectionNeedsConnectedColorScratch(this)) {
           const renderer = await ensureFillRenderer(this);
+          renderer.setSourceSamplingView(this.layerSamplingView);
           await renderer.prewarm();
         }
       } catch (prewarmError) {
@@ -2570,6 +2639,7 @@ export class BrushEngine {
     this.invalidateAdaptivePreview();
     this.canvas.width = width;
     this.canvas.height = height;
+    this.selectionRenderer?.resizeOverlay(width, height);
     this.displayDirty = true;
     this.presentationCacheNeedsFullRebuild = true;
 
@@ -2627,6 +2697,7 @@ export class BrushEngine {
           const transform = this.activeRasterTransformSession?.layerId === record.id
             ? {
               layerId: record.id,
+              scope: this.activeRasterTransformSession.scope,
               x: this.activeRasterTransformSession.sourcePivot.x
                 + this.activeRasterTransformSession.transform.translationX,
               y: this.activeRasterTransformSession.sourcePivot.y
@@ -2702,8 +2773,59 @@ export class BrushEngine {
     return submitFillHistoryBatch(this, batch, present);
   }
 
+  setSelectionToolSelected(
+    selected: boolean,
+    method: SelectionMethod,
+  ): Promise<boolean> {
+    return setSelectionToolSelected(this, selected, method);
+  }
+
+  selectConnectedAtClientPoint(
+    clientX: number,
+    clientY: number,
+    tolerance: number,
+    combineMode: SelectionCombineMode,
+  ): Promise<SelectionOperationResult | null> {
+    return selectConnectedAtClientPoint(
+      this,
+      clientX,
+      clientY,
+      tolerance,
+      combineMode,
+    );
+  }
+
+  selectPixelsByColor(
+    color: string,
+    tolerance: number,
+    combineMode: SelectionCombineMode,
+  ): Promise<SelectionOperationResult | null> {
+    return selectPixelsByColor(this, color, tolerance, combineMode);
+  }
+
+  selectPixelsByClientLasso(
+    clientPoints: readonly SelectionPoint[],
+    combineMode: SelectionCombineMode,
+  ): Promise<SelectionOperationResult | null> {
+    return selectPixelsByClientLasso(this, clientPoints, combineMode);
+  }
+
+  clearPixelSelection(): Promise<boolean> {
+    return clearPixelSelection(this);
+  }
+
+  getPixelSelectionState(): PixelSelectionState {
+    return {
+      ...this.pixelSelectionState,
+      bounds: this.pixelSelectionState.bounds
+        ? { ...this.pixelSelectionState.bounds }
+        : null,
+    };
+  }
+
   notifyViewChange(): void {
     this.callbacks.onViewChange?.(this.getVectorTextViewState());
+    renderPixelSelectionOverlay(this);
   }
 
   setVectorTextFastPresentationEnabled(enabled: boolean): void {
@@ -3078,12 +3200,19 @@ export class BrushEngine {
     // layerSwitchBusy is held across the switch's awaits, so a pointerdown
     // landing mid-switch cannot start a stroke on a half-swapped layer.
     if (this.activeVectorHistoryEdit) return;
-    if (this.historyBusy || this.activeStroke || this.layerSwitchBusy) {
+    if (this.historyBusy || this.activeStroke || this.layerSwitchBusy || this.selectionBusy) {
       return;
     }
     if (!this.canPaintSelectedSceneItem()) {
       this.callbacks.onStatus?.(
         "Un vettore è selezionato: scegli un livello raster per usare il pennello.",
+        "working",
+      );
+      return;
+    }
+    if (this.settings.tool === "blend" && this.pixelSelectionState.selectedPixels > 0) {
+      this.callbacks.onStatus?.(
+        "Blend non modifica una Selezione pixel: deseleziona oppure usa Paint/Riempimento.",
         "working",
       );
       return;
@@ -3154,8 +3283,23 @@ export class BrushEngine {
     }
     this.adaptivePreviewForceStroke = tool === "paint"
       && ADAPTIVE_PREVIEW_FORCE
-      && !lightGlazeSettings;
-    const historyActionId = this.nextHistoryActionId++;
+      && !lightGlazeSettings
+      && this.pixelSelectionState.selectedPixels === 0;
+    const historyActionId = this.nextHistoryActionId;
+    if (tool === "paint") {
+      try {
+        capturePaintSelectionHistoryMask(this, historyActionId);
+      } catch (error) {
+        this.scheduleLayerColdCompression();
+        const message = error instanceof Error ? error.message : String(error);
+        this.callbacks.onStatus?.(
+          `Pennellata annullata prima del rendering: ${message}`,
+          "error",
+        );
+        return;
+      }
+    }
+    this.nextHistoryActionId += 1;
     const thicknessSource = lightGlazeSettings ?? this.settings;
     const thicknessSettings = {
       startThickness: thicknessSource.startThickness,
@@ -3361,6 +3505,7 @@ export class BrushEngine {
     );
     removedStampCount += pendingBlendCountBeforeCancel - this.pendingBlendBatches.length;
     stroke.blendPlanner?.discardPending();
+    releasePaintSelectionHistoryMask(this, stroke.historyActionId);
     this.seedSequence = stroke.seedSequenceBeforeStroke;
 
     if (stroke.historyCommitted) {
@@ -3404,8 +3549,16 @@ export class BrushEngine {
       || this.activeStroke
       || this.historyBusy
       || this.layerSwitchBusy
+      || this.selectionBusy
       || this.activeVectorHistoryEdit
     ) {
+      return false;
+    }
+    if (this.pixelSelectionState.selectedPixels > 0) {
+      this.callbacks.onStatus?.(
+        "Pulisci agisce sul livello intero: deseleziona prima, oppure colora la selezione con Paint/Riempimento.",
+        "working",
+      );
       return false;
     }
 
@@ -3470,7 +3623,12 @@ export class BrushEngine {
   }
 
   resetDocument(): boolean {
-    if (this.historyBusy || this.layerSwitchBusy || this.activeVectorHistoryEdit) {
+    if (
+      this.historyBusy
+      || this.layerSwitchBusy
+      || this.selectionBusy
+      || this.activeVectorHistoryEdit
+    ) {
       return false;
     }
     if (this.documentWideResetBlockedByLayers) {
@@ -3496,6 +3654,8 @@ export class BrushEngine {
     this.presentationCacheNeedsFullRebuild = true;
     this.layerHasContent = false;
     this.layerContentBounds = null;
+    this.selectionRenderer?.clearSelection();
+    resetPixelSelectionState(this);
     this.requestRender();
     clearLayerStorageTileMask(this.layerStack.active.storageTileMask);
     this.publishHistoryState();
@@ -5351,6 +5511,10 @@ export class BrushEngine {
     return updateRasterLayerTransformRuntime(this, update);
   }
 
+  nudgeRasterLayerTransform(deltaX: number, deltaY: number) {
+    return nudgeRasterLayerTransformRuntime(this, deltaX, deltaY);
+  }
+
   commitRasterLayerTransform(): Promise<boolean> {
     return commitRasterLayerTransformRuntime(this);
   }
@@ -5760,6 +5924,7 @@ export class BrushEngine {
       this.activeStroke
       || this.lightGlazeSession
       || this.historyBusy
+      || this.selectionBusy
       || this.activeVectorHistoryEdit
       || this.layerSwitchBusy
       || this.rasterStrokeBusy
@@ -7418,7 +7583,7 @@ export class BrushEngine {
         },
       ],
     });
-    pass.setPipeline(pipeline);
+    bindPaintPipelineWithPixelSelection(this, pass, pipeline);
     pass.setBindGroup(0, bindGroup);
     pass.setScissorRect(0, 0, frame.dirtyRect.width, frame.dirtyRect.height);
     pass.draw(STAMP_VERTICES_PER_COPY, frame.stamps.length * settings.count, 0, 0);
@@ -7502,7 +7667,7 @@ export class BrushEngine {
         storeOp: "store",
       }],
     });
-    pass.setPipeline(pipeline);
+    bindPaintPipelineWithPixelSelection(this, pass, pipeline);
     pass.setBindGroup(0, bindGroup);
     pass.setScissorRect(
       frame.dirtyRect.x,
@@ -7644,7 +7809,8 @@ export class BrushEngine {
     } else if (batch.length > 0) {
       this.trackAdaptivePreviewExactSubmission(batch, renderSettings);
       this.recordHistoryBatch(batch, renderSettings, timing, clearLayer);
-      this.layerHasContent = true;
+      if (clearLayer) this.layerHasContent = timing.dirtyRect !== null;
+      else if (timing.dirtyRect) this.layerHasContent = true;
     } else if (clearLayer) {
       this.layerHasContent = false;
     }
@@ -7729,6 +7895,12 @@ export class BrushEngine {
       this.activeStroke.submitted = true;
     }
 
+    const selectionMask = this.selectionHistoryMasksByAction.get(actionId) ?? null;
+    if (this.pixelSelectionState.selectedPixels > 0 && !selectionMask) {
+      this.historyGpuStorage.release(capturedSlice);
+      throw new Error("Maschera storica Paint non acquisita prima del rendering.");
+    }
+
     this.historyBatches.push({
       kind: "paint",
       actionId,
@@ -7747,6 +7919,7 @@ export class BrushEngine {
       grainTextureIdentity: isTexturizedGrainActive(settings)
         ? this.grainTextureIdentity
         : null,
+      selectionMask,
     });
     this.historyStoredBaseStamps += batch.length;
 
@@ -7777,6 +7950,10 @@ export class BrushEngine {
     this.discardedRasterTransformHistoryActions = [];
     if (this.historyGpuStorage) {
       this.historyGpuStorage.releaseAll();
+      this.selectionHistoryMasksByAction.clear();
+      this.selectionHistoryMasksByRevision.clear();
+      this.selectionHistoryClipBindGroups.clear();
+      this.selectionLiveClipBindGroup = null;
       scheduleHistoryGpuTrim(this);
     }
     this.historyActions = [];
@@ -8269,6 +8446,15 @@ export class BrushEngine {
       }
       return;
     }
+    if (this.pixelSelectionState.selectedPixels > 0) {
+      this.adaptivePreviewCandidates.length = 0;
+      clearAdaptivePreviewCanvas(this);
+      // The Canvas2D emergency tip cannot sample the document-wide one-bit
+      // selection. Queue probes remain active for adaptive spacing, while the
+      // only visible stroke is the exact selection-clipped WebGPU result.
+      this.startAdaptivePreviewProbe(false);
+      return;
+    }
     if (isTexturizedGrainActive(settings)) {
       if (profile) {
         profile.grainAdaptivePreviewSkips += 1;
@@ -8342,7 +8528,14 @@ export class BrushEngine {
     const scratchCanvas = this.adaptivePreviewScratchCanvas;
     const context = this.adaptivePreviewScratchContext;
     const candidates = adaptivePreviewCandidatesForFrame(this);
-    if (!canvas || !visibleContext || !scratchCanvas || !context || candidates.length === 0) {
+    if (
+      this.pixelSelectionState.selectedPixels > 0
+      || !canvas
+      || !visibleContext
+      || !scratchCanvas
+      || !context
+      || candidates.length === 0
+    ) {
       finishIncompleteAdaptivePreviewFrame(this, startedAt, false, candidates, false);
       return;
     }
@@ -8965,6 +9158,11 @@ export class BrushEngine {
         }
         instanceUploadMs = performance.now() - uploadStart;
       }
+      submittedDirtyRect = clipPaintDirtyRectToPixelSelection(
+        this,
+        submittedDirtyRect,
+        replayBatch,
+      );
 
       const brushPass = encoder.beginRenderPass({
         label: "Accumulate Light Glaze stroke",
@@ -9032,7 +9230,7 @@ export class BrushEngine {
                   ? this.uniformedGlazeShapeOccupancyPipeline
                   : this.uniformedGlazeShapePipeline
                 : this.uniformedGlazePipeline;
-        brushPass.setPipeline(pipeline);
+        bindPaintPipelineWithPixelSelection(this, brushPass, pipeline, replayBatch);
         brushPass.setBindGroup(
           0,
           grainActive
@@ -9947,6 +10145,7 @@ export class BrushEngine {
           }
           instanceUploadMs = performance.now() - uploadStart;
         }
+        dirtyRect = clipPaintDirtyRectToPixelSelection(this, dirtyRect, replayBatch);
       }
       submittedDirtyRect = dirtyRect;
       submittedShapeOccupancySelection = shapeOccupancySelection;
@@ -9990,7 +10189,7 @@ export class BrushEngine {
                 ? this.shapeAdditivePipeline
                 : this.shapeNormalPipeline
             : settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline;
-        brushPass.setPipeline(pipeline);
+        bindPaintPipelineWithPixelSelection(this, brushPass, pipeline, replayBatch);
         brushPass.setBindGroup(
           0,
           grainActive

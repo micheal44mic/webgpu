@@ -10,7 +10,10 @@ import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import { truncateRedoHistory } from "./engine-history-runtime";
 import { publishMixedScene } from "./engine-vector-text-runtime";
 import type { DirtyRect } from "./engine-stroke-types";
-import type { RasterTransformHistoryAction } from "./engine-history-types";
+import type {
+  RasterTransformHistoryAction,
+  SelectionHistoryMaskSnapshot,
+} from "./engine-history-types";
 import {
   normalizeRasterTransform,
   packRasterTransformUniforms,
@@ -25,9 +28,17 @@ import {
 } from "./raster-transform-math";
 import {
   rasterTransformMipmapShader,
+  rasterSelectionTranslateShader,
   rasterTransformShader,
+  RASTER_SELECTION_TRANSLATE_SHADER_STRATEGY,
   RASTER_TRANSFORM_SHADER_STRATEGY,
 } from "./raster-transform-shader";
+import {
+  captureSelectionHistoryMask,
+  renderPixelSelectionOverlay,
+  restorePixelSelectionHistoryMask,
+  translatePixelSelection,
+} from "./engine-selection-runtime";
 
 export const RASTER_LAYER_TRANSFORM_STRATEGY =
   "native-raster-tile-bbox-transparent-border-scale-aware-latest-frame-single-checkpoint-v3" as const;
@@ -35,19 +46,23 @@ const RASTER_TRANSFORM_TRANSPARENT_GUARD_PX = 2;
 
 interface RasterTransformSharedResources {
   bindGroupLayout: GPUBindGroupLayout;
+  selectionMaskBindGroupLayout: GPUBindGroupLayout;
   mipBindGroupLayout: GPUBindGroupLayout;
   sampler: GPUSampler;
   pipeline: GPURenderPipeline;
+  selectionPipeline: GPURenderPipeline;
   mipPipeline: GPURenderPipeline;
 }
 
 export interface ActiveRasterTransformSession {
   readonly layerId: number;
+  readonly scope: "layer" | "selection";
   /** Stable handle/pivot geometry, restored from the latest Transform action. */
   readonly sourceBounds: DirtyRect;
   /** Actual filtered pixel support used by storage, effects and sampling. */
   readonly sourceRasterBounds: DirtyRect;
   readonly sourceTileMask: Uint32Array;
+  readonly sourceSelectionTileMask: Uint32Array | null;
   readonly sourceScratchRect: DirtyRect;
   readonly sourceTextureRect: DirtyRect;
   readonly sourcePivot: { x: number; y: number };
@@ -55,12 +70,14 @@ export interface ActiveRasterTransformSession {
   readonly scratchView: GPUTextureView;
   readonly uniformBuffer: GPUBuffer;
   readonly bindGroup: GPUBindGroup;
+  readonly selectionMaskBindGroup: GPUBindGroup | null;
   readonly uniformUpload: Float32Array;
   readonly shared: RasterTransformSharedResources;
   readonly memoryBytes: number;
   transform: RasterTransformAffine;
   resultBounds: DirtyRect | null;
   samplingBounds: DirtyRect | null;
+  mutationBounds: DirtyRect | null;
   resultTileMask: Uint32Array;
   presentedSamplingBounds: DirtyRect | null;
   requestedSerial: number;
@@ -76,6 +93,16 @@ const sharedResources = new WeakMap<
 
 function copyRect(rect: DirtyRect | null): DirtyRect | null {
   return rect ? { ...rect } : null;
+}
+
+function unionRects(left: DirtyRect | null, right: DirtyRect | null): DirtyRect | null {
+  if (!left) return copyRect(right);
+  if (!right) return copyRect(left);
+  const x = Math.min(left.x, right.x);
+  const y = Math.min(left.y, right.y);
+  const rightEdge = Math.max(left.x + left.width, right.x + right.width);
+  const bottomEdge = Math.max(left.y + left.height, right.y + right.height);
+  return { x, y, width: rightEdge - x, height: bottomEdge - y };
 }
 
 function rasterTransformScratchMemoryBytes(
@@ -97,6 +124,7 @@ function rasterTransformScratchMemoryBytes(
 function transformSnapshot(session: ActiveRasterTransformSession): RasterTransformSnapshot {
   return {
     layerId: session.layerId,
+    scope: session.scope,
     x: session.sourcePivot.x + session.transform.translationX,
     y: session.sourcePivot.y + session.transform.translationY,
     scale: session.transform.scale,
@@ -118,12 +146,20 @@ async function createSharedResources(
         label: "Native raster Transform WGSL",
         code: rasterTransformShader,
       });
+      const selectionTransformModule = engine.device.createShaderModule({
+        label: "Native raster selected-pixel translation WGSL",
+        code: rasterSelectionTranslateShader,
+      });
       const mipModule = engine.device.createShaderModule({
         label: "Native raster Transform exact mip WGSL",
         code: rasterTransformMipmapShader,
       });
       await Promise.all([
         assertShaderCompiled(transformModule, "Native raster Transform"),
+        assertShaderCompiled(
+          selectionTransformModule,
+          "Native raster selected-pixel translation",
+        ),
         assertShaderCompiled(mipModule, "Native raster Transform mip"),
       ]);
       const bindGroupLayout = engine.device.createBindGroupLayout({
@@ -154,6 +190,14 @@ async function createSharedResources(
           texture: { sampleType: "float", viewDimension: "2d" },
         }],
       });
+      const selectionMaskBindGroupLayout = engine.device.createBindGroupLayout({
+        label: "Native raster Transform selection mask bind group layout",
+        entries: [{
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "read-only-storage" },
+        }],
+      });
       const sampler = engine.device.createSampler({
         label: "Native raster Transform linear sampler",
         addressModeU: "clamp-to-edge",
@@ -166,6 +210,10 @@ async function createSharedResources(
       const pipelineLayout = engine.device.createPipelineLayout({
         label: "Native raster Transform pipeline layout",
         bindGroupLayouts: [bindGroupLayout],
+      });
+      const selectionPipelineLayout = engine.device.createPipelineLayout({
+        label: "Native raster selected-pixel translation pipeline layout",
+        bindGroupLayouts: [bindGroupLayout, selectionMaskBindGroupLayout],
       });
       const mipPipelineLayout = engine.device.createPipelineLayout({
         label: "Native raster Transform mip pipeline layout",
@@ -193,11 +241,24 @@ async function createSharedResources(
         },
         primitive: { topology: "triangle-list" },
       });
+      const selectionPipeline = engine.device.createRenderPipeline({
+        label: `Native raster selected-pixel translation ${format}`,
+        layout: selectionPipelineLayout,
+        vertex: { module: selectionTransformModule, entryPoint: "vertexMain" },
+        fragment: {
+          module: selectionTransformModule,
+          entryPoint: "fragmentMain",
+          targets: [{ format }],
+        },
+        primitive: { topology: "triangle-list" },
+      });
       return {
         bindGroupLayout,
+        selectionMaskBindGroupLayout,
         mipBindGroupLayout,
         sampler,
         pipeline,
+        selectionPipeline,
         mipPipeline,
       };
     },
@@ -274,8 +335,18 @@ function encodeTransformPass(
       storeOp: "store",
     }],
   });
-  pass.setPipeline(session.shared.pipeline);
+  pass.setPipeline(
+    session.scope === "selection"
+      ? session.shared.selectionPipeline
+      : session.shared.pipeline,
+  );
   pass.setBindGroup(0, session.bindGroup);
+  if (session.scope === "selection") {
+    if (!session.selectionMaskBindGroup) {
+      throw new Error("Bind group della Selezione pixel mancante durante Trasforma.");
+    }
+    pass.setBindGroup(1, session.selectionMaskBindGroup);
+  }
   pass.setScissorRect(dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height);
   pass.draw(3, 1, 0, 0);
   pass.end();
@@ -290,7 +361,7 @@ function renderRequestedPreview(
   if (session.encodedSerial === session.requestedSerial) return;
   const dirtyRect = rasterTransformDirtyRect(
     session.presentedSamplingBounds,
-    session.samplingBounds,
+    session.mutationBounds,
     engine.layerSize,
     0,
   ) as DirtyRect | null;
@@ -311,8 +382,13 @@ function renderRequestedPreview(
     engine.submitImmediate([], false, engine.settings, true, null, dirtyRect, false);
     setAuthoritativeMetadata(engine, session.samplingBounds, session.resultTileMask);
   }
-  session.presentedSamplingBounds = copyRect(session.samplingBounds);
+  session.presentedSamplingBounds = copyRect(session.mutationBounds);
   session.encodedSerial = session.requestedSerial;
+  if (session.scope === "selection") {
+    engine.selectionOverlayOffsetX = session.transform.translationX;
+    engine.selectionOverlayOffsetY = session.transform.translationY;
+    renderPixelSelectionOverlay(engine);
+  }
   publishMixedScene(engine);
   engine.publishStats();
 }
@@ -351,6 +427,16 @@ export async function beginRasterLayerTransform(
   if (!record.hasContent || !record.contentBounds) {
     throw new Error("Il livello raster selezionato è vuoto.");
   }
+  const selectionScope = engine.pixelSelectionState.selectedPixels > 0;
+  const selectionBounds = engine.pixelSelectionState.bounds;
+  const selectionRenderer = selectionScope ? engine.selectionRenderer : null;
+  if (selectionScope && (!selectionBounds || !selectionRenderer)) {
+    throw new Error("Selezione pixel attiva ma maschera GPU non residente.");
+  }
+  engine.selectionOverlaySuppressed = false;
+  engine.selectionOverlayOffsetX = 0;
+  engine.selectionOverlayOffsetY = 0;
+  if (selectionScope) renderPixelSelectionOverlay(engine);
   engine.cancelLayerColdCompressionIdle();
   engine.historyBusy = true;
   engine.publishHistoryState();
@@ -360,16 +446,25 @@ export async function beginRasterLayerTransform(
     const hot = engine.requireLayerGpu(record.id).hot;
     if (!hot) throw new Error("Texture hot del raster da trasformare mancante.");
     const sourceRasterBounds = { ...record.contentBounds };
-    let sourceBounds = sourceRasterBounds;
-    for (let index = engine.historyCursor - 1; index >= 0; index -= 1) {
-      const action = engine.historyActions[index];
-      if (action.kind === "vector" || action.layerId !== record.id) continue;
-      if (action.kind === "raster-transform" && action.geometryBounds) {
-        sourceBounds = { ...action.geometryBounds };
+    let sourceBounds = selectionScope ? { ...selectionBounds! } : sourceRasterBounds;
+    if (!selectionScope) {
+      for (let index = engine.historyCursor - 1; index >= 0; index -= 1) {
+        const action = engine.historyActions[index];
+        if (action.kind === "vector" || action.layerId !== record.id) continue;
+        if (
+          action.kind === "raster-transform"
+          && action.scope === "layer"
+          && action.geometryBounds
+        ) {
+          sourceBounds = { ...action.geometryBounds };
+        }
+        break;
       }
-      break;
     }
     const sourceTileMask = record.storageTileMask.slice();
+    const sourceSelectionTileMask = selectionScope
+      ? engine.pixelSelectionTileMask.slice()
+      : null;
     const sourceScratchRect = rasterTransformScratchRect(
       sourceTileMask,
       engine.layerSize,
@@ -392,10 +487,12 @@ export async function beginRasterLayerTransform(
       engine.device,
       `Allocazione Trasforma raster ${sourceScratchRect.width}×${sourceScratchRect.height}`,
       async (transaction) => {
-        const mipLevelCount = Math.floor(Math.log2(Math.max(
-          sourceTextureRect.width,
-          sourceTextureRect.height,
-        ))) + 1;
+        const mipLevelCount = selectionScope
+          ? 1
+          : Math.floor(Math.log2(Math.max(
+            sourceTextureRect.width,
+            sourceTextureRect.height,
+          ))) + 1;
         const scratchTexture = engine.device.createTexture({
           label: `Native raster Transform source layer ${record.id}`,
           size: {
@@ -432,6 +529,13 @@ export async function beginRasterLayerTransform(
             { binding: 2, resource: shared.sampler },
           ],
         });
+        const selectionMaskBindGroup = selectionScope
+          ? engine.device.createBindGroup({
+            label: `Native raster Transform selection mask layer ${record.id}`,
+            layout: shared.selectionMaskBindGroupLayout,
+            entries: [{ binding: 0, resource: { buffer: selectionRenderer!.maskBuffer } }],
+          })
+          : null;
         const transform: RasterTransformAffine = {
           translationX: 0,
           translationY: 0,
@@ -440,9 +544,11 @@ export async function beginRasterLayerTransform(
         };
         const created: ActiveRasterTransformSession = {
           layerId: record.id,
+          scope: selectionScope ? "selection" : "layer",
           sourceBounds,
           sourceRasterBounds,
           sourceTileMask,
+          sourceSelectionTileMask,
           sourceScratchRect,
           sourceTextureRect,
           sourcePivot,
@@ -450,6 +556,7 @@ export async function beginRasterLayerTransform(
           scratchView,
           uniformBuffer,
           bindGroup,
+          selectionMaskBindGroup,
           uniformUpload: new Float32Array(RASTER_TRANSFORM_UNIFORM_BYTES / 4),
           shared,
           memoryBytes: rasterTransformScratchMemoryBytes(
@@ -460,14 +567,19 @@ export async function beginRasterLayerTransform(
           ),
           transform,
           resultBounds: { ...sourceBounds },
-          samplingBounds: rasterTransformSamplingBounds(
-            sourceRasterBounds,
-            sourcePivot,
-            transform,
-            engine.layerSize,
-          ) as DirtyRect | null,
+          samplingBounds: selectionScope
+            ? { ...sourceRasterBounds }
+            : rasterTransformSamplingBounds(
+              sourceRasterBounds,
+              sourcePivot,
+              transform,
+              engine.layerSize,
+            ) as DirtyRect | null,
+          mutationBounds: selectionScope ? { ...sourceBounds } : { ...sourceRasterBounds },
           resultTileMask: sourceTileMask.slice(),
-          presentedSamplingBounds: { ...sourceRasterBounds },
+          presentedSamplingBounds: selectionScope
+            ? { ...sourceBounds }
+            : { ...sourceRasterBounds },
           requestedSerial: 0,
           encodedSerial: 0,
           previewFrame: null,
@@ -532,7 +644,9 @@ export async function beginRasterLayerTransform(
     );
     engine.activeRasterTransformSession = session;
     engine.publishStatus(
-      `Trasforma GPU pronto per ${record.name}: Applica o Annulla.`,
+      selectionScope
+        ? `Sposta i pixel selezionati di ${record.name}: Applica o Annulla.`
+        : `Trasforma GPU pronto per ${record.name}: Applica o Annulla.`,
       "ok",
     );
     publishMixedScene(engine);
@@ -542,6 +656,10 @@ export async function beginRasterLayerTransform(
   } catch (error) {
     if (session) destroySessionResources(session);
     engine.activeRasterTransformSession = null;
+    engine.selectionOverlaySuppressed = false;
+    engine.selectionOverlayOffsetX = 0;
+    engine.selectionOverlayOffsetY = 0;
+    renderPixelSelectionOverlay(engine);
     engine.historyBusy = engine.historyStateInconsistent;
     engine.publishHistoryState();
     engine.scheduleLayerColdCompression();
@@ -561,7 +679,14 @@ export function updateRasterLayerTransform(
   if (session.terminal) {
     throw new Error("La trasformazione raster è già in fase di Applica/Annulla.");
   }
-  const transform = normalizeRasterTransform({
+  if (
+    session.scope === "selection"
+    && ((update.scale !== undefined && Math.abs(update.scale - 1) > 1e-7)
+      || (update.rotation !== undefined && Math.abs(update.rotation) > 1e-7))
+  ) {
+    throw new Error("La Selezione pixel può essere soltanto spostata, non scalata o ruotata.");
+  }
+  let transform = normalizeRasterTransform({
     translationX: update.x === undefined
       ? session.transform.translationX
       : update.x - session.sourcePivot.x,
@@ -571,6 +696,14 @@ export function updateRasterLayerTransform(
     scale: update.scale ?? session.transform.scale,
     rotation: update.rotation ?? session.transform.rotation,
   });
+  if (session.scope === "selection") {
+    transform = {
+      translationX: Math.round(transform.translationX),
+      translationY: Math.round(transform.translationY),
+      scale: 1,
+      rotation: 0,
+    };
+  }
   session.transform = transform;
   session.resultBounds = rasterTransformBounds(
     session.sourceBounds,
@@ -581,25 +714,62 @@ export function updateRasterLayerTransform(
     // would grow bounds and shift the pivot after every successive Apply.
     { documentSize: engine.layerSize, padding: 0 },
   ) as DirtyRect | null;
-  const samplingPadding = rasterTransformSamplingPadding(transform);
-  session.samplingBounds = rasterTransformSamplingBounds(
-    session.sourceRasterBounds,
-    session.sourcePivot,
-    transform,
-    engine.layerSize,
-  ) as DirtyRect | null;
-  session.resultTileMask = session.samplingBounds
-    ? rasterTransformTileMask(
-      session.sourceTileMask,
+  if (session.scope === "selection") {
+    session.mutationBounds = copyRect(session.resultBounds);
+    session.samplingBounds = unionRects(session.sourceRasterBounds, session.resultBounds);
+    const movedSelectionTiles = session.resultBounds && session.sourceSelectionTileMask
+      ? rasterTransformTileMask(
+        session.sourceSelectionTileMask,
+        session.sourceBounds,
+        session.sourcePivot,
+        transform,
+        { documentSize: engine.layerSize, padding: 0 },
+      )
+      : new Uint32Array(session.sourceTileMask.length);
+    session.resultTileMask = session.sourceTileMask.slice();
+    for (let index = 0; index < session.resultTileMask.length; index += 1) {
+      session.resultTileMask[index] |= movedSelectionTiles[index];
+    }
+  } else {
+    const samplingPadding = rasterTransformSamplingPadding(transform);
+    session.samplingBounds = rasterTransformSamplingBounds(
       session.sourceRasterBounds,
       session.sourcePivot,
       transform,
-      { documentSize: engine.layerSize, padding: samplingPadding },
-    )
-    : new Uint32Array(session.sourceTileMask.length);
+      engine.layerSize,
+    ) as DirtyRect | null;
+    session.mutationBounds = copyRect(session.samplingBounds);
+    session.resultTileMask = session.samplingBounds
+      ? rasterTransformTileMask(
+        session.sourceTileMask,
+        session.sourceRasterBounds,
+        session.sourcePivot,
+        transform,
+        { documentSize: engine.layerSize, padding: samplingPadding },
+      )
+      : new Uint32Array(session.sourceTileMask.length);
+  }
   session.requestedSerial += 1;
   schedulePreview(engine, session);
   return transformSnapshot(session);
+}
+
+export function nudgeRasterLayerTransform(
+  engine: BrushEngine,
+  deltaX: number,
+  deltaY: number,
+): RasterTransformSnapshot {
+  const session = engine.activeRasterTransformSession;
+  if (!session || session.scope !== "selection") {
+    throw new Error("Nessuna Selezione pixel pronta per lo spostamento da tastiera.");
+  }
+  if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) {
+    throw new RangeError("Lo spostamento della Selezione pixel deve essere finito.");
+  }
+  return updateRasterLayerTransform(engine, {
+    x: session.sourcePivot.x + session.transform.translationX + Math.round(deltaX),
+    y: session.sourcePivot.y + session.transform.translationY + Math.round(deltaY),
+  });
 }
 
 function rasterTransformMatrix(session: ActiveRasterTransformSession): readonly [
@@ -647,9 +817,12 @@ async function restoreOriginalPixels(
     identity,
     engine.layerSize,
   ) as DirtyRect | null;
+  const identityMutationBounds = session.scope === "selection"
+    ? session.sourceBounds
+    : identitySamplingBounds;
   const dirtyRect = rasterTransformDirtyRect(
     session.presentedSamplingBounds,
-    identitySamplingBounds,
+    identityMutationBounds,
     engine.layerSize,
     0,
   ) as DirtyRect | null;
@@ -689,6 +862,11 @@ async function restoreOriginalPixels(
     setAuthoritativeMetadata(engine, session.sourceRasterBounds, session.sourceTileMask);
   }
   await engine.waitForGpuCapped("Annullamento Trasforma raster", 60_000);
+  if (session.scope === "selection") {
+    engine.selectionOverlayOffsetX = 0;
+    engine.selectionOverlayOffsetY = 0;
+    renderPixelSelectionOverlay(engine);
+  }
 }
 
 export async function cancelRasterLayerTransform(engine: BrushEngine): Promise<boolean> {
@@ -714,6 +892,10 @@ export async function cancelRasterLayerTransform(engine: BrushEngine): Promise<b
   }
   destroySessionResources(session);
   engine.activeRasterTransformSession = null;
+  engine.selectionOverlaySuppressed = false;
+  engine.selectionOverlayOffsetX = 0;
+  engine.selectionOverlayOffsetY = 0;
+  renderPixelSelectionOverlay(engine);
   engine.historyBusy = engine.historyStateInconsistent;
   engine.publishHistoryState();
   engine.publishStats();
@@ -735,6 +917,10 @@ export async function commitRasterLayerTransform(engine: BrushEngine): Promise<b
   }
   session.terminal = true;
   let seed = null;
+  let selectionBefore: SelectionHistoryMaskSnapshot | null = null;
+  let selectionAfter: SelectionHistoryMaskSnapshot | null = null;
+  let selectionTranslated = false;
+  let journalPublished = false;
   let retainSessionForRecovery = false;
   try {
     flushPreview(engine, session);
@@ -751,6 +937,23 @@ export async function commitRasterLayerTransform(engine: BrushEngine): Promise<b
         engine.nextHistoryActionId,
       );
     }
+    if (session.scope === "selection") {
+      selectionBefore = captureSelectionHistoryMask(
+        engine,
+        `Trasforma selezione ${engine.nextHistoryActionId} · prima`,
+      );
+      await translatePixelSelection(
+        engine,
+        session.transform.translationX,
+        session.transform.translationY,
+      );
+      selectionTranslated = true;
+      selectionAfter = captureSelectionHistoryMask(
+        engine,
+        `Trasforma selezione ${engine.nextHistoryActionId} · dopo`,
+        true,
+      );
+    }
     // Allocate every JS payload before invalidating Redo. After the truncate,
     // publication is reduced to one array insertion and scalar assignments.
     const actionId = engine.nextHistoryActionId;
@@ -761,7 +964,12 @@ export async function commitRasterLayerTransform(engine: BrushEngine): Promise<b
       baseTileMask: session.resultTileMask.slice(),
       geometryBounds: copyRect(session.resultBounds),
       matrix: rasterTransformMatrix(session),
-      filterStrategy: RASTER_TRANSFORM_SHADER_STRATEGY,
+      filterStrategy: session.scope === "selection"
+        ? RASTER_SELECTION_TRANSLATE_SHADER_STRATEGY
+        : RASTER_TRANSFORM_SHADER_STRATEGY,
+      scope: session.scope,
+      selectionBefore,
+      selectionAfter,
     } as const;
     const action: RasterTransformHistoryAction = session.samplingBounds && seed
       ? {
@@ -788,6 +996,7 @@ export async function commitRasterLayerTransform(engine: BrushEngine): Promise<b
       if (engine.activeStrokeProfile) {
         engine.activeStrokeProfile.historyCommittedActions += 1;
       }
+      journalPublished = true;
     } catch (journalError) {
       engine.historyActions.length = cursorBefore;
       for (const redoAction of redoActions) engine.historyActions.push(redoAction);
@@ -804,6 +1013,10 @@ export async function commitRasterLayerTransform(engine: BrushEngine): Promise<b
     // immutable source if allocation or publication fails.
     let rollbackError: unknown = null;
     try {
+      if (selectionTranslated && selectionBefore) {
+        await restorePixelSelectionHistoryMask(engine, selectionBefore);
+        selectionTranslated = false;
+      }
       await restoreOriginalPixels(engine, session);
     } catch (restoreError) {
       rollbackError = restoreError;
@@ -814,6 +1027,10 @@ export async function commitRasterLayerTransform(engine: BrushEngine): Promise<b
       );
     } finally {
       destroyLayerColdStorage(seed);
+      if (!journalPublished) {
+        if (selectionBefore) engine.historyGpuStorage.release(selectionBefore.gpuSlice);
+        if (selectionAfter) engine.historyGpuStorage.release(selectionAfter.gpuSlice);
+      }
     }
     if (rollbackError) {
       const operationMessage = error instanceof Error ? error.message : String(error);
@@ -831,6 +1048,10 @@ export async function commitRasterLayerTransform(engine: BrushEngine): Promise<b
       engine.activeRasterTransformSession = null;
       engine.historyBusy = engine.historyStateInconsistent;
       engine.scheduleLayerColdCompression();
+      engine.selectionOverlaySuppressed = false;
+      engine.selectionOverlayOffsetX = 0;
+      engine.selectionOverlayOffsetY = 0;
+      renderPixelSelectionOverlay(engine);
     }
     engine.publishHistoryState();
     engine.publishStats();

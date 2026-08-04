@@ -1,0 +1,330 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import {
+  COLOR_RANGE_SELECTION_STRATEGY,
+  LASSO_SELECTION_STRATEGY,
+  MAGIC_WAND_SELECTION_STRATEGY,
+  PIXEL_SELECTION_MASK_STRATEGY,
+  SELECTION_LASSO_SPAN_BUFFER_BYTES,
+  SELECTION_LAYER_SIZE,
+  SELECTION_MASK_BYTES,
+  SELECTION_MAX_LASSO_POINTS,
+  SELECTION_MAX_LASSO_SPANS,
+  SELECTION_OVERLAY_STRATEGY,
+  SELECTION_RESIDENT_BUFFER_BYTES,
+  SELECTION_TILE_GRID_SIZE,
+  SELECTION_TILE_SIZE,
+  buildLassoSpans,
+  countSelectionTiles,
+  emptyPixelSelectionState,
+  normalizeSelectionCombineMode,
+  normalizeSelectionMethod,
+  normalizeSelectionTolerance,
+  selectionCombineModeCode,
+  selectionHexToStraightSrgb,
+} from "../src/selection-core.ts";
+import { LAYER_SIZE } from "../src/engine-limits.ts";
+import { readEngineSource } from "./engine-source.mjs";
+
+assert.equal(
+  PIXEL_SELECTION_MASK_STRATEGY,
+  "document-wide-gpu-r32-bitmask-replace-add-subtract-v1",
+);
+assert.equal(
+  MAGIC_WAND_SELECTION_STRATEGY,
+  "fill-ccl-reused-4-connected-straight-srgb-alpha-v1",
+);
+assert.equal(
+  COLOR_RANGE_SELECTION_STRATEGY,
+  "global-straight-srgb-alpha-max-channel-range-v1",
+);
+assert.equal(LASSO_SELECTION_STRATEGY, "cpu-even-odd-pixel-center-spans-gpu-bitmask-v1");
+assert.equal(SELECTION_OVERLAY_STRATEGY, "separate-transparent-webgpu-mask-overlay-v1");
+assert.equal(SELECTION_LAYER_SIZE, LAYER_SIZE);
+assert.equal(SELECTION_TILE_GRID_SIZE, 16);
+assert.equal(SELECTION_TILE_SIZE, 256);
+assert.equal(SELECTION_MASK_BYTES, 2 * 1024 * 1024);
+assert.equal(SELECTION_LASSO_SPAN_BUFFER_BYTES, 1024 * 1024);
+assert.equal(SELECTION_MAX_LASSO_POINTS, 8_192);
+assert.equal(SELECTION_MAX_LASSO_SPANS, 65_536);
+assert(SELECTION_RESIDENT_BUFFER_BYTES >= 5 * 1024 * 1024);
+assert(SELECTION_RESIDENT_BUFFER_BYTES < 5.01 * 1024 * 1024);
+
+assert.equal(normalizeSelectionTolerance(-1), 0);
+assert.equal(normalizeSelectionTolerance(0), 0);
+assert.equal(normalizeSelectionTolerance(32), 32 / 255);
+assert.equal(normalizeSelectionTolerance(255), 1);
+assert.equal(normalizeSelectionTolerance(300), 1);
+assert.throws(() => normalizeSelectionTolerance(Number.NaN));
+assert.throws(() => normalizeSelectionTolerance(Number.POSITIVE_INFINITY));
+assert.deepEqual(selectionHexToStraightSrgb("#000000"), [0, 0, 0, 1]);
+assert.deepEqual(selectionHexToStraightSrgb("ff8040"), [1, 128 / 255, 64 / 255, 1]);
+assert.throws(() => selectionHexToStraightSrgb("#fff"));
+assert.equal(normalizeSelectionMethod("magic-wand"), "magic-wand");
+assert.equal(normalizeSelectionMethod("lasso"), "lasso");
+assert.equal(normalizeSelectionMethod("color-range"), "color-range");
+assert.throws(() => normalizeSelectionMethod("rectangle"));
+assert.equal(normalizeSelectionCombineMode("replace"), "replace");
+assert.equal(normalizeSelectionCombineMode("add"), "add");
+assert.equal(normalizeSelectionCombineMode("subtract"), "subtract");
+assert.throws(() => normalizeSelectionCombineMode("intersect"));
+assert.deepEqual(
+  ["replace", "add", "subtract"].map(selectionCombineModeCode),
+  [0, 1, 2],
+);
+assert.equal(countSelectionTiles(Uint32Array.from([0, 1, 0x80000001])), 3);
+assert.deepEqual(emptyPixelSelectionState(7), {
+  selectedPixels: 0,
+  activeTiles: 0,
+  bounds: null,
+  revision: 7,
+});
+
+function unpackSpans(raster) {
+  const result = [];
+  for (let index = 0; index < raster.packedSpans.length; index += 4) {
+    const [y, startX, endX] = raster.packedSpans.slice(index, index + 3);
+    for (let x = startX; x < endX; x += 1) result.push(`${x},${y}`);
+  }
+  return result.sort();
+}
+
+const rectangle = [
+  { x: 1, y: 1 },
+  { x: 4, y: 1 },
+  { x: 4, y: 4 },
+  { x: 1, y: 4 },
+];
+const rectangleRaster = buildLassoSpans(rectangle, 8);
+assert.equal(rectangleRaster.pointCount, 4);
+assert.equal(rectangleRaster.spanCount, 3);
+assert.deepEqual(rectangleRaster.bounds, { x: 1, y: 1, width: 3, height: 3 });
+assert.deepEqual(unpackSpans(rectangleRaster), [
+  "1,1", "1,2", "1,3",
+  "2,1", "2,2", "2,3",
+  "3,1", "3,2", "3,3",
+].sort());
+assert.deepEqual(
+  unpackSpans(buildLassoSpans([...rectangle].reverse(), 8)),
+  unpackSpans(rectangleRaster),
+  "L'orientamento del lazo non deve cambiare la regola even-odd.",
+);
+assert.deepEqual(
+  unpackSpans(buildLassoSpans([
+    { x: -2, y: -2 },
+    { x: 2, y: -2 },
+    { x: 2, y: 2 },
+    { x: -2, y: 2 },
+  ], 4)),
+  ["0,0", "0,1", "1,0", "1,1"],
+  "Gli span devono essere ritagliati ai limiti del layer.",
+);
+assert.equal(buildLassoSpans([{ x: 1, y: 1 }, { x: 2, y: 2 }], 8).spanCount, 0);
+assert.throws(() => buildLassoSpans([{ x: Number.NaN, y: 0 }], 8));
+assert.throws(() => buildLassoSpans(rectangle, 0));
+assert.throws(() => buildLassoSpans(
+  Array.from({ length: SELECTION_MAX_LASSO_POINTS + 1 }, (_, index) => ({
+    x: index,
+    y: index,
+  })),
+  8,
+));
+
+const brushEngine = readFileSync(new URL("../src/brush-engine.ts", import.meta.url), "utf8");
+const engine = readEngineSource();
+const runtime = readFileSync(new URL("../src/engine-selection-runtime.ts", import.meta.url), "utf8");
+const renderer = readFileSync(new URL("../src/selection-renderer.ts", import.meta.url), "utf8");
+const shader = readFileSync(new URL("../src/selection-shaders.ts", import.meta.url), "utf8");
+const clipShader = readFileSync(new URL("../src/selection-clip-shaders.ts", import.meta.url), "utf8");
+const originalBrushShaders = readFileSync(new URL("../src/shaders.ts", import.meta.url), "utf8");
+const fillRenderer = readFileSync(new URL("../src/fill-renderer.ts", import.meta.url), "utf8");
+const fillShader = readFileSync(new URL("../src/fill-shaders.ts", import.meta.url), "utf8");
+const fillRuntime = readFileSync(new URL("../src/engine-fill-runtime.ts", import.meta.url), "utf8");
+const layerRuntime = readFileSync(new URL("../src/engine-layer-runtime.ts", import.meta.url), "utf8");
+const resourceSetup = readFileSync(new URL("../src/engine-resource-setup.ts", import.meta.url), "utf8");
+const reports = readFileSync(new URL("../src/engine-reports.ts", import.meta.url), "utf8");
+const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+
+for (const entryPoint of [
+  "selectGlobalColor",
+  "rasterizeLassoSpans",
+  "combineExternalMask",
+  "translateExternalMask",
+  "summarizeSelection",
+]) {
+  assert(shader.includes(`fn ${entryPoint}`), `entry point WGSL mancante: ${entryPoint}`);
+}
+assert(shader.includes("textureLoad(sourceLayer"));
+assert(shader.includes("let delta = abs(source - uniforms.targetColor)"));
+assert(shader.includes("atomicOr(&selectionMask[wordIndex], candidate)"));
+assert(shader.includes("atomicAnd(&selectionMask[wordIndex], ~candidate)"));
+assert(shader.includes("fn selectedInScreenPixel(screen: vec2<f32>) -> bool"));
+assert(shader.includes("screenToLayerFloat(screen + vec2<f32>(-0.5, -0.5))"));
+assert(shader.includes("selectionMetadata"));
+assert(shader.includes("selectionOffset: vec2<f32>"));
+assert(shader.includes("overlay.viewCenter + layerOffset - overlay.selectionOffset"));
+assert(shader.includes("activeTileFound"));
+assert(shader.includes("anySelectedInLayerBounds(minimum, maximum)"));
+assert(shader.includes("return vec4<f32>(vec3<f32>(0.16, 0.48, 1.0) * alpha, alpha)"));
+
+assert(renderer.includes("encoder.copyBufferToBuffer(this.frontMask, 0, this.backMask"));
+assert(renderer.includes("encoder.clearBuffer(this.backMask)"));
+assert(renderer.includes("this.publishBackMask()"));
+assert(renderer.includes("async translateSelection("));
+assert(renderer.includes('alphaMode: "premultiplied"'));
+assert(renderer.includes("this.overlayContext.getCurrentTexture().createView()"));
+assert(renderer.includes("this.metadataReadback.mapAsync"));
+assert(renderer.includes("{ buffer: this.metadataBuffer, size: SELECTION_METADATA_BYTES }"));
+const externalStart = renderer.indexOf("  async combineExternalMask(");
+const externalEnd = renderer.indexOf("  clearSelection(): void", externalStart);
+assert(externalStart >= 0 && externalEnd > externalStart, "Sezione combineExternalMask disallineata.");
+const externalSection = renderer.slice(externalStart, externalEnd);
+assert(externalSection.includes("this.prepareBackMask(encoder, combineMode)"));
+assert(externalSection.includes("this.combinePipeline"));
+
+assert(clipShader.includes('"separate-fragment-storage-mask-pipelines-history-snapshot-v1"'));
+assert(clipShader.includes("@group(1) @binding(0) var<storage, read> pixelSelectionMask"));
+assert(clipShader.includes('"  if (!pixelSelectionContains(input.position)) { discard; }\\n"'));
+for (const functionName of [
+  "circleCoverage",
+  "shapeCoverage",
+  "occupiedShapeCoverage",
+  "circleGrainCoverage",
+  "shapeGrainCoverage",
+  "occupiedShapeGrainCoverage",
+]) {
+  const functionStart = originalBrushShaders.indexOf(`fn ${functionName}(`);
+  const functionEnd = originalBrushShaders.indexOf("\n}", functionStart);
+  const section = originalBrushShaders.slice(functionStart, functionEnd);
+  const returnCoverage = section.indexOf("return coverage;");
+  const lastDerivativeOrSample = Math.max(
+    section.lastIndexOf("fwidth(", returnCoverage),
+    section.lastIndexOf("dpdx(", returnCoverage),
+    section.lastIndexOf("dpdy(", returnCoverage),
+    section.lastIndexOf("textureSample", returnCoverage),
+  );
+  assert(functionStart >= 0 && functionEnd > functionStart, `${functionName}: sezione WGSL mancante.`);
+  assert(returnCoverage > lastDerivativeOrSample, `${functionName}: derivate/campionamento dopo il return.`);
+}
+assert(clipShader.includes("floor(fragmentPosition.xy + brush.renderTargetOrigin)"));
+assert(clipShader.includes("result.lastIndexOf(returnMarker, functionEnd)"));
+assert(resourceSetup.includes("selectionMaskBindGroupLayout"));
+assert(layerRuntime.includes("const selectionPipelineByBase = new Map"));
+assert(layerRuntime.includes("selectionPipelineByBase.set(variant.base, selectedPipeline)"));
+assert(layerRuntime.includes("fragmentModule: engine.selectionBrushShaderModule"));
+assert(layerRuntime.includes("fragmentModule: engine.selectionTexturizedGrainShaderModule"));
+
+assert(runtime.includes("export function clipPaintDirtyRectToPixelSelection("));
+assert(runtime.includes("const snapshot = replayBatch?.selectionMask ?? null"));
+assert(runtime.includes("if (replayBatch && !snapshot) return { ...dirtyRect }"));
+assert(runtime.includes("const tileMask = snapshot?.tileMask ?? engine.pixelSelectionTileMask"));
+assert(runtime.includes("export function bindPaintPipelineWithPixelSelection("));
+assert.match(
+  runtime,
+  /if \(!historySnapshot && !usesLiveSelection\) \{\s*pass\.setPipeline\(basePipeline\);\s*return;/,
+  "Senza selezione Paint deve usare direttamente la pipeline autorevole precedente.",
+);
+assert(runtime.includes("engine.selectionPipelineByBase.get(basePipeline)"));
+assert(runtime.includes("historySnapshot?.gpuSlice.buffer ?? engine.selectionRenderer?.maskBuffer"));
+assert(runtime.includes("engine.selectionHistoryMasksByRevision.get(revision)"));
+assert(runtime.includes("engine.selectionHistoryMasksByRevision.set(revision, snapshot)"));
+
+assert(fillRenderer.includes("getAnalyzedSelectionMaskBuffer(): GPUBuffer"));
+assert(fillShader.includes("export const fillSelectionIntersectionShader"));
+assert(fillShader.includes("fillMask[global.x] = fillMask[global.x] & selectionMask[global.x]"));
+assert(fillRenderer.includes("if (!selectionMask) {"));
+assert(fillRenderer.includes("this.selectionIntersectionPipeline"));
+assert(fillRenderer.includes("Il Riempimento non interseca la Selezione pixel attiva."));
+assert(fillRuntime.includes("engine.selectionRenderer?.maskBuffer ?? null"));
+assert(fillRuntime.includes("linearColor,\n      selectionMask,"));
+assert(runtime.includes("fillRenderer.getAnalyzedSelectionMaskBuffer()"));
+assert(runtime.includes("fillRenderer.setSourceSamplingView(engine.layerSamplingView)"));
+assert(runtime.includes("renderer.setSourceSamplingView(engine.layerSamplingView)"));
+assert(!runtime.includes("resolveFillSource"));
+assert(runtime.includes("buildLassoSpans(layerPoints, engine.layerSize)"));
+assert(runtime.includes("selectionBusy = true"));
+assert(runtime.includes("SELECTION_RENDERER_IDLE_RELEASE_MS = 1_500"));
+assert(runtime.includes("engine.selectionRenderer?.destroy()"));
+assert(runtime.includes("engine.device.queue.onSubmittedWorkDone()"));
+assert(runtime.includes("engine.selectionOverlayFrameRequest = requestAnimationFrame"));
+assert(runtime.includes("reportSelectionPresentationError"));
+assert(runtime.includes("notifyPixelSelectionChange(engine, state)"));
+assert(runtime.includes("function notifySelectionStatusBestEffort("));
+assert.equal(
+  runtime.match(/notifySelectionStatusBestEffort\(engine,/g)?.length,
+  4,
+  "Ogni notifica di successo post-commit deve restare best-effort.",
+);
+assert(!runtime.includes('engine.callbacks.onStatus?.(selectionStatus(state, totalMs), "ok")'));
+assert(engine.includes("selectionRendererMiB"));
+assert(engine.includes("capturePaintSelectionHistoryMask(this, historyActionId)"));
+assert(
+  engine.indexOf("capturePaintSelectionHistoryMask(this, historyActionId)")
+    < engine.indexOf("this.nextHistoryActionId += 1", engine.indexOf("capturePaintSelectionHistoryMask")),
+  "La mask Paint deve essere archiviata prima che l'azione possa sottomettere pixel.",
+);
+assert.equal(
+  brushEngine.match(/bindPaintPipelineWithPixelSelection\(this, /g)?.length,
+  4,
+  "Tutti e quattro i renderer Paint devono scegliere la variante selezionata.",
+);
+assert.equal(
+  brushEngine.match(/clipPaintDirtyRectToPixelSelection\(/g)?.length,
+  2,
+  "Glaze e Paint ordinario devono restringere dirty rect e scissor.",
+);
+assert(brushEngine.includes("&& this.pixelSelectionState.selectedPixels === 0"));
+assert(brushEngine.includes("if (this.pixelSelectionState.selectedPixels > 0) {\n      this.adaptivePreviewCandidates.length = 0"));
+assert(brushEngine.includes("Blend non modifica una Selezione pixel"));
+assert(brushEngine.includes("Pulisci agisce sul livello intero: deseleziona prima"));
+assert(reports.includes("Deseleziona i pixel prima del benchmark Paint canonico."));
+assert(main.includes("Deseleziona i pixel prima di riprodurre il tratto canonico."));
+
+const hotPathStart = brushEngine.indexOf("  submitImmediate(");
+const hotPathEnd = brushEngine.indexOf("  private packThicknessTailStamps(");
+assert(hotPathStart >= 0, "Marcatore iniziale del percorso caldo Paint mancante.");
+assert(hotPathEnd > hotPathStart, "Sezione del percorso caldo Paint disallineata.");
+const hotPath = brushEngine.slice(hotPathStart, hotPathEnd);
+assert(hotPath.length > 1_000 && hotPath.length < 250_000);
+assert(!hotPath.includes("selectionRenderer"));
+assert(!hotPath.includes("pixelSelectionState"));
+assert(!hotPath.includes("selectionMask"));
+
+assert(main.includes('activeCanvasTool === "selection"'));
+assert(main.includes('pointerMode === "selection-lasso"'));
+assert(main.includes("engine.selectConnectedAtClientPoint("));
+assert(main.includes("engine.selectPixelsByColor("));
+assert(main.includes("engine.selectPixelsByClientLasso("));
+assert(main.includes("let toolConfigurationRevision = 0"));
+assert(main.includes("configurationRevision !== toolConfigurationRevision"));
+assert(main.includes('configureBrushToolUi("selection", false)'));
+assert(main.includes('canvas.addEventListener("keydown", (event) =>'));
+assert(main.includes("selectionKeyboardLassoActive"));
+assert(main.includes('event.key === "ArrowLeft"'));
+assert(main.includes('event.code === "Space"'));
+assert(html.includes('<option value="selection">Selezione pixel</option>'));
+for (const id of [
+  "selectionMethod",
+  "selectionTolerance",
+  "selectionColor",
+  "selectionReplace",
+  "selectionAdd",
+  "selectionSubtract",
+  "selectionClear",
+  "rasterSelectionOverlayCanvas",
+  "rasterSelectionGestureCanvas",
+  "gpuMemorySelection",
+]) {
+  assert(html.includes(`id="${id}"`), `controllo HTML mancante: ${id}`);
+}
+assert(styles.includes("#rasterSelectionOverlayCanvas"));
+assert(styles.includes('.selection-combine button[aria-pressed="true"]'));
+assert(styles.includes("#selectionColorApply[hidden] + #selectionClear"));
+assert(html.includes('id="gpuCanvas" tabindex="-1"'));
+assert(main.includes("canvasKeyboardEnabled ? 0 : -1"));
+assert(main.includes('canvas.setAttribute("aria-describedby", "selectionKeyboardHelp")'));
+assert(main.includes('canvas.removeAttribute("aria-keyshortcuts")'));
+
+console.log("Pixel selection contract verification passed.");

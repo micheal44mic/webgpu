@@ -3206,3 +3206,108 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   console. TypeScript, tutte le ventuno suite `*:verify`, `git diff --check` e
   build Vite production/Sites sono verdi. È QA funzionale desktop, non un
   benchmark prestazionale canonico, una prova iPhone o una pubblicazione Sites.
+
+### Selezione pixel WebGPU (3 agosto 2026)
+
+- Aggiunto lo strumento document-wide **Selezione pixel** con tre metodi:
+  Bacchetta magica 4-connected, Lazo libero e selezione globale da un colore
+  scelto. Tutti accettano `Sostituisci`, `+ Aggiungi` e `− Sottrai`; la
+  tolleranza pubblica è `0–255` e viene confrontata nello straight-sRGB con
+  alpha. Le firme sono
+  `document-wide-gpu-r32-bitmask-replace-add-subtract-v1`,
+  `fill-ccl-reused-4-connected-straight-srgb-alpha-v1`,
+  `global-straight-srgb-alpha-max-channel-range-v1` e
+  `cpu-even-odd-pixel-center-spans-gpu-bitmask-v1`.
+- La maschera autorevole è un bit per pixel in un buffer GPU `r32` da `2 MiB`.
+  Front/back evitano di corrompere la selezione pubblicata durante una nuova
+  operazione; il lazo viene convertito sulla CPU in span exact even-odd
+  campionati ai centri dei pixel e rasterizzato nella stessa maschera dalla
+  GPU. Due mask, span preallocati, metadati/readback e uniformi occupano
+  `5,0005 MiB` quando residenti. La sola readback per operazione è di `64 B`;
+  pixel, bounds e tile attive vengono riepilogati in compute. Con mask vuota,
+  tool spento e motore idle, un timer da `1.500 ms` attende la fence GPU,
+  distrugge i buffer e fa `unconfigure()` del secondo canvas; la QA è tornata
+  da `137,0` a `132,0 MiB`.
+- La Bacchetta riusa la candidate mask CCL del renderer Riempimento, senza
+  copiarla sul CPU. Legge sempre il mip 0 grezzo del raster attivo e non la
+  sorgente `Riferimento`, effetti o scena composita. Lo scratch CCL resta quindi
+  lazy: nella QA la memoria contata è passata da `132,0` a `137,0 MiB` per la
+  sola selezione e a `187,5 MiB` con Bacchetta/CCL residente; passando a Lazo o
+  Per colore lo scratch è stato rilasciato tornando a `137,0 MiB`.
+- L'overlay firmato
+  `separate-transparent-webgpu-mask-overlay-v1` vive su un canvas WebGPU
+  premoltiplicato separato: tinta blu interna e bordo bianco/nero di un pixel
+  screen-space restano leggibili a zoom e rotazione diversi senza sporcare la
+  presentation cache o il layer. Ogni frammento verifica in modo conservativo
+  qualsiasi bit nel proprio footprint raster, accelerato da bounds e tile mask:
+  una selezione sottile non può sparire fra campioni nearest quando `zoom < 1`.
+  Pan, zoom e rotazione accodano una sola presentazione latest-only per frame;
+  una failure del solo overlay o di un observer UI, incluso lo stato di
+  successo, è best-effort e non può dichiarare fallita una mask già
+  committata. Un canvas 2D separato mostra soltanto il
+  contorno provvisorio mentre si trascina il lazo. La selezione persiste
+  cambiando tool o livello, viene ritargettata al raster attivo per le nuove
+  candidate e viene azzerata da reset documento o cambio formato.
+- Cambio tool/metodo e operazioni sono mutuamente esclusivi con Fill, replay,
+  switch livello e tratto attivo. La configurazione UI usa una revisione
+  latest-only: una vecchia prewarm Bacchetta non può più riportare a Paint o
+  sovrascrivere un passaggio rapido a Lazo/Per colore. La regressione è stata
+  riprodotta e verificata nel browser con cambio Bacchetta→Lazo durante la
+  prewarm; la scelta finale resta Lazo. Con Bacchetta o Lazo il canvas entra
+  nel tab order: frecce muovono un cursore visibile, Invio/Spazio aziona la
+  Bacchetta; per il Lazo Spazio avvia, le frecce tracciano, Invio chiude ed Esc
+  annulla. Negli altri tool e in Per colore torna fuori dal tab order e non
+  dichiara shortcut ARIA inattive.
+- QA browser desktop reale su NVIDIA Ampere/RGBA8, layer trasparente:
+  Bacchetta `16.777.216` pixel / `256` tile; Lazo rettangolare `1.684.690` /
+  `42`; `+ Aggiungi` `2.322.998` / `62`; `− Sottrai` `1.939.687` / `58`;
+  ricerca globale `#ff5b35` con tolleranza `32` correttamente vuota sul layer
+  trasparente. QA solo tastiera: Bacchetta full-layer e Lazo `26.244` pixel /
+  `1` tile / bounds `162×162`; cursore, overlay e contorni sono visibili. Dopo
+  Deseleziona+Paint il rilascio lazy riporta la memoria a `132,0 MiB`. La
+  console resta priva di warning/errori WebGPU. TypeScript, tutte le ventidue
+  suite `*:verify`, `git diff --check` e build Vite production/Sites sono verdi.
+- Passo isolato del 4 agosto 2026: Paint e Riempimento rispettano ora la mask
+  autorevole. Paint usa la strategia
+  `separate-fragment-storage-mask-pipelines-history-snapshot-v1`: soltanto con
+  selezione non vuota sceglie pipeline dedicate che leggono il bit per
+  frammento, mentre il percorso senza selezione continua a usare direttamente
+  gli shader e le pipeline precedenti. Bounds e tile da `256 px` limitano in
+  modo conservativo scissor e dirty rect; il test per-pixel resta autorevole.
+  La tip preview Canvas2D adattiva viene disabilitata per il solo gesto
+  selezionato, così non può mostrare colore provvisorio fuori mask.
+- La snapshot Paint della selezione viene copiata nel journal GPU prima del
+  primo submit del gesto, deduplicata per revisione e riutilizzata dal replay:
+  Undo/Redo non dipendono quindi dalla selezione corrente. Riempimento calcola
+  prima la candidate CCL invariata e poi materializza `candidate ∩ selection`
+  in un secondo pass compute; la history conserva il risultato finale. Blend
+  dry e `Pulisci`, non ancora mascherati, rifiutano esplicitamente l'operazione
+  quando la selezione è attiva. Anche benchmark sintetici e canonici rifiutano
+  una mask attiva, senza cancellarla in silenzio.
+- **Trasforma** con selezione non vuota entra in modalità traslazione intera
+  `integer-cut-selection-mask-immutable-source-over-destination-v1`: taglia i
+  pixel originali selezionati, ricompone la sorgente immutabile con source-over
+  alla destinazione e sposta insieme la mask. L'anteprima quantizza già ai
+  pixel interi e trasla le marching ants; non mostra maniglie di scala o
+  rotazione. Trascinamento, frecce da `1 px`, Maiusc+frecce da `10 px`, Invio,
+  Escape, hit target touch da almeno `44 px`, Applica e Annulla condividono una
+  sola sessione. Undo/Redo ripristina pixel e mask con compare-and-swap
+  sull'identità stabile, quindi una selezione manuale successiva non viene
+  sovrascritta.
+- QA browser desktop reale su NVIDIA Ampere/RGBA8: dopo un Fill full-layer da
+  `16.777.216` pixel / `256` tile, il Lazo ha selezionato `2.978.206` pixel /
+  `56` tile. Un tratto Paint attraversato da esterno a esterno è rimasto
+  visivamente confinato al contorno; il Fill successivo ha modificato soltanto
+  gli stessi `2.978.206` pixel / `56` tile (`197,6 ms`). Il trascinamento ha
+  mostrato il foro alla sorgente e i pixel/marching ants alla destinazione;
+  Applica, Undo e Redo hanno ripristinato insieme contenuto e selezione. Il
+  test ha inoltre spinto il bordo destro fuori documento: il riepilogo è
+  sceso coerentemente a `2.656.830` pixel / `48` tile, senza wrap o pixel oltre
+  `4096²`. Console priva di warning/errori WebGPU.
+- TypeScript, tutte le ventidue suite `*:verify`, `git diff --check` e build
+  Vite production/Sites sono verdi. Limiti conservativi dichiarati: i metadata
+  bounds/tile del contenuto dopo uno spostamento possono restare sovrainclusivi
+  e un tratto interamente dentro un foro sparso di una tile selezionata può
+  produrre un'azione Undo visivamente vuota; i pixel presentati restano
+  corretti. È QA funzionale desktop, non benchmark canonico, prova iPhone o
+  pubblicazione Sites.

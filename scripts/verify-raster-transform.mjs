@@ -19,7 +19,9 @@ import {
   rasterTransformTileMask,
 } from "../src/raster-transform-math.ts";
 import {
+  RASTER_SELECTION_TRANSLATE_SHADER_STRATEGY,
   RASTER_TRANSFORM_SHADER_STRATEGY,
+  rasterSelectionTranslateShader,
   rasterTransformMipmapShader,
   rasterTransformShader,
 } from "../src/raster-transform-shader.ts";
@@ -31,6 +33,10 @@ assert.equal(
 assert.equal(
   RASTER_TRANSFORM_SHADER_STRATEGY,
   "premultiplied-linear-transparent-border-inverse-affine-manual-trilinear-v3",
+);
+assert.equal(
+  RASTER_SELECTION_TRANSLATE_SHADER_STRATEGY,
+  "integer-cut-selection-mask-immutable-source-over-destination-v1",
 );
 
 const identity = { translationX: 0, translationY: 0, scale: 1, rotation: 0 };
@@ -250,6 +256,14 @@ assert.match(rasterTransformMipmapShader, /for \(var [xy] = 0; [xy] < 3/);
 assert.doesNotMatch(rasterTransformMipmapShader, /textureSample/);
 assert.doesNotMatch(rasterTransformMipmapShader, /rgba8unorm|rgba16float/);
 
+assert.match(rasterSelectionTranslateShader, /var<storage, read> selectionMask/);
+assert.match(rasterSelectionTranslateShader, /textureLoad\(sourceTexture, local, 0\)/);
+assert.match(rasterSelectionTranslateShader, /round\(transform\.destinationPivot - transform\.sourcePivot\)/);
+assert.match(rasterSelectionTranslateShader, /if \(selectedAt\(destination\)\) \{ base = vec4<f32>\(0\.0\); \}/);
+assert.match(rasterSelectionTranslateShader, /if \(selectedAt\(source\)\) \{ moved = loadOriginal\(source\); \}/);
+assert.match(rasterSelectionTranslateShader, /return moved \+ base \* \(1\.0 - moved\.a\)/);
+assert.doesNotMatch(rasterSelectionTranslateShader, /textureSample/);
+
 const mathSource = readFileSync(
   new URL("../src/raster-transform-math.ts", import.meta.url),
   "utf8",
@@ -280,7 +294,10 @@ assert.match(runtimeSource, /rasterTransformSamplingPadding\(transform\)/);
 assert.match(runtimeSource, /presentedSamplingBounds/);
 assert.match(runtimeSource, /samplingBounds/);
 assert.match(runtimeSource, /sourceRasterBounds/);
-assert.match(runtimeSource, /presentedSamplingBounds: \{ \.\.\.sourceRasterBounds \}/);
+assert.match(
+  runtimeSource,
+  /presentedSamplingBounds: selectionScope[\s\S]{0,120}\{ \.\.\.sourceBounds \}[\s\S]{0,120}\{ \.\.\.sourceRasterBounds \}/,
+);
 assert.doesNotMatch(runtimeSource, /presentedSamplingBounds: \{ \.\.\.sourceBounds \}/);
 assert.match(runtimeSource, /geometryBounds: copyRect\(session\.resultBounds\)/);
 assert.match(
@@ -296,8 +313,21 @@ assert.doesNotMatch(runtimeSource, /callbacks\.onStatus/);
 assert.match(runtimeSource, /runGpuAllocationTransaction\([\s\S]{0,180}Pipeline Trasforma raster/);
 assert.match(runtimeSource, /const action: RasterTransformHistoryAction[\s\S]{0,2000}truncateRedoHistory/);
 assert.match(runtimeSource, /released|destroyLayerColdStorage\(seed\)/);
+assert.match(runtimeSource, /session\.scope === "selection"[\s\S]{0,240}Math\.round\(transform\.translationX\)/);
+assert.match(runtimeSource, /La Selezione pixel può essere soltanto spostata/);
+assert.match(runtimeSource, /captureSelectionHistoryMask\([\s\S]{0,300}translatePixelSelection\([\s\S]{0,300}captureSelectionHistoryMask\(/);
+assert.match(runtimeSource, /selectionOverlaySuppressed = false/);
+assert.match(runtimeSource, /selectionOverlayOffsetX = session\.transform\.translationX/);
+assert.match(runtimeSource, /selectionOverlayOffsetY = session\.transform\.translationY/);
+assert.match(runtimeSource, /export function nudgeRasterLayerTransform/);
 assert.match(controllerSource, /if \(this\.transformCommitBusy \|\| this\.rasterTransformRecoveryOnly\) return/);
 assert.match(controllerSource, /rasterTransformRecoveryOnly/);
+assert.match(
+  controllerSource,
+  /if \(isRasterLayerTransformNode\(node\) && node\.scope === "selection"\) return null/,
+);
+assert.match(controllerSource, /nudgeRasterLayerTransform\(arrow\.x \* step, arrow\.y \* step\)/);
+assert.match(controllerSource, /event\.shiftKey \? 10 : 1/);
 assert.match(
   controllerSource,
   /setTransformToolActive\(active: boolean\): void \{[\s\S]{0,260}const latestSnapshot = this\.host\.getMixedSceneSnapshot\(\);[\s\S]{0,120}this\.syncScene\(latestSnapshot\);[\s\S]{0,120}this\.transformToolActive = active;/,

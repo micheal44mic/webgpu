@@ -263,6 +263,14 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
       },
     ],
   });
+  engine.selectionMaskBindGroupLayout = engine.device.createBindGroupLayout({
+    label: "Clip Paint · maschera Selezione pixel",
+    entries: [{
+      binding: 0,
+      visibility: GPUShaderStage.FRAGMENT,
+      buffer: { type: "read-only-storage" },
+    }],
+  });
 
   engine.displayBindGroupLayout = engine.device.createBindGroupLayout({
     label: "Three-surface layer display bind group layout",

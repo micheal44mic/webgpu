@@ -20,6 +20,17 @@ import type { LayerColdStorageResources } from "./engine-layer-resources";
 import type { LayerRecord } from "./layer-stack";
 import type { LayerBlendMode } from "./layer-blend-modes";
 
+export interface SelectionHistoryMaskSnapshot {
+  readonly revision: number;
+  /** Stable mask lineage used for compare-and-swap Undo/Redo semantics. */
+  readonly identity: number;
+  readonly gpuSlice: GpuHistorySlice;
+  readonly selectedPixels: number;
+  readonly activeTiles: number;
+  readonly bounds: DirtyRect | null;
+  readonly tileMask: Uint32Array;
+}
+
 export interface RasterHistoryAction {
   id: number;
   kind: "stroke" | "fill" | "clear";
@@ -111,6 +122,9 @@ interface RasterTransformHistoryActionMetadata {
   geometryBounds: DirtyRect | null;
   matrix: RasterTransformMatrix;
   filterStrategy: string;
+  scope: "layer" | "selection";
+  selectionBefore: SelectionHistoryMaskSnapshot | null;
+  selectionAfter: SelectionHistoryMaskSnapshot | null;
 }
 
 export type RasterTransformHistoryAction = RasterTransformHistoryActionMetadata & (
@@ -190,6 +204,7 @@ export interface PaintHistoryRenderBatch {
   shapeOccupancySelection: ShapeOccupancySelection | null;
   shapeMaskIdentity: number;
   grainTextureIdentity: number | null;
+  selectionMask: SelectionHistoryMaskSnapshot | null;
 }
 
 export interface BlendHistoryRenderBatch {

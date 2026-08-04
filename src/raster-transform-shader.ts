@@ -2,6 +2,7 @@
  * Format-agnostic WGSL for transforming a premultiplied linear raster layer.
  * The render pipeline may target either `rgba8unorm` or `rgba16float`.
  */
+import { SELECTION_LAYER_SIZE, SELECTION_WORDS_PER_ROW } from "./selection-core.ts";
 
 export const RASTER_TRANSFORM_SHADER_STRATEGY =
   "premultiplied-linear-transparent-border-inverse-affine-manual-trilinear-v3" as const;
@@ -122,6 +123,81 @@ fn fragmentMain(
   // preserves transparent-edge colors; never unpremultiply or multiply alpha
   // a second time here.
   return mix(lower, upper, lodBlend);
+}
+`;
+
+export const RASTER_SELECTION_TRANSLATE_SHADER_STRATEGY =
+  "integer-cut-selection-mask-immutable-source-over-destination-v1" as const;
+
+/** Translation-only cut/move for selected pixels. The immutable source is the
+ * complete original layer, so overlapping moves never read pixels already
+ * written by an earlier preview frame. */
+export const rasterSelectionTranslateShader = /* wgsl */ `
+const DOCUMENT_EXTENT: i32 = ${SELECTION_LAYER_SIZE};
+const WORDS_PER_ROW: u32 = ${SELECTION_WORDS_PER_ROW}u;
+
+struct RasterTransformUniforms {
+  sourceOrigin: vec2<f32>,
+  sourceExtent: vec2<f32>,
+  sourceContentMinimum: vec2<f32>,
+  sourceContentMaximum: vec2<f32>,
+  sourcePivot: vec2<f32>,
+  destinationPivot: vec2<f32>,
+  inverseRow0: vec2<f32>,
+  inverseRow1: vec2<f32>,
+};
+
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+};
+
+@group(0) @binding(0) var<uniform> transform: RasterTransformUniforms;
+@group(0) @binding(1) var sourceTexture: texture_2d<f32>;
+@group(0) @binding(2) var sourceSampler: sampler;
+@group(1) @binding(0) var<storage, read> selectionMask: array<u32>;
+
+@vertex
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+  let positions = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>(3.0, -1.0),
+    vec2<f32>(-1.0, 3.0),
+  );
+  var output: VertexOutput;
+  output.position = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
+  return output;
+}
+
+fn selectedAt(pixel: vec2<i32>) -> bool {
+  if (any(pixel < vec2<i32>(0)) || any(pixel >= vec2<i32>(DOCUMENT_EXTENT))) {
+    return false;
+  }
+  let unsignedPixel = vec2<u32>(pixel);
+  let word = unsignedPixel.y * WORDS_PER_ROW + unsignedPixel.x / 32u;
+  return (selectionMask[word] & (1u << (unsignedPixel.x & 31u))) != 0u;
+}
+
+fn loadOriginal(pixel: vec2<i32>) -> vec4<f32> {
+  let local = pixel - vec2<i32>(round(transform.sourceOrigin));
+  let dimensions = vec2<i32>(textureDimensions(sourceTexture, 0));
+  if (any(local < vec2<i32>(0)) || any(local >= dimensions)) {
+    return vec4<f32>(0.0);
+  }
+  return textureLoad(sourceTexture, local, 0);
+}
+
+@fragment
+fn fragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let destination = vec2<i32>(fragmentPosition.xy);
+  let delta = vec2<i32>(round(transform.destinationPivot - transform.sourcePivot));
+  let source = destination - delta;
+  var base = loadOriginal(destination);
+  if (selectedAt(destination)) { base = vec4<f32>(0.0); }
+  var moved = vec4<f32>(0.0);
+  if (selectedAt(source)) { moved = loadOriginal(source); }
+  return moved + base * (1.0 - moved.a);
 }
 `;
 
