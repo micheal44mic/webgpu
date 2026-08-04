@@ -5,12 +5,16 @@ import {
   Brush,
   CircleDashed,
   CircleDotDashed,
+  Copy,
   Eraser,
+  Eye,
+  EyeOff,
   House,
   Image as ImageIcon,
   Layers3,
   PaintBucket,
   Palette,
+  Plus,
   Redo2,
   Save,
   Scaling,
@@ -18,10 +22,13 @@ import {
   Search,
   Shapes,
   SlidersHorizontal,
+  SquareDashed,
   Sun,
   Type as TypeIcon,
   Undo2,
+  createElement as createLucideElement,
   createIcons,
+  type IconNode,
 } from "lucide";
 import {
   BrushEngine,
@@ -45,6 +52,7 @@ import type {
   LayerPoint,
   PointerSample,
 } from "./engine-types";
+import { LAYER_SIZE } from "./engine-limits";
 import type { ShapeOccupancyFallbackReason } from "./shape-occupancy";
 import type {
   IphoneMemoryLimitEvent,
@@ -78,12 +86,16 @@ createIcons({
     Brush,
     CircleDashed,
     CircleDotDashed,
+    Copy,
     Eraser,
+    Eye,
+    EyeOff,
     House,
     Image: ImageIcon,
     Layers3,
     PaintBucket,
     Palette,
+    Plus,
     Redo2,
     Save,
     Scaling,
@@ -91,6 +103,7 @@ createIcons({
     Search,
     Shapes,
     SlidersHorizontal,
+    SquareDashed,
     Sun,
     Type: TypeIcon,
     Undo2,
@@ -217,6 +230,12 @@ const mobileToolsSheetContent = element<HTMLElement>("mobileToolsSheetContent");
 const mobileToolsSearchField = element<HTMLLabelElement>("mobileToolsSearchField");
 const mobileToolsSearchInput = element<HTMLInputElement>("mobileToolsSearch");
 const mobileToolsEmpty = element<HTMLParagraphElement>("mobileToolsEmpty");
+const mobileLayersMenuButton = element<HTMLButtonElement>("mobileLayersMenu");
+const mobileLayersPanel = element<HTMLElement>("mobileLayersPanel");
+const mobileAddLayerButton = element<HTMLButtonElement>("mobileAddLayer");
+const mobileCopyLayerButton = element<HTMLButtonElement>("mobileCopyLayer");
+const mobileAddMaskButton = element<HTMLButtonElement>("mobileAddMask");
+const mobileLayerList = element<HTMLElement>("mobileLayerList");
 const mobileToolsCategories = Array.from(
   document.querySelectorAll<HTMLElement>("[data-mobile-tools-category]"),
 );
@@ -685,6 +704,10 @@ const engine = new BrushEngine(canvas, {
   },
   onHistoryChange(state) {
     historyState = state;
+    requestMobileLayersRefresh();
+    if (!state.busy && state.openEdit === null) {
+      scheduleMobileLayersRefresh();
+    }
     updateHistoryControls();
     updateHumanStrokeControls();
   },
@@ -698,6 +721,7 @@ const engine = new BrushEngine(canvas, {
     updatePixelSelectionResult(state);
   },
   onMixedSceneChange(snapshot) {
+    requestMobileLayersRefresh();
     vectorTextPrototype?.syncScene(snapshot);
     updateRasterColorOverlayControlAvailability();
     const selectedItem = snapshot.items.find(
@@ -717,6 +741,7 @@ const engine = new BrushEngine(canvas, {
     // controls would show that layer's styles while the brush paints on
     // another one.
     syncActiveLayerControls();
+    requestMobileLayersRefresh();
     const mixedSnapshot = engine.getMixedSceneSnapshot();
     if (mixedSnapshot) {
       vectorTextPrototype?.syncScene(mixedSnapshot);
@@ -773,6 +798,10 @@ let mobileToolsSheetDragStartY = 0;
 let mobileToolsSheetDragStartOffsetPx = 0;
 let mobileToolsSheetDragMoved = false;
 let mobileToolsSheetResizeFrame: number | null = null;
+let mobileLayersPanelOpen = false;
+let mobileLayersRenderSignature = "";
+let mobileLayersRefreshRequested = true;
+let mobileLayersRefreshFrame: number | null = null;
 let gpuMemoryPanelOpen = false;
 let previousGpuMemoryTotalMiB: number | null = null;
 let gpuMemoryDeltaTimer: number | null = null;
@@ -1126,8 +1155,54 @@ function expandMobileToolsSheetForSearchFocus(): void {
   });
 }
 
+function requestMobileLayersRefresh(): void {
+  mobileLayersRefreshRequested = true;
+}
+
+function scheduleMobileLayersRefresh(): void {
+  requestMobileLayersRefresh();
+  if (!mobileLayersPanelOpen || mobileLayersRefreshFrame !== null) return;
+  mobileLayersRefreshFrame = requestAnimationFrame(() => {
+    mobileLayersRefreshFrame = null;
+    renderMobileLayerList(engine.getStats());
+  });
+}
+
+function setMobileLayersPanelOpen(open: boolean): void {
+  if (open && !mobileUiMediaQuery.matches) return;
+  if (open && mobileToolsSheetOpen) {
+    setMobileToolsSheetOpen(false);
+  }
+  mobileLayersPanelOpen = open;
+  mobileLayersMenuButton.setAttribute("aria-expanded", String(open));
+  mobileLayersMenuButton.setAttribute(
+    "aria-label",
+    open ? "Close layers menu" : "Open layers menu",
+  );
+  mobileLayersPanel.setAttribute("aria-hidden", String(!open));
+  if (open) {
+    setControlsPanelOpen(false);
+    mobileLayersRenderSignature = "";
+    requestMobileLayersRefresh();
+    if (engineInitialized) {
+      renderMobileLayerList(engine.getStats());
+    }
+    void mobileLayersPanel.offsetWidth;
+    mobileLayersPanel.classList.add("is-open");
+    return;
+  }
+  mobileLayersPanel.classList.remove("is-open");
+  if (mobileLayersRefreshFrame !== null) {
+    cancelAnimationFrame(mobileLayersRefreshFrame);
+    mobileLayersRefreshFrame = null;
+  }
+}
+
 function setMobileToolsSheetOpen(open: boolean): void {
   if (open && !mobileUiMediaQuery.matches) return;
+  if (open && mobileLayersPanelOpen) {
+    setMobileLayersPanelOpen(false);
+  }
   mobileToolsSheetOpen = open;
   mobileToolsMenuButton.setAttribute("aria-expanded", String(open));
   mobileToolsMenuButton.setAttribute(
@@ -2991,6 +3066,30 @@ mobileToolsMenuButton.addEventListener("click", () => {
   setMobileToolsSheetOpen(!mobileToolsSheetOpen);
 });
 
+mobileLayersMenuButton.addEventListener("click", () => {
+  setMobileLayersPanelOpen(!mobileLayersPanelOpen);
+});
+
+mobileAddLayerButton.addEventListener("click", () => {
+  if (!mobileAddLayerButton.disabled) addLayerButton.click();
+});
+
+mobileAddMaskButton.addEventListener("click", () => {
+  if (!mobileAddMaskButton.disabled) void addMobileClippingMaskLayer();
+});
+
+mobileLayerList.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element)) return;
+  const actionButton = event.target.closest<HTMLButtonElement>(
+    "[data-mobile-layer-action]",
+  );
+  const row = actionButton?.closest<HTMLElement>("[data-layer-key]");
+  const action = actionButton?.dataset.mobileLayerAction;
+  const key = row?.dataset.layerKey;
+  if (!actionButton || actionButton.disabled || !action || !key) return;
+  runMobileLayerAction(action, key);
+});
+
 mobileToolsSheetHandle.addEventListener("pointerdown", (event) => {
   if (!mobileToolsSheetOpen || event.button !== 0) return;
   mobileToolsSheetDragPointerId = event.pointerId;
@@ -3058,6 +3157,7 @@ mobileUiMediaQuery.addEventListener("change", (event) => {
     return;
   }
   setMobileToolsSheetOpen(false);
+  setMobileLayersPanelOpen(false);
   setControlsPanelOpen(true);
 });
 
@@ -4255,6 +4355,388 @@ function createLayerRow(): HTMLDivElement {
   return row;
 }
 
+type MobileLayerKind = "raster" | "text" | "svg" | "image";
+
+interface MobileLayerView {
+  readonly key: string;
+  readonly kind: MobileLayerKind;
+  readonly name: string;
+  readonly visible: boolean;
+  readonly selected: boolean;
+  readonly rasterIndex: number | null;
+  readonly reference: boolean;
+  readonly referenceAvailable: boolean;
+  readonly hasContent: boolean;
+  readonly contentBounds: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  } | null;
+  readonly thumbnailGlyph: string;
+  readonly thumbnailColor: string | null;
+}
+
+function mobileLayerDisplayName(name: string): string {
+  return name
+    .replace(/^Livello (?=\d+$)/, "Layer ")
+    .replace(/^Maschera ritaglio (?=\d+$)/, "Clipping Mask ")
+    .replace(/^Testo (?=\d+$)/, "Text ")
+    .replace(/^Immagine (?=\d+$)/, "Image ")
+    .replace(/^Immagine raster$/, "Raster Image");
+}
+
+function createMobileLucideIconStack(icon: IconNode): HTMLSpanElement {
+  const stack = document.createElement("span");
+  stack.className = "mobile-icon-stack";
+  stack.setAttribute("aria-hidden", "true");
+  stack.append(
+    createLucideElement(icon, {
+      class: "mobile-icon-layer mobile-icon-outline",
+      width: 20,
+      height: 20,
+    }),
+    createLucideElement(icon, {
+      class: "mobile-icon-layer mobile-icon-face",
+      width: 20,
+      height: 20,
+    }),
+  );
+  return stack;
+}
+
+function createMobileLayerRow(key: string): HTMLDivElement {
+  const row = document.createElement("div");
+  row.className = "mobile-layer-row";
+  row.setAttribute("role", "listitem");
+  row.dataset.layerKey = key;
+
+  const select = document.createElement("button");
+  select.type = "button";
+  select.className = "mobile-layer-select";
+  select.dataset.mobileLayerAction = "select";
+
+  const thumbnail = document.createElement("span");
+  thumbnail.className = "mobile-layer-thumbnail";
+  thumbnail.setAttribute("aria-hidden", "true");
+  const thumbnailContent = document.createElement("span");
+  thumbnailContent.className = "mobile-layer-thumbnail-content";
+  thumbnailContent.hidden = true;
+  const thumbnailGlyph = document.createElement("span");
+  thumbnailGlyph.className = "mobile-layer-thumbnail-glyph";
+  thumbnail.append(thumbnailContent, thumbnailGlyph);
+
+  const name = document.createElement("span");
+  name.className = "mobile-layer-name";
+  select.append(thumbnail, name);
+
+  const reference = document.createElement("button");
+  reference.type = "button";
+  reference.className = "mobile-layer-reference";
+  reference.dataset.mobileLayerAction = "reference";
+  reference.textContent = "R";
+
+  const visibility = document.createElement("button");
+  visibility.type = "button";
+  visibility.className = "mobile-layer-visibility";
+  visibility.dataset.mobileLayerAction = "visibility";
+
+  row.append(select, reference, visibility);
+  return row;
+}
+
+function mobileLayerViews(stats: EngineStats): MobileLayerView[] {
+  const scene = stats.mixedScene;
+  const views: MobileLayerView[] = [];
+  if (!scene) {
+    for (let index = stats.layers.length - 1; index >= 0; index -= 1) {
+      const layer = stats.layers[index];
+      views.push({
+        key: `raster:${layer.id}`,
+        kind: "raster",
+        name: mobileLayerDisplayName(layer.name),
+        visible: layer.visible,
+        selected: index === stats.activeLayerIndex,
+        rasterIndex: index,
+        reference: layer.reference,
+        referenceAvailable: index === stats.activeLayerIndex,
+        hasContent: layer.hasContent,
+        contentBounds: null,
+        thumbnailGlyph: "",
+        thumbnailColor: null,
+      });
+    }
+    return views;
+  }
+
+  for (let sceneIndex = scene.items.length - 1; sceneIndex >= 0; sceneIndex -= 1) {
+    const item = scene.items[sceneIndex];
+    const selected = item.key === scene.selectedKey;
+    if (item.kind === "raster") {
+      const layer = stats.layers[item.rasterLayerIndex];
+      if (!layer) continue;
+      views.push({
+        key: item.key,
+        kind: "raster",
+        name: mobileLayerDisplayName(layer.name),
+        visible: layer.visible,
+        selected,
+        rasterIndex: item.rasterLayerIndex,
+        reference: layer.reference,
+        referenceAvailable: selected && item.rasterLayerId === scene.activeRasterLayerId,
+        hasContent: item.rasterHasContent,
+        contentBounds: item.rasterContentBounds,
+        thumbnailGlyph: "",
+        thumbnailColor: null,
+      });
+      continue;
+    }
+    if (item.kind === "text") {
+      const node = item.textNode;
+      const firstCharacter = Array.from(node.text.trim())[0] ?? "T";
+      views.push({
+        key: item.key,
+        kind: "text",
+        name: mobileLayerDisplayName(node.name),
+        visible: node.visible,
+        selected,
+        rasterIndex: null,
+        reference: false,
+        referenceAvailable: false,
+        hasContent: node.text.trim().length > 0,
+        contentBounds: null,
+        thumbnailGlyph: firstCharacter.toLocaleUpperCase("en-US"),
+        thumbnailColor: node.color,
+      });
+      continue;
+    }
+    if (item.kind === "svg") {
+      const node = item.svgNode;
+      views.push({
+        key: item.key,
+        kind: "svg",
+        name: mobileLayerDisplayName(node.name),
+        visible: node.visible,
+        selected,
+        rasterIndex: null,
+        reference: false,
+        referenceAvailable: false,
+        hasContent: true,
+        contentBounds: null,
+        thumbnailGlyph: "S",
+        thumbnailColor: node.paintColors[0] ?? node.outlineColor,
+      });
+      continue;
+    }
+    const node = item.imageNode;
+    views.push({
+      key: item.key,
+      kind: "image",
+      name: mobileLayerDisplayName(node.name),
+      visible: node.visible,
+      selected,
+      rasterIndex: null,
+      reference: false,
+      referenceAvailable: false,
+      hasContent: true,
+      contentBounds: null,
+      thumbnailGlyph: "I",
+      thumbnailColor: null,
+    });
+  }
+  return views;
+}
+
+function mobileLayerListSignature(
+  views: readonly MobileLayerView[],
+  locked: boolean,
+): string {
+  return `${locked ? 1 : 0}|${views.map((view) => {
+    const bounds = view.contentBounds;
+    return [
+      view.key,
+      view.kind,
+      view.name,
+      view.visible ? 1 : 0,
+      view.selected ? 1 : 0,
+      view.reference ? 1 : 0,
+      view.referenceAvailable ? 1 : 0,
+      view.hasContent ? 1 : 0,
+      bounds?.x ?? "",
+      bounds?.y ?? "",
+      bounds?.width ?? "",
+      bounds?.height ?? "",
+      view.thumbnailGlyph,
+      view.thumbnailColor ?? "",
+    ].join(":");
+  }).join("|")}`;
+}
+
+function updateMobileLayerThumbnail(
+  thumbnail: HTMLSpanElement,
+  view: MobileLayerView,
+): void {
+  const bounds = view.contentBounds;
+  const signature = [
+    view.kind,
+    view.hasContent ? 1 : 0,
+    bounds?.x ?? "",
+    bounds?.y ?? "",
+    bounds?.width ?? "",
+    bounds?.height ?? "",
+    view.thumbnailGlyph,
+    view.thumbnailColor ?? "",
+  ].join(":");
+  if (thumbnail.dataset.thumbnailSignature === signature) return;
+  thumbnail.dataset.thumbnailSignature = signature;
+  thumbnail.dataset.kind = view.kind;
+
+  const content = thumbnail.querySelector<HTMLSpanElement>(
+    ".mobile-layer-thumbnail-content",
+  )!;
+  const glyph = thumbnail.querySelector<HTMLSpanElement>(
+    ".mobile-layer-thumbnail-glyph",
+  )!;
+  glyph.textContent = view.thumbnailGlyph;
+  if (view.thumbnailColor) {
+    thumbnail.style.setProperty("--mobile-layer-thumbnail-color", view.thumbnailColor);
+  } else {
+    thumbnail.style.removeProperty("--mobile-layer-thumbnail-color");
+  }
+
+  content.hidden = view.kind !== "raster" || !view.hasContent;
+  if (content.hidden) return;
+  if (!bounds) {
+    content.style.left = "26%";
+    content.style.top = "32%";
+    content.style.width = "48%";
+    content.style.height = "36%";
+    return;
+  }
+  const left = Math.max(0, Math.min(1, bounds.x / LAYER_SIZE));
+  const top = Math.max(0, Math.min(1, bounds.y / LAYER_SIZE));
+  const right = Math.max(left, Math.min(1, (bounds.x + bounds.width) / LAYER_SIZE));
+  const bottom = Math.max(top, Math.min(1, (bounds.y + bounds.height) / LAYER_SIZE));
+  content.style.left = `${(left * 100).toFixed(2)}%`;
+  content.style.top = `${(top * 100).toFixed(2)}%`;
+  content.style.width = `${((right - left) * 100).toFixed(2)}%`;
+  content.style.height = `${((bottom - top) * 100).toFixed(2)}%`;
+}
+
+function renderMobileLayerList(stats: EngineStats): void {
+  if (!mobileLayersPanelOpen || !mobileLayersRefreshRequested) return;
+  if (
+    activePointerId !== null
+    || layerSwitching
+    || historyState.openEdit !== null
+    || historyState.busy
+  ) {
+    return;
+  }
+  const locked = interactionLocked() || layerSwitching;
+  const views = mobileLayerViews(stats);
+  const signature = mobileLayerListSignature(views, locked);
+  if (signature === mobileLayersRenderSignature) {
+    mobileLayersRefreshRequested = false;
+    return;
+  }
+
+  const rowsMatch = mobileLayerList.childElementCount === views.length
+    && views.every(
+      (view, position) =>
+        (mobileLayerList.children[position] as HTMLElement | undefined)?.dataset.layerKey
+          === view.key,
+    );
+  if (!rowsMatch) {
+    mobileLayerList.replaceChildren(...views.map((view) => createMobileLayerRow(view.key)));
+  }
+
+  views.forEach((view, position) => {
+    const row = mobileLayerList.children[position] as HTMLDivElement;
+    const select = row.querySelector<HTMLButtonElement>(".mobile-layer-select")!;
+    const thumbnail = row.querySelector<HTMLSpanElement>(".mobile-layer-thumbnail")!;
+    const name = row.querySelector<HTMLSpanElement>(".mobile-layer-name")!;
+    const reference = row.querySelector<HTMLButtonElement>(".mobile-layer-reference")!;
+    const visibility = row.querySelector<HTMLButtonElement>(".mobile-layer-visibility")!;
+
+    row.className = `mobile-layer-row is-${view.kind}${view.selected ? " is-selected" : ""}`;
+    select.disabled = locked;
+    select.setAttribute("aria-current", String(view.selected));
+    select.setAttribute("aria-label", `Select ${view.name}`);
+    select.title = view.name;
+    name.textContent = view.name;
+    updateMobileLayerThumbnail(thumbnail, view);
+
+    reference.hidden = view.kind !== "raster";
+    reference.disabled = locked || !view.referenceAvailable;
+    reference.setAttribute("aria-pressed", String(view.reference));
+    reference.setAttribute(
+      "aria-label",
+      `${view.reference ? "Disable" : "Set"} Reference for ${view.name}`,
+    );
+    reference.title = view.reference ? "Reference on" : "Set as Reference";
+
+    visibility.disabled = locked;
+    visibility.setAttribute("aria-pressed", String(view.visible));
+    visibility.setAttribute(
+      "aria-label",
+      `${view.visible ? "Hide" : "Show"} ${view.name}`,
+    );
+    visibility.title = view.visible ? "Hide layer" : "Show layer";
+    visibility.replaceChildren(createMobileLucideIconStack(view.visible ? Eye : EyeOff));
+  });
+
+  const selectedView = views.find((view) => view.selected);
+  mobileAddLayerButton.disabled = locked || stats.layers.length >= 16;
+  mobileCopyLayerButton.disabled = true;
+  mobileAddMaskButton.disabled = locked
+    || stats.layers.length >= 16
+    || selectedView?.kind !== "raster"
+    || !selectedView.referenceAvailable;
+  mobileLayersRenderSignature = signature;
+  mobileLayersRefreshRequested = false;
+}
+
+function runMobileLayerAction(action: string, key: string): void {
+  if (interactionLocked() || layerSwitching) return;
+  const stats = engine.getStats();
+  const scene = stats.mixedScene;
+  if (!scene) {
+    const index = stats.layers.findIndex((layer) => `raster:${layer.id}` === key);
+    const layer = stats.layers[index];
+    if (index < 0 || !layer) return;
+    if (action === "select") void selectLayer(index);
+    if (action === "visibility") void changeLayerVisibility(index, !layer.visible);
+    if (action === "reference") void changeLayerReference(index, !layer.reference);
+    return;
+  }
+
+  const item = scene.items.find((candidate) => candidate.key === key);
+  if (!item) return;
+  if (action === "select") {
+    void selectMixedSceneItem(item.key);
+    return;
+  }
+  if (item.kind === "raster") {
+    const layer = stats.layers[item.rasterLayerIndex];
+    if (!layer) return;
+    if (action === "visibility") {
+      void changeLayerVisibility(item.rasterLayerIndex, !layer.visible);
+    } else if (action === "reference") {
+      void changeLayerReference(item.rasterLayerIndex, !layer.reference);
+    }
+    return;
+  }
+  if (action !== "visibility") return;
+  if (item.kind === "text") {
+    void changeVectorTextVisibility(item.textNode.id, !item.textNode.visible);
+  } else if (item.kind === "svg") {
+    void changeVectorSvgVisibility(item.svgNode.id, !item.svgNode.visible);
+  } else {
+    void changeRasterImageVisibility(item.imageNode.id, !item.imageNode.visible);
+  }
+}
+
 async function runRequestedClippingGroupTest(): Promise<void> {
   layerHistoryTestSection.hidden = false;
   layerHistoryTestDetails.hidden = true;
@@ -4888,6 +5370,7 @@ async function changeLayerVisibility(index: number, visible: boolean): Promise<v
   } finally {
     layerSwitching = false;
     updateHistoryControls();
+    requestMobileLayersRefresh();
     updateStats(engine.getStats());
   }
 }
@@ -4989,6 +5472,7 @@ async function changeRasterImageVisibility(id: number, visible: boolean): Promis
   } finally {
     layerSwitching = false;
     updateHistoryControls();
+    requestMobileLayersRefresh();
     updateStats(engine.getStats());
   }
 }
@@ -5007,6 +5491,7 @@ async function changeRasterImageOpacity(id: number, opacity: number): Promise<vo
   } finally {
     layerSwitching = false;
     updateHistoryControls();
+    requestMobileLayersRefresh();
     updateStats(engine.getStats());
   }
 }
@@ -5041,6 +5526,7 @@ async function changeLayerReference(index: number, enabled: boolean): Promise<vo
     hideLayerLoading();
     layerSwitching = false;
     updateHistoryControls();
+    requestMobileLayersRefresh();
     updateStats(engine.getStats());
   }
 }
@@ -5169,6 +5655,35 @@ async function selectLayer(index: number): Promise<void> {
   }
 }
 
+async function addMobileClippingMaskLayer(): Promise<void> {
+  if (layerSwitching || interactionLocked()) return;
+  layerSwitching = true;
+  updateHistoryControls();
+  mobileLayersRenderSignature = "";
+  requestMobileLayersRefresh();
+  renderMobileLayerList(engine.getStats());
+  try {
+    await showLayerLoading("Creazione maschera…");
+    const result = await engine.addClippingMaskLayer();
+    syncActiveLayerControls();
+    await engine.waitForIdle();
+    layerSwitchResult.textContent =
+      `Clipping Mask ${result.toIndex + 1} creata e selezionata in `
+      + `${result.totalMs.toFixed(0)} ms.`;
+  } catch (error) {
+    layerSwitchResult.textContent = error instanceof Error
+      ? error.message
+      : "Creazione della maschera non riuscita.";
+  } finally {
+    hideLayerLoading();
+    layerSwitching = false;
+    updateHistoryControls();
+    mobileLayersRenderSignature = "";
+    requestMobileLayersRefresh();
+    updateStats(engine.getStats());
+  }
+}
+
 addLayerButton.addEventListener("click", async () => {
   if (layerSwitching || interactionLocked()) {
     return;
@@ -5190,6 +5705,9 @@ addLayerButton.addEventListener("click", async () => {
     hideLayerLoading();
     layerSwitching = false;
     updateHistoryControls();
+    mobileLayersRenderSignature = "";
+    requestMobileLayersRefresh();
+    updateStats(engine.getStats());
   }
 });
 
@@ -5227,6 +5745,7 @@ function updateRenderingModeMemoryHint(stats: EngineStats): void {
 
 function updateStats(stats: EngineStats): void {
   renderLayerList(stats);
+  renderMobileLayerList(stats);
   updateRenderingModeMemoryHint(stats);
   element<HTMLElement>("fpsStat").textContent = String(stats.fps);
   element<HTMLElement>("cpuStat").textContent = stats.lastCpuFrameMs.toFixed(2) + " ms";
@@ -6359,6 +6878,7 @@ function finishPointer(event: PointerEvent): void {
   canvas.classList.remove("panning", "rotating");
   pointerMode = null;
   activePointerId = null;
+  scheduleMobileLayersRefresh();
   touchNavigationGesture = null;
   fillPointerMoved = false;
   selectionPointerMoved = false;

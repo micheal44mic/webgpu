@@ -297,7 +297,8 @@ Paint:
   grande costò `−30%` FPS (`#35/#36`), recuperati da…
 - Header telefono del 4 agosto 2026, attivo soltanto sotto `700 px`: overlay
   completamente trasparente sul canvas, Home a sinistra e Tools/Livelli/Salva
-  a destra. Le quattro azioni sono per ora visual-only e disabilitate; icone
+  a destra. Nella prima versione le quattro azioni erano visual-only e
+  disabilitate; icone
   outline avorio `#f2f0e9` con sottotraccia antracite `#202226`, senza fondo,
   bordo dell'header, blur o ombre. Tablet e desktop conservano la topbar
   precedente. Follow-up dello stesso giorno: il selettore brand è stato reso
@@ -356,9 +357,42 @@ Paint:
   un risultato, lo scroll torna all'inizio e appare uno stato vuoto soltanto con
   zero corrispondenze. Il filtro visita solo i quattordici elementi quando viene
   digitato testo o aperto il foglio: nessun polling o loop permanente.
+  Ottavo follow-up: Layers è ora attivo e apre, in mutua esclusione con Tools,
+  una sidebar destra mobile con contenuto largo esattamente `120 px` (più la
+  sola safe area destra in landscape), agganciata sotto l'header, scrollabile,
+  senza ombre e con lo stesso fondo `#0d0f13`. La toolbar
+  superiore usa le icone Lucide `Plus`, `Copy` e `SquareDashed`: `+` crea un
+  vero raster, Mask crea una vera clipping mask sopra il raster selezionato,
+  mentre Copy resta esplicitamente disabilitato. Lo stack misto è mostrato
+  top-first; ogni riga seleziona il nodo autorevole, espone `R` soltanto sui
+  raster e usa `Eye`/`EyeOff` per la visibilità di raster, testo, SVG e immagini.
+  Ogni card usa due righe: miniatura+nome leggibile sopra, poi `R` ed Eye a
+  destra con target `44×44 px`; il focus da tastiera è un outline interno
+  arancione e non ripristina il contorno blu al tap.
+  Il nodo selezionato ha il solo contorno `#dd5c35`; le etichette predefinite
+  italiane vengono tradotte soltanto nella vista mobile (`Layer`, `Text`,
+  `Image`, `Clipping Mask`) senza mutare nomi, history o ABI del documento.
+  Le miniature `28×28 px` sono intenzionalmente strutturali e cache-only: per
+  i raster rappresentano la bounding box del contenuto sul checkerboard; per i
+  nodi semantici usano un piccolo campione di testo/colore. Non leggono texture
+  `4096²`, non fanno GPU readback, non reidratano livelli cold e non aggiungono
+  lavoro al percorso del pennello. Una dirty flag viene alzata soltanto da
+  apertura, history, mutazioni dello stack/scena e fine gesto; durante Paint,
+  Transform, una proprietà continua o una transazione di cambio layer il
+  renderer della sidebar esce prima di creare viste, array o stringhe e lascia
+  pendente il refresh fino al commit. Quando history torna stabile, un solo RAF
+  coalescente aggiorna subito la lista senza attendere il polling da `500 ms`;
+  a pannello chiuso esce al primo booleano. Le
+  righe DOM conservano identità finché chiavi e ordine restano invariati; un
+  vero cambio stack le sostituisce atomicamente. Il contenuto viene aggiornato
+  soltanto se cambia la firma di stack/selezione/visibilità/contenuto;
+  una miniatura pixel-perfect richiederà un successivo esperimento GPU isolato.
   Tutte le suite `*:verify`, TypeScript, build Vite/Sites e `git diff --check`
   verdi;
   nessuna misura prestazionale o QA fisica iPhone ancora eseguita.
+  Dopo l'ottavo follow-up: TypeScript/build Vite+Sites, tutte le `22` suite
+  `*:verify` e `git diff --check` verdi; nessuna nuova misura prestazionale o
+  QA fisica iPhone eseguita.
 - …cache di presentazione persistente screen-space: display shader eseguito
   solo sulla dirty region, poi `copyTextureToTexture` alla swapchain
   (`#37/#38`: Base `+46%` FPS vs `#35`, migliore anche delle vecchie baseline).

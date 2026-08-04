@@ -47,11 +47,13 @@
               </span>
             </button>
             <button
+              id="mobileLayersMenu"
               class="mobile-header-action"
               type="button"
-              aria-label="Livelli, non ancora disponibili"
-              title="Layer"
-              disabled
+              aria-label="Open layers menu"
+              aria-controls="mobileLayersPanel"
+              aria-expanded="false"
+              title="Layers"
             >
               <span class="mobile-icon-stack" aria-hidden="true">
                 <i data-lucide="layers-3" class="mobile-icon-layer mobile-icon-outline"></i>
@@ -479,6 +481,56 @@
             No tools found.
           </p>
         </div>
+      </aside>
+
+      <aside
+        id="mobileLayersPanel"
+        class="mobile-layers-panel"
+        aria-label="Layers"
+        aria-hidden="true"
+      >
+        <div class="mobile-layers-toolbar" role="toolbar" aria-label="Layer actions">
+          <button
+            id="mobileAddLayer"
+            class="mobile-layers-toolbar-action"
+            type="button"
+            aria-label="Add layer"
+            title="Add layer"
+            disabled
+          >
+            <span class="mobile-icon-stack" aria-hidden="true">
+              <i data-lucide="plus" class="mobile-icon-layer mobile-icon-outline"></i>
+              <i data-lucide="plus" class="mobile-icon-layer mobile-icon-face"></i>
+            </span>
+          </button>
+          <button
+            id="mobileCopyLayer"
+            class="mobile-layers-toolbar-action"
+            type="button"
+            aria-label="Copy layer, not available yet"
+            title="Copy layer"
+            disabled
+          >
+            <span class="mobile-icon-stack" aria-hidden="true">
+              <i data-lucide="copy" class="mobile-icon-layer mobile-icon-outline"></i>
+              <i data-lucide="copy" class="mobile-icon-layer mobile-icon-face"></i>
+            </span>
+          </button>
+          <button
+            id="mobileAddMask"
+            class="mobile-layers-toolbar-action"
+            type="button"
+            aria-label="Add mask"
+            title="Add mask"
+            disabled
+          >
+            <span class="mobile-icon-stack" aria-hidden="true">
+              <i data-lucide="square-dashed" class="mobile-icon-layer mobile-icon-outline"></i>
+              <i data-lucide="square-dashed" class="mobile-icon-layer mobile-icon-face"></i>
+            </span>
+          </button>
+        </div>
+        <div id="mobileLayerList" class="mobile-layer-list" role="list"></div>
       </aside>
 
       <aside id="controlsPanel" class="controls" aria-label="Pannello strumenti">
