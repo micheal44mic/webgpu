@@ -461,6 +461,31 @@ Paint:
   e `41 px` a `100%`, con label/ARIA coerenti e console senza warning/errori.
   La modifica è solo DOM/CSS e non tocca motore, submit WebGPU o risultato del
   pennello; TypeScript, `layers:verify` e build Vite/Sites sono verdi.
+  Quattordicesimo follow-up: un tap su Pennello quando Paint è già attivo apre
+  ora la Brush Library mobile direttamente nello snap expanded, sempre a
+  `77 px + safe-area` dal bordo alto; quando è attivo un altro tool, il primo
+  tap seleziona soltanto Paint e il secondo apre la library. Il drawer condivide
+  fondo, maniglia e gesture del foglio Tools, ma non ha uno snap intermedio:
+  un flick/trascinamento sufficiente lo chiude e un rilascio breve torna tutto
+  in alto. Tools, Layers e Brush Library sono mutuamente esclusivi e Size/
+  Opacity vengono soppressi mentre la library è aperta. Il titolo è
+  `M1M4 BRUSHES`; a sinistra ci sono le categorie inglesi `Pencil`, `Painting`
+  e `Spray Paint` in una colonna da `88 px`, a destra la lista scrollabile.
+  Non esiste ancora un modello di preset o custom brush: per non inventare
+  contenuti, solo Painting espone la card selezionata `Current Brush`; le altre
+  categorie mostrano `Brushes coming soon`. La card contiene una pennellata
+  avorio generata lazy su Canvas2D: riusa la tip reale Shape/Hardness, campiona
+  deterministicamente size, spacing, thickness, flow, opacity, Count e jitter
+  con limiti UI (`112` posizioni e `4` copie) e non chiama mai
+  `setBrushSettings`, submission, readback o attese GPU. È una preview
+  rappresentativa, non pixel-identica a Grain o alle tre formule glaze; i
+  futuri preset dovranno conservare una preview cache al salvataggio nel Brush
+  Studio. QA browser locale passata a `430×932` e `375×667`: top `77 px`,
+  nessun overflow orizzontale, preview renderizzata, categorie/stato vuoto,
+  semantica primo/secondo tap e mutua esclusione verificati, console pulita.
+  TypeScript/build Vite+Sites, `layers:verify`, `grain:verify`, `stroke:verify`,
+  `history:verify` e `git diff --check` sono verdi; non è ancora una QA fisica
+  Safari/iPhone né una misura prestazionale canonica.
 - …cache di presentazione persistente screen-space: display shader eseguito
   solo sulla dirty region, poi `copyTextureToTexture` alla swapchain
   (`#37/#38`: Base `+46%` FPS vs `#35`, migliore anche delle vecchie baseline).

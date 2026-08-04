@@ -77,3 +77,42 @@
 - [x] No per-move engine/GPU setting commits.
 
 final result: passed
+
+# Design QA — Mobile Brush Library
+
+## Scope and evidence
+
+- Local browser QA: `430 × 932` and compact `375 × 667` mobile viewports.
+- States checked: Painting selected, Pencil empty, open/close, Paint-from-Blend
+  first tap, Paint-active second tap, Tools mutual exclusion, Size/Opacity
+  suppression and responsive overflow.
+- The implementation has no custom/preset storage yet, so the only truthful
+  library item is `Current Brush`; Pencil and Spray Paint intentionally show
+  `Brushes coming soon`.
+
+## Findings
+
+- No actionable P0, P1 or P2 issue remains in the tested states.
+- The expanded sheet begins at `y = 77 px`, preserving the requested `25 px`
+  gap below the 52 px header, and ends at the bottom safe edge.
+- At `375 px` viewport width the two-column layout has `347 px` client and
+  scroll width: there is no horizontal overflow. The category column remains
+  `88 px`; the brush card measures `247 px`.
+- The selected card uses the orange border and darker active surface; its name
+  remains off-white at the top-right and the representative stroke remains
+  off-white for legibility on the dark sheet.
+- The stroke preview is DPR-aware Canvas2D and is rendered lazily from current
+  tip/Hardness plus representative settings. It does not submit GPU work,
+  read textures back, or mutate brush settings.
+- Console warnings/errors after initialization: none.
+
+## Verification
+
+- [x] TypeScript and production Sites build.
+- [x] Layer/mobile UI static regression, including a no-GPU preview guard.
+- [x] Grain, Stroke and History verification suites.
+- [x] Mobile layout at `430 × 932` and `375 × 667`.
+- [x] Category empty state and first/second Brush tap semantics.
+- [x] Tools/Layers/Brush Library mutual exclusion.
+
+final result: passed

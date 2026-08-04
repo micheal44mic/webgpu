@@ -7,6 +7,7 @@ import {
   Blend,
   Box,
   Brush,
+  Check,
   CircleDashed,
   CircleDotDashed,
   Copy,
@@ -18,6 +19,7 @@ import {
   Layers3,
   PaintBucket,
   Palette,
+  Pencil,
   Plus,
   Redo2,
   Save,
@@ -26,6 +28,7 @@ import {
   Search,
   Shapes,
   SlidersHorizontal,
+  SprayCan,
   SquareDashed,
   Sun,
   Type as TypeIcon,
@@ -89,6 +92,7 @@ createIcons({
     Blend,
     Box,
     Brush,
+    Check,
     CircleDashed,
     CircleDotDashed,
     Copy,
@@ -100,6 +104,7 @@ createIcons({
     Layers3,
     PaintBucket,
     Palette,
+    Pencil,
     Plus,
     Redo2,
     Save,
@@ -108,6 +113,7 @@ createIcons({
     Search,
     Shapes,
     SlidersHorizontal,
+    SprayCan,
     SquareDashed,
     Sun,
     Type: TypeIcon,
@@ -249,6 +255,17 @@ const mobileBrushOpacityControl = element<HTMLElement>("mobileBrushOpacityContro
 const mobileBrushPreview = element<HTMLElement>("mobileBrushPreview");
 const mobileBrushPreviewLabel = element<HTMLOutputElement>("mobileBrushPreviewLabel");
 const mobileBrushPreviewCanvas = element<HTMLCanvasElement>("mobileBrushPreviewCanvas");
+const mobileBrushLibrarySheet = element<HTMLElement>("mobileBrushLibrarySheet");
+const mobileBrushLibraryHandle = element<HTMLButtonElement>("mobileBrushLibraryHandle");
+const mobileBrushLibraryList = element<HTMLElement>("mobileBrushLibraryList");
+const mobileBrushLibraryEmpty = element<HTMLParagraphElement>("mobileBrushLibraryEmpty");
+const mobileCurrentBrushCard = element<HTMLButtonElement>("mobileCurrentBrushCard");
+const mobileBrushLibraryPreviewCanvas = element<HTMLCanvasElement>(
+  "mobileBrushLibraryPreviewCanvas",
+);
+const mobileBrushLibraryCategoryButtons = Array.from(
+  document.querySelectorAll<HTMLButtonElement>("[data-mobile-brush-category]"),
+);
 const mobileToolsCategories = Array.from(
   document.querySelectorAll<HTMLElement>("[data-mobile-tools-category]"),
 );
@@ -772,6 +789,7 @@ const engine = new BrushEngine(canvas, {
   onStats(stats) {
     updateStats(stats);
     if (mobileBrushControlDrag) scheduleMobileBrushPreview();
+    if (mobileBrushLibraryOpen) markMobileBrushLibraryPreviewDirty();
   },
   onHistoryChange(state) {
     historyState = state;
@@ -874,6 +892,20 @@ let mobileToolsSheetDragLastTime = 0;
 let mobileToolsSheetDragVelocityY = 0;
 let mobileToolsSheetDragMoved = false;
 let mobileToolsSheetResizeFrame: number | null = null;
+type MobileBrushLibraryCategory = "pencil" | "painting" | "spray-paint";
+let mobileBrushLibraryOpen = false;
+let mobileBrushLibraryCategory: MobileBrushLibraryCategory = "painting";
+let mobileBrushLibraryOffsetPx = 0;
+let mobileBrushLibraryDragPointerId: number | null = null;
+let mobileBrushLibraryDragStartY = 0;
+let mobileBrushLibraryDragStartOffsetPx = 0;
+let mobileBrushLibraryDragLastY = 0;
+let mobileBrushLibraryDragLastTime = 0;
+let mobileBrushLibraryDragVelocityY = 0;
+let mobileBrushLibraryDragMoved = false;
+let mobileBrushLibraryPreviewFrame: number | null = null;
+let mobileBrushLibraryPreviewDirty = true;
+const mobileBrushLibraryTipCanvas = document.createElement("canvas");
 let mobileLayersPanelOpen = false;
 let mobileLayersRenderSignature = "";
 let mobileLayersRefreshRequested = true;
@@ -1038,8 +1070,12 @@ function configureBrushToolUi(
     captureActiveToolControls();
   }
   activeCanvasTool = tool;
+  if (tool !== "paint" && mobileBrushLibraryOpen) {
+    setMobileBrushLibraryOpen(false);
+  }
   mobilePaintButton.setAttribute("aria-pressed", String(tool === "paint"));
   mobileBlendButton.setAttribute("aria-pressed", String(tool === "blend"));
+  syncMobileBrushLibraryButtonState();
   syncMobileToolsMenuState();
   const fill = tool === "fill";
   const selection = tool === "selection";
@@ -1307,7 +1343,8 @@ function syncMobileBrushControlsVisibility(): void {
   const suppressed = !mobileUiMediaQuery.matches
     || !brushContext
     || mobileLayersPanelOpen
-    || mobileToolsSheetOpen;
+    || mobileToolsSheetOpen
+    || mobileBrushLibraryOpen;
   if (suppressed && mobileBrushControlDrag) {
     finishMobileBrushControlDrag(true);
   }
@@ -1340,6 +1377,256 @@ function finishMobileBrushControlDrag(commit: boolean): void {
     syncMobileBrushControlVisuals();
   }
   updateHistoryControls();
+}
+
+function syncMobileBrushLibraryButtonState(): void {
+  const paintSelected = activeCanvasTool === "paint";
+  const expanded = paintSelected && mobileBrushLibraryOpen;
+  mobilePaintButton.setAttribute("aria-expanded", String(expanded));
+  mobilePaintButton.setAttribute(
+    "aria-label",
+    paintSelected
+      ? expanded
+        ? "Close brush library"
+        : "Open brush library"
+      : "Select Brush",
+  );
+}
+
+function mobileBrushLibraryClosedOffset(): number {
+  return Math.max(0, Math.round(mobileBrushLibrarySheet.offsetHeight));
+}
+
+function setMobileBrushLibraryOffset(offsetPx: number): void {
+  mobileBrushLibraryOffsetPx = Math.min(
+    mobileBrushLibraryClosedOffset(),
+    Math.max(0, offsetPx),
+  );
+  mobileBrushLibrarySheet.style.setProperty(
+    "--mobile-tools-sheet-offset",
+    `${Math.round(mobileBrushLibraryOffsetPx)}px`,
+  );
+}
+
+function markMobileBrushLibraryPreviewDirty(): void {
+  mobileBrushLibraryPreviewDirty = true;
+  if (mobileBrushLibraryOpen && mobileBrushLibraryCategory === "painting") {
+    scheduleMobileBrushLibraryPreview();
+  }
+}
+
+function mobileBrushLibraryNoise(seed: number): number {
+  const value = Math.sin(seed * 12.9898 + 78.233) * 43_758.5453;
+  return value - Math.floor(value);
+}
+
+function renderMobileBrushLibraryPreview(): void {
+  if (
+    !mobileBrushLibraryOpen
+    || mobileBrushLibraryCategory !== "painting"
+    || !mobileBrushLibraryPreviewDirty
+    || !mobileUiMediaQuery.matches
+  ) {
+    return;
+  }
+  const bounds = mobileBrushLibraryPreviewCanvas.getBoundingClientRect();
+  if (bounds.width <= 0 || bounds.height <= 0) return;
+
+  mobileBrushLibraryPreviewDirty = false;
+  const logicalWidth = Math.max(1, Math.round(bounds.width));
+  const logicalHeight = Math.max(1, Math.round(bounds.height));
+  const pixelRatio = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+  const backingWidth = Math.max(1, Math.round(logicalWidth * pixelRatio));
+  const backingHeight = Math.max(1, Math.round(logicalHeight * pixelRatio));
+  if (
+    mobileBrushLibraryPreviewCanvas.width !== backingWidth
+    || mobileBrushLibraryPreviewCanvas.height !== backingHeight
+  ) {
+    mobileBrushLibraryPreviewCanvas.width = backingWidth;
+    mobileBrushLibraryPreviewCanvas.height = backingHeight;
+  }
+
+  const context = mobileBrushLibraryPreviewCanvas.getContext("2d", { alpha: true });
+  if (!context) return;
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  context.globalAlpha = 1;
+  context.globalCompositeOperation = "source-over";
+  context.clearRect(0, 0, logicalWidth, logicalHeight);
+
+  const settings = engine.getSettings();
+  const sizeRatio = Math.min(
+    1,
+    Math.max(0, Math.log10(Math.max(1, settings.size)) / 3),
+  );
+  const baseDiameter = Math.min(
+    logicalHeight * 0.78,
+    Math.max(11, logicalHeight * (0.26 + sizeRatio * 0.48)),
+  );
+  const tipCssSize = 72;
+  engine.renderBrushTipPreview(
+    mobileBrushLibraryTipCanvas,
+    tipCssSize,
+    tipCssSize - 4,
+    1,
+  );
+
+  const startX = Math.max(4, baseDiameter * 0.45);
+  const endX = Math.max(startX + 1, logicalWidth - startX);
+  const pathLength = Math.max(1, endX - startX);
+  const spacingCssPixels = Math.max(
+    1.5,
+    baseDiameter * Math.max(0.25, settings.spacingPercent) / 100,
+  );
+  const stampCount = Math.min(112, Math.max(2, Math.ceil(pathLength / spacingCssPixels)));
+  const copiesPerStamp = Math.min(4, Math.max(1, Math.round(settings.count)));
+  const stampAlpha = Math.min(1, Math.max(0.035, settings.flow * settings.opacity));
+
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  for (let stampIndex = 0; stampIndex < stampCount; stampIndex += 1) {
+    const progress = stampCount === 1 ? 0 : stampIndex / (stampCount - 1);
+    const centerX = startX + pathLength * progress;
+    const centerY = logicalHeight * (
+      0.55
+      + Math.sin((progress * 1.35 - 0.12) * Math.PI) * 0.095
+    );
+    const thickness = settings.startThickness
+      + (settings.endThickness - settings.startThickness) * progress;
+    const stampDiameter = Math.min(
+      logicalHeight * 0.9,
+      Math.max(3, baseDiameter * Math.max(0.05, thickness)),
+    );
+    for (let copyIndex = 0; copyIndex < copiesPerStamp; copyIndex += 1) {
+      const seed = stampIndex * 31 + copyIndex * 131 + 17;
+      const longitudinal = (
+        mobileBrushLibraryNoise(seed) - 0.5
+      ) * stampDiameter * settings.positionJitterLinear * 0.18;
+      const lateral = (
+        mobileBrushLibraryNoise(seed + 1) - 0.5
+      ) * stampDiameter * settings.positionJitterLateral * 0.3;
+      const rotation = (
+        mobileBrushLibraryNoise(seed + 2) - 0.5
+      ) * Math.PI * 2 * settings.shapeScatter;
+      context.save();
+      context.globalAlpha = stampAlpha;
+      context.translate(centerX + longitudinal, centerY + lateral);
+      context.rotate(rotation);
+      context.drawImage(
+        mobileBrushLibraryTipCanvas,
+        -stampDiameter * 0.5,
+        -stampDiameter * 0.5,
+        stampDiameter,
+        stampDiameter,
+      );
+      context.restore();
+    }
+  }
+  context.globalAlpha = 1;
+}
+
+function scheduleMobileBrushLibraryPreview(): void {
+  if (mobileBrushLibraryPreviewFrame !== null) return;
+  mobileBrushLibraryPreviewFrame = requestAnimationFrame(() => {
+    mobileBrushLibraryPreviewFrame = null;
+    renderMobileBrushLibraryPreview();
+  });
+}
+
+function setMobileBrushLibraryCategory(category: MobileBrushLibraryCategory): void {
+  mobileBrushLibraryCategory = category;
+  for (const button of mobileBrushLibraryCategoryButtons) {
+    button.setAttribute(
+      "aria-pressed",
+      String(button.dataset.mobileBrushCategory === category),
+    );
+  }
+  const painting = category === "painting";
+  mobileBrushLibraryList.hidden = !painting;
+  mobileBrushLibraryEmpty.hidden = painting;
+  if (painting) markMobileBrushLibraryPreviewDirty();
+}
+
+function setMobileBrushLibraryOpen(open: boolean): void {
+  if (open && (!mobileUiMediaQuery.matches || activeCanvasTool !== "paint")) return;
+  if (open && mobileToolsSheetOpen) setMobileToolsSheetOpen(false);
+  if (open && mobileLayersPanelOpen) setMobileLayersPanelOpen(false);
+
+  mobileBrushLibraryOpen = open;
+  mobileBrushLibrarySheet.setAttribute("aria-hidden", String(!open));
+  syncMobileBrushLibraryButtonState();
+  if (open) {
+    setControlsPanelOpen(false);
+    setMobileBrushLibraryCategory(mobileBrushLibraryCategory);
+    setMobileBrushLibraryOffset(0);
+    void mobileBrushLibrarySheet.offsetHeight;
+    mobileBrushLibrarySheet.classList.add("is-open");
+    markMobileBrushLibraryPreviewDirty();
+    syncMobileBrushControlsVisibility();
+    return;
+  }
+
+  mobileBrushLibrarySheet.classList.remove("is-open", "is-dragging");
+  if (
+    mobileBrushLibraryDragPointerId !== null
+    && mobileBrushLibraryHandle.hasPointerCapture(mobileBrushLibraryDragPointerId)
+  ) {
+    mobileBrushLibraryHandle.releasePointerCapture(mobileBrushLibraryDragPointerId);
+  }
+  mobileBrushLibraryDragPointerId = null;
+  mobileBrushLibraryDragMoved = false;
+  if (mobileBrushLibraryPreviewFrame !== null) {
+    cancelAnimationFrame(mobileBrushLibraryPreviewFrame);
+    mobileBrushLibraryPreviewFrame = null;
+  }
+  syncMobileBrushControlsVisibility();
+}
+
+function recordMobileBrushLibraryDragMotion(clientY: number): void {
+  const sampleTime = performance.now();
+  const elapsedMs = sampleTime - mobileBrushLibraryDragLastTime;
+  if (elapsedMs > 0 && elapsedMs <= 120) {
+    const immediateVelocity = (clientY - mobileBrushLibraryDragLastY) / elapsedMs;
+    mobileBrushLibraryDragVelocityY = mobileBrushLibraryDragVelocityY === 0
+      ? immediateVelocity
+      : mobileBrushLibraryDragVelocityY * 0.35 + immediateVelocity * 0.65;
+  } else if (elapsedMs > 120) {
+    mobileBrushLibraryDragVelocityY = 0;
+  }
+  mobileBrushLibraryDragLastY = clientY;
+  mobileBrushLibraryDragLastTime = sampleTime;
+}
+
+function finishMobileBrushLibraryDrag(event: PointerEvent, cancelled = false): void {
+  if (event.pointerId !== mobileBrushLibraryDragPointerId) return;
+  if (mobileBrushLibraryHandle.hasPointerCapture(event.pointerId)) {
+    mobileBrushLibraryHandle.releasePointerCapture(event.pointerId);
+  }
+  mobileBrushLibrarySheet.classList.remove("is-dragging");
+  const deltaY = event.clientY - mobileBrushLibraryDragStartY;
+  const closedOffset = mobileBrushLibraryClosedOffset();
+  const releaseMotionAgeMs = performance.now() - mobileBrushLibraryDragLastTime;
+  const releaseVelocityY = releaseMotionAgeMs <= 100
+    ? mobileBrushLibraryDragVelocityY
+    : 0;
+  const shouldClose = shouldCloseMobileToolsSheetDrag({
+    startSnap: "expanded",
+    deltaY,
+    releaseVelocityY,
+    offsetPx: mobileBrushLibraryOffsetPx,
+    peekOffsetPx: Math.min(closedOffset, Math.max(96, closedOffset * 0.22)),
+    closedOffsetPx: closedOffset,
+  });
+  mobileBrushLibraryDragPointerId = null;
+  if (cancelled) {
+    setMobileBrushLibraryOffset(0);
+    mobileBrushLibraryDragMoved = false;
+    return;
+  }
+  if (mobileBrushLibraryDragMoved && shouldClose) {
+    setMobileBrushLibraryOpen(false);
+    return;
+  }
+  if (mobileBrushLibraryDragMoved) setMobileBrushLibraryOffset(0);
 }
 
 function mobileToolsSheetPeekOffset(): number {
@@ -1557,6 +1844,9 @@ function setMobileLayersPanelOpen(open: boolean): void {
   if (open && mobileToolsSheetOpen) {
     setMobileToolsSheetOpen(false);
   }
+  if (open && mobileBrushLibraryOpen) {
+    setMobileBrushLibraryOpen(false);
+  }
   mobileLayersPanelOpen = open;
   mobileLayersMenuButton.setAttribute("aria-expanded", String(open));
   mobileLayersMenuButton.setAttribute(
@@ -1591,6 +1881,9 @@ function setMobileToolsSheetOpen(open: boolean): void {
   if (open && !mobileUiMediaQuery.matches) return;
   if (open && mobileLayersPanelOpen) {
     setMobileLayersPanelOpen(false);
+  }
+  if (open && mobileBrushLibraryOpen) {
+    setMobileBrushLibraryOpen(false);
   }
   mobileToolsSheetOpen = open;
   mobileToolsMenuButton.setAttribute("aria-expanded", String(open));
@@ -1786,6 +2079,7 @@ function applyBrushControls(): void {
   updateControlOutputs();
   updateGrainControlAvailability();
   engine.setBrushSettings(readBrushSettings());
+  markMobileBrushLibraryPreviewDirty();
 }
 
 function formatDuration(milliseconds: number): string {
@@ -3592,6 +3886,64 @@ mobileLayerList.addEventListener("click", (event) => {
   runMobileLayerAction(action, key);
 });
 
+for (const button of mobileBrushLibraryCategoryButtons) {
+  button.addEventListener("click", () => {
+    const category = button.dataset.mobileBrushCategory;
+    if (
+      category === "pencil"
+      || category === "painting"
+      || category === "spray-paint"
+    ) {
+      setMobileBrushLibraryCategory(category);
+    }
+  });
+}
+
+mobileCurrentBrushCard.addEventListener("click", () => {
+  mobileCurrentBrushCard.classList.add("is-selected");
+  mobileCurrentBrushCard.setAttribute("aria-pressed", "true");
+  markMobileBrushLibraryPreviewDirty();
+});
+
+mobileBrushLibraryHandle.addEventListener("pointerdown", (event) => {
+  if (!mobileBrushLibraryOpen || event.button !== 0) return;
+  mobileBrushLibraryDragPointerId = event.pointerId;
+  mobileBrushLibraryDragStartY = event.clientY;
+  mobileBrushLibraryDragStartOffsetPx = mobileBrushLibraryOffsetPx;
+  mobileBrushLibraryDragLastY = event.clientY;
+  mobileBrushLibraryDragLastTime = performance.now();
+  mobileBrushLibraryDragVelocityY = 0;
+  mobileBrushLibraryDragMoved = false;
+  mobileBrushLibrarySheet.classList.add("is-dragging");
+  mobileBrushLibraryHandle.setPointerCapture(event.pointerId);
+});
+
+mobileBrushLibraryHandle.addEventListener("pointermove", (event) => {
+  if (event.pointerId !== mobileBrushLibraryDragPointerId) return;
+  const deltaY = event.clientY - mobileBrushLibraryDragStartY;
+  recordMobileBrushLibraryDragMotion(event.clientY);
+  if (Math.abs(deltaY) >= 4) mobileBrushLibraryDragMoved = true;
+  setMobileBrushLibraryOffset(mobileBrushLibraryDragStartOffsetPx + deltaY);
+});
+
+mobileBrushLibraryHandle.addEventListener("pointerup", (event) => {
+  finishMobileBrushLibraryDrag(event);
+});
+
+mobileBrushLibraryHandle.addEventListener("pointercancel", (event) => {
+  finishMobileBrushLibraryDrag(event, true);
+});
+
+mobileBrushLibraryHandle.addEventListener("click", () => {
+  if (!mobileBrushLibraryOpen) return;
+  if (mobileBrushLibraryDragMoved) {
+    mobileBrushLibraryDragMoved = false;
+    return;
+  }
+  setMobileBrushLibraryOpen(false);
+  mobilePaintButton.focus({ preventScroll: true });
+});
+
 mobileToolsSheetHandle.addEventListener("pointerdown", (event) => {
   if (!mobileToolsSheetOpen || event.button !== 0) return;
   mobileToolsSheetDragPointerId = event.pointerId;
@@ -3668,18 +4020,28 @@ mobileUiMediaQuery.addEventListener("change", (event) => {
   }
   setMobileToolsSheetOpen(false);
   setMobileLayersPanelOpen(false);
+  setMobileBrushLibraryOpen(false);
   setControlsPanelOpen(true);
   syncMobileBrushControlsVisibility();
 });
 
 window.addEventListener("resize", () => {
-  if (!mobileToolsSheetOpen || mobileToolsSheetDragPointerId !== null) return;
+  const toolsNeedLayout = mobileToolsSheetOpen && mobileToolsSheetDragPointerId === null;
+  const brushLibraryNeedsLayout = mobileBrushLibraryOpen
+    && mobileBrushLibraryDragPointerId === null;
+  if (!toolsNeedLayout && !brushLibraryNeedsLayout) return;
   if (mobileToolsSheetResizeFrame !== null) {
     cancelAnimationFrame(mobileToolsSheetResizeFrame);
   }
   mobileToolsSheetResizeFrame = requestAnimationFrame(() => {
     mobileToolsSheetResizeFrame = null;
-    snapMobileToolsSheet(mobileToolsSheetSnap);
+    if (mobileToolsSheetOpen && mobileToolsSheetDragPointerId === null) {
+      snapMobileToolsSheet(mobileToolsSheetSnap);
+    }
+    if (mobileBrushLibraryOpen && mobileBrushLibraryDragPointerId === null) {
+      setMobileBrushLibraryOffset(0);
+      markMobileBrushLibraryPreviewDirty();
+    }
   });
 });
 
@@ -3726,6 +4088,10 @@ function selectMobileCanvasTool(tool: CanvasTool): boolean {
 }
 
 mobilePaintButton.addEventListener("click", () => {
+  if (activeCanvasTool === "paint") {
+    setMobileBrushLibraryOpen(!mobileBrushLibraryOpen);
+    return;
+  }
   selectMobileCanvasTool("paint");
 });
 mobileBlendButton.addEventListener("click", () => {
@@ -7668,6 +8034,7 @@ syncRasterBevelControls(engine.getRasterBevelStyle());
 setGpuMemoryPanelOpen(false);
 setControlsPanelOpen(!mobileUiMediaQuery.matches);
 setMobileToolsSheetOpen(false);
+setMobileBrushLibraryOpen(false);
 setSelectionCombineMode("replace");
 updatePixelSelectionResult(engine.getPixelSelectionState());
 configureBrushToolUi("paint", false);

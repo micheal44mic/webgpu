@@ -1725,6 +1725,67 @@ assert.equal(shouldCloseMobileToolsSheetDrag({
 }), true, "superare peek di 36 px deve chiudere anche senza velocità");
 assert.match(mainSource, /const shouldClose = shouldCloseMobileToolsSheetDrag\(\{/);
 assert.match(mainSource, /snapMobileToolsSheet\(mobileToolsSheetDragStartSnap\)/);
+assert.match(
+  indexSource,
+  /id="mobileBrushLibrarySheet"[\s\S]*?M1M4 BRUSHES[\s\S]*?data-mobile-brush-category="pencil"[\s\S]*?data-mobile-brush-category="painting"[\s\S]*?data-mobile-brush-category="spray-paint"/,
+  "la Brush Library mobile deve conservare titolo e tre categorie reali",
+);
+assert.match(
+  indexSource,
+  /id="mobileCurrentBrushCard"[\s\S]*?Current Brush[\s\S]*?id="mobileBrushLibraryPreviewCanvas"/,
+  "finché non esistono preset, la library deve esporre solo il pennello corrente con preview",
+);
+assert.match(
+  stylesSource,
+  /\.mobile-brush-library-layout \{[\s\S]*?grid-template-columns: 88px minmax\(0, 1fr\);/,
+);
+assert.match(
+  stylesSource,
+  /\.mobile-brush-card\.is-selected \{[\s\S]*?border-color: #dd5c35;[\s\S]*?background: #1a1d23;/,
+);
+assert.match(
+  mainSource,
+  /mobilePaintButton\.addEventListener\("click", \(\) => \{[\s\S]*?activeCanvasTool === "paint"[\s\S]*?setMobileBrushLibraryOpen\(!mobileBrushLibraryOpen\);[\s\S]*?selectMobileCanvasTool\("paint"\);/,
+  "il primo tap deve selezionare Paint e soltanto un tap sul Paint già attivo apre la library",
+);
+assert.match(
+  mainSource,
+  /function setMobileBrushLibraryOpen\(open: boolean\)[\s\S]*?setMobileToolsSheetOpen\(false\)[\s\S]*?setMobileLayersPanelOpen\(false\)[\s\S]*?setMobileBrushLibraryOffset\(0\)/,
+  "la Brush Library deve aprirsi expanded ed escludere Tools e Layers",
+);
+assert.match(
+  mainSource,
+  /const suppressed = [\s\S]*?mobileLayersPanelOpen[\s\S]*?mobileToolsSheetOpen[\s\S]*?mobileBrushLibraryOpen/,
+  "Size e Opacity non devono restare sopra la Brush Library",
+);
+assert.match(
+  mainSource,
+  /startSnap: "expanded",[\s\S]*?peekOffsetPx: Math\.min\(closedOffset, Math\.max\(96, closedOffset \* 0\.22\)\)/,
+  "il drawer della Brush Library deve usare la gesture facile di chiusura senza snap intermedio",
+);
+const mobileBrushLibraryPreviewStart = mainSource.indexOf(
+  "function renderMobileBrushLibraryPreview()",
+);
+const mobileBrushLibraryPreviewEnd = mainSource.indexOf(
+  "function scheduleMobileBrushLibraryPreview()",
+  mobileBrushLibraryPreviewStart,
+);
+assertSection(
+  "preview Canvas2D Brush Library",
+  mobileBrushLibraryPreviewStart,
+  mobileBrushLibraryPreviewEnd,
+);
+const mobileBrushLibraryPreviewSource = mainSource.slice(
+  mobileBrushLibraryPreviewStart,
+  mobileBrushLibraryPreviewEnd,
+);
+assert.match(mobileBrushLibraryPreviewSource, /getContext\("2d"/);
+assert.match(mobileBrushLibraryPreviewSource, /engine\.renderBrushTipPreview\(/);
+assert.doesNotMatch(
+  mobileBrushLibraryPreviewSource,
+  /setBrushSettings|queue\.submit|copyTextureToBuffer|mapAsync|onSubmittedWorkDone/,
+  "la pennellata della library deve restare una preview Canvas2D lazy senza lavoro o readback GPU",
+);
 assert.match(mainSource, /MOBILE_DOUBLE_TAP_ZOOM_INTERVAL_MS = 350/);
 assert.match(mainSource, /document\.addEventListener\("touchend",[\s\S]*?passive: false/);
 assert.match(mainSource, /document\.addEventListener\("dblclick",[\s\S]*?preventDefault\(\)/);
