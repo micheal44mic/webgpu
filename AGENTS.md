@@ -434,6 +434,17 @@ Paint:
   `layers:verify`, `grain:verify`, `stroke:verify`, `history:verify` e
   `git diff --check` verdi. Non è ancora una QA Safari/iPhone fisico né una
   misura prestazionale canonica.
+  Dodicesimo follow-up: la scala Size mobile non è più presentata come
+  percentuale. Il contratto UI autorevole è ora `1–1000 px` sia per Paint sia
+  per Blend; label, output e ARIA mostrano il valore reale in pixel, mentre
+  soltanto la posizione lungo la corsa resta normalizzata internamente. A
+  `1 px` l'indicatore interno misura `1 px` e la preview sparisce; a `1000 px`
+  l'indicatore misura `41 px` e riempie l'intero interno utile del disco da
+  `44 px`. Frecce e Shift+frecce cambiano rispettivamente `1` e `10 px`, Home
+  va a `1000 px` ed End a `1 px`. I limiti interni legacy del motore e i preset
+  benchmark restano invariati: la modifica riguarda il contratto UI usato per
+  disegnare. QA browser locale a `430×932`: input/ARIA `1–1000`, disco massimo
+  `41 px`, minimo `1 px`, label in pixel e console pulita.
 - …cache di presentazione persistente screen-space: display shader eseguito
   solo sulla dirty region, poi `copyTextureToTexture` alla swapchain
   (`#37/#38`: Base `+46%` FPS vs `#35`, migliore anche delle vecchie baseline).

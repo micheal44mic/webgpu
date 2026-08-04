@@ -1045,8 +1045,8 @@ function configureBrushToolUi(
   const blend = tool === "blend";
   const size = element<HTMLInputElement>("brushSize");
   const spacing = element<HTMLInputElement>("spacing");
-  size.min = blend ? "1" : "4";
-  size.max = blend ? "1024" : "1500";
+  size.min = "1";
+  size.max = "1000";
   spacing.min = blend ? "1" : "0.25";
   spacing.max = blend ? "400" : "25";
   spacing.step = blend ? "1" : "0.25";
@@ -1125,9 +1125,9 @@ function updateRenderingModeControlAvailability(): void {
     || activeCanvasTool === "selection"
     || activeCanvasTool === "transform"
   ) return;
-  const blendTool = activeBrushTool === "blend";
   const size = element<HTMLInputElement>("brushSize");
-  size.max = blendTool ? "1024" : "1500";
+  size.min = "1";
+  size.max = "1000";
   if (rangeValue("brushSize") > Number(size.max)) {
     setControlValue("brushSize", Number(size.max));
   }
@@ -1158,6 +1158,7 @@ function setControlsPanelOpen(open: boolean): void {
 
 const MOBILE_BRUSH_PREVIEW_CSS_SIZE = 124;
 const MOBILE_BRUSH_PREVIEW_MAX_TIP_CSS_PIXELS = 92;
+const MOBILE_BRUSH_SIZE_INDICATOR_MAX_CSS_PIXELS = 41;
 
 function clampMobileBrushPercent(value: number, minimum: number): number {
   return Math.min(100, Math.max(minimum, Number.isFinite(value) ? value : minimum));
@@ -1184,10 +1185,10 @@ function mobileBrushControlPercent(kind: MobileBrushControlKind): number {
   const minimum = Number(input.min);
   const maximum = Number(input.max);
   if (!Number.isFinite(minimum) || !Number.isFinite(maximum) || maximum <= minimum) {
-    return 1;
+    return 0;
   }
   const normalized = Math.min(1, Math.max(0, (value - minimum) / (maximum - minimum)));
-  return 1 + normalized * 99;
+  return normalized * 100;
 }
 
 function setMobileBrushControlPercent(kind: MobileBrushControlKind, requested: number): void {
@@ -1196,28 +1197,44 @@ function setMobileBrushControlPercent(kind: MobileBrushControlKind, requested: n
     const percent = clampMobileBrushPercent(requested, 0);
     input.value = (Math.round(percent * 10) / 10).toString();
   } else {
-    const percent = clampMobileBrushPercent(requested, 1);
+    const percent = clampMobileBrushPercent(requested, 0);
     const minimum = Number(input.min);
     const maximum = Number(input.max);
-    const normalized = (percent - 1) / 99;
-    input.value = Math.round(minimum + normalized * (maximum - minimum)).toString();
+    input.value = Math.round(minimum + percent / 100 * (maximum - minimum)).toString();
   }
   syncMobileBrushControlVisuals();
 }
 
+function mobileBrushControlLabel(kind: MobileBrushControlKind): string {
+  const value = Number(mobileBrushControlInput(kind).value);
+  return kind === "size"
+    ? `Size ${Math.round(value)} px`
+    : `Opacity ${Math.round(value)}%`;
+}
+
 function syncMobileBrushControlVisual(kind: MobileBrushControlKind): void {
   const control = mobileBrushControlElement(kind);
+  const input = mobileBrushControlInput(kind);
   const percent = mobileBrushControlPercent(kind);
   const roundedPercent = Math.round(percent);
-  const label = `${kind === "size" ? "Size" : "Opacity"} ${roundedPercent}%`;
+  const value = Number(input.value);
+  const label = mobileBrushControlLabel(kind);
   control.style.setProperty(
     "--mobile-brush-control-position",
     `${(100 - percent).toFixed(3)}%`,
   );
-  control.setAttribute("aria-valuenow", String(roundedPercent));
+  control.setAttribute("aria-valuemin", input.min);
+  control.setAttribute("aria-valuemax", input.max);
+  control.setAttribute(
+    "aria-valuenow",
+    String(kind === "size" ? Math.round(value) : roundedPercent),
+  );
   control.setAttribute("aria-valuetext", label);
   if (kind === "size") {
-    const indicatorDiameter = Math.max(1, 18 * percent / 100);
+    const indicatorDiameter = Math.max(
+      1,
+      MOBILE_BRUSH_SIZE_INDICATOR_MAX_CSS_PIXELS * percent / 100,
+    );
     control.style.setProperty(
       "--mobile-brush-size-indicator",
       `${indicatorDiameter.toFixed(2)}px`,
@@ -1259,9 +1276,7 @@ function syncMobileBrushControlVisuals(): void {
   syncMobileBrushControlVisual("opacity");
   if (mobileBrushControlDrag) {
     const kind = mobileBrushControlDrag.kind;
-    mobileBrushPreviewLabel.value = `${kind === "size" ? "Size" : "Opacity"} ${
-      Math.round(mobileBrushControlPercent(kind))
-    }%`;
+    mobileBrushPreviewLabel.value = mobileBrushControlLabel(kind);
     scheduleMobileBrushPreview();
   }
 }
@@ -3479,16 +3494,20 @@ function handleMobileBrushControlKeydown(
   ) {
     return;
   }
+  const input = mobileBrushControlInput(kind);
   const step = event.shiftKey ? 10 : 1;
-  const current = mobileBrushControlPercent(kind);
+  const current = Number(input.value);
+  const minimum = Number(input.min);
+  const maximum = Number(input.max);
   let next: number | null = null;
   if (event.key === "ArrowUp" || event.key === "ArrowRight") next = current + step;
   else if (event.key === "ArrowDown" || event.key === "ArrowLeft") next = current - step;
-  else if (event.key === "Home") next = 100;
-  else if (event.key === "End") next = kind === "size" ? 1 : 0;
+  else if (event.key === "Home") next = maximum;
+  else if (event.key === "End") next = minimum;
   if (next === null) return;
   event.preventDefault();
-  setMobileBrushControlPercent(kind, next);
+  input.value = Math.min(maximum, Math.max(minimum, next)).toString();
+  syncMobileBrushControlVisuals();
   applyBrushControls();
 }
 

@@ -1676,6 +1676,21 @@ assert.match(
 assert.match(mainSource, /MOBILE_DOUBLE_TAP_ZOOM_INTERVAL_MS = 350/);
 assert.match(mainSource, /document\.addEventListener\("touchend",[\s\S]*?passive: false/);
 assert.match(mainSource, /document\.addEventListener\("dblclick",[\s\S]*?preventDefault\(\)/);
+assert.match(
+  indexSource,
+  /id="brushSize" type="range" min="1" max="1000" step="1" value="96"/,
+);
+assert.match(
+  indexSource,
+  /id="mobileBrushSizeControl"[\s\S]*?aria-valuemin="1"[\s\S]*?aria-valuemax="1000"[\s\S]*?aria-valuenow="96"[\s\S]*?aria-valuetext="Size 96 px"/,
+);
+assert.equal((mainSource.match(/size\.max = "1000";/g) ?? []).length, 2);
+assert.match(mainSource, /const MOBILE_BRUSH_SIZE_INDICATOR_MAX_CSS_PIXELS = 41;/);
+assert.match(
+  mainSource,
+  /return kind === "size"\s*\? `Size \$\{Math\.round\(value\)\} px`\s*:\s*`Opacity \$\{Math\.round\(value\)\}%`/,
+);
+assert.doesNotMatch(mainSource, /size\.max = blend \? "1024" : "1500"/);
 const mobileToolRailCssStart = stylesSource.indexOf("  .mobile-tool-rail {");
 const mobileToolRailCssEnd = stylesSource.indexOf("\n  }", mobileToolRailCssStart);
 assertSection("CSS mobile tool rail", mobileToolRailCssStart, mobileToolRailCssEnd);
