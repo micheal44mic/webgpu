@@ -1,7 +1,10 @@
 :root {
+  --app-background: #0d0f13;
+  --mobile-icon-face: #f2f0e9;
+  --mobile-icon-outline: #202226;
   color-scheme: dark;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #0d0f13;
+  background: var(--app-background);
   color: #f4f5f7;
   font-synthesis: none;
 }
@@ -118,6 +121,10 @@ button.wide {
 }
 
 .mobile-header {
+  display: none;
+}
+
+.mobile-tool-rail {
   display: none;
 }
 
@@ -844,14 +851,16 @@ select {
     cursor: default;
   }
 
-  .mobile-header-icon-sprite {
-    position: absolute;
-    width: 0;
-    height: 0;
-    overflow: hidden;
+  .mobile-icon-stack {
+    position: relative;
+    display: block;
+    width: 24px;
+    height: 24px;
   }
 
-  .mobile-header-icon {
+  .mobile-icon-layer {
+    position: absolute;
+    inset: 0;
     display: block;
     width: 24px;
     height: 24px;
@@ -860,14 +869,96 @@ select {
     stroke-linejoin: round;
   }
 
-  .mobile-header-icon-outline {
-    stroke: #202226;
-    stroke-width: 3.4;
+  .mobile-icon-outline {
+    stroke: var(--mobile-icon-outline);
+    stroke-width: 3.6;
   }
 
-  .mobile-header-icon-face {
-    stroke: #f2f0e9;
+  .mobile-icon-face {
+    stroke: var(--mobile-icon-face);
     stroke-width: 1.8;
+  }
+
+  .mobile-tool-rail {
+    position: absolute;
+    z-index: 5;
+    top: 50%;
+    left: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 4px 6px max(4px, env(safe-area-inset-left));
+    border-radius: 0 12px 12px 0;
+    background: var(--app-background);
+    transform: translateY(-50%);
+  }
+
+  .mobile-tool-action,
+  .mobile-tool-action:hover {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 10px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+
+  .mobile-tool-action[aria-pressed="true"] {
+    background: #242933;
+  }
+
+  .mobile-tool-action:focus-visible,
+  .mobile-color-action:focus-within {
+    outline: 2px solid #8791ff;
+    outline-offset: -3px;
+  }
+
+  .mobile-tool-action:disabled,
+  .mobile-tool-action:disabled:hover,
+  .mobile-tool-action.is-disabled {
+    background: transparent;
+    cursor: default;
+    opacity: 0.52;
+  }
+
+  .mobile-color-action,
+  .mobile-color-action:hover {
+    padding: 9px;
+  }
+
+  .mobile-color-input {
+    position: absolute;
+    z-index: 1;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+
+  .mobile-color-input:disabled {
+    cursor: default;
+  }
+
+  .mobile-color-swatch {
+    display: block;
+    width: 25px;
+    height: 25px;
+    border: 2px solid var(--mobile-icon-face);
+    border-radius: 50%;
+    outline: 1px solid var(--mobile-icon-outline);
+    outline-offset: 0;
+    background: #ff5b35;
   }
 }
 

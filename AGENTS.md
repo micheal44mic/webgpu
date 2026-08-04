@@ -22,6 +22,13 @@ registro D1, che è append-only.
 - `dist/` è un artefatto generato e ignorato da Git: rigenerarlo con
   `npm run build` per ogni pubblicazione, impacchettarlo per Sites e non
   commettere i bundle con hash.
+- Le icone dell'interfaccia provengono esclusivamente dal catalogo ufficiale
+  **Lucide** (`https://lucide.dev/icons/`), pacchetto npm `lucide`, licenza
+  ISC. Importare soltanto le icone nominate che servono, mantenere lo stile
+  outline Lucide da `24 px` con cap/join arrotondati e non mescolare altre
+  famiglie, emoji o SVG disegnati a mano. Sul canvas mobile usare la doppia
+  traccia già definita in CSS: avorio `#f2f0e9` sopra antracite `#202226`,
+  senza ombre.
 - Preferenza esplicita dell'utente: **niente agenti o subagenti**; il modello
   principale legge, progetta, implementa, revisiona e pubblica da solo.
 
@@ -297,9 +304,15 @@ Paint:
   abbastanza specifico da rimuovere davvero il nome prima di Home sul layout
   compatto; rimossi integralmente dalla UI anche i badge «Zoom vettori · GPU»
   e percentuale/PIXEL, conservando invariati zoom, soglia nearest e renderer.
-  Tutte le suite `*:verify`, TypeScript, build Vite/Sites e
-  `git diff --check` verdi; nessuna misura prestazionale o QA fisica iPhone
-  ancora eseguita.
+  Follow-up: aggiunta al centro del bordo sinistro una rail mobile con lo stesso
+  fondo `#0d0f13`, senza ombre, e controlli da `44 px` per colore pennello,
+  Gomma, Blend, Undo e Redo. Colore, Blend e cronologia riusano le azioni già
+  autorevoli; la Gomma resta visual-only e disabilitata finché non esisterà una
+  semantica di cancellazione nel motore. Tutte le icone mobile, incluse quelle
+  dell'header, sono ora Lucide `1.28.0` importate singolarmente e condividono la
+  doppia traccia avorio/antracite. Tutte le suite `*:verify`, TypeScript, build
+  Vite/Sites e `git diff --check` verdi; nessuna misura prestazionale o QA
+  fisica iPhone ancora eseguita.
 - …cache di presentazione persistente screen-space: display shader eseguito
   solo sulla dirty region, poi `copyTextureToTexture` alla swapchain
   (`#37/#38`: Base `+46%` FPS vs `#35`, migliore anche delle vecchie baseline).

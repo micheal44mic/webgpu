@@ -1,5 +1,16 @@
 import "./styles.css";
 import {
+  Blend,
+  Eraser,
+  House,
+  Layers3,
+  Redo2,
+  Save,
+  SlidersHorizontal,
+  Undo2,
+  createIcons,
+} from "lucide";
+import {
   BrushEngine,
   type RasterBevelStyle,
   type RasterInnerShadowStyle,
@@ -46,6 +57,19 @@ import type {
   SelectionMethod,
   SelectionPoint,
 } from "./selection-core";
+
+createIcons({
+  icons: {
+    Blend,
+    Eraser,
+    House,
+    Layers3,
+    Redo2,
+    Save,
+    SlidersHorizontal,
+    Undo2,
+  },
+});
 
 function element<T extends HTMLElement>(id: string): T {
   const result = document.getElementById(id);
@@ -152,6 +176,13 @@ const layerFormatSelect = element<HTMLSelectElement>("layerFormat");
 const clearLayerButton = element<HTMLButtonElement>("clearLayer");
 const undoStrokeButton = element<HTMLButtonElement>("undoStroke");
 const redoStrokeButton = element<HTMLButtonElement>("redoStroke");
+const brushColorInput = element<HTMLInputElement>("brushColor");
+const mobileBrushColorLabel = element<HTMLLabelElement>("mobileBrushColor");
+const mobileBrushColorInput = element<HTMLInputElement>("mobileBrushColorInput");
+const mobileBrushColorSwatch = element<HTMLElement>("mobileBrushColorSwatch");
+const mobileBlendButton = element<HTMLButtonElement>("mobileBlend");
+const mobileUndoButton = element<HTMLButtonElement>("mobileUndo");
+const mobileRedoButton = element<HTMLButtonElement>("mobileRedo");
 const fitViewButton = element<HTMLButtonElement>("fitView");
 const zoomInButton = element<HTMLButtonElement>("zoomIn");
 const zoomOutButton = element<HTMLButtonElement>("zoomOut");
@@ -164,6 +195,13 @@ const gpuMemoryToggle = element<HTMLButtonElement>("gpuMemoryToggle");
 const gpuMemoryClose = element<HTMLButtonElement>("gpuMemoryClose");
 const gpuMemoryChevron = element<HTMLElement>("gpuMemoryChevron");
 const gpuMemoryDelta = element<HTMLElement>("gpuMemoryDelta");
+
+function syncMobileBrushColor(value = brushColorInput.value): void {
+  mobileBrushColorInput.value = value;
+  mobileBrushColorSwatch.style.backgroundColor = value;
+}
+
+syncMobileBrushColor();
 
 type HumanStrokeTestVariant = "base" | "fur" | "blend";
 type HumanStrokeTestBlendMode = "light-glaze" | "uniformed-glaze" | "intense-blending";
@@ -817,6 +855,7 @@ function configureBrushToolUi(
     captureActiveToolControls();
   }
   activeCanvasTool = tool;
+  mobileBlendButton.setAttribute("aria-pressed", String(tool === "blend"));
   const fill = tool === "fill";
   const selection = tool === "selection";
   const transform = tool === "transform";
@@ -1437,6 +1476,9 @@ async function loadCanonicalHumanStroke(): Promise<void> {
 
 function setControlValue(id: string, value: string | number): void {
   element<HTMLInputElement | HTMLSelectElement>(id).value = String(value);
+  if (id === "brushColor") {
+    syncMobileBrushColor(String(value));
+  }
 }
 
 function readRasterColorOverlayStyle(): RasterColorOverlayStyle {
@@ -2338,6 +2380,11 @@ function updateHistoryControls(): void {
   const locked = interactionLocked();
   undoStrokeButton.disabled = locked || !historyState.canUndo;
   redoStrokeButton.disabled = locked || !historyState.canRedo;
+  mobileUndoButton.disabled = locked || !historyState.canUndo;
+  mobileRedoButton.disabled = locked || !historyState.canRedo;
+  mobileBrushColorInput.disabled = locked;
+  mobileBrushColorLabel.classList.toggle("is-disabled", locked);
+  mobileBlendButton.disabled = locked;
   clearLayerButton.disabled = locked;
   element<HTMLSelectElement>("brushTool").disabled = locked;
   const paintToolInactive = activeCanvasTool !== "paint";
@@ -2512,6 +2559,23 @@ for (const id of brushControlIds) {
   element<HTMLInputElement | HTMLSelectElement>(id).addEventListener("input", applyBrushControls);
   element<HTMLInputElement | HTMLSelectElement>(id).addEventListener("change", applyBrushControls);
 }
+
+brushColorInput.addEventListener("input", () => syncMobileBrushColor());
+brushColorInput.addEventListener("change", () => syncMobileBrushColor());
+
+function applyMobileBrushColor(): void {
+  if (mobileBrushColorInput.disabled) return;
+  if (activeCanvasTool !== "paint") {
+    configureBrushToolUi("paint", true);
+  }
+  brushColorInput.value = mobileBrushColorInput.value;
+  syncMobileBrushColor();
+  applyBrushControls();
+  updateHistoryControls();
+}
+
+mobileBrushColorInput.addEventListener("input", applyMobileBrushColor);
+mobileBrushColorInput.addEventListener("change", applyMobileBrushColor);
 
 element<HTMLInputElement>("rasterColorOverlayEnabled").addEventListener("change", () => {
   updateRasterColorOverlayControlAvailability();
@@ -2738,6 +2802,18 @@ undoStrokeButton.addEventListener("click", () => {
   void runHistoryOperation("undo");
 });
 redoStrokeButton.addEventListener("click", () => {
+  void runHistoryOperation("redo");
+});
+mobileBlendButton.addEventListener("click", () => {
+  if (mobileBlendButton.disabled) return;
+  const brushToolSelect = element<HTMLSelectElement>("brushTool");
+  brushToolSelect.value = "blend";
+  brushToolSelect.dispatchEvent(new Event("change", { bubbles: true }));
+});
+mobileUndoButton.addEventListener("click", () => {
+  void runHistoryOperation("undo");
+});
+mobileRedoButton.addEventListener("click", () => {
   void runHistoryOperation("redo");
 });
 fitViewButton.addEventListener("click", () => {

@@ -15,27 +15,6 @@
           <span class="muted">4096 × 4096</span>
         </div>
         <nav class="mobile-header" aria-label="Navigazione mobile">
-          <svg class="mobile-header-icon-sprite" aria-hidden="true">
-            <symbol id="mobileIconHome" viewBox="0 0 24 24">
-              <path d="m3 11 9-8 9 8" />
-              <path d="M5 10v10h14V10" />
-              <path d="M9 20v-6h6v6" />
-            </symbol>
-            <symbol id="mobileIconTools" viewBox="0 0 24 24">
-              <path d="M14.7 6.3a4 4 0 0 0-5-5.2l2.7 2.7-2.6 2.6-2.7-2.7a4 4 0 0 0 5.2 5l-7.6 7.6a2.1 2.1 0 0 0 3 3l7.6-7.6a4 4 0 0 0-2.6-5.4Z" />
-            </symbol>
-            <symbol id="mobileIconLayers" viewBox="0 0 24 24">
-              <path d="m12.83 2.18 8.58 3.9a1 1 0 0 1 0 1.83l-8.58 3.91a2 2 0 0 1-1.66 0L2.6 7.91a1 1 0 0 1 0-1.83l8.58-3.9a2 2 0 0 1 1.66 0Z" />
-              <path d="m22 12.5-9.17 4.17a2 2 0 0 1-1.66 0L2 12.5" />
-              <path d="m22 17.5-9.17 4.17a2 2 0 0 1-1.66 0L2 17.5" />
-            </symbol>
-            <symbol id="mobileIconSave" viewBox="0 0 24 24">
-              <path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" />
-              <path d="M17 21v-8H7v8" />
-              <path d="M7 3v5h8" />
-            </symbol>
-          </svg>
-
           <button
             class="mobile-header-action"
             type="button"
@@ -43,10 +22,10 @@
             title="Home"
             disabled
           >
-            <svg class="mobile-header-icon" aria-hidden="true" viewBox="0 0 24 24">
-              <use class="mobile-header-icon-outline" href="#mobileIconHome" />
-              <use class="mobile-header-icon-face" href="#mobileIconHome" />
-            </svg>
+            <span class="mobile-icon-stack" aria-hidden="true">
+              <i data-lucide="house" class="mobile-icon-layer mobile-icon-outline"></i>
+              <i data-lucide="house" class="mobile-icon-layer mobile-icon-face"></i>
+            </span>
           </button>
 
           <div class="mobile-header-actions">
@@ -57,10 +36,10 @@
               title="Tools"
               disabled
             >
-              <svg class="mobile-header-icon" aria-hidden="true" viewBox="0 0 24 24">
-                <use class="mobile-header-icon-outline" href="#mobileIconTools" />
-                <use class="mobile-header-icon-face" href="#mobileIconTools" />
-              </svg>
+              <span class="mobile-icon-stack" aria-hidden="true">
+                <i data-lucide="sliders-horizontal" class="mobile-icon-layer mobile-icon-outline"></i>
+                <i data-lucide="sliders-horizontal" class="mobile-icon-layer mobile-icon-face"></i>
+              </span>
             </button>
             <button
               class="mobile-header-action"
@@ -69,10 +48,10 @@
               title="Layer"
               disabled
             >
-              <svg class="mobile-header-icon" aria-hidden="true" viewBox="0 0 24 24">
-                <use class="mobile-header-icon-outline" href="#mobileIconLayers" />
-                <use class="mobile-header-icon-face" href="#mobileIconLayers" />
-              </svg>
+              <span class="mobile-icon-stack" aria-hidden="true">
+                <i data-lucide="layers-3" class="mobile-icon-layer mobile-icon-outline"></i>
+                <i data-lucide="layers-3" class="mobile-icon-layer mobile-icon-face"></i>
+              </span>
             </button>
             <button
               class="mobile-header-action"
@@ -81,10 +60,10 @@
               title="Save"
               disabled
             >
-              <svg class="mobile-header-icon" aria-hidden="true" viewBox="0 0 24 24">
-                <use class="mobile-header-icon-outline" href="#mobileIconSave" />
-                <use class="mobile-header-icon-face" href="#mobileIconSave" />
-              </svg>
+              <span class="mobile-icon-stack" aria-hidden="true">
+                <i data-lucide="save" class="mobile-icon-layer mobile-icon-outline"></i>
+                <i data-lucide="save" class="mobile-icon-layer mobile-icon-face"></i>
+              </span>
             </button>
           </div>
         </nav>
@@ -140,6 +119,77 @@
           <button id="clearLayer" class="danger" type="button">Pulisci</button>
         </div>
       </header>
+
+      <aside class="mobile-tool-rail" aria-label="Strumenti rapidi">
+        <label
+          id="mobileBrushColor"
+          class="mobile-tool-action mobile-color-action"
+          title="Colore pennello"
+        >
+          <input
+            id="mobileBrushColorInput"
+            class="mobile-color-input"
+            type="color"
+            value="#ff5b35"
+            aria-label="Scegli il colore del pennello"
+          />
+          <span id="mobileBrushColorSwatch" class="mobile-color-swatch" aria-hidden="true"></span>
+        </label>
+        <button
+          id="mobileEraser"
+          class="mobile-tool-action"
+          type="button"
+          aria-label="Gomma, non ancora disponibile"
+          title="Gomma"
+          disabled
+        >
+          <span class="mobile-icon-stack" aria-hidden="true">
+            <i data-lucide="eraser" class="mobile-icon-layer mobile-icon-outline"></i>
+            <i data-lucide="eraser" class="mobile-icon-layer mobile-icon-face"></i>
+          </span>
+        </button>
+        <button
+          id="mobileBlend"
+          class="mobile-tool-action"
+          type="button"
+          aria-label="Seleziona Blend"
+          aria-pressed="false"
+          title="Blend"
+        >
+          <span class="mobile-icon-stack" aria-hidden="true">
+            <i data-lucide="blend" class="mobile-icon-layer mobile-icon-outline"></i>
+            <i data-lucide="blend" class="mobile-icon-layer mobile-icon-face"></i>
+          </span>
+        </button>
+        <button
+          id="mobileUndo"
+          class="mobile-tool-action"
+          type="button"
+          aria-label="Annulla ultima azione"
+          aria-keyshortcuts="Control+Z Meta+Z"
+          title="Annulla"
+          disabled
+        >
+          <span class="mobile-icon-stack" aria-hidden="true">
+            <i data-lucide="undo-2" class="mobile-icon-layer mobile-icon-outline"></i>
+            <i data-lucide="undo-2" class="mobile-icon-layer mobile-icon-face"></i>
+          </span>
+        </button>
+        <button
+          id="mobileRedo"
+          class="mobile-tool-action"
+          type="button"
+          aria-label="Ripristina ultima azione"
+          aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z"
+          title="Ripristina"
+          disabled
+        >
+          <span class="mobile-icon-stack" aria-hidden="true">
+            <i data-lucide="redo-2" class="mobile-icon-layer mobile-icon-outline"></i>
+            <i data-lucide="redo-2" class="mobile-icon-layer mobile-icon-face"></i>
+          </span>
+        </button>
+      </aside>
 
       <aside id="controlsPanel" class="controls" aria-label="Pannello strumenti">
         <section>
