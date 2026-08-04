@@ -1,14 +1,25 @@
 import "./styles.css";
 import {
   Blend,
+  Box,
   Brush,
+  CircleDashed,
+  CircleDotDashed,
   Eraser,
   House,
+  Image as ImageIcon,
   Layers3,
+  PaintBucket,
+  Palette,
   Redo2,
   Save,
+  Scaling,
+  Scan,
   Search,
+  Shapes,
   SlidersHorizontal,
+  Sun,
+  Type as TypeIcon,
   Undo2,
   createIcons,
 } from "lucide";
@@ -63,14 +74,25 @@ import type {
 createIcons({
   icons: {
     Blend,
+    Box,
     Brush,
+    CircleDashed,
+    CircleDotDashed,
     Eraser,
     House,
+    Image: ImageIcon,
     Layers3,
+    PaintBucket,
+    Palette,
     Redo2,
     Save,
+    Scaling,
+    Scan,
     Search,
+    Shapes,
     SlidersHorizontal,
+    Sun,
+    Type: TypeIcon,
     Undo2,
   },
 });
@@ -191,8 +213,22 @@ const mobileRedoButton = element<HTMLButtonElement>("mobileRedo");
 const mobileToolsMenuButton = element<HTMLButtonElement>("mobileToolsMenu");
 const mobileToolsSheet = element<HTMLElement>("mobileToolsSheet");
 const mobileToolsSheetHandle = element<HTMLButtonElement>("mobileToolsSheetHandle");
+const mobileToolsSheetContent = element<HTMLElement>("mobileToolsSheetContent");
 const mobileToolsSearchField = element<HTMLLabelElement>("mobileToolsSearchField");
 const mobileToolsSearchInput = element<HTMLInputElement>("mobileToolsSearch");
+const mobileToolsEmpty = element<HTMLParagraphElement>("mobileToolsEmpty");
+const mobileToolsCategories = Array.from(
+  document.querySelectorAll<HTMLElement>("[data-mobile-tools-category]"),
+);
+const mobileToolsCanvasButtons = Array.from(
+  document.querySelectorAll<HTMLButtonElement>("[data-mobile-canvas-tool]"),
+);
+const mobileToolsProxyButtons = Array.from(
+  document.querySelectorAll<HTMLButtonElement>("[data-mobile-proxy-button]"),
+);
+const mobileToolsEffectButtons = Array.from(
+  document.querySelectorAll<HTMLButtonElement>("[data-mobile-effect-control]"),
+);
 const mobileUiMediaQuery = window.matchMedia("(max-width: 699px)");
 const fitViewButton = element<HTMLButtonElement>("fitView");
 const zoomInButton = element<HTMLButtonElement>("zoomIn");
@@ -877,6 +913,7 @@ function configureBrushToolUi(
   activeCanvasTool = tool;
   mobilePaintButton.setAttribute("aria-pressed", String(tool === "paint"));
   mobileBlendButton.setAttribute("aria-pressed", String(tool === "blend"));
+  syncMobileToolsMenuState();
   const fill = tool === "fill";
   const selection = tool === "selection";
   const transform = tool === "transform";
@@ -1005,6 +1042,58 @@ function mobileToolsSheetClosedOffset(): number {
   return Math.max(0, Math.round(mobileToolsSheet.offsetHeight));
 }
 
+function normalizeMobileToolsSearch(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("it-IT")
+    .trim();
+}
+
+function filterMobileTools(): void {
+  const query = normalizeMobileToolsSearch(mobileToolsSearchInput.value);
+  let visibleToolCount = 0;
+  for (const category of mobileToolsCategories) {
+    let visibleInCategory = 0;
+    const tools = category.querySelectorAll<HTMLButtonElement>("[data-mobile-tool]");
+    for (const tool of tools) {
+      const searchText = normalizeMobileToolsSearch(
+        `${tool.textContent ?? ""} ${tool.dataset.mobileToolSearch ?? ""}`,
+      );
+      const visible = query.length === 0 || searchText.includes(query);
+      tool.hidden = !visible;
+      if (visible) visibleInCategory += 1;
+    }
+    category.hidden = visibleInCategory === 0;
+    visibleToolCount += visibleInCategory;
+  }
+  mobileToolsEmpty.hidden = visibleToolCount !== 0;
+}
+
+function syncMobileToolsMenuState(): void {
+  for (const button of mobileToolsCanvasButtons) {
+    button.setAttribute(
+      "aria-pressed",
+      String(button.dataset.mobileCanvasTool === activeCanvasTool),
+    );
+  }
+  for (const button of mobileToolsProxyButtons) {
+    const targetId = button.dataset.mobileProxyButton;
+    const target = targetId
+      ? document.getElementById(targetId) as HTMLButtonElement | null
+      : null;
+    button.disabled = target === null || target.disabled || vectorTextPrototype === null;
+  }
+  for (const button of mobileToolsEffectButtons) {
+    const controlId = button.dataset.mobileEffectControl;
+    const control = controlId
+      ? document.getElementById(controlId) as HTMLInputElement | null
+      : null;
+    button.disabled = control === null || control.disabled || !engineInitialized;
+    button.setAttribute("aria-pressed", String(control?.checked === true));
+  }
+}
+
 function setMobileToolsSheetOffset(offsetPx: number, allowClose = false): void {
   const maximumOffset = allowClose
     ? mobileToolsSheetClosedOffset()
@@ -1022,7 +1111,7 @@ function snapMobileToolsSheet(snap: MobileToolsSheetSnap): void {
   mobileToolsSheetHandle.setAttribute("aria-expanded", String(snap === "expanded"));
   mobileToolsSheetHandle.setAttribute(
     "aria-label",
-    snap === "expanded" ? "Riduci menu strumenti" : "Espandi menu strumenti",
+    snap === "expanded" ? "Collapse tools menu" : "Expand tools menu",
   );
   setMobileToolsSheetOffset(snap === "expanded" ? 0 : mobileToolsSheetPeekOffset());
 }
@@ -1043,11 +1132,13 @@ function setMobileToolsSheetOpen(open: boolean): void {
   mobileToolsMenuButton.setAttribute("aria-expanded", String(open));
   mobileToolsMenuButton.setAttribute(
     "aria-label",
-    open ? "Chiudi menu strumenti" : "Apri menu strumenti",
+    open ? "Close tools menu" : "Open tools menu",
   );
   mobileToolsSheet.setAttribute("aria-hidden", String(!open));
   if (open) {
     setControlsPanelOpen(false);
+    syncMobileToolsMenuState();
+    filterMobileTools();
     snapMobileToolsSheet("peek");
     void mobileToolsSheet.offsetHeight;
     mobileToolsSheet.classList.add("is-open");
@@ -1055,6 +1146,10 @@ function setMobileToolsSheetOpen(open: boolean): void {
   }
   mobileToolsSheet.classList.remove("is-open", "is-dragging", "is-search-focus-snap");
   mobileToolsSearchInput.blur();
+  if (mobileToolsSearchInput.value.length > 0) {
+    mobileToolsSearchInput.value = "";
+    filterMobileTools();
+  }
   mobileToolsSheetDragPointerId = null;
 }
 
@@ -2949,6 +3044,14 @@ mobileToolsSearchInput.addEventListener("focus", () => {
   expandMobileToolsSheetForSearchFocus();
 });
 
+function updateMobileToolsSearchResults(): void {
+  filterMobileTools();
+  mobileToolsSheetContent.scrollTop = 0;
+}
+
+mobileToolsSearchInput.addEventListener("input", updateMobileToolsSearchResults);
+mobileToolsSearchInput.addEventListener("search", updateMobileToolsSearchResults);
+
 mobileUiMediaQuery.addEventListener("change", (event) => {
   if (event.matches) {
     setControlsPanelOpen(false);
@@ -3003,19 +3106,59 @@ redoStrokeButton.addEventListener("click", () => {
   void runHistoryOperation("redo");
 });
 
-function selectMobileBrushTool(tool: BrushSettings["tool"]): void {
-  if (interactionLocked()) return;
+function selectMobileCanvasTool(tool: CanvasTool): boolean {
+  if (interactionLocked()) return false;
   const brushToolSelect = element<HTMLSelectElement>("brushTool");
   brushToolSelect.value = tool;
   brushToolSelect.dispatchEvent(new Event("change", { bubbles: true }));
+  return true;
 }
 
 mobilePaintButton.addEventListener("click", () => {
-  selectMobileBrushTool("paint");
+  selectMobileCanvasTool("paint");
 });
 mobileBlendButton.addEventListener("click", () => {
-  selectMobileBrushTool("blend");
+  selectMobileCanvasTool("blend");
 });
+for (const button of mobileToolsCanvasButtons) {
+  button.addEventListener("click", () => {
+    const tool = button.dataset.mobileCanvasTool;
+    if (
+      tool !== "paint"
+      && tool !== "blend"
+      && tool !== "fill"
+      && tool !== "selection"
+      && tool !== "transform"
+    ) {
+      return;
+    }
+    if (selectMobileCanvasTool(tool)) {
+      setMobileToolsSheetOpen(false);
+    }
+  });
+}
+for (const button of mobileToolsProxyButtons) {
+  button.addEventListener("click", () => {
+    const targetId = button.dataset.mobileProxyButton;
+    const target = targetId
+      ? document.getElementById(targetId) as HTMLButtonElement | null
+      : null;
+    if (!target || target.disabled || vectorTextPrototype === null) return;
+    setMobileToolsSheetOpen(false);
+    target.click();
+  });
+}
+for (const button of mobileToolsEffectButtons) {
+  button.addEventListener("click", () => {
+    const controlId = button.dataset.mobileEffectControl;
+    const control = controlId
+      ? document.getElementById(controlId) as HTMLInputElement | null
+      : null;
+    if (!control || control.disabled || !engineInitialized) return;
+    control.click();
+    syncMobileToolsMenuState();
+  });
+}
 mobileUndoButton.addEventListener("click", () => {
   void runHistoryOperation("undo");
 });
@@ -6477,6 +6620,7 @@ void engine.initialize()
         }).__vectorTextPrototype = vectorTextPrototype;
       }
     }
+    syncMobileToolsMenuState();
     historyState = engine.getHistoryState();
     layerHistoryTestRunning = layerHistoryTestRequested || layerBlendTestRequested;
     layerMemoryStressTestRunning = iphoneMemoryLimitTestRequested;

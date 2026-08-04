@@ -343,6 +343,19 @@ Paint:
   lo snap peek fino a uscire interamente; rilasciandolo con non più di `48 px`
   visibili viene chiuso davvero (stato, ARIA e focus inclusi), mentre un rilascio
   precedente torna a peek e un `pointercancel` ripristina lo snap di partenza.
+  Settimo follow-up: il foglio contiene ora quattro categorie in quest'ordine:
+  `Drawing`, `Select & Edit`, `Insert`, `Effects`. Tutti i titoli e i nomi tool
+  visibili del foglio sono in inglese. Ogni titolo è allineato a
+  sinistra a `18 px` dal bordo e precede una griglia a quattro colonne con icona
+  Lucide `20×20 px` e nome sotto, senza card, ombre o fondi di selezione. Gli
+  strumenti canvas selezionano il routing reale e chiudono il foglio; Testo,
+  SVG e Immagine inoltrano le azioni esistenti; gli effetti commutano i controlli
+  autorevoli del raster selezionato. Gomma resta visibile ma disabilitata perché
+  non è ancora implementata. Search filtra a ogni input per nome e sinonimi,
+  ignorando maiuscole e accenti; una categoria resta visibile se conserva almeno
+  un risultato, lo scroll torna all'inizio e appare uno stato vuoto soltanto con
+  zero corrispondenze. Il filtro visita solo i quattordici elementi quando viene
+  digitato testo o aperto il foglio: nessun polling o loop permanente.
   Tutte le suite `*:verify`, TypeScript, build Vite/Sites e `git diff --check`
   verdi;
   nessuna misura prestazionale o QA fisica iPhone ancora eseguita.

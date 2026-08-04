@@ -36,7 +36,7 @@
               id="mobileToolsMenu"
               class="mobile-header-action"
               type="button"
-              aria-label="Apri menu strumenti"
+              aria-label="Open tools menu"
               aria-controls="mobileToolsSheet"
               aria-expanded="false"
               title="Tools"
@@ -213,7 +213,7 @@
       <aside
         id="mobileToolsSheet"
         class="mobile-tools-sheet"
-        aria-label="Menu strumenti"
+        aria-label="Tools menu"
         aria-hidden="true"
         data-snap="peek"
       >
@@ -221,13 +221,13 @@
           id="mobileToolsSheetHandle"
           class="mobile-tools-sheet-handle"
           type="button"
-          aria-label="Sposta il menu strumenti"
+          aria-label="Move tools menu"
           aria-controls="mobileToolsSheet"
           aria-expanded="false"
         >
           <span class="mobile-tools-sheet-grabber" aria-hidden="true"></span>
         </button>
-        <div class="mobile-tools-sheet-content">
+        <div id="mobileToolsSheetContent" class="mobile-tools-sheet-content">
           <label id="mobileToolsSearchField" class="mobile-tools-search">
             <span class="mobile-icon-stack" aria-hidden="true">
               <i data-lucide="search" class="mobile-icon-layer mobile-icon-outline"></i>
@@ -242,6 +242,242 @@
               spellcheck="false"
             />
           </label>
+
+          <div class="mobile-tools-categories">
+            <section class="mobile-tools-category" data-mobile-tools-category>
+              <h2 class="mobile-tools-category-title">Drawing</h2>
+              <div class="mobile-tools-grid">
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-canvas-tool="paint"
+                  data-mobile-tool-search="pennello brush paint disegno"
+                  aria-label="Select Brush"
+                  aria-pressed="true"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="brush" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="brush" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Brush</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-tool-search="gomma eraser cancella cancellare"
+                  aria-label="Eraser, not available yet"
+                  disabled
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="eraser" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="eraser" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Eraser</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-canvas-tool="blend"
+                  data-mobile-tool-search="blend sfuma sfumino mescola pigmento"
+                  aria-label="Select Blend"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="blend" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="blend" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Blend</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-canvas-tool="fill"
+                  data-mobile-tool-search="riempimento secchiello fill bucket colore"
+                  aria-label="Select Fill"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="paint-bucket" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="paint-bucket" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Fill</span>
+                </button>
+              </div>
+            </section>
+
+            <section class="mobile-tools-category" data-mobile-tools-category>
+              <h2 class="mobile-tools-category-title">Select &amp; Edit</h2>
+              <div class="mobile-tools-grid">
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-canvas-tool="selection"
+                  data-mobile-tool-search="selezione selection bacchetta magica lazo lasso colore"
+                  aria-label="Select Selection"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="scan" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="scan" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Selection</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-canvas-tool="transform"
+                  data-mobile-tool-search="trasforma transform sposta scala ridimensiona ruota"
+                  aria-label="Select Transform"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="scaling" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="scaling" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Transform</span>
+                </button>
+              </div>
+            </section>
+
+            <section class="mobile-tools-category" data-mobile-tools-category>
+              <h2 class="mobile-tools-category-title">Insert</h2>
+              <div class="mobile-tools-grid">
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-proxy-button="addVectorText"
+                  data-mobile-tool-search="testo text type scritta font"
+                  aria-label="Add Text"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="type" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="type" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Text</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-proxy-button="vectorSvgImportButton"
+                  data-mobile-tool-search="svg vettore vector forme shapes importa"
+                  aria-label="Import SVG"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="shapes" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="shapes" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">SVG</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-proxy-button="rasterImageImportButton"
+                  data-mobile-tool-search="immagine image foto raster png jpeg webp avif importa"
+                  aria-label="Import Image"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="image" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="image" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Image</span>
+                </button>
+              </div>
+            </section>
+
+            <section class="mobile-tools-category" data-mobile-tools-category>
+              <h2 class="mobile-tools-category-title">Effects</h2>
+              <div class="mobile-tools-grid">
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-effect-control="rasterColorOverlayEnabled"
+                  data-mobile-tool-search="overlay sovrapposizione colore color effect"
+                  aria-label="Toggle Color Overlay"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="palette" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="palette" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Color Overlay</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-effect-control="rasterStrokeEnabled"
+                  data-mobile-tool-search="traccia contorno stroke outline bordo"
+                  aria-label="Toggle Stroke"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="circle-dashed" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="circle-dashed" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Stroke</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-effect-control="rasterOuterShadowEnabled"
+                  data-mobile-tool-search="ombra esterna outer shadow proiettata"
+                  aria-label="Toggle Outer Shadow"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="sun" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="sun" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Outer Shadow</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-effect-control="rasterInnerShadowEnabled"
+                  data-mobile-tool-search="ombra interna inner shadow bordo"
+                  aria-label="Toggle Inner Shadow"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="circle-dot-dashed" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="circle-dot-dashed" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Inner Shadow</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-effect-control="rasterBevelEnabled"
+                  data-mobile-tool-search="smusso rilievo bevel emboss heightfield"
+                  aria-label="Toggle Bevel"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="box" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="box" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Bevel</span>
+                </button>
+              </div>
+            </section>
+          </div>
+
+          <p id="mobileToolsEmpty" class="mobile-tools-empty" aria-live="polite" hidden>
+            No tools found.
+          </p>
         </div>
       </aside>
 
