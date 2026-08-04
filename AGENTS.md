@@ -346,6 +346,15 @@ Paint:
   lo snap peek fino a uscire interamente; rilasciandolo con non più di `48 px`
   visibili viene chiuso davvero (stato, ARIA e focus inclusi), mentre un rilascio
   precedente torna a peek e un `pointercancel` ripristina lo snap di partenza.
+  Correzione chiusura del 4 agosto 2026: un flick verso il basso di almeno
+  `28 px` e `0,45 px/ms` chiude ora direttamente anche dallo snap expanded,
+  senza fermarsi a peek. Partendo da peek bastano `36 px` verso il basso;
+  partendo da expanded, un trascinamento lento conserva il secondo ancoraggio,
+  ma chiude se supera peek di `36 px`. La velocità usa soltanto campioni recenti
+  entro `100 ms`; `pointercancel` torna esplicitamente allo snap iniziale.
+  La decisione è isolata in un core puro coperto sui casi limite; TypeScript,
+  `layers:verify`, build Vite/Sites e QA browser mobile dei due snap sono verdi,
+  con console senza warning/errori.
   Settimo follow-up: il foglio contiene ora quattro categorie in quest'ordine:
   `Drawing`, `Select & Edit`, `Insert`, `Effects`. Tutti i titoli e i nomi tool
   visibili del foglio sono in inglese. Ogni titolo è allineato a
@@ -445,6 +454,13 @@ Paint:
   benchmark restano invariati: la modifica riguarda il contratto UI usato per
   disegnare. QA browser locale a `430×932`: input/ARIA `1–1000`, disco massimo
   `41 px`, minimo `1 px`, label in pixel e console pulita.
+  Tredicesimo follow-up: anche l'indicatore Opacity usa ora il riempimento
+  proporzionale dell'intero interno utile del disco, invece di un pallino fisso
+  da `18 px` modulato soltanto in alpha. La mappatura è lineare `0–41 px`:
+  browser QA locale a `430×932` ha misurato `0 px` a `0%`, `20,5 px` a `50%`
+  e `41 px` a `100%`, con label/ARIA coerenti e console senza warning/errori.
+  La modifica è solo DOM/CSS e non tocca motore, submit WebGPU o risultato del
+  pennello; TypeScript, `layers:verify` e build Vite/Sites sono verdi.
 - …cache di presentazione persistente screen-space: display shader eseguito
   solo sulla dirty region, poi `copyTextureToTexture` alla swapchain
   (`#37/#38`: Base `+46%` FPS vs `#35`, migliore anche delle vecchie baseline).

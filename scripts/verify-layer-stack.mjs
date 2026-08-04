@@ -24,6 +24,13 @@ import {
 } from "../src/layer-stack.ts";
 import { runGpuAllocationTransaction } from "../src/gpu-allocation-transaction.ts";
 import {
+  MOBILE_TOOLS_SHEET_CLOSE_FLICK_MIN_DISTANCE_PX,
+  MOBILE_TOOLS_SHEET_CLOSE_FLICK_MIN_VELOCITY_PX_PER_MS,
+  MOBILE_TOOLS_SHEET_CLOSE_FROM_PEEK_DISTANCE_PX,
+  MOBILE_TOOLS_SHEET_CLOSE_PAST_PEEK_DISTANCE_PX,
+  shouldCloseMobileToolsSheetDrag,
+} from "../src/mobile-tools-sheet-gesture.ts";
+import {
   DEFAULT_RASTER_INNER_SHADOW_STYLE,
   DEFAULT_RASTER_OUTER_SHADOW_STYLE,
   copyRasterInnerShadowStyle,
@@ -1673,6 +1680,51 @@ assert.match(
   indexSource,
   /minimum-scale=1\.0, maximum-scale=1\.0, user-scalable=no/,
 );
+assert.equal(MOBILE_TOOLS_SHEET_CLOSE_FLICK_MIN_DISTANCE_PX, 28);
+assert.equal(MOBILE_TOOLS_SHEET_CLOSE_FLICK_MIN_VELOCITY_PX_PER_MS, 0.45);
+assert.equal(MOBILE_TOOLS_SHEET_CLOSE_FROM_PEEK_DISTANCE_PX, 36);
+assert.equal(MOBILE_TOOLS_SHEET_CLOSE_PAST_PEEK_DISTANCE_PX, 36);
+const mobileToolsSheetCloseGestureBase = {
+  peekOffsetPx: 600,
+  closedOffsetPx: 800,
+};
+assert.equal(shouldCloseMobileToolsSheetDrag({
+  ...mobileToolsSheetCloseGestureBase,
+  startSnap: "expanded",
+  deltaY: 30,
+  releaseVelocityY: 0.55,
+  offsetPx: 30,
+}), true, "un flick rapido deve chiudere direttamente dallo snap alto");
+assert.equal(shouldCloseMobileToolsSheetDrag({
+  ...mobileToolsSheetCloseGestureBase,
+  startSnap: "expanded",
+  deltaY: 80,
+  releaseVelocityY: 0.1,
+  offsetPx: 80,
+}), false, "un trascinamento lento e corto dallo snap alto deve ancora fermarsi a peek");
+assert.equal(shouldCloseMobileToolsSheetDrag({
+  ...mobileToolsSheetCloseGestureBase,
+  startSnap: "peek",
+  deltaY: 36,
+  releaseVelocityY: 0,
+  offsetPx: 636,
+}), true, "da peek devono bastare 36 px verso il basso per chiudere");
+assert.equal(shouldCloseMobileToolsSheetDrag({
+  ...mobileToolsSheetCloseGestureBase,
+  startSnap: "peek",
+  deltaY: 35,
+  releaseVelocityY: 0,
+  offsetPx: 635,
+}), false, "un movimento sotto soglia da peek non deve chiudere accidentalmente");
+assert.equal(shouldCloseMobileToolsSheetDrag({
+  ...mobileToolsSheetCloseGestureBase,
+  startSnap: "expanded",
+  deltaY: 636,
+  releaseVelocityY: 0,
+  offsetPx: 636,
+}), true, "superare peek di 36 px deve chiudere anche senza velocità");
+assert.match(mainSource, /const shouldClose = shouldCloseMobileToolsSheetDrag\(\{/);
+assert.match(mainSource, /snapMobileToolsSheet\(mobileToolsSheetDragStartSnap\)/);
 assert.match(mainSource, /MOBILE_DOUBLE_TAP_ZOOM_INTERVAL_MS = 350/);
 assert.match(mainSource, /document\.addEventListener\("touchend",[\s\S]*?passive: false/);
 assert.match(mainSource, /document\.addEventListener\("dblclick",[\s\S]*?preventDefault\(\)/);
@@ -1685,7 +1737,15 @@ assert.match(
   /id="mobileBrushSizeControl"[\s\S]*?aria-valuemin="1"[\s\S]*?aria-valuemax="1000"[\s\S]*?aria-valuenow="96"[\s\S]*?aria-valuetext="Size 96 px"/,
 );
 assert.equal((mainSource.match(/size\.max = "1000";/g) ?? []).length, 2);
-assert.match(mainSource, /const MOBILE_BRUSH_SIZE_INDICATOR_MAX_CSS_PIXELS = 41;/);
+assert.match(mainSource, /const MOBILE_BRUSH_CONTROL_INDICATOR_MAX_CSS_PIXELS = 41;/);
+assert.match(
+  mainSource,
+  /const indicatorDiameter = MOBILE_BRUSH_CONTROL_INDICATOR_MAX_CSS_PIXELS \* percent \/ 100;[\s\S]*?"--mobile-brush-opacity-indicator",[\s\S]*?`\$\{indicatorDiameter\.toFixed\(2\)\}px`/,
+);
+assert.match(
+  stylesSource,
+  /\[data-mobile-brush-control="opacity"\] \.mobile-brush-control-value \{[\s\S]*?width: var\(--mobile-brush-opacity-indicator, 41px\);[\s\S]*?height: var\(--mobile-brush-opacity-indicator, 41px\);/,
+);
 assert.match(
   mainSource,
   /return kind === "size"\s*\? `Size \$\{Math\.round\(value\)\} px`\s*:\s*`Opacity \$\{Math\.round\(value\)\}%`/,

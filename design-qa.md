@@ -23,7 +23,7 @@
 - Primary implementation capture: `430 × 932` pixels at a `430 × 932` CSS viewport and device scale factor `1`.
 - The source was downsampled to `430 × 932` for equal-size comparison; no crop or aspect-ratio change was applied.
 - Additional implementation checks used `393 × 852` and `375 × 667` CSS viewports at density `1`.
-- Compared states: both controls resting; Size near the middle; Size at `1 px` and `1000 px`; Opacity active; Paint/Blend availability; Tools and Layers overlays.
+- Compared states: both controls resting; Size near the middle; Size at `1 px` and `1000 px`; Opacity at `0%`, `50%`, and `100%`; Paint/Blend availability; Tools and Layers overlays.
 - The control is intentionally mirrored to the right edge and uses the app's existing dark background because those were explicit product requirements, not fidelity defects.
 
 ## Findings
@@ -34,7 +34,8 @@
 - Colors and tokens: neutral off-white, muted inactive gray, app-background panel, and `#dd5c35` active outline follow the established mobile tokens.
 - Image quality and asset fidelity: the preview is rendered on a dedicated DPR-aware Canvas2D surface from the selected tip shape and hardness; no placeholder image, GPU readback, or scaled raster asset is used.
 - Copy and content: labels use the corrected `Size N px` contract; only `Opacity N%` remains percentage-based.
-- At `1 px`, the stamp preview becomes effectively invisible; at `1000 px`, the inner indicator reaches the complete `41 px` usable diameter of the 44 px control.
+- At `1 px`, the stamp preview becomes effectively invisible; at `1000 px`, the Size indicator reaches the complete `41 px` usable diameter of the 44 px control.
+- The Opacity indicator now uses the same fill language: `0%` is empty, `50%` measures `20.5 px`, and `100%` fills the complete `41 px` interior.
 
 ## Comparison history
 
@@ -45,17 +46,26 @@
 - Iteration 2 — P1: Size was incorrectly exposed as `1–100%`, and the maximum inner indicator used only 18 px of the available disc.
   - Fix: changed the mobile and desktop UI contract to `1–1000 px`, kept only track position normalized, and expanded the maximum indicator to the full 41 px interior.
   - Post-fix evidence: the two new `1 px` and `1000 px` browser captures listed above; runtime measurements report exactly 1 px and 41 px indicator diameters.
+- Iteration 3 — P1: Opacity retained a fixed 18 px inner disc and encoded the value only by fading its alpha, so `100%` did not fill the control.
+  - Fix: changed Opacity to a proportional `0–41 px` diameter with a solid off-white fill, matching the Size control's visual language.
+  - Post-fix evidence: browser runtime measurements at `430 × 932` report exactly `0 px`, `20.5 px`, and `41 px` at `0%`, `50%`, and `100%`; the console contains no warning or error.
 
 ## Interaction and runtime checks
 
 - Vertical drag changes Size and Opacity; horizontal position is ignored.
 - Size clamps to `1–1000 px`; Opacity clamps to `0–100%`; keyboard arrows, Home, and End are supported.
-- The visible value and inner disc update during the gesture; engine settings commit once at gesture end.
+- The visible value and proportional inner disc update during the gesture; engine settings commit once at gesture end.
 - The preview uses a dedicated Canvas2D surface and one `requestAnimationFrame` at a time; the drawing hot path and WebGPU submissions are untouched during slider movement.
 - Size remains available for Paint and Blend; Opacity is disabled for Blend.
 - Controls are suppressed while the Tools sheet or Layers panel is open.
 - Browser console warnings/errors after the final initialized state: none.
 - TypeScript, production build, layer, grain, stroke, and history verification suites: passed.
+
+### Tools sheet closure follow-up
+
+- A downward flick of at least `28 px` at `0.45 px/ms` closes directly from the expanded snap instead of stopping at peek.
+- From peek, a `36 px` downward push closes the sheet; from expanded, a slow drag still lands on peek unless it passes that snap by `36 px`.
+- Deterministic boundary checks cover fast/slow expanded gestures, `35/36 px` peek gestures, and the past-peek close path. Mobile browser QA confirms both anchors, full Tools-button closure, and a clean console.
 
 ## Implementation checklist
 

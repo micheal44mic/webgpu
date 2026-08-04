@@ -1111,9 +1111,8 @@ select {
   }
 
   [data-mobile-brush-control="opacity"] .mobile-brush-control-value {
-    width: 18px;
-    height: 18px;
-    opacity: var(--mobile-brush-opacity-indicator, 1);
+    width: var(--mobile-brush-opacity-indicator, 41px);
+    height: var(--mobile-brush-opacity-indicator, 41px);
   }
 
   .mobile-brush-control:focus-visible .mobile-brush-control-disc,

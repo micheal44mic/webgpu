@@ -1,5 +1,9 @@
 import "./styles.css";
 import {
+  shouldCloseMobileToolsSheetDrag,
+  type MobileToolsSheetSnap,
+} from "./mobile-tools-sheet-gesture";
+import {
   Blend,
   Box,
   Brush,
@@ -858,13 +862,16 @@ let rasterInnerShadowChanging = false;
 let engineInitialized = false;
 let selectionUiBusy = false;
 let controlsPanelOpen = true;
-type MobileToolsSheetSnap = "peek" | "expanded";
 let mobileToolsSheetOpen = false;
 let mobileToolsSheetSnap: MobileToolsSheetSnap = "peek";
 let mobileToolsSheetOffsetPx = 0;
 let mobileToolsSheetDragPointerId: number | null = null;
 let mobileToolsSheetDragStartY = 0;
 let mobileToolsSheetDragStartOffsetPx = 0;
+let mobileToolsSheetDragStartSnap: MobileToolsSheetSnap = "peek";
+let mobileToolsSheetDragLastY = 0;
+let mobileToolsSheetDragLastTime = 0;
+let mobileToolsSheetDragVelocityY = 0;
 let mobileToolsSheetDragMoved = false;
 let mobileToolsSheetResizeFrame: number | null = null;
 let mobileLayersPanelOpen = false;
@@ -1158,7 +1165,7 @@ function setControlsPanelOpen(open: boolean): void {
 
 const MOBILE_BRUSH_PREVIEW_CSS_SIZE = 124;
 const MOBILE_BRUSH_PREVIEW_MAX_TIP_CSS_PIXELS = 92;
-const MOBILE_BRUSH_SIZE_INDICATOR_MAX_CSS_PIXELS = 41;
+const MOBILE_BRUSH_CONTROL_INDICATOR_MAX_CSS_PIXELS = 41;
 
 function clampMobileBrushPercent(value: number, minimum: number): number {
   return Math.min(100, Math.max(minimum, Number.isFinite(value) ? value : minimum));
@@ -1233,16 +1240,17 @@ function syncMobileBrushControlVisual(kind: MobileBrushControlKind): void {
   if (kind === "size") {
     const indicatorDiameter = Math.max(
       1,
-      MOBILE_BRUSH_SIZE_INDICATOR_MAX_CSS_PIXELS * percent / 100,
+      MOBILE_BRUSH_CONTROL_INDICATOR_MAX_CSS_PIXELS * percent / 100,
     );
     control.style.setProperty(
       "--mobile-brush-size-indicator",
       `${indicatorDiameter.toFixed(2)}px`,
     );
   } else {
+    const indicatorDiameter = MOBILE_BRUSH_CONTROL_INDICATOR_MAX_CSS_PIXELS * percent / 100;
     control.style.setProperty(
       "--mobile-brush-opacity-indicator",
-      (percent / 100).toFixed(3),
+      `${indicatorDiameter.toFixed(2)}px`,
     );
   }
 }
@@ -1415,6 +1423,21 @@ function snapMobileToolsSheet(snap: MobileToolsSheetSnap): void {
     snap === "expanded" ? "Collapse tools menu" : "Expand tools menu",
   );
   setMobileToolsSheetOffset(snap === "expanded" ? 0 : mobileToolsSheetPeekOffset());
+}
+
+function recordMobileToolsSheetDragMotion(clientY: number): void {
+  const sampleTime = performance.now();
+  const elapsedMs = sampleTime - mobileToolsSheetDragLastTime;
+  if (elapsedMs > 0 && elapsedMs <= 120) {
+    const immediateVelocity = (clientY - mobileToolsSheetDragLastY) / elapsedMs;
+    mobileToolsSheetDragVelocityY = mobileToolsSheetDragVelocityY === 0
+      ? immediateVelocity
+      : mobileToolsSheetDragVelocityY * 0.35 + immediateVelocity * 0.65;
+  } else if (elapsedMs > 120) {
+    mobileToolsSheetDragVelocityY = 0;
+  }
+  mobileToolsSheetDragLastY = clientY;
+  mobileToolsSheetDragLastTime = sampleTime;
 }
 
 function expandMobileToolsSheetForSearchFocus(): void {
@@ -1608,15 +1631,29 @@ function finishMobileToolsSheetDrag(
   const deltaY = event.clientY - mobileToolsSheetDragStartY;
   const peekOffset = mobileToolsSheetPeekOffset();
   const closedOffset = mobileToolsSheetClosedOffset();
-  const closeThreshold = Math.max(peekOffset, closedOffset - 48);
+  const releaseMotionAgeMs = performance.now() - mobileToolsSheetDragLastTime;
+  const releaseVelocityY = releaseMotionAgeMs <= 100
+    ? mobileToolsSheetDragVelocityY
+    : 0;
+  const shouldClose = shouldCloseMobileToolsSheetDrag({
+    startSnap: mobileToolsSheetDragStartSnap,
+    deltaY,
+    releaseVelocityY,
+    offsetPx: mobileToolsSheetOffsetPx,
+    peekOffsetPx: peekOffset,
+    closedOffsetPx: closedOffset,
+  });
   mobileToolsSheetDragPointerId = null;
   if (cancelled) {
     if (mobileToolsSheetDragMoved) {
-      snapMobileToolsSheet(mobileToolsSheetSnap);
+      snapMobileToolsSheet(mobileToolsSheetDragStartSnap);
     }
     return;
   }
-  if (mobileToolsSheetDragMoved && mobileToolsSheetOffsetPx >= closeThreshold) {
+  if (
+    mobileToolsSheetDragMoved
+    && shouldClose
+  ) {
     setMobileToolsSheetOpen(false);
     mobileToolsSheetDragMoved = false;
     return;
@@ -3560,6 +3597,10 @@ mobileToolsSheetHandle.addEventListener("pointerdown", (event) => {
   mobileToolsSheetDragPointerId = event.pointerId;
   mobileToolsSheetDragStartY = event.clientY;
   mobileToolsSheetDragStartOffsetPx = mobileToolsSheetOffsetPx;
+  mobileToolsSheetDragStartSnap = mobileToolsSheetSnap;
+  mobileToolsSheetDragLastY = event.clientY;
+  mobileToolsSheetDragLastTime = performance.now();
+  mobileToolsSheetDragVelocityY = 0;
   mobileToolsSheetDragMoved = false;
   mobileToolsSheet.classList.add("is-dragging");
   mobileToolsSheetHandle.setPointerCapture(event.pointerId);
@@ -3568,6 +3609,7 @@ mobileToolsSheetHandle.addEventListener("pointerdown", (event) => {
 mobileToolsSheetHandle.addEventListener("pointermove", (event) => {
   if (event.pointerId !== mobileToolsSheetDragPointerId) return;
   const deltaY = event.clientY - mobileToolsSheetDragStartY;
+  recordMobileToolsSheetDragMotion(event.clientY);
   if (Math.abs(deltaY) >= 4) {
     mobileToolsSheetDragMoved = true;
   }
