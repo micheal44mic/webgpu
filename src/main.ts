@@ -3,6 +3,7 @@ import {
   shouldCloseMobileToolsSheetDrag,
   type MobileToolsSheetSnap,
 } from "./mobile-tools-sheet-gesture";
+import { MobileBrushStudioController } from "./mobile-brush-studio";
 import {
   Blend,
   Box,
@@ -792,6 +793,7 @@ if (mixedMemoryBenchmarkRequested) {
     "Pronto. Tieni questa pagina in primo piano finché termina o Safari la chiude.";
 }
 let vectorTextPrototype: MixedVectorTextController | null = null;
+let mobileBrushStudio: MobileBrushStudioController | null = null;
 const engine = new BrushEngine(canvas, {
   onStatus(message, kind) {
     statusElement.textContent = message;
@@ -801,6 +803,7 @@ const engine = new BrushEngine(canvas, {
     updateStats(stats);
     if (mobileBrushControlDrag) scheduleMobileBrushPreview();
     if (mobileBrushLibraryOpen) markMobileBrushLibraryPreviewDirty();
+    mobileBrushStudio?.notifyEngineUpdate();
   },
   onHistoryChange(state) {
     historyState = state;
@@ -908,6 +911,7 @@ type MobileBrushLibraryBrushId = "m1m4-pencil-v1" | "current";
 let mobileBrushLibraryOpen = false;
 let mobileBrushLibraryCategory: MobileBrushLibraryCategory = "painting";
 let activeMobileBrushLibraryBrushId: MobileBrushLibraryBrushId = "current";
+let mobileBrushLibrarySelectionRevision = 0;
 let mobileBrushLibraryOffsetPx = 0;
 let mobileBrushLibraryDragPointerId: number | null = null;
 let mobileBrushLibraryDragStartY = 0;
@@ -957,6 +961,7 @@ let gpuMemoryDeltaTimer: number | null = null;
 type CanvasTool = BrushSettings["tool"] | "fill" | "selection" | "transform";
 let activeBrushTool: BrushSettings["tool"] = "paint";
 let activeCanvasTool: CanvasTool = "paint";
+let activeShapeInvert = false;
 let selectionCombineMode: SelectionCombineMode = "replace";
 let toolConfigurationRevision = 0;
 
@@ -1006,7 +1011,7 @@ const toolControlSnapshots: Record<
   BrushSettings["tool"],
   { size: number; spacing: number; flow: number; hardness: number }
 > = {
-  paint: { size: 96, spacing: 1, flow: 7, hardness: 88 },
+  paint: { size: 96, spacing: 1, flow: 7, hardness: 100 },
   blend: { size: 100, spacing: 10, flow: 45, hardness: 8 },
 };
 
@@ -1089,6 +1094,9 @@ function configureBrushToolUi(
   ) {
     captureActiveToolControls();
   }
+  if (tool !== "paint" && mobileBrushStudio?.isOpen) {
+    mobileBrushStudio.cancel(false);
+  }
   activeCanvasTool = tool;
   if (tool !== "paint" && mobileBrushLibraryOpen) {
     setMobileBrushLibraryOpen(false);
@@ -1139,12 +1147,12 @@ function configureBrushToolUi(
     "brushSizeControl",
     "spacingControl",
     "flowControl",
-    "hardnessControl",
     "grainSection",
     "renderingModeMemoryHint",
   ]) {
     element<HTMLElement>(id).hidden = fill || selection || transform;
   }
+  element<HTMLElement>("hardnessControl").hidden = !blend || fill || selection || transform;
   element<HTMLElement>("brushColorControl").hidden = selection || transform;
   element<HTMLElement>("fillToleranceControl").hidden = !fill;
   element<HTMLElement>("selectionControls").hidden = !selection;
@@ -1366,7 +1374,8 @@ function syncMobileBrushControlsVisibility(): void {
     || !brushContext
     || mobileLayersPanelOpen
     || mobileToolsSheetOpen
-    || mobileBrushLibraryOpen;
+    || mobileBrushLibraryOpen
+    || mobileBrushStudio?.isOpen === true;
   if (suppressed && mobileBrushControlDrag) {
     finishMobileBrushControlDrag(true);
   }
@@ -1403,13 +1412,16 @@ function finishMobileBrushControlDrag(commit: boolean): void {
 
 function syncMobileBrushLibraryButtonState(): void {
   const paintSelected = activeCanvasTool === "paint";
-  const expanded = paintSelected && mobileBrushLibraryOpen;
+  const studioOpen = mobileBrushStudio?.isOpen === true;
+  const expanded = paintSelected && (mobileBrushLibraryOpen || studioOpen);
   mobilePaintButton.setAttribute("aria-expanded", String(expanded));
   mobilePaintButton.setAttribute(
     "aria-label",
     paintSelected
       ? expanded
-        ? "Close brush library"
+        ? studioOpen
+          ? "Brush Studio open"
+          : "Close brush library"
         : "Open brush library"
       : "Select Brush",
   );
@@ -1745,6 +1757,7 @@ function syncMobileBrushLibrarySelection(): void {
 
 function setMobileBrushLibraryOpen(open: boolean): void {
   if (open && (!mobileUiMediaQuery.matches || activeCanvasTool !== "paint")) return;
+  if (open && mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
   if (open && mobileToolsSheetOpen) setMobileToolsSheetOpen(false);
   if (open && mobileLayersPanelOpen) setMobileLayersPanelOpen(false);
 
@@ -2038,6 +2051,7 @@ async function captureRequestedMobileLayerThumbnail(): Promise<void> {
 
 function setMobileLayersPanelOpen(open: boolean): void {
   if (open && !mobileUiMediaQuery.matches) return;
+  if (open && mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
   if (open && mobileToolsSheetOpen) {
     setMobileToolsSheetOpen(false);
   }
@@ -2076,6 +2090,7 @@ function setMobileLayersPanelOpen(open: boolean): void {
 
 function setMobileToolsSheetOpen(open: boolean): void {
   if (open && !mobileUiMediaQuery.matches) return;
+  if (open && mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
   if (open && mobileLayersPanelOpen) {
     setMobileLayersPanelOpen(false);
   }
@@ -2176,6 +2191,7 @@ function readBrushSettings(): BrushSettings {
     shape: element<HTMLSelectElement>("brushShape").value as BrushSettings["shape"],
     shapeAssetId:
       element<HTMLSelectElement>("shapeSource").value as BrushSettings["shapeAssetId"],
+    shapeInvert: activeShapeInvert,
     shapeRotation:
       element<HTMLSelectElement>("shapeRotation").value as BrushSettings["shapeRotation"],
     shapeScatter: rangeValue("shapeScatter") / 100,
@@ -2201,7 +2217,7 @@ function readBrushSettings(): BrushSettings {
     count: rangeValue("count"),
     flow: rangeValue("flow") / 100,
     opacity: rangeValue("opacity") / 100,
-    hardness: rangeValue("hardness") / 100,
+    hardness: activeBrushTool === "paint" ? 1 : rangeValue("hardness") / 100,
     // Kept fixed in the engine/history ABI; Flow is the only deposit control.
     blendIntensity: 1,
     blendMode: element<HTMLSelectElement>("blendMode").value as BrushSettings["blendMode"],
@@ -3219,14 +3235,32 @@ async function applyRasterBevelControls(): Promise<void> {
   }
 }
 
+function setBrushAssetControlValue(
+  controlId: "shapeSource" | "grainSource",
+  value: string,
+  fallback: string,
+): void {
+  const select = element<HTMLSelectElement>(controlId);
+  const normalized = value.startsWith("custom-") ? value : value || fallback;
+  if (!Array.from(select.options).some((option) => option.value === normalized)) {
+    const option = document.createElement("option");
+    option.value = normalized;
+    option.textContent = normalized.startsWith("custom-shape:")
+      ? "Custom Shape"
+      : normalized.startsWith("custom-grain:")
+        ? "Custom Grain"
+        : normalized;
+    select.append(option);
+  }
+  setControlValue(controlId, normalized);
+}
+
 function applySettingsToControls(settings: BrushSettings): void {
   const tool = settings.tool === "blend" ? "blend" : "paint";
   configureBrushToolUi(tool, false);
   setControlValue("brushShape", settings.shape === "shape" ? "shape" : "circle");
-  setControlValue(
-    "shapeSource",
-    settings.shapeAssetId === "pencil-shape" ? "pencil-shape" : "legacy-shape",
-  );
+  setBrushAssetControlValue("shapeSource", settings.shapeAssetId, "legacy-shape");
+  activeShapeInvert = settings.shapeInvert === true;
   setControlValue(
     "shapeRotation",
     settings.shapeRotation === "follow-stroke" ? "follow-stroke" : "fixed",
@@ -3238,10 +3272,7 @@ function applySettingsToControls(settings: BrushSettings): void {
       ? settings.grainMode
       : "off",
   );
-  setControlValue(
-    "grainSource",
-    settings.grainAssetId === "pencil-grain" ? "pencil-grain" : "legacy-grain",
-  );
+  setBrushAssetControlValue("grainSource", settings.grainAssetId, "legacy-grain");
   setControlValue("grainScale", (settings.grainScale ?? 1.4) * 100);
   setControlValue("grainMovement", (settings.grainMovement ?? 0) * 100);
   setControlValue("grainDepth", (settings.grainDepth ?? 1) * 100);
@@ -3264,7 +3295,7 @@ function applySettingsToControls(settings: BrushSettings): void {
   setControlValue("count", settings.count);
   setControlValue("flow", settings.flow * 100);
   setControlValue("opacity", (settings.opacity ?? 1) * 100);
-  setControlValue("hardness", settings.hardness * 100);
+  setControlValue("hardness", tool === "paint" ? 100 : settings.hardness * 100);
   const renderingMode = settings.blendMode === "uniformed-glaze"
     || settings.blendMode === "intense-blending"
     ? settings.blendMode
@@ -3282,10 +3313,30 @@ function applySettingsToControls(settings: BrushSettings): void {
   applyBrushControls();
 }
 
+mobileBrushStudio = new MobileBrushStudioController({
+  engine,
+  mobileMediaQuery: mobileUiMediaQuery,
+  applySettings: applySettingsToControls,
+  setBrushLibraryOpen: setMobileBrushLibraryOpen,
+  onOpenChange: () => {
+    syncMobileBrushLibraryButtonState();
+    syncMobileBrushControlsVisibility();
+  },
+  onCommit: (_brushId, _settings) => {
+    syncMobileBrushLibrarySelection();
+    markMobileBrushLibraryPreviewDirty();
+  },
+  onStatus: (message, kind) => {
+    statusElement.textContent = message;
+    statusElement.className = `status ${kind === "working" ? "" : kind}`;
+  },
+});
+
 function applyHumanStrokePreset(): BrushSettings {
   configureBrushToolUi("paint", false);
   setControlValue("brushShape", "circle");
   setControlValue("shapeSource", "legacy-shape");
+  activeShapeInvert = false;
   setControlValue("shapeRotation", "fixed");
   setControlValue("shapeScatter", 0);
   setControlValue("grainMode", "off");
@@ -4125,21 +4176,49 @@ for (const button of mobileBrushLibraryCategoryButtons) {
   });
 }
 
+function mobileBrushLibraryName(brushId: MobileBrushLibraryBrushId): string {
+  const card = mobileBrushLibraryCards.find(
+    (candidate) => candidate.dataset.mobileBrushId === brushId,
+  );
+  return card?.querySelector<HTMLElement>(".mobile-brush-card-name")?.textContent?.trim()
+    || (brushId === PENCIL_BRUSH_PRESET.id ? PENCIL_BRUSH_PRESET.name : "Current Brush");
+}
+
+async function selectMobileBrushLibraryBrush(
+  brushId: MobileBrushLibraryBrushId,
+): Promise<void> {
+  const studio = mobileBrushStudio;
+  if (!studio) return;
+  if (brushId === activeMobileBrushLibraryBrushId) {
+    studio.open(brushId, mobileBrushLibraryName(brushId), engine.getSettings());
+    return;
+  }
+
+  const revision = ++mobileBrushLibrarySelectionRevision;
+  const currentSettings = engine.getSettings();
+  studio.rememberSettings(activeMobileBrushLibraryBrushId, currentSettings);
+  const fallback = brushId === PENCIL_BRUSH_PRESET.id
+    ? resolveBrushPresetSettings(PENCIL_BRUSH_PRESET, currentSettings)
+    : currentSettings;
+  try {
+    const settings = await studio.resolveBrushSettings(brushId, fallback);
+    if (revision !== mobileBrushLibrarySelectionRevision) return;
+    applySettingsToControls(settings);
+    activeMobileBrushLibraryBrushId = brushId;
+    syncMobileBrushLibrarySelection();
+    markMobileBrushLibraryPreviewDirty();
+  } catch (error) {
+    statusElement.textContent = error instanceof Error ? error.message : String(error);
+    statusElement.className = "status error";
+  }
+}
+
 mobileCurrentBrushCard.addEventListener("click", () => {
-  activeMobileBrushLibraryBrushId = "current";
-  syncMobileBrushLibrarySelection();
-  markMobileBrushLibraryPreviewDirty();
+  void selectMobileBrushLibraryBrush("current");
 });
 
 mobilePencilBrushCard.addEventListener("click", () => {
-  const settings = resolveBrushPresetSettings(
-    PENCIL_BRUSH_PRESET,
-    engine.getSettings(),
-  );
-  applySettingsToControls(settings);
-  activeMobileBrushLibraryBrushId = PENCIL_BRUSH_PRESET.id;
-  syncMobileBrushLibrarySelection();
-  markMobileBrushLibraryPreviewDirty();
+  void selectMobileBrushLibraryBrush(PENCIL_BRUSH_PRESET.id);
 });
 
 mobileBrushLibraryHandle.addEventListener("pointerdown", (event) => {
@@ -4258,6 +4337,7 @@ mobileUiMediaQuery.addEventListener("change", (event) => {
   setMobileToolsSheetOpen(false);
   setMobileLayersPanelOpen(false);
   setMobileBrushLibraryOpen(false);
+  mobileBrushStudio?.cancel(false);
   setControlsPanelOpen(true);
   syncMobileBrushControlsVisibility();
 });
@@ -4266,7 +4346,8 @@ window.addEventListener("resize", () => {
   const toolsNeedLayout = mobileToolsSheetOpen && mobileToolsSheetDragPointerId === null;
   const brushLibraryNeedsLayout = mobileBrushLibraryOpen
     && mobileBrushLibraryDragPointerId === null;
-  if (!toolsNeedLayout && !brushLibraryNeedsLayout) return;
+  const brushStudioNeedsLayout = mobileBrushStudio?.isOpen === true;
+  if (!toolsNeedLayout && !brushLibraryNeedsLayout && !brushStudioNeedsLayout) return;
   if (mobileToolsSheetResizeFrame !== null) {
     cancelAnimationFrame(mobileToolsSheetResizeFrame);
   }
@@ -4279,6 +4360,7 @@ window.addEventListener("resize", () => {
       setMobileBrushLibraryOffset(0);
       markMobileBrushLibraryPreviewDirty();
     }
+    mobileBrushStudio?.handleResize();
   });
 });
 
@@ -8284,6 +8366,17 @@ void loadCanonicalHumanStroke();
 void engine.initialize()
   .then(async () => {
     engineInitialized = true;
+    if (mobileBrushStudio) {
+      if (mobileUiMediaQuery.matches) {
+        const restored = await mobileBrushStudio.resolveBrushSettings(
+          "current",
+          engine.getSettings(),
+        );
+        applySettingsToControls(restored);
+      } else {
+        mobileBrushStudio.rememberSettings("current", engine.getSettings());
+      }
+    }
     if (vectorTextEditorEnabled) {
       vectorTextPrototype = new MixedVectorTextController(engine);
       await vectorTextPrototype.initialize();

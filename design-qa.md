@@ -116,3 +116,44 @@ final result: passed
 - [x] Tools/Layers/Brush Library mutual exclusion.
 
 final result: passed
+
+# Design QA — Mobile Brush Studio
+
+## Visual sources
+
+- Rendering selector: `C:\Users\michi\AppData\Local\Temp\codex-clipboard-b0d58a89-5ac6-4f8e-a25a-2f1d22464832.png`
+- Source card: `C:\Users\michi\AppData\Local\Temp\codex-clipboard-f62e90f6-21ba-4db3-8320-046787a5b7e4.png`
+- Verified implementation: [brush-studio-pencil-393x852.png](design-qa-assets/brush-studio-pencil-393x852.png)
+- Combined comparison: [brush-studio-reference-comparison.png](design-qa-assets/brush-studio-reference-comparison.png)
+
+## Scope and viewports
+
+- Primary comparison viewport: `393 × 852`.
+- Compact-phone regression viewport: `360 × 640`.
+- Mobile sheet top: `77 px`; bottom and sticky category bar remain aligned with the viewport.
+- Source card intentionally omits the reference curve graph and Color button, as requested.
+- Rendering labels intentionally use the three real engine modes: Light Glaze, Uniformed Glaze, and Intense Blending.
+
+## Visual review
+
+- The selected segmented option preserves the light active fill and dark inactive rail from the reference while using the product's existing neutral and orange tokens.
+- Shape and Grain source cards use a real thumbnail, Invert, Replace, and Remove without decorative effects or shadows.
+- Preview, scrollable controls, and the four-category footer fit without horizontal overflow at both tested phone sizes.
+- One P1 layout issue was found during QA: switching footer tabs could programmatically scroll the hidden app root. Mobile root scrolling is now clipped and the controller restores root scroll after a tab change. Recapture confirms `app.scrollTop = 0`, sheet top `77 px`, and footer bottom equal to viewport height.
+- One P2 accessibility issue was fixed: Shape and Grain file inputs now have distinct accessible names instead of inheriting both Select and Replace labels.
+
+## Functional review
+
+- A first tap selects Pencil; a second tap on the selected card opens Brush Studio expanded.
+- Size changes update the live preview once per animation frame.
+- Cancel restores the exact opening settings; verified with Size `96 → 300 → 96`.
+- Done persists settings; verified with Size `96 → 222`, Studio reopen, and full page reload.
+- The sheet handle tap uses Cancel semantics and restores `333 → 222`; drag-close uses the same tested close-threshold helper as the Tools and Library sheets.
+- Real PNG Shape import registered a `custom-shape:*` asset, loaded the GPU Shape resource, and Cancel restored `pencil-shape`.
+- Shape, Grain, and Dynamics tabs expose the Pencil values supplied by the user, including Scatter `51%`, Count `1`, Moving Grain, Scale `43%`, Movement `99%`, and thickness `100% / 60%`.
+- Console review found zero warnings and zero errors.
+- TypeScript, production build, all `*:verify` suites, `brush-studio:verify`, and `git diff --check` passed.
+
+Physical Safari/iPhone touch QA and canonical performance measurement remain separate follow-up work; this pass validates the local mobile browser implementation and does not claim a new performance baseline.
+
+final result: passed

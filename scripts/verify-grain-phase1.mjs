@@ -199,7 +199,7 @@ assert(engine.includes('url: new URL("../graincottonfleece.PNG", import.meta.url
   "Il runtime non instrada gli asset Grain legacy e Pencil espliciti.");
 assert(engine.includes('const GRAIN_TEXTURE_SIZE = 2500;')
   && engine.includes('format: "rgba8unorm"')
-  && engine.includes("mipLevelCountForSize(asset.width, asset.height)"),
+  && engine.includes("mipLevelCountForSize(width, height)"),
   "Dimensione/formato nativi del Grain non configurati.");
 assert(engine.includes('"rgba8-native-2500-fixed-coverage-multiply"')
   && engine.includes('"rgba8-native-2500-moving-coverage-multiply"'),

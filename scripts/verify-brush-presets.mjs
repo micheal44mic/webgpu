@@ -8,6 +8,8 @@ import { readEngineSource } from "./engine-source.mjs";
 const projectRoot = path.resolve(import.meta.dirname, "..");
 const modulePath = path.join(projectRoot, "src", "brush-presets.ts");
 const presets = await import(pathToFileURL(modulePath).href);
+const registryModulePath = path.join(projectRoot, "src", "brush-asset-registry.ts");
+const { CustomBrushAssetRegistry } = await import(pathToFileURL(registryModulePath).href);
 
 assert.equal(presets.BRUSH_PRESET_CONTRACT_VERSION, "m1m4-brush-preset-v1");
 assert.equal(Object.keys(presets.BRUSH_ASSET_REGISTRY).length, 4);
@@ -42,6 +44,7 @@ const pencil = presets.PENCIL_BRUSH_PRESET;
 assert.equal(pencil.id, "m1m4-pencil-v1");
 assert.equal(pencil.categoryId, "pencil");
 assert.equal(pencil.settings.shapeAssetId, "pencil-shape");
+assert.equal(pencil.settings.shapeInvert, false);
 assert.equal(pencil.settings.shapeRotation, "follow-stroke");
 assert.equal(pencil.settings.grainAssetId, "pencil-grain");
 assert.equal(pencil.settings.grainMovement, 0.99);
@@ -100,6 +103,47 @@ function rgba8MipSummary(width, height) {
 const pencilGrainMip = rgba8MipSummary(800, 800);
 assert.deepEqual(pencilGrainMip, { levels: 10, bytes: 3_413_260 });
 
+const customRegistry = new CustomBrushAssetRegistry();
+const decodedShape = {
+  width: 2,
+  height: 1,
+  rgba: new Uint8Array([0, 0, 0, 255, 255, 255, 255, 64]),
+  name: "Persisted Shape",
+  mimeType: "image/png",
+};
+const persistedShapeId = "custom-shape:persisted-v1";
+assert.equal(customRegistry.registerShape(decodedShape, persistedShapeId), persistedShapeId);
+decodedShape.rgba.fill(7);
+const firstSnapshot = customRegistry.snapshot(persistedShapeId);
+assert.deepEqual(
+  [...firstSnapshot.rgba],
+  [0, 0, 0, 255, 255, 255, 255, 64],
+  "Il registro deve possedere una copia persistibile dei pixel decodificati.",
+);
+firstSnapshot.rgba.fill(9);
+assert.deepEqual(
+  [...customRegistry.snapshot(persistedShapeId).rgba],
+  [0, 0, 0, 255, 255, 255, 255, 64],
+  "L'API read-only non deve esporre il backing store autorevole.",
+);
+assert.throws(
+  () => customRegistry.registerShape({ ...decodedShape, rgba: new Uint8Array(8) }, persistedShapeId),
+  /immutabile/,
+);
+const generatedGrainId = customRegistry.registerGrain({
+  width: 1,
+  height: 1,
+  rgba: new Uint8Array([80, 90, 100, 255]),
+});
+assert.match(generatedGrainId, /^custom-grain:/);
+assert.equal(customRegistry.snapshot(generatedGrainId).kind, "grain");
+assert.equal(customRegistry.remove(generatedGrainId), true);
+assert.equal(customRegistry.snapshot(generatedGrainId), null);
+assert.throws(
+  () => customRegistry.registerShape({ width: 1, height: 1, rgba: new Uint8Array(3) }),
+  /attesi 4 B/,
+);
+
 const engine = readEngineSource();
 const shaders = readFileSync(path.join(projectRoot, "src", "shaders.ts"), "utf8");
 const main = readFileSync(path.join(projectRoot, "src", "main.ts"), "utf8");
@@ -108,11 +152,13 @@ const html = readFileSync(path.join(projectRoot, "index.html"), "utf8");
 assert(!engine.includes('"m1m4-pencil-v1"'),
   "Il motore non deve contenere logica legata all'id del preset Pencil.");
 assert(engine.includes("shapeAssetId: BrushShapeAssetId")
+  && engine.includes("shapeInvert: boolean")
   && engine.includes("shapeRotation: BrushShapeRotation")
   && engine.includes("grainAssetId: BrushGrainAssetId")
   && engine.includes("grainMovement: number"),
   "Le nuove capacità devono appartenere al contratto BrushSettings generale.");
 assert(engine.includes('shapeAssetId: "legacy-shape"')
+  && engine.includes("shapeInvert: false")
   && engine.includes('shapeRotation: "fixed"')
   && engine.includes('grainAssetId: "legacy-grain"')
   && engine.includes("grainMovement: 0"),
@@ -125,14 +171,24 @@ const shapeLoaderStart = engine.indexOf("export async function createShapeMaskRe
 const shapeLoaderEnd = engine.indexOf("export function destroyShapeMaskResources", shapeLoaderStart);
 assert(shapeLoaderStart >= 0 && shapeLoaderEnd > shapeLoaderStart, "Loader Shape non trovato.");
 const shapeLoader = engine.slice(shapeLoaderStart, shapeLoaderEnd);
-assert(shapeLoader.indexOf("if (asset.decode.invertLuminance)") >= 0
-  && shapeLoader.indexOf("if (asset.decode.invertLuminance)")
+assert(shapeLoader.indexOf("authoredInvert !== shapeInvert") >= 0
+  && shapeLoader.indexOf("authoredInvert !== shapeInvert")
     < shapeLoader.indexOf("buildShapeOccupancyMaps"),
-  "La polarità nera della Shape deve essere risolta prima di mip, occupancy e preview.");
+  "Shape Invert deve essere risolto prima di mip, occupancy e preview.");
 assert(engine.includes("ensureReplayBrushAssets(batch.settings)")
   && engine.includes("shapeAssetIdForSettings(settings)")
+  && engine.includes("shapeInvertForSettings(settings)")
   && engine.includes("grainAssetIdForSettings(settings)"),
   "Undo/Redo non ripristina gli asset registrati da ogni brush batch.");
+assert(engine.includes("shapeDesiredInvert")
+  && engine.includes("shapeLoadingInvert")
+  && engine.includes("shapeLoadedInvert")
+  && engine.includes("runGpuAllocationTransaction")
+  && engine.includes("createShapeMaskResources(this, assetId, invert)"),
+  "Il retarget Shape asset+invert non conserva latest-only e transazione GPU.");
+assert(engine.includes('hardness: tool === "paint" ? 1')
+  && engine.includes("hardness: 1"),
+  "Hardness deve essere normalizzata al 100% per ogni Paint setting.");
 
 assert(shaders.includes("let followAngle = select(0.0, atan2(direction.y, direction.x)")
   && shaders.includes("return mix(movingUv, fixedUv, movement)")

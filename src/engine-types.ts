@@ -38,13 +38,17 @@ export type LayerFormat = "rgba8unorm" | "rgba16float";
 
 export type BrushShape = "circle" | "shape";
 
-export type BrushShapeAssetId = "legacy-shape" | "pencil-shape";
+export type CustomBrushShapeAssetId = `custom-shape:${string}`;
+
+export type BrushShapeAssetId = "legacy-shape" | "pencil-shape" | CustomBrushShapeAssetId;
 
 export type BrushShapeRotation = "fixed" | "follow-stroke";
 
 export type GrainMode = "off" | "texturized" | "moving";
 
-export type BrushGrainAssetId = "legacy-grain" | "pencil-grain";
+export type CustomBrushGrainAssetId = `custom-grain:${string}`;
+
+export type BrushGrainAssetId = "legacy-grain" | "pencil-grain" | CustomBrushGrainAssetId;
 
 export type GrainFiltering = "no" | "classic" | "improved";
 
@@ -57,6 +61,8 @@ export interface BrushSettings {
   shape: BrushShape;
   /** Stable source identity; old settings without it normalize to legacy-shape. */
   shapeAssetId: BrushShapeAssetId;
+  /** User polarity applied after the source asset's authored polarity. */
+  shapeInvert: boolean;
   shapeRotation: BrushShapeRotation;
   shapeScatter: number;
   grainMode: GrainMode;
@@ -283,6 +289,7 @@ export const defaultBrushSettings: BrushSettings = {
   tool: "paint",
   shape: "circle",
   shapeAssetId: "legacy-shape",
+  shapeInvert: false,
   shapeRotation: "fixed",
   shapeScatter: 0,
   grainMode: "off",
@@ -304,7 +311,7 @@ export const defaultBrushSettings: BrushSettings = {
   count: 24,
   flow: 0.07,
   opacity: 1,
-  hardness: 0.88,
+  hardness: 1,
   blendIntensity: 1,
   blendMode: "light-glaze",
   blendStretch: 0.18,

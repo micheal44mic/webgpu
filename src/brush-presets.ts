@@ -134,6 +134,7 @@ export const PENCIL_BRUSH_PRESET = {
     tool: "paint",
     shape: "shape",
     shapeAssetId: "pencil-shape",
+    shapeInvert: false,
     shapeRotation: "follow-stroke",
     shapeScatter: 0.51,
     grainMode: "moving",

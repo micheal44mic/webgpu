@@ -512,6 +512,8 @@ import {
   type BrushGrainAssetId,
   type BrushSettings,
   type BrushShapeAssetId,
+  type CustomBrushGrainAssetId,
+  type CustomBrushShapeAssetId,
   type BrushTool,
   type EffectsWorkbenchRetargetResult,
   type EngineCallbacks,
@@ -528,10 +530,16 @@ import {
   type PointerSample,
 } from "./engine-types";
 import {
+  CustomBrushAssetRegistry,
+  type CustomBrushAssetSnapshot,
+  type DecodedCustomBrushImage,
   grainAssetIdForSettings,
+  isCustomGrainAssetId,
+  isCustomShapeAssetId,
   normalizeGrainAssetId,
   normalizeShapeAssetId,
   shapeAssetIdForSettings,
+  shapeInvertForSettings,
 } from "./engine-brush-assets";
 import {
   vectorTextGpuDrawUsesBlur,
@@ -1208,8 +1216,11 @@ export class BrushEngine {
   shapeResident = false;
   shapeLoadingPromise: Promise<void> | null = null;
   shapeDesiredAssetId: BrushShapeAssetId = "legacy-shape";
+  shapeDesiredInvert = false;
   shapeLoadingAssetId: BrushShapeAssetId | null = null;
+  shapeLoadingInvert: boolean | null = null;
   shapeLoadedAssetId: BrushShapeAssetId | null = null;
+  shapeLoadedInvert: boolean | null = null;
   shapeMaskSampler!: GPUSampler;
   grainTexture: GPUTexture | null = null;
   grainResourceSet: GrainTextureResources | null = null;
@@ -1416,6 +1427,7 @@ export class BrushEngine {
   );
 
   settings: BrushSettings = { ...defaultBrushSettings };
+  readonly customBrushAssets = new CustomBrushAssetRegistry();
   pendingStamps: Stamp[] = [];
   pendingBlendBatches: PendingBlendBatch[] = [];
   private readonly paintCurvePlanner = new CausalStrokeCurvePlanner();
@@ -1620,6 +1632,48 @@ export class BrushEngine {
     return { ...this.settings };
   }
 
+  registerCustomShapeAsset(
+    source: DecodedCustomBrushImage,
+    requestedId?: CustomBrushShapeAssetId,
+  ): CustomBrushShapeAssetId {
+    return this.customBrushAssets.registerShape(source, requestedId);
+  }
+
+  registerCustomGrainAsset(
+    source: DecodedCustomBrushImage,
+    requestedId?: CustomBrushGrainAssetId,
+  ): CustomBrushGrainAssetId {
+    return this.customBrushAssets.registerGrain(source, requestedId);
+  }
+
+  getCustomBrushAsset(
+    id: BrushShapeAssetId | BrushGrainAssetId,
+  ): CustomBrushAssetSnapshot | null {
+    return this.customBrushAssets.snapshot(id);
+  }
+
+  removeCustomBrushAsset(id: BrushShapeAssetId | BrushGrainAssetId): boolean {
+    if (!isCustomShapeAssetId(id) && !isCustomGrainAssetId(id)) {
+      throw new TypeError("Soltanto gli asset custom possono essere rimossi.");
+    }
+    const referencedBySettings = this.settings.shapeAssetId === id
+      || this.settings.grainAssetId === id;
+    const referencedByResources = this.shapeLoadedAssetId === id
+      || this.shapeLoadingAssetId === id
+      || this.shapeDesiredAssetId === id
+      || this.grainLoadedAssetId === id
+      || this.grainLoadingAssetId === id
+      || this.grainDesiredAssetId === id;
+    const referencedByHistory = this.historyBatches.some((batch) => (
+      batch.kind !== "fill"
+      && (batch.settings.shapeAssetId === id || batch.settings.grainAssetId === id)
+    ));
+    if (referencedBySettings || referencedByResources || referencedByHistory) {
+      throw new Error("L'asset custom è ancora attivo o necessario alla cronologia.");
+    }
+    return this.customBrushAssets.remove(id);
+  }
+
   renderBrushTipPreview(
     canvas: HTMLCanvasElement,
     cssSize: number,
@@ -1709,6 +1763,9 @@ export class BrushEngine {
       tool,
       shape: next.shape === "shape" || next.shape === "circle" ? next.shape : this.settings.shape,
       shapeAssetId: normalizeShapeAssetId(next.shapeAssetId ?? this.settings.shapeAssetId),
+      shapeInvert: typeof next.shapeInvert === "boolean"
+        ? next.shapeInvert
+        : this.settings.shapeInvert,
       shapeRotation: next.shapeRotation === "follow-stroke" || next.shapeRotation === "fixed"
         ? next.shapeRotation
         : this.settings.shapeRotation,
@@ -1753,7 +1810,9 @@ export class BrushEngine {
       endThickness: clamp(next.endThickness ?? this.settings.endThickness, 0, 2),
       flow: clamp(next.flow ?? this.settings.flow, 0.001, 1),
       opacity: clamp(next.opacity ?? this.settings.opacity, 0, 1),
-      hardness: clamp(next.hardness ?? this.settings.hardness, 0, 1),
+      // Brush Studio intentionally has no Paint hardness control. Preserve the
+      // dry Blend setting, while every Paint setting/history batch is authored at 100%.
+      hardness: tool === "paint" ? 1 : clamp(next.hardness ?? this.settings.hardness, 0, 1),
       // Kept in the history ABI only. Rendering now has one unambiguous Flow control.
       blendIntensity: 1,
       blendMode,
@@ -3344,6 +3403,7 @@ export class BrushEngine {
       && (
         !this.shapeResident
         || this.shapeLoadedAssetId !== shapeAssetIdForSettings(this.settings)
+        || this.shapeLoadedInvert !== shapeInvertForSettings(this.settings)
       )
     ) {
       requestShapeLoad(this);
@@ -3992,28 +4052,41 @@ export class BrushEngine {
 
   ensureShapeResources(
     requestedAssetId: BrushShapeAssetId = shapeAssetIdForSettings(this.settings),
+    requestedInvert: boolean = shapeInvertForSettings(this.settings),
   ): Promise<void> {
     const assetId = normalizeShapeAssetId(requestedAssetId);
+    const invert = requestedInvert === true;
     this.shapeDesiredAssetId = assetId;
+    this.shapeDesiredInvert = invert;
     const inFlight = this.shapeLoadingPromise;
     if (inFlight) {
       const inFlightAssetId = this.shapeLoadingAssetId;
+      const inFlightInvert = this.shapeLoadingInvert;
       return inFlight.then(
         () => {
-          if (this.shapeDesiredAssetId !== assetId) return;
-          return this.ensureShapeResources(assetId);
+          if (this.shapeDesiredAssetId !== assetId || this.shapeDesiredInvert !== invert) return;
+          return this.ensureShapeResources(assetId, invert);
         },
         (error: unknown) => {
-          if (this.shapeDesiredAssetId === assetId && inFlightAssetId === assetId) {
+          if (
+            this.shapeDesiredAssetId === assetId
+            && this.shapeDesiredInvert === invert
+            && inFlightAssetId === assetId
+            && inFlightInvert === invert
+          ) {
             throw error;
           }
-          if (this.shapeDesiredAssetId === assetId) {
-            return this.ensureShapeResources(assetId);
+          if (this.shapeDesiredAssetId === assetId && this.shapeDesiredInvert === invert) {
+            return this.ensureShapeResources(assetId, invert);
           }
         },
       );
     }
-    if (this.shapeResident && this.shapeLoadedAssetId === assetId) {
+    if (
+      this.shapeResident
+      && this.shapeLoadedAssetId === assetId
+      && this.shapeLoadedInvert === invert
+    ) {
       return Promise.resolve();
     }
 
@@ -4026,17 +4099,17 @@ export class BrushEngine {
           this.device,
           `Allocazione ${label}`,
           async (transaction) => {
-            const candidate = await createShapeMaskResources(this, assetId);
+            const candidate = await createShapeMaskResources(this, assetId, invert);
             transaction.deferRollback(() => destroyShapeMaskResources(candidate));
             return candidate;
           },
         );
       } catch (error) {
-        if (this.shapeDesiredAssetId !== assetId) return;
+        if (this.shapeDesiredAssetId !== assetId || this.shapeDesiredInvert !== invert) return;
         throw error;
       }
 
-      if (this.shapeDesiredAssetId !== assetId) {
+      if (this.shapeDesiredAssetId !== assetId || this.shapeDesiredInvert !== invert) {
         destroyShapeMaskResources(resources);
         return;
       }
@@ -4045,7 +4118,7 @@ export class BrushEngine {
       if (previous) {
         await this.waitForGpuCapped("Cambio asset Shape", 60_000);
       }
-      if (this.shapeDesiredAssetId !== assetId) {
+      if (this.shapeDesiredAssetId !== assetId || this.shapeDesiredInvert !== invert) {
         destroyShapeMaskResources(resources);
         return;
       }
@@ -4059,7 +4132,7 @@ export class BrushEngine {
         },
       );
 
-      if (this.shapeDesiredAssetId !== assetId) {
+      if (this.shapeDesiredAssetId !== assetId || this.shapeDesiredInvert !== invert) {
         try {
           await runGpuAllocationTransaction(
             this.device,
@@ -4079,7 +4152,7 @@ export class BrushEngine {
       }
 
       destroyShapeMaskResources(previous);
-      if (this.shapeDesiredAssetId === assetId) {
+      if (this.shapeDesiredAssetId === assetId && this.shapeDesiredInvert === invert) {
         this.callbacks.onStatus?.(`${label} pronta.`, "ok");
       }
       this.publishStats();
@@ -4091,12 +4164,18 @@ export class BrushEngine {
       if (this.shapeLoadingPromise !== tracked) return;
       this.shapeLoadingPromise = null;
       this.shapeLoadingAssetId = null;
+      this.shapeLoadingInvert = null;
       const selectedAssetId = shapeAssetIdForSettings(this.settings);
+      const selectedInvert = shapeInvertForSettings(this.settings);
       if (
         completedSuccessfully
         && !this.historyBusy
         && this.settings.shape === "shape"
-        && (this.shapeLoadedAssetId !== selectedAssetId || !this.shapeResident)
+        && (
+          this.shapeLoadedAssetId !== selectedAssetId
+          || this.shapeLoadedInvert !== selectedInvert
+          || !this.shapeResident
+        )
       ) {
         requestShapeLoad(this);
       } else {
@@ -4105,6 +4184,7 @@ export class BrushEngine {
     });
     this.shapeLoadingPromise = tracked;
     this.shapeLoadingAssetId = assetId;
+    this.shapeLoadingInvert = invert;
     return tracked;
   }
 

@@ -601,35 +601,67 @@ export async function createGrainTextureResources(
   engine: BrushEngine,
   assetId: BrushGrainAssetId,
 ): Promise<GrainTextureResources> {
-  const asset = grainAssetDescriptor(assetId);
-  const response = await fetch(asset.url);
-  if (!response.ok) {
-    throw new Error(`Impossibile caricare ${asset.sourceFile} (${response.status}).`);
-  }
+  const customAsset = engine.customBrushAssets.resolveGrain(assetId);
+  let width: number;
+  let height: number;
+  let sourceLabel: string;
+  let sourceIdentity: number;
+  let externalSource: ImageBitmap | HTMLCanvasElement;
+  let closeExternalSource: (() => void) | null = null;
+  let decodeMs = 0;
 
-  const source = await response.arrayBuffer();
-  const decodeStart = performance.now();
-  // Match the M1 path: let the browser decode the original RGBA PNG,
-  // including its embedded color profile, without premultiplying alpha.
-  const bitmap = await createImageBitmap(new Blob([source], { type: "image/png" }), {
-    colorSpaceConversion: "default",
-    premultiplyAlpha: "none",
-  });
-  const decodeMs = performance.now() - decodeStart;
-  if (bitmap.width !== asset.width || bitmap.height !== asset.height) {
-    bitmap.close();
-    throw new Error(
-      `${asset.sourceFile} deve restare ${asset.width}×${asset.height}px; `
-      + `trovata ${bitmap.width}×${bitmap.height}px.`,
+  if (customAsset) {
+    width = customAsset.width;
+    height = customAsset.height;
+    sourceLabel = customAsset.name;
+    sourceIdentity = hashBytes(customAsset.rgba);
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Impossibile preparare il Grain custom.");
+    context.putImageData(
+      new ImageData(new Uint8ClampedArray(customAsset.rgba), width, height),
+      0,
+      0,
     );
+    externalSource = canvas;
+  } else {
+    const asset = grainAssetDescriptor(assetId);
+    const response = await fetch(asset.url);
+    if (!response.ok) {
+      throw new Error(`Impossibile caricare ${asset.sourceFile} (${response.status}).`);
+    }
+    const source = await response.arrayBuffer();
+    const decodeStart = performance.now();
+    // Match the M1 path: let the browser decode the original RGBA PNG,
+    // including its embedded color profile, without premultiplying alpha.
+    const bitmap = await createImageBitmap(new Blob([source], { type: "image/png" }), {
+      colorSpaceConversion: "default",
+      premultiplyAlpha: "none",
+    });
+    decodeMs = performance.now() - decodeStart;
+    if (bitmap.width !== asset.width || bitmap.height !== asset.height) {
+      bitmap.close();
+      throw new Error(
+        `${asset.sourceFile} deve restare ${asset.width}×${asset.height}px; `
+        + `trovata ${bitmap.width}×${bitmap.height}px.`,
+      );
+    }
+    width = asset.width;
+    height = asset.height;
+    sourceLabel = asset.sourceFile;
+    sourceIdentity = hashBytes(new Uint8Array(source));
+    externalSource = bitmap;
+    closeExternalSource = () => bitmap.close();
   }
 
-  const mipLevelCount = mipLevelCountForSize(asset.width, asset.height);
+  const mipLevelCount = mipLevelCountForSize(width, height);
   const texture = engine.device.createTexture({
-    label: `${asset.sourceFile} native RGBA grain`,
+    label: `${sourceLabel} native RGBA grain`,
     size: {
-      width: asset.width,
-      height: asset.height,
+      width,
+      height,
       depthOrArrayLayers: 1,
     },
     mipLevelCount,
@@ -642,11 +674,11 @@ export async function createGrainTextureResources(
 
   const uploadStart = performance.now();
   engine.device.queue.copyExternalImageToTexture(
-    { source: bitmap },
+    { source: externalSource },
     { texture, mipLevel: 0, premultipliedAlpha: false, colorSpace: "srgb" },
     {
-      width: asset.width,
-      height: asset.height,
+      width,
+      height,
       depthOrArrayLayers: 1,
     },
   );
@@ -660,9 +692,9 @@ export async function createGrainTextureResources(
   if (previewContext) {
     previewContext.imageSmoothingEnabled = true;
     previewContext.imageSmoothingQuality = "high";
-    previewContext.drawImage(bitmap, 0, 0, previewSize, previewSize);
+    previewContext.drawImage(externalSource, 0, 0, previewSize, previewSize);
   }
-  bitmap.close();
+  closeExternalSource?.();
 
   const mipBuildStart = performance.now();
   const mipShaderModule = engine.device.createShaderModule({
@@ -752,11 +784,11 @@ export async function createGrainTextureResources(
   return {
     assetId,
     texture,
-    identity: hashBytes(new Uint8Array(source)),
-    width: asset.width,
-    height: asset.height,
+    identity: sourceIdentity,
+    width,
+    height,
     mipLevelCount,
-    memoryBytes: rgba8MipChainBytes(asset.width, asset.height),
+    memoryBytes: rgba8MipChainBytes(width, height),
     previewSprite,
     decodeMs,
     mipBuildMs,
@@ -767,37 +799,90 @@ export async function createGrainTextureResources(
 export async function createShapeMaskResources(
   engine: BrushEngine,
   assetId: BrushShapeAssetId,
+  shapeInvert: boolean,
 ): Promise<ShapeMaskResources> {
-  const asset = shapeAssetDescriptor(assetId);
-  const response = await fetch(asset.url);
-  if (!response.ok) {
-    throw new Error(`Impossibile caricare ${asset.sourceFile} (${response.status}).`);
-  }
-
-  const source = await response.arrayBuffer();
   let baseMask: Uint8Array;
   let decodeStrategy: ShapeMaskDecodeStrategy;
-  try {
-    const decoded = await decodeGrayscalePng8(source);
-    if (decoded.width !== asset.width || decoded.height !== asset.height) {
-      throw new Error(
-        `${asset.sourceFile} deve restare ${asset.width}×${asset.height}px; `
-        + `trovata ${decoded.width}×${decoded.height}px.`,
+  let authoredInvert = false;
+  let polarityAlreadyApplied = false;
+  let sourceLabel: string;
+  const customAsset = engine.customBrushAssets.resolveShape(assetId);
+  if (customAsset) {
+    sourceLabel = customAsset.name;
+    const sourceCanvas = document.createElement("canvas");
+    sourceCanvas.width = customAsset.width;
+    sourceCanvas.height = customAsset.height;
+    const sourceContext = sourceCanvas.getContext("2d");
+    const maskCanvas = document.createElement("canvas");
+    maskCanvas.width = SHAPE_MASK_SIZE;
+    maskCanvas.height = SHAPE_MASK_SIZE;
+    const maskContext = maskCanvas.getContext("2d", { willReadFrequently: true });
+    if (!sourceContext || !maskContext) {
+      throw new Error("Impossibile preparare la Shape custom.");
+    }
+    sourceContext.putImageData(
+      new ImageData(
+        new Uint8ClampedArray(customAsset.rgba),
+        customAsset.width,
+        customAsset.height,
+      ),
+      0,
+      0,
+    );
+    maskContext.imageSmoothingEnabled = true;
+    maskContext.imageSmoothingQuality = "high";
+    maskContext.drawImage(sourceCanvas, 0, 0, SHAPE_MASK_SIZE, SHAPE_MASK_SIZE);
+    const rgba = maskContext.getImageData(0, 0, SHAPE_MASK_SIZE, SHAPE_MASK_SIZE).data;
+    baseMask = new Uint8Array(SHAPE_MASK_SIZE * SHAPE_MASK_SIZE);
+    for (
+      let pixelIndex = 0, rgbaIndex = 0;
+      pixelIndex < baseMask.length;
+      pixelIndex += 1, rgbaIndex += 4
+    ) {
+      const luminance = Math.round(
+        rgba[rgbaIndex] * 0.2126
+        + rgba[rgbaIndex + 1] * 0.7152
+        + rgba[rgbaIndex + 2] * 0.0722,
+      );
+      const coverageLuminance = shapeInvert ? 255 - luminance : luminance;
+      baseMask[pixelIndex] = Math.round(
+        (coverageLuminance * rgba[rgbaIndex + 3]) / 255,
       );
     }
-    baseMask = decoded.pixels;
-    decodeStrategy = SHAPE_DIRECT_DECODE_STRATEGY;
-  } catch {
-    baseMask = await decodeShapeMaskWithCanvas(source);
+    polarityAlreadyApplied = true;
     decodeStrategy = SHAPE_CANVAS_DECODE_STRATEGY;
+  } else {
+    const asset = shapeAssetDescriptor(assetId);
+    sourceLabel = asset.sourceFile;
+    authoredInvert = asset.decode.invertLuminance;
+    const response = await fetch(asset.url);
+    if (!response.ok) {
+      throw new Error(`Impossibile caricare ${asset.sourceFile} (${response.status}).`);
+    }
+    const source = await response.arrayBuffer();
+    try {
+      const decoded = await decodeGrayscalePng8(source);
+      if (decoded.width !== asset.width || decoded.height !== asset.height) {
+        throw new Error(
+          `${asset.sourceFile} deve restare ${asset.width}×${asset.height}px; `
+          + `trovata ${decoded.width}×${decoded.height}px.`,
+        );
+      }
+      baseMask = decoded.pixels;
+      decodeStrategy = SHAPE_DIRECT_DECODE_STRATEGY;
+    } catch {
+      baseMask = await decodeShapeMaskWithCanvas(source, authoredInvert !== shapeInvert);
+      decodeStrategy = SHAPE_CANVAS_DECODE_STRATEGY;
+      polarityAlreadyApplied = true;
+    }
   }
 
   if (baseMask.length !== SHAPE_MASK_SIZE * SHAPE_MASK_SIZE) {
     throw new Error(
-      `${asset.sourceFile} deve produrre una maschera ${SHAPE_MASK_SIZE}×${SHAPE_MASK_SIZE}.`,
+      `${sourceLabel} deve produrre una maschera ${SHAPE_MASK_SIZE}×${SHAPE_MASK_SIZE}.`,
     );
   }
-  if (asset.decode.invertLuminance) {
+  if (!polarityAlreadyApplied && authoredInvert !== shapeInvert) {
     for (let index = 0; index < baseMask.length; index += 1) {
       baseMask[index] = 255 - baseMask[index];
     }
@@ -882,6 +967,7 @@ export async function createShapeMaskResources(
   }
   return {
     assetId,
+    invert: shapeInvert,
     texture,
     decodeStrategy,
     identity: hashBytes(baseMask),
@@ -911,6 +997,7 @@ export function applyShapeMaskResources(
     : engine.shapeMaskPlaceholderView;
   engine.shapeResident = resources !== null;
   engine.shapeLoadedAssetId = resources?.assetId ?? null;
+  engine.shapeLoadedInvert = resources?.invert ?? null;
   engine.shapeMaskDecodeStrategy = resources?.decodeStrategy ?? SHAPE_CANVAS_DECODE_STRATEGY;
   engine.shapeMaskIdentity = resources?.identity ?? 0;
 

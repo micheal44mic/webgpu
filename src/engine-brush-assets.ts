@@ -12,6 +12,18 @@ import type {
   BrushSettings,
   BrushShapeAssetId,
 } from "./engine-types";
+export {
+  CustomBrushAssetRegistry,
+  isCustomGrainAssetId,
+  isCustomShapeAssetId,
+} from "./brush-asset-registry";
+export type {
+  CustomBrushAssetSnapshot,
+  DecodedCustomBrushImage,
+  RegisteredCustomBrushAsset,
+} from "./brush-asset-registry";
+
+import { isCustomGrainAssetId, isCustomShapeAssetId } from "./brush-asset-registry";
 
 export interface ShapeAssetDescriptor extends ShapeBrushAsset {
   readonly url: URL;
@@ -22,11 +34,17 @@ export interface GrainAssetDescriptor extends GrainBrushAsset {
 }
 
 export function normalizeShapeAssetId(value: unknown): BrushShapeAssetId {
-  return value === "pencil-shape" ? value : "legacy-shape";
+  return value === "pencil-shape" || isCustomShapeAssetId(value) ? value : "legacy-shape";
 }
 
 export function normalizeGrainAssetId(value: unknown): BrushGrainAssetId {
-  return value === "pencil-grain" ? value : "legacy-grain";
+  return value === "pencil-grain" || isCustomGrainAssetId(value) ? value : "legacy-grain";
+}
+
+export function shapeInvertForSettings(
+  settings: Readonly<BrushSettings> | Partial<BrushSettings>,
+): boolean {
+  return settings.shapeInvert === true;
 }
 
 export function shapeAssetIdForSettings(
@@ -42,6 +60,9 @@ export function grainAssetIdForSettings(
 }
 
 export function shapeAssetDescriptor(id: BrushShapeAssetId): ShapeAssetDescriptor {
+  if (isCustomShapeAssetId(id)) {
+    throw new Error(`L'asset ${id} deve essere risolto dal registro custom del motore.`);
+  }
   if (id === "pencil-shape") {
     return {
       ...BRUSH_ASSET_REGISTRY["pencil-shape"],
@@ -55,6 +76,9 @@ export function shapeAssetDescriptor(id: BrushShapeAssetId): ShapeAssetDescripto
 }
 
 export function grainAssetDescriptor(id: BrushGrainAssetId): GrainAssetDescriptor {
+  if (isCustomGrainAssetId(id)) {
+    throw new Error(`L'asset ${id} deve essere risolto dal registro custom del motore.`);
+  }
   if (id === "pencil-grain") {
     return {
       ...BRUSH_ASSET_REGISTRY["pencil-grain"],

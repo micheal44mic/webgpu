@@ -58,7 +58,11 @@ import {
 import { LAYER_BLEND_MODE_ORDER } from "./layer-blend-modes";
 import { LAYER_BLEND_FOLD_WGSL } from "./layer-blend-fold-shader";
 import { packStampsIntoUpload } from "./engine-stamp-upload";
-import { grainAssetIdForSettings, shapeAssetIdForSettings } from "./engine-brush-assets";
+import {
+  grainAssetIdForSettings,
+  shapeAssetIdForSettings,
+  shapeInvertForSettings,
+} from "./engine-brush-assets";
 import {
   rasterBevelInfluenceBounds,
   rasterBevelVisualBounds,
@@ -1240,14 +1244,24 @@ export function requestGrainLoad(engine: BrushEngine): void {
 
 export function requestShapeLoad(engine: BrushEngine): void {
   const assetId = shapeAssetIdForSettings(engine.settings);
+  const invert = shapeInvertForSettings(engine.settings);
   engine.shapeDesiredAssetId = assetId;
+  engine.shapeDesiredInvert = invert;
   if (
-    (engine.shapeResident && engine.shapeLoadedAssetId === assetId)
-    || (engine.shapeLoadingPromise && engine.shapeLoadingAssetId === assetId)
+    (
+      engine.shapeResident
+      && engine.shapeLoadedAssetId === assetId
+      && engine.shapeLoadedInvert === invert
+    )
+    || (
+      engine.shapeLoadingPromise
+      && engine.shapeLoadingAssetId === assetId
+      && engine.shapeLoadingInvert === invert
+    )
   ) {
     return;
   }
-  void engine.ensureShapeResources(assetId).catch((error) => {
+  void engine.ensureShapeResources(assetId, invert).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     engine.callbacks.onStatus?.(`Shape 2K non disponibile: ${message}`, "error");
   });

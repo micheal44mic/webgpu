@@ -43,6 +43,7 @@ export interface LightGlazeResourceSet {
 
 export interface ShapeMaskResources {
   assetId: BrushShapeAssetId;
+  invert: boolean;
   texture: GPUTexture;
   decodeStrategy: ShapeMaskDecodeStrategy;
   identity: number;

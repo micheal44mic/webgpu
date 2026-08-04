@@ -44,7 +44,11 @@ import {
   setLayerBlendMode,
 } from "./engine-layer-runtime";
 import { restorePixelSelectionHistoryMask } from "./engine-selection-runtime";
-import { grainAssetIdForSettings, shapeAssetIdForSettings } from "./engine-brush-assets";
+import {
+  grainAssetIdForSettings,
+  shapeAssetIdForSettings,
+  shapeInvertForSettings,
+} from "./engine-brush-assets";
 import {
   maybeReleaseIdleGrainResources,
   maybeReleaseIdleShapeResources,
@@ -345,7 +349,10 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
     settings: Exclude<HistoryRenderBatch, { kind: "fill" }>["settings"],
   ): Promise<void> => {
     if (settings.shape === "shape") {
-      await engine.ensureShapeResources(shapeAssetIdForSettings(settings));
+      await engine.ensureShapeResources(
+        shapeAssetIdForSettings(settings),
+        shapeInvertForSettings(settings),
+      );
     }
     if (isTexturizedGrainActive(settings)) {
       await engine.ensureGrainResources(grainAssetIdForSettings(settings));
@@ -531,9 +538,13 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
       engine.grainDesiredAssetId = grainAssetIdForSettings(engine.settings);
     }
     if (engine.settings.shape === "shape") {
-      await engine.ensureShapeResources(shapeAssetIdForSettings(engine.settings));
+      await engine.ensureShapeResources(
+        shapeAssetIdForSettings(engine.settings),
+        shapeInvertForSettings(engine.settings),
+      );
     } else {
       engine.shapeDesiredAssetId = shapeAssetIdForSettings(engine.settings);
+      engine.shapeDesiredInvert = shapeInvertForSettings(engine.settings);
     }
     if (usesStrokeGlazeRenderer(engine.settings)) {
       await engine.ensureLightGlazeResources(engine.settings.blendMode);

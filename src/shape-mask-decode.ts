@@ -4,7 +4,10 @@ import { SHAPE_MASK_SIZE } from "./engine-limits";/**
  * decodifica diretta del PNG non e' disponibile.
  */
 
-export async function decodeShapeMaskWithCanvas(source: ArrayBuffer): Promise<Uint8Array> {
+export async function decodeShapeMaskWithCanvas(
+  source: ArrayBuffer,
+  invertLuminance = false,
+): Promise<Uint8Array> {
   const bitmap = await createImageBitmap(new Blob([source], { type: "image/png" }), {
     colorSpaceConversion: "none",
     premultiplyAlpha: "none",
@@ -34,7 +37,10 @@ export async function decodeShapeMaskWithCanvas(source: ArrayBuffer): Promise<Ui
         + rgba[rgbaIndex + 1] * 0.7152
         + rgba[rgbaIndex + 2] * 0.0722,
       );
-      baseMask[pixelIndex] = Math.round((luminance * rgba[rgbaIndex + 3]) / 255);
+      const coverageLuminance = invertLuminance ? 255 - luminance : luminance;
+      baseMask[pixelIndex] = Math.round(
+        (coverageLuminance * rgba[rgbaIndex + 3]) / 255,
+      );
     }
     return baseMask;
   } finally {

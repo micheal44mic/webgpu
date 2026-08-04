@@ -503,6 +503,35 @@ Paint:
   senza perdere gli asset; nessun warning/error. Le 23 suite `*:verify`, la
   nuova `brush-presets:verify`, TypeScript e build Vite/Sites sono verdi. Non è
   ancora una QA fisica Safari/iPhone né una misura prestazionale canonica.
+  Sedicesimo follow-up (4 agosto 2026): un secondo tap sulla card del pennello
+  già selezionato apre il Brush Studio mobile nello snap expanded, sempre a
+  `77 px + safe-area` dall'alto. La struttura ha maniglia, `Cancel`, `Done`,
+  preview live, area centrale scrollabile e footer fisso con `Stroke`, `Shape`,
+  `Grain`, `Dynamics`. `Stroke` espone Size `1–1000 px`, Opacity,
+  Stabilization, i tre rendering pubblici, Spacing e Flow; gli altri pannelli
+  espongono sorgenti reali con Invert/Replace/Remove, rotation, Scatter, Count,
+  jitter posizione, tutti i controlli Grain e Color/Thickness Dynamics. Paint
+  non espone Hardness ed è sempre scritto a `100%`.
+  Le modifiche restano una bozza ma vengono applicate latest-only una volta per
+  RAF così la preview e il prossimo tratto riflettono subito i controlli;
+  `Cancel`, trascinamento di chiusura e tap sulla maniglia ripristinano lo
+  snapshot esatto d'apertura, mentre `Done` conserva le impostazioni per brush
+  in localStorage. Le immagini originali custom vivono in IndexedDB e al
+  reload vengono decodificate e registrate di nuovo con lo stesso ID
+  immutabile. L'import UI limita il lato decodificato a `2048 px` per evitare
+  copie CPU inutilmente grandi; il registro motore conserva il limite generale
+  `4096 px`.
+  La preview Studio è Canvas2D rappresentativa e coalescata: riusa la tip
+  corrente del motore, simula spacing/count/jitter/thickness/color e applica il
+  Grain da sorgente, ma non esegue submission o readback GPU e non va descritta
+  come pixel-identica ai tre renderer autorevoli. QA browser locale passata a
+  `393×852` e `360×640`: secondo tap, quattro tab, source Pencil, import Shape
+  PNG reale, rollback Cancel/handle, persistenza Done anche dopo reload,
+  nessun overflow o scroll del root e console pulita. La QA ha trovato e fatto
+  correggere lo scroll programmatico di `#app` al cambio tab. Tutte le suite
+  `*:verify`, la nuova `brush-studio:verify`, TypeScript, build Vite/Sites e
+  `git diff --check` sono verdi. Resta da fare la QA touch su Safari/iPhone
+  fisico e nessuna baseline prestazionale è stata promossa.
 - …cache di presentazione persistente screen-space: display shader eseguito
   solo sulla dirty region, poi `copyTextureToTexture` alla swapchain
   (`#37/#38`: Base `+46%` FPS vs `#35`, migliore anche delle vecchie baseline).
@@ -671,6 +700,20 @@ Paint:
   nativa `800×800`, crea `10` mip RGBA8 e occupa `3.413.260 B` (~`3,26 MiB`),
   mentre la telemetria legge dimensioni/mip/memoria residenti dinamici ed è
   revisionata a `63`.
+- Infrastruttura Brush Studio del 4 agosto 2026: `BrushSettings` accetta ora
+  ID immutabili `custom-shape:*` / `custom-grain:*` e `shapeInvert`. Ogni
+  `BrushEngine` possiede un registro CPU di RGBA8 decodificati (massimo
+  `4096×4096`), con copia in ingresso e snapshot in uscita per una futura
+  persistenza IndexedDB; la rimozione viene rifiutata se impostazioni, risorse
+  in volo/residenti o history referenziano ancora l'asset. Shape custom viene
+  riscalata una sola volta a `2048²`; l'inversione rispetta l'alpha ed è
+  applicata prima di mip, occupancy, hash e preview. Asset e polarità fanno
+  parte del retarget latest-only e del replay per batch; il percorso caldo
+  degli stamp non è cambiato. Grain custom conserva dimensioni native e usa la
+  stessa piramide mip GPU e lo stesso `grainInvert` esistenti. Hardness viene
+  normalizzata a `1` per ogni nuova impostazione Paint (Blend dry conserva il
+  proprio valore). TypeScript e le verifiche mirate `brush-presets`, `grain`,
+  `history` e `stroke` sono verdi; nessuna QA fisica iPhone o misura canonica.
 - Grain M1 nativo legacy: asset originale `graincottonfleece.PNG` RGBA `2500×2500`
   (SHA-256 `9AA1CE07…`), luma `0.299/0.587/0.114`, 12 mip NPOT generati in
   WGSL (~`31,8 MiB`). Fixed = UV layer; Moving con Movement zero = UV stamp
