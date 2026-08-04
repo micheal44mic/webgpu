@@ -2903,7 +2903,7 @@ mobileToolsSheetHandle.addEventListener("click", () => {
 });
 
 mobileToolsSearchInput.addEventListener("focus", () => {
-  if (mobileToolsSheetOpen) {
+  if (mobileToolsSheetOpen && mobileToolsSheetSnap !== "expanded") {
     snapMobileToolsSheet("expanded");
   }
 });

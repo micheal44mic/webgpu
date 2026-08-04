@@ -324,11 +324,16 @@ Paint:
   dal layout, così come il suggerimento «Un dito disegna…». Il pulsante Tools
   dell'header apre ora un bottom sheet non modale, senza ombra e con fondo
   `#0d0f13`, trascinabile soltanto dalla maniglia `42×5 px` fra due snap:
-  expanded a `64 px + safe-area` dal bordo alto e peek con circa il `26%`
+  expanded a `77 px + safe-area` dal bordo alto, cioè `25 px` sotto l'header
+  mobile da `52 px`, e peek con circa il `26%`
   dell'altezza visibile (clamp `160–240 px`). Il contenuto è scrollabile; per
   ora contiene solo una ricerca con icona Lucide avorio, placeholder inglese
   grigio e bordo `#dd5c35`. Tap sulla maniglia alterna gli snap, Tools chiude
-  interamente il foglio e il focus della ricerca lo espande. Non esiste loop UI:
+  interamente il foglio e il focus della ricerca lo espande soltanto se non è
+  già nello snap alto. Il campo usa `16 px`, così Safari iPhone non applica lo
+  zoom automatico al focus; lo zoom pagina al doppio tap è disabilitato tramite
+  viewport e `touch-action: manipulation`, senza cambiare i gesti WebGPU del
+  canvas. Non esiste loop UI:
   offset e snap vengono ricalcolati solo durante drag, apertura o resize. Tutte
   le suite `*:verify`, TypeScript, build Vite/Sites e `git diff --check` verdi;
   nessuna misura prestazionale o QA fisica iPhone ancora eseguita.
