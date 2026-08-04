@@ -1001,9 +1001,15 @@ function mobileToolsSheetPeekOffset(): number {
   return Math.max(0, Math.round(mobileToolsSheet.offsetHeight - peekHeight));
 }
 
-function setMobileToolsSheetOffset(offsetPx: number): void {
-  const peekOffset = mobileToolsSheetPeekOffset();
-  mobileToolsSheetOffsetPx = Math.min(peekOffset, Math.max(0, offsetPx));
+function mobileToolsSheetClosedOffset(): number {
+  return Math.max(0, Math.round(mobileToolsSheet.offsetHeight));
+}
+
+function setMobileToolsSheetOffset(offsetPx: number, allowClose = false): void {
+  const maximumOffset = allowClose
+    ? mobileToolsSheetClosedOffset()
+    : mobileToolsSheetPeekOffset();
+  mobileToolsSheetOffsetPx = Math.min(maximumOffset, Math.max(0, offsetPx));
   mobileToolsSheet.style.setProperty(
     "--mobile-tools-sheet-offset",
     `${Math.round(mobileToolsSheetOffsetPx)}px`,
@@ -1063,15 +1069,28 @@ function finishMobileToolsSheetDrag(
   mobileToolsSheet.classList.remove("is-dragging");
   const deltaY = event.clientY - mobileToolsSheetDragStartY;
   const peekOffset = mobileToolsSheetPeekOffset();
-  const target = !cancelled && deltaY <= -36
+  const closedOffset = mobileToolsSheetClosedOffset();
+  const closeThreshold = Math.max(peekOffset, closedOffset - 48);
+  mobileToolsSheetDragPointerId = null;
+  if (cancelled) {
+    if (mobileToolsSheetDragMoved) {
+      snapMobileToolsSheet(mobileToolsSheetSnap);
+    }
+    return;
+  }
+  if (mobileToolsSheetDragMoved && mobileToolsSheetOffsetPx >= closeThreshold) {
+    setMobileToolsSheetOpen(false);
+    mobileToolsSheetDragMoved = false;
+    return;
+  }
+  const target = deltaY <= -36
     ? "expanded"
-    : !cancelled && deltaY >= 36
+    : deltaY >= 36
       ? "peek"
       : mobileToolsSheetOffsetPx <= peekOffset / 2
         ? "expanded"
         : "peek";
-  mobileToolsSheetDragPointerId = null;
-  if (mobileToolsSheetDragMoved || cancelled) {
+  if (mobileToolsSheetDragMoved) {
     snapMobileToolsSheet(target);
   }
 }
@@ -2893,7 +2912,7 @@ mobileToolsSheetHandle.addEventListener("pointermove", (event) => {
   if (Math.abs(deltaY) >= 4) {
     mobileToolsSheetDragMoved = true;
   }
-  setMobileToolsSheetOffset(mobileToolsSheetDragStartOffsetPx + deltaY);
+  setMobileToolsSheetOffset(mobileToolsSheetDragStartOffsetPx + deltaY, true);
 });
 
 mobileToolsSheetHandle.addEventListener("pointerup", (event) => {

@@ -338,8 +338,13 @@ Paint:
   focus; il focus programmatico usa `preventScroll`, evitando che lo snap del
   foglio e il pan automatico della tastiera si sommino e portino la ricerca
   fuori schermo. Se il foglio è già alto non viene riposizionato. Non esiste
-  loop UI: offset e snap vengono ricalcolati solo durante drag, apertura o resize. Tutte
-  le suite `*:verify`, TypeScript, build Vite/Sites e `git diff --check` verdi;
+  loop UI: offset e snap vengono ricalcolati solo durante drag, apertura o
+  resize. Sesto follow-up: durante il drag dalla maniglia il foglio può superare
+  lo snap peek fino a uscire interamente; rilasciandolo con non più di `48 px`
+  visibili viene chiuso davvero (stato, ARIA e focus inclusi), mentre un rilascio
+  precedente torna a peek e un `pointercancel` ripristina lo snap di partenza.
+  Tutte le suite `*:verify`, TypeScript, build Vite/Sites e `git diff --check`
+  verdi;
   nessuna misura prestazionale o QA fisica iPhone ancora eseguita.
 - …cache di presentazione persistente screen-space: display shader eseguito
   solo sulla dirty region, poi `copyTextureToTexture` alla swapchain
