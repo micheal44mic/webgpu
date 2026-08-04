@@ -30,11 +30,13 @@
 
           <div class="mobile-header-actions">
             <button
+              id="mobileToolsMenu"
               class="mobile-header-action"
               type="button"
-              aria-label="Strumenti, non ancora disponibili"
+              aria-label="Apri menu strumenti"
+              aria-controls="mobileToolsSheet"
+              aria-expanded="false"
               title="Tools"
-              disabled
             >
               <span class="mobile-icon-stack" aria-hidden="true">
                 <i data-lucide="sliders-horizontal" class="mobile-icon-layer mobile-icon-outline"></i>
@@ -203,6 +205,41 @@
             <i data-lucide="redo-2" class="mobile-icon-layer mobile-icon-face"></i>
           </span>
         </button>
+      </aside>
+
+      <aside
+        id="mobileToolsSheet"
+        class="mobile-tools-sheet"
+        aria-label="Menu strumenti"
+        aria-hidden="true"
+        data-snap="peek"
+      >
+        <button
+          id="mobileToolsSheetHandle"
+          class="mobile-tools-sheet-handle"
+          type="button"
+          aria-label="Sposta il menu strumenti"
+          aria-controls="mobileToolsSheet"
+          aria-expanded="false"
+        >
+          <span class="mobile-tools-sheet-grabber" aria-hidden="true"></span>
+        </button>
+        <div class="mobile-tools-sheet-content">
+          <label class="mobile-tools-search">
+            <span class="mobile-icon-stack" aria-hidden="true">
+              <i data-lucide="search" class="mobile-icon-layer mobile-icon-outline"></i>
+              <i data-lucide="search" class="mobile-icon-layer mobile-icon-face"></i>
+            </span>
+            <input
+              id="mobileToolsSearch"
+              type="search"
+              placeholder="Search"
+              aria-label="Search tools"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </label>
+        </div>
       </aside>
 
       <aside id="controlsPanel" class="controls" aria-label="Pannello strumenti">

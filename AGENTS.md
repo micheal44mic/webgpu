@@ -319,9 +319,19 @@ Paint:
   rappresentata falsamente come attiva. Terzo follow-up: tutte le icone e il
   selettore colore mobile sono `20×20 px`; altezza utile dell'header e larghezza
   della rail sono entrambe `52 px` (l'header somma soltanto la safe area
-  superiore). Le aree touch restano `44×44 px`. Tutte le suite `*:verify`,
-  TypeScript, build Vite/Sites e `git diff --check` verdi; nessuna misura
-  prestazionale o QA fisica iPhone ancora eseguita.
+  superiore). Le aree touch restano `44×44 px`. Quarto follow-up: sotto
+  `700 px` il vecchio pannello completo dei parametri parte chiuso ed è nascosto
+  dal layout, così come il suggerimento «Un dito disegna…». Il pulsante Tools
+  dell'header apre ora un bottom sheet non modale, senza ombra e con fondo
+  `#0d0f13`, trascinabile soltanto dalla maniglia `42×5 px` fra due snap:
+  expanded a `64 px + safe-area` dal bordo alto e peek con circa il `26%`
+  dell'altezza visibile (clamp `160–240 px`). Il contenuto è scrollabile; per
+  ora contiene solo una ricerca con icona Lucide avorio, placeholder inglese
+  grigio e bordo `#dd5c35`. Tap sulla maniglia alterna gli snap, Tools chiude
+  interamente il foglio e il focus della ricerca lo espande. Non esiste loop UI:
+  offset e snap vengono ricalcolati solo durante drag, apertura o resize. Tutte
+  le suite `*:verify`, TypeScript, build Vite/Sites e `git diff --check` verdi;
+  nessuna misura prestazionale o QA fisica iPhone ancora eseguita.
 - …cache di presentazione persistente screen-space: display shader eseguito
   solo sulla dirty region, poi `copyTextureToTexture` alla swapchain
   (`#37/#38`: Base `+46%` FPS vs `#35`, migliore anche delle vecchie baseline).

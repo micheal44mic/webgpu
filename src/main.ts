@@ -7,6 +7,7 @@ import {
   Layers3,
   Redo2,
   Save,
+  Search,
   SlidersHorizontal,
   Undo2,
   createIcons,
@@ -68,6 +69,7 @@ createIcons({
     Layers3,
     Redo2,
     Save,
+    Search,
     SlidersHorizontal,
     Undo2,
   },
@@ -186,6 +188,11 @@ const mobilePaintButton = element<HTMLButtonElement>("mobilePaint");
 const mobileBlendButton = element<HTMLButtonElement>("mobileBlend");
 const mobileUndoButton = element<HTMLButtonElement>("mobileUndo");
 const mobileRedoButton = element<HTMLButtonElement>("mobileRedo");
+const mobileToolsMenuButton = element<HTMLButtonElement>("mobileToolsMenu");
+const mobileToolsSheet = element<HTMLElement>("mobileToolsSheet");
+const mobileToolsSheetHandle = element<HTMLButtonElement>("mobileToolsSheetHandle");
+const mobileToolsSearchInput = element<HTMLInputElement>("mobileToolsSearch");
+const mobileUiMediaQuery = window.matchMedia("(max-width: 699px)");
 const fitViewButton = element<HTMLButtonElement>("fitView");
 const zoomInButton = element<HTMLButtonElement>("zoomIn");
 const zoomOutButton = element<HTMLButtonElement>("zoomOut");
@@ -720,6 +727,15 @@ let rasterInnerShadowChanging = false;
 let engineInitialized = false;
 let selectionUiBusy = false;
 let controlsPanelOpen = true;
+type MobileToolsSheetSnap = "peek" | "expanded";
+let mobileToolsSheetOpen = false;
+let mobileToolsSheetSnap: MobileToolsSheetSnap = "peek";
+let mobileToolsSheetOffsetPx = 0;
+let mobileToolsSheetDragPointerId: number | null = null;
+let mobileToolsSheetDragStartY = 0;
+let mobileToolsSheetDragStartOffsetPx = 0;
+let mobileToolsSheetDragMoved = false;
+let mobileToolsSheetResizeFrame: number | null = null;
 let gpuMemoryPanelOpen = false;
 let previousGpuMemoryTotalMiB: number | null = null;
 let gpuMemoryDeltaTimer: number | null = null;
@@ -977,6 +993,76 @@ function setControlsPanelOpen(open: boolean): void {
   toggleControlsButton.setAttribute("aria-expanded", String(open));
   toggleControlsButton.setAttribute("aria-label", open ? "Nascondi pannelli" : "Mostra pannelli");
   toggleControlsButton.title = open ? "Nascondi pannelli" : "Mostra pannelli";
+}
+
+function mobileToolsSheetPeekOffset(): number {
+  const peekHeight = Math.min(240, Math.max(160, window.innerHeight * 0.26));
+  return Math.max(0, Math.round(mobileToolsSheet.offsetHeight - peekHeight));
+}
+
+function setMobileToolsSheetOffset(offsetPx: number): void {
+  const peekOffset = mobileToolsSheetPeekOffset();
+  mobileToolsSheetOffsetPx = Math.min(peekOffset, Math.max(0, offsetPx));
+  mobileToolsSheet.style.setProperty(
+    "--mobile-tools-sheet-offset",
+    `${Math.round(mobileToolsSheetOffsetPx)}px`,
+  );
+}
+
+function snapMobileToolsSheet(snap: MobileToolsSheetSnap): void {
+  mobileToolsSheetSnap = snap;
+  mobileToolsSheet.dataset.snap = snap;
+  mobileToolsSheetHandle.setAttribute("aria-expanded", String(snap === "expanded"));
+  mobileToolsSheetHandle.setAttribute(
+    "aria-label",
+    snap === "expanded" ? "Riduci menu strumenti" : "Espandi menu strumenti",
+  );
+  setMobileToolsSheetOffset(snap === "expanded" ? 0 : mobileToolsSheetPeekOffset());
+}
+
+function setMobileToolsSheetOpen(open: boolean): void {
+  if (open && !mobileUiMediaQuery.matches) return;
+  mobileToolsSheetOpen = open;
+  mobileToolsMenuButton.setAttribute("aria-expanded", String(open));
+  mobileToolsMenuButton.setAttribute(
+    "aria-label",
+    open ? "Chiudi menu strumenti" : "Apri menu strumenti",
+  );
+  mobileToolsSheet.setAttribute("aria-hidden", String(!open));
+  if (open) {
+    setControlsPanelOpen(false);
+    snapMobileToolsSheet("peek");
+    void mobileToolsSheet.offsetHeight;
+    mobileToolsSheet.classList.add("is-open");
+    return;
+  }
+  mobileToolsSheet.classList.remove("is-open", "is-dragging");
+  mobileToolsSearchInput.blur();
+  mobileToolsSheetDragPointerId = null;
+}
+
+function finishMobileToolsSheetDrag(
+  event: PointerEvent,
+  cancelled = false,
+): void {
+  if (event.pointerId !== mobileToolsSheetDragPointerId) return;
+  if (mobileToolsSheetHandle.hasPointerCapture(event.pointerId)) {
+    mobileToolsSheetHandle.releasePointerCapture(event.pointerId);
+  }
+  mobileToolsSheet.classList.remove("is-dragging");
+  const deltaY = event.clientY - mobileToolsSheetDragStartY;
+  const peekOffset = mobileToolsSheetPeekOffset();
+  const target = !cancelled && deltaY <= -36
+    ? "expanded"
+    : !cancelled && deltaY >= 36
+      ? "peek"
+      : mobileToolsSheetOffsetPx <= peekOffset / 2
+        ? "expanded"
+        : "peek";
+  mobileToolsSheetDragPointerId = null;
+  if (mobileToolsSheetDragMoved || cancelled) {
+    snapMobileToolsSheet(target);
+  }
 }
 
 function setGpuMemoryPanelOpen(open: boolean): void {
@@ -2775,6 +2861,72 @@ element<HTMLButtonElement>("selectionClear").addEventListener("click", () => {
 });
 
 benchmarkStampsInput.addEventListener("input", updateControlOutputs);
+
+mobileToolsMenuButton.addEventListener("click", () => {
+  setMobileToolsSheetOpen(!mobileToolsSheetOpen);
+});
+
+mobileToolsSheetHandle.addEventListener("pointerdown", (event) => {
+  if (!mobileToolsSheetOpen || event.button !== 0) return;
+  mobileToolsSheetDragPointerId = event.pointerId;
+  mobileToolsSheetDragStartY = event.clientY;
+  mobileToolsSheetDragStartOffsetPx = mobileToolsSheetOffsetPx;
+  mobileToolsSheetDragMoved = false;
+  mobileToolsSheet.classList.add("is-dragging");
+  mobileToolsSheetHandle.setPointerCapture(event.pointerId);
+});
+
+mobileToolsSheetHandle.addEventListener("pointermove", (event) => {
+  if (event.pointerId !== mobileToolsSheetDragPointerId) return;
+  const deltaY = event.clientY - mobileToolsSheetDragStartY;
+  if (Math.abs(deltaY) >= 4) {
+    mobileToolsSheetDragMoved = true;
+  }
+  setMobileToolsSheetOffset(mobileToolsSheetDragStartOffsetPx + deltaY);
+});
+
+mobileToolsSheetHandle.addEventListener("pointerup", (event) => {
+  finishMobileToolsSheetDrag(event);
+});
+
+mobileToolsSheetHandle.addEventListener("pointercancel", (event) => {
+  finishMobileToolsSheetDrag(event, true);
+});
+
+mobileToolsSheetHandle.addEventListener("click", () => {
+  if (!mobileToolsSheetOpen) return;
+  if (mobileToolsSheetDragMoved) {
+    mobileToolsSheetDragMoved = false;
+    return;
+  }
+  snapMobileToolsSheet(mobileToolsSheetSnap === "peek" ? "expanded" : "peek");
+});
+
+mobileToolsSearchInput.addEventListener("focus", () => {
+  if (mobileToolsSheetOpen) {
+    snapMobileToolsSheet("expanded");
+  }
+});
+
+mobileUiMediaQuery.addEventListener("change", (event) => {
+  if (event.matches) {
+    setControlsPanelOpen(false);
+    return;
+  }
+  setMobileToolsSheetOpen(false);
+  setControlsPanelOpen(true);
+});
+
+window.addEventListener("resize", () => {
+  if (!mobileToolsSheetOpen || mobileToolsSheetDragPointerId !== null) return;
+  if (mobileToolsSheetResizeFrame !== null) {
+    cancelAnimationFrame(mobileToolsSheetResizeFrame);
+  }
+  mobileToolsSheetResizeFrame = requestAnimationFrame(() => {
+    mobileToolsSheetResizeFrame = null;
+    snapMobileToolsSheet(mobileToolsSheetSnap);
+  });
+});
 
 toggleControlsButton.addEventListener("click", () => {
   if (!toggleControlsButton.disabled) {
@@ -6261,7 +6413,8 @@ syncRasterOuterShadowControls(engine.getRasterOuterShadowStyle());
 syncRasterInnerShadowControls(engine.getRasterInnerShadowStyle());
 syncRasterBevelControls(engine.getRasterBevelStyle());
 setGpuMemoryPanelOpen(false);
-setControlsPanelOpen(true);
+setControlsPanelOpen(!mobileUiMediaQuery.matches);
+setMobileToolsSheetOpen(false);
 setSelectionCombineMode("replace");
 updatePixelSelectionResult(engine.getPixelSelectionState());
 configureBrushToolUi("paint", false);
