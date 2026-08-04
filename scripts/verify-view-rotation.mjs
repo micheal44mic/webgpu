@@ -225,13 +225,9 @@ assert.match(pixelViewSource, /resolutionScale <= 1\.0001/,
   "le catture vettoriali supersampled non devono essere pixelate");
 assert.match(pixelViewSource, /vec2<i32>\(floor\(uv \* vec2<f32>\(dimensions\)\)\)/,
   "nearest deve selezionare un texel reale senza interpolazione");
-assert.match(htmlSource, /id="viewZoomPercent"/);
-assert.match(htmlSource, /data-mode="smooth"/);
-assert.match(styleSource, /\.view-zoom-percent\[data-mode="pixel"\]/);
-assert.match(mainSource, /Math\.floor\(percent \+ 1e-6\)/,
-  "il badge non deve mostrare 581% prima della soglia reale");
-assert.match(mainSource, /pixelViewEnabled \? `\$\{formatted\}% · PIXEL`/);
-assert.match(mainSource, /rasterPixelViewEnabled\(zoom\)/);
+assert.doesNotMatch(htmlSource, /id="viewZoomPercent"/);
+assert.doesNotMatch(styleSource, /\.view-zoom-percent/);
+assert.doesNotMatch(mainSource, /updateViewZoomControl|viewZoomPercentOutput/);
 
 assert.equal((mergedSurfaceSource.match(/rasterPixelViewEnabled\(resolutionScale\)/g) ?? []).length, 2,
   "entrambe le superfici raster unite devono usare nearest sopra soglia");

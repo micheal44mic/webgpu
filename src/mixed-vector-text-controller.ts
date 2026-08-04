@@ -630,7 +630,6 @@ export class MixedVectorTextController {
   private readonly moveDownButton = requiredElement<HTMLButtonElement>("moveVectorTextDown");
   private readonly resetButton = requiredElement<HTMLButtonElement>("vectorTextReset");
   private readonly status = requiredElement<HTMLElement>("vectorTextStatus");
-  private readonly zoomModeIndicator = requiredElement<HTMLElement>("vectorTextZoomMode");
 
   private readonly interactionContext: CanvasRenderingContext2D;
   private readonly fontGeometry = new VectorTextFontGeometryRegistry();
@@ -700,8 +699,6 @@ export class MixedVectorTextController {
     this.presentationCanvas.width = 1;
     this.presentationCanvas.height = 1;
     this.presentationCanvas.hidden = true;
-    this.zoomModeIndicator.hidden = false;
-    this.updateAdaptiveZoomIndicator();
     this.bindControls();
     const initialSnapshot = this.host.getMixedSceneSnapshot();
     if (!initialSnapshot) {
@@ -958,7 +955,7 @@ export class MixedVectorTextController {
   }
 
   setAdaptiveZoomEnabled(_enabled: boolean): void {
-    this.updateAdaptiveZoomIndicator();
+    // Compatibilità con gli harness esistenti: il renderer resta sempre preciso.
   }
   getDiagnostics(): MixedVectorTextDiagnostics {
     const view = this.host.getVectorTextViewState();
@@ -2275,15 +2272,6 @@ export class MixedVectorTextController {
     this.pendingViewRender = true;
   }
 
-  private updateAdaptiveZoomIndicator(): void {
-    this.zoomModeIndicator.dataset.mode = "precise";
-    this.zoomModeIndicator.dataset.enabled = "false";
-    this.zoomModeIndicator.dataset.activations = "0";
-    this.zoomModeIndicator.dataset.triggerMs = "0.00";
-    this.zoomModeIndicator.textContent = "Zoom vettori · GPU";
-    this.zoomModeIndicator.title =
-      "Testi OpenType e SVG restano Slug/mesh WebGPU durante ogni zoom; nessuna cache bitmap viene ingrandita.";
-  }
   private syncCanvasSizes(view: VectorTextViewState): void {
     if (
       this.interactionCanvas.width !== view.canvasWidth
@@ -3203,7 +3191,6 @@ export class MixedVectorTextController {
         finishedAt - (viewRenderStartedAt || startedAt),
       );
     }
-    this.updateAdaptiveZoomIndicator();
     this.updateStatus(view, selectedNode);
   }
   private updateStatus(

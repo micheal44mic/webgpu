@@ -1206,7 +1206,8 @@ assert.match(
   "l'applicazione dello stato vettoriale deve ripristinare la scena",
 );
 assert.doesNotMatch(controllerSource, /VectorTextAdaptiveZoomDetector|enterFastZoomMode|finishFastZoomMode|scheduleFastInteractionOverlay/);
-assert.match(controllerSource, /setAdaptiveZoomEnabled\(_enabled: boolean\): void \{[\s\S]*updateAdaptiveZoomIndicator\(\)/);
+assert.match(controllerSource, /setAdaptiveZoomEnabled\(_enabled: boolean\): void \{\s*\/\/ Compatibilità/);
+assert.doesNotMatch(controllerSource, /zoomModeIndicator|updateAdaptiveZoomIndicator|Zoom vettori · GPU/);
 assert.match(adaptiveSource, /disabled-vector-lod-worker-node-atomic-latest-only-v3/);
 assert.doesNotMatch(adaptiveSource, /shouldArmFastMode|frozen-viewport/);
 assert.match(controllerSource, /if \(node\.outlineWidth > 0\) \{[\s\S]*kind: "source-outline"/);
@@ -1222,7 +1223,6 @@ assert.doesNotMatch(
 );
 assert.match(controllerSource, /node\.singleShadowBlur > 0[\s\S]*this\.slugBlurDraw/);
 assert.match(controllerSource, /else \{[\s\S]*this\.slugDraw\(/);
-assert.match(controllerSource, /Testi OpenType e SVG restano Slug\/mesh WebGPU/);
 assert.doesNotMatch(fontGeometrySource, /Path2D|canvasPath|buildShadow3dPath/);
 assert.match(clientSource, /private activeRequestId: number \| null = null/);
 assert.match(clientSource, /private readonly queuedBySlot = new Map/);
@@ -1432,7 +1432,6 @@ for (const id of [
   "deleteVectorText",
   "vectorTextReset",
   "vectorTextStatus",
-  "vectorTextZoomMode",
   "vectorTextPresentationCanvas",
   "vectorTextInteractionCanvas",
 ]) {
@@ -1447,6 +1446,7 @@ assert.match(mainSource, /vectorTextPrototypeEnabled: vectorTextEditorEnabled/);
 assert.match(mainSource, /if \(vectorTextEditorEnabled\)/);
 assert.doesNotMatch(mainSource, /pageSearchParams\.get\("vectorTextTest"\)/);
 assert.doesNotMatch(mainSource, /innerShadowTest/);
+assert.doesNotMatch(htmlSource, /id="vectorTextZoomMode"/);
 assert.match(mainSource, /__vectorTextPrototype = vectorTextPrototype/);
 assert.equal(packageJson.scripts["vector-text:verify"], "node scripts/verify-vector-text.mjs");
 
