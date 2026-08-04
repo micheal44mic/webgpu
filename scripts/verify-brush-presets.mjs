@@ -191,9 +191,11 @@ assert(engine.includes('hardness: tool === "paint" ? 1')
   "Hardness deve essere normalizzata al 100% per ogni Paint setting.");
 
 assert(shaders.includes("let followAngle = select(0.0, atan2(direction.y, direction.x)")
+  && shaders.includes("@location(2) localBrushPixels: vec2<f32>")
+  && shaders.includes("input.localBrushPixels * grain.inversePeriod + vec2<f32>(0.5)")
   && shaders.includes("return mix(movingUv, fixedUv, movement)")
-  && shaders.includes("if (movement <= 0.00001)"),
-  "Shader generici Follow Stroke/Movement mancanti o fallback legacy assente.");
+  && !shaders.includes("if (movement <= 0.00001)"),
+  "Shader generici Follow Stroke/Moving scalato mancanti.");
 assert(main.includes("resolveBrushPresetSettings(PENCIL_BRUSH_PRESET")
   && main.includes('new URL("../Shapepencil.png", import.meta.url)')
   && main.includes('new URL("../Grainpencil.png", import.meta.url)'),

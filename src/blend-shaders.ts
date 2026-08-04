@@ -413,32 +413,26 @@ fn depositMain(@builtin(global_invocation_id) gid: vec3<u32>) {
     var grainUvDx: vec2<f32>;
     var grainUvDy: vec2<f32>;
     if (blend.options.y == 2u) {
-      // Movement 0 preserves the historical dragged/stamp-local mapping
-      // exactly. Higher values advance the roller in document space.
-      let halfSize = max(
-        mix(
-          blend.toAndFromHalfSize.zw,
-          blend.toHalfSizeAndAngles.xy,
-          bestInterpolation
-        ),
-        vec2<f32>(0.001)
+      // Use the same physical grain period for the dragged and rolling ends.
+      // This keeps Scale active at Movement 0 and makes 100% exactly match the
+      // Texturized document-space mapping.
+      let movingUv = bestLocal.brushPixels * blend.grainControls.x + vec2<f32>(0.5);
+      let angle = mix(
+        blend.toHalfSizeAndAngles.z,
+        blend.toHalfSizeAndAngles.w,
+        bestInterpolation
       );
-      let movingUv = bestLocal.uv;
-      let movingUvDx = vec2<f32>(0.5 / halfSize.x, 0.0);
-      let movingUvDy = vec2<f32>(0.0, 0.5 / halfSize.y);
+      let cosine = cos(angle);
+      let sine = sin(angle);
+      let movingUvDx = vec2<f32>(cosine, -sine) * blend.grainControls.x;
+      let movingUvDy = vec2<f32>(sine, cosine) * blend.grainControls.x;
       let movement = clamp(blend.grainAffineAndPhase.y, 0.0, 1.0);
-      if (movement <= 0.00001) {
-        grainUv = movingUv;
-        grainUvDx = movingUvDx;
-        grainUvDy = movingUvDy;
-      } else {
-        let fixedUv = documentPosition * blend.grainControls.x;
-        let fixedUvDx = vec2<f32>(blend.grainControls.x, 0.0);
-        let fixedUvDy = vec2<f32>(0.0, blend.grainControls.x);
-        grainUv = mix(movingUv, fixedUv, movement);
-        grainUvDx = mix(movingUvDx, fixedUvDx, movement);
-        grainUvDy = mix(movingUvDy, fixedUvDy, movement);
-      }
+      let fixedUv = documentPosition * blend.grainControls.x;
+      let fixedUvDx = vec2<f32>(blend.grainControls.x, 0.0);
+      let fixedUvDy = vec2<f32>(0.0, blend.grainControls.x);
+      grainUv = mix(movingUv, fixedUv, movement);
+      grainUvDx = mix(movingUvDx, fixedUvDx, movement);
+      grainUvDy = mix(movingUvDy, fixedUvDy, movement);
     } else {
       // Fixed is anchored to authoritative top-left layer coordinates.
       grainUv = documentPosition * blend.grainControls.x;

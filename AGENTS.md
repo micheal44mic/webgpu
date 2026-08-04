@@ -532,6 +532,25 @@ Paint:
   `*:verify`, la nuova `brush-studio:verify`, TypeScript, build Vite/Sites e
   `git diff --check` sono verdi. Resta da fare la QA touch su Safari/iPhone
   fisico e nessuna baseline prestazionale è stata promossa.
+  Diciassettesimo follow-up (4 agosto 2026): `Done` aggiorna la stessa card
+  autorevole della Brush Library (`Pencil` oppure `Current Brush`), senza creare
+  copie implicite. La cache RAM mantiene le impostazioni durante la sessione;
+  localStorage conserva sia il record completo per brush sia l'ID della card
+  attiva, così categoria, selezione e impostazioni vengono ripristinate dopo un
+  refresh. La preview della card attiva usa ora i settings reali salvati invece
+  di ricostruire sempre Pencil dal preset originale. Shape e Grain custom
+  restano Blob originali in IndexedDB: le nuove scritture usano una chiave
+  immutabile per asset e il vecchio Blob viene eliminato soltanto dopo il commit
+  del nuovo record settings, evitando sia mismatch in caso di errore intermedio
+  sia duplicazioni nel flusso riuscito. Se fallisce soltanto la pulizia finale
+  può restare un Blob irraggiungibile, mai selezionato dal brush; nessuna texture
+  o cache GPU viene serializzata.
+  `Cancel` resta un rollback esatto. QA browser mobile locale `393×852`:
+  Pencil `30→67 px`, `Done`, card Pencil ancora visibile/selezionata, refresh,
+  card e valore `67 px` ripristinati; modifica `67→89 px` seguita da `Cancel`
+  e riapertura tornata a `67 px`, console senza warning/errori. TypeScript,
+  build Vite/Sites, tutte le `24` suite `*:verify` e `git diff --check` verdi.
+  Resta da fare la stessa QA su Safari/iPhone fisico.
 - …cache di presentazione persistente screen-space: display shader eseguito
   solo sulla dirty region, poi `copyTextureToTexture` alla swapchain
   (`#37/#38`: Base `+46%` FPS vs `#35`, migliore anche delle vecchie baseline).
@@ -684,13 +703,14 @@ Paint:
   dimensioni, polarità e SHA-256. Follow Stroke riusa `Stamp.direction` e la
   lane prima libera `options.w`, quindi `STAMP_STRIDE_BYTES=32` e
   `BRUSH_UNIFORM_BYTES=96` non cambiano; i bound Shape diventano
-  conservativamente `sqrt(2)`. Grain Movement usa
-  `mix(stampLocalUv, layerRollerUv, movement)`: a zero conserva formula e
-  sampler clamp legacy byte-per-byte, sopra zero usa il sampler repeat e a
-  `100%` converge al mapping Texturized. `GrainUniforms` resta `32 B`, usando
-  le lane finali per mip count dinamico e Movement. Anche Blend dry riceve
-  width/mip/Movement tramite lane uniform prima inutilizzate; il caso legacy
-  a Movement zero conserva UV e sampler precedenti.
+  conservativamente `sqrt(2)`. Dopo l'audit semantico Moving, Grain Movement
+  usa `mix(stampLocalPixels × inversePeriod + 0.5, layerRollerUv, movement)`:
+  i due estremi condividono la stessa frequenza, quindi Scale agisce anche a
+  zero, il patch segue lo stamp a `0%` e `100%` converge esattamente al mapping
+  Texturized. Tutti i Grain attivi usano il sampler repeat, necessario quando
+  Scale porta il patch oltre un tile. `GrainUniforms` resta `32 B`, usando le
+  lane finali per mip count dinamico e Movement. Blend dry usa la stessa legge
+  e gradienti rotation-aware, senza cambiare uniform ABI.
 - Gli scambi Shape/Grain sono lazy, transazionali e latest-only. La vecchia
   risorsa resta valida durante allocazione/retarget e viene ripristinata se la
   richiesta diventa stale; un pointer-down è rifiutato finché identità e asset
@@ -716,10 +736,26 @@ Paint:
   `history` e `stroke` sono verdi; nessuna QA fisica iPhone o misura canonica.
 - Grain M1 nativo legacy: asset originale `graincottonfleece.PNG` RGBA `2500×2500`
   (SHA-256 `9AA1CE07…`), luma `0.299/0.587/0.114`, 12 mip NPOT generati in
-  WGSL (~`31,8 MiB`). Fixed = UV layer; Moving con Movement zero = UV stamp
-  legacy, dove Scale resta ininfluente; Movement sopra zero abilita il roller
-  e quindi Scale. Invert via segno dei coefficienti affini, nessun ramo WGSL.
+  WGSL (~`31,8 MiB`). Fixed = UV layer; Moving a zero = patch locale fisico
+  scalato e trascinato dallo stamp; Movement lo porta progressivamente al
+  roller in coordinate layer. Invert via segno dei coefficienti affini, nessun ramo WGSL.
   Non ridimensionare l'asset senza richiesta esplicita.
+- Audit Grain Moving del 4 agosto 2026 basato sul
+  [Procreate Handbook 5.4](https://help.procreate.com/procreate/handbook/5.4/brushes/brush-studio-settings):
+  Moving deve trascinare la texture, Movement basso deve risultare più
+  smeared, alto più simile al roller Texturized, e Scale regola la texture
+  dentro la Shape. Il mapping precedente mescolava UV stamp normalizzate
+  `0..1` con UV layer fisiche: a zero ignorava Scale e clampava il tile. Il
+  mapping corretto mantiene una frequenza fisica comune nei renderer Paint e
+  Blend; la preview Canvas2D rappresentativa usa il periodo reale proiettato e
+  allunga il grain lungo il tratto quando Movement scende. Regressioni
+  numeriche vincolano traslazione del drag, effetto Scale, interpolazione e
+  uguaglianza esatta `Movement=100%`/Texturized. Browser QA mobile `393×852`:
+  preset Pencil `Moving / Scale 43% / Movement 99%`, preview nettamente
+  streaked a `0%`, shader WebGPU compilati, tratto reale completato e console
+  priva di warning/errori. Non dichiarare parità pixel con Procreate: Zoom,
+  Rotation Grain, pressure Depth, Depth Minimum/Jitter e Offset Jitter non sono
+  ancora implementati, e il Handbook non pubblica la formula numerica interna.
 - Ciclo di vita Grain (sperimentale rev `39`, da validare):
   `GRAIN_STORAGE_LIFECYCLE_STRATEGY =
   "allocate-on-grain-select-release-when-idle-unused"`. La texture selezionata

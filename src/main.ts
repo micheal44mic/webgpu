@@ -5,6 +5,10 @@ import {
 } from "./mobile-tools-sheet-gesture";
 import { MobileBrushStudioController } from "./mobile-brush-studio";
 import {
+  loadBrushStudioLibraryState,
+  saveBrushStudioLibraryState,
+} from "./brush-studio-storage";
+import {
   Blend,
   Box,
   Brush,
@@ -908,9 +912,16 @@ let mobileToolsSheetDragMoved = false;
 let mobileToolsSheetResizeFrame: number | null = null;
 type MobileBrushLibraryCategory = "pencil" | "painting" | "spray-paint";
 type MobileBrushLibraryBrushId = "m1m4-pencil-v1" | "current";
+const restoredMobileBrushLibraryState = loadBrushStudioLibraryState();
+const restoredMobileBrushLibraryBrushId: MobileBrushLibraryBrushId =
+  restoredMobileBrushLibraryState?.activeBrushId === PENCIL_BRUSH_PRESET.id
+    ? PENCIL_BRUSH_PRESET.id
+    : "current";
 let mobileBrushLibraryOpen = false;
-let mobileBrushLibraryCategory: MobileBrushLibraryCategory = "painting";
-let activeMobileBrushLibraryBrushId: MobileBrushLibraryBrushId = "current";
+let mobileBrushLibraryCategory: MobileBrushLibraryCategory =
+  restoredMobileBrushLibraryBrushId === PENCIL_BRUSH_PRESET.id ? "pencil" : "painting";
+let activeMobileBrushLibraryBrushId: MobileBrushLibraryBrushId =
+  restoredMobileBrushLibraryBrushId;
 let mobileBrushLibrarySelectionRevision = 0;
 let mobileBrushLibraryOffsetPx = 0;
 let mobileBrushLibraryDragPointerId: number | null = null;
@@ -1546,6 +1557,10 @@ function mobileBrushLibraryNoise(seed: number): number {
 
 function renderMobileBrushLibraryPreview(): void {
   const pencilPreview = mobileBrushLibraryCategory === "pencil";
+  const previewBrushId: MobileBrushLibraryBrushId = pencilPreview
+    ? PENCIL_BRUSH_PRESET.id
+    : "current";
+  const previewIsActive = previewBrushId === activeMobileBrushLibraryBrushId;
   if (
     !mobileBrushLibraryOpen
     || (!pencilPreview && mobileBrushLibraryCategory !== "painting")
@@ -1554,7 +1569,7 @@ function renderMobileBrushLibraryPreview(): void {
   ) {
     return;
   }
-  if (pencilPreview && !mobilePencilBrushTipReady) {
+  if (pencilPreview && !previewIsActive && !mobilePencilBrushTipReady) {
     ensureMobilePencilBrushTip();
     return;
   }
@@ -1586,9 +1601,13 @@ function renderMobileBrushLibraryPreview(): void {
   context.clearRect(0, 0, logicalWidth, logicalHeight);
 
   const currentSettings = engine.getSettings();
-  const settings = pencilPreview
+  const fallbackSettings = pencilPreview
     ? resolveBrushPresetSettings(PENCIL_BRUSH_PRESET, currentSettings)
     : currentSettings;
+  const settings = previewIsActive
+    ? currentSettings
+    : mobileBrushStudio?.settingsSnapshot(previewBrushId, fallbackSettings)
+      ?? fallbackSettings;
   const sizeRatio = Math.min(
     1,
     Math.max(0, Math.log10(Math.max(1, settings.size)) / 3),
@@ -1597,8 +1616,10 @@ function renderMobileBrushLibraryPreview(): void {
     logicalHeight * 0.78,
     Math.max(11, logicalHeight * (0.26 + sizeRatio * 0.48)),
   );
-  const tipCanvas = pencilPreview ? mobilePencilBrushTipCanvas : mobileBrushLibraryTipCanvas;
-  if (!pencilPreview) {
+  const tipCanvas = pencilPreview && !previewIsActive
+    ? mobilePencilBrushTipCanvas
+    : mobileBrushLibraryTipCanvas;
+  if (!pencilPreview || previewIsActive) {
     const tipCssSize = 72;
     engine.renderBrushTipPreview(
       mobileBrushLibraryTipCanvas,
@@ -1663,15 +1684,20 @@ function renderMobileBrushLibraryPreview(): void {
       context.restore();
     }
   }
-  if (pencilPreview && mobilePencilBrushGrainReady) {
+  if (
+    pencilPreview
+    && mobilePencilBrushGrainReady
+    && settings.grainMode !== "off"
+    && settings.grainAssetId === "pencil-grain"
+  ) {
     // Movement 99% is almost a paper-locked roller. Multiplying the finished
     // library stroke by the same grain gives a cheap representative preview;
     // the authoritative canvas still samples it for every physical stamp.
     const grainPeriod = Math.max(
       logicalHeight,
       baseDiameter * (
-        PENCIL_BRUSH_PRESET.settings.grainScale * 800
-        / PENCIL_BRUSH_PRESET.settings.size
+        settings.grainScale * 800
+        / Math.max(1, settings.size)
       ),
     );
     const firstX = -grainPeriod * 0.37;
@@ -1702,7 +1728,7 @@ function renderMobileBrushLibraryPreview(): void {
       }
     }
     context.save();
-    context.globalAlpha = PENCIL_BRUSH_PRESET.settings.grainDepth;
+    context.globalAlpha = settings.grainDepth;
     context.globalCompositeOperation = "destination-in";
     context.drawImage(
       mobilePencilBrushGrainClipCanvas,
@@ -3322,7 +3348,14 @@ mobileBrushStudio = new MobileBrushStudioController({
     syncMobileBrushLibraryButtonState();
     syncMobileBrushControlsVisibility();
   },
-  onCommit: (_brushId, _settings) => {
+  onCommit: (brushId, _settings) => {
+    activeMobileBrushLibraryBrushId = brushId === PENCIL_BRUSH_PRESET.id
+      ? PENCIL_BRUSH_PRESET.id
+      : "current";
+    mobileBrushLibraryCategory = mobileBrushLibraryCategoryForBrush(
+      activeMobileBrushLibraryBrushId,
+    );
+    persistActiveMobileBrushLibraryBrush();
     syncMobileBrushLibrarySelection();
     markMobileBrushLibraryPreviewDirty();
   },
@@ -4184,6 +4217,21 @@ function mobileBrushLibraryName(brushId: MobileBrushLibraryBrushId): string {
     || (brushId === PENCIL_BRUSH_PRESET.id ? PENCIL_BRUSH_PRESET.name : "Current Brush");
 }
 
+function mobileBrushLibraryCategoryForBrush(
+  brushId: MobileBrushLibraryBrushId,
+): MobileBrushLibraryCategory {
+  return brushId === PENCIL_BRUSH_PRESET.id ? "pencil" : "painting";
+}
+
+function persistActiveMobileBrushLibraryBrush(): void {
+  try {
+    saveBrushStudioLibraryState(activeMobileBrushLibraryBrushId);
+  } catch {
+    // Settings remain authoritative in their own localStorage record. This
+    // small pointer only restores which saved card is active after a refresh.
+  }
+}
+
 async function selectMobileBrushLibraryBrush(
   brushId: MobileBrushLibraryBrushId,
 ): Promise<void> {
@@ -4205,6 +4253,8 @@ async function selectMobileBrushLibraryBrush(
     if (revision !== mobileBrushLibrarySelectionRevision) return;
     applySettingsToControls(settings);
     activeMobileBrushLibraryBrushId = brushId;
+    mobileBrushLibraryCategory = mobileBrushLibraryCategoryForBrush(brushId);
+    persistActiveMobileBrushLibraryBrush();
     syncMobileBrushLibrarySelection();
     markMobileBrushLibraryPreviewDirty();
   } catch (error) {
@@ -8368,11 +8418,18 @@ void engine.initialize()
     engineInitialized = true;
     if (mobileBrushStudio) {
       if (mobileUiMediaQuery.matches) {
+        const fallback = activeMobileBrushLibraryBrushId === PENCIL_BRUSH_PRESET.id
+          ? resolveBrushPresetSettings(PENCIL_BRUSH_PRESET, engine.getSettings())
+          : engine.getSettings();
         const restored = await mobileBrushStudio.resolveBrushSettings(
-          "current",
-          engine.getSettings(),
+          activeMobileBrushLibraryBrushId,
+          fallback,
         );
         applySettingsToControls(restored);
+        mobileBrushLibraryCategory = mobileBrushLibraryCategoryForBrush(
+          activeMobileBrushLibraryBrushId,
+        );
+        syncMobileBrushLibrarySelection();
       } else {
         mobileBrushStudio.rememberSettings("current", engine.getSettings());
       }

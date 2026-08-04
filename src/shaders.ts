@@ -29,6 +29,7 @@ struct VertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) localPosition: vec2<f32>,
   @location(1) @interpolate(flat) pointColor: vec3<f32>,
+  @location(2) localBrushPixels: vec2<f32>,
 };
 
 struct ShapeOccupancy {
@@ -168,6 +169,7 @@ fn vertexMain(
   var output: VertexOutput;
   output.position = vec4<f32>(clipPosition, 0.0, 1.0);
   output.localPosition = localPosition;
+  output.localBrushPixels = localPosition * stamp.radius;
   var colorCopySeed = copySeed;
   if (brush.options.y == 0u) {
     colorCopySeed = hash32(stamp.seed);
@@ -225,6 +227,7 @@ fn shapeVertexMain(
   var output: VertexOutput;
   output.position = vec4<f32>(clipPosition, 0.0, 1.0);
   output.localPosition = localPosition;
+  output.localBrushPixels = localPosition * stamp.radius;
   var colorCopySeed = copySeed;
   if (brush.options.y == 0u) {
     colorCopySeed = hash32(stamp.seed);
@@ -401,6 +404,7 @@ struct FragmentInput {
   @builtin(position) position: vec4<f32>,
   @location(0) localPosition: vec2<f32>,
   @location(1) @interpolate(flat) pointColor: vec3<f32>,
+  @location(2) localBrushPixels: vec2<f32>,
 };
 
 struct ShapeOccupancy {
@@ -463,14 +467,12 @@ fn adjustedGrainCoverage(
 
 fn selectedGrainUv(input: FragmentInput) -> vec2<f32> {
   if (grain.coordinateMode != 0u) {
-    // At zero, preserve the historical dragged/stamp-local mapping exactly.
-    // Increasing Movement advances the roller in authoritative layer space;
-    // 100% converges to Texturized, matching the Procreate control semantics.
+    // Moving starts with a texture patch dragged in stamp-local *pixel* space.
+    // Scale therefore controls the patch at every Movement value. Advancing
+    // Movement rolls that same-frequency patch into authoritative layer space;
+    // 100% converges exactly to Texturized instead of mixing incompatible UVs.
     let movement = clamp(grain.movement, 0.0, 1.0);
-    if (movement <= 0.00001) {
-      return input.localPosition * 0.5 + vec2<f32>(0.5);
-    }
-    let movingUv = input.localPosition * 0.5 + vec2<f32>(0.5);
+    let movingUv = input.localBrushPixels * grain.inversePeriod + vec2<f32>(0.5);
     let fixedUv = (input.position.xy + brush.renderTargetOrigin) * grain.inversePeriod;
     return mix(movingUv, fixedUv, movement);
   }

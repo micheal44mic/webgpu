@@ -1,6 +1,7 @@
 import type { BrushSettings } from "./engine-types";
 
 const BRUSH_STUDIO_SETTINGS_KEY = "m1m4.brush-studio.settings.v1";
+const BRUSH_STUDIO_LIBRARY_STATE_KEY = "m1m4.brush-studio.library-state.v1";
 const BRUSH_STUDIO_ASSET_DATABASE = "m1m4-brush-studio";
 const BRUSH_STUDIO_ASSET_STORE = "assets";
 const BRUSH_STUDIO_ASSET_DATABASE_VERSION = 1;
@@ -23,6 +24,11 @@ export interface BrushStudioStoredAsset {
   readonly mimeType: string;
   readonly blob: Blob;
   readonly updatedAt: number;
+}
+
+export interface BrushStudioLibraryState {
+  readonly version: 1;
+  readonly activeBrushId: string;
 }
 
 type BrushStudioSavedBrushMap = Record<string, BrushStudioSavedBrush>;
@@ -54,11 +60,37 @@ export function saveBrushStudioSavedBrush(
   window.localStorage.setItem(BRUSH_STUDIO_SETTINGS_KEY, JSON.stringify(saved));
 }
 
+export function loadBrushStudioLibraryState(): BrushStudioLibraryState | null {
+  try {
+    const serialized = window.localStorage.getItem(BRUSH_STUDIO_LIBRARY_STATE_KEY);
+    if (!serialized) return null;
+    const parsed: unknown = JSON.parse(serialized);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const candidate = parsed as Partial<BrushStudioLibraryState>;
+    if (candidate.version !== 1 || typeof candidate.activeBrushId !== "string") return null;
+    return {
+      version: 1,
+      activeBrushId: candidate.activeBrushId,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function saveBrushStudioLibraryState(activeBrushId: string): void {
+  const state: BrushStudioLibraryState = {
+    version: 1,
+    activeBrushId,
+  };
+  window.localStorage.setItem(BRUSH_STUDIO_LIBRARY_STATE_KEY, JSON.stringify(state));
+}
+
 export function brushStudioAssetStorageKey(
   brushId: string,
   kind: BrushStudioAssetKind,
+  assetId?: string,
 ): string {
-  return `${brushId}:${kind}`;
+  return assetId ? `${brushId}:${kind}:${assetId}` : `${brushId}:${kind}`;
 }
 
 function openBrushStudioAssetDatabase(): Promise<IDBDatabase> {

@@ -6981,14 +6981,13 @@ export class BrushEngine {
     if (!isTexturizedGrainActive(settings)) {
       return "none";
     }
-    const moving = settings.grainMode === "moving" && (settings.grainMovement ?? 0) <= 0;
     if (settings.grainFiltering === "no") {
-      return moving ? "clamp-nearest" : "repeat-nearest";
+      return "repeat-nearest";
     }
     if (settings.grainFiltering === "classic") {
-      return moving ? "clamp-linear-mip-nearest" : "repeat-linear-mip-nearest";
+      return "repeat-linear-mip-nearest";
     }
-    return moving ? "clamp-linear-trilinear" : "repeat-linear-trilinear";
+    return "repeat-linear-trilinear";
   }
 
   writeGrainUniforms(settings: BrushSettings): void {

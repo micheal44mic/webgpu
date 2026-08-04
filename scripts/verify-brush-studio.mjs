@@ -42,6 +42,39 @@ assert.match(studio, /requestAnimationFrame\(\(\) => \{[\s\S]*?this\.applyDraftN
 assert.match(studio, /this\.cancel\(true\)/, "drag-close must use Cancel semantics");
 assert.match(studio, /saveBrushStudioSavedBrush/);
 assert.match(storage, /window\.indexedDB\.open/);
+assert.match(
+  storage,
+  /assetId \? `\$\{brushId\}:\$\{kind\}:\$\{assetId\}`/,
+  "custom asset blobs must use immutable per-asset keys",
+);
+assert.match(storage, /m1m4\.brush-studio\.library-state\.v1/);
+assert.match(storage, /export function loadBrushStudioLibraryState/);
+assert.match(storage, /export function saveBrushStudioLibraryState/);
+assert.match(
+  main,
+  /restoredMobileBrushLibraryBrushId[\s\S]*?activeMobileBrushLibraryBrushId[\s\S]*?restoredMobileBrushLibraryBrushId/,
+  "the last active saved brush must remain selected after refresh",
+);
+assert.match(
+  main,
+  /onCommit: \(brushId,[\s\S]*?persistActiveMobileBrushLibraryBrush\(\)/,
+  "Done must persist which visible library card owns the saved settings",
+);
+assert.match(
+  main,
+  /mobileBrushStudio\.resolveBrushSettings\([\s\S]*?activeMobileBrushLibraryBrushId/,
+  "startup must restore the active brush instead of always forcing Current Brush",
+);
+assert.match(
+  main,
+  /previewIsActive[\s\S]*?settingsSnapshot\(previewBrushId, fallbackSettings\)/,
+  "the library preview must use the saved per-card settings",
+);
+assert.match(
+  studio,
+  /saveBrushStudioSavedBrush\([\s\S]*?deleteSupersededStoredAssets\(/,
+  "old custom blobs may be deleted only after the new settings record commits",
+);
 assert.match(engine, /registerCustomShapeAsset\(/);
 assert.match(engine, /registerCustomGrainAsset\(/);
 assert.match(engine, /hardness: tool === "paint" \? 1/);

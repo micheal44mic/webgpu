@@ -7,6 +7,9 @@ import { readEngineSource } from "./engine-source.mjs";
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const assetPath = path.join(projectRoot, "graincottonfleece.PNG");
 const shaderPath = path.join(projectRoot, "src", "shaders.ts");
+const blendShaderPath = path.join(projectRoot, "src", "blend-shaders.ts");
+const blendRendererPath = path.join(projectRoot, "src", "blend-renderer.ts");
+const mobileBrushStudioPath = path.join(projectRoot, "src", "mobile-brush-studio.ts");
 const mainPath = path.join(projectRoot, "src", "main.ts");
 const htmlPath = path.join(projectRoot, "index.html");
 const expectedSize = 2500;
@@ -139,6 +142,23 @@ function wgslStructLayout(source, name) {
   return { members, offsets, alignment, size: roundUp(alignment, offset) };
 }
 
+function movingUv(documentPosition, stampCenter, period, movement) {
+  const inversePeriod = 1 / period;
+  const dragged = (documentPosition - stampCenter) * inversePeriod + 0.5;
+  const fixed = documentPosition * inversePeriod;
+  return dragged + (fixed - dragged) * movement;
+}
+
+// Contract numerico della coordinata Moving: il patch trascinato e il roller
+// condividono la stessa frequenza. Scale agisce anche a Movement 0; traslare
+// insieme stamp e documento lascia il drag invariato, mentre 100% resta fisso
+// nel documento come Texturized.
+assert(movingUv(120, 100, 40, 0) === 1, "Moving 0 non usa il patch locale scalato.");
+assert(movingUv(120, 100, 80, 0) === 0.75, "Scale non agisce su Moving 0.");
+assert(movingUv(160, 140, 40, 0) === 1, "Moving 0 non segue la traslazione dello stamp.");
+assert(movingUv(120, 100, 40, 1) === 3, "Moving 100% non converge a Texturized.");
+assert(movingUv(120, 100, 40, 0.5) === 2, "Movement non interpola drag e roller.");
+
 const decoded = readPngHeader(assetPath);
 assert(decoded.width === expectedSize && decoded.height === expectedSize,
   `Asset ${decoded.width}×${decoded.height}, atteso 2500² nativo.`);
@@ -169,14 +189,20 @@ assert(!legacyShader.includes("grainTexture") && !legacyShader.includes("GrainUn
   "Il modulo brush Grain Off contiene binding Grain.");
 assert(grainShader.includes("(input.position.xy + brush.renderTargetOrigin) * grain.inversePeriod"),
   "Fixed M1 non è ancorato alle coordinate autorevoli del layer.");
-assert(grainShader.includes("input.localPosition * 0.5 + vec2<f32>(0.5)"),
-  "Moving M1 non usa le coordinate locali dello stamp.");
+assert(legacyShader.includes("@location(2) localBrushPixels: vec2<f32>")
+  && legacyShader.includes("output.localBrushPixels = localPosition * stamp.radius"),
+  "Il vertex Grain non trasmette le coordinate locali fisiche dello stamp.");
 assert(grainShader.includes("grain.coordinateMode != 0u"),
   "Selezione Fixed/Moving assente dallo shader WGSL.");
-assert(grainShader.includes("if (movement <= 0.00001)")
-  && grainShader.includes("return input.localPosition * 0.5 + vec2<f32>(0.5)")
-  && grainShader.includes("return mix(movingUv, fixedUv, movement)"),
-  "Movement non conserva il vecchio Moving a zero o non interpola verso il roller.");
+const selectedGrainUv = grainShader.match(
+  /fn selectedGrainUv\(input: FragmentInput\)[\s\S]*?\n}/,
+)?.[0] ?? "";
+assert(selectedGrainUv.includes(
+  "input.localBrushPixels * grain.inversePeriod + vec2<f32>(0.5)",
+) && selectedGrainUv.includes("return mix(movingUv, fixedUv, movement)"),
+"Movement non interpola coordinate stamp/layer alla stessa scala fisica.");
+assert(!selectedGrainUv.includes("input.localPosition * 0.5"),
+  "Moving usa ancora UV stamp 0..1 che ignorano Scale.");
 assert(grainShader.includes("max(1u, grain.mipLevelCount) - 1u"),
   "Il numero di mip Grain non è più dinamico nell'uniform.");
 assert(grainShader.includes("dot(sourceSample.rgb, vec3<f32>(0.299, 0.587, 0.114))"),
@@ -202,8 +228,30 @@ assert(engine.includes('const GRAIN_TEXTURE_SIZE = 2500;')
   && engine.includes("mipLevelCountForSize(width, height)"),
   "Dimensione/formato nativi del Grain non configurati.");
 assert(engine.includes('"rgba8-native-2500-fixed-coverage-multiply"')
-  && engine.includes('"rgba8-native-2500-moving-coverage-multiply"'),
+  && engine.includes('"rgba8-native-2500-moving-scaled-drag-to-roller-coverage-multiply"'),
   "Marker Fixed/Moving nativi assenti.");
+const samplerRouting = engine.match(
+  /export function grainCoordinateMode\([\s\S]*?\n}/,
+)?.[0] ?? "";
+assert(samplerRouting.includes('return "fixed";')
+  && !samplerRouting.includes("grainMovement"),
+"Moving scalato non usa sempre il sampler repeat.");
+
+const blendShader = fs.readFileSync(blendShaderPath, "utf8");
+const blendRenderer = fs.readFileSync(blendRendererPath, "utf8");
+assert(blendShader.includes(
+  "bestLocal.brushPixels * blend.grainControls.x + vec2<f32>(0.5)",
+) && blendShader.includes("grainUv = mix(movingUv, fixedUv, movement)")
+  && blendShader.includes("movingUvDx = vec2<f32>(cosine, -sine)"),
+"Blend dry non usa il mapping Moving scalato e rotation-aware.");
+assert(blendRenderer.includes('const grainMode = "fixed" as const;'),
+  "Blend dry Moving non seleziona il sampler repeat.");
+
+const mobileBrushStudio = fs.readFileSync(mobileBrushStudioPath, "utf8");
+assert(mobileBrushStudio.includes("source.width * settings.grainScale * previewDocumentScale")
+  && mobileBrushStudio.includes("period / Math.max(movement, 0.025)")
+  && !mobileBrushStudio.includes("const movingOffset ="),
+"La preview Brush Studio non rappresenta Scale e drag→roller di Moving.");
 assert(engine.includes('export type BlendMode =')
   && engine.includes('| "light-glaze"')
   && engine.includes('| "uniformed-glaze"')
@@ -326,9 +374,11 @@ console.log(JSON.stringify({
     originalM1AssetUnmodified: true,
     webGpuWgslOnlyRenderingPath: true,
     fixedUsesLayerCoordinates: true,
-    movingUsesStampLocalCoordinates: true,
-    movingMovementZeroPreservesLegacyLocalMapping: true,
-    movingRollerUsesScaleControl: true,
+    movingUsesScaledStampLocalCoordinates: true,
+    movingScaleAppliesAtEveryMovement: true,
+    movingUsesRepeatSampler: true,
+    movingHundredPercentEqualsTexturizedCoordinates: true,
+    movingPreviewShowsDragToRoller: true,
     invertUsesExistingAffineUniforms: true,
     iphoneReplayOffersOffOrFixedTexturized: true,
     iphoneReplayUsesThreeFinalRenderingsAtFixedIntensity1x: true,

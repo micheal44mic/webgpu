@@ -51,15 +51,15 @@ export type BrushOpacityStrategy = "per-stamp-uniform-alpha-multiplier";
 export type GrainStrategy =
   | "disabled-legacy-pipeline"
   | "rgba8-native-2500-fixed-coverage-multiply"
-  | "rgba8-native-2500-moving-coverage-multiply"
+  | "rgba8-native-2500-moving-scaled-drag-to-roller-coverage-multiply"
   | "rgba8-native-800-fixed-coverage-multiply"
-  | "rgba8-native-800-moving-roller-coverage-multiply";
+  | "rgba8-native-800-moving-scaled-drag-to-roller-coverage-multiply";
 
 export type GrainCoordinateStrategy =
   | "none"
   | "authoritative-layer-position"
-  | "stamp-local-position"
-  | "stamp-local-to-layer-roller-interpolation";
+  | "stamp-local-scaled-position"
+  | "stamp-local-scaled-to-layer-roller-interpolation";
 
 export type GrainSamplingStrategy =
   | "none"
@@ -133,20 +133,21 @@ export const GRAIN_DISABLED_STRATEGY = "disabled-legacy-pipeline" as const;
 
 export const GRAIN_FIXED_STRATEGY = "rgba8-native-2500-fixed-coverage-multiply" as const;
 
-export const GRAIN_MOVING_STRATEGY = "rgba8-native-2500-moving-coverage-multiply" as const;
+export const GRAIN_MOVING_STRATEGY =
+  "rgba8-native-2500-moving-scaled-drag-to-roller-coverage-multiply" as const;
 
 export const PENCIL_GRAIN_FIXED_STRATEGY =
   "rgba8-native-800-fixed-coverage-multiply" as const;
 
 export const PENCIL_GRAIN_MOVING_STRATEGY =
-  "rgba8-native-800-moving-roller-coverage-multiply" as const;
+  "rgba8-native-800-moving-scaled-drag-to-roller-coverage-multiply" as const;
 
 export const GRAIN_FIXED_COORDINATE_STRATEGY = "authoritative-layer-position" as const;
 
-export const GRAIN_MOVING_COORDINATE_STRATEGY = "stamp-local-position" as const;
+export const GRAIN_MOVING_COORDINATE_STRATEGY = "stamp-local-scaled-position" as const;
 
 export const GRAIN_MOVING_ROLLER_COORDINATE_STRATEGY =
-  "stamp-local-to-layer-roller-interpolation" as const;
+  "stamp-local-scaled-to-layer-roller-interpolation" as const;
 
 export const GRAIN_MIP_STRATEGY = "webgpu-wgsl-linear-full-chain" as const;
 
@@ -243,10 +244,10 @@ export function isTexturizedGrainActive(settings: BrushSettings): boolean {
     && settings.grainDepth > 0;
 }
 
-export function grainCoordinateMode(settings: BrushSettings): "fixed" | "moving" {
-  // Moving with Movement > 0 can leave the 0..1 stamp domain while rolling;
-  // use the existing repeat sampler. Movement 0 keeps the legacy clamp sampler.
-  return settings.grainMode === "moving" && (settings.grainMovement ?? 0) <= 0
-    ? "moving"
-    : "fixed";
+export function grainCoordinateMode(_settings: BrushSettings): "fixed" | "moving" {
+  // Scale can make even a fully dragged Moving patch cross a tile boundary.
+  // All active Grain mappings therefore require the repeat sampler. The
+  // historical `moving` sampler remains allocated only for ABI/resource-layout
+  // stability and is no longer selected by the corrected coordinate model.
+  return "fixed";
 }

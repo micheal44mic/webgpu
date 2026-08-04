@@ -219,6 +219,25 @@ export class MobileBrushStudioController {
     this.settingsCache.set(brushId, copySettings(settings));
   }
 
+  settingsSnapshot(
+    brushId: string,
+    fallback: Readonly<BrushSettings>,
+  ): BrushSettings {
+    const cached = this.settingsCache.get(brushId);
+    if (cached) {
+      return { ...cached, tool: "paint", color: fallback.color, hardness: 1 };
+    }
+    const saved = loadBrushStudioSavedBrush(brushId);
+    if (!saved) return { ...fallback, tool: "paint", hardness: 1 };
+    return {
+      ...fallback,
+      ...saved.settings,
+      tool: "paint",
+      color: fallback.color,
+      hardness: 1,
+    };
+  }
+
   async resolveBrushSettings(
     brushId: string,
     fallback: Readonly<BrushSettings>,
@@ -894,13 +913,33 @@ export class MobileBrushStudioController {
     grain.clearRect(0, 0, width, height);
     grain.imageSmoothingEnabled = settings.grainFiltering !== "no";
     grain.imageSmoothingQuality = settings.grainFiltering === "improved" ? "high" : "low";
-    const period = clamp(Math.min(width, height) * settings.grainScale, 18, Math.max(width, height));
-    const movingOffset = settings.grainMode === "moving"
-      ? (1 - settings.grainMovement) * period * 0.65
-      : 0;
-    for (let y = -period + movingOffset; y < height + period; y += period) {
-      for (let x = -period + movingOffset; x < width + period; x += period) {
-        grain.drawImage(source, x, y, period, period);
+    const sizeRatio = clamp(Math.log10(Math.max(1, settings.size)) / 3, 0, 1);
+    const previewDiameter = Math.min(
+      height * 0.82,
+      Math.max(8, height * (0.18 + sizeRatio * 0.55)),
+    );
+    const previewDocumentScale = previewDiameter / Math.max(1, settings.size);
+    // Match the engine's physical period (source width × Scale) in preview
+    // pixels. Moving then stretches only along the representative stroke:
+    // low Movement looks dragged/smeared, while 100% is exactly Texturized.
+    const period = clamp(
+      source.width * settings.grainScale * previewDocumentScale,
+      8,
+      Math.max(width, height) * 12,
+    );
+    const movement = settings.grainMode === "moving"
+      ? clamp(settings.grainMovement, 0, 1)
+      : 1;
+    const horizontalPeriod = settings.grainMode === "moving"
+      ? clamp(
+        period / Math.max(movement, 0.025),
+        period,
+        Math.max(width, height) * 40,
+      )
+      : period;
+    for (let y = -period; y < height + period; y += period) {
+      for (let x = -horizontalPeriod; x < width + horizontalPeriod; x += horizontalPeriod) {
+        grain.drawImage(source, x, y, horizontalPeriod, period);
       }
     }
     const pixels = grain.getImageData(0, 0, width, height);
@@ -939,6 +978,7 @@ export class MobileBrushStudioController {
     this.setBusy(true);
     this.options.onStatus("Saving brush…", "working");
     try {
+      const previousSavedBrush = loadBrushStudioSavedBrush(this.activeBrushId);
       const shapeAssetKey = await this.persistAssetIfNeeded("shape", settings);
       const grainAssetKey = await this.persistAssetIfNeeded("grain", settings);
       saveBrushStudioSavedBrush(this.activeBrushId, {
@@ -947,6 +987,12 @@ export class MobileBrushStudioController {
         shapeAssetKey,
         grainAssetKey,
       });
+      await this.deleteSupersededStoredAssets(
+        previousSavedBrush?.shapeAssetKey ?? null,
+        previousSavedBrush?.grainAssetKey ?? null,
+        shapeAssetKey,
+        grainAssetKey,
+      );
       if (isCustomShapeAssetId(settings.shapeAssetId)) {
         this.transientAssetIds.delete(settings.shapeAssetId);
       }
@@ -972,11 +1018,8 @@ export class MobileBrushStudioController {
   ): Promise<string | null> {
     const assetId = kind === "shape" ? settings.shapeAssetId : settings.grainAssetId;
     const custom = kind === "shape" ? isCustomShapeAssetId(assetId) : isCustomGrainAssetId(assetId);
-    const key = brushStudioAssetStorageKey(this.activeBrushId, kind);
-    if (!custom) {
-      try { await deleteBrushStudioAsset(key); } catch { /* IndexedDB may be unavailable. */ }
-      return null;
-    }
+    if (!custom) return null;
+    const key = brushStudioAssetStorageKey(this.activeBrushId, kind, assetId);
     const imported = this.importedAssets.get(assetId);
     if (imported) {
       await saveBrushStudioAsset(key, kind, imported.blob, imported.name);
@@ -985,6 +1028,25 @@ export class MobileBrushStudioController {
     const stored = await loadBrushStudioAsset(key);
     if (!stored) throw new Error(`The custom ${kind} source could not be saved.`);
     return key;
+  }
+
+  private async deleteSupersededStoredAssets(
+    previousShapeKey: string | null,
+    previousGrainKey: string | null,
+    shapeKey: string | null,
+    grainKey: string | null,
+  ): Promise<void> {
+    const staleKeys = new Set<string>();
+    if (previousShapeKey && previousShapeKey !== shapeKey) staleKeys.add(previousShapeKey);
+    if (previousGrainKey && previousGrainKey !== grainKey) staleKeys.add(previousGrainKey);
+    for (const key of staleKeys) {
+      try {
+        await deleteBrushStudioAsset(key);
+      } catch {
+        // The committed settings already point only at the new key. A failed
+        // cleanup can leave an unreachable blob, never a mismatched brush.
+      }
+    }
   }
 
   private async restoreSavedAsset(

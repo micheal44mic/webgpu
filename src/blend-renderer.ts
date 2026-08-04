@@ -554,9 +554,9 @@ export class DryBlendRenderer {
     }
 
     const workgroups = (pixels: number): number => Math.ceil(pixels / 8);
-    const grainMode = settings.grainMode === "moving" && settings.grainMovement <= 0
-      ? "moving"
-      : "fixed";
+    // Both Moving and Texturized can cross tile boundaries once Scale is
+    // applied. Their corrected coordinate mappings therefore share repeat.
+    const grainMode = "fixed" as const;
     for (const group of groups) {
       const groupOffset = group.start * this.uniformStride;
       const computePass = encoder.beginComputePass({
