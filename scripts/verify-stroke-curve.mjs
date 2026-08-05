@@ -252,7 +252,7 @@ assert.match(engineSource, /if \(tool !== "blend"\) \{\s*emitStamp\(this, normal
 assert.match(engineSource, /if \(stampLimitReached\) \{\s*distanceSinceStamp %= spacing;/);
 assert.match(strokeTypesSource, /curvePlanner: CausalStrokeCurvePlanner \| null;/);
 assert.match(engineSource, /strokeCurveStrategy: STROKE_CURVE_STRATEGY/);
-assert.match(mainSource, /performanceTelemetryRevision: 63/g);
+assert.match(mainSource, /performanceTelemetryRevision: 64/g);
 
 const canonicalPath = new URL("../.tmp-canonical-human-stroke.json", import.meta.url);
 let canonicalSummary = null;

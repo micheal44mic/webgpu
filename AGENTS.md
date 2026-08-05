@@ -3757,3 +3757,24 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   TypeScript, build Vite/Sites, tutte le `27` suite `*:verify`, inclusa la nuova
   `effects-ui:verify`, e `git diff --check` sono verdi. Non sono ancora state
   eseguite QA touch su Safari/iPhone fisico né una nuova pubblicazione Sites.
+
+### Arbitraggio primo touch Paint (5 agosto 2026)
+
+- Soltanto il primo contatto `touch` con tool Paint usa ora la strategia
+  `touch-paint-input-buffer-move-3-css-px-timeout-28ms-v1`: prima di entrare
+  nel motore conserva il campione iniziale e gli eventuali campioni coalescenti
+  per non oltre `28 ms`, oppure finché il dito non si sposta di almeno `3 px`
+  CSS. Penna, mouse e Blend conservano il percorso immediato precedente.
+- Se arriva il secondo dito durante questa finestra, il buffer viene scartato
+  prima di qualsiasi `BrushEngine.beginStroke()`: non partono tratto, history,
+  prewarm effetti o lavoro GPU e la navigazione a due dita prende possesso del
+  gesto. Se invece l'intento è Paint, il motore riceve gli stessi campioni con
+  timestamp e ordine originali; Count, spacing, seed, stamp e blending non
+  vengono modificati. Un tap viene confermato al `pointerup`.
+- Il flag di confronto produzione `?touchPaintIntentHold=0` ripristina il
+  percorso immediato. La telemetria sale a revisione `64` e firma strategia,
+  soglie, motivi di rilascio/annullamento, massimo buffer e ultima durata. Il
+  percorso caldo WebGPU e i file del motore pennello non sono stati toccati.
+- TypeScript, tutte le `28` suite `*:verify`, inclusa la nuova
+  `touch-intent:verify`, `git diff --check` e build Vite/Sites sono verdi. La
+  prova Safari/iPhone fisico resta da eseguire dopo la pubblicazione.

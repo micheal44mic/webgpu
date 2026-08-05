@@ -1854,9 +1854,9 @@ assert.doesNotMatch(
   "il pointermove Paint non deve conoscere né aggiornare le miniature",
 );
 assert.equal(
-  (mainSource.match(/performanceTelemetryRevision: 63/g) ?? []).length,
+  (mainSource.match(/performanceTelemetryRevision: 64/g) ?? []).length,
   2,
-  "tipo persistito e runtime devono avanzare insieme alla revisione 61",
+  "tipo persistito e runtime devono avanzare insieme alla revisione 64",
 );
 assert.match(mainSource, /layerBakeStrategy: string;/);
 assert.match(mainSource, /layerCompositeStrategy: string;/);
@@ -2543,7 +2543,7 @@ assert.match(layerCompositeGpuTestSource, /fiveLayerSwitchBreakdownIsConsistent/
 assert.match(layerHistoryGpuTestSource, /measureExactLayerStorageStudy\(\)/);
 assert.match(layerHistoryGpuTestSource, /conservativeTilesContainEveryExactTile/);
 assert.match(layerHistoryGpuTestSource, /exactReadbackReleasedItsTemporaryBuffers/);
-assert.match(mainSource, /performanceTelemetryRevision: 63/);
+assert.match(mainSource, /performanceTelemetryRevision: 64/);
 assert.match(mainSource, /gpuMemoryLayerCold/);
 assert.match(mainSource, /gpuMemoryLayerCompressed/);
 assert.match(mainSource, /gpuMemoryLayerHydration/);

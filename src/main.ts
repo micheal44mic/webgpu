@@ -3,6 +3,13 @@ import {
   shouldCloseMobileToolsSheetDrag,
   type MobileToolsSheetSnap,
 } from "./mobile-tools-sheet-gesture";
+import {
+  TOUCH_PAINT_INTENT_HOLD_MS,
+  TOUCH_PAINT_INTENT_MOVE_THRESHOLD_PX,
+  TOUCH_PAINT_INTENT_STRATEGY,
+  shouldHoldTouchPaintIntent,
+  touchPaintIntentMovementReached,
+} from "./touch-paint-intent-core";
 import { MobileBrushStudioController } from "./mobile-brush-studio";
 import { MobileBrushLibraryPreviewRenderer } from "./brush-library-preview";
 import { MobileStrokeSheetController } from "./mobile-stroke-sheet";
@@ -732,7 +739,19 @@ interface BenchmarkRun {
     historyStampRetentionStrategy: StrokePerformanceProfile["historyStampRetentionStrategy"];
     controlsLayoutStrategy: "full-stage-overlay-drawer";
     touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet";
-    performanceTelemetryRevision: 63;
+    touchPaintIntentStrategy: typeof TOUCH_PAINT_INTENT_STRATEGY;
+    touchPaintIntentHoldEnabled: boolean;
+    touchPaintIntentHoldMs: number;
+    touchPaintIntentMoveThresholdPx: number;
+    touchPaintIntentStarts: number;
+    touchPaintIntentReleasedByMovement: number;
+    touchPaintIntentReleasedByTimeout: number;
+    touchPaintIntentReleasedByPointerUp: number;
+    touchPaintIntentCanceledForNavigation: number;
+    touchPaintIntentCanceledForPointerEnd: number;
+    touchPaintIntentMaximumBufferedSamples: number;
+    touchPaintIntentLastHoldDurationMs: number;
+    performanceTelemetryRevision: 64;
   };
 }
 
@@ -2268,7 +2287,21 @@ function collectBenchmarkEnvironment(): BenchmarkRun["environment"] {
     viewRotationDegrees: Number(engine.getViewRotationDegrees().toFixed(3)),
     controlsLayoutStrategy: "full-stage-overlay-drawer",
     touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet",
-    performanceTelemetryRevision: 63,
+    touchPaintIntentStrategy: TOUCH_PAINT_INTENT_STRATEGY,
+    touchPaintIntentHoldEnabled,
+    touchPaintIntentHoldMs: TOUCH_PAINT_INTENT_HOLD_MS,
+    touchPaintIntentMoveThresholdPx: TOUCH_PAINT_INTENT_MOVE_THRESHOLD_PX,
+    touchPaintIntentStarts: touchPaintIntentDiagnostics.starts,
+    touchPaintIntentReleasedByMovement: touchPaintIntentDiagnostics.releasedByMovement,
+    touchPaintIntentReleasedByTimeout: touchPaintIntentDiagnostics.releasedByTimeout,
+    touchPaintIntentReleasedByPointerUp: touchPaintIntentDiagnostics.releasedByPointerUp,
+    touchPaintIntentCanceledForNavigation: touchPaintIntentDiagnostics.canceledForNavigation,
+    touchPaintIntentCanceledForPointerEnd: touchPaintIntentDiagnostics.canceledForPointerEnd,
+    touchPaintIntentMaximumBufferedSamples: touchPaintIntentDiagnostics.maximumBufferedSamples,
+    touchPaintIntentLastHoldDurationMs: Number(
+      touchPaintIntentDiagnostics.lastHoldDurationMs.toFixed(3),
+    ),
+    performanceTelemetryRevision: 64,
     countedGpuMemoryMiB: stats.gpuMemory.countedTotalMiB,
     vectorTextPresentationMiB: stats.gpuMemory.vectorTextPresentationMiB,
     vectorTextAdaptiveZoomStrategy: vectorTextDiagnostics?.adaptiveZoomStrategy ?? null,
@@ -7818,8 +7851,96 @@ interface TouchNavigationGesture {
   angle: number;
 }
 
+type TouchPaintIntentReleaseReason = "movement" | "timeout" | "pointer-up";
+
+interface TouchPaintIntentHold {
+  pointerId: number;
+  initialSample: PointerSample;
+  bufferedSamples: PointerSample[];
+  startedAtPerformanceMs: number;
+  timeoutId: number;
+}
+
 const activeTouchContacts = new Map<number, TouchContact>();
 let touchNavigationGesture: TouchNavigationGesture | null = null;
+const touchPaintIntentHoldEnabled = pageSearchParams.get("touchPaintIntentHold") !== "0";
+const touchPaintIntentDiagnostics = {
+  starts: 0,
+  releasedByMovement: 0,
+  releasedByTimeout: 0,
+  releasedByPointerUp: 0,
+  canceledForNavigation: 0,
+  canceledForPointerEnd: 0,
+  maximumBufferedSamples: 0,
+  lastHoldDurationMs: 0,
+};
+let touchPaintIntentHold: TouchPaintIntentHold | null = null;
+
+function clearTouchPaintIntentTimer(hold: TouchPaintIntentHold): void {
+  window.clearTimeout(hold.timeoutId);
+}
+
+function startTouchPaintIntentHold(pointerId: number, initialSample: PointerSample): void {
+  if (touchPaintIntentHold) {
+    clearTouchPaintIntentTimer(touchPaintIntentHold);
+  }
+  const hold: TouchPaintIntentHold = {
+    pointerId,
+    initialSample,
+    bufferedSamples: [],
+    startedAtPerformanceMs: performance.now(),
+    timeoutId: 0,
+  };
+  touchPaintIntentHold = hold;
+  touchPaintIntentDiagnostics.starts += 1;
+  hold.timeoutId = window.setTimeout(() => {
+    if (touchPaintIntentHold !== hold) return;
+    releaseTouchPaintIntentHold("timeout");
+  }, TOUCH_PAINT_INTENT_HOLD_MS);
+}
+
+function releaseTouchPaintIntentHold(reason: TouchPaintIntentReleaseReason): boolean {
+  const hold = touchPaintIntentHold;
+  if (!hold) return false;
+  clearTouchPaintIntentTimer(hold);
+  touchPaintIntentHold = null;
+  if (activePointerId !== hold.pointerId || pointerMode !== "paint") {
+    touchPaintIntentDiagnostics.canceledForPointerEnd += 1;
+    return false;
+  }
+
+  touchPaintIntentDiagnostics.lastHoldDurationMs = Math.max(
+    0,
+    performance.now() - hold.startedAtPerformanceMs,
+  );
+  if (reason === "movement") touchPaintIntentDiagnostics.releasedByMovement += 1;
+  else if (reason === "timeout") touchPaintIntentDiagnostics.releasedByTimeout += 1;
+  else touchPaintIntentDiagnostics.releasedByPointerUp += 1;
+
+  // The engine receives the original timestamped samples in their original
+  // order. Only the wall-clock moment of the first GPU request is deferred.
+  engine.beginStroke(hold.initialSample);
+  if (hold.bufferedSamples.length > 0) {
+    engine.extendStroke(hold.bufferedSamples);
+  }
+  return true;
+}
+
+function cancelTouchPaintIntentHold(
+  reason: "navigation" | "pointer-end",
+): boolean {
+  const hold = touchPaintIntentHold;
+  if (!hold) return false;
+  clearTouchPaintIntentTimer(hold);
+  touchPaintIntentHold = null;
+  touchPaintIntentDiagnostics.lastHoldDurationMs = Math.max(
+    0,
+    performance.now() - hold.startedAtPerformanceMs,
+  );
+  if (reason === "navigation") touchPaintIntentDiagnostics.canceledForNavigation += 1;
+  else touchPaintIntentDiagnostics.canceledForPointerEnd += 1;
+  return true;
+}
 
 function currentTouchNavigationGesture(): TouchNavigationGesture | null {
   const contacts = [...activeTouchContacts.values()];
@@ -7849,7 +7970,8 @@ function cancelHumanStrokeRecordingForNavigation(): void {
 function enterTouchNavigation(): void {
   if (pointerMode !== "touch-navigation") {
     if (pointerMode === "paint") {
-      if (!engine.cancelStrokeBeforeRender()) {
+      const canceledHeldIntent = cancelTouchPaintIntentHold("navigation");
+      if (!canceledHeldIntent && !engine.cancelStrokeBeforeRender()) {
         engine.endStroke();
       }
       cancelHumanStrokeRecordingForNavigation();
@@ -7950,11 +8072,19 @@ canvas.addEventListener("pointerdown", (event) => {
     if (humanStrokeRecordingArmed) {
       startHumanStrokeRecording(event, sample);
     }
-    engine.beginStroke(sample);
+    if (shouldHoldTouchPaintIntent(
+      touchPaintIntentHoldEnabled,
+      event.pointerType,
+      activeCanvasTool,
+    )) {
+      startTouchPaintIntentHold(event.pointerId, sample);
+    } else {
+      engine.beginStroke(sample);
+    }
   }
 
-  // requestRender() è già stato accodato da beginStroke(): questo callback
-  // viene dopo il primo render e tiene il lavoro DOM fuori dalla sua strada.
+  // Sul percorso immediato questo callback segue il primo render; sul gate
+  // touch resta comunque separato dall'arbitraggio e dal percorso input.
   requestAnimationFrame(() => {
     if (activePointerId === event.pointerId) {
       updateHistoryControls();
@@ -8056,6 +8186,18 @@ canvas.addEventListener("pointermove", (event) => {
   const sourceEvents = coalesced.length > 0 ? coalesced : [event];
   const samples = sourceEvents.map(toPointerSample);
   captureHumanStrokeSamples(sourceEvents, samples);
+  const heldIntent = touchPaintIntentHold;
+  if (heldIntent?.pointerId === event.pointerId) {
+    heldIntent.bufferedSamples.push(...samples);
+    touchPaintIntentDiagnostics.maximumBufferedSamples = Math.max(
+      touchPaintIntentDiagnostics.maximumBufferedSamples,
+      heldIntent.bufferedSamples.length,
+    );
+    if (touchPaintIntentMovementReached(heldIntent.initialSample, samples)) {
+      releaseTouchPaintIntentHold("movement");
+    }
+    return;
+  }
   engine.extendStroke(samples);
 });
 
@@ -8083,6 +8225,14 @@ function finishPointer(event: PointerEvent): void {
 
   if (event.pointerId !== activePointerId) {
     return;
+  }
+
+  if (pointerMode === "paint" && touchPaintIntentHold?.pointerId === event.pointerId) {
+    if (event.type === "pointerup") {
+      releaseTouchPaintIntentHold("pointer-up");
+    } else {
+      cancelTouchPaintIntentHold("pointer-end");
+    }
   }
 
   const fillRequest = pointerMode === "fill"
