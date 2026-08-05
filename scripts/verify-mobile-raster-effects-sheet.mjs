@@ -90,14 +90,13 @@ assert.deepEqual(
   },
   "all mobile effect titles must remain in English",
 );
-assert.equal(MOBILE_RASTER_EFFECT_SPECS["color-overlay"].expandable, false);
-assert.equal(MOBILE_RASTER_EFFECT_SPECS["outer-shadow"].expandable, false);
-assert.equal(MOBILE_RASTER_EFFECT_SPECS["inner-shadow"].expandable, false);
-assert.equal(
-  MOBILE_RASTER_EFFECT_SPECS.bevel.expandable,
-  true,
-  "Bevel alone needs the higher snap because it has substantially more controls",
-);
+for (const [kind, spec] of Object.entries(MOBILE_RASTER_EFFECT_SPECS)) {
+  assert.equal(
+    spec.expandable,
+    true,
+    `${kind} must reach the same expanded snap as Bevel`,
+  );
+}
 
 const expectedRangeContracts = {
   "color-overlay": {
@@ -161,22 +160,25 @@ assert.deepEqual(
 );
 
 // Pure snap and gesture contract: all sheets open at the same compact Tools
-// height; only Bevel may move upward. Content scrolling remains independent.
+// height and every effect may reach the same high snap as Bevel. Content
+// scrolling remains independent.
 assert.equal(mobileRasterEffectPeekHeight(300), 160);
 assert.equal(mobileRasterEffectPeekHeight(800), 208);
 assert.equal(mobileRasterEffectPeekHeight(2_000), 240);
-assert.equal(
-  resolveMobileRasterEffectDrag({
-    effectKind: "outer-shadow",
-    startSnap: "peek",
-    deltaY: -180,
-    releaseVelocityY: -1,
-    offsetPx: 10,
-    peekOffsetPx: 500,
-  }),
-  "peek",
-  "compact effects must not cover more of the canvas when dragged upward",
-);
+for (const effectKind of Object.keys(MOBILE_RASTER_EFFECT_SPECS)) {
+  assert.equal(
+    resolveMobileRasterEffectDrag({
+      effectKind,
+      startSnap: "peek",
+      deltaY: -36,
+      releaseVelocityY: 0,
+      offsetPx: 464,
+      peekOffsetPx: 500,
+    }),
+    "expanded",
+    `${effectKind} must expand with the same upward gesture as Bevel`,
+  );
+}
 assert.equal(
   resolveMobileRasterEffectDrag({
     effectKind: "bevel",

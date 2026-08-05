@@ -3777,4 +3777,21 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   percorso caldo WebGPU e i file del motore pennello non sono stati toccati.
 - TypeScript, tutte le `28` suite `*:verify`, inclusa la nuova
   `touch-intent:verify`, `git diff --check` e build Vite/Sites sono verdi. La
-  prova Safari/iPhone fisico resta da eseguire dopo la pubblicazione.
+  prova Safari/iPhone fisico del 5 agosto, eseguita dall'utente sulla versione
+  Sites `125`, ha confermato che il lag di zoom e tratto non si presenta più;
+  questa versione è la nuova baseline mobile scelta dall'utente.
+
+### Snap alto per tutti gli effetti mobile (5 agosto 2026)
+
+- `Stroke`, `Color Overlay`, `Outer Shadow` e `Inner Shadow` non sono più
+  confinati allo snap basso: partono ancora alla stessa altezza compatta di
+  Tools (`clamp(160–240 px, 26dvh)`), mantengono lo scroll interno e possono
+  essere trascinati fino allo stesso snap expanded già usato da Bevel, cioè
+  `77 px + safe-area` dal bordo alto. Anche il tap sulla maniglia alterna i due
+  ancoraggi; Escape e le gesture verso il basso conservano la chiusura.
+- La modifica riguarda soltanto stato, ARIA e offset CSS dei fogli. Stili
+  autorevoli, code latest-only, renderer, texture e percorso caldo WebGPU non
+  sono cambiati. TypeScript, tutte le `28` suite `*:verify`, incluse le
+  regressioni aggiornate `stroke-ui:verify` ed `effects-ui:verify`, e
+  `git diff --check` sono verdi; la prova touch Safari/iPhone resta da fare
+  dopo la pubblicazione.

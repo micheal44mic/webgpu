@@ -8,6 +8,35 @@ const controller = readFileSync(
   new URL("../src/mobile-stroke-sheet.ts", import.meta.url),
   "utf8",
 );
+const {
+  mobileStrokePeekHeight,
+  resolveMobileStrokeDrag,
+} = await import(new URL("../src/mobile-stroke-sheet.ts", import.meta.url));
+
+assert.equal(mobileStrokePeekHeight(300), 160);
+assert.equal(mobileStrokePeekHeight(800), 208);
+assert.equal(mobileStrokePeekHeight(2_000), 240);
+assert.equal(resolveMobileStrokeDrag({
+  startSnap: "peek",
+  deltaY: -36,
+  releaseVelocityY: 0,
+  offsetPx: 464,
+  peekOffsetPx: 500,
+}), "expanded", "Stroke deve raggiungere lo stesso snap alto del Bevel.");
+assert.equal(resolveMobileStrokeDrag({
+  startSnap: "expanded",
+  deltaY: 72,
+  releaseVelocityY: 0.2,
+  offsetPx: 72,
+  peekOffsetPx: 500,
+}), "peek", "Stroke deve poter tornare allo snap basso.");
+assert.equal(resolveMobileStrokeDrag({
+  startSnap: "peek",
+  deltaY: 36,
+  releaseVelocityY: 0.1,
+  offsetPx: 536,
+  peekOffsetPx: 500,
+}), "closed", "Stroke deve conservare la chiusura breve dallo snap basso.");
 
 const start = html.indexOf('id="mobileStrokeSheet"');
 const end = html.indexOf('id="mobileToolsSheet"', start);
@@ -32,6 +61,7 @@ assert.match(
   /class="mobile-tools-sheet mobile-stroke-sheet"[\s\S]*?aria-hidden="true"[\s\S]*?data-snap="peek"/,
   "Stroke deve riusare il foglio mobile e partire chiuso allo snap peek.",
 );
+assert.match(sheet, /id="mobileStrokeHandle"[\s\S]*?aria-label="Expand Stroke settings"/);
 assert.match(sheet, /id="mobileStrokeTitle"[^>]*>Stroke<\/h2>/, "Il titolo visibile deve essere inglese.");
 assert.match(sheet, /id="mobileStrokeColorInput"[\s\S]*?type="color"[\s\S]*?aria-label="Stroke color"/);
 assert.match(
@@ -149,8 +179,13 @@ assert.match(
 );
 assert.match(
   controller,
-  /this\.setOffset\(this\.dragStartOffsetPx \+ Math\.max\(0, deltaY\)\)/,
-  "Il foglio Stroke non deve poter essere trascinato sopra lo snap basso.",
+  /this\.setOffset\(this\.dragStartOffsetPx \+ deltaY\)/,
+  "La maniglia Stroke deve seguire il dito anche verso lo snap expanded.",
+);
+assert.match(
+  controller,
+  /this\.snapTo\(this\.snap === "peek" \? "expanded" : "peek"\)/,
+  "Il tap sulla maniglia deve alternare gli stessi due snap del Bevel.",
 );
 assert.doesNotMatch(
   controller,

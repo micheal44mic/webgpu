@@ -1,6 +1,15 @@
 import type { RasterStrokeStyle } from "./stroke-core";
 
 type StrokePosition = RasterStrokeStyle["position"];
+export type MobileStrokeSnap = "peek" | "expanded";
+
+export interface MobileStrokeDragDecisionOptions {
+  readonly startSnap: MobileStrokeSnap;
+  readonly deltaY: number;
+  readonly releaseVelocityY: number;
+  readonly offsetPx: number;
+  readonly peekOffsetPx: number;
+}
 
 export interface MobileStrokeSheetOptions {
   readonly mobileMediaQuery: MediaQueryList;
@@ -16,6 +25,48 @@ const MOBILE_STROKE_PEEK_VIEWPORT_RATIO = 0.26;
 const MOBILE_STROKE_CLOSE_DISTANCE_PX = 36;
 const MOBILE_STROKE_CLOSE_FLICK_DISTANCE_PX = 28;
 const MOBILE_STROKE_CLOSE_FLICK_VELOCITY_PX_PER_MS = 0.45;
+const MOBILE_STROKE_EXPAND_DISTANCE_PX = 36;
+const MOBILE_STROKE_EXPAND_FLICK_VELOCITY_PX_PER_MS = -0.45;
+
+export function mobileStrokePeekHeight(viewportHeight: number): number {
+  return Math.min(
+    MOBILE_STROKE_MAX_PEEK_PX,
+    Math.max(MOBILE_STROKE_MIN_PEEK_PX, viewportHeight * MOBILE_STROKE_PEEK_VIEWPORT_RATIO),
+  );
+}
+
+export function resolveMobileStrokeDrag(
+  options: MobileStrokeDragDecisionOptions,
+): "closed" | MobileStrokeSnap {
+  const closeFlick = options.deltaY >= MOBILE_STROKE_CLOSE_FLICK_DISTANCE_PX
+    && options.releaseVelocityY >= MOBILE_STROKE_CLOSE_FLICK_VELOCITY_PX_PER_MS;
+
+  if (options.startSnap === "peek") {
+    if (options.deltaY >= MOBILE_STROKE_CLOSE_DISTANCE_PX || closeFlick) {
+      return "closed";
+    }
+    if (
+      options.deltaY <= -MOBILE_STROKE_EXPAND_DISTANCE_PX
+      || options.releaseVelocityY <= MOBILE_STROKE_EXPAND_FLICK_VELOCITY_PX_PER_MS
+    ) {
+      return "expanded";
+    }
+    return "peek";
+  }
+
+  const fastCloseFromExpanded = options.deltaY >= Math.max(
+    96,
+    options.peekOffsetPx * 0.32,
+  ) && options.releaseVelocityY >= 0.9;
+  if (fastCloseFromExpanded) return "closed";
+  if (
+    options.offsetPx >= options.peekOffsetPx * 0.5
+    || options.deltaY >= 72
+  ) {
+    return "peek";
+  }
+  return "expanded";
+}
 
 function requiredElement<T extends HTMLElement>(id: string): T {
   const result = document.getElementById(id);
@@ -83,11 +134,13 @@ export class MobileStrokeSheetController {
   );
 
   private openState = false;
+  private snap: MobileStrokeSnap = "peek";
   private alignmentOpen = false;
   private offsetPx = 0;
   private dragPointerId: number | null = null;
   private dragStartY = 0;
   private dragStartOffsetPx = 0;
+  private dragStartSnap: MobileStrokeSnap = "peek";
   private dragLastY = 0;
   private dragLastTime = 0;
   private dragVelocityY = 0;
@@ -95,8 +148,10 @@ export class MobileStrokeSheetController {
   private applyFrame: number | null = null;
   private pendingStyle: RasterStrokeStyle | null = null;
   private applyLoop: Promise<void> | null = null;
+  private readonly options: MobileStrokeSheetOptions;
 
-  constructor(private readonly options: MobileStrokeSheetOptions) {
+  constructor(options: MobileStrokeSheetOptions) {
+    this.options = options;
     this.sheet.setAttribute("aria-hidden", "true");
     this.sheet.dataset.state = "closed";
     this.sheet.setAttribute("inert", "");
@@ -115,9 +170,9 @@ export class MobileStrokeSheetController {
     this.sheet.dataset.state = "open";
     this.sheet.setAttribute("aria-hidden", "false");
     this.sheet.removeAttribute("inert");
-    this.handle.setAttribute("aria-expanded", "true");
     this.sync(this.options.getStyle());
-    this.setOffset(this.peekOffset());
+    this.snap = "peek";
+    this.snapTo("peek");
     void this.sheet.offsetHeight;
     this.sheet.classList.add("is-open");
     this.options.onOpenChange(true);
@@ -154,7 +209,7 @@ export class MobileStrokeSheetController {
 
   handleResize(): void {
     if (!this.openState || this.dragPointerId !== null) return;
-    this.setOffset(this.peekOffset());
+    this.snapTo(this.snap);
   }
 
   private bindEvents(): void {
@@ -168,7 +223,7 @@ export class MobileStrokeSheetController {
         this.dragMoved = false;
         return;
       }
-      this.close(true);
+      this.snapTo(this.snap === "peek" ? "expanded" : "peek");
     });
 
     this.colorInput.addEventListener("input", () => this.handleColorInput());
@@ -336,10 +391,7 @@ export class MobileStrokeSheetController {
   }
 
   private peekHeight(): number {
-    return Math.min(
-      MOBILE_STROKE_MAX_PEEK_PX,
-      Math.max(MOBILE_STROKE_MIN_PEEK_PX, window.innerHeight * MOBILE_STROKE_PEEK_VIEWPORT_RATIO),
-    );
+    return mobileStrokePeekHeight(window.innerHeight);
   }
 
   private peekOffset(): number {
@@ -351,12 +403,23 @@ export class MobileStrokeSheetController {
   }
 
   private setOffset(offsetPx: number): void {
-    const minimum = this.openState ? this.peekOffset() : 0;
-    this.offsetPx = Math.min(this.closedOffset(), Math.max(minimum, offsetPx));
+    this.offsetPx = Math.min(this.closedOffset(), Math.max(0, offsetPx));
     this.sheet.style.setProperty(
       "--mobile-tools-sheet-offset",
       `${Math.round(this.offsetPx)}px`,
     );
+  }
+
+  private snapTo(snap: MobileStrokeSnap): void {
+    this.snap = snap;
+    this.sheet.dataset.snap = snap;
+    const expanded = snap === "expanded";
+    this.handle.setAttribute("aria-expanded", String(expanded));
+    this.handle.setAttribute(
+      "aria-label",
+      `${expanded ? "Collapse" : "Expand"} Stroke settings`,
+    );
+    this.setOffset(expanded ? 0 : this.peekOffset());
   }
 
   private startDrag(event: PointerEvent): void {
@@ -364,6 +427,7 @@ export class MobileStrokeSheetController {
     this.dragPointerId = event.pointerId;
     this.dragStartY = event.clientY;
     this.dragStartOffsetPx = this.offsetPx;
+    this.dragStartSnap = this.snap;
     this.dragLastY = event.clientY;
     this.dragLastTime = performance.now();
     this.dragVelocityY = 0;
@@ -388,9 +452,7 @@ export class MobileStrokeSheetController {
     this.dragLastTime = now;
     const deltaY = event.clientY - this.dragStartY;
     if (Math.abs(deltaY) >= 4) this.dragMoved = true;
-    // The Stroke sheet deliberately has no expanded snap: upward motion is
-    // clamped to the same low height used by the Tools peek.
-    this.setOffset(this.dragStartOffsetPx + Math.max(0, deltaY));
+    this.setOffset(this.dragStartOffsetPx + deltaY);
   }
 
   private finishDrag(event: PointerEvent, cancelled = false): void {
@@ -404,18 +466,23 @@ export class MobileStrokeSheetController {
     const releaseVelocity = velocityAge <= 100 ? this.dragVelocityY : 0;
     this.dragPointerId = null;
     if (cancelled) {
-      this.setOffset(this.peekOffset());
+      this.snapTo(this.dragStartSnap);
       this.dragMoved = false;
       return;
     }
-    const flickClose = deltaY >= MOBILE_STROKE_CLOSE_FLICK_DISTANCE_PX
-      && releaseVelocity >= MOBILE_STROKE_CLOSE_FLICK_VELOCITY_PX_PER_MS;
-    if (this.dragMoved && (deltaY >= MOBILE_STROKE_CLOSE_DISTANCE_PX || flickClose)) {
+    const decision = resolveMobileStrokeDrag({
+      startSnap: this.dragStartSnap,
+      deltaY,
+      releaseVelocityY: releaseVelocity,
+      offsetPx: this.offsetPx,
+      peekOffsetPx: this.peekOffset(),
+    });
+    if (this.dragMoved && decision === "closed") {
       this.close(false);
       this.dragMoved = false;
       return;
     }
-    if (this.dragMoved) this.setOffset(this.peekOffset());
+    if (this.dragMoved) this.snapTo(decision === "expanded" ? "expanded" : "peek");
   }
 
   private releaseDragCapture(): void {

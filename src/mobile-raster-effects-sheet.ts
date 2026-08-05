@@ -81,7 +81,7 @@ const CONTOUR_OPTIONS = [
 export const MOBILE_RASTER_EFFECT_SPECS = {
   "color-overlay": {
     title: "Color Overlay",
-    expandable: false,
+    expandable: true,
     controls: [
       { type: "color", key: "color", label: "Color" },
       {
@@ -97,7 +97,7 @@ export const MOBILE_RASTER_EFFECT_SPECS = {
   },
   "outer-shadow": {
     title: "Outer Shadow",
-    expandable: false,
+    expandable: true,
     controls: [
       { type: "select", key: "blendMode", label: "Blend Mode", options: SHADOW_BLEND_OPTIONS },
       { type: "color", key: "color", label: "Color" },
@@ -132,7 +132,7 @@ export const MOBILE_RASTER_EFFECT_SPECS = {
   },
   "inner-shadow": {
     title: "Inner Shadow",
-    expandable: false,
+    expandable: true,
     controls: [
       { type: "select", key: "blendMode", label: "Blend Mode", options: SHADOW_BLEND_OPTIONS },
       { type: "color", key: "color", label: "Color" },
@@ -313,7 +313,7 @@ export function resolveMobileRasterEffectDrag(
       return "closed";
     }
     if (
-      options.effectKind === "bevel"
+      MOBILE_RASTER_EFFECT_SPECS[options.effectKind].expandable
       && (
         options.deltaY <= -MOBILE_EFFECT_EXPAND_DISTANCE_PX
         || options.releaseVelocityY <= MOBILE_EFFECT_EXPAND_FLICK_VELOCITY_PX_PER_MS
