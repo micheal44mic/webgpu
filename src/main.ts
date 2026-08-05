@@ -15,6 +15,7 @@ import { MobileBrushLibraryPreviewRenderer } from "./brush-library-preview";
 import { MobileStrokeSheetController } from "./mobile-stroke-sheet";
 import {
   MobileToolSettingsSheetController,
+  type MobileToolSettingsKind,
 } from "./mobile-tool-settings-sheet";
 import {
   MOBILE_RASTER_EFFECT_KIND_BY_CONTROL_ID,
@@ -51,9 +52,12 @@ import {
   Shapes,
   SlidersHorizontal,
   SprayCan,
+  Spline,
   SquareDashed,
+  SquareStack,
   Sun,
   Type as TypeIcon,
+  TypeOutline,
   Undo2,
   createElement as createLucideElement,
   createIcons,
@@ -142,9 +146,12 @@ createIcons({
     Shapes,
     SlidersHorizontal,
     SprayCan,
+    Spline,
     SquareDashed,
+    SquareStack,
     Sun,
     Type: TypeIcon,
+    TypeOutline,
     Undo2,
   },
 });
@@ -869,6 +876,7 @@ const engine = new BrushEngine(canvas, {
     requestMobileLayersRefresh();
     vectorTextPrototype?.syncScene(snapshot);
     mobileToolSettingsSheet?.syncOpenState();
+    syncMobileToolsMenuState();
     updateRasterColorOverlayControlAvailability();
     const selectedItem = snapshot.items.find(
       (item) => item.key === snapshot.selectedKey,
@@ -1774,7 +1782,15 @@ function filterMobileTools(): void {
   mobileToolsEmpty.hidden = visibleToolCount !== 0;
 }
 
+function selectedMobileTextNode() {
+  if (!engineInitialized) return null;
+  const snapshot = engine.getMixedSceneSnapshot();
+  const selected = snapshot?.items.find((item) => item.key === snapshot.selectedKey);
+  return selected?.kind === "text" ? selected.textNode : null;
+}
+
 function syncMobileToolsMenuState(): void {
+  const selectedText = selectedMobileTextNode();
   for (const button of mobileToolsCanvasButtons) {
     button.setAttribute(
       "aria-pressed",
@@ -1790,9 +1806,30 @@ function syncMobileToolsMenuState(): void {
   }
   for (const button of mobileToolSettingsButtons) {
     const kind = button.dataset.mobileToolSheet;
+    const textEditor = kind === "text"
+      || kind === "text-warp"
+      || kind === "text-outline"
+      || kind === "text-drop-shadow"
+      || kind === "text-inner-shadow"
+      || kind === "text-block-shadow";
+    const textEffect = textEditor && kind !== "text";
     button.disabled = !engineInitialized
       || interactionLocked()
-      || (kind === "text" && vectorTextPrototype === null);
+      || (textEditor && vectorTextPrototype === null)
+      || (textEffect && selectedText === null);
+    if (!textEditor) continue;
+    const pressed = kind === "text"
+      ? selectedText !== null
+      : kind === "text-warp"
+        ? selectedText?.transformType !== undefined && selectedText.transformType !== "none"
+        : kind === "text-outline"
+          ? (selectedText?.outlineWidth ?? 0) > 0
+          : kind === "text-drop-shadow"
+            ? selectedText?.singleShadowEnabled === true
+            : kind === "text-inner-shadow"
+              ? selectedText?.innerShadowEnabled === true
+              : selectedText?.blockShadowEnabled === true;
+    button.setAttribute("aria-pressed", String(pressed));
   }
   for (const button of mobileToolsEffectButtons) {
     const controlId = button.dataset.mobileEffectControl;
@@ -3372,6 +3409,7 @@ mobileRasterEffectsSheet = new MobileRasterEffectsSheetController({
 mobileToolSettingsSheet = new MobileToolSettingsSheetController({
   mobileMediaQuery: mobileUiMediaQuery,
   selectCanvasTool: selectMobileCanvasTool,
+  hasSelectedText: () => selectedMobileTextNode() !== null,
   getSelectionStatus: () => {
     const state = engine.getPixelSelectionState();
     if (state.selectedPixels === 0) return "No pixels selected.";
@@ -4541,10 +4579,15 @@ for (const button of mobileToolSettingsButtons) {
       && kind !== "selection"
       && kind !== "transform"
       && kind !== "text"
+      && kind !== "text-warp"
+      && kind !== "text-outline"
+      && kind !== "text-drop-shadow"
+      && kind !== "text-inner-shadow"
+      && kind !== "text-block-shadow"
     ) {
       return;
     }
-    mobileToolSettingsSheet?.open(kind, button);
+    mobileToolSettingsSheet?.open(kind as MobileToolSettingsKind, button);
   });
 }
 for (const button of mobileToolsProxyButtons) {

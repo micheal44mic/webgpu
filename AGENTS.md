@@ -3828,3 +3828,32 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   inclusa la nuova `tool-sheet:verify`, e `git diff --check` sono verdi. La
   gesture fisica e la tastiera di Text restano da provare su Safari/iPhone dopo
   la pubblicazione.
+
+### Categoria Text ed effetti mobile (5 agosto 2026)
+
+- Il foglio Tools dell'header mobile contiene ora una categoria autonoma
+  `Text`, fra `Insert` ed `Effects`, con sei card in inglese: `Text`, `Warp`,
+  `Outline`, `Drop Shadow`, `Inner Shadow` e `Block Shadow`. `Insert` conserva
+  soltanto SVG e Image. Le card non hanno indicatore arancione: seguono lo
+  stesso contratto degli altri tool, grigio quando inattive e avorio quando lo
+  stato autorevole del testo selezionato rende attivo il relativo effetto.
+  Warp è attivo per ogni modalità diversa da Normal, Outline per width `>0` e
+  le tre ombre leggono i rispettivi flag del nodo. Gli effetti restano
+  disabilitati finché non è selezionato un vero nodo Text, anche se i controlli
+  desktop condivisi supportano SVG.
+- Ogni card apre il bottom sheet condiviso già esistente allo snap peek, con
+  scroll, expanded, minimized, chiusura, focus e ARIA invariati. Text espone
+  contenuto, font, size, colore e le azioni reali Add, Reset, Delete e
+  Rasterize. Warp espone Normal/Distort/Arch/Circle/Wave e soltanto i controlli
+  pertinenti alla modalità; Outline espone width, color e join; Drop/Inner
+  Shadow espongono enabled, color, opacity, offset, angle e blur; Block Shadow
+  sostituisce blur con outline width. Single/Drop e Block conservano la mutua
+  esclusione del controller autorevole.
+- Il controller mobile è una vista sui controlli `vectorText*`: inoltra valori,
+  click e lifecycle focus/pointer/tastiera ai controlli sorgente, così un gesto
+  range continua a produrre una sola transazione Undo. La selezione e gli stati
+  delle icone vengono ricalcolati solo da `onMixedSceneChange`, senza polling.
+  Non sono stati aggiunti renderer, preview, texture, buffer, submission GPU o
+  modifiche al percorso caldo Paint. TypeScript, tutte le `29` suite
+  `*:verify`, build Vite production/Sites e `git diff --check` sono verdi. QA
+  touch Safari/iPhone e pubblicazione Sites restano da eseguire.

@@ -2428,6 +2428,9 @@ select {
   .mobile-tool-segmented button,
   .mobile-tool-segmented button:hover,
   .mobile-tool-segmented button:active,
+  .mobile-text-warp-modes button,
+  .mobile-text-warp-modes button:hover,
+  .mobile-text-warp-modes button:active,
   .mobile-tool-actions button,
   .mobile-tool-actions button:hover,
   .mobile-tool-actions button:active {
@@ -2450,11 +2453,47 @@ select {
     color: var(--mobile-icon-face);
   }
 
+  .mobile-text-warp-modes {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .mobile-text-warp-modes button,
+  .mobile-text-warp-modes button:hover,
+  .mobile-text-warp-modes button:active {
+    min-height: 44px;
+    border: 1px solid #343842;
+    border-radius: 10px;
+  }
+
+  .mobile-text-warp-modes button[aria-pressed="true"],
+  .mobile-tool-actions button[aria-pressed="true"] {
+    border-color: #4a4e58;
+    background: #353942;
+    color: var(--mobile-icon-face);
+  }
+
   .mobile-tool-actions {
     display: flex;
     min-width: 0;
     justify-content: flex-end;
     gap: 8px;
+  }
+
+  .mobile-tool-actions-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mobile-text-effect-parameters {
+    display: grid;
+    min-width: 0;
+    gap: 10px;
+  }
+
+  .mobile-text-effect-parameters[hidden] {
+    display: none;
   }
 
   .mobile-tool-actions button {
@@ -2470,7 +2509,8 @@ select {
   }
 
   .mobile-tool-actions button:disabled,
-  .mobile-tool-segmented button:disabled {
+  .mobile-tool-segmented button:disabled,
+  .mobile-text-warp-modes button:disabled {
     opacity: 0.42;
   }
 

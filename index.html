@@ -1030,8 +1030,197 @@
                   <input id="mobileTextColor" type="color" value="#f4c95d" />
                 </span>
               </label>
-              <div class="mobile-tool-actions">
+              <div class="mobile-tool-actions mobile-tool-actions-grid">
                 <button id="mobileTextAdd" class="is-primary" type="button">Add Text</button>
+                <button id="mobileTextReset" type="button">Reset</button>
+                <button id="mobileTextDelete" type="button">Delete</button>
+                <button id="mobileTextRasterize" type="button">Rasterize</button>
+              </div>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="text-warp" hidden>
+              <div class="mobile-tool-settings-field">
+                <span>Mode</span>
+                <div class="mobile-text-warp-modes" role="group" aria-label="Text warp mode">
+                  <button id="mobileTextWarpNone" type="button" aria-pressed="true">Normal</button>
+                  <button id="mobileTextWarpDistort" type="button" aria-pressed="false">Distort</button>
+                  <button id="mobileTextWarpArch" type="button" aria-pressed="false">Arch</button>
+                  <button id="mobileTextWarpCircle" type="button" aria-pressed="false">Circle</button>
+                  <button id="mobileTextWarpWave" type="button" aria-pressed="false">Wave</button>
+                </div>
+              </div>
+
+              <div id="mobileTextWarpDistortControls" class="mobile-text-effect-parameters" hidden>
+                <p class="mobile-tool-settings-status">
+                  Edit the four corners directly on the canvas.
+                </p>
+                <div class="mobile-tool-actions">
+                  <button id="mobileTextDistortReset" type="button">Reset</button>
+                  <button id="mobileTextDistortEdit" type="button" aria-pressed="false">Edit</button>
+                </div>
+              </div>
+
+              <div id="mobileTextWarpCurveControls" class="mobile-text-effect-parameters" hidden>
+                <label class="mobile-raster-effect-range" for="mobileTextWarpCurve">
+                  <span>Curve</span>
+                  <output id="mobileTextWarpCurveOut" for="mobileTextWarpCurve">80%</output>
+                  <input id="mobileTextWarpCurve" type="range" min="-100" max="100" step="1" value="80" />
+                </label>
+              </div>
+
+              <div id="mobileTextWarpCircleControls" class="mobile-text-effect-parameters" hidden>
+                <label class="mobile-raster-effect-range" for="mobileTextCircleRadius">
+                  <span>Radius</span>
+                  <output id="mobileTextCircleRadiusOut" for="mobileTextCircleRadius">50%</output>
+                  <input id="mobileTextCircleRadius" type="range" min="16" max="200" step="1" value="50" />
+                </label>
+                <label class="mobile-raster-effect-check" for="mobileTextCircleInverted">
+                  <input id="mobileTextCircleInverted" type="checkbox" />
+                  <span>Invert circle</span>
+                </label>
+              </div>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="text-outline" hidden>
+              <label class="mobile-raster-effect-range" for="mobileTextOutlineWidth">
+                <span>Width</span>
+                <output id="mobileTextOutlineWidthOut" for="mobileTextOutlineWidth">0 px</output>
+                <input id="mobileTextOutlineWidth" type="range" min="0" max="100" step="1" value="0" />
+              </label>
+              <label
+                id="mobileTextOutlineColorControl"
+                class="mobile-raster-effect-color"
+                for="mobileTextOutlineColor"
+              >
+                <span>Color</span>
+                <span class="mobile-raster-effect-color-disc">
+                  <input id="mobileTextOutlineColor" type="color" value="#111111" />
+                </span>
+              </label>
+              <label class="mobile-raster-effect-select" for="mobileTextOutlineJoin">
+                <span>Join</span>
+                <select id="mobileTextOutlineJoin">
+                  <option value="bevel">Bevel</option>
+                  <option value="miter">Miter</option>
+                  <option value="round">Round</option>
+                </select>
+              </label>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="text-drop-shadow" hidden>
+              <label class="mobile-raster-effect-check" for="mobileTextDropShadowEnabled">
+                <input id="mobileTextDropShadowEnabled" type="checkbox" />
+                <span>Enabled</span>
+              </label>
+              <div id="mobileTextDropShadowParameters" class="mobile-text-effect-parameters" hidden>
+                <label
+                  id="mobileTextDropShadowColorControl"
+                  class="mobile-raster-effect-color"
+                  for="mobileTextDropShadowColor"
+                >
+                  <span>Color</span>
+                  <span class="mobile-raster-effect-color-disc">
+                    <input id="mobileTextDropShadowColor" type="color" value="#727272" />
+                  </span>
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextDropShadowOpacity">
+                  <span>Opacity</span>
+                  <output id="mobileTextDropShadowOpacityOut" for="mobileTextDropShadowOpacity">100%</output>
+                  <input id="mobileTextDropShadowOpacity" type="range" min="0" max="100" step="1" value="100" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextDropShadowOffset">
+                  <span>Offset</span>
+                  <output id="mobileTextDropShadowOffsetOut" for="mobileTextDropShadowOffset">54</output>
+                  <input id="mobileTextDropShadowOffset" type="range" min="0" max="100" step="1" value="54" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextDropShadowAngle">
+                  <span>Angle</span>
+                  <output id="mobileTextDropShadowAngleOut" for="mobileTextDropShadowAngle">-180°</output>
+                  <input id="mobileTextDropShadowAngle" type="range" min="-180" max="180" step="1" value="-180" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextDropShadowBlur">
+                  <span>Blur</span>
+                  <output id="mobileTextDropShadowBlurOut" for="mobileTextDropShadowBlur">6</output>
+                  <input id="mobileTextDropShadowBlur" type="range" min="0" max="300" step="1" value="6" />
+                </label>
+              </div>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="text-inner-shadow" hidden>
+              <label class="mobile-raster-effect-check" for="mobileTextInnerShadowEnabled">
+                <input id="mobileTextInnerShadowEnabled" type="checkbox" />
+                <span>Enabled</span>
+              </label>
+              <div id="mobileTextInnerShadowParameters" class="mobile-text-effect-parameters" hidden>
+                <label
+                  id="mobileTextInnerShadowColorControl"
+                  class="mobile-raster-effect-color"
+                  for="mobileTextInnerShadowColor"
+                >
+                  <span>Color</span>
+                  <span class="mobile-raster-effect-color-disc">
+                    <input id="mobileTextInnerShadowColor" type="color" value="#000000" />
+                  </span>
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextInnerShadowOpacity">
+                  <span>Opacity</span>
+                  <output id="mobileTextInnerShadowOpacityOut" for="mobileTextInnerShadowOpacity">65%</output>
+                  <input id="mobileTextInnerShadowOpacity" type="range" min="0" max="100" step="1" value="65" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextInnerShadowOffset">
+                  <span>Offset</span>
+                  <output id="mobileTextInnerShadowOffsetOut" for="mobileTextInnerShadowOffset">12</output>
+                  <input id="mobileTextInnerShadowOffset" type="range" min="0" max="100" step="1" value="12" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextInnerShadowAngle">
+                  <span>Angle</span>
+                  <output id="mobileTextInnerShadowAngleOut" for="mobileTextInnerShadowAngle">-135°</output>
+                  <input id="mobileTextInnerShadowAngle" type="range" min="-180" max="180" step="1" value="-135" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextInnerShadowBlur">
+                  <span>Blur</span>
+                  <output id="mobileTextInnerShadowBlurOut" for="mobileTextInnerShadowBlur">12</output>
+                  <input id="mobileTextInnerShadowBlur" type="range" min="0" max="300" step="1" value="12" />
+                </label>
+              </div>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="text-block-shadow" hidden>
+              <label class="mobile-raster-effect-check" for="mobileTextBlockShadowEnabled">
+                <input id="mobileTextBlockShadowEnabled" type="checkbox" />
+                <span>Enabled</span>
+              </label>
+              <div id="mobileTextBlockShadowParameters" class="mobile-text-effect-parameters" hidden>
+                <label
+                  id="mobileTextBlockShadowColorControl"
+                  class="mobile-raster-effect-color"
+                  for="mobileTextBlockShadowColor"
+                >
+                  <span>Color</span>
+                  <span class="mobile-raster-effect-color-disc">
+                    <input id="mobileTextBlockShadowColor" type="color" value="#727272" />
+                  </span>
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextBlockShadowOpacity">
+                  <span>Opacity</span>
+                  <output id="mobileTextBlockShadowOpacityOut" for="mobileTextBlockShadowOpacity">100%</output>
+                  <input id="mobileTextBlockShadowOpacity" type="range" min="0" max="100" step="1" value="100" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextBlockShadowOffset">
+                  <span>Offset</span>
+                  <output id="mobileTextBlockShadowOffsetOut" for="mobileTextBlockShadowOffset">23</output>
+                  <input id="mobileTextBlockShadowOffset" type="range" min="0" max="100" step="1" value="23" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextBlockShadowAngle">
+                  <span>Angle</span>
+                  <output id="mobileTextBlockShadowAngleOut" for="mobileTextBlockShadowAngle">-104°</output>
+                  <input id="mobileTextBlockShadowAngle" type="range" min="-180" max="180" step="1" value="-104" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextBlockShadowOutlineWidth">
+                  <span>Outline Width</span>
+                  <output id="mobileTextBlockShadowOutlineWidthOut" for="mobileTextBlockShadowOutlineWidth">0 px</output>
+                  <input id="mobileTextBlockShadowOutlineWidth" type="range" min="0" max="100" step="1" value="0" />
+                </label>
               </div>
             </section>
           </div>
@@ -1229,20 +1418,6 @@
                   class="mobile-tools-item"
                   type="button"
                   data-mobile-tool
-                  data-mobile-tool-sheet="text"
-                  data-mobile-tool-search="testo text type scritta font"
-                  aria-label="Open Text settings"
-                >
-                  <span class="mobile-icon-stack" aria-hidden="true">
-                    <i data-lucide="type" class="mobile-icon-layer mobile-icon-outline"></i>
-                    <i data-lucide="type" class="mobile-icon-layer mobile-icon-face"></i>
-                  </span>
-                  <span class="mobile-tools-item-label">Text</span>
-                </button>
-                <button
-                  class="mobile-tools-item"
-                  type="button"
-                  data-mobile-tool
                   data-mobile-proxy-button="vectorSvgImportButton"
                   data-mobile-tool-search="svg vettore vector forme shapes importa"
                   aria-label="Import SVG"
@@ -1266,6 +1441,107 @@
                     <i data-lucide="image" class="mobile-icon-layer mobile-icon-face"></i>
                   </span>
                   <span class="mobile-tools-item-label">Image</span>
+                </button>
+              </div>
+            </section>
+
+            <section class="mobile-tools-category" data-mobile-tools-category>
+              <h2 class="mobile-tools-category-title">Text</h2>
+              <div class="mobile-tools-grid">
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-tool-sheet="text"
+                  data-mobile-tool-search="testo text type scritta font contenuto"
+                  aria-label="Open Text settings"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="type" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="type" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Text</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-tool-sheet="text-warp"
+                  data-mobile-tool-search="testo warp distort arch circle wave curva deformazione"
+                  aria-label="Open Warp settings"
+                  aria-pressed="false"
+                  disabled
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="spline" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="spline" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Warp</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-tool-sheet="text-outline"
+                  data-mobile-tool-search="testo outline contorno bordo stroke"
+                  aria-label="Open Outline settings"
+                  aria-pressed="false"
+                  disabled
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="type-outline" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="type-outline" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Outline</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-tool-sheet="text-drop-shadow"
+                  data-mobile-tool-search="testo ombra esterna drop shadow single shadow"
+                  aria-label="Open Drop Shadow settings"
+                  aria-pressed="false"
+                  disabled
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="sun" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="sun" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Drop Shadow</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-tool-sheet="text-inner-shadow"
+                  data-mobile-tool-search="testo ombra interna inner shadow"
+                  aria-label="Open Inner Shadow settings"
+                  aria-pressed="false"
+                  disabled
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="circle-dot-dashed" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="circle-dot-dashed" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Inner Shadow</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-tool-sheet="text-block-shadow"
+                  data-mobile-tool-search="testo ombra blocco block shadow profondita"
+                  aria-label="Open Block Shadow settings"
+                  aria-pressed="false"
+                  disabled
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="square-stack" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="square-stack" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Block Shadow</span>
                 </button>
               </div>
             </section>

@@ -4,13 +4,23 @@ import {
   type MobileBottomSheetSnap,
 } from "./mobile-bottom-sheet-gesture.ts";
 
-export type MobileToolSettingsKind = "fill" | "selection" | "transform" | "text";
-type MobileCanvasSettingsTool = Exclude<MobileToolSettingsKind, "text">;
+export type MobileToolSettingsKind =
+  | "fill"
+  | "selection"
+  | "transform"
+  | "text"
+  | "text-warp"
+  | "text-outline"
+  | "text-drop-shadow"
+  | "text-inner-shadow"
+  | "text-block-shadow";
+type MobileCanvasSettingsTool = "fill" | "selection" | "transform";
 
 export interface MobileToolSettingsSheetOptions {
   readonly mobileMediaQuery: MediaQueryList;
   readonly selectCanvasTool: (tool: MobileCanvasSettingsTool) => boolean;
   readonly getSelectionStatus: () => string;
+  readonly hasSelectedText: () => boolean;
   readonly beforeOpen: () => void;
   readonly onOpenChange: (open: boolean) => void;
 }
@@ -24,7 +34,26 @@ const MOBILE_TOOL_TITLES: Readonly<Record<MobileToolSettingsKind, string>> = {
   selection: "Selection",
   transform: "Transform",
   text: "Text",
+  "text-warp": "Warp",
+  "text-outline": "Outline",
+  "text-drop-shadow": "Drop Shadow",
+  "text-inner-shadow": "Inner Shadow",
+  "text-block-shadow": "Block Shadow",
 };
+
+const TEXT_SELECTION_REQUIRED_KINDS: ReadonlySet<MobileToolSettingsKind> = new Set([
+  "text-warp",
+  "text-outline",
+  "text-drop-shadow",
+  "text-inner-shadow",
+  "text-block-shadow",
+]);
+
+function isMobileCanvasSettingsTool(
+  kind: MobileToolSettingsKind,
+): kind is MobileCanvasSettingsTool {
+  return kind === "fill" || kind === "selection" || kind === "transform";
+}
 
 function requiredElement<T extends HTMLElement>(id: string): T {
   const result = document.getElementById(id);
@@ -44,6 +73,31 @@ function dispatchMirroredValue(
   const source = sourceControl<HTMLInputElement | HTMLSelectElement>(sourceId);
   source.value = mobile.value;
   source.dispatchEvent(new Event(eventType, { bubbles: true }));
+}
+
+function dispatchMirroredChecked(
+  mobile: HTMLInputElement,
+  sourceId: string,
+): void {
+  const source = sourceControl<HTMLInputElement>(sourceId);
+  source.checked = mobile.checked;
+  source.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+function dispatchSourceLifecycle(sourceId: string, eventType: string): void {
+  sourceControl<HTMLElement>(sourceId).dispatchEvent(new Event(eventType, { bubbles: true }));
+}
+
+function bindMirroredHistoryControl(mobile: HTMLElement, sourceId: string): void {
+  mobile.addEventListener("pointerdown", () => dispatchSourceLifecycle(sourceId, "pointerdown"));
+  mobile.addEventListener("focus", () => dispatchSourceLifecycle(sourceId, "focus"));
+  mobile.addEventListener("blur", () => dispatchSourceLifecycle(sourceId, "blur"));
+  if (mobile instanceof HTMLInputElement && mobile.type === "range") {
+    mobile.addEventListener("pointerup", () => dispatchSourceLifecycle(sourceId, "pointerup"));
+    mobile.addEventListener("pointercancel", () => dispatchSourceLifecycle(sourceId, "pointercancel"));
+    mobile.addEventListener("keydown", () => dispatchSourceLifecycle(sourceId, "keydown"));
+    mobile.addEventListener("keyup", () => dispatchSourceLifecycle(sourceId, "keyup"));
+  }
 }
 
 export function mobileToolSettingsPeekHeight(viewportHeight: number): number {
@@ -109,6 +163,170 @@ export class MobileToolSettingsSheetController {
   private readonly textColorControl = requiredElement<HTMLElement>("mobileTextColorControl");
   private readonly textColor = requiredElement<HTMLInputElement>("mobileTextColor");
   private readonly textAdd = requiredElement<HTMLButtonElement>("mobileTextAdd");
+  private readonly textReset = requiredElement<HTMLButtonElement>("mobileTextReset");
+  private readonly textDelete = requiredElement<HTMLButtonElement>("mobileTextDelete");
+  private readonly textRasterize = requiredElement<HTMLButtonElement>("mobileTextRasterize");
+  private readonly textWarpButtons = [
+    ["mobileTextWarpNone", "vectorTextTransformNone"],
+    ["mobileTextWarpDistort", "vectorTextTransformDistort"],
+    ["mobileTextWarpArch", "vectorTextTransformArch"],
+    ["mobileTextWarpCircle", "vectorTextTransformCircle"],
+    ["mobileTextWarpWave", "vectorTextTransformWave"],
+  ].map(([mobileId, sourceId]) => ({
+    mobile: requiredElement<HTMLButtonElement>(mobileId),
+    sourceId,
+  }));
+  private readonly textWarpDistortControls = requiredElement<HTMLElement>(
+    "mobileTextWarpDistortControls",
+  );
+  private readonly textDistortReset = requiredElement<HTMLButtonElement>(
+    "mobileTextDistortReset",
+  );
+  private readonly textDistortEdit = requiredElement<HTMLButtonElement>(
+    "mobileTextDistortEdit",
+  );
+  private readonly textWarpCurveControls = requiredElement<HTMLElement>(
+    "mobileTextWarpCurveControls",
+  );
+  private readonly textWarpCurve = requiredElement<HTMLInputElement>("mobileTextWarpCurve");
+  private readonly textWarpCurveOut = requiredElement<HTMLOutputElement>(
+    "mobileTextWarpCurveOut",
+  );
+  private readonly textWarpCircleControls = requiredElement<HTMLElement>(
+    "mobileTextWarpCircleControls",
+  );
+  private readonly textCircleRadius = requiredElement<HTMLInputElement>(
+    "mobileTextCircleRadius",
+  );
+  private readonly textCircleRadiusOut = requiredElement<HTMLOutputElement>(
+    "mobileTextCircleRadiusOut",
+  );
+  private readonly textCircleInverted = requiredElement<HTMLInputElement>(
+    "mobileTextCircleInverted",
+  );
+  private readonly textOutlineWidth = requiredElement<HTMLInputElement>(
+    "mobileTextOutlineWidth",
+  );
+  private readonly textOutlineWidthOut = requiredElement<HTMLOutputElement>(
+    "mobileTextOutlineWidthOut",
+  );
+  private readonly textOutlineColorControl = requiredElement<HTMLElement>(
+    "mobileTextOutlineColorControl",
+  );
+  private readonly textOutlineColor = requiredElement<HTMLInputElement>(
+    "mobileTextOutlineColor",
+  );
+  private readonly textOutlineJoin = requiredElement<HTMLSelectElement>(
+    "mobileTextOutlineJoin",
+  );
+  private readonly textDropShadowEnabled = requiredElement<HTMLInputElement>(
+    "mobileTextDropShadowEnabled",
+  );
+  private readonly textDropShadowParameters = requiredElement<HTMLElement>(
+    "mobileTextDropShadowParameters",
+  );
+  private readonly textDropShadowColorControl = requiredElement<HTMLElement>(
+    "mobileTextDropShadowColorControl",
+  );
+  private readonly textDropShadowColor = requiredElement<HTMLInputElement>(
+    "mobileTextDropShadowColor",
+  );
+  private readonly textDropShadowOpacity = requiredElement<HTMLInputElement>(
+    "mobileTextDropShadowOpacity",
+  );
+  private readonly textDropShadowOpacityOut = requiredElement<HTMLOutputElement>(
+    "mobileTextDropShadowOpacityOut",
+  );
+  private readonly textDropShadowOffset = requiredElement<HTMLInputElement>(
+    "mobileTextDropShadowOffset",
+  );
+  private readonly textDropShadowOffsetOut = requiredElement<HTMLOutputElement>(
+    "mobileTextDropShadowOffsetOut",
+  );
+  private readonly textDropShadowAngle = requiredElement<HTMLInputElement>(
+    "mobileTextDropShadowAngle",
+  );
+  private readonly textDropShadowAngleOut = requiredElement<HTMLOutputElement>(
+    "mobileTextDropShadowAngleOut",
+  );
+  private readonly textDropShadowBlur = requiredElement<HTMLInputElement>(
+    "mobileTextDropShadowBlur",
+  );
+  private readonly textDropShadowBlurOut = requiredElement<HTMLOutputElement>(
+    "mobileTextDropShadowBlurOut",
+  );
+  private readonly textInnerShadowEnabled = requiredElement<HTMLInputElement>(
+    "mobileTextInnerShadowEnabled",
+  );
+  private readonly textInnerShadowParameters = requiredElement<HTMLElement>(
+    "mobileTextInnerShadowParameters",
+  );
+  private readonly textInnerShadowColorControl = requiredElement<HTMLElement>(
+    "mobileTextInnerShadowColorControl",
+  );
+  private readonly textInnerShadowColor = requiredElement<HTMLInputElement>(
+    "mobileTextInnerShadowColor",
+  );
+  private readonly textInnerShadowOpacity = requiredElement<HTMLInputElement>(
+    "mobileTextInnerShadowOpacity",
+  );
+  private readonly textInnerShadowOpacityOut = requiredElement<HTMLOutputElement>(
+    "mobileTextInnerShadowOpacityOut",
+  );
+  private readonly textInnerShadowOffset = requiredElement<HTMLInputElement>(
+    "mobileTextInnerShadowOffset",
+  );
+  private readonly textInnerShadowOffsetOut = requiredElement<HTMLOutputElement>(
+    "mobileTextInnerShadowOffsetOut",
+  );
+  private readonly textInnerShadowAngle = requiredElement<HTMLInputElement>(
+    "mobileTextInnerShadowAngle",
+  );
+  private readonly textInnerShadowAngleOut = requiredElement<HTMLOutputElement>(
+    "mobileTextInnerShadowAngleOut",
+  );
+  private readonly textInnerShadowBlur = requiredElement<HTMLInputElement>(
+    "mobileTextInnerShadowBlur",
+  );
+  private readonly textInnerShadowBlurOut = requiredElement<HTMLOutputElement>(
+    "mobileTextInnerShadowBlurOut",
+  );
+  private readonly textBlockShadowEnabled = requiredElement<HTMLInputElement>(
+    "mobileTextBlockShadowEnabled",
+  );
+  private readonly textBlockShadowParameters = requiredElement<HTMLElement>(
+    "mobileTextBlockShadowParameters",
+  );
+  private readonly textBlockShadowColorControl = requiredElement<HTMLElement>(
+    "mobileTextBlockShadowColorControl",
+  );
+  private readonly textBlockShadowColor = requiredElement<HTMLInputElement>(
+    "mobileTextBlockShadowColor",
+  );
+  private readonly textBlockShadowOpacity = requiredElement<HTMLInputElement>(
+    "mobileTextBlockShadowOpacity",
+  );
+  private readonly textBlockShadowOpacityOut = requiredElement<HTMLOutputElement>(
+    "mobileTextBlockShadowOpacityOut",
+  );
+  private readonly textBlockShadowOffset = requiredElement<HTMLInputElement>(
+    "mobileTextBlockShadowOffset",
+  );
+  private readonly textBlockShadowOffsetOut = requiredElement<HTMLOutputElement>(
+    "mobileTextBlockShadowOffsetOut",
+  );
+  private readonly textBlockShadowAngle = requiredElement<HTMLInputElement>(
+    "mobileTextBlockShadowAngle",
+  );
+  private readonly textBlockShadowAngleOut = requiredElement<HTMLOutputElement>(
+    "mobileTextBlockShadowAngleOut",
+  );
+  private readonly textBlockShadowOutlineWidth = requiredElement<HTMLInputElement>(
+    "mobileTextBlockShadowOutlineWidth",
+  );
+  private readonly textBlockShadowOutlineWidthOut = requiredElement<HTMLOutputElement>(
+    "mobileTextBlockShadowOutlineWidthOut",
+  );
 
   private openState = false;
   private activeKind: MobileToolSettingsKind | null = null;
@@ -151,7 +369,8 @@ export class MobileToolSettingsSheetController {
 
   open(kind: MobileToolSettingsKind, opener: HTMLElement | null = null): void {
     if (!this.options.mobileMediaQuery.matches) return;
-    if (kind !== "text" && !this.options.selectCanvasTool(kind)) return;
+    if (isMobileCanvasSettingsTool(kind) && !this.options.selectCanvasTool(kind)) return;
+    if (TEXT_SELECTION_REQUIRED_KINDS.has(kind) && !this.options.hasSelectedText()) return;
     if (this.openState && this.activeKind === kind) return;
     if (this.openState) this.close(false);
     this.options.beforeOpen();
@@ -202,10 +421,22 @@ export class MobileToolSettingsSheetController {
 
   syncOpenState(): void {
     if (!this.openState || !this.activeKind) return;
+    if (
+      TEXT_SELECTION_REQUIRED_KINDS.has(this.activeKind)
+      && !this.options.hasSelectedText()
+    ) {
+      this.close(false);
+      return;
+    }
     if (this.activeKind === "fill") this.syncFill();
     else if (this.activeKind === "selection") this.syncSelection();
     else if (this.activeKind === "transform") this.syncTransform();
-    else this.syncText();
+    else if (this.activeKind === "text") this.syncText();
+    else if (this.activeKind === "text-warp") this.syncTextWarp();
+    else if (this.activeKind === "text-outline") this.syncTextOutline();
+    else if (this.activeKind === "text-drop-shadow") this.syncTextDropShadow();
+    else if (this.activeKind === "text-inner-shadow") this.syncTextInnerShadow();
+    else this.syncTextBlockShadow();
   }
 
   handleResize(): void {
@@ -257,6 +488,32 @@ export class MobileToolSettingsSheetController {
           this.textColor.value,
         );
       });
+      for (const [mobile, sourceId] of [
+        [this.textWarpCurve, "vectorTextTransformCurve"],
+        [this.textCircleRadius, "vectorTextCircleRadius"],
+        [this.textOutlineWidth, "vectorTextOutlineWidth"],
+        [this.textOutlineColor, "vectorTextOutlineColor"],
+        [this.textDropShadowColor, "vectorTextSingleShadowColor"],
+        [this.textDropShadowOpacity, "vectorTextSingleShadowOpacity"],
+        [this.textDropShadowOffset, "vectorTextSingleShadowOffset"],
+        [this.textDropShadowAngle, "vectorTextSingleShadowAngle"],
+        [this.textDropShadowBlur, "vectorTextSingleShadowBlur"],
+        [this.textInnerShadowColor, "vectorTextInnerShadowColor"],
+        [this.textInnerShadowOpacity, "vectorTextInnerShadowOpacity"],
+        [this.textInnerShadowOffset, "vectorTextInnerShadowOffset"],
+        [this.textInnerShadowAngle, "vectorTextInnerShadowAngle"],
+        [this.textInnerShadowBlur, "vectorTextInnerShadowBlur"],
+        [this.textBlockShadowColor, "vectorTextBlockShadowColor"],
+        [this.textBlockShadowOpacity, "vectorTextBlockShadowOpacity"],
+        [this.textBlockShadowOffset, "vectorTextBlockShadowOffset"],
+        [this.textBlockShadowAngle, "vectorTextBlockShadowAngle"],
+        [this.textBlockShadowOutlineWidth, "vectorTextBlockShadowOutlineWidth"],
+      ] as const) {
+        mobile.addEventListener(eventType, () => {
+          dispatchMirroredValue(mobile, sourceId, eventType);
+          this.syncOpenState();
+        });
+      }
     }
     this.selectionMethod.addEventListener("change", () => {
       dispatchMirroredValue(this.selectionMethod, "selectionMethod", "change");
@@ -265,6 +522,39 @@ export class MobileToolSettingsSheetController {
     this.textFontFamily.addEventListener("change", () => {
       dispatchMirroredValue(this.textFontFamily, "vectorTextFontFamily", "change");
       this.syncText();
+    });
+    this.textOutlineJoin.addEventListener("change", () => {
+      dispatchMirroredValue(this.textOutlineJoin, "vectorTextOutlineJoin", "change");
+      this.syncTextOutline();
+    });
+    this.textCircleInverted.addEventListener("change", () => {
+      dispatchMirroredChecked(this.textCircleInverted, "vectorTextCircleInverted");
+      this.syncTextWarp();
+    });
+    for (const [mobile, sourceId] of [
+      [this.textDropShadowEnabled, "vectorTextSingleShadowEnabled"],
+      [this.textInnerShadowEnabled, "vectorTextInnerShadowEnabled"],
+      [this.textBlockShadowEnabled, "vectorTextBlockShadowEnabled"],
+    ] as const) {
+      mobile.addEventListener("change", () => {
+        dispatchMirroredChecked(mobile, sourceId);
+        requestAnimationFrame(() => this.syncOpenState());
+      });
+    }
+
+    for (const { mobile, sourceId } of this.textWarpButtons) {
+      mobile.addEventListener("click", () => {
+        sourceControl<HTMLButtonElement>(sourceId).click();
+        requestAnimationFrame(() => this.syncOpenState());
+      });
+    }
+    this.textDistortReset.addEventListener("click", () => {
+      sourceControl<HTMLButtonElement>("vectorTextDistortReset").click();
+      requestAnimationFrame(() => this.syncOpenState());
+    });
+    this.textDistortEdit.addEventListener("click", () => {
+      sourceControl<HTMLButtonElement>("vectorTextDistortEdit").click();
+      requestAnimationFrame(() => this.syncOpenState());
     });
 
     for (const [mobile, sourceId] of [
@@ -297,6 +587,49 @@ export class MobileToolSettingsSheetController {
       sourceControl<HTMLButtonElement>("addVectorText").click();
       requestAnimationFrame(() => this.syncOpenState());
     });
+    for (const [mobile, sourceId] of [
+      [this.textReset, "vectorTextReset"],
+      [this.textDelete, "deleteVectorText"],
+      [this.textRasterize, "vectorTextRasterize"],
+    ] as const) {
+      mobile.addEventListener("click", () => {
+        sourceControl<HTMLButtonElement>(sourceId).click();
+        requestAnimationFrame(() => this.syncOpenState());
+      });
+    }
+
+    for (const [mobile, sourceId] of [
+      [this.textValue, "vectorTextValue"],
+      [this.textFontFamily, "vectorTextFontFamily"],
+      [this.textFontSize, "vectorTextFontSize"],
+      [this.textColor, "vectorTextColor"],
+      [this.textWarpCurve, "vectorTextTransformCurve"],
+      [this.textCircleRadius, "vectorTextCircleRadius"],
+      [this.textCircleInverted, "vectorTextCircleInverted"],
+      [this.textOutlineWidth, "vectorTextOutlineWidth"],
+      [this.textOutlineColor, "vectorTextOutlineColor"],
+      [this.textOutlineJoin, "vectorTextOutlineJoin"],
+      [this.textDropShadowEnabled, "vectorTextSingleShadowEnabled"],
+      [this.textDropShadowColor, "vectorTextSingleShadowColor"],
+      [this.textDropShadowOpacity, "vectorTextSingleShadowOpacity"],
+      [this.textDropShadowOffset, "vectorTextSingleShadowOffset"],
+      [this.textDropShadowAngle, "vectorTextSingleShadowAngle"],
+      [this.textDropShadowBlur, "vectorTextSingleShadowBlur"],
+      [this.textInnerShadowEnabled, "vectorTextInnerShadowEnabled"],
+      [this.textInnerShadowColor, "vectorTextInnerShadowColor"],
+      [this.textInnerShadowOpacity, "vectorTextInnerShadowOpacity"],
+      [this.textInnerShadowOffset, "vectorTextInnerShadowOffset"],
+      [this.textInnerShadowAngle, "vectorTextInnerShadowAngle"],
+      [this.textInnerShadowBlur, "vectorTextInnerShadowBlur"],
+      [this.textBlockShadowEnabled, "vectorTextBlockShadowEnabled"],
+      [this.textBlockShadowColor, "vectorTextBlockShadowColor"],
+      [this.textBlockShadowOpacity, "vectorTextBlockShadowOpacity"],
+      [this.textBlockShadowOffset, "vectorTextBlockShadowOffset"],
+      [this.textBlockShadowAngle, "vectorTextBlockShadowAngle"],
+      [this.textBlockShadowOutlineWidth, "vectorTextBlockShadowOutlineWidth"],
+    ] as const) {
+      bindMirroredHistoryControl(mobile, sourceId);
+    }
 
     document.addEventListener("keydown", (event) => {
       if (event.key !== "Escape" || !this.openState) return;
@@ -374,6 +707,230 @@ export class MobileToolSettingsSheetController {
     this.textColorControl.style.setProperty("--mobile-raster-effect-color", sourceColor.value);
     this.textColor.disabled = sourceColor.disabled;
     this.textAdd.disabled = sourceAdd.disabled;
+    const hasSelectedText = this.options.hasSelectedText();
+    this.textReset.disabled = !hasSelectedText
+      || sourceControl<HTMLButtonElement>("vectorTextReset").disabled;
+    this.textDelete.disabled = !hasSelectedText
+      || sourceControl<HTMLButtonElement>("deleteVectorText").disabled;
+    this.textRasterize.disabled = !hasSelectedText
+      || sourceControl<HTMLButtonElement>("vectorTextRasterize").disabled;
+  }
+
+  private syncMirroredRange(
+    mobile: HTMLInputElement,
+    output: HTMLOutputElement,
+    sourceId: string,
+    format: (value: number) => string,
+  ): void {
+    const source = sourceControl<HTMLInputElement>(sourceId);
+    mobile.value = source.value;
+    mobile.disabled = source.disabled;
+    output.value = format(Number(source.value));
+  }
+
+  private syncMirroredColor(
+    mobile: HTMLInputElement,
+    control: HTMLElement,
+    sourceId: string,
+  ): void {
+    const source = sourceControl<HTMLInputElement>(sourceId);
+    mobile.value = source.value;
+    mobile.disabled = source.disabled;
+    control.style.setProperty("--mobile-raster-effect-color", source.value);
+  }
+
+  private syncTextWarp(): void {
+    let activeSourceId = "vectorTextTransformNone";
+    for (const { mobile, sourceId } of this.textWarpButtons) {
+      const source = sourceControl<HTMLButtonElement>(sourceId);
+      const pressed = source.getAttribute("aria-pressed") === "true";
+      mobile.setAttribute("aria-pressed", String(pressed));
+      mobile.disabled = source.disabled;
+      if (pressed) activeSourceId = sourceId;
+    }
+    this.textWarpDistortControls.hidden = activeSourceId !== "vectorTextTransformDistort";
+    this.textWarpCurveControls.hidden = activeSourceId !== "vectorTextTransformArch"
+      && activeSourceId !== "vectorTextTransformWave";
+    this.textWarpCircleControls.hidden = activeSourceId !== "vectorTextTransformCircle";
+    const sourceDistortReset = sourceControl<HTMLButtonElement>("vectorTextDistortReset");
+    const sourceDistortEdit = sourceControl<HTMLButtonElement>("vectorTextDistortEdit");
+    this.textDistortReset.disabled = sourceDistortReset.disabled;
+    this.textDistortEdit.disabled = sourceDistortEdit.disabled;
+    const editing = sourceDistortEdit.getAttribute("aria-pressed") === "true";
+    this.textDistortEdit.setAttribute("aria-pressed", String(editing));
+    this.textDistortEdit.textContent = editing ? "Done" : "Edit";
+    this.syncMirroredRange(
+      this.textWarpCurve,
+      this.textWarpCurveOut,
+      "vectorTextTransformCurve",
+      (value) => `${Math.round(value)}%`,
+    );
+    this.syncMirroredRange(
+      this.textCircleRadius,
+      this.textCircleRadiusOut,
+      "vectorTextCircleRadius",
+      (value) => `${Math.round(value)}%`,
+    );
+    const sourceInverted = sourceControl<HTMLInputElement>("vectorTextCircleInverted");
+    this.textCircleInverted.checked = sourceInverted.checked;
+    this.textCircleInverted.disabled = sourceInverted.disabled;
+  }
+
+  private syncTextOutline(): void {
+    this.syncMirroredRange(
+      this.textOutlineWidth,
+      this.textOutlineWidthOut,
+      "vectorTextOutlineWidth",
+      (value) => `${Math.round(value)} px`,
+    );
+    this.syncMirroredColor(
+      this.textOutlineColor,
+      this.textOutlineColorControl,
+      "vectorTextOutlineColor",
+    );
+    const sourceJoin = sourceControl<HTMLSelectElement>("vectorTextOutlineJoin");
+    this.textOutlineJoin.value = sourceJoin.value;
+    this.textOutlineJoin.disabled = sourceJoin.disabled;
+  }
+
+  private syncTextShadow(
+    enabled: HTMLInputElement,
+    parameters: HTMLElement,
+    colorControl: HTMLElement,
+    color: HTMLInputElement,
+    sourceEnabledId: string,
+    sourceColorId: string,
+    ranges: readonly {
+      mobile: HTMLInputElement;
+      output: HTMLOutputElement;
+      sourceId: string;
+      format: (value: number) => string;
+    }[],
+  ): void {
+    const sourceEnabled = sourceControl<HTMLInputElement>(sourceEnabledId);
+    enabled.checked = sourceEnabled.checked;
+    enabled.disabled = sourceEnabled.disabled;
+    parameters.hidden = !sourceEnabled.checked;
+    this.syncMirroredColor(color, colorControl, sourceColorId);
+    for (const range of ranges) {
+      this.syncMirroredRange(
+        range.mobile,
+        range.output,
+        range.sourceId,
+        range.format,
+      );
+    }
+  }
+
+  private syncTextDropShadow(): void {
+    this.syncTextShadow(
+      this.textDropShadowEnabled,
+      this.textDropShadowParameters,
+      this.textDropShadowColorControl,
+      this.textDropShadowColor,
+      "vectorTextSingleShadowEnabled",
+      "vectorTextSingleShadowColor",
+      [
+        {
+          mobile: this.textDropShadowOpacity,
+          output: this.textDropShadowOpacityOut,
+          sourceId: "vectorTextSingleShadowOpacity",
+          format: (value) => `${Math.round(value)}%`,
+        },
+        {
+          mobile: this.textDropShadowOffset,
+          output: this.textDropShadowOffsetOut,
+          sourceId: "vectorTextSingleShadowOffset",
+          format: (value) => String(Math.round(value)),
+        },
+        {
+          mobile: this.textDropShadowAngle,
+          output: this.textDropShadowAngleOut,
+          sourceId: "vectorTextSingleShadowAngle",
+          format: (value) => `${Math.round(value)}°`,
+        },
+        {
+          mobile: this.textDropShadowBlur,
+          output: this.textDropShadowBlurOut,
+          sourceId: "vectorTextSingleShadowBlur",
+          format: (value) => String(Math.round(value)),
+        },
+      ],
+    );
+  }
+
+  private syncTextInnerShadow(): void {
+    this.syncTextShadow(
+      this.textInnerShadowEnabled,
+      this.textInnerShadowParameters,
+      this.textInnerShadowColorControl,
+      this.textInnerShadowColor,
+      "vectorTextInnerShadowEnabled",
+      "vectorTextInnerShadowColor",
+      [
+        {
+          mobile: this.textInnerShadowOpacity,
+          output: this.textInnerShadowOpacityOut,
+          sourceId: "vectorTextInnerShadowOpacity",
+          format: (value) => `${Math.round(value)}%`,
+        },
+        {
+          mobile: this.textInnerShadowOffset,
+          output: this.textInnerShadowOffsetOut,
+          sourceId: "vectorTextInnerShadowOffset",
+          format: (value) => String(Math.round(value)),
+        },
+        {
+          mobile: this.textInnerShadowAngle,
+          output: this.textInnerShadowAngleOut,
+          sourceId: "vectorTextInnerShadowAngle",
+          format: (value) => `${Math.round(value)}°`,
+        },
+        {
+          mobile: this.textInnerShadowBlur,
+          output: this.textInnerShadowBlurOut,
+          sourceId: "vectorTextInnerShadowBlur",
+          format: (value) => String(Math.round(value)),
+        },
+      ],
+    );
+  }
+
+  private syncTextBlockShadow(): void {
+    this.syncTextShadow(
+      this.textBlockShadowEnabled,
+      this.textBlockShadowParameters,
+      this.textBlockShadowColorControl,
+      this.textBlockShadowColor,
+      "vectorTextBlockShadowEnabled",
+      "vectorTextBlockShadowColor",
+      [
+        {
+          mobile: this.textBlockShadowOpacity,
+          output: this.textBlockShadowOpacityOut,
+          sourceId: "vectorTextBlockShadowOpacity",
+          format: (value) => `${Math.round(value)}%`,
+        },
+        {
+          mobile: this.textBlockShadowOffset,
+          output: this.textBlockShadowOffsetOut,
+          sourceId: "vectorTextBlockShadowOffset",
+          format: (value) => String(Math.round(value)),
+        },
+        {
+          mobile: this.textBlockShadowAngle,
+          output: this.textBlockShadowAngleOut,
+          sourceId: "vectorTextBlockShadowAngle",
+          format: (value) => `${Math.round(value)}°`,
+        },
+        {
+          mobile: this.textBlockShadowOutlineWidth,
+          output: this.textBlockShadowOutlineWidthOut,
+          sourceId: "vectorTextBlockShadowOutlineWidth",
+          format: (value) => `${Math.round(value)} px`,
+        },
+      ],
+    );
   }
 
   private peekOffset(): number {

@@ -89,19 +89,93 @@ for (const id of [
   "mobileTextFontSize",
   "mobileTextColor",
   "mobileTextAdd",
+  "mobileTextReset",
+  "mobileTextDelete",
+  "mobileTextRasterize",
+  "mobileTextWarpNone",
+  "mobileTextWarpDistort",
+  "mobileTextWarpArch",
+  "mobileTextWarpCircle",
+  "mobileTextWarpWave",
+  "mobileTextDistortReset",
+  "mobileTextDistortEdit",
+  "mobileTextWarpCurve",
+  "mobileTextCircleRadius",
+  "mobileTextCircleInverted",
+  "mobileTextOutlineWidth",
+  "mobileTextOutlineColor",
+  "mobileTextOutlineJoin",
+  "mobileTextDropShadowEnabled",
+  "mobileTextDropShadowColor",
+  "mobileTextDropShadowOpacity",
+  "mobileTextDropShadowOffset",
+  "mobileTextDropShadowAngle",
+  "mobileTextDropShadowBlur",
+  "mobileTextInnerShadowEnabled",
+  "mobileTextInnerShadowColor",
+  "mobileTextInnerShadowOpacity",
+  "mobileTextInnerShadowOffset",
+  "mobileTextInnerShadowAngle",
+  "mobileTextInnerShadowBlur",
+  "mobileTextBlockShadowEnabled",
+  "mobileTextBlockShadowColor",
+  "mobileTextBlockShadowOpacity",
+  "mobileTextBlockShadowOffset",
+  "mobileTextBlockShadowAngle",
+  "mobileTextBlockShadowOutlineWidth",
 ]) {
   assert.match(sheet, new RegExp(`id="${id}"`), `missing #${id}`);
 }
 
 assert.deepEqual(
-  [...html.matchAll(/data-mobile-tool-sheet="(fill|selection|transform|text)"/g)]
+  [...html.matchAll(/data-mobile-tool-sheet="([^"]+)"/g)]
     .map((match) => match[1]),
-  ["fill", "selection", "transform", "text"],
-  "the four settings cards must route to the shared sheet exactly once",
+  [
+    "fill",
+    "selection",
+    "transform",
+    "text",
+    "text-warp",
+    "text-outline",
+    "text-drop-shadow",
+    "text-inner-shadow",
+    "text-block-shadow",
+  ],
+  "each canvas and text settings card must route to the shared sheet exactly once",
 );
-for (const title of ["Fill", "Selection", "Transform", "Text"]) {
+for (const title of [
+  "Fill",
+  "Selection",
+  "Transform",
+  "Text",
+  "Warp",
+  "Outline",
+  "Drop Shadow",
+  "Inner Shadow",
+  "Block Shadow",
+]) {
   assert.match(html, new RegExp(`aria-label="Open ${title} settings"`));
 }
+const insertCategoryStart = html.indexOf(
+  '<h2 class="mobile-tools-category-title">Insert</h2>',
+);
+const textCategoryStart = html.indexOf(
+  '<h2 class="mobile-tools-category-title">Text</h2>',
+);
+const effectsCategoryStart = html.indexOf(
+  '<h2 class="mobile-tools-category-title">Effects</h2>',
+);
+assert.ok(
+  insertCategoryStart >= 0
+  && textCategoryStart > insertCategoryStart
+  && effectsCategoryStart > textCategoryStart,
+  "Text must be its own category between Insert and raster Effects",
+);
+assert.doesNotMatch(
+  html.slice(insertCategoryStart, textCategoryStart),
+  /data-mobile-tool-sheet="text"/,
+  "Text must no longer be duplicated inside Insert",
+);
 assert.doesNotMatch(
   html,
   /data-mobile-proxy-button="addVectorText"/,
@@ -112,7 +186,7 @@ assert.match(html, /data-mobile-proxy-button="rasterImageImportButton"/);
 
 assert.match(
   main,
-  /for \(const button of mobileToolSettingsButtons\)[\s\S]*?mobileToolSettingsSheet\?\.open\(kind, button\);/,
+  /for \(const button of mobileToolSettingsButtons\)[\s\S]*?mobileToolSettingsSheet\?\.open\(kind(?: as MobileToolSettingsKind)?, button\);/,
   "tool cards must open the shared editor and preserve their opener for focus restoration",
 );
 assert.match(
@@ -139,9 +213,68 @@ for (const sourceId of [
   "vectorTextFontSize",
   "vectorTextColor",
   "addVectorText",
+  "vectorTextReset",
+  "deleteVectorText",
+  "vectorTextRasterize",
+  "vectorTextTransformNone",
+  "vectorTextTransformDistort",
+  "vectorTextTransformArch",
+  "vectorTextTransformCircle",
+  "vectorTextTransformWave",
+  "vectorTextDistortReset",
+  "vectorTextDistortEdit",
+  "vectorTextTransformCurve",
+  "vectorTextCircleRadius",
+  "vectorTextCircleInverted",
+  "vectorTextOutlineWidth",
+  "vectorTextOutlineColor",
+  "vectorTextOutlineJoin",
+  "vectorTextSingleShadowEnabled",
+  "vectorTextSingleShadowColor",
+  "vectorTextSingleShadowOpacity",
+  "vectorTextSingleShadowOffset",
+  "vectorTextSingleShadowAngle",
+  "vectorTextSingleShadowBlur",
+  "vectorTextInnerShadowEnabled",
+  "vectorTextInnerShadowColor",
+  "vectorTextInnerShadowOpacity",
+  "vectorTextInnerShadowOffset",
+  "vectorTextInnerShadowAngle",
+  "vectorTextInnerShadowBlur",
+  "vectorTextBlockShadowEnabled",
+  "vectorTextBlockShadowColor",
+  "vectorTextBlockShadowOpacity",
+  "vectorTextBlockShadowOffset",
+  "vectorTextBlockShadowAngle",
+  "vectorTextBlockShadowOutlineWidth",
 ]) {
   assert.match(controller, new RegExp(`"${sourceId}"`), `missing authoritative source #${sourceId}`);
 }
+assert.match(
+  controller,
+  /bindMirroredHistoryControl\(mobile, sourceId\)/,
+  "mobile text inputs must forward the source history lifecycle so one slider gesture remains one undo action",
+);
+assert.match(
+  controller,
+  /TEXT_SELECTION_REQUIRED_KINDS[\s\S]*?this\.options\.hasSelectedText\(\)/,
+  "text effects must refuse stale SVG or raster selections",
+);
+assert.match(
+  main,
+  /selectedText\?\.transformType[\s\S]*?selectedText\?\.outlineWidth[\s\S]*?singleShadowEnabled[\s\S]*?innerShadowEnabled[\s\S]*?blockShadowEnabled/,
+  "text tool cards must derive their ivory/gray state from the selected authoritative text node",
+);
+assert.match(
+  main,
+  /hasSelectedText:\s*\(\) => selectedMobileTextNode\(\) !== null/,
+  "the shared sheet must gate text-only editors with the mixed-scene selection",
+);
+assert.doesNotMatch(
+  css,
+  /\.mobile-tools-item\[aria-pressed="true"\]\s*\{[^}]*#dd5c35/s,
+  "the main Tools cards must not gain an orange active indicator",
+);
 assert.match(
   controller,
   /this\.scroll\.toggleAttribute\("inert", minimized\);[\s\S]*?this\.scroll\.setAttribute\("aria-hidden", String\(minimized\)\);/,
