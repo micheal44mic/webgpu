@@ -217,7 +217,7 @@
       <aside
         id="mobileBrushControls"
         class="mobile-brush-controls"
-        aria-label="Brush size and opacity"
+        aria-label="Brush controls"
         aria-hidden="false"
       >
         <div id="mobileBrushSizeTrack" class="mobile-brush-control-track">
@@ -256,6 +256,52 @@
               aria-valuenow="100"
               aria-valuetext="Opacity 100%"
               data-mobile-brush-control="opacity"
+            >
+              <span class="mobile-brush-control-disc" aria-hidden="true">
+                <span class="mobile-brush-control-value"></span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div id="mobileBrushStretchTrack" class="mobile-brush-control-track" hidden>
+          <div class="mobile-brush-control-range">
+            <div
+              id="mobileBrushStretchControl"
+              class="mobile-brush-control"
+              role="slider"
+              tabindex="-1"
+              aria-label="Blend stretch"
+              aria-orientation="vertical"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="18"
+              aria-valuetext="Stretch 18%"
+              aria-disabled="true"
+              data-mobile-brush-control="stretch"
+            >
+              <span class="mobile-brush-control-disc" aria-hidden="true">
+                <span class="mobile-brush-control-value"></span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div id="mobileBrushPaintTrack" class="mobile-brush-control-track" hidden>
+          <div class="mobile-brush-control-range">
+            <div
+              id="mobileBrushPaintControl"
+              class="mobile-brush-control"
+              role="slider"
+              tabindex="-1"
+              aria-label="Blend paint"
+              aria-orientation="vertical"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="14"
+              aria-valuetext="Paint 14%"
+              aria-disabled="true"
+              data-mobile-brush-control="paint"
             >
               <span class="mobile-brush-control-disc" aria-hidden="true">
                 <span class="mobile-brush-control-value"></span>
@@ -1002,6 +1048,26 @@
               </div>
             </section>
 
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="layer-options" hidden>
+              <label class="mobile-raster-effect-range" for="mobileLayerOpacity">
+                <span>Opacity</span>
+                <output id="mobileLayerOpacityOut" for="mobileLayerOpacity">100%</output>
+                <input id="mobileLayerOpacity" type="range" min="0" max="100" step="1" value="100" />
+              </label>
+              <label id="mobileLayerBlendModeControl" class="mobile-raster-effect-select" for="mobileLayerBlendMode">
+                <span>Blend Mode</span>
+                <select id="mobileLayerBlendMode"></select>
+              </label>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="svg-style" hidden>
+              <div id="mobileSvgStylePalette" class="mobile-svg-style-palette"></div>
+              <button id="mobileSvgStyleRasterize" class="mobile-tool-wide-action" type="button">
+                Rasterize SVG
+              </button>
+              <p id="mobileSvgStyleStatus" class="mobile-tool-settings-status" aria-live="polite"></p>
+            </section>
+
             <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="text" hidden>
               <label class="mobile-tool-text-field" for="mobileTextValue">
                 <span>Text</span>
@@ -1477,6 +1543,22 @@
                   class="mobile-tools-item"
                   type="button"
                   data-mobile-tool
+                  data-mobile-tool-sheet="svg-style"
+                  data-mobile-tool-search="svg style effects colori palette rasterize vettore"
+                  aria-label="Open SVG Style settings"
+                  aria-pressed="false"
+                  disabled
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="palette" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="palette" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">SVG Style</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
                   data-mobile-tool-sheet="text-warp"
                   data-mobile-tool-search="testo warp distort arch circle wave curva deformazione"
                   aria-label="Open Warp settings"
@@ -1693,6 +1775,26 @@
           </button>
         </div>
         <div id="mobileLayerList" class="mobile-layer-list" role="list"></div>
+        <div
+          id="mobileLayerContextMenu"
+          class="mobile-layer-context-menu"
+          role="menu"
+          aria-label="Layer actions"
+          hidden
+          inert
+        >
+          <button
+            id="mobileLayerClipping"
+            type="button"
+            role="menuitemcheckbox"
+            aria-checked="false"
+          >
+            Clipping Mask
+          </button>
+          <button id="mobileLayerOptions" type="button" role="menuitem">
+            Options
+          </button>
+        </div>
         <p
           id="mobileLayerReorderStatus"
           class="visually-hidden"
@@ -2376,7 +2478,7 @@
               </p>
             </div>
             <label class="check-control">
-              <input id="vectorTextBlockShadowEnabled" type="checkbox" checked />
+              <input id="vectorTextBlockShadowEnabled" type="checkbox" />
               <span>
                 Block Shadow
                 <small>Estrusione piena della sagoma, come nel riferimento Kittl.</small>

@@ -3,11 +3,17 @@ import {
   resolveMobileBottomSheetDrag,
   type MobileBottomSheetSnap,
 } from "./mobile-bottom-sheet-gesture.ts";
+import {
+  LAYER_BLEND_MODE_CATEGORIES,
+  type LayerBlendMode,
+} from "./layer-blend-modes.ts";
 
 export type MobileToolSettingsKind =
   | "fill"
   | "selection"
   | "transform"
+  | "layer-options"
+  | "svg-style"
   | "text"
   | "text-warp"
   | "text-outline"
@@ -17,6 +23,21 @@ export type MobileToolSettingsKind =
 type MobileCanvasSettingsTool = "fill" | "selection" | "transform";
 type MobileSelectionCombineMode = "replace" | "add" | "subtract";
 export type MobileTextWarpMode = "none" | "distort" | "arch" | "circle" | "wave";
+
+export interface MobileLayerOptionsSnapshot {
+  readonly key: string;
+  readonly name: string;
+  readonly opacity: number;
+  readonly blendMode: LayerBlendMode | null;
+  readonly locked: boolean;
+}
+
+export interface MobileSvgStyleSnapshot {
+  readonly id: number;
+  readonly name: string;
+  readonly paintColors: readonly string[];
+  readonly locked: boolean;
+}
 
 export interface MobileToolSettingsSheetOptions {
   readonly mobileMediaQuery: MediaQueryList;
@@ -28,7 +49,16 @@ export interface MobileToolSettingsSheetOptions {
   readonly clearSelection: () => void;
   readonly applyTransform: () => void;
   readonly cancelTransform: () => void;
-  readonly createText: () => void;
+  readonly getSelectedLayerOptions: () => MobileLayerOptionsSnapshot | null;
+  readonly setSelectedLayerOpacity: (opacity: number) => void;
+  readonly setSelectedLayerBlendMode: (blendMode: LayerBlendMode) => void;
+  readonly getSelectedSvgStyle: () => MobileSvgStyleSnapshot | null;
+  readonly setSelectedSvgPaintColor: (index: number, color: string) => void;
+  readonly beginSvgPaintEdit: () => void;
+  readonly commitSvgPaintEdit: () => void;
+  readonly rasterizeSelectedSvg: () => void;
+  readonly getTextCreationColor: () => string;
+  readonly createText: (color: string) => void;
   readonly resetText: () => void;
   readonly deleteText: () => void;
   readonly rasterizeText: () => void;
@@ -42,11 +72,14 @@ export interface MobileToolSettingsSheetOptions {
 const MOBILE_TOOL_MIN_PEEK_PX = 160;
 const MOBILE_TOOL_MAX_PEEK_PX = 240;
 const MOBILE_TOOL_PEEK_VIEWPORT_RATIO = 0.26;
+const MOBILE_LAYER_OPTIONS_MAX_VISIBLE_PX = 288;
 
 const MOBILE_TOOL_TITLES: Readonly<Record<MobileToolSettingsKind, string>> = {
   fill: "Fill",
   selection: "Selection",
   transform: "Transform",
+  "layer-options": "Layer Options",
+  "svg-style": "SVG Style",
   text: "Text",
   "text-warp": "Warp",
   "text-outline": "Outline",
@@ -61,6 +94,11 @@ const TEXT_SELECTION_REQUIRED_KINDS: ReadonlySet<MobileToolSettingsKind> = new S
   "text-drop-shadow",
   "text-inner-shadow",
   "text-block-shadow",
+]);
+
+const SELECTED_ITEM_REQUIRED_KINDS: ReadonlySet<MobileToolSettingsKind> = new Set([
+  "layer-options",
+  "svg-style",
 ]);
 
 function isMobileCanvasSettingsTool(
@@ -112,6 +150,23 @@ function bindMirroredHistoryControl(mobile: HTMLElement, sourceId: string): void
     mobile.addEventListener("keydown", () => dispatchSourceLifecycle(sourceId, "keydown"));
     mobile.addEventListener("keyup", () => dispatchSourceLifecycle(sourceId, "keyup"));
   }
+}
+
+function colorInputValue(value: string): string {
+  return /^#[0-9a-f]{6}$/i.test(value) ? value : "#000000";
+}
+
+function mobileBlendModeLabel(mode: LayerBlendMode): string {
+  if (mode === "add") return "Add (Linear Dodge)";
+  if (mode === "shade") return "Shade (Provisional)";
+  return mode
+    .split("-")
+    .map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
+    .join(" ");
+}
+
+function mobileBlendCategoryLabel(id: string): string {
+  return `${id.charAt(0).toUpperCase()}${id.slice(1)}`;
 }
 
 export function mobileToolSettingsPeekHeight(viewportHeight: number): number {
@@ -170,6 +225,19 @@ export class MobileToolSettingsSheetController {
   private readonly transformHint = requiredElement<HTMLElement>("mobileTransformHint");
   private readonly transformCancel = requiredElement<HTMLButtonElement>("mobileTransformCancel");
   private readonly transformApply = requiredElement<HTMLButtonElement>("mobileTransformApply");
+  private readonly layerOpacity = requiredElement<HTMLInputElement>("mobileLayerOpacity");
+  private readonly layerOpacityOut = requiredElement<HTMLOutputElement>(
+    "mobileLayerOpacityOut",
+  );
+  private readonly layerBlendModeControl = requiredElement<HTMLElement>(
+    "mobileLayerBlendModeControl",
+  );
+  private readonly layerBlendMode = requiredElement<HTMLSelectElement>("mobileLayerBlendMode");
+  private readonly svgStylePalette = requiredElement<HTMLElement>("mobileSvgStylePalette");
+  private readonly svgStyleRasterize = requiredElement<HTMLButtonElement>(
+    "mobileSvgStyleRasterize",
+  );
+  private readonly svgStyleStatus = requiredElement<HTMLElement>("mobileSvgStyleStatus");
   private readonly textValue = requiredElement<HTMLInputElement>("mobileTextValue");
   private readonly textFontFamily = requiredElement<HTMLSelectElement>("mobileTextFontFamily");
   private readonly textFontSize = requiredElement<HTMLInputElement>("mobileTextFontSize");
@@ -372,9 +440,23 @@ export class MobileToolSettingsSheetController {
   private opener: HTMLElement | null = null;
   private readonly options: MobileToolSettingsSheetOptions;
   private readonly transformStateObserver: MutationObserver;
+  private pendingTextColor: string | null = null;
+  private svgPaletteSignature = "";
+  private svgPaintEditIndex: number | null = null;
 
   constructor(options: MobileToolSettingsSheetOptions) {
     this.options = options;
+    for (const category of LAYER_BLEND_MODE_CATEGORIES) {
+      const group = document.createElement("optgroup");
+      group.label = mobileBlendCategoryLabel(category.id);
+      for (const mode of category.modes) {
+        const option = document.createElement("option");
+        option.value = mode;
+        option.textContent = mobileBlendModeLabel(mode);
+        group.append(option);
+      }
+      this.layerBlendMode.append(group);
+    }
     this.sheet.setAttribute("aria-hidden", "true");
     this.sheet.dataset.state = "closed";
     this.sheet.setAttribute("inert", "");
@@ -408,11 +490,22 @@ export class MobileToolSettingsSheetController {
     if (!this.options.mobileMediaQuery.matches) return;
     if (isMobileCanvasSettingsTool(kind) && !this.options.selectCanvasTool(kind)) return;
     if (TEXT_SELECTION_REQUIRED_KINDS.has(kind) && !this.options.hasSelectedText()) return;
+    if (SELECTED_ITEM_REQUIRED_KINDS.has(kind)) {
+      const available = kind === "layer-options"
+        ? this.options.getSelectedLayerOptions() !== null
+        : this.options.getSelectedSvgStyle() !== null;
+      if (!available) return;
+    }
     if (this.openState && this.activeKind === kind) return;
     if (this.openState) this.close(false);
     this.options.beforeOpen();
 
     this.activeKind = kind;
+    if (kind === "text") {
+      this.pendingTextColor = this.options.hasSelectedText()
+        ? null
+        : this.options.getTextCreationColor();
+    }
     this.opener = opener;
     this.openState = true;
     this.snap = "peek";
@@ -436,6 +529,7 @@ export class MobileToolSettingsSheetController {
 
   close(restoreFocus = false): void {
     if (!this.openState) return;
+    this.finishSvgPaintEdit();
     this.openState = false;
     this.releaseDragCapture();
     const activeElement = document.activeElement;
@@ -465,9 +559,18 @@ export class MobileToolSettingsSheetController {
       this.close(false);
       return;
     }
+    if (
+      (this.activeKind === "layer-options" && !this.options.getSelectedLayerOptions())
+      || (this.activeKind === "svg-style" && !this.options.getSelectedSvgStyle())
+    ) {
+      this.close(false);
+      return;
+    }
     if (this.activeKind === "fill") this.syncFill();
     else if (this.activeKind === "selection") this.syncSelection();
     else if (this.activeKind === "transform") this.syncTransform();
+    else if (this.activeKind === "layer-options") this.syncLayerOptions();
+    else if (this.activeKind === "svg-style") this.syncSvgStyle();
     else if (this.activeKind === "text") this.syncText();
     else if (this.activeKind === "text-warp") this.syncTextWarp();
     else if (this.activeKind === "text-outline") this.syncTextOutline();
@@ -519,7 +622,11 @@ export class MobileToolSettingsSheetController {
         this.syncText();
       });
       this.textColor.addEventListener(eventType, () => {
-        dispatchMirroredValue(this.textColor, "vectorTextColor", eventType);
+        if (this.options.hasSelectedText()) {
+          dispatchMirroredValue(this.textColor, "vectorTextColor", eventType);
+        } else {
+          this.pendingTextColor = this.textColor.value;
+        }
         this.textColorControl.style.setProperty(
           "--mobile-raster-effect-color",
           this.textColor.value,
@@ -620,8 +727,26 @@ export class MobileToolSettingsSheetController {
     this.transformApply.addEventListener("click", () => {
       this.runAction(() => this.options.applyTransform());
     });
+    this.layerOpacity.addEventListener("input", () => {
+      this.layerOpacityOut.value = `${Math.round(Number(this.layerOpacity.value))}%`;
+    });
+    this.layerOpacity.addEventListener("change", () => {
+      this.runAction(() => this.options.setSelectedLayerOpacity(
+        Number(this.layerOpacity.value) / 100,
+      ));
+    });
+    this.layerBlendMode.addEventListener("change", () => {
+      this.runAction(() => this.options.setSelectedLayerBlendMode(
+        this.layerBlendMode.value as LayerBlendMode,
+      ));
+    });
+    this.svgStyleRasterize.addEventListener("click", () => {
+      this.runAction(() => this.options.rasterizeSelectedSvg());
+    });
     this.textAdd.addEventListener("click", () => {
-      this.runAction(() => this.options.createText());
+      const color = this.pendingTextColor ?? this.textColor.value;
+      this.pendingTextColor = null;
+      this.runAction(() => this.options.createText(color));
     });
     for (const [mobile, action] of [
       [this.textReset, this.options.resetText],
@@ -746,6 +871,98 @@ export class MobileToolSettingsSheetController {
     return transactionActive;
   }
 
+  private syncLayerOptions(): void {
+    const snapshot = this.options.getSelectedLayerOptions();
+    if (!snapshot) return;
+    const opacity = Math.min(1, Math.max(0, snapshot.opacity));
+    this.layerOpacity.value = String(Math.round(opacity * 100));
+    this.layerOpacityOut.value = `${Math.round(opacity * 100)}%`;
+    this.layerOpacity.disabled = snapshot.locked;
+    this.layerOpacity.setAttribute("aria-label", `Opacity for ${snapshot.name}`);
+    this.layerBlendModeControl.hidden = snapshot.blendMode === null;
+    if (snapshot.blendMode !== null) {
+      this.layerBlendMode.value = snapshot.blendMode;
+      this.layerBlendMode.disabled = snapshot.locked;
+      this.layerBlendMode.setAttribute("aria-label", `Blend mode for ${snapshot.name}`);
+    }
+  }
+
+  private startSvgPaintEdit(index: number): void {
+    if (this.svgPaintEditIndex === index) return;
+    this.finishSvgPaintEdit();
+    this.svgPaintEditIndex = index;
+    this.options.beginSvgPaintEdit();
+  }
+
+  private finishSvgPaintEdit(): void {
+    if (this.svgPaintEditIndex === null) return;
+    this.svgPaintEditIndex = null;
+    this.options.commitSvgPaintEdit();
+  }
+
+  private rebuildSvgPalette(snapshot: MobileSvgStyleSnapshot): void {
+    this.finishSvgPaintEdit();
+    this.svgStylePalette.replaceChildren(...snapshot.paintColors.map((color, index) => {
+      const label = document.createElement("label");
+      label.className = "mobile-raster-effect-color";
+      const title = document.createElement("span");
+      title.textContent = snapshot.paintColors.length === 1
+        ? "Color"
+        : `Color ${index + 1}`;
+      const disc = document.createElement("span");
+      disc.className = "mobile-raster-effect-color-disc";
+      const input = document.createElement("input");
+      input.type = "color";
+      input.value = colorInputValue(color);
+      input.disabled = snapshot.locked;
+      input.dataset.svgPaintIndex = String(index);
+      label.style.setProperty("--mobile-raster-effect-color", input.value);
+      input.addEventListener("pointerdown", () => this.startSvgPaintEdit(index));
+      input.addEventListener("focus", () => this.startSvgPaintEdit(index));
+      input.addEventListener("input", () => {
+        this.startSvgPaintEdit(index);
+        label.style.setProperty("--mobile-raster-effect-color", input.value);
+        this.options.setSelectedSvgPaintColor(index, input.value);
+      });
+      input.addEventListener("change", () => {
+        this.startSvgPaintEdit(index);
+        label.style.setProperty("--mobile-raster-effect-color", input.value);
+        this.options.setSelectedSvgPaintColor(index, input.value);
+        this.finishSvgPaintEdit();
+      });
+      input.addEventListener("blur", () => this.finishSvgPaintEdit());
+      input.addEventListener("pointercancel", () => this.finishSvgPaintEdit());
+      disc.append(input);
+      label.append(title, disc);
+      return label;
+    }));
+  }
+
+  private syncSvgStyle(): void {
+    const snapshot = this.options.getSelectedSvgStyle();
+    if (!snapshot) return;
+    const signature = `${snapshot.id}:${snapshot.paintColors.length}`;
+    if (signature !== this.svgPaletteSignature) {
+      this.svgPaletteSignature = signature;
+      this.rebuildSvgPalette(snapshot);
+    }
+    const inputs = this.svgStylePalette.querySelectorAll<HTMLInputElement>(
+      "input[data-svg-paint-index]",
+    );
+    inputs.forEach((input, index) => {
+      const value = colorInputValue(snapshot.paintColors[index] ?? "#000000");
+      if (document.activeElement !== input) input.value = value;
+      input.disabled = snapshot.locked;
+      input.closest<HTMLElement>(".mobile-raster-effect-color")
+        ?.style.setProperty("--mobile-raster-effect-color", input.value);
+    });
+    this.svgStyleRasterize.disabled = snapshot.locked;
+    this.svgStyleStatus.textContent = snapshot.paintColors.length === 0
+      ? `${snapshot.name} has no editable paint colors.`
+      : `${snapshot.name} · ${snapshot.paintColors.length} editable `
+        + `${snapshot.paintColors.length === 1 ? "color" : "colors"}`;
+  }
+
   private syncText(): void {
     const sourceValue = sourceControl<HTMLInputElement>("vectorTextValue");
     const sourceFont = sourceControl<HTMLSelectElement>("vectorTextFontFamily");
@@ -759,11 +976,14 @@ export class MobileToolSettingsSheetController {
     this.textFontSize.value = sourceSize.value;
     this.textFontSize.disabled = sourceSize.disabled;
     this.textFontSizeOut.value = `${Math.round(Number(sourceSize.value))} px`;
-    this.textColor.value = sourceColor.value;
-    this.textColorControl.style.setProperty("--mobile-raster-effect-color", sourceColor.value);
-    this.textColor.disabled = sourceColor.disabled;
-    this.textAdd.disabled = sourceAdd.disabled;
     const hasSelectedText = this.options.hasSelectedText();
+    const textColor = hasSelectedText
+      ? sourceColor.value
+      : this.pendingTextColor ?? this.options.getTextCreationColor();
+    this.textColor.value = colorInputValue(textColor);
+    this.textColorControl.style.setProperty("--mobile-raster-effect-color", this.textColor.value);
+    this.textColor.disabled = hasSelectedText ? sourceColor.disabled : sourceAdd.disabled;
+    this.textAdd.disabled = sourceAdd.disabled;
     this.textReset.disabled = !hasSelectedText
       || sourceControl<HTMLButtonElement>("vectorTextReset").disabled;
     this.textDelete.disabled = !hasSelectedText
@@ -994,6 +1214,19 @@ export class MobileToolSettingsSheetController {
   }
 
   private peekOffset(): number {
+    if (this.activeKind === "layer-options") {
+      const contentHeight = this.handle.offsetHeight
+        + this.header.offsetHeight
+        + this.scroll.scrollHeight;
+      const visibleHeight = Math.min(
+        this.closedOffset(),
+        Math.max(
+          this.handle.offsetHeight + this.header.offsetHeight,
+          Math.min(MOBILE_LAYER_OPTIONS_MAX_VISIBLE_PX, contentHeight),
+        ),
+      );
+      return Math.max(0, Math.round(this.closedOffset() - visibleHeight));
+    }
     return Math.max(
       0,
       Math.round(this.closedOffset() - mobileToolSettingsPeekHeight(window.innerHeight)),

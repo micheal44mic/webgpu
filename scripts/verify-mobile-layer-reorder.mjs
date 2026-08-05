@@ -70,14 +70,38 @@ assert.equal(mobileLayerReorderAutoScrollVelocity(500, 100, 500), 520);
 assert.match(html, /id="mobileLayerReorderStatus"[\s\S]*?aria-live="polite"/);
 assert.match(
   html,
+  /id="mobileLayerContextMenu"[\s\S]*?role="menu"[\s\S]*?id="mobileLayerClipping"[\s\S]*?id="mobileLayerOptions"/,
+  "the selected layer must expose Clipping Mask and Options in one anchored menu",
+);
+assert.match(
+  html,
   /id="mobileLayersPanel"[\s\S]*?aria-hidden="true"[\s\S]*?inert/,
   "the initially hidden Layers panel must also be inert",
 );
 assert.match(css, /\.mobile-layer-row\.is-reordering/);
 assert.match(css, /\.mobile-layer-row\.is-drop-before::before/);
+assert.match(
+  css,
+  /\.mobile-layer-context-menu\s*\{[\s\S]*?position:\s*absolute;[\s\S]*?background:\s*var\(--app-background\);/,
+);
 assert.match(css, /touch-action: none/);
 assert.match(main, /setPointerCapture\(event\.pointerId\)/);
 assert.match(main, /MOBILE_LAYER_REORDER_HOLD_MS/);
+assert.match(
+  main,
+  /function armMobileLayerContextGesture\(\)[\s\S]*?openMobileLayerContextMenu\(gesture\.key, gesture\.row\)[\s\S]*?gesture\.phase = "armed"/,
+  "a stationary hold must open the menu before it becomes a reorder gesture",
+);
+assert.match(
+  main,
+  /gesture\.phase === "armed"[\s\S]*?mobileLayerReorderMovementExceeded[\s\S]*?activateMobileLayerReorderGesture\(\)/,
+  "continuing the same held gesture beyond the slop must transition to reorder",
+);
+assert.match(
+  main,
+  /mobileLayerOptionsButton\.addEventListener\("click"[\s\S]*?open\("layer-options"/,
+  "Options must route to the shared compact bottom sheet",
+);
 assert.match(main, /mobileLayerReorderAutoScrollVelocity/);
 assert.match(main, /event\.altKey[\s\S]*?ArrowUp[\s\S]*?ArrowDown/);
 assert.match(

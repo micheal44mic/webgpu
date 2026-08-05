@@ -88,6 +88,11 @@ for (const id of [
   "mobileSelectionClear",
   "mobileTransformCancel",
   "mobileTransformApply",
+  "mobileLayerOpacity",
+  "mobileLayerBlendMode",
+  "mobileSvgStylePalette",
+  "mobileSvgStyleRasterize",
+  "mobileSvgStyleStatus",
   "mobileTextValue",
   "mobileTextFontFamily",
   "mobileTextFontSize",
@@ -142,6 +147,7 @@ assert.deepEqual(
     "selection",
     "transform",
     "text",
+    "svg-style",
     "text-warp",
     "text-outline",
     "text-drop-shadow",
@@ -155,6 +161,7 @@ for (const title of [
   "Selection",
   "Transform",
   "Text",
+  "SVG Style",
   "Warp",
   "Outline",
   "Drop Shadow",
@@ -207,6 +214,15 @@ for (const action of [
   "clearSelection",
   "applyTransform",
   "cancelTransform",
+  "getSelectedLayerOptions",
+  "setSelectedLayerOpacity",
+  "setSelectedLayerBlendMode",
+  "getSelectedSvgStyle",
+  "setSelectedSvgPaintColor",
+  "beginSvgPaintEdit",
+  "commitSvgPaintEdit",
+  "rasterizeSelectedSvg",
+  "getTextCreationColor",
   "createText",
   "resetText",
   "deleteText",
@@ -321,6 +337,36 @@ assert.match(
   main,
   /hasSelectedText:\s*\(\) => selectedMobileTextNode\(\) !== null/,
   "the shared sheet must gate text-only editors with the mixed-scene selection",
+);
+assert.match(
+  controller,
+  /MOBILE_LAYER_OPTIONS_MAX_VISIBLE_PX[\s\S]*?activeKind === "layer-options"/,
+  "layer opacity and blend mode must open together in a content-sized compact detent",
+);
+assert.match(
+  controller,
+  /startSvgPaintEdit\(index\)[\s\S]*?setSelectedSvgPaintColor\(index, input\.value\)[\s\S]*?finishSvgPaintEdit\(\)/,
+  "SVG colors must update live while one picker gesture remains one history edit",
+);
+assert.match(
+  main,
+  /rasterizeSelectedSvg:\s*\(\) => vectorTextPrototype\?\.rasterizeSelectedSvgNode\(\)/,
+  "mobile SVG rasterization must call the controller API directly",
+);
+assert.match(
+  mixedController,
+  /createText\(color\?: string\)[\s\S]*?defaultSeed\(textCount, color\)/,
+  "new mobile text must pass its chosen color into the authoritative seed",
+);
+assert.match(
+  mixedController,
+  /blockShadowEnabled:\s*false/,
+  "new text must start without Block Shadow",
+);
+assert.doesNotMatch(
+  html,
+  /id="vectorTextBlockShadowEnabled"[^>]*\schecked(?:\s|>)/,
+  "the initial text UI must also start with Block Shadow disabled",
 );
 assert.doesNotMatch(
   css,

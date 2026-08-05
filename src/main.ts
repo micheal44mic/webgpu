@@ -297,14 +297,21 @@ const mobileAddLayerButton = element<HTMLButtonElement>("mobileAddLayer");
 const mobileCopyLayerButton = element<HTMLButtonElement>("mobileCopyLayer");
 const mobileAddMaskButton = element<HTMLButtonElement>("mobileAddMask");
 const mobileLayerList = element<HTMLElement>("mobileLayerList");
+const mobileLayerContextMenu = element<HTMLElement>("mobileLayerContextMenu");
+const mobileLayerClippingButton = element<HTMLButtonElement>("mobileLayerClipping");
+const mobileLayerOptionsButton = element<HTMLButtonElement>("mobileLayerOptions");
 const mobileLayerReorderStatus = element<HTMLParagraphElement>(
   "mobileLayerReorderStatus",
 );
 const mobileBrushControls = element<HTMLElement>("mobileBrushControls");
 const mobileBrushSizeTrack = element<HTMLElement>("mobileBrushSizeTrack");
 const mobileBrushOpacityTrack = element<HTMLElement>("mobileBrushOpacityTrack");
+const mobileBrushStretchTrack = element<HTMLElement>("mobileBrushStretchTrack");
+const mobileBrushPaintTrack = element<HTMLElement>("mobileBrushPaintTrack");
 const mobileBrushSizeControl = element<HTMLElement>("mobileBrushSizeControl");
 const mobileBrushOpacityControl = element<HTMLElement>("mobileBrushOpacityControl");
+const mobileBrushStretchControl = element<HTMLElement>("mobileBrushStretchControl");
+const mobileBrushPaintControl = element<HTMLElement>("mobileBrushPaintControl");
 const mobileBrushPreview = element<HTMLElement>("mobileBrushPreview");
 const mobileBrushPreviewLabel = element<HTMLOutputElement>("mobileBrushPreviewLabel");
 const mobileBrushPreviewCanvas = element<HTMLCanvasElement>("mobileBrushPreviewCanvas");
@@ -1025,7 +1032,7 @@ interface MobileLayerReorderGesture {
   readonly startScrollTop: number;
   readonly restoreFocus: boolean;
   holdTimer: number | null;
-  phase: "pending" | "dragging";
+  phase: "pending" | "armed" | "dragging";
   plan: MobileLayerReorderPlan | null;
   currentSlot: number;
   clientY: number;
@@ -1033,9 +1040,10 @@ interface MobileLayerReorderGesture {
   lastFrameTime: number;
 }
 let mobileLayerReorderGesture: MobileLayerReorderGesture | null = null;
+let mobileLayerContextKey: MobileMixedSceneLayerKey | null = null;
 let mobileLayerReorderSuppressClickKey: string | null = null;
 let mobileLayerReorderSuppressClickUntil = 0;
-type MobileBrushControlKind = "size" | "opacity";
+type MobileBrushControlKind = "size" | "opacity" | "stretch" | "paint";
 interface MobileBrushControlDrag {
   readonly kind: MobileBrushControlKind;
   readonly pointerId: number;
@@ -1349,21 +1357,35 @@ function clampMobileBrushPercent(value: number, minimum: number): number {
 }
 
 function mobileBrushControlElement(kind: MobileBrushControlKind): HTMLElement {
-  return kind === "size" ? mobileBrushSizeControl : mobileBrushOpacityControl;
+  if (kind === "size") return mobileBrushSizeControl;
+  if (kind === "opacity") return mobileBrushOpacityControl;
+  if (kind === "stretch") return mobileBrushStretchControl;
+  return mobileBrushPaintControl;
 }
 
 function mobileBrushControlTrack(kind: MobileBrushControlKind): HTMLElement {
-  return kind === "size" ? mobileBrushSizeTrack : mobileBrushOpacityTrack;
+  if (kind === "size") return mobileBrushSizeTrack;
+  if (kind === "opacity") return mobileBrushOpacityTrack;
+  if (kind === "stretch") return mobileBrushStretchTrack;
+  return mobileBrushPaintTrack;
 }
 
 function mobileBrushControlInput(kind: MobileBrushControlKind): HTMLInputElement {
-  return element<HTMLInputElement>(kind === "size" ? "brushSize" : "opacity");
+  return element<HTMLInputElement>(
+    kind === "size"
+      ? "brushSize"
+      : kind === "opacity"
+        ? "opacity"
+        : kind === "stretch"
+          ? "blendStretch"
+          : "blendPaint",
+  );
 }
 
 function mobileBrushControlPercent(kind: MobileBrushControlKind): number {
   const input = mobileBrushControlInput(kind);
   const value = Number(input.value);
-  if (kind === "opacity") {
+  if (kind !== "size") {
     return clampMobileBrushPercent(value, 0);
   }
   const minimum = Number(input.min);
@@ -1377,7 +1399,7 @@ function mobileBrushControlPercent(kind: MobileBrushControlKind): number {
 
 function setMobileBrushControlPercent(kind: MobileBrushControlKind, requested: number): void {
   const input = mobileBrushControlInput(kind);
-  if (kind === "opacity") {
+  if (kind !== "size") {
     const percent = clampMobileBrushPercent(requested, 0);
     input.value = (Math.round(percent * 10) / 10).toString();
   } else {
@@ -1391,9 +1413,10 @@ function setMobileBrushControlPercent(kind: MobileBrushControlKind, requested: n
 
 function mobileBrushControlLabel(kind: MobileBrushControlKind): string {
   const value = Number(mobileBrushControlInput(kind).value);
-  return kind === "size"
-    ? `Size ${Math.round(value)} px`
-    : `Opacity ${Math.round(value)}%`;
+  if (kind === "size") return `Size ${Math.round(value)} px`;
+  if (kind === "opacity") return `Opacity ${Math.round(value)}%`;
+  if (kind === "stretch") return `Stretch ${Math.round(value)}%`;
+  return `Paint ${Math.round(value)}%`;
 }
 
 function syncMobileBrushControlVisual(kind: MobileBrushControlKind): void {
@@ -1435,6 +1458,7 @@ function syncMobileBrushControlVisual(kind: MobileBrushControlKind): void {
 function renderMobileBrushPreview(): void {
   if (!mobileBrushControlDrag || !mobileUiMediaQuery.matches) return;
   const kind = mobileBrushControlDrag.kind;
+  if (kind === "stretch" || kind === "paint") return;
   const percent = mobileBrushControlPercent(kind);
   const diameter = kind === "size"
     ? MOBILE_BRUSH_PREVIEW_MAX_TIP_CSS_PIXELS * percent / 100
@@ -1459,6 +1483,8 @@ function scheduleMobileBrushPreview(): void {
 function syncMobileBrushControlVisuals(): void {
   syncMobileBrushControlVisual("size");
   syncMobileBrushControlVisual("opacity");
+  syncMobileBrushControlVisual("stretch");
+  syncMobileBrushControlVisual("paint");
   if (mobileBrushControlDrag) {
     const kind = mobileBrushControlDrag.kind;
     mobileBrushPreviewLabel.value = mobileBrushControlLabel(kind);
@@ -1470,9 +1496,12 @@ function syncMobileBrushControlAvailability(locked = interactionLocked()): void 
   const brushContext = activeCanvasTool === "paint" || activeCanvasTool === "blend";
   const sizeDisabled = locked || !brushContext;
   const opacityDisabled = locked || activeCanvasTool !== "paint";
+  const blendControlDisabled = locked || activeCanvasTool !== "blend";
   for (const [control, disabled] of [
     [mobileBrushSizeControl, sizeDisabled],
     [mobileBrushOpacityControl, opacityDisabled],
+    [mobileBrushStretchControl, blendControlDisabled],
+    [mobileBrushPaintControl, blendControlDisabled],
   ] as const) {
     control.setAttribute("aria-disabled", String(disabled));
     control.tabIndex = disabled ? -1 : 0;
@@ -1481,6 +1510,7 @@ function syncMobileBrushControlAvailability(locked = interactionLocked()): void 
 
 function syncMobileBrushControlsVisibility(): void {
   const brushContext = activeCanvasTool === "paint" || activeCanvasTool === "blend";
+  const blend = activeCanvasTool === "blend";
   const suppressed = !mobileUiMediaQuery.matches
     || !brushContext
     || mobileLayersPanelOpen
@@ -1494,6 +1524,14 @@ function syncMobileBrushControlsVisibility(): void {
     finishMobileBrushControlDrag(true);
   }
   mobileBrushControls.classList.toggle("is-suppressed", suppressed);
+  mobileBrushControls.classList.toggle("is-blend", blend);
+  mobileBrushControls.setAttribute(
+    "aria-label",
+    blend ? "Blend size, stretch and paint" : "Brush size and opacity",
+  );
+  mobileBrushOpacityTrack.hidden = blend;
+  mobileBrushStretchTrack.hidden = !blend;
+  mobileBrushPaintTrack.hidden = !blend;
   mobileBrushControls.setAttribute("aria-hidden", String(suppressed));
 }
 
@@ -1836,8 +1874,156 @@ function selectedMobileTextNode() {
   return selected?.kind === "text" ? selected.textNode : null;
 }
 
+function selectedMobileSvgNode() {
+  if (!engineInitialized) return null;
+  const snapshot = engine.getMixedSceneSnapshot();
+  const selected = snapshot?.items.find((item) => item.key === snapshot.selectedKey);
+  return selected?.kind === "svg" ? selected.svgNode : null;
+}
+
+interface MobileLayerProperties {
+  readonly key: MobileMixedSceneLayerKey;
+  readonly name: string;
+  readonly kind: MobileLayerKind;
+  readonly opacity: number;
+  readonly blendMode: LayerBlendMode | null;
+  readonly rasterIndex: number | null;
+  readonly semanticId: number | null;
+  readonly clippingEnabled: boolean;
+  readonly clippingAvailable: boolean;
+  readonly locked: boolean;
+}
+
+function mobileLayerProperties(
+  requestedKey: string | null = null,
+): MobileLayerProperties | null {
+  if (!engineInitialized) return null;
+  const stats = engine.getStats();
+  const locked = interactionLocked() || layerSwitching;
+  const scene = stats.mixedScene;
+  if (!scene) {
+    const active = stats.layers[stats.activeLayerIndex];
+    const key = requestedKey ?? (active ? `raster:${active.id}` : null);
+    if (!key || !isMobileMixedSceneLayerKey(key)) return null;
+    const rasterIndex = stats.layers.findIndex((layer) => `raster:${layer.id}` === key);
+    const layer = stats.layers[rasterIndex];
+    if (!layer) return null;
+    const clippingEnabled = layer.clippingParentId !== null;
+    return {
+      key,
+      name: mobileLayerDisplayName(layer.name),
+      kind: "raster",
+      opacity: layer.opacity,
+      blendMode: layer.blendMode,
+      rasterIndex,
+      semanticId: null,
+      clippingEnabled,
+      clippingAvailable: clippingEnabled || rasterIndex > 0,
+      locked,
+    };
+  }
+
+  const key = requestedKey ?? scene.selectedKey;
+  if (!isMobileMixedSceneLayerKey(key)) return null;
+  const sceneIndex = scene.items.findIndex((item) => item.key === key);
+  const item = scene.items[sceneIndex];
+  if (!item) return null;
+  if (item.kind === "raster") {
+    const layer = stats.layers[item.rasterLayerIndex];
+    if (!layer) return null;
+    const clippingEnabled = item.rasterClippingParentId !== null;
+    const hasAdjacentRasterBelow = sceneIndex > 0
+      && scene.items[sceneIndex - 1]?.kind === "raster";
+    return {
+      key,
+      name: mobileLayerDisplayName(layer.name),
+      kind: "raster",
+      opacity: layer.opacity,
+      blendMode: layer.blendMode,
+      rasterIndex: item.rasterLayerIndex,
+      semanticId: null,
+      clippingEnabled,
+      clippingAvailable: clippingEnabled || hasAdjacentRasterBelow,
+      locked,
+    };
+  }
+  const node = item.kind === "text"
+    ? item.textNode
+    : item.kind === "svg"
+      ? item.svgNode
+      : item.imageNode;
+  return {
+    key,
+    name: mobileLayerDisplayName(node.name),
+    kind: item.kind,
+    opacity: node.opacity,
+    blendMode: null,
+    rasterIndex: null,
+    semanticId: node.id,
+    clippingEnabled: false,
+    clippingAvailable: false,
+    locked,
+  };
+}
+
+function closeMobileLayerContextMenu(restoreFocus = false): void {
+  const key = mobileLayerContextKey;
+  const activeElement = document.activeElement;
+  if (activeElement instanceof HTMLElement && mobileLayerContextMenu.contains(activeElement)) {
+    if (restoreFocus && key) {
+      mobileLayerList.querySelector<HTMLButtonElement>(
+        `[data-layer-key="${CSS.escape(key)}"] .mobile-layer-select`,
+      )?.focus({ preventScroll: true });
+    } else {
+      activeElement.blur();
+    }
+  }
+  mobileLayerContextKey = null;
+  mobileLayerContextMenu.hidden = true;
+  mobileLayerContextMenu.setAttribute("inert", "");
+  delete mobileLayerContextMenu.dataset.layerKey;
+}
+
+function openMobileLayerContextMenu(
+  key: MobileMixedSceneLayerKey,
+  row: HTMLElement,
+): boolean {
+  const properties = mobileLayerProperties(key);
+  if (!properties || properties.locked || !row.classList.contains("is-selected")) return false;
+  mobileLayerContextKey = key;
+  mobileLayerContextMenu.dataset.layerKey = key;
+  mobileLayerClippingButton.hidden = properties.kind !== "raster";
+  mobileLayerClippingButton.disabled = properties.kind !== "raster"
+    || !properties.clippingAvailable;
+  mobileLayerClippingButton.setAttribute(
+    "aria-checked",
+    String(properties.clippingEnabled),
+  );
+  mobileLayerClippingButton.textContent = properties.clippingEnabled
+    ? "Disable Clipping Mask"
+    : "Clipping Mask";
+  mobileLayerOptionsButton.disabled = false;
+  mobileLayerContextMenu.hidden = false;
+  mobileLayerContextMenu.removeAttribute("inert");
+  const panelRect = mobileLayersPanel.getBoundingClientRect();
+  const rowRect = row.getBoundingClientRect();
+  const menuHeight = mobileLayerContextMenu.offsetHeight;
+  const preferredBelow = rowRect.bottom - panelRect.top + 4;
+  const preferredAbove = rowRect.top - panelRect.top - menuHeight - 4;
+  const maximumTop = Math.max(8, panelRect.height - menuHeight - 8);
+  const top = preferredBelow + menuHeight <= panelRect.height - 8
+    ? preferredBelow
+    : preferredAbove;
+  mobileLayerContextMenu.style.setProperty(
+    "--mobile-layer-context-top",
+    `${Math.round(Math.min(maximumTop, Math.max(8, top)))}px`,
+  );
+  return true;
+}
+
 function syncMobileToolsMenuState(): void {
   const selectedText = selectedMobileTextNode();
+  const selectedSvg = selectedMobileSvgNode();
   for (const button of mobileToolsCanvasButtons) {
     button.setAttribute(
       "aria-pressed",
@@ -1853,6 +2039,7 @@ function syncMobileToolsMenuState(): void {
   }
   for (const button of mobileToolSettingsButtons) {
     const kind = button.dataset.mobileToolSheet;
+    const svgEditor = kind === "svg-style";
     const textEditor = kind === "text"
       || kind === "text-warp"
       || kind === "text-outline"
@@ -1863,7 +2050,12 @@ function syncMobileToolsMenuState(): void {
     button.disabled = !engineInitialized
       || interactionLocked()
       || (textEditor && vectorTextPrototype === null)
-      || (textEffect && selectedText === null);
+      || (textEffect && selectedText === null)
+      || (svgEditor && (vectorTextPrototype === null || selectedSvg === null));
+    if (svgEditor) {
+      button.setAttribute("aria-pressed", String(selectedSvg !== null));
+      continue;
+    }
     if (!textEditor) continue;
     const pressed = kind === "text"
       ? selectedText !== null
@@ -2181,7 +2373,7 @@ function runMobileLayerReorderFrame(frameTime: number): void {
   if (autoScrolled) scheduleMobileLayerReorderFrame();
 }
 
-function activateMobileLayerReorderGesture(): void {
+function armMobileLayerContextGesture(): void {
   const gesture = mobileLayerReorderGesture;
   if (!gesture || gesture.phase !== "pending") return;
   gesture.holdTimer = null;
@@ -2193,6 +2385,20 @@ function activateMobileLayerReorderGesture(): void {
     cancelMobileLayerReorderGesture(false);
     return;
   }
+  if (!openMobileLayerContextMenu(gesture.key, gesture.row)) {
+    cancelMobileLayerReorderGesture(false);
+    return;
+  }
+  gesture.phase = "armed";
+  announceMobileLayerReorder(
+    `${gesture.name} options open. Keep dragging to move the layer.`,
+  );
+}
+
+function activateMobileLayerReorderGesture(): void {
+  const gesture = mobileLayerReorderGesture;
+  if (!gesture || gesture.phase !== "armed") return;
+  closeMobileLayerContextMenu(false);
   const plan = mobileLayerReorderPlanFromEngine(gesture.key);
   if (!plan || plan.validSlots.length <= 1) {
     cancelMobileLayerReorderGesture(false);
@@ -2237,6 +2443,7 @@ function cancelMobileLayerReorderGesture(
   if (announce && gesture.phase === "dragging") {
     announceMobileLayerReorder("Layer move canceled.");
   }
+  if (gesture.phase === "armed") closeMobileLayerContextMenu(false);
   if (mobileLayersPanelOpen) {
     scheduleMobileLayersRefresh();
     requestMobileLayerThumbnailCapture();
@@ -2331,7 +2538,7 @@ function handleMobileLayerReorderPointerDown(event: PointerEvent): void {
     lastFrameTime: performance.now(),
   };
   gesture.holdTimer = window.setTimeout(
-    activateMobileLayerReorderGesture,
+    armMobileLayerContextGesture,
     MOBILE_LAYER_REORDER_HOLD_MS,
   );
   mobileLayerReorderGesture = gesture;
@@ -2351,6 +2558,20 @@ function handleMobileLayerReorderPointerMove(event: PointerEvent): void {
     }
     return;
   }
+  if (gesture.phase === "armed") {
+    if (!mobileLayerReorderMovementExceeded(
+      gesture.startClientX,
+      gesture.startClientY,
+      event.clientX,
+      event.clientY,
+    )) {
+      return;
+    }
+    event.preventDefault();
+    gesture.clientY = event.clientY;
+    activateMobileLayerReorderGesture();
+    return;
+  }
   event.preventDefault();
   gesture.clientY = event.clientY;
   scheduleMobileLayerReorderFrame();
@@ -2359,6 +2580,23 @@ function handleMobileLayerReorderPointerMove(event: PointerEvent): void {
 function handleMobileLayerReorderPointerUp(event: PointerEvent): void {
   const gesture = mobileLayerReorderGesture;
   if (!gesture || event.pointerId !== gesture.pointerId) return;
+  if (gesture.phase === "armed") {
+    event.preventDefault();
+    mobileLayerReorderSuppressClickKey = gesture.key;
+    mobileLayerReorderSuppressClickUntil = performance.now() + 500;
+    mobileLayerReorderGesture = null;
+    if (gesture.holdTimer !== null) window.clearTimeout(gesture.holdTimer);
+    if (gesture.select.hasPointerCapture(gesture.pointerId)) {
+      gesture.select.releasePointerCapture(gesture.pointerId);
+    }
+    requestAnimationFrame(() => {
+      if (mobileLayerContextKey !== gesture.key) return;
+      (mobileLayerClippingButton.hidden || mobileLayerClippingButton.disabled
+        ? mobileLayerOptionsButton
+        : mobileLayerClippingButton).focus({ preventScroll: true });
+    });
+    return;
+  }
   if (gesture.phase !== "dragging" || !gesture.plan) {
     cancelMobileLayerReorderGesture(false);
     return;
@@ -2457,6 +2695,7 @@ function setMobileLayersPanelOpen(open: boolean): void {
   if (!open) {
     const focusWasInside = mobileLayersPanel.contains(document.activeElement)
       || mobileLayerReorderGesture !== null;
+    closeMobileLayerContextMenu(false);
     cancelMobileLayerReorderGesture(false, true, false);
     if (focusWasInside) {
       mobileLayersMenuButton.focus({ preventScroll: true });
@@ -3880,7 +4119,62 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
   clearSelection: clearPixelSelection,
   applyTransform: () => vectorTextPrototype?.applyTransform(),
   cancelTransform: () => vectorTextPrototype?.cancelTransform(),
-  createText: () => vectorTextPrototype?.createText(),
+  getSelectedLayerOptions: () => {
+    const properties = mobileLayerProperties();
+    return properties && {
+      key: properties.key,
+      name: properties.name,
+      opacity: properties.opacity,
+      blendMode: properties.blendMode,
+      locked: properties.locked,
+    };
+  },
+  setSelectedLayerOpacity: (opacity) => {
+    const properties = mobileLayerProperties();
+    if (!properties || properties.locked) return;
+    if (properties.kind === "raster" && properties.rasterIndex !== null) {
+      void changeLayerOpacity(properties.rasterIndex, opacity);
+    } else if (properties.kind === "text" && properties.semanticId !== null) {
+      void changeVectorTextOpacity(properties.semanticId, opacity);
+    } else if (properties.kind === "svg" && properties.semanticId !== null) {
+      void changeVectorSvgOpacity(properties.semanticId, opacity);
+    } else if (properties.kind === "image" && properties.semanticId !== null) {
+      void changeRasterImageOpacity(properties.semanticId, opacity);
+    }
+  },
+  setSelectedLayerBlendMode: (blendMode) => {
+    const properties = mobileLayerProperties();
+    if (
+      !properties
+      || properties.locked
+      || properties.kind !== "raster"
+      || properties.rasterIndex === null
+    ) {
+      return;
+    }
+    void changeLayerBlendMode(properties.rasterIndex, blendMode);
+  },
+  getSelectedSvgStyle: () => {
+    const node = selectedMobileSvgNode();
+    return node && {
+      id: node.id,
+      name: mobileLayerDisplayName(node.name),
+      paintColors: node.paintColors,
+      locked: interactionLocked() || layerSwitching,
+    };
+  },
+  setSelectedSvgPaintColor: (index, color) => {
+    vectorTextPrototype?.setSelectedSvgPaintColor(index, color);
+  },
+  beginSvgPaintEdit: () => {
+    engine.beginVectorHistoryEdit();
+  },
+  commitSvgPaintEdit: () => {
+    engine.commitVectorHistoryEdit();
+  },
+  rasterizeSelectedSvg: () => vectorTextPrototype?.rasterizeSelectedSvgNode(),
+  getTextCreationColor: () => brushColorInput.value,
+  createText: (color) => vectorTextPrototype?.createText(color),
   resetText: resetMobileText,
   deleteText: deleteMobileText,
   rasterizeText: rasterizeMobileText,
@@ -4711,6 +5005,8 @@ function handleMobileBrushControlKeydown(
 for (const [control, kind] of [
   [mobileBrushSizeControl, "size"],
   [mobileBrushOpacityControl, "opacity"],
+  [mobileBrushStretchControl, "stretch"],
+  [mobileBrushPaintControl, "paint"],
 ] as const) {
   control.addEventListener("pointerdown", (event) => {
     startMobileBrushControlDrag(kind, event);
@@ -4748,9 +5044,56 @@ mobileLayerList.addEventListener("lostpointercapture", handleMobileLayerReorderP
 mobileLayerList.addEventListener("keydown", handleMobileLayerReorderKeydown);
 mobileLayerList.addEventListener("contextmenu", (event) => {
   const target = event.target instanceof Element ? event.target : null;
-  if (target?.closest(".mobile-layer-row.is-selected .mobile-layer-select")) {
-    event.preventDefault();
+  const select = target?.closest<HTMLButtonElement>(
+    ".mobile-layer-row.is-selected .mobile-layer-select",
+  );
+  const row = select?.closest<HTMLElement>(".mobile-layer-row.is-selected");
+  const key = row?.dataset.layerKey;
+  if (!select || !row || !key || !isMobileMixedSceneLayerKey(key)) return;
+  event.preventDefault();
+  cancelMobileLayerReorderGesture(false, false, false);
+  openMobileLayerContextMenu(key, row);
+  (mobileLayerClippingButton.hidden || mobileLayerClippingButton.disabled
+    ? mobileLayerOptionsButton
+    : mobileLayerClippingButton).focus({ preventScroll: true });
+});
+
+mobileLayerClippingButton.addEventListener("click", () => {
+  const properties = mobileLayerProperties(mobileLayerContextKey);
+  if (
+    !properties
+    || properties.kind !== "raster"
+    || properties.rasterIndex === null
+    || properties.locked
+    || !properties.clippingAvailable
+  ) {
+    return;
   }
+  closeMobileLayerContextMenu(false);
+  void changeLayerClipping(properties.rasterIndex, !properties.clippingEnabled);
+});
+
+mobileLayerOptionsButton.addEventListener("click", () => {
+  const properties = mobileLayerProperties(mobileLayerContextKey);
+  if (!properties || properties.locked) return;
+  closeMobileLayerContextMenu(false);
+  mobileToolSettingsSheet?.open("layer-options", mobileLayersMenuButton);
+});
+
+document.addEventListener("pointerdown", (event) => {
+  if (mobileLayerContextKey === null || !(event.target instanceof Node)) return;
+  if (mobileLayerContextMenu.contains(event.target)) return;
+  const activeRow = mobileLayerList.querySelector<HTMLElement>(
+    `[data-layer-key="${CSS.escape(mobileLayerContextKey)}"]`,
+  );
+  if (activeRow?.contains(event.target)) return;
+  closeMobileLayerContextMenu(false);
+}, { capture: true });
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || mobileLayerContextKey === null) return;
+  event.preventDefault();
+  closeMobileLayerContextMenu(true);
 });
 
 mobileLayerList.addEventListener("click", (event) => {
@@ -5155,6 +5498,7 @@ for (const button of mobileToolSettingsButtons) {
       kind !== "fill"
       && kind !== "selection"
       && kind !== "transform"
+      && kind !== "svg-style"
       && kind !== "text"
       && kind !== "text-warp"
       && kind !== "text-outline"
@@ -6694,7 +7038,8 @@ function renderMobileLayerList(stats: EngineStats): void {
     select.setAttribute(
       "aria-label",
       view.selected
-        ? `${view.name}. Hold and drag to reorder; Alt plus Arrow Up or Down also moves it.`
+        ? `${view.name}. Hold for layer options, then drag to reorder; `
+          + "Alt plus Arrow Up or Down also moves it."
         : `Select ${view.name}`,
     );
     if (view.selected) {
@@ -7186,6 +7531,7 @@ async function changeVectorTextVisibility(id: number, visible: boolean): Promise
     layerSwitching = false;
     updateHistoryControls();
     updateStats(engine.getStats());
+    mobileToolSettingsSheet?.syncOpenState();
   }
 }
 
@@ -7206,6 +7552,7 @@ async function changeVectorTextOpacity(id: number, opacity: number): Promise<voi
     layerSwitching = false;
     updateHistoryControls();
     updateStats(engine.getStats());
+    mobileToolSettingsSheet?.syncOpenState();
   }
 }
 
@@ -7224,6 +7571,7 @@ async function changeVectorSvgVisibility(id: number, visible: boolean): Promise<
     layerSwitching = false;
     updateHistoryControls();
     updateStats(engine.getStats());
+    mobileToolSettingsSheet?.syncOpenState();
   }
 }
 
@@ -7242,6 +7590,7 @@ async function changeVectorSvgOpacity(id: number, opacity: number): Promise<void
     layerSwitching = false;
     updateHistoryControls();
     updateStats(engine.getStats());
+    mobileToolSettingsSheet?.syncOpenState();
   }
 }
 function renderLayerList(stats: EngineStats): void {
@@ -7431,6 +7780,7 @@ async function changeLayerOpacity(index: number, opacity: number): Promise<void>
     layerSwitching = false;
     updateHistoryControls();
     updateStats(engine.getStats());
+    mobileToolSettingsSheet?.syncOpenState();
   }
 }
 
@@ -7458,6 +7808,7 @@ async function changeLayerBlendMode(
     historyState = engine.getHistoryState();
     updateHistoryControls();
     updateStats(engine.getStats());
+    mobileToolSettingsSheet?.syncOpenState();
   }
 }
 
@@ -7513,6 +7864,7 @@ async function changeRasterImageVisibility(id: number, visible: boolean): Promis
     updateHistoryControls();
     requestMobileLayersRefresh();
     updateStats(engine.getStats());
+    mobileToolSettingsSheet?.syncOpenState();
   }
 }
 
@@ -7532,6 +7884,7 @@ async function changeRasterImageOpacity(id: number, opacity: number): Promise<vo
     updateHistoryControls();
     requestMobileLayersRefresh();
     updateStats(engine.getStats());
+    mobileToolSettingsSheet?.syncOpenState();
   }
 }
 

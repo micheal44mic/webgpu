@@ -972,13 +972,13 @@ export class MixedVectorTextController {
     void this.cancelTransformSession();
   }
 
-  createText(): void {
+  createText(color?: string): void {
     if (this.addButton.disabled) return;
     void this.runSceneOperation(async () => {
       const textCount =
         this.snapshot?.items.filter((item) => item.kind === "text").length ?? 0;
       await this.host.addVectorTextNode(
-        this.defaultSeed(textCount),
+        this.defaultSeed(textCount, color),
         `Testo ${textCount + 1}`,
       );
     });
@@ -995,7 +995,24 @@ export class MixedVectorTextController {
   resetSelectedText(): void {
     const node = this.selectedTextNode();
     if (!node || this.resetButton.disabled) return;
-    this.updateSelectedNode(this.defaultSeed(Math.max(0, node.id - 1)));
+    this.updateSelectedNode(this.defaultSeed(Math.max(0, node.id - 1), node.color));
+  }
+
+  setSelectedSvgPaintColor(index: number, color: string): void {
+    if (this.sceneOperationBusy || this.transformSessionOpen) return;
+    if (!Number.isInteger(index) || !/^#[0-9a-f]{6}$/i.test(color)) return;
+    const node = this.selectedSvgNode();
+    if (!node || index < 0 || index >= node.paintColors.length) return;
+    const normalizedColor = color.toLowerCase();
+    if (node.paintColors[index]?.toLowerCase() === normalizedColor) return;
+    const paintColors = [...node.paintColors];
+    paintColors[index] = normalizedColor;
+    this.updateSelectedNode({ paintColors });
+  }
+
+  rasterizeSelectedSvgNode(): void {
+    if (this.svgRasterizeButton.disabled) return;
+    void this.rasterizeSelectedSvg();
   }
 
   rasterizeSelectedTextNode(): void {
@@ -1084,12 +1101,17 @@ export class MixedVectorTextController {
     };
   }
 
-  private defaultSeed(index: number): VectorTextNodeSeed {
+  private defaultSeed(index: number, colorOverride?: string): VectorTextNodeSeed {
+    const color = colorOverride && /^#[0-9a-f]{6}$/i.test(colorOverride)
+      ? colorOverride.toLowerCase()
+      : index === 0
+        ? "#111111"
+        : "#f47c5d";
     return {
       text: index === 0 ? "STREETWEAR" : `TESTO ${index + 1}`,
       fontFamily: "Anton",
       fontSize: 360,
-      color: index === 0 ? "#111111" : "#f47c5d",
+      color,
       transformType: "none",
       transformCurve: 80,
       circleRadiusPercent: 50,
@@ -1098,7 +1120,7 @@ export class MixedVectorTextController {
       outlineWidth: 0,
       outlineColor: "#111111",
       outlineJoin: "round",
-      blockShadowEnabled: index === 0,
+      blockShadowEnabled: false,
       blockShadowColor: "#727272",
       blockShadowOpacity: 1,
       blockShadowOffset: 23,
@@ -1960,7 +1982,7 @@ export class MixedVectorTextController {
       const node = this.selectedVectorNode();
       if (!node) return;
       if (isTextNode(node)) {
-        this.updateSelectedNode(this.defaultSeed(Math.max(0, node.id - 1)));
+        this.updateSelectedNode(this.defaultSeed(Math.max(0, node.id - 1), node.color));
       } else if (isSvgNode(node)) {
         const defaults = this.defaultSvgSeed(node.document);
         this.updateSelectedNode({

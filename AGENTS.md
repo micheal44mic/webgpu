@@ -3955,3 +3955,44 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   texture, buffer e submission WebGPU non sono stati modificati. TypeScript,
   tutte le `31` suite `*:verify`, build Vite/Sites e `git diff --check` sono
   verdi; resta la prova touch fisica su Safari/iPhone e la pubblicazione.
+
+### Controlli Blend e proprietà Layer/SVG/Text mobile (5 agosto 2026)
+
+- Quando il tool attivo è Blend, la rail destra mostra ora tre controlli
+  verticali nello stesso linguaggio dei dischi già esistenti: `Size` in pixel,
+  `Stretch` e `Paint` in percentuale. `Opacity` resta visibile soltanto per
+  Paint. Stretch/Paint leggono `blendStretch`/`blendPaint`, aggiornano disco,
+  output e ARIA durante il trascinamento e applicano le impostazioni
+  autorevoli una sola volta al rilascio; tastiera, Home/End e frecce restano
+  disponibili. Non è stata aggiunta una preview costosa né modificato il
+  percorso caldo GPU.
+- La pressione stazionaria di `320 ms` su una riga Layer già selezionata apre
+  ora un menu contestuale ancorato alla riga. Se lo stesso gesto supera lo slop
+  di `8 px`, passa senza ambiguità al riordino già esistente. `Clipping Mask`
+  usa l'operazione autorevole ed è disponibile soltanto per un raster con base
+  raster adiacente valida (oppure per disattivare una mask esistente).
+  `Options` apre il bottom sheet condiviso in uno snap compatto, abbastanza
+  alto da mostrare subito `Opacity` e `Blend Mode`; il blend è esposto soltanto
+  per i raster, mentre l'opacità segue il tipo selezionato. Le proprietà
+  risolvono sempre la chiave selezionata al momento dell'azione, evitando
+  riferimenti obsoleti dopo reorder o cambio layer. `Clear Layer` non è stato
+  aggiunto.
+- La categoria `Vectors` dei Tools include ora `SVG Style`. Per un SVG
+  selezionato il pannello mostra un input colore per ogni voce della palette
+  semantica e l'azione `Rasterize SVG`. I cambi palette usano le API del
+  controller, vengono raccolti in una sola transazione History per gesto e non
+  ricostruiscono path o texture durante Paint; Rasterize chiama direttamente
+  l'operazione autorevole. La card resta disabilitata per nodi non SVG.
+- La creazione Text mobile usa ora il colore scelto nel relativo pannello (o il
+  colore pennello corrente quando si apre) invece di un colore fisso. I nuovi
+  nodi nascono con Warp normale, Outline disattivato e Drop/Inner/Block Shadow
+  tutte disattivate; Reset conserva il colore del nodo e non riattiva effetti.
+  Il checkbox desktop iniziale di Block Shadow non è più pre-selezionato.
+- QA browser locale a `393×852` ha verificato i tre dischi Blend, il menu Layer
+  e lo snap compatto, opacità/blend persistenti, clipping attivabile e
+  disattivabile, import SVG con due colori reali, cambio palette e
+  rasterizzazione, Text col colore scelto e nessun effetto attivo; console
+  pulita. TypeScript, tutte le `31` suite `*:verify`, build Vite/Sites e
+  `git diff --check` sono verdi. Il long-press fisico e le gesture dei tre
+  dischi restano da provare su Safari/iPhone; questa modifica non è ancora
+  stata pubblicata.
