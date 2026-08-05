@@ -23,6 +23,7 @@ import { MobileBrushLibraryPreviewRenderer } from "./brush-library-preview";
 import { MobileStrokeSheetController } from "./mobile-stroke-sheet";
 import {
   MobileToolSettingsSheetController,
+  type MobileTextWarpMode,
   type MobileToolSettingsKind,
 } from "./mobile-tool-settings-sheet";
 import {
@@ -1062,6 +1063,7 @@ let gpuMemoryDeltaTimer: number | null = null;
 type CanvasTool = BrushSettings["tool"] | "fill" | "selection" | "transform";
 let activeBrushTool: BrushSettings["tool"] = "paint";
 let activeCanvasTool: CanvasTool = "paint";
+let mobileTextDistortReturnTool: CanvasTool | null = null;
 let activeShapeInvert = false;
 let selectionCombineMode: SelectionCombineMode = "replace";
 let toolConfigurationRevision = 0;
@@ -1182,6 +1184,7 @@ function updatePixelSelectionResult(state: PixelSelectionState): void {
 function configureBrushToolUi(
   tool: CanvasTool,
   restoreSnapshot: boolean,
+  preserveMobileToolSettingsSheet = false,
 ): void {
   const configurationRevision = ++toolConfigurationRevision;
   const previousCanvasTool = activeCanvasTool;
@@ -1199,7 +1202,8 @@ function configureBrushToolUi(
     mobileBrushStudio.cancel(false);
   }
   if (
-    mobileToolSettingsSheet?.isOpen
+    !preserveMobileToolSettingsSheet
+    && mobileToolSettingsSheet?.isOpen
     && mobileToolSettingsSheet.toolKind !== tool
   ) {
     mobileToolSettingsSheet.close(false);
@@ -3871,6 +3875,18 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
   mobileMediaQuery: mobileUiMediaQuery,
   selectCanvasTool: selectMobileCanvasTool,
   hasSelectedText: () => selectedMobileTextNode() !== null,
+  setSelectionCombineMode,
+  applySelectionColor: applySelectionColorRange,
+  clearSelection: clearPixelSelection,
+  applyTransform: () => vectorTextPrototype?.applyTransform(),
+  cancelTransform: () => vectorTextPrototype?.cancelTransform(),
+  createText: () => vectorTextPrototype?.createText(),
+  resetText: resetMobileText,
+  deleteText: deleteMobileText,
+  rasterizeText: rasterizeMobileText,
+  setTextWarpMode: setMobileTextWarpMode,
+  resetTextDistort: () => vectorTextPrototype?.resetSelectedTextDistort(),
+  toggleTextDistortEditing: toggleMobileTextDistortEditing,
   getSelectionStatus: () => {
     const state = engine.getPixelSelectionState();
     if (state.selectedPixels === 0) return "No pixels selected.";
@@ -4594,17 +4610,24 @@ element<HTMLButtonElement>("selectionAdd").addEventListener("click", () => {
 element<HTMLButtonElement>("selectionSubtract").addEventListener("click", () => {
   setSelectionCombineMode("subtract");
 });
-element<HTMLButtonElement>("selectionColorApply").addEventListener("click", () => {
+function applySelectionColorRange(): void {
   if (activeCanvasTool !== "selection" || selectedSelectionMethod() !== "color-range") return;
   void runPixelSelectionOperation(() => engine.selectPixelsByColor(
     element<HTMLInputElement>("selectionColor").value,
     rangeValue("selectionTolerance"),
     selectionCombineMode,
   ));
-});
-element<HTMLButtonElement>("selectionClear").addEventListener("click", () => {
+}
+
+function clearPixelSelection(): void {
   void runPixelSelectionOperation(() => engine.clearPixelSelection());
-});
+}
+
+element<HTMLButtonElement>("selectionColorApply").addEventListener(
+  "click",
+  applySelectionColorRange,
+);
+element<HTMLButtonElement>("selectionClear").addEventListener("click", clearPixelSelection);
 
 benchmarkStampsInput.addEventListener("input", updateControlOutputs);
 
@@ -5020,12 +5043,81 @@ redoStrokeButton.addEventListener("click", () => {
   void runHistoryOperation("redo");
 });
 
-function selectMobileCanvasTool(tool: CanvasTool): boolean {
+function selectMobileCanvasTool(
+  tool: CanvasTool,
+  preserveMobileToolSettingsSheet = false,
+): boolean {
   if (interactionLocked()) return false;
   const brushToolSelect = element<HTMLSelectElement>("brushTool");
   brushToolSelect.value = tool;
-  brushToolSelect.dispatchEvent(new Event("change", { bubbles: true }));
+  if (preserveMobileToolSettingsSheet) {
+    configureBrushToolUi(tool, true, true);
+    if (tool === "paint" || tool === "blend") applyBrushControls();
+    else updateControlOutputs();
+    updateHistoryControls();
+  } else {
+    brushToolSelect.dispatchEvent(new Event("change", { bubbles: true }));
+  }
   return true;
+}
+
+function restoreMobileTextDistortTool(): void {
+  const returnTool = mobileTextDistortReturnTool;
+  mobileTextDistortReturnTool = null;
+  if (returnTool && activeCanvasTool === "transform") {
+    selectMobileCanvasTool(returnTool, true);
+  }
+}
+
+function stopMobileTextDistortEditing(): void {
+  const controller = vectorTextPrototype;
+  if (!controller?.isSelectedTextDistortEditing()) return;
+  controller.toggleSelectedTextDistortEditing();
+  restoreMobileTextDistortTool();
+}
+
+function toggleMobileTextDistortEditing(): boolean {
+  const controller = vectorTextPrototype;
+  if (!controller) return false;
+  if (controller.isSelectedTextDistortEditing()) {
+    controller.toggleSelectedTextDistortEditing();
+    restoreMobileTextDistortTool();
+    return false;
+  }
+  mobileTextDistortReturnTool = activeCanvasTool === "transform"
+    ? activeBrushTool
+    : activeCanvasTool;
+  if (!controller.toggleSelectedTextDistortEditing()) {
+    mobileTextDistortReturnTool = null;
+    return false;
+  }
+  if (selectMobileCanvasTool("transform", true)) return true;
+  controller.toggleSelectedTextDistortEditing();
+  mobileTextDistortReturnTool = null;
+  return false;
+}
+
+function setMobileTextWarpMode(mode: MobileTextWarpMode): void {
+  const controller = vectorTextPrototype;
+  if (!controller) return;
+  const wasDistortEditing = controller.isSelectedTextDistortEditing();
+  controller.setSelectedTextTransform(mode);
+  if (wasDistortEditing && mode !== "distort") restoreMobileTextDistortTool();
+}
+
+function resetMobileText(): void {
+  stopMobileTextDistortEditing();
+  vectorTextPrototype?.resetSelectedText();
+}
+
+function deleteMobileText(): void {
+  stopMobileTextDistortEditing();
+  vectorTextPrototype?.deleteSelectedText();
+}
+
+function rasterizeMobileText(): void {
+  stopMobileTextDistortEditing();
+  vectorTextPrototype?.rasterizeSelectedTextNode();
 }
 
 mobilePaintButton.addEventListener("click", () => {
@@ -5078,12 +5170,11 @@ for (const button of mobileToolSettingsButtons) {
 for (const button of mobileToolsProxyButtons) {
   button.addEventListener("click", () => {
     const targetId = button.dataset.mobileProxyButton;
-    const target = targetId
-      ? document.getElementById(targetId) as HTMLButtonElement | null
-      : null;
-    if (!target || target.disabled || vectorTextPrototype === null) return;
+    const controller = vectorTextPrototype;
+    if (!controller) return;
     setMobileToolsSheetOpen(false);
-    target.click();
+    if (targetId === "vectorSvgImportButton") controller.requestSvgImport();
+    else if (targetId === "rasterImageImportButton") controller.requestRasterImageImport();
   });
 }
 for (const button of mobileToolsEffectButtons) {

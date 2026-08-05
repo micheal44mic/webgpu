@@ -15,12 +15,26 @@ export type MobileToolSettingsKind =
   | "text-inner-shadow"
   | "text-block-shadow";
 type MobileCanvasSettingsTool = "fill" | "selection" | "transform";
+type MobileSelectionCombineMode = "replace" | "add" | "subtract";
+export type MobileTextWarpMode = "none" | "distort" | "arch" | "circle" | "wave";
 
 export interface MobileToolSettingsSheetOptions {
   readonly mobileMediaQuery: MediaQueryList;
   readonly selectCanvasTool: (tool: MobileCanvasSettingsTool) => boolean;
   readonly getSelectionStatus: () => string;
   readonly hasSelectedText: () => boolean;
+  readonly setSelectionCombineMode: (mode: MobileSelectionCombineMode) => void;
+  readonly applySelectionColor: () => void;
+  readonly clearSelection: () => void;
+  readonly applyTransform: () => void;
+  readonly cancelTransform: () => void;
+  readonly createText: () => void;
+  readonly resetText: () => void;
+  readonly deleteText: () => void;
+  readonly rasterizeText: () => void;
+  readonly setTextWarpMode: (mode: MobileTextWarpMode) => void;
+  readonly resetTextDistort: () => void;
+  readonly toggleTextDistortEditing: () => boolean;
   readonly beforeOpen: () => void;
   readonly onOpenChange: (open: boolean) => void;
 }
@@ -167,14 +181,20 @@ export class MobileToolSettingsSheetController {
   private readonly textDelete = requiredElement<HTMLButtonElement>("mobileTextDelete");
   private readonly textRasterize = requiredElement<HTMLButtonElement>("mobileTextRasterize");
   private readonly textWarpButtons = [
-    ["mobileTextWarpNone", "vectorTextTransformNone"],
-    ["mobileTextWarpDistort", "vectorTextTransformDistort"],
-    ["mobileTextWarpArch", "vectorTextTransformArch"],
-    ["mobileTextWarpCircle", "vectorTextTransformCircle"],
-    ["mobileTextWarpWave", "vectorTextTransformWave"],
-  ].map(([mobileId, sourceId]) => ({
+    ["mobileTextWarpNone", "vectorTextTransformNone", "none"],
+    ["mobileTextWarpDistort", "vectorTextTransformDistort", "distort"],
+    ["mobileTextWarpArch", "vectorTextTransformArch", "arch"],
+    ["mobileTextWarpCircle", "vectorTextTransformCircle", "circle"],
+    ["mobileTextWarpWave", "vectorTextTransformWave", "wave"],
+  ] as const satisfies readonly (readonly [string, string, MobileTextWarpMode])[];
+  private readonly textWarpButtonControls = this.textWarpButtons.map(([
+    mobileId,
+    sourceId,
+    mode,
+  ]) => ({
     mobile: requiredElement<HTMLButtonElement>(mobileId),
     sourceId,
+    mode,
   }));
   private readonly textWarpDistortControls = requiredElement<HTMLElement>(
     "mobileTextWarpDistortControls",
@@ -184,6 +204,15 @@ export class MobileToolSettingsSheetController {
   );
   private readonly textDistortEdit = requiredElement<HTMLButtonElement>(
     "mobileTextDistortEdit",
+  );
+  private readonly textDistortCommitActions = requiredElement<HTMLElement>(
+    "mobileTextDistortCommitActions",
+  );
+  private readonly textDistortCancel = requiredElement<HTMLButtonElement>(
+    "mobileTextDistortCancel",
+  );
+  private readonly textDistortApply = requiredElement<HTMLButtonElement>(
+    "mobileTextDistortApply",
   );
   private readonly textWarpCurveControls = requiredElement<HTMLElement>(
     "mobileTextWarpCurveControls",
@@ -351,12 +380,20 @@ export class MobileToolSettingsSheetController {
     this.sheet.setAttribute("inert", "");
     this.bindEvents();
     this.transformStateObserver = new MutationObserver(() => {
-      if (this.openState && this.activeKind === "transform") this.syncTransform();
+      if (!this.openState) return;
+      if (this.activeKind === "transform") this.syncTransform();
+      else if (this.activeKind === "text-warp") this.syncTextWarp();
     });
     this.transformStateObserver.observe(sourceControl<HTMLElement>("transformCommitBar"), {
       attributes: true,
       attributeFilter: ["hidden"],
     });
+    for (const sourceId of ["transformCancel", "transformApply"] as const) {
+      this.transformStateObserver.observe(sourceControl<HTMLButtonElement>(sourceId), {
+        attributes: true,
+        attributeFilter: ["disabled"],
+      });
+    }
   }
 
   get isOpen(): boolean {
@@ -542,59 +579,57 @@ export class MobileToolSettingsSheetController {
       });
     }
 
-    for (const { mobile, sourceId } of this.textWarpButtons) {
+    for (const { mobile, mode } of this.textWarpButtonControls) {
       mobile.addEventListener("click", () => {
-        sourceControl<HTMLButtonElement>(sourceId).click();
-        requestAnimationFrame(() => this.syncOpenState());
+        this.runAction(() => this.options.setTextWarpMode(mode));
       });
     }
     this.textDistortReset.addEventListener("click", () => {
-      sourceControl<HTMLButtonElement>("vectorTextDistortReset").click();
-      requestAnimationFrame(() => this.syncOpenState());
+      this.runAction(() => this.options.resetTextDistort());
     });
     this.textDistortEdit.addEventListener("click", () => {
-      sourceControl<HTMLButtonElement>("vectorTextDistortEdit").click();
-      requestAnimationFrame(() => this.syncOpenState());
+      const editing = this.options.toggleTextDistortEditing();
+      this.syncAfterAction();
+      this.snapTo(editing ? "minimized" : "peek");
+    });
+    this.textDistortCancel.addEventListener("click", () => {
+      this.runAction(() => this.options.cancelTransform());
+    });
+    this.textDistortApply.addEventListener("click", () => {
+      this.runAction(() => this.options.applyTransform());
     });
 
-    for (const [mobile, sourceId] of [
-      [this.selectionReplace, "selectionReplace"],
-      [this.selectionAdd, "selectionAdd"],
-      [this.selectionSubtract, "selectionSubtract"],
+    for (const [mobile, mode] of [
+      [this.selectionReplace, "replace"],
+      [this.selectionAdd, "add"],
+      [this.selectionSubtract, "subtract"],
     ] as const) {
       mobile.addEventListener("click", () => {
-        sourceControl<HTMLButtonElement>(sourceId).click();
-        this.syncSelection();
+        this.runAction(() => this.options.setSelectionCombineMode(mode));
       });
     }
     this.selectionColorApply.addEventListener("click", () => {
-      sourceControl<HTMLButtonElement>("selectionColorApply").click();
-      requestAnimationFrame(() => this.syncOpenState());
+      this.runAction(() => this.options.applySelectionColor());
     });
     this.selectionClear.addEventListener("click", () => {
-      sourceControl<HTMLButtonElement>("selectionClear").click();
-      requestAnimationFrame(() => this.syncOpenState());
+      this.runAction(() => this.options.clearSelection());
     });
     this.transformCancel.addEventListener("click", () => {
-      sourceControl<HTMLButtonElement>("transformCancel").click();
-      requestAnimationFrame(() => this.syncOpenState());
+      this.runAction(() => this.options.cancelTransform());
     });
     this.transformApply.addEventListener("click", () => {
-      sourceControl<HTMLButtonElement>("transformApply").click();
-      requestAnimationFrame(() => this.syncOpenState());
+      this.runAction(() => this.options.applyTransform());
     });
     this.textAdd.addEventListener("click", () => {
-      sourceControl<HTMLButtonElement>("addVectorText").click();
-      requestAnimationFrame(() => this.syncOpenState());
+      this.runAction(() => this.options.createText());
     });
-    for (const [mobile, sourceId] of [
-      [this.textReset, "vectorTextReset"],
-      [this.textDelete, "deleteVectorText"],
-      [this.textRasterize, "vectorTextRasterize"],
+    for (const [mobile, action] of [
+      [this.textReset, this.options.resetText],
+      [this.textDelete, this.options.deleteText],
+      [this.textRasterize, this.options.rasterizeText],
     ] as const) {
       mobile.addEventListener("click", () => {
-        sourceControl<HTMLButtonElement>(sourceId).click();
-        requestAnimationFrame(() => this.syncOpenState());
+        this.runAction(action);
       });
     }
 
@@ -638,6 +673,16 @@ export class MobileToolSettingsSheetController {
     });
   }
 
+  private syncAfterAction(): void {
+    this.syncOpenState();
+    requestAnimationFrame(() => this.syncOpenState());
+  }
+
+  private runAction(action: () => void): void {
+    action();
+    this.syncAfterAction();
+  }
+
   private syncFill(): void {
     const source = sourceControl<HTMLInputElement>("fillTolerance");
     this.fillTolerance.value = source.value;
@@ -679,15 +724,26 @@ export class MobileToolSettingsSheetController {
   }
 
   private syncTransform(): void {
+    const transactionActive = this.syncTransformActions(
+      this.transformCancel,
+      this.transformApply,
+    );
+    this.transformHint.textContent = transactionActive
+      ? "Preview active. Apply or cancel the transform."
+      : "Select content on the canvas, then drag it to transform.";
+  }
+
+  private syncTransformActions(
+    cancelTarget: HTMLButtonElement,
+    applyTarget: HTMLButtonElement,
+  ): boolean {
     const commitBar = sourceControl<HTMLElement>("transformCommitBar");
     const cancel = sourceControl<HTMLButtonElement>("transformCancel");
     const apply = sourceControl<HTMLButtonElement>("transformApply");
     const transactionActive = !commitBar.hidden;
-    this.transformCancel.disabled = !transactionActive || cancel.disabled;
-    this.transformApply.disabled = !transactionActive || apply.disabled;
-    this.transformHint.textContent = transactionActive
-      ? "Preview active. Apply or cancel the transform."
-      : "Select content on the canvas, then drag it to transform.";
+    cancelTarget.disabled = !transactionActive || cancel.disabled;
+    applyTarget.disabled = !transactionActive || apply.disabled;
+    return transactionActive;
   }
 
   private syncText(): void {
@@ -741,7 +797,7 @@ export class MobileToolSettingsSheetController {
 
   private syncTextWarp(): void {
     let activeSourceId = "vectorTextTransformNone";
-    for (const { mobile, sourceId } of this.textWarpButtons) {
+    for (const { mobile, sourceId } of this.textWarpButtonControls) {
       const source = sourceControl<HTMLButtonElement>(sourceId);
       const pressed = source.getAttribute("aria-pressed") === "true";
       mobile.setAttribute("aria-pressed", String(pressed));
@@ -759,6 +815,10 @@ export class MobileToolSettingsSheetController {
     const editing = sourceDistortEdit.getAttribute("aria-pressed") === "true";
     this.textDistortEdit.setAttribute("aria-pressed", String(editing));
     this.textDistortEdit.textContent = editing ? "Done" : "Edit";
+    this.textDistortCommitActions.hidden = !this.syncTransformActions(
+      this.textDistortCancel,
+      this.textDistortApply,
+    );
     this.syncMirroredRange(
       this.textWarpCurve,
       this.textWarpCurveOut,

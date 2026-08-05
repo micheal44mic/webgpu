@@ -954,6 +954,85 @@ export class MixedVectorTextController {
     this.scheduleRender();
   }
 
+  requestSvgImport(): void {
+    if (this.svgImportButton.disabled) return;
+    this.svgFileInput.click();
+  }
+
+  requestRasterImageImport(): void {
+    if (this.imageImportButton.disabled) return;
+    this.imageFileInput.click();
+  }
+
+  applyTransform(): void {
+    void this.applyTransformSession();
+  }
+
+  cancelTransform(): void {
+    void this.cancelTransformSession();
+  }
+
+  createText(): void {
+    if (this.addButton.disabled) return;
+    void this.runSceneOperation(async () => {
+      const textCount =
+        this.snapshot?.items.filter((item) => item.kind === "text").length ?? 0;
+      await this.host.addVectorTextNode(
+        this.defaultSeed(textCount),
+        `Testo ${textCount + 1}`,
+      );
+    });
+  }
+
+  deleteSelectedText(): void {
+    const node = this.selectedTextNode();
+    if (!node || this.deleteButton.disabled) return;
+    void this.runSceneOperation(async () => {
+      await this.host.deleteVectorTextNode(node.id);
+    });
+  }
+
+  resetSelectedText(): void {
+    const node = this.selectedTextNode();
+    if (!node || this.resetButton.disabled) return;
+    this.updateSelectedNode(this.defaultSeed(Math.max(0, node.id - 1)));
+  }
+
+  rasterizeSelectedTextNode(): void {
+    if (this.textRasterizeButton.disabled) return;
+    void this.rasterizeSelectedText();
+  }
+
+  setSelectedTextTransform(transformType: VectorTextTransformType): void {
+    const button = transformType === "distort"
+      ? this.transformDistortButton
+      : transformType === "arch"
+        ? this.transformArchButton
+        : transformType === "circle"
+          ? this.transformCircleButton
+          : transformType === "wave"
+            ? this.transformWaveButton
+            : this.transformNoneButton;
+    if (button.disabled) return;
+    this.activateTransform(transformType);
+  }
+
+  resetSelectedTextDistort(): void {
+    if (this.distortResetButton.disabled) return;
+    this.resetDistort();
+  }
+
+  toggleSelectedTextDistortEditing(): boolean {
+    if (this.distortEditButton.disabled) return this.isSelectedTextDistortEditing();
+    this.toggleDistortEditing();
+    return this.isSelectedTextDistortEditing();
+  }
+
+  isSelectedTextDistortEditing(): boolean {
+    const node = this.selectedTextNode();
+    return Boolean(node && node.id === this.distortEditingNodeId);
+  }
+
   setAdaptiveZoomEnabled(_enabled: boolean): void {
     // Compatibilità con gli harness esistenti: il renderer resta sempre preciso.
   }
@@ -1615,18 +1694,14 @@ export class MixedVectorTextController {
   }
 
   private bindControls(): void {
-    this.imageImportButton.addEventListener("click", () => this.imageFileInput.click());
+    this.imageImportButton.addEventListener("click", () => this.requestRasterImageImport());
     this.imageFileInput.addEventListener("change", () => {
       const file = this.imageFileInput.files?.[0];
       this.imageFileInput.value = "";
       if (file) void this.importImageFile(file);
     });
-    this.transformApplyButton.addEventListener("click", () => {
-      void this.applyTransformSession();
-    });
-    this.transformCancelButton.addEventListener("click", () => {
-      void this.cancelTransformSession();
-    });
+    this.transformApplyButton.addEventListener("click", () => this.applyTransform());
+    this.transformCancelButton.addEventListener("click", () => this.cancelTransform());
     window.addEventListener("keydown", (event) => {
       if (!this.transformSessionOpen || event.defaultPrevented || event.isComposing) return;
       const target = event.target instanceof Element ? event.target : null;
@@ -1685,10 +1760,8 @@ export class MixedVectorTextController {
         }
       })();
     });
-    this.svgImportButton.addEventListener("click", () => this.svgFileInput.click());
-    this.textRasterizeButton.addEventListener("click", () => {
-      void this.rasterizeSelectedText();
-    });
+    this.svgImportButton.addEventListener("click", () => this.requestSvgImport());
+    this.textRasterizeButton.addEventListener("click", () => this.rasterizeSelectedTextNode());
     this.svgRasterizeButton.addEventListener("click", () => {
       void this.rasterizeSelectedSvg();
     });
@@ -1730,14 +1803,14 @@ export class MixedVectorTextController {
     ];
     for (const [transformType, button] of transformButtons) {
       button.addEventListener("click", () => {
-        this.activateTransform(transformType);
+        this.setSelectedTextTransform(transformType);
       });
     }
     this.distortResetButton.addEventListener("click", () => {
-      this.resetDistort();
+      this.resetSelectedTextDistort();
     });
     this.distortEditButton.addEventListener("click", () => {
-      this.toggleDistortEditing();
+      this.toggleSelectedTextDistortEditing();
     });
     this.transformCurveInput.addEventListener("input", () => {
       const transformCurve = Number(this.transformCurveInput.value);
@@ -1855,16 +1928,7 @@ export class MixedVectorTextController {
       this.innerShadowBlurOutput.value = String(Math.round(blur));
       this.updateSelectedNode({ innerShadowBlur: blur });
     });
-    this.addButton.addEventListener("click", () => {
-      void this.runSceneOperation(async () => {
-        const textCount =
-          this.snapshot?.items.filter((item) => item.kind === "text").length ?? 0;
-        await this.host.addVectorTextNode(
-          this.defaultSeed(textCount),
-          `Testo ${textCount + 1}`,
-        );
-      });
-    });
+    this.addButton.addEventListener("click", () => this.createText());
     this.deleteButton.addEventListener("click", () => {
       const node = this.selectedVectorNode();
       if (!node) return;

@@ -2435,15 +2435,23 @@ select {
   .mobile-tool-actions button:hover,
   .mobile-tool-actions button:active {
     min-width: 0;
+    height: 44px;
     min-height: 44px;
+    max-height: 44px;
     padding: 0 9px;
     border: 0;
     border-radius: 0;
     outline: 0;
+    appearance: none;
+    -webkit-appearance: none;
     background: #292c33;
     color: var(--mobile-icon-inactive);
     font-size: 11px;
     font-weight: 600;
+    line-height: 1.1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
   }
@@ -2481,6 +2489,10 @@ select {
     gap: 8px;
   }
 
+  .mobile-tool-actions[hidden] {
+    display: none;
+  }
+
   .mobile-tool-actions-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2500,6 +2512,16 @@ select {
     min-width: 92px;
     border: 1px solid #343842;
     border-radius: 10px;
+  }
+
+  .mobile-tool-actions:not(.mobile-tool-actions-grid) button {
+    width: 92px;
+    flex: 0 0 92px;
+  }
+
+  .mobile-tool-actions-grid button {
+    width: 100%;
+    min-width: 0;
   }
 
   .mobile-tool-actions button.is-primary {
@@ -2526,6 +2548,11 @@ select {
   .mobile-tool-settings-panel button:focus-visible {
     outline: 1px solid #dd5c35;
     outline-offset: 2px;
+  }
+
+  #app:has(#mobileToolSettingsSheet.is-open[data-tool="transform"]) #transformCommitBar,
+  #app:has(#mobileToolSettingsSheet.is-open[data-tool="text-warp"]) #transformCommitBar {
+    display: none;
   }
 
   .mobile-raster-effect-sheet[hidden] {

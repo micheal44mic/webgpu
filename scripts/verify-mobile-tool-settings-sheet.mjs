@@ -9,6 +9,10 @@ const controller = readFileSync(
   new URL("src/mobile-tool-settings-sheet.ts", root),
   "utf8",
 );
+const mixedController = readFileSync(
+  new URL("src/mixed-vector-text-controller.ts", root),
+  "utf8",
+);
 const {
   MOBILE_BOTTOM_SHEET_DIRECT_CLOSE_FLICK_VELOCITY_PX_PER_MS,
   nextMobileBottomSheetTapSnap,
@@ -99,6 +103,9 @@ for (const id of [
   "mobileTextWarpWave",
   "mobileTextDistortReset",
   "mobileTextDistortEdit",
+  "mobileTextDistortCommitActions",
+  "mobileTextDistortCancel",
+  "mobileTextDistortApply",
   "mobileTextWarpCurve",
   "mobileTextCircleRadius",
   "mobileTextCircleInverted",
@@ -193,6 +200,51 @@ assert.match(
   main,
   /mobileToolSettingsSheet = new MobileToolSettingsSheetController\(\{[\s\S]*?selectCanvasTool: selectMobileCanvasTool/,
   "Fill, Selection and Transform must use the existing authoritative canvas-tool routing",
+);
+for (const action of [
+  "setSelectionCombineMode",
+  "applySelectionColor",
+  "clearSelection",
+  "applyTransform",
+  "cancelTransform",
+  "createText",
+  "resetText",
+  "deleteText",
+  "rasterizeText",
+  "setTextWarpMode",
+  "resetTextDistort",
+  "toggleTextDistortEditing",
+]) {
+  assert.match(
+    controller,
+    new RegExp(`readonly ${action}:`),
+    `mobile action ${action} must use an explicit controller callback`,
+  );
+}
+assert.doesNotMatch(
+  controller,
+  /sourceControl<HTMLButtonElement>\([^)]*\)\.click\(\)/,
+  "mobile action buttons must not simulate clicks on hidden desktop controls",
+);
+assert.match(
+  main,
+  /toggleMobileTextDistortEditing\(\): boolean \{[\s\S]*?toggleSelectedTextDistortEditing\(\)[\s\S]*?selectMobileCanvasTool\("transform", true\)/,
+  "Distort Edit must enter the authoritative Transform canvas while preserving its bottom sheet",
+);
+assert.match(
+  controller,
+  /const editing = this\.options\.toggleTextDistortEditing\(\);[\s\S]*?this\.snapTo\(editing \? "minimized" : "peek"\);/,
+  "Distort Edit must expose the canvas by minimizing the sheet and restore it on Done",
+);
+assert.match(
+  mixedController,
+  /toggleSelectedTextDistortEditing\(\): boolean \{[\s\S]*?return this\.isSelectedTextDistortEditing\(\);/,
+  "mobile Distort must call the text controller directly",
+);
+assert.match(
+  main,
+  /targetId === "vectorSvgImportButton"\) controller\.requestSvgImport\(\);[\s\S]*?targetId === "rasterImageImportButton"\) controller\.requestRasterImageImport\(\);/,
+  "mobile file buttons must open each picker once through the controller API",
 );
 
 for (const sourceId of [
@@ -310,6 +362,16 @@ assert.match(
   css,
   /@media \(max-height: 700px\)[\s\S]*?\.mobile-tool-settings-header\s*\{[\s\S]*?flex-basis:\s*44px;/,
   "short iPhones must use the compact title row",
+);
+assert.match(
+  css,
+  /\.mobile-tool-actions button:active\s*\{[\s\S]*?height:\s*44px;[\s\S]*?max-height:\s*44px;[\s\S]*?-webkit-appearance:\s*none;/,
+  "mobile action buttons must keep a fixed native-independent box while pressed",
+);
+assert.match(
+  css,
+  /#app:has\(#mobileToolSettingsSheet\.is-open\[data-tool="transform"\]\) #transformCommitBar,[\s\S]*?data-tool="text-warp"[\s\S]*?display:\s*none;/,
+  "the upper Transform bar must disappear while the equivalent mobile actions are visible",
 );
 
 console.log("Mobile tool settings: authoritative controls, shared detents and accessibility verified.");

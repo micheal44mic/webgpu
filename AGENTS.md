@@ -3922,3 +3922,36 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   da tastiera, focus/inert/ARIA e console pulita. TypeScript, tutte le `31`
   suite `*:verify`, build Vite/Sites e `git diff --check` sono verdi; il
   long-press fisico resta da provare su Safari/iPhone.
+
+### Azioni bottom sheet e Text Distort mobile (5 agosto 2026)
+
+- I pulsanti transazionali del foglio tool non simulano più click sui controlli
+  desktop nascosti. Selection Combine/Apply/Clear, Transform Apply/Cancel,
+  Text Add/Reset/Delete/Rasterize e Warp/Distort chiamano ora callback esplicite
+  che raggiungono gli stessi metodi autorevoli del controller. Anche SVG e
+  Image aprono ciascun file picker una sola volta tramite API del controller.
+  Gli input continui conservano invece il mirroring e il lifecycle History già
+  necessario per raggruppare ogni slider in una sola azione Undo.
+- Nel flusso Transform mobile la toolbar superiore viene nascosta soltanto
+  mentre il foglio equivalente è aperto; Apply e Cancel restano quindi una sola
+  volta nel bottom sheet. Se il foglio viene chiuso durante una transazione, la
+  toolbar superiore torna disponibile come recupero. Lo stesso contratto vale
+  per Warp/Distort, che mostra una propria riga Apply/Cancel soltanto quando la
+  transazione è realmente aperta. L'unico `MutationObserver` osserva ora
+  `hidden` della toolbar e `disabled` delle due azioni, senza polling.
+- `Edit` di Distort attiva il vero tool Transform mantenendo aperto Warp e porta
+  il foglio allo snap `minimized`, così i quattro punti del canvas interattivo
+  sono visibili e trascinabili. Dopo aver risolto l'eventuale transazione con
+  Apply/Cancel, `Done` disattiva l'editing, ripristina lo snap peek e torna al
+  tool che era attivo prima dell'editing. Reset/Delete/Rasterize chiudono prima
+  lo stato Distort, evitando overlay o tool temporanei rimasti attivi.
+- I bottoni segmentati, Warp e action mantengono una scatola nativa-indipendente
+  alta `44 px`; le coppie action non-grid sono `92×44 px`, con raggio `10 px`
+  e `appearance: none` anche durante pressione e cambio `Edit ↔ Done`. QA browser
+  locale a `393×852` ha verificato: Transform senza toolbar duplicata;
+  Apply/Cancel sincronizzati; creazione Text; Distort che passa a Transform con
+  canvas `is-distort-editing`; Done che torna a Paint; geometria identica prima
+  e dopo; console senza warning/errori. Il percorso caldo Paint, renderer,
+  texture, buffer e submission WebGPU non sono stati modificati. TypeScript,
+  tutte le `31` suite `*:verify`, build Vite/Sites e `git diff --check` sono
+  verdi; resta la prova touch fisica su Safari/iPhone e la pubblicazione.
