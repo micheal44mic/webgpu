@@ -185,8 +185,13 @@ assert.match(
 );
 assert.match(
   controller,
-  /this\.widthInput\.addEventListener\("input", \(\) => this\.handleWidthInput\(\)\)[\s\S]*?this\.requestStyle\(\{ \.\.\.copiedStyle\(current\), width \}, true\);/,
+  /this\.widthInput\.addEventListener\("input", \(\) => \{[\s\S]*?this\.handleWidthInput\(\);[\s\S]*?this\.requestStyle\(\{ \.\.\.copiedStyle\(current\), width \}, true\);/,
   "Width deve aggiornare lo stile autorevole usando la stessa coda RAF latest-only.",
+);
+assert.match(
+  controller,
+  /beginHistoryEdit[\s\S]*?requestHistoryEditFinish[\s\S]*?commitHistoryEditIfIdle/,
+  "Un gesto Width/Color deve produrre una sola azione dopo il drain della coda async.",
 );
 assert.match(
   controller,

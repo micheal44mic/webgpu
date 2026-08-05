@@ -166,6 +166,7 @@ import {
   type LayerCompressionStudyProgress,
   type LayerCompressionStudyReport,
 } from "./layer-compression-study";
+import { historyCheckpointAllocatedBytes } from "./history-maintenance-runtime";
 
 export function getBenchmarkEnvironment(engine: BrushEngine): {
   canvasWidth: number;
@@ -918,6 +919,7 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
       historyRasterSeedBytes += action.seed?.memoryBytes ?? 0;
     }
   }
+  historyRasterSeedBytes += historyCheckpointAllocatedBytes(engine);
   const historyGpuMiB = (historyGpu.allocatedBytes + historyRasterSeedBytes) / MEBIBYTE_BYTES;
   const historyGpuUsedMiB =
     (historyGpu.usedLogicalBytes + historyRasterSeedBytes) / MEBIBYTE_BYTES;

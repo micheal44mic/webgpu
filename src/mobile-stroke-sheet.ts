@@ -14,6 +14,8 @@ export interface MobileStrokeSheetOptions {
   readonly mobileMediaQuery: MediaQueryList;
   readonly getStyle: () => RasterStrokeStyle;
   readonly applyStyle: (style: RasterStrokeStyle) => Promise<boolean>;
+  readonly beginHistoryEdit: () => void;
+  readonly commitHistoryEdit: () => void;
   readonly beforeOpen: () => void;
   readonly onOpenChange: (open: boolean) => void;
 }
@@ -117,6 +119,8 @@ export class MobileStrokeSheetController {
   private applyFrame: number | null = null;
   private pendingStyle: RasterStrokeStyle | null = null;
   private applyLoop: Promise<void> | null = null;
+  private historyEditOpen = false;
+  private historyFinishRequested = false;
   private readonly options: MobileStrokeSheetOptions;
 
   constructor(options: MobileStrokeSheetOptions) {
@@ -125,6 +129,11 @@ export class MobileStrokeSheetController {
     this.sheet.dataset.state = "closed";
     this.sheet.setAttribute("inert", "");
     this.bindEvents();
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState !== "visible") this.requestHistoryEditFinish();
+    });
+    window.addEventListener("pagehide", () => this.requestHistoryEditFinish());
+    window.addEventListener("blur", () => this.requestHistoryEditFinish());
   }
 
   get isOpen(): boolean {
@@ -155,6 +164,7 @@ export class MobileStrokeSheetController {
 
   close(restoreFocus = false): void {
     if (!this.openState) return;
+    this.requestHistoryEditFinish();
     this.openState = false;
     this.closeAlignmentMenu(false);
     this.releaseDragCapture();
@@ -204,10 +214,30 @@ export class MobileStrokeSheetController {
       this.snapTo(nextMobileBottomSheetTapSnap(this.snap));
     });
 
-    this.colorInput.addEventListener("input", () => this.handleColorInput());
-    this.colorInput.addEventListener("change", () => this.handleColorInput());
-    this.widthInput.addEventListener("input", () => this.handleWidthInput());
-    this.widthInput.addEventListener("change", () => this.handleWidthInput());
+    for (const control of [this.colorInput, this.widthInput]) {
+      control.addEventListener("pointerdown", () => this.beginHistoryEdit());
+      control.addEventListener("focus", () => this.beginHistoryEdit());
+      control.addEventListener("blur", () => this.requestHistoryEditFinish());
+      control.addEventListener("pointercancel", () => this.requestHistoryEditFinish());
+    }
+    this.colorInput.addEventListener("input", () => {
+      this.beginHistoryEdit();
+      this.handleColorInput();
+    });
+    this.colorInput.addEventListener("change", () => {
+      this.beginHistoryEdit();
+      this.handleColorInput();
+      this.requestHistoryEditFinish();
+    });
+    this.widthInput.addEventListener("input", () => {
+      this.beginHistoryEdit();
+      this.handleWidthInput();
+    });
+    this.widthInput.addEventListener("change", () => {
+      this.beginHistoryEdit();
+      this.handleWidthInput();
+      this.requestHistoryEditFinish();
+    });
 
     this.alignmentButton.addEventListener("click", () => {
       this.setAlignmentMenuOpen(!this.alignmentOpen);
@@ -320,7 +350,38 @@ export class MobileStrokeSheetController {
     })().finally(() => {
       this.applyLoop = null;
       if (this.pendingStyle) this.startApplyLoop();
+      else this.commitHistoryEditIfIdle();
     });
+  }
+
+  private beginHistoryEdit(): void {
+    if (this.historyEditOpen) return;
+    this.historyEditOpen = true;
+    this.historyFinishRequested = false;
+    this.options.beginHistoryEdit();
+  }
+
+  private requestHistoryEditFinish(): void {
+    if (!this.historyEditOpen) return;
+    this.historyFinishRequested = true;
+    if (this.applyFrame !== null) {
+      cancelAnimationFrame(this.applyFrame);
+      this.applyFrame = null;
+      this.startApplyLoop();
+    }
+    this.commitHistoryEditIfIdle();
+  }
+
+  private commitHistoryEditIfIdle(): void {
+    if (
+      !this.historyEditOpen
+      || !this.historyFinishRequested
+      || this.applyLoop
+      || this.pendingStyle
+    ) return;
+    this.historyEditOpen = false;
+    this.historyFinishRequested = false;
+    this.options.commitHistoryEdit();
   }
 
   private syncPosition(position: StrokePosition): void {

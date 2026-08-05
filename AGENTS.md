@@ -3996,3 +3996,58 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   `git diff --check` sono verdi. Il long-press fisico e le gesture dei tre
   dischi restano da provare su Safari/iPhone; questa modifica non è ancora
   stata pubblicata.
+
+### Retention e checkpoint Undo/Redo (5 agosto 2026)
+
+- La retention raster usa ora la strategia
+  `byte-budget-exact-tiled-checkpoints-idle-fenced-chunked-v1`. Dopo una
+  pubblicazione History stabile, la manutenzione aspetta `140 ms`, verifica che
+  non siano aperti tratto, Selection, switch layer o transazioni
+  vector/raster-property, attende la fence della coda e pompa l'ultimo RAF con
+  `waitForIdle()`. Soltanto allora scansiona e libera il ramo Redo abbandonato:
+  ogni turno tratta al massimo `64` elementi e un vero `setTimeout(0)` restituisce
+  il main thread al browser fra i chunk. Un `pointerdown` invalida subito la
+  generazione; `pointerup`/`pointercancel` la rischedulano soltanto se il Redo è
+  ancora pendente. Rimozione dei riferimenti Selection e release della relativa
+  slice avvengono nello stesso chunk, quindi un abort non espone handle già
+  liberati. Se il motore è ancora occupato il timer termina: non esiste polling
+  permanente e il percorso caldo `appendPoint`/submit Paint non chiama la
+  manutenzione. Telemetria distinta conta compattazioni complete/abortite,
+  chunk, yield e slice realmente liberate.
+- Ogni raster attivo riceve checkpoint tiled lossless ancorati a un action id
+  stabile: intervallo base `24` azioni, limite `32` batch di replay oppure
+  `8 MiB` di payload; sotto pressione l'intervallo scende gradualmente fino a
+  `8`. Il primo checkpoint e ogni ottavo sono full, quelli intermedi conservano
+  soltanto i tile cambiati; Clear tronca la catena e import/rasterize/Transform
+  forzano una base full. Undo/Redo cancella una volta, idrata base e delta in
+  ordine GPU e riproduce soltanto la coda successiva. Il checkpoint strutturale
+  preesistente resta preferito quando è più recente.
+- La contabilità esplicita separa payload GPU, checkpoint, maschere
+  Selection/Fill (incluse le due snapshot di Transform), metadata CPU/vector e
+  asset. Per le pagine GPU espone separatamente byte logici, riservati e
+  allocati; il budget usa conservativamente le pagine fisiche allocate, quindi
+  frammentazione e spazio libero non vengono scambiati per memoria restituita.
+  La stima CPU percorre strutture condivise con deduplica e usa `byteLength` per
+  typed array/ArrayBuffer, senza `JSON.stringify`, `TextEncoder` o grandi stringhe
+  temporanee. Il budget è in byte, `192 MiB` mobile e `512 MiB` desktop, con
+  target di isteresi all'`82%`; i checkpoint periodici entrano anche nel totale
+  GPU pubblico. Oltre il limite, il payload viene consolidato soltanto se ogni
+  raster vivo possiede una base full esatta; viene allora avanzato un floor
+  Undo e liberato esclusivamente ciò che quella base rappresenta. Se manca una
+  copertura esatta la telemetria segnala `budgetCheckpointBlocked` e non elimina
+  dati. Pressure, eviction eseguite, byte liberati e fallimenti di cattura sono
+  distinti.
+- `history:verify` esegue sessioni deterministiche da `10/100/500/1000`
+  azioni, confrontando replay integrale, checkpoint full e catene tiled delta
+  byte per byte a ogni cursor. Risultati: `0/5/26/53` checkpoint, coda massima
+  `10/21/23/23` azioni e hash finali stabili
+  `5d4a0e1b/6b710fa5/fa4fa16d/a4daf955`. La regressione incremental visita
+  `1000` elementi in `16` chunk con `15` yield e, simulando un'interazione al
+  primo yield, si arresta esattamente dopo `64`. TypeScript, tutte le `31` suite
+  `*:verify`, build Vite/Sites e `git diff --check` sono verdi. Sono prove
+  deterministiche e statiche locali. QA browser WebGPU a `393×852`: un tratto
+  abilita Undo, Undo abilita Redo e Redo ripristina; il ciclo completo sulla
+  visibilità del raster ripristina correttamente anche la relativa azione
+  metadata, con console senza warning/errori. Restano da misurare su iPhone
+  fisico una sessione lunga, i picchi reali di memoria e la latenza end-to-end
+  di Undo/Redo; non è stata promossa una nuova baseline prestazionale.

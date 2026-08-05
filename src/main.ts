@@ -29,6 +29,7 @@ import {
 import {
   MOBILE_RASTER_EFFECT_KIND_BY_CONTROL_ID,
   MobileRasterEffectsSheetController,
+  type MobileRasterEffectKind,
 } from "./mobile-raster-effects-sheet";
 import {
   loadBrushStudioLibraryState,
@@ -802,6 +803,8 @@ let historyState: HistoryState = {
   cursor: 0,
   storedBaseStamps: 0,
   logicalStampBytes: 0,
+  undoBlockedReason: "Non ci sono azioni da annullare.",
+  redoBlockedReason: "Non ci sono azioni da ripristinare.",
   openEdit: null,
 };
 
@@ -4070,6 +4073,12 @@ mobileStrokeSheet = new MobileStrokeSheetController({
   mobileMediaQuery: mobileUiMediaQuery,
   getStyle: () => engine.getRasterStrokeStyle(),
   applyStyle: applyRasterStrokeStyle,
+  beginHistoryEdit: () => {
+    engine.beginRasterLayerMetadataHistoryEdit("stroke");
+  },
+  commitHistoryEdit: () => {
+    engine.commitRasterLayerMetadataHistoryEdit();
+  },
   beforeOpen: () => {
     setMobileToolsSheetOpen(false);
     setMobileLayersPanelOpen(false);
@@ -4095,6 +4104,19 @@ mobileRasterEffectsSheet = new MobileRasterEffectsSheetController({
   applyInnerShadowStyle: applyRasterInnerShadowStyle,
   getBevelStyle: () => engine.getRasterBevelStyle(),
   applyBevelStyle: applyRasterBevelStyle,
+  beginHistoryEdit: (kind: MobileRasterEffectKind) => {
+    const property = kind === "color-overlay"
+      ? "color-overlay"
+      : kind === "outer-shadow"
+        ? "outer-shadow"
+        : kind === "inner-shadow"
+          ? "inner-shadow"
+          : "bevel";
+    engine.beginRasterLayerMetadataHistoryEdit(property);
+  },
+  commitHistoryEdit: () => {
+    engine.commitRasterLayerMetadataHistoryEdit();
+  },
   beforeOpen: () => {
     setMobileToolsSheetOpen(false);
     setMobileLayersPanelOpen(false);
@@ -4167,10 +4189,10 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
     vectorTextPrototype?.setSelectedSvgPaintColor(index, color);
   },
   beginSvgPaintEdit: () => {
-    engine.beginVectorHistoryEdit();
+    return engine.beginVectorHistoryEdit();
   },
   commitSvgPaintEdit: () => {
-    engine.commitVectorHistoryEdit();
+    return engine.commitVectorHistoryEdit();
   },
   rasterizeSelectedSvg: () => vectorTextPrototype?.rasterizeSelectedSvgNode(),
   getTextCreationColor: () => brushColorInput.value,
@@ -4519,8 +4541,24 @@ function updateHistoryControls(): void {
   const locked = interactionLocked();
   undoStrokeButton.disabled = locked || !historyState.canUndo;
   redoStrokeButton.disabled = locked || !historyState.canRedo;
-  mobileUndoButton.disabled = locked || !historyState.canUndo;
-  mobileRedoButton.disabled = locked || !historyState.canRedo;
+  const undoReason = locked && historyState.undoBlockedReason === null
+    ? "Termina l'operazione corrente prima di annullare."
+    : historyState.undoBlockedReason;
+  const redoReason = locked && historyState.redoBlockedReason === null
+    ? "Termina l'operazione corrente prima di ripristinare."
+    : historyState.redoBlockedReason;
+  for (const [button, blocked, reason, label] of [
+    [mobileUndoButton, locked || !historyState.canUndo, undoReason, "Undo"],
+    [mobileRedoButton, locked || !historyState.canRedo, redoReason, "Redo"],
+  ] as const) {
+    // Keep mobile controls tappable while semantically disabled so a blocked
+    // operation can explain itself instead of looking like a lost touch.
+    button.disabled = false;
+    button.setAttribute("aria-disabled", String(blocked));
+    button.classList.toggle("is-disabled", blocked);
+    button.title = blocked && reason ? reason : label;
+    button.setAttribute("aria-label", blocked && reason ? `${label}: ${reason}` : label);
+  }
   mobileBrushColorInput.disabled = locked;
   mobileBrushColorLabel.classList.toggle("is-disabled", locked);
   mobilePaintButton.disabled = locked;
@@ -4590,9 +4628,19 @@ function updateHistoryControls(): void {
 
 async function runHistoryOperation(operation: "undo" | "redo"): Promise<void> {
   if (interactionLocked() || activePointerId !== null) {
+    const reason = operation === "undo"
+      ? historyState.undoBlockedReason
+      : historyState.redoBlockedReason;
+    statusElement.textContent = reason ?? "Termina l'operazione corrente e riprova.";
+    statusElement.className = "status";
     return;
   }
   if (operation === "undo" ? !historyState.canUndo : !historyState.canRedo) {
+    const reason = operation === "undo"
+      ? historyState.undoBlockedReason
+      : historyState.redoBlockedReason;
+    statusElement.textContent = reason ?? "Operazione di cronologia non disponibile.";
+    statusElement.className = "status";
     return;
   }
 
@@ -9578,12 +9626,21 @@ window.addEventListener("blur", () => {
 });
 
 window.addEventListener("pointerdown", (event) => {
+  engine.interruptHistoryMaintenance();
   if (
     mobileLayerReorderGesture
     && event.pointerId !== mobileLayerReorderGesture.pointerId
   ) {
     cancelMobileLayerReorderGesture();
   }
+}, { capture: true });
+
+window.addEventListener("pointerup", () => {
+  engine.resumeDiscardedHistoryMaintenance();
+}, { capture: true });
+
+window.addEventListener("pointercancel", () => {
+  engine.resumeDiscardedHistoryMaintenance();
 }, { capture: true });
 
 document.addEventListener("visibilitychange", () => {

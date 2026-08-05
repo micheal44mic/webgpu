@@ -14,7 +14,6 @@ import type { FillHistoryRenderBatch } from "./engine-history-types";
 import type { GpuHistorySlice } from "./gpu-history-storage";
 import { clientToLayer, resolveFillSource } from "./engine-layer-runtime";
 import {
-  compactDiscardedHistory,
   rebuildActiveLayerFromHistory,
   truncateRedoHistory,
 } from "./engine-history-runtime";
@@ -157,7 +156,6 @@ export async function fillAtClientPoint(
   let pixelsMutated = false;
   try {
     await engine.waitForIdle();
-    compactDiscardedHistory(engine);
     const renderer = await ensureFillRenderer(engine);
     await renderer.prewarm();
     const source = resolveFillSource(engine);

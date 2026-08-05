@@ -328,11 +328,14 @@ import {
 } from "./adaptive-preview-runtime";
 import {
   type ActiveVectorHistoryEdit,
+  type ActiveRasterLayerMetadataHistoryEdit,
   type BlendHistoryRenderBatch,
   type FillHistoryRenderBatch,
   type HistoryAction,
   type HistoryRenderBatch,
   type RasterImportHistoryAction,
+  type RasterLayerMetadataHistoryAction,
+  type RasterLayerMetadataHistoryState,
   type RasterTransformHistoryAction,
   type SelectionHistoryMaskSnapshot,
   type VectorRasterizeHistoryAction,
@@ -631,18 +634,29 @@ import {
 } from "./engine-vector-text-runtime";
 import {
   applyVectorHistoryState,
+  captureRasterLayerMetadataHistoryState,
   getMixedSceneReorderTargets,
-  compactDiscardedHistory,
+  compactDiscardedHistoryIncrementally,
+  type HistoryIncrementalCompactionHooks,
+  type HistoryIncrementalCompactionResult,
   hasVisibleHistoryContent,
   historyStepBlockedByLayer,
   maybeInjectHistoryReplayFault,
   moveHistoryCursor,
   moveMixedSceneItem,
   recordBlendHistoryBatch,
+  recordRasterLayerMetadataHistoryAction,
   recordVectorHistoryAction,
   scheduleHistoryGpuTrim,
   truncateRedoHistory,
 } from "./engine-history-runtime";
+import {
+  cancelHistoryMaintenance,
+  destroyHistoryMaintenance,
+  historyCursorWithinRetainedRange,
+  historyMaintenanceTelemetry,
+  scheduleHistoryMaintenance,
+} from "./history-maintenance-runtime";
 import {
   ensureFillRenderer,
   fillAtClientPoint,
@@ -1463,6 +1477,7 @@ export class BrushEngine {
   historyBusy = false;
   historyStateInconsistent = false;
   activeVectorHistoryEdit: ActiveVectorHistoryEdit | null = null;
+  activeRasterLayerMetadataHistoryEdit: ActiveRasterLayerMetadataHistoryEdit | null = null;
   activeRasterTransformSession: ActiveRasterTransformSession | null = null;
   historyGpuStorage!: GpuHistoryStorage;
   historyGpuTrimGeneration = 0;
@@ -2052,6 +2067,10 @@ export class BrushEngine {
     }
 
     flushPendingWorkBeforeSettingsChange(this);
+    const historyBefore = captureRasterLayerMetadataHistoryState(
+      this,
+      this.layerStack.active.id,
+    );
     const previous = copyRasterColorOverlayStyle(this.rasterColorOverlayStyle);
     const previousActive = previous.enabled && previous.opacity > 0;
     const previousDisplayUsesStyle = Boolean(
@@ -2134,6 +2153,7 @@ export class BrushEngine {
         "ok",
       );
       this.publishStats();
+      this.recordRasterLayerMetadataMutation("color-overlay", historyBefore);
       return true;
     } catch (error) {
       this.rasterColorOverlayStyle = previous;
@@ -2204,6 +2224,10 @@ export class BrushEngine {
     }
 
     flushPendingWorkBeforeSettingsChange(this);
+    const historyBefore = captureRasterLayerMetadataHistoryState(
+      this,
+      this.layerStack.active.id,
+    );
     const previous = copyRasterStrokeStyle(this.rasterStrokeStyle);
     const previousActive = previous.enabled && previous.width > 0;
     const nextActive = normalized.enabled && normalized.width > 0;
@@ -2284,6 +2308,7 @@ export class BrushEngine {
         }
       }
       this.publishStats();
+      this.recordRasterLayerMetadataMutation("stroke", historyBefore);
       return true;
     } catch (error) {
       this.rasterStrokeStyle = previous;
@@ -2348,6 +2373,10 @@ export class BrushEngine {
     }
 
     flushPendingWorkBeforeSettingsChange(this);
+    const historyBefore = captureRasterLayerMetadataHistoryState(
+      this,
+      this.layerStack.active.id,
+    );
     const previous = copyRasterBevelStyle(this.rasterBevelStyle);
     const previousActive = previous.enabled;
     const previousRect = rasterBevelVisualBounds(
@@ -2412,6 +2441,7 @@ export class BrushEngine {
       this.displayDirty = true;
       this.requestRender();
       this.publishStats();
+      this.recordRasterLayerMetadataMutation("bevel", historyBefore);
       return true;
     } catch (error) {
       this.rasterBevelStyle = previous;
@@ -2472,6 +2502,10 @@ export class BrushEngine {
     }
 
     flushPendingWorkBeforeSettingsChange(this);
+    const historyBefore = captureRasterLayerMetadataHistoryState(
+      this,
+      this.layerStack.active.id,
+    );
     const previous = copyRasterOuterShadowStyle(this.rasterOuterShadowStyle);
     const previousRect = rasterOuterShadowVisualBounds(
       this.layerContentBounds,
@@ -2529,6 +2563,7 @@ export class BrushEngine {
       this.displayDirty = true;
       this.requestRender();
       this.publishStats();
+      this.recordRasterLayerMetadataMutation("outer-shadow", historyBefore);
       return true;
     } catch (error) {
       this.rasterOuterShadowStyle = previous;
@@ -2582,6 +2617,10 @@ export class BrushEngine {
     }
 
     flushPendingWorkBeforeSettingsChange(this);
+    const historyBefore = captureRasterLayerMetadataHistoryState(
+      this,
+      this.layerStack.active.id,
+    );
     const previous = copyRasterInnerShadowStyle(this.rasterInnerShadowStyle);
     const previousRect = rasterInnerShadowVisualBounds(
       this.layerContentBounds,
@@ -2639,6 +2678,7 @@ export class BrushEngine {
       this.displayDirty = true;
       this.requestRender();
       this.publishStats();
+      this.recordRasterLayerMetadataMutation("inner-shadow", historyBefore);
       return true;
     } catch (error) {
       this.rasterInnerShadowStyle = previous;
@@ -3366,7 +3406,7 @@ export class BrushEngine {
   beginStrokeAtLayer(point: LayerPoint): void {
     // layerSwitchBusy is held across the switch's awaits, so a pointerdown
     // landing mid-switch cannot start a stroke on a half-swapped layer.
-    if (this.activeVectorHistoryEdit) return;
+    if (this.activeVectorHistoryEdit || this.activeRasterLayerMetadataHistoryEdit) return;
     if (this.historyBusy || this.activeStroke || this.layerSwitchBusy || this.selectionBusy) {
       return;
     }
@@ -3731,6 +3771,7 @@ export class BrushEngine {
       || this.layerSwitchBusy
       || this.selectionBusy
       || this.activeVectorHistoryEdit
+      || this.activeRasterLayerMetadataHistoryEdit
     ) {
       return false;
     }
@@ -3776,7 +3817,6 @@ export class BrushEngine {
         });
         this.historyCursor = this.historyActions.length;
         this.sweepRasterImageGpuResources();
-        compactDiscardedHistory(this);
         if (this.activeStrokeProfile) {
           this.activeStrokeProfile.historyCommittedActions += 1;
         }
@@ -3808,6 +3848,7 @@ export class BrushEngine {
       || this.layerSwitchBusy
       || this.selectionBusy
       || this.activeVectorHistoryEdit
+      || this.activeRasterLayerMetadataHistoryEdit
     ) {
       return false;
     }
@@ -3862,6 +3903,20 @@ export class BrushEngine {
 
   async redo(): Promise<boolean> {
     return moveHistoryCursor(this, 1);
+  }
+
+  async compactDiscardedHistoryIncrementally(
+    hooks: HistoryIncrementalCompactionHooks,
+  ): Promise<HistoryIncrementalCompactionResult> {
+    return await compactDiscardedHistoryIncrementally(this, hooks);
+  }
+
+  interruptHistoryMaintenance(): void {
+    cancelHistoryMaintenance(this);
+  }
+
+  resumeDiscardedHistoryMaintenance(): void {
+    if (this.historyCompactionPending) scheduleHistoryMaintenance(this);
   }
 
   async runBenchmark(baseStampCount: number): Promise<BenchmarkResult> {
@@ -4205,26 +4260,60 @@ export class BrushEngine {
     return this.layerStack.count > 1;
   }
 
+  private historyBlockedReason(delta: -1 | 1): string | null {
+    if (this.historyStateInconsistent) return "La cronologia è incoerente: ricarica la pagina.";
+    if (this.historyBusy) return "La cronologia sta completando un'altra operazione.";
+    if (this.activeStroke) return "Termina il tratto prima di usare Undo o Redo.";
+    if (this.layerSwitchBusy) return "Attendi il completamento del cambio livello.";
+    if (this.selectionBusy) return "Attendi il completamento della selezione.";
+    if (this.activeRasterTransformSession) {
+      return "Completa o annulla Trasforma prima di usare Undo o Redo.";
+    }
+    if (this.activeVectorHistoryEdit || this.activeRasterLayerMetadataHistoryEdit) {
+      return "Termina la modifica corrente prima di usare Undo o Redo.";
+    }
+    const nextCursor = this.historyCursor + delta;
+    if (nextCursor < 0) return "Non ci sono azioni da annullare.";
+    if (nextCursor > this.historyActions.length) return "Non ci sono azioni da ripristinare.";
+    if (!historyCursorWithinRetainedRange(this, nextCursor)) {
+      return "Le azioni più vecchie sono state consolidate per liberare memoria.";
+    }
+    if (historyStepBlockedByLayer(this, delta)) {
+      const action = delta < 0
+        ? this.historyActions[this.historyCursor - 1]
+        : this.historyActions[this.historyCursor];
+      return action?.kind === "scene-reorder"
+        ? "Il riordino non è compatibile con la struttura livelli corrente."
+        : action?.kind === "layer-metadata"
+          ? "La proprietà non è compatibile con la struttura clipping corrente."
+        : "Il livello richiesto dalla cronologia non esiste più.";
+    }
+    return null;
+  }
+
   getHistoryState(): HistoryState {
+    const undoBlockedReason = this.historyBlockedReason(-1);
+    const redoBlockedReason = this.historyBlockedReason(1);
     return {
-      canUndo: !this.historyBusy
-        && !this.activeVectorHistoryEdit
-        && this.historyCursor > 0
-        && !historyStepBlockedByLayer(this, -1),
-      canRedo: !this.historyBusy
-        && !this.activeVectorHistoryEdit
-        && this.historyCursor < this.historyActions.length
-        && !historyStepBlockedByLayer(this, 1),
+      canUndo: undoBlockedReason === null,
+      canRedo: redoBlockedReason === null,
       busy: this.historyBusy,
       inconsistent: this.historyStateInconsistent,
       actionCount: this.historyActions.length,
       cursor: this.historyCursor,
       storedBaseStamps: this.historyStoredBaseStamps,
       logicalStampBytes: this.historyStoredBaseStamps * STAMP_STRIDE_BYTES,
+      undoBlockedReason,
+      redoBlockedReason,
       openEdit: this.activeRasterTransformSession
         ? "transform"
-        : this.activeVectorHistoryEdit?.scope ?? null,
+        : this.activeVectorHistoryEdit?.scope
+          ?? (this.activeRasterLayerMetadataHistoryEdit ? "raster-property" : null),
     };
+  }
+
+  getHistoryMaintenanceTelemetry() {
+    return historyMaintenanceTelemetry(this);
   }
 
   getAdaptivePreviewDiagnostics(): {
@@ -5615,6 +5704,66 @@ export class BrushEngine {
     return moveMixedSceneItem(this, key, targetTopFirstSlot);
   }
 
+  beginRasterLayerMetadataHistoryEdit(
+    property: RasterLayerMetadataHistoryAction["property"],
+  ): boolean {
+    if (
+      !this.initialized
+      || this.activeStroke !== null
+      || this.historyBusy
+      || this.layerSwitchBusy
+      || this.historyStateInconsistent
+      || this.activeVectorHistoryEdit
+    ) {
+      return false;
+    }
+    const layerId = this.layerStack.active.id;
+    const active = this.activeRasterLayerMetadataHistoryEdit;
+    if (active) return active.layerId === layerId && active.property === property;
+    this.activeRasterLayerMetadataHistoryEdit = {
+      layerId,
+      property,
+      before: captureRasterLayerMetadataHistoryState(this, layerId),
+    };
+    this.publishHistoryState();
+    return true;
+  }
+
+  commitRasterLayerMetadataHistoryEdit(): boolean {
+    const edit = this.activeRasterLayerMetadataHistoryEdit;
+    if (!edit) return false;
+    this.activeRasterLayerMetadataHistoryEdit = null;
+    const after = captureRasterLayerMetadataHistoryState(this, edit.layerId);
+    const changed = recordRasterLayerMetadataHistoryAction(
+      this,
+      edit.property,
+      edit.before,
+      after,
+    );
+    this.publishHistoryState();
+    return changed;
+  }
+
+  private recordRasterLayerMetadataMutation(
+    property: RasterLayerMetadataHistoryAction["property"],
+    before: RasterLayerMetadataHistoryState,
+  ): void {
+    const edit = this.activeRasterLayerMetadataHistoryEdit;
+    if (edit) {
+      if (edit.layerId !== before.layerId) {
+        throw new Error("Il livello metadata è cambiato durante il gesto.");
+      }
+      return;
+    }
+    recordRasterLayerMetadataHistoryAction(
+      this,
+      property,
+      before,
+      captureRasterLayerMetadataHistoryState(this, before.layerId),
+    );
+    this.publishHistoryState();
+  }
+
   beginVectorHistoryEdit(scope: "property" | "transform" = "property"): boolean {
     if (
       !this.initialized
@@ -5622,6 +5771,7 @@ export class BrushEngine {
       || this.historyBusy
       || this.layerSwitchBusy
       || this.historyStateInconsistent
+      || this.activeRasterLayerMetadataHistoryEdit
     ) {
       return false;
     }
@@ -6263,11 +6413,17 @@ export class BrushEngine {
   }
 
   async setLayerVisibility(index: number, visible: boolean): Promise<boolean> {
-    return setLayerPresentation(this, index, Boolean(visible), undefined);
+    const before = captureRasterLayerMetadataHistoryState(this, this.layerStack.at(index).id);
+    const changed = await setLayerPresentation(this, index, Boolean(visible), undefined);
+    if (changed) this.recordRasterLayerMetadataMutation("presentation", before);
+    return changed;
   }
 
   async setLayerOpacity(index: number, opacity: number): Promise<boolean> {
-    return setLayerPresentation(this, index, undefined, clamp(opacity, 0, 1));
+    const before = captureRasterLayerMetadataHistoryState(this, this.layerStack.at(index).id);
+    const changed = await setLayerPresentation(this, index, undefined, clamp(opacity, 0, 1));
+    if (changed) this.recordRasterLayerMetadataMutation("presentation", before);
+    return changed;
   }
 
   async setLayerBlendMode(index: number, blendMode: LayerBlendMode): Promise<boolean> {
@@ -6294,7 +6450,10 @@ export class BrushEngine {
   }
 
   async setLayerClipping(index: number, enabled: boolean): Promise<boolean> {
-    return setLayerClipping(this, index, Boolean(enabled));
+    const before = captureRasterLayerMetadataHistoryState(this, this.layerStack.at(index).id);
+    const changed = await setLayerClipping(this, index, Boolean(enabled));
+    if (changed) this.recordRasterLayerMetadataMutation("clipping", before);
+    return changed;
   }
 
   /**
@@ -6339,6 +6498,7 @@ export class BrushEngine {
       || this.historyBusy
       || this.selectionBusy
       || this.activeVectorHistoryEdit
+      || this.activeRasterLayerMetadataHistoryEdit
       || this.layerSwitchBusy
       || this.rasterStrokeBusy
       || this.rasterBevelBusy
@@ -8353,6 +8513,7 @@ export class BrushEngine {
   }
 
   resetHistoryState(): void {
+    destroyHistoryMaintenance(this);
     const vectorRasterActions = new Set([
       ...this.historyActions,
       ...this.discardedVectorRasterHistoryActions,
@@ -8386,6 +8547,7 @@ export class BrushEngine {
     this.historyStoredBaseStamps = 0;
     this.historyCompactionPending = false;
     this.activeVectorHistoryEdit = null;
+    this.activeRasterLayerMetadataHistoryEdit = null;
     this.sweepRasterImageGpuResources();
   }
 
@@ -11091,6 +11253,9 @@ export class BrushEngine {
       this.callbacks.onHistoryChange?.(this.getHistoryState());
     } catch (error) {
       console.error("Observer cronologia ignorato per preservare la transazione:", error);
+    }
+    if (this.initialized && !this.historyStateInconsistent) {
+      scheduleHistoryMaintenance(this);
     }
   }
 

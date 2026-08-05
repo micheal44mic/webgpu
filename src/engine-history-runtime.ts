@@ -26,6 +26,8 @@ import {
   vectorHistoryStatesEqual,
   type HistoryRenderBatch,
   type MixedSceneReorderHistoryAction,
+  type RasterLayerMetadataHistoryAction,
+  type RasterLayerMetadataHistoryState,
   type RasterHistoryCheckpointAction,
   type RasterImportHistoryAction,
   type RasterTransformHistoryAction,
@@ -55,6 +57,13 @@ import {
   restoreEffectsWorkbenchToActiveLayer,
   setLayerBlendMode,
 } from "./engine-layer-runtime";
+import { copyRasterStrokeStyle } from "./stroke-core";
+import { copyRasterBevelStyle } from "./bevel-core";
+import {
+  copyRasterInnerShadowStyle,
+  copyRasterOuterShadowStyle,
+} from "./shadow-core";
+import { copyRasterColorOverlayStyle } from "./raster-color-overlay-core";
 import { restorePixelSelectionHistoryMask } from "./engine-selection-runtime";
 import {
   grainAssetIdForSettings,
@@ -65,6 +74,140 @@ import {
   maybeReleaseIdleGrainResources,
   maybeReleaseIdleShapeResources,
 } from "./engine-resource-setup";
+import {
+  historyCursorWithinRetainedRange,
+  periodicCheckpointChainForReplay,
+} from "./history-maintenance-runtime";
+import { processHistoryMaintenanceChunks } from "./history-retention-core";
+
+export function captureRasterLayerMetadataHistoryState(
+  engine: BrushEngine,
+  layerId: number,
+): RasterLayerMetadataHistoryState {
+  const record = engine.layerStack.byId(layerId);
+  if (!record) throw new Error(`Livello ${layerId} assente dalla cronologia metadata.`);
+  return {
+    layerId,
+    visible: record.visible,
+    opacity: record.opacity,
+    clipping: engine.layerStack.captureClippingHistoryState(),
+    strokeStyle: copyRasterStrokeStyle(record.strokeStyle),
+    bevelStyle: copyRasterBevelStyle(record.bevelStyle),
+    outerShadowStyle: copyRasterOuterShadowStyle(record.outerShadowStyle),
+    innerShadowStyle: copyRasterInnerShadowStyle(record.innerShadowStyle),
+    colorOverlayStyle: copyRasterColorOverlayStyle(record.colorOverlayStyle),
+  };
+}
+
+export function rasterLayerMetadataHistoryStatesEqual(
+  left: RasterLayerMetadataHistoryState,
+  right: RasterLayerMetadataHistoryState,
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+export function recordRasterLayerMetadataHistoryAction(
+  engine: BrushEngine,
+  property: RasterLayerMetadataHistoryAction["property"],
+  before: RasterLayerMetadataHistoryState,
+  after: RasterLayerMetadataHistoryState,
+): boolean {
+  if (before.layerId !== after.layerId) {
+    throw new Error("Una modifica metadata non può cambiare livello durante il gesto.");
+  }
+  if (rasterLayerMetadataHistoryStatesEqual(before, after)) return false;
+  truncateRedoHistory(engine);
+  engine.historyActions.push({
+    id: engine.nextHistoryActionId++,
+    kind: "layer-metadata",
+    layerId: before.layerId,
+    property,
+    before,
+    after,
+  });
+  engine.historyCursor = engine.historyActions.length;
+  if (engine.activeStrokeProfile) {
+    engine.activeStrokeProfile.historyCommittedActions += 1;
+  }
+  return true;
+}
+
+function assignRasterLayerMetadataHistoryState(
+  engine: BrushEngine,
+  target: RasterLayerMetadataHistoryState,
+): void {
+  const record = engine.layerStack.byId(target.layerId);
+  if (!record) throw new Error(`Livello ${target.layerId} della proprietà non trovato.`);
+  engine.layerStack.restoreClippingHistoryState(target.clipping);
+  record.visible = target.visible;
+  record.opacity = target.opacity;
+  record.strokeStyle = copyRasterStrokeStyle(target.strokeStyle);
+  record.bevelStyle = copyRasterBevelStyle(target.bevelStyle);
+  record.outerShadowStyle = copyRasterOuterShadowStyle(target.outerShadowStyle);
+  record.innerShadowStyle = copyRasterInnerShadowStyle(target.innerShadowStyle);
+  record.colorOverlayStyle = copyRasterColorOverlayStyle(target.colorOverlayStyle);
+  const gpu = engine.layerGpu.get(record.id);
+  if (gpu) gpu.bakeValid = false;
+}
+
+/** Replays CPU metadata and derived presentation only; authoritative pixels are untouched. */
+export async function applyRasterLayerMetadataHistoryState(
+  engine: BrushEngine,
+  target: RasterLayerMetadataHistoryState,
+): Promise<void> {
+  const previous = captureRasterLayerMetadataHistoryState(engine, target.layerId);
+  engine.layerSwitchBusy = true;
+  try {
+    await engine.waitForIdle();
+    assignRasterLayerMetadataHistoryState(engine, target);
+    if (engine.layerStack.active.id === target.layerId) {
+      await restoreEffectsWorkbenchToActiveLayer(engine, "history-replay", true);
+    }
+    await engine.rebuildMergedLayerSurfaces(
+      "history-replay",
+      engine.getVectorTextViewState(),
+      { reuseUnchangedRasterRuns: false },
+    );
+    engine.paintDisplayMipValidThroughLevel = 0;
+    engine.presentationCacheNeedsFullRebuild = true;
+    engine.displayDirty = true;
+    engine.requestRender();
+  } catch (error) {
+    try {
+      assignRasterLayerMetadataHistoryState(engine, previous);
+      if (engine.layerStack.active.id === previous.layerId) {
+        await restoreEffectsWorkbenchToActiveLayer(engine, "history-replay", true);
+      }
+      await engine.rebuildMergedLayerSurfaces(
+        "history-replay",
+        engine.getVectorTextViewState(),
+        { reuseUnchangedRasterRuns: false },
+      );
+      engine.paintDisplayMipValidThroughLevel = 0;
+      engine.presentationCacheNeedsFullRebuild = true;
+      engine.displayDirty = true;
+      engine.requestRender();
+    } catch (restoreError) {
+      engine.latchDocumentStateInconsistent(
+        "Stato incoerente dopo Undo/Redo delle proprietà raster: ricarica la pagina.",
+      );
+      const originalMessage = error instanceof Error ? error.message : String(error);
+      const restoreMessage = restoreError instanceof Error
+        ? restoreError.message
+        : String(restoreError);
+      throw new Error(
+        `Undo/Redo proprietà raster fallito (${originalMessage}) e ripristino fallito `
+        + `(${restoreMessage}).`,
+      );
+    }
+    throw error;
+  } finally {
+    engine.layerSwitchBusy = false;
+    engine.scheduleLayerColdCompression();
+    publishMixedScene(engine);
+    engine.publishStats();
+  }
+}
 
 export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Promise<boolean> {
   if (
@@ -73,6 +216,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
     || engine.historyBusy
     || engine.selectionBusy
     || engine.activeVectorHistoryEdit
+    || engine.activeRasterLayerMetadataHistoryEdit
   ) {
     return false;
   }
@@ -80,7 +224,11 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
     return false;
   }
   const nextCursor = engine.historyCursor + delta;
-  if (nextCursor < 0 || nextCursor > engine.historyActions.length) {
+  if (
+    nextCursor < 0
+    || nextCursor > engine.historyActions.length
+    || !historyCursorWithinRetainedRange(engine, nextCursor)
+  ) {
     return false;
   }
   const crossedAction = delta < 0
@@ -120,6 +268,8 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
       ? delta < 0 ? "Undo: riordino livelli…" : "Redo: riordino livelli…"
       : crossedAction.kind === "layer-blend-mode"
       ? delta < 0 ? "Undo: fusione livello…" : "Redo: fusione livello…"
+      : crossedAction.kind === "layer-metadata"
+      ? delta < 0 ? "Undo: proprietà livello…" : "Redo: proprietà livello…"
       : crossedAction.kind === "vector"
       ? delta < 0 ? "Undo: ripristino del vettore…" : "Redo: ripristino del vettore…"
       : delta < 0
@@ -130,9 +280,6 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
 
   try {
     await engine.waitForIdle();
-    // Eventuali rami Redo già invalidati vengono liberati soltanto dentro
-    // un'operazione esplicita, mai durante o subito dopo una pennellata.
-    compactDiscardedHistory(engine);
     if (crossedAction.kind === "vector-rasterize") {
       await applyVectorRasterizeHistory(engine, crossedAction, delta);
       engine.historyCursor = nextCursor;
@@ -174,6 +321,21 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
       }
       engine.publishStatus(
         delta < 0 ? "Undo fusione livello completato." : "Redo fusione livello completato.",
+        "ok",
+      );
+      return true;
+    }
+    if (crossedAction.kind === "layer-metadata") {
+      await applyRasterLayerMetadataHistoryState(
+        engine,
+        delta < 0 ? crossedAction.before : crossedAction.after,
+      );
+      engine.historyCursor = nextCursor;
+      if (engine.activeStrokeProfile) {
+        engine.activeStrokeProfile.historyReplayOperations += 1;
+      }
+      engine.publishStatus(
+        delta < 0 ? "Proprietà livello annullata." : "Proprietà livello ripristinata.",
         "ok",
       );
       return true;
@@ -367,17 +529,43 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
 
 export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promise<void> {
   const layerId = engine.layerStack.active.id;
-  const {
-    batches: layerBatches,
-    visibleStrokeIds: visibleIds,
-    checkpoint,
-  } = selectLayerReplayAfterCheckpoint(
+  const journalSelection = selectLayerReplayAfterCheckpoint(
     engine.historyActions,
     engine.historyCursor,
     engine.historyBatches,
     layerId,
   );
-  const seedAction = checkpoint?.action as RasterHistoryCheckpointAction | undefined;
+  const periodicSelection = periodicCheckpointChainForReplay(engine, layerId);
+  const usePeriodicCheckpoint = Boolean(
+    periodicSelection
+    && periodicSelection.actionIndex >= (journalSelection.checkpoint?.actionIndex ?? -1),
+  );
+  const periodicChain = usePeriodicCheckpoint
+    ? periodicSelection?.checkpoints ?? []
+    : [];
+  const seedAction = usePeriodicCheckpoint
+    ? undefined
+    : journalSelection.checkpoint?.action as RasterHistoryCheckpointAction | undefined;
+  const replayCheckpointActionIndex = usePeriodicCheckpoint
+    ? periodicSelection?.actionIndex ?? -1
+    : journalSelection.checkpoint?.actionIndex ?? -1;
+  const actionIndexById = new Map(
+    engine.historyActions.slice(0, engine.historyCursor).map((action, index) => [action.id, index]),
+  );
+  const visibleIds = new Set(
+    [...journalSelection.visibleStrokeIds].filter((actionId) => (
+      (actionIndexById.get(actionId) ?? -1) > replayCheckpointActionIndex
+    )),
+  );
+  const layerBatches = journalSelection.batches.filter((batch) => visibleIds.has(batch.actionId));
+  const latestPeriodicCheckpoint = periodicChain.at(-1);
+  const hasReplaySeed = Boolean(seedAction || periodicChain.length > 0);
+  const replaySeedBounds = latestPeriodicCheckpoint
+    ? latestPeriodicCheckpoint.baseBounds
+    : seedAction?.baseBounds ?? null;
+  const replaySeedTileMask = latestPeriodicCheckpoint
+    ? latestPeriodicCheckpoint.baseTileMask
+    : seedAction?.baseTileMask ?? null;
   const ensureReplayBrushAssets = async (
     settings: Exclude<HistoryRenderBatch, { kind: "fill" }>["settings"],
   ): Promise<void> => {
@@ -429,8 +617,8 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
   }
 
   try {
-    if (seedAction) {
-      // Import, vector rasterization and Transform are authoritative tiled
+    if (hasReplaySeed) {
+      // Structural seeds and periodic full+delta tile chains are authoritative
       // checkpoints. Clear first without publishing an intermediate frame.
       engine.submitImmediate(
         [],
@@ -441,13 +629,18 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
       );
       observeReplaySubmit();
       await yieldReplaySubmit();
-      if (seedAction.seed) {
+      const replaySeeds = periodicChain.length > 0
+        ? periodicChain.flatMap((item) => item.seed ? [item.seed] : [])
+        : seedAction?.seed ? [seedAction.seed] : [];
+      if (replaySeeds.length > 0) {
         const hot = engine.requireLayerGpu(layerId).hot;
         if (!hot) throw new Error("Texture hot mancante per il checkpoint raster.");
         const encoder = engine.device.createCommandEncoder({
           label: `Replay checkpoint tiled raster livello ${layerId}`,
         });
-        encodeLayerColdHydration(encoder, seedAction.seed, hot);
+        for (const replaySeed of replaySeeds) {
+          encodeLayerColdHydration(encoder, replaySeed, hot);
+        }
         engine.device.queue.submit([encoder.finish()]);
         await yieldReplaySubmit();
       }
@@ -461,7 +654,7 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
           engine.settings,
           true,
           null,
-          seedAction.baseBounds,
+          replaySeedBounds,
           true,
         );
         observeReplaySubmit();
@@ -469,14 +662,14 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
       }
     }
     if (lastVisibleBatchIndex < 0) {
-      if (!seedAction) {
+      if (!hasReplaySeed) {
         engine.submitImmediate([], true, engine.settings, true, null);
         observeReplaySubmit();
         await yieldReplaySubmit();
       }
     } else {
       const firstVisibleBatch = layerBatches[firstVisibleBatchIndex];
-      if (!seedAction && !firstVisibleBatch.clearLayer) {
+      if (!hasReplaySeed && !firstVisibleBatch.clearLayer) {
         // Il clear originale era un pass separato (per esempio dopo
         // "Pulisci"): manteniamo quel confine prima del primo batch visibile.
         engine.submitImmediate(
@@ -508,7 +701,7 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
           await ensureReplayBrushAssets(batch.settings);
           engine.submitBlendImmediate(
             batch.batches,
-            seedAction ? false : batch.clearLayer,
+            hasReplaySeed ? false : batch.clearLayer,
             batch.settings,
             batch.actionId,
             index === lastVisibleBatchIndex,
@@ -545,7 +738,7 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
         engine.writeBrushUniforms(batch.settings);
         engine.submitImmediate(
           [],
-          seedAction ? false : batch.clearLayer,
+          hasReplaySeed ? false : batch.clearLayer,
           batch.settings,
           index === lastVisibleBatchIndex,
           batch,
@@ -586,9 +779,9 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
 
   engine.clearRequested = false;
   const record = engine.layerStack.active;
-  if (seedAction) {
-    let replayBounds = seedAction.baseBounds ? { ...seedAction.baseBounds } : null;
-    record.storageTileMask.set(seedAction.baseTileMask);
+  if (hasReplaySeed && replaySeedTileMask) {
+    let replayBounds = replaySeedBounds ? { ...replaySeedBounds } : null;
+    record.storageTileMask.set(replaySeedTileMask);
     for (const batch of layerBatches) {
       if (!visibleIds.has(batch.actionId) || !batch.dirtyRect) continue;
       replayBounds = mergeDirtyRects(replayBounds, batch.dirtyRect);
@@ -605,11 +798,11 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
     engine.layerContentBounds = null;
     record.storageTileMask.fill(0);
   }
-  engine.layerHasContent = Boolean(seedAction?.baseBounds) || lastVisibleBatchIndex >= 0;
+  engine.layerHasContent = Boolean(replaySeedBounds) || lastVisibleBatchIndex >= 0;
   record.contentBounds = engine.layerContentBounds;
   record.hasContent = engine.layerHasContent;
   await engine.waitForGpuCapped("Completamento replay Undo/Redo", 60_000);
-  if (seedAction) {
+  if (hasReplaySeed) {
     await restoreEffectsWorkbenchToActiveLayer(engine, "history-replay", true);
     engine.displayDirty = true;
     engine.presentationCacheNeedsFullRebuild = true;
@@ -734,102 +927,276 @@ export function recordBlendHistoryBatch(engine: BrushEngine,
   }
 }
 
-export function compactDiscardedHistory(engine: BrushEngine): void {
+export interface HistoryIncrementalCompactionHooks {
+  shouldContinue(): boolean;
+  yieldTurn(): Promise<void>;
+}
+
+export interface HistoryIncrementalCompactionResult {
+  readonly completed: boolean;
+  readonly chunks: number;
+  readonly yields: number;
+  readonly releasedSlices: number;
+}
+
+/**
+ * Releases an invalidated Redo branch only from fenced idle maintenance.
+ * Every scan, release and metadata cleanup is bounded, yields to the browser,
+ * and re-checks the interaction gate before touching the next chunk.
+ */
+export async function compactDiscardedHistoryIncrementally(
+  engine: BrushEngine,
+  hooks: HistoryIncrementalCompactionHooks,
+): Promise<HistoryIncrementalCompactionResult> {
   if (!engine.historyCompactionPending) {
-    return;
+    return { completed: true, chunks: 0, yields: 0, releasedSlices: 0 };
   }
 
-  const retainedActionIds = new Set(
-    engine.historyActions
-      .filter((action) => action.kind === "stroke" || action.kind === "fill")
-      .map((action) => action.id),
-  );
-
+  const retainedActionIds = new Set<number>();
+  const retainedVectorRasterIds = new Set<number>();
+  const retainedImportIds = new Set<number>();
+  const retainedTransformIds = new Set<number>();
   const retainedBatches: HistoryRenderBatch[] = [];
-  const discardedSlices: GpuHistorySlice[] = [];
-  const discardedSelectionMaskSlices: GpuHistorySlice[] = [];
+  const batchSlicesToRelease: GpuHistorySlice[] = [];
+  const selectionRevisionsToRelease: Array<{
+    revision: number;
+    snapshot: { gpuSlice: GpuHistorySlice };
+  }> = [];
+  const transformSelectionSnapshotsToRelease: Array<{ gpuSlice: GpuHistorySlice }> = [];
+  const retainedRasterImageAssetIds = new Set<string>();
+  const rasterImageAssetIdsToDelete: string[] = [];
+  const sliceIdsToRelease = new Set<number>();
+  const selectionActionIdsToDelete: number[] = [];
+  const vectorRasterActionsToDestroy: VectorRasterizeHistoryAction[] = [];
+  const importActionsToDestroy: RasterImportHistoryAction[] = [];
+  const transformActionsToDestroy: RasterTransformHistoryAction[] = [];
+  const releasedTransformSelectionSlices = new Set<number>();
   let retainedStampCount = 0;
-  for (const batch of engine.historyBatches) {
+  let chunks = 0;
+  let yields = 0;
+  let releasedSlices = 0;
+
+  const abortResult = (): HistoryIncrementalCompactionResult => ({
+    completed: false,
+    chunks,
+    yields,
+    releasedSlices,
+  });
+  const reserveSliceToRelease = (slice: GpuHistorySlice): boolean => {
+    if (sliceIdsToRelease.has(slice.id)) return false;
+    sliceIdsToRelease.add(slice.id);
+    return true;
+  };
+  const retainRasterImageNode = (
+    node: MixedSceneVectorHistoryState["node"],
+  ): void => {
+    if (node?.kind === "image") retainedRasterImageAssetIds.add(node.document.assetId);
+  };
+  const yieldBetweenPhases = async (worked: boolean): Promise<boolean> => {
+    if (!worked) return hooks.shouldContinue();
+    await hooks.yieldTurn();
+    yields += 1;
+    return hooks.shouldContinue();
+  };
+  const processArrayPhase = async <T>(
+    values: readonly T[],
+    process: (value: T) => void,
+  ): Promise<boolean> => {
+    const result = await processHistoryMaintenanceChunks(
+      values.length,
+      (start, end) => {
+        for (let index = start; index < end; index += 1) process(values[index]);
+      },
+      hooks,
+    );
+    chunks += result.chunks;
+    yields += result.yields;
+    if (!result.completed) return false;
+    return yieldBetweenPhases(values.length > 0);
+  };
+  const processIteratorPhase = async <T>(
+    iterator: Iterator<T>,
+    process: (value: T) => void,
+  ): Promise<boolean> => {
+    let worked = false;
+    while (true) {
+      if (!hooks.shouldContinue()) return false;
+      let count = 0;
+      let done = false;
+      while (count < 64) {
+        const next = iterator.next();
+        if (next.done) {
+          done = true;
+          break;
+        }
+        process(next.value);
+        count += 1;
+        worked = true;
+      }
+      if (count > 0) chunks += 1;
+      if (done) break;
+      await hooks.yieldTurn();
+      yields += 1;
+      if (!hooks.shouldContinue()) return false;
+    }
+    return yieldBetweenPhases(worked);
+  };
+  const releaseSlicePhase = async <T>(
+    values: readonly T[],
+    sliceFor: (value: T) => GpuHistorySlice,
+    beforeRelease?: (value: T) => void,
+  ): Promise<boolean> => {
+    const result = await processHistoryMaintenanceChunks(
+      values.length,
+      (start, end) => {
+        const slices: GpuHistorySlice[] = [];
+        for (let index = start; index < end; index += 1) {
+          const value = values[index];
+          beforeRelease?.(value);
+          slices.push(sliceFor(value));
+        }
+        releasedSlices += engine.historyGpuStorage.releaseMany(slices);
+      },
+      hooks,
+    );
+    chunks += result.chunks;
+    yields += result.yields;
+    if (!result.completed) return false;
+    return yieldBetweenPhases(values.length > 0);
+  };
+
+  if (!await processArrayPhase(engine.historyActions, (action) => {
+    if (action.kind === "stroke" || action.kind === "fill") {
+      retainedActionIds.add(action.id);
+    } else if (action.kind === "vector-rasterize") {
+      retainedVectorRasterIds.add(action.id);
+      retainRasterImageNode(action.vectorState.node);
+    } else if (action.kind === "raster-import") {
+      retainedImportIds.add(action.id);
+    } else if (action.kind === "raster-transform") {
+      retainedTransformIds.add(action.id);
+    } else if (action.kind === "vector") {
+      retainRasterImageNode(action.delta.before.node);
+      retainRasterImageNode(action.delta.after.node);
+    }
+  })) return abortResult();
+
+  const scene = engine.mixedSceneStack;
+  if (scene && !await processArrayPhase(scene.items, (item) => {
+    if (item.kind === "image") retainRasterImageNode(scene.imageById(item.imageNodeId));
+  })) return abortResult();
+
+  if (!await processArrayPhase(engine.historyBatches, (batch) => {
     if (!retainedActionIds.has(batch.actionId)) {
-      discardedSlices.push(batch.gpuSlice);
-      continue;
+      if (reserveSliceToRelease(batch.gpuSlice)) batchSlicesToRelease.push(batch.gpuSlice);
+    } else {
+      retainedBatches.push(batch);
+      retainedStampCount += batch.kind === "paint"
+        ? batch.stampCount
+        : batch.kind === "blend"
+          ? batch.batches.length
+          : 0;
     }
-    retainedBatches.push(batch);
-    retainedStampCount += batch.kind === "paint"
-      ? batch.stampCount
-      : batch.kind === "blend"
-        ? batch.batches.length
-        : 0;
-  }
-  for (const actionId of engine.selectionHistoryMasksByAction.keys()) {
-    if (!retainedActionIds.has(actionId)) {
-      engine.selectionHistoryMasksByAction.delete(actionId);
+  })) return abortResult();
+
+  const retainedSelectionSnapshots = new Set<unknown>();
+  if (!await processIteratorPhase(
+    engine.selectionHistoryMasksByAction.entries(),
+    ([actionId, snapshot]) => {
+      if (!retainedActionIds.has(actionId)) {
+        selectionActionIdsToDelete.push(actionId);
+      } else {
+        retainedSelectionSnapshots.add(snapshot);
+      }
+    },
+  )) return abortResult();
+  if (!await processIteratorPhase(
+    engine.selectionHistoryMasksByRevision.entries(),
+    ([revision, snapshot]) => {
+      if (retainedSelectionSnapshots.has(snapshot)) return;
+      if (reserveSliceToRelease(snapshot.gpuSlice)) {
+        selectionRevisionsToRelease.push({ revision, snapshot });
+      }
+    },
+  )) return abortResult();
+
+  if (!await processArrayPhase(engine.discardedVectorRasterHistoryActions, (action) => {
+    if (!retainedVectorRasterIds.has(action.id)) vectorRasterActionsToDestroy.push(action);
+  })) return abortResult();
+  if (!await processArrayPhase(engine.discardedRasterImportHistoryActions, (action) => {
+    if (!retainedImportIds.has(action.id)) importActionsToDestroy.push(action);
+  })) return abortResult();
+  if (!await processArrayPhase(engine.discardedRasterTransformHistoryActions, (action) => {
+    if (retainedTransformIds.has(action.id)) return;
+    transformActionsToDestroy.push(action);
+    for (const snapshot of [action.selectionBefore, action.selectionAfter]) {
+      if (!snapshot || releasedTransformSelectionSlices.has(snapshot.gpuSlice.id)) continue;
+      releasedTransformSelectionSlices.add(snapshot.gpuSlice.id);
+      if (reserveSliceToRelease(snapshot.gpuSlice)) {
+        transformSelectionSnapshotsToRelease.push(snapshot);
+      }
     }
+  })) return abortResult();
+  if (!await processIteratorPhase(
+    engine.rasterImageGpuResources.keys(),
+    (assetId) => {
+      if (!retainedRasterImageAssetIds.has(assetId)) rasterImageAssetIdsToDelete.push(assetId);
+    },
+  )) return abortResult();
+
+  if (!await processArrayPhase(selectionActionIdsToDelete, (actionId) => {
+    engine.selectionHistoryMasksByAction.delete(actionId);
+  })) return abortResult();
+  // Release one physical allocator batch per bounded browser turn. Any map or
+  // bind-group reference is removed in the same synchronous chunk as its
+  // slice, so an interaction starting at the following yield cannot reuse it.
+  if (!await releaseSlicePhase(batchSlicesToRelease, (slice) => slice)) {
+    return abortResult();
   }
-  const retainedSelectionSnapshots = new Set(engine.selectionHistoryMasksByAction.values());
-  for (const [revision, snapshot] of engine.selectionHistoryMasksByRevision) {
-    if (!retainedSelectionSnapshots.has(snapshot)) {
-      discardedSelectionMaskSlices.push(snapshot.gpuSlice);
-      engine.selectionHistoryMasksByRevision.delete(revision);
-      engine.selectionHistoryClipBindGroups.delete(snapshot.gpuSlice.id);
-    }
-  }
-  engine.historyGpuStorage.releaseMany([
-    ...discardedSlices,
-    ...discardedSelectionMaskSlices,
-  ]);
+  if (!await releaseSlicePhase(
+    selectionRevisionsToRelease,
+    (entry) => entry.snapshot.gpuSlice,
+    (entry) => {
+      engine.selectionHistoryClipBindGroups.delete(entry.snapshot.gpuSlice.id);
+      engine.selectionHistoryMasksByRevision.delete(entry.revision);
+    },
+  )) return abortResult();
+  if (!await releaseSlicePhase(
+    transformSelectionSnapshotsToRelease,
+    (snapshot) => snapshot.gpuSlice,
+    (snapshot) => engine.selectionHistoryClipBindGroups.delete(snapshot.gpuSlice.id),
+  )) return abortResult();
+
+  if (!await processArrayPhase(vectorRasterActionsToDestroy, (action) => {
+    destroyVectorRasterHistorySeed(action);
+  })) return abortResult();
+  if (!await processArrayPhase(importActionsToDestroy, (action) => {
+    destroyRasterImportHistorySeed(action);
+  })) return abortResult();
+  if (!await processArrayPhase(transformActionsToDestroy, (action) => {
+    destroyLayerColdStorage(action.seed);
+  })) return abortResult();
+  if (!await processArrayPhase(rasterImageAssetIdsToDelete, (assetId) => {
+    const resource = engine.rasterImageGpuResources.get(assetId);
+    if (!resource) return;
+    resource.uniformBuffer.destroy();
+    resource.texture.destroy();
+    engine.rasterImageGpuResources.delete(assetId);
+  })) return abortResult();
+  if (!hooks.shouldContinue()) return abortResult();
   engine.historyBatches = retainedBatches;
   engine.historyStoredBaseStamps = retainedStampCount;
-  engine.historyCompactionPending = false;
-  const retainedVectorRasterIds = new Set(
-    engine.historyActions
-      .filter((action) => action.kind === "vector-rasterize")
-      .map((action) => action.id),
-  );
-  const releasedVectorRasterActions = new Set<VectorRasterizeHistoryAction>();
-  for (const action of engine.discardedVectorRasterHistoryActions) {
-    if (!retainedVectorRasterIds.has(action.id) && !releasedVectorRasterActions.has(action)) {
-      destroyVectorRasterHistorySeed(action);
-      releasedVectorRasterActions.add(action);
-    }
-  }
   engine.discardedVectorRasterHistoryActions = [];
-  const retainedImportIds = new Set(
-    engine.historyActions
-      .filter((action) => action.kind === "raster-import")
-      .map((action) => action.id),
-  );
-  const releasedImportActions = new Set<RasterImportHistoryAction>();
-  for (const action of engine.discardedRasterImportHistoryActions) {
-    if (!retainedImportIds.has(action.id) && !releasedImportActions.has(action)) {
-      destroyRasterImportHistorySeed(action);
-      releasedImportActions.add(action);
-    }
-  }
   engine.discardedRasterImportHistoryActions = [];
-  const retainedTransformIds = new Set(
-    engine.historyActions
-      .filter((action) => action.kind === "raster-transform")
-      .map((action) => action.id),
-  );
-  const releasedTransformActions = new Set<RasterTransformHistoryAction>();
-  const releasedTransformSelectionSlices = new Set<number>();
-  for (const action of engine.discardedRasterTransformHistoryActions) {
-    if (!retainedTransformIds.has(action.id) && !releasedTransformActions.has(action)) {
-      destroyLayerColdStorage(action.seed);
-      for (const snapshot of [action.selectionBefore, action.selectionAfter]) {
-        if (snapshot && !releasedTransformSelectionSlices.has(snapshot.gpuSlice.id)) {
-          engine.selectionHistoryClipBindGroups.delete(snapshot.gpuSlice.id);
-          engine.historyGpuStorage.release(snapshot.gpuSlice);
-          releasedTransformSelectionSlices.add(snapshot.gpuSlice.id);
-        }
-      }
-      releasedTransformActions.add(action);
-    }
-  }
   engine.discardedRasterTransformHistoryActions = [];
-  engine.sweepRasterImageGpuResources();
-  scheduleHistoryGpuTrim(engine);
+  engine.historyCompactionPending = false;
+  engine.historyGpuStorage.trimEmptyPages(true);
+  return {
+    completed: true,
+    chunks,
+    yields,
+    releasedSlices,
+  };
 }
 
 export function recordVectorHistoryAction(engine: BrushEngine, 
@@ -1041,6 +1408,7 @@ export function historyStepTargetLayerIndex(engine: BrushEngine, delta: -1 | 1):
     !action
     || action.kind === "vector"
     || action.kind === "scene-reorder"
+    || action.kind === "layer-metadata"
     || action.kind === "vector-rasterize"
     || action.kind === "raster-import"
   ) {
@@ -1066,7 +1434,7 @@ export function truncateRedoHistory(engine: BrushEngine): void {
   engine.historyActions.length = engine.historyCursor;
 
   // Il primo stamp dopo un Undo deve restare O(1): i payload abbandonati
-  // vengono esclusi subito e liberati alla prossima operazione esplicita.
+  // vengono esclusi subito e liberati dalla manutenzione idle dopo una fence.
   engine.historyCompactionPending = true;
 }
 
@@ -1074,6 +1442,11 @@ export function historyStepBlockedByLayer(engine: BrushEngine, delta: -1 | 1): b
   const action = delta < 0
     ? engine.historyActions[engine.historyCursor - 1]
     : engine.historyActions[engine.historyCursor];
+  if (action?.kind === "layer-metadata") {
+    const target = delta < 0 ? action.before : action.after;
+    return !engine.layerStack.byId(action.layerId)
+      || !engine.layerStack.isClippingHistoryStateApplicable(target.clipping);
+  }
   if (action?.kind === "scene-reorder") {
     const target = delta < 0 ? action.before : action.after;
     const scene = engine.mixedSceneStack;

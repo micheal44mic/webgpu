@@ -24,7 +24,7 @@
     "layer-reorder-ui:verify": "node scripts/verify-mobile-layer-reorder.mjs",
     "scene-reorder:verify": "node scripts/verify-mixed-scene-reorder.mjs",
     "thickness:verify": "node scripts/verify-thickness-dynamics.mjs",
-    "history:verify": "node scripts/verify-history-journal.mjs",
+    "history:verify": "node scripts/verify-history-journal.mjs && node scripts/verify-history-retention.mjs",
     "layers:verify": "node scripts/verify-layer-stack.mjs",
     "stroke:verify": "node scripts/verify-stroke-core.mjs",
     "stroke-curve:verify": "node scripts/verify-stroke-curve.mjs",

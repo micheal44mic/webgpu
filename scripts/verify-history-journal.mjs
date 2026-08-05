@@ -17,7 +17,7 @@ import {
 
 assert.equal(
   HISTORY_JOURNAL_STRATEGY,
-  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-blend-scene-reorder-v7",
+  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-metadata-scene-reorder-v8",
 );
 
 const stroke = (id, layerId) => ({ id, kind: "stroke", layerId });
@@ -32,6 +32,7 @@ const layerBlendMode = (id, layerId) => ({
   before: "normal",
   after: "multiply",
 });
+const layerMetadata = (id, layerId) => ({ id, kind: "layer-metadata", layerId });
 const vectorRasterize = (id, layerId) => ({ id, kind: "vector-rasterize", layerId });
 const rasterImport = (id, layerId) => ({ id, kind: "raster-import", layerId });
 const rasterTransform = (id, layerId, hasContent = true) => ({
@@ -83,6 +84,19 @@ const rasterTransform = (id, layerId, hasContent = true) => ({
 
   const withPixels = [stroke(1, 7), layerBlendMode(2, 7)];
   assert.equal(hasVisibleContent(withPixels, 2, 7), true);
+  assert.deepEqual([...visibleStrokeIds(withPixels, 2, 7)], [1]);
+}
+
+// Presentation, clipping and effects are metadata too: they require a live
+// owner but must never create pixels or alter raster replay selection.
+{
+  const onlyMetadata = [layerMetadata(1, 7)];
+  assert.equal(hasVisibleContent(onlyMetadata, 1), false);
+  assert.deepEqual([...layersWithVisibleContent(onlyMetadata, 1)], []);
+  assert.deepEqual([...visibleStrokeIds(onlyMetadata, 1, 7)], []);
+  assert.equal(historyStepTargetsMissingLayer(onlyMetadata, 1, -1, new Set([7])), false);
+  assert.equal(historyStepTargetsMissingLayer(onlyMetadata, 1, -1, new Set()), true);
+  const withPixels = [stroke(1, 7), layerMetadata(2, 7)];
   assert.deepEqual([...visibleStrokeIds(withPixels, 2, 7)], [1]);
 }
 
@@ -464,6 +478,18 @@ const rasterTransform = (id, layerId, hasContent = true) => ({
   );
   const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const effectsSheet = readFileSync(
+    new URL("../src/mobile-raster-effects-sheet.ts", import.meta.url),
+    "utf8",
+  );
+  const strokeSheet = readFileSync(
+    new URL("../src/mobile-stroke-sheet.ts", import.meta.url),
+    "utf8",
+  );
+  const toolSheet = readFileSync(
+    new URL("../src/mobile-tool-settings-sheet.ts", import.meta.url),
+    "utf8",
+  );
   const paintBatch = engine.slice(
     engine.indexOf("interface PaintHistoryRenderBatch"),
     engine.indexOf("interface BlendHistoryRenderBatch"),
@@ -486,7 +512,8 @@ const rasterTransform = (id, layerId, hasContent = true) => ({
   assert(engine.includes("historyGpuMiB,"));
   assert(engine.includes("historyGpuUsedMiB,"));
   assert(engine.includes("historyGpuPageCount: historyGpu.pageCount"));
-  assert(engine.includes("...discardedSelectionMaskSlices"));
+  assert(engine.includes("selectionRevisionsToRelease"));
+  assert(engine.includes("releaseSlicePhase("));
   assert(engine.includes("selectionHistoryMasksByAction"));
   assert(engine.includes("selectionHistoryMasksByRevision"));
   assert(selectionRuntime.includes("identity: engine.pixelSelectionIdentity"));
@@ -533,6 +560,22 @@ const rasterTransform = (id, layerId, hasContent = true) => ({
   assert(main.includes("historyGpuUsedMiB"));
   assert(html.includes('id="gpuMemoryHistoryLabel"'));
   assert(html.includes("La cronologia raster mostra pagine GPU riservate"));
+  assert(engine.includes('kind: "layer-metadata"'));
+  assert(engine.includes("captureRasterLayerMetadataHistoryState"));
+  assert(engine.includes("applyRasterLayerMetadataHistoryState"));
+  assert(engine.includes("restoreClippingHistoryState(target.clipping)"));
+  assert(engine.includes("undoBlockedReason"));
+  assert(engine.includes("redoBlockedReason"));
+  assert(effectsSheet.includes("commitHistoryEditIfIdle"));
+  assert(strokeSheet.includes("commitHistoryEditIfIdle"));
+  assert.match(effectsSheet, /applyLoop = null;[\s\S]{0,180}commitHistoryEditIfIdle/);
+  assert.match(strokeSheet, /applyLoop = null;[\s\S]{0,180}commitHistoryEditIfIdle/);
+  assert.match(toolSheet, /visibilitychange[\s\S]{0,180}finishSvgPaintEdit/);
+  assert.match(toolSheet, /pagehide[\s\S]{0,100}finishSvgPaintEdit/);
+  assert.match(
+    toolSheet,
+    /input\.addEventListener\("change"[\s\S]{0,500}finally[\s\S]{0,100}finishSvgPaintEdit/,
+  );
 
   const moveCursor = engine.slice(
     engine.indexOf("export async function moveHistoryCursor"),
@@ -563,13 +606,13 @@ const rasterTransform = (id, layerId, hasContent = true) => ({
     engine.indexOf("export async function rebuildActiveLayerFromHistory"),
     engine.indexOf("export async function applyVectorHistoryState"),
   );
-  const seedBranchStart = rasterReplay.indexOf("if (seedAction) {");
+  const seedBranchStart = rasterReplay.indexOf("if (hasReplaySeed) {");
   const seedClear = rasterReplay.indexOf(
     "engine.submitImmediate(\n        [],\n        true,\n        engine.settings,\n        false,\n        null,",
     seedBranchStart,
   );
   const seedHydration = rasterReplay.indexOf(
-    "encodeLayerColdHydration(encoder, seedAction.seed, hot);",
+    "encodeLayerColdHydration(encoder, replaySeed, hot);",
     seedClear,
   );
   const seedOnlyPresentation = rasterReplay.indexOf(
@@ -577,7 +620,7 @@ const rasterTransform = (id, layerId, hasContent = true) => ({
     seedHydration,
   );
   const seedOnlyDirtyBounds = rasterReplay.indexOf(
-    "seedAction.baseBounds,\n          true,",
+    "replaySeedBounds,\n          true,",
     seedOnlyPresentation,
   );
   assert(
@@ -593,6 +636,8 @@ const rasterTransform = (id, layerId, hasContent = true) => ({
     /lastVisibleBatchIndex < 0/,
     "il clear precedente al seed non deve mai diventare la presentazione finale",
   );
+  assert(rasterReplay.includes("periodicCheckpointChainForReplay(engine, layerId)"));
+  assert(rasterReplay.includes("periodicChain.flatMap"));
 
   const vectorMutation = engine.slice(
     engine.indexOf("export async function mutateMixedScenePresentation"),

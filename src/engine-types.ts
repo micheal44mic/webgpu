@@ -177,8 +177,11 @@ export interface HistoryState {
   cursor: number;
   storedBaseStamps: number;
   logicalStampBytes: number;
+  /** Null only when the corresponding operation can start immediately. */
+  undoBlockedReason: string | null;
+  redoBlockedReason: string | null;
   /** Proprietà continue o Trasforma aperti: Undo/Redo restano bloccati. */
-  openEdit: "property" | "transform" | null;
+  openEdit: "property" | "raster-property" | "transform" | null;
 }
 
 export interface BenchmarkResult {

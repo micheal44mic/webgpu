@@ -17,9 +17,13 @@ import type {
 import type { ShapeOccupancySelection } from "./shape-occupancy";
 import { MAX_STAMPS_PER_BATCH, STAMP_STRIDE_BYTES } from "./engine-limits";
 import type { LayerColdStorageResources } from "./engine-layer-resources";
-import type { LayerRecord } from "./layer-stack";
+import type { LayerClippingHistoryEntry, LayerRecord } from "./layer-stack";
 import type { LayerBlendMode } from "./layer-blend-modes";
 import type { MixedSceneOrderState } from "./mixed-scene-reorder-core";
+import type { RasterStrokeStyle } from "./stroke-core";
+import type { RasterBevelStyle } from "./bevel-core";
+import type { RasterInnerShadowStyle, RasterOuterShadowStyle } from "./shadow-core";
+import type { RasterColorOverlayStyle } from "./raster-color-overlay-core";
 
 export interface SelectionHistoryMaskSnapshot {
   readonly revision: number;
@@ -59,6 +63,36 @@ export interface MixedSceneReorderHistoryAction {
   kind: "scene-reorder";
   before: MixedSceneOrderState;
   after: MixedSceneOrderState;
+}
+
+/** Small CPU-only state needed to reverse one raster property/effect gesture. */
+export interface RasterLayerMetadataHistoryState {
+  readonly layerId: number;
+  readonly visible: boolean;
+  readonly opacity: number;
+  readonly clipping: readonly LayerClippingHistoryEntry[];
+  readonly strokeStyle: RasterStrokeStyle;
+  readonly bevelStyle: RasterBevelStyle;
+  readonly outerShadowStyle: RasterOuterShadowStyle;
+  readonly innerShadowStyle: RasterInnerShadowStyle;
+  readonly colorOverlayStyle: RasterColorOverlayStyle;
+}
+
+export interface RasterLayerMetadataHistoryAction {
+  id: number;
+  kind: "layer-metadata";
+  layerId: number;
+  /** Human-readable diagnostic, never used to choose replay behavior. */
+  property:
+    | "presentation"
+    | "clipping"
+    | "stroke"
+    | "color-overlay"
+    | "outer-shadow"
+    | "inner-shadow"
+    | "bevel";
+  before: RasterLayerMetadataHistoryState;
+  after: RasterLayerMetadataHistoryState;
 }
 
 /**
@@ -156,6 +190,7 @@ export type HistoryAction =
   | RasterHistoryAction
   | VectorHistoryAction
   | LayerBlendModeHistoryAction
+  | RasterLayerMetadataHistoryAction
   | MixedSceneReorderHistoryAction
   | VectorRasterizeHistoryAction
   | RasterImportHistoryAction
@@ -173,6 +208,12 @@ export interface ActiveVectorHistoryEdit {
   key: MixedSceneVectorKey;
   before: MixedSceneVectorHistoryState;
   scope: "property" | "transform";
+}
+
+export interface ActiveRasterLayerMetadataHistoryEdit {
+  readonly layerId: number;
+  readonly property: RasterLayerMetadataHistoryAction["property"];
+  readonly before: RasterLayerMetadataHistoryState;
 }
 
 export function vectorHistoryStatesEqual(

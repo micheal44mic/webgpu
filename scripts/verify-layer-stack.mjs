@@ -439,6 +439,70 @@ const newStack = () => new LayerStack(createStyles);
   );
 }
 
+// History restores the complete graph by stable id in one atomic publication.
+// A transient per-row restore would reject the same valid before/after pair.
+{
+  const stack = newStack();
+  const baseId = stack.active.id;
+  const first = stack.add("Clip storico 1");
+  stack.setClippingEnabled(first, true);
+  const second = stack.add("Clip storico 2");
+  stack.setClippingEnabled(second, true);
+  const joined = stack.captureClippingHistoryState();
+  stack.setClippingEnabled(first, false);
+  const split = stack.captureClippingHistoryState();
+  assert.deepEqual(
+    stack.layers.map((record) => record.clippingParentId),
+    [null, null, stack.at(first).id],
+  );
+  assert.equal(stack.restoreClippingHistoryState(joined), true);
+  assert.deepEqual(
+    stack.layers.map((record) => record.clippingParentId),
+    [null, baseId, baseId],
+  );
+  assert.equal(stack.restoreClippingHistoryState(split), true);
+  const future = stack.add("Raster aggiunto dopo la storia");
+  const futureId = stack.at(future).id;
+  assert.equal(stack.restoreClippingHistoryState(joined), true);
+  assert.deepEqual(
+    stack.layers.map((record) => [record.id, record.clippingParentId]),
+    [
+      [baseId, null],
+      [stack.at(first).id, baseId],
+      [stack.at(second).id, baseId],
+      [futureId, null],
+    ],
+    "Undo metadata deve preservare i raster aggiunti dopo lo snapshot",
+  );
+  const beforeInvalid = stack.captureClippingHistoryState();
+  assert.throws(
+    () => stack.restoreClippingHistoryState([
+      ...beforeInvalid.slice(0, 2),
+      { layerId: stack.at(second).id, parentId: 999 },
+    ]),
+    /assente/,
+  );
+  assert.deepEqual(stack.captureClippingHistoryState(), beforeInvalid);
+}
+
+// A future clipping child can make an old partial graph impossible. The gate
+// must refuse it without mutating the live graph instead of publishing a chain.
+{
+  const stack = newStack();
+  const baseId = stack.active.id;
+  const child = stack.add("Base futura");
+  stack.setClippingEnabled(child, true);
+  const oldJoined = stack.captureClippingHistoryState();
+  stack.setClippingEnabled(child, false);
+  const futureChild = stack.add("Clip futuro");
+  stack.setClippingEnabled(futureChild, true);
+  const live = stack.captureClippingHistoryState();
+  assert.equal(stack.isClippingHistoryStateApplicable(oldJoined), false);
+  assert.throws(() => stack.restoreClippingHistoryState(oldJoined), /parent.*base/i);
+  assert.deepEqual(stack.captureClippingHistoryState(), live);
+  assert.equal(stack.byId(baseId)?.clippingParentId, null);
+}
+
 // Removing a base detaches all of its children instead of leaving dangling ids.
 // Removing a child retains its parent id on the detached history record, and an
 // exact valid reattach restores that relationship.
@@ -2060,8 +2124,13 @@ assert.notEqual(rebuildStart, -1, "il replay deve dichiarare di ricostruire il l
 const rebuildBody = engineSource.slice(rebuildStart, rebuildStart + 1_500);
 assert.match(
   rebuildBody,
-  /\} = selectLayerReplayAfterCheckpoint\(\s*engine\.historyActions,\s*engine\.historyCursor,\s*engine\.historyBatches,\s*layerId,\s*\)/,
+  /const journalSelection = selectLayerReplayAfterCheckpoint\(\s*engine\.historyActions,\s*engine\.historyCursor,\s*engine\.historyBatches,\s*layerId,\s*\)/,
   "il replay reale deve usare il selettore per-livello checkpoint-aware testato",
+);
+assert.match(
+  rebuildBody,
+  /periodicCheckpointChainForReplay\(engine, layerId\)/,
+  "il replay deve preferire il checkpoint periodico più vicino quando è più recente",
 );
 // Nothing in the replay may index the unfiltered array, or a single stray index
 // would reintroduce another layer's batch.
@@ -2091,8 +2160,10 @@ assert.match(
   /return historyStepTargetsMissingLayer\(/,
   "anche il gate per-passo deve usare la funzione pura testata",
 );
-assert.match(engineSource, /&& !historyStepBlockedByLayer\(this, -1\)/);
-assert.match(engineSource, /&& !historyStepBlockedByLayer\(this, 1\)/);
+assert.match(engineSource, /const undoBlockedReason = this\.historyBlockedReason\(-1\)/);
+assert.match(engineSource, /const redoBlockedReason = this\.historyBlockedReason\(1\)/);
+assert.match(engineSource, /canUndo: undoBlockedReason === null/);
+assert.match(engineSource, /canRedo: redoBlockedReason === null/);
 const cursorStart = engineSource.indexOf("export async function moveHistoryCursor(");
 const cursorEnd = engineSource.indexOf(
   "export async function rebuildActiveLayerFromHistory(",

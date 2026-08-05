@@ -160,6 +160,12 @@ export class CustomBrushAssetRegistry {
     return this.assets.delete(id);
   }
 
+  memoryBytes(): number {
+    let bytes = 0;
+    for (const asset of this.assets.values()) bytes += asset.rgba.byteLength;
+    return bytes;
+  }
+
   private createId(
     kind: "shape" | "grain",
     width: number,

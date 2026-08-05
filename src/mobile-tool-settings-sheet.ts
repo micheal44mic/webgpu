@@ -54,8 +54,8 @@ export interface MobileToolSettingsSheetOptions {
   readonly setSelectedLayerBlendMode: (blendMode: LayerBlendMode) => void;
   readonly getSelectedSvgStyle: () => MobileSvgStyleSnapshot | null;
   readonly setSelectedSvgPaintColor: (index: number, color: string) => void;
-  readonly beginSvgPaintEdit: () => void;
-  readonly commitSvgPaintEdit: () => void;
+  readonly beginSvgPaintEdit: () => boolean;
+  readonly commitSvgPaintEdit: () => boolean;
   readonly rasterizeSelectedSvg: () => void;
   readonly getTextCreationColor: () => string;
   readonly createText: (color: string) => void;
@@ -461,6 +461,11 @@ export class MobileToolSettingsSheetController {
     this.sheet.dataset.state = "closed";
     this.sheet.setAttribute("inert", "");
     this.bindEvents();
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState !== "visible") this.finishSvgPaintEdit();
+    });
+    window.addEventListener("pagehide", () => this.finishSvgPaintEdit());
+    window.addEventListener("blur", () => this.finishSvgPaintEdit());
     this.transformStateObserver = new MutationObserver(() => {
       if (!this.openState) return;
       if (this.activeKind === "transform") this.syncTransform();
@@ -480,6 +485,10 @@ export class MobileToolSettingsSheetController {
 
   get isOpen(): boolean {
     return this.openState;
+  }
+
+  commitOpenHistoryEdits(): void {
+    this.finishSvgPaintEdit();
   }
 
   get toolKind(): MobileToolSettingsKind | null {
@@ -890,8 +899,7 @@ export class MobileToolSettingsSheetController {
   private startSvgPaintEdit(index: number): void {
     if (this.svgPaintEditIndex === index) return;
     this.finishSvgPaintEdit();
-    this.svgPaintEditIndex = index;
-    this.options.beginSvgPaintEdit();
+    if (this.options.beginSvgPaintEdit()) this.svgPaintEditIndex = index;
   }
 
   private finishSvgPaintEdit(): void {
@@ -926,9 +934,12 @@ export class MobileToolSettingsSheetController {
       });
       input.addEventListener("change", () => {
         this.startSvgPaintEdit(index);
-        label.style.setProperty("--mobile-raster-effect-color", input.value);
-        this.options.setSelectedSvgPaintColor(index, input.value);
-        this.finishSvgPaintEdit();
+        try {
+          label.style.setProperty("--mobile-raster-effect-color", input.value);
+          this.options.setSelectedSvgPaintColor(index, input.value);
+        } finally {
+          this.finishSvgPaintEdit();
+        }
       });
       input.addEventListener("blur", () => this.finishSvgPaintEdit());
       input.addEventListener("pointercancel", () => this.finishSvgPaintEdit());

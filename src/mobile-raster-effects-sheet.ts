@@ -278,6 +278,8 @@ export interface MobileRasterEffectsSheetOptions {
   readonly applyInnerShadowStyle: (style: RasterInnerShadowStyle) => Promise<boolean>;
   readonly getBevelStyle: () => RasterBevelStyle;
   readonly applyBevelStyle: (style: RasterBevelStyle) => Promise<boolean>;
+  readonly beginHistoryEdit: (kind: MobileRasterEffectKind) => void;
+  readonly commitHistoryEdit: () => void;
   readonly beforeOpen: () => void;
   readonly onOpenChange: (open: boolean) => void;
 }
@@ -428,6 +430,8 @@ export class MobileRasterEffectsSheetController {
   private readonly pendingOrder: MobileRasterEffectKind[] = [];
   private nextStyleVersion = 1;
   private applyLoop: Promise<void> | null = null;
+  private historyEditOpen = false;
+  private historyFinishRequested = false;
   private readonly controls = new Map<string, HTMLInputElement | HTMLSelectElement>();
   private readonly descriptors = new Map<string, MobileRasterEffectControl>();
   private readonly options: MobileRasterEffectsSheetOptions;
@@ -438,6 +442,11 @@ export class MobileRasterEffectsSheetController {
     this.sheet.dataset.state = "closed";
     this.sheet.setAttribute("inert", "");
     this.bindEvents();
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState !== "visible") this.requestHistoryEditFinish();
+    });
+    window.addEventListener("pagehide", () => this.requestHistoryEditFinish());
+    window.addEventListener("blur", () => this.requestHistoryEditFinish());
   }
 
   get isOpen(): boolean {
@@ -485,6 +494,7 @@ export class MobileRasterEffectsSheetController {
   close(restoreFocus = false): void {
     if (!this.openState) return;
     this.flushDraft();
+    this.requestHistoryEditFinish();
     this.openState = false;
     this.releaseDragCapture();
     const activeElement = document.activeElement;
@@ -529,8 +539,12 @@ export class MobileRasterEffectsSheetController {
       this.snapTo(nextMobileBottomSheetTapSnap(this.snap));
     });
 
+    this.enabledInput.addEventListener("pointerdown", () => this.beginHistoryEdit());
+    this.enabledInput.addEventListener("focus", () => this.beginHistoryEdit());
+    this.enabledInput.addEventListener("blur", () => this.requestHistoryEditFinish());
     this.enabledInput.addEventListener("change", () => {
       if (!this.activeKind) return;
+      this.beginHistoryEdit();
       const current = this.currentDraftOrStyle(this.activeKind);
       const next = this.withProperty(
         this.activeKind,
@@ -540,7 +554,23 @@ export class MobileRasterEffectsSheetController {
       );
       this.sync(next);
       this.requestStyle(this.activeKind, next, false);
+      this.requestHistoryEditFinish();
     });
+
+    this.content.addEventListener("pointerdown", (event) => {
+      const control = event.target;
+      if (control instanceof HTMLInputElement || control instanceof HTMLSelectElement) {
+        this.beginHistoryEdit();
+      }
+    });
+    this.content.addEventListener("focusin", (event) => {
+      const control = event.target;
+      if (control instanceof HTMLInputElement || control instanceof HTMLSelectElement) {
+        this.beginHistoryEdit();
+      }
+    });
+    this.content.addEventListener("focusout", () => this.requestHistoryEditFinish());
+    this.content.addEventListener("pointercancel", () => this.requestHistoryEditFinish());
 
     this.content.addEventListener("input", (event) => {
       const control = event.target;
@@ -570,9 +600,11 @@ export class MobileRasterEffectsSheetController {
           // there is no coalesced `input` draft to commit.
           this.handleControl(control, false);
         }
+        this.requestHistoryEditFinish();
         return;
       }
       this.handleControl(control, false);
+      this.requestHistoryEditFinish();
     });
 
     document.addEventListener("keydown", (event) => {
@@ -864,7 +896,40 @@ export class MobileRasterEffectsSheetController {
     })().finally(() => {
       this.applyLoop = null;
       if (this.pendingOrder.length > 0) this.startApplyLoop();
+      else this.commitHistoryEditIfIdle();
     });
+  }
+
+  private beginHistoryEdit(): void {
+    if (this.historyEditOpen || !this.activeKind) return;
+    this.historyEditOpen = true;
+    this.historyFinishRequested = false;
+    this.options.beginHistoryEdit(this.activeKind);
+  }
+
+  private requestHistoryEditFinish(): void {
+    if (!this.historyEditOpen) return;
+    this.historyFinishRequested = true;
+    if (this.applyFrame !== null) {
+      cancelAnimationFrame(this.applyFrame);
+      this.applyFrame = null;
+      this.flushDraft();
+    }
+    this.commitHistoryEditIfIdle();
+  }
+
+  private commitHistoryEditIfIdle(): void {
+    if (
+      !this.historyEditOpen
+      || !this.historyFinishRequested
+      || this.applyLoop
+      || this.draft
+      || this.pendingOrder.length > 0
+      || this.pendingByKind.size > 0
+    ) return;
+    this.historyEditOpen = false;
+    this.historyFinishRequested = false;
+    this.options.commitHistoryEdit();
   }
 
   private applyStyle(

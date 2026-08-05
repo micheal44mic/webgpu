@@ -64,6 +64,11 @@ export interface LayerRecord {
   colorOverlayStyle: RasterColorOverlayStyle;
 }
 
+export interface LayerClippingHistoryEntry {
+  readonly layerId: number;
+  readonly parentId: number | null;
+}
+
 export interface LayerEffectRendererRequirements {
   needsStrokeRenderer: boolean;
   needsBevelRenderer: boolean;
@@ -369,6 +374,74 @@ export class LayerStack {
       throw error;
     }
     return true;
+  }
+
+  captureClippingHistoryState(): readonly LayerClippingHistoryEntry[] {
+    return this.records.map((record) => ({
+      layerId: record.id,
+      parentId: record.clippingParentId,
+    }));
+  }
+
+  private clippingHistoryCandidate(
+    state: readonly LayerClippingHistoryEntry[],
+  ): LayerRecord[] {
+    const parentById = new Map(state.map((entry) => [entry.layerId, entry.parentId]));
+    if (parentById.size !== state.length) {
+      throw new Error("La cronologia clipping contiene livelli duplicati.");
+    }
+    for (const layerId of parentById.keys()) {
+      if (!this.byId(layerId)) {
+        throw new Error(`Il livello ${layerId} della cronologia clipping è assente.`);
+      }
+    }
+    return this.records.map((record) => ({
+      ...record,
+      clippingParentId: parentById.has(record.id)
+        ? parentById.get(record.id) ?? null
+        : record.clippingParentId,
+    }));
+  }
+
+  isClippingHistoryStateApplicable(
+    state: readonly LayerClippingHistoryEntry[],
+  ): boolean {
+    try {
+      this.assertClippingInvariants(this.clippingHistoryCandidate(state));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Restores the captured clipping graph atomically by stable layer id while
+   * preserving layers added after the action was recorded.
+   * Assigning every parent before validating is essential: replaying the
+   * entries one by one can temporarily break a group even when the final
+   * historical state is valid.
+   */
+  restoreClippingHistoryState(
+    state: readonly LayerClippingHistoryEntry[],
+  ): boolean {
+    const candidate = this.clippingHistoryCandidate(state);
+    this.assertClippingInvariants(candidate);
+    const previous = this.records.map((record) => record.clippingParentId);
+    const changed = this.records.some(
+      (record, index) => previous[index] !== candidate[index].clippingParentId,
+    );
+    if (!changed) return false;
+    try {
+      this.records.forEach((record, index) => {
+        record.clippingParentId = candidate[index].clippingParentId;
+      });
+      return true;
+    } catch (error) {
+      this.records.forEach((record, index) => {
+        record.clippingParentId = previous[index] ?? null;
+      });
+      throw error;
+    }
   }
 
   clippingParent(record: Readonly<LayerRecord>): LayerRecord | null {

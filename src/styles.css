@@ -965,7 +965,8 @@ select {
   }
 
   .mobile-tool-action[aria-pressed="false"] .mobile-icon-face,
-  .mobile-tool-action:disabled .mobile-icon-face {
+  .mobile-tool-action:disabled .mobile-icon-face,
+  .mobile-tool-action[aria-disabled="true"] .mobile-icon-face {
     stroke: var(--mobile-icon-inactive);
   }
 

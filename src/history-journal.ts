@@ -1,5 +1,5 @@
 export const HISTORY_JOURNAL_STRATEGY =
-  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-blend-scene-reorder-v7" as const;
+  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-metadata-scene-reorder-v8" as const;
 
 /**
  * One entry of the global journal. `layerId` is what makes a single stack usable
@@ -31,6 +31,11 @@ export type JournalAction =
   | {
     id: number;
     kind: "layer-blend-mode";
+    layerId: number;
+  }
+  | {
+    id: number;
+    kind: "layer-metadata";
     layerId: number;
   }
   | {
@@ -128,6 +133,7 @@ export function hasVisibleContent(
     if (
       action.kind === "vector"
       || action.kind === "layer-blend-mode"
+      || action.kind === "layer-metadata"
       || action.kind === "scene-reorder"
     ) continue;
     if (layerId !== undefined && action.layerId !== layerId) continue;
