@@ -4159,5 +4159,10 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   rollback. TypeScript, tutte le `31` suite `*:verify`, build Vite/Sites e
   `git diff --check` sono verdi; gli hash History restano
   `5d4a0e1b/6b710fa5/fa4fa16d/a4daf955` e la curva canonica resta a `12117`
-  stamp. Non sono state eseguite QA browser WebGPU, A/B Safari/iPhone o una
-  pubblicazione; nessuna nuova baseline prestazionale è promossa.
+  stamp. Prima della pubblicazione non sono state eseguite QA browser WebGPU o
+  A/B Safari/iPhone; nessuna nuova baseline prestazionale è promossa.
+- Pubblicazione Sites `135` completata il 5 agosto 2026 dal commit
+  `9dfa92b032604c6d1beb208a82f0142556195e77` su
+  `https://webgpu-brush-engine-michi.m1m4brand.chatgpt.site`. Il runtime resta
+  spento senza query e la pubblicazione abilita soltanto il test esplicito
+  della v5; la QA Safari/iPhone fisica è ancora da eseguire.
