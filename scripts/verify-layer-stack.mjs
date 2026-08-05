@@ -1275,6 +1275,16 @@ const mergedBody = engineSource.slice(mergedStart, mergedEnd);
 assert.match(mergedBody, /record\.visible && record\.opacity > 0 && record\.hasContent/);
 assert.match(mergedBody, /await materializeLayerCompositeSource\(engine, record, caller\)/);
 assert.match(
+  mergedBody,
+  /const contentBounds = unionMergedSurfaceRects\([\s\S]*?visibleRecords\.map\([\s\S]*?layerCompositeVisualBounds\(engine, record\)/,
+  "anche il compositore raster legacy deve derivare una bbox visiva conservativa",
+);
+assert.match(
+  mergedBody,
+  /const allocationBounds = alignedMergedSurfaceBounds\(contentBounds, LAYER_SIZE\)[\s\S]*?visibleRecords\.length,[\s\S]*?allocationBounds/,
+  "la merged raster legacy non deve tornare a una texture full-document",
+);
+assert.match(
   engineSource,
   /export async function restoreEffectsWorkbenchToActiveLayer\([\s\S]*?rebuildDomain: LayerEffectsRebuildDomain = "full-document"[\s\S]*?"await-immediately",\s*rebuildDomain/,
   "il retarget attivo deve conservare il dominio full di default e permettere il dominio contenuto soltanto ai chiamanti espliciti",
@@ -2748,7 +2758,14 @@ const iphoneMemoryMigrationSource = readFileSync(
   "utf8",
 );
 assert.match(iphoneMemoryLimitSource,
-  /iphone-real-layer-cold-tiles-checkpoint-before-each-operation-v1/);
+  /iphone-gpu-plus-compressed-cpu-peaks-v2/);
+assert.match(iphoneMemoryLimitSource, /countedGpuPlusCompressedCpuMiB/);
+assert.match(iphoneMemoryLimitSource, /peakCountedGpuPlusCompressedCpuMiB/);
+assert.match(
+  iphoneMemoryLimitSource,
+  /variant: \{[\s\S]*?layerColdCompressionEnabled: stats\.layerColdCompressionEnabled[\s\S]*?layerColdCompressionRuntimeBuild: stats\.layerColdCompressionRuntimeBuild[\s\S]*?layerColdDirectHotHydrationEnabled:[\s\S]*?stats\.layerColdDirectHotHydrationEnabled[\s\S]*?layerColdAdjacentPrefetchEnabled:[\s\S]*?stats\.layerColdAdjacentPrefetchEnabled/,
+  "ogni run iPhone deve firmare la variante lifecycle per impedire aggregazioni spurie",
+);
 const iphoneStoragePlanMatch = iphoneMemoryLimitSource.match(
   /IPHONE_MEMORY_LIMIT_STORAGE_TILE_PLAN = Object\.freeze\(\[([\s\S]*?)\]\)/,
 );

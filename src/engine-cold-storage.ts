@@ -181,7 +181,7 @@ export async function compressOneDistantLayerInBackground(engine: BrushEngine, t
       if (!layerColdCompressionEngineIdle(engine)) {
         if (!progress.pauseReported) {
           progress.pauseReported = true;
-          engine.callbacks.onStatus?.(
+          engine.publishLayerColdCompressionStatus(
             `Compressione ${source.record.name} in pausa: `
             + `${progress.nextArrayLayer}/${source.cold.tileIndices.length} tile verificati.`,
             "working",
@@ -224,7 +224,7 @@ export async function compressOneDistantLayerInBackground(engine: BrushEngine, t
     source.gpu.cold = null;
     engine.layerColdCompressionProgress = null;
     destroyLayerColdStorage(source.cold);
-    engine.callbacks.onStatus?.(
+    engine.publishLayerColdCompressionStatus(
       `${source.record.name} compresso in background: `
       + `${(progress.rawBytes / MEBIBYTE_BYTES).toFixed(1)} MiB GPU → `
       + `${(progress.storedBytes / MEBIBYTE_BYTES).toFixed(1)} MiB RAM.`,
@@ -238,7 +238,7 @@ export async function compressOneDistantLayerInBackground(engine: BrushEngine, t
       engine.layerColdCompressionClient?.dispose();
       engine.layerColdCompressionClient = null;
       const message = error instanceof Error ? error.message : String(error);
-      engine.callbacks.onStatus?.(
+      engine.publishLayerColdCompressionStatus(
         `Compressione background non disponibile; cold GPU mantenuto: ${message}`,
         "error",
       );
@@ -327,7 +327,7 @@ export async function ensureLayerColdStorageResident(engine: BrushEngine,
     };
     gpu.compressed = null;
     committed = true;
-    engine.callbacks.onStatus?.(
+    engine.publishLayerColdCompressionStatus(
       `${record.name} ripristinato dal worker senza perdita.`,
       "ok",
     );
@@ -618,14 +618,22 @@ export async function createHydratedLayerTexture(engine: BrushEngine,
   if (injectFault && completionPolicy !== "await-immediately") {
     throw new Error("Il fault hydrate richiede il completamento GPU immediato.");
   }
-  const transientCompressed = completionPolicy === "defer-to-fold-fence"
+  if (gpu.cold && gpu.compressed) {
+    throw new Error(`Livello ${record.id}: cold GPU e compresso autorevoli insieme.`);
+  }
+  // Compressed bytes remain authoritative until the caller commits ownership,
+  // so both activation and transient folding can hydrate the final hot target
+  // directly without first allocating a duplicate GPU cold store.
+  const directCompressedHydration = completionPolicy === "defer-to-fold-fence"
+    || engine.layerColdDirectHotHydrationEnabled;
+  const compressedSource = directCompressedHydration && !gpu.cold
     ? gpu.compressed
     : null;
-  if (!transientCompressed) {
+  if (!compressedSource) {
     await ensureLayerColdStorageResident(engine, record, gpu);
   }
   const cold = gpu.cold;
-  if (record.hasContent && !cold && !transientCompressed) {
+  if (record.hasContent && !cold && !compressedSource) {
     throw new Error(`Reidratazione livello ${record.id}: cold store mancante.`);
   }
   const memoryBytes = LAYER_SIZE * LAYER_SIZE
@@ -637,8 +645,14 @@ export async function createHydratedLayerTexture(engine: BrushEngine,
       const hot = engine.allocateLayerTexture(engine.layerFormat);
       engine.liveLayerHydrationTextures.set(hot.texture, memoryBytes);
       transaction.deferRollback(() => destroyTransientLayerHydration(engine, hot));
-      if (transientCompressed) {
-        await uploadCompressedLayerIntoHot(engine, record, gpu, transientCompressed, hot);
+      if (compressedSource) {
+        await uploadCompressedLayerIntoHot(engine, record, gpu, compressedSource, hot);
+        if (completionPolicy === "await-immediately") {
+          await engine.waitForGpuCapped(label);
+          if (injectFault) {
+            engine.maybeInjectLayerColdStorageFault("after-hydrate-submit");
+          }
+        }
       } else if (cold) {
         const encoder = engine.device.createCommandEncoder({ label });
         encodeLayerColdHydration(encoder, cold, hot);
@@ -722,6 +736,7 @@ export async function ensureActiveLayerHot(engine: BrushEngine, record: LayerRec
 
 export function layerColdCompressionEngineIdle(engine: BrushEngine): boolean {
   return engine.initialized
+    && !engine.layerColdCompressionInteractionActive
     && !engine.activeStroke
     && !engine.historyBusy
     && !engine.layerSwitchBusy

@@ -824,17 +824,28 @@ const mixedMemoryBenchmarkTargetMiB =
   pageSearchParams.get("mixedMemoryTargetMiB") === "600" ? 600 : 800;
 const layerCompressionStudyRequested =
   pageSearchParams.get("layerCompressionTest") === "1";
-const layerColdCompressionRequested =
-  pageSearchParams.get("layerCompressionRuntime") === "1";
 const iphoneMemoryLimitTestRequested =
   pageSearchParams.get("iphoneMemoryLimitTest") === "1";
-const vectorTextEditorEnabled = true;
-element<HTMLElement>("gpuMemoryVectorTextRow").hidden = false;
-element<HTMLElement>("gpuMemoryRasterImageRow").hidden = false;
 const layerMemoryFixtureRequested =
   layerMemoryStressTestRequested
   || iphoneMemoryLimitTestRequested
   || mixedMemoryBenchmarkRequested;
+const appleMobileMemoryLifecycle =
+  /iPhone|iPad|iPod/i.test(navigator.userAgent)
+  || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const layerColdCompressionMode = pageSearchParams.get("layerCompressionRuntime");
+const layerColdCompressionRequested =
+  layerColdCompressionMode === "1";
+const layerColdDirectHotHydrationEnabled =
+  pageSearchParams.get("layerDirectHotHydration") !== "0";
+const layerColdAdjacentPrefetchMode =
+  pageSearchParams.get("layerAdjacentPrefetch");
+const layerColdAdjacentPrefetchEnabled =
+  layerColdAdjacentPrefetchMode === "1"
+  || (!appleMobileMemoryLifecycle && layerColdAdjacentPrefetchMode !== "0");
+const vectorTextEditorEnabled = true;
+element<HTMLElement>("gpuMemoryVectorTextRow").hidden = false;
+element<HTMLElement>("gpuMemoryRasterImageRow").hidden = false;
 const iphoneMemoryLimitServerRequired = !(
   import.meta.env.DEV
   && pageSearchParams.get("memoryLimitLocalOnly") === "1"
@@ -941,6 +952,9 @@ const engine = new BrushEngine(canvas, {
   layerCompressionTestEnabled: layerCompressionStudyRequested,
   vectorTextPrototypeEnabled: vectorTextEditorEnabled,
   layerColdCompressionEnabled: layerColdCompressionRequested,
+  layerColdCompressionStatusEnabled: layerColdCompressionMode === "1",
+  layerColdDirectHotHydrationEnabled,
+  layerColdAdjacentPrefetchEnabled,
 }, rasterSelectionOverlayCanvas);
 if (import.meta.env.DEV) {
   (window as Window & { __brushEngine?: BrushEngine }).__brushEngine = engine;
@@ -1090,6 +1104,7 @@ const gpuMemoryRows: ReadonlyArray<
   ["gpuMemoryLayerCold", "layerColdMiB"],
   ["gpuMemoryActiveClippingMask", "activeClippingMaskMiB"],
   ["gpuMemoryLayerCompressed", "layerCompressedCpuMiB"],
+  ["gpuMemoryCountedWithCompressedCpu", "countedGpuPlusCompressedCpuMiB"],
   ["gpuMemoryLayerHydration", "layerHydrationMiB"],
   ["gpuMemoryLayerMips", "layerMipChainMiB"],
   ["gpuMemoryLayerBakes", "layerBakeMiB"],
@@ -9645,13 +9660,32 @@ window.addEventListener("keyup", (event) => {
   canvas.classList.remove("rotation-ready");
 });
 
+const layerCompressionInteractionPointers = new Set<number>();
 window.addEventListener("blur", () => {
   cancelMobileLayerReorderGesture();
+  if (engine.layerColdCompressionEnabled) {
+    layerCompressionInteractionPointers.clear();
+    engine.pauseLayerColdCompressionForInteraction();
+  }
   rotateShortcutHeld = false;
   canvas.classList.remove("rotation-ready");
 });
 
+window.addEventListener("focus", () => {
+  if (
+    engine.layerColdCompressionEnabled
+    && document.visibilityState === "visible"
+    && layerCompressionInteractionPointers.size === 0
+  ) {
+    engine.resumeLayerColdCompressionAfterInteraction();
+  }
+});
+
 window.addEventListener("pointerdown", (event) => {
+  if (engine.layerColdCompressionEnabled) {
+    layerCompressionInteractionPointers.add(event.pointerId);
+    engine.pauseLayerColdCompressionForInteraction();
+  }
   engine.interruptHistoryMaintenance();
   if (
     mobileLayerReorderGesture
@@ -9661,17 +9695,43 @@ window.addEventListener("pointerdown", (event) => {
   }
 }, { capture: true });
 
-window.addEventListener("pointerup", () => {
+function finishLayerCompressionPointerInteraction(event: PointerEvent): void {
+  if (!engine.layerColdCompressionEnabled) {
+    return;
+  }
+  layerCompressionInteractionPointers.delete(event.pointerId);
+  if (
+    layerCompressionInteractionPointers.size === 0
+    && document.visibilityState === "visible"
+    && document.hasFocus()
+  ) {
+    engine.resumeLayerColdCompressionAfterInteraction();
+  }
+}
+
+window.addEventListener("pointerup", (event) => {
+  finishLayerCompressionPointerInteraction(event);
   engine.resumeDiscardedHistoryMaintenance();
 }, { capture: true });
 
-window.addEventListener("pointercancel", () => {
+window.addEventListener("pointercancel", (event) => {
+  finishLayerCompressionPointerInteraction(event);
   engine.resumeDiscardedHistoryMaintenance();
 }, { capture: true });
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState !== "visible") {
     cancelMobileLayerReorderGesture();
+    if (engine.layerColdCompressionEnabled) {
+      layerCompressionInteractionPointers.clear();
+      engine.pauseLayerColdCompressionForInteraction();
+    }
+  } else if (
+    engine.layerColdCompressionEnabled
+    && layerCompressionInteractionPointers.size === 0
+    && document.hasFocus()
+  ) {
+    engine.resumeLayerColdCompressionAfterInteraction();
   }
 });
 

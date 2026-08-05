@@ -869,6 +869,9 @@ export class BrushEngine {
   readonly layerMemoryStressTestEnabled: boolean;
   readonly layerCompressionTestEnabled: boolean;
   readonly layerColdCompressionEnabled: boolean;
+  readonly layerColdCompressionStatusEnabled: boolean;
+  readonly layerColdDirectHotHydrationEnabled: boolean;
+  readonly layerColdAdjacentPrefetchEnabled: boolean;
   readonly vectorTextPrototypeEnabled: boolean;
   readonly selectionOverlayCanvas: HTMLCanvasElement | null;
 
@@ -981,6 +984,7 @@ export class BrushEngine {
   layerColdCompressionIdleTimer: number | null = null;
   layerColdCompressionEpoch = 0;
   layerColdCompressionJobRunning = false;
+  layerColdCompressionInteractionActive = false;
   layerColdCompressionProgress: LayerColdCompressionProgress | null = null;
   layerColdRestoreActiveBytes = 0;
 
@@ -1534,6 +1538,12 @@ export class BrushEngine {
     this.layerMemoryStressTestEnabled = options.layerMemoryStressTestEnabled === true;
     this.layerCompressionTestEnabled = options.layerCompressionTestEnabled === true;
     this.layerColdCompressionEnabled = options.layerColdCompressionEnabled === true;
+    this.layerColdCompressionStatusEnabled =
+      options.layerColdCompressionStatusEnabled === true;
+    this.layerColdDirectHotHydrationEnabled =
+      options.layerColdDirectHotHydrationEnabled !== false;
+    this.layerColdAdjacentPrefetchEnabled =
+      options.layerColdAdjacentPrefetchEnabled !== false;
     this.vectorTextPrototypeEnabled = options.vectorTextPrototypeEnabled === true;
     this.selectionOverlayCanvas = selectionOverlayCanvas;
     this.mixedSceneStack = this.vectorTextPrototypeEnabled
@@ -5331,6 +5341,42 @@ export class BrushEngine {
     this.layerColdCompressionProgress = null;
   }
 
+  publishLayerColdCompressionStatus(
+    message: string,
+    kind: "working" | "ok" | "error",
+  ): void {
+    if (this.layerColdCompressionStatusEnabled) {
+      this.callbacks.onStatus?.(message, kind);
+    }
+  }
+
+  pauseLayerColdCompressionForInteraction(): void {
+    this.layerColdCompressionInteractionActive = true;
+    pauseLayerColdCompressionIdle(this);
+  }
+
+  resumeLayerColdCompressionAfterInteraction(): void {
+    if (!this.layerColdCompressionInteractionActive) {
+      return;
+    }
+    this.layerColdCompressionInteractionActive = false;
+    this.scheduleLayerColdCompression();
+  }
+
+  layerColdCompressionDistantGpuBytes(): number {
+    const activeIndex = this.layerStack.activeIndex;
+    return this.layerStack.layers.reduce((total, record, index) => {
+      if (
+        Math.abs(index - activeIndex) < LAYER_COLD_COMPRESSION_MINIMUM_DISTANCE
+        || !record.hasContent
+      ) {
+        return total;
+      }
+      const gpu = this.requireLayerGpu(record.id);
+      return total + (!gpu.hot && !gpu.compressed ? gpu.cold?.memoryBytes ?? 0 : 0);
+    }, 0);
+  }
+
   scheduleLayerColdCompression(): void {
     if (
       !this.layerColdCompressionEnabled
@@ -5342,6 +5388,7 @@ export class BrushEngine {
       || this.activeStroke !== null
       || this.historyBusy
       || this.layerSwitchBusy
+      || this.layerColdCompressionInteractionActive
       || !this.selectLayerColdCompressionCandidate()
     ) {
       return;
@@ -6635,7 +6682,9 @@ export class BrushEngine {
       clearVectorTextPresentationForTransaction(this);
     }
     await ensureActiveLayerHot(this, record);
-    await ensureAdjacentLayerColdStorageResident(this);
+    if (this.layerColdAdjacentPrefetchEnabled) {
+      await ensureAdjacentLayerColdStorageResident(this);
+    }
     bindActiveLayerResources(this);
     this.layerContentBounds = record.contentBounds;
     this.layerHasContent = record.hasContent;

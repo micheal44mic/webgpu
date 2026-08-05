@@ -5,7 +5,7 @@ import { LAYER_STACK_MAXIMUM } from "./layer-stack";
 
 export const IPHONE_MEMORY_LIMIT_TEST_VERSION = 1 as const;
 export const IPHONE_MEMORY_LIMIT_TEST_BUILD =
-  "iphone-real-layer-cold-tiles-checkpoint-before-each-operation-v1" as const;
+  "iphone-gpu-plus-compressed-cpu-peaks-v2" as const;
 export const IPHONE_MEMORY_LIMIT_API_URL = "/api/iphone-memory-limit-runs";
 export const IPHONE_MEMORY_LIMIT_STORAGE_TILE_PLAN = Object.freeze([
   224, 224, 224, 224, 224,
@@ -35,12 +35,22 @@ export interface IphoneMemorySnapshot {
   layerCount: number;
   activeLayerIndex: number;
   countedTotalMiB: number;
+  countedGpuPlusCompressedCpuMiB: number;
   layerBaseMiB: number;
   layerColdMiB: number;
+  layerCompressedCpuMiB: number;
   layerHydrationMiB: number;
   layerMipChainMiB: number;
   layerBakeMiB: number;
   layerCompositeMiB: number;
+  effectsScratchPoolMiB: number;
+  lightGlazeMiB: number;
+  stabilizationTailMiB: number;
+  thicknessTailMiB: number;
+  historyGpuMiB: number;
+  presentationCacheMiB: number;
+  vectorTextPresentationMiB: number;
+  rasterImageMiB: number;
 }
 
 export interface IphoneMemoryLimitEvent {
@@ -57,6 +67,7 @@ export interface IphoneMemoryLimitEvent {
   before?: IphoneMemorySnapshot;
   after?: IphoneMemorySnapshot;
   peakCountedTotalMiB?: number;
+  peakCountedGpuPlusCompressedCpuMiB?: number;
   switch?: {
     fromIndex: number;
     toIndex: number;
@@ -84,6 +95,13 @@ export interface IphoneMemoryLimitEnvironment {
   deviceLabel: string | null;
 }
 
+export interface IphoneMemoryLimitVariant {
+  layerColdCompressionEnabled: boolean;
+  layerColdCompressionRuntimeBuild: string | null;
+  layerColdDirectHotHydrationEnabled: boolean;
+  layerColdAdjacentPrefetchEnabled: boolean;
+}
+
 export interface IphoneMemoryLimitRun {
   version: typeof IPHONE_MEMORY_LIMIT_TEST_VERSION;
   build: typeof IPHONE_MEMORY_LIMIT_TEST_BUILD;
@@ -99,10 +117,13 @@ export interface IphoneMemoryLimitRun {
     automaticMiddleAndTopSwitches: true;
   };
   environment: IphoneMemoryLimitEnvironment;
+  variant: IphoneMemoryLimitVariant;
   events: IphoneMemoryLimitEvent[];
   lastCompletedStep: number;
   lastSafeMiB: number;
   highestObservedPeakMiB: number;
+  lastSafeCountedGpuPlusCompressedCpuMiB: number;
+  highestObservedCountedGpuPlusCompressedCpuPeakMiB: number;
   latestMemory: IphoneMemorySnapshot;
   failure?: string;
 }
@@ -129,12 +150,23 @@ function snapshot(stats: EngineStats): IphoneMemorySnapshot {
     layerCount: stats.layerCount,
     activeLayerIndex: stats.activeLayerIndex,
     countedTotalMiB: stats.gpuMemory.countedTotalMiB,
+    countedGpuPlusCompressedCpuMiB:
+      stats.gpuMemory.countedGpuPlusCompressedCpuMiB,
     layerBaseMiB: stats.gpuMemory.layerBaseMiB,
     layerColdMiB: stats.gpuMemory.layerColdMiB,
+    layerCompressedCpuMiB: stats.gpuMemory.layerCompressedCpuMiB,
     layerHydrationMiB: stats.gpuMemory.layerHydrationMiB,
     layerMipChainMiB: stats.gpuMemory.layerMipChainMiB,
     layerBakeMiB: stats.gpuMemory.layerBakeMiB,
     layerCompositeMiB: stats.gpuMemory.layerCompositeMiB,
+    effectsScratchPoolMiB: stats.gpuMemory.effectsScratchPoolMiB,
+    lightGlazeMiB: stats.gpuMemory.lightGlazeMiB,
+    stabilizationTailMiB: stats.gpuMemory.stabilizationTailMiB,
+    thicknessTailMiB: stats.gpuMemory.thicknessTailMiB,
+    historyGpuMiB: stats.gpuMemory.historyGpuMiB,
+    presentationCacheMiB: stats.gpuMemory.presentationCacheMiB,
+    vectorTextPresentationMiB: stats.gpuMemory.vectorTextPresentationMiB,
+    rasterImageMiB: stats.gpuMemory.rasterImageMiB,
   };
 }
 
@@ -309,26 +341,52 @@ function updateSafeState(
   run: IphoneMemoryLimitRun,
   step: number,
   memory: IphoneMemorySnapshot,
-  peakMiB: number,
+  peaks: IphoneMemoryPeaks,
 ): void {
   run.lastCompletedStep = step;
   run.lastSafeMiB = memory.countedTotalMiB;
-  run.highestObservedPeakMiB = Math.max(run.highestObservedPeakMiB, peakMiB);
+  run.highestObservedPeakMiB = Math.max(
+    run.highestObservedPeakMiB,
+    peaks.countedGpuMiB,
+  );
+  run.lastSafeCountedGpuPlusCompressedCpuMiB =
+    memory.countedGpuPlusCompressedCpuMiB;
+  run.highestObservedCountedGpuPlusCompressedCpuPeakMiB = Math.max(
+    run.highestObservedCountedGpuPlusCompressedCpuPeakMiB,
+    peaks.countedGpuPlusCompressedCpuMiB,
+  );
   run.latestMemory = memory;
 }
 
+interface IphoneMemoryPeaks {
+  countedGpuMiB: number;
+  countedGpuPlusCompressedCpuMiB: number;
+}
+
 function startPeakSampler(engine: BrushEngine): {
-  stop: () => number;
+  stop: () => IphoneMemoryPeaks;
 } {
-  let peakMiB = engine.getStats().gpuMemory.countedTotalMiB;
+  const initial = engine.getStats().gpuMemory;
+  const peaks: IphoneMemoryPeaks = {
+    countedGpuMiB: initial.countedTotalMiB,
+    countedGpuPlusCompressedCpuMiB: initial.countedGpuPlusCompressedCpuMiB,
+  };
+  const sample = (): void => {
+    const memory = engine.getStats().gpuMemory;
+    peaks.countedGpuMiB = Math.max(peaks.countedGpuMiB, memory.countedTotalMiB);
+    peaks.countedGpuPlusCompressedCpuMiB = Math.max(
+      peaks.countedGpuPlusCompressedCpuMiB,
+      memory.countedGpuPlusCompressedCpuMiB,
+    );
+  };
   const interval = window.setInterval(() => {
-    peakMiB = Math.max(peakMiB, engine.getStats().gpuMemory.countedTotalMiB);
+    sample();
   }, 5);
   return {
     stop() {
       window.clearInterval(interval);
-      peakMiB = Math.max(peakMiB, engine.getStats().gpuMemory.countedTotalMiB);
-      return peakMiB;
+      sample();
+      return peaks;
     },
   };
 }
@@ -357,10 +415,22 @@ function createRun(
       automaticMiddleAndTopSwitches: true,
     },
     environment: collectEnvironment(stats, deviceLabel),
+    variant: {
+      layerColdCompressionEnabled: stats.layerColdCompressionEnabled,
+      layerColdCompressionRuntimeBuild: stats.layerColdCompressionRuntimeBuild,
+      layerColdDirectHotHydrationEnabled:
+        stats.layerColdDirectHotHydrationEnabled,
+      layerColdAdjacentPrefetchEnabled:
+        stats.layerColdAdjacentPrefetchEnabled,
+    },
     events: [],
     lastCompletedStep: 0,
     lastSafeMiB: initialMemory.countedTotalMiB,
     highestObservedPeakMiB: initialMemory.countedTotalMiB,
+    lastSafeCountedGpuPlusCompressedCpuMiB:
+      initialMemory.countedGpuPlusCompressedCpuMiB,
+    highestObservedCountedGpuPlusCompressedCpuPeakMiB:
+      initialMemory.countedGpuPlusCompressedCpuMiB,
     latestMemory: initialMemory,
   };
 }
@@ -388,13 +458,16 @@ async function executeMeasuredSwitch(
   onProgress?.({ run, event: attempt, completedOperations, totalOperations });
 
   const sampler = startPeakSampler(engine);
-  let peakMiB = before.countedTotalMiB;
+  let peaks: IphoneMemoryPeaks = {
+    countedGpuMiB: before.countedTotalMiB,
+    countedGpuPlusCompressedCpuMiB: before.countedGpuPlusCompressedCpuMiB,
+  };
   let result: LayerSwitchResult | null = null;
   try {
     result = await engine.setActiveLayer(targetIndex);
     await engine.waitForIdle();
   } finally {
-    peakMiB = sampler.stop();
+    peaks = sampler.stop();
   }
 
   const after = snapshot(engine.getStats());
@@ -406,10 +479,12 @@ async function executeMeasuredSwitch(
     attemptSequence: attempt.sequence,
     before,
     after,
-    peakCountedTotalMiB: peakMiB,
+    peakCountedTotalMiB: peaks.countedGpuMiB,
+    peakCountedGpuPlusCompressedCpuMiB:
+      peaks.countedGpuPlusCompressedCpuMiB,
     switch: compactSwitch(result),
   });
-  updateSafeState(run, step, after, peakMiB);
+  updateSafeState(run, step, after, peaks);
   await postCheckpoint(run, serverRequired);
   onProgress?.({
     run,
@@ -518,14 +593,17 @@ export async function runIphoneMemoryLimitTest(
       });
 
       const sampler = startPeakSampler(engine);
-      let peakMiB = before.countedTotalMiB;
+      let peaks: IphoneMemoryPeaks = {
+        countedGpuMiB: before.countedTotalMiB,
+        countedGpuPlusCompressedCpuMiB: before.countedGpuPlusCompressedCpuMiB,
+      };
       let switchResult: LayerSwitchResult | null = null;
       try {
         await engine.seedActiveLayerMemoryStress(planIndex, storageTileCount);
         switchResult = await engine.addLayer(`Limite ${step + 1}`);
         await engine.waitForIdle();
       } finally {
-        peakMiB = sampler.stop();
+        peaks = sampler.stop();
       }
 
       const after = snapshot(engine.getStats());
@@ -539,10 +617,12 @@ export async function runIphoneMemoryLimitTest(
         attemptSequence: attempt.sequence,
         before,
         after,
-        peakCountedTotalMiB: peakMiB,
+        peakCountedTotalMiB: peaks.countedGpuMiB,
+        peakCountedGpuPlusCompressedCpuMiB:
+          peaks.countedGpuPlusCompressedCpuMiB,
         switch: compactSwitch(switchResult),
       });
-      updateSafeState(run, step, after, peakMiB);
+      updateSafeState(run, step, after, peaks);
       completedOperations += 1;
       await postCheckpoint(run, serverRequired);
       options.onProgress?.({
@@ -586,8 +666,14 @@ export async function runIphoneMemoryLimitTest(
       before: armBefore,
       after: armAfter,
       peakCountedTotalMiB: armAfter.countedTotalMiB,
+      peakCountedGpuPlusCompressedCpuMiB:
+        armAfter.countedGpuPlusCompressedCpuMiB,
     });
-    updateSafeState(run, armStep, armAfter, armAfter.countedTotalMiB);
+    updateSafeState(run, armStep, armAfter, {
+      countedGpuMiB: armAfter.countedTotalMiB,
+      countedGpuPlusCompressedCpuMiB:
+        armAfter.countedGpuPlusCompressedCpuMiB,
+    });
     completedOperations += 1;
     await postCheckpoint(run, serverRequired);
     options.onProgress?.({

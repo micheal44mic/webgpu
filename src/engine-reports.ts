@@ -625,6 +625,14 @@ export function getStats(engine: BrushEngine): EngineStats {
     }),
     activeLayerIndex: engine.layerStack.activeIndex,
     layerColdCompressionEnabled: engine.layerColdCompressionEnabled,
+    layerColdCompressionStatusEnabled:
+      engine.layerColdCompressionStatusEnabled,
+    layerColdDirectHotHydrationEnabled:
+      engine.layerColdDirectHotHydrationEnabled,
+    layerColdAdjacentPrefetchEnabled: engine.layerColdAdjacentPrefetchEnabled,
+    layerColdCompressionDistantGpuMiB: engine.layerColdCompressionEnabled
+      ? engine.layerColdCompressionDistantGpuBytes() / MEBIBYTE_BYTES
+      : 0,
     layerColdCompressionRuntimeBuild: engine.layerColdCompressionEnabled
       ? LAYER_COLD_COMPRESSION_RUNTIME_BUILD
       : null,
@@ -942,6 +950,7 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     rasterInnerShadowMatteMiB,
     rasterInnerShadowControlMiB,
   ].reduce((total, value) => total + value, 0);
+  const countedGpuPlusCompressedCpuMiB = countedTotalMiB + layerCompressedCpuMiB;
 
   return {
     layerBaseMiB,
@@ -994,6 +1003,7 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     historyGpuUsedMiB,
     historyGpuPageCount: historyGpu.pageCount,
     countedTotalMiB,
+    countedGpuPlusCompressedCpuMiB,
   };
 }
 

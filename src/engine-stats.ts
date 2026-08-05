@@ -116,6 +116,8 @@ export interface EngineGpuMemoryStats {
   historyGpuUsedMiB: number;
   historyGpuPageCount: number;
   countedTotalMiB: number;
+  /** GPU counted total plus authoritative/partial compressed cold bytes on CPU. */
+  countedGpuPlusCompressedCpuMiB: number;
 }
 
 export interface LayerStorageLayerEstimate {
@@ -229,6 +231,10 @@ export interface EngineStats {
   }[];
   activeLayerIndex: number;
   layerColdCompressionEnabled: boolean;
+  layerColdCompressionStatusEnabled: boolean;
+  layerColdDirectHotHydrationEnabled: boolean;
+  layerColdAdjacentPrefetchEnabled: boolean;
+  layerColdCompressionDistantGpuMiB: number;
   layerColdCompressionRuntimeBuild: string | null;
   layerColdCompressionWorkerUnavailable: boolean;
   layerColdCompressionProgress: {

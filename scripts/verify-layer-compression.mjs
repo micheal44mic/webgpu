@@ -120,7 +120,7 @@ assert.doesNotMatch(studyBody, /destroyLayerColdStorage/);
 assert.match(studyBody, /countedGpuMiBAfter - countedGpuMiBBefore/);
 assert.match(studyBody, /measureLosslessGzipChunk/);
 
-assert.match(clientSource, /worker-gzip-multi-distant-resumable-stroke-pause-v4/);
+assert.match(clientSource, /direct-hot-prefetch-policy-pointer-gated-v5/);
 assert.match(clientSource, /new Worker\(/);
 assert.match(clientSource, /layer-cold-compression-worker\.ts/);
 assert.match(clientSource, /this\.worker\.postMessage\(message, transfer\)/);
@@ -134,6 +134,9 @@ assert.match(workerSource, /compressLosslessGzipChunk/);
 assert.match(workerSource, /hashCompressionBytes\(restored\)/);
 assert.match(workerSource, /workerScope\.postMessage\([\s\S]*?\[output\]\)/);
 assert.match(engineSource, /layerColdCompressionEnabled\?: boolean/);
+assert.match(engineSource, /layerColdCompressionStatusEnabled\?: boolean/);
+assert.match(engineSource, /layerColdDirectHotHydrationEnabled\?: boolean/);
+assert.match(engineSource, /layerColdAdjacentPrefetchEnabled\?: boolean/);
 assert.match(engineSource, /LAYER_COLD_COMPRESSION_MINIMUM_DISTANCE/);
 assert.doesNotMatch(
   engineSource,
@@ -147,7 +150,8 @@ assert.match(
 );
 assert.match(
   engineSource,
-  /await ensureActiveLayerHot\(this, record\);[\s\S]*?await ensureAdjacentLayerColdStorageResident\(this\);/,
+  /await ensureActiveLayerHot\(this, record\);[\s\S]*?if \(this\.layerColdAdjacentPrefetchEnabled\) \{[\s\S]*?await ensureAdjacentLayerColdStorageResident\(this\);/,
+  "il prefetch raw dei vicini deve essere disabilitabile sui device memory-constrained",
 );
 assert.match(engineSource, /compressOneDistantLayerInBackground/);
 assert.match(engineSource, /await client\.compress\(payload, tileByteLength\)/);
@@ -155,6 +159,11 @@ const beginStrokeStart = engineSource.indexOf("beginStrokeAtLayer(point: LayerPo
 const beginStrokeEnd = engineSource.indexOf("extendStroke(", beginStrokeStart);
 const beginStrokeBody = engineSource.slice(beginStrokeStart, beginStrokeEnd);
 assert.match(beginStrokeBody, /pauseLayerColdCompressionIdle\(this\)/);
+assert.match(mainSource, /window\.addEventListener\("pointerdown", \(event\) => \{[\s\S]*?engine\.pauseLayerColdCompressionForInteraction\(\)/);
+assert.match(engineSource, /layerColdCompressionInteractionActive = true;[\s\S]*?pauseLayerColdCompressionIdle\(this\)/);
+assert.match(engineSource, /layerColdCompressionEngineIdle\([\s\S]*?!engine\.layerColdCompressionInteractionActive/);
+assert.match(mainSource, /layerCompressionInteractionPointers\.size === 0[\s\S]*?engine\.resumeLayerColdCompressionAfterInteraction\(\)/);
+assert.match(mainSource, /layerCompressionInteractionPointers\.size === 0[\s\S]*?document\.visibilityState === "visible"[\s\S]*?document\.hasFocus\(\)[\s\S]*?resumeLayerColdCompressionAfterInteraction/);
 // `cancelLayerColdCompressionIdle` è rimasto un metodo della classe: il
 // negativo deve cercare la forma che il codice può davvero assumere, con
 // entrambi i ricevitori possibili, altrimenti non fallirebbe mai.
@@ -194,7 +203,7 @@ assert.match(runtimeCompressionBody, /Compressione \$\{source\.record\.name\} in
 assert.match(
   engineSource,
   /const delayMs = this\.layerColdCompressionProgress[\s\S]*?\? 0[\s\S]*?: LAYER_COLD_COMPRESSION_IDLE_DELAY_MS/,
-  "un job parziale deve riprendere subito dopo il lift",
+  "un job parziale deve riprendere subito dopo il lift senza anticipare il primo readback",
 );
 assert.match(
   engineSource,
@@ -228,7 +237,27 @@ assert.doesNotMatch(
 );
 assert.match(
   engineSource,
-  /const transientCompressed = completionPolicy === "defer-to-fold-fence"[\s\S]*?if \(!transientCompressed\) \{[\s\S]*?ensureLayerColdStorageResident/,
+  /if \(gpu\.cold && gpu\.compressed\)[\s\S]*?const directCompressedHydration = completionPolicy === "defer-to-fold-fence"[\s\S]*?engine\.layerColdDirectHotHydrationEnabled;[\s\S]*?const compressedSource = directCompressedHydration && !gpu\.cold[\s\S]*?if \(!compressedSource\) \{[\s\S]*?ensureLayerColdStorageResident/,
+  "anche l'attivazione deve saltare il cold GPU intermedio quando esistono byte compressi",
+);
+const directHydrationStart = engineSource.indexOf(
+  "export async function createHydratedLayerTexture(",
+);
+const directHydrationEnd = engineSource.indexOf(
+  "export async function decompressLayerColdChunk(",
+  directHydrationStart,
+);
+const directHydrationBody = engineSource.slice(directHydrationStart, directHydrationEnd);
+assert.match(directHydrationBody, /uploadCompressedLayerIntoHot\(engine, record, gpu, compressedSource, hot\)/);
+assert.match(
+  directHydrationBody,
+  /if \(completionPolicy === "await-immediately"\) \{[\s\S]*?waitForGpuCapped\(label\)[\s\S]*?after-hydrate-submit/,
+  "l'attivazione diretta deve conservare fence e fault point transazionali",
+);
+assert.doesNotMatch(
+  directHydrationBody,
+  /gpu\.compressed = null/,
+  "il commit, non la hydration, possiede il rilascio dei byte autorevoli",
 );
 assert.match(engineSource, /await ensureLayerColdStorageResident\(engine, record, gpu\)/);
 assert.match(engineSource, /await decompressLayerColdChunk\(engine, chunk\)/);
@@ -244,14 +273,27 @@ assert.doesNotMatch(
   /layerCompressedCpuMiB/,
   "la RAM compressa non deve gonfiare il totale GPU conteggiato",
 );
-assert.match(mainSource, /pageSearchParams\.get\("layerCompressionRuntime"\) === "1"/);
+assert.match(engineSource, /const countedGpuPlusCompressedCpuMiB = countedTotalMiB \+ layerCompressedCpuMiB/);
+assert.match(mainSource, /const appleMobileMemoryLifecycle =/);
+assert.match(mainSource, /const layerColdCompressionRequested =[\s\S]*?layerColdCompressionMode === "1"/);
 assert.match(mainSource, /layerColdCompressionEnabled: layerColdCompressionRequested/);
+assert.match(mainSource, /layerColdCompressionStatusEnabled: layerColdCompressionMode === "1"/);
+assert.match(engineSource, /publishLayerColdCompressionStatus\([\s\S]*?if \(this\.layerColdCompressionStatusEnabled\)/);
+assert.doesNotMatch(
+  runtimeCompressionBody,
+  /engine\.callbacks\.onStatus/,
+  "il lifecycle automatico non deve sovrascrivere direttamente lo stato UI",
+);
+assert.match(mainSource, /pageSearchParams\.get\("layerDirectHotHydration"\) !== "0"/);
+assert.match(mainSource, /layerColdDirectHotHydrationEnabled,/);
+assert.match(mainSource, /layerColdAdjacentPrefetchEnabled,/);
 assert.match(mainSource, /gpuMemoryLayerCompressed/);assert.match(engineSource, /layerColdCompressionProgress: \{/);
 assert.match(engineSource, /completedTileCount: engine\.layerColdCompressionProgress\.nextArrayLayer/);
 assert.match(engineSource, /pausedByStroke: engine\.activeStroke !== null/);
 assert.match(mainSource, /compressione · \$\{compressionProgress\.completedTileCount\}/);
 assert.match(mainSource, /compressionProgress\.pausedByStroke \? " · pausa tratto"/);
 assert.match(indexSource, /Layer · compressi · RAM CPU/);
+assert.match(indexSource, /Totale contato · GPU \+ cold RAM CPU/);
 assert.match(mainSource, /pageSearchParams\.get\("layerCompressionTest"\) === "1"/);
 assert.match(mainSource, /await engine\.measureLayerColdCompressionStudy/);
 assert.match(mainSource, /saveLayerCompressionRun\(report\)/);

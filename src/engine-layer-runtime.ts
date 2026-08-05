@@ -3395,6 +3395,16 @@ export async function buildMergedSurfaceCandidate(engine: BrushEngine,
   if (visibleRecords.length === 0) {
     return null;
   }
+  const contentBounds = unionMergedSurfaceRects(
+    visibleRecords.map(
+      (record) => layerCompositeVisualBounds(engine, record) as MergedSurfaceRect,
+    ),
+    LAYER_SIZE,
+  );
+  if (!contentBounds) {
+    return null;
+  }
+  const allocationBounds = alignedMergedSurfaceBounds(contentBounds, LAYER_SIZE);
 
   return runGpuAllocationTransaction(
     engine.device,
@@ -3404,6 +3414,7 @@ export async function buildMergedSurfaceCandidate(engine: BrushEngine,
         engine.layerFormat,
         side,
         visibleRecords.length,
+        allocationBounds,
       );
       transaction.deferRollback(() => engine.destroyMergedSurface(surface));
 

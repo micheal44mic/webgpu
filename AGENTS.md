@@ -4097,3 +4097,67 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   senza warning/errori. Restano obbligatorie la prova fisica Safari/iPhone e
   una misura lunga di latenza/memoria con effetti; la modifica non è stata
   pubblicata.
+
+### Candidato riduzione picchi GPU dei livelli (5 agosto 2026)
+
+- Il runtime lossless resta **query-gated** con
+  `?layerCompressionRuntime=1`: non è stato promosso automaticamente su iOS,
+  perché l'assenza di regressioni di latenza richiede ancora un A/B su iPhone
+  fisico. La build candidata è
+  `direct-hot-prefetch-policy-pointer-gated-v5`. Il primo readback conserva il
+  delay idle di `1500 ms`; non è stata adottata la variante aggressiva da
+  `250 ms`. Un `pointerdown` globale sospende il lifecycle prima dei `28 ms` di
+  arbitraggio Paint/touch e più contatti lo riabilitano soltanto all'ultimo
+  `pointerup`/`pointercancel`; un evento tardivo non riavvia il job se la pagina
+  non è visibile o la finestra non ha focus. Può restare in FIFO al massimo il chunk da
+  quattro tile / `1 MiB` già inviato: non dichiarare per questo lag invariato
+  senza misura fisica.
+- L'attivazione di un livello compresso può ora scrivere i chunk verificati
+  direttamente nella texture hot finale. Non alloca prima la texture cold GPU
+  duplicata; conserva i byte compressi autorevoli fino al commit, attende la
+  fence prima del bind e mantiene il fault point post-submit. Se hydrate,
+  effetti o merged falliscono, la transazione distrugge l'hot candidato e il
+  rollback trova ancora lo storage compresso. L'invariante impossibile
+  `gpu.cold && gpu.compressed` fallisce esplicitamente. Il vecchio percorso di
+  attivazione è riproducibile con `?layerDirectHotHydration=0`; il fold
+  transitorio resta direct-hot come nella v4.
+- Il prefetch raw sincrono dei due vicini è ora una policy indipendente:
+  desktop lo conserva, Apple mobile lo disabilita quando il runtime viene
+  provato; `?layerAdjacentPrefetch=0|1` permette l'A/B isolato. Il lifecycle
+  automatico è silenzioso e non sovrascrive lo stato UI; i messaggi diagnostici
+  restano attivi soltanto quando la query runtime è esplicita.
+- Risparmio logico esatto del cambio: il target evita `48/56/64 MiB` per
+  `192/224/256` tile cold. Nel caso `224` il sottosistema target passa da
+  `120 MiB` (`56 cold + 64 hot`) a `64 MiB`, cioè `−46,7%`. Evitare due vicini
+  risparmia altri `0–128 MiB`; nella fixture da `224` tile per vicino sono
+  `112 MiB`, quindi un salto centrale può evitare `168 MiB`. Il massimo full
+  è `192 MiB`. Sono differenze del modello di risorse, non una misura della
+  memoria fisica WebKit.
+- Anche il compositore raster legacy senza stack misto usa ora le stesse bounds
+  visive conservative già attive nel percorso pubblico misto. Due merged full
+  `4096²` con mip costano `170,667 MiB`; a bounds `2048²` costano
+  `42,667 MiB` (`−128 MiB`, `−75%`) e a `1024²` `10,667 MiB`
+  (`−160 MiB`, `−93,75%`). L'app pubblica usa già il percorso misto cropped:
+  questa estensione protegge fallback/test, non è un guadagno addizionale del
+  percorso corrente.
+- La telemetria distingue ora `countedTotalMiB` GPU da
+  `countedGpuPlusCompressedCpuMiB`; il secondo somma cold compressi completi e
+  progresso parziale CPU, ma resta un lower bound e non include driver,
+  swapchain, copie Worker o ArrayBuffer in attesa di GC. Il test limite iPhone
+  usa la build `iphone-gpu-plus-compressed-cpu-peaks-v2`, registra entrambe le
+  serie e categorie scratch/glaze/history/presentazione. Ogni run firma anche
+  runtime build, compressione, direct-hot e prefetch, così raw e varianti A/B
+  non sono aggregabili per errore. Il sampler da `5 ms`
+  è osservativo e può perdere transitori più brevi. La fixture raw non abilita
+  il runtime senza query esplicita; con runtime attivo servirà un protocollo
+  separato che attenda la convergenza invece del settle fisso da `900 ms`.
+- Non sono stati ridotti il budget History (`192 MiB` mobile), la profondità
+  Undo, il pool effetti o la doppia residenza transazionale glaze: i primi due
+  cambierebbero comportamento/latency, l'ultima protegge il rollback. Nessun
+  parametro, stamp, seed, shader, blending o percorso caldo Paint è cambiato.
+- Revisione avversariale indipendente positiva su ownership, fence, FIFO e
+  rollback. TypeScript, tutte le `31` suite `*:verify`, build Vite/Sites e
+  `git diff --check` sono verdi; gli hash History restano
+  `5d4a0e1b/6b710fa5/fa4fa16d/a4daf955` e la curva canonica resta a `12117`
+  stamp. Non sono state eseguite QA browser WebGPU, A/B Safari/iPhone o una
+  pubblicazione; nessuna nuova baseline prestazionale è promossa.

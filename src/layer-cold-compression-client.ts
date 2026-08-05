@@ -4,7 +4,7 @@ import type {
 } from "./layer-compression-study";
 
 export const LAYER_COLD_COMPRESSION_RUNTIME_BUILD =
-  "worker-gzip-multi-distant-resumable-stroke-pause-v4" as const;
+  "direct-hot-prefetch-policy-pointer-gated-v5" as const;
 export const LAYER_COLD_COMPRESSION_IDLE_DELAY_MS = 1500 as const;
 export const LAYER_COLD_COMPRESSION_MINIMUM_DISTANCE = 2 as const;
 

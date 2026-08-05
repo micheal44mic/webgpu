@@ -239,10 +239,24 @@ export interface BrushEngineOptions {
    */
   layerCompressionTestEnabled?: boolean;
   /**
-   * Enables the query-gated runtime experiment: one distant inactive RGBA8
-   * cold store may move from GPU tiles to lossless CPU bytes in a worker.
+   * Enables the lossless runtime lifecycle: distant inactive RGBA8 cold stores
+   * may move from GPU tiles to CPU bytes in a worker while the engine is idle.
    */
   layerColdCompressionEnabled?: boolean;
+  /** Emits worker lifecycle messages into the user-facing status channel. */
+  layerColdCompressionStatusEnabled?: boolean;
+  /**
+   * Allows an activation to upload authoritative compressed chunks straight
+   * into the hot texture. Disable only to reproduce the v4 cold→hot baseline.
+   */
+  layerColdDirectHotHydrationEnabled?: boolean;
+  /**
+   * Restores compressed neighbours to GPU cold tiles after a layer switch.
+   * Desktop keeps this latency-oriented prefetch by default; memory-constrained
+   * callers can disable it because activation can hydrate compressed bytes
+   * directly into the authoritative hot texture.
+   */
+  layerColdAdjacentPrefetchEnabled?: boolean;
   /**
    * Enables the integrated mixed raster/vector text editor and its viewport
    * pipelines. Callers may still disable it in isolated engine tests.

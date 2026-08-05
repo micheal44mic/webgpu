@@ -41,7 +41,7 @@ const HUMAN_STROKE_ID = "canonical";
 const HUMAN_STROKE_PRESET_REVISION = 4;
 const BENCHMARK_RUNS_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS benchmark_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)";
 const BENCHMARK_RUNS_INDEX_SQL = "CREATE INDEX IF NOT EXISTS benchmark_runs_created_at_idx ON benchmark_runs (created_at DESC)";
-const IPHONE_MEMORY_LIMIT_BUILD = "iphone-real-layer-cold-tiles-checkpoint-before-each-operation-v1";
+const IPHONE_MEMORY_LIMIT_BUILD = "iphone-gpu-plus-compressed-cpu-peaks-v2";
 const IPHONE_MEMORY_LIMIT_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS iphone_memory_limit_runs (id TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, status TEXT NOT NULL, payload_json TEXT NOT NULL)";
 const IPHONE_MEMORY_LIMIT_INDEX_SQL = "CREATE INDEX IF NOT EXISTS iphone_memory_limit_runs_updated_at_idx ON iphone_memory_limit_runs (updated_at DESC)";
 const IPHONE_MEMORY_LIMIT_STATUSES = new Set(["running", "completed", "interrupted", "error"]);
@@ -278,10 +278,20 @@ async function handleIphoneMemoryLimitRuns(request, env) {
       || !IPHONE_MEMORY_LIMIT_STATUSES.has(payload.status)
       || !payload.plan
       || !payload.environment
+      || !payload.variant
+      || typeof payload.variant.layerColdCompressionEnabled !== "boolean"
+      || !(
+        payload.variant.layerColdCompressionRuntimeBuild === null
+        || typeof payload.variant.layerColdCompressionRuntimeBuild === "string"
+      )
+      || typeof payload.variant.layerColdDirectHotHydrationEnabled !== "boolean"
+      || typeof payload.variant.layerColdAdjacentPrefetchEnabled !== "boolean"
       || !Array.isArray(payload.events)
       || payload.events.length > 64
       || !Number.isFinite(payload.lastSafeMiB)
       || !Number.isFinite(payload.highestObservedPeakMiB)
+      || !Number.isFinite(payload.lastSafeCountedGpuPlusCompressedCpuMiB)
+      || !Number.isFinite(payload.highestObservedCountedGpuPlusCompressedCpuPeakMiB)
       || !payload.latestMemory
     ) {
       return jsonResponse({ error: "Il checkpoint del limite iPhone non è valido." }, 400);
