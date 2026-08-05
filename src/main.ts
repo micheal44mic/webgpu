@@ -92,6 +92,12 @@ import {
 } from "./engine-types";
 import { LAYER_SIZE } from "./engine-limits";
 import { LAYER_THUMBNAIL_SIZE } from "./layer-thumbnail-renderer";
+import {
+  mobileSemanticLayerThumbnailSignature,
+  renderMobileSemanticLayerThumbnail,
+  requestMobileTextThumbnailFont,
+  type MobileSemanticLayerThumbnailSource,
+} from "./mobile-semantic-layer-thumbnail";
 import type { ShapeOccupancyFallbackReason } from "./shape-occupancy";
 import type {
   IphoneMemoryLimitEvent,
@@ -1009,6 +1015,7 @@ interface MobileRasterThumbnailCacheEntry {
 }
 const mobileRasterThumbnailCache = new Map<number, MobileRasterThumbnailCacheEntry>();
 let mobileLayerThumbnailRevision = 0;
+let mobileSemanticThumbnailFontRevision = 0;
 let mobileLayerThumbnailCaptureTimer: number | null = null;
 let mobileLayerThumbnailCaptureRequested = false;
 let mobileLayerThumbnailCaptureInFlight = false;
@@ -5745,6 +5752,8 @@ interface MobileLayerView {
   } | null;
   readonly thumbnailGlyph: string;
   readonly thumbnailColor: string | null;
+  readonly semanticThumbnail: MobileSemanticLayerThumbnailSource | null;
+  readonly semanticThumbnailSignature: string;
 }
 
 function mobileLayerDisplayName(name: string): string {
@@ -5840,6 +5849,8 @@ function mobileLayerViews(stats: EngineStats): MobileLayerView[] {
         contentBounds: null,
         thumbnailGlyph: "",
         thumbnailColor: null,
+        semanticThumbnail: null,
+        semanticThumbnailSignature: "",
       });
     }
     return views;
@@ -5865,12 +5876,18 @@ function mobileLayerViews(stats: EngineStats): MobileLayerView[] {
         contentBounds: item.rasterContentBounds,
         thumbnailGlyph: "",
         thumbnailColor: null,
+        semanticThumbnail: null,
+        semanticThumbnailSignature: "",
       });
       continue;
     }
     if (item.kind === "text") {
       const node = item.textNode;
       const firstCharacter = Array.from(node.text.trim())[0] ?? "T";
+      const semanticThumbnail = {
+        kind: "text",
+        node,
+      } as const satisfies MobileSemanticLayerThumbnailSource;
       views.push({
         key: item.key,
         kind: "text",
@@ -5885,11 +5902,19 @@ function mobileLayerViews(stats: EngineStats): MobileLayerView[] {
         contentBounds: null,
         thumbnailGlyph: firstCharacter.toLocaleUpperCase("en-US"),
         thumbnailColor: node.color,
+        semanticThumbnail,
+        semanticThumbnailSignature: mobileSemanticLayerThumbnailSignature(
+          semanticThumbnail,
+        ),
       });
       continue;
     }
     if (item.kind === "svg") {
       const node = item.svgNode;
+      const semanticThumbnail = {
+        kind: "svg",
+        node,
+      } as const satisfies MobileSemanticLayerThumbnailSource;
       views.push({
         key: item.key,
         kind: "svg",
@@ -5904,6 +5929,10 @@ function mobileLayerViews(stats: EngineStats): MobileLayerView[] {
         contentBounds: null,
         thumbnailGlyph: "S",
         thumbnailColor: node.paintColors[0] ?? node.outlineColor,
+        semanticThumbnail,
+        semanticThumbnailSignature: mobileSemanticLayerThumbnailSignature(
+          semanticThumbnail,
+        ),
       });
       continue;
     }
@@ -5922,6 +5951,8 @@ function mobileLayerViews(stats: EngineStats): MobileLayerView[] {
       contentBounds: null,
       thumbnailGlyph: "I",
       thumbnailColor: null,
+      semanticThumbnail: null,
+      semanticThumbnailSignature: "",
     });
   }
   return views;
@@ -5951,6 +5982,8 @@ function mobileLayerListSignature(
       bounds?.height ?? "",
       view.thumbnailGlyph,
       view.thumbnailColor ?? "",
+      view.semanticThumbnailSignature,
+      view.kind === "text" ? mobileSemanticThumbnailFontRevision : "",
     ].join(":");
   }).join("|")}`;
 }
@@ -5972,6 +6005,8 @@ function updateMobileLayerThumbnail(
     bounds?.height ?? "",
     view.thumbnailGlyph,
     view.thumbnailColor ?? "",
+    view.semanticThumbnailSignature,
+    view.kind === "text" ? mobileSemanticThumbnailFontRevision : "",
     cached?.revision ?? 0,
   ].join(":");
   if (thumbnail.dataset.thumbnailSignature === signature) return;
@@ -5994,13 +6029,33 @@ function updateMobileLayerThumbnail(
     thumbnail.style.removeProperty("--mobile-layer-thumbnail-color");
   }
 
-  canvas.hidden = cached === null;
+  let canvasRendered = false;
+  const context = canvas.getContext("2d", { alpha: true });
   if (cached) {
-    const context = canvas.getContext("2d", { alpha: true });
-    if (context) context.putImageData(cached.imageData, 0, 0);
+    if (context) {
+      context.putImageData(cached.imageData, 0, 0);
+      canvasRendered = true;
+    }
+  } else if (view.semanticThumbnail && context) {
+    if (view.semanticThumbnail.kind === "text") {
+      requestMobileTextThumbnailFont(
+        view.semanticThumbnail.node.fontFamily,
+        () => {
+          mobileSemanticThumbnailFontRevision += 1;
+          mobileLayersRenderSignature = "";
+          scheduleMobileLayersRefresh();
+        },
+      );
+    }
+    canvasRendered = renderMobileSemanticLayerThumbnail(
+      context,
+      view.semanticThumbnail,
+    );
   }
+  canvas.hidden = !canvasRendered;
+  glyph.hidden = canvasRendered;
 
-  content.hidden = cached !== null || view.kind !== "raster" || !view.hasContent;
+  content.hidden = canvasRendered || view.kind !== "raster" || !view.hasContent;
   if (content.hidden) return;
   if (!bounds) {
     content.style.left = "26%";

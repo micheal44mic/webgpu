@@ -31,6 +31,12 @@ import {
   shouldCloseMobileToolsSheetDrag,
 } from "../src/mobile-tools-sheet-gesture.ts";
 import {
+  MOBILE_SEMANTIC_LAYER_THUMBNAIL_STRATEGY,
+  MOBILE_SEMANTIC_LAYER_THUMBNAIL_SIZE,
+  MOBILE_SEMANTIC_THUMBNAIL_MAXIMUM_COMMANDS,
+  mobileSemanticLayerThumbnailSignature,
+} from "../src/mobile-semantic-layer-thumbnail.ts";
+import {
   DEFAULT_RASTER_INNER_SHADOW_STYLE,
   DEFAULT_RASTER_OUTER_SHADOW_STYLE,
   copyRasterInnerShadowStyle,
@@ -968,6 +974,10 @@ const layerThumbnailSource = readFileSync(
   new URL("../src/layer-thumbnail-renderer.ts", import.meta.url),
   "utf8",
 );
+const mobileSemanticThumbnailSource = readFileSync(
+  new URL("../src/mobile-semantic-layer-thumbnail.ts", import.meta.url),
+  "utf8",
+);
 const clippingGroupShaderSource = readFileSync(
   new URL("../src/clipping-group-shader.ts", import.meta.url),
   "utf8",
@@ -1674,8 +1684,54 @@ assert.match(mainSource, /const mobileRasterThumbnailCache = new Map/);
 assert.match(mainSource, /activePointerId !== null[\s\S]*?historyState\.busy/);
 assert.match(mainSource, /function requestMobileLayerThumbnailCapture\(delayMs = 120\)/);
 assert.match(mainSource, /new ImageData\(imageBytes, capture\.width, capture\.height\)/);
+assert.equal(
+  MOBILE_SEMANTIC_LAYER_THUMBNAIL_STRATEGY,
+  "lazy-canvas2d-semantic-text-svg-64-signature-cache-v1",
+);
+assert.equal(MOBILE_SEMANTIC_LAYER_THUMBNAIL_SIZE, 64);
+assert.equal(MOBILE_SEMANTIC_THUMBNAIL_MAXIMUM_COMMANDS, 25_000);
+assert.notEqual(
+  mobileSemanticLayerThumbnailSignature({
+    kind: "text",
+    node: { text: "ONE", fontFamily: "Anton", fontSize: 360, color: "#112233" },
+  }),
+  mobileSemanticLayerThumbnailSignature({
+    kind: "text",
+    node: { text: "TWO", fontFamily: "Anton", fontSize: 360, color: "#112233" },
+  }),
+  "the text thumbnail signature must follow authoritative text content",
+);
+assert.notEqual(
+  mobileSemanticLayerThumbnailSignature({
+    kind: "svg",
+    node: { document: { sourceRevision: "svg-a" }, paintColors: ["#112233"] },
+  }),
+  mobileSemanticLayerThumbnailSignature({
+    kind: "svg",
+    node: { document: { sourceRevision: "svg-a" }, paintColors: ["#445566"] },
+  }),
+  "the SVG thumbnail signature must follow its editable authoritative palette",
+);
+assert.match(mobileSemanticThumbnailSource, /context\.fillText\(/);
+assert.match(mobileSemanticThumbnailSource, /paint\.path\.verbs/);
+assert.match(mobileSemanticThumbnailSource, /context\.bezierCurveTo\(/);
+assert.match(mobileSemanticThumbnailSource, /paint\.fillRule === 1 \? "evenodd" : "nonzero"/);
+assert.match(mobileSemanticThumbnailSource, /commandCount > MOBILE_SEMANTIC_THUMBNAIL_MAXIMUM_COMMANDS/);
+assert.match(mobileSemanticThumbnailSource, /const textThumbnailFontStates = new Map/);
+assert.doesNotMatch(
+  mobileSemanticThumbnailSource,
+  /navigator\.gpu|GPU(?:Device|Texture|Buffer|Queue|CommandEncoder)|copyTextureToBuffer|mapAsync|setInterval/,
+  "semantic thumbnails must remain cached Canvas2D work without GPU readback or polling",
+);
+assert.match(mainSource, /semanticThumbnailSignature: mobileSemanticLayerThumbnailSignature/);
+assert.match(mainSource, /renderMobileSemanticLayerThumbnail\([\s\S]*?view\.semanticThumbnail/);
 assert.match(stylesSource, /\.mobile-layers-panel \{[\s\S]*?right: 0;/);
 assert.match(stylesSource, /\.mobile-layer-thumbnail-canvas \{[\s\S]*?background: #ffffff;/);
+assert.match(
+  stylesSource,
+  /\.mobile-layer-select,\s*\.mobile-layer-select:hover,\s*\.mobile-layer-select:active\s*\{[^}]*padding: 5px 6px;/,
+  "tap, hover and selected-row interaction must preserve the thumbnail padding",
+);
 assert.match(
   indexSource,
   /minimum-scale=1\.0, maximum-scale=1\.0, user-scalable=no/,

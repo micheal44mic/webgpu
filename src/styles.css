@@ -3044,7 +3044,9 @@ select {
     -webkit-tap-highlight-color: transparent;
   }
 
-  .mobile-layer-select {
+  .mobile-layer-select,
+  .mobile-layer-select:hover,
+  .mobile-layer-select:active {
     display: grid;
     grid-row: 1;
     grid-column: 1;

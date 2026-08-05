@@ -159,20 +159,20 @@ for (const title of [
 const insertCategoryStart = html.indexOf(
   '<h2 class="mobile-tools-category-title">Insert</h2>',
 );
-const textCategoryStart = html.indexOf(
-  '<h2 class="mobile-tools-category-title">Text</h2>',
+const vectorsCategoryStart = html.indexOf(
+  '<h2 class="mobile-tools-category-title">Vectors</h2>',
 );
 const effectsCategoryStart = html.indexOf(
   '<h2 class="mobile-tools-category-title">Effects</h2>',
 );
 assert.ok(
   insertCategoryStart >= 0
-  && textCategoryStart > insertCategoryStart
-  && effectsCategoryStart > textCategoryStart,
-  "Text must be its own category between Insert and raster Effects",
+  && vectorsCategoryStart > insertCategoryStart
+  && effectsCategoryStart > vectorsCategoryStart,
+  "Vectors must be its own category between Insert and raster Effects",
 );
 assert.doesNotMatch(
-  html.slice(insertCategoryStart, textCategoryStart),
+  html.slice(insertCategoryStart, vectorsCategoryStart),
   /data-mobile-tool-sheet="text"/,
   "Text must no longer be duplicated inside Insert",
 );

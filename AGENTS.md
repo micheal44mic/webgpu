@@ -3829,10 +3829,10 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   gesture fisica e la tastiera di Text restano da provare su Safari/iPhone dopo
   la pubblicazione.
 
-### Categoria Text ed effetti mobile (5 agosto 2026)
+### Categoria Vectors ed effetti testo mobile (5 agosto 2026)
 
 - Il foglio Tools dell'header mobile contiene ora una categoria autonoma
-  `Text`, fra `Insert` ed `Effects`, con sei card in inglese: `Text`, `Warp`,
+  `Vectors`, fra `Insert` ed `Effects`, con sei card in inglese: `Text`, `Warp`,
   `Outline`, `Drop Shadow`, `Inner Shadow` e `Block Shadow`. `Insert` conserva
   soltanto SVG e Image. Le card non hanno indicatore arancione: seguono lo
   stesso contratto degli altri tool, grigio quando inattive e avorio quando lo
@@ -3857,3 +3857,26 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   modifiche al percorso caldo Paint. TypeScript, tutte le `29` suite
   `*:verify`, build Vite production/Sites e `git diff --check` sono verdi. QA
   touch Safari/iPhone e pubblicazione Sites restano da eseguire.
+
+### Miniature semantiche mobile Text/SVG (5 agosto 2026)
+
+- Le righe Text e SVG del pannello Layers non mostrano più soltanto una lettera
+  segnaposto. La strategia
+  `lazy-canvas2d-semantic-text-svg-64-signature-cache-v1` disegna nel canvas
+  `64×64` già presente nella riga: il testo usa contenuto, famiglia e colore
+  autorevoli; l'SVG percorre gli stessi verb `move/line/quad/cubic/close`,
+  bounds, fill-rule, opacità e palette modificabile del documento semantico.
+  Lo sfondo resta bianco. I tre font locali vengono registrati lazy soltanto
+  quando Layers deve mostrare un testo e il caricamento completato invalida una
+  sola volta la firma della lista.
+- Ogni riga conserva una firma compatta del contenuto semantico e ridisegna il
+  proprio Canvas2D solo quando testo/font/size/colore oppure revisione/palette
+  SVG cambiano. Non vengono copiati path o pixel e non esiste una cache bitmap
+  separata; documenti SVG oltre `25.000` comandi e Canvas2D/font indisponibili
+  mantengono il fallback leggero precedente. Non sono stati aggiunti readback,
+  risorse o submission GPU, polling o chiamate dal pointermove Paint.
+- La regola CSS di `hover/active` della selezione layer conserva ora lo stesso
+  padding `5px 6px` dello stato normale: toccare o selezionare una riga non può
+  più spostare la miniatura a sinistra. TypeScript, tutte le `29` suite
+  `*:verify`, build Vite/Sites e `git diff --check` sono verdi; QA Safari/iPhone
+  fisico resta da eseguire.
