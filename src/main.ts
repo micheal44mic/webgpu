@@ -14,6 +14,9 @@ import { MobileBrushStudioController } from "./mobile-brush-studio";
 import { MobileBrushLibraryPreviewRenderer } from "./brush-library-preview";
 import { MobileStrokeSheetController } from "./mobile-stroke-sheet";
 import {
+  MobileToolSettingsSheetController,
+} from "./mobile-tool-settings-sheet";
+import {
   MOBILE_RASTER_EFFECT_KIND_BY_CONTROL_ID,
   MobileRasterEffectsSheetController,
 } from "./mobile-raster-effects-sheet";
@@ -309,6 +312,9 @@ const mobileToolsProxyButtons = Array.from(
 );
 const mobileToolsEffectButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>("[data-mobile-effect-control]"),
+);
+const mobileToolSettingsButtons = Array.from(
+  document.querySelectorAll<HTMLButtonElement>("[data-mobile-tool-sheet]"),
 );
 const mobileUiMediaQuery = window.matchMedia("(max-width: 699px)");
 const MOBILE_DOUBLE_TAP_ZOOM_INTERVAL_MS = 350;
@@ -828,6 +834,7 @@ let vectorTextPrototype: MixedVectorTextController | null = null;
 let mobileBrushStudio: MobileBrushStudioController | null = null;
 let mobileStrokeSheet: MobileStrokeSheetController | null = null;
 let mobileRasterEffectsSheet: MobileRasterEffectsSheetController | null = null;
+let mobileToolSettingsSheet: MobileToolSettingsSheetController | null = null;
 const engine = new BrushEngine(canvas, {
   onStatus(message, kind) {
     statusElement.textContent = message;
@@ -856,10 +863,12 @@ const engine = new BrushEngine(canvas, {
   },
   onPixelSelectionChange(state) {
     updatePixelSelectionResult(state);
+    mobileToolSettingsSheet?.syncOpenState();
   },
   onMixedSceneChange(snapshot) {
     requestMobileLayersRefresh();
     vectorTextPrototype?.syncScene(snapshot);
+    mobileToolSettingsSheet?.syncOpenState();
     updateRasterColorOverlayControlAvailability();
     const selectedItem = snapshot.items.find(
       (item) => item.key === snapshot.selectedKey,
@@ -1137,6 +1146,12 @@ function configureBrushToolUi(
   }
   if (tool !== "paint" && mobileBrushStudio?.isOpen) {
     mobileBrushStudio.cancel(false);
+  }
+  if (
+    mobileToolSettingsSheet?.isOpen
+    && mobileToolSettingsSheet.toolKind !== tool
+  ) {
+    mobileToolSettingsSheet.close(false);
   }
   activeCanvasTool = tool;
   if (tool !== "paint" && mobileBrushLibraryOpen) {
@@ -1418,6 +1433,7 @@ function syncMobileBrushControlsVisibility(): void {
     || mobileBrushLibraryOpen
     || mobileStrokeSheet?.isOpen === true
     || mobileRasterEffectsSheet?.isOpen === true
+    || mobileToolSettingsSheet?.isOpen === true
     || mobileBrushStudio?.isOpen === true;
   if (suppressed && mobileBrushControlDrag) {
     finishMobileBrushControlDrag(true);
@@ -1631,6 +1647,7 @@ function setMobileBrushLibraryOpen(open: boolean): void {
   if (open && mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
   if (open && mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
   if (open && mobileRasterEffectsSheet?.isOpen) mobileRasterEffectsSheet.close(false);
+  if (open && mobileToolSettingsSheet?.isOpen) mobileToolSettingsSheet.close(false);
   if (open && mobileToolsSheetOpen) setMobileToolsSheetOpen(false);
   if (open && mobileLayersPanelOpen) setMobileLayersPanelOpen(false);
 
@@ -1770,6 +1787,12 @@ function syncMobileToolsMenuState(): void {
       ? document.getElementById(targetId) as HTMLButtonElement | null
       : null;
     button.disabled = target === null || target.disabled || vectorTextPrototype === null;
+  }
+  for (const button of mobileToolSettingsButtons) {
+    const kind = button.dataset.mobileToolSheet;
+    button.disabled = !engineInitialized
+      || interactionLocked()
+      || (kind === "text" && vectorTextPrototype === null);
   }
   for (const button of mobileToolsEffectButtons) {
     const controlId = button.dataset.mobileEffectControl;
@@ -1935,6 +1958,7 @@ function setMobileLayersPanelOpen(open: boolean): void {
   if (open && mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
   if (open && mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
   if (open && mobileRasterEffectsSheet?.isOpen) mobileRasterEffectsSheet.close(false);
+  if (open && mobileToolSettingsSheet?.isOpen) mobileToolSettingsSheet.close(false);
   if (open && mobileToolsSheetOpen) {
     setMobileToolsSheetOpen(false);
   }
@@ -1976,6 +2000,7 @@ function setMobileToolsSheetOpen(open: boolean): void {
   if (open && mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
   if (open && mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
   if (open && mobileRasterEffectsSheet?.isOpen) mobileRasterEffectsSheet.close(false);
+  if (open && mobileToolSettingsSheet?.isOpen) mobileToolSettingsSheet.close(false);
   if (open && mobileLayersPanelOpen) {
     setMobileLayersPanelOpen(false);
   }
@@ -3279,6 +3304,7 @@ mobileBrushStudio = new MobileBrushStudioController({
   onOpenChange: (open) => {
     if (open && mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
     if (open && mobileRasterEffectsSheet?.isOpen) mobileRasterEffectsSheet.close(false);
+    if (open && mobileToolSettingsSheet?.isOpen) mobileToolSettingsSheet.close(false);
     syncMobileBrushLibraryButtonState();
     syncMobileBrushControlsVisibility();
   },
@@ -3309,6 +3335,7 @@ mobileStrokeSheet = new MobileStrokeSheetController({
     setMobileBrushLibraryOpen(false);
     mobileBrushStudio?.cancel(false);
     mobileRasterEffectsSheet?.close(false);
+    mobileToolSettingsSheet?.close(false);
     setControlsPanelOpen(false);
   },
   onOpenChange: () => {
@@ -3333,6 +3360,35 @@ mobileRasterEffectsSheet = new MobileRasterEffectsSheetController({
     setMobileBrushLibraryOpen(false);
     mobileBrushStudio?.cancel(false);
     mobileStrokeSheet?.close(false);
+    mobileToolSettingsSheet?.close(false);
+    setControlsPanelOpen(false);
+  },
+  onOpenChange: () => {
+    syncMobileToolsMenuState();
+    syncMobileBrushControlsVisibility();
+  },
+});
+
+mobileToolSettingsSheet = new MobileToolSettingsSheetController({
+  mobileMediaQuery: mobileUiMediaQuery,
+  selectCanvasTool: selectMobileCanvasTool,
+  getSelectionStatus: () => {
+    const state = engine.getPixelSelectionState();
+    if (state.selectedPixels === 0) return "No pixels selected.";
+    const bounds = state.bounds
+      ? ` · ${state.bounds.width.toLocaleString("en-US")}×`
+        + state.bounds.height.toLocaleString("en-US")
+      : "";
+    return `${state.selectedPixels.toLocaleString("en-US")} pixels selected`
+      + ` · ${state.activeTiles} tiles${bounds}`;
+  },
+  beforeOpen: () => {
+    setMobileToolsSheetOpen(false);
+    setMobileLayersPanelOpen(false);
+    setMobileBrushLibraryOpen(false);
+    mobileBrushStudio?.cancel(false);
+    mobileStrokeSheet?.close(false);
+    mobileRasterEffectsSheet?.close(false);
     setControlsPanelOpen(false);
   },
   onOpenChange: () => {
@@ -3718,6 +3774,8 @@ function updateHistoryControls(): void {
   updateRasterInnerShadowControlAvailability(locked);
   updateRasterBevelControlAvailability(locked);
   syncMobileBrushControlAvailability(locked);
+  mobileToolSettingsSheet?.syncOpenState();
+  syncMobileToolsMenuState();
   syncMobileBrushControlsVisibility();
 }
 
@@ -4365,6 +4423,7 @@ mobileUiMediaQuery.addEventListener("change", (event) => {
   setMobileBrushLibraryOpen(false);
   mobileStrokeSheet?.close(false);
   mobileRasterEffectsSheet?.close(false);
+  mobileToolSettingsSheet?.close(false);
   mobileBrushStudio?.cancel(false);
   setControlsPanelOpen(true);
   syncMobileBrushControlsVisibility();
@@ -4377,12 +4436,14 @@ window.addEventListener("resize", () => {
   const brushStudioNeedsLayout = mobileBrushStudio?.isOpen === true;
   const strokeSheetNeedsLayout = mobileStrokeSheet?.isOpen === true;
   const rasterEffectsSheetNeedsLayout = mobileRasterEffectsSheet?.isOpen === true;
+  const toolSettingsSheetNeedsLayout = mobileToolSettingsSheet?.isOpen === true;
   if (
     !toolsNeedLayout
     && !brushLibraryNeedsLayout
     && !brushStudioNeedsLayout
     && !strokeSheetNeedsLayout
     && !rasterEffectsSheetNeedsLayout
+    && !toolSettingsSheetNeedsLayout
   ) return;
   if (mobileToolsSheetResizeFrame !== null) {
     cancelAnimationFrame(mobileToolsSheetResizeFrame);
@@ -4398,6 +4459,7 @@ window.addEventListener("resize", () => {
     mobileBrushStudio?.handleResize();
     mobileStrokeSheet?.handleResize();
     mobileRasterEffectsSheet?.handleResize();
+    mobileToolSettingsSheet?.handleResize();
   });
 });
 
@@ -4455,6 +4517,7 @@ mobileBlendButton.addEventListener("click", () => {
 });
 for (const button of mobileToolsCanvasButtons) {
   button.addEventListener("click", () => {
+    if (button.dataset.mobileToolSheet) return;
     const tool = button.dataset.mobileCanvasTool;
     if (
       tool !== "paint"
@@ -4468,6 +4531,20 @@ for (const button of mobileToolsCanvasButtons) {
     if (selectMobileCanvasTool(tool)) {
       setMobileToolsSheetOpen(false);
     }
+  });
+}
+for (const button of mobileToolSettingsButtons) {
+  button.addEventListener("click", () => {
+    const kind = button.dataset.mobileToolSheet;
+    if (
+      kind !== "fill"
+      && kind !== "selection"
+      && kind !== "transform"
+      && kind !== "text"
+    ) {
+      return;
+    }
+    mobileToolSettingsSheet?.open(kind, button);
   });
 }
 for (const button of mobileToolsProxyButtons) {
@@ -4489,7 +4566,7 @@ for (const button of mobileToolsEffectButtons) {
       : null;
     if (!control || control.disabled || !engineInitialized) return;
     if (controlId === "rasterStrokeEnabled" && mobileStrokeSheet) {
-      mobileStrokeSheet.open();
+      mobileStrokeSheet.open(button);
       return;
     }
     const effectKind = controlId
@@ -4498,7 +4575,7 @@ for (const button of mobileToolsEffectButtons) {
       ]
       : undefined;
     if (effectKind && mobileRasterEffectsSheet) {
-      mobileRasterEffectsSheet.open(effectKind);
+      mobileRasterEffectsSheet.open(effectKind, button);
       return;
     }
     control.click();
@@ -5531,6 +5608,7 @@ function syncActiveLayerControls(): void {
   syncRasterInnerShadowControls(engine.getRasterInnerShadowStyle());
   syncRasterBevelControls(engine.getRasterBevelStyle());
   mobileRasterEffectsSheet?.syncOpenStyle();
+  mobileToolSettingsSheet?.syncOpenState();
   updateRasterColorOverlayControlAvailability();
   updateRasterStrokeControlAvailability();
   updateRasterOuterShadowControlAvailability();
@@ -8525,6 +8603,7 @@ setMobileToolsSheetOpen(false);
 setMobileBrushLibraryOpen(false);
 mobileStrokeSheet?.close(false);
 mobileRasterEffectsSheet?.close(false);
+mobileToolSettingsSheet?.close(false);
 setSelectionCombineMode("replace");
 updatePixelSelectionResult(engine.getPixelSelectionState());
 configureBrushToolUi("paint", false);

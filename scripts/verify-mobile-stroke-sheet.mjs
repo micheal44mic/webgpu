@@ -22,6 +22,7 @@ assert.equal(resolveMobileStrokeDrag({
   releaseVelocityY: 0,
   offsetPx: 464,
   peekOffsetPx: 500,
+  minimizedOffsetPx: 700,
 }), "expanded", "Stroke deve raggiungere lo stesso snap alto del Bevel.");
 assert.equal(resolveMobileStrokeDrag({
   startSnap: "expanded",
@@ -29,6 +30,7 @@ assert.equal(resolveMobileStrokeDrag({
   releaseVelocityY: 0.2,
   offsetPx: 72,
   peekOffsetPx: 500,
+  minimizedOffsetPx: 700,
 }), "peek", "Stroke deve poter tornare allo snap basso.");
 assert.equal(resolveMobileStrokeDrag({
   startSnap: "peek",
@@ -36,7 +38,24 @@ assert.equal(resolveMobileStrokeDrag({
   releaseVelocityY: 0.1,
   offsetPx: 536,
   peekOffsetPx: 500,
-}), "closed", "Stroke deve conservare la chiusura breve dallo snap basso.");
+  minimizedOffsetPx: 700,
+}), "minimized", "Un gesto delicato verso il basso deve lasciare titolo e maniglia visibili.");
+assert.equal(resolveMobileStrokeDrag({
+  startSnap: "minimized",
+  deltaY: 36,
+  releaseVelocityY: 0.1,
+  offsetPx: 736,
+  peekOffsetPx: 500,
+  minimizedOffsetPx: 700,
+}), "closed", "Un secondo gesto verso il basso deve chiudere Stroke.");
+assert.equal(resolveMobileStrokeDrag({
+  startSnap: "minimized",
+  deltaY: -36,
+  releaseVelocityY: 0,
+  offsetPx: 664,
+  peekOffsetPx: 500,
+  minimizedOffsetPx: 700,
+}), "peek", "Un gesto verso l'alto deve ripristinare lo snap basso.");
 
 const start = html.indexOf('id="mobileStrokeSheet"');
 const end = html.indexOf('id="mobileToolsSheet"', start);
@@ -46,6 +65,8 @@ const sheet = html.slice(start, end);
 for (const id of [
   "mobileStrokeSheet",
   "mobileStrokeHandle",
+  "mobileStrokeHeader",
+  "mobileStrokeControlsRegion",
   "mobileStrokeColor",
   "mobileStrokeColorInput",
   "mobileStrokeAlignmentButton",
@@ -134,7 +155,7 @@ assert.match(
 );
 assert.match(
   main,
-  /if \(controlId === "rasterStrokeEnabled" && mobileStrokeSheet\) \{\s*mobileStrokeSheet\.open\(\);\s*return;/,
+  /if \(controlId === "rasterStrokeEnabled" && mobileStrokeSheet\) \{\s*mobileStrokeSheet\.open\(button\);\s*return;/,
   "La card Stroke deve aprire il pannello senza disattivare l'effetto già attivo.",
 );
 assert.match(
@@ -179,13 +200,23 @@ assert.match(
 );
 assert.match(
   controller,
-  /this\.setOffset\(this\.dragStartOffsetPx \+ deltaY\)/,
+  /const maximumOffset = this\.dragStartSnap === "minimized"[\s\S]*?this\.setOffset\(Math\.min\(maximumOffset, this\.dragStartOffsetPx \+ deltaY\)\)/,
   "La maniglia Stroke deve seguire il dito anche verso lo snap expanded.",
 );
 assert.match(
   controller,
-  /this\.snapTo\(this\.snap === "peek" \? "expanded" : "peek"\)/,
-  "Il tap sulla maniglia deve alternare gli stessi due snap del Bevel.",
+  /this\.snapTo\(nextMobileBottomSheetTapSnap\(this\.snap\)\)/,
+  "Il tap sulla maniglia deve usare il ciclo condiviso fra minimized, peek ed expanded.",
+);
+assert.match(
+  controller,
+  /this\.controlsRegion\.toggleAttribute\("inert", minimized\);[\s\S]*?this\.controlsRegion\.setAttribute\("aria-hidden", String\(minimized\)\);/,
+  "Nello snap minimized i controlli nascosti devono essere inerti anche per tecnologie assistive.",
+);
+assert.match(
+  controller,
+  /if \(activeElement instanceof HTMLElement && this\.sheet\.contains\(activeElement\)\)[\s\S]*?activeElement\.blur\(\);[\s\S]*?this\.sheet\.setAttribute\("aria-hidden", "true"\)/,
+  "Il focus deve uscire dal foglio prima di impostare aria-hidden.",
 );
 assert.doesNotMatch(
   controller,

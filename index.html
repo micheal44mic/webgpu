@@ -787,8 +787,11 @@
         </button>
 
         <div class="mobile-stroke-sheet-content">
-          <h2 id="mobileStrokeTitle" class="mobile-stroke-title">Stroke</h2>
-          <div class="mobile-stroke-controls">
+          <header id="mobileStrokeHeader" class="mobile-stroke-header">
+            <h2 id="mobileStrokeTitle" class="mobile-stroke-title">Stroke</h2>
+          </header>
+          <div id="mobileStrokeControlsRegion" class="mobile-stroke-controls-region">
+            <div class="mobile-stroke-controls">
             <label
               id="mobileStrokeColor"
               class="mobile-stroke-color-control"
@@ -900,6 +903,137 @@
                 aria-valuetext="14 pixels"
               />
             </label>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <aside
+        id="mobileToolSettingsSheet"
+        class="mobile-tools-sheet mobile-tool-settings-sheet"
+        aria-label="Tool settings"
+        aria-hidden="true"
+        data-state="closed"
+        data-snap="peek"
+        hidden
+      >
+        <button
+          id="mobileToolSettingsHandle"
+          class="mobile-tools-sheet-handle"
+          type="button"
+          aria-label="Expand tool settings"
+          aria-controls="mobileToolSettingsSheet"
+          aria-expanded="false"
+        >
+          <span class="mobile-tools-sheet-grabber" aria-hidden="true"></span>
+        </button>
+
+        <div class="mobile-tool-settings-shell">
+          <header id="mobileToolSettingsHeader" class="mobile-tool-settings-header">
+            <h2 id="mobileToolSettingsTitle">Tool</h2>
+          </header>
+
+          <div id="mobileToolSettingsScroll" class="mobile-tool-settings-scroll">
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="fill" hidden>
+              <label class="mobile-raster-effect-range" for="mobileFillTolerance">
+                <span>Tolerance</span>
+                <output id="mobileFillToleranceOut" for="mobileFillTolerance">10.0%</output>
+                <input id="mobileFillTolerance" type="range" min="0" max="100" step="0.1" value="10" />
+              </label>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="selection" hidden>
+              <label class="mobile-raster-effect-select" for="mobileSelectionMethod">
+                <span>Method</span>
+                <select id="mobileSelectionMethod">
+                  <option value="magic-wand">Magic Wand</option>
+                  <option value="lasso">Lasso</option>
+                  <option value="color-range">Color Range</option>
+                </select>
+              </label>
+
+              <div class="mobile-tool-settings-field">
+                <span>Combine</span>
+                <div class="mobile-tool-segmented" role="group" aria-label="Combine selection">
+                  <button id="mobileSelectionReplace" type="button" aria-pressed="true">Replace</button>
+                  <button id="mobileSelectionAdd" type="button" aria-pressed="false">Add</button>
+                  <button id="mobileSelectionSubtract" type="button" aria-pressed="false">Subtract</button>
+                </div>
+              </div>
+
+              <label
+                id="mobileSelectionToleranceControl"
+                class="mobile-raster-effect-range"
+                for="mobileSelectionTolerance"
+              >
+                <span>Tolerance</span>
+                <output id="mobileSelectionToleranceOut" for="mobileSelectionTolerance">32/255</output>
+                <input id="mobileSelectionTolerance" type="range" min="0" max="255" step="1" value="32" />
+              </label>
+
+              <label
+                id="mobileSelectionColorControl"
+                class="mobile-raster-effect-color"
+                for="mobileSelectionColor"
+                hidden
+              >
+                <span>Color</span>
+                <span class="mobile-raster-effect-color-disc">
+                  <input id="mobileSelectionColor" type="color" value="#ff5b35" />
+                </span>
+              </label>
+
+              <div class="mobile-tool-actions">
+                <button id="mobileSelectionColorApply" class="is-primary" type="button" hidden>Apply Color</button>
+                <button id="mobileSelectionClear" type="button">Clear</button>
+              </div>
+              <p id="mobileSelectionResult" class="mobile-tool-settings-status" aria-live="polite">
+                No pixels selected.
+              </p>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="transform" hidden>
+              <p id="mobileTransformHint" class="mobile-tool-settings-status">
+                Select content on the canvas, then drag it to transform.
+              </p>
+              <div class="mobile-tool-actions">
+                <button id="mobileTransformCancel" type="button" disabled>Cancel</button>
+                <button id="mobileTransformApply" class="is-primary" type="button" disabled>Apply</button>
+              </div>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="text" hidden>
+              <label class="mobile-tool-text-field" for="mobileTextValue">
+                <span>Text</span>
+                <input id="mobileTextValue" type="text" maxlength="80" autocomplete="off" />
+              </label>
+              <label class="mobile-raster-effect-select" for="mobileTextFontFamily">
+                <span>Font</span>
+                <select id="mobileTextFontFamily">
+                  <option value="Anton">Anton</option>
+                  <option value="Bebas Neue">Bebas Neue</option>
+                  <option value="Poppins">Poppins</option>
+                </select>
+              </label>
+              <label class="mobile-raster-effect-range" for="mobileTextFontSize">
+                <span>Size</span>
+                <output id="mobileTextFontSizeOut" for="mobileTextFontSize">360 px</output>
+                <input id="mobileTextFontSize" type="range" min="80" max="1200" step="1" value="360" />
+              </label>
+              <label
+                id="mobileTextColorControl"
+                class="mobile-raster-effect-color"
+                for="mobileTextColor"
+              >
+                <span>Color</span>
+                <span class="mobile-raster-effect-color-disc">
+                  <input id="mobileTextColor" type="color" value="#f4c95d" />
+                </span>
+              </label>
+              <div class="mobile-tool-actions">
+                <button id="mobileTextAdd" class="is-primary" type="button">Add Text</button>
+              </div>
+            </section>
           </div>
         </div>
       </aside>
@@ -925,9 +1059,13 @@
         </button>
 
         <div class="mobile-raster-effect-shell">
-          <header class="mobile-raster-effect-header">
+          <header id="mobileRasterEffectHeader" class="mobile-raster-effect-header">
             <h2 id="mobileRasterEffectTitle">Effect</h2>
-            <label class="mobile-raster-effect-enabled" for="mobileRasterEffectEnabled">
+            <label
+              id="mobileRasterEffectEnabledControl"
+              class="mobile-raster-effect-enabled"
+              for="mobileRasterEffectEnabled"
+            >
               <input
                 id="mobileRasterEffectEnabled"
                 type="checkbox"
@@ -1032,8 +1170,9 @@
                   type="button"
                   data-mobile-tool
                   data-mobile-canvas-tool="fill"
+                  data-mobile-tool-sheet="fill"
                   data-mobile-tool-search="riempimento secchiello fill bucket colore"
-                  aria-label="Select Fill"
+                  aria-label="Open Fill settings"
                   aria-pressed="false"
                 >
                   <span class="mobile-icon-stack" aria-hidden="true">
@@ -1053,8 +1192,9 @@
                   type="button"
                   data-mobile-tool
                   data-mobile-canvas-tool="selection"
+                  data-mobile-tool-sheet="selection"
                   data-mobile-tool-search="selezione selection bacchetta magica lazo lasso colore"
-                  aria-label="Select Selection"
+                  aria-label="Open Selection settings"
                   aria-pressed="false"
                 >
                   <span class="mobile-icon-stack" aria-hidden="true">
@@ -1068,8 +1208,9 @@
                   type="button"
                   data-mobile-tool
                   data-mobile-canvas-tool="transform"
+                  data-mobile-tool-sheet="transform"
                   data-mobile-tool-search="trasforma transform sposta scala ridimensiona ruota"
-                  aria-label="Select Transform"
+                  aria-label="Open Transform settings"
                   aria-pressed="false"
                 >
                   <span class="mobile-icon-stack" aria-hidden="true">
@@ -1088,9 +1229,9 @@
                   class="mobile-tools-item"
                   type="button"
                   data-mobile-tool
-                  data-mobile-proxy-button="addVectorText"
+                  data-mobile-tool-sheet="text"
                   data-mobile-tool-search="testo text type scritta font"
-                  aria-label="Add Text"
+                  aria-label="Open Text settings"
                 >
                   <span class="mobile-icon-stack" aria-hidden="true">
                     <i data-lucide="type" class="mobile-icon-layer mobile-icon-outline"></i>

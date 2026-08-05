@@ -1,15 +1,14 @@
 import type { RasterStrokeStyle } from "./stroke-core";
+import {
+  nextMobileBottomSheetTapSnap,
+  resolveMobileBottomSheetDrag,
+  type MobileBottomSheetDragDecisionOptions,
+  type MobileBottomSheetSnap,
+} from "./mobile-bottom-sheet-gesture.ts";
 
 type StrokePosition = RasterStrokeStyle["position"];
-export type MobileStrokeSnap = "peek" | "expanded";
-
-export interface MobileStrokeDragDecisionOptions {
-  readonly startSnap: MobileStrokeSnap;
-  readonly deltaY: number;
-  readonly releaseVelocityY: number;
-  readonly offsetPx: number;
-  readonly peekOffsetPx: number;
-}
+export type MobileStrokeSnap = MobileBottomSheetSnap;
+export type MobileStrokeDragDecisionOptions = MobileBottomSheetDragDecisionOptions;
 
 export interface MobileStrokeSheetOptions {
   readonly mobileMediaQuery: MediaQueryList;
@@ -22,12 +21,6 @@ export interface MobileStrokeSheetOptions {
 const MOBILE_STROKE_MIN_PEEK_PX = 160;
 const MOBILE_STROKE_MAX_PEEK_PX = 240;
 const MOBILE_STROKE_PEEK_VIEWPORT_RATIO = 0.26;
-const MOBILE_STROKE_CLOSE_DISTANCE_PX = 36;
-const MOBILE_STROKE_CLOSE_FLICK_DISTANCE_PX = 28;
-const MOBILE_STROKE_CLOSE_FLICK_VELOCITY_PX_PER_MS = 0.45;
-const MOBILE_STROKE_EXPAND_DISTANCE_PX = 36;
-const MOBILE_STROKE_EXPAND_FLICK_VELOCITY_PX_PER_MS = -0.45;
-
 export function mobileStrokePeekHeight(viewportHeight: number): number {
   return Math.min(
     MOBILE_STROKE_MAX_PEEK_PX,
@@ -38,34 +31,7 @@ export function mobileStrokePeekHeight(viewportHeight: number): number {
 export function resolveMobileStrokeDrag(
   options: MobileStrokeDragDecisionOptions,
 ): "closed" | MobileStrokeSnap {
-  const closeFlick = options.deltaY >= MOBILE_STROKE_CLOSE_FLICK_DISTANCE_PX
-    && options.releaseVelocityY >= MOBILE_STROKE_CLOSE_FLICK_VELOCITY_PX_PER_MS;
-
-  if (options.startSnap === "peek") {
-    if (options.deltaY >= MOBILE_STROKE_CLOSE_DISTANCE_PX || closeFlick) {
-      return "closed";
-    }
-    if (
-      options.deltaY <= -MOBILE_STROKE_EXPAND_DISTANCE_PX
-      || options.releaseVelocityY <= MOBILE_STROKE_EXPAND_FLICK_VELOCITY_PX_PER_MS
-    ) {
-      return "expanded";
-    }
-    return "peek";
-  }
-
-  const fastCloseFromExpanded = options.deltaY >= Math.max(
-    96,
-    options.peekOffsetPx * 0.32,
-  ) && options.releaseVelocityY >= 0.9;
-  if (fastCloseFromExpanded) return "closed";
-  if (
-    options.offsetPx >= options.peekOffsetPx * 0.5
-    || options.deltaY >= 72
-  ) {
-    return "peek";
-  }
-  return "expanded";
+  return resolveMobileBottomSheetDrag(options);
 }
 
 function requiredElement<T extends HTMLElement>(id: string): T {
@@ -120,6 +86,8 @@ function positionLabel(position: StrokePosition): string {
 export class MobileStrokeSheetController {
   readonly sheet = requiredElement<HTMLElement>("mobileStrokeSheet");
   readonly handle = requiredElement<HTMLButtonElement>("mobileStrokeHandle");
+  readonly header = requiredElement<HTMLElement>("mobileStrokeHeader");
+  readonly controlsRegion = requiredElement<HTMLElement>("mobileStrokeControlsRegion");
   readonly colorControl = requiredElement<HTMLLabelElement>("mobileStrokeColor");
   readonly colorInput = requiredElement<HTMLInputElement>("mobileStrokeColorInput");
   readonly alignmentButton = requiredElement<HTMLButtonElement>(
@@ -145,6 +113,7 @@ export class MobileStrokeSheetController {
   private dragLastTime = 0;
   private dragVelocityY = 0;
   private dragMoved = false;
+  private opener: HTMLElement | null = null;
   private applyFrame: number | null = null;
   private pendingStyle: RasterStrokeStyle | null = null;
   private applyLoop: Promise<void> | null = null;
@@ -162,9 +131,10 @@ export class MobileStrokeSheetController {
     return this.openState;
   }
 
-  open(): void {
+  open(opener: HTMLElement | null = null): void {
     if (this.openState || !this.options.mobileMediaQuery.matches) return;
     this.options.beforeOpen();
+    this.opener = opener;
     this.openState = true;
     this.sheet.hidden = false;
     this.sheet.dataset.state = "open";
@@ -188,6 +158,14 @@ export class MobileStrokeSheetController {
     this.openState = false;
     this.closeAlignmentMenu(false);
     this.releaseDragCapture();
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement && this.sheet.contains(activeElement)) {
+      if (restoreFocus && this.opener?.isConnected) {
+        this.opener.focus({ preventScroll: true });
+      } else {
+        activeElement.blur();
+      }
+    }
     this.sheet.classList.remove("is-open", "is-dragging");
     this.sheet.dataset.state = "closed";
     this.sheet.setAttribute("aria-hidden", "true");
@@ -195,7 +173,7 @@ export class MobileStrokeSheetController {
     this.handle.setAttribute("aria-expanded", "false");
     this.setOffset(this.closedOffset());
     this.options.onOpenChange(false);
-    if (restoreFocus) this.handle.blur();
+    this.opener = null;
   }
 
   sync(style = this.options.getStyle()): void {
@@ -223,7 +201,7 @@ export class MobileStrokeSheetController {
         this.dragMoved = false;
         return;
       }
-      this.snapTo(this.snap === "peek" ? "expanded" : "peek");
+      this.snapTo(nextMobileBottomSheetTapSnap(this.snap));
     });
 
     this.colorInput.addEventListener("input", () => this.handleColorInput());
@@ -402,6 +380,14 @@ export class MobileStrokeSheetController {
     return Math.max(0, Math.round(this.sheet.offsetHeight));
   }
 
+  private minimizedHeight(): number {
+    return Math.max(0, Math.round(this.handle.offsetHeight + this.header.offsetHeight));
+  }
+
+  private minimizedOffset(): number {
+    return Math.max(0, this.closedOffset() - this.minimizedHeight());
+  }
+
   private setOffset(offsetPx: number): void {
     this.offsetPx = Math.min(this.closedOffset(), Math.max(0, offsetPx));
     this.sheet.style.setProperty(
@@ -414,12 +400,30 @@ export class MobileStrokeSheetController {
     this.snap = snap;
     this.sheet.dataset.snap = snap;
     const expanded = snap === "expanded";
+    const minimized = snap === "minimized";
+    this.setMinimizedAccessibility(minimized);
     this.handle.setAttribute("aria-expanded", String(expanded));
     this.handle.setAttribute(
       "aria-label",
-      `${expanded ? "Collapse" : "Expand"} Stroke settings`,
+      `${minimized ? "Restore" : expanded ? "Collapse" : "Expand"} Stroke settings`,
     );
-    this.setOffset(expanded ? 0 : this.peekOffset());
+    this.setOffset(
+      expanded ? 0 : minimized ? this.minimizedOffset() : this.peekOffset(),
+    );
+  }
+
+  private setMinimizedAccessibility(minimized: boolean): void {
+    const activeElement = document.activeElement;
+    if (
+      minimized
+      && activeElement instanceof HTMLElement
+      && this.controlsRegion.contains(activeElement)
+    ) {
+      this.closeAlignmentMenu(false);
+      this.handle.focus({ preventScroll: true });
+    }
+    this.controlsRegion.toggleAttribute("inert", minimized);
+    this.controlsRegion.setAttribute("aria-hidden", String(minimized));
   }
 
   private startDrag(event: PointerEvent): void {
@@ -452,7 +456,10 @@ export class MobileStrokeSheetController {
     this.dragLastTime = now;
     const deltaY = event.clientY - this.dragStartY;
     if (Math.abs(deltaY) >= 4) this.dragMoved = true;
-    this.setOffset(this.dragStartOffsetPx + deltaY);
+    const maximumOffset = this.dragStartSnap === "minimized"
+      ? this.closedOffset()
+      : this.minimizedOffset();
+    this.setOffset(Math.min(maximumOffset, this.dragStartOffsetPx + deltaY));
   }
 
   private finishDrag(event: PointerEvent, cancelled = false): void {
@@ -476,13 +483,14 @@ export class MobileStrokeSheetController {
       releaseVelocityY: releaseVelocity,
       offsetPx: this.offsetPx,
       peekOffsetPx: this.peekOffset(),
+      minimizedOffsetPx: this.minimizedOffset(),
     });
     if (this.dragMoved && decision === "closed") {
       this.close(false);
       this.dragMoved = false;
       return;
     }
-    if (this.dragMoved) this.snapTo(decision === "expanded" ? "expanded" : "peek");
+    if (this.dragMoved && decision !== "closed") this.snapTo(decision);
   }
 
   private releaseDragCapture(): void {

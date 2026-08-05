@@ -174,6 +174,7 @@ for (const effectKind of Object.keys(MOBILE_RASTER_EFFECT_SPECS)) {
       releaseVelocityY: 0,
       offsetPx: 464,
       peekOffsetPx: 500,
+      minimizedOffsetPx: 700,
     }),
     "expanded",
     `${effectKind} must expand with the same upward gesture as Bevel`,
@@ -187,6 +188,7 @@ assert.equal(
     releaseVelocityY: 0,
     offsetPx: 464,
     peekOffsetPx: 500,
+    minimizedOffsetPx: 700,
   }),
   "expanded",
 );
@@ -198,6 +200,7 @@ assert.equal(
     releaseVelocityY: 0.2,
     offsetPx: 72,
     peekOffsetPx: 500,
+    minimizedOffsetPx: 700,
   }),
   "peek",
 );
@@ -209,6 +212,7 @@ assert.equal(
     releaseVelocityY: 1,
     offsetPx: 200,
     peekOffsetPx: 500,
+    minimizedOffsetPx: 700,
   }),
   "closed",
 );
@@ -221,11 +225,38 @@ for (const effectKind of Object.keys(MOBILE_RASTER_EFFECT_SPECS)) {
       releaseVelocityY: 0.1,
       offsetPx: 536,
       peekOffsetPx: 500,
+      minimizedOffsetPx: 700,
     }),
-    "closed",
-    `${effectKind} must close with the same short downward gesture`,
+    "minimized",
+    `${effectKind} must preserve a title-only minimized detent`,
   );
 }
+assert.equal(
+  resolveMobileRasterEffectDrag({
+    effectKind: "outer-shadow",
+    startSnap: "minimized",
+    deltaY: 36,
+    releaseVelocityY: 0.1,
+    offsetPx: 736,
+    peekOffsetPx: 500,
+    minimizedOffsetPx: 700,
+  }),
+  "closed",
+  "a second downward gesture from minimized must close the sheet",
+);
+assert.equal(
+  resolveMobileRasterEffectDrag({
+    effectKind: "inner-shadow",
+    startSnap: "minimized",
+    deltaY: -36,
+    releaseVelocityY: 0,
+    offsetPx: 664,
+    peekOffsetPx: 500,
+    minimizedOffsetPx: 700,
+  }),
+  "peek",
+  "an upward gesture from minimized must restore the compact editor",
+);
 
 const sheetStart = html.indexOf('id="mobileRasterEffectSheet"');
 const sheetEnd = html.indexOf('id="mobileToolsSheet"', sheetStart);
@@ -234,7 +265,9 @@ const sheetMarkup = html.slice(sheetStart, sheetEnd);
 for (const id of [
   "mobileRasterEffectSheet",
   "mobileRasterEffectHandle",
+  "mobileRasterEffectHeader",
   "mobileRasterEffectTitle",
+  "mobileRasterEffectEnabledControl",
   "mobileRasterEffectEnabled",
   "mobileRasterEffectScroll",
   "mobileRasterEffectContent",
@@ -288,7 +321,7 @@ assert.match(
 );
 assert.match(
   main,
-  /const effectKind = controlId[\s\S]*?MOBILE_RASTER_EFFECT_KIND_BY_CONTROL_ID[\s\S]*?if \(effectKind && mobileRasterEffectsSheet\) \{\s*mobileRasterEffectsSheet\.open\(effectKind\);\s*return;/,
+  /const effectKind = controlId[\s\S]*?MOBILE_RASTER_EFFECT_KIND_BY_CONTROL_ID[\s\S]*?if \(effectKind && mobileRasterEffectsSheet\) \{\s*mobileRasterEffectsSheet\.open\(effectKind, button\);\s*return;/,
   "each Effects card must open its editor without clicking the old checkbox",
 );
 for (const [name, engineMethod] of [
@@ -344,5 +377,15 @@ assert.doesNotMatch(
   "the controller may depend on style contracts only, never renderer or engine internals",
 );
 assert.doesNotMatch(controllerSource, /setInterval\(/, "the effect sheet must not add polling");
+assert.match(
+  controllerSource,
+  /for \(const region of \[this\.scroll, this\.enabledControl\]\)[\s\S]*?toggleAttribute\("inert", minimized\)[\s\S]*?setAttribute\("aria-hidden", String\(minimized\)\)/,
+  "minimized effects must expose only their grabber and title",
+);
+assert.match(
+  controllerSource,
+  /if \(activeElement instanceof HTMLElement && this\.sheet\.contains\(activeElement\)\)[\s\S]*?activeElement\.blur\(\);[\s\S]*?this\.sheet\.setAttribute\("aria-hidden", "true"\)/,
+  "focus must leave the effect sheet before its ancestor becomes aria-hidden",
+);
 
 console.log("Mobile raster effects sheet: exact settings, routing, scroll, gestures and latest-only queue verified.");

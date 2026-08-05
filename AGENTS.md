@@ -3795,3 +3795,36 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   regressioni aggiornate `stroke-ui:verify` ed `effects-ui:verify`, e
   `git diff --check` sono verdi; la prova touch Safari/iPhone resta da fare
   dopo la pubblicazione.
+
+### Pannelli tool e snap minimized mobile (5 agosto 2026)
+
+- `Fill`, `Selection`, `Transform` e `Text` aprono ora un unico bottom sheet
+  mobile allo snap compatto di Tools (`clamp(160–240 px, 26dvh)`). Il pannello
+  non possiede stato grafico proprio: Fill riusa la tolleranza esistente;
+  Selection rispecchia Method, Combine, Tolerance, Color, Apply e Clear;
+  Transform espone le vere azioni Apply/Cancel soltanto durante la transazione;
+  Text rispecchia testo, font, size e colore e crea il nodo solo con `Add Text`.
+  Toccare la card Text non inserisce più immediatamente un testo predefinito.
+  SVG e Image restano azioni immediate sui rispettivi file picker.
+- Un core puro condiviso introduce per Stroke, tutti e quattro gli effetti
+  raster e il nuovo pannello tool tre ancoraggi interni:
+  `expanded → peek → minimized`, oltre allo stato chiuso. Un trascinamento
+  lento verso il fondo si ferma a `minimized`, lasciando visibili soltanto la
+  maniglia e una riga titolo (`86 px`, oppure `78 px` sui viewport corti); da
+  lì un gesto verso l'alto torna a peek e un secondo gesto verso il basso
+  chiude. Soltanto un flick deliberato di almeno `28 px` e `0,9 px/ms` può
+  chiudere direttamente. Escape continua a chiudere.
+- Nello stato minimized le regioni dei controlli diventano `inert` e
+  `aria-hidden`; se contengono il focus, questo passa prima alla maniglia. In
+  chiusura il focus viene spostato o rimosso prima di nascondere l'ancestor,
+  evitando il warning Chromium su un discendente focalizzato dentro
+  `aria-hidden`. Lo scroll nativo dei controlli resta separato dalla gesture,
+  che appartiene soltanto alla maniglia; scrollTop viene mantenuto fra snap e
+  azzerato solo quando si apre un tool diverso.
+- Il pannello aggiunge un solo `MutationObserver` sull'attributo `hidden` della
+  toolbar Transform per sincronizzare Apply/Cancel. Non introduce polling,
+  renderer, texture, buffer, submission GPU o modifiche al percorso caldo del
+  pennello. TypeScript, build Vite/Sites, tutte le `29` suite `*:verify`,
+  inclusa la nuova `tool-sheet:verify`, e `git diff --check` sono verdi. La
+  gesture fisica e la tastiera di Text restano da provare su Safari/iPhone dopo
+  la pubblicazione.

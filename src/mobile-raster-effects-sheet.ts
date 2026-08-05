@@ -8,6 +8,11 @@ import type {
   RasterInnerShadowStyle,
   RasterOuterShadowStyle,
 } from "./shadow-core.ts";
+import {
+  nextMobileBottomSheetTapSnap,
+  resolveMobileBottomSheetDrag,
+  type MobileBottomSheetSnap,
+} from "./mobile-bottom-sheet-gesture.ts";
 
 export type MobileRasterEffectKind =
   | "color-overlay"
@@ -15,7 +20,7 @@ export type MobileRasterEffectKind =
   | "inner-shadow"
   | "bevel";
 
-export type MobileRasterEffectSnap = "peek" | "expanded";
+export type MobileRasterEffectSnap = MobileBottomSheetSnap;
 
 type MobileRasterEffectStyle =
   | RasterColorOverlayStyle
@@ -284,17 +289,12 @@ export interface MobileRasterEffectDragDecisionOptions {
   readonly releaseVelocityY: number;
   readonly offsetPx: number;
   readonly peekOffsetPx: number;
+  readonly minimizedOffsetPx: number;
 }
 
 const MOBILE_EFFECT_MIN_PEEK_PX = 160;
 const MOBILE_EFFECT_MAX_PEEK_PX = 240;
 const MOBILE_EFFECT_PEEK_VIEWPORT_RATIO = 0.26;
-const MOBILE_EFFECT_CLOSE_DISTANCE_PX = 36;
-const MOBILE_EFFECT_CLOSE_FLICK_DISTANCE_PX = 28;
-const MOBILE_EFFECT_CLOSE_FLICK_VELOCITY_PX_PER_MS = 0.45;
-const MOBILE_EFFECT_EXPAND_DISTANCE_PX = 36;
-const MOBILE_EFFECT_EXPAND_FLICK_VELOCITY_PX_PER_MS = -0.45;
-
 export function mobileRasterEffectPeekHeight(viewportHeight: number): number {
   return Math.min(
     MOBILE_EFFECT_MAX_PEEK_PX,
@@ -305,37 +305,7 @@ export function mobileRasterEffectPeekHeight(viewportHeight: number): number {
 export function resolveMobileRasterEffectDrag(
   options: MobileRasterEffectDragDecisionOptions,
 ): "closed" | MobileRasterEffectSnap {
-  const closeFlick = options.deltaY >= MOBILE_EFFECT_CLOSE_FLICK_DISTANCE_PX
-    && options.releaseVelocityY >= MOBILE_EFFECT_CLOSE_FLICK_VELOCITY_PX_PER_MS;
-
-  if (options.startSnap === "peek") {
-    if (options.deltaY >= MOBILE_EFFECT_CLOSE_DISTANCE_PX || closeFlick) {
-      return "closed";
-    }
-    if (
-      MOBILE_RASTER_EFFECT_SPECS[options.effectKind].expandable
-      && (
-        options.deltaY <= -MOBILE_EFFECT_EXPAND_DISTANCE_PX
-        || options.releaseVelocityY <= MOBILE_EFFECT_EXPAND_FLICK_VELOCITY_PX_PER_MS
-      )
-    ) {
-      return "expanded";
-    }
-    return "peek";
-  }
-
-  const fastCloseFromExpanded = options.deltaY >= Math.max(
-    96,
-    options.peekOffsetPx * 0.32,
-  ) && options.releaseVelocityY >= 0.9;
-  if (fastCloseFromExpanded) return "closed";
-  if (
-    options.offsetPx >= options.peekOffsetPx * 0.5
-    || options.deltaY >= 72
-  ) {
-    return "peek";
-  }
-  return "expanded";
+  return resolveMobileBottomSheetDrag(options);
 }
 
 function requiredElement<T extends HTMLElement>(id: string): T {
@@ -415,7 +385,9 @@ function formatRangeValue(
 export class MobileRasterEffectsSheetController {
   readonly sheet = requiredElement<HTMLElement>("mobileRasterEffectSheet");
   readonly handle = requiredElement<HTMLButtonElement>("mobileRasterEffectHandle");
+  readonly header = requiredElement<HTMLElement>("mobileRasterEffectHeader");
   readonly title = requiredElement<HTMLElement>("mobileRasterEffectTitle");
+  readonly enabledControl = requiredElement<HTMLElement>("mobileRasterEffectEnabledControl");
   readonly enabledInput = requiredElement<HTMLInputElement>("mobileRasterEffectEnabled");
   readonly scroll = requiredElement<HTMLElement>("mobileRasterEffectScroll");
   readonly content = requiredElement<HTMLElement>("mobileRasterEffectContent");
@@ -432,6 +404,7 @@ export class MobileRasterEffectsSheetController {
   private dragLastTime = 0;
   private dragVelocityY = 0;
   private dragMoved = false;
+  private opener: HTMLElement | null = null;
   private applyFrame: number | null = null;
   private draft: (
     {
@@ -475,7 +448,7 @@ export class MobileRasterEffectsSheetController {
     return this.activeKind;
   }
 
-  open(kind: MobileRasterEffectKind): void {
+  open(kind: MobileRasterEffectKind, opener: HTMLElement | null = null): void {
     if (!this.options.mobileMediaQuery.matches) return;
     if (this.openState && this.activeKind === kind) return;
     if (this.openState) this.close(false);
@@ -483,6 +456,7 @@ export class MobileRasterEffectsSheetController {
     this.options.beforeOpen();
 
     this.activeKind = kind;
+    this.opener = opener;
     this.openState = true;
     this.snap = "peek";
     this.sheet.dataset.effect = kind;
@@ -513,6 +487,14 @@ export class MobileRasterEffectsSheetController {
     this.flushDraft();
     this.openState = false;
     this.releaseDragCapture();
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement && this.sheet.contains(activeElement)) {
+      if (restoreFocus && this.opener?.isConnected) {
+        this.opener.focus({ preventScroll: true });
+      } else {
+        activeElement.blur();
+      }
+    }
     this.sheet.classList.remove("is-open", "is-dragging");
     this.sheet.dataset.state = "closed";
     this.sheet.setAttribute("aria-hidden", "true");
@@ -520,7 +502,7 @@ export class MobileRasterEffectsSheetController {
     this.handle.setAttribute("aria-expanded", "false");
     this.setOffset(this.closedOffset());
     this.options.onOpenChange(false);
-    if (restoreFocus) this.handle.blur();
+    this.opener = null;
   }
 
   syncOpenStyle(): void {
@@ -544,11 +526,7 @@ export class MobileRasterEffectsSheetController {
         this.dragMoved = false;
         return;
       }
-      if (!MOBILE_RASTER_EFFECT_SPECS[this.activeKind].expandable) {
-        this.close(true);
-        return;
-      }
-      this.snapTo(this.snap === "peek" ? "expanded" : "peek");
+      this.snapTo(nextMobileBottomSheetTapSnap(this.snap));
     });
 
     this.enabledInput.addEventListener("change", () => {
@@ -917,6 +895,14 @@ export class MobileRasterEffectsSheetController {
     return Math.max(0, Math.round(this.sheet.offsetHeight));
   }
 
+  private minimizedHeight(): number {
+    return Math.max(0, Math.round(this.handle.offsetHeight + this.header.offsetHeight));
+  }
+
+  private minimizedOffset(): number {
+    return Math.max(0, this.closedOffset() - this.minimizedHeight());
+  }
+
   private setOffset(offsetPx: number): void {
     const closed = this.closedOffset();
     this.offsetPx = Math.min(closed, Math.max(0, offsetPx));
@@ -932,17 +918,34 @@ export class MobileRasterEffectsSheetController {
 
   private snapTo(snap: MobileRasterEffectSnap): void {
     if (!this.activeKind) return;
-    this.snap = MOBILE_RASTER_EFFECT_SPECS[this.activeKind].expandable ? snap : "peek";
+    this.snap = snap;
     this.sheet.dataset.snap = this.snap;
     const expanded = this.snap === "expanded";
+    const minimized = this.snap === "minimized";
+    this.setMinimizedAccessibility(minimized);
     this.handle.setAttribute("aria-expanded", String(expanded));
     this.handle.setAttribute(
       "aria-label",
-      MOBILE_RASTER_EFFECT_SPECS[this.activeKind].expandable
-        ? `${expanded ? "Collapse" : "Expand"} ${MOBILE_RASTER_EFFECT_SPECS[this.activeKind].title} settings`
-        : `Close ${MOBILE_RASTER_EFFECT_SPECS[this.activeKind].title} settings`,
+      `${minimized ? "Restore" : expanded ? "Collapse" : "Expand"} ${MOBILE_RASTER_EFFECT_SPECS[this.activeKind].title} settings`,
     );
-    this.setOffset(expanded ? 0 : this.peekOffset());
+    this.setOffset(
+      expanded ? 0 : minimized ? this.minimizedOffset() : this.peekOffset(),
+    );
+  }
+
+  private setMinimizedAccessibility(minimized: boolean): void {
+    const activeElement = document.activeElement;
+    if (
+      minimized
+      && activeElement instanceof HTMLElement
+      && (this.scroll.contains(activeElement) || this.enabledControl.contains(activeElement))
+    ) {
+      this.handle.focus({ preventScroll: true });
+    }
+    for (const region of [this.scroll, this.enabledControl]) {
+      region.toggleAttribute("inert", minimized);
+      region.setAttribute("aria-hidden", String(minimized));
+    }
   }
 
   private startDrag(event: PointerEvent): void {
@@ -975,10 +978,10 @@ export class MobileRasterEffectsSheetController {
     this.dragLastTime = now;
     const deltaY = event.clientY - this.dragStartY;
     if (Math.abs(deltaY) >= 4) this.dragMoved = true;
-    const expandable = MOBILE_RASTER_EFFECT_SPECS[this.activeKind].expandable;
-    this.setOffset(
-      this.dragStartOffsetPx + (expandable ? deltaY : Math.max(0, deltaY)),
-    );
+    const maximumOffset = this.dragStartSnap === "minimized"
+      ? this.closedOffset()
+      : this.minimizedOffset();
+    this.setOffset(Math.min(maximumOffset, this.dragStartOffsetPx + deltaY));
   }
 
   private finishDrag(event: PointerEvent, cancelled = false): void {
@@ -1003,13 +1006,14 @@ export class MobileRasterEffectsSheetController {
       releaseVelocityY,
       offsetPx: this.offsetPx,
       peekOffsetPx: this.peekOffset(),
+      minimizedOffsetPx: this.minimizedOffset(),
     });
     if (this.dragMoved && decision === "closed") {
       this.close(false);
       this.dragMoved = false;
       return;
     }
-    if (this.dragMoved) this.snapTo(decision === "expanded" ? "expanded" : "peek");
+    if (this.dragMoved && decision !== "closed") this.snapTo(decision);
   }
 
   private releaseDragCapture(): void {
