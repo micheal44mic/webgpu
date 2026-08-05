@@ -644,6 +644,7 @@ import {
   maybeInjectHistoryReplayFault,
   moveHistoryCursor,
   moveMixedSceneItem,
+  rasterLayerMetadataHistoryStatesEqual,
   recordBlendHistoryBatch,
   recordRasterLayerMetadataHistoryAction,
   recordVectorHistoryAction,
@@ -1477,7 +1478,10 @@ export class BrushEngine {
   historyBusy = false;
   historyStateInconsistent = false;
   activeVectorHistoryEdit: ActiveVectorHistoryEdit | null = null;
-  activeRasterLayerMetadataHistoryEdit: ActiveRasterLayerMetadataHistoryEdit | null = null;
+  activeRasterLayerMetadataHistoryEdit: (
+    ActiveRasterLayerMetadataHistoryEdit & { readonly token: number }
+  ) | null = null;
+  nextRasterLayerMetadataHistoryEditToken = 1;
   activeRasterTransformSession: ActiveRasterTransformSession | null = null;
   historyGpuStorage!: GpuHistoryStorage;
   historyGpuTrimGeneration = 0;
@@ -2041,6 +2045,9 @@ export class BrushEngine {
   async setRasterColorOverlayStyle(style: unknown): Promise<boolean> {
     const normalized = normalizeRasterColorOverlayStyle(style);
     const normalizedActive = normalized.enabled && normalized.opacity > 0;
+    if (this.initialized && !this.rasterLayerMetadataHistoryEditAllows("color-overlay")) {
+      return false;
+    }
     if (this.initialized && this.layerSwitchBusy) {
       return false;
     }
@@ -2070,6 +2077,7 @@ export class BrushEngine {
     const historyBefore = captureRasterLayerMetadataHistoryState(
       this,
       this.layerStack.active.id,
+      "color-overlay",
     );
     const previous = copyRasterColorOverlayStyle(this.rasterColorOverlayStyle);
     const previousActive = previous.enabled && previous.opacity > 0;
@@ -2196,6 +2204,9 @@ export class BrushEngine {
   async setRasterStrokeStyle(style: unknown): Promise<boolean> {
     const normalized = normalizeRasterStrokeStyle(style);
     const normalizedActive = normalized.enabled && normalized.width > 0;
+    if (this.initialized && !this.rasterLayerMetadataHistoryEditAllows("stroke")) {
+      return false;
+    }
     if (this.initialized && this.layerSwitchBusy) {
       return false;
     }
@@ -2227,6 +2238,7 @@ export class BrushEngine {
     const historyBefore = captureRasterLayerMetadataHistoryState(
       this,
       this.layerStack.active.id,
+      "stroke",
     );
     const previous = copyRasterStrokeStyle(this.rasterStrokeStyle);
     const previousActive = previous.enabled && previous.width > 0;
@@ -2342,6 +2354,9 @@ export class BrushEngine {
 
   async setRasterBevelStyle(style: unknown): Promise<boolean> {
     const normalized = normalizeRasterBevelStyle(style);
+    if (this.initialized && !this.rasterLayerMetadataHistoryEditAllows("bevel")) {
+      return false;
+    }
     if (this.initialized && this.layerSwitchBusy) {
       return false;
     }
@@ -2376,6 +2391,7 @@ export class BrushEngine {
     const historyBefore = captureRasterLayerMetadataHistoryState(
       this,
       this.layerStack.active.id,
+      "bevel",
     );
     const previous = copyRasterBevelStyle(this.rasterBevelStyle);
     const previousActive = previous.enabled;
@@ -2466,6 +2482,9 @@ export class BrushEngine {
 
   async setRasterOuterShadowStyle(style: unknown): Promise<boolean> {
     const normalized = normalizeRasterOuterShadowStyle(style);
+    if (this.initialized && !this.rasterLayerMetadataHistoryEditAllows("outer-shadow")) {
+      return false;
+    }
     if (!rasterOuterShadowUsesSupportedBlend(normalized)) {
       throw new Error(
         "L'Ombra esterna Multiply è esatta solo con colore nero; "
@@ -2505,6 +2524,7 @@ export class BrushEngine {
     const historyBefore = captureRasterLayerMetadataHistoryState(
       this,
       this.layerStack.active.id,
+      "outer-shadow",
     );
     const previous = copyRasterOuterShadowStyle(this.rasterOuterShadowStyle);
     const previousRect = rasterOuterShadowVisualBounds(
@@ -2587,6 +2607,9 @@ export class BrushEngine {
 
   async setRasterInnerShadowStyle(style: unknown): Promise<boolean> {
     const normalized = normalizeRasterInnerShadowStyle(style);
+    if (this.initialized && !this.rasterLayerMetadataHistoryEditAllows("inner-shadow")) {
+      return false;
+    }
     if (this.initialized && this.layerSwitchBusy) {
       return false;
     }
@@ -2620,6 +2643,7 @@ export class BrushEngine {
     const historyBefore = captureRasterLayerMetadataHistoryState(
       this,
       this.layerStack.active.id,
+      "inner-shadow",
     );
     const previous = copyRasterInnerShadowStyle(this.rasterInnerShadowStyle);
     const previousRect = rasterInnerShadowVisualBounds(
@@ -3399,30 +3423,38 @@ export class BrushEngine {
     applyViewRotation(this, 0);
   }
 
-  beginStroke(sample: PointerSample): void {
-    this.beginStrokeAtLayer(this.toLayerPoint(sample));
+  beginStroke(sample: PointerSample): boolean {
+    return this.beginStrokeAtLayer(this.toLayerPoint(sample));
   }
 
-  beginStrokeAtLayer(point: LayerPoint): void {
+  beginStrokeAtLayer(point: LayerPoint): boolean {
     // layerSwitchBusy is held across the switch's awaits, so a pointerdown
     // landing mid-switch cannot start a stroke on a half-swapped layer.
-    if (this.activeVectorHistoryEdit || this.activeRasterLayerMetadataHistoryEdit) return;
+    if (this.activeVectorHistoryEdit || this.activeRasterLayerMetadataHistoryEdit) {
+      this.callbacks.onStatus?.(
+        this.activeRasterLayerMetadataHistoryEdit
+          ? "Completo la modifica dell'effetto prima di iniziare il tratto…"
+          : "Completa la modifica vettoriale prima di iniziare il tratto.",
+        "working",
+      );
+      return false;
+    }
     if (this.historyBusy || this.activeStroke || this.layerSwitchBusy || this.selectionBusy) {
-      return;
+      return false;
     }
     if (!this.canPaintSelectedSceneItem()) {
       this.callbacks.onStatus?.(
         "Un vettore è selezionato: scegli un livello raster per usare il pennello.",
         "working",
       );
-      return;
+      return false;
     }
     if (this.settings.tool === "blend" && this.pixelSelectionState.selectedPixels > 0) {
       this.callbacks.onStatus?.(
         "Blend non modifica una Selezione pixel: deseleziona oppure usa Paint/Riempimento.",
         "working",
       );
-      return;
+      return false;
     }
     if (
       this.settings.grainMode !== "off"
@@ -3438,7 +3470,7 @@ export class BrushEngine {
         "Grain in caricamento: riprova tra un istante…",
         "working",
       );
-      return;
+      return false;
     }
     if (
       this.settings.shape === "shape"
@@ -3453,7 +3485,7 @@ export class BrushEngine {
         "Shape in caricamento: riprova tra un istante…",
         "working",
       );
-      return;
+      return false;
     }
     if (
       usesStrokeGlazeRenderer(this.settings)
@@ -3469,7 +3501,7 @@ export class BrushEngine {
         "Rendering glaze in preparazione: riprova tra un istante…",
         "working",
       );
-      return;
+      return false;
     }
     pauseLayerColdCompressionIdle(this);
     const normalizedPoint: LayerPoint = {
@@ -3516,7 +3548,7 @@ export class BrushEngine {
           `Pennellata annullata prima del rendering: ${message}`,
           "error",
         );
-        return;
+        return false;
       }
     }
     this.nextHistoryActionId += 1;
@@ -3610,6 +3642,7 @@ export class BrushEngine {
     if (tool !== "blend") {
       emitStamp(this, normalizedPoint, 1, 0);
     }
+    return true;
   }
 
   extendStroke(samples: readonly PointerSample[]): void {
@@ -5706,42 +5739,83 @@ export class BrushEngine {
 
   beginRasterLayerMetadataHistoryEdit(
     property: RasterLayerMetadataHistoryAction["property"],
-  ): boolean {
+  ): number | null {
     if (
       !this.initialized
       || this.activeStroke !== null
       || this.historyBusy
       || this.layerSwitchBusy
+      || this.selectionBusy
       || this.historyStateInconsistent
       || this.activeVectorHistoryEdit
+      || this.rasterStrokeBusy
+      || this.rasterBevelBusy
+      || this.rasterOuterShadowBusy
+      || this.rasterInnerShadowBusy
     ) {
-      return false;
+      return null;
     }
+    cancelHistoryMaintenance(this);
     const layerId = this.layerStack.active.id;
     const active = this.activeRasterLayerMetadataHistoryEdit;
-    if (active) return active.layerId === layerId && active.property === property;
+    if (active) {
+      return active.layerId === layerId && active.property === property
+        ? active.token
+        : null;
+    }
+    const token = this.nextRasterLayerMetadataHistoryEditToken;
+    this.nextRasterLayerMetadataHistoryEditToken = token >= Number.MAX_SAFE_INTEGER ? 1 : token + 1;
+    const before = captureRasterLayerMetadataHistoryState(this, layerId, property);
     this.activeRasterLayerMetadataHistoryEdit = {
-      layerId,
-      property,
-      before: captureRasterLayerMetadataHistoryState(this, layerId),
+      token,
+      ...before,
     };
+    this.publishHistoryState();
+    return token;
+  }
+
+  commitRasterLayerMetadataHistoryEdit(token: number): boolean {
+    const edit = this.activeRasterLayerMetadataHistoryEdit;
+    if (!edit || edit.token !== token) return false;
+    const after = captureRasterLayerMetadataHistoryState(
+      this,
+      edit.layerId,
+      edit.property,
+    );
+    recordRasterLayerMetadataHistoryAction(
+      this,
+      edit.property,
+      edit,
+      after,
+    );
+    this.activeRasterLayerMetadataHistoryEdit = null;
     this.publishHistoryState();
     return true;
   }
 
-  commitRasterLayerMetadataHistoryEdit(): boolean {
+  cancelRasterLayerMetadataHistoryEdit(token: number): boolean {
     const edit = this.activeRasterLayerMetadataHistoryEdit;
-    if (!edit) return false;
-    this.activeRasterLayerMetadataHistoryEdit = null;
-    const after = captureRasterLayerMetadataHistoryState(this, edit.layerId);
-    const changed = recordRasterLayerMetadataHistoryAction(
+    if (!edit || edit.token !== token) return false;
+    const current = captureRasterLayerMetadataHistoryState(
       this,
+      edit.layerId,
       edit.property,
-      edit.before,
-      after,
     );
+    // Cancellation is safe only for an untouched handshake. Once the style
+    // changed, the caller must commit it so the visible mutation remains
+    // reachable through Undo instead of silently disappearing from history.
+    if (!rasterLayerMetadataHistoryStatesEqual(edit, current)) return false;
+    this.activeRasterLayerMetadataHistoryEdit = null;
     this.publishHistoryState();
-    return changed;
+    return true;
+  }
+
+  private rasterLayerMetadataHistoryEditAllows(
+    property: RasterLayerMetadataHistoryAction["property"],
+    layerId = this.layerStack.active.id,
+  ): boolean {
+    const edit = this.activeRasterLayerMetadataHistoryEdit;
+    return !edit || (edit.layerId === layerId && edit.property === property);
   }
 
   private recordRasterLayerMetadataMutation(
@@ -5750,8 +5824,10 @@ export class BrushEngine {
   ): void {
     const edit = this.activeRasterLayerMetadataHistoryEdit;
     if (edit) {
-      if (edit.layerId !== before.layerId) {
-        throw new Error("Il livello metadata è cambiato durante il gesto.");
+      if (edit.layerId !== before.layerId || edit.property !== property) {
+        throw new Error(
+          `La transazione ${edit.property} non può assorbire la modifica ${property}.`,
+        );
       }
       return;
     }
@@ -5759,7 +5835,7 @@ export class BrushEngine {
       this,
       property,
       before,
-      captureRasterLayerMetadataHistoryState(this, before.layerId),
+      captureRasterLayerMetadataHistoryState(this, before.layerId, property),
     );
     this.publishHistoryState();
   }
@@ -6413,21 +6489,26 @@ export class BrushEngine {
   }
 
   async setLayerVisibility(index: number, visible: boolean): Promise<boolean> {
-    const before = captureRasterLayerMetadataHistoryState(this, this.layerStack.at(index).id);
+    const layerId = this.layerStack.at(index).id;
+    if (!this.rasterLayerMetadataHistoryEditAllows("visibility", layerId)) return false;
+    const before = captureRasterLayerMetadataHistoryState(this, layerId, "visibility");
     const changed = await setLayerPresentation(this, index, Boolean(visible), undefined);
-    if (changed) this.recordRasterLayerMetadataMutation("presentation", before);
+    if (changed) this.recordRasterLayerMetadataMutation("visibility", before);
     return changed;
   }
 
   async setLayerOpacity(index: number, opacity: number): Promise<boolean> {
-    const before = captureRasterLayerMetadataHistoryState(this, this.layerStack.at(index).id);
+    const layerId = this.layerStack.at(index).id;
+    if (!this.rasterLayerMetadataHistoryEditAllows("opacity", layerId)) return false;
+    const before = captureRasterLayerMetadataHistoryState(this, layerId, "opacity");
     const changed = await setLayerPresentation(this, index, undefined, clamp(opacity, 0, 1));
-    if (changed) this.recordRasterLayerMetadataMutation("presentation", before);
+    if (changed) this.recordRasterLayerMetadataMutation("opacity", before);
     return changed;
   }
 
   async setLayerBlendMode(index: number, blendMode: LayerBlendMode): Promise<boolean> {
     const record = this.layerStack.at(index);
+    if (this.activeRasterLayerMetadataHistoryEdit) return false;
     const before = record.blendMode;
     const changed = await setLayerBlendMode(this, index, blendMode);
     if (!changed) {
@@ -6450,7 +6531,9 @@ export class BrushEngine {
   }
 
   async setLayerClipping(index: number, enabled: boolean): Promise<boolean> {
-    const before = captureRasterLayerMetadataHistoryState(this, this.layerStack.at(index).id);
+    const layerId = this.layerStack.at(index).id;
+    if (!this.rasterLayerMetadataHistoryEditAllows("clipping", layerId)) return false;
+    const before = captureRasterLayerMetadataHistoryState(this, layerId, "clipping");
     const changed = await setLayerClipping(this, index, Boolean(enabled));
     if (changed) this.recordRasterLayerMetadataMutation("clipping", before);
     return changed;

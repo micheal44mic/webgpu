@@ -3668,6 +3668,7 @@ export function allocateActiveLayerDisplayPyramid(engine: BrushEngine, format: L
 export async function restoreEffectsWorkbenchToActiveLayer(engine: BrushEngine, 
   caller: EffectsRetargetCaller = "layer-switch",
   force = false,
+  rebuildDomain: LayerEffectsRebuildDomain = "full-document",
 ): Promise<void> {
   const record = engine.layerStack.active;
   const hot = requireLayerHot(engine, record.id);
@@ -3683,6 +3684,8 @@ export async function restoreEffectsWorkbenchToActiveLayer(engine: BrushEngine,
     record,
     false,
     true,
+    "await-immediately",
+    rebuildDomain,
   );
 }
 

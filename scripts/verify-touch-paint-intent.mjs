@@ -65,13 +65,13 @@ assert.match(
 );
 assert.match(
   mainSource,
-  /shouldHoldTouchPaintIntent\([\s\S]*?event\.pointerType,[\s\S]*?activeCanvasTool,[\s\S]*?\)\) \{\s*startTouchPaintIntentHold\(event\.pointerId, sample\);\s*\} else \{\s*engine\.beginStroke\(sample\);/,
-  "only eligible touch Paint input may leave the immediate beginStroke path",
+  /const holdPaintIntent = paintSample !== null && shouldHoldTouchPaintIntent\([\s\S]*?event\.pointerType,[\s\S]*?activeCanvasTool,[\s\S]*?\);[\s\S]*?if \(paintSample && !holdPaintIntent\) \{[\s\S]*?if \(!engine\.beginStroke\(paintSample\)\)[\s\S]*?if \(paintSample && holdPaintIntent\) \{[\s\S]*?startTouchPaintIntentHold\(event\.pointerId, paintSample\);/,
+  "only eligible touch Paint input may leave the immediate, acknowledged beginStroke path",
 );
 assert.match(
   mainSource,
-  /engine\.beginStroke\(hold\.initialSample\);\s*if \(hold\.bufferedSamples\.length > 0\) \{\s*engine\.extendStroke\(hold\.bufferedSamples\);/,
-  "release must replay original timestamped samples in their original order",
+  /if \(!engine\.beginStroke\(hold\.initialSample\)\) \{[\s\S]*?return false;\s*\}[\s\S]*?if \(hold\.bufferedSamples\.length > 0\) \{\s*engine\.extendStroke\(hold\.bufferedSamples\);/,
+  "release must acknowledge begin before replaying original timestamped samples in order",
 );
 assert.match(
   mainSource,

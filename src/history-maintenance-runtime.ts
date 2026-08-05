@@ -1,11 +1,11 @@
 import type { BrushEngine } from "./brush-engine";
 import {
-  createLayerColdStorageCandidate,
+  createLayerColdStorageCandidateIncrementally,
   destroyLayerColdStorage,
 } from "./engine-cold-storage";
 import type { DirtyRect } from "./engine-stroke-types";
 import type { LayerColdStorageResources } from "./engine-layer-resources";
-import type { HistoryRenderBatch } from "./engine-history-types";
+import type { HistoryAction, HistoryRenderBatch } from "./engine-history-types";
 import type { GpuHistorySlice } from "./gpu-history-storage";
 import {
   countLayerStorageTiles,
@@ -27,6 +27,7 @@ const HISTORY_MOBILE_BUDGET_BYTES = 192 * MEBIBYTE_BYTES;
 const HISTORY_DESKTOP_BUDGET_BYTES = 512 * MEBIBYTE_BYTES;
 const HISTORY_FULL_CHECKPOINT_PERIOD = 8;
 const HISTORY_MAINTENANCE_DELAY_MS = 140;
+const HISTORY_MINIMUM_BUDGET_BYTES = 16 * MEBIBYTE_BYTES;
 
 export interface PeriodicRasterHistoryCheckpoint {
   readonly id: number;
@@ -48,6 +49,10 @@ export interface HistoryMaintenanceTelemetry {
   readonly memory: HistoryMemoryLedger;
   readonly totalBytes: number;
   readonly budgetBytes: number;
+  /** Device-class ceiling before live effects reserve their working set. */
+  readonly baseBudgetBytes: number;
+  /** Physical active effects resources excluded from the History allowance. */
+  readonly effectsWorkingSetBytes: number;
   readonly budgetPressure: number;
   readonly replayTailBatches: number;
   readonly capturesStarted: number;
@@ -64,6 +69,20 @@ export interface HistoryMaintenanceTelemetry {
   readonly budgetEvictions: number;
   readonly evictedPayloadBytes: number;
   readonly budgetCheckpointBlocked: boolean;
+  readonly accountingFullRebuilds: number;
+  readonly accountingIncrementalActions: number;
+  readonly accountingIncrementalBatches: number;
+}
+
+interface HistoryReplayTailAccounting {
+  actions: number;
+  batches: number;
+  bytes: number;
+}
+
+interface LatestCheckpointAccounting {
+  checkpoint: PeriodicRasterHistoryCheckpoint;
+  actionIndex: number;
 }
 
 interface HistoryMaintenanceState {
@@ -87,6 +106,37 @@ interface HistoryMaintenanceState {
   evictedPayloadBytes: number;
   budgetCheckpointBlocked: boolean;
   checkpointBytes: number;
+  actionCheckpointBytes: number;
+  fullCheckpointCount: number;
+  deltaCheckpointCount: number;
+  accountingInitialized: boolean;
+  accounting: HistoryMemoryLedger;
+  accountingCpuSeen: WeakSet<object>;
+  accountingSelectionSliceIds: Set<number>;
+  accountingCheckpointSeeds: Set<LayerColdStorageResources>;
+  observedActionsLength: number;
+  observedActionsTail: object | null;
+  observedBatchesLength: number;
+  observedBatchesTail: object | null;
+  observedDiscardedVectorLength: number;
+  observedDiscardedVectorTail: object | null;
+  observedDiscardedImportLength: number;
+  observedDiscardedImportTail: object | null;
+  observedDiscardedTransformLength: number;
+  observedDiscardedTransformTail: object | null;
+  observedSelectionRevisionSize: number;
+  observedSelectionActionSize: number;
+  observedRasterAssetSize: number;
+  rasterAssetBytes: number;
+  customAssetBytes: number;
+  actionIndexById: Map<number, number>;
+  latestCheckpointByLayer: Map<number, LatestCheckpointAccounting>;
+  checkpointCountByLayer: Map<number, number>;
+  lastRasterActionByLayer: Map<number, { id: number; index: number }>;
+  replayTailByLayer: Map<number, HistoryReplayTailAccounting>;
+  accountingFullRebuilds: number;
+  accountingIncrementalActions: number;
+  accountingIncrementalBatches: number;
 }
 
 const stateByEngine = new WeakMap<BrushEngine, HistoryMaintenanceState>();
@@ -115,6 +165,37 @@ function stateFor(engine: BrushEngine): HistoryMaintenanceState {
       evictedPayloadBytes: 0,
       budgetCheckpointBlocked: false,
       checkpointBytes: 0,
+      actionCheckpointBytes: 0,
+      fullCheckpointCount: 0,
+      deltaCheckpointCount: 0,
+      accountingInitialized: false,
+      accounting: emptyHistoryMemoryLedger(),
+      accountingCpuSeen: new WeakSet<object>(),
+      accountingSelectionSliceIds: new Set<number>(),
+      accountingCheckpointSeeds: new Set<LayerColdStorageResources>(),
+      observedActionsLength: 0,
+      observedActionsTail: null,
+      observedBatchesLength: 0,
+      observedBatchesTail: null,
+      observedDiscardedVectorLength: 0,
+      observedDiscardedVectorTail: null,
+      observedDiscardedImportLength: 0,
+      observedDiscardedImportTail: null,
+      observedDiscardedTransformLength: 0,
+      observedDiscardedTransformTail: null,
+      observedSelectionRevisionSize: 0,
+      observedSelectionActionSize: 0,
+      observedRasterAssetSize: 0,
+      rasterAssetBytes: 0,
+      customAssetBytes: 0,
+      actionIndexById: new Map<number, number>(),
+      latestCheckpointByLayer: new Map<number, LatestCheckpointAccounting>(),
+      checkpointCountByLayer: new Map<number, number>(),
+      lastRasterActionByLayer: new Map<number, { id: number; index: number }>(),
+      replayTailByLayer: new Map<number, HistoryReplayTailAccounting>(),
+      accountingFullRebuilds: 0,
+      accountingIncrementalActions: 0,
+      accountingIncrementalBatches: 0,
     };
     stateByEngine.set(engine, state);
   }
@@ -146,20 +227,20 @@ function mobileHistoryBudget(): boolean {
   return typeof matchMedia === "function" && matchMedia("(max-width: 700px)").matches;
 }
 
-function actionIndexById(engine: BrushEngine): Map<number, number> {
-  return new Map(engine.historyActions.map((action, index) => [action.id, index]));
-}
-
 function latestCheckpoint(
   engine: BrushEngine,
   layerId: number,
 ): { checkpoint: PeriodicRasterHistoryCheckpoint; actionIndex: number } | null {
-  return nearestHistoryCheckpoint(
-    engine.historyActions,
-    engine.historyCursor,
-    layerId,
-    stateFor(engine).checkpoints,
-  ) as { checkpoint: PeriodicRasterHistoryCheckpoint; actionIndex: number } | null;
+  if (engine.historyCursor !== engine.historyActions.length) {
+    return nearestHistoryCheckpoint(
+      engine.historyActions,
+      engine.historyCursor,
+      layerId,
+      stateFor(engine).checkpoints,
+    ) as { checkpoint: PeriodicRasterHistoryCheckpoint; actionIndex: number } | null;
+  }
+  synchronizeHistoryAccounting(engine);
+  return stateFor(engine).latestCheckpointByLayer.get(layerId) ?? null;
 }
 
 function rasterActionAffectsPixels(kind: string): boolean {
@@ -171,29 +252,14 @@ function rasterActionAffectsPixels(kind: string): boolean {
     || kind === "raster-transform";
 }
 
-function lastRasterActionForLayer(engine: BrushEngine, layerId: number): {
-  id: number;
-  index: number;
-} | null {
-  for (let index = engine.historyCursor - 1; index >= 0; index -= 1) {
-    const action = engine.historyActions[index];
-    if (
-      "layerId" in action
-      && action.layerId === layerId
-      && rasterActionAffectsPixels(action.kind)
-    ) {
-      return { id: action.id, index };
-    }
-  }
-  return null;
-}
-
 function bytesForCheckpointCpuMetadata(checkpoint: PeriodicRasterHistoryCheckpoint): number {
   return checkpoint.baseTileMask.byteLength + 96;
 }
 
-function estimateStructuralBytes(roots: readonly (readonly unknown[])[]): number {
-  const seen = new WeakSet<object>();
+function estimateStructuralBytes(
+  roots: readonly (readonly unknown[])[],
+  seen = new WeakSet<object>(),
+): number {
   const stack: unknown[] = [];
   for (const root of roots) {
     for (let index = root.length - 1; index >= 0; index -= 1) stack.push(root[index]);
@@ -267,117 +333,329 @@ function estimateStructuralBytes(roots: readonly (readonly unknown[])[]): number
   return bytes;
 }
 
-function estimateCpuHistoryBytes(engine: BrushEngine): number {
-  return estimateStructuralBytes([
-    engine.historyActions,
+function appendOnlySince<T extends object>(
+  values: readonly T[],
+  observedLength: number,
+  observedTail: object | null,
+): boolean {
+  return observedLength <= values.length
+    && (observedLength === 0 || values[observedLength - 1] === observedTail);
+}
+
+function tailObject(values: readonly object[]): object | null {
+  return values.length > 0 ? values[values.length - 1] : null;
+}
+
+function emptyReplayTail(): HistoryReplayTailAccounting {
+  return { actions: 0, batches: 0, bytes: 0 };
+}
+
+function accountSelectionSnapshot(
+  state: HistoryMaintenanceState,
+  snapshot: { gpuSlice: GpuHistorySlice } | null | undefined,
+): void {
+  if (!snapshot || state.accountingSelectionSliceIds.has(snapshot.gpuSlice.id)) return;
+  state.accountingSelectionSliceIds.add(snapshot.gpuSlice.id);
+  state.accounting.selectionFillMaskBytes += snapshot.gpuSlice.logicalBytes;
+}
+
+function accountCheckpointSeed(
+  state: HistoryMaintenanceState,
+  action: HistoryAction,
+): void {
+  if (
+    action.kind !== "vector-rasterize"
+    && action.kind !== "raster-import"
+    && action.kind !== "raster-transform"
+  ) {
+    return;
+  }
+  if (!action.seed || state.accountingCheckpointSeeds.has(action.seed)) return;
+  state.accountingCheckpointSeeds.add(action.seed);
+  state.accounting.checkpointBytes += action.seed.memoryBytes;
+  state.actionCheckpointBytes += action.seed.memoryBytes;
+}
+
+function accountHistoryAction(
+  state: HistoryMaintenanceState,
+  action: HistoryAction,
+  liveIndex: number | null,
+): void {
+  state.accounting.cpuVectorBytes += estimateStructuralBytes(
+    [[action]],
+    state.accountingCpuSeen,
+  );
+  accountCheckpointSeed(state, action);
+  if (action.kind === "raster-transform") {
+    accountSelectionSnapshot(state, action.selectionBefore);
+    accountSelectionSnapshot(state, action.selectionAfter);
+  }
+  if (
+    liveIndex === null
+    || !("layerId" in action)
+    || !rasterActionAffectsPixels(action.kind)
+  ) {
+    return;
+  }
+  state.actionIndexById.set(action.id, liveIndex);
+  state.lastRasterActionByLayer.set(action.layerId, { id: action.id, index: liveIndex });
+  const latest = state.latestCheckpointByLayer.get(action.layerId);
+  if (latest && liveIndex <= latest.actionIndex) return;
+  const tail = state.replayTailByLayer.get(action.layerId) ?? emptyReplayTail();
+  tail.actions += 1;
+  state.replayTailByLayer.set(action.layerId, tail);
+}
+
+function accountHistoryBatch(
+  state: HistoryMaintenanceState,
+  batch: HistoryRenderBatch,
+): void {
+  if (batch.kind === "paint") accountSelectionSnapshot(state, batch.selectionMask);
+  if (batch.kind === "fill") {
+    state.accounting.selectionFillMaskBytes += batch.gpuSlice.logicalBytes;
+  }
+  const actionIndex = state.actionIndexById.get(batch.actionId);
+  if (actionIndex === undefined) return;
+  const latest = state.latestCheckpointByLayer.get(batch.layerId);
+  if (latest && actionIndex <= latest.actionIndex) return;
+  const tail = state.replayTailByLayer.get(batch.layerId) ?? emptyReplayTail();
+  tail.batches += 1;
+  tail.bytes += batch.gpuSlice.logicalBytes;
+  state.replayTailByLayer.set(batch.layerId, tail);
+}
+
+function refreshGpuAndAssetAccounting(
+  engine: BrushEngine,
+  state: HistoryMaintenanceState,
+): void {
+  const gpuStorage = engine.historyGpuStorage?.stats() ?? {
+    allocatedBytes: 0,
+    usedLogicalBytes: 0,
+    usedReservedBytes: 0,
+  };
+  state.accounting.gpuReservedBytes = gpuStorage.usedReservedBytes;
+  state.accounting.gpuAllocatedBytes = gpuStorage.allocatedBytes;
+  // Physical pages are authoritative for the budget. This logical split is
+  // diagnostic and includes fenced-but-not-yet-compacted Redo slices.
+  state.accounting.gpuPayloadBytes = Math.max(
+    0,
+    gpuStorage.usedLogicalBytes - state.accounting.selectionFillMaskBytes,
+  );
+  if (state.observedRasterAssetSize !== engine.rasterImageGpuResources.size) {
+    state.rasterAssetBytes = 0;
+    for (const resource of engine.rasterImageGpuResources.values()) {
+      state.rasterAssetBytes += resource.memoryBytes;
+    }
+    state.observedRasterAssetSize = engine.rasterImageGpuResources.size;
+  }
+  state.customAssetBytes = engine.customBrushAssets?.memoryBytes() ?? 0;
+  state.accounting.assetBytes = state.rasterAssetBytes + state.customAssetBytes;
+}
+
+function rebuildHistoryAccounting(engine: BrushEngine): void {
+  const state = stateFor(engine);
+  state.accounting = emptyHistoryMemoryLedger();
+  state.accountingCpuSeen = new WeakSet<object>();
+  state.accountingSelectionSliceIds = new Set<number>();
+  state.accountingCheckpointSeeds = new Set<LayerColdStorageResources>();
+  state.actionIndexById.clear();
+  state.latestCheckpointByLayer.clear();
+  state.checkpointCountByLayer.clear();
+  state.lastRasterActionByLayer.clear();
+  state.replayTailByLayer.clear();
+  state.checkpointBytes = 0;
+  state.actionCheckpointBytes = 0;
+  state.fullCheckpointCount = 0;
+  state.deltaCheckpointCount = 0;
+
+  for (let index = 0; index < engine.historyCursor; index += 1) {
+    state.actionIndexById.set(engine.historyActions[index].id, index);
+  }
+  for (const checkpoint of state.checkpoints) {
+    state.checkpointBytes += checkpoint.memoryBytes;
+    if (checkpoint.kind === "delta") state.deltaCheckpointCount += 1;
+    else state.fullCheckpointCount += 1;
+    state.accounting.checkpointBytes +=
+      checkpoint.memoryBytes + bytesForCheckpointCpuMetadata(checkpoint);
+    state.checkpointCountByLayer.set(
+      checkpoint.layerId,
+      (state.checkpointCountByLayer.get(checkpoint.layerId) ?? 0) + 1,
+    );
+    const actionIndex = state.actionIndexById.get(checkpoint.afterActionId);
+    if (actionIndex === undefined || actionIndex >= engine.historyCursor) continue;
+    const selected = state.latestCheckpointByLayer.get(checkpoint.layerId);
+    if (!selected || actionIndex > selected.actionIndex) {
+      state.latestCheckpointByLayer.set(checkpoint.layerId, { checkpoint, actionIndex });
+    }
+  }
+  engine.historyActions.forEach((action, index) => {
+    accountHistoryAction(state, action, index < engine.historyCursor ? index : null);
+  });
+  for (const action of engine.discardedVectorRasterHistoryActions) {
+    accountHistoryAction(state, action, null);
+  }
+  for (const action of engine.discardedRasterImportHistoryActions) {
+    accountHistoryAction(state, action, null);
+  }
+  for (const action of engine.discardedRasterTransformHistoryActions) {
+    accountHistoryAction(state, action, null);
+  }
+  for (const snapshot of engine.selectionHistoryMasksByRevision.values()) {
+    accountSelectionSnapshot(state, snapshot);
+  }
+  for (const snapshot of engine.selectionHistoryMasksByAction.values()) {
+    accountSelectionSnapshot(state, snapshot);
+  }
+  for (const batch of engine.historyBatches) accountHistoryBatch(state, batch);
+
+  state.observedActionsLength = engine.historyActions.length;
+  state.observedActionsTail = tailObject(engine.historyActions);
+  state.observedBatchesLength = engine.historyBatches.length;
+  state.observedBatchesTail = tailObject(engine.historyBatches);
+  state.observedDiscardedVectorLength = engine.discardedVectorRasterHistoryActions.length;
+  state.observedDiscardedVectorTail = tailObject(engine.discardedVectorRasterHistoryActions);
+  state.observedDiscardedImportLength = engine.discardedRasterImportHistoryActions.length;
+  state.observedDiscardedImportTail = tailObject(engine.discardedRasterImportHistoryActions);
+  state.observedDiscardedTransformLength = engine.discardedRasterTransformHistoryActions.length;
+  state.observedDiscardedTransformTail = tailObject(engine.discardedRasterTransformHistoryActions);
+  state.observedSelectionRevisionSize = engine.selectionHistoryMasksByRevision.size;
+  state.observedSelectionActionSize = engine.selectionHistoryMasksByAction.size;
+  state.observedRasterAssetSize = -1;
+  state.rasterAssetBytes = 0;
+  state.customAssetBytes = 0;
+  state.accountingInitialized = true;
+  state.accountingFullRebuilds += 1;
+  refreshGpuAndAssetAccounting(engine, state);
+}
+
+/**
+ * Normal pointer-up is append-only: only the newly committed action/batches
+ * are visited. Undo-branch truncation and compaction deliberately fall back to
+ * one full rebuild, never to an O(N) scan after every gesture.
+ */
+function synchronizeHistoryAccounting(engine: BrushEngine): boolean {
+  const state = stateFor(engine);
+  const appendOnly = state.accountingInitialized
+    && appendOnlySince(
+      engine.historyActions,
+      state.observedActionsLength,
+      state.observedActionsTail,
+    )
+    && appendOnlySince(
+      engine.historyBatches,
+      state.observedBatchesLength,
+      state.observedBatchesTail,
+    )
+    && appendOnlySince(
+      engine.discardedVectorRasterHistoryActions,
+      state.observedDiscardedVectorLength,
+      state.observedDiscardedVectorTail,
+    )
+    && appendOnlySince(
+      engine.discardedRasterImportHistoryActions,
+      state.observedDiscardedImportLength,
+      state.observedDiscardedImportTail,
+    )
+    && appendOnlySince(
+      engine.discardedRasterTransformHistoryActions,
+      state.observedDiscardedTransformLength,
+      state.observedDiscardedTransformTail,
+    )
+    && state.observedSelectionRevisionSize <= engine.selectionHistoryMasksByRevision.size
+    && state.observedSelectionActionSize <= engine.selectionHistoryMasksByAction.size;
+  if (!appendOnly) {
+    rebuildHistoryAccounting(engine);
+    return true;
+  }
+
+  for (let index = state.observedActionsLength; index < engine.historyActions.length; index += 1) {
+    accountHistoryAction(state, engine.historyActions[index], index);
+    state.accountingIncrementalActions += 1;
+  }
+  const accountDiscarded = <T extends HistoryAction>(
+    values: readonly T[],
+    start: number,
+  ): void => {
+    for (let index = start; index < values.length; index += 1) {
+      accountHistoryAction(state, values[index], null);
+    }
+  };
+  accountDiscarded(
     engine.discardedVectorRasterHistoryActions,
+    state.observedDiscardedVectorLength,
+  );
+  accountDiscarded(
     engine.discardedRasterImportHistoryActions,
+    state.observedDiscardedImportLength,
+  );
+  accountDiscarded(
     engine.discardedRasterTransformHistoryActions,
-  ]);
+    state.observedDiscardedTransformLength,
+  );
+  for (let index = state.observedBatchesLength; index < engine.historyBatches.length; index += 1) {
+    accountHistoryBatch(state, engine.historyBatches[index]);
+    state.accountingIncrementalBatches += 1;
+  }
+  state.observedActionsLength = engine.historyActions.length;
+  state.observedActionsTail = tailObject(engine.historyActions);
+  state.observedBatchesLength = engine.historyBatches.length;
+  state.observedBatchesTail = tailObject(engine.historyBatches);
+  state.observedDiscardedVectorLength = engine.discardedVectorRasterHistoryActions.length;
+  state.observedDiscardedVectorTail = tailObject(engine.discardedVectorRasterHistoryActions);
+  state.observedDiscardedImportLength = engine.discardedRasterImportHistoryActions.length;
+  state.observedDiscardedImportTail = tailObject(engine.discardedRasterImportHistoryActions);
+  state.observedDiscardedTransformLength = engine.discardedRasterTransformHistoryActions.length;
+  state.observedDiscardedTransformTail = tailObject(engine.discardedRasterTransformHistoryActions);
+  state.observedSelectionRevisionSize = engine.selectionHistoryMasksByRevision.size;
+  state.observedSelectionActionSize = engine.selectionHistoryMasksByAction.size;
+  refreshGpuAndAssetAccounting(engine, state);
+  return false;
 }
 
 export function historyMemoryLedger(engine: BrushEngine): HistoryMemoryLedger {
-  const ledger = emptyHistoryMemoryLedger();
-  const gpuStorage = engine.historyGpuStorage.stats();
-  ledger.gpuReservedBytes = gpuStorage.usedReservedBytes;
-  ledger.gpuAllocatedBytes = gpuStorage.allocatedBytes;
-  const selectionSliceIds = new Set<number>();
-  const addSelectionSnapshot = (
-    snapshot: { gpuSlice: GpuHistorySlice } | null | undefined,
-  ): void => {
-    if (!snapshot || selectionSliceIds.has(snapshot.gpuSlice.id)) return;
-    selectionSliceIds.add(snapshot.gpuSlice.id);
-    ledger.selectionFillMaskBytes += snapshot.gpuSlice.logicalBytes;
-  };
-  for (const snapshot of engine.selectionHistoryMasksByRevision.values()) {
-    addSelectionSnapshot(snapshot);
-  }
-  for (const snapshot of engine.selectionHistoryMasksByAction.values()) {
-    addSelectionSnapshot(snapshot);
-  }
-  for (const batch of engine.historyBatches) {
-    if (batch.kind === "paint") addSelectionSnapshot(batch.selectionMask);
-  }
-  for (const action of [
-    ...engine.historyActions,
-    ...engine.discardedRasterTransformHistoryActions,
-  ]) {
-    if (action.kind !== "raster-transform") continue;
-    addSelectionSnapshot(action.selectionBefore);
-    addSelectionSnapshot(action.selectionAfter);
-  }
-  for (const batch of engine.historyBatches) {
-    if (batch.kind === "fill") {
-      ledger.selectionFillMaskBytes += batch.gpuSlice.logicalBytes;
-    } else if (!selectionSliceIds.has(batch.gpuSlice.id)) {
-      ledger.gpuPayloadBytes += batch.gpuSlice.logicalBytes;
-    }
-  }
-  for (const checkpoint of stateFor(engine).checkpoints) {
-    ledger.checkpointBytes += checkpoint.memoryBytes + bytesForCheckpointCpuMetadata(checkpoint);
-  }
-  const checkpointSeeds = new Set<LayerColdStorageResources>();
-  for (const action of [
-    ...engine.historyActions,
-    ...engine.discardedVectorRasterHistoryActions,
-    ...engine.discardedRasterImportHistoryActions,
-    ...engine.discardedRasterTransformHistoryActions,
-  ]) {
-    if (
-      action.kind === "vector-rasterize"
-      || action.kind === "raster-import"
-      || action.kind === "raster-transform"
-    ) {
-      if (action.seed && !checkpointSeeds.has(action.seed)) {
-        checkpointSeeds.add(action.seed);
-        ledger.checkpointBytes += action.seed.memoryBytes;
-      }
-    }
-  }
-  ledger.cpuVectorBytes = estimateCpuHistoryBytes(engine);
-  for (const resource of engine.rasterImageGpuResources.values()) {
-    ledger.assetBytes += resource.memoryBytes;
-  }
-  ledger.assetBytes += engine.customBrushAssets.memoryBytes();
-  return ledger;
+  synchronizeHistoryAccounting(engine);
+  return { ...stateFor(engine).accounting };
+}
+
+function effectsWorkingSetBytes(engine: BrushEngine): number {
+  const stroke = engine.rasterStrokeRenderer;
+  const bevel = engine.rasterBevelRenderer;
+  const outer = engine.rasterOuterShadowRenderer;
+  const inner = engine.rasterInnerShadowRenderer;
+  return (engine.effectsWorkbench?.scratchPool.snapshot().currentBytes ?? 0)
+    + (stroke?.styledMemoryBytes ?? 0)
+    + (stroke?.coverageMemoryBytes ?? 0)
+    + (stroke?.thresholdMaskMemoryBytes ?? 0)
+    + (stroke?.controlMemoryBytes ?? 0)
+    + (bevel?.heightMemoryBytes ?? 0)
+    + (bevel?.lutMemoryBytes ?? 0)
+    + (bevel?.controlMemoryBytes ?? 0)
+    + (outer?.coverageMemoryBytes ?? 0)
+    + (outer?.controlMemoryBytes ?? 0)
+    + (inner?.coverageMemoryBytes ?? 0)
+    + (inner?.controlMemoryBytes ?? 0);
 }
 
 function historyBudgetForEngine(engine: BrushEngine) {
-  void engine;
-  return createHistoryBudget(
-    mobileHistoryBudget() ? HISTORY_MOBILE_BUDGET_BYTES : HISTORY_DESKTOP_BUDGET_BYTES,
+  const baseBytes = mobileHistoryBudget()
+    ? HISTORY_MOBILE_BUDGET_BYTES
+    : HISTORY_DESKTOP_BUDGET_BYTES;
+  const effectsBytes = effectsWorkingSetBytes(engine);
+  const availableBytes = Math.max(
+    HISTORY_MINIMUM_BUDGET_BYTES,
+    baseBytes - effectsBytes,
   );
+  return {
+    budget: createHistoryBudget(availableBytes),
+    baseBytes,
+    effectsBytes,
+  };
 }
 
-function replayTailMetrics(engine: BrushEngine, layerId: number): {
-  actions: number;
-  batches: number;
-  bytes: number;
-} {
-  const latest = latestCheckpoint(engine, layerId);
-  const firstIndex = latest ? latest.actionIndex + 1 : 0;
-  const relevantActionIds = new Set<number>();
-  let actions = 0;
-  for (let index = firstIndex; index < engine.historyCursor; index += 1) {
-    const action = engine.historyActions[index];
-    if (
-      "layerId" in action
-      && action.layerId === layerId
-      && rasterActionAffectsPixels(action.kind)
-    ) {
-      relevantActionIds.add(action.id);
-      actions += 1;
-    }
-  }
-  let batches = 0;
-  let bytes = 0;
-  for (const batch of engine.historyBatches) {
-    if (batch.layerId === layerId && relevantActionIds.has(batch.actionId)) {
-      batches += 1;
-      bytes += batch.gpuSlice.logicalBytes;
-    }
-  }
-  return { actions, batches, bytes };
+function replayTailMetrics(engine: BrushEngine, layerId: number): HistoryReplayTailAccounting {
+  synchronizeHistoryAccounting(engine);
+  const tail = stateFor(engine).replayTailByLayer.get(layerId);
+  return tail ? { ...tail } : emptyReplayTail();
 }
 
 function changedTileMask(
@@ -419,37 +697,44 @@ function changedTileMask(
   return { mask, reset, requiresFull };
 }
 
-async function capturePeriodicCheckpoint(engine: BrushEngine): Promise<void> {
+async function capturePeriodicCheckpoint(
+  engine: BrushEngine,
+  expectedGeneration = stateFor(engine).generation,
+): Promise<void> {
   const state = stateFor(engine);
-  if (state.captureInFlight || !historyMaintenanceEngineIdle(engine)) return;
+  const shouldContinue = (): boolean => (
+    expectedGeneration === state.generation
+    && historyMaintenanceEngineIdle(engine)
+    && !engine.deviceLostError
+  );
+  if (state.captureInFlight || !shouldContinue()) return;
+  synchronizeHistoryAccounting(engine);
   const record = engine.layerStack.active;
   const layerId = record.id;
-  const lastRasterAction = lastRasterActionForLayer(engine, layerId);
+  const lastRasterAction = state.lastRasterActionByLayer.get(layerId) ?? null;
   if (!lastRasterAction) return;
-  const duplicate = state.checkpoints.some((checkpoint) => (
-    checkpoint.layerId === layerId && checkpoint.afterActionId === lastRasterAction.id
-  ));
-  if (duplicate) return;
+  const current = state.latestCheckpointByLayer.get(layerId) ?? null;
+  if (current?.checkpoint.afterActionId === lastRasterAction.id) return;
 
-  const current = latestCheckpoint(engine, layerId);
-  const tail = replayTailMetrics(engine, layerId);
-  const ledger = historyMemoryLedger(engine);
-  const budget = historyBudgetForEngine(engine);
+  // O(1) after the normal append-only gesture: decide before deriving a tile
+  // mask, indexing the journal or allocating a checkpoint texture.
+  const tail = state.replayTailByLayer.get(layerId) ?? emptyReplayTail();
+  const ledger = { ...state.accounting };
+  const budgetInfo = historyBudgetForEngine(engine);
+  const budgetPressure = historyBudgetPressure(ledger, budgetInfo.budget);
   const plan = planHistoryCheckpoint({
     actionsSinceCheckpoint: tail.actions,
     replayBatchesSinceCheckpoint: tail.batches,
     payloadBytesSinceCheckpoint: tail.bytes,
-    budgetPressure: historyBudgetPressure(ledger, budget),
+    budgetPressure,
   });
   if (!plan.capture) return;
 
-  const checkpointOrdinal = state.checkpoints.filter((checkpoint) => (
-    checkpoint.layerId === layerId
-  )).length + 1;
+  const checkpointOrdinal = (state.checkpointCountByLayer.get(layerId) ?? 0) + 1;
   const delta = changedTileMask(engine, layerId, current?.actionIndex ?? -1);
   const forceFull = !current
     || delta.requiresFull
-    || historyBudgetPressure(ledger, budget) >= 1
+    || budgetPressure >= 1
     || checkpointOrdinal % HISTORY_FULL_CHECKPOINT_PERIOD === 0;
   const mask = forceFull ? record.storageTileMask.slice() : delta.mask;
   if (engine.layerContentBounds && forceFull) {
@@ -464,29 +749,39 @@ async function capturePeriodicCheckpoint(engine: BrushEngine): Promise<void> {
   const baseBounds = engine.layerContentBounds ? { ...engine.layerContentBounds } : null;
   const baseTileMask = record.storageTileMask.slice();
   const parentId = forceFull || delta.reset ? null : current?.checkpoint.id ?? null;
-  const generation = ++state.generation;
   state.captureInFlight = true;
   state.capturesStarted += 1;
   let seed: LayerColdStorageResources | null = null;
   try {
     await engine.waitForIdle();
-    if (!historyMaintenanceEngineIdle(engine)) return;
+    if (!shouldContinue()) {
+      state.capturesDiscardedStale += 1;
+      return;
+    }
     if (!blank) {
       const hot = engine.requireLayerGpu(layerId).hot;
       if (!hot) return;
-      seed = await createLayerColdStorageCandidate(
+      seed = await createLayerColdStorageCandidateIncrementally(
         engine,
         record,
         hot,
         mask,
         state.nextCheckpointId,
+        {
+          shouldContinue,
+          yieldTurn: yieldHistoryMaintenanceTurn,
+        },
       );
+      if (!seed) {
+        state.capturesDiscardedStale += 1;
+        return;
+      }
     }
     const anchorStillAtCursor = engine.historyCursor === anchorCursor
       && engine.historyActions[anchorCursor - 1]?.id >= anchorId
       && engine.layerStack.active.id === activeLayerId
-      && historyMaintenanceEngineIdle(engine);
-    if (generation !== state.generation || !anchorStillAtCursor) {
+      && shouldContinue();
+    if (!anchorStillAtCursor) {
       destroyLayerColdStorage(seed);
       seed = null;
       state.capturesDiscardedStale += 1;
@@ -506,6 +801,16 @@ async function capturePeriodicCheckpoint(engine: BrushEngine): Promise<void> {
     seed = null;
     state.checkpoints.push(checkpoint);
     state.checkpointBytes += checkpoint.memoryBytes;
+    state.accounting.checkpointBytes +=
+      checkpoint.memoryBytes + bytesForCheckpointCpuMetadata(checkpoint);
+    state.checkpointCountByLayer.set(layerId, checkpointOrdinal);
+    if (checkpoint.kind === "delta") state.deltaCheckpointCount += 1;
+    else state.fullCheckpointCount += 1;
+    state.latestCheckpointByLayer.set(layerId, {
+      checkpoint,
+      actionIndex: lastRasterAction.index,
+    });
+    state.replayTailByLayer.set(layerId, emptyReplayTail());
     state.capturesCommitted += 1;
     engine.publishStats();
   } catch (error) {
@@ -550,28 +855,31 @@ export function discardStalePeriodicCheckpoints(engine: BrushEngine): void {
   const liveActionIds = new Set(engine.historyActions.map((action) => action.id));
   const retained: PeriodicRasterHistoryCheckpoint[] = [];
   const retainedIds = new Set<number>();
+  let changed = false;
   for (const checkpoint of state.checkpoints) {
     if (!liveActionIds.has(checkpoint.afterActionId)) {
-      state.checkpointBytes -= checkpoint.memoryBytes;
       destroyLayerColdStorage(checkpoint.seed);
+      changed = true;
       continue;
     }
     if (checkpoint.parentId !== null && !retainedIds.has(checkpoint.parentId)) {
-      state.checkpointBytes -= checkpoint.memoryBytes;
       destroyLayerColdStorage(checkpoint.seed);
+      changed = true;
       continue;
     }
     retained.push(checkpoint);
     retainedIds.add(checkpoint.id);
   }
   state.checkpoints = retained;
+  if (changed) rebuildHistoryAccounting(engine);
 }
 
 function latestFullCheckpointByLayer(
   engine: BrushEngine,
 ): Map<number, { checkpoint: PeriodicRasterHistoryCheckpoint; actionIndex: number }> | null {
   const state = stateFor(engine);
-  const indices = actionIndexById(engine);
+  synchronizeHistoryAccounting(engine);
+  const indices = state.actionIndexById;
   const result = new Map<number, {
     checkpoint: PeriodicRasterHistoryCheckpoint;
     actionIndex: number;
@@ -614,7 +922,7 @@ function latestFullCheckpointByLayer(
 function enforceHistoryBudget(engine: BrushEngine): void {
   const state = stateFor(engine);
   const ledger = historyMemoryLedger(engine);
-  const budget = historyBudgetForEngine(engine);
+  const { budget } = historyBudgetForEngine(engine);
   if (historyMemoryTotalBytes(ledger) <= budget.hardBytes) {
     state.budgetCheckpointBlocked = false;
     return;
@@ -632,7 +940,7 @@ function enforceHistoryBudget(engine: BrushEngine): void {
     state.budgetCheckpointBlocked = true;
     return;
   }
-  const actionIndices = actionIndexById(engine);
+  const actionIndices = state.actionIndexById;
   const retainedBatches: HistoryRenderBatch[] = [];
   const releasedSlices: GpuHistorySlice[] = [];
   let evictedPayloadBytes = 0;
@@ -698,6 +1006,7 @@ function enforceHistoryBudget(engine: BrushEngine): void {
   state.evictedPayloadBytes += evictedPayloadBytes;
   state.budgetCheckpointBlocked = false;
   engine.historyGpuStorage.trimEmptyPages(true);
+  rebuildHistoryAccounting(engine);
   engine.publishHistoryState();
   engine.publishStats();
 }
@@ -707,7 +1016,9 @@ export function historyFloorCursor(engine: BrushEngine): number {
 }
 
 export function historyCheckpointAllocatedBytes(engine: BrushEngine): number {
-  return stateFor(engine).checkpointBytes;
+  synchronizeHistoryAccounting(engine);
+  const state = stateFor(engine);
+  return state.checkpointBytes + state.actionCheckpointBytes;
 }
 
 export function historyCursorWithinRetainedRange(
@@ -769,8 +1080,11 @@ export function scheduleHistoryMaintenance(engine: BrushEngine): void {
         }
         state.redoCompactionsCompleted += 1;
       }
-      discardStalePeriodicCheckpoints(engine);
-      await capturePeriodicCheckpoint(engine);
+      const accountingRebuilt = synchronizeHistoryAccounting(engine);
+      if (accountingRebuilt) discardStalePeriodicCheckpoints(engine);
+      if (expectedGeneration !== state.generation) return;
+      await capturePeriodicCheckpoint(engine, expectedGeneration);
+      if (expectedGeneration !== state.generation) return;
       enforceHistoryBudget(engine);
     }).catch(() => {
       // device.lost is surfaced by the engine-wide gate.
@@ -802,15 +1116,17 @@ export function historyMaintenanceTelemetry(
 ): HistoryMaintenanceTelemetry {
   const state = stateFor(engine);
   const memory = historyMemoryLedger(engine);
-  const budget = historyBudgetForEngine(engine);
+  const { budget, baseBytes, effectsBytes } = historyBudgetForEngine(engine);
   return {
     checkpointCount: state.checkpoints.length,
-    fullCheckpointCount: state.checkpoints.filter((item) => item.kind !== "delta").length,
-    deltaCheckpointCount: state.checkpoints.filter((item) => item.kind === "delta").length,
-    checkpointBytes: state.checkpoints.reduce((sum, item) => sum + item.memoryBytes, 0),
+    fullCheckpointCount: state.fullCheckpointCount,
+    deltaCheckpointCount: state.deltaCheckpointCount,
+    checkpointBytes: state.checkpointBytes,
     memory,
     totalBytes: historyMemoryTotalBytes(memory),
     budgetBytes: budget.hardBytes,
+    baseBudgetBytes: baseBytes,
+    effectsWorkingSetBytes: effectsBytes,
     budgetPressure: historyBudgetPressure(memory, budget),
     replayTailBatches: replayTailMetrics(engine, engine.layerStack.active.id).batches,
     capturesStarted: state.capturesStarted,
@@ -827,5 +1143,8 @@ export function historyMaintenanceTelemetry(
     budgetEvictions: state.budgetEvictions,
     evictedPayloadBytes: state.evictedPayloadBytes,
     budgetCheckpointBlocked: state.budgetCheckpointBlocked,
+    accountingFullRebuilds: state.accountingFullRebuilds,
+    accountingIncrementalActions: state.accountingIncrementalActions,
+    accountingIncrementalBatches: state.accountingIncrementalBatches,
   };
 }

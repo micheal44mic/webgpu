@@ -903,23 +903,9 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     usedLogicalBytes: 0,
     pageCount: 0,
   };
-  const historyActionsHoldingGpu = new Set([
-    ...engine.historyActions,
-    ...engine.discardedVectorRasterHistoryActions,
-    ...engine.discardedRasterImportHistoryActions,
-    ...engine.discardedRasterTransformHistoryActions,
-  ]);
-  let historyRasterSeedBytes = 0;
-  for (const action of historyActionsHoldingGpu) {
-    if (
-      action.kind === "vector-rasterize"
-      || action.kind === "raster-import"
-      || action.kind === "raster-transform"
-    ) {
-      historyRasterSeedBytes += action.seed?.memoryBytes ?? 0;
-    }
-  }
-  historyRasterSeedBytes += historyCheckpointAllocatedBytes(engine);
+  // Incremental maintenance owns the physical seed ledger. Reading memory
+  // stats must not rescan a 1000-action journal on every publishStats call.
+  const historyRasterSeedBytes = historyCheckpointAllocatedBytes(engine);
   const historyGpuMiB = (historyGpu.allocatedBytes + historyRasterSeedBytes) / MEBIBYTE_BYTES;
   const historyGpuUsedMiB =
     (historyGpu.usedLogicalBytes + historyRasterSeedBytes) / MEBIBYTE_BYTES;

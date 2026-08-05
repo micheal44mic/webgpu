@@ -65,35 +65,44 @@ export interface MixedSceneReorderHistoryAction {
   after: MixedSceneOrderState;
 }
 
-/** Small CPU-only state needed to reverse one raster property/effect gesture. */
-export interface RasterLayerMetadataHistoryState {
-  readonly layerId: number;
-  readonly visible: boolean;
+/** One journal field per independent raster property/effect gesture. */
+export interface RasterLayerMetadataHistoryValueMap {
+  readonly visibility: boolean;
   readonly opacity: number;
   readonly clipping: readonly LayerClippingHistoryEntry[];
-  readonly strokeStyle: RasterStrokeStyle;
-  readonly bevelStyle: RasterBevelStyle;
-  readonly outerShadowStyle: RasterOuterShadowStyle;
-  readonly innerShadowStyle: RasterInnerShadowStyle;
-  readonly colorOverlayStyle: RasterColorOverlayStyle;
+  readonly stroke: RasterStrokeStyle;
+  readonly bevel: RasterBevelStyle;
+  readonly "outer-shadow": RasterOuterShadowStyle;
+  readonly "inner-shadow": RasterInnerShadowStyle;
+  readonly "color-overlay": RasterColorOverlayStyle;
 }
 
-export interface RasterLayerMetadataHistoryAction {
-  id: number;
-  kind: "layer-metadata";
-  layerId: number;
-  /** Human-readable diagnostic, never used to choose replay behavior. */
-  property:
-    | "presentation"
-    | "clipping"
-    | "stroke"
-    | "color-overlay"
-    | "outer-shadow"
-    | "inner-shadow"
-    | "bevel";
-  before: RasterLayerMetadataHistoryState;
-  after: RasterLayerMetadataHistoryState;
-}
+export type RasterLayerMetadataHistoryProperty =
+  keyof RasterLayerMetadataHistoryValueMap;
+
+/** Small CPU-only snapshot captured at one gesture boundary. */
+export type RasterLayerMetadataHistoryState = {
+  [Property in RasterLayerMetadataHistoryProperty]: {
+    readonly layerId: number;
+    readonly property: Property;
+    readonly value: RasterLayerMetadataHistoryValueMap[Property];
+  }
+}[RasterLayerMetadataHistoryProperty];
+
+/**
+ * A discriminated delta. `before` and `after` can only contain the field named
+ * by `property`; unrelated styles can neither consume memory nor be replayed.
+ */
+export type RasterLayerMetadataHistoryAction = {
+  [Property in RasterLayerMetadataHistoryProperty]: {
+    id: number;
+    kind: "layer-metadata";
+    layerId: number;
+    property: Property;
+    before: RasterLayerMetadataHistoryValueMap[Property];
+    after: RasterLayerMetadataHistoryValueMap[Property];
+  }
+}[RasterLayerMetadataHistoryProperty];
 
 /**
  * Common authoritative checkpoint retained by raster actions.
@@ -210,11 +219,7 @@ export interface ActiveVectorHistoryEdit {
   scope: "property" | "transform";
 }
 
-export interface ActiveRasterLayerMetadataHistoryEdit {
-  readonly layerId: number;
-  readonly property: RasterLayerMetadataHistoryAction["property"];
-  readonly before: RasterLayerMetadataHistoryState;
-}
+export type ActiveRasterLayerMetadataHistoryEdit = RasterLayerMetadataHistoryState;
 
 export function vectorHistoryStatesEqual(
   left: MixedSceneVectorHistoryState,

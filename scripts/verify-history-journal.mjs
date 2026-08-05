@@ -520,14 +520,68 @@ const rasterTransform = (id, layerId, hasContent = true) => ({
   assert(selectionRuntime.includes("engine.selectionHistoryMasksByRevision.get(revision)"));
   assert(selectionRuntime.includes("engine.selectionHistoryMasksByRevision.set(revision, snapshot)"));
   const beginStroke = brushEngine.slice(
-    brushEngine.indexOf("  beginStrokeAtLayer(point: LayerPoint): void"),
-    brushEngine.indexOf("  extendStroke(sample: PointerSample): void"),
+    brushEngine.indexOf("  beginStrokeAtLayer(point: LayerPoint): boolean"),
+    brushEngine.indexOf("  extendStroke(samples: readonly PointerSample[]): void"),
   );
+  assert(beginStroke.includes("return false;"));
+  assert(beginStroke.includes("return true;"));
   assert(
     beginStroke.indexOf("capturePaintSelectionHistoryMask(this, historyActionId)") >= 0
       && beginStroke.indexOf("capturePaintSelectionHistoryMask(this, historyActionId)")
         < beginStroke.indexOf("this.nextHistoryActionId += 1"),
     "Paint deve congelare la selezione storica prima di avanzare o renderizzare l'azione.",
+  );
+  const rasterPropertyHandshake = brushEngine.slice(
+    brushEngine.indexOf("  beginRasterLayerMetadataHistoryEdit("),
+    brushEngine.indexOf("  beginVectorHistoryEdit("),
+  );
+  assert.match(
+    rasterPropertyHandshake,
+    /\): number \| null[\s\S]*?active\.layerId === layerId && active\.property === property[\s\S]*?\? active\.token[\s\S]*?: null/,
+    "Un edit già aperto deve restituire il token soltanto per lo stesso livello e proprietà.",
+  );
+  assert.match(
+    rasterPropertyHandshake,
+    /commitRasterLayerMetadataHistoryEdit\(token: number\)[\s\S]*?!edit \|\| edit\.token !== token/,
+    "Un commit stale non deve chiudere la transazione di un altro controllo.",
+  );
+  assert.match(
+    rasterPropertyHandshake,
+    /edit\.layerId !== before\.layerId \|\| edit\.property !== property/,
+    "Bevel, Shadow e Stroke non devono mai assorbirsi nella stessa azione.",
+  );
+  assert.match(
+    rasterPropertyHandshake,
+    /cancelRasterLayerMetadataHistoryEdit\(token: number\)[\s\S]*?rasterLayerMetadataHistoryStatesEqual\(edit, current\)/,
+    "Cancel può abbandonare soltanto un handshake ancora immutato, mai perdere un effetto già visibile.",
+  );
+  for (const [method, property] of [
+    ["setRasterColorOverlayStyle", "color-overlay"],
+    ["setRasterStrokeStyle", "stroke"],
+    ["setRasterBevelStyle", "bevel"],
+    ["setRasterOuterShadowStyle", "outer-shadow"],
+    ["setRasterInnerShadowStyle", "inner-shadow"],
+  ]) {
+    assert.match(
+      brushEngine,
+      new RegExp(`async ${method}\\(style: unknown\\): Promise<boolean> \\{[\\s\\S]{0,900}?rasterLayerMetadataHistoryEditAllows\\("${property}"\\)`),
+      `${method} deve rifiutare una transazione di un altro effetto prima di mutare risorse.`,
+    );
+  }
+  assert.match(
+    main,
+    /historyState\.openEdit === "transform"\s*\|\| historyState\.openEdit === "raster-property"/,
+    "Il canvas deve restare bloccato finché il drain dell'effetto non ha committato la cronologia.",
+  );
+  const canvasPointerDown = main.slice(
+    main.indexOf('canvas.addEventListener("pointerdown"'),
+    main.indexOf('canvas.addEventListener("pointermove"'),
+  );
+  assert(
+    canvasPointerDown.indexOf("if (!engine.beginStroke(paintSample))") >= 0
+      && canvasPointerDown.indexOf("if (!engine.beginStroke(paintSample))")
+        < canvasPointerDown.lastIndexOf("canvas.setPointerCapture(event.pointerId)"),
+    "Un begin Paint rifiutato non deve acquisire il puntatore né simulare uno stroke attivo.",
   );
   const recordPaintBatch = brushEngine.slice(
     brushEngine.indexOf("  recordHistoryBatch("),
@@ -563,7 +617,18 @@ const rasterTransform = (id, layerId, hasContent = true) => ({
   assert(engine.includes('kind: "layer-metadata"'));
   assert(engine.includes("captureRasterLayerMetadataHistoryState"));
   assert(engine.includes("applyRasterLayerMetadataHistoryState"));
-  assert(engine.includes("restoreClippingHistoryState(target.clipping)"));
+  assert(engine.includes("restoreClippingHistoryState("));
+  assert(engine.includes('action.property === "visibility"'));
+  assert(engine.includes('action.property === "opacity"'));
+  assert(engine.includes('action.property === "clipping"'));
+  assert.match(
+    engine,
+    /restoreEffectsWorkbenchToActiveLayer\(\s*engine,\s*"history-replay",\s*true,\s*"content-bounds",\s*\)/,
+    "Undo/Redo di un singolo effetto deve ricostruire soltanto il dominio visivo del contenuto.",
+  );
+  assert(!engine.includes("restoreClippingHistoryState(target.clipping)"));
+  assert(!engine.includes("record.visible = target.visible"));
+  assert(!engine.includes("record.opacity = target.opacity"));
   assert(engine.includes("undoBlockedReason"));
   assert(engine.includes("redoBlockedReason"));
   assert(effectsSheet.includes("commitHistoryEditIfIdle"));

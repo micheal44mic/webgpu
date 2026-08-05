@@ -175,7 +175,7 @@ assert.match(
 );
 assert.match(
   controller,
-  /if \(!current\.enabled\) \{\s*this\.requestStyle\(\{ \.\.\.copiedStyle\(current\), enabled: true \}, false\);/,
+  /if \(!current\.enabled\) \{\s*if \(this\.beginHistoryEdit\(\)\) \{[\s\S]*?this\.requestStyle\(\{ \.\.\.copiedStyle\(current\), enabled: true \}, false\);[\s\S]*?this\.requestHistoryEditFinish\(\);/,
   "Aprire Stroke dalla card deve attivare l'effetto senza usarlo come toggle-off.",
 );
 assert.match(
@@ -192,6 +192,21 @@ assert.match(
   controller,
   /beginHistoryEdit[\s\S]*?requestHistoryEditFinish[\s\S]*?commitHistoryEditIfIdle/,
   "Un gesto Width/Color deve produrre una sola azione dopo il drain della coda async.",
+);
+assert.match(
+  controller,
+  /const token = this\.options\.beginHistoryEdit\(\);\s*if \(token === null\) return false;\s*this\.historyEditToken = token/,
+  "Stroke deve considerare aperto l'edit soltanto dopo l'handshake accettato dal motore.",
+);
+assert.match(
+  controller,
+  /this\.historyEditToken === null[\s\S]*?this\.applyLoop[\s\S]*?this\.pendingStyle[\s\S]*?const token = this\.historyEditToken;[\s\S]*?this\.options\.commitHistoryEdit\(token\)/,
+  "Una gesture Stroke deve committare il proprio token solo dopo il drain latest-only.",
+);
+assert.match(
+  main,
+  /beginHistoryEdit:\s*\(\) => engine\.beginRasterLayerMetadataHistoryEdit\("stroke"\)[\s\S]*?commitHistoryEdit:\s*\(token\) => engine\.commitRasterLayerMetadataHistoryEdit\(token\)[\s\S]*?cancelHistoryEdit:\s*\(token\) => engine\.cancelRasterLayerMetadataHistoryEdit\(token\)/,
+  "Il controller Stroke deve inoltrare token atomici begin/commit/cancel.",
 );
 assert.match(
   controller,

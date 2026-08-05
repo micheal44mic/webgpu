@@ -1276,6 +1276,11 @@ assert.match(mergedBody, /record\.visible && record\.opacity > 0 && record\.hasC
 assert.match(mergedBody, /await materializeLayerCompositeSource\(engine, record, caller\)/);
 assert.match(
   engineSource,
+  /export async function restoreEffectsWorkbenchToActiveLayer\([\s\S]*?rebuildDomain: LayerEffectsRebuildDomain = "full-document"[\s\S]*?"await-immediately",\s*rebuildDomain/,
+  "il retarget attivo deve conservare il dominio full di default e permettere il dominio contenuto soltanto ai chiamanti espliciti",
+);
+assert.match(
+  engineSource,
   /layerCompositeVisualBounds\([\s\S]*?rasterStrokeEffectRect[\s\S]*?rasterBevelEffectRect[\s\S]*?rasterOuterShadowEffectRect[\s\S]*?rasterInnerShadowEffectRect/,
   "i bounds del bake devono unire Traccia, Smusso e le due Ombre",
 );

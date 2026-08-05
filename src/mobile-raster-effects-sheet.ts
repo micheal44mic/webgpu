@@ -278,8 +278,13 @@ export interface MobileRasterEffectsSheetOptions {
   readonly applyInnerShadowStyle: (style: RasterInnerShadowStyle) => Promise<boolean>;
   readonly getBevelStyle: () => RasterBevelStyle;
   readonly applyBevelStyle: (style: RasterBevelStyle) => Promise<boolean>;
-  readonly beginHistoryEdit: (kind: MobileRasterEffectKind) => void;
-  readonly commitHistoryEdit: () => void;
+  /**
+   * The token makes ownership explicit: a sheet may only finish the exact
+   * layer/property transaction that it successfully opened.
+   */
+  readonly beginHistoryEdit: (kind: MobileRasterEffectKind) => number | null;
+  readonly commitHistoryEdit: (token: number) => boolean;
+  readonly cancelHistoryEdit: (token: number) => boolean;
   readonly beforeOpen: () => void;
   readonly onOpenChange: (open: boolean) => void;
 }
@@ -430,7 +435,8 @@ export class MobileRasterEffectsSheetController {
   private readonly pendingOrder: MobileRasterEffectKind[] = [];
   private nextStyleVersion = 1;
   private applyLoop: Promise<void> | null = null;
-  private historyEditOpen = false;
+  private historyEditToken: number | null = null;
+  private historyEditKind: MobileRasterEffectKind | null = null;
   private historyFinishRequested = false;
   private readonly controls = new Map<string, HTMLInputElement | HTMLSelectElement>();
   private readonly descriptors = new Map<string, MobileRasterEffectControl>();
@@ -488,7 +494,14 @@ export class MobileRasterEffectsSheetController {
     this.sheet.classList.add("is-open");
     this.options.onOpenChange(true);
 
-    if (!current.enabled) this.requestStyle(kind, openingStyle, false);
+    if (!current.enabled) {
+      if (this.beginHistoryEdit()) {
+        this.requestStyle(kind, openingStyle, false);
+        this.requestHistoryEditFinish();
+      } else {
+        this.sync(current);
+      }
+    }
   }
 
   close(restoreFocus = false): void {
@@ -544,7 +557,10 @@ export class MobileRasterEffectsSheetController {
     this.enabledInput.addEventListener("blur", () => this.requestHistoryEditFinish());
     this.enabledInput.addEventListener("change", () => {
       if (!this.activeKind) return;
-      this.beginHistoryEdit();
+      if (!this.beginHistoryEdit()) {
+        this.sync(this.currentDraftOrStyle(this.activeKind));
+        return;
+      }
       const current = this.currentDraftOrStyle(this.activeKind);
       const next = this.withProperty(
         this.activeKind,
@@ -710,6 +726,10 @@ export class MobileRasterEffectsSheetController {
     const kind = this.activeKind;
     const key = control.dataset.mobileEffectKey;
     if (!kind || !key || control.disabled) return;
+    if (!this.beginHistoryEdit()) {
+      this.sync(this.currentDraftOrStyle(kind));
+      return;
+    }
     const descriptor = this.descriptors.get(key);
     if (!descriptor || descriptor.type === "group") return;
     let value: unknown;
@@ -900,15 +920,23 @@ export class MobileRasterEffectsSheetController {
     });
   }
 
-  private beginHistoryEdit(): void {
-    if (this.historyEditOpen || !this.activeKind) return;
-    this.historyEditOpen = true;
+  private beginHistoryEdit(): boolean {
+    if (!this.activeKind) return false;
+    if (this.historyEditToken !== null) {
+      if (this.historyEditKind !== this.activeKind) return false;
+      this.historyFinishRequested = false;
+      return true;
+    }
+    const token = this.options.beginHistoryEdit(this.activeKind);
+    if (token === null) return false;
+    this.historyEditToken = token;
+    this.historyEditKind = this.activeKind;
     this.historyFinishRequested = false;
-    this.options.beginHistoryEdit(this.activeKind);
+    return true;
   }
 
   private requestHistoryEditFinish(): void {
-    if (!this.historyEditOpen) return;
+    if (this.historyEditToken === null) return;
     this.historyFinishRequested = true;
     if (this.applyFrame !== null) {
       cancelAnimationFrame(this.applyFrame);
@@ -920,16 +948,23 @@ export class MobileRasterEffectsSheetController {
 
   private commitHistoryEditIfIdle(): void {
     if (
-      !this.historyEditOpen
+      this.historyEditToken === null
       || !this.historyFinishRequested
       || this.applyLoop
       || this.draft
       || this.pendingOrder.length > 0
       || this.pendingByKind.size > 0
     ) return;
-    this.historyEditOpen = false;
+    const token = this.historyEditToken;
+    this.historyEditToken = null;
+    this.historyEditKind = null;
     this.historyFinishRequested = false;
-    this.options.commitHistoryEdit();
+    if (!this.options.commitHistoryEdit(token)) {
+      // A stale token must never finish somebody else's transaction. Cancel is
+      // deliberately token-checked by the engine as well, so this is harmless
+      // if the transaction was already reset during teardown.
+      this.options.cancelHistoryEdit(token);
+    }
   }
 
   private applyStyle(

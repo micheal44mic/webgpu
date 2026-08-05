@@ -4051,3 +4051,49 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   metadata, con console senza warning/errori. Restano da misurare su iPhone
   fisico una sessione lunga, i picchi reali di memoria e la latenza end-to-end
   di Undo/Redo; non è stata promossa una nuova baseline prestazionale.
+
+### History raster per proprietà e convivenza con gli effetti (5 agosto 2026)
+
+- Le modifiche raster continue usano ora una transazione opaca numerica legata
+  contemporaneamente all'id del layer e a una sola proprietà. Le proprietà
+  journalizzate sono `visibility`, `opacity`, `clipping`, `stroke`, `bevel`,
+  `outer-shadow`, `inner-shadow` e `color-overlay`: un gesto registra soltanto
+  il delta del campo interessato, non più una copia aggregata di tutti gli
+  effetti e delle proprietà di composizione. Un setter diverso non può essere
+  assorbito da una transazione già aperta; Cancel è accettato soltanto quando
+  il valore autorevole è ancora identico a quello iniziale. I controller
+  mobile conservano token e tipo, drenano la coda latest-only prima del commit
+  e raggruppano uno slider in una sola azione.
+- `beginStroke`/`beginStrokeAtLayer` restituiscono ora un esito esplicito. Paint
+  immediato acquisisce il pointer e pubblica lo stato locale soltanto dopo un
+  begin riuscito; anche il riconoscitore touch ritardato libera capture e stato
+  se il begin viene rifiutato. In questo modo il primo contatto successivo a una
+  modifica effetto non può diventare un falso tratto locale non registrato.
+  `operationLocked()` considera aperta anche la transazione raster-property,
+  quindi History, cambio layer e Paint osservano lo stesso lock.
+- Il replay di visibilità/opacità/clipping ricompone lo stack riusando le
+  raster run invariate. Il replay di un effetto non ricompone più l'intero
+  documento: ripristina il solo workbench del raster attivo e limita il dominio
+  alla content bounds. Il percorso live degli effetti resta volutamente
+  invariato: Bevel, ombre, Stroke e style stack continuano a costare GPU per
+  frame quando attivi, perché ridurne qualità, stamp o risultato visivo non era
+  autorizzato.
+- La contabilità History normale è append-only incrementale; la scansione
+  completa resta soltanto per truncation del Redo o compattazione. La decisione
+  di checkpoint legge prima soglie e coda in O(1), e il budget mobile parte da
+  `192 MiB` ma sottrae il working set fisico degli effetti, mantenendo almeno
+  `16 MiB` disponibili alla cronologia. Una cattura cold copia al massimo `16`
+  tile per submission e ricontrolla la generation prima di ogni chunk, con un
+  yield browser fra i chunk: un nuovo pointerdown impedisce quindi nuove
+  submission. La texture destinazione compatta viene ancora allocata tutta una
+  volta e una submission già inviata non è annullabile; questi limiti sono
+  espliciti e vanno misurati su iPhone prima di promuovere una baseline.
+- La firma del journal è ora v8. Le sessioni deterministiche da
+  `10/100/500/1000` azioni conservano `0/5/26/53` checkpoint, code massime
+  `10/21/23/23` e gli stessi hash finali. TypeScript, tutte le `31` suite
+  `*:verify`, build Vite/Sites e `git diff --check` sono verdi. QA browser
+  locale a `393×852` ha coperto modifica Stroke, ritorno al canvas,
+  tratto/Undo/Redo, rilettura dello stato autorevole alla riapertura e console
+  senza warning/errori. Restano obbligatorie la prova fisica Safari/iPhone e
+  una misura lunga di latenza/memoria con effetti; la modifica non è stata
+  pubblicata.

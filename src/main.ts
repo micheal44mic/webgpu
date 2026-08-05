@@ -4073,12 +4073,9 @@ mobileStrokeSheet = new MobileStrokeSheetController({
   mobileMediaQuery: mobileUiMediaQuery,
   getStyle: () => engine.getRasterStrokeStyle(),
   applyStyle: applyRasterStrokeStyle,
-  beginHistoryEdit: () => {
-    engine.beginRasterLayerMetadataHistoryEdit("stroke");
-  },
-  commitHistoryEdit: () => {
-    engine.commitRasterLayerMetadataHistoryEdit();
-  },
+  beginHistoryEdit: () => engine.beginRasterLayerMetadataHistoryEdit("stroke"),
+  commitHistoryEdit: (token) => engine.commitRasterLayerMetadataHistoryEdit(token),
+  cancelHistoryEdit: (token) => engine.cancelRasterLayerMetadataHistoryEdit(token),
   beforeOpen: () => {
     setMobileToolsSheetOpen(false);
     setMobileLayersPanelOpen(false);
@@ -4112,11 +4109,10 @@ mobileRasterEffectsSheet = new MobileRasterEffectsSheetController({
         : kind === "inner-shadow"
           ? "inner-shadow"
           : "bevel";
-    engine.beginRasterLayerMetadataHistoryEdit(property);
+    return engine.beginRasterLayerMetadataHistoryEdit(property);
   },
-  commitHistoryEdit: () => {
-    engine.commitRasterLayerMetadataHistoryEdit();
-  },
+  commitHistoryEdit: (token) => engine.commitRasterLayerMetadataHistoryEdit(token),
+  cancelHistoryEdit: (token) => engine.cancelRasterLayerMetadataHistoryEdit(token),
   beforeOpen: () => {
     setMobileToolsSheetOpen(false);
     setMobileLayersPanelOpen(false);
@@ -4512,6 +4508,7 @@ function operationLocked(): boolean {
     || layerSwitching
     || mobileBrushControlDrag !== null
     || historyState.openEdit === "transform"
+    || historyState.openEdit === "raster-property"
     || historyUiBusy
     || historyState.busy
     || benchmarkRunning
@@ -8847,7 +8844,7 @@ function toPointerSample(event: PointerEvent): PointerSample {
 }
 
 let activePointerId: number | null = null;
-let pointerMode:
+type PointerMode =
   | "paint"
   | "fill"
   | "selection-tap"
@@ -8855,8 +8852,8 @@ let pointerMode:
   | "transform"
   | "pan"
   | "rotate"
-  | "touch-navigation"
-  | null = null;
+  | "touch-navigation";
+let pointerMode: PointerMode | null = null;
 let lastPanClientX = 0;
 let lastPanClientY = 0;
 
@@ -9078,7 +9075,19 @@ function releaseTouchPaintIntentHold(reason: TouchPaintIntentReleaseReason): boo
 
   // The engine receives the original timestamped samples in their original
   // order. Only the wall-clock moment of the first GPU request is deferred.
-  engine.beginStroke(hold.initialSample);
+  if (!engine.beginStroke(hold.initialSample)) {
+    activeTouchContacts.delete(hold.pointerId);
+    activePointerId = null;
+    pointerMode = null;
+    if (canvas.hasPointerCapture(hold.pointerId)) {
+      canvas.releasePointerCapture(hold.pointerId);
+    }
+    humanStrokeRecording = null;
+    historyState = engine.getHistoryState();
+    updateHistoryControls();
+    updateHumanStrokeControls();
+    return false;
+  }
   if (hold.bufferedSamples.length > 0) {
     engine.extendStroke(hold.bufferedSamples);
   }
@@ -9167,8 +9176,50 @@ canvas.addEventListener("pointerdown", (event) => {
     return;
   }
 
-  if (activePointerId !== null || operationLocked()) {
+  if (activePointerId !== null) {
     return;
+  }
+  if (operationLocked()) {
+    if (historyState.openEdit === "raster-property") {
+      statusElement.textContent = "Completo la modifica dell'effetto prima del tratto…";
+      statusElement.className = "status";
+    }
+    return;
+  }
+
+  const shouldRotate = event.pointerType === "mouse"
+    && event.button === 0
+    && rotateShortcutHeld;
+  const shouldPan = event.shiftKey || event.button === 1 || event.button === 2;
+  const requestedPointerMode: PointerMode = shouldRotate
+    ? "rotate"
+    : shouldPan
+      ? "pan"
+      : activeCanvasTool === "fill"
+        ? "fill"
+        : activeCanvasTool === "selection"
+          ? selectedSelectionMethod() === "lasso"
+            ? "selection-lasso"
+            : "selection-tap"
+        : activeCanvasTool === "transform"
+          ? "transform"
+        : "paint";
+  const paintSample = requestedPointerMode === "paint" ? toPointerSample(event) : null;
+  const holdPaintIntent = paintSample !== null && shouldHoldTouchPaintIntent(
+    touchPaintIntentHoldEnabled,
+    event.pointerType,
+    activeCanvasTool,
+  );
+  if (paintSample && !holdPaintIntent) {
+    const recordingStarted = humanStrokeRecordingArmed;
+    if (recordingStarted) startHumanStrokeRecording(event, paintSample);
+    if (!engine.beginStroke(paintSample)) {
+      if (recordingStarted) humanStrokeRecording = null;
+      historyState = engine.getHistoryState();
+      updateHistoryControls();
+      updateHumanStrokeControls();
+      return;
+    }
   }
 
   event.preventDefault();
@@ -9182,23 +9233,7 @@ canvas.addEventListener("pointerdown", (event) => {
       clientY: event.clientY,
     });
   }
-  const shouldRotate = event.pointerType === "mouse"
-    && event.button === 0
-    && rotateShortcutHeld;
-  const shouldPan = event.shiftKey || event.button === 1 || event.button === 2;
-  pointerMode = shouldRotate
-    ? "rotate"
-    : shouldPan
-      ? "pan"
-      : activeCanvasTool === "fill"
-        ? "fill"
-        : activeCanvasTool === "selection"
-          ? selectedSelectionMethod() === "lasso"
-            ? "selection-lasso"
-            : "selection-tap"
-        : activeCanvasTool === "transform"
-          ? "transform"
-        : "paint";
+  pointerMode = requestedPointerMode;
   canvas.setPointerCapture(event.pointerId);
 
   if (pointerMode === "rotate") {
@@ -9227,18 +9262,9 @@ canvas.addEventListener("pointerdown", (event) => {
     // Le maniglie semantiche vivono sull’overlay; sul raster sottostante il
     // tool Trasforma non deve mai avviare una pennellata.
   } else {
-    const sample = toPointerSample(event);
-    if (humanStrokeRecordingArmed) {
-      startHumanStrokeRecording(event, sample);
-    }
-    if (shouldHoldTouchPaintIntent(
-      touchPaintIntentHoldEnabled,
-      event.pointerType,
-      activeCanvasTool,
-    )) {
-      startTouchPaintIntentHold(event.pointerId, sample);
-    } else {
-      engine.beginStroke(sample);
+    if (paintSample && holdPaintIntent) {
+      if (humanStrokeRecordingArmed) startHumanStrokeRecording(event, paintSample);
+      startTouchPaintIntentHold(event.pointerId, paintSample);
     }
   }
 

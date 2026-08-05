@@ -27,7 +27,9 @@ import {
   type HistoryRenderBatch,
   type MixedSceneReorderHistoryAction,
   type RasterLayerMetadataHistoryAction,
+  type RasterLayerMetadataHistoryProperty,
   type RasterLayerMetadataHistoryState,
+  type RasterLayerMetadataHistoryValueMap,
   type RasterHistoryCheckpointAction,
   type RasterImportHistoryAction,
   type RasterTransformHistoryAction,
@@ -57,13 +59,18 @@ import {
   restoreEffectsWorkbenchToActiveLayer,
   setLayerBlendMode,
 } from "./engine-layer-runtime";
-import { copyRasterStrokeStyle } from "./stroke-core";
-import { copyRasterBevelStyle } from "./bevel-core";
+import { copyRasterStrokeStyle, rasterStrokeStylesEqual } from "./stroke-core";
+import { copyRasterBevelStyle, rasterBevelStylesEqual } from "./bevel-core";
 import {
   copyRasterInnerShadowStyle,
   copyRasterOuterShadowStyle,
+  rasterInnerShadowStylesEqual,
+  rasterOuterShadowStylesEqual,
 } from "./shadow-core";
-import { copyRasterColorOverlayStyle } from "./raster-color-overlay-core";
+import {
+  copyRasterColorOverlayStyle,
+  rasterColorOverlayStylesEqual,
+} from "./raster-color-overlay-core";
 import { restorePixelSelectionHistoryMask } from "./engine-selection-runtime";
 import {
   grainAssetIdForSettings,
@@ -83,37 +90,91 @@ import { processHistoryMaintenanceChunks } from "./history-retention-core";
 export function captureRasterLayerMetadataHistoryState(
   engine: BrushEngine,
   layerId: number,
+  property: RasterLayerMetadataHistoryProperty,
 ): RasterLayerMetadataHistoryState {
   const record = engine.layerStack.byId(layerId);
   if (!record) throw new Error(`Livello ${layerId} assente dalla cronologia metadata.`);
-  return {
-    layerId,
-    visible: record.visible,
-    opacity: record.opacity,
-    clipping: engine.layerStack.captureClippingHistoryState(),
-    strokeStyle: copyRasterStrokeStyle(record.strokeStyle),
-    bevelStyle: copyRasterBevelStyle(record.bevelStyle),
-    outerShadowStyle: copyRasterOuterShadowStyle(record.outerShadowStyle),
-    innerShadowStyle: copyRasterInnerShadowStyle(record.innerShadowStyle),
-    colorOverlayStyle: copyRasterColorOverlayStyle(record.colorOverlayStyle),
-  };
+  const value = property === "visibility"
+    ? record.visible
+    : property === "opacity"
+      ? record.opacity
+      : property === "clipping"
+        ? engine.layerStack.captureClippingHistoryState()
+        : property === "stroke"
+          ? copyRasterStrokeStyle(record.strokeStyle)
+          : property === "bevel"
+            ? copyRasterBevelStyle(record.bevelStyle)
+            : property === "outer-shadow"
+              ? copyRasterOuterShadowStyle(record.outerShadowStyle)
+              : property === "inner-shadow"
+                ? copyRasterInnerShadowStyle(record.innerShadowStyle)
+                : copyRasterColorOverlayStyle(record.colorOverlayStyle);
+  return { layerId, property, value } as RasterLayerMetadataHistoryState;
+}
+
+function clippingHistoryStatesEqual(
+  left: readonly { layerId: number; parentId: number | null }[],
+  right: readonly { layerId: number; parentId: number | null }[],
+): boolean {
+  return left.length === right.length && left.every((entry, index) => (
+    entry.layerId === right[index].layerId && entry.parentId === right[index].parentId
+  ));
 }
 
 export function rasterLayerMetadataHistoryStatesEqual(
   left: RasterLayerMetadataHistoryState,
   right: RasterLayerMetadataHistoryState,
 ): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+  if (left.layerId !== right.layerId || left.property !== right.property) return false;
+  switch (left.property) {
+    case "visibility":
+    case "opacity":
+      return left.value === right.value;
+    case "clipping":
+      return clippingHistoryStatesEqual(
+        left.value,
+        (right as Extract<RasterLayerMetadataHistoryState, { property: "clipping" }>).value,
+      );
+    case "stroke":
+      return rasterStrokeStylesEqual(
+        left.value,
+        (right as Extract<RasterLayerMetadataHistoryState, { property: "stroke" }>).value,
+      );
+    case "bevel":
+      return rasterBevelStylesEqual(
+        left.value,
+        (right as Extract<RasterLayerMetadataHistoryState, { property: "bevel" }>).value,
+      );
+    case "outer-shadow":
+      return rasterOuterShadowStylesEqual(
+        left.value,
+        (right as Extract<RasterLayerMetadataHistoryState, { property: "outer-shadow" }>).value,
+      );
+    case "inner-shadow":
+      return rasterInnerShadowStylesEqual(
+        left.value,
+        (right as Extract<RasterLayerMetadataHistoryState, { property: "inner-shadow" }>).value,
+      );
+    case "color-overlay":
+      return rasterColorOverlayStylesEqual(
+        left.value,
+        (right as Extract<RasterLayerMetadataHistoryState, { property: "color-overlay" }>).value,
+      );
+  }
 }
 
 export function recordRasterLayerMetadataHistoryAction(
   engine: BrushEngine,
-  property: RasterLayerMetadataHistoryAction["property"],
+  property: RasterLayerMetadataHistoryProperty,
   before: RasterLayerMetadataHistoryState,
   after: RasterLayerMetadataHistoryState,
 ): boolean {
-  if (before.layerId !== after.layerId) {
-    throw new Error("Una modifica metadata non può cambiare livello durante il gesto.");
+  if (
+    before.layerId !== after.layerId
+    || before.property !== property
+    || after.property !== property
+  ) {
+    throw new Error("Una modifica metadata non può cambiare livello o proprietà durante il gesto.");
   }
   if (rasterLayerMetadataHistoryStatesEqual(before, after)) return false;
   truncateRedoHistory(engine);
@@ -122,9 +183,9 @@ export function recordRasterLayerMetadataHistoryAction(
     kind: "layer-metadata",
     layerId: before.layerId,
     property,
-    before,
-    after,
-  });
+    before: before.value,
+    after: after.value,
+  } as RasterLayerMetadataHistoryAction);
   engine.historyCursor = engine.historyActions.length;
   if (engine.activeStrokeProfile) {
     engine.activeStrokeProfile.historyCommittedActions += 1;
@@ -132,61 +193,94 @@ export function recordRasterLayerMetadataHistoryAction(
   return true;
 }
 
-function assignRasterLayerMetadataHistoryState(
+function assignRasterLayerMetadataHistoryValue(
   engine: BrushEngine,
-  target: RasterLayerMetadataHistoryState,
+  action: RasterLayerMetadataHistoryAction,
+  target: RasterLayerMetadataHistoryAction["before"],
 ): void {
-  const record = engine.layerStack.byId(target.layerId);
-  if (!record) throw new Error(`Livello ${target.layerId} della proprietà non trovato.`);
-  engine.layerStack.restoreClippingHistoryState(target.clipping);
-  record.visible = target.visible;
-  record.opacity = target.opacity;
-  record.strokeStyle = copyRasterStrokeStyle(target.strokeStyle);
-  record.bevelStyle = copyRasterBevelStyle(target.bevelStyle);
-  record.outerShadowStyle = copyRasterOuterShadowStyle(target.outerShadowStyle);
-  record.innerShadowStyle = copyRasterInnerShadowStyle(target.innerShadowStyle);
-  record.colorOverlayStyle = copyRasterColorOverlayStyle(target.colorOverlayStyle);
+  const record = engine.layerStack.byId(action.layerId);
+  if (!record) throw new Error(`Livello ${action.layerId} della proprietà non trovato.`);
+  switch (action.property) {
+    case "visibility":
+      record.visible = target as boolean;
+      return;
+    case "opacity":
+      record.opacity = target as number;
+      return;
+    case "clipping":
+      engine.layerStack.restoreClippingHistoryState(
+        target as RasterLayerMetadataHistoryValueMap["clipping"],
+      );
+      return;
+    case "stroke":
+      record.strokeStyle = copyRasterStrokeStyle(target);
+      break;
+    case "bevel":
+      record.bevelStyle = copyRasterBevelStyle(target);
+      break;
+    case "outer-shadow":
+      record.outerShadowStyle = copyRasterOuterShadowStyle(target);
+      break;
+    case "inner-shadow":
+      record.innerShadowStyle = copyRasterInnerShadowStyle(target);
+      break;
+    case "color-overlay":
+      record.colorOverlayStyle = copyRasterColorOverlayStyle(target);
+      break;
+  }
   const gpu = engine.layerGpu.get(record.id);
   if (gpu) gpu.bakeValid = false;
 }
 
-/** Replays CPU metadata and derived presentation only; authoritative pixels are untouched. */
-export async function applyRasterLayerMetadataHistoryState(
+async function refreshRasterLayerMetadataPresentation(
   engine: BrushEngine,
-  target: RasterLayerMetadataHistoryState,
+  action: RasterLayerMetadataHistoryAction,
 ): Promise<void> {
-  const previous = captureRasterLayerMetadataHistoryState(engine, target.layerId);
-  engine.layerSwitchBusy = true;
-  try {
-    await engine.waitForIdle();
-    assignRasterLayerMetadataHistoryState(engine, target);
-    if (engine.layerStack.active.id === target.layerId) {
-      await restoreEffectsWorkbenchToActiveLayer(engine, "history-replay", true);
-    }
+  if (
+    action.property === "visibility"
+    || action.property === "opacity"
+    || action.property === "clipping"
+  ) {
     await engine.rebuildMergedLayerSurfaces(
       "history-replay",
       engine.getVectorTextViewState(),
-      { reuseUnchangedRasterRuns: false },
+      { reuseUnchangedRasterRuns: true },
     );
-    engine.paintDisplayMipValidThroughLevel = 0;
-    engine.presentationCacheNeedsFullRebuild = true;
-    engine.displayDirty = true;
-    engine.requestRender();
+  } else if (engine.layerStack.active.id === action.layerId) {
+    // One retarget updates only the active effect resources, bounds and
+    // compositor. The raster document/merged surfaces are not rebuilt.
+    await restoreEffectsWorkbenchToActiveLayer(
+      engine,
+      "history-replay",
+      true,
+      "content-bounds",
+    );
+  }
+  engine.paintDisplayMipValidThroughLevel = 0;
+  engine.presentationCacheNeedsFullRebuild = true;
+  engine.displayDirty = true;
+  engine.requestRender();
+}
+
+/** Replays one field delta; authoritative layer pixels are never touched. */
+export async function applyRasterLayerMetadataHistoryState(
+  engine: BrushEngine,
+  action: RasterLayerMetadataHistoryAction,
+  target: RasterLayerMetadataHistoryAction["before"],
+): Promise<void> {
+  const previous = captureRasterLayerMetadataHistoryState(
+    engine,
+    action.layerId,
+    action.property,
+  );
+  engine.layerSwitchBusy = true;
+  try {
+    assignRasterLayerMetadataHistoryValue(engine, action, target);
+    await refreshRasterLayerMetadataPresentation(engine, action);
   } catch (error) {
     try {
-      assignRasterLayerMetadataHistoryState(engine, previous);
-      if (engine.layerStack.active.id === previous.layerId) {
-        await restoreEffectsWorkbenchToActiveLayer(engine, "history-replay", true);
-      }
-      await engine.rebuildMergedLayerSurfaces(
-        "history-replay",
-        engine.getVectorTextViewState(),
-        { reuseUnchangedRasterRuns: false },
-      );
-      engine.paintDisplayMipValidThroughLevel = 0;
-      engine.presentationCacheNeedsFullRebuild = true;
-      engine.displayDirty = true;
-      engine.requestRender();
+      assignRasterLayerMetadataHistoryValue(engine, action, previous.value);
+      await refreshRasterLayerMetadataPresentation(engine, action);
     } catch (restoreError) {
       engine.latchDocumentStateInconsistent(
         "Stato incoerente dopo Undo/Redo delle proprietà raster: ricarica la pagina.",
@@ -328,6 +422,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
     if (crossedAction.kind === "layer-metadata") {
       await applyRasterLayerMetadataHistoryState(
         engine,
+        crossedAction,
         delta < 0 ? crossedAction.before : crossedAction.after,
       );
       engine.historyCursor = nextCursor;
@@ -1443,9 +1538,10 @@ export function historyStepBlockedByLayer(engine: BrushEngine, delta: -1 | 1): b
     ? engine.historyActions[engine.historyCursor - 1]
     : engine.historyActions[engine.historyCursor];
   if (action?.kind === "layer-metadata") {
+    if (!engine.layerStack.byId(action.layerId)) return true;
+    if (action.property !== "clipping") return false;
     const target = delta < 0 ? action.before : action.after;
-    return !engine.layerStack.byId(action.layerId)
-      || !engine.layerStack.isClippingHistoryStateApplicable(target.clipping);
+    return !engine.layerStack.isClippingHistoryStateApplicable(target);
   }
   if (action?.kind === "scene-reorder") {
     const target = delta < 0 ? action.before : action.after;

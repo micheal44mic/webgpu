@@ -310,6 +310,10 @@ for (const actionCount of [10, 100, 500, 1000]) {
     new URL("../src/engine-runtime-misc.ts", import.meta.url),
     "utf8",
   );
+  const coldStorage = readFileSync(
+    new URL("../src/engine-cold-storage.ts", import.meta.url),
+    "utf8",
+  );
   const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
   const publishHistory = brushEngine.slice(
     brushEngine.indexOf("  publishHistoryState(): void"),
@@ -325,17 +329,26 @@ for (const actionCount of [10, 100, 500, 1000]) {
   assert(!runtimeMisc.includes("compactDiscardedHistoryIncrementally"));
   assert.match(
     runtime,
-    /device\.queue\.onSubmittedWorkDone\(\)[\s\S]*?await engine\.waitForIdle\(\)[\s\S]*?await engine\.compactDiscardedHistoryIncrementally\([\s\S]*?capturePeriodicCheckpoint\(engine\)/,
+    /device\.queue\.onSubmittedWorkDone\(\)[\s\S]*?await engine\.waitForIdle\(\)[\s\S]*?await engine\.compactDiscardedHistoryIncrementally\([\s\S]*?capturePeriodicCheckpoint\(engine, expectedGeneration\)/,
   );
   assert(runtime.includes("latestFullCheckpointByLayer(engine)"));
   assert(runtime.includes("state.floorCursor = candidateFloor"));
   assert(runtime.includes("historyMemoryTotalBytes(ledger) <= budget.hardBytes"));
   assert(runtime.includes("!engine.activeRasterLayerMetadataHistoryEdit"));
   assert(runtime.includes("!engine.activeRasterTransformSession"));
-  assert(runtime.includes("addSelectionSnapshot(action.selectionBefore)"));
-  assert(runtime.includes("addSelectionSnapshot(action.selectionAfter)"));
-  assert(runtime.includes("ledger.gpuReservedBytes = gpuStorage.usedReservedBytes"));
-  assert(runtime.includes("ledger.gpuAllocatedBytes = gpuStorage.allocatedBytes"));
+  assert(runtime.includes("accountSelectionSnapshot(state, action.selectionBefore)"));
+  assert(runtime.includes("accountSelectionSnapshot(state, action.selectionAfter)"));
+  assert(runtime.includes("state.accounting.gpuReservedBytes = gpuStorage.usedReservedBytes"));
+  assert(runtime.includes("state.accounting.gpuAllocatedBytes = gpuStorage.allocatedBytes"));
+  assert(runtime.includes("appendOnlySince("));
+  assert(runtime.includes("accountingIncrementalActions"));
+  assert(runtime.includes("baseBytes - effectsBytes"));
+  assert(coldStorage.includes("createLayerColdStorageCandidateIncrementally"));
+  assert.match(
+    coldStorage,
+    /if \(!hooks\.shouldContinue\(\)\)[\s\S]{0,500}device\.queue\.submit/,
+    "ogni submit tile del checkpoint deve avere un gate di interazione immediatamente prima",
+  );
   assert(historyRuntime.includes("historyCursorWithinRetainedRange(engine, nextCursor)"));
   assert(runtime.includes("await engine.compactDiscardedHistoryIncrementally("));
   assert(runtime.includes("yieldHistoryMaintenanceTurn"));

@@ -14,8 +14,9 @@ export interface MobileStrokeSheetOptions {
   readonly mobileMediaQuery: MediaQueryList;
   readonly getStyle: () => RasterStrokeStyle;
   readonly applyStyle: (style: RasterStrokeStyle) => Promise<boolean>;
-  readonly beginHistoryEdit: () => void;
-  readonly commitHistoryEdit: () => void;
+  readonly beginHistoryEdit: () => number | null;
+  readonly commitHistoryEdit: (token: number) => boolean;
+  readonly cancelHistoryEdit: (token: number) => boolean;
   readonly beforeOpen: () => void;
   readonly onOpenChange: (open: boolean) => void;
 }
@@ -119,7 +120,7 @@ export class MobileStrokeSheetController {
   private applyFrame: number | null = null;
   private pendingStyle: RasterStrokeStyle | null = null;
   private applyLoop: Promise<void> | null = null;
-  private historyEditOpen = false;
+  private historyEditToken: number | null = null;
   private historyFinishRequested = false;
   private readonly options: MobileStrokeSheetOptions;
 
@@ -158,7 +159,12 @@ export class MobileStrokeSheetController {
 
     const current = this.options.getStyle();
     if (!current.enabled) {
-      this.requestStyle({ ...copiedStyle(current), enabled: true }, false);
+      if (this.beginHistoryEdit()) {
+        this.requestStyle({ ...copiedStyle(current), enabled: true }, false);
+        this.requestHistoryEditFinish();
+      } else {
+        this.sync(current);
+      }
     }
   }
 
@@ -221,20 +227,32 @@ export class MobileStrokeSheetController {
       control.addEventListener("pointercancel", () => this.requestHistoryEditFinish());
     }
     this.colorInput.addEventListener("input", () => {
-      this.beginHistoryEdit();
+      if (!this.beginHistoryEdit()) {
+        this.sync();
+        return;
+      }
       this.handleColorInput();
     });
     this.colorInput.addEventListener("change", () => {
-      this.beginHistoryEdit();
+      if (!this.beginHistoryEdit()) {
+        this.sync();
+        return;
+      }
       this.handleColorInput();
       this.requestHistoryEditFinish();
     });
     this.widthInput.addEventListener("input", () => {
-      this.beginHistoryEdit();
+      if (!this.beginHistoryEdit()) {
+        this.sync();
+        return;
+      }
       this.handleWidthInput();
     });
     this.widthInput.addEventListener("change", () => {
-      this.beginHistoryEdit();
+      if (!this.beginHistoryEdit()) {
+        this.sync();
+        return;
+      }
       this.handleWidthInput();
       this.requestHistoryEditFinish();
     });
@@ -251,11 +269,16 @@ export class MobileStrokeSheetController {
       option.addEventListener("click", () => {
         const position = option.dataset.strokeAlignment;
         if (!isStrokePosition(position)) return;
+        if (!this.beginHistoryEdit()) {
+          this.sync();
+          return;
+        }
         const current = this.pendingStyle ?? this.options.getStyle();
         this.syncPosition(position);
         this.closeAlignmentMenu(false);
         this.alignmentButton.focus({ preventScroll: true });
         this.requestStyle({ ...copiedStyle(current), position }, false);
+        this.requestHistoryEditFinish();
       });
       option.addEventListener("keydown", (event) => {
         const currentIndex = this.alignmentOptions.indexOf(option);
@@ -354,15 +377,20 @@ export class MobileStrokeSheetController {
     });
   }
 
-  private beginHistoryEdit(): void {
-    if (this.historyEditOpen) return;
-    this.historyEditOpen = true;
+  private beginHistoryEdit(): boolean {
+    if (this.historyEditToken !== null) {
+      this.historyFinishRequested = false;
+      return true;
+    }
+    const token = this.options.beginHistoryEdit();
+    if (token === null) return false;
+    this.historyEditToken = token;
     this.historyFinishRequested = false;
-    this.options.beginHistoryEdit();
+    return true;
   }
 
   private requestHistoryEditFinish(): void {
-    if (!this.historyEditOpen) return;
+    if (this.historyEditToken === null) return;
     this.historyFinishRequested = true;
     if (this.applyFrame !== null) {
       cancelAnimationFrame(this.applyFrame);
@@ -374,14 +402,17 @@ export class MobileStrokeSheetController {
 
   private commitHistoryEditIfIdle(): void {
     if (
-      !this.historyEditOpen
+      this.historyEditToken === null
       || !this.historyFinishRequested
       || this.applyLoop
       || this.pendingStyle
     ) return;
-    this.historyEditOpen = false;
+    const token = this.historyEditToken;
+    this.historyEditToken = null;
     this.historyFinishRequested = false;
-    this.options.commitHistoryEdit();
+    if (!this.options.commitHistoryEdit(token)) {
+      this.options.cancelHistoryEdit(token);
+    }
   }
 
   private syncPosition(position: StrokePosition): void {

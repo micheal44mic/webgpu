@@ -410,6 +410,135 @@ export async function createLayerColdStorageCandidate(engine: BrushEngine,
   );
 }
 
+export interface IncrementalColdStorageCaptureHooks {
+  /**
+   * Checked immediately before allocation and before every GPU submission.
+   * A pointer-down invalidates the owning maintenance generation, therefore a
+   * false result guarantees that no later tile-copy submission is enqueued.
+   */
+  shouldContinue(): boolean;
+  /** Gives pointer/input events a browser turn between bounded submissions. */
+  yieldTurn(): Promise<void>;
+}
+
+/**
+ * History-only variant of the cold-store packer.
+ *
+ * The destination is still one compact texture array, but source tiles are
+ * copied in bounded submissions.  The continuation gate is sampled before
+ * each submit and after each browser yield; abort destroys the unpublished
+ * candidate and returns null.  Normal layer switching keeps using the single
+ * submission function above, so its established transaction is unchanged.
+ */
+export async function createLayerColdStorageCandidateIncrementally(
+  engine: BrushEngine,
+  record: LayerRecord,
+  hot: LayerTextureResources,
+  mask: Uint32Array,
+  generation: number,
+  hooks: IncrementalColdStorageCaptureHooks,
+  maximumTilesPerSubmission = 16,
+): Promise<LayerColdStorageResources | null> {
+  if (!Number.isInteger(maximumTilesPerSubmission) || maximumTilesPerSubmission <= 0) {
+    throw new RangeError("Il chunk tile del checkpoint History deve essere positivo.");
+  }
+  if (!hooks.shouldContinue()) return null;
+  const tileIndices = layerStorageTileIndices(mask);
+  if (tileIndices.length === 0) {
+    throw new Error(`Cold storage livello ${record.id}: contenuto senza tile.`);
+  }
+  if (tileIndices.length > engine.device.limits.maxTextureArrayLayers) {
+    throw new Error(
+      `Cold storage livello ${record.id}: ${tileIndices.length} tile superano `
+      + `maxTextureArrayLayers=${engine.device.limits.maxTextureArrayLayers}.`,
+    );
+  }
+  const bytesPerPixel = engine.layerFormat === "rgba16float" ? 8 : 4;
+  const memoryBytes = tileIndices.length
+    * LAYER_STORAGE_TILE_SIZE
+    * LAYER_STORAGE_TILE_SIZE
+    * bytesPerPixel;
+  return runGpuAllocationTransaction(
+    engine.device,
+    `Pack cold incrementale livello ${record.id}`,
+    async (transaction) => {
+      if (!hooks.shouldContinue()) return null;
+      const texture = engine.device.createTexture({
+        label: `Cold tile History livello ${record.id} #${generation}`,
+        size: {
+          width: LAYER_STORAGE_TILE_SIZE,
+          height: LAYER_STORAGE_TILE_SIZE,
+          depthOrArrayLayers: tileIndices.length,
+        },
+        format: engine.layerFormat,
+        usage:
+          GPUTextureUsage.COPY_SRC
+          | GPUTextureUsage.COPY_DST
+          | GPUTextureUsage.TEXTURE_BINDING,
+      });
+      transaction.deferRollback(() => texture.destroy());
+      for (
+        let firstTile = 0;
+        firstTile < tileIndices.length;
+        firstTile += maximumTilesPerSubmission
+      ) {
+        // This is deliberately the last operation before encoder creation and
+        // submit. Pointer-down changes the generation synchronously, so no new
+        // copy can begin after user interaction has resumed.
+        if (!hooks.shouldContinue()) {
+          texture.destroy();
+          return null;
+        }
+        const endTile = Math.min(
+          tileIndices.length,
+          firstTile + maximumTilesPerSubmission,
+        );
+        const encoder = engine.device.createCommandEncoder({
+          label: `Pack cold History livello ${record.id} ${firstTile}-${endTile}`,
+        });
+        for (let arrayLayer = firstTile; arrayLayer < endTile; arrayLayer += 1) {
+          const tileIndex = tileIndices[arrayLayer];
+          const tileX = tileIndex % LAYER_STORAGE_GRID_SIZE;
+          const tileY = Math.floor(tileIndex / LAYER_STORAGE_GRID_SIZE);
+          encoder.copyTextureToTexture(
+            {
+              texture: hot.texture,
+              origin: {
+                x: tileX * LAYER_STORAGE_TILE_SIZE,
+                y: tileY * LAYER_STORAGE_TILE_SIZE,
+                z: 0,
+              },
+            },
+            { texture, origin: { x: 0, y: 0, z: arrayLayer } },
+            {
+              width: LAYER_STORAGE_TILE_SIZE,
+              height: LAYER_STORAGE_TILE_SIZE,
+              depthOrArrayLayers: 1,
+            },
+          );
+        }
+        if (!hooks.shouldContinue()) {
+          texture.destroy();
+          return null;
+        }
+        engine.device.queue.submit([encoder.finish()]);
+        await engine.waitForGpuCapped(
+          `Pack cold History livello ${record.id} ${firstTile}-${endTile}`,
+        );
+        engine.maybeInjectLayerColdStorageFault("after-pack-submit");
+        if (endTile < tileIndices.length) {
+          await hooks.yieldTurn();
+        }
+      }
+      if (!hooks.shouldContinue()) {
+        texture.destroy();
+        return null;
+      }
+      return { texture, tileIndices, memoryBytes, generation };
+    },
+  );
+}
+
 export async function uploadCompressedLayerIntoHot(engine: BrushEngine, 
   record: LayerRecord,
   gpu: LayerGpuResources,

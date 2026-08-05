@@ -366,6 +366,34 @@ assert.match(
   "only the latest completed version may clear or reject optimistic state",
 );
 
+// History ownership is property-specific. A fast Bevel → Shadow switch may
+// not reuse Bevel's accepted transaction or commit it with Shadow's controls.
+assert.match(
+  controllerSource,
+  /historyEditToken: number \| null = null;[\s\S]*?historyEditKind: MobileRasterEffectKind \| null = null/,
+  "the controller must retain both the opaque token and its effect kind",
+);
+assert.match(
+  controllerSource,
+  /if \(this\.historyEditToken !== null\) \{\s*if \(this\.historyEditKind !== this\.activeKind\) return false;\s*this\.historyFinishRequested = false;\s*return true;\s*\}/,
+  "a rapid effect switch must reject reuse of another effect's open transaction",
+);
+assert.match(
+  controllerSource,
+  /const token = this\.options\.beginHistoryEdit\(this\.activeKind\);\s*if \(token === null\) return false;\s*this\.historyEditToken = token;\s*this\.historyEditKind = this\.activeKind/,
+  "the sheet must only enter edit state after an accepted engine handshake",
+);
+assert.match(
+  controllerSource,
+  /this\.historyEditToken === null[\s\S]*?this\.applyLoop[\s\S]*?this\.pendingOrder\.length > 0[\s\S]*?this\.pendingByKind\.size > 0[\s\S]*?const token = this\.historyEditToken;[\s\S]*?this\.options\.commitHistoryEdit\(token\)/,
+  "close/focusout must commit exactly once and only after every latest-only write drains",
+);
+assert.match(
+  main,
+  /beginHistoryEdit:\s*\(kind: MobileRasterEffectKind\)[\s\S]*?return engine\.beginRasterLayerMetadataHistoryEdit\(property\);[\s\S]*?commitHistoryEdit:\s*\(token\) => engine\.commitRasterLayerMetadataHistoryEdit\(token\)[\s\S]*?cancelHistoryEdit:\s*\(token\) => engine\.cancelRasterLayerMetadataHistoryEdit\(token\)/,
+  "all four effects must forward the engine's atomic begin/commit/cancel token",
+);
+
 assert.doesNotMatch(
   controllerSource,
   /\bGPU(?:Device|Texture|Buffer|Queue|CommandEncoder|CanvasContext)\b|navigator\.gpu|createTexture\(|createBuffer\(|createCommandEncoder\(|queue\.submit\(|copyTextureToBuffer\(|mapAsync\(/,
