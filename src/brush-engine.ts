@@ -631,11 +631,13 @@ import {
 } from "./engine-vector-text-runtime";
 import {
   applyVectorHistoryState,
+  getMixedSceneReorderTargets,
   compactDiscardedHistory,
   hasVisibleHistoryContent,
   historyStepBlockedByLayer,
   maybeInjectHistoryReplayFault,
   moveHistoryCursor,
+  moveMixedSceneItem,
   recordBlendHistoryBatch,
   recordVectorHistoryAction,
   scheduleHistoryGpuTrim,
@@ -5600,6 +5602,17 @@ export class BrushEngine {
 
   recordVectorHistoryAction(before: MixedSceneVectorHistoryState, after: MixedSceneVectorHistoryState): boolean {
     return recordVectorHistoryAction(this, before, after);
+  }
+
+  getMixedSceneReorderTargets(key: MixedSceneItem["key"]) {
+    return getMixedSceneReorderTargets(this, key);
+  }
+
+  async moveMixedSceneItem(
+    key: MixedSceneItem["key"],
+    targetTopFirstSlot: number,
+  ): Promise<boolean> {
+    return moveMixedSceneItem(this, key, targetTopFirstSlot);
   }
 
   beginVectorHistoryEdit(scope: "property" | "transform" = "property"): boolean {

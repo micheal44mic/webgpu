@@ -3880,3 +3880,45 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   più spostare la miniatura a sinistra. TypeScript, tutte le `29` suite
   `*:verify`, build Vite/Sites e `git diff --check` sono verdi; QA Safari/iPhone
   fisico resta da eseguire.
+
+### Riordino universale dei livelli mobile (5 agosto 2026)
+
+- Lo stack misto espone ora una sola transazione autorevole per riordinare a un
+  indice top-first arbitrario raster, testo e SVG; le immagini importate
+  seguono il percorso raster corrente. La strategia
+  `top-first-removal-slot-atomic-clipping-unit-exact-order-v1` calcola prima gli
+  slot validi, poi pubblica la stessa permutazione in `MixedSceneStack` e la sua
+  proiezione raster in `LayerStack`. Il raster attivo, il Reference e la
+  selezione restano associati agli id/alle chiavi originali. Una base raster
+  trascina con sé tutte le clipping mask consecutive; un figlio può cambiare
+  posizione soltanto dentro lo stesso gruppo e nessun nodo semantico può essere
+  inserito fra base e mask.
+- Il commit crea una sola azione History `scene-reorder`, contenente soltanto
+  gli ordini before/after di chiavi e id: nessun pixel, nodo, path, buffer o
+  texture viene copiato. Undo/Redo riusa la stessa transazione e la firma del
+  journal è
+  `global-order-per-layer-clear-barrier-raster-checkpoints-layer-blend-scene-reorder-v7`.
+  Se una successiva mutazione strutturale non journalizzata delle clipping mask
+  rende incompatibile un ordine storico, il passo viene dichiarato bloccato
+  prima del replay. Un errore di rebuild ripristina i soli array d'ordine; il
+  successo esegue una sola ricomposizione con riuso delle raster run invariate.
+  Il taglio del Redo richiama anche lo sweep delle risorse immagine orfane.
+- Nel pannello Layers mobile il riordino parte soltanto sulla riga già
+  selezionata dopo `320 ms` di pressione con slop `8 px`. Durante pointermove
+  cambiano esclusivamente transform DOM, indicatore di inserimento arancione da
+  `2 px` e scroll della lista via RAF (zona bordo `36 px`, massimo
+  `520 px/s`); il motore viene chiamato una sola volta al rilascio. Secondo
+  pointer, Escape, pointercancel/lostcapture, blur, visibilitychange, resize,
+  chiusura pannello e lock History annullano il gesto. `Alt+Freccia su/giù`
+  offre lo stesso spostamento da tastiera, ma viene bloccato durante un drag.
+  Il pannello sincronizza `inert`/`aria-hidden`, trasferisce il focus prima di
+  chiudersi e aggiorna posizione/set-size e annunci live senza lasciare focus
+  nascosto.
+- Il percorso caldo Paint, gli stamp, gli encoder WebGPU e le texture
+  autorevoli non sono stati modificati. Le suite pure coprono conversione
+  top-first/bottom-up, gruppi clipping multi-child, slot invalidi, ordine
+  esatto, rollback/History, hold/slop, auto-scroll e assenza di chiamate al
+  motore dal pointermove. QA browser locale a `393×852` ha verificato riordino
+  da tastiera, focus/inert/ARIA e console pulita. TypeScript, tutte le `31`
+  suite `*:verify`, build Vite/Sites e `git diff --check` sono verdi; il
+  long-press fisico resta da provare su Safari/iPhone.

@@ -1,5 +1,5 @@
 export const HISTORY_JOURNAL_STRATEGY =
-  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-blend-v6" as const;
+  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-blend-scene-reorder-v7" as const;
 
 /**
  * One entry of the global journal. `layerId` is what makes a single stack usable
@@ -32,6 +32,10 @@ export type JournalAction =
     id: number;
     kind: "layer-blend-mode";
     layerId: number;
+  }
+  | {
+    id: number;
+    kind: "scene-reorder";
   };
 
 export interface JournalBatch {
@@ -121,7 +125,11 @@ export function hasVisibleContent(
   const contentByLayer = new Map<number, boolean>();
   for (let index = 0; index < end; index += 1) {
     const action = actions[index];
-    if (action.kind === "vector" || action.kind === "layer-blend-mode") continue;
+    if (
+      action.kind === "vector"
+      || action.kind === "layer-blend-mode"
+      || action.kind === "scene-reorder"
+    ) continue;
     if (layerId !== undefined && action.layerId !== layerId) continue;
     if (action.kind === "clear") {
       contentByLayer.set(action.layerId, false);
@@ -149,6 +157,7 @@ export function latestLayerReplayCheckpoint<TAction extends JournalAction>(
     const action = actions[index];
     if (
       action.kind !== "vector"
+      && action.kind !== "scene-reorder"
       && action.layerId === layerId
       && (
         action.kind === "vector-rasterize"
@@ -185,6 +194,7 @@ export function visibleRasterBatchActionIdsAfterCheckpoint<TAction extends Journ
     const action = actions[index];
     if (
       action.kind !== "vector"
+      && action.kind !== "scene-reorder"
       && action.layerId === layerId
       && (action.kind === "stroke" || action.kind === "fill")
     ) {
@@ -271,7 +281,11 @@ export function historyStepTargetsMissingLayer(
   liveLayerIds: ReadonlySet<number>,
 ): boolean {
   const action = delta < 0 ? actions[cursor - 1] : actions[cursor];
-  if (!action || action.kind === "vector") return false;
+  if (
+    !action
+    || action.kind === "vector"
+    || action.kind === "scene-reorder"
+  ) return false;
   if (action.kind === "vector-rasterize" || action.kind === "raster-import") {
     return delta < 0
       ? !liveLayerIds.has(action.layerId)

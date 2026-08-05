@@ -19,6 +19,7 @@ import { MAX_STAMPS_PER_BATCH, STAMP_STRIDE_BYTES } from "./engine-limits";
 import type { LayerColdStorageResources } from "./engine-layer-resources";
 import type { LayerRecord } from "./layer-stack";
 import type { LayerBlendMode } from "./layer-blend-modes";
+import type { MixedSceneOrderState } from "./mixed-scene-reorder-core";
 
 export interface SelectionHistoryMaskSnapshot {
   readonly revision: number;
@@ -50,6 +51,14 @@ export interface LayerBlendModeHistoryAction {
   layerId: number;
   before: LayerBlendMode;
   after: LayerBlendMode;
+}
+
+/** One compact, pixel-free permutation of the heterogeneous layer stack. */
+export interface MixedSceneReorderHistoryAction {
+  id: number;
+  kind: "scene-reorder";
+  before: MixedSceneOrderState;
+  after: MixedSceneOrderState;
 }
 
 /**
@@ -147,6 +156,7 @@ export type HistoryAction =
   | RasterHistoryAction
   | VectorHistoryAction
   | LayerBlendModeHistoryAction
+  | MixedSceneReorderHistoryAction
   | VectorRasterizeHistoryAction
   | RasterImportHistoryAction
   | RasterTransformHistoryAction;

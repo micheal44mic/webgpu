@@ -1446,6 +1446,31 @@ export class MixedSceneStack {
     return true;
   }
 
+  /**
+   * Applies an exact key permutation without cloning semantic nodes. Selection
+   * remains attached to the same stable key. Clipping validity is planned by
+   * mixed-scene-reorder-core together with LayerStack before this mutation.
+   */
+  reorderByKeys(bottomUpKeys: readonly MixedSceneItem["key"][]): boolean {
+    if (bottomUpKeys.length !== this.orderedItems.length) {
+      throw new Error("Il riordino scena deve contenere tutti gli elementi.");
+    }
+    if (new Set(bottomUpKeys).size !== bottomUpKeys.length) {
+      throw new Error("Il riordino scena contiene chiavi duplicate.");
+    }
+    const itemsByKey = new Map(this.orderedItems.map((item) => [item.key, item]));
+    const candidate = bottomUpKeys.map((key) => {
+      const item = itemsByKey.get(key);
+      if (!item) throw new Error(`Elemento scena ${key} assente dal riordino.`);
+      return item;
+    });
+    const changed = candidate.some((item, index) => item !== this.orderedItems[index]);
+    if (!changed) return false;
+    this.orderedItems.splice(0, this.orderedItems.length, ...candidate);
+    // selectedKey is identity-based and deliberately stays untouched.
+    return true;
+  }
+
   setImageVisibility(id: number, visible: boolean): boolean {
     const node = this.imageById(id);
     if (node.visible === visible) return false;

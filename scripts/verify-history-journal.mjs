@@ -17,13 +17,14 @@ import {
 
 assert.equal(
   HISTORY_JOURNAL_STRATEGY,
-  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-blend-v6",
+  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-blend-scene-reorder-v7",
 );
 
 const stroke = (id, layerId) => ({ id, kind: "stroke", layerId });
 const fill = (id, layerId) => ({ id, kind: "fill", layerId });
 const clear = (id, layerId) => ({ id, kind: "clear", layerId });
 const vector = (id) => ({ id, kind: "vector" });
+const sceneReorder = (id) => ({ id, kind: "scene-reorder" });
 const layerBlendMode = (id, layerId) => ({
   id,
   kind: "layer-blend-mode",
@@ -50,6 +51,23 @@ const rasterTransform = (id, layerId, hasContent = true) => ({
   assert.equal(firstVisibleActionIndex(actions, 2), 0);
   assert.deepEqual([...visibleStrokeIds(actions, 2)], [1, 2]);
   assert.equal(hasVisibleContent(actions, 0), false);
+}
+
+// Scene ordering is reversible document metadata. Like vector metadata it
+// neither creates raster content nor requires an owning raster layer.
+{
+  const onlyReorder = [sceneReorder(1)];
+  assert.equal(hasVisibleContent(onlyReorder, 1), false);
+  assert.deepEqual([...layersWithVisibleContent(onlyReorder, 1)], []);
+  assert.deepEqual([...visibleStrokeIds(onlyReorder, 1)], []);
+  assert.equal(
+    historyStepTargetsMissingLayer(onlyReorder, 1, -1, new Set()),
+    false,
+  );
+
+  const withPixels = [stroke(1, 7), sceneReorder(2)];
+  assert.equal(hasVisibleContent(withPixels, 2, 7), true);
+  assert.deepEqual([...visibleStrokeIds(withPixels, 2, 7)], [1]);
 }
 
 // Blend-mode metadata is reversible document state, never raster content and

@@ -4,6 +4,14 @@ import {
   type MobileToolsSheetSnap,
 } from "./mobile-tools-sheet-gesture";
 import {
+  MOBILE_LAYER_REORDER_HOLD_MS,
+  mobileLayerReorderAutoScrollVelocity,
+  mobileLayerReorderDropSlot,
+  mobileLayerReorderMovementExceeded,
+  type MobileLayerReorderPlan,
+  type MobileLayerReorderRowGeometry,
+} from "./mobile-layer-reorder-core";
+import {
   TOUCH_PAINT_INTENT_HOLD_MS,
   TOUCH_PAINT_INTENT_MOVE_THRESHOLD_PX,
   TOUCH_PAINT_INTENT_STRATEGY,
@@ -288,6 +296,9 @@ const mobileAddLayerButton = element<HTMLButtonElement>("mobileAddLayer");
 const mobileCopyLayerButton = element<HTMLButtonElement>("mobileCopyLayer");
 const mobileAddMaskButton = element<HTMLButtonElement>("mobileAddMask");
 const mobileLayerList = element<HTMLElement>("mobileLayerList");
+const mobileLayerReorderStatus = element<HTMLParagraphElement>(
+  "mobileLayerReorderStatus",
+);
 const mobileBrushControls = element<HTMLElement>("mobileBrushControls");
 const mobileBrushSizeTrack = element<HTMLElement>("mobileBrushSizeTrack");
 const mobileBrushOpacityTrack = element<HTMLElement>("mobileBrushOpacityTrack");
@@ -859,6 +870,9 @@ const engine = new BrushEngine(canvas, {
     mobileBrushStudio?.notifyEngineUpdate();
   },
   onHistoryChange(state) {
+    if (state.busy || state.openEdit !== null || state.inconsistent) {
+      cancelMobileLayerReorderGesture();
+    }
     historyState = state;
     requestMobileLayersRefresh();
     if (!state.busy && state.openEdit === null) {
@@ -998,6 +1012,28 @@ let mobileLayersPanelOpen = false;
 let mobileLayersRenderSignature = "";
 let mobileLayersRefreshRequested = true;
 let mobileLayersRefreshFrame: number | null = null;
+type MobileMixedSceneLayerKey = NonNullable<EngineStats["mixedScene"]>["selectedKey"];
+interface MobileLayerReorderGesture {
+  readonly pointerId: number;
+  readonly key: MobileMixedSceneLayerKey;
+  readonly name: string;
+  readonly row: HTMLElement;
+  readonly select: HTMLButtonElement;
+  readonly startClientX: number;
+  readonly startClientY: number;
+  readonly startScrollTop: number;
+  readonly restoreFocus: boolean;
+  holdTimer: number | null;
+  phase: "pending" | "dragging";
+  plan: MobileLayerReorderPlan | null;
+  currentSlot: number;
+  clientY: number;
+  frame: number | null;
+  lastFrameTime: number;
+}
+let mobileLayerReorderGesture: MobileLayerReorderGesture | null = null;
+let mobileLayerReorderSuppressClickKey: string | null = null;
+let mobileLayerReorderSuppressClickUntil = 0;
 type MobileBrushControlKind = "size" | "opacity";
 interface MobileBrushControlDrag {
   readonly kind: MobileBrushControlKind;
@@ -1918,6 +1954,7 @@ function requestMobileLayerThumbnailCapture(delayMs = 120): void {
   if (
     !mobileLayersPanelOpen
     || !engineInitialized
+    || mobileLayerReorderGesture !== null
     || mobileLayerThumbnailCaptureUnavailable
   ) {
     return;
@@ -1940,6 +1977,7 @@ async function captureRequestedMobileLayerThumbnail(): Promise<void> {
     !mobileLayerThumbnailCaptureRequested
     || !mobileLayersPanelOpen
     || !engineInitialized
+    || mobileLayerReorderGesture !== null
     || mobileLayerThumbnailCaptureUnavailable
   ) {
     return;
@@ -1997,6 +2035,409 @@ async function captureRequestedMobileLayerThumbnail(): Promise<void> {
   }
 }
 
+function announceMobileLayerReorder(message: string): void {
+  mobileLayerReorderStatus.textContent = "";
+  requestAnimationFrame(() => {
+    mobileLayerReorderStatus.textContent = message;
+  });
+}
+
+function mobileLayerRows(): HTMLElement[] {
+  return Array.from(
+    mobileLayerList.querySelectorAll<HTMLElement>(":scope > [data-layer-key]"),
+  );
+}
+
+function mobileLayerReorderOriginalSlot(
+  orderedKeys: readonly string[],
+  movingKeys: readonly string[],
+): number {
+  const moving = new Set(movingKeys);
+  const firstMovingIndex = orderedKeys.findIndex((key) => moving.has(key));
+  if (firstMovingIndex < 0) return 0;
+  return orderedKeys
+    .slice(0, firstMovingIndex)
+    .filter((key) => !moving.has(key)).length;
+}
+
+function isMobileMixedSceneLayerKey(key: string): key is MobileMixedSceneLayerKey {
+  return /^(?:raster|text|svg|image):\d+$/.test(key);
+}
+
+function mobileLayerReorderPlanFromEngine(
+  key: MobileMixedSceneLayerKey,
+): MobileLayerReorderPlan | null {
+  try {
+    const targets = engine.getMixedSceneReorderTargets(key);
+    const orderedKeys = mobileLayerRows()
+      .map((row) => row.dataset.layerKey)
+      .filter((candidate): candidate is string => candidate !== undefined);
+    return {
+      selectedKey: key,
+      draggedKeys: [...targets.movingKeys],
+      remainingKeys: [...targets.topFirstKeysWithoutMoving],
+      validSlots: [...targets.validTargetTopFirstSlots],
+      originalSlot: mobileLayerReorderOriginalSlot(orderedKeys, targets.movingKeys),
+    };
+  } catch (error) {
+    console.warn("Riordino livello mobile non disponibile.", error);
+    return null;
+  }
+}
+
+function clearMobileLayerReorderIndicators(): void {
+  for (const row of mobileLayerRows()) {
+    row.classList.remove(
+      "is-reordering",
+      "is-reorder-companion",
+      "is-drop-before",
+      "is-drop-after",
+    );
+    row.style.removeProperty("--mobile-layer-reorder-y");
+  }
+  mobileLayerList.classList.remove("is-reordering");
+}
+
+function setMobileLayerReorderDropIndicator(
+  plan: MobileLayerReorderPlan,
+  slot: number,
+): void {
+  const rowByKey = new Map(
+    mobileLayerRows().map((row) => [row.dataset.layerKey ?? "", row] as const),
+  );
+  for (const row of rowByKey.values()) {
+    row.classList.remove("is-drop-before", "is-drop-after");
+  }
+  if (plan.remainingKeys.length === 0) return;
+  if (slot === plan.remainingKeys.length) {
+    rowByKey.get(plan.remainingKeys[plan.remainingKeys.length - 1])
+      ?.classList.add("is-drop-after");
+    return;
+  }
+  rowByKey.get(plan.remainingKeys[slot])?.classList.add("is-drop-before");
+}
+
+function mobileLayerReorderSlotAnnouncement(
+  plan: MobileLayerReorderPlan,
+  slot: number,
+): string {
+  if (slot === 0) return "Move to top.";
+  if (slot === plan.remainingKeys.length) return "Move to bottom.";
+  const key = plan.remainingKeys[slot];
+  const row = mobileLayerList.querySelector<HTMLElement>(
+    `[data-layer-key="${CSS.escape(key)}"]`,
+  );
+  const name = row?.querySelector<HTMLElement>(".mobile-layer-name")?.textContent?.trim();
+  return name ? `Move before ${name}.` : `Move to position ${slot + 1}.`;
+}
+
+function scheduleMobileLayerReorderFrame(): void {
+  const gesture = mobileLayerReorderGesture;
+  if (!gesture || gesture.phase !== "dragging" || gesture.frame !== null) return;
+  gesture.frame = requestAnimationFrame(runMobileLayerReorderFrame);
+}
+
+function runMobileLayerReorderFrame(frameTime: number): void {
+  const gesture = mobileLayerReorderGesture;
+  if (!gesture || gesture.phase !== "dragging" || !gesture.plan) return;
+  gesture.frame = null;
+  const plan = gesture.plan;
+  const elapsedSeconds = Math.min(0.05, Math.max(0, frameTime - gesture.lastFrameTime) / 1000);
+  gesture.lastFrameTime = frameTime;
+  const listRect = mobileLayerList.getBoundingClientRect();
+  const velocity = mobileLayerReorderAutoScrollVelocity(
+    gesture.clientY,
+    listRect.top,
+    listRect.bottom,
+  );
+  let autoScrolled = false;
+  if (velocity !== 0 && elapsedSeconds > 0) {
+    const previousScrollTop = mobileLayerList.scrollTop;
+    mobileLayerList.scrollTop += velocity * elapsedSeconds;
+    autoScrolled = mobileLayerList.scrollTop !== previousScrollTop;
+  }
+
+  const offsetY = gesture.clientY - gesture.startClientY
+    + (mobileLayerList.scrollTop - gesture.startScrollTop);
+  gesture.row.style.setProperty("--mobile-layer-reorder-y", `${offsetY.toFixed(2)}px`);
+  const rowGeometry: MobileLayerReorderRowGeometry[] = mobileLayerRows().map((row) => {
+    const rect = row.getBoundingClientRect();
+    return {
+      key: row.dataset.layerKey ?? "",
+      top: rect.top,
+      bottom: rect.bottom,
+    };
+  });
+  const slot = mobileLayerReorderDropSlot(gesture.clientY, plan, rowGeometry);
+  if (slot !== gesture.currentSlot) {
+    gesture.currentSlot = slot;
+    setMobileLayerReorderDropIndicator(plan, slot);
+    announceMobileLayerReorder(mobileLayerReorderSlotAnnouncement(plan, slot));
+  }
+  if (autoScrolled) scheduleMobileLayerReorderFrame();
+}
+
+function activateMobileLayerReorderGesture(): void {
+  const gesture = mobileLayerReorderGesture;
+  if (!gesture || gesture.phase !== "pending") return;
+  gesture.holdTimer = null;
+  if (
+    !mobileLayersPanelOpen
+    || interactionLocked()
+    || !gesture.row.classList.contains("is-selected")
+  ) {
+    cancelMobileLayerReorderGesture(false);
+    return;
+  }
+  const plan = mobileLayerReorderPlanFromEngine(gesture.key);
+  if (!plan || plan.validSlots.length <= 1) {
+    cancelMobileLayerReorderGesture(false);
+    return;
+  }
+  gesture.phase = "dragging";
+  gesture.plan = plan;
+  gesture.currentSlot = plan.originalSlot;
+  gesture.lastFrameTime = performance.now();
+  mobileLayerList.classList.add("is-reordering");
+  const moving = new Set(plan.draggedKeys);
+  for (const row of mobileLayerRows()) {
+    const rowKey = row.dataset.layerKey ?? "";
+    if (rowKey === gesture.key) row.classList.add("is-reordering");
+    else if (moving.has(rowKey)) row.classList.add("is-reorder-companion");
+  }
+  setMobileLayerReorderDropIndicator(plan, plan.originalSlot);
+  announceMobileLayerReorder(
+    `Moving ${gesture.name}. Drag up or down, then release.`,
+  );
+  scheduleMobileLayerReorderFrame();
+}
+
+function cancelMobileLayerReorderGesture(
+  announce = true,
+  restoreScroll = true,
+  restoreFocus = true,
+): void {
+  const gesture = mobileLayerReorderGesture;
+  if (!gesture) return;
+  mobileLayerReorderGesture = null;
+  if (gesture.holdTimer !== null) window.clearTimeout(gesture.holdTimer);
+  if (gesture.frame !== null) cancelAnimationFrame(gesture.frame);
+  clearMobileLayerReorderIndicators();
+  if (restoreScroll) mobileLayerList.scrollTop = gesture.startScrollTop;
+  if (gesture.select.hasPointerCapture(gesture.pointerId)) {
+    gesture.select.releasePointerCapture(gesture.pointerId);
+  }
+  if (restoreFocus && gesture.restoreFocus && gesture.select.isConnected) {
+    gesture.select.focus({ preventScroll: true });
+  }
+  if (announce && gesture.phase === "dragging") {
+    announceMobileLayerReorder("Layer move canceled.");
+  }
+  if (mobileLayersPanelOpen) {
+    scheduleMobileLayersRefresh();
+    requestMobileLayerThumbnailCapture();
+  }
+}
+
+async function commitMobileLayerReorder(
+  key: MobileMixedSceneLayerKey,
+  name: string,
+  targetTopFirstSlot: number,
+  restoreScrollTop: number,
+): Promise<void> {
+  if (interactionLocked() || layerSwitching) {
+    announceMobileLayerReorder("Layer move canceled.");
+    return;
+  }
+  layerSwitching = true;
+  updateHistoryControls();
+  try {
+    const changed = await engine.moveMixedSceneItem(key, targetTopFirstSlot);
+    historyState = engine.getHistoryState();
+    layerSwitchResult.textContent = changed
+      ? `${name} moved.`
+      : `${name} is already in that position.`;
+    announceMobileLayerReorder(
+      changed ? `${name} moved.` : `${name} is already in that position.`,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Layer move failed.";
+    layerSwitchResult.textContent = message;
+    announceMobileLayerReorder(message);
+  } finally {
+    layerSwitching = false;
+    mobileLayersRenderSignature = "";
+    requestMobileLayersRefresh();
+    updateHistoryControls();
+    updateStats(engine.getStats());
+    if (mobileLayersPanelOpen) {
+      renderMobileLayerList(engine.getStats());
+      mobileLayerList.scrollTop = Math.min(
+        restoreScrollTop,
+        Math.max(0, mobileLayerList.scrollHeight - mobileLayerList.clientHeight),
+      );
+      const row = mobileLayerList.querySelector<HTMLElement>(
+        `[data-layer-key="${CSS.escape(key)}"]`,
+      );
+      row?.querySelector<HTMLButtonElement>(".mobile-layer-select")
+        ?.focus({ preventScroll: true });
+      requestMobileLayerThumbnailCapture();
+    }
+  }
+}
+
+function handleMobileLayerReorderPointerDown(event: PointerEvent): void {
+  if (mobileLayerReorderGesture && mobileLayerReorderGesture.pointerId !== event.pointerId) {
+    cancelMobileLayerReorderGesture();
+    return;
+  }
+  if (
+    mobileLayerReorderGesture
+    || !event.isPrimary
+    || (event.pointerType === "mouse" && event.button !== 0)
+    || interactionLocked()
+    || layerSwitching
+  ) {
+    return;
+  }
+  const target = event.target instanceof Element ? event.target : null;
+  const select = target?.closest<HTMLButtonElement>(".mobile-layer-select");
+  const row = select?.closest<HTMLElement>(".mobile-layer-row.is-selected");
+  const key = row?.dataset.layerKey;
+  if (!select || select.disabled || !row || !key || !isMobileMixedSceneLayerKey(key)) return;
+  const name = row.querySelector<HTMLElement>(".mobile-layer-name")?.textContent?.trim()
+    || "Layer";
+  select.setPointerCapture(event.pointerId);
+  const gesture: MobileLayerReorderGesture = {
+    pointerId: event.pointerId,
+    key,
+    name,
+    row,
+    select,
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+    startScrollTop: mobileLayerList.scrollTop,
+    restoreFocus: document.activeElement === select,
+    holdTimer: null,
+    phase: "pending",
+    plan: null,
+    currentSlot: 0,
+    clientY: event.clientY,
+    frame: null,
+    lastFrameTime: performance.now(),
+  };
+  gesture.holdTimer = window.setTimeout(
+    activateMobileLayerReorderGesture,
+    MOBILE_LAYER_REORDER_HOLD_MS,
+  );
+  mobileLayerReorderGesture = gesture;
+}
+
+function handleMobileLayerReorderPointerMove(event: PointerEvent): void {
+  const gesture = mobileLayerReorderGesture;
+  if (!gesture || event.pointerId !== gesture.pointerId) return;
+  if (gesture.phase === "pending") {
+    if (mobileLayerReorderMovementExceeded(
+      gesture.startClientX,
+      gesture.startClientY,
+      event.clientX,
+      event.clientY,
+    )) {
+      cancelMobileLayerReorderGesture(false);
+    }
+    return;
+  }
+  event.preventDefault();
+  gesture.clientY = event.clientY;
+  scheduleMobileLayerReorderFrame();
+}
+
+function handleMobileLayerReorderPointerUp(event: PointerEvent): void {
+  const gesture = mobileLayerReorderGesture;
+  if (!gesture || event.pointerId !== gesture.pointerId) return;
+  if (gesture.phase !== "dragging" || !gesture.plan) {
+    cancelMobileLayerReorderGesture(false);
+    return;
+  }
+  event.preventDefault();
+  gesture.clientY = event.clientY;
+  if (gesture.frame !== null) {
+    cancelAnimationFrame(gesture.frame);
+    gesture.frame = null;
+  }
+  runMobileLayerReorderFrame(performance.now());
+  const { key, name, currentSlot } = gesture;
+  const finalScrollTop = mobileLayerList.scrollTop;
+  mobileLayerReorderSuppressClickKey = key;
+  mobileLayerReorderSuppressClickUntil = performance.now() + 500;
+  mobileLayerReorderGesture = null;
+  if (gesture.holdTimer !== null) window.clearTimeout(gesture.holdTimer);
+  if (gesture.frame !== null) cancelAnimationFrame(gesture.frame);
+  clearMobileLayerReorderIndicators();
+  if (gesture.select.hasPointerCapture(gesture.pointerId)) {
+    gesture.select.releasePointerCapture(gesture.pointerId);
+  }
+  void commitMobileLayerReorder(key, name, currentSlot, finalScrollTop);
+}
+
+function handleMobileLayerReorderPointerEnd(event: PointerEvent): void {
+  const gesture = mobileLayerReorderGesture;
+  if (!gesture || event.pointerId !== gesture.pointerId) return;
+  cancelMobileLayerReorderGesture();
+}
+
+function mobileLayerKeyboardTargetSlot(
+  plan: MobileLayerReorderPlan,
+  direction: -1 | 1,
+): number | null {
+  const candidates = plan.validSlots.filter((slot) =>
+    direction < 0 ? slot < plan.originalSlot : slot > plan.originalSlot);
+  if (candidates.length === 0) return null;
+  return direction < 0 ? Math.max(...candidates) : Math.min(...candidates);
+}
+
+function handleMobileLayerReorderKeydown(event: KeyboardEvent): void {
+  if (
+    mobileLayerReorderGesture !== null
+    && event.altKey
+    && (event.key === "ArrowUp" || event.key === "ArrowDown")
+  ) {
+    event.preventDefault();
+    return;
+  }
+  if (
+    !event.altKey
+    || event.ctrlKey
+    || event.metaKey
+    || (event.key !== "ArrowUp" && event.key !== "ArrowDown")
+    || interactionLocked()
+    || layerSwitching
+  ) {
+    return;
+  }
+  const target = event.target instanceof Element ? event.target : null;
+  const select = target?.closest<HTMLButtonElement>(".mobile-layer-select");
+  const row = select?.closest<HTMLElement>(".mobile-layer-row.is-selected");
+  const key = row?.dataset.layerKey;
+  if (!select || !row || !key || !isMobileMixedSceneLayerKey(key)) return;
+  const plan = mobileLayerReorderPlanFromEngine(key);
+  if (!plan) return;
+  const targetSlot = mobileLayerKeyboardTargetSlot(
+    plan,
+    event.key === "ArrowUp" ? -1 : 1,
+  );
+  event.preventDefault();
+  if (targetSlot === null) {
+    announceMobileLayerReorder(
+      event.key === "ArrowUp" ? "Layer is already at the top." : "Layer is already at the bottom.",
+    );
+    return;
+  }
+  const name = row.querySelector<HTMLElement>(".mobile-layer-name")?.textContent?.trim()
+    || "Layer";
+  void commitMobileLayerReorder(key, name, targetSlot, mobileLayerList.scrollTop);
+}
+
 function setMobileLayersPanelOpen(open: boolean): void {
   if (open && !mobileUiMediaQuery.matches) return;
   if (open && mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
@@ -2009,12 +2450,25 @@ function setMobileLayersPanelOpen(open: boolean): void {
   if (open && mobileBrushLibraryOpen) {
     setMobileBrushLibraryOpen(false);
   }
+  if (!open) {
+    const focusWasInside = mobileLayersPanel.contains(document.activeElement)
+      || mobileLayerReorderGesture !== null;
+    cancelMobileLayerReorderGesture(false, true, false);
+    if (focusWasInside) {
+      mobileLayersMenuButton.focus({ preventScroll: true });
+    }
+  }
   mobileLayersPanelOpen = open;
   mobileLayersMenuButton.setAttribute("aria-expanded", String(open));
   mobileLayersMenuButton.setAttribute(
     "aria-label",
     open ? "Close layers menu" : "Open layers menu",
   );
+  if (open) {
+    mobileLayersPanel.removeAttribute("inert");
+  } else {
+    mobileLayersPanel.setAttribute("inert", "");
+  }
   mobileLayersPanel.setAttribute("aria-hidden", String(!open));
   if (open) {
     setControlsPanelOpen(false);
@@ -4263,6 +4717,19 @@ mobileAddMaskButton.addEventListener("click", () => {
   if (!mobileAddMaskButton.disabled) void addMobileClippingMaskLayer();
 });
 
+mobileLayerList.addEventListener("pointerdown", handleMobileLayerReorderPointerDown);
+mobileLayerList.addEventListener("pointermove", handleMobileLayerReorderPointerMove);
+mobileLayerList.addEventListener("pointerup", handleMobileLayerReorderPointerUp);
+mobileLayerList.addEventListener("pointercancel", handleMobileLayerReorderPointerEnd);
+mobileLayerList.addEventListener("lostpointercapture", handleMobileLayerReorderPointerEnd);
+mobileLayerList.addEventListener("keydown", handleMobileLayerReorderKeydown);
+mobileLayerList.addEventListener("contextmenu", (event) => {
+  const target = event.target instanceof Element ? event.target : null;
+  if (target?.closest(".mobile-layer-row.is-selected .mobile-layer-select")) {
+    event.preventDefault();
+  }
+});
+
 mobileLayerList.addEventListener("click", (event) => {
   if (!(event.target instanceof Element)) return;
   const actionButton = event.target.closest<HTMLButtonElement>(
@@ -4272,6 +4739,16 @@ mobileLayerList.addEventListener("click", (event) => {
   const action = actionButton?.dataset.mobileLayerAction;
   const key = row?.dataset.layerKey;
   if (!actionButton || actionButton.disabled || !action || !key) return;
+  if (
+    action === "select"
+    && key === mobileLayerReorderSuppressClickKey
+    && performance.now() <= mobileLayerReorderSuppressClickUntil
+  ) {
+    event.preventDefault();
+    mobileLayerReorderSuppressClickKey = null;
+    mobileLayerReorderSuppressClickUntil = 0;
+    return;
+  }
   runMobileLayerAction(action, key);
 });
 
@@ -4475,6 +4952,7 @@ mobileUiMediaQuery.addEventListener("change", (event) => {
 });
 
 window.addEventListener("resize", () => {
+  cancelMobileLayerReorderGesture();
   const toolsNeedLayout = mobileToolsSheetOpen && mobileToolsSheetDragPointerId === null;
   const brushLibraryNeedsLayout = mobileBrushLibraryOpen
     && mobileBrushLibraryDragPointerId === null;
@@ -6077,7 +6555,8 @@ function updateMobileLayerThumbnail(
 function renderMobileLayerList(stats: EngineStats): void {
   if (!mobileLayersPanelOpen || !mobileLayersRefreshRequested) return;
   if (
-    activePointerId !== null
+    mobileLayerReorderGesture !== null
+    || activePointerId !== null
     || layerSwitching
     || historyState.openEdit !== null
     || historyState.busy
@@ -6117,9 +6596,21 @@ function renderMobileLayerList(stats: EngineStats): void {
     const visibility = row.querySelector<HTMLButtonElement>(".mobile-layer-visibility")!;
 
     row.className = `mobile-layer-row is-${view.kind}${view.selected ? " is-selected" : ""}`;
+    row.setAttribute("aria-posinset", String(position + 1));
+    row.setAttribute("aria-setsize", String(views.length));
     select.disabled = locked;
     select.setAttribute("aria-current", String(view.selected));
-    select.setAttribute("aria-label", `Select ${view.name}`);
+    select.setAttribute(
+      "aria-label",
+      view.selected
+        ? `${view.name}. Hold and drag to reorder; Alt plus Arrow Up or Down also moves it.`
+        : `Select ${view.name}`,
+    );
+    if (view.selected) {
+      select.setAttribute("aria-keyshortcuts", "Alt+ArrowUp Alt+ArrowDown");
+    } else {
+      select.removeAttribute("aria-keyshortcuts");
+    }
     select.title = view.name;
     name.textContent = view.name;
     updateMobileLayerThumbnail(thumbnail, view);
@@ -8637,8 +9128,31 @@ window.addEventListener("keyup", (event) => {
 });
 
 window.addEventListener("blur", () => {
+  cancelMobileLayerReorderGesture();
   rotateShortcutHeld = false;
   canvas.classList.remove("rotation-ready");
+});
+
+window.addEventListener("pointerdown", (event) => {
+  if (
+    mobileLayerReorderGesture
+    && event.pointerId !== mobileLayerReorderGesture.pointerId
+  ) {
+    cancelMobileLayerReorderGesture();
+  }
+}, { capture: true });
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") {
+    cancelMobileLayerReorderGesture();
+  }
+});
+
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && mobileLayerReorderGesture) {
+    event.preventDefault();
+    cancelMobileLayerReorderGesture();
+  }
 });
 
 window.addEventListener("keydown", (event) => {

@@ -1639,6 +1639,7 @@
         class="mobile-layers-panel"
         aria-label="Layers"
         aria-hidden="true"
+        inert
       >
         <div class="mobile-layers-toolbar" role="toolbar" aria-label="Layer actions">
           <button
@@ -1682,6 +1683,13 @@
           </button>
         </div>
         <div id="mobileLayerList" class="mobile-layer-list" role="list"></div>
+        <p
+          id="mobileLayerReorderStatus"
+          class="visually-hidden"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        ></p>
       </aside>
 
       <aside id="controlsPanel" class="controls" aria-label="Pannello strumenti">

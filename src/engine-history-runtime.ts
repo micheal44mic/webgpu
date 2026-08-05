@@ -10,7 +10,10 @@ import {
   selectLayerReplayAfterCheckpoint,
 } from "./history-journal";
 import { isTexturizedGrainActive, usesStrokeGlazeRenderer } from "./engine-strategies";
-import { type MixedSceneVectorHistoryState } from "./mixed-scene-stack";
+import {
+  type MixedSceneItem,
+  type MixedSceneVectorHistoryState,
+} from "./mixed-scene-stack";
 import {
   clearVectorTextPresentationForTransaction,
   publishMixedScene,
@@ -22,11 +25,20 @@ import { compactDryBlendHistoryGeometry } from "./blend-renderer";
 import {
   vectorHistoryStatesEqual,
   type HistoryRenderBatch,
+  type MixedSceneReorderHistoryAction,
   type RasterHistoryCheckpointAction,
   type RasterImportHistoryAction,
   type RasterTransformHistoryAction,
   type VectorRasterizeHistoryAction,
 } from "./engine-history-types";
+import {
+  assertValidMixedSceneOrder,
+  isMixedSceneOrderStateApplicable,
+  mixedSceneReorderTargets,
+  planMixedSceneReorder,
+  type MixedSceneOrderState,
+  type MixedSceneReorderTargets,
+} from "./mixed-scene-reorder-core";
 import { type GpuHistorySlice } from "./gpu-history-storage";
 import { type HistoryReplayFaultPoint } from "./engine-types";
 import {
@@ -77,11 +89,15 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
   if (!crossedAction) return false;
   // The refusal lives here as well as in getHistoryState: reporting
   // canUndo=false only greys out a button, and the API is reachable directly.
-  // Only a vanished layer is refused now — a step into another live layer moves
-  // the active layer with the cursor further down.
+  // A vanished layer is refused; scene reorder also refuses an old permutation
+  // that is no longer legal under the current, non-journalled clipping map.
+  // A step into another live layer still moves the active layer with the cursor.
   if (historyStepBlockedByLayer(engine, delta)) {
+    const sceneReorderBlocked = crossedAction.kind === "scene-reorder";
     engine.publishStatus(
-      delta < 0
+      sceneReorderBlocked
+        ? "Quel riordino non è più compatibile con i gruppi di clipping attuali."
+        : delta < 0
         ? "Il livello di quel passo non esiste più: impossibile annullarlo."
         : "Il livello di quel passo non esiste più: impossibile ripristinarlo.",
       "error",
@@ -100,6 +116,8 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
       ? delta < 0 ? "Undo: rimozione immagine raster…" : "Redo: ripristino immagine raster…"
       : crossedAction.kind === "vector-rasterize"
       ? delta < 0 ? "Undo: ripristino del vettore…" : "Redo: rasterizzazione vettoriale…"
+      : crossedAction.kind === "scene-reorder"
+      ? delta < 0 ? "Undo: riordino livelli…" : "Redo: riordino livelli…"
       : crossedAction.kind === "layer-blend-mode"
       ? delta < 0 ? "Undo: fusione livello…" : "Redo: fusione livello…"
       : crossedAction.kind === "vector"
@@ -156,6 +174,21 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
       }
       engine.publishStatus(
         delta < 0 ? "Undo fusione livello completato." : "Redo fusione livello completato.",
+        "ok",
+      );
+      return true;
+    }
+    if (crossedAction.kind === "scene-reorder") {
+      await applyMixedSceneOrderState(
+        engine,
+        delta < 0 ? crossedAction.before : crossedAction.after,
+      );
+      engine.historyCursor = nextCursor;
+      if (engine.activeStrokeProfile) {
+        engine.activeStrokeProfile.historyReplayOperations += 1;
+      }
+      engine.publishStatus(
+        delta < 0 ? "Riordino livelli annullato." : "Riordino livelli ripristinato.",
         "ok",
       );
       return true;
@@ -820,6 +853,169 @@ export function recordVectorHistoryAction(engine: BrushEngine,
   return true;
 }
 
+function captureMixedSceneOrderState(engine: BrushEngine): MixedSceneOrderState {
+  const scene = requireMixedSceneStack(engine);
+  return {
+    bottomUpKeys: scene.items.map((item) => item.key),
+    rasterLayerIds: engine.layerStack.layers.map((record) => record.id),
+  };
+}
+
+function rasterOrderEntries(engine: BrushEngine) {
+  return engine.layerStack.layers.map((record) => ({
+    id: record.id,
+    clippingParentId: record.clippingParentId,
+  }));
+}
+
+export function getMixedSceneReorderTargets(
+  engine: BrushEngine,
+  key: MixedSceneItem["key"],
+): MixedSceneReorderTargets {
+  const scene = requireMixedSceneStack(engine);
+  return mixedSceneReorderTargets(
+    scene.items.map((item) => item.key),
+    rasterOrderEntries(engine),
+    key,
+  );
+}
+
+/**
+ * Publishes stable-id permutations and rebuilds presentation exactly once on
+ * success. A failed composition restores only the two order arrays; textures,
+ * raster pixels and semantic nodes are never copied into the rollback state.
+ */
+export async function applyMixedSceneOrderState(
+  engine: BrushEngine,
+  target: MixedSceneOrderState,
+): Promise<void> {
+  const scene = requireMixedSceneStack(engine);
+  const previous = captureMixedSceneOrderState(engine);
+  const activeRasterId = engine.layerStack.active.id;
+  const referenceRasterId = engine.layerStack.referenceLayerId;
+  const selectedKey = scene.selected.key;
+  const recordsById = new Map(
+    engine.layerStack.layers.map((record) => [record.id, record]),
+  );
+  const targetRasterOrder = target.rasterLayerIds.map((id) => {
+    const record = recordsById.get(id);
+    if (!record) throw new Error(`Raster ${id} assente dal riordino.`);
+    return { id, clippingParentId: record.clippingParentId };
+  });
+  assertValidMixedSceneOrder(target.bottomUpKeys, targetRasterOrder);
+  engine.layerSwitchBusy = true;
+  try {
+    await engine.waitForIdle();
+    engine.layerStack.reorderByIds(target.rasterLayerIds);
+    scene.reorderByKeys(target.bottomUpKeys);
+    if (
+      engine.layerStack.active.id !== activeRasterId
+      || engine.layerStack.referenceLayerId !== referenceRasterId
+      || scene.selected.key !== selectedKey
+    ) {
+      throw new Error("Il riordino ha cambiato selezione, raster attivo o riferimento.");
+    }
+    clearVectorTextPresentationForTransaction(engine);
+    await engine.rebuildMergedLayerSurfaces(
+      "layer-switch",
+      engine.getVectorTextViewState(),
+      { reuseUnchangedRasterRuns: true },
+    );
+    engine.presentationCacheNeedsFullRebuild = true;
+    engine.displayDirty = true;
+    engine.requestRender();
+  } catch (error) {
+    const rollbackErrors: unknown[] = [];
+    try {
+      engine.layerStack.reorderByIds(previous.rasterLayerIds);
+      scene.reorderByKeys(previous.bottomUpKeys);
+      clearVectorTextPresentationForTransaction(engine);
+      await engine.rebuildMergedLayerSurfaces(
+        "layer-switch",
+        engine.getVectorTextViewState(),
+        { reuseUnchangedRasterRuns: true },
+      );
+      engine.presentationCacheNeedsFullRebuild = true;
+      engine.displayDirty = true;
+      engine.requestRender();
+    } catch (rollbackError) {
+      rollbackErrors.push(rollbackError);
+    }
+    if (rollbackErrors.length > 0) {
+      engine.latchDocumentStateInconsistent(
+        "Stato incoerente dopo il riordino livelli: ricarica la pagina.",
+      );
+      const originalMessage = error instanceof Error ? error.message : String(error);
+      const rollbackMessage = rollbackErrors.map((rollbackError) =>
+        rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+      ).join("; ");
+      throw new Error(
+        `Riordino fallito (${originalMessage}) e ripristino fallito (${rollbackMessage}).`,
+      );
+    }
+    throw error;
+  } finally {
+    engine.layerSwitchBusy = false;
+    engine.scheduleLayerColdCompression();
+    publishMixedScene(engine);
+    engine.publishStats();
+  }
+}
+
+function recordMixedSceneReorderHistoryAction(
+  engine: BrushEngine,
+  before: MixedSceneOrderState,
+  after: MixedSceneOrderState,
+): void {
+  const action: MixedSceneReorderHistoryAction = {
+    id: engine.nextHistoryActionId,
+    kind: "scene-reorder",
+    before,
+    after,
+  };
+  truncateRedoHistory(engine);
+  engine.historyActions.push(action);
+  engine.nextHistoryActionId += 1;
+  engine.historyCursor = engine.historyActions.length;
+  // truncateRedoHistory may have dropped the last vector action retaining an
+  // imported image asset. Match the vector recorder and release it immediately.
+  engine.sweepRasterImageGpuResources();
+  if (engine.activeStrokeProfile) {
+    engine.activeStrokeProfile.historyCommittedActions += 1;
+  }
+}
+
+export async function moveMixedSceneItem(
+  engine: BrushEngine,
+  key: MixedSceneItem["key"],
+  targetTopFirstSlot: number,
+): Promise<boolean> {
+  if (!engine.initialized || engine.historyStateInconsistent) return false;
+  engine.assertLayerSwitchAllowed();
+  const before = captureMixedSceneOrderState(engine);
+  const plan = planMixedSceneReorder(
+    before.bottomUpKeys,
+    rasterOrderEntries(engine),
+    key,
+    targetTopFirstSlot,
+  );
+  if (!plan.changed) return false;
+  const after: MixedSceneOrderState = {
+    bottomUpKeys: [...plan.bottomUpKeys],
+    rasterLayerIds: [...plan.rasterLayerIds],
+  };
+  engine.cancelLayerColdCompressionIdle();
+  await applyMixedSceneOrderState(engine, after);
+  try {
+    recordMixedSceneReorderHistoryAction(engine, before, after);
+  } catch (error) {
+    await applyMixedSceneOrderState(engine, before);
+    throw error;
+  }
+  engine.publishHistoryState();
+  return true;
+}
+
 export function scheduleHistoryGpuTrim(engine: BrushEngine): void {
   const generation = ++engine.historyGpuTrimGeneration;
   void engine.device.queue.onSubmittedWorkDone().then(() => {
@@ -844,6 +1040,7 @@ export function historyStepTargetLayerIndex(engine: BrushEngine, delta: -1 | 1):
   if (
     !action
     || action.kind === "vector"
+    || action.kind === "scene-reorder"
     || action.kind === "vector-rasterize"
     || action.kind === "raster-import"
   ) {
@@ -874,6 +1071,19 @@ export function truncateRedoHistory(engine: BrushEngine): void {
 }
 
 export function historyStepBlockedByLayer(engine: BrushEngine, delta: -1 | 1): boolean {
+  const action = delta < 0
+    ? engine.historyActions[engine.historyCursor - 1]
+    : engine.historyActions[engine.historyCursor];
+  if (action?.kind === "scene-reorder") {
+    const target = delta < 0 ? action.before : action.after;
+    const scene = engine.mixedSceneStack;
+    if (!scene) return true;
+    return !isMixedSceneOrderStateApplicable(
+      target,
+      scene.items.map((item) => item.key),
+      rasterOrderEntries(engine),
+    );
+  }
   return historyStepTargetsMissingLayer(
     engine.historyActions,
     engine.historyCursor,

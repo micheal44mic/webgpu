@@ -542,6 +542,35 @@ export class LayerStack {
     return true;
   }
 
+  /**
+   * Publishes an exact permutation produced by the heterogeneous scene-order
+   * planner. Record identity, active raster and reference raster are preserved
+   * by id; only the order array changes. This is also the rollback primitive
+   * for a failed mixed-scene composition rebuild.
+   */
+  reorderByIds(bottomUpIds: readonly number[]): boolean {
+    if (bottomUpIds.length !== this.records.length) {
+      throw new Error("Il riordino raster deve contenere tutti i livelli.");
+    }
+    if (new Set(bottomUpIds).size !== bottomUpIds.length) {
+      throw new Error("Il riordino raster contiene id duplicati.");
+    }
+    const recordsById = new Map(this.records.map((record) => [record.id, record]));
+    const candidate = bottomUpIds.map((id) => {
+      const record = recordsById.get(id);
+      if (!record) throw new Error(`Livello ${id} assente dal riordino raster.`);
+      return record;
+    });
+    const activeId = this.active.id;
+    const changed = candidate.some((record, index) => record !== this.records[index]);
+    if (!changed) return false;
+    this.assertClippingInvariants(candidate);
+    this.records.splice(0, this.records.length, ...candidate);
+    this._activeIndex = this.indexOfId(activeId);
+    // _referenceLayerId is identity-based and deliberately stays untouched.
+    return true;
+  }
+
   /** Layers strictly below the active one, bottom-up. */
   below(): readonly LayerRecord[] {
     return this.records.slice(0, this._activeIndex);

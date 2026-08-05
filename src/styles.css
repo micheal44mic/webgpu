@@ -2988,6 +2988,7 @@ select {
   }
 
   .mobile-layer-list {
+    position: relative;
     display: flex;
     min-height: 0;
     flex: 0 1 auto;
@@ -3005,6 +3006,10 @@ select {
     display: none;
   }
 
+  .mobile-layer-list.is-reordering {
+    touch-action: none;
+  }
+
   .mobile-layer-row {
     display: grid;
     height: 64px;
@@ -3020,6 +3025,49 @@ select {
 
   .mobile-layer-row.is-selected {
     border-color: #dd5c35;
+  }
+
+  .mobile-layer-row.is-selected .mobile-layer-select {
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
+
+  .mobile-layer-row.is-reordering {
+    z-index: 2;
+    transform: translate3d(0, var(--mobile-layer-reorder-y, 0), 0);
+    will-change: transform;
+  }
+
+  .mobile-layer-row.is-reorder-companion {
+    opacity: 0.62;
+  }
+
+  .mobile-layer-row.is-drop-before,
+  .mobile-layer-row.is-drop-after {
+    position: relative;
+  }
+
+  .mobile-layer-row.is-drop-before::before,
+  .mobile-layer-row.is-drop-after::after {
+    position: absolute;
+    z-index: 3;
+    right: 4px;
+    left: 4px;
+    height: 2px;
+    border-radius: 1px;
+    background: #dd5c35;
+    content: "";
+    pointer-events: none;
+  }
+
+  .mobile-layer-row.is-drop-before::before {
+    top: -4px;
+  }
+
+  .mobile-layer-row.is-drop-after::after {
+    bottom: -4px;
   }
 
   .mobile-layer-select,
@@ -3180,6 +3228,10 @@ select {
   }
 
   .mobile-stroke-chevron {
+    transition: none;
+  }
+
+  .mobile-layer-row.is-reordering {
     transition: none;
   }
 }

@@ -450,7 +450,11 @@ export async function beginRasterLayerTransform(
     if (!selectionScope) {
       for (let index = engine.historyCursor - 1; index >= 0; index -= 1) {
         const action = engine.historyActions[index];
-        if (action.kind === "vector" || action.layerId !== record.id) continue;
+        if (
+          action.kind === "vector"
+          || action.kind === "scene-reorder"
+          || action.layerId !== record.id
+        ) continue;
         if (
           action.kind === "raster-transform"
           && action.scope === "layer"
