@@ -789,6 +789,67 @@ assert.ok(
   ),
 );
 
+// Regressione Distort + blur: abbassare e decentrare il punto inferiore
+// produce uno Slug con origine non nulla. La ROI della mask dovra' quindi
+// essere convertita in coordinate Slug, mentre la ROI di compositing resta
+// nelle coordinate locali assolute del nodo.
+const loweredBottomMiddle = moveVectorTextDistortPoint(
+  defaultDistort,
+  4,
+  { x: 620, y: 680 },
+);
+assert.deepEqual(loweredBottomMiddle[4], { x: 620, y: 680 });
+assert.deepEqual(loweredBottomMiddle[8], { x: 370, y: 680 });
+assert.deepEqual(loweredBottomMiddle[9], { x: 870, y: 680 });
+const distortBlurPath = {
+  verbs: new Uint8Array([0, 3, 3, 3, 4]),
+  coords: new Float64Array([
+    100, 100,
+    300, 20, 700, 20, 900, 100,
+    900, 340, 650, 400, 500, 400,
+    350, 400, 100, 340, 100, 100,
+  ]),
+  contourOffsets: new Uint32Array([0]),
+  fillRule: 0,
+};
+const loweredDistortBlurPath = warpVectorTextPathFreeForm(
+  distortBlurPath,
+  distortSourceBounds,
+  loweredBottomMiddle,
+);
+const loweredDistortBlurSlug = buildVectorTextSlugData(loweredDistortBlurPath);
+const loweredDistortBlurAbsoluteBounds = {
+  left: loweredDistortBlurSlug.left + loweredDistortBlurSlug.originX,
+  top: loweredDistortBlurSlug.top + loweredDistortBlurSlug.originY,
+  right: loweredDistortBlurSlug.right + loweredDistortBlurSlug.originX,
+  bottom: loweredDistortBlurSlug.bottom + loweredDistortBlurSlug.originY,
+};
+const loweredDistortBlurPlan = planVectorTextSingleShadowBlur(
+  loweredDistortBlurAbsoluteBounds,
+  20,
+  1,
+);
+assert.ok(
+  Math.abs(loweredDistortBlurSlug.originX) > 1
+    && loweredDistortBlurSlug.originY > 1,
+  "la fixture deve esercitare la doppia origine su entrambi gli assi",
+);
+assert.ok(
+  loweredDistortBlurPlan.bounds[3] + loweredDistortBlurSlug.originY
+    > loweredDistortBlurPlan.bounds[3],
+  "i bounds assoluti usati come bounds Slug oltrepasserebbero la ROI inferiore",
+);
+for (let index = 0; index < loweredDistortBlurPlan.bounds.length; index += 1) {
+  const origin = index % 2 === 0
+    ? loweredDistortBlurSlug.originX
+    : loweredDistortBlurSlug.originY;
+  const sourceBound = loweredDistortBlurPlan.bounds[index] - origin;
+  assert.ok(
+    Math.abs(sourceBound + origin - loweredDistortBlurPlan.bounds[index]) < 1e-8,
+    "la ROI source relativa deve ricostruire esattamente la ROI assoluta",
+  );
+}
+
 const archGuide = buildVectorTextCurveGuide("arch", 1000, 400, 80);
 const archStart = archGuide.pointAtDistance(0);
 const archMiddle = archGuide.pointAtDistance(500);
@@ -1376,6 +1437,58 @@ const cappedBlurPlan = planVectorTextSingleShadowBlur(
 assert.ok(Math.abs(cappedBlurPlan.sigmaPixels - 8) < 1e-9);
 assert.equal(cappedBlurPlan.radius, 24);
 assert.ok(cappedBlurPlan.width * cappedBlurPlan.height <= VECTOR_TEXT_SINGLE_SHADOW_MAX_PIXELS);
+const blurSourceUniformStart = engineSource.indexOf(
+  "export function writeVectorTextGpuBlurSourceUniform(",
+);
+const blurSourceUniformEnd = engineSource.indexOf(
+  "\nexport function ",
+  blurSourceUniformStart + 1,
+);
+assert.ok(
+  blurSourceUniformStart >= 0 && blurSourceUniformEnd > blurSourceUniformStart,
+  "uniform source della mask blur GPU non trovato",
+);
+const blurSourceUniformSource = engineSource.slice(
+  blurSourceUniformStart,
+  blurSourceUniformEnd,
+);
+assert.match(
+  blurSourceUniformSource,
+  /const sourceBounds = usesMesh\s*\?\s*draw\.blurBounds\s*:\s*\[\s*draw\.blurBounds\[0\] - draw\.slug\.originX,\s*draw\.blurBounds\[1\] - draw\.slug\.originY,\s*draw\.blurBounds\[2\] - draw\.slug\.originX,\s*draw\.blurBounds\[3\] - draw\.slug\.originY,/,
+  "outer/inner Slug devono usare la ROI relativa, le mesh la ROI assoluta",
+);
+assert.match(
+  engineSource,
+  /function vectorTextGpuDrawUsesBlur\([\s\S]*draw\.mode === "slug-blur"[\s\S]*draw\.mode === "slug-inner-shadow-blur"[\s\S]*draw\.mode === "mesh-blur"[\s\S]*draw\.mode === "mesh-inner-shadow-blur"/,
+  "la conversione source deve coprire outer/inner blur sia Slug sia mesh",
+);
+assert.match(
+  blurSourceUniformSource,
+  /upload\[base \+ 4\] = \(draw\.blurBounds\[0\] \+ draw\.blurBounds\[2\]\) \* 0\.5;\s*upload\[base \+ 5\] = \(draw\.blurBounds\[1\] \+ draw\.blurBounds\[3\]\) \* 0\.5;/,
+  "il centro della texture blur deve restare nella ROI assoluta",
+);
+assert.match(
+  blurSourceUniformSource,
+  /upload\[base \+ 24\] = sourceBounds\[0\];\s*upload\[base \+ 25\] = sourceBounds\[1\];\s*upload\[base \+ 26\] = sourceBounds\[2\];\s*upload\[base \+ 27\] = sourceBounds\[3\];/,
+  "solo i bounds letti dallo shader source devono diventare origin-relative",
+);
+const drawUniformStart = engineSource.indexOf(
+  "export function writeVectorTextGpuDrawUniform(",
+);
+const drawUniformEnd = engineSource.indexOf(
+  "\ntype MixedSceneBlendScratchCandidate",
+  drawUniformStart,
+);
+assert.ok(
+  drawUniformStart >= 0 && drawUniformEnd > drawUniformStart,
+  "uniform del compositing testo GPU non trovato",
+);
+const drawUniformSource = engineSource.slice(drawUniformStart, drawUniformEnd);
+assert.match(
+  drawUniformSource,
+  /const shapeBounds = vectorTextGpuDrawUsesBlur\(draw\)\s*\? draw\.blurBounds\s*:/,
+  "il compositing del blur deve conservare la ROI assoluta",
+);
 assert.doesNotMatch(singleShadowSource, /Canvas|createElement|getContext|filter\s*=/);
 assert.match(gpuShaderSource, /sourceTexture: texture_2d<f32>/);
 assert.match(gpuShaderSource, /horizontalMain/);
