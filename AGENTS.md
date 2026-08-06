@@ -4238,3 +4238,57 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   `dc0e8ce35be14a3aa5dcbebbf4e721bba62a13c9` su
   `https://webgpu-brush-engine-michi.m1m4brand.chatgpt.site`. La QA fisica
   Safari/iPhone resta il prossimo passo e non e' ancora una misura canonica.
+
+### Budget History per classe dispositivo e tetto di profondità (6 agosto 2026)
+
+- Difetto misurato e corretto: il budget History decideva mobile/desktop con
+  `matchMedia("(max-width: 700px)")` sul **viewport** e lo rivalutava a ogni
+  manutenzione. Sullo stesso telefono, stesso documento 2048², il budget passava
+  da `192 MiB` in portrait a `512 MiB` in landscape (`852×393`): bastava ruotare
+  per autorizzare la History a mezzo giga. Ora la classe arriva da
+  `MOBILE_DEVICE_CLASS` in `engine-limits.ts`, la stessa che decide il
+  documento. Verificato dopo la modifica: `96 MiB` in entrambi gli orientamenti.
+- Regola: nessun modulo deve risondare i media query per decisioni di
+  dispositivo. `verify-history-retention.mjs` asserisce che
+  `history-maintenance-runtime.ts` non contenga `matchMedia(`.
+- Il budget non e' piu' un numero fisso ma un multiplo del costo di un
+  checkpoint (`historyBaseBudgetBytes`), limitato dal tetto del dispositivo:
+  `6×` con tetto `96 MiB` su mobile, `16×` con tetto `512 MiB` su desktop, e in
+  ogni caso mai sotto un checkpoint intero. Quest'ultimo vincolo e' emerso dal
+  test prima del rilascio: con checkpoint da `128 MiB` e tetto `96` il budget
+  sarebbe stato insoddisfacibile, l'eviction non avrebbe mai trovato un boundary
+  e `budgetCheckpointBlocked` sarebbe rimasto acceso per sempre.
+- Un checkpoint costa **esattamente un livello intero**, `LAYER_SIZE² × bpp`:
+  misurati `16 MiB` a 2048²/rgba8, contro `~62 KiB` di comandi per tratto.
+  Dopo `223` azioni i checkpoint erano l'`85%` della memoria History. E' il
+  termine da attaccare, non i comandi.
+- Nuovo tetto secondario `HISTORY_MAXIMUM_UNDO_DEPTH = 100`. Il budget in byte
+  resta l'autorita': un conteggio di azioni da solo e' un pessimo metro del
+  costo. Il tetto libera soltanto cio' che e' gia' oltre i passi promessi **e**
+  coperto da un checkpoint full, quindi non puo' mai ridurre la profondita'
+  sotto `100`. Contatore dedicato `depthEvictions`, separato da
+  `budgetEvictions`, altrimenti un taglio da profondita' verrebbe riportato come
+  pressione di memoria.
+- Senza forzare il full la prima versione era inerte: i full arrivano uno ogni
+  `8` checkpoint, il boundary non esisteva e la profondita' restava a `196`
+  passi. La cattura ora forza `full` quando il tetto attende un boundary; non
+  costa piu' di un delta in una sessione che dipinge in largo, dove il delta
+  copre comunque quasi tutti i tile.
+- Misurato in QA browser con `?deviceClass=mobile` a `393×852`, `344` azioni:
+  memoria stabile a **`58 MiB`** su `96` di budget (prima cresceva: `74 MiB` a
+  `240` azioni e la profondita' non si fermava), checkpoint fermi a `3`,
+  `4` eviction da tetto e **`0` da pressione di memoria**, mai bloccato,
+  profondita' oscillante fra `102` e `138` passi.
+- Undo/redo end-to-end dopo le eviction: `138` undo fino al pavimento esatto
+  (`206`), poi `canUndo=false` col messaggio "Le azioni più vecchie sono state
+  consolidate per liberare memoria", `inconsistent=false`, `138` redo fino a
+  `344` e **pixel identico** al valore di partenza.
+- Il rilascio della memoria Redo abbandonata **funzionava gia'** e non e' stato
+  toccato: misurato `501` slice liberate e payload da `13,6` a `9,9 MiB` entro
+  `400 ms` dal tratto che invalida il ramo.
+- TypeScript, tutte le `32` suite `*:verify` e build Vite/Sites verdi; gli hash
+  History restano `5d4a0e1b/6b710fa5/fa4fa16d/a4daf955`. Le sei nuove
+  asserzioni sono dimostrate fallibili (budget mobile riportato a `192 MiB`,
+  tetto cambiato a `64`, tetto che taglia sotto i passi promessi, ritorno alla
+  media query, tetto commentato o non contato, `full` non forzato). Nessuna QA
+  su hardware mobile reale: profilo mobile esercitato via override da desktop.

@@ -3,21 +3,227 @@ import { readFileSync } from "node:fs";
 import {
   HISTORY_CHECKPOINT_BASE_ACTION_INTERVAL,
   HISTORY_CHECKPOINT_MAX_REPLAY_BATCHES,
+  HISTORY_DESKTOP_CHECKPOINT_ALLOWANCE,
+  HISTORY_DESKTOP_MAXIMUM_BYTES,
+  HISTORY_MAXIMUM_UNDO_DEPTH,
+  HISTORY_MINIMUM_BUDGET_BYTES,
+  HISTORY_MOBILE_CHECKPOINT_ALLOWANCE,
+  HISTORY_MOBILE_MAXIMUM_BYTES,
   HISTORY_RETENTION_STRATEGY,
   createHistoryBudget,
   emptyHistoryMemoryLedger,
+  historyBaseBudgetBytes,
   historyBudgetPressure,
   historyMemoryTotalBytes,
   nearestHistoryCheckpoint,
   nextHistoryCompactionChunk,
   planHistoryBudgetEviction,
   planHistoryCheckpoint,
+  planHistoryDepthEviction,
   processHistoryMaintenanceChunks,
 } from "../src/history-retention-core.ts";
 
 assert.equal(
   HISTORY_RETENTION_STRATEGY,
   "byte-budget-exact-tiled-checkpoints-idle-fenced-chunked-v1",
+);
+
+// --- Budget derivato dal costo di un checkpoint ------------------------------
+// Un checkpoint costa esattamente un livello intero, quindi il budget deve
+// seguire documento e formato invece di essere un numero fisso: altrimenti la
+// profondita' di Undo crolla appena il livello cresce.
+const MiB = 1024 * 1024;
+const checkpointBytesFor = (documentSize, format) =>
+  documentSize * documentSize * (format === "rgba16float" ? 8 : 4);
+
+assert.equal(checkpointBytesFor(2048, "rgba8unorm"), 16 * MiB);
+assert.equal(checkpointBytesFor(2048, "rgba16float"), 32 * MiB);
+assert.equal(checkpointBytesFor(4096, "rgba8unorm"), 64 * MiB);
+assert.equal(checkpointBytesFor(4096, "rgba16float"), 128 * MiB);
+
+for (const documentSize of [2048, 4096]) {
+  for (const format of ["rgba8unorm", "rgba16float"]) {
+    const checkpointBytes = checkpointBytesFor(documentSize, format);
+    for (const mobile of [true, false]) {
+      const budget = historyBaseBudgetBytes({ checkpointBytes, mobile });
+      const allowance = mobile
+        ? HISTORY_MOBILE_CHECKPOINT_ALLOWANCE
+        : HISTORY_DESKTOP_CHECKPOINT_ALLOWANCE;
+      const ceiling = mobile ? HISTORY_MOBILE_MAXIMUM_BYTES : HISTORY_DESKTOP_MAXIMUM_BYTES;
+      const label = `${documentSize}² ${format} ${mobile ? "mobile" : "desktop"}`;
+      assert.equal(
+        budget,
+        Math.max(
+          HISTORY_MINIMUM_BUDGET_BYTES,
+          checkpointBytes,
+          Math.min(ceiling, checkpointBytes * allowance),
+        ),
+        `budget History non derivato dal checkpoint: ${label}`,
+      );
+      assert.ok(
+        budget <= Math.max(ceiling, checkpointBytes),
+        `budget History oltre il tetto del dispositivo: ${label}`,
+      );
+      assert.ok(
+        budget >= HISTORY_MINIMUM_BUDGET_BYTES,
+        `budget History sotto il minimo: ${label}`,
+      );
+      // Il budget deve reggere almeno un checkpoint pieno, altrimenti
+      // l'eviction non troverebbe mai un boundary e resterebbe bloccata.
+      assert.ok(
+        budget >= checkpointBytes,
+        `budget History non regge un checkpoint intero: ${label}`,
+      );
+    }
+  }
+}
+
+// Il telefono deve stare sotto il tetto assoluto in entrambi i formati alla
+// taglia che usa davvero (2048²): e' il punto dell'intera modifica. Prima erano
+// 192 MiB fissi, indipendenti da documento e formato.
+for (const format of ["rgba8unorm", "rgba16float"]) {
+  assert.ok(
+    historyBaseBudgetBytes({ checkpointBytes: checkpointBytesFor(2048, format), mobile: true })
+      <= 96 * MiB,
+    `il budget mobile deve restare entro 96 MiB a ${format}`,
+  );
+}
+assert.ok(
+  historyBaseBudgetBytes({ checkpointBytes: checkpointBytesFor(2048, "rgba8unorm"), mobile: true })
+    < 192 * MiB,
+  "il budget mobile deve essere sceso rispetto ai 192 MiB fissi precedenti",
+);
+assert.ok(
+  historyBaseBudgetBytes({ checkpointBytes: checkpointBytesFor(2048, "rgba8unorm"), mobile: true })
+    < historyBaseBudgetBytes({
+      checkpointBytes: checkpointBytesFor(2048, "rgba8unorm"),
+      mobile: false,
+    }),
+  "il budget mobile deve restare inferiore a quello desktop",
+);
+
+// --- Tetto di profondita' ----------------------------------------------------
+assert.equal(HISTORY_MAXIMUM_UNDO_DEPTH, 100);
+
+for (const [cursor, floorCursor] of [[0, 0], [50, 0], [100, 0], [250, 150], [1000, 900]]) {
+  assert.deepEqual(
+    planHistoryDepthEviction({ cursor, floorCursor }),
+    { required: false, newestRetainedActionIndex: null },
+    `il tetto di profondita' non deve scattare entro ${HISTORY_MAXIMUM_UNDO_DEPTH} passi`,
+  );
+}
+
+for (const [cursor, floorCursor] of [[101, 0], [223, 0], [1000, 0], [1000, 500]]) {
+  const plan = planHistoryDepthEviction({ cursor, floorCursor });
+  assert.equal(plan.required, true, `il tetto deve scattare oltre i passi promessi (${cursor})`);
+  // L'eviction porta il pavimento a `indice + 1`: la profondita' residua deve
+  // essere esattamente il tetto, mai meno. Se questa relazione si rompe il
+  // tetto diventa una riduzione della profondita' invece di un limite.
+  const residualDepth = cursor - (plan.newestRetainedActionIndex + 1);
+  assert.equal(
+    residualDepth,
+    HISTORY_MAXIMUM_UNDO_DEPTH,
+    `il tetto di profondita' non deve tagliare sotto ${HISTORY_MAXIMUM_UNDO_DEPTH} passi`,
+  );
+  assert.ok(
+    plan.newestRetainedActionIndex >= 0,
+    "il boundary del tetto deve restare un indice azione valido",
+  );
+}
+
+const customDepth = planHistoryDepthEviction({ cursor: 40, floorCursor: 0, maximumDepth: 10 });
+assert.equal(customDepth.required, true);
+assert.equal(40 - (customDepth.newestRetainedActionIndex + 1), 10);
+
+// --- La classe dispositivo non va risonata dal viewport -----------------------
+// Il difetto misurato il 06/08/2026: con `matchMedia("(max-width: 700px)")` lo
+// stesso telefono passava da 192 a 512 MiB ruotando in landscape (`844 px`).
+const maintenanceSource = readFileSync(
+  new URL("../src/history-maintenance-runtime.ts", import.meta.url),
+  "utf8",
+);
+assert.doesNotMatch(
+  maintenanceSource,
+  /matchMedia\(/,
+  "il budget History non deve risondare i media query: la classe dispositivo vive in engine-limits",
+);
+assert.match(
+  maintenanceSource,
+  /MOBILE_DEVICE_CLASS/,
+  "il budget History deve usare la classe dispositivo condivisa",
+);
+// Scoped e ancorata a inizio riga: una versione commentata della chiamata non
+// deve poter soddisfare l'asserzione.
+const enforceBudgetStart = maintenanceSource.indexOf("function enforceHistoryBudget");
+const enforceBudgetEnd = maintenanceSource.indexOf("export function historyFloorCursor");
+assert.ok(
+  enforceBudgetStart >= 0 && enforceBudgetEnd > enforceBudgetStart,
+  "marcatori di enforceHistoryBudget assenti",
+);
+const enforceBudgetBody = maintenanceSource.slice(enforceBudgetStart, enforceBudgetEnd);
+assert.match(
+  enforceBudgetBody,
+  /^ {2}enforceHistoryDepthCap\(engine\);$/m,
+  "il tetto di profondita' deve essere applicato da enforceHistoryBudget",
+);
+assert.match(
+  enforceBudgetBody,
+  /^ {2}const evicted = evictHistoryBelowBaselines\(engine, baselines\);$/m,
+  "il budget deve leggere l'esito reale dell'eviction",
+);
+assert.match(
+  enforceBudgetBody,
+  /^ {2}state\.budgetCheckpointBlocked = !evicted;$/m,
+  "il budget deve marcare il blocco in base all'esito reale dell'eviction",
+);
+
+// I due contatori devono restare distinti: se l'incremento vivesse dentro
+// l'eviction condivisa, un taglio dovuto al tetto di profondita' verrebbe
+// riportato come pressione di memoria e la telemetria mentirebbe.
+const evictStart = maintenanceSource.indexOf("function evictHistoryBelowBaselines");
+const evictEnd = maintenanceSource.indexOf("function enforceHistoryDepthCap");
+assert.ok(evictStart >= 0 && evictEnd > evictStart, "marcatori di evictHistoryBelowBaselines assenti");
+assert.doesNotMatch(
+  maintenanceSource.slice(evictStart, evictEnd),
+  /state\.(budgetEvictions|depthEvictions) \+= 1/,
+  "l'eviction condivisa non deve attribuirsi la causa: la contano i due gate",
+);
+const depthCapBody = maintenanceSource.slice(
+  evictEnd,
+  maintenanceSource.indexOf("function enforceHistoryBudget"),
+);
+assert.match(
+  depthCapBody,
+  /state\.depthEvictions \+= 1/,
+  "il gate del tetto deve contare le proprie eviction",
+);
+assert.doesNotMatch(
+  depthCapBody,
+  /state\.budgetEvictions \+= 1/,
+  "il tetto di profondita' non deve essere riportato come pressione di memoria",
+);
+assert.match(
+  depthCapBody,
+  /latestFullCheckpointByLayer\(engine, plan\.newestRetainedActionIndex\)/,
+  "il tetto deve limitare il boundary ai passi promessi",
+);
+
+// Il tetto libera soltanto fino a un checkpoint full. Se la cattura non ne
+// forzasse uno quando il tetto e' gia' superato, il gate resterebbe inerte:
+// misurato, senza questo la profondita' restava a 196 passi invece di ~100.
+const captureStart = maintenanceSource.indexOf("async function capturePeriodicCheckpoint");
+const captureEnd = maintenanceSource.indexOf("export function discardStalePeriodicCheckpoints");
+assert.ok(captureStart >= 0 && captureEnd > captureStart, "marcatori di capturePeriodicCheckpoint assenti");
+const captureBody = maintenanceSource.slice(captureStart, captureEnd);
+assert.match(
+  captureBody,
+  /const depthCapNeedsBoundary = planHistoryDepthEviction\(\{/,
+  "la cattura deve sapere se il tetto di profondita' attende un boundary",
+);
+assert.match(
+  captureBody,
+  /^ {4}\|\| depthCapNeedsBoundary$/m,
+  "il checkpoint deve essere full quando il tetto di profondita' attende un boundary",
 );
 
 const applyAction = (pixels, action) => {

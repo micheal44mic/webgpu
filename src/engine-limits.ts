@@ -4,8 +4,47 @@
  * misurata dai benchmark.
  */
 
+const DOCUMENT_SIZE_CHOICES = [2048, 4096] as const;
+
+const MOBILE_MAX_SCREEN_EDGE = 700;
+
+function queryOverride(name: string, environmentName: string): string | null {
+  return (typeof location !== "undefined" && typeof URLSearchParams === "function"
+    ? new URLSearchParams(location.search).get(name)
+    : null)
+    ?? (globalThis as { process?: { env?: Record<string, string | undefined> } })
+      .process?.env?.[environmentName]
+    ?? null;
+}
+
 /**
- * Dimensione del documento, decisa una sola volta all'import di questo modulo.
+ * Classe del dispositivo, decisa una sola volta all'import di questo modulo.
+ *
+ * Il criterio e' lo **schermo fisico**, non il viewport. Un iPhone in landscape
+ * e' largo `844 px`: con una media query sul viewport la rotazione cambierebbe
+ * classe a meta' sessione, che e' esattamente il difetto che aveva il budget
+ * History prima di questa costante. Un tablet (iPad `820×1180`) resta desktop,
+ * e uno schermo che dichiara `0` e' un runtime che non sa rispondere, non un
+ * telefono. Senza `screen`/`matchMedia` (Node, suite `*:verify`) e' desktop.
+ *
+ * Ogni scelta legata al dispositivo deve derivare da qui e non risondare i
+ * media query per conto proprio, altrimenti torna a divergere.
+ */
+function resolveMobileDeviceClass(): boolean {
+  const override = queryOverride("deviceClass", "BRUSH_DEVICE_CLASS");
+  if (override === "mobile") return true;
+  if (override === "desktop") return false;
+  if (typeof matchMedia !== "function" || typeof screen === "undefined") return false;
+  const shortestScreenEdge = Math.min(screen.width, screen.height);
+  return matchMedia("(pointer: coarse)").matches
+    && shortestScreenEdge > 0
+    && shortestScreenEdge <= MOBILE_MAX_SCREEN_EDGE;
+}
+
+export const MOBILE_DEVICE_CLASS = resolveMobileDeviceClass();
+
+/**
+ * Dimensione del documento, derivata dalla classe del dispositivo.
  *
  * `engine-limits` non importa nulla: il suo body gira prima di ogni modulo che
  * lo consuma, quindi le stringhe WGSL che interpolano `${LAYER_SIZE}` e le
@@ -13,43 +52,18 @@
  * valore va deciso qui e non passato da `main.ts`.
  *
  * I telefoni usano 2048²: un livello rgba16float costa 32 MiB invece di 128 e
- * ogni pass full-document costa un quarto del fill-rate. Il confine e' lo
- * schermo fisico e non il viewport, cosi' la scelta e' stabile rispetto a
- * rotazione e ridimensionamento della finestra; un tablet resta a 4096².
+ * ogni pass full-document costa un quarto del fill-rate.
  *
- * Senza `screen`/`matchMedia` (Node, suite `*:verify`) il default e' 4096.
- * `?documentSize=2048` e `BRUSH_DOCUMENT_SIZE=2048` forzano la taglia: servono
- * a riprodurre il percorso mobile da desktop nella QA browser e a girare le
- * verifiche su entrambe le configurazioni.
+ * `?documentSize=2048` e `BRUSH_DOCUMENT_SIZE=2048` forzano la sola taglia;
+ * `?deviceClass=mobile` e `BRUSH_DEVICE_CLASS=mobile` forzano l'intero profilo
+ * mobile, budget History incluso. Servono a riprodurre il percorso mobile da
+ * desktop nella QA browser e a girare le verifiche su entrambi i profili.
  */
-const DOCUMENT_SIZE_CHOICES = [2048, 4096] as const;
-
-const MOBILE_DOCUMENT_MAX_SCREEN_EDGE = 700;
-
-function documentSizeOverride(): number | null {
-  const raw = (typeof location !== "undefined" && typeof URLSearchParams === "function"
-    ? new URLSearchParams(location.search).get("documentSize")
-    : null)
-    ?? (globalThis as { process?: { env?: Record<string, string | undefined> } })
-      .process?.env?.BRUSH_DOCUMENT_SIZE
-    ?? null;
-  if (raw === null) return null;
-  const parsed = Number(raw);
-  return (DOCUMENT_SIZE_CHOICES as readonly number[]).includes(parsed) ? parsed : null;
-}
-
 function resolveDocumentSize(): number {
-  const override = documentSizeOverride();
-  if (override !== null) return override;
-  if (typeof matchMedia !== "function" || typeof screen === "undefined") return 4096;
-  // Uno schermo che dichiara 0 non e' un telefono, e' un runtime che non sa
-  // rispondere: in quel caso vale il documento pieno.
-  const shortestScreenEdge = Math.min(screen.width, screen.height);
-  return matchMedia("(pointer: coarse)").matches
-      && shortestScreenEdge > 0
-      && shortestScreenEdge <= MOBILE_DOCUMENT_MAX_SCREEN_EDGE
-    ? 2048
-    : 4096;
+  const raw = queryOverride("documentSize", "BRUSH_DOCUMENT_SIZE");
+  const parsed = raw === null ? Number.NaN : Number(raw);
+  if ((DOCUMENT_SIZE_CHOICES as readonly number[]).includes(parsed)) return parsed;
+  return MOBILE_DEVICE_CLASS ? 2048 : 4096;
 }
 
 export const LAYER_SIZE = resolveDocumentSize();

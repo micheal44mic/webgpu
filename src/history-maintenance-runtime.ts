@@ -12,22 +12,24 @@ import {
   createLayerStorageTileMask,
   markLayerStorageRect,
 } from "./layer-storage-study";
+import { LAYER_SIZE, MOBILE_DEVICE_CLASS } from "./engine-limits";
 import {
+  HISTORY_MINIMUM_BUDGET_BYTES,
   createHistoryBudget,
   emptyHistoryMemoryLedger,
+  historyBaseBudgetBytes,
   historyBudgetPressure,
   historyMemoryTotalBytes,
   nearestHistoryCheckpoint,
   planHistoryCheckpoint,
+  planHistoryDepthEviction,
+  HISTORY_MAXIMUM_UNDO_DEPTH,
   type HistoryMemoryLedger,
 } from "./history-retention-core";
 
 const MEBIBYTE_BYTES = 1024 * 1024;
-const HISTORY_MOBILE_BUDGET_BYTES = 192 * MEBIBYTE_BYTES;
-const HISTORY_DESKTOP_BUDGET_BYTES = 512 * MEBIBYTE_BYTES;
 const HISTORY_FULL_CHECKPOINT_PERIOD = 8;
 const HISTORY_MAINTENANCE_DELAY_MS = 140;
-const HISTORY_MINIMUM_BUDGET_BYTES = 16 * MEBIBYTE_BYTES;
 
 export interface PeriodicRasterHistoryCheckpoint {
   readonly id: number;
@@ -67,6 +69,9 @@ export interface HistoryMaintenanceTelemetry {
   readonly redoReleasedSlices: number;
   readonly floorCursor: number;
   readonly budgetEvictions: number;
+  /** Eviction dovute al tetto di profondita', non alla pressione di memoria. */
+  readonly depthEvictions: number;
+  readonly maximumUndoDepth: number;
   readonly evictedPayloadBytes: number;
   readonly budgetCheckpointBlocked: boolean;
   readonly accountingFullRebuilds: number;
@@ -103,6 +108,7 @@ interface HistoryMaintenanceState {
   redoReleasedSlices: number;
   floorCursor: number;
   budgetEvictions: number;
+  depthEvictions: number;
   evictedPayloadBytes: number;
   budgetCheckpointBlocked: boolean;
   checkpointBytes: number;
@@ -162,6 +168,7 @@ function stateFor(engine: BrushEngine): HistoryMaintenanceState {
       redoReleasedSlices: 0,
       floorCursor: 0,
       budgetEvictions: 0,
+      depthEvictions: 0,
       evictedPayloadBytes: 0,
       budgetCheckpointBlocked: false,
       checkpointBytes: 0,
@@ -223,8 +230,12 @@ function yieldHistoryMaintenanceTurn(): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, 0));
 }
 
-function mobileHistoryBudget(): boolean {
-  return typeof matchMedia === "function" && matchMedia("(max-width: 700px)").matches;
+// La classe del dispositivo arriva da `engine-limits`, la stessa che decide il
+// documento. Prima veniva risonata qui con una media query sul viewport, quindi
+// ruotare il telefono in landscape (`844 px`) portava il budget da 192 a 512
+// MiB a meta' sessione, sullo stesso dispositivo.
+function historyDeviceCheckpointBytes(engine: BrushEngine): number {
+  return LAYER_SIZE * LAYER_SIZE * (engine.layerFormat === "rgba16float" ? 8 : 4);
 }
 
 function latestCheckpoint(
@@ -637,9 +648,10 @@ function effectsWorkingSetBytes(engine: BrushEngine): number {
 }
 
 function historyBudgetForEngine(engine: BrushEngine) {
-  const baseBytes = mobileHistoryBudget()
-    ? HISTORY_MOBILE_BUDGET_BYTES
-    : HISTORY_DESKTOP_BUDGET_BYTES;
+  const baseBytes = historyBaseBudgetBytes({
+    checkpointBytes: historyDeviceCheckpointBytes(engine),
+    mobile: MOBILE_DEVICE_CLASS,
+  });
   const effectsBytes = effectsWorkingSetBytes(engine);
   const availableBytes = Math.max(
     HISTORY_MINIMUM_BUDGET_BYTES,
@@ -732,9 +744,19 @@ async function capturePeriodicCheckpoint(
 
   const checkpointOrdinal = (state.checkpointCountByLayer.get(layerId) ?? 0) + 1;
   const delta = changedTileMask(engine, layerId, current?.actionIndex ?? -1);
+  // Il tetto di profondita' puo' liberare soltanto fino a un checkpoint full.
+  // Se la coda ha gia' superato i passi promessi e non esiste un full
+  // abbastanza recente, il tetto resterebbe inerte: qui gliene creiamo uno.
+  // Non costa piu' di un delta in una sessione che dipinge in largo, dove il
+  // delta copre comunque quasi tutti i tile.
+  const depthCapNeedsBoundary = planHistoryDepthEviction({
+    cursor: engine.historyCursor,
+    floorCursor: state.floorCursor,
+  }).required;
   const forceFull = !current
     || delta.requiresFull
     || budgetPressure >= 1
+    || depthCapNeedsBoundary
     || checkpointOrdinal % HISTORY_FULL_CHECKPOINT_PERIOD === 0;
   const mask = forceFull ? record.storageTileMask.slice() : delta.mask;
   if (engine.layerContentBounds && forceFull) {
@@ -874,8 +896,14 @@ export function discardStalePeriodicCheckpoints(engine: BrushEngine): void {
   if (changed) rebuildHistoryAccounting(engine);
 }
 
+/**
+ * `newestAllowedActionIndex` limita quanto in avanti puo' spingersi il
+ * boundary: il tetto di profondita' lo usa per non tagliare mai sotto i passi
+ * di Undo che ha promesso di conservare.
+ */
 function latestFullCheckpointByLayer(
   engine: BrushEngine,
+  newestAllowedActionIndex = Number.POSITIVE_INFINITY,
 ): Map<number, { checkpoint: PeriodicRasterHistoryCheckpoint; actionIndex: number }> | null {
   const state = stateFor(engine);
   synchronizeHistoryAccounting(engine);
@@ -903,7 +931,13 @@ function latestFullCheckpointByLayer(
     for (const checkpoint of state.checkpoints) {
       if (checkpoint.layerId !== layerId || checkpoint.kind === "delta") continue;
       const actionIndex = indices.get(checkpoint.afterActionId);
-      if (actionIndex === undefined || actionIndex >= engine.historyCursor) continue;
+      if (
+        actionIndex === undefined
+        || actionIndex >= engine.historyCursor
+        || actionIndex > newestAllowedActionIndex
+      ) {
+        continue;
+      }
       if (!selected || actionIndex > selected.actionIndex) {
         selected = { checkpoint, actionIndex };
       }
@@ -918,28 +952,22 @@ function latestFullCheckpointByLayer(
  * Evicts only payload already represented by standalone tiled checkpoints.
  * The global cursor floor prevents the user from crossing into released data;
  * metadata remains available for diagnostics and stable action ids.
+ *
+ * Due gate lo invocano: il tetto di profondita', che libera cio' che e' gia'
+ * oltre i passi di Undo promessi, e il budget in byte, che resta l'autorita'
+ * finale. Il primo non puo' mai tagliare piu' del secondo perche' riceve un
+ * `newestAllowedActionIndex`.
  */
-function enforceHistoryBudget(engine: BrushEngine): void {
+function evictHistoryBelowBaselines(
+  engine: BrushEngine,
+  baselines: Map<number, { checkpoint: PeriodicRasterHistoryCheckpoint; actionIndex: number }>,
+): boolean {
   const state = stateFor(engine);
-  const ledger = historyMemoryLedger(engine);
-  const { budget } = historyBudgetForEngine(engine);
-  if (historyMemoryTotalBytes(ledger) <= budget.hardBytes) {
-    state.budgetCheckpointBlocked = false;
-    return;
-  }
-  const baselines = latestFullCheckpointByLayer(engine);
-  if (!baselines || baselines.size === 0) {
-    state.budgetCheckpointBlocked = true;
-    return;
-  }
   const candidateFloor = Math.max(
     state.floorCursor,
     ...[...baselines.values()].map(({ actionIndex }) => actionIndex + 1),
   );
-  if (candidateFloor <= state.floorCursor) {
-    state.budgetCheckpointBlocked = true;
-    return;
-  }
+  if (candidateFloor <= state.floorCursor) return false;
   const actionIndices = state.actionIndexById;
   const retainedBatches: HistoryRenderBatch[] = [];
   const releasedSlices: GpuHistorySlice[] = [];
@@ -1002,13 +1030,48 @@ function enforceHistoryBudget(engine: BrushEngine): void {
   }
   state.checkpoints = retainedCheckpoints;
   state.floorCursor = candidateFloor;
-  state.budgetEvictions += 1;
   state.evictedPayloadBytes += evictedPayloadBytes;
-  state.budgetCheckpointBlocked = false;
   engine.historyGpuStorage.trimEmptyPages(true);
   rebuildHistoryAccounting(engine);
   engine.publishHistoryState();
   engine.publishStats();
+  return true;
+}
+
+/**
+ * Tetto secondario: taglia solo cio' che e' gia' oltre `HISTORY_MAXIMUM_UNDO_DEPTH`
+ * passi **e** coperto da un checkpoint full. Il budget in byte resta l'autorita',
+ * questo rende soltanto prevedibile il caso tipico.
+ */
+function enforceHistoryDepthCap(engine: BrushEngine): void {
+  const state = stateFor(engine);
+  const plan = planHistoryDepthEviction({
+    cursor: engine.historyCursor,
+    floorCursor: state.floorCursor,
+  });
+  if (!plan.required || plan.newestRetainedActionIndex === null) return;
+  const baselines = latestFullCheckpointByLayer(engine, plan.newestRetainedActionIndex);
+  if (!baselines || baselines.size === 0) return;
+  if (evictHistoryBelowBaselines(engine, baselines)) state.depthEvictions += 1;
+}
+
+function enforceHistoryBudget(engine: BrushEngine): void {
+  const state = stateFor(engine);
+  enforceHistoryDepthCap(engine);
+  const ledger = historyMemoryLedger(engine);
+  const { budget } = historyBudgetForEngine(engine);
+  if (historyMemoryTotalBytes(ledger) <= budget.hardBytes) {
+    state.budgetCheckpointBlocked = false;
+    return;
+  }
+  const baselines = latestFullCheckpointByLayer(engine);
+  if (!baselines || baselines.size === 0) {
+    state.budgetCheckpointBlocked = true;
+    return;
+  }
+  const evicted = evictHistoryBelowBaselines(engine, baselines);
+  if (evicted) state.budgetEvictions += 1;
+  state.budgetCheckpointBlocked = !evicted;
 }
 
 export function historyFloorCursor(engine: BrushEngine): number {
@@ -1141,6 +1204,8 @@ export function historyMaintenanceTelemetry(
     redoReleasedSlices: state.redoReleasedSlices,
     floorCursor: state.floorCursor,
     budgetEvictions: state.budgetEvictions,
+    depthEvictions: state.depthEvictions,
+    maximumUndoDepth: HISTORY_MAXIMUM_UNDO_DEPTH,
     evictedPayloadBytes: state.evictedPayloadBytes,
     budgetCheckpointBlocked: state.budgetCheckpointBlocked,
     accountingFullRebuilds: state.accountingFullRebuilds,

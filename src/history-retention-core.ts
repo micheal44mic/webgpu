@@ -15,6 +15,32 @@ export const HISTORY_CHECKPOINT_MAX_REPLAY_BATCHES = 32;
 export const HISTORY_CHECKPOINT_PAYLOAD_INTERVAL_BYTES = 8 * 1024 * 1024;
 export const HISTORY_MAINTENANCE_CHUNK_ITEMS = 64;
 
+/**
+ * Il termine dominante della memoria History e' il checkpoint, che costa
+ * esattamente un livello intero (`LAYER_SIZE² × byte per pixel`). Misurato a
+ * 2048²/rgba8: `16 MiB` a checkpoint contro `~62 KiB` di comandi per tratto,
+ * cioe' l'85% del totale dopo `223` azioni. Esprimere il budget come multiplo
+ * di quel costo mantiene costante la **profondita'** di Undo quando cambiano
+ * documento o formato, invece di farla collassare al crescere del livello.
+ *
+ * Il tetto assoluto resta perche' un telefono ha un limite suo: senza, a
+ * rgba16float il multiplo riporterebbe il budget dove stava prima.
+ */
+export const HISTORY_MOBILE_CHECKPOINT_ALLOWANCE = 6;
+export const HISTORY_DESKTOP_CHECKPOINT_ALLOWANCE = 16;
+export const HISTORY_MOBILE_MAXIMUM_BYTES = 96 * 1024 * 1024;
+export const HISTORY_DESKTOP_MAXIMUM_BYTES = 512 * 1024 * 1024;
+export const HISTORY_MINIMUM_BUDGET_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Tetto secondario sulla profondita' di Undo. Il budget in byte resta
+ * l'autorita': un conteggio di azioni da solo e' un pessimo metro del costo
+ * (cento tocchi e cento riempimenti a pieno canvas differiscono di mille
+ * volte). Questo serve a rendere il comportamento prevedibile e a impedire che
+ * una sessione lunga trattenga centinaia di passi che nessuno usera'.
+ */
+export const HISTORY_MAXIMUM_UNDO_DEPTH = 100;
+
 export type HistoryMemoryCategory =
   | "gpuPayloadBytes"
   | "checkpointBytes"
@@ -145,11 +171,62 @@ export function historyMemoryTotalBytes(ledger: HistoryMemoryLedger): number {
 }
 
 /**
+ * Tetto di classe dispositivo, prima che gli effetti vivi prenotino la loro
+ * quota. E' un multiplo del costo di un checkpoint, limitato dal tetto assoluto
+ * del dispositivo: cosi' la profondita' di Undo resta stabile al variare di
+ * documento e formato, ma il telefono non supera mai la sua soglia.
+ */
+export function historyBaseBudgetBytes(options: {
+  checkpointBytes: number;
+  mobile: boolean;
+}): number {
+  const checkpointBytes = finiteNonNegative(options.checkpointBytes);
+  const allowance = options.mobile
+    ? HISTORY_MOBILE_CHECKPOINT_ALLOWANCE
+    : HISTORY_DESKTOP_CHECKPOINT_ALLOWANCE;
+  const maximumBytes = options.mobile
+    ? HISTORY_MOBILE_MAXIMUM_BYTES
+    : HISTORY_DESKTOP_MAXIMUM_BYTES;
+  // Il tetto del dispositivo non puo' scendere sotto un checkpoint intero: un
+  // budget che non ne regge nemmeno uno non ha alcun boundary di eviction, e
+  // l'unico effetto sarebbe restare permanentemente sopra il tetto con
+  // `budgetCheckpointBlocked` acceso. Sotto quella soglia il costo del
+  // checkpoint vince sul tetto, ed e' il documento a dover scendere.
+  return Math.max(
+    HISTORY_MINIMUM_BUDGET_BYTES,
+    checkpointBytes,
+    Math.min(maximumBytes, Math.floor(checkpointBytes * allowance)),
+  );
+}
+
+/**
+ * Il tetto di profondita' non taglia mai sotto `maximumDepth` passi: libera
+ * soltanto cio' che e' gia' piu' vecchio del tetto **e** coperto da un
+ * checkpoint full. Se un tale checkpoint non esiste non fa nulla e resta il
+ * budget in byte a fare da rete.
+ */
+export function planHistoryDepthEviction(options: {
+  cursor: number;
+  floorCursor: number;
+  maximumDepth?: number;
+}): { required: boolean; newestRetainedActionIndex: number | null } {
+  const maximumDepth = Math.max(1, Math.floor(options.maximumDepth ?? HISTORY_MAXIMUM_UNDO_DEPTH));
+  const cursor = Math.max(0, Math.floor(options.cursor));
+  const floorCursor = Math.max(0, Math.floor(options.floorCursor));
+  if (cursor - floorCursor <= maximumDepth) {
+    return { required: false, newestRetainedActionIndex: null };
+  }
+  // Il boundary e' un indice azione: l'eviction porta il pavimento a
+  // `indice + 1`, quindi il piu' recente ammesso e' `cursor - maximumDepth - 1`.
+  return { required: true, newestRetainedActionIndex: cursor - maximumDepth - 1 };
+}
+
+/**
  * Builds a byte budget from an explicit amount of memory made available to
  * History. It intentionally never accepts an action count as a proxy for cost.
  */
 export function createHistoryBudget(availableBytes: number): HistoryBudget {
-  if (!Number.isFinite(availableBytes) || availableBytes < 16 * 1024 * 1024) {
+  if (!Number.isFinite(availableBytes) || availableBytes < HISTORY_MINIMUM_BUDGET_BYTES) {
     throw new RangeError("Il budget History deve essere almeno 16 MiB.");
   }
   const hardBytes = Math.floor(availableBytes);
