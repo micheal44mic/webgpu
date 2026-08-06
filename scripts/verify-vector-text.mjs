@@ -78,7 +78,18 @@ import {
   VECTOR_TEXT_PRESENTATION_STRATEGY,
 } from "../src/vector-text-shader.ts";
 import {
+  VECTOR_TEXT_ADAPTIVE_ZOOM_SETTLE_MS,
   VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
+  VECTOR_TEXT_FAST_PRESENTATION_FILTER_GUARD_PX,
+  VECTOR_TEXT_ZOOM_STRESS_PROFILE_ORDER,
+  VECTOR_TEXT_ZOOM_STRESS_SEED,
+  VECTOR_TEXT_ZOOM_STRESS_STRATEGY,
+  VECTOR_TEXT_ZOOM_STRESS_TARGET_ZOOM,
+  VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT,
+  vectorTextExactRecoveryIsCurrent,
+  vectorTextFastPresentationMode,
+  vectorTextZoomStressSeed,
+  vectorTextZoomStressStepFactor,
 } from "../src/vector-text-adaptive-zoom.ts";
 import {
   VECTOR_SVG_IMPORT_STRATEGY,
@@ -126,6 +137,7 @@ const singleShadowSource = read("src/vector-text-single-shadow.ts");
 const fontGeometrySource = read("src/vector-text-font-geometry.ts");
 const transformSource = read("src/vector-text-transform.ts");
 const adaptiveSource = read("src/vector-text-adaptive-zoom.ts");
+const mixedCompositorSource = read("src/mixed-scene-compositor-shader.ts");
 const svgSource = read("src/vector-svg-import.ts");
 const vectorRasterSource = read("src/engine-vector-raster-runtime.ts");
 const mainSource = read("src/main.ts");
@@ -297,7 +309,93 @@ assert.equal(
 );
 assert.equal(
   VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
-  "disabled-vector-lod-worker-node-atomic-latest-only-v3",
+  "gesture-latest-only-gpu-reprojection-full-coverage-screen-freeze-exact-settle-v4",
+);
+assert.equal(VECTOR_TEXT_ADAPTIVE_ZOOM_SETTLE_MS, 140);
+assert.equal(VECTOR_TEXT_FAST_PRESENTATION_FILTER_GUARD_PX, 0.5);
+assert.equal(
+  VECTOR_TEXT_ZOOM_STRESS_STRATEGY,
+  "ten-semantic-text-seeded-arch-drop-block-inner-center-zoom64-v1",
+);
+assert.equal(VECTOR_TEXT_ZOOM_STRESS_SEED, 0x5a17c0de);
+assert.equal(VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT, 10);
+assert.equal(VECTOR_TEXT_ZOOM_STRESS_TARGET_ZOOM, 64);
+assert.equal(VECTOR_TEXT_ZOOM_STRESS_PROFILE_ORDER.length, 10);
+assert.deepEqual(
+  Object.fromEntries(
+    ["arch", "drop-shadow", "block-shadow", "inner-shadow"].map((profile) => [
+      profile,
+      VECTOR_TEXT_ZOOM_STRESS_PROFILE_ORDER.filter((candidate) => candidate === profile).length,
+    ]),
+  ),
+  { arch: 3, "drop-shadow": 3, "block-shadow": 2, "inner-shadow": 2 },
+);
+const stressSeedsA = Array.from(
+  { length: VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT },
+  (_, index) => vectorTextZoomStressSeed(index, 4096),
+);
+const stressSeedsB = Array.from(
+  { length: VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT },
+  (_, index) => vectorTextZoomStressSeed(index, 4096),
+);
+assert.deepEqual(stressSeedsA, stressSeedsB, "la fixture deve essere byte-deterministica");
+assert.equal(stressSeedsA.filter(({ seed }) => seed.transformType === "arch").length, 3);
+assert.equal(stressSeedsA.filter(({ seed }) => seed.singleShadowEnabled).length, 3);
+assert.equal(stressSeedsA.filter(({ seed }) => seed.blockShadowEnabled).length, 2);
+assert.equal(stressSeedsA.filter(({ seed }) => seed.innerShadowEnabled).length, 2);
+assert.throws(() => vectorTextZoomStressSeed(10, 4096), /fuori range/);
+let plannedZoom = 0.2;
+let plannedZoomSteps = 0;
+while (plannedZoom < VECTOR_TEXT_ZOOM_STRESS_TARGET_ZOOM && plannedZoomSteps < 64) {
+  plannedZoom *= vectorTextZoomStressStepFactor(plannedZoom);
+  plannedZoomSteps += 1;
+}
+assert.ok(Math.abs(plannedZoom - 64) < 1e-9);
+assert.ok(plannedZoomSteps > 1 && plannedZoomSteps < 64);
+const capturedView = {
+  canvasWidth: 390,
+  canvasHeight: 844,
+  cssWidth: 390,
+  cssHeight: 844,
+  centerX: 2048,
+  centerY: 2048,
+  zoom: 1,
+  rotationRadians: 0,
+  rotationCos: 1,
+  rotationSin: 0,
+};
+assert.equal(vectorTextFastPresentationMode(capturedView, capturedView), "reproject");
+assert.equal(
+  vectorTextFastPresentationMode(capturedView, { ...capturedView, zoom: 64 }),
+  "reproject",
+  "lo zoom-in fino a 64× resta interamente coperto dalla capture",
+);
+assert.equal(
+  vectorTextFastPresentationMode(capturedView, { ...capturedView, zoom: 0.5 }),
+  "freeze",
+  "lo zoom-out non deve riproiettare una viewport parzialmente scoperta",
+);
+assert.equal(
+  vectorTextFastPresentationMode(capturedView, { ...capturedView, centerX: 2500 }),
+  "freeze",
+  "un pan oltre la capture deve usare il refresh esatto bounded",
+);
+assert.equal(
+  vectorTextFastPresentationMode(capturedView, { ...capturedView, canvasWidth: 430 }),
+  "freeze",
+  "un resize non è coperto dalla cache viewport precedente",
+);
+assert.equal(vectorTextExactRecoveryIsCurrent(100, 100, false), true);
+assert.equal(vectorTextExactRecoveryIsCurrent(99, 100, false), false);
+assert.equal(vectorTextExactRecoveryIsCurrent(100, 100, true), false);
+let runnableRecoveries = 0;
+for (let revision = 1; revision <= 100; revision += 1) {
+  if (vectorTextExactRecoveryIsCurrent(revision, 100, false)) runnableRecoveries += 1;
+}
+assert.equal(
+  runnableRecoveries,
+  1,
+  "una raffica di 100 campioni conserva una sola recovery, quella latest",
 );
 assert.equal(
   VECTOR_TEXT_OUTLINE_STRATEGY,
@@ -1205,11 +1303,49 @@ assert.match(
   /restoreVectorHistoryState\(/,
   "l'applicazione dello stato vettoriale deve ripristinare la scena",
 );
-assert.doesNotMatch(controllerSource, /VectorTextAdaptiveZoomDetector|enterFastZoomMode|finishFastZoomMode|scheduleFastInteractionOverlay/);
-assert.match(controllerSource, /setAdaptiveZoomEnabled\(_enabled: boolean\): void \{\s*\/\/ Compatibilità/);
+assert.match(controllerSource, /scheduleViewSync\(\): void \{[\s\S]*this\.enterFastZoomMode\(\)/);
+assert.match(
+  controllerSource,
+  /!this\.hasVectorPresentationNodes\(\) \|\| !this\.adaptiveZoomEnabled[\s\S]{0,300}this\.exitFastAfterScheduledRender = true/,
+);
+assert.match(controllerSource, /beginViewGesture\(\): void/);
+assert.match(controllerSource, /endViewGesture\(\): void/);
+assert.match(controllerSource, /requestExactRecovery\(revision: number\): void/);
+assert.match(controllerSource, /requestUnsafeExactRefresh\(revision: number\): void/);
+assert.match(controllerSource, /this\.unsafeExactRefreshInFlight[\s\S]*zoomUnsafeExactCoalescedCount/);
+assert.match(controllerSource, /waitForVectorTextPresentationCompletion\(\)\.then/);
+assert.match(controllerSource, /vectorTextExactRecoveryIsCurrent\(/);
+assert.match(controllerSource, /setAdaptiveZoomEnabled\(enabled: boolean\): void/);
+assert.match(
+  controllerSource,
+  /if \(!enabled && this\.zoomRenderMode === "fast"\)[\s\S]{0,700}this\.viewGestureActive = false[\s\S]{0,700}this\.exitFastAfterScheduledRender = true/,
+  "disabilitare il fast path durante un gesto deve forzare un redraw preciso senza attendere pointer-up",
+);
+assert.match(mainSource, /effectRefinementRenderDelta = Math\.max\([\s\S]{0,150}exactRenderDeltaDuringRecovery - 1/);
+assert.doesNotMatch(
+  mainSource,
+  /exactRecoveryLatestOnly:[\s\S]{0,300}exactRenderDeltaDuringRecovery === 1/,
+  "gli swap atomici LOD degli effetti possono raffinare la singola recovery senza creare altre recovery zoom",
+);
+assert.match(mainSource, /layerMemoryStressReport\.textContent = JSON\.stringify\(report, null, 2\)/);
+assert.ok(
+  (mainSource.match(/vectorTextPrototype\?\.beginViewGesture\(\)/g) ?? []).length >= 2,
+  "pinch e pan/rotate devono armare il fast mode prima del primo movimento",
+);
+assert.ok(
+  (mainSource.match(/vectorTextPrototype\?\.endViewGesture\(\)/g) ?? []).length >= 2,
+  "pointer-up deve richiedere il recovery preciso senza attendere il debounce",
+);
 assert.doesNotMatch(controllerSource, /zoomModeIndicator|updateAdaptiveZoomIndicator|Zoom vettori · GPU/);
-assert.match(adaptiveSource, /disabled-vector-lod-worker-node-atomic-latest-only-v3/);
-assert.doesNotMatch(adaptiveSource, /shouldArmFastMode|frozen-viewport/);
+assert.match(adaptiveSource, /full-coverage-screen-freeze-exact-settle-v4/);
+assert.match(adaptiveSource, /for \(const \[x, y\] of \[/);
+assert.match(engineSource, /vectorTextFastPresentationInFlight/);
+assert.match(engineSource, /vectorTextFastPresentationLatestRequested/);
+assert.match(engineSource, /vectorTextFastPresentationCoalescedRequestCount \+= 1/);
+assert.match(engineSource, /device\.queue\.onSubmittedWorkDone\(\)\.then/);
+assert.match(engineSource, /if \(!changed\) \{\s*return;\s*\}[\s\S]*queue\.writeBuffer/);
+assert.match(mixedCompositorSource, /if \(capture\.fastMode > 1\.5\)/);
+assert.match(mixedCompositorSource, /Defensive round-off fallback/);
 assert.match(controllerSource, /if \(node\.outlineWidth > 0\) \{[\s\S]*kind: "source-outline"/);
 assert.match(controllerSource, /if \(node\.blockShadowOutlineWidth > 0\) \{[\s\S]*kind: "block-outline"/);
 assert.equal(
@@ -1337,7 +1473,7 @@ assert.match(controllerSource, /resourceRevisionValue\(\)/);
 assert.match(controllerSource, /private sceneOperationRenderDeferred = false/);
 assert.match(
   controllerSource,
-  /renderNow\(\): void \{[\s\S]*this\.sceneOperationBusy[\s\S]*this\.sceneOperationRenderDeferred = true/,
+  /private renderNow\([\s\S]{0,220}\): boolean \{[\s\S]*this\.sceneOperationBusy[\s\S]*this\.sceneOperationRenderDeferred = true/,
 );
 assert.match(
   controllerSource,

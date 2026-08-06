@@ -131,6 +131,18 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     return textureLoad(sourceTexture, pixel, 0);
   }
 
+  // Coverage is decided once on the CPU for the complete viewport.  An
+  // unsafe pan/zoom-out keeps the whole last exact vector frame in screen
+  // space until the bounded latest-only exact refresh arrives; it must never
+  // combine a moved interior with transparent uncovered strips.
+  if (capture.fastMode > 1.5) {
+    let inside = all(pixel >= vec2<i32>(0)) && all(pixel < dimensions);
+    if (!inside) {
+      return vec4<f32>(0.0);
+    }
+    return textureLoad(sourceTexture, pixel, 0);
+  }
+
   let layerPosition = layerPositionAt(fragmentPosition.xy);
   let layerDelta = layerPosition - capture.viewCenter;
   let sourcePixel = capture.canvasSize * 0.5 + capture.zoom * vec2<f32>(
@@ -141,7 +153,14 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   let insideSource = all(sourcePixel >= vec2<f32>(0.0))
     && all(sourcePixel < sourceDimensions);
   if (!insideSource) {
-    return vec4<f32>(0.0);
+    // Defensive round-off fallback. The four-corner coverage guard makes
+    // this unreachable for a correctly sized capture, but a stale floating
+    // point edge must still show the complete frozen frame, never a hole.
+    let insideFrozen = all(pixel >= vec2<i32>(0)) && all(pixel < dimensions);
+    if (!insideFrozen) {
+      return vec4<f32>(0.0);
+    }
+    return textureLoad(sourceTexture, pixel, 0);
   }
   return textureSampleLevel(
     sourceTexture,

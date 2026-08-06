@@ -120,6 +120,15 @@ import type { LayerCompressionStudyReport } from "./layer-compression-study";
 import { MixedVectorTextController } from "./mixed-vector-text-controller";
 import type { MixedMemoryBenchmarkReport } from "./mixed-memory-benchmark";
 import {
+  VECTOR_TEXT_ZOOM_STRESS_PROFILE_ORDER,
+  VECTOR_TEXT_ZOOM_STRESS_SLOW_FRAME_MS,
+  VECTOR_TEXT_ZOOM_STRESS_STRATEGY,
+  VECTOR_TEXT_ZOOM_STRESS_TARGET_ZOOM,
+  VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT,
+  vectorTextZoomStressSeed,
+  vectorTextZoomStressStepFactor,
+} from "./vector-text-adaptive-zoom";
+import {
   rasterColorOverlayColorFromHex,
   rasterColorOverlayColorToHex,
   type RasterColorOverlayStyle,
@@ -840,6 +849,8 @@ const layerMemoryStressTestRequested =
   pageSearchParams.get("layerMemoryStressTest") === "1";
 const mixedMemoryBenchmarkRequested =
   pageSearchParams.get("mixedMemoryBenchmark") === "1";
+const vectorZoomStressRequested =
+  pageSearchParams.get("vectorZoomStress") === "1";
 const mixedMemoryBenchmarkTargetMiB =
   pageSearchParams.get("mixedMemoryTargetMiB") === "600" ? 600 : 800;
 const layerCompressionStudyRequested =
@@ -849,7 +860,8 @@ const iphoneMemoryLimitTestRequested =
 const layerMemoryFixtureRequested =
   layerMemoryStressTestRequested
   || iphoneMemoryLimitTestRequested
-  || mixedMemoryBenchmarkRequested;
+  || mixedMemoryBenchmarkRequested
+  || vectorZoomStressRequested;
 const appleMobileMemoryLifecycle =
   /iPhone|iPad|iPod/i.test(navigator.userAgent)
   || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -887,6 +899,12 @@ if (mixedMemoryBenchmarkRequested) {
     `Prepara scenario misto ~${mixedMemoryBenchmarkTargetMiB} MiB`;
   layerMemoryStressResult.textContent =
     "Pronto. La preparazione è distruttiva e va eseguita una sola volta su pagina nuova.";
+} else if (vectorZoomStressRequested) {
+  layerMemoryStressIntro.textContent =
+    "Stress isolato e deterministico: 10 testi semantici con Arch, Drop Shadow, "
+    + "Block Shadow e Inner Shadow, zoom centrato fino a 64× e recovery vettoriale esatto.";
+  layerMemoryStressButton.hidden = true;
+  layerMemoryStressResult.textContent = "Preparazione automatica dello stress zoom…";
 } else if (iphoneMemoryLimitTestRequested) {
   layerMemoryStressIntro.textContent =
     "Ricerca distruttiva del limite di questo iPhone: sale a gradini reali e "
@@ -6011,6 +6029,235 @@ async function waitForVectorTextRenderAfter(
   throw new Error("Il testo non ha completato il ridisegno dello zoom.");
 }
 
+interface VectorZoomStressReport {
+  version: 1;
+  strategy: typeof VECTOR_TEXT_ZOOM_STRESS_STRATEGY;
+  textCount: number;
+  profileOrder: readonly string[];
+  profileCounts: {
+    arch: number;
+    dropShadow: number;
+    blockShadow: number;
+    innerShadow: number;
+  };
+  targetZoom: number;
+  finalZoom: number;
+  zoomSteps: number;
+  gestureDurationMs: number;
+  recoveryDurationMs: number;
+  exactRenderDeltaDuringRecovery: number;
+  effectRefinementRenderDelta: number;
+  slowFrameThresholdMs: number;
+  rafIntervalsMs: number[];
+  slowFrameCount: number;
+  rafP95Ms: number;
+  rafMaximumMs: number;
+  exactRenderDeltaDuringSafeGesture: number;
+  fastActivationDelta: number;
+  safeReprojectionDelta: number;
+  coverageFreezeDelta: number;
+  unsafeExactRefreshDelta: number;
+  unsafeExactCoalescedDelta: number;
+  fastPresentationSubmitDelta: number;
+  fastPresentationCoalescedDelta: number;
+  exactRecoveryDelta: number;
+  latestViewRevision: number;
+  checks: {
+    exactlyTenTexts: boolean;
+    allProfilesCovered: boolean;
+    reachedZoom64: boolean;
+    fastPathActivated: boolean;
+    safeGestureStayedCovered: boolean;
+    safeGestureExactRendersBounded: boolean;
+    exactRecoveryLatestOnly: boolean;
+    finalModePrecise: boolean;
+  };
+  passed: boolean;
+}
+
+async function waitForVectorTextStable(
+  minimumRecoveryCount = 0,
+): Promise<ReturnType<MixedVectorTextController["getDiagnostics"]>> {
+  const controller = vectorTextPrototype;
+  if (!controller) throw new Error("Controller testo assente nello stress zoom.");
+  let consecutiveStableFrames = 0;
+  for (let frame = 0; frame < 360; frame += 1) {
+    await nextAnimationFrame();
+    const diagnostics = controller.getDiagnostics();
+    const stable = diagnostics.zoomRenderMode === "precise"
+      && diagnostics.zoomExactRecoveryCount >= minimumRecoveryCount
+      && diagnostics.effectWorkerPendingJobs === 0
+      && diagnostics.atomicEffectPendingNodes === 0;
+    consecutiveStableFrames = stable ? consecutiveStableFrames + 1 : 0;
+    if (consecutiveStableFrames >= 2) {
+      await engine.waitForIdle();
+      return controller.getDiagnostics();
+    }
+  }
+  throw new Error("Stress zoom: renderer vettoriale non stabilizzato entro 360 frame.");
+}
+
+async function runRequestedVectorZoomStress(): Promise<void> {
+  if (!vectorZoomStressRequested) return;
+  const controller = vectorTextPrototype;
+  if (!controller) throw new Error("Controller testo non disponibile per lo stress zoom.");
+  const initialScene = engine.getMixedSceneSnapshot();
+  if (!initialScene || initialScene.items.some((item) => item.kind !== "raster")) {
+    throw new Error("Lo stress zoom richiede una pagina nuova con il solo raster iniziale.");
+  }
+
+  statusElement.textContent = "Preparo 10 testi semantici per lo stress zoom 64×…";
+  statusElement.className = "status";
+  const entries = Array.from(
+    { length: VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT },
+    (_, index) => {
+      const fixture = vectorTextZoomStressSeed(index, engine.layerSize);
+      return {
+        seed: fixture.seed,
+        name: `Zoom ${fixture.profile} ${String(index + 1).padStart(2, "0")}`,
+      };
+    },
+  );
+  const beforeInsert = controller.getDiagnostics();
+  await engine.addVectorTextNodesBatch(entries);
+  await waitForVectorTextRenderAfter(beforeInsert.renderCount);
+  await waitForVectorTextStable();
+
+  // Fit is setup, not part of the measured gesture. Keeping adaptive zoom off
+  // here guarantees one exact capture at a known camera before the burst.
+  controller.setAdaptiveZoomEnabled(false);
+  const beforeFit = controller.getDiagnostics();
+  engine.fitView();
+  await waitForVectorTextRenderAfter(beforeFit.renderCount);
+  await waitForVectorTextStable();
+  controller.setAdaptiveZoomEnabled(true);
+
+  const before = controller.getDiagnostics();
+  const rectangle = canvas.getBoundingClientRect();
+  const anchorX = rectangle.left + rectangle.width * 0.5;
+  const anchorY = rectangle.top + rectangle.height * 0.5;
+  const rafIntervalsMs: number[] = [];
+  let previousRaf = await nextAnimationFrame();
+  let zoomSteps = 0;
+  const gestureStartedAt = performance.now();
+  controller.beginViewGesture();
+  while (
+    engine.getVectorTextViewState().zoom < VECTOR_TEXT_ZOOM_STRESS_TARGET_ZOOM - 1e-9
+    && zoomSteps < 64
+  ) {
+    const currentZoom = engine.getVectorTextViewState().zoom;
+    const factor = vectorTextZoomStressStepFactor(currentZoom);
+    engine.zoomBy(factor, anchorX, anchorY);
+    const timestamp = await nextAnimationFrame();
+    rafIntervalsMs.push(Math.max(0, timestamp - previousRaf));
+    previousRaf = timestamp;
+    zoomSteps += 1;
+  }
+  const during = controller.getDiagnostics();
+  const gestureDurationMs = performance.now() - gestureStartedAt;
+  const recoveryStartedAt = performance.now();
+  controller.endViewGesture();
+  const after = await waitForVectorTextStable(before.zoomExactRecoveryCount + 1);
+  const recoveryDurationMs = performance.now() - recoveryStartedAt;
+  const finalZoom = engine.getVectorTextViewState().zoom;
+  const exactRenderDeltaDuringSafeGesture = during.renderCount - before.renderCount;
+  const exactRenderDeltaDuringRecovery = after.renderCount - during.renderCount;
+  const effectRefinementRenderDelta = Math.max(
+    0,
+    exactRenderDeltaDuringRecovery - 1,
+  );
+  const finalScene = engine.getMixedSceneSnapshot();
+  const stressNodes = finalScene?.items.flatMap(
+    (item) => item.kind === "text" ? [item.textNode] : [],
+  ) ?? [];
+  const profileCounts = {
+    arch: stressNodes.filter((node) => node.transformType === "arch").length,
+    dropShadow: stressNodes.filter((node) => node.singleShadowEnabled).length,
+    blockShadow: stressNodes.filter((node) => node.blockShadowEnabled).length,
+    innerShadow: stressNodes.filter((node) => node.innerShadowEnabled).length,
+  };
+  const checks = {
+    exactlyTenTexts:
+      after.textNodeCount === VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT
+      && stressNodes.length === VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT,
+    allProfilesCovered:
+      profileCounts.arch === 3
+      && profileCounts.dropShadow === 3
+      && profileCounts.blockShadow === 2
+      && profileCounts.innerShadow === 2,
+    reachedZoom64: Math.abs(finalZoom - VECTOR_TEXT_ZOOM_STRESS_TARGET_ZOOM) < 1e-6,
+    fastPathActivated: during.zoomFastActivationCount > before.zoomFastActivationCount,
+    safeGestureStayedCovered:
+      during.zoomSafeReprojectionCount - before.zoomSafeReprojectionCount >= zoomSteps
+      && during.zoomCoverageFreezeCount === before.zoomCoverageFreezeCount,
+    safeGestureExactRendersBounded: exactRenderDeltaDuringSafeGesture <= 1,
+    exactRecoveryLatestOnly:
+      after.zoomExactRecoveryCount - before.zoomExactRecoveryCount === 1
+      && after.zoomViewRevision === during.zoomViewRevision,
+    finalModePrecise:
+      after.zoomRenderMode === "precise"
+      && after.zoomFastPresentationMode === "precise",
+  };
+  const report: VectorZoomStressReport = {
+    version: 1,
+    strategy: VECTOR_TEXT_ZOOM_STRESS_STRATEGY,
+    textCount: after.textNodeCount,
+    profileOrder: [...VECTOR_TEXT_ZOOM_STRESS_PROFILE_ORDER],
+    profileCounts,
+    targetZoom: VECTOR_TEXT_ZOOM_STRESS_TARGET_ZOOM,
+    finalZoom,
+    zoomSteps,
+    gestureDurationMs,
+    recoveryDurationMs,
+    exactRenderDeltaDuringRecovery,
+    effectRefinementRenderDelta,
+    slowFrameThresholdMs: VECTOR_TEXT_ZOOM_STRESS_SLOW_FRAME_MS,
+    rafIntervalsMs,
+    slowFrameCount: rafIntervalsMs.filter(
+      (duration) => duration > VECTOR_TEXT_ZOOM_STRESS_SLOW_FRAME_MS,
+    ).length,
+    rafP95Ms: percentile(rafIntervalsMs, 0.95),
+    rafMaximumMs: Math.max(0, ...rafIntervalsMs),
+    exactRenderDeltaDuringSafeGesture,
+    fastActivationDelta: during.zoomFastActivationCount - before.zoomFastActivationCount,
+    safeReprojectionDelta:
+      during.zoomSafeReprojectionCount - before.zoomSafeReprojectionCount,
+    coverageFreezeDelta: during.zoomCoverageFreezeCount - before.zoomCoverageFreezeCount,
+    unsafeExactRefreshDelta:
+      during.zoomUnsafeExactRefreshCount - before.zoomUnsafeExactRefreshCount,
+    unsafeExactCoalescedDelta:
+      during.zoomUnsafeExactCoalescedCount - before.zoomUnsafeExactCoalescedCount,
+    fastPresentationSubmitDelta:
+      during.zoomFastPresentationSubmissionCount
+      - before.zoomFastPresentationSubmissionCount,
+    fastPresentationCoalescedDelta:
+      during.zoomFastPresentationCoalescedRequestCount
+      - before.zoomFastPresentationCoalescedRequestCount,
+    exactRecoveryDelta: after.zoomExactRecoveryCount - before.zoomExactRecoveryCount,
+    latestViewRevision: after.zoomViewRevision,
+    checks,
+    passed: Object.values(checks).every(Boolean),
+  };
+  (
+    window as Window & { __vectorZoomStressReport?: VectorZoomStressReport }
+  ).__vectorZoomStressReport = report;
+  layerMemoryStressReport.textContent = JSON.stringify(report, null, 2);
+  layerMemoryStressDetails.hidden = false;
+  layerMemoryStressDetails.open = true;
+  layerMemoryStressResult.className = report.passed ? "result ok" : "result error";
+  layerMemoryStressResult.textContent = report.passed
+    ? `Stress zoom 10 testi OK · 64× · ${report.slowFrameCount} frame oltre 20 ms · `
+      + `recovery esatto ${report.recoveryDurationMs.toFixed(1)} ms.`
+    : "Stress zoom 10 testi NON SUPERATO: consulta il report.";
+  statusElement.textContent = report.passed
+    ? `Stress zoom 10 testi OK · 64× · ${report.slowFrameCount} frame oltre 20 ms.`
+    : "Stress zoom 10 testi NON SUPERATO: consulta __vectorZoomStressReport.";
+  statusElement.className = report.passed ? "status ok" : "status error";
+  if (!report.passed) {
+    throw new Error("Lo stress zoom vettoriale non ha rispettato tutti gli invarianti.");
+  }
+}
+
 async function runMixedMemoryZoomProbe(): Promise<MixedMemoryZoomProbe> {
   const controller = vectorTextPrototype;
   if (!controller) {
@@ -9348,6 +9595,7 @@ function enterTouchNavigation(): void {
     } else if (pointerMode === "selection-lasso") {
       clearLassoGesture();
     }
+    vectorTextPrototype?.beginViewGesture();
     engine.beginViewRotationGesture();
     pointerMode = "touch-navigation";
     canvas.classList.add("panning");
@@ -9435,10 +9683,12 @@ canvas.addEventListener("pointerdown", (event) => {
   canvas.setPointerCapture(event.pointerId);
 
   if (pointerMode === "rotate") {
+    vectorTextPrototype?.beginViewGesture();
     engine.beginViewRotationGesture();
     canvas.classList.add("rotating");
     lastRotateClientX = event.clientX;
   } else if (pointerMode === "pan") {
+    vectorTextPrototype?.beginViewGesture();
     canvas.classList.add("panning");
     lastPanClientX = event.clientX;
     lastPanClientY = event.clientY;
@@ -9597,6 +9847,7 @@ function finishPointer(event: PointerEvent): void {
 
     if (activeTouchContacts.size === 0) {
       engine.endViewRotationGesture();
+      vectorTextPrototype?.endViewGesture();
       canvas.classList.remove("panning");
       pointerMode = null;
       historyState = engine.getHistoryState();
@@ -9656,6 +9907,9 @@ function finishPointer(event: PointerEvent): void {
     void finishHumanStrokeRecording(event.type === "pointerup");
   } else if (pointerMode === "rotate") {
     engine.endViewRotationGesture();
+  }
+  if (pointerMode === "rotate" || pointerMode === "pan") {
+    vectorTextPrototype?.endViewGesture();
   }
   canvas.classList.remove("panning", "rotating");
   pointerMode = null;
@@ -10024,6 +10278,9 @@ void engine.initialize()
           __vectorTextPrototype?: MixedVectorTextController;
         }).__vectorTextPrototype = vectorTextPrototype;
       }
+    }
+    if (vectorZoomStressRequested) {
+      await runRequestedVectorZoomStress();
     }
     syncMobileToolsMenuState();
     historyState = engine.getHistoryState();

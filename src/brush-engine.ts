@@ -125,6 +125,7 @@ import type {
   VectorTextPlacement,
   VectorTextViewState,
 } from "./vector-text-types";
+import type { VectorTextFastPresentationMode } from "./vector-text-adaptive-zoom";
 import {
   VECTOR_TEXT_GPU_BLUR_COMPOSITE_UNIFORM_BYTES,
   VECTOR_TEXT_GPU_BLUR_FILTER_UNIFORM_BYTES,
@@ -1109,6 +1110,11 @@ export class BrushEngine {
   presentationCacheNeedsFullRebuild = true;
   vectorTextCaptureView: VectorTextViewState | null = null;
   vectorTextFastPresentationEnabled = false;
+  vectorTextFastPresentationMode: VectorTextFastPresentationMode = "precise";
+  vectorTextFastPresentationInFlight = false;
+  vectorTextFastPresentationLatestRequested = false;
+  vectorTextFastPresentationSubmissionCount = 0;
+  vectorTextFastPresentationCoalescedRequestCount = 0;
   mixedSceneLinearTexture: GPUTexture | null = null;
   mixedSceneLinearView: GPUTextureView | null = null;
   mixedSceneLinearWidth = 0;
@@ -3091,6 +3097,12 @@ export class BrushEngine {
   }
 
   notifyViewChange(): void {
+    if (this.vectorTextFastPresentationEnabled) {
+      // The capture stays fixed while the current camera moves. Updating this
+      // tiny uniform selects full-coverage reprojection or the all-or-nothing
+      // frozen fallback before the next coalesced presentation submit.
+      writeVectorTextCaptureUniforms(this);
+    }
     this.callbacks.onViewChange?.(this.getVectorTextViewState());
     renderPixelSelectionOverlay(this);
   }
@@ -3108,6 +3120,27 @@ export class BrushEngine {
     this.displayDirty = true;
     this.presentationCacheNeedsFullRebuild = true;
     this.requestRender();
+  }
+
+  getVectorTextFastPresentationMode(): VectorTextFastPresentationMode {
+    return this.vectorTextFastPresentationMode;
+  }
+
+  getVectorTextFastPresentationBackpressureStats(): {
+    submissionCount: number;
+    coalescedRequestCount: number;
+  } {
+    return {
+      submissionCount: this.vectorTextFastPresentationSubmissionCount,
+      coalescedRequestCount: this.vectorTextFastPresentationCoalescedRequestCount,
+    };
+  }
+
+  waitForVectorTextPresentationCompletion(): Promise<void> {
+    // Backpressure gate only. Safari includes the whole FIFO prefix and JS
+    // callback delay, so callers must never interpret this as isolated GPU
+    // duration telemetry.
+    return this.device.queue.onSubmittedWorkDone();
   }
   updateVectorTextPresentation(
     source: HTMLCanvasElement,
@@ -6088,10 +6121,10 @@ export class BrushEngine {
   }
 
   /**
-   * Fixture-only batch insertion: sixty-four semantic text nodes are committed
-   * through one scene transaction and one merged-surface rebuild instead of
-   * paying that setup cost once per node. Rendering and document order are the
-   * same as repeated addVectorTextNode() calls.
+   * Fixture-only batch insertion: semantic text nodes are committed through
+   * one scene transaction and one merged-surface rebuild instead of paying
+   * that setup cost once per node. Rendering and document order are the same
+   * as repeated addVectorTextNode() calls.
    */
   async addVectorTextNodesBatch(
     entries: readonly {
@@ -8554,11 +8587,57 @@ export class BrushEngine {
     commitThicknessStamp(this, stamp, stroke);
   }
 
+  private vectorTextFastPresentationHasAuthoritativeWork(): boolean {
+    return this.pendingStamps.length > 0
+      || this.pendingBlendBatches.length > 0
+      || this.clearRequested
+      || Boolean(this.lightGlazeSession?.commitRequested)
+      || this.thicknessTailPreviewEligible()
+      || this.thicknessTailPresentedRect !== null;
+  }
+
+  private trackVectorTextFastPresentationSubmission(): void {
+    if (this.vectorTextFastPresentationInFlight) {
+      return;
+    }
+    this.vectorTextFastPresentationInFlight = true;
+    this.vectorTextFastPresentationSubmissionCount += 1;
+    void this.device.queue.onSubmittedWorkDone().then(() => {
+      this.vectorTextFastPresentationInFlight = false;
+      if (
+        this.vectorTextFastPresentationEnabled
+        && this.vectorTextFastPresentationLatestRequested
+      ) {
+        this.vectorTextFastPresentationLatestRequested = false;
+        this.displayDirty = true;
+        this.presentationCacheNeedsFullRebuild = true;
+        this.requestRender();
+      } else {
+        this.vectorTextFastPresentationLatestRequested = false;
+      }
+    }).catch(() => {
+      // Device loss has its own authoritative reporting path. This promise is
+      // only a non-blocking backpressure gate and must never surface as an
+      // unhandled rejection or be interpreted as timing telemetry.
+      this.vectorTextFastPresentationInFlight = false;
+      this.vectorTextFastPresentationLatestRequested = false;
+    });
+  }
+
   requestRender(): void {
     if (!this.initialized || this.renderFrameError || this.deviceLostError) {
       return;
     }
     if (this.frameRequest !== null) {
+      return;
+    }
+    if (
+      this.vectorTextFastPresentationEnabled
+      && this.vectorTextFastPresentationInFlight
+      && !this.vectorTextFastPresentationHasAuthoritativeWork()
+    ) {
+      this.vectorTextFastPresentationLatestRequested = true;
+      this.vectorTextFastPresentationCoalescedRequestCount += 1;
       return;
     }
     this.frameRequest = requestAnimationFrame((timestamp) => runRenderFrame(this, timestamp));
@@ -8687,6 +8766,17 @@ export class BrushEngine {
       this.avoidedLogicalDraws += batch.length * Math.max(0, renderSettings.count - 1);
     }
     this.recordRenderedFrame(timestamp);
+    if (
+      this.vectorTextFastPresentationEnabled
+      && batch.length === 0
+      && blendBatch.length === 0
+      && !clearLayer
+      && !lightGlazeSession?.commitRequested
+      && !this.thicknessTailPreviewEligible()
+      && this.thicknessTailPresentedRect === null
+    ) {
+      this.trackVectorTextFastPresentationSubmission();
+    }
 
     const statsPublishStart = performance.now();
     this.publishStats();

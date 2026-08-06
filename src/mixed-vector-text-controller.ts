@@ -60,7 +60,12 @@ import {
   VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY,
   planVectorTextSingleShadowBlur,
 } from "./vector-text-single-shadow";
-import { VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY } from "./vector-text-adaptive-zoom";
+import {
+  VECTOR_TEXT_ADAPTIVE_ZOOM_SETTLE_MS,
+  VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
+  vectorTextExactRecoveryIsCurrent,
+  type VectorTextFastPresentationMode,
+} from "./vector-text-adaptive-zoom";
 import {
   VECTOR_SVG_IMPORT_STRATEGY,
   parseVectorSvg,
@@ -85,6 +90,13 @@ export interface MixedVectorTextHost {
   ): VectorTextGpuPresentationStats;
   isPaintStrokeActive(): boolean;
   clearVectorTextPresentation(placement?: VectorTextPlacement): void;
+  setVectorTextFastPresentationEnabled(enabled: boolean): void;
+  getVectorTextFastPresentationMode(): VectorTextFastPresentationMode;
+  getVectorTextFastPresentationBackpressureStats(): {
+    submissionCount: number;
+    coalescedRequestCount: number;
+  };
+  waitForVectorTextPresentationCompletion(): Promise<void>;
   pruneVectorTextGpuMeshes(activeMeshKeys: ReadonlySet<string>): void;
   beginVectorHistoryEdit(scope?: "property" | "transform"): boolean;
   commitVectorHistoryEdit(): boolean;
@@ -158,7 +170,8 @@ export interface MixedVectorTextDiagnostics {
   adaptiveZoomStrategy: typeof VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY;
   transformStrategy: typeof VECTOR_TEXT_TRANSFORM_STRATEGY;
   adaptiveZoomEnabled: boolean;
-  zoomRenderMode: "precise";
+  zoomRenderMode: "precise" | "fast";
+  zoomFastPresentationMode: VectorTextFastPresentationMode;
   zoomFastModeArmed: boolean;
   zoomSlowFrameStreak: number;
   zoomFastActivationCount: number;
@@ -166,6 +179,14 @@ export interface MixedVectorTextDiagnostics {
   lastViewRenderEndToEndMs: number;
   lastAdaptiveZoomTriggerRenderMs: number;
   lastAdaptiveZoomTriggerEndToEndMs: number;
+  zoomViewRevision: number;
+  zoomViewEventCount: number;
+  zoomSafeReprojectionCount: number;
+  zoomCoverageFreezeCount: number;
+  zoomUnsafeExactRefreshCount: number;
+  zoomUnsafeExactCoalescedCount: number;
+  zoomFastPresentationSubmissionCount: number;
+  zoomFastPresentationCoalescedRequestCount: number;
   selectedKey: MixedSceneItem["key"] | null;
   textNodeCount: number;
   renderCount: number;
@@ -666,6 +687,27 @@ export class MixedVectorTextController {
   private pendingViewRender = false;
   private pendingViewRenderStartedAt = 0;
   private lastViewRenderEndToEndMs = 0;
+  private adaptiveZoomEnabled = true;
+  private zoomRenderMode: "precise" | "fast" = "precise";
+  private viewGestureActive = false;
+  private viewRevision = 0;
+  private viewIdleTimer: number | null = null;
+  private exactRecoveryRequest: number | null = null;
+  private pendingExactRecoveryRevision: number | null = null;
+  private unsafeExactRefreshRequest: number | null = null;
+  private fastOverlayRequest: number | null = null;
+  private unsafeExactRefreshInFlight = false;
+  private unsafeExactRefreshRevision = 0;
+  private exitFastAfterScheduledRender = false;
+  private zoomFastActivationCount = 0;
+  private zoomExactRecoveryCount = 0;
+  private zoomViewEventCount = 0;
+  private zoomSafeReprojectionCount = 0;
+  private zoomCoverageFreezeCount = 0;
+  private zoomUnsafeExactRefreshCount = 0;
+  private zoomUnsafeExactCoalescedCount = 0;
+  private lastExactCanvasWidth = 0;
+  private lastExactCanvasHeight = 0;
   private atomicEffectHoldCount = 0;
   private atomicEffectPendingNodes = 0;
   private distortEditingNodeId: number | null = null;
@@ -869,6 +911,20 @@ export class MixedVectorTextController {
       && previousSnapshot?.items.length === snapshot.items.length
       && previousSnapshot.items.every((item, index) => item.key === snapshot.items[index]?.key),
     );
+    if (!imageTransformOnly) {
+      this.viewRevision += 1;
+      this.cancelAdaptiveZoomTimers();
+      if (this.unsafeExactRefreshRequest !== null) {
+        cancelAnimationFrame(this.unsafeExactRefreshRequest);
+        this.unsafeExactRefreshRequest = null;
+      }
+      if (this.zoomRenderMode === "fast") {
+        // Keep sampling the captured camera until this semantic exact render
+        // has submitted all run textures. renderNow disables fast only after
+        // pruneVectorTextGpuMeshes() flushes that authoritative batch.
+        this.exitFastAfterScheduledRender = true;
+      }
+    }
     const interaction = this.activeInteraction;
     const interactionStillTargetsSelection =
       interaction !== null
@@ -950,8 +1006,242 @@ export class MixedVectorTextController {
     if (this.transformToolActive) void this.prepareSelectedRasterTransform();
   }
   scheduleViewSync(): void {
-    this.markPendingViewRender();
-    this.scheduleRender();
+    this.viewRevision += 1;
+    this.zoomViewEventCount += 1;
+    if (!this.hasVectorPresentationNodes() || !this.adaptiveZoomEnabled) {
+      this.cancelAdaptiveZoomTimers();
+      if (this.zoomRenderMode === "fast") {
+        this.exitFastAfterScheduledRender = true;
+      }
+      this.markPendingViewRender();
+      this.scheduleRender();
+      return;
+    }
+
+    const view = this.host.getVectorTextViewState();
+    const canvasSizeChanged = this.lastExactCanvasWidth > 0
+      && (
+        view.canvasWidth !== this.lastExactCanvasWidth
+        || view.canvasHeight !== this.lastExactCanvasHeight
+      );
+    if (canvasSizeChanged) {
+      // A viewport-sized capture cannot cover a resized target. Keep resize on
+      // the precise path; view gestures themselves never allocate a new cache.
+      this.cancelAdaptiveZoomTimers();
+      if (this.zoomRenderMode === "fast") {
+        this.exitFastAfterScheduledRender = true;
+      }
+      this.markPendingViewRender();
+      this.scheduleRender();
+      return;
+    }
+
+    if (!this.enterFastZoomMode()) {
+      this.markPendingViewRender();
+      this.scheduleRender();
+      return;
+    }
+    const presentationMode = this.host.getVectorTextFastPresentationMode();
+    if (presentationMode === "reproject") {
+      this.zoomSafeReprojectionCount += 1;
+    } else if (presentationMode === "freeze") {
+      this.zoomCoverageFreezeCount += 1;
+      this.requestUnsafeExactRefresh(this.viewRevision);
+    }
+    this.scheduleFastInteractionOverlay();
+    if (!this.viewGestureActive) {
+      this.armViewIdleTimer(this.viewRevision);
+    }
+  }
+
+  beginViewGesture(): void {
+    this.viewGestureActive = true;
+    this.viewRevision += 1;
+    this.cancelAdaptiveZoomTimers();
+    if (this.adaptiveZoomEnabled && this.hasVectorPresentationNodes()) {
+      this.enterFastZoomMode();
+    }
+  }
+
+  endViewGesture(): void {
+    if (!this.viewGestureActive) return;
+    this.viewGestureActive = false;
+    if (this.zoomRenderMode === "fast") {
+      this.requestExactRecovery(this.viewRevision);
+    }
+  }
+
+  private hasVectorPresentationNodes(): boolean {
+    return this.snapshot?.items.some(
+      (item) => item.kind === "text" || item.kind === "svg",
+    ) ?? false;
+  }
+
+  private clearViewIdleTimer(): void {
+    if (this.viewIdleTimer !== null) {
+      window.clearTimeout(this.viewIdleTimer);
+      this.viewIdleTimer = null;
+    }
+  }
+
+  private cancelExactRecovery(): void {
+    if (this.exactRecoveryRequest !== null) {
+      cancelAnimationFrame(this.exactRecoveryRequest);
+      this.exactRecoveryRequest = null;
+    }
+    this.pendingExactRecoveryRevision = null;
+  }
+
+  private cancelAdaptiveZoomTimers(): void {
+    this.clearViewIdleTimer();
+    this.cancelExactRecovery();
+  }
+
+  private armViewIdleTimer(revision: number): void {
+    this.clearViewIdleTimer();
+    this.viewIdleTimer = window.setTimeout(() => {
+      this.viewIdleTimer = null;
+      if (vectorTextExactRecoveryIsCurrent(
+        revision,
+        this.viewRevision,
+        this.viewGestureActive,
+      )) {
+        this.requestExactRecovery(revision);
+      }
+    }, VECTOR_TEXT_ADAPTIVE_ZOOM_SETTLE_MS);
+  }
+
+  private enterFastZoomMode(): boolean {
+    this.cancelExactRecovery();
+    if (this.zoomRenderMode === "fast") return true;
+    this.host.setVectorTextFastPresentationEnabled(true);
+    if (this.host.getVectorTextFastPresentationMode() === "precise") {
+      return false;
+    }
+    this.zoomRenderMode = "fast";
+    this.zoomFastActivationCount += 1;
+    return true;
+  }
+
+  private finishFastZoomMode(): void {
+    if (this.zoomRenderMode !== "fast") return;
+    this.zoomRenderMode = "precise";
+    this.zoomExactRecoveryCount += 1;
+    this.cancelAdaptiveZoomTimers();
+    this.host.setVectorTextFastPresentationEnabled(false);
+    this.effectReadyRenderPending = false;
+  }
+
+  private requestExactRecovery(revision: number): void {
+    this.cancelExactRecovery();
+    if (this.unsafeExactRefreshInFlight) {
+      this.pendingExactRecoveryRevision = revision;
+      return;
+    }
+    if (this.unsafeExactRefreshRequest !== null) {
+      cancelAnimationFrame(this.unsafeExactRefreshRequest);
+      this.unsafeExactRefreshRequest = null;
+    }
+    this.exactRecoveryRequest = requestAnimationFrame(() => {
+      this.exactRecoveryRequest = null;
+      if (
+        this.zoomRenderMode !== "fast"
+        || !vectorTextExactRecoveryIsCurrent(
+          revision,
+          this.viewRevision,
+          this.viewGestureActive,
+        )
+      ) {
+        return;
+      }
+      this.markPendingViewRender();
+      if (!this.renderNow("recovery", revision)) {
+        this.exitFastAfterScheduledRender = true;
+      }
+    });
+  }
+
+  private requestUnsafeExactRefresh(revision: number): void {
+    this.unsafeExactRefreshRevision = Math.max(
+      this.unsafeExactRefreshRevision,
+      revision,
+    );
+    if (this.unsafeExactRefreshInFlight || this.unsafeExactRefreshRequest !== null) {
+      this.zoomUnsafeExactCoalescedCount += 1;
+      return;
+    }
+    this.unsafeExactRefreshRequest = requestAnimationFrame(() => {
+      this.unsafeExactRefreshRequest = null;
+      const targetRevision = this.unsafeExactRefreshRevision;
+      if (
+        this.zoomRenderMode !== "fast"
+        || targetRevision !== this.viewRevision
+        || this.host.getVectorTextFastPresentationMode() !== "freeze"
+      ) {
+        return;
+      }
+      this.unsafeExactRefreshInFlight = true;
+      this.zoomUnsafeExactRefreshCount += 1;
+      this.markPendingViewRender();
+      const rendered = this.renderNow("unsafe-refresh", targetRevision);
+      if (!rendered) {
+        this.unsafeExactRefreshInFlight = false;
+        this.requestUnsafeExactRefresh(this.viewRevision);
+        return;
+      }
+      void this.host.waitForVectorTextPresentationCompletion().then(() => {
+        this.unsafeExactRefreshInFlight = false;
+        const pendingRecovery = this.pendingExactRecoveryRevision;
+        this.pendingExactRecoveryRevision = null;
+        if (
+          pendingRecovery !== null
+          && vectorTextExactRecoveryIsCurrent(
+            pendingRecovery,
+            this.viewRevision,
+            this.viewGestureActive,
+          )
+        ) {
+          this.requestExactRecovery(pendingRecovery);
+          return;
+        }
+        if (
+          this.zoomRenderMode === "fast"
+          && this.host.getVectorTextFastPresentationMode() === "freeze"
+        ) {
+          this.requestUnsafeExactRefresh(this.viewRevision);
+        }
+      }).catch(() => {
+        // Device loss is reported by the engine. This completion signal is a
+        // backpressure gate only, never GPU-duration telemetry.
+        this.unsafeExactRefreshInFlight = false;
+      });
+    });
+  }
+
+  private scheduleFastInteractionOverlay(): void {
+    if (this.fastOverlayRequest !== null) return;
+    this.fastOverlayRequest = requestAnimationFrame(() => {
+      this.fastOverlayRequest = null;
+      if (this.zoomRenderMode !== "fast") return;
+      const view = this.host.getVectorTextViewState();
+      this.syncCanvasSizes(view);
+      const selectedNode = this.selectedTransformNode();
+      if (selectedNode) {
+        if (isTextNode(selectedNode)) this.metrics = this.measureText(selectedNode);
+        else if (isSvgNode(selectedNode)) {
+          this.metrics = {
+            left: selectedNode.document.bounds.left,
+            top: selectedNode.document.bounds.top,
+            right: selectedNode.document.bounds.right,
+            bottom: selectedNode.document.bounds.bottom,
+            baseline: 0,
+          };
+        }
+        if (this.transformToolActive) this.renderInteractionOverlay(view, selectedNode);
+      } else {
+        this.clearInteractionOverlay(view);
+      }
+    });
   }
 
   requestSvgImport(): void {
@@ -1050,12 +1340,30 @@ export class MixedVectorTextController {
     return Boolean(node && node.id === this.distortEditingNodeId);
   }
 
-  setAdaptiveZoomEnabled(_enabled: boolean): void {
-    // Compatibilità con gli harness esistenti: il renderer resta sempre preciso.
+  setAdaptiveZoomEnabled(enabled: boolean): void {
+    if (this.adaptiveZoomEnabled === enabled) return;
+    this.adaptiveZoomEnabled = enabled;
+    this.viewRevision += 1;
+    this.cancelAdaptiveZoomTimers();
+    if (!enabled && this.zoomRenderMode === "fast") {
+      // Disabling the optimization is an explicit request for the precise
+      // path. Do not leave recovery waiting for a pointer-up that a benchmark
+      // or lifecycle transition may never deliver.
+      this.viewGestureActive = false;
+      if (this.unsafeExactRefreshRequest !== null) {
+        cancelAnimationFrame(this.unsafeExactRefreshRequest);
+        this.unsafeExactRefreshRequest = null;
+      }
+      this.pendingExactRecoveryRevision = null;
+      this.exitFastAfterScheduledRender = true;
+      this.markPendingViewRender();
+      this.scheduleRender();
+    }
   }
   getDiagnostics(): MixedVectorTextDiagnostics {
     const view = this.host.getVectorTextViewState();
     const effectDiagnostics = this.effectCompiler.diagnostics();
+    const backpressure = this.host.getVectorTextFastPresentationBackpressureStats();
     return {
       sceneStrategy: MIXED_SCENE_STACK_STRATEGY,
       livePresentationStrategy: VECTOR_TEXT_PRESENTATION_STRATEGY,
@@ -1066,15 +1374,24 @@ export class MixedVectorTextController {
       singleShadowBlurStrategy: VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY,
       adaptiveZoomStrategy: VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
       transformStrategy: VECTOR_TEXT_TRANSFORM_STRATEGY,
-      adaptiveZoomEnabled: false,
-      zoomRenderMode: "precise",
-      zoomFastModeArmed: false,
+      adaptiveZoomEnabled: this.adaptiveZoomEnabled,
+      zoomRenderMode: this.zoomRenderMode,
+      zoomFastPresentationMode: this.host.getVectorTextFastPresentationMode(),
+      zoomFastModeArmed: this.zoomRenderMode === "fast",
       zoomSlowFrameStreak: 0,
-      zoomFastActivationCount: 0,
-      zoomExactRecoveryCount: 0,
+      zoomFastActivationCount: this.zoomFastActivationCount,
+      zoomExactRecoveryCount: this.zoomExactRecoveryCount,
       lastViewRenderEndToEndMs: this.lastViewRenderEndToEndMs,
       lastAdaptiveZoomTriggerRenderMs: 0,
       lastAdaptiveZoomTriggerEndToEndMs: 0,
+      zoomViewRevision: this.viewRevision,
+      zoomViewEventCount: this.zoomViewEventCount,
+      zoomSafeReprojectionCount: this.zoomSafeReprojectionCount,
+      zoomCoverageFreezeCount: this.zoomCoverageFreezeCount,
+      zoomUnsafeExactRefreshCount: this.zoomUnsafeExactRefreshCount,
+      zoomUnsafeExactCoalescedCount: this.zoomUnsafeExactCoalescedCount,
+      zoomFastPresentationSubmissionCount: backpressure.submissionCount,
+      zoomFastPresentationCoalescedRequestCount: backpressure.coalescedRequestCount,
       selectedKey: this.snapshot?.selectedKey ?? null,
       textNodeCount: this.snapshot?.items.filter((item) => item.kind === "text").length ?? 0,
       renderCount: this.renderCount,
@@ -2314,6 +2631,10 @@ export class MixedVectorTextController {
     this.innerShadowBlurOutput.value = String(Math.round(node.innerShadowBlur));
   }
   private handleEffectResourceReady(): void {
+    if (this.zoomRenderMode === "fast") {
+      this.effectReadyRenderPending = true;
+      return;
+    }
     if (this.host.isPaintStrokeActive()) {
       this.effectReadyRenderPending = true;
       this.armEffectReadyIdleCheck();
@@ -2330,6 +2651,9 @@ export class MixedVectorTextController {
     this.effectReadyIdleTimer = window.setTimeout(() => {
       this.effectReadyIdleTimer = null;
       if (!this.effectReadyRenderPending) {
+        return;
+      }
+      if (this.zoomRenderMode === "fast") {
         return;
       }
       if (this.host.isPaintStrokeActive()) {
@@ -3062,11 +3386,27 @@ export class MixedVectorTextController {
     };
   }
 
-  private renderNow(): void {
+  private renderNow(
+    origin: "scheduled" | "recovery" | "unsafe-refresh" = "scheduled",
+    recoveryRevision = this.viewRevision,
+  ): boolean {
     if (this.sceneOperationBusy) {
       this.sceneOperationRenderDeferred = true;
-      return;
+      return false;
     }
+    if (
+      origin === "recovery"
+      && !vectorTextExactRecoveryIsCurrent(
+        recoveryRevision,
+        this.viewRevision,
+        this.viewGestureActive,
+      )
+    ) {
+      return false;
+    }
+    const shouldExitFastAfterRender = origin === "recovery"
+      || this.exitFastAfterScheduledRender;
+    this.exitFastAfterScheduledRender = false;
     const wasViewRender = this.pendingViewRender;
     const viewRenderStartedAt = this.pendingViewRenderStartedAt;
     this.pendingViewRender = false;
@@ -3271,13 +3611,22 @@ export class MixedVectorTextController {
       this.renderSamples.splice(0, this.renderSamples.length - FRAME_SAMPLE_LIMIT);
     }
     this.renderCount += 1;
+    this.lastExactCanvasWidth = view.canvasWidth;
+    this.lastExactCanvasHeight = view.canvasHeight;
     if (wasViewRender) {
       this.lastViewRenderEndToEndMs = Math.max(
         this.lastRenderMs,
         finishedAt - (viewRenderStartedAt || startedAt),
       );
     }
+    if (shouldExitFastAfterRender && this.zoomRenderMode === "fast") {
+      // updateVectorTextGpuPresentation queued every run and prune flushed the
+      // exact batch before this toggle. Queue ordering therefore publishes the
+      // new texture before the precise sampling uniform can be presented.
+      this.finishFastZoomMode();
+    }
     this.updateStatus(view, selectedNode);
+    return true;
   }
   private updateStatus(
     view: VectorTextViewState,
@@ -3798,6 +4147,7 @@ export class MixedVectorTextController {
     }
     if (!this.touchNavigationActive) {
       this.touchNavigationActive = true;
+      this.beginViewGesture();
       this.host.beginViewRotationGesture();
     }
     this.touchNavigationGesture = this.currentTouchNavigationGesture();
@@ -3923,6 +4273,7 @@ export class MixedVectorTextController {
       distortPointIndex,
       openedTransformSession,
     };
+    if (mode === "pan") this.beginViewGesture();
     this.interactionCanvas.classList.add(`is-${mode}`);
   }
   private movedDistortPoints(
@@ -4049,6 +4400,7 @@ export class MixedVectorTextController {
         this.touchNavigationActive = false;
         this.touchNavigationGesture = null;
         this.host.endViewRotationGesture();
+        this.endViewGesture();
       } else {
         this.touchNavigationGesture = this.currentTouchNavigationGesture();
       }
@@ -4059,6 +4411,7 @@ export class MixedVectorTextController {
       return;
     }
     this.clearActiveInteraction(interaction);
+    if (interaction.mode === "pan") this.endViewGesture();
     if (
       interaction.mode !== "pan"
       && (event.type === "pointercancel" || event.type === "lostpointercapture")

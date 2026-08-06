@@ -61,6 +61,9 @@ import { rasterImageBindGroupForNode } from "./engine-raster-image-runtime";
 import { LAYER_BLEND_COMPOSITOR_UNIFORM_BYTE_SIZE } from "./layer-blend-compositor";
 import { LAYER_BLEND_MODE_CODES, LAYER_BLEND_MODE_ORDER } from "./layer-blend-modes";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
+import {
+  vectorTextFastPresentationMode,
+} from "./vector-text-adaptive-zoom";
 
 export async function initializeVectorTextGpuRenderer(engine: BrushEngine): Promise<void> {
   engine.vectorTextGpuShaderModule = engine.device.createShaderModule({
@@ -2349,15 +2352,38 @@ export function captureVectorTextPresentationView(engine: BrushEngine): void {
 
 export function writeVectorTextCaptureUniforms(engine: BrushEngine): void {
   const view = engine.vectorTextCaptureView ?? engine.getVectorTextViewState();
+  const currentView = engine.getVectorTextViewState();
+  const presentationMode = engine.vectorTextFastPresentationEnabled
+    ? vectorTextFastPresentationMode(engine.vectorTextCaptureView, currentView)
+    : "precise";
+  engine.vectorTextFastPresentationMode = presentationMode;
   const upload = engine.vectorTextCaptureUniformUpload;
-  upload[0] = view.canvasWidth;
-  upload[1] = view.canvasHeight;
-  upload[2] = view.rotationCos;
-  upload[3] = view.rotationSin;
-  upload[4] = view.centerX;
-  upload[5] = view.centerY;
-  upload[6] = view.zoom;
-  upload[7] = engine.vectorTextFastPresentationEnabled ? 1 : 0;
+  const fastMode = presentationMode === "reproject"
+    ? 1
+    : presentationMode === "freeze"
+      ? 2
+      : 0;
+  const nextValues = [
+    view.canvasWidth,
+    view.canvasHeight,
+    view.rotationCos,
+    view.rotationSin,
+    view.centerX,
+    view.centerY,
+    view.zoom,
+    fastMode,
+  ] as const;
+  let changed = false;
+  for (let index = 0; index < nextValues.length; index += 1) {
+    const next = Math.fround(nextValues[index]);
+    if (!Object.is(upload[index], next)) {
+      upload[index] = next;
+      changed = true;
+    }
+  }
+  if (!changed) {
+    return;
+  }
   engine.device.queue.writeBuffer(
     engine.vectorTextCaptureUniformBuffer,
     0,
