@@ -4492,3 +4492,62 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   `257127da40c25163820ce6d987ba529bb336d3cb` su
   `https://webgpu-brush-engine-michi.m1m4brand.chatgpt.site`. Registro GPU e
   ripartizione misurata sono pronti per la verifica su iPhone fisico.
+
+### Mutazioni strutturali di livello, journaled (6 agosto 2026)
+
+- Scoperta che ha dimezzato il lavoro: `raster-import` era **gia'** un'azione
+  journaled che fa comparire e sparire un livello conservandone record,
+  posizioni e pixel in un `seed`. Cancellare un livello e' il suo Undo,
+  ripristinarlo e' il suo Redo. `engine-layer-structure-runtime.ts` estrae le
+  due direzioni e le riusa per entrambe le azioni nuove invece di duplicarle.
+- Due helper prima privati sono stati **generalizzati ed esportati**
+  (`switchActiveForStructuralHistory`, `hydrateLayerFromSeed`): duplicarli
+  avrebbe creato due percorsi destinati a divergere.
+- **Creare un livello e' ora annullabile.** Prima `addLayer` troncava il Redo
+  con un commento che lo dichiarava intenzionale: le azioni `scene-reorder`
+  conservano un ordine assoluto e un'inserzione non registrata le rendeva
+  inapplicabili. Registrandola, lo stato a qualsiasi cursore si ottiene
+  applicando le azioni in ordine. Verificato in browser: crea → Undo → Redo,
+  `1 → 2 → 1 → 2` livelli, mai incoerente, e due creazioni consecutive piu'
+  Undo restano sane.
+- `verify-history-journal.mjs` fissava il vecchio contratto ed era verde
+  **perche'** il difetto c'era. Riscritto con quattro asserzioni piu' strette.
+- Semantica decisa: cancellare un parent di ritaglio si porta via **l'intera
+  unita'**. Una maschera senza il suo parent verrebbe disegnata come livello
+  normale e cambierebbe l'immagine; promuoverla in silenzio sarebbe peggio che
+  rifiutare, e rifiutare contraddirebbe «qualsiasi livello».
+- Trappola TypeScript annotata nel codice: un membro di unione con
+  discriminante `"layer-add" | "layer-delete"` non viene eliminato dal
+  narrowing (il discriminante diventa `never`, il membro resta) e ogni accesso
+  a `layerId` a valle e' un errore. Servono due membri con literal singolo.
+- Nuova suite `layer-structure:verify` (33ª): tipi, contratto del journal,
+  ordine di stacco/riattacco provato su un modello puro — incluso il controllo
+  che l'ordine sbagliato produca davvero un ripristino sbagliato, altrimenti il
+  test non proverebbe nulla — invarianti del runtime e collegamento UI. Quattro
+  regressioni dimostrate fallibili.
+
+Il blocco runtime di `deleteLayer` e' stato poi isolato con lo stack reale:
+l'eccezione partiva dal `waitForIdle()` iniziale del **Redo**, prima di applicare
+l'azione. Era quindi l'Undo precedente a lasciare la presentazione congelata.
+Nel ramo di riattacco, `LayerStack.attach()` seleziona gia' il record appena
+ripristinato; la successiva chiamata a `switchActiveForStructuralHistory`
+vedeva lo stesso indice attivo e usciva senza `activateLayer()`. La correzione
+conserva l'id del raster uscente prima di `prepareActiveLayerForSwitch`, lo
+risolve dopo gli attach e riattiva esplicitamente il record ripristinato con lo
+stesso schema usato dal Redo di `raster-import`. La suite blocca ora sia questa
+sequenza sia il ritorno della voce UI allo stato `hidden`.
+
+La voce «Delete Layer» e' nuovamente visibile. QA browser a `393×852`: su un
+livello vuoto il ciclo `2 → 1 → 2 → 1` completa Delete/Undo/Redo senza blocchi;
+su un livello dipinto il ciclo `2 → 1 → 2 → 1 → 2` completa anche il secondo
+Undo. La presentazione prima della cancellazione e dopo entrambi i ripristini
+e' identica canale per canale nel crop canvas `369×370` (`0` canali diversi),
+stabile fra due frame distanziati, e la console non contiene warning o errori.
+TypeScript, tutte le `33` suite `*:verify`, build Vite/Sites e
+`git diff --check` sono verdi dopo la correzione.
+
+In totale quattro difetti del percorso strutturale sono stati trovati **solo
+eseguendo l'app**, nessuno visibile da `tsc` o dalle suite originarie: doppia
+preparazione del cambio livello (texture non residente), stacco dallo stack
+senza stacco dalla scena mista, cattura dei seed che lascia lavoro GPU pendente
+e riattacco gia' selezionato che saltava la riattivazione della presentazione.

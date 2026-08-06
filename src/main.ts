@@ -320,6 +320,7 @@ const mobileLayerList = element<HTMLElement>("mobileLayerList");
 const mobileLayerContextMenu = element<HTMLElement>("mobileLayerContextMenu");
 const mobileLayerClippingButton = element<HTMLButtonElement>("mobileLayerClipping");
 const mobileLayerOptionsButton = element<HTMLButtonElement>("mobileLayerOptions");
+const mobileLayerDeleteButton = element<HTMLButtonElement>("mobileLayerDelete");
 const mobileLayerReorderStatus = element<HTMLParagraphElement>(
   "mobileLayerReorderStatus",
 );
@@ -5157,6 +5158,27 @@ mobileLayerOptionsButton.addEventListener("click", () => {
   if (!properties || properties.locked) return;
   closeMobileLayerContextMenu(false);
   mobileToolSettingsSheet?.open("layer-options", mobileLayersMenuButton);
+});
+
+// Nessuna conferma: l`operazione e` annullabile, ed e` esattamente il motivo
+// per cui l`abbiamo resa journaled. Un dialogo qui sarebbe attrito inutile.
+mobileLayerDeleteButton.addEventListener("click", () => {
+  const properties = mobileLayerProperties(mobileLayerContextKey);
+  if (
+    !properties
+    || properties.kind !== "raster"
+    || properties.rasterIndex === null
+    || properties.locked
+  ) {
+    return;
+  }
+  const index = properties.rasterIndex;
+  closeMobileLayerContextMenu(false);
+  void engine.deleteLayer(index).catch((error) => {
+    console.error("Eliminazione livello non riuscita", error);
+    statusElement.textContent = error instanceof Error ? error.message : String(error);
+    statusElement.className = "status error";
+  });
 });
 
 document.addEventListener("pointerdown", (event) => {

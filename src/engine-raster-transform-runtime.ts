@@ -453,6 +453,8 @@ export async function beginRasterLayerTransform(
         if (
           action.kind === "vector"
           || action.kind === "scene-reorder"
+          || action.kind === "layer-add"
+          || action.kind === "layer-delete"
           || action.layerId !== record.id
         ) continue;
         if (

@@ -754,7 +754,13 @@ export async function importRasterImageFile(
   }
 }
 
-async function switchActiveForRasterImportHistory(
+/**
+ * Sposta il livello attivo durante una mutazione strutturale, con rollback
+ * completo se l'attivazione fallisce. Non ha nulla di specifico dell'import:
+ * cancellazione e ricreazione di un livello usano lo stesso percorso, e
+ * duplicarlo creerebbe due strade che possono divergere.
+ */
+export async function switchActiveForStructuralHistory(
   engine: BrushEngine,
   targetIndex: number,
 ): Promise<void> {
@@ -771,7 +777,7 @@ async function switchActiveForRasterImportHistory(
       await engine.activateLayer(targetIndex, "structural-history");
     } catch (restoreError) {
       engine.latchDocumentStateInconsistent(
-        "Cambio livello fallito durante Undo/Redo dell’importazione raster.",
+        "Cambio livello fallito durante una mutazione strutturale di livello.",
       );
       const first = error instanceof Error ? error.message : String(error);
       const second = restoreError instanceof Error
@@ -783,14 +789,19 @@ async function switchActiveForRasterImportHistory(
   }
 }
 
-async function hydrateRasterImportSeed(
+/**
+ * Alloca le risorse di un livello e ne reidrata i pixel da un seed di cold
+ * storage. Condivisa da import raster e da ripristino di un livello cancellato.
+ */
+export async function hydrateLayerFromSeed(
   engine: BrushEngine,
-  action: RasterImportHistoryAction,
+  layerId: number,
+  seed: LayerColdStorageResources,
 ): Promise<LayerGpuResources> {
   const gpu = await allocateLayerGpuResources(
     engine,
     engine.layerFormat,
-    `Reidratazione import raster storico livello ${action.layerId}`,
+    `Reidratazione livello storico ${layerId}`,
   );
   const hot = gpu.hot;
   if (!hot) {
@@ -799,11 +810,11 @@ async function hydrateRasterImportSeed(
   }
   try {
     const encoder = engine.device.createCommandEncoder({
-      label: `Reidratazione seed import raster livello ${action.layerId}`,
+      label: `Reidratazione seed livello ${layerId}`,
     });
-    encodeLayerColdHydration(encoder, action.seed, hot);
+    encodeLayerColdHydration(encoder, seed, hot);
     engine.device.queue.submit([encoder.finish()]);
-    await engine.waitForGpuCapped("Reidratazione import raster", 60_000);
+    await engine.waitForGpuCapped("Reidratazione livello da seed", 60_000);
     return gpu;
   } catch (error) {
     destroyLayerGpuResources(engine, gpu);
@@ -836,7 +847,7 @@ async function undoRasterImport(
   if (currentSceneIndex < 0) {
     throw new Error("Livello importato assente dalla scena mista durante Undo.");
   }
-  await switchActiveForRasterImportHistory(engine, targetIndex);
+  await switchActiveForStructuralHistory(engine, targetIndex);
   const activeTargetIndex = engine.layerStack.indexOfId(action.layerId);
   const fallbackIndex = engine.layerStack.indexOfId(action.activeRasterLayerIdBefore);
   try {
@@ -865,7 +876,7 @@ async function undoRasterImport(
       if (originalActiveId !== action.layerId) {
         const originalIndex = engine.layerStack.indexOfId(originalActiveId);
         if (originalIndex < 0) throw new Error("Raster attivo originale perso nel rollback Undo.");
-        await switchActiveForRasterImportHistory(engine, originalIndex);
+        await switchActiveForStructuralHistory(engine, originalIndex);
       }
     } catch (restoreError) {
       rollbackErrors.push(restoreError);
@@ -912,7 +923,7 @@ async function redoRasterImport(
   let gpu: LayerGpuResources | null = null;
   let attached = false;
   try {
-    gpu = await hydrateRasterImportSeed(engine, action);
+    gpu = await hydrateLayerFromSeed(engine, action.layerId, action.seed);
     action.layerRecord.contentBounds = { ...action.baseBounds };
     action.layerRecord.hasContent = true;
     action.layerRecord.storageTileMask.set(action.baseTileMask);

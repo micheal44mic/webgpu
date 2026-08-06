@@ -78,6 +78,10 @@ import type {
   RasterImageGpuResource,
 } from "./engine-raster-image-runtime";
 import {
+  applyLayerDeleteHistory,
+  destroyLayerDeleteHistorySeeds,
+} from "./engine-layer-structure-runtime";
+import {
   deleteRasterImageNode,
   destroyRasterImportHistorySeed,
   importRasterImageFile as importRasterImageFileRuntime,
@@ -333,6 +337,9 @@ import {
   type FillHistoryRenderBatch,
   type HistoryAction,
   type HistoryRenderBatch,
+  type LayerAddHistoryAction,
+  type LayerDeleteHistoryAction,
+  type DeletedLayerEntry,
   type RasterImportHistoryAction,
   type RasterLayerMetadataHistoryAction,
   type RasterLayerMetadataHistoryState,
@@ -1475,6 +1482,9 @@ export class BrushEngine {
   nextHistoryActionId = 1;
   discardedVectorRasterHistoryActions: VectorRasterizeHistoryAction[] = [];
   discardedRasterImportHistoryActions: RasterImportHistoryAction[] = [];
+
+  /** Cancellazioni abbandonate dal Redo: i loro seed vanno liberati. */
+  discardedLayerDeleteHistoryActions: LayerDeleteHistoryAction[] = [];
   discardedRasterTransformHistoryActions: RasterTransformHistoryAction[] = [];
   historyBatches: HistoryRenderBatch[] = [];
   selectionHistoryMasksByAction = new Map<number, SelectionHistoryMaskSnapshot>();
@@ -4376,6 +4386,87 @@ export class BrushEngine {
   }
 
   /**
+   * Cancella un livello, in modo annullabile. Se il livello e' parent di un
+   * gruppo di ritaglio si porta via **l'intera unita'**: una maschera senza il
+   * suo parent verrebbe disegnata come livello normale e cambierebbe l'immagine.
+   *
+   * I pixel di ogni livello con contenuto vengono conservati in un seed di cold
+   * storage, che e' il costo dichiarato della reversibilita': `LAYER_SIZE² ×
+   * byte per pixel` per livello, dentro il budget History.
+   */
+  async deleteLayer(index: number): Promise<void> {
+    if (!this.initialized) throw new Error("Il motore non è ancora inizializzato.");
+    const target = this.layerStack.at(index);
+    const unit = target.clippingParentId === null
+      ? this.layerStack.clippingUnit(target.id)
+      : [target];
+    const doomed = new Set(unit.map((record) => record.id));
+    const survivor = this.layerStack.layers.find((record) => !doomed.has(record.id));
+    if (!survivor) {
+      throw new Error("Non è possibile eliminare l'ultimo livello del documento.");
+    }
+    this.assertLayerSwitchAllowed();
+    this.cancelLayerColdCompressionIdle();
+    await this.waitForIdle();
+
+    const scene = this.mixedSceneStack;
+    if (!scene) throw new Error("Scena mista non disponibile per l'eliminazione.");
+    // L'elenco e' dal basso verso l'alto: il ripristino reinserisce in avanti e
+    // gli indici restano validi mentre la pila ricresce.
+    const ordered = [...unit].sort(
+      (left, right) => this.layerStack.indexOfId(left.id) - this.layerStack.indexOfId(right.id),
+    );
+    const entries: DeletedLayerEntry[] = [];
+    for (const record of ordered) {
+      const gpu = this.layerGpu.get(record.id);
+      const hot = gpu?.hot ?? null;
+      const seed = record.hasContent && hot
+        ? await createLayerColdStorageCandidate(
+          this,
+          record,
+          hot,
+          coldStorageMaskForRecord(record),
+          this.nextHistoryActionId,
+        )
+        : null;
+      entries.push({
+        layerRecord: record,
+        rasterLayerIndex: this.layerStack.indexOfId(record.id),
+        sceneIndex: scene.indexOfKey(`raster:${record.id}`),
+        clippingParentId: record.clippingParentId,
+        seed,
+        baseBounds: record.contentBounds ? { ...record.contentBounds } : null,
+      });
+    }
+
+    // La cattura dei seed sottomette copie GPU. Senza drenarle, la transazione
+    // strutturale trova la presentazione congelata con lavoro pendente e si
+    // interrompe: il guard e' giusto, mancava l'attesa.
+    await this.waitForIdle();
+
+    const action: LayerDeleteHistoryAction = {
+      id: this.nextHistoryActionId++,
+      kind: "layer-delete",
+      entries,
+      selectedKeyBefore: scene.selected.key,
+      activeRasterLayerIdBefore: this.layerStack.active.id,
+      activeRasterLayerIdAfter: survivor.id,
+    };
+    truncateRedoHistory(this);
+    try {
+      await applyLayerDeleteHistory(this, action, 1);
+    } catch (error) {
+      for (const entry of entries) destroyLayerColdStorage(entry.seed);
+      throw error;
+    }
+    this.historyActions.push(action);
+    this.historyCursor = this.historyActions.length;
+    this.publishHistoryState();
+    this.publishStats();
+    scheduleHistoryMaintenance(this);
+  }
+
+  /**
    * Memoria GPU **misurata**: somma esatta dei descrittori di ogni texture e
    * buffer vivi, raccolta al momento della creazione. Non e' una stima e non
    * richiede manutenzione quando cambiano documento, formato o effetti.
@@ -6407,6 +6498,9 @@ export class BrushEngine {
         }
       }
       const fromIndex = this.layerStack.activeIndex;
+      // Catturati **prima** dell'inserimento: sono lo stato a cui l'Undo torna.
+      const selectedKeyBefore = this.mixedSceneStack?.selected.key ?? null;
+      const activeRasterLayerIdBefore = this.layerStack.active.id;
       this.persistActiveLayerState();
       await this.prepareActiveLayerForSwitch();
       const index = clippingLayerInsertIndex === null
@@ -6462,10 +6556,27 @@ export class BrushEngine {
       }
       try {
         const result = await this.activateLayer(fromIndex);
-        // Adding a layer is an intentional non-journal document mutation. A
-        // pending Redo contains absolute structural ordering from the state
-        // before this insertion and must not survive it.
+        // La creazione e' journaled. Prima troncava il Redo perche' le azioni
+        // `scene-reorder` conservano un ordine assoluto e un'inserzione non
+        // registrata le rendeva inapplicabili; registrandola, lo stato a
+        // qualsiasi cursore si ottiene applicando le azioni in ordine e la coda
+        // resta coerente. Il troncamento resta solo come regola generale del
+        // ramo Redo abbandonato, non come conseguenza dell'inserimento.
         truncateRedoHistory(this);
+        if (selectedKeyBefore !== null && this.mixedSceneStack) {
+          this.historyActions.push({
+            id: this.nextHistoryActionId++,
+            kind: "layer-add",
+            layerRecord: record,
+            rasterLayerIndex: this.layerStack.indexOfId(record.id),
+            sceneIndex: this.mixedSceneStack.indexOfKey(`raster:${record.id}`),
+            clippingParentId: clippingParentId,
+            selectedKeyBefore,
+            activeRasterLayerIdBefore,
+          } satisfies LayerAddHistoryAction);
+          this.historyCursor = this.historyActions.length;
+          this.publishHistoryState();
+        }
         // prepareActiveLayerForSwitch freezes presentation. Clearing the live
         // text texture before activation marks displayDirty while frozen, so
         // the effect retarget's waitForIdle can never drain it. The new mixed
@@ -8690,6 +8801,7 @@ export class BrushEngine {
       ...this.discardedVectorRasterHistoryActions,
       ...this.discardedRasterImportHistoryActions,
       ...this.discardedRasterTransformHistoryActions,
+      ...this.discardedLayerDeleteHistoryActions,
     ]);
     for (const action of vectorRasterActions) {
       if (action.kind === "vector-rasterize") {
@@ -8698,11 +8810,14 @@ export class BrushEngine {
         destroyRasterImportHistorySeed(action);
       } else if (action.kind === "raster-transform") {
         destroyLayerColdStorage(action.seed);
+      } else if (action.kind === "layer-delete") {
+        destroyLayerDeleteHistorySeeds(action);
       }
     }
     this.discardedVectorRasterHistoryActions = [];
     this.discardedRasterImportHistoryActions = [];
     this.discardedRasterTransformHistoryActions = [];
+    this.discardedLayerDeleteHistoryActions = [];
     if (this.historyGpuStorage) {
       this.historyGpuStorage.releaseAll();
       this.selectionHistoryMasksByAction.clear();

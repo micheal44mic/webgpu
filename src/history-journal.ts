@@ -41,6 +41,23 @@ export type JournalAction =
   | {
     id: number;
     kind: "scene-reorder";
+  }
+  // Mutazioni strutturali: cambiano **quali** livelli esistono. Non hanno un
+  // `layerId` singolo perche' una cancellazione puo' portarsi via un'intera
+  // unita' di ritaglio, e non sono checkpoint: non ricostruiscono i pixel di
+  // un livello vivo, spostano il livello dentro o fuori dal documento.
+  //
+  // Due membri distinti e non uno con discriminante `"layer-add" | "layer-delete"`:
+  // escludendo entrambi i kind, TypeScript riduce quel discriminante a `never`
+  // ma **non** elimina il membro, e ogni accesso a `layerId` a valle resta un
+  // errore. Con literal singoli il narrowing funziona.
+  | {
+    id: number;
+    kind: "layer-add";
+  }
+  | {
+    id: number;
+    kind: "layer-delete";
   };
 
 export interface JournalBatch {
@@ -135,6 +152,10 @@ export function hasVisibleContent(
       || action.kind === "layer-blend-mode"
       || action.kind === "layer-metadata"
       || action.kind === "scene-reorder"
+      // Le mutazioni strutturali non hanno un livello singolo: una
+      // cancellazione puo` portarsi via un`intera unita` di ritaglio.
+      || action.kind === "layer-add"
+      || action.kind === "layer-delete"
     ) continue;
     if (layerId !== undefined && action.layerId !== layerId) continue;
     if (action.kind === "clear") {
@@ -164,6 +185,8 @@ export function latestLayerReplayCheckpoint<TAction extends JournalAction>(
     if (
       action.kind !== "vector"
       && action.kind !== "scene-reorder"
+      && action.kind !== "layer-add"
+      && action.kind !== "layer-delete"
       && action.layerId === layerId
       && (
         action.kind === "vector-rasterize"
@@ -201,6 +224,8 @@ export function visibleRasterBatchActionIdsAfterCheckpoint<TAction extends Journ
     if (
       action.kind !== "vector"
       && action.kind !== "scene-reorder"
+      && action.kind !== "layer-add"
+      && action.kind !== "layer-delete"
       && action.layerId === layerId
       && (action.kind === "stroke" || action.kind === "fill")
     ) {
@@ -291,6 +316,8 @@ export function historyStepTargetsMissingLayer(
     !action
     || action.kind === "vector"
     || action.kind === "scene-reorder"
+    || action.kind === "layer-add"
+    || action.kind === "layer-delete"
   ) return false;
   if (action.kind === "vector-rasterize" || action.kind === "raster-import") {
     return delta < 0

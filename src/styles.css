@@ -3218,6 +3218,13 @@ select {
     border-bottom: 0;
   }
 
+  /* L'unica voce che toglie qualcosa dal documento si distingue dalle altre.
+     Non serve una conferma perche' l'operazione e' annullabile, ma deve essere
+     chiaro col pollice sopra che non e' una voce come le altre. */
+  .mobile-layer-context-menu button.is-destructive {
+    color: #e8654b;
+  }
+
   .mobile-layer-context-menu button[aria-checked="true"] {
     color: #dd5c35;
   }

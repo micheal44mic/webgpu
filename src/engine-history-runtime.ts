@@ -19,6 +19,11 @@ import {
   publishMixedScene,
   requireMixedSceneStack,
 } from "./engine-vector-text-runtime";
+import {
+  applyLayerAddHistory,
+  applyLayerDeleteHistory,
+  destroyLayerDeleteHistorySeeds,
+} from "./engine-layer-structure-runtime";
 import { type PendingBlendBatch } from "./engine-stroke-types";
 import { type SubmitTiming } from "./engine-stats";
 import { compactDryBlendHistoryGeometry } from "./blend-renderer";
@@ -356,6 +361,10 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
   engine.publishStatus(
     crossedAction.kind === "raster-import"
       ? delta < 0 ? "Undo: rimozione immagine raster…" : "Redo: ripristino immagine raster…"
+      : crossedAction.kind === "layer-delete"
+      ? delta < 0 ? "Undo: ripristino livello…" : "Redo: eliminazione livello…"
+      : crossedAction.kind === "layer-add"
+      ? delta < 0 ? "Undo: rimozione livello…" : "Redo: creazione livello…"
       : crossedAction.kind === "vector-rasterize"
       ? delta < 0 ? "Undo: ripristino del vettore…" : "Redo: rasterizzazione vettoriale…"
       : crossedAction.kind === "scene-reorder"
@@ -394,6 +403,23 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
       }
       engine.publishStatus(
         delta < 0 ? "Undo importazione raster completato." : "Redo importazione raster completato.",
+        "ok",
+      );
+      return true;
+    }
+    if (crossedAction.kind === "layer-delete" || crossedAction.kind === "layer-add") {
+      if (crossedAction.kind === "layer-delete") {
+        await applyLayerDeleteHistory(engine, crossedAction, delta);
+      } else {
+        await applyLayerAddHistory(engine, crossedAction, delta);
+      }
+      engine.historyCursor = nextCursor;
+      if (engine.activeStrokeProfile) {
+        engine.activeStrokeProfile.historyReplayOperations += 1;
+      }
+      publishMixedScene(engine);
+      engine.publishStatus(
+        delta < 0 ? "Undo struttura livelli completato." : "Redo struttura livelli completato.",
         "ok",
       );
       return true;
@@ -1283,6 +1309,10 @@ export async function compactDiscardedHistoryIncrementally(
   engine.historyStoredBaseStamps = retainedStampCount;
   engine.discardedVectorRasterHistoryActions = [];
   engine.discardedRasterImportHistoryActions = [];
+  for (const action of engine.discardedLayerDeleteHistoryActions) {
+    destroyLayerDeleteHistorySeeds(action);
+  }
+  engine.discardedLayerDeleteHistoryActions = [];
   engine.discardedRasterTransformHistoryActions = [];
   engine.historyCompactionPending = false;
   engine.historyGpuStorage.trimEmptyPages(true);
@@ -1506,6 +1536,8 @@ export function historyStepTargetLayerIndex(engine: BrushEngine, delta: -1 | 1):
     || action.kind === "layer-metadata"
     || action.kind === "vector-rasterize"
     || action.kind === "raster-import"
+    || action.kind === "layer-add"
+    || action.kind === "layer-delete"
   ) {
     return null;
   }
@@ -1524,6 +1556,10 @@ export function truncateRedoHistory(engine: BrushEngine): void {
       engine.discardedRasterImportHistoryActions.push(action);
     } else if (action.kind === "raster-transform") {
       engine.discardedRasterTransformHistoryActions.push(action);
+    } else if (action.kind === "layer-delete") {
+      // Senza questo ogni cancellazione superata dal Redo perde il suo seed:
+      // 16 MiB a 2048²/rgba8, che nessuno liberera` mai.
+      engine.discardedLayerDeleteHistoryActions.push(action);
     }
   }
   engine.historyActions.length = engine.historyCursor;

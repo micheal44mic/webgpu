@@ -661,10 +661,32 @@ const rasterTransform = (id, layerId, hasContent = true) => ({
     engine.indexOf("  async addLayer("),
     engine.indexOf("  async setActiveLayer("),
   );
+  // Contratto cambiato il 6 agosto 2026: la creazione di un livello e' ora
+  // journaled. Prima troncava il Redo perche' un'inserzione non registrata
+  // rendeva inapplicabili le azioni `scene-reorder`, che conservano un ordine
+  // assoluto; registrandola, lo stato a qualsiasi cursore si ottiene applicando
+  // le azioni in ordine. Senza queste asserzioni un ritorno al vecchio
+  // comportamento renderebbe la creazione non annullabile senza che nulla lo
+  // segnali.
   assert.match(
     addLayer,
-    /const result = await this\.activateLayer\(fromIndex\);[\s\S]{0,300}truncateRedoHistory\(this\);/,
-    "un nuovo livello non journalled deve invalidare gli indici strutturali del Redo",
+    /kind: "layer-add"/,
+    "la creazione di un livello deve registrare un'azione journaled",
+  );
+  assert.match(
+    addLayer,
+    /const selectedKeyBefore = this\.mixedSceneStack\?\.selected\.key \?\? null;/,
+    "lo stato selezionato va catturato prima dell'inserimento, non dopo",
+  );
+  assert.match(
+    addLayer,
+    /const activeRasterLayerIdBefore = this\.layerStack\.active\.id;/,
+    "il raster attivo precedente va catturato prima dell'inserimento",
+  );
+  assert.match(
+    addLayer,
+    /this\.historyCursor = this\.historyActions\.length;/,
+    "l'azione di creazione deve avanzare il cursore",
   );
 
   const rasterReplay = engine.slice(

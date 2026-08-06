@@ -151,6 +151,55 @@ export interface RasterImportHistoryAction extends RasterHistoryCheckpoint {
   source: RasterImportSourceMetadata;
 }
 
+/**
+ * Un livello cancellato conserva tutto cio' che serve a rimetterlo dov'era:
+ * il record, la posizione nello stack e nella scena, e i pixel nel `seed`.
+ *
+ * Cancellare un parent di ritaglio cancella **l'intera unita'**, quindi le
+ * voci sono un elenco: una maschera senza il suo parent verrebbe disegnata
+ * come livello normale e cambierebbe l'immagine. L'elenco e' ordinato dal
+ * basso verso l'alto, cosi' il ripristino puo' reinserire in avanti.
+ */
+export interface DeletedLayerEntry {
+  layerRecord: LayerRecord;
+  rasterLayerIndex: number;
+  sceneIndex: number;
+  clippingParentId: number | null;
+  /** `null` quando il livello era vuoto: non c'e' nulla da reidratare. */
+  seed: LayerColdStorageResources | null;
+  baseBounds: DirtyRect | null;
+}
+
+export interface LayerDeleteHistoryAction {
+  id: number;
+  kind: "layer-delete";
+  entries: readonly DeletedLayerEntry[];
+  selectedKeyBefore: MixedSceneItem["key"];
+  activeRasterLayerIdBefore: number;
+  /** Raster attivo dopo la cancellazione, per rifare il Redo senza indovinare. */
+  activeRasterLayerIdAfter: number;
+}
+
+/**
+ * La creazione di un livello e' journaled: prima troncava il Redo perche' le
+ * azioni `scene-reorder` conservano un ordine assoluto e un'inserzione non
+ * registrata le rendeva inapplicabili. Registrandola, lo stato a qualsiasi
+ * cursore si ottiene applicando le azioni in ordine e la coda resta coerente.
+ *
+ * Non serve un `seed`: quando l'Undo attraversa la creazione, tutte le azioni
+ * successive sono gia' state annullate, quindi il livello e' vuoto.
+ */
+export interface LayerAddHistoryAction {
+  id: number;
+  kind: "layer-add";
+  layerRecord: LayerRecord;
+  rasterLayerIndex: number;
+  sceneIndex: number;
+  clippingParentId: number | null;
+  selectedKeyBefore: MixedSceneItem["key"];
+  activeRasterLayerIdBefore: number;
+}
+
 export type RasterTransformMatrix = readonly [
   number,
   number,
@@ -203,7 +252,20 @@ export type HistoryAction =
   | MixedSceneReorderHistoryAction
   | VectorRasterizeHistoryAction
   | RasterImportHistoryAction
-  | RasterTransformHistoryAction;
+  | RasterTransformHistoryAction
+  | LayerAddHistoryAction
+  | LayerDeleteHistoryAction;
+
+/**
+ * Mutazioni che cambiano **quali** livelli esistono, non il loro contenuto.
+ * Chi ramifica sul tipo di azione deve trattarle insieme: sono le uniche che
+ * possono invalidare un indice di livello memorizzato altrove.
+ */
+export function isLayerStructureHistoryAction(
+  action: HistoryAction,
+): action is LayerAddHistoryAction | LayerDeleteHistoryAction {
+  return action.kind === "layer-add" || action.kind === "layer-delete";
+}
 
 export function isRasterHistoryCheckpointAction(
   action: HistoryAction,
