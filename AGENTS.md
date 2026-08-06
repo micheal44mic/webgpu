@@ -4234,3 +4234,7 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   Non e' stata eseguita QA su hardware mobile reale: il percorso 2048² e' stato
   esercitato via override da desktop, quindi il guadagno di fill-rate su Mali
   resta previsto e non misurato.
+- Pubblicazione Sites `136` completata il 6 agosto 2026 dal commit
+  `dc0e8ce35be14a3aa5dcbebbf4e721bba62a13c9` su
+  `https://webgpu-brush-engine-michi.m1m4brand.chatgpt.site`. La QA fisica
+  Safari/iPhone resta il prossimo passo e non e' ancora una misura canonica.
