@@ -13,10 +13,13 @@ import type { VectorTextNodeSeed } from "./mixed-scene-stack";
  * revision replaces the transient presentation when the gesture settles.
  */
 export const VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY =
-  "gesture-latest-only-dual-gpu-reprojection-fallback-exact-settle-v6" as const;
+  "gesture-window2-dual-gpu-auto-fallback-exact-settle-v7" as const;
 
 export const VECTOR_TEXT_ADAPTIVE_ZOOM_SETTLE_MS = 140;
 export const VECTOR_TEXT_FAST_PRESENTATION_FILTER_GUARD_PX = 0.5;
+export const VECTOR_TEXT_FAST_PRESENTATION_MAX_IN_FLIGHT = 2;
+export const VECTOR_TEXT_WIDE_FALLBACK_MAX_ZOOM = 0.2;
+export const VECTOR_TEXT_WIDE_FALLBACK_DOCUMENT_MARGIN = 0.94;
 
 export const VECTOR_TEXT_ZOOM_STRESS_STRATEGY =
   "ten-semantic-text-seeded-arch-drop-block-inner-center-zoom64-v1" as const;
@@ -31,7 +34,7 @@ export const VECTOR_TEXT_ZOOM_AB_IDLE_FRAME_COUNT = 30;
 export const VECTOR_TEXT_ZOOM_AB_SAMPLE_COUNT = 180;
 export const VECTOR_TEXT_ZOOM_AB_START_ZOOM = 64;
 export const VECTOR_TEXT_ZOOM_C_STRATEGY =
-  "ten-semantic-text-dual-gpu-fallback0.2-zoom8-to-0.3-drift-650ms-v5" as const;
+  "ten-semantic-text-dual-gpu-fallback-auto-post-raster-window2-zoom8-to-0.3-v6" as const;
 export const VECTOR_TEXT_ZOOM_C_IDLE_FRAME_COUNT = 30;
 export const VECTOR_TEXT_ZOOM_C_SAMPLE_LIMIT = 120;
 export const VECTOR_TEXT_ZOOM_C_GESTURE_DURATION_MS = 650;
@@ -297,15 +300,97 @@ function vectorTextCaptureCoversView(
   return true;
 }
 
+function layerPointInCapture(
+  x: number,
+  y: number,
+  capture: Readonly<VectorTextViewState>,
+): readonly [number, number] {
+  const deltaX = x - capture.centerX;
+  const deltaY = y - capture.centerY;
+  return [
+    capture.canvasWidth * 0.5 + capture.zoom * (
+      capture.rotationCos * deltaX - capture.rotationSin * deltaY
+    ),
+    capture.canvasHeight * 0.5 + capture.zoom * (
+      capture.rotationSin * deltaX + capture.rotationCos * deltaY
+    ),
+  ];
+}
+
+/**
+ * A production fallback represents the whole document, not the empty area
+ * around it. Once all four document corners fit, it can safely supply vector
+ * pixels at any zoom-out or pan while the primary capture stays sharp.
+ */
+export function vectorTextCaptureCoversDocument(
+  capture: Readonly<VectorTextViewState> | null,
+  layerSize: number,
+): boolean {
+  if (!capture || !finiteView(capture) || !Number.isFinite(layerSize) || layerSize <= 0) {
+    return false;
+  }
+  const guard = VECTOR_TEXT_FAST_PRESENTATION_FILTER_GUARD_PX;
+  const right = capture.canvasWidth - guard;
+  const bottom = capture.canvasHeight - guard;
+  const epsilon = 1e-4;
+  for (const [x, y] of [
+    [0, 0],
+    [layerSize, 0],
+    [layerSize, layerSize],
+    [0, layerSize],
+  ] as const) {
+    const [captureX, captureY] = layerPointInCapture(x, y, capture);
+    if (
+      captureX < guard - epsilon
+      || captureY < guard - epsilon
+      || captureX > right + epsilon
+      || captureY > bottom + epsilon
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Fixed, scene-relative camera used to rebuild the wide GPU cache without
+ * moving the visible camera. The 0.2 cap keeps the iPhone fixture identical;
+ * smaller viewports reduce the zoom just enough to retain the full document.
+ */
+export function vectorTextWideFallbackView(
+  current: Readonly<VectorTextViewState>,
+  layerSize: number,
+): VectorTextViewState {
+  if (!finiteView(current) || !Number.isFinite(layerSize) || layerSize <= 0) {
+    throw new RangeError("Vista o dimensione documento non valida per la cache vettoriale larga.");
+  }
+  const fitZoom = Math.min(current.canvasWidth, current.canvasHeight)
+    / layerSize
+    * VECTOR_TEXT_WIDE_FALLBACK_DOCUMENT_MARGIN;
+  return {
+    ...current,
+    centerX: layerSize * 0.5,
+    centerY: layerSize * 0.5,
+    zoom: Math.min(VECTOR_TEXT_WIDE_FALLBACK_MAX_ZOOM, fitZoom),
+    rotationRadians: 0,
+    rotationCos: 1,
+    rotationSin: 0,
+  };
+}
+
 export function vectorTextFastPresentationMode(
   capture: Readonly<VectorTextViewState> | null,
   current: Readonly<VectorTextViewState>,
   fallbackCapture: Readonly<VectorTextViewState> | null = null,
+  layerSize?: number,
 ): VectorTextFastPresentationMode {
   if (vectorTextCaptureCoversView(capture, current)) {
     return "reproject";
   }
-  if (vectorTextCaptureCoversView(fallbackCapture, current)) {
+  const fallbackCovers = layerSize === undefined
+    ? vectorTextCaptureCoversView(fallbackCapture, current)
+    : vectorTextCaptureCoversDocument(fallbackCapture, layerSize);
+  if (fallbackCovers) {
     return "reproject-fallback";
   }
   return "reproject-clipped";

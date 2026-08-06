@@ -6224,6 +6224,9 @@ interface VectorZoomCoverageReport {
   fallbackRunCount: number;
   fallbackGpuMemoryMiB: number;
   fallbackProbeAlphaPixelCounts: number[];
+  rasterLayerCountAfterFallbackRebuild: number;
+  selectedRasterAfterFallbackRebuild: boolean;
+  automaticFallbackRebuildDelta: number;
   fastCompositeProbeAlphaPixelCounts: number[];
   witnessesOutsideStartCount: number;
   witnessesInsideTargetCount: number;
@@ -6276,6 +6279,8 @@ interface VectorZoomCoverageReport {
   fastPresentationCoalescedDelta: number;
   requiredFastPresentationSubmitCount: number;
   fastPresentationRateHz: number;
+  fastPresentationMaximumInFlight: number;
+  fastPresentationInFlightAtTraceEnd: number;
   fastSubmittedRevisionLagMaximum: number;
   fastCompletedRevisionLagP95: number;
   fastCompletedRevisionLagMaximum: number;
@@ -6289,6 +6294,7 @@ interface VectorZoomCoverageReport {
     fixedFastZoomOutCompleted: boolean;
     fallbackPreparedBeforeGesture: boolean;
     fallbackPixelsPresent: boolean;
+    rasterLifecycleRebuiltFallback: boolean;
     finalFastFrameAcknowledged: boolean;
     fastCompositePixelsPresent: boolean;
     witnessesExerciseReveal: boolean;
@@ -6472,6 +6478,10 @@ async function runRequestedVectorZoomCoverage(): Promise<void> {
   let fallbackRunCount = 0;
   let fallbackGpuMemoryMiB = 0;
   let fallbackProbeAlphaPixelCounts: number[] = [];
+  let rasterLayerCountAfterFallbackRebuild = 0;
+  let selectedRasterAfterFallbackRebuild = false;
+  let automaticFallbackRebuildDelta = 0;
+  let fallbackCompleteAfterRaster = false;
   controller.setAdaptiveZoomEnabled(false);
   try {
     let beforeCameraRender = controller.getDiagnostics();
@@ -6484,31 +6494,36 @@ async function runRequestedVectorZoomCoverage(): Promise<void> {
     const anchorY = rectangle.top + rectangle.height * 0.5;
     beforeCameraRender = controller.getDiagnostics();
     engine.zoomBy(
-      VECTOR_TEXT_ZOOM_C_FALLBACK_ZOOM / engine.getVectorTextViewState().zoom,
-      anchorX,
-      anchorY,
-    );
-    await waitForVectorTextRenderAfter(beforeCameraRender.renderCount);
-    await waitForVectorTextStable();
-    fallbackCaptureZoom = engine.getVectorTextViewState().zoom;
-    const fallback = engine.captureVectorTextFallbackPresentation();
-    fallbackTextureCount = fallback.textureCount;
-    fallbackGpuMemoryMiB = fallback.gpuMemoryMiB;
-    await engine.waitForVectorTextPresentationCompletion();
-    const probe = await engine.probeVectorTextFallbackAlpha(
-      fixtures.map(({ seed }) => ({ x: seed.x, y: seed.y })),
-    );
-    fallbackRunCount = probe.runCount;
-    fallbackProbeAlphaPixelCounts = probe.alphaPixelCounts;
-
-    beforeCameraRender = controller.getDiagnostics();
-    engine.zoomBy(
       VECTOR_TEXT_ZOOM_C_START_ZOOM / engine.getVectorTextViewState().zoom,
       anchorX,
       anchorY,
     );
     await waitForVectorTextRenderAfter(beforeCameraRender.renderCount);
     await waitForVectorTextStable();
+
+    const beforeRasterLifecycle = controller.getDiagnostics();
+    await engine.addLayer("C raster lifecycle");
+    await waitForVectorTextRenderAfter(beforeRasterLifecycle.renderCount);
+    const afterRasterLifecycle = await waitForVectorTextStable();
+    automaticFallbackRebuildDelta = afterRasterLifecycle.fallbackPresentationRebuildCount
+      - beforeRasterLifecycle.fallbackPresentationRebuildCount;
+    const fallback = engine.getVectorTextFallbackPresentationStats();
+    fallbackCaptureZoom = fallback.captureView?.zoom ?? 0;
+    fallbackTextureCount = fallback.textureCount;
+    fallbackGpuMemoryMiB = fallback.gpuMemoryMiB;
+    fallbackCompleteAfterRaster = fallback.complete;
+    const postRasterScene = engine.getMixedSceneSnapshot();
+    const selectedPostRasterItem = postRasterScene?.items.find(
+      (item) => item.key === postRasterScene.selectedKey,
+    );
+    rasterLayerCountAfterFallbackRebuild = engine.getStats().layerCount;
+    selectedRasterAfterFallbackRebuild = selectedPostRasterItem?.kind === "raster";
+    await engine.waitForVectorTextPresentationCompletion();
+    const probe = await engine.probeVectorTextFallbackAlpha(
+      fixtures.map(({ seed }) => ({ x: seed.x, y: seed.y })),
+    );
+    fallbackRunCount = probe.runCount;
+    fallbackProbeAlphaPixelCounts = probe.alphaPixelCounts;
   } finally {
     controller.setAdaptiveZoomEnabled(true);
   }
@@ -6581,6 +6596,7 @@ async function runRequestedVectorZoomCoverage(): Promise<void> {
     if (progress >= 1) break;
   }
   const duringTrace = controller.getDiagnostics();
+  const duringFastBackpressure = engine.getVectorTextFastPresentationBackpressureStats();
   const gestureDurationMs = performance.now() - gestureStartedAt;
   const queuePrefixStartedAt = performance.now();
   const queuePrefixPromise = engine.waitForVectorTextPresentationCompletion()
@@ -6667,13 +6683,15 @@ async function runRequestedVectorZoomCoverage(): Promise<void> {
   const requiredFastPresentationSubmitCount = Math.max(
     1,
     Math.ceil(Math.min(
-      sampleCount * 0.75,
+      sampleCount,
       gestureDurationMs * 55 / 1000,
     )),
   );
   const fastPresentationRateHz = gestureDurationMs > 0
     ? fastPresentationSubmitDelta * 1000 / gestureDurationMs
     : 0;
+  const fastPresentationMaximumInFlight = duringFastBackpressure.maximumInFlightCount;
+  const fastPresentationInFlightAtTraceEnd = duringFastBackpressure.inFlightCount;
   const fastSubmittedRevisionLagMaximum = Math.max(
     0,
     ...fastSubmittedRevisionLagSamples,
@@ -6720,6 +6738,12 @@ async function runRequestedVectorZoomCoverage(): Promise<void> {
     fallbackPixelsPresent:
       fallbackProbeAlphaPixelCounts.length === VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT
       && emptyFallbackWitnessCount === 0,
+    rasterLifecycleRebuiltFallback:
+      rasterLayerCountAfterFallbackRebuild === 2
+      && selectedRasterAfterFallbackRebuild
+      && automaticFallbackRebuildDelta >= 1
+      && fallbackCompleteAfterRaster
+      && fallbackTextureCount === fallbackRunCount,
     finalFastFrameAcknowledged:
       finalFastRevisions.submittedRevision === finalFastRequestedRevision
       && finalFastRevisions.completedRevision === finalFastRequestedRevision,
@@ -6744,6 +6768,10 @@ async function runRequestedVectorZoomCoverage(): Promise<void> {
       && !duringVerified.zoomUnsafeExactRefreshRequestPending,
     fastPresentationFlowed:
       fastPresentationSubmitDelta >= requiredFastPresentationSubmitCount
+      && fastPresentationCoalescedDelta <= Math.ceil(sampleCount * 0.1)
+      && fastPresentationMaximumInFlight >= 1
+      && fastPresentationMaximumInFlight <= 2
+      && fastPresentationInFlightAtTraceEnd <= 2
       && fastSubmittedRevisionLagMaximum <= 2
       && fastCompletedRevisionLagP95 <= 2
       && fastCompletedRevisionLagMaximum <= 2,
@@ -6791,7 +6819,7 @@ async function runRequestedVectorZoomCoverage(): Promise<void> {
     traceFingerprint:
       `texts:${VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT}|zoom:${VECTOR_TEXT_ZOOM_C_START_ZOOM}`
       + `->${VECTOR_TEXT_ZOOM_C_TARGET_ZOOM}|duration:${VECTOR_TEXT_ZOOM_C_GESTURE_DURATION_MS}`
-      + `|fallback:${VECTOR_TEXT_ZOOM_C_FALLBACK_ZOOM}|anchor:drift|coverage:dual-gpu`,
+      + `|fallback:auto-post-raster|window:2|anchor:drift|coverage:dual-gpu`,
     textCount: after.textNodeCount,
     profileOrder,
     idleFrameCount: VECTOR_TEXT_ZOOM_C_IDLE_FRAME_COUNT,
@@ -6805,6 +6833,9 @@ async function runRequestedVectorZoomCoverage(): Promise<void> {
     fallbackRunCount,
     fallbackGpuMemoryMiB,
     fallbackProbeAlphaPixelCounts,
+    rasterLayerCountAfterFallbackRebuild,
+    selectedRasterAfterFallbackRebuild,
+    automaticFallbackRebuildDelta,
     fastCompositeProbeAlphaPixelCounts,
     witnessesOutsideStartCount,
     witnessesInsideTargetCount,
@@ -6857,6 +6888,8 @@ async function runRequestedVectorZoomCoverage(): Promise<void> {
     fastPresentationCoalescedDelta,
     requiredFastPresentationSubmitCount,
     fastPresentationRateHz,
+    fastPresentationMaximumInFlight,
+    fastPresentationInFlightAtTraceEnd,
     fastSubmittedRevisionLagMaximum,
     fastCompletedRevisionLagP95,
     fastCompletedRevisionLagMaximum,

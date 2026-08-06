@@ -37,7 +37,7 @@ import {
   type VectorTextPlacement,
   type VectorTextViewState,
 } from "./vector-text-types";
-import { vectorTextGpuClearBounds } from "./engine-geometry";
+import { vectorTextGpuClearBounds, vectorTextGpuRunBounds } from "./engine-geometry";
 import { type DirtyRect } from "./engine-stroke-types";
 import { MIXED_SCENE_COMPOSITOR_STRATEGY, MIXED_SCENE_LINEAR_FORMAT } from "./mixed-scene-compositor-shader";
 import {
@@ -832,16 +832,16 @@ export function flushVectorTextGpuPresentations(engine: BrushEngine): void {
     }
     pass.end();
 
-    const wasInitialized = run.resources.initialized;
-    const clearBounds = vectorTextGpuClearBounds(
-      run.resources.lastBounds,
-      run.bounds,
-    );
+    const isPrimary = run.target === "primary";
+    const wasInitialized = isPrimary && run.resources.initialized;
+    const clearBounds = isPrimary
+      ? vectorTextGpuClearBounds(run.resources.lastBounds, run.bounds)
+      : run.bounds;
     const clearPass = encoder.beginRenderPass({
-      label: `Vector text GPU clear old crop ${run.placement}`,
+      label: `Vector text GPU clear ${run.target} crop ${run.placement}`,
       colorAttachments: [
         {
-          view: run.resources.view,
+          view: run.targetView,
           loadOp: wasInitialized ? "load" : "clear",
           storeOp: "store",
           clearValue: { r: 0, g: 0, b: 0, a: 0 },
@@ -865,7 +865,7 @@ export function flushVectorTextGpuPresentations(engine: BrushEngine): void {
         origin: { x: 0, y: 0, z: 0 },
       },
       {
-        texture: run.resources.texture,
+        texture: run.targetTexture,
         origin: { x: run.bounds.x, y: run.bounds.y, z: 0 },
       },
       {
@@ -874,8 +874,10 @@ export function flushVectorTextGpuPresentations(engine: BrushEngine): void {
         depthOrArrayLayers: 1,
       },
     );
-    run.resources.lastBounds = run.bounds;
-    run.resources.initialized = true;
+    if (isPrimary) {
+      run.resources.lastBounds = run.bounds;
+      run.resources.initialized = true;
+    }
     drawOffset += run.draws.length;
   }
   engine.vectorTextGpuPendingRuns.length = 0;
@@ -1271,27 +1273,41 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
   presentPass.end();
 }
 
-function rebuildVectorTextRunBindGroup(
+function createVectorTextRunBindGroup(
   engine: BrushEngine,
   key: Extract<VectorTextPlacement, `text-run:${string}`>,
-  resources: VectorTextRunTextureResources,
-): void {
+  sourceView: GPUTextureView,
+  fallbackView: GPUTextureView | null,
+): GPUBindGroup {
   const layout = engine.mixedSceneTextSegmentBindGroupLayout;
   if (!layout) {
     throw new Error("Layout delle cache testo segmentate non inizializzato.");
   }
-  resources.bindGroup = engine.device.createBindGroup({
+  return engine.device.createBindGroup({
     label: `Vector text ${key} dual-capture segment bind group`,
     layout,
     entries: [
       { binding: 0, resource: { buffer: engine.displayUniformBuffer } },
       { binding: 1, resource: { buffer: engine.vectorTextCaptureUniformBuffer } },
-      { binding: 2, resource: resources.view },
+      { binding: 2, resource: sourceView },
       { binding: 3, resource: engine.sampler },
       { binding: 4, resource: { buffer: engine.vectorTextFallbackCaptureUniformBuffer } },
-      { binding: 5, resource: resources.fallbackView ?? engine.transparentLayerView },
+      { binding: 5, resource: fallbackView ?? engine.transparentLayerView },
     ],
   });
+}
+
+function rebuildVectorTextRunBindGroup(
+  engine: BrushEngine,
+  key: Extract<VectorTextPlacement, `text-run:${string}`>,
+  resources: VectorTextRunTextureResources,
+): void {
+  resources.bindGroup = createVectorTextRunBindGroup(
+    engine,
+    key,
+    resources.view,
+    resources.fallbackView,
+  );
 }
 
 export function clearVectorTextFallbackPresentation(engine: BrushEngine): void {
@@ -1313,6 +1329,182 @@ export function clearVectorTextFallbackPresentation(engine: BrushEngine): void {
     engine.presentationCacheNeedsFullRebuild = true;
     engine.requestRender();
   }
+}
+
+export function vectorTextFallbackPresentationComplete(engine: BrushEngine): boolean {
+  const capture = engine.vectorTextFallbackCaptureView;
+  return capture !== null
+    && engine.vectorTextRunTextures.size > 0
+    && capture.canvasWidth === engine.vectorTextTextureWidth
+    && capture.canvasHeight === engine.vectorTextTextureHeight
+    && [...engine.vectorTextRunTextures.values()].every(
+      (resources) => resources.fallbackTexture !== null && resources.fallbackView !== null,
+    );
+}
+
+export function getVectorTextFallbackPresentationStats(engine: BrushEngine): {
+  captureView: VectorTextViewState | null;
+  textureCount: number;
+  gpuMemoryMiB: number;
+  complete: boolean;
+} {
+  const textureCount = [...engine.vectorTextRunTextures.values()].filter(
+    (resources) => resources.fallbackTexture !== null,
+  ).length;
+  return {
+    captureView: engine.vectorTextFallbackCaptureView
+      ? { ...engine.vectorTextFallbackCaptureView }
+      : null,
+    textureCount,
+    gpuMemoryMiB:
+      textureCount
+      * engine.vectorTextTextureWidth
+      * engine.vectorTextTextureHeight
+      * 4
+      / (1024 * 1024),
+    complete: vectorTextFallbackPresentationComplete(engine),
+  };
+}
+
+/**
+ * Rebuilds every live text run into candidate fallback textures with a fixed
+ * scene-relative camera. Candidate views and bind groups are published only
+ * after the whole batch has been encoded and submitted, so a topology change
+ * can never expose a half-old/half-new fallback generation.
+ */
+export function rebuildVectorTextGpuFallbackPresentation(
+  engine: BrushEngine,
+  captureView: Readonly<VectorTextViewState>,
+  runs: readonly {
+    placement: VectorTextPlacement;
+    draws: readonly VectorTextGpuDraw[];
+  }[],
+): { textureCount: number; gpuMemoryMiB: number } {
+  flushVectorTextGpuPresentations(engine);
+  const width = engine.vectorTextTextureWidth;
+  const height = engine.vectorTextTextureHeight;
+  if (
+    width < 1
+    || height < 1
+    || captureView.canvasWidth !== width
+    || captureView.canvasHeight !== height
+  ) {
+    throw new Error("Vista larga diversa dalle cache vettoriali del viewport.");
+  }
+  if (engine.vectorTextRunTextures.size === 0) {
+    clearVectorTextFallbackPresentation(engine);
+    return { textureCount: 0, gpuMemoryMiB: 0 };
+  }
+
+  const runByKey = new Map<
+    Extract<VectorTextPlacement, `text-run:${string}`>,
+    readonly VectorTextGpuDraw[]
+  >();
+  for (const run of runs) {
+    if (!run.placement.startsWith("text-run:")) {
+      throw new Error("La cache larga accetta soltanto run testo segmentate.");
+    }
+    const key = run.placement as Extract<VectorTextPlacement, `text-run:${string}`>;
+    if (runByKey.has(key)) {
+      throw new Error(`Run testo duplicata nella cache larga: ${key}.`);
+    }
+    runByKey.set(key, run.draws);
+  }
+  if (
+    runByKey.size !== engine.vectorTextRunTextures.size
+    || [...engine.vectorTextRunTextures.keys()].some((key) => !runByKey.has(key))
+  ) {
+    throw new Error("La cache larga deve coprire atomicamente tutte le run testo vive.");
+  }
+
+  const candidates = new Map<
+    Extract<VectorTextPlacement, `text-run:${string}`>,
+    {
+      texture: GPUTexture;
+      view: GPUTextureView;
+      bindGroup: GPUBindGroup;
+      resources: VectorTextRunTextureResources;
+    }
+  >();
+  const pendingStart = engine.vectorTextGpuPendingRuns.length;
+  try {
+    for (const [key, draws] of runByKey) {
+      const resources = engine.vectorTextRunTextures.get(key);
+      if (!resources) {
+        throw new Error(`Run testo GPU ${key} rimossa durante la cache larga.`);
+      }
+      const texture = engine.device.createTexture({
+        label: `Vector text ${key} automatic wide fallback ${width}×${height}`,
+        size: { width, height, depthOrArrayLayers: 1 },
+        format: "rgba8unorm-srgb",
+        usage:
+          GPUTextureUsage.COPY_DST
+          | GPUTextureUsage.COPY_SRC
+          | GPUTextureUsage.RENDER_ATTACHMENT
+          | GPUTextureUsage.TEXTURE_BINDING,
+      });
+      try {
+        const view = texture.createView({
+          label: `Vector text ${key} automatic wide fallback view`,
+        });
+        const bindGroup = createVectorTextRunBindGroup(
+          engine,
+          key,
+          resources.view,
+          view,
+        );
+        candidates.set(key, { texture, view, bindGroup, resources });
+        const drawResources = draws.map((draw) => ensureVectorTextGpuResource(engine, draw));
+        const blurResources = draws.map((draw) =>
+          vectorTextGpuDrawUsesBlur(draw)
+            ? ensureVectorTextGpuBlurCache(engine, draw)
+            : null,
+        );
+        engine.vectorTextGpuPendingRuns.push({
+          placement: key,
+          resources,
+          target: "fallback",
+          targetTexture: texture,
+          targetView: view,
+          draws,
+          drawResources,
+          blurResources,
+          view: { ...captureView },
+          bounds: vectorTextGpuRunBounds(draws, captureView),
+        });
+      } catch (error) {
+        candidates.delete(key);
+        texture.destroy();
+        throw error;
+      }
+    }
+    flushVectorTextGpuPresentations(engine);
+  } catch (error) {
+    engine.vectorTextGpuPendingRuns.splice(pendingStart);
+    for (const candidate of candidates.values()) candidate.texture.destroy();
+    throw error;
+  }
+
+  const previousTextures: GPUTexture[] = [];
+  for (const [key, candidate] of candidates) {
+    if (candidate.resources.fallbackTexture) {
+      previousTextures.push(candidate.resources.fallbackTexture);
+    }
+    candidate.resources.fallbackTexture = candidate.texture;
+    candidate.resources.fallbackView = candidate.view;
+    candidate.resources.bindGroup = candidate.bindGroup;
+    if (!engine.vectorTextRunTextures.has(key)) {
+      throw new Error(`Run testo GPU ${key} rimossa prima della pubblicazione larga.`);
+    }
+  }
+  engine.vectorTextFallbackCaptureView = { ...captureView };
+  writeVectorTextFallbackCaptureUniforms(engine);
+  writeVectorTextCaptureUniforms(engine);
+  for (const texture of previousTextures) texture.destroy();
+  return {
+    textureCount: candidates.size,
+    gpuMemoryMiB: candidates.size * width * height * 4 / (1024 * 1024),
+  };
 }
 
 export function captureVectorTextFallbackPresentation(engine: BrushEngine): {
@@ -2686,11 +2878,17 @@ export function writeVectorTextFallbackCaptureUniforms(engine: BrushEngine): voi
 export function writeVectorTextCaptureUniforms(engine: BrushEngine): void {
   const view = engine.vectorTextCaptureView ?? engine.getVectorTextViewState();
   const currentView = engine.getVectorTextViewState();
+  const completeFallback = vectorTextFallbackPresentationComplete(engine)
+    && engine.vectorTextFallbackCaptureView?.canvasWidth === currentView.canvasWidth
+    && engine.vectorTextFallbackCaptureView.canvasHeight === currentView.canvasHeight
+    ? engine.vectorTextFallbackCaptureView
+    : null;
   const presentationMode = engine.vectorTextFastPresentationEnabled
     ? vectorTextFastPresentationMode(
       engine.vectorTextCaptureView,
       currentView,
-      engine.vectorTextFallbackCaptureView,
+      completeFallback,
+      engine.layerSize,
     )
     : "precise";
   engine.vectorTextFastPresentationMode = presentationMode;

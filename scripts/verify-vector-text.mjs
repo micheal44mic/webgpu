@@ -81,6 +81,8 @@ import {
   VECTOR_TEXT_ADAPTIVE_ZOOM_SETTLE_MS,
   VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
   VECTOR_TEXT_FAST_PRESENTATION_FILTER_GUARD_PX,
+  VECTOR_TEXT_FAST_PRESENTATION_MAX_IN_FLIGHT,
+  VECTOR_TEXT_WIDE_FALLBACK_MAX_ZOOM,
   VECTOR_TEXT_ZOOM_AB_IDLE_FRAME_COUNT,
   VECTOR_TEXT_ZOOM_AB_SAMPLE_COUNT,
   VECTOR_TEXT_ZOOM_AB_START_ZOOM,
@@ -98,7 +100,9 @@ import {
   VECTOR_TEXT_ZOOM_STRESS_TARGET_ZOOM,
   VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT,
   vectorTextExactRecoveryIsCurrent,
+  vectorTextCaptureCoversDocument,
   vectorTextFastPresentationMode,
+  vectorTextWideFallbackView,
   vectorTextZoomCoverageSeed,
   vectorTextZoomStressSeed,
   vectorTextZoomStressStepFactor,
@@ -323,10 +327,12 @@ assert.equal(
 );
 assert.equal(
   VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
-  "gesture-latest-only-dual-gpu-reprojection-fallback-exact-settle-v6",
+  "gesture-window2-dual-gpu-auto-fallback-exact-settle-v7",
 );
 assert.equal(VECTOR_TEXT_ADAPTIVE_ZOOM_SETTLE_MS, 140);
 assert.equal(VECTOR_TEXT_FAST_PRESENTATION_FILTER_GUARD_PX, 0.5);
+assert.equal(VECTOR_TEXT_FAST_PRESENTATION_MAX_IN_FLIGHT, 2);
+assert.equal(VECTOR_TEXT_WIDE_FALLBACK_MAX_ZOOM, 0.2);
 assert.equal(
   VECTOR_TEXT_ZOOM_STRESS_STRATEGY,
   "ten-semantic-text-seeded-arch-drop-block-inner-center-zoom64-v1",
@@ -436,6 +442,111 @@ assert.equal(
   "reproject-fallback",
   "C deve coprire lo zoom-out con la seconda capture senza dichiararlo clipped",
 );
+const mobilePhysicalView = {
+  ...capturedView,
+  canvasWidth: 828,
+  canvasHeight: 1500,
+  cssWidth: 414,
+  cssHeight: 750,
+  centerX: 1024,
+  centerY: 1024,
+};
+const automaticWideCapture = vectorTextWideFallbackView(mobilePhysicalView, 2048);
+assert.equal(automaticWideCapture.zoom, VECTOR_TEXT_ZOOM_C_FALLBACK_ZOOM);
+assert.equal(vectorTextCaptureCoversDocument(automaticWideCapture, 2048), true);
+assert.equal(
+  vectorTextFastPresentationMode(
+    { ...mobilePhysicalView, zoom: VECTOR_TEXT_ZOOM_C_START_ZOOM },
+    {
+      ...mobilePhysicalView,
+      centerX: 1400,
+      centerY: 700,
+      zoom: 0.02,
+    },
+    automaticWideCapture,
+    2048,
+  ),
+  "reproject-fallback",
+  "la fallback production copre i pixel documento anche a zoom-out estremo",
+);
+assert.equal(
+  vectorTextCaptureCoversDocument({ ...automaticWideCapture, zoom: 0.5 }, 2048),
+  false,
+  "una cache larga che non contiene l'intero documento non deve essere pubblicabile",
+);
+
+function simulateFastPresentationWindow(capacity, frameCount) {
+  const completions = [];
+  let inFlight = 0;
+  let peakInFlight = 0;
+  let submissionCount = 0;
+  let coalescedCount = 0;
+  for (let tick = 0; tick < frameCount; tick += 1) {
+    for (let index = completions.length - 1; index >= 0; index -= 1) {
+      if (completions[index] <= tick) {
+        completions.splice(index, 1);
+        inFlight -= 1;
+      }
+    }
+    if (inFlight >= capacity) {
+      coalescedCount += 1;
+      continue;
+    }
+    submissionCount += 1;
+    inFlight += 1;
+    peakInFlight = Math.max(peakInFlight, inFlight);
+    const callbackDelayTicks = submissionCount % 2 === 1 ? 1 : 2;
+    completions.push(tick + callbackDelayTicks);
+  }
+  return { submissionCount, coalescedCount, peakInFlight };
+}
+
+const singleSlotTrace = simulateFastPresentationWindow(1, 40);
+assert.equal(singleSlotTrace.submissionCount, 27);
+assert.equal(singleSlotTrace.coalescedCount, 13);
+const twoSlotTrace = simulateFastPresentationWindow(
+  VECTOR_TEXT_FAST_PRESENTATION_MAX_IN_FLIGHT,
+  40,
+);
+assert.equal(twoSlotTrace.submissionCount, 40);
+assert.equal(twoSlotTrace.coalescedCount, 0);
+assert.equal(twoSlotTrace.peakInFlight, 2);
+
+const schedulerState = {
+  inFlight: 0,
+  latest: null,
+  submitted: [],
+  peak: 0,
+};
+const requestSchedulerRevision = (revision) => {
+  if (schedulerState.inFlight >= VECTOR_TEXT_FAST_PRESENTATION_MAX_IN_FLIGHT) {
+    schedulerState.latest = revision;
+    return;
+  }
+  schedulerState.submitted.push(revision);
+  schedulerState.inFlight += 1;
+  schedulerState.peak = Math.max(schedulerState.peak, schedulerState.inFlight);
+};
+const completeSchedulerRevision = () => {
+  schedulerState.inFlight -= 1;
+  if (schedulerState.latest !== null) {
+    const latest = schedulerState.latest;
+    schedulerState.latest = null;
+    requestSchedulerRevision(latest);
+  }
+};
+requestSchedulerRevision(1);
+requestSchedulerRevision(2);
+for (let revision = 3; revision <= 20; revision += 1) {
+  requestSchedulerRevision(revision);
+}
+completeSchedulerRevision();
+completeSchedulerRevision();
+completeSchedulerRevision();
+assert.deepEqual(schedulerState.submitted, [1, 2, 20]);
+assert.equal(schedulerState.peak, 2);
+assert.equal(schedulerState.inFlight, 0);
+assert.equal(schedulerState.latest, null);
 assert.equal(
   vectorTextFastPresentationMode(capturedView, { ...capturedView, centerX: 2500 }),
   "reproject-clipped",
@@ -1442,9 +1553,10 @@ assert.ok(
   "pointer-up deve richiedere il recovery preciso senza attendere il debounce",
 );
 assert.doesNotMatch(controllerSource, /zoomModeIndicator|updateAdaptiveZoomIndicator|Zoom vettori · GPU/);
-assert.match(adaptiveSource, /dual-gpu-reprojection-fallback-exact-settle-v6/);
+assert.match(adaptiveSource, /gesture-window2-dual-gpu-auto-fallback-exact-settle-v7/);
 assert.match(adaptiveSource, /for \(const \[x, y\] of \[/);
-assert.match(engineSource, /vectorTextFastPresentationInFlight/);
+assert.match(engineSource, /vectorTextFastPresentationInFlightCount/);
+assert.match(engineSource, /VECTOR_TEXT_FAST_PRESENTATION_MAX_IN_FLIGHT/);
 assert.match(engineSource, /vectorTextFastPresentationLatestRequested/);
 assert.match(engineSource, /vectorTextFastPresentationCoalescedRequestCount \+= 1/);
 assert.match(engineSource, /vectorTextFastRequestedRevision \+= 1/);
@@ -1453,8 +1565,13 @@ assert.match(engineSource, /vectorTextFastCompletedRevision = Math\.max/);
 assert.match(engineSource, /waitForVectorTextFastPresentationRevision/);
 assert.match(
   engineSource,
-  /vectorTextFastPresentationEnabled && this\.vectorTextFastPresentationInFlight\) \{\s*this\.vectorTextFastPresentationLatestRequested = true/,
-  "anche un frame autoritativo concorrente deve lasciare un ack latest-only tracciato",
+  /vectorTextFastPresentationInFlightCount[\s\S]{0,120}>= VECTOR_TEXT_FAST_PRESENTATION_MAX_IN_FLIGHT[\s\S]{0,120}vectorTextFastPresentationLatestRequested = true/,
+  "solo il terzo frame fast deve entrare nel singolo slot latest-only",
+);
+assert.match(
+  engineSource,
+  /if \(this\.vectorTextFastPresentationEnabled\) \{\s*this\.trackVectorTextFastPresentationSubmission\(\)/,
+  "anche un submit autoritativo concorrente deve consumare e ackare la camera più recente",
 );
 assert.match(engineSource, /device\.queue\.onSubmittedWorkDone\(\)\.then/);
 assert.match(
@@ -1469,6 +1586,8 @@ assert.doesNotMatch(
 assert.match(mixedCompositorSource, /@group\(0\) @binding\(5\) var fallbackTexture/);
 assert.match(mixedCompositorSource, /return mix\(fallbackColor, sourceColor, smoothstep/);
 assert.match(engineSource, /captureVectorTextFallbackPresentation/);
+assert.match(engineSource, /rebuildVectorTextGpuFallbackPresentation/);
+assert.match(engineSource, /vectorTextFallbackPresentationComplete/);
 assert.match(engineSource, /probeVectorTextFallbackAlpha/);
 assert.match(engineSource, /probeVectorTextFastCompositeAlpha/);
 assert.match(engineSource, /const texture = engine\.mixedSceneLinearTexture/);
@@ -1480,6 +1599,8 @@ assert.match(
   "invalidare la fallback deve riclassificare subito il fast mode prima del frame successivo",
 );
 assert.match(controllerSource, /zoomFallbackReprojectionCount/);
+assert.match(controllerSource, /vectorTextWideFallbackView\(view, this\.host\.layerSize\)/);
+assert.match(controllerSource, /fallbackPresentationDirty/);
 assert.match(mainSource, /VECTOR_TEXT_ZOOM_C_START_ZOOM/);
 assert.match(mainSource, /VECTOR_TEXT_ZOOM_C_TARGET_ZOOM/);
 assert.match(mainSource, /__vectorZoomCoverageReport/);
@@ -1487,6 +1608,20 @@ assert.match(mainSource, /fallbackProbeAlphaPixelCounts/);
 assert.match(mainSource, /fastCompositeProbeAlphaPixelCounts/);
 assert.match(mainSource, /finalFastFrameAcknowledged/);
 assert.match(mainSource, /initialRasterWasEmpty/);
+const coverageFunctionStart = mainSource.indexOf("async function runRequestedVectorZoomCoverage");
+const coverageFunctionEnd = mainSource.indexOf("async function runRequestedVectorZoomAb", coverageFunctionStart);
+assert.ok(coverageFunctionStart >= 0 && coverageFunctionEnd > coverageFunctionStart);
+const coverageFunctionSource = mainSource.slice(coverageFunctionStart, coverageFunctionEnd);
+const rasterLifecycleIndex = coverageFunctionSource.indexOf('engine.addLayer("C raster lifecycle")');
+const beginCoverageGestureIndex = coverageFunctionSource.indexOf("controller.beginViewGesture()");
+assert.ok(rasterLifecycleIndex >= 0 && beginCoverageGestureIndex > rasterLifecycleIndex);
+assert.doesNotMatch(
+  coverageFunctionSource.slice(rasterLifecycleIndex, beginCoverageGestureIndex),
+  /captureVectorTextFallbackPresentation/,
+  "C deve provare il rebuild production dopo addLayer senza autoripararsi manualmente",
+);
+assert.match(coverageFunctionSource, /automaticFallbackRebuildDelta/);
+assert.match(coverageFunctionSource, /rasterLifecycleRebuiltFallback/);
 assert.match(mainSource, /const duringTrace = controller\.getDiagnostics\(\)/);
 assert.match(
   mainSource,
@@ -1494,6 +1629,9 @@ assert.match(
   "il drain di verifica non deve migliorare retroattivamente la metrica dei 650 ms",
 );
 assert.match(mainSource, /fastSubmittedRevisionLagMaximum <= 2/);
+assert.match(mainSource, /fastPresentationMaximumInFlight >= 1/);
+assert.match(mainSource, /fastPresentationMaximumInFlight <= 2/);
+assert.match(mainSource, /fastPresentationCoalescedDelta <= Math\.ceil\(sampleCount \* 0\.1\)/);
 assert.match(mainSource, /finalFastAckDurationMs <= 250/);
 assert.match(mainSource, /VECTOR_TEXT_ZOOM_C_GESTURE_DURATION_MS/);
 assert.match(mainSource, /\/api\/vector-zoom-runs/);
