@@ -1009,6 +1009,9 @@ let rasterInnerShadowChanging = false;
 let engineInitialized = false;
 let selectionUiBusy = false;
 let controlsPanelOpen = true;
+// Statistiche arrivate mentre il pannello era chiuso: il ridisegno si recupera
+// alla riapertura invece di pagarlo ad ogni frame.
+let controlsPanelStatsDirty = false;
 let mobileToolsSheetOpen = false;
 let mobileToolsSheetSnap: MobileToolsSheetSnap = "peek";
 let mobileToolsSheetOffsetPx = 0;
@@ -1103,6 +1106,7 @@ let mobileLayerThumbnailCaptureRequested = false;
 let mobileLayerThumbnailCaptureInFlight = false;
 let mobileLayerThumbnailCaptureUnavailable = false;
 let gpuMemoryPanelOpen = false;
+let gpuMemoryPanelStatsDirty = false;
 let previousGpuMemoryTotalMiB: number | null = null;
 let gpuMemoryDeltaTimer: number | null = null;
 type CanvasTool = BrushSettings["tool"] | "fill" | "selection" | "transform";
@@ -1384,6 +1388,10 @@ function setControlsPanelOpen(open: boolean): void {
   toggleControlsButton.setAttribute("aria-expanded", String(open));
   toggleControlsButton.setAttribute("aria-label", open ? "Nascondi pannelli" : "Mostra pannelli");
   toggleControlsButton.title = open ? "Nascondi pannelli" : "Mostra pannelli";
+  if (open && controlsPanelStatsDirty) {
+    controlsPanelStatsDirty = false;
+    updateStats(engine.getStats());
+  }
 }
 
 const MOBILE_BRUSH_PREVIEW_CSS_SIZE = 124;
@@ -2872,6 +2880,10 @@ function setGpuMemoryPanelOpen(open: boolean): void {
     ? "Chiudi dettaglio memoria GPU"
     : "Apri dettaglio memoria GPU";
   gpuMemoryChevron.textContent = open ? "▾" : "▴";
+  if (open && gpuMemoryPanelStatsDirty) {
+    gpuMemoryPanelStatsDirty = false;
+    updateGpuMemoryPanel(engine.getStats());
+  }
 }
 
 function readBrushSettings(): BrushSettings {
@@ -6611,6 +6623,12 @@ function renderMeasuredBreakdown(
 }
 
 function updateGpuMemoryPanel(stats: EngineStats): void {
+  // Stesso motivo di renderLayerList: ~46 getElementById piu la riduzione sui
+  // tile dello storage study, ad ogni frame, su un pannello chiuso.
+  if (!gpuMemoryPanelOpen) {
+    gpuMemoryPanelStatsDirty = true;
+    return;
+  }
   for (const [id, key] of gpuMemoryRows) {
     const output = element<HTMLElement>(id);
     const value = stats.gpuMemory[key];
@@ -7807,6 +7825,14 @@ async function changeVectorSvgOpacity(id: number, opacity: number): Promise<void
   }
 }
 function renderLayerList(stats: EngineStats): void {
+  // Il motore pubblica le statistiche alla fine di ogni frame, e ogni modifica
+  // di un controllo del pennello ne provoca uno. Ridisegnare la lista layer a
+  // pannello chiuso costava ~144 querySelector e altrettanti setAttribute per
+  // frame senza che nulla fosse visibile.
+  if (!controlsPanelOpen) {
+    controlsPanelStatsDirty = true;
+    return;
+  }
   if (stats.mixedScene) {
     renderMixedSceneList(stats, stats.mixedScene);
     return;
@@ -8317,6 +8343,10 @@ addLayerButton.addEventListener("click", async () => {
 });
 
 function updateRenderingModeMemoryHint(stats: EngineStats): void {
+  if (!controlsPanelOpen) {
+    controlsPanelStatsDirty = true;
+    return;
+  }
   if (activeCanvasTool === "fill") {
     const referenceMemory = stats.fillReferenceLayerMiB > 0
       ? ` · riferimento hot ${formatMemoryMiB(stats.fillReferenceLayerMiB)}`

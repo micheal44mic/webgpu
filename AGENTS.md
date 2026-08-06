@@ -4551,3 +4551,107 @@ eseguendo l'app**, nessuno visibile da `tsc` o dalle suite originarie: doppia
 preparazione del cambio livello (texture non residente), stacco dallo stack
 senza stacco dalla scena mista, cattura dei seed che lascia lavoro GPU pendente
 e riattacco gia' selezionato che saltava la riattivazione della presentazione.
+
+## Brush Studio — lag degli slider e fedelta' dell'anteprima (6 agosto 2026)
+
+Sintomo riportato: muovendo qualunque slider del Brush Studio mobile l'interfaccia
+laggava pesantemente, e l'anteprima «non rispecchiava per niente il pennello reale».
+I due problemi avevano la stessa radice: `renderPreview()` in `mobile-brush-studio.ts`
+e' una reimplementazione Canvas 2D che non condivideva **nessuna riga** con il motore,
+e calcolava il colore con i filtri CSS `hue-rotate/saturate/brightness`.
+
+**Causa dominante, misurata.** Con il pennello di default (`size 96`, `spacingPercent 1`,
+`count 24`) il doppio loop esegue `144 x 24 = 3456` `drawImage` per frame, ognuno
+preceduto da un'assegnazione di `context.filter`. Un filtro non-`none` obbliga il
+browser ad allocare una superficie intermedia per **ogni singolo disegno**. Benchmark
+sincrono in pagina, geometria reale `345x92`, tip `192x192`:
+
+| percorso | ms/frame |
+|---|---|
+| vecchio, `context.filter` per stamp | **149,22** |
+| nuovo, tavolozza pre-tinta | **25,72** |
+
+Fattore `5,8x`, cioe' da ~7 fps a ~39 fps sul solo loop, su desktop; su telefono il
+divario e' maggiore. Il residuo di 25,7 ms sono i 3456 `drawImage` in se'.
+
+**Correzioni applicate.**
+
+1. `buildTintedTipPalette()` costruisce 12 punte gia' tinte (stesso numero di
+   `ADAPTIVE_PREVIEW_SHAPE_PALETTE_SIZE`) usando `adaptivePreviewRgb` e gli stessi semi
+   di `prepareAdaptivePreviewShapePalette`. Nessun `context.filter` nel loop, e la
+   variazione cromatica e' finalmente quella del motore: prima l'anteprima usava un
+   rumore `sin/fract` proprio, spazio sRGB, e formule diverse (saturazione
+   moltiplicativa invece che additiva in HSL, scurimento sottrattivo invece che
+   moltiplicativo). La tavolozza si ricostruisce **ogni frame** — misurati `0,052 ms`,
+   trascurabili — cosi' non puo' restare indietro rispetto alla punta che il motore
+   ripubblica dopo un caricamento di shape asincrono.
+2. Metodi di rendering distinti. Prima `uniformed-glaze` e `intense-blending` erano
+   **byte-identici** nell'anteprima (entrambi `source-over`). Semantica reale del motore
+   verificata sul sorgente: light usa blend `max` su copertura `r8` con **tinta unica
+   per gestata** (`session.tintLinear`, nessun build-up); uniformed compone in lineare
+   con alpha `coverage*flow` e consuma Opacity **una volta** al resolve; intense compone
+   in sRGB con alpha `coverage*flow*opacity`. Tradotto in 2D: light -> stamp opachi e
+   `flow*opacity` sull'output con tinta fissa dal seme `31`; uniformed -> `flow` per
+   stamp, `opacity` sull'output; intense -> `flow*opacity` per stamp, output `1`.
+   Verifica in browser sull'alpha media del canvas di anteprima:
+
+   | Opacity | light | uniformed | intense |
+   |---|---|---|---|
+   | 100% | 17,3 | 228,3 | 228,3 |
+   | 50%  | 8,7  | 114,2 | 213,8 |
+   | 20%  | 3,9  | 46,0  | 184,8 |
+
+   `17,3/255 = 0,068`, cioe' esattamente `flow 0,07`. Uniformed scala linearmente con
+   Opacity, intense satura: e' il comportamento del motore. A Opacity 100% uniformed e
+   intense coincidono **correttamente**, perche' le due formule degenerano.
+3. Cache del canvas del grano, chiave su `width/height/grainAssetId/grainMode/grainScale/
+   grainMovement/grainBrightness/grainContrast/grainInvert/grainFiltering/size` piu'
+   identita' dell'oggetto sorgente. `grainDepth` resta **fuori** chiave: entra solo come
+   `globalAlpha` del composite `destination-in`, che continua a rieseguire sempre.
+   Misurato: ricostruzione `2,55 ms` contro `0,003 ms` da cache, **851x**. Prima veniva
+   rifatta ad ogni evento anche muovendo Size, Opacity o Spacing.
+4. Niente piu' riallocazione dei canvas per frame (`strokeCanvas`, `grainCanvas`, punte
+   della tavolozza): le dimensioni sono costanti durante un drag, e i `clearRect`
+   esistevano gia' tutti e tre.
+5. Freno all'eco delle statistiche. `publishStats()` e' incondizionato alla fine di
+   **ogni** `renderFrame` (`brush-engine.ts:8692`) e `setBrushSettings` garantisce un
+   frame per evento: `onStats -> notifyEngineUpdate -> schedulePreview` raddoppiava i
+   `renderPreview`. Ora `notifyEngineUpdate()` e' limitato a un preview ogni
+   `ENGINE_NOTIFY_PREVIEW_INTERVAL_MS = 200`. Implementato **dentro lo Studio** e non in
+   `main.ts` di proposito: `verify-brush-library-preview.mjs:102-106` ritaglia il
+   sorgente con `indexOf` fra le stringhe letterali `onStats(stats)` e `onHistoryChange`.
+6. Guardie di visibilita' su `updateStats`. `renderLayerList` (~144 `querySelector` +
+   ~112 closure + ~144 `setAttribute` per frame a 16 layer) e
+   `updateRenderingModeMemoryHint` escono su `!controlsPanelOpen`;
+   `updateGpuMemoryPanel` (~46 `getElementById`) esce su `!gpuMemoryPanelOpen`. I flag
+   `controlsPanelStatsDirty` / `gpuMemoryPanelStatsDirty` forzano il ridisegno alla
+   riapertura, quindi nessun pannello resta stale.
+
+**Non fatto, e perche'.**
+
+- **Abbassare i tetti di 144 stamp / 24 copie: rifiutato.** Sembra spreco (a `size 96`
+  il passo e' ~2 px su una punta da 50), ma con `alpha < 1` il numero di stamp determina
+  la densita' accumulata, e sotto `lighten` non esiste compensazione esatta dell'alpha.
+  Con `alpha = 1` cambia comunque la texture, perche' `shapeScatter` ruota ogni stamp.
+- **Early-out su `setBrushSettings`: rifiutato.** Durante un drag le impostazioni
+  cambiano davvero ad ogni evento, quindi non aiuta il sintomo riportato. In piu'
+  saltare `requestGrainLoad`/`requestShapeLoad` perderebbe il retry dopo un caricamento
+  fallito, e non e' dimostrato che il buffer degli uniform contenga sempre
+  `this.settings` a riposo. `flushPendingWorkBeforeSettingsChange` dovrebbe comunque
+  restare fuori dal confronto: e' ordine di commit, non dipende dall'uguaglianza.
+- `blendStretch` e `blendPaint` **non** appartengono ai metodi di rendering: sono letti
+  solo con `tool === "blend"` (smudge, `blend-renderer.ts:813-815`). L'anteprima fa bene
+  a ignorarli. Annotato perche' era una mia ipotesi iniziale sbagliata.
+
+**Divergenze note ancora aperte** (fuori scope in questo giro): il grano dell'anteprima
+resta una maschera di alpha in `destination-in` mentre il motore moltiplica la copertura
+nello shader; la punta viene dallo sprite di anteprima `128x128` e non dalla maschera
+reale con la sua catena di mip; `hardness` e' forzato a `1` dallo Studio; lo spacing
+sotto ~4,4% non si vede piu' perche' il tetto di 144 stamp morde; con lo sheet aperto il
+motore ricompone comunque tutto il documento (due passate full-canvas per evento).
+
+TypeScript, build Vite/Sites e tutte le `33` suite `*:verify` verdi. La misura
+end-to-end del frame durante il drag **non e' stata eseguita**: il pannello browser era
+`visibilityState: "hidden"` e `requestAnimationFrame` non scatta, quindi i numeri sopra
+vengono da benchmark sincroni con la geometria reale e dal confronto dell'alpha media
+del canvas, non dal tempo di frame reale.
