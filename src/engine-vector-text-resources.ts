@@ -14,6 +14,8 @@ import type {
 export interface VectorTextRunTextureResources {
   texture: GPUTexture;
   view: GPUTextureView;
+  fallbackTexture: GPUTexture | null;
+  fallbackView: GPUTextureView | null;
   bindGroup: GPUBindGroup;
 
   lastBounds: DirtyRect | null;

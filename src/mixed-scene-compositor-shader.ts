@@ -115,6 +115,8 @@ struct TextCaptureUniforms {
 @group(0) @binding(1) var<uniform> capture: TextCaptureUniforms;
 @group(0) @binding(2) var sourceTexture: texture_2d<f32>;
 @group(0) @binding(3) var sourceSampler: sampler;
+@group(0) @binding(4) var<uniform> fallbackCapture: TextCaptureUniforms;
+@group(0) @binding(5) var fallbackTexture: texture_2d<f32>;
 
 
 ${fullscreenVertexShader}
@@ -131,10 +133,10 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     return textureLoad(sourceTexture, pixel, 0);
   }
 
-  // Both fast modes use the current camera. fastMode 1 has full capture
-  // coverage; fastMode 2 clips newly exposed pixels while the controller
-  // coalesces one exact refresh. Never fall back to screen-space sampling:
-  // that makes vectors visibly detach from the raster during a pinch.
+  // Every fast mode follows the current camera. Mode 1 is fully covered by
+  // the sharp capture. Mode 2 clips uncovered pixels. Mode 3 keeps the sharp
+  // sample wherever it exists and fills newly revealed pixels from a second,
+  // wider GPU capture prepared before the gesture.
   let layerPosition = layerPositionAt(fragmentPosition.xy);
   let layerDelta = layerPosition - capture.viewCenter;
   let sourcePixel = capture.canvasSize * 0.5 + capture.zoom * vec2<f32>(
@@ -144,15 +146,51 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   let sourceDimensions = vec2<f32>(dimensions);
   let insideSource = all(sourcePixel >= vec2<f32>(0.0))
     && all(sourcePixel < sourceDimensions);
-  if (!insideSource) {
-    return vec4<f32>(0.0);
+  let sourceColor = select(
+    vec4<f32>(0.0),
+    textureSampleLevel(
+      sourceTexture,
+      sourceSampler,
+      sourcePixel / sourceDimensions,
+      0.0
+    ),
+    insideSource
+  );
+  if (capture.fastMode < 2.5) {
+    return sourceColor;
   }
-  return textureSampleLevel(
-    sourceTexture,
+
+  let fallbackDimensions = vec2<f32>(textureDimensions(fallbackTexture, 0));
+  let fallbackDelta = layerPosition - fallbackCapture.viewCenter;
+  let fallbackPixel = fallbackCapture.canvasSize * 0.5 + fallbackCapture.zoom * vec2<f32>(
+    fallbackCapture.viewRotation.x * fallbackDelta.x
+      - fallbackCapture.viewRotation.y * fallbackDelta.y,
+    fallbackCapture.viewRotation.y * fallbackDelta.x
+      + fallbackCapture.viewRotation.x * fallbackDelta.y
+  );
+  let insideFallback = all(fallbackPixel >= vec2<f32>(0.0))
+    && all(fallbackPixel < fallbackDimensions);
+  if (!insideFallback) {
+    return sourceColor;
+  }
+  let fallbackColor = textureSampleLevel(
+    fallbackTexture,
     sourceSampler,
-    sourcePixel / sourceDimensions,
+    fallbackPixel / fallbackDimensions,
     0.0
   );
+  if (!insideSource) {
+    return fallbackColor;
+  }
+
+  // Blend only within four source pixels of the sharp-cache edge. Both colors
+  // are premultiplied, so this removes a rectangular resolution seam without
+  // changing alpha compositing or detaching the vector from the camera.
+  let sourceEdgeDistance = min(
+    min(sourcePixel.x, sourcePixel.y),
+    min(sourceDimensions.x - sourcePixel.x, sourceDimensions.y - sourcePixel.y)
+  );
+  return mix(fallbackColor, sourceColor, smoothstep(0.0, 4.0, sourceEdgeDistance));
 }
 `;
 

@@ -627,6 +627,8 @@ import {
 } from "./engine-reports";
 import {
   captureVectorTextPresentationView,
+  captureVectorTextFallbackPresentation,
+  clearVectorTextFallbackPresentation,
   clearVectorTextPresentationForTransaction,
   createMixedSceneRasterSegmentResources,
   destroyMixedSceneRasterSegment,
@@ -640,6 +642,8 @@ import {
   mixedSceneItemIsVisible,
   mutateMixedScenePresentation,
   publishMixedScene,
+  probeVectorTextFastCompositeAlpha,
+  probeVectorTextFallbackAlpha,
   rebuildVectorTextDisplayBindGroup,
   releaseVectorTextGpuBlurScratch,
   releaseVectorTextGpuScratch,
@@ -1115,12 +1119,16 @@ export class BrushEngine {
   presentationCacheHeight = 0;
   presentationCacheNeedsFullRebuild = true;
   vectorTextCaptureView: VectorTextViewState | null = null;
+  vectorTextFallbackCaptureView: VectorTextViewState | null = null;
   vectorTextFastPresentationEnabled = false;
   vectorTextFastPresentationMode: VectorTextFastPresentationMode = "precise";
   vectorTextFastPresentationInFlight = false;
   vectorTextFastPresentationLatestRequested = false;
   vectorTextFastPresentationSubmissionCount = 0;
   vectorTextFastPresentationCoalescedRequestCount = 0;
+  vectorTextFastRequestedRevision = 0;
+  vectorTextFastSubmittedRevision = 0;
+  vectorTextFastCompletedRevision = 0;
   mixedSceneLinearTexture: GPUTexture | null = null;
   mixedSceneLinearView: GPUTextureView | null = null;
   mixedSceneLinearWidth = 0;
@@ -1252,6 +1260,7 @@ export class BrushEngine {
   grainUniformBuffer!: GPUBuffer;
   displayUniformBuffer!: GPUBuffer;
   vectorTextCaptureUniformBuffer!: GPUBuffer;
+  vectorTextFallbackCaptureUniformBuffer!: GPUBuffer;
   thicknessTailDisplayUniformBuffer!: GPUBuffer;
   lightGlazeUniformBuffer!: GPUBuffer;
   lightGlazeCommitTileUniformBuffer!: GPUBuffer;
@@ -1472,6 +1481,7 @@ export class BrushEngine {
   private readonly grainUniformUpload = new Float32Array(GRAIN_UNIFORM_BYTES / 4);
   private readonly displayUniformUpload = new Float32Array(DISPLAY_UNIFORM_BYTES / 4);
   readonly vectorTextCaptureUniformUpload = new Float32Array(8);
+  readonly vectorTextFallbackCaptureUniformUpload = new Float32Array(8);
   layerCompositeUniformBuffer!: GPUBuffer;
   private readonly thicknessTailDisplayUniformUpload = new ArrayBuffer(
     THICKNESS_TAIL_UNIFORM_BYTES,
@@ -3107,6 +3117,7 @@ export class BrushEngine {
       // The capture stays fixed while the current camera moves. Updating this
       // tiny uniform selects full-coverage or clipped reprojection before the
       // next coalesced presentation submit. Both stay attached to the camera.
+      this.vectorTextFastRequestedRevision += 1;
       writeVectorTextCaptureUniforms(this);
     }
     this.callbacks.onViewChange?.(this.getVectorTextViewState());
@@ -3122,6 +3133,9 @@ export class BrushEngine {
       return;
     }
     this.vectorTextFastPresentationEnabled = next;
+    if (next) {
+      this.vectorTextFastRequestedRevision += 1;
+    }
     writeVectorTextCaptureUniforms(this);
     this.displayDirty = true;
     this.presentationCacheNeedsFullRebuild = true;
@@ -3135,11 +3149,48 @@ export class BrushEngine {
   getVectorTextFastPresentationBackpressureStats(): {
     submissionCount: number;
     coalescedRequestCount: number;
+    requestedRevision: number;
+    submittedRevision: number;
+    completedRevision: number;
   } {
     return {
       submissionCount: this.vectorTextFastPresentationSubmissionCount,
       coalescedRequestCount: this.vectorTextFastPresentationCoalescedRequestCount,
+      requestedRevision: this.vectorTextFastRequestedRevision,
+      submittedRevision: this.vectorTextFastSubmittedRevision,
+      completedRevision: this.vectorTextFastCompletedRevision,
     };
+  }
+
+  async waitForVectorTextFastPresentationRevision(
+    revision: number,
+    timeoutMs = 3000,
+  ): Promise<void> {
+    if (!Number.isInteger(revision) || revision < 0) {
+      throw new RangeError(`Revisione fast non valida: ${revision}.`);
+    }
+    const deadline = performance.now() + timeoutMs;
+    while (this.vectorTextFastCompletedRevision < revision) {
+      if (!this.vectorTextFastPresentationEnabled) {
+        throw new Error("Presentazione fast disattivata prima dell'ack richiesto.");
+      }
+      if (performance.now() >= deadline) {
+        throw new Error(
+          `Presentazione fast ferma a ${this.vectorTextFastCompletedRevision}/${revision}.`,
+        );
+      }
+      await new Promise<void>((resolve) => {
+        let frame = 0;
+        const timer = window.setTimeout(() => {
+          cancelAnimationFrame(frame);
+          resolve();
+        }, 50);
+        frame = requestAnimationFrame(() => {
+          window.clearTimeout(timer);
+          resolve();
+        });
+      });
+    }
   }
 
   waitForVectorTextPresentationCompletion(): Promise<void> {
@@ -3147,6 +3198,39 @@ export class BrushEngine {
     // callback delay, so callers must never interpret this as isolated GPU
     // duration telemetry.
     return this.device.queue.onSubmittedWorkDone();
+  }
+
+  captureVectorTextFallbackPresentation(): {
+    textureCount: number;
+    gpuMemoryMiB: number;
+  } {
+    if (!this.vectorTextPrototypeEnabled || !this.initialized) {
+      throw new Error("Renderer testo vettoriale GPU non abilitato.");
+    }
+    return captureVectorTextFallbackPresentation(this);
+  }
+
+  clearVectorTextFallbackPresentation(): void {
+    if (!this.vectorTextPrototypeEnabled || !this.initialized) return;
+    clearVectorTextFallbackPresentation(this);
+  }
+
+  probeVectorTextFallbackAlpha(
+    layerPoints: readonly { x: number; y: number }[],
+  ): Promise<{ runCount: number; alphaPixelCounts: number[] }> {
+    if (!this.vectorTextPrototypeEnabled || !this.initialized) {
+      throw new Error("Renderer testo vettoriale GPU non abilitato.");
+    }
+    return probeVectorTextFallbackAlpha(this, layerPoints);
+  }
+
+  probeVectorTextFastCompositeAlpha(
+    layerPoints: readonly { x: number; y: number }[],
+  ): Promise<{ alphaPixelCounts: number[] }> {
+    if (!this.vectorTextPrototypeEnabled || !this.initialized) {
+      throw new Error("Renderer testo vettoriale GPU non abilitato.");
+    }
+    return probeVectorTextFastCompositeAlpha(this, layerPoints);
   }
   updateVectorTextPresentation(
     source: HTMLCanvasElement,
@@ -3334,6 +3418,7 @@ export class BrushEngine {
     if (!placement) {
       for (const resources of this.vectorTextRunTextures.values()) {
         resources.texture.destroy();
+        resources.fallbackTexture?.destroy();
         changed = true;
       }
       this.vectorTextRunTextures.clear();
@@ -3342,6 +3427,7 @@ export class BrushEngine {
       const resources = this.vectorTextRunTextures.get(key);
       if (resources) {
         resources.texture.destroy();
+        resources.fallbackTexture?.destroy();
         this.vectorTextRunTextures.delete(key);
         changed = true;
       }
@@ -3366,6 +3452,7 @@ export class BrushEngine {
       this.vectorTextTextureWidth = 0;
       this.vectorTextTextureHeight = 0;
       this.vectorTextCaptureView = null;
+      this.vectorTextFallbackCaptureView = null;
       this.vectorTextFastPresentationEnabled = false;
       writeVectorTextCaptureUniforms(this);
     }
@@ -8465,9 +8552,18 @@ export class BrushEngine {
     if (this.vectorTextFastPresentationInFlight) {
       return;
     }
+    const submittedRevision = this.vectorTextFastRequestedRevision;
     this.vectorTextFastPresentationInFlight = true;
+    this.vectorTextFastSubmittedRevision = Math.max(
+      this.vectorTextFastSubmittedRevision,
+      submittedRevision,
+    );
     this.vectorTextFastPresentationSubmissionCount += 1;
     void this.device.queue.onSubmittedWorkDone().then(() => {
+      this.vectorTextFastCompletedRevision = Math.max(
+        this.vectorTextFastCompletedRevision,
+        submittedRevision,
+      );
       this.vectorTextFastPresentationInFlight = false;
       if (
         this.vectorTextFastPresentationEnabled
@@ -8496,14 +8592,12 @@ export class BrushEngine {
     if (this.frameRequest !== null) {
       return;
     }
-    if (
-      this.vectorTextFastPresentationEnabled
-      && this.vectorTextFastPresentationInFlight
-      && !this.vectorTextFastPresentationHasAuthoritativeWork()
-    ) {
+    if (this.vectorTextFastPresentationEnabled && this.vectorTextFastPresentationInFlight) {
       this.vectorTextFastPresentationLatestRequested = true;
-      this.vectorTextFastPresentationCoalescedRequestCount += 1;
-      return;
+      if (!this.vectorTextFastPresentationHasAuthoritativeWork()) {
+        this.vectorTextFastPresentationCoalescedRequestCount += 1;
+        return;
+      }
     }
     this.frameRequest = requestAnimationFrame((timestamp) => runRenderFrame(this, timestamp));
   }

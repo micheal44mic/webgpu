@@ -125,11 +125,19 @@ import {
   VECTOR_TEXT_ZOOM_AB_SAMPLE_COUNT,
   VECTOR_TEXT_ZOOM_AB_START_ZOOM,
   VECTOR_TEXT_ZOOM_AB_STRATEGY,
+  VECTOR_TEXT_ZOOM_C_IDLE_FRAME_COUNT,
+  VECTOR_TEXT_ZOOM_C_GESTURE_DURATION_MS,
+  VECTOR_TEXT_ZOOM_C_SAMPLE_LIMIT,
+  VECTOR_TEXT_ZOOM_C_FALLBACK_ZOOM,
+  VECTOR_TEXT_ZOOM_C_START_ZOOM,
+  VECTOR_TEXT_ZOOM_C_STRATEGY,
+  VECTOR_TEXT_ZOOM_C_TARGET_ZOOM,
   VECTOR_TEXT_ZOOM_STRESS_PROFILE_ORDER,
   VECTOR_TEXT_ZOOM_STRESS_SLOW_FRAME_MS,
   VECTOR_TEXT_ZOOM_STRESS_STRATEGY,
   VECTOR_TEXT_ZOOM_STRESS_TARGET_ZOOM,
   VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT,
+  vectorTextZoomCoverageSeed,
   vectorTextZoomStressSeed,
   vectorTextZoomStressStepFactor,
 } from "./vector-text-adaptive-zoom";
@@ -857,11 +865,24 @@ const mixedMemoryBenchmarkRequested =
 const vectorZoomStressRequested =
   pageSearchParams.get("vectorZoomStress") === "1";
 const vectorZoomRefreshParameter = pageSearchParams.get("vectorZoomRefresh");
+const vectorZoomCoverageRequested = vectorZoomStressRequested
+  && vectorZoomRefreshParameter === "coverage";
 const vectorZoomRefreshMode = vectorZoomStressRequested
   && (vectorZoomRefreshParameter === "during" || vectorZoomRefreshParameter === "release")
   ? vectorZoomRefreshParameter
   : null;
 const vectorZoomAbRequested = vectorZoomRefreshMode !== null;
+const vectorZoomHashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+const vectorZoomRunCodeParameter = (
+  pageSearchParams.get("vectorZoomRun")
+  ?? vectorZoomHashParams.get("zoomRun")
+  ?? ""
+).toUpperCase();
+const vectorZoomRunCode = vectorZoomCoverageRequested
+  ? /^[2-9A-HJ-NP-Z]{8}$/.test(vectorZoomRunCodeParameter)
+    ? vectorZoomRunCodeParameter
+    : makeVectorZoomRunCode()
+  : null;
 const mixedMemoryBenchmarkTargetMiB =
   pageSearchParams.get("mixedMemoryTargetMiB") === "600" ? 600 : 800;
 const layerCompressionStudyRequested =
@@ -910,6 +931,13 @@ if (mixedMemoryBenchmarkRequested) {
     `Prepara scenario misto ~${mixedMemoryBenchmarkTargetMiB} MiB`;
   layerMemoryStressResult.textContent =
     "Pronto. La preparazione è distruttiva e va eseguita una sola volta su pagina nuova.";
+} else if (vectorZoomCoverageRequested) {
+  layerMemoryStressIntro.textContent =
+    "Variante C isolata: 10 testi distribuiti, cache GPU nitida più copertura larga con overscan, "
+    + "zoom-out rapido da 800% a 30% e nessun ridisegno vettoriale durante il gesto. "
+    + `Il report verrà salvato nel progetto con codice ${vectorZoomRunCode}.`;
+  layerMemoryStressButton.hidden = true;
+  layerMemoryStressResult.textContent = "Preparazione automatica della variante C…";
 } else if (vectorZoomAbRequested) {
   const variant = vectorZoomRefreshMode === "during" ? "A" : "B";
   layerMemoryStressIntro.textContent =
@@ -6176,6 +6204,165 @@ interface VectorZoomAbReport {
   passed: boolean;
 }
 
+interface VectorZoomCoverageReport {
+  version: 1;
+  strategy: typeof VECTOR_TEXT_ZOOM_C_STRATEGY;
+  variant: "C";
+  runCode: string;
+  traceFingerprint: string;
+  initialRasterWasEmpty: boolean;
+  textCount: number;
+  profileOrder: readonly string[];
+  idleFrameCount: number;
+  sampleCount: number;
+  gestureTargetDurationMs: number;
+  startZoom: number;
+  targetZoom: number;
+  finalZoom: number;
+  fallbackCaptureZoom: number;
+  fallbackTextureCount: number;
+  fallbackRunCount: number;
+  fallbackGpuMemoryMiB: number;
+  fallbackProbeAlphaPixelCounts: number[];
+  fastCompositeProbeAlphaPixelCounts: number[];
+  witnessesOutsideStartCount: number;
+  witnessesInsideTargetCount: number;
+  environment: {
+    userAgent: string;
+    gpuLabel: string;
+    visibilityAtStart: DocumentVisibilityState;
+    visibilityAtEnd: DocumentVisibilityState;
+    devicePixelRatioAtStart: number;
+    devicePixelRatioAtEnd: number;
+    viewportWidthAtStart: number;
+    viewportHeightAtStart: number;
+    viewportWidthAtEnd: number;
+    viewportHeightAtEnd: number;
+    canvasWidthAtStart: number;
+    canvasHeightAtStart: number;
+    canvasWidthAtEnd: number;
+    canvasHeightAtEnd: number;
+  };
+  idleFrameIntervalsMs: number[];
+  idleFrameMedianMs: number;
+  gestureFrameIntervalsMs: number[];
+  eventToNextFrameMs: number[];
+  presentationModes: string[];
+  fastSubmittedRevisionLagSamples: number[];
+  fastCompletedRevisionLagSamples: number[];
+  gestureDurationMs: number;
+  frameP50Ms: number;
+  frameP95Ms: number;
+  frameMaximumMs: number;
+  framesOver20Ms: number;
+  framesOver33Ms: number;
+  normalizedMissedFrameCount: number;
+  eventToNextFrameP95Ms: number;
+  queuePrefixAndCallbackWaitMs: number;
+  finalFastAckDurationMs: number;
+  fastCompositeProbeDurationMs: number;
+  fastVerificationDurationMs: number;
+  fastVerificationError: string | null;
+  recoveryDurationMs: number;
+  totalMeasuredDurationMs: number;
+  exactRenderDeltaDuringGesture: number;
+  exactRenderDeltaDuringRecovery: number;
+  safeReprojectionDelta: number;
+  fallbackReprojectionDelta: number;
+  clippedReprojectionDelta: number;
+  unsafeExactRefreshStartedDelta: number;
+  unsafeExactRefreshCompletedDelta: number;
+  fastPresentationSubmitDelta: number;
+  fastPresentationCoalescedDelta: number;
+  requiredFastPresentationSubmitCount: number;
+  fastPresentationRateHz: number;
+  fastSubmittedRevisionLagMaximum: number;
+  fastCompletedRevisionLagP95: number;
+  fastCompletedRevisionLagMaximum: number;
+  finalFastRequestedRevision: number;
+  finalFastSubmittedRevision: number;
+  finalFastCompletedRevision: number;
+  exactRecoveryDelta: number;
+  latestViewRevision: number;
+  checks: {
+    exactlyTenDistributedTexts: boolean;
+    fixedFastZoomOutCompleted: boolean;
+    fallbackPreparedBeforeGesture: boolean;
+    fallbackPixelsPresent: boolean;
+    finalFastFrameAcknowledged: boolean;
+    fastCompositePixelsPresent: boolean;
+    witnessesExerciseReveal: boolean;
+    everyZoomStepCovered: boolean;
+    noClippedOrExactWorkDuringGesture: boolean;
+    fastPresentationFlowed: boolean;
+    framePacingWithinBudget: boolean;
+    recoveryWithinBudget: boolean;
+    exactRecoveryLatestOnly: boolean;
+    finalModePrecise: boolean;
+    effectsStayedSettled: boolean;
+    environmentStayedStable: boolean;
+  };
+  passed: boolean;
+}
+
+function makeVectorZoomRunCode(): string {
+  const alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+  const random = new Uint8Array(8);
+  crypto.getRandomValues(random);
+  return Array.from(random, (value) => alphabet[value % alphabet.length]).join("");
+}
+
+async function saveVectorZoomCoverageReport(
+  report: VectorZoomCoverageReport,
+): Promise<{ saved: boolean; message: string }> {
+  const hashUrl = new URL(window.location.href);
+  hashUrl.hash = `zoomRun=${report.runCode}`;
+  history.replaceState(history.state, "", hashUrl);
+  if (import.meta.env.DEV) {
+    return { saved: false, message: "Modalità locale: JSON disponibile nella pagina." };
+  }
+
+  const payload = {
+    version: 1,
+    kind: "vector-zoom-c",
+    runCode: report.runCode,
+    report,
+  } as const;
+  let lastError = "salvataggio non riuscito";
+  for (const delayMs of [0, 450, 1200]) {
+    if (delayMs > 0) {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, delayMs));
+    }
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 8000);
+    try {
+      const response = await fetch("/api/vector-zoom-runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        const errorPayload = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(errorPayload?.error ?? `HTTP ${response.status}`);
+      }
+      return {
+        saved: true,
+        message: `Report salvato nel progetto · codice ${report.runCode}`,
+      };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+  return {
+    saved: false,
+    message: `Test finito, report non salvato (${lastError}). Il JSON resta visibile.`,
+  };
+}
+
 async function waitForVectorTextStable(
   minimumRecoveryCount = 0,
 ): Promise<ReturnType<MixedVectorTextController["getDiagnostics"]>> {
@@ -6218,6 +6405,489 @@ function showVectorZoomAbReport(report: VectorZoomAbReport): void {
   reportElement.textContent = JSON.stringify(report, null, 2);
   details.append(summary, explanation, reportElement);
   document.body.append(details);
+}
+
+function showVectorZoomCoverageReport(
+  report: VectorZoomCoverageReport,
+  saveMessage: string,
+): void {
+  document.getElementById("vectorZoomCoverageSummary")?.remove();
+  const details = document.createElement("details");
+  details.id = "vectorZoomCoverageSummary";
+  details.className = `vector-zoom-ab-summary ${report.passed ? "is-ok" : "is-error"}`;
+  details.open = true;
+  const summary = document.createElement("summary");
+  summary.textContent = report.passed
+    ? `C OK · 800%→30% · p95 ${report.frameP95Ms.toFixed(1)} ms · `
+      + `frame scoperti ${report.clippedReprojectionDelta} · codice ${report.runCode}`
+    : `C NON VALIDA · codice ${report.runCode} · apri il report`;
+  const explanation = document.createElement("p");
+  explanation.textContent =
+    "C usa la cache GPU nitida dove copre e una seconda cache GPU larga per i vettori "
+    + "che entrano nell'inquadratura durante lo zoom-out. "
+    + saveMessage;
+  const reportElement = document.createElement("pre");
+  reportElement.textContent = JSON.stringify(report, null, 2);
+  details.append(summary, explanation, reportElement);
+  document.body.append(details);
+}
+
+async function runRequestedVectorZoomCoverage(): Promise<void> {
+  if (!vectorZoomCoverageRequested || vectorZoomRunCode === null) return;
+  const controller = vectorTextPrototype;
+  if (!controller) throw new Error("Controller testo non disponibile per il test C zoom.");
+  const initialScene = engine.getMixedSceneSnapshot();
+  const initialStats = engine.getStats();
+  const initialRasterWasEmpty = initialStats.layerCount === 1
+    && initialStats.layers.length === 1
+    && initialStats.layers[0].hasContent === false;
+  if (
+    !initialScene
+    || initialScene.items.some((item) => item.kind !== "raster")
+    || !initialRasterWasEmpty
+  ) {
+    throw new Error("Il test C zoom richiede una pagina nuova con un solo raster vuoto.");
+  }
+
+  statusElement.textContent = "Preparo C: 10 testi distribuiti e copertura GPU overscan al 20%…";
+  statusElement.className = "status";
+  const fixtures = Array.from(
+    { length: VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT },
+    (_, index) => vectorTextZoomCoverageSeed(index, engine.layerSize, {
+      canvasWidth: canvas.width,
+      canvasHeight: canvas.height,
+      targetZoom: VECTOR_TEXT_ZOOM_C_TARGET_ZOOM,
+    }),
+  );
+  const beforeInsert = controller.getDiagnostics();
+  await engine.addVectorTextNodesBatch(fixtures.map((fixture, index) => ({
+    seed: fixture.seed,
+    name: `C ${fixture.profile} ${String(index + 1).padStart(2, "0")}`,
+  })));
+  await waitForVectorTextRenderAfter(beforeInsert.renderCount);
+  await waitForVectorTextStable();
+
+  let fallbackCaptureZoom = 0;
+  let fallbackTextureCount = 0;
+  let fallbackRunCount = 0;
+  let fallbackGpuMemoryMiB = 0;
+  let fallbackProbeAlphaPixelCounts: number[] = [];
+  controller.setAdaptiveZoomEnabled(false);
+  try {
+    let beforeCameraRender = controller.getDiagnostics();
+    engine.fitView();
+    await waitForVectorTextRenderAfter(beforeCameraRender.renderCount);
+    await waitForVectorTextStable();
+
+    const rectangle = canvas.getBoundingClientRect();
+    const anchorX = rectangle.left + rectangle.width * 0.5;
+    const anchorY = rectangle.top + rectangle.height * 0.5;
+    beforeCameraRender = controller.getDiagnostics();
+    engine.zoomBy(
+      VECTOR_TEXT_ZOOM_C_FALLBACK_ZOOM / engine.getVectorTextViewState().zoom,
+      anchorX,
+      anchorY,
+    );
+    await waitForVectorTextRenderAfter(beforeCameraRender.renderCount);
+    await waitForVectorTextStable();
+    fallbackCaptureZoom = engine.getVectorTextViewState().zoom;
+    const fallback = engine.captureVectorTextFallbackPresentation();
+    fallbackTextureCount = fallback.textureCount;
+    fallbackGpuMemoryMiB = fallback.gpuMemoryMiB;
+    await engine.waitForVectorTextPresentationCompletion();
+    const probe = await engine.probeVectorTextFallbackAlpha(
+      fixtures.map(({ seed }) => ({ x: seed.x, y: seed.y })),
+    );
+    fallbackRunCount = probe.runCount;
+    fallbackProbeAlphaPixelCounts = probe.alphaPixelCounts;
+
+    beforeCameraRender = controller.getDiagnostics();
+    engine.zoomBy(
+      VECTOR_TEXT_ZOOM_C_START_ZOOM / engine.getVectorTextViewState().zoom,
+      anchorX,
+      anchorY,
+    );
+    await waitForVectorTextRenderAfter(beforeCameraRender.renderCount);
+    await waitForVectorTextStable();
+  } finally {
+    controller.setAdaptiveZoomEnabled(true);
+  }
+  await waitForVectorTextStable();
+
+  const startRectangle = canvas.getBoundingClientRect();
+  const environmentStart = {
+    visibility: document.visibilityState,
+    devicePixelRatio: window.devicePixelRatio,
+    viewportWidth: window.innerWidth,
+    viewportHeight: window.innerHeight,
+    canvasWidth: canvas.width,
+    canvasHeight: canvas.height,
+  };
+  const idleFrameIntervalsMs: number[] = [];
+  let idlePreviousRaf = await nextAnimationFrame();
+  for (let index = 0; index < VECTOR_TEXT_ZOOM_C_IDLE_FRAME_COUNT; index += 1) {
+    const timestamp = await nextAnimationFrame();
+    idleFrameIntervalsMs.push(Math.max(0, timestamp - idlePreviousRaf));
+    idlePreviousRaf = timestamp;
+  }
+  const idleFrameMedianMs = percentile(idleFrameIntervalsMs, 0.5);
+
+  const before = controller.getDiagnostics();
+  const startView = engine.getVectorTextViewState();
+  const startZoom = startView.zoom;
+  const gestureFrameIntervalsMs: number[] = [];
+  const eventToNextFrameMs: number[] = [];
+  const presentationModes: string[] = [];
+  const fastSubmittedRevisionLagSamples: number[] = [];
+  const fastCompletedRevisionLagSamples: number[] = [];
+  const rectangle = canvas.getBoundingClientRect();
+  let previousRaf = await nextAnimationFrame();
+  const gestureStartedAt = performance.now();
+  controller.beginViewGesture();
+  for (let index = 0; index < VECTOR_TEXT_ZOOM_C_SAMPLE_LIMIT; index += 1) {
+    const progress = Math.min(
+      1,
+      (performance.now() - gestureStartedAt) / VECTOR_TEXT_ZOOM_C_GESTURE_DURATION_MS,
+    );
+    const plannedZoom = VECTOR_TEXT_ZOOM_C_START_ZOOM * (
+      VECTOR_TEXT_ZOOM_C_TARGET_ZOOM / VECTOR_TEXT_ZOOM_C_START_ZOOM
+    ) ** progress;
+    const anchorX = rectangle.left + rectangle.width * (
+      0.68 + Math.sin(progress * Math.PI * 2) * 0.035
+    );
+    const anchorY = rectangle.top + rectangle.height * (
+      0.44 + Math.cos(progress * Math.PI * 2) * 0.025
+    );
+    const eventStartedAt = performance.now();
+    engine.zoomBy(
+      plannedZoom / engine.getVectorTextViewState().zoom,
+      anchorX,
+      anchorY,
+    );
+    const timestamp = await nextAnimationFrame();
+    gestureFrameIntervalsMs.push(Math.max(0, timestamp - previousRaf));
+    eventToNextFrameMs.push(Math.max(0, performance.now() - eventStartedAt));
+    presentationModes.push(controller.getDiagnostics().zoomFastPresentationMode);
+    const fastRevisions = engine.getVectorTextFastPresentationBackpressureStats();
+    fastSubmittedRevisionLagSamples.push(Math.max(
+      0,
+      fastRevisions.requestedRevision - fastRevisions.submittedRevision,
+    ));
+    fastCompletedRevisionLagSamples.push(Math.max(
+      0,
+      fastRevisions.requestedRevision - fastRevisions.completedRevision,
+    ));
+    previousRaf = timestamp;
+    if (progress >= 1) break;
+  }
+  const duringTrace = controller.getDiagnostics();
+  const gestureDurationMs = performance.now() - gestureStartedAt;
+  const queuePrefixStartedAt = performance.now();
+  const queuePrefixPromise = engine.waitForVectorTextPresentationCompletion()
+    .then(() => performance.now() - queuePrefixStartedAt);
+  const finalFastRequestedRevision = engine
+    .getVectorTextFastPresentationBackpressureStats().requestedRevision;
+  const fastVerificationStartedAt = performance.now();
+  let fastVerificationError: string | null = null;
+  let fastCompositeProbeAlphaPixelCounts: number[] = [];
+  let finalFastAckDurationMs = 0;
+  let fastCompositeProbeDurationMs = 0;
+  try {
+    const finalFastAckStartedAt = performance.now();
+    await engine.waitForVectorTextFastPresentationRevision(finalFastRequestedRevision);
+    finalFastAckDurationMs = performance.now() - finalFastAckStartedAt;
+    const fastCompositeProbeStartedAt = performance.now();
+    try {
+      const fastCompositeProbe = await engine.probeVectorTextFastCompositeAlpha(
+        fixtures.map(({ seed }) => ({ x: seed.x, y: seed.y })),
+      );
+      fastCompositeProbeAlphaPixelCounts = fastCompositeProbe.alphaPixelCounts;
+    } finally {
+      fastCompositeProbeDurationMs = performance.now() - fastCompositeProbeStartedAt;
+    }
+  } catch (error) {
+    if (finalFastAckDurationMs === 0) {
+      finalFastAckDurationMs = performance.now() - fastVerificationStartedAt;
+    }
+    fastVerificationError = error instanceof Error ? error.message : String(error);
+  }
+  const finalFastRevisions = engine.getVectorTextFastPresentationBackpressureStats();
+  const fastVerificationDurationMs = performance.now() - fastVerificationStartedAt;
+  const duringVerified = controller.getDiagnostics();
+  const recoveryStartedAt = performance.now();
+  controller.endViewGesture();
+  const after = await waitForVectorTextStable(before.zoomExactRecoveryCount + 1);
+  const recoveryDurationMs = performance.now() - recoveryStartedAt;
+  const queuePrefixAndCallbackWaitMs = await queuePrefixPromise;
+  const totalMeasuredDurationMs = gestureDurationMs
+    + finalFastAckDurationMs
+    + recoveryDurationMs;
+  const finalView = engine.getVectorTextViewState();
+  const finalZoom = finalView.zoom;
+  const environmentEnd = {
+    visibility: document.visibilityState,
+    devicePixelRatio: window.devicePixelRatio,
+    viewportWidth: window.innerWidth,
+    viewportHeight: window.innerHeight,
+    canvasWidth: canvas.width,
+    canvasHeight: canvas.height,
+  };
+
+  const exactRenderDeltaDuringGesture = duringVerified.renderCount - before.renderCount;
+  const exactRenderDeltaDuringRecovery = after.renderCount - duringVerified.renderCount;
+  const safeReprojectionDelta =
+    duringVerified.zoomSafeReprojectionCount - before.zoomSafeReprojectionCount;
+  const fallbackReprojectionDelta =
+    duringVerified.zoomFallbackReprojectionCount - before.zoomFallbackReprojectionCount;
+  const clippedReprojectionDelta =
+    duringVerified.zoomClippedReprojectionCount - before.zoomClippedReprojectionCount;
+  const unsafeExactRefreshStartedDelta =
+    duringVerified.zoomUnsafeExactRefreshCount - before.zoomUnsafeExactRefreshCount;
+  const unsafeExactRefreshCompletedDelta =
+    duringVerified.zoomUnsafeExactRefreshCompletedCount
+    - before.zoomUnsafeExactRefreshCompletedCount;
+  const exactRecoveryDelta = after.zoomExactRecoveryCount - before.zoomExactRecoveryCount;
+  const normalizedMissedFrameCount = idleFrameMedianMs > 0
+    ? gestureFrameIntervalsMs.reduce(
+      (count, duration) => count + Math.max(0, Math.round(duration / idleFrameMedianMs) - 1),
+      0,
+    )
+    : 0;
+  const profileOrder = fixtures.map((fixture) => fixture.profile);
+  const sampleCount = gestureFrameIntervalsMs.length;
+  const frameP95Ms = percentile(gestureFrameIntervalsMs, 0.95);
+  const framesOver20Ms = gestureFrameIntervalsMs.filter((duration) => duration > 20).length;
+  const framesOver33Ms = gestureFrameIntervalsMs.filter((duration) => duration > 33).length;
+  const fastPresentationSubmitDelta =
+    duringTrace.zoomFastPresentationSubmissionCount
+    - before.zoomFastPresentationSubmissionCount;
+  const fastPresentationCoalescedDelta =
+    duringTrace.zoomFastPresentationCoalescedRequestCount
+    - before.zoomFastPresentationCoalescedRequestCount;
+  const requiredFastPresentationSubmitCount = Math.max(
+    1,
+    Math.ceil(Math.min(
+      sampleCount * 0.75,
+      gestureDurationMs * 55 / 1000,
+    )),
+  );
+  const fastPresentationRateHz = gestureDurationMs > 0
+    ? fastPresentationSubmitDelta * 1000 / gestureDurationMs
+    : 0;
+  const fastSubmittedRevisionLagMaximum = Math.max(
+    0,
+    ...fastSubmittedRevisionLagSamples,
+  );
+  const fastCompletedRevisionLagP95 = percentile(fastCompletedRevisionLagSamples, 0.95);
+  const fastCompletedRevisionLagMaximum = Math.max(
+    0,
+    ...fastCompletedRevisionLagSamples,
+  );
+  const witnessesOutsideStartCount = fixtures.filter(({ seed }) => (
+    Math.abs(seed.x - startView.centerX) * startZoom > canvas.width * 0.5
+    || Math.abs(seed.y - startView.centerY) * startZoom > canvas.height * 0.5
+  )).length;
+  const witnessesInsideTargetCount = fixtures.filter(({ seed }) => (
+    Math.abs(seed.x - finalView.centerX) * VECTOR_TEXT_ZOOM_C_TARGET_ZOOM
+      < canvas.width * 0.5
+    && Math.abs(seed.y - finalView.centerY) * VECTOR_TEXT_ZOOM_C_TARGET_ZOOM
+      < canvas.height * 0.5
+  )).length;
+  const expectedFallbackGpuMemoryMiB = canvas.width * canvas.height * 4 / (1024 * 1024);
+  const emptyFallbackWitnessCount = fallbackProbeAlphaPixelCounts.filter(
+    (count) => count === 0,
+  ).length;
+  const checks = {
+    exactlyTenDistributedTexts:
+      initialRasterWasEmpty
+      && after.textNodeCount === VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT
+      && engine.getMixedSceneSnapshot()?.items.filter((item) => item.kind === "text").length
+        === VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT,
+    fixedFastZoomOutCompleted:
+      sampleCount >= 2
+      && sampleCount <= VECTOR_TEXT_ZOOM_C_SAMPLE_LIMIT
+      && gestureDurationMs >= VECTOR_TEXT_ZOOM_C_GESTURE_DURATION_MS
+      && Math.abs(startZoom - VECTOR_TEXT_ZOOM_C_START_ZOOM) < 1e-6
+      && Math.abs(finalZoom - VECTOR_TEXT_ZOOM_C_TARGET_ZOOM) < 1e-6,
+    fallbackPreparedBeforeGesture:
+      fallbackTextureCount === 1
+      && fallbackRunCount === fallbackTextureCount
+      && Math.abs(
+        fallbackGpuMemoryMiB - expectedFallbackGpuMemoryMiB,
+      ) < 1e-6
+      && fallbackGpuMemoryMiB <= 16
+      && Math.abs(fallbackCaptureZoom - VECTOR_TEXT_ZOOM_C_FALLBACK_ZOOM) < 1e-6,
+    fallbackPixelsPresent:
+      fallbackProbeAlphaPixelCounts.length === VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT
+      && emptyFallbackWitnessCount === 0,
+    finalFastFrameAcknowledged:
+      finalFastRevisions.submittedRevision === finalFastRequestedRevision
+      && finalFastRevisions.completedRevision === finalFastRequestedRevision,
+    fastCompositePixelsPresent:
+      fastCompositeProbeAlphaPixelCounts.length === VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT
+      && fastCompositeProbeAlphaPixelCounts.every((count) => count > 0),
+    witnessesExerciseReveal:
+      witnessesOutsideStartCount >= 8
+      && witnessesInsideTargetCount === VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT,
+    everyZoomStepCovered:
+      presentationModes.every(
+        (mode) => mode === "reproject" || mode === "reproject-fallback",
+      )
+      && fallbackReprojectionDelta > 0
+      && clippedReprojectionDelta === 0,
+    noClippedOrExactWorkDuringGesture:
+      clippedReprojectionDelta === 0
+      && unsafeExactRefreshStartedDelta === 0
+      && unsafeExactRefreshCompletedDelta === 0
+      && exactRenderDeltaDuringGesture === 0
+      && !duringVerified.zoomUnsafeExactRefreshInFlight
+      && !duringVerified.zoomUnsafeExactRefreshRequestPending,
+    fastPresentationFlowed:
+      fastPresentationSubmitDelta >= requiredFastPresentationSubmitCount
+      && fastSubmittedRevisionLagMaximum <= 2
+      && fastCompletedRevisionLagP95 <= 2
+      && fastCompletedRevisionLagMaximum <= 2,
+    framePacingWithinBudget:
+      frameP95Ms <= Math.max(20, idleFrameMedianMs * 1.5)
+      && framesOver33Ms <= 1
+      && normalizedMissedFrameCount <= 2,
+    recoveryWithinBudget:
+      finalFastAckDurationMs <= 250
+      && queuePrefixAndCallbackWaitMs <= 250
+      && recoveryDurationMs <= 1200
+      && totalMeasuredDurationMs <= VECTOR_TEXT_ZOOM_C_GESTURE_DURATION_MS + 1500,
+    exactRecoveryLatestOnly:
+      exactRecoveryDelta === 1
+      && after.zoomViewRevision === duringVerified.zoomViewRevision,
+    finalModePrecise:
+      after.zoomRenderMode === "precise"
+      && after.zoomFastPresentationMode === "precise",
+    effectsStayedSettled:
+      before.effectWorkerPendingJobs === 0
+      && duringTrace.effectWorkerPendingJobs === 0
+      && duringVerified.effectWorkerPendingJobs === 0
+      && after.effectWorkerPendingJobs === 0
+      && before.atomicEffectPendingNodes === 0
+      && duringTrace.atomicEffectPendingNodes === 0
+      && duringVerified.atomicEffectPendingNodes === 0
+      && after.atomicEffectPendingNodes === 0,
+    environmentStayedStable:
+      environmentStart.visibility === "visible"
+      && environmentEnd.visibility === "visible"
+      && environmentEnd.devicePixelRatio === environmentStart.devicePixelRatio
+      && environmentEnd.viewportWidth === environmentStart.viewportWidth
+      && environmentEnd.viewportHeight === environmentStart.viewportHeight
+      && environmentEnd.canvasWidth === environmentStart.canvasWidth
+      && environmentEnd.canvasHeight === environmentStart.canvasHeight
+      && Math.abs(canvas.getBoundingClientRect().width - startRectangle.width) < 0.5
+      && Math.abs(canvas.getBoundingClientRect().height - startRectangle.height) < 0.5,
+  };
+  const report: VectorZoomCoverageReport = {
+    version: 1,
+    strategy: VECTOR_TEXT_ZOOM_C_STRATEGY,
+    variant: "C",
+    runCode: vectorZoomRunCode,
+    initialRasterWasEmpty,
+    traceFingerprint:
+      `texts:${VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT}|zoom:${VECTOR_TEXT_ZOOM_C_START_ZOOM}`
+      + `->${VECTOR_TEXT_ZOOM_C_TARGET_ZOOM}|duration:${VECTOR_TEXT_ZOOM_C_GESTURE_DURATION_MS}`
+      + `|fallback:${VECTOR_TEXT_ZOOM_C_FALLBACK_ZOOM}|anchor:drift|coverage:dual-gpu`,
+    textCount: after.textNodeCount,
+    profileOrder,
+    idleFrameCount: VECTOR_TEXT_ZOOM_C_IDLE_FRAME_COUNT,
+    sampleCount,
+    gestureTargetDurationMs: VECTOR_TEXT_ZOOM_C_GESTURE_DURATION_MS,
+    startZoom,
+    targetZoom: VECTOR_TEXT_ZOOM_C_TARGET_ZOOM,
+    finalZoom,
+    fallbackCaptureZoom,
+    fallbackTextureCount,
+    fallbackRunCount,
+    fallbackGpuMemoryMiB,
+    fallbackProbeAlphaPixelCounts,
+    fastCompositeProbeAlphaPixelCounts,
+    witnessesOutsideStartCount,
+    witnessesInsideTargetCount,
+    environment: {
+      userAgent: navigator.userAgent,
+      gpuLabel: engine.getBenchmarkEnvironment().gpuLabel,
+      visibilityAtStart: environmentStart.visibility,
+      visibilityAtEnd: environmentEnd.visibility,
+      devicePixelRatioAtStart: environmentStart.devicePixelRatio,
+      devicePixelRatioAtEnd: environmentEnd.devicePixelRatio,
+      viewportWidthAtStart: environmentStart.viewportWidth,
+      viewportHeightAtStart: environmentStart.viewportHeight,
+      viewportWidthAtEnd: environmentEnd.viewportWidth,
+      viewportHeightAtEnd: environmentEnd.viewportHeight,
+      canvasWidthAtStart: environmentStart.canvasWidth,
+      canvasHeightAtStart: environmentStart.canvasHeight,
+      canvasWidthAtEnd: environmentEnd.canvasWidth,
+      canvasHeightAtEnd: environmentEnd.canvasHeight,
+    },
+    idleFrameIntervalsMs,
+    idleFrameMedianMs,
+    gestureFrameIntervalsMs,
+    eventToNextFrameMs,
+    presentationModes,
+    fastSubmittedRevisionLagSamples,
+    fastCompletedRevisionLagSamples,
+    gestureDurationMs,
+    frameP50Ms: percentile(gestureFrameIntervalsMs, 0.5),
+    frameP95Ms,
+    frameMaximumMs: Math.max(0, ...gestureFrameIntervalsMs),
+    framesOver20Ms,
+    framesOver33Ms,
+    normalizedMissedFrameCount,
+    eventToNextFrameP95Ms: percentile(eventToNextFrameMs, 0.95),
+    queuePrefixAndCallbackWaitMs,
+    finalFastAckDurationMs,
+    fastCompositeProbeDurationMs,
+    fastVerificationDurationMs,
+    fastVerificationError,
+    recoveryDurationMs,
+    totalMeasuredDurationMs,
+    exactRenderDeltaDuringGesture,
+    exactRenderDeltaDuringRecovery,
+    safeReprojectionDelta,
+    fallbackReprojectionDelta,
+    clippedReprojectionDelta,
+    unsafeExactRefreshStartedDelta,
+    unsafeExactRefreshCompletedDelta,
+    fastPresentationSubmitDelta,
+    fastPresentationCoalescedDelta,
+    requiredFastPresentationSubmitCount,
+    fastPresentationRateHz,
+    fastSubmittedRevisionLagMaximum,
+    fastCompletedRevisionLagP95,
+    fastCompletedRevisionLagMaximum,
+    finalFastRequestedRevision,
+    finalFastSubmittedRevision: finalFastRevisions.submittedRevision,
+    finalFastCompletedRevision: finalFastRevisions.completedRevision,
+    exactRecoveryDelta,
+    latestViewRevision: after.zoomViewRevision,
+    checks,
+    passed: Object.values(checks).every(Boolean),
+  };
+  (
+    window as Window & { __vectorZoomCoverageReport?: VectorZoomCoverageReport }
+  ).__vectorZoomCoverageReport = report;
+  layerMemoryStressReport.textContent = JSON.stringify(report, null, 2);
+  layerMemoryStressDetails.hidden = false;
+  layerMemoryStressDetails.open = true;
+  layerMemoryStressResult.className = report.passed ? "result ok" : "result error";
+  layerMemoryStressResult.textContent = report.passed
+    ? `C OK · p95 ${report.frameP95Ms.toFixed(1)} ms · `
+      + `${report.framesOver20Ms} frame oltre 20 ms · salvataggio in corso…`
+    : "C NON VALIDA: report disponibile, salvataggio in corso…";
+  statusElement.textContent = layerMemoryStressResult.textContent;
+  statusElement.className = report.passed ? "status ok" : "status error";
+  const save = await saveVectorZoomCoverageReport(report);
+  layerMemoryStressResult.textContent = report.passed
+    ? `C OK · p95 ${report.frameP95Ms.toFixed(1)} ms · `
+      + `frame scoperti ${report.clippedReprojectionDelta} · ${save.message}`
+    : `C NON VALIDA · ${save.message}`;
+  statusElement.textContent = layerMemoryStressResult.textContent;
+  showVectorZoomCoverageReport(report, save.message);
 }
 
 async function runRequestedVectorZoomAb(): Promise<void> {
@@ -10656,7 +11326,9 @@ void engine.initialize()
     if (vectorTextEditorEnabled) {
       vectorTextPrototype = new MixedVectorTextController(engine, {
         clippedRefreshPolicy:
-          vectorZoomRefreshMode === "release" ? "on-release" : "during-gesture",
+          vectorZoomRefreshMode === "release" || vectorZoomCoverageRequested
+            ? "on-release"
+            : "during-gesture",
       });
       await vectorTextPrototype.initialize();
       if (import.meta.env.DEV) {
@@ -10665,7 +11337,9 @@ void engine.initialize()
         }).__vectorTextPrototype = vectorTextPrototype;
       }
     }
-    if (vectorZoomAbRequested) {
+    if (vectorZoomCoverageRequested) {
+      await runRequestedVectorZoomCoverage();
+    } else if (vectorZoomAbRequested) {
       await runRequestedVectorZoomAb();
     } else if (vectorZoomStressRequested) {
       await runRequestedVectorZoomStress();

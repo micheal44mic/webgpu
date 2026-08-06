@@ -48,6 +48,31 @@ const IPHONE_MEMORY_LIMIT_STATUSES = new Set(["running", "completed", "interrupt
 const LAYER_COMPRESSION_BUILD = "lossless-gzip-256-tile-1mib-streamed-measurement-v1";
 const LAYER_COMPRESSION_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS layer_compression_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)";
 const LAYER_COMPRESSION_INDEX_SQL = "CREATE INDEX IF NOT EXISTS layer_compression_runs_created_at_idx ON layer_compression_runs (created_at DESC)";
+const VECTOR_ZOOM_C_STRATEGY = "ten-semantic-text-dual-gpu-fallback0.2-zoom8-to-0.3-drift-650ms-v5";
+const VECTOR_ZOOM_RUNS_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS vector_zoom_runs (run_code TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)";
+const VECTOR_ZOOM_RUN_CODE = /^[2-9A-HJ-NP-Z]{8}$/;
+const VECTOR_ZOOM_CHECK_NAMES = [
+  "exactlyTenDistributedTexts",
+  "fixedFastZoomOutCompleted",
+  "fallbackPreparedBeforeGesture",
+  "fallbackPixelsPresent",
+  "finalFastFrameAcknowledged",
+  "fastCompositePixelsPresent",
+  "witnessesExerciseReveal",
+  "everyZoomStepCovered",
+  "noClippedOrExactWorkDuringGesture",
+  "fastPresentationFlowed",
+  "framePacingWithinBudget",
+  "recoveryWithinBudget",
+  "exactRecoveryLatestOnly",
+  "finalModePrecise",
+  "effectsStayedSettled",
+  "environmentStayedStable",
+];
+const VECTOR_ZOOM_PROFILE_ORDER = [
+  "arch", "drop-shadow", "block-shadow", "inner-shadow", "arch",
+  "drop-shadow", "block-shadow", "inner-shadow", "arch", "drop-shadow",
+];
 
 function jsonResponse(payload, status = 200) {
   return new Response(JSON.stringify(payload), {
@@ -82,6 +107,57 @@ async function ensureLayerCompressionSchema(db) {
     db.prepare(LAYER_COMPRESSION_SCHEMA_SQL),
     db.prepare(LAYER_COMPRESSION_INDEX_SQL),
   ]);
+}
+
+async function ensureVectorZoomRunsSchema(db) {
+  await db.prepare(VECTOR_ZOOM_RUNS_SCHEMA_SQL).run();
+}
+
+function finiteNumberArray(value, maximumLength = 360) {
+  return Array.isArray(value)
+    && value.length <= maximumLength
+    && value.every((entry) => Number.isFinite(entry));
+}
+
+function finiteNumberInRange(value, minimum, maximum) {
+  return Number.isFinite(value) && value >= minimum && value <= maximum;
+}
+
+function integerInRange(value, minimum, maximum) {
+  return Number.isInteger(value) && value >= minimum && value <= maximum;
+}
+
+function finiteNonNegativeNumberArray(value, maximumLength = 360) {
+  return finiteNumberArray(value, maximumLength)
+    && value.every((entry) => entry >= 0 && entry <= 60_000);
+}
+
+async function readLimitedJson(request, maximumBytes) {
+  if (!request.body) return { error: "invalid" };
+  const reader = request.body.getReader();
+  const chunks = [];
+  let totalBytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalBytes += value.byteLength;
+    if (totalBytes > maximumBytes) {
+      await reader.cancel();
+      return { error: "too-large" };
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return { value: JSON.parse(new TextDecoder().decode(bytes)) };
+  } catch {
+    return { error: "invalid" };
+  }
 }
 
 function normalizeHumanStrokeBenchmark(payload) {
@@ -419,6 +495,244 @@ async function handleLayerCompressionRuns(request, env) {
   return new Response(null, { status: 405, headers: { Allow: "GET, POST" } });
 }
 
+async function handleVectorZoomRuns(request, env) {
+  if (!env.DB) {
+    return jsonResponse({ error: "Archivio test zoom vettoriale non disponibile." }, 503);
+  }
+  await ensureVectorZoomRunsSchema(env.DB);
+
+  if (request.method === "POST") {
+    const requestOrigin = request.headers.get("Origin");
+    if (requestOrigin !== new URL(request.url).origin) {
+      return jsonResponse({ error: "Origine non consentita." }, 403);
+    }
+    if (!(request.headers.get("Content-Type") ?? "").toLowerCase().startsWith("application/json")) {
+      return jsonResponse({ error: "Content-Type JSON richiesto." }, 415);
+    }
+    const contentLength = Number(request.headers.get("Content-Length") ?? "0");
+    if (contentLength > 65_536) {
+      return jsonResponse({ error: "Il report zoom è troppo grande." }, 413);
+    }
+    const decoded = await readLimitedJson(request, 65_536);
+    if (decoded.error === "too-large") {
+      return jsonResponse({ error: "Il report zoom è troppo grande." }, 413);
+    }
+    if (decoded.error) {
+      return jsonResponse({ error: "JSON del report zoom non valido." }, 400);
+    }
+    const payload = decoded.value;
+    const report = payload?.report;
+    const checks = report && typeof report.checks === "object" && report.checks
+      ? report.checks
+      : null;
+    const timingFields = report ? [
+      report.idleFrameMedianMs,
+      report.gestureDurationMs,
+      report.frameP50Ms,
+      report.frameP95Ms,
+      report.frameMaximumMs,
+      report.eventToNextFrameP95Ms,
+      report.queuePrefixAndCallbackWaitMs,
+      report.finalFastAckDurationMs,
+      report.fastCompositeProbeDurationMs,
+      report.fastVerificationDurationMs,
+      report.recoveryDurationMs,
+      report.totalMeasuredDurationMs,
+    ] : [];
+    const counterFields = report ? [
+      report.framesOver20Ms,
+      report.framesOver33Ms,
+      report.normalizedMissedFrameCount,
+      report.exactRenderDeltaDuringGesture,
+      report.exactRenderDeltaDuringRecovery,
+      report.safeReprojectionDelta,
+      report.fallbackReprojectionDelta,
+      report.clippedReprojectionDelta,
+      report.unsafeExactRefreshStartedDelta,
+      report.unsafeExactRefreshCompletedDelta,
+      report.fastPresentationSubmitDelta,
+      report.fastPresentationCoalescedDelta,
+      report.requiredFastPresentationSubmitCount,
+      report.latestViewRevision,
+      report.finalFastRequestedRevision,
+      report.finalFastSubmittedRevision,
+      report.finalFastCompletedRevision,
+    ] : [];
+    const greenReportIsConsistent = !report?.passed || (
+      report.initialRasterWasEmpty === true
+      && report.textCount === 10
+      && Math.abs(report.startZoom - 8) <= 1e-4
+      && Math.abs(report.finalZoom - 0.3) <= 1e-4
+      && Math.abs(report.fallbackCaptureZoom - 0.2) <= 1e-4
+      && report.fallbackTextureCount === 1
+      && report.fallbackRunCount === 1
+      && report.fallbackGpuMemoryMiB > 0
+      && report.fallbackGpuMemoryMiB <= 16
+      && Array.isArray(report.fallbackProbeAlphaPixelCounts)
+      && report.fallbackProbeAlphaPixelCounts.length === 10
+      && report.fallbackProbeAlphaPixelCounts.every((count) => count > 0)
+      && Array.isArray(report.fastCompositeProbeAlphaPixelCounts)
+      && report.fastCompositeProbeAlphaPixelCounts.length === 10
+      && report.fastCompositeProbeAlphaPixelCounts.every((count) => count > 0)
+      && report.witnessesOutsideStartCount >= 8
+      && report.witnessesInsideTargetCount === 10
+      && Array.isArray(report.presentationModes)
+      && report.presentationModes.every((mode) => (
+        mode === "reproject" || mode === "reproject-fallback"
+      ))
+      && report.exactRenderDeltaDuringGesture === 0
+      && report.clippedReprojectionDelta === 0
+      && report.unsafeExactRefreshStartedDelta === 0
+      && report.unsafeExactRefreshCompletedDelta === 0
+      && report.fallbackReprojectionDelta > 0
+      && report.fastPresentationSubmitDelta >= report.requiredFastPresentationSubmitCount
+      && report.fastSubmittedRevisionLagMaximum <= 2
+      && report.fastCompletedRevisionLagP95 <= 2
+      && report.fastCompletedRevisionLagMaximum <= 2
+      && report.finalFastSubmittedRevision === report.finalFastRequestedRevision
+      && report.finalFastCompletedRevision === report.finalFastRequestedRevision
+      && report.finalFastAckDurationMs <= 250
+      && report.queuePrefixAndCallbackWaitMs <= 250
+      && report.recoveryDurationMs <= 1200
+      && report.exactRecoveryDelta === 1
+      && Array.isArray(report.profileOrder)
+      && report.profileOrder.every((profile, index) => (
+        profile === VECTOR_ZOOM_PROFILE_ORDER[index]
+      ))
+    );
+    if (
+      !payload
+      || payload.version !== 1
+      || payload.kind !== "vector-zoom-c"
+      || typeof payload.runCode !== "string"
+      || !VECTOR_ZOOM_RUN_CODE.test(payload.runCode)
+      || !report
+      || report.version !== 1
+      || report.strategy !== VECTOR_ZOOM_C_STRATEGY
+      || report.variant !== "C"
+      || report.runCode !== payload.runCode
+      || typeof report.passed !== "boolean"
+      || typeof report.initialRasterWasEmpty !== "boolean"
+      || typeof report.traceFingerprint !== "string"
+      || report.traceFingerprint.length > 512
+      || !integerInRange(report.textCount, 0, 100)
+      || report.idleFrameCount !== 30
+      || !Number.isInteger(report.sampleCount)
+      || report.sampleCount < 2
+      || report.sampleCount > 120
+      || report.gestureTargetDurationMs !== 650
+      || !finiteNumberInRange(report.startZoom, 0.02, 64)
+      || report.targetZoom !== 0.3
+      || !finiteNumberInRange(report.finalZoom, 0.02, 64)
+      || !finiteNumberInRange(report.fallbackCaptureZoom, 0, 64)
+      || !integerInRange(report.fallbackTextureCount, 0, 64)
+      || !integerInRange(report.fallbackRunCount, 0, 64)
+      || !finiteNumberInRange(report.fallbackGpuMemoryMiB, 0, 1024)
+      || !finiteNumberArray(report.fallbackProbeAlphaPixelCounts, 10)
+      || !report.fallbackProbeAlphaPixelCounts.every((count) => (
+        integerInRange(count, 0, 16_384)
+      ))
+      || !finiteNumberArray(report.fastCompositeProbeAlphaPixelCounts, 10)
+      || !report.fastCompositeProbeAlphaPixelCounts.every((count) => (
+        integerInRange(count, 0, 16_384)
+      ))
+      || !integerInRange(report.witnessesOutsideStartCount, 0, 10)
+      || !integerInRange(report.witnessesInsideTargetCount, 0, 10)
+      || !finiteNonNegativeNumberArray(report.idleFrameIntervalsMs)
+      || !finiteNonNegativeNumberArray(report.gestureFrameIntervalsMs, 120)
+      || !finiteNonNegativeNumberArray(report.eventToNextFrameMs, 120)
+      || !finiteNonNegativeNumberArray(report.fastSubmittedRevisionLagSamples, 120)
+      || !finiteNonNegativeNumberArray(report.fastCompletedRevisionLagSamples, 120)
+      || report.idleFrameIntervalsMs.length !== report.idleFrameCount
+      || report.gestureFrameIntervalsMs.length !== report.sampleCount
+      || report.eventToNextFrameMs.length !== report.sampleCount
+      || report.fastSubmittedRevisionLagSamples.length !== report.sampleCount
+      || report.fastCompletedRevisionLagSamples.length !== report.sampleCount
+      || !Array.isArray(report.presentationModes)
+      || report.presentationModes.length !== report.sampleCount
+      || !report.presentationModes.every((mode) => (
+        mode === "precise"
+        || mode === "reproject"
+        || mode === "reproject-fallback"
+        || mode === "reproject-clipped"
+      ))
+      || timingFields.length !== 12
+      || !timingFields.every((value) => finiteNumberInRange(value, 0, 60_000))
+      || !counterFields.every((value) => integerInRange(value, -1_000_000, 1_000_000_000))
+      || !finiteNumberInRange(report.fastSubmittedRevisionLagMaximum, 0, 1_000_000)
+      || !finiteNumberInRange(report.fastCompletedRevisionLagP95, 0, 1_000_000)
+      || !finiteNumberInRange(report.fastCompletedRevisionLagMaximum, 0, 1_000_000)
+      || !finiteNumberInRange(report.fastPresentationRateHz, 0, 10_000)
+      || (report.fastVerificationError !== null && (
+        typeof report.fastVerificationError !== "string"
+        || report.fastVerificationError.length > 1024
+      ))
+      || !report.environment
+      || typeof report.environment.userAgent !== "string"
+      || report.environment.userAgent.length > 1024
+      || typeof report.environment.gpuLabel !== "string"
+      || report.environment.gpuLabel.length > 512
+      || typeof report.environment.visibilityAtStart !== "string"
+      || typeof report.environment.visibilityAtEnd !== "string"
+      || !finiteNumberInRange(report.environment.devicePixelRatioAtStart, 0.1, 20)
+      || !finiteNumberInRange(report.environment.devicePixelRatioAtEnd, 0.1, 20)
+      || !integerInRange(report.environment.viewportWidthAtStart, 1, 32_768)
+      || !integerInRange(report.environment.viewportHeightAtStart, 1, 32_768)
+      || !integerInRange(report.environment.viewportWidthAtEnd, 1, 32_768)
+      || !integerInRange(report.environment.viewportHeightAtEnd, 1, 32_768)
+      || !integerInRange(report.environment.canvasWidthAtStart, 1, 32_768)
+      || !integerInRange(report.environment.canvasHeightAtStart, 1, 32_768)
+      || !integerInRange(report.environment.canvasWidthAtEnd, 1, 32_768)
+      || !integerInRange(report.environment.canvasHeightAtEnd, 1, 32_768)
+      || !Array.isArray(report.profileOrder)
+      || report.profileOrder.length !== 10
+      || !report.profileOrder.every((profile) => (
+        typeof profile === "string" && profile.length <= 64
+      ))
+      || !integerInRange(report.exactRecoveryDelta, -1_000_000, 1_000_000_000)
+      || !checks
+      || Object.keys(checks).length !== VECTOR_ZOOM_CHECK_NAMES.length
+      || !VECTOR_ZOOM_CHECK_NAMES.every((name) => typeof checks[name] === "boolean")
+      || report.passed !== VECTOR_ZOOM_CHECK_NAMES.every((name) => checks[name])
+      || !greenReportIsConsistent
+    ) {
+      return jsonResponse({ error: "Il report zoom vettoriale non è valido." }, 400);
+    }
+    const payloadJson = JSON.stringify(report);
+    if (new TextEncoder().encode(payloadJson).byteLength > 65_536) {
+      return jsonResponse({ error: "Il report zoom è troppo grande." }, 413);
+    }
+    const createdAt = new Date().toISOString();
+    await env.DB
+      .prepare("INSERT INTO vector_zoom_runs (run_code, created_at, payload_json) VALUES (?1, ?2, ?3) ON CONFLICT(run_code) DO UPDATE SET created_at = excluded.created_at, payload_json = excluded.payload_json")
+      .bind(payload.runCode, createdAt, payloadJson)
+      .run();
+    return jsonResponse({ runCode: payload.runCode, createdAt }, 201);
+  }
+
+  if (request.method === "GET") {
+    const runCode = new URL(request.url).searchParams.get("code")?.toUpperCase() ?? "";
+    if (!VECTOR_ZOOM_RUN_CODE.test(runCode)) {
+      return jsonResponse({ error: "Codice del test zoom non valido." }, 400);
+    }
+    const record = await env.DB
+      .prepare("SELECT created_at, payload_json FROM vector_zoom_runs WHERE run_code = ?1")
+      .bind(runCode)
+      .first();
+    if (!record) {
+      return jsonResponse({ error: "Report zoom non trovato." }, 404);
+    }
+    return jsonResponse({
+      version: 1,
+      runCode,
+      createdAt: record.created_at,
+      report: JSON.parse(record.payload_json),
+    });
+  }
+
+  return new Response(null, { status: 405, headers: { Allow: "GET, POST" } });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -436,6 +750,9 @@ export default {
     }
     if (url.pathname === "/api/iphone-memory-limit-runs") {
       return handleIphoneMemoryLimitRuns(request, env);
+    }
+    if (url.pathname === "/api/vector-zoom-runs") {
+      return handleVectorZoomRuns(request, env);
     }
 
     if (

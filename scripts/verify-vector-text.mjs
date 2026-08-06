@@ -85,6 +85,13 @@ import {
   VECTOR_TEXT_ZOOM_AB_SAMPLE_COUNT,
   VECTOR_TEXT_ZOOM_AB_START_ZOOM,
   VECTOR_TEXT_ZOOM_AB_STRATEGY,
+  VECTOR_TEXT_ZOOM_C_IDLE_FRAME_COUNT,
+  VECTOR_TEXT_ZOOM_C_GESTURE_DURATION_MS,
+  VECTOR_TEXT_ZOOM_C_SAMPLE_LIMIT,
+  VECTOR_TEXT_ZOOM_C_FALLBACK_ZOOM,
+  VECTOR_TEXT_ZOOM_C_START_ZOOM,
+  VECTOR_TEXT_ZOOM_C_STRATEGY,
+  VECTOR_TEXT_ZOOM_C_TARGET_ZOOM,
   VECTOR_TEXT_ZOOM_STRESS_PROFILE_ORDER,
   VECTOR_TEXT_ZOOM_STRESS_SEED,
   VECTOR_TEXT_ZOOM_STRESS_STRATEGY,
@@ -92,6 +99,7 @@ import {
   VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT,
   vectorTextExactRecoveryIsCurrent,
   vectorTextFastPresentationMode,
+  vectorTextZoomCoverageSeed,
   vectorTextZoomStressSeed,
   vectorTextZoomStressStepFactor,
 } from "../src/vector-text-adaptive-zoom.ts";
@@ -145,6 +153,8 @@ const mixedCompositorSource = read("src/mixed-scene-compositor-shader.ts");
 const svgSource = read("src/vector-svg-import.ts");
 const vectorRasterSource = read("src/engine-vector-raster-runtime.ts");
 const mainSource = read("src/main.ts");
+const sitesBuildSource = read("scripts/prepare-sites-build.mjs");
+const vectorZoomMigrationSource = read(".openai/drizzle/0005_vector_zoom_runs.sql");
 const htmlSource = read("index.html");
 const packageJson = JSON.parse(read("package.json"));
 
@@ -313,7 +323,7 @@ assert.equal(
 );
 assert.equal(
   VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
-  "gesture-latest-only-gpu-reprojection-clipped-uncovered-exact-settle-v5",
+  "gesture-latest-only-dual-gpu-reprojection-fallback-exact-settle-v6",
 );
 assert.equal(VECTOR_TEXT_ADAPTIVE_ZOOM_SETTLE_MS, 140);
 assert.equal(VECTOR_TEXT_FAST_PRESENTATION_FILTER_GUARD_PX, 0.5);
@@ -331,6 +341,13 @@ assert.equal(
 assert.equal(VECTOR_TEXT_ZOOM_AB_IDLE_FRAME_COUNT, 30);
 assert.equal(VECTOR_TEXT_ZOOM_AB_SAMPLE_COUNT, 180);
 assert.equal(VECTOR_TEXT_ZOOM_AB_START_ZOOM, 64);
+assert.match(VECTOR_TEXT_ZOOM_C_STRATEGY, /dual-gpu-fallback/);
+assert.equal(VECTOR_TEXT_ZOOM_C_IDLE_FRAME_COUNT, 30);
+assert.equal(VECTOR_TEXT_ZOOM_C_SAMPLE_LIMIT, 120);
+assert.equal(VECTOR_TEXT_ZOOM_C_GESTURE_DURATION_MS, 650);
+assert.equal(VECTOR_TEXT_ZOOM_C_START_ZOOM, 8);
+assert.equal(VECTOR_TEXT_ZOOM_C_TARGET_ZOOM, 0.3);
+assert.equal(VECTOR_TEXT_ZOOM_C_FALLBACK_ZOOM, 0.2);
 assert.equal(VECTOR_TEXT_ZOOM_STRESS_PROFILE_ORDER.length, 10);
 assert.deepEqual(
   Object.fromEntries(
@@ -355,6 +372,24 @@ assert.equal(stressSeedsA.filter(({ seed }) => seed.singleShadowEnabled).length,
 assert.equal(stressSeedsA.filter(({ seed }) => seed.blockShadowEnabled).length, 2);
 assert.equal(stressSeedsA.filter(({ seed }) => seed.innerShadowEnabled).length, 2);
 assert.throws(() => vectorTextZoomStressSeed(10, 4096), /fuori range/);
+const coverageSeeds = Array.from(
+  { length: VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT },
+  (_, index) => vectorTextZoomCoverageSeed(index, 4096, {
+    canvasWidth: 390,
+    canvasHeight: 844,
+    targetZoom: VECTOR_TEXT_ZOOM_C_TARGET_ZOOM,
+  }),
+);
+assert.equal(new Set(coverageSeeds.map(({ seed }) => `${seed.x}:${seed.y}`)).size, 10);
+assert.ok(coverageSeeds.every(({ seed }) => (
+  Math.abs(seed.x - 2048) * VECTOR_TEXT_ZOOM_C_TARGET_ZOOM < 390 * 0.5
+  && Math.abs(seed.y - 2048) * VECTOR_TEXT_ZOOM_C_TARGET_ZOOM < 844 * 0.5
+)));
+assert.deepEqual(
+  coverageSeeds.map(({ profile }) => profile),
+  [...VECTOR_TEXT_ZOOM_STRESS_PROFILE_ORDER],
+  "C deve cambiare soltanto la distribuzione, non il mix deterministico degli effetti",
+);
 let plannedZoom = 0.2;
 let plannedZoomSteps = 0;
 while (plannedZoom < VECTOR_TEXT_ZOOM_STRESS_TARGET_ZOOM && plannedZoomSteps < 64) {
@@ -385,6 +420,21 @@ assert.equal(
   vectorTextFastPresentationMode(capturedView, { ...capturedView, zoom: 0.5 }),
   "reproject-clipped",
   "lo zoom-out deve seguire la camera e richiedere il refresh delle zone scoperte",
+);
+const wideCapture = { ...capturedView, zoom: VECTOR_TEXT_ZOOM_C_FALLBACK_ZOOM };
+assert.equal(
+  vectorTextFastPresentationMode(
+    { ...capturedView, zoom: VECTOR_TEXT_ZOOM_C_START_ZOOM },
+    {
+      ...capturedView,
+      centerX: capturedView.centerX + 180,
+      centerY: capturedView.centerY + 50,
+      zoom: VECTOR_TEXT_ZOOM_C_TARGET_ZOOM,
+    },
+    wideCapture,
+  ),
+  "reproject-fallback",
+  "C deve coprire lo zoom-out con la seconda capture senza dichiararlo clipped",
 );
 assert.equal(
   vectorTextFastPresentationMode(capturedView, { ...capturedView, centerX: 2500 }),
@@ -1392,22 +1442,70 @@ assert.ok(
   "pointer-up deve richiedere il recovery preciso senza attendere il debounce",
 );
 assert.doesNotMatch(controllerSource, /zoomModeIndicator|updateAdaptiveZoomIndicator|Zoom vettori · GPU/);
-assert.match(adaptiveSource, /reprojection-clipped-uncovered-exact-settle-v5/);
+assert.match(adaptiveSource, /dual-gpu-reprojection-fallback-exact-settle-v6/);
 assert.match(adaptiveSource, /for \(const \[x, y\] of \[/);
 assert.match(engineSource, /vectorTextFastPresentationInFlight/);
 assert.match(engineSource, /vectorTextFastPresentationLatestRequested/);
 assert.match(engineSource, /vectorTextFastPresentationCoalescedRequestCount \+= 1/);
+assert.match(engineSource, /vectorTextFastRequestedRevision \+= 1/);
+assert.match(engineSource, /vectorTextFastSubmittedRevision = Math\.max/);
+assert.match(engineSource, /vectorTextFastCompletedRevision = Math\.max/);
+assert.match(engineSource, /waitForVectorTextFastPresentationRevision/);
+assert.match(
+  engineSource,
+  /vectorTextFastPresentationEnabled && this\.vectorTextFastPresentationInFlight\) \{\s*this\.vectorTextFastPresentationLatestRequested = true/,
+  "anche un frame autoritativo concorrente deve lasciare un ack latest-only tracciato",
+);
 assert.match(engineSource, /device\.queue\.onSubmittedWorkDone\(\)\.then/);
-assert.match(engineSource, /if \(!changed\) \{\s*return;\s*\}[\s\S]*queue\.writeBuffer/);
+assert.match(
+  engineSource,
+  /function writeCaptureViewUniform[\s\S]*if \(changed\) \{[\s\S]*queue\.writeBuffer/,
+);
 assert.doesNotMatch(
   mixedCompositorSource,
   /if \(capture\.fastMode > 1\.5\)/,
   "nessun fast mode deve bypassare la camera con un frame screen-space",
 );
+assert.match(mixedCompositorSource, /@group\(0\) @binding\(5\) var fallbackTexture/);
+assert.match(mixedCompositorSource, /return mix\(fallbackColor, sourceColor, smoothstep/);
+assert.match(engineSource, /captureVectorTextFallbackPresentation/);
+assert.match(engineSource, /probeVectorTextFallbackAlpha/);
+assert.match(engineSource, /probeVectorTextFastCompositeAlpha/);
+assert.match(engineSource, /const texture = engine\.mixedSceneLinearTexture/);
+assert.match(engineSource, /x \* bytesPerPixel \+ 6/);
+assert.match(engineSource, /GPUTextureUsage\.COPY_SRC/);
 assert.match(
-  mixedCompositorSource,
-  /if \(!insideSource\) \{\s*return vec4<f32>\(0\.0\);\s*\}/,
+  engineSource,
+  /vectorTextFallbackCaptureView = null;\s*writeVectorTextFallbackCaptureUniforms\(engine\);\s*writeVectorTextCaptureUniforms\(engine\)/,
+  "invalidare la fallback deve riclassificare subito il fast mode prima del frame successivo",
 );
+assert.match(controllerSource, /zoomFallbackReprojectionCount/);
+assert.match(mainSource, /VECTOR_TEXT_ZOOM_C_START_ZOOM/);
+assert.match(mainSource, /VECTOR_TEXT_ZOOM_C_TARGET_ZOOM/);
+assert.match(mainSource, /__vectorZoomCoverageReport/);
+assert.match(mainSource, /fallbackProbeAlphaPixelCounts/);
+assert.match(mainSource, /fastCompositeProbeAlphaPixelCounts/);
+assert.match(mainSource, /finalFastFrameAcknowledged/);
+assert.match(mainSource, /initialRasterWasEmpty/);
+assert.match(mainSource, /const duringTrace = controller\.getDiagnostics\(\)/);
+assert.match(
+  mainSource,
+  /fastPresentationSubmitDelta =\s*duringTrace\.zoomFastPresentationSubmissionCount/,
+  "il drain di verifica non deve migliorare retroattivamente la metrica dei 650 ms",
+);
+assert.match(mainSource, /fastSubmittedRevisionLagMaximum <= 2/);
+assert.match(mainSource, /finalFastAckDurationMs <= 250/);
+assert.match(mainSource, /VECTOR_TEXT_ZOOM_C_GESTURE_DURATION_MS/);
+assert.match(mainSource, /\/api\/vector-zoom-runs/);
+assert.match(sitesBuildSource, /handleVectorZoomRuns/);
+assert.match(sitesBuildSource, /\/api\/vector-zoom-runs/);
+assert.match(sitesBuildSource, /report\.passed !== VECTOR_ZOOM_CHECK_NAMES\.every/);
+assert.doesNotMatch(
+  sitesBuildSource,
+  /report\.fallbackTextureCount !== 1|report\.exactRecoveryDelta !== 1/,
+  "il backend deve salvare anche i report C falliti, non soltanto gli esiti verdi",
+);
+assert.match(vectorZoomMigrationSource, /CREATE TABLE IF NOT EXISTS vector_zoom_runs/);
 assert.equal(
   (mixedCompositorSource.match(/return textureLoad\(sourceTexture, pixel, 0\);/g) ?? []).length,
   1,

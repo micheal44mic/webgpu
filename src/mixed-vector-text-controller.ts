@@ -90,6 +90,7 @@ export interface MixedVectorTextHost {
   ): VectorTextGpuPresentationStats;
   isPaintStrokeActive(): boolean;
   clearVectorTextPresentation(placement?: VectorTextPlacement): void;
+  clearVectorTextFallbackPresentation(): void;
   setVectorTextFastPresentationEnabled(enabled: boolean): void;
   getVectorTextFastPresentationMode(): VectorTextFastPresentationMode;
   getVectorTextFastPresentationBackpressureStats(): {
@@ -183,6 +184,7 @@ export interface MixedVectorTextDiagnostics {
   zoomViewRevision: number;
   zoomViewEventCount: number;
   zoomSafeReprojectionCount: number;
+  zoomFallbackReprojectionCount: number;
   zoomClippedReprojectionCount: number;
   zoomUnsafeExactRefreshCount: number;
   zoomUnsafeExactRefreshCompletedCount: number;
@@ -714,6 +716,7 @@ export class MixedVectorTextController {
   private zoomExactRecoveryCount = 0;
   private zoomViewEventCount = 0;
   private zoomSafeReprojectionCount = 0;
+  private zoomFallbackReprojectionCount = 0;
   private zoomClippedReprojectionCount = 0;
   private zoomUnsafeExactRefreshCount = 0;
   private zoomUnsafeExactRefreshCompletedCount = 0;
@@ -928,6 +931,7 @@ export class MixedVectorTextController {
       && previousSnapshot.items.every((item, index) => item.key === snapshot.items[index]?.key),
     );
     if (!imageTransformOnly) {
+      this.host.clearVectorTextFallbackPresentation();
       this.viewRevision += 1;
       this.cancelAdaptiveZoomTimers();
       if (this.unsafeExactRefreshRequest !== null) {
@@ -1060,6 +1064,8 @@ export class MixedVectorTextController {
     const presentationMode = this.host.getVectorTextFastPresentationMode();
     if (presentationMode === "reproject") {
       this.zoomSafeReprojectionCount += 1;
+    } else if (presentationMode === "reproject-fallback") {
+      this.zoomFallbackReprojectionCount += 1;
     } else if (presentationMode === "reproject-clipped") {
       this.zoomClippedReprojectionCount += 1;
       if (this.clippedRefreshPolicy === "during-gesture") {
@@ -1408,6 +1414,7 @@ export class MixedVectorTextController {
       zoomViewRevision: this.viewRevision,
       zoomViewEventCount: this.zoomViewEventCount,
       zoomSafeReprojectionCount: this.zoomSafeReprojectionCount,
+      zoomFallbackReprojectionCount: this.zoomFallbackReprojectionCount,
       zoomClippedReprojectionCount: this.zoomClippedReprojectionCount,
       zoomUnsafeExactRefreshCount: this.zoomUnsafeExactRefreshCount,
       zoomUnsafeExactRefreshCompletedCount: this.zoomUnsafeExactRefreshCompletedCount,

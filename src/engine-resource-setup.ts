@@ -98,6 +98,11 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
     size: VECTOR_TEXT_CAPTURE_UNIFORM_BYTES,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
+  engine.vectorTextFallbackCaptureUniformBuffer = engine.device.createBuffer({
+    label: "Adaptive vector text wide capture view uniforms",
+    size: VECTOR_TEXT_CAPTURE_UNIFORM_BYTES,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
 
   engine.layerCompositeUniformBuffer = engine.device.createBuffer({
     label: "Layer composite opacity",

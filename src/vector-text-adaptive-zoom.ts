@@ -4,17 +4,16 @@ import type { VectorTextNodeSeed } from "./mixed-scene-stack";
 /**
  * During a view gesture the last exact vector viewport is only presented, not
  * rebuilt. Every fast frame is reprojected through the current camera so text
- * and SVG never detach from the raster scene. When every current viewport
- * corner maps inside the capture the reprojection has full coverage. Otherwise
- * the mapped capture is clipped at its boundary while one bounded exact refresh
- * fills the newly exposed region; further samples replace its pending latest
- * revision without adding GPU submissions.
+ * and SVG never detach from the raster scene. A sharp capture handles covered
+ * pixels; the optional wide capture fills newly exposed pixels. Without that
+ * wide capture, the mapped primary is clipped while one bounded exact refresh
+ * fills the newly exposed region.
  *
  * The semantic scene remains authoritative.  One exact redraw of the latest
  * revision replaces the transient presentation when the gesture settles.
  */
 export const VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY =
-  "gesture-latest-only-gpu-reprojection-clipped-uncovered-exact-settle-v5" as const;
+  "gesture-latest-only-dual-gpu-reprojection-fallback-exact-settle-v6" as const;
 
 export const VECTOR_TEXT_ADAPTIVE_ZOOM_SETTLE_MS = 140;
 export const VECTOR_TEXT_FAST_PRESENTATION_FILTER_GUARD_PX = 0.5;
@@ -31,6 +30,14 @@ export const VECTOR_TEXT_ZOOM_AB_STRATEGY =
 export const VECTOR_TEXT_ZOOM_AB_IDLE_FRAME_COUNT = 30;
 export const VECTOR_TEXT_ZOOM_AB_SAMPLE_COUNT = 180;
 export const VECTOR_TEXT_ZOOM_AB_START_ZOOM = 64;
+export const VECTOR_TEXT_ZOOM_C_STRATEGY =
+  "ten-semantic-text-dual-gpu-fallback0.2-zoom8-to-0.3-drift-650ms-v5" as const;
+export const VECTOR_TEXT_ZOOM_C_IDLE_FRAME_COUNT = 30;
+export const VECTOR_TEXT_ZOOM_C_SAMPLE_LIMIT = 120;
+export const VECTOR_TEXT_ZOOM_C_GESTURE_DURATION_MS = 650;
+export const VECTOR_TEXT_ZOOM_C_START_ZOOM = 8;
+export const VECTOR_TEXT_ZOOM_C_TARGET_ZOOM = 0.3;
+export const VECTOR_TEXT_ZOOM_C_FALLBACK_ZOOM = 0.2;
 
 export type VectorTextZoomStressProfile =
   | "arch"
@@ -126,6 +133,61 @@ export function vectorTextZoomStressSeed(
   };
 }
 
+const VECTOR_TEXT_ZOOM_C_POSITIONS = [
+  [0, 0],
+  [-0.7, -0.7],
+  [0, -0.7],
+  [0.7, -0.7],
+  [-0.7, 0],
+  [0.7, 0],
+  [-0.7, 0.7],
+  [0, 0.7],
+  [0.7, 0.7],
+  [0.35, 0.35],
+] as const;
+
+/**
+ * The C fixture keeps the same deterministic effect mix as the A/B fixture,
+ * but distributes the witnesses across the document. Most witnesses therefore
+ * start outside the sharp 8x capture and become visible during the zoom-out.
+ */
+export function vectorTextZoomCoverageSeed(
+  index: number,
+  layerSize: number,
+  viewport: {
+    canvasWidth: number;
+    canvasHeight: number;
+    targetZoom: number;
+  } = {
+    canvasWidth: layerSize,
+    canvasHeight: layerSize,
+    targetZoom: 1,
+  },
+): { profile: VectorTextZoomStressProfile; seed: VectorTextNodeSeed } {
+  const fixture = vectorTextZoomStressSeed(index, layerSize);
+  const position = VECTOR_TEXT_ZOOM_C_POSITIONS[index];
+  const targetZoom = Number.isFinite(viewport.targetZoom) && viewport.targetZoom > 0
+    ? viewport.targetZoom
+    : 1;
+  const horizontalReach = Math.min(
+    layerSize * 0.42,
+    Math.max(0, viewport.canvasWidth) / (2 * targetZoom) * 0.88,
+  );
+  const verticalReach = Math.min(
+    layerSize * 0.42,
+    Math.max(0, viewport.canvasHeight) / (2 * targetZoom) * 0.88,
+  );
+  return {
+    profile: fixture.profile,
+    seed: {
+      ...fixture.seed,
+      x: layerSize * 0.5 + horizontalReach * position[0],
+      y: layerSize * 0.5 + verticalReach * position[1],
+      rotation: 0,
+    },
+  };
+}
+
 export function vectorTextZoomStressStepFactor(currentZoom: number): number {
   if (!Number.isFinite(currentZoom) || currentZoom <= 0) return 1;
   return Math.max(
@@ -140,6 +202,7 @@ export function vectorTextZoomStressStepFactor(currentZoom: number): number {
 export type VectorTextFastPresentationMode =
   | "precise"
   | "reproject"
+  | "reproject-fallback"
   | "reproject-clipped";
 
 function finiteView(view: Readonly<VectorTextViewState>): boolean {
@@ -184,22 +247,22 @@ function currentCanvasPointInCapture(
 }
 
 /**
- * Pure coverage guard shared by runtime and verification. Both fast modes use
- * the same camera reprojection. The clipped variant only marks that newly
- * exposed pixels need a bounded exact refresh.
+ * Pure coverage guard shared by runtime and verification. Every fast mode uses
+ * the same camera reprojection. The fallback variant means the primary is
+ * incomplete but the wide capture fully covers the current view.
  */
-export function vectorTextFastPresentationMode(
+function vectorTextCaptureCoversView(
   capture: Readonly<VectorTextViewState> | null,
   current: Readonly<VectorTextViewState>,
-): VectorTextFastPresentationMode {
+): boolean {
   if (!capture || !finiteView(capture) || !finiteView(current)) {
-    return "reproject-clipped";
+    return false;
   }
   if (
     capture.canvasWidth !== current.canvasWidth
     || capture.canvasHeight !== current.canvasHeight
   ) {
-    return "reproject-clipped";
+    return false;
   }
 
   const guard = VECTOR_TEXT_FAST_PRESENTATION_FILTER_GUARD_PX;
@@ -228,10 +291,24 @@ export function vectorTextFastPresentationMode(
       || captureX > captureRight + epsilon
       || captureY > captureBottom + epsilon
     ) {
-      return "reproject-clipped";
+      return false;
     }
   }
-  return "reproject";
+  return true;
+}
+
+export function vectorTextFastPresentationMode(
+  capture: Readonly<VectorTextViewState> | null,
+  current: Readonly<VectorTextViewState>,
+  fallbackCapture: Readonly<VectorTextViewState> | null = null,
+): VectorTextFastPresentationMode {
+  if (vectorTextCaptureCoversView(capture, current)) {
+    return "reproject";
+  }
+  if (vectorTextCaptureCoversView(fallbackCapture, current)) {
+    return "reproject-fallback";
+  }
+  return "reproject-clipped";
 }
 
 /** A recovery callback is valid only for the newest idle view revision. */

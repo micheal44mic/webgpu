@@ -29,6 +29,7 @@ import {
   type MixedSceneActivePresentation,
   type VectorTextGpuBlurCacheResources,
   type VectorTextGpuDrawResources,
+  type VectorTextRunTextureResources,
 } from "./engine-vector-text-resources";
 import {
   type VectorTextGpuBlurSourceDraw,
@@ -1270,6 +1271,300 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
   presentPass.end();
 }
 
+function rebuildVectorTextRunBindGroup(
+  engine: BrushEngine,
+  key: Extract<VectorTextPlacement, `text-run:${string}`>,
+  resources: VectorTextRunTextureResources,
+): void {
+  const layout = engine.mixedSceneTextSegmentBindGroupLayout;
+  if (!layout) {
+    throw new Error("Layout delle cache testo segmentate non inizializzato.");
+  }
+  resources.bindGroup = engine.device.createBindGroup({
+    label: `Vector text ${key} dual-capture segment bind group`,
+    layout,
+    entries: [
+      { binding: 0, resource: { buffer: engine.displayUniformBuffer } },
+      { binding: 1, resource: { buffer: engine.vectorTextCaptureUniformBuffer } },
+      { binding: 2, resource: resources.view },
+      { binding: 3, resource: engine.sampler },
+      { binding: 4, resource: { buffer: engine.vectorTextFallbackCaptureUniformBuffer } },
+      { binding: 5, resource: resources.fallbackView ?? engine.transparentLayerView },
+    ],
+  });
+}
+
+export function clearVectorTextFallbackPresentation(engine: BrushEngine): void {
+  let changed = engine.vectorTextFallbackCaptureView !== null;
+  for (const [key, resources] of engine.vectorTextRunTextures) {
+    if (resources.fallbackTexture) {
+      resources.fallbackTexture.destroy();
+      resources.fallbackTexture = null;
+      resources.fallbackView = null;
+      changed = true;
+      rebuildVectorTextRunBindGroup(engine, key, resources);
+    }
+  }
+  engine.vectorTextFallbackCaptureView = null;
+  writeVectorTextFallbackCaptureUniforms(engine);
+  writeVectorTextCaptureUniforms(engine);
+  if (changed && engine.initialized) {
+    engine.displayDirty = true;
+    engine.presentationCacheNeedsFullRebuild = true;
+    engine.requestRender();
+  }
+}
+
+export function captureVectorTextFallbackPresentation(engine: BrushEngine): {
+  textureCount: number;
+  gpuMemoryMiB: number;
+} {
+  flushVectorTextGpuPresentations(engine);
+  const width = engine.vectorTextTextureWidth;
+  const height = engine.vectorTextTextureHeight;
+  const sourceView = engine.vectorTextCaptureView;
+  if (!sourceView || width < 1 || height < 1) {
+    throw new Error("Nessuna presentazione vettoriale esatta da usare come copertura.");
+  }
+  const candidates = new Map<
+    Extract<VectorTextPlacement, `text-run:${string}`>,
+    { texture: GPUTexture; view: GPUTextureView }
+  >();
+  const encoder = engine.device.createCommandEncoder({
+    label: "Vector text wide fallback capture copies",
+  });
+  try {
+    for (const [key, resources] of engine.vectorTextRunTextures) {
+      if (!resources.initialized) continue;
+      const texture = engine.device.createTexture({
+        label: `Vector text ${key} wide fallback ${width}×${height}`,
+        size: { width, height, depthOrArrayLayers: 1 },
+        format: "rgba8unorm-srgb",
+        usage:
+          GPUTextureUsage.COPY_DST
+          | GPUTextureUsage.COPY_SRC
+          | GPUTextureUsage.TEXTURE_BINDING,
+      });
+      const view = texture.createView({
+        label: `Vector text ${key} wide fallback view`,
+      });
+      candidates.set(key, { texture, view });
+      encoder.copyTextureToTexture(
+        { texture: resources.texture },
+        { texture },
+        { width, height, depthOrArrayLayers: 1 },
+      );
+    }
+    if (candidates.size === 0) {
+      throw new Error("Le cache vettoriali esatte non sono ancora inizializzate.");
+    }
+    engine.device.queue.submit([encoder.finish()]);
+  } catch (error) {
+    for (const candidate of candidates.values()) candidate.texture.destroy();
+    throw error;
+  }
+
+  const previousTextures: GPUTexture[] = [];
+  for (const [key, resources] of engine.vectorTextRunTextures) {
+    const candidate = candidates.get(key);
+    if (resources.fallbackTexture) previousTextures.push(resources.fallbackTexture);
+    resources.fallbackTexture = candidate?.texture ?? null;
+    resources.fallbackView = candidate?.view ?? null;
+  }
+  engine.vectorTextFallbackCaptureView = { ...sourceView };
+  writeVectorTextFallbackCaptureUniforms(engine);
+  for (const [key, resources] of engine.vectorTextRunTextures) {
+    rebuildVectorTextRunBindGroup(engine, key, resources);
+  }
+  for (const texture of previousTextures) texture.destroy();
+  engine.displayDirty = true;
+  engine.presentationCacheNeedsFullRebuild = true;
+  engine.requestRender();
+  return {
+    textureCount: candidates.size,
+    gpuMemoryMiB: candidates.size * width * height * 4 / (1024 * 1024),
+  };
+}
+
+export async function probeVectorTextFallbackAlpha(
+  engine: BrushEngine,
+  layerPoints: readonly { x: number; y: number }[],
+): Promise<{ runCount: number; alphaPixelCounts: number[] }> {
+  const fallbackRuns = [...engine.vectorTextRunTextures.values()].filter(
+    (resources) => resources.fallbackTexture !== null,
+  );
+  const capture = engine.vectorTextFallbackCaptureView;
+  if (fallbackRuns.length !== 1 || !capture || layerPoints.length === 0) {
+    throw new Error("Il probe C richiede una sola run con copertura GPU pronta.");
+  }
+  const texture = fallbackRuns[0].fallbackTexture!;
+  const probeSize = Math.max(
+    1,
+    Math.min(128, Math.floor(capture.canvasWidth), Math.floor(capture.canvasHeight)),
+  );
+  const bytesPerRow = Math.ceil(probeSize * 4 / 256) * 256;
+  const bytesPerProbe = bytesPerRow * probeSize;
+  const readback = engine.device.createBuffer({
+    label: `Vector text C fallback alpha witnesses ${layerPoints.length}`,
+    size: bytesPerProbe * layerPoints.length,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  try {
+    const encoder = engine.device.createCommandEncoder({
+      label: "Vector text C fallback alpha witness readback",
+    });
+    layerPoints.forEach((point, index) => {
+      const deltaX = point.x - capture.centerX;
+      const deltaY = point.y - capture.centerY;
+      const screenX = capture.canvasWidth * 0.5 + capture.zoom * (
+        capture.rotationCos * deltaX - capture.rotationSin * deltaY
+      );
+      const screenY = capture.canvasHeight * 0.5 + capture.zoom * (
+        capture.rotationSin * deltaX + capture.rotationCos * deltaY
+      );
+      const originX = Math.max(
+        0,
+        Math.min(
+          Math.floor(capture.canvasWidth) - probeSize,
+          Math.round(screenX - probeSize * 0.5),
+        ),
+      );
+      const originY = Math.max(
+        0,
+        Math.min(
+          Math.floor(capture.canvasHeight) - probeSize,
+          Math.round(screenY - probeSize * 0.5),
+        ),
+      );
+      encoder.copyTextureToBuffer(
+        { texture, origin: { x: originX, y: originY, z: 0 } },
+        {
+          buffer: readback,
+          offset: index * bytesPerProbe,
+          bytesPerRow,
+          rowsPerImage: probeSize,
+        },
+        { width: probeSize, height: probeSize, depthOrArrayLayers: 1 },
+      );
+    });
+    engine.device.queue.submit([encoder.finish()]);
+    await readback.mapAsync(GPUMapMode.READ);
+    const bytes = new Uint8Array(readback.getMappedRange());
+    const alphaPixelCounts = layerPoints.map((_, pointIndex) => {
+      let alphaPixels = 0;
+      const base = pointIndex * bytesPerProbe;
+      for (let y = 0; y < probeSize; y += 1) {
+        for (let x = 0; x < probeSize; x += 1) {
+          if (bytes[base + y * bytesPerRow + x * 4 + 3] > 0) alphaPixels += 1;
+        }
+      }
+      return alphaPixels;
+    });
+    readback.unmap();
+    return { runCount: fallbackRuns.length, alphaPixelCounts };
+  } finally {
+    readback.destroy();
+  }
+}
+
+/**
+ * Reads the actual fast-mode mixed-scene result before the opaque checker pass.
+ * Unlike the fallback-source probe, this exercises the current camera uniforms,
+ * dual-capture bind group, mode-3 shader branch, and the compositor submission
+ * that is copied to the visible presentation cache.
+ */
+export async function probeVectorTextFastCompositeAlpha(
+  engine: BrushEngine,
+  layerPoints: readonly { x: number; y: number }[],
+): Promise<{ alphaPixelCounts: number[] }> {
+  const texture = engine.mixedSceneLinearTexture;
+  const view = engine.getVectorTextViewState();
+  if (
+    !engine.vectorTextFastPresentationEnabled
+    || engine.vectorTextFastPresentationMode !== "reproject-fallback"
+    || !texture
+    || layerPoints.length === 0
+  ) {
+    throw new Error("Il probe C richiede la composizione fast fallback attiva.");
+  }
+  if (
+    engine.mixedSceneLinearWidth !== view.canvasWidth
+    || engine.mixedSceneLinearHeight !== view.canvasHeight
+  ) {
+    throw new Error("La cache lineare C non corrisponde al viewport corrente.");
+  }
+
+  const probeSize = Math.max(
+    1,
+    Math.min(128, Math.floor(view.canvasWidth), Math.floor(view.canvasHeight)),
+  );
+  const bytesPerPixel = 8;
+  const bytesPerRow = Math.ceil(probeSize * bytesPerPixel / 256) * 256;
+  const bytesPerProbe = bytesPerRow * probeSize;
+  const readback = engine.device.createBuffer({
+    label: `Vector text C fast composite alpha witnesses ${layerPoints.length}`,
+    size: bytesPerProbe * layerPoints.length,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  try {
+    const encoder = engine.device.createCommandEncoder({
+      label: "Vector text C fast composite alpha witness readback",
+    });
+    layerPoints.forEach((point, index) => {
+      const deltaX = point.x - view.centerX;
+      const deltaY = point.y - view.centerY;
+      const screenX = view.canvasWidth * 0.5 + view.zoom * (
+        view.rotationCos * deltaX - view.rotationSin * deltaY
+      );
+      const screenY = view.canvasHeight * 0.5 + view.zoom * (
+        view.rotationSin * deltaX + view.rotationCos * deltaY
+      );
+      const originX = Math.max(
+        0,
+        Math.min(
+          Math.floor(view.canvasWidth) - probeSize,
+          Math.round(screenX - probeSize * 0.5),
+        ),
+      );
+      const originY = Math.max(
+        0,
+        Math.min(
+          Math.floor(view.canvasHeight) - probeSize,
+          Math.round(screenY - probeSize * 0.5),
+        ),
+      );
+      encoder.copyTextureToBuffer(
+        { texture, origin: { x: originX, y: originY, z: 0 } },
+        {
+          buffer: readback,
+          offset: index * bytesPerProbe,
+          bytesPerRow,
+          rowsPerImage: probeSize,
+        },
+        { width: probeSize, height: probeSize, depthOrArrayLayers: 1 },
+      );
+    });
+    engine.device.queue.submit([encoder.finish()]);
+    await readback.mapAsync(GPUMapMode.READ);
+    const bytes = new Uint8Array(readback.getMappedRange());
+    const alphaPixelCounts = layerPoints.map((_, pointIndex) => {
+      let alphaPixels = 0;
+      const base = pointIndex * bytesPerProbe;
+      for (let y = 0; y < probeSize; y += 1) {
+        for (let x = 0; x < probeSize; x += 1) {
+          const alphaOffset = base + y * bytesPerRow + x * bytesPerPixel + 6;
+          if ((bytes[alphaOffset] | bytes[alphaOffset + 1]) !== 0) alphaPixels += 1;
+        }
+      }
+      return alphaPixels;
+    });
+    readback.unmap();
+    return { alphaPixelCounts };
+  } finally {
+    readback.destroy();
+  }
+}
+
 export function ensureVectorTextPresentationTexture(engine: BrushEngine, 
   width: number,
   height: number,
@@ -1286,12 +1581,16 @@ export function ensureVectorTextPresentationTexture(engine: BrushEngine,
     engine.vectorTextAboveTexture?.destroy();
     for (const resources of engine.vectorTextRunTextures.values()) {
       resources.texture.destroy();
+      resources.fallbackTexture?.destroy();
     }
     engine.vectorTextRunTextures.clear();
     engine.vectorTextBelowTexture = null;
     engine.vectorTextBelowView = null;
     engine.vectorTextAboveTexture = null;
     engine.vectorTextAboveView = null;
+    engine.vectorTextFallbackCaptureView = null;
+    writeVectorTextFallbackCaptureUniforms(engine);
+    writeVectorTextCaptureUniforms(engine);
     engine.vectorTextTextureWidth = width;
     engine.vectorTextTextureHeight = height;
     if (legacyBindingsChanged) {
@@ -1305,16 +1604,13 @@ export function ensureVectorTextPresentationTexture(engine: BrushEngine,
     if (existingRun) {
       return existingRun.texture;
     }
-    const layout = engine.mixedSceneTextSegmentBindGroupLayout;
-    if (!layout) {
-      throw new Error("Layout delle cache testo segmentate non inizializzato.");
-    }
     const texture = engine.device.createTexture({
       label: `Vector text ${key} viewport cache ${width}×${height}`,
       size: { width, height, depthOrArrayLayers: 1 },
       format: "rgba8unorm-srgb",
       usage:
         GPUTextureUsage.COPY_DST
+        | GPUTextureUsage.COPY_SRC
         | GPUTextureUsage.RENDER_ATTACHMENT
         | GPUTextureUsage.TEXTURE_BINDING,
     });
@@ -1322,23 +1618,17 @@ export function ensureVectorTextPresentationTexture(engine: BrushEngine,
       const view = texture.createView({
         label: `Vector text ${key} viewport cache view`,
       });
-      const bindGroup = engine.device.createBindGroup({
-        label: `Vector text ${key} segment bind group`,
-        layout,
-        entries: [
-          { binding: 0, resource: { buffer: engine.displayUniformBuffer } },
-          { binding: 1, resource: { buffer: engine.vectorTextCaptureUniformBuffer } },
-          { binding: 2, resource: view },
-          { binding: 3, resource: engine.sampler },
-        ],
-      });
-      engine.vectorTextRunTextures.set(key, {
+      const resources: VectorTextRunTextureResources = {
         texture,
         view,
-        bindGroup,
+        fallbackTexture: null,
+        fallbackView: null,
+        bindGroup: null as unknown as GPUBindGroup,
         lastBounds: null,
         initialized: false,
-      });
+      };
+      rebuildVectorTextRunBindGroup(engine, key, resources);
+      engine.vectorTextRunTextures.set(key, resources);
       return texture;
     } catch (error) {
       texture.destroy();
@@ -1497,7 +1787,7 @@ export function ensureVectorTextGpuBlurCache(engine: BrushEngine,
       depthOrArrayLayers: 1,
     },
     format: VECTOR_TEXT_GPU_BLUR_FORMAT,
-    usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
+        usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
   });
   try {
     const view = texture.createView({
@@ -2350,19 +2640,13 @@ export function captureVectorTextPresentationView(engine: BrushEngine): void {
   writeVectorTextCaptureUniforms(engine);
 }
 
-export function writeVectorTextCaptureUniforms(engine: BrushEngine): void {
-  const view = engine.vectorTextCaptureView ?? engine.getVectorTextViewState();
-  const currentView = engine.getVectorTextViewState();
-  const presentationMode = engine.vectorTextFastPresentationEnabled
-    ? vectorTextFastPresentationMode(engine.vectorTextCaptureView, currentView)
-    : "precise";
-  engine.vectorTextFastPresentationMode = presentationMode;
-  const upload = engine.vectorTextCaptureUniformUpload;
-  const fastMode = presentationMode === "reproject"
-    ? 1
-    : presentationMode === "reproject-clipped"
-      ? 2
-      : 0;
+function writeCaptureViewUniform(
+  engine: BrushEngine,
+  view: Readonly<VectorTextViewState>,
+  upload: Float32Array,
+  buffer: GPUBuffer,
+  fastMode: number,
+): void {
   const nextValues = [
     view.canvasWidth,
     view.canvasHeight,
@@ -2381,13 +2665,48 @@ export function writeVectorTextCaptureUniforms(engine: BrushEngine): void {
       changed = true;
     }
   }
-  if (!changed) {
-    return;
+  if (changed) {
+    engine.device.queue.writeBuffer(buffer, 0, upload);
   }
-  engine.device.queue.writeBuffer(
-    engine.vectorTextCaptureUniformBuffer,
+}
+
+export function writeVectorTextFallbackCaptureUniforms(engine: BrushEngine): void {
+  const view = engine.vectorTextFallbackCaptureView
+    ?? engine.vectorTextCaptureView
+    ?? engine.getVectorTextViewState();
+  writeCaptureViewUniform(
+    engine,
+    view,
+    engine.vectorTextFallbackCaptureUniformUpload,
+    engine.vectorTextFallbackCaptureUniformBuffer,
     0,
-    upload,
+  );
+}
+
+export function writeVectorTextCaptureUniforms(engine: BrushEngine): void {
+  const view = engine.vectorTextCaptureView ?? engine.getVectorTextViewState();
+  const currentView = engine.getVectorTextViewState();
+  const presentationMode = engine.vectorTextFastPresentationEnabled
+    ? vectorTextFastPresentationMode(
+      engine.vectorTextCaptureView,
+      currentView,
+      engine.vectorTextFallbackCaptureView,
+    )
+    : "precise";
+  engine.vectorTextFastPresentationMode = presentationMode;
+  const fastMode = presentationMode === "reproject"
+    ? 1
+    : presentationMode === "reproject-fallback"
+      ? 3
+      : presentationMode === "reproject-clipped"
+        ? 2
+        : 0;
+  writeCaptureViewUniform(
+    engine,
+    view,
+    engine.vectorTextCaptureUniformUpload,
+    engine.vectorTextCaptureUniformBuffer,
+    fastMode,
   );
 }
 

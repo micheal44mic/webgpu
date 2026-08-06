@@ -42,3 +42,18 @@ CREATE TABLE IF NOT EXISTS layer_compression_runs (
   payload_json TEXT NOT NULL
 )
 `;
+
+/** One diagnostic C zoom-out report, addressed by the short code in its URL. */
+export interface VectorZoomRunRecord {
+  runCode: string;
+  createdAt: string;
+  payloadJson: string;
+}
+
+export const vectorZoomRunsSchemaSql = `
+CREATE TABLE IF NOT EXISTS vector_zoom_runs (
+  run_code TEXT PRIMARY KEY NOT NULL,
+  created_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL
+)
+`;
