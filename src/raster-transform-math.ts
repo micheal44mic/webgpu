@@ -5,12 +5,22 @@
  * immutable source. Keeping this module free of DOM/WebGPU objects makes the
  * dirty bounds, sparse tile projection and shader ABI independently testable.
  */
+import {
+  DOCUMENT_TILE_GRID_SIZE,
+  DOCUMENT_TILE_SIZE,
+  LAYER_SIZE,
+} from "./engine-limits.ts";
 
 export const RASTER_TRANSFORM_MATH_STRATEGY =
   "document-space-uniform-affine-scale-aware-sampling-per-source-tile-mask-v2" as const;
 
-export const RASTER_TRANSFORM_DOCUMENT_SIZE = 4096;
-export const RASTER_TRANSFORM_TILE_SIZE = 256;
+// La maschera tile consumata qui e' la stessa che producono Selezione e cold
+// storage: griglia 16×16 sul documento, quindi il lato del tile scala con la
+// taglia. Se questo restasse 256 fisso, a 2048² la maschera da 8 word verrebbe
+// rifiutata da `requireTileMask` come lunga il quadruplo del previsto.
+export const RASTER_TRANSFORM_DOCUMENT_SIZE = LAYER_SIZE;
+export const RASTER_TRANSFORM_TILE_GRID_SIZE = DOCUMENT_TILE_GRID_SIZE;
+export const RASTER_TRANSFORM_TILE_SIZE = DOCUMENT_TILE_SIZE;
 export const RASTER_TRANSFORM_FILTER_PADDING_PX = 2;
 export const RASTER_TRANSFORM_MINIMUM_ABS_SCALE = 0.01;
 export const RASTER_TRANSFORM_MAXIMUM_ABS_SCALE = 64;

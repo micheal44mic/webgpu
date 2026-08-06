@@ -9,7 +9,7 @@ import {
   PAINT_DISPLAY_MIP_LEVEL_COUNT,
   SHAPE_MASK_PIXEL_COUNT,
   STATIC_PAINT_BUFFER_BYTES,
-} from "./engine-limits";
+} from "./engine-limits.ts";
 import type { LightGlazeStorageMode } from "./engine-strategies";
 import type { LayerFormat } from "./engine-types";
 
@@ -24,7 +24,8 @@ export function paintDisplayPyramidAdditionalMemoryMiB(format: LayerFormat): num
 }
 
 export function layerBaseMemoryMiB(format: LayerFormat): number {
-  return format === "rgba16float" ? 128 : 64;
+  const bytesPerPixel = format === "rgba16float" ? 8 : 4;
+  return (LAYER_SIZE * LAYER_SIZE * bytesPerPixel) / MEBIBYTE_BYTES;
 }
 
 export function lightGlazeAdditionalMemoryMiB(

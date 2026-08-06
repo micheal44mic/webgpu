@@ -4,7 +4,68 @@
  * misurata dai benchmark.
  */
 
-export const LAYER_SIZE = 4096;
+/**
+ * Dimensione del documento, decisa una sola volta all'import di questo modulo.
+ *
+ * `engine-limits` non importa nulla: il suo body gira prima di ogni modulo che
+ * lo consuma, quindi le stringhe WGSL che interpolano `${LAYER_SIZE}` e le
+ * costanti derivate a module-eval leggono gia' il valore giusto. Per questo il
+ * valore va deciso qui e non passato da `main.ts`.
+ *
+ * I telefoni usano 2048²: un livello rgba16float costa 32 MiB invece di 128 e
+ * ogni pass full-document costa un quarto del fill-rate. Il confine e' lo
+ * schermo fisico e non il viewport, cosi' la scelta e' stabile rispetto a
+ * rotazione e ridimensionamento della finestra; un tablet resta a 4096².
+ *
+ * Senza `screen`/`matchMedia` (Node, suite `*:verify`) il default e' 4096.
+ * `?documentSize=2048` e `BRUSH_DOCUMENT_SIZE=2048` forzano la taglia: servono
+ * a riprodurre il percorso mobile da desktop nella QA browser e a girare le
+ * verifiche su entrambe le configurazioni.
+ */
+const DOCUMENT_SIZE_CHOICES = [2048, 4096] as const;
+
+const MOBILE_DOCUMENT_MAX_SCREEN_EDGE = 700;
+
+function documentSizeOverride(): number | null {
+  const raw = (typeof location !== "undefined" && typeof URLSearchParams === "function"
+    ? new URLSearchParams(location.search).get("documentSize")
+    : null)
+    ?? (globalThis as { process?: { env?: Record<string, string | undefined> } })
+      .process?.env?.BRUSH_DOCUMENT_SIZE
+    ?? null;
+  if (raw === null) return null;
+  const parsed = Number(raw);
+  return (DOCUMENT_SIZE_CHOICES as readonly number[]).includes(parsed) ? parsed : null;
+}
+
+function resolveDocumentSize(): number {
+  const override = documentSizeOverride();
+  if (override !== null) return override;
+  if (typeof matchMedia !== "function" || typeof screen === "undefined") return 4096;
+  // Uno schermo che dichiara 0 non e' un telefono, e' un runtime che non sa
+  // rispondere: in quel caso vale il documento pieno.
+  const shortestScreenEdge = Math.min(screen.width, screen.height);
+  return matchMedia("(pointer: coarse)").matches
+      && shortestScreenEdge > 0
+      && shortestScreenEdge <= MOBILE_DOCUMENT_MAX_SCREEN_EDGE
+    ? 2048
+    : 4096;
+}
+
+export const LAYER_SIZE = resolveDocumentSize();
+
+/**
+ * Il documento e' sempre diviso in una griglia 16×16 di tile: e' il lato del
+ * tile a scalare con `LAYER_SIZE`, non il numero di tile. Cosi' ogni maschera
+ * tile del motore (Selezione, Riempimento, cold storage, transform) resta di
+ * 8 word e le maschere restano interscambiabili a qualsiasi taglia.
+ */
+export const DOCUMENT_TILE_GRID_SIZE = 16;
+
+export const DOCUMENT_TILE_SIZE = LAYER_SIZE / DOCUMENT_TILE_GRID_SIZE;
+
+export const DOCUMENT_TILE_MASK_WORDS =
+  DOCUMENT_TILE_GRID_SIZE * DOCUMENT_TILE_GRID_SIZE / 32;
 
 export const MEBIBYTE_BYTES = 1024 * 1024;
 

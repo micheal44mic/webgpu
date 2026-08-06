@@ -1,7 +1,14 @@
 /**
  * Contratto puro del riempimento connesso. Il renderer usa blocchi 16x16 e
- * conserva la selezione come bitmask: un intero layer 4096x4096 occupa 2 MiB.
+ * conserva la selezione come bitmask: un intero layer occupa
+ * `LAYER_SIZE² / 8` byte, cioe' 2 MiB a 4096² e 512 KiB a 2048².
  */
+import {
+  DOCUMENT_TILE_GRID_SIZE,
+  DOCUMENT_TILE_MASK_WORDS,
+  DOCUMENT_TILE_SIZE,
+  LAYER_SIZE,
+} from "./engine-limits.ts";
 import type { DirtyRect } from "./engine-stroke-types";
 
 export const GPU_FILL_STRATEGY =
@@ -10,7 +17,7 @@ export const GPU_FILL_STRATEGY =
 export const FILL_REFERENCE_LAYER_STRATEGY =
   "single-raster-reference-full-resident-gpu-source-separate-active-target-no-fallback-v1" as const;
 
-export const FILL_LAYER_SIZE = 4096;
+export const FILL_LAYER_SIZE = LAYER_SIZE;
 export const FILL_BLOCK_SIZE = 16;
 export const FILL_BLOCK_GRID_SIZE = FILL_LAYER_SIZE / FILL_BLOCK_SIZE;
 export const FILL_BLOCK_COUNT = FILL_BLOCK_GRID_SIZE * FILL_BLOCK_GRID_SIZE;
@@ -40,7 +47,13 @@ export const FILL_META_ACTIVE_COMPONENTS = 5;
 export const FILL_META_ACTIVE_BLOCKS = 6;
 export const FILL_META_DIAGNOSTIC = 7;
 export const FILL_META_TILE_MASK_START = 8;
-export const FILL_TILE_MASK_WORDS = 8;
+export const FILL_TILE_MASK_WORDS = DOCUMENT_TILE_MASK_WORDS;
+
+// La maschera tile prodotta dal Riempimento e' la stessa griglia 16×16 del cold
+// storage e della Selezione: a 2048² il tile e' 128 px e vale 8 blocchi, non 16.
+export const FILL_TILE_GRID_SIZE = DOCUMENT_TILE_GRID_SIZE;
+export const FILL_TILE_SIZE = DOCUMENT_TILE_SIZE;
+export const FILL_BLOCKS_PER_TILE = FILL_TILE_SIZE / FILL_BLOCK_SIZE;
 
 /** Procreate salva 100% come soglia effettiva 97,6%; manteniamo lo stesso cap. */
 export const FILL_MAX_TOLERANCE_PERCENT = 97.6;

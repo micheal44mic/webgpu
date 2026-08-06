@@ -1,6 +1,7 @@
 import {
   FILL_BLOCK_GRID_SIZE,
   FILL_BLOCK_SIZE,
+  FILL_BLOCKS_PER_TILE,
   FILL_LABEL_WORDS_PER_BLOCK,
   FILL_MAX_COMPONENTS_PER_BLOCK,
   FILL_META_ACTIVE_BLOCKS,
@@ -12,8 +13,9 @@ import {
   FILL_META_MIN_Y,
   FILL_META_SELECTED_PIXELS,
   FILL_META_TILE_MASK_START,
-} from "./fill-core";
-import { LAYER_SIZE } from "./engine-limits";
+  FILL_TILE_GRID_SIZE,
+} from "./fill-core.ts";
+import { LAYER_SIZE } from "./engine-limits.ts";
 
 export const fillComputeShader = /* wgsl */ `
 const LAYER_EXTENT: u32 = ${LAYER_SIZE}u;
@@ -305,7 +307,8 @@ fn reduceAndRecord(
     atomicMax(&metadata[${FILL_META_MAX_X}u], reduceMaxX[0]);
     atomicMax(&metadata[${FILL_META_MAX_Y}u], reduceMaxY[0]);
     atomicAdd(&metadata[${FILL_META_ACTIVE_BLOCKS}u], 1u);
-    let coldTile = (block.y / 16u) * 16u + block.x / 16u;
+    let coldTile = (block.y / ${FILL_BLOCKS_PER_TILE}u) * ${FILL_TILE_GRID_SIZE}u
+      + block.x / ${FILL_BLOCKS_PER_TILE}u;
     atomicOr(&metadata[${FILL_META_TILE_MASK_START}u + coldTile / 32u], 1u << (coldTile & 31u));
   }
 }

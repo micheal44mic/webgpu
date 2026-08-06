@@ -8,14 +8,16 @@
     />
     <meta name="theme-color" content="#111318" />
     <link rel="icon" href="data:," />
-    <title>WebGPU Brush Engine 4096²</title>
+    <!-- Titolo e taglia documento sono riscritti al boot da main.ts: la
+         dimensione la decide `LAYER_SIZE`, non questo file. -->
+    <title>WebGPU Brush Engine</title>
   </head>
   <body>
     <div id="app">
       <header class="topbar">
         <div class="desktop-brand">
           <strong>WebGPU Brush Engine</strong>
-          <span class="muted">4096 × 4096</span>
+          <span class="muted" id="document-size-label"></span>
         </div>
         <nav class="mobile-header" aria-label="Navigazione mobile">
           <button
@@ -2318,7 +2320,8 @@
               </select>
             </label>
             <p class="vector-text-outline-note">
-              0 px disattiva la traccia. Effetto del nodo vettoriale, senza un nuovo canvas 4096².
+              0 px disattiva la traccia. Effetto del nodo vettoriale, senza un nuovo canvas
+              <span data-document-size-square></span>.
             </p>
           </fieldset>
 
@@ -2996,8 +2999,8 @@
           <label class="control">
             <span>Precisione layer</span>
             <select id="layerFormat">
-              <option value="rgba8unorm">RGBA8 linear — 64 MiB</option>
-              <option value="rgba16float">RGBA16F linear — 128 MiB</option>
+              <option value="rgba8unorm" data-layer-format-label="RGBA8 linear"></option>
+              <option value="rgba16float" data-layer-format-label="RGBA16F linear"></option>
             </select>
           </label>
         </section>
@@ -3033,7 +3036,7 @@
               <pre id="rasterStrokeGoldenReport" class="golden-report"></pre>
             </details>
             <button id="runEffectsWorkbenchBenchmark" class="wide" type="button" hidden>
-              Benchmark banco effetti 4096²
+              Benchmark banco effetti <span data-document-size-square></span>
             </button>
             <p id="effectsWorkbenchBenchmarkResult" class="result" hidden></p>
             <details id="effectsWorkbenchBenchmarkDetails" hidden>

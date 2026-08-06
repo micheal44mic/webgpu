@@ -3,7 +3,7 @@
  *
  * Il decoder vive sul CPU soltanto fino all'ImageBitmap. Da quel momento la
  * conversione colore, il premultiply, l'eventuale riduzione e la scrittura nel
- * livello 4096² avvengono in WebGPU. Non viene creato alcun RasterImageNode:
+ * livello `LAYER_SIZE²` avvengono in WebGPU. Non viene creato alcun RasterImageNode:
  * dopo la Promise l'immagine è un normale LayerRecord, immediatamente
  * modificabile da Paint, Blend, Fill ed effetti raster.
  */

@@ -15,7 +15,7 @@ export const LAYER_STACK_STRATEGY =
   "ordered-records-single-active-single-reference-per-layer-blend-mode-contiguous-raster-clipping-groups-monotonic-ids" as const;
 
 /**
- * Each layer owns only its authoritative 4096² mip-0 texture. Display mips are
+ * Each layer owns only its authoritative `LAYER_SIZE²` mip-0 texture. Display mips are
  * singular for the active layer and for the two fused surfaces around it, so
  * they do not scale linearly with the layer count. The cap is a guard against
  * an accidental loop allocating until the device refuses, not a product

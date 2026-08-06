@@ -5,6 +5,7 @@
 import type { BrushEngine } from "./brush-engine";
 import {
   FILL_HISTORY_MASK_BYTES,
+  FILL_LAYER_SIZE,
   hexToLinearFillColor,
   normalizeFillTolerance,
   type FillAnalysis,
@@ -178,7 +179,7 @@ export async function fillAtClientPoint(
     const actionId = engine.nextHistoryActionId;
     historySlice = engine.historyGpuStorage.allocate(
       FILL_HISTORY_MASK_BYTES,
-      `Fill ${actionId} · mask 4096² 1-bit`,
+      `Fill ${actionId} · mask ${FILL_LAYER_SIZE}² 1-bit`,
     );
 
     const storageMaskBefore = engine.layerStack.active.storageTileMask.slice();

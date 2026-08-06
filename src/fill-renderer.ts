@@ -111,7 +111,9 @@ export class FillRenderer {
       || limits.maxStorageBuffersPerShaderStage < 7
       || limits.maxStorageBufferBindingSize < FILL_PARENT_BUFFER_BYTES
     ) {
-      throw new Error("I limiti compute della GPU non supportano il Riempimento 4096².");
+      throw new Error(
+        `I limiti compute della GPU non supportano il Riempimento ${LAYER_SIZE}².`,
+      );
     }
     this.layerFormat = options.layerFormat;
     this.sourceSamplingView = options.sourceSamplingView;

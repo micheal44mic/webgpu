@@ -10,7 +10,7 @@ import {
   SELECTION_TILE_GRID_SIZE,
   SELECTION_TILE_SIZE,
   SELECTION_WORDS_PER_ROW,
-} from "./selection-core";
+} from "./selection-core.ts";
 
 export const selectionComputeShader = /* wgsl */ `
 const LAYER_EXTENT: u32 = ${SELECTION_LAYER_SIZE}u;

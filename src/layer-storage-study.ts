@@ -1,8 +1,16 @@
+import {
+  DOCUMENT_TILE_GRID_SIZE,
+  DOCUMENT_TILE_SIZE,
+} from "./engine-limits.ts";
+
 export const LAYER_STORAGE_STRATEGY =
   "single-active-plus-optional-reference-full-inactive-256-array-tiles-rehydrate-fold" as const;
 
-export const LAYER_STORAGE_TILE_SIZE = 256;
-export const LAYER_STORAGE_GRID_SIZE = 16;
+// I tile restano 256 per documento: e' il loro lato a scalare con la taglia del
+// documento, cosi' l'array texture del cold storage e la maschera da 8 word
+// hanno la stessa forma a 4096² e a 2048².
+export const LAYER_STORAGE_TILE_SIZE = DOCUMENT_TILE_SIZE;
+export const LAYER_STORAGE_GRID_SIZE = DOCUMENT_TILE_GRID_SIZE;
 export const LAYER_STORAGE_TILE_COUNT =
   LAYER_STORAGE_GRID_SIZE * LAYER_STORAGE_GRID_SIZE;
 export const LAYER_STORAGE_MASK_WORD_COUNT = LAYER_STORAGE_TILE_COUNT / 32;

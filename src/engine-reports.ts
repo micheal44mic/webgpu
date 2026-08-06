@@ -748,7 +748,7 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
   ) / MEBIBYTE_BYTES;
   // Exactly one full raw-layer pyramid follows the active layer. Mixed-scene
   // merged sides report their real cropped mip bytes instead of charging a
-  // full 4096² chain per side.
+  // full `LAYER_SIZE²` chain per side.
   const activeClippingSurfaces = new Set(
     [
       engine.activeClippingGroup?.prefix,
@@ -1912,7 +1912,7 @@ export async function benchmarkEffectsWorkingSet(engine: BrushEngine,
   engine.rasterBevelBusy = true;
   engine.rasterOuterShadowBusy = true;
   engine.rasterInnerShadowBusy = true;
-  engine.callbacks.onStatus?.("Benchmark banco effetti 4096² in corso…", "working");
+  engine.callbacks.onStatus?.(`Benchmark banco effetti ${LAYER_SIZE}² in corso…`, "working");
   try {
     const { benchmarkEffectsWorkbench } = await import("./effects-benchmark");
     const report = await benchmarkEffectsWorkbench({
@@ -1932,7 +1932,7 @@ export async function benchmarkEffectsWorkingSet(engine: BrushEngine,
       },
       onMemoryChanged: () => engine.publishStats(),
     });
-    console.info("[EffectsWorkbench] benchmark 4096²", report);
+    console.info(`[EffectsWorkbench] benchmark ${LAYER_SIZE}²`, report);
     console.table(Object.fromEntries(report.scenarios.map((scenario) => [
       scenario.id,
       {

@@ -5215,12 +5215,13 @@ export class BrushEngine {
   }
 
   /**
-   * One authoritative layer is exactly one 4096² mip-0 texture. Display mips
-   * live in one reusable active-layer pyramid instead of every layer texture.
+   * One authoritative layer is exactly one `LAYER_SIZE²` mip-0 texture. Display
+   * mips live in one reusable active-layer pyramid instead of every layer
+   * texture.
    */
   allocateLayerTexture(format: LayerFormat): LayerTextureResources {
     const texture = this.device.createTexture({
-      label: `4096² authoritative paint layer ${format}`,
+      label: `${LAYER_SIZE}² authoritative paint layer ${format}`,
       size: { width: LAYER_SIZE, height: LAYER_SIZE, depthOrArrayLayers: 1 },
       mipLevelCount: 1,
       format,
@@ -10880,7 +10881,7 @@ export class BrushEngine {
 
       const brushEncodingStart = performance.now();
       const brushPass = encoder.beginRenderPass({
-        label: "Paint into 4096² layer",
+        label: `Paint into ${LAYER_SIZE}² layer`,
         colorAttachments: [
           {
             view: this.layerView,

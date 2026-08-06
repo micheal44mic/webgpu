@@ -1532,7 +1532,7 @@ export async function retargetEffectsWorkingSetInternal(engine: BrushEngine,
       console.info(
         engine.bevelBoundingFieldEnabled
           ? "[EffectsWorkbench] retarget con campo Smusso bbox completato"
-          : "[EffectsWorkbench] retarget 4096² completato",
+          : `[EffectsWorkbench] retarget ${LAYER_SIZE}² completato`,
         result,
       );
     }

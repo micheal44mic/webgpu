@@ -1592,7 +1592,9 @@ assert.match(
   "l'allocazione completa del mip 0 deve chiudere validation e OOM scope prima del commit",
 );
 assert.equal(
-  (engineSource.match(/label: `4096² authoritative paint layer \$\{format\}`/g) ?? []).length,
+  (engineSource.match(
+    /label: `\$\{LAYER_SIZE\}² authoritative paint layer \$\{format\}`/g,
+  ) ?? []).length,
   1,
   "la creazione della texture autorevole deve esistere in un solo punto",
 );

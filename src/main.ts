@@ -101,6 +101,7 @@ import {
   type PointerSample,
 } from "./engine-types";
 import { LAYER_SIZE } from "./engine-limits";
+import { layerBaseMemoryMiB } from "./engine-memory-model";
 import { LAYER_THUMBNAIL_SIZE } from "./layer-thumbnail-renderer";
 import {
   mobileSemanticLayerThumbnailSignature,
@@ -201,6 +202,23 @@ function formatMemoryMiB(value: number): string {
     return "<0,1 MiB";
   }
   return `${memoryNumberFormatter.format(value)} MiB`;
+}
+
+// La taglia del documento la decide `LAYER_SIZE` al boot, quindi titolo,
+// intestazione e ogni etichetta che cita documento o costo di un livello non
+// possono essere statiche in `index.html`. Deve stare dopo `formatMemoryMiB`:
+// piu' in alto finirebbe nella TDZ di `memoryNumberFormatter` e l'intero modulo
+// non verrebbe eseguito.
+document.title = `WebGPU Brush Engine ${LAYER_SIZE}²`;
+element("document-size-label").textContent = `${LAYER_SIZE} × ${LAYER_SIZE}`;
+for (const node of document.querySelectorAll<HTMLElement>("[data-document-size-square]")) {
+  node.textContent = `${LAYER_SIZE}²`;
+}
+for (
+  const option of document.querySelectorAll<HTMLOptionElement>("[data-layer-format-label]")
+) {
+  option.textContent = `${option.dataset.layerFormatLabel} — `
+    + formatMemoryMiB(layerBaseMemoryMiB(option.value as LayerFormat));
 }
 
 const canvas = element<HTMLCanvasElement>("gpuCanvas");
@@ -5808,7 +5826,7 @@ if (import.meta.env.DEV) {
     effectsWorkbenchBenchmarkRunning = true;
     effectsWorkbenchBenchmarkDetails.hidden = true;
     effectsWorkbenchBenchmarkResult.textContent =
-      "Misuro retarget e destroy+recreate sul documento 4096²…";
+      `Misuro retarget e destroy+recreate sul documento ${LAYER_SIZE}²…`;
     updateHistoryControls();
     updateHumanStrokeControls();
     try {
@@ -6565,7 +6583,8 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
   ): string => `${bounds.width}×${bounds.height} @ ${bounds.x},${bounds.y}`;
   const allocation = stats.gpuMemory.rasterBevelFieldAllocationBounds;
   const valid = stats.gpuMemory.rasterBevelFieldValidBounds;
-  let bevelHeightLabel = "Smusso · heightfield R32F · documento 4096×4096";
+  let bevelHeightLabel =
+    `Smusso · heightfield R32F · documento ${LAYER_SIZE}×${LAYER_SIZE}`;
   if (stats.gpuMemory.rasterBevelFieldBounded) {
     if (!valid) {
       bevelHeightLabel = allocation
@@ -7761,9 +7780,9 @@ function renderLayerList(stats: EngineStats): void {
       : `↳ ritaglio su Livello ${layer.clippingParentId} · `;
     hint.textContent = `${clippingHint}${layer.reference ? "riferimento · " : ""}${residencyHint}`;
     select.title = isActive
-      ? "Livello attivo: texture full-canvas 4096² pronta per disegnare senza paging."
+      ? `Livello attivo: texture full-canvas ${LAYER_SIZE}² pronta per disegnare senza paging.`
       : layer.reference && layer.hotAllocated
-        ? "Livello Riferimento: texture full-canvas 4096² sempre residente; il "
+        ? `Livello Riferimento: texture full-canvas ${LAYER_SIZE}² sempre residente; il `
           + "Riempimento legge qui i confini senza reidratazione o copie."
       : layer.hotAllocated
         ? "Livello inattivo trattenuto full-canvas per preservare i pixel dopo un errore; "

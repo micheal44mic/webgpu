@@ -4166,3 +4166,71 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   `https://webgpu-brush-engine-michi.m1m4brand.chatgpt.site`. Il runtime resta
   spento senza query e la pubblicazione abilita soltanto il test esplicito
   della v5; la QA Safari/iPhone fisica è ancora da eseguire.
+- Follow-up richiesto dall'utente, da ricordare più avanti ma **non da attivare
+  ora**: aggiungere nelle impostazioni un toggle `Compressione livelli`. La
+  scelta dovrà essere persistente e applicata con una ricarica controllata
+  dell'app, perché il lifecycle viene configurato alla costruzione del motore;
+  lo stato Off deve restare il default finché l'A/B iPhone non dimostra memoria
+  migliore senza regressioni di latenza. Il toggle non dovrà cambiare pennello,
+  pixel, parametri, History o documento.
+
+### Documento 2048² sui telefoni (6 agosto 2026)
+
+- `LAYER_SIZE` non e' piu' una costante letterale: `src/engine-limits.ts` la
+  risolve una sola volta all'import con `resolveDocumentSize()`. Il modulo non
+  ha import, quindi il suo body gira prima di ogni consumatore: le stringhe WGSL
+  che interpolano `${LAYER_SIZE}` e ogni costante derivata a module-eval leggono
+  gia' il valore giusto. Non esiste un setter e il valore non va passato da
+  `main.ts`: renderlo mutabile romperebbe proprio quelle interpolazioni.
+- Il confine e' `pointer: coarse` **e** `min(screen.width, screen.height)` fra
+  `1` e `700`. E' lo schermo fisico, non il viewport: un iPhone in landscape e'
+  largo `844 px` e col criterio del viewport avrebbe preso il documento pieno,
+  cioe' esattamente il caso che si voleva evitare. Un tablet
+  (iPad `820×1180`) resta a 4096². Uno schermo che dichiara `0` vale desktop.
+- Override espliciti: `?documentSize=2048|4096` nel browser e
+  `BRUSH_DOCUMENT_SIZE` sotto Node. Senza `screen`/`matchMedia` il default e'
+  4096, quindi tutte le suite `*:verify` continuano a misurare il desktop e le
+  loro asserzioni assolute (`FILL_BLOCK_GRID_SIZE 256`, `SELECTION_TILE_SIZE
+  256`, `LAYER_STORAGE_TILE_COUNT 256`) restano valide senza riscritture.
+- Invariante nuovo e non negoziabile: **il documento e' sempre diviso in una
+  griglia 16×16 di tile; e' il lato del tile a scalare, non il numero di tile**
+  (`DOCUMENT_TILE_GRID_SIZE`, `DOCUMENT_TILE_SIZE`, `DOCUMENT_TILE_MASK_WORDS`).
+  Selezione, Riempimento, cold storage e Trasforma condividono la stessa
+  maschera da `8` word e se la scambiano davvero: il Trasforma consuma
+  `engine.pixelSelectionTileMask`. Scalare la griglia invece del tile avrebbe
+  fatto rifiutare quella maschera da `requireTileMask` a 2048².
+- Punti che erano cablati a 4096 e ora derivano: `FILL_LAYER_SIZE`,
+  `RASTER_TRANSFORM_DOCUMENT_SIZE` e `RASTER_TRANSFORM_TILE_SIZE`,
+  `DRY_BLEND_DEFAULT_DOCUMENT_SIZE`, `LAYER_STORAGE_TILE_SIZE`, il tile freddo
+  in `fill-shaders.ts` (`block.y / FILL_BLOCKS_PER_TILE * FILL_TILE_GRID_SIZE`),
+  l'estensione documento nel compositore mixed-scene, l'uniforme mip della
+  fusione a tile e `layerBaseMemoryMiB`. Titolo, intestazione, etichette dei
+  formati livello e le due note in `index.html` sono riscritte al boot da
+  `main.ts` (dopo `formatMemoryMiB`: piu' in alto finivano nella TDZ di
+  `memoryNumberFormatter` e l'intero modulo non veniva eseguito).
+- I default `4096` rimasti in `bevel-core.ts` e `stroke-core.ts` sono
+  intenzionali: nessun percorso del motore li usa, tutti i chiamanti passano
+  `LAYER_SIZE` esplicito, e lasciarli tiene quei moduli senza dipendenze.
+- Semantica accettata, non un difetto: i pennelli restano misurati in pixel
+  documento, quindi a 2048² lo stesso slider copre il doppio dell'area relativa
+  e il grain `2500²` si vede al doppio della scala. E' il comportamento di
+  Procreate; riscalare i preset creerebbe due semantiche divergenti.
+- Verifica nuova `document:verify` (`scripts/verify-document-size.mjs`): rilancia
+  se' stessa con `BRUSH_DOCUMENT_SIZE` e asserisce gli invarianti a 2048² e
+  4096² in forma relativa a `LAYER_SIZE`. Dimostrata fallibile su quattro
+  regressioni distinte: tile del Trasforma ricablato a `256`, compositore
+  mixed-scene ricablato a `4096.0`, tile freddo del Riempimento ricablato a
+  `16u`, memoria livello ricablata a `128/64 MiB`.
+- Misurato in QA browser locale, non stimato. A `393×852` con
+  `?documentSize=2048`: `layerSize` `2048`, memoria totale d'avvio `41,9 MiB`
+  contro `132,0 MiB` a 4096², livello base `16,0` contro `64,0 MiB`, piramide
+  mip `5,3` contro `21,3 MiB`, etichette formato `16,0`/`32,0 MiB`. Tratto,
+  Riempimento (`bounds 0,0,2048,2048`, `3.765.632` px, `247/256` tile attivi),
+  Selezione bacchetta magica, Trasforma su livello (`commit true`, bounds
+  `27,27,1994,1994`) e undo/redo con confronto pixel: tutti verdi. Il bordo del
+  documento misurato pixel per pixel cade fra `2046` e `2047`, e a 4096² fra
+  `4090` e `4100`. Console pulita su tab nuova.
+- TypeScript, tutte le `32` suite `*:verify` e la build Vite/Sites sono verdi.
+  Non e' stata eseguita QA su hardware mobile reale: il percorso 2048² e' stato
+  esercitato via override da desktop, quindi il guadagno di fill-rate su Mali
+  resta previsto e non misurato.

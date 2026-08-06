@@ -4,11 +4,13 @@
 // Its output is a deterministic stream of continuous sweep
 // segments plus the conservative ROI needed by the later GPU port.
 
+import { LAYER_SIZE } from "./engine-limits.ts";
+
 export const DRY_BLEND_CORE_BUILD = "dry-blend-continuous-core-v1-pressure-inert";
 export const DRY_BLEND_REFERENCE_STEP_RATIO = 0.06;
 export const DRY_BLEND_REFERENCE_MIN_STEP_PX = 2.5;
 export const DRY_BLEND_REFERENCE_MAX_STEP_PX = 48;
-export const DRY_BLEND_DEFAULT_DOCUMENT_SIZE = 4096;
+export const DRY_BLEND_DEFAULT_DOCUMENT_SIZE = LAYER_SIZE;
 export const DRY_BLEND_DEFAULT_SCRATCH_SIZE = 1664;
 export const DRY_BLEND_DEFAULT_TILE_SIZE = 256;
 export const DRY_BLEND_SCRATCH_LIFECYCLE_STRATEGY =
