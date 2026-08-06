@@ -4296,3 +4296,54 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   `1c3d3805a1c30bdc83730d5422d641018d4f4933` su
   `https://webgpu-brush-engine-michi.m1m4brand.chatgpt.site`. La verifica
   Safari/iPhone fisica del budget History resta il prossimo passo.
+
+### Modello di memoria per documento arbitrario (6 agosto 2026)
+
+- Difetto trovato su hardware reale, non in laboratorio: una schermata del
+  telefono su Sites `137` mostrava `Rendering · Light / Uniformed / Intense`
+  a `137,3 MiB` con documento `2048²`. L'accumulatore Light Glaze era ancora
+  un **`128` cablato** in `engine-memory-model.ts`, costo a 4096². L'allocazione
+  reale scala gia' con `LAYER_SIZE` (`engine-glaze-runtime.ts` crea la texture
+  `LAYER_SIZE²`): sbagliava soltanto il **report**, di esattamente `96 MiB`.
+  Il totale GPU letto sul telefono, `427,2 MiB`, era in realta' `~331,2`.
+- `engine-memory-model.ts` non legge piu' la costante globale dentro il corpo
+  delle funzioni: ognuna riceve `{ width, height }` con `LAYER_SIZE` come solo
+  default. E' il modo per cui un canvas personalizzato — non quadrato, non
+  potenza di due — si misura passando la sua taglia, senza toccare il file. La
+  catena mip deriva dal lato piu' lungo e la piramide somma per asse.
+- `lightGlazeAccumulatorBytesPerPixel` isola il punto che sbagliava:
+  l'accumulatore e' full-document e costa `1 B/px` in `r8-coverage`, `8 B/px`
+  altrimenti. Non dipende dal formato del livello, che governa invece piramide
+  e commit tile: e' proprio la confusione che aveva prodotto il `128`.
+- Verificato in browser sulla configurazione esatta del telefono:
+  `uniformed-glaze` e `intense-blending` (storage `rgba16float-stroke`) ora
+  dichiarano **`41,3 MiB`** invece di `137,3`, `light-glaze` (`r8-coverage`)
+  `9,3 MiB`. Totale motore da `73,9` contro i `169,9` che avrebbe detto prima.
+- `verify-intense-blending.mjs` fissava `': 128;'` come contratto: era il test
+  che cementava il difetto. Ora asserisce la forma derivata e vieta
+  esplicitamente il ritorno a un costo cablato.
+- Nuova diagnostica History nel pannello memoria
+  (`gpuMemoryHistoryDiagnostics`): budget effettivo e base, effetti sottratti,
+  causa (`entro budget` / `sopra budget` / `BLOCCATO: nessun checkpoint full su
+  cui consolidare`), checkpoint e catture committed/fallite/stale, eviction da
+  budget e da profondita', pavimento e profondita' Undo. Si legge **solo a
+  pannello aperto**, perche' sincronizza la contabilita' History e non deve
+  pesare su ogni frame. Serve a distinguere sul telefono "il budget non scatta"
+  da "non c'e' nulla da liberare", che dalla sola schermata era indecidibile.
+- Resta aperto il problema vero emerso dalla stessa schermata: la Cronologia
+  raster era a `193 MiB` di pagine GPU con `191,2` di payload, contro un budget
+  da `96`. Sono **comandi**, non checkpoint: i pennelli reali depositano ordini
+  di grandezza piu' stamp dei tratti sintetici usati nella misura da desktop,
+  dove il payload si fermava a `13,6 MiB` in `223` azioni. La prossima mossa e'
+  leggere la nuova diagnostica su dispositivo.
+- Corollario da ricordare: la compressione dei checkpoint, misurata ottima in
+  uno spike (`16 MiB → 0,57 MiB`, `28×`, decompressione `80 ms`, lossless
+  verificato), **non e' la leva giusta** per quella sessione, perche' non tocca
+  il payload dei comandi. E' stata rimandata, non scartata.
+- `document:verify` copre ora il modello di memoria a `2048²`, `4096²` e a
+  taglie arbitrarie (`3000×1800`, `1024×4096`, `777×333`, `8192×8192`), con il
+  caso del telefono come ancora di regressione. Sette regressioni dimostrate
+  fallibili: ritorno al `128`, byte per pixel errati, larghezza ignorata, mip
+  che ignora il lato lungo, piramide che assume il documento quadrato, e le due
+  firme sorvegliate da `intense:verify`.
+- TypeScript, tutte le `32` suite `*:verify` e build Vite/Sites verdi.

@@ -6485,6 +6485,43 @@ runRenderingModeSuiteButton.addEventListener("click", () => {
   void runRenderingModeSuite();
 });
 
+/**
+ * Perche' la Cronologia sta a quel numero. Senza console su telefono era
+ * impossibile distinguere "il budget non scatta" da "non c'e' nulla da
+ * liberare": il 6 agosto 2026 una schermata mostrava `191,2 MiB` di payload
+ * contro un budget da `96` e non c'era modo di sapere quale dei due fosse.
+ *
+ * Si legge solo a pannello aperto: la telemetria sincronizza la contabilita'
+ * History e non deve pesare su ogni frame quando nessuno la guarda.
+ */
+function updateHistoryDiagnostics(): void {
+  const output = element<HTMLElement>("gpuMemoryHistoryDiagnostics");
+  if (gpuMemoryPanel.hidden) return;
+  const telemetry = engine.getHistoryMaintenanceTelemetry();
+  const state = engine.getHistoryState();
+  const depth = state.cursor - telemetry.floorCursor;
+  const causa = telemetry.budgetCheckpointBlocked
+    ? "BLOCCATO: nessun checkpoint full su cui consolidare"
+    : telemetry.totalBytes > telemetry.budgetBytes
+      ? "sopra budget, eviction in attesa di manutenzione idle"
+      : "entro budget";
+  output.textContent =
+    `History ${formatMemoryMiB(telemetry.totalBytes / (1024 * 1024))} su budget `
+    + `${formatMemoryMiB(telemetry.budgetBytes / (1024 * 1024))} `
+    + `(base ${formatMemoryMiB(telemetry.baseBudgetBytes / (1024 * 1024))} − effetti `
+    + `${formatMemoryMiB(telemetry.effectsWorkingSetBytes / (1024 * 1024))}) · ${causa}. `
+    + `Checkpoint ${telemetry.checkpointCount} (${telemetry.fullCheckpointCount} full, `
+    + `${telemetry.deltaCheckpointCount} delta) per `
+    + `${formatMemoryMiB(telemetry.checkpointBytes / (1024 * 1024))}; catture `
+    + `${telemetry.capturesCommitted}/${telemetry.capturesStarted} committed, `
+    + `${telemetry.capturesFailed} fallite, ${telemetry.capturesDiscardedStale} stale. `
+    + `Eviction ${telemetry.budgetEvictions} da budget e ${telemetry.depthEvictions} da `
+    + `profondità (tetto ${telemetry.maximumUndoDepth}); pavimento `
+    + `${telemetry.floorCursor}, azioni ${state.actionCount}, profondità Undo ${depth}. `
+    + `Compattazioni Redo ${telemetry.redoCompactionsCompleted} complete, `
+    + `${telemetry.redoCompactionsAborted} interrotte.`;
+}
+
 function updateGpuMemoryPanel(stats: EngineStats): void {
   for (const [id, key] of gpuMemoryRows) {
     const output = element<HTMLElement>(id);
@@ -6500,6 +6537,7 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
   historyLabel.title =
     "La cifra a destra è la memoria GPU realmente riservata in pagine; "
     + "«usati» è il payload logico attualmente residente nelle pagine.";
+  updateHistoryDiagnostics();
 
   const storageStudy = stats.layerStorageStudy;
   const inactiveLayers = storageStudy.layers.filter((layer) => !layer.active);

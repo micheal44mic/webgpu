@@ -42,11 +42,22 @@ assert(
     && engine.includes(': "rgba16float";'),
   "Uniformed/Intense non usano l'accumulatore autorevole RGBA16F.",
 );
+// L'accumulatore e' full-document: il suo costo si deriva dalle dimensioni e
+// dai byte per pixel della modalita', non da un numero cablato. Il `128` che
+// stava qui era il costo a 4096² e faceva dichiarare al pannello `137,3 MiB`
+// invece di `41,3` su un telefono a 2048².
 assert(
-  engine.includes('const accumulatorMiB = storageMode === "r8-coverage"')
-    && engine.includes(': 128;')
+  engine.includes("lightGlazeAccumulatorBytesPerPixel(storageMode)")
+    && engine.includes('return storageMode === "r8-coverage" ? 1 : 8;')
+    && engine.includes(
+      "(width * height * lightGlazeAccumulatorBytesPerPixel(storageMode)) / MEBIBYTE_BYTES",
+    )
     && engine.includes('const commitTileMiB = storageMode === "rgba16float-stroke"'),
-  "La contabilità non include accumulator RGBA16F e scratch tile.",
+  "La contabilità non include accumulator RGBA16F full-document e scratch tile.",
+);
+assert(
+  !/const accumulatorMiB = [\s\S]{0,200}: 128;/.test(engine),
+  "L'accumulatore Light Glaze non deve tornare a un costo cablato.",
 );
 
 const glazeModeRouting = section(
