@@ -3958,3 +3958,43 @@ select {
   min-height: 32px;
   padding: 6px 11px;
 }
+
+.vector-zoom-ab-summary {
+  position: fixed;
+  z-index: 10000;
+  right: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  left: 12px;
+  max-height: min(46vh, 420px);
+  overflow: auto;
+  padding: 11px 13px;
+  border: 1px solid rgba(106, 211, 153, 0.85);
+  border-radius: 12px;
+  background: rgba(12, 16, 23, 0.96);
+  color: #f4f6fa;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.48);
+  font: 600 12px/1.45 system-ui, sans-serif;
+  backdrop-filter: blur(12px);
+}
+
+.vector-zoom-ab-summary.is-error {
+  border-color: rgba(255, 117, 117, 0.9);
+}
+
+.vector-zoom-ab-summary summary {
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.vector-zoom-ab-summary p {
+  margin: 9px 0;
+  color: #cbd3e0;
+}
+
+.vector-zoom-ab-summary pre {
+  margin: 8px 0 0;
+  overflow: visible;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 500 10px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace;
+}

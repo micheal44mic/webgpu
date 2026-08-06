@@ -26,6 +26,11 @@ export const VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT = 10;
 export const VECTOR_TEXT_ZOOM_STRESS_TARGET_ZOOM = 64;
 export const VECTOR_TEXT_ZOOM_STRESS_SLOW_FRAME_MS = 20;
 export const VECTOR_TEXT_ZOOM_STRESS_STEP_FACTOR = 1.42;
+export const VECTOR_TEXT_ZOOM_AB_STRATEGY =
+  "ten-semantic-text-pan180-refresh-during-vs-release-v1" as const;
+export const VECTOR_TEXT_ZOOM_AB_IDLE_FRAME_COUNT = 30;
+export const VECTOR_TEXT_ZOOM_AB_SAMPLE_COUNT = 180;
+export const VECTOR_TEXT_ZOOM_AB_START_ZOOM = 64;
 
 export type VectorTextZoomStressProfile =
   | "arch"

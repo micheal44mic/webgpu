@@ -81,6 +81,10 @@ import {
   VECTOR_TEXT_ADAPTIVE_ZOOM_SETTLE_MS,
   VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
   VECTOR_TEXT_FAST_PRESENTATION_FILTER_GUARD_PX,
+  VECTOR_TEXT_ZOOM_AB_IDLE_FRAME_COUNT,
+  VECTOR_TEXT_ZOOM_AB_SAMPLE_COUNT,
+  VECTOR_TEXT_ZOOM_AB_START_ZOOM,
+  VECTOR_TEXT_ZOOM_AB_STRATEGY,
   VECTOR_TEXT_ZOOM_STRESS_PROFILE_ORDER,
   VECTOR_TEXT_ZOOM_STRESS_SEED,
   VECTOR_TEXT_ZOOM_STRESS_STRATEGY,
@@ -320,6 +324,13 @@ assert.equal(
 assert.equal(VECTOR_TEXT_ZOOM_STRESS_SEED, 0x5a17c0de);
 assert.equal(VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT, 10);
 assert.equal(VECTOR_TEXT_ZOOM_STRESS_TARGET_ZOOM, 64);
+assert.equal(
+  VECTOR_TEXT_ZOOM_AB_STRATEGY,
+  "ten-semantic-text-pan180-refresh-during-vs-release-v1",
+);
+assert.equal(VECTOR_TEXT_ZOOM_AB_IDLE_FRAME_COUNT, 30);
+assert.equal(VECTOR_TEXT_ZOOM_AB_SAMPLE_COUNT, 180);
+assert.equal(VECTOR_TEXT_ZOOM_AB_START_ZOOM, 64);
 assert.equal(VECTOR_TEXT_ZOOM_STRESS_PROFILE_ORDER.length, 10);
 assert.deepEqual(
   Object.fromEntries(
@@ -384,6 +395,15 @@ assert.equal(
   vectorTextFastPresentationMode(capturedView, { ...capturedView, canvasWidth: 430 }),
   "reproject-clipped",
   "un resize non è coperto dalla cache viewport precedente",
+);
+const capturedZoom64View = { ...capturedView, zoom: VECTOR_TEXT_ZOOM_AB_START_ZOOM };
+assert.equal(
+  vectorTextFastPresentationMode(capturedZoom64View, {
+    ...capturedZoom64View,
+    centerX: capturedZoom64View.centerX + 1 / VECTOR_TEXT_ZOOM_AB_START_ZOOM,
+  }),
+  "reproject-clipped",
+  "un pan di un pixel a 64× deve esercitare il ramo clipped del test A/B",
 );
 assert.equal(vectorTextExactRecoveryIsCurrent(100, 100, false), true);
 assert.equal(vectorTextExactRecoveryIsCurrent(99, 100, false), false);
@@ -1314,6 +1334,30 @@ assert.match(controllerSource, /requestExactRecovery\(revision: number\): void/)
 assert.match(controllerSource, /requestUnsafeExactRefresh\(revision: number\): void/);
 assert.match(controllerSource, /this\.unsafeExactRefreshInFlight[\s\S]*zoomUnsafeExactCoalescedCount/);
 assert.match(controllerSource, /waitForVectorTextPresentationCompletion\(\)\.then/);
+assert.match(
+  controllerSource,
+  /export type VectorTextClippedRefreshPolicy = "during-gesture" \| "on-release"/,
+);
+assert.match(
+  controllerSource,
+  /private readonly clippedRefreshPolicy: VectorTextClippedRefreshPolicy/,
+  "la variante A/B deve essere immutabile per l'intera vita del controller",
+);
+assert.match(
+  controllerSource,
+  /if \(this\.clippedRefreshPolicy === "during-gesture"\) \{\s*this\.requestUnsafeExactRefresh/,
+);
+assert.doesNotMatch(controllerSource, /setExactRefreshDuringViewGestureEnabled/);
+assert.match(
+  controllerSource,
+  /waitForVectorTextPresentationCompletion\(\)\.then\(\(\) => \{\s*this\.zoomUnsafeExactRefreshCompletedCount \+= 1/,
+  "un refresh iniziato non basta: il report deve sapere se è stato completato prima del rilascio",
+);
+assert.match(controllerSource, /zoomUnsafeExactRefreshInFlight: this\.unsafeExactRefreshInFlight/);
+assert.match(
+  controllerSource,
+  /zoomUnsafeExactRefreshRequestPending: this\.unsafeExactRefreshRequest !== null/,
+);
 assert.match(controllerSource, /vectorTextExactRecoveryIsCurrent\(/);
 assert.match(controllerSource, /setAdaptiveZoomEnabled\(enabled: boolean\): void/);
 assert.match(
@@ -1328,6 +1372,17 @@ assert.doesNotMatch(
   "gli swap atomici LOD degli effetti possono raffinare la singola recovery senza creare altre recovery zoom",
 );
 assert.match(mainSource, /layerMemoryStressReport\.textContent = JSON\.stringify\(report, null, 2\)/);
+assert.match(mainSource, /pageSearchParams\.get\("vectorZoomRefresh"\)/);
+assert.match(mainSource, /refreshMode === "during" \? "A" : "B"/);
+assert.match(mainSource, /engine\.panByClientDelta\(1, 0\)/);
+assert.match(mainSource, /VECTOR_TEXT_ZOOM_AB_IDLE_FRAME_COUNT/);
+assert.match(mainSource, /VECTOR_TEXT_ZOOM_AB_SAMPLE_COUNT/);
+assert.match(mainSource, /__vectorZoomAbReport/);
+assert.match(mainSource, /unsafeExactRefreshCompletedDelta > 0/);
+assert.match(
+  mainSource,
+  /unsafeExactRefreshStartedDelta === 0[\s\S]{0,220}exactRenderDeltaDuringGesture === 0/,
+);
 assert.ok(
   (mainSource.match(/vectorTextPrototype\?\.beginViewGesture\(\)/g) ?? []).length >= 2,
   "pinch e pan/rotate devono armare il fast mode prima del primo movimento",

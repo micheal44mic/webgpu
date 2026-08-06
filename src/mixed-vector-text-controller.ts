@@ -173,6 +173,7 @@ export interface MixedVectorTextDiagnostics {
   zoomRenderMode: "precise" | "fast";
   zoomFastPresentationMode: VectorTextFastPresentationMode;
   zoomFastModeArmed: boolean;
+  zoomClippedRefreshPolicy: VectorTextClippedRefreshPolicy;
   zoomSlowFrameStreak: number;
   zoomFastActivationCount: number;
   zoomExactRecoveryCount: number;
@@ -184,7 +185,10 @@ export interface MixedVectorTextDiagnostics {
   zoomSafeReprojectionCount: number;
   zoomClippedReprojectionCount: number;
   zoomUnsafeExactRefreshCount: number;
+  zoomUnsafeExactRefreshCompletedCount: number;
   zoomUnsafeExactCoalescedCount: number;
+  zoomUnsafeExactRefreshInFlight: boolean;
+  zoomUnsafeExactRefreshRequestPending: boolean;
   zoomFastPresentationSubmissionCount: number;
   zoomFastPresentationCoalescedRequestCount: number;
   selectedKey: MixedSceneItem["key"] | null;
@@ -222,6 +226,12 @@ interface RasterLayerTransformNode extends RasterTransformSnapshot {
   kind: "raster-layer";
   id: number;
   name: string;
+}
+
+export type VectorTextClippedRefreshPolicy = "during-gesture" | "on-release";
+
+export interface MixedVectorTextControllerOptions {
+  clippedRefreshPolicy?: VectorTextClippedRefreshPolicy;
 }
 type TransformSceneNode = VectorSceneNode | RasterLayerTransformNode;
 type VectorSceneNodeUpdate =
@@ -688,6 +698,7 @@ export class MixedVectorTextController {
   private pendingViewRenderStartedAt = 0;
   private lastViewRenderEndToEndMs = 0;
   private adaptiveZoomEnabled = true;
+  private readonly clippedRefreshPolicy: VectorTextClippedRefreshPolicy;
   private zoomRenderMode: "precise" | "fast" = "precise";
   private viewGestureActive = false;
   private viewRevision = 0;
@@ -705,6 +716,7 @@ export class MixedVectorTextController {
   private zoomSafeReprojectionCount = 0;
   private zoomClippedReprojectionCount = 0;
   private zoomUnsafeExactRefreshCount = 0;
+  private zoomUnsafeExactRefreshCompletedCount = 0;
   private zoomUnsafeExactCoalescedCount = 0;
   private lastExactCanvasWidth = 0;
   private lastExactCanvasHeight = 0;
@@ -721,7 +733,11 @@ export class MixedVectorTextController {
   private touchNavigationGesture: TouchNavigationGesture | null = null;
   private touchNavigationActive = false;
 
-  constructor(private readonly host: MixedVectorTextHost) {
+  constructor(
+    private readonly host: MixedVectorTextHost,
+    options: MixedVectorTextControllerOptions = {},
+  ) {
+    this.clippedRefreshPolicy = options.clippedRefreshPolicy ?? "during-gesture";
     const interactionContext = this.interactionCanvas.getContext("2d", {
       alpha: true,
       desynchronized: true,
@@ -1046,7 +1062,9 @@ export class MixedVectorTextController {
       this.zoomSafeReprojectionCount += 1;
     } else if (presentationMode === "reproject-clipped") {
       this.zoomClippedReprojectionCount += 1;
-      this.requestUnsafeExactRefresh(this.viewRevision);
+      if (this.clippedRefreshPolicy === "during-gesture") {
+        this.requestUnsafeExactRefresh(this.viewRevision);
+      }
     }
     this.scheduleFastInteractionOverlay();
     if (!this.viewGestureActive) {
@@ -1190,6 +1208,7 @@ export class MixedVectorTextController {
         return;
       }
       void this.host.waitForVectorTextPresentationCompletion().then(() => {
+        this.zoomUnsafeExactRefreshCompletedCount += 1;
         this.unsafeExactRefreshInFlight = false;
         const pendingRecovery = this.pendingExactRecoveryRevision;
         this.pendingExactRecoveryRevision = null;
@@ -1360,6 +1379,7 @@ export class MixedVectorTextController {
       this.scheduleRender();
     }
   }
+
   getDiagnostics(): MixedVectorTextDiagnostics {
     const view = this.host.getVectorTextViewState();
     const effectDiagnostics = this.effectCompiler.diagnostics();
@@ -1378,6 +1398,7 @@ export class MixedVectorTextController {
       zoomRenderMode: this.zoomRenderMode,
       zoomFastPresentationMode: this.host.getVectorTextFastPresentationMode(),
       zoomFastModeArmed: this.zoomRenderMode === "fast",
+      zoomClippedRefreshPolicy: this.clippedRefreshPolicy,
       zoomSlowFrameStreak: 0,
       zoomFastActivationCount: this.zoomFastActivationCount,
       zoomExactRecoveryCount: this.zoomExactRecoveryCount,
@@ -1389,7 +1410,10 @@ export class MixedVectorTextController {
       zoomSafeReprojectionCount: this.zoomSafeReprojectionCount,
       zoomClippedReprojectionCount: this.zoomClippedReprojectionCount,
       zoomUnsafeExactRefreshCount: this.zoomUnsafeExactRefreshCount,
+      zoomUnsafeExactRefreshCompletedCount: this.zoomUnsafeExactRefreshCompletedCount,
       zoomUnsafeExactCoalescedCount: this.zoomUnsafeExactCoalescedCount,
+      zoomUnsafeExactRefreshInFlight: this.unsafeExactRefreshInFlight,
+      zoomUnsafeExactRefreshRequestPending: this.unsafeExactRefreshRequest !== null,
       zoomFastPresentationSubmissionCount: backpressure.submissionCount,
       zoomFastPresentationCoalescedRequestCount: backpressure.coalescedRequestCount,
       selectedKey: this.snapshot?.selectedKey ?? null,
