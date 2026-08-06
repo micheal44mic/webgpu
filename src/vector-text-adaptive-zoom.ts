@@ -3,19 +3,18 @@ import type { VectorTextNodeSeed } from "./mixed-scene-stack";
 
 /**
  * During a view gesture the last exact vector viewport is only presented, not
- * rebuilt.  A full-coverage reprojection is used when every current viewport
- * corner maps inside that capture.  Otherwise the whole capture is kept in
- * screen space: mixing a reprojected interior with transparent uncovered
- * strips was the source of the old "missing regions" defect. The frozen
- * frame is only transient: unsafe movement starts one bounded exact refresh,
- * and further samples replace its pending latest revision without adding GPU
- * submissions.
+ * rebuilt. Every fast frame is reprojected through the current camera so text
+ * and SVG never detach from the raster scene. When every current viewport
+ * corner maps inside the capture the reprojection has full coverage. Otherwise
+ * the mapped capture is clipped at its boundary while one bounded exact refresh
+ * fills the newly exposed region; further samples replace its pending latest
+ * revision without adding GPU submissions.
  *
  * The semantic scene remains authoritative.  One exact redraw of the latest
  * revision replaces the transient presentation when the gesture settles.
  */
 export const VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY =
-  "gesture-latest-only-gpu-reprojection-full-coverage-screen-freeze-exact-settle-v4" as const;
+  "gesture-latest-only-gpu-reprojection-clipped-uncovered-exact-settle-v5" as const;
 
 export const VECTOR_TEXT_ADAPTIVE_ZOOM_SETTLE_MS = 140;
 export const VECTOR_TEXT_FAST_PRESENTATION_FILTER_GUARD_PX = 0.5;
@@ -136,7 +135,7 @@ export function vectorTextZoomStressStepFactor(currentZoom: number): number {
 export type VectorTextFastPresentationMode =
   | "precise"
   | "reproject"
-  | "freeze";
+  | "reproject-clipped";
 
 function finiteView(view: Readonly<VectorTextViewState>): boolean {
   return Number.isFinite(view.canvasWidth)
@@ -180,22 +179,22 @@ function currentCanvasPointInCapture(
 }
 
 /**
- * Pure coverage guard shared by runtime and verification.  Reprojection is
- * all-or-nothing for a frame; an unsafe view freezes the complete previous
- * vector viewport rather than exposing partially transparent strips.
+ * Pure coverage guard shared by runtime and verification. Both fast modes use
+ * the same camera reprojection. The clipped variant only marks that newly
+ * exposed pixels need a bounded exact refresh.
  */
 export function vectorTextFastPresentationMode(
   capture: Readonly<VectorTextViewState> | null,
   current: Readonly<VectorTextViewState>,
 ): VectorTextFastPresentationMode {
   if (!capture || !finiteView(capture) || !finiteView(current)) {
-    return "freeze";
+    return "reproject-clipped";
   }
   if (
     capture.canvasWidth !== current.canvasWidth
     || capture.canvasHeight !== current.canvasHeight
   ) {
-    return "freeze";
+    return "reproject-clipped";
   }
 
   const guard = VECTOR_TEXT_FAST_PRESENTATION_FILTER_GUARD_PX;
@@ -224,7 +223,7 @@ export function vectorTextFastPresentationMode(
       || captureX > captureRight + epsilon
       || captureY > captureBottom + epsilon
     ) {
-      return "freeze";
+      return "reproject-clipped";
     }
   }
   return "reproject";

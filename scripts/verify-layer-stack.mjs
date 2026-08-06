@@ -1923,7 +1923,7 @@ const mobileBrushLibraryPreviewEnd = mainSource.indexOf(
   mobileBrushLibraryPreviewStart,
 );
 assertSection(
-  "preview Canvas2D Brush Library",
+  "orchestrazione preview WebGPU Brush Library",
   mobileBrushLibraryPreviewStart,
   mobileBrushLibraryPreviewEnd,
 );
@@ -1938,7 +1938,7 @@ assert.match(
 assert.doesNotMatch(
   mobileBrushLibraryPreviewSource,
   /setBrushSettings|queue\.submit|copyTextureToBuffer|mapAsync|onSubmittedWorkDone/,
-  "la pennellata della library deve restare una preview Canvas2D lazy senza lavoro o readback GPU",
+  "main deve soltanto orchestrare la cache: submit e readback vivono nel renderer WebGPU condiviso",
 );
 assert.match(mainSource, /MOBILE_DOUBLE_TAP_ZOOM_INTERVAL_MS = 350/);
 assert.match(mainSource, /document\.addEventListener\("touchend",[\s\S]*?passive: false/);

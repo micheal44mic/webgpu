@@ -151,6 +151,10 @@ const libraryPreview = readFileSync(
   path.join(projectRoot, "src", "brush-library-preview.ts"),
   "utf8",
 );
+const strokePreviewRenderer = readFileSync(
+  path.join(projectRoot, "src", "brush-stroke-preview-renderer.ts"),
+  "utf8",
+);
 const html = readFileSync(path.join(projectRoot, "index.html"), "utf8");
 
 assert(!engine.includes('"m1m4-pencil-v1"'),
@@ -201,9 +205,15 @@ assert(shaders.includes("let followAngle = select(0.0, atan2(direction.y, direct
   && !shaders.includes("if (movement <= 0.00001)"),
   "Shader generici Follow Stroke/Moving scalato mancanti.");
 assert(main.includes("resolveBrushPresetSettings(PENCIL_BRUSH_PRESET")
-  && libraryPreview.includes('new URL("../Shapepencil.png", import.meta.url)')
-  && libraryPreview.includes('new URL("../Grainpencil.png", import.meta.url)'),
-  "Selezione o preview Pencil non collegate alla libreria mobile.");
+  && libraryPreview.includes("AuthoritativeBrushStrokePreviewRenderer")
+  && libraryPreview.includes("await this.renderer.render(canvas, settings")
+  && strokePreviewRenderer.includes("createShapeMaskResources(")
+  && strokePreviewRenderer.includes("createGrainTextureResources("),
+  "Selezione o preview autorevole Pencil non collegate alla libreria mobile.");
+assert(!strokePreviewRenderer.includes('"m1m4-pencil-v1"')
+  && !strokePreviewRenderer.includes("Shapepencil.png")
+  && !strokePreviewRenderer.includes("Grainpencil.png"),
+  "Il renderer preview deve restare generico e risolvere Pencil dal registry autorevole.");
 assert(html.includes('data-mobile-brush-id="m1m4-pencil-v1"')
   && html.includes('data-mobile-brush-category-card="pencil"'),
   "Card Pencil mobile non registrata.");

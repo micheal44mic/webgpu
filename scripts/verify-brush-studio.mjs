@@ -8,6 +8,7 @@ const main = readFileSync(`${root}/src/main.ts`, "utf8");
 const studio = readFileSync(`${root}/src/mobile-brush-studio.ts`, "utf8");
 const storage = readFileSync(`${root}/src/brush-studio-storage.ts`, "utf8");
 const engine = readFileSync(`${root}/src/brush-engine.ts`, "utf8");
+const previewRenderer = readFileSync(`${root}/src/brush-stroke-preview-renderer.ts`, "utf8");
 
 for (const id of [
   "mobileBrushStudioSheet",
@@ -75,6 +76,35 @@ assert.match(
   /saveBrushStudioSavedBrush\([\s\S]*?deleteSupersededStoredAssets\(/,
   "old custom blobs may be deleted only after the new settings record commits",
 );
+assert.match(studio, /readonly previewRenderer: AuthoritativeBrushStrokePreviewRenderer/);
+const renderStart = studio.indexOf("private async renderPreview(): Promise<void>");
+const renderEnd = studio.indexOf("private async commit(): Promise<void>", renderStart);
+assert.ok(renderStart >= 0 && renderEnd > renderStart, "authoritative Studio render section missing");
+const renderBody = studio.slice(renderStart, renderEnd);
+assert.match(
+  renderBody,
+  /await this\.options\.previewRenderer\.render\(this\.previewCanvas, settings\)/,
+  "Brush Studio must delegate its stroke to the shared WebGPU renderer",
+);
+assert.doesNotMatch(
+  renderBody,
+  /getContext\(|drawImage\(|putImageData\(|globalCompositeOperation|stampCount|spacingPixels|applyPreviewGrain|renderBrushTipPreview|\.noise\(/,
+  "Brush Studio must not rebuild stamps, blend or grain in Canvas2D",
+);
+assert.match(studio, /this\.options\.previewRenderer\.invalidate\(this\.previewCanvas\)/);
+assert.match(
+  main,
+  /new MobileBrushLibraryPreviewRenderer\(\s*authoritativeBrushStrokePreviewRenderer,?\s*\)/,
+  "Brush Library must receive the shared authoritative renderer instance",
+);
+assert.match(
+  main,
+  /new MobileBrushStudioController\(\{[\s\S]*?previewRenderer: authoritativeBrushStrokePreviewRenderer,/,
+  "Brush Studio must receive the same authoritative renderer instance",
+);
+assert.match(previewRenderer, /BRUSH_STROKE_PREVIEW_RENDERER_VERSION[\s\S]*authoritative-paint-stamps-webgpu-v1/);
+assert.match(previewRenderer, /resamplePaintCurveSegment\(/);
+assert.match(previewRenderer, /packStampsIntoUpload\(/);
 assert.match(engine, /registerCustomShapeAsset\(/);
 assert.match(engine, /registerCustomGrainAsset\(/);
 assert.match(engine, /hardness: tool === "paint" \? 1/);

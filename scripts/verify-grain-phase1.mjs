@@ -10,6 +10,12 @@ const shaderPath = path.join(projectRoot, "src", "shaders.ts");
 const blendShaderPath = path.join(projectRoot, "src", "blend-shaders.ts");
 const blendRendererPath = path.join(projectRoot, "src", "blend-renderer.ts");
 const mobileBrushStudioPath = path.join(projectRoot, "src", "mobile-brush-studio.ts");
+const brushStrokePreviewPath = path.join(
+  projectRoot,
+  "src",
+  "brush-stroke-preview-renderer.ts",
+);
+const stampUploadPath = path.join(projectRoot, "src", "engine-stamp-upload.ts");
 const mainPath = path.join(projectRoot, "src", "main.ts");
 const htmlPath = path.join(projectRoot, "index.html");
 const expectedSize = 2500;
@@ -248,10 +254,22 @@ assert(blendRenderer.includes('const grainMode = "fixed" as const;'),
   "Blend dry Moving non seleziona il sampler repeat.");
 
 const mobileBrushStudio = fs.readFileSync(mobileBrushStudioPath, "utf8");
-assert(mobileBrushStudio.includes("source.width * settings.grainScale * previewDocumentScale")
-  && mobileBrushStudio.includes("period / Math.max(movement, 0.025)")
-  && !mobileBrushStudio.includes("const movingOffset ="),
-"La preview Brush Studio non rappresenta Scale e drag→roller di Moving.");
+const brushStrokePreview = fs.readFileSync(brushStrokePreviewPath, "utf8");
+const stampUpload = fs.readFileSync(stampUploadPath, "utf8");
+assert(mobileBrushStudio.includes(
+  "await this.options.previewRenderer.render(this.previewCanvas, settings)",
+) && !mobileBrushStudio.includes("previewDocumentScale")
+  && !mobileBrushStudio.includes("applyPreviewGrain("),
+"Brush Studio non delega il Grain al renderer WebGPU autorevole.");
+assert(brushStrokePreview.includes("populateGrainUniformUpload(")
+  && brushStrokePreview.includes("projectionScale,")
+  && brushStrokePreview.includes("grainCoordinateMode(settings)")
+  && brushStrokePreview.includes("isTexturizedGrainActive(settings)"),
+"La preview WebGPU non riusa uniforme, coordinate e routing Grain autorevoli.");
+assert(stampUpload.includes("coordinateScale = 1")
+  && stampUpload.includes("coordinateScale) * authoredScale")
+  && stampUpload.includes("1 / (Math.max(1, textureWidth) * projectedScale)"),
+"La proiezione della preview non conserva il periodo fisico Scale × asset.");
 assert(engine.includes('export type BlendMode =')
   && engine.includes('| "light-glaze"')
   && engine.includes('| "uniformed-glaze"')

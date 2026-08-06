@@ -572,6 +572,7 @@ import {
   evaluateStrokeCurveX,
   evaluateStrokeCurveY,
 } from "./stroke-curve-core";
+import { resamplePaintCurveSegment } from "./paint-stamp-generation-core";
 import {
   CausalFadedStrokeStabilizer,
   type StrokeStabilizationUpdate,
@@ -600,7 +601,12 @@ import {
   evictReconstructibleLayerResources,
   pauseLayerColdCompressionIdle,
 } from "./engine-cold-storage";
-import { packStampsIntoUpload, populateBrushUniformUpload } from "./engine-stamp-upload";
+import {
+  packStampsIntoUpload,
+  populateBrushUniformUpload,
+  populateGrainUniformUpload,
+  populateStrokeGlazeUniformUpload,
+} from "./engine-stamp-upload";
 import {
   benchmarkEffectsWorkingSet,
   finishStrokePerformanceProfile,
@@ -3099,8 +3105,8 @@ export class BrushEngine {
   notifyViewChange(): void {
     if (this.vectorTextFastPresentationEnabled) {
       // The capture stays fixed while the current camera moves. Updating this
-      // tiny uniform selects full-coverage reprojection or the all-or-nothing
-      // frozen fallback before the next coalesced presentation submit.
+      // tiny uniform selects full-coverage or clipped reprojection before the
+      // next coalesced presentation submit. Both stay attached to the camera.
       writeVectorTextCaptureUniforms(this);
     }
     this.callbacks.onViewChange?.(this.getVectorTextViewState());
@@ -7114,22 +7120,16 @@ export class BrushEngine {
     tintLinear: readonly [number, number, number] | null,
   ): void {
     const upload = new ArrayBuffer(LIGHT_GLAZE_UNIFORM_BYTES);
-    const floats = new Float32Array(upload);
-    const unsigned = new Uint32Array(upload);
-    floats[0] = Number.isFinite(opacity) ? clamp(opacity, 0, 1) : 1;
-    unsigned[1] = this.layerFormat === "rgba16float" ? 1 : 0;
     // Mode 1 is the public Light contract: Flow belongs to each candidate
     // deposit, the R8 attachment keeps only MAX during pointer-down, and this
     // Opacity value is consumed once when the gesture is composited at lift.
-    unsigned[2] = accumulationMode === "light-no-build-up"
-      ? 1
-      : accumulationMode === "encoded-srgb-source-over"
-        ? 2
-        : 0;
-    floats[4] = tintLinear?.[0] ?? 0;
-    floats[5] = tintLinear?.[1] ?? 0;
-    floats[6] = tintLinear?.[2] ?? 0;
-    floats[7] = 1;
+    populateStrokeGlazeUniformUpload(
+      upload,
+      opacity,
+      this.layerFormat,
+      accumulationMode,
+      tintLinear,
+    );
     this.device.queue.writeBuffer(this.lightGlazeUniformBuffer, 0, upload);
   }
 
@@ -7479,29 +7479,13 @@ export class BrushEngine {
   }
 
   writeGrainUniforms(settings: BrushSettings): void {
-    const floats = this.grainUniformUpload;
-    const unsigned = new Uint32Array(floats.buffer);
-    floats.fill(0);
-    const scale = clamp(settings.grainScale, 0.1, 4);
-    const polarity = settings.grainInvert ? -1 : 1;
-    floats[0] = 1 / (Math.max(1, this.grainTextureWidth) * scale);
-    floats[1] = clamp(settings.grainDepth, 0, 1);
-    // Folding inversion into the existing affine transform preserves the
-    // fragment shader and its cost:
-    // 1 - clamp((s - .5) * c + .5 + b) =
-    //     clamp((s - .5) * -c + .5 - b).
-    floats[2] = clamp(settings.grainBrightness, -1, 1) * polarity;
-    floats[3] = (1 + clamp(settings.grainContrast, -1, 1)) * polarity;
-    unsigned[4] = settings.grainFiltering === "no"
-      ? 0
-      : settings.grainFiltering === "classic" ? 1 : 2;
-    const movement = clamp(settings.grainMovement ?? 0, 0, 1);
-    unsigned[5] = settings.grainMode === "moving"
-      ? movement > 0 ? 2 : 1
-      : 0;
-    unsigned[6] = Math.max(1, this.grainTextureMipLevelCount) >>> 0;
-    floats[7] = movement;
-    this.device.queue.writeBuffer(this.grainUniformBuffer, 0, floats);
+    populateGrainUniformUpload(
+      this.grainUniformUpload,
+      settings,
+      this.grainTextureWidth,
+      this.grainTextureMipLevelCount,
+    );
+    this.device.queue.writeBuffer(this.grainUniformBuffer, 0, this.grainUniformUpload);
   }
 
   writeBrushUniforms(settings: BrushSettings = this.settings): void {
@@ -7819,8 +7803,6 @@ export class BrushEngine {
     const deltaX = normalizedPoint.x - start.x;
     const deltaY = normalizedPoint.y - start.y;
     const segmentLength = Math.hypot(deltaX, deltaY);
-    const deltaTimeMs = normalizedPoint.timeMs - start.timeMs;
-
     releaseHeldThicknessStamps(this, normalizedPoint.timeMs, false);
 
     if (segmentLength <= 0.0001) {
@@ -7855,76 +7837,16 @@ export class BrushEngine {
       }
     }
 
-    let distanceSinceStamp = stroke.distanceSinceStamp;
-    let generatedOnInputSegment = 0;
-    let stampLimitReached = false;
-    let curveStartX = start.x;
-    let curveStartY = start.y;
-    let parameterStart = 0;
-
-    for (
-      let subdivision = 1;
-      subdivision <= curveSegment.subdivisionCount;
-      subdivision += 1
-    ) {
-      const parameterEnd = subdivision / curveSegment.subdivisionCount;
-      const curveEndX = subdivision === curveSegment.subdivisionCount
-        ? normalizedPoint.x
-        : evaluateStrokeCurveX(curveSegment, parameterEnd);
-      const curveEndY = subdivision === curveSegment.subdivisionCount
-        ? normalizedPoint.y
-        : evaluateStrokeCurveY(curveSegment, parameterEnd);
-      const curveDeltaX = curveEndX - curveStartX;
-      const curveDeltaY = curveEndY - curveStartY;
-      const curveSegmentLength = Math.hypot(curveDeltaX, curveDeltaY);
-      let distanceAlongCurveSegment = 0;
-
-      if (curveSegmentLength > 0.0001) {
-        const directionX = curveDeltaX / curveSegmentLength;
-        const directionY = curveDeltaY / curveSegmentLength;
-        while (
-          !stampLimitReached
-          && distanceSinceStamp
-            + (curveSegmentLength - distanceAlongCurveSegment)
-            >= spacing
-        ) {
-          const distanceToNextStamp = spacing - distanceSinceStamp;
-          distanceAlongCurveSegment += distanceToNextStamp;
-          const localInterpolation = clamp(
-            distanceAlongCurveSegment / curveSegmentLength,
-            0,
-            1,
-          );
-          const curveParameter = parameterStart
-            + (parameterEnd - parameterStart) * localInterpolation;
-          emitStamp(this, {
-            x: curveStartX + curveDeltaX * localInterpolation,
-            y: curveStartY + curveDeltaY * localInterpolation,
-            pressure: start.pressure
-              + (normalizedPoint.pressure - start.pressure) * curveParameter,
-            timeMs: start.timeMs + deltaTimeMs * curveParameter,
-          }, directionX, directionY);
-          distanceSinceStamp = 0;
-          generatedOnInputSegment += 1;
-
-          if (generatedOnInputSegment >= MAX_STAMPS_PER_BATCH) {
-            stampLimitReached = true;
-            break;
-          }
-        }
-        distanceSinceStamp += Math.max(
-          0,
-          curveSegmentLength - distanceAlongCurveSegment,
-        );
-      }
-
-      curveStartX = curveEndX;
-      curveStartY = curveEndY;
-      parameterStart = parameterEnd;
-    }
-    if (stampLimitReached) {
-      distanceSinceStamp %= spacing;
-    }
+    const distanceSinceStamp = resamplePaintCurveSegment(
+      curveSegment,
+      start,
+      normalizedPoint,
+      spacing,
+      stroke.distanceSinceStamp,
+      MAX_STAMPS_PER_BATCH,
+      this,
+      emitStamp,
+    );
 
     stroke.lastInput = normalizedPoint;
     stroke.distanceSinceStamp = distanceSinceStamp;
@@ -7993,8 +7915,6 @@ export class BrushEngine {
     const deltaX = pointX - start.x;
     const deltaY = pointY - start.y;
     const segmentLength = Math.hypot(deltaX, deltaY);
-    const deltaTimeMs = normalizedTimeMs - start.timeMs;
-
     if (segmentLength <= 0.0001) {
       start.x = pointX;
       start.y = pointY;
@@ -8029,76 +7949,21 @@ export class BrushEngine {
       }
     }
 
-    let distanceSinceStamp = stroke.distanceSinceStamp;
-    let generatedOnInputSegment = 0;
-    let stampLimitReached = false;
-    let curveStartX = start.x;
-    let curveStartY = start.y;
-    let parameterStart = 0;
-
-    for (
-      let subdivision = 1;
-      subdivision <= curveSegment.subdivisionCount;
-      subdivision += 1
-    ) {
-        const parameterEnd = subdivision / curveSegment.subdivisionCount;
-        const curveEndX = subdivision === curveSegment.subdivisionCount
-        ? pointX
-        : evaluateStrokeCurveX(curveSegment, parameterEnd);
-      const curveEndY = subdivision === curveSegment.subdivisionCount
-        ? pointY
-        : evaluateStrokeCurveY(curveSegment, parameterEnd);
-      const curveDeltaX = curveEndX - curveStartX;
-      const curveDeltaY = curveEndY - curveStartY;
-      const curveSegmentLength = Math.hypot(curveDeltaX, curveDeltaY);
-      let distanceAlongCurveSegment = 0;
-
-      if (curveSegmentLength > 0.0001) {
-        const directionX = curveDeltaX / curveSegmentLength;
-        const directionY = curveDeltaY / curveSegmentLength;
-        while (
-          !stampLimitReached
-          && distanceSinceStamp
-            + (curveSegmentLength - distanceAlongCurveSegment)
-            >= spacing
-        ) {
-          const distanceToNextStamp = spacing - distanceSinceStamp;
-          distanceAlongCurveSegment += distanceToNextStamp;
-          const localInterpolation = clamp(
-            distanceAlongCurveSegment / curveSegmentLength,
-            0,
-            1,
-          );
-          const curveParameter = parameterStart
-            + (parameterEnd - parameterStart) * localInterpolation;
-          emitStamp(this, {
-            x: curveStartX + curveDeltaX * localInterpolation,
-            y: curveStartY + curveDeltaY * localInterpolation,
-            pressure: start.pressure
-              + (pointPressure - start.pressure) * curveParameter,
-            timeMs: start.timeMs + deltaTimeMs * curveParameter,
-          }, directionX, directionY);
-          distanceSinceStamp = 0;
-          generatedOnInputSegment += 1;
-
-          if (generatedOnInputSegment >= MAX_STAMPS_PER_BATCH) {
-            stampLimitReached = true;
-            break;
-          }
-        }
-        distanceSinceStamp += Math.max(
-          0,
-          curveSegmentLength - distanceAlongCurveSegment,
-        );
-      }
-
-      curveStartX = curveEndX;
-      curveStartY = curveEndY;
-      parameterStart = parameterEnd;
-    }
-    if (stampLimitReached) {
-      distanceSinceStamp %= spacing;
-    }
+    const distanceSinceStamp = resamplePaintCurveSegment(
+      curveSegment,
+      start,
+      {
+        x: pointX,
+        y: pointY,
+        pressure: pointPressure,
+        timeMs: normalizedTimeMs,
+      },
+      spacing,
+      stroke.distanceSinceStamp,
+      MAX_STAMPS_PER_BATCH,
+      this,
+      emitStamp,
+    );
 
     start.x = pointX;
     start.y = pointY;

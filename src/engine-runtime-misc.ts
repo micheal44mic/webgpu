@@ -36,6 +36,7 @@ import { VECTOR_TEXT_GPU_UNIFORM_STRIDE } from "./vector-text-gpu-shader";
 import { type ActiveStroke, type DirtyRect, type Stamp } from "./engine-stroke-types";
 import { paintMipDimensions } from "./engine-geometry";
 import { type BrushSettings, type LayerPoint } from "./engine-types";
+import { nextPaintStampSeed } from "./paint-stamp-generation-core";
 import { clamp } from "./color";
 import { startThicknessFactor } from "./thickness-dynamics";
 import { flushClosingLightGlazeSessionBeforeNewStroke } from "./engine-glaze-runtime";
@@ -844,7 +845,7 @@ export function emitStamp(engine: BrushEngine, point: LayerPoint, directionX: nu
   const radius = stroke.thicknessDynamicsNeutral
     ? baseRadius
     : baseRadius * liveThicknessFactor;
-  const seed = (Math.imul(engine.seedSequence++, 0x9e3779b1) ^ 0xa511e9b3) >>> 0;
+  const seed = nextPaintStampSeed(engine.seedSequence++);
   const stamp: Stamp = {
     x: point.x,
     y: point.y,

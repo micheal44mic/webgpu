@@ -20,6 +20,7 @@ import {
 } from "./touch-paint-intent-core";
 import { MobileBrushStudioController } from "./mobile-brush-studio";
 import { MobileBrushLibraryPreviewRenderer } from "./brush-library-preview";
+import { AuthoritativeBrushStrokePreviewRenderer } from "./brush-stroke-preview-renderer";
 import { MobileStrokeSheetController } from "./mobile-stroke-sheet";
 import {
   MobileToolSettingsSheetController,
@@ -1066,7 +1067,11 @@ let mobileBrushLibraryDragMoved = false;
 let mobileBrushLibraryPreviewFrame: number | null = null;
 let mobileBrushLibraryPreviewDirty = true;
 let mobileBrushLibraryPreviewRevision = 0;
-const mobileBrushLibraryPreviewRenderer = new MobileBrushLibraryPreviewRenderer();
+const authoritativeBrushStrokePreviewRenderer =
+  new AuthoritativeBrushStrokePreviewRenderer(engine);
+const mobileBrushLibraryPreviewRenderer = new MobileBrushLibraryPreviewRenderer(
+  authoritativeBrushStrokePreviewRenderer,
+);
 if (import.meta.env.DEV) {
   (window as Window & {
     __mobileBrushLibraryPreviewStats?: () => ReturnType<
@@ -1839,6 +1844,8 @@ function setMobileBrushLibraryOpen(open: boolean): void {
   }
   mobileBrushLibraryDragPointerId = null;
   mobileBrushLibraryDragMoved = false;
+  authoritativeBrushStrokePreviewRenderer.invalidate(mobilePencilBrushPreviewCanvas);
+  authoritativeBrushStrokePreviewRenderer.invalidate(mobileBrushLibraryPreviewCanvas);
   if (mobileBrushLibraryPreviewFrame !== null) {
     cancelAnimationFrame(mobileBrushLibraryPreviewFrame);
     mobileBrushLibraryPreviewFrame = null;
@@ -4107,6 +4114,7 @@ function applySettingsToControls(settings: BrushSettings): void {
 
 mobileBrushStudio = new MobileBrushStudioController({
   engine,
+  previewRenderer: authoritativeBrushStrokePreviewRenderer,
   mobileMediaQuery: mobileUiMediaQuery,
   applySettings: applySettingsToControls,
   setBrushLibraryOpen: setMobileBrushLibraryOpen,
@@ -6055,7 +6063,7 @@ interface VectorZoomStressReport {
   exactRenderDeltaDuringSafeGesture: number;
   fastActivationDelta: number;
   safeReprojectionDelta: number;
-  coverageFreezeDelta: number;
+  clippedReprojectionDelta: number;
   unsafeExactRefreshDelta: number;
   unsafeExactCoalescedDelta: number;
   fastPresentationSubmitDelta: number;
@@ -6189,7 +6197,7 @@ async function runRequestedVectorZoomStress(): Promise<void> {
     fastPathActivated: during.zoomFastActivationCount > before.zoomFastActivationCount,
     safeGestureStayedCovered:
       during.zoomSafeReprojectionCount - before.zoomSafeReprojectionCount >= zoomSteps
-      && during.zoomCoverageFreezeCount === before.zoomCoverageFreezeCount,
+      && during.zoomClippedReprojectionCount === before.zoomClippedReprojectionCount,
     safeGestureExactRendersBounded: exactRenderDeltaDuringSafeGesture <= 1,
     exactRecoveryLatestOnly:
       after.zoomExactRecoveryCount - before.zoomExactRecoveryCount === 1
@@ -6222,7 +6230,8 @@ async function runRequestedVectorZoomStress(): Promise<void> {
     fastActivationDelta: during.zoomFastActivationCount - before.zoomFastActivationCount,
     safeReprojectionDelta:
       during.zoomSafeReprojectionCount - before.zoomSafeReprojectionCount,
-    coverageFreezeDelta: during.zoomCoverageFreezeCount - before.zoomCoverageFreezeCount,
+    clippedReprojectionDelta:
+      during.zoomClippedReprojectionCount - before.zoomClippedReprojectionCount,
     unsafeExactRefreshDelta:
       during.zoomUnsafeExactRefreshCount - before.zoomUnsafeExactRefreshCount,
     unsafeExactCoalescedDelta:

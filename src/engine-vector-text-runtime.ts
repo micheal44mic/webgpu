@@ -2360,7 +2360,7 @@ export function writeVectorTextCaptureUniforms(engine: BrushEngine): void {
   const upload = engine.vectorTextCaptureUniformUpload;
   const fastMode = presentationMode === "reproject"
     ? 1
-    : presentationMode === "freeze"
+    : presentationMode === "reproject-clipped"
       ? 2
       : 0;
   const nextValues = [

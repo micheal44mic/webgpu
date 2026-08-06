@@ -1,15 +1,10 @@
 import type { BrushEngine } from "./brush-engine";
-import {
-  ADAPTIVE_PREVIEW_SHAPE_PALETTE_SIZE,
-  adaptivePreviewRgb,
-} from "./adaptive-preview-runtime";
+import type { AuthoritativeBrushStrokePreviewRenderer } from "./brush-stroke-preview-renderer";
 import {
   isCustomGrainAssetId,
   isCustomShapeAssetId,
   type DecodedCustomBrushImage,
 } from "./brush-asset-registry";
-import { hexToHsl } from "./color";
-import { previewHash32 } from "./engine-math";
 import {
   brushStudioAssetStorageKey,
   deleteBrushStudioAsset,
@@ -41,6 +36,7 @@ interface ImportedBrushStudioAsset {
 
 export interface MobileBrushStudioOptions {
   readonly engine: BrushEngine;
+  readonly previewRenderer: AuthoritativeBrushStrokePreviewRenderer;
   readonly mobileMediaQuery: MediaQueryList;
   readonly applySettings: (settings: BrushSettings) => void;
   readonly setBrushLibraryOpen: (open: boolean) => void;
@@ -189,14 +185,6 @@ export class MobileBrushStudioController {
   private readonly imagePromises = new Map<string, Promise<HTMLImageElement>>();
   private readonly sourceCanvases = new Map<string, HTMLCanvasElement>();
   private readonly resolvedSources = new Map<string, BrushStudioCanvasSource>();
-  private readonly tipCanvas = document.createElement("canvas");
-  // Una punta gia tinta per ogni variante di colore, invece di un filtro CSS
-  // per singolo stamp: vedi buildTintedTipPalette().
-  private readonly tintedTipPalette: HTMLCanvasElement[] = [];
-  private readonly strokeCanvas = document.createElement("canvas");
-  private readonly grainCanvas = document.createElement("canvas");
-  private grainCacheKey = "";
-  private grainCacheSource: BrushStudioCanvasSource | null = null;
   private lastEngineNotifyAt = 0;
 
   private openState = false;
@@ -818,11 +806,11 @@ export class MobileBrushStudioController {
     if (!this.openState || this.previewFrame !== null) return;
     this.previewFrame = requestAnimationFrame(() => {
       this.previewFrame = null;
-      this.renderPreview();
+      void this.renderPreview();
     });
   }
 
-  private renderPreview(): void {
+  private async renderPreview(): Promise<void> {
     const settings = this.draftSettings;
     if (!settings || !this.openState) return;
     const bounds = this.previewCanvas.getBoundingClientRect();
@@ -836,288 +824,16 @@ export class MobileBrushStudioController {
       this.previewCanvas.width = backingWidth;
       this.previewCanvas.height = backingHeight;
     }
-    const output = this.previewCanvas.getContext("2d", { alpha: true });
-    if (!output) return;
-    output.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-    output.clearRect(0, 0, width, height);
-
-    // Riassegnare .width ricrea il backing store: durante il drag di uno slider
-    // le dimensioni non cambiano mai, quindi si riallocava una superficie nuova
-    // ad ogni frame per niente. Il clearRect sotto basta a ripulire.
-    if (this.strokeCanvas.width !== width || this.strokeCanvas.height !== height) {
-      this.strokeCanvas.width = width;
-      this.strokeCanvas.height = height;
-    }
-    const context = this.strokeCanvas.getContext("2d", { alpha: true });
-    if (!context) return;
-    context.clearRect(0, 0, width, height);
-    // I tre metodi di rendering hanno semantiche diverse nel motore, e prima
-    // Uniformed Glaze e Intense Blending finivano entrambi qui indistinguibili:
-    //  - Light Glaze accumula con un blend MAX su una copertura r8 e usa una
-    //    tinta unica per tutta la gestata: nessun build-up, colore piatto.
-    //  - Uniformed Glaze compone source-over in lineare con alpha coverage*flow,
-    //    e consuma Opacity una sola volta alla chiusura del tratto.
-    //  - Intense Blending compone source-over in sRGB con alpha coverage*flow*opacity,
-    //    quindi accumula davvero fra stamp.
-    // Canvas 2D non ha un MAX sull'alpha: Light Glaze resta un'approssimazione,
-    // con stamp opachi che saturano come il MAX e il livello complessivo
-    // portato sull'output.
-    const lightGlaze = settings.blendMode === "light-glaze";
-    const uniformedGlaze = settings.blendMode === "uniformed-glaze";
-    context.globalCompositeOperation = "source-over";
-
-    const sizeRatio = clamp(Math.log10(Math.max(1, settings.size)) / 3, 0, 1);
-    const baseDiameter = Math.min(height * 0.82, Math.max(8, height * (0.18 + sizeRatio * 0.55)));
-    const tipSize = 96;
-    this.options.engine.renderBrushTipPreview(this.tipCanvas, tipSize, tipSize - 4, 1);
-    const palette = this.buildTintedTipPalette(settings);
-    if (palette.length === 0) return;
-
-    const startX = Math.max(9, baseDiameter * 0.5);
-    const endX = Math.max(startX + 1, width - startX);
-    const pathLength = Math.max(1, endX - startX);
-    const spacingPixels = Math.max(1, baseDiameter * settings.spacingPercent / 100);
-    const stampCount = Math.min(144, Math.max(2, Math.ceil(pathLength / spacingPixels)));
-    const copies = Math.min(24, Math.max(1, Math.round(settings.count)));
-    const alpha = clamp(
-      lightGlaze
-        ? 1
-        : uniformedGlaze
-          ? settings.flow
-          : settings.flow * settings.opacity,
-      0.001,
-      1,
-    );
-    const outputAlpha = lightGlaze
-      ? clamp(settings.flow * settings.opacity, 0, 1)
-      : uniformedGlaze
-        ? settings.opacity
-        : 1;
-    const stabilizationScale = 1 - settings.stabilization * 0.72;
-
-    context.imageSmoothingEnabled = true;
-    context.imageSmoothingQuality = "high";
-    for (let index = 0; index < stampCount; index += 1) {
-      const progress = stampCount <= 1 ? 0 : index / (stampCount - 1);
-      const phase = (progress * 1.6 - 0.22) * Math.PI;
-      const centerX = startX + pathLength * progress;
-      const centerY = height * (0.52 + Math.sin(phase) * 0.12 * stabilizationScale);
-      const tangent = settings.shapeRotation === "follow-stroke"
-        ? Math.atan2(height * 0.12 * stabilizationScale * Math.cos(phase) * 1.6 * Math.PI, pathLength)
-        : 0;
-      const thickness = settings.startThickness + (settings.endThickness - settings.startThickness) * progress;
-      const diameter = clamp(baseDiameter * Math.max(0.02, thickness), 1, height * 0.94);
-      for (let copy = 0; copy < copies; copy += 1) {
-        const seed = index * 67 + copy * 149 + 31;
-        const randomA = this.noise(seed) - 0.5;
-        const randomB = this.noise(seed + 1) - 0.5;
-        const randomC = this.noise(seed + 2) - 0.5;
-        const longitudinal = randomA * diameter * settings.positionJitterLinear;
-        const lateral = randomB * diameter * settings.positionJitterLateral;
-        const rotation = tangent + randomC * Math.PI * 2 * settings.shapeScatter;
-        // Light Glaze fissa la tinta sul primo stamp e la tiene per tutta la
-        // gestata (brush-engine session.tintLinear): dentro il tratto il jitter
-        // di colore non si vede, quindi l'anteprima non deve mostrarlo.
-        const colorSeed = lightGlaze
-          ? 31
-          : settings.jitterPerCopy ? seed : index * 67 + 31;
-        // La variante di colore e gia tinta: nessun context.filter nel loop.
-        // Un filtro non-"none" costringe il browser ad allocare una superficie
-        // intermedia per ogni singolo disegno, ed e il costo che faceva laggare
-        // gli slider.
-        const tip = palette[previewHash32(colorSeed) % palette.length] ?? this.tipCanvas;
-        context.save();
-        context.globalAlpha = alpha;
-        context.translate(centerX + longitudinal, centerY + lateral);
-        context.rotate(rotation);
-        context.drawImage(tip, -diameter / 2, -diameter / 2, diameter, diameter);
-        context.restore();
-      }
-    }
-
-    if (settings.grainMode !== "off" && settings.grainDepth > 0) {
-      const grainSource = this.cachedSourceForAsset(settings.grainAssetId);
-      if (grainSource) {
-        this.applyPreviewGrain(settings, grainSource, width, height);
-      } else {
-        void this.sourceForAsset(settings.grainAssetId).then((source) => {
-          if (source && this.openState && this.draftSettings === settings) this.schedulePreview();
-        });
-      }
-    }
-    output.save();
-    output.globalAlpha = outputAlpha;
-    output.drawImage(this.strokeCanvas, 0, 0);
-    output.restore();
-  }
-
-  /**
-   * Punte gia tinte, una per variante di colore. I colori escono da
-   * `adaptivePreviewRgb` con gli stessi semi che il motore usa per la sua
-   * tavolozza (`prepareAdaptivePreviewShapePalette`), quindi la variazione
-   * cromatica mostrata qui e quella che si ottiene davvero dipingendo: prima
-   * l'anteprima usava un rumore e uno spazio colore tutti suoi.
-   *
-   * La tavolozza si ricostruisce ad ogni frame. Sono dodici tinture su una
-   * punta di 96 px, trascurabili accanto al loop degli stamp, e in cambio non
-   * puo mai restare indietro rispetto alla punta che il motore ripubblica in
-   * modo asincrono al termine di un caricamento di shape.
-   */
-  private buildTintedTipPalette(settings: BrushSettings): readonly HTMLCanvasElement[] {
-    const width = this.tipCanvas.width;
-    const height = this.tipCanvas.height;
-    if (width < 1 || height < 1) {
-      this.tintedTipPalette.length = 0;
-      return this.tintedTipPalette;
-    }
-
-    let baseHsl: readonly [number, number, number] | null = null;
     try {
-      baseHsl = hexToHsl(settings.color);
-    } catch {
-      // Un colore non esadecimale non deve fermare l'anteprima: si ricade sulla
-      // tintura diretta, che e quello che faceva la versione precedente.
-    }
-
-    const count = baseHsl ? ADAPTIVE_PREVIEW_SHAPE_PALETTE_SIZE : 1;
-    this.tintedTipPalette.length = count;
-    for (let index = 0; index < count; index += 1) {
-      let canvas = this.tintedTipPalette[index];
-      if (!canvas) {
-        canvas = document.createElement("canvas");
-        this.tintedTipPalette[index] = canvas;
-      }
-      if (canvas.width !== width || canvas.height !== height) {
-        canvas.width = width;
-        canvas.height = height;
-      }
-      const context = canvas.getContext("2d", { alpha: true });
-      if (!context) continue;
-
-      let fillStyle = settings.color;
-      if (baseHsl) {
-        const seed = previewHash32(Math.imul(index + 1, 0x9e3779b1) ^ 0xa511e9b3);
-        const [red, green, blue] = adaptivePreviewRgb(seed, settings, baseHsl);
-        fillStyle = `rgb(${red} ${green} ${blue})`;
-      }
-
-      context.globalCompositeOperation = "source-over";
-      context.clearRect(0, 0, width, height);
-      context.drawImage(this.tipCanvas, 0, 0);
-      context.globalCompositeOperation = "source-in";
-      context.fillStyle = fillStyle;
-      context.fillRect(0, 0, width, height);
-      context.globalCompositeOperation = "source-over";
-    }
-    return this.tintedTipPalette;
-  }
-
-  private applyPreviewGrain(
-    settings: BrushSettings,
-    source: BrushStudioCanvasSource,
-    width: number,
-    height: number,
-  ): void {
-    if (this.grainCanvas.width !== width || this.grainCanvas.height !== height) {
-      this.grainCanvas.width = width;
-      this.grainCanvas.height = height;
-    }
-    const grain = this.grainCanvas.getContext("2d", { alpha: true });
-    const stroke = this.strokeCanvas.getContext("2d", { alpha: true });
-    if (!grain || !stroke) return;
-
-    // Il contenuto del canvas del grano dipende solo da questi parametri.
-    // grainDepth resta fuori chiave: entra unicamente come alpha del composite
-    // finale, quindi puo cambiare riusando la texture. Senza questa cache ogni
-    // evento slider — anche Size o Opacity — rifaceva il tiling da una sorgente
-    // 2500x2500, un getImageData sincrono e un ciclo su ~34.000 pixel.
-    const cacheKey = [
-      width,
-      height,
-      settings.grainAssetId,
-      settings.grainMode,
-      settings.grainScale,
-      settings.grainMovement,
-      settings.grainBrightness,
-      settings.grainContrast,
-      settings.grainInvert,
-      settings.grainFiltering,
-      settings.size,
-    ].join("|");
-    if (cacheKey !== this.grainCacheKey || source !== this.grainCacheSource) {
-      this.renderPreviewGrainTexture(grain, settings, source, width, height);
-      this.grainCacheKey = cacheKey;
-      this.grainCacheSource = source;
-    }
-
-    stroke.save();
-    stroke.globalCompositeOperation = "destination-in";
-    stroke.globalAlpha = settings.grainDepth;
-    stroke.drawImage(this.grainCanvas, 0, 0);
-    stroke.restore();
-  }
-
-  private renderPreviewGrainTexture(
-    grain: CanvasRenderingContext2D,
-    settings: BrushSettings,
-    source: BrushStudioCanvasSource,
-    width: number,
-    height: number,
-  ): void {
-    grain.clearRect(0, 0, width, height);
-    grain.imageSmoothingEnabled = settings.grainFiltering !== "no";
-    grain.imageSmoothingQuality = settings.grainFiltering === "improved" ? "high" : "low";
-    const sizeRatio = clamp(Math.log10(Math.max(1, settings.size)) / 3, 0, 1);
-    const previewDiameter = Math.min(
-      height * 0.82,
-      Math.max(8, height * (0.18 + sizeRatio * 0.55)),
-    );
-    const previewDocumentScale = previewDiameter / Math.max(1, settings.size);
-    // Match the engine's physical period (source width × Scale) in preview
-    // pixels. Moving then stretches only along the representative stroke:
-    // low Movement looks dragged/smeared, while 100% is exactly Texturized.
-    const period = clamp(
-      source.width * settings.grainScale * previewDocumentScale,
-      8,
-      Math.max(width, height) * 12,
-    );
-    const movement = settings.grainMode === "moving"
-      ? clamp(settings.grainMovement, 0, 1)
-      : 1;
-    const horizontalPeriod = settings.grainMode === "moving"
-      ? clamp(
-        period / Math.max(movement, 0.025),
-        period,
-        Math.max(width, height) * 40,
-      )
-      : period;
-    for (let y = -period; y < height + period; y += period) {
-      for (let x = -horizontalPeriod; x < width + horizontalPeriod; x += horizontalPeriod) {
-        grain.drawImage(source, x, y, horizontalPeriod, period);
+      await this.options.previewRenderer.render(this.previewCanvas, settings);
+    } catch (error) {
+      if (this.openState) {
+        this.options.onStatus(
+          error instanceof Error ? error.message : String(error),
+          "error",
+        );
       }
     }
-    const pixels = grain.getImageData(0, 0, width, height);
-    const contrast = Math.max(0, 1 + settings.grainContrast);
-    for (let offset = 0; offset < pixels.data.length; offset += 4) {
-      let value = (
-        pixels.data[offset] * 0.299
-        + pixels.data[offset + 1] * 0.587
-        + pixels.data[offset + 2] * 0.114
-      ) / 255;
-      value = (value - 0.5) * contrast + 0.5 + settings.grainBrightness;
-      if (settings.grainInvert) value = 1 - value;
-      const alpha = Math.round(clamp(value, 0, 1) * 255);
-      pixels.data[offset] = 255;
-      pixels.data[offset + 1] = 255;
-      pixels.data[offset + 2] = 255;
-      pixels.data[offset + 3] = alpha;
-    }
-    grain.putImageData(pixels, 0, 0);
-  }
-
-  private noise(seed: number): number {
-    const value = Math.sin(seed * 12.9898 + 78.233) * 43_758.5453;
-    return value - Math.floor(value);
   }
 
   private async commit(): Promise<void> {
@@ -1272,6 +988,7 @@ export class MobileBrushStudioController {
   private cancelScheduledWork(): void {
     if (this.applyFrame !== null) cancelAnimationFrame(this.applyFrame);
     if (this.previewFrame !== null) cancelAnimationFrame(this.previewFrame);
+    this.options.previewRenderer.invalidate(this.previewCanvas);
     this.applyFrame = null;
     this.previewFrame = null;
   }

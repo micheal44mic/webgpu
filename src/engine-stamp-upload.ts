@@ -1,5 +1,5 @@
 
-import { type BrushSettings } from "./engine-types";
+import { type BrushSettings, type LayerFormat } from "./engine-types";
 import { clamp, hexToHsl } from "./color";
 import { type PackedStampUpload, type Stamp } from "./engine-stroke-types";
 import { LAYER_SIZE, STAMP_STRIDE_BYTES } from "./engine-limits";/**
@@ -7,6 +7,66 @@ import { LAYER_SIZE, STAMP_STRIDE_BYTES } from "./engine-limits";/**
  * upload. Formato binario condiviso con gli shader: le taglie vivono in
  * `engine-limits`, qui c'e' solo la scrittura.
  */
+
+export function populateGrainUniformUpload(
+  upload: ArrayBuffer | Float32Array,
+  settings: Readonly<BrushSettings>,
+  textureWidth: number,
+  mipLevelCount: number,
+  coordinateScale = 1,
+): void {
+  const floats = upload instanceof Float32Array ? upload : new Float32Array(upload);
+  const unsigned = new Uint32Array(
+    floats.buffer,
+    floats.byteOffset,
+    floats.byteLength / Uint32Array.BYTES_PER_ELEMENT,
+  );
+  floats.fill(0);
+  const authoredScale = clamp(settings.grainScale, 0.1, 4);
+  const projectedScale = Math.max(Number.EPSILON, coordinateScale) * authoredScale;
+  const polarity = settings.grainInvert ? -1 : 1;
+  floats[0] = 1 / (Math.max(1, textureWidth) * projectedScale);
+  floats[1] = clamp(settings.grainDepth, 0, 1);
+  // Folding inversion into the affine brightness/contrast transform keeps the
+  // exact fragment path shared by fixed and moving grain.
+  floats[2] = clamp(settings.grainBrightness, -1, 1) * polarity;
+  floats[3] = (1 + clamp(settings.grainContrast, -1, 1)) * polarity;
+  unsigned[4] = settings.grainFiltering === "no"
+    ? 0
+    : settings.grainFiltering === "classic" ? 1 : 2;
+  const movement = clamp(settings.grainMovement ?? 0, 0, 1);
+  unsigned[5] = settings.grainMode === "moving"
+    ? movement > 0 ? 2 : 1
+    : 0;
+  unsigned[6] = Math.max(1, mipLevelCount) >>> 0;
+  floats[7] = movement;
+}
+
+export type StrokeGlazeAccumulationMode =
+  | "source-over"
+  | "light-no-build-up"
+  | "encoded-srgb-source-over";
+
+export function populateStrokeGlazeUniformUpload(
+  upload: ArrayBuffer,
+  opacity: number,
+  layerFormat: LayerFormat,
+  accumulationMode: StrokeGlazeAccumulationMode,
+  tintLinear: readonly [number, number, number] | null,
+): void {
+  const floats = new Float32Array(upload);
+  const unsigned = new Uint32Array(upload);
+  floats.fill(0);
+  floats[0] = Number.isFinite(opacity) ? clamp(opacity, 0, 1) : 1;
+  unsigned[1] = layerFormat === "rgba16float" ? 1 : 0;
+  unsigned[2] = accumulationMode === "light-no-build-up"
+    ? 1
+    : accumulationMode === "encoded-srgb-source-over" ? 2 : 0;
+  floats[4] = tintLinear?.[0] ?? 0;
+  floats[5] = tintLinear?.[1] ?? 0;
+  floats[6] = tintLinear?.[2] ?? 0;
+  floats[7] = 1;
+}
 
 export function populateBrushUniformUpload(
   upload: ArrayBuffer,

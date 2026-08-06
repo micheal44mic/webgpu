@@ -309,7 +309,7 @@ assert.equal(
 );
 assert.equal(
   VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
-  "gesture-latest-only-gpu-reprojection-full-coverage-screen-freeze-exact-settle-v4",
+  "gesture-latest-only-gpu-reprojection-clipped-uncovered-exact-settle-v5",
 );
 assert.equal(VECTOR_TEXT_ADAPTIVE_ZOOM_SETTLE_MS, 140);
 assert.equal(VECTOR_TEXT_FAST_PRESENTATION_FILTER_GUARD_PX, 0.5);
@@ -372,17 +372,17 @@ assert.equal(
 );
 assert.equal(
   vectorTextFastPresentationMode(capturedView, { ...capturedView, zoom: 0.5 }),
-  "freeze",
-  "lo zoom-out non deve riproiettare una viewport parzialmente scoperta",
+  "reproject-clipped",
+  "lo zoom-out deve seguire la camera e richiedere il refresh delle zone scoperte",
 );
 assert.equal(
   vectorTextFastPresentationMode(capturedView, { ...capturedView, centerX: 2500 }),
-  "freeze",
-  "un pan oltre la capture deve usare il refresh esatto bounded",
+  "reproject-clipped",
+  "un pan oltre la capture deve restare agganciato e usare il refresh esatto bounded",
 );
 assert.equal(
   vectorTextFastPresentationMode(capturedView, { ...capturedView, canvasWidth: 430 }),
-  "freeze",
+  "reproject-clipped",
   "un resize non è coperto dalla cache viewport precedente",
 );
 assert.equal(vectorTextExactRecoveryIsCurrent(100, 100, false), true);
@@ -1337,15 +1337,27 @@ assert.ok(
   "pointer-up deve richiedere il recovery preciso senza attendere il debounce",
 );
 assert.doesNotMatch(controllerSource, /zoomModeIndicator|updateAdaptiveZoomIndicator|Zoom vettori · GPU/);
-assert.match(adaptiveSource, /full-coverage-screen-freeze-exact-settle-v4/);
+assert.match(adaptiveSource, /reprojection-clipped-uncovered-exact-settle-v5/);
 assert.match(adaptiveSource, /for \(const \[x, y\] of \[/);
 assert.match(engineSource, /vectorTextFastPresentationInFlight/);
 assert.match(engineSource, /vectorTextFastPresentationLatestRequested/);
 assert.match(engineSource, /vectorTextFastPresentationCoalescedRequestCount \+= 1/);
 assert.match(engineSource, /device\.queue\.onSubmittedWorkDone\(\)\.then/);
 assert.match(engineSource, /if \(!changed\) \{\s*return;\s*\}[\s\S]*queue\.writeBuffer/);
-assert.match(mixedCompositorSource, /if \(capture\.fastMode > 1\.5\)/);
-assert.match(mixedCompositorSource, /Defensive round-off fallback/);
+assert.doesNotMatch(
+  mixedCompositorSource,
+  /if \(capture\.fastMode > 1\.5\)/,
+  "nessun fast mode deve bypassare la camera con un frame screen-space",
+);
+assert.match(
+  mixedCompositorSource,
+  /if \(!insideSource\) \{\s*return vec4<f32>\(0\.0\);\s*\}/,
+);
+assert.equal(
+  (mixedCompositorSource.match(/return textureLoad\(sourceTexture, pixel, 0\);/g) ?? []).length,
+  1,
+  "il campionamento screen-space diretto deve esistere soltanto nel modo preciso",
+);
 assert.match(controllerSource, /if \(node\.outlineWidth > 0\) \{[\s\S]*kind: "source-outline"/);
 assert.match(controllerSource, /if \(node\.blockShadowOutlineWidth > 0\) \{[\s\S]*kind: "block-outline"/);
 assert.equal(

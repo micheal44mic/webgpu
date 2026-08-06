@@ -19,6 +19,7 @@
     "brush-presets:verify": "node scripts/verify-brush-presets.mjs",
     "brush-studio:verify": "node scripts/verify-brush-studio.mjs",
     "brush-library-preview:verify": "node scripts/verify-brush-library-preview.mjs",
+    "brush-preview-parity:verify": "node scripts/verify-brush-preview-parity.mjs",
     "stroke-ui:verify": "node scripts/verify-mobile-stroke-sheet.mjs",
     "effects-ui:verify": "node scripts/verify-mobile-raster-effects-sheet.mjs",
     "tool-sheet:verify": "node scripts/verify-mobile-tool-settings-sheet.mjs",

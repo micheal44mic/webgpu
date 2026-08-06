@@ -73,32 +73,43 @@ assert.notEqual(
   fingerprintA,
   "asset identity must invalidate the preview",
 );
-
-const deterministicPixels = (seed) => Uint8Array.from(
-  { length: 240 * 56 * 4 },
-  (_, index) => Math.floor(core.brushLibraryPreviewRandom(seed, index) * 256),
-);
-const pixelsA = deterministicPixels(0x1234abcd);
-const pixelsB = deterministicPixels(0x1234abcd);
-assert.deepEqual(pixelsA, pixelsB, "fixed integer seed must repeat every preview byte");
-assert.equal(
-  core.hashBrushLibraryPreviewPixels(pixelsA),
-  core.hashBrushLibraryPreviewPixels(pixelsB),
-  "repeated pixel buffers must have the same hash",
-);
+for (const [field, value] of [
+  ["blendMode", "uniformed-glaze"],
+  ["grainDepth", 0.5],
+  ["grainFiltering", "classic"],
+  ["stabilization", 0.4],
+  ["hueJitterDegrees", 12],
+  ["positionJitterLateral", 0.2],
+]) {
+  assert.notEqual(
+    core.brushLibraryPreviewFingerprint("m1m4-pencil-v1", {
+      ...settings,
+      [field]: value,
+    }),
+    fingerprintA,
+    `authoritative visual setting ${field} must invalidate the preview`,
+  );
+}
 
 assert.doesNotMatch(coreSource, /Math\.random|Date\.now|performance\.now/);
+assert.match(coreSource, /BRUSH_LIBRARY_PREVIEW_RENDERER_VERSION = "authoritative-webgpu-v1"/);
+assert.doesNotMatch(coreSource, /fixed-path-canvas2d/);
 assert.match(rendererSource, /BRUSH_LIBRARY_PREVIEW_MAX_CARDS = 2/);
-assert.match(rendererSource, /BRUSH_LIBRARY_PREVIEW_MAX_ASSETS = 4/);
+assert.match(rendererSource, /BRUSH_LIBRARY_PREVIEW_MAX_ASSETS = 0/);
 assert.match(rendererSource, /BRUSH_LIBRARY_PREVIEW_MAX_STEADY_BYTES/);
 assert.match(rendererSource, /cached\.fingerprint === fingerprint/);
 assert.match(rendererSource, /canvas\.dataset\.previewPixelHash = pixelHash/);
-assert.match(rendererSource, /loadBrushStudioAsset\(storedKey\)/);
+assert.match(rendererSource, /private readonly renderer: AuthoritativeBrushStrokePreviewRenderer/);
+assert.match(rendererSource, /await this\.renderer\.render\(canvas, settings, \{/);
+assert.match(rendererSource, /this\.renderer\.cacheIdentity/);
+assert.match(rendererSource, /color: BRUSH_LIBRARY_PREVIEW_NEUTRAL_COLOR/);
+assert.match(rendererSource, /computePixelHash: true/);
 assert.doesNotMatch(
   rendererSource,
-  /queue\.submit|copyTextureToBuffer|mapAsync|onSubmittedWorkDone|setBrushSettings/,
-  "library previews must remain isolated from GPU and authoritative settings",
+  /getContext\(|drawImage\(|getImageData\(|putImageData\(|drawFixedStroke|loadBrushStudioAsset|createImageBitmap|setBrushSettings/,
+  "library cards must delegate rendering instead of owning Canvas2D brush math or settings",
 );
+assert.match(rendererSource, /canvas\.dataset\.previewRenderer = "authoritative-webgpu"/);
 assert.doesNotMatch(
   mainSource.slice(mainSource.indexOf("onStats(stats)"), mainSource.indexOf("onHistoryChange")),
   /markMobileBrushLibraryPreviewDirty/,
