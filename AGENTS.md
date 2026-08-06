@@ -4292,3 +4292,7 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   tetto cambiato a `64`, tetto che taglia sotto i passi promessi, ritorno alla
   media query, tetto commentato o non contato, `full` non forzato). Nessuna QA
   su hardware mobile reale: profilo mobile esercitato via override da desktop.
+- Pubblicazione Sites `137` completata il 6 agosto 2026 dal commit
+  `1c3d3805a1c30bdc83730d5422d641018d4f4933` su
+  `https://webgpu-brush-engine-michi.m1m4brand.chatgpt.site`. La verifica
+  Safari/iPhone fisica del budget History resta il prossimo passo.
