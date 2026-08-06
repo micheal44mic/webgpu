@@ -4347,3 +4347,7 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   che ignora il lato lungo, piramide che assume il documento quadrato, e le due
   firme sorvegliate da `intense:verify`.
 - TypeScript, tutte le `32` suite `*:verify` e build Vite/Sites verdi.
+- Pubblicazione Sites `138` completata il 6 agosto 2026 dal commit
+  `7813da7fe8b7a199ba7d35cf992e44c5683510c9` su
+  `https://webgpu-brush-engine-michi.m1m4brand.chatgpt.site`. La nuova
+  diagnostica memoria e History e' pronta per la lettura su iPhone fisico.
