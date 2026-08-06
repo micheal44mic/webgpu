@@ -125,7 +125,10 @@ import type {
   VectorTextPlacement,
   VectorTextViewState,
 } from "./vector-text-types";
-import type { VectorTextFastPresentationMode } from "./vector-text-adaptive-zoom";
+import {
+  VECTOR_TEXT_FAST_PRESENTATION_MAX_IN_FLIGHT,
+  type VectorTextFastPresentationMode,
+} from "./vector-text-adaptive-zoom";
 import {
   VECTOR_TEXT_GPU_BLUR_COMPOSITE_UNIFORM_BYTES,
   VECTOR_TEXT_GPU_BLUR_FILTER_UNIFORM_BYTES,
@@ -638,12 +641,14 @@ import {
   ensureVectorTextGpuResource,
   ensureVectorTextPresentationTexture,
   flushVectorTextGpuPresentations,
+  getVectorTextFallbackPresentationStats,
   initializeVectorTextGpuRenderer,
   mixedSceneItemIsVisible,
   mutateMixedScenePresentation,
   publishMixedScene,
   probeVectorTextFastCompositeAlpha,
   probeVectorTextFallbackAlpha,
+  rebuildVectorTextGpuFallbackPresentation,
   rebuildVectorTextDisplayBindGroup,
   releaseVectorTextGpuBlurScratch,
   releaseVectorTextGpuScratch,
@@ -1122,7 +1127,8 @@ export class BrushEngine {
   vectorTextFallbackCaptureView: VectorTextViewState | null = null;
   vectorTextFastPresentationEnabled = false;
   vectorTextFastPresentationMode: VectorTextFastPresentationMode = "precise";
-  vectorTextFastPresentationInFlight = false;
+  vectorTextFastPresentationInFlightCount = 0;
+  vectorTextFastPresentationMaximumInFlightCount = 0;
   vectorTextFastPresentationLatestRequested = false;
   vectorTextFastPresentationSubmissionCount = 0;
   vectorTextFastPresentationCoalescedRequestCount = 0;
@@ -3135,6 +3141,8 @@ export class BrushEngine {
     this.vectorTextFastPresentationEnabled = next;
     if (next) {
       this.vectorTextFastRequestedRevision += 1;
+    } else {
+      this.vectorTextFastPresentationLatestRequested = false;
     }
     writeVectorTextCaptureUniforms(this);
     this.displayDirty = true;
@@ -3152,6 +3160,8 @@ export class BrushEngine {
     requestedRevision: number;
     submittedRevision: number;
     completedRevision: number;
+    inFlightCount: number;
+    maximumInFlightCount: number;
   } {
     return {
       submissionCount: this.vectorTextFastPresentationSubmissionCount,
@@ -3159,6 +3169,8 @@ export class BrushEngine {
       requestedRevision: this.vectorTextFastRequestedRevision,
       submittedRevision: this.vectorTextFastSubmittedRevision,
       completedRevision: this.vectorTextFastCompletedRevision,
+      inFlightCount: this.vectorTextFastPresentationInFlightCount,
+      maximumInFlightCount: this.vectorTextFastPresentationMaximumInFlightCount,
     };
   }
 
@@ -3322,6 +3334,9 @@ export class BrushEngine {
     this.vectorTextGpuPendingRuns.push({
       placement: key,
       resources,
+      target: "primary",
+      targetTexture: resources.texture,
+      targetView: resources.view,
       draws,
       drawResources,
       blurResources,
@@ -3348,6 +3363,28 @@ export class BrushEngine {
       blurGpuMemoryMiB: this.vectorTextGpuBlurMemoryBytes() / MEBIBYTE_BYTES,
       blurCacheEntries: this.vectorTextGpuBlurCaches.size,
     };
+  }
+
+  rebuildVectorTextGpuFallbackPresentation(
+    view: Readonly<VectorTextViewState>,
+    runs: readonly {
+      placement: VectorTextPlacement;
+      draws: readonly VectorTextGpuDraw[];
+    }[],
+  ): { textureCount: number; gpuMemoryMiB: number } {
+    if (!this.vectorTextPrototypeEnabled || !this.initialized) {
+      throw new Error("Renderer testo vettoriale GPU non abilitato.");
+    }
+    return rebuildVectorTextGpuFallbackPresentation(this, view, runs);
+  }
+
+  getVectorTextFallbackPresentationStats(): {
+    captureView: VectorTextViewState | null;
+    textureCount: number;
+    gpuMemoryMiB: number;
+    complete: boolean;
+  } {
+    return getVectorTextFallbackPresentationStats(this);
   }
 
   pruneVectorTextGpuMeshes(activeMeshKeys: ReadonlySet<string>): void {
@@ -8549,39 +8586,52 @@ export class BrushEngine {
   }
 
   private trackVectorTextFastPresentationSubmission(): void {
-    if (this.vectorTextFastPresentationInFlight) {
-      return;
-    }
     const submittedRevision = this.vectorTextFastRequestedRevision;
-    this.vectorTextFastPresentationInFlight = true;
+    this.vectorTextFastPresentationInFlightCount += 1;
+    this.vectorTextFastPresentationMaximumInFlightCount = Math.max(
+      this.vectorTextFastPresentationMaximumInFlightCount,
+      this.vectorTextFastPresentationInFlightCount,
+    );
     this.vectorTextFastSubmittedRevision = Math.max(
       this.vectorTextFastSubmittedRevision,
       submittedRevision,
     );
     this.vectorTextFastPresentationSubmissionCount += 1;
-    void this.device.queue.onSubmittedWorkDone().then(() => {
-      this.vectorTextFastCompletedRevision = Math.max(
-        this.vectorTextFastCompletedRevision,
-        submittedRevision,
+    // The actual submit consumed the newest camera uniforms, including a
+    // latest-only request that had been waiting for one of the two slots.
+    this.vectorTextFastPresentationLatestRequested = false;
+    const finish = (completed: boolean) => {
+      if (completed) {
+        this.vectorTextFastCompletedRevision = Math.max(
+          this.vectorTextFastCompletedRevision,
+          submittedRevision,
+        );
+      }
+      this.vectorTextFastPresentationInFlightCount = Math.max(
+        0,
+        this.vectorTextFastPresentationInFlightCount - 1,
       );
-      this.vectorTextFastPresentationInFlight = false;
       if (
         this.vectorTextFastPresentationEnabled
         && this.vectorTextFastPresentationLatestRequested
+        && this.vectorTextFastRequestedRevision > this.vectorTextFastSubmittedRevision
+        && this.vectorTextFastPresentationInFlightCount
+          < VECTOR_TEXT_FAST_PRESENTATION_MAX_IN_FLIGHT
       ) {
-        this.vectorTextFastPresentationLatestRequested = false;
         this.displayDirty = true;
         this.presentationCacheNeedsFullRebuild = true;
         this.requestRender();
-      } else {
+      } else if (this.vectorTextFastRequestedRevision <= this.vectorTextFastSubmittedRevision) {
         this.vectorTextFastPresentationLatestRequested = false;
       }
-    }).catch(() => {
+    };
+    void this.device.queue.onSubmittedWorkDone().then(() => {
+      finish(true);
+    }, () => {
       // Device loss has its own authoritative reporting path. This promise is
       // only a non-blocking backpressure gate and must never surface as an
       // unhandled rejection or be interpreted as timing telemetry.
-      this.vectorTextFastPresentationInFlight = false;
-      this.vectorTextFastPresentationLatestRequested = false;
+      finish(false);
     });
   }
 
@@ -8592,7 +8642,11 @@ export class BrushEngine {
     if (this.frameRequest !== null) {
       return;
     }
-    if (this.vectorTextFastPresentationEnabled && this.vectorTextFastPresentationInFlight) {
+    if (
+      this.vectorTextFastPresentationEnabled
+      && this.vectorTextFastPresentationInFlightCount
+        >= VECTOR_TEXT_FAST_PRESENTATION_MAX_IN_FLIGHT
+    ) {
       this.vectorTextFastPresentationLatestRequested = true;
       if (!this.vectorTextFastPresentationHasAuthoritativeWork()) {
         this.vectorTextFastPresentationCoalescedRequestCount += 1;
@@ -8725,15 +8779,7 @@ export class BrushEngine {
       this.avoidedLogicalDraws += batch.length * Math.max(0, renderSettings.count - 1);
     }
     this.recordRenderedFrame(timestamp);
-    if (
-      this.vectorTextFastPresentationEnabled
-      && batch.length === 0
-      && blendBatch.length === 0
-      && !clearLayer
-      && !lightGlazeSession?.commitRequested
-      && !this.thicknessTailPreviewEligible()
-      && this.thicknessTailPresentedRect === null
-    ) {
+    if (this.vectorTextFastPresentationEnabled) {
       this.trackVectorTextFastPresentationSubmission();
     }
 

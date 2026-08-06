@@ -81,6 +81,9 @@ export interface VectorTextGpuBlurCacheResources {
 export interface VectorTextGpuPendingRun {
   placement: Extract<VectorTextPlacement, `text-run:${string}`>;
   resources: VectorTextRunTextureResources;
+  target: "primary" | "fallback";
+  targetTexture: GPUTexture;
+  targetView: GPUTextureView;
   draws: readonly VectorTextGpuDraw[];
   drawResources: readonly VectorTextGpuDrawResources[];
   blurResources: readonly (VectorTextGpuBlurCacheResources | null)[];

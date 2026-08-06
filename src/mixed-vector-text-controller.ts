@@ -64,6 +64,7 @@ import {
   VECTOR_TEXT_ADAPTIVE_ZOOM_SETTLE_MS,
   VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
   vectorTextExactRecoveryIsCurrent,
+  vectorTextWideFallbackView,
   type VectorTextFastPresentationMode,
 } from "./vector-text-adaptive-zoom";
 import {
@@ -88,6 +89,13 @@ export interface MixedVectorTextHost {
     placement: VectorTextPlacement,
     draws: readonly VectorTextGpuDraw[],
   ): VectorTextGpuPresentationStats;
+  rebuildVectorTextGpuFallbackPresentation(
+    view: Readonly<VectorTextViewState>,
+    runs: readonly {
+      placement: VectorTextPlacement;
+      draws: readonly VectorTextGpuDraw[];
+    }[],
+  ): { textureCount: number; gpuMemoryMiB: number };
   isPaintStrokeActive(): boolean;
   clearVectorTextPresentation(placement?: VectorTextPlacement): void;
   clearVectorTextFallbackPresentation(): void;
@@ -193,6 +201,8 @@ export interface MixedVectorTextDiagnostics {
   zoomUnsafeExactRefreshRequestPending: boolean;
   zoomFastPresentationSubmissionCount: number;
   zoomFastPresentationCoalescedRequestCount: number;
+  fallbackPresentationReady: boolean;
+  fallbackPresentationRebuildCount: number;
   selectedKey: MixedSceneItem["key"] | null;
   textNodeCount: number;
   renderCount: number;
@@ -723,6 +733,9 @@ export class MixedVectorTextController {
   private zoomUnsafeExactCoalescedCount = 0;
   private lastExactCanvasWidth = 0;
   private lastExactCanvasHeight = 0;
+  private fallbackPresentationDirty = true;
+  private fallbackPresentationGpuMemoryMiB = 0;
+  private fallbackPresentationRebuildCount = 0;
   private atomicEffectHoldCount = 0;
   private atomicEffectPendingNodes = 0;
   private distortEditingNodeId: number | null = null;
@@ -932,6 +945,8 @@ export class MixedVectorTextController {
     );
     if (!imageTransformOnly) {
       this.host.clearVectorTextFallbackPresentation();
+      this.fallbackPresentationDirty = true;
+      this.fallbackPresentationGpuMemoryMiB = 0;
       this.viewRevision += 1;
       this.cancelAdaptiveZoomTimers();
       if (this.unsafeExactRefreshRequest !== null) {
@@ -1423,6 +1438,9 @@ export class MixedVectorTextController {
       zoomUnsafeExactRefreshRequestPending: this.unsafeExactRefreshRequest !== null,
       zoomFastPresentationSubmissionCount: backpressure.submissionCount,
       zoomFastPresentationCoalescedRequestCount: backpressure.coalescedRequestCount,
+      fallbackPresentationReady:
+        !this.fallbackPresentationDirty && this.fallbackPresentationGpuMemoryMiB > 0,
+      fallbackPresentationRebuildCount: this.fallbackPresentationRebuildCount,
       selectedKey: this.snapshot?.selectedKey ?? null,
       textNodeCount: this.snapshot?.items.filter((item) => item.kind === "text").length ?? 0,
       renderCount: this.renderCount,
@@ -2662,6 +2680,7 @@ export class MixedVectorTextController {
     this.innerShadowBlurOutput.value = String(Math.round(node.innerShadowBlur));
   }
   private handleEffectResourceReady(): void {
+    this.fallbackPresentationDirty = true;
     if (this.zoomRenderMode === "fast") {
       this.effectReadyRenderPending = true;
       return;
@@ -3444,6 +3463,16 @@ export class MixedVectorTextController {
     this.pendingViewRenderStartedAt = 0;
     const startedAt = performance.now();
     const view = this.host.getVectorTextViewState();
+    if (
+      this.lastExactCanvasWidth > 0
+      && (
+        view.canvasWidth !== this.lastExactCanvasWidth
+        || view.canvasHeight !== this.lastExactCanvasHeight
+      )
+    ) {
+      this.fallbackPresentationDirty = true;
+      this.fallbackPresentationGpuMemoryMiB = 0;
+    }
     this.syncCanvasSizes(view);
     const snapshot = this.snapshot;
     const selectedNode = this.selectedVectorNode();
@@ -3455,10 +3484,16 @@ export class MixedVectorTextController {
     let textureCount = 0;
     const activeMeshKeys = new Set<string>();
     const liveEffectSlots = new Set<string>();
+    const fallbackRuns: {
+      placement: VectorTextPlacement;
+      draws: readonly VectorTextGpuDraw[];
+    }[] = [];
     let atomicEffectPendingNodes = 0;
     if (!snapshot) {
       this.host.clearVectorTextPresentation();
       this.renderedTextRunKeys.clear();
+      this.fallbackPresentationDirty = false;
+      this.fallbackPresentationGpuMemoryMiB = 0;
     } else {
       const groups: {
         placement: VectorTextPlacement;
@@ -3572,6 +3607,7 @@ export class MixedVectorTextController {
           ) activeMeshKeys.add(draw.blurKey);
         }
         const stats = this.host.updateVectorTextGpuPresentation(group.placement, draws);
+        fallbackRuns.push({ placement: group.placement, draws });
         gpuMemoryMiB += stats.gpuMemoryMiB;
         blurGpuMemoryMiB = Math.max(blurGpuMemoryMiB, stats.blurGpuMemoryMiB);
         blurGpuCacheEntries = Math.max(blurGpuCacheEntries, stats.blurCacheEntries);
@@ -3583,6 +3619,23 @@ export class MixedVectorTextController {
     this.status.dataset.atomicEffectHoldCount = String(this.atomicEffectHoldCount);
     this.effectCompiler.retainSlots(liveEffectSlots);
     this.host.pruneVectorTextGpuMeshes(activeMeshKeys);
+    if (
+      this.fallbackPresentationDirty
+      && atomicEffectPendingNodes === 0
+      && fallbackRuns.length > 0
+    ) {
+      const fallback = this.host.rebuildVectorTextGpuFallbackPresentation(
+        vectorTextWideFallbackView(view, this.host.layerSize),
+        fallbackRuns,
+      );
+      this.fallbackPresentationGpuMemoryMiB = fallback.gpuMemoryMiB;
+      this.fallbackPresentationDirty = false;
+      this.fallbackPresentationRebuildCount += 1;
+    } else if (fallbackRuns.length === 0) {
+      this.fallbackPresentationGpuMemoryMiB = 0;
+      this.fallbackPresentationDirty = false;
+    }
+    gpuMemoryMiB += this.fallbackPresentationGpuMemoryMiB;
     gpuMemoryMiB += blurGpuMemoryMiB;
     this.singleShadowGpuMemoryMiB = blurGpuMemoryMiB;
     this.singleShadowGpuCacheEntries = blurGpuCacheEntries;

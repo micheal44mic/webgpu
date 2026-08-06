@@ -48,7 +48,7 @@ const IPHONE_MEMORY_LIMIT_STATUSES = new Set(["running", "completed", "interrupt
 const LAYER_COMPRESSION_BUILD = "lossless-gzip-256-tile-1mib-streamed-measurement-v1";
 const LAYER_COMPRESSION_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS layer_compression_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)";
 const LAYER_COMPRESSION_INDEX_SQL = "CREATE INDEX IF NOT EXISTS layer_compression_runs_created_at_idx ON layer_compression_runs (created_at DESC)";
-const VECTOR_ZOOM_C_STRATEGY = "ten-semantic-text-dual-gpu-fallback0.2-zoom8-to-0.3-drift-650ms-v5";
+const VECTOR_ZOOM_C_STRATEGY = "ten-semantic-text-dual-gpu-fallback-auto-post-raster-window2-zoom8-to-0.3-v6";
 const VECTOR_ZOOM_RUNS_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS vector_zoom_runs (run_code TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)";
 const VECTOR_ZOOM_RUN_CODE = /^[2-9A-HJ-NP-Z]{8}$/;
 const VECTOR_ZOOM_CHECK_NAMES = [
@@ -56,6 +56,7 @@ const VECTOR_ZOOM_CHECK_NAMES = [
   "fixedFastZoomOutCompleted",
   "fallbackPreparedBeforeGesture",
   "fallbackPixelsPresent",
+  "rasterLifecycleRebuiltFallback",
   "finalFastFrameAcknowledged",
   "fastCompositePixelsPresent",
   "witnessesExerciseReveal",
@@ -553,6 +554,10 @@ async function handleVectorZoomRuns(request, env) {
       report.fastPresentationSubmitDelta,
       report.fastPresentationCoalescedDelta,
       report.requiredFastPresentationSubmitCount,
+      report.fastPresentationMaximumInFlight,
+      report.fastPresentationInFlightAtTraceEnd,
+      report.rasterLayerCountAfterFallbackRebuild,
+      report.automaticFallbackRebuildDelta,
       report.latestViewRevision,
       report.finalFastRequestedRevision,
       report.finalFastSubmittedRevision,
@@ -571,6 +576,9 @@ async function handleVectorZoomRuns(request, env) {
       && Array.isArray(report.fallbackProbeAlphaPixelCounts)
       && report.fallbackProbeAlphaPixelCounts.length === 10
       && report.fallbackProbeAlphaPixelCounts.every((count) => count > 0)
+      && report.rasterLayerCountAfterFallbackRebuild === 2
+      && report.selectedRasterAfterFallbackRebuild === true
+      && report.automaticFallbackRebuildDelta >= 1
       && Array.isArray(report.fastCompositeProbeAlphaPixelCounts)
       && report.fastCompositeProbeAlphaPixelCounts.length === 10
       && report.fastCompositeProbeAlphaPixelCounts.every((count) => count > 0)
@@ -586,6 +594,10 @@ async function handleVectorZoomRuns(request, env) {
       && report.unsafeExactRefreshCompletedDelta === 0
       && report.fallbackReprojectionDelta > 0
       && report.fastPresentationSubmitDelta >= report.requiredFastPresentationSubmitCount
+      && report.fastPresentationCoalescedDelta <= Math.ceil(report.sampleCount * 0.1)
+      && report.fastPresentationMaximumInFlight >= 1
+      && report.fastPresentationMaximumInFlight <= 2
+      && report.fastPresentationInFlightAtTraceEnd <= 2
       && report.fastSubmittedRevisionLagMaximum <= 2
       && report.fastCompletedRevisionLagP95 <= 2
       && report.fastCompletedRevisionLagMaximum <= 2
@@ -632,6 +644,9 @@ async function handleVectorZoomRuns(request, env) {
       || !report.fallbackProbeAlphaPixelCounts.every((count) => (
         integerInRange(count, 0, 16_384)
       ))
+      || !integerInRange(report.rasterLayerCountAfterFallbackRebuild, 0, 64)
+      || typeof report.selectedRasterAfterFallbackRebuild !== "boolean"
+      || !integerInRange(report.automaticFallbackRebuildDelta, 0, 1_000_000)
       || !finiteNumberArray(report.fastCompositeProbeAlphaPixelCounts, 10)
       || !report.fastCompositeProbeAlphaPixelCounts.every((count) => (
         integerInRange(count, 0, 16_384)
@@ -663,6 +678,8 @@ async function handleVectorZoomRuns(request, env) {
       || !finiteNumberInRange(report.fastCompletedRevisionLagP95, 0, 1_000_000)
       || !finiteNumberInRange(report.fastCompletedRevisionLagMaximum, 0, 1_000_000)
       || !finiteNumberInRange(report.fastPresentationRateHz, 0, 10_000)
+      || !integerInRange(report.fastPresentationMaximumInFlight, 0, 1_000_000)
+      || !integerInRange(report.fastPresentationInFlightAtTraceEnd, 0, 1_000_000)
       || (report.fastVerificationError !== null && (
         typeof report.fastVerificationError !== "string"
         || report.fastVerificationError.length > 1024
