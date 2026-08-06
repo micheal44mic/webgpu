@@ -2606,6 +2606,17 @@ export function writeVectorTextGpuBlurSourceUniform(engine: BrushEngine,
 ): void {
   const base = drawIndex * VECTOR_TEXT_GPU_UNIFORM_STRIDE / 4;
   const upload = engine.vectorTextGpuUniformUpload;
+  const usesMesh = vectorTextGpuDrawUsesMesh(draw);
+  // Slug coverage is evaluated in coordinates relative to its packing origin.
+  // The source pass still centers the target on the absolute blur ROI below.
+  const sourceBounds = usesMesh
+    ? draw.blurBounds
+    : [
+      draw.blurBounds[0] - draw.slug.originX,
+      draw.blurBounds[1] - draw.slug.originY,
+      draw.blurBounds[2] - draw.slug.originX,
+      draw.blurBounds[3] - draw.slug.originY,
+    ] as const;
   upload.fill(0, base, base + VECTOR_TEXT_GPU_UNIFORM_STRIDE / 4);
   upload[base] = draw.blurWidth;
   upload[base + 1] = draw.blurHeight;
@@ -2621,11 +2632,11 @@ export function writeVectorTextGpuBlurSourceUniform(engine: BrushEngine,
   upload[base + 19] = 1;
   upload[base + 22] = draw.blurWidth;
   upload[base + 23] = draw.blurHeight;
-  upload[base + 24] = draw.blurBounds[0];
-  upload[base + 25] = draw.blurBounds[1];
-  upload[base + 26] = draw.blurBounds[2];
-  upload[base + 27] = draw.blurBounds[3];
-  if (vectorTextGpuDrawUsesMesh(draw)) {
+  upload[base + 24] = sourceBounds[0];
+  upload[base + 25] = sourceBounds[1];
+  upload[base + 26] = sourceBounds[2];
+  upload[base + 27] = sourceBounds[3];
+  if (usesMesh) {
     upload[base + 13] = draw.mesh.originX;
     upload[base + 14] = draw.mesh.originY;
     return;
