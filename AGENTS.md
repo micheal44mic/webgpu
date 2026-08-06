@@ -4488,3 +4488,7 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   scratch senza nome, piramide di un effetto rubata alla riga generica, glaze
   attribuito alla Traccia, una risorsa esclusa dalla partizione.
 - TypeScript, tutte le `32` suite `*:verify` e build Vite/Sites verdi.
+- Pubblicazione Sites `139` completata il 6 agosto 2026 dal commit
+  `257127da40c25163820ce6d987ba529bb336d3cb` su
+  `https://webgpu-brush-engine-michi.m1m4brand.chatgpt.site`. Registro GPU e
+  ripartizione misurata sono pronti per la verifica su iPhone fisico.
