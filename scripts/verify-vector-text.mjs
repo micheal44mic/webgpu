@@ -1,0 +1,1757 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import { area, difference, FillRule } from "clipper2-ts";
+import { readEngineSource } from "./engine-source.mjs";
+
+import {
+  VECTOR_TEXT_BLOCK_SHADOW_STRATEGY,
+  VECTOR_TEXT_OUTLINE_MITER_LIMIT,
+  VECTOR_TEXT_OUTLINE_STRATEGY,
+  VECTOR_TEXT_OUTLINE_WIDTH_MAXIMUM,
+  VECTOR_TEXT_SINGLE_SHADOW_STRATEGY,
+  VECTOR_TEXT_INNER_SHADOW_STRATEGY,
+  normalizeVectorTextBlockShadowAngle,
+  normalizeVectorTextBlockShadowOffset,
+  normalizeVectorTextBlockShadowOpacity,
+  normalizeVectorTextOutlineJoin,
+  normalizeVectorTextOutlineWidth,
+  normalizeVectorTextSingleShadowAngle,
+  normalizeVectorTextSingleShadowBlur,
+  normalizeVectorTextSingleShadowOffset,
+  normalizeVectorTextSingleShadowOpacity,
+  normalizeVectorTextInnerShadowAngle,
+  normalizeVectorTextInnerShadowBlur,
+  normalizeVectorTextInnerShadowOffset,
+  normalizeVectorTextInnerShadowOpacity,
+  vectorTextBlockShadowLocalReach,
+  vectorTextBlockShadowLocalVector,
+  vectorTextOutlineLocalReach,
+  vectorTextSingleShadowLocalVector,
+  vectorTextInnerShadowLocalVector,
+} from "../src/mixed-scene-stack.ts";
+import {
+  VECTOR_TEXT_FONT_GEOMETRY_STRATEGY,
+  VECTOR_TEXT_FONT_MANIFEST,
+} from "../src/vector-text-font-geometry.ts";
+import {
+  vectorPathToQuadraticContours,
+} from "../src/vector-text-curve-utils.ts";
+import {
+  VECTOR_TEXT_GPU_GEOMETRY_STRATEGY,
+  VECTOR_TEXT_BLOCK_INNER_OVERLAP_PIXELS,
+  VECTOR_TEXT_OUTLINE_INNER_OVERLAP_PIXELS,
+  buildOutsideVectorTextOutline,
+  buildVectorTextBlockSet,
+  buildVisibleVectorTextBlockSet,
+  canonicalizeVectorTextPath,
+  compileVectorTextEffect,
+  triangulateCanonicalVectorTextSet,
+} from "../src/vector-text-effect-geometry.ts";
+import {
+  VECTOR_TEXT_GEOMETRY_COMPILER_VERSION,
+  VECTOR_TEXT_MAXIMUM_VECTOR_ZOOM,
+  vectorTextLodForSigma,
+  vectorTextMaximumLod,
+} from "../src/vector-text-lod.ts";
+import {
+  VECTOR_TEXT_SLUG_COMPILER_VERSION,
+  buildVectorTextSlugData,
+  vectorTextPathRevision,
+} from "../src/vector-text-slug.ts";
+import {
+  VECTOR_TEXT_SINGLE_SHADOW_BLUR_MAXIMUM,
+  VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY,
+  VECTOR_TEXT_SINGLE_SHADOW_MAX_KERNEL_RADIUS,
+  VECTOR_TEXT_SINGLE_SHADOW_MAX_PIXELS,
+  planVectorTextSingleShadowBlur,
+  vectorTextSingleShadowBlurSupport,
+} from "../src/vector-text-single-shadow.ts";
+import {
+  VECTOR_TEXT_GPU_BLUR_FORMAT,
+  VECTOR_TEXT_GPU_RENDER_STRATEGY,
+  VECTOR_TEXT_GPU_SAMPLE_COUNT,
+} from "../src/vector-text-gpu-shader.ts";
+import {
+  VECTOR_TEXT_SLUG_GPU_RENDER_STRATEGY,
+} from "../src/vector-text-slug-gpu-shader.ts";
+import {
+  VECTOR_TEXT_PRESENTATION_STRATEGY,
+} from "../src/vector-text-shader.ts";
+import {
+  VECTOR_TEXT_ADAPTIVE_ZOOM_SETTLE_MS,
+  VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
+  VECTOR_TEXT_FAST_PRESENTATION_FILTER_GUARD_PX,
+  VECTOR_TEXT_ZOOM_AB_IDLE_FRAME_COUNT,
+  VECTOR_TEXT_ZOOM_AB_SAMPLE_COUNT,
+  VECTOR_TEXT_ZOOM_AB_START_ZOOM,
+  VECTOR_TEXT_ZOOM_AB_STRATEGY,
+  VECTOR_TEXT_ZOOM_C_IDLE_FRAME_COUNT,
+  VECTOR_TEXT_ZOOM_C_GESTURE_DURATION_MS,
+  VECTOR_TEXT_ZOOM_C_SAMPLE_LIMIT,
+  VECTOR_TEXT_ZOOM_C_FALLBACK_ZOOM,
+  VECTOR_TEXT_ZOOM_C_START_ZOOM,
+  VECTOR_TEXT_ZOOM_C_STRATEGY,
+  VECTOR_TEXT_ZOOM_C_TARGET_ZOOM,
+  VECTOR_TEXT_ZOOM_STRESS_PROFILE_ORDER,
+  VECTOR_TEXT_ZOOM_STRESS_SEED,
+  VECTOR_TEXT_ZOOM_STRESS_STRATEGY,
+  VECTOR_TEXT_ZOOM_STRESS_TARGET_ZOOM,
+  VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT,
+  vectorTextExactRecoveryIsCurrent,
+  vectorTextFastPresentationMode,
+  vectorTextZoomCoverageSeed,
+  vectorTextZoomStressSeed,
+  vectorTextZoomStressStepFactor,
+} from "../src/vector-text-adaptive-zoom.ts";
+import {
+  VECTOR_SVG_IMPORT_STRATEGY,
+  VECTOR_SVG_MAXIMUM_COMMANDS,
+  VECTOR_SVG_MAXIMUM_SOURCE_BYTES,
+} from "../src/vector-svg-import.ts";
+import {
+  VECTOR_TEXT_TRANSFORM_STRATEGY,
+  buildVectorTextCurveGuide,
+  defaultVectorTextDistortPoints,
+  moveVectorTextDistortPoint,
+  normalizeVectorTextCircleRadiusPercent,
+  normalizeVectorTextDistortPoints,
+  normalizeVectorTextTransformCurve,
+  normalizeVectorTextTransformParameters,
+  transformVectorTextPathAffine,
+  vectorTextCircleAffine,
+  vectorTextCirclePlacement,
+  vectorTextDistortBounds,
+  warpVectorTextPathAlongCurve,
+  warpVectorTextPathFreeForm,
+  warpVectorTextPointFreeForm,
+} from "../src/vector-text-transform.ts";
+import {
+  MIXED_SCENE_COMPOSITOR_STRATEGY,
+  MIXED_SCENE_LINEAR_FORMAT,
+} from "../src/mixed-scene-compositor-shader.ts";
+
+const read = (relativePath) =>
+  fs.readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
+
+const engineSource = readEngineSource();
+const controllerSource = read("src/mixed-vector-text-controller.ts");
+const clientSource = read("src/vector-text-effect-client.ts");
+const workerSource = read("src/vector-text-effect-worker.ts");
+const workerProtocolSource = read("src/vector-text-effect-worker-protocol.ts");
+const geometrySource = read("src/vector-text-effect-geometry.ts");
+const curveSource = read("src/vector-text-curve-utils.ts");
+const slugSource = read("src/vector-text-slug.ts");
+const slugShaderSource = read("src/vector-text-slug-gpu-shader.ts");
+const gpuShaderSource = read("src/vector-text-gpu-shader.ts");
+const innerShadowShaderSource = read("src/vector-text-inner-shadow-gpu-shader.ts");
+const gpuResourcesSource = read("src/vector-text-gpu-resources.ts");
+const singleShadowSource = read("src/vector-text-single-shadow.ts");
+const fontGeometrySource = read("src/vector-text-font-geometry.ts");
+const transformSource = read("src/vector-text-transform.ts");
+const adaptiveSource = read("src/vector-text-adaptive-zoom.ts");
+const mixedCompositorSource = read("src/mixed-scene-compositor-shader.ts");
+const svgSource = read("src/vector-svg-import.ts");
+const vectorRasterSource = read("src/engine-vector-raster-runtime.ts");
+const mainSource = read("src/main.ts");
+const sitesBuildSource = read("scripts/prepare-sites-build.mjs");
+const vectorZoomMigrationSource = read(".openai/drizzle/0005_vector_zoom_runs.sql");
+const htmlSource = read("index.html");
+const packageJson = JSON.parse(read("package.json"));
+
+function polygonPath(rings, fillRule = 0) {
+  const verbs = [];
+  const coords = [];
+  const contourOffsets = [];
+  for (const ring of rings) {
+    assert.ok(ring.length >= 3);
+    contourOffsets.push(verbs.length);
+    verbs.push(0);
+    coords.push(ring[0][0], ring[0][1]);
+    for (let index = 1; index < ring.length; index += 1) {
+      verbs.push(1);
+      coords.push(ring[index][0], ring[index][1]);
+    }
+    verbs.push(4);
+  }
+  return {
+    verbs: new Uint8Array(verbs),
+    coords: new Float64Array(coords),
+    contourOffsets: new Uint32Array(contourOffsets),
+    fillRule,
+  };
+}
+
+function reverseRing(ring) {
+  return [...ring].reverse();
+}
+
+function assertCanonical(set, label) {
+  for (const group of set.groups) {
+    assert.ok(area(group.outer) > 0, `${label}: outer non positivo`);
+    for (const hole of group.holes) {
+      assert.ok(area(hole) < 0, `${label}: hole non negativo`);
+    }
+  }
+  for (const ring of set.paths) {
+    assert.ok(ring.length >= 3, `${label}: ring corto`);
+    for (let index = 0; index < ring.length; index += 1) {
+      const current = ring[index];
+      const next = ring[(index + 1) % ring.length];
+      assert.notDeepEqual(current, next, `${label}: punti consecutivi duplicati`);
+      assert.ok(Number.isSafeInteger(current.x), `${label}: x non safe integer`);
+      assert.ok(Number.isSafeInteger(current.y), `${label}: y non safe integer`);
+    }
+  }
+}
+
+function canonicalArea(set, integerScale) {
+  return set.paths.reduce((total, ring) => total + area(ring), 0)
+    / (integerScale * integerScale);
+}
+
+function meshTriangleArea(mesh) {
+  let total = 0;
+  for (let index = 0; index < mesh.indices.length; index += 3) {
+    const ia = mesh.indices[index] * 2;
+    const ib = mesh.indices[index + 1] * 2;
+    const ic = mesh.indices[index + 2] * 2;
+    assert.ok(ic + 1 < mesh.vertices.length, "indice Earcut fuori range");
+    const ax = mesh.vertices[ia];
+    const ay = mesh.vertices[ia + 1];
+    const bx = mesh.vertices[ib];
+    const by = mesh.vertices[ib + 1];
+    const cx = mesh.vertices[ic];
+    const cy = mesh.vertices[ic + 1];
+    const twice = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    assert.ok(Math.abs(twice) > 1e-10, "triangolo Earcut degenere");
+    total += Math.abs(twice) * 0.5;
+  }
+  return total;
+}
+
+function assertTriangulation(set, lod, label) {
+  const mesh = triangulateCanonicalVectorTextSet(
+    set,
+    lod.integerScale,
+    `verify:${label}`,
+    lod.bucket,
+  );
+  assert.equal(mesh.indices.length % 3, 0);
+  const expected = canonicalArea(set, lod.integerScale);
+  const actual = meshTriangleArea(mesh);
+  const tolerance = Math.max(1e-5, Math.abs(expected) * 2e-6);
+  assert.ok(
+    Math.abs(actual - expected) <= tolerance,
+    `${label}: area mesh ${actual} != area canonica ${expected}`,
+  );
+  return mesh;
+}
+
+function canonicalKey(set) {
+  return JSON.stringify(set.groups.map((group) => ({
+    outer: group.outer.map(({ x, y }) => [x, y]),
+    holes: group.holes.map((ring) => ring.map(({ x, y }) => [x, y])),
+  })));
+}
+
+function absoluteMeshBounds(mesh) {
+  return {
+    left: mesh.left + mesh.originX,
+    top: mesh.top + mesh.originY,
+    right: mesh.right + mesh.originX,
+    bottom: mesh.bottom + mesh.originY,
+  };
+}
+
+// Coordinate view/node: gli effetti non devono alterare il modello semantico.
+const viewport = {
+  width: 1420,
+  height: 860,
+  centerX: 2048,
+  centerY: 2048,
+  zoom: 0.197,
+  rotation: 0.37,
+};
+const object = { x: 2110, y: 1960, scale: 1.42, rotation: -0.18 };
+function localToLayer(point) {
+  const x = point.x * object.scale;
+  const y = point.y * object.scale;
+  const cosine = Math.cos(object.rotation);
+  const sine = Math.sin(object.rotation);
+  return {
+    x: object.x + cosine * x - sine * y,
+    y: object.y + sine * x + cosine * y,
+  };
+}
+function layerToCanvas(point) {
+  const dx = point.x - viewport.centerX;
+  const dy = point.y - viewport.centerY;
+  const cosine = Math.cos(viewport.rotation);
+  const sine = Math.sin(viewport.rotation);
+  return {
+    x: viewport.width * 0.5 + (cosine * dx - sine * dy) * viewport.zoom,
+    y: viewport.height * 0.5 + (sine * dx + cosine * dy) * viewport.zoom,
+  };
+}
+function canvasToLayer(point) {
+  const x = (point.x - viewport.width * 0.5) / viewport.zoom;
+  const y = (point.y - viewport.height * 0.5) / viewport.zoom;
+  const cosine = Math.cos(viewport.rotation);
+  const sine = Math.sin(viewport.rotation);
+  return {
+    x: viewport.centerX + cosine * x + sine * y,
+    y: viewport.centerY - sine * x + cosine * y,
+  };
+}
+for (const point of [
+  { x: -900, y: -280 },
+  { x: 900, y: -280 },
+  { x: 900, y: 280 },
+  { x: -900, y: 280 },
+  { x: 0, y: 0 },
+]) {
+  const layer = localToLayer(point);
+  const roundTrip = canvasToLayer(layerToCanvas(layer));
+  assert.ok(Math.abs(roundTrip.x - layer.x) < 1e-9);
+  assert.ok(Math.abs(roundTrip.y - layer.y) < 1e-9);
+}
+
+// Strategie: nessun fallback bitmap, source Slug, effetti Clipper/Worker.
+assert.equal(
+  VECTOR_TEXT_PRESENTATION_STRATEGY,
+  "semantic-vector-gpu-runs-slug-clipper-msaa4-rgba16f-v6",
+);
+assert.equal(
+  VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
+  "gesture-latest-only-dual-gpu-reprojection-fallback-exact-settle-v6",
+);
+assert.equal(VECTOR_TEXT_ADAPTIVE_ZOOM_SETTLE_MS, 140);
+assert.equal(VECTOR_TEXT_FAST_PRESENTATION_FILTER_GUARD_PX, 0.5);
+assert.equal(
+  VECTOR_TEXT_ZOOM_STRESS_STRATEGY,
+  "ten-semantic-text-seeded-arch-drop-block-inner-center-zoom64-v1",
+);
+assert.equal(VECTOR_TEXT_ZOOM_STRESS_SEED, 0x5a17c0de);
+assert.equal(VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT, 10);
+assert.equal(VECTOR_TEXT_ZOOM_STRESS_TARGET_ZOOM, 64);
+assert.equal(
+  VECTOR_TEXT_ZOOM_AB_STRATEGY,
+  "ten-semantic-text-pan180-refresh-during-vs-release-v1",
+);
+assert.equal(VECTOR_TEXT_ZOOM_AB_IDLE_FRAME_COUNT, 30);
+assert.equal(VECTOR_TEXT_ZOOM_AB_SAMPLE_COUNT, 180);
+assert.equal(VECTOR_TEXT_ZOOM_AB_START_ZOOM, 64);
+assert.match(VECTOR_TEXT_ZOOM_C_STRATEGY, /dual-gpu-fallback/);
+assert.equal(VECTOR_TEXT_ZOOM_C_IDLE_FRAME_COUNT, 30);
+assert.equal(VECTOR_TEXT_ZOOM_C_SAMPLE_LIMIT, 120);
+assert.equal(VECTOR_TEXT_ZOOM_C_GESTURE_DURATION_MS, 650);
+assert.equal(VECTOR_TEXT_ZOOM_C_START_ZOOM, 8);
+assert.equal(VECTOR_TEXT_ZOOM_C_TARGET_ZOOM, 0.3);
+assert.equal(VECTOR_TEXT_ZOOM_C_FALLBACK_ZOOM, 0.2);
+assert.equal(VECTOR_TEXT_ZOOM_STRESS_PROFILE_ORDER.length, 10);
+assert.deepEqual(
+  Object.fromEntries(
+    ["arch", "drop-shadow", "block-shadow", "inner-shadow"].map((profile) => [
+      profile,
+      VECTOR_TEXT_ZOOM_STRESS_PROFILE_ORDER.filter((candidate) => candidate === profile).length,
+    ]),
+  ),
+  { arch: 3, "drop-shadow": 3, "block-shadow": 2, "inner-shadow": 2 },
+);
+const stressSeedsA = Array.from(
+  { length: VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT },
+  (_, index) => vectorTextZoomStressSeed(index, 4096),
+);
+const stressSeedsB = Array.from(
+  { length: VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT },
+  (_, index) => vectorTextZoomStressSeed(index, 4096),
+);
+assert.deepEqual(stressSeedsA, stressSeedsB, "la fixture deve essere byte-deterministica");
+assert.equal(stressSeedsA.filter(({ seed }) => seed.transformType === "arch").length, 3);
+assert.equal(stressSeedsA.filter(({ seed }) => seed.singleShadowEnabled).length, 3);
+assert.equal(stressSeedsA.filter(({ seed }) => seed.blockShadowEnabled).length, 2);
+assert.equal(stressSeedsA.filter(({ seed }) => seed.innerShadowEnabled).length, 2);
+assert.throws(() => vectorTextZoomStressSeed(10, 4096), /fuori range/);
+const coverageSeeds = Array.from(
+  { length: VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT },
+  (_, index) => vectorTextZoomCoverageSeed(index, 4096, {
+    canvasWidth: 390,
+    canvasHeight: 844,
+    targetZoom: VECTOR_TEXT_ZOOM_C_TARGET_ZOOM,
+  }),
+);
+assert.equal(new Set(coverageSeeds.map(({ seed }) => `${seed.x}:${seed.y}`)).size, 10);
+assert.ok(coverageSeeds.every(({ seed }) => (
+  Math.abs(seed.x - 2048) * VECTOR_TEXT_ZOOM_C_TARGET_ZOOM < 390 * 0.5
+  && Math.abs(seed.y - 2048) * VECTOR_TEXT_ZOOM_C_TARGET_ZOOM < 844 * 0.5
+)));
+assert.deepEqual(
+  coverageSeeds.map(({ profile }) => profile),
+  [...VECTOR_TEXT_ZOOM_STRESS_PROFILE_ORDER],
+  "C deve cambiare soltanto la distribuzione, non il mix deterministico degli effetti",
+);
+let plannedZoom = 0.2;
+let plannedZoomSteps = 0;
+while (plannedZoom < VECTOR_TEXT_ZOOM_STRESS_TARGET_ZOOM && plannedZoomSteps < 64) {
+  plannedZoom *= vectorTextZoomStressStepFactor(plannedZoom);
+  plannedZoomSteps += 1;
+}
+assert.ok(Math.abs(plannedZoom - 64) < 1e-9);
+assert.ok(plannedZoomSteps > 1 && plannedZoomSteps < 64);
+const capturedView = {
+  canvasWidth: 390,
+  canvasHeight: 844,
+  cssWidth: 390,
+  cssHeight: 844,
+  centerX: 2048,
+  centerY: 2048,
+  zoom: 1,
+  rotationRadians: 0,
+  rotationCos: 1,
+  rotationSin: 0,
+};
+assert.equal(vectorTextFastPresentationMode(capturedView, capturedView), "reproject");
+assert.equal(
+  vectorTextFastPresentationMode(capturedView, { ...capturedView, zoom: 64 }),
+  "reproject",
+  "lo zoom-in fino a 64× resta interamente coperto dalla capture",
+);
+assert.equal(
+  vectorTextFastPresentationMode(capturedView, { ...capturedView, zoom: 0.5 }),
+  "reproject-clipped",
+  "lo zoom-out deve seguire la camera e richiedere il refresh delle zone scoperte",
+);
+const wideCapture = { ...capturedView, zoom: VECTOR_TEXT_ZOOM_C_FALLBACK_ZOOM };
+assert.equal(
+  vectorTextFastPresentationMode(
+    { ...capturedView, zoom: VECTOR_TEXT_ZOOM_C_START_ZOOM },
+    {
+      ...capturedView,
+      centerX: capturedView.centerX + 180,
+      centerY: capturedView.centerY + 50,
+      zoom: VECTOR_TEXT_ZOOM_C_TARGET_ZOOM,
+    },
+    wideCapture,
+  ),
+  "reproject-fallback",
+  "C deve coprire lo zoom-out con la seconda capture senza dichiararlo clipped",
+);
+assert.equal(
+  vectorTextFastPresentationMode(capturedView, { ...capturedView, centerX: 2500 }),
+  "reproject-clipped",
+  "un pan oltre la capture deve restare agganciato e usare il refresh esatto bounded",
+);
+assert.equal(
+  vectorTextFastPresentationMode(capturedView, { ...capturedView, canvasWidth: 430 }),
+  "reproject-clipped",
+  "un resize non è coperto dalla cache viewport precedente",
+);
+const capturedZoom64View = { ...capturedView, zoom: VECTOR_TEXT_ZOOM_AB_START_ZOOM };
+assert.equal(
+  vectorTextFastPresentationMode(capturedZoom64View, {
+    ...capturedZoom64View,
+    centerX: capturedZoom64View.centerX + 1 / VECTOR_TEXT_ZOOM_AB_START_ZOOM,
+  }),
+  "reproject-clipped",
+  "un pan di un pixel a 64× deve esercitare il ramo clipped del test A/B",
+);
+assert.equal(vectorTextExactRecoveryIsCurrent(100, 100, false), true);
+assert.equal(vectorTextExactRecoveryIsCurrent(99, 100, false), false);
+assert.equal(vectorTextExactRecoveryIsCurrent(100, 100, true), false);
+let runnableRecoveries = 0;
+for (let revision = 1; revision <= 100; revision += 1) {
+  if (vectorTextExactRecoveryIsCurrent(revision, 100, false)) runnableRecoveries += 1;
+}
+assert.equal(
+  runnableRecoveries,
+  1,
+  "una raffica di 100 campioni conserva una sola recovery, quella latest",
+);
+assert.equal(
+  VECTOR_TEXT_OUTLINE_STRATEGY,
+  "webgpu-clipper64-worker-outside-offset-aa-overlap1px-same-color-fused-round-bevel-miter4-v6",
+);
+assert.equal(
+  VECTOR_TEXT_BLOCK_SHADOW_STRATEGY,
+  "webgpu-clipper64-worker-visible-swept-union-separate-clipped-overlap2px-mesh-v8",
+);
+assert.equal(
+  VECTOR_TEXT_SINGLE_SHADOW_STRATEGY,
+  "webgpu-slug-zero-blur-or-r8-separable-gaussian-v2",
+);
+assert.equal(
+  VECTOR_TEXT_INNER_SHADOW_STRATEGY,
+  "webgpu-slug-analytic-fill-clip-zero-blur-or-r8-separable-gaussian-v1",
+);
+assert.equal(
+  VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY,
+  "webgpu-slug-r8-mask-separable-gaussian-roi-cache-v2",
+);
+assert.equal(
+  VECTOR_TEXT_GPU_GEOMETRY_STRATEGY,
+  "clipper64-nonzero-worker-native-round-bevel-exact-miter-aa-overlap-same-color-union-visible-block-separate-clipped-overlap2px-earcut-v10",
+);
+assert.equal(VECTOR_TEXT_GEOMETRY_COMPILER_VERSION, "clipper64-nonzero-lod-worker-v10");
+assert.equal(
+  VECTOR_TEXT_SLUG_GPU_RENDER_STRATEGY,
+  "webgpu-slug-source-clipper-effect-mesh-msaa4-stable-lines-absolute-f32-scale-v5",
+);
+assert.equal(
+  VECTOR_TEXT_SLUG_COMPILER_VERSION,
+  "three-text-slug-0.6.5-whole-node-compact-bands-inclusive-v2",
+);
+assert.equal(VECTOR_TEXT_GPU_RENDER_STRATEGY, "webgpu-indexed-vector-msaa4-exact-camera-redraw-v1");
+assert.equal(VECTOR_TEXT_GPU_SAMPLE_COUNT, 4);
+assert.equal(VECTOR_TEXT_GPU_BLUR_FORMAT, "r8unorm");
+assert.equal(MIXED_SCENE_LINEAR_FORMAT, "rgba16float");
+assert.equal(
+  MIXED_SCENE_COMPOSITOR_STRATEGY,
+  "ordered-raster-vector-gpu-runs-rgba16f-viewport-source-over-raster-nearest-at-581pct-v4",
+);
+assert.equal(
+  VECTOR_TEXT_FONT_GEOMETRY_STRATEGY,
+  "local-opentype-outline-kittl-transform-v4-distort",
+);
+assert.equal(
+  VECTOR_TEXT_TRANSFORM_STRATEGY,
+  "kittl-compatible-centered-arch-wave-distort-six-vertex-four-handle-cubic-distance-warp-circle-rigid-glyph-v3",
+);
+assert.equal(packageJson.dependencies["clipper2-ts"], "2.0.1-18");
+assert.equal(packageJson.dependencies.earcut, "^3.0.2");
+assert.ok(!fs.existsSync(new URL("../src/vector-path-gpu-geometry.ts", import.meta.url)));
+
+// Normalizzazione UI e convenzione +Y verso il basso.
+assert.equal(VECTOR_TEXT_OUTLINE_WIDTH_MAXIMUM, 100);
+assert.equal(VECTOR_TEXT_OUTLINE_MITER_LIMIT, 4);
+assert.equal(normalizeVectorTextOutlineWidth(-5), 0);
+assert.equal(normalizeVectorTextOutlineWidth(999), 100);
+assert.equal(normalizeVectorTextOutlineJoin("invalid"), "round");
+assert.equal(vectorTextOutlineLocalReach(25, "round"), 25);
+assert.equal(vectorTextOutlineLocalReach(25, "bevel"), 25);
+assert.equal(vectorTextOutlineLocalReach(25, "miter"), 100);
+assert.equal(normalizeVectorTextBlockShadowOpacity(-1), 0);
+assert.equal(normalizeVectorTextBlockShadowOpacity(2), 1);
+assert.equal(normalizeVectorTextBlockShadowOffset(-1), 0);
+assert.equal(normalizeVectorTextBlockShadowOffset(200), 100);
+assert.equal(normalizeVectorTextBlockShadowAngle(-999), -180);
+assert.equal(normalizeVectorTextBlockShadowAngle(999), 180);
+assert.equal(vectorTextBlockShadowLocalReach(360, 23), 23);
+const blockVector = vectorTextBlockShadowLocalVector(360, 23, -104);
+assert.ok(Math.abs(blockVector.x + 5.564204) < 1e-6);
+assert.ok(Math.abs(blockVector.y - 22.316802) < 1e-6);
+assert.equal(normalizeVectorTextSingleShadowOpacity(-1), 0);
+assert.equal(normalizeVectorTextSingleShadowOpacity(2), 1);
+assert.equal(normalizeVectorTextSingleShadowOffset(-1), 0);
+assert.equal(normalizeVectorTextSingleShadowOffset(999), 100);
+assert.equal(normalizeVectorTextSingleShadowAngle(-999), -180);
+assert.equal(normalizeVectorTextSingleShadowAngle(999), 180);
+assert.equal(normalizeVectorTextSingleShadowBlur(-1), 0);
+assert.equal(normalizeVectorTextSingleShadowBlur(999), 300);
+const sharpShadow = vectorTextSingleShadowLocalVector(54, -180);
+assert.ok(Math.abs(sharpShadow.x + 54) < 1e-9);
+assert.equal(normalizeVectorTextInnerShadowOpacity(-1), 0);
+assert.equal(normalizeVectorTextInnerShadowOpacity(2), 1);
+assert.equal(normalizeVectorTextInnerShadowOffset(-1), 0);
+assert.equal(normalizeVectorTextInnerShadowOffset(999), 100);
+assert.equal(normalizeVectorTextInnerShadowAngle(-999), -180);
+assert.equal(normalizeVectorTextInnerShadowAngle(999), 180);
+assert.equal(normalizeVectorTextInnerShadowBlur(-1), 0);
+assert.equal(normalizeVectorTextInnerShadowBlur(999), 300);
+const innerShadowVector = vectorTextInnerShadowLocalVector(12, -135);
+assert.ok(Math.abs(innerShadowVector.x + 8.485281) < 1e-6);
+assert.ok(Math.abs(innerShadowVector.y - 8.485281) < 1e-6);
+assert.ok(Math.abs(sharpShadow.y) < 1e-9);
+
+// Trasformazioni: stessi preset/contratti osservati nel bundle Kittl.
+assert.equal(normalizeVectorTextTransformCurve(-999), -100);
+assert.equal(normalizeVectorTextTransformCurve(999), 100);
+assert.equal(normalizeVectorTextCircleRadiusPercent(1), 16);
+assert.equal(normalizeVectorTextCircleRadiusPercent(999), 200);
+assert.deepEqual(normalizeVectorTextTransformParameters(undefined), {
+  type: "none",
+  curve: 80,
+  circleRadiusPercent: 50,
+  circleInverted: false,
+  distortPoints: null,
+});
+const distortSourceBounds = { left: 0, top: 0, right: 1000, bottom: 400 };
+const defaultDistort = defaultVectorTextDistortPoints(distortSourceBounds);
+assert.equal(defaultDistort.length, 10);
+assert.deepEqual(defaultDistort[0], { x: 0, y: 0 });
+assert.deepEqual(defaultDistort[1], { x: 500, y: 0 });
+assert.deepEqual(defaultDistort[2], { x: 1000, y: 0 });
+assert.deepEqual(defaultDistort[3], { x: 1000, y: 400 });
+assert.deepEqual(defaultDistort[4], { x: 500, y: 400 });
+assert.deepEqual(defaultDistort[5], { x: 0, y: 400 });
+assert.equal(normalizeVectorTextDistortPoints(defaultDistort)?.length, 10);
+assert.equal(normalizeVectorTextDistortPoints(defaultDistort.slice(0, 9)), null);
+assert.equal(normalizeVectorTextTransformParameters({ type: "distort" }).type, "distort");
+for (const point of [
+  { x: 0, y: 0 },
+  { x: 500, y: 0 },
+  { x: 1000, y: 0 },
+  { x: 0, y: 400 },
+  { x: 500, y: 400 },
+  { x: 1000, y: 400 },
+  { x: 250, y: 200 },
+  { x: 750, y: 200 },
+]) {
+  const mapped = warpVectorTextPointFreeForm(
+    point,
+    distortSourceBounds,
+    defaultDistort,
+  );
+  assert.ok(Math.abs(mapped.x - point.x) < 1e-8);
+  assert.ok(Math.abs(mapped.y - point.y) < 1e-8);
+}
+assert.deepEqual(vectorTextDistortBounds(defaultDistort), distortSourceBounds);
+
+const raisedTopMiddle = moveVectorTextDistortPoint(
+  defaultDistort,
+  1,
+  { x: 500, y: -120 },
+);
+assert.deepEqual(raisedTopMiddle[1], { x: 500, y: -120 });
+assert.deepEqual(raisedTopMiddle[6], { x: 250, y: -120 });
+assert.deepEqual(raisedTopMiddle[7], { x: 750, y: -120 });
+assert.deepEqual(defaultDistort[1], { x: 500, y: 0 });
+
+const bentTopHandle = moveVectorTextDistortPoint(
+  defaultDistort,
+  6,
+  { x: 400, y: 100 },
+);
+const movedHandleVector = {
+  x: bentTopHandle[6].x - bentTopHandle[1].x,
+  y: bentTopHandle[6].y - bentTopHandle[1].y,
+};
+const mirroredHandleVector = {
+  x: bentTopHandle[7].x - bentTopHandle[1].x,
+  y: bentTopHandle[7].y - bentTopHandle[1].y,
+};
+assert.ok(Math.abs(
+  movedHandleVector.x * mirroredHandleVector.y
+    - movedHandleVector.y * mirroredHandleVector.x,
+) < 1e-8);
+assert.ok(
+  movedHandleVector.x * mirroredHandleVector.x
+    + movedHandleVector.y * mirroredHandleVector.y < 0,
+);
+assert.ok(Math.abs(Math.hypot(
+  mirroredHandleVector.x,
+  mirroredHandleVector.y,
+) - 250) < 1e-8, "la maniglia opposta conserva la propria lunghezza");
+
+const shortTextCenter = warpVectorTextPointFreeForm(
+  { x: 100, y: 50 },
+  { left: 0, top: 0, right: 200, bottom: 100 },
+  raisedTopMiddle,
+);
+const longTextCenter = warpVectorTextPointFreeForm(
+  { x: 700, y: 250 },
+  { left: 0, top: 0, right: 1400, bottom: 500 },
+  raisedTopMiddle,
+);
+assert.ok(Math.abs(shortTextCenter.x - longTextCenter.x) < 1e-8);
+assert.ok(Math.abs(shortTextCenter.y - longTextCenter.y) < 1e-8);
+
+const distortControlPath = {
+  verbs: new Uint8Array([0, 3, 4]),
+  coords: new Float64Array([0, 0, 250, 100, 750, 300, 1000, 400]),
+  contourOffsets: new Uint32Array([0]),
+  fillRule: 0,
+};
+const distortedControlPath = warpVectorTextPathFreeForm(
+  distortControlPath,
+  distortSourceBounds,
+  raisedTopMiddle,
+);
+assert.deepEqual([...distortedControlPath.verbs], [...distortControlPath.verbs]);
+assert.deepEqual(
+  [...distortedControlPath.contourOffsets],
+  [...distortControlPath.contourOffsets],
+);
+assert.equal(distortedControlPath.coords.length, distortControlPath.coords.length);
+assert.ok(
+  [...distortedControlPath.coords].some(
+    (value, index) => Math.abs(value - distortControlPath.coords[index]) > 1e-6,
+  ),
+);
+
+const archGuide = buildVectorTextCurveGuide("arch", 1000, 400, 80);
+const archStart = archGuide.pointAtDistance(0);
+const archMiddle = archGuide.pointAtDistance(500);
+assert.ok(archMiddle.y < archStart.y, "Arch positivo deve sollevare il centro");
+const centeredArchOffset = (archGuide.length - 1000) * 0.5;
+const centeredArchLeft = archGuide.pointAtDistance(centeredArchOffset);
+const centeredArchMiddle = archGuide.pointAtDistance(centeredArchOffset + 500);
+const centeredArchRight = archGuide.pointAtDistance(centeredArchOffset + 1000);
+assert.ok(
+  Math.abs(centeredArchLeft.x + centeredArchRight.x) < 1e-7,
+  "Arch centrato deve avere estremi X speculari",
+);
+assert.ok(
+  Math.abs(centeredArchLeft.y - centeredArchRight.y) < 1e-7,
+  "Arch centrato deve avere estremi alla stessa altezza",
+);
+assert.ok(
+  Math.abs(centeredArchMiddle.x) < 1e-7,
+  "Il centro del testo deve cadere sull'apice dell'Arch",
+);
+for (const curve of [-100, -47, 0, 47, 100]) {
+  const symmetricGuide = buildVectorTextCurveGuide("arch", 1000, 400, curve);
+  const symmetricOffset = (symmetricGuide.length - 1000) * 0.5;
+  const leftPoint = symmetricGuide.pointAtDistance(symmetricOffset);
+  const middlePoint = symmetricGuide.pointAtDistance(symmetricOffset + 500);
+  const rightPoint = symmetricGuide.pointAtDistance(symmetricOffset + 1000);
+  assert.ok(Math.abs(leftPoint.x + rightPoint.x) < 1e-7);
+  assert.ok(Math.abs(leftPoint.y - rightPoint.y) < 1e-7);
+  assert.ok(Math.abs(middlePoint.x) < 1e-7);
+}
+const invertedArchGuide = buildVectorTextCurveGuide("arch", 1000, 400, -80);
+assert.ok(
+  invertedArchGuide.pointAtDistance(500).y
+    > invertedArchGuide.pointAtDistance(0).y,
+  "Arch negativo deve invertire la curva",
+);
+const waveGuide = buildVectorTextCurveGuide("wave", 1000, 400, 80);
+assert.notEqual(
+  Math.round(waveGuide.pointAtDistance(0).y),
+  Math.round(waveGuide.pointAtDistance(900).y),
+);
+const controlPath = {
+  verbs: new Uint8Array([0, 3, 4]),
+  coords: new Float64Array([0, 10, 250, 20, 750, 30, 1000, 40]),
+  contourOffsets: new Uint32Array([0]),
+  fillRule: 0,
+};
+const warpedControlPath = warpVectorTextPathAlongCurve(
+  controlPath,
+  archGuide,
+  0,
+);
+assert.deepEqual([...warpedControlPath.verbs], [...controlPath.verbs]);
+assert.deepEqual(
+  [...warpedControlPath.contourOffsets],
+  [...controlPath.contourOffsets],
+);
+assert.equal(warpedControlPath.coords.length, controlPath.coords.length);
+for (let index = 0; index < controlPath.coords.length; index += 2) {
+  const guidePoint = archGuide.pointAtDistance(controlPath.coords[index]);
+  assert.ok(Math.abs(warpedControlPath.coords[index] - guidePoint.x) < 1e-8);
+  assert.ok(
+    Math.abs(
+      warpedControlPath.coords[index + 1]
+        - (guidePoint.y + controlPath.coords[index + 1]),
+    ) < 1e-8,
+  );
+}
+const centeredControlPath = warpVectorTextPathAlongCurve(
+  {
+    verbs: new Uint8Array([0, 1, 1]),
+    coords: new Float64Array([0, 0, 500, 0, 1000, 0]),
+    contourOffsets: new Uint32Array([0]),
+    fillRule: 0,
+  },
+  archGuide,
+  0,
+  0,
+  centeredArchOffset,
+);
+assert.ok(
+  Math.abs(centeredControlPath.coords[0] + centeredControlPath.coords[4]) < 1e-7,
+  "Il warp centrato deve conservare la simmetria X",
+);
+assert.ok(
+  Math.abs(centeredControlPath.coords[1] - centeredControlPath.coords[5]) < 1e-7,
+  "Il warp centrato deve conservare la simmetria Y",
+);
+const circleStart = vectorTextCirclePlacement(0, 0, 100, false);
+assert.ok(Math.abs(circleStart.targetX) < 1e-9);
+assert.ok(Math.abs(circleStart.targetY + 100) < 1e-9);
+assert.ok(Math.abs(circleStart.rotation) < 1e-9);
+const circleQuarter = vectorTextCirclePlacement(Math.PI * 50, 0, 100, false);
+assert.ok(Math.abs(circleQuarter.targetX - 100) < 1e-9);
+assert.ok(Math.abs(circleQuarter.targetY) < 1e-9);
+assert.ok(Math.abs(circleQuarter.rotation - Math.PI / 2) < 1e-9);
+const invertedCircleStart = vectorTextCirclePlacement(0, 0, 100, true);
+assert.ok(Math.abs(invertedCircleStart.targetX) < 1e-9);
+assert.ok(Math.abs(invertedCircleStart.targetY - 100) < 1e-9);
+assert.ok(Math.abs(invertedCircleStart.rotation) < 1e-9);
+const circlePivotPath = {
+  verbs: new Uint8Array([0]),
+  coords: new Float64Array([50, -20]),
+  contourOffsets: new Uint32Array([0]),
+  fillRule: 0,
+};
+const circlePivotPlacement = vectorTextCirclePlacement(50, 0, 100, false);
+const mappedCirclePivot = transformVectorTextPathAffine(
+  circlePivotPath,
+  vectorTextCircleAffine(50, -20, 0, 100, false),
+);
+assert.ok(
+  Math.abs(mappedCirclePivot.coords[0] - circlePivotPlacement.targetX) < 1e-9,
+);
+assert.ok(
+  Math.abs(mappedCirclePivot.coords[1] - circlePivotPlacement.targetY) < 1e-9,
+);
+assert.match(transformSource, /arch:[\s\S]*x: 0\.5, y: 0\.65/);
+assert.match(transformSource, /wave:[\s\S]*x: 0\.8, y: 0\.5/);
+assert.match(transformSource, /verbs: path\.verbs\.slice\(\)/);
+assert.doesNotMatch(transformSource, /flatten|polygon/i);
+assert.match(fontGeometrySource, /font\.getPaths\(/);
+assert.match(controllerSource, /node\.transformType/);
+assert.match(controllerSource, /includeFill: fuseOutlineAndFill/);
+assert.match(controllerSource, /if \(!sourceFillCoveredByOutline\)/);
+assert.match(clientSource, /include-fill/);
+assert.match(controllerSource, /rotation: 0,/);
+assert.doesNotMatch(controllerSource, /rotation: index === 0/);
+
+// LOD: errore in pixel monotono e bound sotto 0,1 px fino a 64×.
+assert.equal(VECTOR_TEXT_MAXIMUM_VECTOR_ZOOM, 64);
+const lodSamples = [0.02, 0.197, 1, 8, 32, 64].map(vectorTextLodForSigma);
+for (let index = 1; index < lodSamples.length; index += 1) {
+  assert.ok(lodSamples[index].bucket >= lodSamples[index - 1].bucket);
+  assert.ok(lodSamples[index].integerScale >= lodSamples[index - 1].integerScale);
+}
+const maxLod = vectorTextMaximumLod();
+assert.equal(maxLod.bucketScale, 64);
+assert.ok(maxLod.cubicToQuadraticTolerance * 64 <= 0.015625 + 1e-12);
+assert.ok(maxLod.polygonFlattenTolerance * 64 <= 0.03125 + 1e-12);
+assert.ok(maxLod.roundArcSagittaTolerance * 64 <= 0.03125 + 1e-12);
+assert.ok(Math.SQRT2 * 0.5 / maxLod.integerScale * 64 < 0.006);
+
+// Topologia Clipper NonZero: holes, overlap, auto-intersezioni e degenerazioni.
+const lod = vectorTextLodForSigma(1);
+const outer = [[0, 0], [120, 0], [120, 100], [0, 100]];
+const inner = [[30, 30], [90, 30], [90, 70], [30, 70]];
+const sourceRectangle = polygonPath([outer]);
+const rectangleSet = canonicalizeVectorTextPath(sourceRectangle, lod);
+assertCanonical(rectangleSet, "rectangle");
+assert.equal(rectangleSet.groups.length, 1);
+assert.equal(rectangleSet.groups[0].holes.length, 0);
+assertTriangulation(rectangleSet, lod, "rectangle");
+
+const sameNested = canonicalizeVectorTextPath(polygonPath([outer, inner]), lod);
+assertCanonical(sameNested, "same-oriented nested");
+assert.equal(sameNested.groups.length, 1);
+assert.equal(sameNested.groups[0].holes.length, 0);
+
+const oppositeNested = canonicalizeVectorTextPath(
+  polygonPath([outer, reverseRing(inner)]),
+  lod,
+);
+assertCanonical(oppositeNested, "opposite nested");
+assert.equal(oppositeNested.groups.length, 1);
+assert.equal(oppositeNested.groups[0].holes.length, 1);
+assertTriangulation(oppositeNested, lod, "opposite nested");
+
+const island = [[45, 40], [75, 40], [75, 60], [45, 60]];
+const threeLevels = canonicalizeVectorTextPath(
+  polygonPath([outer, reverseRing(inner), island]),
+  lod,
+);
+assertCanonical(threeLevels, "three levels");
+assert.equal(threeLevels.groups.length, 2);
+assertTriangulation(threeLevels, lod, "three levels");
+
+const overlapA = [[0, 0], [80, 0], [80, 80], [0, 80]];
+const overlapB = [[50, 20], [130, 20], [130, 100], [50, 100]];
+const overlapping = canonicalizeVectorTextPath(polygonPath([overlapA, overlapB]), lod);
+const overlappingPermuted = canonicalizeVectorTextPath(
+  polygonPath([overlapB, overlapA]),
+  lod,
+);
+assertCanonical(overlapping, "overlap");
+assert.equal(canonicalKey(overlapping), canonicalKey(overlappingPermuted));
+assertTriangulation(overlapping, lod, "overlap");
+
+const bowTie = canonicalizeVectorTextPath(
+  polygonPath([[[0, 0], [100, 100], [0, 100], [100, 0]]]),
+  lod,
+);
+assertCanonical(bowTie, "bow-tie");
+assert.ok(bowTie.groups.length > 0, "bow-tie non deve essere scartato per area netta zero");
+assertTriangulation(bowTie, lod, "bow-tie");
+
+const duplicateAndZeroLength = canonicalizeVectorTextPath(
+  polygonPath([[[0, 0], [100, 0], [100, 0], [100, 0.000001], [100, 80], [0, 80]]]),
+  lod,
+);
+assertCanonical(duplicateAndZeroLength, "duplicate/near-collinear");
+assert.ok(duplicateAndZeroLength.groups.length > 0);
+
+const explicitZeroLengthCurves = vectorPathToQuadraticContours({
+  verbs: new Uint8Array([0, 2, 3, 1, 1, 1, 4]),
+  coords: new Float64Array([
+    0, 0,
+    0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0,
+    80, 0,
+    80, 60,
+    0, 60,
+  ]),
+  contourOffsets: new Uint32Array([0]),
+  fillRule: 0,
+}, lod.cubicToQuadraticTolerance);
+assert.equal(explicitZeroLengthCurves.length, 1);
+assert.equal(explicitZeroLengthCurves[0].curves.length, 4);
+for (const curve of explicitZeroLengthCurves[0].curves) {
+  assert.ok(
+    curve.p0.x !== curve.p2.x || curve.p0.y !== curve.p2.y,
+    "le curve completamente degeneri devono essere rimosse",
+  );
+}
+
+const tangentContours = canonicalizeVectorTextPath(
+  polygonPath([
+    [[0, 0], [50, 0], [50, 50], [0, 50]],
+    [[50, 50], [100, 50], [100, 100], [50, 100]],
+  ]),
+  lod,
+);
+assertCanonical(tangentContours, "tangent contours");
+assertTriangulation(tangentContours, lod, "tangent contours");
+
+// Outline: zero è un vero no-op; round/bevel e miter producono regioni canoniche.
+// La mesh runtime sovrappone 1 px sotto il fill analitico senza cambiare il bordo esterno.
+assert.equal(VECTOR_TEXT_OUTLINE_INNER_OVERLAP_PIXELS, 1);
+assert.equal(VECTOR_TEXT_BLOCK_INNER_OVERLAP_PIXELS, 2);
+assert.equal(
+  compileVectorTextEffect(
+    sourceRectangle,
+    lod,
+    { kind: "source-outline", width: 0, join: "round" },
+    "width-zero",
+  ),
+  null,
+);
+const sourceFillMesh = compileVectorTextEffect(
+  sourceRectangle,
+  lod,
+  { kind: "source-fill" },
+  "source-fill",
+);
+assert.ok(sourceFillMesh);
+assert.deepEqual(absoluteMeshBounds(sourceFillMesh), {
+  left: 0,
+  top: 0,
+  right: 120,
+  bottom: 100,
+});
+for (const join of ["round", "bevel", "miter"]) {
+  const outlineSet = buildOutsideVectorTextOutline(
+    rectangleSet,
+    10 * lod.integerScale,
+    join,
+    Math.max(1, Math.round(lod.roundArcSagittaTolerance * lod.integerScale)),
+  );
+  assert.ok(outlineSet);
+  assertCanonical(outlineSet, `outline-${join}`);
+  assert.ok(canonicalArea(outlineSet, lod.integerScale) > 0);
+  const outlineMesh = assertTriangulation(outlineSet, lod, `outline-${join}`);
+  const seamSafeOutlineSet = buildOutsideVectorTextOutline(
+    rectangleSet,
+    10 * lod.integerScale,
+    join,
+    Math.max(1, Math.round(lod.roundArcSagittaTolerance * lod.integerScale)),
+    VECTOR_TEXT_OUTLINE_INNER_OVERLAP_PIXELS * lod.integerScale,
+  );
+  assert.ok(seamSafeOutlineSet);
+  assertCanonical(seamSafeOutlineSet, `outline-seam-safe-${join}`);
+  assert.ok(
+    canonicalArea(seamSafeOutlineSet, lod.integerScale)
+      > canonicalArea(outlineSet, lod.integerScale),
+    "l'overlap interno deve chiudere la fessura AA",
+  );
+  const bounds = absoluteMeshBounds(outlineMesh);
+  assert.ok(bounds.left <= -9.99);
+  assert.ok(bounds.right >= 129.99);
+  const compiled = compileVectorTextEffect(
+    sourceRectangle,
+    lod,
+    { kind: "source-outline", width: 10, join },
+    `compiled-${join}`,
+  );
+  assert.ok(compiled);
+  assert.equal(compiled.lodBucket, lod.bucket);
+  assert.ok(
+    meshTriangleArea(compiled) > meshTriangleArea(outlineMesh),
+    "la mesh compilata deve includere l'overlap nascosto sotto il fill",
+  );
+  const fused = compileVectorTextEffect(
+    sourceRectangle,
+    lod,
+    { kind: "source-outline", width: 10, join, includeFill: true },
+    `fused-${join}`,
+  );
+  assert.ok(fused);
+  assert.ok(
+    meshTriangleArea(fused) > meshTriangleArea(compiled),
+    "fill e outline dello stesso colore devono diventare una sola unione",
+  );
+  assert.deepEqual(absoluteMeshBounds(fused), absoluteMeshBounds(compiled));
+}
+
+// Block Shadow: F, F+v e le side wall appartengono a una sola unione.
+assert.equal(buildVectorTextBlockSet(rectangleSet, 0, 0), rectangleSet);
+const vectorX = 23 * lod.integerScale;
+const vectorY = 17 * lod.integerScale;
+const blockSet = buildVectorTextBlockSet(rectangleSet, vectorX, vectorY);
+assertCanonical(blockSet, "block shadow");
+assert.ok(canonicalArea(blockSet, lod.integerScale) >= canonicalArea(rectangleSet, lod.integerScale));
+assert.ok(blockSet.left <= rectangleSet.left);
+assert.ok(blockSet.top <= rectangleSet.top);
+assert.ok(blockSet.right >= rectangleSet.right + vectorX);
+assert.ok(blockSet.bottom >= rectangleSet.bottom + vectorY);
+assertTriangulation(blockSet, lod, "block shadow");
+const visibleBlockWithoutOverlap = buildVisibleVectorTextBlockSet(
+  rectangleSet,
+  vectorX,
+  vectorY,
+);
+const blockInnerOverlap = Math.max(
+  1,
+  Math.round(
+    VECTOR_TEXT_BLOCK_INNER_OVERLAP_PIXELS
+      / lod.bucketScale
+      * lod.integerScale,
+  ),
+);
+const visibleBlockSet = buildVisibleVectorTextBlockSet(
+  rectangleSet,
+  vectorX,
+  vectorY,
+  blockInnerOverlap,
+);
+assertCanonical(visibleBlockSet, "visible block shadow overlap");
+assertTriangulation(visibleBlockSet, lod, "visible block shadow overlap");
+assert.ok(
+  canonicalArea(visibleBlockSet, lod.integerScale)
+    > canonicalArea(visibleBlockWithoutOverlap, lod.integerScale),
+  "le pareti devono sovrapporsi al fill nella sola zona nascosta",
+);
+assert.ok(
+  canonicalArea(visibleBlockSet, lod.integerScale)
+    < canonicalArea(blockSet, lod.integerScale),
+  "la faccia sorgente nascosta non deve restare nel fill della Block Shadow",
+);
+assert.deepEqual(
+  {
+    left: visibleBlockSet.left,
+    top: visibleBlockSet.top,
+    right: visibleBlockSet.right,
+    bottom: visibleBlockSet.bottom,
+  },
+  {
+    left: visibleBlockWithoutOverlap.left,
+    top: visibleBlockWithoutOverlap.top,
+    right: visibleBlockWithoutOverlap.right,
+    bottom: visibleBlockWithoutOverlap.bottom,
+  },
+  "l'overlap nascosto non deve cambiare la bbox della mesh visibile",
+);
+assert.deepEqual(
+  {
+    left: visibleBlockSet.left,
+    top: visibleBlockSet.top,
+    right: visibleBlockSet.right,
+    bottom: visibleBlockSet.bottom,
+  },
+  {
+    left: blockSet.left,
+    top: blockSet.top,
+    right: blockSet.right,
+    bottom: blockSet.bottom,
+  },
+  "rimuovere la faccia sorgente non deve cambiare la bbox dell'effetto",
+);
+const blockMesh = compileVectorTextEffect(
+  sourceRectangle,
+  lod,
+  { kind: "block", vectorX: 23, vectorY: 17 },
+  "block",
+);
+assert.ok(blockMesh);
+assert.equal(
+  compileVectorTextEffect(
+    sourceRectangle,
+    lod,
+    { kind: "block", vectorX: 0, vectorY: 0 },
+    "block-zero",
+  ),
+  null,
+  "offset zero non deve generare una faccia nascosta",
+);
+assert.ok(
+  Math.abs(
+    meshTriangleArea(blockMesh)
+      - canonicalArea(visibleBlockSet, lod.integerScale),
+  ) <= 1e-5,
+  "la mesh Block Shadow deve usare faccia traslata e pareti esposte",
+);
+const blockBounds = absoluteMeshBounds(blockMesh);
+assert.ok(blockBounds.right >= 142.99);
+assert.ok(blockBounds.bottom >= 116.99);
+const longSeventyDegreeVector = vectorTextBlockShadowLocalVector(0, 100, 70);
+for (const [directionX, directionY] of [
+  [23, 0],
+  [-23, 0],
+  [0, 17],
+  [0, -17],
+  [23, 17],
+  [-23, 17],
+  [23, -17],
+  [-23, -17],
+  [longSeventyDegreeVector.x, longSeventyDegreeVector.y],
+]) {
+  const quantizedX = Math.round(directionX * lod.integerScale);
+  const quantizedY = Math.round(directionY * lod.integerScale);
+  const fullDirectionBlock = buildVectorTextBlockSet(
+    oppositeNested,
+    quantizedX,
+    quantizedY,
+  );
+  const visibleDirectionBlock = buildVisibleVectorTextBlockSet(
+    oppositeNested,
+    quantizedX,
+    quantizedY,
+  );
+  const overlappedDirectionBlock = buildVisibleVectorTextBlockSet(
+    oppositeNested,
+    quantizedX,
+    quantizedY,
+    blockInnerOverlap,
+  );
+  assertCanonical(overlappedDirectionBlock, `block overlap ${directionX},${directionY}`);
+  assertTriangulation(
+    overlappedDirectionBlock,
+    lod,
+    `block overlap ${directionX},${directionY}`,
+  );
+  assert.equal(
+    difference(visibleDirectionBlock.paths, overlappedDirectionBlock.paths, FillRule.NonZero).length,
+    0,
+    `l'overlap sottrae triangoli visibili per ${directionX},${directionY}`,
+  );
+  assert.equal(
+    difference(overlappedDirectionBlock.paths, fullDirectionBlock.paths, FillRule.NonZero).length,
+    0,
+    `l'overlap esce dallo sweep completo per ${directionX},${directionY}`,
+  );
+
+  assert.ok(
+    canonicalArea(overlappedDirectionBlock, lod.integerScale)
+      >= canonicalArea(visibleDirectionBlock, lod.integerScale),
+    `overlap nascosto mancante per ${directionX},${directionY}`,
+  );
+  assert.ok(
+    canonicalArea(overlappedDirectionBlock, lod.integerScale)
+      < canonicalArea(fullDirectionBlock, lod.integerScale),
+    `la faccia sorgente è rientrata per ${directionX},${directionY}`,
+  );
+  assert.deepEqual(
+    {
+      left: overlappedDirectionBlock.left,
+      top: overlappedDirectionBlock.top,
+      right: overlappedDirectionBlock.right,
+      bottom: overlappedDirectionBlock.bottom,
+    },
+    {
+      left: visibleDirectionBlock.left,
+      top: visibleDirectionBlock.top,
+      right: visibleDirectionBlock.right,
+      bottom: visibleDirectionBlock.bottom,
+    },
+    `l'overlap cambia bbox per ${directionX},${directionY}`,
+  );
+}
+const blockOutlineMesh = compileVectorTextEffect(
+  sourceRectangle,
+  lod,
+  {
+    kind: "block-outline",
+    vectorX: 23,
+    vectorY: 17,
+    width: 8,
+    join: "miter",
+  },
+  "block-outline",
+);
+assert.ok(blockOutlineMesh);
+assert.ok(meshTriangleArea(blockOutlineMesh) > 0);
+
+// Slug: un'intera shape, texture compatte/allineate e winding analitico.
+const slugPath = polygonPath([outer, reverseRing(inner)]);
+const slug = buildVectorTextSlugData(slugPath);
+assert.equal(slug.revision, vectorTextPathRevision(slugPath));
+assert.equal(slug.curveCount, 8);
+for (const texture of [slug.curveTexture, slug.bandTexture]) {
+  assert.ok(texture.width >= 16);
+  assert.equal(texture.width & (texture.width - 1), 0);
+  assert.equal((texture.width * 16) % 256, 0);
+  assert.ok(texture.height >= 1 && texture.height <= 8192);
+}
+assert.ok(slug.horizontalBandCount >= 16 && slug.horizontalBandCount <= 255);
+assert.ok(slug.verticalBandCount >= 16 && slug.verticalBandCount <= 255);
+assert.ok(slug.maximumHorizontalCandidates <= 64);
+assert.ok(slug.maximumVerticalCandidates <= 64);
+assert.throws(
+  () => buildVectorTextSlugData({ ...slugPath, fillRule: 1 }),
+  /EvenOdd/,
+);
+assert.match(slugSource, /const sourceCurves = contours\.flatMap/);
+assert.match(slugSource, /Math\.ceil\(\(minimum - boundsMinimum\)[\s\S]*- 1/);
+assert.match(slugShaderSource, /length\(vec2<f32>\([\s\S]*dpdx/);
+assert.match(slugShaderSource, /let alpha = coverage \* slug\.color\.a/);
+assert.match(slugShaderSource, /vec4<f32>\(slug\.color\.rgb \* alpha, alpha\)/);
+assert.match(slugShaderSource, /abs\(a\.y\) <= linearScale \/ 1048576\.0/);
+assert.equal(
+  slugShaderSource.match(/sourceCoordinateScale: f32/g)?.length,
+  2,
+);
+assert.match(
+  slugShaderSource,
+  /max\(abs\(source12\.y\), max\(abs\(source12\.w\), abs\(source3\.y\)\)\)/,
+);
+assert.match(
+  slugShaderSource,
+  /max\(abs\(source12\.x\), max\(abs\(source12\.z\), abs\(source3\.x\)\)\)/,
+);
+const f32LineStart = Math.fround(300.00003);
+const f32LineMiddle = Math.fround(300.01503);
+const f32LineEnd = Math.fround(300.03003);
+const f32LineSecondDifference = Math.abs(
+  f32LineStart - f32LineMiddle * 2 + f32LineEnd,
+);
+const f32LineSpanScale = Math.max(
+  1,
+  Math.abs(f32LineStart - f32LineMiddle),
+  Math.abs(f32LineMiddle - f32LineEnd),
+  Math.abs(f32LineStart - f32LineEnd),
+);
+const f32LineAbsoluteScale = Math.max(
+  1,
+  Math.abs(f32LineStart),
+  Math.abs(f32LineMiddle),
+  Math.abs(f32LineEnd),
+);
+assert.ok(f32LineSecondDifference > f32LineSpanScale / 1048576);
+assert.ok(f32LineSecondDifference <= f32LineAbsoluteScale / 1048576);
+assert.doesNotMatch(slugSource, /perGlyph|glyphQuads|one quad per glyph/i);
+assert.match(curveSource, /throw new Error\([\s\S]*depth/i);
+
+// Blur singolo: mask Slug R8, Gaussian separabile, ROI e kernel bounded.
+assert.equal(VECTOR_TEXT_SINGLE_SHADOW_BLUR_MAXIMUM, 300);
+assert.equal(vectorTextSingleShadowBlurSupport(0), 0);
+assert.equal(vectorTextSingleShadowBlurSupport(6), 19);
+assert.equal(VECTOR_TEXT_SINGLE_SHADOW_MAX_PIXELS, 4 * 1024 * 1024);
+assert.equal(VECTOR_TEXT_SINGLE_SHADOW_MAX_KERNEL_RADIUS, 24);
+const blurPlan = planVectorTextSingleShadowBlur(
+  { left: 0, top: 0, right: 100, bottom: 40 },
+  6,
+  1,
+);
+assert.deepEqual([...blurPlan.bounds], [-19, -19, 119, 59]);
+assert.equal(blurPlan.width, 138);
+assert.equal(blurPlan.height, 78);
+assert.equal(blurPlan.sigmaPixels, 6);
+assert.equal(blurPlan.radius, 18);
+const cappedBlurPlan = planVectorTextSingleShadowBlur(
+  { left: 0, top: 0, right: 100, bottom: 40 },
+  6,
+  10,
+);
+assert.ok(Math.abs(cappedBlurPlan.sigmaPixels - 8) < 1e-9);
+assert.equal(cappedBlurPlan.radius, 24);
+assert.ok(cappedBlurPlan.width * cappedBlurPlan.height <= VECTOR_TEXT_SINGLE_SHADOW_MAX_PIXELS);
+assert.doesNotMatch(singleShadowSource, /Canvas|createElement|getContext|filter\s*=/);
+assert.match(gpuShaderSource, /sourceTexture: texture_2d<f32>/);
+assert.match(gpuShaderSource, /horizontalMain/);
+assert.match(gpuShaderSource, /verticalMain/);
+assert.match(gpuShaderSource, /textureSample\(blurredMask, blurredSampler, input\.uv\)\.r/);
+assert.match(innerShadowShaderSource, /innerShadowDirectFragmentMain/);
+assert.match(innerShadowShaderSource, /innerShadowBlurFragmentMain/);
+assert.match(
+  innerShadowShaderSource,
+  /fillCoverage \* \(1\.0 - shiftedFillCoverage\)/,
+);
+assert.match(
+  innerShadowShaderSource,
+  /fillCoverage \* \(1\.0 - clamp\(shiftedBlurredFill/,
+);
+assert.match(innerShadowShaderSource, /slug\.effectSampleOffset\.xy/);
+assert.match(innerShadowShaderSource, /textureSampleLevel\(/);
+assert.doesNotMatch(innerShadowShaderSource, /Canvas|createElement|getContext/);
+
+const appendDrawsStart = controllerSource.indexOf("  private appendGpuDrawsForNode(");
+const appendDrawsEnd = controllerSource.indexOf(
+  "  private blockShadowPathLogicalMiB(",
+  appendDrawsStart,
+);
+const appendDrawsSource = controllerSource.slice(appendDrawsStart, appendDrawsEnd);
+assert.ok(appendDrawsStart >= 0 && appendDrawsEnd > appendDrawsStart);
+assert.ok(
+  appendDrawsSource.indexOf("this.slugInnerShadowDraw")
+    > appendDrawsSource.lastIndexOf("draws.push(this.slugDraw("),
+  "l’ombra interna deve essere composta dopo il riempimento",
+);
+const runBoundsStart = engineSource.indexOf("  private vectorTextGpuRunBounds(");
+const runBoundsEnd = engineSource.indexOf(
+  "  private vectorTextGpuClearBounds(",
+  runBoundsStart,
+);
+const runBoundsSource = engineSource.slice(runBoundsStart, runBoundsEnd);
+assert.doesNotMatch(runBoundsSource, /slug-inner-shadow/);
+assert.match(engineSource, /Vector text inner shadow direct Slug MSAA4/);
+assert.match(engineSource, /Vector text inner shadow blurred Slug clip MSAA4/);
+
+// Controller/Worker: sempre GPU, scambio atomico, coda coalescente e bbox semantica.
+assert.match(controllerSource, /updateVectorTextGpuPresentation\(/);
+assert.doesNotMatch(controllerSource, /updateVectorTextPresentation\(/);
+assert.equal((controllerSource.match(/getContext\("2d"/g) ?? []).length, 1);
+assert.match(controllerSource, /this\.interactionCanvas\.getContext\("2d"/);
+assert.match(controllerSource, /this\.presentationCanvas\.width = 1/);
+assert.match(controllerSource, /this\.presentationCanvas\.hidden = true/);
+const controllerInitializeStart = controllerSource.indexOf("  async initialize(): Promise<void> {");
+const controllerInitializeEnd = controllerSource.indexOf(
+  "\n  syncScene(",
+  controllerInitializeStart,
+);
+assert.ok(
+  controllerInitializeStart >= 0 && controllerInitializeEnd > controllerInitializeStart,
+);
+const controllerInitializeSource = controllerSource.slice(
+  controllerInitializeStart,
+  controllerInitializeEnd,
+);
+assert.doesNotMatch(
+  controllerInitializeSource,
+  /addVectorTextNode|defaultSeed/,
+  "l'avvio non deve creare automaticamente un livello testo",
+);
+assert.match(controllerSource, /private bindVectorHistoryControl\(control: HTMLElement\)/);
+assert.match(
+  controllerSource,
+  /control\.type === "range"[\s\S]*pointerup[\s\S]*pointercancel[\s\S]*keyup[\s\S]*blur/,
+);
+assert.match(
+  controllerSource,
+  /this\.host\.beginVectorHistoryEdit\("transform"\)/,
+);
+assert.match(
+  controllerSource,
+  /private async applyTransformSession\(\)[\s\S]*this\.host\.commitVectorHistoryEdit\(\)/,
+);
+assert.match(
+  controllerSource,
+  /private async cancelTransformSession\(\)[\s\S]*this\.host\.cancelVectorHistoryEdit\(\)/,
+);
+assert.doesNotMatch(
+  controllerSource.slice(
+    controllerSource.indexOf("  private finishPointer(event: PointerEvent): void {"),
+  ),
+  /this\.host\.commitVectorHistoryEdit\(\)/,
+  "pointerup non deve creare una voce Undo prima di Applica",
+);
+assert.match(engineSource, /beginVectorHistoryEdit\(scope: "property" \| "transform" = "property"\): boolean/);
+assert.match(engineSource, /commitVectorHistoryEdit\(\): boolean/);
+assert.match(engineSource, /async cancelVectorHistoryEdit\(\): Promise<boolean>/);
+assert.match(engineSource, /kind: "vector"[\s\S]*delta: MixedSceneVectorHistoryDelta/);
+// Non un'asserzione di ordine sulla concatenazione (che codificherebbe solo la
+// posizione dei moduli): due presenze distinte, con il ripristino vincolato a
+// stare dentro la funzione che applica lo stato vettoriale.
+assert.match(engineSource, /action\.kind === "vector"/);
+const applyVectorStart = engineSource.indexOf("export async function applyVectorHistoryState(");
+const applyVectorEnd = engineSource.indexOf("\nexport ", applyVectorStart + 1);
+assert.ok(
+  applyVectorStart >= 0 && applyVectorEnd > applyVectorStart,
+  "applyVectorHistoryState non delimitabile",
+);
+assert.match(
+  engineSource.slice(applyVectorStart, applyVectorEnd),
+  /restoreVectorHistoryState\(/,
+  "l'applicazione dello stato vettoriale deve ripristinare la scena",
+);
+assert.match(controllerSource, /scheduleViewSync\(\): void \{[\s\S]*this\.enterFastZoomMode\(\)/);
+assert.match(
+  controllerSource,
+  /!this\.hasVectorPresentationNodes\(\) \|\| !this\.adaptiveZoomEnabled[\s\S]{0,300}this\.exitFastAfterScheduledRender = true/,
+);
+assert.match(controllerSource, /beginViewGesture\(\): void/);
+assert.match(controllerSource, /endViewGesture\(\): void/);
+assert.match(controllerSource, /requestExactRecovery\(revision: number\): void/);
+assert.match(controllerSource, /requestUnsafeExactRefresh\(revision: number\): void/);
+assert.match(controllerSource, /this\.unsafeExactRefreshInFlight[\s\S]*zoomUnsafeExactCoalescedCount/);
+assert.match(controllerSource, /waitForVectorTextPresentationCompletion\(\)\.then/);
+assert.match(
+  controllerSource,
+  /export type VectorTextClippedRefreshPolicy = "during-gesture" \| "on-release"/,
+);
+assert.match(
+  controllerSource,
+  /private readonly clippedRefreshPolicy: VectorTextClippedRefreshPolicy/,
+  "la variante A/B deve essere immutabile per l'intera vita del controller",
+);
+assert.match(
+  controllerSource,
+  /if \(this\.clippedRefreshPolicy === "during-gesture"\) \{\s*this\.requestUnsafeExactRefresh/,
+);
+assert.doesNotMatch(controllerSource, /setExactRefreshDuringViewGestureEnabled/);
+assert.match(
+  controllerSource,
+  /waitForVectorTextPresentationCompletion\(\)\.then\(\(\) => \{\s*this\.zoomUnsafeExactRefreshCompletedCount \+= 1/,
+  "un refresh iniziato non basta: il report deve sapere se è stato completato prima del rilascio",
+);
+assert.match(controllerSource, /zoomUnsafeExactRefreshInFlight: this\.unsafeExactRefreshInFlight/);
+assert.match(
+  controllerSource,
+  /zoomUnsafeExactRefreshRequestPending: this\.unsafeExactRefreshRequest !== null/,
+);
+assert.match(controllerSource, /vectorTextExactRecoveryIsCurrent\(/);
+assert.match(controllerSource, /setAdaptiveZoomEnabled\(enabled: boolean\): void/);
+assert.match(
+  controllerSource,
+  /if \(!enabled && this\.zoomRenderMode === "fast"\)[\s\S]{0,700}this\.viewGestureActive = false[\s\S]{0,700}this\.exitFastAfterScheduledRender = true/,
+  "disabilitare il fast path durante un gesto deve forzare un redraw preciso senza attendere pointer-up",
+);
+assert.match(mainSource, /effectRefinementRenderDelta = Math\.max\([\s\S]{0,150}exactRenderDeltaDuringRecovery - 1/);
+assert.doesNotMatch(
+  mainSource,
+  /exactRecoveryLatestOnly:[\s\S]{0,300}exactRenderDeltaDuringRecovery === 1/,
+  "gli swap atomici LOD degli effetti possono raffinare la singola recovery senza creare altre recovery zoom",
+);
+assert.match(mainSource, /layerMemoryStressReport\.textContent = JSON\.stringify\(report, null, 2\)/);
+assert.match(mainSource, /pageSearchParams\.get\("vectorZoomRefresh"\)/);
+assert.match(mainSource, /refreshMode === "during" \? "A" : "B"/);
+assert.match(mainSource, /engine\.panByClientDelta\(1, 0\)/);
+assert.match(mainSource, /VECTOR_TEXT_ZOOM_AB_IDLE_FRAME_COUNT/);
+assert.match(mainSource, /VECTOR_TEXT_ZOOM_AB_SAMPLE_COUNT/);
+assert.match(mainSource, /__vectorZoomAbReport/);
+assert.match(mainSource, /unsafeExactRefreshCompletedDelta > 0/);
+assert.match(
+  mainSource,
+  /unsafeExactRefreshStartedDelta === 0[\s\S]{0,220}exactRenderDeltaDuringGesture === 0/,
+);
+assert.ok(
+  (mainSource.match(/vectorTextPrototype\?\.beginViewGesture\(\)/g) ?? []).length >= 2,
+  "pinch e pan/rotate devono armare il fast mode prima del primo movimento",
+);
+assert.ok(
+  (mainSource.match(/vectorTextPrototype\?\.endViewGesture\(\)/g) ?? []).length >= 2,
+  "pointer-up deve richiedere il recovery preciso senza attendere il debounce",
+);
+assert.doesNotMatch(controllerSource, /zoomModeIndicator|updateAdaptiveZoomIndicator|Zoom vettori · GPU/);
+assert.match(adaptiveSource, /dual-gpu-reprojection-fallback-exact-settle-v6/);
+assert.match(adaptiveSource, /for \(const \[x, y\] of \[/);
+assert.match(engineSource, /vectorTextFastPresentationInFlight/);
+assert.match(engineSource, /vectorTextFastPresentationLatestRequested/);
+assert.match(engineSource, /vectorTextFastPresentationCoalescedRequestCount \+= 1/);
+assert.match(engineSource, /vectorTextFastRequestedRevision \+= 1/);
+assert.match(engineSource, /vectorTextFastSubmittedRevision = Math\.max/);
+assert.match(engineSource, /vectorTextFastCompletedRevision = Math\.max/);
+assert.match(engineSource, /waitForVectorTextFastPresentationRevision/);
+assert.match(
+  engineSource,
+  /vectorTextFastPresentationEnabled && this\.vectorTextFastPresentationInFlight\) \{\s*this\.vectorTextFastPresentationLatestRequested = true/,
+  "anche un frame autoritativo concorrente deve lasciare un ack latest-only tracciato",
+);
+assert.match(engineSource, /device\.queue\.onSubmittedWorkDone\(\)\.then/);
+assert.match(
+  engineSource,
+  /function writeCaptureViewUniform[\s\S]*if \(changed\) \{[\s\S]*queue\.writeBuffer/,
+);
+assert.doesNotMatch(
+  mixedCompositorSource,
+  /if \(capture\.fastMode > 1\.5\)/,
+  "nessun fast mode deve bypassare la camera con un frame screen-space",
+);
+assert.match(mixedCompositorSource, /@group\(0\) @binding\(5\) var fallbackTexture/);
+assert.match(mixedCompositorSource, /return mix\(fallbackColor, sourceColor, smoothstep/);
+assert.match(engineSource, /captureVectorTextFallbackPresentation/);
+assert.match(engineSource, /probeVectorTextFallbackAlpha/);
+assert.match(engineSource, /probeVectorTextFastCompositeAlpha/);
+assert.match(engineSource, /const texture = engine\.mixedSceneLinearTexture/);
+assert.match(engineSource, /x \* bytesPerPixel \+ 6/);
+assert.match(engineSource, /GPUTextureUsage\.COPY_SRC/);
+assert.match(
+  engineSource,
+  /vectorTextFallbackCaptureView = null;\s*writeVectorTextFallbackCaptureUniforms\(engine\);\s*writeVectorTextCaptureUniforms\(engine\)/,
+  "invalidare la fallback deve riclassificare subito il fast mode prima del frame successivo",
+);
+assert.match(controllerSource, /zoomFallbackReprojectionCount/);
+assert.match(mainSource, /VECTOR_TEXT_ZOOM_C_START_ZOOM/);
+assert.match(mainSource, /VECTOR_TEXT_ZOOM_C_TARGET_ZOOM/);
+assert.match(mainSource, /__vectorZoomCoverageReport/);
+assert.match(mainSource, /fallbackProbeAlphaPixelCounts/);
+assert.match(mainSource, /fastCompositeProbeAlphaPixelCounts/);
+assert.match(mainSource, /finalFastFrameAcknowledged/);
+assert.match(mainSource, /initialRasterWasEmpty/);
+assert.match(mainSource, /const duringTrace = controller\.getDiagnostics\(\)/);
+assert.match(
+  mainSource,
+  /fastPresentationSubmitDelta =\s*duringTrace\.zoomFastPresentationSubmissionCount/,
+  "il drain di verifica non deve migliorare retroattivamente la metrica dei 650 ms",
+);
+assert.match(mainSource, /fastSubmittedRevisionLagMaximum <= 2/);
+assert.match(mainSource, /finalFastAckDurationMs <= 250/);
+assert.match(mainSource, /VECTOR_TEXT_ZOOM_C_GESTURE_DURATION_MS/);
+assert.match(mainSource, /\/api\/vector-zoom-runs/);
+assert.match(sitesBuildSource, /handleVectorZoomRuns/);
+assert.match(sitesBuildSource, /\/api\/vector-zoom-runs/);
+assert.match(sitesBuildSource, /report\.passed !== VECTOR_ZOOM_CHECK_NAMES\.every/);
+assert.doesNotMatch(
+  sitesBuildSource,
+  /report\.fallbackTextureCount !== 1|report\.exactRecoveryDelta !== 1/,
+  "il backend deve salvare anche i report C falliti, non soltanto gli esiti verdi",
+);
+assert.match(vectorZoomMigrationSource, /CREATE TABLE IF NOT EXISTS vector_zoom_runs/);
+assert.equal(
+  (mixedCompositorSource.match(/return textureLoad\(sourceTexture, pixel, 0\);/g) ?? []).length,
+  1,
+  "il campionamento screen-space diretto deve esistere soltanto nel modo preciso",
+);
+assert.match(controllerSource, /if \(node\.outlineWidth > 0\) \{[\s\S]*kind: "source-outline"/);
+assert.match(controllerSource, /if \(node\.blockShadowOutlineWidth > 0\) \{[\s\S]*kind: "block-outline"/);
+assert.equal(
+  (controllerSource.match(/Math\.hypot\(vector\.x, vector\.y\) > Number\.EPSILON/g) ?? []).length,
+  2,
+  "testo e SVG devono saltare la faccia Block Shadow completamente nascosta a offset zero",
+);
+assert.doesNotMatch(
+  controllerSource,
+  /Math\.hypot\(vector\.x, vector\.y\) <= Number\.EPSILON/,
+);
+assert.match(controllerSource, /node\.singleShadowBlur > 0[\s\S]*this\.slugBlurDraw/);
+assert.match(controllerSource, /else \{[\s\S]*this\.slugDraw\(/);
+assert.doesNotMatch(fontGeometrySource, /Path2D|canvasPath|buildShadow3dPath/);
+assert.match(clientSource, /private activeRequestId: number \| null = null/);
+assert.match(clientSource, /private readonly queuedBySlot = new Map/);
+assert.match(clientSource, /this\.queuedBySlot\.set\(slotKey, queued\)/);
+assert.match(clientSource, /desiredKeyBySlot\.values\(\)[\s\S]*desiredKey === response\.cacheKey/);
+assert.match(clientSource, /requiresExactEffectLod[\s\S]*effect\.kind === "block"[\s\S]*effect\.kind === "block-outline"/);
+assert.match(clientSource, /currentAlreadySuitable[\s\S]*current\.lodBucket === lod\.bucket[\s\S]*current\.lodBucket >= lod\.bucket/);
+assert.match(clientSource, /if \(!currentAlreadySuitable\) \{[\s\S]*this\.requestEffect/);
+assert.match(clientSource, /\|\| exactLod[\s\S]*ready\.lodBucket >= current\.lodBucket/);
+assert.match(clientSource, /matchesRequestedIdentity: current\?\.effectIdentity === identity/);
+assert.match(clientSource, /matchesRequestedLod: currentAlreadySuitable/);
+assert.match(controllerSource, /!requireRequestedLod \|\| result\.matchesRequestedLod/);
+assert.match(clientSource, /private readonly pinnedSlots = new Set<string>\(\)/);
+assert.match(clientSource, /!liveSlots\.has\(slot\) && !this\.pinnedSlots\.has\(slot\)/);
+assert.match(controllerSource, /slotNamespace = pinForRasterization \? "svg-raster" : "svg"/);
+assert.match(controllerSource, /this\.effectCompiler\.pinSlot\(slotKey\)/);
+assert.match(controllerSource, /finally \{[\s\S]*releasePinnedSlot\(slot\)/);
+assert.doesNotMatch(clientSource, /displayed\.sourceRevision !== sourceRevision/);
+assert.match(clientSource, /MAXIMUM_READY_EFFECT_CACHE_ENTRIES = 48/);
+assert.match(clientSource, /MAXIMUM_REGISTERED_PATHS = 128/);
+assert.match(clientSource, /protectedRevisions/);
+assert.match(clientSource, /type: "release-path"/);
+assert.match(workerProtocolSource, /ReleaseVectorTextPathMessage/);
+assert.match(workerSource, /message\.type === "release-path"[\s\S]*paths\.delete/);
+assert.match(controllerSource, /displayedDrawsByNodeKey/);
+assert.match(controllerSource, /if \(allEffectsReady\) \{[\s\S]*else if \(displayedDraws\)/);
+assert.match(controllerSource, /retargetDisplayedDraws\(displayedDraws, node\)/);
+assert.match(controllerSource, /dataset\.atomicEffectPendingNodes/);
+assert.match(workerSource, /postMessage\([\s\S]*mesh\.vertices\.buffer[\s\S]*mesh\.indices\.buffer/);
+assert.match(geometrySource, /const MITER_LIMIT = 4/);
+assert.match(geometrySource, /Il contratto richiede bevel, non square/);
+assert.match(geometrySource, /exactCrossSign\(vectorX, vectorY, edgeX, edgeY\) <= 0/);
+assert.match(geometrySource, /canonicalSetFromPaths\(pieces\)/);
+assert.match(geometrySource, /ClipType\.Difference/);
+assert.match(geometrySource, /ClipType\.Intersection/);
+assert.match(geometrySource, /overlapPieces/);
+assert.match(geometrySource, /triangulationDeviation > 1e-8/);
+assert.match(geometrySource, /if \(quantized\.length >= 3\)/);
+
+const textCornersStart = controllerSource.indexOf("  private textCorners(");
+const textCornersEnd = controllerSource.indexOf("  private rotationHandle(", textCornersStart);
+assert.ok(textCornersStart >= 0 && textCornersEnd > textCornersStart);
+const textCornersSource = controllerSource.slice(textCornersStart, textCornersEnd);
+assert.doesNotMatch(textCornersSource, /blockShadow|singleShadow|outlineWidth|blur/);
+assert.match(controllerSource, /effectLodForNode[\s\S]*Math\.abs\(node\.scale \* view\.zoom\)/);
+assert.match(controllerSource, /!this\.host\.isPaintStrokeActive\(\)/);
+
+// WebGPU resources: MSAA4 senza vecchio stencil, premultiplied source-over e destroy esplicito.
+assert.doesNotMatch(engineSource, /vectorTextGpuDepthStencil|VECTOR_TEXT_GPU_DEPTH_STENCIL_FORMAT/);
+assert.doesNotMatch(engineSource, /Vector text outline stencil union/);
+assert.match(engineSource, /VECTOR_TEXT_GPU_SAMPLE_COUNT \+ 1/);
+assert.match(engineSource, /srcFactor: "one"[\s\S]*dstFactor: "one-minus-src-alpha"/);
+assert.match(engineSource, /Vector text analytic Slug mask for GPU blur/);
+assert.match(engineSource, /Vector text GPU Gaussian horizontal/);
+assert.match(engineSource, /Vector text GPU Gaussian vertical/);
+assert.match(gpuResourcesSource, /resources\.curveTexture\.destroy\(\)[\s\S]*resources\.bandTexture\.destroy\(\)/);
+assert.match(gpuResourcesSource, /resources\.vertexBuffer\.destroy\(\)[\s\S]*resources\.indexBuffer\.destroy\(\)/);
+assert.match(engineSource, /resources\.texture\.destroy\(\)[\s\S]*vectorTextGpuBlurCaches\.delete/);
+assert.match(engineSource, /if \(activeBlurCacheCount === 0\) \{[\s\S]*releaseVectorTextGpuBlurScratch/);
+assert.doesNotMatch(controllerSource, /document\.createElement\("canvas"\)/);
+assert.doesNotMatch(controllerSource, /strokeText\(|fillText\(|canvasPath/);
+
+// SVG: parser semantico sicuro, palette modificabile e gli stessi effetti mesh GPU.
+assert.equal(VECTOR_SVG_IMPORT_STRATEGY, "sanitized-semantic-svg-solid-paints-worker-lod-mesh-webgpu-v1");
+assert.equal(VECTOR_SVG_MAXIMUM_SOURCE_BYTES, 5 * 1024 * 1024);
+assert.equal(VECTOR_SVG_MAXIMUM_COMMANDS, 500_000);
+assert.match(svgSource, /const SAFE_ELEMENTS = new Set/);
+assert.match(svgSource, /"path", "rect", "circle", "ellipse", "line", "polyline", "polygon"/);
+assert.match(svgSource, /Elemento SVG non supportato o non sicuro/);
+assert.match(svgSource, /Handler evento SVG non consentito/);
+assert.match(svgSource, /Riferimenti href non consentiti/);
+assert.doesNotMatch(svgSource, /innerHTML|insertAdjacentHTML|eval\(/);
+assert.match(controllerSource, /parseVectorSvg\(source, sourceName\)/);
+assert.match(controllerSource, /this\.svgFileInput\.files\?\.\[0\]/);
+assert.match(controllerSource, /kind: "source-fill"/);
+assert.match(controllerSource, /this\.svgBlurDraw/);
+assert.match(controllerSource, /kind === "outer"[\s\S]*mode: "mesh-blur"[\s\S]*mode: "mesh-inner-shadow-blur"/);
+assert.match(gpuShaderSource, /fn blurMaskVertexMain/);
+assert.match(gpuShaderSource, /fn meshInnerShadowFragmentMain/);
+
+// Rasterizzazione vettoriale autorevole: SVG mesh e testo Slug usano target
+// RGBA8 lineare, MSAA 4x, blocchi allineati ai tile e seed tiled Undo/Redo.
+assert.match(
+  vectorRasterSource,
+  /semantic-vector-slug-mesh-webgpu-linear-rgba8-msaa4-512-tile-chunks-history-seed-v2/,
+);
+assert.match(vectorRasterSource, /VECTOR_RASTER_FORMAT = "rgba8unorm"/);
+assert.match(vectorRasterSource, /VECTOR_RASTER_CHUNK_SIZE = LAYER_STORAGE_TILE_SIZE \* 2/);
+assert.match(vectorRasterSource, /sampleCount: VECTOR_TEXT_GPU_SAMPLE_COUNT/);
+assert.match(vectorRasterSource, /entryPoint: "fragmentMain"/);
+assert.match(vectorRasterSource, /slugInnerShadowDirect/);
+assert.match(vectorRasterSource, /slugInnerShadowBlur/);
+assert.match(vectorRasterSource, /meshInnerShadowBlur/);
+assert.match(vectorRasterSource, /createLayerColdStorageCandidate\(/);
+assert.match(vectorRasterSource, /encodeLayerColdHydration\(/);
+assert.match(vectorRasterSource, /markLayerStorageRect\(/);
+assert.match(vectorRasterSource, /replaceVectorWithRaster\(/);
+assert.match(vectorRasterSource, /replaceRasterWithVector\(/);
+assert.match(vectorRasterSource, /rgba16float non viene convertito implicitamente/);
+assert.doesNotMatch(
+  vectorRasterSource,
+  /CanvasRenderingContext2D|copyExternalImageToTexture|drawImage\(/,
+  "la rasterizzazione non deve introdurre un fallback bitmap/Canvas2D",
+);
+assert.match(controllerSource, /async rasterizeSelectedSvg\(\)/);
+assert.match(controllerSource, /await this\.host\.rasterizeVectorSvgNode\(svgId, draws\)/);
+assert.match(controllerSource, /async rasterizeSelectedText\(\)/);
+assert.match(controllerSource, /await this\.host\.rasterizeVectorTextNode\(textId, draws\)/);
+assert.match(controllerSource, /slotNamespace = pinForRasterization \? "text-raster" : "text"/);
+assert.match(controllerSource, /!requireRequestedLod \|\| result\.matchesRequestedLod/);
+assert.match(controllerSource, /resourceRevisionValue\(\)/);
+assert.match(controllerSource, /private sceneOperationRenderDeferred = false/);
+assert.match(
+  controllerSource,
+  /private renderNow\([\s\S]{0,220}\): boolean \{[\s\S]*this\.sceneOperationBusy[\s\S]*this\.sceneOperationRenderDeferred = true/,
+);
+assert.match(
+  controllerSource,
+  /if \(this\.sceneOperationRenderDeferred\) \{[\s\S]*this\.scheduleRender\(\)/,
+);
+assert.match(clientSource, /waitForResourceReady\(/);
+assert.match(engineSource, /kind: "vector-rasterize"/);
+assert.match(engineSource, /destroyVectorRasterHistorySeed\(/);
+assert.match(engineSource, /this\.vectorTextGpuPendingRuns\.length = 0/);
+assert.match(engineSource, /this\.vectorTextGpuPendingRuns\.splice\(index, 1\)/);
+assert.match(vectorRasterSource, /activateLayer\([^;]*"structural-history"\)/);
+assert.match(
+  engineSource,
+  /caller === "history-replay" \|\| caller === "structural-history"/,
+);
+const redoVectorStart = vectorRasterSource.indexOf("async function redoVectorRasterization(");
+const redoVectorBody = vectorRasterSource.slice(redoVectorStart, redoVectorStart + 4_500);
+const redoVectorTry = redoVectorBody.indexOf("try {");
+const redoVectorHydration = redoVectorBody.indexOf("gpu = await hydrateHistorySeed");
+assert.ok(
+  redoVectorStart >= 0 && redoVectorTry >= 0 && redoVectorHydration > redoVectorTry,
+  "l'OOM di reidratazione Redo deve attraversare il rollback strutturale",
+);
+assert.match(
+  redoVectorBody,
+  /if \(gpu\) destroyLayerGpuResources\(engine, gpu\)/,
+  "il rollback Redo deve accettare una candidata fallita prima dell'allocazione",
+);
+
+assert.match(htmlSource, /id="vectorSvgRasterize"/);
+assert.match(htmlSource, /id="vectorTextRasterize"/);
+assert.match(htmlSource, /id="vectorTextRasterStatus"/);
+
+// UI e font locali.
+assert.equal(VECTOR_TEXT_FONT_MANIFEST.length, 3);
+const fontLogicalBytes = VECTOR_TEXT_FONT_MANIFEST.reduce(
+  (total, entry) => total + fs.statSync(entry.fileUrl).size,
+  0,
+);
+assert.equal(fontLogicalBytes, 392_528);
+for (const id of [
+  "vectorTextPrototypeSection",
+  "vectorSvgLoadExample",
+  "vectorSvgImportButton",
+  "vectorSvgFileInput",
+  "vectorSvgImportStatus",
+  "vectorSvgSelectedControls",
+  "vectorSvgSourceSummary",
+  "vectorSvgPalette",
+  "vectorSvgRasterize",
+  "vectorTextRasterize",
+  "vectorTextRasterStatus",
+  "vectorTextValue",
+  "vectorTextFontFamily",
+  "vectorTextFontSize",
+  "vectorTextColor",
+  "vectorTextTransformNone",
+  "vectorTextTransformArch",
+  "vectorTextTransformCircle",
+  "vectorTextTransformWave",
+  "vectorTextTransformCurveParameters",
+  "vectorTextTransformCurve",
+  "vectorTextTransformCurveOut",
+  "vectorTextTransformCircleParameters",
+  "vectorTextCircleRadius",
+  "vectorTextCircleRadiusOut",
+  "vectorTextCircleInverted",
+  "vectorTextOutlineWidth",
+  "vectorTextOutlineColor",
+  "vectorTextOutlineJoin",
+  "vectorTextBlockShadowEnabled",
+  "vectorTextBlockShadowColor",
+  "vectorTextBlockShadowOpacity",
+  "vectorTextBlockShadowOffset",
+  "vectorTextBlockShadowAngle",
+  "vectorTextBlockShadowOutlineWidth",
+  "vectorTextSingleShadowEnabled",
+  "vectorTextSingleShadowColor",
+  "vectorTextSingleShadowOpacity",
+  "vectorTextSingleShadowOffset",
+  "vectorTextSingleShadowAngle",
+  "vectorTextSingleShadowBlur",
+  "vectorTextInnerShadowEnabled",
+  "vectorTextInnerShadowParameters",
+  "vectorTextInnerShadowColor",
+  "vectorTextInnerShadowOpacity",
+  "vectorTextInnerShadowOffset",
+  "vectorTextInnerShadowAngle",
+  "vectorTextInnerShadowBlur",
+  "vectorTextSingleShadowOutlineWidth",
+  "addVectorText",
+  "deleteVectorText",
+  "vectorTextReset",
+  "vectorTextStatus",
+  "vectorTextPresentationCanvas",
+  "vectorTextInteractionCanvas",
+]) {
+  assert.match(htmlSource, new RegExp(`id="${id}"`), `elemento #${id} mancante`);
+}
+assert.match(
+  htmlSource,
+  /id="vectorTextSingleShadowOutlineWidth"[\s\S]*?value="0"[\s\S]*?disabled/,
+);
+assert.match(mainSource, /const vectorTextEditorEnabled = true/);
+assert.match(mainSource, /vectorTextPrototypeEnabled: vectorTextEditorEnabled/);
+assert.match(mainSource, /if \(vectorTextEditorEnabled\)/);
+assert.doesNotMatch(mainSource, /pageSearchParams\.get\("vectorTextTest"\)/);
+assert.doesNotMatch(mainSource, /innerShadowTest/);
+assert.doesNotMatch(htmlSource, /id="vectorTextZoomMode"/);
+assert.match(mainSource, /__vectorTextPrototype = vectorTextPrototype/);
+assert.equal(packageJson.scripts["vector-text:verify"], "node scripts/verify-vector-text.mjs");
+
+console.log(
+  "Testo vettoriale verificato: Distort/Arch/Circle/Wave Kittl, Slug analitico, Clipper64/Worker, outline fused senza seam, 0 no-op, "
+  + "Block Shadow canonica, SVG semantici sanitizzati con palette/effetti GPU, blur Gaussian R8 GPU, swap di nodo atomici, coda latest-only e nessun fallback bitmap.",
+);

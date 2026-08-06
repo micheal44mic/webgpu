@@ -1,0 +1,61 @@
+{
+  "name": "webgpu-brush-engine-prototype",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc --noEmit && vite build && node scripts/prepare-sites-build.mjs",
+    "preview": "vite preview --host 0.0.0.0",
+    "benchmark:sync": "node scripts/sync-benchmark-runs.mjs",
+    "document:verify": "node scripts/verify-document-size.mjs",
+    "layer-structure:verify": "node scripts/verify-layer-structure.mjs",
+    "blend:verify": "node scripts/verify-blend-core.mjs",
+    "light:verify": "node scripts/verify-light-glaze.mjs",
+    "intense:verify": "node scripts/verify-intense-blending.mjs",
+    "fill:verify": "node scripts/verify-fill.mjs",
+    "selection:verify": "node scripts/verify-selection.mjs",
+    "grain:verify": "node scripts/verify-grain-phase1.mjs",
+    "brush-presets:verify": "node scripts/verify-brush-presets.mjs",
+    "brush-studio:verify": "node scripts/verify-brush-studio.mjs",
+    "brush-library-preview:verify": "node scripts/verify-brush-library-preview.mjs",
+    "brush-preview-parity:verify": "node scripts/verify-brush-preview-parity.mjs",
+    "stroke-ui:verify": "node scripts/verify-mobile-stroke-sheet.mjs",
+    "effects-ui:verify": "node scripts/verify-mobile-raster-effects-sheet.mjs",
+    "tool-sheet:verify": "node scripts/verify-mobile-tool-settings-sheet.mjs",
+    "touch-intent:verify": "node scripts/verify-touch-paint-intent.mjs",
+    "layer-reorder-ui:verify": "node scripts/verify-mobile-layer-reorder.mjs",
+    "scene-reorder:verify": "node scripts/verify-mixed-scene-reorder.mjs",
+    "thickness:verify": "node scripts/verify-thickness-dynamics.mjs",
+    "history:verify": "node scripts/verify-history-journal.mjs && node scripts/verify-history-retention.mjs",
+    "layers:verify": "node scripts/verify-layer-stack.mjs",
+    "stroke:verify": "node scripts/verify-stroke-core.mjs",
+    "stroke-curve:verify": "node scripts/verify-stroke-curve.mjs",
+    "stabilization:verify": "node scripts/verify-stroke-stabilization.mjs && node scripts/verify-stabilization-ui.mjs",
+    "layer-blend:verify": "node scripts/verify-layer-blend-modes.mjs && node scripts/verify-layer-blend-compositor.mjs",
+    "effects-scratch:verify": "node scripts/verify-effects-scratch-pool.mjs",
+    "bevel:verify": "node scripts/verify-bevel-core.mjs",
+    "shadow:verify": "node scripts/verify-shadow-core.mjs",
+    "view:verify": "node scripts/verify-view-rotation.mjs",
+    "compression:verify": "node scripts/verify-layer-compression.mjs",
+    "vector-text:verify": "node scripts/verify-vector-text.mjs",
+    "mixed-scene:verify": "node scripts/verify-mixed-scene-stack.mjs",
+    "image:verify": "node scripts/verify-raster-image.mjs",
+    "transform:verify": "node scripts/verify-raster-transform.mjs"
+  },
+  "devDependencies": {
+    "@webgpu/types": "0.1.71",
+    "typescript": "7.0.2",
+    "vite": "8.1.5"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "dependencies": {
+    "@types/earcut": "^3.0.0",
+    "clipper2-ts": "2.0.1-18",
+    "earcut": "^3.0.2",
+    "lucide": "^1.28.0",
+    "opentype.js": "^1.3.4"
+  }
+}

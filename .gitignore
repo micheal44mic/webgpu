@@ -1,0 +1,9 @@
+node_modules/
+/dist/
+
+# Log dei dev server in radice: rumore in ogni diff, nessun valore storico.
+# Ancorato: un futuro benchmarks/run.log deve restare versionabile.
+/*.log
+
+# Output di build finito nella cartella sbagliata per un path non risolto.
+/undefined/

@@ -1,0 +1,3239 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#111318" />
+    <link rel="icon" href="data:," />
+    <!-- Titolo e taglia documento sono riscritti al boot da main.ts: la
+         dimensione la decide `LAYER_SIZE`, non questo file. -->
+    <title>WebGPU Brush Engine</title>
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="desktop-brand">
+          <strong>WebGPU Brush Engine</strong>
+          <span class="muted" id="document-size-label"></span>
+        </div>
+        <nav class="mobile-header" aria-label="Navigazione mobile">
+          <button
+            class="mobile-header-action"
+            type="button"
+            aria-label="Home, non ancora disponibile"
+            title="Home"
+            disabled
+          >
+            <span class="mobile-icon-stack" aria-hidden="true">
+              <i data-lucide="house" class="mobile-icon-layer mobile-icon-outline"></i>
+              <i data-lucide="house" class="mobile-icon-layer mobile-icon-face"></i>
+            </span>
+          </button>
+
+          <div class="mobile-header-actions">
+            <button
+              id="mobileToolsMenu"
+              class="mobile-header-action"
+              type="button"
+              aria-label="Open tools menu"
+              aria-controls="mobileToolsSheet"
+              aria-expanded="false"
+              title="Tools"
+            >
+              <span class="mobile-icon-stack" aria-hidden="true">
+                <i data-lucide="sliders-horizontal" class="mobile-icon-layer mobile-icon-outline"></i>
+                <i data-lucide="sliders-horizontal" class="mobile-icon-layer mobile-icon-face"></i>
+              </span>
+            </button>
+            <button
+              id="mobileLayersMenu"
+              class="mobile-header-action"
+              type="button"
+              aria-label="Open layers menu"
+              aria-controls="mobileLayersPanel"
+              aria-expanded="false"
+              title="Layers"
+            >
+              <span class="mobile-icon-stack" aria-hidden="true">
+                <i data-lucide="layers-3" class="mobile-icon-layer mobile-icon-outline"></i>
+                <i data-lucide="layers-3" class="mobile-icon-layer mobile-icon-face"></i>
+              </span>
+            </button>
+            <button
+              class="mobile-header-action"
+              type="button"
+              aria-label="Salva, non ancora disponibile"
+              title="Save"
+              disabled
+            >
+              <span class="mobile-icon-stack" aria-hidden="true">
+                <i data-lucide="save" class="mobile-icon-layer mobile-icon-outline"></i>
+                <i data-lucide="save" class="mobile-icon-layer mobile-icon-face"></i>
+              </span>
+            </button>
+          </div>
+        </nav>
+        <div class="topbar-actions">
+          <button
+            id="toggleControls"
+            type="button"
+            aria-controls="controlsPanel"
+            aria-expanded="true"
+            aria-label="Nascondi pannelli"
+            title="Nascondi pannelli"
+          >☰</button>
+          <button
+            id="undoStroke"
+            type="button"
+            aria-label="Annulla ultima azione"
+            aria-keyshortcuts="Control+Z Meta+Z"
+            title="Annulla (Ctrl/⌘+Z)"
+            disabled
+          >↶</button>
+          <button
+            id="redoStroke"
+            type="button"
+            aria-label="Ripristina ultima azione"
+            aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z"
+            title="Ripristina (Ctrl/⌘+Shift+Z)"
+            disabled
+          >↷</button>
+          <button id="zoomOut" type="button" title="Riduci zoom">−</button>
+          <button id="fitView" type="button">Fit</button>
+          <button id="zoomIn" type="button" title="Aumenta zoom">+</button>
+          <button
+            id="rotateViewLeft"
+            class="desktop-rotation-control"
+            type="button"
+            aria-label="Ruota vista di 15 gradi a sinistra"
+            title="Ruota vista −15° (oppure R + trascina)"
+          >−15°</button>
+          <button
+            id="viewRotation"
+            class="desktop-rotation-control snapped"
+            type="button"
+            aria-label="Rotazione vista 0 gradi; premi per azzerare"
+            title="Rotazione vista 0° · premi per azzerare"
+          >0°</button>
+          <button
+            id="rotateViewRight"
+            class="desktop-rotation-control"
+            type="button"
+            aria-label="Ruota vista di 15 gradi a destra"
+            title="Ruota vista +15° (oppure R + trascina)"
+          >+15°</button>
+          <button id="clearLayer" class="danger" type="button">Pulisci</button>
+        </div>
+      </header>
+
+      <aside class="mobile-tool-rail" aria-label="Strumenti rapidi">
+        <label
+          id="mobileBrushColor"
+          class="mobile-tool-action mobile-color-action"
+          title="Colore pennello"
+        >
+          <input
+            id="mobileBrushColorInput"
+            class="mobile-color-input"
+            type="color"
+            value="#ff5b35"
+            aria-label="Scegli il colore del pennello"
+          />
+          <span id="mobileBrushColorSwatch" class="mobile-color-swatch" aria-hidden="true"></span>
+        </label>
+        <button
+          id="mobilePaint"
+          class="mobile-tool-action"
+          type="button"
+          aria-label="Open brush library"
+          aria-controls="mobileBrushLibrarySheet"
+          aria-expanded="false"
+          aria-pressed="true"
+          title="Pennello"
+        >
+          <span class="mobile-icon-stack" aria-hidden="true">
+            <i data-lucide="brush" class="mobile-icon-layer mobile-icon-outline"></i>
+            <i data-lucide="brush" class="mobile-icon-layer mobile-icon-face"></i>
+          </span>
+        </button>
+        <button
+          id="mobileEraser"
+          class="mobile-tool-action"
+          type="button"
+          aria-label="Gomma, non ancora disponibile"
+          aria-pressed="false"
+          title="Gomma"
+          disabled
+        >
+          <span class="mobile-icon-stack" aria-hidden="true">
+            <i data-lucide="eraser" class="mobile-icon-layer mobile-icon-outline"></i>
+            <i data-lucide="eraser" class="mobile-icon-layer mobile-icon-face"></i>
+          </span>
+        </button>
+        <button
+          id="mobileBlend"
+          class="mobile-tool-action"
+          type="button"
+          aria-label="Seleziona Blend"
+          aria-pressed="false"
+          title="Blend"
+        >
+          <span class="mobile-icon-stack" aria-hidden="true">
+            <i data-lucide="blend" class="mobile-icon-layer mobile-icon-outline"></i>
+            <i data-lucide="blend" class="mobile-icon-layer mobile-icon-face"></i>
+          </span>
+        </button>
+        <button
+          id="mobileUndo"
+          class="mobile-tool-action"
+          type="button"
+          aria-label="Annulla ultima azione"
+          aria-keyshortcuts="Control+Z Meta+Z"
+          title="Annulla"
+          disabled
+        >
+          <span class="mobile-icon-stack" aria-hidden="true">
+            <i data-lucide="undo-2" class="mobile-icon-layer mobile-icon-outline"></i>
+            <i data-lucide="undo-2" class="mobile-icon-layer mobile-icon-face"></i>
+          </span>
+        </button>
+        <button
+          id="mobileRedo"
+          class="mobile-tool-action"
+          type="button"
+          aria-label="Ripristina ultima azione"
+          aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z"
+          title="Ripristina"
+          disabled
+        >
+          <span class="mobile-icon-stack" aria-hidden="true">
+            <i data-lucide="redo-2" class="mobile-icon-layer mobile-icon-outline"></i>
+            <i data-lucide="redo-2" class="mobile-icon-layer mobile-icon-face"></i>
+          </span>
+        </button>
+      </aside>
+
+      <aside
+        id="mobileBrushControls"
+        class="mobile-brush-controls"
+        aria-label="Brush controls"
+        aria-hidden="false"
+      >
+        <div id="mobileBrushSizeTrack" class="mobile-brush-control-track">
+          <div class="mobile-brush-control-range">
+            <div
+              id="mobileBrushSizeControl"
+              class="mobile-brush-control"
+              role="slider"
+              tabindex="0"
+              aria-label="Brush size"
+              aria-orientation="vertical"
+              aria-valuemin="1"
+              aria-valuemax="1000"
+              aria-valuenow="96"
+              aria-valuetext="Size 96 px"
+              data-mobile-brush-control="size"
+            >
+              <span class="mobile-brush-control-disc" aria-hidden="true">
+                <span class="mobile-brush-control-value"></span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div id="mobileBrushOpacityTrack" class="mobile-brush-control-track">
+          <div class="mobile-brush-control-range">
+            <div
+              id="mobileBrushOpacityControl"
+              class="mobile-brush-control"
+              role="slider"
+              tabindex="0"
+              aria-label="Brush opacity"
+              aria-orientation="vertical"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="100"
+              aria-valuetext="Opacity 100%"
+              data-mobile-brush-control="opacity"
+            >
+              <span class="mobile-brush-control-disc" aria-hidden="true">
+                <span class="mobile-brush-control-value"></span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div id="mobileBrushStretchTrack" class="mobile-brush-control-track" hidden>
+          <div class="mobile-brush-control-range">
+            <div
+              id="mobileBrushStretchControl"
+              class="mobile-brush-control"
+              role="slider"
+              tabindex="-1"
+              aria-label="Blend stretch"
+              aria-orientation="vertical"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="18"
+              aria-valuetext="Stretch 18%"
+              aria-disabled="true"
+              data-mobile-brush-control="stretch"
+            >
+              <span class="mobile-brush-control-disc" aria-hidden="true">
+                <span class="mobile-brush-control-value"></span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div id="mobileBrushPaintTrack" class="mobile-brush-control-track" hidden>
+          <div class="mobile-brush-control-range">
+            <div
+              id="mobileBrushPaintControl"
+              class="mobile-brush-control"
+              role="slider"
+              tabindex="-1"
+              aria-label="Blend paint"
+              aria-orientation="vertical"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="14"
+              aria-valuetext="Paint 14%"
+              aria-disabled="true"
+              data-mobile-brush-control="paint"
+            >
+              <span class="mobile-brush-control-disc" aria-hidden="true">
+                <span class="mobile-brush-control-value"></span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <section
+          id="mobileBrushPreview"
+          class="mobile-brush-preview"
+          aria-hidden="true"
+        >
+          <header class="mobile-brush-preview-header">
+            <output id="mobileBrushPreviewLabel">Size 96 px</output>
+          </header>
+          <div class="mobile-brush-preview-body">
+            <canvas
+              id="mobileBrushPreviewCanvas"
+              width="248"
+              height="248"
+              aria-hidden="true"
+            ></canvas>
+          </div>
+        </section>
+      </aside>
+
+      <aside
+        id="mobileBrushLibrarySheet"
+        class="mobile-tools-sheet mobile-brush-library-sheet"
+        aria-label="Brush library"
+        aria-hidden="true"
+        data-snap="expanded"
+      >
+        <button
+          id="mobileBrushLibraryHandle"
+          class="mobile-tools-sheet-handle"
+          type="button"
+          aria-label="Close brush library"
+          aria-controls="mobileBrushLibrarySheet"
+          aria-expanded="true"
+        >
+          <span class="mobile-tools-sheet-grabber" aria-hidden="true"></span>
+        </button>
+        <div class="mobile-brush-library-content">
+          <h2 class="mobile-brush-library-title">M1M4 BRUSHES</h2>
+          <div class="mobile-brush-library-layout">
+            <nav class="mobile-brush-library-categories" aria-label="Brush categories">
+              <button
+                class="mobile-brush-library-category"
+                type="button"
+                data-mobile-brush-category="pencil"
+                aria-pressed="false"
+              >
+                <span class="mobile-icon-stack" aria-hidden="true">
+                  <i data-lucide="pencil" class="mobile-icon-layer mobile-icon-outline"></i>
+                  <i data-lucide="pencil" class="mobile-icon-layer mobile-icon-face"></i>
+                </span>
+                <span>Pencil</span>
+              </button>
+              <button
+                class="mobile-brush-library-category"
+                type="button"
+                data-mobile-brush-category="painting"
+                aria-pressed="true"
+              >
+                <span class="mobile-icon-stack" aria-hidden="true">
+                  <i data-lucide="brush" class="mobile-icon-layer mobile-icon-outline"></i>
+                  <i data-lucide="brush" class="mobile-icon-layer mobile-icon-face"></i>
+                </span>
+                <span>Painting</span>
+              </button>
+              <button
+                class="mobile-brush-library-category"
+                type="button"
+                data-mobile-brush-category="spray-paint"
+                aria-pressed="false"
+              >
+                <span class="mobile-icon-stack" aria-hidden="true">
+                  <i data-lucide="spray-can" class="mobile-icon-layer mobile-icon-outline"></i>
+                  <i data-lucide="spray-can" class="mobile-icon-layer mobile-icon-face"></i>
+                </span>
+                <span>Spray Paint</span>
+              </button>
+            </nav>
+
+            <section class="mobile-brush-library-brushes" aria-label="Brushes">
+              <div id="mobileBrushLibraryList" class="mobile-brush-library-list">
+                <button
+                  id="mobilePencilBrushCard"
+                  class="mobile-brush-card"
+                  type="button"
+                  data-mobile-brush-id="m1m4-pencil-v1"
+                  data-mobile-brush-category-card="pencil"
+                  aria-label="Pencil"
+                  aria-pressed="false"
+                  hidden
+                >
+                  <span class="mobile-brush-card-selected" aria-hidden="true">
+                    <i data-lucide="check"></i>
+                  </span>
+                  <span class="mobile-brush-card-name">Pencil</span>
+                  <canvas
+                    id="mobilePencilBrushPreviewCanvas"
+                    class="mobile-brush-card-preview"
+                    width="480"
+                    height="112"
+                    aria-hidden="true"
+                  ></canvas>
+                </button>
+                <button
+                  id="mobileCurrentBrushCard"
+                  class="mobile-brush-card is-selected"
+                  type="button"
+                  data-mobile-brush-id="current"
+                  data-mobile-brush-category-card="painting"
+                  aria-label="Default Brush, selected"
+                  aria-pressed="true"
+                >
+                  <span class="mobile-brush-card-selected" aria-hidden="true">
+                    <i data-lucide="check"></i>
+                  </span>
+                  <span class="mobile-brush-card-name">Default Brush</span>
+                  <canvas
+                    id="mobileBrushLibraryPreviewCanvas"
+                    class="mobile-brush-card-preview"
+                    width="480"
+                    height="112"
+                    aria-hidden="true"
+                  ></canvas>
+                </button>
+              </div>
+              <p id="mobileBrushLibraryEmpty" class="mobile-brush-library-empty" hidden>
+                Brushes coming soon
+              </p>
+            </section>
+          </div>
+        </div>
+      </aside>
+
+      <aside
+        id="mobileBrushStudioSheet"
+        class="mobile-tools-sheet mobile-brush-studio-sheet"
+        aria-label="Brush Studio"
+        aria-hidden="true"
+        data-snap="expanded"
+      >
+        <button
+          id="mobileBrushStudioHandle"
+          class="mobile-tools-sheet-handle"
+          type="button"
+          aria-label="Move Brush Studio"
+          aria-controls="mobileBrushStudioSheet"
+          aria-expanded="true"
+        >
+          <span class="mobile-tools-sheet-grabber" aria-hidden="true"></span>
+        </button>
+
+        <div class="mobile-brush-studio-shell">
+          <header class="mobile-brush-studio-header">
+            <button id="mobileBrushStudioCancel" class="mobile-brush-studio-header-action" type="button">
+              Cancel
+            </button>
+            <h2 id="mobileBrushStudioName">Pencil</h2>
+            <button id="mobileBrushStudioDone" class="mobile-brush-studio-header-action is-primary" type="button">
+              Done
+            </button>
+          </header>
+
+          <section class="mobile-brush-studio-preview" aria-label="Live brush preview">
+            <canvas
+              id="mobileBrushStudioPreviewCanvas"
+              width="720"
+              height="180"
+              aria-label="Live preview of the current brush stroke"
+            ></canvas>
+          </section>
+
+          <div id="mobileBrushStudioScroll" class="mobile-brush-studio-scroll">
+            <section
+              id="mobileBrushStudioStrokePanel"
+              class="mobile-brush-studio-panel"
+              role="tabpanel"
+              aria-labelledby="mobileBrushStudioStrokeTab"
+              data-mobile-brush-studio-panel="stroke"
+            >
+              <h3>Primary</h3>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioSize">
+                <span>Size</span>
+                <output id="mobileBrushStudioSizeOut" for="mobileBrushStudioSize">30 px</output>
+                <input id="mobileBrushStudioSize" type="range" min="1" max="1000" step="1" value="30" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioOpacity">
+                <span>Opacity</span>
+                <output id="mobileBrushStudioOpacityOut" for="mobileBrushStudioOpacity">100%</output>
+                <input id="mobileBrushStudioOpacity" type="range" min="0" max="100" step="0.1" value="100" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioStabilization">
+                <span>Stabilization</span>
+                <output id="mobileBrushStudioStabilizationOut" for="mobileBrushStudioStabilization">0%</output>
+                <input id="mobileBrushStudioStabilization" type="range" min="0" max="100" step="1" value="0" />
+              </label>
+
+              <fieldset class="mobile-brush-studio-fieldset">
+                <legend>Rendering</legend>
+                <div
+                  id="mobileBrushStudioRendering"
+                  class="mobile-brush-studio-segments mobile-brush-studio-rendering"
+                  role="radiogroup"
+                  aria-label="Rendering mode"
+                >
+                  <button type="button" role="radio" aria-checked="false" data-mobile-brush-rendering="light-glaze">
+                    Light Glaze
+                  </button>
+                  <button type="button" role="radio" aria-checked="false" data-mobile-brush-rendering="uniformed-glaze">
+                    Uniformed Glaze
+                  </button>
+                  <button type="button" role="radio" aria-checked="true" data-mobile-brush-rendering="intense-blending">
+                    Intense Blending
+                  </button>
+                </div>
+              </fieldset>
+
+              <h3>Stroke</h3>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioSpacing">
+                <span>Spacing</span>
+                <output id="mobileBrushStudioSpacingOut" for="mobileBrushStudioSpacing">2%</output>
+                <input id="mobileBrushStudioSpacing" type="range" min="0.25" max="25" step="0.25" value="2" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioFlow">
+                <span>Flow</span>
+                <output id="mobileBrushStudioFlowOut" for="mobileBrushStudioFlow">100%</output>
+                <input id="mobileBrushStudioFlow" type="range" min="0.1" max="100" step="0.1" value="100" />
+              </label>
+            </section>
+
+            <section
+              id="mobileBrushStudioShapePanel"
+              class="mobile-brush-studio-panel"
+              role="tabpanel"
+              aria-labelledby="mobileBrushStudioShapeTab"
+              data-mobile-brush-studio-panel="shape"
+              hidden
+            >
+              <div class="mobile-brush-studio-section-heading">
+                <h3>Source</h3>
+                <label class="mobile-brush-studio-check" for="mobileBrushStudioShapeInvert">
+                  <input id="mobileBrushStudioShapeInvert" type="checkbox" />
+                  <span>Invert</span>
+                </label>
+              </div>
+              <div class="mobile-brush-studio-source">
+                <button
+                  id="mobileBrushStudioShapeSource"
+                  class="mobile-brush-studio-source-preview"
+                  type="button"
+                  aria-label="Choose shape source image"
+                >
+                  <canvas id="mobileBrushStudioShapeSourceCanvas" width="256" height="256" aria-hidden="true"></canvas>
+                  <span class="mobile-brush-studio-source-placeholder" aria-hidden="true">
+                    <span class="mobile-icon-stack">
+                      <i data-lucide="image" class="mobile-icon-layer mobile-icon-outline"></i>
+                      <i data-lucide="image" class="mobile-icon-layer mobile-icon-face"></i>
+                    </span>
+                    <span>Shape Source</span>
+                  </span>
+                </button>
+                <div class="mobile-brush-studio-source-actions">
+                  <input
+                    id="mobileBrushStudioShapeFile"
+                    class="mobile-brush-studio-file"
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    aria-label="Choose shape source file"
+                  />
+                  <label
+                    id="mobileBrushStudioShapeSelect"
+                    class="mobile-brush-studio-source-action is-primary"
+                    for="mobileBrushStudioShapeFile"
+                  >Select Image</label>
+                  <label
+                    id="mobileBrushStudioShapeReplace"
+                    class="mobile-brush-studio-source-action"
+                    for="mobileBrushStudioShapeFile"
+                  >Replace</label>
+                  <button id="mobileBrushStudioShapeRemove" class="mobile-brush-studio-source-action" type="button">
+                    Remove
+                  </button>
+                </div>
+              </div>
+
+              <fieldset class="mobile-brush-studio-fieldset">
+                <legend>Rotation</legend>
+                <div id="mobileBrushStudioShapeRotation" class="mobile-brush-studio-segments" role="radiogroup" aria-label="Shape rotation">
+                  <button type="button" role="radio" aria-checked="false" data-mobile-brush-shape-rotation="fixed">Fixed</button>
+                  <button type="button" role="radio" aria-checked="true" data-mobile-brush-shape-rotation="follow-stroke">Follow Stroke</button>
+                </div>
+              </fieldset>
+
+              <h3>Behavior</h3>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioShapeScatter">
+                <span>Scatter</span>
+                <output id="mobileBrushStudioShapeScatterOut" for="mobileBrushStudioShapeScatter">51%</output>
+                <input id="mobileBrushStudioShapeScatter" type="range" min="0" max="100" step="1" value="51" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioCount">
+                <span>Count</span>
+                <output id="mobileBrushStudioCountOut" for="mobileBrushStudioCount">1</output>
+                <input id="mobileBrushStudioCount" type="range" min="1" max="24" step="1" value="1" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioJitterLateral">
+                <span>Lateral Jitter</span>
+                <output id="mobileBrushStudioJitterLateralOut" for="mobileBrushStudioJitterLateral">10%</output>
+                <input id="mobileBrushStudioJitterLateral" type="range" min="0" max="100" step="1" value="10" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioJitterLinear">
+                <span>Linear Jitter</span>
+                <output id="mobileBrushStudioJitterLinearOut" for="mobileBrushStudioJitterLinear">10%</output>
+                <input id="mobileBrushStudioJitterLinear" type="range" min="0" max="100" step="1" value="10" />
+              </label>
+            </section>
+
+            <section
+              id="mobileBrushStudioGrainPanel"
+              class="mobile-brush-studio-panel"
+              role="tabpanel"
+              aria-labelledby="mobileBrushStudioGrainTab"
+              data-mobile-brush-studio-panel="grain"
+              hidden
+            >
+              <div class="mobile-brush-studio-section-heading">
+                <h3>Source</h3>
+                <label class="mobile-brush-studio-check" for="mobileBrushStudioGrainInvert">
+                  <input id="mobileBrushStudioGrainInvert" type="checkbox" />
+                  <span>Invert</span>
+                </label>
+              </div>
+              <div class="mobile-brush-studio-source">
+                <button
+                  id="mobileBrushStudioGrainSource"
+                  class="mobile-brush-studio-source-preview"
+                  type="button"
+                  aria-label="Choose grain source image"
+                >
+                  <canvas id="mobileBrushStudioGrainSourceCanvas" width="256" height="256" aria-hidden="true"></canvas>
+                  <span class="mobile-brush-studio-source-placeholder" aria-hidden="true">
+                    <span class="mobile-icon-stack">
+                      <i data-lucide="image" class="mobile-icon-layer mobile-icon-outline"></i>
+                      <i data-lucide="image" class="mobile-icon-layer mobile-icon-face"></i>
+                    </span>
+                    <span>Grain Source</span>
+                  </span>
+                </button>
+                <div class="mobile-brush-studio-source-actions">
+                  <input
+                    id="mobileBrushStudioGrainFile"
+                    class="mobile-brush-studio-file"
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    aria-label="Choose grain source file"
+                  />
+                  <label
+                    id="mobileBrushStudioGrainSelect"
+                    class="mobile-brush-studio-source-action is-primary"
+                    for="mobileBrushStudioGrainFile"
+                  >Select Image</label>
+                  <label
+                    id="mobileBrushStudioGrainReplace"
+                    class="mobile-brush-studio-source-action"
+                    for="mobileBrushStudioGrainFile"
+                  >Replace</label>
+                  <button id="mobileBrushStudioGrainRemove" class="mobile-brush-studio-source-action" type="button">
+                    Remove
+                  </button>
+                </div>
+              </div>
+
+              <fieldset class="mobile-brush-studio-fieldset">
+                <legend>Mode</legend>
+                <div id="mobileBrushStudioGrainMode" class="mobile-brush-studio-segments" role="radiogroup" aria-label="Grain mode">
+                  <button type="button" role="radio" aria-checked="false" data-mobile-brush-grain-mode="off">Off</button>
+                  <button type="button" role="radio" aria-checked="false" data-mobile-brush-grain-mode="texturized">Fixed</button>
+                  <button type="button" role="radio" aria-checked="true" data-mobile-brush-grain-mode="moving">Moving</button>
+                </div>
+              </fieldset>
+
+              <h3>Texture</h3>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioGrainScale">
+                <span>Scale</span>
+                <output id="mobileBrushStudioGrainScaleOut" for="mobileBrushStudioGrainScale">43%</output>
+                <input id="mobileBrushStudioGrainScale" type="range" min="10" max="400" step="1" value="43" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioGrainMovement">
+                <span>Movement</span>
+                <output id="mobileBrushStudioGrainMovementOut" for="mobileBrushStudioGrainMovement">99%</output>
+                <input id="mobileBrushStudioGrainMovement" type="range" min="0" max="100" step="1" value="99" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioGrainDepth">
+                <span>Depth</span>
+                <output id="mobileBrushStudioGrainDepthOut" for="mobileBrushStudioGrainDepth">100%</output>
+                <input id="mobileBrushStudioGrainDepth" type="range" min="0" max="100" step="1" value="100" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioGrainBrightness">
+                <span>Brightness</span>
+                <output id="mobileBrushStudioGrainBrightnessOut" for="mobileBrushStudioGrainBrightness">0%</output>
+                <input id="mobileBrushStudioGrainBrightness" type="range" min="-100" max="100" step="1" value="0" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioGrainContrast">
+                <span>Contrast</span>
+                <output id="mobileBrushStudioGrainContrastOut" for="mobileBrushStudioGrainContrast">0%</output>
+                <input id="mobileBrushStudioGrainContrast" type="range" min="-100" max="100" step="1" value="0" />
+              </label>
+              <label class="mobile-brush-studio-select" for="mobileBrushStudioGrainFiltering">
+                <span>Filtering</span>
+                <select id="mobileBrushStudioGrainFiltering">
+                  <option value="no">No</option>
+                  <option value="classic">Classic</option>
+                  <option value="improved" selected>Improved</option>
+                </select>
+              </label>
+            </section>
+
+            <section
+              id="mobileBrushStudioDynamicsPanel"
+              class="mobile-brush-studio-panel"
+              role="tabpanel"
+              aria-labelledby="mobileBrushStudioDynamicsTab"
+              data-mobile-brush-studio-panel="dynamics"
+              hidden
+            >
+              <div class="mobile-brush-studio-section-heading">
+                <h3>Color Jitter</h3>
+                <label class="mobile-brush-studio-check" for="mobileBrushStudioJitterPerCopy">
+                  <input id="mobileBrushStudioJitterPerCopy" type="checkbox" />
+                  <span>Per Copy</span>
+                </label>
+              </div>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioHue">
+                <span>Hue</span>
+                <output id="mobileBrushStudioHueOut" for="mobileBrushStudioHue">0°</output>
+                <input id="mobileBrushStudioHue" type="range" min="0" max="180" step="1" value="0" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioSaturation">
+                <span>Saturation</span>
+                <output id="mobileBrushStudioSaturationOut" for="mobileBrushStudioSaturation">0%</output>
+                <input id="mobileBrushStudioSaturation" type="range" min="0" max="100" step="1" value="0" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioLightness">
+                <span>Lightness</span>
+                <output id="mobileBrushStudioLightnessOut" for="mobileBrushStudioLightness">0%</output>
+                <input id="mobileBrushStudioLightness" type="range" min="0" max="100" step="1" value="0" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioDarkness">
+                <span>Darkness</span>
+                <output id="mobileBrushStudioDarknessOut" for="mobileBrushStudioDarkness">0%</output>
+                <input id="mobileBrushStudioDarkness" type="range" min="0" max="100" step="1" value="0" />
+              </label>
+
+              <h3>Thickness Dynamics</h3>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioStartThickness">
+                <span>Start Thickness</span>
+                <output id="mobileBrushStudioStartThicknessOut" for="mobileBrushStudioStartThickness">100%</output>
+                <input id="mobileBrushStudioStartThickness" type="range" min="0" max="200" step="1" value="100" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioEndThickness">
+                <span>End Thickness</span>
+                <output id="mobileBrushStudioEndThicknessOut" for="mobileBrushStudioEndThickness">60%</output>
+                <input id="mobileBrushStudioEndThickness" type="range" min="0" max="200" step="1" value="60" />
+              </label>
+            </section>
+          </div>
+
+          <nav class="mobile-brush-studio-tabs" role="tablist" aria-label="Brush Studio categories">
+            <button
+              id="mobileBrushStudioStrokeTab"
+              type="button"
+              role="tab"
+              aria-selected="true"
+              aria-controls="mobileBrushStudioStrokePanel"
+              data-mobile-brush-studio-tab="stroke"
+            >Stroke</button>
+            <button
+              id="mobileBrushStudioShapeTab"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="mobileBrushStudioShapePanel"
+              data-mobile-brush-studio-tab="shape"
+              tabindex="-1"
+            >Shape</button>
+            <button
+              id="mobileBrushStudioGrainTab"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="mobileBrushStudioGrainPanel"
+              data-mobile-brush-studio-tab="grain"
+              tabindex="-1"
+            >Grain</button>
+            <button
+              id="mobileBrushStudioDynamicsTab"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="mobileBrushStudioDynamicsPanel"
+              data-mobile-brush-studio-tab="dynamics"
+              tabindex="-1"
+            >Dynamics</button>
+          </nav>
+        </div>
+      </aside>
+
+      <aside
+        id="mobileStrokeSheet"
+        class="mobile-tools-sheet mobile-stroke-sheet"
+        aria-label="Stroke effect"
+        aria-hidden="true"
+        data-snap="peek"
+      >
+        <button
+          id="mobileStrokeHandle"
+          class="mobile-tools-sheet-handle"
+          type="button"
+          aria-label="Expand Stroke settings"
+          aria-controls="mobileStrokeSheet"
+          aria-expanded="false"
+        >
+          <span class="mobile-tools-sheet-grabber" aria-hidden="true"></span>
+        </button>
+
+        <div class="mobile-stroke-sheet-content">
+          <header id="mobileStrokeHeader" class="mobile-stroke-header">
+            <h2 id="mobileStrokeTitle" class="mobile-stroke-title">Stroke</h2>
+          </header>
+          <div id="mobileStrokeControlsRegion" class="mobile-stroke-controls-region">
+            <div class="mobile-stroke-controls">
+            <label
+              id="mobileStrokeColor"
+              class="mobile-stroke-color-control"
+              for="mobileStrokeColorInput"
+            >
+              <span class="mobile-stroke-control-label">Color</span>
+              <span class="mobile-stroke-color-disc">
+                <input
+                  id="mobileStrokeColorInput"
+                  type="color"
+                  value="#ffa448"
+                  aria-label="Stroke color"
+                />
+              </span>
+            </label>
+
+            <div class="mobile-stroke-alignment">
+              <span id="mobileStrokeAlignmentLabel" class="mobile-stroke-control-label">
+                Alignment
+              </span>
+              <button
+                id="mobileStrokeAlignmentButton"
+                class="mobile-stroke-alignment-button"
+                type="button"
+                aria-haspopup="listbox"
+                aria-expanded="false"
+                aria-controls="mobileStrokeAlignmentMenu"
+                aria-labelledby="mobileStrokeAlignmentLabel mobileStrokeAlignmentValue"
+                data-stroke-alignment="outside"
+              >
+                <span class="mobile-icon-stack" aria-hidden="true">
+                  <i data-lucide="square-dashed" class="mobile-icon-layer mobile-icon-outline"></i>
+                  <i data-lucide="square-dashed" class="mobile-icon-layer mobile-icon-face"></i>
+                </span>
+                <span id="mobileStrokeAlignmentValue">Outside</span>
+                <span class="mobile-icon-stack mobile-stroke-chevron" aria-hidden="true">
+                  <i data-lucide="chevron-down" class="mobile-icon-layer mobile-icon-outline"></i>
+                  <i data-lucide="chevron-down" class="mobile-icon-layer mobile-icon-face"></i>
+                </span>
+              </button>
+
+              <div
+                id="mobileStrokeAlignmentMenu"
+                class="mobile-stroke-alignment-menu"
+                role="listbox"
+                aria-labelledby="mobileStrokeAlignmentLabel"
+                hidden
+              >
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected="true"
+                  data-stroke-alignment="outside"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="square-dashed" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="square-dashed" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span>Outside</span>
+                  <i data-lucide="check" class="mobile-stroke-option-check" aria-hidden="true"></i>
+                </button>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected="false"
+                  data-stroke-alignment="inside"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="square-dashed" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="square-dashed" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span>Inside</span>
+                  <i data-lucide="check" class="mobile-stroke-option-check" aria-hidden="true"></i>
+                </button>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected="false"
+                  data-stroke-alignment="center"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="square-dashed" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="square-dashed" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span>Centered</span>
+                  <i data-lucide="check" class="mobile-stroke-option-check" aria-hidden="true"></i>
+                </button>
+              </div>
+            </div>
+
+            <label
+              class="mobile-stroke-width-control"
+              for="mobileStrokeWidthInput"
+            >
+              <span class="mobile-stroke-control-label">Width</span>
+              <output
+                id="mobileStrokeWidthOut"
+                for="mobileStrokeWidthInput"
+              >14 px</output>
+              <input
+                id="mobileStrokeWidthInput"
+                type="range"
+                min="0"
+                max="512"
+                step="1"
+                value="14"
+                aria-label="Stroke width"
+                aria-describedby="mobileStrokeWidthOut"
+                aria-valuetext="14 pixels"
+              />
+            </label>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <aside
+        id="mobileToolSettingsSheet"
+        class="mobile-tools-sheet mobile-tool-settings-sheet"
+        aria-label="Tool settings"
+        aria-hidden="true"
+        data-state="closed"
+        data-snap="peek"
+        hidden
+      >
+        <button
+          id="mobileToolSettingsHandle"
+          class="mobile-tools-sheet-handle"
+          type="button"
+          aria-label="Expand tool settings"
+          aria-controls="mobileToolSettingsSheet"
+          aria-expanded="false"
+        >
+          <span class="mobile-tools-sheet-grabber" aria-hidden="true"></span>
+        </button>
+
+        <div class="mobile-tool-settings-shell">
+          <header id="mobileToolSettingsHeader" class="mobile-tool-settings-header">
+            <h2 id="mobileToolSettingsTitle">Tool</h2>
+          </header>
+
+          <div id="mobileToolSettingsScroll" class="mobile-tool-settings-scroll">
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="fill" hidden>
+              <label class="mobile-raster-effect-range" for="mobileFillTolerance">
+                <span>Tolerance</span>
+                <output id="mobileFillToleranceOut" for="mobileFillTolerance">10.0%</output>
+                <input id="mobileFillTolerance" type="range" min="0" max="100" step="0.1" value="10" />
+              </label>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="selection" hidden>
+              <label class="mobile-raster-effect-select" for="mobileSelectionMethod">
+                <span>Method</span>
+                <select id="mobileSelectionMethod">
+                  <option value="magic-wand">Magic Wand</option>
+                  <option value="lasso">Lasso</option>
+                  <option value="color-range">Color Range</option>
+                </select>
+              </label>
+
+              <div class="mobile-tool-settings-field">
+                <span>Combine</span>
+                <div class="mobile-tool-segmented" role="group" aria-label="Combine selection">
+                  <button id="mobileSelectionReplace" type="button" aria-pressed="true">Replace</button>
+                  <button id="mobileSelectionAdd" type="button" aria-pressed="false">Add</button>
+                  <button id="mobileSelectionSubtract" type="button" aria-pressed="false">Subtract</button>
+                </div>
+              </div>
+
+              <label
+                id="mobileSelectionToleranceControl"
+                class="mobile-raster-effect-range"
+                for="mobileSelectionTolerance"
+              >
+                <span>Tolerance</span>
+                <output id="mobileSelectionToleranceOut" for="mobileSelectionTolerance">32/255</output>
+                <input id="mobileSelectionTolerance" type="range" min="0" max="255" step="1" value="32" />
+              </label>
+
+              <label
+                id="mobileSelectionColorControl"
+                class="mobile-raster-effect-color"
+                for="mobileSelectionColor"
+                hidden
+              >
+                <span>Color</span>
+                <span class="mobile-raster-effect-color-disc">
+                  <input id="mobileSelectionColor" type="color" value="#ff5b35" />
+                </span>
+              </label>
+
+              <div class="mobile-tool-actions">
+                <button id="mobileSelectionColorApply" class="is-primary" type="button" hidden>Apply Color</button>
+                <button id="mobileSelectionClear" type="button">Clear</button>
+              </div>
+              <p id="mobileSelectionResult" class="mobile-tool-settings-status" aria-live="polite">
+                No pixels selected.
+              </p>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="transform" hidden>
+              <p id="mobileTransformHint" class="mobile-tool-settings-status">
+                Select content on the canvas, then drag it to transform.
+              </p>
+              <div class="mobile-tool-actions">
+                <button id="mobileTransformCancel" type="button" disabled>Cancel</button>
+                <button id="mobileTransformApply" class="is-primary" type="button" disabled>Apply</button>
+              </div>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="layer-options" hidden>
+              <label class="mobile-raster-effect-range" for="mobileLayerOpacity">
+                <span>Opacity</span>
+                <output id="mobileLayerOpacityOut" for="mobileLayerOpacity">100%</output>
+                <input id="mobileLayerOpacity" type="range" min="0" max="100" step="1" value="100" />
+              </label>
+              <label id="mobileLayerBlendModeControl" class="mobile-raster-effect-select" for="mobileLayerBlendMode">
+                <span>Blend Mode</span>
+                <select id="mobileLayerBlendMode"></select>
+              </label>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="svg-style" hidden>
+              <div id="mobileSvgStylePalette" class="mobile-svg-style-palette"></div>
+              <button id="mobileSvgStyleRasterize" class="mobile-tool-wide-action" type="button">
+                Rasterize SVG
+              </button>
+              <p id="mobileSvgStyleStatus" class="mobile-tool-settings-status" aria-live="polite"></p>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="text" hidden>
+              <label class="mobile-tool-text-field" for="mobileTextValue">
+                <span>Text</span>
+                <input id="mobileTextValue" type="text" maxlength="80" autocomplete="off" />
+              </label>
+              <label class="mobile-raster-effect-select" for="mobileTextFontFamily">
+                <span>Font</span>
+                <select id="mobileTextFontFamily">
+                  <option value="Anton">Anton</option>
+                  <option value="Bebas Neue">Bebas Neue</option>
+                  <option value="Poppins">Poppins</option>
+                </select>
+              </label>
+              <label class="mobile-raster-effect-range" for="mobileTextFontSize">
+                <span>Size</span>
+                <output id="mobileTextFontSizeOut" for="mobileTextFontSize">360 px</output>
+                <input id="mobileTextFontSize" type="range" min="80" max="1200" step="1" value="360" />
+              </label>
+              <label
+                id="mobileTextColorControl"
+                class="mobile-raster-effect-color"
+                for="mobileTextColor"
+              >
+                <span>Color</span>
+                <span class="mobile-raster-effect-color-disc">
+                  <input id="mobileTextColor" type="color" value="#f4c95d" />
+                </span>
+              </label>
+              <div class="mobile-tool-actions mobile-tool-actions-grid">
+                <button id="mobileTextAdd" class="is-primary" type="button">Add Text</button>
+                <button id="mobileTextReset" type="button">Reset</button>
+                <button id="mobileTextDelete" type="button">Delete</button>
+                <button id="mobileTextRasterize" type="button">Rasterize</button>
+              </div>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="text-warp" hidden>
+              <div class="mobile-tool-settings-field">
+                <span>Mode</span>
+                <div class="mobile-text-warp-modes" role="group" aria-label="Text warp mode">
+                  <button id="mobileTextWarpNone" type="button" aria-pressed="true">Normal</button>
+                  <button id="mobileTextWarpDistort" type="button" aria-pressed="false">Distort</button>
+                  <button id="mobileTextWarpArch" type="button" aria-pressed="false">Arch</button>
+                  <button id="mobileTextWarpCircle" type="button" aria-pressed="false">Circle</button>
+                  <button id="mobileTextWarpWave" type="button" aria-pressed="false">Wave</button>
+                </div>
+              </div>
+
+              <div id="mobileTextWarpDistortControls" class="mobile-text-effect-parameters" hidden>
+                <p class="mobile-tool-settings-status">
+                  Edit the four corners directly on the canvas.
+                </p>
+                <div class="mobile-tool-actions">
+                  <button id="mobileTextDistortReset" type="button">Reset</button>
+                  <button id="mobileTextDistortEdit" type="button" aria-pressed="false">Edit</button>
+                </div>
+                <div
+                  id="mobileTextDistortCommitActions"
+                  class="mobile-tool-actions mobile-transform-commit-actions"
+                  role="group"
+                  aria-label="Confirm distortion"
+                  hidden
+                >
+                  <button id="mobileTextDistortCancel" type="button" disabled>Cancel</button>
+                  <button id="mobileTextDistortApply" class="is-primary" type="button" disabled>Apply</button>
+                </div>
+              </div>
+
+              <div id="mobileTextWarpCurveControls" class="mobile-text-effect-parameters" hidden>
+                <label class="mobile-raster-effect-range" for="mobileTextWarpCurve">
+                  <span>Curve</span>
+                  <output id="mobileTextWarpCurveOut" for="mobileTextWarpCurve">80%</output>
+                  <input id="mobileTextWarpCurve" type="range" min="-100" max="100" step="1" value="80" />
+                </label>
+              </div>
+
+              <div id="mobileTextWarpCircleControls" class="mobile-text-effect-parameters" hidden>
+                <label class="mobile-raster-effect-range" for="mobileTextCircleRadius">
+                  <span>Radius</span>
+                  <output id="mobileTextCircleRadiusOut" for="mobileTextCircleRadius">50%</output>
+                  <input id="mobileTextCircleRadius" type="range" min="16" max="200" step="1" value="50" />
+                </label>
+                <label class="mobile-raster-effect-check" for="mobileTextCircleInverted">
+                  <input id="mobileTextCircleInverted" type="checkbox" />
+                  <span>Invert circle</span>
+                </label>
+              </div>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="text-outline" hidden>
+              <label class="mobile-raster-effect-range" for="mobileTextOutlineWidth">
+                <span>Width</span>
+                <output id="mobileTextOutlineWidthOut" for="mobileTextOutlineWidth">0 px</output>
+                <input id="mobileTextOutlineWidth" type="range" min="0" max="100" step="1" value="0" />
+              </label>
+              <label
+                id="mobileTextOutlineColorControl"
+                class="mobile-raster-effect-color"
+                for="mobileTextOutlineColor"
+              >
+                <span>Color</span>
+                <span class="mobile-raster-effect-color-disc">
+                  <input id="mobileTextOutlineColor" type="color" value="#111111" />
+                </span>
+              </label>
+              <label class="mobile-raster-effect-select" for="mobileTextOutlineJoin">
+                <span>Join</span>
+                <select id="mobileTextOutlineJoin">
+                  <option value="bevel">Bevel</option>
+                  <option value="miter">Miter</option>
+                  <option value="round">Round</option>
+                </select>
+              </label>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="text-drop-shadow" hidden>
+              <label class="mobile-raster-effect-check" for="mobileTextDropShadowEnabled">
+                <input id="mobileTextDropShadowEnabled" type="checkbox" />
+                <span>Enabled</span>
+              </label>
+              <div id="mobileTextDropShadowParameters" class="mobile-text-effect-parameters" hidden>
+                <label
+                  id="mobileTextDropShadowColorControl"
+                  class="mobile-raster-effect-color"
+                  for="mobileTextDropShadowColor"
+                >
+                  <span>Color</span>
+                  <span class="mobile-raster-effect-color-disc">
+                    <input id="mobileTextDropShadowColor" type="color" value="#727272" />
+                  </span>
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextDropShadowOpacity">
+                  <span>Opacity</span>
+                  <output id="mobileTextDropShadowOpacityOut" for="mobileTextDropShadowOpacity">100%</output>
+                  <input id="mobileTextDropShadowOpacity" type="range" min="0" max="100" step="1" value="100" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextDropShadowOffset">
+                  <span>Offset</span>
+                  <output id="mobileTextDropShadowOffsetOut" for="mobileTextDropShadowOffset">54</output>
+                  <input id="mobileTextDropShadowOffset" type="range" min="0" max="100" step="1" value="54" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextDropShadowAngle">
+                  <span>Angle</span>
+                  <output id="mobileTextDropShadowAngleOut" for="mobileTextDropShadowAngle">-180°</output>
+                  <input id="mobileTextDropShadowAngle" type="range" min="-180" max="180" step="1" value="-180" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextDropShadowBlur">
+                  <span>Blur</span>
+                  <output id="mobileTextDropShadowBlurOut" for="mobileTextDropShadowBlur">6</output>
+                  <input id="mobileTextDropShadowBlur" type="range" min="0" max="300" step="1" value="6" />
+                </label>
+              </div>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="text-inner-shadow" hidden>
+              <label class="mobile-raster-effect-check" for="mobileTextInnerShadowEnabled">
+                <input id="mobileTextInnerShadowEnabled" type="checkbox" />
+                <span>Enabled</span>
+              </label>
+              <div id="mobileTextInnerShadowParameters" class="mobile-text-effect-parameters" hidden>
+                <label
+                  id="mobileTextInnerShadowColorControl"
+                  class="mobile-raster-effect-color"
+                  for="mobileTextInnerShadowColor"
+                >
+                  <span>Color</span>
+                  <span class="mobile-raster-effect-color-disc">
+                    <input id="mobileTextInnerShadowColor" type="color" value="#000000" />
+                  </span>
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextInnerShadowOpacity">
+                  <span>Opacity</span>
+                  <output id="mobileTextInnerShadowOpacityOut" for="mobileTextInnerShadowOpacity">65%</output>
+                  <input id="mobileTextInnerShadowOpacity" type="range" min="0" max="100" step="1" value="65" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextInnerShadowOffset">
+                  <span>Offset</span>
+                  <output id="mobileTextInnerShadowOffsetOut" for="mobileTextInnerShadowOffset">12</output>
+                  <input id="mobileTextInnerShadowOffset" type="range" min="0" max="100" step="1" value="12" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextInnerShadowAngle">
+                  <span>Angle</span>
+                  <output id="mobileTextInnerShadowAngleOut" for="mobileTextInnerShadowAngle">-135°</output>
+                  <input id="mobileTextInnerShadowAngle" type="range" min="-180" max="180" step="1" value="-135" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextInnerShadowBlur">
+                  <span>Blur</span>
+                  <output id="mobileTextInnerShadowBlurOut" for="mobileTextInnerShadowBlur">12</output>
+                  <input id="mobileTextInnerShadowBlur" type="range" min="0" max="300" step="1" value="12" />
+                </label>
+              </div>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="text-block-shadow" hidden>
+              <label class="mobile-raster-effect-check" for="mobileTextBlockShadowEnabled">
+                <input id="mobileTextBlockShadowEnabled" type="checkbox" />
+                <span>Enabled</span>
+              </label>
+              <div id="mobileTextBlockShadowParameters" class="mobile-text-effect-parameters" hidden>
+                <label
+                  id="mobileTextBlockShadowColorControl"
+                  class="mobile-raster-effect-color"
+                  for="mobileTextBlockShadowColor"
+                >
+                  <span>Color</span>
+                  <span class="mobile-raster-effect-color-disc">
+                    <input id="mobileTextBlockShadowColor" type="color" value="#727272" />
+                  </span>
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextBlockShadowOpacity">
+                  <span>Opacity</span>
+                  <output id="mobileTextBlockShadowOpacityOut" for="mobileTextBlockShadowOpacity">100%</output>
+                  <input id="mobileTextBlockShadowOpacity" type="range" min="0" max="100" step="1" value="100" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextBlockShadowOffset">
+                  <span>Offset</span>
+                  <output id="mobileTextBlockShadowOffsetOut" for="mobileTextBlockShadowOffset">23</output>
+                  <input id="mobileTextBlockShadowOffset" type="range" min="0" max="100" step="1" value="23" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextBlockShadowAngle">
+                  <span>Angle</span>
+                  <output id="mobileTextBlockShadowAngleOut" for="mobileTextBlockShadowAngle">-104°</output>
+                  <input id="mobileTextBlockShadowAngle" type="range" min="-180" max="180" step="1" value="-104" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextBlockShadowOutlineWidth">
+                  <span>Outline Width</span>
+                  <output id="mobileTextBlockShadowOutlineWidthOut" for="mobileTextBlockShadowOutlineWidth">0 px</output>
+                  <input id="mobileTextBlockShadowOutlineWidth" type="range" min="0" max="100" step="1" value="0" />
+                </label>
+              </div>
+            </section>
+          </div>
+        </div>
+      </aside>
+
+      <aside
+        id="mobileRasterEffectSheet"
+        class="mobile-tools-sheet mobile-raster-effect-sheet"
+        aria-label="Raster effect settings"
+        aria-hidden="true"
+        data-state="closed"
+        data-snap="peek"
+        hidden
+      >
+        <button
+          id="mobileRasterEffectHandle"
+          class="mobile-tools-sheet-handle"
+          type="button"
+          aria-label="Close raster effect settings"
+          aria-controls="mobileRasterEffectSheet"
+          aria-expanded="false"
+        >
+          <span class="mobile-tools-sheet-grabber" aria-hidden="true"></span>
+        </button>
+
+        <div class="mobile-raster-effect-shell">
+          <header id="mobileRasterEffectHeader" class="mobile-raster-effect-header">
+            <h2 id="mobileRasterEffectTitle">Effect</h2>
+            <label
+              id="mobileRasterEffectEnabledControl"
+              class="mobile-raster-effect-enabled"
+              for="mobileRasterEffectEnabled"
+            >
+              <input
+                id="mobileRasterEffectEnabled"
+                type="checkbox"
+                aria-label="Effect enabled"
+              />
+              <span class="mobile-raster-effect-switch" aria-hidden="true">
+                <span></span>
+              </span>
+              <span>Enabled</span>
+            </label>
+          </header>
+
+          <div id="mobileRasterEffectScroll" class="mobile-raster-effect-scroll">
+            <div id="mobileRasterEffectContent" class="mobile-raster-effect-content"></div>
+          </div>
+        </div>
+      </aside>
+
+      <aside
+        id="mobileToolsSheet"
+        class="mobile-tools-sheet"
+        aria-label="Tools menu"
+        aria-hidden="true"
+        data-snap="peek"
+      >
+        <button
+          id="mobileToolsSheetHandle"
+          class="mobile-tools-sheet-handle"
+          type="button"
+          aria-label="Move tools menu"
+          aria-controls="mobileToolsSheet"
+          aria-expanded="false"
+        >
+          <span class="mobile-tools-sheet-grabber" aria-hidden="true"></span>
+        </button>
+        <div id="mobileToolsSheetContent" class="mobile-tools-sheet-content">
+          <label id="mobileToolsSearchField" class="mobile-tools-search">
+            <span class="mobile-icon-stack" aria-hidden="true">
+              <i data-lucide="search" class="mobile-icon-layer mobile-icon-outline"></i>
+              <i data-lucide="search" class="mobile-icon-layer mobile-icon-face"></i>
+            </span>
+            <input
+              id="mobileToolsSearch"
+              type="search"
+              placeholder="Search"
+              aria-label="Search tools"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </label>
+
+          <div class="mobile-tools-categories">
+            <section class="mobile-tools-category" data-mobile-tools-category>
+              <h2 class="mobile-tools-category-title">Drawing</h2>
+              <div class="mobile-tools-grid">
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-canvas-tool="paint"
+                  data-mobile-tool-search="pennello brush paint disegno"
+                  aria-label="Select Brush"
+                  aria-pressed="true"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="brush" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="brush" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Brush</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-tool-search="gomma eraser cancella cancellare"
+                  aria-label="Eraser, not available yet"
+                  disabled
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="eraser" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="eraser" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Eraser</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-canvas-tool="blend"
+                  data-mobile-tool-search="blend sfuma sfumino mescola pigmento"
+                  aria-label="Select Blend"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="blend" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="blend" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Blend</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-canvas-tool="fill"
+                  data-mobile-tool-sheet="fill"
+                  data-mobile-tool-search="riempimento secchiello fill bucket colore"
+                  aria-label="Open Fill settings"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="paint-bucket" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="paint-bucket" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Fill</span>
+                </button>
+              </div>
+            </section>
+
+            <section class="mobile-tools-category" data-mobile-tools-category>
+              <h2 class="mobile-tools-category-title">Select &amp; Edit</h2>
+              <div class="mobile-tools-grid">
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-canvas-tool="selection"
+                  data-mobile-tool-sheet="selection"
+                  data-mobile-tool-search="selezione selection bacchetta magica lazo lasso colore"
+                  aria-label="Open Selection settings"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="scan" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="scan" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Selection</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-canvas-tool="transform"
+                  data-mobile-tool-sheet="transform"
+                  data-mobile-tool-search="trasforma transform sposta scala ridimensiona ruota"
+                  aria-label="Open Transform settings"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="scaling" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="scaling" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Transform</span>
+                </button>
+              </div>
+            </section>
+
+            <section class="mobile-tools-category" data-mobile-tools-category>
+              <h2 class="mobile-tools-category-title">Insert</h2>
+              <div class="mobile-tools-grid">
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-proxy-button="vectorSvgImportButton"
+                  data-mobile-tool-search="svg vettore vector forme shapes importa"
+                  aria-label="Import SVG"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="shapes" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="shapes" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">SVG</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-proxy-button="rasterImageImportButton"
+                  data-mobile-tool-search="immagine image foto raster png jpeg webp avif importa"
+                  aria-label="Import Image"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="image" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="image" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Image</span>
+                </button>
+              </div>
+            </section>
+
+            <section class="mobile-tools-category" data-mobile-tools-category>
+              <h2 class="mobile-tools-category-title">Vectors</h2>
+              <div class="mobile-tools-grid">
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-tool-sheet="text"
+                  data-mobile-tool-search="testo text type scritta font contenuto"
+                  aria-label="Open Text settings"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="type" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="type" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Text</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-tool-sheet="svg-style"
+                  data-mobile-tool-search="svg style effects colori palette rasterize vettore"
+                  aria-label="Open SVG Style settings"
+                  aria-pressed="false"
+                  disabled
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="palette" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="palette" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">SVG Style</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-tool-sheet="text-warp"
+                  data-mobile-tool-search="testo warp distort arch circle wave curva deformazione"
+                  aria-label="Open Warp settings"
+                  aria-pressed="false"
+                  disabled
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="spline" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="spline" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Warp</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-tool-sheet="text-outline"
+                  data-mobile-tool-search="testo outline contorno bordo stroke"
+                  aria-label="Open Outline settings"
+                  aria-pressed="false"
+                  disabled
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="type-outline" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="type-outline" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Outline</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-tool-sheet="text-drop-shadow"
+                  data-mobile-tool-search="testo ombra esterna drop shadow single shadow"
+                  aria-label="Open Drop Shadow settings"
+                  aria-pressed="false"
+                  disabled
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="sun" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="sun" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Drop Shadow</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-tool-sheet="text-inner-shadow"
+                  data-mobile-tool-search="testo ombra interna inner shadow"
+                  aria-label="Open Inner Shadow settings"
+                  aria-pressed="false"
+                  disabled
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="circle-dot-dashed" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="circle-dot-dashed" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Inner Shadow</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-tool-sheet="text-block-shadow"
+                  data-mobile-tool-search="testo ombra blocco block shadow profondita"
+                  aria-label="Open Block Shadow settings"
+                  aria-pressed="false"
+                  disabled
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="square-stack" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="square-stack" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Block Shadow</span>
+                </button>
+              </div>
+            </section>
+
+            <section class="mobile-tools-category" data-mobile-tools-category>
+              <h2 class="mobile-tools-category-title">Effects</h2>
+              <div class="mobile-tools-grid">
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-effect-control="rasterColorOverlayEnabled"
+                  data-mobile-tool-search="overlay sovrapposizione colore color effect"
+                  aria-label="Open Color Overlay settings"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="palette" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="palette" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Color Overlay</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-effect-control="rasterStrokeEnabled"
+                  data-mobile-tool-search="traccia contorno stroke outline bordo"
+                  aria-label="Open Stroke settings"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="circle-dashed" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="circle-dashed" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Stroke</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-effect-control="rasterOuterShadowEnabled"
+                  data-mobile-tool-search="ombra esterna outer shadow proiettata"
+                  aria-label="Open Outer Shadow settings"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="sun" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="sun" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Outer Shadow</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-effect-control="rasterInnerShadowEnabled"
+                  data-mobile-tool-search="ombra interna inner shadow bordo"
+                  aria-label="Open Inner Shadow settings"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="circle-dot-dashed" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="circle-dot-dashed" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Inner Shadow</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-effect-control="rasterBevelEnabled"
+                  data-mobile-tool-search="smusso rilievo bevel emboss heightfield"
+                  aria-label="Open Bevel settings"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="box" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="box" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Bevel</span>
+                </button>
+              </div>
+            </section>
+          </div>
+
+          <p id="mobileToolsEmpty" class="mobile-tools-empty" aria-live="polite" hidden>
+            No tools found.
+          </p>
+        </div>
+      </aside>
+
+      <aside
+        id="mobileLayersPanel"
+        class="mobile-layers-panel"
+        aria-label="Layers"
+        aria-hidden="true"
+        inert
+      >
+        <div class="mobile-layers-toolbar" role="toolbar" aria-label="Layer actions">
+          <button
+            id="mobileAddLayer"
+            class="mobile-layers-toolbar-action"
+            type="button"
+            aria-label="Add layer"
+            title="Add layer"
+            disabled
+          >
+            <span class="mobile-icon-stack" aria-hidden="true">
+              <i data-lucide="plus" class="mobile-icon-layer mobile-icon-outline"></i>
+              <i data-lucide="plus" class="mobile-icon-layer mobile-icon-face"></i>
+            </span>
+          </button>
+          <button
+            id="mobileCopyLayer"
+            class="mobile-layers-toolbar-action"
+            type="button"
+            aria-label="Copy layer, not available yet"
+            title="Copy layer"
+            disabled
+          >
+            <span class="mobile-icon-stack" aria-hidden="true">
+              <i data-lucide="copy" class="mobile-icon-layer mobile-icon-outline"></i>
+              <i data-lucide="copy" class="mobile-icon-layer mobile-icon-face"></i>
+            </span>
+          </button>
+          <button
+            id="mobileAddMask"
+            class="mobile-layers-toolbar-action"
+            type="button"
+            aria-label="Add mask"
+            title="Add mask"
+            disabled
+          >
+            <span class="mobile-icon-stack" aria-hidden="true">
+              <i data-lucide="square-dashed" class="mobile-icon-layer mobile-icon-outline"></i>
+              <i data-lucide="square-dashed" class="mobile-icon-layer mobile-icon-face"></i>
+            </span>
+          </button>
+        </div>
+        <div id="mobileLayerList" class="mobile-layer-list" role="list"></div>
+        <div
+          id="mobileLayerContextMenu"
+          class="mobile-layer-context-menu"
+          role="menu"
+          aria-label="Layer actions"
+          hidden
+          inert
+        >
+          <button
+            id="mobileLayerClipping"
+            type="button"
+            role="menuitemcheckbox"
+            aria-checked="false"
+          >
+            Clipping Mask
+          </button>
+          <button id="mobileLayerOptions" type="button" role="menuitem">
+            Options
+          </button>
+          <button
+            id="mobileLayerDelete"
+            class="is-destructive"
+            type="button"
+            role="menuitem"
+          >
+            Delete Layer
+          </button>
+        </div>
+        <p
+          id="mobileLayerReorderStatus"
+          class="visually-hidden"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        ></p>
+      </aside>
+
+      <aside id="controlsPanel" class="controls" aria-label="Pannello strumenti">
+        <section>
+          <h2>Strumento</h2>
+
+          <label class="control">
+            <span>Strumento</span>
+            <select id="brushTool">
+              <option value="paint">Paint</option>
+              <option value="blend">Blend — dry</option>
+              <option value="fill">Riempimento</option>
+              <option value="selection">Selezione pixel</option>
+              <option value="transform">Trasforma</option>
+            </select>
+          </label>
+
+          <label id="brushShapeControl" class="control">
+            <span>Forma</span>
+            <select id="brushShape">
+              <option value="circle">Cerchio</option>
+              <option value="shape">Shape 2K</option>
+            </select>
+          </label>
+
+          <label id="shapeScatterControl" class="control">
+            <span>Scatter rotazione <output id="shapeScatterOut">0%</output></span>
+            <input id="shapeScatter" type="range" min="0" max="100" step="1" value="0" />
+          </label>
+
+          <label id="brushColorControl" class="control color-control">
+            <span>Colore</span>
+            <input id="brushColor" type="color" value="#ff5b35" />
+          </label>
+
+          <label id="shapeSourceControl" class="control">
+            <span>Shape Source</span>
+            <select id="shapeSource" disabled>
+              <option value="legacy-shape">Legacy Shape 2K</option>
+              <option value="pencil-shape">Pencil Shape 2K</option>
+            </select>
+          </label>
+
+          <label id="shapeRotationControl" class="control">
+            <span>Shape Rotation</span>
+            <select id="shapeRotation">
+              <option value="fixed">Fixed</option>
+              <option value="follow-stroke">Follow Stroke</option>
+            </select>
+          </label>
+
+          <label id="fillToleranceControl" class="control" hidden>
+            <span>
+              Tolleranza <output id="fillToleranceOut">10,0%</output>
+              <small>Confronto RGBA in sRGB; la regione resta sul livello selezionato.</small>
+            </span>
+            <input id="fillTolerance" type="range" min="0" max="100" step="0.1" value="10" />
+          </label>
+
+          <fieldset id="selectionControls" class="selection-controls" hidden>
+            <legend>Selezione pixel</legend>
+
+            <label class="control">
+              <span>Metodo</span>
+              <select id="selectionMethod">
+                <option value="magic-wand">Bacchetta magica</option>
+                <option value="lasso">Lazo</option>
+                <option value="color-range">Per colore</option>
+              </select>
+            </label>
+
+            <div class="control">
+              <span>Combina</span>
+              <div class="selection-combine" role="group" aria-label="Combina con la selezione corrente">
+                <button id="selectionReplace" type="button" aria-pressed="true">Sostituisci</button>
+                <button id="selectionAdd" type="button" aria-pressed="false" title="Aggiungi alla selezione">+ Aggiungi</button>
+                <button id="selectionSubtract" type="button" aria-pressed="false" title="Togli dalla selezione">− Sottrai</button>
+              </div>
+            </div>
+
+            <label id="selectionToleranceControl" class="control">
+              <span>
+                Tolleranza <output id="selectionToleranceOut">32/255</output>
+                <small>Distanza massima RGBA straight-sRGB sul raster attivo.</small>
+              </span>
+              <input id="selectionTolerance" type="range" min="0" max="255" step="1" value="32" />
+            </label>
+
+            <label id="selectionColorControl" class="control color-control" hidden>
+              <span>Colore da cercare</span>
+              <input id="selectionColor" type="color" value="#ff5b35" />
+            </label>
+
+            <div class="selection-actions">
+              <button id="selectionColorApply" class="primary" type="button" hidden>Seleziona colore</button>
+              <button id="selectionClear" type="button">Deseleziona</button>
+            </div>
+            <p id="selectionResult" class="result" aria-live="polite">Nessun pixel selezionato.</p>
+            <p id="selectionKeyboardHelp" class="selection-keyboard-help">
+              Tastiera sul canvas: frecce per il cursore; Bacchetta con Invio/Spazio.
+              Lazo: Spazio avvia, frecce tracciano, Invio chiude, Esc annulla.
+            </p>
+          </fieldset>
+
+          <label id="brushSizeControl" class="control">
+            <span>Dimensione <output id="brushSizeOut">96 px</output></span>
+            <input id="brushSize" type="range" min="1" max="1000" step="1" value="96" />
+          </label>
+
+          <label id="spacingControl" class="control">
+            <span>Spacing <output id="spacingOut">1.00%</output></span>
+            <input id="spacing" type="range" min="0.25" max="25" step="0.25" value="1" />
+          </label>
+
+          <label id="stabilizationControl" class="control">
+            <span>
+              Stabilizzazione <output id="stabilizationOut">0%</output>
+              <small>La coda viene stabilizzata; la forza sfuma fino a 0% vicino al puntatore.</small>
+            </span>
+            <input id="stabilization" type="range" min="0" max="100" step="1" value="0" />
+          </label>
+
+          <label id="countControl" class="control">
+            <span>Count <output id="countOut">24</output></span>
+            <input id="count" type="range" min="1" max="24" step="1" value="24" />
+          </label>
+
+          <label id="flowControl" class="control">
+            <span>Flow <output id="flowOut">7%</output></span>
+            <input id="flow" type="range" min="0.1" max="100" step="0.1" value="7" />
+          </label>
+
+          <label id="opacityControl" class="control">
+            <span>Opacità <output id="opacityOut">100%</output></span>
+            <input id="opacity" type="range" min="0" max="100" step="0.1" value="100" />
+          </label>
+
+          <label id="hardnessControl" class="control">
+            <span>Hardness <output id="hardnessOut">88%</output></span>
+            <input id="hardness" type="range" min="0" max="100" step="1" value="88" />
+          </label>
+
+          <label id="paintBlendModeControl" class="control">
+            <span>Rendering</span>
+            <select id="blendMode">
+              <option value="light-glaze">Light Glaze</option>
+              <option value="uniformed-glaze">Uniformed Glaze</option>
+              <option value="intense-blending">Intense Blending</option>
+            </select>
+          </label>
+          <p id="renderingModeMemoryHint" class="result">Memoria rendering: inizializzazione…</p>
+
+          <div id="blendControls" hidden>
+            <label class="control">
+              <span>
+                Stretch <output id="blendStretchOut">18%</output>
+                <small>Quanto pigmento già raccolto resta nel carrier.</small>
+              </span>
+              <input id="blendStretch" type="range" min="0" max="100" step="1" value="18" />
+            </label>
+
+            <label class="control">
+              <span>
+                Paint <output id="blendPaintOut">14%</output>
+                <small>Carica il colore selezionato nel pigmento trasportato.</small>
+              </span>
+              <input id="blendPaint" type="range" min="0" max="100" step="1" value="14" />
+            </label>
+
+            <p class="result">Blend dry: pickup e deposito del colore.</p>
+          </div>
+        </section>
+
+        <section id="thicknessSection">
+          <h2>Spessore dinamico — test ibis</h2>
+
+          <label class="control">
+            <span>
+              Spessore dell'inizio <output id="startThicknessOut">100%</output>
+              <small>Rapporto rispetto alla dimensione del pennello.</small>
+            </span>
+            <input id="startThickness" type="range" min="0" max="200" step="1" value="100" />
+          </label>
+
+          <label class="control">
+            <span>
+              Spessore della fine <output id="endThicknessOut">100%</output>
+              <small>La coda finale usa gli ultimi 100 ms del gesto.</small>
+            </span>
+            <input id="endThickness" type="range" min="0" max="200" step="1" value="100" />
+          </label>
+
+        </section>
+
+        <section id="grainSection">
+          <h2>Grain</h2>
+
+          <label class="control">
+            <span>Sorgente</span>
+            <select id="grainSource" disabled>
+              <option value="legacy-grain">Cotton Fleece M1 — 2500 px</option>
+              <option value="pencil-grain">Pencil Grain — 800 px</option>
+            </select>
+          </label>
+
+          <label class="control">
+            <span>Modalità</span>
+            <select id="grainMode">
+              <option value="off">Off</option>
+              <option value="texturized">Texturized — Fixed M1</option>
+              <option value="moving">Texturized — Moving M1</option>
+            </select>
+          </label>
+
+          <div id="grainParameters" hidden>
+            <label class="control">
+              <span>
+                Scale <output id="grainScaleOut">140%</output>
+                <small>Regola la dimensione della texture nel grain.</small>
+              </span>
+              <input id="grainScale" type="range" min="10" max="400" step="1" value="140" />
+            </label>
+
+            <label id="grainMovementControl" class="control" hidden>
+              <span>
+                Movement <output id="grainMovementOut">0%</output>
+                <small>0% trascina il grain; 100% si avvicina a Texturized.</small>
+              </span>
+              <input id="grainMovement" type="range" min="0" max="100" step="1" value="0" />
+            </label>
+
+            <label class="control">
+              <span>Depth <output id="grainDepthOut">100%</output></span>
+              <input id="grainDepth" type="range" min="0" max="100" step="1" value="100" />
+            </label>
+
+            <label class="control">
+              <span>Brightness <output id="grainBrightnessOut">0%</output></span>
+              <input id="grainBrightness" type="range" min="-100" max="100" step="1" value="0" />
+            </label>
+
+            <label class="control">
+              <span>Contrast <output id="grainContrastOut">0%</output></span>
+              <input id="grainContrast" type="range" min="-100" max="100" step="1" value="0" />
+            </label>
+
+            <label class="check-control">
+              <input id="grainInvert" type="checkbox" />
+              <span>
+                Invert
+                <small>Inverte chiaro e scuro dopo Brightness e Contrast.</small>
+              </span>
+            </label>
+
+            <label class="control">
+              <span>Filtering</span>
+              <select id="grainFiltering">
+                <option value="no">No</option>
+                <option value="classic">Classic</option>
+                <option value="improved" selected>Improved</option>
+              </select>
+            </label>
+
+            <label class="control">
+              <span>Blend Mode</span>
+              <select id="grainBlendMode">
+                <option value="multiply">Multiply</option>
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <section id="colorJitterSection">
+          <h2>Color jitter</h2>
+
+          <label class="control">
+            <span>Hue <output id="hueJitterOut">12°</output></span>
+            <input id="hueJitter" type="range" min="0" max="180" step="1" value="12" />
+          </label>
+
+          <label class="control">
+            <span>Saturation <output id="saturationJitterOut">18%</output></span>
+            <input id="saturationJitter" type="range" min="0" max="100" step="1" value="18" />
+          </label>
+
+          <label class="control">
+            <span>Lightness <output id="lightnessJitterOut">12%</output></span>
+            <input id="lightnessJitter" type="range" min="0" max="100" step="1" value="12" />
+          </label>
+
+          <label class="control">
+            <span>Darkness <output id="darknessJitterOut">18%</output></span>
+            <input id="darknessJitter" type="range" min="0" max="100" step="1" value="18" />
+          </label>
+
+          <label class="check-control">
+            <input id="jitterPerCopy" type="checkbox" />
+            <span>
+              Color jitter diverso per ciascuna copia
+              <small>Il jitter di posizione è sempre indipendente per ogni copia fisica.</small>
+            </span>
+          </label>
+        </section>
+
+        <section id="positionJitterSection">
+          <h2>Jitter posizione</h2>
+
+          <label class="control">
+            <span>Laterale <output id="positionJitterLateralOut">100%</output></span>
+            <input id="positionJitterLateral" type="range" min="0" max="100" step="1" value="100" />
+          </label>
+
+          <label class="control">
+            <span>Lineare <output id="positionJitterLinearOut">100%</output></span>
+            <input id="positionJitterLinear" type="range" min="0" max="100" step="1" value="100" />
+          </label>
+        </section>
+
+        <section id="vectorTextPrototypeSection" hidden>
+          <h2>Testo, SVG e immagini · livelli separati</h2>
+          <p class="result">
+            Testo, SVG e raster restano oggetti separati ma condividono una
+            timeline Undo/Redo ordinata per gesto.
+          </p>
+
+          <div class="vector-svg-import-card">
+            <button id="vectorSvgLoadExample" class="primary wide" type="button">
+              Carica SVG di esempio
+            </button>
+            <button id="vectorSvgImportButton" class="wide" type="button">
+              Importa un altro SVG…
+            </button>
+            <input
+              id="vectorSvgFileInput"
+              type="file"
+              accept=".svg,image/svg+xml"
+              hidden
+            />
+            <p id="vectorSvgImportStatus" class="result" aria-live="polite">
+              Importazione vettoriale sicura: path e colori restano modificabili.
+            </p>
+          </div>
+
+          <div class="vector-image-import-card">
+            <button id="rasterImageImportButton" class="primary wide" type="button">
+              Importa immagine…
+            </button>
+            <input
+              id="rasterImageFileInput"
+              type="file"
+              accept=".png,.jpg,.jpeg,.webp,.avif,image/png,image/jpeg,image/webp,image/avif"
+              hidden
+            />
+            <p id="rasterImageImportStatus" class="result" aria-live="polite">
+              PNG, JPEG, WebP e AVIF statici · diventano subito normali livelli raster WebGPU.
+            </p>
+          </div>
+
+          <div id="vectorTextSpecificControls">
+          <label class="control">
+            <span>Testo</span>
+            <input
+              id="vectorTextValue"
+              type="text"
+              maxlength="80"
+              autocomplete="off"
+              value="STREETWEAR"
+            />
+          </label>
+
+          <label class="control">
+            <span>Font</span>
+            <select id="vectorTextFontFamily">
+              <option value="Anton">Anton / condensato</option>
+              <option value="Bebas Neue">Bebas Neue</option>
+              <option value="Poppins">Poppins</option>
+            </select>
+          </label>
+
+          <label class="control">
+            <span>
+              Dimensione <output id="vectorTextFontSizeOut">360 px</output>
+            </span>
+            <input
+              id="vectorTextFontSize"
+              type="range"
+              min="80"
+              max="1200"
+              step="1"
+              value="360"
+            />
+          </label>
+
+          <label class="control color-control">
+            <span>Colore</span>
+            <input id="vectorTextColor" type="color" value="#f4c95d" />
+          </label>
+
+          <fieldset class="vector-text-transform-controls">
+            <legend>Trasformazione testo</legend>
+            <div class="vector-text-transform-grid" role="group" aria-label="Tipo di trasformazione">
+              <button id="vectorTextTransformNone" type="button" class="is-selected" aria-pressed="true">Normale</button>
+              <button id="vectorTextTransformDistort" type="button" aria-pressed="false">Distort</button>
+              <button id="vectorTextTransformArch" type="button" aria-pressed="false">Arch</button>
+              <button id="vectorTextTransformCircle" type="button" aria-pressed="false">Circle</button>
+              <button id="vectorTextTransformWave" type="button" aria-pressed="false">Wave</button>
+            </div>
+            <div id="vectorTextTransformDistortParameters" hidden>
+              <p class="vector-text-distort-note">
+                Sposta i 6 vertici e le 4 maniglie Bézier. Maiusc blocca il gesto
+                sull’asse dominante; il testo nuovo resta dentro la stessa gabbia.
+              </p>
+              <div class="vector-text-distort-actions">
+                <button id="vectorTextDistortReset" type="button">Reset</button>
+                <button id="vectorTextDistortEdit" type="button" aria-pressed="false">Modifica</button>
+              </div>
+            </div>
+            <div id="vectorTextTransformCurveParameters" hidden>
+              <label class="control">
+                <span>
+                  Curve <output id="vectorTextTransformCurveOut">80%</output>
+                </span>
+                <input
+                  id="vectorTextTransformCurve"
+                  type="range"
+                  min="-100"
+                  max="100"
+                  step="1"
+                  value="80"
+                />
+              </label>
+            </div>
+            <div id="vectorTextTransformCircleParameters" hidden>
+              <label class="control">
+                <span>
+                  Raggio <output id="vectorTextCircleRadiusOut">50%</output>
+                </span>
+                <input
+                  id="vectorTextCircleRadius"
+                  type="range"
+                  min="16"
+                  max="200"
+                  step="1"
+                  value="50"
+                />
+              </label>
+              <label class="check-control vector-text-circle-direction">
+                <input id="vectorTextCircleInverted" type="checkbox" />
+                <span>
+                  Direction Inverted
+                  <small>Inverte lato e direzione della circonferenza.</small>
+                </span>
+              </label>
+            </div>
+            <p class="vector-text-transform-note">
+              Distort, Arch e Wave deformano anchor e maniglie delle Bézier;
+              Circle ruota ogni glifo rigidamente. Il path resta Slug/WebGPU anche allo zoom.
+            </p>
+          </fieldset>
+
+          <button id="vectorTextRasterize" class="primary wide" type="button">
+            Rasterizza testo in livello RGBA8
+          </button>
+          <p id="vectorTextRasterStatus" class="result" aria-live="polite">
+            Slug analitico alla risoluzione documento · MSAA 4× · tile 256 px.
+          </p>
+          </div>
+
+          <div id="vectorSvgSelectedControls" class="vector-svg-selected" hidden>
+            <h3>SVG selezionato</h3>
+            <p id="vectorSvgSourceSummary" class="result"></p>
+            <div id="vectorSvgPalette" class="vector-svg-palette"></div>
+            <button id="vectorSvgRasterize" class="primary wide" type="button">
+              Rasterizza SVG in livello RGBA8
+            </button>
+            <p class="result">
+              Qualità massima WebGPU: MSAA 4× e blocchi allineati ai tile 256 px.
+            </p>
+          </div>
+
+          <div id="rasterImageSelectedControls" class="vector-image-selected" hidden>
+            <h3>Immagine selezionata</h3>
+            <p id="rasterImageSourceSummary" class="result"></p>
+            <p class="result">
+              Scegli Trasforma per spostare, ridimensionare o ruotare; Applica crea un solo Undo.
+            </p>
+          </div>
+
+          <fieldset class="vector-text-outline-controls">
+            <legend>Traccia vettore</legend>
+            <label class="control">
+              <span>
+                Spessore <output id="vectorTextOutlineWidthOut">0 px</output>
+              </span>
+              <input
+                id="vectorTextOutlineWidth"
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                value="0"
+              />
+            </label>
+            <label class="control color-control">
+              <span>Colore traccia</span>
+              <input id="vectorTextOutlineColor" type="color" value="#111111" />
+            </label>
+            <label class="control">
+              <span>Forma angoli</span>
+              <select id="vectorTextOutlineJoin">
+                <option value="bevel">Squadrata</option>
+                <option value="miter">A punta</option>
+                <option value="round" selected>Tonda</option>
+              </select>
+            </label>
+            <p class="vector-text-outline-note">
+              0 px disattiva la traccia. Effetto del nodo vettoriale, senza un nuovo canvas
+              <span data-document-size-square></span>.
+            </p>
+          </fieldset>
+
+          <fieldset class="vector-text-effect-controls">
+            <legend>Ombre vettore</legend>
+            <label class="check-control">
+              <input id="vectorTextSingleShadowEnabled" type="checkbox" />
+              <span>
+                Ombra singola
+                <small>Una sola sagoma offset con blur della maschera alfa.</small>
+              </span>
+            </label>
+            <div id="vectorTextSingleShadowParameters" hidden>
+              <label class="control color-control">
+                <span>Colore</span>
+                <input id="vectorTextSingleShadowColor" type="color" value="#727272" />
+              </label>
+              <label class="control">
+                <span>
+                  Opacità <output id="vectorTextSingleShadowOpacityOut">100%</output>
+                </span>
+                <input
+                  id="vectorTextSingleShadowOpacity"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value="100"
+                />
+              </label>
+              <label class="control">
+                <span>
+                  Offset <output id="vectorTextSingleShadowOffsetOut">54</output>
+                </span>
+                <input
+                  id="vectorTextSingleShadowOffset"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value="54"
+                />
+              </label>
+              <label class="control">
+                <span>
+                  Angolo <output id="vectorTextSingleShadowAngleOut">−180°</output>
+                </span>
+                <input
+                  id="vectorTextSingleShadowAngle"
+                  type="range"
+                  min="-180"
+                  max="180"
+                  step="1"
+                  value="-180"
+                />
+              </label>
+              <label class="control">
+                <span>
+                  Blur <output id="vectorTextSingleShadowBlurOut">6</output>
+                </span>
+                <input
+                  id="vectorTextSingleShadowBlur"
+                  type="range"
+                  min="0"
+                  max="300"
+                  step="1"
+                  value="6"
+                />
+              </label>
+              <label class="control">
+                <span>
+                  Outline Width
+                  <output id="vectorTextSingleShadowOutlineWidthOut">0 px</output>
+                </span>
+                <input
+                  id="vectorTextSingleShadowOutlineWidth"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value="0"
+                  disabled
+                />
+              </label>
+              <p class="vector-text-effect-note">
+                La mask usa una ROI adattiva e uno scratch condiviso. Il blur
+                non entra nella bbox del testo e Outline Width resta a 0.
+              </p>
+            </div>
+            <label class="check-control">
+              <input id="vectorTextInnerShadowEnabled" type="checkbox" />
+              <span>
+                Ombra interna riempimento
+                <small>Incisa esclusivamente dentro l’alpha del testo.</small>
+              </span>
+            </label>
+            <div id="vectorTextInnerShadowParameters" hidden>
+              <label class="control color-control">
+                <span>Colore</span>
+                <input id="vectorTextInnerShadowColor" type="color" value="#000000" />
+              </label>
+              <label class="control">
+                <span>
+                  Opacità <output id="vectorTextInnerShadowOpacityOut">65%</output>
+                </span>
+                <input
+                  id="vectorTextInnerShadowOpacity"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value="65"
+                />
+              </label>
+              <label class="control">
+                <span>
+                  Offset <output id="vectorTextInnerShadowOffsetOut">12</output>
+                </span>
+                <input
+                  id="vectorTextInnerShadowOffset"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value="12"
+                />
+              </label>
+              <label class="control">
+                <span>
+                  Angolo <output id="vectorTextInnerShadowAngleOut">−135°</output>
+                </span>
+                <input
+                  id="vectorTextInnerShadowAngle"
+                  type="range"
+                  min="-180"
+                  max="180"
+                  step="1"
+                  value="-135"
+                />
+              </label>
+              <label class="control">
+                <span>
+                  Blur <output id="vectorTextInnerShadowBlurOut">12</output>
+                </span>
+                <input
+                  id="vectorTextInnerShadowBlur"
+                  type="range"
+                  min="0"
+                  max="300"
+                  step="1"
+                  value="12"
+                />
+              </label>
+              <p class="vector-text-effect-note">
+                La coverage Slug ritaglia l’effetto nel riempimento originale:
+                traccia, maniglie e bbox semantica restano invariate.
+              </p>
+            </div>
+            <label class="check-control">
+              <input id="vectorTextBlockShadowEnabled" type="checkbox" />
+              <span>
+                Block Shadow
+                <small>Estrusione piena della sagoma, come nel riferimento Kittl.</small>
+              </span>
+            </label>
+            <div id="vectorTextBlockShadowParameters">
+              <label class="control color-control">
+                <span>Colore</span>
+                <input id="vectorTextBlockShadowColor" type="color" value="#727272" />
+              </label>
+              <label class="control">
+                <span>
+                  Opacità <output id="vectorTextBlockShadowOpacityOut">100%</output>
+                </span>
+                <input
+                  id="vectorTextBlockShadowOpacity"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value="100"
+                />
+              </label>
+              <label class="control">
+                <span>
+                  Offset <output id="vectorTextBlockShadowOffsetOut">23</output>
+                </span>
+                <input
+                  id="vectorTextBlockShadowOffset"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value="23"
+                />
+              </label>
+              <label class="control">
+                <span>
+                  Angolo <output id="vectorTextBlockShadowAngleOut">−104°</output>
+                </span>
+                <input
+                  id="vectorTextBlockShadowAngle"
+                  type="range"
+                  min="-180"
+                  max="180"
+                  step="1"
+                  value="-104"
+                />
+              </label>
+              <label class="control">
+                <span>
+                  Outline Width
+                  <output id="vectorTextBlockShadowOutlineWidthOut">0 px</output>
+                </span>
+                <input
+                  id="vectorTextBlockShadowOutlineWidth"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value="0"
+                />
+              </label>
+              <p class="vector-text-effect-note">
+                Una sola silhouette vettoriale estrusa, dallo stesso core di
+                paint-webgpu-m1: nessuna pila di copie e nessun canvas aggiuntivo.
+              </p>
+            </div>
+          </fieldset>
+
+          <div class="vector-text-actions">
+            <button id="addVectorText" class="primary" type="button">Aggiungi testo</button>
+            <button id="deleteVectorText" type="button">Elimina testo</button>
+            <button id="moveVectorTextDown" type="button">Sposta sotto</button>
+            <button id="moveVectorTextUp" type="button">Sposta sopra</button>
+            <button id="vectorTextReset" type="button">Reimposta</button>
+          </div>
+          <p id="vectorTextStatus" class="result" aria-live="polite">
+            Preparazione dei livelli testo…
+          </p>
+        </section>
+
+        <section id="layerSection">
+          <h2>Livelli</h2>
+          <div id="layerList" class="layer-list"></div>
+          <button id="addLayer" class="wide" type="button">
+            Aggiungi livello raster
+          </button>
+          <p id="layerSwitchResult" class="result" aria-live="polite">
+            Il tasto M di ogni raster attiva o disattiva la maschera sul livello
+            immediatamente sotto. Più M consecutive condividono la stessa base.
+          </p>
+          <div id="layerMemoryStressSection" hidden>
+            <p id="layerMemoryStressIntro" class="result">
+              Prova distruttiva su pagina nuova: prepara circa 1000 MiB di
+              risorse WebGPU reali. Al termine i livelli restano selezionabili.
+            </p>
+            <label id="iphoneMemoryDeviceControl" class="control" hidden>
+              <span>
+                Modello iPhone (facoltativo)
+                <small>Serve solo a riconoscere il risultato salvato.</small>
+              </span>
+              <input
+                id="iphoneMemoryDeviceLabel"
+                type="text"
+                maxlength="80"
+                autocomplete="off"
+                placeholder="es. iPhone 15 Pro"
+              />
+            </label>
+            <button id="runLayerMemoryStress" class="primary wide" type="button" disabled>
+              Prepara stress memoria ~1000 MiB
+            </button>
+            <p id="layerMemoryStressResult" class="result" aria-live="polite">
+              Pronto. Avvia una sola volta, poi cambia livello manualmente.
+            </p>
+            <details id="layerMemoryStressDetails" hidden>
+              <summary>Report stress memoria livelli</summary>
+              <pre id="layerMemoryStressReport" class="golden-report"></pre>
+            </details>
+          </div>
+          <div id="layerCompressionStudySection" hidden>
+            <p class="result">
+              Misura gzip lossless sui veri tile inattivi. Non elimina né
+              sostituisce alcuna risorsa del documento.
+            </p>
+            <button id="runLayerCompressionStudy" class="primary wide" type="button" disabled>
+              Misura compressione lossless
+            </button>
+            <p id="layerCompressionStudyResult" class="result" aria-live="polite">
+              Crea almeno due livelli con contenuto, poi avvia la misura.
+            </p>
+            <details id="layerCompressionStudyDetails" hidden>
+              <summary>Report compressione livelli</summary>
+              <pre id="layerCompressionStudyReport" class="golden-report"></pre>
+            </details>
+          </div>
+        </section>
+
+        <section id="rasterColorOverlaySection">
+          <h2>Sovrapposizione colore</h2>
+
+          <label class="check-control">
+            <input
+              id="rasterColorOverlayEnabled"
+              type="checkbox"
+              aria-controls="rasterColorOverlayParameters"
+              aria-expanded="false"
+            />
+            <span>
+              Colore sul contenuto raster
+              <small>Effetto WebGPU non distruttivo: l’alpha originale resta invariato.</small>
+            </span>
+          </label>
+
+          <div id="rasterColorOverlayParameters" hidden>
+            <label class="control color-control">
+              <span>Colore</span>
+              <input id="rasterColorOverlayColor" type="color" value="#000000" />
+            </label>
+
+            <label class="control" for="rasterColorOverlayOpacity">
+              <span>
+                Opacità
+                <output id="rasterColorOverlayOpacityOut" for="rasterColorOverlayOpacity">100%</output>
+              </span>
+              <input
+                id="rasterColorOverlayOpacity"
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                value="100"
+              />
+            </label>
+
+            <p class="result">
+              Il colore viene composto in WebGPU senza riscrivere i pixel del livello;
+              trasparenza e bordi raster restano quelli della sorgente.
+            </p>
+          </div>
+        </section>
+
+        <section id="rasterStrokeSection">
+          <h2>Traccia</h2>
+
+          <label class="check-control">
+            <input id="rasterStrokeEnabled" type="checkbox" />
+            <span>
+              Contorno raster
+              <small>Distance field e compositing eseguiti in WebGPU.</small>
+            </span>
+          </label>
+
+          <div id="rasterStrokeParameters" hidden>
+            <label class="control">
+              <span>Larghezza <output id="rasterStrokeWidthOut">14 px</output></span>
+              <input id="rasterStrokeWidth" type="range" min="0" max="512" step="1" value="14" />
+            </label>
+
+            <label class="control">
+              <span>Posizione</span>
+              <select id="rasterStrokePosition">
+                <option value="inside">Interna</option>
+                <option value="center">Centrata</option>
+                <option value="outside" selected>Esterna</option>
+              </select>
+            </label>
+
+            <label class="control color-control">
+              <span>Colore</span>
+              <input id="rasterStrokeColor" type="color" value="#ffa448" />
+            </label>
+
+            <p class="result">
+              Equivalenza M1: JFA duale, distanza Q10.6, copertura R8 e compositing premoltiplicato.
+            </p>
+          </div>
+        </section>
+
+        <section id="rasterOuterShadowSection">
+          <h2>Ombra esterna</h2>
+
+          <label class="check-control">
+            <input id="rasterOuterShadowEnabled" type="checkbox" />
+            <span>
+              Ombra proiettata
+              <small>Matte R8 indipendente, applicata senza modificare i pixel sorgente.</small>
+            </span>
+          </label>
+
+          <div id="rasterOuterShadowParameters" hidden>
+            <label class="control">
+              <span>Metodo fusione</span>
+              <select id="rasterOuterShadowBlendMode">
+                <option value="multiply" selected>Moltiplica — nero</option>
+                <option value="normal">Normale</option>
+              </select>
+            </label>
+
+            <label class="control color-control">
+              <span>Colore</span>
+              <input id="rasterOuterShadowColor" type="color" value="#000000" />
+            </label>
+
+            <label class="control">
+              <span>Opacità <output id="rasterOuterShadowOpacityOut">75%</output></span>
+              <input id="rasterOuterShadowOpacity" type="range" min="0" max="100" step="1" value="75" />
+            </label>
+
+            <label class="control">
+              <span>Angolo <output id="rasterOuterShadowAngleOut">120°</output></span>
+              <input id="rasterOuterShadowAngle" type="range" min="0" max="359" step="1" value="120" />
+            </label>
+
+            <label class="control">
+              <span>Distanza <output id="rasterOuterShadowDistanceOut">5 px</output></span>
+              <input id="rasterOuterShadowDistance" type="range" min="0" max="1024" step="1" value="5" />
+            </label>
+
+            <label class="control">
+              <span>Estensione <output id="rasterOuterShadowSpreadOut">0%</output></span>
+              <input id="rasterOuterShadowSpread" type="range" min="0" max="100" step="1" value="0" />
+            </label>
+
+            <label class="control">
+              <span>Dimensione <output id="rasterOuterShadowSizeOut">5 px</output></span>
+              <input id="rasterOuterShadowSize" type="range" min="0" max="250" step="1" value="5" />
+            </label>
+
+            <label class="control">
+              <span>Profilo</span>
+              <select id="rasterOuterShadowContour">
+                <option value="linear" selected>Lineare</option>
+                <option value="cone">Cono</option>
+                <option value="gaussian">Gaussiano</option>
+                <option value="ring">Anello</option>
+              </select>
+            </label>
+
+            <label class="check-control">
+              <input id="rasterOuterShadowContourAA" type="checkbox" checked />
+              <span>Antialias del profilo</span>
+            </label>
+
+            <label class="control">
+              <span>Disturbo <output id="rasterOuterShadowNoiseOut">0%</output></span>
+              <input id="rasterOuterShadowNoise" type="range" min="0" max="100" step="1" value="0" />
+            </label>
+
+            <label class="check-control">
+              <input id="rasterOuterShadowLayerKnocksOut" type="checkbox" checked />
+              <span>
+                Il livello buca l’ombra
+                <small>Equivalente al comportamento «Layer Knocks Out Drop Shadow».</small>
+              </span>
+            </label>
+
+            <p class="result">
+              Estensione morfologica e Gaussian separabile sono calcolati in WebGPU; l’effetto resta modificabile per livello.
+            </p>
+          </div>
+        </section>
+
+        <section id="rasterInnerShadowSection">
+          <h2>Ombra interna</h2>
+
+          <label class="check-control">
+            <input id="rasterInnerShadowEnabled" type="checkbox" />
+            <span>
+              Ombra sul bordo interno
+              <small>Matte R8 indipendente, ritagliata dall’alpha del livello.</small>
+            </span>
+          </label>
+
+          <div id="rasterInnerShadowParameters" hidden>
+            <label class="control">
+              <span>Metodo fusione</span>
+              <select id="rasterInnerShadowBlendMode">
+                <option value="multiply" selected>Moltiplica</option>
+                <option value="normal">Normale</option>
+              </select>
+            </label>
+
+            <label class="control color-control">
+              <span>Colore</span>
+              <input id="rasterInnerShadowColor" type="color" value="#000000" />
+            </label>
+
+            <label class="control">
+              <span>Opacità <output id="rasterInnerShadowOpacityOut">75%</output></span>
+              <input id="rasterInnerShadowOpacity" type="range" min="0" max="100" step="1" value="75" />
+            </label>
+
+            <label class="control">
+              <span>Angolo <output id="rasterInnerShadowAngleOut">120°</output></span>
+              <input id="rasterInnerShadowAngle" type="range" min="0" max="359" step="1" value="120" />
+            </label>
+
+            <label class="control">
+              <span>Distanza <output id="rasterInnerShadowDistanceOut">5 px</output></span>
+              <input id="rasterInnerShadowDistance" type="range" min="0" max="1024" step="1" value="5" />
+            </label>
+
+            <label class="control">
+              <span>Riduci <output id="rasterInnerShadowChokeOut">0%</output></span>
+              <input id="rasterInnerShadowChoke" type="range" min="0" max="100" step="1" value="0" />
+            </label>
+
+            <label class="control">
+              <span>Dimensione <output id="rasterInnerShadowSizeOut">5 px</output></span>
+              <input id="rasterInnerShadowSize" type="range" min="0" max="250" step="1" value="5" />
+            </label>
+
+            <label class="control">
+              <span>Profilo</span>
+              <select id="rasterInnerShadowContour">
+                <option value="linear" selected>Lineare</option>
+                <option value="cone">Cono</option>
+                <option value="gaussian">Gaussiano</option>
+                <option value="ring">Anello</option>
+              </select>
+            </label>
+
+            <label class="check-control">
+              <input id="rasterInnerShadowContourAA" type="checkbox" checked />
+              <span>Antialias del profilo</span>
+            </label>
+
+            <label class="control">
+              <span>Disturbo <output id="rasterInnerShadowNoiseOut">0%</output></span>
+              <input id="rasterInnerShadowNoise" type="range" min="0" max="100" step="1" value="0" />
+            </label>
+
+            <p class="result">
+              Riduci morfologico e Gaussian separabile sono calcolati in WebGPU; l’ombra resta confinata dentro il livello.
+            </p>
+          </div>
+        </section>
+
+        <section id="rasterBevelSection">
+          <h2>Smusso / Rilievo</h2>
+
+          <label class="check-control">
+            <input id="rasterBevelEnabled" type="checkbox" />
+            <span>
+              Heightfield V2
+              <small>Campo altezza R32F, normali Scharr 3×3 e compositing nello style stack.</small>
+            </span>
+          </label>
+
+          <div id="rasterBevelParameters" hidden>
+            <label class="control">
+              <span>Modalità</span>
+              <select id="rasterBevelMode">
+                <option value="inner" selected>Interno</option>
+                <option value="outer">Esterno</option>
+                <option value="emboss">Rilievo</option>
+                <option value="pillow">Cuscino</option>
+              </select>
+            </label>
+
+            <label class="control">
+              <span>Tecnica</span>
+              <select id="rasterBevelTechnique">
+                <option value="smooth" selected>Morbida</option>
+                <option value="chiselHard">Scalpello duro</option>
+                <option value="chiselSoft">Scalpello morbido</option>
+              </select>
+            </label>
+
+            <label class="control">
+              <span>Direzione</span>
+              <select id="rasterBevelDirection">
+                <option value="up" selected>Su</option>
+                <option value="down">Giù</option>
+              </select>
+            </label>
+
+            <label class="control">
+              <span>Dimensione <output id="rasterBevelSizeOut">32 px</output></span>
+              <input id="rasterBevelSize" type="range" min="0.5" max="250" step="0.5" value="32" />
+            </label>
+
+            <label class="control">
+              <span>Ammorbidisci <output id="rasterBevelSoftenOut">4 px</output></span>
+              <input id="rasterBevelSoften" type="range" min="0" max="64" step="0.5" value="4" />
+            </label>
+
+            <label class="control">
+              <span>Profondità <output id="rasterBevelDepthOut">100%</output></span>
+              <input id="rasterBevelDepth" type="range" min="1" max="1000" step="1" value="100" />
+            </label>
+
+            <label class="control">
+              <span>Angolo luce <output id="rasterBevelAngleOut">135°</output></span>
+              <input id="rasterBevelAngle" type="range" min="0" max="359" step="1" value="135" />
+            </label>
+
+            <label class="control">
+              <span>Altitudine luce <output id="rasterBevelAltitudeOut">30°</output></span>
+              <input id="rasterBevelAltitude" type="range" min="0" max="90" step="1" value="30" />
+            </label>
+
+            <label class="control">
+              <span>Gloss</span>
+              <select id="rasterBevelGloss">
+                <option value="linear" selected>Lineare</option>
+                <option value="soft">Morbido</option>
+                <option value="gaussian">Gaussiano</option>
+                <option value="cone">Cono</option>
+                <option value="ring">Anello</option>
+              </select>
+            </label>
+
+            <label class="check-control">
+              <input id="rasterBevelContourAA" type="checkbox" checked />
+              <span>Antialias del gloss</span>
+            </label>
+
+            <label class="check-control">
+              <input id="rasterBevelContourEnabled" type="checkbox" />
+              <span>Profilo smusso</span>
+            </label>
+
+            <label class="control">
+              <span>Profilo</span>
+              <select id="rasterBevelContour">
+                <option value="linear" selected>Lineare</option>
+                <option value="cone">Cono</option>
+                <option value="gaussian">Gaussiano</option>
+                <option value="ring">Anello</option>
+              </select>
+            </label>
+
+            <label class="control">
+              <span>Range profilo <output id="rasterBevelRangeOut">100%</output></span>
+              <input id="rasterBevelRange" type="range" min="1" max="100" step="1" value="100" />
+            </label>
+
+            <label class="control">
+              <span>Riempimento <output id="rasterBevelFillOut">100%</output></span>
+              <input id="rasterBevelFill" type="range" min="0" max="100" step="1" value="100" />
+            </label>
+
+            <label class="control color-control">
+              <span>Colore luce</span>
+              <input id="rasterBevelHighlightColor" type="color" value="#fff4df" />
+            </label>
+
+            <label class="control">
+              <span>Opacità luce <output id="rasterBevelHighlightOpacityOut">75%</output></span>
+              <input id="rasterBevelHighlightOpacity" type="range" min="0" max="100" step="1" value="75" />
+            </label>
+
+            <label class="control color-control">
+              <span>Colore ombra</span>
+              <input id="rasterBevelShadowColor" type="color" value="#241409" />
+            </label>
+
+            <label class="control">
+              <span>Opacità ombra <output id="rasterBevelShadowOpacityOut">75%</output></span>
+              <input id="rasterBevelShadowOpacity" type="range" min="0" max="100" step="1" value="75" />
+            </label>
+
+            <p class="result">
+              Morbida usa Gaussian separabile; Scalpello usa marching squares subpixel, JFA sui segmenti e distanza signed R32F.
+            </p>
+          </div>
+        </section>
+
+        <section>
+          <h2>Layer</h2>
+
+          <label class="control">
+            <span>Precisione layer</span>
+            <select id="layerFormat">
+              <option value="rgba8unorm" data-layer-format-label="RGBA8 linear"></option>
+              <option value="rgba16float" data-layer-format-label="RGBA16F linear"></option>
+            </select>
+          </label>
+        </section>
+
+        <section>
+          <h2>Benchmark</h2>
+          <label class="control">
+            <span>Base stamps <output id="benchmarkStampsOut">2000</output></span>
+            <input id="benchmarkStamps" type="range" min="250" max="12000" step="250" value="2000" />
+          </label>
+          <button id="runBenchmark" class="primary wide" type="button">Esegui benchmark GPU</button>
+          <p id="benchmarkResult" class="result">Nessun benchmark eseguito.</p>
+
+          <div id="rasterStrokeGoldenSection" hidden>
+            <button id="runRasterShadowGolden" class="wide" type="button">
+              Cattura golden pixel Ombre
+            </button>
+            <p id="rasterShadowGoldenResult" class="result">
+              Sei casi isolati: esterna, interna e combinata; non modifica il disegno.
+            </p>
+            <details id="rasterShadowGoldenDetails" hidden>
+              <summary>Report Golden Ombre JSON</summary>
+              <pre id="rasterShadowGoldenReport" class="golden-report"></pre>
+            </details>
+            <button id="runRasterStrokeGolden" class="wide" type="button">
+              Cattura golden pixel Traccia
+            </button>
+            <p id="rasterStrokeGoldenResult" class="result">
+              Test locale isolato: non modifica il disegno.
+            </p>
+            <details id="rasterStrokeGoldenDetails" hidden>
+              <summary>Report JSON</summary>
+              <pre id="rasterStrokeGoldenReport" class="golden-report"></pre>
+            </details>
+            <button id="runEffectsWorkbenchBenchmark" class="wide" type="button" hidden>
+              Benchmark banco effetti <span data-document-size-square></span>
+            </button>
+            <p id="effectsWorkbenchBenchmarkResult" class="result" hidden></p>
+            <details id="effectsWorkbenchBenchmarkDetails" hidden>
+              <summary>Report benchmark banco effetti</summary>
+              <pre id="effectsWorkbenchBenchmarkReport" class="golden-report"></pre>
+            </details>
+
+            <div id="layerHistoryTestSection" hidden>
+              <p id="layerHistoryTestResult" class="result">
+                Test GPU bilaterale della cronologia livelli non eseguito.
+              </p>
+              <details id="layerHistoryTestDetails" hidden>
+                <summary>Report test cronologia livelli</summary>
+                <pre id="layerHistoryTestReport" class="golden-report"></pre>
+              </details>
+            </div>
+
+          </div>
+
+          <label class="check-control">
+            <span>
+              Benchmark tratto umano
+              <small>Registra una volta la pennellata di riferimento: poi la stessa sequenza viene usata su ogni dispositivo.</small>
+            </span>
+          </label>
+          <label class="control">
+            <span>Variante test</span>
+            <select id="humanStrokeTestVariant">
+              <option value="base">Base — cerchio</option>
+              <option value="fur">Fur — Shape 2K + Scatter 100%</option>
+            </select>
+          </label>
+          <label class="control">
+            <span>Blending test</span>
+            <select id="humanStrokeTestBlendMode">
+              <option value="light-glaze">Light Glaze</option>
+              <option value="uniformed-glaze">Uniformed Glaze</option>
+              <option value="intense-blending">Intense Blending</option>
+            </select>
+          </label>
+          <label class="control">
+            <span>Grain test</span>
+            <select id="humanStrokeTestGrainMode">
+              <option value="off">Off — senza texture</option>
+              <option value="texturized">Texturized — Fixed M1 (fisso)</option>
+            </select>
+          </label>
+          <button id="recordHumanStroke" class="primary wide" type="button">Registra tratto umano</button>
+          <button id="playHumanStroke" class="wide" type="button" disabled>Play tratto registrato</button>
+          <button id="playBlendHumanStroke" class="wide" type="button" disabled>Play Blend registrato</button>
+          <button id="runRenderingModeSuite" class="primary wide" type="button" disabled>Confronta 3 rendering · Base 1% · 1 tap</button>
+          <p id="humanStrokeResult" class="result">Caricamento tratto umano di riferimento…</p>
+          <p id="renderingModeSuiteResult" class="result">Suite rendering non eseguita.</p>
+          <details id="renderingModeSuiteDetails" hidden>
+            <summary>Report completo rendering e memoria</summary>
+            <pre id="renderingModeSuiteReport" class="golden-report"></pre>
+          </details>
+        </section>
+
+        <section class="stats-section">
+          <h2>Telemetria</h2>
+          <dl class="stats">
+            <div><dt>FPS render</dt><dd id="fpsStat">—</dd></div>
+            <div><dt>CPU frame</dt><dd id="cpuStat">—</dd></div>
+            <div><dt>Stamps base</dt><dd id="stampStat">0</dd></div>
+            <div><dt>Draw logiche evitate</dt><dd id="avoidedStat">0</dd></div>
+            <div><dt>Memoria GPU conteggiata</dt><dd id="memoryStat">—</dd></div>
+            <div><dt>GPU</dt><dd id="gpuStat">—</dd></div>
+          </dl>
+          <p id="status" class="status" role="status" aria-live="polite">
+            Inizializzazione WebGPU…
+          </p>
+        </section>
+      </aside>
+
+      <main class="stage">
+        <canvas id="gpuCanvas" tabindex="-1" aria-label="Canvas di disegno WebGPU"></canvas>
+        <canvas id="rasterSelectionOverlayCanvas" aria-hidden="true" hidden></canvas>
+        <canvas id="rasterSelectionGestureCanvas" aria-hidden="true" hidden></canvas>
+        <canvas id="vectorTextPresentationCanvas" aria-hidden="true" hidden></canvas>
+        <canvas id="vectorTextInteractionCanvas" aria-label="Selezione e trasformazione degli elementi" hidden></canvas>
+        <p id="pixelSelectionMoveHelp" class="visually-hidden">
+          Trascina per spostare i pixel. Frecce: un pixel; Maiusc più frecce: dieci pixel. Invio applica, Escape annulla.
+        </p>
+        <div id="transformCommitBar" class="transform-commit-bar" role="toolbar" aria-label="Conferma trasformazione" hidden>
+          <span id="transformCommitLabel">Trasforma</span>
+          <button id="transformCancel" type="button">Annulla</button>
+          <button id="transformApply" class="primary" type="button">Applica</button>
+        </div>
+        <canvas id="tipPreviewCanvas" aria-hidden="true"></canvas>
+        <output
+          id="renderingModeSuiteProgress"
+          class="rendering-suite-progress"
+          role="status"
+          aria-live="polite"
+          hidden
+        ></output>
+        <div class="hint">Un dito disegna o riempie · due dita spostano, fanno zoom e ruotano · desktop: R + trascina</div>
+
+        <aside id="gpuMemoryMonitor" class="gpu-memory-monitor" aria-label="Memoria GPU conteggiata">
+          <section id="gpuMemoryPanel" class="gpu-memory-panel" hidden>
+            <header class="gpu-memory-header">
+              <div>
+                <span>Memoria GPU conteggiata</span>
+                <strong id="gpuMemoryTotal">—</strong>
+              </div>
+              <button id="gpuMemoryClose" type="button" aria-label="Chiudi dettaglio memoria" title="Chiudi">×</button>
+            </header>
+            <p class="gpu-memory-subtitle">Risorse WebGPU create dal motore</p>
+            <dl class="gpu-memory-list">
+              <div data-memory-row><dt>Layer · raster di lavoro full-canvas</dt><dd id="gpuMemoryLayerBase">—</dd></div>
+              <div data-memory-row><dt>Layer · inattivi cold tile</dt><dd id="gpuMemoryLayerCold">—</dd></div>
+              <div data-memory-row><dt>Gruppo ritaglio attivo · RGBA ritagliata</dt><dd id="gpuMemoryActiveClippingMask">—</dd></div>
+              <div data-memory-row><dt>Layer · compressi · RAM CPU</dt><dd id="gpuMemoryLayerCompressed">—</dd></div>
+              <div data-memory-row><dt>Totale contato · GPU + cold RAM CPU</dt><dd id="gpuMemoryCountedWithCompressedCpu">—</dd></div>
+              <div data-memory-row><dt>Layer · reidratazione transitoria</dt><dd id="gpuMemoryLayerHydration">—</dd></div>
+              <div class="gpu-memory-study" data-memory-study-row><dt id="gpuMemoryLayerStudyTilesLabel">Raw livelli · hot + cold effettivo</dt><dd id="gpuMemoryLayerStudyTiles">—</dd></div>
+              <div class="gpu-memory-study" data-memory-study-row><dt id="gpuMemoryLayerStudyBboxLabel">Confronto · bbox 256</dt><dd id="gpuMemoryLayerStudyBbox">—</dd></div>
+              <div data-memory-row><dt>Mip · attivo e superfici fuse</dt><dd id="gpuMemoryLayerMips">—</dd></div>
+              <div data-memory-row><dt>Bake livelli · transitori</dt><dd id="gpuMemoryLayerBakes">—</dd></div>
+              <div data-memory-row><dt>Livelli fusi · mip 0</dt><dd id="gpuMemoryLayerComposite">—</dd></div>
+              <div data-memory-row><dt>Grain M1</dt><dd id="gpuMemoryGrain">—</dd></div>
+              <div id="gpuMemoryVectorTextRow" data-memory-row hidden><dt>Testo vettoriale · cache schermo</dt><dd id="gpuMemoryVectorText">—</dd></div>
+              <div id="gpuMemoryRasterImageRow" data-memory-row hidden><dt>Trasforma raster · scratch e mipmap</dt><dd id="gpuMemoryRasterImage">—</dd></div>
+
+              <div data-memory-row><dt>Shape 2K</dt><dd id="gpuMemoryShape">—</dd></div>
+              <div data-memory-row><dt>Buffer Paint</dt><dd id="gpuMemoryPaintBuffers">—</dd></div>
+              <div data-memory-row><dt>Cache schermo</dt><dd id="gpuMemoryPresentation">—</dd></div>
+              <div data-memory-row><dt>Miniatura layer · GPU</dt><dd id="gpuMemoryLayerThumbnail">—</dd></div>
+              <div class="gpu-memory-group-start" data-memory-row><dt>Style stack · risultato mip 1+</dt><dd id="gpuMemoryStrokeStyled">—</dd></div>
+              <div data-memory-row><dt>Traccia · copertura R8</dt><dd id="gpuMemoryStrokeCoverage">—</dd></div>
+              <div data-memory-row><dt>Traccia · mask e controllo</dt><dd id="gpuMemoryStrokeControl">—</dd></div>
+              <div data-memory-row><dt id="gpuMemoryEffectsScratchLabel">Effetti · pool scratch</dt><dd id="gpuMemoryEffectsScratch">—</dd></div>
+              <div data-memory-row><dt>Pool scratch · picco</dt><dd id="gpuMemoryEffectsScratchPeak">—</dd></div>
+              <div class="gpu-memory-group-start" data-memory-row><dt>Ombra esterna · matte R8</dt><dd id="gpuMemoryOuterShadowMatte">—</dd></div>
+              <div data-memory-row><dt>Ombra esterna · controllo</dt><dd id="gpuMemoryOuterShadowControl">—</dd></div>
+              <div class="gpu-memory-group-start" data-memory-row><dt>Ombra interna · matte R8</dt><dd id="gpuMemoryInnerShadowMatte">—</dd></div>
+              <div data-memory-row><dt>Ombra interna · controllo</dt><dd id="gpuMemoryInnerShadowControl">—</dd></div>
+              <div class="gpu-memory-group-start" data-memory-row><dt id="gpuMemoryBevelHeightLabel">Smusso · heightfield R32F</dt><dd id="gpuMemoryBevelHeight">—</dd></div>
+              <div data-memory-row><dt>Smusso · LUT e controllo</dt><dd id="gpuMemoryBevelControl">—</dd></div>
+
+              <div class="gpu-memory-group-start" data-memory-row><dt>Blend dry · scratch</dt><dd id="gpuMemoryBlend">—</dd></div>
+              <div data-memory-row><dt>Riempimento / bacchetta · scratch CCL</dt><dd id="gpuMemoryFill">—</dd></div>
+              <div data-memory-row><dt>Selezione pixel · mask e span</dt><dd id="gpuMemorySelection">—</dd></div>
+              <div data-memory-row><dt>Rendering · Light / Uniformed / Intense</dt><dd id="gpuMemoryLightGlaze">—</dd></div>
+              <div data-memory-row><dt>Coda stabilizzazione</dt><dd id="gpuMemoryStabilizationTail">—</dd></div>
+              <div data-memory-row><dt>Coda spessore</dt><dd id="gpuMemoryThicknessTail">—</dd></div>
+              <div class="gpu-memory-group-start" data-memory-row><dt id="gpuMemoryHistoryLabel">Cronologia raster · GPU</dt><dd id="gpuMemoryHistory">—</dd></div>
+            </dl>
+            <p class="gpu-memory-measured-heading">
+              Ripartizione misurata <span id="gpuMeasuredTotal">—</span>
+            </p>
+            <dl class="gpu-memory-list gpu-memory-measured" id="gpuMeasuredBreakdown"></dl>
+            <p id="gpuMemoryHistoryDiagnostics" class="gpu-memory-note">—</p>
+            <p id="gpuMemoryAudit" class="gpu-memory-note">—</p>
+            <p class="gpu-memory-note">Stima delle allocazioni note. Le due righe «Studio cold» simulano soltanto la memoria raw con attivo full-canvas e inattivi compatti: non sono allocate né sommate al totale. Il pool scratch corrente è conteggiato una sola volta; il picco è storico e non viene sommato. La cronologia raster mostra pagine GPU riservate e payload usato ed è inclusa nel totale; Layer compressi resta RAM CPU esclusa. Non include swapchain, pipeline, driver o memoria del browser.</p>
+          </section>
+
+          <button
+            id="gpuMemoryToggle"
+            class="gpu-memory-toggle"
+            type="button"
+            aria-controls="gpuMemoryPanel"
+            aria-expanded="false"
+            title="Apri dettaglio memoria GPU"
+          >
+            <span>GPU</span>
+            <strong id="gpuMemoryCompact">—</strong>
+            <span id="gpuMemoryDelta" class="gpu-memory-delta" aria-live="polite" hidden></span>
+            <span id="gpuMemoryChevron" aria-hidden="true">▴</span>
+          </button>
+        </aside>
+      </main>
+    </div>
+
+    <div
+      id="layerLoadingOverlay"
+      class="layer-loading-overlay"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      hidden
+    >
+      <div class="layer-loading-content">
+        <span class="layer-loading-spinner" aria-hidden="true"></span>
+        <p id="layerLoadingLabel">Caricamento livello…</p>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
