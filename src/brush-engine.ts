@@ -659,6 +659,14 @@ import {
   scheduleHistoryMaintenance,
 } from "./history-maintenance-runtime";
 import {
+  buildGpuMemoryAuditReport,
+  collectGpuMemoryEntries,
+} from "./gpu-memory-audit";
+import {
+  GpuResourceRegistry,
+  instrumentGpuDevice,
+} from "./gpu-resource-registry";
+import {
   ensureFillRenderer,
   fillAtClientPoint,
   setFillToolSelected,
@@ -877,6 +885,9 @@ export class BrushEngine {
 
   private adapter!: GPUAdapter;
   device!: GPUDevice;
+
+  /** Contabilita' misurata di ogni texture e buffer creati dal device. */
+  gpuResourceRegistry = new GpuResourceRegistry();
   deviceLostError: Error | null = null;
   deviceLostSignal: Promise<Error> = new Promise(() => undefined);
   renderFrameError: Error | null = null;
@@ -1596,7 +1607,12 @@ export class BrushEngine {
       );
     }
 
-    this.device = await adapter.requestDevice();
+    // Unico punto da cui il motore ottiene il device: strumentarlo qui rende
+    // contabilizzata ogni allocazione, presente e futura, senza toccare i 125
+    // siti che creano texture e buffer.
+    const instrumented = instrumentGpuDevice(await adapter.requestDevice());
+    this.device = instrumented.device;
+    this.gpuResourceRegistry = instrumented.registry;
     this.deviceLostSignal = this.device.lost.then((info) => {
       this.invalidateAdaptivePreview();
       const reason = info.message || info.reason;
@@ -4357,6 +4373,28 @@ export class BrushEngine {
 
   getHistoryMaintenanceTelemetry() {
     return historyMaintenanceTelemetry(this);
+  }
+
+  /**
+   * Memoria GPU **misurata**: somma esatta dei descrittori di ogni texture e
+   * buffer vivi, raccolta al momento della creazione. Non e' una stima e non
+   * richiede manutenzione quando cambiano documento, formato o effetti.
+   */
+  measuredGpuMemory() {
+    return this.gpuResourceRegistry.snapshot();
+  }
+
+  /**
+   * Confronto fra la memoria misurata e quella dichiarata dal modello del
+   * pannello. Serve solo finche' le righe semantiche del pannello vengono dal
+   * modello: quando arriveranno dal registro, lo scarto sara' nullo per
+   * costruzione e questo confronto potra' sparire.
+   */
+  auditGpuMemory(declaredMiB = this.getStats().gpuMemory.countedTotalMiB) {
+    return buildGpuMemoryAuditReport(
+      collectGpuMemoryEntries(this, "engine"),
+      declaredMiB * MEBIBYTE_BYTES,
+    );
   }
 
   getAdaptivePreviewDiagnostics(): {

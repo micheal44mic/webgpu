@@ -4351,3 +4351,140 @@ lo scratch (~`52,9 MiB`: state `42,25` + coverage `10,56` + carrier e uniform
   `7813da7fe8b7a199ba7d35cf992e44c5683510c9` su
   `https://webgpu-brush-engine-michi.m1m4brand.chatgpt.site`. La nuova
   diagnostica memoria e History e' pronta per la lettura su iPhone fisico.
+
+### Revisione automatica della memoria GPU (6 agosto 2026)
+
+- Domanda a cui risponde: «il numero del pannello e' affidabile, e resta
+  affidabile se cambio canvas?». Il pannello e' un **modello** e puo' divergere
+  in due modi, entrambi gia' successi qui: un costo cablato che non segue il
+  documento, o una risorsa nuova mai aggiunta alla contabilita'.
+- `src/gpu-memory-audit.ts` enumera le risorse GPU vive raggiungibili dal
+  motore — texture e buffer — e ne calcola i byte veri: catena mip per livello,
+  strati delle array texture, byte per pixel per formato. Un formato
+  sconosciuto vale **zero e viene segnalato**, non stimato: inventare `4` byte
+  nasconderebbe proprio la deriva che il revisore deve trovare.
+- `engine.auditGpuMemory()` confronta reale e dichiarato. La riga
+  `gpuMemoryAudit` nel pannello lo mostra sempre e diventa ambra oltre
+  `GPU_MEMORY_AUDIT_TOLERANCE_BYTES` (`2 MiB`), soglia scelta perche' lasci
+  passare l'arrotondamento ma **non** possa nascondere un livello intero: a
+  2048²/rgba8 un livello ne pesa `16`.
+- Verificato che il modello e' davvero derivato, non tarato su un caso: otto
+  configurazioni (livello `rgba8unorm`/`rgba16float` × glaze `r8-coverage`/
+  `rgba16float-stroke` × effetti on/off) danno uno scarto **costante fra `0,17`
+  e `0,20 MiB`**, cioe' fra `0,12%` e `0,34%`, e non proporzionale. Un valore
+  cablato darebbe invece un errore che si allarga cambiando configurazione,
+  come faceva il `128` del glaze (`+96 MiB` su Intense).
+- Prova end-to-end nell'interfaccia reale, non solo nei test: allocando una
+  texture da `64 MiB` attaccata al motore e mai dichiarata, la riga passa da
+  `scarto +0,3 MiB (0,59%)` a `scarto +64,3 MiB (60,53%) · ATTENZIONE: oltre la
+  tolleranza` con la classe di allarme; distrutta la texture, torna da sola.
+- E' questo che rende il pannello «automatico» rispetto a un canvas
+  personalizzato: non serve rimisurare a mano dopo aver cambiato taglia, la
+  deriva si dichiara da sola.
+- Misure di riferimento a 2048², livello `rgba8unorm`, telefono simulato
+  `393×852`: avvio `41,9 MiB`; con Traccia e Smusso attivi `86,9`; con Intense
+  `118,9`; livello `rgba16float` con tutto attivo `154,9`.
+- Cosa usa `rgba16float`, misurato enumerando le texture vive: **soltanto**
+  l'accumulatore glaze (`32 MiB` a 2048², e solo con Uniformed/Intense; con
+  Light Glaze e' `r8unorm`, `4 MiB`) e le superfici mixed-scene, che pero' sono
+  dimensionate sul **canvas** e allocate solo con testo o vettoriali. Lo Smusso
+  usa `r32float` (heightfield `2050×2050`, `16,03 MiB`, un pixel di bordo per
+  lato); la Traccia segue il formato del livello.
+- Annotato e non risolto: `RASTER_STROKE_FULL_SCRATCH_EXTENT` resta fisso a
+  `2048`, scelto quando il documento era 4096². Ora su mobile lo scratch
+  coincide col documento intero (`16 MiB`), e su un canvas personalizzato piu'
+  piccolo di 2048 sarebbe **piu' grande del documento**. Va derivato da
+  `LAYER_SIZE` quando si tocchera' il canvas configurabile.
+- `document:verify` copre ora anche la matematica del revisore: byte per pixel
+  di ogni formato, catene mip a `2048²`, `4096²`, `3000×1800`, `777×333`, `1×1`,
+  strati di array texture, formati sconosciuti, e il fatto che la tolleranza non
+  possa mascherare un livello. Cinque regressioni dimostrate fallibili: formato
+  ignoto stimato, strati ignorati, mip ignorati, tolleranza allargata, scarto
+  forzato a zero.
+- TypeScript, tutte le `32` suite `*:verify` e build Vite/Sites verdi.
+
+### Contabilita' GPU misurata invece che dichiarata (6 agosto 2026)
+
+- Il pannello memoria e' sempre stato un **modello scritto a mano**: un secondo
+  elenco di costi da tenere allineato al codice. Un elenco parallelo deriva per
+  costruzione, ed era gia' derivato due volte (accumulatore Light Glaze fermo a
+  `128 MiB`, memoria del livello ferma a `128/64`). Il revisore aggiunto poco
+  prima trovava la deriva ma non la eliminava: restava un modello da aggiornare
+  a mano, quindi «preciso» solo finche' qualcuno se ne ricordava.
+- `src/gpu-resource-registry.ts` toglie il modello di mezzo. `instrumentGpuDevice`
+  avvolge l'unico punto da cui il motore ottiene il device
+  (`brush-engine.ts`, `adapter.requestDevice()`) e registra ogni
+  `createTexture`/`createBuffer` con i **byte esatti del descrittore**: catena
+  mip per livello, strati delle array texture, byte per pixel del formato. I
+  `125` siti di allocazione sparsi in `24` file non cambiano di una riga, e
+  qualunque risorsa futura e' contabilizzata da subito.
+- `destroy()` viene intercettato per scalare i byte; le risorse abbandonate
+  senza `destroy()` sono riconciliate da un `FinalizationRegistry`, altrimenti
+  il totale resterebbe gonfio per sempre.
+- Il totale che l'utente legge — pastiglia GPU, totale pannello e `memoryStat` —
+  viene ora dal registro, non dal modello. Il modello resta sotto come
+  ripartizione semantica e la riga di revisione ne mostra lo scarto: quando
+  anche le righe verranno dal registro, lo scarto sara' nullo per costruzione e
+  il confronto potra' sparire.
+- Le categorie si leggono dalle **etichette**, che in questo motore sono gia'
+  descrittive ovunque (`122` su `125` allocazioni ne hanno una). Cio' che non
+  combacia finisce in `Non categorizzato`, che resta **visibile**: una risorsa
+  nuova non puo' sparire dal conto, al massimo sta in una riga che chiede un
+  nome. Un formato non nella tabella vale zero, e' contato a parte e dichiarato
+  come escluso: stimarlo a `4` byte nasconderebbe proprio cio' che va trovato.
+- Verificato dal vivo che si mantiene da solo: avvio `42,1 MiB` (29 risorse),
+  effetti Traccia e Smusso accesi `87,1` (56 risorse), spenti `58,1` con **26
+  distruzioni contate**. Il registro rende anche visibile che dopo lo
+  spegnimento restano `16 MiB` di scratch effetti allocati, cosa che il modello
+  non diceva.
+- Il registro e' piu' completo della camminata sull'oggetto motore: `42,27`
+  contro `42,14 MiB`, perche' vede anche risorse non raggiungibili da una
+  proprieta'.
+- `document:verify` copre byte da descrittore nelle tre forme di `size`
+  (oggetto completo, oggetto parziale, tupla), strati, catene mip, formati non
+  misurabili, categorizzazione delle etichette reali del motore e ciclo di vita
+  registra/rilascia con doppia distruzione. Otto regressioni dimostrate
+  fallibili: strati ignorati, mip ignorati, formato ignoto stimato, risorsa
+  ignota nascosta in una categoria esistente, doppia distruzione contata due
+  volte, altezza e strati di una tupla parziale letti come zero, scarto forzato
+  a zero.
+- Nota su una mutazione **non** osservabile: leggere `size[1] ?? 0` non cambia i
+  byte, perche' `Math.max(1, height >> level)` la riporta a 1. E' pinnata sul
+  campo `height` restituito, che finisce nei record e nella vista di dettaglio.
+- TypeScript, tutte le `32` suite `*:verify` e build Vite/Sites verdi.
+
+### Ripartizione misurata nel pannello (6 agosto 2026)
+
+- Chiusura del giro precedente: il pannello mostra ora una **Ripartizione
+  misurata** che viene dal registro, sotto le righe del modello dichiarato. Le
+  categorie **partizionano** il registro, quindi la loro somma e' il totale per
+  costruzione, non per manutenzione; se un giorno non lo fosse, l'intestazione
+  lo dichiara (`partizione incoerente`) invece di nasconderlo.
+- Le `34` righe semantiche del modello **non** sono state rimosse: cinque suite
+  ne fissano gli id e la mappa (`verify-history-journal`, `verify-layer-stack`,
+  `verify-fill`, `verify-selection`, `verify-layer-compression`), e restano la
+  ripartizione piu' fine. Ora pero' sono dichiaratamente il modello, mentre il
+  totale e la ripartizione autorevole vengono dal registro.
+- Ripartizione misurata a 2048², livello `rgba8unorm`, Traccia e Smusso accesi:
+  Smusso `18,6` · Livelli raster `16,0` · Banco effetti scratch `16,0` ·
+  Traccia `10,4` · Light Glaze `9,3` · Piramidi mip `5,3` · Presentazione `5,1`
+  · Pennello/grana/shape `2,0` · Code predittive `2,0` · Cronologia `2,0`.
+  Ogni voce coincide con la misura fatta a mano sulle singole risorse.
+- Due difetti trovati dal meccanismo stesso, non da un'ispezione:
+  1. Lo scratch condiviso del banco effetti (`16 MiB`) finiva in `Non
+     categorizzato`. E' esattamente il caso per cui il catch-all deve restare
+     visibile: una risorsa non riconosciuta non sparisce dal conto.
+  2. Riordinando le regole per attribuire le piramidi al loro effetto, i
+     `32 MiB` dell'accumulatore glaze sono finiti nella Traccia, perche'
+     l'etichetta autorevole e' «Lazy Light Glaze **stroke** accumulator».
+     Colto da `document:verify` prima del commit; il glaze ora precede la
+     Traccia nell'ordine delle regole, con il motivo scritto accanto.
+- Le piramidi possedute da un effetto stanno con l'effetto: `Traccia styled
+  derived mip` e' memoria della Traccia, non una riga generica, altrimenti la
+  Traccia sembrerebbe costare `5 MiB` meno del vero.
+- `document:verify` copre ora anche l'invariante di partizione e la
+  categorizzazione di `14` etichette reali osservate nel motore in esecuzione.
+  Undici regressioni dimostrate fallibili in tutto sul registro, fra cui:
+  scratch senza nome, piramide di un effetto rubata alla riga generica, glaze
+  attribuito alla Traccia, una risorsa esclusa dalla partizione.
+- TypeScript, tutte le `32` suite `*:verify` e build Vite/Sites verdi.

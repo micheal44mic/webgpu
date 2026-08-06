@@ -102,6 +102,7 @@ import {
 } from "./engine-types";
 import { LAYER_SIZE } from "./engine-limits";
 import { layerBaseMemoryMiB } from "./engine-memory-model";
+import { GPU_MEMORY_AUDIT_TOLERANCE_BYTES } from "./gpu-memory-audit";
 import { LAYER_THUMBNAIL_SIZE } from "./layer-thumbnail-renderer";
 import {
   mobileSemanticLayerThumbnailSignature,
@@ -6522,6 +6523,71 @@ function updateHistoryDiagnostics(): void {
     + `${telemetry.redoCompactionsAborted} interrotte.`;
 }
 
+/**
+ * Dichiarato contro reale. Il pannello e' un modello e puo' derivare: qui il
+ * confronto e' automatico, cosi' una taglia di documento nuova o una risorsa
+ * non contabilizzata si vedono subito invece di dover essere rimisurate.
+ */
+function updateGpuMemoryAudit(declaredMiB: number): void {
+  const output = element<HTMLElement>("gpuMemoryAudit");
+  if (gpuMemoryPanel.hidden) return;
+  const misura = engine.measuredGpuMemory();
+  const misuratoMiB = misura.totalBytes / (1024 * 1024);
+  const scartoMiB = misuratoMiB - declaredMiB;
+  const oltreTolleranza =
+    Math.abs(scartoMiB) * 1024 * 1024 > GPU_MEMORY_AUDIT_TOLERANCE_BYTES;
+  renderMeasuredBreakdown(misura, misuratoMiB);
+  output.textContent =
+    `Misurata ${formatMemoryMiB(misuratoMiB)} in ${misura.textureCount} texture e `
+    + `${misura.bufferCount} buffer (${misura.createdCount} create, `
+    + `${misura.destroyedCount} distrutte, ${misura.collectedCount} raccolte dal GC). `
+    + `Somma esatta dei descrittori, non una stima. `
+    + (misura.unmeasurableCount > 0
+      ? `${misura.unmeasurableCount} risorse con formato non misurabile `
+        + `(${misura.unmeasurableFormats.join(", ")}) sono ESCLUSE dal totale. `
+      : "")
+    + `Le righe qui sopra sono il modello dichiarato, che somma a `
+    + `${formatMemoryMiB(declaredMiB)}: scarto `
+    + `${scartoMiB >= 0 ? "+" : "−"}${formatMemoryMiB(Math.abs(scartoMiB))}`
+    + (oltreTolleranza ? " · ATTENZIONE: il modello è disallineato." : ".");
+  output.classList.toggle(
+    "memory-audit-warning",
+    oltreTolleranza || misura.unmeasurableCount > 0,
+  );
+}
+
+/**
+ * Ripartizione misurata. Le categorie **partizionano** il registro: la loro
+ * somma e' il totale per costruzione, non per manutenzione. Se un giorno non lo
+ * fosse piu' sarebbe un difetto del registro, non un numero da riallineare a
+ * mano, quindi lo si dichiara invece di nasconderlo.
+ */
+function renderMeasuredBreakdown(
+  misura: ReturnType<BrushEngine["measuredGpuMemory"]>,
+  misuratoMiB: number,
+): void {
+  const lista = element<HTMLElement>("gpuMeasuredBreakdown");
+  const sommaCategorie = misura.categories.reduce((totale, voce) => totale + voce.bytes, 0);
+  const partizioneIntegra = sommaCategorie === misura.totalBytes;
+  element<HTMLElement>("gpuMeasuredTotal").textContent = partizioneIntegra
+    ? formatMemoryMiB(misuratoMiB)
+    : `${formatMemoryMiB(misuratoMiB)} · partizione incoerente`;
+
+  const righe = misura.categories.filter((voce) => voce.bytes > 0 || voce.count > 0);
+  lista.replaceChildren(...righe.map((voce) => {
+    const riga = document.createElement("div");
+    riga.dataset.memoryRow = "";
+    riga.dataset.measuredCategory = voce.category;
+    const nome = document.createElement("dt");
+    nome.textContent = `${voce.category} · ${voce.count} risors${voce.count === 1 ? "a" : "e"}`;
+    const valore = document.createElement("dd");
+    valore.textContent = formatMemoryMiB(voce.bytes / (1024 * 1024));
+    riga.append(nome, valore);
+    riga.classList.toggle("memory-zero", voce.bytes < 0.05 * 1024 * 1024);
+    return riga;
+  }));
+}
+
 function updateGpuMemoryPanel(stats: EngineStats): void {
   for (const [id, key] of gpuMemoryRows) {
     const output = element<HTMLElement>(id);
@@ -6643,7 +6709,14 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
   }
   element<HTMLElement>("gpuMemoryBevelHeightLabel").textContent = bevelHeightLabel;
 
-  const totalMiB = stats.gpuMemory.countedTotalMiB;
+  // Il numero che l'utente legge e' quello **misurato**: la somma esatta dei
+  // descrittori di ogni texture e buffer vivi. Il modello dichiarato resta
+  // sotto, come ripartizione semantica, ma non e' piu' la fonte del totale:
+  // era il punto in cui la stima poteva mentire senza che si vedesse.
+  const declaredMiB = stats.gpuMemory.countedTotalMiB;
+  const totalMiB = engineInitialized
+    ? engine.measuredGpuMemory().totalBytes / (1024 * 1024)
+    : declaredMiB;
   const formattedTotal = formatMemoryMiB(totalMiB);
   element<HTMLElement>("gpuMemoryTotal").textContent = formattedTotal;
   element<HTMLElement>("gpuMemoryCompact").textContent = formattedTotal;
@@ -6672,6 +6745,7 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
       }, 3500);
     }
   }
+  updateGpuMemoryAudit(declaredMiB);
   previousGpuMemoryTotalMiB = totalMiB;
 }
 

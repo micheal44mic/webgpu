@@ -594,6 +594,29 @@ select {
   line-height: 1.4;
 }
 
+/* La revisione memoria e' silenziosa finche' il modello regge; quando il
+   dichiarato si stacca dal reale deve saltare all'occhio anche su telefono. */
+.gpu-memory-note.memory-audit-warning {
+  color: #f2b45a;
+}
+
+/* La ripartizione misurata e' la fonte autorevole: si distingue dal modello
+   dichiarato che le sta sopra, senza gridare. */
+.gpu-memory-measured-heading {
+  margin: 14px 0 6px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  color: #c6ccd8;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.gpu-memory-measured-heading span {
+  float: right;
+  color: #8fb8ff;
+}
+
 .result,
 .status {
   margin: 10px 0 0;
