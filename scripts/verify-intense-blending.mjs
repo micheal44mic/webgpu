@@ -14,6 +14,12 @@ const blendRenderer = read("../src/blend-renderer.ts");
 const html = read("../index.html");
 const sitesBuild = read("./prepare-sites-build.mjs");
 
+assert.match(
+  main,
+  /if \(MOBILE_DEVICE_CLASS\) \{\s*engine\.layerFormat = "rgba16float";\s*layerFormatSelect\.value = "rgba16float";\s*\}/,
+  "Il test qualità mobile deve inizializzare davvero livello e selettore in RGBA16F.",
+);
+
 // Il motore è diviso in più moduli concatenati da `readEngineSource()`: un
 // marcatore disallineato non deve più poter allargare la finestra a mezzo
 // sorgente, altrimenti l'asserzione passa senza verificare più nulla.
