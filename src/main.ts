@@ -126,7 +126,7 @@ import {
   type LayerPoint,
   type PointerSample,
 } from "./engine-types";
-import { LAYER_SIZE } from "./engine-limits";
+import { LAYER_SIZE, MOBILE_DEVICE_CLASS } from "./engine-limits";
 import { layerBaseMemoryMiB } from "./engine-memory-model";
 import { GPU_MEMORY_AUDIT_TOLERANCE_BYTES } from "./gpu-memory-audit";
 import { LAYER_THUMBNAIL_SIZE } from "./layer-thumbnail-renderer";
@@ -1075,6 +1075,13 @@ const engine = new BrushEngine(canvas, {
   layerColdDirectHotHydrationEnabled,
   layerColdAdjacentPrefetchEnabled,
 }, rasterSelectionOverlayCanvas);
+// Temporary phone-only quality probe: start with the existing high-precision
+// layer format so the same soft brush can be compared directly with RGBA8.
+// Desktop retains the memory-efficient default while this test is evaluated.
+if (MOBILE_DEVICE_CLASS) {
+  engine.layerFormat = "rgba16float";
+  layerFormatSelect.value = "rgba16float";
+}
 if (import.meta.env.DEV) {
   (window as Window & { __brushEngine?: BrushEngine }).__brushEngine = engine;
 }
