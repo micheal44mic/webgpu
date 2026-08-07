@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 
 const transfer = await import("../src/brush-studio-transfer.ts");
 const storage = await import("../src/brush-studio-storage.ts");
+const pngMask = await import("../src/png-mask.ts");
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -11,6 +12,23 @@ const onePixelPng = Uint8Array.from(Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
   "base64",
 ));
+const threeToneMaskPng = Uint8Array.from(Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAMAAAABCAAAAAA+i0toAAAADElEQVR4nGNgaPgPAAIDAYAkYfWXAAAAAElFTkSuQmCC",
+  "base64",
+));
+
+const decodedThreeToneMask = await pngMask.decodeGrayscalePng8(
+  threeToneMaskPng.slice().buffer,
+);
+assert.deepEqual(
+  decodedThreeToneMask,
+  {
+    width: 3,
+    height: 1,
+    pixels: Uint8Array.of(0, 128, 255),
+  },
+  "the portable regression fixture must contain exact 0/128/255 mask samples",
+);
 
 function persistedSettings(overrides = {}) {
   return {
@@ -54,13 +72,13 @@ function persistedSettings(overrides = {}) {
   };
 }
 
-function storedAsset(kind, name) {
+function storedAsset(kind, name, bytes = onePixelPng) {
   return {
     key: `fixture:${kind}`,
     kind,
     name,
     mimeType: "image/png",
-    blob: new Blob([onePixelPng], { type: "image/png" }),
+    blob: new Blob([bytes], { type: "image/png" }),
     updatedAt: 1,
   };
 }
@@ -122,8 +140,8 @@ const customSettings = persistedSettings({
   grainMode: "off",
   grainAssetId: "custom-grain:roundtrip",
 });
-const shapeAsset = storedAsset("shape", "cloud shape.png");
-const grainAsset = storedAsset("grain", "paper grain.png");
+const shapeAsset = storedAsset("shape", "cloud shape.png", threeToneMaskPng);
+const grainAsset = storedAsset("grain", "paper grain.png", threeToneMaskPng);
 const customBlob = await transfer.createBrushStudioTransferBlob({
   name: "Cloud Paper",
   savedBrush: {
@@ -142,13 +160,13 @@ assert.equal(custom.shapeAsset?.name, "cloud shape.png");
 assert.equal(custom.grainAsset?.name, "paper grain.png");
 assert.deepEqual(
   new Uint8Array(await custom.shapeAsset.blob.arrayBuffer()),
-  onePixelPng,
-  "Shape bytes must survive a portable round trip",
+  threeToneMaskPng,
+  "Shape mask samples 0/128/255 must survive a portable round trip byte-exactly",
 );
 assert.deepEqual(
   new Uint8Array(await custom.grainAsset.blob.arrayBuffer()),
-  onePixelPng,
-  "a dormant Grain must remain embedded and byte-exact",
+  threeToneMaskPng,
+  "dormant Grain samples 0/128/255 must remain embedded and byte-exact",
 );
 
 const customParts = await unpackTransfer(customBlob);
@@ -230,7 +248,7 @@ await assert.rejects(
   /normalized PNG/,
 );
 
-const oversizedHeader = Uint8Array.from(onePixelPng);
+const oversizedHeader = Uint8Array.from(threeToneMaskPng);
 oversizedHeader[16] = 0;
 oversizedHeader[17] = 0;
 oversizedHeader[18] = 8;

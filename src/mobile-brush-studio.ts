@@ -128,14 +128,31 @@ async function decodeBrushSource(blob: Blob, name: string): Promise<DecodedCusto
   try {
     if (typeof createImageBitmap === "function") {
       try {
+        // Shape and Grain channels are coverage data, not display colors.
+        // Preserve the authored bytes instead of baking ICC/premultiplication.
         source = await createImageBitmap(blob, {
+          colorSpaceConversion: "none",
           imageOrientation: "none",
+          premultiplyAlpha: "none",
           resizeWidth: plan.width,
           resizeHeight: plan.height,
           resizeQuality: "high",
         });
       } catch {
-        source = null;
+        try {
+          // Older WebKit builds can expose createImageBitmap while rejecting
+          // newer decode options. Keep those devices on the previous bounded
+          // decode path rather than making custom sources unavailable.
+          source = await createImageBitmap(blob, {
+            imageOrientation: "none",
+            premultiplyAlpha: "none",
+            resizeWidth: plan.width,
+            resizeHeight: plan.height,
+            resizeQuality: "high",
+          });
+        } catch {
+          source = null;
+        }
       }
     }
     if (!source) {
@@ -198,13 +215,6 @@ function normalizedBrushSourceBlob(source: DecodedCustomBrushImage): Promise<Blo
       else reject(new Error("The normalized brush source could not be encoded."));
     }, "image/png");
   });
-}
-
-export async function normalizeBrushStudioSourceBlob(
-  blob: Blob,
-  name: string,
-): Promise<Blob> {
-  return normalizedBrushSourceBlob(await decodeBrushSource(blob, name));
 }
 
 export class MobileBrushStudioController {
