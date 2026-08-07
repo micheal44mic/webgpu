@@ -1737,6 +1737,10 @@ export class BrushEngine {
     return this.customBrushAssets.snapshot(id);
   }
 
+  hasCustomBrushAsset(id: BrushShapeAssetId | BrushGrainAssetId): boolean {
+    return this.customBrushAssets.has(id);
+  }
+
   removeCustomBrushAsset(id: BrushShapeAssetId | BrushGrainAssetId): boolean {
     if (!isCustomShapeAssetId(id) && !isCustomGrainAssetId(id)) {
       throw new TypeError("Soltanto gli asset custom possono essere rimossi.");

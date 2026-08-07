@@ -7,7 +7,8 @@ import { brushLibraryPreviewFingerprint } from "./brush-library-preview-core";
 
 export const BRUSH_LIBRARY_PREVIEW_WIDTH = 240;
 export const BRUSH_LIBRARY_PREVIEW_HEIGHT = 56;
-export const BRUSH_LIBRARY_PREVIEW_MAX_CARDS = 2;
+/** Two built-ins plus the bounded custom-brush catalog. */
+export const BRUSH_LIBRARY_PREVIEW_MAX_CARDS = 10;
 /** Assets are owned transiently by the shared authoritative renderer. */
 export const BRUSH_LIBRARY_PREVIEW_MAX_ASSETS = 0;
 
@@ -77,10 +78,7 @@ export class MobileBrushLibraryPreviewRenderer {
     canvas: HTMLCanvasElement,
     settings: Readonly<BrushSettings>,
   ): Promise<BrushLibraryPreviewResult> {
-    const fingerprint = [
-      brushLibraryPreviewFingerprint(brushId, settings),
-      this.renderer.cacheIdentity,
-    ].join(":");
+    const fingerprint = this.fingerprint(brushId, settings);
     const cached = this.cards.get(brushId);
     if (
       cached
@@ -108,6 +106,20 @@ export class MobileBrushLibraryPreviewRenderer {
       .finally(() => this.pendingCards.delete(pendingKey));
     this.pendingCards.set(pendingKey, task);
     return task;
+  }
+
+  hasCompletePreview(
+    brushId: string,
+    canvas: HTMLCanvasElement,
+    settings: Readonly<BrushSettings>,
+  ): boolean {
+    const cached = this.cards.get(brushId);
+    return cached?.canvas === canvas
+      && cached.fingerprint === this.fingerprint(brushId, settings)
+      && cached.sourceComplete
+      && canvas.dataset.previewSourceComplete === "true"
+      && canvas.width === BRUSH_LIBRARY_PREVIEW_WIDTH
+      && canvas.height === BRUSH_LIBRARY_PREVIEW_HEIGHT;
   }
 
   stats(): BrushLibraryPreviewStats {
@@ -174,6 +186,16 @@ export class MobileBrushLibraryPreviewRenderer {
       renderCount: entry.renderCount,
       sourceComplete: true,
     };
+  }
+
+  private fingerprint(
+    brushId: string,
+    settings: Readonly<BrushSettings>,
+  ): string {
+    return [
+      brushLibraryPreviewFingerprint(brushId, settings),
+      this.renderer.cacheIdentity,
+    ].join(":");
   }
 
   private evictCards(protectedId: string): void {

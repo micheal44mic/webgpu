@@ -8,13 +8,20 @@ import {
 import {
   brushStudioAssetStorageKey,
   deleteBrushStudioAsset,
+  deleteBrushStudioSavedBrush,
+  isBrushStudioCustomBrushId,
   loadBrushStudioAsset,
   loadBrushStudioSavedBrush,
+  normalizeBrushStudioCustomBrushName,
   saveBrushStudioAsset,
   saveBrushStudioSavedBrush,
   type BrushStudioAssetKind,
   type BrushStudioPersistedSettings,
 } from "./brush-studio-storage";
+import {
+  brushSourceDimensionsFromBytes,
+  brushSourceResizePlan,
+} from "./brush-source-image";
 import { shouldCloseMobileToolsSheetDrag } from "./mobile-tools-sheet-gesture";
 import type {
   BrushSettings,
@@ -41,7 +48,16 @@ export interface MobileBrushStudioOptions {
   readonly applySettings: (settings: BrushSettings) => void;
   readonly setBrushLibraryOpen: (open: boolean) => void;
   readonly onOpenChange: (open: boolean) => void;
-  readonly onCommit: (brushId: string, settings: BrushSettings) => void;
+  readonly onCommit: (
+    brushId: string,
+    brushName: string,
+    settings: BrushSettings,
+  ) => void | Promise<void>;
+  readonly onCommitted: (
+    brushId: string,
+    brushName: string,
+    settings: BrushSettings,
+  ) => void;
   readonly onStatus: (message: string, kind: "ok" | "error" | "working") => void;
 }
 
@@ -52,7 +68,9 @@ const BUILTIN_BRUSH_SOURCE_URLS: Readonly<Record<string, string>> = {
   "pencil-grain": new URL("../Grainpencil.png", import.meta.url).href,
 };
 
-const MAX_IMPORTED_SOURCE_DIMENSION = 2048;
+const MAX_IMPORTED_SOURCE_BYTES = 64 * 1024 * 1024;
+const BRUSH_SOURCE_HEADER_BYTES = 4 * 1024 * 1024;
+const BRUSH_SOURCE_FALLBACK_MAX_INPUT_PIXELS = 8_388_608;
 
 /** Freno all'eco delle statistiche del motore: vedi notifyEngineUpdate(). */
 const ENGINE_NOTIFY_PREVIEW_INTERVAL_MS = 200;
@@ -99,23 +117,39 @@ function loadImage(url: string): Promise<HTMLImageElement> {
 }
 
 async function decodeBrushSource(blob: Blob, name: string): Promise<DecodedCustomBrushImage> {
-  const objectUrl = URL.createObjectURL(blob);
+  const header = new Uint8Array(await blob.slice(0, BRUSH_SOURCE_HEADER_BYTES).arrayBuffer());
+  const dimensions = brushSourceDimensionsFromBytes(header);
+  if (!dimensions) {
+    throw new Error("The selected image dimensions could not be read safely.");
+  }
+  const plan = brushSourceResizePlan(dimensions.width, dimensions.height);
+  let source: ImageBitmap | HTMLImageElement | null = null;
+  let objectUrl: string | null = null;
   try {
-    const image = await loadImage(objectUrl);
-    const sourceWidth = image.naturalWidth;
-    const sourceHeight = image.naturalHeight;
-    if (sourceWidth < 1 || sourceHeight < 1) {
-      throw new Error("The selected image has no readable pixels.");
+    if (typeof createImageBitmap === "function") {
+      try {
+        source = await createImageBitmap(blob, {
+          imageOrientation: "none",
+          resizeWidth: plan.width,
+          resizeHeight: plan.height,
+          resizeQuality: "high",
+        });
+      } catch {
+        source = null;
+      }
     }
-    const scale = Math.min(
-      1,
-      MAX_IMPORTED_SOURCE_DIMENSION / Math.max(sourceWidth, sourceHeight),
-    );
-    const width = Math.max(1, Math.round(sourceWidth * scale));
-    const height = Math.max(1, Math.round(sourceHeight * scale));
+    if (!source) {
+      if (plan.sourceWidth * plan.sourceHeight > BRUSH_SOURCE_FALLBACK_MAX_INPUT_PIXELS) {
+        throw new Error(
+          "Resize this image below 8 megapixels before importing it on this device.",
+        );
+      }
+      objectUrl = URL.createObjectURL(blob);
+      source = await loadImage(objectUrl);
+    }
     const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
+    canvas.width = plan.width;
+    canvas.height = plan.height;
     const context = canvas.getContext("2d", {
       alpha: true,
       willReadFrequently: true,
@@ -123,16 +157,17 @@ async function decodeBrushSource(blob: Blob, name: string): Promise<DecodedCusto
     if (!context) throw new Error("Canvas 2D is unavailable for this image.");
     context.imageSmoothingEnabled = true;
     context.imageSmoothingQuality = "high";
-    context.drawImage(image, 0, 0, width, height);
+    context.drawImage(source, 0, 0, plan.width, plan.height);
     return {
-      width,
-      height,
-      rgba: context.getImageData(0, 0, width, height).data,
+      width: plan.width,
+      height: plan.height,
+      rgba: context.getImageData(0, 0, plan.width, plan.height).data,
       name,
       mimeType: blob.type || "image/png",
     };
   } finally {
-    URL.revokeObjectURL(objectUrl);
+    if (source && "close" in source) source.close();
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
   }
 }
 
@@ -155,12 +190,23 @@ function canvasFromRgba(
   return canvas;
 }
 
+function normalizedBrushSourceBlob(source: DecodedCustomBrushImage): Promise<Blob> {
+  const canvas = canvasFromRgba(source.width, source.height, source.rgba);
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error("The normalized brush source could not be encoded."));
+    }, "image/png");
+  });
+}
+
 export class MobileBrushStudioController {
   readonly sheet = requiredElement<HTMLElement>("mobileBrushStudioSheet");
   readonly handle = requiredElement<HTMLButtonElement>("mobileBrushStudioHandle");
   readonly cancelButton = requiredElement<HTMLButtonElement>("mobileBrushStudioCancel");
   readonly doneButton = requiredElement<HTMLButtonElement>("mobileBrushStudioDone");
-  readonly nameElement = requiredElement<HTMLElement>("mobileBrushStudioName");
+  readonly nameElement = requiredElement<HTMLInputElement>("mobileBrushStudioName");
+  readonly statusElement = requiredElement<HTMLParagraphElement>("mobileBrushStudioStatus");
   readonly previewCanvas = requiredElement<HTMLCanvasElement>("mobileBrushStudioPreviewCanvas");
   readonly scrollElement = requiredElement<HTMLElement>("mobileBrushStudioScroll");
   readonly tabs = Array.from(
@@ -263,20 +309,89 @@ export class MobileBrushStudioController {
       color: fallback.color,
       hardness: 1,
     };
-    await this.restoreSavedAsset(brushId, "shape", saved.shapeAssetKey, resolved);
-    await this.restoreSavedAsset(brushId, "grain", saved.grainAssetKey, resolved);
+    try {
+      await this.restoreSavedAsset(brushId, "shape", saved.shapeAssetKey, resolved);
+      await this.restoreSavedAsset(brushId, "grain", saved.grainAssetKey, resolved);
+    } catch (error) {
+      await this.releasePreviewAssets(brushId, resolved);
+      throw error;
+    }
     this.rememberSettings(brushId, resolved);
     return copySettings(resolved);
   }
 
-  open(brushId: string, brushName: string, settings: Readonly<BrushSettings>): void {
+  async releasePreviewAssets(
+    brushId: string,
+    settings: Readonly<BrushSettings>,
+  ): Promise<void> {
+    const candidates = new Set<CustomBrushShapeAssetId | CustomBrushGrainAssetId>();
+    if (
+      isCustomShapeAssetId(settings.shapeAssetId)
+      && this.options.engine.hasCustomBrushAsset(settings.shapeAssetId)
+    ) {
+      candidates.add(settings.shapeAssetId);
+    }
+    if (
+      isCustomGrainAssetId(settings.grainAssetId)
+      && this.options.engine.hasCustomBrushAsset(settings.grainAssetId)
+    ) {
+      candidates.add(settings.grainAssetId);
+    }
+    if (candidates.size === 0) return;
+
+    const activeSettings = this.options.engine.getSettings();
+    if (isCustomShapeAssetId(activeSettings.shapeAssetId)) {
+      candidates.delete(activeSettings.shapeAssetId);
+    }
+    if (isCustomGrainAssetId(activeSettings.grainAssetId)) {
+      candidates.delete(activeSettings.grainAssetId);
+    }
+    if (candidates.size === 0) return;
+
+    try {
+      await this.options.engine.waitForIdle();
+    } catch {
+      return;
+    }
+    const activeAfterIdle = this.options.engine.getSettings();
+    if (isCustomShapeAssetId(activeAfterIdle.shapeAssetId)) {
+      candidates.delete(activeAfterIdle.shapeAssetId);
+    }
+    if (isCustomGrainAssetId(activeAfterIdle.grainAssetId)) {
+      candidates.delete(activeAfterIdle.grainAssetId);
+    }
+    let released = false;
+    for (const assetId of candidates) {
+      try {
+        if (this.options.engine.removeCustomBrushAsset(assetId)) {
+          released = true;
+          this.importedAssets.delete(assetId);
+          this.sourceCanvases.delete(assetId);
+          this.resolvedSources.delete(assetId);
+        }
+      } catch {
+        // The card bitmap is already complete. Keep an asset still referenced
+        // by a late GPU publication and retry its release on a later preview.
+      }
+    }
+    if (released) this.settingsCache.delete(brushId);
+  }
+
+  open(
+    brushId: string,
+    brushName: string,
+    settings: Readonly<BrushSettings>,
+    originalSettings: Readonly<BrushSettings> = settings,
+  ): void {
     if (!this.options.mobileMediaQuery.matches) return;
     this.activeBrushId = brushId;
     this.activeBrushName = brushName;
-    this.originalSettings = copySettings(settings);
+    this.originalSettings = copySettings(originalSettings);
     this.draftSettings = { ...settings, tool: "paint", hardness: 1 };
     this.openState = true;
-    this.nameElement.textContent = brushName;
+    this.nameElement.value = brushName;
+    this.nameElement.readOnly = !isBrushStudioCustomBrushId(brushId);
+    this.reportStatus("", "ok");
     this.setBusy(false);
     this.populateControls(this.draftSettings);
     this.setTab("stroke", false);
@@ -642,27 +757,42 @@ export class MobileBrushStudioController {
   }
 
   private async importSource(kind: BrushStudioSourceKind, file: File): Promise<void> {
-    if (!file.type.match(/^image\/(png|jpeg|webp)$/)) {
-      this.options.onStatus("Choose a PNG, JPEG, or WebP image.", "error");
+    const declaredType = file.type.trim().toLowerCase();
+    if (
+      declaredType
+      && declaredType !== "application/octet-stream"
+      && !declaredType.match(/^image\/(png|jpeg|webp)$/)
+    ) {
+      this.reportStatus("Choose a PNG, JPEG, or WebP image.", "error");
+      return;
+    }
+    if (file.size > MAX_IMPORTED_SOURCE_BYTES) {
+      this.reportStatus("Choose an image smaller than 64 MB.", "error");
       return;
     }
     const revision = ++this.importRevision;
     this.setBusy(true);
-    this.options.onStatus(`Loading ${kind} source…`, "working");
+    this.reportStatus(`Loading ${kind} source…`, "working");
     try {
       const decoded = await decodeBrushSource(file, file.name);
       if (!this.openState || revision !== this.importRevision || !this.draftSettings) return;
+      const normalizedBlob = await normalizedBrushSourceBlob(decoded);
+      if (!this.openState || revision !== this.importRevision || !this.draftSettings) return;
+      const normalizedDecoded: DecodedCustomBrushImage = {
+        ...decoded,
+        mimeType: "image/png",
+      };
       if (kind === "shape") {
-        const id = this.options.engine.registerCustomShapeAsset(decoded);
-        this.importedAssets.set(id, { kind, blob: file, name: file.name });
+        const id = this.options.engine.registerCustomShapeAsset(normalizedDecoded);
+        this.importedAssets.set(id, { kind, blob: normalizedBlob, name: file.name });
         this.transientAssetIds.add(id);
         this.draftSettings.shape = "shape";
         this.draftSettings.shapeAssetId = id;
         this.draftSettings.shapeInvert = false;
         requiredElement<HTMLInputElement>("mobileBrushStudioShapeInvert").checked = false;
       } else {
-        const id = this.options.engine.registerCustomGrainAsset(decoded);
-        this.importedAssets.set(id, { kind, blob: file, name: file.name });
+        const id = this.options.engine.registerCustomGrainAsset(normalizedDecoded);
+        this.importedAssets.set(id, { kind, blob: normalizedBlob, name: file.name });
         this.transientAssetIds.add(id);
         this.draftSettings.grainAssetId = id;
         if (this.draftSettings.grainMode === "off") this.draftSettings.grainMode = "moving";
@@ -672,10 +802,10 @@ export class MobileBrushStudioController {
         this.syncGrainAvailability(this.draftSettings.grainMode);
       }
       this.scheduleApply();
-      await this.drawSourcePreviews();
-      this.options.onStatus(`${kind === "shape" ? "Shape" : "Grain"} source ready.`, "ok");
+      void this.drawSourcePreviews();
+      this.reportStatus(`${kind === "shape" ? "Shape" : "Grain"} source ready.`, "ok");
     } catch (error) {
-      this.options.onStatus(error instanceof Error ? error.message : String(error), "error");
+      this.reportStatus(error instanceof Error ? error.message : String(error), "error");
     } finally {
       if (revision === this.importRevision) this.setBusy(false);
     }
@@ -828,7 +958,7 @@ export class MobileBrushStudioController {
       await this.options.previewRenderer.render(this.previewCanvas, settings);
     } catch (error) {
       if (this.openState) {
-        this.options.onStatus(
+        this.reportStatus(
           error instanceof Error ? error.message : String(error),
           "error",
         );
@@ -841,17 +971,35 @@ export class MobileBrushStudioController {
     const settings = this.flushDraft();
     if (!settings) return;
     this.setBusy(true);
-    this.options.onStatus("Saving brush…", "working");
+    this.reportStatus("Saving brush…", "working");
+    const brushId = this.activeBrushId;
+    const previousSavedBrush = loadBrushStudioSavedBrush(brushId);
+    let shapeAssetKey: string | null = null;
+    let grainAssetKey: string | null = null;
+    let settingsRecordWritten = false;
+    let catalogCommitted = false;
     try {
-      const previousSavedBrush = loadBrushStudioSavedBrush(this.activeBrushId);
-      const shapeAssetKey = await this.persistAssetIfNeeded("shape", settings);
-      const grainAssetKey = await this.persistAssetIfNeeded("grain", settings);
-      saveBrushStudioSavedBrush(this.activeBrushId, {
+      const brushName = isBrushStudioCustomBrushId(brushId)
+        ? normalizeBrushStudioCustomBrushName(this.nameElement.value)
+        : this.activeBrushName;
+      this.activeBrushName = brushName;
+      this.nameElement.value = brushName;
+      shapeAssetKey = await this.persistAssetIfNeeded("shape", settings);
+      grainAssetKey = await this.persistAssetIfNeeded("grain", settings);
+      saveBrushStudioSavedBrush(brushId, {
         version: 1,
         settings: settingsForPersistence(settings),
         shapeAssetKey,
         grainAssetKey,
       });
+      settingsRecordWritten = true;
+      await this.options.onCommit(brushId, brushName, settings);
+      catalogCommitted = true;
+      try {
+        this.options.onCommitted(brushId, brushName, settings);
+      } catch (error) {
+        console.error("Brush catalog UI refresh failed after a durable save.", error);
+      }
       await this.deleteSupersededStoredAssets(
         previousSavedBrush?.shapeAssetKey ?? null,
         previousSavedBrush?.grainAssetKey ?? null,
@@ -864,16 +1012,62 @@ export class MobileBrushStudioController {
       if (isCustomGrainAssetId(settings.grainAssetId)) {
         this.transientAssetIds.delete(settings.grainAssetId);
       }
-      this.rememberSettings(this.activeBrushId, settings);
-      const brushId = this.activeBrushId;
+      this.rememberSettings(brushId, settings);
+      this.reportStatus(`${brushName} saved.`, "ok");
       this.closeSheet();
-      this.options.onCommit(brushId, settings);
-      this.options.onStatus(`${this.activeBrushName} saved.`, "ok");
       this.options.setBrushLibraryOpen(true);
-      void this.releaseTransientAssets(settings);
+      const supersededAssetIds = [
+        previousSavedBrush?.settings.shapeAssetId,
+        previousSavedBrush?.settings.grainAssetId,
+      ].filter((assetId): assetId is CustomBrushShapeAssetId | CustomBrushGrainAssetId => (
+        (isCustomShapeAssetId(assetId) || isCustomGrainAssetId(assetId))
+        && assetId !== settings.shapeAssetId
+        && assetId !== settings.grainAssetId
+      ));
+      void this.releaseTransientAssets(settings, supersededAssetIds);
     } catch (error) {
-      this.options.onStatus(error instanceof Error ? error.message : String(error), "error");
+      let rollbackFailed = false;
+      if (!catalogCommitted) {
+        rollbackFailed = !(await this.rollbackPartialCommit(
+          brushId,
+          previousSavedBrush,
+          settingsRecordWritten,
+          shapeAssetKey,
+          grainAssetKey,
+        ));
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      this.reportStatus(
+        rollbackFailed ? `${message} The previous saved brush could not be restored.` : message,
+        "error",
+      );
       this.setBusy(false);
+    }
+  }
+
+  private async rollbackPartialCommit(
+    brushId: string,
+    previousSavedBrush: ReturnType<typeof loadBrushStudioSavedBrush>,
+    settingsRecordWritten: boolean,
+    shapeAssetKey: string | null,
+    grainAssetKey: string | null,
+  ): Promise<boolean> {
+    try {
+      if (settingsRecordWritten) {
+        if (previousSavedBrush) saveBrushStudioSavedBrush(brushId, previousSavedBrush);
+        else deleteBrushStudioSavedBrush(brushId);
+      }
+      const newKeys = new Set<string>();
+      if (shapeAssetKey && shapeAssetKey !== previousSavedBrush?.shapeAssetKey) {
+        newKeys.add(shapeAssetKey);
+      }
+      if (grainAssetKey && grainAssetKey !== previousSavedBrush?.grainAssetKey) {
+        newKeys.add(grainAssetKey);
+      }
+      for (const key of newKeys) await deleteBrushStudioAsset(key);
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -938,35 +1132,49 @@ export class MobileBrushStudioController {
         blob: stored.blob,
         name: stored.name,
       });
-    } catch {
-      if (kind === "shape") {
-        settings.shape = "circle";
-        settings.shapeAssetId = "legacy-shape";
-        settings.shapeInvert = false;
-      } else {
-        settings.grainMode = "off";
-        settings.grainAssetId = "legacy-grain";
-        settings.grainInvert = false;
-      }
+    } catch (error) {
+      throw new Error(
+        `The saved ${kind} source is unavailable. The brush was not changed.`,
+        { cause: error },
+      );
     }
   }
 
-  private async releaseTransientAssets(keep?: Readonly<BrushSettings>): Promise<void> {
+  private async releaseTransientAssets(
+    keep?: Readonly<BrushSettings>,
+    additionalCandidates: readonly (
+      CustomBrushShapeAssetId | CustomBrushGrainAssetId
+    )[] = [],
+  ): Promise<void> {
     const keepIds = new Set<string>();
     if (keep && isCustomShapeAssetId(keep.shapeAssetId)) keepIds.add(keep.shapeAssetId);
     if (keep && isCustomGrainAssetId(keep.grainAssetId)) keepIds.add(keep.grainAssetId);
-    const candidates = Array.from(this.transientAssetIds).filter((id) => !keepIds.has(id));
-    if (candidates.length === 0) return;
+    const candidates = new Set<CustomBrushShapeAssetId | CustomBrushGrainAssetId>(
+      additionalCandidates,
+    );
+    for (const id of additionalCandidates) this.transientAssetIds.add(id);
+    for (const id of this.transientAssetIds) {
+      candidates.add(id as CustomBrushShapeAssetId | CustomBrushGrainAssetId);
+    }
+    for (const id of keepIds) {
+      candidates.delete(id as CustomBrushShapeAssetId | CustomBrushGrainAssetId);
+    }
+    if (candidates.size === 0) return;
     try {
       await this.options.engine.waitForIdle();
     } catch {
       return;
     }
+    const activeSettings = this.options.engine.getSettings();
+    if (isCustomShapeAssetId(activeSettings.shapeAssetId)) {
+      candidates.delete(activeSettings.shapeAssetId);
+    }
+    if (isCustomGrainAssetId(activeSettings.grainAssetId)) {
+      candidates.delete(activeSettings.grainAssetId);
+    }
     for (const id of candidates) {
       try {
-        if (this.options.engine.removeCustomBrushAsset(
-          id as CustomBrushShapeAssetId | CustomBrushGrainAssetId,
-        )) {
+        if (this.options.engine.removeCustomBrushAsset(id)) {
           this.transientAssetIds.delete(id);
           this.importedAssets.delete(id);
           this.sourceCanvases.delete(id);
@@ -983,6 +1191,16 @@ export class MobileBrushStudioController {
     this.busy = busy;
     this.doneButton.disabled = busy;
     this.sheet.setAttribute("aria-busy", String(busy));
+  }
+
+  private reportStatus(
+    message: string,
+    kind: "ok" | "error" | "working",
+  ): void {
+    this.statusElement.textContent = message;
+    this.statusElement.hidden = message.length === 0;
+    this.statusElement.dataset.statusKind = kind;
+    this.options.onStatus(message, kind);
   }
 
   private cancelScheduledWork(): void {

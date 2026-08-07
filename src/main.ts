@@ -33,8 +33,15 @@ import {
   type MobileRasterEffectKind,
 } from "./mobile-raster-effects-sheet";
 import {
+  BRUSH_STUDIO_MAX_CUSTOM_BRUSHES,
+  createBrushStudioBaseSettings,
+  createBrushStudioCustomBrushId,
+  isBrushStudioCustomBrushId,
   loadBrushStudioLibraryState,
+  nextBrushStudioCustomBrushName,
   saveBrushStudioLibraryState,
+  type BrushStudioCustomBrush,
+  type BrushStudioCustomBrushId,
 } from "./brush-studio-storage";
 import {
   Blend,
@@ -360,6 +367,9 @@ const mobileBrushPreviewLabel = element<HTMLOutputElement>("mobileBrushPreviewLa
 const mobileBrushPreviewCanvas = element<HTMLCanvasElement>("mobileBrushPreviewCanvas");
 const mobileBrushLibrarySheet = element<HTMLElement>("mobileBrushLibrarySheet");
 const mobileBrushLibraryHandle = element<HTMLButtonElement>("mobileBrushLibraryHandle");
+const mobileBrushLibraryAddButton = element<HTMLButtonElement>("mobileBrushLibraryAdd");
+const mobileBrushLibraryStatus = element<HTMLParagraphElement>("mobileBrushLibraryStatus");
+const mobileBrushLibraryBrushes = element<HTMLElement>("mobileBrushLibraryBrushes");
 const mobileBrushLibraryList = element<HTMLElement>("mobileBrushLibraryList");
 const mobileBrushLibraryEmpty = element<HTMLParagraphElement>("mobileBrushLibraryEmpty");
 const mobilePencilBrushCard = element<HTMLButtonElement>("mobilePencilBrushCard");
@@ -373,7 +383,7 @@ const mobileBrushLibraryPreviewCanvas = element<HTMLCanvasElement>(
 const mobileBrushLibraryCategoryButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>("[data-mobile-brush-category]"),
 );
-const mobileBrushLibraryCards = Array.from(
+const mobileBrushLibraryCards: HTMLButtonElement[] = Array.from(
   document.querySelectorAll<HTMLButtonElement>("[data-mobile-brush-id]"),
 );
 const mobileToolsCategories = Array.from(
@@ -1091,11 +1101,23 @@ let mobileToolsSheetDragVelocityY = 0;
 let mobileToolsSheetDragMoved = false;
 let mobileToolsSheetResizeFrame: number | null = null;
 type MobileBrushLibraryCategory = "pencil" | "painting" | "spray-paint";
-type MobileBrushLibraryBrushId = "m1m4-pencil-v1" | "current";
+type MobileBrushLibraryBrushId =
+  | "m1m4-pencil-v1"
+  | "current"
+  | BrushStudioCustomBrushId;
 const restoredMobileBrushLibraryState = loadBrushStudioLibraryState();
+let mobileCustomBrushes: BrushStudioCustomBrush[] = [
+  ...(restoredMobileBrushLibraryState?.customBrushes ?? []),
+];
+for (const brush of mobileCustomBrushes) ensureMobileCustomBrushCard(brush);
+syncMobileBrushLibraryAddState();
+const restoredMobileBrushLibraryCandidate =
+  restoredMobileBrushLibraryState?.activeBrushId;
 const restoredMobileBrushLibraryBrushId: MobileBrushLibraryBrushId =
-  restoredMobileBrushLibraryState?.activeBrushId === PENCIL_BRUSH_PRESET.id
-    ? PENCIL_BRUSH_PRESET.id
+  restoredMobileBrushLibraryCandidate === PENCIL_BRUSH_PRESET.id
+  || restoredMobileBrushLibraryCandidate === "current"
+  || mobileCustomBrushes.some((brush) => brush.id === restoredMobileBrushLibraryCandidate)
+    ? restoredMobileBrushLibraryCandidate as MobileBrushLibraryBrushId
     : "current";
 let mobileBrushLibraryOpen = false;
 let mobileBrushLibraryCategory: MobileBrushLibraryCategory =
@@ -1112,6 +1134,7 @@ let mobileBrushLibraryDragLastTime = 0;
 let mobileBrushLibraryDragVelocityY = 0;
 let mobileBrushLibraryDragMoved = false;
 let mobileBrushLibraryPreviewFrame: number | null = null;
+let mobileBrushLibraryScrollTimer: number | null = null;
 let mobileBrushLibraryPreviewDirty = true;
 let mobileBrushLibraryPreviewRevision = 0;
 const authoritativeBrushStrokePreviewRenderer =
@@ -1729,22 +1752,90 @@ function mobileCurrentBrushFallback(
   };
 }
 
+function isMobileBrushLibraryBrushId(value: string): value is MobileBrushLibraryBrushId {
+  return value === PENCIL_BRUSH_PRESET.id
+    || value === "current"
+    || (isBrushStudioCustomBrushId(value)
+      && mobileCustomBrushes.some((brush) => brush.id === value));
+}
+
+function ensureMobileCustomBrushCard(
+  brush: BrushStudioCustomBrush,
+): HTMLButtonElement {
+  const existing = mobileBrushLibraryCards.find(
+    (card) => card.dataset.mobileBrushId === brush.id,
+  );
+  if (existing) {
+    const name = existing.querySelector<HTMLElement>(".mobile-brush-card-name");
+    if (name) name.textContent = brush.name;
+    return existing;
+  }
+
+  const card = document.createElement("button");
+  card.className = "mobile-brush-card";
+  card.type = "button";
+  card.dataset.mobileBrushId = brush.id;
+  card.dataset.mobileBrushCategoryCard = "painting";
+  card.setAttribute("aria-label", brush.name);
+  card.setAttribute("aria-pressed", "false");
+
+  const selected = document.createElement("span");
+  selected.className = "mobile-brush-card-selected";
+  selected.setAttribute("aria-hidden", "true");
+  selected.append(createLucideElement(Check, { width: 16, height: 16 }));
+
+  const name = document.createElement("span");
+  name.className = "mobile-brush-card-name";
+  name.textContent = brush.name;
+
+  const canvas = document.createElement("canvas");
+  canvas.className = "mobile-brush-card-preview";
+  canvas.width = 240;
+  canvas.height = 56;
+  canvas.setAttribute("aria-hidden", "true");
+
+  card.append(selected, name, canvas);
+  mobileBrushLibraryCards.push(card);
+  mobileBrushLibraryList.append(card);
+  return card;
+}
+
+function syncMobileBrushLibraryAddState(): void {
+  const full = mobileCustomBrushes.length >= BRUSH_STUDIO_MAX_CUSTOM_BRUSHES;
+  mobileBrushLibraryAddButton.disabled = full;
+  mobileBrushLibraryAddButton.title = full
+    ? `Maximum ${BRUSH_STUDIO_MAX_CUSTOM_BRUSHES} custom brushes reached`
+    : "New brush";
+  mobileBrushLibraryStatus.textContent = full
+    ? `Maximum ${BRUSH_STUDIO_MAX_CUSTOM_BRUSHES} custom brushes reached.`
+    : "";
+  mobileBrushLibraryStatus.hidden = !full;
+}
+
 function mobileBrushLibraryCanvasForBrush(
   brushId: MobileBrushLibraryBrushId,
 ): HTMLCanvasElement {
-  return brushId === PENCIL_BRUSH_PRESET.id
-    ? mobilePencilBrushPreviewCanvas
-    : mobileBrushLibraryPreviewCanvas;
+  const card = mobileBrushLibraryCards.find(
+    (candidate) => candidate.dataset.mobileBrushId === brushId,
+  );
+  const canvas = card?.querySelector<HTMLCanvasElement>(".mobile-brush-card-preview");
+  if (!canvas) throw new Error(`Brush preview canvas unavailable for ${brushId}.`);
+  return canvas;
 }
 
 function mobileBrushLibraryVisibleBrushIds(): MobileBrushLibraryBrushId[] {
   const visible = [activeMobileBrushLibraryBrushId];
+  const viewport = mobileBrushLibraryBrushes.getBoundingClientRect();
+  const preloadMargin = 80;
   for (const card of mobileBrushLibraryCards) {
     const brushId = card.dataset.mobileBrushId as MobileBrushLibraryBrushId | undefined;
+    const bounds = card.getBoundingClientRect();
     if (
       brushId
       && brushId !== activeMobileBrushLibraryBrushId
       && card.dataset.mobileBrushCategoryCard === mobileBrushLibraryCategory
+      && bounds.bottom >= viewport.top - preloadMargin
+      && bounds.top <= viewport.bottom + preloadMargin
     ) {
       visible.push(brushId);
     }
@@ -1752,18 +1843,25 @@ function mobileBrushLibraryVisibleBrushIds(): MobileBrushLibraryBrushId[] {
   return visible;
 }
 
-function mobileBrushLibrarySettingsForBrush(
+async function mobileBrushLibrarySettingsForBrush(
   brushId: MobileBrushLibraryBrushId,
   currentSettings: Readonly<BrushSettings>,
-): BrushSettings {
+): Promise<BrushSettings> {
   const previewIsActive = brushId === activeMobileBrushLibraryBrushId;
   const fallbackSettings = brushId === PENCIL_BRUSH_PRESET.id
     ? resolveBrushPresetSettings(PENCIL_BRUSH_PRESET, currentSettings)
     : mobileCurrentBrushFallback(currentSettings);
-  return previewIsActive
-    ? currentSettings
-    : mobileBrushStudio?.settingsSnapshot(brushId, fallbackSettings)
-      ?? fallbackSettings;
+  if (previewIsActive) return { ...currentSettings };
+  if (!mobileBrushStudio) return fallbackSettings;
+  const snapshot = mobileBrushStudio.settingsSnapshot(brushId, fallbackSettings);
+  if (mobileBrushLibraryPreviewRenderer.hasCompletePreview(
+    brushId,
+    mobileBrushLibraryCanvasForBrush(brushId),
+    snapshot,
+  )) {
+    return snapshot;
+  }
+  return mobileBrushStudio.resolveBrushSettings(brushId, fallbackSettings);
 }
 
 function renderMobileBrushLibraryPreview(): void {
@@ -1772,13 +1870,45 @@ function renderMobileBrushLibraryPreview(): void {
   const previewBrushIds = mobileBrushLibraryVisibleBrushIds();
   const revision = mobileBrushLibraryPreviewRevision;
   mobileBrushLibraryPreviewDirty = false;
-  void Promise.all(previewBrushIds.map((brushId) => (
-    mobileBrushLibraryPreviewRenderer.render(
-      brushId,
-      mobileBrushLibraryCanvasForBrush(brushId),
-      mobileBrushLibrarySettingsForBrush(brushId, currentSettings),
-    )
-  )))
+  void (async () => {
+    for (const brushId of previewBrushIds) {
+      if (
+        !mobileBrushLibraryOpen
+        || !mobileUiMediaQuery.matches
+        || revision !== mobileBrushLibraryPreviewRevision
+      ) {
+        return;
+      }
+      let settings: BrushSettings;
+      try {
+        settings = await mobileBrushLibrarySettingsForBrush(
+          brushId,
+          currentSettings,
+        );
+      } catch {
+        // Keep this card retryable without blocking the remaining previews.
+        continue;
+      }
+      if (
+        !mobileBrushLibraryOpen
+        || !mobileUiMediaQuery.matches
+        || revision !== mobileBrushLibraryPreviewRevision
+      ) {
+        if (brushId !== activeMobileBrushLibraryBrushId) {
+          await mobileBrushStudio?.releasePreviewAssets(brushId, settings);
+        }
+        return;
+      }
+      await mobileBrushLibraryPreviewRenderer.render(
+        brushId,
+        mobileBrushLibraryCanvasForBrush(brushId),
+        settings,
+      );
+      if (brushId !== activeMobileBrushLibraryBrushId) {
+        await mobileBrushStudio?.releasePreviewAssets(brushId, settings);
+      }
+    }
+  })()
     .then(() => {
       if (
         mobileBrushLibraryOpen
@@ -1802,6 +1932,10 @@ function scheduleMobileBrushLibraryPreview(): void {
 }
 
 function setMobileBrushLibraryCategory(category: MobileBrushLibraryCategory): void {
+  if (mobileBrushLibraryCategory !== category) {
+    mobileBrushLibraryPreviewDirty = true;
+    mobileBrushLibraryPreviewRevision += 1;
+  }
   mobileBrushLibraryCategory = category;
   for (const button of mobileBrushLibraryCategoryButtons) {
     button.setAttribute(
@@ -1891,11 +2025,19 @@ function setMobileBrushLibraryOpen(open: boolean): void {
   }
   mobileBrushLibraryDragPointerId = null;
   mobileBrushLibraryDragMoved = false;
-  authoritativeBrushStrokePreviewRenderer.invalidate(mobilePencilBrushPreviewCanvas);
-  authoritativeBrushStrokePreviewRenderer.invalidate(mobileBrushLibraryPreviewCanvas);
+  mobileBrushLibraryPreviewDirty = true;
+  mobileBrushLibraryPreviewRevision += 1;
+  for (const card of mobileBrushLibraryCards) {
+    const preview = card.querySelector<HTMLCanvasElement>(".mobile-brush-card-preview");
+    if (preview) authoritativeBrushStrokePreviewRenderer.invalidate(preview);
+  }
   if (mobileBrushLibraryPreviewFrame !== null) {
     cancelAnimationFrame(mobileBrushLibraryPreviewFrame);
     mobileBrushLibraryPreviewFrame = null;
+  }
+  if (mobileBrushLibraryScrollTimer !== null) {
+    window.clearTimeout(mobileBrushLibraryScrollTimer);
+    mobileBrushLibraryScrollTimer = null;
   }
   syncMobileBrushControlsVisibility();
 }
@@ -4172,14 +4314,67 @@ mobileBrushStudio = new MobileBrushStudioController({
     syncMobileBrushLibraryButtonState();
     syncMobileBrushControlsVisibility();
   },
-  onCommit: (brushId, _settings) => {
-    activeMobileBrushLibraryBrushId = brushId === PENCIL_BRUSH_PRESET.id
-      ? PENCIL_BRUSH_PRESET.id
-      : "current";
+  onCommit: (brushId, brushName, _settings) => {
+    const latestCustomBrushes = [
+      ...(loadBrushStudioLibraryState()?.customBrushes ?? []),
+    ];
+    for (const localBrush of mobileCustomBrushes) {
+      if (
+        latestCustomBrushes.length < BRUSH_STUDIO_MAX_CUSTOM_BRUSHES
+        && !latestCustomBrushes.some((brush) => brush.id === localBrush.id)
+      ) {
+        latestCustomBrushes.push(localBrush);
+      }
+    }
+    let nextCustomBrushes = latestCustomBrushes;
+    if (isBrushStudioCustomBrushId(brushId)) {
+      const existing = latestCustomBrushes.find((brush) => brush.id === brushId);
+      if (!existing && latestCustomBrushes.length >= BRUSH_STUDIO_MAX_CUSTOM_BRUSHES) {
+        throw new Error(
+          `Maximum ${BRUSH_STUDIO_MAX_CUSTOM_BRUSHES} custom brushes reached.`,
+        );
+      }
+      const now = Date.now();
+      const committed: BrushStudioCustomBrush = {
+        id: brushId,
+        name: brushName,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      };
+      nextCustomBrushes = existing
+        ? latestCustomBrushes.map((brush) => brush.id === brushId ? committed : brush)
+        : [...latestCustomBrushes, committed];
+    }
+    const committedBrushId: MobileBrushLibraryBrushId =
+      brushId === PENCIL_BRUSH_PRESET.id
+      || brushId === "current"
+      || isBrushStudioCustomBrushId(brushId)
+        ? brushId
+        : "current";
+    saveBrushStudioLibraryState(committedBrushId, nextCustomBrushes);
+    mobileCustomBrushes = nextCustomBrushes;
+  },
+  onCommitted: (brushId, _brushName, _settings) => {
+    const committedBrushId: MobileBrushLibraryBrushId =
+      brushId === PENCIL_BRUSH_PRESET.id
+      || brushId === "current"
+      || isBrushStudioCustomBrushId(brushId)
+        ? brushId
+        : "current";
+    for (const descriptor of mobileCustomBrushes) {
+      ensureMobileCustomBrushCard(descriptor);
+    }
+    if (isBrushStudioCustomBrushId(committedBrushId)) {
+      const descriptor = mobileCustomBrushes.find(
+        (brush) => brush.id === committedBrushId,
+      );
+      if (descriptor) ensureMobileCustomBrushCard(descriptor);
+    }
+    activeMobileBrushLibraryBrushId = committedBrushId;
+    syncMobileBrushLibraryAddState();
     setMobileBrushLibraryCategory(
       mobileBrushLibraryCategoryForBrush(activeMobileBrushLibraryBrushId),
     );
-    persistActiveMobileBrushLibraryBrush();
     syncMobileBrushLibrarySelection();
     markMobileBrushLibraryPreviewDirty();
   },
@@ -5317,7 +5512,19 @@ for (const button of mobileBrushLibraryCategoryButtons) {
   });
 }
 
+mobileBrushLibraryBrushes.addEventListener("scroll", () => {
+  if (mobileBrushLibraryScrollTimer !== null) {
+    window.clearTimeout(mobileBrushLibraryScrollTimer);
+  }
+  mobileBrushLibraryScrollTimer = window.setTimeout(() => {
+    mobileBrushLibraryScrollTimer = null;
+    if (mobileBrushLibraryOpen) markMobileBrushLibraryPreviewDirty();
+  }, 90);
+}, { passive: true });
+
 function mobileBrushLibraryName(brushId: MobileBrushLibraryBrushId): string {
+  const customName = mobileCustomBrushes.find((brush) => brush.id === brushId)?.name;
+  if (customName) return customName;
   const card = mobileBrushLibraryCards.find(
     (candidate) => candidate.dataset.mobileBrushId === brushId,
   );
@@ -5333,11 +5540,34 @@ function mobileBrushLibraryCategoryForBrush(
 
 function persistActiveMobileBrushLibraryBrush(): void {
   try {
-    saveBrushStudioLibraryState(activeMobileBrushLibraryBrushId);
+    saveBrushStudioLibraryState(
+      activeMobileBrushLibraryBrushId,
+      mobileCustomBrushes,
+    );
   } catch {
     // Settings remain authoritative in their own localStorage record. This
     // small pointer only restores which saved card is active after a refresh.
   }
+}
+
+function createMobileBrushLibraryBrush(): void {
+  const studio = mobileBrushStudio;
+  if (!studio || !mobileUiMediaQuery.matches) return;
+  if (mobileCustomBrushes.length >= BRUSH_STUDIO_MAX_CUSTOM_BRUSHES) {
+    syncMobileBrushLibraryAddState();
+    return;
+  }
+  mobileBrushLibrarySelectionRevision += 1;
+  const originalSettings = engine.getSettings();
+  studio.rememberSettings(activeMobileBrushLibraryBrushId, originalSettings);
+  const brushId = createBrushStudioCustomBrushId();
+  const brushName = nextBrushStudioCustomBrushName(mobileCustomBrushes);
+  const baseSettings = createBrushStudioBaseSettings(
+    defaultBrushSettings,
+    originalSettings.color,
+  );
+  applySettingsToControls(baseSettings);
+  studio.open(brushId, brushName, baseSettings, originalSettings);
 }
 
 async function selectMobileBrushLibraryBrush(
@@ -5364,19 +5594,29 @@ async function selectMobileBrushLibraryBrush(
     setMobileBrushLibraryCategory(mobileBrushLibraryCategoryForBrush(brushId));
     persistActiveMobileBrushLibraryBrush();
     syncMobileBrushLibrarySelection();
+    syncMobileBrushLibraryAddState();
     markMobileBrushLibraryPreviewDirty();
   } catch (error) {
-    statusElement.textContent = error instanceof Error ? error.message : String(error);
+    const message = error instanceof Error ? error.message : String(error);
+    statusElement.textContent = message;
     statusElement.className = "status error";
+    mobileBrushLibraryStatus.textContent = message;
+    mobileBrushLibraryStatus.hidden = false;
   }
 }
 
-mobileCurrentBrushCard.addEventListener("click", () => {
-  void selectMobileBrushLibraryBrush("current");
+mobileBrushLibraryAddButton.addEventListener("click", () => {
+  createMobileBrushLibraryBrush();
 });
 
-mobilePencilBrushCard.addEventListener("click", () => {
-  void selectMobileBrushLibraryBrush(PENCIL_BRUSH_PRESET.id);
+mobileBrushLibraryList.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element)) return;
+  const card = event.target.closest<HTMLButtonElement>("[data-mobile-brush-id]");
+  const brushId = card?.dataset.mobileBrushId;
+  if (!card || !mobileBrushLibraryList.contains(card) || !brushId) return;
+  if (isMobileBrushLibraryBrushId(brushId)) {
+    void selectMobileBrushLibraryBrush(brushId);
+  }
 });
 
 mobileBrushLibraryHandle.addEventListener("pointerdown", (event) => {
@@ -5484,12 +5724,54 @@ function updateMobileToolsSearchResults(): void {
 mobileToolsSearchInput.addEventListener("input", updateMobileToolsSearchResults);
 mobileToolsSearchInput.addEventListener("search", updateMobileToolsSearchResults);
 
+async function restoreActiveMobileBrushLibraryBrush(): Promise<void> {
+  const studio = mobileBrushStudio;
+  if (!studio || !mobileUiMediaQuery.matches) return;
+  const revision = ++mobileBrushLibrarySelectionRevision;
+  const currentSettings = engine.getSettings();
+  const fallback = activeMobileBrushLibraryBrushId === PENCIL_BRUSH_PRESET.id
+    ? resolveBrushPresetSettings(PENCIL_BRUSH_PRESET, currentSettings)
+    : mobileCurrentBrushFallback(currentSettings);
+  try {
+    const restored = await studio.resolveBrushSettings(
+      activeMobileBrushLibraryBrushId,
+      fallback,
+    );
+    if (
+      revision !== mobileBrushLibrarySelectionRevision
+      || !mobileUiMediaQuery.matches
+    ) {
+      return;
+    }
+    applySettingsToControls(restored);
+    setMobileBrushLibraryCategory(
+      mobileBrushLibraryCategoryForBrush(activeMobileBrushLibraryBrushId),
+    );
+    syncMobileBrushLibrarySelection();
+    syncMobileBrushLibraryAddState();
+    markMobileBrushLibraryPreviewDirty();
+  } catch (error) {
+    if (revision !== mobileBrushLibrarySelectionRevision) return;
+    const message = error instanceof Error ? error.message : String(error);
+    activeMobileBrushLibraryBrushId = "current";
+    applySettingsToControls(mobileCurrentBrushFallback(currentSettings));
+    setMobileBrushLibraryCategory("painting");
+    persistActiveMobileBrushLibraryBrush();
+    syncMobileBrushLibrarySelection();
+    mobileBrushLibraryStatus.textContent = `${message} Default Brush selected.`;
+    mobileBrushLibraryStatus.hidden = false;
+    statusElement.textContent = message;
+    statusElement.className = "status error";
+  }
+}
+
 mobileUiMediaQuery.addEventListener("change", (event) => {
   if (event.matches) {
     setControlsPanelOpen(false);
     syncMobileBrushControlVisuals();
     syncMobileBrushControlAvailability();
     syncMobileBrushControlsVisibility();
+    if (engineInitialized) void restoreActiveMobileBrushLibraryBrush();
     return;
   }
   setMobileToolsSheetOpen(false);
@@ -11338,23 +11620,8 @@ void loadCanonicalHumanStroke();
 void engine.initialize()
   .then(async () => {
     engineInitialized = true;
-    if (mobileBrushStudio) {
-      if (mobileUiMediaQuery.matches) {
-        const fallback = activeMobileBrushLibraryBrushId === PENCIL_BRUSH_PRESET.id
-          ? resolveBrushPresetSettings(PENCIL_BRUSH_PRESET, engine.getSettings())
-          : mobileCurrentBrushFallback(engine.getSettings());
-        const restored = await mobileBrushStudio.resolveBrushSettings(
-          activeMobileBrushLibraryBrushId,
-          fallback,
-        );
-        applySettingsToControls(restored);
-        setMobileBrushLibraryCategory(
-          mobileBrushLibraryCategoryForBrush(activeMobileBrushLibraryBrushId),
-        );
-        syncMobileBrushLibrarySelection();
-      } else {
-        mobileBrushStudio.rememberSettings("current", engine.getSettings());
-      }
+    if (mobileBrushStudio && mobileUiMediaQuery.matches) {
+      await restoreActiveMobileBrushLibraryBrush();
     }
     if (vectorTextEditorEnabled) {
       vectorTextPrototype = new MixedVectorTextController(engine, {

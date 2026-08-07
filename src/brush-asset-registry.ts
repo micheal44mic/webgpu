@@ -156,6 +156,10 @@ export class CustomBrushAssetRegistry {
     return asset ? { ...asset, rgba: asset.rgba.slice() } : null;
   }
 
+  has(id: BrushShapeAssetId | BrushGrainAssetId): boolean {
+    return this.assets.has(id);
+  }
+
   remove(id: BrushShapeAssetId | BrushGrainAssetId): boolean {
     return this.assets.delete(id);
   }

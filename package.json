@@ -17,6 +17,8 @@
     "selection:verify": "node scripts/verify-selection.mjs",
     "grain:verify": "node scripts/verify-grain-phase1.mjs",
     "brush-presets:verify": "node scripts/verify-brush-presets.mjs",
+    "brush-catalog:verify": "node scripts/verify-brush-catalog.mjs",
+    "brush-source:verify": "node scripts/verify-brush-source-image.mjs",
     "brush-studio:verify": "node scripts/verify-brush-studio.mjs",
     "brush-library-preview:verify": "node scripts/verify-brush-library-preview.mjs",
     "brush-preview-parity:verify": "node scripts/verify-brush-preview-parity.mjs",

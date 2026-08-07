@@ -173,11 +173,8 @@ assert.doesNotMatch(
 assert.match(studioSource, /this\.options\.previewRenderer\.invalidate\(this\.previewCanvas\)/);
 assert.match(
   mainSource,
-  /authoritativeBrushStrokePreviewRenderer\.invalidate\(mobilePencilBrushPreviewCanvas\)/,
-);
-assert.match(
-  mainSource,
-  /authoritativeBrushStrokePreviewRenderer\.invalidate\(mobileBrushLibraryPreviewCanvas\)/,
+  /for \(const card of mobileBrushLibraryCards\)[\s\S]*?querySelector<HTMLCanvasElement>\("\.mobile-brush-card-preview"\)[\s\S]*?authoritativeBrushStrokePreviewRenderer\.invalidate\(preview\)/,
+  "closing the library must invalidate every built-in and dynamic card canvas",
 );
 
 assert.match(librarySource, /private readonly renderer: AuthoritativeBrushStrokePreviewRenderer/);
