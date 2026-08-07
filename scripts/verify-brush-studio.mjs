@@ -15,6 +15,8 @@ for (const id of [
   "mobileBrushStudioHandle",
   "mobileBrushStudioCancel",
   "mobileBrushStudioDone",
+  "mobileBrushStudioName",
+  "mobileBrushStudioStatus",
   "mobileBrushStudioPreviewCanvas",
   "mobileBrushStudioStrokeTab",
   "mobileBrushStudioShapeTab",
@@ -22,6 +24,8 @@ for (const id of [
   "mobileBrushStudioDynamicsTab",
   "mobileBrushStudioShapeFile",
   "mobileBrushStudioGrainFile",
+  "mobileBrushLibraryAdd",
+  "mobileBrushLibraryStatus",
 ]) {
   assert.match(html, new RegExp(`id=["']${id}["']`), `missing #${id}`);
 }
@@ -51,6 +55,13 @@ assert.match(
 assert.match(storage, /m1m4\.brush-studio\.library-state\.v1/);
 assert.match(storage, /export function loadBrushStudioLibraryState/);
 assert.match(storage, /export function saveBrushStudioLibraryState/);
+assert.match(storage, /BRUSH_STUDIO_MAX_CUSTOM_BRUSHES = 8/);
+assert.match(storage, /readonly customBrushes: readonly BrushStudioCustomBrush\[\]/);
+assert.match(storage, /candidate\.version !== 1 && candidate\.version !== 2/);
+assert.match(storage, /transaction\.addEventListener\("complete"/);
+assert.match(storage, /export function deleteBrushStudioSavedBrush/);
+assert.match(html, /id="mobileBrushStudioName"[\s\S]*?maxlength="48"/);
+assert.match(html, /id="mobileBrushLibraryAdd"[\s\S]*?data-lucide="plus"/);
 assert.match(
   main,
   /restoredMobileBrushLibraryBrushId[\s\S]*?activeMobileBrushLibraryBrushId[\s\S]*?restoredMobileBrushLibraryBrushId/,
@@ -58,8 +69,28 @@ assert.match(
 );
 assert.match(
   main,
-  /onCommit: \(brushId,[\s\S]*?persistActiveMobileBrushLibraryBrush\(\)/,
-  "Done must persist which visible library card owns the saved settings",
+  /onCommit: \(brushId, brushName,[\s\S]*?saveBrushStudioLibraryState\(committedBrushId, nextCustomBrushes\)/,
+  "Done must atomically persist the custom catalog and its active card",
+);
+assert.match(
+  main,
+  /onCommit: \(brushId, brushName,[\s\S]*?loadBrushStudioLibraryState\(\)\?\.customBrushes[\s\S]*?saveBrushStudioLibraryState\(committedBrushId, nextCustomBrushes\)[\s\S]*?onCommitted:/,
+  "each save must merge the latest cross-tab catalog before writing",
+);
+assert.match(
+  main,
+  /createMobileBrushLibraryBrush[\s\S]*?createBrushStudioCustomBrushId\(\)[\s\S]*?createBrushStudioBaseSettings/,
+  "the + action must create an isolated base-brush draft",
+);
+assert.match(
+  main,
+  /restoreActiveMobileBrushLibraryBrush[\s\S]*?mobileUiMediaQuery\.addEventListener\("change"[\s\S]*?if \(engineInitialized\) void restoreActiveMobileBrushLibraryBrush\(\)/,
+  "a desktop-to-mobile transition must hydrate the active custom brush",
+);
+assert.match(
+  main,
+  /mobileBrushLibraryList\.addEventListener\("click"[\s\S]*?selectMobileBrushLibraryBrush\(brushId\)/,
+  "dynamic brush cards must select through event delegation",
 );
 assert.match(
   main,
@@ -68,13 +99,68 @@ assert.match(
 );
 assert.match(
   main,
-  /function mobileBrushLibrarySettingsForBrush[\s\S]*?previewIsActive[\s\S]*?settingsSnapshot\(brushId, fallbackSettings\)/,
-  "the library preview must use the saved per-card settings",
+  /async function mobileBrushLibrarySettingsForBrush[\s\S]*?previewIsActive[\s\S]*?resolveBrushSettings\(brushId, fallbackSettings\)/,
+  "nonactive cards must hydrate saved Shape and Grain assets before preview",
 );
 assert.match(
   studio,
-  /saveBrushStudioSavedBrush\([\s\S]*?deleteSupersededStoredAssets\(/,
-  "old custom blobs may be deleted only after the new settings record commits",
+  /async releasePreviewAssets\([\s\S]*?waitForIdle\(\)[\s\S]*?removeCustomBrushAsset\(assetId\)[\s\S]*?settingsCache\.delete\(brushId\)/,
+  "hydrated preview assets must be released after their compact card bitmap is ready",
+);
+assert.match(
+  studio,
+  /saveBrushStudioSavedBrush\([\s\S]*?await this\.options\.onCommit\(brushId, brushName, settings\)[\s\S]*?deleteSupersededStoredAssets\(/,
+  "old custom blobs may be deleted only after settings and catalog both commit",
+);
+assert.match(
+  studio,
+  /normalizeBrushStudioCustomBrushName\(this\.nameElement\.value\)[\s\S]*?await this\.options\.onCommit\(brushId, brushName, settings\)/,
+  "custom names and catalog commit must complete before Brush Studio closes",
+);
+assert.match(
+  studio,
+  /this\.reportStatus\("Saving brush…", "working"\)/,
+  "save progress must be visible inside the mobile sheet",
+);
+assert.match(
+  studio,
+  /normalizedBrushSourceBlob\(decoded\)[\s\S]*?blob: normalizedBlob/,
+  "Shape and Grain must persist their bounded normalized source, not the original file",
+);
+assert.match(
+  studio,
+  /brushSourceDimensionsFromBytes\(header\)[\s\S]*?brushSourceResizePlan[\s\S]*?createImageBitmap\(blob,[\s\S]*?resizeWidth: plan\.width/,
+  "large images must be dimension-gated and resized during decode",
+);
+assert.match(
+  studio,
+  /const declaredType = file\.type\.trim\(\)\.toLowerCase\(\)[\s\S]*?declaredType !== "application\/octet-stream"/,
+  "Android providers with an empty or generic MIME type must fall through to magic-byte validation",
+);
+assert.match(
+  studio,
+  /rollbackPartialCommit\([\s\S]*?deleteBrushStudioSavedBrush\(brushId\)[\s\S]*?deleteBrushStudioAsset\(key\)/,
+  "a failed catalog commit must roll back settings and newly stored blobs",
+);
+const restoreStart = studio.indexOf("private async restoreSavedAsset(");
+const releaseStart = studio.indexOf("private async releaseTransientAssets(", restoreStart);
+assert.ok(restoreStart >= 0 && releaseStart > restoreStart, "saved-asset restore section missing");
+const restoreBody = studio.slice(restoreStart, releaseStart);
+assert.match(restoreBody, /throw new Error\([\s\S]*?The saved \$\{kind\} source is unavailable/);
+assert.doesNotMatch(
+  restoreBody,
+  /settings\.shape\s*=\s*"circle"|settings\.grainMode\s*=\s*"off"/,
+  "a transient preview load error must not poison the saved brush settings",
+);
+assert.match(
+  studio,
+  /for \(const id of additionalCandidates\) this\.transientAssetIds\.add\(id\)/,
+  "superseded registry assets must remain queued until release succeeds",
+);
+assert.doesNotMatch(
+  main,
+  /rememberSettings\("current", engine\.getSettings\(\)\)/,
+  "landscape bootstrap must not shadow the persisted Default Brush before portrait restore",
 );
 assert.match(studio, /readonly previewRenderer: AuthoritativeBrushStrokePreviewRenderer/);
 const renderStart = studio.indexOf("private async renderPreview(): Promise<void>");

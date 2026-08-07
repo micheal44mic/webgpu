@@ -136,8 +136,10 @@ const generatedGrainId = customRegistry.registerGrain({
   rgba: new Uint8Array([80, 90, 100, 255]),
 });
 assert.match(generatedGrainId, /^custom-grain:/);
+assert.equal(customRegistry.has(generatedGrainId), true);
 assert.equal(customRegistry.snapshot(generatedGrainId).kind, "grain");
 assert.equal(customRegistry.remove(generatedGrainId), true);
+assert.equal(customRegistry.has(generatedGrainId), false);
 assert.equal(customRegistry.snapshot(generatedGrainId), null);
 assert.throws(
   () => customRegistry.registerShape({ width: 1, height: 1, rgba: new Uint8Array(3) }),

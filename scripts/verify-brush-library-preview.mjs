@@ -94,10 +94,11 @@ for (const [field, value] of [
 assert.doesNotMatch(coreSource, /Math\.random|Date\.now|performance\.now/);
 assert.match(coreSource, /BRUSH_LIBRARY_PREVIEW_RENDERER_VERSION = "authoritative-webgpu-v1"/);
 assert.doesNotMatch(coreSource, /fixed-path-canvas2d/);
-assert.match(rendererSource, /BRUSH_LIBRARY_PREVIEW_MAX_CARDS = 2/);
+assert.match(rendererSource, /BRUSH_LIBRARY_PREVIEW_MAX_CARDS = 10/);
 assert.match(rendererSource, /BRUSH_LIBRARY_PREVIEW_MAX_ASSETS = 0/);
 assert.match(rendererSource, /BRUSH_LIBRARY_PREVIEW_MAX_STEADY_BYTES/);
 assert.match(rendererSource, /cached\.fingerprint === fingerprint/);
+assert.match(rendererSource, /hasCompletePreview\(/);
 assert.match(rendererSource, /canvas\.dataset\.previewPixelHash = pixelHash/);
 assert.match(rendererSource, /private readonly renderer: AuthoritativeBrushStrokePreviewRenderer/);
 assert.match(rendererSource, /await this\.renderer\.render\(canvas, settings, \{/);
@@ -127,8 +128,28 @@ assert.match(
 );
 assert.match(
   mainSource,
-  /Promise\.all\(previewBrushIds\.map\(\(brushId\)[\s\S]*?mobileBrushLibraryCanvasForBrush\(brushId\)[\s\S]*?mobileBrushLibrarySettingsForBrush\(brushId, currentSettings\)/,
-  "the reordered cards must reuse their existing canvases and settings records",
+  /mobileBrushLibraryBrushes\.getBoundingClientRect\(\)[\s\S]*?bounds\.bottom >= viewport\.top[\s\S]*?bounds\.top <= viewport\.bottom/,
+  "cold-open must hydrate only cards in or near the scroll viewport",
+);
+assert.match(
+  mainSource,
+  /mobileBrushLibraryBrushes\.addEventListener\("scroll"[\s\S]*?markMobileBrushLibraryPreviewDirty\(\)/,
+  "newly visible cards must render after scrolling stops",
+);
+assert.match(
+  mainSource,
+  /for \(const brushId of previewBrushIds\)[\s\S]*?await mobileBrushLibrarySettingsForBrush\([\s\S]*?await mobileBrushLibraryPreviewRenderer\.render\([\s\S]*?releasePreviewAssets\(brushId, settings\)/,
+  "cards must hydrate serially and release nonactive custom assets after rendering",
+);
+assert.match(
+  mainSource,
+  /await mobileBrushLibrarySettingsForBrush\([\s\S]*?!mobileBrushLibraryOpen[\s\S]*?revision !== mobileBrushLibraryPreviewRevision[\s\S]*?return/,
+  "closing or changing category must cancel late preview work",
+);
+assert.match(
+  mainSource,
+  /settingsSnapshot\(brushId, fallbackSettings\)[\s\S]*?hasCompletePreview\([\s\S]*?return snapshot/,
+  "completed card bitmaps must not rehydrate full-resolution assets",
 );
 
 console.log(`Brush Library preview verification passed (${fingerprintA}).`);

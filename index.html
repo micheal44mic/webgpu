@@ -349,7 +349,25 @@
           <span class="mobile-tools-sheet-grabber" aria-hidden="true"></span>
         </button>
         <div class="mobile-brush-library-content">
-          <h2 class="mobile-brush-library-title">M1M4 BRUSHES</h2>
+          <div class="mobile-brush-library-heading">
+            <h2 class="mobile-brush-library-title">M1M4 BRUSHES</h2>
+            <button
+              id="mobileBrushLibraryAdd"
+              class="mobile-brush-library-add"
+              type="button"
+              aria-label="Create a new brush"
+              title="New brush"
+            >
+              <i data-lucide="plus" aria-hidden="true"></i>
+            </button>
+          </div>
+          <p
+            id="mobileBrushLibraryStatus"
+            class="mobile-brush-library-status"
+            role="status"
+            aria-live="polite"
+            hidden
+          ></p>
           <div class="mobile-brush-library-layout">
             <nav class="mobile-brush-library-categories" aria-label="Brush categories">
               <button
@@ -390,7 +408,11 @@
               </button>
             </nav>
 
-            <section class="mobile-brush-library-brushes" aria-label="Brushes">
+            <section
+              id="mobileBrushLibraryBrushes"
+              class="mobile-brush-library-brushes"
+              aria-label="Brushes"
+            >
               <div id="mobileBrushLibraryList" class="mobile-brush-library-list">
                 <button
                   id="mobilePencilBrushCard"
@@ -467,11 +489,29 @@
             <button id="mobileBrushStudioCancel" class="mobile-brush-studio-header-action" type="button">
               Cancel
             </button>
-            <h2 id="mobileBrushStudioName">Pencil</h2>
+            <input
+              id="mobileBrushStudioName"
+              class="mobile-brush-studio-name"
+              type="text"
+              value="Pencil"
+              maxlength="48"
+              aria-label="Brush name"
+              autocomplete="off"
+              spellcheck="false"
+              readonly
+            />
             <button id="mobileBrushStudioDone" class="mobile-brush-studio-header-action is-primary" type="button">
               Done
             </button>
           </header>
+
+          <p
+            id="mobileBrushStudioStatus"
+            class="mobile-brush-studio-status"
+            role="status"
+            aria-live="polite"
+            hidden
+          ></p>
 
           <section class="mobile-brush-studio-preview" aria-label="Live brush preview">
             <canvas
