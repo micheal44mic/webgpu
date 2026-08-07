@@ -18,10 +18,7 @@ import {
   shouldHoldTouchPaintIntent,
   touchPaintIntentMovementReached,
 } from "./touch-paint-intent-core";
-import {
-  MobileBrushStudioController,
-  normalizeBrushStudioSourceBlob,
-} from "./mobile-brush-studio";
+import { MobileBrushStudioController } from "./mobile-brush-studio";
 import { MobileBrushLibraryPreviewRenderer } from "./brush-library-preview";
 import { AuthoritativeBrushStrokePreviewRenderer } from "./brush-stroke-preview-renderer";
 import { MobileStrokeSheetController } from "./mobile-stroke-sheet";
@@ -5816,24 +5813,8 @@ async function importMobileBrush(file: File): Promise<void> {
   let catalogCommitted = false;
   try {
     const imported = await parseBrushStudioTransferBlob(file);
-    const normalizedShapeAsset = imported.shapeAsset
-      ? {
-          ...imported.shapeAsset,
-          blob: await normalizeBrushStudioSourceBlob(
-            imported.shapeAsset.blob,
-            imported.shapeAsset.name,
-          ),
-        }
-      : null;
-    const normalizedGrainAsset = imported.grainAsset
-      ? {
-          ...imported.grainAsset,
-          blob: await normalizeBrushStudioSourceBlob(
-            imported.grainAsset.blob,
-            imported.grainAsset.name,
-          ),
-        }
-      : null;
+    // Portable assets are already bounded PNGs. Keep their mask bytes intact;
+    // resolveBrushSettings decodes and validates them before catalog commit.
     let catalog = latestMobileCustomBrushCatalog();
     if (catalog.length >= BRUSH_STUDIO_MAX_CUSTOM_BRUSHES) {
       adoptMobileCustomBrushCatalog(catalog);
@@ -5844,7 +5825,7 @@ async function importMobileBrush(file: File): Promise<void> {
     const settings = { ...imported.settings };
     let shapeAssetKey: string | null = null;
     let grainAssetKey: string | null = null;
-    if (normalizedShapeAsset) {
+    if (imported.shapeAsset) {
       const shapeAssetId = createBrushStudioImportedAssetId(
         brushId,
         "shape",
@@ -5855,11 +5836,11 @@ async function importMobileBrush(file: File): Promise<void> {
       await saveBrushStudioAsset(
         shapeAssetKey,
         "shape",
-        normalizedShapeAsset.blob,
-        normalizedShapeAsset.name,
+        imported.shapeAsset.blob,
+        imported.shapeAsset.name,
       );
     }
-    if (normalizedGrainAsset) {
+    if (imported.grainAsset) {
       const grainAssetId = createBrushStudioImportedAssetId(
         brushId,
         "grain",
@@ -5870,8 +5851,8 @@ async function importMobileBrush(file: File): Promise<void> {
       await saveBrushStudioAsset(
         grainAssetKey,
         "grain",
-        normalizedGrainAsset.blob,
-        normalizedGrainAsset.name,
+        imported.grainAsset.blob,
+        imported.grainAsset.name,
       );
     }
     saveBrushStudioSavedBrush(brushId, {

@@ -318,6 +318,50 @@ assert(
   "Flow 50% non converge alla piena opacità con overlap sufficienti.",
 );
 
+const paintAlphaBodies = [...shaders.matchAll(
+  /fn paintAlpha\(input: (?:VertexOutput|FragmentInput), coverage: f32\) -> f32 \{([\s\S]*?)\n\}/g,
+)].map((match) => match[1]);
+assert.equal(
+  paintAlphaBodies.length,
+  2,
+  "I due percorsi Shape/base devono condividere un contratto alpha verificabile.",
+);
+for (const body of paintAlphaBodies) {
+  assert.match(
+    body,
+    /coverage\s*\*\s*brush\.controls\.x\s*\*\s*brush\.baseHslAlpha\.w\s*\*\s*brush\.controls\.z/,
+    "L'alpha deve dipendere solo da mask, Flow, Opacity e guadagno del timbro.",
+  );
+  assert.doesNotMatch(
+    body,
+    /pointColor|\.rgb|linearToSrgb/,
+    "Il colore selezionato non deve alterare l'alpha del timbro.",
+  );
+}
+
+const stampSourceOver = (colorByte, maskByte, stampFlow, stampOpacity) => {
+  const alpha = Math.min(0.999999, Math.max(
+    0,
+    (maskByte / 255) * stampFlow * stampOpacity,
+  ));
+  return {
+    premultipliedColor: (colorByte / 255) * alpha,
+    alpha,
+  };
+};
+const darkFlow100 = stampSourceOver(0x33, 128, 1, 1);
+const lightFlow100 = stampSourceOver(0xdd, 128, 1, 1);
+assert.equal(
+  darkFlow100.alpha,
+  lightFlow100.alpha,
+  "Flow 100% deve produrre lo stesso alpha per #333333 e #dddddd a parità di Shape.",
+);
+assert.notEqual(
+  darkFlow100.premultipliedColor,
+  lightFlow100.premultipliedColor,
+  "Il colore deve cambiare solo il canale RGB premoltiplicato, non la copertura.",
+);
+
 const linearToSrgb = (value) => value <= 0.0031308
   ? value * 12.92
   : 1.055 * value ** (1 / 2.4) - 0.055;

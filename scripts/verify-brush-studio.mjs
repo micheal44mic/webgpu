@@ -108,7 +108,32 @@ assert.match(
 assert.match(transfer, /BRUSH_STUDIO_TRANSFER_MAX_FILE_BYTES = 42 \* 1024 \* 1024/);
 assert.match(transfer, /validateAssetPairing/);
 assert.match(transfer, /settings must not contain color or tool/);
-assert.match(main, /parseBrushStudioTransferBlob[\s\S]*?normalizeBrushStudioSourceBlob/);
+const portableImportStart = main.indexOf("async function importMobileBrush(");
+const portableImportEnd = main.indexOf(
+  "async function selectMobileBrushLibraryBrush(",
+  portableImportStart,
+);
+assert.ok(
+  portableImportStart >= 0 && portableImportEnd > portableImportStart,
+  "portable brush import section missing",
+);
+const portableImport = main.slice(portableImportStart, portableImportEnd);
+assert.match(portableImport, /parseBrushStudioTransferBlob\(file\)/);
+assert.match(
+  portableImport,
+  /saveBrushStudioAsset\([\s\S]*?"shape",\s*imported\.shapeAsset\.blob,/,
+  "portable import must store the validated Shape PNG byte-exactly",
+);
+assert.match(
+  portableImport,
+  /saveBrushStudioAsset\([\s\S]*?"grain",\s*imported\.grainAsset\.blob,/,
+  "portable import must store the validated Grain PNG byte-exactly",
+);
+assert.doesNotMatch(
+  portableImport,
+  /normalizeBrushStudioSourceBlob|normalized(?:Shape|Grain)Asset/,
+  "portable assets must not pass through a second lossy Canvas normalization",
+);
 assert.match(main, /rollbackMobileBrushImport[\s\S]*?forgetSettings\(brushId\)/);
 assert.match(main, /mobileBrushLibraryList\.inert = mobileBrushLibraryTransferBusy/);
 assert.match(
@@ -160,6 +185,33 @@ assert.match(
   studio,
   /brushSourceDimensionsFromBytes\(header\)[\s\S]*?brushSourceResizePlan[\s\S]*?createImageBitmap\(blob,[\s\S]*?resizeWidth: plan\.width/,
   "large images must be dimension-gated and resized during decode",
+);
+const customSourceDecodeStart = studio.indexOf("async function decodeBrushSource(");
+const customSourceDecodeEnd = studio.indexOf("function canvasFromRgba(", customSourceDecodeStart);
+assert.ok(
+  customSourceDecodeStart >= 0 && customSourceDecodeEnd > customSourceDecodeStart,
+  "custom Shape/Grain decode section missing",
+);
+const customSourceDecode = studio.slice(customSourceDecodeStart, customSourceDecodeEnd);
+const customBitmapDecodeMatch = customSourceDecode.match(
+  /source\s*=\s*await createImageBitmap\(blob,\s*\{([\s\S]*?)\}\s*\);/,
+);
+assert.ok(customBitmapDecodeMatch, "primary custom Shape/Grain bitmap decode missing");
+const customBitmapDecodeOptions = customBitmapDecodeMatch[1];
+assert.match(
+  customBitmapDecodeOptions,
+  /colorSpaceConversion:\s*"none"/,
+  "custom Shape/Grain masks must bypass profile conversion so authored channel bytes survive",
+);
+assert.match(
+  customBitmapDecodeOptions,
+  /premultiplyAlpha:\s*"none"/,
+  "custom Shape/Grain masks must decode without premultiplying their authored channels",
+);
+assert.doesNotMatch(
+  customBitmapDecodeOptions,
+  /colorSpaceConversion:\s*"default"|premultiplyAlpha:\s*"default"/,
+  "custom mask decode must not silently restore browser color/alpha conversion",
 );
 assert.match(
   studio,
