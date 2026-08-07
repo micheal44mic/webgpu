@@ -164,6 +164,26 @@ export function nextBrushStudioCustomBrushName(
   return `New Brush ${brushes.length + 1}`;
 }
 
+export function uniqueBrushStudioCustomBrushName(
+  requestedName: string,
+  brushes: readonly Pick<BrushStudioCustomBrush, "name">[],
+): string {
+  const base = normalizeBrushStudioCustomBrushName(requestedName);
+  const usedNames = new Set(brushes.map((brush) => (
+    normalizeBrushStudioCustomBrushName(brush.name).toLocaleLowerCase()
+  )));
+  if (!usedNames.has(base.toLocaleLowerCase())) return base;
+  for (let suffix = 2; suffix <= BRUSH_STUDIO_MAX_CUSTOM_BRUSHES + 1; suffix += 1) {
+    const ending = ` ${suffix}`;
+    const candidate = `${base.slice(
+      0,
+      BRUSH_STUDIO_CUSTOM_BRUSH_NAME_MAX_LENGTH - ending.length,
+    )}${ending}`;
+    if (!usedNames.has(candidate.toLocaleLowerCase())) return candidate;
+  }
+  return base;
+}
+
 export function createBrushStudioBaseSettings(
   defaults: Readonly<BrushSettings>,
   color: BrushSettings["color"],

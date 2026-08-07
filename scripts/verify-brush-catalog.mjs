@@ -52,6 +52,16 @@ assert.equal(
   ]),
   "New Brush 3",
 );
+assert.equal(
+  storage.uniqueBrushStudioCustomBrushName("Soft Cloud", [{ name: "soft cloud" }]),
+  "Soft Cloud 2",
+  "an imported brush must keep its name without overwriting an existing card",
+);
+assert.equal(
+  storage.uniqueBrushStudioCustomBrushName("A".repeat(48), [{ name: "A".repeat(48) }]).length,
+  48,
+  "an imported duplicate suffix must remain inside the catalog name limit",
+);
 
 const defaults = {
   tool: "blend",

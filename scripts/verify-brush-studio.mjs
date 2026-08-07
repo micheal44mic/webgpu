@@ -7,6 +7,7 @@ const html = readFileSync(`${root}/index.html`, "utf8");
 const main = readFileSync(`${root}/src/main.ts`, "utf8");
 const studio = readFileSync(`${root}/src/mobile-brush-studio.ts`, "utf8");
 const storage = readFileSync(`${root}/src/brush-studio-storage.ts`, "utf8");
+const transfer = readFileSync(`${root}/src/brush-studio-transfer.ts`, "utf8");
 const engine = readFileSync(`${root}/src/brush-engine.ts`, "utf8");
 const previewRenderer = readFileSync(`${root}/src/brush-stroke-preview-renderer.ts`, "utf8");
 
@@ -25,6 +26,9 @@ for (const id of [
   "mobileBrushStudioShapeFile",
   "mobileBrushStudioGrainFile",
   "mobileBrushLibraryAdd",
+  "mobileBrushLibraryImport",
+  "mobileBrushLibraryExport",
+  "mobileBrushLibraryImportFile",
   "mobileBrushLibraryStatus",
 ]) {
   assert.match(html, new RegExp(`id=["']${id}["']`), `missing #${id}`);
@@ -62,6 +66,10 @@ assert.match(storage, /transaction\.addEventListener\("complete"/);
 assert.match(storage, /export function deleteBrushStudioSavedBrush/);
 assert.match(html, /id="mobileBrushStudioName"[\s\S]*?maxlength="48"/);
 assert.match(html, /id="mobileBrushLibraryAdd"[\s\S]*?data-lucide="plus"/);
+assert.match(html, /id="mobileBrushLibraryImport"[\s\S]*?aria-label="Import brush"/);
+assert.match(html, /id="mobileBrushLibraryExport"[\s\S]*?aria-label="Export selected brush"/);
+assert.match(html, /id="mobileBrushLibraryImportFile"[\s\S]*?\.m1m4brush/);
+assert.match(html, /id="mobileBrushLibraryImportFile"[\s\S]*?application\/octet-stream/);
 assert.match(
   main,
   /restoredMobileBrushLibraryBrushId[\s\S]*?activeMobileBrushLibraryBrushId[\s\S]*?restoredMobileBrushLibraryBrushId/,
@@ -82,6 +90,27 @@ assert.match(
   /createMobileBrushLibraryBrush[\s\S]*?createBrushStudioCustomBrushId\(\)[\s\S]*?createBrushStudioBaseSettings/,
   "the + action must create an isolated base-brush draft",
 );
+assert.match(
+  main,
+  /exportActiveMobileBrush[\s\S]*?loadBrushStudioSavedBrush[\s\S]*?createBrushStudioTransferBlob/,
+  "Export must package the selected saved custom brush",
+);
+assert.match(
+  main,
+  /importMobileBrush[\s\S]*?parseBrushStudioTransferBlob[\s\S]*?createBrushStudioCustomBrushId\(\)[\s\S]*?saveBrushStudioAsset[\s\S]*?resolveBrushSettings[\s\S]*?saveBrushStudioLibraryState/,
+  "Import must validate and hydrate fresh assets before catalog publication",
+);
+assert.match(
+  main,
+  /rollbackMobileBrushImport[\s\S]*?releasePreviewAssets[\s\S]*?deleteBrushStudioSavedBrush[\s\S]*?deleteBrushStudioAsset/,
+  "a failed import must roll back every newly allocated resource",
+);
+assert.match(transfer, /BRUSH_STUDIO_TRANSFER_MAX_FILE_BYTES = 42 \* 1024 \* 1024/);
+assert.match(transfer, /validateAssetPairing/);
+assert.match(transfer, /settings must not contain color or tool/);
+assert.match(main, /parseBrushStudioTransferBlob[\s\S]*?normalizeBrushStudioSourceBlob/);
+assert.match(main, /rollbackMobileBrushImport[\s\S]*?forgetSettings\(brushId\)/);
+assert.match(main, /mobileBrushLibraryList\.inert = mobileBrushLibraryTransferBusy/);
 assert.match(
   main,
   /restoreActiveMobileBrushLibraryBrush[\s\S]*?mobileUiMediaQuery\.addEventListener\("change"[\s\S]*?if \(engineInitialized\) void restoreActiveMobileBrushLibraryBrush\(\)/,

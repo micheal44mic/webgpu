@@ -18,7 +18,10 @@ import {
   shouldHoldTouchPaintIntent,
   touchPaintIntentMovementReached,
 } from "./touch-paint-intent-core";
-import { MobileBrushStudioController } from "./mobile-brush-studio";
+import {
+  MobileBrushStudioController,
+  normalizeBrushStudioSourceBlob,
+} from "./mobile-brush-studio";
 import { MobileBrushLibraryPreviewRenderer } from "./brush-library-preview";
 import { AuthoritativeBrushStrokePreviewRenderer } from "./brush-stroke-preview-renderer";
 import { MobileStrokeSheetController } from "./mobile-stroke-sheet";
@@ -34,15 +37,31 @@ import {
 } from "./mobile-raster-effects-sheet";
 import {
   BRUSH_STUDIO_MAX_CUSTOM_BRUSHES,
+  brushStudioAssetStorageKey,
   createBrushStudioBaseSettings,
   createBrushStudioCustomBrushId,
+  deleteBrushStudioAsset,
+  deleteBrushStudioSavedBrush,
   isBrushStudioCustomBrushId,
+  loadBrushStudioAsset,
   loadBrushStudioLibraryState,
+  loadBrushStudioSavedBrush,
   nextBrushStudioCustomBrushName,
+  saveBrushStudioAsset,
   saveBrushStudioLibraryState,
+  saveBrushStudioSavedBrush,
+  uniqueBrushStudioCustomBrushName,
   type BrushStudioCustomBrush,
   type BrushStudioCustomBrushId,
 } from "./brush-studio-storage";
+import {
+  BRUSH_STUDIO_TRANSFER_MAX_FILE_BYTES,
+  BRUSH_STUDIO_TRANSFER_MIME_TYPE,
+  brushStudioTransferFileName,
+  createBrushStudioImportedAssetId,
+  createBrushStudioTransferBlob,
+  parseBrushStudioTransferBlob,
+} from "./brush-studio-transfer";
 import {
   Blend,
   Box,
@@ -52,6 +71,7 @@ import {
   CircleDashed,
   CircleDotDashed,
   Copy,
+  Download,
   Eraser,
   Eye,
   EyeOff,
@@ -77,6 +97,7 @@ import {
   Type as TypeIcon,
   TypeOutline,
   Undo2,
+  Upload,
   createElement as createLucideElement,
   createIcons,
   type IconNode,
@@ -175,6 +196,7 @@ createIcons({
     CircleDashed,
     CircleDotDashed,
     Copy,
+    Download,
     Eraser,
     Eye,
     EyeOff,
@@ -200,6 +222,7 @@ createIcons({
     Type: TypeIcon,
     TypeOutline,
     Undo2,
+    Upload,
   },
 });
 
@@ -367,6 +390,9 @@ const mobileBrushPreviewLabel = element<HTMLOutputElement>("mobileBrushPreviewLa
 const mobileBrushPreviewCanvas = element<HTMLCanvasElement>("mobileBrushPreviewCanvas");
 const mobileBrushLibrarySheet = element<HTMLElement>("mobileBrushLibrarySheet");
 const mobileBrushLibraryHandle = element<HTMLButtonElement>("mobileBrushLibraryHandle");
+const mobileBrushLibraryImportButton = element<HTMLButtonElement>("mobileBrushLibraryImport");
+const mobileBrushLibraryExportButton = element<HTMLButtonElement>("mobileBrushLibraryExport");
+const mobileBrushLibraryImportFile = element<HTMLInputElement>("mobileBrushLibraryImportFile");
 const mobileBrushLibraryAddButton = element<HTMLButtonElement>("mobileBrushLibraryAdd");
 const mobileBrushLibraryStatus = element<HTMLParagraphElement>("mobileBrushLibraryStatus");
 const mobileBrushLibraryBrushes = element<HTMLElement>("mobileBrushLibraryBrushes");
@@ -1110,7 +1136,6 @@ let mobileCustomBrushes: BrushStudioCustomBrush[] = [
   ...(restoredMobileBrushLibraryState?.customBrushes ?? []),
 ];
 for (const brush of mobileCustomBrushes) ensureMobileCustomBrushCard(brush);
-syncMobileBrushLibraryAddState();
 const restoredMobileBrushLibraryCandidate =
   restoredMobileBrushLibraryState?.activeBrushId;
 const restoredMobileBrushLibraryBrushId: MobileBrushLibraryBrushId =
@@ -1124,6 +1149,8 @@ let mobileBrushLibraryCategory: MobileBrushLibraryCategory =
   restoredMobileBrushLibraryBrushId === PENCIL_BRUSH_PRESET.id ? "pencil" : "painting";
 let activeMobileBrushLibraryBrushId: MobileBrushLibraryBrushId =
   restoredMobileBrushLibraryBrushId;
+let mobileBrushLibraryTransferBusy = false;
+syncMobileBrushLibraryAddState();
 let mobileBrushLibrarySelectionRevision = 0;
 let mobileBrushLibraryOffsetPx = 0;
 let mobileBrushLibraryDragPointerId: number | null = null;
@@ -1802,14 +1829,61 @@ function ensureMobileCustomBrushCard(
 
 function syncMobileBrushLibraryAddState(): void {
   const full = mobileCustomBrushes.length >= BRUSH_STUDIO_MAX_CUSTOM_BRUSHES;
-  mobileBrushLibraryAddButton.disabled = full;
+  const canExport = isBrushStudioCustomBrushId(activeMobileBrushLibraryBrushId)
+    && loadBrushStudioSavedBrush(activeMobileBrushLibraryBrushId) !== null;
+  mobileBrushLibraryAddButton.disabled = full || mobileBrushLibraryTransferBusy;
+  mobileBrushLibraryImportButton.disabled = full || mobileBrushLibraryTransferBusy;
+  mobileBrushLibraryExportButton.disabled = mobileBrushLibraryTransferBusy;
+  mobileBrushLibraryExportButton.setAttribute(
+    "aria-disabled",
+    String(!canExport || mobileBrushLibraryTransferBusy),
+  );
+  mobileBrushLibrarySheet.setAttribute(
+    "aria-busy",
+    String(mobileBrushLibraryTransferBusy),
+  );
+  mobileBrushLibraryList.inert = mobileBrushLibraryTransferBusy;
   mobileBrushLibraryAddButton.title = full
     ? `Maximum ${BRUSH_STUDIO_MAX_CUSTOM_BRUSHES} custom brushes reached`
     : "New brush";
-  mobileBrushLibraryStatus.textContent = full
-    ? `Maximum ${BRUSH_STUDIO_MAX_CUSTOM_BRUSHES} custom brushes reached.`
-    : "";
-  mobileBrushLibraryStatus.hidden = !full;
+  mobileBrushLibraryImportButton.title = full
+    ? `Maximum ${BRUSH_STUDIO_MAX_CUSTOM_BRUSHES} custom brushes reached`
+    : "Import brush";
+  mobileBrushLibraryExportButton.title = canExport
+    ? "Export selected brush"
+    : "Select a saved custom brush to export";
+  if (mobileBrushLibraryTransferBusy) return;
+  if (
+    canExport
+    && mobileBrushLibraryStatus.dataset.kind === "export-unavailable"
+  ) {
+    delete mobileBrushLibraryStatus.dataset.kind;
+    mobileBrushLibraryStatus.textContent = "";
+    mobileBrushLibraryStatus.hidden = true;
+  }
+  if (
+    full
+    && (!mobileBrushLibraryStatus.dataset.kind
+      || mobileBrushLibraryStatus.dataset.kind === "capacity")
+  ) {
+    mobileBrushLibraryStatus.dataset.kind = "capacity";
+    mobileBrushLibraryStatus.textContent =
+      `Maximum ${BRUSH_STUDIO_MAX_CUSTOM_BRUSHES} custom brushes reached.`;
+    mobileBrushLibraryStatus.hidden = false;
+  } else if (mobileBrushLibraryStatus.dataset.kind === "capacity") {
+    delete mobileBrushLibraryStatus.dataset.kind;
+    mobileBrushLibraryStatus.textContent = "";
+    mobileBrushLibraryStatus.hidden = true;
+  }
+}
+
+function reportMobileBrushLibraryStatus(
+  message: string,
+  kind: "ok" | "error" | "working" | "export-unavailable",
+): void {
+  mobileBrushLibraryStatus.dataset.kind = kind;
+  mobileBrushLibraryStatus.textContent = message;
+  mobileBrushLibraryStatus.hidden = !message;
 }
 
 function mobileBrushLibraryCanvasForBrush(
@@ -5570,6 +5644,282 @@ function createMobileBrushLibraryBrush(): void {
   studio.open(brushId, brushName, baseSettings, originalSettings);
 }
 
+function latestMobileCustomBrushCatalog(): BrushStudioCustomBrush[] {
+  const latest = [
+    ...(loadBrushStudioLibraryState()?.customBrushes ?? []),
+  ];
+  for (const localBrush of mobileCustomBrushes) {
+    if (
+      latest.length < BRUSH_STUDIO_MAX_CUSTOM_BRUSHES
+      && !latest.some((brush) => brush.id === localBrush.id)
+    ) {
+      latest.push(localBrush);
+    }
+  }
+  return latest;
+}
+
+function adoptMobileCustomBrushCatalog(catalog: readonly BrushStudioCustomBrush[]): void {
+  mobileCustomBrushes = [...catalog];
+  for (const descriptor of mobileCustomBrushes) ensureMobileCustomBrushCard(descriptor);
+}
+
+async function storedMobileBrushTransferAsset(
+  key: string | null,
+  kind: "shape" | "grain",
+) {
+  if (!key) return null;
+  const asset = await loadBrushStudioAsset(key);
+  if (!asset || asset.kind !== kind) {
+    throw new Error(`The saved ${kind} source is unavailable. Nothing was exported.`);
+  }
+  return asset;
+}
+
+async function presentMobileBrushTransfer(
+  blob: Blob,
+  brushName: string,
+): Promise<"shared" | "downloaded" | "cancelled"> {
+  const fileName = brushStudioTransferFileName(brushName);
+  const file = new File([blob], fileName, { type: BRUSH_STUDIO_TRANSFER_MIME_TYPE });
+  if (
+    typeof navigator.share === "function"
+    && typeof navigator.canShare === "function"
+    && navigator.canShare({ files: [file] })
+  ) {
+    try {
+      await navigator.share({
+        files: [file],
+        title: brushName,
+        text: "M1M4 brush",
+      });
+      return "shared";
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return "cancelled";
+      // Some mobile browsers advertise file sharing but reject a custom file
+      // extension. The download path below still produces the same brush file.
+    }
+  }
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  anchor.hidden = true;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  return "downloaded";
+}
+
+async function exportActiveMobileBrush(): Promise<void> {
+  if (mobileBrushLibraryTransferBusy) return;
+  const brushId = activeMobileBrushLibraryBrushId;
+  if (!isBrushStudioCustomBrushId(brushId)) {
+    reportMobileBrushLibraryStatus(
+      "Select a saved custom brush to export.",
+      "export-unavailable",
+    );
+    return;
+  }
+  const savedBrush = loadBrushStudioSavedBrush(brushId);
+  const descriptor = mobileCustomBrushes.find((brush) => brush.id === brushId);
+  if (!savedBrush || !descriptor) {
+    reportMobileBrushLibraryStatus("This custom brush has not been saved yet.", "error");
+    return;
+  }
+  mobileBrushLibraryTransferBusy = true;
+  syncMobileBrushLibraryAddState();
+  reportMobileBrushLibraryStatus(`Preparing ${descriptor.name}…`, "working");
+  try {
+    const [shapeAsset, grainAsset] = await Promise.all([
+      storedMobileBrushTransferAsset(savedBrush.shapeAssetKey, "shape"),
+      storedMobileBrushTransferAsset(savedBrush.grainAssetKey, "grain"),
+    ]);
+    const blob = await createBrushStudioTransferBlob({
+      name: descriptor.name,
+      savedBrush,
+      shapeAsset,
+      grainAsset,
+    });
+    const outcome = await presentMobileBrushTransfer(blob, descriptor.name);
+    if (outcome === "shared") {
+      reportMobileBrushLibraryStatus(`${descriptor.name} shared.`, "ok");
+    } else if (outcome === "downloaded") {
+      reportMobileBrushLibraryStatus(`${descriptor.name} exported.`, "ok");
+    } else {
+      reportMobileBrushLibraryStatus("Export cancelled.", "ok");
+    }
+  } catch (error) {
+    reportMobileBrushLibraryStatus(
+      error instanceof Error ? error.message : String(error),
+      "error",
+    );
+  } finally {
+    mobileBrushLibraryTransferBusy = false;
+    syncMobileBrushLibraryAddState();
+  }
+}
+
+async function rollbackMobileBrushImport(
+  brushId: BrushStudioCustomBrushId,
+  assetKeys: readonly string[],
+  resolvedSettings: Readonly<BrushSettings> | null,
+): Promise<void> {
+  if (resolvedSettings && mobileBrushStudio) {
+    try {
+      await mobileBrushStudio.releasePreviewAssets(brushId, resolvedSettings);
+    } catch {
+      // The brush was never made active. Leaving a small transient registry
+      // entry is safer than turning a recoverable import error into data loss.
+    }
+  }
+  mobileBrushStudio?.forgetSettings(brushId);
+  try {
+    deleteBrushStudioSavedBrush(brushId);
+  } catch {
+    // The unique import ID cannot shadow an existing brush.
+  }
+  for (const key of assetKeys) {
+    try {
+      await deleteBrushStudioAsset(key);
+    } catch {
+      // An unreachable import blob can be reclaimed by storage cleanup later.
+    }
+  }
+}
+
+async function importMobileBrush(file: File): Promise<void> {
+  const studio = mobileBrushStudio;
+  if (!studio || mobileBrushLibraryTransferBusy) return;
+  if (file.size > BRUSH_STUDIO_TRANSFER_MAX_FILE_BYTES) {
+    reportMobileBrushLibraryStatus("Choose an M1M4 brush file smaller than 42 MB.", "error");
+    return;
+  }
+  const openingCatalog = latestMobileCustomBrushCatalog();
+  if (openingCatalog.length >= BRUSH_STUDIO_MAX_CUSTOM_BRUSHES) {
+    adoptMobileCustomBrushCatalog(openingCatalog);
+    syncMobileBrushLibraryAddState();
+    reportMobileBrushLibraryStatus(
+      `Maximum ${BRUSH_STUDIO_MAX_CUSTOM_BRUSHES} custom brushes reached.`,
+      "error",
+    );
+    return;
+  }
+
+  mobileBrushLibraryTransferBusy = true;
+  syncMobileBrushLibraryAddState();
+  reportMobileBrushLibraryStatus(`Importing ${file.name}…`, "working");
+  let brushId: BrushStudioCustomBrushId | null = null;
+  let resolvedSettings: BrushSettings | null = null;
+  const assetKeys: string[] = [];
+  let catalogCommitted = false;
+  try {
+    const imported = await parseBrushStudioTransferBlob(file);
+    const normalizedShapeAsset = imported.shapeAsset
+      ? {
+          ...imported.shapeAsset,
+          blob: await normalizeBrushStudioSourceBlob(
+            imported.shapeAsset.blob,
+            imported.shapeAsset.name,
+          ),
+        }
+      : null;
+    const normalizedGrainAsset = imported.grainAsset
+      ? {
+          ...imported.grainAsset,
+          blob: await normalizeBrushStudioSourceBlob(
+            imported.grainAsset.blob,
+            imported.grainAsset.name,
+          ),
+        }
+      : null;
+    let catalog = latestMobileCustomBrushCatalog();
+    if (catalog.length >= BRUSH_STUDIO_MAX_CUSTOM_BRUSHES) {
+      adoptMobileCustomBrushCatalog(catalog);
+      throw new Error(`Maximum ${BRUSH_STUDIO_MAX_CUSTOM_BRUSHES} custom brushes reached.`);
+    }
+
+    brushId = createBrushStudioCustomBrushId();
+    const settings = { ...imported.settings };
+    let shapeAssetKey: string | null = null;
+    let grainAssetKey: string | null = null;
+    if (normalizedShapeAsset) {
+      const shapeAssetId = createBrushStudioImportedAssetId(
+        brushId,
+        "shape",
+      );
+      settings.shapeAssetId = shapeAssetId;
+      shapeAssetKey = brushStudioAssetStorageKey(brushId, "shape", shapeAssetId);
+      assetKeys.push(shapeAssetKey);
+      await saveBrushStudioAsset(
+        shapeAssetKey,
+        "shape",
+        normalizedShapeAsset.blob,
+        normalizedShapeAsset.name,
+      );
+    }
+    if (normalizedGrainAsset) {
+      const grainAssetId = createBrushStudioImportedAssetId(
+        brushId,
+        "grain",
+      );
+      settings.grainAssetId = grainAssetId;
+      grainAssetKey = brushStudioAssetStorageKey(brushId, "grain", grainAssetId);
+      assetKeys.push(grainAssetKey);
+      await saveBrushStudioAsset(
+        grainAssetKey,
+        "grain",
+        normalizedGrainAsset.blob,
+        normalizedGrainAsset.name,
+      );
+    }
+    saveBrushStudioSavedBrush(brushId, {
+      version: 1,
+      settings,
+      shapeAssetKey,
+      grainAssetKey,
+    });
+
+    const currentSettings = engine.getSettings();
+    resolvedSettings = await studio.resolveBrushSettings(
+      brushId,
+      mobileCurrentBrushFallback(currentSettings),
+    );
+
+    catalog = latestMobileCustomBrushCatalog();
+    if (catalog.length >= BRUSH_STUDIO_MAX_CUSTOM_BRUSHES) {
+      adoptMobileCustomBrushCatalog(catalog);
+      throw new Error(`Maximum ${BRUSH_STUDIO_MAX_CUSTOM_BRUSHES} custom brushes reached.`);
+    }
+    const now = Date.now();
+    const descriptor: BrushStudioCustomBrush = {
+      id: brushId,
+      name: uniqueBrushStudioCustomBrushName(imported.name, catalog),
+      createdAt: now,
+      updatedAt: now,
+    };
+    const nextCatalog = [...catalog, descriptor];
+    saveBrushStudioLibraryState(brushId, nextCatalog);
+    catalogCommitted = true;
+    adoptMobileCustomBrushCatalog(nextCatalog);
+    ensureMobileCustomBrushCard(descriptor);
+    await selectMobileBrushLibraryBrush(brushId);
+    reportMobileBrushLibraryStatus(`${descriptor.name} imported.`, "ok");
+  } catch (error) {
+    if (brushId && !catalogCommitted) {
+      await rollbackMobileBrushImport(brushId, assetKeys, resolvedSettings);
+    }
+    reportMobileBrushLibraryStatus(
+      error instanceof Error ? error.message : String(error),
+      "error",
+    );
+  } finally {
+    mobileBrushLibraryTransferBusy = false;
+    syncMobileBrushLibraryAddState();
+  }
+}
+
 async function selectMobileBrushLibraryBrush(
   brushId: MobileBrushLibraryBrushId,
 ): Promise<void> {
@@ -5600,8 +5950,7 @@ async function selectMobileBrushLibraryBrush(
     const message = error instanceof Error ? error.message : String(error);
     statusElement.textContent = message;
     statusElement.className = "status error";
-    mobileBrushLibraryStatus.textContent = message;
-    mobileBrushLibraryStatus.hidden = false;
+    reportMobileBrushLibraryStatus(message, "error");
   }
 }
 
@@ -5609,7 +5958,24 @@ mobileBrushLibraryAddButton.addEventListener("click", () => {
   createMobileBrushLibraryBrush();
 });
 
+mobileBrushLibraryImportButton.addEventListener("click", () => {
+  if (mobileBrushLibraryImportButton.disabled) return;
+  mobileBrushLibraryImportFile.value = "";
+  mobileBrushLibraryImportFile.click();
+});
+
+mobileBrushLibraryExportButton.addEventListener("click", () => {
+  void exportActiveMobileBrush();
+});
+
+mobileBrushLibraryImportFile.addEventListener("change", () => {
+  const file = mobileBrushLibraryImportFile.files?.[0];
+  mobileBrushLibraryImportFile.value = "";
+  if (file) void importMobileBrush(file);
+});
+
 mobileBrushLibraryList.addEventListener("click", (event) => {
+  if (mobileBrushLibraryTransferBusy) return;
   if (!(event.target instanceof Element)) return;
   const card = event.target.closest<HTMLButtonElement>("[data-mobile-brush-id]");
   const brushId = card?.dataset.mobileBrushId;
@@ -5758,8 +6124,7 @@ async function restoreActiveMobileBrushLibraryBrush(): Promise<void> {
     setMobileBrushLibraryCategory("painting");
     persistActiveMobileBrushLibraryBrush();
     syncMobileBrushLibrarySelection();
-    mobileBrushLibraryStatus.textContent = `${message} Default Brush selected.`;
-    mobileBrushLibraryStatus.hidden = false;
+    reportMobileBrushLibraryStatus(`${message} Default Brush selected.`, "error");
     statusElement.textContent = message;
     statusElement.className = "status error";
   }
