@@ -1,4 +1,5 @@
 import type {
+  LayerFormat,
   MixedSceneSnapshot,
   PointerSample,
   RasterTransformSnapshot,
@@ -79,10 +80,46 @@ import {
   type VectorTextTransformType,
 } from "./vector-text-transform.ts";
 
+interface VectorRasterizationResult {
+  layerId: number;
+  chunkCount: number;
+  tileCount: number;
+  format: LayerFormat;
+  seedFormat: LayerFormat;
+}
+
+export interface VectorRasterHistoryGpuProbe {
+  sourceKind: "text" | "svg";
+  format: LayerFormat;
+  seedFormat: LayerFormat;
+  rawByteLength: number;
+  rawBytesPerPixel: number;
+  nonZeroAlphaPixels: number;
+  undoReturned: boolean;
+  undoRestoredVector: boolean;
+  undoPreservedBackgroundBytes: boolean;
+  redoReturned: boolean;
+  redoRestoredRaster: boolean;
+  redoRestoredRawBytesExactly: boolean;
+}
+
+export interface VectorRasterHistoryGpuTestReport {
+  passed: boolean;
+  probes: readonly VectorRasterHistoryGpuProbe[];
+}
+
 export interface MixedVectorTextHost {
   readonly layerSize: number;
   getVectorTextViewState(): VectorTextViewState;
   getMixedSceneSnapshot(): MixedSceneSnapshot | null;
+  getHistoryState(): { actionCount: number; cursor: number };
+  readLayerPixels(
+    rect?: { x: number; y: number; width: number; height: number },
+    layerIndex?: number,
+  ): Promise<Uint8Array>;
+  undo(): Promise<boolean>;
+  redo(): Promise<boolean>;
+  waitForIdle(): Promise<void>;
   getPixelSelectionState(): PixelSelectionState;
   toLayerPoint(sample: PointerSample): { x: number; y: number };
   updateVectorTextGpuPresentation(
@@ -123,7 +160,7 @@ export interface MixedVectorTextHost {
   rasterizeVectorTextNode(
     id: number,
     draws: readonly VectorTextGpuDraw[],
-  ): Promise<{ layerId: number; chunkCount: number; tileCount: number }>;
+  ): Promise<VectorRasterizationResult>;
   addVectorSvgNode(
     seed: VectorSvgNodeSeed,
     name?: string,
@@ -137,7 +174,7 @@ export interface MixedVectorTextHost {
   rasterizeVectorSvgNode(
     id: number,
     draws: readonly VectorTextGpuDraw[],
-  ): Promise<{ layerId: number; chunkCount: number; tileCount: number }>;
+  ): Promise<VectorRasterizationResult>;
   importRasterImageFile(file: File): Promise<{
     layerId: number;
     name: string;
@@ -315,6 +352,28 @@ function requiredElement<ElementType extends HTMLElement>(id: string): ElementTy
 
 function isTextNode(node: Readonly<TransformSceneNode>): node is Readonly<VectorTextNode> {
   return node.kind === "text";
+}
+
+function vectorRasterFormatLabel(format: LayerFormat): string {
+  return format === "rgba16float" ? "RGBA16F lineare" : "RGBA8 lineare";
+}
+
+function uint8ArraysEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false;
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+function countNonZeroRgba16fAlpha(pixels: Uint8Array): number {
+  if (pixels.byteLength % 8 !== 0) return 0;
+  let count = 0;
+  for (let offset = 6; offset < pixels.byteLength; offset += 8) {
+    const alphaBits = pixels[offset] | (pixels[offset + 1] << 8);
+    count += Number((alphaBits & 0x7fff) !== 0);
+  }
+  return count;
 }
 
 function isSvgNode(node: Readonly<TransformSceneNode>): node is Readonly<VectorSvgNode> {
@@ -1350,6 +1409,181 @@ export class MixedVectorTextController {
     void this.rasterizeSelectedText();
   }
 
+  /**
+   * Destructive dev-only WebGPU regression for a fresh document. It exercises
+   * both semantic source kinds through their real mesh compiler, tiled RGBA16F
+   * History seed, Undo removal and Redo hydration. Call from the dev console as
+   * `await __vectorTextPrototype.runVectorRasterHistoryGpuTest()`.
+   */
+  async runVectorRasterHistoryGpuTest(): Promise<VectorRasterHistoryGpuTestReport> {
+    if (this.sceneOperationBusy || this.transformSessionOpen) {
+      throw new Error("Concludi prima l’operazione vettoriale corrente.");
+    }
+    const initialScene = this.host.getMixedSceneSnapshot();
+    const initialHistory = this.host.getHistoryState();
+    const initialRasters = initialScene?.items.filter((item) => item.kind === "raster") ?? [];
+    if (
+      !initialScene
+      || initialRasters.length !== 1
+      || initialRasters[0].rasterHasContent
+      || initialHistory.actionCount !== 0
+      || initialHistory.cursor !== 0
+    ) {
+      throw new Error(
+        "Il test raster vettoriale richiede una pagina dev nuova con un solo raster vuoto.",
+      );
+    }
+
+    const auditWidth = Math.min(1536, this.host.layerSize);
+    const auditHeight = Math.min(1024, this.host.layerSize);
+    const auditRect = {
+      x: Math.floor((this.host.layerSize - auditWidth) * 0.5),
+      y: Math.floor((this.host.layerSize - auditHeight) * 0.5),
+      width: auditWidth,
+      height: auditHeight,
+    };
+    const refreshScene = (): MixedSceneSnapshot => {
+      const snapshot = this.host.getMixedSceneSnapshot();
+      if (!snapshot) throw new Error("Scena mista non disponibile durante il test.");
+      this.syncScene(snapshot);
+      return snapshot;
+    };
+    const readBackground = async (
+      snapshot: MixedSceneSnapshot,
+    ): Promise<Map<number, Uint8Array>> => {
+      const result = new Map<number, Uint8Array>();
+      for (const item of snapshot.items) {
+        if (item.kind !== "raster") continue;
+        result.set(
+          item.rasterLayerId,
+          await this.host.readLayerPixels(auditRect, item.rasterLayerIndex),
+        );
+      }
+      return result;
+    };
+
+    const runProbe = async (
+      sourceKind: "text" | "svg",
+    ): Promise<VectorRasterHistoryGpuProbe> => {
+      let vectorKey: `text:${number}` | `svg:${number}`;
+      if (sourceKind === "text") {
+        const seed = {
+          ...this.defaultSeed(0, "#334455"),
+          text: "RGBA16F",
+          fontSize: 280,
+          x: this.host.layerSize * 0.5,
+          y: this.host.layerSize * 0.5,
+        };
+        const node = await this.host.addVectorTextNode(seed, "Test RGBA16F testo");
+        vectorKey = `text:${node.id}`;
+      } else {
+        const documentValue = parseVectorSvg(
+          '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
+          + '<path fill="#4466aa" d="M32 64H480V448H32Z"/>'
+          + '<circle fill="#dd8844" cx="256" cy="256" r="112"/>'
+          + "</svg>",
+          "regression-rgba16f.svg",
+        );
+        const node = await this.host.addVectorSvgNode(
+          this.defaultSvgSeed(documentValue),
+          "Test RGBA16F SVG",
+        );
+        vectorKey = `svg:${node.id}`;
+      }
+
+      const beforeRasterization = refreshScene();
+      const backgroundBefore = await readBackground(beforeRasterization);
+      const result = sourceKind === "text"
+        ? await this.rasterizeSelectedText()
+        : await this.rasterizeSelectedSvg();
+      if (!result) {
+        throw new Error(`Rasterizzazione ${sourceKind} non completata dal test WebGPU.`);
+      }
+      await this.host.waitForIdle();
+      const rasterizedScene = refreshScene();
+      const generated = rasterizedScene.items.find(
+        (item) => item.kind === "raster" && item.rasterLayerId === result.layerId,
+      );
+      if (!generated || generated.kind !== "raster" || !generated.rasterContentBounds) {
+        throw new Error(`Raster ${sourceKind} generato privo di bounds autorevoli.`);
+      }
+      const rawRect = generated.rasterContentBounds;
+      const rawBeforeUndo = await this.host.readLayerPixels(
+        rawRect,
+        generated.rasterLayerIndex,
+      );
+      const rawPixels = rawRect.width * rawRect.height;
+      const rawBytesPerPixel = rawPixels > 0 ? rawBeforeUndo.byteLength / rawPixels : 0;
+
+      const undoReturned = await this.host.undo();
+      await this.host.waitForIdle();
+      const undoScene = refreshScene();
+      const undoRestoredVector = undoScene.items.some((item) => item.key === vectorKey)
+        && !undoScene.items.some(
+          (item) => item.kind === "raster" && item.rasterLayerId === result.layerId,
+        );
+      let undoPreservedBackgroundBytes = true;
+      for (const [layerId, before] of backgroundBefore) {
+        const item = undoScene.items.find(
+          (candidate) => candidate.kind === "raster" && candidate.rasterLayerId === layerId,
+        );
+        if (!item || item.kind !== "raster") {
+          undoPreservedBackgroundBytes = false;
+          break;
+        }
+        const after = await this.host.readLayerPixels(auditRect, item.rasterLayerIndex);
+        if (!uint8ArraysEqual(before, after)) {
+          undoPreservedBackgroundBytes = false;
+          break;
+        }
+      }
+
+      const redoReturned = await this.host.redo();
+      await this.host.waitForIdle();
+      const redoScene = refreshScene();
+      const redone = redoScene.items.find(
+        (item) => item.kind === "raster" && item.rasterLayerId === result.layerId,
+      );
+      const redoRestoredRaster = Boolean(redone && redone.kind === "raster");
+      const rawAfterRedo = redone && redone.kind === "raster"
+        ? await this.host.readLayerPixels(rawRect, redone.rasterLayerIndex)
+        : new Uint8Array();
+
+      return {
+        sourceKind,
+        format: result.format,
+        seedFormat: result.seedFormat,
+        rawByteLength: rawBeforeUndo.byteLength,
+        rawBytesPerPixel,
+        nonZeroAlphaPixels: countNonZeroRgba16fAlpha(rawBeforeUndo),
+        undoReturned,
+        undoRestoredVector,
+        undoPreservedBackgroundBytes,
+        redoReturned,
+        redoRestoredRaster,
+        redoRestoredRawBytesExactly: uint8ArraysEqual(rawBeforeUndo, rawAfterRedo),
+      };
+    };
+
+    const probes = [await runProbe("text"), await runProbe("svg")];
+    return {
+      probes,
+      passed: probes.every((probe) =>
+        probe.format === "rgba16float"
+        && probe.seedFormat === "rgba16float"
+        && probe.rawByteLength > 0
+        && probe.rawBytesPerPixel === 8
+        && probe.nonZeroAlphaPixels > 0
+        && probe.undoReturned
+        && probe.undoRestoredVector
+        && probe.undoPreservedBackgroundBytes
+        && probe.redoReturned
+        && probe.redoRestoredRaster
+        && probe.redoRestoredRawBytesExactly
+      ),
+    };
+  }
+
   setSelectedTextTransform(transformType: VectorTextTransformType): void {
     const button = transformType === "distort"
       ? this.transformDistortButton
@@ -1894,11 +2128,11 @@ export class MixedVectorTextController {
     this.textRasterStatus.classList.toggle("ok", !failed);
   }
 
-  private async rasterizeSelectedText(): Promise<void> {
+  private async rasterizeSelectedText(): Promise<VectorRasterizationResult | null> {
     const selected = this.selectedTextNode();
-    if (!selected || selected.text.length === 0) return;
+    if (!selected || selected.text.length === 0) return null;
     const textId = selected.id;
-    await this.runSceneOperation(async () => {
+    const rasterized = await this.runSceneOperation(async () => {
       this.setTextRasterStatus(
         "Preparazione del testo alla risoluzione documento…",
       );
@@ -1934,12 +2168,13 @@ export class MixedVectorTextController {
             );
             const result = await this.host.rasterizeVectorTextNode(textId, draws);
             const message =
-              current.name + " rasterizzato in RGBA8 · MSAA 4× · "
+              current.name + " rasterizzato in "
+              + vectorRasterFormatLabel(result.format) + " · MSAA 4× · "
               + result.chunkCount + " blocchi 512 px · "
               + result.tileCount + " tile 256 px.";
             this.setTextRasterStatus(message);
             this.status.textContent = message;
-            return;
+            return result;
           }
           const diagnostics = this.effectCompiler.diagnostics();
           if (diagnostics.pendingJobs === 0 && diagnostics.lastError) {
@@ -1963,13 +2198,14 @@ export class MixedVectorTextController {
         }
       }
     });
+    return rasterized ?? null;
   }
 
-  private async rasterizeSelectedSvg(): Promise<void> {
+  private async rasterizeSelectedSvg(): Promise<VectorRasterizationResult | null> {
     const selected = this.selectedSvgNode();
-    if (!selected) return;
+    if (!selected) return null;
     const svgId = selected.id;
-    await this.runSceneOperation(async () => {
+    const rasterized = await this.runSceneOperation(async () => {
       this.setSvgImportStatus("Preparazione delle mesh SVG alla risoluzione documento…");
       const view = this.vectorRasterView();
       const rasterSlots = new Set<string>();
@@ -1996,10 +2232,10 @@ export class MixedVectorTextController {
             );
             const result = await this.host.rasterizeVectorSvgNode(svgId, draws);
             this.setSvgImportStatus(
-              `${current.name} rasterizzato in RGBA8 · MSAA 4× · `
+              `${current.name} rasterizzato in ${vectorRasterFormatLabel(result.format)} · MSAA 4× · `
               + `${result.chunkCount} blocchi 512 px · ${result.tileCount} tile 256 px.`,
             );
-            return;
+            return result;
           }
           const diagnostics = this.effectCompiler.diagnostics();
           if (diagnostics.pendingJobs === 0 && diagnostics.lastError) {
@@ -2021,6 +2257,7 @@ export class MixedVectorTextController {
         }
       }
     });
+    return rasterized ?? null;
   }
 
   private defaultDistortPointsForNode(
@@ -2439,18 +2676,21 @@ export class MixedVectorTextController {
     );
   }
 
-  private async runSceneOperation(operation: () => Promise<void>): Promise<void> {
+  private async runSceneOperation<Result>(
+    operation: () => Promise<Result>,
+  ): Promise<Result | undefined> {
     if (this.sceneOperationBusy) {
-      return;
+      return undefined;
     }
     this.sceneOperationBusy = true;
     this.syncControlsFromSelection(this.selectedVectorNode());
     try {
-      await operation();
+      return await operation();
     } catch (error) {
       this.status.textContent = error instanceof Error
         ? error.message
         : "Modifica della scena testo/raster non riuscita.";
+      return undefined;
     } finally {
       this.sceneOperationBusy = false;
       this.syncControlsFromSelection(this.selectedVectorNode());
@@ -3235,7 +3475,7 @@ export class MixedVectorTextController {
     );
     // The cache contains only G(fill). It is deliberately shareable with an
     // outer shadow using the same source, sigma and LOD; color and direction
-    // are applied later and never duplicate the R8 matte.
+    // are applied later and never duplicate the R16F matte.
     const blurKey = [
       "vector-text-gpu-blur-v1",
       node.id,

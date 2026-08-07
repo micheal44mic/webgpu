@@ -18,6 +18,7 @@ import {
   type RasterImageFormat,
 } from "./raster-image-import";
 import {
+  RASTER_IMAGE_DECODED_BYTES_PER_PIXEL,
   rasterImageMipChainBytes,
   rasterImageMipLevelCount,
   RASTER_IMAGE_UNIFORM_BYTES,
@@ -272,7 +273,7 @@ async function ensureNativeImportPipelines(
         fragment: {
           module: uploadModule,
           entryPoint: "fragmentPremultiplyMain",
-          targets: [{ format: "rgba8unorm-srgb" }],
+          targets: [{ format: "rgba16float" }],
         },
         primitive: { topology: "triangle-list" },
       });
@@ -283,7 +284,7 @@ async function ensureNativeImportPipelines(
         fragment: {
           module: uploadModule,
           entryPoint: "fragmentMipmapMain",
-          targets: [{ format: "rgba8unorm-srgb" }],
+          targets: [{ format: "rgba16float" }],
         },
         primitive: { topology: "triangle-list" },
       });
@@ -345,10 +346,10 @@ async function createTransientImageTextures(
       });
       transaction.deferRollback(() => straightTexture.destroy());
       const premultipliedTexture = engine.device.createTexture({
-        label: `Native import premultiplied-sRGB mips ${width}×${height}`,
+        label: `Native import linear-premultiplied RGBA16F mips ${width}×${height}`,
         size: { width, height, depthOrArrayLayers: 1 },
         mipLevelCount,
-        format: "rgba8unorm-srgb",
+        format: "rgba16float",
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
       });
       transaction.deferRollback(() => premultipliedTexture.destroy());
@@ -516,7 +517,9 @@ async function importRasterImageFileUnlocked(
         maximumSourceBytes: RASTER_IMAGE_MAXIMUM_ENCODED_BYTES,
         maximumWidth: maximumDimension,
         maximumHeight: maximumDimension,
-        maximumPixels: Math.floor(RASTER_IMAGE_MAXIMUM_GPU_BYTES / 4),
+        maximumPixels: Math.floor(
+          RASTER_IMAGE_MAXIMUM_GPU_BYTES / RASTER_IMAGE_DECODED_BYTES_PER_PIXEL,
+        ),
       },
       preflight: (inspection) => {
         const bounds = outputBoundsForImage(
@@ -532,10 +535,13 @@ async function importRasterImageFileUnlocked(
             bounds,
           ),
         );
-        if (sourceMipBytes > RASTER_IMAGE_MAXIMUM_GPU_BYTES) {
+        const transientGpuBytes = sourceMipBytes
+          + inspection.encodedWidth * inspection.encodedHeight
+            * RASTER_IMAGE_DECODED_BYTES_PER_PIXEL;
+        if (transientGpuBytes > RASTER_IMAGE_MAXIMUM_GPU_BYTES) {
           throw new Error(
             `Immagine troppo grande: la sorgente GPU transitoria richiederebbe `
-            + `${(sourceMipBytes / 1024 / 1024).toFixed(1)} MiB.`,
+            + `${(transientGpuBytes / 1024 / 1024).toFixed(1)} MiB.`,
           );
         }
         assertNativeRasterImportResidentBudget(engine, bounds);
@@ -549,10 +555,12 @@ async function importRasterImageFileUnlocked(
       metadata.height,
       requiredImportMipLevelCount(metadata.width, metadata.height, bounds),
     );
-    if (decodedMipBytes > RASTER_IMAGE_MAXIMUM_GPU_BYTES) {
+    const decodedTransientGpuBytes = decodedMipBytes
+      + metadata.width * metadata.height * RASTER_IMAGE_DECODED_BYTES_PER_PIXEL;
+    if (decodedTransientGpuBytes > RASTER_IMAGE_MAXIMUM_GPU_BYTES) {
       throw new Error(
         `Immagine decodificata troppo grande: la sorgente GPU transitoria `
-        + `richiederebbe ${(decodedMipBytes / 1024 / 1024).toFixed(1)} MiB.`,
+        + `richiederebbe ${(decodedTransientGpuBytes / 1024 / 1024).toFixed(1)} MiB.`,
       );
     }
     assertNativeRasterImportResidentBudget(engine, bounds);

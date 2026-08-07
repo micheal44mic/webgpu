@@ -15,9 +15,9 @@ import type { RasterStrokeSourceMode } from "./stroke-renderer";
 import type { EffectsScratchLease, EffectsScratchPool } from "./effects-scratch-pool";
 
 export const RASTER_SHADOW_RENDERER_BUILD =
-  "raster-shadow-webgpu-v1-independent-packed-r8-morphology-gaussian";
+  "raster-shadow-webgpu-v1-independent-packed-f16-morphology-gaussian";
 export const RASTER_SHADOW_STORAGE_STRATEGY =
-  "persistent-packed-r8-matte-per-enabled-shadow" as const;
+  "persistent-packed-f16-matte-per-enabled-shadow" as const;
 export const RASTER_SHADOW_WORKSPACE_STRATEGY =
   "shared-effects-pool-tiled-f32-ping-pong" as const;
 
@@ -81,7 +81,7 @@ const PARAMETER_BYTES = 80;
 const PARAMETER_STRIDE = 256;
 const PARAMETER_CAPACITY = 2048;
 const COMPOSITION_UNIFORM_BYTES = 64;
-const COVERAGE_WORD_PIXELS = 4;
+const COVERAGE_WORD_PIXELS = 2;
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
@@ -194,20 +194,13 @@ fn insideDocument(position: vec2<i32>) -> bool {
 }
 
 fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
-  if (lightGlaze.formatCode == 0u) {
-    return round(clamp(value, vec4<f32>(0.0), vec4<f32>(1.0)) * 255.0) / 255.0;
-  }
   let redGreen = unpack2x16float(pack2x16float(value.rg));
   let blueAlpha = unpack2x16float(pack2x16float(value.ba));
   return vec4<f32>(redGreen, blueAlpha);
 }
 
 fn storedLightCoverage(value: f32) -> f32 {
-  let coverage = clamp(value, 0.0, 1.0);
-  if (lightGlaze.formatCode == 1u) {
-    return unpack2x16float(pack2x16float(vec2<f32>(coverage, 0.0))).x;
-  }
-  return coverage;
+  return clamp(value, 0.0, 1.0);
 }
 
 fn srgbToLinearChannel(value: f32) -> f32 {
@@ -456,25 +449,25 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   if (globalId.y >= parameters.targetSize.y) {
     return;
   }
-  let firstX = globalId.x * 4u;
+  let firstX = globalId.x * 2u;
   if (firstX >= parameters.targetSize.x) {
     return;
   }
   let firstDocumentPosition = parameters.targetOrigin
     + vec2<u32>(firstX, globalId.y);
-  var packed = 0u;
-  for (var lane = 0u; lane < 4u; lane += 1u) {
+  var matte = vec2<f32>(0.0);
+  for (var lane = 0u; lane < 2u; lane += 1u) {
     if (firstX + lane >= parameters.targetSize.x) {
       continue;
     }
     let local = parameters.localTargetOrigin
       + vec2<u32>(firstX + lane, globalId.y);
     let value = clamp(loadFloat(parameters.inputOffsetWords, local), 0.0, 1.0);
-    packed |= u32(round(value * 255.0)) << (lane * 8u);
+    matte[lane] = value;
   }
   let linearIndex = firstDocumentPosition.y * ${documentWidth}u
     + firstDocumentPosition.x;
-  shadowMatte[linearIndex >> 2u] = packed;
+  shadowMatte[linearIndex >> 1u] = pack2x16float(matte);
 }
 `;
 }
@@ -562,7 +555,7 @@ export class RasterShadowRenderer {
     this.documentWidth = options.documentWidth;
     this.documentHeight = options.documentHeight;
     if (this.documentWidth % COVERAGE_WORD_PIXELS !== 0) {
-      throw new Error("La larghezza documento Ombra deve essere divisibile per 4.");
+      throw new Error("La larghezza documento Ombra deve essere divisibile per 2.");
     }
     this.layerView = options.layerView;
     this.lightGlazeUniformBuffer = options.lightGlazeUniformBuffer;
@@ -577,7 +570,7 @@ export class RasterShadowRenderer {
     );
     this.coverageMemoryBytes = coverageWords * 4;
     this.coverageBuffer = this.device.createBuffer({
-      label: `${this.label} persistent packed R8 matte`,
+      label: `${this.label} persistent packed f16 matte`,
       size: this.coverageMemoryBytes,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
@@ -699,7 +692,7 @@ export class RasterShadowRenderer {
       {
         label: "resolve",
         module: this.device.createShaderModule({
-          label: `${this.label} resolve packed R8 WGSL`,
+          label: `${this.label} resolve packed f16 WGSL`,
           code: resolveShader(this.documentWidth, this.documentHeight),
         }),
       },
@@ -725,7 +718,7 @@ export class RasterShadowRenderer {
       compute: { module: modules[2].module, entryPoint: "main" },
     });
     this.resolvePipeline = this.device.createComputePipeline({
-      label: `${this.label} resolve packed R8 pipeline`,
+      label: `${this.label} resolve packed f16 pipeline`,
       layout: pipelineLayout,
       compute: { module: modules[3].module, entryPoint: "main" },
     });

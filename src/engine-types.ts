@@ -239,8 +239,9 @@ export interface BrushEngineOptions {
    */
   layerCompressionTestEnabled?: boolean;
   /**
-   * Enables the lossless runtime lifecycle: distant inactive RGBA8 cold stores
-   * may move from GPU tiles to CPU bytes in a worker while the engine is idle.
+   * Legacy RGBA8-only worker codec switch. Permanent RGBA16F documents keep it
+   * disabled: their cold tiles remain byte-exact GPU storage and are never
+   * quantized or sent through this four-byte-per-pixel codec.
    */
   layerColdCompressionEnabled?: boolean;
   /** Emits worker lifecycle messages into the user-facing status channel. */

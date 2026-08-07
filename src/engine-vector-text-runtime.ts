@@ -1,10 +1,12 @@
 import type { BrushEngine } from "./brush-engine";
 import {
   VECTOR_TEXT_GPU_BLUR_COMPOSITE_UNIFORM_BYTES,
+  VECTOR_TEXT_GPU_BLUR_BYTES_PER_PIXEL,
   VECTOR_TEXT_GPU_BLUR_FILTER_UNIFORM_BYTES,
   VECTOR_TEXT_GPU_BLUR_FORMAT,
   VECTOR_TEXT_GPU_RENDER_STRATEGY,
   VECTOR_TEXT_GPU_SAMPLE_COUNT,
+  VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL,
   VECTOR_TEXT_GPU_TARGET_FORMAT,
   VECTOR_TEXT_GPU_UNIFORM_BYTES,
   VECTOR_TEXT_GPU_UNIFORM_STRIDE,
@@ -1360,7 +1362,7 @@ export function getVectorTextFallbackPresentationStats(engine: BrushEngine): {
       textureCount
       * engine.vectorTextTextureWidth
       * engine.vectorTextTextureHeight
-      * 4
+      * VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL
       / (1024 * 1024),
     complete: vectorTextFallbackPresentationComplete(engine),
   };
@@ -1436,7 +1438,7 @@ export function rebuildVectorTextGpuFallbackPresentation(
       const texture = engine.device.createTexture({
         label: `Vector text ${key} automatic wide fallback ${width}×${height}`,
         size: { width, height, depthOrArrayLayers: 1 },
-        format: "rgba8unorm-srgb",
+        format: VECTOR_TEXT_GPU_TARGET_FORMAT,
         usage:
           GPUTextureUsage.COPY_DST
           | GPUTextureUsage.COPY_SRC
@@ -1503,7 +1505,8 @@ export function rebuildVectorTextGpuFallbackPresentation(
   for (const texture of previousTextures) texture.destroy();
   return {
     textureCount: candidates.size,
-    gpuMemoryMiB: candidates.size * width * height * 4 / (1024 * 1024),
+    gpuMemoryMiB: candidates.size * width * height
+      * VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL / (1024 * 1024),
   };
 }
 
@@ -1531,7 +1534,7 @@ export function captureVectorTextFallbackPresentation(engine: BrushEngine): {
       const texture = engine.device.createTexture({
         label: `Vector text ${key} wide fallback ${width}×${height}`,
         size: { width, height, depthOrArrayLayers: 1 },
-        format: "rgba8unorm-srgb",
+        format: VECTOR_TEXT_GPU_TARGET_FORMAT,
         usage:
           GPUTextureUsage.COPY_DST
           | GPUTextureUsage.COPY_SRC
@@ -1574,7 +1577,8 @@ export function captureVectorTextFallbackPresentation(engine: BrushEngine): {
   engine.requestRender();
   return {
     textureCount: candidates.size,
-    gpuMemoryMiB: candidates.size * width * height * 4 / (1024 * 1024),
+    gpuMemoryMiB: candidates.size * width * height
+      * VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL / (1024 * 1024),
   };
 }
 
@@ -1594,7 +1598,8 @@ export async function probeVectorTextFallbackAlpha(
     1,
     Math.min(128, Math.floor(capture.canvasWidth), Math.floor(capture.canvasHeight)),
   );
-  const bytesPerRow = Math.ceil(probeSize * 4 / 256) * 256;
+  const bytesPerPixel = VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL;
+  const bytesPerRow = Math.ceil(probeSize * bytesPerPixel / 256) * 256;
   const bytesPerProbe = bytesPerRow * probeSize;
   const readback = engine.device.createBuffer({
     label: `Vector text C fallback alpha witnesses ${layerPoints.length}`,
@@ -1647,7 +1652,8 @@ export async function probeVectorTextFallbackAlpha(
       const base = pointIndex * bytesPerProbe;
       for (let y = 0; y < probeSize; y += 1) {
         for (let x = 0; x < probeSize; x += 1) {
-          if (bytes[base + y * bytesPerRow + x * 4 + 3] > 0) alphaPixels += 1;
+          const alphaOffset = base + y * bytesPerRow + x * bytesPerPixel + 6;
+          if ((bytes[alphaOffset] | bytes[alphaOffset + 1]) !== 0) alphaPixels += 1;
         }
       }
       return alphaPixels;
@@ -1799,7 +1805,7 @@ export function ensureVectorTextPresentationTexture(engine: BrushEngine,
     const texture = engine.device.createTexture({
       label: `Vector text ${key} viewport cache ${width}×${height}`,
       size: { width, height, depthOrArrayLayers: 1 },
-      format: "rgba8unorm-srgb",
+      format: VECTOR_TEXT_GPU_TARGET_FORMAT,
       usage:
         GPUTextureUsage.COPY_DST
         | GPUTextureUsage.COPY_SRC
@@ -1838,7 +1844,7 @@ export function ensureVectorTextPresentationTexture(engine: BrushEngine,
   const texture = engine.device.createTexture({
     label: `Vector text ${placement} viewport cache ${width}×${height}`,
     size: { width, height, depthOrArrayLayers: 1 },
-    format: "rgba8unorm-srgb",
+    format: VECTOR_TEXT_GPU_TARGET_FORMAT,
     usage:
       GPUTextureUsage.COPY_DST
       | GPUTextureUsage.RENDER_ATTACHMENT
@@ -2016,7 +2022,8 @@ export function ensureVectorTextGpuBlurCache(engine: BrushEngine,
       innerShadowBindGroup,
       width: draw.blurWidth,
       height: draw.blurHeight,
-      memoryBytes: draw.blurWidth * draw.blurHeight,
+      memoryBytes: draw.blurWidth * draw.blurHeight
+        * VECTOR_TEXT_GPU_BLUR_BYTES_PER_PIXEL,
       needsBuild: true,
     };
     engine.vectorTextGpuBlurCaches.set(draw.blurKey, created);

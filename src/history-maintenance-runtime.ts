@@ -648,13 +648,15 @@ function effectsWorkingSetBytes(engine: BrushEngine): number {
 }
 
 function historyBudgetForEngine(engine: BrushEngine) {
+  const checkpointBytes = historyDeviceCheckpointBytes(engine);
   const baseBytes = historyBaseBudgetBytes({
-    checkpointBytes: historyDeviceCheckpointBytes(engine),
+    checkpointBytes,
     mobile: MOBILE_DEVICE_CLASS,
   });
   const effectsBytes = effectsWorkingSetBytes(engine);
   const availableBytes = Math.max(
     HISTORY_MINIMUM_BUDGET_BYTES,
+    checkpointBytes,
     baseBytes - effectsBytes,
   );
   return {

@@ -62,13 +62,13 @@ export async function runLayerMemoryStressTest(
 ): Promise<LayerMemoryStressReport> {
   const initial = engine.getStats();
   if (
-    initial.layerFormat !== "rgba8unorm"
+    initial.layerFormat !== "rgba16float"
     || initial.layerCount !== 1
     || initial.activeLayerIndex !== 0
     || initial.layers[0]?.hasContent
   ) {
     throw new Error(
-      "Lo stress memoria richiede una pagina nuova in RGBA8 con un solo livello vuoto.",
+      "Lo stress memoria richiede una pagina nuova in RGBA16F con un solo livello vuoto.",
     );
   }
   if (engine.getHistoryState().busy) {

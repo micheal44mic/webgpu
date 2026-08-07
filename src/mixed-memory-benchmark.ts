@@ -7,6 +7,10 @@ import {
 } from "./mixed-scene-stack";
 import { LAYER_STACK_MAXIMUM } from "./layer-stack";
 import {
+  LAYER_STORAGE_TILE_COUNT,
+  layerStorageTileMemoryMiB,
+} from "./layer-storage-study";
+import {
   MIXED_MEMORY_BENCHMARK_INTERLEAVED_TEXT_RUNS,
   MIXED_MEMORY_BENCHMARK_REPORT_VERSION,
   MIXED_MEMORY_BENCHMARK_STAGED_INTERLEAVED_TILE_COUNT,
@@ -137,11 +141,12 @@ export async function runMixedMemoryBenchmark(
     targetMiB === MIXED_MEMORY_BENCHMARK_STAGED_TARGET_MIB;
   const interleavedStorageTileCount = stagedProfile
     ? MIXED_MEMORY_BENCHMARK_STAGED_INTERLEAVED_TILE_COUNT
-    : 256;
+    : LAYER_STORAGE_TILE_COUNT;
+  const rgba16fColdTileMiB = layerStorageTileMemoryMiB(1, 8);
   const initial = engine.getStats();
   const initialScene = engine.getMixedSceneSnapshot();
   if (
-    initial.layerFormat !== "rgba8unorm"
+    initial.layerFormat !== "rgba16float"
     || initial.layerCount !== 1
     || initial.activeLayerIndex !== 0
     || initial.layers[0]?.hasContent
@@ -149,7 +154,7 @@ export async function runMixedMemoryBenchmark(
     || initialScene.items.filter((item) => item.kind === "text").length !== 1
   ) {
     throw new Error(
-      "Lo scenario misto richiede una pagina nuova RGBA8 con un raster vuoto e il testo iniziale.",
+      "Lo scenario misto richiede una pagina nuova RGBA16F con un raster vuoto e il testo iniziale.",
     );
   }
   if (engine.getHistoryState().busy) {
@@ -271,10 +276,11 @@ export async function runMixedMemoryBenchmark(
     await engine.setActiveMixedSceneItem(`raster:${stats.activeLayerId}`);
     await settleVisibleScene(engine);
 
-    // I tile cold sono quantizzati a 0,25 MiB. L'ultimo raster usa solo i tile
-    // necessari per avvicinarsi al target, poi un nuovo raster vuoto diventa
-    // il target del replay. L'eventuale overshoot resta limitato alle piccole
-    // superfici derivate del marker e alle cache viewport già conteggiate.
+    // I tile cold RGBA16F valgono 0,5 MiB a 4096² e 0,125 MiB a 2048².
+    // L'ultimo raster usa solo i tile necessari per avvicinarsi al target, poi
+    // un nuovo raster vuoto diventa il target del replay. L'eventuale overshoot
+    // resta limitato alle piccole superfici derivate del marker e alle cache
+    // viewport già conteggiate.
     while ((stats = engine.getStats()).gpuMemory.countedTotalMiB < targetMiB) {
       if (stats.layerCount >= LAYER_STACK_MAXIMUM) {
         throw new Error(
@@ -285,7 +291,10 @@ export async function runMixedMemoryBenchmark(
       const remainingMiB = targetMiB - stats.gpuMemory.countedTotalMiB;
       const storageTileCount = Math.max(
         1,
-        Math.min(256, Math.ceil(remainingMiB * 4)),
+        Math.min(
+          LAYER_STORAGE_TILE_COUNT,
+          Math.ceil(remainingMiB / rgba16fColdTileMiB),
+        ),
       );
       publishProgress("raster");
       await engine.seedActiveLayerMemoryStress(

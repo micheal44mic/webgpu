@@ -1,13 +1,16 @@
 /** Pure logical memory model for one imported raster image. */
 
-export const RASTER_IMAGE_BYTES_PER_PIXEL = 4;
+/** Browser decoder/upload boundary: straight-alpha 8-bit sRGB. */
+export const RASTER_IMAGE_DECODED_BYTES_PER_PIXEL = 4;
+/** First authoritative intermediate: linear-premultiplied RGBA16F. */
+export const RASTER_IMAGE_LINEAR_BYTES_PER_PIXEL = 8;
 export const RASTER_IMAGE_UNIFORM_BYTES = 32;
 
 export interface RasterImageMemoryBudget {
   readonly width: number;
   readonly height: number;
   readonly mipLevelCount: number;
-  /** Persistent rgba8unorm-srgb mip chain plus the transform uniform. */
+  /** Linear-premultiplied rgba16float mip chain plus the transform uniform. */
   readonly residentGpuBytes: number;
   /** Temporary straight-sRGB GPU upload texture. */
   readonly uploadTextureBytes: number;
@@ -50,7 +53,7 @@ export function rasterImageMipChainBytes(
     const divisor = 2 ** level;
     total += Math.max(1, Math.floor(safeWidth / divisor))
       * Math.max(1, Math.floor(safeHeight / divisor))
-      * RASTER_IMAGE_BYTES_PER_PIXEL;
+      * RASTER_IMAGE_LINEAR_BYTES_PER_PIXEL;
   }
   if (!Number.isSafeInteger(total)) {
     throw new Error("La memoria della catena mip supera l’intervallo sicuro.");
@@ -69,14 +72,15 @@ export function planRasterImageMemory(
     throw new Error("I byte sorgente devono essere un intero sicuro non negativo.");
   }
   const mipLevelCount = rasterImageMipLevelCount(safeWidth, safeHeight);
-  const baseBytes = safeWidth * safeHeight * RASTER_IMAGE_BYTES_PER_PIXEL;
+  const decodedBaseBytes = safeWidth * safeHeight
+    * RASTER_IMAGE_DECODED_BYTES_PER_PIXEL;
   const residentGpuBytes = rasterImageMipChainBytes(
     safeWidth,
     safeHeight,
     mipLevelCount,
   ) + RASTER_IMAGE_UNIFORM_BYTES;
-  const uploadTextureBytes = baseBytes;
-  const decodedBitmapBytes = baseBytes;
+  const uploadTextureBytes = decodedBaseBytes;
+  const decodedBitmapBytes = decodedBaseBytes;
   const inspectionBytes = sourceBytes;
   const logicalImportPeakBytes = residentGpuBytes
     + uploadTextureBytes

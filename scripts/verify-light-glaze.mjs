@@ -53,7 +53,7 @@ closeTo(sourceOverGesture(0, 1), 1);
 closeTo(sourceOverGesture(1, 1), 1);
 
 assert(
-  engine.includes('"light-r8-max-per-gesture-source-over-between-gestures"'),
+  engine.includes('"light-r16float-max-per-gesture-source-over-between-gestures"'),
   "Firma pubblica Light Glaze no-build-up assente.",
 );
 
@@ -80,8 +80,8 @@ const storageRouting = section(
 );
 assert.match(
   storageRouting,
-  /blendMode === "light-glaze" \|\| blendMode === "m1-glaze"\s*\? "r8-coverage"/,
-  "Light Glaze non usa l'accumulatore coverage R8 isolato per gesture.",
+  /blendMode === "light-glaze" \|\| blendMode === "m1-glaze"\s*\? "r16float-coverage"/,
+  "Light Glaze non usa l'accumulatore coverage R16F isolato per gesture.",
 );
 
 const baseMaxPipeline = section(
@@ -99,9 +99,10 @@ assert.doesNotMatch(
   /one-minus-src-alpha/,
   "Gli stamp base della stessa gesture non devono usare source-over.",
 );
-assert.match(baseMaxPipeline, /format: "r8unorm"/);
-assert.match(baseMaxPipeline, /Light Glaze circle MAX per gesture r8unorm/);
-assert.match(baseMaxPipeline, /Light Glaze Texturized circle MAX per gesture r8unorm/);
+assert.match(baseMaxPipeline, /format: "r16float"/);
+assert.doesNotMatch(baseMaxPipeline, /format: "r8unorm"/);
+assert.match(baseMaxPipeline, /Light Glaze circle MAX per gesture r16float/);
+assert.match(baseMaxPipeline, /Light Glaze Texturized circle MAX per gesture r16float/);
 
 const selectionMaxPipeline = section(
   engine,
@@ -169,8 +170,10 @@ assert.match(
   /coverage \* brush\.controls\.x \* brush\.baseHslAlpha\.w \* brush\.controls\.z/,
   "Flow non raggiunge il deposito candidato dello stamp.",
 );
-assert.match(shaders, /unpack4x8unorm\(pack4x8unorm\(vec4<f32>\(alpha\)\)\)\.r/);
+assert.match(shaders, /fn highPrecisionCoveragePaint[\s\S]*return vec4<f32>\(alpha\)/);
+assert.doesNotMatch(shaders, /pack4x8unorm\(vec4<f32>\(alpha\)\)/);
 assert.match(shaders, /fn storedLightCoverage\(value: f32\)/);
+assert.match(shaders, /fn storedLightCoverage\(value: f32\) -> f32 \{\s*return clamp\(value, 0\.0, 1\.0\);/);
 assert.match(
   shaders,
   /if \(lightGlaze\.accumulationMode == 1u\)[\s\S]*tintLinear\.rgb \* coverage, coverage\) \* opacity/,

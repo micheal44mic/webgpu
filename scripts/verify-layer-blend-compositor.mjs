@@ -91,6 +91,46 @@ const srgbToLinear = (value) => {
     : ((channel + 0.055) / 1.055) ** 2.4;
 };
 
+// Regression: repeated low-opacity #333 deposits must not stall on an R8
+// storage plateau. Model the render-target rounding after every source-over
+// pass, as opposed to quantizing only the final display conversion.
+const quantizeUnorm8 = (value) => Math.round(clamp(value) * 255) / 255;
+const quantizeFloat16 = (value) => {
+  const clamped = clamp(value);
+  if (clamped === 0) return 0;
+  const step = clamped < 2 ** -14
+    ? 2 ** -24
+    : 2 ** (Math.floor(Math.log2(clamped)) - 10);
+  return clamp(Math.round(clamped / step) * step);
+};
+const darkLinear = srgbToLinear(0x33 / 0xff);
+const passAlpha = 0.01;
+let storedRgba8 = [0, 0, 0, 0];
+let storedRgba16 = [0, 0, 0, 0];
+const rgba8DarkLevels = new Set();
+const rgba16DarkLevels = new Set();
+for (let pass = 0; pass < 1024; pass += 1) {
+  storedRgba8 = storedRgba8.map((destination, channel) => quantizeUnorm8(
+    (channel === 3 ? passAlpha : darkLinear * passAlpha)
+      + destination * (1 - passAlpha),
+  ));
+  storedRgba16 = storedRgba16.map((destination, channel) => quantizeFloat16(
+    (channel === 3 ? passAlpha : darkLinear * passAlpha)
+      + destination * (1 - passAlpha),
+  ));
+  rgba8DarkLevels.add(storedRgba8[0]);
+  rgba16DarkLevels.add(storedRgba16[0]);
+}
+assert.equal(storedRgba8[0], 0, "R8 oracle must reproduce the dark-color plateau.");
+assert.ok(
+  rgba16DarkLevels.size > 300,
+  `RGBA16F should preserve a continuous dark ramp, got ${rgba16DarkLevels.size} levels.`,
+);
+assert.ok(
+  storedRgba16[0] > darkLinear * 0.95,
+  "RGBA16F repeated #333 deposits must converge without an R8 color stall.",
+);
+
 // Independent encoded-sRGB Multiply oracle for the non-Normal atop equation.
 const backdrop = [0.16, 0.32, 0.08, 0.8];
 const source = [0.3, 0.12, 0.42, 0.6];

@@ -15,16 +15,55 @@ import {
   markLayerStorageRect,
 } from "./layer-storage-study";
 import type { BrushEngine } from "./brush-engine";
+import type { LayerFormat } from "./engine-types";
 import { combineCompressionHashes } from "./engine-math";
 import {
   LAYER_COLD_COMPRESSION_MINIMUM_DISTANCE,
   type LayerColdCompressedChunk,
 } from "./layer-cold-compression-client";
 import { LAYER_SIZE, MEBIBYTE_BYTES } from "./engine-limits";
-import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";/**
+import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
+
+/**
  * Archiviazione fredda dei livelli: codifica dell'idratazione, maschere dei
  * record e distruzione delle risorse calde e fredde.
  */
+
+function layerFormatBytesPerPixel(format: LayerFormat): number {
+  return format === "rgba16float" ? 8 : 4;
+}
+
+/** Legacy worker codec contract; every use is guarded by assertRgba8CompressedStorage. */
+const RGBA8_COLD_CODEC_BYTES_PER_PIXEL = 4;
+
+function assertColdMatchesHot(
+  cold: LayerColdStorageResources,
+  hot: LayerTextureResources,
+): void {
+  if (
+    (cold.format !== "rgba8unorm" && cold.format !== "rgba16float")
+    || (hot.format !== "rgba8unorm" && hot.format !== "rgba16float")
+  ) {
+    throw new Error("Cold storage o texture hot privi di un formato documento valido.");
+  }
+  if (cold.format !== hot.format) {
+    throw new Error(
+      `Cold storage ${cold.format} incompatibile con texture hot ${hot.format}; copia rifiutata.`,
+    );
+  }
+}
+
+function assertRgba8CompressedStorage(
+  engine: BrushEngine,
+  compressed: LayerCompressedColdStorageResources,
+): void {
+  if (engine.layerFormat !== "rgba8unorm" || compressed.format !== "rgba8unorm") {
+    throw new Error(
+      `Cold storage compresso ${compressed.format} incompatibile con documento `
+      + `${engine.layerFormat}; la compressione RGBA16F resta disabilitata.`,
+    );
+  }
+}
 
 export function createColdLayerGpuResources(): LayerGpuResources {
   return { hot: null, cold: null, compressed: null, bake: null, bakeValid: false };
@@ -59,6 +98,7 @@ export function encodeLayerColdHydration(
   cold: LayerColdStorageResources,
   hot: LayerTextureResources,
 ): void {
+  assertColdMatchesHot(cold, hot);
   cold.tileIndices.forEach((tileIndex, arrayLayer) => {
     const tileX = tileIndex % LAYER_STORAGE_GRID_SIZE;
     const tileY = Math.floor(tileIndex / LAYER_STORAGE_GRID_SIZE);
@@ -94,6 +134,12 @@ export async function compressOneDistantLayerInBackground(engine: BrushEngine, t
   if (!source) {
     return;
   }
+  if (engine.layerFormat !== "rgba8unorm" || source.cold.format !== "rgba8unorm") {
+    throw new Error(
+      `Compressione cold disponibile solo per RGBA8; ricevuto documento `
+      + `${engine.layerFormat} con seed ${source.cold.format}.`,
+    );
+  }
   let progress = engine.layerColdCompressionProgress;
   if (
     !progress
@@ -116,7 +162,8 @@ export async function compressOneDistantLayerInBackground(engine: BrushEngine, t
     engine.layerColdCompressionProgress = progress;
   }
   engine.layerColdCompressionJobRunning = true;
-  const tileByteLength = LAYER_STORAGE_TILE_SIZE * LAYER_STORAGE_TILE_SIZE * 4;
+  const tileByteLength = LAYER_STORAGE_TILE_SIZE * LAYER_STORAGE_TILE_SIZE
+    * RGBA8_COLD_CODEC_BYTES_PER_PIXEL;
   try {
     const client = await engine.requireLayerColdCompressionClient();
     await engine.waitForIdle();
@@ -220,6 +267,7 @@ export async function compressOneDistantLayerInBackground(engine: BrushEngine, t
       sourceHash: progress.sourceHash,
       generation: source.cold.generation,
       encodeMs: progress.encodeMs,
+      format: "rgba8unorm",
     };
     source.gpu.cold = null;
     engine.layerColdCompressionProgress = null;
@@ -261,7 +309,9 @@ export async function ensureLayerColdStorageResident(engine: BrushEngine,
   if (!compressed) {
     throw new Error(`Livello ${record.id}: storage autorevole mancante.`);
   }
-  const tileByteLength = LAYER_STORAGE_TILE_SIZE * LAYER_STORAGE_TILE_SIZE * 4;
+  assertRgba8CompressedStorage(engine, compressed);
+  const tileByteLength = LAYER_STORAGE_TILE_SIZE * LAYER_STORAGE_TILE_SIZE
+    * RGBA8_COLD_CODEC_BYTES_PER_PIXEL;
   const texture = engine.device.createTexture({
     label: `Cold ripristinato livello ${record.id} #${compressed.generation}`,
     size: {
@@ -269,7 +319,7 @@ export async function ensureLayerColdStorageResident(engine: BrushEngine,
       height: LAYER_STORAGE_TILE_SIZE,
       depthOrArrayLayers: compressed.tileIndices.length,
     },
-    format: "rgba8unorm",
+    format: compressed.format,
     usage:
       GPUTextureUsage.COPY_SRC
       | GPUTextureUsage.COPY_DST
@@ -291,7 +341,7 @@ export async function ensureLayerColdStorageResident(engine: BrushEngine,
         { texture, origin: { x: 0, y: 0, z: firstArrayLayer } },
         restored,
         {
-          bytesPerRow: LAYER_STORAGE_TILE_SIZE * 4,
+          bytesPerRow: LAYER_STORAGE_TILE_SIZE * RGBA8_COLD_CODEC_BYTES_PER_PIXEL,
           rowsPerImage: LAYER_STORAGE_TILE_SIZE,
         },
         {
@@ -324,6 +374,7 @@ export async function ensureLayerColdStorageResident(engine: BrushEngine,
       tileIndices: compressed.tileIndices,
       memoryBytes: compressed.rawBytes,
       generation: compressed.generation,
+      format: compressed.format,
     };
     gpu.compressed = null;
     committed = true;
@@ -346,6 +397,12 @@ export async function createLayerColdStorageCandidate(engine: BrushEngine,
   mask: Uint32Array,
   generation: number,
 ): Promise<LayerColdStorageResources> {
+  if (hot.format !== engine.layerFormat) {
+    throw new Error(
+      `Pack cold rifiutato: texture hot ${hot.format}, documento ${engine.layerFormat}.`,
+    );
+  }
+  const format = hot.format;
   const tileIndices = layerStorageTileIndices(mask);
   if (tileIndices.length === 0) {
     throw new Error(`Cold storage livello ${record.id}: contenuto senza tile.`);
@@ -356,7 +413,7 @@ export async function createLayerColdStorageCandidate(engine: BrushEngine,
       + `maxTextureArrayLayers=${engine.device.limits.maxTextureArrayLayers}.`,
     );
   }
-  const bytesPerPixel = engine.layerFormat === "rgba16float" ? 8 : 4;
+  const bytesPerPixel = layerFormatBytesPerPixel(format);
   const memoryBytes = tileIndices.length
     * LAYER_STORAGE_TILE_SIZE
     * LAYER_STORAGE_TILE_SIZE
@@ -372,7 +429,7 @@ export async function createLayerColdStorageCandidate(engine: BrushEngine,
           height: LAYER_STORAGE_TILE_SIZE,
           depthOrArrayLayers: tileIndices.length,
         },
-        format: engine.layerFormat,
+        format,
         usage:
           GPUTextureUsage.COPY_SRC
           | GPUTextureUsage.COPY_DST
@@ -405,7 +462,7 @@ export async function createLayerColdStorageCandidate(engine: BrushEngine,
       engine.device.queue.submit([encoder.finish()]);
       await engine.waitForGpuCapped(`Pack cold livello ${record.id}`);
       engine.maybeInjectLayerColdStorageFault("after-pack-submit");
-      return { texture, tileIndices, memoryBytes, generation };
+      return { texture, tileIndices, memoryBytes, generation, format };
     },
   );
 }
@@ -443,6 +500,12 @@ export async function createLayerColdStorageCandidateIncrementally(
     throw new RangeError("Il chunk tile del checkpoint History deve essere positivo.");
   }
   if (!hooks.shouldContinue()) return null;
+  if (hot.format !== engine.layerFormat) {
+    throw new Error(
+      `Pack cold History rifiutato: texture hot ${hot.format}, documento ${engine.layerFormat}.`,
+    );
+  }
+  const format = hot.format;
   const tileIndices = layerStorageTileIndices(mask);
   if (tileIndices.length === 0) {
     throw new Error(`Cold storage livello ${record.id}: contenuto senza tile.`);
@@ -453,7 +516,7 @@ export async function createLayerColdStorageCandidateIncrementally(
       + `maxTextureArrayLayers=${engine.device.limits.maxTextureArrayLayers}.`,
     );
   }
-  const bytesPerPixel = engine.layerFormat === "rgba16float" ? 8 : 4;
+  const bytesPerPixel = layerFormatBytesPerPixel(format);
   const memoryBytes = tileIndices.length
     * LAYER_STORAGE_TILE_SIZE
     * LAYER_STORAGE_TILE_SIZE
@@ -470,7 +533,7 @@ export async function createLayerColdStorageCandidateIncrementally(
           height: LAYER_STORAGE_TILE_SIZE,
           depthOrArrayLayers: tileIndices.length,
         },
-        format: engine.layerFormat,
+        format,
         usage:
           GPUTextureUsage.COPY_SRC
           | GPUTextureUsage.COPY_DST
@@ -534,7 +597,7 @@ export async function createLayerColdStorageCandidateIncrementally(
         texture.destroy();
         return null;
       }
-      return { texture, tileIndices, memoryBytes, generation };
+      return { texture, tileIndices, memoryBytes, generation, format };
     },
   );
 }
@@ -545,7 +608,14 @@ export async function uploadCompressedLayerIntoHot(engine: BrushEngine,
   compressed: LayerCompressedColdStorageResources,
   hot: LayerTextureResources,
 ): Promise<void> {
-  const tileByteLength = LAYER_STORAGE_TILE_SIZE * LAYER_STORAGE_TILE_SIZE * 4;
+  assertRgba8CompressedStorage(engine, compressed);
+  if (hot.format !== compressed.format) {
+    throw new Error(
+      `Upload cold compresso ${compressed.format} incompatibile con texture hot ${hot.format}.`,
+    );
+  }
+  const tileByteLength = LAYER_STORAGE_TILE_SIZE * LAYER_STORAGE_TILE_SIZE
+    * RGBA8_COLD_CODEC_BYTES_PER_PIXEL;
   let firstTile = 0;
   let restoredBytes = 0;
   let restoredHash = 0x811c9dc5;
@@ -579,7 +649,7 @@ export async function uploadCompressedLayerIntoHot(engine: BrushEngine,
         },
         restored.subarray(byteOffset, byteOffset + tileByteLength),
         {
-          bytesPerRow: LAYER_STORAGE_TILE_SIZE * 4,
+          bytesPerRow: LAYER_STORAGE_TILE_SIZE * RGBA8_COLD_CODEC_BYTES_PER_PIXEL,
           rowsPerImage: LAYER_STORAGE_TILE_SIZE,
         },
         {

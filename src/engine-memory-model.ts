@@ -72,14 +72,14 @@ export function layerBaseMemoryMiB(format: LayerFormat, extent?: DocumentExtent)
 }
 
 /**
- * L'accumulatore Light Glaze e' full-document: `r8unorm` in modalita' coverage,
+ * L'accumulatore Light Glaze e' full-document: `r16float` in modalita' coverage,
  * `rgba16float` altrimenti. Il suo costo non ha nulla a che vedere col formato
  * del livello, che governa invece piramide e commit tile.
  */
 export function lightGlazeAccumulatorBytesPerPixel(
   storageMode: LightGlazeStorageMode,
 ): number {
-  return storageMode === "r8-coverage" ? 1 : 8;
+  return storageMode === "r16float-coverage" ? 2 : 8;
 }
 
 export function lightGlazeAdditionalMemoryMiB(

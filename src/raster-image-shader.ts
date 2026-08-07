@@ -2,18 +2,16 @@
  * WebGPU shaders for immutable raster-image assets in the heterogeneous scene.
  *
  * Mipmap pass bindings (group 0):
- *   0 - `texture_2d<f32>` view exposing exactly the preceding sRGB mip.
+ *   0 - `texture_2d<f32>` view exposing exactly the preceding linear RGBA16F mip.
  *
- * The mip pipeline must target `rgba8unorm-srgb` without blending. Reading an
- * sRGB view decodes RGB to linear values and writing the sRGB attachment encodes
- * RGB again; alpha stays linear. Mip 0 must already contain premultiplied alpha,
- * so the exact 2x2 average below remains premultiplied and cannot create dark
- * fringes around transparent pixels.
+ * The mip pipeline targets `rgba16float` without blending. Mip 0 already
+ * contains linear-premultiplied alpha, so each exact area average remains
+ * premultiplied without another 8-bit encode/decode cycle.
  *
  * Mixed-scene image bindings (group 0):
  *   0 - the existing 64-byte `DisplayUniforms` buffer;
  *   1 - one 32-byte `RasterImageUniforms` buffer;
- *   2 - the complete premultiplied `rgba8unorm-srgb` image texture + mip chain;
+ *   2 - the complete linear-premultiplied `rgba16float` image texture + mip chain;
  *   3 - a filtering sampler (linear min/mag and linear mip filtering).
  *
  * The image pipeline uses a four-vertex `triangle-strip`, culling disabled, and
@@ -22,10 +20,10 @@
  */
 
 export const RASTER_IMAGE_MIPMAP_STRATEGY =
-  "webgpu-straight-srgb-to-linear-premultiplied-exact-area-npot-mips-v2" as const;
+  "webgpu-straight-rgba8-srgb-to-linear-premultiplied-rgba16float-exact-area-npot-mips-v3" as const;
 
 export const RASTER_IMAGE_MIXED_SCENE_STRATEGY =
-  "webgpu-native-srgb-mips-transformed-quad-premultiplied-source-over-v1" as const;
+  "webgpu-linear-rgba16float-mips-transformed-quad-premultiplied-source-over-v2" as const;
 
 /**
  * Generates one mip from a view of the immediately preceding mip.
@@ -106,8 +104,8 @@ fn fragmentMain(
     }
   }
 
-  // Each source view contains linear-premultiplied pixels encoded by its sRGB
-  // format. Exact area weights preserve every edge texel on odd NPOT levels.
+  // Each source view contains linear-premultiplied RGBA16F pixels. Exact area
+  // weights preserve every edge texel on odd NPOT levels.
   return accumulated / max(accumulatedWeight, 0.000001);
 }
 `;
@@ -245,9 +243,9 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     );
   }
 
-  // Sampling the sRGB texture decodes RGB to linear light. The asset and all
-  // its mip levels are already premultiplied, therefore opacity scales the
-  // complete RGBA vector exactly once before fixed-function source-over.
+  // The RGBA16F asset and all its mip levels are already linear-premultiplied,
+  // therefore opacity scales the complete RGBA vector exactly once before
+  // fixed-function source-over.
   return source * clamp(image.opacity, 0.0, 1.0);
 }
 `;

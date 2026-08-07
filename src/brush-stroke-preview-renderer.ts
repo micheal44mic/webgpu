@@ -607,7 +607,7 @@ export class AuthoritativeBrushStrokePreviewRenderer {
     const accumulatorFormat: GPUTextureFormat = direct
       ? this.engine.layerFormat
       : settings.blendMode === "light-glaze" || settings.blendMode === "m1-glaze"
-        ? "r8unorm"
+        ? "r16float"
         : "rgba16float";
     const existing = this.target;
     if (

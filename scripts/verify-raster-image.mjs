@@ -14,6 +14,8 @@ import {
 import {
   planRasterImageMemory,
   rasterImageMipChainBytes,
+  RASTER_IMAGE_DECODED_BYTES_PER_PIXEL,
+  RASTER_IMAGE_LINEAR_BYTES_PER_PIXEL,
   RASTER_IMAGE_UNIFORM_BYTES,
 } from "../src/raster-image-budget.ts";
 
@@ -131,8 +133,10 @@ assert.equal(
 );
 assert.equal(
   RASTER_IMAGE_LAYER_IMPORT_STRATEGY,
-  "decoded-straight-srgb-transient-exact-npot-mips-linear-premultiplied-top-left-native-layer-v2",
+  "decoded-rgba8-srgb-to-linear-premultiplied-rgba16float-exact-npot-mips-native-layer-v3",
 );
+assert.equal(RASTER_IMAGE_DECODED_BYTES_PER_PIXEL, 4);
+assert.equal(RASTER_IMAGE_LINEAR_BYTES_PER_PIXEL, 8);
 assert.match(
   rasterImageLayerBlitShader,
   /let texcoords = array<vec2<f32>, 4>\(\s*vec2<f32>\(0\.0, 1\.0\),\s*vec2<f32>\(1\.0, 1\.0\),\s*vec2<f32>\(0\.0, 0\.0\),\s*vec2<f32>\(1\.0, 0\.0\)/,
@@ -143,16 +147,16 @@ assert.deepEqual(planRasterImageMemory(1, 1, 7), {
   width: 1,
   height: 1,
   mipLevelCount: 1,
-  residentGpuBytes: 4 + RASTER_IMAGE_UNIFORM_BYTES,
+  residentGpuBytes: 8 + RASTER_IMAGE_UNIFORM_BYTES,
   uploadTextureBytes: 4,
   decodedBitmapBytes: 4,
   inspectionBytes: 7,
-  logicalImportPeakBytes: 4 + RASTER_IMAGE_UNIFORM_BYTES + 4 + 4 + 7,
+  logicalImportPeakBytes: 8 + RASTER_IMAGE_UNIFORM_BYTES + 4 + 4 + 7,
 });
-assert.equal(rasterImageMipChainBytes(3, 1), 16, "NPOT mip accounting must include 3×1 and 1×1");
+assert.equal(rasterImageMipChainBytes(3, 1), 32, "NPOT RGBA16F mips must include 3×1 and 1×1");
 assert.equal(
   rasterImageMipChainBytes(2 ** 32 + 1, 1, 2),
-  ((2 ** 32 + 1) + 2 ** 31) * 4,
+  ((2 ** 32 + 1) + 2 ** 31) * 8,
   "pure accounting must not truncate dimensions through signed bit shifts",
 );
 assert.throws(() => rasterImageMipChainBytes(3, 1, 3), /massimo 2 livelli mip/);
@@ -160,11 +164,11 @@ assert.deepEqual(planRasterImageMemory(3, 1, 5), {
   width: 3,
   height: 1,
   mipLevelCount: 2,
-  residentGpuBytes: 16 + RASTER_IMAGE_UNIFORM_BYTES,
+  residentGpuBytes: 32 + RASTER_IMAGE_UNIFORM_BYTES,
   uploadTextureBytes: 12,
   decodedBitmapBytes: 12,
   inspectionBytes: 5,
-  logicalImportPeakBytes: 16 + RASTER_IMAGE_UNIFORM_BYTES + 12 + 12 + 5,
+  logicalImportPeakBytes: 32 + RASTER_IMAGE_UNIFORM_BYTES + 12 + 12 + 5,
 });
 const desktopSizedBudget = planRasterImageMemory(4096, 4096, 16 * 1024 * 1024);
 assert.ok(desktopSizedBudget.logicalImportPeakBytes < 384 * 1024 * 1024);
@@ -305,7 +309,16 @@ assert.match(
   /GPUTextureUsage\.COPY_DST[\s\S]{0,100}GPUTextureUsage\.TEXTURE_BINDING[\s\S]{0,100}GPUTextureUsage\.RENDER_ATTACHMENT/,
   "copyExternalImageToTexture destination must allow Dawn's render path",
 );
-assert.match(runtimeSource, /format: "rgba8unorm-srgb"/);
+assert.equal(
+  (runtimeSource.match(/format: "rgba8unorm-srgb"/g) ?? []).length,
+  1,
+  "only the browser-decoded straight source may remain RGBA8-sRGB",
+);
+assert.ok(
+  (runtimeSource.match(/format: "rgba16float"/g) ?? []).length >= 3,
+  "premultiply target, mip target and linear mip texture must be RGBA16F",
+);
+assert.doesNotMatch(shaderSource, /pack4x8unorm|unpack4x8unorm/);
 assert.match(runtimeSource, /GPUTextureUsage\.RENDER_ATTACHMENT/);
 assert.match(runtimeSource, /allocateLayerGpuResources\(/);
 assert.match(runtimeSource, /createLayerColdStorageCandidate\(/);

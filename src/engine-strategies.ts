@@ -84,13 +84,16 @@ export type GrainAdaptivePreviewStrategy =
 
 export type LightGlazeStrategy =
   | "uniformed-linear-rgba16float-live-composite-mips-single-commit"
-  | "light-r8-max-per-gesture-source-over-between-gestures"
-  | "m1-r8-quantized-max-coverage-plus-composited-mips-single-commit"
+  | "light-r16float-max-per-gesture-source-over-between-gestures"
+  | "m1-r16float-max-coverage-plus-composited-mips-single-commit"
   | "intense-physical-stamps-source-over-srgb-rgba16float-live-single-commit";
 
 export type LightGlazeAdaptivePreviewStrategy = "disabled-semantic-mismatch";
 
-export type LightGlazeStorageMode = "none" | "rgba16float-stroke" | "r8-coverage";
+export type LightGlazeStorageMode =
+  | "none"
+  | "rgba16float-stroke"
+  | "r16float-coverage";
 
 export type ThicknessDynamicsPreviewStrategy = "predictive-webgpu-tail-overlay";
 
@@ -162,10 +165,10 @@ export const UNIFORMED_GLAZE_STRATEGY =
   "uniformed-linear-rgba16float-live-composite-mips-single-commit" as const;
 
 export const LIGHT_GLAZE_STRATEGY =
-  "light-r8-max-per-gesture-source-over-between-gestures" as const;
+  "light-r16float-max-per-gesture-source-over-between-gestures" as const;
 
 export const M1_GLAZE_STRATEGY =
-  "m1-r8-quantized-max-coverage-plus-composited-mips-single-commit" as const;
+  "m1-r16float-max-coverage-plus-composited-mips-single-commit" as const;
 
 export const INTENSE_BLENDING_STAMP_STRATEGY =
   "intense-physical-stamps-source-over-srgb-rgba16float-live-single-commit" as const;
@@ -234,7 +237,7 @@ export function usesBlendRenderer(settings: BrushSettings): boolean {
 
 export function lightGlazeStorageModeFor(blendMode: BlendMode): LightGlazeStorageMode {
   return blendMode === "light-glaze" || blendMode === "m1-glaze"
-    ? "r8-coverage"
+    ? "r16float-coverage"
     : "rgba16float-stroke";
 }
 

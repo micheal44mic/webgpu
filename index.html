@@ -2344,7 +2344,7 @@
           </fieldset>
 
           <button id="vectorTextRasterize" class="primary wide" type="button">
-            Rasterizza testo in livello RGBA8
+            Rasterizza testo in livello RGBA16F
           </button>
           <p id="vectorTextRasterStatus" class="result" aria-live="polite">
             Slug analitico alla risoluzione documento · MSAA 4× · tile 256 px.
@@ -2356,7 +2356,7 @@
             <p id="vectorSvgSourceSummary" class="result"></p>
             <div id="vectorSvgPalette" class="vector-svg-palette"></div>
             <button id="vectorSvgRasterize" class="primary wide" type="button">
-              Rasterizza SVG in livello RGBA8
+              Rasterizza SVG in livello RGBA16F
             </button>
             <p class="result">
               Qualità massima WebGPU: MSAA 4× e blocchi allineati ai tile 256 px.
@@ -2776,7 +2776,7 @@
             </label>
 
             <p class="result">
-              Equivalenza M1: JFA duale, distanza Q10.6, copertura R8 e compositing premoltiplicato.
+              Equivalenza M1: JFA duale, distanza Q10.6, copertura R16F e compositing premoltiplicato RGBA16F.
             </p>
           </div>
         </section>
@@ -2788,7 +2788,7 @@
             <input id="rasterOuterShadowEnabled" type="checkbox" />
             <span>
               Ombra proiettata
-              <small>Matte R8 indipendente, applicata senza modificare i pixel sorgente.</small>
+              <small>Matte R16F indipendente, applicata senza modificare i pixel sorgente.</small>
             </span>
           </label>
 
@@ -2872,7 +2872,7 @@
             <input id="rasterInnerShadowEnabled" type="checkbox" />
             <span>
               Ombra sul bordo interno
-              <small>Matte R8 indipendente, ritagliata dall’alpha del livello.</small>
+              <small>Matte R16F indipendente, ritagliata dall’alpha del livello.</small>
             </span>
           </label>
 
@@ -3077,9 +3077,8 @@
 
           <label class="control">
             <span>Precisione layer</span>
-            <select id="layerFormat">
-              <option value="rgba8unorm" data-layer-format-label="RGBA8 linear"></option>
-              <option value="rgba16float" data-layer-format-label="RGBA16F linear"></option>
+            <select id="layerFormat" disabled aria-disabled="true" title="Formato documento permanente">
+              <option value="rgba16float" data-layer-format-label="RGBA16F linear" selected></option>
             </select>
           </label>
         </section>
@@ -3215,44 +3214,51 @@
         ></output>
         <div class="hint">Un dito disegna o riempie · due dita spostano, fanno zoom e ruotano · desktop: R + trascina</div>
 
-        <aside id="gpuMemoryMonitor" class="gpu-memory-monitor" aria-label="Memoria GPU conteggiata">
+        <aside id="gpuMemoryMonitor" class="gpu-memory-monitor" aria-label="Memoria GPU registrata">
           <section id="gpuMemoryPanel" class="gpu-memory-panel" hidden>
             <header class="gpu-memory-header">
               <div>
-                <span>Memoria GPU conteggiata</span>
+                <span>Memoria GPU registrata</span>
                 <strong id="gpuMemoryTotal">—</strong>
+                <small id="gpuMemoryPeak">picco —</small>
               </div>
               <button id="gpuMemoryClose" type="button" aria-label="Chiudi dettaglio memoria" title="Chiudi">×</button>
             </header>
-            <p class="gpu-memory-subtitle">Risorse WebGPU create dal motore</p>
+            <p class="gpu-memory-subtitle">Allocazioni WebGPU logiche registrate dal motore</p>
+            <p class="gpu-memory-measured-heading">
+              Ripartizione esatta
+              <span><output id="gpuMeasuredTotal">—</output> corrente · <output id="gpuMeasuredPeak">—</output> picco</span>
+            </p>
+            <dl class="gpu-memory-list gpu-memory-measured" id="gpuMeasuredBreakdown"></dl>
+            <p class="gpu-memory-measured-heading">Modello diagnostico · non sommato al totale</p>
             <dl class="gpu-memory-list">
-              <div data-memory-row><dt>Layer · raster di lavoro full-canvas</dt><dd id="gpuMemoryLayerBase">—</dd></div>
+              <div data-memory-row><dt>Layer · RGBA16F autorevole full-canvas</dt><dd id="gpuMemoryLayerBase">—</dd></div>
               <div data-memory-row><dt>Layer · inattivi cold tile</dt><dd id="gpuMemoryLayerCold">—</dd></div>
-              <div data-memory-row><dt>Gruppo ritaglio attivo · RGBA ritagliata</dt><dd id="gpuMemoryActiveClippingMask">—</dd></div>
+              <div data-memory-row><dt>Gruppo ritaglio attivo · RGBA16F ritagliata</dt><dd id="gpuMemoryActiveClippingMask">—</dd></div>
               <div data-memory-row><dt>Layer · compressi · RAM CPU</dt><dd id="gpuMemoryLayerCompressed">—</dd></div>
               <div data-memory-row><dt>Totale contato · GPU + cold RAM CPU</dt><dd id="gpuMemoryCountedWithCompressedCpu">—</dd></div>
               <div data-memory-row><dt>Layer · reidratazione transitoria</dt><dd id="gpuMemoryLayerHydration">—</dd></div>
               <div class="gpu-memory-study" data-memory-study-row><dt id="gpuMemoryLayerStudyTilesLabel">Raw livelli · hot + cold effettivo</dt><dd id="gpuMemoryLayerStudyTiles">—</dd></div>
               <div class="gpu-memory-study" data-memory-study-row><dt id="gpuMemoryLayerStudyBboxLabel">Confronto · bbox 256</dt><dd id="gpuMemoryLayerStudyBbox">—</dd></div>
-              <div data-memory-row><dt>Mip · attivo e superfici fuse</dt><dd id="gpuMemoryLayerMips">—</dd></div>
-              <div data-memory-row><dt>Bake livelli · transitori</dt><dd id="gpuMemoryLayerBakes">—</dd></div>
-              <div data-memory-row><dt>Livelli fusi · mip 0</dt><dd id="gpuMemoryLayerComposite">—</dd></div>
+              <div data-memory-row><dt>Piramidi mip · RGBA16F</dt><dd id="gpuMemoryLayerMips">—</dd></div>
+              <div data-memory-row><dt>Bake livelli · RGBA16F transitori</dt><dd id="gpuMemoryLayerBakes">—</dd></div>
+              <div data-memory-row><dt>Livelli fusi · RGBA16F mip 0</dt><dd id="gpuMemoryLayerComposite">—</dd></div>
               <div data-memory-row><dt>Grain M1</dt><dd id="gpuMemoryGrain">—</dd></div>
-              <div id="gpuMemoryVectorTextRow" data-memory-row hidden><dt>Testo vettoriale · cache schermo</dt><dd id="gpuMemoryVectorText">—</dd></div>
+              <div id="gpuMemoryVectorTextRow" data-memory-row hidden><dt>Cache vettoriali · RGBA16F / matte R16F</dt><dd id="gpuMemoryVectorText">—</dd></div>
               <div id="gpuMemoryRasterImageRow" data-memory-row hidden><dt>Trasforma raster · scratch e mipmap</dt><dd id="gpuMemoryRasterImage">—</dd></div>
 
               <div data-memory-row><dt>Shape 2K</dt><dd id="gpuMemoryShape">—</dd></div>
               <div data-memory-row><dt>Buffer Paint</dt><dd id="gpuMemoryPaintBuffers">—</dd></div>
               <div data-memory-row><dt>Cache schermo</dt><dd id="gpuMemoryPresentation">—</dd></div>
               <div data-memory-row><dt>Miniatura layer · GPU</dt><dd id="gpuMemoryLayerThumbnail">—</dd></div>
-              <div class="gpu-memory-group-start" data-memory-row><dt>Style stack · risultato mip 1+</dt><dd id="gpuMemoryStrokeStyled">—</dd></div>
-              <div data-memory-row><dt>Traccia · copertura R8</dt><dd id="gpuMemoryStrokeCoverage">—</dd></div>
+              <div class="gpu-memory-group-start" data-memory-row><dt>Style stack · risultato RGBA16F mip 1+</dt><dd id="gpuMemoryStrokeStyled">—</dd></div>
+              <div data-memory-row><dt>Traccia · copertura continua R16F</dt><dd id="gpuMemoryStrokeCoverage">—</dd></div>
               <div data-memory-row><dt>Traccia · mask e controllo</dt><dd id="gpuMemoryStrokeControl">—</dd></div>
               <div data-memory-row><dt id="gpuMemoryEffectsScratchLabel">Effetti · pool scratch</dt><dd id="gpuMemoryEffectsScratch">—</dd></div>
               <div data-memory-row><dt>Pool scratch · picco</dt><dd id="gpuMemoryEffectsScratchPeak">—</dd></div>
-              <div class="gpu-memory-group-start" data-memory-row><dt>Ombra esterna · matte R8</dt><dd id="gpuMemoryOuterShadowMatte">—</dd></div>
+              <div class="gpu-memory-group-start" data-memory-row><dt>Ombra esterna · matte R16F</dt><dd id="gpuMemoryOuterShadowMatte">—</dd></div>
               <div data-memory-row><dt>Ombra esterna · controllo</dt><dd id="gpuMemoryOuterShadowControl">—</dd></div>
-              <div class="gpu-memory-group-start" data-memory-row><dt>Ombra interna · matte R8</dt><dd id="gpuMemoryInnerShadowMatte">—</dd></div>
+              <div class="gpu-memory-group-start" data-memory-row><dt>Ombra interna · matte R16F</dt><dd id="gpuMemoryInnerShadowMatte">—</dd></div>
               <div data-memory-row><dt>Ombra interna · controllo</dt><dd id="gpuMemoryInnerShadowControl">—</dd></div>
               <div class="gpu-memory-group-start" data-memory-row><dt id="gpuMemoryBevelHeightLabel">Smusso · heightfield R32F</dt><dd id="gpuMemoryBevelHeight">—</dd></div>
               <div data-memory-row><dt>Smusso · LUT e controllo</dt><dd id="gpuMemoryBevelControl">—</dd></div>
@@ -3260,18 +3266,14 @@
               <div class="gpu-memory-group-start" data-memory-row><dt>Blend dry · scratch</dt><dd id="gpuMemoryBlend">—</dd></div>
               <div data-memory-row><dt>Riempimento / bacchetta · scratch CCL</dt><dd id="gpuMemoryFill">—</dd></div>
               <div data-memory-row><dt>Selezione pixel · mask e span</dt><dd id="gpuMemorySelection">—</dd></div>
-              <div data-memory-row><dt>Rendering · Light / Uniformed / Intense</dt><dd id="gpuMemoryLightGlaze">—</dd></div>
+              <div data-memory-row><dt>Rendering · Light R16F / Uniformed e Intense RGBA16F</dt><dd id="gpuMemoryLightGlaze">—</dd></div>
               <div data-memory-row><dt>Coda stabilizzazione</dt><dd id="gpuMemoryStabilizationTail">—</dd></div>
               <div data-memory-row><dt>Coda spessore</dt><dd id="gpuMemoryThicknessTail">—</dd></div>
               <div class="gpu-memory-group-start" data-memory-row><dt id="gpuMemoryHistoryLabel">Cronologia raster · GPU</dt><dd id="gpuMemoryHistory">—</dd></div>
             </dl>
-            <p class="gpu-memory-measured-heading">
-              Ripartizione misurata <span id="gpuMeasuredTotal">—</span>
-            </p>
-            <dl class="gpu-memory-list gpu-memory-measured" id="gpuMeasuredBreakdown"></dl>
             <p id="gpuMemoryHistoryDiagnostics" class="gpu-memory-note">—</p>
             <p id="gpuMemoryAudit" class="gpu-memory-note">—</p>
-            <p class="gpu-memory-note">Stima delle allocazioni note. Le due righe «Studio cold» simulano soltanto la memoria raw con attivo full-canvas e inattivi compatti: non sono allocate né sommate al totale. Il pool scratch corrente è conteggiato una sola volta; il picco è storico e non viene sommato. La cronologia raster mostra pagine GPU riservate e payload usato ed è inclusa nel totale; Layer compressi resta RAM CPU esclusa. Non include swapchain, pipeline, driver o memoria del browser.</p>
+            <p class="gpu-memory-note">Il totale e la prima ripartizione provengono dal registro delle risorse vive: ogni texture o buffer appartiene a una sola categoria. La cronologia raster mostra pagine GPU riservate e cold storage registrato nel totale. I picchi di categoria sono storici indipendenti e non vanno sommati. Il modello diagnostico resta visibile soltanto per individuare derive; le due righe di studio cold sono controfattuali. Layer compressi è RAM CPU separata. Non include swapchain, pipeline, overhead del driver o memoria del browser.</p>
           </section>
 
           <button

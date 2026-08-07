@@ -204,9 +204,9 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
     },
     primitive: { topology: "triangle-list" },
   });
-  engine.lightGlazeClearR8Pipeline = createLightGlazeClearPipeline(
-    "Light Glaze R8 stale dirty-region clear pipeline",
-    "r8unorm",
+  engine.lightGlazeClearR16Pipeline = createLightGlazeClearPipeline(
+    "Light Glaze R16F stale dirty-region clear pipeline",
+    "r16float",
   );
   engine.lightGlazeClearRgba16FloatPipeline = createLightGlazeClearPipeline(
     "Uniformed/Intense RGBA16F stale dirty-region clear pipeline",
@@ -525,7 +525,7 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
       fragment: {
         module: engine.rasterImageMipmapShaderModule,
         entryPoint: "fragmentMain",
-        targets: [{ format: "rgba8unorm-srgb" }],
+        targets: [{ format: "rgba16float" }],
       },
       primitive: { topology: "triangle-list" },
     });
@@ -542,7 +542,7 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
       fragment: {
         module: engine.rasterImageMipmapShaderModule,
         entryPoint: "fragmentPremultiplyMain",
-        targets: [{ format: "rgba8unorm-srgb" }],
+        targets: [{ format: "rgba16float" }],
       },
       primitive: { topology: "triangle-list" },
     });

@@ -107,7 +107,8 @@ export type RasterLayerMetadataHistoryAction = {
 /**
  * Common authoritative checkpoint retained by raster actions.
  *
- * The seed always describes the pixels AFTER the action. A null seed is valid
+ * The seed always describes the byte-exact pixels AFTER the action and carries
+ * the authoritative layer format used to encode those bytes. A null seed is valid
  * only when the resulting layer is empty; bounds and tile metadata must then
  * be empty as well. Keeping this contract explicit prevents replay from
  * accidentally treating a transform as a geometric node layered over pixels.

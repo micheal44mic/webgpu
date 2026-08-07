@@ -14,6 +14,7 @@ import {
 import { paintMipDownsampleShader } from "./shaders";
 import {
   createRasterStrokeGoldenFixture,
+  packRgba8UnormToRgba16FloatBytes,
   RASTER_STROKE_GOLDEN_FORMAT,
   RASTER_STROKE_GOLDEN_HEIGHT,
   RASTER_STROKE_GOLDEN_WIDTH,
@@ -25,10 +26,16 @@ import {
 } from "./stroke-renderer";
 import rasterShadowGoldenBaseline from "../goldens/raster-shadow-rgba8-v1.json";
 
-export const RASTER_SHADOW_GOLDEN_VERSION = 1 as const;
-export const RASTER_SHADOW_GOLDEN_MIP_CHAIN_VERSION = 1 as const;
+export const RASTER_SHADOW_GOLDEN_VERSION = 2 as const;
+export const RASTER_SHADOW_GOLDEN_MIP_CHAIN_VERSION = 2 as const;
+
+const GOLDEN_RGBA16F_BYTES_PER_PIXEL = 8;
+const GOLDEN_RGBA16F_ALPHA_BYTE_OFFSET = 6;
 
 interface RasterShadowGoldenBaseline {
+  version: number;
+  format?: string;
+  mipChainVersion?: number;
   fixtureSha256: string;
   combinedSha256: string;
   mipCombinedSha256: string;
@@ -210,8 +217,12 @@ async function sha256(bytes: Uint8Array): Promise<string> {
 
 function countNonZeroAlphaPixels(pixels: Uint8Array): number {
   let count = 0;
-  for (let offset = 3; offset < pixels.length; offset += 4) {
-    if (pixels[offset] !== 0) {
+  for (
+    let offset = GOLDEN_RGBA16F_ALPHA_BYTE_OFFSET;
+    offset < pixels.length;
+    offset += GOLDEN_RGBA16F_BYTES_PER_PIXEL
+  ) {
+    if ((pixels[offset] | (pixels[offset + 1] & 0x7f)) !== 0) {
       count += 1;
     }
   }
@@ -223,11 +234,12 @@ function uploadFixture(
   texture: GPUTexture,
   pixels: Uint8Array,
 ): void {
+  const packed = packRgba8UnormToRgba16FloatBytes(pixels);
   device.queue.writeTexture(
     { texture },
-    pixels,
+    packed,
     {
-      bytesPerRow: RASTER_STROKE_GOLDEN_WIDTH * 4,
+      bytesPerRow: RASTER_STROKE_GOLDEN_WIDTH * GOLDEN_RGBA16F_BYTES_PER_PIXEL,
       rowsPerImage: RASTER_STROKE_GOLDEN_HEIGHT,
     },
     {
@@ -261,11 +273,15 @@ export async function runRasterShadowGolden(
     size: 32,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
-  device.queue.writeBuffer(lightGlazeUniformBuffer, 0, new Uint8Array(32));
+  const lightGlazeUniforms = new Uint32Array(8);
+  lightGlazeUniforms[1] = 1;
+  device.queue.writeBuffer(lightGlazeUniformBuffer, 0, lightGlazeUniforms);
   device.queue.writeBuffer(thicknessTailUniformBuffer, 0, new Uint8Array(32));
 
   const fixture = createRasterStrokeGoldenFixture();
-  const fixtureSha256 = await sha256(fixture);
+  const fixtureSha256 = await sha256(
+    packRgba8UnormToRgba16FloatBytes(fixture),
+  );
   uploadFixture(device, sourceTexture, fixture);
 
   const workbench = new EffectsWorkbench({
@@ -487,6 +503,27 @@ export async function runRasterShadowGolden(
           baselineMismatches.push(`${goldenCase.id}:mip-${mip.level}`);
         }
       }
+    }
+    if (goldenBaseline.version !== RASTER_SHADOW_GOLDEN_VERSION) {
+      baselineMismatches.unshift(
+        `version:${goldenBaseline.version}->${RASTER_SHADOW_GOLDEN_VERSION}`,
+      );
+    }
+    if (goldenBaseline.format !== RASTER_STROKE_GOLDEN_FORMAT) {
+      const legacyFormat = goldenBaseline.format ?? "rgba8unorm (legacy)";
+      baselineMismatches.unshift(
+        `format:${legacyFormat}->${RASTER_STROKE_GOLDEN_FORMAT}`,
+      );
+    }
+    if (
+      goldenBaseline.mipChainVersion
+      !== RASTER_SHADOW_GOLDEN_MIP_CHAIN_VERSION
+    ) {
+      const legacyMipVersion = goldenBaseline.mipChainVersion ?? 1;
+      baselineMismatches.unshift(
+        `mip-version:${legacyMipVersion}`
+        + `->${RASTER_SHADOW_GOLDEN_MIP_CHAIN_VERSION}`,
+      );
     }
     if (fixtureSha256 !== goldenBaseline.fixtureSha256) {
       baselineMismatches.unshift("fixture");
