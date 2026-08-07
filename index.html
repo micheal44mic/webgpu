@@ -351,15 +351,46 @@
         <div class="mobile-brush-library-content">
           <div class="mobile-brush-library-heading">
             <h2 class="mobile-brush-library-title">M1M4 BRUSHES</h2>
-            <button
-              id="mobileBrushLibraryAdd"
-              class="mobile-brush-library-add"
-              type="button"
-              aria-label="Create a new brush"
-              title="New brush"
+            <div
+              class="mobile-brush-library-actions"
+              role="group"
+              aria-label="Brush actions"
             >
-              <i data-lucide="plus" aria-hidden="true"></i>
-            </button>
+              <button
+                id="mobileBrushLibraryImport"
+                class="mobile-brush-library-action"
+                type="button"
+                aria-label="Import brush"
+                title="Import brush"
+              >
+                <i data-lucide="upload" aria-hidden="true"></i>
+              </button>
+              <button
+                id="mobileBrushLibraryExport"
+                class="mobile-brush-library-action"
+                type="button"
+                aria-label="Export selected brush"
+                title="Export selected brush"
+                disabled
+              >
+                <i data-lucide="download" aria-hidden="true"></i>
+              </button>
+              <button
+                id="mobileBrushLibraryAdd"
+                class="mobile-brush-library-action mobile-brush-library-add"
+                type="button"
+                aria-label="Create a new brush"
+                title="New brush"
+              >
+                <i data-lucide="plus" aria-hidden="true"></i>
+              </button>
+            </div>
+            <input
+              id="mobileBrushLibraryImportFile"
+              type="file"
+              accept=".m1m4brush,application/vnd.m1m4.brush,application/octet-stream"
+              hidden
+            />
           </div>
           <p
             id="mobileBrushLibraryStatus"

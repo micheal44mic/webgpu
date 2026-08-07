@@ -200,6 +200,13 @@ function normalizedBrushSourceBlob(source: DecodedCustomBrushImage): Promise<Blo
   });
 }
 
+export async function normalizeBrushStudioSourceBlob(
+  blob: Blob,
+  name: string,
+): Promise<Blob> {
+  return normalizedBrushSourceBlob(await decodeBrushSource(blob, name));
+}
+
 export class MobileBrushStudioController {
   readonly sheet = requiredElement<HTMLElement>("mobileBrushStudioSheet");
   readonly handle = requiredElement<HTMLButtonElement>("mobileBrushStudioHandle");
@@ -265,6 +272,10 @@ export class MobileBrushStudioController {
 
   rememberSettings(brushId: string, settings: Readonly<BrushSettings>): void {
     this.settingsCache.set(brushId, copySettings(settings));
+  }
+
+  forgetSettings(brushId: string): void {
+    this.settingsCache.delete(brushId);
   }
 
   settingsSnapshot(
