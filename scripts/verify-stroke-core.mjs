@@ -22,7 +22,6 @@ import {
   normalizeRasterStrokeStyle,
   packRasterStrokeDistanceQ10_6,
   partitionRasterStrokeBuildKeys,
-  quantizeRasterStrokeCoverage,
   quantizeRasterStrokeDistance,
   rasterStrokeBuildRegion,
   rasterStrokeCoverageFromFixedDistance,
@@ -35,8 +34,6 @@ import {
   rasterStrokeSignedDistance,
   rasterStrokeStylesEqual,
   rasterStrokeTileHalo,
-  unpackRasterStrokeDistanceQ10_6,
-  unpackRasterStrokeFixedDistanceFromUnorm,
 } from "../src/stroke-core.ts";
 import {
   DEFAULT_RASTER_COLOR_OVERLAY_STYLE,
@@ -288,36 +285,15 @@ assert.equal(quantizeRasterStrokeDistance(1023), 65472);
 assert.equal(quantizeRasterStrokeDistance(2000), 65472);
 assert.deepEqual(packRasterStrokeDistanceQ10_6(4.5), [32, 1]);
 assert.deepEqual(packRasterStrokeDistanceQ10_6(1023), [192, 255]);
-assert.equal(
-  unpackRasterStrokeFixedDistanceFromUnorm(32 / 255, 1 / 255),
-  288,
-);
-assert.equal(unpackRasterStrokeDistanceQ10_6(32 / 255, 1 / 255), 4.5);
 
 // NODE_FRAGMENT signed-distance correction around the alpha=0.5 isoline.
 assert.equal(RASTER_STROKE_ALPHA_THRESHOLD, 0.5);
 assert.equal(rasterStrokeSignedDistance(0.5, 1), 0);
 assert.equal(rasterStrokeSignedDistance(1, 1), -0.5);
 assert.equal(rasterStrokeSignedDistance(0, 1), 0.5);
-approx(
-  rasterStrokeSignedDistance(127 / 255, 1),
-  1 / 510,
-);
-approx(
-  rasterStrokeSignedDistance(128 / 255, 1),
-  -1 / 510,
-);
 
-// rampAt/coverage equations, including the shader's R8 half-up quantization.
-assert.equal(quantizeRasterStrokeCoverage(0.5), 128 / 255);
-assert.equal(
-  rasterStrokeCoverageFromSignedDistance(0, 2, "outside"),
-  128 / 255,
-);
-assert.equal(
-  rasterStrokeCoverageFromSignedDistance(0, 2, "inside"),
-  128 / 255,
-);
+// Keep the CPU geometry endpoint checks, but do not make its historical
+// byte-quantized midpoint an oracle for the packed-f16 runtime coverage.
 assert.equal(
   rasterStrokeCoverageFromSignedDistance(0, 2, "center"),
   1,
@@ -333,10 +309,6 @@ assert.equal(
 assert.equal(
   rasterStrokeCoverageFromFixedDistance(0, 64, 2, "outside"),
   1,
-);
-assert.equal(
-  rasterStrokeCoverageFromFixedDistance(0.5, 64, 2, "outside"),
-  128 / 255,
 );
 assert.equal(
   rasterStrokeCoverageFromFixedDistance(0.5, 0, 512, "center"),
@@ -421,7 +393,7 @@ const goldenMipBaseline = JSON.parse(readFileSync(
 ));
 assert.match(
   rendererSource,
-  /style-stack-webgpu-v16-alpha-clipped-normal-color-overlay-before-inner-shadow-bevel-stroke-lazy-stroke-geometry-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-nearest-raster-at-581pct-native-unorm-round-even/,
+  /style-stack-webgpu-v16-alpha-clipped-normal-color-overlay-before-inner-shadow-bevel-stroke-lazy-stroke-geometry-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-nearest-raster-at-581pct/,
 );
 assert.match(rendererSource, /const PARAMETER_BYTES = 96/);
 assert.ok(
@@ -457,16 +429,26 @@ assert.ok(
 assert.match(rendererSource, /style\.enabled && style\.width > 0 \? 1 : 0/);
 assert.match(rendererSource, /let dt = 0\.5 \* fwidth\(t\)/);
 assert.match(rendererSource, /persistent alpha-threshold bit mask/);
-assert.match(rendererSource, /persistent packed R8 coverage/);
-assert.match(rendererSource, /direct-lod0-plus-derived-mips-1-through-12/);
-assert.match(rendererSource, /fn directStyledSample/);
-assert.match(rendererSource, /native-unorm-round-even/);
+assert.match(rendererSource, /persistent packed f16 coverage/);
+assert.match(rendererSource, /const COVERAGE_WORD_PIXELS = 2/);
+assert.match(rendererSource, /return clamp\(coverage, 0\.0, 1\.0\);/);
 assert.match(
   rendererSource,
-  /round\(clamp\(value, vec4<f32>\(0\.0\), vec4<f32>\(1\.0\)\) \* 255\.0\) \/ 255\.0/,
+  /coverageField\[linearIndex >> 1u\] = pack2x16float\(coveragePair\)/,
 );
+assert.match(
+  rendererSource,
+  /unpack2x16float\(coverageField\[linearIndex >> 1u\]\)/,
+);
+assert.doesNotMatch(rendererSource, /resolveCoverageByte/);
+assert.doesNotMatch(rendererSource, /0\.75 \/ 255\.0/);
+assert.match(rendererSource, /direct-lod0-plus-derived-mips-1-through-12/);
+assert.match(rendererSource, /fn directStyledSample/);
 assert.match(rendererSource, /fn storedLightCoverage/);
-assert.match(rendererSource, /pack2x16float\(vec2<f32>\(coverage, 0\.0\)\)/);
+assert.match(
+  rendererSource,
+  /fn storedLightCoverage\(value: f32\) -> f32 \{\s*return clamp\(value, 0\.0, 1\.0\);\s*\}/,
+);
 assert.match(rendererSource, /Traccia styled derived mip 1\+/);
 assert.match(engineSource, /rasterStrokeDisplayPipeline/);
 assert.match(engineSource, /presentationCacheLod0FullRebuildTraceEnabledCpuEncodingMs/);
@@ -582,14 +564,22 @@ assert.match(goldenSource, /threshold-island-new-edge/);
 assert.match(goldenSource, /gate-deep-interior-skips-rebuild/);
 assert.match(goldenSource, /gate-subthreshold-alpha-near-outer-coverage/);
 assert.match(goldenSource, /light-glaze-source-over-opacity-0\.43/);
-assert.match(goldenSource, /light-glaze-m1-r8-max-coverage-opacity-0\.37/);
+assert.match(goldenSource, /light-glaze-m1-r16float-max-coverage-opacity-0\.37/);
+assert.match(goldenSource, /RASTER_STROKE_GOLDEN_VERSION = 2/);
+assert.match(goldenSource, /RASTER_STROKE_GOLDEN_FORMAT = "rgba16float"/);
+assert.match(goldenSource, /RASTER_STROKE_GOLDEN_MIP_CHAIN_VERSION = 2/);
+assert.match(goldenSource, /RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION = 9/);
+assert.match(goldenSource, /packRgba8UnormToRgba16FloatBytes/);
+assert.match(goldenSource, /format: "r16float"/);
+assert.doesNotMatch(goldenSource, /format: "r8unorm"/);
+assert.match(goldenSource, /unsigned\[1\] = 1/);
+assert.match(goldenSource, /GOLDEN_RGBA16F_BYTES_PER_PIXEL = 8/);
 assert.match(goldenSource, /thickness-tail-source-over/);
 assert.match(goldenSource, /analytic-layer-bake-matches-golden-mip0/);
 assert.match(goldenSource, /renderer!\.encodeBake\(/);
 assert.match(goldenSource, /encoded\.pixels === RASTER_STROKE_GOLDEN_WIDTH \* RASTER_STROKE_GOLDEN_HEIGHT/);
 assert.match(goldenSource, /diagnosticsMatch/);
 assert.match(goldenSource, /differingBytes/);
-assert.match(goldenSource, /RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION = 8/);
 // Il pool sostituisce il buffer fisico quando cresce e distrugge il vecchio: se
 // i renderer non rileggessero il lease, i loro bind group punterebbero a un
 // buffer distrutto. Nessun altro caso raggiunge quello stato.
@@ -683,17 +673,18 @@ let traceStyledPixels = 0;
 for (let mipLevel = 1; mipLevel < 13; mipLevel += 1) {
   traceStyledPixels += Math.max(1, 4_096 >> mipLevel) ** 2;
 }
-const tracePersistentRgba8MiB = (
-  traceStyledPixels * 4
-  + Math.ceil(4_096 * 4_096 / 4) * 4
+const tracePersistentRgba16fMiB = (
+  traceStyledPixels * 8
+  + Math.ceil(4_096 * 4_096 / 2) * 4
   + Math.ceil(4_096 / 32) * 4_096 * 4
   + traceControlBytes
 ) / (1024 * 1024);
-const traceCompactRgba8MiB = tracePersistentRgba8MiB
+const traceCompactRgba16fMiB = tracePersistentRgba16fMiB
   + RASTER_STROKE_COMPACT_SCRATCH_EXTENT ** 2 * 8 * 2 / (1024 * 1024);
-const traceFullRgba8MiB = tracePersistentRgba8MiB
+const traceFullRgba16fMiB = tracePersistentRgba16fMiB
   + RASTER_STROKE_FULL_SCRATCH_EXTENT ** 2 * 8 * 2 / (1024 * 1024);
-assert.equal(Number(traceCompactRgba8MiB.toFixed(1)), 55.9);
-assert.equal(Number(traceFullRgba8MiB.toFixed(1)), 103.9);
+assert.equal(Number(tracePersistentRgba16fMiB.toFixed(1)), 77.2);
+assert.equal(Number(traceCompactRgba16fMiB.toFixed(1)), 93.2);
+assert.equal(Number(traceFullRgba16fMiB.toFixed(1)), 141.2);
 
 console.log("Raster Stroke core verification passed.");

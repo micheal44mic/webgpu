@@ -68,8 +68,11 @@ import {
 } from "../src/vector-text-single-shadow.ts";
 import {
   VECTOR_TEXT_GPU_BLUR_FORMAT,
+  VECTOR_TEXT_GPU_BLUR_BYTES_PER_PIXEL,
   VECTOR_TEXT_GPU_RENDER_STRATEGY,
   VECTOR_TEXT_GPU_SAMPLE_COUNT,
+  VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL,
+  VECTOR_TEXT_GPU_TARGET_FORMAT,
 } from "../src/vector-text-gpu-shader.ts";
 import {
   VECTOR_TEXT_SLUG_GPU_RENDER_STRATEGY,
@@ -588,15 +591,15 @@ assert.equal(
 );
 assert.equal(
   VECTOR_TEXT_SINGLE_SHADOW_STRATEGY,
-  "webgpu-slug-zero-blur-or-r8-separable-gaussian-v2",
+  "webgpu-slug-zero-blur-or-r16float-separable-gaussian-v3",
 );
 assert.equal(
   VECTOR_TEXT_INNER_SHADOW_STRATEGY,
-  "webgpu-slug-analytic-fill-clip-zero-blur-or-r8-separable-gaussian-v1",
+  "webgpu-slug-analytic-fill-clip-zero-blur-or-r16float-separable-gaussian-v2",
 );
 assert.equal(
   VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY,
-  "webgpu-slug-r8-mask-separable-gaussian-roi-cache-v2",
+  "webgpu-slug-r16float-mask-separable-gaussian-roi-cache-v3",
 );
 assert.equal(
   VECTOR_TEXT_GPU_GEOMETRY_STRATEGY,
@@ -611,9 +614,15 @@ assert.equal(
   VECTOR_TEXT_SLUG_COMPILER_VERSION,
   "three-text-slug-0.6.5-whole-node-compact-bands-inclusive-v2",
 );
-assert.equal(VECTOR_TEXT_GPU_RENDER_STRATEGY, "webgpu-indexed-vector-msaa4-exact-camera-redraw-v1");
+assert.equal(
+  VECTOR_TEXT_GPU_RENDER_STRATEGY,
+  "webgpu-indexed-vector-linear-rgba16float-msaa4-exact-camera-redraw-v2",
+);
+assert.equal(VECTOR_TEXT_GPU_TARGET_FORMAT, "rgba16float");
+assert.equal(VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL, 8);
 assert.equal(VECTOR_TEXT_GPU_SAMPLE_COUNT, 4);
-assert.equal(VECTOR_TEXT_GPU_BLUR_FORMAT, "r8unorm");
+assert.equal(VECTOR_TEXT_GPU_BLUR_FORMAT, "r16float");
+assert.equal(VECTOR_TEXT_GPU_BLUR_BYTES_PER_PIXEL, 2);
 assert.equal(MIXED_SCENE_LINEAR_FORMAT, "rgba16float");
 assert.equal(
   MIXED_SCENE_COMPOSITOR_STRATEGY,
@@ -1413,7 +1422,7 @@ assert.ok(f32LineSecondDifference <= f32LineAbsoluteScale / 1048576);
 assert.doesNotMatch(slugSource, /perGlyph|glyphQuads|one quad per glyph/i);
 assert.match(curveSource, /throw new Error\([\s\S]*depth/i);
 
-// Blur singolo: mask Slug R8, Gaussian separabile, ROI e kernel bounded.
+// Blur singolo: mask Slug R16F, Gaussian separabile, ROI e kernel bounded.
 assert.equal(VECTOR_TEXT_SINGLE_SHADOW_BLUR_MAXIMUM, 300);
 assert.equal(vectorTextSingleShadowBlurSupport(0), 0);
 assert.equal(vectorTextSingleShadowBlurSupport(6), 19);
@@ -1856,13 +1865,23 @@ assert.match(gpuShaderSource, /fn blurMaskVertexMain/);
 assert.match(gpuShaderSource, /fn meshInnerShadowFragmentMain/);
 
 // Rasterizzazione vettoriale autorevole: SVG mesh e testo Slug usano target
-// RGBA8 lineare, MSAA 4x, blocchi allineati ai tile e seed tiled Undo/Redo.
+// RGBA16F lineare, MSAA 4x, blocchi allineati ai tile e seed tiled Undo/Redo.
 assert.match(
   vectorRasterSource,
-  /semantic-vector-slug-mesh-webgpu-linear-rgba8-msaa4-512-tile-chunks-history-seed-v2/,
+  /semantic-vector-slug-mesh-webgpu-linear-layer-format-msaa4-512-tile-chunks-history-seed-v3/,
 );
-assert.match(vectorRasterSource, /VECTOR_RASTER_FORMAT = "rgba8unorm"/);
+assert.match(vectorRasterSource, /VECTOR_RASTER_FORMAT = "rgba16float"/);
 assert.match(vectorRasterSource, /VECTOR_RASTER_CHUNK_SIZE = LAYER_STORAGE_TILE_SIZE \* 2/);
+assert.match(
+  vectorRasterSource,
+  /WeakMap<[\s\S]{0,120}Map<LayerFormat, Promise<VectorRasterPipelines>>/,
+  "le pipeline raster vettoriali devono essere separate per formato documento",
+);
+assert.match(vectorRasterSource, /targets: \[\{ format, blend \}\]/);
+assert.match(vectorRasterSource, /const format = destination\.format/);
+assert.match(vectorRasterSource, /destination\.format !== engine\.layerFormat/);
+assert.match(vectorRasterSource, /createVectorRasterScratch\(engine, format\)/);
+assert.match(vectorRasterSource, /format,\s*usage: GPUTextureUsage\.RENDER_ATTACHMENT/);
 assert.match(vectorRasterSource, /sampleCount: VECTOR_TEXT_GPU_SAMPLE_COUNT/);
 assert.match(vectorRasterSource, /entryPoint: "fragmentMain"/);
 assert.match(vectorRasterSource, /slugInnerShadowDirect/);
@@ -1873,7 +1892,11 @@ assert.match(vectorRasterSource, /encodeLayerColdHydration\(/);
 assert.match(vectorRasterSource, /markLayerStorageRect\(/);
 assert.match(vectorRasterSource, /replaceVectorWithRaster\(/);
 assert.match(vectorRasterSource, /replaceRasterWithVector\(/);
-assert.match(vectorRasterSource, /rgba16float non viene convertito implicitamente/);
+assert.match(vectorRasterSource, /action\.seed\.format !== engine\.layerFormat/);
+assert.match(vectorRasterSource, /allocateLayerGpuResources\([\s\S]{0,100}action\.seed\.format/);
+assert.match(vectorRasterSource, /runGpuAllocationTransaction\(/);
+assert.match(vectorRasterSource, /Nessun fallback RGBA8 è consentito/);
+assert.doesNotMatch(vectorRasterSource, /format:\s*"rgba8unorm"/);
 assert.doesNotMatch(
   vectorRasterSource,
   /CanvasRenderingContext2D|copyExternalImageToTexture|drawImage\(/,
@@ -1883,6 +1906,8 @@ assert.match(controllerSource, /async rasterizeSelectedSvg\(\)/);
 assert.match(controllerSource, /await this\.host\.rasterizeVectorSvgNode\(svgId, draws\)/);
 assert.match(controllerSource, /async rasterizeSelectedText\(\)/);
 assert.match(controllerSource, /await this\.host\.rasterizeVectorTextNode\(textId, draws\)/);
+assert.match(controllerSource, /vectorRasterFormatLabel\(result\.format\)/);
+assert.doesNotMatch(controllerSource, /rasterizzato in RGBA8/);
 assert.match(controllerSource, /slotNamespace = pinForRasterization \? "text-raster" : "text"/);
 assert.match(controllerSource, /!requireRequestedLod \|\| result\.matchesRequestedLod/);
 assert.match(controllerSource, /resourceRevisionValue\(\)/);
@@ -1897,6 +1922,7 @@ assert.match(
 );
 assert.match(clientSource, /waitForResourceReady\(/);
 assert.match(engineSource, /kind: "vector-rasterize"/);
+assert.match(engineSource, /seedFormat: converted\.history\.seed\.format/);
 assert.match(engineSource, /destroyVectorRasterHistorySeed\(/);
 assert.match(engineSource, /this\.vectorTextGpuPendingRuns\.length = 0/);
 assert.match(engineSource, /this\.vectorTextGpuPendingRuns\.splice\(index, 1\)/);
@@ -1918,6 +1944,20 @@ assert.match(
   /if \(gpu\) destroyLayerGpuResources\(engine, gpu\)/,
   "il rollback Redo deve accettare una candidata fallita prima dell'allocazione",
 );
+
+// Harness WebGPU reale: su una pagina dev nuova crea entrambe le sorgenti,
+// legge i byte RGBA16F, attraversa Undo/Redo e richiede identità Uint8Array.
+assert.match(controllerSource, /async runVectorRasterHistoryGpuTest\(\)/);
+assert.match(controllerSource, /await runProbe\("text"\), await runProbe\("svg"\)/);
+assert.match(controllerSource, /parseVectorSvg\([\s\S]{0,500}regression-rgba16f\.svg/);
+assert.match(controllerSource, /rawBeforeUndo = await this\.host\.readLayerPixels/);
+assert.match(controllerSource, /undoReturned = await this\.host\.undo\(\)/);
+assert.match(controllerSource, /redoReturned = await this\.host\.redo\(\)/);
+assert.match(controllerSource, /uint8ArraysEqual\(before, after\)/);
+assert.match(controllerSource, /uint8ArraysEqual\(rawBeforeUndo, rawAfterRedo\)/);
+assert.match(controllerSource, /probe\.seedFormat === "rgba16float"/);
+assert.match(controllerSource, /probe\.rawBytesPerPixel === 8/);
+assert.match(controllerSource, /probe\.nonZeroAlphaPixels > 0/);
 
 assert.match(htmlSource, /id="vectorSvgRasterize"/);
 assert.match(htmlSource, /id="vectorTextRasterize"/);
@@ -2004,5 +2044,5 @@ assert.equal(packageJson.scripts["vector-text:verify"], "node scripts/verify-vec
 
 console.log(
   "Testo vettoriale verificato: Distort/Arch/Circle/Wave Kittl, Slug analitico, Clipper64/Worker, outline fused senza seam, 0 no-op, "
-  + "Block Shadow canonica, SVG semantici sanitizzati con palette/effetti GPU, blur Gaussian R8 GPU, swap di nodo atomici, coda latest-only e nessun fallback bitmap.",
+  + "Block Shadow canonica, SVG semantici sanitizzati con palette/effetti GPU, blur Gaussian R16F GPU, raster testo/SVG RGBA16F byte-exact, swap di nodo atomici, coda latest-only e nessun fallback bitmap.",
 );

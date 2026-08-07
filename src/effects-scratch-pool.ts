@@ -122,7 +122,7 @@ function sameRanges(
  * Implemented effect layouts:
  * - Ombra esterna and Ombra interna each declare scalar f32 ping/pong ranges.
  *   Their effect-local layouts alias Traccia and Smusso only after the previous
- *   renderer's compute pass has ended. The persistent packed-R8 mattes live
+ *   renderer's compute pass has ended. The persistent packed-f16 mattes live
  *   outside this pool.
  * - A color/gradient fill calls declareEffect(effectId, []). The declaration
  *   is recorded as a zero-byte requirement and returns null: a compose-only

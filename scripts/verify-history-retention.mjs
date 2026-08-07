@@ -549,6 +549,11 @@ for (const actionCount of [10, 100, 500, 1000]) {
   assert(runtime.includes("appendOnlySince("));
   assert(runtime.includes("accountingIncrementalActions"));
   assert(runtime.includes("baseBytes - effectsBytes"));
+  assert.match(
+    runtime,
+    /const availableBytes = Math\.max\(\s*HISTORY_MINIMUM_BUDGET_BYTES,\s*checkpointBytes,\s*baseBytes - effectsBytes,\s*\)/,
+    "gli scratch effetti non devono ridurre History sotto un checkpoint RGBA16F intero",
+  );
   assert(coldStorage.includes("createLayerColdStorageCandidateIncrementally"));
   assert.match(
     coldStorage,

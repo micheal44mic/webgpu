@@ -730,7 +730,7 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
       entryPoint: fragmentEntryPoint,
       targets: [
         {
-          format: "r8unorm",
+          format: "r16float",
           blend: {
             color: {
               operation: "max",
@@ -749,42 +749,42 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
     primitive: { topology: "triangle-strip" },
   });
   const lightNoBuildUpPipeline = createLightNoBuildUpPipeline(
-    `Light Glaze circle MAX per gesture r8unorm`,
+    `Light Glaze circle MAX per gesture r16float`,
     brushPipelineLayout,
     engine.brushShaderModule,
     "vertexMain",
     "coverageFragmentMain",
   );
   const lightNoBuildUpShapePipeline = createLightNoBuildUpPipeline(
-    `Light Glaze Shape MAX per gesture r8unorm`,
+    `Light Glaze Shape MAX per gesture r16float`,
     brushPipelineLayout,
     engine.brushShaderModule,
     "shapeVertexMain",
     "shapeCoverageFragmentMain",
   );
   const lightNoBuildUpShapeOccupancyPipeline = createLightNoBuildUpPipeline(
-    `Light Glaze Shape occupancy MAX per gesture r8unorm`,
+    `Light Glaze Shape occupancy MAX per gesture r16float`,
     brushOccupancyPipelineLayout,
     engine.brushShaderModule,
     "shapeVertexMain",
     "shapeOccupancyCoverageFragmentMain",
   );
   const grainLightNoBuildUpPipeline = createLightNoBuildUpPipeline(
-    `Light Glaze Texturized circle MAX per gesture r8unorm`,
+    `Light Glaze Texturized circle MAX per gesture r16float`,
     grainBrushPipelineLayout,
     engine.texturizedGrainShaderModule,
     "vertexMain",
     "coverageFragmentMain",
   );
   const grainLightNoBuildUpShapePipeline = createLightNoBuildUpPipeline(
-    `Light Glaze Texturized Shape MAX per gesture r8unorm`,
+    `Light Glaze Texturized Shape MAX per gesture r16float`,
     grainBrushPipelineLayout,
     engine.texturizedGrainShaderModule,
     "shapeVertexMain",
     "shapeCoverageFragmentMain",
   );
   const grainLightNoBuildUpShapeOccupancyPipeline = createLightNoBuildUpPipeline(
-    `Light Glaze Texturized Shape occupancy MAX per gesture r8unorm`,
+    `Light Glaze Texturized Shape occupancy MAX per gesture r16float`,
     grainBrushOccupancyPipelineLayout,
     engine.texturizedGrainShaderModule,
     "shapeVertexMain",
@@ -926,7 +926,7 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
       fragmentModule,
       vertexEntryPoint,
       fragmentEntryPoint,
-      targetFormat: "r8unorm",
+      targetFormat: "r16float",
       blend: maximumBlend,
     });
   };
@@ -1413,7 +1413,7 @@ export async function retargetEffectsWorkingSetInternal(engine: BrushEngine,
   if (layerFormat !== engine.layerFormat || layerFormat !== workbench.sourceFormat) {
     throw new Error(
       `Formato banco effetti ${workbench.sourceFormat} incompatibile con ${layerFormat}; `
-      + "usa setLayerFormat() per il fallback con ricreazione completa.",
+      + "operazione rifiutata: il documento RGBA16F non ammette fallback di formato.",
     );
   }
 

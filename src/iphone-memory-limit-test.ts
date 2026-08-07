@@ -2,10 +2,11 @@ import type { BrushEngine } from "./brush-engine";
 import type { EngineStats } from "./engine-stats";
 import type { LayerSwitchResult } from "./engine-types";
 import { LAYER_STACK_MAXIMUM } from "./layer-stack";
+import { LAYER_STORAGE_TILE_SIZE } from "./layer-storage-study";
 
 export const IPHONE_MEMORY_LIMIT_TEST_VERSION = 1 as const;
 export const IPHONE_MEMORY_LIMIT_TEST_BUILD =
-  "iphone-gpu-plus-compressed-cpu-peaks-v2" as const;
+  "iphone-rgba16f-gpu-plus-compressed-cpu-peaks-v3" as const;
 export const IPHONE_MEMORY_LIMIT_API_URL = "/api/iphone-memory-limit-runs";
 export const IPHONE_MEMORY_LIMIT_STORAGE_TILE_PLAN = Object.freeze([
   224, 224, 224, 224, 224,
@@ -15,7 +16,10 @@ export const IPHONE_MEMORY_LIMIT_STORAGE_TILE_PLAN = Object.freeze([
 
 const LOCAL_STORAGE_KEY = "webgpu-brush-engine.iphone-memory-limit.v1";
 const HASH_PARAMETER = "memoryRun";
-const TILE_MEMORY_MIB_RGBA8 = 0.25;
+const RGBA16F_BYTES_PER_PIXEL = 8;
+const MEBIBYTE_BYTES = 1024 * 1024;
+const TILE_MEMORY_MIB_RGBA16F =
+  LAYER_STORAGE_TILE_SIZE ** 2 * RGBA16F_BYTES_PER_PIXEL / MEBIBYTE_BYTES;
 const CHECKPOINT_RETRY_DELAYS_MS = [0, 450, 1_200] as const;
 const SETTLE_BETWEEN_STEPS_MS = 900;
 
@@ -111,7 +115,7 @@ export interface IphoneMemoryLimitRun {
   status: IphoneMemoryLimitRunStatus;
   plan: {
     maximumLayers: typeof LAYER_STACK_MAXIMUM;
-    tileMemoryMiB: typeof TILE_MEMORY_MIB_RGBA8;
+    tileMemoryMiB: typeof TILE_MEMORY_MIB_RGBA16F;
     storageTileCounts: readonly number[];
     plannedColdMiB: number;
     automaticMiddleAndTopSwitches: true;
@@ -406,10 +410,10 @@ function createRun(
     status: "running",
     plan: {
       maximumLayers: LAYER_STACK_MAXIMUM,
-      tileMemoryMiB: TILE_MEMORY_MIB_RGBA8,
+      tileMemoryMiB: TILE_MEMORY_MIB_RGBA16F,
       storageTileCounts: [...IPHONE_MEMORY_LIMIT_STORAGE_TILE_PLAN],
       plannedColdMiB: IPHONE_MEMORY_LIMIT_STORAGE_TILE_PLAN.reduce(
-        (total, tileCount) => total + tileCount * TILE_MEMORY_MIB_RGBA8,
+        (total, tileCount) => total + tileCount * TILE_MEMORY_MIB_RGBA16F,
         0,
       ),
       automaticMiddleAndTopSwitches: true,
@@ -546,13 +550,13 @@ export async function runIphoneMemoryLimitTest(
 ): Promise<IphoneMemoryLimitRun> {
   const initialStats = engine.getStats();
   if (
-    initialStats.layerFormat !== "rgba8unorm"
+    initialStats.layerFormat !== "rgba16float"
     || initialStats.layerCount !== 1
     || initialStats.activeLayerIndex !== 0
     || initialStats.layers[0]?.hasContent
   ) {
     throw new Error(
-      "La ricerca del limite richiede una pagina nuova RGBA8 con un solo livello vuoto.",
+      "La ricerca del limite richiede una pagina nuova RGBA16F con un solo livello vuoto.",
     );
   }
   if (engine.getHistoryState().busy) {
@@ -580,7 +584,7 @@ export async function runIphoneMemoryLimitTest(
         operation: "add-layer",
         step,
         storageTileCount,
-        storageMiB: storageTileCount * TILE_MEMORY_MIB_RGBA8,
+        storageMiB: storageTileCount * TILE_MEMORY_MIB_RGBA16F,
         targetLayerCount: before.layerCount + 1,
         before,
       });
@@ -612,7 +616,7 @@ export async function runIphoneMemoryLimitTest(
         operation: "add-layer",
         step,
         storageTileCount,
-        storageMiB: storageTileCount * TILE_MEMORY_MIB_RGBA8,
+        storageMiB: storageTileCount * TILE_MEMORY_MIB_RGBA16F,
         targetLayerCount: after.layerCount,
         attemptSequence: attempt.sequence,
         before,

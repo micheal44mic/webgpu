@@ -5,12 +5,12 @@
  * The browser decoder exposes straight-alpha sRGB pixels. Paint layers store
  * linear-premultiplied values, so copying the external image directly into the
  * layer would produce incorrect blending and dark transparent edges. The first
- * pass performs that conversion into a temporary sRGB mip chain; the last pass
- * samples the chain into the document's native rgba8unorm/rgba16float layer.
+ * pass performs that conversion into a temporary linear RGBA16F mip chain; the
+ * last pass samples the chain into the document's authoritative RGBA16F layer.
  */
 
 export const RASTER_IMAGE_LAYER_IMPORT_STRATEGY =
-  "decoded-straight-srgb-transient-exact-npot-mips-linear-premultiplied-top-left-native-layer-v2" as const;
+  "decoded-rgba8-srgb-to-linear-premultiplied-rgba16float-exact-npot-mips-native-layer-v3" as const;
 
 export const rasterImageLayerUploadShader = /* wgsl */ `
 struct VertexOutput {

@@ -37,8 +37,8 @@ export function createLightGlazeResourceSet(engine: BrushEngine,
     let commitTileView: GPUTextureView | null = null;
     let commitTileBindGroup: GPUBindGroup | null = null;
     try {
-      const accumulatorFormat: GPUTextureFormat = storageMode === "r8-coverage"
-        ? "r8unorm"
+      const accumulatorFormat: GPUTextureFormat = storageMode === "r16float-coverage"
+        ? "r16float"
         : "rgba16float";
       texture = engine.device.createTexture({
         label: `Lazy Light Glaze stroke accumulator ${accumulatorFormat}`,
@@ -392,8 +392,8 @@ export function ensureStrokeStabilizationSnapshot(
       )
       : engine.stabilizationSnapshotHeight
     : roundedHeight;
-  const format: GPUTextureFormat = storageMode === "r8-coverage"
-    ? "r8unorm"
+  const format: GPUTextureFormat = storageMode === "r16float-coverage"
+    ? "r16float"
     : "rgba16float";
   const texture = engine.device.createTexture({
     label: `Stabilization mature-prefix snapshot ${width}×${height} ${format}`,
@@ -453,7 +453,7 @@ export function lightGlazeResourcesMatch(engine: BrushEngine, storageMode: Light
     && engine.lightGlazeDisplayBindGroup
     && engine.lightGlazeCompositeBindGroup
     && (
-      storageMode === "r8-coverage"
+      storageMode === "r16float-coverage"
       || (
         engine.lightGlazeCommitTileTexture
         && engine.lightGlazeCommitTileView

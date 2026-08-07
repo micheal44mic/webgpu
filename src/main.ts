@@ -126,9 +126,10 @@ import {
   type LayerPoint,
   type PointerSample,
 } from "./engine-types";
-import { LAYER_SIZE, MOBILE_DEVICE_CLASS } from "./engine-limits";
+import { LAYER_SIZE } from "./engine-limits";
 import { layerBaseMemoryMiB } from "./engine-memory-model";
 import { GPU_MEMORY_AUDIT_TOLERANCE_BYTES } from "./gpu-memory-audit";
+import { GPU_MEMORY_CATEGORY_ORDER } from "./gpu-resource-registry";
 import { LAYER_THUMBNAIL_SIZE } from "./layer-thumbnail-renderer";
 import {
   mobileSemanticLayerThumbnailSignature,
@@ -1075,13 +1076,10 @@ const engine = new BrushEngine(canvas, {
   layerColdDirectHotHydrationEnabled,
   layerColdAdjacentPrefetchEnabled,
 }, rasterSelectionOverlayCanvas);
-// Temporary phone-only quality probe: start with the existing high-precision
-// layer format so the same soft brush can be compared directly with RGBA8.
-// Desktop retains the memory-efficient default while this test is evaluated.
-if (MOBILE_DEVICE_CLASS) {
-  engine.layerFormat = "rgba16float";
-  layerFormatSelect.value = "rgba16float";
-}
+// BrushEngine possiede il default autorevole RGBA16F. La UI si limita a
+// rifletterlo: nessun override locale (mobile o desktop) puo' divergere dal
+// formato realmente usato per creare livelli, storia e compositori.
+layerFormatSelect.value = engine.layerFormat;
 if (import.meta.env.DEV) {
   (window as Window & { __brushEngine?: BrushEngine }).__brushEngine = engine;
 }
@@ -1104,7 +1102,6 @@ let layerMemoryStressTestCompleted = false;
 let mixedMemoryBenchmarkReport: MixedMemoryBenchmarkSessionReport | null = null;
 let layerCompressionStudyRunning = false;
 let layerCompressionStudyCompleted = false;
-let layerFormatChanging = false;
 let layerSwitching = false;
 let rasterColorOverlayChanging = false;
 let rasterStrokeChanging = false;
@@ -4835,7 +4832,6 @@ function updateHumanStrokeControls(): void {
     || layerHistoryTestRunning
     || layerMemoryStressTestRunning
     || layerCompressionStudyRunning
-    || layerFormatChanging
     || rasterColorOverlayChanging
     || rasterStrokeChanging
     || rasterOuterShadowChanging
@@ -4911,7 +4907,6 @@ function operationLocked(): boolean {
     || layerHistoryTestRunning
     || layerMemoryStressTestRunning
     || layerCompressionStudyRunning
-    || layerFormatChanging
     || rasterColorOverlayChanging
     || rasterStrokeChanging
     || rasterOuterShadowChanging
@@ -4975,7 +4970,9 @@ function updateHistoryControls(): void {
     || layerCompressionStudyCompleted
     || locked;
   iphoneMemoryDeviceLabel.disabled = locked || layerMemoryStressTestCompleted;
-  layerFormatSelect.disabled = locked;
+  // Il documento e' sempre RGBA16F: il controllo resta solo come indicatore
+  // leggibile, non come una via di downgrade verso RGBA8.
+  layerFormatSelect.disabled = true;
   fitViewButton.disabled = locked;
   zoomInButton.disabled = locked;
   zoomOutButton.disabled = locked;
@@ -6400,36 +6397,6 @@ viewRotationButton.addEventListener("click", () => {
 rotateViewRightButton.addEventListener("click", () => {
   if (!interactionLocked() && activePointerId === null) {
     engine.rotateViewBy(Math.PI / 12);
-  }
-});
-
-layerFormatSelect.addEventListener("change", async () => {
-  if (interactionLocked() || activePointerId !== null) {
-    layerFormatSelect.value = engine.getStats().layerFormat;
-    return;
-  }
-  const requested = layerFormatSelect.value as LayerFormat;
-  layerFormatChanging = true;
-  layerFormatSelect.disabled = true;
-  updateHistoryControls();
-  updateHumanStrokeControls();
-  try {
-    const changed = await engine.setLayerFormat(requested);
-    if (!changed) {
-      layerFormatSelect.value = engine.getStats().layerFormat;
-    }
-  } catch {
-    layerFormatSelect.value = engine.getStats().layerFormat;
-  } finally {
-    layerFormatChanging = false;
-    syncRasterColorOverlayControls(engine.getRasterColorOverlayStyle());
-    syncRasterStrokeControls(engine.getRasterStrokeStyle());
-    syncRasterOuterShadowControls(engine.getRasterOuterShadowStyle());
-    syncRasterInnerShadowControls(engine.getRasterInnerShadowStyle());
-    syncRasterBevelControls(engine.getRasterBevelStyle());
-    historyState = engine.getHistoryState();
-    updateHistoryControls();
-    updateHumanStrokeControls();
   }
 });
 
@@ -8427,7 +8394,7 @@ async function runRequestedLayerHistoryTest(): Promise<void> {
       : "Cronologia livelli GPU ERRORE · consulta il report JSON.";
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const failure = { version: 10, passed: false, error: message };
+    const failure = { version: 11, passed: false, error: message };
     layerHistoryTestReport.textContent = JSON.stringify(failure, null, 2);
     layerHistoryTestDetails.hidden = false;
     layerHistoryTestDetails.open = true;
@@ -8530,17 +8497,21 @@ function updateHistoryDiagnostics(): void {
  * confronto e' automatico, cosi' una taglia di documento nuova o una risorsa
  * non contabilizzata si vedono subito invece di dover essere rimisurate.
  */
-function updateGpuMemoryAudit(declaredMiB: number): void {
+function updateGpuMemoryAudit(
+  declaredMiB: number,
+  misura: ReturnType<BrushEngine["measuredGpuMemory"]>,
+): void {
   const output = element<HTMLElement>("gpuMemoryAudit");
   if (gpuMemoryPanel.hidden) return;
-  const misura = engine.measuredGpuMemory();
-  const misuratoMiB = misura.totalBytes / (1024 * 1024);
+  const misuratoMiB = misura.currentBytes / (1024 * 1024);
+  const piccoMiB = misura.peakBytes / (1024 * 1024);
   const scartoMiB = misuratoMiB - declaredMiB;
   const oltreTolleranza =
     Math.abs(scartoMiB) * 1024 * 1024 > GPU_MEMORY_AUDIT_TOLERANCE_BYTES;
-  renderMeasuredBreakdown(misura, misuratoMiB);
+  renderMeasuredBreakdown(misura);
   output.textContent =
-    `Misurata ${formatMemoryMiB(misuratoMiB)} in ${misura.textureCount} texture e `
+    `Registrata ${formatMemoryMiB(misuratoMiB)} corrente, picco `
+    + `${formatMemoryMiB(piccoMiB)}, in ${misura.textureCount} texture e `
     + `${misura.bufferCount} buffer (${misura.createdCount} create, `
     + `${misura.destroyedCount} distrutte, ${misura.collectedCount} raccolte dal GC). `
     + `Somma esatta dei descrittori, non una stima. `
@@ -8548,7 +8519,7 @@ function updateGpuMemoryAudit(declaredMiB: number): void {
       ? `${misura.unmeasurableCount} risorse con formato non misurabile `
         + `(${misura.unmeasurableFormats.join(", ")}) sono ESCLUSE dal totale. `
       : "")
-    + `Le righe qui sopra sono il modello dichiarato, che somma a `
+    + `Il modello diagnostico non sommato dichiara `
     + `${formatMemoryMiB(declaredMiB)}: scarto `
     + `${scartoMiB >= 0 ? "+" : "−"}${formatMemoryMiB(Math.abs(scartoMiB))}`
     + (oltreTolleranza ? " · ATTENZIONE: il modello è disallineato." : ".");
@@ -8566,16 +8537,25 @@ function updateGpuMemoryAudit(declaredMiB: number): void {
  */
 function renderMeasuredBreakdown(
   misura: ReturnType<BrushEngine["measuredGpuMemory"]>,
-  misuratoMiB: number,
 ): void {
   const lista = element<HTMLElement>("gpuMeasuredBreakdown");
   const sommaCategorie = misura.categories.reduce((totale, voce) => totale + voce.bytes, 0);
-  const partizioneIntegra = sommaCategorie === misura.totalBytes;
+  const partizioneIntegra = sommaCategorie === misura.currentBytes;
+  const misuratoMiB = misura.currentBytes / (1024 * 1024);
   element<HTMLElement>("gpuMeasuredTotal").textContent = partizioneIntegra
     ? formatMemoryMiB(misuratoMiB)
     : `${formatMemoryMiB(misuratoMiB)} · partizione incoerente`;
+  element<HTMLElement>("gpuMeasuredPeak").textContent =
+    formatMemoryMiB(misura.peakBytes / (1024 * 1024));
 
-  const righe = misura.categories.filter((voce) => voce.bytes > 0 || voce.count > 0);
+  const categoryByName = new Map(misura.categories.map((entry) => [entry.category, entry]));
+  const extraCategories = misura.categories
+    .map((entry) => entry.category)
+    .filter((category) => !(GPU_MEMORY_CATEGORY_ORDER as readonly string[]).includes(category))
+    .sort((left, right) => left.localeCompare(right));
+  const righe = [...GPU_MEMORY_CATEGORY_ORDER, ...extraCategories].map((category) =>
+    categoryByName.get(category) ?? { category, bytes: 0, peakBytes: 0, count: 0 }
+  );
   lista.replaceChildren(...righe.map((voce) => {
     const riga = document.createElement("div");
     riga.dataset.memoryRow = "";
@@ -8583,7 +8563,9 @@ function renderMeasuredBreakdown(
     const nome = document.createElement("dt");
     nome.textContent = `${voce.category} · ${voce.count} risors${voce.count === 1 ? "a" : "e"}`;
     const valore = document.createElement("dd");
-    valore.textContent = formatMemoryMiB(voce.bytes / (1024 * 1024));
+    valore.textContent = `${formatMemoryMiB(voce.bytes / (1024 * 1024))} correnti · `
+      + `${formatMemoryMiB(voce.peakBytes / (1024 * 1024))} picco`;
+    valore.title = "Il picco è storico per questa categoria e non va sommato ai picchi delle altre righe.";
     riga.append(nome, valore);
     riga.classList.toggle("memory-zero", voce.bytes < 0.05 * 1024 * 1024);
     return riga;
@@ -8723,10 +8705,14 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
   // era il punto in cui la stima poteva mentire senza che si vedesse.
   const declaredMiB = stats.gpuMemory.countedTotalMiB;
   const totalMiB = engineInitialized
-    ? engine.measuredGpuMemory().totalBytes / (1024 * 1024)
+    ? stats.gpuMemory.registeredCurrentMiB
+    : declaredMiB;
+  const peakMiB = engineInitialized
+    ? stats.gpuMemory.registeredPeakMiB
     : declaredMiB;
   const formattedTotal = formatMemoryMiB(totalMiB);
   element<HTMLElement>("gpuMemoryTotal").textContent = formattedTotal;
+  element<HTMLElement>("gpuMemoryPeak").textContent = `picco ${formatMemoryMiB(peakMiB)}`;
   element<HTMLElement>("gpuMemoryCompact").textContent = formattedTotal;
   element<HTMLElement>("memoryStat").textContent = formattedTotal;
 
@@ -8753,7 +8739,7 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
       }, 3500);
     }
   }
-  updateGpuMemoryAudit(declaredMiB);
+  updateGpuMemoryAudit(declaredMiB, engine.measuredGpuMemory());
   previousGpuMemoryTotalMiB = totalMiB;
 }
 
@@ -10908,7 +10894,7 @@ async function runRenderingModeSuite(): Promise<void> {
         grainMode: result.run.benchmark.testGrainMode,
         executionIndex: index,
         storageClass: result.run.benchmark.testBlendMode === "light-glaze"
-          ? "r8-coverage"
+          ? "r16float-coverage"
           : "rgba16float-stroke",
         storageReusedFromPreviousCase: index === 2,
         settings: {

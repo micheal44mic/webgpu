@@ -15,9 +15,29 @@ const html = read("../index.html");
 const sitesBuild = read("./prepare-sites-build.mjs");
 
 assert.match(
+  engine,
+  /layerFormat: LayerFormat = "rgba16float";/,
+  "Il default autorevole di BrushEngine deve essere RGBA16F.",
+);
+assert.match(
   main,
-  /if \(MOBILE_DEVICE_CLASS\) \{\s*engine\.layerFormat = "rgba16float";\s*layerFormatSelect\.value = "rgba16float";\s*\}/,
-  "Il test qualità mobile deve inizializzare davvero livello e selettore in RGBA16F.",
+  /layerFormatSelect\.value = engine\.layerFormat;/,
+  "Il selettore deve riflettere il formato autorevole di BrushEngine.",
+);
+assert.doesNotMatch(
+  main,
+  /engine\.layerFormat\s*=/,
+  "main non deve sovrascrivere il default autorevole di BrushEngine.",
+);
+assert.doesNotMatch(
+  main,
+  /if \(MOBILE_DEVICE_CLASS\) \{[\s\S]{0,200}(?:engine\.layerFormat|layerFormatSelect)/,
+  "Il formato documento non deve dipendere dalla classe mobile.",
+);
+assert.match(
+  engine,
+  /async setLayerFormat\(format: LayerFormat\)[\s\S]{0,180}format !== "rgba16float"/,
+  "setLayerFormat deve rifiutare esplicitamente ogni formato non RGBA16F.",
 );
 
 // Il motore è diviso in più moduli concatenati da `readEngineSource()`: un
@@ -43,10 +63,10 @@ assert(
   "Strategy Intense encoded-sRGB live assente.",
 );
 assert(
-  engine.includes('export type LightGlazeStorageMode = "none" | "rgba16float-stroke" | "r8-coverage"')
+  /export type LightGlazeStorageMode =[\s\S]{0,120}\| "r16float-coverage";/.test(engine)
     && engine.includes(': "rgba16float-stroke";')
     && engine.includes(': "rgba16float";'),
-  "Uniformed/Intense non usano l'accumulatore autorevole RGBA16F.",
+  "Light/Uniformed/Intense non dichiarano gli accumulatori autorevoli R16F/RGBA16F.",
 );
 // L'accumulatore e' full-document: il suo costo si deriva dalle dimensioni e
 // dai byte per pixel della modalita', non da un numero cablato. Il `128` che
@@ -54,12 +74,12 @@ assert(
 // invece di `41,3` su un telefono a 2048².
 assert(
   engine.includes("lightGlazeAccumulatorBytesPerPixel(storageMode)")
-    && engine.includes('return storageMode === "r8-coverage" ? 1 : 8;')
+    && engine.includes('return storageMode === "r16float-coverage" ? 2 : 8;')
     && engine.includes(
       "(width * height * lightGlazeAccumulatorBytesPerPixel(storageMode)) / MEBIBYTE_BYTES",
     )
     && engine.includes('const commitTileMiB = storageMode === "rgba16float-stroke"'),
-  "La contabilità non include accumulator RGBA16F full-document e scratch tile.",
+  "La contabilità non include accumulator R16F/RGBA16F full-document e scratch tile.",
 );
 assert(
   !/const accumulatorMiB = [\s\S]{0,200}: 128;/.test(engine),
@@ -287,11 +307,11 @@ for (const setting of [
 assert(
   main.includes('storageClass: result.run.benchmark.testBlendMode === "light-glaze"')
     && main.includes(': "rgba16float-stroke"'),
-  "Il report suite non distingue R8 da RGBA16F.",
+  "Il report suite non distingue R16F da RGBA16F.",
 );
 assert(
   html.includes("Confronta 3 rendering · Base 1% · 1 tap")
-    && html.includes("Rendering · Light / Uniformed / Intense")
+    && html.includes("Rendering · Light R16F / Uniformed e Intense RGBA16F")
     && html.includes("Blend dry · scratch")
     && !html.includes("Intense Blending · scratch"),
   "UI suite o memoria rendering non coerente.",

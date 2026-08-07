@@ -3,6 +3,7 @@
  * unite, bake e archiviazione fredda (compressa e non).
  */
 import type { DirtyRect } from "./engine-stroke-types";
+import type { LayerFormat } from "./engine-types";
 import type { LayerColdCompressedChunk } from "./layer-cold-compression-client";
 import type { LayerRecord } from "./layer-stack";
 import type { LayerBlendMode } from "./layer-blend-modes";
@@ -12,6 +13,8 @@ export interface LayerTextureResources {
   texture: GPUTexture;
   view: GPUTextureView;
   samplingView: GPUTextureView;
+  /** Format signature used to reject incompatible raw GPU copies. */
+  format: LayerFormat;
 }
 
 export interface DisplayPyramidResources {
@@ -102,6 +105,8 @@ export interface LayerColdStorageResources {
   tileIndices: readonly number[];
   memoryBytes: number;
   generation: number;
+  /** Raw tiled pixels retain the authoritative document format byte-for-byte. */
+  format: LayerFormat;
 }
 
 export interface LayerCompressedColdStorageResources {
@@ -112,6 +117,8 @@ export interface LayerCompressedColdStorageResources {
   sourceHash: number;
   generation: number;
   encodeMs: number;
+  /** The current worker codec is intentionally restricted to RGBA8 bytes. */
+  format: "rgba8unorm";
 }
 
 export interface LayerColdCompressionProgress {

@@ -65,6 +65,19 @@ import { STROKE_STABILIZATION_STRATEGY } from "./stroke-stabilization-core";
 import type { LayerBlendMode } from "./layer-blend-modes";
 
 export interface EngineGpuMemoryStats {
+  /** Totale corrente esatto delle risorse registrate dal device strumentato. */
+  registeredCurrentMiB: number;
+  /** Massimo storico esatto del totale registrato. */
+  registeredPeakMiB: number;
+  registeredTextureCount: number;
+  registeredBufferCount: number;
+  registeredUnmeasurableCount: number;
+  registeredCategories: readonly {
+    category: string;
+    currentMiB: number;
+    peakMiB: number;
+    count: number;
+  }[];
   layerBaseMiB: number;
   layerColdMiB: number;
   activeClippingMaskMiB: number;

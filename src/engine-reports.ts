@@ -142,7 +142,10 @@ import {
 } from "./adaptive-preview-runtime";
 import { LAYER_COLD_COMPRESSION_RUNTIME_BUILD } from "./layer-cold-compression-client";
 import { LAYER_BLEND_MODE_ORDER } from "./layer-blend-modes";
-import { VECTOR_TEXT_GPU_SAMPLE_COUNT } from "./vector-text-gpu-shader";
+import {
+  VECTOR_TEXT_GPU_SAMPLE_COUNT,
+  VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL,
+} from "./vector-text-gpu-shader";
 import { average, maximum, percentile } from "./engine-math";
 import {
   LAYER_STORAGE_GRID_SIZE,
@@ -167,6 +170,44 @@ import {
   type LayerCompressionStudyReport,
 } from "./layer-compression-study";
 import { historyCheckpointAllocatedBytes } from "./history-maintenance-runtime";
+
+// JavaScript non espone ancora una Float16Array portabile, ma gli upload e i
+// readback del documento RGBA16F sono byte IEEE-754 binary16 reali. Queste due
+// conversioni tengono le diagnostiche sullo stesso formato autorevole senza
+// passare da una texture RGBA8 ausiliaria.
+const FLOAT16_CONVERSION_F32 = new Float32Array(1);
+const FLOAT16_CONVERSION_U32 = new Uint32Array(FLOAT16_CONVERSION_F32.buffer);
+
+function encodeFloat16(value: number): number {
+  FLOAT16_CONVERSION_F32[0] = value;
+  const source = FLOAT16_CONVERSION_U32[0];
+  let result = (source >>> 16) & 0x8000;
+  let mantissa = (source >>> 12) & 0x07ff;
+  const exponent = (source >>> 23) & 0xff;
+  if (exponent < 103) return result;
+  if (exponent > 142) {
+    result |= 0x7c00;
+    if (exponent === 0xff && (source & 0x007fffff) !== 0) result |= 0x0200;
+    return result;
+  }
+  if (exponent < 113) {
+    mantissa |= 0x0800;
+    result |= (mantissa >>> (114 - exponent))
+      + ((mantissa >>> (113 - exponent)) & 1);
+    return result;
+  }
+  result |= ((exponent - 112) << 10) | (mantissa >>> 1);
+  return result + (mantissa & 1);
+}
+
+function decodeFloat16(bits: number): number {
+  const sign = (bits & 0x8000) === 0 ? 1 : -1;
+  const exponent = (bits >>> 10) & 0x1f;
+  const fraction = bits & 0x03ff;
+  if (exponent === 0) return sign * fraction * 2 ** -24;
+  if (exponent === 0x1f) return fraction === 0 ? sign * Infinity : Number.NaN;
+  return sign * (1 + fraction / 1024) * 2 ** (exponent - 15);
+}
 
 export function getBenchmarkEnvironment(engine: BrushEngine): {
   canvasWidth: number;
@@ -707,6 +748,15 @@ export function getStats(engine: BrushEngine): EngineStats {
 
 export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
   const baseResourcesAllocated = engine.initialized;
+  const registered = engine.gpuResourceRegistry.snapshot();
+  const registeredCurrentMiB = registered.currentBytes / MEBIBYTE_BYTES;
+  const registeredPeakMiB = registered.peakBytes / MEBIBYTE_BYTES;
+  const registeredCategories = registered.categories.map((entry) => ({
+    category: entry.category,
+    currentMiB: entry.bytes / MEBIBYTE_BYTES,
+    peakMiB: entry.peakBytes / MEBIBYTE_BYTES,
+    count: entry.count,
+  }));
   const bytesPerPixel = engine.layerFormat === "rgba16float" ? 8 : 4;
   const rasterStroke = engine.rasterStrokeRenderer;
   const rasterBevel = engine.rasterBevelRenderer;
@@ -796,13 +846,14 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     + engine.vectorTextRunTextures.size;
   const vectorTextViewportMiB = vectorTextTextureCount > 0
     ? vectorTextTextureCount * engine.vectorTextTextureWidth
-      * engine.vectorTextTextureHeight * 4 / MEBIBYTE_BYTES
+      * engine.vectorTextTextureHeight * VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL / MEBIBYTE_BYTES
     : 0;
   const vectorTextBlurMiB =
     engine.vectorTextGpuBlurMemoryBytes() / MEBIBYTE_BYTES;
   const vectorTextGpuScratchMiB = engine.vectorTextGpuMsaaTexture
     ? engine.vectorTextGpuScratchWidth * engine.vectorTextGpuScratchHeight
-      * 4 * (VECTOR_TEXT_GPU_SAMPLE_COUNT + 1) / MEBIBYTE_BYTES
+      * VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL * (VECTOR_TEXT_GPU_SAMPLE_COUNT + 1)
+      / MEBIBYTE_BYTES
     : 0;
   const vectorTextGpuGeometryMiB = [...engine.vectorTextGpuMeshes.values()]
     .reduce((total, resources) => total + resources.memoryBytes, 0)
@@ -897,7 +948,7 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     0,
   ) / MEBIBYTE_BYTES;
   const stabilizationTailBytesPerPixel = engine.stabilizationSnapshotStorageMode
-    === "r8-coverage" ? 1 : 8;
+    === "r16float-coverage" ? 2 : 8;
   const stabilizationTailMiB = engine.stabilizationSnapshotTexture
     ? engine.stabilizationSnapshotWidth * engine.stabilizationSnapshotHeight
       * stabilizationTailBytesPerPixel / MEBIBYTE_BYTES
@@ -953,6 +1004,12 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
   const countedGpuPlusCompressedCpuMiB = countedTotalMiB + layerCompressedCpuMiB;
 
   return {
+    registeredCurrentMiB,
+    registeredPeakMiB,
+    registeredTextureCount: registered.textureCount,
+    registeredBufferCount: registered.bufferCount,
+    registeredUnmeasurableCount: registered.unmeasurableCount,
+    registeredCategories,
     layerBaseMiB,
     layerMipChainMiB,
     layerColdMiB,
@@ -1966,7 +2023,10 @@ export async function measureLayerColdCompressionStudy(engine: BrushEngine,
     throw new Error("Il motore non è ancora inizializzato.");
   }
   if (engine.layerFormat !== "rgba8unorm") {
-    throw new Error("Lo studio compressione v1 richiede livelli RGBA8.");
+    throw new Error(
+      "Lo studio compressione v1 supporta solo il codec legacy RGBA8; "
+      + "i documenti universali RGBA16F lo saltano.",
+    );
   }
   if (engine.activeStroke || engine.historyBusy || engine.layerSwitchBusy) {
     throw new Error("La compressione richiede il motore fermo.");
@@ -2240,8 +2300,8 @@ export async function measureActiveStyleBakeGap(engine: BrushEngine, rect: Dirty
   if (!import.meta.env.DEV) {
     throw new Error("Misura fwidth/bake disponibile solo in modalità dev.");
   }
-  if (!engine.initialized || engine.layerFormat !== "rgba8unorm") {
-    throw new Error("La misura fwidth/bake richiede un layer RGBA8 inizializzato.");
+  if (!engine.initialized || engine.layerFormat !== "rgba16float") {
+    throw new Error("La misura fwidth/bake richiede un layer RGBA16F inizializzato.");
   }
   if (engine.layerStack.count !== 1 || !engine.styleStackActive()) {
     throw new Error("La misura fwidth/bake richiede un solo livello con effetti attivi.");
@@ -2289,9 +2349,14 @@ export async function measureActiveStyleBakeGap(engine: BrushEngine, rect: Dirty
       rect,
       "bake analitico per misura fwidth",
     );
-    if (analytic.length !== live.length) {
+    if (analytic.length !== live.length * 2) {
       throw new Error("Misura fwidth/bake: dimensioni readback incoerenti.");
     }
+    const analyticView = new DataView(
+      analytic.buffer,
+      analytic.byteOffset,
+      analytic.byteLength,
+    );
 
     const srgbToLinear = (value: number): number => value <= 0.04045
       ? value / 12.92
@@ -2327,21 +2392,27 @@ export async function measureActiveStyleBakeGap(engine: BrushEngine, rect: Dirty
     const height = Math.floor(rect.height);
     for (let row = 0; row < height; row += 1) {
       for (let column = 0; column < width; column += 1) {
-        const offset = (row * width + column) * 4;
-        const alpha = analytic[offset + 3] / 255 * activeAlpha;
+        const pixelIndex = row * width + column;
+        const offset = pixelIndex * 4;
+        const analyticOffset = pixelIndex * 8;
+        const analyticRed = decodeFloat16(analyticView.getUint16(analyticOffset, true));
+        const analyticGreen = decodeFloat16(analyticView.getUint16(analyticOffset + 2, true));
+        const analyticBlue = decodeFloat16(analyticView.getUint16(analyticOffset + 4, true));
+        const analyticAlpha = decodeFloat16(analyticView.getUint16(analyticOffset + 6, true));
+        const alpha = analyticAlpha * activeAlpha;
         const checkerX = Math.floor((rect.x + column + 0.5) / 96);
         const checkerY = Math.floor((rect.y + row + 0.5) / 96);
         const backgroundSrgb = ((checkerX + checkerY) & 1) === 0 ? 0.91 : 0.82;
         const backgroundLinear = srgbToLinear(backgroundSrgb);
         const expected = [
           quantizeUnorm(linearToSrgb(
-            analytic[offset] / 255 * activeAlpha + backgroundLinear * (1 - alpha),
+            analyticRed * activeAlpha + backgroundLinear * (1 - alpha),
           )),
           quantizeUnorm(linearToSrgb(
-            analytic[offset + 1] / 255 * activeAlpha + backgroundLinear * (1 - alpha),
+            analyticGreen * activeAlpha + backgroundLinear * (1 - alpha),
           )),
           quantizeUnorm(linearToSrgb(
-            analytic[offset + 2] / 255 * activeAlpha + backgroundLinear * (1 - alpha),
+            analyticBlue * activeAlpha + backgroundLinear * (1 - alpha),
           )),
           255,
         ];
@@ -2403,8 +2474,8 @@ export async function seedActiveLayerMemoryStress(engine: BrushEngine,
   if (!engine.initialized) {
     throw new Error("Il motore non è ancora inizializzato.");
   }
-  if (engine.layerFormat !== "rgba8unorm") {
-    throw new Error("Lo stress memoria da 1000 MiB richiede il formato RGBA8.");
+  if (engine.layerFormat !== "rgba16float") {
+    throw new Error("Lo stress memoria da 1000 MiB richiede il formato RGBA16F.");
   }
   if (engine.styleStackActive()) {
     throw new Error(
@@ -2427,22 +2498,27 @@ export async function seedActiveLayerMemoryStress(engine: BrushEngine,
   const markerSize = 64;
   const gridColumn = markerIndex % 4;
   const gridRow = Math.floor(markerIndex / 4) % 4;
-  const x = 512 + gridColumn * 896;
-  const y = 512 + gridRow * 896;
+  const markerCellSize = LAYER_SIZE / 4;
+  const x = Math.floor(gridColumn * markerCellSize + (markerCellSize - markerSize) * 0.5);
+  const y = Math.floor(gridRow * markerCellSize + (markerCellSize - markerSize) * 0.5);
   const red = 72 + (markerIndex * 73) % 176;
   const green = 72 + (markerIndex * 109) % 176;
   const blue = 72 + (markerIndex * 151) % 176;
-  const pixels = new Uint8Array(markerSize * markerSize * 4);
+  const pixels = new Uint16Array(markerSize * markerSize * 4);
+  const redF16 = encodeFloat16(red / 255);
+  const greenF16 = encodeFloat16(green / 255);
+  const blueF16 = encodeFloat16(blue / 255);
+  const opaqueF16 = encodeFloat16(1);
   for (let offset = 0; offset < pixels.length; offset += 4) {
-    pixels[offset] = red;
-    pixels[offset + 1] = green;
-    pixels[offset + 2] = blue;
-    pixels[offset + 3] = 255;
+    pixels[offset] = redF16;
+    pixels[offset + 1] = greenF16;
+    pixels[offset + 2] = blueF16;
+    pixels[offset + 3] = opaqueF16;
   }
   engine.device.queue.writeTexture(
     { texture: engine.layerTexture, origin: { x, y, z: 0 } },
     pixels,
-    { bytesPerRow: markerSize * 4, rowsPerImage: markerSize },
+    { bytesPerRow: markerSize * 8, rowsPerImage: markerSize },
     { width: markerSize, height: markerSize, depthOrArrayLayers: 1 },
   );
   await engine.waitForGpuCapped(`Marker stress memoria livello ${markerIndex + 1}`);

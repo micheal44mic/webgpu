@@ -254,13 +254,12 @@ fn premultipliedEncodedSrgbPaint(input: VertexOutput, coverage: f32) -> vec4<f32
   return vec4<f32>(linearToSrgb(input.pointColor) * alpha, alpha);
 }
 
-fn quantizedCoveragePaint(input: VertexOutput, coverage: f32) -> vec4<f32> {
+fn highPrecisionCoveragePaint(input: VertexOutput, coverage: f32) -> vec4<f32> {
   let alpha = paintAlpha(input, coverage);
-  // Light Glaze stores only the exactly quantized red coverage channel in an
-  // r8unorm attachment. The vec4 output keeps this entry point valid for WGSL;
-  // the render target writes only its red component.
-  let quantized = unpack4x8unorm(pack4x8unorm(vec4<f32>(alpha))).r;
-  return vec4<f32>(quantized);
+  // Light Glaze stores continuous MAX/no-build-up coverage in an r16float
+  // attachment. The vec4 output keeps this entry point valid for WGSL; the
+  // render target persists only its red component at half-float precision.
+  return vec4<f32>(alpha);
 }
 
 fn circleCoverage(input: VertexOutput) -> f32 {
@@ -305,7 +304,7 @@ fn encodedSrgbFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
 @fragment
 fn coverageFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-  return quantizedCoveragePaint(input, circleCoverage(input));
+  return highPrecisionCoveragePaint(input, circleCoverage(input));
 }
 
 @fragment
@@ -320,7 +319,7 @@ fn encodedSrgbShapeFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
 @fragment
 fn shapeCoverageFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-  return quantizedCoveragePaint(input, shapeCoverage(input));
+  return highPrecisionCoveragePaint(input, shapeCoverage(input));
 }
 
 fn shapeOccupancyMayContribute(uv: vec2<f32>) -> bool {
@@ -369,7 +368,7 @@ fn encodedSrgbShapeOccupancyFragmentMain(
 
 @fragment
 fn shapeOccupancyCoverageFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-  return quantizedCoveragePaint(input, occupiedShapeCoverage(input));
+  return highPrecisionCoveragePaint(input, occupiedShapeCoverage(input));
 }
 `;
 
@@ -527,10 +526,9 @@ fn premultipliedEncodedSrgbPaint(input: FragmentInput, coverage: f32) -> vec4<f3
   return vec4<f32>(linearToSrgb(input.pointColor) * alpha, alpha);
 }
 
-fn quantizedCoveragePaint(input: FragmentInput, coverage: f32) -> vec4<f32> {
+fn highPrecisionCoveragePaint(input: FragmentInput, coverage: f32) -> vec4<f32> {
   let alpha = paintAlpha(input, coverage);
-  let quantized = unpack4x8unorm(pack4x8unorm(vec4<f32>(alpha))).r;
-  return vec4<f32>(quantized);
+  return vec4<f32>(alpha);
 }
 
 fn circleGrainCoverage(input: FragmentInput) -> f32 {
@@ -571,7 +569,7 @@ fn encodedSrgbFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
 
 @fragment
 fn coverageFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
-  return quantizedCoveragePaint(input, circleGrainCoverage(input));
+  return highPrecisionCoveragePaint(input, circleGrainCoverage(input));
 }
 
 fn shapeGrainCoverage(input: FragmentInput) -> f32 {
@@ -606,7 +604,7 @@ fn encodedSrgbShapeFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> 
 
 @fragment
 fn shapeCoverageFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
-  return quantizedCoveragePaint(input, shapeGrainCoverage(input));
+  return highPrecisionCoveragePaint(input, shapeGrainCoverage(input));
 }
 
 fn occupiedShapeGrainCoverage(input: FragmentInput) -> f32 {
@@ -650,7 +648,7 @@ fn encodedSrgbShapeOccupancyFragmentMain(
 
 @fragment
 fn shapeOccupancyCoverageFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
-  return quantizedCoveragePaint(input, occupiedShapeGrainCoverage(input));
+  return highPrecisionCoveragePaint(input, occupiedShapeGrainCoverage(input));
 }
 `;
 
@@ -1491,23 +1489,13 @@ fn composeLayerStack(
 }
 
 fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
-  if (lightGlaze.formatCode == 0u) {
-    return round(clamp(value, vec4<f32>(0.0), vec4<f32>(1.0)) * 255.0) / 255.0;
-  }
   let redGreen = unpack2x16float(pack2x16float(value.rg));
   let blueAlpha = unpack2x16float(pack2x16float(value.ba));
   return vec4<f32>(redGreen, blueAlpha);
 }
 
 fn storedLightCoverage(value: f32) -> f32 {
-  let coverage = clamp(value, 0.0, 1.0);
-  // The previous RGBA16F accumulator stored the already R8-quantized coverage
-  // as half-float. Reapply that storage conversion after loading the R8 mask
-  // so both layer formats retain their exact previous compositing inputs.
-  if (lightGlaze.formatCode == 1u) {
-    return unpack2x16float(pack2x16float(vec2<f32>(coverage, 0.0))).x;
-  }
-  return coverage;
+  return clamp(value, 0.0, 1.0);
 }
 
 fn linearPremultipliedToEncodedSrgb(value: vec4<f32>) -> vec4<f32> {
@@ -1788,23 +1776,13 @@ struct VertexOutput {
 ${activeClippingGroupTexelShader}
 
 fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
-  if (lightGlaze.formatCode == 0u) {
-    return round(clamp(value, vec4<f32>(0.0), vec4<f32>(1.0)) * 255.0) / 255.0;
-  }
   let redGreen = unpack2x16float(pack2x16float(value.rg));
   let blueAlpha = unpack2x16float(pack2x16float(value.ba));
   return vec4<f32>(redGreen, blueAlpha);
 }
 
 fn storedLightCoverage(value: f32) -> f32 {
-  let coverage = clamp(value, 0.0, 1.0);
-  // The previous RGBA16F accumulator stored the already R8-quantized coverage
-  // as half-float. Reapply that storage conversion after loading the R8 mask
-  // so both layer formats retain their exact previous compositing inputs.
-  if (lightGlaze.formatCode == 1u) {
-    return unpack2x16float(pack2x16float(vec2<f32>(coverage, 0.0))).x;
-  }
-  return coverage;
+  return clamp(value, 0.0, 1.0);
 }
 
 fn srgbToLinearChannel(value: f32) -> f32 {
@@ -1941,20 +1919,13 @@ struct VertexOutput {
 @group(0) @binding(3) var<uniform> commitTile: CommitTileUniforms;
 
 fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
-  if (lightGlaze.formatCode == 0u) {
-    return round(clamp(value, vec4<f32>(0.0), vec4<f32>(1.0)) * 255.0) / 255.0;
-  }
   let redGreen = unpack2x16float(pack2x16float(value.rg));
   let blueAlpha = unpack2x16float(pack2x16float(value.ba));
   return vec4<f32>(redGreen, blueAlpha);
 }
 
 fn storedLightCoverage(value: f32) -> f32 {
-  let coverage = clamp(value, 0.0, 1.0);
-  if (lightGlaze.formatCode == 1u) {
-    return unpack2x16float(pack2x16float(vec2<f32>(coverage, 0.0))).x;
-  }
-  return coverage;
+  return clamp(value, 0.0, 1.0);
 }
 
 fn srgbToLinearChannel(value: f32) -> f32 {
@@ -2070,11 +2041,7 @@ struct VertexOutput {
 @group(0) @binding(1) var<uniform> lightGlaze: LightGlazeUniforms;
 
 fn storedLightCoverage(value: f32) -> f32 {
-  let coverage = clamp(value, 0.0, 1.0);
-  if (lightGlaze.formatCode == 1u) {
-    return unpack2x16float(pack2x16float(vec2<f32>(coverage, 0.0))).x;
-  }
-  return coverage;
+  return clamp(value, 0.0, 1.0);
 }
 
 @vertex

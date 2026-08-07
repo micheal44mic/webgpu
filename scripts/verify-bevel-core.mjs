@@ -346,6 +346,15 @@ assert(rendererSource.includes("raster-bevel-webgpu-v5-bbox-field-shared-effects
 assert(rendererSource.includes("shared-effects-pool-roi-split-common-segment-arenas-grow-until-idle-shrink"));
 const engineSource = readEngineSource();
 assert(rendererSource.includes("texture_storage_2d<r32float, write>"));
+assert(rendererSource.includes("Smusso continuous F32 coverage WGSL"));
+assert.match(rendererSource, /commonCursor \+= alignedWords\(pixels\)/);
+assert.match(
+  rendererSource,
+  /storeFloat\(parameters\.outputOffsetWords, vec2<u32>\(x, globalId\.y\), alpha\)/,
+);
+assert.match(rendererSource, /if \(alpha >= 0\.5\)/);
+assert.match(rendererSource, /if \(alpha > 0\.0 && alpha < 1\.0\)/);
+assert.doesNotMatch(rendererSource, /alphaByte|coverage R8 packed|alpha to packed R8/);
 assert(rendererSource.includes("marching"));
 assert(rendererSource.includes("segmentDistance"));
 assert(rendererSource.includes("jfaScheduleForExtent"));
@@ -354,7 +363,8 @@ assert(!rendererSource.includes("mapAsync"));
 assert(styleStackSource.includes("bevelNode(base, position)"));
 assert(styleStackSource.indexOf("bevelNode(base, position)")
   < styleStackSource.indexOf("combinedStrokeNode(base.a, node, coverage)"));
-assert(styleStackSource.includes("random24(documentPosition, 4660u)"));
+assert(!styleStackSource.includes("random24(documentPosition, 4660u)"));
+assert.doesNotMatch(styleStackSource, /0\.75 \/ 255\.0/);
 assert(engineSource.includes("sourceMode: RasterStrokeSourceMode"));
 assert.match(rendererSource, /retarget\(layerView: GPUTextureView\)/);
 assert.match(rendererSource, /this\.sourceViews\[0\] = layerView/);
@@ -407,6 +417,17 @@ assert.ok(
 assert.match(bboxGoldenSource, /for \(const mode of RASTER_BEVEL_MODES\)/);
 assert.match(bboxGoldenSource, /for \(const technique of RASTER_BEVEL_TECHNIQUES\)/);
 assert.match(bboxGoldenSource, /for \(const contour of \["off", "linear"\] as const\)/);
+assert.match(bboxGoldenSource, /RASTER_BEVEL_BBOX_GOLDEN_VERSION = 2/);
+assert.match(
+  bboxGoldenSource,
+  /RASTER_BEVEL_BBOX_GOLDEN_FORMAT = "rgba16float"/,
+);
+assert.match(bboxGoldenSource, /packRgba8FixtureAsRgba16FloatBytes/);
+assert.match(bboxGoldenSource, /GOLDEN_RGBA16F_BYTES_PER_PIXEL = 8/);
+assert.match(bboxGoldenSource, /lightGlazeUniforms\[1\] = 1/);
+assert.match(bboxGoldenSource, /format: RASTER_BEVEL_BBOX_GOLDEN_FORMAT/);
+assert.doesNotMatch(bboxGoldenSource, /format: "rgba8unorm"/);
+assert.doesNotMatch(bboxGoldenSource, /layerFormat: "rgba8unorm"/);
 assert.match(bboxGoldenSource, /matrixComplete/);
 assert.match(bboxGoldenSource, /fullPair\.workbench !== bboxPair\.workbench/);
 assert.match(bboxGoldenSource, /zero-outside/);

@@ -26,7 +26,7 @@ import {
 export const RASTER_STROKE_RENDERER_BUILD =
   "style-stack-webgpu-v16-alpha-clipped-normal-color-overlay-before-inner-shadow-bevel-stroke-lazy-stroke-geometry-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-nearest-raster-at-581pct-native-unorm-round-even";
 export const RASTER_STROKE_COVERAGE_STRATEGY =
-  "lazy-packed-r8-style-coverage-while-stroke-enabled" as const;
+  "lazy-packed-f16-style-coverage-while-stroke-enabled" as const;
 export const RASTER_STROKE_GEOMETRY_STORAGE_STRATEGY =
   "allocate-on-stroke-enable-release-when-idle-disabled" as const;
 export const RASTER_STROKE_DISTANCE_STORAGE_STRATEGY =
@@ -147,7 +147,7 @@ const PARAMETER_CAPACITY = 2048;
 const BAKE_PARAMETER_CAPACITY = 32;
 const INVALID_PACKED_SEED = 0xffff_ffff;
 const THRESHOLD_MASK_WORD_BITS = 32;
-const COVERAGE_WORD_PIXELS = 4;
+const COVERAGE_WORD_PIXELS = 2;
 const COVERAGE_DETECTION_HALO = 1;
 const INDIRECT_ARGUMENT_WORDS = 3;
 const INDIRECT_ARGUMENT_BYTES = INDIRECT_ARGUMENT_WORDS * 4;
@@ -303,20 +303,13 @@ fn insideDocument(position: vec2<i32>) -> bool {
 }
 
 fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
-  if (lightGlaze.formatCode == 0u) {
-    return round(clamp(value, vec4<f32>(0.0), vec4<f32>(1.0)) * 255.0) / 255.0;
-  }
   let redGreen = unpack2x16float(pack2x16float(value.rg));
   let blueAlpha = unpack2x16float(pack2x16float(value.ba));
   return vec4<f32>(redGreen, blueAlpha);
 }
 
 fn storedLightCoverage(value: f32) -> f32 {
-  let coverage = clamp(value, 0.0, 1.0);
-  if (lightGlaze.formatCode == 1u) {
-    return unpack2x16float(pack2x16float(vec2<f32>(coverage, 0.0))).x;
-  }
-  return coverage;
+  return clamp(value, 0.0, 1.0);
 }
 
 fn srgbToLinearChannel(value: f32) -> f32 {
@@ -562,10 +555,10 @@ fn rampAt(offset: f32, signedDistance: f32) -> f32 {
   return clamp(offset + 0.5 - signedDistance, 0.0, 1.0);
 }
 
-fn resolveCoverageByte(
+fn resolveCoverage(
   documentPosition: vec2<u32>,
   localPosition: vec2<u32>
-) -> u32 {
+) -> f32 {
   let pair = propagatedSeeds[
     localPosition.y * parameters.scratchExtent + localPosition.x
   ];
@@ -573,14 +566,14 @@ fn resolveCoverageByte(
   let inside = alpha >= 0.5;
   let candidate = select(pair.x, pair.y, inside);
   if (candidate == INVALID_SEED) {
-    return 0u;
+    return 0.0;
   }
   let seedPosition = unpackSeed(candidate);
   let delta = vec2<f32>(seedPosition) - vec2<f32>(localPosition);
   let distance = sqrt(dot(delta, delta));
   let fixedDistance = u32(floor(min(distance, 1023.0) * 64.0 + 0.5));
   if (fixedDistance < 1u) {
-    return 0u;
+    return 0.0;
   }
   let quantizedDistance = f32(fixedDistance) / 64.0;
   let signedDistance = select(
@@ -598,7 +591,7 @@ fn resolveCoverageByte(
     let radius = parameters.styleWidth * 0.5;
     coverage = rampAt(radius, signedDistance) - rampAt(-radius, signedDistance);
   }
-  return u32(floor(clamp(coverage, 0.0, 1.0) * 255.0 + 0.5));
+  return clamp(coverage, 0.0, 1.0);
 }
 
 @compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
@@ -606,27 +599,26 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   if (globalId.y >= parameters.targetSize.y) {
     return;
   }
-  let firstX = globalId.x * 4u;
+  let firstX = globalId.x * 2u;
   if (firstX >= parameters.targetSize.x) {
     return;
   }
   let firstOffset = vec2<u32>(firstX, globalId.y);
   let firstDocumentPosition = parameters.targetOrigin + firstOffset;
-  var packedCoverage = 0u;
-  for (var lane = 0u; lane < 4u; lane += 1u) {
+  var coveragePair = vec2<f32>(0.0);
+  for (var lane = 0u; lane < 2u; lane += 1u) {
     if (firstX + lane >= parameters.targetSize.x) {
       continue;
     }
     let offset = firstOffset + vec2<u32>(lane, 0u);
-    let coverage = resolveCoverageByte(
+    coveragePair[lane] = resolveCoverage(
       parameters.targetOrigin + offset,
       parameters.localTargetOrigin + offset
     );
-    packedCoverage |= coverage << (lane * 8u);
   }
   let linearIndex = firstDocumentPosition.y * ${documentWidth}u
     + firstDocumentPosition.x;
-  coverageField[linearIndex >> 2u] = packedCoverage;
+  coverageField[linearIndex >> 1u] = pack2x16float(coveragePair);
 }
 `;
 }
@@ -743,11 +735,10 @@ var<storage, read> innerShadowField: array<u32>;
 @group(${bindGroup}) @binding(${innerShadowUniformBinding})
 var<uniform> innerShadow: ShadowUniforms;
 
-fn loadCoverageByte(position: vec2<i32>) -> u32 {
+fn loadCoverage(position: vec2<i32>) -> f32 {
   let linearIndex = u32(position.y) * ${documentWidth}u + u32(position.x);
-  let packed = coverageField[linearIndex >> 2u];
-  let shift = (linearIndex & 3u) * 8u;
-  return (packed >> shift) & 255u;
+  let pair = unpack2x16float(coverageField[linearIndex >> 1u]);
+  return select(pair.x, pair.y, (linearIndex & 1u) == 1u);
 }
 
 fn loadOuterShadow(position: vec2<i32>) -> f32 {
@@ -755,9 +746,8 @@ fn loadOuterShadow(position: vec2<i32>) -> f32 {
     return 0.0;
   }
   let linearIndex = u32(position.y) * ${documentWidth}u + u32(position.x);
-  let packed = outerShadowField[linearIndex >> 2u];
-  let shift = (linearIndex & 3u) * 8u;
-  return f32((packed >> shift) & 255u) / 255.0;
+  let pair = unpack2x16float(outerShadowField[linearIndex >> 1u]);
+  return select(pair.x, pair.y, (linearIndex & 1u) == 1u);
 }
 
 fn loadInnerShadow(position: vec2<i32>) -> f32 {
@@ -765,9 +755,8 @@ fn loadInnerShadow(position: vec2<i32>) -> f32 {
     return 0.0;
   }
   let linearIndex = u32(position.y) * ${documentWidth}u + u32(position.x);
-  let packed = innerShadowField[linearIndex >> 2u];
-  let shift = (linearIndex & 3u) * 8u;
-  return f32((packed >> shift) & 255u) / 255.0;
+  let pair = unpack2x16float(innerShadowField[linearIndex >> 1u]);
+  return select(pair.x, pair.y, (linearIndex & 1u) == 1u);
 }
 
 fn sampleOuterShadow(position: vec2<f32>) -> f32 {
@@ -814,8 +803,8 @@ fn shadowContourValue(value: f32, contourCode: u32, antialias: u32) -> f32 {
   }
   var result = shadowContourRaw(x, contourCode);
   if (antialias == 1u && contourCode != 0u) {
-    let lower = clamp(x - 0.5 / 255.0, 0.0, 1.0);
-    let upper = clamp(x + 0.5 / 255.0, 0.0, 1.0);
+    let lower = clamp(x - 0.5 / 1024.0, 0.0, 1.0);
+    let upper = clamp(x + 0.5 / 1024.0, 0.0, 1.0);
     result = (
       shadowContourRaw(lower, contourCode)
       + result
@@ -1086,7 +1075,7 @@ fn styledTexel(position: vec2<i32>) -> vec4<f32> {
   let base = colorOverlayNode(sourceTexel(position));
   var coverage = 0.0;
   if (parameters.strokeEnabled == 1u) {
-    coverage = f32(loadCoverageByte(position)) / 255.0;
+    coverage = loadCoverage(position);
   }
   let shadowsDisabled = outerShadow.flags.x == 0u && innerShadow.flags.x == 0u;
   if (shadowsDisabled) {
@@ -1105,18 +1094,6 @@ fn styledTexel(position: vec2<i32>) -> vec4<f32> {
       clamp(legacyNode.rgb, vec3<f32>(0.0), vec3<f32>(legacyAlpha)),
       legacyAlpha
     );
-    if (legacyNode.a > 1e-6) {
-      var legacyStraight = legacyNode.rgb / legacyNode.a;
-      let documentPosition = vec2<u32>(position);
-      let noise = random24(documentPosition, 4660u)
-        + random24(documentPosition, 40503u) - 1.0;
-      legacyStraight = clamp(
-        legacyStraight + noise * (0.75 / 255.0),
-        vec3<f32>(0.0),
-        vec3<f32>(1.0)
-      );
-      legacyNode = vec4<f32>(legacyStraight * legacyNode.a, legacyNode.a);
-    }
     return legacyNode * bevel.scalars.z;
   }
 
@@ -1140,14 +1117,6 @@ fn styledTexel(position: vec2<i32>) -> vec4<f32> {
     clamp(node.rgb, vec3<f32>(0.0), vec3<f32>(clampedAlpha)),
     clampedAlpha
   );
-  if (node.a > 1e-6) {
-    var straight = node.rgb / node.a;
-    let documentPosition = vec2<u32>(position);
-    let noise = random24(documentPosition, 4660u)
-      + random24(documentPosition, 40503u) - 1.0;
-    straight = clamp(straight + noise * (0.75 / 255.0), vec3<f32>(0.0), vec3<f32>(1.0));
-    node = vec4<f32>(straight * node.a, node.a);
-  }
   return node * bevel.scalars.z;
 }
 `;
@@ -1545,11 +1514,10 @@ function thresholdMaskShader(
 const THRESHOLD_WORD_BITS = ${THRESHOLD_MASK_WORD_BITS}u;
 const THRESHOLD_WORDS_PER_ROW = ${wordsPerRow}u;
 
-fn loadCoverageByte(position: vec2<u32>) -> u32 {
+fn loadCoverage(position: vec2<u32>) -> f32 {
   let linearIndex = position.y * ${documentWidth}u + position.x;
-  let packed = coverageField[linearIndex >> 2u];
-  let shift = (linearIndex & 3u) * 8u;
-  return (packed >> shift) & 255u;
+  let pair = unpack2x16float(coverageField[linearIndex >> 1u]);
+  return select(pair.x, pair.y, (linearIndex & 1u) == 1u);
 }
 
 @compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
@@ -1584,7 +1552,7 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
     if (sourceTexel(vec2<i32>(documentPosition)).a >= 0.5) {
       nextBits |= bit;
     }
-    if (loadCoverageByte(documentPosition) != 0u) {
+    if (loadCoverage(documentPosition) > 0.0) {
       atomicOr(&changeState[0], 2u);
     }
   }
@@ -1782,7 +1750,7 @@ export class RasterStrokeRenderer {
     this.documentWidth = options.documentWidth;
     this.documentHeight = options.documentHeight;
     if (this.documentWidth % COVERAGE_WORD_PIXELS !== 0) {
-      throw new Error("La larghezza documento Traccia deve essere divisibile per 4.");
+      throw new Error("La larghezza documento Traccia deve essere divisibile per 2.");
     }
     this.layerFormat = options.layerFormat;
     this.layerView = options.layerView;
@@ -1989,7 +1957,7 @@ export class RasterStrokeRenderer {
     this.bevelHeightView = this.dummyBevelView;
     this.bevelGlossView = this.dummyBevelView;
     this.dummyShadowStorageBuffer = this.device.createBuffer({
-      label: "Style stack disabled Ombra packed R8 placeholder",
+      label: "Style stack disabled Ombra packed f16 placeholder",
       size: 4,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
@@ -2087,7 +2055,7 @@ export class RasterStrokeRenderer {
     let indirectArguments: GPUBuffer | null = null;
     try {
       coverage = this.device.createBuffer({
-        label: "Traccia persistent packed R8 coverage",
+        label: "Traccia persistent packed f16 coverage",
         size: this.fullCoverageMemoryBytes,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       });
@@ -2766,7 +2734,7 @@ export class RasterStrokeRenderer {
       code: jfaShader(),
     });
     const resolveModule = this.device.createShaderModule({
-      label: "Traccia Q10.6 to packed R8 coverage WGSL",
+      label: "Traccia Q10.6 to packed f16 coverage WGSL",
       code: resolveShader(this.documentWidth, this.documentHeight),
     });
     const composeModule = this.device.createShaderModule({
@@ -2825,7 +2793,7 @@ export class RasterStrokeRenderer {
       compute: { module: jfaModule, entryPoint: "main" },
     });
     this.resolvePipeline = this.device.createComputePipeline({
-      label: "Traccia packed R8 coverage resolve pipeline",
+      label: "Traccia packed f16 coverage resolve pipeline",
       layout: this.device.createPipelineLayout({
         bindGroupLayouts: [this.resolveBindGroupLayout],
       }),
@@ -3606,8 +3574,8 @@ export class RasterStrokeRenderer {
     if (jobs.length > 0) {
       const fieldPass = options.encoder.beginComputePass({
         label: useThresholdGate
-          ? "Traccia gated seed + packed dual JFA + packed R8 coverage"
-          : "Traccia seed + packed dual JFA + packed R8 coverage",
+          ? "Traccia gated seed + packed dual JFA + packed f16 coverage"
+          : "Traccia seed + packed dual JFA + packed f16 coverage",
       });
       for (let jobIndex = 0; jobIndex < jobs.length; jobIndex += 1) {
         const job = jobs[jobIndex];

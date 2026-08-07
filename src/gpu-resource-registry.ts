@@ -20,7 +20,7 @@
 import { GPU_FORMAT_BYTES_PER_PIXEL } from "./gpu-memory-audit.ts";
 
 export const GPU_RESOURCE_REGISTRY_STRATEGY =
-  "device-intercepted-exact-descriptor-bytes-label-categorised-v1" as const;
+  "device-intercepted-exact-descriptor-bytes-msaa-current-peak-categorised-v2" as const;
 
 export type GpuResourceKind = "texture" | "buffer";
 
@@ -35,18 +35,27 @@ export interface GpuResourceRecord {
   readonly height: number;
   readonly layers: number;
   readonly mipLevelCount: number;
+  readonly sampleCount: number;
   /** Il formato non e' nella tabella: i byte non sono calcolabili, non valgono zero. */
   readonly unmeasurable: boolean;
 }
 
 export interface GpuCategoryTotal {
   readonly category: string;
+  /** Byte correnti: ogni risorsa appartiene a una sola categoria. */
   readonly bytes: number;
+  /** Massimo storico della sola categoria; i picchi di categorie diverse non si sommano. */
+  readonly peakBytes: number;
   readonly count: number;
 }
 
 export interface GpuRegistrySnapshot {
+  /** Alias esplicito del totale corrente. */
+  readonly currentBytes: number;
+  /** Alias storico di `currentBytes`, mantenuto per i consumatori esistenti. */
   readonly totalBytes: number;
+  /** Massimo totale osservato dopo una createTexture/createBuffer. */
+  readonly peakBytes: number;
   readonly textureBytes: number;
   readonly bufferBytes: number;
   readonly textureCount: number;
@@ -69,31 +78,49 @@ export interface GpuRegistrySnapshot {
  * finisce in `Non categorizzato`, che resta **visibile**: una risorsa nuova non
  * puo' sparire dal conto, al massimo sta in una riga che chiede un nome.
  */
+export const GPU_MEMORY_CATEGORY_ORDER = Object.freeze([
+  "Layer RGBA16F",
+  "Piramidi mip RGBA16F",
+  "Maschere continue R16F",
+  "Heightfield R32F",
+  "Cache vettoriali",
+  "Scratch temporanei",
+  "History e cold storage",
+  "Import e trasformazioni raster",
+  "Presentazione",
+  "Effetti raster",
+  "Light / Uniformed / Intense",
+  "Fusione e Blend",
+  "Riempimento e selezione",
+  "Pennello, grana e shape",
+  "Code predittive",
+  "Uniformi e parametri",
+  "Non categorizzato",
+] as const);
+
 const CATEGORY_RULES: ReadonlyArray<readonly [RegExp, string]> = Object.freeze([
-  [/authoritative paint layer|Transparent layer placeholder/i, "Livelli raster"],
-  [/cold tile|cold storage|compress/i, "Livelli · cold storage"],
-  // Lo scratch condiviso del banco effetti va nominato prima delle regole
-  // generiche: senza, i suoi `16 MiB` finivano in `Non categorizzato`. E' stato
-  // il catch-all a rivelarlo, ed e' il motivo per cui deve restare visibile.
-  [/banco effetti|scratch condiviso|scratch pool/i, "Banco effetti · scratch"],
-  // Il glaze precede la Traccia perche' la sua etichetta autorevole e'
-  // «Lazy Light Glaze **stroke** accumulator»: invertendo l'ordine i suoi
-  // 32 MiB verrebbero attribuiti alla Traccia. Colto da `document:verify`.
-  [/Light Glaze|glaze/i, "Light Glaze"],
-  // Le piramidi possedute da un effetto stanno con l'effetto, non in una riga
-  // generica: `Traccia styled derived mip` e' memoria della Traccia.
-  [/Smusso|bevel/i, "Smusso"],
-  [/Traccia|stroke/i, "Traccia"],
-  [/Ombra|shadow/i, "Ombre"],
-  [/display pyramid|derived mip|logical mip|composited/i, "Piramidi mip"],
-  [/Cronologia|history/i, "Cronologia raster"],
-  [/Riempimento|fill/i, "Riempimento"],
-  [/Selezione|selection|lasso/i, "Selezione"],
-  [/Blend dry|blend/i, "Fusione e Blend"],
-  [/mixed scene|scene lineare|ping-pong/i, "Scena mista"],
-  [/presentation|presentazione|swap/i, "Presentazione"],
+  [/authoritative paint layer|Transparent layer placeholder/i, "Layer RGBA16F"],
+  // Scratch/readback precede ogni proprietario semantico: una cache vettoriale
+  // persistente e il suo scratch temporaneo devono restare righe disgiunte.
+  [/scratch|arena comune|arena segmenti|readback|rect probe|pixel probe|witness/i,
+    "Scratch temporanei"],
+  [/Heightfield|heightfield/i, "Heightfield R32F"],
+  [/(?:R16F|r16float|f16).*(?:coverage|matte|mask|accumulator|snapshot)|(?:coverage|matte|blur cache|blurred mask|accumulator|snapshot).*(?:R16F|r16float|f16)|GPU blur cache/i,
+    "Maschere continue R16F"],
+  [/Cronologia|history|cold tile|cold storage|Cold ripristinato|compress/i,
+    "History e cold storage"],
+  [/vector text|vector svg|semantic vector|mixed scene|scene lineare|ordered layer blend|ordered clipping-group/i,
+    "Cache vettoriali"],
+  [/display pyramid|derived mip|logical mip|sampling chain|\bmip(?:map)?\b/i,
+    "Piramidi mip RGBA16F"],
+  [/raster import|raster Transform|Trasforma raster|Native raster/i,
+    "Import e trasformazioni raster"],
+  [/presentation|presentazione|swap|thumbnail/i, "Presentazione"],
+  [/Light Glaze|Uniformed|Intense|glaze/i, "Light / Uniformed / Intense"],
+  [/Smusso|bevel|Traccia|stroke|Ombra|shadow/i, "Effetti raster"],
+  [/Riempimento|fill|Selezione|selection|lasso/i, "Riempimento e selezione"],
+  [/Blend dry|blend|compositor|compositore/i, "Fusione e Blend"],
   [/grain|shape|stamp|brush|pennello/i, "Pennello, grana e shape"],
-  [/vector text|testo/i, "Testo vettoriale"],
   [/thickness|stabilizzazione|stabilization|tail/i, "Code predittive"],
   [/uniform|parameter|indirect|metadata|argument/i, "Uniformi e parametri"],
 ]);
@@ -109,7 +136,15 @@ export function textureDescriptorBytes(descriptor: {
   format: string;
   size: GPUExtent3DStrict;
   mipLevelCount?: number;
-}): { bytes: number; unmeasurable: boolean; width: number; height: number; layers: number } {
+  sampleCount?: number;
+}): {
+  bytes: number;
+  unmeasurable: boolean;
+  width: number;
+  height: number;
+  layers: number;
+  sampleCount: number;
+} {
   const size = descriptor.size as
     | { width: number; height?: number; depthOrArrayLayers?: number }
     | readonly number[];
@@ -121,8 +156,9 @@ export function textureDescriptorBytes(descriptor: {
     ? (size[2] ?? 1)
     : ((size as { depthOrArrayLayers?: number }).depthOrArrayLayers ?? 1);
   const bytesPerPixel = GPU_FORMAT_BYTES_PER_PIXEL[descriptor.format];
+  const sampleCount = Math.max(1, Math.trunc(descriptor.sampleCount ?? 1));
   if (bytesPerPixel === undefined) {
-    return { bytes: 0, unmeasurable: true, width, height, layers };
+    return { bytes: 0, unmeasurable: true, width, height, layers, sampleCount };
   }
   const levels = Math.max(1, descriptor.mipLevelCount ?? 1);
   let bytes = 0;
@@ -130,9 +166,10 @@ export function textureDescriptorBytes(descriptor: {
     bytes += Math.max(1, width >> level)
       * Math.max(1, height >> level)
       * Math.max(1, layers)
-      * bytesPerPixel;
+      * bytesPerPixel
+      * sampleCount;
   }
-  return { bytes, unmeasurable: false, width, height, layers };
+  return { bytes, unmeasurable: false, width, height, layers, sampleCount };
 }
 
 export class GpuResourceRegistry {
@@ -141,11 +178,19 @@ export class GpuResourceRegistry {
   private createdCount = 0;
   private destroyedCount = 0;
   private collectedCount = 0;
+  private currentBytes = 0;
+  private peakBytes = 0;
+  private readonly categoryCurrentBytes = new Map<string, number>();
+  private readonly categoryPeakBytes = new Map<string, number>();
   private readonly finalization = typeof FinalizationRegistry === "function"
     ? new FinalizationRegistry<number>((id) => {
       // Risorsa abbandonata senza `destroy()`: il driver la libera comunque, e
       // senza questa riconciliazione il totale resterebbe gonfio per sempre.
-      if (this.live.delete(id)) this.collectedCount += 1;
+      const record = this.live.get(id);
+      if (record && this.live.delete(id)) {
+        this.removeLiveBytes(record);
+        this.collectedCount += 1;
+      }
     })
     : null;
 
@@ -153,12 +198,15 @@ export class GpuResourceRegistry {
     const id = this.nextId++;
     this.live.set(id, { ...record, id });
     this.createdCount += 1;
+    this.addLiveBytes(record);
     this.finalization?.register(resource, id, resource as WeakKey);
     return id;
   }
 
   release(id: number, resource: object): void {
-    if (!this.live.delete(id)) return;
+    const record = this.live.get(id);
+    if (!record || !this.live.delete(id)) return;
+    this.removeLiveBytes(record);
     this.destroyedCount += 1;
     this.finalization?.unregister(resource as WeakKey);
   }
@@ -175,6 +223,11 @@ export class GpuResourceRegistry {
     let unmeasurableCount = 0;
     const unmeasurableFormats = new Set<string>();
     const categories = new Map<string, { bytes: number; count: number }>();
+    // Conserva una riga a zero anche dopo il rilascio dell'ultima risorsa:
+    // altrimenti il picco storico della categoria sparirebbe dal pannello.
+    for (const category of this.categoryPeakBytes.keys()) {
+      categories.set(category, { bytes: 0, count: 0 });
+    }
     for (const record of this.live.values()) {
       if (record.unmeasurable) {
         unmeasurableCount += 1;
@@ -192,8 +245,11 @@ export class GpuResourceRegistry {
       bucket.count += 1;
       categories.set(record.category, bucket);
     }
+    const currentBytes = textureBytes + bufferBytes;
     return {
-      totalBytes: textureBytes + bufferBytes,
+      currentBytes,
+      totalBytes: currentBytes,
+      peakBytes: this.peakBytes,
       textureBytes,
       bufferBytes,
       textureCount,
@@ -201,13 +257,37 @@ export class GpuResourceRegistry {
       unmeasurableCount,
       unmeasurableFormats: [...unmeasurableFormats],
       categories: [...categories.entries()]
-        .map(([category, bucket]) => ({ category, ...bucket }))
+        .map(([category, bucket]) => ({
+          category,
+          ...bucket,
+          peakBytes: this.categoryPeakBytes.get(category) ?? bucket.bytes,
+        }))
         .sort((left, right) => right.bytes - left.bytes),
       liveCount: this.live.size,
       createdCount: this.createdCount,
       destroyedCount: this.destroyedCount,
       collectedCount: this.collectedCount,
     };
+  }
+
+  private addLiveBytes(record: Omit<GpuResourceRecord, "id">): void {
+    this.currentBytes += record.bytes;
+    this.peakBytes = Math.max(this.peakBytes, this.currentBytes);
+    const categoryBytes = (this.categoryCurrentBytes.get(record.category) ?? 0) + record.bytes;
+    this.categoryCurrentBytes.set(record.category, categoryBytes);
+    this.categoryPeakBytes.set(
+      record.category,
+      Math.max(this.categoryPeakBytes.get(record.category) ?? 0, categoryBytes),
+    );
+  }
+
+  private removeLiveBytes(record: GpuResourceRecord): void {
+    this.currentBytes = Math.max(0, this.currentBytes - record.bytes);
+    const categoryBytes = Math.max(
+      0,
+      (this.categoryCurrentBytes.get(record.category) ?? 0) - record.bytes,
+    );
+    this.categoryCurrentBytes.set(record.category, categoryBytes);
   }
 }
 
@@ -239,6 +319,7 @@ export function instrumentGpuDevice(device: GPUDevice): {
       height: measured.height,
       layers: measured.layers,
       mipLevelCount: Math.max(1, descriptor.mipLevelCount ?? 1),
+      sampleCount: measured.sampleCount,
       unmeasurable: measured.unmeasurable,
     }, texture);
     const destroy = texture.destroy.bind(texture);
@@ -262,6 +343,7 @@ export function instrumentGpuDevice(device: GPUDevice): {
       height: 0,
       layers: 0,
       mipLevelCount: 0,
+      sampleCount: 1,
       unmeasurable: false,
     }, buffer);
     const destroy = buffer.destroy.bind(buffer);

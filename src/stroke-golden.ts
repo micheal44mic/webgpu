@@ -19,12 +19,72 @@ import { paintMipDownsampleShader } from "./shaders";
 import rasterStrokeGoldenBaseline from "../goldens/raster-stroke-rgba8-v1.json";
 import rasterStrokeMipGoldenBaseline from "../goldens/raster-stroke-rgba8-mips-v1.json";
 
-export const RASTER_STROKE_GOLDEN_VERSION = 1 as const;
+export const RASTER_STROKE_GOLDEN_VERSION = 2 as const;
 export const RASTER_STROKE_GOLDEN_WIDTH = 256;
 export const RASTER_STROKE_GOLDEN_HEIGHT = 192;
-export const RASTER_STROKE_GOLDEN_FORMAT = "rgba8unorm" as const;
-export const RASTER_STROKE_GOLDEN_MIP_CHAIN_VERSION = 1 as const;
-export const RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION = 8 as const;
+export const RASTER_STROKE_GOLDEN_FORMAT = "rgba16float" as const;
+export const RASTER_STROKE_GOLDEN_MIP_CHAIN_VERSION = 2 as const;
+export const RASTER_STROKE_GOLDEN_DIAGNOSTICS_VERSION = 9 as const;
+
+const GOLDEN_RGBA16F_BYTES_PER_PIXEL = 8;
+const GOLDEN_RGBA16F_ALPHA_BYTE_OFFSET = 6;
+const GOLDEN_R16F_BYTES_PER_PIXEL = 2;
+
+const float32Bits = new Uint32Array(1);
+const float32Value = new Float32Array(float32Bits.buffer);
+
+/** Packs an f32 value into the IEEE-754 binary16 bit pattern WebGPU uploads. */
+function float32ToFloat16Bits(value: number): number {
+  float32Value[0] = value;
+  const bits = float32Bits[0];
+  const sign = (bits >>> 16) & 0x8000;
+  const exponent = (bits >>> 23) & 0xff;
+  const mantissa = bits & 0x7fffff;
+
+  if (exponent === 0xff) {
+    return sign | (mantissa === 0 ? 0x7c00 : 0x7e00);
+  }
+  const halfExponent = exponent - 127 + 15;
+  if (halfExponent >= 0x1f) {
+    return sign | 0x7c00;
+  }
+  if (halfExponent <= 0) {
+    if (halfExponent < -10) return sign;
+    const normalizedMantissa = mantissa | 0x800000;
+    const shift = 14 - halfExponent;
+    const rounded = (normalizedMantissa + (1 << (shift - 1)) - 1
+      + ((normalizedMantissa >>> shift) & 1)) >>> shift;
+    return sign | rounded;
+  }
+  const roundedMantissa = mantissa + 0xfff + ((mantissa >>> 13) & 1);
+  if ((roundedMantissa & 0x800000) !== 0) {
+    const roundedExponent = halfExponent + 1;
+    return roundedExponent >= 0x1f
+      ? sign | 0x7c00
+      : sign | (roundedExponent << 10);
+  }
+  return sign | (halfExponent << 10) | (roundedMantissa >>> 13);
+}
+
+/** Converts the historical RGBA8 logical fixture into authoritative RGBA16F bytes. */
+export function packRgba8UnormToRgba16FloatBytes(pixels: Uint8Array): Uint8Array {
+  if (pixels.byteLength % 4 !== 0) {
+    throw new RangeError("Fixture RGBA8 golden non allineata a quattro canali.");
+  }
+  const packed = new Uint16Array(pixels.byteLength);
+  for (let index = 0; index < pixels.length; index += 1) {
+    packed[index] = float32ToFloat16Bits(pixels[index] / 255);
+  }
+  return new Uint8Array(packed.buffer);
+}
+
+function packR8UnormToR16FloatBytes(pixels: Uint8Array): Uint8Array {
+  const packed = new Uint16Array(pixels.byteLength);
+  for (let index = 0; index < pixels.length; index += 1) {
+    packed[index] = float32ToFloat16Bits(pixels[index] / 255);
+  }
+  return new Uint8Array(packed.buffer);
+}
 
 export interface RasterStrokeGoldenMip {
   level: number;
@@ -392,8 +452,12 @@ async function sha256(bytes: Uint8Array): Promise<string> {
 
 function countNonZeroAlphaPixels(pixels: Uint8Array): number {
   let count = 0;
-  for (let offset = 3; offset < pixels.length; offset += 4) {
-    if (pixels[offset] !== 0) {
+  for (
+    let offset = GOLDEN_RGBA16F_ALPHA_BYTE_OFFSET;
+    offset < pixels.length;
+    offset += GOLDEN_RGBA16F_BYTES_PER_PIXEL
+  ) {
+    if ((pixels[offset] | (pixels[offset + 1] & 0x7f)) !== 0) {
       count += 1;
     }
   }
@@ -401,11 +465,12 @@ function countNonZeroAlphaPixels(pixels: Uint8Array): number {
 }
 
 function uploadFixture(device: GPUDevice, texture: GPUTexture, pixels: Uint8Array): void {
+  const packed = packRgba8UnormToRgba16FloatBytes(pixels);
   device.queue.writeTexture(
     { texture },
-    pixels,
+    packed,
     {
-      bytesPerRow: RASTER_STROKE_GOLDEN_WIDTH * 4,
+      bytesPerRow: RASTER_STROKE_GOLDEN_WIDTH * GOLDEN_RGBA16F_BYTES_PER_PIXEL,
       rowsPerImage: RASTER_STROKE_GOLDEN_HEIGHT,
     },
     {
@@ -416,16 +481,17 @@ function uploadFixture(device: GPUDevice, texture: GPUTexture, pixels: Uint8Arra
   );
 }
 
-function uploadR8Fixture(
+function uploadR16FloatFixture(
   device: GPUDevice,
   texture: GPUTexture,
   pixels: Uint8Array,
 ): void {
+  const packed = packR8UnormToR16FloatBytes(pixels);
   device.queue.writeTexture(
     { texture },
-    pixels,
+    packed,
     {
-      bytesPerRow: RASTER_STROKE_GOLDEN_WIDTH,
+      bytesPerRow: RASTER_STROKE_GOLDEN_WIDTH * GOLDEN_R16F_BYTES_PER_PIXEL,
       rowsPerImage: RASTER_STROKE_GOLDEN_HEIGHT,
     },
     {
@@ -436,13 +502,13 @@ function uploadR8Fixture(
   );
 }
 
-async function readRgba8Texture(
+async function readRgba16FloatTexture(
   device: GPUDevice,
   texture: GPUTexture,
   width: number,
   height: number,
 ): Promise<Uint8Array> {
-  const unpaddedBytesPerRow = width * 4;
+  const unpaddedBytesPerRow = width * GOLDEN_RGBA16F_BYTES_PER_PIXEL;
   const bytesPerRow = Math.ceil(unpaddedBytesPerRow / 256) * 256;
   const buffer = device.createBuffer({
     label: "Traccia golden reference texture readback",
@@ -485,7 +551,7 @@ function writeGoldenLightGlazeUniforms(
   const floats = new Float32Array(upload);
   const unsigned = new Uint32Array(upload);
   floats[0] = opacity;
-  unsigned[1] = 0;
+  unsigned[1] = 1;
   unsigned[2] = accumulationMode === "m1-max-coverage" ? 1 : 0;
   floats[4] = 0.12;
   floats[5] = 0.62;
@@ -544,13 +610,13 @@ export async function runRasterStrokeGolden(
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   });
   const m1CoverageTexture = device.createTexture({
-    label: "Traccia golden M1 R8 coverage source",
+    label: "Traccia golden M1 R16F coverage source",
     size: {
       width: RASTER_STROKE_GOLDEN_WIDTH,
       height: RASTER_STROKE_GOLDEN_HEIGHT,
       depthOrArrayLayers: 1,
     },
-    format: "r8unorm",
+    format: "r16float",
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   });
   const referenceMip1Texture = device.createTexture({
@@ -641,7 +707,9 @@ export async function runRasterStrokeGolden(
       }));
 
     const fixture = createRasterStrokeGoldenFixture();
-    const fixtureSha256 = await sha256(fixture);
+    const fixtureSha256 = await sha256(
+      packRgba8UnormToRgba16FloatBytes(fixture),
+    );
     uploadFixture(device, sourceTexture, fixture);
     const cases: RasterStrokeGoldenCase[] = [];
     const diagnostics: RasterStrokeGoldenDiagnostic[] = [];
@@ -802,7 +870,7 @@ export async function runRasterStrokeGolden(
       device.queue.submit([encoder.finish()]);
 
       const runtimeMip1Pixels = await renderer!.readStyledPixels(undefined, 1);
-      const referenceMip1Pixels = await readRgba8Texture(
+      const referenceMip1Pixels = await readRgba16FloatTexture(
         device,
         referenceMip1Texture,
         RASTER_STROKE_GOLDEN_WIDTH >> 1,
@@ -824,12 +892,16 @@ export async function runRasterStrokeGolden(
         differingBytes += 1;
         maxByteDelta = Math.max(maxByteDelta, Math.abs(runtime - reference));
         if (!firstDifference) {
-          const pixelIndex = Math.floor(byteIndex / 4);
+          const pixelIndex = Math.floor(
+            byteIndex / GOLDEN_RGBA16F_BYTES_PER_PIXEL,
+          );
           firstDifference = {
             byteIndex,
             x: pixelIndex % mip1Width,
             y: Math.floor(pixelIndex / mip1Width),
-            channel: channels[byteIndex % 4],
+            channel: channels[
+              Math.floor(byteIndex / GOLDEN_R16F_BYTES_PER_PIXEL) % 4
+            ],
             runtime,
             reference,
           };
@@ -890,7 +962,7 @@ export async function runRasterStrokeGolden(
         });
         device.queue.submit([bakeEncoder.finish()]);
         await device.queue.onSubmittedWorkDone();
-        const runtimePixels = await readRgba8Texture(
+        const runtimePixels = await readRgba16FloatTexture(
           device,
           bakeTexture,
           RASTER_STROKE_GOLDEN_WIDTH,
@@ -1016,7 +1088,7 @@ export async function runRasterStrokeGolden(
       CENTER_STYLE,
     );
 
-    uploadR8Fixture(device, m1CoverageTexture, createM1CoverageFixture());
+    uploadR16FloatFixture(device, m1CoverageTexture, createM1CoverageFixture());
     renderer.setLightGlazeView(m1CoverageTexture.createView());
     writeGoldenLightGlazeUniforms(
       device,
@@ -1025,7 +1097,7 @@ export async function runRasterStrokeGolden(
       "m1-max-coverage",
     );
     await runSourceModeMipDiagnostic(
-      "light-glaze-m1-r8-max-coverage-opacity-0.37",
+      "light-glaze-m1-r16float-max-coverage-opacity-0.37",
       "light-glaze",
       CENTER_STYLE,
     );
@@ -1413,6 +1485,25 @@ export async function runRasterStrokeGolden(
           baselineMismatches.push(id);
         }
       }
+    }
+    if (rasterStrokeGoldenBaseline.version !== RASTER_STROKE_GOLDEN_VERSION) {
+      baselineMismatches.unshift(
+        `version:${rasterStrokeGoldenBaseline.version}->${RASTER_STROKE_GOLDEN_VERSION}`,
+      );
+    }
+    if (rasterStrokeGoldenBaseline.format !== RASTER_STROKE_GOLDEN_FORMAT) {
+      baselineMismatches.unshift(
+        `format:${rasterStrokeGoldenBaseline.format}->${RASTER_STROKE_GOLDEN_FORMAT}`,
+      );
+    }
+    if (
+      rasterStrokeMipGoldenBaseline.mipChainVersion
+      !== RASTER_STROKE_GOLDEN_MIP_CHAIN_VERSION
+    ) {
+      baselineMismatches.unshift(
+        `mip-version:${rasterStrokeMipGoldenBaseline.mipChainVersion}`
+        + `->${RASTER_STROKE_GOLDEN_MIP_CHAIN_VERSION}`,
+      );
     }
     if (fixtureSha256 !== rasterStrokeGoldenBaseline.fixtureSha256) {
       baselineMismatches.unshift("fixture");

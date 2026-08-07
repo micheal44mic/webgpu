@@ -1,5 +1,5 @@
 export const VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY =
-  "webgpu-slug-r8-mask-separable-gaussian-roi-cache-v2" as const;
+  "webgpu-slug-r16float-mask-separable-gaussian-roi-cache-v3" as const;
 
 export const VECTOR_TEXT_SINGLE_SHADOW_BLUR_MAXIMUM = 300;
 export const VECTOR_TEXT_SINGLE_SHADOW_MAX_PIXELS = 4 * 1024 * 1024;

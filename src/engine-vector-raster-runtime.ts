@@ -5,6 +5,7 @@ import {
   VECTOR_TEXT_GPU_UNIFORM_STRIDE,
 } from "./vector-text-gpu-shader";
 import type { VectorRasterizeHistoryAction } from "./engine-history-types";
+import type { LayerFormat } from "./engine-types";
 import type { MixedSceneVectorKey } from "./mixed-scene-stack";
 import type {
   EffectsRetargetCaller,
@@ -49,11 +50,13 @@ import {
   destroyLayerGpuResources,
 } from "./engine-layer-runtime";
 import { LAYER_STACK_MAXIMUM } from "./layer-stack";
+import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 
 export const VECTOR_RASTERIZATION_STRATEGY =
-  "semantic-vector-slug-mesh-webgpu-linear-rgba8-msaa4-512-tile-chunks-history-seed-v2" as const;
+  "semantic-vector-slug-mesh-webgpu-linear-layer-format-msaa4-512-tile-chunks-history-seed-v3" as const;
 export const VECTOR_RASTER_CHUNK_SIZE = LAYER_STORAGE_TILE_SIZE * 2;
-export const VECTOR_RASTER_FORMAT = "rgba8unorm" as const;
+/** Permanent authoritative default; runtime resources still follow engine.layerFormat. */
+export const VECTOR_RASTER_FORMAT = "rgba16float" as const;
 
 interface VectorRasterPipelines {
   meshFill: GPURenderPipeline;
@@ -68,9 +71,20 @@ export interface VectorRasterConversionResult {
   readonly history: Omit<VectorRasterizeHistoryAction, "id" | "kind">;
   readonly chunkCount: number;
   readonly tileCount: number;
+  readonly format: LayerFormat;
 }
 
-const pipelinesByDevice = new WeakMap<GPUDevice, VectorRasterPipelines>();
+interface VectorRasterScratch {
+  readonly msaaTexture: GPUTexture;
+  readonly resolvedTexture: GPUTexture;
+  readonly msaaView: GPUTextureView;
+  readonly resolvedView: GPUTextureView;
+}
+
+const pipelinesByDevice = new WeakMap<
+  GPUDevice,
+  Map<LayerFormat, Promise<VectorRasterPipelines>>
+>();
 
 function sourceOverBlend(): GPUBlendState {
   return {
@@ -87,9 +101,21 @@ function sourceOverBlend(): GPUBlendState {
   };
 }
 
-function ensureVectorRasterPipelines(engine: BrushEngine): VectorRasterPipelines {
-  const existing = pipelinesByDevice.get(engine.device);
+async function ensureVectorRasterPipelines(
+  engine: BrushEngine,
+  format: LayerFormat,
+): Promise<VectorRasterPipelines> {
+  let devicePipelines = pipelinesByDevice.get(engine.device);
+  if (!devicePipelines) {
+    devicePipelines = new Map();
+    pipelinesByDevice.set(engine.device, devicePipelines);
+  }
+  const existing = devicePipelines.get(format);
   if (existing) return existing;
+  const pending = runGpuAllocationTransaction(
+    engine.device,
+    `Pipeline raster vettoriale ${format}`,
+    () => {
   const meshShader = engine.vectorTextGpuShaderModule;
   const slugShader = engine.vectorTextGpuSlugShaderModule;
   const blurShader = engine.vectorTextGpuBlurCompositeShaderModule;
@@ -120,84 +146,84 @@ function ensureVectorRasterPipelines(engine: BrushEngine): VectorRasterPipelines
     }],
   }];
   const meshFill = engine.device.createRenderPipeline({
-    label: "Vector raster RGBA8 linear mesh fill MSAA4",
+    label: `Vector raster ${format} linear mesh fill MSAA4`,
     layout: engine.device.createPipelineLayout({
-      label: "Vector raster RGBA8 mesh layout",
+      label: `Vector raster ${format} mesh layout`,
       bindGroupLayouts: [meshLayout],
     }),
     vertex: { module: meshShader, entryPoint: "vertexMain", buffers: vertexBuffers },
     fragment: {
       module: meshShader,
       entryPoint: "fragmentMain",
-      targets: [{ format: VECTOR_RASTER_FORMAT, blend }],
+      targets: [{ format, blend }],
     },
     primitive: { topology: "triangle-list" },
     multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
   });
   const slugFill = engine.device.createRenderPipeline({
-    label: "Vector raster RGBA8 linear Slug fill MSAA4",
+    label: `Vector raster ${format} linear Slug fill MSAA4`,
     layout: engine.device.createPipelineLayout({
-      label: "Vector raster RGBA8 Slug layout",
+      label: `Vector raster ${format} Slug layout`,
       bindGroupLayouts: [slugLayout],
     }),
     vertex: { module: slugShader, entryPoint: "vertexMain" },
     fragment: {
       module: slugShader,
       entryPoint: "fragmentMain",
-      targets: [{ format: VECTOR_RASTER_FORMAT, blend }],
+      targets: [{ format, blend }],
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
   });
   const blurComposite = engine.device.createRenderPipeline({
-    label: "Vector raster RGBA8 linear blur composite MSAA4",
+    label: `Vector raster ${format} linear blur composite MSAA4`,
     layout: engine.device.createPipelineLayout({
-      label: "Vector raster RGBA8 blur layout",
+      label: `Vector raster ${format} blur layout`,
       bindGroupLayouts: [blurLayout],
     }),
     vertex: { module: blurShader, entryPoint: "vertexMain" },
     fragment: {
       module: blurShader,
       entryPoint: "fragmentMain",
-      targets: [{ format: VECTOR_RASTER_FORMAT, blend }],
+      targets: [{ format, blend }],
     },
     primitive: { topology: "triangle-list" },
     multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
   });
   const slugInnerShadowDirect = engine.device.createRenderPipeline({
-    label: "Vector raster RGBA8 Slug inner shadow direct MSAA4",
+    label: `Vector raster ${format} Slug inner shadow direct MSAA4`,
     layout: engine.device.createPipelineLayout({
-      label: "Vector raster RGBA8 Slug inner-shadow direct layout",
+      label: `Vector raster ${format} Slug inner-shadow direct layout`,
       bindGroupLayouts: [slugLayout],
     }),
     vertex: { module: innerShader, entryPoint: "vertexMain" },
     fragment: {
       module: innerShader,
       entryPoint: "innerShadowDirectFragmentMain",
-      targets: [{ format: VECTOR_RASTER_FORMAT, blend }],
+      targets: [{ format, blend }],
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
   });
   const slugInnerShadowBlur = engine.device.createRenderPipeline({
-    label: "Vector raster RGBA8 Slug inner shadow blur MSAA4",
+    label: `Vector raster ${format} Slug inner shadow blur MSAA4`,
     layout: engine.device.createPipelineLayout({
-      label: "Vector raster RGBA8 Slug inner-shadow blur layout",
+      label: `Vector raster ${format} Slug inner-shadow blur layout`,
       bindGroupLayouts: [slugLayout, innerLayout],
     }),
     vertex: { module: innerShader, entryPoint: "innerShadowBlurVertexMain" },
     fragment: {
       module: innerShader,
       entryPoint: "innerShadowBlurFragmentMain",
-      targets: [{ format: VECTOR_RASTER_FORMAT, blend }],
+      targets: [{ format, blend }],
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
   });
   const meshInnerShadowBlur = engine.device.createRenderPipeline({
-    label: "Vector raster RGBA8 mesh inner shadow blur MSAA4",
+    label: `Vector raster ${format} mesh inner shadow blur MSAA4`,
     layout: engine.device.createPipelineLayout({
-      label: "Vector raster RGBA8 mesh inner-shadow layout",
+      label: `Vector raster ${format} mesh inner-shadow layout`,
       bindGroupLayouts: [meshLayout, innerLayout],
     }),
     vertex: {
@@ -208,7 +234,7 @@ function ensureVectorRasterPipelines(engine: BrushEngine): VectorRasterPipelines
     fragment: {
       module: meshShader,
       entryPoint: "meshInnerShadowFragmentMain",
-      targets: [{ format: VECTOR_RASTER_FORMAT, blend }],
+      targets: [{ format, blend }],
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
@@ -221,9 +247,73 @@ function ensureVectorRasterPipelines(engine: BrushEngine): VectorRasterPipelines
     slugInnerShadowBlur,
     meshInnerShadowBlur,
   };
-  pipelinesByDevice.set(engine.device, created);
-  return created;
+      return created;
+    },
+  );
+  devicePipelines.set(format, pending);
+  try {
+    return await pending;
+  } catch (error) {
+    if (devicePipelines.get(format) === pending) {
+      devicePipelines.delete(format);
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Rasterizzazione vettoriale ${format} non supportata dalla GPU. `
+      + `Nessun fallback RGBA8 è consentito. Dettaglio: ${message}`,
+    );
+  }
 }
+
+async function createVectorRasterScratch(
+  engine: BrushEngine,
+  format: LayerFormat,
+): Promise<VectorRasterScratch> {
+  try {
+    return await runGpuAllocationTransaction(
+      engine.device,
+      `Scratch raster vettoriale ${format} MSAA${VECTOR_TEXT_GPU_SAMPLE_COUNT}`,
+      (transaction) => {
+        const msaaTexture = engine.device.createTexture({
+          label: `Vector raster ${format} MSAA4 512 tile-aligned scratch`,
+          size: {
+            width: VECTOR_RASTER_CHUNK_SIZE,
+            height: VECTOR_RASTER_CHUNK_SIZE,
+            depthOrArrayLayers: 1,
+          },
+          sampleCount: VECTOR_TEXT_GPU_SAMPLE_COUNT,
+          format,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT,
+        });
+        transaction.deferRollback(() => msaaTexture.destroy());
+        const resolvedTexture = engine.device.createTexture({
+          label: `Vector raster ${format} resolved 512 tile-aligned scratch`,
+          size: {
+            width: VECTOR_RASTER_CHUNK_SIZE,
+            height: VECTOR_RASTER_CHUNK_SIZE,
+            depthOrArrayLayers: 1,
+          },
+          format,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+        });
+        transaction.deferRollback(() => resolvedTexture.destroy());
+        return {
+          msaaTexture,
+          resolvedTexture,
+          msaaView: msaaTexture.createView(),
+          resolvedView: resolvedTexture.createView(),
+        };
+      },
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Scratch raster vettoriale ${format} non supportato dalla GPU. `
+      + `Nessun fallback RGBA8 è consentito. Dettaglio: ${message}`,
+    );
+  }
+}
+
 function requireVectorDraws(draws: readonly VectorTextGpuDraw[]): void {
   if (draws.length === 0) {
     throw new Error("Il nodo vettoriale non contiene draw rasterizzabili.");
@@ -311,7 +401,7 @@ function encodeMissingBlurCaches(
     builds.length * VECTOR_TEXT_GPU_UNIFORM_STRIDE / 4,
   );
   const encoder = engine.device.createCommandEncoder({
-    label: "Preparazione cache blur vettoriale per raster RGBA8",
+    label: "Preparazione cache blur vettoriale ad alta precisione per raster",
   });
   builds.forEach((build, index) => {
     const width = build.draw.blurWidth;
@@ -395,7 +485,14 @@ async function renderVectorDrawsToLayer(
   destination: LayerTextureResources,
 ): Promise<{ bounds: VectorRasterizeHistoryAction["baseBounds"]; chunkCount: number }> {
   requireVectorDraws(draws);
-  const pipelines = ensureVectorRasterPipelines(engine);
+  if (destination.format !== engine.layerFormat) {
+    throw new Error(
+      `Destinazione raster vettoriale ${destination.format} incompatibile con documento `
+      + `${engine.layerFormat}.`,
+    );
+  }
+  const format = destination.format;
+  const pipelines = await ensureVectorRasterPipelines(engine, format);
   const uniformBuffer = engine.vectorTextGpuUniformBuffer;
   const uniformBindGroup = engine.vectorTextGpuUniformBindGroup;
   if (!uniformBuffer || !uniformBindGroup) {
@@ -418,29 +515,8 @@ async function renderVectorDrawsToLayer(
     * VECTOR_RASTER_CHUNK_SIZE;
   const lastChunkY = Math.ceil((bounds.y + bounds.height) / VECTOR_RASTER_CHUNK_SIZE)
     * VECTOR_RASTER_CHUNK_SIZE;
-  const msaaTexture = engine.device.createTexture({
-    label: "Vector raster RGBA8 MSAA4 512 tile-aligned scratch",
-    size: {
-      width: VECTOR_RASTER_CHUNK_SIZE,
-      height: VECTOR_RASTER_CHUNK_SIZE,
-      depthOrArrayLayers: 1,
-    },
-    sampleCount: VECTOR_TEXT_GPU_SAMPLE_COUNT,
-    format: VECTOR_RASTER_FORMAT,
-    usage: GPUTextureUsage.RENDER_ATTACHMENT,
-  });
-  const resolvedTexture = engine.device.createTexture({
-    label: "Vector raster RGBA8 resolved 512 tile-aligned scratch",
-    size: {
-      width: VECTOR_RASTER_CHUNK_SIZE,
-      height: VECTOR_RASTER_CHUNK_SIZE,
-      depthOrArrayLayers: 1,
-    },
-    format: VECTOR_RASTER_FORMAT,
-    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-  });
-  const msaaView = msaaTexture.createView();
-  const resolvedView = resolvedTexture.createView();
+  const { msaaTexture, resolvedTexture, msaaView, resolvedView } =
+    await createVectorRasterScratch(engine, format);
   let chunkCount = 0;
   try {
     for (let y = firstChunkY; y < lastChunkY; y += VECTOR_RASTER_CHUNK_SIZE) {
@@ -468,10 +544,10 @@ async function renderVectorDrawsToLayer(
           draws.length * VECTOR_TEXT_GPU_UNIFORM_STRIDE / 4,
         );
         const encoder = engine.device.createCommandEncoder({
-          label: `Vector raster RGBA8 chunk ${x},${y} ${width}x${height}`,
+          label: `Vector raster ${format} chunk ${x},${y} ${width}x${height}`,
         });
         const pass = encoder.beginRenderPass({
-          label: `Vector raster RGBA8 MSAA4 chunk ${x},${y}`,
+          label: `Vector raster ${format} MSAA4 chunk ${x},${y}`,
           colorAttachments: [{
             view: msaaView,
             resolveTarget: resolvedView,
@@ -553,7 +629,10 @@ async function renderVectorDrawsToLayer(
         chunkCount += 1;
       }
     }
-    await engine.waitForGpuCapped("Rasterizzazione vettoriale RGBA8 MSAA4", 60_000);
+    await engine.waitForGpuCapped(
+      `Rasterizzazione vettoriale ${format} MSAA4`,
+      60_000,
+    );
   } finally {
     msaaTexture.destroy();
     resolvedTexture.destroy();
@@ -565,9 +644,15 @@ async function hydrateHistorySeed(
   engine: BrushEngine,
   action: VectorRasterizeHistoryAction,
 ): Promise<LayerGpuResources> {
+  if (action.seed.format !== engine.layerFormat) {
+    throw new Error(
+      `Seed raster vettoriale ${action.seed.format} incompatibile con documento `
+      + `${engine.layerFormat}; Redo rifiutato.`,
+    );
+  }
   const gpu = await allocateLayerGpuResources(
     engine,
-    VECTOR_RASTER_FORMAT,
+    action.seed.format,
     `Reidratazione raster vettoriale storico livello ${action.layerId}`,
   );
   const hot = gpu.hot;
@@ -617,12 +702,7 @@ export async function rasterizeVectorNodeToLayer(
   draws: readonly VectorTextGpuDraw[],
 ): Promise<VectorRasterConversionResult> {
   if (!engine.initialized) throw new Error("Il motore non è inizializzato.");
-  if (engine.layerFormat !== VECTOR_RASTER_FORMAT) {
-    throw new Error(
-      "Rasterizza vettore è disponibile solo per documenti RGBA8; "
-      + "rgba16float non viene convertito implicitamente.",
-    );
-  }
+  const format = engine.layerFormat;
   if (engine.layerStack.count >= LAYER_STACK_MAXIMUM) {
     throw new Error(`Massimo ${LAYER_STACK_MAXIMUM} livelli raggiunto.`);
   }
@@ -671,12 +751,12 @@ export async function rasterizeVectorNodeToLayer(
     record.opacity = node.opacity;
     gpu = await allocateLayerGpuResources(
       engine,
-      VECTOR_RASTER_FORMAT,
+      format,
       `Allocazione raster vettoriale livello ${record.id}`,
     );
     engine.layerGpu.set(record.id, gpu);
     const hot = gpu.hot;
-    if (!hot) throw new Error("Texture RGBA8 del raster vettoriale mancante.");
+    if (!hot) throw new Error(`Texture ${format} del raster vettoriale mancante.`);
 
     const view: VectorTextViewState = {
       canvasWidth: engine.layerSize,
@@ -726,6 +806,7 @@ export async function rasterizeVectorNodeToLayer(
       },
       chunkCount: rendered.chunkCount,
       tileCount: countLayerStorageTiles(record.storageTileMask),
+      format: seed.format,
     };
   } catch (error) {
     const rollbackErrors: unknown[] = [];
@@ -951,8 +1032,11 @@ export async function applyVectorRasterizeHistory(
   if (!action.vectorState.key.startsWith(action.sourceKind + ":")) {
     throw new Error("Tipo sorgente incoerente nella cronologia raster vettoriale.");
   }
-  if (engine.layerFormat !== VECTOR_RASTER_FORMAT) {
-    throw new Error("La cronologia raster vettoriale richiede un documento RGBA8.");
+  if (action.seed.format !== engine.layerFormat) {
+    throw new Error(
+      `La cronologia raster vettoriale ${action.seed.format} non è compatibile con il `
+      + `documento ${engine.layerFormat}.`,
+    );
   }
   engine.layerSwitchBusy = true;
   try {

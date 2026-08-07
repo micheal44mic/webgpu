@@ -1,12 +1,14 @@
 export const VECTOR_TEXT_GPU_RENDER_STRATEGY =
-  "webgpu-indexed-vector-msaa4-exact-camera-redraw-v1" as const;
+  "webgpu-indexed-vector-linear-rgba16float-msaa4-exact-camera-redraw-v2" as const;
 
-export const VECTOR_TEXT_GPU_TARGET_FORMAT: GPUTextureFormat = "rgba8unorm-srgb";
+export const VECTOR_TEXT_GPU_TARGET_FORMAT: GPUTextureFormat = "rgba16float";
+export const VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL = 8;
 export const VECTOR_TEXT_GPU_SAMPLE_COUNT = 4;
 export const VECTOR_TEXT_GPU_UNIFORM_FLOATS = 32;
 export const VECTOR_TEXT_GPU_UNIFORM_BYTES = VECTOR_TEXT_GPU_UNIFORM_FLOATS * 4;
 export const VECTOR_TEXT_GPU_UNIFORM_STRIDE = 256;
-export const VECTOR_TEXT_GPU_BLUR_FORMAT: GPUTextureFormat = "r8unorm";
+export const VECTOR_TEXT_GPU_BLUR_FORMAT: GPUTextureFormat = "r16float";
+export const VECTOR_TEXT_GPU_BLUR_BYTES_PER_PIXEL = 2;
 export const VECTOR_TEXT_GPU_BLUR_FILTER_UNIFORM_BYTES = 128;
 export const VECTOR_TEXT_GPU_BLUR_COMPOSITE_UNIFORM_BYTES = 112;
 

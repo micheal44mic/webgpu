@@ -220,7 +220,10 @@ assert.match(
   /prewarmWorkspace\(source: unknown\): void \{\s+this\.requireScratchLease\(this\.styleKernel\(source\)\);/,
   "il prewarm deve riusare lease e bind group quando l'extent non cambia",
 );
-assert.match(rendererSource, /persistent packed R8 matte/);
+assert.match(rendererSource, /persistent packed f16 matte/);
+assert.match(rendererSource, /const COVERAGE_WORD_PIXELS = 2/);
+assert.match(rendererSource, /shadowMatte\[linearIndex >> 1u\] = pack2x16float\(matte\)/);
+assert.doesNotMatch(rendererSource, /round\(value \* 255\.0\)/);
 assert.match(rendererSource, /morphology\/Gaussian matte/);
 assert.match(rendererSource, /options\.encoder\.clearBuffer\(this\.coverageBuffer\)/);
 assert.match(rendererSource, /this\.scratchPool\.declareEffect\(this\.effectId/);
@@ -234,6 +237,17 @@ assert.match(compositorSource, /fn outerShadowPlane\(/);
 assert.match(compositorSource, /fn innerShadowNode\(/);
 assert.match(compositorSource, /outerShadowField: array<u32>/);
 assert.match(compositorSource, /innerShadowField: array<u32>/);
+assert.match(
+  compositorSource,
+  /unpack2x16float\(outerShadowField\[linearIndex >> 1u\]\)/,
+);
+assert.match(
+  compositorSource,
+  /unpack2x16float\(innerShadowField\[linearIndex >> 1u\]\)/,
+);
+// A full-width 4096² matte is exactly two bytes per pixel. This guards both
+// the wide-document allocation and the old one-byte stride from returning.
+assert.equal(4096 * 4096 / 2 * 4, 32 * 1024 * 1024);
 assert.match(
   compositorSource,
   /let shadowsDisabled = outerShadow\.flags\.x == 0u && innerShadow\.flags\.x == 0u/,
@@ -293,6 +307,8 @@ assert.equal(
   "f5bcd1e4caee360ab77cdcd9a9f8022fc3b93f079cc75216bf60471a27ed0a9e",
 );
 const mipIdentity = Buffer.from(JSON.stringify({
+  // The checked-in baseline is the legacy v1/RGBA8 identity. Runtime goldens
+  // are now v2/RGBA16F and intentionally report a mismatch until regenerated.
   mipChainVersion: 1,
   format: "rgba8unorm",
   width: 256,
@@ -315,6 +331,13 @@ assert.equal(
 assert.match(goldenSource, /outer-soft-linear/);
 assert.match(goldenSource, /inner-hard-cone-noise/);
 assert.match(goldenSource, /outer-inner-combined-restored/);
+assert.match(goldenSource, /RASTER_SHADOW_GOLDEN_VERSION = 2/);
+assert.match(goldenSource, /RASTER_SHADOW_GOLDEN_MIP_CHAIN_VERSION = 2/);
+assert.match(goldenSource, /packRgba8UnormToRgba16FloatBytes/);
+assert.match(goldenSource, /GOLDEN_RGBA16F_BYTES_PER_PIXEL = 8/);
+assert.match(goldenSource, /lightGlazeUniforms\[1\] = 1/);
+assert.match(goldenSource, /format: RASTER_STROKE_GOLDEN_FORMAT/);
+assert.match(goldenSource, /layerFormat: RASTER_STROKE_GOLDEN_FORMAT/);
 assert.match(goldenSource, /scratchExtent: 8/);
 assert.match(goldenSource, /strokeGeometryEnabled: false/);
 assert.match(goldenSource, /baselineMatches: baselineMismatches\.length === 0/);

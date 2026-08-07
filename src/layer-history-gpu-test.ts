@@ -6,7 +6,7 @@ import {
   type LayerMemorySnapshot,
 } from "./layer-composite-gpu-test";
 
-export const LAYER_HISTORY_GPU_TEST_VERSION = 10 as const;
+export const LAYER_HISTORY_GPU_TEST_VERSION = 11 as const;
 
 interface PixelRect {
   x: number;
@@ -111,12 +111,25 @@ export interface LayerHistoryGpuTestReport {
   };
 }
 
-function countNonZeroAlpha(pixels: Uint8Array): number {
+function countNonZeroAlpha(pixels: Uint8Array, bytesPerPixel: 4 | 8): number {
   let count = 0;
-  for (let index = 3; index < pixels.length; index += 4) {
-    count += Number(pixels[index] !== 0);
+  const alphaOffset = bytesPerPixel === 8 ? 6 : 3;
+  for (let index = alphaOffset; index < pixels.length; index += bytesPerPixel) {
+    const nonZero = bytesPerPixel === 8
+      ? pixels[index] !== 0 || (pixels[index + 1] & 0x7f) !== 0
+      : pixels[index] !== 0;
+    count += Number(nonZero);
   }
   return count;
+}
+
+function mipTailMiB(layerSize: number, bytesPerPixel: number): number {
+  let bytes = 0;
+  for (let size = Math.max(1, layerSize >> 1);; size = Math.max(1, size >> 1)) {
+    bytes += size * size * bytesPerPixel;
+    if (size === 1) break;
+  }
+  return bytes / (1024 * 1024);
 }
 
 function countDifferingBytes(left: Uint8Array, right: Uint8Array): number {
@@ -146,7 +159,7 @@ function snapshotMemory(engine: BrushEngine): LayerMemorySnapshot {
 
 /**
  * Destructive diagnostic for a fresh dev page (`?layerHistoryTest=1`). It uses
- * named RGBA8 layer readback, absolute compositor references and explicit fault
+ * named RGBA16F layer readback, absolute compositor references and explicit fault
  * injection. The outer caller adds a wall-clock timeout as a final fail-safe.
  */
 export async function runLayerHistoryGpuTest(
@@ -156,16 +169,21 @@ export async function runLayerHistoryGpuTest(
   const initialLayers = initialStats.layers;
   const initialHistory = engine.getHistoryState();
   if (
-    initialStats.layerFormat !== "rgba8unorm"
+    initialStats.layerFormat !== "rgba16float"
     || initialLayers.length !== 1
     || initialLayers[0].hasContent
     || initialHistory.actionCount !== 0
     || initialHistory.cursor !== 0
   ) {
     throw new Error(
-      "Il test GPU richiede una pagina dev nuova, RGBA8, con un solo livello vuoto.",
+      "Il test GPU richiede una pagina dev nuova, RGBA16F, con un solo livello vuoto.",
     );
   }
+
+  const rawBytesPerPixel = 8 as const;
+  const expectedLayerBaseMiB = engine.layerSize * engine.layerSize
+    * rawBytesPerPixel / (1024 * 1024);
+  const expectedLayerMipMiB = mipTailMiB(engine.layerSize, rawBytesPerPixel);
 
   const pRect: PixelRect = { x: 448, y: 448, width: 176, height: 128 };
   const qRect: PixelRect = { x: 960, y: 448, width: 176, height: 128 };
@@ -433,13 +451,13 @@ export async function runLayerHistoryGpuTest(
   const fatalFollowUpUndoReturned = await engine.undo();
 
   const alphaPixels = {
-    layerAStrokeP: countNonZeroAlpha(layerAP),
-    layerARegionQ: countNonZeroAlpha(layerAQ),
-    layerBBeforeUndoRegionP: countNonZeroAlpha(layerBBeforeUndoP),
-    layerBBeforeUndoStrokeQ: countNonZeroAlpha(layerBBeforeUndoQ),
-    layerBAfterUndoRegionP: countNonZeroAlpha(layerBAfterUndoP),
-    layerBAfterUndoRegionQ: countNonZeroAlpha(layerBAfterUndoQ),
-    layerBAfterRedoStrokeQ: countNonZeroAlpha(layerBAfterRedoQ),
+    layerAStrokeP: countNonZeroAlpha(layerAP, rawBytesPerPixel),
+    layerARegionQ: countNonZeroAlpha(layerAQ, rawBytesPerPixel),
+    layerBBeforeUndoRegionP: countNonZeroAlpha(layerBBeforeUndoP, rawBytesPerPixel),
+    layerBBeforeUndoStrokeQ: countNonZeroAlpha(layerBBeforeUndoQ, rawBytesPerPixel),
+    layerBAfterUndoRegionP: countNonZeroAlpha(layerBAfterUndoP, rawBytesPerPixel),
+    layerBAfterUndoRegionQ: countNonZeroAlpha(layerBAfterUndoQ, rawBytesPerPixel),
+    layerBAfterRedoStrokeQ: countNonZeroAlpha(layerBAfterRedoQ, rawBytesPerPixel),
   };
   const differingBytes = {
     layerAAfterPaintingB: countDifferingBytes(layerABaseline, layerAAfterPaintingB),
@@ -451,21 +469,20 @@ export async function runLayerHistoryGpuTest(
 
   const memoryChecks = {
     oneLayerHasOneRawPyramid: oneLayerMemory.layerCount === 1
-      && oneLayerMemory.layerMipChainMiB > 21
-      && oneLayerMemory.layerMipChainMiB < 22,
+      && Math.abs(oneLayerMemory.layerMipChainMiB - expectedLayerMipMiB) < 0.01,
     oneLayerHasOneHotAndNoCold:
-      Math.abs(oneLayerMemory.layerBaseMiB - 64) < 0.01
+      Math.abs(oneLayerMemory.layerBaseMiB - expectedLayerBaseMiB) < 0.01
       && oneLayerMemory.layerColdMiB < 0.01
       && oneLayerMemory.layerHydrationMiB < 0.01,
     twoLayersHaveOneHotAndSparseCold:
-      Math.abs(twoLayersMemory.layerBaseMiB - 64) < 0.01
+      Math.abs(twoLayersMemory.layerBaseMiB - expectedLayerBaseMiB) < 0.01
       && twoLayersMemory.layerColdMiB > 0
-      && twoLayersMemory.layerColdMiB < 64
+      && twoLayersMemory.layerColdMiB < expectedLayerBaseMiB
       && twoLayersMemory.layerHydrationMiB < 0.01,
     fiveLayersHaveOneHotAndSparseCold:
-      Math.abs(compositing.fiveLayerMemory.layerBaseMiB - 64) < 0.01
+      Math.abs(compositing.fiveLayerMemory.layerBaseMiB - expectedLayerBaseMiB) < 0.01
       && compositing.fiveLayerMemory.layerColdMiB > twoLayersMemory.layerColdMiB
-      && compositing.fiveLayerMemory.layerColdMiB < 4 * 64
+      && compositing.fiveLayerMemory.layerColdMiB < 4 * expectedLayerBaseMiB
       && compositing.fiveLayerMemory.layerHydrationMiB < 0.01,
     twoLayersReleasedPerLayerBakes: twoLayersMemory.layerBakeMiB < 0.01,
     fiveLayersReleasedPerLayerBakes: compositing.fiveLayerMemory.layerBakeMiB < 0.01,
@@ -479,14 +496,15 @@ export async function runLayerHistoryGpuTest(
         twoLayersMemory.layerCompositeMiB
           - compositing.fiveLayerMemory.layerCompositeMiB,
       ) < 0.05,
-    fiveEagerFullLayersWouldCost320MiB:
-      Math.abs(storageStudy.eagerFullRawMiB - 320) < 0.05,
+    fiveEagerFullLayersMatchRgba16fBytes:
+      Math.abs(storageStudy.eagerFullRawMiB - 5 * expectedLayerBaseMiB) < 0.05,
   };
 
   const checks: Record<string, boolean> = {
     storageStudyMeasuredEveryLayer:
       storageStudy.layers.length === 5
       && storageStudy.layers.every((layer) => layer.exactTileCount > 0),
+    storageStudyUsesRgba16fBytes: storageStudy.bytesPerPixel === rawBytesPerPixel,
     conservativeTilesContainEveryExactTile:
       storageStudy.totalMissedExactTiles === 0
       && storageStudy.layers.every((layer) => layer.missedExactTiles === 0),
@@ -501,7 +519,8 @@ export async function runLayerHistoryGpuTest(
     sparseHarnessReducedRawLayerMemory:
       storageStudy.actualRawMiB < storageStudy.eagerFullRawMiB,
     exactReadbackReleasedItsTemporaryBuffers: (() => {
-      const expectedPeakMiB = storageStudy.bytesPerPixel === 8 ? 128 : 64;
+      const expectedPeakMiB = engine.layerSize * engine.layerSize
+        * storageStudy.bytesPerPixel / (1024 * 1024);
       return storageStudy.temporaryReadbackMiBBefore === 0
         && storageStudy.temporaryReadbackMiBAfter === 0
         && Math.abs(storageStudy.temporaryReadbackPeakMiB - expectedPeakMiB) < 0.01
@@ -527,7 +546,7 @@ export async function runLayerHistoryGpuTest(
     coldPackFailureKeptOneActiveHotLayer:
       coldPackRollback.layerCount === 1
       && coldPackRollback.activeLayerIndex === 0
-      && Math.abs(coldPackRollback.layerBaseMiB - 64) < 0.01,
+      && Math.abs(coldPackRollback.layerBaseMiB - expectedLayerBaseMiB) < 0.01,
     coldPackFailureKeptWorkingSet: coldPackRollback.workingSetMatchesActiveLayer,
     coldPackFailureKeptRawPixels: coldPackRollback.rawLayerDifferingBytes === 0,
     coldPackFailureReleasedEveryCandidate:
@@ -538,7 +557,7 @@ export async function runLayerHistoryGpuTest(
     hydrationFailureRestoredIncomingSelection:
       coldHydrateRollback.layerCount === 2
       && coldHydrateRollback.activeLayerIndex === 1
-      && Math.abs(coldHydrateRollback.layerBaseMiB - 64) < 0.01,
+      && Math.abs(coldHydrateRollback.layerBaseMiB - expectedLayerBaseMiB) < 0.01,
     hydrationFailureKeptWorkingSet: coldHydrateRollback.workingSetMatchesActiveLayer,
     hydrationFailureKeptColdPixels: coldHydrateRollback.rawLayerDifferingBytes === 0,
     hydrationFailureReleasedFullCandidate:
@@ -567,7 +586,8 @@ export async function runLayerHistoryGpuTest(
     crossLayerUndoMovedTheCursor: afterCrossLayerUndo.cursor === afterUndo.cursor - 1,
     crossLayerUndoMovedTheActiveLayer:
       activeAfterCrossLayerUndo !== activeBeforeCrossLayerUndo,
-    crossLayerUndoRemovedPFromA: countNonZeroAlpha(layerAAfterCrossLayerUndo) === 0,
+    crossLayerUndoRemovedPFromA:
+      countNonZeroAlpha(layerAAfterCrossLayerUndo, rawBytesPerPixel) === 0,
     workingSetFollowedTheCrossLayerUndo: workingSetMatchesAfterCrossLayerUndo,
     crossLayerRedoAdvertised: afterCrossLayerUndo.canRedo,
     crossLayerRedoSucceeded: crossLayerRedoReturned,
@@ -575,7 +595,8 @@ export async function runLayerHistoryGpuTest(
       afterCrossLayerRedo.cursor === afterCrossLayerUndo.cursor + 1,
     crossLayerRedoMovedTheActiveLayer:
       activeAfterCrossLayerRedo !== activeBeforeCrossLayerRedo,
-    crossLayerRedoRestoredPOnA: countNonZeroAlpha(layerAAfterCrossLayerRedo) > 0,
+    crossLayerRedoRestoredPOnA:
+      countNonZeroAlpha(layerAAfterCrossLayerRedo, rawBytesPerPixel) > 0,
     crossLayerRedoRestoredPByteExactly:
       countDifferingBytes(layerAP, layerAAfterCrossLayerRedo) === 0,
     crossLayerRedoSelectedTheActionsLayer:

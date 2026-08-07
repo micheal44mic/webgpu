@@ -32,7 +32,7 @@ export interface LayerBlendModeProbe {
 }
 
 export interface LayerBlendGpuTestReport {
-  version: 1;
+  version: 2;
   passed: boolean;
   checks: {
     runtimeShaderCompilationGatePassed: boolean;
@@ -135,6 +135,47 @@ function roundTiesToEven(value: number): number {
 const quantizeUnorm = (value: number): number =>
   roundTiesToEven(clamp01(value) * 255);
 
+const FLOAT16_CONVERSION_F32 = new Float32Array(1);
+const FLOAT16_CONVERSION_U32 = new Uint32Array(FLOAT16_CONVERSION_F32.buffer);
+
+function encodeFloat16(value: number): number {
+  FLOAT16_CONVERSION_F32[0] = value;
+  const source = FLOAT16_CONVERSION_U32[0];
+  let result = (source >>> 16) & 0x8000;
+  let mantissa = (source >>> 12) & 0x07ff;
+  const exponent = (source >>> 23) & 0xff;
+  if (exponent < 103) return result;
+  if (exponent > 142) {
+    result |= 0x7c00;
+    if (exponent === 0xff && (source & 0x007fffff) !== 0) result |= 0x0200;
+    return result;
+  }
+  if (exponent < 113) {
+    mantissa |= 0x0800;
+    result |= (mantissa >>> (114 - exponent))
+      + ((mantissa >>> (113 - exponent)) & 1);
+    return result;
+  }
+  result |= ((exponent - 112) << 10) | (mantissa >>> 1);
+  return result + (mantissa & 1);
+}
+
+function decodeFloat16(bits: number): number {
+  const sign = (bits & 0x8000) === 0 ? 1 : -1;
+  const exponent = (bits >>> 10) & 0x1f;
+  const fraction = bits & 0x03ff;
+  if (exponent === 0) return sign * fraction * 2 ** -24;
+  if (exponent === 0x1f) return fraction === 0 ? sign * Infinity : Number.NaN;
+  return sign * (1 + fraction / 1024) * 2 ** (exponent - 15);
+}
+
+function rgba16FloatTexel(bytes: Uint8Array, byteOffset = 0): LinearPremultipliedRgba {
+  const channel = (offset: number): number => decodeFloat16(
+    bytes[byteOffset + offset] | (bytes[byteOffset + offset + 1] << 8),
+  );
+  return [channel(0), channel(2), channel(4), channel(6)];
+}
+
 const srgbToLinear = (value: number): number =>
   value <= 0.04045
     ? value / 12.92
@@ -152,6 +193,12 @@ function rgbaBytes(value: Uint8Array | readonly number[]): RgbaBytes {
 }
 
 function linearRgba(value: Uint8Array | RgbaBytes): LinearPremultipliedRgba {
+  if (value instanceof Uint8Array) {
+    if (value.byteLength < 8) {
+      throw new Error(`Readback RGBA16F incompleto: ${value.byteLength} byte.`);
+    }
+    return rgba16FloatTexel(value);
+  }
   return [value[0] / 255, value[1] / 255, value[2] / 255, value[3] / 255];
 }
 
@@ -169,12 +216,9 @@ function scalePremultiplied(
 }
 
 function quantizedLinear(value: LinearPremultipliedRgba): LinearPremultipliedRgba {
-  return [
-    quantizeUnorm(value[0]) / 255,
-    quantizeUnorm(value[1]) / 255,
-    quantizeUnorm(value[2]) / 255,
-    quantizeUnorm(value[3]) / 255,
-  ];
+  const stored = (channel: number): number =>
+    decodeFloat16(encodeFloat16(clamp01(channel)));
+  return [stored(value[0]), stored(value[1]), stored(value[2]), stored(value[3])];
 }
 
 function checkerSrgb(x: number, y: number): number {
@@ -238,13 +282,8 @@ function windowTexel(
   ) {
     throw new Error(`Oracle filtro fuori finestra a ${x},${y}.`);
   }
-  const offset = (localY * window.width + localX) * 4;
-  return [
-    window.pixels[offset] / 255,
-    window.pixels[offset + 1] / 255,
-    window.pixels[offset + 2] / 255,
-    window.pixels[offset + 3] / 255,
-  ];
+  const offset = (localY * window.width + localX) * 8;
+  return rgba16FloatTexel(window.pixels, offset);
 }
 
 function mixLinear(
@@ -571,14 +610,14 @@ export async function runLayerBlendGpuTest(
   const initial = engine.getStats();
   const initialHistory = engine.getHistoryState();
   if (
-    initial.layerFormat !== "rgba8unorm"
+    initial.layerFormat !== "rgba16float"
     || initial.layerCount !== 1
     || initial.layers[0]?.hasContent
     || initialHistory.actionCount !== 0
     || initialHistory.cursor !== 0
   ) {
     throw new Error(
-      "La sonda fusioni richiede una pagina dev nuova, RGBA8, con un solo raster vuoto.",
+      "La sonda fusioni richiede una pagina dev nuova, RGBA16F, con un solo raster vuoto.",
     );
   }
 
@@ -765,8 +804,8 @@ export async function runLayerBlendGpuTest(
   );
   let clippingSampleX = -1;
   for (let offset = 0; offset < scanWidth; offset += 1) {
-    const alpha = parentStrip[offset * 4 + 3];
-    if (alpha >= 48 && alpha <= 192) {
+    const alpha = rgba16FloatTexel(parentStrip, offset * 8)[3];
+    if (alpha >= 48 / 255 && alpha <= 192 / 255) {
       clippingSampleX = scanX + offset;
       break;
     }
@@ -1101,8 +1140,8 @@ export async function runLayerBlendGpuTest(
       multiplyThenScreen.maxDelta <= 4
       && clippingPresentation.maxDelta <= 4,
     clippingPreservesSoftBaseAlpha:
-      parentRaw[3] > 0
-      && parentRaw[3] < 255
+      parentLinear[3] > 0
+      && parentLinear[3] < 1
       && multiplyThenScreen.maxDelta <= 4
       && alphaOracleSeparation >= 8
       && wrongSourceOver.maxDelta >= multiplyThenScreen.maxDelta + 4,
@@ -1130,7 +1169,7 @@ export async function runLayerBlendGpuTest(
   };
 
   return {
-    version: 1,
+    version: 2,
     passed: Object.values(checks).every(Boolean),
     checks,
     validationError: validationError ? validationError.message : null,
@@ -1159,7 +1198,7 @@ export async function runLayerBlendGpuTest(
       sample: { x: clippingSampleX, y: CLIPPING_CENTER.y },
       parentId: clippingParentId,
       childIds: [firstChildId, secondChildId],
-      parentAlphaRaw: parentRaw[3],
+      parentAlphaRaw: parentLinear[3],
       expectedFinalAlpha,
       actualFinalAlpha,
       alphaOracleSeparation,

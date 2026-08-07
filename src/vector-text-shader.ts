@@ -5,7 +5,7 @@ import { activeClippingGroupTexelShader } from "./clipping-group-shader.ts";
  * Presentazione ordinata raster/testo interamente GPU.
  *
  * Ogni run testo viene ridisegnato dal sorgente Slug analitico e dalle mesh
- * Clipper al LOD corrente in una cache sRGB ritagliata; il compositore RGBA16F
+ * Clipper al LOD corrente in una cache lineare RGBA16F ritagliata; il compositore RGBA16F
  * conserva l'ordine dei livelli. Non esiste un fallback bitmap durante lo zoom.
  */
 export const VECTOR_TEXT_PRESENTATION_STRATEGY =

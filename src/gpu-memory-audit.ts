@@ -31,6 +31,7 @@ export const GPU_FORMAT_BYTES_PER_PIXEL: Readonly<Record<string, number>> = Obje
   rgba16float: 8,
   rgba16uint: 8,
   rgba32float: 16,
+  rgba32uint: 16,
 });
 
 export interface GpuMemoryAuditEntry {
@@ -42,6 +43,7 @@ export interface GpuMemoryAuditEntry {
   readonly height: number;
   readonly layers: number;
   readonly mipLevelCount: number;
+  readonly sampleCount: number;
   readonly bytes: number;
 }
 
@@ -74,15 +76,18 @@ export function gpuTextureBytes(texture: {
   height: number;
   depthOrArrayLayers: number;
   mipLevelCount: number;
+  sampleCount?: number;
 }): number {
   const bytesPerPixel = GPU_FORMAT_BYTES_PER_PIXEL[texture.format];
   if (bytesPerPixel === undefined) return 0;
   let total = 0;
+  const sampleCount = Math.max(1, Math.trunc(texture.sampleCount ?? 1));
   for (let mipLevel = 0; mipLevel < Math.max(1, texture.mipLevelCount); mipLevel += 1) {
     total += Math.max(1, texture.width >> mipLevel)
       * Math.max(1, texture.height >> mipLevel)
       * Math.max(1, texture.depthOrArrayLayers)
-      * bytesPerPixel;
+      * bytesPerPixel
+      * sampleCount;
   }
   return total;
 }
@@ -128,6 +133,7 @@ export function collectGpuMemoryEntries(
         height: node.height,
         layers: node.depthOrArrayLayers,
         mipLevelCount: node.mipLevelCount,
+        sampleCount: node.sampleCount,
         bytes: gpuTextureBytes(node),
       });
       return;
@@ -142,6 +148,7 @@ export function collectGpuMemoryEntries(
         height: 0,
         layers: 0,
         mipLevelCount: 0,
+        sampleCount: 1,
         bytes: node.size,
       });
       return;

@@ -186,7 +186,7 @@ function workspaceLayout(extent: number, segments: boolean): WorkspaceLayout {
     align(words * 4, ARENA_ALIGNMENT_BYTES) / 4;
   let commonCursor = 0;
   const coverageOffsetWords = commonCursor;
-  commonCursor += alignedWords(Math.ceil(pixels / 4));
+  commonCursor += alignedWords(pixels);
   const scalarAOffsetWords = commonCursor;
   commonCursor += alignedWords(pixels);
   const scalarBOffsetWords = commonCursor;
@@ -281,20 +281,13 @@ fn insideDocument(position: vec2<i32>) -> bool {
 }
 
 fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
-  if (lightGlaze.formatCode == 0u) {
-    return round(clamp(value, vec4<f32>(0.0), vec4<f32>(1.0)) * 255.0) / 255.0;
-  }
   let redGreen = unpack2x16float(pack2x16float(value.rg));
   let blueAlpha = unpack2x16float(pack2x16float(value.ba));
   return vec4<f32>(redGreen, blueAlpha);
 }
 
 fn storedLightCoverage(value: f32) -> f32 {
-  let coverage = clamp(value, 0.0, 1.0);
-  if (lightGlaze.formatCode == 1u) {
-    return unpack2x16float(pack2x16float(vec2<f32>(coverage, 0.0))).x;
-  }
-  return coverage;
+  return clamp(value, 0.0, 1.0);
 }
 
 fn srgbToLinearChannel(value: f32) -> f32 {
@@ -415,10 +408,7 @@ fn loadCoverage(position: vec2<i32>) -> f32 {
     vec2<i32>(0),
     vec2<i32>(parameters.buildSize) - vec2<i32>(1)
   );
-  let index = u32(clamped.y) * parameters.scratchExtent + u32(clamped.x);
-  let packed = arena[index >> 2u];
-  let shift = (index & 3u) * 8u;
-  return f32((packed >> shift) & 255u) / 255.0;
+  return loadFloat(parameters.inputOffsetWords, vec2<u32>(clamped));
 }
 
 fn loadSegment(offsetWords: u32, position: vec2<u32>) -> vec4<f32> {
@@ -463,7 +453,6 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   if (firstX >= parameters.buildSize.x) {
     return;
   }
-  var packed = 0u;
   for (var lane = 0u; lane < 4u; lane += 1u) {
     let x = firstX + lane;
     if (x >= parameters.buildSize.x) {
@@ -471,11 +460,8 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
     }
     let documentPosition = parameters.buildOrigin + vec2<i32>(i32(x), i32(globalId.y));
     let alpha = clamp(sourceTexel(documentPosition).a, 0.0, 1.0);
-    let byte = u32(round(alpha * 255.0));
-    packed |= byte << (lane * 8u);
+    storeFloat(parameters.outputOffsetWords, vec2<u32>(x, globalId.y), alpha);
   }
-  let index = globalId.y * parameters.scratchExtent + firstX;
-  arena[parameters.outputOffsetWords + (index >> 2u)] = packed;
 }
 `;
 }
@@ -881,11 +867,10 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
       0.0,
       1.0
     );
-    let alphaByte = u32(round(alpha * 255.0));
-    if (alphaByte >= 128u) {
+    if (alpha >= 0.5) {
       thresholdBits |= bit;
     }
-    if (alphaByte > 0u && alphaByte < 255u) {
+    if (alpha > 0.0 && alpha < 1.0) {
       fractionalBits |= bit;
     }
   }
@@ -1347,7 +1332,7 @@ export class RasterBevelRenderer {
     });
     const modules = {
       coverage: this.device.createShaderModule({
-        label: "Smusso coverage R8 packed WGSL",
+        label: "Smusso continuous F32 coverage WGSL",
         code: coverageShader(this.documentWidth, this.documentHeight),
       }),
       segment: this.device.createShaderModule({
@@ -1397,7 +1382,7 @@ export class RasterBevelRenderer {
     });
     this.device.pushErrorScope("validation");
     this.coveragePipeline = this.device.createComputePipeline({
-      label: "Smusso alpha to packed R8",
+      label: "Smusso alpha to F32 coverage",
       layout,
       compute: { module: modules.coverage, entryPoint: "main" },
     });

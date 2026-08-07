@@ -28,7 +28,7 @@ export const VECTOR_TEXT_BLOCK_SHADOW_ANGLE_MINIMUM = -180;
 export const VECTOR_TEXT_BLOCK_SHADOW_ANGLE_MAXIMUM = 180;
 
 export const VECTOR_TEXT_SINGLE_SHADOW_STRATEGY =
-  "webgpu-slug-zero-blur-or-r8-separable-gaussian-v2" as const;
+  "webgpu-slug-zero-blur-or-r16float-separable-gaussian-v3" as const;
 export const VECTOR_TEXT_SINGLE_SHADOW_OFFSET_MINIMUM = 0;
 export const VECTOR_TEXT_SINGLE_SHADOW_OFFSET_MAXIMUM = 100;
 export const VECTOR_TEXT_SINGLE_SHADOW_ANGLE_MINIMUM = -180;
@@ -37,7 +37,7 @@ export const VECTOR_TEXT_SINGLE_SHADOW_BLUR_MINIMUM = 0;
 export const VECTOR_TEXT_SINGLE_SHADOW_BLUR_MAXIMUM = 300;
 
 export const VECTOR_TEXT_INNER_SHADOW_STRATEGY =
-  "webgpu-slug-analytic-fill-clip-zero-blur-or-r8-separable-gaussian-v1" as const;
+  "webgpu-slug-analytic-fill-clip-zero-blur-or-r16float-separable-gaussian-v2" as const;
 
 export function normalizeVectorTextOutlineWidth(width: number): number {
   const finite = Number.isFinite(width) ? width : VECTOR_TEXT_OUTLINE_WIDTH_MINIMUM;

@@ -299,13 +299,13 @@ assert(engine.includes('operation: "max"')
   && engine.includes("lightNoBuildUpPipeline")
   && engine.includes("grainLightNoBuildUpPipeline"),
   "Pipeline MAX coverage Light Glaze assenti.");
-assert(shaders.includes("unpack4x8unorm(pack4x8unorm")
-  && engine.includes("light-r8-max-per-gesture-source-over-between-gestures")
-  && engine.includes("m1-r8-quantized-max-coverage-plus-composited-mips-single-commit")
-  && engine.includes('format: "r8unorm"')
+assert(!shaders.includes("unpack4x8unorm(pack4x8unorm(vec4<f32>(alpha)")
+  && engine.includes("light-r16float-max-per-gesture-source-over-between-gestures")
+  && engine.includes("m1-r16float-max-coverage-plus-composited-mips-single-commit")
+  && engine.includes('format: "r16float"')
   && engine.includes("lightGlazeCompositeMipTexture")
-  && engine.includes('storageMode === "r8-coverage"'),
-  "Semantica coverage R8 nativa M1 e mip compositati separati assenti.");
+  && engine.includes('storageMode === "r16float-coverage"'),
+  "Semantica coverage R16F nativa M1 e mip compositati separati assenti.");
 assert(engine.includes("session.tintLinear")
   && engine.includes('"light-no-build-up"'),
   "Tint per gesture e resolve Light Glaze non collegati.");
@@ -314,31 +314,22 @@ assert(shaders.includes("@group(0) @binding(5) var compositedMipTexture")
   && engine.includes("lightGlazeMipDownsampleBindGroups[mipLevel - 2]"),
   "Catena mip compositata separata Light/M1 Glaze non collegata correttamente.");
 assert(shaders.includes("fn storedLightCoverage(value: f32)")
-  && shaders.includes("pack2x16float(vec2<f32>(coverage, 0.0))"),
-  "Compatibilità esatta del vecchio accumulatore M1 RGBA16F assente.");
+  && shaders.includes("return clamp(value, 0.0, 1.0);"),
+  "Lettura continua dell'accumulatore M1 R16F assente.");
 
 let compositedMipPixels = 0;
 for (let mipLevel = 1; mipLevel < 13; mipLevel += 1) {
   compositedMipPixels += Math.max(1, 4_096 >> mipLevel) ** 2;
 }
-const compositedRgba8MiB = compositedMipPixels * 4 / (1024 * 1024);
 const compositedRgba16MiB = compositedMipPixels * 8 / (1024 * 1024);
-const m1Rgba8MiB = 16 + compositedRgba8MiB;
-const m1Rgba16MiB = 16 + compositedRgba16MiB;
-const highPrecisionRgba8MiB = 128 + compositedRgba8MiB + 4;
+const m1Rgba16MiB = 32 + compositedRgba16MiB;
 const highPrecisionRgba16MiB = 128 + compositedRgba16MiB + 8;
-assert(Number(m1Rgba8MiB.toFixed(1)) === 37.3,
-  `Memoria M1 RGBA8 ${m1Rgba8MiB.toFixed(1)} MiB, attesi 37.3.`);
-assert(Number(m1Rgba16MiB.toFixed(1)) === 58.7,
-  `Memoria M1 RGBA16F ${m1Rgba16MiB.toFixed(1)} MiB, attesi 58.7.`);
-assert(Number(highPrecisionRgba8MiB.toFixed(1)) === 153.3,
-  `Memoria high-precision su RGBA8 ${highPrecisionRgba8MiB.toFixed(1)} MiB, attesi 153.3.`);
+assert(Number(m1Rgba16MiB.toFixed(1)) === 74.7,
+  `Memoria M1 R16F/RGBA16F ${m1Rgba16MiB.toFixed(1)} MiB, attesi 74.7.`);
 assert(Number(highPrecisionRgba16MiB.toFixed(1)) === 178.7,
   `Memoria high-precision su RGBA16F ${highPrecisionRgba16MiB.toFixed(1)} MiB, attesi 178.7.`);
-assert(Number((highPrecisionRgba8MiB - m1Rgba8MiB).toFixed(1)) === 116.0,
-  "Delta high-precision vs M1 RGBA8 diverso da 116.0 MiB.");
-assert(Number((highPrecisionRgba16MiB - m1Rgba16MiB).toFixed(1)) === 120.0,
-  "Delta high-precision vs M1 RGBA16F diverso da 120.0 MiB.");
+assert(Number((highPrecisionRgba16MiB - m1Rgba16MiB).toFixed(1)) === 104.0,
+  "Delta high-precision vs M1 R16F/RGBA16F diverso da 104.0 MiB.");
 assert(engine.includes("grainTextureIdentity") && engine.includes("expectedGrainIdentity"),
   "Identità Grain non protetta nel journal/replay.");
 assert(engine.includes("const polarity = settings.grainInvert ? -1 : 1")
@@ -400,7 +391,7 @@ console.log(JSON.stringify({
     invertUsesExistingAffineUniforms: true,
     iphoneReplayOffersOffOrFixedTexturized: true,
     iphoneReplayUsesThreeFinalRenderingsAtFixedIntensity1x: true,
-    m1GlazeUsesR8QuantizedMaxCoverage: true,
+    m1GlazeUsesR16FloatMaxCoverage: true,
     legacyLightGlazePreserved: true,
     canonicalReplayForcesGrainOff: true,
   },

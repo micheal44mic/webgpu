@@ -23,9 +23,56 @@ import {
 } from "./stroke-core";
 import { EffectsWorkbench } from "./effects-workbench";
 
-export const RASTER_BEVEL_BBOX_GOLDEN_VERSION = 1 as const;
+export const RASTER_BEVEL_BBOX_GOLDEN_VERSION = 2 as const;
 export const RASTER_BEVEL_BBOX_GOLDEN_WIDTH = 512;
 export const RASTER_BEVEL_BBOX_GOLDEN_HEIGHT = 512;
+export const RASTER_BEVEL_BBOX_GOLDEN_FORMAT = "rgba16float" as const;
+
+const GOLDEN_RGBA16F_BYTES_PER_PIXEL = 8;
+const GOLDEN_RGBA16F_ALPHA_BYTE_OFFSET = 6;
+const GOLDEN_R16F_BYTES_PER_CHANNEL = 2;
+
+const float32Bits = new Uint32Array(1);
+const float32Value = new Float32Array(float32Bits.buffer);
+
+function float32ToFloat16Bits(value: number): number {
+  float32Value[0] = value;
+  const bits = float32Bits[0];
+  const sign = (bits >>> 16) & 0x8000;
+  const exponent = (bits >>> 23) & 0xff;
+  const mantissa = bits & 0x7fffff;
+  if (exponent === 0xff) {
+    return sign | (mantissa === 0 ? 0x7c00 : 0x7e00);
+  }
+  const halfExponent = exponent - 127 + 15;
+  if (halfExponent >= 0x1f) return sign | 0x7c00;
+  if (halfExponent <= 0) {
+    if (halfExponent < -10) return sign;
+    const normalizedMantissa = mantissa | 0x800000;
+    const shift = 14 - halfExponent;
+    return sign | ((normalizedMantissa + (1 << (shift - 1)) - 1
+      + ((normalizedMantissa >>> shift) & 1)) >>> shift);
+  }
+  const roundedMantissa = mantissa + 0xfff + ((mantissa >>> 13) & 1);
+  if ((roundedMantissa & 0x800000) !== 0) {
+    const roundedExponent = halfExponent + 1;
+    return roundedExponent >= 0x1f
+      ? sign | 0x7c00
+      : sign | (roundedExponent << 10);
+  }
+  return sign | (halfExponent << 10) | (roundedMantissa >>> 13);
+}
+
+function packRgba8FixtureAsRgba16FloatBytes(pixels: Uint8Array): Uint8Array {
+  if (pixels.byteLength % 4 !== 0) {
+    throw new RangeError("Fixture bbox RGBA8 non allineata a quattro canali.");
+  }
+  const packed = new Uint16Array(pixels.byteLength);
+  for (let index = 0; index < pixels.length; index += 1) {
+    packed[index] = float32ToFloat16Bits(pixels[index] / 255);
+  }
+  return new Uint8Array(packed.buffer);
+}
 
 const FULL_RECT: RasterBevelRect = {
   x: 0,
@@ -84,6 +131,7 @@ export interface RasterBevelBboxGoldenCase {
 
 export interface RasterBevelBboxGoldenReport {
   version: typeof RASTER_BEVEL_BBOX_GOLDEN_VERSION;
+  format: typeof RASTER_BEVEL_BBOX_GOLDEN_FORMAT;
   width: number;
   height: number;
   contentBounds: RasterBevelRect;
@@ -146,11 +194,13 @@ function uploadFixture(
   texture: GPUTexture,
   pixels: Uint8Array,
 ): void {
+  const packed = packRgba8FixtureAsRgba16FloatBytes(pixels);
   device.queue.writeTexture(
     { texture },
-    pixels,
+    packed,
     {
-      bytesPerRow: RASTER_BEVEL_BBOX_GOLDEN_WIDTH * 4,
+      bytesPerRow:
+        RASTER_BEVEL_BBOX_GOLDEN_WIDTH * GOLDEN_RGBA16F_BYTES_PER_PIXEL,
       rowsPerImage: RASTER_BEVEL_BBOX_GOLDEN_HEIGHT,
     },
     {
@@ -171,8 +221,12 @@ async function sha256(bytes: Uint8Array): Promise<string> {
 
 function countNonZeroAlphaPixels(pixels: Uint8Array): number {
   let total = 0;
-  for (let offset = 3; offset < pixels.length; offset += 4) {
-    total += pixels[offset] > 0 ? 1 : 0;
+  for (
+    let offset = GOLDEN_RGBA16F_ALPHA_BYTE_OFFSET;
+    offset < pixels.length;
+    offset += GOLDEN_RGBA16F_BYTES_PER_PIXEL
+  ) {
+    total += (pixels[offset] | (pixels[offset + 1] & 0x7f)) !== 0 ? 1 : 0;
   }
   return total;
 }
@@ -198,12 +252,16 @@ function comparePixels(
       Math.abs(full[byteIndex] - bbox[byteIndex]),
     );
     if (!firstDifference) {
-      const pixelIndex = Math.floor(byteIndex / 4);
+      const pixelIndex = Math.floor(
+        byteIndex / GOLDEN_RGBA16F_BYTES_PER_PIXEL,
+      );
       firstDifference = {
         byteIndex,
         x: pixelIndex % RASTER_BEVEL_BBOX_GOLDEN_WIDTH,
         y: Math.floor(pixelIndex / RASTER_BEVEL_BBOX_GOLDEN_WIDTH),
-        channel: channels[byteIndex % 4],
+        channel: channels[
+          Math.floor(byteIndex / GOLDEN_R16F_BYTES_PER_CHANNEL) % 4
+        ],
         full: full[byteIndex],
         bbox: bbox[byteIndex],
       };
@@ -249,7 +307,7 @@ async function createRendererPair(
   const workbench = new EffectsWorkbench({
     device,
     view: layerView,
-    format: "rgba8unorm",
+    format: RASTER_BEVEL_BBOX_GOLDEN_FORMAT,
   });
   try {
     const bevel = await RasterBevelRenderer.create({
@@ -268,7 +326,7 @@ async function createRendererPair(
       scratchPool: workbench.scratchPool,
       documentWidth: RASTER_BEVEL_BBOX_GOLDEN_WIDTH,
       documentHeight: RASTER_BEVEL_BBOX_GOLDEN_HEIGHT,
-      layerFormat: "rgba8unorm",
+      layerFormat: RASTER_BEVEL_BBOX_GOLDEN_FORMAT,
       layerView,
       lightGlazeUniformBuffer,
       thicknessTailUniformBuffer,
@@ -353,10 +411,11 @@ export async function runRasterBevelBboxGolden(
       height: RASTER_BEVEL_BBOX_GOLDEN_HEIGHT,
       depthOrArrayLayers: 1,
     },
-    format: "rgba8unorm",
+    format: RASTER_BEVEL_BBOX_GOLDEN_FORMAT,
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   });
   const fixture = createFixture();
+  const packedFixture = packRgba8FixtureAsRgba16FloatBytes(fixture);
   uploadFixture(device, sourceTexture, fixture);
   const lightGlazeUniformBuffer = device.createBuffer({
     label: "Golden Smusso bbox Light Glaze uniforms",
@@ -368,7 +427,9 @@ export async function runRasterBevelBboxGolden(
     size: 32,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
-  device.queue.writeBuffer(lightGlazeUniformBuffer, 0, new Uint8Array(32));
+  const lightGlazeUniforms = new Uint32Array(8);
+  lightGlazeUniforms[1] = 1;
+  device.queue.writeBuffer(lightGlazeUniformBuffer, 0, lightGlazeUniforms);
   device.queue.writeBuffer(thicknessTailUniformBuffer, 0, new Uint8Array(32));
 
   let fullPair: RendererPair | null = null;
@@ -496,10 +557,10 @@ export async function runRasterBevelBboxGolden(
     );
     const originMutationDetected = originComparison.differingBytes > 0;
     const styledOutputDistinctFromSource =
-      representativeOutputSha256 !== await sha256(fixture);
+      representativeOutputSha256 !== await sha256(packedFixture);
     const fullHeightMemoryMiB = fullPair.bevel.heightMemoryBytes / MEBIBYTE;
     const bboxHeightMemoryMiB = bboxPair.bevel.heightMemoryBytes / MEBIBYTE;
-    const sourceNonZeroAlphaPixels = countNonZeroAlphaPixels(fixture);
+    const sourceNonZeroAlphaPixels = countNonZeroAlphaPixels(packedFixture);
     const independentRenderers =
       fullPair.workbench !== bboxPair.workbench
       && fullPair.stroke !== bboxPair.stroke
@@ -517,6 +578,7 @@ export async function runRasterBevelBboxGolden(
       && independentRenderers;
     return {
       version: RASTER_BEVEL_BBOX_GOLDEN_VERSION,
+      format: RASTER_BEVEL_BBOX_GOLDEN_FORMAT,
       width: RASTER_BEVEL_BBOX_GOLDEN_WIDTH,
       height: RASTER_BEVEL_BBOX_GOLDEN_HEIGHT,
       contentBounds: { ...CONTENT_BOUNDS },

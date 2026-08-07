@@ -2417,8 +2417,13 @@ assert.match(mainSource, /window\.clearTimeout\(timeoutId\)/,
   "il timer dell'harness deve essere disarmato dopo successo o errore");
 assert.match(mainSource, /layerHistoryTestRunning = timedOut/,
   "dopo timeout la pagina deve restare bloccata perché Promise.race non cancella il test");
-assert.match(mainSource, /const failure = \{ version: 10, passed: false/);
-assert.match(layerHistoryGpuTestSource, /LAYER_HISTORY_GPU_TEST_VERSION = 10 as const/);
+assert.match(mainSource, /const failure = \{ version: 11, passed: false/);
+assert.match(layerHistoryGpuTestSource, /LAYER_HISTORY_GPU_TEST_VERSION = 11 as const/);
+assert.match(layerHistoryGpuTestSource, /initialStats\.layerFormat !== "rgba16float"/);
+assert.match(layerHistoryGpuTestSource, /const rawBytesPerPixel = 8 as const/);
+assert.match(layerHistoryGpuTestSource, /storageStudyUsesRgba16fBytes/);
+assert.match(layerHistoryGpuTestSource, /crossLayerRedoRestoredPByteExactly/);
+assert.match(layerHistoryGpuTestSource, /redoRestoredBByteExactly/);
 assert.match(layerCompositeGpuTestSource, /fiveLayerSwitchMemoryPeaks/);
 assert.match(layerCompositeGpuTestSource, /fiveLayerMiddleSwitchMemoryPeaks/);
 assert.match(layerCompositeGpuTestSource, /measureMemoryPeakDuring/);
@@ -2645,6 +2650,10 @@ assert.match(
 );
 const packStart = engineSource.indexOf("export async function createLayerColdStorageCandidate(");
 const packBody = engineSource.slice(packStart, packStart + 4_300);
+assert.match(packBody, /hot\.format !== engine\.layerFormat/);
+assert.match(packBody, /const format = hot\.format/);
+assert.match(packBody, /layerFormatBytesPerPixel\(format\)/);
+assert.match(packBody, /return \{ texture, tileIndices, memoryBytes, generation, format \}/);
 assert.match(packBody, /depthOrArrayLayers: tileIndices\.length/);
 assert.match(packBody, /tileIndices\.forEach\(\(tileIndex, arrayLayer\) =>/);
 assert.match(packBody, /copyTextureToTexture\(/);
@@ -2661,6 +2670,13 @@ assert.match(freezeBody, /record\.storageTileMask\.set\(mask\)/);
 const hydrateStart = engineSource.indexOf("export async function createHydratedLayerTexture(");
 const hydrateBody = engineSource.slice(hydrateStart, hydrateStart + 2_600);
 assert.match(hydrateBody, /encodeLayerColdHydration\(encoder, cold, hot\)/);
+assert.match(engineSource, /assertColdMatchesHot\(cold, hot\)/);
+assert.match(engineSource, /RGBA8_COLD_CODEC_BYTES_PER_PIXEL = 4/);
+assert.match(
+  engineSource,
+  /engine\.layerFormat !== "rgba8unorm" \|\| compressed\.format !== "rgba8unorm"/,
+  "il codec worker a quattro byte deve restare inaccessibile a un documento RGBA16F",
+);
 assert.match(hydrateBody, /await engine\.waitForGpuCapped\(label\)/);
 assert.match(hydrateBody, /engine\.liveLayerHydrationTextures\.set\(hot\.texture, memoryBytes\)/);
 const activateStorageBody = engineSource.slice(activateStart, activateEnd);
@@ -2760,7 +2776,13 @@ const iphoneMemoryMigrationSource = readFileSync(
   "utf8",
 );
 assert.match(iphoneMemoryLimitSource,
-  /iphone-gpu-plus-compressed-cpu-peaks-v2/);
+  /iphone-rgba16f-gpu-plus-compressed-cpu-peaks-v3/);
+assert.match(sitesBuildSource, /iphone-rgba16f-gpu-plus-compressed-cpu-peaks-v3/);
+assert.match(
+  iphoneMemoryLimitSource,
+  /TILE_MEMORY_MIB_RGBA16F\s*=\s*\n?\s*LAYER_STORAGE_TILE_SIZE \*\* 2 \* RGBA16F_BYTES_PER_PIXEL \/ MEBIBYTE_BYTES;/,
+);
+assert.match(iphoneMemoryLimitSource, /initialStats\.layerFormat !== "rgba16float"/);
 assert.match(iphoneMemoryLimitSource, /countedGpuPlusCompressedCpuMiB/);
 assert.match(iphoneMemoryLimitSource, /peakCountedGpuPlusCompressedCpuMiB/);
 assert.match(

@@ -917,7 +917,8 @@ export class BrushEngine {
   private context!: GPUCanvasContext;
   canvasFormat!: GPUTextureFormat;
 
-  layerFormat: LayerFormat = "rgba8unorm";
+  /** Authoritative document pixels are always initialized in linear RGBA16F. */
+  layerFormat: LayerFormat = "rgba16float";
   layerTexture!: GPUTexture;
   layerView!: GPUTextureView;
   layerSamplingView!: GPUTextureView;
@@ -1461,7 +1462,7 @@ export class BrushEngine {
   lightGlazeCompositeMipPipeline!: GPURenderPipeline;
   lightGlazeCompositePipeline!: GPURenderPipeline;
   lightGlazeCommitTilePipeline!: GPURenderPipeline;
-  lightGlazeClearR8Pipeline!: GPURenderPipeline;
+  lightGlazeClearR16Pipeline!: GPURenderPipeline;
   lightGlazeClearRgba16FloatPipeline!: GPURenderPipeline;
   paintMipDownsamplePipeline!: GPURenderPipeline;
   paintStackCompositeMipPipeline!: GPURenderPipeline;
@@ -1681,9 +1682,17 @@ export class BrushEngine {
     });
 
     this.gpuLabel = describeAdapter(adapter);
-    await createStaticResources(this);
-    prepareAdaptivePreviewShapePalette(this, this.settings);
-    await recreateLayerResources(this, this.layerFormat);
+    try {
+      await createStaticResources(this);
+      prepareAdaptivePreviewShapePalette(this, this.settings);
+      await recreateLayerResources(this, this.layerFormat);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `La GPU non supporta tutte le risorse richieste dal documento ${this.layerFormat}. `
+        + `Il motore non esegue fallback a RGBA8. Dettaglio: ${message}`,
+      );
+    }
 
     this.historyGpuStorage = new GpuHistoryStorage(this.device);
     this.historyGpuStorage.prewarm();
@@ -1948,7 +1957,7 @@ export class BrushEngine {
         && !this.lightGlazeSession
         && !this.activeStroke
       ) {
-        // Prewarm at selection (including r8↔rgba retarget).
+        // Prewarm at selection (including R16F coverage↔RGBA16F retarget).
         requestLightGlazeResources(this, this.settings.blendMode);
       }
       if (this.settings.grainMode !== "off") {
@@ -2642,7 +2651,7 @@ export class BrushEngine {
           releaseRasterStrokeRenderer(this);
         }
         this.callbacks.onStatus?.(
-          "Ombra esterna disattivata; matte R8 liberata.",
+          "Ombra esterna disattivata; matte R16F liberata.",
           "ok",
         );
       }
@@ -2761,7 +2770,7 @@ export class BrushEngine {
           releaseRasterStrokeRenderer(this);
         }
         this.callbacks.onStatus?.(
-          "Ombra interna disattivata; matte R8 liberata.",
+          "Ombra interna disattivata; matte R16F liberata.",
           "ok",
         );
       }
@@ -2793,6 +2802,14 @@ export class BrushEngine {
   }
 
   async setLayerFormat(format: LayerFormat): Promise<boolean> {
+    if (format !== "rgba16float") {
+      const error = new Error(
+        `Formato documento ${format} rifiutato: il motore usa permanentemente `
+        + "RGBA16F e non esegue fallback a RGBA8.",
+      );
+      this.callbacks.onStatus?.(error.message, "error");
+      throw error;
+    }
     if (format === this.layerFormat) {
       return true;
     }
@@ -3280,7 +3297,7 @@ export class BrushEngine {
       strategy: VECTOR_TEXT_PRESENTATION_STRATEGY,
       width,
       height,
-      gpuMemoryMiB: width * height * 4 / MEBIBYTE_BYTES,
+      gpuMemoryMiB: width * height * 8 / MEBIBYTE_BYTES,
       placement,
       blurGpuMemoryMiB: 0,
       blurCacheEntries: 0,
@@ -3293,7 +3310,8 @@ export class BrushEngine {
       0,
     );
     const scratchBytes = this.vectorTextGpuBlurScratchATexture
-      ? this.vectorTextGpuBlurScratchWidth * this.vectorTextGpuBlurScratchHeight * 2
+      // Two R16F scratch textures, two bytes per texel each.
+      ? this.vectorTextGpuBlurScratchWidth * this.vectorTextGpuBlurScratchHeight * 4
       : 0;
     return cacheBytes + scratchBytes;
   }
@@ -3359,7 +3377,7 @@ export class BrushEngine {
       height,
       gpuMemoryMiB:
         (
-          width * height * 4
+          width * height * 8
           + geometryBytes
         )
         / MEBIBYTE_BYTES,
@@ -5112,7 +5130,12 @@ export class BrushEngine {
     ) {
       throw new Error("Intervallo readback cold storage non valido.");
     }
-    const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
+    if (cold.format !== this.layerFormat) {
+      throw new Error(
+        `Sonda cold storage ${cold.format} incompatibile con il documento ${this.layerFormat}.`,
+      );
+    }
+    const bytesPerPixel = cold.format === "rgba16float" ? 8 : 4;
     const bytesPerRow = LAYER_STORAGE_TILE_SIZE * bytesPerPixel;
     const rowsPerImage = LAYER_STORAGE_TILE_SIZE;
     const readbackBytes = bytesPerRow * rowsPerImage * arrayLayerCount;
@@ -5530,7 +5553,7 @@ export class BrushEngine {
     try {
       const view = texture.createView({ label: `Paint layer mip 0 ${format}` });
       const samplingView = texture.createView({ label: `Paint layer sampling mip 0 ${format}` });
-      return { texture, view, samplingView };
+      return { texture, view, samplingView, format };
     } catch (error) {
       texture.destroy();
       throw error;
@@ -6535,7 +6558,13 @@ export class BrushEngine {
     sourceKind: VectorRasterizeHistoryAction["sourceKind"],
     id: number,
     draws: readonly VectorTextGpuDraw[],
-  ): Promise<{ layerId: number; chunkCount: number; tileCount: number }> {
+  ): Promise<{
+    layerId: number;
+    chunkCount: number;
+    tileCount: number;
+    format: LayerFormat;
+    seedFormat: LayerFormat;
+  }> {
     const converted = await rasterizeVectorNodeToLayer(
       this,
       sourceKind,
@@ -6559,20 +6588,34 @@ export class BrushEngine {
       layerId: converted.history.layerId,
       chunkCount: converted.chunkCount,
       tileCount: converted.tileCount,
+      format: converted.format,
+      seedFormat: converted.history.seed.format,
     };
   }
 
   async rasterizeVectorTextNode(
     id: number,
     draws: readonly VectorTextGpuDraw[],
-  ): Promise<{ layerId: number; chunkCount: number; tileCount: number }> {
+  ): Promise<{
+    layerId: number;
+    chunkCount: number;
+    tileCount: number;
+    format: LayerFormat;
+    seedFormat: LayerFormat;
+  }> {
     return this.rasterizeVectorNode("text", id, draws);
   }
 
   async rasterizeVectorSvgNode(
     id: number,
     draws: readonly VectorTextGpuDraw[],
-  ): Promise<{ layerId: number; chunkCount: number; tileCount: number }> {
+  ): Promise<{
+    layerId: number;
+    chunkCount: number;
+    tileCount: number;
+    format: LayerFormat;
+    seedFormat: LayerFormat;
+  }> {
     return this.rasterizeVectorNode("svg", id, draws);
   }
 
@@ -7249,7 +7292,7 @@ export class BrushEngine {
   ): void {
     const upload = new ArrayBuffer(LIGHT_GLAZE_UNIFORM_BYTES);
     // Mode 1 is the public Light contract: Flow belongs to each candidate
-    // deposit, the R8 attachment keeps only MAX during pointer-down, and this
+    // deposit, the R16F attachment keeps only MAX during pointer-down, and this
     // Opacity value is consumed once when the gesture is composited at lift.
     populateStrokeGlazeUniformUpload(
       upload,
@@ -9976,7 +10019,7 @@ export class BrushEngine {
       if (this.activeStrokeProfile) {
         const snapshotPixels = this.stabilizationSnapshotWidth
           * this.stabilizationSnapshotHeight;
-        const snapshotBytesPerPixel = storageMode === "r8-coverage" ? 1 : 8;
+        const snapshotBytesPerPixel = storageMode === "r16float-coverage" ? 2 : 8;
         this.activeStrokeProfile.strokeStabilizationMaximumSnapshotPixels = Math.max(
           this.activeStrokeProfile.strokeStabilizationMaximumSnapshotPixels,
           snapshotPixels,
@@ -10155,8 +10198,8 @@ export class BrushEngine {
         const staleRect = this.lightGlazeStaleRect;
         if (staleRect) {
           brushPass.setPipeline(
-            this.lightGlazeStorageMode === "r8-coverage"
-              ? this.lightGlazeClearR8Pipeline
+            this.lightGlazeStorageMode === "r16float-coverage"
+              ? this.lightGlazeClearR16Pipeline
               : this.lightGlazeClearRgba16FloatPipeline,
           );
           brushPass.setScissorRect(
@@ -10264,8 +10307,8 @@ export class BrushEngine {
           }],
         });
         clearPass.setPipeline(
-          this.lightGlazeStorageMode === "r8-coverage"
-            ? this.lightGlazeClearR8Pipeline
+          this.lightGlazeStorageMode === "r16float-coverage"
+            ? this.lightGlazeClearR16Pipeline
             : this.lightGlazeClearRgba16FloatPipeline,
         );
         clearPass.setScissorRect(staleRect.x, staleRect.y, staleRect.width, staleRect.height);
