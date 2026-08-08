@@ -500,6 +500,8 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
       { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
       { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
       { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+      { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+      { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
     ],
   });
   engine.lightGlazeCompositeBindGroupLayout = engine.device.createBindGroupLayout({

@@ -165,6 +165,98 @@ assert.match(
   "Il commit Light deve attendere ogni stamp non incluso nel batch finale della gesture.",
 );
 
+const livePyramid = section(
+  engine,
+  "export function encodeLightGlazeDisplayPyramid",
+  "export function currentLightGlazeResourceSet",
+);
+assert.match(
+  livePyramid,
+  /requestedContent: "active-only" \| "final-raster-stack" = "active-only"/,
+  "La piramide live deve dichiarare esplicitamente quale contenuto rappresenta.",
+);
+assert.match(
+  livePyramid,
+  /session\.mipContent !== requestedContent[\s\S]*session\.mipValidThroughLevel = 0/,
+  "Un cambio di semantica deve invalidare tutta la catena live.",
+);
+assert.match(
+  livePyramid,
+  /const needsFullBuild = mipLevel > previousValidThroughLevel/,
+  "Il primo uso di ogni livello mip deve costruirlo interamente.",
+);
+assert.match(
+  livePyramid,
+  /requestedContent === "final-raster-stack"\s*\? engine\.lightGlazeFinalRasterStackCompositeMipPipeline/,
+  "Mip 1 live deve poter comporre lo stack raster finale prima del box filter.",
+);
+
+assert.match(
+  submit,
+  /const useLiveFinalRasterStack = session\.hasContent[\s\S]*!this\.usesOrderedScenePresentation\(\)[\s\S]*!this\.usesLayerBlendTilePresentation\(\)[\s\S]*this\.finalRasterStackMipAvailable\(true\)/,
+  "Il percorso live finale deve restare limitato allo stack raster semplice e compatibile.",
+);
+assert.match(
+  submit,
+  /encodeLightGlazeDisplayPyramid\([\s\S]*useLiveFinalRasterStack \? "final-raster-stack" : "active-only"/,
+  "La pennellata deve chiedere la semantica final-stack quando è sicura.",
+);
+assert.match(
+  submit,
+  /\(!useLiveFinalRasterStack \|\| displaySelectedMipLevel === 0\)[\s\S]*&& !tileBlendOwnsPyramid[\s\S]*encodeMergedDisplayPyramids/,
+  "Solo LOD 1+ final-stack può evitare i merged mip; LOD 0 li usa nel fast path.",
+);
+assert.match(
+  submit,
+  /useLiveFinalRasterStack\s*\? this\.lightGlazeFinalRasterStackDisplayPipeline\s*:\s*this\.lightGlazeDisplayPipeline/,
+  "Il display live deve leggere direttamente lo stack finale senza un secondo source-over.",
+);
+assert.match(
+  submit,
+  /const requestFinalRasterStackMip = displaySelectedMipLevel > 0[\s\S]*requestFinalRasterStackMip \? "final-raster-stack" : "active-only"[\s\S]*this\.paintDisplayPyramidContent === "final-raster-stack"/,
+  "Il frame di commit deve conservare la stessa semantica final-stack del frame live.",
+);
+
+const liveDisplayShader = section(
+  shaders,
+  "export const lightGlazeDisplayShader",
+  "export const lightGlazeCompositeMipShader",
+);
+assert.match(liveDisplayShader, /fn compositedFinalRasterStackTexel\(/);
+assert.match(
+  liveDisplayShader,
+  /fn sampleCompositedFinalRasterStackLinear[\s\S]*compositedFinalRasterStackTexel\(lower\)[\s\S]*compositedFinalRasterStackTexel\(lower \+ vec2<i32>\(1, 1\)\)[\s\S]*return mix\(/,
+  "LOD 0 live deve comporre i quattro texel finali prima della bilineare.",
+);
+assert.match(
+  liveDisplayShader,
+  /fn finalStackFragmentMain[\s\S]*display\.selectedMipLevel >= 0\.5[\s\S]*textureSampleLevel\(\s*compositedMipTexture/,
+  "LOD 1+ live deve leggere direttamente la piramide già composta.",
+);
+assert.match(
+  liveDisplayShader,
+  /jointFinalStackFilteringCandidate[\s\S]*stackAlphaGradient = fwidth\(activePaint\.a\)[\s\S]*needsJointFinalStackFiltering/,
+  "Il costo LOD 0 aggiuntivo deve restare confinato ai bordi alpha.",
+);
+
+const liveMipShader = section(
+  shaders,
+  "export const lightGlazeCompositeMipShader",
+  "export const lightGlazeCommitTileShader",
+);
+assert.match(liveMipShader, /@group\(0\) @binding\(6\) var mergedBelowTexture/);
+assert.match(liveMipShader, /@group\(0\) @binding\(7\) var mergedAboveTexture/);
+assert.match(
+  liveMipShader,
+  /fn compositedFinalStackSource[\s\S]*loadMergedBelow\(sourcePosition\)[\s\S]*sourceOver\(activeGroup, paint\)[\s\S]*loadMergedAbove\(sourcePosition\)/,
+  "Mip 1 live deve rispettare l'ordine below, gruppo active, above per texel.",
+);
+assert.match(
+  liveMipShader,
+  /fn finalStackFragmentMain[\s\S]*let p00 = compositedFinalStackSource\(sourceOrigin\)[\s\S]*let p11 = compositedFinalStackSource\(sourceOrigin \+ vec2<i32>\(1, 1\)\)[\s\S]*return \(p00 \+ p10 \+ p01 \+ p11\) \* 0\.25/,
+  "Mip 1 live deve mediare quattro risultati finali premoltiplicati.",
+);
+
 assert.match(
   shaders,
   /coverage \* brush\.controls\.x \* brush\.baseHslAlpha\.w \* brush\.controls\.z/,

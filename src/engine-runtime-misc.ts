@@ -733,6 +733,20 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
     },
     primitive: { topology: "triangle-list" },
   });
+  engine.lightGlazeFinalRasterStackDisplayPipeline = engine.device.createRenderPipeline({
+    label: "Light Glaze live final raster stack display pipeline",
+    layout: lightGlazeDisplayPipelineLayout,
+    vertex: {
+      module: engine.lightGlazeDisplayShaderModule,
+      entryPoint: "vertexMain",
+    },
+    fragment: {
+      module: engine.lightGlazeDisplayShaderModule,
+      entryPoint: "finalStackFragmentMain",
+      targets: [{ format: engine.canvasFormat }],
+    },
+    primitive: { topology: "triangle-list" },
+  });
   if (engine.vectorTextPrototypeEnabled) {
     engine.mixedSceneActiveLightGlazeDisplayPipeline = engine.device.createRenderPipeline({
       label: "Mixed scene active Light Glaze source-over pipeline",

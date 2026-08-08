@@ -93,6 +93,8 @@ export function createLightGlazeResourceSet(engine: BrushEngine,
           { binding: 3, resource: { buffer: engine.displayUniformBuffer } },
           { binding: 4, resource: engine.activeClippingPrefixView() },
           { binding: 5, resource: engine.activeClippingSuffixView() },
+          { binding: 6, resource: engine.mergedBelowView() },
+          { binding: 7, resource: engine.mergedAboveView() },
         ],
       });
       const displayBindGroup = engine.device.createBindGroup({
@@ -206,9 +208,13 @@ export function encodeLightGlazeDisplayPyramid(engine: BrushEngine,
   session: LightGlazeSession,
   baseDirtyRect: DirtyRect | null,
   selectedMipLevel: number,
+  requestedContent: "active-only" | "final-raster-stack" = "active-only",
 ): { passes: number; updatedPixels: number } {
+  if (session.mipContent !== requestedContent) {
+    session.mipContent = requestedContent;
+    session.mipValidThroughLevel = 0;
+  }
   const previousValidThroughLevel = session.mipValidThroughLevel;
-  const baseChanged = baseDirtyRect !== null;
   let sourceDirtyRect = baseDirtyRect;
   let passes = 0;
   let updatedPixels = 0;
@@ -239,7 +245,11 @@ export function encodeLightGlazeDisplayPyramid(engine: BrushEngine,
       ],
     });
     if (mipLevel === 1) {
-      pass.setPipeline(engine.lightGlazeCompositeMipPipeline);
+      pass.setPipeline(
+        requestedContent === "final-raster-stack"
+          ? engine.lightGlazeFinalRasterStackCompositeMipPipeline
+          : engine.lightGlazeCompositeMipPipeline,
+      );
       pass.setBindGroup(0, engine.lightGlazeCompositeMipBindGroup!);
     } else {
       pass.setPipeline(engine.paintMipDownsamplePipeline);
@@ -260,9 +270,7 @@ export function encodeLightGlazeDisplayPyramid(engine: BrushEngine,
     sourceDirtyRect = targetDirtyRect;
   }
 
-  if (baseChanged) {
-    session.mipValidThroughLevel = selectedMipLevel;
-  } else if (selectedMipLevel > previousValidThroughLevel) {
+  if (selectedMipLevel > previousValidThroughLevel) {
     session.mipValidThroughLevel = selectedMipLevel;
   }
   return { passes, updatedPixels };

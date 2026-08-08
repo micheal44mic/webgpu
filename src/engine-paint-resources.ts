@@ -21,6 +21,9 @@ export interface LightGlazeSession {
   hasContent: boolean;
   endRequested: boolean;
   commitRequested: boolean;
+  /** Meaning of mip 1+ in the reusable live pyramid for this presentation. */
+  mipContent: "active-only" | "final-raster-stack" | null;
+  /** Highest level known to be valid for the complete document, not just dirty regions. */
   mipValidThroughLevel: number;
   tintLinear: [number, number, number] | null;
 }

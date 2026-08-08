@@ -139,6 +139,7 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
     grainLightNoBuildUpShapePipeline,
     grainLightNoBuildUpShapeOccupancyPipeline,
     lightGlazeCompositeMipPipeline,
+    lightGlazeFinalRasterStackCompositeMipPipeline,
     lightGlazeCompositePipeline,
     lightGlazeCommitTilePipeline,
     paintMipDownsamplePipeline,
@@ -952,6 +953,20 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
     },
     primitive: { topology: "triangle-list" },
   });
+  const lightGlazeFinalRasterStackCompositeMipPipeline = engine.device.createRenderPipeline({
+    label: `Light Glaze final raster stack composited mip 1 ${format}`,
+    layout: lightGlazeCompositeMipPipelineLayout,
+    vertex: {
+      module: engine.lightGlazeCompositeMipShaderModule,
+      entryPoint: "vertexMain",
+    },
+    fragment: {
+      module: engine.lightGlazeCompositeMipShaderModule,
+      entryPoint: "finalStackFragmentMain",
+      targets: [{ format }],
+    },
+    primitive: { topology: "triangle-list" },
+  });
 
   const lightGlazeCompositePipeline = engine.device.createRenderPipeline({
     label: `Light Glaze final source-over composite ${format}`,
@@ -1129,6 +1144,7 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
         grainLightNoBuildUpShapePipeline,
         grainLightNoBuildUpShapeOccupancyPipeline,
         lightGlazeCompositeMipPipeline,
+        lightGlazeFinalRasterStackCompositeMipPipeline,
         lightGlazeCompositePipeline,
         lightGlazeCommitTilePipeline,
         paintMipDownsamplePipeline,
@@ -1328,6 +1344,8 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
   engine.grainLightNoBuildUpShapePipeline = grainLightNoBuildUpShapePipeline;
   engine.grainLightNoBuildUpShapeOccupancyPipeline = grainLightNoBuildUpShapeOccupancyPipeline;
   engine.lightGlazeCompositeMipPipeline = lightGlazeCompositeMipPipeline;
+  engine.lightGlazeFinalRasterStackCompositeMipPipeline =
+    lightGlazeFinalRasterStackCompositeMipPipeline;
   engine.lightGlazeCompositePipeline = lightGlazeCompositePipeline;
   engine.lightGlazeCommitTilePipeline = lightGlazeCommitTilePipeline;
   engine.paintMipDownsamplePipeline = paintMipDownsamplePipeline;
@@ -3757,6 +3775,8 @@ export function rebuildLayerDisplayBindGroups(engine: BrushEngine): void {
         { binding: 3, resource: { buffer: engine.displayUniformBuffer } },
         { binding: 4, resource: engine.activeClippingPrefixView() },
         { binding: 5, resource: engine.activeClippingSuffixView() },
+        { binding: 6, resource: engine.mergedBelowView() },
+        { binding: 7, resource: engine.mergedAboveView() },
       ],
     });
   }

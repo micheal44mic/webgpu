@@ -107,9 +107,9 @@ const submit = section(
   "private submitLightGlazeImmediate",
   "submitBlendImmediate",
   // Il routing di presentazione document-space dei blend di livello aggiunge
-  // tre rami espliciti al submit live; la finestra resta stretta sui due
-  // marcatori e conserva un tetto dedicato, appena sopra i 40.121 byte misurati.
-  41_000,
+  // tre rami espliciti al submit live; il final-stack mip coerente aggiunge i
+  // gate live/commit, ma la finestra resta stretta sui due marcatori.
+  42_000,
 );
 for (const requirement of [
   'const intenseBlending = settings.blendMode === "intense-blending";',

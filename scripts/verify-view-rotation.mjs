@@ -175,7 +175,7 @@ assert.equal((displayShaders.match(/  mergedAboveOrigin: vec2<f32>,/g) ?? []).le
   "display e compositori mip devono ricevere l'origine del bbox superiore");
 assert.equal((displayShaders.match(/  viewRotation: vec2<f32>,/g) ?? []).length, 6,
   "display e compositori mip devono condividere la stessa ABI di rotazione");
-assert.equal((displayShaders.match(/let displayOffset =/g) ?? []).length, 9,
+assert.equal((displayShaders.match(/let displayOffset =/g) ?? []).length, 10,
   "entry point canonico, final-stack e active-only devono applicare la stessa trasformazione inversa");
 assert.equal((displayShaders.match(/fn activeFragmentMain\(/g) ?? []).length, 4,
   "ogni variante display deve offrire la sorgente trasparente al compositore segmentato");
@@ -209,7 +209,7 @@ assert.equal(RASTER_PIXEL_VIEW_ZOOM_THRESHOLD, 5.81);
 assert.equal(RASTER_PIXEL_VIEW_STRATEGY, "display-only-nearest-raster-at-581-percent-v1");
 assert.equal(
   RASTER_SMOOTH_LAYER_COMPOSITE_STRATEGY,
-  "lod0-edge-plus-final-stack-mips-compose-before-filter-v3",
+  "lod0-edge-plus-live-glaze-final-stack-mips-compose-before-filter-v4",
 );
 assert.equal(rasterPixelViewEnabled(5.809999), false,
   "sotto il 581% il raster deve restare nella vista morbida fedele");

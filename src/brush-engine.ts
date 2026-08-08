@@ -1480,7 +1480,9 @@ export class BrushEngine {
   rasterStrokeDisplayPipeline!: GPURenderPipeline;
   thicknessTailDisplayPipeline!: GPURenderPipeline;
   lightGlazeDisplayPipeline!: GPURenderPipeline;
+  lightGlazeFinalRasterStackDisplayPipeline!: GPURenderPipeline;
   lightGlazeCompositeMipPipeline!: GPURenderPipeline;
+  lightGlazeFinalRasterStackCompositeMipPipeline!: GPURenderPipeline;
   lightGlazeCompositePipeline!: GPURenderPipeline;
   lightGlazeCommitTilePipeline!: GPURenderPipeline;
   lightGlazeClearR16Pipeline!: GPURenderPipeline;
@@ -7377,6 +7379,7 @@ export class BrushEngine {
       hasContent: false,
       endRequested: false,
       commitRequested: false,
+      mipContent: null,
       mipValidThroughLevel: 0,
       tintLinear: null,
     };
@@ -7835,16 +7838,21 @@ export class BrushEngine {
     };
   }
 
-  private finalRasterStackMipAvailable(): boolean {
+  private finalRasterStackMipAvailable(virtualActivePresent = false): boolean {
     if (
       (this.mergedBelow && this.mergedBelow.resolutionScale !== 1)
       || (this.mergedAbove && this.mergedAbove.resolutionScale !== 1)
+      || (this.activeClippingGroup?.prefix
+        && this.activeClippingGroup.prefix.resolutionScale !== 1)
+      || (this.activeClippingGroup?.suffix
+        && this.activeClippingGroup.suffix.resolutionScale !== 1)
+      || Boolean(this.activeClippingGroup?.suffixSteps.length)
     ) {
       return false;
     }
     const activePresent = this.layerStack.active.visible
       && this.layerStack.active.opacity > 0
-      && this.layerContentBounds !== null;
+      && (virtualActivePresent || this.layerContentBounds !== null);
     const surfaceCount = Number(activePresent)
       + Number(this.mergedBelow !== null)
       + Number(this.mergedAbove !== null);
@@ -10502,6 +10510,13 @@ export class BrushEngine {
           : { dirtyRect: null, timing: null };
         const tileBlendOwnsPyramid = displaySelectedMipLevel > 0
           && this.usesLayerBlendTilePresentation();
+        const useLiveFinalRasterStack = session.hasContent
+          && !rasterStrokeActive
+          && !this.usesOrderedScenePresentation()
+          && !this.usesLayerBlendTilePresentation()
+          && !this.vectorTextBelowTexture
+          && !this.vectorTextAboveTexture
+          && this.finalRasterStackMipAvailable(true);
         if (rasterStrokeActive && !tileBlendOwnsPyramid) {
           if (clearLayer || liveDirtyRect) {
             this.paintDisplayMipValidThroughLevel = 0;
@@ -10525,6 +10540,7 @@ export class BrushEngine {
             session,
             liveDirtyRect,
             displaySelectedMipLevel,
+            useLiveFinalRasterStack ? "final-raster-stack" : "active-only",
           );
           lightGlazePyramidPasses += glazePyramid.passes;
           lightGlazePyramidUpdatedPixels += glazePyramid.updatedPixels;
@@ -10554,7 +10570,10 @@ export class BrushEngine {
             : null;
 
         if (presentationDirtyRect) {
-          if (!tileBlendOwnsPyramid) {
+          if (
+            (!useLiveFinalRasterStack || displaySelectedMipLevel === 0)
+            && !tileBlendOwnsPyramid
+          ) {
             encodeMergedDisplayPyramids(this, encoder, displaySelectedMipLevel);
           }
           this.writeDisplayUniforms(displaySelectedMipLevel);
@@ -10615,7 +10634,9 @@ export class BrushEngine {
               rasterStrokeActive
                 ? this.rasterStrokeDisplayPipeline
                 : session.hasContent
-                  ? this.lightGlazeDisplayPipeline
+                  ? useLiveFinalRasterStack
+                    ? this.lightGlazeFinalRasterStackDisplayPipeline
+                    : this.lightGlazeDisplayPipeline
                   : this.vectorTextDisplayPipeline && this.vectorTextDisplayBindGroup
                     ? this.vectorTextDisplayPipeline
                     : this.displayPipeline,
@@ -10794,6 +10815,12 @@ export class BrushEngine {
           : { dirtyRect: null, timing: null };
         const tileBlendOwnsPyramid = displaySelectedMipLevel > 0
           && this.usesLayerBlendTilePresentation();
+        const requestFinalRasterStackMip = displaySelectedMipLevel > 0
+          && !rasterStrokeActive
+          && !this.vectorTextBelowTexture
+          && !this.vectorTextAboveTexture
+          && !this.usesOrderedScenePresentation()
+          && !this.usesLayerBlendTilePresentation();
         const canonicalLayerDirtyRect = clearLayer
           ? { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE }
           : authoritativeDirtyRect;
@@ -10817,6 +10844,7 @@ export class BrushEngine {
             encoder,
             canonicalLayerDirtyRect,
             displaySelectedMipLevel,
+            requestFinalRasterStackMip ? "final-raster-stack" : "active-only",
           );
           paintDisplayPyramidMaintenanceFrames += mainPyramid.maintenanceFrames;
           paintDisplayPyramidFullLevelBuilds += mainPyramid.fullLevelBuilds;
@@ -10826,6 +10854,9 @@ export class BrushEngine {
           paintDisplayPyramidUpdatedPixels += mainPyramid.updatedPixels;
           paintDisplayPyramidEncodingMs += mainPyramid.encodingMs;
         }
+        const useFinalRasterStackMip = requestFinalRasterStackMip
+          && !tileBlendOwnsPyramid
+          && this.paintDisplayPyramidContent === "final-raster-stack";
 
         // Replace every live-composite cache pixel touched by this stroke with
         // the canonical permanent-layer result. Subsequent partial updates can
@@ -10840,7 +10871,7 @@ export class BrushEngine {
             ? layerDirtyRectToPresentationRect(this, presentationLayerDirtyRect, displaySelectedMipLevel)
             : null;
         if (presentationDirtyRect) {
-          if (!tileBlendOwnsPyramid) {
+          if (!useFinalRasterStackMip && !tileBlendOwnsPyramid) {
             encodeMergedDisplayPyramids(this, encoder, displaySelectedMipLevel);
           }
           this.writeDisplayUniforms(displaySelectedMipLevel);
@@ -10900,7 +10931,9 @@ export class BrushEngine {
                 ? this.rasterStrokeDisplayPipeline
                 : this.vectorTextDisplayPipeline && this.vectorTextDisplayBindGroup
                   ? this.vectorTextDisplayPipeline
-                  : this.displayPipeline,
+                  : useFinalRasterStackMip
+                    ? this.finalRasterStackDisplayPipeline
+                    : this.displayPipeline,
             );
             if (rasterStrokeActive) {
               displayPass.setBindGroup(0, this.rasterStrokeDisplayScreenBindGroup);
