@@ -22,6 +22,7 @@ import { MobileBrushStudioController } from "./mobile-brush-studio";
 import { MobileBrushLibraryPreviewRenderer } from "./brush-library-preview";
 import { AuthoritativeBrushStrokePreviewRenderer } from "./brush-stroke-preview-renderer";
 import { MobileStrokeSheetController } from "./mobile-stroke-sheet";
+import { MobileGaussianBlurSheetController } from "./mobile-gaussian-blur-sheet";
 import {
   MobileToolSettingsSheetController,
   type MobileTextWarpMode,
@@ -433,44 +434,84 @@ const mobileToolsProxyButtons = Array.from(
 const mobileToolsEffectButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>("[data-mobile-effect-control]"),
 );
-const desktopGaussianBlurOpenButton = element<HTMLButtonElement>(
+const rasterGaussianBlurSection = element<HTMLElement>("rasterGaussianBlurSection");
+const desktopGaussianBlurOpenInput = element<HTMLInputElement>(
   "desktopGaussianBlurOpen",
+);
+const desktopGaussianBlurParameters = element<HTMLElement>(
+  "desktopGaussianBlurParameters",
+);
+const desktopGaussianBlurRadiusInput = element<HTMLInputElement>(
+  "desktopGaussianBlurRadius",
+);
+const desktopGaussianBlurRadiusOutput = element<HTMLOutputElement>(
+  "desktopGaussianBlurRadiusOut",
+);
+const desktopGaussianBlurStatus = element<HTMLParagraphElement>(
+  "desktopGaussianBlurStatus",
+);
+const desktopGaussianBlurCancelButton = element<HTMLButtonElement>(
+  "desktopGaussianBlurCancel",
+);
+const desktopGaussianBlurApplyButton = element<HTMLButtonElement>(
+  "desktopGaussianBlurApply",
 );
 const mobileGaussianBlurOpenButton = element<HTMLButtonElement>(
   "mobileGaussianBlurOpen",
 );
-const rasterGaussianBlurDialog = element<HTMLDialogElement>(
-  "rasterGaussianBlurDialog",
+const mobileGaussianBlurSheetElement = element<HTMLElement>(
+  "mobileGaussianBlurSheet",
 );
-const rasterGaussianBlurCloseButton = element<HTMLButtonElement>(
-  "rasterGaussianBlurClose",
+const mobileGaussianBlurRadiusInput = element<HTMLInputElement>(
+  "mobileGaussianBlurRadius",
 );
-const rasterGaussianBlurRadiusInput = element<HTMLInputElement>(
-  "rasterGaussianBlurRadius",
+const mobileGaussianBlurRadiusOutput = element<HTMLOutputElement>(
+  "mobileGaussianBlurRadiusOut",
 );
-const rasterGaussianBlurRadiusOutput = element<HTMLOutputElement>(
-  "rasterGaussianBlurRadiusOut",
+const mobileGaussianBlurStatus = element<HTMLParagraphElement>(
+  "mobileGaussianBlurStatus",
 );
-const rasterGaussianBlurStatus = element<HTMLParagraphElement>(
-  "rasterGaussianBlurStatus",
+const mobileGaussianBlurCancelButton = element<HTMLButtonElement>(
+  "mobileGaussianBlurCancel",
 );
-const rasterGaussianBlurCancelButton = element<HTMLButtonElement>(
-  "rasterGaussianBlurCancel",
+const mobileGaussianBlurApplyButton = element<HTMLButtonElement>(
+  "mobileGaussianBlurApply",
 );
-const rasterGaussianBlurApplyButton = element<HTMLButtonElement>(
-  "rasterGaussianBlurApply",
-);
+const rasterGaussianBlurRadiusInputs = [
+  desktopGaussianBlurRadiusInput,
+  mobileGaussianBlurRadiusInput,
+] as const;
+const rasterGaussianBlurRadiusOutputs = [
+  desktopGaussianBlurRadiusOutput,
+  mobileGaussianBlurRadiusOutput,
+] as const;
+const rasterGaussianBlurStatuses = [
+  desktopGaussianBlurStatus,
+  mobileGaussianBlurStatus,
+] as const;
+const rasterGaussianBlurCancelButtons = [
+  desktopGaussianBlurCancelButton,
+  mobileGaussianBlurCancelButton,
+] as const;
+const rasterGaussianBlurApplyButtons = [
+  desktopGaussianBlurApplyButton,
+  mobileGaussianBlurApplyButton,
+] as const;
 const mobileToolSettingsButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>("[data-mobile-tool-sheet]"),
 );
 const mobileUiMediaQuery = window.matchMedia("(max-width: 699px)");
 const MOBILE_DOUBLE_TAP_ZOOM_INTERVAL_MS = 350;
 const MOBILE_DOUBLE_TAP_ZOOM_DISTANCE_PX = 32;
-rasterGaussianBlurRadiusInput.min = "1";
-rasterGaussianBlurRadiusInput.max = String(DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS);
-rasterGaussianBlurRadiusInput.step = String(DESTRUCTIVE_GAUSSIAN_BLUR_RADIUS_STEP);
-rasterGaussianBlurRadiusInput.value = String(DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS);
-rasterGaussianBlurRadiusOutput.value = `${DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS} px`;
+for (const input of rasterGaussianBlurRadiusInputs) {
+  input.min = "1";
+  input.max = String(DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS);
+  input.step = String(DESTRUCTIVE_GAUSSIAN_BLUR_RADIUS_STEP);
+  input.value = String(DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS);
+}
+for (const output of rasterGaussianBlurRadiusOutputs) {
+  output.value = `${DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS} px`;
+}
 let previousMobileTouchEndTime = Number.NEGATIVE_INFINITY;
 let previousMobileTouchEndX = Number.NEGATIVE_INFINITY;
 let previousMobileTouchEndY = Number.NEGATIVE_INFINITY;
@@ -1047,16 +1088,20 @@ let mobileBrushStudio: MobileBrushStudioController | null = null;
 let mobileStrokeSheet: MobileStrokeSheetController | null = null;
 let mobileRasterEffectsSheet: MobileRasterEffectsSheetController | null = null;
 let mobileToolSettingsSheet: MobileToolSettingsSheetController | null = null;
+let mobileGaussianBlurSheet: MobileGaussianBlurSheetController | null = null;
+type RasterGaussianBlurSurface = "desktop" | "mobile";
 let rasterGaussianBlurUiBusy = false;
 let rasterGaussianBlurSessionOpen = false;
 let rasterGaussianBlurPreviewFault = false;
+let rasterGaussianBlurCancelPending = false;
+let rasterGaussianBlurSurface: RasterGaussianBlurSurface | null = null;
 let rasterGaussianBlurReturnFocus: HTMLElement | null = null;
 const engine = new BrushEngine(canvas, {
   onStatus(message, kind) {
     statusElement.textContent = message;
     statusElement.className = `status ${kind === "working" ? "" : kind}`;
-    if (rasterGaussianBlurDialog.open && message.includes("Gaussian Blur")) {
-      rasterGaussianBlurStatus.textContent = message;
+    if (rasterGaussianBlurSessionOpen && message.includes("Gaussian Blur")) {
+      setRasterGaussianBlurStatus(message);
       if (kind === "error") rasterGaussianBlurPreviewFault = true;
       syncRasterGaussianBlurUi();
     }
@@ -1743,6 +1788,7 @@ function syncMobileBrushControlsVisibility(): void {
     || mobileBrushLibraryOpen
     || mobileStrokeSheet?.isOpen === true
     || mobileRasterEffectsSheet?.isOpen === true
+    || mobileGaussianBlurSheet?.isOpen === true
     || mobileToolSettingsSheet?.isOpen === true
     || mobileBrushStudio?.isOpen === true;
   if (suppressed && mobileBrushControlDrag) {
@@ -2120,6 +2166,7 @@ function syncMobileBrushLibrarySelection(): void {
 
 function setMobileBrushLibraryOpen(open: boolean): void {
   if (open && (!mobileUiMediaQuery.matches || activeCanvasTool !== "paint")) return;
+  if (open && rasterGaussianBlurSurface === "mobile") return;
   if (open && mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
   if (open && mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
   if (open && mobileRasterEffectsSheet?.isOpen) mobileRasterEffectsSheet.close(false);
@@ -2496,34 +2543,57 @@ function rasterGaussianBlurEligibilityError(): string | null {
 }
 
 function syncRasterGaussianBlurUi(): void {
-  const eligibilityError = rasterGaussianBlurSessionOpen
+  const workbenchOpen = rasterGaussianBlurSurface !== null;
+  const eligibilityError = workbenchOpen
+    || rasterGaussianBlurSessionOpen
     || rasterGaussianBlurUiBusy
-    || rasterGaussianBlurDialog.open
     ? "Gaussian Blur è già aperto."
     : rasterGaussianBlurEligibilityError();
   const triggerDisabled = eligibilityError !== null;
-  for (const button of [desktopGaussianBlurOpenButton, mobileGaussianBlurOpenButton]) {
-    button.disabled = triggerDisabled;
-    button.title = eligibilityError ?? "Apri Gaussian Blur";
-  }
-
   const recoveryOnly = rasterGaussianBlurPreviewFault || historyState.inconsistent;
   const controlsDisabled = rasterGaussianBlurUiBusy
     || !rasterGaussianBlurSessionOpen
     || recoveryOnly;
-  rasterGaussianBlurRadiusInput.disabled = controlsDisabled;
-  rasterGaussianBlurApplyButton.disabled = controlsDisabled;
-  rasterGaussianBlurCancelButton.disabled = rasterGaussianBlurUiBusy
-    || !rasterGaussianBlurSessionOpen;
-  rasterGaussianBlurCloseButton.disabled = rasterGaussianBlurCancelButton.disabled;
-  rasterGaussianBlurDialog.setAttribute("aria-busy", String(rasterGaussianBlurUiBusy));
-  rasterGaussianBlurDialog.dataset.state = rasterGaussianBlurUiBusy
+
+  desktopGaussianBlurOpenInput.checked = rasterGaussianBlurSurface === "desktop";
+  desktopGaussianBlurOpenInput.disabled = rasterGaussianBlurSurface === "desktop"
+    ? rasterGaussianBlurUiBusy
+    : triggerDisabled;
+  desktopGaussianBlurOpenInput.title = rasterGaussianBlurSurface === "desktop"
+    ? "Disattiva per annullare Gaussian Blur"
+    : eligibilityError ?? "Apri Gaussian Blur";
+  desktopGaussianBlurOpenInput.setAttribute(
+    "aria-expanded",
+    String(rasterGaussianBlurSurface === "desktop"),
+  );
+  desktopGaussianBlurParameters.hidden = rasterGaussianBlurSurface !== "desktop";
+
+  mobileGaussianBlurOpenButton.disabled = triggerDisabled;
+  mobileGaussianBlurOpenButton.title = eligibilityError ?? "Apri Gaussian Blur";
+  mobileGaussianBlurOpenButton.setAttribute(
+    "aria-pressed",
+    String(rasterGaussianBlurSurface === "mobile"),
+  );
+
+  for (const input of rasterGaussianBlurRadiusInputs) input.disabled = controlsDisabled;
+  for (const button of rasterGaussianBlurApplyButtons) button.disabled = controlsDisabled;
+  const cancelDisabled = rasterGaussianBlurUiBusy || !rasterGaussianBlurSessionOpen;
+  for (const button of rasterGaussianBlurCancelButtons) button.disabled = cancelDisabled;
+
+  const state = rasterGaussianBlurUiBusy
     ? "busy"
     : recoveryOnly
       ? "recovery"
       : rasterGaussianBlurSessionOpen
         ? "preview"
         : "closed";
+  rasterGaussianBlurSection.dataset.state = state;
+  rasterGaussianBlurSection.setAttribute("aria-busy", String(rasterGaussianBlurUiBusy));
+  mobileGaussianBlurSheetElement.dataset.state = state;
+  mobileGaussianBlurSheetElement.setAttribute(
+    "aria-busy",
+    String(rasterGaussianBlurUiBusy),
+  );
 }
 
 function setMobileToolsSheetOffset(offsetPx: number, allowClose = false): void {
@@ -3128,6 +3198,7 @@ function handleMobileLayerReorderKeydown(event: KeyboardEvent): void {
 
 function setMobileLayersPanelOpen(open: boolean): void {
   if (open && !mobileUiMediaQuery.matches) return;
+  if (open && rasterGaussianBlurSurface === "mobile") return;
   if (open && mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
   if (open && mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
   if (open && mobileRasterEffectsSheet?.isOpen) mobileRasterEffectsSheet.close(false);
@@ -3184,6 +3255,7 @@ function setMobileLayersPanelOpen(open: boolean): void {
 
 function setMobileToolsSheetOpen(open: boolean): void {
   if (open && !mobileUiMediaQuery.matches) return;
+  if (open && rasterGaussianBlurSurface === "mobile") return;
   if (open && mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
   if (open && mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
   if (open && mobileRasterEffectsSheet?.isOpen) mobileRasterEffectsSheet.close(false);
@@ -4629,6 +4701,27 @@ mobileRasterEffectsSheet = new MobileRasterEffectsSheetController({
   },
 });
 
+mobileGaussianBlurSheet = new MobileGaussianBlurSheetController({
+  mobileMediaQuery: mobileUiMediaQuery,
+  beforeOpen: () => {
+    setMobileToolsSheetOpen(false);
+    setMobileLayersPanelOpen(false);
+    setMobileBrushLibraryOpen(false);
+    mobileBrushStudio?.cancel(false);
+    mobileStrokeSheet?.close(false);
+    mobileRasterEffectsSheet?.close(false);
+    mobileToolSettingsSheet?.close(false);
+    setControlsPanelOpen(false);
+  },
+  onRequestCancel: () => {
+    void cancelRasterGaussianBlurFromUi();
+  },
+  onOpenChange: () => {
+    syncMobileToolsMenuState();
+    syncMobileBrushControlsVisibility();
+  },
+});
+
 mobileToolSettingsSheet = new MobileToolSettingsSheetController({
   mobileMediaQuery: mobileUiMediaQuery,
   selectCanvasTool: selectMobileCanvasTool,
@@ -5124,6 +5217,8 @@ function updateHistoryControls(): void {
     || effectsWorkbenchBenchmarkRunning || layerHistoryTestRunning
     || layerMemoryStressTestRunning
     || layerCompressionStudyRunning
+    || rasterGaussianBlurSessionOpen
+    || rasterGaussianBlurUiBusy
     || renderingModeSuiteRunning
     || humanStrokeReplaying;
   for (const id of brushControlIds) {
@@ -5154,29 +5249,59 @@ function updateHistoryControls(): void {
 }
 
 function setRasterGaussianBlurRadiusOutput(radius: number): void {
-  rasterGaussianBlurRadiusOutput.value = `${Math.round(radius)} px`;
+  const value = `${Math.round(radius)} px`;
+  for (const output of rasterGaussianBlurRadiusOutputs) output.value = value;
+  for (const input of rasterGaussianBlurRadiusInputs) {
+    input.value = String(Math.round(radius));
+    input.setAttribute("aria-valuetext", `${Math.round(radius)} pixels`);
+  }
+}
+
+function setRasterGaussianBlurStatus(message: string): void {
+  for (const status of rasterGaussianBlurStatuses) status.textContent = message;
+}
+
+function resetRasterGaussianBlurControls(): void {
+  setRasterGaussianBlurRadiusOutput(DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS);
+  setRasterGaussianBlurStatus(
+    "Regola il raggio e controlla l’anteprima direttamente sul canvas.",
+  );
 }
 
 function reportRasterGaussianBlurError(prefix: string, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   const fullMessage = `${prefix}: ${message}`;
-  rasterGaussianBlurStatus.textContent = fullMessage;
+  setRasterGaussianBlurStatus(fullMessage);
   statusElement.textContent = fullMessage;
   statusElement.className = "status error";
 }
 
-function closeRasterGaussianBlurDialog(result: "apply" | "cancel" | "error"): void {
-  if (rasterGaussianBlurDialog.open) rasterGaussianBlurDialog.close(result);
+function closeRasterGaussianBlurWorkbench(
+  result: "apply" | "cancel" | "error",
+): void {
+  const surface = rasterGaussianBlurSurface;
+  rasterGaussianBlurSurface = null;
+  rasterGaussianBlurCancelPending = false;
+  desktopGaussianBlurOpenInput.checked = false;
+  desktopGaussianBlurOpenInput.setAttribute("aria-expanded", "false");
+  desktopGaussianBlurParameters.hidden = true;
+  mobileGaussianBlurOpenButton.setAttribute("aria-pressed", "false");
+  if (surface === "mobile") mobileGaussianBlurSheet?.close(false);
   const returnFocus = rasterGaussianBlurReturnFocus;
   rasterGaussianBlurReturnFocus = null;
   if (returnFocus?.isConnected) {
     queueMicrotask(() => returnFocus.focus({ preventScroll: true }));
   }
+  if (result !== "error") resetRasterGaussianBlurControls();
+  syncRasterGaussianBlurUi();
 }
 
-async function openRasterGaussianBlurDialog(trigger: HTMLElement): Promise<void> {
+async function openRasterGaussianBlurWorkbench(
+  surface: RasterGaussianBlurSurface,
+  trigger: HTMLElement,
+): Promise<void> {
   const eligibilityError = rasterGaussianBlurEligibilityError();
-  if (eligibilityError || rasterGaussianBlurDialog.open) {
+  if (eligibilityError || rasterGaussianBlurSurface !== null) {
     if (eligibilityError) {
       statusElement.textContent = eligibilityError;
       statusElement.className = "status error";
@@ -5184,54 +5309,61 @@ async function openRasterGaussianBlurDialog(trigger: HTMLElement): Promise<void>
     return;
   }
 
-  setMobileToolsSheetOpen(false);
-  setMobileLayersPanelOpen(false);
-  setMobileBrushLibraryOpen(false);
-  mobileStrokeSheet?.close(false);
-  mobileRasterEffectsSheet?.close(false);
-  mobileToolSettingsSheet?.close(false);
+  if (surface === "mobile" && !mobileGaussianBlurSheet?.open(trigger)) return;
 
+  rasterGaussianBlurSurface = surface;
   rasterGaussianBlurReturnFocus = trigger;
   rasterGaussianBlurSessionOpen = false;
   rasterGaussianBlurPreviewFault = false;
   rasterGaussianBlurUiBusy = true;
-  rasterGaussianBlurStatus.textContent = "Preparazione dell’anteprima RGBA16F…";
-  rasterGaussianBlurDialog.showModal();
+  setRasterGaussianBlurStatus("Preparazione dell’anteprima live RGBA16F…");
   syncRasterGaussianBlurUi();
 
   try {
+    const radiusInput = surface === "mobile"
+      ? mobileGaussianBlurRadiusInput
+      : desktopGaussianBlurRadiusInput;
     const preview = await engine.beginRasterGaussianBlur(
-      Number(rasterGaussianBlurRadiusInput.value),
+      Number(radiusInput.value),
     );
     if (!preview) throw new Error("Seleziona un livello raster per usare Gaussian Blur.");
     rasterGaussianBlurSessionOpen = true;
-    rasterGaussianBlurRadiusInput.value = String(preview.radius);
     setRasterGaussianBlurRadiusOutput(preview.radius);
-    rasterGaussianBlurStatus.textContent =
-      `Anteprima ${preview.radius.toFixed(0)} px attiva · accumulo f32 su raster RGBA16F.`;
+    setRasterGaussianBlurStatus(
+      `Anteprima ${preview.radius.toFixed(0)} px attiva · accumulo f32 su raster RGBA16F.`,
+    );
   } catch (error) {
     historyState = engine.getHistoryState();
     rasterGaussianBlurSessionOpen = historyState.openEdit === "gaussian-blur";
     rasterGaussianBlurPreviewFault = rasterGaussianBlurSessionOpen;
     reportRasterGaussianBlurError("Impossibile aprire Gaussian Blur", error);
-    if (!rasterGaussianBlurSessionOpen) closeRasterGaussianBlurDialog("error");
+    if (!rasterGaussianBlurSessionOpen) closeRasterGaussianBlurWorkbench("error");
   } finally {
     rasterGaussianBlurUiBusy = false;
     historyState = engine.getHistoryState();
     updateHistoryControls();
+    if (rasterGaussianBlurCancelPending && rasterGaussianBlurSessionOpen) {
+      rasterGaussianBlurCancelPending = false;
+      void cancelRasterGaussianBlurFromUi();
+    }
   }
 }
 
 async function cancelRasterGaussianBlurFromUi(): Promise<void> {
-  if (rasterGaussianBlurUiBusy || !rasterGaussianBlurSessionOpen) return;
+  if (rasterGaussianBlurUiBusy) {
+    rasterGaussianBlurCancelPending = true;
+    return;
+  }
+  if (!rasterGaussianBlurSessionOpen) return;
+  rasterGaussianBlurCancelPending = false;
   rasterGaussianBlurUiBusy = true;
-  rasterGaussianBlurStatus.textContent = "Ripristino byte-esatto dei pixel originali…";
+  setRasterGaussianBlurStatus("Ripristino byte-esatto dei pixel originali…");
   syncRasterGaussianBlurUi();
   try {
     await engine.cancelRasterGaussianBlur();
     rasterGaussianBlurSessionOpen = false;
     rasterGaussianBlurPreviewFault = false;
-    closeRasterGaussianBlurDialog("cancel");
+    closeRasterGaussianBlurWorkbench("cancel");
   } catch (error) {
     historyState = engine.getHistoryState();
     rasterGaussianBlurSessionOpen = historyState.openEdit === "gaussian-blur";
@@ -5254,19 +5386,19 @@ async function applyRasterGaussianBlurFromUi(): Promise<void> {
     return;
   }
   rasterGaussianBlurUiBusy = true;
-  rasterGaussianBlurStatus.textContent = "Applicazione ai pixel e creazione del checkpoint Undo…";
+  setRasterGaussianBlurStatus("Applicazione ai pixel e creazione del checkpoint Undo…");
   syncRasterGaussianBlurUi();
   try {
     await engine.commitRasterGaussianBlur();
     rasterGaussianBlurSessionOpen = false;
     rasterGaussianBlurPreviewFault = false;
-    closeRasterGaussianBlurDialog("apply");
+    closeRasterGaussianBlurWorkbench("apply");
   } catch (error) {
     historyState = engine.getHistoryState();
     rasterGaussianBlurSessionOpen = historyState.openEdit === "gaussian-blur";
     rasterGaussianBlurPreviewFault = rasterGaussianBlurSessionOpen;
     reportRasterGaussianBlurError("Applicazione Gaussian Blur non riuscita", error);
-    if (!rasterGaussianBlurSessionOpen) closeRasterGaussianBlurDialog("error");
+    if (!rasterGaussianBlurSessionOpen) closeRasterGaussianBlurWorkbench("error");
   } finally {
     rasterGaussianBlurUiBusy = false;
     historyState = engine.getHistoryState();
@@ -6459,6 +6591,9 @@ async function restoreActiveMobileBrushLibraryBrush(): Promise<void> {
 }
 
 mobileUiMediaQuery.addEventListener("change", (event) => {
+  if (rasterGaussianBlurSurface !== null) {
+    void cancelRasterGaussianBlurFromUi();
+  }
   if (event.matches) {
     setControlsPanelOpen(false);
     syncMobileBrushControlVisuals();
@@ -6486,6 +6621,7 @@ window.addEventListener("resize", () => {
   const brushStudioNeedsLayout = mobileBrushStudio?.isOpen === true;
   const strokeSheetNeedsLayout = mobileStrokeSheet?.isOpen === true;
   const rasterEffectsSheetNeedsLayout = mobileRasterEffectsSheet?.isOpen === true;
+  const gaussianBlurSheetNeedsLayout = mobileGaussianBlurSheet?.isOpen === true;
   const toolSettingsSheetNeedsLayout = mobileToolSettingsSheet?.isOpen === true;
   if (
     !toolsNeedLayout
@@ -6493,6 +6629,7 @@ window.addEventListener("resize", () => {
     && !brushStudioNeedsLayout
     && !strokeSheetNeedsLayout
     && !rasterEffectsSheetNeedsLayout
+    && !gaussianBlurSheetNeedsLayout
     && !toolSettingsSheetNeedsLayout
   ) return;
   if (mobileToolsSheetResizeFrame !== null) {
@@ -6509,6 +6646,7 @@ window.addEventListener("resize", () => {
     mobileBrushStudio?.handleResize();
     mobileStrokeSheet?.handleResize();
     mobileRasterEffectsSheet?.handleResize();
+    mobileGaussianBlurSheet?.handleResize();
     mobileToolSettingsSheet?.handleResize();
   });
 });
@@ -6706,48 +6844,56 @@ for (const button of mobileToolsEffectButtons) {
     syncMobileToolsMenuState();
   });
 }
-for (const button of [desktopGaussianBlurOpenButton, mobileGaussianBlurOpenButton]) {
-  button.addEventListener("click", () => {
-    void openRasterGaussianBlurDialog(button);
-  });
-}
-rasterGaussianBlurRadiusInput.addEventListener("input", () => {
-  const requestedRadius = Number(rasterGaussianBlurRadiusInput.value);
-  setRasterGaussianBlurRadiusOutput(requestedRadius);
-  if (
-    !rasterGaussianBlurSessionOpen
-    || rasterGaussianBlurUiBusy
-    || rasterGaussianBlurPreviewFault
-  ) {
-    return;
-  }
-  try {
-    const preview = engine.updateRasterGaussianBlur(requestedRadius);
-    rasterGaussianBlurRadiusInput.value = String(preview.radius);
-    setRasterGaussianBlurRadiusOutput(preview.radius);
-    rasterGaussianBlurStatus.textContent =
-      `Calcolo anteprima ${preview.radius.toFixed(0)} px · trascina liberamente lo slider.`;
-  } catch (error) {
-    rasterGaussianBlurPreviewFault = true;
-    reportRasterGaussianBlurError("Anteprima Gaussian Blur interrotta", error);
+desktopGaussianBlurOpenInput.addEventListener("change", () => {
+  if (desktopGaussianBlurOpenInput.checked) {
+    void openRasterGaussianBlurWorkbench("desktop", desktopGaussianBlurOpenInput);
+  } else if (rasterGaussianBlurSurface === "desktop") {
+    void cancelRasterGaussianBlurFromUi();
+  } else {
     syncRasterGaussianBlurUi();
   }
 });
-rasterGaussianBlurCancelButton.addEventListener("click", () => {
-  void cancelRasterGaussianBlurFromUi();
+mobileGaussianBlurOpenButton.addEventListener("click", () => {
+  void openRasterGaussianBlurWorkbench("mobile", mobileGaussianBlurOpenButton);
 });
-rasterGaussianBlurCloseButton.addEventListener("click", () => {
-  void cancelRasterGaussianBlurFromUi();
-});
-rasterGaussianBlurApplyButton.addEventListener("click", () => {
-  void applyRasterGaussianBlurFromUi();
-});
-rasterGaussianBlurDialog.addEventListener("cancel", (event) => {
+for (const input of rasterGaussianBlurRadiusInputs) {
+  input.addEventListener("input", () => {
+    const requestedRadius = Number(input.value);
+    setRasterGaussianBlurRadiusOutput(requestedRadius);
+    if (
+      !rasterGaussianBlurSessionOpen
+      || rasterGaussianBlurUiBusy
+      || rasterGaussianBlurPreviewFault
+    ) {
+      return;
+    }
+    try {
+      const preview = engine.updateRasterGaussianBlur(requestedRadius);
+      setRasterGaussianBlurRadiusOutput(preview.radius);
+      setRasterGaussianBlurStatus(
+        `Anteprima live ${preview.radius.toFixed(0)} px · trascina liberamente lo slider.`,
+      );
+    } catch (error) {
+      rasterGaussianBlurPreviewFault = true;
+      reportRasterGaussianBlurError("Anteprima Gaussian Blur interrotta", error);
+      syncRasterGaussianBlurUi();
+    }
+  });
+}
+for (const button of rasterGaussianBlurCancelButtons) {
+  button.addEventListener("click", () => {
+    void cancelRasterGaussianBlurFromUi();
+  });
+}
+for (const button of rasterGaussianBlurApplyButtons) {
+  button.addEventListener("click", () => {
+    void applyRasterGaussianBlurFromUi();
+  });
+}
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || rasterGaussianBlurSurface !== "desktop") return;
   event.preventDefault();
   void cancelRasterGaussianBlurFromUi();
-});
-rasterGaussianBlurDialog.addEventListener("close", () => {
-  syncRasterGaussianBlurUi();
 });
 mobileUndoButton.addEventListener("click", () => {
   requestHistoryOperation("undo");

@@ -64,6 +64,10 @@ const engine = readFileSync(new URL("../src/brush-engine.ts", import.meta.url), 
 const history = readFileSync(new URL("../src/engine-history-types.ts", import.meta.url), "utf8");
 const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const mobileSheet = readFileSync(
+  new URL("../src/mobile-gaussian-blur-sheet.ts", import.meta.url),
+  "utf8",
+);
 
 assert.match(runtime, /format:\s*"rgba16float"/);
 assert.match(runtime, /array<vec4<f32>/);
@@ -95,7 +99,9 @@ assert.match(engine, /activeRasterGaussianBlurSession/);
 
 assert.match(html, /id="mobileGaussianBlurOpen"/);
 assert.match(html, /id="desktopGaussianBlurOpen"/);
-assert.match(html, /id="rasterGaussianBlurDialog"/);
+assert.match(html, /id="mobileGaussianBlurSheet"/);
+assert.match(html, /id="desktopGaussianBlurParameters"/);
+assert.doesNotMatch(html, /id="rasterGaussianBlurDialog"/);
 const mobileTile = html.slice(
   html.indexOf('id="mobileGaussianBlurOpen"'),
   html.indexOf("</button>", html.indexOf('id="mobileGaussianBlurOpen"')),
@@ -105,5 +111,11 @@ assert.match(main, /engine\.beginRasterGaussianBlur/);
 assert.match(main, /engine\.commitRasterGaussianBlur/);
 assert.match(main, /engine\.cancelRasterGaussianBlur/);
 assert.match(main, /historyState\.openEdit === "gaussian-blur"/);
+assert.match(main, /resetRasterGaussianBlurControls/);
+assert.match(main, /DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS/);
+assert.match(main, /openRasterGaussianBlurWorkbench\("desktop"/);
+assert.match(main, /openRasterGaussianBlurWorkbench\("mobile"/);
+assert.match(mobileSheet, /resolveMobileBottomSheetDrag/);
+assert.match(mobileSheet, /onRequestCancel/);
 
 console.log("Destructive 16-bit Gaussian Blur verification passed.");

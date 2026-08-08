@@ -4409,3 +4409,163 @@ select {
     animation: none;
   }
 }
+
+.gaussian-blur-launch-control {
+  margin-bottom: 0;
+}
+
+#desktopGaussianBlurParameters {
+  margin-top: 9px;
+  padding-top: 10px;
+  border-top: 1px solid #303746;
+}
+
+.gaussian-blur-inline-status {
+  min-height: 2.8em;
+  margin-top: 2px;
+}
+
+.gaussian-blur-inline-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-bottom: 12px;
+}
+
+.gaussian-blur-inline-actions button {
+  min-width: 0;
+  min-height: 36px;
+}
+
+#rasterGaussianBlurSection[data-state="preview"] .gaussian-blur-inline-status {
+  color: #aeb8ff;
+}
+
+#rasterGaussianBlurSection[data-state="recovery"] .gaussian-blur-inline-status {
+  color: #ffb7bd;
+}
+
+@media (max-width: 699px) {
+  .mobile-gaussian-blur-sheet {
+    --mobile-tools-sheet-offset: calc(100% - clamp(260px, 37dvh, 330px));
+    overflow: visible;
+  }
+
+  .mobile-gaussian-blur-sheet[hidden] {
+    display: none;
+  }
+
+  .mobile-gaussian-blur-shell {
+    display: flex;
+    min-height: 0;
+    flex: 1 1 auto;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--app-background);
+  }
+
+  .mobile-gaussian-blur-header {
+    display: flex;
+    min-height: 50px;
+    flex: 0 0 50px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0 16px;
+    border-bottom: 1px solid #252932;
+    background: var(--app-background);
+  }
+
+  .mobile-gaussian-blur-header > div {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .mobile-gaussian-blur-header h2 {
+    overflow: hidden;
+    margin: 0;
+    color: var(--mobile-icon-face);
+    font-size: 13px;
+    font-weight: 650;
+    line-height: 1.15;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-gaussian-blur-header > div > span {
+    color: var(--mobile-icon-inactive);
+    font-size: 9px;
+    font-weight: 650;
+    letter-spacing: 0.055em;
+    text-transform: uppercase;
+  }
+
+  .mobile-gaussian-blur-live {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 6px;
+    color: #9edeb4;
+    font-size: 10px;
+    font-weight: 650;
+  }
+
+  .mobile-gaussian-blur-live > span {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #62cf89;
+    box-shadow: 0 0 0 3px rgba(98, 207, 137, 0.12);
+  }
+
+  .mobile-gaussian-blur-controls {
+    display: flex;
+    min-height: 0;
+    flex: 1 1 auto;
+    flex-direction: column;
+    padding: 4px 16px max(12px, env(safe-area-inset-bottom));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .mobile-gaussian-blur-status {
+    min-height: 2.7em;
+    margin: 0 0 8px;
+    color: var(--mobile-icon-inactive);
+    font-size: 10px;
+    line-height: 1.35;
+  }
+
+  .mobile-gaussian-blur-actions {
+    flex: 0 0 auto;
+    margin-top: auto;
+  }
+
+  .mobile-gaussian-blur-sheet[data-state="preview"] .mobile-gaussian-blur-status {
+    color: #aeb8ff;
+  }
+
+  .mobile-gaussian-blur-sheet[data-state="busy"] .mobile-gaussian-blur-live,
+  .mobile-gaussian-blur-sheet[data-state="recovery"] .mobile-gaussian-blur-live {
+    color: var(--mobile-icon-inactive);
+  }
+
+  .mobile-gaussian-blur-sheet[data-state="busy"] .mobile-gaussian-blur-live > span {
+    background: #dd5c35;
+    box-shadow: 0 0 0 3px rgba(221, 92, 53, 0.14);
+    animation: gaussian-blur-icon-pulse 900ms ease-in-out infinite alternate;
+  }
+
+  .mobile-gaussian-blur-sheet[data-state="recovery"] .mobile-gaussian-blur-status {
+    color: #ff9ca7;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mobile-gaussian-blur-sheet[data-state="busy"] .mobile-gaussian-blur-live > span {
+    animation: none;
+  }
+}
