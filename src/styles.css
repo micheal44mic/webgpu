@@ -4541,7 +4541,7 @@ select {
 
   .mobile-gaussian-blur-actions {
     flex: 0 0 auto;
-    margin-top: auto;
+    margin-top: 4px;
   }
 
   .mobile-gaussian-blur-sheet[data-state="preview"] .mobile-gaussian-blur-status {
