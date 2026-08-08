@@ -1382,6 +1382,7 @@ export class HistoryStorageCoordinator {
       crossed.kind === "vector-rasterize"
       || crossed.kind === "raster-import"
       || crossed.kind === "raster-transform"
+      || crossed.kind === "raster-filter"
     ) {
       addSeed(crossed.seed);
     } else if (crossed.kind === "layer-delete") {
@@ -1397,6 +1398,7 @@ export class HistoryStorageCoordinator {
       || crossed.kind === "fill"
       || crossed.kind === "clear"
       || crossed.kind === "raster-transform"
+      || crossed.kind === "raster-filter"
     ) {
       this.addRasterReplayRequirements(
         collector,
@@ -1413,6 +1415,7 @@ export class HistoryStorageCoordinator {
         action.kind === "vector-rasterize"
         || action.kind === "raster-import"
         || action.kind === "raster-transform"
+        || action.kind === "raster-filter"
       ) {
         if (action.seed) action.seed = this.wrapSeed(action.seed, action.id, action.layerId);
       } else if (action.kind === "layer-delete") {

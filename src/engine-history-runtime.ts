@@ -37,6 +37,7 @@ import {
   type RasterLayerMetadataHistoryState,
   type RasterLayerMetadataHistoryValueMap,
   type RasterImportHistoryAction,
+  type RasterFilterHistoryAction,
   type RasterTransformHistoryAction,
   type VectorRasterizeHistoryAction,
 } from "./engine-history-types";
@@ -338,6 +339,13 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
   if (engine.activeRasterTransformSession) {
     engine.publishStatus(
       "Applica o annulla la trasformazione prima di usare la cronologia.",
+      "error",
+    );
+    return false;
+  }
+  if (engine.activeRasterGaussianBlurSession) {
+    engine.publishStatus(
+      "Applica o annulla Gaussian Blur prima di usare la cronologia.",
       "error",
     );
     return false;
@@ -1127,7 +1135,9 @@ export async function compactDiscardedHistoryIncrementally(
   const selectionActionIdsToDelete: number[] = [];
   const vectorRasterActionsToDestroy: VectorRasterizeHistoryAction[] = [];
   const importActionsToDestroy: RasterImportHistoryAction[] = [];
-  const transformActionsToDestroy: RasterTransformHistoryAction[] = [];
+  const transformActionsToDestroy: Array<
+    RasterTransformHistoryAction | RasterFilterHistoryAction
+  > = [];
   const layerDeleteActionsToDestroy: LayerDeleteHistoryAction[] = [];
   const releasedTransformSelectionSlices = new Set<number>();
   let retainedStampCount = 0;
@@ -1232,7 +1242,7 @@ export async function compactDiscardedHistoryIncrementally(
       retainRasterImageNode(action.vectorState.node);
     } else if (action.kind === "raster-import") {
       retainedImportIds.add(action.id);
-    } else if (action.kind === "raster-transform") {
+    } else if (action.kind === "raster-transform" || action.kind === "raster-filter") {
       retainedTransformIds.add(action.id);
     } else if (action.kind === "layer-delete") {
       retainedLayerDeleteIds.add(action.id);
@@ -1290,11 +1300,13 @@ export async function compactDiscardedHistoryIncrementally(
   if (!await processArrayPhase(engine.discardedRasterTransformHistoryActions, (action) => {
     if (retainedTransformIds.has(action.id)) return;
     transformActionsToDestroy.push(action);
-    for (const snapshot of [action.selectionBefore, action.selectionAfter]) {
-      if (!snapshot || releasedTransformSelectionSlices.has(snapshot.gpuSlice.id)) continue;
-      releasedTransformSelectionSlices.add(snapshot.gpuSlice.id);
-      if (reserveSliceToRelease(snapshot.gpuSlice)) {
-        transformSelectionSnapshotsToRelease.push(snapshot);
+    if (action.kind === "raster-transform") {
+      for (const snapshot of [action.selectionBefore, action.selectionAfter]) {
+        if (!snapshot || releasedTransformSelectionSlices.has(snapshot.gpuSlice.id)) continue;
+        releasedTransformSelectionSlices.add(snapshot.gpuSlice.id);
+        if (reserveSliceToRelease(snapshot.gpuSlice)) {
+          transformSelectionSnapshotsToRelease.push(snapshot);
+        }
       }
     }
   })) return abortResult();
@@ -1643,7 +1655,7 @@ export function truncateRedoHistory(engine: BrushEngine): void {
       engine.discardedVectorRasterHistoryActions.push(action);
     } else if (action.kind === "raster-import") {
       engine.discardedRasterImportHistoryActions.push(action);
-    } else if (action.kind === "raster-transform") {
+    } else if (action.kind === "raster-transform" || action.kind === "raster-filter") {
       engine.discardedRasterTransformHistoryActions.push(action);
     } else if (action.kind === "layer-delete") {
       // Senza questo ogni cancellazione superata dal Redo perde il suo seed:

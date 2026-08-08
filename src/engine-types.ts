@@ -180,8 +180,8 @@ export interface HistoryState {
   /** Null only when the corresponding operation can start immediately. */
   undoBlockedReason: string | null;
   redoBlockedReason: string | null;
-  /** Proprietà continue o Trasforma aperti: Undo/Redo restano bloccati. */
-  openEdit: "property" | "raster-property" | "transform" | null;
+  /** Proprietà continue o operazioni raster transazionali aperte. */
+  openEdit: "property" | "raster-property" | "transform" | "gaussian-blur" | null;
 }
 
 export interface BenchmarkResult {

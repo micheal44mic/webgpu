@@ -17,7 +17,7 @@ import {
 
 assert.equal(
   HISTORY_JOURNAL_STRATEGY,
-  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-metadata-scene-reorder-v8",
+  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-metadata-scene-reorder-v9",
 );
 
 const stroke = (id, layerId) => ({ id, kind: "stroke", layerId });
@@ -41,6 +41,12 @@ const rasterTransform = (id, layerId, hasContent = true) => ({
   layerId,
   baseBounds: hasContent ? { x: 0, y: 0, width: 1, height: 1 } : null,
 });
+const rasterFilter = (id, layerId) => ({
+  id,
+  kind: "raster-filter",
+  layerId,
+  baseBounds: { x: 0, y: 0, width: 1, height: 1 },
+});
 
 // With one layer the module must reproduce the engine's current behaviour
 // exactly: scan back to the most recent clear, everything after it is visible.
@@ -52,6 +58,21 @@ const rasterTransform = (id, layerId, hasContent = true) => ({
   assert.equal(firstVisibleActionIndex(actions, 2), 0);
   assert.deepEqual([...visibleStrokeIds(actions, 2)], [1, 2]);
   assert.equal(hasVisibleContent(actions, 0), false);
+}
+
+// A destructive filter is also a post-action checkpoint. Undo reveals the
+// earlier raster state; Redo hydrates exact committed pixels without running
+// the shader again.
+{
+  const actions = [stroke(1, 3), rasterFilter(2, 3), fill(3, 3)];
+  assert.equal(latestLayerReplayCheckpoint(actions, 3, 3)?.action.id, 2);
+  assert.deepEqual(
+    [...visibleRasterBatchActionIdsAfterCheckpoint(actions, 3, 3)],
+    [3],
+  );
+  assert.equal(hasVisibleContent(actions, 2, 3), true);
+  assert.equal(historyStepTargetsMissingLayer(actions, 2, -1, new Set([3])), false);
+  assert.equal(historyStepTargetsMissingLayer(actions, 2, -1, new Set()), true);
 }
 
 // Scene ordering is reversible document metadata. Like vector metadata it
@@ -603,7 +624,7 @@ const rasterTransform = (id, layerId, hasContent = true) => ({
   }
   assert.match(
     main,
-    /historyState\.openEdit === "transform"\s*\|\| historyState\.openEdit === "raster-property"/,
+    /historyState\.openEdit === "transform"\s*\|\| historyState\.openEdit === "gaussian-blur"\s*\|\| historyState\.openEdit === "raster-property"/,
     "Il canvas deve restare bloccato finché il drain dell'effetto non ha committato la cronologia.",
   );
   const canvasPointerDown = main.slice(

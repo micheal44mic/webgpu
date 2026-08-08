@@ -416,6 +416,9 @@ export async function beginRasterLayerTransform(
   engine: BrushEngine,
 ): Promise<RasterTransformSnapshot | null> {
   if (!engine.initialized) throw new Error("Il motore non è ancora inizializzato.");
+  if (engine.activeRasterGaussianBlurSession) {
+    throw new Error("Applica o annulla Gaussian Blur prima di aprire Trasforma.");
+  }
   if (engine.activeRasterTransformSession) {
     return transformSnapshot(engine.activeRasterTransformSession);
   }

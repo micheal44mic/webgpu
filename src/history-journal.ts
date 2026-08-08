@@ -1,5 +1,5 @@
 export const HISTORY_JOURNAL_STRATEGY =
-  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-metadata-scene-reorder-v8" as const;
+  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-metadata-scene-reorder-v9" as const;
 
 /**
  * One entry of the global journal. `layerId` is what makes a single stack usable
@@ -23,6 +23,12 @@ export type JournalAction =
     layerId: number;
     /** Null means that Apply moved every resulting pixel outside the document. */
     baseBounds: unknown | null;
+  }
+  | {
+    id: number;
+    kind: "raster-filter";
+    layerId: number;
+    baseBounds: unknown;
   }
   | {
     id: number;
@@ -72,7 +78,7 @@ export interface LayerReplaySelection<T extends JournalBatch> {
 
 export type JournalCheckpointAction<TAction extends JournalAction = JournalAction> = Extract<
   TAction,
-  { kind: "vector-rasterize" | "raster-import" | "raster-transform" }
+  { kind: "vector-rasterize" | "raster-import" | "raster-transform" | "raster-filter" }
 >;
 
 export interface LayerReplayCheckpoint<TAction extends JournalAction = JournalAction> {
@@ -160,7 +166,7 @@ export function hasVisibleContent(
     if (layerId !== undefined && action.layerId !== layerId) continue;
     if (action.kind === "clear") {
       contentByLayer.set(action.layerId, false);
-    } else if (action.kind === "raster-transform") {
+    } else if (action.kind === "raster-transform" || action.kind === "raster-filter") {
       contentByLayer.set(action.layerId, action.baseBounds !== null);
     } else {
       contentByLayer.set(action.layerId, true);
@@ -192,6 +198,7 @@ export function latestLayerReplayCheckpoint<TAction extends JournalAction>(
         action.kind === "vector-rasterize"
         || action.kind === "raster-import"
         || action.kind === "raster-transform"
+        || action.kind === "raster-filter"
       )
     ) {
       checkpoint = {
@@ -340,6 +347,7 @@ export function layersWithVisibleContent(
       || action.kind === "vector-rasterize"
       || action.kind === "raster-import"
       || action.kind === "raster-transform"
+      || action.kind === "raster-filter"
     ) {
       layers.add(action.layerId);
     }

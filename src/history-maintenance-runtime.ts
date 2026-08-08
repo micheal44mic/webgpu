@@ -248,6 +248,7 @@ function historyMaintenanceEngineIdle(
     && !engine.activeVectorHistoryEdit
     && !engine.activeRasterLayerMetadataHistoryEdit
     && !engine.activeRasterTransformSession
+    && !engine.activeRasterGaussianBlurSession
     && !engine.rasterStrokeBusy
     && !engine.rasterBevelBusy
     && !engine.rasterOuterShadowBusy
@@ -291,7 +292,8 @@ function rasterActionAffectsPixels(kind: string): boolean {
     || kind === "clear"
     || kind === "vector-rasterize"
     || kind === "raster-import"
-    || kind === "raster-transform";
+    || kind === "raster-transform"
+    || kind === "raster-filter";
 }
 
 function bytesForCheckpointCpuMetadata(checkpoint: PeriodicRasterHistoryCheckpoint): number {
@@ -431,6 +433,7 @@ function accountCheckpointSeed(
     action.kind !== "vector-rasterize"
     && action.kind !== "raster-import"
     && action.kind !== "raster-transform"
+    && action.kind !== "raster-filter"
   ) {
     return;
   }
@@ -762,6 +765,7 @@ function changedTileMask(
       action.kind === "vector-rasterize"
       || action.kind === "raster-import"
       || action.kind === "raster-transform"
+      || action.kind === "raster-filter"
     ) {
       requiresFull = true;
     }

@@ -248,10 +248,30 @@ export type RasterTransformHistoryAction = RasterTransformHistoryActionMetadata 
   }
 );
 
+/**
+ * Exact post-Apply pixels produced by a destructive raster filter.
+ *
+ * Undo/Redo hydrates the checkpoint and never evaluates the filter again, so a
+ * future shader change cannot alter an existing document's history.
+ */
+export interface RasterFilterHistoryAction extends RasterHistoryCheckpoint {
+  id: number;
+  kind: "raster-filter";
+  filter: "gaussian-blur";
+  radius: number;
+  sigma: number;
+  supportRadius: number;
+  precision: "rgba16float-f32-accumulation";
+  edgeMode: "transparent-black";
+  seed: LayerColdStorageResources;
+  baseBounds: DirtyRect;
+}
+
 export type RasterHistoryCheckpointAction =
   | VectorRasterizeHistoryAction
   | RasterImportHistoryAction
-  | RasterTransformHistoryAction;
+  | RasterTransformHistoryAction
+  | RasterFilterHistoryAction;
 
 export type HistoryAction =
   | RasterHistoryAction
@@ -262,6 +282,7 @@ export type HistoryAction =
   | VectorRasterizeHistoryAction
   | RasterImportHistoryAction
   | RasterTransformHistoryAction
+  | RasterFilterHistoryAction
   | LayerAddHistoryAction
   | LayerDeleteHistoryAction;
 
@@ -281,7 +302,8 @@ export function isRasterHistoryCheckpointAction(
 ): action is RasterHistoryCheckpointAction {
   return action.kind === "vector-rasterize"
     || action.kind === "raster-import"
-    || action.kind === "raster-transform";
+    || action.kind === "raster-transform"
+    || action.kind === "raster-filter";
 }
 
 export interface ActiveVectorHistoryEdit {

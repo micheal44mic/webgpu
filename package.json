@@ -46,7 +46,8 @@
     "vector-text:verify": "node scripts/verify-vector-text.mjs",
     "mixed-scene:verify": "node scripts/verify-mixed-scene-stack.mjs",
     "image:verify": "node scripts/verify-raster-image.mjs",
-    "transform:verify": "node scripts/verify-raster-transform.mjs"
+    "transform:verify": "node scripts/verify-raster-transform.mjs",
+    "gaussian-blur:verify": "node scripts/verify-gaussian-blur.mjs"
   },
   "devDependencies": {
     "@webgpu/types": "0.1.71",

@@ -100,6 +100,13 @@ import {
   type ActiveRasterTransformSession,
 } from "./engine-raster-transform-runtime";
 import {
+  beginRasterGaussianBlur as beginRasterGaussianBlurRuntime,
+  cancelRasterGaussianBlur as cancelRasterGaussianBlurRuntime,
+  commitRasterGaussianBlur as commitRasterGaussianBlurRuntime,
+  updateRasterGaussianBlur as updateRasterGaussianBlurRuntime,
+  type ActiveRasterGaussianBlurSession,
+} from "./engine-gaussian-blur-runtime";
+import {
   MIXED_SCENE_COMPOSITOR_STRATEGY,
   MIXED_SCENE_LINEAR_FORMAT,
   mixedSceneClearShader,
@@ -346,6 +353,7 @@ import {
   type LayerAddHistoryAction,
   type LayerDeleteHistoryAction,
   type DeletedLayerEntry,
+  type RasterFilterHistoryAction,
   type RasterImportHistoryAction,
   type RasterLayerMetadataHistoryAction,
   type RasterLayerMetadataHistoryState,
@@ -1537,7 +1545,10 @@ export class BrushEngine {
 
   /** Cancellazioni abbandonate dal Redo: i loro seed vanno liberati. */
   discardedLayerDeleteHistoryActions: LayerDeleteHistoryAction[] = [];
-  discardedRasterTransformHistoryActions: RasterTransformHistoryAction[] = [];
+  /** Post-action raster checkpoints abandoned with Redo (Transform + filters). */
+  discardedRasterTransformHistoryActions: Array<
+    RasterTransformHistoryAction | RasterFilterHistoryAction
+  > = [];
   historyBatches: HistoryRenderBatch[] = [];
   selectionHistoryMasksByAction = new Map<number, SelectionHistoryMaskSnapshot>();
   selectionHistoryMasksByRevision = new Map<number, SelectionHistoryMaskSnapshot>();
@@ -1560,6 +1571,7 @@ export class BrushEngine {
   ) | null = null;
   nextRasterLayerMetadataHistoryEditToken = 1;
   activeRasterTransformSession: ActiveRasterTransformSession | null = null;
+  activeRasterGaussianBlurSession: ActiveRasterGaussianBlurSession | null = null;
   historyGpuStorage!: GpuHistoryStorage;
   historyLocalStorage!: HistoryStorageCoordinator;
   historyGpuTrimGeneration = 0;
@@ -3679,6 +3691,15 @@ export class BrushEngine {
   beginStrokeAtLayer(point: LayerPoint): boolean {
     // layerSwitchBusy is held across the switch's awaits, so a pointerdown
     // landing mid-switch cannot start a stroke on a half-swapped layer.
+    if (this.activeRasterTransformSession || this.activeRasterGaussianBlurSession) {
+      this.callbacks.onStatus?.(
+        this.activeRasterGaussianBlurSession
+          ? "Applica o annulla Gaussian Blur prima di iniziare il tratto."
+          : "Applica o annulla Trasforma prima di iniziare il tratto.",
+        "working",
+      );
+      return false;
+    }
     if (this.activeVectorHistoryEdit || this.activeRasterLayerMetadataHistoryEdit) {
       this.callbacks.onStatus?.(
         this.activeRasterLayerMetadataHistoryEdit
@@ -4054,6 +4075,8 @@ export class BrushEngine {
       || this.selectionBusy
       || this.activeVectorHistoryEdit
       || this.activeRasterLayerMetadataHistoryEdit
+      || this.activeRasterTransformSession
+      || this.activeRasterGaussianBlurSession
     ) {
       return false;
     }
@@ -4131,6 +4154,8 @@ export class BrushEngine {
       || this.selectionBusy
       || this.activeVectorHistoryEdit
       || this.activeRasterLayerMetadataHistoryEdit
+      || this.activeRasterTransformSession
+      || this.activeRasterGaussianBlurSession
     ) {
       return false;
     }
@@ -4555,6 +4580,9 @@ export class BrushEngine {
     if (this.activeRasterTransformSession) {
       return "Completa o annulla Trasforma prima di usare Undo o Redo.";
     }
+    if (this.activeRasterGaussianBlurSession) {
+      return "Applica o annulla Gaussian Blur prima di usare Undo o Redo.";
+    }
     if (this.activeVectorHistoryEdit || this.activeRasterLayerMetadataHistoryEdit) {
       return "Termina la modifica corrente prima di usare Undo o Redo.";
     }
@@ -4593,8 +4621,10 @@ export class BrushEngine {
       redoBlockedReason,
       openEdit: this.activeRasterTransformSession
         ? "transform"
-        : this.activeVectorHistoryEdit?.scope
-          ?? (this.activeRasterLayerMetadataHistoryEdit ? "raster-property" : null),
+        : this.activeRasterGaussianBlurSession
+          ? "gaussian-blur"
+          : this.activeVectorHistoryEdit?.scope
+            ?? (this.activeRasterLayerMetadataHistoryEdit ? "raster-property" : null),
     };
   }
 
@@ -6223,6 +6253,8 @@ export class BrushEngine {
       || this.selectionBusy
       || this.historyStateInconsistent
       || this.activeVectorHistoryEdit
+      || this.activeRasterTransformSession
+      || this.activeRasterGaussianBlurSession
       || this.rasterStrokeBusy
       || this.rasterBevelBusy
       || this.rasterOuterShadowBusy
@@ -6323,6 +6355,8 @@ export class BrushEngine {
       || this.layerSwitchBusy
       || this.historyStateInconsistent
       || this.activeRasterLayerMetadataHistoryEdit
+      || this.activeRasterTransformSession
+      || this.activeRasterGaussianBlurSession
     ) {
       return false;
     }
@@ -6592,6 +6626,22 @@ export class BrushEngine {
     if (this.activeStrokeProfile) {
       this.activeStrokeProfile.historyCommittedActions += 1;
     }
+  }
+
+  beginRasterGaussianBlur(initialRadius?: number) {
+    return beginRasterGaussianBlurRuntime(this, initialRadius);
+  }
+
+  updateRasterGaussianBlur(radius: number) {
+    return updateRasterGaussianBlurRuntime(this, radius);
+  }
+
+  commitRasterGaussianBlur(): Promise<boolean> {
+    return commitRasterGaussianBlurRuntime(this);
+  }
+
+  cancelRasterGaussianBlur(): Promise<boolean> {
+    return cancelRasterGaussianBlurRuntime(this);
   }
 
   beginRasterLayerTransform() {
@@ -7096,6 +7146,11 @@ export class BrushEngine {
     if (this.activeRasterTransformSession) {
       throw new Error(
         "Applica o annulla la trasformazione prima di cambiare i livelli.",
+      );
+    }
+    if (this.activeRasterGaussianBlurSession) {
+      throw new Error(
+        "Applica o annulla Gaussian Blur prima di cambiare i livelli.",
       );
     }
     if (
@@ -9073,7 +9128,7 @@ export class BrushEngine {
         destroyVectorRasterHistorySeed(action);
       } else if (action.kind === "raster-import") {
         destroyRasterImportHistorySeed(action);
-      } else if (action.kind === "raster-transform") {
+      } else if (action.kind === "raster-transform" || action.kind === "raster-filter") {
         destroyLayerColdStorage(action.seed);
       } else if (action.kind === "layer-delete") {
         destroyLayerDeleteHistorySeeds(action);

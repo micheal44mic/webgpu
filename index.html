@@ -1791,6 +1791,28 @@
                 </button>
               </div>
             </section>
+
+            <section class="mobile-tools-category" data-mobile-tools-category>
+              <h2 class="mobile-tools-category-title">Blur</h2>
+              <div class="mobile-tools-grid">
+                <button
+                  id="mobileGaussianBlurOpen"
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-tool-search="sfocatura blur gaussiano gaussian morbidezza"
+                  aria-label="Open Gaussian Blur"
+                  aria-haspopup="dialog"
+                  aria-controls="rasterGaussianBlurDialog"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="focus" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="focus" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Gaussian Blur</span>
+                </button>
+              </div>
+            </section>
           </div>
 
           <p id="mobileToolsEmpty" class="mobile-tools-empty" aria-live="polite" hidden>
@@ -3072,6 +3094,28 @@
           </div>
         </section>
 
+        <section id="rasterGaussianBlurSection">
+          <h2>Blur</h2>
+          <button
+            id="desktopGaussianBlurOpen"
+            class="wide gaussian-blur-open-button"
+            type="button"
+            aria-haspopup="dialog"
+            aria-controls="rasterGaussianBlurDialog"
+          >
+            <span class="gaussian-blur-open-icon" aria-hidden="true">
+              <i data-lucide="focus"></i>
+            </span>
+            <span>
+              <strong>Gaussian Blur</strong>
+              <small>Anteprima · Applica o Annulla</small>
+            </span>
+          </button>
+          <p class="result">
+            Effetto distruttivo RGBA16F: Applica riscrive i pixel e crea un solo passo Undo.
+          </p>
+        </section>
+
         <section>
           <h2>Layer</h2>
 
@@ -3252,7 +3296,7 @@
               <div data-memory-row><dt>Livelli fusi · RGBA16F mip 0</dt><dd id="gpuMemoryLayerComposite">—</dd></div>
               <div data-memory-row><dt>Grain M1</dt><dd id="gpuMemoryGrain">—</dd></div>
               <div id="gpuMemoryVectorTextRow" data-memory-row hidden><dt>Cache vettoriali · RGBA16F / matte R16F</dt><dd id="gpuMemoryVectorText">—</dd></div>
-              <div id="gpuMemoryRasterImageRow" data-memory-row hidden><dt>Trasforma raster · scratch e mipmap</dt><dd id="gpuMemoryRasterImage">—</dd></div>
+              <div id="gpuMemoryRasterImageRow" data-memory-row hidden><dt>Operazioni raster · immagini, Trasforma e Blur</dt><dd id="gpuMemoryRasterImage">—</dd></div>
 
               <div data-memory-row><dt>Shape 2K</dt><dd id="gpuMemoryShape">—</dd></div>
               <div data-memory-row><dt>Buffer Paint</dt><dd id="gpuMemoryPaintBuffers">—</dd></div>
@@ -3299,6 +3343,69 @@
         </aside>
       </main>
     </div>
+
+    <dialog
+      id="rasterGaussianBlurDialog"
+      class="gaussian-blur-dialog"
+      aria-labelledby="rasterGaussianBlurTitle"
+      aria-describedby="rasterGaussianBlurDescription"
+    >
+      <div class="gaussian-blur-dialog-panel">
+        <header class="gaussian-blur-dialog-header">
+          <span class="gaussian-blur-dialog-icon" aria-hidden="true">
+            <i data-lucide="focus"></i>
+          </span>
+          <div>
+            <h2 id="rasterGaussianBlurTitle">Gaussian Blur</h2>
+            <span class="gaussian-blur-precision">16-bit · RGBA16F</span>
+          </div>
+          <button
+            id="rasterGaussianBlurClose"
+            class="gaussian-blur-dialog-close"
+            type="button"
+            aria-label="Annulla Gaussian Blur"
+            title="Annulla"
+          >×</button>
+        </header>
+
+        <div class="gaussian-blur-dialog-body">
+          <label class="gaussian-blur-radius-control" for="rasterGaussianBlurRadius">
+            <span>
+              Raggio
+              <output
+                id="rasterGaussianBlurRadiusOut"
+                for="rasterGaussianBlurRadius"
+              >5 px</output>
+            </span>
+            <input
+              id="rasterGaussianBlurRadius"
+              type="range"
+              min="1"
+              max="64"
+              step="1"
+              value="5"
+            />
+          </label>
+
+          <p id="rasterGaussianBlurDescription" class="gaussian-blur-warning">
+            L’anteprima modifica temporaneamente il raster. Annulla ripristina i pixel originali;
+            Applica conferma il risultato nel livello.
+          </p>
+          <p
+            id="rasterGaussianBlurStatus"
+            class="gaussian-blur-dialog-status"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >Regola il raggio e controlla l’anteprima sul canvas.</p>
+        </div>
+
+        <footer class="gaussian-blur-dialog-actions">
+          <button id="rasterGaussianBlurCancel" type="button">Annulla</button>
+          <button id="rasterGaussianBlurApply" class="primary" type="button">Applica</button>
+        </footer>
+      </div>
+    </dialog>
 
     <div
       id="layerLoadingOverlay"
