@@ -38,28 +38,19 @@ export const HISTORY_DESKTOP_CHECKPOINT_ALLOWANCE = 16;
  * il consolidamento era bloccato — era meno profondita' di Undo.
  *
  * A 200 il travaso, che parte al 70% cioe' a 140 MiB, ha spazio per agire
- * prima: sposta i checkpoint lontani in RAM compressa, il totale rientra, e
- * l'eviction non ha piu' motivo di distruggere niente.
+ * prima: pubblica su storage locale i payload lontani e ne libera la copia
+ * residente, cosi' l'eviction non ha piu' motivo di distruggere passi.
  */
 export const HISTORY_MOBILE_MAXIMUM_BYTES = 200 * 1024 * 1024;
 export const HISTORY_DESKTOP_MAXIMUM_BYTES = 512 * 1024 * 1024;
 export const HISTORY_MINIMUM_BUDGET_BYTES = 16 * 1024 * 1024;
 
 /**
- * Tetto secondario sulla profondita' di Undo. Il budget in byte resta
- * l'autorita': un conteggio di azioni da solo e' un pessimo metro del costo
- * (cento tocchi e cento riempimenti a pieno canvas differiscono di mille
- * volte). Questo serve a rendere il comportamento prevedibile e a impedire che
- * una sessione lunga trattenga centinaia di passi che nessuno usera'.
- */
-export const HISTORY_MAXIMUM_UNDO_DEPTH = 100;
-
-/**
- * Travaso della cronologia lontana dalla GPU alla RAM compressa.
+ * Travaso della cronologia lontana dalla memoria residente allo storage locale.
  *
- * L'eviction butta via; questo **sposta**. Un checkpoint travasato resta
- * annullabile: costa una decompressione quando il replay lo raggiunge, e nulla
- * finche' non lo raggiunge.
+ * L'eviction butta via; questo **sposta**. Un payload travasato resta
+ * annullabile: costa una lettura/reidratazione quando il replay lo raggiunge,
+ * e non occupa RAM/GPU finche' non lo raggiunge.
  *
  * Una soglia sola: oltre `HIGH` si travasa **tutto** quello che si puo'.
  *
@@ -602,28 +593,6 @@ export function historyBaseBudgetBytes(options: {
 }
 
 /**
- * Il tetto di profondita' non taglia mai sotto `maximumDepth` passi: libera
- * soltanto cio' che e' gia' piu' vecchio del tetto **e** coperto da un
- * checkpoint full. Se un tale checkpoint non esiste non fa nulla e resta il
- * budget in byte a fare da rete.
- */
-export function planHistoryDepthEviction(options: {
-  cursor: number;
-  floorCursor: number;
-  maximumDepth?: number;
-}): { required: boolean; newestRetainedActionIndex: number | null } {
-  const maximumDepth = Math.max(1, Math.floor(options.maximumDepth ?? HISTORY_MAXIMUM_UNDO_DEPTH));
-  const cursor = Math.max(0, Math.floor(options.cursor));
-  const floorCursor = Math.max(0, Math.floor(options.floorCursor));
-  if (cursor - floorCursor <= maximumDepth) {
-    return { required: false, newestRetainedActionIndex: null };
-  }
-  // Il boundary e' un indice azione: l'eviction porta il pavimento a
-  // `indice + 1`, quindi il piu' recente ammesso e' `cursor - maximumDepth - 1`.
-  return { required: true, newestRetainedActionIndex: cursor - maximumDepth - 1 };
-}
-
-/**
  * Builds a byte budget from an explicit amount of memory made available to
  * History. It intentionally never accepts an action count as a proxy for cost.
  */
@@ -663,8 +632,8 @@ export function historyBudgetPressure(
  * full. Sforare faceva produrre fotografie piu' grosse piu' spesso, il che
  * faceva sforare di piu'. Adesso la pressione fa l'unica cosa sensata: dice no.
  *
- * `mandatory` esiste perche' alcuni checkpoint non sono acceleratori ma
- * boundary richiesti dal tetto di profondita': quelli devono passare comunque.
+ * `mandatory` esiste perche' alcuni full non sono acceleratori ma basi
+ * necessarie alla correttezza della catena: quelli devono passare comunque.
  */
 export function admitHistoryCheckpoint(options: {
   currentBytes: number;
@@ -697,6 +666,8 @@ export function admitHistoryCheckpoint(options: {
  */
 export function selectCheckpointRepresentation(options: {
   fullRequired: boolean;
+  /** A byte-bounded replay chain may rebase only to a full, but can skip it. */
+  rebaseRequired?: boolean;
   rebasePreferred: boolean;
   fullValid: boolean;
   fullAdmitted: boolean;
@@ -705,7 +676,7 @@ export function selectCheckpointRepresentation(options: {
 }): "full" | "delta" | "none" {
   const full = options.fullValid && options.fullAdmitted ? "full" : null;
   const delta = options.deltaValid && options.deltaAdmitted ? "delta" : null;
-  if (options.fullRequired) return full ?? "none";
+  if (options.fullRequired || options.rebaseRequired) return full ?? "none";
   return (options.rebasePreferred ? full ?? delta : delta ?? full) ?? "none";
 }
 

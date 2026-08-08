@@ -5,7 +5,6 @@ import {
   HISTORY_CHECKPOINT_MAX_REPLAY_BATCHES,
   HISTORY_DESKTOP_CHECKPOINT_ALLOWANCE,
   HISTORY_DESKTOP_MAXIMUM_BYTES,
-  HISTORY_MAXIMUM_UNDO_DEPTH,
   HISTORY_MINIMUM_BUDGET_BYTES,
   HISTORY_MOBILE_CHECKPOINT_ALLOWANCE,
   HISTORY_MOBILE_MAXIMUM_BYTES,
@@ -27,11 +26,16 @@ import {
   planHistoryBudgetEviction,
   planHistoryCheckpoint,
   planHistoryBudgetRecovery,
-  planHistoryDepthEviction,
   planHistorySpill,
   processHistoryMaintenanceChunks,
   selectCheckpointRepresentation,
 } from "../src/history-retention-core.ts";
+import {
+  adaptiveHistoryStorageKeepHotActions,
+  canonicalHistoryJson,
+  historyDiskBudget,
+  planHistoryStorageSegment,
+} from "../src/history-storage-core.ts";
 
 assert.equal(
   HISTORY_RETENTION_STRATEGY,
@@ -45,6 +49,124 @@ assert.equal(
 const MiB = 1024 * 1024;
 const checkpointBytesFor = (documentSize, format) =>
   documentSize * documentSize * (format === "rgba16float" ? 8 : 4);
+
+// --- Segmenti locali globali e budget disco --------------------------------
+// Gli ID azione possono avere buchi e le azioni CPU-only possono stare fra due
+// payload: il range e' del cursore globale, mai un journal parallelo per layer.
+{
+  const plan = planHistoryStorageSegment({
+    currentResidentBytes: 220 * MiB,
+    highWaterBytes: 140 * MiB,
+    targetSegmentBytes: 64 * MiB,
+    maximumSegmentBytes: 128 * MiB,
+    journalLength: 40,
+    keepHotActions: 8,
+    actions: [
+      { actionId: 7, cursor: 2, payloadBytes: 40 * MiB, payloadCount: 2, alreadyStored: false, pinned: false },
+      // cursor 3 e' un'azione vettoriale CPU-only e resta implicitamente nel range.
+      { actionId: 11, cursor: 4, payloadBytes: 30 * MiB, payloadCount: 1, alreadyStored: false, pinned: false },
+      { actionId: 19, cursor: 35, payloadBytes: 90 * MiB, payloadCount: 1, alreadyStored: false, pinned: false },
+    ],
+  });
+  assert.deepEqual(plan, {
+    required: true,
+    actionIds: [7, 11],
+    startCursor: 2,
+    endCursor: 5,
+    rawBytes: 70 * MiB,
+    payloadCount: 3,
+    oversize: false,
+    reason: "segment",
+  });
+  assert.equal(
+    planHistoryStorageSegment({
+      currentResidentBytes: 140 * MiB,
+      highWaterBytes: 140 * MiB,
+      targetSegmentBytes: 64 * MiB,
+      maximumSegmentBytes: 128 * MiB,
+      journalLength: 10_000,
+      actions: [],
+    }).reason,
+    "below-high-water",
+    "il disco non deve ricevere scritture per gesto sotto la soglia",
+  );
+  const oversize = planHistoryStorageSegment({
+    currentResidentBytes: 300 * MiB,
+    highWaterBytes: 140 * MiB,
+    targetSegmentBytes: 32 * MiB,
+    maximumSegmentBytes: 64 * MiB,
+    journalLength: 100,
+    keepHotActions: 2,
+    actions: [
+      { actionId: 50, cursor: 10, payloadBytes: 96 * MiB, payloadCount: 1, alreadyStored: false, pinned: false },
+      { actionId: 51, cursor: 11, payloadBytes: 2 * MiB, payloadCount: 1, alreadyStored: false, pinned: false },
+    ],
+  });
+  assert.deepEqual(oversize.actionIds, [50], "un'azione oversize non va spezzata");
+  assert.equal(oversize.oversize, true);
+
+  const recentLargeActions = Array.from({ length: 7 }, (_, cursor) => ({
+    cursor,
+    payloadBytes: 32 * MiB,
+  }));
+  assert.equal(
+    adaptiveHistoryStorageKeepHotActions({
+      currentResidentBytes: 224 * MiB,
+      highWaterBytes: 180 * MiB,
+      hotPayloadBudgetBytes: 50 * MiB,
+      journalLength: 7,
+      actions: recentLargeActions,
+    }),
+    1,
+    "sette checkpoint grandi non devono essere tutti protetti dalla finestra fissa di 16 azioni",
+  );
+  assert.equal(
+    adaptiveHistoryStorageKeepHotActions({
+      currentResidentBytes: 160 * MiB,
+      highWaterBytes: 180 * MiB,
+      hotPayloadBudgetBytes: 50 * MiB,
+      journalLength: 40,
+      actions: recentLargeActions,
+    }),
+    16,
+    "sotto pressione nulla resta valida la normale finestra calda di 16 azioni",
+  );
+
+  const budget = historyDiskBudget({
+    quota: 10 * 1024 * MiB,
+    usage: 2 * 1024 * MiB,
+    committedHistoryBytes: 100 * MiB,
+    maximumStoredSegmentBytes: 128 * MiB,
+    mobile: false,
+  });
+  assert(budget.hardBytes >= budget.targetBytes && budget.targetBytes >= 0);
+  assert(
+    historyDiskBudget({
+      quota: 0,
+      usage: 0,
+      committedHistoryBytes: 0,
+      maximumStoredSegmentBytes: 64 * MiB,
+      mobile: true,
+    }).hardBytes > 0,
+    "una quota non riportata deve tentare un budget prudente e affidarsi a QuotaExceeded",
+  );
+  for (const malformed of [Number.NaN, -1, Number.POSITIVE_INFINITY]) {
+    const safe = historyDiskBudget({
+      quota: malformed,
+      usage: malformed,
+      committedHistoryBytes: malformed,
+      maximumStoredSegmentBytes: malformed,
+      mobile: true,
+    });
+    assert.equal(safe.hardBytes, 0);
+    assert.equal(safe.targetBytes, 0);
+  }
+  assert.equal(
+    canonicalHistoryJson({ z: 1, a: { y: 2, x: 3 } }),
+    canonicalHistoryJson({ a: { x: 3, y: 2 }, z: 1 }),
+    "il digest del descriptor non deve dipendere dall'ordine di inserimento delle chiavi",
+  );
+}
 
 assert.equal(checkpointBytesFor(2048, "rgba8unorm"), 16 * MiB);
 assert.equal(checkpointBytesFor(2048, "rgba16float"), 32 * MiB);
@@ -115,38 +237,29 @@ assert.ok(
   "il budget mobile deve restare inferiore a quello desktop",
 );
 
-// --- Tetto di profondita' ----------------------------------------------------
-assert.equal(HISTORY_MAXIMUM_UNDO_DEPTH, 100);
-
-for (const [cursor, floorCursor] of [[0, 0], [50, 0], [100, 0], [250, 150], [1000, 900]]) {
-  assert.deepEqual(
-    planHistoryDepthEviction({ cursor, floorCursor }),
-    { required: false, newestRetainedActionIndex: null },
-    `il tetto di profondita' non deve scattare entro ${HISTORY_MAXIMUM_UNDO_DEPTH} passi`,
-  );
-}
-
-for (const [cursor, floorCursor] of [[101, 0], [223, 0], [1000, 0], [1000, 500]]) {
-  const plan = planHistoryDepthEviction({ cursor, floorCursor });
-  assert.equal(plan.required, true, `il tetto deve scattare oltre i passi promessi (${cursor})`);
-  // L'eviction porta il pavimento a `indice + 1`: la profondita' residua deve
-  // essere esattamente il tetto, mai meno. Se questa relazione si rompe il
-  // tetto diventa una riduzione della profondita' invece di un limite.
-  const residualDepth = cursor - (plan.newestRetainedActionIndex + 1);
-  assert.equal(
-    residualDepth,
-    HISTORY_MAXIMUM_UNDO_DEPTH,
-    `il tetto di profondita' non deve tagliare sotto ${HISTORY_MAXIMUM_UNDO_DEPTH} passi`,
-  );
-  assert.ok(
-    plan.newestRetainedActionIndex >= 0,
-    "il boundary del tetto deve restare un indice azione valido",
-  );
-}
-
-const customDepth = planHistoryDepthEviction({ cursor: 40, floorCursor: 0, maximumDepth: 10 });
-assert.equal(customDepth.required, true);
-assert.equal(40 - (customDepth.newestRetainedActionIndex + 1), 10);
+// --- Nessun tetto numerico sulla profondita' --------------------------------
+// Diecimila azioni leggere non sono una ragione per perderne una sola: finche'
+// i byte restano sotto budget, il pianificatore non deve chiedere eviction.
+assert.deepEqual(
+  planHistoryBudgetEviction(
+    { ...emptyHistoryMemoryLedger(), gpuAllocatedBytes: 64 * MiB },
+    createHistoryBudget(192 * MiB),
+    [{
+      cursor: 10_000,
+      retainedBytes: 32 * MiB,
+      baselineBytes: 16 * MiB,
+      exactLayerCount: 1,
+      liveLayerCount: 1,
+    }],
+  ),
+  {
+    required: false,
+    boundaryCursor: null,
+    projectedBytes: 64 * MiB,
+    reason: "within-budget",
+  },
+  "il conteggio delle azioni non deve accorciare una cronologia entro budget",
+);
 
 // --- La classe dispositivo non va risonata dal viewport -----------------------
 // Il difetto misurato il 06/08/2026: con `matchMedia("(max-width: 700px)")` lo
@@ -154,6 +267,22 @@ assert.equal(40 - (customDepth.newestRetainedActionIndex + 1), 10);
 const maintenanceSource = readFileSync(
   new URL("../src/history-maintenance-runtime.ts", import.meta.url),
   "utf8",
+);
+const retentionCoreSource = readFileSync(
+  new URL("../src/history-retention-core.ts", import.meta.url),
+  "utf8",
+);
+const removedDepthCap =
+  /HISTORY_MAXIMUM_UNDO_DEPTH|planHistoryDepthEviction|enforceHistoryDepthCap|depthEvictions|maximumUndoDepth/;
+assert.doesNotMatch(
+  retentionCoreSource,
+  removedDepthCap,
+  "la politica pura non deve piu' contenere un tetto numerico di Undo",
+);
+assert.doesNotMatch(
+  maintenanceSource,
+  removedDepthCap,
+  "il runtime non deve piu' accorciare la cronologia in base al numero di azioni",
 );
 assert.doesNotMatch(
   maintenanceSource,
@@ -165,8 +294,6 @@ assert.match(
   /MOBILE_DEVICE_CLASS/,
   "il budget History deve usare la classe dispositivo condivisa",
 );
-// Scoped e ancorata a inizio riga: una versione commentata della chiamata non
-// deve poter soddisfare l'asserzione.
 const enforceBudgetStart = maintenanceSource.indexOf("function enforceHistoryBudget");
 const enforceBudgetEnd = maintenanceSource.indexOf("export function historyFloorCursor");
 assert.ok(
@@ -174,10 +301,14 @@ assert.ok(
   "marcatori di enforceHistoryBudget assenti",
 );
 const enforceBudgetBody = maintenanceSource.slice(enforceBudgetStart, enforceBudgetEnd);
-assert.match(
-  enforceBudgetBody,
-  /^ {2}enforceHistoryDepthCap\(engine\);$/m,
-  "il tetto di profondita' deve essere applicato da enforceHistoryBudget",
+const withinBudgetGate = enforceBudgetBody.indexOf(
+  "if (historyMemoryTotalBytes(ledger) <= budget.hardBytes)",
+);
+assert.ok(withinBudgetGate >= 0, "gate entro-budget assente");
+assert.doesNotMatch(
+  enforceBudgetBody.slice(0, withinBudgetGate),
+  /historyCursor|floorCursor|historyActions|evictHistoryBelowBaselines|latestFullCheckpointByLayer/,
+  "prima del gate in byte non deve esistere alcuna decisione basata sulla profondita'",
 );
 assert.match(
   enforceBudgetBody,
@@ -190,58 +321,25 @@ assert.match(
   "il budget deve marcare il blocco in base all'esito reale dell'eviction",
 );
 
-// I due contatori devono restare distinti: se l'incremento vivesse dentro
-// l'eviction condivisa, un taglio dovuto al tetto di profondita' verrebbe
-// riportato come pressione di memoria e la telemetria mentirebbe.
+// L'eviction condivisa non si attribuisce la causa da sola: e' il solo gate del
+// budget, dopo avere verificato il risultato, a incrementare la telemetria.
 const evictStart = maintenanceSource.indexOf("function evictHistoryBelowBaselines");
-const evictEnd = maintenanceSource.indexOf("function enforceHistoryDepthCap");
+const evictEnd = maintenanceSource.indexOf("function enforceHistoryBudget");
 assert.ok(evictStart >= 0 && evictEnd > evictStart, "marcatori di evictHistoryBelowBaselines assenti");
 assert.doesNotMatch(
   maintenanceSource.slice(evictStart, evictEnd),
-  /state\.(budgetEvictions|depthEvictions) \+= 1/,
-  "l'eviction condivisa non deve attribuirsi la causa: la contano i due gate",
-);
-const depthCapBody = maintenanceSource.slice(
-  evictEnd,
-  maintenanceSource.indexOf("function enforceHistoryBudget"),
-);
-assert.match(
-  depthCapBody,
-  /state\.depthEvictions \+= 1/,
-  "il gate del tetto deve contare le proprie eviction",
-);
-assert.doesNotMatch(
-  depthCapBody,
   /state\.budgetEvictions \+= 1/,
-  "il tetto di profondita' non deve essere riportato come pressione di memoria",
-);
-assert.match(
-  depthCapBody,
-  /latestFullCheckpointByLayer\(engine, plan\.newestRetainedActionIndex\)/,
-  "il tetto deve limitare il boundary ai passi promessi",
+  "l'eviction condivisa non deve attribuirsi la causa prima del gate del budget",
 );
 
-// Il tetto libera soltanto fino a un checkpoint full. Se la cattura non ne
-// forzasse uno quando il tetto e' gia' superato, il gate resterebbe inerte:
-// misurato, senza questo la profondita' restava a 196 passi invece di ~100.
 const captureStart = maintenanceSource.indexOf("async function capturePeriodicCheckpoint");
 const captureEnd = maintenanceSource.indexOf("export function discardStalePeriodicCheckpoints");
 assert.ok(captureStart >= 0 && captureEnd > captureStart, "marcatori di capturePeriodicCheckpoint assenti");
 const captureBody = maintenanceSource.slice(captureStart, captureEnd);
 assert.match(
   captureBody,
-  /const depthCapNeedsBoundary = planHistoryDepthEviction\(\{/,
-  "la cattura deve sapere se il tetto di profondita' attende un boundary",
-);
-// Il boundary del tetto di profondita' e' ora una condizione di `fullRequired`,
-// non di `forceFull`: e' la distinzione che permette al full **periodico** di
-// ripiegare su un delta quando non c'e' spazio, senza che quello obbligatorio
-// possa fare altrettanto. Un delta non puo' sostituire un boundary: il tetto
-// libera solo fino a un full, e sopra un delta l'eviction resterebbe inerte.
-assert.match(
-  captureBody,
-  /^ {4}\|\| depthCapNeedsBoundary;$/m,
-  "il boundary del tetto di profondita' deve rendere il full obbligatorio",
+  /const fullRequired = !current\s*\n\s*\|\| delta\.requiresFull\s*\n\s*\|\| delta\.reset;/,
+  "un full deve essere obbligatorio soltanto per la correttezza della catena",
 );
 assert.match(
   captureBody,
@@ -582,8 +680,8 @@ for (const actionCount of [10, 100, 500, 1000]) {
   assert(runtime.includes("historyMemoryTotalBytes(ledger) <= budget.hardBytes"));
   assert(runtime.includes("!engine.activeRasterLayerMetadataHistoryEdit"));
   assert(runtime.includes("!engine.activeRasterTransformSession"));
-  assert(runtime.includes("accountSelectionSnapshot(state, action.selectionBefore)"));
-  assert(runtime.includes("accountSelectionSnapshot(state, action.selectionAfter)"));
+  assert(runtime.includes("accountSelectionSnapshot(engine, state, action.selectionBefore)"));
+  assert(runtime.includes("accountSelectionSnapshot(engine, state, action.selectionAfter)"));
   assert(runtime.includes("state.accounting.gpuReservedBytes = gpuStorage.usedReservedBytes"));
   assert(runtime.includes("state.accounting.gpuAllocatedBytes = gpuStorage.allocatedBytes"));
   // La decisione fra incrementale e ricostruzione non vive piu' qui: e' stata
@@ -1117,7 +1215,7 @@ console.log("History accounting append-only decision verified.");
       mandatory: true,
     }).admitted,
     true,
-    "i boundary richiesti dal tetto di profondita' non sono facoltativi",
+    "le basi full richieste dalla correttezza non sono facoltative",
   );
 }
 
@@ -1195,6 +1293,18 @@ console.log("History budget recovery and checkpoint admission verified.");
   );
   assert.equal(scelta({ fullRequired: true }), "full");
 
+  // Anche il tetto della catena impone un rebase, ma resta una cache: se il
+  // full non entra si salta la cattura invece di ammetterlo oltre budget o di
+  // allungare ancora la catena con un delta.
+  assert.equal(
+    scelta({ rebaseRequired: true, rebasePreferred: false }),
+    "full",
+  );
+  assert.equal(
+    scelta({ rebaseRequired: true, fullAdmitted: false, deltaAdmitted: true }),
+    "none",
+  );
+
   // Nessuno dei due entra: si rinuncia, e la coda crescera'. Va detto, non
   // mascherato scattando qualcosa che non ci sta.
   assert.equal(
@@ -1241,3 +1351,280 @@ console.log("Checkpoint representation selection verified.");
 }
 
 console.log("History failure surfacing verified.");
+
+// --- Input rapidi e pavimento visibile -------------------------------------
+// Durante un replay getHistoryState espone canUndo/canRedo=false perche' il
+// motore e' occupato. Quello stato non e' un verdetto sul comando successivo:
+// filtrarlo nel keydown o rendere nativo-disabled il pulsante fa sparire gli
+// input proprio mentre la coda dovrebbe conservarli. Al pavimento, viceversa,
+// il comando deve arrivare a runHistoryOperation per mostrarne il motivo.
+{
+  const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  const controls = main.slice(
+    main.indexOf("function updateHistoryControls(): void"),
+    main.indexOf("function updateGrainControlAvailability("),
+  );
+  assert(
+    controls.includes("const replayBusy = historyUiBusy || historyState.busy;"),
+    "i controlli devono distinguere un replay accodabile da un blocco reale",
+  );
+  assert(
+    controls.includes("undoStrokeButton.disabled = requestLocked;")
+      && controls.includes("redoStrokeButton.disabled = requestLocked;"),
+    "i pulsanti desktop non devono diventare nativo-disabled durante il replay o al pavimento",
+  );
+  assert(
+    controls.includes("[undoStrokeButton, undoBlocked, undoReason")
+      && controls.includes("[redoStrokeButton, redoBlocked, redoReason"),
+    "anche i pulsanti desktop devono esporre aria-disabled e il motivo del blocco",
+  );
+  assert(
+    !controls.includes("locked || !historyState.canUndo")
+      && !controls.includes("locked || !historyState.canRedo"),
+    "canUndo/canRedo temporaneamente falsi non devono disabilitare fisicamente la coda",
+  );
+
+  const shortcutStart = main.indexOf("// `event.repeat` non viene piu' scartato");
+  const shortcut = main.slice(
+    shortcutStart,
+    main.indexOf("canvas.addEventListener(", shortcutStart),
+  );
+  assert(shortcutStart >= 0, "blocco scorciatoia Undo/Redo non trovato");
+  assert(
+    !shortcut.includes("const available =")
+      && !shortcut.includes("!historyState.canUndo")
+      && !shortcut.includes("!historyState.canRedo"),
+    "la scorciatoia non deve scartare input mentre il replay espone canUndo/canRedo=false",
+  );
+  assert(
+    shortcut.includes("if (historyRequestLocked())")
+      && shortcut.includes("requestHistoryOperation(operation);"),
+    "la scorciatoia deve filtrare solo i lock reali e poi affidarsi alla coda",
+  );
+  assert(
+    shortcut.indexOf("event.preventDefault();")
+      < shortcut.indexOf("if (historyRequestLocked())"),
+    "anche un Undo bloccato deve restare nell'app e mostrare il proprio motivo",
+  );
+}
+
+console.log("History rapid-input queue and retention-floor feedback verified.");
+
+// --- Storage locale: ordine di commit, hydrate preflight e fallback ---------
+// Queste sono cuciture di sicurezza: i test puri non vedono l'ordine delle
+// mutazioni runtime, quindi una release spostata accidentalmente sopra il CAS
+// renderebbe verde il planner e perderebbe comunque l'unica copia dei pixel.
+{
+  const coordinator = readFileSync(
+    new URL("../src/history-storage-coordinator.ts", import.meta.url),
+    "utf8",
+  );
+  const historyRuntime = readFileSync(
+    new URL("../src/engine-history-runtime.ts", import.meta.url),
+    "utf8",
+  );
+  const maintenance = readFileSync(
+    new URL("../src/history-maintenance-runtime.ts", import.meta.url),
+    "utf8",
+  );
+  const idb = readFileSync(
+    new URL("../src/history-storage-idb.ts", import.meta.url),
+    "utf8",
+  );
+  const opfs = readFileSync(
+    new URL("../src/history-storage-opfs-worker.ts", import.meta.url),
+    "utf8",
+  );
+  const opfsClient = readFileSync(
+    new URL("../src/history-storage-opfs-client.ts", import.meta.url),
+    "utf8",
+  );
+  const replayPlanner = readFileSync(
+    new URL("../src/history-replay-plan.ts", import.meta.url),
+    "utf8",
+  );
+  const rasterImageRuntime = readFileSync(
+    new URL("../src/engine-raster-image-runtime.ts", import.meta.url),
+    "utf8",
+  );
+  const fillRuntime = readFileSync(
+    new URL("../src/engine-fill-runtime.ts", import.meta.url),
+    "utf8",
+  );
+  const gpuStorage = readFileSync(
+    new URL("../src/gpu-history-storage.ts", import.meta.url),
+    "utf8",
+  );
+
+  const spill = coordinator.slice(
+    coordinator.indexOf("private async spillOneSegment"),
+    coordinator.indexOf("private async serializeGpuPayload"),
+  );
+  const manifestCommit = spill.indexOf("await this.catalog.commitSegmentCAS(");
+  const ownershipCommit = spill.indexOf("gpuDemotion.commitNoThrow();");
+  assert(manifestCommit >= 0 && ownershipCommit > manifestCommit,
+    "la release residente deve avvenire soltanto dopo il manifest durable");
+  assert(
+    spill.indexOf("prepareDemoteMany(gpuSlices)") < manifestCommit,
+    "l'intero set GPU va prevalidato prima del CAS, senza release incrementali",
+  );
+  const postManifest = spill.slice(manifestCommit);
+  assert(
+    postManifest.includes("demotionStillSafe")
+      && postManifest.indexOf("if (demotionStillSafe)")
+        < postManifest.indexOf("gpuDemotion.commitNoThrow();"),
+    "un gesto foreground durante il CAS deve lasciare residenti i payload prevalidati",
+  );
+  assert.match(
+    maintenance,
+    /historyCursor === engine\.historyActions\.length;[\s\S]*?historyLocalStorage\.spillIfNeeded/,
+    "lo spill v1 deve partire soltanto al journal end",
+  );
+  assert(
+    maintenance.includes("historyMaintenanceEngineIdle(engine, true)"),
+    "lo spill non deve auto-annullarsi quando pubblica busy=spilling",
+  );
+
+  const move = historyRuntime.slice(
+    historyRuntime.indexOf("export async function moveHistoryCursor"),
+    historyRuntime.indexOf("export async function rebuildActiveLayerFromHistory"),
+  );
+  assert(
+    move.indexOf("await engine.historyLocalStorage.prepareHistoryStep(delta);")
+      < move.indexOf("engine.historyCursor = nextCursor;"),
+    "target e rollback devono essere residenti prima che il cursore cambi",
+  );
+  assert(move.includes("cancelHistoryMaintenance(engine);"));
+  assert(coordinator.includes("planRasterHistoryReplay({"));
+  assert(coordinator.includes("periodicCheckpointChainForReplay("));
+  assert(replayPlanner.includes("selectLayerReplayAfterCheckpoint("));
+  assert(coordinator.includes("addRasterReplayRequirements("));
+  assert(coordinator.includes("[previousCursor, nextCursor]"));
+  const prepare = coordinator.slice(
+    coordinator.indexOf("async prepareHistoryStep"),
+    coordinator.indexOf("private async initializeSession"),
+  );
+  assert(
+    prepare.indexOf("await this.waitForForegroundStorageAccess();")
+      < prepare.indexOf("this.payloadsRequiredForStep(delta)"),
+    "Undo deve attendere lo spill e ricalcolare poi le dipendenze residenti",
+  );
+  assert(
+    coordinator.includes("periodicHistoryCheckpoints(this.engine)")
+      && coordinator.includes("prepareRasterReplayAtCursor")
+      && maintenance.includes("historyColdSeedResidentBytes(checkpoint.seed)")
+      && maintenance.includes("rebaseRequiredForReplayBudget")
+      && maintenance.includes("currentReplayChainBytes + bytesOf(deltaMask)"),
+    "i checkpoint periodici devono poter essere spillati e preidratati con accounting residente",
+  );
+  const fill = fillRuntime.slice(
+    fillRuntime.indexOf("export async function fillAtClientPoint"),
+    fillRuntime.indexOf("export const", fillRuntime.indexOf("export async function fillAtClientPoint") + 1),
+  );
+  assert(
+    fill.indexOf("await engine.historyLocalStorage.prepareRasterReplayAtCursor(")
+      < fill.indexOf("renderer.encodeLiveCommit("),
+    "il Fill deve preidratare il piano di rollback prima di mutare i pixel",
+  );
+  assert(coordinator.includes("this.engine.selectionHistoryClipBindGroups.clear();"));
+  assert(coordinator.includes("Spazio locale prudente esaurito"));
+  assert(coordinator.includes("this.consecutiveSpillFailures >= 3"));
+  assert(coordinator.includes("failureSignature === this.lastSpillFailureSignature"));
+  assert(coordinator.includes("trimHydratedWorkingSetAfterStep"));
+  assert(historyRuntime.includes("trimHydratedWorkingSetAfterStep(delta)"));
+  assert(!coordinator.includes("localStorage."), "i payload History non vanno in localStorage");
+
+  const serializeGpu = coordinator.slice(
+    coordinator.indexOf("private async serializeGpuPayload"),
+    coordinator.indexOf("private async serializeColdPayload"),
+  );
+  assert(
+    serializeGpu.indexOf("const rawBytes = raw.byteLength;")
+      < serializeGpu.indexOf("await writer.append(bytes)")
+      && serializeGpu.indexOf("const rawHash32 = historyHash32(raw);")
+        < serializeGpu.indexOf("await writer.append(bytes)"),
+    "metadata e hash GPU vanno catturati prima che OPFS detach il buffer",
+  );
+  const serializeCold = coordinator.slice(
+    coordinator.indexOf("private async serializeColdPayload"),
+    coordinator.indexOf("private async beginCandidate"),
+  );
+  assert(
+    serializeCold.includes("raw.slice()"),
+    "il fallback raw deve sopravvivere al transfer del worker di compressione",
+  );
+  assert(
+    coordinator.includes("await opfs.deleteSegment(sessionId, segmentId);")
+      && coordinator.includes("removeSegmentCAS({"),
+    "candidati OPFS abortiti e segmenti morti devono essere reclamati",
+  );
+  assert(
+    coordinator.includes("optionalLockManager()")
+      && coordinator.includes("ifAvailable: true"),
+    "il GC cross-tab deve cancellare soltanto sotto Web Lock esclusivo",
+  );
+  assert(
+    !coordinator.includes(
+      'addGpu(batch.selectionMask.gpuSlice, "selection-mask-gpu", batch.actionId, batch.layerId)',
+    )
+      && !coordinator.includes(
+        'addGpu(snapshot.gpuSlice, "selection-mask-gpu", action.id, action.layerId)',
+      ),
+    "le maschere selezione condivise non devono ereditare un layerId instabile",
+  );
+  assert(
+    maintenance.includes("isHistoryColdSeedHandle(value as LayerColdStorageResources)")
+      && maintenance.includes("engine.historyGpuStorage.contains(value as GpuHistorySlice)"),
+    "l'estimatore strutturale deve trattare gli handle stored-only come opachi",
+  );
+  assert(
+    rasterImageRuntime.includes("historyColdSeedResidentBytes(seed)"),
+    "il budget import deve contare soltanto i seed History residenti",
+  );
+  assert(
+    gpuStorage.includes("sliceById(id: number)")
+      && !coordinator.includes("private findGpuSlice"),
+    "la telemetria lunga deve usare lookup GPU O(1), non riscansioni del journal",
+  );
+
+  assert(idb.includes('const MANIFEST_STORE = "manifestHeads"'));
+  assert(idb.includes('const CHUNK_STORE = "idbChunks"'));
+  assert(idb.includes("expectedManifestGeneration"));
+  assert(idb.includes('durability: "strict"'));
+  assert(idb.includes("[SESSION_STORE, MANIFEST_STORE, SEGMENT_STORE]"));
+  assert(idb.includes("sessionStore.put({ ...session, opfsMayExist: true })"));
+  assert(idb.includes("async removeSegmentCAS(options:"));
+  assert(idb.includes("lockProtected: record.lockProtected ?? false"));
+  assert(idb.includes("index.openKeyCursor(range)"));
+  assert(idb.includes("store.delete(cursor.primaryKey)"));
+  assert(!idb.includes("cursor.delete()"));
+  assert(idb.includes("Older Safari versions reject the optional third argument"));
+  assert(opfs.includes("createSyncAccessHandle"));
+  assert(opfs.includes("HISTORY_LOCAL_STORAGE_COMMIT_MAGIC"));
+  assert(opfs.includes("writeAll("), "le write parziali OPFS devono avanzare in ciclo");
+  assert(opfs.includes("let access: SyncAccessHandle | null = null;"));
+  assert(opfs.includes("if (!isNotFound(error)) throw error;"));
+  assert(opfsClient.includes("error.name = response.name;"));
+  const requireOpfs = coordinator.slice(
+    coordinator.indexOf("private async requireOpfs"),
+    coordinator.indexOf("private captureToken"),
+  );
+  assert.doesNotMatch(
+    requireOpfs,
+    /selfTest\(/,
+    "lettura e cleanup OPFS non devono dipendere da una prova di scrittura",
+  );
+  const deleteSession = coordinator.slice(
+    coordinator.indexOf("private async deleteSessionBestEffort"),
+    coordinator.lastIndexOf("\n}"),
+  );
+  assert.doesNotMatch(deleteSession, /selfTest\(/);
+  assert(coordinator.includes("cleanupOpfsGarbageCandidates"));
+  assert(coordinator.includes("candidate.leaseExpiresAt <= now"));
+  assert(coordinator.includes("candidate.lockProtected"));
+  assert(coordinator.includes("markSessionLockProtected"));
+  assert(coordinator.includes('this.backend = "indexeddb-chunks"'));
+  assert(coordinator.includes('this.backend = "memory-only"'));
+}
+
+console.log("Session-local History storage protocol verified.");

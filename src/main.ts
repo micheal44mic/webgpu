@@ -4902,14 +4902,12 @@ function updateHumanStrokeControls(): void {
     || Boolean(humanStrokeRecording);
 }
 
-function operationLocked(): boolean {
+function nonHistoryOperationLocked(): boolean {
   return !engineInitialized
     || layerSwitching
     || mobileBrushControlDrag !== null
     || historyState.openEdit === "transform"
     || historyState.openEdit === "raster-property"
-    || historyUiBusy
-    || historyState.busy
     || benchmarkRunning
     || rasterShadowGoldenRunning
     || rasterStrokeGoldenRunning
@@ -4928,6 +4926,12 @@ function operationLocked(): boolean {
     || humanStrokeSaving;
 }
 
+function operationLocked(): boolean {
+  return nonHistoryOperationLocked()
+    || historyUiBusy
+    || historyState.busy;
+}
+
 function interactionLocked(): boolean {
   return operationLocked() || activePointerId !== null;
 }
@@ -4942,35 +4946,40 @@ function interactionLocked(): boolean {
  * mentre uno e' in corso e' legittimo — sara' il turno di esecuzione a
  * verificare che sia ancora possibile.
  */
-function historyShortcutLocked(): boolean {
-  return !engineInitialized
-    || layerSwitching
-    || activePointerId !== null
-    || historyState.openEdit === "transform"
-    || historyState.openEdit === "raster-property"
-    || benchmarkRunning;
+function historyRequestLocked(): boolean {
+  return nonHistoryOperationLocked() || activePointerId !== null;
 }
 
 function updateHistoryControls(): void {
   const locked = interactionLocked();
-  undoStrokeButton.disabled = locked || !historyState.canUndo;
-  redoStrokeButton.disabled = locked || !historyState.canRedo;
-  const undoReason = locked && historyState.undoBlockedReason === null
+  const requestLocked = historyRequestLocked();
+  const replayBusy = historyUiBusy || historyState.busy;
+  const undoBlocked = requestLocked || (!replayBusy && !historyState.canUndo);
+  const redoBlocked = requestLocked || (!replayBusy && !historyState.canRedo);
+  const undoReason = requestLocked && historyState.undoBlockedReason === null
     ? "Termina l'operazione corrente prima di annullare."
-    : historyState.undoBlockedReason;
-  const redoReason = locked && historyState.redoBlockedReason === null
+    : replayBusy ? null : historyState.undoBlockedReason;
+  const redoReason = requestLocked && historyState.redoBlockedReason === null
     ? "Termina l'operazione corrente prima di ripristinare."
-    : historyState.redoBlockedReason;
-  for (const [button, blocked, reason, label] of [
-    [mobileUndoButton, locked || !historyState.canUndo, undoReason, "Undo"],
-    [mobileRedoButton, locked || !historyState.canRedo, redoReason, "Redo"],
+    : replayBusy ? null : historyState.redoBlockedReason;
+
+  // Durante un replay i due comandi restano premibili: ogni pressione viene
+  // accodata e sara' validata quando arriva il suo turno. Fuori dal replay un
+  // comando semanticamente bloccato resta comunque cliccabile per mostrare il
+  // motivo (per esempio il pavimento di retention), invece di sembrare perso.
+  undoStrokeButton.disabled = requestLocked;
+  redoStrokeButton.disabled = requestLocked;
+  mobileUndoButton.disabled = false;
+  mobileRedoButton.disabled = false;
+  for (const [button, blocked, reason, label, availableTitle] of [
+    [undoStrokeButton, undoBlocked, undoReason, "Annulla ultima azione", "Annulla (Ctrl/⌘+Z)"],
+    [redoStrokeButton, redoBlocked, redoReason, "Ripristina ultima azione", "Ripristina (Ctrl/⌘+Shift+Z)"],
+    [mobileUndoButton, undoBlocked, undoReason, "Undo", "Undo"],
+    [mobileRedoButton, redoBlocked, redoReason, "Redo", "Redo"],
   ] as const) {
-    // Keep mobile controls tappable while semantically disabled so a blocked
-    // operation can explain itself instead of looking like a lost touch.
-    button.disabled = false;
     button.setAttribute("aria-disabled", String(blocked));
     button.classList.toggle("is-disabled", blocked);
-    button.title = blocked && reason ? reason : label;
+    button.title = blocked && reason ? reason : availableTitle;
     button.setAttribute("aria-label", blocked && reason ? `${label}: ${reason}` : label);
   }
   mobileBrushColorInput.disabled = locked;
@@ -8580,6 +8589,7 @@ function updateHistoryDiagnostics(): void {
   if (gpuMemoryPanel.hidden) return;
   const telemetry = engine.getHistoryMaintenanceTelemetry();
   const state = engine.getHistoryState();
+  const locale = telemetry.localStorage;
   const depth = state.cursor - telemetry.floorCursor;
   const causa = telemetry.budgetCheckpointBlocked
     ? "BLOCCATO: nessun checkpoint full su cui consolidare"
@@ -8596,11 +8606,19 @@ function updateHistoryDiagnostics(): void {
     + `${formatMemoryMiB(telemetry.checkpointBytes / (1024 * 1024))}; catture `
     + `${telemetry.capturesCommitted}/${telemetry.capturesStarted} committed, `
     + `${telemetry.capturesFailed} fallite, ${telemetry.capturesDiscardedStale} stale. `
-    + `Eviction ${telemetry.budgetEvictions} da budget e ${telemetry.depthEvictions} da `
-    + `profondità (tetto ${telemetry.maximumUndoDepth}); pavimento `
+    + `Eviction ${telemetry.budgetEvictions} esclusivamente da budget; pavimento `
     + `${telemetry.floorCursor}, azioni ${state.actionCount}, profondità Undo ${depth}. `
+    + `Locale ${formatMemoryMiB(locale.committedBytes / (1024 * 1024))} · `
+    + `${locale.backend} · ${locale.ready ? "pronto" : "avvio"}/`
+    + `${locale.writable ? "scrivibile" : "sola memoria"} · ${locale.busy} · `
+    + `soglia spill ${formatMemoryMiB(telemetry.spillHighWaterBytes / (1024 * 1024))} · `
+    + `${locale.storedOnlyPayloads}/${locale.storedPayloads} payload `
+    + `solo locali in ${locale.segments} segmenti (${locale.storedActions} azioni); `
+    + `spill ${locale.spillsCommitted} committed/${locale.spillFailures} falliti, `
+    + `hydrate ${locale.hydrationsCompleted}/${locale.hydrationFailures}. `
     + `Compattazioni Redo ${telemetry.redoCompactionsCompleted} complete, `
     + `${telemetry.redoCompactionsAborted} interrotte.`
+    + (locale.lastError ? ` Storage: ${locale.lastError}.` : "")
     + (ultimoGuastoCronologia
       ? ` ⚠ ULTIMO GUASTO: ${ultimoGuastoCronologia.operazione} su `
         + `«${ultimoGuastoCronologia.azione}» al cursore `
@@ -12126,12 +12144,19 @@ window.addEventListener("keydown", (event) => {
   }
 
   const operation = event.shiftKey ? "redo" : "undo";
-  const available = operation === "undo" ? historyState.canUndo : historyState.canRedo;
-  if (!available || historyShortcutLocked()) {
+  event.preventDefault();
+  if (historyRequestLocked()) {
+    const reason = operation === "undo"
+      ? historyState.undoBlockedReason
+      : historyState.redoBlockedReason;
+    statusElement.textContent = reason ?? "Termina l'operazione corrente e riprova.";
+    statusElement.className = "status";
     return;
   }
 
-  event.preventDefault();
+  // Non filtrare su canUndo/canRedo qui: durante il replay sono falsi perche'
+  // il motore e' occupato, ma la richiesta deve entrare in coda. Se invece il
+  // cursore e' davvero al limite, runHistoryOperation mostrera' il motivo.
   requestHistoryOperation(operation);
 });
 

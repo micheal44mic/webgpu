@@ -7,7 +7,6 @@ import {
 import {
   hasVisibleContent,
   historyStepTargetsMissingLayer,
-  selectLayerReplayAfterCheckpoint,
 } from "./history-journal";
 import { isTexturizedGrainActive, usesStrokeGlazeRenderer } from "./engine-strategies";
 import {
@@ -37,7 +36,6 @@ import {
   type RasterLayerMetadataHistoryProperty,
   type RasterLayerMetadataHistoryState,
   type RasterLayerMetadataHistoryValueMap,
-  type RasterHistoryCheckpointAction,
   type RasterImportHistoryAction,
   type RasterTransformHistoryAction,
   type VectorRasterizeHistoryAction,
@@ -89,10 +87,12 @@ import {
   maybeReleaseIdleShapeResources,
 } from "./engine-resource-setup";
 import {
+  cancelHistoryMaintenance,
   historyCursorWithinRetainedRange,
   periodicCheckpointChainForReplay,
 } from "./history-maintenance-runtime";
 import { processHistoryMaintenanceChunks } from "./history-retention-core";
+import { planRasterHistoryReplay } from "./history-replay-plan";
 
 export function captureRasterLayerMetadataHistoryState(
   engine: BrushEngine,
@@ -376,6 +376,23 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
     return false;
   }
 
+  // A deep step may cross payloads whose authoritative copy is now in local
+  // storage. Cancel fenced maintenance and hydrate both the target replay and
+  // its rollback closure before the cursor or any pixels can change.
+  cancelHistoryMaintenance(engine);
+  engine.historyBusy = true;
+  engine.publishHistoryState();
+  try {
+    await engine.historyLocalStorage.prepareHistoryStep(delta);
+  } catch (error) {
+    engine.historyBusy = false;
+    const message = error instanceof Error ? error.message : String(error);
+    engine.publishStatus(`Undo/Redo locale non riuscito: ${message}`, "error");
+    engine.publishHistoryState();
+    throw error;
+  }
+  engine.historyBusy = false;
+
   const previousCursor = engine.historyCursor;
   let publishRasterSceneAfterUnlock = false;
   engine.cancelLayerColdCompressionIdle();
@@ -646,6 +663,17 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
     );
     return true;
   } finally {
+    const stepCommitted = !engine.historyStateInconsistent
+      && engine.historyCursor === nextCursor;
+    if (stepCommitted) {
+      try {
+        await engine.waitForGpuCapped("Working set Undo/Redo", 60_000);
+        engine.historyLocalStorage.trimHydratedWorkingSetAfterStep(delta);
+      } catch {
+        // The document transition already committed. Cache demotion is a
+        // bounded-memory optimisation and may be retried after the next step.
+      }
+    }
     // A failed rollback is a terminal document state. Keeping historyBusy high
     // reuses every engine-side mutation guard and the UI lock; a status message
     // alone would still let the user continue painting on incoherent resources.
@@ -674,35 +702,19 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
 
 export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promise<void> {
   const layerId = engine.layerStack.active.id;
-  const journalSelection = selectLayerReplayAfterCheckpoint(
-    engine.historyActions,
-    engine.historyCursor,
-    engine.historyBatches,
-    layerId,
-  );
   const periodicSelection = periodicCheckpointChainForReplay(engine, layerId);
-  const usePeriodicCheckpoint = Boolean(
-    periodicSelection
-    && periodicSelection.actionIndex >= (journalSelection.checkpoint?.actionIndex ?? -1),
-  );
-  const periodicChain = usePeriodicCheckpoint
-    ? periodicSelection?.checkpoints ?? []
-    : [];
-  const seedAction = usePeriodicCheckpoint
-    ? undefined
-    : journalSelection.checkpoint?.action as RasterHistoryCheckpointAction | undefined;
-  const replayCheckpointActionIndex = usePeriodicCheckpoint
-    ? periodicSelection?.actionIndex ?? -1
-    : journalSelection.checkpoint?.actionIndex ?? -1;
-  const actionIndexById = new Map(
-    engine.historyActions.slice(0, engine.historyCursor).map((action, index) => [action.id, index]),
-  );
-  const visibleIds = new Set(
-    [...journalSelection.visibleStrokeIds].filter((actionId) => (
-      (actionIndexById.get(actionId) ?? -1) > replayCheckpointActionIndex
-    )),
-  );
-  const layerBatches = journalSelection.batches.filter((batch) => visibleIds.has(batch.actionId));
+  const replayPlan = planRasterHistoryReplay({
+    actions: engine.historyActions,
+    cursor: engine.historyCursor,
+    batches: engine.historyBatches,
+    layerId,
+    periodicSelection,
+  });
+  const periodicChain = replayPlan.periodicChain;
+  const seedAction = replayPlan.seedAction;
+  const replayCheckpointActionIndex = replayPlan.replayCheckpointActionIndex;
+  const visibleIds = replayPlan.visibleActionIds;
+  const layerBatches = replayPlan.batches;
   const latestPeriodicCheckpoint = periodicChain.at(-1);
   const hasReplaySeed = Boolean(seedAction || periodicChain.length > 0);
   const replaySeedBounds = latestPeriodicCheckpoint
@@ -1640,6 +1652,7 @@ export function truncateRedoHistory(engine: BrushEngine): void {
     }
   }
   engine.historyActions.length = engine.historyCursor;
+  engine.historyLocalStorage.noteBranchCut();
 
   // Il primo stamp dopo un Undo deve restare O(1): i payload abbandonati
   // vengono esclusi subito e liberati dalla manutenzione idle dopo una fence.

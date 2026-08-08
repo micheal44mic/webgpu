@@ -35,6 +35,7 @@ import {
   GpuHistoryStorage,
   type GpuHistorySlice,
 } from "./gpu-history-storage";
+import { HistoryStorageCoordinator } from "./history-storage-coordinator";
 import {
   brushShader,
   displayShader,
@@ -681,6 +682,7 @@ import {
   destroyHistoryMaintenance,
   historyCursorWithinRetainedRange,
   historyMaintenanceTelemetry,
+  refreshHistoryAccountingAfterStorageChange,
   scheduleHistoryMaintenance,
 } from "./history-maintenance-runtime";
 import {
@@ -1557,6 +1559,7 @@ export class BrushEngine {
   nextRasterLayerMetadataHistoryEditToken = 1;
   activeRasterTransformSession: ActiveRasterTransformSession | null = null;
   historyGpuStorage!: GpuHistoryStorage;
+  historyLocalStorage!: HistoryStorageCoordinator;
   historyGpuTrimGeneration = 0;
   layerHasContent = false;
 
@@ -1715,6 +1718,10 @@ export class BrushEngine {
 
     this.historyGpuStorage = new GpuHistoryStorage(this.device);
     this.historyGpuStorage.prewarm();
+    this.historyLocalStorage = new HistoryStorageCoordinator(this);
+    this.historyGpuStorage.setReleaseListener((slice) => {
+      this.historyLocalStorage.onGpuSliceReleased(slice);
+    });
     this.resizeCanvas();
     this.fitView();
     this.writeBrushUniforms();
@@ -4190,6 +4197,10 @@ export class BrushEngine {
 
   resumeDiscardedHistoryMaintenance(): void {
     if (this.historyCompactionPending) scheduleHistoryMaintenance(this);
+  }
+
+  resumeHistoryStorageMaintenance(): void {
+    scheduleHistoryMaintenance(this);
   }
 
   async runBenchmark(baseStampCount: number): Promise<BenchmarkResult> {
@@ -9041,6 +9052,7 @@ export class BrushEngine {
 
   resetHistoryState(): void {
     destroyHistoryMaintenance(this);
+    this.historyLocalStorage?.resetSession();
     const vectorRasterActions = new Set([
       ...this.historyActions,
       ...this.discardedVectorRasterHistoryActions,
@@ -9080,6 +9092,11 @@ export class BrushEngine {
     this.activeVectorHistoryEdit = null;
     this.activeRasterLayerMetadataHistoryEdit = null;
     this.sweepRasterImageGpuResources();
+  }
+
+  historyStorageResidenceChanged(): void {
+    refreshHistoryAccountingAfterStorageChange(this);
+    this.publishStats();
   }
 
   sweepRasterImageGpuResources(): number {

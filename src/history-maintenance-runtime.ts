@@ -8,6 +8,10 @@ import type { LayerColdStorageResources } from "./engine-layer-resources";
 import type { HistoryAction, HistoryRenderBatch } from "./engine-history-types";
 import type { GpuHistorySlice } from "./gpu-history-storage";
 import {
+  historyColdSeedResidentBytes,
+  isHistoryColdSeedHandle,
+} from "./history-cold-seed";
+import {
   countLayerStorageTiles,
   createLayerStorageTileMask,
   LAYER_STORAGE_TILE_SIZE,
@@ -23,18 +27,27 @@ import {
   historyAccountingIsAppendOnly,
   historyBudgetPressure,
   historyMemoryTotalBytes,
+  HISTORY_SPILL_BUDGET_FRACTION,
+  HISTORY_SPILL_HIGH_WATER_BYTES,
   nearestHistoryCheckpoint,
   planHistoryCheckpoint,
   planHistoryBudgetRecovery,
-  planHistoryDepthEviction,
   selectCheckpointRepresentation,
-  HISTORY_MAXIMUM_UNDO_DEPTH,
   type HistoryMemoryLedger,
 } from "./history-retention-core";
 
 const MEBIBYTE_BYTES = 1024 * 1024;
 const HISTORY_FULL_CHECKPOINT_PERIOD = 8;
 const HISTORY_MAINTENANCE_DELAY_MS = 140;
+const HISTORY_DEV_SPILL_HIGH_WATER_BYTES = (() => {
+  if (!import.meta.env.DEV || typeof location === "undefined") return null;
+  const raw = new URLSearchParams(location.search).get("historySpillMiB");
+  if (raw === null) return null;
+  const mib = Number(raw);
+  return Number.isFinite(mib) && mib > 0
+    ? Math.max(64 * 1024, Math.floor(mib * MEBIBYTE_BYTES))
+    : null;
+})();
 
 export interface PeriodicRasterHistoryCheckpoint {
   readonly id: number;
@@ -42,7 +55,7 @@ export interface PeriodicRasterHistoryCheckpoint {
   readonly afterActionId: number;
   readonly parentId: number | null;
   readonly kind: "full" | "delta" | "blank";
-  readonly seed: LayerColdStorageResources | null;
+  seed: LayerColdStorageResources | null;
   readonly baseBounds: DirtyRect | null;
   readonly baseTileMask: Uint32Array;
   readonly memoryBytes: number;
@@ -60,6 +73,8 @@ export interface HistoryMaintenanceTelemetry {
   readonly baseBudgetBytes: number;
   /** Physical active effects resources excluded from the History allowance. */
   readonly effectsWorkingSetBytes: number;
+  /** Resident-byte threshold that starts the local-storage spill pass. */
+  readonly spillHighWaterBytes: number;
   readonly budgetPressure: number;
   readonly replayTailBatches: number;
   readonly capturesStarted: number;
@@ -74,14 +89,12 @@ export interface HistoryMaintenanceTelemetry {
   readonly redoReleasedSlices: number;
   readonly floorCursor: number;
   readonly budgetEvictions: number;
-  /** Eviction dovute al tetto di profondita', non alla pressione di memoria. */
-  readonly depthEvictions: number;
-  readonly maximumUndoDepth: number;
   readonly evictedPayloadBytes: number;
   readonly budgetCheckpointBlocked: boolean;
   readonly accountingFullRebuilds: number;
   readonly accountingIncrementalActions: number;
   readonly accountingIncrementalBatches: number;
+  readonly localStorage: ReturnType<BrushEngine["historyLocalStorage"]["telemetry"]>;
 }
 
 interface HistoryReplayTailAccounting {
@@ -117,7 +130,6 @@ interface HistoryMaintenanceState {
   redoReleasedSlices: number;
   floorCursor: number;
   budgetEvictions: number;
-  depthEvictions: number;
   evictedPayloadBytes: number;
   budgetCheckpointBlocked: boolean;
   checkpointBytes: number;
@@ -181,7 +193,6 @@ function stateFor(engine: BrushEngine): HistoryMaintenanceState {
       redoReleasedSlices: 0,
       floorCursor: 0,
       budgetEvictions: 0,
-      depthEvictions: 0,
       evictedPayloadBytes: 0,
       budgetCheckpointBlocked: false,
       checkpointBytes: 0,
@@ -223,7 +234,11 @@ function stateFor(engine: BrushEngine): HistoryMaintenanceState {
   return state;
 }
 
-function historyMaintenanceEngineIdle(engine: BrushEngine): boolean {
+function historyMaintenanceEngineIdle(
+  engine: BrushEngine,
+  allowCurrentStorageOperation = false,
+): boolean {
+  const storageBusy = engine.historyLocalStorage.telemetry().busy;
   return engine.initialized
     && !engine.activeStroke
     && !engine.historyBusy
@@ -237,6 +252,7 @@ function historyMaintenanceEngineIdle(engine: BrushEngine): boolean {
     && !engine.rasterBevelBusy
     && !engine.rasterOuterShadowBusy
     && !engine.rasterInnerShadowBusy
+    && (allowCurrentStorageOperation ? storageBusy !== "hydrating" : storageBusy === "idle")
     && engine.historyCursor === engine.historyActions.length;
 }
 
@@ -255,11 +271,12 @@ function historyDeviceCheckpointBytes(engine: BrushEngine): number {
 function latestCheckpoint(
   engine: BrushEngine,
   layerId: number,
+  cursor = engine.historyCursor,
 ): { checkpoint: PeriodicRasterHistoryCheckpoint; actionIndex: number } | null {
-  if (engine.historyCursor !== engine.historyActions.length) {
+  if (cursor !== engine.historyActions.length) {
     return nearestHistoryCheckpoint(
       engine.historyActions,
-      engine.historyCursor,
+      cursor,
       layerId,
       stateFor(engine).checkpoints,
     ) as { checkpoint: PeriodicRasterHistoryCheckpoint; actionIndex: number } | null;
@@ -282,6 +299,7 @@ function bytesForCheckpointCpuMetadata(checkpoint: PeriodicRasterHistoryCheckpoi
 }
 
 function estimateStructuralBytes(
+  engine: BrushEngine,
   roots: readonly (readonly unknown[])[],
   seen = new WeakSet<object>(),
 ): number {
@@ -315,6 +333,22 @@ function estimateStructuralBytes(
     const object = value as object;
     if (seen.has(object)) continue;
     seen.add(object);
+    // Stable History handles intentionally expose throwing accessors while
+    // their physical payload is on disk. They are opaque references here:
+    // GPU/cold bytes have their own exact ledger and structural accounting
+    // must never dereference a non-resident payload.
+    if (isHistoryColdSeedHandle(value as LayerColdStorageResources)) {
+      bytes += 96;
+      continue;
+    }
+    const id = Object.getOwnPropertyDescriptor(object, "id")?.value;
+    if (
+      typeof id === "number"
+      && engine.historyGpuStorage.contains(value as GpuHistorySlice)
+    ) {
+      bytes += 64;
+      continue;
+    }
     if (value instanceof ArrayBuffer) {
       bytes += 24 + value.byteLength;
       continue;
@@ -367,18 +401,32 @@ function emptyReplayTail(): HistoryReplayTailAccounting {
 }
 
 function accountSelectionSnapshot(
+  engine: BrushEngine,
   state: HistoryMaintenanceState,
   snapshot: { gpuSlice: GpuHistorySlice } | null | undefined,
 ): void {
   if (!snapshot || state.accountingSelectionSliceIds.has(snapshot.gpuSlice.id)) return;
   state.accountingSelectionSliceIds.add(snapshot.gpuSlice.id);
-  state.accounting.selectionFillMaskBytes += snapshot.gpuSlice.logicalBytes;
+  if (engine.historyGpuStorage.isResident(snapshot.gpuSlice)) {
+    state.accounting.selectionFillMaskBytes += snapshot.gpuSlice.logicalBytes;
+  }
 }
 
 function accountCheckpointSeed(
   state: HistoryMaintenanceState,
   action: HistoryAction,
 ): void {
+  const account = (seed: LayerColdStorageResources | null | undefined): void => {
+    if (!seed || state.accountingCheckpointSeeds.has(seed)) return;
+    state.accountingCheckpointSeeds.add(seed);
+    const residentBytes = historyColdSeedResidentBytes(seed);
+    state.accounting.checkpointBytes += residentBytes;
+    state.actionCheckpointBytes += residentBytes;
+  };
+  if (action.kind === "layer-delete") {
+    for (const entry of action.entries) account(entry.seed);
+    return;
+  }
   if (
     action.kind !== "vector-rasterize"
     && action.kind !== "raster-import"
@@ -386,25 +434,24 @@ function accountCheckpointSeed(
   ) {
     return;
   }
-  if (!action.seed || state.accountingCheckpointSeeds.has(action.seed)) return;
-  state.accountingCheckpointSeeds.add(action.seed);
-  state.accounting.checkpointBytes += action.seed.memoryBytes;
-  state.actionCheckpointBytes += action.seed.memoryBytes;
+  account(action.seed);
 }
 
 function accountHistoryAction(
+  engine: BrushEngine,
   state: HistoryMaintenanceState,
   action: HistoryAction,
   liveIndex: number | null,
 ): void {
   state.accounting.cpuVectorBytes += estimateStructuralBytes(
+    engine,
     [[action]],
     state.accountingCpuSeen,
   );
   accountCheckpointSeed(state, action);
   if (action.kind === "raster-transform") {
-    accountSelectionSnapshot(state, action.selectionBefore);
-    accountSelectionSnapshot(state, action.selectionAfter);
+    accountSelectionSnapshot(engine, state, action.selectionBefore);
+    accountSelectionSnapshot(engine, state, action.selectionAfter);
   }
   if (
     liveIndex === null
@@ -423,11 +470,12 @@ function accountHistoryAction(
 }
 
 function accountHistoryBatch(
+  engine: BrushEngine,
   state: HistoryMaintenanceState,
   batch: HistoryRenderBatch,
 ): void {
-  if (batch.kind === "paint") accountSelectionSnapshot(state, batch.selectionMask);
-  if (batch.kind === "fill") {
+  if (batch.kind === "paint") accountSelectionSnapshot(engine, state, batch.selectionMask);
+  if (batch.kind === "fill" && engine.historyGpuStorage.isResident(batch.gpuSlice)) {
     state.accounting.selectionFillMaskBytes += batch.gpuSlice.logicalBytes;
   }
   const actionIndex = state.actionIndexById.get(batch.actionId);
@@ -488,11 +536,12 @@ function rebuildHistoryAccounting(engine: BrushEngine): void {
     state.actionIndexById.set(engine.historyActions[index].id, index);
   }
   for (const checkpoint of state.checkpoints) {
-    state.checkpointBytes += checkpoint.memoryBytes;
+    const residentBytes = historyColdSeedResidentBytes(checkpoint.seed);
+    state.checkpointBytes += residentBytes;
     if (checkpoint.kind === "delta") state.deltaCheckpointCount += 1;
     else state.fullCheckpointCount += 1;
     state.accounting.checkpointBytes +=
-      checkpoint.memoryBytes + bytesForCheckpointCpuMetadata(checkpoint);
+      residentBytes + bytesForCheckpointCpuMetadata(checkpoint);
     state.checkpointCountByLayer.set(
       checkpoint.layerId,
       (state.checkpointCountByLayer.get(checkpoint.layerId) ?? 0) + 1,
@@ -505,24 +554,24 @@ function rebuildHistoryAccounting(engine: BrushEngine): void {
     }
   }
   engine.historyActions.forEach((action, index) => {
-    accountHistoryAction(state, action, index < engine.historyCursor ? index : null);
+    accountHistoryAction(engine, state, action, index < engine.historyCursor ? index : null);
   });
   for (const action of engine.discardedVectorRasterHistoryActions) {
-    accountHistoryAction(state, action, null);
+    accountHistoryAction(engine, state, action, null);
   }
   for (const action of engine.discardedRasterImportHistoryActions) {
-    accountHistoryAction(state, action, null);
+    accountHistoryAction(engine, state, action, null);
   }
   for (const action of engine.discardedRasterTransformHistoryActions) {
-    accountHistoryAction(state, action, null);
+    accountHistoryAction(engine, state, action, null);
   }
   for (const snapshot of engine.selectionHistoryMasksByRevision.values()) {
-    accountSelectionSnapshot(state, snapshot);
+    accountSelectionSnapshot(engine, state, snapshot);
   }
   for (const snapshot of engine.selectionHistoryMasksByAction.values()) {
-    accountSelectionSnapshot(state, snapshot);
+    accountSelectionSnapshot(engine, state, snapshot);
   }
-  for (const batch of engine.historyBatches) accountHistoryBatch(state, batch);
+  for (const batch of engine.historyBatches) accountHistoryBatch(engine, state, batch);
 
   state.observedCursor = engine.historyCursor;
   state.observedActionsLength = engine.historyActions.length;
@@ -590,7 +639,7 @@ function synchronizeHistoryAccounting(engine: BrushEngine): boolean {
   }
 
   for (let index = state.observedActionsLength; index < engine.historyActions.length; index += 1) {
-    accountHistoryAction(state, engine.historyActions[index], index);
+    accountHistoryAction(engine, state, engine.historyActions[index], index);
     state.accountingIncrementalActions += 1;
   }
   const accountDiscarded = <T extends HistoryAction>(
@@ -598,7 +647,7 @@ function synchronizeHistoryAccounting(engine: BrushEngine): boolean {
     start: number,
   ): void => {
     for (let index = start; index < values.length; index += 1) {
-      accountHistoryAction(state, values[index], null);
+      accountHistoryAction(engine, state, values[index], null);
     }
   };
   accountDiscarded(
@@ -614,7 +663,7 @@ function synchronizeHistoryAccounting(engine: BrushEngine): boolean {
     state.observedDiscardedTransformLength,
   );
   for (let index = state.observedBatchesLength; index < engine.historyBatches.length; index += 1) {
-    accountHistoryBatch(state, engine.historyBatches[index]);
+    accountHistoryBatch(engine, state, engine.historyBatches[index]);
     state.accountingIncrementalBatches += 1;
   }
   state.observedCursor = engine.historyCursor;
@@ -675,6 +724,15 @@ function historyBudgetForEngine(engine: BrushEngine) {
     baseBytes,
     effectsBytes,
   };
+}
+
+function historySpillHighWaterBytes(engine: BrushEngine): number {
+  const { budget } = historyBudgetForEngine(engine);
+  return Math.min(
+    HISTORY_SPILL_HIGH_WATER_BYTES,
+    Math.floor(budget.hardBytes * HISTORY_SPILL_BUDGET_FRACTION),
+    HISTORY_DEV_SPILL_HIGH_WATER_BYTES ?? Number.POSITIVE_INFINITY,
+  );
 }
 
 function replayTailMetrics(engine: BrushEngine, layerId: number): HistoryReplayTailAccounting {
@@ -757,15 +815,6 @@ async function capturePeriodicCheckpoint(
 
   const checkpointOrdinal = (state.checkpointCountByLayer.get(layerId) ?? 0) + 1;
   const delta = changedTileMask(engine, layerId, current?.actionIndex ?? -1);
-  // Il tetto di profondita' puo' liberare soltanto fino a un checkpoint full.
-  // Se la coda ha gia' superato i passi promessi e non esiste un full
-  // abbastanza recente, il tetto resterebbe inerte: qui gliene creiamo uno.
-  // Non costa piu' di un delta in una sessione che dipinge in largo, dove il
-  // delta copre comunque quasi tutti i tile.
-  const depthCapNeedsBoundary = planHistoryDepthEviction({
-    cursor: engine.historyCursor,
-    floorCursor: state.floorCursor,
-  }).required;
   // `budgetPressure >= 1` non compare piu' qui, ed e' la correzione centrale.
   //
   // Faceva diventare full ogni checkpoint appena la cronologia toccava il
@@ -778,12 +827,10 @@ async function capturePeriodicCheckpoint(
   // niente in cambio. Il freno adesso e' `admitHistoryCheckpoint`, che guarda i
   // byte invece della cadenza.
   // Il full e' **obbligatorio** solo quando la correttezza lo impone: senza un
-  // genitore su cui appoggiarsi, dopo un reset, dopo un'operazione strutturale,
-  // o quando il tetto di profondita' ha bisogno di un boundary autonomo.
+  // genitore su cui appoggiarsi, dopo un reset o dopo un'operazione strutturale.
   const fullRequired = !current
     || delta.requiresFull
-    || delta.reset
-    || depthCapNeedsBoundary;
+    || delta.reset;
   // Il full periodico e' invece una **preferenza**: rifonda la catena e accorcia
   // l'idratazione. Se non c'e' spazio, un delta e' meglio di niente.
   const rebasePreferred = checkpointOrdinal % HISTORY_FULL_CHECKPOINT_PERIOD === 0;
@@ -810,6 +857,24 @@ async function capturePeriodicCheckpoint(
   // rifiutato non lasciava spazio a un delta che sarebbe entrato.
   const fullMask = buildMask(true);
   const deltaMask = buildMask(false);
+  const currentReplayChain = current
+    ? periodicCheckpointChainForReplay(engine, layerId, engine.historyCursor)
+    : null;
+  const currentReplayChainBytes = currentReplayChain
+    ? currentReplayChain.checkpoints.reduce(
+      (total, checkpoint) => total + checkpoint.memoryBytes,
+      0,
+    )
+    : 0;
+  // A stored-only checkpoint still has its immutable raw size in
+  // `memoryBytes`. Bound the full+delta chain to one full-canvas equivalent:
+  // target+rollback therefore fit in two such windows even after a long
+  // session repeatedly frees the resident copies back to local storage.
+  const replayChainBudgetBytes = historyDeviceCheckpointBytes(engine);
+  const rebaseRequiredForReplayBudget = Boolean(
+    current
+    && currentReplayChainBytes + bytesOf(deltaMask) > replayChainBudgetBytes,
+  );
   const currentBytes = historyMemoryTotalBytes(historyMemoryLedger(engine));
   const budget = historyBudgetForEngine(engine).budget;
   const valuta = (candidate: Uint32Array, mandatory: boolean) => ({
@@ -825,6 +890,7 @@ async function capturePeriodicCheckpoint(
   const deltaEsito = valuta(deltaMask, false);
   const scelta = selectCheckpointRepresentation({
     fullRequired,
+    rebaseRequired: rebaseRequiredForReplayBudget,
     rebasePreferred,
     fullValid: fullEsito.valid,
     fullAdmitted: fullEsito.admitted,
@@ -924,25 +990,35 @@ async function capturePeriodicCheckpoint(
 export function periodicCheckpointChainForReplay(
   engine: BrushEngine,
   layerId: number,
+  cursor = engine.historyCursor,
 ): { checkpoints: PeriodicRasterHistoryCheckpoint[]; actionIndex: number } | null {
   const state = stateFor(engine);
-  const selected = latestCheckpoint(engine, layerId);
+  const selected = latestCheckpoint(engine, layerId, cursor);
   if (!selected) return null;
   const byId = new Map(state.checkpoints.map((checkpoint) => [checkpoint.id, checkpoint]));
   const reverse: PeriodicRasterHistoryCheckpoint[] = [];
-  let cursor: PeriodicRasterHistoryCheckpoint | undefined = selected.checkpoint;
+  let checkpointCursor: PeriodicRasterHistoryCheckpoint | undefined = selected.checkpoint;
   const seen = new Set<number>();
-  while (cursor) {
-    if (seen.has(cursor.id)) throw new Error("Ciclo nei checkpoint raster periodici.");
-    seen.add(cursor.id);
-    reverse.push(cursor);
-    if (cursor.kind === "full" || cursor.kind === "blank") break;
-    cursor = cursor.parentId === null ? undefined : byId.get(cursor.parentId);
+  while (checkpointCursor) {
+    if (seen.has(checkpointCursor.id)) throw new Error("Ciclo nei checkpoint raster periodici.");
+    seen.add(checkpointCursor.id);
+    reverse.push(checkpointCursor);
+    if (checkpointCursor.kind === "full" || checkpointCursor.kind === "blank") break;
+    checkpointCursor = checkpointCursor.parentId === null
+      ? undefined
+      : byId.get(checkpointCursor.parentId);
   }
   if (reverse.at(-1)?.kind === "delta") {
     return null;
   }
   return { checkpoints: reverse.reverse(), actionIndex: selected.actionIndex };
+}
+
+/** Storage wraps/demotes only the seed; checkpoint topology remains owned here. */
+export function periodicHistoryCheckpoints(
+  engine: BrushEngine,
+): readonly PeriodicRasterHistoryCheckpoint[] {
+  return stateFor(engine).checkpoints;
 }
 
 export function discardStalePeriodicCheckpoints(engine: BrushEngine): void {
@@ -969,14 +1045,8 @@ export function discardStalePeriodicCheckpoints(engine: BrushEngine): void {
   if (changed) rebuildHistoryAccounting(engine);
 }
 
-/**
- * `newestAllowedActionIndex` limita quanto in avanti puo' spingersi il
- * boundary: il tetto di profondita' lo usa per non tagliare mai sotto i passi
- * di Undo che ha promesso di conservare.
- */
 function latestFullCheckpointByLayer(
   engine: BrushEngine,
-  newestAllowedActionIndex = Number.POSITIVE_INFINITY,
 ): Map<number, { checkpoint: PeriodicRasterHistoryCheckpoint; actionIndex: number }> | null {
   const state = stateFor(engine);
   synchronizeHistoryAccounting(engine);
@@ -1003,11 +1073,19 @@ function latestFullCheckpointByLayer(
     } | null = null;
     for (const checkpoint of state.checkpoints) {
       if (checkpoint.layerId !== layerId || checkpoint.kind === "delta") continue;
+      if (
+        checkpoint.kind === "full"
+        && historyColdSeedResidentBytes(checkpoint.seed) === 0
+      ) {
+        // A destructive in-memory floor must never depend on local storage.
+        // Stored-only checkpoints remain valid replay accelerators, not RAM
+        // baselines that authorize deleting the journal.
+        continue;
+      }
       const actionIndex = indices.get(checkpoint.afterActionId);
       if (
         actionIndex === undefined
         || actionIndex >= engine.historyCursor
-        || actionIndex > newestAllowedActionIndex
       ) {
         continue;
       }
@@ -1026,10 +1104,9 @@ function latestFullCheckpointByLayer(
  * The global cursor floor prevents the user from crossing into released data;
  * metadata remains available for diagnostics and stable action ids.
  *
- * Due gate lo invocano: il tetto di profondita', che libera cio' che e' gia'
- * oltre i passi di Undo promessi, e il budget in byte, che resta l'autorita'
- * finale. Il primo non puo' mai tagliare piu' del secondo perche' riceve un
- * `newestAllowedActionIndex`.
+ * Lo invoca soltanto il budget in byte, dopo avere sacrificato le cache
+ * ricostruibili. Il numero di azioni non e' mai una ragione per accorciare la
+ * profondita' di Undo.
  */
 function evictHistoryBelowBaselines(
   engine: BrushEngine,
@@ -1095,7 +1172,7 @@ function evictHistoryBelowBaselines(
       && checkpointIndex !== undefined
       && checkpointIndex < baseline.actionIndex
     ) {
-      state.checkpointBytes -= checkpoint.memoryBytes;
+      state.checkpointBytes -= historyColdSeedResidentBytes(checkpoint.seed);
       destroyLayerColdStorage(checkpoint.seed);
     } else {
       retainedCheckpoints.push(checkpoint);
@@ -1111,26 +1188,8 @@ function evictHistoryBelowBaselines(
   return true;
 }
 
-/**
- * Tetto secondario: taglia solo cio' che e' gia' oltre `HISTORY_MAXIMUM_UNDO_DEPTH`
- * passi **e** coperto da un checkpoint full. Il budget in byte resta l'autorita',
- * questo rende soltanto prevedibile il caso tipico.
- */
-function enforceHistoryDepthCap(engine: BrushEngine): void {
+function enforceHistoryBudget(engine: BrushEngine, allowJournalEviction = true): void {
   const state = stateFor(engine);
-  const plan = planHistoryDepthEviction({
-    cursor: engine.historyCursor,
-    floorCursor: state.floorCursor,
-  });
-  if (!plan.required || plan.newestRetainedActionIndex === null) return;
-  const baselines = latestFullCheckpointByLayer(engine, plan.newestRetainedActionIndex);
-  if (!baselines || baselines.size === 0) return;
-  if (evictHistoryBelowBaselines(engine, baselines)) state.depthEvictions += 1;
-}
-
-function enforceHistoryBudget(engine: BrushEngine): void {
-  const state = stateFor(engine);
-  enforceHistoryDepthCap(engine);
   const ledger = historyMemoryLedger(engine);
   const { budget } = historyBudgetForEngine(engine);
   if (historyMemoryTotalBytes(ledger) <= budget.hardBytes) {
@@ -1155,7 +1214,7 @@ function enforceHistoryBudget(engine: BrushEngine): void {
       parentId: checkpoint.parentId,
       kind: checkpoint.kind,
       actionIndex: state.actionIndexById.get(checkpoint.afterActionId) ?? -1,
-      bytes: checkpoint.memoryBytes,
+      bytes: historyColdSeedResidentBytes(checkpoint.seed),
     })),
   });
   if (recovery.required) {
@@ -1175,6 +1234,13 @@ function enforceHistoryBudget(engine: BrushEngine): void {
   if (recovery.reachedTarget) {
     // La cache e' bastata: il journal non si tocca e la profondita' di Undo
     // resta intera. E' il caso normale, e deve restarlo.
+    state.budgetCheckpointBlocked = false;
+    return;
+  }
+
+  if (!allowJournalEviction) {
+    // More authoritative payload can still be published to local storage.
+    // Keep the cache cleanup above, then defer the irreversible cursor floor.
     state.budgetCheckpointBlocked = false;
     return;
   }
@@ -1265,23 +1331,33 @@ export function scheduleHistoryMaintenance(engine: BrushEngine): void {
       if (expectedGeneration !== state.generation) return;
       await capturePeriodicCheckpoint(engine, expectedGeneration);
       if (expectedGeneration !== state.generation) return;
-      // Qui viveva il travaso dei checkpoint lontani in RAM compressa, ed e'
-      // stato rimosso perche' non era salvabile con una correzione.
-      //
-      // Il difetto non stava in cosa faceva ma in cosa doveva toccare per
-      // farlo: per aggiornare i byte dei checkpoint invalidava il ledger della
-      // cronologia, e quell'invalidazione forza una ricostruzione. Una
-      // ricostruzione con il cursore a meta' journal conta solo le azioni sotto
-      // il cursore ma dichiara di aver visto l'intero journal — e da quel
-      // momento nessuno se ne accorge piu', perche' il controllo append-only
-      // non guarda il cursore. Il risultato e' un checkpoint ancorato a
-      // un'azione vecchia con dentro i pixel nuovi: un Undo successivo
-      // ricostruisce un disegno che l'utente non ha mai fatto.
-      //
-      // `planHistorySpill` resta, puro e con i suoi test: e' la politica, ed e'
-      // corretta. Manca il modo di applicarla senza passare dal ledger. Quella
-      // e' la cosa da risolvere prima di riprovarci.
-      enforceHistoryBudget(engine);
+      // Local spill runs only at the journal end and publishes storage before
+      // releasing a resident payload. Residence changes rebuild the ledger in
+      // the same operation, with the cursor watermark included, so the old
+      // mid-cursor accounting corruption cannot reappear.
+      const spillHighWaterBytes = historySpillHighWaterBytes(engine);
+      const spillOptions = {
+        highWaterBytes: spillHighWaterBytes,
+        logicalFloorCursor: state.floorCursor,
+        currentResidentBytes: () => historyMemoryTotalBytes(historyMemoryLedger(engine)),
+        shouldContinue: () => (
+          expectedGeneration === state.generation
+          // spillIfNeeded publishes busy="spilling" before its first await.
+          // The current storage operation must not invalidate its own gate;
+          // foreground/history state and the maintenance generation remain
+          // the authorities that abort it.
+          && historyMaintenanceEngineIdle(engine, true)
+          && !engine.deviceLostError
+        ),
+        afterResidenceChange: () => refreshHistoryAccountingAfterStorageChange(engine),
+      } as const;
+      await engine.historyLocalStorage.spillIfNeeded(spillOptions);
+      if (expectedGeneration !== state.generation) return;
+      const deferJournalEviction = engine.historyLocalStorage.shouldDeferJournalEviction(
+        spillOptions,
+      );
+      enforceHistoryBudget(engine, !deferJournalEviction);
+      if (deferJournalEviction) engine.resumeHistoryStorageMaintenance();
     }).catch(() => {
       // device.lost is surfaced by the engine-wide gate.
     });
@@ -1295,6 +1371,10 @@ export function cancelHistoryMaintenance(engine: BrushEngine): void {
     window.clearTimeout(state.timer);
     state.timer = null;
   }
+}
+
+export function refreshHistoryAccountingAfterStorageChange(engine: BrushEngine): void {
+  rebuildHistoryAccounting(engine);
 }
 
 export function destroyHistoryMaintenance(engine: BrushEngine): void {
@@ -1323,6 +1403,7 @@ export function historyMaintenanceTelemetry(
     budgetBytes: budget.hardBytes,
     baseBudgetBytes: baseBytes,
     effectsWorkingSetBytes: effectsBytes,
+    spillHighWaterBytes: historySpillHighWaterBytes(engine),
     budgetPressure: historyBudgetPressure(memory, budget),
     replayTailBatches: replayTailMetrics(engine, engine.layerStack.active.id).batches,
     capturesStarted: state.capturesStarted,
@@ -1337,12 +1418,11 @@ export function historyMaintenanceTelemetry(
     redoReleasedSlices: state.redoReleasedSlices,
     floorCursor: state.floorCursor,
     budgetEvictions: state.budgetEvictions,
-    depthEvictions: state.depthEvictions,
-    maximumUndoDepth: HISTORY_MAXIMUM_UNDO_DEPTH,
     evictedPayloadBytes: state.evictedPayloadBytes,
     budgetCheckpointBlocked: state.budgetCheckpointBlocked,
     accountingFullRebuilds: state.accountingFullRebuilds,
     accountingIncrementalActions: state.accountingIncrementalActions,
     accountingIncrementalBatches: state.accountingIncrementalBatches,
+    localStorage: engine.historyLocalStorage.telemetry(),
   };
 }

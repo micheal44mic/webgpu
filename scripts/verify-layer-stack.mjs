@@ -1058,6 +1058,10 @@ const mixedSceneStackSource = readFileSync(
   new URL("../src/mixed-scene-stack.ts", import.meta.url),
   "utf8",
 );
+const historyReplayPlanSource = readFileSync(
+  new URL("../src/history-replay-plan.ts", import.meta.url),
+  "utf8",
+);
 const compositionSegmentsStart = mixedSceneStackSource.indexOf("  compositionSegments(");
 const compositionSegmentsReturn = mixedSceneStackSource.indexOf(
   "    return segments;",
@@ -2141,8 +2145,13 @@ assert.notEqual(rebuildStart, -1, "il replay deve dichiarare di ricostruire il l
 const rebuildBody = engineSource.slice(rebuildStart, rebuildStart + 1_500);
 assert.match(
   rebuildBody,
-  /const journalSelection = selectLayerReplayAfterCheckpoint\(\s*engine\.historyActions,\s*engine\.historyCursor,\s*engine\.historyBatches,\s*layerId,\s*\)/,
-  "il replay reale deve usare il selettore per-livello checkpoint-aware testato",
+  /const replayPlan = planRasterHistoryReplay\(\{\s*actions: engine\.historyActions,\s*cursor: engine\.historyCursor,\s*batches: engine\.historyBatches,\s*layerId,\s*periodicSelection,\s*\}\)/,
+  "il replay reale deve usare l'unico planner condiviso con il preflight storage",
+);
+assert.match(
+  historyReplayPlanSource,
+  /const journalSelection = selectLayerReplayAfterCheckpoint\(\s*options\.actions,\s*options\.cursor,\s*options\.batches,\s*options\.layerId,\s*\)/,
+  "il planner condiviso deve restare per-livello e checkpoint-aware",
 );
 assert.match(
   rebuildBody,

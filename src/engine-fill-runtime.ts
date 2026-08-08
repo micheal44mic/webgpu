@@ -157,6 +157,10 @@ export async function fillAtClientPoint(
   let pixelsMutated = false;
   try {
     await engine.waitForIdle();
+    await engine.historyLocalStorage.prepareRasterReplayAtCursor(
+      engine.layerStack.active.id,
+      engine.historyCursor,
+    );
     const renderer = await ensureFillRenderer(engine);
     await renderer.prewarm();
     const source = resolveFillSource(engine);

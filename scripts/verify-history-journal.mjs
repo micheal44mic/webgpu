@@ -434,6 +434,35 @@ const rasterTransform = (id, layerId, hasContent = true) => ({
   assert.equal(aligned.reservedBytes, 8);
   const storageAligned = storage.allocate(12, "storage-alignment", 256);
   assert.equal(storageAligned.offsetBytes % 256, 0);
+  const atomicFirst = storage.allocate(16, "atomic-first");
+  const atomicLast = storage.allocate(16, "atomic-last");
+  const allocatorBeforeInvalidRelease = storage.stats();
+  assert.throws(
+    () => storage.prepareReleaseMany([
+      atomicFirst,
+      { ...atomicLast, label: "foreign-copy" },
+    ]),
+    /non appartenente/,
+    "una slice finale non valida deve impedire la release dell'intero set",
+  );
+  assert.deepEqual(
+    storage.stats(),
+    allocatorBeforeInvalidRelease,
+    "prepareReleaseMany non deve liberare il prefisso prima di validare la coda",
+  );
+  assert.equal(storage.releaseMany([atomicFirst, atomicLast]), 2);
+
+  const demoted = storage.allocate(20, "stored-only-handle");
+  const preparedDemotion = storage.prepareDemoteMany([demoted]);
+  assert.equal(preparedDemotion.sliceCount, 1);
+  assert.equal(preparedDemotion.commitNoThrow(), 1);
+  assert.equal(storage.isResident(demoted), false);
+  assert.throws(
+    () => demoted.buffer,
+    /non reidratata/,
+    "un replay senza preflight hydrate deve fallire prima di leggere un buffer morto",
+  );
+  assert.equal(storage.release(demoted), true, "un handle stored-only resta ritirabile");
   assert.throws(
     () => storage.allocate(4, "bad-alignment", 24),
     /potenza di due/,

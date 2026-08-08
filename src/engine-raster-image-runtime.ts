@@ -62,6 +62,7 @@ import {
   publishMixedScene,
   requireMixedSceneStack,
 } from "./engine-vector-text-runtime";
+import { historyColdSeedResidentBytes } from "./history-cold-seed";
 
 export const RASTER_IMAGE_GPU_STORAGE_STRATEGY =
   RASTER_IMAGE_LAYER_IMPORT_STRATEGY;
@@ -184,7 +185,7 @@ function nativeRasterImportResidentBytes(engine: BrushEngine): number {
     importedLayerIds.add(action.layerId);
     seeds.add(action.seed);
   }
-  for (const seed of seeds) bytes += seed.memoryBytes;
+  for (const seed of seeds) bytes += historyColdSeedResidentBytes(seed);
   const bytesPerPixel = engine.layerFormat === "rgba16float" ? 8 : 4;
   for (const layerId of importedLayerIds) {
     const gpu = engine.layerGpu.get(layerId);

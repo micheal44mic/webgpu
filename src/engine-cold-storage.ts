@@ -16,13 +16,14 @@ import {
 } from "./layer-storage-study";
 import type { BrushEngine } from "./brush-engine";
 import type { LayerFormat } from "./engine-types";
-import { combineCompressionHashes } from "./engine-math";
+import { combineCompressionHashes, hashBytes } from "./engine-math";
 import {
   LAYER_COLD_COMPRESSION_MINIMUM_DISTANCE,
   type LayerColdCompressedChunk,
 } from "./layer-cold-compression-client";
 import { LAYER_SIZE, MEBIBYTE_BYTES } from "./engine-limits";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
+import { isHistoryColdSeedHandle } from "./history-cold-seed";
 
 /**
  * Archiviazione fredda dei livelli: codifica dell'idratazione, maschere dei
@@ -92,7 +93,12 @@ export function createColdLayerGpuResources(): LayerGpuResources {
 }
 
 export function destroyLayerColdStorage(cold: LayerColdStorageResources | null | undefined): void {
-  cold?.texture.destroy();
+  if (!cold) return;
+  if (isHistoryColdSeedHandle(cold)) {
+    cold.retireNoThrow();
+    return;
+  }
+  cold.texture.destroy();
 }
 
 export function destroyLayerHot(hot: LayerTextureResources | null | undefined): void {
@@ -911,6 +917,16 @@ export async function createHydratedLayerTexture(engine: BrushEngine,
 export async function decompressLayerColdChunk(engine: BrushEngine, 
   chunk: LayerColdCompressedChunk,
 ): Promise<Uint8Array> {
+  if (chunk.storage === "raw") {
+    const restored = new Uint8Array(chunk.bytes);
+    if (
+      restored.byteLength !== chunk.rawBytes
+      || hashBytes(restored) !== chunk.sourceHash
+    ) {
+      throw new Error("Chunk cold raw non supera la verifica di integrità.");
+    }
+    return restored;
+  }
   let firstError: unknown = null;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {

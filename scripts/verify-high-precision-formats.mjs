@@ -36,6 +36,9 @@ const allowedLiteralFormats = new Map([
   // letterale RGBA8, lo staging transitorio che riceve l'immagine sorgente e
   // viene distrutto subito dopo la conversione a luma.
   ["src/engine-resource-setup.ts", { rgba8unorm: 2, r8unorm: 2 }],
+  // Descriptor serializzato: registra il formato originale del seed History,
+  // non alloca né converte una texture continua a 8 bit.
+  ["src/history-storage-core.ts", { rgba8unorm: 1 }],
   ["src/layer-blend-tile-compositor.ts", { rgba8unorm: 1 }],
   ["src/layer-thumbnail-renderer.ts", { rgba8unorm: 2 }],
   ["src/stroke-renderer.ts", { rgba8unorm: 1 }],
