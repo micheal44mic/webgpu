@@ -53,6 +53,7 @@ import {
 import {
   type EngineGpuMemoryStats,
   type EngineStats,
+  type LayerMemoryState,
   type LayerStorageExactLayerMeasurement,
   type LayerStorageExactStudy,
   type LayerStorageLayerEstimate,
@@ -121,6 +122,11 @@ import {
   THICKNESS_TAIL_MAXIMUM_TEXTURE_DIMENSION,
   THICKNESS_TAIL_TEXTURE_QUANTUM,
 } from "./engine-limits";
+import {
+  type MemoryZone,
+  memoryLedgerUsedBytes,
+  memoryZoneFor,
+} from "./memory-governor-core";
 import {
   layerBaseMemoryMiB,
   lightGlazeAdditionalMemoryMiB,
@@ -330,7 +336,7 @@ export function getBenchmarkEnvironment(engine: BrushEngine): {
   grainCoordinateStrategy: GrainCoordinateStrategy;
   grainSamplingStrategy: GrainSamplingStrategy;
   grainMipStrategy: typeof GRAIN_MIP_STRATEGY;
-  grainTextureFormat: "rgba8unorm";
+  grainTextureFormat: "r16float";
   grainTextureWidth: number;
   grainTextureHeight: number;
   grainTextureMipLevelCount: number;
@@ -544,7 +550,7 @@ export function getBenchmarkEnvironment(engine: BrushEngine): {
     grainCoordinateStrategy: engine.grainCoordinateStrategy(engine.settings),
     grainSamplingStrategy: engine.grainSamplingStrategy(engine.settings),
     grainMipStrategy: GRAIN_MIP_STRATEGY,
-    grainTextureFormat: "rgba8unorm",
+    grainTextureFormat: "r16float",
     grainTextureWidth: engine.grainTextureWidth,
     grainTextureHeight: engine.grainTextureHeight,
     grainTextureMipLevelCount: engine.grainTextureMipLevelCount,
@@ -790,6 +796,49 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     (total, gpu) => total + (gpu.compressed?.rawBytes ?? 0),
     0,
   ) / MEBIBYTE_BYTES;
+  // Peso per singolo livello. Le righe aggregate sopra rispondono "quanto
+  // pesano i livelli"; questa risponde "quale", che e' la domanda vera quando
+  // la memoria sale e non si sa perche'. I byte vengono dalle stesse fonti del
+  // totale, cosi' la somma di queste righe non puo' divergere da quelle.
+  const activeLayerIndex = engine.layerStack.activeIndex;
+  const displayPyramidMiB = paintDisplayPyramidAdditionalMemoryMiB(engine.layerFormat);
+  const perLayerMemory = baseResourcesAllocated
+    ? engine.layerStack.layers.map((record, index) => {
+      const gpu = engine.layerGpu.get(record.id);
+      const active = index === activeLayerIndex;
+      const hotMiB = gpu?.hot ? fullLayerMiB : 0;
+      // La piramide display segue il livello attivo, non ogni livello caldo:
+      // caricarla su tutti farebbe mentire la riga.
+      const mipMiB = gpu?.hot && active ? displayPyramidMiB : 0;
+      const coldMiB = (gpu?.cold?.memoryBytes ?? 0) / MEBIBYTE_BYTES;
+      const compressedCpuMiB = (gpu?.compressed?.storedBytes ?? 0) / MEBIBYTE_BYTES;
+      const compressedRawMiB = (gpu?.compressed?.rawBytes ?? 0) / MEBIBYTE_BYTES;
+      const gpuMiB = hotMiB + mipMiB + coldMiB;
+      const state: LayerMemoryState = gpu?.hot
+        ? "hot"
+        : gpu?.cold
+        ? "cold"
+        : gpu?.compressed
+        ? "compressed"
+        : "empty";
+      return {
+        id: record.id,
+        index,
+        name: record.name,
+        active,
+        visible: record.visible,
+        state,
+        hotMiB,
+        mipMiB,
+        coldMiB,
+        compressedCpuMiB,
+        compressedRawMiB,
+        gpuMiB,
+        totalMiB: gpuMiB + compressedCpuMiB,
+      };
+    })
+    : [];
+
   const layerHydrationMiB = (
     [...engine.liveLayerHydrationTextures.values()].reduce(
       (total, bytes) => total + bytes,
@@ -1003,7 +1052,39 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
   ].reduce((total, value) => total + value, 0);
   const countedGpuPlusCompressedCpuMiB = countedTotalMiB + layerCompressedCpuMiB;
 
+  // Stato del governor, per ora in sola osservazione: nessuna allocazione viene
+  // ancora rifiutata. Serve a calibrare, ed e' l'ordine giusto — un tetto che
+  // rifiuta prima di essere stato misurato su dispositivi veri rompe l'app in
+  // scenari legittimi. I byte vengono dal registro, non dal modello dichiarato.
+  //
+  // Il liberabile conta solo cio' che il motore sa gia' ricostruire dai pixel
+  // autorevoli: cache di presentazione, miniature e superfici merged. La RAM
+  // dei cold compressi resta fuori finche' non esiste un livello sotto verso
+  // cui sfogarla: senza storage non e' liberabile, e' soltanto perdibile.
+  const governorReclaimableBytes = Math.round(
+    (presentationCacheMiB + layerThumbnailMiB + layerCompositeMiB) * MEBIBYTE_BYTES,
+  );
+  const governorLedger = {
+    committedBytes: registered.currentBytes,
+    reservedBytes: engine.memoryReservations.pendingBytes,
+    reclaimableBytes: Math.min(governorReclaimableBytes, registered.currentBytes),
+    inFlightBytes: Math.round(layerCompressedCpuMiB * MEBIBYTE_BYTES),
+  };
+  const governorLimits = engine.memoryGovernorLimits;
+  const governorUsedBytes = memoryLedgerUsedBytes(governorLedger);
+  const governorZone: MemoryZone = memoryZoneFor(governorLedger, governorLimits);
+  const governorCeilingBytes =
+    governorLimits.hardCapBytes - governorLimits.emergencyReserveBytes;
+
   return {
+    layers: perLayerMemory,
+    governorZone,
+    governorHardCapMiB: governorLimits.hardCapBytes / MEBIBYTE_BYTES,
+    governorCeilingMiB: governorCeilingBytes / MEBIBYTE_BYTES,
+    governorUsedMiB: governorUsedBytes / MEBIBYTE_BYTES,
+    governorHeadroomMiB: (governorCeilingBytes - governorUsedBytes) / MEBIBYTE_BYTES,
+    governorReclaimableMiB: governorLedger.reclaimableBytes / MEBIBYTE_BYTES,
+    governorReservedMiB: governorLedger.reservedBytes / MEBIBYTE_BYTES,
     registeredCurrentMiB,
     registeredPeakMiB,
     registeredTextureCount: registered.textureCount,
@@ -1170,7 +1251,7 @@ export function finishStrokePerformanceProfile(engine: BrushEngine): StrokePerfo
     grainCoordinateStrategy: profile.grainCoordinateStrategy,
     grainSamplingStrategy: profile.grainSamplingStrategy,
     grainMipStrategy: GRAIN_MIP_STRATEGY,
-    grainTextureFormat: "rgba8unorm",
+    grainTextureFormat: "r16float",
     grainTextureWidth: engine.grainTextureWidth,
     grainTextureHeight: engine.grainTextureHeight,
     grainTextureMipLevelCount: engine.grainTextureMipLevelCount,
@@ -2022,12 +2103,6 @@ export async function measureLayerColdCompressionStudy(engine: BrushEngine,
   if (!engine.initialized) {
     throw new Error("Il motore non è ancora inizializzato.");
   }
-  if (engine.layerFormat !== "rgba8unorm") {
-    throw new Error(
-      "Lo studio compressione v1 supporta solo il codec legacy RGBA8; "
-      + "i documenti universali RGBA16F lo saltano.",
-    );
-  }
   if (engine.activeStroke || engine.historyBusy || engine.layerSwitchBusy) {
     throw new Error("La compressione richiede il motore fermo.");
   }
@@ -2076,8 +2151,9 @@ export async function measureLayerColdCompressionStudy(engine: BrushEngine,
 
   const startedAt = performance.now();
   const countedGpuMiBBefore = getGpuMemoryStats(engine).countedTotalMiB;
+  const studyBytesPerPixel = engine.layerFormat === "rgba16float" ? 8 : 4;
   const tileByteLength =
-    LAYER_STORAGE_TILE_SIZE * LAYER_STORAGE_TILE_SIZE * 4;
+    LAYER_STORAGE_TILE_SIZE * LAYER_STORAGE_TILE_SIZE * studyBytesPerPixel;
   const totalTiles = sources.reduce(
     (total, source) => total + source.cold.tileIndices.length,
     0,
@@ -2241,8 +2317,8 @@ export async function measureLayerColdCompressionStudy(engine: BrushEngine,
     codec: LAYER_COMPRESSION_CODEC,
     tileSizePx: LAYER_STORAGE_TILE_SIZE,
     chunkTileCount: LAYER_COMPRESSION_CHUNK_TILE_COUNT,
-    layerFormat: "rgba8unorm",
-    bytesPerPixel: 4,
+    layerFormat: engine.layerFormat,
+    bytesPerPixel: engine.layerFormat === "rgba16float" ? 8 : 4,
     recordedAt: new Date().toISOString(),
     elapsedMs: performance.now() - startedAt,
     layerCount: engine.layerStack.count,

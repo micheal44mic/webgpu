@@ -11,6 +11,38 @@ import { EFFECTS_SCRATCH_POOL_STRATEGY } from "./effects-scratch-pool";
 import { EFFECTS_WORKING_SET_STRATEGY } from "./effects-workbench";
 import { FILL_REFERENCE_LAYER_STRATEGY } from "./fill-core";
 import { lightGlazeAdditionalMemoryMiB, paintDisplayPyramidAdditionalMemoryMiB } from "./engine-memory-model";
+import type { MemoryZone } from "./memory-governor-core";
+
+/**
+ * Dove vive un livello in questo istante. E' lo stesso vocabolario del motore:
+ * `hot` e' la texture full-document, `cold` sono i soli tile occupati, e
+ * `compressed` e' RAM CPU — che pesa sul limite di processo come la GPU, ma non
+ * compare nel totale GPU e va quindi letta a parte.
+ */
+export type LayerMemoryState = "hot" | "cold" | "compressed" | "empty";
+
+export interface EngineLayerMemoryEntry {
+  id: number;
+  index: number;
+  name: string;
+  active: boolean;
+  visible: boolean;
+  state: LayerMemoryState;
+  /** Texture full-document, presente solo quando il livello e' caldo. */
+  hotMiB: number;
+  /** Piramide display: la porta il livello attivo, non tutti i caldi. */
+  mipMiB: number;
+  /** Array dei soli tile occupati. */
+  coldMiB: number;
+  /** RAM CPU occupata dai chunk compressi. */
+  compressedCpuMiB: number;
+  /** Byte grezzi che quei chunk rappresentano, per leggere il rapporto. */
+  compressedRawMiB: number;
+  /** Somma delle sole voci GPU. */
+  gpuMiB: number;
+  /** GPU piu' la RAM compressa: il numero che conta contro il tetto Safari. */
+  totalMiB: number;
+}
 import {
   LAYER_BAKE_STRATEGY,
   LAYER_COMPOSITE_STRATEGY,
@@ -66,6 +98,25 @@ import type { LayerBlendMode } from "./layer-blend-modes";
 
 export interface EngineGpuMemoryStats {
   /** Totale corrente esatto delle risorse registrate dal device strumentato. */
+  /**
+   * Stato del governor, in sola osservazione: nessuna allocazione viene ancora
+   * rifiutata. La zona guarda il tetto duro, il margine guarda il tetto
+   * utilizzabile — fra i due c'e' la riserva d'emergenza, quindi si puo' essere
+   * ancora in arancione e gia' senza margine.
+   */
+  /**
+   * Peso di ogni singolo livello, in ordine di documento. Le righe aggregate
+   * dicono quanto pesano "i livelli"; questa dice **quale**, che e' la domanda
+   * che si fa chi sta cercando di capire perche' la memoria e' salita.
+   */
+  layers: readonly EngineLayerMemoryEntry[];
+  governorZone: MemoryZone;
+  governorHardCapMiB: number;
+  governorCeilingMiB: number;
+  governorUsedMiB: number;
+  governorHeadroomMiB: number;
+  governorReclaimableMiB: number;
+  governorReservedMiB: number;
   registeredCurrentMiB: number;
   /** Massimo storico esatto del totale registrato. */
   registeredPeakMiB: number;
@@ -414,7 +465,7 @@ export interface StrokePerformanceProfile {
   grainCoordinateStrategy: GrainCoordinateStrategy;
   grainSamplingStrategy: GrainSamplingStrategy;
   grainMipStrategy: GrainMipStrategy;
-  grainTextureFormat: "rgba8unorm";
+  grainTextureFormat: "r16float";
   grainTextureWidth: number;
   grainTextureHeight: number;
   grainTextureMipLevelCount: number;

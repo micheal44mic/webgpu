@@ -127,6 +127,8 @@ export interface VectorRasterizeHistoryAction extends RasterHistoryCheckpoint {
   layerRecord: LayerRecord;
   rasterLayerIndex: number;
   vectorState: MixedSceneVectorHistoryState;
+  /** Raster attivo prima della conversione, ripristinato esattamente dall'Undo. */
+  activeRasterLayerIdBefore: number;
   seed: LayerColdStorageResources;
   baseBounds: DirtyRect;
 }
@@ -176,9 +178,13 @@ export interface LayerDeleteHistoryAction {
   kind: "layer-delete";
   entries: readonly DeletedLayerEntry[];
   selectedKeyBefore: MixedSceneItem["key"];
+  /** Selezione autorevole dopo la cancellazione, usata dal Redo. */
+  selectedKeyAfter: MixedSceneItem["key"];
   activeRasterLayerIdBefore: number;
   /** Raster attivo dopo la cancellazione, per rifare il Redo senza indovinare. */
   activeRasterLayerIdAfter: number;
+  referenceRasterLayerIdBefore: number | null;
+  referenceRasterLayerIdAfter: number | null;
 }
 
 /**
@@ -199,6 +205,8 @@ export interface LayerAddHistoryAction {
   clippingParentId: number | null;
   selectedKeyBefore: MixedSceneItem["key"];
   activeRasterLayerIdBefore: number;
+  /** Aggiungere un livello non cambia il riferimento Fill. */
+  referenceRasterLayerIdBefore: number | null;
 }
 
 export type RasterTransformMatrix = readonly [

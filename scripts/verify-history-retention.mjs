@@ -10,8 +10,15 @@ import {
   HISTORY_MOBILE_CHECKPOINT_ALLOWANCE,
   HISTORY_MOBILE_MAXIMUM_BYTES,
   HISTORY_RETENTION_STRATEGY,
+  HISTORY_SPILL_HIGH_WATER_BYTES,
+  HISTORY_SPILL_KEEP_HOT_CHECKPOINTS,
+  HISTORY_SPILL_LOW_WATER_BYTES,
+  admitHistoryCheckpoint,
+  assertHistorySpillMarks,
   createHistoryBudget,
+  defaultHistorySpillMarks,
   emptyHistoryMemoryLedger,
+  historyAccountingIsAppendOnly,
   historyBaseBudgetBytes,
   historyBudgetPressure,
   historyMemoryTotalBytes,
@@ -19,8 +26,11 @@ import {
   nextHistoryCompactionChunk,
   planHistoryBudgetEviction,
   planHistoryCheckpoint,
+  planHistoryBudgetRecovery,
   planHistoryDepthEviction,
+  planHistorySpill,
   processHistoryMaintenanceChunks,
+  selectCheckpointRepresentation,
 } from "../src/history-retention-core.ts";
 
 assert.equal(
@@ -78,14 +88,17 @@ for (const documentSize of [2048, 4096]) {
   }
 }
 
-// Il telefono deve stare sotto il tetto assoluto in entrambi i formati alla
-// taglia che usa davvero (2048²): e' il punto dell'intera modifica. Prima erano
-// 192 MiB fissi, indipendenti da documento e formato.
+// Il telefono deve restare sotto il proprio tetto assoluto in entrambi i
+// formati alla taglia che usa davvero (2048²). Il tetto e' passato da 96 a 200
+// MiB: a 96 veniva superato quasi subito e l'eviction rispondeva distruggendo
+// passi di Undo, che e' il costo che non si voleva pagare. L'asserzione resta
+// legata alla costante invece che a un numero scritto qui, cosi' spostare il
+// tetto e' una decisione sola in un posto solo.
 for (const format of ["rgba8unorm", "rgba16float"]) {
   assert.ok(
     historyBaseBudgetBytes({ checkpointBytes: checkpointBytesFor(2048, format), mobile: true })
-      <= 96 * MiB,
-    `il budget mobile deve restare entro 96 MiB a ${format}`,
+      <= HISTORY_MOBILE_MAXIMUM_BYTES,
+    `il budget mobile deve restare entro il proprio tetto a ${format}`,
   );
 }
 assert.ok(
@@ -220,10 +233,37 @@ assert.match(
   /const depthCapNeedsBoundary = planHistoryDepthEviction\(\{/,
   "la cattura deve sapere se il tetto di profondita' attende un boundary",
 );
+// Il boundary del tetto di profondita' e' ora una condizione di `fullRequired`,
+// non di `forceFull`: e' la distinzione che permette al full **periodico** di
+// ripiegare su un delta quando non c'e' spazio, senza che quello obbligatorio
+// possa fare altrettanto. Un delta non puo' sostituire un boundary: il tetto
+// libera solo fino a un full, e sopra un delta l'eviction resterebbe inerte.
 assert.match(
   captureBody,
-  /^ {4}\|\| depthCapNeedsBoundary$/m,
-  "il checkpoint deve essere full quando il tetto di profondita' attende un boundary",
+  /^ {4}\|\| depthCapNeedsBoundary;$/m,
+  "il boundary del tetto di profondita' deve rendere il full obbligatorio",
+);
+assert.match(
+  captureBody,
+  /const fullRequired = !current$/m,
+  "la distinzione fra full obbligatorio e full preferito deve restare esplicita",
+);
+assert.match(
+  captureBody,
+  /const rebasePreferred = checkpointOrdinal % HISTORY_FULL_CHECKPOINT_PERIOD === 0;/,
+  "il full periodico e' una preferenza, non un obbligo",
+);
+// Entrambi i candidati devono essere misurati prima di scegliere: sceglierne
+// uno e chiedere poi se ci sta e' cio' che produceva la fame all'ottavo.
+assert.match(
+  captureBody,
+  /const fullMask = buildMask\(true\);\s*\n\s*const deltaMask = buildMask\(false\);/,
+  "full e delta vanno costruiti entrambi prima della scelta",
+);
+assert.match(
+  captureBody,
+  /selectCheckpointRepresentation\(\{/,
+  "la scelta della rappresentazione deve passare dalla politica pura",
 );
 
 const applyAction = (pixels, action) => {
@@ -546,7 +586,34 @@ for (const actionCount of [10, 100, 500, 1000]) {
   assert(runtime.includes("accountSelectionSnapshot(state, action.selectionAfter)"));
   assert(runtime.includes("state.accounting.gpuReservedBytes = gpuStorage.usedReservedBytes"));
   assert(runtime.includes("state.accounting.gpuAllocatedBytes = gpuStorage.allocatedBytes"));
-  assert(runtime.includes("appendOnlySince("));
+  // La decisione fra incrementale e ricostruzione non vive piu' qui: e' stata
+  // spostata in `history-retention-core`, che si carica in Node e quindi si puo'
+  // provare sul comportamento invece che sul testo. Il runtime deve limitarsi a
+  // dichiarare cosa vede, cursore compreso.
+  assert(runtime.includes("historyAccountingIsAppendOnly("));
+  // Il collegamento va pinzato oltre alla semantica. Il test di comportamento
+  // prova la funzione pura con watermark scritti a mano, quindi non si accorge
+  // se il runtime passa il cursore SBAGLIATO: mettendo `engine.historyCursor`
+  // da entrambi i lati il confronto sarebbe sempre vero e il veleno tornerebbe,
+  // con la funzione pura ancora perfettamente corretta. E' successo, in questa
+  // stessa sessione, ed e' passato inosservato al primo giro.
+  const sincronizza = runtime.slice(
+    runtime.indexOf("function synchronizeHistoryAccounting"),
+    runtime.indexOf("function rebuildHistoryAccounting") >= 0
+      ? runtime.length
+      : runtime.length,
+  );
+  assert.match(
+    sincronizza,
+    /\{\s*\n\s*initialized: state\.accountingInitialized,\s*\n\s*cursor: state\.observedCursor,/,
+    "il watermark deve portare il cursore OSSERVATO, non quello corrente: "
+    + "confrontare il cursore con se stesso rende il termine sempre vero",
+  );
+  assert.match(
+    sincronizza,
+    /\{\s*\n\s*cursor: engine\.historyCursor,\s*\n\s*actions: engine\.historyActions,/,
+    "l'osservazione deve portare il cursore corrente",
+  );
   assert(runtime.includes("accountingIncrementalActions"));
   assert(runtime.includes("baseBytes - effectsBytes"));
   assert.match(
@@ -581,3 +648,596 @@ for (const actionCount of [10, 100, 500, 1000]) {
 
 console.log(`History retention telemetry: ${JSON.stringify(longSessionTelemetry)}`);
 console.log("History retention long-session verification passed (10/100/500/1000 actions).");
+
+// ---------------------------------------------------------------------------
+// Travaso della cronologia lontana in RAM compressa.
+//
+// L'eviction butta via, il travaso sposta: un checkpoint travasato resta
+// annullabile. La regola che rende il compromesso accettabile e' una sola —
+// i checkpoint recenti non si toccano mai, cosi' i primi annullamenti restano
+// immediati e si paga soltanto tornando indietro parecchio.
+// ---------------------------------------------------------------------------
+{
+  const MiB = 1024 * 1024;
+  const marks = defaultHistorySpillMarks();
+  assert.equal(marks.highWaterBytes, HISTORY_SPILL_HIGH_WATER_BYTES);
+  assert.equal(marks.lowWaterBytes, HISTORY_SPILL_LOW_WATER_BYTES);
+  assert.equal(marks.keepHotCheckpoints, HISTORY_SPILL_KEEP_HOT_CHECKPOINTS);
+  // Una soglia sola: oltre HIGH si travasa tutto il travasabile. L'isteresi
+  // arriva gratis dal fatto che un travasato non e' piu' candidato.
+  assert.equal(
+    marks.lowWaterBytes,
+    0,
+    "non ci si ferma a meta': i byte lasciati sulla GPU non comprano profondita'",
+  );
+
+  // Soglie coincidenti o invertite sono il difetto che l'isteresi previene.
+  assert.throws(
+    () => assertHistorySpillMarks({ ...marks, lowWaterBytes: marks.highWaterBytes }),
+    /lowWaterBytes/,
+  );
+  assert.throws(
+    () => assertHistorySpillMarks({ ...marks, keepHotCheckpoints: -1 }),
+    /keepHotCheckpoints/,
+  );
+
+  const candidato = (id, distance, gpuBytes, extra = {}) => ({
+    id,
+    distance,
+    gpuBytes,
+    spilled: false,
+    pinned: false,
+    ...extra,
+  });
+
+  // Sotto la soglia alta non si muove niente, nemmeno con candidati pronti.
+  {
+    const piano = planHistorySpill(
+      [candidato(1, 9, 32 * MiB), candidato(2, 8, 32 * MiB)],
+      150 * MiB,
+      marks,
+    );
+    assert.equal(piano.required, false);
+    assert.equal(piano.reason, "within-high-water");
+    assert.equal(piano.steps.length, 0);
+    assert.equal(piano.projectedBytes, 150 * MiB);
+  }
+
+  // Il confine e' inclusivo: esattamente alla soglia alta non si parte.
+  assert.equal(
+    planHistorySpill([candidato(1, 9, 32 * MiB)], marks.highWaterBytes, marks).required,
+    false,
+  );
+  assert.equal(
+    planHistorySpill([candidato(1, 9, 32 * MiB)], marks.highWaterBytes + 1, marks).required,
+    true,
+  );
+
+  // Oltre la soglia si travasa TUTTO il travasabile, non fino a un bersaglio.
+  // Lasciare byte sulla GPU non comprerebbe profondita': i checkpoint residenti
+  // rendono veloce un ritorno lontano, non lo rendono possibile.
+  {
+    const candidati = [
+      candidato(1, 7, 32 * MiB),
+      candidato(2, 6, 32 * MiB),
+      candidato(3, 5, 32 * MiB),
+      candidato(4, 4, 32 * MiB),
+      candidato(5, 1, 32 * MiB),
+      candidato(6, 0, 32 * MiB),
+    ];
+    const piano = planHistorySpill(candidati, 224 * MiB, marks);
+    assert.equal(piano.required, true);
+    assert.equal(piano.reason, "spilled-all-eligible");
+    assert.equal(piano.exhaustedEligible, true);
+    // Dal piu' lontano verso il piu' recente: la probabilita' di essere
+    // richiesto scende con la distanza, ed e' quella che deve guidare.
+    assert.deepEqual(piano.steps.map((s) => s.id), [1, 2, 3, 4]);
+    assert.equal(piano.spilledBytes, 128 * MiB);
+    assert.equal(piano.projectedBytes, 96 * MiB);
+    // I due recenti restano caldi anche potendo travasarli: e' il contratto che
+    // tiene immediati i primi annullamenti.
+    assert.ok(!piano.steps.some((s) => s.id === 5 || s.id === 6));
+  }
+
+  // I recenti sono intoccabili anche quando sono l'unica cosa rimasta.
+  {
+    const piano = planHistorySpill(
+      [candidato(1, 0, 120 * MiB), candidato(2, 1, 120 * MiB)],
+      240 * MiB,
+      marks,
+    );
+    assert.equal(piano.steps.length, 0);
+    assert.equal(piano.required, false);
+    assert.equal(piano.exhaustedEligible, true);
+    assert.equal(
+      piano.reason,
+      "no-eligible-checkpoints",
+      "restare sopra soglia senza candidati va detto, non nascosto",
+    );
+    assert.equal(piano.projectedBytes, 240 * MiB);
+  }
+
+  // Gia' travasati e bloccati da un replay in corso non contano.
+  {
+    const piano = planHistorySpill(
+      [
+        candidato(1, 9, 64 * MiB, { spilled: true }),
+        candidato(2, 8, 64 * MiB, { pinned: true }),
+        candidato(3, 7, 64 * MiB),
+      ],
+      240 * MiB,
+      marks,
+    );
+    assert.deepEqual(piano.steps.map((s) => s.id), [3]);
+    assert.equal(piano.projectedBytes, 176 * MiB);
+    assert.equal(piano.exhaustedEligible, true, "il solo candidato libero era il 3");
+  }
+
+  // Lo scenario dell'utente: superata la soglia si travasa tutto il travasabile
+  // in un giro solo, e il giro dopo non c'e' piu' niente da fare.
+  {
+    const candidati = Array.from({ length: 8 }, (_, index) =>
+      candidato(index + 1, 7 - index, 32 * MiB));
+    const travasati = new Set();
+    const piano = planHistorySpill(candidati, 256 * MiB, marks);
+    piano.steps.forEach((step) => travasati.add(step.id));
+    const gpuBytes = piano.projectedBytes;
+
+    // Otto candidati, i due piu' recenti restano caldi: sei travasati.
+    assert.equal(piano.steps.length, 6);
+    assert.equal(piano.reason, "spilled-all-eligible");
+    assert.equal(gpuBytes, 64 * MiB, "256 − 6×32 = 64 MiB, i due checkpoint caldi");
+
+    // L'isteresi arriva gratis: un travasato non e' piu' candidato, quindi il
+    // secondo giro non ha nulla da rifare anche restando sopra la soglia.
+    const stabile = planHistorySpill(
+      candidati.map((c) => ({ ...c, spilled: travasati.has(c.id) })),
+      gpuBytes,
+      marks,
+    );
+    assert.equal(stabile.required, false);
+    assert.equal(stabile.reason, "within-high-water");
+
+    const sopraSoglia = planHistorySpill(
+      candidati.map((c) => ({ ...c, spilled: travasati.has(c.id) })),
+      240 * MiB,
+      marks,
+    );
+    assert.equal(sopraSoglia.required, false);
+    assert.equal(
+      sopraSoglia.reason,
+      "no-eligible-checkpoints",
+      "sopra soglia senza candidati: niente churn, e il motivo resta leggibile",
+    );
+  }
+}
+
+console.log("History spill planning verification passed.");
+
+
+// ---------------------------------------------------------------------------
+// La decisione fra ledger incrementale e ricostruzione, esercitata direttamente.
+//
+// E' la logica piu' delicata del sottosistema e il suo difetto non si vede dai
+// pixel: se il ledger resta descritto a un vecchio cursore continua a sembrare
+// sano, e il danno arriva molto dopo sotto forma di un checkpoint ancorato
+// all'azione sbagliata. Provarla richiede che sia pura — per questo vive qui e
+// non dentro il runtime, che importa mezzo motore e non si carica in Node.
+// ---------------------------------------------------------------------------
+{
+  const azioni = Array.from({ length: 30 }, (_, index) => ({ id: index + 1 }));
+  const vuoto = [];
+  const osserva = (cursor, actions = azioni) => ({
+    cursor,
+    actions,
+    batches: vuoto,
+    discardedVector: vuoto,
+    discardedImport: vuoto,
+    discardedTransform: vuoto,
+    selectionRevisionSize: 0,
+    selectionActionSize: 0,
+  });
+  const segna = (cursor, actions = azioni) => ({
+    initialized: true,
+    cursor,
+    actionsLength: actions.length,
+    actionsTail: actions.at(-1) ?? null,
+    batchesLength: 0,
+    batchesTail: null,
+    discardedVectorLength: 0,
+    discardedVectorTail: null,
+    discardedImportLength: 0,
+    discardedImportTail: null,
+    discardedTransformLength: 0,
+    discardedTransformTail: null,
+    selectionRevisionSize: 0,
+    selectionActionSize: 0,
+  });
+
+  // Niente e' cambiato: si resta sul ramo incrementale.
+  assert.equal(
+    historyAccountingIsAppendOnly(segna(30), osserva(30)),
+    true,
+    "senza movimenti non si deve pagare una ricostruzione",
+  );
+
+  // Mai inizializzato: sempre ricostruzione.
+  assert.equal(
+    historyAccountingIsAppendOnly({ ...segna(30), initialized: false }, osserva(30)),
+    false,
+  );
+
+  // IL CASO CHE CI HA MORSO. Il ledger e' stato ricostruito con il cursore a 15
+  // (quindi descrive solo 15 azioni) ma il watermark degli array e' alla
+  // lunghezza piena. L'utente rifa' i Redo e torna a 30: gli array non sono
+  // cambiati, quindi ogni altro termine e' soddisfatto. Solo il cursore puo'
+  // accorgersene — e senza di lui il ledger resterebbe troncato per sempre.
+  assert.equal(
+    historyAccountingIsAppendOnly(segna(15), osserva(30)),
+    false,
+    "tornare in fondo dopo una ricostruzione a meta' DEVE forzare un rebuild: "
+    + "senza, il ledger resta descritto a un cursore che non esiste piu'",
+  );
+
+  // E vale in entrambi i versi: anche allontanarsi dal fondo invalida.
+  assert.equal(
+    historyAccountingIsAppendOnly(segna(30), osserva(15)),
+    false,
+    "anche annullare invalida: il ledger descriveva un mondo piu' avanti",
+  );
+
+  // Un andirivieni completo: ogni tappa che sposta il cursore deve invalidare,
+  // ogni tappa che lo lascia fermo no.
+  let watermark = segna(30);
+  for (const cursore of [30, 22, 22, 7, 30, 30, 1]) {
+    const atteso = watermark.cursor === cursore;
+    assert.equal(
+      historyAccountingIsAppendOnly(watermark, osserva(cursore)),
+      atteso,
+      `cursore ${cursore}: incrementale atteso ${atteso}`,
+    );
+    watermark = segna(cursore);
+  }
+
+  // Il cursore non oscura gli altri termini: una coda di redo troncata resta
+  // rilevata anche se il cursore non si e' mosso.
+  const troncate = azioni.slice(0, 20);
+  assert.equal(
+    historyAccountingIsAppendOnly(segna(20, azioni), osserva(20, troncate)),
+    false,
+    "un array accorciato deve invalidare anche a cursore fermo",
+  );
+
+  // Un elemento sostituito in posizione non e' un append: il confronto e' per
+  // identita', non per lunghezza.
+  const sostituite = [...azioni];
+  sostituite[29] = { id: 30 };
+  assert.equal(
+    historyAccountingIsAppendOnly(segna(30, azioni), osserva(30, sostituite)),
+    false,
+    "una coda sostituita non e' una crescita in coda",
+  );
+
+  // Crescita vera in coda a cursore che segue: incrementale.
+  const cresciute = [...azioni, { id: 31 }];
+  assert.equal(
+    historyAccountingIsAppendOnly(segna(30, azioni), osserva(30, cresciute)),
+    true,
+    "aggiungere in coda senza muovere il cursore resta incrementale",
+  );
+}
+
+console.log("History accounting append-only decision verified.");
+
+// ---------------------------------------------------------------------------
+// Recupero del budget: si butta la cache, non la cronologia.
+//
+// E' la correzione dell'errore centrale. I checkpoint periodici sono
+// acceleratori ricostruibili; il journal e' l'unica copia dei passi di Undo.
+// Il motore faceva il contrario — alzava il pavimento (distruggendo
+// l'insostituibile) e lasciava intatti i checkpoint (la parte pesante e
+// rimpiazzabile). Da qui il caso misurato dall'utente: pavimento a 54 su 55
+// azioni con 246 MiB di checkpoint ancora residenti.
+// ---------------------------------------------------------------------------
+{
+  const budget = createHistoryBudget(192 * MiB);
+  const voce = (id, layerId, parentId, kind, actionIndex, mib) => ({
+    id,
+    layerId,
+    parentId,
+    kind,
+    actionIndex,
+    bytes: mib * MiB,
+  });
+
+  // Modello della lettura reale: 4 full e 5 delta per 246 MiB, piu' 2 MiB di
+  // journal e pagine. I delta pendono dai rispettivi full.
+  const scenarioUtente = [
+    voce(1, 1, null, "full", 7, 32),
+    voce(2, 1, 1, "delta", 15, 32),
+    voce(3, 1, 2, "delta", 23, 32),
+    voce(4, 1, null, "full", 31, 32),
+    voce(5, 1, 4, "delta", 39, 24),
+    voce(6, 2, null, "full", 41, 32),
+    voce(7, 2, 6, "delta", 47, 20),
+    voce(8, 3, null, "full", 49, 32),
+    voce(9, 3, 8, "delta", 54, 10),
+  ];
+
+  const piano = planHistoryBudgetRecovery({
+    currentBytes: 248 * MiB,
+    budget,
+    checkpoints: scenarioUtente,
+  });
+
+  assert.equal(piano.required, true);
+  assert.equal(piano.reason, "recovered-by-cache");
+  assert.equal(piano.reachedTarget, true);
+  // Bastano quattro delta per rientrare sotto il bersaglio di 157,44 MiB:
+  // 248 − (32+32+24+20) = 140. Il quinto non viene toccato, ed e' la proprieta'
+  // che conta piu' del numero: **non si distrugge piu' cache del necessario**.
+  assert.deepEqual(
+    [...piano.checkpointIdsToDrop].sort((a, b) => a - b),
+    [2, 3, 5, 7],
+    "si sacrificano i delta, che sono gli acceleratori piu' economici da rifare",
+  );
+  assert.equal(piano.projectedBytes, 140 * MiB);
+  assert.ok(
+    piano.projectedBytes <= budget.targetBytes,
+    "il recupero deve arrivare sotto il bersaglio",
+  );
+  assert.ok(
+    !piano.checkpointIdsToDrop.includes(9),
+    "fermarsi appena si rientra: ogni checkpoint in piu' buttato e' replay pagato per niente",
+  );
+  // L'ordine di eliminazione parte dalle foglie: il 3 se ne va prima del 2, che
+  // e' suo genitore. Invertirli renderebbe la catena inservibile.
+  assert.ok(
+    piano.checkpointIdsToDrop.indexOf(3) < piano.checkpointIdsToDrop.indexOf(2),
+    "una catena si consuma dalla punta verso la base",
+  );
+  // E soprattutto: nessun pavimento. La profondita' di Undo non viene toccata.
+  assert.ok(
+    !("floorCursor" in piano) && !("boundaryCursor" in piano),
+    "il recupero da cache non deve nemmeno poter esprimere un pavimento",
+  );
+
+  // Sotto il tetto non si tocca niente.
+  assert.equal(
+    planHistoryBudgetRecovery({ currentBytes: 100 * MiB, budget, checkpoints: scenarioUtente })
+      .reason,
+    "within-budget",
+  );
+
+  // Le catene non si spezzano: un genitore non se ne va prima del figlio.
+  // Qui il bersaglio richiede di intaccare anche i full, e l'ordine di
+  // eliminazione deve restare valido a ogni passo.
+  {
+    const stretto = planHistoryBudgetRecovery({
+      currentBytes: 248 * MiB,
+      budget: createHistoryBudget(60 * MiB),
+      checkpoints: scenarioUtente,
+    });
+    const buttati = new Set(stretto.checkpointIdsToDrop);
+    for (const voceCorrente of scenarioUtente) {
+      if (voceCorrente.parentId === null) continue;
+      if (buttati.has(voceCorrente.parentId)) {
+        assert.ok(
+          buttati.has(voceCorrente.id),
+          `catena spezzata: il genitore ${voceCorrente.parentId} e' stato buttato `
+          + `ma il figlio ${voceCorrente.id} e' rimasto`,
+        );
+      }
+    }
+  }
+
+  // A parita' di foglia, il delta se ne va prima del full.
+  //
+  // Nello scenario sopra le due regole coincidono — tutte le foglie sono delta —
+  // quindi non lo distinguerebbe. Qui ci sono due foglie eleggibili insieme, un
+  // full isolato e un delta, e una sola basta a rientrare: si deve scegliere il
+  // delta, perche' rifarlo costa meno e perche' un full e' la base su cui altri
+  // delta potrebbero poggiare in futuro.
+  {
+    const foglieMiste = [
+      voce(1, 1, null, "full", 5, 45),   // foglia: nessun figlio
+      voce(2, 2, null, "full", 10, 40),
+      voce(3, 2, 2, "delta", 20, 45),    // foglia: figlio di 2
+    ];
+    // 200 − 45 = 155, sotto il bersaglio di 157,44: una foglia sola basta.
+    const piano = planHistoryBudgetRecovery({
+      currentBytes: 200 * MiB,
+      budget: createHistoryBudget(192 * MiB),
+      checkpoints: foglieMiste,
+    });
+    assert.deepEqual(
+      piano.checkpointIdsToDrop,
+      [3],
+      "fra due foglie eleggibili si sacrifica il delta, non il full",
+    );
+  }
+
+  // Un checkpoint in uso da un replay non si tocca.
+  {
+    const conPin = planHistoryBudgetRecovery({
+      currentBytes: 248 * MiB,
+      budget,
+      checkpoints: scenarioUtente,
+      pinnedIds: [9, 7],
+    });
+    assert.ok(!conPin.checkpointIdsToDrop.includes(9));
+    assert.ok(!conPin.checkpointIdsToDrop.includes(7));
+  }
+
+  // Cache insufficiente: va detto, non mascherato.
+  {
+    const insufficiente = planHistoryBudgetRecovery({
+      currentBytes: 400 * MiB,
+      budget,
+      checkpoints: [voce(1, 1, null, "full", 3, 10)],
+    });
+    assert.equal(insufficiente.reason, "cache-insufficient");
+    assert.equal(insufficiente.reachedTarget, false);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ammissione: sotto pressione un checkpoint si rifiuta, non si ingrandisce.
+// ---------------------------------------------------------------------------
+{
+  const budget = createHistoryBudget(192 * MiB);
+
+  assert.equal(
+    admitHistoryCheckpoint({
+      currentBytes: 100 * MiB,
+      candidateBytes: 32 * MiB,
+      budget,
+      mandatory: false,
+    }).admitted,
+    true,
+    "con spazio si scatta",
+  );
+
+  assert.equal(
+    admitHistoryCheckpoint({
+      currentBytes: 150 * MiB,
+      candidateBytes: 32 * MiB,
+      budget,
+      mandatory: false,
+    }).admitted,
+    false,
+    "un acceleratore che sfora il bersaglio si paga in profondita' di Undo, non in velocita'",
+  );
+
+  assert.equal(
+    admitHistoryCheckpoint({
+      currentBytes: 150 * MiB,
+      candidateBytes: 32 * MiB,
+      budget,
+      mandatory: true,
+    }).admitted,
+    true,
+    "i boundary richiesti dal tetto di profondita' non sono facoltativi",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// La pressione non accelera piu' le catture.
+// ---------------------------------------------------------------------------
+{
+  for (const pressione of [0, 0.5, 0.9, 1]) {
+    assert.equal(
+      planHistoryCheckpoint({
+        actionsSinceCheckpoint: 0,
+        replayBatchesSinceCheckpoint: 0,
+        payloadBytesSinceCheckpoint: 0,
+        budgetPressure: pressione,
+      }).effectiveActionInterval,
+      HISTORY_CHECKPOINT_BASE_ACTION_INTERVAL,
+      `pressione ${pressione}: l'intervallo non deve accorciarsi`,
+    );
+  }
+  assert.equal(
+    planHistoryCheckpoint({
+      actionsSinceCheckpoint: 12,
+      replayBatchesSinceCheckpoint: 0,
+      payloadBytesSinceCheckpoint: 0,
+      budgetPressure: 1,
+    }).capture,
+    false,
+    "a meta' intervallo, sotto pressione piena, non si deve catturare comunque",
+  );
+}
+
+console.log("History budget recovery and checkpoint admission verified.");
+
+// ---------------------------------------------------------------------------
+// Scelta della rappresentazione: una preferenza non deve diventare un blocco.
+//
+// L'ordinale del full periodico avanza SOLO al commit. Con il full preferito
+// rifiutato e nessun ripiego, l'ottavo checkpoint restava l'ottavo per sempre:
+// ogni tentativo riproponeva lo stesso full da 32 MiB, un delta da 2 MiB non
+// veniva mai considerato, e la coda di replay cresceva senza fine.
+// ---------------------------------------------------------------------------
+{
+  const scelta = (o) => selectCheckpointRepresentation({
+    fullRequired: false,
+    rebasePreferred: false,
+    fullValid: true,
+    fullAdmitted: true,
+    deltaValid: true,
+    deltaAdmitted: true,
+    ...o,
+  });
+
+  // LA FAME. Ottavo checkpoint, full preferito ma rifiutato, delta disponibile.
+  assert.equal(
+    scelta({ rebasePreferred: true, fullAdmitted: false }),
+    "delta",
+    "un full periodico rifiutato deve ripiegare sul delta, non bloccare la cattura",
+  );
+
+  // Quando il full ci sta, il rebase periodico lo preferisce.
+  assert.equal(scelta({ rebasePreferred: true }), "full");
+
+  // Fuori dal rebase si preferisce il delta: stesso azzeramento della coda,
+  // molti meno byte.
+  assert.equal(scelta({ rebasePreferred: false }), "delta");
+
+  // Se il delta non e' valido — niente e' cambiato — si ripiega sul full.
+  assert.equal(scelta({ deltaValid: false }), "full");
+
+  // Il full obbligatorio non ha alternative: li' serve alla correttezza.
+  assert.equal(
+    scelta({ fullRequired: true, fullAdmitted: false, deltaAdmitted: true }),
+    "none",
+    "un delta non puo' sostituire un full richiesto dalla correttezza",
+  );
+  assert.equal(scelta({ fullRequired: true }), "full");
+
+  // Nessuno dei due entra: si rinuncia, e la coda crescera'. Va detto, non
+  // mascherato scattando qualcosa che non ci sta.
+  assert.equal(
+    scelta({ fullAdmitted: false, deltaAdmitted: false }),
+    "none",
+  );
+}
+
+console.log("Checkpoint representation selection verified.");
+
+// --- Guasto di cronologia visibile ------------------------------------------
+// Il messaggio d'errore vero vive un istante nella barra di stato e il primo
+// aggiornamento lo cancella; su telefono non c'e' console, quindi in mano
+// restano solo le righe ripetute che ne sono la conseguenza. Senza la causa
+// una diagnosi e' impossibile: il pannello deve conservarla e mostrarla.
+{
+  const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  const operazione = main.slice(
+    main.indexOf("async function runHistoryOperation("),
+    main.indexOf("async function clearLayerWithHistory("),
+  );
+  assert(
+    operazione.includes("ultimoGuastoCronologia = {"),
+    "runHistoryOperation deve registrare il guasto, non solo mostrarlo",
+  );
+  for (const campo of ["operazione: operation", "azione:", "cursore,", "messaggio,"]) {
+    assert(
+      operazione.includes(campo),
+      `il guasto registrato deve riportare ${campo}`,
+    );
+  }
+  const diagnostica = main.slice(
+    main.indexOf("function updateHistoryDiagnostics(): void"),
+    main.indexOf("function updateGpuMemoryAudit("),
+  );
+  assert(
+    diagnostica.includes("ULTIMO GUASTO"),
+    "il pannello deve mostrare l'ultimo guasto di cronologia",
+  );
+  assert(
+    diagnostica.includes("ultimoGuastoCronologia.messaggio"),
+    "il pannello deve riportare il messaggio originale, non solo che c'e' stato un guasto",
+  );
+}
+
+console.log("History failure surfacing verified.");

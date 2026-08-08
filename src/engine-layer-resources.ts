@@ -117,8 +117,12 @@ export interface LayerCompressedColdStorageResources {
   sourceHash: number;
   generation: number;
   encodeMs: number;
-  /** The current worker codec is intentionally restricted to RGBA8 bytes. */
-  format: "rgba8unorm";
+  /**
+   * Il codec del worker comprime byte grezzi, quindi segue il formato del
+   * documento invece di imporne uno. Il campo resta perche' un cold compresso
+   * di un formato non deve mai essere ripristinato dentro l'altro.
+   */
+  format: LayerFormat;
 }
 
 export interface LayerColdCompressionProgress {

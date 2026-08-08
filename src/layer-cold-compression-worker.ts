@@ -2,6 +2,7 @@ import {
   compressLosslessGzipChunk,
   gunzipBytes,
   hashCompressionBytes,
+  unshuffle16,
 } from "./layer-compression-study";
 import type {
   LayerColdCompressionWorkerRequest,
@@ -47,6 +48,7 @@ async function handleRequest(
     const result = await compressLosslessGzipChunk(
       new Uint8Array(request.bytes),
       request.tileByteLength,
+      request.bytesPerComponent ?? 1,
     );
     const output = result.bytes.buffer instanceof ArrayBuffer
         && result.bytes.byteOffset === 0
@@ -64,7 +66,11 @@ async function handleRequest(
   }
 
   const stored = new Uint8Array(request.bytes);
-  const restored = request.storage === "gzip"
+  // Il tag descrive la trasformazione applicata, quindi l'inverso si sceglie
+  // dal payload e non da cosa il chiamante crede di aver mandato.
+  const restored = request.storage === "gzip-shuffle16"
+    ? unshuffle16(await gunzipBytes(stored))
+    : request.storage === "gzip"
     ? await gunzipBytes(stored)
     : stored;
   if (restored.byteLength !== request.expectedRawBytes) {

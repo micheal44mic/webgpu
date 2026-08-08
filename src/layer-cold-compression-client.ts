@@ -8,6 +8,20 @@ export const LAYER_COLD_COMPRESSION_RUNTIME_BUILD =
 export const LAYER_COLD_COMPRESSION_IDLE_DELAY_MS = 1500 as const;
 export const LAYER_COLD_COMPRESSION_MINIMUM_DISTANCE = 2 as const;
 
+/**
+ * Quanto devono trattenere i livelli lontani, in frazione di un livello intero,
+ * perche' valga la pena comprimerli mentre la memoria abbonda.
+ *
+ * Sotto pressione questa soglia non si applica: li' si comprime comunque. Serve
+ * solo a evitare di pagare una decompressione futura per recuperare briciole in
+ * una pila di due o tre livelti appena abbozzati.
+ *
+ * Mezzo livello e' un valore iniziale da tarare: a 2048²/rgba16f sono 16 MiB, a
+ * 4096² sono 64. Alzarlo troppo riproduce il difetto che questa soglia doveva
+ * risolvere — una compressione che in pratica non parte mai.
+ */
+export const LAYER_COLD_COMPRESSION_IDLE_THRESHOLD_RATIO = 0.5;
+
 export interface LayerColdCompressedChunk {
   storage: LayerCompressionStorage;
   bytes: ArrayBuffer;
@@ -22,6 +36,8 @@ export type LayerColdCompressionWorkerRequest =
     id: number;
     bytes: ArrayBuffer;
     tileByteLength: number;
+    /** 2 per i documenti a mezza precisione: abilita il byte shuffle. */
+    bytesPerComponent?: number;
   }
   | {
     type: "decompress";
@@ -115,6 +131,7 @@ export class LayerColdCompressionClient {
   async compress(
     bytes: Uint8Array,
     tileByteLength: number,
+    bytesPerComponent = 1,
   ): Promise<{
     chunk: LayerColdCompressedChunk;
     measurement: LayerCompressionChunkMeasurement;
@@ -125,6 +142,7 @@ export class LayerColdCompressionClient {
       id: this.nextRequestId++,
       bytes: buffer,
       tileByteLength,
+      bytesPerComponent,
     }, [buffer]);
     if (response.type !== "compressed") {
       throw new Error("Risposta compressione inattesa.");

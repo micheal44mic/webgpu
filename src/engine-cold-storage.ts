@@ -33,8 +33,24 @@ function layerFormatBytesPerPixel(format: LayerFormat): number {
   return format === "rgba16float" ? 8 : 4;
 }
 
-/** Legacy worker codec contract; every use is guarded by assertRgba8CompressedStorage. */
-const RGBA8_COLD_CODEC_BYTES_PER_PIXEL = 4;
+/**
+ * Il codec del worker comprime byte grezzi: gzip non sa ne' gli interessa quale
+ * formato descrivano. L'unica cosa che dipendeva dal formato era la
+ * **contabilita'** — quanti byte pesa un tile — e ora la si chiede al documento
+ * invece di darla per scontata a quattro.
+ *
+ * Misurato il 7 agosto 2026 su una regione dipinta al 100% con grana, il caso
+ * peggiore: gzip da solo rende 2,30:1 su rgba16float, e 2,76:1 con il byte
+ * shuffle. Un livello lontano da 32 MiB scende a circa 11,6.
+ */
+function coldCodecTileBytes(format: LayerFormat): number {
+  return LAYER_STORAGE_TILE_SIZE * LAYER_STORAGE_TILE_SIZE
+    * layerFormatBytesPerPixel(format);
+}
+
+function coldCodecBytesPerRow(format: LayerFormat): number {
+  return LAYER_STORAGE_TILE_SIZE * layerFormatBytesPerPixel(format);
+}
 
 function assertColdMatchesHot(
   cold: LayerColdStorageResources,
@@ -53,14 +69,20 @@ function assertColdMatchesHot(
   }
 }
 
-function assertRgba8CompressedStorage(
+/**
+ * Il cold compresso deve descrivere lo stesso formato del documento. Non e' piu'
+ * una restrizione a RGBA8 — e' l'invariante che conta davvero: decomprimere byte
+ * di un formato dentro una texture di un altro produrrebbe pixel plausibili e
+ * sbagliati, che e' il modo peggiore di rompersi.
+ */
+function assertCompressedStorageMatchesDocument(
   engine: BrushEngine,
   compressed: LayerCompressedColdStorageResources,
 ): void {
-  if (engine.layerFormat !== "rgba8unorm" || compressed.format !== "rgba8unorm") {
+  if (compressed.format !== engine.layerFormat) {
     throw new Error(
       `Cold storage compresso ${compressed.format} incompatibile con documento `
-      + `${engine.layerFormat}; la compressione RGBA16F resta disabilitata.`,
+      + `${engine.layerFormat}; ripristino rifiutato.`,
     );
   }
 }
@@ -134,10 +156,10 @@ export async function compressOneDistantLayerInBackground(engine: BrushEngine, t
   if (!source) {
     return;
   }
-  if (engine.layerFormat !== "rgba8unorm" || source.cold.format !== "rgba8unorm") {
+  if (source.cold.format !== engine.layerFormat) {
     throw new Error(
-      `Compressione cold disponibile solo per RGBA8; ricevuto documento `
-      + `${engine.layerFormat} con seed ${source.cold.format}.`,
+      `Compressione cold: seed ${source.cold.format} non combacia col documento `
+      + `${engine.layerFormat}.`,
     );
   }
   let progress = engine.layerColdCompressionProgress;
@@ -162,8 +184,7 @@ export async function compressOneDistantLayerInBackground(engine: BrushEngine, t
     engine.layerColdCompressionProgress = progress;
   }
   engine.layerColdCompressionJobRunning = true;
-  const tileByteLength = LAYER_STORAGE_TILE_SIZE * LAYER_STORAGE_TILE_SIZE
-    * RGBA8_COLD_CODEC_BYTES_PER_PIXEL;
+  const tileByteLength = coldCodecTileBytes(source.cold.format);
   try {
     const client = await engine.requireLayerColdCompressionClient();
     await engine.waitForIdle();
@@ -207,7 +228,12 @@ export async function compressOneDistantLayerInBackground(engine: BrushEngine, t
       ) {
         return;
       }
-      const result = await client.compress(payload, tileByteLength);
+      const result = await client.compress(
+        payload,
+        tileByteLength,
+        // Un mezzo float ha componenti da due byte: e' li' che lo shuffle paga.
+        source.cold.format === "rgba16float" ? 2 : 1,
+      );
       if (
         token !== engine.layerColdCompressionEpoch
         || engine.layerColdCompressionProgress !== progress
@@ -267,7 +293,7 @@ export async function compressOneDistantLayerInBackground(engine: BrushEngine, t
       sourceHash: progress.sourceHash,
       generation: source.cold.generation,
       encodeMs: progress.encodeMs,
-      format: "rgba8unorm",
+      format: source.cold.format,
     };
     source.gpu.cold = null;
     engine.layerColdCompressionProgress = null;
@@ -298,7 +324,152 @@ export async function compressOneDistantLayerInBackground(engine: BrushEngine, t
   }
 }
 
-export async function ensureLayerColdStorageResident(engine: BrushEngine, 
+/**
+ * Comprime un cold storage qualunque e ne restituisce i chunk.
+ *
+ * La compressione dei livelli vive dentro una macchina a stati sua, legata al
+ * candidato in corso e interrompibile a ogni chunk. La cronologia ha bisogno
+ * della stessa trasformazione ma senza quella macchina: travasa un checkpoint
+ * intero mentre il motore e' fermo, e non ha un "candidato" da riconsiderare.
+ * Estrarre qui la sola conversione evita di duplicare il codec e di intrecciare
+ * due politiche di interruzione diverse sullo stesso stato.
+ *
+ * Non distrugge la sorgente: chi chiama decide quando, dopo aver verificato che
+ * il risultato sia valido.
+ */
+export async function compressColdStorageResources(
+  engine: BrushEngine,
+  cold: LayerColdStorageResources,
+  label: string,
+): Promise<LayerCompressedColdStorageResources> {
+  const client = await engine.requireLayerColdCompressionClient();
+  const tileByteLength = coldCodecTileBytes(cold.format);
+  const bytesPerComponent = cold.format === "rgba16float" ? 2 : 1;
+  const chunks: LayerColdCompressedChunk[] = [];
+  let rawBytes = 0;
+  let storedBytes = 0;
+  let encodeMs = 0;
+  let sourceHash = 0x811c9dc5;
+  for (
+    let firstArrayLayer = 0;
+    firstArrayLayer < cold.tileIndices.length;
+    firstArrayLayer += 4
+  ) {
+    const chunkTileCount = Math.min(4, cold.tileIndices.length - firstArrayLayer);
+    const payload = await engine.readLayerColdStorageTiles(
+      cold,
+      firstArrayLayer,
+      chunkTileCount,
+      label,
+    );
+    const result = await client.compress(payload, tileByteLength, bytesPerComponent);
+    chunks.push(result.chunk);
+    rawBytes += result.measurement.rawBytes;
+    storedBytes += result.chunk.storedBytes;
+    encodeMs += result.measurement.encodeMs;
+    sourceHash = combineCompressionHashes(
+      sourceHash,
+      result.chunk.sourceHash,
+      result.measurement.rawBytes,
+    );
+  }
+  if (rawBytes !== cold.memoryBytes) {
+    throw new Error(
+      `${label}: compressi ${rawBytes} byte, attesi ${cold.memoryBytes}.`,
+    );
+  }
+  return {
+    tileIndices: [...cold.tileIndices],
+    chunks,
+    rawBytes,
+    storedBytes,
+    sourceHash,
+    generation: cold.generation,
+    encodeMs,
+    format: cold.format,
+  };
+}
+
+/**
+ * Ricostruisce un cold storage dai chunk compressi.
+ *
+ * L'integrita' e' verificata in aggregato — conteggio tile, byte e hash — prima
+ * di restituire la texture. Un ripristino che sbaglia in silenzio produrrebbe
+ * pixel plausibili al posto di quelli dell'utente, che e' il modo peggiore in
+ * cui un Undo possa rompersi: meglio fallire rumorosamente.
+ */
+export async function restoreColdStorageResources(
+  engine: BrushEngine,
+  compressed: LayerCompressedColdStorageResources,
+  label: string,
+): Promise<LayerColdStorageResources> {
+  const tileByteLength = coldCodecTileBytes(compressed.format);
+  const texture = engine.device.createTexture({
+    label,
+    size: {
+      width: LAYER_STORAGE_TILE_SIZE,
+      height: LAYER_STORAGE_TILE_SIZE,
+      depthOrArrayLayers: compressed.tileIndices.length,
+    },
+    format: compressed.format,
+    usage:
+      GPUTextureUsage.COPY_SRC
+      | GPUTextureUsage.COPY_DST
+      | GPUTextureUsage.TEXTURE_BINDING,
+  });
+  try {
+    let firstArrayLayer = 0;
+    let restoredBytes = 0;
+    let restoredHash = 0x811c9dc5;
+    for (const chunk of compressed.chunks) {
+      const restored = await decompressLayerColdChunk(engine, chunk);
+      if (restored.byteLength % tileByteLength !== 0) {
+        throw new Error(`${label}: chunk non allineato ai tile.`);
+      }
+      const chunkTileCount = restored.byteLength / tileByteLength;
+      engine.device.queue.writeTexture(
+        { texture, origin: { x: 0, y: 0, z: firstArrayLayer } },
+        restored,
+        {
+          bytesPerRow: coldCodecBytesPerRow(compressed.format),
+          rowsPerImage: LAYER_STORAGE_TILE_SIZE,
+        },
+        {
+          width: LAYER_STORAGE_TILE_SIZE,
+          height: LAYER_STORAGE_TILE_SIZE,
+          depthOrArrayLayers: chunkTileCount,
+        },
+      );
+      firstArrayLayer += chunkTileCount;
+      restoredBytes += restored.byteLength;
+      restoredHash = combineCompressionHashes(
+        restoredHash,
+        chunk.sourceHash,
+        restored.byteLength,
+      );
+    }
+    if (
+      firstArrayLayer !== compressed.tileIndices.length
+      || restoredBytes !== compressed.rawBytes
+      || restoredHash !== compressed.sourceHash
+    ) {
+      throw new Error(`${label}: integrità aggregata non valida.`);
+    }
+    await engine.waitForGpuCapped(label);
+    return {
+      texture,
+      tileIndices: compressed.tileIndices,
+      memoryBytes: compressed.rawBytes,
+      generation: compressed.generation,
+      format: compressed.format,
+    };
+  } catch (error) {
+    texture.destroy();
+    throw error;
+  }
+}
+
+export async function ensureLayerColdStorageResident(engine: BrushEngine,
   record: LayerRecord,
   gpu: LayerGpuResources,
 ): Promise<void> {
@@ -309,9 +480,8 @@ export async function ensureLayerColdStorageResident(engine: BrushEngine,
   if (!compressed) {
     throw new Error(`Livello ${record.id}: storage autorevole mancante.`);
   }
-  assertRgba8CompressedStorage(engine, compressed);
-  const tileByteLength = LAYER_STORAGE_TILE_SIZE * LAYER_STORAGE_TILE_SIZE
-    * RGBA8_COLD_CODEC_BYTES_PER_PIXEL;
+  assertCompressedStorageMatchesDocument(engine, compressed);
+  const tileByteLength = coldCodecTileBytes(compressed.format);
   const texture = engine.device.createTexture({
     label: `Cold ripristinato livello ${record.id} #${compressed.generation}`,
     size: {
@@ -341,7 +511,7 @@ export async function ensureLayerColdStorageResident(engine: BrushEngine,
         { texture, origin: { x: 0, y: 0, z: firstArrayLayer } },
         restored,
         {
-          bytesPerRow: LAYER_STORAGE_TILE_SIZE * RGBA8_COLD_CODEC_BYTES_PER_PIXEL,
+          bytesPerRow: coldCodecBytesPerRow(compressed.format),
           rowsPerImage: LAYER_STORAGE_TILE_SIZE,
         },
         {
@@ -608,14 +778,13 @@ export async function uploadCompressedLayerIntoHot(engine: BrushEngine,
   compressed: LayerCompressedColdStorageResources,
   hot: LayerTextureResources,
 ): Promise<void> {
-  assertRgba8CompressedStorage(engine, compressed);
+  assertCompressedStorageMatchesDocument(engine, compressed);
   if (hot.format !== compressed.format) {
     throw new Error(
       `Upload cold compresso ${compressed.format} incompatibile con texture hot ${hot.format}.`,
     );
   }
-  const tileByteLength = LAYER_STORAGE_TILE_SIZE * LAYER_STORAGE_TILE_SIZE
-    * RGBA8_COLD_CODEC_BYTES_PER_PIXEL;
+  const tileByteLength = coldCodecTileBytes(compressed.format);
   let firstTile = 0;
   let restoredBytes = 0;
   let restoredHash = 0x811c9dc5;
@@ -649,7 +818,7 @@ export async function uploadCompressedLayerIntoHot(engine: BrushEngine,
         },
         restored.subarray(byteOffset, byteOffset + tileByteLength),
         {
-          bytesPerRow: LAYER_STORAGE_TILE_SIZE * RGBA8_COLD_CODEC_BYTES_PER_PIXEL,
+          bytesPerRow: coldCodecBytesPerRow(compressed.format),
           rowsPerImage: LAYER_STORAGE_TILE_SIZE,
         },
         {

@@ -110,7 +110,11 @@ import {
   PENCIL_BRUSH_PRESET,
   resolveBrushPresetSettings,
 } from "./brush-presets";
-import type { EngineStats, StrokePerformanceProfile } from "./engine-stats";
+import type {
+  EngineGpuMemoryStats,
+  EngineStats,
+  StrokePerformanceProfile,
+} from "./engine-stats";
 import type {
   FragmentCoverageStrategy,
   ShapeMaskDecodeStrategy,
@@ -932,8 +936,11 @@ const appleMobileMemoryLifecycle =
   /iPhone|iPad|iPod/i.test(navigator.userAgent)
   || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 const layerColdCompressionMode = pageSearchParams.get("layerCompressionRuntime");
-const layerColdCompressionRequested =
-  layerColdCompressionMode === "1";
+// Attiva di default: il codec segue ormai il formato del documento e il
+// cancello decide da solo quando vale la pena, quindi non c'e' piu' niente da
+// tenere dietro a un flag. `?layerCompressionRuntime=0` la spegne, e resta
+// l'unico modo di misurare un prima/dopo sullo stesso build.
+const layerColdCompressionRequested = layerColdCompressionMode !== "0";
 const layerColdDirectHotHydrationEnabled =
   pageSearchParams.get("layerDirectHotHydration") !== "0";
 const layerColdAdjacentPrefetchMode =
@@ -1072,6 +1079,9 @@ const engine = new BrushEngine(canvas, {
   layerCompressionTestEnabled: layerCompressionStudyRequested,
   vectorTextPrototypeEnabled: vectorTextEditorEnabled,
   layerColdCompressionEnabled: layerColdCompressionRequested,
+  // Le notifiche restano su richiesta esplicita: ora che la compressione gira
+  // sempre, annunciare ogni livello compresso sarebbe rumore, non informazione.
+  // Il pannello memoria mostra comunque lo stato di ogni livello in tempo reale.
   layerColdCompressionStatusEnabled: layerColdCompressionMode === "1",
   layerColdDirectHotHydrationEnabled,
   layerColdAdjacentPrefetchEnabled,
@@ -4922,6 +4932,25 @@ function interactionLocked(): boolean {
   return operationLocked() || activePointerId !== null;
 }
 
+/**
+ * Lucchetto per la sola scorciatoia di cronologia.
+ *
+ * `interactionLocked()` comprende `historyUiBusy` e `historyState.busy`, cioe'
+ * e' vero **mentre un annullamento sta lavorando**. Usarlo qui significherebbe
+ * scartare i tasti premuti durante il passo precedente: esattamente il difetto
+ * che la coda esiste per risolvere. Accodare un altro passo di cronologia
+ * mentre uno e' in corso e' legittimo — sara' il turno di esecuzione a
+ * verificare che sia ancora possibile.
+ */
+function historyShortcutLocked(): boolean {
+  return !engineInitialized
+    || layerSwitching
+    || activePointerId !== null
+    || historyState.openEdit === "transform"
+    || historyState.openEdit === "raster-property"
+    || benchmarkRunning;
+}
+
 function updateHistoryControls(): void {
   const locked = interactionLocked();
   undoStrokeButton.disabled = locked || !historyState.canUndo;
@@ -5013,14 +5042,71 @@ function updateHistoryControls(): void {
   syncMobileBrushControlsVisibility();
 }
 
-async function runHistoryOperation(operation: "undo" | "redo"): Promise<void> {
+/**
+ * Passi di cronologia richiesti mentre uno era gia' in corso.
+ *
+ * Un Undo che deve rigiocare da un checkpoint tiene il motore occupato a lungo,
+ * e per tutta quella finestra `moveHistoryCursor` rifiutava in silenzio: chi
+ * premeva cinque volte ne vedeva uno solo e concludeva, ragionevolmente, che
+ * l'Undo fosse rotto. I comandi ora si accodano invece di sparire.
+ *
+ * Il tetto esiste perche' un tasto tenuto premuto genera eventi molto piu' in
+ * fretta di quanto un replay possa consumarli: senza, la coda crescerebbe
+ * all'infinito e l'utente si troverebbe a guardare passi che non ha piu'
+ * chiesto. Trentadue e' abbondante per un gesto umano e resta interrompibile.
+ */
+const HISTORY_QUEUE_MAXIMUM = 32;
+const historyOperationQueue: ("undo" | "redo")[] = [];
+let historyQueueDraining = false;
+
+function requestHistoryOperation(operation: "undo" | "redo"): void {
+  if (historyOperationQueue.length >= HISTORY_QUEUE_MAXIMUM) return;
+  historyOperationQueue.push(operation);
+  void drainHistoryOperations();
+}
+
+async function drainHistoryOperations(): Promise<void> {
+  if (historyQueueDraining) return;
+  historyQueueDraining = true;
+  try {
+    while (historyOperationQueue.length > 0) {
+      const operation = historyOperationQueue.shift();
+      if (!operation) break;
+      // Un passo che non si muove e' un muro, non un intoppo: insistere
+      // trentadue volte ripeterebbe lo stesso messaggio d'errore e basta.
+      if (!await runHistoryOperation(operation)) {
+        historyOperationQueue.length = 0;
+        break;
+      }
+    }
+  } finally {
+    historyQueueDraining = false;
+  }
+}
+
+/**
+ * Ultimo guasto di una transazione di cronologia, tenuto finche' non ne arriva
+ * un altro. La barra di stato lo mostra ma il primo aggiornamento lo cancella,
+ * e su telefono non c'e' console: senza questo, l'errore che conta resta
+ * invisibile e in mano restano solo le righe ripetute che ne sono la
+ * conseguenza. Il pannello lo rende fotografabile.
+ */
+let ultimoGuastoCronologia: {
+  readonly operazione: "undo" | "redo";
+  readonly azione: string;
+  readonly cursore: number;
+  readonly messaggio: string;
+} | null = null;
+
+/** Ritorna se il cursore si e' davvero mosso: la coda si ferma quando non si muove. */
+async function runHistoryOperation(operation: "undo" | "redo"): Promise<boolean> {
   if (interactionLocked() || activePointerId !== null) {
     const reason = operation === "undo"
       ? historyState.undoBlockedReason
       : historyState.redoBlockedReason;
     statusElement.textContent = reason ?? "Termina l'operazione corrente e riprova.";
     statusElement.className = "status";
-    return;
+    return false;
   }
   if (operation === "undo" ? !historyState.canUndo : !historyState.canRedo) {
     const reason = operation === "undo"
@@ -5028,20 +5114,41 @@ async function runHistoryOperation(operation: "undo" | "redo"): Promise<void> {
       : historyState.redoBlockedReason;
     statusElement.textContent = reason ?? "Operazione di cronologia non disponibile.";
     statusElement.className = "status";
-    return;
+    return false;
   }
 
   historyUiBusy = true;
   updateHistoryControls();
   updateHumanStrokeControls();
+  let moved = false;
   try {
-    if (operation === "undo") {
-      await engine.undo();
-    } else {
-      await engine.redo();
+    moved = operation === "undo" ? await engine.undo() : await engine.redo();
+    if (!moved) {
+      // Il motore rifiuta anche in silenzio: senza questo, un passo scartato
+      // resterebbe indistinguibile da un passo eseguito. Il motivo va riletto
+      // adesso, perche' quello in `historyState` e' anteriore al tentativo.
+      const fresco = engine.getHistoryState();
+      statusElement.textContent = (operation === "undo"
+        ? fresco.undoBlockedReason
+        : fresco.redoBlockedReason)
+        ?? "Passo di cronologia non eseguibile in questo momento.";
+      statusElement.className = "status";
     }
   } catch (error) {
-    statusElement.textContent = error instanceof Error ? error.message : String(error);
+    const messaggio = error instanceof Error ? error.message : String(error);
+    // Il cursore non si e' mosso, quindi l'azione attraversata e' quella che
+    // stava per essere annullata (Undo) o riapplicata (Redo).
+    const cursore = engine.historyCursor;
+    const attraversata = operation === "undo"
+      ? engine.historyActions[cursore - 1]
+      : engine.historyActions[cursore];
+    ultimoGuastoCronologia = {
+      operazione: operation,
+      azione: attraversata?.kind ?? "sconosciuta",
+      cursore,
+      messaggio,
+    };
+    statusElement.textContent = messaggio;
     statusElement.className = "status error";
   } finally {
     historyUiBusy = false;
@@ -5049,6 +5156,7 @@ async function runHistoryOperation(operation: "undo" | "redo"): Promise<void> {
     updateHistoryControls();
     updateHumanStrokeControls();
   }
+  return moved;
 }
 
 async function clearLayerWithHistory(): Promise<void> {
@@ -5519,12 +5627,15 @@ mobileLayerOptionsButton.addEventListener("click", () => {
 // per cui l`abbiamo resa journaled. Un dialogo qui sarebbe attrito inutile.
 mobileLayerDeleteButton.addEventListener("click", () => {
   const properties = mobileLayerProperties(mobileLayerContextKey);
-  if (
-    !properties
-    || properties.kind !== "raster"
-    || properties.rasterIndex === null
-    || properties.locked
-  ) {
+  if (!properties || properties.kind !== "raster" || properties.rasterIndex === null) {
+    return;
+  }
+  // Il livello bloccato usciva di qui in silenzio: il pulsante non faceva
+  // niente e non diceva niente, indistinguibile da un guasto.
+  if (properties.locked) {
+    closeMobileLayerContextMenu(false);
+    statusElement.textContent = "Livello bloccato: sbloccalo prima di eliminarlo.";
+    statusElement.className = "status";
     return;
   }
   const index = properties.rasterIndex;
@@ -6198,10 +6309,10 @@ clearLayerButton.addEventListener("click", () => {
   void clearLayerWithHistory();
 });
 undoStrokeButton.addEventListener("click", () => {
-  void runHistoryOperation("undo");
+  requestHistoryOperation("undo");
 });
 redoStrokeButton.addEventListener("click", () => {
-  void runHistoryOperation("redo");
+  requestHistoryOperation("redo");
 });
 
 function selectMobileCanvasTool(
@@ -6364,10 +6475,10 @@ for (const button of mobileToolsEffectButtons) {
   });
 }
 mobileUndoButton.addEventListener("click", () => {
-  void runHistoryOperation("undo");
+  requestHistoryOperation("undo");
 });
 mobileRedoButton.addEventListener("click", () => {
-  void runHistoryOperation("redo");
+  requestHistoryOperation("redo");
 });
 fitViewButton.addEventListener("click", () => {
   if (!interactionLocked() && activePointerId === null) {
@@ -8489,7 +8600,12 @@ function updateHistoryDiagnostics(): void {
     + `profondità (tetto ${telemetry.maximumUndoDepth}); pavimento `
     + `${telemetry.floorCursor}, azioni ${state.actionCount}, profondità Undo ${depth}. `
     + `Compattazioni Redo ${telemetry.redoCompactionsCompleted} complete, `
-    + `${telemetry.redoCompactionsAborted} interrotte.`;
+    + `${telemetry.redoCompactionsAborted} interrotte.`
+    + (ultimoGuastoCronologia
+      ? ` ⚠ ULTIMO GUASTO: ${ultimoGuastoCronologia.operazione} su `
+        + `«${ultimoGuastoCronologia.azione}» al cursore `
+        + `${ultimoGuastoCronologia.cursore} → ${ultimoGuastoCronologia.messaggio}`
+      : "");
 }
 
 /**
@@ -8529,6 +8645,80 @@ function updateGpuMemoryAudit(
   );
 }
 
+const STATO_LIVELLO_ETICHETTA: Record<string, string> = {
+  hot: "caldo",
+  cold: "freddo",
+  compressed: "compresso",
+  empty: "vuoto",
+};
+
+/**
+ * Peso di ogni singolo livello, in ordine di consumo.
+ *
+ * Le categorie sopra dicono quanto pesano *i livelli*; questa dice **quale**, ed
+ * e' la domanda che ci si fa davvero quando la memoria sale. L'ordine e' per
+ * peso decrescente come il resto del pannello, ma l'indice di documento resta
+ * scritto in ogni riga: senza, un livello che scala posizione sembrerebbe un
+ * livello diverso.
+ */
+function renderLayerMemoryBreakdown(
+  livelli: EngineGpuMemoryStats["layers"],
+  inizializzato: boolean,
+): void {
+  const lista = element<HTMLElement>("gpuLayerBreakdown");
+  const totale = livelli.reduce((somma, livello) => somma + livello.totalMiB, 0);
+  element<HTMLElement>("gpuLayerMemoryTotal").textContent = inizializzato
+    ? formatMemoryMiB(totale)
+    : "—";
+  if (!inizializzato || livelli.length === 0) {
+    lista.replaceChildren();
+    return;
+  }
+
+  const ordinati = [...livelli].sort((sinistra, destra) =>
+    destra.totalMiB - sinistra.totalMiB || sinistra.index - destra.index
+  );
+  lista.replaceChildren(...ordinati.map((livello) => {
+    const riga = document.createElement("div");
+    riga.dataset.memoryRow = "";
+    riga.dataset.layerMemoryId = String(livello.id);
+    riga.classList.add("gpu-layer-row");
+    const nome = document.createElement("dt");
+    const stato = STATO_LIVELLO_ETICHETTA[livello.state] ?? livello.state;
+    nome.textContent = `${livello.index + 1}. ${livello.name} · ${stato}`
+      + `${livello.active ? " · attivo" : ""}${livello.visible ? "" : " · nascosto"}`;
+    const valore = document.createElement("dd");
+    valore.textContent = formatMemoryMiB(livello.totalMiB);
+    valore.title = livello.compressedCpuMiB > 0
+      ? "La RAM compressa pesa sul limite di processo ma non sul totale GPU."
+      : "Somma delle risorse GPU vive di questo livello.";
+    riga.append(nome, valore);
+
+    // Le componenti si mostrano solo quando esistono: una riga che elenca tre
+    // zeri nasconde l'unico numero che conta. Vanno su una riga propria perche'
+    // il nome del livello lo scrive l'utente e puo' essere lungo quanto vuole.
+    const parti: string[] = [];
+    if (livello.hotMiB > 0) parti.push(`${formatMemoryMiB(livello.hotMiB)} texture`);
+    if (livello.mipMiB > 0) parti.push(`${formatMemoryMiB(livello.mipMiB)} mip`);
+    if (livello.coldMiB > 0) parti.push(`${formatMemoryMiB(livello.coldMiB)} tile`);
+    if (livello.compressedCpuMiB > 0) {
+      const rapporto = livello.compressedRawMiB / livello.compressedCpuMiB;
+      parti.push(
+        `${formatMemoryMiB(livello.compressedCpuMiB)} RAM compressa`
+        + (rapporto > 1 ? ` (${rapporto.toFixed(1)}:1)` : ""),
+      );
+    }
+    if (parti.length > 0) {
+      const scomposizione = document.createElement("dd");
+      scomposizione.className = "gpu-layer-parts";
+      scomposizione.textContent = parti.join(" + ");
+      riga.append(scomposizione);
+    }
+    riga.classList.toggle("memory-zero", livello.totalMiB < 0.05);
+    return riga;
+  }));
+}
+
 /**
  * Ripartizione misurata. Le categorie **partizionano** il registro: la loro
  * somma e' il totale per costruzione, non per manutenzione. Se un giorno non lo
@@ -8553,9 +8743,21 @@ function renderMeasuredBreakdown(
     .map((entry) => entry.category)
     .filter((category) => !(GPU_MEMORY_CATEGORY_ORDER as readonly string[]).includes(category))
     .sort((left, right) => left.localeCompare(right));
-  const righe = [...GPU_MEMORY_CATEGORY_ORDER, ...extraCategories].map((category) =>
-    categoryByName.get(category) ?? { category, bytes: 0, peakBytes: 0, count: 0 }
-  );
+  // Ordine per consumo, dal piu' grande al piu' piccolo, ricalcolato a ogni
+  // aggiornamento: un pannello che vuole dire "cosa sta mangiando la memoria
+  // adesso" deve mettere in cima cio' che la sta mangiando, non seguire un
+  // elenco fisso in cui la riga che conta puo' finire settima. A parita' di
+  // byte correnti decide il picco, poi il nome, cosi' le righe a zero non si
+  // rimescolano fra loro a ogni frame.
+  const righe = [...GPU_MEMORY_CATEGORY_ORDER, ...extraCategories]
+    .map((category) =>
+      categoryByName.get(category) ?? { category, bytes: 0, peakBytes: 0, count: 0 }
+    )
+    .sort((sinistra, destra) =>
+      destra.bytes - sinistra.bytes
+      || destra.peakBytes - sinistra.peakBytes
+      || sinistra.category.localeCompare(destra.category)
+    );
   lista.replaceChildren(...righe.map((voce) => {
     const riga = document.createElement("div");
     riga.dataset.memoryRow = "";
@@ -8715,6 +8917,22 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
   element<HTMLElement>("gpuMemoryPeak").textContent = `picco ${formatMemoryMiB(peakMiB)}`;
   element<HTMLElement>("gpuMemoryCompact").textContent = formattedTotal;
   element<HTMLElement>("memoryStat").textContent = formattedTotal;
+
+  renderLayerMemoryBreakdown(stats.gpuMemory.layers, engineInitialized);
+
+  // Governor in sola osservazione: la riga esiste per calibrare il tetto, non
+  // per giustificare un rifiuto. Finche' dice "osserva", nessuna allocazione e'
+  // stata impedita.
+  const governor = stats.gpuMemory;
+  element<HTMLElement>("gpuMemoryGovernor").textContent = engineInitialized
+    ? `Governor · osserva · zona ${governor.governorZone} · `
+      + `${formatMemoryMiB(governor.governorUsedMiB)} su `
+      + `${formatMemoryMiB(governor.governorCeilingMiB)} utilizzabili `
+      + `(tetto ${formatMemoryMiB(governor.governorHardCapMiB)}) · `
+      + `margine ${formatMemoryMiB(governor.governorHeadroomMiB)} · `
+      + `liberabile ${formatMemoryMiB(governor.governorReclaimableMiB)} · `
+      + `promesso ${formatMemoryMiB(governor.governorReservedMiB)}`
+    : "Governor · in attesa del device";
 
   if (!engineInitialized) {
     previousGpuMemoryTotalMiB = null;
@@ -11886,10 +12104,14 @@ window.addEventListener("keydown", (event) => {
   }
 });
 
+// `event.repeat` non viene piu' scartato: era il motivo per cui tenere premuto
+// Ctrl+Z produceva **esattamente un** annullamento e mai una sequenza. Scartarlo
+// serviva a non lanciare replay sovrapposti, ma quel compito ora spetta alla
+// coda, che serializza e ha un tetto suo. Filtrare qui significava buttare via
+// l'intenzione dell'utente invece di metterla in fila.
 window.addEventListener("keydown", (event) => {
   if (
     event.defaultPrevented
-    || event.repeat
     || event.isComposing
     || event.altKey
     || (!event.ctrlKey && !event.metaKey)
@@ -11905,12 +12127,12 @@ window.addEventListener("keydown", (event) => {
 
   const operation = event.shiftKey ? "redo" : "undo";
   const available = operation === "undo" ? historyState.canUndo : historyState.canRedo;
-  if (!available || interactionLocked() || activePointerId !== null) {
+  if (!available || historyShortcutLocked()) {
     return;
   }
 
   event.preventDefault();
-  void runHistoryOperation(operation);
+  requestHistoryOperation(operation);
 });
 
 canvas.addEventListener(

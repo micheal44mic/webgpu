@@ -7,7 +7,7 @@ import {
 import { assertShaderCompiled } from "./engine-gpu-utils";
 import type { LayerFormat, RasterTransformSnapshot } from "./engine-types";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
-import { truncateRedoHistory } from "./engine-history-runtime";
+import { commitHistoryActionAtomically } from "./engine-history-runtime";
 import { publishMixedScene } from "./engine-vector-text-runtime";
 import type { DirtyRect } from "./engine-stroke-types";
 import type {
@@ -23,6 +23,7 @@ import {
   rasterTransformSamplingPadding,
   rasterTransformScratchRect,
   rasterTransformTileMask,
+  tileMaskCoveringRect,
   RASTER_TRANSFORM_UNIFORM_BYTES,
   type RasterTransformAffine,
 } from "./raster-transform-math";
@@ -318,7 +319,12 @@ function setAuthoritativeMetadata(
   engine.layerHasContent = bounds !== null;
   record.contentBounds = copyRect(bounds);
   record.hasContent = bounds !== null;
-  record.storageTileMask.set(tileMask);
+  // Punto unico in cui bounds e maschera vengono scritti insieme: e' qui che
+  // l'invariante "contenuto dentro i tile" va imposta, non nei quattro
+  // chiamanti. Vedi `tileMaskCoveringRect`.
+  record.storageTileMask.set(
+    tileMaskCoveringRect(tileMask, bounds, engine.layerSize),
+  );
 }
 
 function encodeTransformPass(
@@ -462,12 +468,32 @@ export async function beginRasterLayerTransform(
           && action.scope === "layer"
           && action.geometryBounds
         ) {
-          sourceBounds = { ...action.geometryBounds };
+          // Unione, non sostituzione. Il `geometryBounds` journaled e'
+          // l'estensione della geometria trasformata, e si riusa proprio
+          // perche' puo' eccedere il contenuto rasterizzato: senza, ogni giro
+          // ritaglierebbe un po' di piu'. Ma per arrotondamento nella
+          // rasterizzazione e' anche sistematicamente **piu' piccolo** del
+          // contenuto reale di qualche pixel (misurato: record 1079x736 contro
+          // journal 1074x730 dopo due Applica). Sostituirlo dimensiona lo
+          // scratch su un rettangolo che non contiene i pixel del livello, e la
+          // riapertura muore su "sourceContentBounds deve essere contenuto
+          // nello scratch": da li' Trasforma non si apre piu' su quel livello.
+          sourceBounds = unionRects(sourceRasterBounds, action.geometryBounds)
+            ?? sourceRasterBounds;
         }
         break;
       }
     }
-    const sourceTileMask = record.storageTileMask.slice();
+    // Anche in lettura, non solo in scrittura: lo scratch nasce da questa
+    // maschera ed e' contro di lui che `packRasterTransformUniforms` verifica
+    // il contenuto. Imporlo qui ripara anche un livello che ha gia' divergenza
+    // da prima — da una sessione precedente o da un altro percorso che scrive
+    // la maschera — invece di limitarsi a prevenirla d'ora in poi.
+    const sourceTileMask = tileMaskCoveringRect(
+      record.storageTileMask,
+      sourceBounds,
+      engine.layerSize,
+    );
     const sourceSelectionTileMask = selectionScope
       ? engine.pixelSelectionTileMask.slice()
       : null;
@@ -649,6 +675,13 @@ export async function beginRasterLayerTransform(
       },
     );
     engine.activeRasterTransformSession = session;
+    // La preparazione e' finita: da qui la sessione e' aperta e ad ammettere o
+    // rifiutare le operazioni e' `activeRasterTransformSession`, non piu'
+    // `historyBusy`. Lasciarlo acceso rendeva Undo un rifiuto **silenzioso** a
+    // tempo indefinito, e per giunta con il motivo sbagliato: `historyBusy`
+    // viene interrogato prima della sessione, quindi l'utente leggeva "un'altra
+    // operazione in corso" invece di "chiudi la trasformazione".
+    engine.historyBusy = false;
     engine.publishStatus(
       selectionScope
         ? `Sposta i pixel selezionati di ${record.name}: Applica o Annulla.`
@@ -988,32 +1021,11 @@ export async function commitRasterLayerTransform(engine: BrushEngine): Promise<b
         seed: null,
         baseBounds: null,
       };
-    const cursorBefore = engine.historyCursor;
-    const redoActions = engine.historyActions.slice(cursorBefore);
-    const discardedVectorLength = engine.discardedVectorRasterHistoryActions.length;
-    const discardedImportLength = engine.discardedRasterImportHistoryActions.length;
-    const discardedTransformLength = engine.discardedRasterTransformHistoryActions.length;
-    const compactionPendingBefore = engine.historyCompactionPending;
-    try {
-      truncateRedoHistory(engine);
-      engine.historyActions.push(action);
-      engine.nextHistoryActionId = actionId + 1;
-      engine.historyCursor = engine.historyActions.length;
-      if (engine.activeStrokeProfile) {
-        engine.activeStrokeProfile.historyCommittedActions += 1;
-      }
-      journalPublished = true;
-    } catch (journalError) {
-      engine.historyActions.length = cursorBefore;
-      for (const redoAction of redoActions) engine.historyActions.push(redoAction);
-      engine.historyCursor = cursorBefore;
-      engine.nextHistoryActionId = actionId;
-      engine.discardedVectorRasterHistoryActions.length = discardedVectorLength;
-      engine.discardedRasterImportHistoryActions.length = discardedImportLength;
-      engine.discardedRasterTransformHistoryActions.length = discardedTransformLength;
-      engine.historyCompactionPending = compactionPendingBefore;
-      throw journalError;
+    commitHistoryActionAtomically(engine, action);
+    if (engine.activeStrokeProfile) {
+      engine.activeStrokeProfile.historyCommittedActions += 1;
     }
+    journalPublished = true;
   } catch (error) {
     // The history cursor is untouched until the checkpoint exists. Restore the
     // immutable source if allocation or publication fails.

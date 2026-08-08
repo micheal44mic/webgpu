@@ -800,6 +800,7 @@ export async function rasterizeVectorNodeToLayer(
         layerRecord: record,
         rasterLayerIndex,
         vectorState,
+        activeRasterLayerIdBefore: originalActiveId,
         seed,
         baseBounds: { ...rendered.bounds },
         baseTileMask: record.storageTileMask.slice(),
@@ -841,10 +842,22 @@ export async function rasterizeVectorNodeToLayer(
           engine.layerStack.remove(stillAttached);
         }
       }
-      const candidateGpu = engine.layerGpu.get(recordId);
-      if (candidateGpu) {
-        engine.layerGpu.delete(recordId);
-        destroyLayerGpuResources(engine, candidateGpu);
+      // Le risorse si liberano **solo** se il record e' davvero uscito dallo
+      // stack. Lo stacco sopra e' condizionato (non si puo' rimuovere il
+      // livello attivo), la liberazione no: se il candidato resta attaccato —
+      // e per giunta attivo — restava nello stack con le risorse GPU
+      // distrutte, e ogni lookup successiva ci inciampava. Un record senza GPU
+      // e' peggio del leak che si voleva evitare, e va dichiarato.
+      if (engine.layerStack.indexOfId(recordId) >= 0) {
+        rollbackErrors.push(
+          new Error(`Livello candidato ${recordId} non staccabile durante il rollback.`),
+        );
+      } else {
+        const candidateGpu = engine.layerGpu.get(recordId);
+        if (candidateGpu) {
+          engine.layerGpu.delete(recordId);
+          destroyLayerGpuResources(engine, candidateGpu);
+        }
       }
     }
     destroyLayerColdStorage(seed);
@@ -907,11 +920,11 @@ async function undoVectorRasterization(
   if (targetIndex < 0) throw new Error("Raster vettoriale da annullare non presente.");
   await switchActiveForStructuralHistory(engine, targetIndex);
   const activeTargetIndex = engine.layerStack.indexOfId(action.layerId);
-  const fallbackIndex = activeTargetIndex > 0
-    ? activeTargetIndex - 1
-    : activeTargetIndex + 1;
-  if (fallbackIndex < 0 || fallbackIndex >= engine.layerStack.count) {
-    throw new Error("Nessun raster di fallback per annullare la conversione vettoriale.");
+  const fallbackIndex = engine.layerStack.indexOfId(action.activeRasterLayerIdBefore);
+  if (fallbackIndex < 0 || action.activeRasterLayerIdBefore === action.layerId) {
+    throw new Error(
+      "Raster attivo precedente alla rasterizzazione non disponibile.",
+    );
   }
 
   // Crossing this structural action means every later raster edit has already
@@ -919,7 +932,10 @@ async function undoVectorRasterization(
   // generated layer, which is about to leave the scene; packing that same hot
   // texture into a second cold copy would only add a GPU fence and memory peak.
   scene.replaceRasterWithVector(action.layerId, action.vectorState);
-  engine.vectorTextPreviewExcludedNodeId = null;
+  const restoredSelection = scene.selected;
+  engine.vectorTextPreviewExcludedNodeId = restoredSelection.kind === "text"
+    ? restoredSelection.textNodeId
+    : null;
   clearVectorTextPresentationForTransaction(engine);
   engine.layerStack.setActiveIndex(fallbackIndex);
   try {
@@ -1013,8 +1029,18 @@ async function redoVectorRasterization(
     } catch (restoreError) {
       rollbackErrors.push(restoreError);
     }
-    engine.layerGpu.delete(action.layerId);
-    if (gpu) destroyLayerGpuResources(engine, gpu);
+    // Come nel percorso di rasterizzazione: si libera solo se il record e'
+    // uscito davvero dallo stack. Lo stacco sopra e' condizionato, questa
+    // liberazione era incondizionata, e la combinazione lasciava un livello
+    // attivo con le risorse GPU distrutte.
+    if (engine.layerStack.indexOfId(action.layerId) >= 0) {
+      rollbackErrors.push(
+        new Error(`Livello ${action.layerId} non staccabile durante il rollback del Redo.`),
+      );
+    } else {
+      engine.layerGpu.delete(action.layerId);
+      if (gpu) destroyLayerGpuResources(engine, gpu);
+    }
     if (rollbackErrors.length > 0) {
       engine.latchDocumentStateInconsistent(
         "Redo della rasterizzazione vettoriale fallito e rollback incompleto.",

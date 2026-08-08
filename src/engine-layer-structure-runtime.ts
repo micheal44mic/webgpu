@@ -87,32 +87,157 @@ async function attachLayer(
   if (engine.layerStack.indexOfId(layerId) >= 0) {
     throw new Error(`Livello ${layerId} gia' presente durante il ripristino.`);
   }
+  if (engine.layerGpu.has(layerId)) {
+    throw new Error(`Risorse GPU del livello ${layerId} gia' presenti durante il ripristino.`);
+  }
+  // L'ultimo livello non e' cancellabile, quindi esiste sempre un raster vivo
+  // che puo' ricevere la selezione se la compensazione deve rimuovere la voce
+  // appena inserita nella scena.
+  const fallbackLayerId = engine.layerStack.active.id;
   let gpu: LayerGpuResources | null = null;
-  if (entry.seed) {
-    gpu = await hydrateLayerFromSeed(engine, layerId, entry.seed);
-    if (entry.baseBounds) {
-      entry.layerRecord.contentBounds = { ...entry.baseBounds };
-      entry.layerRecord.hasContent = true;
+  try {
+    if (entry.seed) {
+      gpu = await hydrateLayerFromSeed(engine, layerId, entry.seed);
+      if (entry.baseBounds) {
+        entry.layerRecord.contentBounds = { ...entry.baseBounds };
+        entry.layerRecord.hasContent = true;
+      }
+    } else {
+      gpu = await allocateLayerGpuResources(
+        engine,
+        engine.layerFormat,
+        `Ripristino livello vuoto ${layerId}`,
+      );
     }
-  } else {
-    gpu = await allocateLayerGpuResources(
-      engine,
-      engine.layerFormat,
-      `Ripristino livello vuoto ${layerId}`,
-    );
+    if (!gpu) throw new Error(`Risorse del livello ${layerId} non allocate.`);
+    const rasterInsertionIndex = Math.min(entry.rasterLayerIndex, engine.layerStack.count);
+    const sceneInsertionIndex = Math.min(entry.sceneIndex, scene.items.length);
+    engine.layerStack.attach(entry.layerRecord, rasterInsertionIndex);
+    engine.layerGpu.set(layerId, gpu);
+    scene.insertRasterAt(layerId, sceneInsertionIndex, true);
+    if (entry.clippingParentId !== null) {
+      engine.layerStack.setClippingParent(
+        engine.layerStack.indexOfId(layerId),
+        entry.clippingParentId,
+      );
+    }
+  } catch (error) {
+    const rollbackErrors: unknown[] = [];
+
+    // I metodi mutanti possono lanciare dopo aver scritto: per decidere cosa
+    // compensare si osserva lo stato vivo, non un flag aggiornato dal chiamante.
+    if (scene.indexOfKey(`raster:${layerId}`) >= 0) {
+      try {
+        scene.removeRaster(layerId, fallbackLayerId);
+      } catch (sceneError) {
+        if (scene.indexOfKey(`raster:${layerId}`) >= 0) rollbackErrors.push(sceneError);
+      }
+    }
+    const stackIndex = engine.layerStack.indexOfId(layerId);
+    if (stackIndex >= 0) {
+      try {
+        engine.layerStack.remove(stackIndex);
+      } catch (stackError) {
+        if (engine.layerStack.indexOfId(layerId) >= 0) rollbackErrors.push(stackError);
+      }
+    }
+
+    if (engine.layerStack.indexOfId(layerId) < 0) {
+      if (engine.layerGpu.get(layerId) === gpu) engine.layerGpu.delete(layerId);
+      try {
+        if (gpu) destroyLayerGpuResources(engine, gpu);
+      } catch (gpuError) {
+        rollbackErrors.push(gpuError);
+      }
+    } else {
+      rollbackErrors.push(
+        new Error(`Livello ${layerId} rimasto nello stack dopo attach fallito.`),
+      );
+    }
+
+    if (rollbackErrors.length > 0) {
+      engine.latchDocumentStateInconsistent(
+        "Ripristino livello fallito e compensazione incompleta: ricarica la pagina.",
+      );
+      const originalMessage = error instanceof Error ? error.message : String(error);
+      const details = rollbackErrors.map((failure) =>
+        failure instanceof Error ? failure.message : String(failure)
+      ).join("; ");
+      throw new Error(`${originalMessage}; rollback attach fallito: ${details}`);
+    }
+    throw error;
   }
-  if (!gpu) throw new Error(`Risorse del livello ${layerId} non allocate.`);
-  const rasterInsertionIndex = Math.min(entry.rasterLayerIndex, engine.layerStack.count);
-  const sceneInsertionIndex = Math.min(entry.sceneIndex, scene.items.length);
-  engine.layerStack.attach(entry.layerRecord, rasterInsertionIndex);
-  engine.layerGpu.set(layerId, gpu);
-  scene.insertRasterAt(layerId, sceneInsertionIndex, true);
-  if (entry.clippingParentId !== null) {
-    engine.layerStack.setClippingParent(
-      engine.layerStack.indexOfId(layerId),
-      entry.clippingParentId,
-    );
+}
+
+/**
+ * Annulla la parte strutturale gia' applicata quando la transazione fallisce a
+ * meta'. Serve perche' lo stacco e' **distruttivo**: toglie il record dallo
+ * stack e distrugge le risorse GPU. Ripristinare la sola scena rimetterebbe la
+ * chiave `raster:N` senza il livello dietro, e da quel momento ogni lettura
+ * delle statistiche fallirebbe per sempre invece di una volta sola.
+ *
+ * I livelli staccati si riattaccano nell'ordine originale (inverso dello
+ * stacco, che va dall'alto in basso) cosi' ogni indice di inserimento e'
+ * ancora valido mentre la pila ricresce.
+ */
+async function rollbackStructuralMutation(
+  engine: BrushEngine,
+  detached: DeletedLayerEntry[],
+  attached: DeletedLayerEntry[],
+): Promise<void> {
+  for (const entry of [...detached].reverse()) await attachLayer(engine, entry);
+  if (attached.length === 0) return;
+  // Il fallback dello stacco deve essere un livello che sopravvive: quelli
+  // appena attaccati stanno per sparire, e `attach()` ha selezionato l'ultimo.
+  const attachedIds = new Set(attached.map((entry) => entry.layerRecord.id));
+  const survivor = engine.layerStack.layers.find((layer) => !attachedIds.has(layer.id));
+  if (!survivor) throw new Error("Nessun livello superstite per annullare il ripristino.");
+  for (const entry of [...attached].reverse()) {
+    await detachLayer(engine, entry.layerRecord.id, survivor.id);
   }
+}
+
+/**
+ * Primo raster rimasto nella scena senza livello nello stack. E' l'invariante
+ * che `createMixedSceneSnapshot()` pretende: verificarla qui trasforma un
+ * rollback riuscito a meta' in un errore dichiarato una volta, invece che in
+ * un documento che lancia a ogni frame senza dire perche'.
+ */
+function firstSceneRasterMissingFromStack(
+  engine: BrushEngine,
+  scene: ReturnType<typeof requireMixedSceneStack>,
+): number | null {
+  for (const item of scene.items) {
+    if (item.kind !== "raster") continue;
+    if (engine.layerStack.indexOfId(item.rasterLayerId) < 0) return item.rasterLayerId;
+  }
+  return null;
+}
+
+/** Invariante simmetrica: ogni record raster deve avere una voce nella scena. */
+function firstStackRasterMissingFromScene(
+  engine: BrushEngine,
+  scene: ReturnType<typeof requireMixedSceneStack>,
+): number | null {
+  for (const layer of engine.layerStack.layers) {
+    if (scene.indexOfKey(`raster:${layer.id}`) < 0) return layer.id;
+  }
+  return null;
+}
+
+function restoreReferenceLayerId(
+  engine: BrushEngine,
+  layerId: number | null,
+): void {
+  if (layerId === null) {
+    engine.layerStack.setReferenceIndex(null);
+    return;
+  }
+  const index = engine.layerStack.indexOfId(layerId);
+  if (index < 0) {
+    throw new Error(`Raster di riferimento ${layerId} non ripristinabile.`);
+  }
+  engine.layerStack.setReferenceIndex(index);
 }
 
 /** Libera i seed di un'azione di cancellazione abbandonata dal Redo. */
@@ -133,6 +258,14 @@ export async function applyLayerDeleteHistory(
   const scene = requireMixedSceneStack(engine);
   const sceneState = scene.captureState();
   const previousExcludedNodeId = engine.vectorTextPreviewExcludedNodeId;
+  const previousActiveLayerId = engine.layerStack.active.id;
+  const previousReferenceLayerId = engine.layerStack.referenceLayerId;
+  // Cosa e' stato mutato **davvero**, non cosa si voleva mutare: il rollback
+  // deve annullare la struttura, non solo la scena. Vedi
+  // `rollbackStructuralMutation`.
+  const detached: DeletedLayerEntry[] = [];
+  const attached: DeletedLayerEntry[] = [];
+  let presentationMayNeedRetarget = false;
   engine.layerSwitchBusy = true;
   try {
     if (delta < 0) {
@@ -141,9 +274,13 @@ export async function applyLayerDeleteHistory(
       // suo interno. Prepararlo due volte evacua la texture del livello attivo
       // e la seconda attivazione la trova non residente.
       const outgoingActiveLayerId = engine.layerStack.active.id;
+      presentationMayNeedRetarget = true;
       engine.persistActiveLayerState();
       await engine.prepareActiveLayerForSwitch();
-      for (const entry of action.entries) await attachLayer(engine, entry);
+      for (const entry of action.entries) {
+        await attachLayer(engine, entry);
+        attached.push(entry);
+      }
       const restoredIndex = engine.layerStack.indexOfId(action.activeRasterLayerIdBefore);
       if (restoredIndex < 0) {
         throw new Error("Raster attivo precedente alla cancellazione non ripristinabile.");
@@ -160,6 +297,7 @@ export async function applyLayerDeleteHistory(
       // `prepareActiveLayerForSwitch()` acceso. Come il Redo di raster-import,
       // dopo l'inserimento si imposta l'indice desiderato e si esegue sempre la
       // riattivazione completa a partire dal superstite uscente.
+      restoreReferenceLayerId(engine, action.referenceRasterLayerIdBefore);
       engine.layerStack.setActiveIndex(restoredIndex);
       await engine.activateLayer(outgoingIndexAfterAttachment, "structural-history");
       if (scene.indexOfKey(action.selectedKeyBefore) >= 0) {
@@ -170,7 +308,26 @@ export async function applyLayerDeleteHistory(
       if (survivorIndex < 0) {
         throw new Error("Raster superstite della cancellazione non presente.");
       }
+      presentationMayNeedRetarget = true;
       await switchActiveForStructuralHistory(engine, survivorIndex);
+      // `switchActiveForStructuralHistory` finisce con un'attivazione riuscita,
+      // e quella **scongela** la presentazione. Lo stacco procederebbe quindi a
+      // presentazione viva: il gate dei frame guarda `layerPresentationFrozen`,
+      // non `layerSwitchBusy`, cosi' un frame passa fra lo stacco e la
+      // riattivazione e trova i segmenti di composizione che citano ancora il
+      // livello staccato — `clippingUnit()` lancia "Livello N assente dallo
+      // stack". Serve una scena **segmentata** per vederlo: con soli raster c'e'
+      // una tratta sola e nessuna cita il livello che se ne va, quindi il caso
+      // si manifesta solo con un vettore fra i raster (testo, SVG, immagine).
+      // Lo spegne la riattivazione qui sotto, che ricostruisce i segmenti.
+      //
+      // Si drena prima di congelare: la commutazione si chiude pubblicando il
+      // retarget degli effetti, che sporca il display e chiede un frame.
+      // Congelare con quel lavoro gia' in coda farebbe abortire la transazione
+      // dalla guardia di `waitForIdle` ("Presentazione congelata con lavoro
+      // render pendente"). Lo stacco in se' non ne aggiunge altro.
+      await engine.waitForIdle();
+      engine.layerPresentationFrozen = true;
       // Dall'alto verso il basso: staccare il piu' alto per primo lascia
       // invariati gli indici di quelli sotto.
       for (const entry of [...action.entries].reverse()) {
@@ -181,6 +338,7 @@ export async function applyLayerDeleteHistory(
         );
         entry.rasterLayerIndex = observed.rasterLayerIndex;
         entry.sceneIndex = observed.sceneIndex;
+        detached.push(entry);
       }
       // `switchActiveForStructuralHistory` congela la presentazione; lo stacco
       // sposta gli indici e sporca il display. Senza questa seconda attivazione
@@ -193,6 +351,10 @@ export async function applyLayerDeleteHistory(
       if (survivorAfterDetach < 0) {
         throw new Error("Raster superstite perso durante lo stacco.");
       }
+      restoreReferenceLayerId(engine, action.referenceRasterLayerIdAfter);
+      if (scene.indexOfKey(action.selectedKeyAfter) >= 0) {
+        scene.select(action.selectedKeyAfter);
+      }
       engine.layerStack.setActiveIndex(survivorAfterDetach);
       await engine.activateLayer(survivorAfterDetach, "structural-history");
     }
@@ -204,9 +366,46 @@ export async function applyLayerDeleteHistory(
     engine.publishActiveLayerChange();
   } catch (error) {
     try {
+      const structureChanged = detached.length > 0 || attached.length > 0;
+      const mustRetarget = presentationMayNeedRetarget
+        || structureChanged
+        || engine.layerPresentationFrozen;
+      // Un'attivazione riuscita ha gia' riaperto il rendering e puo' aver
+      // lasciato un frame in coda. Drenarlo prima di congelare impedisce al
+      // rollback di distruggere risorse ancora referenziate.
+      if (mustRetarget && !engine.layerPresentationFrozen) {
+        await engine.waitForIdle();
+        engine.layerPresentationFrozen = true;
+      }
+      await rollbackStructuralMutation(engine, detached, attached);
       scene.restoreState(sceneState);
       engine.vectorTextPreviewExcludedNodeId = previousExcludedNodeId;
+      restoreReferenceLayerId(engine, previousReferenceLayerId);
       clearVectorTextPresentationForTransaction(engine);
+      const previousActiveIndex = engine.layerStack.indexOfId(previousActiveLayerId);
+      if (previousActiveIndex < 0) {
+        throw new Error(`Raster attivo ${previousActiveLayerId} perso durante il rollback.`);
+      }
+      // Il freeze della presentazione lo spegne solo una riattivazione vera:
+      // il `finally` ricostruisce la cache ma lascia acceso il flag, e la
+      // transazione **successiva** si rifiuterebbe di partire. Si ritenta
+      // anche se e' proprio l'attivazione ad aver fallito: annullata la
+      // mutazione il tentativo parte da uno stato coerente, e se fallisce di
+      // nuovo il `catch` esterno dichiara il documento inconsistente invece di
+      // lasciarlo mezzo commutato.
+      const outgoingIndex = engine.layerStack.indexOfId(engine.layerStack.active.id);
+      engine.layerStack.setActiveIndex(previousActiveIndex);
+      if (mustRetarget) {
+        await engine.activateLayer(outgoingIndex, "structural-history");
+      }
+      const orphan = firstSceneRasterMissingFromStack(engine, scene);
+      if (orphan !== null) {
+        throw new Error(`Raster ${orphan} restato nella scena senza livello.`);
+      }
+      const missing = firstStackRasterMissingFromScene(engine, scene);
+      if (missing !== null) {
+        throw new Error(`Livello raster ${missing} restato nello stack senza scena.`);
+      }
     } catch (restoreError) {
       engine.latchDocumentStateInconsistent(
         "Mutazione strutturale fallita e rollback incompleto: ricarica la pagina.",
@@ -246,15 +445,20 @@ export async function applyLayerAddHistory(
     seed: null,
     baseBounds: null,
   };
+  const addedKey = `raster:${action.layerRecord.id}` as const;
   await applyLayerDeleteHistory(
     engine,
     {
       id: action.id,
       kind: "layer-delete",
       entries: [entry],
-      selectedKeyBefore: action.selectedKeyBefore,
-      activeRasterLayerIdBefore: action.activeRasterLayerIdBefore,
+      // Prima della cancellazione sintetica siamo nello stato dopo Add.
+      selectedKeyBefore: addedKey,
+      selectedKeyAfter: action.selectedKeyBefore,
+      activeRasterLayerIdBefore: action.layerRecord.id,
       activeRasterLayerIdAfter: action.activeRasterLayerIdBefore,
+      referenceRasterLayerIdBefore: action.referenceRasterLayerIdBefore,
+      referenceRasterLayerIdAfter: action.referenceRasterLayerIdBefore,
     },
     // Creare e' l'inverso di cancellare: annullare una creazione stacca.
     delta < 0 ? 1 : -1,

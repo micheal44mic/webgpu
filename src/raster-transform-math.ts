@@ -427,6 +427,47 @@ export function rasterTransformScratchRect(
 }
 
 /**
+ * Accende nella maschera ogni tile che tocca `rect`, restituendo una copia.
+ *
+ * Serve a garantire l'invariante che il resto del Trasforma da' per scontata:
+ * **il contenuto dichiarato deve stare dentro i tile dichiarati**. I due valori
+ * nascono da calcoli diversi — i bounds sono continui, la maschera e' per tile
+ * proiettata tile per tile — e divergono di pochi pixel a ogni Applica. Basta
+ * un pixel di sforo e la riapertura muore su "sourceContentBounds deve essere
+ * contenuto nello scratch", perche' lo scratch si deriva dalla maschera:
+ * misurato dopo due Applica, contenuto `0,0 903x490` contro maschera
+ * `0,0 896x512`, sette pixel fuori a destra.
+ *
+ * La maschera puo' solo **crescere**: nel dubbio si salva un tile in piu' in
+ * cold storage, mai un pixel in meno.
+ */
+export function tileMaskCoveringRect(
+  mask: Uint32Array,
+  rect: RasterTransformRect | null,
+  documentSize = RASTER_TRANSFORM_DOCUMENT_SIZE,
+  tileSize = RASTER_TRANSFORM_TILE_SIZE,
+): Uint32Array {
+  const gridSize = requireTileMask(mask, documentSize, tileSize);
+  const covering = mask.slice();
+  if (!rect) return covering;
+  const clipped = clipRasterTransformRect(rect, documentSize);
+  if (!clipped) return covering;
+  const firstTileX = Math.floor(clipped.x / tileSize);
+  const firstTileY = Math.floor(clipped.y / tileSize);
+  // `rectRight` e' esclusivo: l'ultimo pixel e' `right - 1`, e prendere il tile
+  // di `right` accenderebbe una colonna vuota su un bordo allineato.
+  const lastTileX = Math.floor((rectRight(clipped) - 1) / tileSize);
+  const lastTileY = Math.floor((rectBottom(clipped) - 1) / tileSize);
+  for (let tileY = firstTileY; tileY <= lastTileY; tileY += 1) {
+    for (let tileX = firstTileX; tileX <= lastTileX; tileX += 1) {
+      const tileIndex = tileY * gridSize + tileX;
+      covering[tileIndex >>> 5] |= 1 << (tileIndex & 31);
+    }
+  }
+  return covering;
+}
+
+/**
  * Projects every occupied source tile separately. A transformed sparse mask
  * therefore stays sparse instead of degenerating into the AABB of all content.
  */

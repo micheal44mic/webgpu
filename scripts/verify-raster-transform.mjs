@@ -17,6 +17,7 @@ import {
   rasterTransformScratchRect,
   rasterTransformTileIndices,
   rasterTransformTileMask,
+  tileMaskCoveringRect,
 } from "../src/raster-transform-math.ts";
 import {
   RASTER_SELECTION_TRANSLATE_SHADER_STRATEGY,
@@ -311,7 +312,11 @@ assert.match(runtimeSource, /if \(session\.terminal\)/);
 assert.match(runtimeSource, /retainSessionForRecovery = true/);
 assert.doesNotMatch(runtimeSource, /callbacks\.onStatus/);
 assert.match(runtimeSource, /runGpuAllocationTransaction\([\s\S]{0,180}Pipeline Trasforma raster/);
-assert.match(runtimeSource, /const action: RasterTransformHistoryAction[\s\S]{0,2000}truncateRedoHistory/);
+assert.match(
+  runtimeSource,
+  /const action: RasterTransformHistoryAction[\s\S]{0,1200}commitHistoryActionAtomically\(engine, action\)/,
+  "il checkpoint Trasforma deve pubblicare journal e ramo Redo con rollback comune",
+);
 assert.match(runtimeSource, /released|destroyLayerColdStorage\(seed\)/);
 assert.match(runtimeSource, /session\.scope === "selection"[\s\S]{0,240}Math\.round\(transform\.translationX\)/);
 assert.match(runtimeSource, /La Selezione pixel può essere soltanto spostata/);
@@ -340,3 +345,114 @@ assert.match(
 );
 
 console.log("Raster transform math/shader verification passed.");
+
+// --- Invariante contenuto/tile ------------------------------------------------
+// Lo scratch si deriva dalla maschera di tile, e `packRasterTransformUniforms`
+// pretende che il contenuto ci stia dentro. Bounds e maschera nascono pero' da
+// calcoli diversi — continui i primi, per tile proiettata la seconda — e
+// divergono di pochi pixel a ogni Applica. Misurato in browser dopo due
+// Applica: contenuto `0,0 903x490` contro maschera `0,0 896x512`, sette pixel
+// fuori a destra. Da li' Trasforma non si riapriva piu' su quel livello.
+{
+  const size = RASTER_TRANSFORM_DOCUMENT_SIZE;
+  const tile = RASTER_TRANSFORM_TILE_SIZE;
+  const grid = size / tile;
+  const parole = Math.ceil((grid * grid) / 32);
+  const accendi = (mask, tileX, tileY) => {
+    const indice = tileY * grid + tileX;
+    mask[indice >>> 5] |= 1 << (indice & 31);
+  };
+  const identita = { translationX: 0, translationY: 0, scale: 1, rotation: 0 };
+
+  const maschera = new Uint32Array(parole);
+  for (let tileY = 0; tileY < 4; tileY += 1) {
+    for (let tileX = 0; tileX < 7; tileX += 1) accendi(maschera, tileX, tileY);
+  }
+  const scratchPrima = rasterTransformScratchRect(maschera, size, tile);
+  assert.equal(scratchPrima.width, 7 * tile, "scratch di partenza inatteso");
+
+  // Il caso reale: il contenuto sfora la maschera di 7 px a destra.
+  const contenuto = { x: 0, y: 0, width: 7 * tile + 7, height: 4 * tile - 22 };
+  assert.throws(
+    () => packRasterTransformUniforms({
+      sourceScratchRect: scratchPrima,
+      sourceContentBounds: contenuto,
+      sourcePivot: { x: 0, y: 0 },
+      transform: identita,
+    }),
+    /sourceContentBounds deve essere contenuto nello scratch/,
+    "senza copertura il caso misurato deve ancora fallire: e' la regressione",
+  );
+
+  const coperta = tileMaskCoveringRect(maschera, contenuto, size, tile);
+  const scratchDopo = rasterTransformScratchRect(coperta, size, tile);
+  assert.equal(scratchDopo.width, 8 * tile, "la copertura deve accendere la colonna mancante");
+  packRasterTransformUniforms({
+    sourceScratchRect: scratchDopo,
+    sourceContentBounds: contenuto,
+    sourcePivot: { x: 0, y: 0 },
+    transform: identita,
+  });
+
+  // Non deve mutare l'ingresso: la maschera del record e' condivisa.
+  assert.equal(rasterTransformScratchRect(maschera, size, tile).width, 7 * tile,
+    "tileMaskCoveringRect non deve mutare la maschera ricevuta");
+
+  // Bordo esatto: `right` e' esclusivo, quindi un rettangolo che finisce sul
+  // confine non deve accendere la colonna successiva.
+  const esatto = tileMaskCoveringRect(
+    maschera, { x: 0, y: 0, width: 7 * tile, height: 4 * tile }, size, tile,
+  );
+  assert.equal(rasterTransformScratchRect(esatto, size, tile).width, 7 * tile,
+    "un rettangolo allineato al tile non deve accendere una colonna vuota");
+
+  // La maschera puo' solo crescere, e un rettangolo nullo la lascia com'e'.
+  const nulla = tileMaskCoveringRect(maschera, null, size, tile);
+  assert.deepEqual([...nulla], [...maschera], "rect nullo deve lasciare la maschera invariata");
+  for (let parola = 0; parola < parole; parola += 1) {
+    assert.equal(coperta[parola] & maschera[parola], maschera[parola],
+      "la copertura non puo' spegnere tile gia' accesi");
+  }
+}
+
+// --- Guardie del runtime ------------------------------------------------------
+{
+  const engine = readFileSync(new URL("../src/brush-engine.ts", import.meta.url), "utf8");
+  const guardia = engine.slice(
+    engine.indexOf("  assertLayerSwitchAllowed(): void {"),
+    engine.indexOf("  assertLayerSwitchAllowed(): void {") + 900,
+  );
+  // La sessione Trasforma tiene viva la texture hot del sorgente: un cambio di
+  // livello la evacua e l'Applica successivo la trova mancante, perdendo la
+  // trasformazione in silenzio. L'Undo era gia' protetto, `addLayer` no.
+  assert.ok(
+    guardia.includes("this.activeRasterTransformSession"),
+    "il cambio livello va rifiutato mentre una sessione Trasforma e' aperta",
+  );
+  assert.ok(
+    guardia.indexOf("this.activeRasterTransformSession")
+      < guardia.indexOf("this.activeStroke"),
+    "il caso Trasforma va controllato per primo, per dare il messaggio che dice cosa fare",
+  );
+
+  const runtime = readFileSync(
+    new URL("../src/engine-raster-transform-runtime.ts", import.meta.url),
+    "utf8",
+  );
+  const metadati = runtime.slice(
+    runtime.indexOf("function setAuthoritativeMetadata("),
+    runtime.indexOf("function encodeTransformPass("),
+  );
+  assert.match(
+    metadati,
+    /record\.storageTileMask\.set\(\s*\n?\s*tileMaskCoveringRect\(tileMask, bounds, engine\.layerSize\),?\s*\n?\s*\)/,
+    "bounds e maschera vanno scritti insieme rispettando l'invariante",
+  );
+  assert.match(
+    runtime,
+    /const sourceTileMask = tileMaskCoveringRect\(\s*\n\s*record\.storageTileMask,\s*\n\s*sourceBounds,/,
+    "anche in lettura, per riparare un livello gia' divergente",
+  );
+}
+
+console.log("Raster transform tile/bounds invariant verified.");

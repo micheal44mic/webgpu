@@ -154,7 +154,23 @@ assert.match(
   "il prefetch raw dei vicini deve essere disabilitabile sui device memory-constrained",
 );
 assert.match(engineSource, /compressOneDistantLayerInBackground/);
-assert.match(engineSource, /await client\.compress\(payload, tileByteLength\)/);
+assert.match(
+  engineSource,
+  /await client\.compress\(\s*payload,\s*tileByteLength,/,
+  "la compressione deve continuare a passare per il client del worker",
+);
+// Il byte shuffle vale solo su componenti a due byte: su RGBA8 sarebbe una
+// permutazione inutile che costa una copia.
+assert.match(
+  engineSource,
+  /source\.cold\.format === "rgba16float" \? 2 : 1/,
+  "il numero di byte per componente deve derivare dal formato del cold",
+);
+assert.match(
+  workerSource,
+  /request\.storage === "gzip-shuffle16"[\s\S]*?unshuffle16\(await gunzipBytes\(stored\)\)/,
+  "il worker deve invertire lo shuffle in base al tag del payload",
+);
 const beginStrokeStart = engineSource.indexOf("beginStrokeAtLayer(point: LayerPoint)");
 const beginStrokeEnd = engineSource.indexOf("extendStroke(", beginStrokeStart);
 const beginStrokeBody = engineSource.slice(beginStrokeStart, beginStrokeEnd);

@@ -29,7 +29,9 @@ import { type SubmitTiming } from "./engine-stats";
 import { compactDryBlendHistoryGeometry } from "./blend-renderer";
 import {
   vectorHistoryStatesEqual,
+  type HistoryAction,
   type HistoryRenderBatch,
+  type LayerDeleteHistoryAction,
   type MixedSceneReorderHistoryAction,
   type RasterLayerMetadataHistoryAction,
   type RasterLayerMetadataHistoryProperty,
@@ -249,7 +251,6 @@ async function refreshRasterLayerMetadataPresentation(
     await engine.rebuildMergedLayerSurfaces(
       "history-replay",
       engine.getVectorTextViewState(),
-      { reuseUnchangedRasterRuns: true },
     );
   } else if (engine.layerStack.active.id === action.layerId) {
     // One retarget updates only the active effect resources, bounds and
@@ -259,6 +260,14 @@ async function refreshRasterLayerMetadataPresentation(
       "history-replay",
       true,
       "content-bounds",
+    );
+  } else {
+    // Gli identificatori delle raster-run contengono gli ID dei livelli, non
+    // gli stili. Un effetto modificato su un raster inattivo deve quindi
+    // ricostruire la run invece di riutilizzarne una byte-diversa ma omonima.
+    await engine.rebuildMergedLayerSurfaces(
+      "history-replay",
+      engine.getVectorTextViewState(),
     );
   }
   engine.paintDisplayMipValidThroughLevel = 0;
@@ -320,6 +329,21 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
     return false;
   }
   if (engine.layerSwitchBusy) {
+    return false;
+  }
+  // Queste due erano coperte solo di rimbalzo, perche' chi le apriva lasciava
+  // acceso `historyBusy`. Farle valere qui in modo esplicito e' cio' che
+  // permette a quel flag di tornare a significare "un'operazione di cronologia
+  // e' in corso" invece di "qualcosa, da qualche parte, e' aperto".
+  if (engine.activeRasterTransformSession) {
+    engine.publishStatus(
+      "Applica o annulla la trasformazione prima di usare la cronologia.",
+      "error",
+    );
+    return false;
+  }
+  if (engine.historyStateInconsistent) {
+    engine.publishStatus("La cronologia è incoerente: ricarica la pagina.", "error");
     return false;
   }
   const nextCursor = engine.historyCursor + delta;
@@ -1077,6 +1101,7 @@ export async function compactDiscardedHistoryIncrementally(
   const retainedVectorRasterIds = new Set<number>();
   const retainedImportIds = new Set<number>();
   const retainedTransformIds = new Set<number>();
+  const retainedLayerDeleteIds = new Set<number>();
   const retainedBatches: HistoryRenderBatch[] = [];
   const batchSlicesToRelease: GpuHistorySlice[] = [];
   const selectionRevisionsToRelease: Array<{
@@ -1091,6 +1116,7 @@ export async function compactDiscardedHistoryIncrementally(
   const vectorRasterActionsToDestroy: VectorRasterizeHistoryAction[] = [];
   const importActionsToDestroy: RasterImportHistoryAction[] = [];
   const transformActionsToDestroy: RasterTransformHistoryAction[] = [];
+  const layerDeleteActionsToDestroy: LayerDeleteHistoryAction[] = [];
   const releasedTransformSelectionSlices = new Set<number>();
   let retainedStampCount = 0;
   let chunks = 0;
@@ -1196,6 +1222,8 @@ export async function compactDiscardedHistoryIncrementally(
       retainedImportIds.add(action.id);
     } else if (action.kind === "raster-transform") {
       retainedTransformIds.add(action.id);
+    } else if (action.kind === "layer-delete") {
+      retainedLayerDeleteIds.add(action.id);
     } else if (action.kind === "vector") {
       retainRasterImageNode(action.delta.before.node);
       retainRasterImageNode(action.delta.after.node);
@@ -1258,6 +1286,9 @@ export async function compactDiscardedHistoryIncrementally(
       }
     }
   })) return abortResult();
+  if (!await processArrayPhase(engine.discardedLayerDeleteHistoryActions, (action) => {
+    if (!retainedLayerDeleteIds.has(action.id)) layerDeleteActionsToDestroy.push(action);
+  })) return abortResult();
   if (!await processIteratorPhase(
     engine.rasterImageGpuResources.keys(),
     (assetId) => {
@@ -1297,6 +1328,9 @@ export async function compactDiscardedHistoryIncrementally(
   if (!await processArrayPhase(transformActionsToDestroy, (action) => {
     destroyLayerColdStorage(action.seed);
   })) return abortResult();
+  if (!await processArrayPhase(layerDeleteActionsToDestroy, (action) => {
+    destroyLayerDeleteHistorySeeds(action);
+  })) return abortResult();
   if (!await processArrayPhase(rasterImageAssetIdsToDelete, (assetId) => {
     const resource = engine.rasterImageGpuResources.get(assetId);
     if (!resource) return;
@@ -1309,9 +1343,6 @@ export async function compactDiscardedHistoryIncrementally(
   engine.historyStoredBaseStamps = retainedStampCount;
   engine.discardedVectorRasterHistoryActions = [];
   engine.discardedRasterImportHistoryActions = [];
-  for (const action of engine.discardedLayerDeleteHistoryActions) {
-    destroyLayerDeleteHistorySeeds(action);
-  }
   engine.discardedLayerDeleteHistoryActions = [];
   engine.discardedRasterTransformHistoryActions = [];
   engine.historyCompactionPending = false;
@@ -1543,6 +1574,52 @@ export function historyStepTargetLayerIndex(engine: BrushEngine, delta: -1 | 1):
   }
   const index = engine.layerStack.indexOfId(action.layerId);
   return index >= 0 ? index : null;
+}
+
+/**
+ * Pubblica un'azione e abbandona il ramo Redo come un'unica transazione CPU.
+ * Alcune azioni possiedono seed GPU: se `push` o il troncamento falliscono, la
+ * stessa azione non puo' restare contemporaneamente viva nel journal e nella
+ * lista che la manutenzione distruggera' piu' tardi.
+ */
+export function commitHistoryActionAtomically(
+  engine: BrushEngine,
+  action: HistoryAction,
+): void {
+  const actionIdBefore = engine.nextHistoryActionId;
+  if (action.id !== actionIdBefore) {
+    throw new Error(
+      `ID azione history ${action.id} inatteso; prossimo ID ${actionIdBefore}.`,
+    );
+  }
+  const cursorBefore = engine.historyCursor;
+  const redoActions = engine.historyActions.slice(cursorBefore);
+  const discardedVectorLength = engine.discardedVectorRasterHistoryActions.length;
+  const discardedImportLength = engine.discardedRasterImportHistoryActions.length;
+  const discardedTransformLength = engine.discardedRasterTransformHistoryActions.length;
+  const discardedLayerDeleteLength = engine.discardedLayerDeleteHistoryActions.length;
+  const compactionPendingBefore = engine.historyCompactionPending;
+  try {
+    truncateRedoHistory(engine);
+    engine.historyActions.push(action);
+    engine.nextHistoryActionId = actionIdBefore + 1;
+    engine.historyCursor = engine.historyActions.length;
+  } catch (error) {
+    // Non usare l'eventuale `push` sovrascritto dal fault test anche per il
+    // ripristino: assegnare per indice ricostruisce esattamente il ramo.
+    engine.historyActions.length = cursorBefore;
+    for (let index = 0; index < redoActions.length; index += 1) {
+      engine.historyActions[cursorBefore + index] = redoActions[index];
+    }
+    engine.historyCursor = cursorBefore;
+    engine.nextHistoryActionId = actionIdBefore;
+    engine.discardedVectorRasterHistoryActions.length = discardedVectorLength;
+    engine.discardedRasterImportHistoryActions.length = discardedImportLength;
+    engine.discardedRasterTransformHistoryActions.length = discardedTransformLength;
+    engine.discardedLayerDeleteHistoryActions.length = discardedLayerDeleteLength;
+    engine.historyCompactionPending = compactionPendingBefore;
+    throw error;
+  }
 }
 
 export function truncateRedoHistory(engine: BrushEngine): void {

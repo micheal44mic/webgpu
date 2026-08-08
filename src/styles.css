@@ -562,6 +562,32 @@ select {
   opacity: 0.42;
 }
 
+/*
+ * Le righe per livello portano un nome scritto dall'utente e una scomposizione
+ * lunga. In flex con valore non spezzabile il nome veniva schiacciato a un
+ * carattere per riga: qui il totale resta a destra su una riga sua e la
+ * scomposizione va sotto, a piena larghezza, dove ha spazio per respirare.
+ */
+.gpu-memory-list > div.gpu-layer-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: 10px;
+  row-gap: 1px;
+}
+
+.gpu-memory-list > div.gpu-layer-row dt {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.gpu-memory-list > div.gpu-layer-row .gpu-layer-parts {
+  grid-column: 1 / -1;
+  color: #7f8795;
+  font-size: 0.66rem;
+  font-variant-numeric: tabular-nums;
+}
+
 .gpu-memory-list dt,
 .gpu-memory-list dd {
   font-size: 0.72rem;
@@ -602,7 +628,22 @@ select {
 
 /* La ripartizione misurata e' la fonte autorevole: si distingue dal modello
    dichiarato che le sta sopra, senza gridare. */
+/*
+ * Titolo e cifre stanno sulla stessa riga finche' ci stanno, e vanno a capo
+ * insieme quando non ci stanno piu'.
+ *
+ * Prima le cifre erano un `float: right`. Un float esce dal flusso, quindi il
+ * paragrafo non cresce per contenerlo: appena il testo si allungava — bastava
+ * passare da "0 MiB" a "465,6 MiB corrente · 591,8 MiB picco" — le cifre
+ * finivano sopra la prima riga della ripartizione. Con flex il contenitore si
+ * adatta e la sovrapposizione non e' piu' rappresentabile.
+ */
 .gpu-memory-measured-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 2px 10px;
   margin: 14px 0 6px;
   padding-top: 10px;
   border-top: 1px solid rgba(255, 255, 255, 0.12);
@@ -613,8 +654,10 @@ select {
 }
 
 .gpu-memory-measured-heading span {
-  float: right;
   color: #8fb8ff;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .result,
@@ -993,8 +1036,13 @@ select {
     stroke: var(--mobile-icon-inactive);
   }
 
+  /* L'esclusione di `aria-disabled` non e' pleonastica: senza, questa regola
+     vince per specificita' (0,4,0 contro 0,3,0) su quella dello stato
+     disabilitato qui sopra, e una freccia Undo che non puo' tornare indietro
+     resta a colore pieno. */
   .mobile-tool-action[aria-pressed="true"] .mobile-icon-face,
-  .mobile-tool-action:not(:disabled):not([aria-pressed]) .mobile-icon-face {
+  .mobile-tool-action:not(:disabled):not([aria-pressed]):not([aria-disabled="true"])
+    .mobile-icon-face {
     stroke: var(--mobile-icon-face);
   }
 
@@ -1003,7 +1051,11 @@ select {
   .mobile-tool-action.is-disabled {
     background: transparent;
     cursor: default;
-    opacity: 1;
+    /* Restano toccabili di proposito, per spiegare il blocco invece di
+       sembrare un tocco perso: quindi lo stato spento deve leggerlo l'occhio,
+       non il puntatore. Stessa opacita' degli altri comandi mobile
+       disabilitati. */
+    opacity: 0.42;
   }
 
   .mobile-color-action,

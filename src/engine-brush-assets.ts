@@ -95,7 +95,7 @@ export function mipLevelCountForSize(width: number, height: number): number {
   return Math.floor(Math.log2(Math.max(width, height))) + 1;
 }
 
-export function rgba8MipChainBytes(width: number, height: number): number {
+export function mipChainPixelCount(width: number, height: number): number {
   let mipWidth = width;
   let mipHeight = height;
   let pixels = 0;
@@ -105,5 +105,18 @@ export function rgba8MipChainBytes(width: number, height: number): number {
     mipWidth = Math.max(1, Math.floor(mipWidth / 2));
     mipHeight = Math.max(1, Math.floor(mipHeight / 2));
   }
-  return pixels * 4;
+  return pixels;
+}
+
+export function rgba8MipChainBytes(width: number, height: number): number {
+  return mipChainPixelCount(width, height) * 4;
+}
+
+/**
+ * La grana e' un campo scalare: lo shader di pittura ne ricava una sola luma e
+ * scarta l'alpha. Conservarla su un canale a mezza precisione costa due byte
+ * per pixel invece di quattro, senza perdere nulla di cio' che veniva usato.
+ */
+export function r16MipChainBytes(width: number, height: number): number {
+  return mipChainPixelCount(width, height) * 2;
 }

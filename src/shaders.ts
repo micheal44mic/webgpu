@@ -453,9 +453,12 @@ fn adjustedGrainCoverage(
       grainUvDy
     );
   }
-  // M1 uploads the original RGBA image and derives grain from RGB luma in the
-  // fragment shader. Alpha metadata in the source image does not modulate paint.
-  let source = dot(sourceSample.rgb, vec3<f32>(0.299, 0.587, 0.114));
+  // La luma RGB dell'asset M1 originale e' gia' stata calcolata al carico, con
+  // gli stessi pesi 0.299/0.587/0.114, e conservata su un canale scalare. Il
+  // valore campionato qui e' quello che prima veniva ricavato a ogni fragment
+  // dal dot(rgb): identico, ma senza portarsi dietro tre canali inutilizzati.
+  // L'alpha dell'immagine sorgente non modula la pittura, come prima.
+  let source = sourceSample.r;
   let adjusted = clamp(
     (source - 0.5) * grain.contrastFactor + 0.5 + grain.brightness,
     0.0,
@@ -656,6 +659,48 @@ fn shapeOccupancyCoverageFragmentMain(input: FragmentInput) -> @location(0) vec4
 // immediately preceding mip with a linear clamp sampler and writes the next
 // level. This keeps asset preparation on WebGPU/WGSL and handles the native
 // non-power-of-two 2500² dimensions without a 2K resample.
+/**
+ * Conversione della sorgente RGBA in campo scalare, una sola volta al carico.
+ *
+ * La luma e' esattamente quella che il fragment shader di pittura calcolava a
+ * ogni campionamento: stessi pesi, stesso risultato. Cambia solo **quando**
+ * viene calcolata. E poiche' la luma e' una combinazione lineare di R, G e B e
+ * anche il downsample delle mip e' lineare, le due operazioni commutano: la
+ * catena mip generata sulla luma coincide con la luma della catena generata su
+ * RGB. L'unica differenza e' la quantizzazione, e va nella direzione buona —
+ * prima ogni livello mip veniva arrotondato a 8 bit per canale, ora resta in
+ * mezza precisione.
+ *
+ * `textureLoad` invece di un campionamento filtrato: sorgente e destinazione
+ * hanno la stessa taglia, quindi la corrispondenza deve essere texel a texel.
+ */
+export const grainLumaShader = /* wgsl */ `
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+};
+
+@group(0) @binding(0) var sourceTexture: texture_2d<f32>;
+
+@vertex
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+  let positions = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>( 3.0, -1.0),
+    vec2<f32>(-1.0,  3.0)
+  );
+  var output: VertexOutput;
+  output.position = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
+  return output;
+}
+
+@fragment
+fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
+  let texel = textureLoad(sourceTexture, vec2<i32>(fragmentPosition.xy), 0);
+  let luma = dot(texel.rgb, vec3<f32>(0.299, 0.587, 0.114));
+  return vec4<f32>(luma, 0.0, 0.0, 1.0);
+}
+`;
+
 export const grainMipShader = /* wgsl */ `
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,

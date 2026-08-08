@@ -300,6 +300,7 @@ import type {
 } from "./layer-compression-study";
 import {
   LAYER_COLD_COMPRESSION_IDLE_DELAY_MS,
+  LAYER_COLD_COMPRESSION_IDLE_THRESHOLD_RATIO,
   LAYER_COLD_COMPRESSION_MINIMUM_DISTANCE,
   LAYER_COLD_COMPRESSION_RUNTIME_BUILD,
   LayerColdCompressionClient,
@@ -660,6 +661,7 @@ import {
   captureRasterLayerMetadataHistoryState,
   getMixedSceneReorderTargets,
   compactDiscardedHistoryIncrementally,
+  commitHistoryActionAtomically,
   type HistoryIncrementalCompactionHooks,
   type HistoryIncrementalCompactionResult,
   hasVisibleHistoryContent,
@@ -689,6 +691,8 @@ import {
   GpuResourceRegistry,
   instrumentGpuDevice,
 } from "./gpu-resource-registry";
+import { MemoryReservationLedger, memoryZoneFor } from "./memory-governor-core";
+import { memoryGovernorLimitsForDeviceClass } from "./memory-governor-limits";
 import {
   ensureFillRenderer,
   fillAtClientPoint,
@@ -712,6 +716,7 @@ import {
   setSelectionToolSelected,
 } from "./engine-selection-runtime";
 import {
+  applyVectorRasterizeHistory,
   destroyVectorRasterHistorySeed,
   rasterizeVectorNodeToLayer,
 } from "./engine-vector-raster-runtime";
@@ -911,6 +916,20 @@ export class BrushEngine {
 
   /** Contabilita' misurata di ogni texture e buffer creati dal device. */
   gpuResourceRegistry = new GpuResourceRegistry();
+
+  /**
+   * Tetti del governor per questa classe di dispositivo. Il registro misura
+   * cio' che esiste gia'; questi sono i numeri contro cui verra' deciso cosa
+   * puo' nascere. Per ora vengono soltanto osservati.
+   */
+  memoryGovernorLimits = memoryGovernorLimitsForDeviceClass();
+
+  /**
+   * Memoria promessa a operazioni asincrone non ancora concluse. E' il termine
+   * che il solo rollback non copre: due operazioni concorrenti possono entrambe
+   * vedere spazio libero e allocare insieme.
+   */
+  readonly memoryReservations = new MemoryReservationLedger();
   deviceLostError: Error | null = null;
   deviceLostSignal: Promise<Error> = new Promise(() => undefined);
   renderFrameError: Error | null = null;
@@ -1304,7 +1323,7 @@ export class BrushEngine {
   grainTextureWidth = GRAIN_TEXTURE_SIZE;
   grainTextureHeight = GRAIN_TEXTURE_SIZE;
   grainTextureMipLevelCount = GRAIN_TEXTURE_MIP_LEVEL_COUNT;
-  grainTextureMemoryBytes = GRAIN_TEXTURE_PIXEL_COUNT * 4;
+  grainTextureMemoryBytes = GRAIN_TEXTURE_PIXEL_COUNT * 2;
   grainPreviewSprite: HTMLCanvasElement | null = null;
   grainStartupDecodeMs = 0;
   grainStartupMipBuildMs = 0;
@@ -4588,7 +4607,16 @@ export class BrushEngine {
     const doomed = new Set(unit.map((record) => record.id));
     const survivor = this.layerStack.layers.find((record) => !doomed.has(record.id));
     if (!survivor) {
-      throw new Error("Non è possibile eliminare l'ultimo livello del documento.");
+      // Cancellare la base di un ritaglio si porta via l'intera unita': dirle
+      // "ultimo livello" mentre ne sta eliminando quattro non spiega niente e
+      // sembra un blocco arbitrario.
+      throw new Error(
+        unit.length > 1
+          ? `La base di ritaglio si elimina con tutta la sua unità (${unit.length} livelli): `
+            + "il documento resterebbe vuoto. Elimina prima le maschere, "
+            + "oppure aggiungi un livello fuori dal gruppo."
+          : "Non è possibile eliminare l'ultimo livello del documento.",
+      );
     }
     this.assertLayerSwitchAllowed();
     this.cancelLayerColdCompressionIdle();
@@ -4629,23 +4657,58 @@ export class BrushEngine {
     // interrompe: il guard e' giusto, mancava l'attesa.
     await this.waitForIdle();
 
+    const selectedKeyBefore = scene.selected.key;
+    const selectedKeyAfter = scene.selected.kind === "raster"
+        && doomed.has(scene.selected.rasterLayerId)
+      ? `raster:${survivor.id}` as const
+      : selectedKeyBefore;
+    const referenceRasterLayerIdBefore = this.layerStack.referenceLayerId;
+    const referenceRasterLayerIdAfter = referenceRasterLayerIdBefore !== null
+        && doomed.has(referenceRasterLayerIdBefore)
+      ? null
+      : referenceRasterLayerIdBefore;
     const action: LayerDeleteHistoryAction = {
-      id: this.nextHistoryActionId++,
+      id: this.nextHistoryActionId,
       kind: "layer-delete",
       entries,
-      selectedKeyBefore: scene.selected.key,
+      selectedKeyBefore,
+      selectedKeyAfter,
       activeRasterLayerIdBefore: this.layerStack.active.id,
       activeRasterLayerIdAfter: survivor.id,
+      referenceRasterLayerIdBefore,
+      referenceRasterLayerIdAfter,
     };
-    truncateRedoHistory(this);
+    let deletionApplied = false;
     try {
       await applyLayerDeleteHistory(this, action, 1);
+      deletionApplied = true;
+      commitHistoryActionAtomically(this, action);
     } catch (error) {
-      for (const entry of entries) destroyLayerColdStorage(entry.seed);
+      let rollbackError: unknown = null;
+      if (deletionApplied) {
+        try {
+          await applyLayerDeleteHistory(this, action, -1);
+        } catch (restoreError) {
+          rollbackError = restoreError;
+          this.latchDocumentStateInconsistent(
+            "Pubblicazione della cancellazione fallita e rollback incompleto: ricarica la pagina.",
+          );
+        }
+      }
+      if (!rollbackError) {
+        for (const entry of entries) destroyLayerColdStorage(entry.seed);
+      }
+      if (rollbackError) {
+        const operationMessage = error instanceof Error ? error.message : String(error);
+        const rollbackMessage = rollbackError instanceof Error
+          ? rollbackError.message
+          : String(rollbackError);
+        throw new Error(
+          `Cancellazione non pubblicata: ${operationMessage}; rollback fallito: ${rollbackMessage}`,
+        );
+      }
       throw error;
     }
-    this.historyActions.push(action);
-    this.historyCursor = this.historyActions.length;
     this.publishHistoryState();
     this.publishStats();
     scheduleHistoryMaintenance(this);
@@ -5479,7 +5542,7 @@ export class BrushEngine {
     grainCoordinateStrategy: GrainCoordinateStrategy;
     grainSamplingStrategy: GrainSamplingStrategy;
     grainMipStrategy: typeof GRAIN_MIP_STRATEGY;
-    grainTextureFormat: "rgba8unorm";
+    grainTextureFormat: "r16float";
     grainTextureWidth: number;
     grainTextureHeight: number;
     grainTextureMipLevelCount: number;
@@ -5586,6 +5649,42 @@ export class BrushEngine {
     throw new Error(`Guasto iniettato nel cold storage: ${point}.`);
   }
 
+  /**
+   * Quando vale la pena comprimere un livello lontano.
+   *
+   * La compressione costa una decompressione al prossimo cambio livello, quindi
+   * non va pagata a vuoto: su un ping-pong fra due livelli, una regola puramente
+   * temporale produce cicli di comprimi/decomprimi che bruciano batteria per
+   * niente. Ma il criterio opposto — comprimere **solo** sotto pressione — e'
+   * altrettanto sbagliato, ed e' l'errore che questa funzione ha gia' fatto una
+   * volta: con un tetto largo la zona resta verde per sempre e la compressione
+   * non parte mai, esattamente come quando era chiusa a chiave sul formato a 8
+   * bit. Una funzione che non si attiva mai non e' prudente, e' assente.
+   *
+   * Il criterio giusto guarda **quanto c'e' da recuperare**. Sotto pressione si
+   * comprime sempre; in verde si comprime quando i livelli lontani trattengono
+   * almeno quanto un livello intero, cioe' quando il recupero vale il costo. Le
+   * protezioni contro il churn restano dove stavano: distanza minima dal livello
+   * attivo e attesa di inattivita'.
+   */
+  compressionIsWorthwhile(): boolean {
+    if (!this.initialized) return false;
+    const zone = memoryZoneFor(
+      {
+        committedBytes: this.gpuResourceRegistry.snapshot().currentBytes,
+        reservedBytes: this.memoryReservations.pendingBytes,
+        reclaimableBytes: 0,
+        inFlightBytes: 0,
+      },
+      this.memoryGovernorLimits,
+    );
+    if (zone !== "green") return true;
+    const layerBytes = LAYER_SIZE * LAYER_SIZE
+      * (this.layerFormat === "rgba16float" ? 8 : 4);
+    return this.layerColdCompressionDistantGpuBytes()
+      >= layerBytes * LAYER_COLD_COMPRESSION_IDLE_THRESHOLD_RATIO;
+  }
+
   selectLayerColdCompressionCandidate(): {
     record: LayerRecord;
     index: number;
@@ -5593,10 +5692,7 @@ export class BrushEngine {
     cold: LayerColdStorageResources;
     distance: number;
   } | null {
-    if (
-      !this.layerColdCompressionEnabled
-      || this.layerFormat !== "rgba8unorm"
-    ) {
+    if (!this.layerColdCompressionEnabled || !this.compressionIsWorthwhile()) {
       return null;
     }
     const activeIndex = this.layerStack.activeIndex;
@@ -5702,7 +5798,6 @@ export class BrushEngine {
       !this.layerColdCompressionEnabled
       || this.layerColdCompressionWorkerUnavailable
       || !this.initialized
-      || this.layerFormat !== "rgba8unorm"
       || this.layerColdCompressionIdleTimer !== null
       || this.layerColdCompressionJobRunning
       || this.activeStroke !== null
@@ -6480,30 +6575,9 @@ export class BrushEngine {
       baseTileMask: history.baseTileMask.slice(),
       source: { ...history.source },
     };
-    const cursorBefore = this.historyCursor;
-    const redoActions = this.historyActions.slice(cursorBefore);
-    const discardedVectorLength = this.discardedVectorRasterHistoryActions.length;
-    const discardedImportLength = this.discardedRasterImportHistoryActions.length;
-    const discardedTransformLength = this.discardedRasterTransformHistoryActions.length;
-    const compactionPendingBefore = this.historyCompactionPending;
-    try {
-      truncateRedoHistory(this);
-      this.historyActions.push(action);
-      this.nextHistoryActionId = actionId + 1;
-      this.historyCursor = this.historyActions.length;
-      if (this.activeStrokeProfile) {
-        this.activeStrokeProfile.historyCommittedActions += 1;
-      }
-    } catch (error) {
-      this.historyActions.length = cursorBefore;
-      for (const redoAction of redoActions) this.historyActions.push(redoAction);
-      this.historyCursor = cursorBefore;
-      this.nextHistoryActionId = actionId;
-      this.discardedVectorRasterHistoryActions.length = discardedVectorLength;
-      this.discardedRasterImportHistoryActions.length = discardedImportLength;
-      this.discardedRasterTransformHistoryActions.length = discardedTransformLength;
-      this.historyCompactionPending = compactionPendingBefore;
-      throw error;
+    commitHistoryActionAtomically(this, action);
+    if (this.activeStrokeProfile) {
+      this.activeStrokeProfile.historyCommittedActions += 1;
     }
   }
 
@@ -6571,13 +6645,31 @@ export class BrushEngine {
       id,
       draws,
     );
-    truncateRedoHistory(this);
-    this.historyActions.push({
-      id: this.nextHistoryActionId++,
+    const action = {
+      id: this.nextHistoryActionId,
       kind: "vector-rasterize",
       ...converted.history,
-    });
-    this.historyCursor = this.historyActions.length;
+    } satisfies VectorRasterizeHistoryAction;
+    try {
+      commitHistoryActionAtomically(this, action);
+    } catch (error) {
+      try {
+        await applyVectorRasterizeHistory(this, action, -1);
+        destroyVectorRasterHistorySeed(action);
+      } catch (restoreError) {
+        this.latchDocumentStateInconsistent(
+          "Pubblicazione della rasterizzazione fallita e rollback incompleto: ricarica la pagina.",
+        );
+        const operationMessage = error instanceof Error ? error.message : String(error);
+        const rollbackMessage = restoreError instanceof Error
+          ? restoreError.message
+          : String(restoreError);
+        throw new Error(
+          `Rasterizzazione non pubblicata: ${operationMessage}; rollback fallito: ${rollbackMessage}`,
+        );
+      }
+      throw error;
+    }
     this.sweepRasterImageGpuResources();
     if (this.activeStrokeProfile) {
       this.activeStrokeProfile.historyCommittedActions += 1;
@@ -6711,6 +6803,7 @@ export class BrushEngine {
       // Catturati **prima** dell'inserimento: sono lo stato a cui l'Undo torna.
       const selectedKeyBefore = this.mixedSceneStack?.selected.key ?? null;
       const activeRasterLayerIdBefore = this.layerStack.active.id;
+      const referenceRasterLayerIdBefore = this.layerStack.referenceLayerId;
       this.persistActiveLayerState();
       await this.prepareActiveLayerForSwitch();
       const index = clippingLayerInsertIndex === null
@@ -6772,10 +6865,9 @@ export class BrushEngine {
         // qualsiasi cursore si ottiene applicando le azioni in ordine e la coda
         // resta coerente. Il troncamento resta solo come regola generale del
         // ramo Redo abbandonato, non come conseguenza dell'inserimento.
-        truncateRedoHistory(this);
         if (selectedKeyBefore !== null && this.mixedSceneStack) {
-          this.historyActions.push({
-            id: this.nextHistoryActionId++,
+          const action = {
+            id: this.nextHistoryActionId,
             kind: "layer-add",
             layerRecord: record,
             rasterLayerIndex: this.layerStack.indexOfId(record.id),
@@ -6783,8 +6875,9 @@ export class BrushEngine {
             clippingParentId: clippingParentId,
             selectedKeyBefore,
             activeRasterLayerIdBefore,
-          } satisfies LayerAddHistoryAction);
-          this.historyCursor = this.historyActions.length;
+            referenceRasterLayerIdBefore,
+          } satisfies LayerAddHistoryAction;
+          commitHistoryActionAtomically(this, action);
           this.publishHistoryState();
         }
         // prepareActiveLayerForSwitch freezes presentation. Clearing the live
@@ -6982,6 +7075,16 @@ export class BrushEngine {
   }
 
   assertLayerSwitchAllowed(): void {
+    // La sessione Trasforma tiene viva la texture hot del raster sorgente. Un
+    // cambio di livello la evacua, e l'Applica successivo la trova mancante:
+    // la trasformazione dell'utente sparisce in silenzio, senza che nulla si
+    // rompa. L'Undo era gia' protetto altrove, `addLayer` no. Messaggio
+    // dedicato perche' "a motore fermo" non direbbe cosa fare.
+    if (this.activeRasterTransformSession) {
+      throw new Error(
+        "Applica o annulla la trasformazione prima di cambiare i livelli.",
+      );
+    }
     if (
       this.activeStroke
       || this.lightGlazeSession

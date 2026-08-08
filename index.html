@@ -3225,11 +3225,18 @@
               <button id="gpuMemoryClose" type="button" aria-label="Chiudi dettaglio memoria" title="Chiudi">×</button>
             </header>
             <p class="gpu-memory-subtitle">Allocazioni WebGPU logiche registrate dal motore</p>
+            <p id="gpuMemoryGovernor" class="gpu-memory-note">—</p>
             <p class="gpu-memory-measured-heading">
               Ripartizione esatta
               <span><output id="gpuMeasuredTotal">—</output> corrente · <output id="gpuMeasuredPeak">—</output> picco</span>
             </p>
             <dl class="gpu-memory-list gpu-memory-measured" id="gpuMeasuredBreakdown"></dl>
+            <p class="gpu-memory-measured-heading">
+              Per livello
+              <span><output id="gpuLayerMemoryTotal">—</output> totale</span>
+            </p>
+            <dl class="gpu-memory-list gpu-memory-measured" id="gpuLayerBreakdown"></dl>
+            <p class="gpu-memory-note">Caldo è la texture full-document, Freddo sono i soli tile dipinti, Compresso è RAM CPU: pesa sul limite del processo ma non sul totale GPU. La piramide mip segue il livello attivo.</p>
             <p class="gpu-memory-measured-heading">Modello diagnostico · non sommato al totale</p>
             <dl class="gpu-memory-list">
               <div data-memory-row><dt>Layer · RGBA16F autorevole full-canvas</dt><dd id="gpuMemoryLayerBase">—</dd></div>

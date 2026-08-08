@@ -9,6 +9,8 @@ const MEBIBYTE_BYTES = 1024 * 1024;
 export interface LayerCompressionChunkMeasurement {
   rawBytes: number;
   gzipBytes: number;
+  /** Il payload gzip e' stato prodotto dopo il byte shuffle a 16 bit. */
+  usedShuffle: boolean;
   adaptiveStoredBytes: number;
   encodeMs: number;
   decodeMs: number;
@@ -20,7 +22,7 @@ export interface LayerCompressionChunkMeasurement {
   usedRawFallback: boolean;
 }
 
-export type LayerCompressionStorage = "gzip" | "raw";
+export type LayerCompressionStorage = "gzip" | "gzip-shuffle16" | "raw";
 
 export interface LosslessLayerCompressionChunk {
   storage: LayerCompressionStorage;
@@ -58,8 +60,8 @@ export interface LayerCompressionStudyReport {
   codec: typeof LAYER_COMPRESSION_CODEC;
   tileSizePx: number;
   chunkTileCount: typeof LAYER_COMPRESSION_CHUNK_TILE_COUNT;
-  layerFormat: "rgba8unorm";
-  bytesPerPixel: 4;
+  layerFormat: "rgba8unorm" | "rgba16float";
+  bytesPerPixel: 4 | 8;
   recordedAt: string;
   elapsedMs: number;
   layerCount: number;
@@ -226,17 +228,62 @@ export async function measureLosslessGzipChunk(
   return (await compressLosslessGzipChunk(bytes, tileByteLength)).measurement;
 }
 
+/**
+ * Separa i byte bassi dai byte alti dei valori a 16 bit.
+ *
+ * In un mezzo float i byte alti (esponente e mantissa superiore) variano
+ * lentamente fra pixel vicini, i byte bassi quasi a caso. Interlacciati, il
+ * rumore dei bassi spezza le ripetizioni degli alti e gzip non le vede.
+ * Separati, gli alti formano lunghe sequenze comprimibili.
+ *
+ * Misurato il 7 agosto 2026 su una regione dipinta al 100% con grana, il caso
+ * peggiore: gzip da solo 2,30:1, con questo shuffle 2,76:1. Uno shuffle per
+ * canale invece peggiora a 1,68:1, perche' rompe la correlazione spaziale che
+ * e' proprio cio' che gzip sfrutta.
+ *
+ * E' una permutazione: il suo inverso e' esatto e la verifica byte-per-byte
+ * gia' presente lo dimostra a ogni chunk.
+ */
+export function shuffle16(bytes: Uint8Array): Uint8Array {
+  const pairs = bytes.byteLength >> 1;
+  const out = new Uint8Array(bytes.byteLength);
+  for (let index = 0; index < pairs; index += 1) {
+    out[index] = bytes[index * 2];
+    out[pairs + index] = bytes[index * 2 + 1];
+  }
+  return out;
+}
+
+export function unshuffle16(bytes: Uint8Array): Uint8Array {
+  const pairs = bytes.byteLength >> 1;
+  const out = new Uint8Array(bytes.byteLength);
+  for (let index = 0; index < pairs; index += 1) {
+    out[index * 2] = bytes[index];
+    out[index * 2 + 1] = bytes[pairs + index];
+  }
+  return out;
+}
+
 export async function compressLosslessGzipChunk(
   bytes: Uint8Array,
   tileByteLength: number,
+  bytesPerComponent = 1,
 ): Promise<LosslessLayerCompressionChunk> {
   const classification = classifyTiles(bytes, tileByteLength);
   const sourceHash = hashCompressionBytes(bytes);
+  // Lo shuffle si tenta solo dove ha senso: componenti a 16 bit e lunghezza
+  // pari. Su byte singoli sarebbe una permutazione inutile che costa una copia.
+  const tryShuffle = bytesPerComponent === 2 && (bytes.byteLength & 1) === 0;
   const encodeStart = performance.now();
-  const compressed = await gzipBytes(bytes);
+  const plainGzip = await gzipBytes(bytes);
+  const shuffledGzip = tryShuffle ? await gzipBytes(shuffle16(bytes)) : null;
+  const useShuffle = shuffledGzip !== null
+    && shuffledGzip.byteLength < plainGzip.byteLength;
+  const compressed = useShuffle ? shuffledGzip : plainGzip;
   const encodeMs = performance.now() - encodeStart;
   const decodeStart = performance.now();
-  const restored = await gunzipBytes(compressed);
+  const inflated = await gunzipBytes(compressed);
+  const restored = useShuffle ? unshuffle16(inflated) : inflated;
   const decodeMs = performance.now() - decodeStart;
   if (restored.byteLength !== bytes.byteLength) {
     throw new Error(
@@ -258,6 +305,7 @@ export async function compressLosslessGzipChunk(
   const measurement: LayerCompressionChunkMeasurement = {
     rawBytes: bytes.byteLength,
     gzipBytes: compressed.byteLength,
+    usedShuffle: useShuffle && !usedRawFallback,
     adaptiveStoredBytes: Math.min(bytes.byteLength, compressed.byteLength),
     encodeMs,
     decodeMs,
@@ -268,7 +316,9 @@ export async function compressLosslessGzipChunk(
     usedRawFallback,
   };
   return {
-    storage: usedRawFallback ? "raw" : "gzip",
+    // Il tag e' autodescrittivo: chi decomprime non deve sapere da quale
+    // formato provenissero i byte per invertire la trasformazione giusta.
+    storage: usedRawFallback ? "raw" : (useShuffle ? "gzip-shuffle16" : "gzip"),
     bytes: usedRawFallback ? bytes : compressed,
     measurement,
   };

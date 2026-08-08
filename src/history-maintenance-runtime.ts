@@ -10,6 +10,7 @@ import type { GpuHistorySlice } from "./gpu-history-storage";
 import {
   countLayerStorageTiles,
   createLayerStorageTileMask,
+  LAYER_STORAGE_TILE_SIZE,
   markLayerStorageRect,
 } from "./layer-storage-study";
 import { LAYER_SIZE, MOBILE_DEVICE_CLASS } from "./engine-limits";
@@ -18,11 +19,15 @@ import {
   createHistoryBudget,
   emptyHistoryMemoryLedger,
   historyBaseBudgetBytes,
+  admitHistoryCheckpoint,
+  historyAccountingIsAppendOnly,
   historyBudgetPressure,
   historyMemoryTotalBytes,
   nearestHistoryCheckpoint,
   planHistoryCheckpoint,
+  planHistoryBudgetRecovery,
   planHistoryDepthEviction,
+  selectCheckpointRepresentation,
   HISTORY_MAXIMUM_UNDO_DEPTH,
   type HistoryMemoryLedger,
 } from "./history-retention-core";
@@ -100,6 +105,10 @@ interface HistoryMaintenanceState {
   capturesCommitted: number;
   capturesDiscardedStale: number;
   capturesFailed: number;
+  /** Catture rifiutate perche' avrebbero sforato il bersaglio del budget. */
+  capturesRefusedForBudget: number;
+  /** Checkpoint buttati come cache, senza toccare la profondita' di Undo. */
+  checkpointCacheEvictions: number;
   redoCompactionsScheduled: number;
   redoCompactionsCompleted: number;
   redoCompactionsAborted: number;
@@ -120,6 +129,8 @@ interface HistoryMaintenanceState {
   accountingCpuSeen: WeakSet<object>;
   accountingSelectionSliceIds: Set<number>;
   accountingCheckpointSeeds: Set<LayerColdStorageResources>;
+  /** Cursore al momento dell'ultima sincronizzazione: spostarlo invalida. */
+  observedCursor: number;
   observedActionsLength: number;
   observedActionsTail: object | null;
   observedBatchesLength: number;
@@ -160,6 +171,8 @@ function stateFor(engine: BrushEngine): HistoryMaintenanceState {
       capturesCommitted: 0,
       capturesDiscardedStale: 0,
       capturesFailed: 0,
+      capturesRefusedForBudget: 0,
+      checkpointCacheEvictions: 0,
       redoCompactionsScheduled: 0,
       redoCompactionsCompleted: 0,
       redoCompactionsAborted: 0,
@@ -180,6 +193,7 @@ function stateFor(engine: BrushEngine): HistoryMaintenanceState {
       accountingCpuSeen: new WeakSet<object>(),
       accountingSelectionSliceIds: new Set<number>(),
       accountingCheckpointSeeds: new Set<LayerColdStorageResources>(),
+      observedCursor: -1,
       observedActionsLength: 0,
       observedActionsTail: null,
       observedBatchesLength: 0,
@@ -342,15 +356,6 @@ function estimateStructuralBytes(
     }
   }
   return bytes;
-}
-
-function appendOnlySince<T extends object>(
-  values: readonly T[],
-  observedLength: number,
-  observedTail: object | null,
-): boolean {
-  return observedLength <= values.length
-    && (observedLength === 0 || values[observedLength - 1] === observedTail);
 }
 
 function tailObject(values: readonly object[]): object | null {
@@ -519,6 +524,7 @@ function rebuildHistoryAccounting(engine: BrushEngine): void {
   }
   for (const batch of engine.historyBatches) accountHistoryBatch(state, batch);
 
+  state.observedCursor = engine.historyCursor;
   state.observedActionsLength = engine.historyActions.length;
   state.observedActionsTail = tailObject(engine.historyActions);
   state.observedBatchesLength = engine.historyBatches.length;
@@ -546,34 +552,38 @@ function rebuildHistoryAccounting(engine: BrushEngine): void {
  */
 function synchronizeHistoryAccounting(engine: BrushEngine): boolean {
   const state = stateFor(engine);
-  const appendOnly = state.accountingInitialized
-    && appendOnlySince(
-      engine.historyActions,
-      state.observedActionsLength,
-      state.observedActionsTail,
-    )
-    && appendOnlySince(
-      engine.historyBatches,
-      state.observedBatchesLength,
-      state.observedBatchesTail,
-    )
-    && appendOnlySince(
-      engine.discardedVectorRasterHistoryActions,
-      state.observedDiscardedVectorLength,
-      state.observedDiscardedVectorTail,
-    )
-    && appendOnlySince(
-      engine.discardedRasterImportHistoryActions,
-      state.observedDiscardedImportLength,
-      state.observedDiscardedImportTail,
-    )
-    && appendOnlySince(
-      engine.discardedRasterTransformHistoryActions,
-      state.observedDiscardedTransformLength,
-      state.observedDiscardedTransformTail,
-    )
-    && state.observedSelectionRevisionSize <= engine.selectionHistoryMasksByRevision.size
-    && state.observedSelectionActionSize <= engine.selectionHistoryMasksByAction.size;
+  // La decisione vive in `history-retention-core`, che non importa il motore e
+  // quindi si puo' esercitare nella suite senza GPU. Qui resta solo il compito
+  // di dire cosa si vede: e' il punto in cui il difetto del cursore si era
+  // nascosto, e tenerlo in un modulo provabile e' l'unica difesa che regge.
+  const appendOnly = historyAccountingIsAppendOnly(
+    {
+      initialized: state.accountingInitialized,
+      cursor: state.observedCursor,
+      actionsLength: state.observedActionsLength,
+      actionsTail: state.observedActionsTail,
+      batchesLength: state.observedBatchesLength,
+      batchesTail: state.observedBatchesTail,
+      discardedVectorLength: state.observedDiscardedVectorLength,
+      discardedVectorTail: state.observedDiscardedVectorTail,
+      discardedImportLength: state.observedDiscardedImportLength,
+      discardedImportTail: state.observedDiscardedImportTail,
+      discardedTransformLength: state.observedDiscardedTransformLength,
+      discardedTransformTail: state.observedDiscardedTransformTail,
+      selectionRevisionSize: state.observedSelectionRevisionSize,
+      selectionActionSize: state.observedSelectionActionSize,
+    },
+    {
+      cursor: engine.historyCursor,
+      actions: engine.historyActions,
+      batches: engine.historyBatches,
+      discardedVector: engine.discardedVectorRasterHistoryActions,
+      discardedImport: engine.discardedRasterImportHistoryActions,
+      discardedTransform: engine.discardedRasterTransformHistoryActions,
+      selectionRevisionSize: engine.selectionHistoryMasksByRevision.size,
+      selectionActionSize: engine.selectionHistoryMasksByAction.size,
+    },
+  );
   if (!appendOnly) {
     rebuildHistoryAccounting(engine);
     return true;
@@ -607,6 +617,7 @@ function synchronizeHistoryAccounting(engine: BrushEngine): boolean {
     accountHistoryBatch(state, engine.historyBatches[index]);
     state.accountingIncrementalBatches += 1;
   }
+  state.observedCursor = engine.historyCursor;
   state.observedActionsLength = engine.historyActions.length;
   state.observedActionsTail = tailObject(engine.historyActions);
   state.observedBatchesLength = engine.historyBatches.length;
@@ -755,17 +766,77 @@ async function capturePeriodicCheckpoint(
     cursor: engine.historyCursor,
     floorCursor: state.floorCursor,
   }).required;
-  const forceFull = !current
+  // `budgetPressure >= 1` non compare piu' qui, ed e' la correzione centrale.
+  //
+  // Faceva diventare full ogni checkpoint appena la cronologia toccava il
+  // proprio tetto, mentre `planHistoryCheckpoint` accorciava l'intervallo a
+  // otto azioni: sforare produceva fotografie piu' grosse tre volte piu'
+  // spesso, il che faceva sforare di piu'. Un anello che non si apriva da solo.
+  //
+  // L'intento era creare boundary su cui consolidare. Ma il consolidamento e'
+  // spesso bloccato per motivi suoi, quindi si pagavano i full e non si otteneva
+  // niente in cambio. Il freno adesso e' `admitHistoryCheckpoint`, che guarda i
+  // byte invece della cadenza.
+  // Il full e' **obbligatorio** solo quando la correttezza lo impone: senza un
+  // genitore su cui appoggiarsi, dopo un reset, dopo un'operazione strutturale,
+  // o quando il tetto di profondita' ha bisogno di un boundary autonomo.
+  const fullRequired = !current
     || delta.requiresFull
-    || budgetPressure >= 1
-    || depthCapNeedsBoundary
-    || checkpointOrdinal % HISTORY_FULL_CHECKPOINT_PERIOD === 0;
-  const mask = forceFull ? record.storageTileMask.slice() : delta.mask;
-  if (engine.layerContentBounds && forceFull) {
-    markLayerStorageRect(mask, engine.layerContentBounds);
-  }
+    || delta.reset
+    || depthCapNeedsBoundary;
+  // Il full periodico e' invece una **preferenza**: rifonda la catena e accorcia
+  // l'idratazione. Se non c'e' spazio, un delta e' meglio di niente.
+  const rebasePreferred = checkpointOrdinal % HISTORY_FULL_CHECKPOINT_PERIOD === 0;
+
   const blank = !engine.layerHasContent;
-  if (!blank && countLayerStorageTiles(mask) === 0) return;
+  const bytesPerPixel = engine.layerFormat === "rgba16float" ? 8 : 4;
+  const buildMask = (full: boolean): Uint32Array => {
+    const candidate = full ? record.storageTileMask.slice() : delta.mask.slice();
+    if (full && engine.layerContentBounds) {
+      markLayerStorageRect(candidate, engine.layerContentBounds);
+    }
+    return candidate;
+  };
+  const bytesOf = (candidate: Uint32Array): number =>
+    blank
+      ? 0
+      : countLayerStorageTiles(candidate)
+        * LAYER_STORAGE_TILE_SIZE
+        * LAYER_STORAGE_TILE_SIZE
+        * bytesPerPixel;
+
+  // Entrambi i candidati vengono costruiti e misurati, e solo dopo si sceglie.
+  // Sceglierne uno prima e chiedere poi se ci sta era il difetto: un full
+  // rifiutato non lasciava spazio a un delta che sarebbe entrato.
+  const fullMask = buildMask(true);
+  const deltaMask = buildMask(false);
+  const currentBytes = historyMemoryTotalBytes(historyMemoryLedger(engine));
+  const budget = historyBudgetForEngine(engine).budget;
+  const valuta = (candidate: Uint32Array, mandatory: boolean) => ({
+    valid: blank || countLayerStorageTiles(candidate) > 0,
+    admitted: admitHistoryCheckpoint({
+      currentBytes,
+      candidateBytes: bytesOf(candidate),
+      budget,
+      mandatory,
+    }).admitted,
+  });
+  const fullEsito = valuta(fullMask, fullRequired);
+  const deltaEsito = valuta(deltaMask, false);
+  const scelta = selectCheckpointRepresentation({
+    fullRequired,
+    rebasePreferred,
+    fullValid: fullEsito.valid,
+    fullAdmitted: fullEsito.admitted,
+    deltaValid: deltaEsito.valid,
+    deltaAdmitted: deltaEsito.admitted,
+  });
+  if (scelta === "none") {
+    state.capturesRefusedForBudget += 1;
+    return;
+  }
+  const forceFull = scelta === "full";
+  const mask = forceFull ? fullMask : deltaMask;
 
   const anchorId = lastRasterAction.id;
   const anchorCursor = engine.historyCursor;
@@ -1066,6 +1137,50 @@ function enforceHistoryBudget(engine: BrushEngine): void {
     state.budgetCheckpointBlocked = false;
     return;
   }
+  // PRIMA la cache, POI — solo se davvero non basta — il journal.
+  //
+  // E' l'inversione che corregge il difetto centrale. I checkpoint periodici
+  // sono acceleratori ricostruibili: buttarli costa un replay piu' lungo. Le
+  // azioni sotto il pavimento sono l'unica copia dei passi di Undo: buttarle
+  // costa lavoro che l'utente non riavra' mai. Il motore sacrificava le seconde
+  // per proteggere i primi, ed e' il motivo per cui una sessione poteva
+  // ritrovarsi con il pavimento a 54 su 55 azioni e 246 MiB di checkpoint
+  // ancora residenti: massimo danno, nessun guadagno.
+  const recovery = planHistoryBudgetRecovery({
+    currentBytes: historyMemoryTotalBytes(ledger),
+    budget,
+    checkpoints: state.checkpoints.map((checkpoint) => ({
+      id: checkpoint.id,
+      layerId: checkpoint.layerId,
+      parentId: checkpoint.parentId,
+      kind: checkpoint.kind,
+      actionIndex: state.actionIndexById.get(checkpoint.afterActionId) ?? -1,
+      bytes: checkpoint.memoryBytes,
+    })),
+  });
+  if (recovery.required) {
+    const buttati = new Set(recovery.checkpointIdsToDrop);
+    state.checkpoints = state.checkpoints.filter((checkpoint) => {
+      if (!buttati.has(checkpoint.id)) return true;
+      destroyLayerColdStorage(checkpoint.seed);
+      return false;
+    });
+    state.checkpointCacheEvictions += recovery.checkpointIdsToDrop.length;
+    // Ricostruzione diretta, non invalidazione: qui il cursore e' in fondo per
+    // il gate della manutenzione, quindi ricostruire e' sicuro. Invalidare e
+    // basta lascerebbe il rifacimento a un momento che non controlliamo, ed e'
+    // esattamente da li' che e' passato il difetto del ledger.
+    rebuildHistoryAccounting(engine);
+  }
+  if (recovery.reachedTarget) {
+    // La cache e' bastata: il journal non si tocca e la profondita' di Undo
+    // resta intera. E' il caso normale, e deve restarlo.
+    state.budgetCheckpointBlocked = false;
+    return;
+  }
+
+  // Solo qui il journal diventa discutibile: la cache e' finita e siamo ancora
+  // sopra il tetto.
   const baselines = latestFullCheckpointByLayer(engine);
   if (!baselines || baselines.size === 0) {
     state.budgetCheckpointBlocked = true;
@@ -1150,6 +1265,22 @@ export function scheduleHistoryMaintenance(engine: BrushEngine): void {
       if (expectedGeneration !== state.generation) return;
       await capturePeriodicCheckpoint(engine, expectedGeneration);
       if (expectedGeneration !== state.generation) return;
+      // Qui viveva il travaso dei checkpoint lontani in RAM compressa, ed e'
+      // stato rimosso perche' non era salvabile con una correzione.
+      //
+      // Il difetto non stava in cosa faceva ma in cosa doveva toccare per
+      // farlo: per aggiornare i byte dei checkpoint invalidava il ledger della
+      // cronologia, e quell'invalidazione forza una ricostruzione. Una
+      // ricostruzione con il cursore a meta' journal conta solo le azioni sotto
+      // il cursore ma dichiara di aver visto l'intero journal — e da quel
+      // momento nessuno se ne accorge piu', perche' il controllo append-only
+      // non guarda il cursore. Il risultato e' un checkpoint ancorato a
+      // un'azione vecchia con dentro i pixel nuovi: un Undo successivo
+      // ricostruisce un disegno che l'utente non ha mai fatto.
+      //
+      // `planHistorySpill` resta, puro e con i suoi test: e' la politica, ed e'
+      // corretta. Manca il modo di applicarla senza passare dal ledger. Quella
+      // e' la cosa da risolvere prima di riprovarci.
       enforceHistoryBudget(engine);
     }).catch(() => {
       // device.lost is surfaced by the engine-wide gate.

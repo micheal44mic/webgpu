@@ -28,10 +28,10 @@ import { type GrainTextureResources, type ShapeMaskResources } from "./engine-pa
 import {
   grainAssetDescriptor,
   mipLevelCountForSize,
-  rgba8MipChainBytes,
+  r16MipChainBytes,
   shapeAssetDescriptor,
 } from "./engine-brush-assets";
-import { grainMipShader } from "./shaders";
+import { grainLumaShader, grainMipShader } from "./shaders";
 import { assertShaderCompiled } from "./engine-gpu-utils";
 import { hashBytes } from "./engine-math";
 import {
@@ -662,25 +662,42 @@ export async function createGrainTextureResources(
   }
 
   const mipLevelCount = mipLevelCountForSize(width, height);
+  // Campo scalare a mezza precisione: lo shader di pittura consuma una sola
+  // luma e ignora l'alpha, quindi tre canali su quattro erano peso morto.
   const texture = engine.device.createTexture({
-    label: `${sourceLabel} native RGBA grain`,
+    label: `${sourceLabel} scalar R16F grain`,
     size: {
       width,
       height,
       depthOrArrayLayers: 1,
     },
     mipLevelCount,
-    format: "rgba8unorm",
+    format: "r16float",
     usage:
       GPUTextureUsage.TEXTURE_BINDING
       | GPUTextureUsage.COPY_DST
       | GPUTextureUsage.RENDER_ATTACHMENT,
   });
 
+  // Staging RGBA senza catena mip: esiste solo per il tempo di una passata di
+  // conversione e viene distrutto subito, cosi' il picco di carico non porta
+  // due catene complete insieme.
   const uploadStart = performance.now();
+  const stagingTexture = engine.device.createTexture({
+    label: `${sourceLabel} grain RGBA staging`,
+    size: { width, height, depthOrArrayLayers: 1 },
+    mipLevelCount: 1,
+    format: "rgba8unorm",
+    // copyExternalImageToTexture esige COPY_DST e RENDER_ATTACHMENT sulla
+    // destinazione; TEXTURE_BINDING serve poi alla passata di conversione.
+    usage:
+      GPUTextureUsage.TEXTURE_BINDING
+      | GPUTextureUsage.COPY_DST
+      | GPUTextureUsage.RENDER_ATTACHMENT,
+  });
   engine.device.queue.copyExternalImageToTexture(
     { source: externalSource },
-    { texture, mipLevel: 0, premultipliedAlpha: false, colorSpace: "srgb" },
+    { texture: stagingTexture, mipLevel: 0, premultipliedAlpha: false, colorSpace: "srgb" },
     {
       width,
       height,
@@ -700,6 +717,73 @@ export async function createGrainTextureResources(
     previewContext.drawImage(externalSource, 0, 0, previewSize, previewSize);
   }
   closeExternalSource?.();
+
+  // Conversione texel a texel della sorgente RGBA nel campo scalare. Gli stessi
+  // pesi di luma che il fragment shader di pittura applicava a ogni
+  // campionamento, applicati una volta sola qui.
+  const lumaShaderModule = engine.device.createShaderModule({
+    label: "Grain scalar luma WGSL",
+    code: grainLumaShader,
+  });
+  await assertShaderCompiled(lumaShaderModule, "Grain scalar luma");
+  const lumaBindGroupLayout = engine.device.createBindGroupLayout({
+    label: "Grain scalar luma bind group layout",
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float", viewDimension: "2d" },
+      },
+    ],
+  });
+  const lumaPipeline = engine.device.createRenderPipeline({
+    label: "Grain scalar luma pipeline",
+    layout: engine.device.createPipelineLayout({
+      label: "Grain scalar luma pipeline layout",
+      bindGroupLayouts: [lumaBindGroupLayout],
+    }),
+    vertex: { module: lumaShaderModule, entryPoint: "vertexMain" },
+    fragment: {
+      module: lumaShaderModule,
+      entryPoint: "fragmentMain",
+      targets: [{ format: "r16float" }],
+    },
+    primitive: { topology: "triangle-list" },
+  });
+  const lumaEncoder = engine.device.createCommandEncoder({
+    label: "Grain scalar luma encoder",
+  });
+  const lumaPass = lumaEncoder.beginRenderPass({
+    label: "Grain scalar luma mip 0",
+    colorAttachments: [
+      {
+        view: texture.createView({
+          label: "Grain scalar luma mip 0 target",
+          baseMipLevel: 0,
+          mipLevelCount: 1,
+        }),
+        loadOp: "clear",
+        storeOp: "store",
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+      },
+    ],
+  });
+  lumaPass.setPipeline(lumaPipeline);
+  lumaPass.setBindGroup(
+    0,
+    engine.device.createBindGroup({
+      label: "Grain scalar luma bind group",
+      layout: lumaBindGroupLayout,
+      entries: [{ binding: 0, resource: stagingTexture.createView() }],
+    }),
+  );
+  lumaPass.draw(3, 1, 0, 0);
+  lumaPass.end();
+  engine.device.queue.submit([lumaEncoder.finish()]);
+  await engine.device.queue.onSubmittedWorkDone();
+  // Lo staging ha esaurito il suo scopo: fuori subito, prima che la catena mip
+  // aggiunga il proprio costo.
+  stagingTexture.destroy();
 
   const mipBuildStart = performance.now();
   const mipShaderModule = engine.device.createShaderModule({
@@ -732,7 +816,7 @@ export async function createGrainTextureResources(
     fragment: {
       module: mipShaderModule,
       entryPoint: "fragmentMain",
-      targets: [{ format: "rgba8unorm" }],
+      targets: [{ format: "r16float" }],
     },
     primitive: { topology: "triangle-list" },
   });
@@ -793,7 +877,7 @@ export async function createGrainTextureResources(
     width,
     height,
     mipLevelCount,
-    memoryBytes: rgba8MipChainBytes(width, height),
+    memoryBytes: r16MipChainBytes(width, height),
     previewSprite,
     decodeMs,
     mipBuildMs,

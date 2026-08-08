@@ -211,8 +211,21 @@ assert(!selectedGrainUv.includes("input.localPosition * 0.5"),
   "Moving usa ancora UV stamp 0..1 che ignorano Scale.");
 assert(grainShader.includes("max(1u, grain.mipLevelCount) - 1u"),
   "Il numero di mip Grain non è più dinamico nell'uniform.");
-assert(grainShader.includes("dot(sourceSample.rgb, vec3<f32>(0.299, 0.587, 0.114))"),
-  "Luma RGB dell'asset M1 originale non trovata.");
+// La luma dell'asset M1 originale non e' sparita: si e' spostata al carico.
+// Il campo scalare conserva gli stessi pesi, quindi il valore campionato in
+// pittura e' quello di prima; qui si verifica che entrambe le meta' del patto
+// reggano ancora, cosi' nessuna delle due puo' derivare da sola.
+assert(shaders.includes("export const grainLumaShader")
+  && shaders.match(
+    /grainLumaShader[\s\S]*?dot\(texel\.rgb, vec3<f32>\(0\.299, 0\.587, 0\.114\)\)/,
+  ),
+  "Luma RGB dell'asset M1 originale non trovata nella conversione al carico.");
+assert(shaders.match(/grainLumaShader[\s\S]*?textureLoad\(sourceTexture/),
+  "La conversione luma deve leggere texel a texel, non campionare filtrato.");
+assert(grainShader.includes("let source = sourceSample.r;"),
+  "Il fragment shader di pittura non consuma il campo scalare della grana.");
+assert(!grainShader.includes("dot(sourceSample.rgb"),
+  "La luma non deve essere ricalcolata a ogni campionamento.");
 assert(grainShader.includes("shapeOccupancyCoverageFragmentMain")
   && grainShader.includes("coverageFragmentMain"),
   "Entry point coverage M1 mancanti nel Grain WGSL.");
@@ -230,9 +243,15 @@ assert(engine.includes('url: new URL("../graincottonfleece.PNG", import.meta.url
   && engine.includes("fetch(asset.url)"),
   "Il runtime non instrada gli asset Grain legacy e Pencil espliciti.");
 assert(engine.includes('const GRAIN_TEXTURE_SIZE = 2500;')
-  && engine.includes('format: "rgba8unorm"')
+  && engine.includes('format: "r16float"')
   && engine.includes("mipLevelCountForSize(width, height)"),
   "Dimensione/formato nativi del Grain non configurati.");
+// Lo staging RGBA e' un transitorio: se sopravvivesse alla conversione, il
+// risparmio verrebbe annullato dal doppio della memoria al carico.
+assert(engine.includes("stagingTexture.destroy()"),
+  "Lo staging RGBA della grana non viene distrutto dopo la conversione.");
+assert(engine.includes("r16MipChainBytes(width, height)"),
+  "La contabilita' della grana non segue il formato scalare.");
 assert(engine.includes('"rgba8-native-2500-fixed-coverage-multiply"')
   && engine.includes('"rgba8-native-2500-moving-scaled-drag-to-roller-coverage-multiply"'),
   "Marker Fixed/Moving nativi assenti.");

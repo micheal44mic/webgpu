@@ -2671,11 +2671,49 @@ const hydrateStart = engineSource.indexOf("export async function createHydratedL
 const hydrateBody = engineSource.slice(hydrateStart, hydrateStart + 2_600);
 assert.match(hydrateBody, /encodeLayerColdHydration\(encoder, cold, hot\)/);
 assert.match(engineSource, /assertColdMatchesHot\(cold, hot\)/);
-assert.match(engineSource, /RGBA8_COLD_CODEC_BYTES_PER_PIXEL = 4/);
+// Il codec non e' piu' vincolato a quattro byte: la taglia del tile viene dal
+// formato del documento. L'invariante che conta si e' spostata, non indebolita —
+// un cold compresso deve descrivere lo **stesso** formato del documento, perche'
+// decomprimere byte di un formato dentro una texture dell'altro produrrebbe
+// pixel plausibili e sbagliati.
 assert.match(
   engineSource,
-  /engine\.layerFormat !== "rgba8unorm" \|\| compressed\.format !== "rgba8unorm"/,
-  "il codec worker a quattro byte deve restare inaccessibile a un documento RGBA16F",
+  /function coldCodecTileBytes\(format: LayerFormat\)[\s\S]*?layerFormatBytesPerPixel\(format\)/,
+  "la taglia del tile compresso deve seguire il formato del documento",
+);
+assert.doesNotMatch(
+  engineSource,
+  /RGBA8_COLD_CODEC_BYTES_PER_PIXEL/,
+  "la costante a quattro byte non deve sopravvivere alla generalizzazione",
+);
+assert.match(
+  engineSource,
+  /compressed\.format !== engine\.layerFormat/,
+  "il ripristino deve rifiutare un cold compresso di formato diverso dal documento",
+);
+// La compressione si paga in latenza al prossimo cambio livello, quindi non
+// deve partire a vuoto. Ma il criterio non puo' essere la sola pressione: con
+// un tetto largo la zona resta verde per sempre e la compressione non parte
+// mai. Servono entrambe le vie — pressione **oppure** abbastanza da recuperare.
+assert.match(
+  engineSource,
+  /compressionIsWorthwhile\(\)[\s\S]*?if \(zone !== "green"\) return true;/,
+  "sotto pressione la compressione deve partire sempre",
+);
+assert.match(
+  engineSource,
+  /layerColdCompressionDistantGpuBytes\(\)\s*>= layerBytes \* LAYER_COLD_COMPRESSION_IDLE_THRESHOLD_RATIO/,
+  "in zona verde la compressione deve partire quando c'e' abbastanza da recuperare",
+);
+assert.doesNotMatch(
+  engineSource,
+  /return zone !== "green";\s*\}/,
+  "la sola pressione non basta come criterio: con un tetto largo non scatterebbe mai",
+);
+assert.match(
+  engineSource,
+  /!this\.layerColdCompressionEnabled \|\| !this\.compressionIsWorthwhile\(\)/,
+  "il candidato alla compressione deve passare dal cancello",
 );
 assert.match(hydrateBody, /await engine\.waitForGpuCapped\(label\)/);
 assert.match(hydrateBody, /engine\.liveLayerHydrationTextures\.set\(hot\.texture, memoryBytes\)/);
@@ -2830,3 +2868,101 @@ assert.match(sitesBuildSource, /\/api\/iphone-memory-limit-runs/);
 assert.match(sitesBuildSource, /ON CONFLICT\(id\) DO UPDATE/);
 assert.match(iphoneMemoryMigrationSource, /CREATE TABLE IF NOT EXISTS iphone_memory_limit_runs/);
 console.log("Layer stack verification passed.");
+
+// --- Cancellazione: messaggi che spiegano ------------------------------------
+{
+  const engineSource = readFileSync(new URL("../src/brush-engine.ts", import.meta.url), "utf8");
+  const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+
+  // Cancellare la base di un ritaglio si porta via l'intera unita'. Dire
+  // "ultimo livello" mentre ne sta eliminando quattro sembra un blocco
+  // arbitrario: l'utente non ha modo di capire cosa fare.
+  const deleteLayer = engineSource.slice(
+    engineSource.indexOf("  async deleteLayer(index: number): Promise<void> {"),
+    engineSource.indexOf("this.assertLayerSwitchAllowed();",
+      engineSource.indexOf("  async deleteLayer(index: number): Promise<void> {")),
+  );
+  assert.ok(deleteLayer.length > 0, "deleteLayer non individuata");
+  assert.match(
+    deleteLayer,
+    /unit\.length > 1/,
+    "il rifiuto deve distinguere l'unita' di ritaglio dal singolo livello",
+  );
+  assert.match(
+    deleteLayer,
+    /La base di ritaglio si elimina con tutta la sua unità/,
+    "il messaggio deve spiegare che la base si porta via il gruppo",
+  );
+  assert.match(
+    deleteLayer,
+    /Elimina prima le maschere, /,
+    "il messaggio deve dire cosa fare, non solo cosa non si puo' fare",
+  );
+
+  // Il livello bloccato usciva in silenzio: pulsante inerte, nessun messaggio,
+  // indistinguibile da un guasto dell'app.
+  const deleteButton = mainSource.slice(
+    mainSource.indexOf("mobileLayerDeleteButton.addEventListener(\"click\", () => {"),
+    mainSource.indexOf("mobileLayerDeleteButton.addEventListener(\"click\", () => {") + 1200,
+  );
+  assert.ok(deleteButton.length > 0, "handler di eliminazione non individuato");
+  assert.match(
+    deleteButton,
+    /if \(properties\.locked\) \{[\s\S]{0,320}Livello bloccato/,
+    "il livello bloccato deve dire perche' non si elimina",
+  );
+}
+
+console.log("Layer delete messaging verified.");
+
+// --- Frecce Undo/Redo: lo stato spento si deve vedere -------------------------
+// Le frecce mobile restano toccabili di proposito, cosi' un'operazione bloccata
+// puo' spiegarsi invece di sembrare un tocco perso: `disabled` resta `false` e
+// lo stato passa per `aria-disabled` e `.is-disabled`. Il risultato e' che il
+// segnale e' solo visivo, e va garantito qui — altrimenti le frecce sembrano
+// sempre accese e non dicono piu' se puoi andare avanti o indietro.
+{
+  const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  const cssSource = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+
+  const controlli = mainSource.slice(
+    mainSource.indexOf("function updateHistoryControls(): void {"),
+    mainSource.indexOf("mobileBrushColorInput.disabled = locked;"),
+  );
+  assert.ok(controlli.length > 0, "updateHistoryControls non individuata");
+  assert.match(
+    controlli,
+    /button\.setAttribute\("aria-disabled", String\(blocked\)\)/,
+    "lo stato bloccato va esposto su aria-disabled",
+  );
+  assert.match(
+    controlli,
+    /button\.classList\.toggle\("is-disabled", blocked\)/,
+    "lo stato bloccato va esposto anche come classe, per lo stile",
+  );
+
+  // Lo stato spento deve attenuare davvero. `opacity: 1` qui significa
+  // "identico ad acceso": e' il bug che questa asserzione impedisce.
+  const spento = cssSource.slice(
+    cssSource.indexOf(".mobile-tool-action:disabled,"),
+    cssSource.indexOf(".mobile-color-action,"),
+  );
+  assert.ok(spento.length > 0, "regola dello stato spento non individuata");
+  const opacita = /opacity:\s*([0-9.]+)/.exec(spento);
+  assert.ok(opacita, "lo stato spento deve dichiarare un'opacita'");
+  assert.ok(
+    Number(opacita[1]) < 0.9,
+    `lo stato spento deve essere visibilmente attenuato, trovato opacity ${opacita[1]}`,
+  );
+
+  // La regola del colore "acceso" ha specificita' piu' alta di quella dello
+  // stato disabilitato: senza escludere aria-disabled vince lei, e la freccia
+  // bloccata resta a colore pieno.
+  assert.match(
+    cssSource,
+    /\.mobile-tool-action:not\(:disabled\):not\(\[aria-pressed\]\):not\(\[aria-disabled="true"\]\)/,
+    "la regola del colore acceso deve escludere aria-disabled, o vince per specificita'",
+  );
+}
+
+console.log("Undo/Redo affordance verified.");

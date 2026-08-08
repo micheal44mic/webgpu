@@ -2046,3 +2046,126 @@ console.log(
   "Testo vettoriale verificato: Distort/Arch/Circle/Wave Kittl, Slug analitico, Clipper64/Worker, outline fused senza seam, 0 no-op, "
   + "Block Shadow canonica, SVG semantici sanitizzati con palette/effetti GPU, blur Gaussian R16F GPU, raster testo/SVG RGBA16F byte-exact, swap di nodo atomici, coda latest-only e nessun fallback bitmap.",
 );
+
+// --- Rollback: mai un record senza risorse GPU --------------------------------
+// Lo stacco nel rollback e' condizionato — non si puo' rimuovere il livello
+// attivo — mentre la liberazione delle risorse era incondizionata. Se il
+// ripristino dell'attivo falliva, il candidato restava nello stack (e attivo)
+// con le risorse GPU gia' distrutte: ogni lookup successiva ci inciampava. Un
+// record senza GPU e' peggio del leak che si voleva evitare, e va dichiarato
+// invece che lasciato in giro.
+{
+  const vectorRaster = fs.readFileSync(
+    new URL("../src/engine-vector-raster-runtime.ts", import.meta.url),
+    "utf8",
+  );
+  // I due siti di rollback, non le liberazioni legittime di `hydrateHistorySeed`.
+  for (const [identificatore, contesto] of [
+    ["recordId", "rasterizzazione"],
+    ["action.layerId", "Redo della rasterizzazione"],
+  ]) {
+    const atteso = new RegExp(
+      "if \\(engine\\.layerStack\\.indexOfId\\("
+      + identificatore.replace(".", "\\.")
+      + "\\) >= 0\\) \\{[\\s\\S]{0,400}rollbackErrors\\.push\\("
+      + "[\\s\\S]{0,400}\\} else \\{[\\s\\S]{0,400}destroyLayerGpuResources\\(",
+    );
+    assert.match(
+      vectorRaster,
+      atteso,
+      `nel rollback della ${contesto} le risorse si liberano solo se il record e' `
+        + "davvero uscito dallo stack, altrimenti il rollback va dichiarato fallito",
+    );
+  }
+}
+
+console.log("Vector rasterize rollback resource ownership verified.");
+
+// --- Nessun frame fra mutazione della scena e ricostruzione -------------------
+// `mutateMixedScenePresentation` e' il percorso di **ogni** aggiunta, rimozione
+// e modifica vettoriale (testo, SVG, immagine). Muta la scena a presentazione
+// viva e la ricostruisce subito dopo: i segmenti di composizione restano stale
+// in mezzo, e citano per id livelli e nodi che il frame risolve con lookup che
+// lanciano. Oggi regge solo perche' fra le due cose non c'e' nessun `await`,
+// quindi il controllo non torna mai al loop di rendering. Basta inserirne uno
+// e si riapre esattamente il bug "Livello N assente dallo stack" — con la
+// differenza che colpirebbe tutti i vettori, non il solo layer-add.
+{
+  const vectorText = fs.readFileSync(
+    new URL("../src/engine-vector-text-runtime.ts", import.meta.url),
+    "utf8",
+  );
+  const corpo = vectorText.slice(
+    vectorText.indexOf("export async function mutateMixedScenePresentation<Result>"),
+  );
+  const mutazione = corpo.indexOf("const result = mutate(scene);");
+  const ricostruzione = corpo.indexOf("await engine.rebuildMergedLayerSurfaces(");
+  assert.ok(
+    mutazione >= 0 && ricostruzione > mutazione,
+    "mutazione o ricostruzione della scena mista non individuate",
+  );
+  const inMezzo = corpo.slice(mutazione, ricostruzione);
+  assert.ok(
+    !/\bawait\b/.test(inMezzo),
+    "nessun await fra la mutazione della scena e la ricostruzione dei segmenti: "
+      + "cederebbe il controllo al loop di rendering con i segmenti stale",
+  );
+}
+
+console.log("Mixed scene mutation atomicity verified.");
+
+// --- Undo rasterizzazione: identita' stabile e preview testo -----------------
+// La posizione del vettore nella scena non dice quale raster fosse attivo: con
+// tre raster l'adiacente puo' essere diverso da quello su cui si stava
+// dipingendo. L'azione deve conservare l'ID e ripristinare anche l'esclusione
+// del testo appena tornato selezionato.
+{
+  const vectorRaster = fs.readFileSync(
+    new URL("../src/engine-vector-raster-runtime.ts", import.meta.url),
+    "utf8",
+  );
+  const historyTypes = fs.readFileSync(
+    new URL("../src/engine-history-types.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    historyTypes,
+    /interface VectorRasterizeHistoryAction[\s\S]*activeRasterLayerIdBefore: number;/,
+    "l'azione deve ricordare il raster attivo prima della conversione",
+  );
+  assert.match(
+    vectorRaster,
+    /vectorState,[\s\S]{0,120}activeRasterLayerIdBefore: originalActiveId,/,
+    "la conversione deve registrare l'identita' attiva osservata",
+  );
+  const undo = vectorRaster.slice(
+    vectorRaster.indexOf("async function undoVectorRasterization("),
+    vectorRaster.indexOf("async function redoVectorRasterization("),
+  );
+  assert.match(
+    undo,
+    /const fallbackIndex = engine\.layerStack\.indexOfId\(action\.activeRasterLayerIdBefore\);/,
+    "Undo deve cercare il raster originario per ID, non scegliere un adiacente",
+  );
+  assert.doesNotMatch(
+    undo,
+    /activeTargetIndex > 0[\s\S]*activeTargetIndex - 1/,
+    "la geometria dello stack non e' uno snapshot dello stato attivo",
+  );
+  assert.match(
+    undo,
+    /const restoredSelection = scene\.selected;[\s\S]*restoredSelection\.kind === "text"[\s\S]*restoredSelection\.textNodeId/,
+    "il testo ripristinato e selezionato deve tornare escluso dalla preview statica",
+  );
+
+  // Modello del caso non adiacente riprodotto: il testo sta fra raster 1 e 2,
+  // ma prima della conversione era attivo il raster 3.
+  const stackDuringRasterization = [1, 4, 2, 3];
+  const targetIndex = stackDuringRasterization.indexOf(4);
+  const adjacentFallback = stackDuringRasterization[targetIndex - 1];
+  const stableFallback = stackDuringRasterization.findIndex((id) => id === 3);
+  assert.equal(adjacentFallback, 1, "il modello deve distinguere davvero le due scelte");
+  assert.equal(stackDuringRasterization[stableFallback], 3);
+}
+
+console.log("Vector rasterize exact active/preview restoration verified.");

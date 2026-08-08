@@ -85,7 +85,9 @@ export const GPU_MEMORY_CATEGORY_ORDER = Object.freeze([
   "Heightfield R32F",
   "Cache vettoriali",
   "Scratch temporanei",
-  "History e cold storage",
+  "Composite livelli",
+  "Cronologia · Undo",
+  "Cold storage livelli",
   "Import e trasformazioni raster",
   "Presentazione",
   "Effetti raster",
@@ -107,8 +109,19 @@ const CATEGORY_RULES: ReadonlyArray<readonly [RegExp, string]> = Object.freeze([
   [/Heightfield|heightfield/i, "Heightfield R32F"],
   [/(?:R16F|r16float|f16).*(?:coverage|matte|mask|accumulator|snapshot)|(?:coverage|matte|blur cache|blurred mask|accumulator|snapshot).*(?:R16F|r16float|f16)|GPU blur cache/i,
     "Maschere continue R16F"],
-  [/Cronologia|history|cold tile|cold storage|Cold ripristinato|compress/i,
-    "History e cold storage"],
+  // Cronologia e cold storage erano una riga sola, e la riga sola non si poteva
+  // leggere: la cronologia ha un budget in byte che la tiene a bada, il cold
+  // storage dei livelli inattivi no. Sommarle nascondeva proprio la distinzione
+  // che serve per capire perche' la memoria e' salita. L'ordine conta: il seed
+  // di un checkpoint si chiama `Cold tile History livello N`, quindi la regola
+  // della cronologia deve venire prima di quella del cold storage.
+  // Le superfici merged sono la cache del composito sopra e sotto il livello
+  // attivo: ricostruibili dai pixel autorevoli, e la voce piu' pesante dopo il
+  // livello stesso. Restavano in `Non categorizzato`, che e' la riga che chiede
+  // un nome — questo e' il nome.
+  [/Merged (?:below|above|[a-z]+) |Layer composite/i, "Composite livelli"],
+  [/Cronologia|history/i, "Cronologia · Undo"],
+  [/cold tile|cold storage|Cold ripristinato|compress/i, "Cold storage livelli"],
   [/vector text|vector svg|semantic vector|mixed scene|scene lineare|ordered layer blend|ordered clipping-group/i,
     "Cache vettoriali"],
   [/display pyramid|derived mip|logical mip|sampling chain|\bmip(?:map)?\b/i,

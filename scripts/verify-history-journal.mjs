@@ -476,6 +476,10 @@ const rasterTransform = (id, layerId, hasContent = true) => ({
     new URL("../src/engine-history-runtime.ts", import.meta.url),
     "utf8",
   );
+  const transformRuntime = readFileSync(
+    new URL("../src/engine-raster-transform-runtime.ts", import.meta.url),
+    "utf8",
+  );
   const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
   const effectsSheet = readFileSync(
@@ -685,8 +689,97 @@ const rasterTransform = (id, layerId, hasContent = true) => ({
   );
   assert.match(
     addLayer,
-    /this\.historyCursor = this\.historyActions\.length;/,
-    "l'azione di creazione deve avanzare il cursore",
+    /commitHistoryActionAtomically\(this, action\);/,
+    "l'azione di creazione deve pubblicare journal e troncamento Redo atomicamente",
+  );
+
+  // Ogni lista che `truncateRedoHistory` puo' allungare appartiene allo stesso
+  // commit. Dimenticarne una lascia un'azione contemporaneamente viva nel Redo
+  // e candidata alla distruzione idle.
+  const atomicCommit = historyRuntime.slice(
+    historyRuntime.indexOf("export function commitHistoryActionAtomically("),
+    historyRuntime.indexOf("export function truncateRedoHistory("),
+  );
+  assert.ok(atomicCommit.length > 0, "helper di commit history atomico non individuato");
+  for (const field of [
+    "discardedVectorRasterHistoryActions",
+    "discardedRasterImportHistoryActions",
+    "discardedRasterTransformHistoryActions",
+    "discardedLayerDeleteHistoryActions",
+  ]) {
+    assert.match(
+      atomicCommit,
+      new RegExp(`${field}\\.length = discarded`),
+      `${field} deve tornare alla propria lunghezza se la pubblicazione fallisce`,
+    );
+  }
+  assert.match(
+    atomicCommit,
+    /engine\.historyActions\[cursorBefore \+ index\] = redoActions\[index\]/,
+    "il ramo Redo va ricostruito senza riusare il push eventualmente guastato",
+  );
+  assert.match(
+    brushEngine.slice(
+      brushEngine.indexOf("  commitRasterImportHistory("),
+      brushEngine.indexOf("  beginRasterLayerTransform("),
+    ),
+    /commitHistoryActionAtomically\(this, action\)/,
+    "anche l'import raster deve usare il commit che ripristina tutte le liste di scarto",
+  );
+  assert.match(
+    transformRuntime,
+    /commitHistoryActionAtomically\(engine, action\)/,
+    "Trasforma deve usare il commit che ripristina anche le layer-delete scartate",
+  );
+  for (const [name, body] of [
+    ["deleteLayer", brushEngine.slice(
+      brushEngine.indexOf("  async deleteLayer("),
+      brushEngine.indexOf("  measuredGpuMemory()"),
+    )],
+    ["rasterizeVectorNode", brushEngine.slice(
+      brushEngine.indexOf("  private async rasterizeVectorNode("),
+      brushEngine.indexOf("  async rasterizeVectorTextNode("),
+    )],
+  ]) {
+    assert.match(body, /commitHistoryActionAtomically\(this, action\)/,
+      `${name}: il journal va pubblicato atomicamente`);
+    assert.match(body, /catch \(error\)[\s\S]*rollback|catch \(error\)[\s\S]*apply.*-1/,
+      `${name}: un commit rifiutato deve annullare anche la mutazione del documento`);
+  }
+
+  // Il compattatore non deve fidarsi ciecamente della lista di scarto: una
+  // layer-delete ancora trattenuta nel journal conserva i propri seed.
+  assert.match(
+    historyRuntime,
+    /retainedLayerDeleteIds\.add\(action\.id\)/,
+    "le layer-delete vive vanno marcate durante la scansione del journal",
+  );
+  assert.match(
+    historyRuntime,
+    /if \(!retainedLayerDeleteIds\.has\(action\.id\)\) layerDeleteActionsToDestroy\.push\(action\)/,
+    "solo le layer-delete davvero abbandonate possono essere distrutte",
+  );
+  assert.doesNotMatch(
+    historyRuntime,
+    /for \(const action of engine\.discardedLayerDeleteHistoryActions\) \{\s*destroyLayerDeleteHistorySeeds/,
+    "vietata la distruzione incondizionata della lista layer-delete",
+  );
+
+  // Le raster-run sono nominate dagli ID, non dagli stili: una modifica raster
+  // non puo' usare l'ottimizzazione riservata alle sole mutazioni vettoriali.
+  const metadataPresentation = historyRuntime.slice(
+    historyRuntime.indexOf("async function refreshRasterLayerMetadataPresentation("),
+    historyRuntime.indexOf("export async function applyRasterLayerMetadataHistoryState("),
+  );
+  assert.doesNotMatch(
+    metadataPresentation,
+    /reuseUnchangedRasterRuns: true/,
+    "Undo/Redo metadata raster deve rigenerare le run cambiate",
+  );
+  assert.match(
+    metadataPresentation,
+    /else \{[\s\S]*await engine\.rebuildMergedLayerSurfaces\([\s\S]*"history-replay"/,
+    "anche gli effetti di un raster inattivo devono ricostruire la sua run",
   );
 
   const rasterReplay = engine.slice(

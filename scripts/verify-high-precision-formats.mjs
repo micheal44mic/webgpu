@@ -28,10 +28,14 @@ const sources = new Map(sourceFiles.map((path) => [
 // Exact counts make this an allowlist: a new continuous R8/RGBA8 allocation
 // cannot hide merely by landing in a file that already contains an exception.
 const allowedLiteralFormats = new Map([
-  ["src/engine-cold-storage.ts", { rgba8unorm: 1 }],
-  ["src/engine-layer-resources.ts", { rgba8unorm: 1 }],
+  // Il cold compresso non fissa piu' un formato: segue quello del documento,
+  // quindi l'ultimo letterale RGBA8 di questo file e' sparito.
+  // Anche il tipo del cold compresso segue ora LayerFormat: nessun letterale.
   ["src/engine-raster-image-runtime.ts", { "rgba8unorm-srgb": 1 }],
-  ["src/engine-resource-setup.ts", { rgba8unorm: 3, r8unorm: 2 }],
+  // La grana non e' piu' RGBA8: e' un campo scalare R16F. Resta un solo
+  // letterale RGBA8, lo staging transitorio che riceve l'immagine sorgente e
+  // viene distrutto subito dopo la conversione a luma.
+  ["src/engine-resource-setup.ts", { rgba8unorm: 2, r8unorm: 2 }],
   ["src/layer-blend-tile-compositor.ts", { rgba8unorm: 1 }],
   ["src/layer-thumbnail-renderer.ts", { rgba8unorm: 2 }],
   ["src/stroke-renderer.ts", { rgba8unorm: 1 }],
@@ -52,8 +56,10 @@ assert.deepEqual(
   "È comparso (o è cambiato) un formato letterale RGBA8/R8: classificarlo esplicitamente prima di accettarlo.",
 );
 
+// La catena mip della grana era l'ultimo percorso continuo a passare per un
+// target a 8 bit: ora e' R16F dal primo livello all'ultimo, quindi l'eccezione
+// non serve piu'. Resta solo la miniatura, che e' un output di interfaccia.
 const allowedEightBitRenderTargets = new Map([
-  ["src/engine-resource-setup.ts", 1], // mip della sorgente Grain RGBA8
   ["src/layer-thumbnail-renderer.ts", 1], // miniatura UI finale
 ]);
 const actualEightBitRenderTargets = new Map();
