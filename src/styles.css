@@ -4410,7 +4410,8 @@ select {
   }
 }
 
-.gaussian-blur-launch-control {
+.gaussian-blur-launch-control,
+.motion-blur-launch-control {
   margin-bottom: 0;
 }
 
@@ -4420,14 +4421,28 @@ select {
   border-top: 1px solid #303746;
 }
 
-.gaussian-blur-inline-actions {
+.motion-blur-launch-block {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #303746;
+}
+
+#desktopMotionBlurParameters {
+  margin-top: 9px;
+  padding-top: 10px;
+  border-top: 1px solid #303746;
+}
+
+.gaussian-blur-inline-actions,
+.motion-blur-inline-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 7px;
   margin-bottom: 12px;
 }
 
-.gaussian-blur-inline-actions button {
+.gaussian-blur-inline-actions button,
+.motion-blur-inline-actions button {
   min-width: 0;
   min-height: 36px;
 }
@@ -4438,20 +4453,30 @@ select {
     overflow: visible;
   }
 
-  .mobile-gaussian-blur-controls {
+  .mobile-motion-blur-sheet {
+    --mobile-tools-sheet-offset: calc(100% - clamp(250px, 36dvh, 320px));
+    overflow: visible;
+  }
+
+  .mobile-gaussian-blur-controls,
+  .mobile-motion-blur-controls {
     display: grid;
     min-width: 0;
     gap: 2px;
   }
 
-  .mobile-gaussian-blur-actions {
+  .mobile-gaussian-blur-actions,
+  .mobile-motion-blur-actions {
     flex: 0 0 auto;
     margin: 0;
   }
 
   .mobile-gaussian-blur-actions button,
   .mobile-gaussian-blur-actions button:hover,
-  .mobile-gaussian-blur-actions button:active {
+  .mobile-gaussian-blur-actions button:active,
+  .mobile-motion-blur-actions button,
+  .mobile-motion-blur-actions button:hover,
+  .mobile-motion-blur-actions button:active {
     border: 1px solid #343842;
     border-radius: 10px;
     background: #292c33;
@@ -4460,7 +4485,10 @@ select {
 
   .mobile-gaussian-blur-actions button.is-primary,
   .mobile-gaussian-blur-actions button.is-primary:hover,
-  .mobile-gaussian-blur-actions button.is-primary:active {
+  .mobile-gaussian-blur-actions button.is-primary:active,
+  .mobile-motion-blur-actions button.is-primary,
+  .mobile-motion-blur-actions button.is-primary:hover,
+  .mobile-motion-blur-actions button.is-primary:active {
     border-color: #dd5c35;
     background: #dd5c35;
     color: var(--mobile-icon-face);
@@ -4468,6 +4496,11 @@ select {
 
   @media (max-height: 700px) {
     .mobile-gaussian-blur-sheet .mobile-tools-sheet-handle {
+      flex-basis: 34px;
+      min-height: 34px;
+    }
+
+    .mobile-motion-blur-sheet .mobile-tools-sheet-handle {
       flex-basis: 34px;
       min-height: 34px;
     }

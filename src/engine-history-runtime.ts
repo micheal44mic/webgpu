@@ -350,6 +350,13 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
     );
     return false;
   }
+  if (engine.activeRasterMotionBlurSession) {
+    engine.publishStatus(
+      "Applica o annulla Motion Blur prima di usare la cronologia.",
+      "error",
+    );
+    return false;
+  }
   if (engine.historyStateInconsistent) {
     engine.publishStatus("La cronologia è incoerente: ricarica la pagina.", "error");
     return false;

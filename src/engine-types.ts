@@ -181,7 +181,13 @@ export interface HistoryState {
   undoBlockedReason: string | null;
   redoBlockedReason: string | null;
   /** Proprietà continue o operazioni raster transazionali aperte. */
-  openEdit: "property" | "raster-property" | "transform" | "gaussian-blur" | null;
+  openEdit:
+    | "property"
+    | "raster-property"
+    | "transform"
+    | "gaussian-blur"
+    | "motion-blur"
+    | null;
 }
 
 export interface BenchmarkResult {

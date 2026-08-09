@@ -254,18 +254,32 @@ export type RasterTransformHistoryAction = RasterTransformHistoryActionMetadata 
  * Undo/Redo hydrates the checkpoint and never evaluates the filter again, so a
  * future shader change cannot alter an existing document's history.
  */
-export interface RasterFilterHistoryAction extends RasterHistoryCheckpoint {
+interface RasterFilterHistoryActionCommon extends RasterHistoryCheckpoint {
   id: number;
   kind: "raster-filter";
-  filter: "gaussian-blur";
-  radius: number;
-  sigma: number;
-  supportRadius: number;
   precision: "rgba16float-f32-accumulation";
   edgeMode: "transparent-black";
   seed: LayerColdStorageResources;
   baseBounds: DirtyRect;
 }
+
+export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (
+  | {
+    filter: "gaussian-blur";
+    radius: number;
+    sigma: number;
+    supportRadius: number;
+  }
+  | {
+    filter: "motion-blur";
+    distance: number;
+    angle: number;
+    sampleCount: number;
+    passCount: number;
+    supportX: number;
+    supportY: number;
+  }
+);
 
 export type RasterHistoryCheckpointAction =
   | VectorRasterizeHistoryAction

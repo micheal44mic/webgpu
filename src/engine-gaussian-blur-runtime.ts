@@ -712,6 +712,9 @@ export async function beginRasterGaussianBlur(
   if (engine.activeRasterGaussianBlurSession) {
     return snapshot(engine.activeRasterGaussianBlurSession);
   }
+  if (engine.activeRasterMotionBlurSession) {
+    throw new Error("Applica o annulla Motion Blur prima di aprire Gaussian Blur.");
+  }
   if (engine.activeRasterTransformSession) {
     throw new Error("Applica o annulla Trasforma prima di aprire Gaussian Blur.");
   }

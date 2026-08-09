@@ -23,6 +23,7 @@ import { MobileBrushLibraryPreviewRenderer } from "./brush-library-preview";
 import { AuthoritativeBrushStrokePreviewRenderer } from "./brush-stroke-preview-renderer";
 import { MobileStrokeSheetController } from "./mobile-stroke-sheet";
 import { MobileGaussianBlurSheetController } from "./mobile-gaussian-blur-sheet";
+import { MobileMotionBlurSheetController } from "./mobile-motion-blur-sheet";
 import {
   MobileToolSettingsSheetController,
   type MobileTextWarpMode,
@@ -97,6 +98,7 @@ import {
   TypeOutline,
   Undo2,
   Upload,
+  Wind,
   createElement as createLucideElement,
   createIcons,
   type IconNode,
@@ -138,6 +140,14 @@ import {
   DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS,
   DESTRUCTIVE_GAUSSIAN_BLUR_RADIUS_STEP,
 } from "./gaussian-blur-core";
+import {
+  DESTRUCTIVE_MOTION_BLUR_DEFAULT_ANGLE,
+  DESTRUCTIVE_MOTION_BLUR_DEFAULT_DISTANCE,
+  DESTRUCTIVE_MOTION_BLUR_DISTANCE_STEP,
+  DESTRUCTIVE_MOTION_BLUR_MAX_ANGLE,
+  DESTRUCTIVE_MOTION_BLUR_MAX_DISTANCE,
+  DESTRUCTIVE_MOTION_BLUR_MIN_ANGLE,
+} from "./motion-blur-core";
 import { layerBaseMemoryMiB } from "./engine-memory-model";
 import { GPU_MEMORY_AUDIT_TOLERANCE_BYTES } from "./gpu-memory-audit";
 import { GPU_MEMORY_CATEGORY_ORDER } from "./gpu-resource-registry";
@@ -233,6 +243,7 @@ createIcons({
     TypeOutline,
     Undo2,
     Upload,
+    Wind,
   },
 });
 
@@ -497,6 +508,55 @@ const rasterGaussianBlurApplyButtons = [
   desktopGaussianBlurApplyButton,
   mobileGaussianBlurApplyButton,
 ] as const;
+const rasterMotionBlurSection = element<HTMLElement>("rasterMotionBlurSection");
+const desktopMotionBlurOpenInput = element<HTMLInputElement>("desktopMotionBlurOpen");
+const desktopMotionBlurParameters = element<HTMLElement>("desktopMotionBlurParameters");
+const desktopMotionBlurDistanceInput = element<HTMLInputElement>("desktopMotionBlurDistance");
+const desktopMotionBlurDistanceOutput = element<HTMLOutputElement>(
+  "desktopMotionBlurDistanceOut",
+);
+const desktopMotionBlurAngleInput = element<HTMLInputElement>("desktopMotionBlurAngle");
+const desktopMotionBlurAngleOutput = element<HTMLOutputElement>("desktopMotionBlurAngleOut");
+const desktopMotionBlurStatus = element<HTMLParagraphElement>("desktopMotionBlurStatus");
+const desktopMotionBlurCancelButton = element<HTMLButtonElement>("desktopMotionBlurCancel");
+const desktopMotionBlurApplyButton = element<HTMLButtonElement>("desktopMotionBlurApply");
+const mobileMotionBlurOpenButton = element<HTMLButtonElement>("mobileMotionBlurOpen");
+const mobileMotionBlurSheetElement = element<HTMLElement>("mobileMotionBlurSheet");
+const mobileMotionBlurDistanceInput = element<HTMLInputElement>("mobileMotionBlurDistance");
+const mobileMotionBlurDistanceOutput = element<HTMLOutputElement>("mobileMotionBlurDistanceOut");
+const mobileMotionBlurAngleInput = element<HTMLInputElement>("mobileMotionBlurAngle");
+const mobileMotionBlurAngleOutput = element<HTMLOutputElement>("mobileMotionBlurAngleOut");
+const mobileMotionBlurStatus = element<HTMLParagraphElement>("mobileMotionBlurStatus");
+const mobileMotionBlurCancelButton = element<HTMLButtonElement>("mobileMotionBlurCancel");
+const mobileMotionBlurApplyButton = element<HTMLButtonElement>("mobileMotionBlurApply");
+const rasterMotionBlurDistanceInputs = [
+  desktopMotionBlurDistanceInput,
+  mobileMotionBlurDistanceInput,
+] as const;
+const rasterMotionBlurDistanceOutputs = [
+  desktopMotionBlurDistanceOutput,
+  mobileMotionBlurDistanceOutput,
+] as const;
+const rasterMotionBlurAngleInputs = [
+  desktopMotionBlurAngleInput,
+  mobileMotionBlurAngleInput,
+] as const;
+const rasterMotionBlurAngleOutputs = [
+  desktopMotionBlurAngleOutput,
+  mobileMotionBlurAngleOutput,
+] as const;
+const rasterMotionBlurStatuses = [
+  desktopMotionBlurStatus,
+  mobileMotionBlurStatus,
+] as const;
+const rasterMotionBlurCancelButtons = [
+  desktopMotionBlurCancelButton,
+  mobileMotionBlurCancelButton,
+] as const;
+const rasterMotionBlurApplyButtons = [
+  desktopMotionBlurApplyButton,
+  mobileMotionBlurApplyButton,
+] as const;
 const mobileToolSettingsButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>("[data-mobile-tool-sheet]"),
 );
@@ -511,6 +571,24 @@ for (const input of rasterGaussianBlurRadiusInputs) {
 }
 for (const output of rasterGaussianBlurRadiusOutputs) {
   output.value = `${DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS} px`;
+}
+for (const input of rasterMotionBlurDistanceInputs) {
+  input.min = "0";
+  input.max = String(DESTRUCTIVE_MOTION_BLUR_MAX_DISTANCE);
+  input.step = String(DESTRUCTIVE_MOTION_BLUR_DISTANCE_STEP);
+  input.value = String(DESTRUCTIVE_MOTION_BLUR_DEFAULT_DISTANCE);
+}
+for (const output of rasterMotionBlurDistanceOutputs) {
+  output.value = `${DESTRUCTIVE_MOTION_BLUR_DEFAULT_DISTANCE} px`;
+}
+for (const input of rasterMotionBlurAngleInputs) {
+  input.min = String(DESTRUCTIVE_MOTION_BLUR_MIN_ANGLE);
+  input.max = String(DESTRUCTIVE_MOTION_BLUR_MAX_ANGLE);
+  input.step = "1";
+  input.value = String(DESTRUCTIVE_MOTION_BLUR_DEFAULT_ANGLE);
+}
+for (const output of rasterMotionBlurAngleOutputs) {
+  output.value = `${DESTRUCTIVE_MOTION_BLUR_DEFAULT_ANGLE}°`;
 }
 let previousMobileTouchEndTime = Number.NEGATIVE_INFINITY;
 let previousMobileTouchEndX = Number.NEGATIVE_INFINITY;
@@ -1089,6 +1167,7 @@ let mobileStrokeSheet: MobileStrokeSheetController | null = null;
 let mobileRasterEffectsSheet: MobileRasterEffectsSheetController | null = null;
 let mobileToolSettingsSheet: MobileToolSettingsSheetController | null = null;
 let mobileGaussianBlurSheet: MobileGaussianBlurSheetController | null = null;
+let mobileMotionBlurSheet: MobileMotionBlurSheetController | null = null;
 type RasterGaussianBlurSurface = "desktop" | "mobile";
 let rasterGaussianBlurUiBusy = false;
 let rasterGaussianBlurSessionOpen = false;
@@ -1096,6 +1175,13 @@ let rasterGaussianBlurPreviewFault = false;
 let rasterGaussianBlurCancelPending = false;
 let rasterGaussianBlurSurface: RasterGaussianBlurSurface | null = null;
 let rasterGaussianBlurReturnFocus: HTMLElement | null = null;
+type RasterMotionBlurSurface = "desktop" | "mobile";
+let rasterMotionBlurUiBusy = false;
+let rasterMotionBlurSessionOpen = false;
+let rasterMotionBlurPreviewFault = false;
+let rasterMotionBlurCancelPending = false;
+let rasterMotionBlurSurface: RasterMotionBlurSurface | null = null;
+let rasterMotionBlurReturnFocus: HTMLElement | null = null;
 const engine = new BrushEngine(canvas, {
   onStatus(message, kind) {
     statusElement.textContent = message;
@@ -1104,6 +1190,11 @@ const engine = new BrushEngine(canvas, {
       setRasterGaussianBlurStatus(message);
       if (kind === "error") rasterGaussianBlurPreviewFault = true;
       syncRasterGaussianBlurUi();
+    }
+    if (rasterMotionBlurSessionOpen && message.includes("Motion Blur")) {
+      setRasterMotionBlurStatus(message);
+      if (kind === "error") rasterMotionBlurPreviewFault = true;
+      syncRasterMotionBlurUi();
     }
   },
   onStats(stats) {
@@ -1789,6 +1880,7 @@ function syncMobileBrushControlsVisibility(): void {
     || mobileStrokeSheet?.isOpen === true
     || mobileRasterEffectsSheet?.isOpen === true
     || mobileGaussianBlurSheet?.isOpen === true
+    || mobileMotionBlurSheet?.isOpen === true
     || mobileToolSettingsSheet?.isOpen === true
     || mobileBrushStudio?.isOpen === true;
   if (suppressed && mobileBrushControlDrag) {
@@ -2166,7 +2258,10 @@ function syncMobileBrushLibrarySelection(): void {
 
 function setMobileBrushLibraryOpen(open: boolean): void {
   if (open && (!mobileUiMediaQuery.matches || activeCanvasTool !== "paint")) return;
-  if (open && rasterGaussianBlurSurface === "mobile") return;
+  if (
+    open
+    && (rasterGaussianBlurSurface === "mobile" || rasterMotionBlurSurface === "mobile")
+  ) return;
   if (open && mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
   if (open && mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
   if (open && mobileRasterEffectsSheet?.isOpen) mobileRasterEffectsSheet.close(false);
@@ -2519,10 +2614,12 @@ function syncMobileToolsMenuState(): void {
     button.setAttribute("aria-pressed", String(control?.checked === true));
   }
   syncRasterGaussianBlurUi();
+  syncRasterMotionBlurUi();
 }
 
 function rasterGaussianBlurEligibilityError(): string | null {
   if (!engineInitialized) return "Gaussian Blur sarà disponibile dopo l’inizializzazione.";
+  if (rasterMotionBlurSurface !== null) return "Applica o annulla Motion Blur prima.";
   if (engine.getPixelSelectionState().selectedPixels > 0) {
     return "Deseleziona i pixel per sfocare l’intero livello.";
   }
@@ -2593,6 +2690,85 @@ function syncRasterGaussianBlurUi(): void {
   mobileGaussianBlurSheetElement.setAttribute(
     "aria-busy",
     String(rasterGaussianBlurUiBusy),
+  );
+}
+
+function rasterMotionBlurEligibilityError(): string | null {
+  if (!engineInitialized) return "Motion Blur sarà disponibile dopo l’inizializzazione.";
+  if (rasterGaussianBlurSurface !== null) return "Applica o annulla Gaussian Blur prima.";
+  if (engine.getPixelSelectionState().selectedPixels > 0) {
+    return "Deseleziona i pixel per sfocare l’intero livello.";
+  }
+  const stats = engine.getStats();
+  const active = stats.layers.find((layer) => layer.id === stats.activeLayerId);
+  if (!active?.hasContent) return "Il livello raster selezionato è vuoto.";
+  const scene = stats.mixedScene;
+  if (scene) {
+    const selected = scene.items.find((item) => item.key === scene.selectedKey);
+    if (selected?.kind !== "raster" || selected.rasterLayerId !== stats.activeLayerId) {
+      return "Seleziona un livello raster per usare Motion Blur.";
+    }
+  }
+  if (layerSwitching || interactionLocked()) {
+    return "Termina l’operazione corrente prima di aprire Motion Blur.";
+  }
+  return null;
+}
+
+function syncRasterMotionBlurUi(): void {
+  const workbenchOpen = rasterMotionBlurSurface !== null;
+  const eligibilityError = workbenchOpen
+    || rasterMotionBlurSessionOpen
+    || rasterMotionBlurUiBusy
+    ? "Motion Blur è già aperto."
+    : rasterMotionBlurEligibilityError();
+  const triggerDisabled = eligibilityError !== null;
+  const recoveryOnly = rasterMotionBlurPreviewFault || historyState.inconsistent;
+  const controlsDisabled = rasterMotionBlurUiBusy
+    || !rasterMotionBlurSessionOpen
+    || recoveryOnly;
+
+  desktopMotionBlurOpenInput.checked = rasterMotionBlurSurface === "desktop";
+  desktopMotionBlurOpenInput.disabled = rasterMotionBlurSurface === "desktop"
+    ? rasterMotionBlurUiBusy
+    : triggerDisabled;
+  desktopMotionBlurOpenInput.title = rasterMotionBlurSurface === "desktop"
+    ? "Disattiva per annullare Motion Blur"
+    : eligibilityError ?? "Apri Motion Blur";
+  desktopMotionBlurOpenInput.setAttribute(
+    "aria-expanded",
+    String(rasterMotionBlurSurface === "desktop"),
+  );
+  desktopMotionBlurParameters.hidden = rasterMotionBlurSurface !== "desktop";
+
+  mobileMotionBlurOpenButton.disabled = triggerDisabled;
+  mobileMotionBlurOpenButton.title = eligibilityError ?? "Apri Motion Blur";
+  mobileMotionBlurOpenButton.setAttribute(
+    "aria-pressed",
+    String(rasterMotionBlurSurface === "mobile"),
+  );
+
+  for (const input of [
+    ...rasterMotionBlurDistanceInputs,
+    ...rasterMotionBlurAngleInputs,
+  ]) input.disabled = controlsDisabled;
+  for (const button of rasterMotionBlurApplyButtons) button.disabled = controlsDisabled;
+  const cancelDisabled = rasterMotionBlurUiBusy || !rasterMotionBlurSessionOpen;
+  for (const button of rasterMotionBlurCancelButtons) button.disabled = cancelDisabled;
+
+  const state = rasterMotionBlurUiBusy
+    ? "busy"
+    : recoveryOnly
+      ? "recovery"
+      : rasterMotionBlurSessionOpen
+        ? "preview"
+        : "closed";
+  rasterMotionBlurSection.dataset.state = state;
+  rasterMotionBlurSection.setAttribute("aria-busy", String(rasterMotionBlurUiBusy));
+  mobileMotionBlurSheetElement.dataset.state = state;
+  mobileMotionBlurSheetElement.setAttribute(
+    "aria-busy",
+    String(rasterMotionBlurUiBusy),
   );
 }
 
@@ -3198,7 +3374,10 @@ function handleMobileLayerReorderKeydown(event: KeyboardEvent): void {
 
 function setMobileLayersPanelOpen(open: boolean): void {
   if (open && !mobileUiMediaQuery.matches) return;
-  if (open && rasterGaussianBlurSurface === "mobile") return;
+  if (
+    open
+    && (rasterGaussianBlurSurface === "mobile" || rasterMotionBlurSurface === "mobile")
+  ) return;
   if (open && mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
   if (open && mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
   if (open && mobileRasterEffectsSheet?.isOpen) mobileRasterEffectsSheet.close(false);
@@ -3255,7 +3434,10 @@ function setMobileLayersPanelOpen(open: boolean): void {
 
 function setMobileToolsSheetOpen(open: boolean): void {
   if (open && !mobileUiMediaQuery.matches) return;
-  if (open && rasterGaussianBlurSurface === "mobile") return;
+  if (
+    open
+    && (rasterGaussianBlurSurface === "mobile" || rasterMotionBlurSurface === "mobile")
+  ) return;
   if (open && mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
   if (open && mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
   if (open && mobileRasterEffectsSheet?.isOpen) mobileRasterEffectsSheet.close(false);
@@ -4722,6 +4904,27 @@ mobileGaussianBlurSheet = new MobileGaussianBlurSheetController({
   },
 });
 
+mobileMotionBlurSheet = new MobileMotionBlurSheetController({
+  mobileMediaQuery: mobileUiMediaQuery,
+  beforeOpen: () => {
+    setMobileToolsSheetOpen(false);
+    setMobileLayersPanelOpen(false);
+    setMobileBrushLibraryOpen(false);
+    mobileBrushStudio?.cancel(false);
+    mobileStrokeSheet?.close(false);
+    mobileRasterEffectsSheet?.close(false);
+    mobileToolSettingsSheet?.close(false);
+    setControlsPanelOpen(false);
+  },
+  onRequestCancel: () => {
+    void cancelRasterMotionBlurFromUi();
+  },
+  onOpenChange: () => {
+    syncMobileToolsMenuState();
+    syncMobileBrushControlsVisibility();
+  },
+});
+
 mobileToolSettingsSheet = new MobileToolSettingsSheetController({
   mobileMediaQuery: mobileUiMediaQuery,
   selectCanvasTool: selectMobileCanvasTool,
@@ -5096,12 +5299,13 @@ function updateHumanStrokeControls(): void {
     || Boolean(humanStrokeRecording);
 }
 
-function nonHistoryOperationLocked(allowGaussianBlurEdit = false): boolean {
+function nonHistoryOperationLocked(allowDestructiveBlurEdit = false): boolean {
   return !engineInitialized
     || layerSwitching
     || mobileBrushControlDrag !== null
     || historyState.openEdit === "transform"
-    || (!allowGaussianBlurEdit && historyState.openEdit === "gaussian-blur")
+    || (!allowDestructiveBlurEdit && historyState.openEdit === "gaussian-blur")
+    || (!allowDestructiveBlurEdit && historyState.openEdit === "motion-blur")
     || historyState.openEdit === "raster-property"
     || benchmarkRunning
     || rasterShadowGoldenRunning
@@ -5121,8 +5325,8 @@ function nonHistoryOperationLocked(allowGaussianBlurEdit = false): boolean {
     || humanStrokeSaving;
 }
 
-function operationLocked(allowGaussianBlurEdit = false): boolean {
-  return nonHistoryOperationLocked(allowGaussianBlurEdit)
+function operationLocked(allowDestructiveBlurEdit = false): boolean {
+  return nonHistoryOperationLocked(allowDestructiveBlurEdit)
     || historyUiBusy
     || historyState.busy;
 }
@@ -5133,15 +5337,20 @@ function interactionLocked(): boolean {
 
 /**
  * Pan, zoom e rotazione non modificano i pixel e restano disponibili mentre
- * Gaussian Blur mostra la sua anteprima distruttiva. Il normale lock del
+ * un Blur mostra la sua anteprima distruttiva. Il normale lock del
  * documento continua invece a proteggere pennello, livelli e cronologia.
  */
 function canvasViewOperationLocked(): boolean {
-  const allowGaussianBlurEdit = rasterGaussianBlurSessionOpen
-    && historyState.openEdit === "gaussian-blur"
-    && !rasterGaussianBlurUiBusy
-    && !historyState.inconsistent;
-  return operationLocked(allowGaussianBlurEdit);
+  const allowDestructiveBlurEdit = (
+    rasterGaussianBlurSessionOpen
+      && historyState.openEdit === "gaussian-blur"
+      && !rasterGaussianBlurUiBusy
+  ) || (
+    rasterMotionBlurSessionOpen
+      && historyState.openEdit === "motion-blur"
+      && !rasterMotionBlurUiBusy
+  );
+  return operationLocked(allowDestructiveBlurEdit && !historyState.inconsistent);
 }
 
 /**
@@ -5219,12 +5428,13 @@ function updateHistoryControls(): void {
   // Il documento e' sempre RGBA16F: il controllo resta solo come indicatore
   // leggibile, non come una via di downgrade verso RGBA8.
   layerFormatSelect.disabled = true;
-  fitViewButton.disabled = locked;
-  zoomInButton.disabled = locked;
-  zoomOutButton.disabled = locked;
-  rotateViewLeftButton.disabled = locked;
-  viewRotationButton.disabled = locked;
-  rotateViewRightButton.disabled = locked;
+  const viewLocked = canvasViewOperationLocked() || activePointerId !== null;
+  fitViewButton.disabled = viewLocked;
+  zoomInButton.disabled = viewLocked;
+  zoomOutButton.disabled = viewLocked;
+  rotateViewLeftButton.disabled = viewLocked;
+  viewRotationButton.disabled = viewLocked;
+  rotateViewRightButton.disabled = viewLocked;
   toggleControlsButton.disabled =
     benchmarkRunning || rasterShadowGoldenRunning || rasterStrokeGoldenRunning
     || effectsWorkbenchBenchmarkRunning || layerHistoryTestRunning
@@ -5232,6 +5442,8 @@ function updateHistoryControls(): void {
     || layerCompressionStudyRunning
     || rasterGaussianBlurSessionOpen
     || rasterGaussianBlurUiBusy
+    || rasterMotionBlurSessionOpen
+    || rasterMotionBlurUiBusy
     || renderingModeSuiteRunning
     || humanStrokeReplaying;
   for (const id of brushControlIds) {
@@ -5305,6 +5517,7 @@ function closeRasterGaussianBlurWorkbench(
   }
   if (result !== "error") resetRasterGaussianBlurControls();
   syncRasterGaussianBlurUi();
+  syncRasterMotionBlurUi();
 }
 
 async function openRasterGaussianBlurWorkbench(
@@ -5329,6 +5542,7 @@ async function openRasterGaussianBlurWorkbench(
   rasterGaussianBlurUiBusy = true;
   setRasterGaussianBlurStatus("Preparazione Gaussian Blur…");
   syncRasterGaussianBlurUi();
+  syncRasterMotionBlurUi();
 
   try {
     const radiusInput = surface === "mobile"
@@ -5410,6 +5624,181 @@ async function applyRasterGaussianBlurFromUi(): Promise<void> {
     if (!rasterGaussianBlurSessionOpen) closeRasterGaussianBlurWorkbench("error");
   } finally {
     rasterGaussianBlurUiBusy = false;
+    historyState = engine.getHistoryState();
+    updateHistoryControls();
+  }
+}
+
+function setRasterMotionBlurDistanceOutput(distance: number): void {
+  const rounded = Math.round(distance);
+  const value = `${rounded} px`;
+  for (const output of rasterMotionBlurDistanceOutputs) output.value = value;
+  for (const input of rasterMotionBlurDistanceInputs) {
+    input.value = String(rounded);
+    input.setAttribute("aria-valuetext", `${rounded} pixels`);
+  }
+}
+
+function setRasterMotionBlurAngleOutput(angle: number): void {
+  const rounded = Math.round(angle);
+  const value = `${rounded}°`;
+  for (const output of rasterMotionBlurAngleOutputs) output.value = value;
+  for (const input of rasterMotionBlurAngleInputs) {
+    input.value = String(rounded);
+    input.setAttribute("aria-valuetext", `${rounded} degrees`);
+  }
+}
+
+function setRasterMotionBlurStatus(message: string): void {
+  for (const status of rasterMotionBlurStatuses) status.textContent = message;
+}
+
+function resetRasterMotionBlurControls(): void {
+  setRasterMotionBlurDistanceOutput(DESTRUCTIVE_MOTION_BLUR_DEFAULT_DISTANCE);
+  setRasterMotionBlurAngleOutput(DESTRUCTIVE_MOTION_BLUR_DEFAULT_ANGLE);
+  setRasterMotionBlurStatus("Motion Blur pronto.");
+}
+
+function reportRasterMotionBlurError(prefix: string, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  const fullMessage = `${prefix}: ${message}`;
+  setRasterMotionBlurStatus(fullMessage);
+  statusElement.textContent = fullMessage;
+  statusElement.className = "status error";
+}
+
+function closeRasterMotionBlurWorkbench(
+  result: "apply" | "cancel" | "error",
+): void {
+  const surface = rasterMotionBlurSurface;
+  rasterMotionBlurSurface = null;
+  rasterMotionBlurCancelPending = false;
+  desktopMotionBlurOpenInput.checked = false;
+  desktopMotionBlurOpenInput.setAttribute("aria-expanded", "false");
+  desktopMotionBlurParameters.hidden = true;
+  mobileMotionBlurOpenButton.setAttribute("aria-pressed", "false");
+  if (surface === "mobile") mobileMotionBlurSheet?.close(false);
+  const returnFocus = rasterMotionBlurReturnFocus;
+  rasterMotionBlurReturnFocus = null;
+  if (returnFocus?.isConnected) {
+    queueMicrotask(() => returnFocus.focus({ preventScroll: true }));
+  }
+  if (result !== "error") resetRasterMotionBlurControls();
+  syncRasterMotionBlurUi();
+  syncRasterGaussianBlurUi();
+}
+
+async function openRasterMotionBlurWorkbench(
+  surface: RasterMotionBlurSurface,
+  trigger: HTMLElement,
+): Promise<void> {
+  const eligibilityError = rasterMotionBlurEligibilityError();
+  if (eligibilityError || rasterMotionBlurSurface !== null) {
+    if (eligibilityError) {
+      statusElement.textContent = eligibilityError;
+      statusElement.className = "status error";
+    }
+    return;
+  }
+
+  if (surface === "mobile" && !mobileMotionBlurSheet?.open(trigger)) return;
+
+  rasterMotionBlurSurface = surface;
+  rasterMotionBlurReturnFocus = trigger;
+  rasterMotionBlurSessionOpen = false;
+  rasterMotionBlurPreviewFault = false;
+  rasterMotionBlurUiBusy = true;
+  setRasterMotionBlurStatus("Preparazione Motion Blur…");
+  syncRasterMotionBlurUi();
+  syncRasterGaussianBlurUi();
+
+  try {
+    const distanceInput = surface === "mobile"
+      ? mobileMotionBlurDistanceInput
+      : desktopMotionBlurDistanceInput;
+    const angleInput = surface === "mobile"
+      ? mobileMotionBlurAngleInput
+      : desktopMotionBlurAngleInput;
+    const preview = await engine.beginRasterMotionBlur(
+      Number(distanceInput.value),
+      Number(angleInput.value),
+    );
+    if (!preview) throw new Error("Seleziona un livello raster per usare Motion Blur.");
+    rasterMotionBlurSessionOpen = true;
+    setRasterMotionBlurDistanceOutput(preview.distance);
+    setRasterMotionBlurAngleOutput(preview.angle);
+    setRasterMotionBlurStatus(
+      `Distanza ${preview.distance.toFixed(0)} pixel · Angolo ${preview.angle.toFixed(0)}°.`,
+    );
+  } catch (error) {
+    historyState = engine.getHistoryState();
+    rasterMotionBlurSessionOpen = historyState.openEdit === "motion-blur";
+    rasterMotionBlurPreviewFault = rasterMotionBlurSessionOpen;
+    reportRasterMotionBlurError("Impossibile aprire Motion Blur", error);
+    if (!rasterMotionBlurSessionOpen) closeRasterMotionBlurWorkbench("error");
+  } finally {
+    rasterMotionBlurUiBusy = false;
+    historyState = engine.getHistoryState();
+    updateHistoryControls();
+    if (rasterMotionBlurCancelPending && rasterMotionBlurSessionOpen) {
+      rasterMotionBlurCancelPending = false;
+      void cancelRasterMotionBlurFromUi();
+    }
+  }
+}
+
+async function cancelRasterMotionBlurFromUi(): Promise<void> {
+  if (rasterMotionBlurUiBusy) {
+    rasterMotionBlurCancelPending = true;
+    return;
+  }
+  if (!rasterMotionBlurSessionOpen) return;
+  rasterMotionBlurCancelPending = false;
+  rasterMotionBlurUiBusy = true;
+  setRasterMotionBlurStatus("Ripristino dei pixel originali…");
+  syncRasterMotionBlurUi();
+  try {
+    await engine.cancelRasterMotionBlur();
+    rasterMotionBlurSessionOpen = false;
+    rasterMotionBlurPreviewFault = false;
+    closeRasterMotionBlurWorkbench("cancel");
+  } catch (error) {
+    historyState = engine.getHistoryState();
+    rasterMotionBlurSessionOpen = historyState.openEdit === "motion-blur";
+    rasterMotionBlurPreviewFault = true;
+    reportRasterMotionBlurError("Annullamento Motion Blur non riuscito", error);
+  } finally {
+    rasterMotionBlurUiBusy = false;
+    historyState = engine.getHistoryState();
+    updateHistoryControls();
+  }
+}
+
+async function applyRasterMotionBlurFromUi(): Promise<void> {
+  if (
+    rasterMotionBlurUiBusy
+    || !rasterMotionBlurSessionOpen
+    || rasterMotionBlurPreviewFault
+    || historyState.inconsistent
+  ) {
+    return;
+  }
+  rasterMotionBlurUiBusy = true;
+  setRasterMotionBlurStatus("Applicazione Motion Blur…");
+  syncRasterMotionBlurUi();
+  try {
+    await engine.commitRasterMotionBlur();
+    rasterMotionBlurSessionOpen = false;
+    rasterMotionBlurPreviewFault = false;
+    closeRasterMotionBlurWorkbench("apply");
+  } catch (error) {
+    historyState = engine.getHistoryState();
+    rasterMotionBlurSessionOpen = historyState.openEdit === "motion-blur";
+    rasterMotionBlurPreviewFault = rasterMotionBlurSessionOpen;
+    reportRasterMotionBlurError("Applicazione Motion Blur non riuscita", error);
+    if (!rasterMotionBlurSessionOpen) closeRasterMotionBlurWorkbench("error");
+  } finally {
+    rasterMotionBlurUiBusy = false;
     historyState = engine.getHistoryState();
     updateHistoryControls();
   }
@@ -6603,6 +6992,9 @@ mobileUiMediaQuery.addEventListener("change", (event) => {
   if (rasterGaussianBlurSurface !== null) {
     void cancelRasterGaussianBlurFromUi();
   }
+  if (rasterMotionBlurSurface !== null) {
+    void cancelRasterMotionBlurFromUi();
+  }
   if (event.matches) {
     setControlsPanelOpen(false);
     syncMobileBrushControlVisuals();
@@ -6631,6 +7023,7 @@ window.addEventListener("resize", () => {
   const strokeSheetNeedsLayout = mobileStrokeSheet?.isOpen === true;
   const rasterEffectsSheetNeedsLayout = mobileRasterEffectsSheet?.isOpen === true;
   const gaussianBlurSheetNeedsLayout = mobileGaussianBlurSheet?.isOpen === true;
+  const motionBlurSheetNeedsLayout = mobileMotionBlurSheet?.isOpen === true;
   const toolSettingsSheetNeedsLayout = mobileToolSettingsSheet?.isOpen === true;
   if (
     !toolsNeedLayout
@@ -6639,6 +7032,7 @@ window.addEventListener("resize", () => {
     && !strokeSheetNeedsLayout
     && !rasterEffectsSheetNeedsLayout
     && !gaussianBlurSheetNeedsLayout
+    && !motionBlurSheetNeedsLayout
     && !toolSettingsSheetNeedsLayout
   ) return;
   if (mobileToolsSheetResizeFrame !== null) {
@@ -6656,6 +7050,7 @@ window.addEventListener("resize", () => {
     mobileStrokeSheet?.handleResize();
     mobileRasterEffectsSheet?.handleResize();
     mobileGaussianBlurSheet?.handleResize();
+    mobileMotionBlurSheet?.handleResize();
     mobileToolSettingsSheet?.handleResize();
   });
 });
@@ -6902,6 +7297,85 @@ document.addEventListener("keydown", (event) => {
   event.preventDefault();
   void cancelRasterGaussianBlurFromUi();
 });
+desktopMotionBlurOpenInput.addEventListener("change", () => {
+  if (desktopMotionBlurOpenInput.checked) {
+    void openRasterMotionBlurWorkbench("desktop", desktopMotionBlurOpenInput);
+  } else if (rasterMotionBlurSurface === "desktop") {
+    void cancelRasterMotionBlurFromUi();
+  } else {
+    syncRasterMotionBlurUi();
+  }
+});
+mobileMotionBlurOpenButton.addEventListener("click", () => {
+  void openRasterMotionBlurWorkbench("mobile", mobileMotionBlurOpenButton);
+});
+for (const input of rasterMotionBlurDistanceInputs) {
+  input.addEventListener("input", () => {
+    const requestedDistance = Number(input.value);
+    setRasterMotionBlurDistanceOutput(requestedDistance);
+    if (
+      !rasterMotionBlurSessionOpen
+      || rasterMotionBlurUiBusy
+      || rasterMotionBlurPreviewFault
+    ) return;
+    try {
+      const preview = engine.updateRasterMotionBlur(
+        requestedDistance,
+        Number(desktopMotionBlurAngleInput.value),
+      );
+      setRasterMotionBlurDistanceOutput(preview.distance);
+      setRasterMotionBlurAngleOutput(preview.angle);
+      setRasterMotionBlurStatus(
+        `Distanza ${preview.distance.toFixed(0)} pixel · Angolo ${preview.angle.toFixed(0)}°.`,
+      );
+    } catch (error) {
+      rasterMotionBlurPreviewFault = true;
+      reportRasterMotionBlurError("Anteprima Motion Blur interrotta", error);
+      syncRasterMotionBlurUi();
+    }
+  });
+}
+for (const input of rasterMotionBlurAngleInputs) {
+  input.addEventListener("input", () => {
+    const requestedAngle = Number(input.value);
+    setRasterMotionBlurAngleOutput(requestedAngle);
+    if (
+      !rasterMotionBlurSessionOpen
+      || rasterMotionBlurUiBusy
+      || rasterMotionBlurPreviewFault
+    ) return;
+    try {
+      const preview = engine.updateRasterMotionBlur(
+        Number(desktopMotionBlurDistanceInput.value),
+        requestedAngle,
+      );
+      setRasterMotionBlurDistanceOutput(preview.distance);
+      setRasterMotionBlurAngleOutput(preview.angle);
+      setRasterMotionBlurStatus(
+        `Distanza ${preview.distance.toFixed(0)} pixel · Angolo ${preview.angle.toFixed(0)}°.`,
+      );
+    } catch (error) {
+      rasterMotionBlurPreviewFault = true;
+      reportRasterMotionBlurError("Anteprima Motion Blur interrotta", error);
+      syncRasterMotionBlurUi();
+    }
+  });
+}
+for (const button of rasterMotionBlurCancelButtons) {
+  button.addEventListener("click", () => {
+    void cancelRasterMotionBlurFromUi();
+  });
+}
+for (const button of rasterMotionBlurApplyButtons) {
+  button.addEventListener("click", () => {
+    void applyRasterMotionBlurFromUi();
+  });
+}
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || rasterMotionBlurSurface !== "desktop") return;
+  event.preventDefault();
+  void cancelRasterMotionBlurFromUi();
+});
 mobileUndoButton.addEventListener("click", () => {
   requestHistoryOperation("undo");
 });
@@ -6909,32 +7383,32 @@ mobileRedoButton.addEventListener("click", () => {
   requestHistoryOperation("redo");
 });
 fitViewButton.addEventListener("click", () => {
-  if (!interactionLocked() && activePointerId === null) {
+  if (!canvasViewOperationLocked() && activePointerId === null) {
     engine.fitView();
   }
 });
 zoomInButton.addEventListener("click", () => {
-  if (!interactionLocked() && activePointerId === null) {
+  if (!canvasViewOperationLocked() && activePointerId === null) {
     engine.zoomBy(1.35);
   }
 });
 zoomOutButton.addEventListener("click", () => {
-  if (!interactionLocked() && activePointerId === null) {
+  if (!canvasViewOperationLocked() && activePointerId === null) {
     engine.zoomBy(1 / 1.35);
   }
 });
 rotateViewLeftButton.addEventListener("click", () => {
-  if (!interactionLocked() && activePointerId === null) {
+  if (!canvasViewOperationLocked() && activePointerId === null) {
     engine.rotateViewBy(-Math.PI / 12);
   }
 });
 viewRotationButton.addEventListener("click", () => {
-  if (!interactionLocked() && activePointerId === null) {
+  if (!canvasViewOperationLocked() && activePointerId === null) {
     engine.resetViewRotation();
   }
 });
 rotateViewRightButton.addEventListener("click", () => {
-  if (!interactionLocked() && activePointerId === null) {
+  if (!canvasViewOperationLocked() && activePointerId === null) {
     engine.rotateViewBy(Math.PI / 12);
   }
 });
@@ -12018,11 +12492,13 @@ canvas.addEventListener("pointerdown", (event) => {
         : "paint";
   const viewNavigationRequested = requestedPointerMode === "pan"
     || requestedPointerMode === "rotate";
-  const gaussianTouchNavigationRequested = event.pointerType === "touch"
-    && rasterGaussianBlurSessionOpen
-    && historyState.openEdit === "gaussian-blur";
+  const blurTouchNavigationRequested = event.pointerType === "touch"
+    && (
+      (rasterGaussianBlurSessionOpen && historyState.openEdit === "gaussian-blur")
+      || (rasterMotionBlurSessionOpen && historyState.openEdit === "motion-blur")
+    );
   if (
-    (viewNavigationRequested || gaussianTouchNavigationRequested)
+    (viewNavigationRequested || blurTouchNavigationRequested)
       ? canvasViewOperationLocked()
       : operationLocked()
   ) {
@@ -12033,7 +12509,7 @@ canvas.addEventListener("pointerdown", (event) => {
     return;
   }
 
-  if (gaussianTouchNavigationRequested) {
+  if (blurTouchNavigationRequested) {
     event.preventDefault();
     activePointerId = event.pointerId;
     activeTouchContacts.set(event.pointerId, {

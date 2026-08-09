@@ -1087,6 +1087,81 @@
       </aside>
 
       <aside
+        id="mobileMotionBlurSheet"
+        class="mobile-tools-sheet mobile-motion-blur-sheet"
+        aria-label="Motion Blur settings"
+        aria-hidden="true"
+        data-state="closed"
+        data-snap="peek"
+      >
+        <button
+          id="mobileMotionBlurHandle"
+          class="mobile-tools-sheet-handle"
+          type="button"
+          aria-label="Expand Motion Blur settings"
+          aria-controls="mobileMotionBlurSheet"
+          aria-expanded="false"
+        >
+          <span class="mobile-tools-sheet-grabber" aria-hidden="true"></span>
+        </button>
+
+        <div class="mobile-stroke-sheet-content mobile-motion-blur-shell">
+          <header id="mobileMotionBlurHeader" class="mobile-stroke-header">
+            <h2 class="mobile-stroke-title">Motion Blur</h2>
+          </header>
+
+          <div id="mobileMotionBlurControlsRegion" class="mobile-stroke-controls-region">
+            <div class="mobile-motion-blur-controls">
+              <label class="mobile-stroke-width-control" for="mobileMotionBlurDistance">
+                <span class="mobile-stroke-control-label">Distance</span>
+                <output id="mobileMotionBlurDistanceOut" for="mobileMotionBlurDistance">20 px</output>
+                <input
+                  id="mobileMotionBlurDistance"
+                  type="range"
+                  min="0"
+                  max="500"
+                  step="1"
+                  value="20"
+                  aria-label="Motion Blur distance"
+                  aria-describedby="mobileMotionBlurDistanceOut"
+                  aria-valuetext="20 pixels"
+                />
+              </label>
+
+              <label class="mobile-stroke-width-control" for="mobileMotionBlurAngle">
+                <span class="mobile-stroke-control-label">Angle</span>
+                <output id="mobileMotionBlurAngleOut" for="mobileMotionBlurAngle">0°</output>
+                <input
+                  id="mobileMotionBlurAngle"
+                  type="range"
+                  min="-180"
+                  max="180"
+                  step="1"
+                  value="0"
+                  aria-label="Motion Blur angle"
+                  aria-describedby="mobileMotionBlurAngleOut"
+                  aria-valuetext="0 degrees"
+                />
+              </label>
+
+              <p
+                id="mobileMotionBlurStatus"
+                class="visually-hidden"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >Motion Blur ready.</p>
+
+              <div class="mobile-tool-actions mobile-tool-actions-grid mobile-motion-blur-actions">
+                <button id="mobileMotionBlurCancel" type="button">Cancel</button>
+                <button id="mobileMotionBlurApply" class="is-primary" type="button">Apply</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <aside
         id="mobileToolSettingsSheet"
         class="mobile-tools-sheet mobile-tool-settings-sheet"
         aria-label="Tool settings"
@@ -1869,6 +1944,22 @@
                     <i data-lucide="focus" class="mobile-icon-layer mobile-icon-face"></i>
                   </span>
                   <span class="mobile-tools-item-label">Gaussian Blur</span>
+                </button>
+                <button
+                  id="mobileMotionBlurOpen"
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-tool-search="sfocatura movimento motion blur direzione velocita"
+                  aria-label="Open Motion Blur"
+                  aria-controls="mobileMotionBlurSheet"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="wind" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="wind" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Motion Blur</span>
                 </button>
               </div>
             </section>
@@ -3198,6 +3289,72 @@
             <div class="gaussian-blur-inline-actions">
               <button id="desktopGaussianBlurCancel" type="button">Annulla</button>
               <button id="desktopGaussianBlurApply" class="primary" type="button">Applica</button>
+            </div>
+          </div>
+
+          <div id="rasterMotionBlurSection" class="motion-blur-launch-block">
+            <label class="check-control motion-blur-launch-control">
+              <input
+                id="desktopMotionBlurOpen"
+                type="checkbox"
+                aria-controls="desktopMotionBlurParameters"
+                aria-expanded="false"
+              />
+              <span>
+                Motion Blur
+                <small>Applica o Annulla.</small>
+              </span>
+            </label>
+
+            <div id="desktopMotionBlurParameters" hidden>
+              <label class="control" for="desktopMotionBlurDistance">
+                <span>
+                  Distanza
+                  <output
+                    id="desktopMotionBlurDistanceOut"
+                    for="desktopMotionBlurDistance"
+                  >20 px</output>
+                </span>
+                <input
+                  id="desktopMotionBlurDistance"
+                  type="range"
+                  min="0"
+                  max="500"
+                  step="1"
+                  value="20"
+                />
+              </label>
+
+              <label class="control" for="desktopMotionBlurAngle">
+                <span>
+                  Angolo
+                  <output
+                    id="desktopMotionBlurAngleOut"
+                    for="desktopMotionBlurAngle"
+                  >0°</output>
+                </span>
+                <input
+                  id="desktopMotionBlurAngle"
+                  type="range"
+                  min="-180"
+                  max="180"
+                  step="1"
+                  value="0"
+                />
+              </label>
+
+              <p
+                id="desktopMotionBlurStatus"
+                class="visually-hidden"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >Motion Blur pronto.</p>
+
+              <div class="motion-blur-inline-actions">
+                <button id="desktopMotionBlurCancel" type="button">Annulla</button>
+                <button id="desktopMotionBlurApply" class="primary" type="button">Applica</button>
+              </div>
             </div>
           </div>
         </section>
