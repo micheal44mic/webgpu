@@ -1034,7 +1034,6 @@
         aria-hidden="true"
         data-state="closed"
         data-snap="peek"
-        hidden
       >
         <button
           id="mobileGaussianBlurHandle"
@@ -1047,43 +1046,44 @@
           <span class="mobile-tools-sheet-grabber" aria-hidden="true"></span>
         </button>
 
-        <div class="mobile-gaussian-blur-shell">
-          <header id="mobileGaussianBlurHeader" class="mobile-gaussian-blur-header">
-            <div>
-              <h2>Gaussian Blur</h2>
-              <span>16-bit · RGBA16F</span>
-            </div>
-            <span class="mobile-gaussian-blur-live">
-              <span aria-hidden="true"></span>
-              Live preview
+        <div class="mobile-stroke-sheet-content mobile-gaussian-blur-shell">
+          <header id="mobileGaussianBlurHeader" class="mobile-stroke-header">
+            <h2 class="mobile-stroke-title">Gaussian Blur</h2>
+            <span class="mobile-stroke-control-label mobile-gaussian-blur-preview-label">
+              Live · 16-bit
             </span>
           </header>
 
-          <div id="mobileGaussianBlurControlsRegion" class="mobile-gaussian-blur-controls">
-            <label class="mobile-raster-effect-range" for="mobileGaussianBlurRadius">
-              <span>Radius</span>
-              <output id="mobileGaussianBlurRadiusOut" for="mobileGaussianBlurRadius">5 px</output>
-              <input
-                id="mobileGaussianBlurRadius"
-                type="range"
-                min="1"
-                max="64"
-                step="1"
-                value="5"
-              />
-            </label>
+          <div id="mobileGaussianBlurControlsRegion" class="mobile-stroke-controls-region">
+            <div class="mobile-gaussian-blur-controls">
+              <label class="mobile-stroke-width-control" for="mobileGaussianBlurRadius">
+                <span class="mobile-stroke-control-label">Radius</span>
+                <output id="mobileGaussianBlurRadiusOut" for="mobileGaussianBlurRadius">5 px</output>
+                <input
+                  id="mobileGaussianBlurRadius"
+                  type="range"
+                  min="1"
+                  max="64"
+                  step="1"
+                  value="5"
+                  aria-label="Gaussian Blur radius"
+                  aria-describedby="mobileGaussianBlurRadiusOut"
+                  aria-valuetext="5 pixels"
+                />
+              </label>
 
-            <p
-              id="mobileGaussianBlurStatus"
-              class="mobile-gaussian-blur-status"
-              role="status"
-              aria-live="polite"
-              aria-atomic="true"
-            >Regola il raggio e controlla l’anteprima sul canvas.</p>
+              <p
+                id="mobileGaussianBlurStatus"
+                class="mobile-tool-settings-status mobile-gaussian-blur-status"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >Regola il raggio e controlla l’anteprima sul canvas.</p>
 
-            <div class="mobile-tool-actions mobile-tool-actions-grid mobile-gaussian-blur-actions">
-              <button id="mobileGaussianBlurCancel" type="button">Annulla</button>
-              <button id="mobileGaussianBlurApply" class="is-primary" type="button">Applica</button>
+              <div class="mobile-tool-actions mobile-tool-actions-grid mobile-gaussian-blur-actions">
+                <button id="mobileGaussianBlurCancel" type="button">Cancel</button>
+                <button id="mobileGaussianBlurApply" class="is-primary" type="button">Apply</button>
+              </div>
             </div>
           </div>
         </div>

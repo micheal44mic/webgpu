@@ -117,5 +117,13 @@ assert.match(main, /openRasterGaussianBlurWorkbench\("desktop"/);
 assert.match(main, /openRasterGaussianBlurWorkbench\("mobile"/);
 assert.match(mobileSheet, /resolveMobileBottomSheetDrag/);
 assert.match(mobileSheet, /onRequestCancel/);
+assert.match(mobileSheet, /MOBILE_GAUSSIAN_BLUR_PEEK_VIEWPORT_RATIO = 0\.26/);
+assert.match(html, /mobile-stroke-sheet-content mobile-gaussian-blur-shell/);
+assert.match(html, /id="mobileGaussianBlurHeader" class="mobile-stroke-header"/);
+assert.match(html, /class="mobile-stroke-title">Gaussian Blur/);
+assert.match(html, /class="mobile-stroke-width-control" for="mobileGaussianBlurRadius"/);
+assert.match(html, /id="mobileGaussianBlurCancel" type="button">Cancel/);
+assert.match(html, /id="mobileGaussianBlurApply" class="is-primary" type="button">Apply/);
+assert.doesNotMatch(html, /mobile-gaussian-blur-live/);
 
 console.log("Destructive 16-bit Gaussian Blur verification passed.");

@@ -11,9 +11,11 @@ export interface MobileGaussianBlurSheetOptions {
   readonly onOpenChange: (open: boolean) => void;
 }
 
-const MOBILE_GAUSSIAN_BLUR_MIN_PEEK_PX = 260;
-const MOBILE_GAUSSIAN_BLUR_MAX_PEEK_PX = 330;
-const MOBILE_GAUSSIAN_BLUR_PEEK_VIEWPORT_RATIO = 0.37;
+// Match the raster Stroke sheet. The slightly higher minimum only affects very
+// short screens and keeps both destructive actions inside the peek viewport.
+const MOBILE_GAUSSIAN_BLUR_MIN_PEEK_PX = 176;
+const MOBILE_GAUSSIAN_BLUR_MAX_PEEK_PX = 240;
+const MOBILE_GAUSSIAN_BLUR_PEEK_VIEWPORT_RATIO = 0.26;
 
 function requiredElement<T extends HTMLElement>(id: string): T {
   const result = document.getElementById(id);
@@ -58,7 +60,6 @@ export class MobileGaussianBlurSheetController {
   private opener: HTMLElement | null = null;
 
   constructor(private readonly options: MobileGaussianBlurSheetOptions) {
-    this.sheet.hidden = true;
     this.sheet.dataset.state = "closed";
     this.sheet.setAttribute("aria-hidden", "true");
     this.sheet.setAttribute("inert", "");
@@ -104,7 +105,6 @@ export class MobileGaussianBlurSheetController {
     this.sheet.dataset.state = "closed";
     this.sheet.setAttribute("aria-hidden", "true");
     this.sheet.setAttribute("inert", "");
-    this.sheet.hidden = true;
     this.handle.setAttribute("aria-expanded", "false");
     this.setOffset(this.closedOffset());
     this.options.onOpenChange(false);
