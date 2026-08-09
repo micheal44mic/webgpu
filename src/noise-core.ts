@@ -51,7 +51,7 @@ export interface RasterNoisePixel {
 export const DEFAULT_RASTER_NOISE_SETTINGS: Readonly<RasterNoiseSettings> =
   Object.freeze({
     amountPercent: 0,
-    scalePercent: 50,
+    scalePercent: 0,
     octavesPercent: 50,
     turbulencePercent: 0,
     style: "clouds",

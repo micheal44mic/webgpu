@@ -151,10 +151,15 @@ export class MobileNoiseSheetController {
   }
 
   private setOffset(offsetPx: number): void {
-    this.offsetPx = Math.min(this.closedOffset(), Math.max(0, offsetPx));
+    const closed = this.closedOffset();
+    this.offsetPx = Math.min(closed, Math.max(0, offsetPx));
     this.sheet.style.setProperty(
       "--mobile-tools-sheet-offset",
       `${Math.round(this.offsetPx)}px`,
+    );
+    this.sheet.style.setProperty(
+      "--mobile-noise-visible-height",
+      `${Math.max(0, Math.round(closed - this.offsetPx))}px`,
     );
   }
 

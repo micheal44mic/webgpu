@@ -4476,6 +4476,8 @@ select {
 
   .mobile-noise-sheet {
     --mobile-tools-sheet-offset: calc(100% - clamp(176px, 26dvh, 240px));
+    --mobile-noise-visible-height: clamp(176px, 26dvh, 240px);
+    --mobile-noise-handle-height: 38px;
     overflow: visible;
   }
 
@@ -4534,6 +4536,10 @@ select {
       min-height: 34px;
     }
 
+    .mobile-noise-sheet {
+      --mobile-noise-handle-height: 34px;
+    }
+
     .mobile-noise-sheet .mobile-tools-sheet-handle {
       flex-basis: 34px;
       min-height: 34px;
@@ -4542,14 +4548,30 @@ select {
 }
 
 @media (max-width: 699px) {
-  .mobile-noise-shell,
+  .mobile-noise-shell {
+    width: 100%;
+    height: max(
+      0px,
+      calc(
+        var(--mobile-noise-visible-height)
+        - var(--mobile-noise-handle-height)
+      )
+    );
+    flex: 0 0 auto;
+    overflow: hidden;
+  }
+
   .mobile-noise-sheet .mobile-stroke-controls-region {
+    display: flex;
+    min-height: 0;
+    flex: 1 1 auto;
+    flex-direction: column;
     overflow: hidden;
   }
 
   .mobile-noise-scroll {
-    height: 100%;
     min-height: 0;
+    flex: 1 1 auto;
     overflow-x: hidden;
     overflow-y: auto;
     padding: 0 0 max(12px, env(safe-area-inset-bottom));

@@ -25,6 +25,7 @@ assert.equal(
 assert.equal(DESTRUCTIVE_RASTER_NOISE_ALGORITHM_VERSION, 1);
 assert.equal(DESTRUCTIVE_RASTER_NOISE_MAX_AMOUNT_PERCENT, 300);
 assert.deepEqual(normalizeRasterNoiseSettings(), DEFAULT_RASTER_NOISE_SETTINGS);
+assert.equal(DEFAULT_RASTER_NOISE_SETTINGS.scalePercent, 0);
 assert.equal(normalizeRasterNoiseSettings({ amountPercent: Number.NaN }).amountPercent, 0);
 assert.equal(normalizeRasterNoiseSettings({ amountPercent: Number.POSITIVE_INFINITY }).amountPercent, 0);
 assert.equal(normalizeRasterNoiseSettings({ amountPercent: -1 }).amountPercent, 0);
@@ -267,12 +268,26 @@ for (const prefix of ["mobile", "desktop"]) {
   );
 }
 assert.match(html, /Extended above 100%/);
+for (const prefix of ["mobile", "desktop"]) {
+  assert.match(
+    html,
+    new RegExp(`id="${prefix}NoiseScaleOut"[^>]*>0% · 1 px<`),
+  );
+  assert.match(
+    html,
+    new RegExp(`id="${prefix}NoiseScale"[^>]*value="0"`),
+  );
+}
 assert.match(sheet, /export class MobileNoiseSheetController/);
 assert.match(sheet, /MOBILE_NOISE_MIN_PEEK_PX = 176/);
 assert.match(sheet, /MOBILE_NOISE_MAX_PEEK_PX = 240/);
 assert.match(sheet, /MOBILE_NOISE_PEEK_VIEWPORT_RATIO = 0\.26/);
+assert.match(sheet, /--mobile-noise-visible-height/);
 assert.doesNotMatch(sheet, /from "\.\/engine/);
-assert.match(styles, /\.mobile-noise-scroll/);
+assert.match(styles, /\.mobile-noise-shell[\s\S]{0,260}--mobile-noise-visible-height/);
+assert.match(styles, /\.mobile-noise-scroll[\s\S]{0,220}flex: 1 1 auto/);
+assert.match(styles, /\.mobile-noise-scroll[\s\S]{0,320}overflow-y: auto/);
+assert.match(styles, /\.mobile-noise-scroll[\s\S]{0,420}touch-action: pan-y/);
 assert.doesNotMatch(metadataEffects, /MobileRasterEffectKind[\s\S]{0,140}"noise"/);
 
 console.log("Destructive RGBA16F Noise verification passed.");
