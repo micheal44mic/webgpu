@@ -40,6 +40,53 @@ for (const radius of [0, 1, 5, 17, DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS]) {
   }
 }
 
+function clampDocumentIndex(value, size) {
+  return Math.max(0, Math.min(size - 1, value));
+}
+
+function gaussianAlphaReference(source, width, height, radius) {
+  const kernel = destructiveGaussianBlurKernel(radius);
+  const horizontal = new Float64Array(width * height);
+  const result = new Float64Array(width * height);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      let value = source[y * width + x] * kernel.weights[0];
+      for (let offset = 1; offset <= kernel.radius; offset += 1) {
+        const weight = kernel.weights[offset];
+        value += source[y * width + clampDocumentIndex(x - offset, width)] * weight;
+        value += source[y * width + clampDocumentIndex(x + offset, width)] * weight;
+      }
+      horizontal[y * width + x] = value;
+    }
+  }
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      let value = horizontal[y * width + x] * kernel.weights[0];
+      for (let offset = 1; offset <= kernel.radius; offset += 1) {
+        const weight = kernel.weights[offset];
+        value += horizontal[clampDocumentIndex(y - offset, height) * width + x] * weight;
+        value += horizontal[clampDocumentIndex(y + offset, height) * width + x] * weight;
+      }
+      result[y * width + x] = value;
+    }
+  }
+  return result;
+}
+
+const solidAlpha = new Float64Array(7 * 7).fill(1);
+const solidBlurred = gaussianAlphaReference(solidAlpha, 7, 7, 2);
+assert(
+  [...solidBlurred].every((alpha) => Math.abs(alpha - 1) < 1e-12),
+  "un canvas uniforme deve restare opaco fino ad angoli e bordi",
+);
+
+const isolatedAlpha = new Float64Array(9 * 9);
+isolatedAlpha[4 * 9 + 4] = 1;
+const isolatedBlurred = gaussianAlphaReference(isolatedAlpha, 9, 9, 2);
+assert(isolatedBlurred[4 * 9 + 3] > 0, "il blur deve espandersi fuori dal contenuto");
+assert(isolatedBlurred[4 * 9 + 2] > 0, "il supporto esterno deve raggiungere il raggio");
+assert.equal(isolatedBlurred[4 * 9 + 1], 0, "fuori dal supporto resta trasparente");
+
 assert.deepEqual(
   destructiveGaussianBlurBounds(
     { x: 20, y: 30, width: 40, height: 50 },
@@ -88,6 +135,9 @@ assert.doesNotMatch(runtime, /rgba8|unorm8|pack4x8|unpack4x8/i);
 assert.match(runtime, /immutable source/);
 assert.match(runtime, /previewInFlight/);
 assert.match(runtime, /session\.previewFault/);
+assert.match(runtime, /transparent-content-clamp-document-edge/);
+assert.match(runtime, /clampedDocumentPosition\s*=\s*clamp\(/);
+assert.match(runtime, /parameterUploadU32\[word \+ 15\]\s*=\s*documentSize/);
 
 const restore = runtime.slice(
   runtime.indexOf("async function restoreOriginalPixels("),
@@ -107,6 +157,7 @@ assert.match(commit, /commitHistoryActionAtomically\(engine, action\)/);
 assert.match(commit, /createLayerColdStorageCandidate\([\s\S]{0,260}"history"/);
 assert.match(commit, /precision:\s*"rgba16float-f32-accumulation"/);
 assert.match(history, /interface RasterFilterHistoryAction/);
+assert.match(history, /transparent-content-clamp-document-edge/);
 assert.match(engine, /activeRasterGaussianBlurSession/);
 
 assert.match(html, /id="mobileGaussianBlurOpen"/);
@@ -150,4 +201,4 @@ assert.doesNotMatch(html, /mobile-gaussian-blur-live/);
 assert.doesNotMatch(html, /Live · 16-bit|Anteprima live RGBA16F/);
 assert.doesNotMatch(main, /accumulo f32 su raster RGBA16F|Anteprima live \$\{preview\.radius/);
 
-console.log("Destructive 16-bit Gaussian Blur verification passed.");
+console.log("Destructive 16-bit Gaussian Blur document-edge verification passed.");

@@ -269,7 +269,9 @@ export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (
     sigma: number;
     supportRadius: number;
     precision: "rgba16float-f32-accumulation";
-    edgeMode: "transparent-black";
+    edgeMode:
+      | "transparent-black"
+      | "transparent-content-clamp-document-edge";
   }
   | {
     filter: "motion-blur";
@@ -280,7 +282,9 @@ export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (
     supportX: number;
     supportY: number;
     precision: "rgba16float-f32-accumulation";
-    edgeMode: "transparent-black";
+    edgeMode:
+      | "transparent-black"
+      | "transparent-content-clamp-document-edge";
   }
   | {
     filter: "noise";

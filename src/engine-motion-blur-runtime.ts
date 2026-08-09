@@ -27,10 +27,11 @@ import {
 import { tileMaskCoveringRect } from "./raster-transform-math";
 
 export const DESTRUCTIVE_MOTION_BLUR_RUNTIME_BUILD =
-  "destructive-motion-blur-webgpu-v1-immutable-source-logarithmic-exposures-rgba16float";
+  "destructive-motion-blur-webgpu-v2-document-edge-clamp-logarithmic-exposures-rgba16float";
 export const DESTRUCTIVE_MOTION_BLUR_PRECISION =
   "rgba16float-storage-f32-accumulation" as const;
-export const DESTRUCTIVE_MOTION_BLUR_EDGE_MODE = "transparent-black" as const;
+export const DESTRUCTIVE_MOTION_BLUR_EDGE_MODE =
+  "transparent-content-clamp-document-edge" as const;
 
 const PARAMETER_WORDS = 16;
 const PARAMETER_BYTES = PARAMETER_WORDS * 4;
@@ -98,7 +99,7 @@ function motionBlurShader(): string {
 struct MotionParameters {
   inputTextureOriginAndSize: vec4<i32>,
   inputValidOriginAndSize: vec4<i32>,
-  attachmentOriginAndPadding: vec4<i32>,
+  attachmentOriginAndDocumentSize: vec4<i32>,
   shiftAndPadding: vec4<f32>,
 };
 
@@ -106,15 +107,22 @@ struct MotionParameters {
 @group(0) @binding(1) var inputTexture: texture_2d<f32>;
 
 fn inputTexel(documentPixel: vec2<i32>) -> vec4<f32> {
+  let documentSize = parameters.attachmentOriginAndDocumentSize.zw;
+  let documentMaximum = max(documentSize - vec2<i32>(1), vec2<i32>(0));
+  let clampedDocumentPixel = clamp(
+    documentPixel,
+    vec2<i32>(0),
+    documentMaximum
+  );
   let validOrigin = parameters.inputValidOriginAndSize.xy;
   let validSize = parameters.inputValidOriginAndSize.zw;
   if (
-    any(documentPixel < validOrigin)
-    || any(documentPixel >= validOrigin + validSize)
+    any(clampedDocumentPixel < validOrigin)
+    || any(clampedDocumentPixel >= validOrigin + validSize)
   ) {
     return vec4<f32>(0.0);
   }
-  let local = documentPixel - parameters.inputTextureOriginAndSize.xy;
+  let local = clampedDocumentPixel - parameters.inputTextureOriginAndSize.xy;
   let size = parameters.inputTextureOriginAndSize.zw;
   if (any(local < vec2<i32>(0)) || any(local >= size)) {
     return vec4<f32>(0.0);
@@ -153,7 +161,7 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> @builtin(position) vec
 @fragment
 fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
   let documentPosition = position.xy
-    + vec2<f32>(parameters.attachmentOriginAndPadding.xy);
+    + vec2<f32>(parameters.attachmentOriginAndDocumentSize.xy);
   let shift = parameters.shiftAndPadding.xy;
   // Each logarithmic stage averages two equally weighted, symmetric exposure
   // blocks. Fragment arithmetic and the average are f32; only storage between
@@ -268,6 +276,7 @@ function writePassParameters(
   session: ActiveRasterMotionBlurSession,
   index: number,
   parameters: PassParameters,
+  documentSize: number,
 ): number {
   if (index >= PARAMETER_CAPACITY) {
     throw new Error("Motion Blur: capacità passaggi superata.");
@@ -286,8 +295,8 @@ function writePassParameters(
   session.parameterUploadI32[word + 7] = valid.height;
   session.parameterUploadI32[word + 8] = parameters.attachmentOriginX;
   session.parameterUploadI32[word + 9] = parameters.attachmentOriginY;
-  session.parameterUploadI32[word + 10] = 0;
-  session.parameterUploadI32[word + 11] = 0;
+  session.parameterUploadI32[word + 10] = documentSize;
+  session.parameterUploadI32[word + 11] = documentSize;
   session.parameterUploadF32[word + 12] = parameters.shiftX;
   session.parameterUploadF32[word + 13] = parameters.shiftY;
   session.parameterUploadF32[word + 14] = 0;
@@ -357,7 +366,7 @@ function encodeRequestedPreview(
       attachmentOriginY: writesIntermediate ? session.scratchBounds.y : 0,
       shiftX: shift.x,
       shiftY: shift.y,
-    });
+    }, engine.layerSize);
   });
   if (offsets.length > 0) {
     engine.device.queue.writeBuffer(

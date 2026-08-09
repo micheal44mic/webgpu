@@ -25,10 +25,11 @@ import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import { tileMaskCoveringRect } from "./raster-transform-math";
 
 export const DESTRUCTIVE_GAUSSIAN_BLUR_RUNTIME_BUILD =
-  "destructive-gaussian-blur-webgpu-v2-immutable-source-two-pass-rgba16float-packed-cache";
+  "destructive-gaussian-blur-webgpu-v3-document-edge-clamp-rgba16float-packed-cache";
 export const DESTRUCTIVE_GAUSSIAN_BLUR_PRECISION =
   "rgba16float-storage-f32-weights-and-accumulation" as const;
-export const DESTRUCTIVE_GAUSSIAN_BLUR_EDGE_MODE = "transparent-black" as const;
+export const DESTRUCTIVE_GAUSSIAN_BLUR_EDGE_MODE =
+  "transparent-content-clamp-document-edge" as const;
 
 const FILTER_WORKGROUP_SIZE = 64;
 const FILTER_CACHE_LENGTH =
@@ -146,7 +147,17 @@ function horizontalShader(): string {
 var<workgroup> filterCache: array<vec2<u32>, ${FILTER_CACHE_LENGTH}>;
 
 fn sourceTexel(documentPosition: vec2<i32>) -> vec4<f32> {
-  let local = documentPosition - parameters.sourceOriginAndSize.xy;
+  // Il contenuto resta trasparente dentro il documento, ma i campioni che
+  // oltrepassano il vero bordo del canvas replicano il texel di bordo. Cosi'
+  // un livello pieno e uniforme non perde alpha verso l'interno.
+  let documentSize = i32(parameters.kernelAndIntermediate.w);
+  let documentMaximum = vec2<i32>(max(documentSize - 1, 0));
+  let clampedDocumentPosition = clamp(
+    documentPosition,
+    vec2<i32>(0),
+    documentMaximum
+  );
+  let local = clampedDocumentPosition - parameters.sourceOriginAndSize.xy;
   let size = parameters.sourceOriginAndSize.zw;
   if (any(local < vec2<i32>(0)) || any(local >= size)) {
     return vec4<f32>(0.0);
@@ -421,6 +432,7 @@ function writeJobParameters(
   index: number,
   job: GaussianBlurJob,
   kernel: GaussianBlurKernel,
+  documentSize: number,
 ): number {
   if (index >= PARAMETER_CAPACITY) {
     throw new Error("Gaussian Blur: capacità strip superata.");
@@ -443,7 +455,7 @@ function writeJobParameters(
   session.parameterUploadU32[word + 12] = kernel.radius;
   session.parameterUploadU32[word + 13] = job.targetWidth;
   session.parameterUploadU32[word + 14] = job.buildHeight;
-  session.parameterUploadU32[word + 15] = 0;
+  session.parameterUploadU32[word + 15] = documentSize;
   session.parameterUploadF32.fill(0, word + 16, word + PARAMETER_WORDS);
   for (let offset = 0; offset < kernel.weights.length; offset += 1) {
     session.parameterUploadF32[word + 16 + offset] = kernel.weights[offset];
@@ -498,6 +510,7 @@ function encodeRequestedPreview(
     index,
     job,
     kernel,
+    engine.layerSize,
   ));
   if (jobs.length > 0) {
     engine.device.queue.writeBuffer(
