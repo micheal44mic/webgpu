@@ -4223,7 +4223,10 @@ export class BrushEngine {
   }
 
   resumeDiscardedHistoryMaintenance(): void {
-    if (this.historyCompactionPending) scheduleHistoryMaintenance(this);
+    // Ogni pointer-down interrompe anche checkpoint e spill locale, non solo
+    // la compattazione del ramo Redo. Ripianificare l'intera manutenzione al
+    // pointer-up evita che aprire un pannello lasci seed History residenti.
+    scheduleHistoryMaintenance(this);
   }
 
   resumeHistoryStorageMaintenance(): void {
@@ -4683,6 +4686,7 @@ export class BrushEngine {
           hot,
           coldStorageMaskForRecord(record),
           this.nextHistoryActionId,
+          "history",
         )
         : null;
       entries.push({

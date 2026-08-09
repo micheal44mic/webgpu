@@ -624,8 +624,13 @@ const rasterFilter = (id, layerId) => ({
   }
   assert.match(
     main,
-    /historyState\.openEdit === "transform"\s*\|\| historyState\.openEdit === "gaussian-blur"\s*\|\| historyState\.openEdit === "raster-property"/,
-    "Il canvas deve restare bloccato finché il drain dell'effetto non ha committato la cronologia.",
+    /historyState\.openEdit === "transform"[\s\S]{0,180}\(!allowGaussianBlurEdit && historyState\.openEdit === "gaussian-blur"\)[\s\S]{0,180}historyState\.openEdit === "raster-property"/,
+    "Le modifiche ai pixel devono restare bloccate finché l'effetto non ha committato la cronologia.",
+  );
+  assert.match(
+    main,
+    /function canvasViewOperationLocked\(\)[\s\S]{0,420}operationLocked\(allowGaussianBlurEdit\)/,
+    "Gaussian Blur deve separare la navigazione del canvas dal lock delle modifiche ai pixel.",
   );
   const canvasPointerDown = main.slice(
     main.indexOf('canvas.addEventListener("pointerdown"'),

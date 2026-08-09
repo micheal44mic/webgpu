@@ -572,6 +572,7 @@ export async function createLayerColdStorageCandidate(engine: BrushEngine,
   hot: LayerTextureResources,
   mask: Uint32Array,
   generation: number,
+  purpose: "layer" | "history" = "layer",
 ): Promise<LayerColdStorageResources> {
   if (hot.format !== engine.layerFormat) {
     throw new Error(
@@ -594,12 +595,13 @@ export async function createLayerColdStorageCandidate(engine: BrushEngine,
     * LAYER_STORAGE_TILE_SIZE
     * LAYER_STORAGE_TILE_SIZE
     * bytesPerPixel;
+  const historyQualifier = purpose === "history" ? " History" : "";
   return runGpuAllocationTransaction(
     engine.device,
-    `Pack cold livello ${record.id}`,
+    `Pack cold${historyQualifier} livello ${record.id}`,
     async (transaction) => {
       const texture = engine.device.createTexture({
-        label: `Cold tile livello ${record.id} #${generation}`,
+        label: `Cold tile${historyQualifier} livello ${record.id} #${generation}`,
         size: {
           width: LAYER_STORAGE_TILE_SIZE,
           height: LAYER_STORAGE_TILE_SIZE,
@@ -613,7 +615,7 @@ export async function createLayerColdStorageCandidate(engine: BrushEngine,
       });
       transaction.deferRollback(() => texture.destroy());
       const encoder = engine.device.createCommandEncoder({
-        label: `Pack cold livello ${record.id} #${generation}`,
+        label: `Pack cold${historyQualifier} livello ${record.id} #${generation}`,
       });
       tileIndices.forEach((tileIndex, arrayLayer) => {
         const tileX = tileIndex % LAYER_STORAGE_GRID_SIZE;
@@ -636,7 +638,7 @@ export async function createLayerColdStorageCandidate(engine: BrushEngine,
         );
       });
       engine.device.queue.submit([encoder.finish()]);
-      await engine.waitForGpuCapped(`Pack cold livello ${record.id}`);
+      await engine.waitForGpuCapped(`Pack cold${historyQualifier} livello ${record.id}`);
       engine.maybeInjectLayerColdStorageFault("after-pack-submit");
       return { texture, tileIndices, memoryBytes, generation, format };
     },

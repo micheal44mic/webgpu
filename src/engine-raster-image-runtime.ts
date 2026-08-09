@@ -619,6 +619,7 @@ async function importRasterImageFileUnlocked(
         hot,
         record.storageTileMask.slice(),
         1,
+        "history",
       );
       transient.destroy();
       transient = null;

@@ -781,6 +781,7 @@ export async function rasterizeVectorNodeToLayer(
       hot,
       record.storageTileMask.slice(),
       1,
+      "history",
     );
 
     scene.replaceVectorWithRaster(vectorKey, record.id);

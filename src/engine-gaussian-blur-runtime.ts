@@ -25,7 +25,7 @@ import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import { tileMaskCoveringRect } from "./raster-transform-math";
 
 export const DESTRUCTIVE_GAUSSIAN_BLUR_RUNTIME_BUILD =
-  "destructive-gaussian-blur-webgpu-v1-immutable-source-two-pass-rgba16float-strips";
+  "destructive-gaussian-blur-webgpu-v2-immutable-source-two-pass-rgba16float-packed-cache";
 export const DESTRUCTIVE_GAUSSIAN_BLUR_PRECISION =
   "rgba16float-storage-f32-weights-and-accumulation" as const;
 export const DESTRUCTIVE_GAUSSIAN_BLUR_EDGE_MODE = "transparent-black" as const;
@@ -33,6 +33,7 @@ export const DESTRUCTIVE_GAUSSIAN_BLUR_EDGE_MODE = "transparent-black" as const;
 const FILTER_WORKGROUP_SIZE = 64;
 const FILTER_CACHE_LENGTH =
   FILTER_WORKGROUP_SIZE + DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS * 2;
+const FILTER_CACHE_BYTES = FILTER_CACHE_LENGTH * 8;
 const KERNEL_WEIGHT_COUNT = DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS + 1;
 const KERNEL_WEIGHT_VEC4_COUNT = Math.ceil(KERNEL_WEIGHT_COUNT / 4);
 const PARAMETER_WORDS = 16 + KERNEL_WEIGHT_VEC4_COUNT * 4;
@@ -122,6 +123,17 @@ const MAX_RADIUS = ${DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS}u;
 fn kernelWeight(index: u32) -> f32 {
   return parameters.weights[index / 4u][index % 4u];
 }
+
+// Le texture di ingresso sono gia' RGBA16F. Conservare la cache workgroup
+// nello stesso formato non perde precisione rispetto alla sorgente, dimezza
+// lo storage condiviso e lascia pesi e accumulo in f32.
+fn packFilterTexel(value: vec4<f32>) -> vec2<u32> {
+  return vec2<u32>(pack2x16float(value.xy), pack2x16float(value.zw));
+}
+
+fn unpackFilterTexel(value: vec2<u32>) -> vec4<f32> {
+  return vec4<f32>(unpack2x16float(value.x), unpack2x16float(value.y));
+}
 `;
 }
 
@@ -131,7 +143,7 @@ function horizontalShader(): string {
 @group(0) @binding(2) var intermediateOutput:
   texture_storage_2d<rgba16float, write>;
 
-var<workgroup> filterCache: array<vec4<f32>, ${FILTER_CACHE_LENGTH}>;
+var<workgroup> filterCache: array<vec2<u32>, ${FILTER_CACHE_LENGTH}>;
 
 fn sourceTexel(documentPosition: vec2<i32>) -> vec4<f32> {
   let local = documentPosition - parameters.sourceOriginAndSize.xy;
@@ -161,7 +173,7 @@ fn main(
       + i32(groupId.x * ${FILTER_WORKGROUP_SIZE}u + cacheIndex)
       - ${DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS};
     let documentY = parameters.buildOriginAndSize.y + i32(groupId.y);
-    filterCache[cacheIndex] = sourceTexel(vec2<i32>(documentX, documentY));
+    filterCache[cacheIndex] = packFilterTexel(sourceTexel(vec2<i32>(documentX, documentY)));
   }
   workgroupBarrier();
 
@@ -170,14 +182,14 @@ fn main(
     return;
   }
   let center = ${DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS}u + localId.x;
-  var result = filterCache[center] * kernelWeight(0u);
+  var result = unpackFilterTexel(filterCache[center]) * kernelWeight(0u);
   for (var offset = 1u; offset <= MAX_RADIUS; offset += 1u) {
     if (offset > parameters.kernelAndIntermediate.x) {
       break;
     }
     let weight = kernelWeight(offset);
-    result += filterCache[center - offset] * weight;
-    result += filterCache[center + offset] * weight;
+    result += unpackFilterTexel(filterCache[center - offset]) * weight;
+    result += unpackFilterTexel(filterCache[center + offset]) * weight;
   }
   textureStore(intermediateOutput, vec2<i32>(i32(outputX), i32(groupId.y)), result);
 }
@@ -190,7 +202,7 @@ function verticalShader(): string {
 @group(0) @binding(2) var outputTexture:
   texture_storage_2d<rgba16float, write>;
 
-var<workgroup> filterCache: array<vec4<f32>, ${FILTER_CACHE_LENGTH}>;
+var<workgroup> filterCache: array<vec2<u32>, ${FILTER_CACHE_LENGTH}>;
 
 fn intermediateTexel(position: vec2<i32>) -> vec4<f32> {
   let size = vec2<i32>(parameters.kernelAndIntermediate.yz);
@@ -219,7 +231,9 @@ fn main(
     let sourceY = i32(groupId.x * ${FILTER_WORKGROUP_SIZE}u + cacheIndex)
       + i32(parameters.kernelAndIntermediate.x)
       - ${DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS};
-    filterCache[cacheIndex] = intermediateTexel(vec2<i32>(i32(localX), sourceY));
+    filterCache[cacheIndex] = packFilterTexel(
+      intermediateTexel(vec2<i32>(i32(localX), sourceY))
+    );
   }
   workgroupBarrier();
 
@@ -228,14 +242,14 @@ fn main(
     return;
   }
   let center = ${DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS}u + localId.x;
-  var result = filterCache[center] * kernelWeight(0u);
+  var result = unpackFilterTexel(filterCache[center]) * kernelWeight(0u);
   for (var offset = 1u; offset <= MAX_RADIUS; offset += 1u) {
     if (offset > parameters.kernelAndIntermediate.x) {
       break;
     }
     let weight = kernelWeight(offset);
-    result += filterCache[center - offset] * weight;
-    result += filterCache[center + offset] * weight;
+    result += unpackFilterTexel(filterCache[center - offset]) * weight;
+    result += unpackFilterTexel(filterCache[center + offset]) * weight;
   }
   textureStore(outputTexture, vec2<i32>(i32(localX), i32(localY)), result);
 }
@@ -243,6 +257,16 @@ fn main(
 }
 
 async function createSharedResources(device: GPUDevice): Promise<GaussianBlurSharedResources> {
+  const availableWorkgroupStorage = Number(device.limits.maxComputeWorkgroupStorageSize);
+  if (
+    Number.isFinite(availableWorkgroupStorage)
+    && availableWorkgroupStorage < FILTER_CACHE_BYTES
+  ) {
+    throw new Error(
+      `Gaussian Blur richiede ${FILTER_CACHE_BYTES} byte di cache workgroup; `
+      + `la GPU ne espone ${availableWorkgroupStorage}.`,
+    );
+  }
   return runGpuAllocationTransaction(
     device,
     "Pipeline Native raster Gaussian Blur RGBA16F",
@@ -1034,6 +1058,7 @@ export async function commitRasterGaussianBlur(engine: BrushEngine): Promise<boo
       hot,
       session.resultTileMask.slice(),
       engine.nextHistoryActionId,
+      "history",
     );
     const kernel = destructiveGaussianBlurKernel(session.radius);
     const action: RasterFilterHistoryAction = {

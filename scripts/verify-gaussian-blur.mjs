@@ -15,8 +15,8 @@ assert.equal(
   DESTRUCTIVE_GAUSSIAN_BLUR_CORE_BUILD,
   "destructive-gaussian-blur-core-v1-three-sigma-premultiplied-rgba16float",
 );
-assert.equal(DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS, 200);
-const maximumFilterCacheBytes = (64 + DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS * 2) * 16;
+assert.equal(DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS, 500);
+const maximumFilterCacheBytes = (64 + DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS * 2) * 8;
 const maximumParameterBytes = (
   16 + Math.ceil((DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS + 1) / 4) * 4
 ) * 4;
@@ -78,6 +78,10 @@ const mobileSheet = readFileSync(
 
 assert.match(runtime, /format:\s*"rgba16float"/);
 assert.match(runtime, /array<vec4<f32>/);
+assert.match(runtime, /array<vec2<u32>/);
+assert.match(runtime, /pack2x16float/);
+assert.match(runtime, /unpack2x16float/);
+assert.match(runtime, /maxComputeWorkgroupStorageSize/);
 assert.match(runtime, /texture_2d<f32>/);
 assert.match(runtime, /texture_storage_2d<rgba16float, write>/);
 assert.doesNotMatch(runtime, /rgba8|unorm8|pack4x8|unpack4x8/i);
@@ -100,6 +104,7 @@ const commit = runtime.slice(
 assert.match(commit, /kind:\s*"raster-filter"/);
 assert.match(commit, /filter:\s*"gaussian-blur"/);
 assert.match(commit, /commitHistoryActionAtomically\(engine, action\)/);
+assert.match(commit, /createLayerColdStorageCandidate\([\s\S]{0,260}"history"/);
 assert.match(commit, /precision:\s*"rgba16float-f32-accumulation"/);
 assert.match(history, /interface RasterFilterHistoryAction/);
 assert.match(engine, /activeRasterGaussianBlurSession/);
@@ -118,6 +123,12 @@ assert.match(main, /engine\.beginRasterGaussianBlur/);
 assert.match(main, /engine\.commitRasterGaussianBlur/);
 assert.match(main, /engine\.cancelRasterGaussianBlur/);
 assert.match(main, /historyState\.openEdit === "gaussian-blur"/);
+assert.match(main, /function canvasViewOperationLocked\(\)/);
+assert.match(main, /operationLocked\(allowGaussianBlurEdit\)/);
+assert.match(main, /gaussianTouchNavigationRequested/);
+assert.match(main, /enterTouchNavigation\(\)/);
+assert.match(main, /canvasViewOperationLocked\(\) \|\| activePointerId !== null/);
+assert.match(main, /nextGesture\.contactCount >= 2 && previousGesture\.contactCount >= 2/);
 assert.match(main, /resetRasterGaussianBlurControls/);
 assert.match(main, /DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS/);
 assert.match(main, /openRasterGaussianBlurWorkbench\("desktop"/);
@@ -129,8 +140,8 @@ assert.match(html, /mobile-stroke-sheet-content mobile-gaussian-blur-shell/);
 assert.match(html, /id="mobileGaussianBlurHeader" class="mobile-stroke-header"/);
 assert.match(html, /class="mobile-stroke-title">Gaussian Blur/);
 assert.match(html, /class="mobile-stroke-width-control" for="mobileGaussianBlurRadius"/);
-assert.match(html, /id="mobileGaussianBlurRadius"[\s\S]{0,160}max="200"/);
-assert.match(html, /id="desktopGaussianBlurRadius"[\s\S]{0,160}max="200"/);
+assert.match(html, /id="mobileGaussianBlurRadius"[\s\S]{0,160}max="500"/);
+assert.match(html, /id="desktopGaussianBlurRadius"[\s\S]{0,160}max="500"/);
 assert.match(html, /id="mobileGaussianBlurStatus"[\s\S]{0,120}class="visually-hidden"/);
 assert.match(html, /id="desktopGaussianBlurStatus"[\s\S]{0,120}class="visually-hidden"/);
 assert.match(html, /id="mobileGaussianBlurCancel" type="button">Cancel/);

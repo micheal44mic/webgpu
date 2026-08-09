@@ -5096,12 +5096,12 @@ function updateHumanStrokeControls(): void {
     || Boolean(humanStrokeRecording);
 }
 
-function nonHistoryOperationLocked(): boolean {
+function nonHistoryOperationLocked(allowGaussianBlurEdit = false): boolean {
   return !engineInitialized
     || layerSwitching
     || mobileBrushControlDrag !== null
     || historyState.openEdit === "transform"
-    || historyState.openEdit === "gaussian-blur"
+    || (!allowGaussianBlurEdit && historyState.openEdit === "gaussian-blur")
     || historyState.openEdit === "raster-property"
     || benchmarkRunning
     || rasterShadowGoldenRunning
@@ -5121,14 +5121,27 @@ function nonHistoryOperationLocked(): boolean {
     || humanStrokeSaving;
 }
 
-function operationLocked(): boolean {
-  return nonHistoryOperationLocked()
+function operationLocked(allowGaussianBlurEdit = false): boolean {
+  return nonHistoryOperationLocked(allowGaussianBlurEdit)
     || historyUiBusy
     || historyState.busy;
 }
 
 function interactionLocked(): boolean {
   return operationLocked() || activePointerId !== null;
+}
+
+/**
+ * Pan, zoom e rotazione non modificano i pixel e restano disponibili mentre
+ * Gaussian Blur mostra la sua anteprima distruttiva. Il normale lock del
+ * documento continua invece a proteggere pennello, livelli e cronologia.
+ */
+function canvasViewOperationLocked(): boolean {
+  const allowGaussianBlurEdit = rasterGaussianBlurSessionOpen
+    && historyState.openEdit === "gaussian-blur"
+    && !rasterGaussianBlurUiBusy
+    && !historyState.inconsistent;
+  return operationLocked(allowGaussianBlurEdit);
 }
 
 /**
@@ -11795,6 +11808,7 @@ interface TouchContact {
 }
 
 interface TouchNavigationGesture {
+  contactCount: number;
   centerX: number;
   centerY: number;
   distance: number;
@@ -11906,12 +11920,22 @@ function cancelTouchPaintIntentHold(
 
 function currentTouchNavigationGesture(): TouchNavigationGesture | null {
   const contacts = [...activeTouchContacts.values()];
-  if (contacts.length < 2) {
+  if (contacts.length === 0) {
     return null;
+  }
+  if (contacts.length === 1) {
+    return {
+      contactCount: 1,
+      centerX: contacts[0].clientX,
+      centerY: contacts[0].clientY,
+      distance: 1,
+      angle: 0,
+    };
   }
   const first = contacts[0];
   const second = contacts[1];
   return {
+    contactCount: contacts.length,
     centerX: (first.clientX + second.clientX) * 0.5,
     centerY: (first.clientY + second.clientY) * 0.5,
     distance: Math.max(1, Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY)),
@@ -11957,7 +11981,7 @@ canvas.addEventListener("pointerdown", (event) => {
     event.pointerType === "touch"
     && activePointerId !== null
     && activeTouchContacts.size > 0
-    && !operationLocked()
+    && !canvasViewOperationLocked()
   ) {
     event.preventDefault();
     activeTouchContacts.set(event.pointerId, {
@@ -11972,13 +11996,6 @@ canvas.addEventListener("pointerdown", (event) => {
   }
 
   if (activePointerId !== null) {
-    return;
-  }
-  if (operationLocked()) {
-    if (historyState.openEdit === "raster-property") {
-      statusElement.textContent = "Completo la modifica dell'effetto prima del tratto…";
-      statusElement.className = "status";
-    }
     return;
   }
 
@@ -11999,6 +12016,35 @@ canvas.addEventListener("pointerdown", (event) => {
         : activeCanvasTool === "transform"
           ? "transform"
         : "paint";
+  const viewNavigationRequested = requestedPointerMode === "pan"
+    || requestedPointerMode === "rotate";
+  const gaussianTouchNavigationRequested = event.pointerType === "touch"
+    && rasterGaussianBlurSessionOpen
+    && historyState.openEdit === "gaussian-blur";
+  if (
+    (viewNavigationRequested || gaussianTouchNavigationRequested)
+      ? canvasViewOperationLocked()
+      : operationLocked()
+  ) {
+    if (historyState.openEdit === "raster-property") {
+      statusElement.textContent = "Completo la modifica dell'effetto prima del tratto…";
+      statusElement.className = "status";
+    }
+    return;
+  }
+
+  if (gaussianTouchNavigationRequested) {
+    event.preventDefault();
+    activePointerId = event.pointerId;
+    activeTouchContacts.set(event.pointerId, {
+      clientX: event.clientX,
+      clientY: event.clientY,
+    });
+    canvas.setPointerCapture(event.pointerId);
+    enterTouchNavigation();
+    return;
+  }
+
   const paintSample = requestedPointerMode === "paint" ? toPointerSample(event) : null;
   const holdPaintIntent = paintSample !== null && shouldHoldTouchPaintIntent(
     touchPaintIntentHoldEnabled,
@@ -12093,18 +12139,20 @@ canvas.addEventListener("pointermove", (event) => {
           engine.panByClientDelta(deltaX, deltaY);
         }
 
-        const zoomFactor = nextGesture.distance / previousGesture.distance;
-        if (Number.isFinite(zoomFactor) && Math.abs(zoomFactor - 1) > 0.0001) {
-          engine.zoomBy(
-            Math.min(2, Math.max(0.5, zoomFactor)),
-            nextGesture.centerX,
-            nextGesture.centerY,
-          );
-        }
-        const rawRotationDelta = nextGesture.angle - previousGesture.angle;
-        const rotationDelta = Math.atan2(Math.sin(rawRotationDelta), Math.cos(rawRotationDelta));
-        if (Math.abs(rotationDelta) > 0.0001) {
-          engine.rotateViewBy(rotationDelta, nextGesture.centerX, nextGesture.centerY);
+        if (nextGesture.contactCount >= 2 && previousGesture.contactCount >= 2) {
+          const zoomFactor = nextGesture.distance / previousGesture.distance;
+          if (Number.isFinite(zoomFactor) && Math.abs(zoomFactor - 1) > 0.0001) {
+            engine.zoomBy(
+              Math.min(2, Math.max(0.5, zoomFactor)),
+              nextGesture.centerX,
+              nextGesture.centerY,
+            );
+          }
+          const rawRotationDelta = nextGesture.angle - previousGesture.angle;
+          const rotationDelta = Math.atan2(Math.sin(rawRotationDelta), Math.cos(rawRotationDelta));
+          if (Math.abs(rotationDelta) > 0.0001) {
+            engine.rotateViewBy(rotationDelta, nextGesture.centerX, nextGesture.centerY);
+          }
         }
       }
       touchNavigationGesture = nextGesture;
@@ -12570,7 +12618,7 @@ canvas.addEventListener(
   "wheel",
   (event) => {
     event.preventDefault();
-    if (interactionLocked() || activePointerId !== null) {
+    if (canvasViewOperationLocked() || activePointerId !== null) {
       return;
     }
     const factor = Math.exp(-event.deltaY * 0.0015);

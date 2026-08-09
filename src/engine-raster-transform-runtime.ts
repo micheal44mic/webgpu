@@ -977,6 +977,7 @@ export async function commitRasterLayerTransform(engine: BrushEngine): Promise<b
         hot,
         session.resultTileMask.slice(),
         engine.nextHistoryActionId,
+        "history",
       );
     }
     if (session.scope === "selection") {
