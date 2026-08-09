@@ -114,6 +114,15 @@ import {
   type ActiveRasterMotionBlurSession,
 } from "./engine-motion-blur-runtime";
 import {
+  abandonRasterNoiseSession,
+  beginRasterNoise as beginRasterNoiseRuntime,
+  cancelRasterNoise as cancelRasterNoiseRuntime,
+  commitRasterNoise as commitRasterNoiseRuntime,
+  updateRasterNoise as updateRasterNoiseRuntime,
+  type ActiveRasterNoiseSession,
+} from "./engine-noise-runtime";
+import type { RasterNoiseSettings } from "./noise-core";
+import {
   MIXED_SCENE_COMPOSITOR_STRATEGY,
   MIXED_SCENE_LINEAR_FORMAT,
   mixedSceneClearShader,
@@ -893,6 +902,12 @@ export type {
   RasterShadowContour,
 } from "./shadow-core";
 
+export type DestructiveRasterEditKind =
+  | "transform"
+  | "gaussian-blur"
+  | "motion-blur"
+  | "noise";
+
 /**
  * Il motore. La classe conserva lo stato e il percorso caldo del tratto; il
  * resto vive nei moduli `engine-*`, che ricevono l'istanza come primo
@@ -1580,6 +1595,7 @@ export class BrushEngine {
   activeRasterTransformSession: ActiveRasterTransformSession | null = null;
   activeRasterGaussianBlurSession: ActiveRasterGaussianBlurSession | null = null;
   activeRasterMotionBlurSession: ActiveRasterMotionBlurSession | null = null;
+  activeRasterNoiseSession: ActiveRasterNoiseSession | null = null;
   historyGpuStorage!: GpuHistoryStorage;
   historyLocalStorage!: HistoryStorageCoordinator;
   historyGpuTrimGeneration = 0;
@@ -1698,6 +1714,7 @@ export class BrushEngine {
     this.gpuResourceRegistry = instrumented.registry;
     this.deviceLostSignal = this.device.lost.then((info) => {
       this.invalidateAdaptivePreview();
+      abandonRasterNoiseSession(this);
       const reason = info.message || info.reason;
       const error = new Error(`Device WebGPU perso: ${reason}`);
       this.deviceLostError = error;
@@ -3699,17 +3716,11 @@ export class BrushEngine {
   beginStrokeAtLayer(point: LayerPoint): boolean {
     // layerSwitchBusy is held across the switch's awaits, so a pointerdown
     // landing mid-switch cannot start a stroke on a half-swapped layer.
-    if (
-      this.activeRasterTransformSession
-      || this.activeRasterGaussianBlurSession
-      || this.activeRasterMotionBlurSession
-    ) {
+    const destructiveEdit = this.activeDestructiveRasterEditKind();
+    if (destructiveEdit) {
       this.callbacks.onStatus?.(
-        this.activeRasterGaussianBlurSession
-          ? "Applica o annulla Gaussian Blur prima di iniziare il tratto."
-          : this.activeRasterMotionBlurSession
-            ? "Applica o annulla Motion Blur prima di iniziare il tratto."
-            : "Applica o annulla Trasforma prima di iniziare il tratto.",
+        `Applica o annulla ${this.destructiveRasterEditLabel(destructiveEdit)} `
+        + "prima di iniziare il tratto.",
         "working",
       );
       return false;
@@ -4092,6 +4103,7 @@ export class BrushEngine {
       || this.activeRasterTransformSession
       || this.activeRasterGaussianBlurSession
       || this.activeRasterMotionBlurSession
+      || this.activeRasterNoiseSession
     ) {
       return false;
     }
@@ -4172,6 +4184,7 @@ export class BrushEngine {
       || this.activeRasterTransformSession
       || this.activeRasterGaussianBlurSession
       || this.activeRasterMotionBlurSession
+      || this.activeRasterNoiseSession
     ) {
       return false;
     }
@@ -4590,20 +4603,40 @@ export class BrushEngine {
     return this.layerStack.count > 1;
   }
 
+  activeDestructiveRasterEditKind(): DestructiveRasterEditKind | null {
+    if (this.activeRasterTransformSession) return "transform";
+    if (this.activeRasterGaussianBlurSession) return "gaussian-blur";
+    if (this.activeRasterMotionBlurSession) return "motion-blur";
+    if (this.activeRasterNoiseSession) return "noise";
+    return null;
+  }
+
+  destructiveRasterEditLabel(kind: DestructiveRasterEditKind): string {
+    if (kind === "transform") return "Trasforma";
+    if (kind === "gaussian-blur") return "Gaussian Blur";
+    if (kind === "motion-blur") return "Motion Blur";
+    return "Noise";
+  }
+
+  assertDestructiveRasterEditCanOpen(kind: DestructiveRasterEditKind): void {
+    const active = this.activeDestructiveRasterEditKind();
+    if (!active || active === kind) return;
+    throw new Error(
+      `Applica o annulla ${this.destructiveRasterEditLabel(active)} prima di aprire `
+      + `${this.destructiveRasterEditLabel(kind)}.`,
+    );
+  }
+
   private historyBlockedReason(delta: -1 | 1): string | null {
     if (this.historyStateInconsistent) return "La cronologia è incoerente: ricarica la pagina.";
     if (this.historyBusy) return "La cronologia sta completando un'altra operazione.";
     if (this.activeStroke) return "Termina il tratto prima di usare Undo o Redo.";
     if (this.layerSwitchBusy) return "Attendi il completamento del cambio livello.";
     if (this.selectionBusy) return "Attendi il completamento della selezione.";
-    if (this.activeRasterTransformSession) {
-      return "Completa o annulla Trasforma prima di usare Undo o Redo.";
-    }
-    if (this.activeRasterGaussianBlurSession) {
-      return "Applica o annulla Gaussian Blur prima di usare Undo o Redo.";
-    }
-    if (this.activeRasterMotionBlurSession) {
-      return "Applica o annulla Motion Blur prima di usare Undo o Redo.";
+    const destructiveEdit = this.activeDestructiveRasterEditKind();
+    if (destructiveEdit) {
+      return `Applica o annulla ${this.destructiveRasterEditLabel(destructiveEdit)} `
+        + "prima di usare Undo o Redo.";
     }
     if (this.activeVectorHistoryEdit || this.activeRasterLayerMetadataHistoryEdit) {
       return "Termina la modifica corrente prima di usare Undo o Redo.";
@@ -4641,14 +4674,9 @@ export class BrushEngine {
       logicalStampBytes: this.historyStoredBaseStamps * STAMP_STRIDE_BYTES,
       undoBlockedReason,
       redoBlockedReason,
-      openEdit: this.activeRasterTransformSession
-        ? "transform"
-        : this.activeRasterGaussianBlurSession
-          ? "gaussian-blur"
-          : this.activeRasterMotionBlurSession
-            ? "motion-blur"
-            : this.activeVectorHistoryEdit?.scope
-              ?? (this.activeRasterLayerMetadataHistoryEdit ? "raster-property" : null),
+      openEdit: this.activeDestructiveRasterEditKind()
+        ?? this.activeVectorHistoryEdit?.scope
+        ?? (this.activeRasterLayerMetadataHistoryEdit ? "raster-property" : null),
     };
   }
 
@@ -5676,7 +5704,8 @@ export class BrushEngine {
       mipLevelCount: 1,
       format,
       usage:
-        GPUTextureUsage.RENDER_ATTACHMENT
+        GPUTextureUsage.STORAGE_BINDING
+        | GPUTextureUsage.RENDER_ATTACHMENT
         | GPUTextureUsage.TEXTURE_BINDING
         | GPUTextureUsage.COPY_SRC
         | GPUTextureUsage.COPY_DST,
@@ -5872,6 +5901,7 @@ export class BrushEngine {
       || this.historyBusy
       || this.layerSwitchBusy
       || this.layerColdCompressionInteractionActive
+      || this.activeDestructiveRasterEditKind() !== null
       || !this.selectLayerColdCompressionCandidate()
     ) {
       return;
@@ -6281,6 +6311,7 @@ export class BrushEngine {
       || this.activeRasterTransformSession
       || this.activeRasterGaussianBlurSession
       || this.activeRasterMotionBlurSession
+      || this.activeRasterNoiseSession
       || this.rasterStrokeBusy
       || this.rasterBevelBusy
       || this.rasterOuterShadowBusy
@@ -6384,6 +6415,7 @@ export class BrushEngine {
       || this.activeRasterTransformSession
       || this.activeRasterGaussianBlurSession
       || this.activeRasterMotionBlurSession
+      || this.activeRasterNoiseSession
     ) {
       return false;
     }
@@ -6685,6 +6717,22 @@ export class BrushEngine {
 
   cancelRasterMotionBlur(): Promise<boolean> {
     return cancelRasterMotionBlurRuntime(this);
+  }
+
+  beginRasterNoise(initial?: Partial<RasterNoiseSettings>) {
+    return beginRasterNoiseRuntime(this, initial);
+  }
+
+  updateRasterNoise(update: Partial<RasterNoiseSettings>) {
+    return updateRasterNoiseRuntime(this, update);
+  }
+
+  commitRasterNoise(): Promise<boolean> {
+    return commitRasterNoiseRuntime(this);
+  }
+
+  cancelRasterNoise(): Promise<boolean> {
+    return cancelRasterNoiseRuntime(this);
   }
 
   beginRasterLayerTransform() {
@@ -7199,6 +7247,11 @@ export class BrushEngine {
     if (this.activeRasterMotionBlurSession) {
       throw new Error(
         "Applica o annulla Motion Blur prima di cambiare i livelli.",
+      );
+    }
+    if (this.activeRasterNoiseSession) {
+      throw new Error(
+        "Applica o annulla Noise prima di cambiare i livelli.",
       );
     }
     if (

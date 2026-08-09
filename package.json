@@ -48,7 +48,9 @@
     "image:verify": "node scripts/verify-raster-image.mjs",
     "transform:verify": "node scripts/verify-raster-transform.mjs",
     "gaussian-blur:verify": "node scripts/verify-gaussian-blur.mjs",
-    "motion-blur:verify": "node scripts/verify-motion-blur.mjs && node scripts/verify-motion-blur-ui.mjs"
+    "motion-blur:verify": "node scripts/verify-motion-blur.mjs && node scripts/verify-motion-blur-ui.mjs",
+    "noise:verify": "node scripts/verify-noise.mjs",
+    "raster-filters:verify": "npm run gaussian-blur:verify && npm run motion-blur:verify && npm run noise:verify && npm run precision:verify"
   },
   "devDependencies": {
     "@webgpu/types": "0.1.71",

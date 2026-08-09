@@ -4411,7 +4411,8 @@ select {
 }
 
 .gaussian-blur-launch-control,
-.motion-blur-launch-control {
+.motion-blur-launch-control,
+.noise-launch-control {
   margin-bottom: 0;
 }
 
@@ -4421,20 +4422,23 @@ select {
   border-top: 1px solid #303746;
 }
 
-.motion-blur-launch-block {
+.motion-blur-launch-block,
+.noise-launch-block {
   margin-top: 10px;
   padding-top: 10px;
   border-top: 1px solid #303746;
 }
 
-#desktopMotionBlurParameters {
+#desktopMotionBlurParameters,
+#desktopNoiseParameters {
   margin-top: 9px;
   padding-top: 10px;
   border-top: 1px solid #303746;
 }
 
 .gaussian-blur-inline-actions,
-.motion-blur-inline-actions {
+.motion-blur-inline-actions,
+.noise-inline-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 7px;
@@ -4442,9 +4446,21 @@ select {
 }
 
 .gaussian-blur-inline-actions button,
-.motion-blur-inline-actions button {
+.motion-blur-inline-actions button,
+.noise-inline-actions button {
   min-width: 0;
   min-height: 36px;
+}
+
+.noise-extended-hint {
+  margin: -2px 0 10px;
+  color: #aeb6c5;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.noise-option-control {
+  margin-bottom: 10px;
 }
 
 @media (max-width: 699px) {
@@ -4458,15 +4474,22 @@ select {
     overflow: visible;
   }
 
+  .mobile-noise-sheet {
+    --mobile-tools-sheet-offset: calc(100% - clamp(176px, 26dvh, 240px));
+    overflow: visible;
+  }
+
   .mobile-gaussian-blur-controls,
-  .mobile-motion-blur-controls {
+  .mobile-motion-blur-controls,
+  .mobile-noise-controls {
     display: grid;
     min-width: 0;
     gap: 2px;
   }
 
   .mobile-gaussian-blur-actions,
-  .mobile-motion-blur-actions {
+  .mobile-motion-blur-actions,
+  .mobile-noise-actions {
     flex: 0 0 auto;
     margin: 0;
   }
@@ -4476,7 +4499,10 @@ select {
   .mobile-gaussian-blur-actions button:active,
   .mobile-motion-blur-actions button,
   .mobile-motion-blur-actions button:hover,
-  .mobile-motion-blur-actions button:active {
+  .mobile-motion-blur-actions button:active,
+  .mobile-noise-actions button,
+  .mobile-noise-actions button:hover,
+  .mobile-noise-actions button:active {
     border: 1px solid #343842;
     border-radius: 10px;
     background: #292c33;
@@ -4488,7 +4514,10 @@ select {
   .mobile-gaussian-blur-actions button.is-primary:active,
   .mobile-motion-blur-actions button.is-primary,
   .mobile-motion-blur-actions button.is-primary:hover,
-  .mobile-motion-blur-actions button.is-primary:active {
+  .mobile-motion-blur-actions button.is-primary:active,
+  .mobile-noise-actions button.is-primary,
+  .mobile-noise-actions button.is-primary:hover,
+  .mobile-noise-actions button.is-primary:active {
     border-color: #dd5c35;
     background: #dd5c35;
     color: var(--mobile-icon-face);
@@ -4504,5 +4533,72 @@ select {
       flex-basis: 34px;
       min-height: 34px;
     }
+
+    .mobile-noise-sheet .mobile-tools-sheet-handle {
+      flex-basis: 34px;
+      min-height: 34px;
+    }
+  }
+}
+
+@media (max-width: 699px) {
+  .mobile-noise-shell,
+  .mobile-noise-sheet .mobile-stroke-controls-region {
+    overflow: hidden;
+  }
+
+  .mobile-noise-scroll {
+    height: 100%;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 0 0 max(12px, env(safe-area-inset-bottom));
+    overscroll-behavior: contain;
+    scrollbar-color: #4a4e58 transparent;
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .mobile-noise-select-control {
+    display: grid;
+    min-height: 46px;
+    grid-template-columns: minmax(0, 1fr) minmax(120px, 46%);
+    align-items: center;
+    gap: 10px;
+    color: var(--mobile-icon-inactive);
+    font-size: 11px;
+    font-weight: 550;
+  }
+
+  .mobile-noise-select-control select {
+    width: 100%;
+    min-width: 0;
+    min-height: 38px;
+    border: 1px solid #343842;
+    border-radius: 9px;
+    background: #292c33;
+    color: var(--mobile-icon-face);
+  }
+
+  .mobile-noise-check-control {
+    display: flex;
+    min-height: 42px;
+    align-items: center;
+    gap: 9px;
+    color: var(--mobile-icon-face);
+    font-size: 12px;
+  }
+
+  .mobile-noise-check-control input {
+    width: 18px;
+    height: 18px;
+    accent-color: #dd5c35;
+  }
+
+  .mobile-noise-hint {
+    margin: -8px 0 4px;
+    color: var(--mobile-icon-inactive);
+    font-size: 10px;
+    line-height: 1.3;
   }
 }

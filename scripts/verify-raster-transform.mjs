@@ -420,7 +420,7 @@ console.log("Raster transform math/shader verification passed.");
   const engine = readFileSync(new URL("../src/brush-engine.ts", import.meta.url), "utf8");
   const guardia = engine.slice(
     engine.indexOf("  assertLayerSwitchAllowed(): void {"),
-    engine.indexOf("  assertLayerSwitchAllowed(): void {") + 900,
+    engine.indexOf("  assertLayerSwitchAllowed(): void {") + 1_400,
   );
   // La sessione Trasforma tiene viva la texture hot del sorgente: un cambio di
   // livello la evacua e l'Applica successivo la trova mancante, perdendo la

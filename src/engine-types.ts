@@ -187,6 +187,7 @@ export interface HistoryState {
     | "transform"
     | "gaussian-blur"
     | "motion-blur"
+    | "noise"
     | null;
 }
 

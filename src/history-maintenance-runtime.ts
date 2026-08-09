@@ -249,6 +249,8 @@ function historyMaintenanceEngineIdle(
     && !engine.activeRasterLayerMetadataHistoryEdit
     && !engine.activeRasterTransformSession
     && !engine.activeRasterGaussianBlurSession
+    && !engine.activeRasterMotionBlurSession
+    && !engine.activeRasterNoiseSession
     && !engine.rasterStrokeBusy
     && !engine.rasterBevelBusy
     && !engine.rasterOuterShadowBusy

@@ -1162,6 +1162,110 @@
       </aside>
 
       <aside
+        id="mobileNoiseSheet"
+        class="mobile-tools-sheet mobile-noise-sheet"
+        aria-label="Noise settings"
+        aria-hidden="true"
+        data-state="closed"
+        data-snap="peek"
+      >
+        <button
+          id="mobileNoiseHandle"
+          class="mobile-tools-sheet-handle"
+          type="button"
+          aria-label="Expand Noise settings"
+          aria-controls="mobileNoiseSheet"
+          aria-expanded="false"
+        >
+          <span class="mobile-tools-sheet-grabber" aria-hidden="true"></span>
+        </button>
+
+        <div class="mobile-stroke-sheet-content mobile-noise-shell">
+          <header id="mobileNoiseHeader" class="mobile-stroke-header">
+            <h2 class="mobile-stroke-title">Noise</h2>
+          </header>
+
+          <div id="mobileNoiseControlsRegion" class="mobile-stroke-controls-region">
+            <div id="mobileNoiseScroll" class="mobile-noise-scroll">
+              <div class="mobile-noise-controls">
+                <label class="mobile-stroke-width-control" for="mobileNoiseAmount">
+                  <span class="mobile-stroke-control-label">Amount</span>
+                  <output id="mobileNoiseAmountOut" for="mobileNoiseAmount">0%</output>
+                  <input
+                    id="mobileNoiseAmount"
+                    type="range"
+                    min="0"
+                    max="300"
+                    step="1"
+                    value="0"
+                    aria-label="Noise amount"
+                    aria-describedby="mobileNoiseAmountOut mobileNoiseExtendedHint"
+                    aria-valuetext="0 percent"
+                  />
+                </label>
+                <p id="mobileNoiseExtendedHint" class="mobile-noise-hint">
+                  Extended above 100%
+                </p>
+
+                <label class="mobile-noise-select-control" for="mobileNoiseStyle">
+                  <span>Style</span>
+                  <select id="mobileNoiseStyle">
+                    <option value="clouds" selected>Clouds</option>
+                    <option value="billows">Billows</option>
+                    <option value="ridges">Ridges</option>
+                  </select>
+                </label>
+
+                <label class="mobile-stroke-width-control" for="mobileNoiseScale">
+                  <span class="mobile-stroke-control-label">Scale</span>
+                  <output id="mobileNoiseScaleOut" for="mobileNoiseScale">50% · 32 px</output>
+                  <input id="mobileNoiseScale" type="range" min="0" max="100" step="1" value="50" />
+                </label>
+
+                <label class="mobile-stroke-width-control" for="mobileNoiseOctaves">
+                  <span class="mobile-stroke-control-label">Octaves</span>
+                  <output id="mobileNoiseOctavesOut" for="mobileNoiseOctaves">4.5</output>
+                  <input id="mobileNoiseOctaves" type="range" min="0" max="100" step="1" value="50" />
+                </label>
+
+                <label class="mobile-stroke-width-control" for="mobileNoiseTurbulence">
+                  <span class="mobile-stroke-control-label">Turbulence</span>
+                  <output id="mobileNoiseTurbulenceOut" for="mobileNoiseTurbulence">0%</output>
+                  <input id="mobileNoiseTurbulence" type="range" min="0" max="100" step="1" value="0" />
+                </label>
+
+                <label class="mobile-noise-select-control" for="mobileNoiseChannels">
+                  <span>Channels</span>
+                  <select id="mobileNoiseChannels">
+                    <option value="single" selected>Single</option>
+                    <option value="multi">Multi</option>
+                  </select>
+                </label>
+
+                <label class="mobile-noise-check-control">
+                  <input id="mobileNoiseAdditive" type="checkbox" checked />
+                  <span>Additive</span>
+                </label>
+
+                <p
+                  id="mobileNoiseStatus"
+                  class="visually-hidden"
+                  role="status"
+                  aria-live="polite"
+                  aria-atomic="true"
+                >Noise ready.</p>
+
+                <div class="mobile-tool-actions mobile-tool-actions-grid mobile-noise-actions">
+                  <button id="mobileNoiseCancel" type="button">Cancel</button>
+                  <button id="mobileNoiseApply" class="is-primary" type="button">Apply</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <aside
         id="mobileToolSettingsSheet"
         class="mobile-tools-sheet mobile-tool-settings-sheet"
         aria-label="Tool settings"
@@ -1927,7 +2031,7 @@
             </section>
 
             <section class="mobile-tools-category" data-mobile-tools-category>
-              <h2 class="mobile-tools-category-title">Blur</h2>
+              <h2 class="mobile-tools-category-title">Adjustments</h2>
               <div class="mobile-tools-grid">
                 <button
                   id="mobileGaussianBlurOpen"
@@ -1960,6 +2064,22 @@
                     <i data-lucide="wind" class="mobile-icon-layer mobile-icon-face"></i>
                   </span>
                   <span class="mobile-tools-item-label">Motion Blur</span>
+                </button>
+                <button
+                  id="mobileNoiseOpen"
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-tool-search="noise grain texture procedural adjustment"
+                  aria-label="Open Noise"
+                  aria-controls="mobileNoiseSheet"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="sparkles" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="sparkles" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Noise</span>
                 </button>
               </div>
             </section>
@@ -3245,7 +3365,7 @@
         </section>
 
         <section id="rasterGaussianBlurSection">
-          <h2>Blur</h2>
+          <h2>Adjustments</h2>
           <label class="check-control gaussian-blur-launch-control">
             <input
               id="desktopGaussianBlurOpen"
@@ -3354,6 +3474,91 @@
               <div class="motion-blur-inline-actions">
                 <button id="desktopMotionBlurCancel" type="button">Annulla</button>
                 <button id="desktopMotionBlurApply" class="primary" type="button">Applica</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="rasterNoiseSection" class="noise-launch-block">
+            <label class="check-control noise-launch-control">
+              <input
+                id="desktopNoiseOpen"
+                type="checkbox"
+                aria-controls="desktopNoiseParameters"
+                aria-expanded="false"
+              />
+              <span>
+                Noise
+                <small>Applica o Annulla.</small>
+              </span>
+            </label>
+
+            <div id="desktopNoiseParameters" hidden>
+              <label class="control" for="desktopNoiseAmount">
+                <span>
+                  Quantità
+                  <output id="desktopNoiseAmountOut" for="desktopNoiseAmount">0%</output>
+                </span>
+                <input id="desktopNoiseAmount" type="range" min="0" max="300" step="1" value="0" />
+              </label>
+              <p class="noise-extended-hint">Da 0% a 100% usa il range standard. Oltre 100% usa Extended.</p>
+
+              <label class="control" for="desktopNoiseStyle">
+                <span>Stile</span>
+                <select id="desktopNoiseStyle">
+                  <option value="clouds" selected>Clouds</option>
+                  <option value="billows">Billows</option>
+                  <option value="ridges">Ridges</option>
+                </select>
+              </label>
+
+              <label class="control" for="desktopNoiseScale">
+                <span>
+                  Scala
+                  <output id="desktopNoiseScaleOut" for="desktopNoiseScale">50% · 32 px</output>
+                </span>
+                <input id="desktopNoiseScale" type="range" min="0" max="100" step="1" value="50" />
+              </label>
+
+              <label class="control" for="desktopNoiseOctaves">
+                <span>
+                  Ottave
+                  <output id="desktopNoiseOctavesOut" for="desktopNoiseOctaves">4.5</output>
+                </span>
+                <input id="desktopNoiseOctaves" type="range" min="0" max="100" step="1" value="50" />
+              </label>
+
+              <label class="control" for="desktopNoiseTurbulence">
+                <span>
+                  Turbolenza
+                  <output id="desktopNoiseTurbulenceOut" for="desktopNoiseTurbulence">0%</output>
+                </span>
+                <input id="desktopNoiseTurbulence" type="range" min="0" max="100" step="1" value="0" />
+              </label>
+
+              <label class="control" for="desktopNoiseChannels">
+                <span>Canali</span>
+                <select id="desktopNoiseChannels">
+                  <option value="single" selected>Single</option>
+                  <option value="multi">Multi</option>
+                </select>
+              </label>
+
+              <label class="check-control noise-option-control">
+                <input id="desktopNoiseAdditive" type="checkbox" checked />
+                <span>Additive</span>
+              </label>
+
+              <p
+                id="desktopNoiseStatus"
+                class="visually-hidden"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >Noise pronto.</p>
+
+              <div class="noise-inline-actions">
+                <button id="desktopNoiseCancel" type="button">Annulla</button>
+                <button id="desktopNoiseApply" class="primary" type="button">Applica</button>
               </div>
             </div>
           </div>

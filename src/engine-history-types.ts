@@ -24,6 +24,7 @@ import type { RasterStrokeStyle } from "./stroke-core";
 import type { RasterBevelStyle } from "./bevel-core";
 import type { RasterInnerShadowStyle, RasterOuterShadowStyle } from "./shadow-core";
 import type { RasterColorOverlayStyle } from "./raster-color-overlay-core";
+import type { RasterNoiseChannels, RasterNoiseStyle } from "./noise-core";
 
 export interface SelectionHistoryMaskSnapshot {
   readonly revision: number;
@@ -257,8 +258,6 @@ export type RasterTransformHistoryAction = RasterTransformHistoryActionMetadata 
 interface RasterFilterHistoryActionCommon extends RasterHistoryCheckpoint {
   id: number;
   kind: "raster-filter";
-  precision: "rgba16float-f32-accumulation";
-  edgeMode: "transparent-black";
   seed: LayerColdStorageResources;
   baseBounds: DirtyRect;
 }
@@ -269,6 +268,8 @@ export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (
     radius: number;
     sigma: number;
     supportRadius: number;
+    precision: "rgba16float-f32-accumulation";
+    edgeMode: "transparent-black";
   }
   | {
     filter: "motion-blur";
@@ -278,6 +279,26 @@ export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (
     passCount: number;
     supportX: number;
     supportY: number;
+    precision: "rgba16float-f32-accumulation";
+    edgeMode: "transparent-black";
+  }
+  | {
+    filter: "noise";
+    amountPercent: number;
+    scalePercent: number;
+    octavesPercent: number;
+    turbulencePercent: number;
+    style: RasterNoiseStyle;
+    channels: RasterNoiseChannels;
+    additive: boolean;
+    randomSeedLow: number;
+    randomSeedHigh: number;
+    algorithm: "gradient-fbm-domain-warp-v1";
+    algorithmVersion: 1;
+    precision: "rgba16float-storage-f32-procedural";
+    colorSpace: "linear-premultiplied";
+    alphaMode: "preserve";
+    boundsMode: "preserve";
   }
 );
 

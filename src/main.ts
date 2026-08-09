@@ -24,6 +24,7 @@ import { AuthoritativeBrushStrokePreviewRenderer } from "./brush-stroke-preview-
 import { MobileStrokeSheetController } from "./mobile-stroke-sheet";
 import { MobileGaussianBlurSheetController } from "./mobile-gaussian-blur-sheet";
 import { MobileMotionBlurSheetController } from "./mobile-motion-blur-sheet";
+import { MobileNoiseSheetController } from "./mobile-noise-sheet";
 import {
   MobileToolSettingsSheetController,
   type MobileTextWarpMode,
@@ -90,6 +91,7 @@ import {
   Shapes,
   SlidersHorizontal,
   SprayCan,
+  Sparkles,
   Spline,
   SquareDashed,
   SquareStack,
@@ -148,6 +150,16 @@ import {
   DESTRUCTIVE_MOTION_BLUR_MAX_DISTANCE,
   DESTRUCTIVE_MOTION_BLUR_MIN_ANGLE,
 } from "./motion-blur-core";
+import {
+  DEFAULT_RASTER_NOISE_SETTINGS,
+  DESTRUCTIVE_RASTER_NOISE_AMOUNT_STEP,
+  DESTRUCTIVE_RASTER_NOISE_MAX_AMOUNT_PERCENT,
+  rasterNoiseOctaveCount,
+  rasterNoisePeriodPixels,
+  type RasterNoiseChannels,
+  type RasterNoiseSettings,
+  type RasterNoiseStyle,
+} from "./noise-core";
 import { layerBaseMemoryMiB } from "./engine-memory-model";
 import { GPU_MEMORY_AUDIT_TOLERANCE_BYTES } from "./gpu-memory-audit";
 import { GPU_MEMORY_CATEGORY_ORDER } from "./gpu-resource-registry";
@@ -235,6 +247,7 @@ createIcons({
     Shapes,
     SlidersHorizontal,
     SprayCan,
+    Sparkles,
     Spline,
     SquareDashed,
     SquareStack,
@@ -557,6 +570,67 @@ const rasterMotionBlurApplyButtons = [
   desktopMotionBlurApplyButton,
   mobileMotionBlurApplyButton,
 ] as const;
+const rasterNoiseSection = element<HTMLElement>("rasterNoiseSection");
+const desktopNoiseOpenInput = element<HTMLInputElement>("desktopNoiseOpen");
+const desktopNoiseParameters = element<HTMLElement>("desktopNoiseParameters");
+const desktopNoiseAmountInput = element<HTMLInputElement>("desktopNoiseAmount");
+const desktopNoiseAmountOutput = element<HTMLOutputElement>("desktopNoiseAmountOut");
+const desktopNoiseStyleSelect = element<HTMLSelectElement>("desktopNoiseStyle");
+const desktopNoiseScaleInput = element<HTMLInputElement>("desktopNoiseScale");
+const desktopNoiseScaleOutput = element<HTMLOutputElement>("desktopNoiseScaleOut");
+const desktopNoiseOctavesInput = element<HTMLInputElement>("desktopNoiseOctaves");
+const desktopNoiseOctavesOutput = element<HTMLOutputElement>("desktopNoiseOctavesOut");
+const desktopNoiseTurbulenceInput = element<HTMLInputElement>("desktopNoiseTurbulence");
+const desktopNoiseTurbulenceOutput = element<HTMLOutputElement>(
+  "desktopNoiseTurbulenceOut",
+);
+const desktopNoiseChannelsSelect = element<HTMLSelectElement>("desktopNoiseChannels");
+const desktopNoiseAdditiveInput = element<HTMLInputElement>("desktopNoiseAdditive");
+const desktopNoiseStatus = element<HTMLParagraphElement>("desktopNoiseStatus");
+const desktopNoiseCancelButton = element<HTMLButtonElement>("desktopNoiseCancel");
+const desktopNoiseApplyButton = element<HTMLButtonElement>("desktopNoiseApply");
+const mobileNoiseOpenButton = element<HTMLButtonElement>("mobileNoiseOpen");
+const mobileNoiseSheetElement = element<HTMLElement>("mobileNoiseSheet");
+const mobileNoiseAmountInput = element<HTMLInputElement>("mobileNoiseAmount");
+const mobileNoiseAmountOutput = element<HTMLOutputElement>("mobileNoiseAmountOut");
+const mobileNoiseStyleSelect = element<HTMLSelectElement>("mobileNoiseStyle");
+const mobileNoiseScaleInput = element<HTMLInputElement>("mobileNoiseScale");
+const mobileNoiseScaleOutput = element<HTMLOutputElement>("mobileNoiseScaleOut");
+const mobileNoiseOctavesInput = element<HTMLInputElement>("mobileNoiseOctaves");
+const mobileNoiseOctavesOutput = element<HTMLOutputElement>("mobileNoiseOctavesOut");
+const mobileNoiseTurbulenceInput = element<HTMLInputElement>("mobileNoiseTurbulence");
+const mobileNoiseTurbulenceOutput = element<HTMLOutputElement>("mobileNoiseTurbulenceOut");
+const mobileNoiseChannelsSelect = element<HTMLSelectElement>("mobileNoiseChannels");
+const mobileNoiseAdditiveInput = element<HTMLInputElement>("mobileNoiseAdditive");
+const mobileNoiseStatus = element<HTMLParagraphElement>("mobileNoiseStatus");
+const mobileNoiseCancelButton = element<HTMLButtonElement>("mobileNoiseCancel");
+const mobileNoiseApplyButton = element<HTMLButtonElement>("mobileNoiseApply");
+const rasterNoiseAmountInputs = [desktopNoiseAmountInput, mobileNoiseAmountInput] as const;
+const rasterNoiseAmountOutputs = [desktopNoiseAmountOutput, mobileNoiseAmountOutput] as const;
+const rasterNoiseStyleSelects = [desktopNoiseStyleSelect, mobileNoiseStyleSelect] as const;
+const rasterNoiseScaleInputs = [desktopNoiseScaleInput, mobileNoiseScaleInput] as const;
+const rasterNoiseScaleOutputs = [desktopNoiseScaleOutput, mobileNoiseScaleOutput] as const;
+const rasterNoiseOctavesInputs = [desktopNoiseOctavesInput, mobileNoiseOctavesInput] as const;
+const rasterNoiseOctavesOutputs = [
+  desktopNoiseOctavesOutput,
+  mobileNoiseOctavesOutput,
+] as const;
+const rasterNoiseTurbulenceInputs = [
+  desktopNoiseTurbulenceInput,
+  mobileNoiseTurbulenceInput,
+] as const;
+const rasterNoiseTurbulenceOutputs = [
+  desktopNoiseTurbulenceOutput,
+  mobileNoiseTurbulenceOutput,
+] as const;
+const rasterNoiseChannelsSelects = [
+  desktopNoiseChannelsSelect,
+  mobileNoiseChannelsSelect,
+] as const;
+const rasterNoiseAdditiveInputs = [desktopNoiseAdditiveInput, mobileNoiseAdditiveInput] as const;
+const rasterNoiseStatuses = [desktopNoiseStatus, mobileNoiseStatus] as const;
+const rasterNoiseCancelButtons = [desktopNoiseCancelButton, mobileNoiseCancelButton] as const;
+const rasterNoiseApplyButtons = [desktopNoiseApplyButton, mobileNoiseApplyButton] as const;
 const mobileToolSettingsButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>("[data-mobile-tool-sheet]"),
 );
@@ -590,6 +664,22 @@ for (const input of rasterMotionBlurAngleInputs) {
 for (const output of rasterMotionBlurAngleOutputs) {
   output.value = `${DESTRUCTIVE_MOTION_BLUR_DEFAULT_ANGLE}°`;
 }
+for (const input of rasterNoiseAmountInputs) {
+  input.min = "0";
+  input.max = String(DESTRUCTIVE_RASTER_NOISE_MAX_AMOUNT_PERCENT);
+  input.step = String(DESTRUCTIVE_RASTER_NOISE_AMOUNT_STEP);
+  input.value = String(DEFAULT_RASTER_NOISE_SETTINGS.amountPercent);
+}
+for (const input of [
+  ...rasterNoiseScaleInputs,
+  ...rasterNoiseOctavesInputs,
+  ...rasterNoiseTurbulenceInputs,
+]) {
+  input.min = "0";
+  input.max = "100";
+  input.step = "1";
+}
+syncRasterNoiseSettings(DEFAULT_RASTER_NOISE_SETTINGS);
 let previousMobileTouchEndTime = Number.NEGATIVE_INFINITY;
 let previousMobileTouchEndX = Number.NEGATIVE_INFINITY;
 let previousMobileTouchEndY = Number.NEGATIVE_INFINITY;
@@ -1168,6 +1258,7 @@ let mobileRasterEffectsSheet: MobileRasterEffectsSheetController | null = null;
 let mobileToolSettingsSheet: MobileToolSettingsSheetController | null = null;
 let mobileGaussianBlurSheet: MobileGaussianBlurSheetController | null = null;
 let mobileMotionBlurSheet: MobileMotionBlurSheetController | null = null;
+let mobileNoiseSheet: MobileNoiseSheetController | null = null;
 type RasterGaussianBlurSurface = "desktop" | "mobile";
 let rasterGaussianBlurUiBusy = false;
 let rasterGaussianBlurSessionOpen = false;
@@ -1182,6 +1273,13 @@ let rasterMotionBlurPreviewFault = false;
 let rasterMotionBlurCancelPending = false;
 let rasterMotionBlurSurface: RasterMotionBlurSurface | null = null;
 let rasterMotionBlurReturnFocus: HTMLElement | null = null;
+type RasterNoiseSurface = "desktop" | "mobile";
+let rasterNoiseUiBusy = false;
+let rasterNoiseSessionOpen = false;
+let rasterNoisePreviewFault = false;
+let rasterNoiseCancelPending = false;
+let rasterNoiseSurface: RasterNoiseSurface | null = null;
+let rasterNoiseReturnFocus: HTMLElement | null = null;
 const engine = new BrushEngine(canvas, {
   onStatus(message, kind) {
     statusElement.textContent = message;
@@ -1195,6 +1293,11 @@ const engine = new BrushEngine(canvas, {
       setRasterMotionBlurStatus(message);
       if (kind === "error") rasterMotionBlurPreviewFault = true;
       syncRasterMotionBlurUi();
+    }
+    if (rasterNoiseSessionOpen && message.includes("Noise")) {
+      setRasterNoiseStatus(message);
+      if (kind === "error") rasterNoisePreviewFault = true;
+      syncRasterNoiseUi();
     }
   },
   onStats(stats) {
@@ -1881,6 +1984,7 @@ function syncMobileBrushControlsVisibility(): void {
     || mobileRasterEffectsSheet?.isOpen === true
     || mobileGaussianBlurSheet?.isOpen === true
     || mobileMotionBlurSheet?.isOpen === true
+    || mobileNoiseSheet?.isOpen === true
     || mobileToolSettingsSheet?.isOpen === true
     || mobileBrushStudio?.isOpen === true;
   if (suppressed && mobileBrushControlDrag) {
@@ -2615,11 +2719,13 @@ function syncMobileToolsMenuState(): void {
   }
   syncRasterGaussianBlurUi();
   syncRasterMotionBlurUi();
+  syncRasterNoiseUi();
 }
 
 function rasterGaussianBlurEligibilityError(): string | null {
   if (!engineInitialized) return "Gaussian Blur sarà disponibile dopo l’inizializzazione.";
   if (rasterMotionBlurSurface !== null) return "Applica o annulla Motion Blur prima.";
+  if (rasterNoiseSurface !== null) return "Applica o annulla Noise prima.";
   if (engine.getPixelSelectionState().selectedPixels > 0) {
     return "Deseleziona i pixel per sfocare l’intero livello.";
   }
@@ -2696,6 +2802,7 @@ function syncRasterGaussianBlurUi(): void {
 function rasterMotionBlurEligibilityError(): string | null {
   if (!engineInitialized) return "Motion Blur sarà disponibile dopo l’inizializzazione.";
   if (rasterGaussianBlurSurface !== null) return "Applica o annulla Gaussian Blur prima.";
+  if (rasterNoiseSurface !== null) return "Applica o annulla Noise prima.";
   if (engine.getPixelSelectionState().selectedPixels > 0) {
     return "Deseleziona i pixel per sfocare l’intero livello.";
   }
@@ -2770,6 +2877,143 @@ function syncRasterMotionBlurUi(): void {
     "aria-busy",
     String(rasterMotionBlurUiBusy),
   );
+}
+
+function rasterNoiseEligibilityError(): string | null {
+  if (!engineInitialized) return "Noise sarà disponibile dopo l'inizializzazione.";
+  if (rasterGaussianBlurSurface !== null) return "Applica o annulla Gaussian Blur prima.";
+  if (rasterMotionBlurSurface !== null) return "Applica o annulla Motion Blur prima.";
+  if (engine.getPixelSelectionState().selectedPixels > 0) {
+    return "Deseleziona i pixel per applicare Noise all'intero livello.";
+  }
+  const stats = engine.getStats();
+  const active = stats.layers.find((layer) => layer.id === stats.activeLayerId);
+  if (!active?.hasContent) return "Il livello raster selezionato è vuoto.";
+  const scene = stats.mixedScene;
+  if (scene) {
+    const selected = scene.items.find((item) => item.key === scene.selectedKey);
+    if (selected?.kind !== "raster" || selected.rasterLayerId !== stats.activeLayerId) {
+      return "Seleziona un livello raster per usare Noise.";
+    }
+  }
+  if (layerSwitching || interactionLocked()) {
+    return "Termina l'operazione corrente prima di aprire Noise.";
+  }
+  return null;
+}
+
+function rasterNoiseSettingsFromSurface(
+  surface: RasterNoiseSurface,
+): RasterNoiseSettings {
+  const amount = surface === "mobile" ? mobileNoiseAmountInput : desktopNoiseAmountInput;
+  const scale = surface === "mobile" ? mobileNoiseScaleInput : desktopNoiseScaleInput;
+  const octaves = surface === "mobile" ? mobileNoiseOctavesInput : desktopNoiseOctavesInput;
+  const turbulence = surface === "mobile"
+    ? mobileNoiseTurbulenceInput
+    : desktopNoiseTurbulenceInput;
+  const style = surface === "mobile" ? mobileNoiseStyleSelect : desktopNoiseStyleSelect;
+  const channels = surface === "mobile"
+    ? mobileNoiseChannelsSelect
+    : desktopNoiseChannelsSelect;
+  const additive = surface === "mobile" ? mobileNoiseAdditiveInput : desktopNoiseAdditiveInput;
+  return {
+    amountPercent: Number(amount.value),
+    scalePercent: Number(scale.value),
+    octavesPercent: Number(octaves.value),
+    turbulencePercent: Number(turbulence.value),
+    style: style.value as RasterNoiseStyle,
+    channels: channels.value as RasterNoiseChannels,
+    additive: additive.checked,
+  };
+}
+
+function formatNoisePeriod(period: number): string {
+  if (period >= 100) return period.toFixed(0);
+  if (period >= 10) return period.toFixed(1).replace(/\.0$/, "");
+  return period.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+}
+
+function syncRasterNoiseSettings(settings: Readonly<RasterNoiseSettings>): void {
+  const amount = Math.round(settings.amountPercent);
+  const amountLabel = amount > 100 ? `${amount}% · Extended` : `${amount}%`;
+  for (const input of rasterNoiseAmountInputs) {
+    input.value = String(settings.amountPercent);
+    input.setAttribute("aria-valuetext", amountLabel);
+  }
+  for (const output of rasterNoiseAmountOutputs) output.value = amountLabel;
+  for (const select of rasterNoiseStyleSelects) select.value = settings.style;
+  for (const input of rasterNoiseScaleInputs) input.value = String(settings.scalePercent);
+  const period = rasterNoisePeriodPixels(settings.scalePercent);
+  const scaleLabel = `${Math.round(settings.scalePercent)}% · ${formatNoisePeriod(period)} px`;
+  for (const output of rasterNoiseScaleOutputs) output.value = scaleLabel;
+  for (const input of rasterNoiseOctavesInputs) input.value = String(settings.octavesPercent);
+  const octaveLabel = rasterNoiseOctaveCount(settings.octavesPercent).toFixed(1);
+  for (const output of rasterNoiseOctavesOutputs) output.value = octaveLabel;
+  for (const input of rasterNoiseTurbulenceInputs) {
+    input.value = String(settings.turbulencePercent);
+  }
+  for (const output of rasterNoiseTurbulenceOutputs) {
+    output.value = `${Math.round(settings.turbulencePercent)}%`;
+  }
+  for (const select of rasterNoiseChannelsSelects) select.value = settings.channels;
+  for (const input of rasterNoiseAdditiveInputs) input.checked = settings.additive;
+}
+
+function syncRasterNoiseUi(): void {
+  const workbenchOpen = rasterNoiseSurface !== null;
+  const eligibilityError = workbenchOpen || rasterNoiseSessionOpen || rasterNoiseUiBusy
+    ? "Noise è già aperto."
+    : rasterNoiseEligibilityError();
+  const triggerDisabled = eligibilityError !== null;
+  const recoveryOnly = rasterNoisePreviewFault || historyState.inconsistent;
+  const controlsDisabled = rasterNoiseUiBusy || !rasterNoiseSessionOpen || recoveryOnly;
+
+  desktopNoiseOpenInput.checked = rasterNoiseSurface === "desktop";
+  desktopNoiseOpenInput.disabled = rasterNoiseSurface === "desktop"
+    ? rasterNoiseUiBusy
+    : triggerDisabled;
+  desktopNoiseOpenInput.title = rasterNoiseSurface === "desktop"
+    ? "Disattiva per annullare Noise"
+    : eligibilityError ?? "Apri Noise";
+  desktopNoiseOpenInput.setAttribute(
+    "aria-expanded",
+    String(rasterNoiseSurface === "desktop"),
+  );
+  desktopNoiseParameters.hidden = rasterNoiseSurface !== "desktop";
+
+  mobileNoiseOpenButton.disabled = triggerDisabled;
+  mobileNoiseOpenButton.title = eligibilityError ?? "Apri Noise";
+  mobileNoiseOpenButton.setAttribute(
+    "aria-pressed",
+    String(rasterNoiseSurface === "mobile"),
+  );
+
+  for (const control of [
+    ...rasterNoiseAmountInputs,
+    ...rasterNoiseStyleSelects,
+    ...rasterNoiseScaleInputs,
+    ...rasterNoiseOctavesInputs,
+    ...rasterNoiseTurbulenceInputs,
+    ...rasterNoiseChannelsSelects,
+    ...rasterNoiseAdditiveInputs,
+  ]) {
+    control.disabled = controlsDisabled;
+  }
+  for (const button of rasterNoiseApplyButtons) button.disabled = controlsDisabled;
+  const cancelDisabled = rasterNoiseUiBusy || !rasterNoiseSessionOpen;
+  for (const button of rasterNoiseCancelButtons) button.disabled = cancelDisabled;
+
+  const state = rasterNoiseUiBusy
+    ? "busy"
+    : recoveryOnly
+      ? "recovery"
+      : rasterNoiseSessionOpen
+        ? "preview"
+        : "closed";
+  rasterNoiseSection.dataset.state = state;
+  rasterNoiseSection.setAttribute("aria-busy", String(rasterNoiseUiBusy));
+  mobileNoiseSheetElement.dataset.state = state;
+  mobileNoiseSheetElement.setAttribute("aria-busy", String(rasterNoiseUiBusy));
 }
 
 function setMobileToolsSheetOffset(offsetPx: number, allowClose = false): void {
@@ -4925,6 +5169,27 @@ mobileMotionBlurSheet = new MobileMotionBlurSheetController({
   },
 });
 
+mobileNoiseSheet = new MobileNoiseSheetController({
+  mobileMediaQuery: mobileUiMediaQuery,
+  beforeOpen: () => {
+    setMobileToolsSheetOpen(false);
+    setMobileLayersPanelOpen(false);
+    setMobileBrushLibraryOpen(false);
+    mobileBrushStudio?.cancel(false);
+    mobileStrokeSheet?.close(false);
+    mobileRasterEffectsSheet?.close(false);
+    mobileToolSettingsSheet?.close(false);
+    setControlsPanelOpen(false);
+  },
+  onRequestCancel: () => {
+    void cancelRasterNoiseFromUi();
+  },
+  onOpenChange: () => {
+    syncMobileToolsMenuState();
+    syncMobileBrushControlsVisibility();
+  },
+});
+
 mobileToolSettingsSheet = new MobileToolSettingsSheetController({
   mobileMediaQuery: mobileUiMediaQuery,
   selectCanvasTool: selectMobileCanvasTool,
@@ -5306,6 +5571,7 @@ function nonHistoryOperationLocked(allowDestructiveBlurEdit = false): boolean {
     || historyState.openEdit === "transform"
     || (!allowDestructiveBlurEdit && historyState.openEdit === "gaussian-blur")
     || (!allowDestructiveBlurEdit && historyState.openEdit === "motion-blur")
+    || (!allowDestructiveBlurEdit && historyState.openEdit === "noise")
     || historyState.openEdit === "raster-property"
     || benchmarkRunning
     || rasterShadowGoldenRunning
@@ -5337,7 +5603,7 @@ function interactionLocked(): boolean {
 
 /**
  * Pan, zoom e rotazione non modificano i pixel e restano disponibili mentre
- * un Blur mostra la sua anteprima distruttiva. Il normale lock del
+ * un filtro mostra la sua anteprima distruttiva. Il normale lock del
  * documento continua invece a proteggere pennello, livelli e cronologia.
  */
 function canvasViewOperationLocked(): boolean {
@@ -5349,6 +5615,10 @@ function canvasViewOperationLocked(): boolean {
     rasterMotionBlurSessionOpen
       && historyState.openEdit === "motion-blur"
       && !rasterMotionBlurUiBusy
+  ) || (
+    rasterNoiseSessionOpen
+      && historyState.openEdit === "noise"
+      && !rasterNoiseUiBusy
   );
   return operationLocked(allowDestructiveBlurEdit && !historyState.inconsistent);
 }
@@ -5444,6 +5714,8 @@ function updateHistoryControls(): void {
     || rasterGaussianBlurUiBusy
     || rasterMotionBlurSessionOpen
     || rasterMotionBlurUiBusy
+    || rasterNoiseSessionOpen
+    || rasterNoiseUiBusy
     || renderingModeSuiteRunning
     || humanStrokeReplaying;
   for (const id of brushControlIds) {
@@ -5518,6 +5790,7 @@ function closeRasterGaussianBlurWorkbench(
   if (result !== "error") resetRasterGaussianBlurControls();
   syncRasterGaussianBlurUi();
   syncRasterMotionBlurUi();
+  syncRasterNoiseUi();
 }
 
 async function openRasterGaussianBlurWorkbench(
@@ -5543,6 +5816,7 @@ async function openRasterGaussianBlurWorkbench(
   setRasterGaussianBlurStatus("Preparazione Gaussian Blur…");
   syncRasterGaussianBlurUi();
   syncRasterMotionBlurUi();
+  syncRasterNoiseUi();
 
   try {
     const radiusInput = surface === "mobile"
@@ -5686,6 +5960,7 @@ function closeRasterMotionBlurWorkbench(
   if (result !== "error") resetRasterMotionBlurControls();
   syncRasterMotionBlurUi();
   syncRasterGaussianBlurUi();
+  syncRasterNoiseUi();
 }
 
 async function openRasterMotionBlurWorkbench(
@@ -5711,6 +5986,7 @@ async function openRasterMotionBlurWorkbench(
   setRasterMotionBlurStatus("Preparazione Motion Blur…");
   syncRasterMotionBlurUi();
   syncRasterGaussianBlurUi();
+  syncRasterNoiseUi();
 
   try {
     const distanceInput = surface === "mobile"
@@ -5799,6 +6075,172 @@ async function applyRasterMotionBlurFromUi(): Promise<void> {
     if (!rasterMotionBlurSessionOpen) closeRasterMotionBlurWorkbench("error");
   } finally {
     rasterMotionBlurUiBusy = false;
+    historyState = engine.getHistoryState();
+    updateHistoryControls();
+  }
+}
+
+function setRasterNoiseStatus(message: string): void {
+  for (const status of rasterNoiseStatuses) status.textContent = message;
+}
+
+function resetRasterNoiseControls(): void {
+  syncRasterNoiseSettings(DEFAULT_RASTER_NOISE_SETTINGS);
+  setRasterNoiseStatus("Noise pronto.");
+}
+
+function reportRasterNoiseError(prefix: string, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  const fullMessage = `${prefix}: ${message}`;
+  setRasterNoiseStatus(fullMessage);
+  statusElement.textContent = fullMessage;
+  statusElement.className = "status error";
+}
+
+function closeRasterNoiseWorkbench(result: "apply" | "cancel" | "error"): void {
+  const surface = rasterNoiseSurface;
+  rasterNoiseSurface = null;
+  rasterNoiseCancelPending = false;
+  desktopNoiseOpenInput.checked = false;
+  desktopNoiseOpenInput.setAttribute("aria-expanded", "false");
+  desktopNoiseParameters.hidden = true;
+  mobileNoiseOpenButton.setAttribute("aria-pressed", "false");
+  if (surface === "mobile") mobileNoiseSheet?.close(false);
+  const returnFocus = rasterNoiseReturnFocus;
+  rasterNoiseReturnFocus = null;
+  if (returnFocus?.isConnected) {
+    queueMicrotask(() => returnFocus.focus({ preventScroll: true }));
+  }
+  if (result !== "error") resetRasterNoiseControls();
+  syncRasterNoiseUi();
+  syncRasterGaussianBlurUi();
+  syncRasterMotionBlurUi();
+}
+
+async function openRasterNoiseWorkbench(
+  surface: RasterNoiseSurface,
+  trigger: HTMLElement,
+): Promise<void> {
+  const eligibilityError = rasterNoiseEligibilityError();
+  if (eligibilityError || rasterNoiseSurface !== null) {
+    if (eligibilityError) {
+      statusElement.textContent = eligibilityError;
+      statusElement.className = "status error";
+    }
+    return;
+  }
+  if (surface === "mobile" && !mobileNoiseSheet?.open(trigger)) return;
+
+  rasterNoiseSurface = surface;
+  rasterNoiseReturnFocus = trigger;
+  rasterNoiseSessionOpen = false;
+  rasterNoisePreviewFault = false;
+  rasterNoiseUiBusy = true;
+  const initial = rasterNoiseSettingsFromSurface(surface);
+  syncRasterNoiseSettings(initial);
+  setRasterNoiseStatus("Preparazione Noise…");
+  syncRasterNoiseUi();
+  syncRasterGaussianBlurUi();
+  syncRasterMotionBlurUi();
+
+  try {
+    const preview = await engine.beginRasterNoise(initial);
+    if (!preview) throw new Error("Seleziona un livello raster per usare Noise.");
+    rasterNoiseSessionOpen = true;
+    syncRasterNoiseSettings(preview.settings);
+    setRasterNoiseStatus(
+      `Quantità ${preview.settings.amountPercent.toFixed(0)}% · `
+      + `${preview.settings.style} · ${preview.settings.channels}.`,
+    );
+  } catch (error) {
+    historyState = engine.getHistoryState();
+    rasterNoiseSessionOpen = historyState.openEdit === "noise";
+    rasterNoisePreviewFault = rasterNoiseSessionOpen;
+    reportRasterNoiseError("Impossibile aprire Noise", error);
+    if (!rasterNoiseSessionOpen) closeRasterNoiseWorkbench("error");
+  } finally {
+    rasterNoiseUiBusy = false;
+    historyState = engine.getHistoryState();
+    updateHistoryControls();
+    if (rasterNoiseCancelPending && rasterNoiseSessionOpen) {
+      rasterNoiseCancelPending = false;
+      void cancelRasterNoiseFromUi();
+    }
+  }
+}
+
+function updateRasterNoiseFromUi(surface: RasterNoiseSurface): void {
+  if (
+    rasterNoiseUiBusy
+    || !rasterNoiseSessionOpen
+    || rasterNoisePreviewFault
+    || historyState.inconsistent
+  ) {
+    return;
+  }
+  try {
+    const preview = engine.updateRasterNoise(rasterNoiseSettingsFromSurface(surface));
+    syncRasterNoiseSettings(preview.settings);
+    setRasterNoiseStatus(`Anteprima Noise ${preview.settings.amountPercent.toFixed(0)}%…`);
+  } catch (error) {
+    rasterNoisePreviewFault = true;
+    reportRasterNoiseError("Anteprima Noise non riuscita", error);
+    syncRasterNoiseUi();
+  }
+}
+
+async function cancelRasterNoiseFromUi(): Promise<void> {
+  if (rasterNoiseUiBusy) {
+    rasterNoiseCancelPending = true;
+    return;
+  }
+  if (!rasterNoiseSessionOpen) return;
+  rasterNoiseCancelPending = false;
+  rasterNoiseUiBusy = true;
+  setRasterNoiseStatus("Ripristino dei pixel originali…");
+  syncRasterNoiseUi();
+  try {
+    await engine.cancelRasterNoise();
+    rasterNoiseSessionOpen = false;
+    rasterNoisePreviewFault = false;
+    closeRasterNoiseWorkbench("cancel");
+  } catch (error) {
+    historyState = engine.getHistoryState();
+    rasterNoiseSessionOpen = historyState.openEdit === "noise";
+    rasterNoisePreviewFault = true;
+    reportRasterNoiseError("Annullamento Noise non riuscito", error);
+  } finally {
+    rasterNoiseUiBusy = false;
+    historyState = engine.getHistoryState();
+    updateHistoryControls();
+  }
+}
+
+async function applyRasterNoiseFromUi(): Promise<void> {
+  if (
+    rasterNoiseUiBusy
+    || !rasterNoiseSessionOpen
+    || rasterNoisePreviewFault
+    || historyState.inconsistent
+  ) {
+    return;
+  }
+  rasterNoiseUiBusy = true;
+  setRasterNoiseStatus("Applicazione Noise…");
+  syncRasterNoiseUi();
+  try {
+    await engine.commitRasterNoise();
+    rasterNoiseSessionOpen = false;
+    rasterNoisePreviewFault = false;
+    closeRasterNoiseWorkbench("apply");
+  } catch (error) {
+    historyState = engine.getHistoryState();
+    rasterNoiseSessionOpen = historyState.openEdit === "noise";
+    rasterNoisePreviewFault = rasterNoiseSessionOpen;
+    reportRasterNoiseError("Applicazione Noise non riuscita", error);
+    if (!rasterNoiseSessionOpen) closeRasterNoiseWorkbench("error");
+  } finally {
+    rasterNoiseUiBusy = false;
     historyState = engine.getHistoryState();
     updateHistoryControls();
   }
@@ -7024,6 +7466,7 @@ window.addEventListener("resize", () => {
   const rasterEffectsSheetNeedsLayout = mobileRasterEffectsSheet?.isOpen === true;
   const gaussianBlurSheetNeedsLayout = mobileGaussianBlurSheet?.isOpen === true;
   const motionBlurSheetNeedsLayout = mobileMotionBlurSheet?.isOpen === true;
+  const noiseSheetNeedsLayout = mobileNoiseSheet?.isOpen === true;
   const toolSettingsSheetNeedsLayout = mobileToolSettingsSheet?.isOpen === true;
   if (
     !toolsNeedLayout
@@ -7033,6 +7476,7 @@ window.addEventListener("resize", () => {
     && !rasterEffectsSheetNeedsLayout
     && !gaussianBlurSheetNeedsLayout
     && !motionBlurSheetNeedsLayout
+    && !noiseSheetNeedsLayout
     && !toolSettingsSheetNeedsLayout
   ) return;
   if (mobileToolsSheetResizeFrame !== null) {
@@ -7051,6 +7495,7 @@ window.addEventListener("resize", () => {
     mobileRasterEffectsSheet?.handleResize();
     mobileGaussianBlurSheet?.handleResize();
     mobileMotionBlurSheet?.handleResize();
+    mobileNoiseSheet?.handleResize();
     mobileToolSettingsSheet?.handleResize();
   });
 });
@@ -7375,6 +7820,62 @@ document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape" || rasterMotionBlurSurface !== "desktop") return;
   event.preventDefault();
   void cancelRasterMotionBlurFromUi();
+});
+desktopNoiseOpenInput.addEventListener("change", () => {
+  if (desktopNoiseOpenInput.checked) {
+    void openRasterNoiseWorkbench("desktop", desktopNoiseOpenInput);
+  } else if (rasterNoiseSurface === "desktop") {
+    void cancelRasterNoiseFromUi();
+  } else {
+    syncRasterNoiseUi();
+  }
+});
+mobileNoiseOpenButton.addEventListener("click", () => {
+  void openRasterNoiseWorkbench("mobile", mobileNoiseOpenButton);
+});
+for (const input of [
+  ...rasterNoiseAmountInputs,
+  ...rasterNoiseScaleInputs,
+  ...rasterNoiseOctavesInputs,
+  ...rasterNoiseTurbulenceInputs,
+]) {
+  input.addEventListener("input", () => {
+    const surface: RasterNoiseSurface = input.id.startsWith("mobile") ? "mobile" : "desktop";
+    const settings = rasterNoiseSettingsFromSurface(surface);
+    syncRasterNoiseSettings(settings);
+    updateRasterNoiseFromUi(surface);
+  });
+}
+for (const select of [...rasterNoiseStyleSelects, ...rasterNoiseChannelsSelects]) {
+  select.addEventListener("change", () => {
+    const surface: RasterNoiseSurface = select.id.startsWith("mobile") ? "mobile" : "desktop";
+    const settings = rasterNoiseSettingsFromSurface(surface);
+    syncRasterNoiseSettings(settings);
+    updateRasterNoiseFromUi(surface);
+  });
+}
+for (const input of rasterNoiseAdditiveInputs) {
+  input.addEventListener("change", () => {
+    const surface: RasterNoiseSurface = input.id.startsWith("mobile") ? "mobile" : "desktop";
+    const settings = rasterNoiseSettingsFromSurface(surface);
+    syncRasterNoiseSettings(settings);
+    updateRasterNoiseFromUi(surface);
+  });
+}
+for (const button of rasterNoiseCancelButtons) {
+  button.addEventListener("click", () => {
+    void cancelRasterNoiseFromUi();
+  });
+}
+for (const button of rasterNoiseApplyButtons) {
+  button.addEventListener("click", () => {
+    void applyRasterNoiseFromUi();
+  });
+}
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || rasterNoiseSurface !== "desktop") return;
+  event.preventDefault();
+  void cancelRasterNoiseFromUi();
 });
 mobileUndoButton.addEventListener("click", () => {
   requestHistoryOperation("undo");
@@ -12496,6 +12997,7 @@ canvas.addEventListener("pointerdown", (event) => {
     && (
       (rasterGaussianBlurSessionOpen && historyState.openEdit === "gaussian-blur")
       || (rasterMotionBlurSessionOpen && historyState.openEdit === "motion-blur")
+      || (rasterNoiseSessionOpen && historyState.openEdit === "noise")
     );
   if (
     (viewNavigationRequested || blurTouchNavigationRequested)

@@ -604,12 +604,7 @@ export async function beginRasterMotionBlur(
   if (engine.activeRasterMotionBlurSession) {
     return snapshot(engine.activeRasterMotionBlurSession);
   }
-  if (engine.activeRasterGaussianBlurSession) {
-    throw new Error("Applica o annulla Gaussian Blur prima di aprire Motion Blur.");
-  }
-  if (engine.activeRasterTransformSession) {
-    throw new Error("Applica o annulla Trasforma prima di aprire Motion Blur.");
-  }
+  engine.assertDestructiveRasterEditCanOpen("motion-blur");
   const selected = engine.mixedSceneStack?.selected;
   if (selected?.kind !== "raster") return null;
   const record = engine.layerStack.active;

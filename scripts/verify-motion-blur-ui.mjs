@@ -34,16 +34,18 @@ for (const id of [
   assert.match(html, new RegExp(`id="${id}"`), `Manca #${id}.`);
 }
 
-const blurCategoryStart = html.indexOf(
-  '<h2 class="mobile-tools-category-title">Blur</h2>',
+const adjustmentsCategoryStart = html.indexOf(
+  '<h2 class="mobile-tools-category-title">Adjustments</h2>',
 );
-const blurCategoryEnd = html.indexOf("</section>", blurCategoryStart);
-const blurCategory = html.slice(blurCategoryStart, blurCategoryEnd);
-const gaussianPosition = blurCategory.indexOf('id="mobileGaussianBlurOpen"');
-const motionPosition = blurCategory.indexOf('id="mobileMotionBlurOpen"');
+const adjustmentsCategoryEnd = html.indexOf("</section>", adjustmentsCategoryStart);
+const adjustmentsCategory = html.slice(adjustmentsCategoryStart, adjustmentsCategoryEnd);
+const gaussianPosition = adjustmentsCategory.indexOf('id="mobileGaussianBlurOpen"');
+const motionPosition = adjustmentsCategory.indexOf('id="mobileMotionBlurOpen"');
+const noisePosition = adjustmentsCategory.indexOf('id="mobileNoiseOpen"');
 assert.ok(gaussianPosition >= 0 && motionPosition > gaussianPosition);
-assert.match(blurCategory, /data-lucide="wind"/);
-assert.match(blurCategory, /mobile-tools-item-label">Motion Blur</);
+assert.ok(noisePosition > motionPosition);
+assert.match(adjustmentsCategory, /data-lucide="wind"/);
+assert.match(adjustmentsCategory, /mobile-tools-item-label">Motion Blur</);
 
 for (const prefix of ["mobile", "desktop"]) {
   assert.match(
