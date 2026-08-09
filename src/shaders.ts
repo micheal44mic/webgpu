@@ -801,26 +801,65 @@ fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
 
 ${activeClippingGroupTexelShader}
 
-fn sampleActiveLayer(uv: vec2<f32>) -> vec4<f32> {
-  if (display.selectedMipLevel < 0.5) {
-    if (rasterPixelViewEnabled(1.0)) {
-      let pixel = rasterPixelViewTexel(
-        uv,
-        vec2<i32>(textureDimensions(activeLayerBase, 0))
-      );
-      let activeTexel = textureLoad(activeLayerBase, pixel, 0);
-      if (display.clippingMode < 0.5) {
-        return activeTexel;
-      }
-      return composeActiveClippingGroupTexel(activeTexel, pixel);
+fn sampleActiveLayerMipZero(uv: vec2<f32>) -> vec4<f32> {
+  let dimensions = vec2<i32>(textureDimensions(activeLayerBase, 0));
+  if (rasterPixelViewEnabled(1.0)) {
+    let pixel = rasterPixelViewTexel(uv, dimensions);
+    let activeTexel = textureLoad(activeLayerBase, pixel, 0);
+    if (display.clippingMode < 0.5) {
+      return activeTexel;
     }
+    return composeActiveClippingGroupTexel(activeTexel, pixel);
+  }
+  if (display.clippingMode < 0.5) {
     return textureSampleLevel(activeLayerBase, layerSampler, uv, 0.0);
+  }
+
+  // Mip 0 lives in a separate texture and clipping composition is nonlinear.
+  // Compose each source texel first, then reproduce bilinear filtering.
+  let texelPosition = uv * vec2<f32>(dimensions) - vec2<f32>(0.5);
+  let lower = vec2<i32>(floor(texelPosition));
+  let interpolation = fract(texelPosition);
+  let maximum = dimensions - vec2<i32>(1);
+  let p00i = clamp(lower, vec2<i32>(0), maximum);
+  let p10i = clamp(lower + vec2<i32>(1, 0), vec2<i32>(0), maximum);
+  let p01i = clamp(lower + vec2<i32>(0, 1), vec2<i32>(0), maximum);
+  let p11i = clamp(lower + vec2<i32>(1, 1), vec2<i32>(0), maximum);
+  let p00 = composeActiveClippingGroupTexel(textureLoad(activeLayerBase, p00i, 0), p00i);
+  let p10 = composeActiveClippingGroupTexel(textureLoad(activeLayerBase, p10i, 0), p10i);
+  let p01 = composeActiveClippingGroupTexel(textureLoad(activeLayerBase, p01i, 0), p01i);
+  let p11 = composeActiveClippingGroupTexel(textureLoad(activeLayerBase, p11i, 0), p11i);
+  return mix(
+    mix(p00, p10, interpolation.x),
+    mix(p01, p11, interpolation.x),
+    interpolation.y
+  );
+}
+
+fn sampleActiveLayerLogicalMip(uv: vec2<f32>, logicalMip: f32) -> vec4<f32> {
+  if (logicalMip < 0.5) {
+    return sampleActiveLayerMipZero(uv);
   }
   return textureSampleLevel(
     activeLayerPyramid,
     layerSampler,
     uv,
-    display.selectedMipLevel - 1.0
+    logicalMip - 1.0
+  );
+}
+
+fn sampleActiveLayer(uv: vec2<f32>) -> vec4<f32> {
+  let lod = max(display.selectedMipLevel, 0.0);
+  let lowerMip = floor(lod);
+  let upperMip = ceil(lod);
+  if (upperMip <= lowerMip) {
+    return sampleActiveLayerLogicalMip(uv, lowerMip);
+  }
+  let interpolation = lod - lowerMip;
+  return mix(
+    sampleActiveLayerLogicalMip(uv, lowerMip),
+    sampleActiveLayerLogicalMip(uv, upperMip),
+    interpolation
   );
 }
 
@@ -910,7 +949,7 @@ fn mergedSurfacesUseDocumentResolution() -> bool {
 }
 
 fn jointLayerFilteringCandidate() -> bool {
-  let lodZeroSmooth = display.selectedMipLevel < 0.5
+  let lodZeroSmooth = display.selectedMipLevel < 0.000001
     && !rasterPixelViewEnabled(1.0);
   let activePresent = display.activeLayerAlpha > 0.0;
   let belowPresent = display.hasMergedBelow > 0.5;
@@ -1026,12 +1065,36 @@ fn finalStackFragmentMain(
     vec2<f32>(0.0),
     vec2<f32>(1.0)
   );
-  let paint = textureSampleLevel(
-    activeLayerPyramid,
-    layerSampler,
-    uv,
-    max(display.selectedMipLevel - 1.0, 0.0)
-  );
+  let lod = max(display.selectedMipLevel, 0.0);
+  var paint: vec4<f32>;
+  if (lod < 1.0) {
+    var mipZero: vec4<f32>;
+    if (rasterPixelViewEnabled(1.0)) {
+      mipZero = compositedLayerStackTexel(
+        rasterPixelViewTexel(uv, vec2<i32>(textureDimensions(activeLayerBase, 0)))
+      );
+    } else {
+      mipZero = sampleCompositedLayerStackLinear(layerPosition);
+    }
+    if (lod <= 0.0) {
+      paint = mipZero;
+    } else {
+      let mipOne = textureSampleLevel(activeLayerPyramid, layerSampler, uv, 0.0);
+      paint = mix(mipZero, mipOne, lod);
+    }
+  } else {
+    let lowerMip = floor(lod);
+    let upperMip = ceil(lod);
+    if (upperMip <= lowerMip) {
+      paint = textureSampleLevel(activeLayerPyramid, layerSampler, uv, lowerMip - 1.0);
+    } else {
+      paint = mix(
+        textureSampleLevel(activeLayerPyramid, layerSampler, uv, lowerMip - 1.0),
+        textureSampleLevel(activeLayerPyramid, layerSampler, uv, upperMip - 1.0),
+        lod - lowerMip
+      );
+    }
+  }
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
   let backgroundSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
@@ -1061,26 +1124,12 @@ fn activeFragmentMain(
     vec2<f32>(0.0),
     vec2<f32>(1.0)
   );
-  if (display.selectedMipLevel >= 0.5 || rasterPixelViewEnabled(1.0)) {
-    let sampled = sampleActiveLayer(uv);
-    return select(
-      sampled,
-      sampled * display.activeLayerAlpha,
-      display.clippingMode < 0.5
-    );
-  }
-  let lower = vec2<i32>(floor(layerPosition));
-  let interpolation = fract(layerPosition);
-  let maximum = vec2<i32>(textureDimensions(activeLayerBase, 0)) - vec2<i32>(1);
-  let p00i = clamp(lower, vec2<i32>(0), maximum);
-  let p10i = clamp(lower + vec2<i32>(1, 0), vec2<i32>(0), maximum);
-  let p01i = clamp(lower + vec2<i32>(0, 1), vec2<i32>(0), maximum);
-  let p11i = clamp(lower + vec2<i32>(1, 1), vec2<i32>(0), maximum);
-  let p00 = composeActiveClippingGroupTexel(textureLoad(activeLayerBase, p00i, 0), p00i);
-  let p10 = composeActiveClippingGroupTexel(textureLoad(activeLayerBase, p10i, 0), p10i);
-  let p01 = composeActiveClippingGroupTexel(textureLoad(activeLayerBase, p01i, 0), p01i);
-  let p11 = composeActiveClippingGroupTexel(textureLoad(activeLayerBase, p11i, 0), p11i);
-  return mix(mix(p00, p10, interpolation.x), mix(p01, p11, interpolation.x), interpolation.y);
+  let sampled = sampleActiveLayer(uv);
+  return select(
+    sampled,
+    sampled * display.activeLayerAlpha,
+    display.clippingMode < 0.5
+  );
 }
 `;
 
@@ -1179,8 +1228,8 @@ fn sampleViewportTexture(
   return textureLoad(source, pixel, 0);
 }
 
-fn samplePermanentLayer(uv: vec2<f32>) -> vec4<f32> {
-  if (display.selectedMipLevel < 0.5) {
+fn samplePermanentLogicalMip(uv: vec2<f32>, logicalMip: f32) -> vec4<f32> {
+  if (logicalMip < 0.5) {
     if (rasterPixelViewEnabled(1.0)) {
       return textureLoad(
         activeLayerBase,
@@ -1197,7 +1246,21 @@ fn samplePermanentLayer(uv: vec2<f32>) -> vec4<f32> {
     activeLayerPyramid,
     layerSampler,
     uv,
-    display.selectedMipLevel - 1.0
+    logicalMip - 1.0
+  );
+}
+
+fn samplePermanentLayer(uv: vec2<f32>) -> vec4<f32> {
+  let lod = max(display.selectedMipLevel, 0.0);
+  let lowerMip = floor(lod);
+  let upperMip = ceil(lod);
+  if (upperMip <= lowerMip) {
+    return samplePermanentLogicalMip(uv, lowerMip);
+  }
+  return mix(
+    samplePermanentLogicalMip(uv, lowerMip),
+    samplePermanentLogicalMip(uv, upperMip),
+    lod - lowerMip
   );
 }
 
@@ -1576,9 +1639,35 @@ fn compositeLightGlazeOverPermanent(
 ) -> vec4<f32> {
   let strokePaint = resolvedStrokePaint(accumulatedStroke);
   if (lightGlaze.accumulationMode == 2u) {
-    let permanentEncoded = linearPremultipliedToEncodedSrgb(permanentPaint);
+    // Outside the physical stamp Intense must be an exact identity operation.
+    // In particular, do not round-trip signed/HDR Noise through bounded sRGB.
+    if (strokePaint.a <= 0.0) {
+      return permanentPaint;
+    }
+    let permanentAlpha = clamp(permanentPaint.a, 0.0, 1.0);
+    var boundedPermanentRgb = vec3<f32>(0.0);
+    if (permanentAlpha > 0.0) {
+      boundedPermanentRgb = clamp(
+        permanentPaint.rgb / permanentAlpha,
+        vec3<f32>(0.0),
+        vec3<f32>(1.0)
+      ) * permanentAlpha;
+    }
+    let extendedResidual = permanentPaint.rgb - boundedPermanentRgb;
+    let permanentEncoded = linearPremultipliedToEncodedSrgb(
+      vec4<f32>(boundedPermanentRgb, permanentAlpha)
+    );
     let compositedEncoded = strokePaint + permanentEncoded * (1.0 - strokePaint.a);
-    return quantizeLayer(encodedSrgbPremultipliedToLinear(compositedEncoded));
+    let boundedResult = encodedSrgbPremultipliedToLinear(compositedEncoded);
+    let extendedResult = vec4<f32>(
+      clamp(
+        boundedResult.rgb + extendedResidual * (1.0 - strokePaint.a),
+        vec3<f32>(-65504.0),
+        vec3<f32>(65504.0)
+      ),
+      boundedResult.a
+    );
+    return quantizeLayer(extendedResult);
   }
   return quantizeLayer(strokePaint + permanentPaint * (1.0 - strokePaint.a));
 }
@@ -1644,6 +1733,59 @@ fn sampleCompositedClippingGroupLinear(layerPosition: vec2<f32>) -> vec4<f32> {
   let p01 = compositedClippingGroupTexel(p01i);
   let p11 = compositedClippingGroupTexel(p11i);
   return mix(mix(p00, p10, interpolation.x), mix(p01, p11, interpolation.x), interpolation.y);
+}
+
+fn sampleCompositedActiveMipZero(
+  uv: vec2<f32>,
+  layerPosition: vec2<f32>
+) -> vec4<f32> {
+  if (display.clippingMode > 0.5) {
+    if (rasterPixelViewEnabled(1.0)) {
+      let pixel = rasterPixelViewTexel(
+        uv,
+        vec2<i32>(textureDimensions(layerTexture, 0))
+      );
+      return compositedClippingGroupTexel(pixel);
+    }
+    return sampleCompositedClippingGroupLinear(layerPosition);
+  }
+  if (rasterPixelViewEnabled(1.0)) {
+    return sampleCompositedLayerNearest(uv);
+  }
+  return sampleCompositedLayerLinear(uv);
+}
+
+fn sampleCompositedActiveLogicalMip(
+  uv: vec2<f32>,
+  layerPosition: vec2<f32>,
+  logicalMip: f32
+) -> vec4<f32> {
+  if (logicalMip < 0.5) {
+    return sampleCompositedActiveMipZero(uv, layerPosition);
+  }
+  return textureSampleLevel(
+    compositedMipTexture,
+    layerSampler,
+    uv,
+    logicalMip - 1.0
+  );
+}
+
+fn sampleCompositedActiveLayer(
+  uv: vec2<f32>,
+  layerPosition: vec2<f32>
+) -> vec4<f32> {
+  let lod = max(display.selectedMipLevel, 0.0);
+  let lowerMip = floor(lod);
+  let upperMip = ceil(lod);
+  if (upperMip <= lowerMip) {
+    return sampleCompositedActiveLogicalMip(uv, layerPosition, lowerMip);
+  }
+  return mix(
+    sampleCompositedActiveLogicalMip(uv, layerPosition, lowerMip),
+    sampleCompositedActiveLogicalMip(uv, layerPosition, upperMip),
+    lod - lowerMip
+  );
 }
 
 fn composeFinalRasterStackSamples(
@@ -1729,7 +1871,7 @@ fn finalStackSurfacesUseDocumentResolution() -> bool {
 }
 
 fn jointFinalStackFilteringCandidate() -> bool {
-  let lodZeroSmooth = display.selectedMipLevel < 0.5
+  let lodZeroSmooth = display.selectedMipLevel < 1.0
     && !rasterPixelViewEnabled(1.0);
   let activePresent = display.activeLayerAlpha > 0.0;
   let belowPresent = display.hasMergedBelow > 0.5;
@@ -1777,37 +1919,10 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   }
 
   let uv = clamp((layerPosition + vec2<f32>(0.5)) / layerSize, vec2<f32>(0.0), vec2<f32>(1.0));
-  var paint: vec4<f32>;
-  if (display.selectedMipLevel < 0.5) {
-    // Reproduce sampling of the quantized committed mip 0: compose and encode
-    // each neighboring layer texel first, then apply the sampler's bilinear mix.
-    if (rasterPixelViewEnabled(1.0)) {
-      paint = sampleCompositedLayerNearest(uv);
-    } else {
-      paint = sampleCompositedLayerLinear(uv);
-    }
-  } else {
-    // Mip 1+ of compositedMipTexture stores box-filtered final compositing.
-    // Sampling that pyramid avoids compose(filter(base), filter(stroke)),
-    // which is not equivalent to filtering the per-pixel source-over result.
-    paint = textureSampleLevel(
-      compositedMipTexture,
-      layerSampler,
-      uv,
-      display.selectedMipLevel - 1.0
-    );
-  }
-  if (display.clippingMode > 0.5 && display.selectedMipLevel < 0.5) {
-    if (rasterPixelViewEnabled(1.0)) {
-      let pixel = rasterPixelViewTexel(
-        uv,
-        vec2<i32>(textureDimensions(layerTexture, 0))
-      );
-      paint = compositedClippingGroupTexel(pixel);
-    } else {
-      paint = sampleCompositedClippingGroupLinear(layerPosition);
-    }
-  }
+  // Logical mip 0 is the exact permanent+stroke composite; mip 1+ lives in
+  // the derived texture. Mix adjacent logical levels explicitly because the
+  // shared sampler intentionally keeps nearest-mip behavior for legacy paths.
+  var paint = sampleCompositedActiveLayer(uv, layerPosition);
   paint = composeLayerStack(paint, layerPosition, fragmentPosition.xy);
 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
@@ -1865,31 +1980,46 @@ fn finalStackFragmentMain(
     return vec4<f32>(vec3<f32>(0.055), 1.0);
   }
 
+  let lod = max(display.selectedMipLevel, 0.0);
   var paint: vec4<f32>;
-  if (display.selectedMipLevel >= 0.5) {
-    paint = textureSampleLevel(
-      compositedMipTexture,
-      layerSampler,
-      uv,
-      display.selectedMipLevel - 1.0
-    );
-  } else if (rasterPixelViewEnabled(1.0)) {
-    paint = compositedFinalRasterStackTexel(
-      rasterPixelViewTexel(uv, vec2<i32>(textureDimensions(layerTexture, 0)))
-    );
-  } else {
-    if (!jointFilteringCandidate) {
-      activePaint = sampleCompositedLayerLinear(uv);
-      if (display.hasMergedBelow > 0.5) {
-        belowPaint = sampleMergedBelow(layerPosition);
+  if (lod < 1.0) {
+    var mipZero: vec4<f32>;
+    if (rasterPixelViewEnabled(1.0)) {
+      mipZero = compositedFinalRasterStackTexel(
+        rasterPixelViewTexel(uv, vec2<i32>(textureDimensions(layerTexture, 0)))
+      );
+    } else {
+      if (!jointFilteringCandidate) {
+        activePaint = sampleCompositedLayerLinear(uv);
+        if (display.hasMergedBelow > 0.5) {
+          belowPaint = sampleMergedBelow(layerPosition);
+        }
+        if (display.hasMergedAbove > 0.5) {
+          abovePaint = sampleMergedAbove(layerPosition);
+        }
       }
-      if (display.hasMergedAbove > 0.5) {
-        abovePaint = sampleMergedAbove(layerPosition);
+      mipZero = composeFinalRasterStackSamples(activePaint, belowPaint, abovePaint);
+      if (needsJointFinalStackFiltering(stackAlphaGradient)) {
+        mipZero = sampleCompositedFinalRasterStackLinear(layerPosition);
       }
     }
-    paint = composeFinalRasterStackSamples(activePaint, belowPaint, abovePaint);
-    if (needsJointFinalStackFiltering(stackAlphaGradient)) {
-      paint = sampleCompositedFinalRasterStackLinear(layerPosition);
+    if (lod <= 0.0) {
+      paint = mipZero;
+    } else {
+      let mipOne = textureSampleLevel(compositedMipTexture, layerSampler, uv, 0.0);
+      paint = mix(mipZero, mipOne, lod);
+    }
+  } else {
+    let lowerMip = floor(lod);
+    let upperMip = ceil(lod);
+    if (upperMip <= lowerMip) {
+      paint = textureSampleLevel(compositedMipTexture, layerSampler, uv, lowerMip - 1.0);
+    } else {
+      paint = mix(
+        textureSampleLevel(compositedMipTexture, layerSampler, uv, lowerMip - 1.0),
+        textureSampleLevel(compositedMipTexture, layerSampler, uv, upperMip - 1.0),
+        lod - lowerMip
+      );
     }
   }
 
@@ -1923,31 +2053,7 @@ fn activeFragmentMain(
     vec2<f32>(0.0),
     vec2<f32>(1.0)
   );
-  var paint: vec4<f32>;
-  if (display.selectedMipLevel < 0.5) {
-    if (rasterPixelViewEnabled(1.0)) {
-      paint = sampleCompositedLayerNearest(uv);
-    } else {
-      paint = sampleCompositedLayerLinear(uv);
-    }
-  } else {
-    paint = textureSampleLevel(
-      compositedMipTexture,
-      layerSampler,
-      uv,
-      display.selectedMipLevel - 1.0
-    );
-  }
-  if (display.clippingMode > 0.5 && display.selectedMipLevel < 0.5) {
-    if (rasterPixelViewEnabled(1.0)) {
-      let pixel = rasterPixelViewTexel(
-        uv,
-        vec2<i32>(textureDimensions(layerTexture, 0))
-      );
-      return compositedClippingGroupTexel(pixel);
-    }
-    return sampleCompositedClippingGroupLinear(layerPosition);
-  }
+  let paint = sampleCompositedActiveLayer(uv, layerPosition);
   return select(
     paint,
     paint * display.activeLayerAlpha,
@@ -2106,9 +2212,35 @@ fn compositeLightGlazeOverPermanent(
 ) -> vec4<f32> {
   let strokePaint = resolvedStrokePaint(accumulatedStroke);
   if (lightGlaze.accumulationMode == 2u) {
-    let permanentEncoded = linearPremultipliedToEncodedSrgb(permanentPaint);
+    // Outside the physical stamp Intense must be an exact identity operation.
+    // In particular, do not round-trip signed/HDR Noise through bounded sRGB.
+    if (strokePaint.a <= 0.0) {
+      return permanentPaint;
+    }
+    let permanentAlpha = clamp(permanentPaint.a, 0.0, 1.0);
+    var boundedPermanentRgb = vec3<f32>(0.0);
+    if (permanentAlpha > 0.0) {
+      boundedPermanentRgb = clamp(
+        permanentPaint.rgb / permanentAlpha,
+        vec3<f32>(0.0),
+        vec3<f32>(1.0)
+      ) * permanentAlpha;
+    }
+    let extendedResidual = permanentPaint.rgb - boundedPermanentRgb;
+    let permanentEncoded = linearPremultipliedToEncodedSrgb(
+      vec4<f32>(boundedPermanentRgb, permanentAlpha)
+    );
     let compositedEncoded = strokePaint + permanentEncoded * (1.0 - strokePaint.a);
-    return quantizeLayer(encodedSrgbPremultipliedToLinear(compositedEncoded));
+    let boundedResult = encodedSrgbPremultipliedToLinear(compositedEncoded);
+    let extendedResult = vec4<f32>(
+      clamp(
+        boundedResult.rgb + extendedResidual * (1.0 - strokePaint.a),
+        vec3<f32>(-65504.0),
+        vec3<f32>(65504.0)
+      ),
+      boundedResult.a
+    );
+    return quantizeLayer(extendedResult);
   }
   return quantizeLayer(strokePaint + permanentPaint * (1.0 - strokePaint.a));
 }
@@ -2274,9 +2406,35 @@ fn compositeLightGlazeOverPermanent(
 ) -> vec4<f32> {
   let strokePaint = resolvedStrokePaint(accumulatedStroke);
   if (lightGlaze.accumulationMode == 2u) {
-    let permanentEncoded = linearPremultipliedToEncodedSrgb(permanentPaint);
+    // Outside the physical stamp Intense must be an exact identity operation.
+    // In particular, do not round-trip signed/HDR Noise through bounded sRGB.
+    if (strokePaint.a <= 0.0) {
+      return permanentPaint;
+    }
+    let permanentAlpha = clamp(permanentPaint.a, 0.0, 1.0);
+    var boundedPermanentRgb = vec3<f32>(0.0);
+    if (permanentAlpha > 0.0) {
+      boundedPermanentRgb = clamp(
+        permanentPaint.rgb / permanentAlpha,
+        vec3<f32>(0.0),
+        vec3<f32>(1.0)
+      ) * permanentAlpha;
+    }
+    let extendedResidual = permanentPaint.rgb - boundedPermanentRgb;
+    let permanentEncoded = linearPremultipliedToEncodedSrgb(
+      vec4<f32>(boundedPermanentRgb, permanentAlpha)
+    );
     let compositedEncoded = strokePaint + permanentEncoded * (1.0 - strokePaint.a);
-    return quantizeLayer(encodedSrgbPremultipliedToLinear(compositedEncoded));
+    let boundedResult = encodedSrgbPremultipliedToLinear(compositedEncoded);
+    let extendedResult = vec4<f32>(
+      clamp(
+        boundedResult.rgb + extendedResidual * (1.0 - strokePaint.a),
+        vec3<f32>(-65504.0),
+        vec3<f32>(65504.0)
+      ),
+      boundedResult.a
+    );
+    return quantizeLayer(extendedResult);
   }
   return quantizeLayer(strokePaint + permanentPaint * (1.0 - strokePaint.a));
 }

@@ -94,6 +94,7 @@ import {
 } from "./history-maintenance-runtime";
 import { processHistoryMaintenanceChunks } from "./history-retention-core";
 import { planRasterHistoryReplay } from "./history-replay-plan";
+import { noiseMipSmoothingAfterHistory } from "./noise-mip-smoothing-core";
 
 export function captureRasterLayerMetadataHistoryState(
   engine: BrushEngine,
@@ -724,6 +725,15 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
 
 export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promise<void> {
   const layerId = engine.layerStack.active.id;
+  // Set presentation policy before the first replay submission. Otherwise an
+  // Undo across Noise could publish its final frame with the stale post-Noise
+  // LOD policy and leave that cache visible until the next view interaction.
+  const replayNoiseMipSmoothing = noiseMipSmoothingAfterHistory(
+    engine.historyActions,
+    engine.historyCursor,
+    layerId,
+  );
+  engine.layerStack.active.noiseMipSmoothing = replayNoiseMipSmoothing;
   const periodicSelection = periodicCheckpointChainForReplay(engine, layerId);
   const replayPlan = planRasterHistoryReplay({
     actions: engine.historyActions,
@@ -980,6 +990,10 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
   engine.layerHasContent = Boolean(replaySeedBounds) || lastVisibleBatchIndex >= 0;
   record.contentBounds = engine.layerContentBounds;
   record.hasContent = engine.layerHasContent;
+  // Checkpoint replay starts with an internal clear, which correctly resets
+  // live metadata but must not erase the policy reconstructed for the final
+  // historical raster lineage.
+  record.noiseMipSmoothing = replayNoiseMipSmoothing;
   await engine.waitForGpuCapped("Completamento replay Undo/Redo", 60_000);
   if (hasReplaySeed) {
     await restoreEffectsWorkbenchToActiveLayer(engine, "history-replay", true);

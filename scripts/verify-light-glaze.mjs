@@ -213,7 +213,7 @@ assert.match(
 );
 assert.match(
   submit,
-  /const requestFinalRasterStackMip = displaySelectedMipLevel > 0[\s\S]*requestFinalRasterStackMip \? "final-raster-stack" : "active-only"[\s\S]*this\.paintDisplayPyramidContent === "final-raster-stack"/,
+  /const requestFinalRasterStackMip = displayRequiredMipLevel > 0[\s\S]*requestFinalRasterStackMip \? "final-raster-stack" : "active-only"[\s\S]*this\.paintDisplayPyramidContent === "final-raster-stack"/,
   "Il frame di commit deve conservare la stessa semantica final-stack del frame live.",
 );
 
@@ -230,8 +230,8 @@ assert.match(
 );
 assert.match(
   liveDisplayShader,
-  /fn finalStackFragmentMain[\s\S]*display\.selectedMipLevel >= 0\.5[\s\S]*textureSampleLevel\(\s*compositedMipTexture/,
-  "LOD 1+ live deve leggere direttamente la piramide già composta.",
+  /fn finalStackFragmentMain[\s\S]*let lod = max\(display\.selectedMipLevel, 0\.0\)[\s\S]*let mipOne = textureSampleLevel\(compositedMipTexture[\s\S]*let lowerMip = floor\(lod\)[\s\S]*let upperMip = ceil\(lod\)/,
+  "Il display live deve fondere mip 0 e la piramide composta, poi i livelli adiacenti.",
 );
 assert.match(
   liveDisplayShader,

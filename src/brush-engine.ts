@@ -123,6 +123,10 @@ import {
 } from "./engine-noise-runtime";
 import type { RasterNoiseSettings } from "./noise-core";
 import {
+  planPaintDisplayMips,
+  type PaintDisplayMipPlan,
+} from "./noise-mip-smoothing-core";
+import {
   MIXED_SCENE_COMPOSITOR_STRATEGY,
   MIXED_SCENE_LINEAR_FORMAT,
   mixedSceneClearShader,
@@ -2939,6 +2943,7 @@ export class BrushEngine {
       this.displayDirty = true;
       this.layerStack.active.contentBounds = null;
       this.layerStack.active.hasContent = false;
+      this.layerStack.active.noiseMipSmoothing = false;
       clearLayerStorageTileMask(this.layerStack.active.storageTileMask);
       this.layerHasContent = false;
       this.layerContentBounds = null;
@@ -4211,6 +4216,7 @@ export class BrushEngine {
     this.presentationCacheNeedsFullRebuild = true;
     this.layerHasContent = false;
     this.layerContentBounds = null;
+    this.layerStack.active.noiseMipSmoothing = false;
     this.selectionRenderer?.clearSelection();
     resetPixelSelectionState(this);
     this.requestRender();
@@ -7599,6 +7605,7 @@ export class BrushEngine {
     }
     if (cleared) {
       this.layerContentBounds = null;
+      this.layerStack.active.noiseMipSmoothing = false;
       clearLayerStorageTileMask(this.layerStack.active.storageTileMask);
       this.rasterStrokeCoverageValid = false;
       this.rasterBevelHeightValid = false;
@@ -7966,17 +7973,28 @@ export class BrushEngine {
     );
   }
 
-  private desiredPaintDisplayMipLevel(): number {
-    if (!Number.isFinite(this.zoom) || this.zoom >= 1) {
-      return 0;
-    }
-    // Pick the coarsest power-of-two variant that is still at least as large
-    // as its projected size. The residual operation is therefore always a
-    // downscale (or 1:1), never a blurry upscale.
-    return clamp(
-      Math.floor(Math.log2(1 / Math.max(this.zoom, Number.EPSILON)) + 1e-6),
-      0,
-      PAINT_DISPLAY_MIP_LEVEL_COUNT - 1,
+  private noiseMipSmoothingEligible(): boolean {
+    return (
+      this.layerStack.active.noiseMipSmoothing
+      || this.activeRasterNoiseSession !== null
+    )
+      // The tile compositor owns a different, final-stack pyramid and cannot
+      // mix its document-tile mip 0 without changing blend semantics.
+      && !this.usesLayerBlendTilePresentation()
+      // Styled rasters use a separate derived pyramid. Keep that established
+      // path discrete until it exposes the same adjacent-level contract.
+      && !this.styleStackActive()
+      // The viewport fallback shares selectedMipLevel with semantic textures;
+      // a fractional value there would alter non-Noise items in the scene.
+      && !this.vectorTextBelowTexture
+      && !this.vectorTextAboveTexture;
+  }
+
+  private desiredPaintDisplayMipPlan(): PaintDisplayMipPlan {
+    return planPaintDisplayMips(
+      this.zoom,
+      PAINT_DISPLAY_MIP_LEVEL_COUNT,
+      this.noiseMipSmoothingEligible(),
     );
   }
 
@@ -8140,7 +8158,7 @@ export class BrushEngine {
     };
   }
 
-  private writeDisplayUniforms(selectedMipLevel = this.paintDisplaySelectedMipLevel): void {
+  private writeDisplayUniforms(sampleMipLod = this.paintDisplaySelectedMipLevel): void {
     this.displayUniformUpload[0] = this.canvas.width;
     this.displayUniformUpload[1] = this.canvas.height;
     this.displayUniformUpload[2] = this.viewRotationCos;
@@ -8149,7 +8167,7 @@ export class BrushEngine {
     this.displayUniformUpload[5] = this.viewCenterY;
     this.displayUniformUpload[6] = this.zoom;
     this.displayUniformUpload[7] = 96;
-    this.displayUniformUpload[8] = selectedMipLevel;
+    this.displayUniformUpload[8] = sampleMipLod;
     this.displayUniformUpload[9] = this.mergedBelow?.resolutionScale ?? 0;
     this.displayUniformUpload[10] = this.mergedAbove?.resolutionScale ?? 0;
     this.displayUniformUpload[11] = this.layerStack.active.visible
@@ -10404,6 +10422,8 @@ export class BrushEngine {
     let presentationCopiedPixels = 0;
     let presentationCacheWasUpdated = false;
     let displaySelectedMipLevel = this.paintDisplaySelectedMipLevel;
+    let displayRequiredMipLevel = displaySelectedMipLevel;
+    let displaySampleLod = displaySelectedMipLevel;
     let paintDisplayPyramidMaintenanceFrames = 0;
     let paintDisplayPyramidFullLevelBuilds = 0;
     let paintDisplayPyramidDirtyLevelUpdates = 0;
@@ -10640,7 +10660,10 @@ export class BrushEngine {
 
     if (present) {
       const displayEncodingStart = performance.now();
-      displaySelectedMipLevel = this.desiredPaintDisplayMipLevel();
+      const displayMipPlan = this.desiredPaintDisplayMipPlan();
+      displaySelectedMipLevel = displayMipPlan.legacyMipLevel;
+      displayRequiredMipLevel = displayMipPlan.requiredMipLevel;
+      displaySampleLod = displayMipPlan.sampleLod;
       if (displaySelectedMipLevel !== this.paintDisplaySelectedMipLevel) {
         this.presentationCacheNeedsFullRebuild = true;
       }
@@ -10681,7 +10704,7 @@ export class BrushEngine {
           const rasterPyramid = encodeRasterStrokeDisplayPyramid(this, 
             encoder,
             rasterStrokeUpdate.dirtyRect,
-            displaySelectedMipLevel,
+            displayRequiredMipLevel,
           );
           paintDisplayPyramidMaintenanceFrames += rasterPyramid.passes > 0 ? 1 : 0;
           paintDisplayPyramidPasses += rasterPyramid.passes;
@@ -10695,7 +10718,7 @@ export class BrushEngine {
             encoder,
             session,
             liveDirtyRect,
-            displaySelectedMipLevel,
+            displayRequiredMipLevel,
             useLiveFinalRasterStack ? "final-raster-stack" : "active-only",
           );
           lightGlazePyramidPasses += glazePyramid.passes;
@@ -10704,7 +10727,7 @@ export class BrushEngine {
           const mainPyramid = this.encodePaintDisplayPyramid(
             encoder,
             clearLayer ? { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE } : null,
-            displaySelectedMipLevel,
+            displayRequiredMipLevel,
           );
           paintDisplayPyramidMaintenanceFrames += mainPyramid.maintenanceFrames;
           paintDisplayPyramidFullLevelBuilds += mainPyramid.fullLevelBuilds;
@@ -10722,7 +10745,7 @@ export class BrushEngine {
         const presentationDirtyRect = requiresFullRebuild
           ? { x: 0, y: 0, width: this.canvas.width, height: this.canvas.height }
           : presentationLayerDirtyRect
-            ? layerDirtyRectToPresentationRect(this, presentationLayerDirtyRect, displaySelectedMipLevel)
+            ? layerDirtyRectToPresentationRect(this, presentationLayerDirtyRect, displayRequiredMipLevel)
             : null;
 
         if (presentationDirtyRect) {
@@ -10732,7 +10755,7 @@ export class BrushEngine {
           ) {
             encodeMergedDisplayPyramids(this, encoder, displaySelectedMipLevel);
           }
-          this.writeDisplayUniforms(displaySelectedMipLevel);
+          this.writeDisplayUniforms(displaySampleLod);
           if (rasterStrokeActive) {
             this.rasterStrokeRenderer!.updateDisplayParameters(
               "light-glaze",
@@ -10742,7 +10765,7 @@ export class BrushEngine {
             );
           }
           const lod0FullRebuildCpuEncodingStart = requiresFullRebuild
-            && displaySelectedMipLevel === 0 ? performance.now() : 0;
+            && displayRequiredMipLevel === 0 ? performance.now() : 0;
           if (this.usesOrderedScenePresentation()) {
             const activePresentation: MixedSceneActivePresentation = rasterStrokeActive
               ? { kind: "raster-stroke", sourceMode: "light-glaze" }
@@ -10971,7 +10994,7 @@ export class BrushEngine {
           : { dirtyRect: null, timing: null };
         const tileBlendOwnsPyramid = displaySelectedMipLevel > 0
           && this.usesLayerBlendTilePresentation();
-        const requestFinalRasterStackMip = displaySelectedMipLevel > 0
+        const requestFinalRasterStackMip = displayRequiredMipLevel > 0
           && !rasterStrokeActive
           && !this.vectorTextBelowTexture
           && !this.vectorTextAboveTexture
@@ -10986,7 +11009,7 @@ export class BrushEngine {
           const rasterPyramid = encodeRasterStrokeDisplayPyramid(this, 
             encoder,
             rasterStrokeUpdate.dirtyRect,
-            displaySelectedMipLevel,
+            displayRequiredMipLevel,
           );
           paintDisplayPyramidMaintenanceFrames += rasterPyramid.passes > 0 ? 1 : 0;
           paintDisplayPyramidPasses += rasterPyramid.passes;
@@ -10999,7 +11022,7 @@ export class BrushEngine {
           const mainPyramid = this.encodePaintDisplayPyramid(
             encoder,
             canonicalLayerDirtyRect,
-            displaySelectedMipLevel,
+            displayRequiredMipLevel,
             requestFinalRasterStackMip ? "final-raster-stack" : "active-only",
           );
           paintDisplayPyramidMaintenanceFrames += mainPyramid.maintenanceFrames;
@@ -11024,13 +11047,13 @@ export class BrushEngine {
         const presentationDirtyRect = requiresFullRebuild
           ? { x: 0, y: 0, width: this.canvas.width, height: this.canvas.height }
           : presentationLayerDirtyRect
-            ? layerDirtyRectToPresentationRect(this, presentationLayerDirtyRect, displaySelectedMipLevel)
+            ? layerDirtyRectToPresentationRect(this, presentationLayerDirtyRect, displayRequiredMipLevel)
             : null;
         if (presentationDirtyRect) {
           if (!useFinalRasterStackMip && !tileBlendOwnsPyramid) {
             encodeMergedDisplayPyramids(this, encoder, displaySelectedMipLevel);
           }
-          this.writeDisplayUniforms(displaySelectedMipLevel);
+          this.writeDisplayUniforms(displaySampleLod);
           if (rasterStrokeActive) {
             this.rasterStrokeRenderer!.updateDisplayParameters(
               "permanent",
@@ -11040,7 +11063,7 @@ export class BrushEngine {
             );
           }
           const lod0FullRebuildCpuEncodingStart = requiresFullRebuild
-            && displaySelectedMipLevel === 0 ? performance.now() : 0;
+            && displayRequiredMipLevel === 0 ? performance.now() : 0;
           if (this.usesOrderedScenePresentation()) {
             const activePresentation: MixedSceneActivePresentation = rasterStrokeActive
               ? { kind: "raster-stroke", sourceMode: "permanent" }
@@ -11427,6 +11450,8 @@ export class BrushEngine {
     let presentationCopiedPixels = 0;
     let presentationCacheWasUpdated = false;
     let displaySelectedMipLevel = this.paintDisplaySelectedMipLevel;
+    let displayRequiredMipLevel = displaySelectedMipLevel;
+    let displaySampleLod = displaySelectedMipLevel;
     let paintDisplayPyramidMaintenanceFrames = 0;
     let paintDisplayPyramidFullLevelBuilds = 0;
     let paintDisplayPyramidDirtyLevelUpdates = 0;
@@ -11574,7 +11599,10 @@ export class BrushEngine {
 
     if (present) {
       const displayEncodingStart = performance.now();
-      displaySelectedMipLevel = this.desiredPaintDisplayMipLevel();
+      const displayMipPlan = this.desiredPaintDisplayMipPlan();
+      displaySelectedMipLevel = displayMipPlan.legacyMipLevel;
+      displayRequiredMipLevel = displayMipPlan.requiredMipLevel;
+      displaySampleLod = displayMipPlan.sampleLod;
       if (displaySelectedMipLevel !== this.paintDisplaySelectedMipLevel) {
         // A screen-space cache must never contain a mixture of samples from
         // two pyramid levels. A LOD switch therefore rebuilds it atomically.
@@ -11590,7 +11618,7 @@ export class BrushEngine {
         && this.vectorTextDisplayBindGroup
         && vectorTextDisplayPipeline,
       );
-      const requestFinalRasterStackMip = displaySelectedMipLevel > 0
+      const requestFinalRasterStackMip = displayRequiredMipLevel > 0
         && !rasterStrokeActive
         && !thicknessTailFrame
         && !useVectorTextDisplay
@@ -11628,7 +11656,7 @@ export class BrushEngine {
         const pyramidTiming = this.encodePaintDisplayPyramid(
           encoder,
           baseDirtyRect,
-          displaySelectedMipLevel,
+          displayRequiredMipLevel,
           requestFinalRasterStackMip ? "final-raster-stack" : "active-only",
         );
         paintDisplayPyramidMaintenanceFrames = pyramidTiming.maintenanceFrames;
@@ -11643,7 +11671,7 @@ export class BrushEngine {
         const rasterPyramid = encodeRasterStrokeDisplayPyramid(this, 
           encoder,
           rasterStrokeUpdate.dirtyRect,
-          displaySelectedMipLevel,
+          displayRequiredMipLevel,
         );
         paintDisplayPyramidMaintenanceFrames = rasterPyramid.passes > 0 ? 1 : 0;
         paintDisplayPyramidPasses = rasterPyramid.passes;
@@ -11678,7 +11706,7 @@ export class BrushEngine {
         : presentationLayerDirtyRect
           ? layerDirtyRectToPresentationRect(this, 
             presentationLayerDirtyRect,
-            displaySelectedMipLevel,
+            displayRequiredMipLevel,
           )
           : null;
 
@@ -11686,7 +11714,7 @@ export class BrushEngine {
         if (!useFinalRasterStackMip && !tileBlendOwnsPyramid) {
           encodeMergedDisplayPyramids(this, encoder, displaySelectedMipLevel);
         }
-        this.writeDisplayUniforms(displaySelectedMipLevel);
+        this.writeDisplayUniforms(displaySampleLod);
         if (rasterStrokeActive) {
           this.rasterStrokeRenderer!.updateDisplayParameters(
             thicknessTailFrame ? "thickness-tail" : "permanent",
@@ -11696,7 +11724,7 @@ export class BrushEngine {
           );
         }
         const lod0FullRebuildCpuEncodingStart = requiresFullRebuild
-          && displaySelectedMipLevel === 0 ? performance.now() : 0;
+          && displayRequiredMipLevel === 0 ? performance.now() : 0;
         if (this.usesOrderedScenePresentation()) {
           const activePresentation: MixedSceneActivePresentation = rasterStrokeActive
             ? {

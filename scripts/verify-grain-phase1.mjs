@@ -269,6 +269,10 @@ assert(blendShader.includes(
 ) && blendShader.includes("grainUv = mix(movingUv, fixedUv, movement)")
   && blendShader.includes("movingUvDx = vec2<f32>(cosine, -sine)"),
 "Blend dry non usa il mapping Moving scalato e rotation-aware.");
+assert(blendShader.includes("let source = sourceSample.r;"),
+  "Blend dry non consuma il campo scalare R16F della grana.");
+assert(!blendShader.includes("dot(sourceSample.rgb"),
+  "Blend dry ricalcola ancora la luma RGB su una texture Grain R16F.");
 assert(blendRenderer.includes('const grainMode = "fixed" as const;'),
   "Blend dry Moving non seleziona il sampler repeat.");
 
@@ -329,7 +333,8 @@ assert(engine.includes("session.tintLinear")
   && engine.includes('"light-no-build-up"'),
   "Tint per gesture e resolve Light Glaze non collegati.");
 assert(shaders.includes("@group(0) @binding(5) var compositedMipTexture")
-  && shaders.includes("display.selectedMipLevel - 1.0")
+  && shaders.includes("logicalMip - 1.0")
+  && shaders.includes("fn sampleCompositedActiveLogicalMip(")
   && engine.includes("lightGlazeMipDownsampleBindGroups[mipLevel - 2]"),
   "Catena mip compositata separata Light/M1 Glaze non collegata correttamente.");
 assert(shaders.includes("fn storedLightCoverage(value: f32)")

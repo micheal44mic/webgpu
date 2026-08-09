@@ -57,6 +57,8 @@ export interface LayerRecord {
    */
   storageTileMask: LayerStorageTileMask;
   hasContent: boolean;
+  /** Display-only continuous mip sampling after this raster has committed Noise. */
+  noiseMipSmoothing: boolean;
   strokeStyle: RasterStrokeStyle;
   bevelStyle: RasterBevelStyle;
   outerShadowStyle: RasterOuterShadowStyle;
@@ -164,6 +166,7 @@ export class LayerStack {
       contentBounds: null,
       storageTileMask: new Uint32Array(8),
       hasContent: false,
+      noiseMipSmoothing: false,
       strokeStyle,
       bevelStyle,
       outerShadowStyle,

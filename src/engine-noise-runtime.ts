@@ -942,6 +942,13 @@ export async function commitRasterNoise(engine: BrushEngine): Promise<boolean> {
     };
     commitHistoryActionAtomically(engine, action);
     journalPublished = true;
+    // One CPU boolean opts only this raster into continuous sampling of the
+    // display pyramid it already owns while active. Pixels, export mip 0 and
+    // the GPU allocation topology remain unchanged.
+    record.noiseMipSmoothing = true;
+    engine.presentationCacheNeedsFullRebuild = true;
+    engine.displayDirty = true;
+    engine.requestRender();
     if (engine.activeStrokeProfile) {
       engine.activeStrokeProfile.historyCommittedActions += 1;
     }

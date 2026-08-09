@@ -189,10 +189,16 @@ for (const [label, source] of [
   assert(
     source.includes("fn linearPremultipliedToEncodedSrgb")
       && source.includes("fn encodedSrgbPremultipliedToLinear")
-      && source.includes("let permanentEncoded = linearPremultipliedToEncodedSrgb(permanentPaint);")
+      && source.includes("if (strokePaint.a <= 0.0)")
+      && source.includes("return permanentPaint;")
+      && source.includes("let extendedResidual = permanentPaint.rgb - boundedPermanentRgb;")
+      && source.includes("vec4<f32>(boundedPermanentRgb, permanentAlpha)")
       && source.includes("let compositedEncoded = strokePaint + permanentEncoded * (1.0 - strokePaint.a);")
-      && source.includes("encodedSrgbPremultipliedToLinear(compositedEncoded)"),
-    `${label}: compositing Intense completo in encoded-sRGB mancante.`,
+      && source.includes("let boundedResult = encodedSrgbPremultipliedToLinear(compositedEncoded);")
+      && source.includes("boundedResult.rgb + extendedResidual * (1.0 - strokePaint.a)")
+      && source.includes("vec3<f32>(-65504.0)")
+      && source.includes("vec3<f32>(65504.0)"),
+    `${label}: compositing Intense signed/HDR-safe incompleto.`,
   );
 }
 const fixedFunctionComposite = section(
@@ -391,6 +397,56 @@ assert.notEqual(
 const linearToSrgb = (value) => value <= 0.0031308
   ? value * 12.92
   : 1.055 * value ** (1 / 2.4) - 0.055;
+const srgbToLinear = (value) => value <= 0.04045
+  ? value / 12.92
+  : ((value + 0.055) / 1.055) ** 2.4;
+const clamp01 = (value) => Math.min(1, Math.max(0, value));
+const compositeIntenseExtended = (permanent, stroke) => {
+  if (stroke[3] <= 0) return [...permanent];
+  const permanentAlpha = clamp01(permanent[3]);
+  const boundedPermanent = permanent.slice(0, 3).map((value) => (
+    permanentAlpha > 0 ? clamp01(value / permanentAlpha) * permanentAlpha : 0
+  ));
+  const residual = permanent.slice(0, 3).map(
+    (value, index) => value - boundedPermanent[index],
+  );
+  const permanentEncoded = boundedPermanent.map((value) => (
+    permanentAlpha > 0 ? linearToSrgb(value / permanentAlpha) * permanentAlpha : 0
+  ));
+  const inverseStrokeAlpha = 1 - stroke[3];
+  const compositedAlpha = stroke[3] + permanentAlpha * inverseStrokeAlpha;
+  const compositedEncoded = permanentEncoded.map(
+    (value, index) => stroke[index] + value * inverseStrokeAlpha,
+  );
+  const boundedResult = compositedEncoded.map((value) => (
+    compositedAlpha > 0 ? srgbToLinear(clamp01(value / compositedAlpha)) * compositedAlpha : 0
+  ));
+  return [
+    ...boundedResult.map(
+      (value, index) => value + residual[index] * inverseStrokeAlpha,
+    ),
+    compositedAlpha,
+  ];
+};
+const extendedPermanent = [-0.25, 1.25, 0.4, 1];
+assert.deepEqual(
+  compositeIntenseExtended(extendedPermanent, [0, 0, 0, 0]),
+  extendedPermanent,
+  "Intense deve essere identico sui pixel senza copertura, inclusi RGB signed/HDR.",
+);
+const partialExtendedComposite = compositeIntenseExtended(
+  extendedPermanent,
+  [0.25, 0, 0, 0.25],
+);
+assert(
+  partialExtendedComposite[0] < 0 && partialExtendedComposite[1] > 0.5,
+  "Il residuo signed/HDR del permanente non sopravvive sotto una copertura parziale.",
+);
+assert.equal(
+  partialExtendedComposite[3],
+  1,
+  "La preservazione HDR non deve cambiare la legge alpha source-over.",
+);
 const encodedWhiteOverBlackByte = Math.round(0.5 * 255);
 const linearWhiteOverBlackByte = Math.round(linearToSrgb(0.5) * 255);
 assert.equal(encodedWhiteOverBlackByte, 128);

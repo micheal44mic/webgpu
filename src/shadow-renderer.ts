@@ -267,9 +267,32 @@ fn compositeLightGlazeOverPermanent(
 ) -> vec4<f32> {
   let strokePaint = resolvedLightGlaze(accumulatedStroke);
   if (lightGlaze.accumulationMode == 2u) {
-    let permanentEncoded = linearPremultipliedToEncodedSrgb(permanentPaint);
+    if (strokePaint.a <= 0.0) {
+      return permanentPaint;
+    }
+    let permanentAlpha = clamp(permanentPaint.a, 0.0, 1.0);
+    var boundedPermanentRgb = vec3<f32>(0.0);
+    if (permanentAlpha > 0.0) {
+      boundedPermanentRgb = clamp(
+        permanentPaint.rgb / permanentAlpha,
+        vec3<f32>(0.0),
+        vec3<f32>(1.0)
+      ) * permanentAlpha;
+    }
+    let extendedResidual = permanentPaint.rgb - boundedPermanentRgb;
+    let permanentEncoded = linearPremultipliedToEncodedSrgb(
+      vec4<f32>(boundedPermanentRgb, permanentAlpha)
+    );
     let compositedEncoded = strokePaint + permanentEncoded * (1.0 - strokePaint.a);
-    return quantizeLayer(encodedSrgbPremultipliedToLinear(compositedEncoded));
+    let boundedResult = encodedSrgbPremultipliedToLinear(compositedEncoded);
+    return quantizeLayer(vec4<f32>(
+      clamp(
+        boundedResult.rgb + extendedResidual * (1.0 - strokePaint.a),
+        vec3<f32>(-65504.0),
+        vec3<f32>(65504.0)
+      ),
+      boundedResult.a
+    ));
   }
   return quantizeLayer(strokePaint + permanentPaint * (1.0 - strokePaint.a));
 }

@@ -315,7 +315,10 @@ fn adjustedGrainCoverage(
     );
   }
 
-  let source = dot(sourceSample.rgb, vec3<f32>(0.299, 0.587, 0.114));
+  // Grain assets are converted once at upload into a scalar R16F field.
+  // Sampling RGB here silently attenuates that field to 0.299 × R because
+  // the implicit G/B components of an R16F texture are zero.
+  let source = sourceSample.r;
   let adjusted = clamp(
     (source - 0.5) * blend.grainAffineAndPhase.x
       + 0.5

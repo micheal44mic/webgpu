@@ -277,8 +277,13 @@ assert.match(
 );
 assert.match(
   baseDisplayShader,
-  /let lodZeroSmooth = display\.selectedMipLevel < 0\.5\s*&& !rasterPixelViewEnabled\(1\.0\);/,
-  "la correzione LOD 0 deve coprire anche lo zoom sotto il 100% prima del primo mip",
+  /let lodZeroSmooth = display\.selectedMipLevel < 0\.000001\s*&& !rasterPixelViewEnabled\(1\.0\);/,
+  "la correzione legacy LOD 0 deve restare attiva sul livello intero di base",
+);
+assert.match(
+  baseDisplayShader,
+  /fn finalStackFragmentMain[\s\S]*if \(lod < 1\.0\)[\s\S]*paint = mix\(mipZero, mipOne, lod\)/,
+  "la transizione Noise sotto il primo mip deve fondere lo stack finale già composto",
 );
 assert.match(
   baseDisplayShader,
@@ -335,7 +340,7 @@ assert.match(
 assert.match(baseDisplayShader, /fn finalStackFragmentMain\(/);
 assert.match(
   baseDisplayShader,
-  /fn finalStackFragmentMain[\s\S]*textureSampleLevel\([\s\S]*activeLayerPyramid[\s\S]*max\(display\.selectedMipLevel - 1\.0, 0\.0\)/,
+  /fn finalStackFragmentMain[\s\S]*sampleCompositedLayerStackLinear\(layerPosition\)[\s\S]*let mipOne = textureSampleLevel\(activeLayerPyramid[\s\S]*paint = mix\(mipZero, mipOne, lod\)[\s\S]*lowerMip - 1\.0/,
   "il display final-stack deve campionare la piramide già composta senza un secondo source-over",
 );
 assert.match(
