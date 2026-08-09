@@ -5263,9 +5263,7 @@ function setRasterGaussianBlurStatus(message: string): void {
 
 function resetRasterGaussianBlurControls(): void {
   setRasterGaussianBlurRadiusOutput(DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS);
-  setRasterGaussianBlurStatus(
-    "Regola il raggio e controlla l’anteprima direttamente sul canvas.",
-  );
+  setRasterGaussianBlurStatus("Gaussian Blur pronto.");
 }
 
 function reportRasterGaussianBlurError(prefix: string, error: unknown): void {
@@ -5316,7 +5314,7 @@ async function openRasterGaussianBlurWorkbench(
   rasterGaussianBlurSessionOpen = false;
   rasterGaussianBlurPreviewFault = false;
   rasterGaussianBlurUiBusy = true;
-  setRasterGaussianBlurStatus("Preparazione dell’anteprima live RGBA16F…");
+  setRasterGaussianBlurStatus("Preparazione Gaussian Blur…");
   syncRasterGaussianBlurUi();
 
   try {
@@ -5329,9 +5327,7 @@ async function openRasterGaussianBlurWorkbench(
     if (!preview) throw new Error("Seleziona un livello raster per usare Gaussian Blur.");
     rasterGaussianBlurSessionOpen = true;
     setRasterGaussianBlurRadiusOutput(preview.radius);
-    setRasterGaussianBlurStatus(
-      `Anteprima ${preview.radius.toFixed(0)} px attiva · accumulo f32 su raster RGBA16F.`,
-    );
+    setRasterGaussianBlurStatus(`Raggio ${preview.radius.toFixed(0)} pixel.`);
   } catch (error) {
     historyState = engine.getHistoryState();
     rasterGaussianBlurSessionOpen = historyState.openEdit === "gaussian-blur";
@@ -5357,7 +5353,7 @@ async function cancelRasterGaussianBlurFromUi(): Promise<void> {
   if (!rasterGaussianBlurSessionOpen) return;
   rasterGaussianBlurCancelPending = false;
   rasterGaussianBlurUiBusy = true;
-  setRasterGaussianBlurStatus("Ripristino byte-esatto dei pixel originali…");
+  setRasterGaussianBlurStatus("Ripristino dei pixel originali…");
   syncRasterGaussianBlurUi();
   try {
     await engine.cancelRasterGaussianBlur();
@@ -5386,7 +5382,7 @@ async function applyRasterGaussianBlurFromUi(): Promise<void> {
     return;
   }
   rasterGaussianBlurUiBusy = true;
-  setRasterGaussianBlurStatus("Applicazione ai pixel e creazione del checkpoint Undo…");
+  setRasterGaussianBlurStatus("Applicazione Gaussian Blur…");
   syncRasterGaussianBlurUi();
   try {
     await engine.commitRasterGaussianBlur();
@@ -6870,9 +6866,7 @@ for (const input of rasterGaussianBlurRadiusInputs) {
     try {
       const preview = engine.updateRasterGaussianBlur(requestedRadius);
       setRasterGaussianBlurRadiusOutput(preview.radius);
-      setRasterGaussianBlurStatus(
-        `Anteprima live ${preview.radius.toFixed(0)} px · trascina liberamente lo slider.`,
-      );
+      setRasterGaussianBlurStatus(`Raggio ${preview.radius.toFixed(0)} pixel.`);
     } catch (error) {
       rasterGaussianBlurPreviewFault = true;
       reportRasterGaussianBlurError("Anteprima Gaussian Blur interrotta", error);

@@ -15,6 +15,13 @@ assert.equal(
   DESTRUCTIVE_GAUSSIAN_BLUR_CORE_BUILD,
   "destructive-gaussian-blur-core-v1-three-sigma-premultiplied-rgba16float",
 );
+assert.equal(DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS, 200);
+const maximumFilterCacheBytes = (64 + DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS * 2) * 16;
+const maximumParameterBytes = (
+  16 + Math.ceil((DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS + 1) / 4) * 4
+) * 4;
+assert(maximumFilterCacheBytes <= 16 * 1024, "cache workgroup oltre il budget WebGPU");
+assert(maximumParameterBytes <= 16 * 1024, "uniformi kernel oltre il budget WebGPU");
 assert.equal(normalizeDestructiveGaussianBlurRadius(Number.NaN), DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS);
 assert.equal(normalizeDestructiveGaussianBlurRadius(-12), 0);
 assert.equal(normalizeDestructiveGaussianBlurRadius(999), DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS);
@@ -122,8 +129,14 @@ assert.match(html, /mobile-stroke-sheet-content mobile-gaussian-blur-shell/);
 assert.match(html, /id="mobileGaussianBlurHeader" class="mobile-stroke-header"/);
 assert.match(html, /class="mobile-stroke-title">Gaussian Blur/);
 assert.match(html, /class="mobile-stroke-width-control" for="mobileGaussianBlurRadius"/);
+assert.match(html, /id="mobileGaussianBlurRadius"[\s\S]{0,160}max="200"/);
+assert.match(html, /id="desktopGaussianBlurRadius"[\s\S]{0,160}max="200"/);
+assert.match(html, /id="mobileGaussianBlurStatus"[\s\S]{0,120}class="visually-hidden"/);
+assert.match(html, /id="desktopGaussianBlurStatus"[\s\S]{0,120}class="visually-hidden"/);
 assert.match(html, /id="mobileGaussianBlurCancel" type="button">Cancel/);
 assert.match(html, /id="mobileGaussianBlurApply" class="is-primary" type="button">Apply/);
 assert.doesNotMatch(html, /mobile-gaussian-blur-live/);
+assert.doesNotMatch(html, /Live · 16-bit|Anteprima live RGBA16F/);
+assert.doesNotMatch(main, /accumulo f32 su raster RGBA16F|Anteprima live \$\{preview\.radius/);
 
 console.log("Destructive 16-bit Gaussian Blur verification passed.");

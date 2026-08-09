@@ -1049,9 +1049,6 @@
         <div class="mobile-stroke-sheet-content mobile-gaussian-blur-shell">
           <header id="mobileGaussianBlurHeader" class="mobile-stroke-header">
             <h2 class="mobile-stroke-title">Gaussian Blur</h2>
-            <span class="mobile-stroke-control-label mobile-gaussian-blur-preview-label">
-              Live · 16-bit
-            </span>
           </header>
 
           <div id="mobileGaussianBlurControlsRegion" class="mobile-stroke-controls-region">
@@ -1063,7 +1060,7 @@
                   id="mobileGaussianBlurRadius"
                   type="range"
                   min="1"
-                  max="64"
+                  max="200"
                   step="1"
                   value="5"
                   aria-label="Gaussian Blur radius"
@@ -1074,11 +1071,11 @@
 
               <p
                 id="mobileGaussianBlurStatus"
-                class="mobile-tool-settings-status mobile-gaussian-blur-status"
+                class="visually-hidden"
                 role="status"
                 aria-live="polite"
                 aria-atomic="true"
-              >Regola il raggio e controlla l’anteprima sul canvas.</p>
+              >Gaussian Blur pronto.</p>
 
               <div class="mobile-tool-actions mobile-tool-actions-grid mobile-gaussian-blur-actions">
                 <button id="mobileGaussianBlurCancel" type="button">Cancel</button>
@@ -3167,7 +3164,7 @@
             />
             <span>
               Gaussian Blur
-              <small>Anteprima live RGBA16F · Applica o Annulla.</small>
+              <small>Applica o Annulla.</small>
             </span>
           </label>
 
@@ -3184,7 +3181,7 @@
                 id="desktopGaussianBlurRadius"
                 type="range"
                 min="1"
-                max="64"
+                max="200"
                 step="1"
                 value="5"
               />
@@ -3192,11 +3189,11 @@
 
             <p
               id="desktopGaussianBlurStatus"
-              class="result gaussian-blur-inline-status"
+              class="visually-hidden"
               role="status"
               aria-live="polite"
               aria-atomic="true"
-            >Regola il raggio e controlla l’anteprima direttamente sul canvas.</p>
+            >Gaussian Blur pronto.</p>
 
             <div class="gaussian-blur-inline-actions">
               <button id="desktopGaussianBlurCancel" type="button">Annulla</button>

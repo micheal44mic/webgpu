@@ -2,7 +2,7 @@ export const DESTRUCTIVE_GAUSSIAN_BLUR_CORE_BUILD =
   "destructive-gaussian-blur-core-v1-three-sigma-premultiplied-rgba16float";
 
 export const DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS = 5;
-export const DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS = 64;
+export const DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS = 200;
 export const DESTRUCTIVE_GAUSSIAN_BLUR_RADIUS_STEP = 1;
 export const DESTRUCTIVE_GAUSSIAN_BLUR_STRIP_HEIGHT = 256;
 
