@@ -20,9 +20,11 @@ import type {
   LayerDeleteHistoryAction,
 } from "./engine-history-types";
 import type { LayerGpuResources } from "./engine-layer-resources";
-import { destroyLayerColdStorage } from "./engine-cold-storage";
 import {
-  allocateLayerGpuResources,
+  createColdLayerGpuResources,
+  destroyLayerColdStorage,
+} from "./engine-cold-storage";
+import {
   destroyLayerGpuResources,
 } from "./engine-layer-runtime";
 import {
@@ -46,7 +48,7 @@ export const LAYER_STRUCTURE_HISTORY_STRATEGY =
  * quelle attese: fra la registrazione dell'azione e la sua esecuzione il
  * documento puo' essere stato riordinato.
  */
-async function detachLayer(
+export async function detachLayer(
   engine: BrushEngine,
   layerId: number,
   fallbackLayerId: number,
@@ -78,9 +80,10 @@ async function detachLayer(
  * `seed` nullo e' il caso legittimo del livello vuoto: non c'e' nulla da
  * ricostruire, e allocare comunque una texture piena sarebbe memoria sprecata.
  */
-async function attachLayer(
+export async function attachLayer(
   engine: BrushEngine,
   entry: DeletedLayerEntry,
+  allowTemporaryReplacementOverflow = false,
 ): Promise<void> {
   const scene = requireMixedSceneStack(engine);
   const layerId = entry.layerRecord.id;
@@ -103,16 +106,19 @@ async function attachLayer(
         entry.layerRecord.hasContent = true;
       }
     } else {
-      gpu = await allocateLayerGpuResources(
-        engine,
-        engine.layerFormat,
-        `Ripristino livello vuoto ${layerId}`,
-      );
+      // An empty inactive record has no pixel authority to preserve. Activation
+      // allocates its one required hot texture lazily; allocating it here for
+      // every entry in a structural Undo was the 16-layer empty-merge spike.
+      gpu = createColdLayerGpuResources();
     }
     if (!gpu) throw new Error(`Risorse del livello ${layerId} non allocate.`);
     const rasterInsertionIndex = Math.min(entry.rasterLayerIndex, engine.layerStack.count);
     const sceneInsertionIndex = Math.min(entry.sceneIndex, scene.items.length);
-    engine.layerStack.attach(entry.layerRecord, rasterInsertionIndex);
+    engine.layerStack.attach(
+      entry.layerRecord,
+      rasterInsertionIndex,
+      allowTemporaryReplacementOverflow,
+    );
     engine.layerGpu.set(layerId, gpu);
     scene.insertRasterAt(layerId, sceneInsertionIndex, true);
     if (entry.clippingParentId !== null) {
@@ -180,7 +186,7 @@ async function attachLayer(
  * stacco, che va dall'alto in basso) cosi' ogni indice di inserimento e'
  * ancora valido mentre la pila ricresce.
  */
-async function rollbackStructuralMutation(
+export async function rollbackStructuralMutation(
   engine: BrushEngine,
   detached: DeletedLayerEntry[],
   attached: DeletedLayerEntry[],
@@ -225,7 +231,7 @@ function firstStackRasterMissingFromScene(
   return null;
 }
 
-function restoreReferenceLayerId(
+export function restoreReferenceLayerId(
   engine: BrushEngine,
   layerId: number | null,
 ): void {

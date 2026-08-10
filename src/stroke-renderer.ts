@@ -1296,8 +1296,9 @@ fn composeLayerStack(
 }
 
 fn directStyledSample(layerPosition: vec2<f32>) -> vec4<f32> {
-  let origin = vec2<i32>(floor(layerPosition));
-  let fraction = fract(layerPosition);
+  let texelPosition = layerPosition - vec2<f32>(0.5);
+  let origin = vec2<i32>(floor(texelPosition));
+  let fraction = fract(texelPosition);
   let maximumCoordinate = DOCUMENT_SIZE - vec2<i32>(1);
   let p00 = quantizeLayer(styledTexel(clamp(origin, vec2<i32>(0), maximumCoordinate)));
   let p10 = quantizeLayer(styledTexel(clamp(
@@ -1321,7 +1322,7 @@ fn directStyledSample(layerPosition: vec2<f32>) -> vec4<f32> {
 fn directStyledNearestSample(layerPosition: vec2<f32>) -> vec4<f32> {
   let maximumCoordinate = DOCUMENT_SIZE - vec2<i32>(1);
   let position = clamp(
-    vec2<i32>(floor(layerPosition + vec2<f32>(0.5))),
+    vec2<i32>(floor(layerPosition)),
     vec2<i32>(0),
     maximumCoordinate
   );
@@ -1335,8 +1336,9 @@ fn styledGroupTexel(position: vec2<i32>) -> vec4<f32> {
 }
 
 fn directStyledGroupSample(layerPosition: vec2<f32>) -> vec4<f32> {
-  let origin = vec2<i32>(floor(layerPosition));
-  let fraction = fract(layerPosition);
+  let texelPosition = layerPosition - vec2<f32>(0.5);
+  let origin = vec2<i32>(floor(texelPosition));
+  let fraction = fract(texelPosition);
   let p00 = styledGroupTexel(origin);
   let p10 = styledGroupTexel(origin + vec2<i32>(1, 0));
   let p01 = styledGroupTexel(origin + vec2<i32>(0, 1));
@@ -1358,7 +1360,7 @@ fn sampleClippingAuxiliary(
   if (any(local < vec2<f32>(0.0)) || any(local >= dimensions)) {
     return vec4<f32>(0.0);
   }
-  let uv = clamp((local + vec2<f32>(0.5)) / dimensions, vec2<f32>(0.0), vec2<f32>(1.0));
+  let uv = clamp(local / dimensions, vec2<f32>(0.0), vec2<f32>(1.0));
   let lod = clamp(
     display.selectedMipLevel - 1.0,
     0.0,
@@ -1420,7 +1422,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   if (display.selectedMipLevel < 0.5) {
     if (rasterPixelViewEnabled(1.0)) {
       if (display.clippingMode > 0.5) {
-        let pixel = vec2<i32>(floor(layerPosition + vec2<f32>(0.5)));
+        let pixel = vec2<i32>(floor(layerPosition));
         paint = styledGroupTexel(pixel);
       } else {
         paint = directStyledNearestSample(layerPosition);
@@ -1437,7 +1439,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     }
   } else {
     let uv = clamp(
-      (layerPosition + vec2<f32>(0.5)) / layerSize,
+      layerPosition / layerSize,
       vec2<f32>(0.0),
       vec2<f32>(1.0)
     );
@@ -1486,7 +1488,7 @@ fn activeFragmentMain(
   if (display.selectedMipLevel < 0.5) {
     if (rasterPixelViewEnabled(1.0)) {
       if (display.clippingMode > 0.5) {
-        let pixel = vec2<i32>(floor(layerPosition + vec2<f32>(0.5)));
+        let pixel = vec2<i32>(floor(layerPosition));
         paint = styledGroupTexel(pixel);
       } else {
         paint = directStyledNearestSample(layerPosition);
@@ -1500,7 +1502,7 @@ fn activeFragmentMain(
     }
   } else {
     let uv = clamp(
-      (layerPosition + vec2<f32>(0.5)) / layerSize,
+      layerPosition / layerSize,
       vec2<f32>(0.0),
       vec2<f32>(1.0)
     );

@@ -1705,7 +1705,7 @@ async function ensureLayerBlendFoldScratch(
   destination.blendFoldTileHeight = tileHeight;
 }
 
-function releaseLayerBlendFoldScratch(destination: MergedSurfaceResources): void {
+export function releaseLayerBlendFoldScratch(destination: MergedSurfaceResources): void {
   destination.blendFoldBackdropScratchTexture?.destroy();
   destination.blendFoldScratchTexture?.destroy();
   destination.blendFoldUniformBuffer?.destroy();
@@ -1719,7 +1719,7 @@ function releaseLayerBlendFoldScratch(destination: MergedSurfaceResources): void
   destination.blendFoldTileHeight = 0;
 }
 
-async function foldViewIntoMergedSurface(
+export async function foldViewIntoMergedSurface(
   engine: BrushEngine,
   destination: MergedSurfaceResources,
   sourceView: GPUTextureView,
@@ -2191,7 +2191,7 @@ async function buildActiveClippingSuffixResources(
   }
 }
 
-async function buildClippingPrefixSurface(
+export async function buildClippingPrefixSurface(
   engine: BrushEngine,
   parent: LayerRecord,
   children: readonly LayerRecord[],
@@ -2199,39 +2199,31 @@ async function buildClippingPrefixSurface(
   maintainMips: boolean,
   label: string,
 ): Promise<MergedSurfaceResources | null> {
-  const parentBounds = recordRawBounds(engine, parent);
-  if (!recordHasLiveContent(engine, parent) || !parentBounds) {
+  if (!recordHasLiveContent(engine, parent)) {
     return null;
   }
-  const surface = allocateMergedSurface(
-    engine,
-    engine.layerFormat,
-    "below",
-    1 + children.length,
-    alignedMergedSurfaceBounds(parentBounds, LAYER_SIZE),
-    1,
-  );
-  let parentHydration: LayerTextureResources | null = null;
+  const parentSource = await materializeLayerCompositeSource(engine, parent, caller);
+  const parentBounds = normalizeLayerRect(parentSource.nonTransparentBounds);
+  if (!parentBounds) {
+    engine.destroyLayerBake(parentSource.transientBake);
+    destroyTransientLayerHydration(engine, parentSource.transientHydration);
+    return null;
+  }
+  let surface: MergedSurfaceResources | null = null;
   try {
-    const parentGpu = engine.requireLayerGpu(parent.id);
-    parentHydration = parentGpu.hot
-      ? null
-      : await createHydratedLayerTexture(
-        engine,
-        parent,
-        parentGpu,
-        `${label} · hydrate parent ${parent.id}`,
-        false,
-        "defer-to-fold-fence",
-      );
-    const parentHot = parentGpu.hot ?? parentHydration;
-    if (!parentHot) {
-      throw new Error(`Texture raw parent ${parent.id} non disponibile.`);
-    }
+    surface = allocateMergedSurface(
+      engine,
+      engine.layerFormat,
+      "below",
+      1 + children.length,
+      alignedMergedSurfaceBounds(parentBounds, LAYER_SIZE),
+      1,
+      maintainMips,
+    );
     await foldViewIntoMergedSurface(
       engine,
       surface,
-      parentHot.view,
+      parentSource.view,
       { x: 0, y: 0 },
       1,
       LAYER_SIZE,
@@ -2241,10 +2233,9 @@ async function buildClippingPrefixSurface(
       "normal",
       "source-over",
       true,
-      `${label} · raw parent ${parent.id}`,
+      `${label} · styled parent ${parent.id}`,
     );
-    destroyTransientLayerHydration(engine, parentHydration);
-    parentHydration = null;
+    surface.analyticBakePixels += parentSource.analyticBakePixels;
 
     for (const child of children) {
       if (!child.visible || child.opacity <= 0 || !recordHasLiveContent(engine, child)) {
@@ -2291,7 +2282,8 @@ async function buildClippingPrefixSurface(
     engine.destroyMergedSurface(surface);
     throw error;
   } finally {
-    destroyTransientLayerHydration(engine, parentHydration);
+    engine.destroyLayerBake(parentSource.transientBake);
+    destroyTransientLayerHydration(engine, parentSource.transientHydration);
   }
 }
 
@@ -2377,7 +2369,7 @@ export function destroyActiveClippingGroupResources(
   });
 }
 
-async function foldClippingGroupIntoMergedSurface(
+export async function foldClippingGroupIntoMergedSurface(
   engine: BrushEngine,
   surface: MergedSurfaceResources,
   unit: readonly LayerRecord[],

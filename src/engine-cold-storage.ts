@@ -645,6 +645,75 @@ export async function createLayerColdStorageCandidate(engine: BrushEngine,
   );
 }
 
+/**
+ * Copies an authoritative tiled seed without materialising a full-canvas hot
+ * texture. Structural Undo needs an independent live owner: sharing the
+ * History seed would let a later branch cut destroy pixels still used by the
+ * restored layer, while hydrating every input to hot creates an unbounded
+ * `layerCount * LAYER_SIZE^2` peak.
+ */
+export async function cloneLayerColdStorageResources(
+  engine: BrushEngine,
+  source: LayerColdStorageResources,
+  label: string,
+): Promise<LayerColdStorageResources> {
+  if (source.format !== engine.layerFormat) {
+    throw new Error(
+      `${label}: seed ${source.format} incompatibile con documento ${engine.layerFormat}.`,
+    );
+  }
+  if (source.tileIndices.length === 0) {
+    throw new Error(`${label}: seed cold privo di tile.`);
+  }
+  const expectedBytes = source.tileIndices.length
+    * LAYER_STORAGE_TILE_SIZE
+    * LAYER_STORAGE_TILE_SIZE
+    * layerFormatBytesPerPixel(source.format);
+  if (source.memoryBytes !== expectedBytes) {
+    throw new Error(
+      `${label}: seed cold dichiara ${source.memoryBytes} byte, attesi ${expectedBytes}.`,
+    );
+  }
+  return runGpuAllocationTransaction(engine.device, label, async (transaction) => {
+    const texture = engine.device.createTexture({
+      label,
+      size: {
+        width: LAYER_STORAGE_TILE_SIZE,
+        height: LAYER_STORAGE_TILE_SIZE,
+        depthOrArrayLayers: source.tileIndices.length,
+      },
+      format: source.format,
+      usage:
+        GPUTextureUsage.COPY_SRC
+        | GPUTextureUsage.COPY_DST
+        | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    transaction.deferRollback(() => texture.destroy());
+    const encoder = engine.device.createCommandEncoder({ label });
+    source.tileIndices.forEach((_tileIndex, arrayLayer) => {
+      encoder.copyTextureToTexture(
+        { texture: source.texture, origin: { x: 0, y: 0, z: arrayLayer } },
+        { texture, origin: { x: 0, y: 0, z: arrayLayer } },
+        {
+          width: LAYER_STORAGE_TILE_SIZE,
+          height: LAYER_STORAGE_TILE_SIZE,
+          depthOrArrayLayers: 1,
+        },
+      );
+    });
+    engine.device.queue.submit([encoder.finish()]);
+    await engine.waitForGpuCapped(label, 60_000);
+    engine.maybeInjectLayerColdStorageFault("after-pack-submit");
+    return {
+      texture,
+      tileIndices: [...source.tileIndices],
+      memoryBytes: source.memoryBytes,
+      generation: source.generation,
+      format: source.format,
+    };
+  });
+}
+
 export interface IncrementalColdStorageCaptureHooks {
   /**
    * Checked immediately before allocation and before every GPU submission.

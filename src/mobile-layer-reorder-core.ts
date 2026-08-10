@@ -129,6 +129,14 @@ export function mobileLayerReorderMovementExceeded(
   return Math.hypot(clientX - startX, clientY - startY) > MOBILE_LAYER_REORDER_SLOP_PX;
 }
 
+/** Pointer-up fallback for browsers that throttle the hold timer. */
+export function mobileLayerReorderHoldReached(
+  startTime: number,
+  currentTime: number,
+): boolean {
+  return currentTime - startTime >= MOBILE_LAYER_REORDER_HOLD_MS;
+}
+
 export interface MobileLayerReorderRowGeometry {
   readonly key: string;
   readonly top: number;
@@ -198,4 +206,3 @@ export function mobileLayerReorderKeysAtSlot(
   result.splice(slot, 0, ...plan.draggedKeys);
   return result;
 }
-

@@ -51,6 +51,7 @@ export const ENGINE_SOURCE_FILES = Object.freeze([
   "engine-adaptive-preview-runtime.ts",
   "engine-layer-runtime.ts",
   "engine-layer-structure-runtime.ts",
+  "engine-layer-merge-runtime.ts",
   "engine-layer-blend-tile-runtime.ts",
   "engine-resource-setup.ts",
   "engine-runtime-misc.ts",

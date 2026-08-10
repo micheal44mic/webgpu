@@ -196,6 +196,14 @@ export function rasterEffectRendererReachability(
         reachableLayerIds.add(entry.layerRecord.id);
         includeStyleOwner(reachable, entry.layerRecord);
       }
+    } else if (action.kind === "layer-merge") {
+      reachableLayerIds.add(action.output.layerRecord.id);
+      includeStyleOwner(reachable, action.output.layerRecord);
+      for (const input of action.inputs) {
+        if (input.kind !== "raster") continue;
+        reachableLayerIds.add(input.entry.layerRecord.id);
+        includeStyleOwner(reachable, input.entry.layerRecord);
+      }
     }
   }
   for (let index = retainedStart; index < historyActions.length; index += 1) {

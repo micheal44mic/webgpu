@@ -378,26 +378,31 @@ function filterOrderOracle(
   let filteredBase: LinearPremultipliedRgba;
   let filteredSource: LinearPremultipliedRgba;
   if (selectedMipLevel === 0) {
+    // The compositor samples document position P with uv = P / layerSize.
+    // In texture texel space that is P - 0.5, because texel centers live at
+    // half-integer normalized coordinates.
+    const texelX = position.x - 0.5;
+    const texelY = position.y - 0.5;
     blendThenFilter = bilinearSample(
       (x, y) => blendedDocumentTexel(base, source, x, y),
-      position.x,
-      position.y,
+      texelX,
+      texelY,
     );
     filteredBase = bilinearSample(
       (x, y) => windowTexel(base, x, y),
-      position.x,
-      position.y,
+      texelX,
+      texelY,
     );
     filteredSource = bilinearSample(
       (x, y) => windowTexel(source, x, y),
-      position.x,
-      position.y,
+      texelX,
+      texelY,
     );
   } else {
     // textureSampleLevel on mip 1 maps document position P to texel space
-    // P / 2 - 0.25 because the shader samples (P + 0.5) / 4096.
-    const mipX = position.x * 0.5 - 0.25;
-    const mipY = position.y * 0.5 - 0.25;
+    // P / 2 - 0.5 because the shader samples P / layerSize.
+    const mipX = position.x * 0.5 - 0.5;
+    const mipY = position.y * 0.5 - 0.5;
     blendThenFilter = bilinearSample(
       (x, y) => mipOneTexel(
         (documentX, documentY) => blendedDocumentTexel(
@@ -803,15 +808,31 @@ export async function runLayerBlendGpuTest(
     clippingParentIndex,
   );
   let clippingSampleX = -1;
+  let minimumParentAlpha = Number.POSITIVE_INFINITY;
+  let maximumParentAlpha = Number.NEGATIVE_INFINITY;
+  let nonZeroParentSamples = 0;
+  let clippingSampleDistance = Number.POSITIVE_INFINITY;
   for (let offset = 0; offset < scanWidth; offset += 1) {
     const alpha = rgba16FloatTexel(parentStrip, offset * 8)[3];
-    if (alpha >= 48 / 255 && alpha <= 192 / 255) {
+    minimumParentAlpha = Math.min(minimumParentAlpha, alpha);
+    maximumParentAlpha = Math.max(maximumParentAlpha, alpha);
+    if (alpha > 0) nonZeroParentSamples += 1;
+    const distance = Math.abs(alpha - 0.5);
+    if (
+      alpha > 1 / 255
+      && alpha < 254 / 255
+      && distance < clippingSampleDistance
+    ) {
       clippingSampleX = scanX + offset;
-      break;
+      clippingSampleDistance = distance;
     }
   }
   if (clippingSampleX < 0) {
-    throw new Error("Bordo alpha morbido della base clipping non trovato.");
+    throw new Error(
+      "Bordo alpha morbido della base clipping non trovato: "
+      + `alpha ${minimumParentAlpha}…${maximumParentAlpha}, `
+      + `${nonZeroParentSamples}/${scanWidth} campioni non zero.`,
+    );
   }
   await engine.setLayerOpacity(clippingParentIndex, 0.83);
 

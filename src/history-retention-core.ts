@@ -255,6 +255,8 @@ export interface HistoryAccountingWatermark {
   discardedImportTail: object | null;
   discardedTransformLength: number;
   discardedTransformTail: object | null;
+  discardedStructuralLength: number;
+  discardedStructuralTail: object | null;
   selectionRevisionSize: number;
   selectionActionSize: number;
 }
@@ -266,6 +268,7 @@ export interface HistoryAccountingObservation {
   discardedVector: readonly object[];
   discardedImport: readonly object[];
   discardedTransform: readonly object[];
+  discardedStructural: readonly object[];
   selectionRevisionSize: number;
   selectionActionSize: number;
 }
@@ -315,6 +318,11 @@ export function historyAccountingIsAppendOnly(
       observation.discardedTransform,
       watermark.discardedTransformLength,
       watermark.discardedTransformTail,
+    )
+    && grownOnlyAtTail(
+      observation.discardedStructural,
+      watermark.discardedStructuralLength,
+      watermark.discardedStructuralTail,
     )
     && watermark.selectionRevisionSize <= observation.selectionRevisionSize
     && watermark.selectionActionSize <= observation.selectionActionSize;

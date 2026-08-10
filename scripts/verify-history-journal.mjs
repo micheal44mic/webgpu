@@ -17,7 +17,7 @@ import {
 
 assert.equal(
   HISTORY_JOURNAL_STRATEGY,
-  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-metadata-scene-reorder-v9",
+  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-metadata-scene-reorder-merge-v10",
 );
 
 const stroke = (id, layerId) => ({ id, kind: "stroke", layerId });
@@ -46,6 +46,25 @@ const rasterFilter = (id, layerId) => ({
   kind: "raster-filter",
   layerId,
   baseBounds: { x: 0, y: 0, width: 1, height: 1 },
+});
+const layerMerge = (
+  id,
+  inputLayerIds,
+  outputLayerId,
+  hasContent = true,
+  payloadsRetiredBelowFloor = false,
+) => ({
+  id,
+  kind: "layer-merge",
+  inputs: inputLayerIds.map((layerId) => ({
+    kind: "raster",
+    entry: { layerRecord: { id: layerId } },
+  })),
+  output: {
+    layerRecord: { id: outputLayerId },
+    baseBounds: hasContent ? { x: 0, y: 0, width: 1, height: 1 } : null,
+  },
+  payloadsRetiredBelowFloor,
 });
 
 // With one layer the module must reproduce the engine's current behaviour
@@ -334,6 +353,41 @@ const rasterFilter = (id, layerId) => ({
   assert.equal(hasVisibleContent(actions, 3, 7), false);
   assert.equal(hasVisibleContent(actions, 2, 7), true);
   assert.deepEqual([...visibleStrokeIds(actions, 2, 7)], [2]);
+}
+
+// A merge removes the raster inputs from the visible journal state and becomes
+// the exact replay checkpoint for its fresh output identity.
+{
+  const actions = [
+    stroke(1, 3),
+    stroke(2, 4),
+    layerMerge(3, [3, 4], 9),
+    stroke(4, 9),
+  ];
+  assert.equal(hasVisibleContent(actions, 2, 3), true);
+  assert.equal(hasVisibleContent(actions, 3, 3), false);
+  assert.equal(hasVisibleContent(actions, 3, 4), false);
+  assert.equal(hasVisibleContent(actions, 3, 9), true);
+  assert.deepEqual([...layersWithVisibleContent(actions, 3)], [9]);
+  assert.equal(latestLayerReplayCheckpoint(actions, 4, 9)?.action.id, 3);
+  assert.deepEqual([...visibleRasterBatchActionIdsAfterCheckpoint(actions, 4, 9)], [4]);
+
+  assert.equal(historyStepTargetsMissingLayer(actions, 3, -1, new Set([9])), false);
+  assert.equal(historyStepTargetsMissingLayer(actions, 3, -1, new Set()), true);
+  assert.equal(historyStepTargetsMissingLayer(actions, 2, 1, new Set([3, 4])), false);
+  assert.equal(historyStepTargetsMissingLayer(actions, 2, 1, new Set([3])), true);
+  assert.equal(historyStepTargetsMissingLayer(actions, 2, 1, new Set([3, 4, 9])), true);
+
+  const retired = [
+    stroke(1, 3),
+    layerMerge(2, [3], 9, true, true),
+    stroke(3, 9),
+  ];
+  assert.equal(
+    latestLayerReplayCheckpoint(retired, retired.length, 9),
+    null,
+    "un seed merge ritirato sotto il floor non deve più essere scelto come baseline replay",
+  );
 }
 
 // Structural Undo needs the generated raster to be live so it can replace it
@@ -761,6 +815,7 @@ const rasterFilter = (id, layerId) => ({
     "discardedRasterImportHistoryActions",
     "discardedRasterTransformHistoryActions",
     "discardedLayerDeleteHistoryActions",
+    "discardedLayerMergeHistoryActions",
   ]) {
     assert.match(
       atomicCommit,
@@ -818,6 +873,16 @@ const rasterFilter = (id, layerId) => ({
     historyRuntime,
     /for \(const action of engine\.discardedLayerDeleteHistoryActions\) \{\s*destroyLayerDeleteHistorySeeds/,
     "vietata la distruzione incondizionata della lista layer-delete",
+  );
+  assert.match(
+    historyRuntime,
+    /retainedLayerMergeIds\.add\(action\.id\)/,
+    "i merge vivi vanno marcati durante la scansione del journal",
+  );
+  assert.match(
+    historyRuntime,
+    /if \(!retainedLayerMergeIds\.has\(action\.id\)\) layerMergeActionsToDestroy\.push\(action\)/,
+    "solo i merge davvero abbandonati possono perdere i seed input/output",
   );
 
   // Le raster-run sono nominate dagli ID, non dagli stili: una modifica raster

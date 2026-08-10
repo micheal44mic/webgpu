@@ -703,19 +703,23 @@ export class MixedSceneStack {
     return this.orderedItems.findIndex((item) => item.key === key);
   }
 
-  captureState(): MixedSceneState {
+  captureState(shareImmutableDocuments = false): MixedSceneState {
     return {
       items: this.orderedItems.map((item) => ({ ...item })),
       textNodes: [...this.textNodes.values()].map(cloneVectorTextNode),
-      svgNodes: [...this.svgNodes.values()].map(cloneVectorSvgNode),
-      imageNodes: [...this.imageNodes.values()].map(cloneRasterImageNode),
+      svgNodes: [...this.svgNodes.values()].map((node) => (
+        shareImmutableDocuments ? cloneVectorSvgNodeForHistory(node) : cloneVectorSvgNode(node)
+      )),
+      imageNodes: [...this.imageNodes.values()].map((node) => (
+        shareImmutableDocuments ? cloneRasterImageNodeForHistory(node) : cloneRasterImageNode(node)
+      )),
       selectedKey: this.selectedKey,
       nextTextNodeId: this.nextTextNodeId,
       nextSvgNodeId: this.nextSvgNodeId,
       nextImageNodeId: this.nextImageNodeId,
     };
   }
-  restoreState(state: MixedSceneState): void {
+  restoreState(state: MixedSceneState, shareImmutableDocuments = false): void {
     this.orderedItems.splice(
       0,
       this.orderedItems.length,
@@ -737,11 +741,21 @@ export class MixedSceneStack {
     }
     this.svgNodes.clear();
     for (const node of state.svgNodes) {
-      this.svgNodes.set(node.id, { ...cloneVectorSvgNode(node), kind: "svg" });
+      this.svgNodes.set(node.id, {
+        ...(shareImmutableDocuments
+          ? cloneVectorSvgNodeForHistory(node)
+          : cloneVectorSvgNode(node)),
+        kind: "svg",
+      });
     }
     this.imageNodes.clear();
     for (const node of state.imageNodes) {
-      this.imageNodes.set(node.id, { ...cloneRasterImageNode(node), kind: "image" });
+      this.imageNodes.set(node.id, {
+        ...(shareImmutableDocuments
+          ? cloneRasterImageNodeForHistory(node)
+          : cloneRasterImageNode(node)),
+        kind: "image",
+      });
     }
     this.selectedKey = state.selectedKey;
     this.nextTextNodeId = state.nextTextNodeId;

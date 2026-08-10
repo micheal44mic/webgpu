@@ -2161,13 +2161,48 @@
               <i data-lucide="square-dashed" class="mobile-icon-layer mobile-icon-face"></i>
             </span>
           </button>
+          <button
+            id="mobileLayerMultiSelect"
+            class="mobile-layers-toolbar-action"
+            type="button"
+            aria-label="Select multiple layers"
+            aria-controls="mobileLayerList"
+            aria-pressed="false"
+            title="Select multiple layers"
+            disabled
+          >
+            <span class="mobile-icon-stack" aria-hidden="true">
+              <i data-lucide="check" class="mobile-icon-layer mobile-icon-outline"></i>
+              <i data-lucide="check" class="mobile-icon-layer mobile-icon-face"></i>
+            </span>
+          </button>
         </div>
         <div id="mobileLayerList" class="mobile-layer-list" role="list"></div>
+        <div
+          id="mobileLayerMultiActions"
+          class="mobile-layer-multi-actions"
+          hidden
+        >
+          <button
+            id="mobileLayerMergeSelection"
+            type="button"
+            aria-describedby="mobileLayerMergeStatus"
+          >
+            Unisci livelli
+          </button>
+        </div>
+        <p
+          id="mobileLayerMergeStatus"
+          class="mobile-layer-merge-status"
+          role="status"
+          hidden
+        ></p>
         <div
           id="mobileLayerContextMenu"
           class="mobile-layer-context-menu"
           role="menu"
           aria-label="Layer actions"
+          tabindex="-1"
           hidden
           inert
         >
@@ -2182,6 +2217,16 @@
           <button id="mobileLayerOptions" type="button" role="menuitem">
             Options
           </button>
+          <button
+            id="mobileLayerMerge"
+            type="button"
+            role="menuitem"
+            aria-describedby="mobileLayerMergeReason"
+            hidden
+          >
+            Unisci livelli
+          </button>
+          <p id="mobileLayerMergeReason" role="status" hidden></p>
           <button
             id="mobileLayerDelete"
             class="is-destructive"

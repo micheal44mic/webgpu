@@ -10,6 +10,7 @@ import type {
 import type {
   HistoryAction,
   HistoryRenderBatch,
+  LayerMergeHistoryAction,
   SelectionHistoryMaskSnapshot,
 } from "./engine-history-types";
 import { HISTORY_JOURNAL_STRATEGY } from "./history-journal";
@@ -177,6 +178,8 @@ export class HistoryStorageCoordinator {
   private readonly gpuStableOwnerActionIds = new Map<number, number>();
   private rawSeedHandles = new WeakMap<LayerColdStorageResources, HistoryColdSeedHandle>();
   private readonly coldHandles = new Map<string, HistoryColdSeedHandle>();
+  /** One oversized action must not disable spill for every later action. */
+  private readonly diskBudgetBlockedActionIds = new Set<number>();
   private heartbeatTimer: number | null = null;
   private sessionLockRelease: (() => void) | null = null;
   private initializePromise: Promise<void>;
@@ -248,6 +251,7 @@ export class HistoryStorageCoordinator {
     this.garbageSegmentIds.clear();
     this.gpuStableOwnerActionIds.clear();
     this.coldHandles.clear();
+    this.diskBudgetBlockedActionIds.clear();
     this.rawSeedHandles = new WeakMap();
     this.nextColdPayloadId = 1;
     this.resetSpillFailureCircuit();
@@ -287,6 +291,7 @@ export class HistoryStorageCoordinator {
     this.operationEpoch += 1;
     this.journalEpoch += 1;
     this.branchId = makeId("b");
+    this.diskBudgetBlockedActionIds.clear();
     this.resetSpillFailureCircuit();
   }
 
@@ -339,7 +344,7 @@ export class HistoryStorageCoordinator {
       // await (quota estimate included), so Undo cannot observe a resident
       // payload and then race its demotion.
       this.storageBusy = "spilling";
-      let result: "committed" | "none" | "backend-fallback";
+      let result: "committed" | "none" | "backend-fallback" | "budget-skip";
       try {
         result = await this.spillOneSegment(options);
       } finally {
@@ -351,6 +356,7 @@ export class HistoryStorageCoordinator {
         this.engine.historyGpuStorage.trimEmptyPages(true);
         continue;
       }
+      if (result === "budget-skip") continue;
       // An OPFS runtime failure degrades new writes to IDB. Retry the same
       // resident payload once rather than letting byte eviction run first.
       if (result === "backend-fallback" && beforeBackend !== this.backend) continue;
@@ -383,7 +389,66 @@ export class HistoryStorageCoordinator {
     // have become stored-only at the durable commit boundary.
     await this.waitForForegroundStorageAccess();
     this.wrapAllHistorySeeds();
-    await this.hydrateRequiredPayloads(this.payloadsRequiredForStep(delta));
+    const required = this.payloadsRequiredForStep(delta);
+    const previousCursor = this.engine.historyCursor;
+    const crossed = delta < 0
+      ? this.engine.historyActions[previousCursor - 1]
+      : this.engine.historyActions[previousCursor];
+    if (crossed?.kind === "layer-merge") {
+      // The merge runtime streams one seed at a time and retains detached live
+      // GPU resources as its rollback closure. Hydrating N+1 seeds here would
+      // recreate the old unbounded peak before the transaction even starts.
+      await this.assertRequiredPayloadsAvailable(required);
+      return;
+    }
+    await this.hydrateRequiredPayloads(required);
+  }
+
+  /** Hydrates exactly one merge seed immediately before its bounded GPU copy. */
+  async ensureLayerMergeSeedResident(
+    seed: LayerColdStorageResources | null,
+  ): Promise<void> {
+    if (!seed || !isHistoryColdSeedHandle(seed) || seed.resident) return;
+    await this.waitForForegroundStorageAccess();
+    const collector = this.createPayloadRequirementCollector();
+    collector.addSeed(seed);
+    const required = [...collector.required.values()];
+    if (required.length !== 1) {
+      throw new Error("Seed merge locale non più raggiungibile nello storage History.");
+    }
+    await this.hydrateRequiredPayloads(required);
+  }
+
+  /** Demotes durable caches before admission and after each streamed copy. */
+  demoteStoredLayerMergeSeeds(action: LayerMergeHistoryAction): boolean {
+    this.wrapAllHistorySeeds();
+    let changed = false;
+    for (const input of action.inputs) {
+      if (input.kind === "raster") {
+        changed = this.demoteStoredLayerMergeSeed(input.entry.seed) || changed;
+      }
+    }
+    changed = this.demoteStoredLayerMergeSeed(action.output.seed) || changed;
+    return changed;
+  }
+
+  demoteStoredLayerMergeSeed(seed: LayerColdStorageResources | null): boolean {
+    if (
+      !seed
+      || !isHistoryColdSeedHandle(seed)
+      || !seed.resident
+      || !this.storedPayloads.has(seed.payloadId)
+    ) {
+      return false;
+    }
+    const resident = seed.demoteResidentNoThrow();
+    try {
+      resident?.texture.destroy();
+    } catch {
+      // The committed local payload remains authoritative.
+    }
+    this.ownershipEpoch += 1;
+    return true;
   }
 
   /**
@@ -493,6 +558,28 @@ export class HistoryStorageCoordinator {
       throw error;
     } finally {
       this.storageBusy = "idle";
+    }
+  }
+
+  private async assertRequiredPayloadsAvailable(
+    required: readonly HistoryPayloadCandidate[],
+  ): Promise<void> {
+    const missing = required.filter((candidate) => candidate.storage === "gpu"
+      ? !this.engine.historyGpuStorage.isResident(candidate.slice)
+      : !candidate.handle.resident
+    );
+    if (missing.length === 0) return;
+    await this.initializePromise;
+    if (!this.ready || this.storageBusy !== "idle") {
+      throw new Error("La cronologia locale non è disponibile in questo momento.");
+    }
+    for (const candidate of missing) {
+      if (!this.storedPayloads.has(candidate.payloadId)) {
+        throw new Error(
+          "La parte locale della cronologia non è più disponibile. "
+          + "Il disegno corrente non è stato modificato.",
+        );
+      }
     }
   }
 
@@ -639,7 +726,7 @@ export class HistoryStorageCoordinator {
       payloadBytes: value.bytes,
       payloadCount: value.count,
       alreadyStored: false,
-      pinned: false,
+      pinned: this.diskBudgetBlockedActionIds.has(actionId),
     }));
     const maximumSegmentBytes = historyStorageMaximumSegmentBytes(MOBILE_DEVICE_CLASS);
     const keepHotActions = adaptiveHistoryStorageKeepHotActions({
@@ -668,7 +755,7 @@ export class HistoryStorageCoordinator {
 
   private async spillOneSegment(
     options: HistoryStorageSpillOptions,
-  ): Promise<"committed" | "none" | "backend-fallback"> {
+  ): Promise<"committed" | "none" | "backend-fallback" | "budget-skip"> {
     const { candidates, plan } = this.residentPayloadSegmentPlan(options);
     if (!plan.required) return "none";
     const selectedActionIds = new Set(plan.actionIds);
@@ -694,9 +781,12 @@ export class HistoryStorageCoordinator {
       diskBudget.hardBytes <= this.committedBytes
       || plan.rawBytes > diskBudget.hardBytes - this.committedBytes
     ) {
-      this.writable = false;
-      this.lastError = "Spazio locale prudente esaurito; la cronologia resta in memoria.";
-      return "none";
+      for (const actionId of plan.actionIds) {
+        this.diskBudgetBlockedActionIds.add(actionId);
+      }
+      this.lastError =
+        "Azione History troppo grande per il budget locale; gli altri payload restano spillabili.";
+      return "budget-skip";
     }
 
     const segmentId = makeId("seg");
@@ -1387,6 +1477,11 @@ export class HistoryStorageCoordinator {
       addSeed(crossed.seed);
     } else if (crossed.kind === "layer-delete") {
       for (const entry of crossed.entries) addSeed(entry.seed);
+    } else if (crossed.kind === "layer-merge") {
+      for (const input of crossed.inputs) {
+        if (input.kind === "raster") addSeed(input.entry.seed);
+      }
+      addSeed(crossed.output.seed);
     }
     if (crossed.kind === "raster-transform") {
       addSnapshot(crossed.selectionBefore);
@@ -1424,6 +1519,22 @@ export class HistoryStorageCoordinator {
             entry.seed,
             action.id,
             entry.layerRecord.id,
+          );
+        }
+      } else if (action.kind === "layer-merge") {
+        for (const input of action.inputs) {
+          if (input.kind !== "raster" || !input.entry.seed) continue;
+          input.entry.seed = this.wrapSeed(
+            input.entry.seed,
+            action.id,
+            input.entry.layerRecord.id,
+          );
+        }
+        if (action.output.seed) {
+          action.output.seed = this.wrapSeed(
+            action.output.seed,
+            action.id,
+            action.output.layerRecord.id,
           );
         }
       }

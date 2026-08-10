@@ -153,6 +153,8 @@ interface HistoryMaintenanceState {
   observedDiscardedImportTail: object | null;
   observedDiscardedTransformLength: number;
   observedDiscardedTransformTail: object | null;
+  observedDiscardedStructuralLength: number;
+  observedDiscardedStructuralTail: object | null;
   observedSelectionRevisionSize: number;
   observedSelectionActionSize: number;
   observedRasterAssetSize: number;
@@ -215,6 +217,8 @@ function stateFor(engine: BrushEngine): HistoryMaintenanceState {
       observedDiscardedImportTail: null,
       observedDiscardedTransformLength: 0,
       observedDiscardedTransformTail: null,
+      observedDiscardedStructuralLength: 0,
+      observedDiscardedStructuralTail: null,
       observedSelectionRevisionSize: 0,
       observedSelectionActionSize: 0,
       observedRasterAssetSize: 0,
@@ -295,7 +299,8 @@ function rasterActionAffectsPixels(kind: string): boolean {
     || kind === "vector-rasterize"
     || kind === "raster-import"
     || kind === "raster-transform"
-    || kind === "raster-filter";
+    || kind === "raster-filter"
+    || kind === "layer-merge";
 }
 
 function bytesForCheckpointCpuMetadata(checkpoint: PeriodicRasterHistoryCheckpoint): number {
@@ -400,6 +405,16 @@ function tailObject(values: readonly object[]): object | null {
   return values.length > 0 ? values[values.length - 1] : null;
 }
 
+function discardedStructuralHistoryActions(engine: BrushEngine): readonly HistoryAction[] {
+  if (engine.discardedLayerMergeHistoryActions.length === 0) {
+    return engine.discardedLayerDeleteHistoryActions;
+  }
+  return [
+    ...engine.discardedLayerDeleteHistoryActions,
+    ...engine.discardedLayerMergeHistoryActions,
+  ];
+}
+
 function emptyReplayTail(): HistoryReplayTailAccounting {
   return { actions: 0, batches: 0, bytes: 0 };
 }
@@ -431,6 +446,13 @@ function accountCheckpointSeed(
     for (const entry of action.entries) account(entry.seed);
     return;
   }
+  if (action.kind === "layer-merge") {
+    for (const input of action.inputs) {
+      if (input.kind === "raster") account(input.entry.seed);
+    }
+    account(action.output.seed);
+    return;
+  }
   if (
     action.kind !== "vector-rasterize"
     && action.kind !== "raster-import"
@@ -457,6 +479,13 @@ function accountHistoryAction(
   if (action.kind === "raster-transform") {
     accountSelectionSnapshot(engine, state, action.selectionBefore);
     accountSelectionSnapshot(engine, state, action.selectionAfter);
+  }
+  if (liveIndex !== null && action.kind === "layer-merge") {
+    const layerId = action.output.layerRecord.id;
+    state.actionIndexById.set(action.id, liveIndex);
+    state.lastRasterActionByLayer.set(layerId, { id: action.id, index: liveIndex });
+    state.replayTailByLayer.set(layerId, emptyReplayTail());
+    return;
   }
   if (
     liveIndex === null
@@ -523,6 +552,7 @@ function refreshGpuAndAssetAccounting(
 
 function rebuildHistoryAccounting(engine: BrushEngine): void {
   const state = stateFor(engine);
+  const discardedStructural = discardedStructuralHistoryActions(engine);
   state.accounting = emptyHistoryMemoryLedger();
   state.accountingCpuSeen = new WeakSet<object>();
   state.accountingSelectionSliceIds = new Set<number>();
@@ -570,6 +600,9 @@ function rebuildHistoryAccounting(engine: BrushEngine): void {
   for (const action of engine.discardedRasterTransformHistoryActions) {
     accountHistoryAction(engine, state, action, null);
   }
+  for (const action of discardedStructural) {
+    accountHistoryAction(engine, state, action, null);
+  }
   for (const snapshot of engine.selectionHistoryMasksByRevision.values()) {
     accountSelectionSnapshot(engine, state, snapshot);
   }
@@ -589,6 +622,8 @@ function rebuildHistoryAccounting(engine: BrushEngine): void {
   state.observedDiscardedImportTail = tailObject(engine.discardedRasterImportHistoryActions);
   state.observedDiscardedTransformLength = engine.discardedRasterTransformHistoryActions.length;
   state.observedDiscardedTransformTail = tailObject(engine.discardedRasterTransformHistoryActions);
+  state.observedDiscardedStructuralLength = discardedStructural.length;
+  state.observedDiscardedStructuralTail = tailObject(discardedStructural);
   state.observedSelectionRevisionSize = engine.selectionHistoryMasksByRevision.size;
   state.observedSelectionActionSize = engine.selectionHistoryMasksByAction.size;
   state.observedRasterAssetSize = -1;
@@ -606,6 +641,7 @@ function rebuildHistoryAccounting(engine: BrushEngine): void {
  */
 function synchronizeHistoryAccounting(engine: BrushEngine): boolean {
   const state = stateFor(engine);
+  const discardedStructural = discardedStructuralHistoryActions(engine);
   // La decisione vive in `history-retention-core`, che non importa il motore e
   // quindi si puo' esercitare nella suite senza GPU. Qui resta solo il compito
   // di dire cosa si vede: e' il punto in cui il difetto del cursore si era
@@ -624,6 +660,8 @@ function synchronizeHistoryAccounting(engine: BrushEngine): boolean {
       discardedImportTail: state.observedDiscardedImportTail,
       discardedTransformLength: state.observedDiscardedTransformLength,
       discardedTransformTail: state.observedDiscardedTransformTail,
+      discardedStructuralLength: state.observedDiscardedStructuralLength,
+      discardedStructuralTail: state.observedDiscardedStructuralTail,
       selectionRevisionSize: state.observedSelectionRevisionSize,
       selectionActionSize: state.observedSelectionActionSize,
     },
@@ -634,6 +672,7 @@ function synchronizeHistoryAccounting(engine: BrushEngine): boolean {
       discardedVector: engine.discardedVectorRasterHistoryActions,
       discardedImport: engine.discardedRasterImportHistoryActions,
       discardedTransform: engine.discardedRasterTransformHistoryActions,
+      discardedStructural,
       selectionRevisionSize: engine.selectionHistoryMasksByRevision.size,
       selectionActionSize: engine.selectionHistoryMasksByAction.size,
     },
@@ -667,6 +706,10 @@ function synchronizeHistoryAccounting(engine: BrushEngine): boolean {
     engine.discardedRasterTransformHistoryActions,
     state.observedDiscardedTransformLength,
   );
+  accountDiscarded(
+    discardedStructural,
+    state.observedDiscardedStructuralLength,
+  );
   for (let index = state.observedBatchesLength; index < engine.historyBatches.length; index += 1) {
     accountHistoryBatch(engine, state, engine.historyBatches[index]);
     state.accountingIncrementalBatches += 1;
@@ -682,6 +725,8 @@ function synchronizeHistoryAccounting(engine: BrushEngine): boolean {
   state.observedDiscardedImportTail = tailObject(engine.discardedRasterImportHistoryActions);
   state.observedDiscardedTransformLength = engine.discardedRasterTransformHistoryActions.length;
   state.observedDiscardedTransformTail = tailObject(engine.discardedRasterTransformHistoryActions);
+  state.observedDiscardedStructuralLength = discardedStructural.length;
+  state.observedDiscardedStructuralTail = tailObject(discardedStructural);
   state.observedSelectionRevisionSize = engine.selectionHistoryMasksByRevision.size;
   state.observedSelectionActionSize = engine.selectionHistoryMasksByAction.size;
   refreshGpuAndAssetAccounting(engine, state);
@@ -1064,12 +1109,17 @@ function latestFullCheckpointByLayer(
   const rasterLayerIdsWithHistory = new Set<number>();
   for (let index = 0; index < engine.historyCursor; index += 1) {
     const action = engine.historyActions[index];
+    const layerId = action.kind === "layer-merge"
+      ? action.output.layerRecord.id
+      : "layerId" in action
+        ? action.layerId
+        : null;
     if (
-      "layerId" in action
+      layerId !== null
       && rasterActionAffectsPixels(action.kind)
-      && engine.layerStack.byId(action.layerId)
+      && engine.layerStack.byId(layerId)
     ) {
-      rasterLayerIdsWithHistory.add(action.layerId);
+      rasterLayerIdsWithHistory.add(layerId);
     }
   }
   for (const layerId of rasterLayerIdsWithHistory) {
@@ -1185,6 +1235,28 @@ function evictHistoryBelowBaselines(
     }
   }
   state.checkpoints = retainedCheckpoints;
+
+  // The global floor makes structural Undo below it unreachable. Keeping the
+  // full raster seeds (and semantic vector snapshots) inside diagnostic action
+  // metadata would retain GPU/OPFS ownership forever without preserving a
+  // single user-visible step. IDs/order/record metadata remain for lineage.
+  for (let index = 0; index < candidateFloor; index += 1) {
+    const action = engine.historyActions[index];
+    if (action.kind !== "layer-merge" || action.payloadsRetiredBelowFloor) continue;
+    for (const input of action.inputs) {
+      if (input.kind === "raster") {
+        evictedPayloadBytes += historyColdSeedResidentBytes(input.entry.seed);
+        destroyLayerColdStorage(input.entry.seed);
+        input.entry.seed = null;
+      } else {
+        input.state = null;
+      }
+    }
+    evictedPayloadBytes += historyColdSeedResidentBytes(action.output.seed);
+    destroyLayerColdStorage(action.output.seed);
+    action.output.seed = null;
+    action.payloadsRetiredBelowFloor = true;
+  }
   state.floorCursor = candidateFloor;
   state.evictedPayloadBytes += evictedPayloadBytes;
   engine.historyGpuStorage.trimEmptyPages(true);

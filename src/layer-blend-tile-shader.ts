@@ -102,8 +102,9 @@ fn fragmentMain(
   if (rasterPixelViewEnabled(1.0)) {
     return loadTile(vec2<i32>(floor(localPosition)));
   }
-  let lower = vec2<i32>(floor(localPosition));
-  let interpolation = fract(localPosition);
+  let texelPosition = localPosition - vec2<f32>(0.5);
+  let lower = vec2<i32>(floor(texelPosition));
+  let interpolation = fract(texelPosition);
   let p00 = loadTile(lower);
   let p10 = loadTile(lower + vec2<i32>(1, 0));
   let p01 = loadTile(lower + vec2<i32>(0, 1));
@@ -170,7 +171,7 @@ fn fragmentMain(
     return vec4<f32>(0.0);
   }
   let uv = clamp(
-    (layerPosition + vec2<f32>(0.5)) / documentSize,
+    layerPosition / documentSize,
     vec2<f32>(0.0),
     vec2<f32>(1.0)
   );

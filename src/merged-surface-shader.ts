@@ -25,7 +25,7 @@ fn sampleMergedBelow(layerPosition: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(0.0);
   }
   let uv = clamp(
-    (localPosition + vec2<f32>(0.5)) / dimensions,
+    localPosition / dimensions,
     vec2<f32>(0.0),
     vec2<f32>(1.0)
   );
@@ -56,7 +56,7 @@ fn sampleMergedAbove(layerPosition: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(0.0);
   }
   let uv = clamp(
-    (localPosition + vec2<f32>(0.5)) / dimensions,
+    localPosition / dimensions,
     vec2<f32>(0.0),
     vec2<f32>(1.0)
   );

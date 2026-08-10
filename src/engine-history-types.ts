@@ -188,6 +188,54 @@ export interface LayerDeleteHistoryAction {
   referenceRasterLayerIdAfter: number | null;
 }
 
+export type LayerMergeHistoryInput =
+  | {
+    readonly kind: "raster";
+    readonly key: Extract<MixedSceneItem, { readonly kind: "raster" }>["key"];
+    readonly entry: DeletedLayerEntry;
+  }
+  | {
+    readonly kind: "vector";
+    readonly key: MixedSceneVectorKey;
+    /** Null only after the global History floor made this Undo unreachable. */
+    state: MixedSceneVectorHistoryState | null;
+  };
+
+/**
+ * The output record remains the live mutable layer metadata after the merge.
+ * Keep the merge-time sparse mask separately: later paint/history replay is
+ * allowed to mutate `layerRecord.storageTileMask`, but Redo must hydrate the
+ * exact checkpoint originally produced by this action.
+ */
+export interface LayerMergeHistoryOutput extends DeletedLayerEntry {
+  baseTileMask: Uint32Array;
+}
+
+/**
+ * One heterogeneous scene interval becomes one new raster identity.
+ *
+ * Text/SVG nodes remain semantic snapshots in this single action; they are
+ * rasterized only while producing `output.seed` and never appear as temporary
+ * layers or journal entries. Raster inputs retain exact tiled seeds. This is a
+ * structural checkpoint, not N independent vector-rasterize operations.
+ */
+export interface LayerMergeHistoryAction {
+  id: number;
+  kind: "layer-merge";
+  readonly inputs: readonly LayerMergeHistoryInput[];
+  readonly output: LayerMergeHistoryOutput;
+  readonly selectedKeyBefore: MixedSceneItem["key"];
+  readonly selectedKeyAfter: Extract<MixedSceneItem, { readonly kind: "raster" }>["key"];
+  readonly activeRasterLayerIdBefore: number;
+  readonly activeRasterLayerIdAfter: number;
+  readonly referenceRasterLayerIdBefore: number | null;
+  readonly referenceRasterLayerIdAfter: number | null;
+  /** True only for one complete raster clipping unit/single raster. */
+  readonly preservesParentPresentation: boolean;
+  /** Heavy seeds/vector snapshots were retired after the global floor crossed this action. */
+  payloadsRetiredBelowFloor: boolean;
+}
+
 /**
  * La creazione di un livello e' journaled: prima troncava il Redo perche' le
  * azioni `scene-reorder` conservano un ordine assoluto e un'inserzione non
@@ -323,7 +371,8 @@ export type HistoryAction =
   | RasterTransformHistoryAction
   | RasterFilterHistoryAction
   | LayerAddHistoryAction
-  | LayerDeleteHistoryAction;
+  | LayerDeleteHistoryAction
+  | LayerMergeHistoryAction;
 
 /**
  * Mutazioni che cambiano **quali** livelli esistono, non il loro contenuto.
@@ -332,8 +381,10 @@ export type HistoryAction =
  */
 export function isLayerStructureHistoryAction(
   action: HistoryAction,
-): action is LayerAddHistoryAction | LayerDeleteHistoryAction {
-  return action.kind === "layer-add" || action.kind === "layer-delete";
+): action is LayerAddHistoryAction | LayerDeleteHistoryAction | LayerMergeHistoryAction {
+  return action.kind === "layer-add"
+    || action.kind === "layer-delete"
+    || action.kind === "layer-merge";
 }
 
 export function isRasterHistoryCheckpointAction(

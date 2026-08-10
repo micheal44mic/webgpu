@@ -478,11 +478,22 @@ function encodeMissingBlurCaches(
   });
   engine.device.queue.submit([encoder.finish()]);
 }
-async function renderVectorDrawsToLayer(
+export async function renderVectorDrawsToTexture(
   engine: BrushEngine,
   draws: readonly VectorTextGpuDraw[],
   view: VectorTextViewState,
-  destination: LayerTextureResources,
+  destination: Pick<LayerTextureResources, "texture" | "format">,
+  destinationDocumentBounds: Readonly<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }> = {
+    x: 0,
+    y: 0,
+    width: view.canvasWidth,
+    height: view.canvasHeight,
+  },
 ): Promise<{ bounds: VectorRasterizeHistoryAction["baseBounds"]; chunkCount: number }> {
   requireVectorDraws(draws);
   if (destination.format !== engine.layerFormat) {
@@ -620,11 +631,37 @@ async function renderVectorDrawsToLayer(
           }
         }
         pass.end();
-        encoder.copyTextureToTexture(
-          { texture: resolvedTexture },
-          { texture: destination.texture, origin: { x, y, z: 0 } },
-          { width, height, depthOrArrayLayers: 1 },
+        const copyLeft = Math.max(x, destinationDocumentBounds.x);
+        const copyTop = Math.max(y, destinationDocumentBounds.y);
+        const copyRight = Math.min(
+          x + width,
+          destinationDocumentBounds.x + destinationDocumentBounds.width,
         );
+        const copyBottom = Math.min(
+          y + height,
+          destinationDocumentBounds.y + destinationDocumentBounds.height,
+        );
+        if (copyRight > copyLeft && copyBottom > copyTop) {
+          encoder.copyTextureToTexture(
+            {
+              texture: resolvedTexture,
+              origin: { x: copyLeft - x, y: copyTop - y, z: 0 },
+            },
+            {
+              texture: destination.texture,
+              origin: {
+                x: copyLeft - destinationDocumentBounds.x,
+                y: copyTop - destinationDocumentBounds.y,
+                z: 0,
+              },
+            },
+            {
+              width: copyRight - copyLeft,
+              height: copyBottom - copyTop,
+              depthOrArrayLayers: 1,
+            },
+          );
+        }
         engine.device.queue.submit([encoder.finish()]);
         chunkCount += 1;
       }
@@ -638,6 +675,15 @@ async function renderVectorDrawsToLayer(
     resolvedTexture.destroy();
   }
   return { bounds, chunkCount };
+}
+
+async function renderVectorDrawsToLayer(
+  engine: BrushEngine,
+  draws: readonly VectorTextGpuDraw[],
+  view: VectorTextViewState,
+  destination: LayerTextureResources,
+): Promise<{ bounds: VectorRasterizeHistoryAction["baseBounds"]; chunkCount: number }> {
+  return renderVectorDrawsToTexture(engine, draws, view, destination);
 }
 
 async function hydrateHistorySeed(

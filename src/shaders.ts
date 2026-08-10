@@ -930,8 +930,9 @@ fn compositedLayerStackTexel(documentPixel: vec2<i32>) -> vec4<f32> {
 // final premultiplied results. This is used only where any participating
 // stack surface has an alpha gradient.
 fn sampleCompositedLayerStackLinear(layerPosition: vec2<f32>) -> vec4<f32> {
-  let lower = vec2<i32>(floor(layerPosition));
-  let interpolation = fract(layerPosition);
+  let texelPosition = layerPosition - vec2<f32>(0.5);
+  let lower = vec2<i32>(floor(texelPosition));
+  let interpolation = fract(texelPosition);
   let p00 = compositedLayerStackTexel(lower);
   let p10 = compositedLayerStackTexel(lower + vec2<i32>(1, 0));
   let p01 = compositedLayerStackTexel(lower + vec2<i32>(0, 1));
@@ -988,7 +989,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   );
   let layerPosition = display.viewCenter + layerOffset;
   let layerSize = vec2<f32>(textureDimensions(activeLayerBase, 0));
-  let uv = clamp((layerPosition + vec2<f32>(0.5)) / layerSize, vec2<f32>(0.0), vec2<f32>(1.0));
+  let uv = clamp(layerPosition / layerSize, vec2<f32>(0.0), vec2<f32>(1.0));
   let jointFilteringCandidate = jointLayerFilteringCandidate();
   var activePaint = vec4<f32>(0.0);
   var belowPaint = vec4<f32>(0.0);
@@ -1061,7 +1062,7 @@ fn finalStackFragmentMain(
   }
 
   let uv = clamp(
-    (layerPosition + vec2<f32>(0.5)) / layerSize,
+    layerPosition / layerSize,
     vec2<f32>(0.0),
     vec2<f32>(1.0)
   );
@@ -1120,7 +1121,7 @@ fn activeFragmentMain(
     return vec4<f32>(0.0);
   }
   let uv = clamp(
-    (layerPosition + vec2<f32>(0.5)) / layerSize,
+    layerPosition / layerSize,
     vec2<f32>(0.0),
     vec2<f32>(1.0)
   );
@@ -1298,8 +1299,9 @@ fn tailActiveTexel(documentPixel: vec2<i32>) -> vec4<f32> {
 }
 
 fn sampleTailClippingGroupLinear(layerPosition: vec2<f32>) -> vec4<f32> {
-  let lower = vec2<i32>(floor(layerPosition));
-  let interpolation = fract(layerPosition);
+  let texelPosition = layerPosition - vec2<f32>(0.5);
+  let lower = vec2<i32>(floor(texelPosition));
+  let interpolation = fract(texelPosition);
   let p10i = lower + vec2<i32>(1, 0);
   let p01i = lower + vec2<i32>(0, 1);
   let p11i = lower + vec2<i32>(1, 1);
@@ -1371,7 +1373,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   }
 
   let layerUv = clamp(
-    (layerPosition + vec2<f32>(0.5)) / layerSize,
+    layerPosition / layerSize,
     vec2<f32>(0.0),
     vec2<f32>(1.0)
   );
@@ -1383,7 +1385,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     && all(tailPosition < tail.textureSize);
   if (insideTail) {
     let tailUv = clamp(
-      (tailPosition + vec2<f32>(0.5)) / tail.textureSize,
+      tailPosition / tail.textureSize,
       vec2<f32>(0.0),
       vec2<f32>(1.0)
     );
@@ -1399,7 +1401,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   }
   if (display.clippingMode > 0.5) {
     if (rasterPixelViewEnabled(1.0)) {
-      let pixel = vec2<i32>(floor(layerPosition + vec2<f32>(0.5)));
+      let pixel = vec2<i32>(floor(layerPosition));
       paint = composeActiveClippingGroupTexel(tailActiveTexel(pixel), pixel);
     } else {
       paint = sampleTailClippingGroupLinear(layerPosition);
@@ -1434,7 +1436,7 @@ fn activeFragmentMain(
   }
 
   let layerUv = clamp(
-    (layerPosition + vec2<f32>(0.5)) / layerSize,
+    layerPosition / layerSize,
     vec2<f32>(0.0),
     vec2<f32>(1.0)
   );
@@ -1445,7 +1447,7 @@ fn activeFragmentMain(
     && all(tailPosition < tail.textureSize);
   if (insideTail) {
     let tailUv = clamp(
-      (tailPosition + vec2<f32>(0.5)) / tail.textureSize,
+      tailPosition / tail.textureSize,
       vec2<f32>(0.0),
       vec2<f32>(1.0)
     );
@@ -1461,7 +1463,7 @@ fn activeFragmentMain(
   }
   if (display.clippingMode > 0.5) {
     if (rasterPixelViewEnabled(1.0)) {
-      let pixel = vec2<i32>(floor(layerPosition + vec2<f32>(0.5)));
+      let pixel = vec2<i32>(floor(layerPosition));
       return composeActiveClippingGroupTexel(tailActiveTexel(pixel), pixel);
     }
     return sampleTailClippingGroupLinear(layerPosition);
@@ -1721,8 +1723,9 @@ fn sampleCompositedLayerNearest(uv: vec2<f32>) -> vec4<f32> {
 }
 
 fn sampleCompositedClippingGroupLinear(layerPosition: vec2<f32>) -> vec4<f32> {
-  let lower = vec2<i32>(floor(layerPosition));
-  let interpolation = fract(layerPosition);
+  let texelPosition = layerPosition - vec2<f32>(0.5);
+  let lower = vec2<i32>(floor(texelPosition));
+  let interpolation = fract(texelPosition);
   let maximum = vec2<i32>(textureDimensions(layerTexture, 0)) - vec2<i32>(1);
   let p00i = clamp(lower, vec2<i32>(0), maximum);
   let p10i = clamp(lower + vec2<i32>(1, 0), vec2<i32>(0), maximum);
@@ -1850,8 +1853,9 @@ fn compositedFinalRasterStackTexel(documentPixel: vec2<i32>) -> vec4<f32> {
 // document texels first and only then interpolate the final premultiplied
 // colors, matching the canonical raster-stack presenter at mip 0.
 fn sampleCompositedFinalRasterStackLinear(layerPosition: vec2<f32>) -> vec4<f32> {
-  let lower = vec2<i32>(floor(layerPosition));
-  let interpolation = fract(layerPosition);
+  let texelPosition = layerPosition - vec2<f32>(0.5);
+  let lower = vec2<i32>(floor(texelPosition));
+  let interpolation = fract(texelPosition);
   let p00 = compositedFinalRasterStackTexel(lower);
   let p10 = compositedFinalRasterStackTexel(lower + vec2<i32>(1, 0));
   let p01 = compositedFinalRasterStackTexel(lower + vec2<i32>(0, 1));
@@ -1918,7 +1922,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     return vec4<f32>(vec3<f32>(0.055), 1.0);
   }
 
-  let uv = clamp((layerPosition + vec2<f32>(0.5)) / layerSize, vec2<f32>(0.0), vec2<f32>(1.0));
+  let uv = clamp(layerPosition / layerSize, vec2<f32>(0.0), vec2<f32>(1.0));
   // Logical mip 0 is the exact permanent+stroke composite; mip 1+ lives in
   // the derived texture. Mix adjacent logical levels explicitly because the
   // shared sampler intentionally keeps nearest-mip behavior for legacy paths.
@@ -1949,7 +1953,7 @@ fn finalStackFragmentMain(
   let layerPosition = display.viewCenter + layerOffset;
   let layerSize = vec2<f32>(textureDimensions(layerTexture, 0));
   let uv = clamp(
-    (layerPosition + vec2<f32>(0.5)) / layerSize,
+    layerPosition / layerSize,
     vec2<f32>(0.0),
     vec2<f32>(1.0)
   );
@@ -2049,7 +2053,7 @@ fn activeFragmentMain(
   }
 
   let uv = clamp(
-    (layerPosition + vec2<f32>(0.5)) / layerSize,
+    layerPosition / layerSize,
     vec2<f32>(0.0),
     vec2<f32>(1.0)
   );

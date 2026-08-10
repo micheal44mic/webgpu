@@ -8,6 +8,7 @@ import {
   buildMobileLayerReorderPlan,
   mobileLayerReorderAutoScrollVelocity,
   mobileLayerReorderDropSlot,
+  mobileLayerReorderHoldReached,
   mobileLayerReorderKeysAtSlot,
   mobileLayerReorderMovementExceeded,
 } from "../src/mobile-layer-reorder-core.ts";
@@ -23,6 +24,8 @@ assert.equal(MOBILE_LAYER_REORDER_AUTO_SCROLL_EDGE_PX, 36);
 assert.equal(MOBILE_LAYER_REORDER_AUTO_SCROLL_MAX_PX_PER_SECOND, 520);
 assert.equal(mobileLayerReorderMovementExceeded(0, 0, 8, 0), false);
 assert.equal(mobileLayerReorderMovementExceeded(0, 0, 8.01, 0), true);
+assert.equal(mobileLayerReorderHoldReached(100, 419.99), false);
+assert.equal(mobileLayerReorderHoldReached(100, 420), true);
 
 const items = [
   { key: "text:1", clippingParentKey: null },
@@ -96,6 +99,11 @@ assert.match(
   main,
   /gesture\.phase === "armed"[\s\S]*?mobileLayerReorderMovementExceeded[\s\S]*?activateMobileLayerReorderGesture\(\)/,
   "continuing the same held gesture beyond the slop must transition to reorder",
+);
+assert.match(
+  main,
+  /gesture\.phase === "pending"[\s\S]*?mobileLayerReorderHoldReached\(gesture\.startTime, performance\.now\(\)\)[\s\S]*?armMobileLayerContextGesture\(\)/,
+  "pointer-up must recover a long press when the browser throttles the hold timer",
 );
 assert.match(
   main,

@@ -1,7 +1,7 @@
 import type {
   HistoryAction,
   HistoryRenderBatch,
-  RasterHistoryCheckpointAction,
+  RasterHistoryCheckpoint,
 } from "./engine-history-types";
 import { selectLayerReplayAfterCheckpoint } from "./history-journal";
 import type { PeriodicRasterHistoryCheckpoint } from "./history-maintenance-runtime";
@@ -13,7 +13,7 @@ export interface PeriodicHistoryReplaySelection {
 
 export interface RasterHistoryReplayPlan {
   readonly periodicChain: readonly PeriodicRasterHistoryCheckpoint[];
-  readonly seedAction: RasterHistoryCheckpointAction | undefined;
+  readonly seedAction: RasterHistoryCheckpoint | undefined;
   readonly replayCheckpointActionIndex: number;
   readonly visibleActionIds: ReadonlySet<number>;
   readonly batches: readonly HistoryRenderBatch[];
@@ -45,9 +45,17 @@ export function planRasterHistoryReplay(options: {
   const periodicChain = usePeriodicCheckpoint
     ? options.periodicSelection?.checkpoints ?? []
     : [];
-  const seedAction = usePeriodicCheckpoint
+  const checkpointAction = usePeriodicCheckpoint
     ? undefined
-    : journalSelection.checkpoint?.action as RasterHistoryCheckpointAction | undefined;
+    : journalSelection.checkpoint?.action;
+  const seedAction: RasterHistoryCheckpoint | undefined = checkpointAction?.kind === "layer-merge"
+    ? {
+      layerId: checkpointAction.output.layerRecord.id,
+      seed: checkpointAction.output.seed,
+      baseBounds: checkpointAction.output.baseBounds,
+      baseTileMask: checkpointAction.output.baseTileMask,
+    }
+    : checkpointAction;
   const replayCheckpointActionIndex = usePeriodicCheckpoint
     ? options.periodicSelection?.actionIndex ?? -1
     : journalSelection.checkpoint?.actionIndex ?? -1;

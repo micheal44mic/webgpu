@@ -5,6 +5,8 @@ import type {
   RasterTransformSnapshot,
 } from "./engine-types";
 import type { PixelSelectionState } from "./selection-core";
+import type { MergeMixedSceneItemsRequest } from "./layer-merge-core";
+import type { LayerMergeResult } from "./engine-layer-merge-runtime";
 import {
   MIXED_SCENE_STACK_STRATEGY,
   VECTOR_TEXT_BLOCK_SHADOW_STRATEGY,
@@ -175,6 +177,7 @@ export interface MixedVectorTextHost {
     id: number,
     draws: readonly VectorTextGpuDraw[],
   ): Promise<VectorRasterizationResult>;
+  mergeMixedSceneItems(request: MergeMixedSceneItemsRequest): Promise<LayerMergeResult>;
   importRasterImageFile(file: File): Promise<{
     layerId: number;
     name: string;
@@ -2126,6 +2129,96 @@ export class MixedVectorTextController {
     this.textRasterStatus.textContent = message;
     this.textRasterStatus.classList.toggle("error", failed);
     this.textRasterStatus.classList.toggle("ok", !failed);
+  }
+
+  /**
+   * Core-facing merge API used by layer UIs. Keys are bottom-up and must be a
+   * contiguous scene interval. Text/SVG draw programs are prepared here, where
+   * font/SVG geometry lives, then consumed transiently by the engine.
+   */
+  async mergeSceneItems(
+    keys: readonly MixedSceneItem["key"][],
+  ): Promise<LayerMergeResult> {
+    if (this.sceneOperationBusy) {
+      throw new Error("Un'altra operazione sulla scena è ancora in corso.");
+    }
+    this.sceneOperationBusy = true;
+    this.syncControlsFromSelection(this.selectedVectorNode());
+    const rasterSlots = new Set<string>();
+    try {
+      const view = this.vectorRasterView();
+      for (;;) {
+        const revision = this.effectCompiler.resourceRevisionValue();
+        const snapshot = this.host.getMixedSceneSnapshot();
+        if (!snapshot) throw new Error("Scena mista non disponibile.");
+        const firstIndex = snapshot.items.findIndex((item) => item.key === keys[0]);
+        const liveKeys = firstIndex >= 0
+          ? snapshot.items.slice(firstIndex, firstIndex + keys.length).map((item) => item.key)
+          : [];
+        if (
+          keys.length < 2
+          || liveKeys.length !== keys.length
+          || liveKeys.some((key, index) => key !== keys[index])
+        ) {
+          throw new Error(
+            "Gli elementi da unire sono cambiati o non sono più consecutivi.",
+          );
+        }
+
+        let allEffectsReady = true;
+        const vectorDraws: MergeMixedSceneItemsRequest["vectorDraws"][number][] = [];
+        for (const key of keys) {
+          const item = snapshot.items.find((candidate) => candidate.key === key);
+          if (!item) throw new Error(`Elemento ${key} assente durante il merge.`);
+          if (item.kind === "raster") continue;
+          if (item.kind === "image") {
+            throw new Error("La v1 del merge non supporta ancora i nodi immagine.");
+          }
+          const draws: VectorTextGpuDraw[] = [];
+          if (item.kind === "text") {
+            const node = item.textNode;
+            if (node.visible && node.opacity > 0 && node.text.length > 0) {
+              allEffectsReady = this.appendGpuDrawsForNode(
+                draws,
+                node,
+                this.geometryForNode(node),
+                view,
+                rasterSlots,
+                true,
+              ) && allEffectsReady;
+            }
+          } else {
+            const node = item.svgNode;
+            if (node.visible && node.opacity > 0) {
+              allEffectsReady = this.appendGpuDrawsForSvgNode(
+                draws,
+                node,
+                view,
+                rasterSlots,
+                true,
+              ) && allEffectsReady;
+            }
+          }
+          vectorDraws.push({ key: item.key, draws });
+        }
+        if (allEffectsReady) {
+          return await this.host.mergeMixedSceneItems({ keys: [...keys], vectorDraws });
+        }
+        const diagnostics = this.effectCompiler.diagnostics();
+        if (diagnostics.pendingJobs === 0 && diagnostics.lastError) {
+          throw new Error(`Preparazione vettori per merge fallita: ${diagnostics.lastError}`);
+        }
+        await this.effectCompiler.waitForResourceReady(revision);
+      }
+    } finally {
+      for (const slot of rasterSlots) this.effectCompiler.releasePinnedSlot(slot);
+      this.sceneOperationBusy = false;
+      this.syncControlsFromSelection(this.selectedVectorNode());
+      if (this.sceneOperationRenderDeferred) {
+        this.sceneOperationRenderDeferred = false;
+        this.scheduleRender();
+      }
+    }
   }
 
   private async rasterizeSelectedText(): Promise<VectorRasterizationResult | null> {

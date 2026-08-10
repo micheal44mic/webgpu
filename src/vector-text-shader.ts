@@ -108,8 +108,9 @@ fn sampleActiveLayer(uv: vec2<f32>) -> vec4<f32> {
 }
 
 fn sampleActiveClippingGroupLinear(layerPosition: vec2<f32>) -> vec4<f32> {
-  let lower = vec2<i32>(floor(layerPosition));
-  let interpolation = fract(layerPosition);
+  let texelPosition = layerPosition - vec2<f32>(0.5);
+  let lower = vec2<i32>(floor(texelPosition));
+  let interpolation = fract(texelPosition);
   let maximum = vec2<i32>(textureDimensions(activeLayerBase, 0)) - vec2<i32>(1);
   let p00i = clamp(lower, vec2<i32>(0), maximum);
   let p10i = clamp(lower + vec2<i32>(1, 0), vec2<i32>(0), maximum);
@@ -165,7 +166,7 @@ fn fragmentMain(
   }
 
   let uv = clamp(
-    (layerPosition + vec2<f32>(0.5)) / layerSize,
+    layerPosition / layerSize,
     vec2<f32>(0.0),
     vec2<f32>(1.0)
   );

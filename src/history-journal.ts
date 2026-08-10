@@ -1,5 +1,5 @@
 export const HISTORY_JOURNAL_STRATEGY =
-  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-metadata-scene-reorder-v9" as const;
+  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-metadata-scene-reorder-merge-v10" as const;
 
 /**
  * One entry of the global journal. `layerId` is what makes a single stack usable
@@ -64,6 +64,22 @@ export type JournalAction =
   | {
     id: number;
     kind: "layer-delete";
+  }
+  | {
+    id: number;
+    kind: "layer-merge";
+    inputs: readonly (
+      | {
+        kind: "raster";
+        entry: { layerRecord: { id: number } };
+      }
+      | { kind: "vector" }
+    )[];
+    output: {
+      layerRecord: { id: number };
+      baseBounds: unknown | null;
+    };
+    payloadsRetiredBelowFloor?: boolean;
   };
 
 export interface JournalBatch {
@@ -78,8 +94,34 @@ export interface LayerReplaySelection<T extends JournalBatch> {
 
 export type JournalCheckpointAction<TAction extends JournalAction = JournalAction> = Extract<
   TAction,
-  { kind: "vector-rasterize" | "raster-import" | "raster-transform" | "raster-filter" }
+  {
+    kind:
+      | "vector-rasterize"
+      | "raster-import"
+      | "raster-transform"
+      | "raster-filter"
+      | "layer-merge";
+  }
 >;
+
+function journalActionLayerId(action: JournalAction): number | null {
+  if (action.kind === "layer-merge") return action.output.layerRecord.id;
+  if (
+    action.kind === "vector"
+    || action.kind === "scene-reorder"
+    || action.kind === "layer-add"
+    || action.kind === "layer-delete"
+  ) return null;
+  return action.layerId;
+}
+
+function mergeRasterInputIds(
+  action: Extract<JournalAction, { kind: "layer-merge" }>,
+): readonly number[] {
+  return action.inputs.flatMap((input) =>
+    input.kind === "raster" ? [input.entry.layerRecord.id] : []
+  );
+}
 
 export interface LayerReplayCheckpoint<TAction extends JournalAction = JournalAction> {
   action: JournalCheckpointAction<TAction>;
@@ -163,6 +205,18 @@ export function hasVisibleContent(
       || action.kind === "layer-add"
       || action.kind === "layer-delete"
     ) continue;
+    if (action.kind === "layer-merge") {
+      for (const inputLayerId of mergeRasterInputIds(action)) {
+        if (layerId === undefined || inputLayerId === layerId) {
+          contentByLayer.set(inputLayerId, false);
+        }
+      }
+      const outputLayerId = action.output.layerRecord.id;
+      if (layerId === undefined || outputLayerId === layerId) {
+        contentByLayer.set(outputLayerId, action.output.baseBounds !== null);
+      }
+      continue;
+    }
     if (layerId !== undefined && action.layerId !== layerId) continue;
     if (action.kind === "clear") {
       contentByLayer.set(action.layerId, false);
@@ -193,12 +247,13 @@ export function latestLayerReplayCheckpoint<TAction extends JournalAction>(
       && action.kind !== "scene-reorder"
       && action.kind !== "layer-add"
       && action.kind !== "layer-delete"
-      && action.layerId === layerId
+      && journalActionLayerId(action) === layerId
       && (
         action.kind === "vector-rasterize"
         || action.kind === "raster-import"
         || action.kind === "raster-transform"
         || action.kind === "raster-filter"
+        || (action.kind === "layer-merge" && !action.payloadsRetiredBelowFloor)
       )
     ) {
       checkpoint = {
@@ -233,6 +288,7 @@ export function visibleRasterBatchActionIdsAfterCheckpoint<TAction extends Journ
       && action.kind !== "scene-reorder"
       && action.kind !== "layer-add"
       && action.kind !== "layer-delete"
+      && action.kind !== "layer-merge"
       && action.layerId === layerId
       && (action.kind === "stroke" || action.kind === "fill")
     ) {
@@ -326,6 +382,15 @@ export function historyStepTargetsMissingLayer(
     || action.kind === "layer-add"
     || action.kind === "layer-delete"
   ) return false;
+  if (action.kind === "layer-merge") {
+    const outputIsLive = liveLayerIds.has(action.output.layerRecord.id);
+    const rasterInputIds = mergeRasterInputIds(action);
+    const anyRasterInputIsLive = rasterInputIds.some((id) => liveLayerIds.has(id));
+    const allRasterInputsAreLive = rasterInputIds.every((id) => liveLayerIds.has(id));
+    return delta < 0
+      ? !outputIsLive || anyRasterInputIsLive
+      : outputIsLive || !allRasterInputsAreLive;
+  }
   if (action.kind === "vector-rasterize" || action.kind === "raster-import") {
     return delta < 0
       ? !liveLayerIds.has(action.layerId)
@@ -350,6 +415,9 @@ export function layersWithVisibleContent(
       || action.kind === "raster-filter"
     ) {
       layers.add(action.layerId);
+    } else if (action.kind === "layer-merge") {
+      layers.add(action.output.layerRecord.id);
+      for (const inputLayerId of mergeRasterInputIds(action)) layers.add(inputLayerId);
     }
   }
   for (const layerId of [...layers]) {

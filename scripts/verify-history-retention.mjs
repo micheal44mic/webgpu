@@ -104,6 +104,24 @@ const checkpointBytesFor = (documentSize, format) =>
   });
   assert.deepEqual(oversize.actionIds, [50], "un'azione oversize non va spezzata");
   assert.equal(oversize.oversize, true);
+  const afterOversizeBudgetRejection = planHistoryStorageSegment({
+    currentResidentBytes: 300 * MiB,
+    highWaterBytes: 140 * MiB,
+    targetSegmentBytes: 32 * MiB,
+    maximumSegmentBytes: 64 * MiB,
+    journalLength: 100,
+    keepHotActions: 2,
+    actions: [
+      { actionId: 50, cursor: 10, payloadBytes: 96 * MiB, payloadCount: 1, alreadyStored: false, pinned: true },
+      { actionId: 51, cursor: 11, payloadBytes: 2 * MiB, payloadCount: 1, alreadyStored: false, pinned: false },
+    ],
+  });
+  assert.deepEqual(
+    afterOversizeBudgetRejection.actionIds,
+    [51],
+    "un merge oltre quota va isolato: il payload successivo più piccolo deve restare spillabile",
+  );
+  assert.equal(afterOversizeBudgetRejection.oversize, false);
 
   const recentLargeActions = Array.from({ length: 7 }, (_, cursor) => ({
     cursor,
@@ -932,6 +950,7 @@ console.log("History spill planning verification passed.");
     discardedVector: vuoto,
     discardedImport: vuoto,
     discardedTransform: vuoto,
+    discardedStructural: vuoto,
     selectionRevisionSize: 0,
     selectionActionSize: 0,
   });
@@ -948,6 +967,8 @@ console.log("History spill planning verification passed.");
     discardedImportTail: null,
     discardedTransformLength: 0,
     discardedTransformTail: null,
+    discardedStructuralLength: 0,
+    discardedStructuralTail: null,
     selectionRevisionSize: 0,
     selectionActionSize: 0,
   });
@@ -1527,12 +1548,44 @@ console.log("History rapid-input queue and retention-floor feedback verified.");
     "il Fill deve preidratare il piano di rollback prima di mutare i pixel",
   );
   assert(coordinator.includes("this.engine.selectionHistoryClipBindGroups.clear();"));
-  assert(coordinator.includes("Spazio locale prudente esaurito"));
+  assert(coordinator.includes("Azione History troppo grande per il budget locale"));
+  assert(coordinator.includes("diskBudgetBlockedActionIds"));
+  assert(coordinator.includes('if (result === "budget-skip") continue;'));
+  const diskBudgetGate = spill.slice(
+    spill.indexOf("if (\n      diskBudget.hardBytes"),
+    spill.indexOf("const segmentId = makeId"),
+  );
+  assert(diskBudgetGate.includes("this.diskBudgetBlockedActionIds.add(actionId)"));
+  assert(
+    !diskBudgetGate.includes("this.writable = false"),
+    "un singolo merge oversize non deve disabilitare globalmente gli spill successivi",
+  );
   assert(coordinator.includes("this.consecutiveSpillFailures >= 3"));
   assert(coordinator.includes("failureSignature === this.lastSpillFailureSignature"));
   assert(coordinator.includes("trimHydratedWorkingSetAfterStep"));
   assert(historyRuntime.includes("trimHydratedWorkingSetAfterStep(delta)"));
   assert(!coordinator.includes("localStorage."), "i payload History non vanno in localStorage");
+
+  const floorRetirement = maintenance.slice(
+    maintenance.indexOf("// The global floor makes structural Undo below it unreachable."),
+    maintenance.indexOf("state.floorCursor = candidateFloor;"),
+  );
+  assert.match(floorRetirement, /index < candidateFloor/);
+  assert.match(floorRetirement, /destroyLayerColdStorage\(input\.entry\.seed\)/);
+  assert.match(floorRetirement, /input\.entry\.seed = null/);
+  assert.match(floorRetirement, /input\.state = null/);
+  assert.match(floorRetirement, /destroyLayerColdStorage\(action\.output\.seed\)/);
+  assert.match(floorRetirement, /action\.output\.seed = null/);
+  assert.match(floorRetirement, /action\.payloadsRetiredBelowFloor = true/);
+  assert(
+    maintenance.indexOf("rebuildHistoryAccounting(engine);", maintenance.indexOf(floorRetirement)) >= 0,
+    "dopo i tombstone merge il ledger residente deve essere ricostruito",
+  );
+  assert.match(
+    coordinator,
+    /onRetire: \(retired\)[\s\S]*?retireStoredPayload\(retired\.payloadId\)/,
+    "ritirare un seed merge stored-only deve rimuoverne anche l'ownership locale",
+  );
 
   const serializeGpu = coordinator.slice(
     coordinator.indexOf("private async serializeGpuPayload"),

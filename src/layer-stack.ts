@@ -176,6 +176,16 @@ export class LayerStack {
   }
 
   /**
+   * Reserves a fresh stable id for a record prepared outside the live stack.
+   * Failed asynchronous candidates deliberately burn their id: layer ids are
+   * monotonic identities and must never be recycled after GPU work may have
+   * observed them.
+   */
+  createDetachedRecord(name?: string): LayerRecord {
+    return this.createRecord(name?.trim() || `Livello ${this.nextId}`);
+  }
+
+  /**
    * A clipping relationship is valid only inside this raster stack: the base
    * exists, stays strictly below every clipped raster and is not itself
    * clipped. A base and all of its clipped rasters are one consecutive unit;
@@ -540,9 +550,14 @@ export class LayerStack {
   }
 
   /** Reattaches the exact detached record retained by structural history. */
-  attach(record: LayerRecord, index: number): number {
-    if (this.records.length >= LAYER_STACK_MAXIMUM) {
-      throw new Error(`Massimo ${LAYER_STACK_MAXIMUM} livelli raggiunto.`);
+  attach(record: LayerRecord, index: number, allowTemporaryReplacementOverflow = false): number {
+    const maximum = LAYER_STACK_MAXIMUM + Number(allowTemporaryReplacementOverflow);
+    if (this.records.length >= maximum) {
+      throw new Error(
+        allowTemporaryReplacementOverflow
+          ? `Il rimpiazzo temporaneo non può superare ${maximum} livelli.`
+          : `Massimo ${LAYER_STACK_MAXIMUM} livelli raggiunto.`,
+      );
     }
     if (!Number.isInteger(index) || index < 0 || index > this.records.length) {
       throw new Error(`Indice reinserimento livello ${index} fuori intervallo.`);

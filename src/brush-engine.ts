@@ -83,6 +83,13 @@ import {
   destroyLayerDeleteHistorySeeds,
 } from "./engine-layer-structure-runtime";
 import {
+  applyLayerMergeHistory,
+  destroyLayerMergeHistorySeeds,
+  prepareAndApplyLayerMerge,
+  type LayerMergeResult,
+} from "./engine-layer-merge-runtime";
+import type { MergeMixedSceneItemsRequest } from "./layer-merge-core";
+import {
   deleteRasterImageNode,
   destroyRasterImportHistorySeed,
   importRasterImageFile as importRasterImageFileRuntime,
@@ -372,6 +379,7 @@ import {
   type HistoryRenderBatch,
   type LayerAddHistoryAction,
   type LayerDeleteHistoryAction,
+  type LayerMergeHistoryAction,
   type DeletedLayerEntry,
   type RasterFilterHistoryAction,
   type RasterImportHistoryAction,
@@ -1575,6 +1583,8 @@ export class BrushEngine {
 
   /** Cancellazioni abbandonate dal Redo: i loro seed vanno liberati. */
   discardedLayerDeleteHistoryActions: LayerDeleteHistoryAction[] = [];
+  /** Merge abbandonati dal Redo: input e output restano vivi fino alla compaction. */
+  discardedLayerMergeHistoryActions: LayerMergeHistoryAction[] = [];
   /** Post-action raster checkpoints abandoned with Redo (Transform + filters). */
   discardedRasterTransformHistoryActions: Array<
     RasterTransformHistoryAction | RasterFilterHistoryAction
@@ -6882,6 +6892,40 @@ export class BrushEngine {
     return this.rasterizeVectorNode("svg", id, draws);
   }
 
+  /**
+   * Replaces one ordered heterogeneous scene interval with one new raster id.
+   * Vector inputs are rendered transiently by the controller-provided draw
+   * program and the journal receives exactly one structural action.
+   */
+  async mergeMixedSceneItems(
+    request: MergeMixedSceneItemsRequest,
+  ): Promise<LayerMergeResult> {
+    const prepared = await prepareAndApplyLayerMerge(this, request);
+    try {
+      commitHistoryActionAtomically(this, prepared.action);
+    } catch (error) {
+      try {
+        await applyLayerMergeHistory(this, prepared.action, -1);
+        destroyLayerMergeHistorySeeds(prepared.action);
+      } catch (rollbackError) {
+        this.latchDocumentStateInconsistent(
+          "Pubblicazione merge fallita e rollback incompleto: ricarica la pagina.",
+        );
+        const first = error instanceof Error ? error.message : String(error);
+        const second = rollbackError instanceof Error
+          ? rollbackError.message
+          : String(rollbackError);
+        throw new Error(`${first}; rollback pubblicazione merge fallito: ${second}`);
+      }
+      throw error;
+    }
+    this.sweepRasterImageGpuResources();
+    if (this.activeStrokeProfile) this.activeStrokeProfile.historyCommittedActions += 1;
+    this.publishHistoryState();
+    this.publishStats();
+    return prepared.result;
+  }
+
   async setVectorTextNodeVisibility(id: number, visible: boolean): Promise<boolean> {
     return mutateMixedScenePresentation(this, 
       (scene) => scene.setTextVisibility(id, Boolean(visible)),
@@ -9252,6 +9296,7 @@ export class BrushEngine {
       ...this.discardedRasterImportHistoryActions,
       ...this.discardedRasterTransformHistoryActions,
       ...this.discardedLayerDeleteHistoryActions,
+      ...this.discardedLayerMergeHistoryActions,
     ]);
     for (const action of vectorRasterActions) {
       if (action.kind === "vector-rasterize") {
@@ -9262,12 +9307,18 @@ export class BrushEngine {
         destroyLayerColdStorage(action.seed);
       } else if (action.kind === "layer-delete") {
         destroyLayerDeleteHistorySeeds(action);
+      } else if (action.kind === "layer-merge") {
+        for (const input of action.inputs) {
+          if (input.kind === "raster") destroyLayerColdStorage(input.entry.seed);
+        }
+        destroyLayerColdStorage(action.output.seed);
       }
     }
     this.discardedVectorRasterHistoryActions = [];
     this.discardedRasterImportHistoryActions = [];
     this.discardedRasterTransformHistoryActions = [];
     this.discardedLayerDeleteHistoryActions = [];
+    this.discardedLayerMergeHistoryActions = [];
     if (this.historyGpuStorage) {
       this.historyGpuStorage.releaseAll();
       this.selectionHistoryMasksByAction.clear();
@@ -9314,10 +9365,19 @@ export class BrushEngine {
         retainNode(action.delta.after.node);
       } else if (action.kind === "vector-rasterize") {
         retainNode(action.vectorState.node);
+      } else if (action.kind === "layer-merge") {
+        for (const input of action.inputs) {
+          if (input.kind === "vector" && input.state) retainNode(input.state.node);
+        }
       }
     }
     for (const action of this.discardedVectorRasterHistoryActions) {
       retainNode(action.vectorState.node);
+    }
+    for (const action of this.discardedLayerMergeHistoryActions) {
+      for (const input of action.inputs) {
+        if (input.kind === "vector" && input.state) retainNode(input.state.node);
+      }
     }
     for (const action of this.activeStroke?.redoActionsBeforeStroke ?? []) {
       if (action.kind === "vector") {
@@ -9325,6 +9385,10 @@ export class BrushEngine {
         retainNode(action.delta.after.node);
       } else if (action.kind === "vector-rasterize") {
         retainNode(action.vectorState.node);
+      } else if (action.kind === "layer-merge") {
+        for (const input of action.inputs) {
+          if (input.kind === "vector" && input.state) retainNode(input.state.node);
+        }
       }
     }
     retainNode(this.activeVectorHistoryEdit?.before.node ?? null);

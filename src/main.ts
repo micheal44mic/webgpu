@@ -7,10 +7,17 @@ import {
   MOBILE_LAYER_REORDER_HOLD_MS,
   mobileLayerReorderAutoScrollVelocity,
   mobileLayerReorderDropSlot,
+  mobileLayerReorderHoldReached,
   mobileLayerReorderMovementExceeded,
   type MobileLayerReorderPlan,
   type MobileLayerReorderRowGeometry,
 } from "./mobile-layer-reorder-core";
+import {
+  buildMobileLayerMergeSelectionPlan,
+  mobileLayerMergeCompletionMatches,
+  type MobileLayerMergeSelectionItem,
+  type MobileLayerMergeSelectionPlan,
+} from "./mobile-layer-multi-selection";
 import {
   TOUCH_PAINT_INTENT_HOLD_MS,
   TOUCH_PAINT_INTENT_MOVE_THRESHOLD_PX,
@@ -178,6 +185,7 @@ import type {
 } from "./iphone-memory-limit-test";
 import type { LayerCompressionStudyReport } from "./layer-compression-study";
 import { MixedVectorTextController } from "./mixed-vector-text-controller";
+import type { MixedSceneItem } from "./mixed-scene-stack";
 import type { MixedMemoryBenchmarkReport } from "./mixed-memory-benchmark";
 import {
   VECTOR_TEXT_ZOOM_AB_IDLE_FRAME_COUNT,
@@ -402,10 +410,20 @@ const mobileLayersPanel = element<HTMLElement>("mobileLayersPanel");
 const mobileAddLayerButton = element<HTMLButtonElement>("mobileAddLayer");
 const mobileCopyLayerButton = element<HTMLButtonElement>("mobileCopyLayer");
 const mobileAddMaskButton = element<HTMLButtonElement>("mobileAddMask");
+const mobileLayerMultiSelectButton = element<HTMLButtonElement>(
+  "mobileLayerMultiSelect",
+);
 const mobileLayerList = element<HTMLElement>("mobileLayerList");
+const mobileLayerMultiActions = element<HTMLElement>("mobileLayerMultiActions");
+const mobileLayerMergeSelectionButton = element<HTMLButtonElement>(
+  "mobileLayerMergeSelection",
+);
 const mobileLayerContextMenu = element<HTMLElement>("mobileLayerContextMenu");
 const mobileLayerClippingButton = element<HTMLButtonElement>("mobileLayerClipping");
 const mobileLayerOptionsButton = element<HTMLButtonElement>("mobileLayerOptions");
+const mobileLayerMergeButton = element<HTMLButtonElement>("mobileLayerMerge");
+const mobileLayerMergeReason = element<HTMLParagraphElement>("mobileLayerMergeReason");
+const mobileLayerMergeStatus = element<HTMLParagraphElement>("mobileLayerMergeStatus");
 const mobileLayerDeleteButton = element<HTMLButtonElement>("mobileLayerDelete");
 const mobileLayerReorderStatus = element<HTMLParagraphElement>(
   "mobileLayerReorderStatus",
@@ -1146,6 +1164,17 @@ const clippingGroupTestRequested = import.meta.env.DEV
   && pageSearchParams.get("clippingGroupTest") === "1";
 const layerBlendTestRequested = import.meta.env.DEV
   && pageSearchParams.get("layerBlendTest") === "1";
+const layerMergeTestParameter = pageSearchParams.get("layerMergeTest");
+const layerMergeTestRequested = import.meta.env.DEV
+  && (
+    layerMergeTestParameter === "raster"
+    || layerMergeTestParameter === "clipping"
+    || layerMergeTestParameter === "mixed"
+    || layerMergeTestParameter === "memory"
+    || layerMergeTestParameter === "reject"
+  )
+  ? layerMergeTestParameter
+  : null;
 const layerMemoryStressTestRequested =
   pageSearchParams.get("layerMemoryStressTest") === "1";
 const mixedMemoryBenchmarkRequested =
@@ -1480,7 +1509,9 @@ let mobileLayersPanelOpen = false;
 let mobileLayersRenderSignature = "";
 let mobileLayersRefreshRequested = true;
 let mobileLayersRefreshFrame: number | null = null;
-type MobileMixedSceneLayerKey = NonNullable<EngineStats["mixedScene"]>["selectedKey"];
+type MobileMixedSceneLayerKey = MixedSceneItem["key"];
+let mobileLayerMultiSelectEnabled = false;
+const mobileLayerMultiSelectedKeys = new Set<MobileMixedSceneLayerKey>();
 interface MobileLayerReorderGesture {
   readonly pointerId: number;
   readonly key: MobileMixedSceneLayerKey;
@@ -1489,6 +1520,7 @@ interface MobileLayerReorderGesture {
   readonly select: HTMLButtonElement;
   readonly startClientX: number;
   readonly startClientY: number;
+  readonly startTime: number;
   readonly startScrollTop: number;
   readonly restoreFocus: boolean;
   holdTimer: number | null;
@@ -2615,6 +2647,158 @@ function mobileLayerProperties(
   };
 }
 
+function mobileLayerPrimaryKey(stats: EngineStats): MobileMixedSceneLayerKey | null {
+  const sceneKey = stats.mixedScene?.selectedKey ?? null;
+  if (sceneKey) return sceneKey;
+  const active = stats.layers[stats.activeLayerIndex];
+  return active ? `raster:${active.id}` : null;
+}
+
+function mobileLayerMergeSelectionItems(
+  stats: EngineStats,
+): MobileLayerMergeSelectionItem<MobileMixedSceneLayerKey>[] {
+  // Engine scene/layer arrays are bottom-up. Keep that order for the merge
+  // callback even though `mobileLayerViews()` reverses it for the visual list.
+  const scene = stats.mixedScene;
+  if (!scene) {
+    return stats.layers.map((layer) => ({
+      key: `raster:${layer.id}`,
+      clippingParentKey: layer.clippingParentId === null
+        ? null
+        : `raster:${layer.clippingParentId}`,
+    }));
+  }
+  return scene.items.map((item) => ({
+    key: item.key,
+    clippingParentKey: item.kind === "raster" && item.rasterClippingParentId !== null
+      ? `raster:${item.rasterClippingParentId}`
+      : null,
+  }));
+}
+
+function currentMobileLayerMergePlan(
+  stats: EngineStats = engine.getStats(),
+): MobileLayerMergeSelectionPlan<MobileMixedSceneLayerKey> {
+  return buildMobileLayerMergeSelectionPlan(
+    mobileLayerMergeSelectionItems(stats),
+    mobileLayerMultiSelectedKeys,
+  );
+}
+
+function mobileLayerMergeController(): MixedVectorTextController | null {
+  return vectorTextPrototype;
+}
+
+function mobileLayerMergeUnsupportedReason(
+  plan: MobileLayerMergeSelectionPlan<MobileMixedSceneLayerKey>,
+  stats: EngineStats = engine.getStats(),
+): string | null {
+  if (!plan.valid) return plan.reason;
+  const scene = stats.mixedScene;
+  if (
+    scene
+    && scene.items.some((item) => (
+      plan.orderedKeys.includes(item.key) && item.kind === "image"
+    ))
+  ) {
+    return "Questa versione non può ancora unire livelli immagine.";
+  }
+  return null;
+}
+
+function mobileLayerMergeUnavailableReason(
+  plan: MobileLayerMergeSelectionPlan<MobileMixedSceneLayerKey>,
+  controller: MixedVectorTextController | null = mobileLayerMergeController(),
+): string | null {
+  return mobileLayerMergeUnsupportedReason(plan)
+    ?? (controller === null
+      ? "Unione non disponibile: il controller dei livelli non è ancora pronto."
+      : null);
+}
+
+function setMobileLayerMergeStatus(message: string | null, failed = false): void {
+  mobileLayerMergeStatus.textContent = message ?? "";
+  mobileLayerMergeStatus.hidden = message === null;
+  mobileLayerMergeStatus.classList.toggle("is-error", failed && message !== null);
+}
+
+function reconcileMobileLayerMultiSelection(stats: EngineStats): void {
+  if (!mobileLayerMultiSelectEnabled) return;
+  const liveKeys = new Set(
+    mobileLayerMergeSelectionItems(stats).map((item) => item.key),
+  );
+  for (const key of mobileLayerMultiSelectedKeys) {
+    if (!liveKeys.has(key)) mobileLayerMultiSelectedKeys.delete(key);
+  }
+  if (mobileLayerMultiSelectedKeys.size > 0) return;
+  const primaryKey = mobileLayerPrimaryKey(stats);
+  if (primaryKey) mobileLayerMultiSelectedKeys.add(primaryKey);
+}
+
+function setMobileLayerMultiSelectEnabled(
+  enabled: boolean,
+  announce = true,
+): void {
+  if (enabled === mobileLayerMultiSelectEnabled) return;
+  closeMobileLayerContextMenu(false);
+  cancelMobileLayerReorderGesture(false, false, false);
+  mobileLayerMultiSelectEnabled = enabled;
+  mobileLayerMultiSelectedKeys.clear();
+  if (enabled && engineInitialized) {
+    const primaryKey = mobileLayerPrimaryKey(engine.getStats());
+    if (primaryKey) mobileLayerMultiSelectedKeys.add(primaryKey);
+  }
+  mobileLayersPanel.classList.toggle("is-multi-select", enabled);
+  mobileLayerMultiActions.hidden = !enabled;
+  if (!enabled) mobileLayerMergeSelectionButton.disabled = true;
+  mobileLayerMultiSelectButton.setAttribute("aria-pressed", String(enabled));
+  mobileLayerMultiSelectButton.setAttribute(
+    "aria-label",
+    enabled ? "Stop selecting multiple layers" : "Select multiple layers",
+  );
+  mobileLayerMultiSelectButton.title = enabled
+    ? "Done selecting layers"
+    : "Select multiple layers";
+  mobileLayersRenderSignature = "";
+  setMobileLayerMergeStatus(null);
+  scheduleMobileLayersRefresh();
+  if (announce) {
+    announceMobileLayerReorder(enabled
+      ? "Multiple selection on. Select adjacent layers to merge."
+      : "Multiple selection off.");
+  }
+}
+
+function toggleMobileLayerMultiSelection(key: MobileMixedSceneLayerKey): void {
+  if (!mobileLayerMultiSelectEnabled) return;
+  if (mobileLayerMultiSelectedKeys.has(key)) {
+    if (mobileLayerMultiSelectedKeys.size === 1) {
+      announceMobileLayerReorder("Keep at least one layer selected.");
+      return;
+    }
+    mobileLayerMultiSelectedKeys.delete(key);
+  } else {
+    mobileLayerMultiSelectedKeys.add(key);
+  }
+  const count = mobileLayerMultiSelectedKeys.size;
+  setMobileLayerMergeStatus(null);
+  announceMobileLayerReorder(`${count} ${count === 1 ? "layer" : "layers"} selected.`);
+  mobileLayersRenderSignature = "";
+  scheduleMobileLayersRefresh();
+}
+
+function focusFirstMobileLayerContextAction(): void {
+  if (mobileLayerMultiSelectEnabled) {
+    (mobileLayerMergeButton.disabled
+      ? mobileLayerContextMenu
+      : mobileLayerMergeButton).focus({ preventScroll: true });
+    return;
+  }
+  (mobileLayerClippingButton.hidden || mobileLayerClippingButton.disabled
+    ? mobileLayerOptionsButton
+    : mobileLayerClippingButton).focus({ preventScroll: true });
+}
+
 function closeMobileLayerContextMenu(restoreFocus = false): void {
   const key = mobileLayerContextKey;
   const activeElement = document.activeElement;
@@ -2638,10 +2822,15 @@ function openMobileLayerContextMenu(
   row: HTMLElement,
 ): boolean {
   const properties = mobileLayerProperties(key);
-  if (!properties || properties.locked || !row.classList.contains("is-selected")) return false;
+  if (
+    !properties
+    || properties.locked
+    || !row.matches(".is-selected, .is-multi-selected")
+  ) return false;
   mobileLayerContextKey = key;
   mobileLayerContextMenu.dataset.layerKey = key;
-  mobileLayerClippingButton.hidden = properties.kind !== "raster";
+  mobileLayerClippingButton.hidden = mobileLayerMultiSelectEnabled
+    || properties.kind !== "raster";
   mobileLayerClippingButton.disabled = properties.kind !== "raster"
     || !properties.clippingAvailable;
   mobileLayerClippingButton.setAttribute(
@@ -2651,7 +2840,26 @@ function openMobileLayerContextMenu(
   mobileLayerClippingButton.textContent = properties.clippingEnabled
     ? "Disable Clipping Mask"
     : "Clipping Mask";
-  mobileLayerOptionsButton.disabled = false;
+  mobileLayerOptionsButton.hidden = mobileLayerMultiSelectEnabled;
+  mobileLayerOptionsButton.disabled = mobileLayerMultiSelectEnabled;
+  mobileLayerDeleteButton.hidden = mobileLayerMultiSelectEnabled;
+  mobileLayerMergeButton.hidden = !mobileLayerMultiSelectEnabled;
+  mobileLayerMergeReason.hidden = true;
+  mobileLayerMergeReason.textContent = "";
+  if (mobileLayerMultiSelectEnabled) {
+    const plan = currentMobileLayerMergePlan();
+    const controller = mobileLayerMergeController();
+    const unavailableReason = mobileLayerMergeUnavailableReason(plan, controller);
+    mobileLayerMergeButton.disabled = unavailableReason !== null;
+    mobileLayerMergeButton.title = unavailableReason ?? "Unisci i livelli selezionati";
+    if (unavailableReason) {
+      mobileLayerMergeReason.textContent = unavailableReason;
+      mobileLayerMergeReason.hidden = false;
+    }
+  } else {
+    mobileLayerMergeButton.disabled = true;
+    mobileLayerMergeButton.title = "";
+  }
   mobileLayerContextMenu.hidden = false;
   mobileLayerContextMenu.removeAttribute("inert");
   const panelRect = mobileLayersPanel.getBoundingClientRect();
@@ -3326,7 +3534,7 @@ function armMobileLayerContextGesture(): void {
   if (
     !mobileLayersPanelOpen
     || interactionLocked()
-    || !gesture.row.classList.contains("is-selected")
+    || !gesture.row.matches(".is-selected, .is-multi-selected")
   ) {
     cancelMobileLayerReorderGesture(false);
     return;
@@ -3337,13 +3545,19 @@ function armMobileLayerContextGesture(): void {
   }
   gesture.phase = "armed";
   announceMobileLayerReorder(
-    `${gesture.name} options open. Keep dragging to move the layer.`,
+    mobileLayerMultiSelectEnabled
+      ? `${gesture.name} selection actions open.`
+      : `${gesture.name} options open. Keep dragging to move the layer.`,
   );
 }
 
 function activateMobileLayerReorderGesture(): void {
   const gesture = mobileLayerReorderGesture;
   if (!gesture || gesture.phase !== "armed") return;
+  if (mobileLayerMultiSelectEnabled) {
+    announceMobileLayerReorder("Layer options open for the current selection.");
+    return;
+  }
   closeMobileLayerContextMenu(false);
   const plan = mobileLayerReorderPlanFromEngine(gesture.key);
   if (!plan || plan.validSlots.length <= 1) {
@@ -3459,7 +3673,9 @@ function handleMobileLayerReorderPointerDown(event: PointerEvent): void {
   }
   const target = event.target instanceof Element ? event.target : null;
   const select = target?.closest<HTMLButtonElement>(".mobile-layer-select");
-  const row = select?.closest<HTMLElement>(".mobile-layer-row.is-selected");
+  const row = select?.closest<HTMLElement>(
+    ".mobile-layer-row.is-selected, .mobile-layer-row.is-multi-selected",
+  );
   const key = row?.dataset.layerKey;
   if (!select || select.disabled || !row || !key || !isMobileMixedSceneLayerKey(key)) return;
   const name = row.querySelector<HTMLElement>(".mobile-layer-name")?.textContent?.trim()
@@ -3473,6 +3689,7 @@ function handleMobileLayerReorderPointerDown(event: PointerEvent): void {
     select,
     startClientX: event.clientX,
     startClientY: event.clientY,
+    startTime: performance.now(),
     startScrollTop: mobileLayerList.scrollTop,
     restoreFocus: document.activeElement === select,
     holdTimer: null,
@@ -3505,6 +3722,10 @@ function handleMobileLayerReorderPointerMove(event: PointerEvent): void {
     return;
   }
   if (gesture.phase === "armed") {
+    if (mobileLayerMultiSelectEnabled) {
+      event.preventDefault();
+      return;
+    }
     if (!mobileLayerReorderMovementExceeded(
       gesture.startClientX,
       gesture.startClientY,
@@ -3526,6 +3747,14 @@ function handleMobileLayerReorderPointerMove(event: PointerEvent): void {
 function handleMobileLayerReorderPointerUp(event: PointerEvent): void {
   const gesture = mobileLayerReorderGesture;
   if (!gesture || event.pointerId !== gesture.pointerId) return;
+  if (
+    gesture.phase === "pending"
+    && mobileLayerReorderHoldReached(gesture.startTime, performance.now())
+  ) {
+    if (gesture.holdTimer !== null) window.clearTimeout(gesture.holdTimer);
+    gesture.holdTimer = null;
+    armMobileLayerContextGesture();
+  }
   if (gesture.phase === "armed") {
     event.preventDefault();
     mobileLayerReorderSuppressClickKey = gesture.key;
@@ -3537,9 +3766,7 @@ function handleMobileLayerReorderPointerUp(event: PointerEvent): void {
     }
     requestAnimationFrame(() => {
       if (mobileLayerContextKey !== gesture.key) return;
-      (mobileLayerClippingButton.hidden || mobileLayerClippingButton.disabled
-        ? mobileLayerOptionsButton
-        : mobileLayerClippingButton).focus({ preventScroll: true });
+      focusFirstMobileLayerContextAction();
     });
     return;
   }
@@ -3586,6 +3813,14 @@ function mobileLayerKeyboardTargetSlot(
 
 function handleMobileLayerReorderKeydown(event: KeyboardEvent): void {
   if (
+    mobileLayerMultiSelectEnabled
+    && event.altKey
+    && (event.key === "ArrowUp" || event.key === "ArrowDown")
+  ) {
+    event.preventDefault();
+    return;
+  }
+  if (
     mobileLayerReorderGesture !== null
     && event.altKey
     && (event.key === "ArrowUp" || event.key === "ArrowDown")
@@ -3605,7 +3840,9 @@ function handleMobileLayerReorderKeydown(event: KeyboardEvent): void {
   }
   const target = event.target instanceof Element ? event.target : null;
   const select = target?.closest<HTMLButtonElement>(".mobile-layer-select");
-  const row = select?.closest<HTMLElement>(".mobile-layer-row.is-selected");
+  const row = select?.closest<HTMLElement>(
+    ".mobile-layer-row.is-selected, .mobile-layer-row.is-multi-selected",
+  );
   const key = row?.dataset.layerKey;
   if (!select || !row || !key || !isMobileMixedSceneLayerKey(key)) return;
   const plan = mobileLayerReorderPlanFromEngine(key);
@@ -3647,6 +3884,7 @@ function setMobileLayersPanelOpen(open: boolean): void {
       || mobileLayerReorderGesture !== null;
     closeMobileLayerContextMenu(false);
     cancelMobileLayerReorderGesture(false, true, false);
+    setMobileLayerMultiSelectEnabled(false, false);
     if (focusWasInside) {
       mobileLayersMenuButton.focus({ preventScroll: true });
     }
@@ -6379,6 +6617,11 @@ async function runHistoryOperation(operation: "undo" | "redo"): Promise<boolean>
     historyState = engine.getHistoryState();
     updateHistoryControls();
     updateHumanStrokeControls();
+    syncActiveLayerControls();
+    mobileLayersRenderSignature = "";
+    requestMobileLayersRefresh();
+    updateStats(engine.getStats());
+    requestMobileLayerThumbnailCapture(0);
   }
   return moved;
 }
@@ -6805,6 +7048,11 @@ mobileAddMaskButton.addEventListener("click", () => {
   if (!mobileAddMaskButton.disabled) void addMobileClippingMaskLayer();
 });
 
+mobileLayerMultiSelectButton.addEventListener("click", () => {
+  if (mobileLayerMultiSelectButton.disabled) return;
+  setMobileLayerMultiSelectEnabled(!mobileLayerMultiSelectEnabled);
+});
+
 mobileLayerList.addEventListener("pointerdown", handleMobileLayerReorderPointerDown);
 mobileLayerList.addEventListener("pointermove", handleMobileLayerReorderPointerMove);
 mobileLayerList.addEventListener("pointerup", handleMobileLayerReorderPointerUp);
@@ -6814,17 +7062,18 @@ mobileLayerList.addEventListener("keydown", handleMobileLayerReorderKeydown);
 mobileLayerList.addEventListener("contextmenu", (event) => {
   const target = event.target instanceof Element ? event.target : null;
   const select = target?.closest<HTMLButtonElement>(
-    ".mobile-layer-row.is-selected .mobile-layer-select",
+    ".mobile-layer-row.is-selected .mobile-layer-select, "
+      + ".mobile-layer-row.is-multi-selected .mobile-layer-select",
   );
-  const row = select?.closest<HTMLElement>(".mobile-layer-row.is-selected");
+  const row = select?.closest<HTMLElement>(
+    ".mobile-layer-row.is-selected, .mobile-layer-row.is-multi-selected",
+  );
   const key = row?.dataset.layerKey;
   if (!select || !row || !key || !isMobileMixedSceneLayerKey(key)) return;
   event.preventDefault();
   cancelMobileLayerReorderGesture(false, false, false);
   openMobileLayerContextMenu(key, row);
-  (mobileLayerClippingButton.hidden || mobileLayerClippingButton.disabled
-    ? mobileLayerOptionsButton
-    : mobileLayerClippingButton).focus({ preventScroll: true });
+  focusFirstMobileLayerContextAction();
 });
 
 mobileLayerClippingButton.addEventListener("click", () => {
@@ -6847,6 +7096,82 @@ mobileLayerOptionsButton.addEventListener("click", () => {
   if (!properties || properties.locked) return;
   closeMobileLayerContextMenu(false);
   mobileToolSettingsSheet?.open("layer-options", mobileLayersMenuButton);
+});
+
+async function requestMobileLayerMerge(): Promise<void> {
+  if (!mobileLayerMultiSelectEnabled || interactionLocked() || layerSwitching) return;
+  const plan = currentMobileLayerMergePlan();
+  const controller = mobileLayerMergeController();
+  const unavailableReason = mobileLayerMergeUnavailableReason(plan, controller);
+  if (unavailableReason || !plan.valid || controller === null) {
+    mobileLayerMergeButton.disabled = true;
+    mobileLayerMergeButton.title = unavailableReason ?? "Unione non disponibile.";
+    mobileLayerMergeReason.textContent = unavailableReason ?? "Unione non disponibile.";
+    mobileLayerMergeReason.hidden = false;
+    announceMobileLayerReorder(mobileLayerMergeReason.textContent);
+    return;
+  }
+
+  const beforeSnapshot = engine.getMixedSceneSnapshot();
+  const beforeKeys = beforeSnapshot?.items.map((item) => item.key) ?? [];
+  closeMobileLayerContextMenu(false);
+  setMobileLayerMergeStatus(null);
+  layerSwitching = true;
+  updateHistoryControls();
+  mobileLayersRenderSignature = "";
+  requestMobileLayersRefresh();
+  try {
+    await showLayerLoading("Unione livelli…");
+    const result = await controller.mergeSceneItems(plan.orderedKeys);
+    const mergedSnapshot = engine.getMixedSceneSnapshot();
+    const outputKey = `raster:${result.layerId}` as MobileMixedSceneLayerKey;
+    if (
+      !mergedSnapshot
+      || !mobileLayerMergeCompletionMatches(
+        beforeKeys,
+        plan.orderedKeys,
+        mergedSnapshot.items.map((item) => item.key),
+        outputKey,
+      )
+    ) {
+      throw new Error(
+        "Il merge è terminato, ma la scena pubblicata non contiene il rimpiazzo atteso.",
+      );
+    }
+    await engine.waitForIdle();
+    historyState = engine.getHistoryState();
+    syncActiveLayerControls();
+    setMobileLayerMultiSelectEnabled(false, false);
+    const successMessage = `${result.itemCount} livelli uniti.`;
+    layerSwitchResult.textContent = successMessage;
+    setMobileLayerMergeStatus(successMessage);
+    announceMobileLayerReorder(`${result.itemCount} layers merged.`);
+  } catch (error) {
+    const message = error instanceof Error
+      ? error.message
+      : "Unione dei livelli non riuscita.";
+    layerSwitchResult.textContent = message;
+    setMobileLayerMergeStatus(message, true);
+    announceMobileLayerReorder(message);
+  } finally {
+    hideLayerLoading();
+    layerSwitching = false;
+    mobileLayersRenderSignature = "";
+    requestMobileLayersRefresh();
+    updateHistoryControls();
+    updateStats(engine.getStats());
+    requestMobileLayerThumbnailCapture(0);
+  }
+}
+
+mobileLayerMergeButton.addEventListener("click", () => {
+  if (mobileLayerMergeButton.disabled) return;
+  void requestMobileLayerMerge();
+});
+
+mobileLayerMergeSelectionButton.addEventListener("click", () => {
+  if (mobileLayerMergeSelectionButton.disabled) return;
+  void requestMobileLayerMerge();
 });
 
 // Nessuna conferma: l`operazione e` annullabile, ed e` esattamente il motivo
@@ -10484,7 +10809,7 @@ function createLayerRow(): HTMLDivElement {
 type MobileLayerKind = "raster" | "text" | "svg" | "image";
 
 interface MobileLayerView {
-  readonly key: string;
+  readonly key: MobileMixedSceneLayerKey;
   readonly kind: MobileLayerKind;
   readonly name: string;
   readonly visible: boolean;
@@ -10712,7 +11037,11 @@ function mobileLayerListSignature(
   views: readonly MobileLayerView[],
   locked: boolean,
 ): string {
-  return `${locked ? 1 : 0}|${views.map((view) => {
+  const multiSelectionSignature = mobileLayerMultiSelectEnabled
+    ? [...mobileLayerMultiSelectedKeys].sort().join(",")
+    : "";
+  return `${locked ? 1 : 0}|${mobileLayerMultiSelectEnabled ? 1 : 0}`
+    + `|${multiSelectionSignature}|${views.map((view) => {
     const bounds = view.contentBounds;
     return [
       view.key,
@@ -10835,6 +11164,7 @@ function renderMobileLayerList(stats: EngineStats): void {
   ) {
     return;
   }
+  reconcileMobileLayerMultiSelection(stats);
   const liveRasterIds = new Set(stats.layers.map((layer) => layer.id));
   for (const cachedLayerId of mobileRasterThumbnailCache.keys()) {
     if (!liveRasterIds.has(cachedLayerId)) {
@@ -10843,6 +11173,19 @@ function renderMobileLayerList(stats: EngineStats): void {
   }
   const locked = interactionLocked() || layerSwitching;
   const views = mobileLayerViews(stats);
+  mobileLayerMultiActions.hidden = !mobileLayerMultiSelectEnabled;
+  if (mobileLayerMultiSelectEnabled) {
+    const mergePlan = currentMobileLayerMergePlan(stats);
+    const mergeReason = mobileLayerMergeUnavailableReason(mergePlan);
+    mobileLayerMergeSelectionButton.disabled = locked || mergeReason !== null;
+    mobileLayerMergeSelectionButton.title = mergeReason ?? "Unisci i livelli selezionati";
+    if (!mobileLayerMergeStatus.classList.contains("is-error")) {
+      setMobileLayerMergeStatus(mergeReason);
+    }
+  } else {
+    mobileLayerMergeSelectionButton.disabled = true;
+    mobileLayerMergeSelectionButton.title = "";
+  }
   const signature = mobileLayerListSignature(views, locked);
   if (signature === mobileLayersRenderSignature) {
     mobileLayersRefreshRequested = false;
@@ -10867,19 +11210,35 @@ function renderMobileLayerList(stats: EngineStats): void {
     const reference = row.querySelector<HTMLButtonElement>(".mobile-layer-reference")!;
     const visibility = row.querySelector<HTMLButtonElement>(".mobile-layer-visibility")!;
 
-    row.className = `mobile-layer-row is-${view.kind}${view.selected ? " is-selected" : ""}`;
+    const selected = mobileLayerMultiSelectEnabled
+      ? mobileLayerMultiSelectedKeys.has(view.key)
+      : view.selected;
+    row.className = `mobile-layer-row is-${view.kind}`
+      + `${selected ? " is-selected" : ""}`
+      + `${mobileLayerMultiSelectEnabled && selected ? " is-multi-selected" : ""}`
+      + `${view.selected ? " is-active-layer" : ""}`;
     row.setAttribute("aria-posinset", String(position + 1));
     row.setAttribute("aria-setsize", String(views.length));
     select.disabled = locked;
     select.setAttribute("aria-current", String(view.selected));
+    if (mobileLayerMultiSelectEnabled) {
+      select.setAttribute("aria-pressed", String(selected));
+    } else {
+      select.removeAttribute("aria-pressed");
+    }
     select.setAttribute(
       "aria-label",
-      view.selected
+      mobileLayerMultiSelectEnabled
+        ? selected
+          ? `${view.name}, selected. Tap to remove it from the merge selection; `
+            + "hold for selection actions."
+          : `Add ${view.name} to the merge selection`
+        : view.selected
         ? `${view.name}. Hold for layer options, then drag to reorder; `
           + "Alt plus Arrow Up or Down also moves it."
         : `Select ${view.name}`,
     );
-    if (view.selected) {
+    if (view.selected && !mobileLayerMultiSelectEnabled) {
       select.setAttribute("aria-keyshortcuts", "Alt+ArrowUp Alt+ArrowDown");
     } else {
       select.removeAttribute("aria-keyshortcuts");
@@ -10889,7 +11248,9 @@ function renderMobileLayerList(stats: EngineStats): void {
     updateMobileLayerThumbnail(thumbnail, view);
 
     reference.hidden = view.kind !== "raster";
-    reference.disabled = locked || !view.referenceAvailable;
+    reference.disabled = locked
+      || mobileLayerMultiSelectEnabled
+      || !view.referenceAvailable;
     reference.setAttribute("aria-pressed", String(view.reference));
     reference.setAttribute(
       "aria-label",
@@ -10897,7 +11258,7 @@ function renderMobileLayerList(stats: EngineStats): void {
     );
     reference.title = view.reference ? "Reference on" : "Set as Reference";
 
-    visibility.disabled = locked;
+    visibility.disabled = locked || mobileLayerMultiSelectEnabled;
     visibility.setAttribute("aria-pressed", String(view.visible));
     visibility.setAttribute(
       "aria-label",
@@ -10908,18 +11269,31 @@ function renderMobileLayerList(stats: EngineStats): void {
   });
 
   const selectedView = views.find((view) => view.selected);
-  mobileAddLayerButton.disabled = locked || stats.layers.length >= 16;
+  mobileAddLayerButton.disabled = mobileLayerMultiSelectEnabled
+    || locked
+    || stats.layers.length >= 16;
   mobileCopyLayerButton.disabled = true;
-  mobileAddMaskButton.disabled = locked
+  mobileAddMaskButton.disabled = mobileLayerMultiSelectEnabled
+    || locked
     || stats.layers.length >= 16
     || selectedView?.kind !== "raster"
     || !selectedView.referenceAvailable;
+  mobileLayerMultiSelectButton.disabled = !mobileLayerMultiSelectEnabled
+    && (locked || views.length < 2);
   mobileLayersRenderSignature = signature;
   mobileLayersRefreshRequested = false;
 }
 
 function runMobileLayerAction(action: string, key: string): void {
   if (interactionLocked() || layerSwitching) return;
+  if (
+    action === "select"
+    && mobileLayerMultiSelectEnabled
+    && isMobileMixedSceneLayerKey(key)
+  ) {
+    toggleMobileLayerMultiSelection(key);
+    return;
+  }
   const stats = engine.getStats();
   const scene = stats.mixedScene;
   if (!scene) {
@@ -11059,6 +11433,50 @@ async function runRequestedLayerBlendTest(): Promise<void> {
       window.clearTimeout(timeoutId);
     }
     layerHistoryTestRunning = timedOut;
+    historyState = engine.getHistoryState();
+    syncActiveLayerControls();
+    updateHistoryControls();
+    updateHumanStrokeControls();
+    updateStats(engine.getStats());
+  }
+}
+
+async function runRequestedLayerMergeTest(
+  testCase: "raster" | "clipping" | "mixed" | "memory" | "reject",
+): Promise<void> {
+  layerHistoryTestSection.hidden = false;
+  layerHistoryTestDetails.hidden = true;
+  layerHistoryTestResult.className = "result";
+  layerHistoryTestResult.textContent = `Test GPU merge livelli · ${testCase}…`;
+  try {
+    if (!vectorTextPrototype) {
+      throw new Error("Controller della scena mista non disponibile.");
+    }
+    const { runLayerMergeGpuTest } = await import("./layer-merge-gpu-test");
+    const report = await runLayerMergeGpuTest(engine, vectorTextPrototype, testCase);
+    layerHistoryTestReport.textContent = JSON.stringify(report, null, 2);
+    layerHistoryTestDetails.hidden = false;
+    layerHistoryTestDetails.open = true;
+    (
+      window as Window & { __layerMergeGpuTestReport?: typeof report }
+    ).__layerMergeGpuTestReport = report;
+    layerHistoryTestResult.className = report.passed ? "result ok" : "result error";
+    layerHistoryTestResult.textContent = report.passed
+      ? `Merge GPU ${testCase} OK · pixel, struttura e cronologia verificati.`
+      : `Merge GPU ${testCase} ERRORE · consulta il report JSON.`;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const failure = { version: 1, testCase, passed: false, error: message } as const;
+    layerHistoryTestReport.textContent = JSON.stringify(failure, null, 2);
+    layerHistoryTestDetails.hidden = false;
+    layerHistoryTestDetails.open = true;
+    (
+      window as Window & { __layerMergeGpuTestReport?: typeof failure }
+    ).__layerMergeGpuTestReport = failure;
+    layerHistoryTestResult.className = "result error";
+    layerHistoryTestResult.textContent = `Merge GPU ${testCase} ERRORE · ${message}`;
+  } finally {
+    layerHistoryTestRunning = false;
     historyState = engine.getHistoryState();
     syncActiveLayerControls();
     updateHistoryControls();
@@ -13687,7 +14105,9 @@ void engine.initialize()
     syncMobileToolsMenuState();
     historyState = engine.getHistoryState();
     requestMobileLayerThumbnailCapture(0);
-    layerHistoryTestRunning = layerHistoryTestRequested || layerBlendTestRequested;
+    layerHistoryTestRunning = layerHistoryTestRequested
+      || layerBlendTestRequested
+      || layerMergeTestRequested !== null;
     layerMemoryStressTestRunning = iphoneMemoryLimitTestRequested;
     updateHistoryControls();
     updateHumanStrokeControls();
@@ -13697,7 +14117,9 @@ void engine.initialize()
       updateHistoryControls();
       updateHumanStrokeControls();
     }
-    if (layerBlendTestRequested) {
+    if (layerMergeTestRequested) {
+      await runRequestedLayerMergeTest(layerMergeTestRequested);
+    } else if (layerBlendTestRequested) {
       await runRequestedLayerBlendTest();
     } else if (clippingGroupTestRequested) {
       layerHistoryTestRunning = true;
@@ -13714,7 +14136,23 @@ void engine.initialize()
     statusElement.textContent = `${message}${secureContextHint}`;
     statusElement.className = "status error";
     benchmarkButton.disabled = true;
-    if (layerBlendTestRequested) {
+    if (layerMergeTestRequested) {
+      const failure = {
+        version: 1,
+        testCase: layerMergeTestRequested,
+        passed: false,
+        error: `${message}${secureContextHint}`,
+      } as const;
+      layerHistoryTestSection.hidden = false;
+      layerHistoryTestResult.className = "result error";
+      layerHistoryTestResult.textContent = `Merge GPU ERRORE · ${message}`;
+      layerHistoryTestReport.textContent = JSON.stringify(failure, null, 2);
+      layerHistoryTestDetails.hidden = false;
+      layerHistoryTestDetails.open = true;
+      (
+        window as Window & { __layerMergeGpuTestReport?: typeof failure }
+      ).__layerMergeGpuTestReport = failure;
+    } else if (layerBlendTestRequested) {
       const failure = {
         version: 1,
         passed: false,
