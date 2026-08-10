@@ -1051,6 +1051,100 @@
       </aside>
 
       <aside
+        id="mobileLiquifySheet"
+        class="mobile-tools-sheet mobile-liquify-sheet"
+        aria-label="Liquify settings"
+        aria-hidden="true"
+        data-state="closed"
+        data-snap="peek"
+      >
+        <button
+          id="mobileLiquifyHandle"
+          class="mobile-tools-sheet-handle"
+          type="button"
+          aria-label="Expand Liquify settings"
+          aria-controls="mobileLiquifySheet"
+          aria-expanded="false"
+        >
+          <span class="mobile-tools-sheet-grabber" aria-hidden="true"></span>
+        </button>
+
+        <div class="mobile-stroke-sheet-content mobile-liquify-shell">
+          <header id="mobileLiquifyHeader" class="mobile-stroke-header mobile-liquify-header">
+            <div>
+              <h2 class="mobile-stroke-title">Liquify</h2>
+              <output id="mobileLiquifyModeLabel">Push</output>
+            </div>
+            <span class="mobile-liquify-live-badge" aria-hidden="true">LIVE</span>
+          </header>
+
+          <div id="mobileLiquifyControlsRegion" class="mobile-stroke-controls-region">
+            <div id="mobileLiquifyScroll" class="mobile-liquify-scroll">
+              <div class="mobile-liquify-controls">
+                <div
+                  class="liquify-mode-grid mobile-liquify-mode-grid"
+                  role="radiogroup"
+                  aria-label="Liquify mode"
+                >
+                  <button type="button" role="radio" aria-checked="true" data-liquify-mode="push" data-liquify-surface="mobile"><span aria-hidden="true">↗</span><span>Push</span></button>
+                  <button type="button" role="radio" aria-checked="false" data-liquify-mode="twirl-right" data-liquify-surface="mobile"><span aria-hidden="true">↻</span><span>Twirl Right</span></button>
+                  <button type="button" role="radio" aria-checked="false" data-liquify-mode="twirl-left" data-liquify-surface="mobile"><span aria-hidden="true">↺</span><span>Twirl Left</span></button>
+                  <button type="button" role="radio" aria-checked="false" data-liquify-mode="pinch" data-liquify-surface="mobile"><span aria-hidden="true">⌁</span><span>Pinch</span></button>
+                  <button type="button" role="radio" aria-checked="false" data-liquify-mode="expand" data-liquify-surface="mobile"><span aria-hidden="true">◉</span><span>Expand</span></button>
+                  <button type="button" role="radio" aria-checked="false" data-liquify-mode="crystals" data-liquify-surface="mobile"><span aria-hidden="true">✦</span><span>Crystals</span></button>
+                  <button type="button" role="radio" aria-checked="false" data-liquify-mode="edge" data-liquify-surface="mobile"><span aria-hidden="true">◇</span><span>Edge</span></button>
+                  <button type="button" role="radio" aria-checked="false" data-liquify-mode="reconstruct" data-liquify-surface="mobile"><span aria-hidden="true">↶</span><span>Reconstruct</span></button>
+                </div>
+
+                <div class="liquify-parameter-grid">
+                  <label class="mobile-stroke-width-control" for="mobileLiquifySize">
+                    <span class="mobile-stroke-control-label">Size</span>
+                    <output id="mobileLiquifySizeOut" for="mobileLiquifySize">180 px</output>
+                    <input id="mobileLiquifySize" type="range" min="1" max="1000" step="1" value="180" />
+                  </label>
+                  <label class="mobile-stroke-width-control" for="mobileLiquifyPressure">
+                    <span class="mobile-stroke-control-label">Pressure</span>
+                    <output id="mobileLiquifyPressureOut" for="mobileLiquifyPressure">50%</output>
+                    <input id="mobileLiquifyPressure" type="range" min="0" max="100" step="1" value="50" />
+                  </label>
+                  <label class="mobile-stroke-width-control" for="mobileLiquifyDistortion">
+                    <span class="mobile-stroke-control-label">Distortion</span>
+                    <output id="mobileLiquifyDistortionOut" for="mobileLiquifyDistortion">0%</output>
+                    <input id="mobileLiquifyDistortion" type="range" min="0" max="100" step="1" value="0" />
+                  </label>
+                  <label class="mobile-stroke-width-control" for="mobileLiquifyMomentum">
+                    <span class="mobile-stroke-control-label">Momentum</span>
+                    <output id="mobileLiquifyMomentumOut" for="mobileLiquifyMomentum">0%</output>
+                    <input id="mobileLiquifyMomentum" type="range" min="0" max="100" step="1" value="0" />
+                  </label>
+                  <label class="mobile-stroke-width-control liquify-adjust-control" for="mobileLiquifyAmount">
+                    <span class="mobile-stroke-control-label">Adjust · Amount</span>
+                    <output id="mobileLiquifyAmountOut" for="mobileLiquifyAmount">100%</output>
+                    <input id="mobileLiquifyAmount" type="range" min="0" max="100" step="1" value="100" />
+                  </label>
+                </div>
+
+                <p class="mobile-liquify-hint">Un dito modifica · due dita spostano, ingrandiscono e ruotano.</p>
+                <p
+                  id="mobileLiquifyStatus"
+                  class="visually-hidden"
+                  role="status"
+                  aria-live="polite"
+                  aria-atomic="true"
+                >Liquify ready.</p>
+
+                <div class="mobile-liquify-actions" role="group" aria-label="Liquify actions">
+                  <button id="mobileLiquifyReset" type="button">Reset</button>
+                  <button id="mobileLiquifyCancel" type="button">Cancel</button>
+                  <button id="mobileLiquifyApply" class="is-primary" type="button">Apply</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <aside
         id="mobileGaussianBlurSheet"
         class="mobile-tools-sheet mobile-gaussian-blur-sheet"
         aria-label="Gaussian Blur settings"
@@ -2053,6 +2147,28 @@
               </div>
             </section>
 
+            <section class="mobile-tools-category mobile-tools-liquify-category" data-mobile-tools-category>
+              <h2 class="mobile-tools-category-title">Liquify</h2>
+              <div class="mobile-tools-grid">
+                <button
+                  id="mobileLiquifyOpen"
+                  class="mobile-tools-item mobile-liquify-open"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-tool-search="liquify fluidifica push twirl pinch expand crystals edge reconstruct"
+                  aria-label="Open Liquify"
+                  aria-controls="mobileLiquifySheet"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="spline" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="spline" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Liquify</span>
+                </button>
+              </div>
+            </section>
+
             <section class="mobile-tools-category" data-mobile-tools-category>
               <h2 class="mobile-tools-category-title">Adjustments</h2>
               <div class="mobile-tools-grid">
@@ -2257,6 +2373,7 @@
               <option value="fill">Riempimento</option>
               <option value="selection">Selezione pixel</option>
               <option value="transform">Trasforma</option>
+              <option value="liquify">Liquify</option>
             </select>
           </label>
 
@@ -3437,6 +3554,70 @@
             <p class="result">
               Morbida usa Gaussian separabile; Scalpello usa marching squares subpixel, JFA sui segmenti e distanza signed R32F.
             </p>
+          </div>
+        </section>
+
+        <section id="rasterLiquifySection" class="liquify-section" data-state="closed">
+          <h2>Liquify</h2>
+          <label class="check-control liquify-launch-control">
+            <input
+              id="desktopLiquifyOpen"
+              type="checkbox"
+              aria-controls="desktopLiquifyParameters"
+              aria-expanded="false"
+            />
+            <span>
+              Liquify
+              <small>Deforma direttamente sul canvas · un solo Undo.</small>
+            </span>
+          </label>
+
+          <div id="desktopLiquifyParameters" class="desktop-liquify-parameters" hidden>
+            <div class="liquify-mode-grid desktop-liquify-mode-grid" role="radiogroup" aria-label="Modalità Liquify">
+              <button type="button" role="radio" aria-checked="true" data-liquify-mode="push" data-liquify-surface="desktop"><span aria-hidden="true">↗</span><span>Push</span></button>
+              <button type="button" role="radio" aria-checked="false" data-liquify-mode="twirl-right" data-liquify-surface="desktop"><span aria-hidden="true">↻</span><span>Twirl Right</span></button>
+              <button type="button" role="radio" aria-checked="false" data-liquify-mode="twirl-left" data-liquify-surface="desktop"><span aria-hidden="true">↺</span><span>Twirl Left</span></button>
+              <button type="button" role="radio" aria-checked="false" data-liquify-mode="pinch" data-liquify-surface="desktop"><span aria-hidden="true">⌁</span><span>Pinch</span></button>
+              <button type="button" role="radio" aria-checked="false" data-liquify-mode="expand" data-liquify-surface="desktop"><span aria-hidden="true">◉</span><span>Expand</span></button>
+              <button type="button" role="radio" aria-checked="false" data-liquify-mode="crystals" data-liquify-surface="desktop"><span aria-hidden="true">✦</span><span>Crystals</span></button>
+              <button type="button" role="radio" aria-checked="false" data-liquify-mode="edge" data-liquify-surface="desktop"><span aria-hidden="true">◇</span><span>Edge</span></button>
+              <button type="button" role="radio" aria-checked="false" data-liquify-mode="reconstruct" data-liquify-surface="desktop"><span aria-hidden="true">↶</span><span>Reconstruct</span></button>
+            </div>
+
+            <label class="control" for="desktopLiquifySize">
+              <span>Size <output id="desktopLiquifySizeOut" for="desktopLiquifySize">180 px</output></span>
+              <input id="desktopLiquifySize" type="range" min="1" max="1000" step="1" value="180" />
+            </label>
+            <label class="control" for="desktopLiquifyPressure">
+              <span>Pressure <output id="desktopLiquifyPressureOut" for="desktopLiquifyPressure">50%</output></span>
+              <input id="desktopLiquifyPressure" type="range" min="0" max="100" step="1" value="50" />
+            </label>
+            <label class="control" for="desktopLiquifyDistortion">
+              <span>Distortion <output id="desktopLiquifyDistortionOut" for="desktopLiquifyDistortion">0%</output></span>
+              <input id="desktopLiquifyDistortion" type="range" min="0" max="100" step="1" value="0" />
+            </label>
+            <label class="control" for="desktopLiquifyMomentum">
+              <span>Momentum <output id="desktopLiquifyMomentumOut" for="desktopLiquifyMomentum">0%</output></span>
+              <input id="desktopLiquifyMomentum" type="range" min="0" max="100" step="1" value="0" />
+            </label>
+            <label class="control liquify-adjust-control" for="desktopLiquifyAmount">
+              <span>Adjust · Amount <output id="desktopLiquifyAmountOut" for="desktopLiquifyAmount">100%</output></span>
+              <input id="desktopLiquifyAmount" type="range" min="0" max="100" step="1" value="100" />
+            </label>
+
+            <p class="liquify-desktop-hint">Penna e mouse deformano · Shift o tasto centrale spostano la vista.</p>
+            <p
+              id="desktopLiquifyStatus"
+              class="visually-hidden"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >Liquify pronto.</p>
+            <div class="liquify-inline-actions">
+              <button id="desktopLiquifyReset" type="button">Reset</button>
+              <button id="desktopLiquifyCancel" type="button">Annulla</button>
+              <button id="desktopLiquifyApply" class="primary" type="button">Applica</button>
+            </div>
           </div>
         </section>
 

@@ -130,6 +130,20 @@ import {
 } from "./engine-noise-runtime";
 import type { RasterNoiseSettings } from "./noise-core";
 import {
+  abandonRasterLiquifySession,
+  beginRasterLiquify as beginRasterLiquifyRuntime,
+  beginRasterLiquifyStroke as beginRasterLiquifyStrokeRuntime,
+  cancelRasterLiquify as cancelRasterLiquifyRuntime,
+  commitRasterLiquify as commitRasterLiquifyRuntime,
+  endRasterLiquifyStroke as endRasterLiquifyStrokeRuntime,
+  extendRasterLiquifyStroke as extendRasterLiquifyStrokeRuntime,
+  resetRasterLiquify as resetRasterLiquifyRuntime,
+  setRasterLiquifyAmount as setRasterLiquifyAmountRuntime,
+  updateRasterLiquifySettings as updateRasterLiquifySettingsRuntime,
+  type ActiveRasterLiquifySession,
+} from "./engine-liquify-runtime";
+import type { LiquifySettings } from "./liquify-core";
+import {
   planPaintDisplayMips,
   type PaintDisplayMipPlan,
 } from "./noise-mip-smoothing-core";
@@ -918,7 +932,8 @@ export type DestructiveRasterEditKind =
   | "transform"
   | "gaussian-blur"
   | "motion-blur"
-  | "noise";
+  | "noise"
+  | "liquify";
 
 /**
  * Il motore. La classe conserva lo stato e il percorso caldo del tratto; il
@@ -1614,6 +1629,7 @@ export class BrushEngine {
   activeRasterGaussianBlurSession: ActiveRasterGaussianBlurSession | null = null;
   activeRasterMotionBlurSession: ActiveRasterMotionBlurSession | null = null;
   activeRasterNoiseSession: ActiveRasterNoiseSession | null = null;
+  activeRasterLiquifySession: ActiveRasterLiquifySession | null = null;
   historyGpuStorage!: GpuHistoryStorage;
   historyLocalStorage!: HistoryStorageCoordinator;
   historyGpuTrimGeneration = 0;
@@ -1733,6 +1749,7 @@ export class BrushEngine {
     this.deviceLostSignal = this.device.lost.then((info) => {
       this.invalidateAdaptivePreview();
       abandonRasterNoiseSession(this);
+      abandonRasterLiquifySession(this);
       const reason = info.message || info.reason;
       const error = new Error(`Device WebGPU perso: ${reason}`);
       this.deviceLostError = error;
@@ -4131,6 +4148,7 @@ export class BrushEngine {
       || this.activeRasterGaussianBlurSession
       || this.activeRasterMotionBlurSession
       || this.activeRasterNoiseSession
+      || this.activeRasterLiquifySession
     ) {
       return false;
     }
@@ -4212,6 +4230,7 @@ export class BrushEngine {
       || this.activeRasterGaussianBlurSession
       || this.activeRasterMotionBlurSession
       || this.activeRasterNoiseSession
+      || this.activeRasterLiquifySession
     ) {
       return false;
     }
@@ -4635,6 +4654,7 @@ export class BrushEngine {
     if (this.activeRasterGaussianBlurSession) return "gaussian-blur";
     if (this.activeRasterMotionBlurSession) return "motion-blur";
     if (this.activeRasterNoiseSession) return "noise";
+    if (this.activeRasterLiquifySession) return "liquify";
     return null;
   }
 
@@ -4642,6 +4662,7 @@ export class BrushEngine {
     if (kind === "transform") return "Trasforma";
     if (kind === "gaussian-blur") return "Gaussian Blur";
     if (kind === "motion-blur") return "Motion Blur";
+    if (kind === "liquify") return "Liquify";
     return "Noise";
   }
 
@@ -6339,6 +6360,7 @@ export class BrushEngine {
       || this.activeRasterGaussianBlurSession
       || this.activeRasterMotionBlurSession
       || this.activeRasterNoiseSession
+      || this.activeRasterLiquifySession
       || this.rasterStrokeBusy
       || this.rasterBevelBusy
       || this.rasterOuterShadowBusy
@@ -6443,6 +6465,7 @@ export class BrushEngine {
       || this.activeRasterGaussianBlurSession
       || this.activeRasterMotionBlurSession
       || this.activeRasterNoiseSession
+      || this.activeRasterLiquifySession
     ) {
       return false;
     }
@@ -6760,6 +6783,42 @@ export class BrushEngine {
 
   cancelRasterNoise(): Promise<boolean> {
     return cancelRasterNoiseRuntime(this);
+  }
+
+  beginRasterLiquify(initial?: Partial<LiquifySettings>) {
+    return beginRasterLiquifyRuntime(this, initial);
+  }
+
+  updateRasterLiquifySettings(update: Partial<LiquifySettings>) {
+    return updateRasterLiquifySettingsRuntime(this, update);
+  }
+
+  setRasterLiquifyAmount(amount: number) {
+    return setRasterLiquifyAmountRuntime(this, amount);
+  }
+
+  beginRasterLiquifyStroke(point: LayerPoint): boolean {
+    return beginRasterLiquifyStrokeRuntime(this, point);
+  }
+
+  extendRasterLiquifyStroke(points: readonly LayerPoint[]): number {
+    return extendRasterLiquifyStrokeRuntime(this, points);
+  }
+
+  endRasterLiquifyStroke(allowMomentum = true): boolean {
+    return endRasterLiquifyStrokeRuntime(this, allowMomentum);
+  }
+
+  resetRasterLiquify(): Promise<boolean> {
+    return resetRasterLiquifyRuntime(this);
+  }
+
+  commitRasterLiquify(): Promise<boolean> {
+    return commitRasterLiquifyRuntime(this);
+  }
+
+  cancelRasterLiquify(): Promise<boolean> {
+    return cancelRasterLiquifyRuntime(this);
   }
 
   beginRasterLayerTransform() {
@@ -7313,6 +7372,11 @@ export class BrushEngine {
     if (this.activeRasterNoiseSession) {
       throw new Error(
         "Applica o annulla Noise prima di cambiare i livelli.",
+      );
+    }
+    if (this.activeRasterLiquifySession) {
+      throw new Error(
+        "Applica o annulla Liquify prima di cambiare i livelli.",
       );
     }
     if (

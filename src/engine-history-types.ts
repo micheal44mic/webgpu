@@ -25,6 +25,7 @@ import type { RasterBevelStyle } from "./bevel-core";
 import type { RasterInnerShadowStyle, RasterOuterShadowStyle } from "./shadow-core";
 import type { RasterColorOverlayStyle } from "./raster-color-overlay-core";
 import type { RasterNoiseChannels, RasterNoiseStyle } from "./noise-core";
+import type { LiquifyMode } from "./liquify-core";
 
 export interface SelectionHistoryMaskSnapshot {
   readonly revision: number;
@@ -351,6 +352,16 @@ export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (
     colorSpace: "linear-premultiplied";
     alphaMode: "preserve";
     boundsMode: "preserve";
+  }
+  | {
+    filter: "liquify";
+    strokeCount: number;
+    dabCount: number;
+    modes: readonly LiquifyMode[];
+    amountPercent: number;
+    strategy: string;
+    precision: "rgba16float-source-and-displacement-f32-math";
+    displacementFormat: "rgba16float";
   }
 );
 

@@ -370,6 +370,13 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
     );
     return false;
   }
+  if (engine.activeRasterLiquifySession) {
+    engine.publishStatus(
+      "Applica o annulla Liquify prima di usare la cronologia.",
+      "error",
+    );
+    return false;
+  }
   if (engine.historyStateInconsistent) {
     engine.publishStatus("La cronologia è incoerente: ricarica la pagina.", "error");
     return false;

@@ -190,6 +190,7 @@ export interface HistoryState {
     | "gaussian-blur"
     | "motion-blur"
     | "noise"
+    | "liquify"
     | null;
 }
 

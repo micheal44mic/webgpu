@@ -32,6 +32,7 @@ import { MobileStrokeSheetController } from "./mobile-stroke-sheet";
 import { MobileGaussianBlurSheetController } from "./mobile-gaussian-blur-sheet";
 import { MobileMotionBlurSheetController } from "./mobile-motion-blur-sheet";
 import { MobileNoiseSheetController } from "./mobile-noise-sheet";
+import { MobileLiquifySheetController } from "./mobile-liquify-sheet";
 import {
   MobileToolSettingsSheetController,
   type MobileTextWarpMode,
@@ -167,6 +168,15 @@ import {
   type RasterNoiseSettings,
   type RasterNoiseStyle,
 } from "./noise-core";
+import {
+  DEFAULT_LIQUIFY_SETTINGS,
+  LIQUIFY_MODES,
+  isLiquifyMode,
+  liquifyModeControls,
+  normalizeLiquifySettings,
+  type LiquifyMode,
+  type LiquifySettings,
+} from "./liquify-core";
 import { layerBaseMemoryMiB } from "./engine-memory-model";
 import { GPU_MEMORY_AUDIT_TOLERANCE_BYTES } from "./gpu-memory-audit";
 import { GPU_MEMORY_CATEGORY_ORDER } from "./gpu-resource-registry";
@@ -478,6 +488,89 @@ const mobileToolsProxyButtons = Array.from(
 const mobileToolsEffectButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>("[data-mobile-effect-control]"),
 );
+const rasterLiquifySection = element<HTMLElement>("rasterLiquifySection");
+const desktopLiquifyOpenInput = element<HTMLInputElement>("desktopLiquifyOpen");
+const desktopLiquifyParameters = element<HTMLElement>("desktopLiquifyParameters");
+const mobileLiquifyOpenButton = element<HTMLButtonElement>("mobileLiquifyOpen");
+const mobileLiquifySheetElement = element<HTMLElement>("mobileLiquifySheet");
+const mobileLiquifyModeLabel = element<HTMLOutputElement>("mobileLiquifyModeLabel");
+const liquifyModeButtons = Array.from(
+  document.querySelectorAll<HTMLButtonElement>("[data-liquify-mode]"),
+);
+const desktopLiquifySizeInput = element<HTMLInputElement>("desktopLiquifySize");
+const mobileLiquifySizeInput = element<HTMLInputElement>("mobileLiquifySize");
+const desktopLiquifySizeOutput = element<HTMLOutputElement>("desktopLiquifySizeOut");
+const mobileLiquifySizeOutput = element<HTMLOutputElement>("mobileLiquifySizeOut");
+const desktopLiquifyPressureInput = element<HTMLInputElement>("desktopLiquifyPressure");
+const mobileLiquifyPressureInput = element<HTMLInputElement>("mobileLiquifyPressure");
+const desktopLiquifyPressureOutput = element<HTMLOutputElement>(
+  "desktopLiquifyPressureOut",
+);
+const mobileLiquifyPressureOutput = element<HTMLOutputElement>(
+  "mobileLiquifyPressureOut",
+);
+const desktopLiquifyDistortionInput = element<HTMLInputElement>(
+  "desktopLiquifyDistortion",
+);
+const mobileLiquifyDistortionInput = element<HTMLInputElement>("mobileLiquifyDistortion");
+const desktopLiquifyDistortionOutput = element<HTMLOutputElement>(
+  "desktopLiquifyDistortionOut",
+);
+const mobileLiquifyDistortionOutput = element<HTMLOutputElement>(
+  "mobileLiquifyDistortionOut",
+);
+const desktopLiquifyMomentumInput = element<HTMLInputElement>("desktopLiquifyMomentum");
+const mobileLiquifyMomentumInput = element<HTMLInputElement>("mobileLiquifyMomentum");
+const desktopLiquifyMomentumOutput = element<HTMLOutputElement>(
+  "desktopLiquifyMomentumOut",
+);
+const mobileLiquifyMomentumOutput = element<HTMLOutputElement>(
+  "mobileLiquifyMomentumOut",
+);
+const desktopLiquifyAmountInput = element<HTMLInputElement>("desktopLiquifyAmount");
+const mobileLiquifyAmountInput = element<HTMLInputElement>("mobileLiquifyAmount");
+const desktopLiquifyAmountOutput = element<HTMLOutputElement>("desktopLiquifyAmountOut");
+const mobileLiquifyAmountOutput = element<HTMLOutputElement>("mobileLiquifyAmountOut");
+const desktopLiquifyStatus = element<HTMLParagraphElement>("desktopLiquifyStatus");
+const mobileLiquifyStatus = element<HTMLParagraphElement>("mobileLiquifyStatus");
+const desktopLiquifyResetButton = element<HTMLButtonElement>("desktopLiquifyReset");
+const mobileLiquifyResetButton = element<HTMLButtonElement>("mobileLiquifyReset");
+const desktopLiquifyCancelButton = element<HTMLButtonElement>("desktopLiquifyCancel");
+const mobileLiquifyCancelButton = element<HTMLButtonElement>("mobileLiquifyCancel");
+const desktopLiquifyApplyButton = element<HTMLButtonElement>("desktopLiquifyApply");
+const mobileLiquifyApplyButton = element<HTMLButtonElement>("mobileLiquifyApply");
+const rasterLiquifySizeInputs = [desktopLiquifySizeInput, mobileLiquifySizeInput] as const;
+const rasterLiquifySizeOutputs = [desktopLiquifySizeOutput, mobileLiquifySizeOutput] as const;
+const rasterLiquifyPressureInputs = [
+  desktopLiquifyPressureInput,
+  mobileLiquifyPressureInput,
+] as const;
+const rasterLiquifyPressureOutputs = [
+  desktopLiquifyPressureOutput,
+  mobileLiquifyPressureOutput,
+] as const;
+const rasterLiquifyDistortionInputs = [
+  desktopLiquifyDistortionInput,
+  mobileLiquifyDistortionInput,
+] as const;
+const rasterLiquifyDistortionOutputs = [
+  desktopLiquifyDistortionOutput,
+  mobileLiquifyDistortionOutput,
+] as const;
+const rasterLiquifyMomentumInputs = [
+  desktopLiquifyMomentumInput,
+  mobileLiquifyMomentumInput,
+] as const;
+const rasterLiquifyMomentumOutputs = [
+  desktopLiquifyMomentumOutput,
+  mobileLiquifyMomentumOutput,
+] as const;
+const rasterLiquifyAmountInputs = [desktopLiquifyAmountInput, mobileLiquifyAmountInput] as const;
+const rasterLiquifyAmountOutputs = [desktopLiquifyAmountOutput, mobileLiquifyAmountOutput] as const;
+const rasterLiquifyStatuses = [desktopLiquifyStatus, mobileLiquifyStatus] as const;
+const rasterLiquifyResetButtons = [desktopLiquifyResetButton, mobileLiquifyResetButton] as const;
+const rasterLiquifyCancelButtons = [desktopLiquifyCancelButton, mobileLiquifyCancelButton] as const;
+const rasterLiquifyApplyButtons = [desktopLiquifyApplyButton, mobileLiquifyApplyButton] as const;
 const rasterGaussianBlurSection = element<HTMLElement>("rasterGaussianBlurSection");
 const desktopGaussianBlurOpenInput = element<HTMLInputElement>(
   "desktopGaussianBlurOpen",
@@ -1290,6 +1383,17 @@ let mobileToolSettingsSheet: MobileToolSettingsSheetController | null = null;
 let mobileGaussianBlurSheet: MobileGaussianBlurSheetController | null = null;
 let mobileMotionBlurSheet: MobileMotionBlurSheetController | null = null;
 let mobileNoiseSheet: MobileNoiseSheetController | null = null;
+let mobileLiquifySheet: MobileLiquifySheetController | null = null;
+type RasterLiquifySurface = "desktop" | "mobile";
+let rasterLiquifyUiBusy = false;
+let rasterLiquifySessionOpen = false;
+let rasterLiquifyPreviewFault = false;
+let rasterLiquifyCancelPending = false;
+let rasterLiquifySurface: RasterLiquifySurface | null = null;
+let rasterLiquifyReturnFocus: HTMLElement | null = null;
+let rasterLiquifyReturnTool: CanvasTool | null = null;
+let rasterLiquifySettings: LiquifySettings = { ...DEFAULT_LIQUIFY_SETTINGS };
+let rasterLiquifyAmount = 1;
 type RasterGaussianBlurSurface = "desktop" | "mobile";
 let rasterGaussianBlurUiBusy = false;
 let rasterGaussianBlurSessionOpen = false;
@@ -1329,6 +1433,11 @@ const engine = new BrushEngine(canvas, {
       setRasterNoiseStatus(message);
       if (kind === "error") rasterNoisePreviewFault = true;
       syncRasterNoiseUi();
+    }
+    if (rasterLiquifySessionOpen && message.includes("Liquify")) {
+      setRasterLiquifyStatus(message);
+      if (kind === "error") rasterLiquifyPreviewFault = true;
+      syncRasterLiquifyUi();
     }
   },
   onStats(stats) {
@@ -1561,7 +1670,7 @@ let gpuMemoryPanelOpen = false;
 let gpuMemoryPanelStatsDirty = false;
 let previousGpuMemoryTotalMiB: number | null = null;
 let gpuMemoryDeltaTimer: number | null = null;
-type CanvasTool = BrushSettings["tool"] | "fill" | "selection" | "transform";
+type CanvasTool = BrushSettings["tool"] | "fill" | "selection" | "transform" | "liquify";
 let activeBrushTool: BrushSettings["tool"] = "paint";
 let activeCanvasTool: CanvasTool = "paint";
 let mobileTextDistortReturnTool: CanvasTool | null = null;
@@ -1697,6 +1806,7 @@ function configureBrushToolUi(
     && previousCanvasTool !== "fill"
     && previousCanvasTool !== "selection"
     && previousCanvasTool !== "transform"
+    && previousCanvasTool !== "liquify"
   ) {
     captureActiveToolControls();
   }
@@ -1721,8 +1831,9 @@ function configureBrushToolUi(
   const fill = tool === "fill";
   const selection = tool === "selection";
   const transform = tool === "transform";
+  const liquify = tool === "liquify";
   if (!selection) cancelKeyboardSelectionGesture(true);
-  if (!fill && !selection && !transform) {
+  if (!fill && !selection && !transform && !liquify) {
     activeBrushTool = tool;
   }
   setControlValue("brushTool", tool);
@@ -1734,7 +1845,14 @@ function configureBrushToolUi(
   spacing.min = blend ? "1" : "0.25";
   spacing.max = blend ? "400" : "25";
   spacing.step = blend ? "1" : "0.25";
-  if (restoreSnapshot && !fill && !selection && !transform && previousBrushTool !== tool) {
+  if (
+    restoreSnapshot
+    && !fill
+    && !selection
+    && !transform
+    && !liquify
+    && previousBrushTool !== tool
+  ) {
     const snapshot = toolControlSnapshots[tool];
     setControlValue("brushSize", snapshot.size);
     setControlValue("spacing", snapshot.spacing);
@@ -1753,7 +1871,7 @@ function configureBrushToolUi(
     "colorJitterSection",
     "positionJitterSection",
   ]) {
-    element<HTMLElement>(id).hidden = blend || fill || selection || transform;
+    element<HTMLElement>(id).hidden = blend || fill || selection || transform || liquify;
   }
   for (const id of [
     "brushShapeControl",
@@ -1763,10 +1881,10 @@ function configureBrushToolUi(
     "grainSection",
     "renderingModeMemoryHint",
   ]) {
-    element<HTMLElement>(id).hidden = fill || selection || transform;
+    element<HTMLElement>(id).hidden = fill || selection || transform || liquify;
   }
-  element<HTMLElement>("hardnessControl").hidden = !blend || fill || selection || transform;
-  element<HTMLElement>("brushColorControl").hidden = selection || transform;
+  element<HTMLElement>("hardnessControl").hidden = !blend || fill || selection || transform || liquify;
+  element<HTMLElement>("brushColorControl").hidden = selection || transform || liquify;
   element<HTMLElement>("fillToleranceControl").hidden = !fill;
   element<HTMLElement>("selectionControls").hidden = !selection;
   element<HTMLElement>("blendControls").hidden = !blend;
@@ -1810,6 +1928,7 @@ function updateRenderingModeControlAvailability(): void {
     activeCanvasTool === "fill"
     || activeCanvasTool === "selection"
     || activeCanvasTool === "transform"
+    || activeCanvasTool === "liquify"
   ) return;
   const size = element<HTMLInputElement>("brushSize");
   size.min = "1";
@@ -2023,6 +2142,7 @@ function syncMobileBrushControlsVisibility(): void {
     || mobileBrushLibraryOpen
     || mobileStrokeSheet?.isOpen === true
     || mobileRasterEffectsSheet?.isOpen === true
+    || mobileLiquifySheet?.isOpen === true
     || mobileGaussianBlurSheet?.isOpen === true
     || mobileMotionBlurSheet?.isOpen === true
     || mobileNoiseSheet?.isOpen === true
@@ -2406,7 +2526,12 @@ function setMobileBrushLibraryOpen(open: boolean): void {
   if (open && (!mobileUiMediaQuery.matches || activeCanvasTool !== "paint")) return;
   if (
     open
-    && (rasterGaussianBlurSurface === "mobile" || rasterMotionBlurSurface === "mobile")
+    && (
+      rasterLiquifySurface === "mobile"
+      || rasterGaussianBlurSurface === "mobile"
+      || rasterMotionBlurSurface === "mobile"
+      || rasterNoiseSurface === "mobile"
+    )
   ) return;
   if (open && mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
   if (open && mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
@@ -2938,10 +3063,377 @@ function syncMobileToolsMenuState(): void {
   syncRasterGaussianBlurUi();
   syncRasterMotionBlurUi();
   syncRasterNoiseUi();
+  syncRasterLiquifyUi();
+}
+
+const LIQUIFY_MODE_LABELS: Readonly<Record<LiquifyMode, string>> = Object.freeze({
+  push: "Push",
+  "twirl-right": "Twirl Right",
+  "twirl-left": "Twirl Left",
+  pinch: "Pinch",
+  expand: "Expand",
+  crystals: "Crystals",
+  edge: "Edge",
+  reconstruct: "Reconstruct",
+});
+syncRasterLiquifySettings(rasterLiquifySettings, rasterLiquifyAmount);
+
+function rasterLiquifyEligibilityError(): string | null {
+  if (!engineInitialized) return "Liquify sarà disponibile dopo l’inizializzazione.";
+  if (rasterGaussianBlurSurface !== null) return "Applica o annulla Gaussian Blur prima.";
+  if (rasterMotionBlurSurface !== null) return "Applica o annulla Motion Blur prima.";
+  if (rasterNoiseSurface !== null) return "Applica o annulla Noise prima.";
+  if (engine.getPixelSelectionState().selectedPixels > 0) {
+    return "Deseleziona i pixel per deformare l’intero livello.";
+  }
+  const stats = engine.getStats();
+  const active = stats.layers.find((layer) => layer.id === stats.activeLayerId);
+  if (!active?.hasContent) return "Il livello raster selezionato è vuoto.";
+  const selected = stats.mixedScene?.items.find(
+    (item) => item.key === stats.mixedScene?.selectedKey,
+  );
+  if (selected?.kind !== "raster" || selected.rasterLayerId !== stats.activeLayerId) {
+    return "Seleziona un livello raster per usare Liquify.";
+  }
+  if (layerSwitching || interactionLocked()) {
+    return "Termina l’operazione corrente prima di aprire Liquify.";
+  }
+  return null;
+}
+
+function rasterLiquifySettingsFromSurface(
+  surface: RasterLiquifySurface,
+): LiquifySettings {
+  const mobile = surface === "mobile";
+  return normalizeLiquifySettings({
+    mode: rasterLiquifySettings.mode,
+    size: Number((mobile ? mobileLiquifySizeInput : desktopLiquifySizeInput).value),
+    pressure: Number(
+      (mobile ? mobileLiquifyPressureInput : desktopLiquifyPressureInput).value,
+    ) / 100,
+    distortion: Number(
+      (mobile ? mobileLiquifyDistortionInput : desktopLiquifyDistortionInput).value,
+    ) / 100,
+    momentum: Number(
+      (mobile ? mobileLiquifyMomentumInput : desktopLiquifyMomentumInput).value,
+    ) / 100,
+  }, rasterLiquifySettings);
+}
+
+function syncRasterLiquifySettings(
+  settings: Readonly<LiquifySettings>,
+  amount = rasterLiquifyAmount,
+): void {
+  rasterLiquifySettings = normalizeLiquifySettings(settings, rasterLiquifySettings);
+  rasterLiquifyAmount = Math.min(1, Math.max(0, Number.isFinite(amount) ? amount : 1));
+  const size = Math.round(rasterLiquifySettings.size);
+  const pressure = Math.round(rasterLiquifySettings.pressure * 100);
+  const distortion = Math.round(rasterLiquifySettings.distortion * 100);
+  const momentum = Math.round(rasterLiquifySettings.momentum * 100);
+  const amountPercent = Math.round(rasterLiquifyAmount * 100);
+  for (const input of rasterLiquifySizeInputs) {
+    input.value = String(size);
+    input.setAttribute("aria-valuetext", `${size} pixels`);
+  }
+  for (const output of rasterLiquifySizeOutputs) output.value = `${size} px`;
+  for (const input of rasterLiquifyPressureInputs) input.value = String(pressure);
+  for (const output of rasterLiquifyPressureOutputs) output.value = `${pressure}%`;
+  for (const input of rasterLiquifyDistortionInputs) input.value = String(distortion);
+  for (const output of rasterLiquifyDistortionOutputs) output.value = `${distortion}%`;
+  for (const input of rasterLiquifyMomentumInputs) input.value = String(momentum);
+  for (const output of rasterLiquifyMomentumOutputs) output.value = `${momentum}%`;
+  for (const input of rasterLiquifyAmountInputs) input.value = String(amountPercent);
+  for (const output of rasterLiquifyAmountOutputs) output.value = `${amountPercent}%`;
+  for (const button of liquifyModeButtons) {
+    const selected = button.dataset.liquifyMode === rasterLiquifySettings.mode;
+    button.setAttribute("aria-checked", String(selected));
+    button.tabIndex = selected ? 0 : -1;
+  }
+  mobileLiquifyModeLabel.value = LIQUIFY_MODE_LABELS[rasterLiquifySettings.mode];
+}
+
+function setRasterLiquifyStatus(message: string): void {
+  for (const status of rasterLiquifyStatuses) status.textContent = message;
+}
+
+function reportRasterLiquifyError(prefix: string, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  const fullMessage = `${prefix}: ${message}`;
+  setRasterLiquifyStatus(fullMessage);
+  statusElement.textContent = fullMessage;
+  statusElement.className = "status error";
+}
+
+function syncRasterLiquifyUi(): void {
+  const workbenchOpen = rasterLiquifySurface !== null;
+  const eligibilityError = workbenchOpen || rasterLiquifySessionOpen || rasterLiquifyUiBusy
+    ? "Liquify è già aperto."
+    : rasterLiquifyEligibilityError();
+  const recoveryOnly = rasterLiquifyPreviewFault || historyState.inconsistent;
+  const controlsDisabled = rasterLiquifyUiBusy
+    || !rasterLiquifySessionOpen
+    || recoveryOnly;
+  const modeControls = liquifyModeControls(rasterLiquifySettings.mode);
+
+  desktopLiquifyOpenInput.checked = rasterLiquifySurface === "desktop";
+  desktopLiquifyOpenInput.disabled = rasterLiquifySurface === "desktop"
+    ? rasterLiquifyUiBusy
+    : eligibilityError !== null;
+  desktopLiquifyOpenInput.title = rasterLiquifySurface === "desktop"
+    ? "Disattiva per annullare Liquify"
+    : eligibilityError ?? "Apri Liquify";
+  desktopLiquifyOpenInput.setAttribute(
+    "aria-expanded",
+    String(rasterLiquifySurface === "desktop"),
+  );
+  desktopLiquifyParameters.hidden = rasterLiquifySurface !== "desktop";
+
+  mobileLiquifyOpenButton.disabled = eligibilityError !== null;
+  mobileLiquifyOpenButton.title = eligibilityError ?? "Apri Liquify";
+  mobileLiquifyOpenButton.setAttribute(
+    "aria-pressed",
+    String(rasterLiquifySurface === "mobile"),
+  );
+  for (const button of liquifyModeButtons) button.disabled = controlsDisabled;
+  for (const input of rasterLiquifySizeInputs) input.disabled = controlsDisabled;
+  for (const input of rasterLiquifyPressureInputs) input.disabled = controlsDisabled;
+  for (const input of rasterLiquifyDistortionInputs) {
+    input.disabled = controlsDisabled || !modeControls.distortion;
+  }
+  for (const input of rasterLiquifyMomentumInputs) {
+    input.disabled = controlsDisabled || !modeControls.momentum;
+  }
+  for (const input of rasterLiquifyAmountInputs) input.disabled = controlsDisabled;
+  for (const button of rasterLiquifyApplyButtons) button.disabled = controlsDisabled;
+  const recoveryActionDisabled = rasterLiquifyUiBusy || !rasterLiquifySessionOpen;
+  for (const button of rasterLiquifyCancelButtons) {
+    button.disabled = recoveryActionDisabled;
+  }
+  for (const button of rasterLiquifyResetButtons) {
+    button.disabled = recoveryActionDisabled || historyState.inconsistent;
+  }
+
+  const state = rasterLiquifyUiBusy
+    ? "busy"
+    : recoveryOnly
+      ? "recovery"
+      : rasterLiquifySessionOpen
+        ? "preview"
+        : "closed";
+  rasterLiquifySection.dataset.state = state;
+  rasterLiquifySection.setAttribute("aria-busy", String(rasterLiquifyUiBusy));
+  mobileLiquifySheetElement.dataset.state = state;
+  mobileLiquifySheetElement.setAttribute("aria-busy", String(rasterLiquifyUiBusy));
+  canvas.classList.toggle("liquify-active", rasterLiquifySessionOpen);
+}
+
+function restoreRasterLiquifyTool(): void {
+  const requested = rasterLiquifyReturnTool;
+  rasterLiquifyReturnTool = null;
+  const tool = requested && requested !== "liquify" ? requested : activeBrushTool;
+  configureBrushToolUi(tool, true);
+  if (tool === "paint" || tool === "blend") applyBrushControls();
+  else updateControlOutputs();
+}
+
+function closeRasterLiquifyWorkbench(result: "apply" | "cancel" | "error"): void {
+  const surface = rasterLiquifySurface;
+  rasterLiquifySurface = null;
+  rasterLiquifyCancelPending = false;
+  desktopLiquifyOpenInput.checked = false;
+  desktopLiquifyOpenInput.setAttribute("aria-expanded", "false");
+  desktopLiquifyParameters.hidden = true;
+  mobileLiquifyOpenButton.setAttribute("aria-pressed", "false");
+  if (surface === "mobile") mobileLiquifySheet?.close(false);
+  canvas.classList.remove("liquify-active", "liquify-deforming");
+  restoreRasterLiquifyTool();
+  const returnFocus = rasterLiquifyReturnFocus;
+  rasterLiquifyReturnFocus = null;
+  if (returnFocus?.isConnected) {
+    queueMicrotask(() => returnFocus.focus({ preventScroll: true }));
+  }
+  if (result !== "error") setRasterLiquifyStatus("Liquify pronto.");
+  syncRasterLiquifyUi();
+  syncRasterGaussianBlurUi();
+  syncRasterMotionBlurUi();
+  syncRasterNoiseUi();
+}
+
+async function openRasterLiquifyWorkbench(
+  surface: RasterLiquifySurface,
+  trigger: HTMLElement,
+): Promise<void> {
+  const eligibilityError = rasterLiquifyEligibilityError();
+  if (eligibilityError || rasterLiquifySurface !== null) {
+    setControlValue("brushTool", activeCanvasTool);
+    if (eligibilityError) {
+      statusElement.textContent = eligibilityError;
+      statusElement.className = "status error";
+    }
+    syncRasterLiquifyUi();
+    return;
+  }
+  if (surface === "mobile" && !mobileLiquifySheet?.open(trigger)) return;
+
+  rasterLiquifySurface = surface;
+  rasterLiquifyReturnFocus = trigger;
+  rasterLiquifyReturnTool = activeCanvasTool === "liquify"
+    ? activeBrushTool
+    : activeCanvasTool;
+  rasterLiquifySessionOpen = false;
+  rasterLiquifyPreviewFault = false;
+  rasterLiquifyUiBusy = true;
+  setRasterLiquifyStatus("Preparazione Liquify…");
+  syncRasterLiquifyUi();
+  syncRasterGaussianBlurUi();
+  syncRasterMotionBlurUi();
+  syncRasterNoiseUi();
+
+  try {
+    const requested = rasterLiquifySettingsFromSurface(surface);
+    const preview = await engine.beginRasterLiquify(requested);
+    if (!preview) throw new Error("Seleziona un livello raster per usare Liquify.");
+    rasterLiquifySessionOpen = true;
+    syncRasterLiquifySettings(preview.settings, preview.amount);
+    configureBrushToolUi("liquify", false);
+    setRasterLiquifyStatus(
+      `${LIQUIFY_MODE_LABELS[preview.settings.mode]} · trascina sul canvas.`,
+    );
+  } catch (error) {
+    historyState = engine.getHistoryState();
+    rasterLiquifySessionOpen = historyState.openEdit === "liquify";
+    rasterLiquifyPreviewFault = rasterLiquifySessionOpen;
+    reportRasterLiquifyError("Impossibile aprire Liquify", error);
+    if (!rasterLiquifySessionOpen) closeRasterLiquifyWorkbench("error");
+  } finally {
+    rasterLiquifyUiBusy = false;
+    historyState = engine.getHistoryState();
+    updateHistoryControls();
+    if (rasterLiquifyCancelPending && rasterLiquifySessionOpen) {
+      rasterLiquifyCancelPending = false;
+      void cancelRasterLiquifyFromUi();
+    }
+  }
+}
+
+function updateRasterLiquifyFromUi(surface: RasterLiquifySurface): void {
+  const requested = rasterLiquifySettingsFromSurface(surface);
+  syncRasterLiquifySettings(requested, rasterLiquifyAmount);
+  if (
+    !rasterLiquifySessionOpen
+    || rasterLiquifyUiBusy
+    || rasterLiquifyPreviewFault
+  ) return;
+  try {
+    const preview = engine.updateRasterLiquifySettings(requested);
+    syncRasterLiquifySettings(preview.settings, preview.amount);
+    setRasterLiquifyStatus(`${LIQUIFY_MODE_LABELS[preview.settings.mode]} attivo.`);
+  } catch (error) {
+    rasterLiquifyPreviewFault = true;
+    reportRasterLiquifyError("Anteprima Liquify interrotta", error);
+  }
+  syncRasterLiquifyUi();
+}
+
+function updateRasterLiquifyAmountFromUi(amountPercent: number): void {
+  const normalized = Math.min(1, Math.max(0, amountPercent / 100));
+  syncRasterLiquifySettings(rasterLiquifySettings, normalized);
+  if (
+    !rasterLiquifySessionOpen
+    || rasterLiquifyUiBusy
+    || rasterLiquifyPreviewFault
+  ) return;
+  try {
+    const preview = engine.setRasterLiquifyAmount(normalized);
+    syncRasterLiquifySettings(preview.settings, preview.amount);
+  } catch (error) {
+    rasterLiquifyPreviewFault = true;
+    reportRasterLiquifyError("Adjust Amount interrotto", error);
+  }
+  syncRasterLiquifyUi();
+}
+
+async function resetRasterLiquifyFromUi(): Promise<void> {
+  if (rasterLiquifyUiBusy || !rasterLiquifySessionOpen || historyState.inconsistent) return;
+  rasterLiquifyUiBusy = true;
+  setRasterLiquifyStatus("Ripristino della deformazione…");
+  syncRasterLiquifyUi();
+  try {
+    await engine.resetRasterLiquify();
+    rasterLiquifyPreviewFault = false;
+    setRasterLiquifyStatus("Deformazione azzerata; Liquify resta attivo.");
+  } catch (error) {
+    historyState = engine.getHistoryState();
+    rasterLiquifyPreviewFault = true;
+    reportRasterLiquifyError("Reset Liquify non riuscito", error);
+  } finally {
+    rasterLiquifyUiBusy = false;
+    historyState = engine.getHistoryState();
+    updateHistoryControls();
+  }
+}
+
+async function cancelRasterLiquifyFromUi(): Promise<void> {
+  if (rasterLiquifyUiBusy) {
+    rasterLiquifyCancelPending = true;
+    return;
+  }
+  if (!rasterLiquifySessionOpen) return;
+  rasterLiquifyCancelPending = false;
+  rasterLiquifyUiBusy = true;
+  engine.endRasterLiquifyStroke(false);
+  setRasterLiquifyStatus("Ripristino dei pixel originali…");
+  syncRasterLiquifyUi();
+  try {
+    await engine.cancelRasterLiquify();
+    rasterLiquifySessionOpen = false;
+    rasterLiquifyPreviewFault = false;
+    closeRasterLiquifyWorkbench("cancel");
+  } catch (error) {
+    historyState = engine.getHistoryState();
+    rasterLiquifySessionOpen = historyState.openEdit === "liquify";
+    rasterLiquifyPreviewFault = true;
+    reportRasterLiquifyError("Annullamento Liquify non riuscito", error);
+  } finally {
+    rasterLiquifyUiBusy = false;
+    historyState = engine.getHistoryState();
+    updateHistoryControls();
+  }
+}
+
+async function applyRasterLiquifyFromUi(): Promise<void> {
+  if (
+    rasterLiquifyUiBusy
+    || !rasterLiquifySessionOpen
+    || rasterLiquifyPreviewFault
+    || historyState.inconsistent
+  ) return;
+  rasterLiquifyUiBusy = true;
+  engine.endRasterLiquifyStroke(false);
+  setRasterLiquifyStatus("Applicazione Liquify…");
+  syncRasterLiquifyUi();
+  try {
+    await engine.commitRasterLiquify();
+    rasterLiquifySessionOpen = false;
+    rasterLiquifyPreviewFault = false;
+    closeRasterLiquifyWorkbench("apply");
+    requestMobileLayerThumbnailCapture();
+  } catch (error) {
+    historyState = engine.getHistoryState();
+    rasterLiquifySessionOpen = historyState.openEdit === "liquify";
+    rasterLiquifyPreviewFault = rasterLiquifySessionOpen;
+    reportRasterLiquifyError("Applicazione Liquify non riuscita", error);
+    if (!rasterLiquifySessionOpen) closeRasterLiquifyWorkbench("error");
+  } finally {
+    rasterLiquifyUiBusy = false;
+    historyState = engine.getHistoryState();
+    updateHistoryControls();
+  }
 }
 
 function rasterGaussianBlurEligibilityError(): string | null {
   if (!engineInitialized) return "Gaussian Blur sarà disponibile dopo l’inizializzazione.";
+  if (rasterLiquifySurface !== null) return "Applica o annulla Liquify prima.";
   if (rasterMotionBlurSurface !== null) return "Applica o annulla Motion Blur prima.";
   if (rasterNoiseSurface !== null) return "Applica o annulla Noise prima.";
   if (engine.getPixelSelectionState().selectedPixels > 0) {
@@ -3019,6 +3511,7 @@ function syncRasterGaussianBlurUi(): void {
 
 function rasterMotionBlurEligibilityError(): string | null {
   if (!engineInitialized) return "Motion Blur sarà disponibile dopo l’inizializzazione.";
+  if (rasterLiquifySurface !== null) return "Applica o annulla Liquify prima.";
   if (rasterGaussianBlurSurface !== null) return "Applica o annulla Gaussian Blur prima.";
   if (rasterNoiseSurface !== null) return "Applica o annulla Noise prima.";
   if (engine.getPixelSelectionState().selectedPixels > 0) {
@@ -3099,6 +3592,7 @@ function syncRasterMotionBlurUi(): void {
 
 function rasterNoiseEligibilityError(): string | null {
   if (!engineInitialized) return "Noise sarà disponibile dopo l'inizializzazione.";
+  if (rasterLiquifySurface !== null) return "Applica o annulla Liquify prima.";
   if (rasterGaussianBlurSurface !== null) return "Applica o annulla Gaussian Blur prima.";
   if (rasterMotionBlurSurface !== null) return "Applica o annulla Motion Blur prima.";
   if (engine.getPixelSelectionState().selectedPixels > 0) {
@@ -3867,7 +4361,12 @@ function setMobileLayersPanelOpen(open: boolean): void {
   if (open && !mobileUiMediaQuery.matches) return;
   if (
     open
-    && (rasterGaussianBlurSurface === "mobile" || rasterMotionBlurSurface === "mobile")
+    && (
+      rasterLiquifySurface === "mobile"
+      || rasterGaussianBlurSurface === "mobile"
+      || rasterMotionBlurSurface === "mobile"
+      || rasterNoiseSurface === "mobile"
+    )
   ) return;
   if (open && mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
   if (open && mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
@@ -3928,7 +4427,12 @@ function setMobileToolsSheetOpen(open: boolean): void {
   if (open && !mobileUiMediaQuery.matches) return;
   if (
     open
-    && (rasterGaussianBlurSurface === "mobile" || rasterMotionBlurSurface === "mobile")
+    && (
+      rasterLiquifySurface === "mobile"
+      || rasterGaussianBlurSurface === "mobile"
+      || rasterMotionBlurSurface === "mobile"
+      || rasterNoiseSurface === "mobile"
+    )
   ) return;
   if (open && mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
   if (open && mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
@@ -5382,6 +5886,27 @@ mobileRasterEffectsSheet = new MobileRasterEffectsSheetController({
   },
 });
 
+mobileLiquifySheet = new MobileLiquifySheetController({
+  mobileMediaQuery: mobileUiMediaQuery,
+  beforeOpen: () => {
+    setMobileToolsSheetOpen(false);
+    setMobileLayersPanelOpen(false);
+    setMobileBrushLibraryOpen(false);
+    mobileBrushStudio?.cancel(false);
+    mobileStrokeSheet?.close(false);
+    mobileRasterEffectsSheet?.close(false);
+    mobileToolSettingsSheet?.close(false);
+    setControlsPanelOpen(false);
+  },
+  onRequestCancel: () => {
+    void cancelRasterLiquifyFromUi();
+  },
+  onOpenChange: () => {
+    syncMobileToolsMenuState();
+    syncMobileBrushControlsVisibility();
+  },
+});
+
 mobileGaussianBlurSheet = new MobileGaussianBlurSheetController({
   mobileMediaQuery: mobileUiMediaQuery,
   beforeOpen: () => {
@@ -5827,6 +6352,7 @@ function nonHistoryOperationLocked(allowDestructiveBlurEdit = false): boolean {
     || layerSwitching
     || mobileBrushControlDrag !== null
     || historyState.openEdit === "transform"
+    || (!allowDestructiveBlurEdit && historyState.openEdit === "liquify")
     || (!allowDestructiveBlurEdit && historyState.openEdit === "gaussian-blur")
     || (!allowDestructiveBlurEdit && historyState.openEdit === "motion-blur")
     || (!allowDestructiveBlurEdit && historyState.openEdit === "noise")
@@ -5866,6 +6392,10 @@ function interactionLocked(): boolean {
  */
 function canvasViewOperationLocked(): boolean {
   const allowDestructiveBlurEdit = (
+    rasterLiquifySessionOpen
+      && historyState.openEdit === "liquify"
+      && !rasterLiquifyUiBusy
+  ) || (
     rasterGaussianBlurSessionOpen
       && historyState.openEdit === "gaussian-blur"
       && !rasterGaussianBlurUiBusy
@@ -5974,6 +6504,8 @@ function updateHistoryControls(): void {
     || rasterMotionBlurUiBusy
     || rasterNoiseSessionOpen
     || rasterNoiseUiBusy
+    || rasterLiquifySessionOpen
+    || rasterLiquifyUiBusy
     || renderingModeSuiteRunning
     || humanStrokeReplaying;
   for (const id of brushControlIds) {
@@ -6876,7 +7408,12 @@ for (const id of rasterBevelChangeControlIds) {
 }
 
 element<HTMLSelectElement>("brushTool").addEventListener("change", () => {
-  const selected = element<HTMLSelectElement>("brushTool").value;
+  const select = element<HTMLSelectElement>("brushTool");
+  const selected = select.value;
+  if (selected === "liquify") {
+    void openRasterLiquifyWorkbench("desktop", select);
+    return;
+  }
   const tool: CanvasTool = selected === "blend"
     ? "blend"
     : selected === "fill"
@@ -7778,11 +8315,17 @@ async function restoreActiveMobileBrushLibraryBrush(): Promise<void> {
 }
 
 mobileUiMediaQuery.addEventListener("change", (event) => {
+  if (rasterLiquifySurface !== null) {
+    void cancelRasterLiquifyFromUi();
+  }
   if (rasterGaussianBlurSurface !== null) {
     void cancelRasterGaussianBlurFromUi();
   }
   if (rasterMotionBlurSurface !== null) {
     void cancelRasterMotionBlurFromUi();
+  }
+  if (rasterNoiseSurface !== null) {
+    void cancelRasterNoiseFromUi();
   }
   if (event.matches) {
     setControlsPanelOpen(false);
@@ -7811,6 +8354,7 @@ window.addEventListener("resize", () => {
   const brushStudioNeedsLayout = mobileBrushStudio?.isOpen === true;
   const strokeSheetNeedsLayout = mobileStrokeSheet?.isOpen === true;
   const rasterEffectsSheetNeedsLayout = mobileRasterEffectsSheet?.isOpen === true;
+  const liquifySheetNeedsLayout = mobileLiquifySheet?.isOpen === true;
   const gaussianBlurSheetNeedsLayout = mobileGaussianBlurSheet?.isOpen === true;
   const motionBlurSheetNeedsLayout = mobileMotionBlurSheet?.isOpen === true;
   const noiseSheetNeedsLayout = mobileNoiseSheet?.isOpen === true;
@@ -7821,6 +8365,7 @@ window.addEventListener("resize", () => {
     && !brushStudioNeedsLayout
     && !strokeSheetNeedsLayout
     && !rasterEffectsSheetNeedsLayout
+    && !liquifySheetNeedsLayout
     && !gaussianBlurSheetNeedsLayout
     && !motionBlurSheetNeedsLayout
     && !noiseSheetNeedsLayout
@@ -7840,6 +8385,7 @@ window.addEventListener("resize", () => {
     mobileBrushStudio?.handleResize();
     mobileStrokeSheet?.handleResize();
     mobileRasterEffectsSheet?.handleResize();
+    mobileLiquifySheet?.handleResize();
     mobileGaussianBlurSheet?.handleResize();
     mobileMotionBlurSheet?.handleResize();
     mobileNoiseSheet?.handleResize();
@@ -8040,6 +8586,99 @@ for (const button of mobileToolsEffectButtons) {
     syncMobileToolsMenuState();
   });
 }
+desktopLiquifyOpenInput.addEventListener("change", () => {
+  if (desktopLiquifyOpenInput.checked) {
+    void openRasterLiquifyWorkbench("desktop", desktopLiquifyOpenInput);
+  } else if (rasterLiquifySurface === "desktop") {
+    void cancelRasterLiquifyFromUi();
+  } else {
+    syncRasterLiquifyUi();
+  }
+});
+mobileLiquifyOpenButton.addEventListener("click", () => {
+  void openRasterLiquifyWorkbench("mobile", mobileLiquifyOpenButton);
+});
+for (const button of liquifyModeButtons) {
+  button.addEventListener("click", () => {
+    const mode = button.dataset.liquifyMode;
+    const surface = button.dataset.liquifySurface;
+    if (!isLiquifyMode(mode) || (surface !== "desktop" && surface !== "mobile")) return;
+    rasterLiquifySettings = { ...rasterLiquifySettings, mode };
+    updateRasterLiquifyFromUi(surface);
+  });
+  button.addEventListener("keydown", (event) => {
+    if (
+      event.key !== "ArrowLeft"
+      && event.key !== "ArrowRight"
+      && event.key !== "ArrowUp"
+      && event.key !== "ArrowDown"
+      && event.key !== "Home"
+      && event.key !== "End"
+    ) return;
+    const surface = button.dataset.liquifySurface;
+    const peers = liquifyModeButtons.filter(
+      (candidate) => candidate.dataset.liquifySurface === surface && !candidate.disabled,
+    );
+    const index = peers.indexOf(button);
+    if (index < 0 || peers.length === 0) return;
+    event.preventDefault();
+    const columns = surface === "mobile" ? 4 : 2;
+    const delta = event.key === "ArrowLeft"
+      ? -1
+      : event.key === "ArrowRight"
+        ? 1
+        : event.key === "ArrowUp"
+          ? -columns
+          : event.key === "ArrowDown"
+            ? columns
+            : 0;
+    const nextIndex = event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? peers.length - 1
+        : (index + delta + peers.length) % peers.length;
+    peers[nextIndex].focus({ preventScroll: true });
+    peers[nextIndex].click();
+  });
+}
+for (const input of [
+  ...rasterLiquifySizeInputs,
+  ...rasterLiquifyPressureInputs,
+  ...rasterLiquifyDistortionInputs,
+  ...rasterLiquifyMomentumInputs,
+]) {
+  input.addEventListener("input", () => {
+    const surface: RasterLiquifySurface = input.id.startsWith("mobile")
+      ? "mobile"
+      : "desktop";
+    updateRasterLiquifyFromUi(surface);
+  });
+}
+for (const input of rasterLiquifyAmountInputs) {
+  input.addEventListener("input", () => {
+    updateRasterLiquifyAmountFromUi(Number(input.value));
+  });
+}
+for (const button of rasterLiquifyResetButtons) {
+  button.addEventListener("click", () => {
+    void resetRasterLiquifyFromUi();
+  });
+}
+for (const button of rasterLiquifyCancelButtons) {
+  button.addEventListener("click", () => {
+    void cancelRasterLiquifyFromUi();
+  });
+}
+for (const button of rasterLiquifyApplyButtons) {
+  button.addEventListener("click", () => {
+    void applyRasterLiquifyFromUi();
+  });
+}
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || rasterLiquifySurface !== "desktop") return;
+  event.preventDefault();
+  void cancelRasterLiquifyFromUi();
+});
 desktopGaussianBlurOpenInput.addEventListener("change", () => {
   if (desktopGaussianBlurOpenInput.checked) {
     void openRasterGaussianBlurWorkbench("desktop", desktopGaussianBlurOpenInput);
@@ -13068,6 +13707,7 @@ function toPointerSample(event: PointerEvent): PointerSample {
 let activePointerId: number | null = null;
 type PointerMode =
   | "paint"
+  | "liquify"
   | "fill"
   | "selection-tap"
   | "selection-lasso"
@@ -13376,6 +14016,9 @@ function enterTouchNavigation(): void {
         engine.endStroke();
       }
       cancelHumanStrokeRecordingForNavigation();
+    } else if (pointerMode === "liquify") {
+      engine.endRasterLiquifyStroke(false);
+      canvas.classList.remove("liquify-deforming");
     } else if (pointerMode === "fill") {
       fillPointerMoved = true;
     } else if (pointerMode === "selection-tap") {
@@ -13424,6 +14067,8 @@ canvas.addEventListener("pointerdown", (event) => {
       ? "pan"
       : activeCanvasTool === "fill"
         ? "fill"
+        : activeCanvasTool === "liquify"
+          ? "liquify"
         : activeCanvasTool === "selection"
           ? selectedSelectionMethod() === "lasso"
             ? "selection-lasso"
@@ -13433,6 +14078,9 @@ canvas.addEventListener("pointerdown", (event) => {
         : "paint";
   const viewNavigationRequested = requestedPointerMode === "pan"
     || requestedPointerMode === "rotate";
+  const liquifyEditRequested = requestedPointerMode === "liquify"
+    && rasterLiquifySessionOpen
+    && historyState.openEdit === "liquify";
   const blurTouchNavigationRequested = event.pointerType === "touch"
     && (
       (rasterGaussianBlurSessionOpen && historyState.openEdit === "gaussian-blur")
@@ -13442,7 +14090,7 @@ canvas.addEventListener("pointerdown", (event) => {
   if (
     (viewNavigationRequested || blurTouchNavigationRequested)
       ? canvasViewOperationLocked()
-      : operationLocked()
+      : operationLocked(liquifyEditRequested)
   ) {
     if (historyState.openEdit === "raster-property") {
       statusElement.textContent = "Completo la modifica dell'effetto prima del tratto…";
@@ -13464,6 +14112,17 @@ canvas.addEventListener("pointerdown", (event) => {
   }
 
   const paintSample = requestedPointerMode === "paint" ? toPointerSample(event) : null;
+  const liquifyPoint = requestedPointerMode === "liquify"
+    ? engine.toLayerPoint({
+      ...toPointerSample(event),
+      pressure: event.pointerType === "pen" ? normalizedPressure(event) : 1,
+    })
+    : null;
+  if (liquifyPoint && !engine.beginRasterLiquifyStroke(liquifyPoint)) {
+    historyState = engine.getHistoryState();
+    updateHistoryControls();
+    return;
+  }
   const holdPaintIntent = paintSample !== null && shouldHoldTouchPaintIntent(
     touchPaintIntentHoldEnabled,
     event.pointerType,
@@ -13522,6 +14181,8 @@ canvas.addEventListener("pointerdown", (event) => {
   } else if (pointerMode === "transform") {
     // Le maniglie semantiche vivono sull’overlay; sul raster sottostante il
     // tool Trasforma non deve mai avviare una pennellata.
+  } else if (pointerMode === "liquify") {
+    canvas.classList.add("liquify-deforming");
   } else {
     if (paintSample && holdPaintIntent) {
       if (humanStrokeRecordingArmed) startHumanStrokeRecording(event, paintSample);
@@ -13632,6 +14293,13 @@ canvas.addEventListener("pointermove", (event) => {
   };
   const coalesced = eventWithCoalescing.getCoalescedEvents?.() ?? [];
   const sourceEvents = coalesced.length > 0 ? coalesced : [event];
+  if (pointerMode === "liquify") {
+    engine.extendRasterLiquifyStroke(sourceEvents.map((source) => engine.toLayerPoint({
+      ...toPointerSample(source),
+      pressure: source.pointerType === "pen" ? normalizedPressure(source) : 1,
+    })));
+    return;
+  }
   const samples = sourceEvents.map(toPointerSample);
   captureHumanStrokeSamples(sourceEvents, samples);
   const heldIntent = touchPaintIntentHold;
@@ -13720,13 +14388,15 @@ function finishPointer(event: PointerEvent): void {
   if (pointerMode === "paint") {
     engine.endStroke(event.timeStamp);
     void finishHumanStrokeRecording(event.type === "pointerup");
+  } else if (pointerMode === "liquify") {
+    engine.endRasterLiquifyStroke(event.type === "pointerup");
   } else if (pointerMode === "rotate") {
     engine.endViewRotationGesture();
   }
   if (pointerMode === "rotate" || pointerMode === "pan") {
     vectorTextPrototype?.endViewGesture();
   }
-  canvas.classList.remove("panning", "rotating");
+  canvas.classList.remove("panning", "rotating", "liquify-deforming");
   pointerMode = null;
   activePointerId = null;
   scheduleMobileLayersRefresh();
