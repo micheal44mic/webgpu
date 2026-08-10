@@ -37,6 +37,14 @@ import {
   mobileSemanticLayerThumbnailSignature,
 } from "../src/mobile-semantic-layer-thumbnail.ts";
 import {
+  BoundedMobileRasterThumbnailCache,
+  MOBILE_RASTER_THUMBNAIL_CACHE_GENERATIONS,
+  MOBILE_RASTER_THUMBNAIL_CACHE_MAXIMUM,
+  MOBILE_RASTER_THUMBNAIL_CACHE_MAXIMUM_BYTES,
+  MOBILE_RASTER_THUMBNAIL_EDGE_PX,
+  MOBILE_RASTER_THUMBNAIL_RGBA_BYTES,
+} from "../src/mobile-raster-thumbnail-cache.ts";
+import {
   DEFAULT_RASTER_INNER_SHADOW_STYLE,
   DEFAULT_RASTER_OUTER_SHADOW_STYLE,
   copyRasterInnerShadowStyle,
@@ -1765,10 +1773,39 @@ assert.doesNotMatch(
 );
 assert.match(engineSource, /async captureActiveLayerThumbnail\(\)/);
 assert.match(engineSource, /engine\.layerThumbnailRenderer\?\.residentBytes/);
-assert.match(mainSource, /const mobileRasterThumbnailCache = new Map/);
+assert.match(mainSource, /new BoundedMobileRasterThumbnailCache/);
+assert.doesNotMatch(
+  mainSource,
+  /liveRasterIds[\s\S]{0,300}mobileRasterThumbnailCache\.delete/,
+  "merge must not purge previews for layer ids that structural undo can restore",
+);
 assert.match(mainSource, /activePointerId !== null[\s\S]*?historyState\.busy/);
 assert.match(mainSource, /function requestMobileLayerThumbnailCapture\(delayMs = 120\)/);
 assert.match(mainSource, /new ImageData\(imageBytes, capture\.width, capture\.height\)/);
+assert.equal(MOBILE_RASTER_THUMBNAIL_EDGE_PX, 64);
+assert.equal(MOBILE_RASTER_THUMBNAIL_RGBA_BYTES, 64 * 64 * 4);
+assert.equal(MOBILE_RASTER_THUMBNAIL_CACHE_GENERATIONS, 4);
+assert.equal(
+  MOBILE_RASTER_THUMBNAIL_CACHE_MAXIMUM,
+  LAYER_STACK_MAXIMUM * MOBILE_RASTER_THUMBNAIL_CACHE_GENERATIONS,
+);
+assert.equal(MOBILE_RASTER_THUMBNAIL_CACHE_MAXIMUM_BYTES, 1024 * 1024);
+const rasterThumbnailCache = new BoundedMobileRasterThumbnailCache(2);
+rasterThumbnailCache.set(1, "detached-by-merge");
+rasterThumbnailCache.set(2, "merged-result");
+assert.equal(rasterThumbnailCache.get(1), "detached-by-merge");
+rasterThumbnailCache.set(3, "newer-preview");
+assert.equal(
+  rasterThumbnailCache.get(1),
+  "detached-by-merge",
+  "reading a restored undo preview must keep it resident",
+);
+assert.equal(
+  rasterThumbnailCache.get(2),
+  undefined,
+  "the least-recent preview must be evicted at the hard cap",
+);
+assert.equal(rasterThumbnailCache.get(3), "newer-preview");
 assert.equal(
   MOBILE_SEMANTIC_LAYER_THUMBNAIL_STRATEGY,
   "lazy-canvas2d-semantic-text-svg-64-signature-cache-v1",

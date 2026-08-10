@@ -7,6 +7,10 @@ import {
   restoreBorrowedLayerMergeColdSeedAfterDetachFailure,
   transferBorrowedLayerMergeColdSeedForDetach,
 } from "../src/layer-merge-seed-ownership.ts";
+import {
+  planLayerMergeCreateMemory,
+  planLayerSwitchMemory,
+} from "../src/layer-memory-admission-core.ts";
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const core = read("../src/layer-merge-core.ts");
@@ -26,6 +30,8 @@ assert.match(history, /readonly output: LayerMergeHistoryOutput/);
 assert.match(history, /baseTileMask: Uint32Array/);
 assert.match(runtime, /prepareAndApplyLayerMerge/);
 assert.match(runtime, /applyLayerMergeHistory/);
+assert.match(runtime, /reserveLayerMergeCreateMemory/);
+assert.match(runtime, /memoryReservation = reserveLayerMergeCreateMemory/);
 assert.match(runtime, /baseTileMask: rendered\.record\.storageTileMask\.slice\(\)/);
 assert.match(runtime, /entry\.layerRecord\.storageTileMask\.set\(entry\.baseTileMask\)/);
 assert.match(history, /payloadsRetiredBelowFloor: boolean/);
@@ -44,6 +50,8 @@ assert.match(historyRuntime, /engine\.discardedLayerMergeHistoryActions\.push\(a
 assert.match(historyRuntime, /destroyLayerMergeHistorySeeds\(action\)/);
 assert.match(engine, /discardedLayerMergeHistoryActions: LayerMergeHistoryAction\[\]/);
 assert.match(engine, /async mergeMixedSceneItems\(/);
+assert.match(engine, /private reserveLayerSwitchMemory\(/);
+assert.match(engine, /const memoryReservation = this\.reserveLayerSwitchMemory\(index\)/);
 assert.match(controller, /async mergeSceneItems\(/);
 assert.match(controller, /this\.host\.mergeMixedSceneItems\(\{ keys: \[\.\.\.keys\], vectorDraws \}\)/);
 
@@ -295,6 +303,52 @@ for (const documentSize of [2048, 4096]) {
     assert.equal(finalResidency.filter((entry) => entry.cold).length, count - 1);
   }
 }
+
+// Admission is proportional to the real cold-tile payloads, not a fixed
+// number of selected layers. Full-document resources stay explicit because
+// WebGPU has to allocate them even when a layer is sparse.
+const fullLayerBytes = 32 * 1024 * 1024;
+const fullMergedSurfaceBytes = Math.floor(fullLayerBytes * 4 / 3);
+const sparseSeeds = [128 * 1024, 512 * 1024, 0, 256 * 1024];
+const mergeCreate = planLayerMergeCreateMemory({
+  fullLayerBytes,
+  inputSeedBytes: sparseSeeds,
+  outputSeedBytes: fullLayerBytes,
+  foldTransientBytes: fullLayerBytes * 2 + fullMergedSurfaceBytes,
+});
+assert.equal(mergeCreate.category, "layer-merge-create");
+assert.equal(mergeCreate.steadyBytes, fullLayerBytes * 2);
+assert.equal(
+  mergeCreate.peakBytes,
+  fullLayerBytes * 4
+    + fullMergedSurfaceBytes
+    + sparseSeeds.reduce((total, value) => total + value, 0),
+);
+const smallerMerge = planLayerMergeCreateMemory({
+  fullLayerBytes,
+  inputSeedBytes: sparseSeeds.slice(0, 1),
+  outputSeedBytes: fullLayerBytes,
+  foldTransientBytes: fullLayerBytes * 2 + fullMergedSurfaceBytes,
+});
+assert.ok(smallerMerge.peakBytes < mergeCreate.peakBytes);
+
+const layerSwitch = planLayerSwitchMemory({
+  outgoingColdBytes: 512 * 1024,
+  incomingHotBytes: fullLayerBytes,
+  adjacentPrefetchBytes: 256 * 1024,
+  fullMergedSurfaceBytes,
+  foldTransientBytes: fullLayerBytes * 2,
+});
+assert.equal(layerSwitch.category, "layer-switch");
+assert.equal(layerSwitch.steadyBytes, 0);
+assert.equal(
+  layerSwitch.peakBytes,
+  512 * 1024
+    + fullLayerBytes
+    + 256 * 1024
+    + fullMergedSurfaceBytes * 2
+    + fullLayerBytes * 2,
+);
 
 // Every fallible attach/detach happens before staged GPU destruction. Output
 // attach compensates stack/map/scene partial success locally; the outer

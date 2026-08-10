@@ -181,6 +181,7 @@ import { layerBaseMemoryMiB } from "./engine-memory-model";
 import { GPU_MEMORY_AUDIT_TOLERANCE_BYTES } from "./gpu-memory-audit";
 import { GPU_MEMORY_CATEGORY_ORDER } from "./gpu-resource-registry";
 import { LAYER_THUMBNAIL_SIZE } from "./layer-thumbnail-renderer";
+import { BoundedMobileRasterThumbnailCache } from "./mobile-raster-thumbnail-cache";
 import {
   mobileSemanticLayerThumbnailSignature,
   renderMobileSemanticLayerThumbnail,
@@ -1659,7 +1660,8 @@ interface MobileRasterThumbnailCacheEntry {
   readonly imageData: ImageData;
   readonly revision: number;
 }
-const mobileRasterThumbnailCache = new Map<number, MobileRasterThumbnailCacheEntry>();
+const mobileRasterThumbnailCache =
+  new BoundedMobileRasterThumbnailCache<MobileRasterThumbnailCacheEntry>();
 let mobileLayerThumbnailRevision = 0;
 let mobileSemanticThumbnailFontRevision = 0;
 let mobileLayerThumbnailCaptureTimer: number | null = null;
@@ -11804,12 +11806,9 @@ function renderMobileLayerList(stats: EngineStats): void {
     return;
   }
   reconcileMobileLayerMultiSelection(stats);
-  const liveRasterIds = new Set(stats.layers.map((layer) => layer.id));
-  for (const cachedLayerId of mobileRasterThumbnailCache.keys()) {
-    if (!liveRasterIds.has(cachedLayerId)) {
-      mobileRasterThumbnailCache.delete(cachedLayerId);
-    }
-  }
+  // Structural history detaches the source records during Merge and reattaches
+  // those same monotonic ids on Undo. Their previews therefore remain in the
+  // bounded LRU until history restores them or newer previews evict them.
   const locked = interactionLocked() || layerSwitching;
   const views = mobileLayerViews(stats);
   mobileLayerMultiActions.hidden = !mobileLayerMultiSelectEnabled;

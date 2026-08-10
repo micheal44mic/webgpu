@@ -49,11 +49,13 @@ import { renderVectorDrawsToTexture } from "./engine-vector-raster-runtime";
 import { mergeDirtyRects } from "./engine-geometry";
 import type { DirtyRect } from "./engine-stroke-types";
 import {
+  LAYER_STORAGE_TILE_SIZE,
   countLayerStorageTiles,
   markLayerStorageRect,
 } from "./layer-storage-study";
 import {
   alignedMergedSurfaceBounds,
+  mergedSurfaceMemoryBytes,
 } from "./merged-surface-bounds";
 import type {
   MixedSceneItem,
@@ -77,6 +79,7 @@ import {
   type MemoryReservation,
   type MemoryRequest,
 } from "./memory-governor-core";
+import { planLayerMergeCreateMemory } from "./layer-memory-admission-core";
 import { isHistoryColdSeedHandle } from "./history-cold-seed";
 
 export interface LayerMergeResult {
@@ -559,6 +562,76 @@ function layerMergeCompressedCpuBytes(engine: BrushEngine): number {
   let bytes = 0;
   for (const gpu of engine.layerGpu.values()) bytes += gpu.compressed?.storedBytes ?? 0;
   return bytes;
+}
+
+function layerMergeColdBytesForRecord(engine: BrushEngine, layerId: number): number {
+  const record = engine.layerStack.byId(layerId);
+  if (!record || !record.hasContent) return 0;
+  const bytesPerPixel = engine.layerFormat === "rgba16float" ? 8 : 4;
+  return countLayerStorageTiles(coldStorageMaskForRecord(record))
+    * LAYER_STORAGE_TILE_SIZE
+    * LAYER_STORAGE_TILE_SIZE
+    * bytesPerPixel;
+}
+
+function layerMergeCreateRequest(
+  engine: BrushEngine,
+  plan: ReturnType<typeof planMixedSceneLayerMerge>,
+): MemoryRequest {
+  const full = layerMergeFullTextureBytes(engine);
+  const inputSeedBytes = plan.rasterLayerIds.map((layerId) => {
+    const record = engine.layerStack.byId(layerId);
+    if (!record?.hasContent) return 0;
+    const gpu = engine.requireLayerGpu(layerId);
+    // A hot layer needs a separate History seed. A cold authority is borrowed
+    // and transferred only at detach, so charging it twice would reject a safe
+    // merge. A compressed authority has to be restored into a seed first.
+    if (gpu.hot) return layerMergeColdBytesForRecord(engine, layerId);
+    if (gpu.compressed) return gpu.compressed.rawBytes;
+    if (gpu.cold) return 0;
+    // The operation will subsequently reject the malformed authority as well;
+    // use the full bound here so its admission can never be optimistic.
+    return full;
+  });
+  const mergedFullBytes = mergedSurfaceMemoryBytes(
+    { width: engine.layerSize, height: engine.layerSize },
+    engine.layerFormat === "rgba16float" ? 8 : 4,
+  ).totalBytes;
+  return planLayerMergeCreateMemory({
+    fullLayerBytes: full,
+    inputSeedBytes,
+    outputSeedBytes: full,
+    // One source may be rehydrated and baked while the output is folded. The
+    // source is streamed, therefore this does not scale with selected layers.
+    foldTransientBytes: full * 2 + mergedFullBytes,
+  });
+}
+
+function reserveLayerMergeCreateMemory(
+  engine: BrushEngine,
+  plan: ReturnType<typeof planMixedSceneLayerMerge>,
+): MemoryReservation {
+  const request = layerMergeCreateRequest(engine, plan);
+  const decision = planMemoryAdmission(
+    {
+      committedBytes: engine.gpuResourceRegistry.snapshot().currentBytes,
+      reservedBytes: engine.memoryReservations.pendingBytes,
+      reclaimableBytes: 0,
+      inFlightBytes: layerMergeCompressedCpuBytes(engine),
+    },
+    engine.memoryGovernorLimits,
+    request,
+  );
+  if (decision.outcome !== "admit") {
+    const requiredMiB = request.peakBytes / (1024 * 1024);
+    const headroomMiB = Math.max(0, decision.ceilingBytes - decision.usedBytes) / (1024 * 1024);
+    throw new Error(
+      "Memoria insufficiente per unire i livelli: "
+      + `${requiredMiB.toFixed(1)} MiB richiesti, ${headroomMiB.toFixed(1)} MiB disponibili. `
+      + "Riduci la selezione o attendi che la cronologia scarichi le copie locali.",
+    );
+  }
+  return engine.memoryReservations.reserve(request);
 }
 
 function layerMergeHistoryRequest(
@@ -1071,6 +1144,7 @@ export async function prepareAndApplyLayerMerge(
   const actionId = engine.nextHistoryActionId;
   let rendered: Awaited<ReturnType<typeof renderMergeOutput>> | null = null;
   const inputs: LayerMergeHistoryInput[] = [];
+  let memoryReservation: MemoryReservation | null = null;
   let applied = false;
   let applyAttempted = false;
   let workbenchMayNeedRestore = false;
@@ -1080,6 +1154,8 @@ export async function prepareAndApplyLayerMerge(
     // snapshot helpers consume record metadata, so publish it before planning.
     engine.persistActiveLayerState();
     workbenchMayNeedRestore = true;
+    const memoryPlan = planMixedSceneLayerMerge(engine.layerStack, scene, request.keys);
+    memoryReservation = reserveLayerMergeCreateMemory(engine, memoryPlan);
     rendered = await renderMergeOutput(engine, request, actionId);
     await restoreEffectsWorkbenchToActiveLayer(engine, "structural-history");
     workbenchMayNeedRestore = false;
@@ -1139,6 +1215,10 @@ export async function prepareAndApplyLayerMerge(
       },
     };
   } finally {
+    if (memoryReservation) {
+      if (applied) engine.memoryReservations.settle(memoryReservation);
+      else engine.memoryReservations.release(memoryReservation);
+    }
     if (!applied) {
       for (const input of inputs) {
         if (input.kind !== "raster") continue;

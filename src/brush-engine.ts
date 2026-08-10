@@ -743,8 +743,14 @@ import {
   GpuResourceRegistry,
   instrumentGpuDevice,
 } from "./gpu-resource-registry";
-import { MemoryReservationLedger, memoryZoneFor } from "./memory-governor-core";
+import {
+  MemoryReservationLedger,
+  memoryZoneFor,
+  planMemoryAdmission,
+  type MemoryReservation,
+} from "./memory-governor-core";
 import { memoryGovernorLimitsForDeviceClass } from "./memory-governor-limits";
+import { planLayerSwitchMemory } from "./layer-memory-admission-core";
 import {
   ensureFillRenderer,
   fillAtClientPoint,
@@ -7205,6 +7211,77 @@ export class BrushEngine {
     }
   }
 
+  private layerColdBytesForMemoryAdmission(record: LayerRecord): number {
+    if (!record.hasContent) return 0;
+    const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
+    return countLayerStorageTiles(coldStorageMaskForRecord(record))
+      * LAYER_STORAGE_TILE_SIZE
+      * LAYER_STORAGE_TILE_SIZE
+      * bytesPerPixel;
+  }
+
+  private layerSwitchCompressedCpuBytes(): number {
+    let bytes = this.layerColdRestoreActiveBytes;
+    for (const gpu of this.layerGpu.values()) {
+      bytes += gpu.compressed?.storedBytes ?? 0;
+    }
+    return bytes;
+  }
+
+  /**
+   * Reserves the whole structural peak before the outgoing hot texture is
+   * frozen. The switch itself already releases old composite caches before
+   * rebuilding them; this guard covers the remaining unavoidable overlap.
+   */
+  private reserveLayerSwitchMemory(targetIndex: number): MemoryReservation {
+    const outgoing = this.layerStack.active;
+    const incoming = this.layerStack.at(targetIndex);
+    const incomingGpu = this.requireLayerGpu(incoming.id);
+    const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
+    const fullLayerBytes = this.layerSize * this.layerSize * bytesPerPixel;
+    let adjacentPrefetchBytes = 0;
+    if (this.layerColdAdjacentPrefetchEnabled) {
+      for (const adjacentIndex of [targetIndex - 1, targetIndex + 1]) {
+        if (adjacentIndex < 0 || adjacentIndex >= this.layerStack.count) continue;
+        const adjacent = this.layerStack.at(adjacentIndex);
+        const adjacentGpu = this.requireLayerGpu(adjacent.id);
+        adjacentPrefetchBytes += adjacentGpu.compressed?.rawBytes ?? 0;
+      }
+    }
+    const request = planLayerSwitchMemory({
+      outgoingColdBytes: outgoing.id === this.layerStack.referenceLayerId
+        ? 0
+        : this.layerColdBytesForMemoryAdmission(outgoing),
+      incomingHotBytes: incomingGpu.hot ? 0 : fullLayerBytes,
+      adjacentPrefetchBytes,
+      fullMergedSurfaceBytes: mergedSurfaceMemoryBytes(
+        { width: this.layerSize, height: this.layerSize },
+        bytesPerPixel,
+      ).totalBytes,
+      foldTransientBytes: fullLayerBytes * 2,
+    });
+    const decision = planMemoryAdmission(
+      {
+        committedBytes: this.gpuResourceRegistry.snapshot().currentBytes,
+        reservedBytes: this.memoryReservations.pendingBytes,
+        reclaimableBytes: 0,
+        inFlightBytes: this.layerSwitchCompressedCpuBytes(),
+      },
+      this.memoryGovernorLimits,
+      request,
+    );
+    if (decision.outcome !== "admit") {
+      const requiredMiB = request.peakBytes / (1024 * 1024);
+      const headroomMiB = Math.max(0, decision.ceilingBytes - decision.usedBytes) / (1024 * 1024);
+      throw new Error(
+        "Memoria insufficiente per cambiare livello: "
+        + `${requiredMiB.toFixed(1)} MiB richiesti, ${headroomMiB.toFixed(1)} MiB disponibili. `
+        + "Attendi la compressione dei livelli inattivi o riduci la cronologia prima di riprovare.",
+      );
+    }
+    return this.memoryReservations.reserve(request);
+  }
+
   /** Selects an existing layer, paying the switch cost. */
   async setActiveLayer(index: number): Promise<LayerSwitchResult | null> {
     if (!this.initialized) {
@@ -7215,6 +7292,8 @@ export class BrushEngine {
       return null;
     }
     this.assertLayerSwitchAllowed();
+    const memoryReservation = this.reserveLayerSwitchMemory(index);
+    let memoryCommitted = false;
     this.cancelLayerColdCompressionIdle();
     this.layerSwitchBusy = true;
     const fromIndex = this.layerStack.activeIndex;
@@ -7225,7 +7304,9 @@ export class BrushEngine {
       await this.prepareActiveLayerForSwitch();
       this.layerStack.setActiveIndex(index);
       activationStarted = true;
-      return await this.activateLayer(fromIndex);
+      const result = await this.activateLayer(fromIndex);
+      memoryCommitted = true;
+      return result;
     } catch (error) {
       if (activationStarted) {
         // Restoring only the selected index and texture fields is insufficient:
@@ -7252,6 +7333,8 @@ export class BrushEngine {
       }
       throw error;
     } finally {
+      if (memoryCommitted) this.memoryReservations.settle(memoryReservation);
+      else this.memoryReservations.release(memoryReservation);
       this.layerSwitchBusy = false;
       this.scheduleLayerColdCompression();
       if (import.meta.env.DEV) {
