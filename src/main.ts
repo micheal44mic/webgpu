@@ -13887,6 +13887,27 @@ function keyboardEventTargetsEditable(target: EventTarget | null): boolean {
   return Boolean(elementTarget?.closest("input, textarea, select, [contenteditable]"));
 }
 
+const textSelectionEditableSelector = [
+  "input:not([type])",
+  'input[type="text"]',
+  'input[type="search"]',
+  'input[type="email"]',
+  'input[type="url"]',
+  'input[type="tel"]',
+  'input[type="password"]',
+  'input[type="number"]',
+  "textarea",
+  '[contenteditable]:not([contenteditable="false"])',
+  ".allow-text-selection",
+].join(", ");
+
+document.addEventListener("selectstart", (event) => {
+  const elementTarget = event.target instanceof Element ? event.target : null;
+  if (!elementTarget?.closest(textSelectionEditableSelector)) {
+    event.preventDefault();
+  }
+}, { capture: true });
+
 window.addEventListener("keydown", (event) => {
   if (
     event.defaultPrevented
