@@ -94,6 +94,7 @@ export class LayerBlendTileCompositor {
   private readonly normalOverPipeline: GPURenderPipeline;
   private readonly normalAtopPipeline: GPURenderPipeline;
   private readonly advancedPipeline: GPURenderPipeline;
+  private readonly tileClearPipeline: GPURenderPipeline;
   private readonly tilePresentPipeline: GPURenderPipeline;
   private readonly mipOnePipeline: GPURenderPipeline;
   private readonly pyramidPresentPipeline: GPURenderPipeline;
@@ -127,6 +128,7 @@ export class LayerBlendTileCompositor {
     normalOverPipeline: GPURenderPipeline;
     normalAtopPipeline: GPURenderPipeline;
     advancedPipeline: GPURenderPipeline;
+    tileClearPipeline: GPURenderPipeline;
     tilePresentPipeline: GPURenderPipeline;
     mipOnePipeline: GPURenderPipeline;
     pyramidPresentPipeline: GPURenderPipeline;
@@ -149,6 +151,7 @@ export class LayerBlendTileCompositor {
     this.normalOverPipeline = options.normalOverPipeline;
     this.normalAtopPipeline = options.normalAtopPipeline;
     this.advancedPipeline = options.advancedPipeline;
+    this.tileClearPipeline = options.tileClearPipeline;
     this.tilePresentPipeline = options.tilePresentPipeline;
     this.mipOnePipeline = options.mipOnePipeline;
     this.pyramidPresentPipeline = options.pyramidPresentPipeline;
@@ -385,13 +388,32 @@ export class LayerBlendTileCompositor {
           "fragmentMain",
           engine.layerFormat,
         );
+        if (!engine.mixedSceneClearShaderModule) {
+          throw new Error("Shader clear parziale scena mista non inizializzato.");
+        }
+        const tileClearPipeline = engine.device.createRenderPipeline({
+          label: "Layer blend tile bounded transparent clear",
+          layout: engine.device.createPipelineLayout({
+            label: "Layer blend tile bounded transparent clear pipeline layout",
+            bindGroupLayouts: [],
+          }),
+          vertex: {
+            module: engine.mixedSceneClearShaderModule,
+            entryPoint: "vertexMain",
+          },
+          fragment: {
+            module: engine.mixedSceneClearShaderModule,
+            entryPoint: "fragmentMain",
+            targets: [{ format: engine.layerFormat }],
+          },
+          primitive: { topology: "triangle-list" },
+        });
         const tilePresentPipeline = pipeline(
           "Layer blend tile to linear presentation",
           presentLayout,
           presentShader,
           "fragmentMain",
           "rgba16float",
-          sourceOverBlend,
         );
         const mipOnePipeline = pipeline(
           "Layer blend tile exact mip 1",
@@ -427,7 +449,6 @@ export class LayerBlendTileCompositor {
           pyramidShader,
           "fragmentMain",
           "rgba16float",
-          sourceOverBlend,
         );
         const pyramidPresentBindGroup = engine.device.createBindGroup({
           label: "Layer blend final pyramid present bind group",
@@ -456,6 +477,7 @@ export class LayerBlendTileCompositor {
           normalOverPipeline,
           normalAtopPipeline,
           advancedPipeline,
+          tileClearPipeline,
           tilePresentPipeline,
           mipOnePipeline,
           pyramidPresentPipeline,
@@ -509,17 +531,33 @@ export class LayerBlendTileCompositor {
     }
   }
 
-  clearTile(encoder: GPUCommandEncoder, tileIndex: 0 | 1 | 2, label: string): void {
+  clearTile(
+    encoder: GPUCommandEncoder,
+    tileIndex: 0 | 1 | 2,
+    label: string,
+    width: number = this.extent,
+    height: number = this.extent,
+  ): void {
     this.assertAlive();
+    const boundedWidth = Math.min(this.extent, Math.max(0, Math.ceil(width)));
+    const boundedHeight = Math.min(this.extent, Math.max(0, Math.ceil(height)));
+    if (boundedWidth <= 0 || boundedHeight <= 0) return;
+    const clearsWholeTile = boundedWidth === this.extent
+      && boundedHeight === this.extent;
     const pass = encoder.beginRenderPass({
       label,
       colorAttachments: [{
         view: this.views[tileIndex],
-        loadOp: "clear",
+        loadOp: clearsWholeTile ? "clear" : "load",
         storeOp: "store",
         clearValue: { r: 0, g: 0, b: 0, a: 0 },
       }],
     });
+    if (!clearsWholeTile) {
+      pass.setPipeline(this.tileClearPipeline);
+      pass.setScissorRect(0, 0, boundedWidth, boundedHeight);
+      pass.draw(3, 1, 0, 0);
+    }
     pass.end();
   }
 

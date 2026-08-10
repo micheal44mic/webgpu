@@ -9,7 +9,7 @@ export const LAYER_BLEND_TILE_EXTENT = 1024 as const;
 export const LAYER_BLEND_TILE_PRESENT_UNIFORM_BYTES = 32 as const;
 export const LAYER_BLEND_TILE_MIP_UNIFORM_BYTES = 16 as const;
 export const LAYER_BLEND_TILE_STRATEGY =
-  "document-space-1024-tile-native-format-blend-before-filter-mip-v1" as const;
+  "document-space-1024-tile-native-format-blend-before-filter-replace-cache-v2" as const;
 
 const fullscreenVertex = /* wgsl */ `
 struct VertexOutput {
@@ -61,7 +61,10 @@ fn layerPositionAt(fragmentPosition: vec2<f32>) -> vec2<f32> {
 `;
 
 /**
- * Presents one completed mip-0 tile into the screen-space linear cache.
+ * Replaces the owned pixels of one completed mip-0 tile in the screen-space
+ * linear cache. Pixels outside the transformed core are discarded: a rotated
+ * core has an axis-aligned screen scissor whose corner pixels belong to the
+ * unchanged cache and must never be cleared or overwritten.
  * `textureOrigin` includes the one-pixel apron while `coreOrigin/coreSize`
  * form a half-open ownership rectangle, so adjacent tiles never double blend.
  */
@@ -95,7 +98,7 @@ fn fragmentMain(
   let inside = all(layerPosition >= tile.coreOrigin)
     && all(layerPosition < coreMaximum);
   if (!inside) {
-    return vec4<f32>(0.0);
+    discard;
   }
 
   let localPosition = layerPosition - tile.textureOrigin;

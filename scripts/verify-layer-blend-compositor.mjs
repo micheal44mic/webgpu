@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   LAYER_BLEND_MODE_ORDER,
+  LAYER_BLEND_MODE_WGSL,
   blendLayerPremultipliedLinear,
 } from "../src/layer-blend-modes.ts";
 import {
@@ -22,6 +24,18 @@ import {
   LAYER_BLEND_FOLD_UNIFORM_BYTES,
   LAYER_BLEND_FOLD_WGSL,
 } from "../src/layer-blend-fold-shader.ts";
+const tileShaderSource = readFileSync(
+  new URL("../src/layer-blend-tile-shader.ts", import.meta.url),
+  "utf8",
+);
+const tileCompositorSource = readFileSync(
+  new URL("../src/layer-blend-tile-compositor.ts", import.meta.url),
+  "utf8",
+);
+const tileRuntimeSource = readFileSync(
+  new URL("../src/engine-layer-blend-tile-runtime.ts", import.meta.url),
+  "utf8",
+);
 
 assert.equal(
   LAYER_BLEND_COMPOSITOR_STRATEGY,
@@ -268,5 +282,76 @@ assert.ok(
 );
 assert.match(foldAtopShader, /blendedLinear \* \(sourceAlpha \* backdropAlpha\)/);
 assert.match(foldAtopShader, /backdropPremultiplied \* \(1\.0 - sourceAlpha\)/);
+
+// Sparse advanced blends bypass transfer functions when either operand is
+// exactly transparent. This is pixel-identical source-over/source-atop math,
+// but avoids the expensive pow/switch path over empty brush coverage.
+const sourceOverShader = LAYER_BLEND_MODE_WGSL.slice(
+  LAYER_BLEND_MODE_WGSL.indexOf("fn layerBlendPremultipliedLinearSourceOver"),
+);
+assert.ok(
+  sourceOverShader.indexOf("if (sourceAlpha <= 0.0)")
+    < sourceOverShader.indexOf("layerBlendLinearToSrgb(backdropLinear)"),
+  "transparent source-over fast path must precede transfer conversion",
+);
+assert.ok(
+  sourceOverShader.indexOf("if (backdropAlpha <= 0.0)")
+    < sourceOverShader.indexOf("layerBlendLinearToSrgb(backdropLinear)"),
+  "transparent backdrop source-over fast path must precede transfer conversion",
+);
+assert.ok(
+  foldAtopShader.indexOf("if (sourceAlpha <= 0.0)")
+    < foldAtopShader.indexOf("layerBlendLinearToSrgb("),
+  "transparent source-atop fast path must precede transfer conversion",
+);
+assert.ok(
+  atopShader.indexOf("if (backdropAlpha <= 0.0)")
+    < atopShader.indexOf("layerBlendLinearToSrgb("),
+  "viewport source-atop transparent fast path must precede transfer conversion",
+);
+
+// A completed document tile owns the final cache value. Partial updates must
+// replace those pixels and discard the corners of the rotated core's
+// axis-aligned screen scissor. Clearing that whole scissor first is the exact
+// regression that exposed checkerboard rectangles while painting.
+assert.match(
+  tileShaderSource,
+  /LAYER_BLEND_TILE_STRATEGY\s*=\s*\n\s*"document-space-1024-tile-native-format-blend-before-filter-replace-cache-v2"/,
+);
+assert.match(
+  tileShaderSource,
+  /if \(!inside\) \{\s*discard;\s*\}/s,
+);
+const tilePresentPipelineCall = tileCompositorSource.match(
+  /const tilePresentPipeline = pipeline\(([\s\S]*?)\n\s*\);/,
+)?.[1] ?? "";
+const pyramidPresentPipelineCall = tileCompositorSource.match(
+  /const pyramidPresentPipeline = pipeline\(([\s\S]*?)\n\s*\);/,
+)?.[1] ?? "";
+assert.ok(tilePresentPipelineCall.length > 0, "tile present pipeline call not found");
+assert.ok(pyramidPresentPipelineCall.length > 0, "pyramid present pipeline call not found");
+assert.doesNotMatch(tilePresentPipelineCall, /sourceOverBlend/);
+assert.doesNotMatch(pyramidPresentPipelineCall, /sourceOverBlend/);
+assert.match(
+  tileRuntimeSource,
+  /if \(requiresFullRebuild\) \{[\s\S]*?loadOp: "clear"/,
+);
+assert.doesNotMatch(tileRuntimeSource, /clearLinearPass\.setScissorRect/);
+assert.doesNotMatch(tileRuntimeSource, /mixedSceneClearPipeline/);
+
+// Small live dirty rects clear only their bounded scratch footprint. Full
+// 1024² rebuild tiles retain the attachment-clear fast path.
+assert.match(
+  tileCompositorSource,
+  /loadOp: clearsWholeTile \? "clear" : "load"/,
+);
+assert.match(
+  tileCompositorSource,
+  /pass\.setScissorRect\(0, 0, boundedWidth, boundedHeight\)/,
+);
+assert.match(
+  tileRuntimeSource,
+  /clear document backdrop tile`,\s*textureRect\.width,\s*textureRect\.height,/s,
+);
 
 console.log("Layer blend compositor verification passed for source-over/source-atop and 27 modes.");

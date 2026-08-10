@@ -749,6 +749,16 @@ fn layerBlendPremultipliedLinearSourceOver(
     );
   }
 
+  // Transparent operands cannot contribute to an advanced blend function.
+  // These coherent branches avoid transfer functions and mode math across the
+  // empty majority of sparse brush and layer bounds without changing pixels.
+  if (sourceAlpha <= 0.0) {
+    return vec4<f32>(backdropPremultiplied, backdropAlpha);
+  }
+  if (backdropAlpha <= 0.0) {
+    return vec4<f32>(sourcePremultiplied, sourceAlpha);
+  }
+
   var backdropLinear = vec3<f32>(0.0);
   var sourceLinear = vec3<f32>(0.0);
   if (backdropAlpha > 0.0) { backdropLinear = backdropPremultiplied / backdropAlpha; }

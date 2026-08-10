@@ -18,7 +18,7 @@ import type { MixedSceneCompositionSegment } from "./mixed-scene-stack";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 
 export const LIVE_LAYER_BLEND_PRESENTATION_STRATEGY =
-  "raster-only-document-space-tile-compose-before-filter-live-v1" as const;
+  "raster-only-document-space-tile-compose-before-filter-replace-cache-live-v2" as const;
 
 const TILE_INDEX_A = 0 as const;
 const TILE_INDEX_B = 1 as const;
@@ -379,7 +379,6 @@ export function encodeLayerBlendTilePresentation(
     || !engine.mixedSceneLinearView
     || !engine.mixedScenePresentBindGroup
     || !engine.mixedScenePresentPipeline
-    || !engine.mixedSceneClearPipeline
     || !engine.presentationCacheView
   ) {
     throw new Error("Compositore live fusioni a tile non pronto.");
@@ -425,26 +424,23 @@ export function encodeLayerBlendTilePresentation(
     : [];
   compositor.beginFrame();
 
-  const clearLinearPass = encoder.beginRenderPass({
-    label: `${label} · clear linear dirty cache`,
-    colorAttachments: [{
-      view: engine.mixedSceneLinearView,
-      loadOp: requiresFullRebuild ? "clear" : "load",
-      storeOp: "store",
-      clearValue: { r: 0, g: 0, b: 0, a: 0 },
-    }],
-  });
-  if (!requiresFullRebuild) {
-    clearLinearPass.setPipeline(engine.mixedSceneClearPipeline);
-    clearLinearPass.setScissorRect(
-      presentationDirtyRect.x,
-      presentationDirtyRect.y,
-      presentationDirtyRect.width,
-      presentationDirtyRect.height,
-    );
-    clearLinearPass.draw(3, 1, 0, 0);
+  // A completed tile replaces its cache pixels, including transparent ones.
+  // Clearing the screen-space AABB of a rotated dirty rect would also erase
+  // unchanged pixels in its corners, which are outside the transformed core.
+  // Only a full rebuild clears the cache; partial updates preserve those
+  // corners and overwrite the exact owned pixels through the tile shaders.
+  if (requiresFullRebuild) {
+    const clearLinearPass = encoder.beginRenderPass({
+      label: `${label} · clear full linear cache`,
+      colorAttachments: [{
+        view: engine.mixedSceneLinearView,
+        loadOp: "clear",
+        storeOp: "store",
+        clearValue: { r: 0, g: 0, b: 0, a: 0 },
+      }],
+    });
+    clearLinearPass.end();
   }
-  clearLinearPass.end();
 
   const activeNeedsBake = activePresentation.kind !== "base";
   if (cores.length > 0 && activeNeedsBake) {
@@ -582,7 +578,13 @@ export function encodeLayerBlendTilePresentation(
 
     // Build the clipping unit into operand tile 2 before it meets the external backdrop.
     if (activeGroup?.mode === "active-child") {
-      compositor.clearTile(encoder, TILE_INDEX_A, `${label} · clear clipping prefix tile`);
+      compositor.clearTile(
+        encoder,
+        TILE_INDEX_A,
+        `${label} · clear clipping prefix tile`,
+        textureRect.width,
+        textureRect.height,
+      );
       let groupTile: 0 | 1 = TILE_INDEX_A;
       if (activeGroup.prefix) {
         groupTile = applyToTile(
@@ -621,7 +623,13 @@ export function encodeLayerBlendTilePresentation(
       };
     } else if (activeGroup?.mode === "active-parent") {
       if (activeGroup.suffix || activeGroup.suffixSteps.length > 0) {
-        compositor.clearTile(encoder, TILE_INDEX_A, `${label} · clear parent group tile`);
+        compositor.clearTile(
+          encoder,
+          TILE_INDEX_A,
+          `${label} · clear parent group tile`,
+          textureRect.width,
+          textureRect.height,
+        );
         const parentTile = applyToTile(
           TILE_INDEX_A,
           activeSource,
@@ -650,7 +658,13 @@ export function encodeLayerBlendTilePresentation(
       activeOperandOpacity = activeGroup.parentOpacity;
     }
 
-    compositor.clearTile(encoder, TILE_INDEX_A, `${label} · clear document backdrop tile`);
+    compositor.clearTile(
+      encoder,
+      TILE_INDEX_A,
+      `${label} · clear document backdrop tile`,
+      textureRect.width,
+      textureRect.height,
+    );
     let currentTile: 0 | 1 = TILE_INDEX_A;
     for (let index = 0; index < activeSegmentIndex; index += 1) {
       const segment = engine.mixedSceneCompositionSegments[index];

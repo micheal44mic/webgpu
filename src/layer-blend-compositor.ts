@@ -170,6 +170,13 @@ fn layerBlendPremultipliedLinearSourceAtop(
     );
   }
 
+  if (sourceAlpha <= 0.0) {
+    return vec4<f32>(backdropPremultiplied, backdropAlpha);
+  }
+  if (backdropAlpha <= 0.0) {
+    return vec4<f32>(0.0);
+  }
+
   var backdropLinear = vec3<f32>(0.0);
   var sourceLinear = vec3<f32>(0.0);
   if (backdropAlpha > 0.0) { backdropLinear = backdropPremultiplied / backdropAlpha; }
