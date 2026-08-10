@@ -1189,6 +1189,10 @@ function evictHistoryBelowBaselines(
   state.evictedPayloadBytes += evictedPayloadBytes;
   engine.historyGpuStorage.trimEmptyPages(true);
   rebuildHistoryAccounting(engine);
+  // Le azioni sotto il nuovo pavimento restano come metadata diagnostici, ma
+  // non sono piu' attraversabili: non devono continuare a trattenere renderer
+  // di effetti che nessun layer o stato Undo/Redo raggiungibile possiede.
+  engine.scheduleEffectsScratchShrink();
   engine.publishHistoryState();
   engine.publishStats();
   return true;

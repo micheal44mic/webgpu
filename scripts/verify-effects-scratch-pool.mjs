@@ -10,11 +10,15 @@ const poolPath = path.join(root, "src", "effects-scratch-pool.ts");
 const bevelPath = path.join(root, "src", "bevel-renderer.ts");
 const strokePath = path.join(root, "src", "stroke-renderer.ts");
 const shadowPath = path.join(root, "src", "shadow-renderer.ts");
+const lifecyclePath = path.join(root, "src", "effects-resource-lifecycle.ts");
+const historyMaintenancePath = path.join(root, "src", "history-maintenance-runtime.ts");
 const poolSource = fs.readFileSync(poolPath, "utf8");
 const engineSource = readEngineSource();
 const bevelSource = fs.readFileSync(bevelPath, "utf8");
 const strokeSource = fs.readFileSync(strokePath, "utf8");
 const shadowSource = fs.readFileSync(shadowPath, "utf8");
+const lifecycleSource = fs.readFileSync(lifecyclePath, "utf8");
+const historyMaintenanceSource = fs.readFileSync(historyMaintenancePath, "utf8");
 
 const runtimeSource = stripTypeScriptTypes(poolSource, {
   mode: "transform",
@@ -30,6 +34,14 @@ const {
   effectsScratchCanShrink,
   effectsScratchShrinkIsWorthwhile,
 } = await import(moduleUrl);
+
+const lifecycleRuntimeSource = stripTypeScriptTypes(lifecycleSource, {
+  mode: "transform",
+});
+const lifecycleModuleUrl = `data:text/javascript;base64,${
+  Buffer.from(lifecycleRuntimeSource).toString("base64")
+}#${Date.now()}`;
+const { rasterEffectRendererReachability } = await import(lifecycleModuleUrl);
 
 function createMockDevice() {
   const allocations = [];
@@ -120,6 +132,7 @@ const idleState = {
   initialized: true,
   activeStroke: false,
   historyBusy: false,
+  layerSwitchBusy: false,
   rasterStrokeBusy: false,
   rasterBevelBusy: false,
   rasterOuterShadowBusy: false,
@@ -131,6 +144,11 @@ assert.equal(
   effectsScratchCanShrink({ ...idleState, activeStroke: true }),
   false,
   "active strokes must block shrink",
+);
+assert.equal(
+  effectsScratchCanShrink({ ...idleState, layerSwitchBusy: true }),
+  false,
+  "layer switches must block renderer and scratch reclamation",
 );
 assert.equal(
   effectsScratchCanShrink({ ...idleState, rasterOuterShadowBusy: true }),
@@ -148,6 +166,89 @@ assert.equal(
   "queued work must block shrink",
 );
 assert.equal(EFFECTS_SCRATCH_POOL_IDLE_SHRINK_DELAY_MS, 1_500);
+
+function effectLayer(overrides = {}) {
+  return {
+    id: 1,
+    strokeStyle: { enabled: false, width: 10 },
+    bevelStyle: { enabled: false },
+    outerShadowStyle: { enabled: false },
+    innerShadowStyle: { enabled: false },
+    colorOverlayStyle: { enabled: false, opacity: 100 },
+    ...overrides,
+  };
+}
+
+assert.deepEqual(
+  rasterEffectRendererReachability([effectLayer()], []),
+  { stroke: false, bevel: false, outerShadow: false, innerShadow: false },
+  "an effect-free document and journal must retain no renderer",
+);
+assert.deepEqual(
+  rasterEffectRendererReachability([
+    effectLayer({ bevelStyle: { enabled: true } }),
+  ], []),
+  { stroke: true, bevel: true, outerShadow: false, innerShadow: false },
+  "a live Bevel layer must retain Bevel and its shared compositor",
+);
+
+const deletedShadowLayer = effectLayer({
+  id: 2,
+  outerShadowStyle: { enabled: true },
+});
+assert.deepEqual(
+  rasterEffectRendererReachability([effectLayer()], [{
+    id: 3,
+    kind: "layer-delete",
+    entries: [{ layerRecord: deletedShadowLayer }],
+  }]),
+  { stroke: true, bevel: false, outerShadow: true, innerShadow: false },
+  "an undoable deleted layer must keep its effect renderer reachable",
+);
+
+const abandonedBevelRedo = {
+  id: 4,
+  kind: "layer-metadata",
+  layerId: 1,
+  property: "bevel",
+  before: { enabled: false },
+  after: { enabled: true },
+};
+assert.equal(
+  rasterEffectRendererReachability([effectLayer()], [abandonedBevelRedo]).bevel,
+  true,
+  "a retained Redo delta must keep Bevel reachable",
+);
+assert.deepEqual(
+  rasterEffectRendererReachability([effectLayer()], []),
+  { stroke: false, bevel: false, outerShadow: false, innerShadow: false },
+  "cutting the sole effect Redo action must make its renderers reclaimable",
+);
+assert.equal(
+  rasterEffectRendererReachability(
+    [effectLayer()],
+    [abandonedBevelRedo],
+    null,
+    1,
+  ).bevel,
+  false,
+  "actions below the non-crossable history floor must not retain renderers",
+);
+assert.equal(
+  rasterEffectRendererReachability([effectLayer()], [{
+    ...abandonedBevelRedo,
+    layerId: 999,
+  }]).bevel,
+  false,
+  "orphan metadata for a non-restorable layer must not retain renderers",
+);
+assert.equal(
+  rasterEffectRendererReachability([
+    effectLayer({ colorOverlayStyle: { enabled: true, opacity: 75 } }),
+  ], []).stroke,
+  true,
+  "Color Overlay must retain the shared style compositor",
+);
 
 {
   const { device } = createMockDevice();
@@ -210,6 +311,65 @@ assert.ok(
 assert.match(shadowSource, /this\.scratchPool\.declareEffect\(this\.effectId/);
 assert.match(shadowSource, /id: "scalar-a"[\s\S]*?id: "scalar-b"/);
 assert.match(bevelSource, /releaseIdleWorkspace\(\): boolean/);
+assert.match(
+  lifecycleSource,
+  /action\.kind === "vector-rasterize"[\s\S]*?action\.kind === "raster-import"[\s\S]*?action\.kind === "layer-add"/,
+  "detached/restorable layer records must participate in effect reachability",
+);
+assert.match(
+  lifecycleSource,
+  /action\.kind === "layer-delete"[\s\S]*?entry\.layerRecord/,
+  "undoable deleted layers must participate in effect reachability",
+);
+assert.match(
+  engineSource,
+  /const actions = engine\.historyActions;[\s\S]{0,1600}rasterEffectRendererReachability\([\s\S]{0,120}actions,/,
+  "the runtime release plan must include the retained history journal",
+);
+assert.doesNotMatch(
+  lifecycleSource,
+  /historyActions\.slice\(/,
+  "reachability scans must not allocate a journal copy",
+);
+assert.match(
+  engineSource,
+  /const effectsReachabilityCache = new WeakMap<BrushEngine, EffectsReachabilityCacheEntry>\(\);/,
+  "per-frame scratch checks must cache full history reachability scans",
+);
+assert.match(
+  engineSource,
+  /previous\.record !== live[\s\S]{0,120}previous\.effectMask !== layerEffectReachabilityMask\(live\)/,
+  "the reachability cache key must include live layer identity and effect state",
+);
+assert.match(
+  engineSource,
+  /if \(releasePlan\.outerShadow\) releaseRasterOuterShadowRenderer\(engine\);[\s\S]*?if \(releasePlan\.innerShadow\) releaseRasterInnerShadowRenderer\(engine\);[\s\S]*?if \(releasePlan\.bevel\) releaseRasterBevelRenderer\(engine\);[\s\S]*?if \(releasePlan\.stroke\) releaseRasterStrokeRenderer\(engine\);/,
+  "unreachable persistent effect owners must be destroyed before shrinking the pool",
+);
+assert.match(
+  engineSource,
+  /engine\.historyCompactionPending = true;[\s\S]{0,300}engine\.scheduleEffectsScratchShrink\(\);/,
+  "cutting Redo must schedule effect reachability reclamation",
+);
+assert.match(
+  historyMaintenanceSource,
+  /state\.floorCursor = candidateFloor;[\s\S]{0,700}engine\.scheduleEffectsScratchShrink\(\);/,
+  "advancing the non-crossable history floor must schedule effect reclamation",
+);
+const scratchSchedulerSource = engineSource.slice(
+  engineSource.indexOf("scheduleEffectsScratchShrink(): void"),
+  engineSource.indexOf("cancelBevelFieldShrink(): void"),
+);
+assert.doesNotMatch(
+  scratchSchedulerSource,
+  /bevelFieldBlocksScratchShrink/,
+  "the timer must start so the worker can destroy an unreachable Bevel field",
+);
+assert.match(
+  engineSource,
+  /bevelFieldBlocksEffectsReclaim\(engine, releasePlan\)/,
+  "the fenced worker must preserve field-shrink ordering only for reachable Bevel",
+);
 assert.match(
   strokeSource,
   /@binding\(1\) var<storage, read_write> inputSeeds: array<vec2<u32>>;/,

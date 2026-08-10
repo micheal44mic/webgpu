@@ -22,7 +22,7 @@ const BLEND_MAX_BATCHES_PER_SUBMIT = 256;
 const BLEND_CARRIER_SLOT_COUNT = 4096;
 
 export const DRY_BLEND_RENDERER_BUILD =
-  "dry-blend-webgpu-v3-compute-fused-sweep";
+  "dry-blend-webgpu-v4-specialized-compute-sweep";
 
 export interface DryBlendRenderSettings {
   shape: "circle" | "shape";
@@ -244,6 +244,8 @@ export class DryBlendRenderer {
   private readonly scratchSize: number;
   private readonly uniformStride: number;
   private readonly uniformUpload: ArrayBuffer;
+  private readonly uniformFloatViews: readonly Float32Array[];
+  private readonly uniformUnsignedViews: readonly Uint32Array[];
   private readonly uniformBuffer: GPUBuffer;
 
   private gatherBindGroupLayout!: GPUBindGroupLayout;
@@ -252,7 +254,10 @@ export class DryBlendRenderer {
   private scatterBindGroupLayout!: GPUBindGroupLayout;
   private gatherPipeline!: GPUComputePipeline;
   private pickupPipeline!: GPUComputePipeline;
-  private depositPipeline!: GPUComputePipeline;
+  private depositPipelines!: Record<
+    DryBlendRenderSettings["shape"],
+    Record<"off" | "on", GPUComputePipeline>
+  >;
   private scatterPipeline!: GPURenderPipeline;
   private scratch: ScratchResources | null = null;
   private activeHistoryActionId: number | null = null;
@@ -282,6 +287,22 @@ export class DryBlendRenderer {
     ) * this.device.limits.minUniformBufferOffsetAlignment;
     this.uniformUpload = new ArrayBuffer(
       this.uniformStride * BLEND_MAX_BATCHES_PER_SUBMIT,
+    );
+    this.uniformFloatViews = Array.from(
+      { length: BLEND_MAX_BATCHES_PER_SUBMIT },
+      (_, index) => new Float32Array(
+        this.uniformUpload,
+        index * this.uniformStride,
+        BLEND_UNIFORM_BYTES / 4,
+      ),
+    );
+    this.uniformUnsignedViews = Array.from(
+      { length: BLEND_MAX_BATCHES_PER_SUBMIT },
+      (_, index) => new Uint32Array(
+        this.uniformUpload,
+        index * this.uniformStride,
+        BLEND_UNIFORM_BYTES / 4,
+      ),
     );
     this.uniformBuffer = this.device.createBuffer({
       label: "Blend dry dynamic uniforms",
@@ -404,10 +425,11 @@ export class DryBlendRenderer {
       layout: GPUBindGroupLayout,
       module: GPUShaderModule,
       entryPoint: string,
+      constants?: Record<string, GPUPipelineConstantValue>,
     ): GPUComputePipeline => this.device.createComputePipeline({
       label,
       layout: pipelineLayout(`${label} pipeline layout`, layout),
-      compute: { module, entryPoint },
+      compute: { module, entryPoint, constants },
     });
 
     await runGpuAllocationTransaction(
@@ -426,12 +448,29 @@ export class DryBlendRenderer {
           modules[1].module,
           "pickupMain",
         );
-        this.depositPipeline = computePipeline(
-          "Blend dry fused sweep mask and pigment deposit",
+        const depositPipeline = (
+          shape: DryBlendRenderSettings["shape"],
+          grain: "off" | "on",
+        ) => computePipeline(
+          `Blend dry ${shape} ${grain} fused sweep and pigment deposit`,
           this.depositBindGroupLayout,
           modules[2].module,
           "depositMain",
+          {
+            blendCustomShape: shape === "shape" ? 1 : 0,
+            blendGrainEnabled: grain === "on" ? 1 : 0,
+          },
         );
+        this.depositPipelines = {
+          circle: {
+            off: depositPipeline("circle", "off"),
+            on: depositPipeline("circle", "on"),
+          },
+          shape: {
+            off: depositPipeline("shape", "off"),
+            on: depositPipeline("shape", "on"),
+          },
+        };
         this.scatterPipeline = this.device.createRenderPipeline({
           label: "Blend dry scatter to canonical layer",
           layout: pipelineLayout(
@@ -461,6 +500,40 @@ export class DryBlendRenderer {
   }
 
   submit(
+    batches: readonly (DryBlendRenderBatch | DryBlendHistoryGeometry)[],
+    settings: DryBlendRenderSettings,
+    historyActionId: number,
+    clearLayer: boolean,
+    historyTransfer: DryBlendHistoryTransfer | null = null,
+  ): DryBlendSubmitResult {
+    const startedAt = performance.now();
+    const encoder = this.device.createCommandEncoder({
+      label: "Blend dry frame encoder",
+    });
+    const result = this.encode(
+      encoder,
+      batches,
+      settings,
+      historyActionId,
+      clearLayer,
+      historyTransfer,
+    );
+    if (clearLayer || result.batchCount > 0) {
+      this.device.queue.submit([encoder.finish()]);
+    }
+    return {
+      ...result,
+      cpuMs: performance.now() - startedAt,
+    };
+  }
+
+  /**
+   * Encodes Blend into a caller-owned command buffer. The interactive engine
+   * uses this path to place Blend, mip maintenance and presentation in one GPU
+   * submission; submit() remains the bounded fallback for multi-chunk replay.
+   */
+  encode(
+    encoder: GPUCommandEncoder,
     batches: readonly (DryBlendRenderBatch | DryBlendHistoryGeometry)[],
     settings: DryBlendRenderSettings,
     historyActionId: number,
@@ -509,9 +582,6 @@ export class DryBlendRenderer {
       );
     }
 
-    const encoder = this.device.createCommandEncoder({
-      label: "Blend dry frame encoder",
-    });
     let passCount = 0;
     let dirtyRect: BlendRect | null = null;
     if (historyTransfer?.replay && historyBytes > 0) {
@@ -557,6 +627,9 @@ export class DryBlendRenderer {
     // Both Moving and Texturized can cross tile boundaries once Scale is
     // applied. Their corrected coordinate mappings therefore share repeat.
     const grainMode = "fixed" as const;
+    const depositPipeline = this.depositPipelines[settings.shape][
+      settings.grainMode === "off" ? "off" : "on"
+    ];
     for (const group of groups) {
       const groupOffset = group.start * this.uniformStride;
       const computePass = encoder.beginComputePass({
@@ -574,7 +647,7 @@ export class DryBlendRenderer {
         computePass.setPipeline(this.pickupPipeline);
         computePass.setBindGroup(0, scratch.pickupBindGroup, [dynamicOffset]);
         computePass.dispatchWorkgroups(1);
-        computePass.setPipeline(this.depositPipeline);
+        computePass.setPipeline(depositPipeline);
         computePass.setBindGroup(
           0,
           scratch.depositBindGroups[grainMode][settings.grainFiltering],
@@ -610,9 +683,6 @@ export class DryBlendRenderer {
       dirtyRect = mergeRects(dirtyRect, group.writeRect);
     }
 
-    if (clearLayer || renderable.length > 0) {
-      this.device.queue.submit([encoder.finish()]);
-    }
     if (renderable.length > 0) {
       this.carrierValid = true;
     }
@@ -783,9 +853,8 @@ export class DryBlendRenderer {
         const carrierReadSlot = this.carrierCursor;
         const carrierWriteSlot = (this.carrierCursor + 1) % BLEND_CARRIER_SLOT_COUNT;
         this.carrierCursor = carrierWriteSlot;
-        const offset = index * this.uniformStride;
-        const floats = new Float32Array(this.uniformUpload, offset, BLEND_UNIFORM_BYTES / 4);
-        const unsigned = new Uint32Array(this.uniformUpload, offset, BLEND_UNIFORM_BYTES / 4);
+        const floats = this.uniformFloatViews[index];
+        const unsigned = this.uniformUnsignedViews[index];
         floats.fill(0);
         floats[0] = this.documentWidth;
         floats[1] = this.documentHeight;

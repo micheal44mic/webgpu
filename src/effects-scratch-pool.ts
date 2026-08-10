@@ -24,6 +24,7 @@ export interface EffectsScratchIdleState {
   initialized: boolean;
   activeStroke: boolean;
   historyBusy: boolean;
+  layerSwitchBusy: boolean;
   rasterStrokeBusy: boolean;
   rasterBevelBusy: boolean;
   rasterOuterShadowBusy?: boolean;
@@ -35,6 +36,7 @@ export function effectsScratchCanShrink(state: EffectsScratchIdleState): boolean
   return state.initialized
     && !state.activeStroke
     && !state.historyBusy
+    && !state.layerSwitchBusy
     && !state.rasterStrokeBusy
     && !state.rasterBevelBusy
     && !state.rasterOuterShadowBusy

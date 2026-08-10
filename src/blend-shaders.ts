@@ -223,6 +223,12 @@ ${blendUniformsWgsl}
 @group(0) @binding(6) var grainTexture: texture_2d<f32>;
 @group(0) @binding(7) var grainSampler: sampler;
 
+// These are pipeline constants, not per-pixel branches. The renderer creates
+// four resident variants so Circle/Grain-off never carries the register and
+// instruction pressure of the custom-shape and grain paths.
+override blendCustomShape: bool = false;
+override blendGrainEnabled: bool = false;
+
 ${blendStateSamplingWgsl}
 
 struct LocalSample {
@@ -236,19 +242,14 @@ struct CustomSample {
   brushPixels: vec2<f32>,
 };
 
-fn localAt(documentPosition: vec2<f32>, interpolation: f32) -> LocalSample {
+fn localAt(
+  documentPosition: vec2<f32>,
+  interpolation: f32,
+  halfSize: vec2<f32>,
+  cosine: f32,
+  sine: f32,
+) -> LocalSample {
   let center = mix(blend.validAndFrom.zw, blend.toAndFromHalfSize.xy, interpolation);
-  let halfSize = max(
-    mix(blend.toAndFromHalfSize.zw, blend.toHalfSizeAndAngles.xy, interpolation),
-    vec2<f32>(0.001)
-  );
-  let angle = mix(
-    blend.toHalfSizeAndAngles.z,
-    blend.toHalfSizeAndAngles.w,
-    interpolation
-  );
-  let cosine = cos(angle);
-  let sine = sin(angle);
   let delta = documentPosition - center;
   let local = vec2<f32>(
     cosine * delta.x + sine * delta.y,
@@ -264,8 +265,14 @@ fn localAt(documentPosition: vec2<f32>, interpolation: f32) -> LocalSample {
   return result;
 }
 
-fn customAt(documentPosition: vec2<f32>, interpolation: f32) -> CustomSample {
-  let local = localAt(documentPosition, interpolation);
+fn customAt(
+  documentPosition: vec2<f32>,
+  interpolation: f32,
+  halfSize: vec2<f32>,
+  cosine: f32,
+  sine: f32,
+) -> CustomSample {
+  let local = localAt(documentPosition, interpolation, halfSize, cosine, sine);
   var result: CustomSample;
   result.uv = local.uv;
   result.brushPixels = local.brushPixels;
@@ -350,11 +357,25 @@ fn depositMain(@builtin(global_invocation_id) gid: vec3<u32>) {
     1.0
   );
 
+  // The dry planner currently emits constant size and angle inside one sweep.
+  // Compute this basis once per output pixel instead of once for every one of
+  // the 34 custom-shape candidates below.
+  let constantHalfSize = max(blend.toAndFromHalfSize.zw, vec2<f32>(0.001));
+  let constantAngle = blend.toHalfSizeAndAngles.z;
+  let constantCosine = cos(constantAngle);
+  let constantSine = sin(constantAngle);
+
   var coverage = 0.0;
   var bestInterpolation = closest;
-  var bestLocal = localAt(documentPosition, closest);
+  var bestLocal = localAt(
+    documentPosition,
+    closest,
+    constantHalfSize,
+    constantCosine,
+    constantSine
+  );
 
-  if (blend.options.x == 0u) {
+  if (!blendCustomShape) {
     let halfSize = max(
       mix(blend.toAndFromHalfSize.zw, blend.toHalfSizeAndAngles.xy, closest),
       vec2<f32>(0.001)
@@ -375,14 +396,26 @@ fn depositMain(@builtin(global_invocation_id) gid: vec3<u32>) {
       normalizedRadius
     );
   } else {
-    var selected = customAt(documentPosition, closest);
+    var selected = customAt(
+      documentPosition,
+      closest,
+      constantHalfSize,
+      constantCosine,
+      constantSine
+    );
     coverage = selected.coverage;
     bestLocal.uv = selected.uv;
     bestLocal.brushPixels = selected.brushPixels;
 
     for (var index = 0u; index <= 32u; index += 1u) {
       let interpolation = f32(index) / 32.0;
-      let candidate = customAt(documentPosition, interpolation);
+      let candidate = customAt(
+        documentPosition,
+        interpolation,
+        constantHalfSize,
+        constantCosine,
+        constantSine
+      );
       if (candidate.coverage > coverage) {
         coverage = candidate.coverage;
         bestInterpolation = interpolation;
@@ -411,7 +444,7 @@ fn depositMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
 
   var grainCoverage = 1.0;
-  if (blend.options.y != 0u) {
+  if (blendGrainEnabled) {
     var grainUv: vec2<f32>;
     var grainUvDx: vec2<f32>;
     var grainUvDy: vec2<f32>;

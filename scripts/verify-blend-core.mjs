@@ -17,11 +17,38 @@ import {
 } from "../src/blend-core.ts";
 import {
   DRY_BLEND_PICKUP_BORDER_STRATEGY,
+  blendDepositShader,
   blendPickupShader,
 } from "../src/blend-shaders.ts";
 
 const approx = (actual, expected, epsilon = 1e-6) => {
   assert.ok(Math.abs(actual - expected) <= epsilon, `${actual} != ${expected}`);
+};
+
+const legacySweepBounds = (step) => {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let index = 0; index < 5; index += 1) {
+    const ratio = index * 0.25;
+    const centerX = step.fromX + (step.toX - step.fromX) * ratio;
+    const centerY = step.fromY + (step.toY - step.fromY) * ratio;
+    const halfWidth = step.fromHalfWidth
+      + (step.toHalfWidth - step.fromHalfWidth) * ratio;
+    const halfHeight = step.fromHalfHeight
+      + (step.toHalfHeight - step.fromHalfHeight) * ratio;
+    const angle = step.fromAngle + (step.toAngle - step.fromAngle) * ratio;
+    const cosine = Math.abs(Math.cos(angle));
+    const sine = Math.abs(Math.sin(angle));
+    const extentX = cosine * halfWidth + sine * halfHeight + 2;
+    const extentY = sine * halfWidth + cosine * halfHeight + 2;
+    minX = Math.min(minX, Math.floor(centerX - extentX));
+    minY = Math.min(minY, Math.floor(centerY - extentY));
+    maxX = Math.max(maxX, Math.ceil(centerX + extentX));
+    maxY = Math.max(maxY, Math.ceil(centerY + extentY));
+  }
+  return { minX, minY, maxX, maxY };
 };
 
 assert.equal(DRY_BLEND_DEFAULT_DOCUMENT_SIZE, 4096);
@@ -98,6 +125,55 @@ const blendRendererSource = await readFile(
   new URL("../src/blend-renderer.ts", import.meta.url),
   "utf8",
 );
+const blendCoreSource = await readFile(
+  new URL("../src/blend-core.ts", import.meta.url),
+  "utf8",
+);
+assert.doesNotMatch(
+  blendCoreSource,
+  /Object\.assign\(target,\s*emptyStep\(\)/,
+  "emitStep deve riusare lo slot senza allocare un nuovo emptyStep",
+);
+assert.match(blendDepositShader, /override blendCustomShape: bool = false/);
+assert.match(blendDepositShader, /override blendGrainEnabled: bool = false/);
+assert.match(
+  blendDepositShader,
+  /let constantCosine = cos\(constantAngle\);[\s\S]*?customAt\([\s\S]*?constantCosine/,
+  "la base Shape costante deve essere calcolata una volta fuori dalla scansione",
+);
+assert.match(blendRendererSource, /private depositPipelines!:/);
+assert.match(blendRendererSource, /blendCustomShape: shape === "shape" \? 1 : 0/);
+assert.match(blendRendererSource, /blendGrainEnabled: grain === "on" \? 1 : 0/);
+assert.match(blendRendererSource, /encode\(\s*encoder: GPUCommandEncoder,/);
+const blendEncodeStart = blendRendererSource.indexOf("  encode(\n    encoder: GPUCommandEncoder");
+const blendEncodeEnd = blendRendererSource.indexOf("\n  memoryMiB(): number", blendEncodeStart);
+assert(blendEncodeStart >= 0 && blendEncodeEnd > blendEncodeStart);
+assert.doesNotMatch(
+  blendRendererSource.slice(blendEncodeStart, blendEncodeEnd),
+  /queue\.submit/,
+  "encode deve lasciare il submit al command buffer proprietario",
+);
+assert.match(blendRendererSource, /private readonly uniformFloatViews:/);
+assert.match(blendRendererSource, /private readonly uniformUnsignedViews:/);
+assert.doesNotMatch(
+  blendRendererSource.slice(
+    blendRendererSource.indexOf("  private populateUniforms("),
+    blendRendererSource.indexOf("  private createDepositBindGroups("),
+  ),
+  /new (?:Float32Array|Uint32Array)/,
+  "populateUniforms non deve allocare typed-array view per segmento",
+);
+assert.match(
+  brushEngineSource,
+  /const sharedEncoder = batches\.length <= renderer\.maximumBatchesPerSubmit/,
+);
+assert.match(
+  brushEngineSource,
+  /clearLayer,\s*sharedEncoder,\s*\);/,
+  "presentazione e Blend interattivo devono condividere lo stesso encoder",
+);
+assert.match(brushEngineSource, /private reusableBlendPlanner: DryBlendPlanner \| null = null/);
+assert.match(brushEngineSource, /this\.reusableBlendPlanner \?\?= createDryBlendPlanner/);
 assert.match(blendRendererSource, /prewarmScratch\(\): boolean/);
 assert.match(blendRendererSource, /releaseScratch\(\): boolean/);
 assert.match(
@@ -141,6 +217,25 @@ assert.equal(partitioned.pushSamples(samples.slice(4)).accepted, true);
 partitioned.finish();
 assert.deepEqual(partitioned.snapshotSteps(), allAtOnce.snapshotSteps());
 
+// BrushEngine keeps one planner ring across gestures. A fully drained planner
+// configured for a new stroke must be indistinguishable from a fresh one.
+const reusablePlanner = createDryBlendPlanner(controls, { maxSteps: 128 });
+reusablePlanner.reset(samples[0]);
+assert.equal(reusablePlanner.pushSamples(samples.slice(1)).accepted, true);
+while (reusablePlanner.buildNextBatch()) {
+  // Drain the first gesture exactly as the render queue does.
+}
+const secondControls = { ...controls, size: 96, strength: 0.35, seed: 991 };
+const secondSamples = [point(300, 410, 100), point(355, 433, 116), point(401, 390, 132)];
+reusablePlanner.configure(secondControls);
+reusablePlanner.reset(secondSamples[0]);
+assert.equal(reusablePlanner.pushSamples(secondSamples.slice(1)).accepted, true);
+
+const freshSecondPlanner = createDryBlendPlanner(secondControls, { maxSteps: 128 });
+freshSecondPlanner.reset(secondSamples[0]);
+assert.equal(freshSecondPlanner.pushSamples(secondSamples.slice(1)).accepted, true);
+assert.deepEqual(reusablePlanner.snapshotSteps(), freshSecondPlanner.snapshotSteps());
+
 const lowPressure = resampleDryBlendStroke(
   samples.map((sample) => ({ ...sample, pressure: 0 })),
   controls,
@@ -164,6 +259,47 @@ const ratioSteps = ratioPlanner.snapshotSteps();
 approx(ratioSteps.reduce((sum, step) => sum + step.distance, 0), 100, 1e-4);
 approx(ratioSteps.at(-1).toX, 200, 1e-4);
 assert(ratioSteps.every((step) => step.warpStrength === Math.fround(0.7)));
+
+// Constant size/aspect/angle makes the two-endpoint fast path exact. Compare
+// its output with the original five-sample implementation across different
+// orientations, aspect ratios, and subpixel coordinates.
+for (const fastPathCase of [
+  {
+    controls: { size: 64, aspect: 1, angle: 0, orientToStroke: true },
+    samples: [point(10.125, 20.25, 0), point(97.75, 31.5, 17), point(44.5, 109.125, 31)],
+  },
+  {
+    controls: {
+      size: 257,
+      aspect: 0.17,
+      angle: Math.PI / 4,
+      orientToStroke: false,
+    },
+    samples: [point(900.25, 801.125, 0), point(731.5, 999.875, 24)],
+  },
+  {
+    controls: {
+      size: 1024,
+      aspect: 3.75,
+      angle: -Math.PI / 7,
+      orientToStroke: false,
+    },
+    samples: [point(2000, 2000, 0), point(2051.375, 1942.625, 9)],
+  },
+]) {
+  const fastPathPlanner = createDryBlendPlanner(fastPathCase.controls, { maxSteps: 256 });
+  fastPathPlanner.reset(fastPathCase.samples[0]);
+  assert.equal(fastPathPlanner.pushSamples(fastPathCase.samples.slice(1)).accepted, true);
+  for (const step of fastPathPlanner.snapshotSteps()) {
+    assert.equal(step.fromHalfWidth, step.toHalfWidth);
+    assert.equal(step.fromHalfHeight, step.toHalfHeight);
+    assert.equal(step.fromAngle, step.toAngle);
+    assert.deepEqual(
+      { minX: step.minX, minY: step.minY, maxX: step.maxX, maxY: step.maxY },
+      legacySweepBounds(step),
+    );
+  }
+}
 
 const rotatedMaximum = createDryBlendPlanner(
   {

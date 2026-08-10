@@ -1555,6 +1555,10 @@ export class BrushEngine {
   readonly customBrushAssets = new CustomBrushAssetRegistry();
   pendingStamps: Stamp[] = [];
   pendingBlendBatches: PendingBlendBatch[] = [];
+  // Allocating the 8,192-step ring on every pointer-down caused avoidable GC
+  // spikes. One planner is safe to reuse because the engine admits only one
+  // active stroke and configure/reset fully replace its gesture state.
+  private reusableBlendPlanner: DryBlendPlanner | null = null;
   private readonly paintCurvePlanner = new CausalStrokeCurvePlanner();
   private readonly paintStabilizer = new CausalFadedStrokeStabilizer();
   private readonly stabilizationPreviewCurvePlanner = new CausalStrokeCurvePlanner();
@@ -3857,8 +3861,8 @@ export class BrushEngine {
       startThickness: thicknessSource.startThickness,
       endThickness: thicknessSource.endThickness,
     };
-    const blendPlanner = tool === "blend"
-      ? createDryBlendPlanner({
+    const blendControls = tool === "blend"
+      ? {
         size: this.settings.size,
         strength: 1,
         spacing: this.settings.spacingPercent / 100,
@@ -3869,11 +3873,17 @@ export class BrushEngine {
         angle: 0,
         orientToStroke: true,
         seed: historyActionId,
-      }, {
+      }
+      : null;
+    const blendPlanner = blendControls
+      ? this.reusableBlendPlanner ??= createDryBlendPlanner({}, {
         documentWidth: LAYER_SIZE,
         documentHeight: LAYER_SIZE,
       })
       : null;
+    if (blendPlanner && blendControls) {
+      blendPlanner.configure(blendControls);
+    }
     blendPlanner?.reset(normalizedPoint);
     const curvePlanner = tool === "paint" ? this.paintCurvePlanner : null;
     curvePlanner?.reset();
@@ -4305,7 +4315,6 @@ export class BrushEngine {
     if (
       this.effectsScratchShrinkTimer !== null
       || this.effectsScratchShrinkInFlight
-      || bevelFieldBlocksScratchShrink(this)
       || !effectsScratchNeedsShrink(this)
     ) {
       return;
@@ -9274,6 +9283,9 @@ export class BrushEngine {
     this.activeVectorHistoryEdit = null;
     this.activeRasterLayerMetadataHistoryEdit = null;
     this.sweepRasterImageGpuResources();
+    if (this.initialized) {
+      this.scheduleEffectsScratchShrink();
+    }
   }
 
   historyStorageResidenceChanged(): void {
@@ -11297,6 +11309,14 @@ export class BrushEngine {
     }
 
     const historyBytes = renderer.historyUniformBytes(batches);
+    // Interactive Blend is already capped to one renderer chunk. Keep its
+    // compute work, mip maintenance and presentation in the same command
+    // buffer so the browser only has to schedule one queue submission.
+    // Large Undo/Redo replays retain the bounded multi-submit fallback because
+    // every chunk reuses the same dynamic uniform buffer.
+    const sharedEncoder = batches.length <= renderer.maximumBatchesPerSubmit
+      ? this.device.createCommandEncoder({ label: "Unified Blend frame encoder" })
+      : null;
     let historyGpuSlice: GpuHistorySlice | null = null;
     if (replayBatch) {
       if (replayBatch.gpuSlice.logicalBytes !== historyBytes) {
@@ -11318,7 +11338,15 @@ export class BrushEngine {
     let historyByteOffset = 0;
     try {
       if (batches.length === 0) {
-        const blendTiming = renderer.submit(batches, settings, historyActionId, clearLayer);
+        const blendTiming = sharedEncoder
+          ? renderer.encode(
+            sharedEncoder,
+            batches,
+            settings,
+            historyActionId,
+            clearLayer,
+          )
+          : renderer.submit(batches, settings, historyActionId, clearLayer);
         blendCpuMs = blendTiming.cpuMs;
         blendDirtyRect = blendTiming.dirtyRect;
       } else {
@@ -11347,13 +11375,22 @@ export class BrushEngine {
                 },
               }
             : null;
-          const chunkTiming = renderer.submit(
-            chunk,
-            settings,
-            historyActionId,
-            clearLayer && start === 0,
-            historyTransfer,
-          );
+          const chunkTiming = sharedEncoder
+            ? renderer.encode(
+              sharedEncoder,
+              chunk,
+              settings,
+              historyActionId,
+              clearLayer && start === 0,
+              historyTransfer,
+            )
+            : renderer.submit(
+              chunk,
+              settings,
+              historyActionId,
+              clearLayer && start === 0,
+              historyTransfer,
+            );
           historyByteOffset += chunkBytes;
           blendCpuMs += chunkTiming.cpuMs;
           blendDirtyRect = mergeDirtyRects(blendDirtyRect, chunkTiming.dirtyRect);
@@ -11374,6 +11411,7 @@ export class BrushEngine {
         null,
         blendDirtyRect,
         clearLayer,
+        sharedEncoder,
       );
       return {
         ...timing,
@@ -11401,6 +11439,7 @@ export class BrushEngine {
     replayBatch: PaintHistoryRenderBatch | null = null,
     externalDirtyRect: DirtyRect | null = null,
     externalLayerCleared = false,
+    externalEncoder: GPUCommandEncoder | null = null,
   ): SubmitTiming {
     const stampCount = resolvePaintHistoryStampCount(stamps, replayBatch);
     if (usesStrokeGlazeRenderer(settings)) {
@@ -11429,7 +11468,8 @@ export class BrushEngine {
     if (thicknessTailFrame?.grainActive && !grainActive) {
       this.writeGrainUniforms(thicknessTailFrame.settings);
     }
-    const encoder = this.device.createCommandEncoder({ label: "Brush frame encoder" });
+    const encoder = externalEncoder
+      ?? this.device.createCommandEncoder({ label: "Brush frame encoder" });
     let stampPackingMs = 0;
     let instanceUploadMs = 0;
     let brushEncodingMs = 0;

@@ -304,6 +304,38 @@ function copyStep(source: DryBlendStep): DryBlendStep {
   return { ...source };
 }
 
+function copyStepInto(target: DryBlendStep, source: DryBlendStep): DryBlendStep {
+  target.fromX = source.fromX;
+  target.fromY = source.fromY;
+  target.toX = source.toX;
+  target.toY = source.toY;
+  target.dirX = source.dirX;
+  target.dirY = source.dirY;
+  target.distance = source.distance;
+  target.fromDiameter = source.fromDiameter;
+  target.toDiameter = source.toDiameter;
+  target.diameter = source.diameter;
+  target.fromHalfWidth = source.fromHalfWidth;
+  target.fromHalfHeight = source.fromHalfHeight;
+  target.toHalfWidth = source.toHalfWidth;
+  target.toHalfHeight = source.toHalfHeight;
+  target.fromAngle = source.fromAngle;
+  target.toAngle = source.toAngle;
+  target.angle = source.angle;
+  target.warpStrength = source.warpStrength;
+  target.flow = source.flow;
+  target.spacing = source.spacing;
+  target.arcStart = source.arcStart;
+  target.arcEnd = source.arcEnd;
+  target.speed = source.speed;
+  target.minX = source.minX;
+  target.minY = source.minY;
+  target.maxX = source.maxX;
+  target.maxY = source.maxY;
+  target.maxHalo = source.maxHalo;
+  return target;
+}
+
 function copySample(
   target: QuantizedDryBlendSample,
   source: QuantizedDryBlendSample,
@@ -369,6 +401,42 @@ function fillTileKeys(
 }
 
 function sweepBounds(step: DryBlendStep): void {
+  if (
+    step.fromHalfWidth === step.toHalfWidth
+    && step.fromHalfHeight === step.toHalfHeight
+    && step.fromAngle === step.toAngle
+  ) {
+    // The current pressure-inert planner keeps size, aspect, and rotation
+    // constant inside a step. The footprint extents are therefore constant
+    // too, and the extrema of its linear center sweep are exactly at the two
+    // endpoints. Keep the sampled path below for future variable transforms.
+    const cosine = Math.abs(Math.cos(step.fromAngle));
+    const sine = Math.abs(Math.sin(step.fromAngle));
+    const extentX = cosine * step.fromHalfWidth + sine * step.fromHalfHeight + 2;
+    const extentY = sine * step.fromHalfWidth + cosine * step.fromHalfHeight + 2;
+    const fromCenterX = lerp(step.fromX, step.toX, 0);
+    const fromCenterY = lerp(step.fromY, step.toY, 0);
+    const toCenterX = lerp(step.fromX, step.toX, 1);
+    const toCenterY = lerp(step.fromY, step.toY, 1);
+    step.minX = Math.min(
+      Math.floor(fromCenterX - extentX),
+      Math.floor(toCenterX - extentX),
+    );
+    step.minY = Math.min(
+      Math.floor(fromCenterY - extentY),
+      Math.floor(toCenterY - extentY),
+    );
+    step.maxX = Math.max(
+      Math.ceil(fromCenterX + extentX),
+      Math.ceil(toCenterX + extentX),
+    );
+    step.maxY = Math.max(
+      Math.ceil(fromCenterY + extentY),
+      Math.ceil(toCenterY + extentY),
+    );
+    return;
+  }
+
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -589,31 +657,32 @@ export function createDryBlendPlanner(
     const directionAngle = Math.atan2(directionY, directionX);
     const angle = controls.angle + (controls.orientToStroke ? directionAngle : 0);
     const deltaSeconds = Math.max(0.001, (to.timeMs - from.timeMs) / 1000);
-    Object.assign(target, emptyStep(), {
-      fromX: from.x,
-      fromY: from.y,
-      toX: to.x,
-      toY: to.y,
-      dirX: f32(directionX),
-      dirY: f32(directionY),
-      distance: f32(distance),
-      fromDiameter: f32(fromDiameter),
-      toDiameter: f32(toDiameter),
-      diameter: f32(diameter),
-      fromHalfWidth: f32(fromDiameter * 0.5),
-      fromHalfHeight: f32(fromDiameter * 0.5 * controls.aspect),
-      toHalfWidth: f32(toDiameter * 0.5),
-      toHalfHeight: f32(toDiameter * 0.5 * controls.aspect),
-      fromAngle: f32(angle),
-      toAngle: f32(angle),
-      angle: f32(angle),
-      warpStrength: f32(controls.strength),
-      flow: f32(controls.flow),
-      spacing: f32(controls.spacing),
-      arcStart: f32(arc),
-      arcEnd: f32(arc + distance),
-      speed: f32(distance / deltaSeconds),
-    });
+    const halfWidth = f32(fromDiameter * 0.5);
+    const halfHeight = f32(fromDiameter * 0.5 * controls.aspect);
+    const stepAngle = f32(angle);
+    target.fromX = from.x;
+    target.fromY = from.y;
+    target.toX = to.x;
+    target.toY = to.y;
+    target.dirX = f32(directionX);
+    target.dirY = f32(directionY);
+    target.distance = f32(distance);
+    target.fromDiameter = f32(fromDiameter);
+    target.toDiameter = f32(toDiameter);
+    target.diameter = f32(diameter);
+    target.fromHalfWidth = halfWidth;
+    target.fromHalfHeight = halfHeight;
+    target.toHalfWidth = halfWidth;
+    target.toHalfHeight = halfHeight;
+    target.fromAngle = stepAngle;
+    target.toAngle = stepAngle;
+    target.angle = stepAngle;
+    target.warpStrength = f32(controls.strength);
+    target.flow = f32(controls.flow);
+    target.spacing = f32(controls.spacing);
+    target.arcStart = f32(arc);
+    target.arcEnd = f32(arc + distance);
+    target.speed = f32(distance / deltaSeconds);
     target.maxHalo = Math.ceil(distance * target.warpStrength) + 2;
     sweepBounds(target);
     arc += distance;
@@ -680,7 +749,7 @@ export function createDryBlendPlanner(
     }
     const source = ring[read];
     const target = batch.steps[0];
-    Object.assign(target, source);
+    copyStepInto(target, source);
     batch.generation = ++generation;
     finalizeBatch(
       batch,

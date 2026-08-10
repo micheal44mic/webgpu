@@ -1697,6 +1697,10 @@ export function truncateRedoHistory(engine: BrushEngine): void {
   // Il primo stamp dopo un Undo deve restare O(1): i payload abbandonati
   // vengono esclusi subito e liberati dalla manutenzione idle dopo una fence.
   engine.historyCompactionPending = true;
+  // Il ramo appena escluso puo' essere l'ultimo proprietario logico di un
+  // effetto annullato. La reclamazione e' differita e rifara' il controllo di
+  // raggiungibilita' dopo che tratto, frame e fence GPU sono terminati.
+  engine.scheduleEffectsScratchShrink();
 }
 
 export function historyStepBlockedByLayer(engine: BrushEngine, delta: -1 | 1): boolean {
