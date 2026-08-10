@@ -2001,7 +2001,7 @@ export class BrushEngine {
       spacingPercent: clamp(
         next.spacingPercent ?? this.settings.spacingPercent,
         tool === "blend" ? 1 : 0.25,
-        tool === "blend" ? 400 : 25,
+        tool === "blend" ? 400 : 99,
       ),
       stabilization: clamp(next.stabilization ?? this.settings.stabilization, 0, 1),
       startThickness: clamp(next.startThickness ?? this.settings.startThickness, 0, 2),

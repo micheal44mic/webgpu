@@ -65,6 +65,14 @@ assert.match(storage, /candidate\.version !== 1 && candidate\.version !== 2/);
 assert.match(storage, /transaction\.addEventListener\("complete"/);
 assert.match(storage, /export function deleteBrushStudioSavedBrush/);
 assert.match(html, /id="mobileBrushStudioName"[\s\S]*?maxlength="48"/);
+assert.match(html, /id="mobileBrushStudioSpacing"[^>]*max="99"/);
+assert.match(html, /id="spacing"[^>]*max="99"/);
+assert.match(main, /spacing\.max = blend \? "400" : "99"/);
+assert.match(engine, /tool === "blend" \? 400 : 99/);
+assert.match(
+  transfer,
+  /"spacingPercent",\s*defaultBrushSettings\.spacingPercent,\s*0\.25,\s*99,/,
+);
 assert.match(html, /id="mobileBrushLibraryAdd"[\s\S]*?data-lucide="plus"/);
 assert.match(html, /id="mobileBrushLibraryImport"[\s\S]*?aria-label="Import brush"/);
 assert.match(html, /id="mobileBrushLibraryExport"[\s\S]*?aria-label="Export selected brush"/);

@@ -135,6 +135,20 @@ assert.deepEqual(plain.settings, persistedSettings());
 assert.equal(plain.shapeAsset, null);
 assert.equal(plain.grainAsset, null);
 
+const maximumSpacingBlob = await transfer.createBrushStudioTransferBlob({
+  name: "Maximum Spacing",
+  savedBrush: {
+    version: 1,
+    settings: persistedSettings({ spacingPercent: 99 }),
+    shapeAssetKey: null,
+    grainAssetKey: null,
+  },
+  shapeAsset: null,
+  grainAsset: null,
+});
+const maximumSpacing = await transfer.parseBrushStudioTransferBlob(maximumSpacingBlob);
+assert.equal(maximumSpacing.settings.spacingPercent, 99);
+
 const legacyPlainParts = await unpackTransfer(plainBlob);
 delete legacyPlainParts.manifest.settings.blendBlur;
 const legacyPlain = await transfer.parseBrushStudioTransferBlob(packTransfer(
@@ -226,6 +240,17 @@ await assert.rejects(
     customParts.grainBytes,
   )),
   /settings\.count/,
+);
+
+const invalidSpacing = structuredClone(customParts.manifest);
+invalidSpacing.settings.spacingPercent = 99.25;
+await assert.rejects(
+  transfer.parseBrushStudioTransferBlob(packTransfer(
+    invalidSpacing,
+    customParts.shapeBytes,
+    customParts.grainBytes,
+  )),
+  /settings\.spacingPercent/,
 );
 
 const invalidBoolean = structuredClone(customParts.manifest);

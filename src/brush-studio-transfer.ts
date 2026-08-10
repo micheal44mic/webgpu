@@ -266,7 +266,7 @@ function transferSettings(
       "spacingPercent",
       defaultBrushSettings.spacingPercent,
       0.25,
-      25,
+      99,
       strict,
     ),
     stabilization: finiteNumber(record, "stabilization", defaultBrushSettings.stabilization, 0, 1, strict),

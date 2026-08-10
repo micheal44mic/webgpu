@@ -1843,7 +1843,7 @@ function configureBrushToolUi(
   size.min = "1";
   size.max = "1000";
   spacing.min = blend ? "1" : "0.25";
-  spacing.max = blend ? "400" : "25";
+  spacing.max = blend ? "400" : "99";
   spacing.step = blend ? "1" : "0.25";
   if (
     restoreSnapshot
