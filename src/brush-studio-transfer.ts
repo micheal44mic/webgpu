@@ -63,6 +63,7 @@ const defaultBrushSettings: BrushStudioPersistedSettings = {
   blendMode: "light-glaze",
   blendStretch: 0.18,
   blendPaint: 0.14,
+  blendBlur: 0,
   jitterMaster: 1,
   hueJitterDegrees: 12,
   saturationJitter: 0.18,
@@ -285,6 +286,16 @@ function transferSettings(
     ),
     blendStretch: finiteNumber(record, "blendStretch", defaultBrushSettings.blendStretch, 0, 1, strict),
     blendPaint: finiteNumber(record, "blendPaint", defaultBrushSettings.blendPaint, 0, 1, strict),
+    // Version 1 files created before Blend Blur remain valid; malformed values
+    // are still rejected whenever the optional field is present.
+    blendBlur: finiteNumber(
+      record,
+      "blendBlur",
+      defaultBrushSettings.blendBlur,
+      0,
+      1,
+      strict && "blendBlur" in record,
+    ),
     jitterMaster: finiteNumber(record, "jitterMaster", 1, 1, 1, strict),
     hueJitterDegrees: finiteNumber(
       record,

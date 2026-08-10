@@ -163,6 +163,7 @@ export const PENCIL_BRUSH_PRESET = {
     blendMode: "intense-blending",
     blendStretch: 0.18,
     blendPaint: 0.14,
+    blendBlur: 0,
     // Retained at the inert legacy value required by BrushSettings/history.
     jitterMaster: 1,
     hueJitterDegrees: 0,

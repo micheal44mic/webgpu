@@ -60,6 +60,7 @@ function persistedSettings(overrides = {}) {
     blendMode: "light-glaze",
     blendStretch: 0.18,
     blendPaint: 0.14,
+    blendBlur: 0,
     jitterMaster: 1,
     hueJitterDegrees: 0,
     saturationJitter: 0,
@@ -133,6 +134,19 @@ assert.equal(plain.name, "Base Brush");
 assert.deepEqual(plain.settings, persistedSettings());
 assert.equal(plain.shapeAsset, null);
 assert.equal(plain.grainAsset, null);
+
+const legacyPlainParts = await unpackTransfer(plainBlob);
+delete legacyPlainParts.manifest.settings.blendBlur;
+const legacyPlain = await transfer.parseBrushStudioTransferBlob(packTransfer(
+  legacyPlainParts.manifest,
+  null,
+  null,
+));
+assert.equal(
+  legacyPlain.settings.blendBlur,
+  0,
+  "version 1 brushes authored before Blend Blur must import with the inert default",
+);
 
 const customSettings = persistedSettings({
   shape: "shape",

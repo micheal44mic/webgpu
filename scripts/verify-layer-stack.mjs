@@ -1963,6 +1963,10 @@ assert.match(
   indexSource,
   /id="mobileBrushPaintControl"[\s\S]*?aria-valuemin="0"[\s\S]*?aria-valuemax="100"[\s\S]*?aria-valuetext="Paint 14%"/,
 );
+assert.match(
+  indexSource,
+  /id="mobileBrushBlurControl"[\s\S]*?aria-valuemin="0"[\s\S]*?aria-valuemax="100"[\s\S]*?aria-valuetext="Blur 0%"/,
+);
 assert.equal((mainSource.match(/size\.max = "1000";/g) ?? []).length, 2);
 assert.match(mainSource, /const MOBILE_BRUSH_CONTROL_INDICATOR_MAX_CSS_PIXELS = 41;/);
 assert.match(
@@ -1975,17 +1979,22 @@ assert.match(
 );
 assert.match(
   mainSource,
-  /if \(kind === "size"\) return `Size \$\{Math\.round\(value\)\} px`;[\s\S]*?if \(kind === "opacity"\) return `Opacity \$\{Math\.round\(value\)\}%`;[\s\S]*?if \(kind === "stretch"\) return `Stretch \$\{Math\.round\(value\)\}%`;[\s\S]*?return `Paint \$\{Math\.round\(value\)\}%`/,
+  /if \(kind === "size"\) return `Size \$\{Math\.round\(value\)\} px`;[\s\S]*?if \(kind === "opacity"\) return `Opacity \$\{Math\.round\(value\)\}%`;[\s\S]*?if \(kind === "stretch"\) return `Stretch \$\{Math\.round\(value\)\}%`;[\s\S]*?if \(kind === "paint"\) return `Paint \$\{Math\.round\(value\)\}%`;[\s\S]*?return `Blur \$\{Math\.round\(value\)\}%`/,
 );
 assert.match(
   mainSource,
-  /mobileBrushOpacityTrack\.hidden = blend;[\s\S]*?mobileBrushStretchTrack\.hidden = !blend;[\s\S]*?mobileBrushPaintTrack\.hidden = !blend;/,
-  "Paint must retain Size and Opacity while Blend exposes Size, Stretch and Paint",
+  /mobileBrushOpacityTrack\.hidden = blend;[\s\S]*?mobileBrushStretchTrack\.hidden = !blend;[\s\S]*?mobileBrushPaintTrack\.hidden = !blend;[\s\S]*?mobileBrushBlurTrack\.hidden = !blend;/,
+  "Paint must retain Size and Opacity while Blend exposes Size, Stretch, Paint and Blur",
+);
+assert.match(
+  stylesSource,
+  /\.mobile-brush-controls\.is-blend \.mobile-brush-control-track \{[\s\S]*?height: clamp\(64px, 16%, 124px\);[\s\S]*?#mobileBrushSizeTrack \{[\s\S]*?top: 5%;[\s\S]*?#mobileBrushStretchTrack \{[\s\S]*?top: 29%;[\s\S]*?#mobileBrushPaintTrack \{[\s\S]*?top: 53%;[\s\S]*?#mobileBrushBlurTrack \{[\s\S]*?top: 77%;/,
+  "the four Blend circles must use evenly spaced tracks",
 );
 assert.match(
   mainSource,
   /finishMobileBrushControlDrag\(commit: boolean\)[\s\S]*?if \(mobileBrushControlInput\(drag\.kind\)\.value !== drag\.startInputValue\) \{[\s\S]*?applyBrushControls\(\);/,
-  "the three Blend controls must apply authoritative settings once on release",
+  "the four Blend controls must apply authoritative settings once on release",
 );
 assert.doesNotMatch(mainSource, /size\.max = blend \? "1024" : "1500"/);
 const mobileToolRailCssStart = stylesSource.indexOf("  .mobile-tool-rail {");

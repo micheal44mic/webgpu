@@ -415,10 +415,12 @@ const mobileBrushSizeTrack = element<HTMLElement>("mobileBrushSizeTrack");
 const mobileBrushOpacityTrack = element<HTMLElement>("mobileBrushOpacityTrack");
 const mobileBrushStretchTrack = element<HTMLElement>("mobileBrushStretchTrack");
 const mobileBrushPaintTrack = element<HTMLElement>("mobileBrushPaintTrack");
+const mobileBrushBlurTrack = element<HTMLElement>("mobileBrushBlurTrack");
 const mobileBrushSizeControl = element<HTMLElement>("mobileBrushSizeControl");
 const mobileBrushOpacityControl = element<HTMLElement>("mobileBrushOpacityControl");
 const mobileBrushStretchControl = element<HTMLElement>("mobileBrushStretchControl");
 const mobileBrushPaintControl = element<HTMLElement>("mobileBrushPaintControl");
+const mobileBrushBlurControl = element<HTMLElement>("mobileBrushBlurControl");
 const mobileBrushPreview = element<HTMLElement>("mobileBrushPreview");
 const mobileBrushPreviewLabel = element<HTMLOutputElement>("mobileBrushPreviewLabel");
 const mobileBrushPreviewCanvas = element<HTMLCanvasElement>("mobileBrushPreviewCanvas");
@@ -1501,7 +1503,7 @@ let mobileLayerReorderGesture: MobileLayerReorderGesture | null = null;
 let mobileLayerContextKey: MobileMixedSceneLayerKey | null = null;
 let mobileLayerReorderSuppressClickKey: string | null = null;
 let mobileLayerReorderSuppressClickUntil = 0;
-type MobileBrushControlKind = "size" | "opacity" | "stretch" | "paint";
+type MobileBrushControlKind = "size" | "opacity" | "stretch" | "paint" | "blur";
 interface MobileBrushControlDrag {
   readonly kind: MobileBrushControlKind;
   readonly pointerId: number;
@@ -1824,14 +1826,16 @@ function mobileBrushControlElement(kind: MobileBrushControlKind): HTMLElement {
   if (kind === "size") return mobileBrushSizeControl;
   if (kind === "opacity") return mobileBrushOpacityControl;
   if (kind === "stretch") return mobileBrushStretchControl;
-  return mobileBrushPaintControl;
+  if (kind === "paint") return mobileBrushPaintControl;
+  return mobileBrushBlurControl;
 }
 
 function mobileBrushControlTrack(kind: MobileBrushControlKind): HTMLElement {
   if (kind === "size") return mobileBrushSizeTrack;
   if (kind === "opacity") return mobileBrushOpacityTrack;
   if (kind === "stretch") return mobileBrushStretchTrack;
-  return mobileBrushPaintTrack;
+  if (kind === "paint") return mobileBrushPaintTrack;
+  return mobileBrushBlurTrack;
 }
 
 function mobileBrushControlInput(kind: MobileBrushControlKind): HTMLInputElement {
@@ -1842,7 +1846,9 @@ function mobileBrushControlInput(kind: MobileBrushControlKind): HTMLInputElement
         ? "opacity"
         : kind === "stretch"
           ? "blendStretch"
-          : "blendPaint",
+          : kind === "paint"
+            ? "blendPaint"
+            : "blendBlur",
   );
 }
 
@@ -1880,7 +1886,8 @@ function mobileBrushControlLabel(kind: MobileBrushControlKind): string {
   if (kind === "size") return `Size ${Math.round(value)} px`;
   if (kind === "opacity") return `Opacity ${Math.round(value)}%`;
   if (kind === "stretch") return `Stretch ${Math.round(value)}%`;
-  return `Paint ${Math.round(value)}%`;
+  if (kind === "paint") return `Paint ${Math.round(value)}%`;
+  return `Blur ${Math.round(value)}%`;
 }
 
 function syncMobileBrushControlVisual(kind: MobileBrushControlKind): void {
@@ -1922,7 +1929,7 @@ function syncMobileBrushControlVisual(kind: MobileBrushControlKind): void {
 function renderMobileBrushPreview(): void {
   if (!mobileBrushControlDrag || !mobileUiMediaQuery.matches) return;
   const kind = mobileBrushControlDrag.kind;
-  if (kind === "stretch" || kind === "paint") return;
+  if (kind === "stretch" || kind === "paint" || kind === "blur") return;
   const percent = mobileBrushControlPercent(kind);
   const diameter = kind === "size"
     ? MOBILE_BRUSH_PREVIEW_MAX_TIP_CSS_PIXELS * percent / 100
@@ -1949,6 +1956,7 @@ function syncMobileBrushControlVisuals(): void {
   syncMobileBrushControlVisual("opacity");
   syncMobileBrushControlVisual("stretch");
   syncMobileBrushControlVisual("paint");
+  syncMobileBrushControlVisual("blur");
   if (mobileBrushControlDrag) {
     const kind = mobileBrushControlDrag.kind;
     mobileBrushPreviewLabel.value = mobileBrushControlLabel(kind);
@@ -1966,6 +1974,7 @@ function syncMobileBrushControlAvailability(locked = interactionLocked()): void 
     [mobileBrushOpacityControl, opacityDisabled],
     [mobileBrushStretchControl, blendControlDisabled],
     [mobileBrushPaintControl, blendControlDisabled],
+    [mobileBrushBlurControl, blendControlDisabled],
   ] as const) {
     control.setAttribute("aria-disabled", String(disabled));
     control.tabIndex = disabled ? -1 : 0;
@@ -1994,11 +2003,12 @@ function syncMobileBrushControlsVisibility(): void {
   mobileBrushControls.classList.toggle("is-blend", blend);
   mobileBrushControls.setAttribute(
     "aria-label",
-    blend ? "Blend size, stretch and paint" : "Brush size and opacity",
+    blend ? "Blend size, stretch, paint and blur" : "Brush size and opacity",
   );
   mobileBrushOpacityTrack.hidden = blend;
   mobileBrushStretchTrack.hidden = !blend;
   mobileBrushPaintTrack.hidden = !blend;
+  mobileBrushBlurTrack.hidden = !blend;
   mobileBrushControls.setAttribute("aria-hidden", String(suppressed));
 }
 
@@ -3822,6 +3832,7 @@ function readBrushSettings(): BrushSettings {
     blendMode: element<HTMLSelectElement>("blendMode").value as BrushSettings["blendMode"],
     blendStretch: rangeValue("blendStretch") / 100,
     blendPaint: rangeValue("blendPaint") / 100,
+    blendBlur: rangeValue("blendBlur") / 100,
     // Legacy history ABI field. Individual Color Dynamics controls are direct.
     jitterMaster: 1,
     hueJitterDegrees: rangeValue("hueJitter"),
@@ -3862,6 +3873,7 @@ function updateControlOutputs(): void {
   element<HTMLOutputElement>("hardnessOut").value = `${rangeValue("hardness").toFixed(0)}%`;
   element<HTMLOutputElement>("blendStretchOut").value = `${rangeValue("blendStretch").toFixed(0)}%`;
   element<HTMLOutputElement>("blendPaintOut").value = `${rangeValue("blendPaint").toFixed(0)}%`;
+  element<HTMLOutputElement>("blendBlurOut").value = `${rangeValue("blendBlur").toFixed(0)}%`;
   element<HTMLOutputElement>("hueJitterOut").value = `${rangeValue("hueJitter").toFixed(0)}°`;
   element<HTMLOutputElement>("saturationJitterOut").value = `${rangeValue("saturationJitter").toFixed(0)}%`;
   element<HTMLOutputElement>("lightnessJitterOut").value = `${rangeValue("lightnessJitter").toFixed(0)}%`;
@@ -4158,6 +4170,9 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
   const blendPaint = Number.isFinite(benchmark.settings.blendPaint)
     ? Math.min(1, Math.max(0, benchmark.settings.blendPaint))
     : 0.14;
+  const blendBlur = Number.isFinite(benchmark.settings.blendBlur)
+    ? Math.min(1, Math.max(0, benchmark.settings.blendBlur))
+    : 0;
   const settingsWithoutLegacyDynamics = {
     ...benchmark.settings,
   } as BrushSettings & {
@@ -4193,6 +4208,7 @@ function parseHumanStrokeBenchmark(value: unknown): HumanStrokeBenchmark | null 
       blendMode,
       blendStretch,
       blendPaint,
+      blendBlur,
     },
   };
 }
@@ -4975,6 +4991,7 @@ function applySettingsToControls(settings: BrushSettings): void {
   setControlValue("blendMode", renderingMode);
   setControlValue("blendStretch", (settings.blendStretch ?? 0.18) * 100);
   setControlValue("blendPaint", (settings.blendPaint ?? 0.14) * 100);
+  setControlValue("blendBlur", (settings.blendBlur ?? 0) * 100);
   setControlValue("hueJitter", settings.hueJitterDegrees);
   setControlValue("saturationJitter", settings.saturationJitter * 100);
   setControlValue("lightnessJitter", settings.lightnessJitter * 100);
@@ -5315,6 +5332,7 @@ function applyHumanStrokePreset(): BrushSettings {
   setControlValue("blendMode", "light-glaze");
   setControlValue("blendStretch", 18);
   setControlValue("blendPaint", 14);
+  setControlValue("blendBlur", 0);
   setControlValue("hueJitter", 180);
   setControlValue("saturationJitter", 100);
   element<HTMLInputElement>("jitterPerCopy").checked = true;
@@ -5353,6 +5371,7 @@ function humanStrokeTestSettings(
     blendMode,
     blendStretch: 0.18,
     blendPaint: 0.14,
+    blendBlur: 0,
     grainMode,
     grainScale: 1.4,
     grainDepth: 1,
@@ -5410,6 +5429,7 @@ function humanStrokeBlendTestSettings(benchmark: HumanStrokeBenchmark): BrushSet
     blendMode: "normal",
     blendStretch: 0.2,
     blendPaint: 0,
+    blendBlur: 0,
     jitterMaster: 1,
     hueJitterDegrees: 0,
     saturationJitter: 0,
@@ -6437,6 +6457,7 @@ const brushControlIds = [
   "blendMode",
   "blendStretch",
   "blendPaint",
+  "blendBlur",
   "hueJitter",
   "saturationJitter",
   "lightnessJitter",
@@ -6754,6 +6775,7 @@ for (const [control, kind] of [
   [mobileBrushOpacityControl, "opacity"],
   [mobileBrushStretchControl, "stretch"],
   [mobileBrushPaintControl, "paint"],
+  [mobileBrushBlurControl, "blur"],
 ] as const) {
   control.addEventListener("pointerdown", (event) => {
     startMobileBrushControlDrag(kind, event);

@@ -1136,16 +1136,17 @@ select {
   }
 
   #mobileBrushStretchTrack,
-  #mobileBrushPaintTrack {
+  #mobileBrushPaintTrack,
+  #mobileBrushBlurTrack {
     display: none;
   }
 
   .mobile-brush-controls.is-blend .mobile-brush-control-track {
-    height: clamp(104px, 20%, 156px);
+    height: clamp(64px, 16%, 124px);
   }
 
   .mobile-brush-controls.is-blend #mobileBrushSizeTrack {
-    top: 6%;
+    top: 5%;
   }
 
   .mobile-brush-controls.is-blend #mobileBrushOpacityTrack {
@@ -1153,12 +1154,17 @@ select {
   }
 
   .mobile-brush-controls.is-blend #mobileBrushStretchTrack {
-    top: 38%;
+    top: 29%;
     display: block;
   }
 
   .mobile-brush-controls.is-blend #mobileBrushPaintTrack {
-    top: 70%;
+    top: 53%;
+    display: block;
+  }
+
+  .mobile-brush-controls.is-blend #mobileBrushBlurTrack {
+    top: 77%;
     display: block;
   }
 
@@ -1231,7 +1237,8 @@ select {
   }
 
   [data-mobile-brush-control="stretch"] .mobile-brush-control-value,
-  [data-mobile-brush-control="paint"] .mobile-brush-control-value {
+  [data-mobile-brush-control="paint"] .mobile-brush-control-value,
+  [data-mobile-brush-control="blur"] .mobile-brush-control-value {
     width: var(--mobile-brush-opacity-indicator, 41px);
     height: var(--mobile-brush-opacity-indicator, 41px);
   }
@@ -1264,7 +1271,7 @@ select {
   }
 
   .mobile-brush-controls.is-blend[data-active="size"] .mobile-brush-preview {
-    top: calc(6% - 8px);
+    top: calc(5% - 8px);
   }
 
   .mobile-brush-controls[data-active="opacity"] .mobile-brush-preview {
@@ -1272,21 +1279,27 @@ select {
   }
 
   .mobile-brush-controls[data-active="stretch"] .mobile-brush-preview {
-    top: calc(38% - 8px);
+    top: calc(29% - 8px);
   }
 
   .mobile-brush-controls[data-active="paint"] .mobile-brush-preview {
-    top: calc(70% - 8px);
+    top: calc(53% - 8px);
+  }
+
+  .mobile-brush-controls[data-active="blur"] .mobile-brush-preview {
+    top: calc(77% - 8px);
   }
 
   .mobile-brush-controls[data-active="stretch"] .mobile-brush-preview,
-  .mobile-brush-controls[data-active="paint"] .mobile-brush-preview {
+  .mobile-brush-controls[data-active="paint"] .mobile-brush-preview,
+  .mobile-brush-controls[data-active="blur"] .mobile-brush-preview {
     height: 48px;
     grid-template-rows: 48px;
   }
 
   .mobile-brush-controls[data-active="stretch"] .mobile-brush-preview-body,
-  .mobile-brush-controls[data-active="paint"] .mobile-brush-preview-body {
+  .mobile-brush-controls[data-active="paint"] .mobile-brush-preview-body,
+  .mobile-brush-controls[data-active="blur"] .mobile-brush-preview-body {
     display: none;
   }
 

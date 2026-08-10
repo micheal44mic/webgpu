@@ -6,8 +6,10 @@ import {
   DRY_BLEND_CORE_BUILD,
   DRY_BLEND_DEFAULT_DOCUMENT_SIZE,
   DRY_BLEND_DEFAULT_SCRATCH_SIZE,
+  DRY_BLEND_BLUR_MAX_SUPPORT_PX,
   DRY_BLEND_SCRATCH_LIFECYCLE_STRATEGY,
   blendPaintCoefficient,
+  blendBlurSupportRadius,
   blendStretchCoefficient,
   createDryBlendPlanner,
   dryBlendReferenceStep,
@@ -17,9 +19,12 @@ import {
 } from "../src/blend-core.ts";
 import {
   DRY_BLEND_PICKUP_BORDER_STRATEGY,
+  blendBlurHorizontalShader,
+  blendBlurVerticalShader,
   blendDepositShader,
   blendPickupShader,
 } from "../src/blend-shaders.ts";
+import { destructiveGaussianBlurKernel } from "../src/gaussian-blur-core.ts";
 
 const approx = (actual, expected, epsilon = 1e-6) => {
   assert.ok(Math.abs(actual - expected) <= epsilon, `${actual} != ${expected}`);
@@ -60,6 +65,7 @@ assert.equal(normalizeDryBlendControls({ spacing: 10 }).spacing, 4);
 assert.equal(normalizeDryBlendControls({ aspect: 0.001 }).aspect, 0.05);
 assert.throws(() => normalizeDryBlendControls({ stretch: 1.01 }), /stretch/);
 assert.throws(() => normalizeDryBlendControls({ paint: -0.01 }), /paint/);
+assert.throws(() => normalizeDryBlendControls({ blur: 1.01 }), /blur/);
 assert.throws(() => normalizeDryBlendControls({ strength: 2 }), /strength/);
 assert.throws(() => normalizeDryBlendControls({ flow: -1 }), /flow/);
 
@@ -69,6 +75,15 @@ assert.equal(blendStretchCoefficient(0), 0);
 assert.equal(blendStretchCoefficient(1), 1);
 assert.equal(blendPaintCoefficient(0), 0);
 assert.equal(blendPaintCoefficient(1), 1);
+assert.equal(blendBlurSupportRadius(0, 96), 0);
+assert.equal(blendBlurSupportRadius(0.5, 96), 12);
+assert.equal(blendBlurSupportRadius(1, 96), 24);
+assert.equal(blendBlurSupportRadius(1, 1000), DRY_BLEND_BLUR_MAX_SUPPORT_PX);
+assert.deepEqual(
+  destructiveGaussianBlurKernel(blendBlurSupportRadius(1, 96)),
+  destructiveGaussianBlurKernel(24),
+  "Blend Blur deve usare lo stesso kernel normalizzato del Gaussian Blur layer",
+);
 
 assert.equal(
   DRY_BLEND_PICKUP_BORDER_STRATEGY,
@@ -136,6 +151,17 @@ assert.doesNotMatch(
 );
 assert.match(blendDepositShader, /override blendCustomShape: bool = false/);
 assert.match(blendDepositShader, /override blendGrainEnabled: bool = false/);
+assert.match(blendBlurHorizontalShader, /pack2x16float/);
+assert.match(blendBlurHorizontalShader, /documentClampedState/);
+assert.match(blendBlurVerticalShader, /mix\(original, result, clamp\(blend\.grainAffineAndPhase\.w/);
+assert.match(
+  blendDepositShader,
+  /finalCoverage \* blend\.transportControls\.z \* \(1\.0 - blurAmount\)/,
+  "Blur 100% deve lasciare visibile il Gaussian anche sotto una Shape custom opaca",
+);
+assert.match(blendRendererSource, /blurAmount > 0 && groups\.length > 0/);
+assert.match(blendRendererSource, /floats\[31\] = clamp\(settings\.blendBlur, 0, 1\)/);
+assert.match(blendRendererSource, /size: this\.scratchSize \* this\.scratchSize \* 8/);
 assert.match(
   blendDepositShader,
   /let constantCosine = cos\(constantAngle\);[\s\S]*?customAt\([\s\S]*?constantCosine/,
@@ -300,6 +326,22 @@ for (const fastPathCase of [
     );
   }
 }
+
+const blurFixtureSamples = [point(1000, 1000, 0), point(1080, 1030, 16)];
+const noBlurPlanner = createDryBlendPlanner({ size: 96, blur: 0 });
+noBlurPlanner.reset(blurFixtureSamples[0]);
+assert.equal(noBlurPlanner.pushSample(blurFixtureSamples[1]).accepted, true);
+const noBlurBatch = structuredClone(noBlurPlanner.buildNextBatch());
+const fullBlurPlanner = createDryBlendPlanner({ size: 96, blur: 1 });
+fullBlurPlanner.reset(blurFixtureSamples[0]);
+assert.equal(fullBlurPlanner.pushSample(blurFixtureSamples[1]).accepted, true);
+const fullBlurBatch = structuredClone(fullBlurPlanner.buildNextBatch());
+assert.deepEqual(fullBlurBatch.writeRect, noBlurBatch.writeRect);
+assert.equal(fullBlurBatch.maxHalo - noBlurBatch.maxHalo, 24);
+assert.equal(fullBlurBatch.readRect.x, noBlurBatch.readRect.x - 24);
+assert.equal(fullBlurBatch.readRect.y, noBlurBatch.readRect.y - 24);
+assert.equal(fullBlurBatch.readRect.width, noBlurBatch.readRect.width + 48);
+assert.equal(fullBlurBatch.readRect.height, noBlurBatch.readRect.height + 48);
 
 const rotatedMaximum = createDryBlendPlanner(
   {

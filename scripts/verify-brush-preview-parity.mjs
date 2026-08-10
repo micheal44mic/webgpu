@@ -226,6 +226,7 @@ const pencil = {
   blendMode: "intense-blending",
   blendStretch: 0.18,
   blendPaint: 0.14,
+  blendBlur: 0,
   jitterMaster: 1,
   hueJitterDegrees: 0,
   saturationJitter: 0,
@@ -283,6 +284,7 @@ for (const [field, value] of [
   ["blendIntensity", 0.2],
   ["blendStretch", 0.8],
   ["blendPaint", 0.8],
+  ["blendBlur", 0.8],
   ["jitterMaster", 0.2],
 ]) {
   assert.equal(

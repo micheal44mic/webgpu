@@ -10,6 +10,8 @@ export const DRY_BLEND_CORE_BUILD = "dry-blend-continuous-core-v1-pressure-inert
 export const DRY_BLEND_REFERENCE_STEP_RATIO = 0.06;
 export const DRY_BLEND_REFERENCE_MIN_STEP_PX = 2.5;
 export const DRY_BLEND_REFERENCE_MAX_STEP_PX = 48;
+export const DRY_BLEND_BLUR_MAX_SUPPORT_PX = 64;
+export const DRY_BLEND_BLUR_DIAMETER_RATIO = 0.25;
 export const DRY_BLEND_DEFAULT_DOCUMENT_SIZE = LAYER_SIZE;
 export const DRY_BLEND_DEFAULT_SCRATCH_SIZE = 1664;
 export const DRY_BLEND_DEFAULT_TILE_SIZE = 256;
@@ -25,6 +27,7 @@ export interface DryBlendControls {
   flow: number;
   stretch: number;
   paint: number;
+  blur: number;
   aspect: number;
   angle: number;
   orientToStroke: boolean;
@@ -38,6 +41,7 @@ export const DEFAULT_DRY_BLEND_CONTROLS: Readonly<DryBlendControls> = Object.fre
   flow: 1,
   stretch: 0.18,
   paint: 0.14,
+  blur: 0,
   aspect: 1,
   angle: 0,
   orientToStroke: true,
@@ -218,6 +222,7 @@ export function normalizeDryBlendControls(
     flow: unit(source.flow ?? DEFAULT_DRY_BLEND_CONTROLS.flow, "flow"),
     stretch: unit(source.stretch ?? DEFAULT_DRY_BLEND_CONTROLS.stretch, "stretch"),
     paint: unit(source.paint ?? DEFAULT_DRY_BLEND_CONTROLS.paint, "paint"),
+    blur: unit(source.blur ?? DEFAULT_DRY_BLEND_CONTROLS.blur, "blur"),
     aspect: clamp(
       positive(source.aspect ?? DEFAULT_DRY_BLEND_CONTROLS.aspect, "aspect"),
       0.05,
@@ -243,6 +248,25 @@ export function blendPaintCoefficient(
 ): number {
   const normalized = unit(value, "paint");
   return normalized * normalized;
+}
+
+/**
+ * Maps the public 0..1 control to the three-sigma support used by the same
+ * normalized Gaussian kernel as the layer Gaussian Blur. The brush-relative
+ * radius keeps the effect visually stable across sizes, while the cap bounds
+ * both scratch halo and GPU work for very large tips.
+ */
+export function blendBlurSupportRadius(
+  value: number = DEFAULT_DRY_BLEND_CONTROLS.blur,
+  diameter: number = DEFAULT_DRY_BLEND_CONTROLS.size,
+): number {
+  const normalized = unit(value, "blur");
+  if (normalized <= 0) return 0;
+  const maximum = Math.min(
+    DRY_BLEND_BLUR_MAX_SUPPORT_PX,
+    Math.max(1, positive(diameter, "diameter") * DRY_BLEND_BLUR_DIAMETER_RATIO),
+  );
+  return Math.max(1, Math.ceil(maximum * normalized));
 }
 
 export function quantizeDryBlendSample(sample: DryBlendSample): QuantizedDryBlendSample {
@@ -683,7 +707,9 @@ export function createDryBlendPlanner(
     target.arcStart = f32(arc);
     target.arcEnd = f32(arc + distance);
     target.speed = f32(distance / deltaSeconds);
-    target.maxHalo = Math.ceil(distance * target.warpStrength) + 2;
+    target.maxHalo = Math.ceil(distance * target.warpStrength)
+      + 2
+      + blendBlurSupportRadius(controls.blur, diameter);
     sweepBounds(target);
     arc += distance;
     write = (write + 1) % maxSteps;

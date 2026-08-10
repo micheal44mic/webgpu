@@ -1,3 +1,5 @@
+import { DRY_BLEND_BLUR_MAX_SUPPORT_PX } from "./blend-core.ts";
+
 // Compute-first WGSL for the dry Blend brush.
 //
 // The original port issued five render passes per ~6 px sweep segment; the
@@ -20,7 +22,7 @@ struct BlendUniforms {
   maskControls: vec4<f32>,        // hardness, flow, spacing, arc start
   transportControls: vec4<f32>,   // distance, diameter, strength, stretch
   grainControls: vec4<f32>,       // grain scale, paint, grain depth, grain brightness
-  grainAffineAndPhase: vec4<f32>, // grain contrast, movement, mip count, alpha floor
+  grainAffineAndPhase: vec4<f32>, // grain contrast, movement, mip count, blur amount
   paintColor: vec4<f32>,
   depositRect: vec4<f32>,         // step write rect in group-local pixels X,Y,W,H
   options: vec4<u32>,             // shape custom, grain mode, filtering, has previous
@@ -81,6 +83,161 @@ fn sampleState(center: vec2<f32>) -> vec4<f32> {
       interpolation.x
     ),
     interpolation.y
+  );
+}
+`;
+
+const BLEND_BLUR_WORKGROUP_SIZE = 64;
+const BLEND_BLUR_WEIGHT_VEC4_COUNT = Math.ceil(
+  (DRY_BLEND_BLUR_MAX_SUPPORT_PX + 1) / 4,
+);
+const BLEND_BLUR_CACHE_LENGTH = BLEND_BLUR_WORKGROUP_SIZE
+  + DRY_BLEND_BLUR_MAX_SUPPORT_PX * 2;
+
+const blendBlurKernelWgsl = /* wgsl */ `
+struct BlendBlurKernel {
+  controls: vec4<u32>, // support radius, 0, 0, 0
+  weights: array<vec4<f32>, ${BLEND_BLUR_WEIGHT_VEC4_COUNT}>,
+};
+
+@group(0) @binding(3) var<uniform> blurKernel: BlendBlurKernel;
+
+const BLEND_BLUR_MAX_RADIUS = ${DRY_BLEND_BLUR_MAX_SUPPORT_PX}u;
+
+fn blendBlurWeight(index: u32) -> f32 {
+  return blurKernel.weights[index / 4u][index % 4u];
+}
+
+fn packBlendBlurTexel(value: vec4<f32>) -> vec2<u32> {
+  return vec2<u32>(pack2x16float(value.xy), pack2x16float(value.zw));
+}
+
+fn unpackBlendBlurTexel(value: vec2<u32>) -> vec4<f32> {
+  return vec4<f32>(unpack2x16float(value.x), unpack2x16float(value.y));
+}
+`;
+
+export const blendBlurHorizontalShader = /* wgsl */ `
+${blendUniformsWgsl}
+
+@group(0) @binding(1) var<storage, read> stateBuffer: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> blurBuffer: array<vec2<u32>>;
+
+${blendStateSamplingWgsl}
+${blendBlurKernelWgsl}
+
+var<workgroup> blurCache: array<vec2<u32>, ${BLEND_BLUR_CACHE_LENGTH}>;
+
+fn documentClampedState(documentPosition: vec2<i32>) -> vec4<f32> {
+  let maximum = max(documentSize() - vec2<i32>(1), vec2<i32>(0));
+  let clampedPosition = clamp(documentPosition, vec2<i32>(0), maximum);
+  return cleanState(clampedPosition - roiOrigin());
+}
+
+@compute @workgroup_size(${BLEND_BLUR_WORKGROUP_SIZE})
+fn blurHorizontalMain(
+  @builtin(local_invocation_id) localId: vec3<u32>,
+  @builtin(workgroup_id) groupId: vec3<u32>,
+) {
+  if (groupId.y >= u32(validSize().y)) {
+    return;
+  }
+  for (
+    var cacheIndex = localId.x;
+    cacheIndex < ${BLEND_BLUR_CACHE_LENGTH}u;
+    cacheIndex += ${BLEND_BLUR_WORKGROUP_SIZE}u
+  ) {
+    let localX = i32(
+      groupId.x * ${BLEND_BLUR_WORKGROUP_SIZE}u + cacheIndex
+    ) - i32(BLEND_BLUR_MAX_RADIUS);
+    let localPixel = vec2<i32>(localX, i32(groupId.y));
+    blurCache[cacheIndex] = packBlendBlurTexel(
+      documentClampedState(roiOrigin() + localPixel)
+    );
+  }
+  workgroupBarrier();
+
+  let outputX = groupId.x * ${BLEND_BLUR_WORKGROUP_SIZE}u + localId.x;
+  if (outputX >= u32(validSize().x)) {
+    return;
+  }
+  let center = BLEND_BLUR_MAX_RADIUS + localId.x;
+  var result = unpackBlendBlurTexel(blurCache[center]) * blendBlurWeight(0u);
+  for (var offset = 1u; offset <= BLEND_BLUR_MAX_RADIUS; offset += 1u) {
+    if (offset > blurKernel.controls.x) {
+      break;
+    }
+    let weight = blendBlurWeight(offset);
+    result += unpackBlendBlurTexel(blurCache[center - offset]) * weight;
+    result += unpackBlendBlurTexel(blurCache[center + offset]) * weight;
+  }
+  let pixel = vec2<i32>(i32(outputX), i32(groupId.y));
+  blurBuffer[stateIndex(pixel)] = packBlendBlurTexel(result);
+}
+`;
+
+export const blendBlurVerticalShader = /* wgsl */ `
+${blendUniformsWgsl}
+
+@group(0) @binding(1) var<storage, read> blurBuffer: array<vec2<u32>>;
+@group(0) @binding(2) var<storage, read_write> stateBuffer: array<vec4<f32>>;
+
+${blendStateSamplingWgsl}
+${blendBlurKernelWgsl}
+
+var<workgroup> blurCache: array<vec2<u32>, ${BLEND_BLUR_CACHE_LENGTH}>;
+
+fn cleanBlurState(pixel: vec2<i32>) -> vec4<f32> {
+  if (any(pixel < vec2<i32>(0)) || any(pixel >= validSize())) {
+    return vec4<f32>(0.0);
+  }
+  return unpackBlendBlurTexel(blurBuffer[stateIndex(pixel)]);
+}
+
+@compute @workgroup_size(${BLEND_BLUR_WORKGROUP_SIZE})
+fn blurVerticalMain(
+  @builtin(local_invocation_id) localId: vec3<u32>,
+  @builtin(workgroup_id) groupId: vec3<u32>,
+) {
+  if (groupId.y >= u32(validSize().x)) {
+    return;
+  }
+  for (
+    var cacheIndex = localId.x;
+    cacheIndex < ${BLEND_BLUR_CACHE_LENGTH}u;
+    cacheIndex += ${BLEND_BLUR_WORKGROUP_SIZE}u
+  ) {
+    let localY = i32(
+      groupId.x * ${BLEND_BLUR_WORKGROUP_SIZE}u + cacheIndex
+    ) - i32(BLEND_BLUR_MAX_RADIUS);
+    blurCache[cacheIndex] = packBlendBlurTexel(
+      cleanBlurState(vec2<i32>(i32(groupId.y), localY))
+    );
+  }
+  workgroupBarrier();
+
+  let outputY = groupId.x * ${BLEND_BLUR_WORKGROUP_SIZE}u + localId.x;
+  if (outputY >= u32(validSize().y)) {
+    return;
+  }
+  let center = BLEND_BLUR_MAX_RADIUS + localId.x;
+  var result = unpackBlendBlurTexel(blurCache[center]) * blendBlurWeight(0u);
+  for (var offset = 1u; offset <= BLEND_BLUR_MAX_RADIUS; offset += 1u) {
+    if (offset > blurKernel.controls.x) {
+      break;
+    }
+    let weight = blendBlurWeight(offset);
+    result += unpackBlendBlurTexel(blurCache[center - offset]) * weight;
+    result += unpackBlendBlurTexel(blurCache[center + offset]) * weight;
+  }
+
+  let pixel = vec2<i32>(i32(groupId.y), i32(outputY));
+  let original = cleanState(pixel);
+  let mixed = mix(original, result, clamp(blend.grainAffineAndPhase.w, 0.0, 1.0));
+  let alpha = clamp(mixed.a, 0.0, 1.0);
+  stateBuffer[stateIndex(pixel)] = vec4<f32>(
+    clamp(mixed.rgb, vec3<f32>(0.0), vec3<f32>(alpha)),
+    alpha
   );
 }
 `;
@@ -495,8 +652,12 @@ fn depositMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (finalCoverage > 0.0) {
     coverageBuffer[index] = max(coverageBuffer[index], finalCoverage);
   }
+  // Blur is a crossfade from the dry carrier to a pure Gaussian brush.
+  // Without this gate, an opaque custom Shape deposits the picked-up carrier
+  // after the Gaussian pass and completely covers the blur at 100%.
+  let blurAmount = clamp(blend.grainAffineAndPhase.w, 0.0, 1.0);
   let depositCoverage = clamp(
-    finalCoverage * blend.transportControls.z,
+    finalCoverage * blend.transportControls.z * (1.0 - blurAmount),
     0.0,
     1.0
   );
@@ -518,7 +679,7 @@ fn depositMain(@builtin(global_invocation_id) gid: vec3<u32>) {
     clamp(mixed.rgb, vec3<f32>(0.0), vec3<f32>(resultAlpha)),
     resultAlpha
   );
-  if (resultAlpha <= blend.grainAffineAndPhase.w) {
+  if (resultAlpha <= 0.0) {
     result = vec4<f32>(0.0);
   }
   stateBuffer[index] = result;

@@ -312,6 +312,29 @@
           </div>
         </div>
 
+        <div id="mobileBrushBlurTrack" class="mobile-brush-control-track" hidden>
+          <div class="mobile-brush-control-range">
+            <div
+              id="mobileBrushBlurControl"
+              class="mobile-brush-control"
+              role="slider"
+              tabindex="-1"
+              aria-label="Blend blur"
+              aria-orientation="vertical"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="0"
+              aria-valuetext="Blur 0%"
+              aria-disabled="true"
+              data-mobile-brush-control="blur"
+            >
+              <span class="mobile-brush-control-disc" aria-hidden="true">
+                <span class="mobile-brush-control-value"></span>
+              </span>
+            </div>
+          </div>
+        </div>
+
         <section
           id="mobileBrushPreview"
           class="mobile-brush-preview"
@@ -2344,7 +2367,15 @@
               <input id="blendPaint" type="range" min="0" max="100" step="1" value="14" />
             </label>
 
-            <p class="result">Blend dry: pickup e deposito del colore.</p>
+            <label class="control">
+              <span>
+                Blur <output id="blendBlurOut">0%</output>
+                <small>Sfoca il contenuto del layer prima di applicare Shape e Grain.</small>
+              </span>
+              <input id="blendBlur" type="range" min="0" max="100" step="1" value="0" />
+            </label>
+
+            <p class="result">Blend dry: pickup, deposito e blur locale del colore.</p>
           </div>
         </section>
 

@@ -94,6 +94,7 @@ const defaults = {
   blendMode: "intense-blending",
   blendStretch: 0.8,
   blendPaint: 0.9,
+  blendBlur: 0.7,
   jitterMaster: 1,
   hueJitterDegrees: 30,
   saturationJitter: 0.5,

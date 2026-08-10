@@ -1989,6 +1989,7 @@ export class BrushEngine {
       blendMode,
       blendStretch: clamp(next.blendStretch ?? this.settings.blendStretch, 0, 1),
       blendPaint: clamp(next.blendPaint ?? this.settings.blendPaint, 0, 1),
+      blendBlur: clamp(next.blendBlur ?? this.settings.blendBlur, 0, 1),
       // Legacy presets may still carry this field, but the four Color Dynamics
       // controls are authoritative and must never be scaled a second time.
       jitterMaster: 1,
@@ -3869,6 +3870,7 @@ export class BrushEngine {
         flow: this.settings.flow,
         stretch: this.settings.blendStretch,
         paint: this.settings.blendPaint,
+        blur: this.settings.blendBlur,
         aspect: 1,
         angle: 0,
         orientToStroke: true,

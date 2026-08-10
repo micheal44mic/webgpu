@@ -220,6 +220,7 @@ export function createBrushStudioBaseSettings(
     blendMode: "light-glaze",
     blendStretch: 0.18,
     blendPaint: 0.14,
+    blendBlur: 0,
     jitterMaster: 1,
     hueJitterDegrees: 0,
     saturationJitter: 0,

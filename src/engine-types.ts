@@ -92,6 +92,8 @@ export interface BrushSettings {
   blendMode: BlendMode;
   blendStretch: number;
   blendPaint: number;
+  /** Local Gaussian blur mixed into the layer content under the Blend mask. */
+  blendBlur: number;
   // Retained only for history/settings ABI compatibility; always normalized to 1.
   jitterMaster: number;
   hueJitterDegrees: number;
@@ -341,6 +343,7 @@ export const defaultBrushSettings: BrushSettings = {
   blendMode: "light-glaze",
   blendStretch: 0.18,
   blendPaint: 0.14,
+  blendBlur: 0,
   jitterMaster: 1,
   hueJitterDegrees: 12,
   saturationJitter: 0.18,

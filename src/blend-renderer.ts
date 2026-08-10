@@ -1,4 +1,6 @@
 import {
+  blendBlurHorizontalShader,
+  blendBlurVerticalShader,
   blendDepositShader,
   blendGatherShader,
   blendPickupShader,
@@ -6,13 +8,16 @@ import {
 } from "./blend-shaders";
 import {
   DRY_BLEND_CORE_BUILD,
+  DRY_BLEND_BLUR_MAX_SUPPORT_PX,
   DRY_BLEND_DEFAULT_SCRATCH_SIZE,
+  blendBlurSupportRadius,
   blendPaintCoefficient,
   blendStretchCoefficient,
   type BlendRect,
   type DryBlendBatch,
   type DryBlendStep,
 } from "./blend-core";
+import { destructiveGaussianBlurKernel } from "./gaussian-blur-core";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 
 const BLEND_UNIFORM_BYTES = 192;
@@ -20,11 +25,17 @@ const BLEND_MAX_BATCHES_PER_SUBMIT = 256;
 // Ring of persistent carrier slots: slot i feeds step i, the step writes i+1.
 // The ring only needs to out-size a single submit so read/write never collide.
 const BLEND_CARRIER_SLOT_COUNT = 4096;
+const BLEND_BLUR_WORKGROUP_SIZE = 64;
+const BLEND_BLUR_WEIGHT_VEC4_COUNT = Math.ceil(
+  (DRY_BLEND_BLUR_MAX_SUPPORT_PX + 1) / 4,
+);
+const BLEND_BLUR_UNIFORM_BYTES = 16 + BLEND_BLUR_WEIGHT_VEC4_COUNT * 16;
 
 export const DRY_BLEND_RENDERER_BUILD =
-  "dry-blend-webgpu-v4-specialized-compute-sweep";
+  "dry-blend-webgpu-v5-local-gaussian-blur";
 
 export interface DryBlendRenderSettings {
+  size: number;
   shape: "circle" | "shape";
   grainMode: "off" | "texturized" | "moving";
   grainScale: number;
@@ -38,6 +49,7 @@ export interface DryBlendRenderSettings {
   hardness: number;
   blendStretch: number;
   blendPaint: number;
+  blendBlur: number;
 }
 
 export interface DryBlendRenderBatch {
@@ -99,6 +111,11 @@ interface ScratchResources {
   stateBuffer: GPUBuffer;
   coverageBuffer: GPUBuffer;
   carrierBuffer: GPUBuffer;
+  blur: {
+    buffer: GPUBuffer;
+    horizontalBindGroup: GPUBindGroup;
+    verticalBindGroup: GPUBindGroup;
+  } | null;
   gatherBindGroup: GPUBindGroup;
   pickupBindGroup: GPUBindGroup;
   depositBindGroups: Record<
@@ -247,12 +264,21 @@ export class DryBlendRenderer {
   private readonly uniformFloatViews: readonly Float32Array[];
   private readonly uniformUnsignedViews: readonly Uint32Array[];
   private readonly uniformBuffer: GPUBuffer;
+  private readonly blurKernelUpload = new ArrayBuffer(BLEND_BLUR_UNIFORM_BYTES);
+  private readonly blurKernelFloats = new Float32Array(this.blurKernelUpload);
+  private readonly blurKernelUnsigned = new Uint32Array(this.blurKernelUpload);
+  private readonly blurKernelBuffer: GPUBuffer;
+  private blurKernelRadius = -1;
 
   private gatherBindGroupLayout!: GPUBindGroupLayout;
+  private blurHorizontalBindGroupLayout!: GPUBindGroupLayout;
+  private blurVerticalBindGroupLayout!: GPUBindGroupLayout;
   private pickupBindGroupLayout!: GPUBindGroupLayout;
   private depositBindGroupLayout!: GPUBindGroupLayout;
   private scatterBindGroupLayout!: GPUBindGroupLayout;
   private gatherPipeline!: GPUComputePipeline;
+  private blurHorizontalPipeline!: GPUComputePipeline;
+  private blurVerticalPipeline!: GPUComputePipeline;
   private pickupPipeline!: GPUComputePipeline;
   private depositPipelines!: Record<
     DryBlendRenderSettings["shape"],
@@ -309,6 +335,11 @@ export class DryBlendRenderer {
       size: this.uniformUpload.byteLength,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
     });
+    this.blurKernelBuffer = this.device.createBuffer({
+      label: "Blend local Gaussian kernel",
+      size: BLEND_BLUR_UNIFORM_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
   }
 
   private async initialize(): Promise<void> {
@@ -356,6 +387,29 @@ export class DryBlendRenderer {
         storageEntry(3, GPUShaderStage.COMPUTE, false),
       ],
     });
+    const blurKernelEntry: GPUBindGroupLayoutEntry = {
+      binding: 3,
+      visibility: GPUShaderStage.COMPUTE,
+      buffer: { type: "uniform", minBindingSize: BLEND_BLUR_UNIFORM_BYTES },
+    };
+    this.blurHorizontalBindGroupLayout = this.device.createBindGroupLayout({
+      label: "Blend local Gaussian horizontal bind group layout",
+      entries: [
+        dynamicUniformEntry(GPUShaderStage.COMPUTE),
+        storageEntry(1, GPUShaderStage.COMPUTE, true),
+        storageEntry(2, GPUShaderStage.COMPUTE, false),
+        blurKernelEntry,
+      ],
+    });
+    this.blurVerticalBindGroupLayout = this.device.createBindGroupLayout({
+      label: "Blend local Gaussian vertical bind group layout",
+      entries: [
+        dynamicUniformEntry(GPUShaderStage.COMPUTE),
+        storageEntry(1, GPUShaderStage.COMPUTE, true),
+        storageEntry(2, GPUShaderStage.COMPUTE, false),
+        blurKernelEntry,
+      ],
+    });
     this.pickupBindGroupLayout = this.device.createBindGroupLayout({
       label: "Blend dry pickup bind group layout",
       entries: [
@@ -399,6 +453,20 @@ export class DryBlendRenderer {
         module: this.device.createShaderModule({
           label: "Blend pickup WGSL",
           code: blendPickupShader,
+        }),
+      },
+      {
+        label: "Blend Gaussian horizontal",
+        module: this.device.createShaderModule({
+          label: "Blend Gaussian horizontal WGSL",
+          code: blendBlurHorizontalShader,
+        }),
+      },
+      {
+        label: "Blend Gaussian vertical",
+        module: this.device.createShaderModule({
+          label: "Blend Gaussian vertical WGSL",
+          code: blendBlurVerticalShader,
         }),
       },
       {
@@ -448,13 +516,25 @@ export class DryBlendRenderer {
           modules[1].module,
           "pickupMain",
         );
+        this.blurHorizontalPipeline = computePipeline(
+          "Blend local Gaussian horizontal",
+          this.blurHorizontalBindGroupLayout,
+          modules[2].module,
+          "blurHorizontalMain",
+        );
+        this.blurVerticalPipeline = computePipeline(
+          "Blend local Gaussian vertical",
+          this.blurVerticalBindGroupLayout,
+          modules[3].module,
+          "blurVerticalMain",
+        );
         const depositPipeline = (
           shape: DryBlendRenderSettings["shape"],
           grain: "off" | "on",
         ) => computePipeline(
           `Blend dry ${shape} ${grain} fused sweep and pigment deposit`,
           this.depositBindGroupLayout,
-          modules[2].module,
+          modules[4].module,
           "depositMain",
           {
             blendCustomShape: shape === "shape" ? 1 : 0,
@@ -478,11 +558,11 @@ export class DryBlendRenderer {
             this.scatterBindGroupLayout,
           ),
           vertex: {
-            module: modules[3].module,
+            module: modules[5].module,
             entryPoint: "fullscreenVertex",
           },
           fragment: {
-            module: modules[3].module,
+            module: modules[5].module,
             entryPoint: "scatterFragment",
             targets: [{ format: this.layerFormat }],
           },
@@ -556,6 +636,13 @@ export class DryBlendRenderer {
       this.validateBatch(batch);
     }
     const groups = this.buildStepGroups(renderable);
+    const blurAmount = clamp(settings.blendBlur, 0, 1);
+    const blurScratch = blurAmount > 0 && groups.length > 0
+      ? this.ensureBlurScratchResources(scratch)
+      : null;
+    if (blurScratch) {
+      this.updateBlurKernel(blurAmount, settings.size);
+    }
     const historyBytes = renderable.length * this.uniformStride;
     if (historyTransfer?.capture && historyTransfer.replay) {
       throw new Error("Il transfer Blend non può catturare e riprodurre insieme.");
@@ -624,6 +711,8 @@ export class DryBlendRenderer {
     }
 
     const workgroups = (pixels: number): number => Math.ceil(pixels / 8);
+    const blurWorkgroups = (pixels: number): number =>
+      Math.ceil(pixels / BLEND_BLUR_WORKGROUP_SIZE);
     // Both Moving and Texturized can cross tile boundaries once Scale is
     // applied. Their corrected coordinate mappings therefore share repeat.
     const grainMode = "fixed" as const;
@@ -641,6 +730,20 @@ export class DryBlendRenderer {
         workgroups(group.readRect.width),
         workgroups(group.readRect.height),
       );
+      if (blurScratch) {
+        computePass.setPipeline(this.blurHorizontalPipeline);
+        computePass.setBindGroup(0, blurScratch.horizontalBindGroup, [groupOffset]);
+        computePass.dispatchWorkgroups(
+          blurWorkgroups(group.readRect.width),
+          group.readRect.height,
+        );
+        computePass.setPipeline(this.blurVerticalPipeline);
+        computePass.setBindGroup(0, blurScratch.verticalBindGroup, [groupOffset]);
+        computePass.dispatchWorkgroups(
+          blurWorkgroups(group.readRect.height),
+          group.readRect.width,
+        );
+      }
       for (let index = 0; index < group.count; index += 1) {
         const batch = renderable[group.start + index];
         const dynamicOffset = (group.start + index) * this.uniformStride;
@@ -703,14 +806,22 @@ export class DryBlendRenderer {
     const stateBytes = pixels * 16;
     const coverageBytes = pixels * 4;
     const carrierBytes = BLEND_CARRIER_SLOT_COUNT * 16;
-    return (stateBytes + coverageBytes + carrierBytes + this.uniformUpload.byteLength)
+    const blurBytes = this.scratch.blur ? pixels * 8 : 0;
+    return (
+      stateBytes
+      + coverageBytes
+      + carrierBytes
+      + blurBytes
+      + this.uniformUpload.byteLength
+      + BLEND_BLUR_UNIFORM_BYTES
+    )
       / (1024 * 1024);
   }
 
   allocatedMemoryMiB(): number {
     return this.scratch
       ? this.memoryMiB()
-      : this.uniformUpload.byteLength / (1024 * 1024);
+      : (this.uniformUpload.byteLength + BLEND_BLUR_UNIFORM_BYTES) / (1024 * 1024);
   }
   historyUniformBytes(
     batches: readonly DryBlendHistoryGeometry[],
@@ -735,6 +846,7 @@ export class DryBlendRenderer {
     this.scratch.stateBuffer.destroy();
     this.scratch.coverageBuffer.destroy();
     this.scratch.carrierBuffer.destroy();
+    this.scratch.blur?.buffer.destroy();
     this.scratch = null;
     this.carrierValid = false;
     return true;
@@ -746,10 +858,12 @@ export class DryBlendRenderer {
     }
     this.destroyed = true;
     this.uniformBuffer.destroy();
+    this.blurKernelBuffer.destroy();
     if (this.scratch) {
       this.scratch.stateBuffer.destroy();
       this.scratch.coverageBuffer.destroy();
       this.scratch.carrierBuffer.destroy();
+      this.scratch.blur?.buffer.destroy();
       this.scratch = null;
     }
   }
@@ -887,7 +1001,7 @@ export class DryBlendRenderer {
         floats[28] = (1 + clamp(settings.grainContrast, -1, 1)) * grainPolarity;
         floats[29] = clamp(settings.grainMovement, 0, 1);
         floats[30] = this.grainTextureMipLevelCount;
-        floats[31] = 0;
+        floats[31] = clamp(settings.blendBlur, 0, 1);
         floats[32] = paintColor[0];
         floats[33] = paintColor[1];
         floats[34] = paintColor[2];
@@ -1026,6 +1140,76 @@ export class DryBlendRenderer {
     }
   }
 
+  private updateBlurKernel(amount: number, diameter: number): void {
+    const radius = blendBlurSupportRadius(amount, diameter);
+    if (radius === this.blurKernelRadius) return;
+    const kernel = destructiveGaussianBlurKernel(radius);
+    this.blurKernelFloats.fill(0);
+    this.blurKernelUnsigned[0] = kernel.radius;
+    for (let index = 0; index < kernel.weights.length; index += 1) {
+      this.blurKernelFloats[4 + index] = kernel.weights[index];
+    }
+    this.device.queue.writeBuffer(
+      this.blurKernelBuffer,
+      0,
+      this.blurKernelUpload,
+    );
+    this.blurKernelRadius = radius;
+  }
+
+  private ensureBlurScratchResources(
+    scratch: ScratchResources,
+  ): NonNullable<ScratchResources["blur"]> {
+    if (scratch.blur) return scratch.blur;
+    const blurBuffer = this.device.createBuffer({
+      label: "Blend local Gaussian packed intermediate",
+      size: this.scratchSize * this.scratchSize * 8,
+      usage: GPUBufferUsage.STORAGE,
+    });
+    const uniformEntry = {
+      binding: 0,
+      resource: {
+        buffer: this.uniformBuffer,
+        offset: 0,
+        size: BLEND_UNIFORM_BYTES,
+      },
+    } as const;
+    const kernelEntry = {
+      binding: 3,
+      resource: {
+        buffer: this.blurKernelBuffer,
+        offset: 0,
+        size: BLEND_BLUR_UNIFORM_BYTES,
+      },
+    } as const;
+    const horizontalBindGroup = this.device.createBindGroup({
+      label: "Blend local Gaussian horizontal bind group",
+      layout: this.blurHorizontalBindGroupLayout,
+      entries: [
+        uniformEntry,
+        { binding: 1, resource: { buffer: scratch.stateBuffer } },
+        { binding: 2, resource: { buffer: blurBuffer } },
+        kernelEntry,
+      ],
+    });
+    const verticalBindGroup = this.device.createBindGroup({
+      label: "Blend local Gaussian vertical bind group",
+      layout: this.blurVerticalBindGroupLayout,
+      entries: [
+        uniformEntry,
+        { binding: 1, resource: { buffer: blurBuffer } },
+        { binding: 2, resource: { buffer: scratch.stateBuffer } },
+        kernelEntry,
+      ],
+    });
+    scratch.blur = {
+      buffer: blurBuffer,
+      horizontalBindGroup,
+      verticalBindGroup,
+    };
+    return scratch.blur;
+  }
+
   private ensureScratchResources(): ScratchResources {
     if (this.scratch) {
       return this.scratch;
@@ -1095,6 +1279,7 @@ export class DryBlendRenderer {
       stateBuffer,
       coverageBuffer,
       carrierBuffer,
+      blur: null,
       gatherBindGroup,
       pickupBindGroup,
       depositBindGroups,
