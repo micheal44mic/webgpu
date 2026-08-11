@@ -80,7 +80,16 @@ import {
   type RasterShadowRect,
 } from "./shadow-core";
 
-export async function finishStaticResourceCreation(engine: BrushEngine): Promise<void> {
+export type StaticResourceCreationPhase = "all" | "core" | "optional";
+
+export async function finishStaticResourceCreation(
+  engine: BrushEngine,
+  phase: StaticResourceCreationPhase = "all",
+): Promise<void> {
+  const createCore = phase !== "optional";
+  const createOptional = phase !== "core" && engine.vectorTextPrototypeEnabled;
+
+  if (createCore) {
   engine.brushShaderModule = engine.device.createShaderModule({ label: "Brush WGSL", code: brushShader });
   engine.texturizedGrainShaderModule = engine.device.createShaderModule({
     label: "Texturized grain fragment WGSL",
@@ -212,11 +221,14 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
     "Uniformed/Intense RGBA16F stale dirty-region clear pipeline",
     "rgba16float",
   );
+  }
+
   const displayPipelineLayout = engine.device.createPipelineLayout({
     label: "Display pipeline layout",
     bindGroupLayouts: [engine.displayBindGroupLayout],
   });
 
+  if (createCore) {
   engine.displayPipeline = engine.device.createRenderPipeline({
     label: "Display pipeline",
     layout: displayPipelineLayout,
@@ -245,8 +257,9 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
     },
     primitive: { topology: "triangle-list" },
   });
+  }
 
-  if (engine.vectorTextPrototypeEnabled) {
+  if (createOptional) {
     engine.vectorTextDisplayShaderModule = engine.device.createShaderModule({
       label: "Dual viewport vector text mixed-layer display WGSL",
       code: vectorTextDisplayShader,
@@ -627,6 +640,7 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
       engine.rasterStrokeDisplaySourceBindGroupLayout,
     ],
   });
+  if (createCore) {
   engine.rasterStrokeDisplayPipeline = engine.device.createRenderPipeline({
     label: "Traccia direct LOD 0 and coarse mip display pipeline",
     layout: rasterStrokeDisplayPipelineLayout,
@@ -641,7 +655,8 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
     },
     primitive: { topology: "triangle-list" },
   });
-  if (engine.vectorTextPrototypeEnabled) {
+  }
+  if (createOptional) {
     engine.mixedSceneActiveRasterStrokeDisplayPipeline = engine.device.createRenderPipeline({
       label: "Mixed scene active Traccia/effects source-over pipeline",
       layout: rasterStrokeDisplayPipelineLayout,
@@ -673,6 +688,7 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
     label: "Predictive thickness tail display pipeline layout",
     bindGroupLayouts: [engine.thicknessTailDisplayBindGroupLayout],
   });
+  if (createCore) {
   engine.thicknessTailDisplayPipeline = engine.device.createRenderPipeline({
     label: "Predictive thickness tail display pipeline",
     layout: thicknessTailDisplayPipelineLayout,
@@ -687,7 +703,8 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
     },
     primitive: { topology: "triangle-list" },
   });
-  if (engine.vectorTextPrototypeEnabled) {
+  }
+  if (createOptional) {
     engine.mixedSceneActiveThicknessTailDisplayPipeline = engine.device.createRenderPipeline({
       label: "Mixed scene active thickness tail source-over pipeline",
       layout: thicknessTailDisplayPipelineLayout,
@@ -719,6 +736,7 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
     label: "Light Glaze live display pipeline layout",
     bindGroupLayouts: [engine.lightGlazeDisplayBindGroupLayout],
   });
+  if (createCore) {
   engine.lightGlazeDisplayPipeline = engine.device.createRenderPipeline({
     label: "Light Glaze live display pipeline",
     layout: lightGlazeDisplayPipelineLayout,
@@ -747,7 +765,8 @@ export async function finishStaticResourceCreation(engine: BrushEngine): Promise
     },
     primitive: { topology: "triangle-list" },
   });
-  if (engine.vectorTextPrototypeEnabled) {
+  }
+  if (createOptional) {
     engine.mixedSceneActiveLightGlazeDisplayPipeline = engine.device.createRenderPipeline({
       label: "Mixed scene active Light Glaze source-over pipeline",
       layout: lightGlazeDisplayPipelineLayout,

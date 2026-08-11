@@ -204,7 +204,7 @@ import type {
   IphoneMemoryLimitRun,
 } from "./iphone-memory-limit-test";
 import type { LayerCompressionStudyReport } from "./layer-compression-study";
-import { MixedVectorTextController } from "./mixed-vector-text-controller";
+import type { MixedVectorTextController } from "./mixed-vector-text-controller";
 import {
   RASTER_IMAGE_NODE_MAXIMUM,
   VECTOR_SVG_NODE_MAXIMUM,
@@ -1415,6 +1415,7 @@ if (mixedMemoryBenchmarkRequested) {
     "Pronto. Tieni questa pagina in primo piano finché termina o Safari la chiude.";
 }
 let vectorTextPrototype: MixedVectorTextController | null = null;
+let vectorTextInitializationPromise: Promise<MixedVectorTextController> | null = null;
 let mobileBrushStudio: MobileBrushStudioController | null = null;
 let mobileStrokeSheet: MobileStrokeSheetController | null = null;
 let mobileRasterEffectsSheet: MobileRasterEffectsSheetController | null = null;
@@ -1654,6 +1655,8 @@ let rasterBevelChanging = false;
 let rasterOuterShadowChanging = false;
 let rasterInnerShadowChanging = false;
 let engineInitialized = false;
+let statsPollingTimer: number | null = null;
+let statsPollingFaultReported = false;
 let selectionUiBusy = false;
 let controlsPanelOpen = true;
 // Statistiche arrivate mentre il pannello era chiuso: il ridisegno si recupera
@@ -15352,7 +15355,83 @@ updateControlOutputs();
 engine.setBrushSettings(readBrushSettings());
 updateHumanStrokeControls();
 updateHistoryControls();
-void loadCanonicalHumanStroke();
+
+function refreshRuntimeStats(): void {
+  if (!engineInitialized || document.hidden) return;
+  try {
+    updateStats(engine.getStats());
+  } catch (error) {
+    if (statsPollingFaultReported) return;
+    statsPollingFaultReported = true;
+    appDiagnosticLog.record({
+      category: "error",
+      name: "runtime-stats-poll",
+      error,
+    });
+    console.error("Runtime stats polling failed.", error);
+  }
+}
+
+function startRuntimeStatsPolling(): void {
+  if (statsPollingTimer !== null) return;
+  statsPollingTimer = window.setInterval(refreshRuntimeStats, 1_000);
+}
+
+function scheduleDeferredStartupTask(
+  name: string,
+  task: () => Promise<void>,
+  timeout: number,
+): void {
+  const run = (): void => {
+    void task().catch((error) => {
+      appDiagnosticLog.record({ category: "error", name, error });
+      console.error(`Deferred startup task ${name} failed.`, error);
+    });
+  };
+  if (typeof window.requestIdleCallback === "function") {
+    window.requestIdleCallback(run, { timeout });
+    return;
+  }
+  window.setTimeout(run, 0);
+}
+
+async function initializeVectorTextPrototype(): Promise<MixedVectorTextController> {
+  if (vectorTextPrototype) return vectorTextPrototype;
+  if (vectorTextInitializationPromise) return vectorTextInitializationPromise;
+
+  const initialization = (async (): Promise<MixedVectorTextController> => {
+    await engine.ensureOptionalEditorResources();
+    const { MixedVectorTextController } = await import("./mixed-vector-text-controller");
+    const controller = new MixedVectorTextController(engine, {
+      clippedRefreshPolicy:
+        vectorZoomRefreshMode === "release" || vectorZoomCoverageRequested
+          ? "on-release"
+          : "during-gesture",
+    });
+    await controller.initialize();
+    vectorTextPrototype = controller;
+    const snapshot = engine.getMixedSceneSnapshot();
+    if (snapshot) controller.syncScene(snapshot);
+    syncMobileToolsMenuState(snapshot);
+    requestMobileLayersRefresh();
+    mobileToolSettingsSheet?.syncOpenState();
+    if (import.meta.env.DEV) {
+      (window as Window & {
+        __vectorTextPrototype?: MixedVectorTextController;
+      }).__vectorTextPrototype = vectorTextPrototype;
+    }
+    return controller;
+  })();
+  vectorTextInitializationPromise = initialization;
+  try {
+    return await initialization;
+  } catch (error) {
+    if (vectorTextInitializationPromise === initialization) {
+      vectorTextInitializationPromise = null;
+    }
+    throw error;
+  }
+}
 
 markStartupPhase(
   "Avvio del motore WebGPU",
@@ -15362,45 +15441,13 @@ void engine.initialize()
   .then(async () => {
     markStartupPhase(
       "Motore WebGPU inizializzato",
-      "La GPU è pronta; completo i moduli dell’editor.",
+      "La GPU essenziale è pronta; l’editor può essere mostrato.",
     );
     engineInitialized = true;
-    if (mobileBrushStudio && mobileUiMediaQuery.matches) {
-      markStartupPhase(
-        "Ripristino dei pennelli",
-        "Caricamento della libreria pennelli salvata sul dispositivo.",
-      );
-      await restoreActiveMobileBrushLibraryBrush();
-    }
-    if (vectorTextEditorEnabled) {
-      markStartupPhase(
-        "Inizializzazione testo e vettori",
-        "Preparazione del controller per testo, SVG ed effetti.",
-      );
-      vectorTextPrototype = new MixedVectorTextController(engine, {
-        clippedRefreshPolicy:
-          vectorZoomRefreshMode === "release" || vectorZoomCoverageRequested
-            ? "on-release"
-            : "during-gesture",
-      });
-      await vectorTextPrototype.initialize();
-      if (import.meta.env.DEV) {
-        (window as Window & {
-          __vectorTextPrototype?: MixedVectorTextController;
-        }).__vectorTextPrototype = vectorTextPrototype;
-      }
-    }
     markStartupPhase(
       "Finalizzazione dell’interfaccia",
-      "Sincronizzazione livelli, cronologia e anteprime.",
+      "Sincronizzazione dei controlli essenziali.",
     );
-    if (vectorZoomCoverageRequested) {
-      await runRequestedVectorZoomCoverage();
-    } else if (vectorZoomAbRequested) {
-      await runRequestedVectorZoomAb();
-    } else if (vectorZoomStressRequested) {
-      await runRequestedVectorZoomStress();
-    }
     syncMobileToolsMenuState();
     historyState = engine.getHistoryState();
     requestMobileLayerThumbnailCapture(0);
@@ -15411,6 +15458,49 @@ void engine.initialize()
     updateHistoryControls();
     updateHumanStrokeControls();
     completeStartupDiagnostics();
+    startRuntimeStatsPolling();
+
+    scheduleDeferredStartupTask(
+      "deferred-gpu-pipelines",
+      () => engine.ensureOptionalEditorResources(),
+      500,
+    );
+    scheduleDeferredStartupTask(
+      "deferred-canonical-stroke",
+      loadCanonicalHumanStroke,
+      2_000,
+    );
+    if (mobileBrushStudio && mobileUiMediaQuery.matches) {
+      scheduleDeferredStartupTask(
+        "deferred-brush-restore",
+        restoreActiveMobileBrushLibraryBrush,
+        250,
+      );
+    }
+
+    const vectorTextRequiredByStartupProbe = vectorZoomCoverageRequested
+      || vectorZoomAbRequested
+      || vectorZoomStressRequested
+      || layerMergeTestRequested !== null;
+    if (vectorTextEditorEnabled && vectorTextRequiredByStartupProbe) {
+      await initializeVectorTextPrototype();
+    } else if (vectorTextEditorEnabled) {
+      scheduleDeferredStartupTask(
+        "deferred-vector-text",
+        async () => {
+          await initializeVectorTextPrototype();
+        },
+        1_500,
+      );
+    }
+
+    if (vectorZoomCoverageRequested) {
+      await runRequestedVectorZoomCoverage();
+    } else if (vectorZoomAbRequested) {
+      await runRequestedVectorZoomAb();
+    } else if (vectorZoomStressRequested) {
+      await runRequestedVectorZoomStress();
+    }
     if (iphoneMemoryLimitTestRequested) {
       await recoverRequestedIphoneMemoryLimitTest();
       layerMemoryStressTestRunning = false;
@@ -15472,5 +15562,3 @@ void engine.initialize()
     }
     updateHistoryControls();
   });
-
-window.setInterval(() => updateStats(engine.getStats()), 500);

@@ -129,6 +129,18 @@ const startupDiagnosticsSource = readFileSync(
   new URL("../src/startup-diagnostics.ts", import.meta.url),
   "utf8",
 );
+const gpuUtilsSource = readFileSync(
+  new URL("../src/engine-gpu-utils.ts", import.meta.url),
+  "utf8",
+);
+const resourceSetupSource = readFileSync(
+  new URL("../src/engine-resource-setup.ts", import.meta.url),
+  "utf8",
+);
+const historyMaintenanceSource = readFileSync(
+  new URL("../src/history-maintenance-runtime.ts", import.meta.url),
+  "utf8",
+);
 const reportsSource = readFileSync(
   new URL("../src/engine-reports.ts", import.meta.url),
   "utf8",
@@ -146,6 +158,22 @@ assert.match(brushEngineSource, /"Richiesta adattatore WebGPU"/);
 assert.match(brushEngineSource, /"Creazione dispositivo WebGPU"/);
 assert.match(brushEngineSource, /"Creazione risorse GPU"/);
 assert.match(brushEngineSource, /"Preparazione cronologia"/);
+assert.match(brushEngineSource, /deferBlendRenderer: true/);
+assert.match(brushEngineSource, /deferSelectionPipelines: true/);
+assert.match(brushEngineSource, /ensureOptionalEditorResources\(\)/);
+assert.match(resourceSetupSource, /finishStaticResourceCreation\(engine, "core"\)/);
+assert.match(mainSource, /"deferred-gpu-pipelines"/);
+assert.match(mainSource, /startRuntimeStatsPolling\(\)/);
+assert.doesNotMatch(mainSource, /setInterval\(\(\) => updateStats\(engine\.getStats\(\)\), 500\)/);
+assert.match(gpuUtilsSource, /if \(!explicitShaderValidationRequested\(\)\) return/);
+assert.match(
+  historyMaintenanceSource,
+  /if \(!engine\.initialized \|\| !engine\.historyLocalStorage\) return false/,
+);
+assert.match(
+  historyMaintenanceSource,
+  /export function scheduleHistoryMaintenance[\s\S]*?if \(!engine\.initialized \|\| !engine\.historyLocalStorage\) return/,
+);
 assert.match(startupDiagnosticsSource, /__WEBGPU_BRUSH_STARTUP__/);
 assert.match(mainSource, /renderFrameError:[\s\S]*?getDocumentInconsistentDiagnostic\(\)/);
 assert.match(

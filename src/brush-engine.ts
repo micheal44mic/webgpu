@@ -1004,6 +1004,8 @@ export class BrushEngine {
 
   private adapter!: GPUAdapter;
   device!: GPUDevice;
+  private optionalEditorResourcesPromise: Promise<void> | null = null;
+  optionalEditorResourcesReady = false;
 
   /** Contabilita' misurata di ogni texture e buffer creati dal device. */
   gpuResourceRegistry = new GpuResourceRegistry();
@@ -1033,6 +1035,7 @@ export class BrushEngine {
   layerView!: GPUTextureView;
   layerSamplingView!: GPUTextureView;
   blendRenderer: DryBlendRenderer | null = null;
+  blendRendererWarmup: (() => Promise<void>) | null = null;
   fillRenderer: FillRenderer | null = null;
   fillRendererLoadingPromise: Promise<FillRenderer> | null = null;
   fillToolSelected = false;
@@ -1537,6 +1540,8 @@ export class BrushEngine {
   grainLightNoBuildUpShapePipeline!: GPURenderPipeline;
   grainLightNoBuildUpShapeOccupancyPipeline!: GPURenderPipeline;
   selectionPipelineByBase = new Map<GPURenderPipeline, GPURenderPipeline>();
+  selectionPipelinesReady = false;
+  selectionPipelineWarmup: (() => Promise<void>) | null = null;
   vectorTextGpuSlugPipeline: GPURenderPipeline | null = null;
   displayPipeline!: GPURenderPipeline;
   finalRasterStackDisplayPipeline!: GPURenderPipeline;
@@ -1763,12 +1768,55 @@ export class BrushEngine {
       throw new Error("WebGPU non è disponibile in questo browser o in questo contesto.");
     }
 
+    const android = /\bAndroid\b/i.test(navigator.userAgent);
+    // On Android there is commonly a single usable adapter. Requesting the
+    // high-performance profile can make Chrome discard it, so mobile starts
+    // from the neutral choice and only desktop keeps the preference.
     const adapterOptions: GPURequestAdapterOptions | undefined =
-      /\bWindows\b/i.test(navigator.userAgent)
+      /\bWindows\b/i.test(navigator.userAgent) || android
         ? undefined
         : { powerPreference: "high-performance" };
-    const adapter = await navigator.gpu.requestAdapter(adapterOptions);
+    const adapterWaitTimer = window.setTimeout(() => {
+      this.callbacks.onStatus?.(
+        "Ricerca della GPU ancora in corso… Chrome può impiegare qualche secondo.",
+        "working",
+      );
+    }, 6_000);
+    let adapter: GPUAdapter | null = null;
+    let primaryAdapterError: unknown = null;
+    try {
+      try {
+        adapter = await navigator.gpu.requestAdapter(adapterOptions);
+      } catch (error) {
+        primaryAdapterError = error;
+      }
+      if (!adapter && adapterOptions !== undefined) {
+        this.callbacks.onStatus?.(
+          "Riprovo la selezione WebGPU senza preferenze energetiche…",
+          "working",
+        );
+        adapter = await navigator.gpu.requestAdapter();
+      }
+      if (!adapter && android) {
+        this.callbacks.onStatus?.(
+          "Provo la modalità WebGPU compatibile per Android…",
+          "working",
+        );
+        try {
+          adapter = await navigator.gpu.requestAdapter({
+            featureLevel: "compatibility",
+          } as GPURequestAdapterOptions & { featureLevel: "compatibility" });
+        } catch {
+          // Older implementations reject this option instead of ignoring it.
+        }
+      }
+    } finally {
+      window.clearTimeout(adapterWaitTimer);
+    }
     if (!adapter) {
+      if (primaryAdapterError && adapterOptions === undefined) {
+        throw primaryAdapterError;
+      }
       throw new Error("Nessun adapter WebGPU compatibile trovato.");
     }
     this.adapter = adapter;
@@ -1790,7 +1838,17 @@ export class BrushEngine {
       "Creazione dispositivo WebGPU",
       "Chrome sta aprendo il collegamento operativo con la GPU.",
     );
-    const instrumented = instrumentGpuDevice(await adapter.requestDevice());
+    this.callbacks.onStatus?.("Adapter trovato. Creo il device WebGPU…", "working");
+    const deviceWaitTimer = window.setTimeout(() => {
+      this.callbacks.onStatus?.("Creazione del device WebGPU ancora in corso…", "working");
+    }, 6_000);
+    let rawDevice: GPUDevice;
+    try {
+      rawDevice = await adapter.requestDevice();
+    } finally {
+      window.clearTimeout(deviceWaitTimer);
+    }
+    const instrumented = instrumentGpuDevice(rawDevice);
     this.device = instrumented.device;
     this.gpuResourceRegistry = instrumented.registry;
     markStartupPhase(
@@ -1829,14 +1887,25 @@ export class BrushEngine {
     });
 
     this.gpuLabel = describeAdapter(adapter);
+    this.callbacks.onStatus?.(
+      `Device pronto. Preparo il renderer ${LAYER_SIZE}×${LAYER_SIZE}…`,
+      "working",
+    );
     markStartupPhase(
       "Creazione risorse GPU",
-      "Compilazione shader, pipeline e texture del documento.",
+      "Compilazione delle pipeline essenziali e delle texture del documento.",
     );
+    // Give Chrome one rendering turn before the expensive GPU setup so the
+    // diagnostic phase remains visible even on slow drivers.
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
     try {
       await createStaticResources(this);
       prepareAdaptivePreviewShapePalette(this, this.settings);
-      await recreateLayerResources(this, this.layerFormat);
+      this.callbacks.onStatus?.("Creo il documento iniziale…", "working");
+      await recreateLayerResources(this, this.layerFormat, {
+        deferBlendRenderer: true,
+        deferSelectionPipelines: true,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(
@@ -1850,7 +1919,6 @@ export class BrushEngine {
       "Creazione della memoria History GPU e dello storage locale.",
     );
     this.historyGpuStorage = new GpuHistoryStorage(this.device);
-    this.historyGpuStorage.prewarm();
     this.historyLocalStorage = new HistoryStorageCoordinator(this);
     this.historyGpuStorage.setReleaseListener((slice) => {
       this.historyLocalStorage.onGpuSliceReleased(slice);
@@ -3844,9 +3912,34 @@ export class BrushEngine {
       );
       return false;
     }
+    if (this.settings.tool === "blend" && !this.blendRenderer) {
+      void this.ensureOptionalEditorResources().catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.callbacks.onStatus?.(`Renderer Blend non disponibile: ${message}`, "error");
+      });
+      this.callbacks.onStatus?.(
+        "Renderer Blend in preparazione: riprova tra un istante…",
+        "working",
+      );
+      return false;
+    }
     if (this.settings.tool === "blend" && this.pixelSelectionState.selectedPixels > 0) {
       this.callbacks.onStatus?.(
         "Blend non modifica una Selezione pixel: deseleziona oppure usa Paint/Riempimento.",
+        "working",
+      );
+      return false;
+    }
+    if (this.pixelSelectionState.selectedPixels > 0 && !this.selectionPipelinesReady) {
+      void this.ensureOptionalEditorResources().catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.callbacks.onStatus?.(
+          `Preparazione Selezione pixel non riuscita: ${message}`,
+          "error",
+        );
+      });
+      this.callbacks.onStatus?.(
+        "Pipeline Selezione pixel in preparazione: riprova tra un istante…",
         "working",
       );
       return false;
@@ -5801,6 +5894,57 @@ export class BrushEngine {
 
   async finishStaticResourceCreation(): Promise<void> {
     await finishStaticResourceCreation(this);
+  }
+
+  /**
+   * Completes GPU resources used only by text, SVG and raster-image layers.
+   * The promise is shared so idle startup, tests and an early user action can
+   * safely request the same initialization without compiling pipelines twice.
+   */
+  async ensureOptionalEditorResources(): Promise<void> {
+    const vectorResourcesPending = this.vectorTextPrototypeEnabled
+      && !this.optionalEditorResourcesReady;
+    const selectionResourcesPending = !this.selectionPipelinesReady
+      && this.selectionPipelineWarmup !== null;
+    const blendResourcesPending = this.blendRenderer === null
+      && this.blendRendererWarmup !== null;
+    if (!vectorResourcesPending && !selectionResourcesPending && !blendResourcesPending) return;
+    if (this.optionalEditorResourcesPromise) {
+      await this.optionalEditorResourcesPromise;
+      return;
+    }
+
+    const initialization = (async (): Promise<void> => {
+      this.callbacks.onStatus?.(
+        "Editor pronto. Completo gli strumenti avanzati in background…",
+        "working",
+      );
+      // Keep the old mobile driver responsive: optional compilers run in
+      // bounded phases instead of all contending for the GPU at once.
+      if (blendResourcesPending) {
+        await this.blendRendererWarmup!();
+      }
+      if (selectionResourcesPending) {
+        await this.selectionPipelineWarmup!();
+        this.selectionPipelinesReady = true;
+        this.selectionPipelineWarmup = null;
+      }
+      if (vectorResourcesPending) {
+        await finishStaticResourceCreation(this, "optional");
+        this.optionalEditorResourcesReady = true;
+      }
+      if (this.deviceLostError) throw this.deviceLostError;
+      this.callbacks.onStatus?.("WebGPU pronto. Disegna sul canvas.", "ok");
+    })();
+    this.optionalEditorResourcesPromise = initialization;
+    try {
+      await initialization;
+    } catch (error) {
+      if (this.optionalEditorResourcesPromise === initialization) {
+        this.optionalEditorResourcesPromise = null;
+      }
+      throw error;
+    }
   }
 
   /**

@@ -601,7 +601,9 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
 
   rebuildShapeBrushBindGroups(engine);
   rebuildGrainBrushBindGroups(engine);
-  await finishStaticResourceCreation(engine);
+  // Text/vector/raster-image pipelines are not needed to show the initial
+  // raster canvas. They are completed after the editor is interactive.
+  await finishStaticResourceCreation(engine, "core");
 }
 
 export async function createGrainTextureResources(

@@ -3,7 +3,20 @@
  * descrizione dell'adapter per i report.
  */
 
+function explicitShaderValidationRequested(): boolean {
+  if (import.meta.env.DEV) return true;
+  if (typeof location === "undefined") return false;
+  return new URLSearchParams(location.search).get("validateShaders") === "1";
+}
+
+/**
+ * Pipeline creation already validates WGSL. In production, asking every shader
+ * module for compilation info first forces a second, eagerly awaited validation
+ * pass and is particularly expensive on mobile GPUs. Development keeps the
+ * explicit diagnostics; `?validateShaders=1` enables them on a published build.
+ */
 export async function assertShaderCompiled(module: GPUShaderModule, label: string): Promise<void> {
+  if (!explicitShaderValidationRequested()) return;
   const compilationInfo = await module.getCompilationInfo();
   const errors = compilationInfo.messages.filter((message) => message.type === "error");
   if (errors.length === 0) {
@@ -14,6 +27,18 @@ export async function assertShaderCompiled(module: GPUShaderModule, label: strin
     .map((error) => `${error.lineNum}:${error.linePos} ${error.message}`)
     .join("\n");
   throw new Error(`Errore WGSL nel modulo ${label}:\n${description}`);
+}
+
+/** Uses asynchronous compilation when exposed by the browser, with a fallback
+ * for older WebGPU implementations. */
+export async function createRenderPipelineAsync(
+  device: GPUDevice,
+  descriptor: GPURenderPipelineDescriptor,
+): Promise<GPURenderPipeline> {
+  if (typeof device.createRenderPipelineAsync === "function") {
+    return device.createRenderPipelineAsync(descriptor);
+  }
+  return device.createRenderPipeline(descriptor);
 }
 
 export function describeAdapter(adapter: GPUAdapter): string {

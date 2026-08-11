@@ -6,6 +6,7 @@ import {
   type LayerFormat,
 } from "./engine-types";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
+import { createRenderPipelineAsync } from "./engine-gpu-utils";
 import {
   effectsRetargetCallerForHistoryReplay,
   type ActiveClippingGroupResources,
@@ -108,7 +109,18 @@ import {
   rasterStrokeEffectRect,
 } from "./engine-runtime-misc";
 
-export async function recreateLayerResources(engine: BrushEngine, format: LayerFormat): Promise<void> {
+export interface RecreateLayerResourcesOptions {
+  /** Compile pixel-selection paint variants after the initial canvas is visible. */
+  readonly deferSelectionPipelines?: boolean;
+  /** Build the dry-blend renderer after the initial raster canvas is visible. */
+  readonly deferBlendRenderer?: boolean;
+}
+
+export async function recreateLayerResources(
+  engine: BrushEngine,
+  format: LayerFormat,
+  options: RecreateLayerResourcesOptions = {},
+): Promise<void> {
   const oldBlendRenderer = engine.blendRenderer;
   const oldEffectsWorkbench = engine.effectsWorkbench;
   const previousScratchPeakBytes = oldEffectsWorkbench?.scratchPool.peakBytes ?? 0;
@@ -154,10 +166,11 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
     layerCompositePipeline,
     layerSourceAtopPipeline,
     layerBlendFoldPipeline,
+    warmSelectionPipelines,
   } = await runGpuAllocationTransaction(
     engine.device,
     `Pipeline formato layer ${format}`,
-    () => {
+    async () => {
   const brushPipelineLayout = engine.device.createPipelineLayout({
     label: `Brush legacy pipeline layout ${format}`,
     bindGroupLayouts: [engine.brushBindGroupLayout],
@@ -821,8 +834,10 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
     readonly targetFormat: GPUTextureFormat;
     readonly blend: GPUBlendState;
   }
-  const registerSelectionPipeline = (variant: SelectionPipelineVariant): void => {
-    const selectedPipeline = engine.device.createRenderPipeline({
+  const registerSelectionPipeline = async (
+    variant: SelectionPipelineVariant,
+  ): Promise<void> => {
+    const selectedPipeline = await createRenderPipelineAsync(engine.device, {
       label: `${variant.label} · clip Selezione pixel`,
       layout: variant.layout,
       vertex: {
@@ -943,7 +958,22 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
   addLightVariant(grainLightNoBuildUpPipeline, "Light Grain circle", selectionGrainBrushPipelineLayout, engine.selectionTexturizedGrainShaderModule, "vertexMain", "coverageFragmentMain");
   addLightVariant(grainLightNoBuildUpShapePipeline, "Light Grain Shape", selectionGrainBrushPipelineLayout, engine.selectionTexturizedGrainShaderModule, "shapeVertexMain", "shapeCoverageFragmentMain");
   addLightVariant(grainLightNoBuildUpShapeOccupancyPipeline, "Light Grain Shape occupancy", selectionGrainBrushOccupancyPipelineLayout, engine.selectionTexturizedGrainShaderModule, "shapeVertexMain", "shapeOccupancyCoverageFragmentMain");
-  for (const variant of selectionVariants) registerSelectionPipeline(variant);
+  const warmSelectionPipelines = async (): Promise<void> => {
+    if (selectionPipelineByBase.size === selectionVariants.length) return;
+    const chunkSize = 4;
+    for (let index = 0; index < selectionVariants.length; index += chunkSize) {
+      const pending = selectionVariants
+        .slice(index, index + chunkSize)
+        .filter((variant) => !selectionPipelineByBase.has(variant.base));
+      await Promise.all(
+        pending.map(registerSelectionPipeline),
+      );
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    }
+  };
+  if (!options.deferSelectionPipelines) {
+    await warmSelectionPipelines();
+  }
 
   const lightGlazeCompositeMipPipeline = engine.device.createRenderPipeline({
     label: `Light Glaze composited mip 1 ${format}`,
@@ -1159,6 +1189,7 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
         layerCompositePipeline,
         layerSourceAtopPipeline,
         layerBlendFoldPipeline,
+        warmSelectionPipelines,
       };
     },
   );
@@ -1216,28 +1247,30 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
     if (!activeGpu || !activeHot) {
       throw new Error("Risorse candidate mancanti per il livello attivo.");
     }
-    blendRenderer = await runGpuAllocationTransaction(
-      engine.device,
-      `Renderer Blend formato ${format}`,
-      async (transaction) => {
-        const candidate = await DryBlendRenderer.create({
-          device: engine.device,
-          documentWidth: LAYER_SIZE,
-          documentHeight: LAYER_SIZE,
-          layerFormat: format,
-          layerView: activeHot.view,
-          layerSamplingView: activeHot.samplingView,
-          shapeMaskView: engine.shapeMaskView,
-          shapeMaskSampler: engine.shapeMaskSampler,
-          grainTextureView: engine.grainTextureView,
-          grainTextureWidth: engine.grainTextureWidth,
-          grainTextureMipLevelCount: engine.grainTextureMipLevelCount,
-          grainSamplers: engine.grainSamplers,
-        });
-        transaction.deferRollback(() => candidate.destroy());
-        return candidate;
-      },
-    );
+    if (!options.deferBlendRenderer) {
+      blendRenderer = await runGpuAllocationTransaction(
+        engine.device,
+        `Renderer Blend formato ${format}`,
+        async (transaction) => {
+          const candidate = await DryBlendRenderer.create({
+            device: engine.device,
+            documentWidth: LAYER_SIZE,
+            documentHeight: LAYER_SIZE,
+            layerFormat: format,
+            layerView: activeHot.view,
+            layerSamplingView: activeHot.samplingView,
+            shapeMaskView: engine.shapeMaskView,
+            shapeMaskSampler: engine.shapeMaskSampler,
+            grainTextureView: engine.grainTextureView,
+            grainTextureWidth: engine.grainTextureWidth,
+            grainTextureMipLevelCount: engine.grainTextureMipLevelCount,
+            grainSamplers: engine.grainSamplers,
+          });
+          transaction.deferRollback(() => candidate.destroy());
+          return candidate;
+        },
+      );
+    }
     nextEffectsWorkbench = new EffectsWorkbench({
       device: engine.device,
       view: activeHot.view,
@@ -1263,7 +1296,7 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
   if (
     !activeGpu
     || !activeHot
-    || !blendRenderer
+    || (!blendRenderer && !options.deferBlendRenderer)
     || !nextEffectsWorkbench
     || !nextDisplayPyramid
     || !nextTransparentTexture
@@ -1304,6 +1337,46 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
   engine.layerView = view;
   engine.layerSamplingView = samplingView;
   engine.blendRenderer = blendRenderer;
+  engine.blendRendererWarmup = options.deferBlendRenderer
+    ? async (): Promise<void> => {
+      if (engine.blendRenderer) return;
+      const candidate = await runGpuAllocationTransaction(
+        engine.device,
+        `Renderer Blend differito formato ${engine.layerFormat}`,
+        async (transaction) => {
+          const renderer = await DryBlendRenderer.create({
+            device: engine.device,
+            documentWidth: LAYER_SIZE,
+            documentHeight: LAYER_SIZE,
+            layerFormat: engine.layerFormat,
+            layerView: engine.layerView,
+            layerSamplingView: engine.layerSamplingView,
+            shapeMaskView: engine.shapeMaskView,
+            shapeMaskSampler: engine.shapeMaskSampler,
+            grainTextureView: engine.grainTextureView,
+            grainTextureWidth: engine.grainTextureWidth,
+            grainTextureMipLevelCount: engine.grainTextureMipLevelCount,
+            grainSamplers: engine.grainSamplers,
+          });
+          transaction.deferRollback(() => renderer.destroy());
+          return renderer;
+        },
+      );
+      if (engine.blendRenderer) {
+        candidate.destroy();
+        return;
+      }
+      candidate.setShapeMaskView(engine.shapeMaskView);
+      candidate.setGrainTextureView(
+        engine.grainTextureView,
+        engine.grainTextureWidth,
+        engine.grainTextureMipLevelCount,
+      );
+      engine.blendRenderer = candidate;
+      engine.blendRendererWarmup = null;
+      engine.publishStats();
+    }
+    : null;
   engine.activeLayerDisplayPyramid = nextDisplayPyramid;
   engine.transparentLayerTexture = nextTransparentTexture;
   engine.transparentLayerView = nextTransparentView;
@@ -1320,6 +1393,10 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
     : [];
   engine.normalPipeline = normalPipeline;
   engine.selectionPipelineByBase = selectionPipelineByBase;
+  engine.selectionPipelinesReady = !options.deferSelectionPipelines;
+  engine.selectionPipelineWarmup = options.deferSelectionPipelines
+    ? warmSelectionPipelines
+    : null;
   engine.additivePipeline = additivePipeline;
   engine.shapeNormalPipeline = shapeNormalPipeline;
   engine.shapeAdditivePipeline = shapeAdditivePipeline;

@@ -242,9 +242,9 @@ function historyMaintenanceEngineIdle(
   engine: BrushEngine,
   allowCurrentStorageOperation = false,
 ): boolean {
+  if (!engine.initialized || !engine.historyLocalStorage) return false;
   const storageBusy = engine.historyLocalStorage.telemetry().busy;
-  return engine.initialized
-    && !engine.activeStroke
+  return !engine.activeStroke
     && !engine.historyBusy
     && !engine.historyStateInconsistent
     && !engine.layerSwitchBusy
@@ -1365,6 +1365,10 @@ export function historyCursorWithinRetainedRange(
 }
 
 export function scheduleHistoryMaintenance(engine: BrushEngine): void {
+  // Pointer/touch listeners are installed before WebGPU initialization ends.
+  // Their pointer-up cleanup must not start History work before the coordinator
+  // exists (the Android diagnostic overlay itself can generate such events).
+  if (!engine.initialized || !engine.historyLocalStorage) return;
   const state = stateFor(engine);
   state.generation += 1;
   if (engine.historyCompactionPending) state.redoCompactionsScheduled += 1;
