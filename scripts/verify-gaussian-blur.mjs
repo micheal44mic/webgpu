@@ -131,19 +131,7 @@ assert.match(runtime, /unpack2x16float/);
 assert.match(runtime, /maxComputeWorkgroupStorageSize/);
 assert.match(runtime, /texture_2d<f32>/);
 assert.match(runtime, /texture_storage_2d<rgba16float, write>/);
-assert.match(runtime, /texture_storage_2d<rgba8unorm, write>/);
-assert.doesNotMatch(runtime, /pack4x8|unpack4x8/i);
-assert.match(runtime, /format:\s*engine\.layerFormat/,
-  "la copia immutabile deve conservare il formato del layer sorgente");
-assert.match(runtime, /sourceFormat:\s*engine\.layerFormat/);
-assert.match(runtime, /GPUTextureUsage\.TEXTURE_BINDING/,
-  "l'output 16F deve essere campionabile dal resolve finale RGBA8");
-assert.match(runtime, /session\.sourceFormat === "rgba16float"[\s\S]{0,700}copyTextureToTexture/,
-  "il documento 16F deve conservare il copy diretto senza conversione");
-assert.match(runtime, /rgba8ResolvePipeline[\s\S]{0,220}rgba8ResolveBindGroup/,
-  "il documento RGBA8 deve risolvere lo scratch 16F una sola volta");
-assert.match(runtime, /Math\.ceil\(job\.targetWidth \/ 8\)[\s\S]{0,100}Math\.ceil\(job\.targetHeight \/ 8\)/);
-assert.doesNotMatch(runtime, /Gaussian Blur distruttivo richiede un documento RGBA16F/);
+assert.doesNotMatch(runtime, /rgba8|unorm8|pack4x8|unpack4x8/i);
 assert.match(runtime, /immutable source/);
 assert.match(runtime, /previewInFlight/);
 assert.match(runtime, /session\.previewFault/);
@@ -194,12 +182,6 @@ assert.match(main, /canvasViewOperationLocked\(\) \|\| activePointerId !== null/
 assert.match(main, /nextGesture\.contactCount >= 2 && previousGesture\.contactCount >= 2/);
 assert.match(main, /resetRasterGaussianBlurControls/);
 assert.match(main, /DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS/);
-assert.match(engine, /layerFormat:\s*LayerFormat\s*=\s*"rgba8unorm"/);
-assert.match(runtime, /format:\s*engine\.layerFormat/);
-assert.match(runtime, /format:\s*"rgba16float"/);
-assert.match(runtime, /rgba8ResolvePipeline/);
-assert.doesNotMatch(main, /precisionTest|gaussianPrecisionCompare|gaussianAccumulationCompare/);
-assert.doesNotMatch(html, /id="precisionTestBadge"/);
 assert.match(main, /openRasterGaussianBlurWorkbench\("desktop"/);
 assert.match(main, /openRasterGaussianBlurWorkbench\("mobile"/);
 assert.match(mobileSheet, /resolveMobileBottomSheetDrag/);
@@ -219,4 +201,4 @@ assert.doesNotMatch(html, /mobile-gaussian-blur-live/);
 assert.doesNotMatch(html, /Live · 16-bit|Anteprima live RGBA16F/);
 assert.doesNotMatch(main, /accumulo f32 su raster RGBA16F|Anteprima live \$\{preview\.radius/);
 
-console.log("Hybrid RGBA8/RGBA16F destructive Gaussian Blur verification passed.");
+console.log("Destructive 16-bit Gaussian Blur document-edge verification passed.");

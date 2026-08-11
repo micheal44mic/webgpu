@@ -124,9 +124,8 @@ const submit = section(
 );
 for (const requirement of [
   'const lightNoBuildUp = settings.blendMode === "light-glaze"',
-  'const opacityPerDeposit = standardNormal || standardAdditive || intenseBlending;',
-  'opacity: opacityPerDeposit ? settings.opacity : 1',
-  'opacityPerDeposit ? 1 : settings.opacity',
+  'opacity: intenseBlending ? settings.opacity : 1',
+  'intenseBlending ? 1 : settings.opacity',
   '"light-no-build-up"',
   "this.lightNoBuildUpPipeline",
   "this.lightNoBuildUpShapePipeline",

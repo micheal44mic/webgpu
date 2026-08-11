@@ -1285,11 +1285,7 @@ const mergedEnd = engineSource.indexOf(
 assert.ok(mergedStart >= 0 && mergedEnd > mergedStart, "sezione merged surface non trovata");
 const mergedBody = engineSource.slice(mergedStart, mergedEnd);
 assert.match(mergedBody, /record\.visible && record\.opacity > 0 && record\.hasContent/);
-assert.match(
-  mergedBody,
-  /await materializeLayerCompositeSource\([\s\S]{0,100}surface\.format/,
-  "il fold deve richiedere un bake nello stesso formato della superficie di lavoro",
-);
+assert.match(mergedBody, /await materializeLayerCompositeSource\(engine, record, caller\)/);
 assert.match(
   mergedBody,
   /const contentBounds = unionMergedSurfaceRects\([\s\S]*?visibleRecords\.map\([\s\S]*?layerCompositeVisualBounds\(engine, record\)/,
@@ -1352,10 +1348,10 @@ assert.match(foldViewBody, /if \(blendMode === "normal"\)/,
   "Normal deve conservare il percorso fixed-function senza scratch");
 assert.match(
   foldViewBody,
-  /operator === "source-atop"[\s\S]*?pipelines\.sourceAtop[\s\S]*?pipelines\.composite/,
-  "Normal deve scegliere le pipeline hardware source-atop/source-over del formato target",
+  /operator === "source-atop"[\s\S]*?engine\.layerSourceAtopPipeline[\s\S]*?engine\.layerCompositePipeline/,
+  "Normal deve scegliere le pipeline hardware source-atop/source-over preesistenti",
 );
-assert.match(foldViewBody, /pipelines\.advanced/,
+assert.match(foldViewBody, /engine\.layerBlendFoldPipeline/,
   "i modi avanzati devono usare lo shader che campiona il backdrop");
 assert.match(foldViewBody, /binding: 0, resource: backdropScratchView/,
   "il fold avanzato deve campionare il tile backdrop separato");
@@ -1414,7 +1410,7 @@ assert.match(
 );
 assert.match(
   engineSource,
-  /foldRasterRecordIntoMergedSurface\([\s\S]*?caller: EffectsRetargetCaller,[\s\S]*?materializeLayerCompositeSource\([\s\S]{0,100}surface\.format/,
+  /foldRasterRecordIntoMergedSurface\([\s\S]*?caller: EffectsRetargetCaller,[\s\S]*?materializeLayerCompositeSource\(engine, record, caller\)/,
 );
 assert.match(
   engineSource,

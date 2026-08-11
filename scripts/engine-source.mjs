@@ -33,7 +33,6 @@ export const ENGINE_SOURCE_FILES = Object.freeze([
   "engine-paint-resources.ts",
   "engine-geometry.ts",
   "engine-gpu-utils.ts",
-  "engine-rgba16f-resolve.ts",
   "engine-stamp-upload.ts",
   "engine-cold-storage.ts",
   "shape-mask-decode.ts",

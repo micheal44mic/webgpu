@@ -44,7 +44,6 @@ export function populateGrainUniformUpload(
 
 export type StrokeGlazeAccumulationMode =
   | "source-over"
-  | "additive"
   | "light-no-build-up"
   | "encoded-srgb-source-over";
 
@@ -62,9 +61,7 @@ export function populateStrokeGlazeUniformUpload(
   unsigned[1] = layerFormat === "rgba16float" ? 1 : 0;
   unsigned[2] = accumulationMode === "light-no-build-up"
     ? 1
-    : accumulationMode === "encoded-srgb-source-over"
-      ? 2
-      : accumulationMode === "additive" ? 3 : 0;
+    : accumulationMode === "encoded-srgb-source-over" ? 2 : 0;
   floats[4] = tintLinear?.[0] ?? 0;
   floats[5] = tintLinear?.[1] ?? 0;
   floats[6] = tintLinear?.[2] ?? 0;

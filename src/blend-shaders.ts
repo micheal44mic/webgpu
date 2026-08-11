@@ -709,27 +709,3 @@ fn scatterFragment(@builtin(position) fragmentPosition: vec4<f32>) -> @location(
   return vec4<f32>(clamp(value.rgb, vec3<f32>(0.0), vec3<f32>(alpha)), alpha);
 }
 `;
-
-// Format conversion for the gesture-wide Blend work surface. The same
-// textureLoad-only shader seeds RGBA16F from the persistent layer at pointer
-// down and mirrors the high-precision result back to RGBA8 for presentation.
-// The mirror is never sampled by later Blend steps: their authoritative input
-// remains the RGBA16F work surface until the gesture ends.
-export const blendWorkSurfaceCopyShader = /* wgsl */ `
-@group(0) @binding(0) var sourceTexture: texture_2d<f32>;
-
-@vertex
-fn fullscreenVertex(@builtin(vertex_index) vertexIndex: u32) -> @builtin(position) vec4<f32> {
-  let positions = array<vec2<f32>, 3>(
-    vec2<f32>(-1.0, -1.0),
-    vec2<f32>( 3.0, -1.0),
-    vec2<f32>(-1.0,  3.0)
-  );
-  return vec4<f32>(positions[vertexIndex], 0.0, 1.0);
-}
-
-@fragment
-fn copyFragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-  return textureLoad(sourceTexture, vec2<i32>(position.xy), 0);
-}
-`;

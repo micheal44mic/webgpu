@@ -33,7 +33,7 @@ assert.equal(
 );
 assert.equal(
   RASTER_TRANSFORM_SHADER_STRATEGY,
-  "premultiplied-linear-native-mip0-rgba16float-derived-mips-transparent-border-inverse-affine-manual-trilinear-v4",
+  "premultiplied-linear-transparent-border-inverse-affine-manual-trilinear-v3",
 );
 assert.equal(
   RASTER_SELECTION_TRANSLATE_SHADER_STRATEGY,
@@ -244,10 +244,6 @@ assert.doesNotMatch(rasterTransformShader, /textureSampleGrad\s*\(/);
 assert.doesNotMatch(rasterTransformShader, /\b(?:dpdx|dpdy|fwidth)\s*\(/);
 assert.match(rasterTransformShader, /transparentBorderWeight/);
 assert.match(rasterTransformShader, /textureNumLevels/);
-assert.match(rasterTransformShader, /sourceMip0/);
-assert.match(rasterTransformShader, /workMipChain/);
-assert.match(rasterTransformShader, /mipLevel - 1u/);
-assert.match(rasterTransformShader, /maximumLevel = textureNumLevels\(workMipChain\)/);
 assert.doesNotMatch(rasterTransformShader, /if \(!insideContent/);
 assert.doesNotMatch(rasterTransformShader, /insideScratch/);
 assert.match(rasterTransformShader, /if \(upperLevel == lowerLevel \|\| lodBlend <= 0\.000001\)/);
@@ -316,19 +312,6 @@ assert.match(runtimeSource, /if \(session\.terminal\)/);
 assert.match(runtimeSource, /retainSessionForRecovery = true/);
 assert.doesNotMatch(runtimeSource, /callbacks\.onStatus/);
 assert.match(runtimeSource, /runGpuAllocationTransaction\([\s\S]{0,180}Pipeline Trasforma raster/);
-assert.match(runtimeSource, /mipLevelCount: 1,[\s\S]{0,80}format: engine\.layerFormat/);
-assert.match(runtimeSource, /format: "rgba16float",[\s\S]{0,120}GPUTextureUsage\.RENDER_ATTACHMENT/);
-assert.match(runtimeSource, /targets: \[\{ format: "rgba16float" \}\]/);
-assert.match(runtimeSource, /binding: 1, resource: sourceView/);
-assert.match(runtimeSource, /binding: 2, resource: workMipView \?\? sourceView/);
-assert.match(runtimeSource, /logicalMip === 1[\s\S]{0,100}\? sourceView[\s\S]{0,160}logicalMip - 2/);
-assert.match(runtimeSource, /texture: session\.sourceTexture/);
-assert.doesNotMatch(runtimeSource, /session\.scratchTexture|const scratchTexture/);
-assert.match(runtimeSource, /rasterTransformSessionMemoryBytes/);
-assert.match(runtimeSource, /\* 8;/);
-assert.match(runtimeSource, /reserveRasterTransformMemory/);
-assert.match(runtimeSource, /memoryReservations\.settle\(reservation\)/);
-assert.match(runtimeSource, /memoryReservations\.release\(reservation\)/);
 assert.match(
   runtimeSource,
   /const action: RasterTransformHistoryAction[\s\S]{0,1200}commitHistoryActionAtomically\(engine, action\)/,

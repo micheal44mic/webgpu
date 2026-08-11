@@ -5,7 +5,6 @@ import {
   blendGatherShader,
   blendPickupShader,
   blendScatterShader,
-  blendWorkSurfaceCopyShader,
 } from "./blend-shaders";
 import {
   DRY_BLEND_CORE_BUILD,
@@ -33,7 +32,7 @@ const BLEND_BLUR_WEIGHT_VEC4_COUNT = Math.ceil(
 const BLEND_BLUR_UNIFORM_BYTES = 16 + BLEND_BLUR_WEIGHT_VEC4_COUNT * 16;
 
 export const DRY_BLEND_RENDERER_BUILD =
-  "dry-blend-webgpu-v6-rgba16f-gesture-work-surface";
+  "dry-blend-webgpu-v5-local-gaussian-blur";
 
 export interface DryBlendRenderSettings {
   size: number;
@@ -109,8 +108,6 @@ interface DryBlendRendererOptions {
 }
 
 interface ScratchResources {
-  workTexture: GPUTexture;
-  workView: GPUTextureView;
   stateBuffer: GPUBuffer;
   coverageBuffer: GPUBuffer;
   carrierBuffer: GPUBuffer;
@@ -126,8 +123,6 @@ interface ScratchResources {
     Record<"no" | "classic" | "improved", GPUBindGroup>
   >;
   scatterBindGroup: GPUBindGroup;
-  workSeedBindGroup: GPUBindGroup;
-  workMirrorBindGroup: GPUBindGroup;
 }
 
 // Consecutive sweep segments overlap heavily; sharing one gather/scatter pair
@@ -281,7 +276,6 @@ export class DryBlendRenderer {
   private pickupBindGroupLayout!: GPUBindGroupLayout;
   private depositBindGroupLayout!: GPUBindGroupLayout;
   private scatterBindGroupLayout!: GPUBindGroupLayout;
-  private workCopyBindGroupLayout!: GPUBindGroupLayout;
   private gatherPipeline!: GPUComputePipeline;
   private blurHorizontalPipeline!: GPUComputePipeline;
   private blurVerticalPipeline!: GPUComputePipeline;
@@ -291,12 +285,8 @@ export class DryBlendRenderer {
     Record<"off" | "on", GPUComputePipeline>
   >;
   private scatterPipeline!: GPURenderPipeline;
-  private workSeedPipeline!: GPURenderPipeline;
-  private workMirrorPipeline!: GPURenderPipeline;
   private scratch: ScratchResources | null = null;
   private activeHistoryActionId: number | null = null;
-  private workSeedPending = true;
-  private gestureDirtyRect: BlendRect | null = null;
   private carrierCursor = 0;
   private carrierValid = false;
   private destroyed = false;
@@ -449,18 +439,6 @@ export class DryBlendRenderer {
         storageEntry(2, GPUShaderStage.FRAGMENT, true),
       ],
     });
-    this.workCopyBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Blend RGBA16F work surface copy layout",
-      entries: [{
-        binding: 0,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: {
-          sampleType: "unfilterable-float",
-          viewDimension: "2d",
-          multisampled: false,
-        },
-      }],
-    });
 
     const modules = [
       {
@@ -503,13 +481,6 @@ export class DryBlendRenderer {
         module: this.device.createShaderModule({
           label: "Blend scatter WGSL",
           code: blendScatterShader,
-        }),
-      },
-      {
-        label: "Blend work surface copy",
-        module: this.device.createShaderModule({
-          label: "Blend work surface copy WGSL",
-          code: blendWorkSurfaceCopyShader,
         }),
       },
     ] as const;
@@ -581,7 +552,7 @@ export class DryBlendRenderer {
           },
         };
         this.scatterPipeline = this.device.createRenderPipeline({
-          label: "Blend dry scatter to RGBA16F gesture work surface",
+          label: "Blend dry scatter to canonical layer",
           layout: pipelineLayout(
             "Blend dry scatter pipeline layout",
             this.scatterBindGroupLayout,
@@ -593,38 +564,10 @@ export class DryBlendRenderer {
           fragment: {
             module: modules[5].module,
             entryPoint: "scatterFragment",
-            targets: [{ format: "rgba16float" }],
+            targets: [{ format: this.layerFormat }],
           },
           primitive: { topology: "triangle-list" },
         });
-        const workCopyPipeline = (
-          label: string,
-          format: GPUTextureFormat,
-        ): GPURenderPipeline => this.device.createRenderPipeline({
-          label,
-          layout: pipelineLayout(
-            `${label} pipeline layout`,
-            this.workCopyBindGroupLayout,
-          ),
-          vertex: {
-            module: modules[6].module,
-            entryPoint: "fullscreenVertex",
-          },
-          fragment: {
-            module: modules[6].module,
-            entryPoint: "copyFragment",
-            targets: [{ format }],
-          },
-          primitive: { topology: "triangle-list" },
-        });
-        this.workSeedPipeline = workCopyPipeline(
-          "Blend seed persistent layer to RGBA16F gesture work surface",
-          "rgba16float",
-        );
-        this.workMirrorPipeline = workCopyPipeline(
-          "Blend resolve RGBA16F gesture work surface to persistent layer",
-          this.layerFormat,
-        );
       },
     );
   }
@@ -632,24 +575,6 @@ export class DryBlendRenderer {
   beginStroke(historyActionId: number): void {
     this.assertAlive();
     this.activeHistoryActionId = historyActionId;
-    this.workSeedPending = true;
-    this.gestureDirtyRect = null;
-    this.carrierCursor = 0;
-    this.carrierValid = false;
-  }
-
-  abandonStroke(historyActionId?: number): void {
-    if (this.destroyed) return;
-    if (
-      historyActionId !== undefined
-      && this.activeHistoryActionId !== null
-      && this.activeHistoryActionId !== historyActionId
-    ) {
-      return;
-    }
-    this.activeHistoryActionId = null;
-    this.workSeedPending = true;
-    this.gestureDirtyRect = null;
     this.carrierCursor = 0;
     this.carrierValid = false;
   }
@@ -660,7 +585,6 @@ export class DryBlendRenderer {
     historyActionId: number,
     clearLayer: boolean,
     historyTransfer: DryBlendHistoryTransfer | null = null,
-    finalizeStroke = false,
   ): DryBlendSubmitResult {
     const startedAt = performance.now();
     const encoder = this.device.createCommandEncoder({
@@ -673,9 +597,8 @@ export class DryBlendRenderer {
       historyActionId,
       clearLayer,
       historyTransfer,
-      finalizeStroke,
     );
-    if (clearLayer || result.passCount > 0) {
+    if (clearLayer || result.batchCount > 0) {
       this.device.queue.submit([encoder.finish()]);
     }
     return {
@@ -696,7 +619,6 @@ export class DryBlendRenderer {
     historyActionId: number,
     clearLayer: boolean,
     historyTransfer: DryBlendHistoryTransfer | null = null,
-    finalizeStroke = false,
   ): DryBlendSubmitResult {
     this.assertAlive();
     if (batches.length > BLEND_MAX_BATCHES_PER_SUBMIT) {
@@ -705,9 +627,6 @@ export class DryBlendRenderer {
       );
     }
     if (this.activeHistoryActionId !== historyActionId) {
-      if (finalizeStroke) {
-        throw new Error("Finalizzazione Blend riferita a un tratto non attivo.");
-      }
       this.beginStroke(historyActionId);
     }
     const startedAt = performance.now();
@@ -777,31 +696,6 @@ export class DryBlendRenderer {
     }
 
 
-    // Seed the authoritative gesture surface exactly once. A clear starts the
-    // gesture from transparent; otherwise RGBA8 storage is expanded to 16F
-    // before any pickup/deposit math runs.
-    if ((renderable.length > 0 || clearLayer) && (this.workSeedPending || clearLayer)) {
-      const seedPass = encoder.beginRenderPass({
-        label: clearLayer
-          ? "Blend dry clear RGBA16F gesture work surface"
-          : "Blend dry seed RGBA16F gesture work surface",
-        colorAttachments: [{
-          view: scratch.workView,
-          loadOp: "clear",
-          storeOp: "store",
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
-        }],
-      });
-      if (!clearLayer) {
-        seedPass.setPipeline(this.workSeedPipeline);
-        seedPass.setBindGroup(0, scratch.workSeedBindGroup);
-        seedPass.draw(3);
-      }
-      seedPass.end();
-      this.workSeedPending = false;
-      passCount += 1;
-    }
-
     if (clearLayer) {
       const clearPass = encoder.beginRenderPass({
         label: "Blend dry clear canonical layer",
@@ -870,9 +764,9 @@ export class DryBlendRenderer {
       computePass.end();
 
       const scatterPass = encoder.beginRenderPass({
-        label: "Blend dry scatter ROI to RGBA16F gesture work surface",
+        label: "Blend dry scatter ROI to canonical layer",
         colorAttachments: [{
-          view: scratch.workView,
+          view: this.layerView,
           loadOp: "load",
           storeOp: "store",
         }],
@@ -890,44 +784,10 @@ export class DryBlendRenderer {
 
       passCount += 2;
       dirtyRect = mergeRects(dirtyRect, group.writeRect);
-      this.gestureDirtyRect = mergeRects(this.gestureDirtyRect, group.writeRect);
-    }
-
-    const mirrorRect = finalizeStroke ? this.gestureDirtyRect : dirtyRect;
-    if (mirrorRect) {
-      // This dirty mirror is presentation/canonical storage only. The next
-      // Blend frame gathers from workView, so repeated UNORM8 rounding can
-      // never feed back into the gesture's pigment transport.
-      const mirrorPass = encoder.beginRenderPass({
-        label: "Blend resolve RGBA16F gesture work surface to persistent layer",
-        colorAttachments: [{
-          view: this.layerView,
-          loadOp: "load",
-          storeOp: "store",
-        }],
-      });
-      mirrorPass.setPipeline(this.workMirrorPipeline);
-      mirrorPass.setBindGroup(0, scratch.workMirrorBindGroup);
-      mirrorPass.setScissorRect(
-        mirrorRect.x,
-        mirrorRect.y,
-        mirrorRect.width,
-        mirrorRect.height,
-      );
-      mirrorPass.draw(3);
-      mirrorPass.end();
-      passCount += 1;
-      dirtyRect = mergeRects(dirtyRect, mirrorRect);
     }
 
     if (renderable.length > 0) {
       this.carrierValid = true;
-    }
-    if (finalizeStroke) {
-      this.activeHistoryActionId = null;
-      this.workSeedPending = true;
-      this.gestureDirtyRect = null;
-      this.carrierValid = false;
     }
     return {
       dirtyRect,
@@ -947,13 +807,11 @@ export class DryBlendRenderer {
     const coverageBytes = pixels * 4;
     const carrierBytes = BLEND_CARRIER_SLOT_COUNT * 16;
     const blurBytes = this.scratch.blur ? pixels * 8 : 0;
-    const gestureWorkBytes = this.documentWidth * this.documentHeight * 8;
     return (
       stateBytes
       + coverageBytes
       + carrierBytes
       + blurBytes
-      + gestureWorkBytes
       + this.uniformUpload.byteLength
       + BLEND_BLUR_UNIFORM_BYTES
     )
@@ -989,11 +847,8 @@ export class DryBlendRenderer {
     this.scratch.coverageBuffer.destroy();
     this.scratch.carrierBuffer.destroy();
     this.scratch.blur?.buffer.destroy();
-    this.scratch.workTexture.destroy();
     this.scratch = null;
     this.carrierValid = false;
-    this.workSeedPending = true;
-    this.gestureDirtyRect = null;
     return true;
   }
 
@@ -1009,7 +864,6 @@ export class DryBlendRenderer {
       this.scratch.coverageBuffer.destroy();
       this.scratch.carrierBuffer.destroy();
       this.scratch.blur?.buffer.destroy();
-      this.scratch.workTexture.destroy();
       this.scratch = null;
     }
   }
@@ -1252,18 +1106,28 @@ export class DryBlendRenderer {
     }
     this.layerView = view;
     this.layerSamplingView = samplingView;
-    // layerView is read at encode time as a colour attachment. The persistent
-    // sampling view is only used to seed the 16F gesture surface, while gather
-    // remains bound to that surface for the complete stroke.
+    // layerView is read at encode time as a colour attachment, so it needs no
+    // rebuild. layerSamplingView is baked into the gather bind group.
     if (this.scratch) {
-      this.scratch.workSeedBindGroup = this.device.createBindGroup({
-        label: "Blend seed persistent layer bind group",
-        layout: this.workCopyBindGroupLayout,
-        entries: [{ binding: 0, resource: this.layerSamplingView }],
+      this.scratch.gatherBindGroup = this.device.createBindGroup({
+        label: "Blend dry gather bind group",
+        layout: this.gatherBindGroupLayout,
+        entries: [
+          {
+            binding: 0,
+            resource: {
+              buffer: this.uniformBuffer,
+              offset: 0,
+              size: BLEND_UNIFORM_BYTES,
+            },
+          },
+          { binding: 1, resource: this.layerSamplingView },
+          { binding: 2, resource: { buffer: this.scratch.stateBuffer } },
+          { binding: 3, resource: { buffer: this.scratch.coverageBuffer } },
+        ],
       });
     }
     this.carrierValid = false;
-    this.workSeedPending = true;
   }
 
   private rebuildResidentDepositBindGroups(): void {
@@ -1351,16 +1215,6 @@ export class DryBlendRenderer {
       return this.scratch;
     }
     const pixels = this.scratchSize * this.scratchSize;
-    const workTexture = this.device.createTexture({
-      label: "Blend gesture-wide RGBA16F work surface",
-      size: {
-        width: this.documentWidth,
-        height: this.documentHeight,
-      },
-      format: "rgba16float",
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-    });
-    const workView = workTexture.createView();
     const stateBuffer = this.device.createBuffer({
       label: "Blend dry scratch state",
       size: pixels * 16,
@@ -1389,11 +1243,11 @@ export class DryBlendRenderer {
       resource: { buffer },
     });
     const gatherBindGroup = this.device.createBindGroup({
-      label: "Blend dry gather from RGBA16F gesture work surface",
+      label: "Blend dry gather bind group",
       layout: this.gatherBindGroupLayout,
       entries: [
         uniformEntry,
-        { binding: 1, resource: workView },
+        { binding: 1, resource: this.layerSamplingView },
         bufferEntry(2, stateBuffer),
         bufferEntry(3, coverageBuffer),
       ],
@@ -1421,19 +1275,7 @@ export class DryBlendRenderer {
         bufferEntry(2, coverageBuffer),
       ],
     });
-    const workSeedBindGroup = this.device.createBindGroup({
-      label: "Blend seed persistent layer bind group",
-      layout: this.workCopyBindGroupLayout,
-      entries: [{ binding: 0, resource: this.layerSamplingView }],
-    });
-    const workMirrorBindGroup = this.device.createBindGroup({
-      label: "Blend mirror RGBA16F work surface bind group",
-      layout: this.workCopyBindGroupLayout,
-      entries: [{ binding: 0, resource: workView }],
-    });
     this.scratch = {
-      workTexture,
-      workView,
       stateBuffer,
       coverageBuffer,
       carrierBuffer,
@@ -1442,8 +1284,6 @@ export class DryBlendRenderer {
       pickupBindGroup,
       depositBindGroups,
       scatterBindGroup,
-      workSeedBindGroup,
-      workMirrorBindGroup,
     };
     return this.scratch;
   }

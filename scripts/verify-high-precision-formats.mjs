@@ -28,10 +28,6 @@ const sources = new Map(sourceFiles.map((path) => [
 // Exact counts make this an allowlist: a new continuous R8/RGBA8 allocation
 // cannot hide merely by landing in a file that already contains an exception.
 const allowedLiteralFormats = new Map([
-  // Resolve finale specifico del Gaussian; gli altri effetti condividono il
-  // resolver generico qui sotto.
-  ["src/engine-gaussian-blur-runtime.ts", { rgba8unorm: 1 }],
-  ["src/engine-rgba16f-resolve.ts", { rgba8unorm: 1 }],
   // Il cold compresso non fissa piu' un formato: segue quello del documento,
   // quindi l'ultimo letterale RGBA8 di questo file e' sparito.
   // Anche il tipo del cold compresso segue ora LayerFormat: nessun letterale.
@@ -91,18 +87,8 @@ const requireSource = (path, pattern, message) => {
 };
 requireSource(
   "src/brush-engine.ts",
-  /layerFormat:\s*LayerFormat\s*=\s*"rgba8unorm"/,
-  "Lo storage persistente predefinito del documento deve essere RGBA8.",
-);
-requireSource(
-  "src/engine-rgba16f-resolve.ts",
-  /texture_2d<f32>[\s\S]*texture_storage_2d<rgba8unorm, write>/,
-  "Il commit condiviso deve risolvere da scratch 16F/f32 al layer RGBA8.",
-);
-requireSource(
-  "src/engine-strategies.ts",
-  /mode === "normal"[\s\S]{0,140}mode === "additive"[\s\S]{0,220}mode === "intense-blending"/,
-  "Tutti i blend mode Paint devono passare da uno storage per-tratto ad alta precisione.",
+  /layerFormat:\s*LayerFormat\s*=\s*"rgba16float"/,
+  "Il default reale del documento deve essere RGBA16F.",
 );
 requireSource(
   "src/vector-text-gpu-shader.ts",
@@ -118,31 +104,6 @@ requireSource(
   "src/engine-raster-image-runtime.ts",
   /format:\s*"rgba8unorm-srgb"[\s\S]*format:\s*"rgba16float"/,
   "L’import deve passare dalla sorgente decoder RGBA8-sRGB ai mip lineari RGBA16F.",
-);
-requireSource(
-  "src/engine-vector-raster-runtime.ts",
-  /const format = VECTOR_RASTER_FORMAT[\s\S]*createRgba16fToRgba8ResolveResources[\s\S]*encodeRgba16fToRgba8Resolve/,
-  "La rasterizzazione vettoriale deve accumulare in 16F e risolvere una sola volta nel layer.",
-);
-requireSource(
-  "src/engine-raster-transform-runtime.ts",
-  /format: "rgba16float"[\s\S]{0,180}RENDER_ATTACHMENT[\s\S]*logicalMip === 1[\s\S]{0,120}\? sourceView[\s\S]{0,180}logicalMip - 2/,
-  "Trasforma deve promuovere il primo mip nativo e continuare la catena soltanto in 16F.",
-);
-requireSource(
-  "src/engine-layer-merge-runtime.ts",
-  /outputFoldSurface[\s\S]{0,420}"rgba16float"[\s\S]*commitOutputFoldSurface[\s\S]*encodeRgba16fToRgba8Resolve/,
-  "Merge deve usare un accumulatore 16F e un unico commit persistente.",
-);
-requireSource(
-  "src/engine-layer-runtime.ts",
-  /format: destination\.format[\s\S]*layerFoldPipelinesForFormat\(engine, destination\.format\)/,
-  "Gli scratch e le pipeline di fold devono seguire il formato 16F della superficie di lavoro, non il layer RGBA8.",
-);
-requireSource(
-  "src/stroke-renderer.ts",
-  /targetFormat\?: "rgba8unorm" \| "rgba16float"[\s\S]*Style stack analytic transient RGBA16F bake pipeline/,
-  "Gli effetti raster devono poter materializzare un bake transitorio 16F per Merge.",
 );
 
 console.log("High-precision format allowlist verification passed.");

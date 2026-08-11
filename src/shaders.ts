@@ -1640,12 +1640,6 @@ fn compositeLightGlazeOverPermanent(
   accumulatedStroke: vec4<f32>
 ) -> vec4<f32> {
   let strokePaint = resolvedStrokePaint(accumulatedStroke);
-  if (lightGlaze.accumulationMode == 3u) {
-    return quantizeLayer(vec4<f32>(
-      permanentPaint.rgb + strokePaint.rgb,
-      strokePaint.a + permanentPaint.a * (1.0 - strokePaint.a)
-    ));
-  }
   if (lightGlaze.accumulationMode == 2u) {
     // Outside the physical stamp Intense must be an exact identity operation.
     // In particular, do not round-trip signed/HDR Noise through bounded sRGB.
@@ -2221,12 +2215,6 @@ fn compositeLightGlazeOverPermanent(
   accumulatedStroke: vec4<f32>
 ) -> vec4<f32> {
   let strokePaint = resolvedStrokePaint(accumulatedStroke);
-  if (lightGlaze.accumulationMode == 3u) {
-    return quantizeLayer(vec4<f32>(
-      permanentPaint.rgb + strokePaint.rgb,
-      strokePaint.a + permanentPaint.a * (1.0 - strokePaint.a)
-    ));
-  }
   if (lightGlaze.accumulationMode == 2u) {
     // Outside the physical stamp Intense must be an exact identity operation.
     // In particular, do not round-trip signed/HDR Noise through bounded sRGB.
@@ -2421,12 +2409,6 @@ fn compositeLightGlazeOverPermanent(
   accumulatedStroke: vec4<f32>
 ) -> vec4<f32> {
   let strokePaint = resolvedStrokePaint(accumulatedStroke);
-  if (lightGlaze.accumulationMode == 3u) {
-    return quantizeLayer(vec4<f32>(
-      permanentPaint.rgb + strokePaint.rgb,
-      strokePaint.a + permanentPaint.a * (1.0 - strokePaint.a)
-    ));
-  }
   if (lightGlaze.accumulationMode == 2u) {
     // Outside the physical stamp Intense must be an exact identity operation.
     // In particular, do not round-trip signed/HDR Noise through bounded sRGB.
@@ -2527,13 +2509,10 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     let coverage = storedLightCoverage(source.r);
     return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
   }
-  // Modes 2 (Intense encoded-sRGB) and 3 (Additive) must never use this
-  // fixed-function destination blend. They are resolved by the exact tile
-  // shader, which samples both the permanent layer and the 16F stroke.
-  if (
-    lightGlaze.accumulationMode == 2u
-    || lightGlaze.accumulationMode == 3u
-  ) {
+  // Mode 2 (Intense encoded-sRGB) must never use this fixed-function
+  // destination blend. Uniformed and Intense are resolved by the exact tile
+  // shader, which samples both the permanent layer and the stroke.
+  if (lightGlaze.accumulationMode == 2u) {
     return vec4<f32>(0.0);
   }
   return source * opacity;

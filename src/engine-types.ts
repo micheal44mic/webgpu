@@ -235,12 +235,6 @@ export interface EngineCallbacks {
 }
 
 export interface BrushEngineOptions {
-  /**
-   * Initial authoritative document format. Normal sessions omit this and use
-   * RGBA8 storage; legacy DEV/regression fixtures may explicitly request 16F.
-   * Working precision is independent and remains RGBA16F/f32.
-   */
-  initialLayerFormat?: LayerFormat;
   bevelBoundingFieldEnabled?: boolean;
   /**
    * Enables the destructive, query-gated layer memory stress fixture. Normal

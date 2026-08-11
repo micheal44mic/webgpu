@@ -17,7 +17,6 @@ import type {
 import type {
   LayerColdStorageResources,
   LayerGpuResources,
-  LayerTextureResources,
   MergedSurfaceResources,
 } from "./engine-layer-resources";
 import {
@@ -56,11 +55,8 @@ import {
 } from "./layer-storage-study";
 import {
   alignedMergedSurfaceBounds,
+  mergedSurfaceMemoryBytes,
 } from "./merged-surface-bounds";
-import {
-  LAYER_BLEND_FOLD_TILE_EXTENT,
-  LAYER_BLEND_FOLD_UNIFORM_BYTES,
-} from "./layer-blend-fold-shader";
 import type {
   MixedSceneItem,
   MixedSceneVectorHistoryState,
@@ -85,11 +81,6 @@ import {
 } from "./memory-governor-core";
 import { planLayerMergeCreateMemory } from "./layer-memory-admission-core";
 import { isHistoryColdSeedHandle } from "./history-cold-seed";
-import {
-  createRgba16fToRgba8ResolveResources,
-  destroyRgba16fToRgba8ResolveResources,
-  encodeRgba16fToRgba8Resolve,
-} from "./engine-rgba16f-resolve";
 
 export interface LayerMergeResult {
   readonly layerId: number;
@@ -122,22 +113,41 @@ function fullDocumentView(engine: BrushEngine): VectorTextViewState {
 
 function outputFoldSurface(
   engine: BrushEngine,
+  gpu: LayerGpuResources,
 ): MergedSurfaceResources {
-  return allocateMergedSurface(
-    engine,
-    "rgba16float",
-    "above",
-    0,
-    { x: 0, y: 0, width: engine.layerSize, height: engine.layerSize },
-    1,
-    false,
-  );
+  const hot = gpu.hot;
+  if (!hot) throw new Error("Texture hot del merge non disponibile.");
+  const bytesPerPixel = engine.layerFormat === "rgba16float" ? 8 : 4;
+  return {
+    texture: hot.texture,
+    samplingView: hot.samplingView,
+    mipViews: [hot.view],
+    mipDownsampleBindGroups: [],
+    blendFoldBackdropScratchTexture: null,
+    blendFoldBackdropScratchView: null,
+    blendFoldScratchTexture: null,
+    blendFoldScratchView: null,
+    blendFoldUniformBuffer: null,
+    blendFoldUniformStride: 0,
+    blendFoldTileWidth: 0,
+    blendFoldTileHeight: 0,
+    bounds: { x: 0, y: 0, width: engine.layerSize, height: engine.layerSize },
+    resolutionScale: 1,
+    textureWidth: engine.layerSize,
+    textureHeight: engine.layerSize,
+    mip0MemoryBytes: engine.layerSize * engine.layerSize * bytesPerPixel,
+    mipChainMemoryBytes: 0,
+    validThroughLevel: 0,
+    layerCount: 0,
+    foldedPixels: 0,
+    analyticBakePixels: 0,
+  };
 }
 
 function clearOutputTexture(engine: BrushEngine, surface: MergedSurfaceResources): void {
-  const encoder = engine.device.createCommandEncoder({ label: "Clear RGBA16F merge work" });
+  const encoder = engine.device.createCommandEncoder({ label: "Clear output merge layer" });
   const pass = encoder.beginRenderPass({
-    label: "Clear RGBA16F merge work",
+    label: "Clear output merge layer",
     colorAttachments: [{
       view: surface.mipViews[0],
       loadOp: "clear",
@@ -147,67 +157,6 @@ function clearOutputTexture(engine: BrushEngine, surface: MergedSurfaceResources
   });
   pass.end();
   engine.device.queue.submit([encoder.finish()]);
-}
-
-async function commitOutputFoldSurface(
-  engine: BrushEngine,
-  surface: MergedSurfaceResources,
-  hot: LayerTextureResources,
-  bounds: DirtyRect | null,
-): Promise<void> {
-  if (surface.format !== "rgba16float") {
-    throw new Error(`Accumulatore merge ${surface.format}: atteso rgba16float.`);
-  }
-  const resolve = bounds && hot.format === "rgba8unorm"
-    ? await createRgba16fToRgba8ResolveResources(
-      engine.device,
-      surface.samplingView,
-      hot.view,
-      "Merge layer final",
-    )
-    : null;
-  try {
-    const encoder = engine.device.createCommandEncoder({
-      label: `Commit merge RGBA16F → ${hot.format}`,
-    });
-    const clear = encoder.beginRenderPass({
-      label: "Clear persistent merge output before final commit",
-      colorAttachments: [{
-        view: hot.view,
-        loadOp: "clear",
-        storeOp: "store",
-        clearValue: { r: 0, g: 0, b: 0, a: 0 },
-      }],
-    });
-    clear.end();
-    if (bounds) {
-      if (resolve) {
-        encodeRgba16fToRgba8Resolve(
-          engine.device,
-          encoder,
-          resolve,
-          {
-            sourceX: bounds.x,
-            sourceY: bounds.y,
-            targetX: bounds.x,
-            targetY: bounds.y,
-            width: bounds.width,
-            height: bounds.height,
-          },
-          "Merge layer single final RGBA8 resolve",
-        );
-      } else {
-        encoder.copyTextureToTexture(
-          { texture: surface.texture, origin: { x: bounds.x, y: bounds.y, z: 0 } },
-          { texture: hot.texture, origin: { x: bounds.x, y: bounds.y, z: 0 } },
-          { width: bounds.width, height: bounds.height, depthOrArrayLayers: 1 },
-        );
-      }
-    }
-    engine.device.queue.submit([encoder.finish()]);
-  } finally {
-    destroyRgba16fToRgba8ResolveResources(resolve);
-  }
 }
 
 function itemName(engine: BrushEngine, item: MixedSceneItem): string {
@@ -268,7 +217,7 @@ async function renderVectorRunInput(
   const allocationBounds = alignedMergedSurfaceBounds(runBounds, engine.layerSize);
   const vectorSurface = allocateMergedSurface(
     engine,
-    "rgba16float",
+    engine.layerFormat,
     "above",
     1,
     allocationBounds,
@@ -280,11 +229,7 @@ async function renderVectorRunInput(
       engine,
       draws,
       view,
-      {
-        texture: vectorSurface.texture,
-        view: vectorSurface.mipViews[0],
-        format: "rgba16float",
-      },
+      { texture: vectorSurface.texture, format: engine.layerFormat },
       vectorSurface.bounds,
     );
     await foldViewIntoMergedSurface(
@@ -324,7 +269,6 @@ async function renderSingleRasterUnitPreservingParent(
       "structural-history",
       false,
       `Merge preserve clipping group ${parent.id}`,
-      surface.format,
     );
     if (!group) return null;
     try {
@@ -349,12 +293,7 @@ async function renderSingleRasterUnitPreservingParent(
     }
   }
 
-  const source = await materializeLayerCompositeSource(
-    engine,
-    parent,
-    "structural-history",
-    surface.format,
-  );
+  const source = await materializeLayerCompositeSource(engine, parent, "structural-history");
   try {
     await foldViewIntoMergedSurface(
       engine,
@@ -415,11 +354,10 @@ async function renderMergeOutput(
     engine.layerFormat,
     `Output merge layer ${record.id}`,
   );
-  let surface: MergedSurfaceResources | null = null;
+  const surface = outputFoldSurface(engine, gpu);
+  clearOutputTexture(engine, surface);
   let bounds: DirtyRect | null = null;
   try {
-    surface = outputFoldSurface(engine);
-    clearOutputTexture(engine, surface);
     if (plan.preservesParentPresentation) {
       const parent = engine.layerStack.clippingUnit(plan.rasterLayerIds[0])[0];
       record.visible = parent.visible;
@@ -483,14 +421,13 @@ async function renderMergeOutput(
       }
     }
     releaseLayerBlendFoldScratch(surface);
-    const hot = gpu.hot;
-    if (!hot) throw new Error("Output merge privo della texture hot.");
-    await commitOutputFoldSurface(engine, surface, hot, bounds);
     await engine.waitForGpuCapped(`Render merge layer ${record.id}`, 60_000);
     record.contentBounds = bounds ? { ...bounds } : null;
     record.hasContent = bounds !== null;
     record.storageTileMask.fill(0);
     if (bounds) markLayerStorageRect(record.storageTileMask, bounds);
+    const hot = gpu.hot;
+    if (!hot) throw new Error("Output merge privo della texture hot.");
     const seed = bounds
       ? await createLayerColdStorageCandidate(
         engine,
@@ -503,13 +440,9 @@ async function renderMergeOutput(
       : null;
     return { record, gpu, seed, baseBounds: bounds ? { ...bounds } : null, plan };
   } catch (error) {
+    releaseLayerBlendFoldScratch(surface);
     destroyLayerGpuResources(engine, gpu);
     throw error;
-  } finally {
-    if (surface) {
-      releaseLayerBlendFoldScratch(surface);
-      engine.destroyMergedSurface(surface);
-    }
   }
 }
 
@@ -660,26 +593,17 @@ function layerMergeCreateRequest(
     // use the full bound here so its admission can never be optimistic.
     return full;
   });
-  const rgba16fFullBytes = engine.layerSize * engine.layerSize * 8;
-  const blendTileExtent = Math.min(LAYER_BLEND_FOLD_TILE_EXTENT, engine.layerSize);
-  const blendTileCount = Math.ceil(engine.layerSize / blendTileExtent) ** 2;
-  const blendUniformStride = Math.ceil(
-    LAYER_BLEND_FOLD_UNIFORM_BYTES
-      / engine.device.limits.minUniformBufferOffsetAlignment,
-  ) * engine.device.limits.minUniformBufferOffsetAlignment;
-  const advancedFoldScratchBytes = blendTileExtent * blendTileExtent * 8 * 2
-    + blendTileCount * blendUniformStride;
+  const mergedFullBytes = mergedSurfaceMemoryBytes(
+    { width: engine.layerSize, height: engine.layerSize },
+    engine.layerFormat === "rgba16float" ? 8 : 4,
+  ).totalBytes;
   return planLayerMergeCreateMemory({
     fullLayerBytes: full,
     inputSeedBytes,
     outputSeedBytes: full,
-    // The merge owns one RGBA16F accumulator. A clipping group can coexist
-    // with one transient RGBA16F analytic bake and one native hydration; the
-    // tiled advanced-mode pair is bounded and shared across the fold.
-    foldTransientBytes:
-      rgba16fFullBytes * 3
-      + full
-      + advancedFoldScratchBytes,
+    // One source may be rehydrated and baked while the output is folded. The
+    // source is streamed, therefore this does not scale with selected layers.
+    foldTransientBytes: full * 2 + mergedFullBytes,
   });
 }
 

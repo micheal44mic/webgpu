@@ -40,14 +40,9 @@ import {
   restorePixelSelectionHistoryMask,
   translatePixelSelection,
 } from "./engine-selection-runtime";
-import {
-  planMemoryAdmission,
-  type MemoryRequest,
-  type MemoryReservation,
-} from "./memory-governor-core";
 
 export const RASTER_LAYER_TRANSFORM_STRATEGY =
-  "native-raster-native-mip0-rgba16float-derived-mips-transparent-border-scale-aware-latest-frame-single-checkpoint-v4" as const;
+  "native-raster-tile-bbox-transparent-border-scale-aware-latest-frame-single-checkpoint-v3" as const;
 const RASTER_TRANSFORM_TRANSPARENT_GUARD_PX = 2;
 
 interface RasterTransformSharedResources {
@@ -72,11 +67,8 @@ export interface ActiveRasterTransformSession {
   readonly sourceScratchRect: DirtyRect;
   readonly sourceTextureRect: DirtyRect;
   readonly sourcePivot: { x: number; y: number };
-  readonly sourceFormat: LayerFormat;
-  readonly sourceTexture: GPUTexture;
-  readonly sourceView: GPUTextureView;
-  readonly workMipTexture: GPUTexture | null;
-  readonly workMipView: GPUTextureView | null;
+  readonly scratchTexture: GPUTexture;
+  readonly scratchView: GPUTextureView;
   readonly uniformBuffer: GPUBuffer;
   readonly bindGroup: GPUBindGroup;
   readonly selectionMaskBindGroup: GPUBindGroup | null;
@@ -114,56 +106,20 @@ function unionRects(left: DirtyRect | null, right: DirtyRect | null): DirtyRect 
   return { x, y, width: rightEdge - x, height: bottomEdge - y };
 }
 
-function rasterTransformSessionMemoryBytes(
+function rasterTransformScratchMemoryBytes(
   width: number,
   height: number,
-  logicalMipCount: number,
-  sourceFormat: LayerFormat,
+  mipLevelCount: number,
+  format: LayerFormat,
 ): number {
-  const sourceBytesPerPixel = sourceFormat === "rgba16float" ? 8 : 4;
-  let bytes = RASTER_TRANSFORM_UNIFORM_BYTES + width * height * sourceBytesPerPixel;
-  for (let level = 1; level < logicalMipCount; level += 1) {
+  const bytesPerPixel = format === "rgba16float" ? 8 : 4;
+  let bytes = RASTER_TRANSFORM_UNIFORM_BYTES;
+  for (let level = 0; level < mipLevelCount; level += 1) {
     bytes += Math.max(1, Math.floor(width / 2 ** level))
       * Math.max(1, Math.floor(height / 2 ** level))
-      * 8;
+      * bytesPerPixel;
   }
   return bytes;
-}
-
-function rasterTransformMemoryRequest(memoryBytes: number): MemoryRequest {
-  return {
-    category: "native-raster-transform-session",
-    steadyBytes: memoryBytes,
-    peakBytes: memoryBytes,
-    priority: "interactive",
-  };
-}
-
-function reserveRasterTransformMemory(
-  engine: BrushEngine,
-  memoryBytes: number,
-): MemoryReservation {
-  const request = rasterTransformMemoryRequest(memoryBytes);
-  const decision = planMemoryAdmission(
-    {
-      committedBytes: engine.gpuResourceRegistry.snapshot().currentBytes,
-      reservedBytes: engine.memoryReservations.pendingBytes,
-      reclaimableBytes: 0,
-      inFlightBytes: 0,
-    },
-    engine.memoryGovernorLimits,
-    request,
-  );
-  if (decision.outcome !== "admit") {
-    const requiredMiB = request.peakBytes / (1024 * 1024);
-    const availableMiB = Math.max(0, decision.ceilingBytes - decision.usedBytes)
-      / (1024 * 1024);
-    throw new Error(
-      `Memoria insufficiente per Trasforma: ${requiredMiB.toFixed(1)} MiB richiesti, `
-      + `${availableMiB.toFixed(1)} MiB disponibili.`,
-    );
-  }
-  return engine.memoryReservations.reserve(request);
 }
 
 function transformSnapshot(session: ActiveRasterTransformSession): RasterTransformSnapshot {
@@ -223,11 +179,6 @@ async function createSharedResources(
           {
             binding: 2,
             visibility: GPUShaderStage.FRAGMENT,
-            texture: { sampleType: "float", viewDimension: "2d" },
-          },
-          {
-            binding: 3,
-            visibility: GPUShaderStage.FRAGMENT,
             sampler: { type: "filtering" },
           },
         ],
@@ -281,13 +232,13 @@ async function createSharedResources(
         primitive: { topology: "triangle-list" },
       });
       const mipPipeline = engine.device.createRenderPipeline({
-        label: "Native raster Transform exact mip RGBA16F",
+        label: `Native raster Transform exact mip ${format}`,
         layout: mipPipelineLayout,
         vertex: { module: mipModule, entryPoint: "vertexMain" },
         fragment: {
           module: mipModule,
           entryPoint: "fragmentMain",
-          targets: [{ format: "rgba16float" }],
+          targets: [{ format }],
         },
         primitive: { topology: "triangle-list" },
       });
@@ -318,19 +269,18 @@ async function createSharedResources(
 async function requireSharedResources(
   engine: BrushEngine,
 ): Promise<RasterTransformSharedResources> {
-  const targetFormat = engine.layerFormat;
   let byFormat = sharedResources.get(engine);
   byFormat ??= new Map<LayerFormat, Promise<RasterTransformSharedResources>>();
-  let promise = byFormat.get(targetFormat);
+  let promise = byFormat.get(engine.layerFormat);
   if (!promise) {
     promise = createSharedResources(engine);
-    byFormat.set(targetFormat, promise);
+    byFormat.set(engine.layerFormat, promise);
     sharedResources.set(engine, byFormat);
   }
   try {
     return await promise;
   } catch (error) {
-    byFormat.delete(targetFormat);
+    byFormat.delete(engine.layerFormat);
     if (byFormat.size === 0) sharedResources.delete(engine);
     throw error;
   }
@@ -342,8 +292,7 @@ function destroySessionResources(session: ActiveRasterTransformSession): void {
     session.previewFrame = null;
   }
   session.uniformBuffer.destroy();
-  session.sourceTexture.destroy();
-  session.workMipTexture?.destroy();
+  session.scratchTexture.destroy();
 }
 
 function writeSessionUniforms(
@@ -499,8 +448,6 @@ export async function beginRasterLayerTransform(
   engine.historyBusy = true;
   engine.publishHistoryState();
   let session: ActiveRasterTransformSession | null = null;
-  let reservation: MemoryReservation | null = null;
-  let reservationClosed = false;
   try {
     await engine.waitForIdle();
     const hot = engine.requireLayerGpu(record.id).hot;
@@ -569,59 +516,38 @@ export async function beginRasterLayerTransform(
       width: sourceScratchRect.width + RASTER_TRANSFORM_TRANSPARENT_GUARD_PX * 2,
       height: sourceScratchRect.height + RASTER_TRANSFORM_TRANSPARENT_GUARD_PX * 2,
     };
-    const logicalMipCount = selectionScope
-      ? 1
-      : Math.floor(Math.log2(Math.max(
-        sourceTextureRect.width,
-        sourceTextureRect.height,
-      ))) + 1;
-    const memoryBytes = rasterTransformSessionMemoryBytes(
-      sourceTextureRect.width,
-      sourceTextureRect.height,
-      logicalMipCount,
-      engine.layerFormat,
-    );
-    reservation = reserveRasterTransformMemory(engine, memoryBytes);
     const shared = await requireSharedResources(engine);
     session = await runGpuAllocationTransaction(
       engine.device,
       `Allocazione Trasforma raster ${sourceScratchRect.width}×${sourceScratchRect.height}`,
       async (transaction) => {
-        const sourceTexture = engine.device.createTexture({
-          label: `Native raster Transform immutable mip 0 layer ${record.id}`,
+        const mipLevelCount = selectionScope
+          ? 1
+          : Math.floor(Math.log2(Math.max(
+            sourceTextureRect.width,
+            sourceTextureRect.height,
+          ))) + 1;
+        const scratchTexture = engine.device.createTexture({
+          label: `Native raster Transform source layer ${record.id}`,
           size: {
             width: sourceTextureRect.width,
             height: sourceTextureRect.height,
             depthOrArrayLayers: 1,
           },
-          mipLevelCount: 1,
+          mipLevelCount,
           format: engine.layerFormat,
           usage:
             GPUTextureUsage.COPY_SRC
             | GPUTextureUsage.COPY_DST
-            | GPUTextureUsage.TEXTURE_BINDING,
+            | GPUTextureUsage.TEXTURE_BINDING
+            | GPUTextureUsage.RENDER_ATTACHMENT,
         });
-        transaction.deferRollback(() => sourceTexture.destroy());
-        const sourceView = sourceTexture.createView({
-          label: `Native raster Transform immutable native mip 0 layer ${record.id}`,
+        transaction.deferRollback(() => scratchTexture.destroy());
+        const scratchView = scratchTexture.createView({
+          label: `Native raster Transform source mips layer ${record.id}`,
+          baseMipLevel: 0,
+          mipLevelCount,
         });
-        const workMipTexture = logicalMipCount > 1
-          ? engine.device.createTexture({
-            label: `Native raster Transform RGBA16F derived mips layer ${record.id}`,
-            size: {
-              width: Math.max(1, Math.floor(sourceTextureRect.width / 2)),
-              height: Math.max(1, Math.floor(sourceTextureRect.height / 2)),
-              depthOrArrayLayers: 1,
-            },
-            mipLevelCount: logicalMipCount - 1,
-            format: "rgba16float",
-            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
-          })
-          : null;
-        transaction.deferRollback(() => workMipTexture?.destroy());
-        const workMipView = workMipTexture?.createView({
-          label: `Native raster Transform RGBA16F derived mip chain layer ${record.id}`,
-        }) ?? null;
         const uniformBuffer = engine.device.createBuffer({
           label: `Native raster Transform uniform layer ${record.id}`,
           size: RASTER_TRANSFORM_UNIFORM_BYTES,
@@ -633,9 +559,8 @@ export async function beginRasterLayerTransform(
           layout: shared.bindGroupLayout,
           entries: [
             { binding: 0, resource: { buffer: uniformBuffer } },
-            { binding: 1, resource: sourceView },
-            { binding: 2, resource: workMipView ?? sourceView },
-            { binding: 3, resource: shared.sampler },
+            { binding: 1, resource: scratchView },
+            { binding: 2, resource: shared.sampler },
           ],
         });
         const selectionMaskBindGroup = selectionScope
@@ -661,17 +586,19 @@ export async function beginRasterLayerTransform(
           sourceScratchRect,
           sourceTextureRect,
           sourcePivot,
-          sourceFormat: engine.layerFormat,
-          sourceTexture,
-          sourceView,
-          workMipTexture,
-          workMipView,
+          scratchTexture,
+          scratchView,
           uniformBuffer,
           bindGroup,
           selectionMaskBindGroup,
           uniformUpload: new Float32Array(RASTER_TRANSFORM_UNIFORM_BYTES / 4),
           shared,
-          memoryBytes,
+          memoryBytes: rasterTransformScratchMemoryBytes(
+            sourceTextureRect.width,
+            sourceTextureRect.height,
+            mipLevelCount,
+            engine.layerFormat,
+          ),
           transform,
           resultBounds: { ...sourceBounds },
           samplingBounds: selectionScope
@@ -703,7 +630,7 @@ export async function beginRasterLayerTransform(
             origin: { x: sourceScratchRect.x, y: sourceScratchRect.y, z: 0 },
           },
           {
-            texture: sourceTexture,
+            texture: scratchTexture,
             mipLevel: 0,
             origin: {
               x: RASTER_TRANSFORM_TRANSPARENT_GUARD_PX,
@@ -717,26 +644,21 @@ export async function beginRasterLayerTransform(
             depthOrArrayLayers: 1,
           },
         );
-        for (let logicalMip = 1; logicalMip < logicalMipCount; logicalMip += 1) {
-          if (!workMipTexture) {
-            throw new Error("Catena mip RGBA16F Trasforma mancante.");
-          }
-          const mipSourceView = logicalMip === 1
-            ? sourceView
-            : workMipTexture.createView({
-              baseMipLevel: logicalMip - 2,
-              mipLevelCount: 1,
-            });
-          const targetView = workMipTexture.createView({
-            baseMipLevel: logicalMip - 1,
+        for (let mipLevel = 1; mipLevel < mipLevelCount; mipLevel += 1) {
+          const sourceView = scratchTexture.createView({
+            baseMipLevel: mipLevel - 1,
+            mipLevelCount: 1,
+          });
+          const targetView = scratchTexture.createView({
+            baseMipLevel: mipLevel,
             mipLevelCount: 1,
           });
           const mipBindGroup = engine.device.createBindGroup({
             layout: shared.mipBindGroupLayout,
-            entries: [{ binding: 0, resource: mipSourceView }],
+            entries: [{ binding: 0, resource: sourceView }],
           });
           const pass = encoder.beginRenderPass({
-            label: `Native raster Transform RGBA16F logical mip ${logicalMip}`,
+            label: `Native raster Transform mip ${mipLevel}`,
             colorAttachments: [{
               view: targetView,
               loadOp: "clear",
@@ -754,8 +676,6 @@ export async function beginRasterLayerTransform(
         return created;
       },
     );
-    engine.memoryReservations.settle(reservation);
-    reservationClosed = true;
     engine.activeRasterTransformSession = session;
     // La preparazione e' finita: da qui la sessione e' aperta e ad ammettere o
     // rifiutare le operazioni e' `activeRasterTransformSession`, non piu'
@@ -775,9 +695,6 @@ export async function beginRasterLayerTransform(
     engine.publishStats();
     return transformSnapshot(session);
   } catch (error) {
-    if (reservation && !reservationClosed) {
-      engine.memoryReservations.release(reservation);
-    }
     if (session) destroySessionResources(session);
     engine.activeRasterTransformSession = null;
     engine.selectionOverlaySuppressed = false;
@@ -958,7 +875,8 @@ async function restoreOriginalPixels(
     encodeTransformPass(engine, session, encoder, dirtyRect);
     encoder.copyTextureToTexture(
       {
-        texture: session.sourceTexture,
+        texture: session.scratchTexture,
+        mipLevel: 0,
         origin: {
           x: RASTER_TRANSFORM_TRANSPARENT_GUARD_PX,
           y: RASTER_TRANSFORM_TRANSPARENT_GUARD_PX,

@@ -5,14 +5,13 @@
 import { SELECTION_LAYER_SIZE, SELECTION_WORDS_PER_ROW } from "./selection-core.ts";
 
 export const RASTER_TRANSFORM_SHADER_STRATEGY =
-  "premultiplied-linear-native-mip0-rgba16float-derived-mips-transparent-border-inverse-affine-manual-trilinear-v4" as const;
+  "premultiplied-linear-transparent-border-inverse-affine-manual-trilinear-v3" as const;
 
 /**
  * Bindings:
  *   0 - 64-byte `RasterTransformUniforms`
- *   1 - immutable native-format tile-bbox mip 0
- *   2 - immutable RGBA16F derived mip chain (logical levels 1…N)
- *   3 - clamp-to-edge linear sampler; transparent border and trilinear LOD are
+ *   1 - immutable tile-bbox scratch with a complete mip chain
+ *   2 - clamp-to-edge linear sampler; transparent border and trilinear LOD are
  *       reconstructed explicitly because WebGPU has no clamp-to-border mode
  *
  * The destination pass must use no blending: every pixel in the dirty union is
@@ -35,19 +34,11 @@ struct VertexOutput {
 };
 
 @group(0) @binding(0) var<uniform> transform: RasterTransformUniforms;
-@group(0) @binding(1) var sourceMip0: texture_2d<f32>;
-@group(0) @binding(2) var workMipChain: texture_2d<f32>;
-@group(0) @binding(3) var sourceSampler: sampler;
-
-fn logicalMipDimensions(mipLevel: u32) -> vec2<u32> {
-  if (mipLevel == 0u) {
-    return textureDimensions(sourceMip0, 0);
-  }
-  return textureDimensions(workMipChain, mipLevel - 1u);
-}
+@group(0) @binding(1) var sourceTexture: texture_2d<f32>;
+@group(0) @binding(2) var sourceSampler: sampler;
 
 fn transparentBorderWeight(uv: vec2<f32>, mipLevel: u32) -> f32 {
-  let dimensions = vec2<f32>(logicalMipDimensions(mipLevel));
+  let dimensions = vec2<f32>(textureDimensions(sourceTexture, mipLevel));
   let texelPosition = uv * dimensions - vec2<f32>(0.5);
   let axisWeight = clamp(
     min(texelPosition + vec2<f32>(1.0), dimensions - texelPosition),
@@ -62,18 +53,12 @@ fn sampleTransparentLevel(uv: vec2<f32>, mipLevel: u32) -> vec4<f32> {
   // by the exact in-bounds bilinear weight turns the replicated edge texel into
   // a transparent-border sample, including after the base guard collapses in
   // deep mip levels.
-  var sampled = vec4<f32>(0.0);
-  if (mipLevel == 0u) {
-    sampled = textureSampleLevel(sourceMip0, sourceSampler, uv, 0.0);
-  } else {
-    sampled = textureSampleLevel(
-      workMipChain,
-      sourceSampler,
-      uv,
-      f32(mipLevel - 1u)
-    );
-  }
-  return sampled * transparentBorderWeight(uv, mipLevel);
+  return textureSampleLevel(
+    sourceTexture,
+    sourceSampler,
+    uv,
+    f32(mipLevel)
+  ) * transparentBorderWeight(uv, mipLevel);
 }
 
 @vertex
@@ -113,14 +98,12 @@ fn fragmentMain(
   // Uniform scale + rotation has an isotropic footprint, so anisotropic taps
   // add no information. Selecting the two mip levels explicitly lets both use
   // a real transparent border instead of clamp-to-edge color replication.
-  let baseDimensions = vec2<f32>(textureDimensions(sourceMip0, 0));
+  let baseDimensions = vec2<f32>(textureDimensions(sourceTexture, 0));
   let footprint = max(
     length(sourceUvDx * baseDimensions),
     length(sourceUvDy * baseDimensions)
   );
-  // The work texture stores logical levels 1…N, therefore its physical level
-  // count is also the maximum logical LOD value.
-  let maximumLevel = textureNumLevels(workMipChain);
+  let maximumLevel = textureNumLevels(sourceTexture) - 1u;
   let lod = clamp(
     log2(max(footprint, 0.000001)),
     0.0,
@@ -170,7 +153,7 @@ struct VertexOutput {
 
 @group(0) @binding(0) var<uniform> transform: RasterTransformUniforms;
 @group(0) @binding(1) var sourceTexture: texture_2d<f32>;
-@group(0) @binding(3) var sourceSampler: sampler;
+@group(0) @binding(2) var sourceSampler: sampler;
 @group(1) @binding(0) var<storage, read> selectionMask: array<u32>;
 
 @vertex
@@ -220,8 +203,8 @@ fn fragmentMain(
 
 /**
  * Exact area reduction for the possibly-NPOT tile-bbox scratch. Reading and
- * the first read may be native RGBA8/RGBA16F, but every destination is
- * RGBA16F. Later levels therefore never reread a quantized RGBA8 mip.
+ * writing use the layer's native linear-premultiplied representation, so the
+ * same WGSL is valid for rgba8unorm and rgba16float render targets.
  */
 export const rasterTransformMipmapShader = /* wgsl */ `
 struct VertexOutput {

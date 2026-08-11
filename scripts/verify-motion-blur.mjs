@@ -179,11 +179,7 @@ assert.match(runtime, /transparent-content-clamp-document-edge/);
 assert.match(runtime, /clampedDocumentPixel\s*=\s*clamp\(/);
 assert.match(runtime, /parameterUploadI32\[word \+ 10\]\s*=\s*documentSize/);
 assert.match(runtime, /parameterUploadI32\[word \+ 11\]\s*=\s*documentSize/);
-assert.match(runtime, /format:\s*engine\.layerFormat/);
-assert.match(runtime, /workTextureA/);
-assert.match(runtime, /workTextureB/);
-assert.match(runtime, /encodeRgba16fToRgba8Resolve/);
-assert.doesNotMatch(runtime, /pack4x8|unpack4x8/i);
+assert.doesNotMatch(runtime, /rgba8|unorm8|pack4x8|unpack4x8/i);
 
 const restore = runtime.slice(
   runtime.indexOf("async function restoreOriginalPixels("),
@@ -210,4 +206,4 @@ assert.match(main, /engine\.cancelRasterMotionBlur/);
 assert.match(main, /historyState\.openEdit === "motion-blur"/);
 assert.match(main, /blurTouchNavigationRequested/);
 
-console.log("Motion Blur RGBA16F-work/RGBA8-storage verification passed.");
+console.log("Destructive 16-bit Motion Blur document-edge verification passed.");

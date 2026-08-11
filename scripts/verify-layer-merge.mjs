@@ -15,8 +15,6 @@ import {
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const core = read("../src/layer-merge-core.ts");
 const runtime = read("../src/engine-layer-merge-runtime.ts");
-const layerRuntime = read("../src/engine-layer-runtime.ts");
-const strokeRenderer = read("../src/stroke-renderer.ts");
 const history = read("../src/engine-history-types.ts");
 const historyRuntime = read("../src/engine-history-runtime.ts");
 const engine = read("../src/brush-engine.ts");
@@ -62,26 +60,6 @@ assert.match(controller, /this\.host\.mergeMixedSceneItems\(\{ keys: \[\.\.\.key
 assert.match(runtime, /renderVectorDrawsToTexture/);
 assert.doesNotMatch(runtime, /rasterizeVectorNodeToLayer/);
 assert.doesNotMatch(runtime, /kind: "vector-rasterize"/);
-
-// The operation accumulates every raster/vector/style contribution in 16F and
-// quantizes the persistent RGBA8 output exactly once.
-assert.match(
-  runtime,
-  /function outputFoldSurface\([\s\S]{0,320}allocateMergedSurface\([\s\S]{0,100}"rgba16float"/,
-);
-assert.match(runtime, /const vectorSurface = allocateMergedSurface\([\s\S]{0,100}"rgba16float"/);
-assert.match(runtime, /format: "rgba16float"/);
-assert.match(runtime, /commitOutputFoldSurface\(/);
-assert.match(runtime, /createRgba16fToRgba8ResolveResources\(/);
-assert.match(runtime, /encodeRgba16fToRgba8Resolve\(/);
-assert.match(runtime, /Merge layer single final RGBA8 resolve/);
-assert.match(runtime, /rgba16fFullBytes \* 3/);
-assert.match(layerRuntime, /format: destination\.format/);
-assert.match(layerRuntime, /layerFoldPipelinesForFormat\(engine, destination\.format\)/);
-assert.match(layerRuntime, /gpu\.bake\.format === targetFormat/);
-assert.match(layerRuntime, /createLayerBakeCandidate\([\s\S]{0,140}targetFormat/);
-assert.match(strokeRenderer, /targetFormat\?: "rgba8unorm" \| "rgba16float"/);
-assert.match(strokeRenderer, /Style stack analytic transient RGBA16F bake pipeline/);
 
 // Conservative representability gates are part of the correctness contract.
 for (const fragment of [

@@ -661,7 +661,6 @@ import {
   populateBrushUniformUpload,
   populateGrainUniformUpload,
   populateStrokeGlazeUniformUpload,
-  type StrokeGlazeAccumulationMode,
 } from "./engine-stamp-upload";
 import {
   benchmarkEffectsWorkingSet,
@@ -918,7 +917,6 @@ export type {
   RasterStrokePosition,
   RasterStrokeStyle,
 } from "./stroke-core";
-export type { Rgba16fToRgba8ResolveResources } from "./engine-rgba16f-resolve";
 export type { RasterColorOverlayStyle } from "./raster-color-overlay-core";
 
 export type {
@@ -1003,11 +1001,8 @@ export class BrushEngine {
   private context!: GPUCanvasContext;
   canvasFormat!: GPUTextureFormat;
 
-  /**
-   * Authoritative layer storage is linear RGBA8. Continuous paint/effect math
-   * lives in RGBA16F/f32 scratch and is quantized only when an operation commits.
-   */
-  layerFormat: LayerFormat = "rgba8unorm";
+  /** Authoritative document pixels are always initialized in linear RGBA16F. */
+  layerFormat: LayerFormat = "rgba16float";
   layerTexture!: GPUTexture;
   layerView!: GPUTextureView;
   layerSamplingView!: GPUTextureView;
@@ -1497,12 +1492,6 @@ export class BrushEngine {
   grainShapeAdditivePipeline!: GPURenderPipeline;
   grainShapeOccupancyNormalPipeline!: GPURenderPipeline;
   grainShapeOccupancyAdditivePipeline!: GPURenderPipeline;
-  additiveGlazePipeline!: GPURenderPipeline;
-  additiveGlazeShapePipeline!: GPURenderPipeline;
-  additiveGlazeShapeOccupancyPipeline!: GPURenderPipeline;
-  grainAdditiveGlazePipeline!: GPURenderPipeline;
-  grainAdditiveGlazeShapePipeline!: GPURenderPipeline;
-  grainAdditiveGlazeShapeOccupancyPipeline!: GPURenderPipeline;
   uniformedGlazePipeline!: GPURenderPipeline;
   uniformedGlazeShapePipeline!: GPURenderPipeline;
   uniformedGlazeShapeOccupancyPipeline!: GPURenderPipeline;
@@ -1595,7 +1584,6 @@ export class BrushEngine {
   readonly customBrushAssets = new CustomBrushAssetRegistry();
   pendingStamps: Stamp[] = [];
   pendingBlendBatches: PendingBlendBatch[] = [];
-  pendingBlendFinalization: { actionId: number; settings: BrushSettings } | null = null;
   // Allocating the 8,192-step ring on every pointer-down caused avoidable GC
   // spikes. One planner is safe to reuse because the engine admits only one
   // active stroke and configure/reset fully replace its gesture state.
@@ -1696,7 +1684,6 @@ export class BrushEngine {
   ) {
     this.canvas = canvas;
     this.callbacks = callbacks;
-    this.layerFormat = options.initialLayerFormat ?? this.layerFormat;
     this.bevelBoundingFieldEnabled = options.bevelBoundingFieldEnabled === true;
     this.layerMemoryStressTestEnabled = options.layerMemoryStressTestEnabled === true;
     this.layerCompressionTestEnabled = options.layerCompressionTestEnabled === true;
@@ -1805,7 +1792,7 @@ export class BrushEngine {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(
         `La GPU non supporta tutte le risorse richieste dal documento ${this.layerFormat}. `
-        + `Impossibile inizializzare il formato richiesto. Dettaglio: ${message}`,
+        + `Il motore non esegue fallback a RGBA8. Dettaglio: ${message}`,
       );
     }
 
@@ -2922,16 +2909,16 @@ export class BrushEngine {
   }
 
   async setLayerFormat(format: LayerFormat): Promise<boolean> {
-    if (format === this.layerFormat) {
-      return true;
-    }
     if (format !== "rgba16float") {
       const error = new Error(
-        `Cambio dinamico verso ${format} non supportato. `
-        + "Il prodotto usa RGBA8 come storage; RGBA16F resta un override diagnostico.",
+        `Formato documento ${format} rifiutato: il motore usa permanentemente `
+        + "RGBA16F e non esegue fallback a RGBA8.",
       );
       this.callbacks.onStatus?.(error.message, "error");
       throw error;
+    }
+    if (format === this.layerFormat) {
+      return true;
     }
     if (
       !this.initialized
@@ -4023,14 +4010,8 @@ export class BrushEngine {
       endingStroke.blendPlanner?.finish();
       drainBlendPlanner(this, endingStroke);
       const historyChanged = endingStroke.historyCommitted;
-      if (historyChanged && endingStroke.blendSettings) {
-        this.pendingBlendFinalization = {
-          actionId: endingStroke.historyActionId,
-          settings: endingStroke.blendSettings,
-        };
-      }
       this.activeStroke = null;
-      if (this.pendingBlendBatches.length > 0 || this.pendingBlendFinalization) {
+      if (this.pendingBlendBatches.length > 0) {
         this.displayDirty = true;
         this.requestRender();
       }
@@ -4145,10 +4126,6 @@ export class BrushEngine {
     }
 
     this.activeStroke = null;
-    if (stroke.tool === "blend") {
-      this.blendRenderer?.abandonStroke(stroke.historyActionId);
-      this.pendingBlendFinalization = null;
-    }
     if (this.lightGlazeSession?.historyActionId === stroke.historyActionId) {
       this.abandonLightGlazeSession();
     }
@@ -4277,9 +4254,7 @@ export class BrushEngine {
     }
     this.pendingStamps.length = 0;
     this.pendingBlendBatches.length = 0;
-    this.pendingBlendFinalization = null;
     this.activeStroke = null;
-    this.blendRenderer?.abandonStroke();
     this.abandonLightGlazeSession();
     this.invalidateAdaptivePreview();
     this.resetHistoryState();
@@ -4364,7 +4339,6 @@ export class BrushEngine {
     return this.frameRequest !== null
       || this.pendingStamps.length > 0
       || this.pendingBlendBatches.length > 0
-      || this.pendingBlendFinalization !== null
       || this.clearRequested
       || this.displayDirty
       || this.lightGlazeSession !== null;
@@ -5532,7 +5506,6 @@ export class BrushEngine {
       this.frameRequest === null ? 0 : 1,
       this.pendingStamps.length,
       this.pendingBlendBatches.length,
-      Number(this.pendingBlendFinalization !== null),
       Number(this.clearRequested),
       Number(this.displayDirty),
       Number(Boolean(this.lightGlazeSession?.commitRequested)),
@@ -6039,7 +6012,6 @@ export class BrushEngine {
     generation: number,
     injectBakeFault: boolean,
     completionPolicy: LayerGpuCompletionPolicy = "await-immediately",
-    format: LayerFormat = this.layerFormat,
   ): Promise<LayerBakeResources> {
     if (injectBakeFault && completionPolicy !== "await-immediately") {
       throw new Error("Il fault bake richiede il completamento GPU immediato.");
@@ -6048,7 +6020,7 @@ export class BrushEngine {
     if (!renderer) {
       throw new Error("Bake impossibile: compositore effetti non disponibile.");
     }
-    const bytesPerPixel = format === "rgba16float" ? 8 : 4;
+    const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
     const memoryBytes = LAYER_SIZE * LAYER_SIZE * bytesPerPixel;
     const nonTransparentBounds = layerCompositeVisualBounds(this, record);
     return runGpuAllocationTransaction(
@@ -6058,7 +6030,7 @@ export class BrushEngine {
         const texture = this.device.createTexture({
           label: `Bake analitico livello ${record.id} #${generation}`,
           size: { width: LAYER_SIZE, height: LAYER_SIZE, depthOrArrayLayers: 1 },
-          format,
+          format: this.layerFormat,
           usage:
             GPUTextureUsage.STORAGE_BINDING
             | GPUTextureUsage.TEXTURE_BINDING
@@ -6078,7 +6050,6 @@ export class BrushEngine {
         renderer.encodeBake({
           encoder,
           targetView: storageView,
-          targetFormat: format,
           sourceMode: "permanent",
           style: record.strokeStyle,
           bevelStyle: record.bevelStyle,
@@ -6096,7 +6067,6 @@ export class BrushEngine {
           texture,
           storageView,
           samplingView,
-          format,
           memoryBytes,
           generation,
           nonTransparentBounds: { ...nonTransparentBounds },
@@ -7798,7 +7768,7 @@ export class BrushEngine {
 
   writeLightGlazeUniforms(
     opacity: number,
-    accumulationMode: StrokeGlazeAccumulationMode,
+    accumulationMode: "source-over" | "light-no-build-up" | "encoded-srgb-source-over",
     tintLinear: readonly [number, number, number] | null,
   ): void {
     const upload = new ArrayBuffer(LIGHT_GLAZE_UNIFORM_BYTES);
@@ -8887,12 +8857,9 @@ export class BrushEngine {
       return null;
     }
     const intenseBlending = settings.blendMode === "intense-blending";
-    const standardNormal = settings.blendMode === "normal";
-    const standardAdditive = settings.blendMode === "additive";
-    const opacityPerDeposit = standardNormal || standardAdditive || intenseBlending;
     this.writeThicknessTailBrushUniforms({
       ...settings,
-      opacity: opacityPerDeposit ? settings.opacity : 1,
+      opacity: intenseBlending ? settings.opacity : 1,
       blendMode: "normal",
     }, LAYER_SIZE, LAYER_SIZE, 0, 0);
     this.device.queue.writeBuffer(
@@ -9077,7 +9044,6 @@ export class BrushEngine {
     const lightNoBuildUp = settings.blendMode === "light-glaze"
       || settings.blendMode === "m1-glaze";
     const intenseBlending = settings.blendMode === "intense-blending";
-    const standardAdditive = settings.blendMode === "additive";
     const pipeline = lightNoBuildUp
       ? frame.grainActive
         ? isShape
@@ -9090,19 +9056,7 @@ export class BrushEngine {
             ? this.lightNoBuildUpShapeOccupancyPipeline
             : this.lightNoBuildUpShapePipeline
           : this.lightNoBuildUpPipeline
-      : standardAdditive
-        ? frame.grainActive
-          ? isShape
-            ? useShapeOccupancy
-              ? this.grainAdditiveGlazeShapeOccupancyPipeline
-              : this.grainAdditiveGlazeShapePipeline
-            : this.grainAdditiveGlazePipeline
-          : isShape
-            ? useShapeOccupancy
-              ? this.additiveGlazeShapeOccupancyPipeline
-              : this.additiveGlazeShapePipeline
-            : this.additiveGlazePipeline
-        : intenseBlending
+      : intenseBlending
         ? frame.grainActive
           ? isShape
             ? useShapeOccupancy
@@ -9170,7 +9124,6 @@ export class BrushEngine {
   private vectorTextFastPresentationHasAuthoritativeWork(): boolean {
     return this.pendingStamps.length > 0
       || this.pendingBlendBatches.length > 0
-      || this.pendingBlendFinalization !== null
       || this.clearRequested
       || Boolean(this.lightGlazeSession?.commitRequested)
       || this.thicknessTailPreviewEligible()
@@ -9304,20 +9257,6 @@ export class BrushEngine {
       }
       blendBatch = this.pendingBlendBatches.slice(0, blendBatchSize);
     }
-    const blendFinalization = this.pendingBlendFinalization;
-    const finalizeBlend = Boolean(
-      blendFinalization
-      && batch.length === 0
-      && !lightGlazeSession
-      && (
-        blendBatch.length === 0
-          ? this.pendingBlendBatches.length === 0
-          : blendBatch[0].actionId === blendFinalization.actionId
-            && !this.pendingBlendBatches
-              .slice(blendBatch.length)
-              .some((pending) => pending.actionId === blendFinalization.actionId)
-      )
-    );
     if (lightGlazeSession) {
       let hasPendingStampForGesture = false;
       for (let index = batchSize; index < this.pendingStamps.length; index += 1) {
@@ -9336,7 +9275,6 @@ export class BrushEngine {
     const shouldSubmit = this.clearRequested
       || batch.length > 0
       || blendBatch.length > 0
-      || finalizeBlend
       || this.displayDirty
       || Boolean(lightGlazeSession?.commitRequested)
       || this.thicknessTailPreviewEligible()
@@ -9349,18 +9287,14 @@ export class BrushEngine {
     const clearLayer = this.clearRequested;
     const renderSettings = blendBatch[0]?.settings
       ?? lightGlazeSession?.settings
-      ?? (finalizeBlend ? blendFinalization?.settings : undefined)
       ?? this.settings;
     const start = performance.now();
-    const timing = blendBatch.length > 0 || finalizeBlend
+    const timing = blendBatch.length > 0
       ? this.submitBlendImmediate(
         blendBatch.map((pending) => pending.batch),
         clearLayer,
         renderSettings,
-        blendBatch[0]?.actionId ?? blendFinalization!.actionId,
-        true,
-        null,
-        finalizeBlend,
+        blendBatch[0].actionId,
       )
       : this.submitImmediate(batch, clearLayer, renderSettings);
     if (batch.length > 0) {
@@ -9368,9 +9302,6 @@ export class BrushEngine {
     }
     if (blendBatch.length > 0) {
       this.pendingBlendBatches.splice(0, blendBatch.length);
-    }
-    if (finalizeBlend) {
-      this.pendingBlendFinalization = null;
     }
     this.lastCpuFrameMs = performance.now() - start;
 
@@ -9404,7 +9335,6 @@ export class BrushEngine {
     if (
       this.pendingStamps.length > 0
       || this.pendingBlendBatches.length > 0
-      || this.pendingBlendFinalization !== null
       || this.displayDirty
       || this.clearRequested
       || Boolean(this.lightGlazeSession?.commitRequested)
@@ -10636,9 +10566,6 @@ export class BrushEngine {
       ensurePresentationCacheTexture(this);
     }
     const intenseBlending = settings.blendMode === "intense-blending";
-    const standardNormal = settings.blendMode === "normal";
-    const standardAdditive = settings.blendMode === "additive";
-    const opacityPerDeposit = standardNormal || standardAdditive || intenseBlending;
     // Light: Flow enters each candidate deposit, but MAX — never source-over —
     // combines every physical stamp belonging to this pointer-down. Opacity is
     // deliberately forced to 1 here and applied exactly once at lift. A later
@@ -10649,7 +10576,7 @@ export class BrushEngine {
     // measured Procreate spacing/jitter fixtures.
     this.writeBrushUniforms({
       ...settings,
-      opacity: opacityPerDeposit ? settings.opacity : 1,
+      opacity: intenseBlending ? settings.opacity : 1,
       blendMode: "normal",
     });
     if (grainActive) {
@@ -10670,12 +10597,10 @@ export class BrushEngine {
       ];
     }
     this.writeLightGlazeUniforms(
-      opacityPerDeposit ? 1 : settings.opacity,
+      intenseBlending ? 1 : settings.opacity,
       lightNoBuildUp
         ? "light-no-build-up"
-        : standardAdditive
-          ? "additive"
-          : intenseBlending
+        : intenseBlending
           ? "encoded-srgb-source-over"
           : "source-over",
       session.tintLinear,
@@ -10833,19 +10758,7 @@ export class BrushEngine {
                 ? this.lightNoBuildUpShapeOccupancyPipeline
                 : this.lightNoBuildUpShapePipeline
               : this.lightNoBuildUpPipeline
-          : standardAdditive
-            ? grainActive
-              ? isShape
-                ? useShapeOccupancy
-                  ? this.grainAdditiveGlazeShapeOccupancyPipeline
-                  : this.grainAdditiveGlazeShapePipeline
-                : this.grainAdditiveGlazePipeline
-              : isShape
-                ? useShapeOccupancy
-                  ? this.additiveGlazeShapeOccupancyPipeline
-                  : this.additiveGlazeShapePipeline
-                : this.additiveGlazePipeline
-            : intenseBlending
+          : intenseBlending
             ? grainActive
               ? isShape
                 ? useShapeOccupancy
@@ -11185,13 +11098,16 @@ export class BrushEngine {
     if (session.commitRequested) {
       if (session.hasContent && authoritativeDirtyRect) {
         const compositeStart = performance.now();
-        if (!lightNoBuildUp) {
+        if (
+          session.settings.blendMode === "uniformed-glaze"
+          || session.settings.blendMode === "intense-blending"
+        ) {
           if (
             !this.lightGlazeCommitTileTexture
             || !this.lightGlazeCommitTileView
             || !this.lightGlazeCommitTileBindGroup
           ) {
-            throw new Error("Scratch tile 16F non disponibile al commit del tratto.");
+            throw new Error("Scratch tile Intense Blending non disponibile al commit.");
           }
           const tileUniformUpload = new Uint32Array(
             LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BUFFER_BYTES / Uint32Array.BYTES_PER_ELEMENT,
@@ -11210,7 +11126,7 @@ export class BrushEngine {
               tileX += LIGHT_GLAZE_COMMIT_TILE_EXTENT
             ) {
               if (tileIndex >= LIGHT_GLAZE_COMMIT_TILE_SLOT_COUNT) {
-                throw new Error("Numero di tile del tratto oltre il limite del documento.");
+                throw new Error("Numero di tile Intense Blending oltre il limite del documento.");
               }
               const tileWidth = Math.min(
                 LIGHT_GLAZE_COMMIT_TILE_EXTENT,
@@ -11586,7 +11502,6 @@ export class BrushEngine {
     historyActionId: number,
     present = true,
     replayBatch: BlendHistoryRenderBatch | null = null,
-    finalizeStroke = false,
   ): SubmitTiming {
     const renderer = this.blendRenderer;
     if (!renderer) {
@@ -11643,17 +11558,8 @@ export class BrushEngine {
             settings,
             historyActionId,
             clearLayer,
-            null,
-            finalizeStroke,
           )
-          : renderer.submit(
-            batches,
-            settings,
-            historyActionId,
-            clearLayer,
-            null,
-            finalizeStroke,
-          );
+          : renderer.submit(batches, settings, historyActionId, clearLayer);
         blendCpuMs = blendTiming.cpuMs;
         blendDirtyRect = blendTiming.dirtyRect;
       } else {
@@ -11690,8 +11596,6 @@ export class BrushEngine {
               historyActionId,
               clearLayer && start === 0,
               historyTransfer,
-              finalizeStroke
-                && start + renderer.maximumBatchesPerSubmit >= batches.length,
             )
             : renderer.submit(
               chunk,
@@ -11699,8 +11603,6 @@ export class BrushEngine {
               historyActionId,
               clearLayer && start === 0,
               historyTransfer,
-              finalizeStroke
-                && start + renderer.maximumBatchesPerSubmit >= batches.length,
             );
           historyByteOffset += chunkBytes;
           blendCpuMs += chunkTiming.cpuMs;

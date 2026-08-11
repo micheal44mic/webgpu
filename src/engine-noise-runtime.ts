@@ -9,13 +9,6 @@ import { commitHistoryActionAtomically } from "./engine-history-runtime";
 import { invalidateActiveLayerBake } from "./engine-layer-runtime";
 import type { RasterFilterHistoryAction } from "./engine-history-types";
 import type { DirtyRect } from "./engine-stroke-types";
-import {
-  createRgba16fToRgba8ResolveResources,
-  destroyRgba16fToRgba8ResolveResources,
-  encodeRgba16fToRgba8Resolve,
-  type Rgba16fToRgba8ResolveResources,
-} from "./engine-rgba16f-resolve";
-import type { LayerFormat } from "./engine-types";
 import { publishMixedScene } from "./engine-vector-text-runtime";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import {
@@ -69,7 +62,6 @@ export interface RasterNoiseSnapshot {
 
 export interface ActiveRasterNoiseSession {
   readonly layerId: number;
-  readonly sourceFormat: LayerFormat;
   readonly sourceBounds: DirtyRect;
   readonly sourceTileMask: Uint32Array;
   readonly sourceTexture: GPUTexture;
@@ -79,10 +71,8 @@ export interface ActiveRasterNoiseSession {
   readonly parameterUploadI32: Int32Array;
   readonly parameterUploadU32: Uint32Array;
   readonly parameterUploadF32: Float32Array;
-  readonly outputTexture: GPUTexture;
   readonly outputView: GPUTextureView;
   readonly bindGroup: GPUBindGroup;
-  readonly rgba8Resolve: Rgba16fToRgba8ResolveResources | null;
   readonly shared: RasterNoiseSharedResources;
   readonly randomSeedLow: number;
   readonly randomSeedHigh: number;
@@ -275,14 +265,9 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   let documentPosition = parameters.sourceOriginAndSize.xy + localPosition;
   let source = textureLoad(immutableSource, localPosition, 0);
 
-  if (!(source.a > 0.0)) {
-    textureStore(authoritativeOutput, localPosition, source);
-    return;
-  }
-  if (any(source != source) || any(abs(source) > vec4<f32>(HALF_MAX))) {
-    textureStore(authoritativeOutput, localPosition, source);
-    return;
-  }
+  // The source copy already restored pixels that the filter must preserve.
+  if (!(source.a > 0.0)) { return; }
+  if (any(source != source) || any(abs(source) > vec4<f32>(HALF_MAX))) { return; }
 
   let field = evaluateNoise(vec2<f32>(documentPosition) + vec2<f32>(0.5));
   let amount = parameters.amountScaleOctavesTurbulence.x;
@@ -297,7 +282,7 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   if (any(resultRgb != resultRgb)) { return; }
   textureStore(
     authoritativeOutput,
-    localPosition,
+    documentPosition,
     vec4<f32>(
       clamp(resultRgb, vec3<f32>(-HALF_MAX), vec3<f32>(HALF_MAX)),
       source.a
@@ -454,9 +439,7 @@ function destroySessionResources(session: ActiveRasterNoiseSession): void {
     session.previewFrame = null;
   }
   session.sourceTexture.destroy();
-  session.outputTexture.destroy();
   session.parameterBuffer.destroy();
-  destroyRgba16fToRgba8ResolveResources(session.rgba8Resolve);
 }
 
 /**
@@ -541,34 +524,6 @@ function encodeRequestedPreview(
       Math.ceil(bounds.height / WORKGROUP_HEIGHT),
     );
     pass.end();
-    if (session.sourceFormat === "rgba8unorm") {
-      if (!session.rgba8Resolve) {
-        throw new Error("Noise: resolve RGBA8 mancante.");
-      }
-      encodeRgba16fToRgba8Resolve(
-        engine.device,
-        encoder,
-        session.rgba8Resolve,
-        {
-          sourceX: 0,
-          sourceY: 0,
-          targetX: bounds.x,
-          targetY: bounds.y,
-          width: bounds.width,
-          height: bounds.height,
-        },
-        "Noise RGBA16F → layer RGBA8",
-      );
-    } else {
-      encoder.copyTextureToTexture(
-        { texture: session.outputTexture },
-        {
-          texture: engine.layerTexture,
-          origin: { x: bounds.x, y: bounds.y, z: 0 },
-        },
-        { width: bounds.width, height: bounds.height, depthOrArrayLayers: 1 },
-      );
-    }
   }
   engine.device.queue.submit([encoder.finish()]);
   setAuthoritativeMetadata(engine, bounds, session.sourceTileMask);
@@ -716,6 +671,10 @@ export async function beginRasterNoise(
   if (!record.hasContent || !record.contentBounds) {
     throw new Error("Il livello raster selezionato è vuoto.");
   }
+  if (engine.layerFormat !== "rgba16float") {
+    throw new Error("Noise distruttivo richiede un documento RGBA16F.");
+  }
+
   engine.cancelLayerColdCompressionIdle();
   engine.historyBusy = true;
   engine.publishHistoryState();
@@ -746,7 +705,7 @@ export async function beginRasterNoise(
             height: sourceBounds.height,
             depthOrArrayLayers: 1,
           },
-          format: engine.layerFormat,
+          format: "rgba16float",
           usage:
             GPUTextureUsage.COPY_SRC
             | GPUTextureUsage.COPY_DST
@@ -763,21 +722,7 @@ export async function beginRasterNoise(
         });
         transaction.deferRollback(() => parameterBuffer.destroy());
         const parameterUpload = new ArrayBuffer(PARAMETER_BYTES);
-        const outputTexture = engine.device.createTexture({
-          label: `Native raster Noise RGBA16F work ${sourceBounds.width}x${sourceBounds.height}`,
-          size: {
-            width: sourceBounds.width,
-            height: sourceBounds.height,
-            depthOrArrayLayers: 1,
-          },
-          format: "rgba16float",
-          usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC
-            | GPUTextureUsage.TEXTURE_BINDING,
-        });
-        transaction.deferRollback(() => outputTexture.destroy());
-        const outputView = outputTexture.createView({
-          label: "Native raster Noise RGBA16F work view",
-        });
+        const outputView = hot.view;
         const bindGroup = engine.device.createBindGroup({
           label: "Native raster Noise bind group",
           layout: shared.bindGroupLayout,
@@ -790,20 +735,8 @@ export async function beginRasterNoise(
             { binding: 2, resource: outputView },
           ],
         });
-        const rgba8Resolve = engine.layerFormat === "rgba8unorm"
-          ? await createRgba16fToRgba8ResolveResources(
-            engine.device,
-            outputView,
-            engine.layerView,
-            "Noise",
-          )
-          : null;
-        transaction.deferRollback(() => {
-          destroyRgba16fToRgba8ResolveResources(rgba8Resolve);
-        });
         const created: ActiveRasterNoiseSession = {
           layerId: record.id,
-          sourceFormat: engine.layerFormat,
           sourceBounds,
           sourceTileMask,
           sourceTexture,
@@ -813,18 +746,14 @@ export async function beginRasterNoise(
           parameterUploadI32: new Int32Array(parameterUpload),
           parameterUploadU32: new Uint32Array(parameterUpload),
           parameterUploadF32: new Float32Array(parameterUpload),
-          outputTexture,
           outputView,
           bindGroup,
-          rgba8Resolve,
           shared,
           randomSeedLow: randomSeed.low,
           randomSeedHigh: randomSeed.high,
           memoryBytes:
-            sourceBounds.width * sourceBounds.height
-              * ((engine.layerFormat === "rgba16float" ? 8 : 4) + BYTES_PER_RGBA16F_PIXEL)
-            + PARAMETER_BYTES
-            + (rgba8Resolve?.memoryBytes ?? 0),
+            sourceBounds.width * sourceBounds.height * BYTES_PER_RGBA16F_PIXEL
+            + PARAMETER_BYTES,
           settings,
           requestedSerial: 1,
           encodedSerial: 0,

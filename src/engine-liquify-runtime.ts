@@ -9,13 +9,6 @@ import { commitHistoryActionAtomically } from "./engine-history-runtime";
 import type { RasterFilterHistoryAction } from "./engine-history-types";
 import { invalidateActiveLayerBake } from "./engine-layer-runtime";
 import type { DirtyRect } from "./engine-stroke-types";
-import {
-  createRgba16fToRgba8ResolveResources,
-  destroyRgba16fToRgba8ResolveResources,
-  encodeRgba16fToRgba8Resolve,
-  type Rgba16fToRgba8ResolveResources,
-} from "./engine-rgba16f-resolve";
-import type { LayerFormat } from "./engine-types";
 import type { LayerPoint } from "./engine-types";
 import { publishMixedScene } from "./engine-vector-text-runtime";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
@@ -57,7 +50,7 @@ import {
 export const RASTER_LIQUIFY_RUNTIME_BUILD =
   "raster-liquify-webgpu-v2-composed-warp-stable-patterns-transactional" as const;
 export const RASTER_LIQUIFY_MEMORY_STRATEGY =
-  "one-full-displacement-one-full-rgba16f-output-one-cropped-source-one-reused-swept-dirty-scratch" as const;
+  "one-full-displacement-one-cropped-source-one-reused-swept-dirty-scratch" as const;
 export const RASTER_LIQUIFY_INPUT_STRATEGY =
   "coalesced-pressure-mode-aware-resampling-stable-axis-hold-resampled-momentum" as const;
 
@@ -121,14 +114,11 @@ export interface RasterLiquifySnapshot {
 
 export interface ActiveRasterLiquifySession {
   readonly layerId: number;
-  readonly sourceFormat: LayerFormat;
   readonly sourceBounds: DirtyRect;
   readonly sourceTileMask: Uint32Array;
   readonly sourceScratchBounds: DirtyRect;
   readonly sourceTexture: GPUTexture;
   readonly sourceView: GPUTextureView;
-  readonly outputTexture: GPUTexture;
-  readonly outputView: GPUTextureView;
   readonly displacementTexture: GPUTexture;
   readonly displacementView: GPUTextureView;
   readonly displacementScratchTexture: GPUTexture;
@@ -140,7 +130,6 @@ export interface ActiveRasterLiquifySession {
   readonly uniformScratch: ArrayBuffer;
   readonly updateBindGroup: GPUBindGroup;
   readonly resolveBindGroup: GPUBindGroup;
-  readonly rgba8Resolve: Rgba16fToRgba8ResolveResources | null;
   readonly shared: LiquifySharedResources;
   readonly memoryBytes: number;
   readonly pendingDabs: LiquifyDab[];
@@ -394,11 +383,9 @@ function destroySessionResources(session: ActiveRasterLiquifySession): void {
     session.previewFrame = null;
   }
   session.sourceTexture.destroy();
-  session.outputTexture.destroy();
   session.displacementTexture.destroy();
   session.displacementScratchTexture.destroy();
   session.uniformBuffer.destroy();
-  destroyRgba16fToRgba8ResolveResources(session.rgba8Resolve);
 }
 
 export function abandonRasterLiquifySession(engine: BrushEngine): boolean {
@@ -579,37 +566,6 @@ function encodePreviewBatch(
     Math.ceil(dirty.height / LIQUIFY_WORKGROUP_SIZE),
   );
   resolve.end();
-  if (session.sourceFormat === "rgba8unorm") {
-    if (!session.rgba8Resolve) {
-      throw new Error("Liquify: resolve RGBA8 mancante.");
-    }
-    encodeRgba16fToRgba8Resolve(
-      engine.device,
-      encoder,
-      session.rgba8Resolve,
-      {
-        sourceX: dirty.x,
-        sourceY: dirty.y,
-        targetX: dirty.x,
-        targetY: dirty.y,
-        width: dirty.width,
-        height: dirty.height,
-      },
-      "Liquify RGBA16F → layer RGBA8",
-    );
-  } else {
-    encoder.copyTextureToTexture(
-      {
-        texture: session.outputTexture,
-        origin: { x: dirty.x, y: dirty.y, z: 0 },
-      },
-      {
-        texture: engine.layerTexture,
-        origin: { x: dirty.x, y: dirty.y, z: 0 },
-      },
-      { width: dirty.width, height: dirty.height, depthOrArrayLayers: 1 },
-    );
-  }
   engine.device.queue.submit([encoder.finish()]);
 
   updateResultMetadata(engine, session);
@@ -934,37 +890,6 @@ async function restoreOriginalPixels(
       Math.ceil(dirty.height / LIQUIFY_WORKGROUP_SIZE),
     );
     resolve.end();
-    if (session.sourceFormat === "rgba8unorm") {
-      if (!session.rgba8Resolve) {
-        throw new Error("Liquify: resolve RGBA8 mancante durante il ripristino.");
-      }
-      encodeRgba16fToRgba8Resolve(
-        engine.device,
-        encoder,
-        session.rgba8Resolve,
-        {
-          sourceX: dirty.x,
-          sourceY: dirty.y,
-          targetX: dirty.x,
-          targetY: dirty.y,
-          width: dirty.width,
-          height: dirty.height,
-        },
-        "Ripristino Liquify RGBA16F → layer RGBA8",
-      );
-    } else {
-      encoder.copyTextureToTexture(
-        {
-          texture: session.outputTexture,
-          origin: { x: dirty.x, y: dirty.y, z: 0 },
-        },
-        {
-          texture: engine.layerTexture,
-          origin: { x: dirty.x, y: dirty.y, z: 0 },
-        },
-        { width: dirty.width, height: dirty.height, depthOrArrayLayers: 1 },
-      );
-    }
   }
   engine.device.queue.submit([encoder.finish()]);
   setAuthoritativeMetadata(engine, session.sourceBounds, session.sourceTileMask);
@@ -1047,6 +972,10 @@ export async function beginRasterLiquify(
   if (!record.hasContent || !record.contentBounds) {
     throw new Error("Il livello raster selezionato è vuoto.");
   }
+  if (engine.layerFormat !== "rgba16float") {
+    throw new Error("Liquify distruttivo richiede un documento RGBA16F.");
+  }
+
   engine.cancelLayerColdCompressionIdle();
   engine.historyBusy = true;
   engine.publishHistoryState();
@@ -1077,15 +1006,11 @@ export async function beginRasterLiquify(
     if (Number.isFinite(maximumDispatch) && scratchWorkgroups > maximumDispatch) {
       throw new Error("Liquify: dimensione dispatch non supportata dalla GPU.");
     }
-    const sourceBytesPerPixel = engine.layerFormat === "rgba16float" ? 8 : 4;
-    const memoryBytes =
-      sourceScratchBounds.width * sourceScratchBounds.height * sourceBytesPerPixel
-      + (
-        engine.layerSize * engine.layerSize * 2
-        + scratchExtent * scratchExtent
-      ) * BYTES_PER_RGBA16F_PIXEL
-      + uniformStride * UNIFORM_SLOT_COUNT
-      + (engine.layerFormat === "rgba8unorm" ? 32 : 0);
+    const memoryBytes = (
+      sourceScratchBounds.width * sourceScratchBounds.height
+      + engine.layerSize * engine.layerSize
+      + scratchExtent * scratchExtent
+    ) * BYTES_PER_RGBA16F_PIXEL + uniformStride * UNIFORM_SLOT_COUNT;
     reservation = reserveSessionMemory(engine, memoryBytes);
 
     const session = await runGpuAllocationTransaction(
@@ -1099,7 +1024,7 @@ export async function beginRasterLiquify(
             height: sourceScratchBounds.height,
             depthOrArrayLayers: 1,
           },
-          format: engine.layerFormat,
+          format: "rgba16float",
           usage:
             GPUTextureUsage.COPY_DST
             | GPUTextureUsage.COPY_SRC
@@ -1108,23 +1033,6 @@ export async function beginRasterLiquify(
         transaction.deferRollback(() => sourceTexture.destroy());
         const sourceView = sourceTexture.createView({
           label: "Native raster Liquify immutable source view",
-        });
-        const outputTexture = engine.device.createTexture({
-          label: `Native raster Liquify RGBA16F output ${engine.layerSize}x${engine.layerSize}`,
-          size: {
-            width: engine.layerSize,
-            height: engine.layerSize,
-            depthOrArrayLayers: 1,
-          },
-          format: "rgba16float",
-          usage:
-            GPUTextureUsage.STORAGE_BINDING
-            | GPUTextureUsage.TEXTURE_BINDING
-            | GPUTextureUsage.COPY_SRC,
-        });
-        transaction.deferRollback(() => outputTexture.destroy());
-        const outputView = outputTexture.createView({
-          label: "Native raster Liquify RGBA16F output view",
         });
         const displacementTexture = engine.device.createTexture({
           label: `Native raster Liquify displacement field ${engine.layerSize}x${engine.layerSize}`,
@@ -1185,31 +1093,17 @@ export async function beginRasterLiquify(
             },
             { binding: 1, resource: displacementView },
             { binding: 2, resource: sourceView },
-            { binding: 3, resource: outputView },
+            { binding: 3, resource: engine.layerView },
           ],
-        });
-        const rgba8Resolve = engine.layerFormat === "rgba8unorm"
-          ? await createRgba16fToRgba8ResolveResources(
-            engine.device,
-            outputView,
-            engine.layerView,
-            "Liquify",
-          )
-          : null;
-        transaction.deferRollback(() => {
-          destroyRgba16fToRgba8ResolveResources(rgba8Resolve);
         });
         const uniformUpload = new ArrayBuffer(uniformStride * UNIFORM_SLOT_COUNT);
         const created: ActiveRasterLiquifySession = {
           layerId: record.id,
-          sourceFormat: engine.layerFormat,
           sourceBounds,
           sourceTileMask,
           sourceScratchBounds,
           sourceTexture,
           sourceView,
-          outputTexture,
-          outputView,
           displacementTexture,
           displacementView,
           displacementScratchTexture,
@@ -1221,7 +1115,6 @@ export async function beginRasterLiquify(
           uniformScratch: new ArrayBuffer(LIQUIFY_UNIFORM_BYTES),
           updateBindGroup,
           resolveBindGroup,
-          rgba8Resolve,
           shared,
           memoryBytes,
           pendingDabs: [],
@@ -1598,7 +1491,7 @@ export async function commitRasterLiquify(engine: BrushEngine): Promise<boolean>
       modes,
       amountPercent: Math.round(session.amount * 100),
       strategy: LIQUIFY_SHADER_STRATEGY,
-      precision: "layer-format-source-rgba16float-output-displacement-f32-math",
+      precision: "rgba16float-source-and-displacement-f32-math",
       displacementFormat: LIQUIFY_DISPLACEMENT_FORMAT,
       seed,
       baseBounds: { ...session.resultBounds },
