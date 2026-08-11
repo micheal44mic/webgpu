@@ -392,13 +392,13 @@ fn expandRenderMask(@builtin(global_invocation_id) global: vec3<u32>) {
   const SOURCE_WORDS: u32 = ${LAYER_SIZE * LAYER_SIZE / 32}u;
   if (global.x >= SOURCE_WORDS) { return; }
   let source = atomicLoad(&selectedMask[global.x]);
-  let target = global.x * 4u;
+  let targetWord = global.x * 4u;
   // packedLabels is no longer needed once selectedMask has been produced. Its
   // capacity is twice this expanded mask even at the maximum document size.
-  packedLabels[target] = source & 0xffu;
-  packedLabels[target + 1u] = (source >> 8u) & 0xffu;
-  packedLabels[target + 2u] = (source >> 16u) & 0xffu;
-  packedLabels[target + 3u] = (source >> 24u) & 0xffu;
+  packedLabels[targetWord] = source & 0xffu;
+  packedLabels[targetWord + 1u] = (source >> 8u) & 0xffu;
+  packedLabels[targetWord + 2u] = (source >> 16u) & 0xffu;
+  packedLabels[targetWord + 3u] = (source >> 24u) & 0xffu;
 }
 `;
 
