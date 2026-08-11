@@ -956,7 +956,11 @@ export function flushPendingWorkBeforeSettingsChange(engine: BrushEngine): void 
   flushClosingLightGlazeSessionBeforeNewStroke(engine);
   if (
     engine.lightGlazeSession
-    || (engine.pendingStamps.length === 0 && engine.pendingBlendBatches.length === 0)
+    || (
+      engine.pendingStamps.length === 0
+      && engine.pendingBlendBatches.length === 0
+      && engine.pendingBlendFinalization === null
+    )
   ) {
     return;
   }
@@ -966,17 +970,26 @@ export function flushPendingWorkBeforeSettingsChange(engine: BrushEngine): void 
   // un frame consuma un solo batch, quindi il tetto usa quel minimo garantito.
   const maximumIterations = Math.ceil(engine.pendingStamps.length / MAX_STAMPS_PER_BATCH)
     + engine.pendingBlendBatches.length
+    + Number(engine.pendingBlendFinalization !== null)
     + 2;
-  while (engine.pendingStamps.length > 0 || engine.pendingBlendBatches.length > 0) {
+  while (
+    engine.pendingStamps.length > 0
+    || engine.pendingBlendBatches.length > 0
+    || engine.pendingBlendFinalization !== null
+  ) {
     if (engine.frameRequest !== null) {
       cancelAnimationFrame(engine.frameRequest);
       engine.frameRequest = null;
     }
-    const pendingBeforeRender = engine.pendingStamps.length + engine.pendingBlendBatches.length;
+    const pendingBeforeRender = engine.pendingStamps.length
+      + engine.pendingBlendBatches.length
+      + Number(engine.pendingBlendFinalization !== null);
     engine.renderFrame(performance.now());
     iterations += 1;
     if (
-      engine.pendingStamps.length + engine.pendingBlendBatches.length >= pendingBeforeRender
+      engine.pendingStamps.length
+        + engine.pendingBlendBatches.length
+        + Number(engine.pendingBlendFinalization !== null) >= pendingBeforeRender
       || iterations > maximumIterations
     ) {
       throw new Error("Impossibile finalizzare gli stamp prima del cambio impostazioni.");
@@ -1225,6 +1238,7 @@ export function hasPendingRenderWork(engine: BrushEngine): boolean {
   return engine.frameRequest !== null
     || engine.pendingStamps.length > 0
     || engine.pendingBlendBatches.length > 0
+    || engine.pendingBlendFinalization !== null
     || engine.clearRequested
     || engine.displayDirty
     || Boolean(engine.lightGlazeSession?.commitRequested)

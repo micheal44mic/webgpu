@@ -80,11 +80,11 @@
           <button
             id="toggleControls"
             type="button"
-            aria-controls="controlsPanel"
+            aria-controls="controlsPanel layerSection"
             aria-expanded="true"
-            aria-label="Nascondi pannelli"
-            title="Nascondi pannelli"
-          >☰</button>
+            aria-label="Nascondi pannello laterale"
+            title="Nascondi pannello laterale"
+          ></button>
           <button
             id="undoStroke"
             type="button"
@@ -184,6 +184,45 @@
           <span class="mobile-icon-stack" aria-hidden="true">
             <i data-lucide="blend" class="mobile-icon-layer mobile-icon-outline"></i>
             <i data-lucide="blend" class="mobile-icon-layer mobile-icon-face"></i>
+          </span>
+        </button>
+        <button
+          id="desktopFill"
+          class="mobile-tool-action desktop-tool-only"
+          type="button"
+          aria-label="Seleziona Riempimento"
+          aria-pressed="false"
+          title="Riempimento"
+        >
+          <span class="mobile-icon-stack" aria-hidden="true">
+            <i data-lucide="paint-bucket" class="mobile-icon-layer mobile-icon-outline"></i>
+            <i data-lucide="paint-bucket" class="mobile-icon-layer mobile-icon-face"></i>
+          </span>
+        </button>
+        <button
+          id="desktopSelection"
+          class="mobile-tool-action desktop-tool-only"
+          type="button"
+          aria-label="Seleziona Selezione pixel"
+          aria-pressed="false"
+          title="Selezione pixel"
+        >
+          <span class="mobile-icon-stack" aria-hidden="true">
+            <i data-lucide="scan" class="mobile-icon-layer mobile-icon-outline"></i>
+            <i data-lucide="scan" class="mobile-icon-layer mobile-icon-face"></i>
+          </span>
+        </button>
+        <button
+          id="desktopTransform"
+          class="mobile-tool-action desktop-tool-only"
+          type="button"
+          aria-label="Seleziona Trasforma"
+          aria-pressed="false"
+          title="Trasforma"
+        >
+          <span class="mobile-icon-stack" aria-hidden="true">
+            <i data-lucide="scaling" class="mobile-icon-layer mobile-icon-outline"></i>
+            <i data-lucide="scaling" class="mobile-icon-layer mobile-icon-face"></i>
           </span>
         </button>
         <button
@@ -2361,8 +2400,29 @@
         ></p>
       </aside>
 
-      <aside id="controlsPanel" class="controls" aria-label="Pannello strumenti">
-        <section>
+      <aside id="controlsPanel" class="controls" aria-label="Proprietà">
+        <header class="desktop-properties-header">
+          <div class="desktop-properties-heading">
+            <span>Properties</span>
+            <strong id="desktopPropertiesContext">Brush</strong>
+          </div>
+          <label class="desktop-properties-picker" for="desktopPropertiesTarget">
+            <span class="visually-hidden">Mostra proprietà</span>
+            <select id="desktopPropertiesTarget" aria-label="Mostra proprietà">
+              <option value="brushPropertiesSection">Brush</option>
+              <option value="vectorTextPrototypeSection">Text &amp; Vector</option>
+              <option value="rasterColorOverlaySection">Color Overlay</option>
+              <option value="rasterStrokeSection">Stroke</option>
+              <option value="rasterOuterShadowSection">Outer Shadow</option>
+              <option value="rasterInnerShadowSection">Inner Shadow</option>
+              <option value="rasterBevelSection">Bevel</option>
+              <option value="rasterLiquifySection">Liquify</option>
+              <option value="rasterGaussianBlurSection">Adjustments</option>
+            </select>
+          </label>
+        </header>
+
+        <section id="brushPropertiesSection">
           <h2>Strumento</h2>
 
           <label class="control">
@@ -2829,7 +2889,7 @@
           </fieldset>
 
           <button id="vectorTextRasterize" class="primary wide" type="button">
-            Rasterizza testo in livello RGBA16F
+            Rasterizza testo in un livello pixel
           </button>
           <p id="vectorTextRasterStatus" class="result" aria-live="polite">
             Slug analitico alla risoluzione documento · MSAA 4× · tile 256 px.
@@ -2841,7 +2901,7 @@
             <p id="vectorSvgSourceSummary" class="result"></p>
             <div id="vectorSvgPalette" class="vector-svg-palette"></div>
             <button id="vectorSvgRasterize" class="primary wide" type="button">
-              Rasterizza SVG in livello RGBA16F
+              Rasterizza SVG in un livello pixel
             </button>
             <p class="result">
               Qualità massima WebGPU: MSAA 4× e blocchi allineati ai tile 256 px.
@@ -3126,63 +3186,6 @@
           <p id="vectorTextStatus" class="result" aria-live="polite">
             Preparazione dei livelli testo…
           </p>
-        </section>
-
-        <section id="layerSection">
-          <h2>Livelli</h2>
-          <div id="layerList" class="layer-list"></div>
-          <button id="addLayer" class="wide" type="button">
-            Aggiungi livello raster
-          </button>
-          <p id="layerSwitchResult" class="result" aria-live="polite">
-            Il tasto M di ogni raster attiva o disattiva la maschera sul livello
-            immediatamente sotto. Più M consecutive condividono la stessa base.
-          </p>
-          <div id="layerMemoryStressSection" hidden>
-            <p id="layerMemoryStressIntro" class="result">
-              Prova distruttiva su pagina nuova: prepara circa 1000 MiB di
-              risorse WebGPU reali. Al termine i livelli restano selezionabili.
-            </p>
-            <label id="iphoneMemoryDeviceControl" class="control" hidden>
-              <span>
-                Modello iPhone (facoltativo)
-                <small>Serve solo a riconoscere il risultato salvato.</small>
-              </span>
-              <input
-                id="iphoneMemoryDeviceLabel"
-                type="text"
-                maxlength="80"
-                autocomplete="off"
-                placeholder="es. iPhone 15 Pro"
-              />
-            </label>
-            <button id="runLayerMemoryStress" class="primary wide" type="button" disabled>
-              Prepara stress memoria ~1000 MiB
-            </button>
-            <p id="layerMemoryStressResult" class="result" aria-live="polite">
-              Pronto. Avvia una sola volta, poi cambia livello manualmente.
-            </p>
-            <details id="layerMemoryStressDetails" hidden>
-              <summary>Report stress memoria livelli</summary>
-              <pre id="layerMemoryStressReport" class="golden-report"></pre>
-            </details>
-          </div>
-          <div id="layerCompressionStudySection" hidden>
-            <p class="result">
-              Misura gzip lossless sui veri tile inattivi. Non elimina né
-              sostituisce alcuna risorsa del documento.
-            </p>
-            <button id="runLayerCompressionStudy" class="primary wide" type="button" disabled>
-              Misura compressione lossless
-            </button>
-            <p id="layerCompressionStudyResult" class="result" aria-live="polite">
-              Crea almeno due livelli con contenuto, poi avvia la misura.
-            </p>
-            <details id="layerCompressionStudyDetails" hidden>
-              <summary>Report compressione livelli</summary>
-              <pre id="layerCompressionStudyReport" class="golden-report"></pre>
-            </details>
-          </div>
         </section>
 
         <section id="rasterColorOverlaySection">
@@ -3827,7 +3830,8 @@
           <label class="control">
             <span>Precisione layer</span>
             <select id="layerFormat" disabled aria-disabled="true" title="Formato documento permanente">
-              <option value="rgba16float" data-layer-format-label="RGBA16F linear" selected></option>
+              <option value="rgba8unorm" data-layer-format-label="RGBA8 linear" selected></option>
+              <option value="rgba16float" data-layer-format-label="RGBA16F linear"></option>
             </select>
           </label>
         </section>
@@ -3939,6 +3943,71 @@
         </section>
       </aside>
 
+      <div
+        id="desktopDockDivider"
+        class="desktop-dock-divider"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Separatore tra proprietà e livelli"
+      ></div>
+
+      <section id="layerSection" class="desktop-layers-pane" aria-label="Layers">
+        <h2>Layers</h2>
+        <div id="layerList" class="layer-list"></div>
+        <button id="addLayer" class="wide" type="button">
+          Aggiungi livello raster
+        </button>
+        <p id="layerSwitchResult" class="result" aria-live="polite">
+          Il tasto M di ogni raster attiva o disattiva la maschera sul livello
+          immediatamente sotto. Più M consecutive condividono la stessa base.
+        </p>
+        <div id="layerMemoryStressSection" hidden>
+          <p id="layerMemoryStressIntro" class="result">
+            Prova distruttiva su pagina nuova: prepara circa 1000 MiB di
+            risorse WebGPU reali. Al termine i livelli restano selezionabili.
+          </p>
+          <label id="iphoneMemoryDeviceControl" class="control" hidden>
+            <span>
+              Modello iPhone (facoltativo)
+              <small>Serve solo a riconoscere il risultato salvato.</small>
+            </span>
+            <input
+              id="iphoneMemoryDeviceLabel"
+              type="text"
+              maxlength="80"
+              autocomplete="off"
+              placeholder="es. iPhone 15 Pro"
+            />
+          </label>
+          <button id="runLayerMemoryStress" class="primary wide" type="button" disabled>
+            Prepara stress memoria ~1000 MiB
+          </button>
+          <p id="layerMemoryStressResult" class="result" aria-live="polite">
+            Pronto. Avvia una sola volta, poi cambia livello manualmente.
+          </p>
+          <details id="layerMemoryStressDetails" hidden>
+            <summary>Report stress memoria livelli</summary>
+            <pre id="layerMemoryStressReport" class="golden-report"></pre>
+          </details>
+        </div>
+        <div id="layerCompressionStudySection" hidden>
+          <p class="result">
+            Misura gzip lossless sui veri tile inattivi. Non elimina né
+            sostituisce alcuna risorsa del documento.
+          </p>
+          <button id="runLayerCompressionStudy" class="primary wide" type="button" disabled>
+            Misura compressione lossless
+          </button>
+          <p id="layerCompressionStudyResult" class="result" aria-live="polite">
+            Crea almeno due livelli con contenuto, poi avvia la misura.
+          </p>
+          <details id="layerCompressionStudyDetails" hidden>
+            <summary>Report compressione livelli</summary>
+            <pre id="layerCompressionStudyReport" class="golden-report"></pre>
+          </details>
+        </div>
+      </section>
+
       <main class="stage">
         <canvas id="gpuCanvas" tabindex="-1" aria-label="Canvas di disegno WebGPU"></canvas>
         <canvas id="rasterSelectionOverlayCanvas" aria-hidden="true" hidden></canvas>
@@ -3988,7 +4057,7 @@
             <p class="gpu-memory-note">Caldo è la texture full-document, Freddo sono i soli tile dipinti, Compresso è RAM CPU: pesa sul limite del processo ma non sul totale GPU. La piramide mip segue il livello attivo.</p>
             <p class="gpu-memory-measured-heading">Modello diagnostico · non sommato al totale</p>
             <dl class="gpu-memory-list">
-              <div data-memory-row><dt>Layer · RGBA16F autorevole full-canvas</dt><dd id="gpuMemoryLayerBase">—</dd></div>
+              <div data-memory-row><dt>Layer · formato documento autorevole full-canvas</dt><dd id="gpuMemoryLayerBase">—</dd></div>
               <div data-memory-row><dt>Layer · inattivi cold tile</dt><dd id="gpuMemoryLayerCold">—</dd></div>
               <div data-memory-row><dt>Gruppo ritaglio attivo · RGBA16F ritagliata</dt><dd id="gpuMemoryActiveClippingMask">—</dd></div>
               <div data-memory-row><dt>Layer · compressi · RAM CPU</dt><dd id="gpuMemoryLayerCompressed">—</dd></div>
@@ -3996,7 +4065,7 @@
               <div data-memory-row><dt>Layer · reidratazione transitoria</dt><dd id="gpuMemoryLayerHydration">—</dd></div>
               <div class="gpu-memory-study" data-memory-study-row><dt id="gpuMemoryLayerStudyTilesLabel">Raw livelli · hot + cold effettivo</dt><dd id="gpuMemoryLayerStudyTiles">—</dd></div>
               <div class="gpu-memory-study" data-memory-study-row><dt id="gpuMemoryLayerStudyBboxLabel">Confronto · bbox 256</dt><dd id="gpuMemoryLayerStudyBbox">—</dd></div>
-              <div data-memory-row><dt>Piramidi mip · RGBA16F</dt><dd id="gpuMemoryLayerMips">—</dd></div>
+              <div data-memory-row><dt>Piramidi mip · cache di visualizzazione</dt><dd id="gpuMemoryLayerMips">—</dd></div>
               <div data-memory-row><dt>Bake livelli · RGBA16F transitori</dt><dd id="gpuMemoryLayerBakes">—</dd></div>
               <div data-memory-row><dt>Livelli fusi · RGBA16F mip 0</dt><dd id="gpuMemoryLayerComposite">—</dd></div>
               <div data-memory-row><dt>Grain M1</dt><dd id="gpuMemoryGrain">—</dd></div>
@@ -4007,7 +4076,7 @@
               <div data-memory-row><dt>Buffer Paint</dt><dd id="gpuMemoryPaintBuffers">—</dd></div>
               <div data-memory-row><dt>Cache schermo</dt><dd id="gpuMemoryPresentation">—</dd></div>
               <div data-memory-row><dt>Miniatura layer · GPU</dt><dd id="gpuMemoryLayerThumbnail">—</dd></div>
-              <div class="gpu-memory-group-start" data-memory-row><dt>Style stack · risultato RGBA16F mip 1+</dt><dd id="gpuMemoryStrokeStyled">—</dd></div>
+              <div class="gpu-memory-group-start" data-memory-row><dt>Style stack · cache display mip 1+</dt><dd id="gpuMemoryStrokeStyled">—</dd></div>
               <div data-memory-row><dt>Traccia · copertura continua R16F</dt><dd id="gpuMemoryStrokeCoverage">—</dd></div>
               <div data-memory-row><dt>Traccia · mask e controllo</dt><dd id="gpuMemoryStrokeControl">—</dd></div>
               <div data-memory-row><dt id="gpuMemoryEffectsScratchLabel">Effetti · pool scratch</dt><dd id="gpuMemoryEffectsScratch">—</dd></div>

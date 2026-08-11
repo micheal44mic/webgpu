@@ -23,6 +23,7 @@ import {
   blendBlurVerticalShader,
   blendDepositShader,
   blendPickupShader,
+  blendWorkSurfaceCopyShader,
 } from "../src/blend-shaders.ts";
 import { destructiveGaussianBlurKernel } from "../src/gaussian-blur-core.ts";
 
@@ -130,7 +131,7 @@ assert.match(
 );
 assert.match(
   brushEngineSource,
-  /\|\| engine\.pendingBlendBatches\.length > 0\s*\n\s*\) \{\s*\n\s*return;/,
+  /\|\| engine\.pendingBlendBatches\.length > 0\s*\n\s*\|\| engine\.pendingBlendFinalization !== null/,
 );
 assert.match(
   brushEngineSource,
@@ -205,6 +206,37 @@ assert.match(blendRendererSource, /releaseScratch\(\): boolean/);
 assert.match(
   blendRendererSource,
   /this\.scratch = null;\s*\n\s*this\.carrierValid = false;/,
+);
+assert.match(
+  blendRendererSource,
+  /format: "rgba16float",[\s\S]*?GPUTextureUsage\.RENDER_ATTACHMENT \| GPUTextureUsage\.TEXTURE_BINDING/,
+  "Blend deve allocare una superficie RGBA16F condivisa per l'intero gesto",
+);
+assert.match(
+  blendRendererSource,
+  /\{ binding: 1, resource: workView \}/,
+  "Gather Blend deve rileggere il work RGBA16F, non il mirror RGBA8",
+);
+assert.match(
+  blendRendererSource,
+  /targets: \[\{ format: "rgba16float" \}\]/,
+  "Scatter Blend deve scrivere in RGBA16F",
+);
+assert.match(blendWorkSurfaceCopyShader, /textureLoad\(sourceTexture/);
+assert.match(blendRendererSource, /const mirrorRect = finalizeStroke \? this\.gestureDirtyRect : dirtyRect/);
+assert.match(blendRendererSource, /this\.gestureDirtyRect = mergeRects\(this\.gestureDirtyRect, group\.writeRect\)/);
+assert.match(blendRendererSource, /const gestureWorkBytes = this\.documentWidth \* this\.documentHeight \* 8/);
+assert.ok(
+  (blendRendererSource.match(/this\.scratch\.workTexture\.destroy\(\)/g) ?? []).length >= 2,
+  "releaseScratch e destroy devono entrambi liberare la superficie gesto 16F",
+);
+assert.match(blendRendererSource, /if \(clearLayer \|\| result\.passCount > 0\)/);
+assert.match(brushEngineSource, /pendingBlendFinalization: \{ actionId: number; settings: BrushSettings \} \| null/);
+assert.match(brushEngineSource, /const finalizeBlend = Boolean\(/);
+assert.match(brushEngineSource, /lastVisibleBlendBatchIndexByAction/);
+assert.ok(
+  (brushEngineSource.match(/pendingBlendFinalization !== null/g) ?? []).length >= 4,
+  "flush, render-work e rilascio scratch devono tutti vedere la finalizzazione senza batch",
 );
 
 assert.deepEqual(
@@ -421,9 +453,10 @@ assert.match(
 );
 assert.match(
   blendRetargetBody,
-  /this\.scratch\.gatherBindGroup = this\.device\.createBindGroup/,
-  "layerSamplingView è incorporata nel gather bind group e va ricostruita",
+  /this\.scratch\.workSeedBindGroup = this\.device\.createBindGroup/,
+  "il retarget deve ricostruire il seed del work RGBA16F dal layer entrante",
 );
+assert.match(blendRetargetBody, /this\.workSeedPending = true/);
 assert.doesNotMatch(
   blendRendererSource,
   /private readonly layerView: GPUTextureView/,

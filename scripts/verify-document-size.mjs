@@ -97,26 +97,26 @@ assert.ok(
 
 // --- Il formato del documento non e' piu' selezionabile ---------------------
 // Il canvas di presentazione puo' restare nel formato preferito dal browser,
-// ma livelli, storia e composizione devono partire sempre da RGBA16F. Questi
-// guardrail impediscono di reintrodurre per errore il vecchio downgrade UI.
+// ma i pixel persistenti del prodotto devono partire da RGBA8. L'opzione 16F
+// resta soltanto per gli harness diagnostici storici, mai selezionabile in UI.
 {
   const indexSource = read("../index.html");
   const mainSource = read("../src/main.ts");
   const brushEngineSource = read("../src/brush-engine.ts");
   assert.match(
     indexSource,
-    /<select id="layerFormat"[^>]*\bdisabled\b[^>]*>[\s\S]*?<option value="rgba16float"[^>]*\bselected\b/,
-    at("il selettore precisione deve mostrare RGBA16F ed essere permanente"),
+    /<select id="layerFormat"[^>]*\bdisabled\b[^>]*>[\s\S]*?<option value="rgba8unorm"[^>]*\bselected\b/,
+    at("il selettore precisione deve mostrare RGBA8 ed essere permanente"),
   );
-  assert.doesNotMatch(
+  assert.match(
     indexSource,
-    /<option value="rgba8unorm"/,
-    at("il selettore precisione non deve offrire RGBA8"),
+    /<option value="rgba16float"/,
+    at("l'etichetta diagnostica RGBA16F deve restare sincronizzabile"),
   );
   assert.match(
     brushEngineSource,
-    /layerFormat: LayerFormat = "rgba16float";/,
-    at("BrushEngine deve possedere il default autorevole RGBA16F"),
+    /layerFormat: LayerFormat = "rgba8unorm";/,
+    at("BrushEngine deve possedere il default autorevole RGBA8"),
   );
   assert.match(
     mainSource,
@@ -137,6 +137,11 @@ assert.ok(
     mainSource,
     /MOBILE_DEVICE_CLASS|setLayerFormat\(/,
     at("non deve esistere un override mobile o un downgrade formato dalla UI"),
+  );
+  assert.match(
+    mainSource,
+    /initialLayerFormat: legacyRgba16fFixtureRequested \? "rgba16float" : undefined/,
+    at("solo gli harness legacy possono richiedere RGBA16F iniziale"),
   );
 }
 
@@ -532,8 +537,8 @@ assert.equal(lightGlazeAdditionalMemoryMiB("rgba8unorm", "none", { width: 4096, 
   assert.deepEqual(
     GPU_MEMORY_CATEGORY_ORDER.slice(0, 9),
     [
-      "Layer RGBA16F",
-      "Piramidi mip RGBA16F",
+      "Layer documento",
+      "Piramidi mip",
       "Maschere continue R16F",
       "Heightfield R32F",
       "Cache vettoriali",
@@ -628,20 +633,22 @@ assert.equal(lightGlazeAdditionalMemoryMiB("rgba8unorm", "none", { width: 4096, 
   // e cio' che non combacia deve restare visibile invece di sparire.
   // Etichette reali osservate nel motore in esecuzione, non inventate.
   for (const [label, categoria] of [
-    ["2048² authoritative paint layer rgba16float", "Layer RGBA16F"],
+    ["2048² authoritative paint layer rgba16float", "Layer documento"],
+    ["Transparent layer placeholder rgba8unorm", "Presentazione"],
     ["Lazy Light Glaze stroke accumulator r16float", "Maschere continue R16F"],
-    ["Lazy Light Glaze composited logical mip 1+ rgba16float", "Piramidi mip RGBA16F"],
+    ["Lazy Light Glaze composited logical mip 1+ rgba16float", "Piramidi mip"],
     ["Smusso Heightfield V2 persistent R32F", "Heightfield R32F"],
     ["Smusso alpha threshold/fractional class mask", "Effetti raster"],
     ["Traccia persistent packed f16 coverage", "Maschere continue R16F"],
     ["Ombra esterna persistent packed f16 matte", "Maschere continue R16F"],
-    ["Traccia styled derived mip 1+ rgba16float", "Piramidi mip RGBA16F"],
+    ["Traccia styled derived mip 1+ rgba16float", "Piramidi mip"],
     ["Banco effetti scratch condiviso 16777216 byte", "Scratch temporanei"],
     ["Vector text GPU blur scratch A 512×512", "Scratch temporanei"],
     ["Vector text viewport cache 1024×1024", "Cache vettoriali"],
     ["Cronologia raster GPU · pagina 1 · 2097152 B", "Cronologia · Undo"],
     ["Persistent presentation cache 786×1704", "Presentazione"],
-    ["Single active-layer display pyramid rgba16float", "Piramidi mip RGBA16F"],
+    ["Single active-layer display pyramid rgba16float", "Piramidi mip"],
+    ["Shape conservative occupancy bitmask mip 3", "Pennello, grana e shape"],
     ["Cold tile History livello 1 #3", "Cronologia · Undo"],
     // Il seed riportato sulla GPU dall'Undo: senza "Cronologia" nell'etichetta
     // finiva in "Non categorizzato", cioe' memoria reale senza una provenienza.
@@ -708,14 +715,14 @@ assert.equal(lightGlazeAdditionalMemoryMiB("rgba8unorm", "none", { width: 4096, 
   assert.equal(istantanea.liveCount, 2);
   assert.equal(istantanea.createdCount, 2);
   assert.equal(istantanea.destroyedCount, 0);
-  assert.equal(istantanea.categories[0].category, "Layer RGBA16F");
+  assert.equal(istantanea.categories[0].category, "Layer documento");
 
   registro.release(idA, risorsaA);
   istantanea = registro.snapshot();
   assert.equal(istantanea.totalBytes, 4 * MEBIBYTE, at("La distruzione deve togliere i byte"));
   assert.equal(istantanea.peakBytes, 36 * MEBIBYTE, at("La distruzione non deve abbassare il picco"));
   const layerCategoryAfterRelease = istantanea.categories.find(
-    (entry) => entry.category === "Layer RGBA16F",
+    (entry) => entry.category === "Layer documento",
   );
   assert.equal(layerCategoryAfterRelease?.bytes, 0);
   assert.equal(layerCategoryAfterRelease?.peakBytes, 32 * MEBIBYTE,

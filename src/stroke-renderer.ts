@@ -90,6 +90,8 @@ export interface RasterStrokeEncodeResult {
 export interface RasterStrokeBakeOptions {
   encoder: GPUCommandEncoder;
   targetView: GPUTextureView;
+  /** Defaults to the persistent layer format; merge can request transient RGBA16F. */
+  targetFormat?: "rgba8unorm" | "rgba16float";
   style: RasterStrokeStyle;
   bevelStyle?: RasterBevelStyle;
   colorOverlayStyle?: RasterColorOverlayStyle;
@@ -375,6 +377,12 @@ fn compositeLightGlazeOverPermanent(
   accumulatedStroke: vec4<f32>
 ) -> vec4<f32> {
   let strokePaint = resolvedLightGlaze(accumulatedStroke);
+  if (lightGlaze.accumulationMode == 3u) {
+    return quantizeLayer(vec4<f32>(
+      permanentPaint.rgb + strokePaint.rgb,
+      strokePaint.a + permanentPaint.a * (1.0 - strokePaint.a)
+    ));
+  }
   if (lightGlaze.accumulationMode == 2u) {
     if (strokePaint.a <= 0.0) {
       return permanentPaint;
@@ -1749,6 +1757,7 @@ export class RasterStrokeRenderer {
   private jfaBindGroupLayout!: GPUBindGroupLayout;
   private resolveBindGroupLayout!: GPUBindGroupLayout;
   private composeBindGroupLayout!: GPUBindGroupLayout;
+  private rgba16fBakeBindGroupLayout: GPUBindGroupLayout | null = null;
   private thresholdMaskBindGroupLayout!: GPUBindGroupLayout;
   private indirectGateBindGroupLayout!: GPUBindGroupLayout;
   private seedPipeline!: GPUComputePipeline;
@@ -1756,6 +1765,7 @@ export class RasterStrokeRenderer {
   private resolvePipeline!: GPUComputePipeline;
   private composePipeline!: GPUComputePipeline;
   private readbackComposePipeline: GPUComputePipeline | null = null;
+  private rgba16fBakePipeline: GPUComputePipeline | null = null;
   private thresholdMaskPipeline!: GPUComputePipeline;
   private indirectGatePipeline!: GPUComputePipeline;
   private jfaBindGroups!: readonly [GPUBindGroup, GPUBindGroup];
@@ -1767,6 +1777,10 @@ export class RasterStrokeRenderer {
   private readbackComposeBindGroups = new Map<SourceModeCode, GPUBindGroup>();
   private thresholdMaskBindGroups = new Map<SourceModeCode, GPUBindGroup>();
   private bakeBindGroups = new WeakMap<GPUTextureView, Map<SourceModeCode, GPUBindGroup>>();
+  private rgba16fBakeBindGroups = new WeakMap<
+    GPUTextureView,
+    Map<SourceModeCode, GPUBindGroup>
+  >();
   private destroyed = false;
 
   private constructor(options: RasterStrokeRendererOptions) {
@@ -2336,11 +2350,27 @@ export class RasterStrokeRenderer {
       );
     }
 
-    const bindGroup = this.bakeBindGroup(options.targetView, mode, sourceMode);
+    const targetFormat = options.targetFormat ?? this.layerFormat;
+    const bakePipeline = targetFormat === this.layerFormat
+      ? this.readbackComposePipeline
+      : targetFormat === "rgba16float"
+        ? this.rgba16fBakePipeline
+        : null;
+    if (!bakePipeline) {
+      throw new Error(
+        `Bake Traccia ${this.layerFormat} → ${targetFormat} non supportato.`,
+      );
+    }
+    const bindGroup = this.bakeBindGroup(
+      options.targetView,
+      mode,
+      sourceMode,
+      targetFormat,
+    );
     const pass = options.encoder.beginComputePass({
       label: "Style stack layer bake analytic mip 0",
     });
-    pass.setPipeline(this.readbackComposePipeline);
+    pass.setPipeline(bakePipeline);
     pass.setBindGroup(0, bindGroup, this.dynamicOffset(parameterSlot));
     pass.dispatchWorkgroups(
       Math.ceil(rect.width / WORKGROUP_SIZE),
@@ -2719,6 +2749,39 @@ export class RasterStrokeRenderer {
         },
       ],
     });
+    if (this.layerFormat !== "rgba16float") {
+      this.rgba16fBakeBindGroupLayout = this.device.createBindGroupLayout({
+        label: "Traccia RGBA16F transient bake bind group layout",
+        entries: [
+          {
+            binding: 0,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: {
+              type: "uniform",
+              hasDynamicOffset: true,
+              minBindingSize: PARAMETER_BYTES,
+            },
+          },
+          { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float" } },
+          { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float" } },
+          { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+          { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+          { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+          {
+            binding: 6,
+            visibility: GPUShaderStage.COMPUTE,
+            storageTexture: { access: "write-only", format: "rgba16float" },
+          },
+          { binding: 7, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "unfilterable-float" } },
+          { binding: 8, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "unfilterable-float" } },
+          { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+          { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+          { binding: 11, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+          { binding: 12, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+          { binding: 13, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+        ],
+      });
+    }
 
     this.thresholdMaskBindGroupLayout = this.device.createBindGroupLayout({
       label: "Traccia alpha-threshold mask bind group layout",
@@ -2784,6 +2847,18 @@ export class RasterStrokeRenderer {
         this.bevelBoundingFieldTestMutation,
       ),
     });
+    const rgba16fBakeModule = this.layerFormat === "rgba16float"
+      ? null
+      : this.device.createShaderModule({
+        label: "Style stack analytic transient RGBA16F bake WGSL",
+        code: readbackComposeShader(
+          this.documentWidth,
+          this.documentHeight,
+          "rgba16float",
+          this.bevelBoundingFieldEnabled,
+          this.bevelBoundingFieldTestMutation,
+        ),
+      });
     const thresholdMaskModule = this.device.createShaderModule({
       label: "Traccia alpha-threshold mask WGSL",
       code: thresholdMaskShader(this.documentWidth, this.documentHeight),
@@ -2798,6 +2873,9 @@ export class RasterStrokeRenderer {
       { label: "resolve", module: resolveModule },
       { label: "coarse-compose", module: composeModule },
       { label: "analytic-mip0-bake", module: readbackComposeModule },
+      ...(rgba16fBakeModule
+        ? [{ label: "analytic-rgba16f-transient-bake", module: rgba16fBakeModule }]
+        : []),
       { label: "threshold-mask", module: thresholdMaskModule },
       { label: "indirect-gate", module: indirectGateModule },
     ]);
@@ -2838,6 +2916,15 @@ export class RasterStrokeRenderer {
       layout: composePipelineLayout,
       compute: { module: readbackComposeModule, entryPoint: "main" },
     });
+    if (rgba16fBakeModule && this.rgba16fBakeBindGroupLayout) {
+      this.rgba16fBakePipeline = this.device.createComputePipeline({
+        label: "Style stack analytic transient RGBA16F bake pipeline",
+        layout: this.device.createPipelineLayout({
+          bindGroupLayouts: [this.rgba16fBakeBindGroupLayout],
+        }),
+        compute: { module: rgba16fBakeModule, entryPoint: "main" },
+      });
+    }
     this.thresholdMaskPipeline = this.device.createComputePipeline({
       label: "Traccia alpha-threshold mask pipeline",
       layout: this.device.createPipelineLayout({
@@ -3050,6 +3137,7 @@ export class RasterStrokeRenderer {
     // Every bake group captures source/effect resources. Retargeting any one
     // source invalidates the tiny target-view cache as a unit.
     this.bakeBindGroups = new WeakMap();
+    this.rgba16fBakeBindGroups = new WeakMap();
     const scratchLease = this.requireScratchLease();
     this.seedBindGroups.set(mode, this.device.createBindGroup({
       label: `Traccia seed source mode ${mode}`,
@@ -3120,11 +3208,20 @@ export class RasterStrokeRenderer {
     targetView: GPUTextureView,
     mode: SourceModeCode,
     sourceMode: RasterStrokeSourceMode,
+    targetFormat: "rgba8unorm" | "rgba16float",
   ): GPUBindGroup {
-    let byMode = this.bakeBindGroups.get(targetView);
+    const alternateRgba16f = targetFormat !== this.layerFormat;
+    const cache = alternateRgba16f ? this.rgba16fBakeBindGroups : this.bakeBindGroups;
+    const layout = alternateRgba16f
+      ? this.rgba16fBakeBindGroupLayout
+      : this.composeBindGroupLayout;
+    if (!layout) {
+      throw new Error(`Layout bake Traccia ${targetFormat} non inizializzato.`);
+    }
+    let byMode = cache.get(targetView);
     if (!byMode) {
       byMode = new Map();
-      this.bakeBindGroups.set(targetView, byMode);
+      cache.set(targetView, byMode);
     }
     const existing = byMode.get(mode);
     if (existing) {
@@ -3132,7 +3229,7 @@ export class RasterStrokeRenderer {
     }
     const created = this.device.createBindGroup({
       label: `Style stack layer bake mip 0 source mode ${sourceMode}`,
-      layout: this.composeBindGroupLayout,
+      layout,
       entries: [
         ...this.commonSourceEntries(mode, this.bakeParameterBuffer),
         { binding: 5, resource: { buffer: this.coverageBuffer } },

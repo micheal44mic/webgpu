@@ -9,6 +9,13 @@ import { commitHistoryActionAtomically } from "./engine-history-runtime";
 import { invalidateActiveLayerBake } from "./engine-layer-runtime";
 import type { RasterFilterHistoryAction } from "./engine-history-types";
 import type { DirtyRect } from "./engine-stroke-types";
+import {
+  createRgba16fToRgba8ResolveResources,
+  destroyRgba16fToRgba8ResolveResources,
+  encodeRgba16fToRgba8Resolve,
+  type Rgba16fToRgba8ResolveResources,
+} from "./engine-rgba16f-resolve";
+import type { LayerFormat } from "./engine-types";
 import { publishMixedScene } from "./engine-vector-text-runtime";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import {
@@ -27,7 +34,7 @@ import {
 import { tileMaskCoveringRect } from "./raster-transform-math";
 
 export const DESTRUCTIVE_MOTION_BLUR_RUNTIME_BUILD =
-  "destructive-motion-blur-webgpu-v2-document-edge-clamp-logarithmic-exposures-rgba16float";
+  "destructive-motion-blur-webgpu-v3-rgba16float-work-rgba8-final-resolve";
 export const DESTRUCTIVE_MOTION_BLUR_PRECISION =
   "rgba16float-storage-f32-accumulation" as const;
 export const DESTRUCTIVE_MOTION_BLUR_EDGE_MODE =
@@ -58,21 +65,26 @@ export interface RasterMotionBlurSnapshot {
 
 export interface ActiveRasterMotionBlurSession {
   readonly layerId: number;
+  readonly sourceFormat: LayerFormat;
   readonly sourceBounds: DirtyRect;
   readonly sourceTileMask: Uint32Array;
   readonly scratchBounds: DirtyRect;
   readonly sourceTexture: GPUTexture;
   readonly sourceView: GPUTextureView;
-  readonly intermediateTexture: GPUTexture;
-  readonly intermediateView: GPUTextureView;
+  readonly workTextureA: GPUTexture;
+  readonly workViewA: GPUTextureView;
+  readonly workTextureB: GPUTexture;
+  readonly workViewB: GPUTextureView;
   readonly parameterBuffer: GPUBuffer;
   readonly parameterStride: number;
   readonly parameterUpload: ArrayBuffer;
   readonly parameterUploadI32: Int32Array;
   readonly parameterUploadF32: Float32Array;
   readonly sourceBindGroup: GPUBindGroup;
-  readonly layerBindGroup: GPUBindGroup;
-  readonly intermediateBindGroup: GPUBindGroup;
+  readonly workBindGroupA: GPUBindGroup;
+  readonly workBindGroupB: GPUBindGroup;
+  readonly rgba8ResolveA: Rgba16fToRgba8ResolveResources | null;
+  readonly rgba8ResolveB: Rgba16fToRgba8ResolveResources | null;
   readonly shared: MotionBlurSharedResources;
   readonly memoryBytes: number;
   distance: number;
@@ -310,8 +322,11 @@ function destroySessionResources(session: ActiveRasterMotionBlurSession): void {
     session.previewFrame = null;
   }
   session.sourceTexture.destroy();
-  session.intermediateTexture.destroy();
+  session.workTextureA.destroy();
+  session.workTextureB.destroy();
   session.parameterBuffer.destroy();
+  destroyRgba16fToRgba8ResolveResources(session.rgba8ResolveA);
+  destroyRgba16fToRgba8ResolveResources(session.rgba8ResolveB);
 }
 
 function previewError(error: unknown): Error {
@@ -345,25 +360,13 @@ function encodeRequestedPreview(
     throw new Error("Motion Blur: troppi passaggi per il buffer parametri.");
   }
 
-  const fullLayerBounds: DirtyRect = {
-    x: 0,
-    y: 0,
-    width: engine.layerSize,
-    height: engine.layerSize,
-  };
   const offsets = kernel.shifts.map((shift, pass) => {
-    const inputTextureBounds = pass === 0
-      ? session.scratchBounds
-      : pass % 2 === 1
-        ? fullLayerBounds
-        : session.scratchBounds;
     const inputValidBounds = pass === 0 ? session.scratchBounds : resultBounds;
-    const writesIntermediate = pass % 2 === 1;
     return writePassParameters(session, pass, {
-      inputTextureBounds,
+      inputTextureBounds: session.scratchBounds,
       inputValidBounds,
-      attachmentOriginX: writesIntermediate ? session.scratchBounds.x : 0,
-      attachmentOriginY: writesIntermediate ? session.scratchBounds.y : 0,
+      attachmentOriginX: session.scratchBounds.x,
+      attachmentOriginY: session.scratchBounds.y,
       shiftX: shift.x,
       shiftY: shift.y,
     }, engine.layerSize);
@@ -398,11 +401,11 @@ function encodeRequestedPreview(
   );
 
   for (let pass = 0; pass < kernel.passCount; pass += 1) {
-    const writesIntermediate = pass % 2 === 1;
+    const writesA = pass % 2 === 0;
     const renderPass = encoder.beginRenderPass({
       label: `Motion Blur exposure pass ${pass + 1}/${kernel.passCount}`,
       colorAttachments: [{
-        view: writesIntermediate ? session.intermediateView : engine.layerView,
+        view: writesA ? session.workViewA : session.workViewB,
         loadOp: "load",
         storeOp: "store",
       }],
@@ -411,15 +414,11 @@ function encodeRequestedPreview(
     const bindGroup = pass === 0
       ? session.sourceBindGroup
       : pass % 2 === 1
-        ? session.layerBindGroup
-        : session.intermediateBindGroup;
+        ? session.workBindGroupA
+        : session.workBindGroupB;
     renderPass.setBindGroup(0, bindGroup, [offsets[pass]]);
-    const viewportX = writesIntermediate
-      ? resultBounds.x - session.scratchBounds.x
-      : resultBounds.x;
-    const viewportY = writesIntermediate
-      ? resultBounds.y - session.scratchBounds.y
-      : resultBounds.y;
+    const viewportX = resultBounds.x - session.scratchBounds.x;
+    const viewportY = resultBounds.y - session.scratchBounds.y;
     renderPass.setViewport(
       viewportX,
       viewportY,
@@ -438,28 +437,52 @@ function encodeRequestedPreview(
     renderPass.end();
   }
 
-  // An even number of passes ends in the intermediate surface. Copy the exact
-  // RGBA16F result into the authoritative layer without another resampling.
-  if (kernel.passCount > 0 && kernel.passCount % 2 === 0) {
-    encoder.copyTextureToTexture(
-      {
-        texture: session.intermediateTexture,
-        origin: {
-          x: resultBounds.x - session.scratchBounds.x,
-          y: resultBounds.y - session.scratchBounds.y,
-          z: 0,
+  if (kernel.passCount > 0) {
+    const finalTexture = kernel.passCount % 2 === 1
+      ? session.workTextureA
+      : session.workTextureB;
+    if (session.sourceFormat === "rgba8unorm") {
+      const rgba8Resolve = kernel.passCount % 2 === 1
+        ? session.rgba8ResolveA
+        : session.rgba8ResolveB;
+      if (!rgba8Resolve) {
+        throw new Error("Motion Blur: resolve RGBA8 mancante.");
+      }
+      encodeRgba16fToRgba8Resolve(
+        engine.device,
+        encoder,
+        rgba8Resolve,
+        {
+          sourceX: resultBounds.x - session.scratchBounds.x,
+          sourceY: resultBounds.y - session.scratchBounds.y,
+          targetX: resultBounds.x,
+          targetY: resultBounds.y,
+          width: resultBounds.width,
+          height: resultBounds.height,
         },
-      },
-      {
-        texture: engine.layerTexture,
-        origin: { x: resultBounds.x, y: resultBounds.y, z: 0 },
-      },
-      {
-        width: resultBounds.width,
-        height: resultBounds.height,
-        depthOrArrayLayers: 1,
-      },
-    );
+        "Motion Blur RGBA16F → layer RGBA8",
+      );
+    } else {
+      encoder.copyTextureToTexture(
+        {
+          texture: finalTexture,
+          origin: {
+            x: resultBounds.x - session.scratchBounds.x,
+            y: resultBounds.y - session.scratchBounds.y,
+            z: 0,
+          },
+        },
+        {
+          texture: engine.layerTexture,
+          origin: { x: resultBounds.x, y: resultBounds.y, z: 0 },
+        },
+        {
+          width: resultBounds.width,
+          height: resultBounds.height,
+          depthOrArrayLayers: 1,
+        },
+      );
+    }
   }
   engine.device.queue.submit([encoder.finish()]);
 
@@ -630,10 +653,6 @@ export async function beginRasterMotionBlur(
   if (!record.hasContent || !record.contentBounds) {
     throw new Error("Il livello raster selezionato è vuoto.");
   }
-  if (engine.layerFormat !== "rgba16float") {
-    throw new Error("Motion Blur distruttivo richiede un documento RGBA16F.");
-  }
-
   engine.cancelLayerColdCompressionIdle();
   engine.historyBusy = true;
   engine.publishHistoryState();
@@ -681,7 +700,7 @@ export async function beginRasterMotionBlur(
             height: scratchBounds.height,
             depthOrArrayLayers: 1,
           },
-          format: "rgba16float",
+          format: engine.layerFormat,
           usage:
             GPUTextureUsage.COPY_SRC
             | GPUTextureUsage.COPY_DST
@@ -691,22 +710,30 @@ export async function beginRasterMotionBlur(
         const sourceView = sourceTexture.createView({
           label: "Native raster Motion Blur immutable source view",
         });
-        const intermediateTexture = engine.device.createTexture({
-          label: `Native raster Motion Blur logarithmic intermediate ${scratchBounds.width}x${scratchBounds.height}`,
-          size: {
-            width: scratchBounds.width,
-            height: scratchBounds.height,
-            depthOrArrayLayers: 1,
-          },
-          format: "rgba16float",
-          usage:
-            GPUTextureUsage.RENDER_ATTACHMENT
-            | GPUTextureUsage.TEXTURE_BINDING
-            | GPUTextureUsage.COPY_SRC,
+        const createWorkTexture = (suffix: "A" | "B"): GPUTexture => (
+          engine.device.createTexture({
+            label: `Native raster Motion Blur RGBA16F work ${suffix} ${scratchBounds.width}x${scratchBounds.height}`,
+            size: {
+              width: scratchBounds.width,
+              height: scratchBounds.height,
+              depthOrArrayLayers: 1,
+            },
+            format: "rgba16float",
+            usage:
+              GPUTextureUsage.RENDER_ATTACHMENT
+              | GPUTextureUsage.TEXTURE_BINDING
+              | GPUTextureUsage.COPY_SRC,
+          })
+        );
+        const workTextureA = createWorkTexture("A");
+        transaction.deferRollback(() => workTextureA.destroy());
+        const workViewA = workTextureA.createView({
+          label: "Native raster Motion Blur RGBA16F work A view",
         });
-        transaction.deferRollback(() => intermediateTexture.destroy());
-        const intermediateView = intermediateTexture.createView({
-          label: "Native raster Motion Blur logarithmic intermediate view",
+        const workTextureB = createWorkTexture("B");
+        transaction.deferRollback(() => workTextureB.destroy());
+        const workViewB = workTextureB.createView({
+          label: "Native raster Motion Blur RGBA16F work B view",
         });
         const parameterBuffer = engine.device.createBuffer({
           label: "Native raster Motion Blur dynamic parameters",
@@ -728,15 +755,38 @@ export async function beginRasterMotionBlur(
           })
         );
         const parameterUpload = new ArrayBuffer(parameterStride * PARAMETER_CAPACITY);
+        const rgba8ResolveA = engine.layerFormat === "rgba8unorm"
+          ? await createRgba16fToRgba8ResolveResources(
+            engine.device,
+            workViewA,
+            engine.layerView,
+            "Motion Blur",
+          )
+          : null;
+        const rgba8ResolveB = engine.layerFormat === "rgba8unorm"
+          ? await createRgba16fToRgba8ResolveResources(
+            engine.device,
+            workViewB,
+            engine.layerView,
+            "Motion Blur work B",
+          )
+          : null;
+        transaction.deferRollback(() => {
+          destroyRgba16fToRgba8ResolveResources(rgba8ResolveA);
+          destroyRgba16fToRgba8ResolveResources(rgba8ResolveB);
+        });
         const created: ActiveRasterMotionBlurSession = {
           layerId: record.id,
+          sourceFormat: engine.layerFormat,
           sourceBounds,
           sourceTileMask,
           scratchBounds,
           sourceTexture,
           sourceView,
-          intermediateTexture,
-          intermediateView,
+          workTextureA,
+          workViewA,
+          workTextureB,
+          workViewB,
           parameterBuffer,
           parameterStride,
           parameterUpload,
@@ -746,18 +796,25 @@ export async function beginRasterMotionBlur(
             "Native raster Motion Blur immutable source bind group",
             sourceView,
           ),
-          layerBindGroup: bindGroup(
-            "Native raster Motion Blur authoritative layer bind group",
-            engine.layerSamplingView,
+          workBindGroupA: bindGroup(
+            "Native raster Motion Blur work A input bind group",
+            workViewA,
           ),
-          intermediateBindGroup: bindGroup(
-            "Native raster Motion Blur intermediate bind group",
-            intermediateView,
+          workBindGroupB: bindGroup(
+            "Native raster Motion Blur work B input bind group",
+            workViewB,
           ),
+          rgba8ResolveA,
+          rgba8ResolveB,
           shared,
           memoryBytes:
-            scratchBounds.width * scratchBounds.height * BYTES_PER_RGBA16F_PIXEL * 2
-            + parameterStride * PARAMETER_CAPACITY,
+            scratchBounds.width * scratchBounds.height * (
+              (engine.layerFormat === "rgba16float" ? 8 : 4)
+              + BYTES_PER_RGBA16F_PIXEL * 2
+            )
+            + parameterStride * PARAMETER_CAPACITY
+            + (rgba8ResolveA?.memoryBytes ?? 0)
+            + (rgba8ResolveB?.memoryBytes ?? 0),
           distance,
           angle,
           resultBounds: initialResultBounds,

@@ -1868,20 +1868,21 @@ assert.match(gpuShaderSource, /fn meshInnerShadowFragmentMain/);
 // RGBA16F lineare, MSAA 4x, blocchi allineati ai tile e seed tiled Undo/Redo.
 assert.match(
   vectorRasterSource,
-  /semantic-vector-slug-mesh-webgpu-linear-layer-format-msaa4-512-tile-chunks-history-seed-v3/,
+  /semantic-vector-slug-mesh-webgpu-linear-rgba16float-work-msaa4-single-layer-resolve-512-tile-chunks-history-seed-v4/,
 );
 assert.match(vectorRasterSource, /VECTOR_RASTER_FORMAT = "rgba16float"/);
 assert.match(vectorRasterSource, /VECTOR_RASTER_CHUNK_SIZE = LAYER_STORAGE_TILE_SIZE \* 2/);
 assert.match(
   vectorRasterSource,
-  /WeakMap<[\s\S]{0,120}Map<LayerFormat, Promise<VectorRasterPipelines>>/,
-  "le pipeline raster vettoriali devono essere separate per formato documento",
+  /WeakMap<GPUDevice, Promise<VectorRasterPipelines>>/,
+  "le pipeline raster vettoriali devono essere condivise nel solo formato di lavoro 16F",
 );
 assert.match(vectorRasterSource, /targets: \[\{ format, blend \}\]/);
-assert.match(vectorRasterSource, /const format = destination\.format/);
-assert.match(vectorRasterSource, /destination\.format !== engine\.layerFormat/);
-assert.match(vectorRasterSource, /createVectorRasterScratch\(engine, format\)/);
+assert.match(vectorRasterSource, /const format = VECTOR_RASTER_FORMAT/);
+assert.doesNotMatch(vectorRasterSource, /destination\.format !== engine\.layerFormat/);
+assert.match(vectorRasterSource, /createVectorRasterScratch\(engine\)/);
 assert.match(vectorRasterSource, /format,\s*usage: GPUTextureUsage\.RENDER_ATTACHMENT/);
+assert.match(vectorRasterSource, /GPUTextureUsage\.TEXTURE_BINDING[\s\S]{0,80}GPUTextureUsage\.COPY_SRC/);
 assert.match(vectorRasterSource, /sampleCount: VECTOR_TEXT_GPU_SAMPLE_COUNT/);
 assert.match(vectorRasterSource, /entryPoint: "fragmentMain"/);
 assert.match(vectorRasterSource, /slugInnerShadowDirect/);
@@ -1895,8 +1896,11 @@ assert.match(vectorRasterSource, /replaceRasterWithVector\(/);
 assert.match(vectorRasterSource, /action\.seed\.format !== engine\.layerFormat/);
 assert.match(vectorRasterSource, /allocateLayerGpuResources\([\s\S]{0,100}action\.seed\.format/);
 assert.match(vectorRasterSource, /runGpuAllocationTransaction\(/);
-assert.match(vectorRasterSource, /Nessun fallback RGBA8 è consentito/);
-assert.doesNotMatch(vectorRasterSource, /format:\s*"rgba8unorm"/);
+assert.match(vectorRasterSource, /destination\.format === "rgba8unorm"/);
+assert.match(vectorRasterSource, /createRgba16fToRgba8ResolveResources\(/);
+assert.match(vectorRasterSource, /encodeRgba16fToRgba8Resolve\(/);
+assert.match(vectorRasterSource, /destroyRgba16fToRgba8ResolveResources\(/);
+assert.match(vectorRasterSource, /else \{[\s\S]{0,180}copyTextureToTexture\(/);
 assert.doesNotMatch(
   vectorRasterSource,
   /CanvasRenderingContext2D|copyExternalImageToTexture|drawImage\(/,

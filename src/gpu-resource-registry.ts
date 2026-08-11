@@ -79,8 +79,8 @@ export interface GpuRegistrySnapshot {
  * puo' sparire dal conto, al massimo sta in una riga che chiede un nome.
  */
 export const GPU_MEMORY_CATEGORY_ORDER = Object.freeze([
-  "Layer RGBA16F",
-  "Piramidi mip RGBA16F",
+  "Layer documento",
+  "Piramidi mip",
   "Maschere continue R16F",
   "Heightfield R32F",
   "Cache vettoriali",
@@ -101,7 +101,8 @@ export const GPU_MEMORY_CATEGORY_ORDER = Object.freeze([
 ] as const);
 
 const CATEGORY_RULES: ReadonlyArray<readonly [RegExp, string]> = Object.freeze([
-  [/authoritative paint layer|Transparent layer placeholder/i, "Layer RGBA16F"],
+  [/authoritative paint layer/i, "Layer documento"],
+  [/Transparent layer placeholder/i, "Presentazione"],
   // Scratch/readback precede ogni proprietario semantico: una cache vettoriale
   // persistente e il suo scratch temporaneo devono restare righe disgiunte.
   [/scratch|arena comune|arena segmenti|readback|rect probe|pixel probe|witness/i,
@@ -124,8 +125,12 @@ const CATEGORY_RULES: ReadonlyArray<readonly [RegExp, string]> = Object.freeze([
   [/cold tile|cold storage|Cold ripristinato|compress/i, "Cold storage livelli"],
   [/vector text|vector svg|semantic vector|mixed scene|scene lineare|ordered layer blend|ordered clipping-group/i,
     "Cache vettoriali"],
+  // Questi sono piccoli buffer di lookup del pennello, non texture di
+  // visualizzazione. La parola "mip" nell'etichetta non deve gonfiare il
+  // numero di risorse mostrato nella categoria delle piramidi.
+  [/Shape conservative occupancy bitmask/i, "Pennello, grana e shape"],
   [/display pyramid|derived mip|logical mip|sampling chain|\bmip(?:map)?\b/i,
-    "Piramidi mip RGBA16F"],
+    "Piramidi mip"],
   [/raster import|raster Transform|Trasforma raster|Native raster/i,
     "Import e trasformazioni raster"],
   [/presentation|presentazione|swap|thumbnail/i, "Presentazione"],

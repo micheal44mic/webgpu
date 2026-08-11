@@ -1898,6 +1898,8 @@ export async function runBenchmark(engine: BrushEngine, baseStampCount: number):
   engine.invalidateAdaptivePreview();
   engine.pendingStamps.length = 0;
   engine.pendingBlendBatches.length = 0;
+  engine.pendingBlendFinalization = null;
+  engine.blendRenderer?.abandonStroke();
   engine.activeStroke = null;
   engine.resetHistoryState();
   engine.publishHistoryState();
@@ -2653,6 +2655,8 @@ export function resetActiveLayerForMemoryBenchmark(engine: BrushEngine): boolean
   }
   engine.pendingStamps.length = 0;
   engine.pendingBlendBatches.length = 0;
+  engine.pendingBlendFinalization = null;
+  engine.blendRenderer?.abandonStroke();
   engine.activeStroke = null;
   engine.abandonLightGlazeSession();
   engine.invalidateAdaptivePreview();

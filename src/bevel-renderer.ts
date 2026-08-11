@@ -353,6 +353,12 @@ fn compositeLightGlazeOverPermanent(
   accumulatedStroke: vec4<f32>
 ) -> vec4<f32> {
   let strokePaint = resolvedLightGlaze(accumulatedStroke);
+  if (lightGlaze.accumulationMode == 3u) {
+    return quantizeLayer(vec4<f32>(
+      permanentPaint.rgb + strokePaint.rgb,
+      strokePaint.a + permanentPaint.a * (1.0 - strokePaint.a)
+    ));
+  }
   if (lightGlaze.accumulationMode == 2u) {
     if (strokePaint.a <= 0.0) {
       return permanentPaint;

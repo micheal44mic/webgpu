@@ -276,7 +276,7 @@ assert.equal(
   "Glaze e Paint ordinario devono restringere dirty rect e scissor.",
 );
 assert(brushEngine.includes("&& this.pixelSelectionState.selectedPixels === 0"));
-assert(brushEngine.includes("if (this.pixelSelectionState.selectedPixels > 0) {\n      this.adaptivePreviewCandidates.length = 0"));
+assert(/if \(this\.pixelSelectionState\.selectedPixels > 0\) \{\r?\n\s+this\.adaptivePreviewCandidates\.length = 0/.test(brushEngine));
 assert(brushEngine.includes("Blend non modifica una Selezione pixel"));
 assert(brushEngine.includes("Pulisci agisce sul livello intero: deseleziona prima"));
 assert(reports.includes("Deseleziona i pixel prima del benchmark Paint canonico."));

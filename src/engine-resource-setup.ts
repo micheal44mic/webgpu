@@ -1680,6 +1680,7 @@ export function maybeReleaseIdleShapeResources(engine: BrushEngine): void {
     || engine.historyBusy
     || engine.pendingStamps.length > 0
     || engine.pendingBlendBatches.length > 0
+    || engine.pendingBlendFinalization !== null
   ) {
     return;
   }
@@ -1700,6 +1701,7 @@ export function maybeReleaseIdleGrainResources(engine: BrushEngine): void {
     || engine.historyBusy
     || engine.pendingStamps.length > 0
     || engine.pendingBlendBatches.length > 0
+    || engine.pendingBlendFinalization !== null
   ) {
     return;
   }
@@ -1716,6 +1718,7 @@ export function maybeReleaseIdleBlendScratch(engine: BrushEngine): void {
     || engine.activeStroke !== null
     || engine.historyBusy
     || engine.pendingBlendBatches.length > 0
+    || engine.pendingBlendFinalization !== null
   ) {
     return;
   }

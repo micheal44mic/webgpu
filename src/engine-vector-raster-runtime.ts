@@ -51,11 +51,16 @@ import {
 } from "./engine-layer-runtime";
 import { LAYER_STACK_MAXIMUM } from "./layer-stack";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
+import {
+  createRgba16fToRgba8ResolveResources,
+  destroyRgba16fToRgba8ResolveResources,
+  encodeRgba16fToRgba8Resolve,
+} from "./engine-rgba16f-resolve";
 
 export const VECTOR_RASTERIZATION_STRATEGY =
-  "semantic-vector-slug-mesh-webgpu-linear-layer-format-msaa4-512-tile-chunks-history-seed-v3" as const;
+  "semantic-vector-slug-mesh-webgpu-linear-rgba16float-work-msaa4-single-layer-resolve-512-tile-chunks-history-seed-v4" as const;
 export const VECTOR_RASTER_CHUNK_SIZE = LAYER_STORAGE_TILE_SIZE * 2;
-/** Permanent authoritative default; runtime resources still follow engine.layerFormat. */
+/** Draw overlap, MSAA resolve and shadows stay high precision until layer commit. */
 export const VECTOR_RASTER_FORMAT = "rgba16float" as const;
 
 interface VectorRasterPipelines {
@@ -81,10 +86,7 @@ interface VectorRasterScratch {
   readonly resolvedView: GPUTextureView;
 }
 
-const pipelinesByDevice = new WeakMap<
-  GPUDevice,
-  Map<LayerFormat, Promise<VectorRasterPipelines>>
->();
+const pipelinesByDevice = new WeakMap<GPUDevice, Promise<VectorRasterPipelines>>();
 
 function sourceOverBlend(): GPUBlendState {
   return {
@@ -103,14 +105,9 @@ function sourceOverBlend(): GPUBlendState {
 
 async function ensureVectorRasterPipelines(
   engine: BrushEngine,
-  format: LayerFormat,
 ): Promise<VectorRasterPipelines> {
-  let devicePipelines = pipelinesByDevice.get(engine.device);
-  if (!devicePipelines) {
-    devicePipelines = new Map();
-    pipelinesByDevice.set(engine.device, devicePipelines);
-  }
-  const existing = devicePipelines.get(format);
+  const format = VECTOR_RASTER_FORMAT;
+  const existing = pipelinesByDevice.get(engine.device);
   if (existing) return existing;
   const pending = runGpuAllocationTransaction(
     engine.device,
@@ -250,25 +247,25 @@ async function ensureVectorRasterPipelines(
       return created;
     },
   );
-  devicePipelines.set(format, pending);
+  pipelinesByDevice.set(engine.device, pending);
   try {
     return await pending;
   } catch (error) {
-    if (devicePipelines.get(format) === pending) {
-      devicePipelines.delete(format);
+    if (pipelinesByDevice.get(engine.device) === pending) {
+      pipelinesByDevice.delete(engine.device);
     }
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `Rasterizzazione vettoriale ${format} non supportata dalla GPU. `
-      + `Nessun fallback RGBA8 è consentito. Dettaglio: ${message}`,
+      `Superficie di lavoro vettoriale ${format} non supportata dalla GPU. `
+      + `Il layer resta invariato. Dettaglio: ${message}`,
     );
   }
 }
 
 async function createVectorRasterScratch(
   engine: BrushEngine,
-  format: LayerFormat,
 ): Promise<VectorRasterScratch> {
+  const format = VECTOR_RASTER_FORMAT;
   try {
     return await runGpuAllocationTransaction(
       engine.device,
@@ -294,7 +291,10 @@ async function createVectorRasterScratch(
             depthOrArrayLayers: 1,
           },
           format,
-          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+          usage:
+            GPUTextureUsage.RENDER_ATTACHMENT
+            | GPUTextureUsage.TEXTURE_BINDING
+            | GPUTextureUsage.COPY_SRC,
         });
         transaction.deferRollback(() => resolvedTexture.destroy());
         return {
@@ -309,7 +309,7 @@ async function createVectorRasterScratch(
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
       `Scratch raster vettoriale ${format} non supportato dalla GPU. `
-      + `Nessun fallback RGBA8 è consentito. Dettaglio: ${message}`,
+      + `Il layer resta invariato. Dettaglio: ${message}`,
     );
   }
 }
@@ -482,7 +482,7 @@ export async function renderVectorDrawsToTexture(
   engine: BrushEngine,
   draws: readonly VectorTextGpuDraw[],
   view: VectorTextViewState,
-  destination: Pick<LayerTextureResources, "texture" | "format">,
+  destination: Pick<LayerTextureResources, "texture" | "view" | "format">,
   destinationDocumentBounds: Readonly<{
     x: number;
     y: number;
@@ -496,14 +496,8 @@ export async function renderVectorDrawsToTexture(
   },
 ): Promise<{ bounds: VectorRasterizeHistoryAction["baseBounds"]; chunkCount: number }> {
   requireVectorDraws(draws);
-  if (destination.format !== engine.layerFormat) {
-    throw new Error(
-      `Destinazione raster vettoriale ${destination.format} incompatibile con documento `
-      + `${engine.layerFormat}.`,
-    );
-  }
-  const format = destination.format;
-  const pipelines = await ensureVectorRasterPipelines(engine, format);
+  const format = VECTOR_RASTER_FORMAT;
+  const pipelines = await ensureVectorRasterPipelines(engine);
   const uniformBuffer = engine.vectorTextGpuUniformBuffer;
   const uniformBindGroup = engine.vectorTextGpuUniformBindGroup;
   if (!uniformBuffer || !uniformBindGroup) {
@@ -527,7 +521,15 @@ export async function renderVectorDrawsToTexture(
   const lastChunkY = Math.ceil((bounds.y + bounds.height) / VECTOR_RASTER_CHUNK_SIZE)
     * VECTOR_RASTER_CHUNK_SIZE;
   const { msaaTexture, resolvedTexture, msaaView, resolvedView } =
-    await createVectorRasterScratch(engine, format);
+    await createVectorRasterScratch(engine);
+  const rgba8Resolve = destination.format === "rgba8unorm"
+    ? await createRgba16fToRgba8ResolveResources(
+      engine.device,
+      resolvedView,
+      destination.view,
+      "Vector raster chunk",
+    )
+    : null;
   let chunkCount = 0;
   try {
     for (let y = firstChunkY; y < lastChunkY; y += VECTOR_RASTER_CHUNK_SIZE) {
@@ -642,25 +644,34 @@ export async function renderVectorDrawsToTexture(
           destinationDocumentBounds.y + destinationDocumentBounds.height,
         );
         if (copyRight > copyLeft && copyBottom > copyTop) {
-          encoder.copyTextureToTexture(
-            {
-              texture: resolvedTexture,
-              origin: { x: copyLeft - x, y: copyTop - y, z: 0 },
-            },
-            {
-              texture: destination.texture,
-              origin: {
-                x: copyLeft - destinationDocumentBounds.x,
-                y: copyTop - destinationDocumentBounds.y,
-                z: 0,
+          const copyWidth = copyRight - copyLeft;
+          const copyHeight = copyBottom - copyTop;
+          const sourceX = copyLeft - x;
+          const sourceY = copyTop - y;
+          const targetX = copyLeft - destinationDocumentBounds.x;
+          const targetY = copyTop - destinationDocumentBounds.y;
+          if (rgba8Resolve) {
+            encodeRgba16fToRgba8Resolve(
+              engine.device,
+              encoder,
+              rgba8Resolve,
+              {
+                sourceX,
+                sourceY,
+                targetX,
+                targetY,
+                width: copyWidth,
+                height: copyHeight,
               },
-            },
-            {
-              width: copyRight - copyLeft,
-              height: copyBottom - copyTop,
-              depthOrArrayLayers: 1,
-            },
-          );
+              `Vector raster single RGBA8 resolve ${copyLeft},${copyTop}`,
+            );
+          } else {
+            encoder.copyTextureToTexture(
+              { texture: resolvedTexture, origin: { x: sourceX, y: sourceY, z: 0 } },
+              { texture: destination.texture, origin: { x: targetX, y: targetY, z: 0 } },
+              { width: copyWidth, height: copyHeight, depthOrArrayLayers: 1 },
+            );
+          }
         }
         engine.device.queue.submit([encoder.finish()]);
         chunkCount += 1;
@@ -671,6 +682,7 @@ export async function renderVectorDrawsToTexture(
       60_000,
     );
   } finally {
+    destroyRgba16fToRgba8ResolveResources(rgba8Resolve);
     msaaTexture.destroy();
     resolvedTexture.destroy();
   }

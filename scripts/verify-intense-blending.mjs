@@ -5,6 +5,7 @@ import { readEngineSource } from "./engine-source.mjs";
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const engine = readEngineSource();
 const main = read("../src/main.ts");
+const engineTypes = read("../src/engine-types.ts");
 const shaders = read("../src/shaders.ts");
 const strokeRenderer = read("../src/stroke-renderer.ts");
 const bevelRenderer = read("../src/bevel-renderer.ts");
@@ -16,8 +17,8 @@ const sitesBuild = read("./prepare-sites-build.mjs");
 
 assert.match(
   engine,
-  /layerFormat: LayerFormat = "rgba16float";/,
-  "Il default autorevole di BrushEngine deve essere RGBA16F.",
+  /layerFormat: LayerFormat = "rgba8unorm";/,
+  "Lo storage autorevole di BrushEngine deve essere RGBA8.",
 );
 assert.match(
   main,
@@ -29,6 +30,23 @@ assert.doesNotMatch(
   /engine\.layerFormat\s*=/,
   "main non deve sovrascrivere il default autorevole di BrushEngine.",
 );
+assert.match(
+  engineTypes,
+  /initialLayerFormat\?: LayerFormat/,
+  "Il test deve impostare il formato prima dell'allocazione, non convertirlo dopo il boot.",
+);
+assert.match(
+  engine,
+  /this\.layerFormat = options\.initialLayerFormat \?\? this\.layerFormat;/,
+  "BrushEngine non applica il formato iniziale esplicito prima delle allocazioni.",
+);
+assert.match(
+  engine,
+  /isStrokeGlazeBlendMode[\s\S]{0,220}mode === "normal"[\s\S]{0,120}mode === "additive"/,
+  "Normal e Additive devono usare l'accumulatore per-tratto 16F.",
+);
+assert.doesNotMatch(main, /precisionTest|pencilPrecisionCompare|gaussianPrecisionCompare/);
+assert.doesNotMatch(html, /id="precisionTestBadge"/);
 assert.doesNotMatch(
   main,
   /if \(MOBILE_DEVICE_CLASS\) \{[\s\S]{0,200}(?:engine\.layerFormat|layerFormatSelect)/,
@@ -109,12 +127,15 @@ const submit = section(
   // Il routing di presentazione document-space dei blend di livello aggiunge
   // tre rami espliciti al submit live; il final-stack mip coerente aggiunge i
   // gate live/commit, ma la finestra resta stretta sui due marcatori.
-  42_000,
+  44_000,
 );
 for (const requirement of [
   'const intenseBlending = settings.blendMode === "intense-blending";',
-  "opacity: intenseBlending ? settings.opacity : 1",
-  "intenseBlending ? 1 : settings.opacity",
+  'const standardNormal = settings.blendMode === "normal";',
+  'const standardAdditive = settings.blendMode === "additive";',
+  "const opacityPerDeposit = standardNormal || standardAdditive || intenseBlending;",
+  "opacity: opacityPerDeposit ? settings.opacity : 1",
+  "opacityPerDeposit ? 1 : settings.opacity",
   '"encoded-srgb-source-over"',
   "stampCount * settings.count",
   "this.intenseBlendingPipeline",
@@ -127,15 +148,17 @@ for (const requirement of [
   assert(submit.includes(requirement), `Percorso Intense incompleto: ${requirement}`);
 }
 assert(
-  submit.includes('session.settings.blendMode === "uniformed-glaze"')
-    && submit.includes('session.settings.blendMode === "intense-blending"')
+  submit.includes("if (!lightNoBuildUp)")
+    && submit.includes('settings.blendMode === "normal"')
+    && submit.includes('settings.blendMode === "additive"')
+    && submit.includes('settings.blendMode === "intense-blending"')
     && submit.includes("LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BUFFER_BYTES")
     && submit.includes("tilePass.setViewport(0, 0, tileWidth, tileHeight, 0, 1)")
     && submit.includes("[tileIndex * LIGHT_GLAZE_COMMIT_TILE_UNIFORM_STRIDE_BYTES]")
     && submit.includes("encoder.copyTextureToTexture(")
     && submit.includes("this.device.queue.writeBuffer(")
     && submit.includes("tileUniformUpload"),
-  "Commit esatto Uniformed/Intense a tile con dynamic offset mancante.",
+  "Commit esatto dei tratti RGBA16F a tile con dynamic offset mancante.",
 );
 assert.equal(
   (submit.match(/this\.device\.queue\.writeBuffer\(\s*this\.lightGlazeCommitTileUniformBuffer/g) ?? []).length,
@@ -209,7 +232,8 @@ const fixedFunctionComposite = section(
 assert(
   !fixedFunctionComposite.includes("resolvedEncodedSrgbStroke")
     && fixedFunctionComposite.includes("return vec4<f32>(0.0);")
-    && fixedFunctionComposite.includes("must never use this fixed-function"),
+    && fixedFunctionComposite.includes("must never use this")
+    && fixedFunctionComposite.includes("fixed-function destination blend"),
   "Il compositore fixed-function conserva un branch Intense matematicamente invalido.",
 );
 

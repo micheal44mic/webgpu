@@ -89,6 +89,8 @@ import {
   Layers3,
   PaintBucket,
   Palette,
+  PanelRightClose,
+  PanelRightOpen,
   Pencil,
   Plus,
   Redo2,
@@ -256,6 +258,8 @@ createIcons({
     Layers3,
     PaintBucket,
     Palette,
+    PanelRightClose,
+    PanelRightOpen,
     Pencil,
     Plus,
     Redo2,
@@ -346,6 +350,8 @@ const rasterSelectionGestureContext: CanvasRenderingContext2D =
 const appElement = element<HTMLElement>("app");
 const controlsPanel = element<HTMLElement>("controlsPanel");
 const toggleControlsButton = element<HTMLButtonElement>("toggleControls");
+const desktopPropertiesContext = element<HTMLElement>("desktopPropertiesContext");
+const desktopPropertiesTarget = element<HTMLSelectElement>("desktopPropertiesTarget");
 const statusElement = element<HTMLParagraphElement>("status");
 const benchmarkButton = element<HTMLButtonElement>("runBenchmark");
 const benchmarkResult = element<HTMLParagraphElement>("benchmarkResult");
@@ -407,6 +413,9 @@ const mobileBrushColorInput = element<HTMLInputElement>("mobileBrushColorInput")
 const mobileBrushColorSwatch = element<HTMLElement>("mobileBrushColorSwatch");
 const mobilePaintButton = element<HTMLButtonElement>("mobilePaint");
 const mobileBlendButton = element<HTMLButtonElement>("mobileBlend");
+const desktopFillButton = element<HTMLButtonElement>("desktopFill");
+const desktopSelectionButton = element<HTMLButtonElement>("desktopSelection");
+const desktopTransformButton = element<HTMLButtonElement>("desktopTransform");
 const mobileUndoButton = element<HTMLButtonElement>("mobileUndo");
 const mobileRedoButton = element<HTMLButtonElement>("mobileRedo");
 const mobileToolsMenuButton = element<HTMLButtonElement>("mobileToolsMenu");
@@ -1305,6 +1314,16 @@ const layerMemoryFixtureRequested =
   || iphoneMemoryLimitTestRequested
   || mixedMemoryBenchmarkRequested
   || vectorZoomStressRequested;
+// Questi harness storici verificano esplicitamente ABI/readback e soglie di
+// memoria RGBA16F. Restano isolati dietro query DEV; il prodotto normale nasce
+// sempre in RGBA8 e usa 16F soltanto per il lavoro transitorio.
+const legacyRgba16fFixtureRequested =
+  layerHistoryTestRequested
+  || layerBlendTestRequested
+  || layerMergeTestRequested !== null
+  || layerMemoryStressTestRequested
+  || iphoneMemoryLimitTestRequested
+  || mixedMemoryBenchmarkRequested;
 const appleMobileMemoryLifecycle =
   /iPhone|iPad|iPod/i.test(navigator.userAgent)
   || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -1502,6 +1521,7 @@ const engine = new BrushEngine(canvas, {
       `Undo/Redo ha selezionato il livello ${activeIndex + 1}.`;
   },
 }, tipPreviewCanvas, {
+  initialLayerFormat: legacyRgba16fFixtureRequested ? "rgba16float" : undefined,
   bevelBoundingFieldEnabled,
   layerMemoryStressTestEnabled: layerMemoryFixtureRequested,
   layerCompressionTestEnabled: layerCompressionStudyRequested,
@@ -1514,9 +1534,10 @@ const engine = new BrushEngine(canvas, {
   layerColdDirectHotHydrationEnabled,
   layerColdAdjacentPrefetchEnabled,
 }, rasterSelectionOverlayCanvas);
-// BrushEngine possiede il default autorevole RGBA16F. La UI si limita a
-// rifletterlo: nessun override locale (mobile o desktop) puo' divergere dal
-// formato realmente usato per creare livelli, storia e compositori.
+// I pixel persistenti del documento nascono direttamente in RGBA8. Pennelli,
+// blending ed effetti usano scratch RGBA16F/f32: gli eventuali mirror RGBA8 di
+// anteprima non vengono mai riletti dal calcolo, e il commit finale parte dal
+// work ad alta precisione senza dipendere dalla classe del dispositivo.
 layerFormatSelect.value = engine.layerFormat;
 if (import.meta.env.DEV) {
   (window as Window & { __brushEngine?: BrushEngine }).__brushEngine = engine;
@@ -1585,7 +1606,9 @@ const restoredMobileBrushLibraryBrushId: MobileBrushLibraryBrushId =
     : "current";
 let mobileBrushLibraryOpen = false;
 let mobileBrushLibraryCategory: MobileBrushLibraryCategory =
-  restoredMobileBrushLibraryBrushId === PENCIL_BRUSH_PRESET.id ? "pencil" : "painting";
+  restoredMobileBrushLibraryBrushId === PENCIL_BRUSH_PRESET.id
+    ? "pencil"
+    : "painting";
 let activeMobileBrushLibraryBrushId: MobileBrushLibraryBrushId =
   restoredMobileBrushLibraryBrushId;
 let mobileBrushLibraryTransferBusy = false;
@@ -1955,12 +1978,144 @@ function updateViewRotationControl(degrees: number, snappedToZero: boolean): voi
     : `Rotazione vista ${formatted}° · premi per azzerare`;
 }
 
+const DESKTOP_PROPERTIES_LABEL_BY_SECTION = new Map<string, string>([
+  ["brushPropertiesSection", "Brush"],
+  ["thicknessSection", "Brush Dynamics"],
+  ["grainSection", "Grain"],
+  ["colorJitterSection", "Color Jitter"],
+  ["positionJitterSection", "Position Jitter"],
+  ["vectorTextPrototypeSection", "Text & Vector"],
+  ["rasterColorOverlaySection", "Color Overlay"],
+  ["rasterStrokeSection", "Stroke"],
+  ["rasterOuterShadowSection", "Outer Shadow"],
+  ["rasterInnerShadowSection", "Inner Shadow"],
+  ["rasterBevelSection", "Bevel"],
+  ["rasterLiquifySection", "Liquify"],
+  ["rasterGaussianBlurSection", "Adjustments"],
+]);
+
+const DESKTOP_CANVAS_TOOL_LABEL: Record<CanvasTool, string> = {
+  paint: "Brush",
+  blend: "Blend",
+  fill: "Fill",
+  selection: "Selection",
+  transform: "Transform",
+  liquify: "Liquify",
+};
+
+let desktopPropertiesFocusTimer: number | null = null;
+
+function desktopPropertiesTargetForSection(sectionId: string): string | null {
+  if (
+    sectionId === "thicknessSection"
+    || sectionId === "grainSection"
+    || sectionId === "colorJitterSection"
+    || sectionId === "positionJitterSection"
+  ) {
+    return "brushPropertiesSection";
+  }
+  return Array.from(desktopPropertiesTarget.options).some(
+      (option) => option.value === sectionId,
+    )
+    ? sectionId
+    : null;
+}
+
+function desktopPropertiesSectionsForTarget(targetId: string): readonly string[] {
+  if (targetId === "brushPropertiesSection") {
+    return [
+      "brushPropertiesSection",
+      "thicknessSection",
+      "grainSection",
+      "colorJitterSection",
+      "positionJitterSection",
+    ];
+  }
+  return [targetId];
+}
+
+function focusDesktopPropertiesSection(
+  sectionId: string,
+  scroll = true,
+): void {
+  const section = document.getElementById(sectionId);
+  if (!(section instanceof HTMLElement) || !controlsPanel.contains(section)) return;
+  const target = desktopPropertiesTargetForSection(sectionId) ?? sectionId;
+  if (desktopPropertiesTargetForSection(target)) desktopPropertiesTarget.value = target;
+  const visibleSectionIds = new Set(desktopPropertiesSectionsForTarget(target));
+  controlsPanel.classList.add("is-desktop-contextual");
+  for (const candidate of controlsPanel.querySelectorAll<HTMLElement>(":scope > section")) {
+    candidate.classList.toggle(
+      "desktop-properties-panel-visible",
+      visibleSectionIds.has(candidate.id),
+    );
+  }
+  desktopPropertiesContext.textContent = DESKTOP_PROPERTIES_LABEL_BY_SECTION.get(sectionId)
+    ?? DESKTOP_PROPERTIES_LABEL_BY_SECTION.get(target ?? "")
+    ?? "Properties";
+  if (mobileUiMediaQuery.matches || !controlsPanelOpen || !scroll) return;
+  const header = controlsPanel.querySelector<HTMLElement>(".desktop-properties-header");
+  const panelRect = controlsPanel.getBoundingClientRect();
+  const sectionRect = section.getBoundingClientRect();
+  const top = Math.max(
+    0,
+    controlsPanel.scrollTop
+      + sectionRect.top
+      - panelRect.top
+      - (header?.offsetHeight ?? 0)
+      - 10,
+  );
+  controlsPanel.scrollTo({
+    top,
+    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      ? "auto"
+      : "smooth",
+  });
+  if (desktopPropertiesFocusTimer !== null) {
+    window.clearTimeout(desktopPropertiesFocusTimer);
+  }
+  for (const focused of controlsPanel.querySelectorAll(
+    ".desktop-properties-section-focus",
+  )) {
+    focused.classList.remove("desktop-properties-section-focus");
+  }
+  section.classList.add("desktop-properties-section-focus");
+  desktopPropertiesFocusTimer = window.setTimeout(() => {
+    section.classList.remove("desktop-properties-section-focus");
+    desktopPropertiesFocusTimer = null;
+  }, 950);
+}
+
+function focusDesktopCanvasToolProperties(tool: CanvasTool, scroll = true): void {
+  focusDesktopPropertiesSection("brushPropertiesSection", scroll);
+  desktopPropertiesContext.textContent = DESKTOP_CANVAS_TOOL_LABEL[tool];
+}
+
+function desktopDockShouldStartOpen(): boolean {
+  return !mobileUiMediaQuery.matches;
+}
+
 function setControlsPanelOpen(open: boolean): void {
   controlsPanelOpen = open;
   controlsPanel.hidden = !open;
+  appElement.classList.toggle(
+    "is-desktop-dock-collapsed",
+    !mobileUiMediaQuery.matches && !open,
+  );
   toggleControlsButton.setAttribute("aria-expanded", String(open));
-  toggleControlsButton.setAttribute("aria-label", open ? "Nascondi pannelli" : "Mostra pannelli");
-  toggleControlsButton.title = open ? "Nascondi pannelli" : "Mostra pannelli";
+  toggleControlsButton.setAttribute(
+    "aria-label",
+    open ? "Nascondi pannello laterale" : "Mostra pannello laterale",
+  );
+  toggleControlsButton.title = open
+    ? "Nascondi pannello laterale"
+    : "Mostra pannello laterale";
+  const icon = createLucideElement(open ? PanelRightClose : PanelRightOpen, {
+    width: 18,
+    height: 18,
+  });
+  icon.setAttribute("aria-hidden", "true");
+  toggleControlsButton.replaceChildren(icon);
   if (open && controlsPanelStatsDirty) {
     controlsPanelStatsDirty = false;
     updateStats(engine.getStats());
@@ -3014,6 +3169,15 @@ function syncMobileToolsMenuState(): void {
       String(button.dataset.mobileCanvasTool === activeCanvasTool),
     );
   }
+  desktopFillButton.setAttribute("aria-pressed", String(activeCanvasTool === "fill"));
+  desktopSelectionButton.setAttribute(
+    "aria-pressed",
+    String(activeCanvasTool === "selection"),
+  );
+  desktopTransformButton.setAttribute(
+    "aria-pressed",
+    String(activeCanvasTool === "transform"),
+  );
   for (const button of mobileToolsProxyButtons) {
     const targetId = button.dataset.mobileProxyButton;
     const target = targetId
@@ -6463,6 +6627,9 @@ function updateHistoryControls(): void {
   mobileBrushColorLabel.classList.toggle("is-disabled", locked);
   mobilePaintButton.disabled = locked;
   mobileBlendButton.disabled = locked;
+  desktopFillButton.disabled = locked;
+  desktopSelectionButton.disabled = locked;
+  desktopTransformButton.disabled = locked;
   clearLayerButton.disabled = locked;
   element<HTMLSelectElement>("brushTool").disabled = locked;
   const paintToolInactive = activeCanvasTool !== "paint";
@@ -6485,8 +6652,8 @@ function updateHistoryControls(): void {
     || layerCompressionStudyCompleted
     || locked;
   iphoneMemoryDeviceLabel.disabled = locked || layerMemoryStressTestCompleted;
-  // Il documento e' sempre RGBA16F: il controllo resta solo come indicatore
-  // leggibile, non come una via di downgrade verso RGBA8.
+  // Il controllo resta un indicatore: il confronto 8/16 bit nasce dal query
+  // parameter e non converte in corsa il contenuto o la cronologia.
   layerFormatSelect.disabled = true;
   const viewLocked = canvasViewOperationLocked() || activePointerId !== null;
   fitViewButton.disabled = viewLocked;
@@ -7425,6 +7592,7 @@ element<HTMLSelectElement>("brushTool").addEventListener("change", () => {
       : selected === "transform"
         ? "transform"
       : "paint";
+  if (!mobileUiMediaQuery.matches) focusDesktopCanvasToolProperties(tool, false);
   configureBrushToolUi(tool, true);
   if (tool === "paint" || tool === "blend") {
     applyBrushControls();
@@ -8344,7 +8512,7 @@ mobileUiMediaQuery.addEventListener("change", (event) => {
   mobileRasterEffectsSheet?.close(false);
   mobileToolSettingsSheet?.close(false);
   mobileBrushStudio?.cancel(false);
-  setControlsPanelOpen(true);
+  setControlsPanelOpen(desktopDockShouldStartOpen());
   syncMobileBrushControlsVisibility();
 });
 
@@ -8399,6 +8567,15 @@ toggleControlsButton.addEventListener("click", () => {
   if (!toggleControlsButton.disabled) {
     setControlsPanelOpen(!controlsPanelOpen);
   }
+});
+desktopPropertiesTarget.addEventListener("change", () => {
+  focusDesktopPropertiesSection(desktopPropertiesTarget.value);
+});
+controlsPanel.addEventListener("focusin", (event) => {
+  const target = event.target instanceof Element ? event.target : null;
+  const section = target?.closest<HTMLElement>("section[id]");
+  if (!section) return;
+  focusDesktopPropertiesSection(section.id, false);
 });
 gpuMemoryToggle.addEventListener("click", () => {
   setGpuMemoryPanelOpen(!gpuMemoryPanelOpen);
@@ -8507,6 +8684,10 @@ function rasterizeMobileText(): void {
 }
 
 mobilePaintButton.addEventListener("click", () => {
+  if (!mobileUiMediaQuery.matches) {
+    if (selectMobileCanvasTool("paint")) focusDesktopCanvasToolProperties("paint");
+    return;
+  }
   if (activeCanvasTool === "paint") {
     setMobileBrushLibraryOpen(!mobileBrushLibraryOpen);
     return;
@@ -8514,8 +8695,19 @@ mobilePaintButton.addEventListener("click", () => {
   selectMobileCanvasTool("paint");
 });
 mobileBlendButton.addEventListener("click", () => {
-  selectMobileCanvasTool("blend");
+  if (selectMobileCanvasTool("blend") && !mobileUiMediaQuery.matches) {
+    focusDesktopCanvasToolProperties("blend");
+  }
 });
+for (const [button, tool] of [
+  [desktopFillButton, "fill"],
+  [desktopSelectionButton, "selection"],
+  [desktopTransformButton, "transform"],
+] as const) {
+  button.addEventListener("click", () => {
+    if (selectMobileCanvasTool(tool)) focusDesktopCanvasToolProperties(tool);
+  });
+}
 for (const button of mobileToolsCanvasButtons) {
   button.addEventListener("click", () => {
     if (button.dataset.mobileToolSheet) return;
@@ -14750,7 +14942,8 @@ syncRasterOuterShadowControls(engine.getRasterOuterShadowStyle());
 syncRasterInnerShadowControls(engine.getRasterInnerShadowStyle());
 syncRasterBevelControls(engine.getRasterBevelStyle());
 setGpuMemoryPanelOpen(false);
-setControlsPanelOpen(!mobileUiMediaQuery.matches);
+setControlsPanelOpen(desktopDockShouldStartOpen());
+focusDesktopPropertiesSection(desktopPropertiesTarget.value, false);
 setMobileToolsSheetOpen(false);
 setMobileBrushLibraryOpen(false);
 mobileStrokeSheet?.close(false);

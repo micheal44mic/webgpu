@@ -197,7 +197,7 @@ for (const symbol of [
 }
 requireText(runtime, "MAX_DABS_PER_PREVIEW = 64", "bounded dynamic-uniform batch");
 requireText(runtime, "MAX_MOMENTUM_DABS_PER_FRAME = 32", "bounded resampled Momentum tail");
-requireText(runtime, "one-full-displacement-one-cropped-source-one-reused-swept-dirty-scratch", "bounded working set");
+requireText(runtime, "one-full-displacement-one-full-rgba16f-output-one-cropped-source-one-reused-swept-dirty-scratch", "bounded high-precision working set");
 requireText(runtime, "liquifySegmentDirtyBounds", "swept Push dirty bounds");
 requireText(runtime, "patternSeed", "stable per-stroke procedural pattern");
 requireText(runtime, "directionFromSeed", "stable fallback Edge axis");

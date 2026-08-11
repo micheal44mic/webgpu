@@ -125,6 +125,12 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
     grainShapeAdditivePipeline,
     grainShapeOccupancyNormalPipeline,
     grainShapeOccupancyAdditivePipeline,
+    additiveGlazePipeline,
+    additiveGlazeShapePipeline,
+    additiveGlazeShapeOccupancyPipeline,
+    grainAdditiveGlazePipeline,
+    grainAdditiveGlazeShapePipeline,
+    grainAdditiveGlazeShapeOccupancyPipeline,
     uniformedGlazePipeline,
     uniformedGlazeShapePipeline,
     uniformedGlazeShapeOccupancyPipeline,
@@ -601,6 +607,7 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
       | "encodedSrgbFragmentMain"
       | "encodedSrgbShapeFragmentMain"
       | "encodedSrgbShapeOccupancyFragmentMain",
+    accumulation: "source-over" | "additive" = "source-over",
   ): GPURenderPipeline => engine.device.createRenderPipeline({
     label,
     layout,
@@ -617,7 +624,7 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
           color: {
             operation: "add",
             srcFactor: "one",
-            dstFactor: "one-minus-src-alpha",
+            dstFactor: accumulation === "additive" ? "one" : "one-minus-src-alpha",
           },
           alpha: {
             operation: "add",
@@ -629,6 +636,55 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
     },
     primitive: { topology: "triangle-strip" },
   });
+
+  const additiveGlazePipeline = createRgba16FloatGlazePipeline(
+    "Normal Additive circle linear rgba16float",
+    brushPipelineLayout,
+    engine.brushShaderModule,
+    "vertexMain",
+    "fragmentMain",
+    "additive",
+  );
+  const additiveGlazeShapePipeline = createRgba16FloatGlazePipeline(
+    "Normal Additive Shape linear rgba16float",
+    brushPipelineLayout,
+    engine.brushShaderModule,
+    "shapeVertexMain",
+    "shapeFragmentMain",
+    "additive",
+  );
+  const additiveGlazeShapeOccupancyPipeline = createRgba16FloatGlazePipeline(
+    "Normal Additive Shape occupancy linear rgba16float",
+    brushOccupancyPipelineLayout,
+    engine.brushShaderModule,
+    "shapeVertexMain",
+    "shapeOccupancyFragmentMain",
+    "additive",
+  );
+  const grainAdditiveGlazePipeline = createRgba16FloatGlazePipeline(
+    "Normal Additive Texturized circle linear rgba16float",
+    grainBrushPipelineLayout,
+    engine.texturizedGrainShaderModule,
+    "vertexMain",
+    "fragmentMain",
+    "additive",
+  );
+  const grainAdditiveGlazeShapePipeline = createRgba16FloatGlazePipeline(
+    "Normal Additive Texturized Shape linear rgba16float",
+    grainBrushPipelineLayout,
+    engine.texturizedGrainShaderModule,
+    "shapeVertexMain",
+    "shapeFragmentMain",
+    "additive",
+  );
+  const grainAdditiveGlazeShapeOccupancyPipeline = createRgba16FloatGlazePipeline(
+    "Normal Additive Texturized Shape occupancy linear rgba16float",
+    grainBrushOccupancyPipelineLayout,
+    engine.texturizedGrainShaderModule,
+    "shapeVertexMain",
+    "shapeOccupancyFragmentMain",
+    "additive",
+  );
 
   const uniformedGlazePipeline = createRgba16FloatGlazePipeline(
     "Uniformed Glaze circle linear source-over rgba16float",
@@ -892,6 +948,7 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
     fragmentModule: GPUShaderModule,
     vertexEntryPoint: string,
     fragmentEntryPoint: string,
+    blend: GPUBlendState = sourceOverBlend,
   ): void => {
     selectionVariants.push({
       base,
@@ -901,9 +958,15 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
       vertexEntryPoint,
       fragmentEntryPoint,
       targetFormat: "rgba16float",
-      blend: sourceOverBlend,
+      blend,
     });
   };
+  addGlazeVariant(additiveGlazePipeline, "Normal Additive circle 16F", selectionBrushPipelineLayout, engine.selectionBrushShaderModule, "vertexMain", "fragmentMain", additiveBlend);
+  addGlazeVariant(additiveGlazeShapePipeline, "Normal Additive Shape 16F", selectionBrushPipelineLayout, engine.selectionBrushShaderModule, "shapeVertexMain", "shapeFragmentMain", additiveBlend);
+  addGlazeVariant(additiveGlazeShapeOccupancyPipeline, "Normal Additive Shape occupancy 16F", selectionBrushOccupancyPipelineLayout, engine.selectionBrushShaderModule, "shapeVertexMain", "shapeOccupancyFragmentMain", additiveBlend);
+  addGlazeVariant(grainAdditiveGlazePipeline, "Normal Additive Grain circle 16F", selectionGrainBrushPipelineLayout, engine.selectionTexturizedGrainShaderModule, "vertexMain", "fragmentMain", additiveBlend);
+  addGlazeVariant(grainAdditiveGlazeShapePipeline, "Normal Additive Grain Shape 16F", selectionGrainBrushPipelineLayout, engine.selectionTexturizedGrainShaderModule, "shapeVertexMain", "shapeFragmentMain", additiveBlend);
+  addGlazeVariant(grainAdditiveGlazeShapeOccupancyPipeline, "Normal Additive Grain Shape occupancy 16F", selectionGrainBrushOccupancyPipelineLayout, engine.selectionTexturizedGrainShaderModule, "shapeVertexMain", "shapeOccupancyFragmentMain", additiveBlend);
   addGlazeVariant(uniformedGlazePipeline, "Uniformed circle", selectionBrushPipelineLayout, engine.selectionBrushShaderModule, "vertexMain", "fragmentMain");
   addGlazeVariant(uniformedGlazeShapePipeline, "Uniformed Shape", selectionBrushPipelineLayout, engine.selectionBrushShaderModule, "shapeVertexMain", "shapeFragmentMain");
   addGlazeVariant(uniformedGlazeShapeOccupancyPipeline, "Uniformed Shape occupancy", selectionBrushOccupancyPipelineLayout, engine.selectionBrushShaderModule, "shapeVertexMain", "shapeOccupancyFragmentMain");
@@ -1130,6 +1193,12 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
         grainShapeAdditivePipeline,
         grainShapeOccupancyNormalPipeline,
         grainShapeOccupancyAdditivePipeline,
+        additiveGlazePipeline,
+        additiveGlazeShapePipeline,
+        additiveGlazeShapeOccupancyPipeline,
+        grainAdditiveGlazePipeline,
+        grainAdditiveGlazeShapePipeline,
+        grainAdditiveGlazeShapeOccupancyPipeline,
         uniformedGlazePipeline,
         uniformedGlazeShapePipeline,
         uniformedGlazeShapeOccupancyPipeline,
@@ -1330,6 +1399,12 @@ export async function recreateLayerResources(engine: BrushEngine, format: LayerF
   engine.grainShapeAdditivePipeline = grainShapeAdditivePipeline;
   engine.grainShapeOccupancyNormalPipeline = grainShapeOccupancyNormalPipeline;
   engine.grainShapeOccupancyAdditivePipeline = grainShapeOccupancyAdditivePipeline;
+  engine.additiveGlazePipeline = additiveGlazePipeline;
+  engine.additiveGlazeShapePipeline = additiveGlazeShapePipeline;
+  engine.additiveGlazeShapeOccupancyPipeline = additiveGlazeShapeOccupancyPipeline;
+  engine.grainAdditiveGlazePipeline = grainAdditiveGlazePipeline;
+  engine.grainAdditiveGlazeShapePipeline = grainAdditiveGlazeShapePipeline;
+  engine.grainAdditiveGlazeShapeOccupancyPipeline = grainAdditiveGlazeShapeOccupancyPipeline;
   engine.uniformedGlazePipeline = uniformedGlazePipeline;
   engine.uniformedGlazeShapePipeline = uniformedGlazeShapePipeline;
   engine.uniformedGlazeShapeOccupancyPipeline = uniformedGlazeShapeOccupancyPipeline;
@@ -1626,6 +1701,97 @@ function writeLayerCompositeUniforms(
 
 type LayerFoldCompositeOperator = "source-over" | "source-atop";
 
+interface LayerFoldPipelines {
+  readonly composite: GPURenderPipeline;
+  readonly sourceAtop: GPURenderPipeline;
+  readonly advanced: GPURenderPipeline;
+}
+
+const layerFoldPipelinesByDevice = new WeakMap<
+  GPUDevice,
+  Map<LayerFormat, LayerFoldPipelines>
+>();
+
+function layerFoldPipelinesForFormat(
+  engine: BrushEngine,
+  format: LayerFormat,
+): LayerFoldPipelines {
+  if (format === engine.layerFormat) {
+    return {
+      composite: engine.layerCompositePipeline,
+      sourceAtop: engine.layerSourceAtopPipeline,
+      advanced: engine.layerBlendFoldPipeline,
+    };
+  }
+  let byFormat = layerFoldPipelinesByDevice.get(engine.device);
+  if (!byFormat) {
+    byFormat = new Map();
+    layerFoldPipelinesByDevice.set(engine.device, byFormat);
+  }
+  const existing = byFormat.get(format);
+  if (existing) return existing;
+  const compositeLayout = engine.device.createPipelineLayout({
+    label: `Layer fold work pipeline layout ${format}`,
+    bindGroupLayouts: [engine.layerCompositeBindGroupLayout],
+  });
+  const advancedLayout = engine.device.createPipelineLayout({
+    label: `Advanced layer fold work pipeline layout ${format}`,
+    bindGroupLayouts: [engine.layerBlendFoldBindGroupLayout],
+  });
+  const composite = engine.device.createRenderPipeline({
+    label: `Layer source-over work fold ${format}`,
+    layout: compositeLayout,
+    vertex: { module: engine.layerCompositeShaderModule, entryPoint: "vertexMain" },
+    fragment: {
+      module: engine.layerCompositeShaderModule,
+      entryPoint: "fragmentMain",
+      targets: [{
+        format,
+        blend: {
+          color: { operation: "add", srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+          alpha: { operation: "add", srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+        },
+      }],
+    },
+    primitive: { topology: "triangle-list" },
+  });
+  const sourceAtop = engine.device.createRenderPipeline({
+    label: `Clipping child source-atop work fold ${format}`,
+    layout: compositeLayout,
+    vertex: { module: engine.layerCompositeShaderModule, entryPoint: "vertexMain" },
+    fragment: {
+      module: engine.layerCompositeShaderModule,
+      entryPoint: "fragmentMain",
+      targets: [{
+        format,
+        blend: {
+          color: {
+            operation: "add",
+            srcFactor: "dst-alpha",
+            dstFactor: "one-minus-src-alpha",
+          },
+          alpha: { operation: "add", srcFactor: "zero", dstFactor: "one" },
+        },
+      }],
+    },
+    primitive: { topology: "triangle-list" },
+  });
+  const advanced = engine.device.createRenderPipeline({
+    label: `Advanced document-space layer work fold ${format}`,
+    layout: advancedLayout,
+    vertex: { module: engine.layerBlendFoldShaderModule, entryPoint: "vertexMain" },
+    fragment: {
+      module: engine.layerBlendFoldShaderModule,
+      entryPoint: "fragmentMain",
+      targets: [{ format }],
+    },
+    primitive: { topology: "triangle-list" },
+  });
+  const created = { composite, sourceAtop, advanced };
+  byFormat.set(format, created);
+  return created;
+}
+
 async function ensureLayerBlendFoldScratch(
   engine: BrushEngine,
   destination: MergedSurfaceResources,
@@ -1657,22 +1823,22 @@ async function ensureLayerBlendFoldScratch(
       const backdropTexture = engine.device.createTexture({
         label:
           `Advanced layer blend backdrop tile ${tileWidth}×${tileHeight} `
-          + engine.layerFormat,
+          + destination.format,
         size: {
           width: tileWidth,
           height: tileHeight,
           depthOrArrayLayers: 1,
         },
-        format: engine.layerFormat,
+        format: destination.format,
         usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
       });
       transaction.deferRollback(() => backdropTexture.destroy());
       const outputTexture = engine.device.createTexture({
         label:
           `Advanced layer blend output tile ${tileWidth}×${tileHeight} `
-          + engine.layerFormat,
+          + destination.format,
         size: { width: tileWidth, height: tileHeight, depthOrArrayLayers: 1 },
-        format: engine.layerFormat,
+        format: destination.format,
         usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
       });
       transaction.deferRollback(() => outputTexture.destroy());
@@ -1734,6 +1900,7 @@ export async function foldViewIntoMergedSurface(
   clearDestination: boolean,
   label: string,
 ): Promise<void> {
+  const pipelines = layerFoldPipelinesForFormat(engine, destination.format);
   const clipped = intersectMergedSurfaceRects(
     documentRect,
     destination.bounds,
@@ -1781,8 +1948,8 @@ export async function foldViewIntoMergedSurface(
     });
     pass.setPipeline(
       operator === "source-atop"
-        ? engine.layerSourceAtopPipeline
-        : engine.layerCompositePipeline,
+        ? pipelines.sourceAtop
+        : pipelines.composite,
     );
     pass.setBindGroup(0, bindGroup);
     pass.setScissorRect(
@@ -1898,7 +2065,7 @@ export async function foldViewIntoMergedSurface(
           clearValue: { r: 0, g: 0, b: 0, a: 0 },
         }],
       });
-      pass.setPipeline(engine.layerBlendFoldPipeline);
+      pass.setPipeline(pipelines.advanced);
       pass.setBindGroup(0, bindGroup, [tileIndex * uniformStride]);
       pass.setScissorRect(0, 0, tile.width, tile.height);
       pass.draw(3, 1, 0, 0);
@@ -1991,7 +2158,12 @@ async function buildClippingOverlaySurface(
   let first = true;
   try {
     for (const record of visible) {
-      const source = await materializeLayerCompositeSource(engine, record, caller);
+      const source = await materializeLayerCompositeSource(
+        engine,
+        record,
+        caller,
+        surface.format,
+      );
       try {
         const rect = intersectMergedSurfaceRects(
           source.nonTransparentBounds,
@@ -2058,7 +2230,12 @@ async function buildClippingSuffixStepSurface(
   requestedBounds: DirtyRect,
   label: string,
 ): Promise<MergedSurfaceResources | null> {
-  const source = await materializeLayerCompositeSource(engine, record, caller);
+  const source = await materializeLayerCompositeSource(
+    engine,
+    record,
+    caller,
+    engine.layerFormat,
+  );
   let surface: MergedSurfaceResources | null = null;
   try {
     const bounded = intersectMergedSurfaceRects(
@@ -2198,11 +2375,17 @@ export async function buildClippingPrefixSurface(
   caller: EffectsRetargetCaller,
   maintainMips: boolean,
   label: string,
+  format: LayerFormat = engine.layerFormat,
 ): Promise<MergedSurfaceResources | null> {
   if (!recordHasLiveContent(engine, parent)) {
     return null;
   }
-  const parentSource = await materializeLayerCompositeSource(engine, parent, caller);
+  const parentSource = await materializeLayerCompositeSource(
+    engine,
+    parent,
+    caller,
+    format,
+  );
   const parentBounds = normalizeLayerRect(parentSource.nonTransparentBounds);
   if (!parentBounds) {
     engine.destroyLayerBake(parentSource.transientBake);
@@ -2213,7 +2396,7 @@ export async function buildClippingPrefixSurface(
   try {
     surface = allocateMergedSurface(
       engine,
-      engine.layerFormat,
+      format,
       "below",
       1 + children.length,
       alignedMergedSurfaceBounds(parentBounds, LAYER_SIZE),
@@ -2241,7 +2424,12 @@ export async function buildClippingPrefixSurface(
       if (!child.visible || child.opacity <= 0 || !recordHasLiveContent(engine, child)) {
         continue;
       }
-      const source = await materializeLayerCompositeSource(engine, child, caller);
+      const source = await materializeLayerCompositeSource(
+        engine,
+        child,
+        caller,
+        format,
+      );
       try {
         const rect = intersectMergedSurfaceRects(
           source.nonTransparentBounds,
@@ -2389,6 +2577,7 @@ export async function foldClippingGroupIntoMergedSurface(
     caller,
     false,
     `Fold gruppo ritaglio ${parent.id}`,
+    surface.format,
   );
   if (!group) {
     return false;
@@ -2431,7 +2620,12 @@ export async function foldRasterRecordIntoMergedSurface(engine: BrushEngine,
   if (record.clippingParentId !== null) {
     throw new Error(`Il child ${record.id} deve essere foldato con il proprio gruppo.`);
   }
-  const source = await materializeLayerCompositeSource(engine, record, caller);
+  const source = await materializeLayerCompositeSource(
+    engine,
+    record,
+    caller,
+    surface.format,
+  );
   const sourceRect = intersectMergedSurfaceRects(
     source.nonTransparentBounds,
     surface.bounds,
@@ -2592,6 +2786,7 @@ export async function buildMixedMergedSurfaceCandidate(engine: BrushEngine,
 export async function materializeLayerCompositeSource(engine: BrushEngine, 
   record: LayerRecord,
   caller: EffectsRetargetCaller,
+  targetFormat: LayerFormat = engine.layerFormat,
 ): Promise<{
   texture: GPUTexture;
   view: GPUTextureView;
@@ -2608,7 +2803,7 @@ export async function materializeLayerCompositeSource(engine: BrushEngine,
     normalizeRasterInnerShadowStyle(record.innerShadowStyle),
     normalizeRasterColorOverlayStyle(record.colorOverlayStyle),
   );
-  if (gpu.bake && gpu.bakeValid) {
+  if (gpu.bake && gpu.bakeValid && gpu.bake.format === targetFormat) {
     return {
       texture: gpu.bake.texture,
       view: gpu.bake.samplingView,
@@ -2667,6 +2862,7 @@ export async function materializeLayerCompositeSource(engine: BrushEngine,
       1,
       false,
       "defer-to-fold-fence",
+      targetFormat,
     );
     return {
       texture: transientBake.texture,
@@ -2849,6 +3045,7 @@ export function allocateMergedSurface(engine: BrushEngine,
     );
     const surface: MergedSurfaceResources = {
       texture,
+      format,
       samplingView,
       mipViews,
       mipDownsampleBindGroups,

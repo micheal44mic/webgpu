@@ -25,6 +25,8 @@ export interface DisplayPyramidResources {
 
 export interface MergedSurfaceResources {
   texture: GPUTexture;
+  /** Render/storage format of mip 0 and every derived mip in this surface. */
+  format: LayerFormat;
   samplingView: GPUTextureView;
   mipViews: GPUTextureView[];
   mipDownsampleBindGroups: GPUBindGroup[];
@@ -95,6 +97,7 @@ export interface LayerBakeResources {
   texture: GPUTexture;
   storageView: GPUTextureView;
   samplingView: GPUTextureView;
+  format: LayerFormat;
   memoryBytes: number;
   generation: number;
   nonTransparentBounds: DirtyRect;

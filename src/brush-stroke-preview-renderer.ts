@@ -797,9 +797,12 @@ export class AuthoritativeBrushStrokePreviewRenderer {
   ): void {
     const { settings, stamps, projectionScale } = projected;
     const intense = settings.blendMode === "intense-blending";
+    const opacityPerDeposit = settings.blendMode === "normal"
+      || settings.blendMode === "additive"
+      || intense;
     const glaze = usesStrokeGlazeRenderer(settings);
     const brushSettings: BrushSettings = glaze
-      ? { ...settings, opacity: intense ? settings.opacity : 1, blendMode: "normal" }
+      ? { ...settings, opacity: opacityPerDeposit ? settings.opacity : 1, blendMode: "normal" }
       : settings;
     const brushUpload = new ArrayBuffer(BRUSH_UNIFORM_BYTES);
     populateBrushUniformUpload(
@@ -892,6 +895,16 @@ export class AuthoritativeBrushStrokePreviewRenderer {
         ? shape ? this.engine.grainIntenseBlendingShapePipeline : this.engine.grainIntenseBlendingPipeline
         : shape ? this.engine.intenseBlendingShapePipeline : this.engine.intenseBlendingPipeline;
     }
+    if (settings.blendMode === "additive" && usesStrokeGlazeRenderer(settings)) {
+      return grain
+        ? shape ? this.engine.grainAdditiveGlazeShapePipeline : this.engine.grainAdditiveGlazePipeline
+        : shape ? this.engine.additiveGlazeShapePipeline : this.engine.additiveGlazePipeline;
+    }
+    if (settings.blendMode === "normal" && usesStrokeGlazeRenderer(settings)) {
+      return grain
+        ? shape ? this.engine.grainUniformedGlazeShapePipeline : this.engine.grainUniformedGlazePipeline
+        : shape ? this.engine.uniformedGlazeShapePipeline : this.engine.uniformedGlazePipeline;
+    }
     if (grain) {
       if (shape) {
         return settings.blendMode === "additive"
@@ -944,6 +957,9 @@ export class AuthoritativeBrushStrokePreviewRenderer {
   ): void {
     const light = settings.blendMode === "light-glaze" || settings.blendMode === "m1-glaze";
     const intense = settings.blendMode === "intense-blending";
+    const opacityPerDeposit = settings.blendMode === "normal"
+      || settings.blendMode === "additive"
+      || intense;
     let tintLinear: readonly [number, number, number] | null = null;
     if (light && stamps.length > 0) {
       const [red, green, blue] = adaptivePreviewRgb(
@@ -959,11 +975,13 @@ export class AuthoritativeBrushStrokePreviewRenderer {
     const glazeUpload = new ArrayBuffer(LIGHT_GLAZE_UNIFORM_BYTES);
     populateStrokeGlazeUniformUpload(
       glazeUpload,
-      intense ? 1 : settings.opacity,
+      opacityPerDeposit ? 1 : settings.opacity,
       this.engine.layerFormat,
       light
         ? "light-no-build-up"
-        : intense ? "encoded-srgb-source-over" : "source-over",
+        : settings.blendMode === "additive"
+          ? "additive"
+          : intense ? "encoded-srgb-source-over" : "source-over",
       tintLinear,
     );
     this.engine.device.queue.writeBuffer(this.glazeUniformBuffer!, 0, glazeUpload);

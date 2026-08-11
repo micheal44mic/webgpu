@@ -360,7 +360,7 @@ export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (
     modes: readonly LiquifyMode[];
     amountPercent: number;
     strategy: string;
-    precision: "rgba16float-source-and-displacement-f32-math";
+    precision: "layer-format-source-rgba16float-output-displacement-f32-math";
     displacementFormat: "rgba16float";
   }
 );

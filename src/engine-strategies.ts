@@ -83,6 +83,8 @@ export type GrainAdaptivePreviewStrategy =
   | "disabled-semantic-mismatch-probe-spacing-active";
 
 export type LightGlazeStrategy =
+  | "normal-linear-rgba16float-live-single-commit"
+  | "additive-linear-rgba16float-live-single-commit"
   | "uniformed-linear-rgba16float-live-composite-mips-single-commit"
   | "light-r16float-max-per-gesture-source-over-between-gestures"
   | "m1-r16float-max-coverage-plus-composited-mips-single-commit"
@@ -164,6 +166,12 @@ export const GRAIN_ADAPTIVE_PREVIEW_STRATEGY =
 export const UNIFORMED_GLAZE_STRATEGY =
   "uniformed-linear-rgba16float-live-composite-mips-single-commit" as const;
 
+export const NORMAL_STROKE_16F_STRATEGY =
+  "normal-linear-rgba16float-live-single-commit" as const;
+
+export const ADDITIVE_STROKE_16F_STRATEGY =
+  "additive-linear-rgba16float-live-single-commit" as const;
+
 export const LIGHT_GLAZE_STRATEGY =
   "light-r16float-max-per-gesture-source-over-between-gestures" as const;
 
@@ -208,13 +216,21 @@ export const HISTORY_STAMP_RETENTION_STRATEGY =
   "gpu-only-packed-payload-no-cpu-stamp-arrays" as const;
 
 export function isStrokeGlazeBlendMode(mode: BlendMode): boolean {
-  return mode === "light-glaze"
+  return mode === "normal"
+    || mode === "additive"
+    || mode === "light-glaze"
     || mode === "uniformed-glaze"
     || mode === "intense-blending"
     || mode === "m1-glaze";
 }
 
 export function lightGlazeStrategyForBlendMode(mode: BlendMode): LightGlazeStrategy {
+  if (mode === "normal") {
+    return NORMAL_STROKE_16F_STRATEGY;
+  }
+  if (mode === "additive") {
+    return ADDITIVE_STROKE_16F_STRATEGY;
+  }
   if (mode === "intense-blending") {
     return INTENSE_BLENDING_STAMP_STRATEGY;
   }

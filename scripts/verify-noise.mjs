@@ -188,8 +188,10 @@ assert.match(runtime, /export function abandonRasterNoiseSession/);
 assert.match(engine, /device\.lost[\s\S]{0,220}abandonRasterNoiseSession\(this\)/);
 assert.match(runtime, /source\.rgb \+ source\.a \* amount/);
 assert.match(runtime, /clamp\(resultRgb, vec3<f32>\(-HALF_MAX\)/);
-assert.doesNotMatch(runtime, /rgba32float|r32float|rgba8|unorm8|pack4x8|unpack4x8/i);
-assert.doesNotMatch(runtime, /intermediateTexture|outputTexture/);
+assert.doesNotMatch(runtime, /rgba32float|r32float|pack4x8|unpack4x8/i);
+assert.match(runtime, /format:\s*engine\.layerFormat/);
+assert.match(runtime, /outputTexture/);
+assert.match(runtime, /encodeRgba16fToRgba8Resolve/);
 
 const preview = runtime.slice(
   runtime.indexOf("function encodeRequestedPreview("),

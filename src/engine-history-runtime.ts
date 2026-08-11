@@ -800,6 +800,7 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
   let firstVisibleBatchIndex = -1;
   let lastVisibleBatchIndex = -1;
   const lastVisiblePaintBatchIndexByAction = new Map<number, number>();
+  const lastVisibleBlendBatchIndexByAction = new Map<number, number>();
   let firstReplaySubmitObserved = false;
   const observeReplaySubmit = (): void => {
     if (firstReplaySubmitObserved) {
@@ -828,6 +829,8 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
     lastVisibleBatchIndex = index;
     if (batch.kind === "paint") {
       lastVisiblePaintBatchIndexByAction.set(batch.actionId, index);
+    } else if (batch.kind === "blend") {
+      lastVisibleBlendBatchIndexByAction.set(batch.actionId, index);
     }
   }
 
@@ -914,6 +917,9 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
             continue;
           }
           await ensureReplayBrushAssets(batch.settings);
+          const commitBlend = (
+            lastVisibleBlendBatchIndexByAction.get(batch.actionId) ?? index
+          ) === index;
           engine.submitBlendImmediate(
             batch.batches,
             hasReplaySeed ? false : batch.clearLayer,
@@ -921,6 +927,7 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
             batch.actionId,
             index === lastVisibleBatchIndex,
             batch,
+            commitBlend,
           );
           observeReplaySubmit();
           await yieldReplaySubmit();
@@ -966,6 +973,7 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
       }
     }
   } finally {
+    engine.blendRenderer?.abandonStroke();
     if (engine.lightGlazeSession) {
       engine.abandonLightGlazeSession();
     }
