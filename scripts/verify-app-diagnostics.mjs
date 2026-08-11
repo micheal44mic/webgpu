@@ -121,6 +121,18 @@ assert.deepEqual(
 
 const indexSource = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const brushEngineSource = readFileSync(
+  new URL("../src/brush-engine.ts", import.meta.url),
+  "utf8",
+);
+const gpuUtilsSource = readFileSync(
+  new URL("../src/engine-gpu-utils.ts", import.meta.url),
+  "utf8",
+);
+const adaptivePreviewSource = readFileSync(
+  new URL("../src/engine-adaptive-preview-runtime.ts", import.meta.url),
+  "utf8",
+);
 const reportsSource = readFileSync(
   new URL("../src/engine-reports.ts", import.meta.url),
   "utf8",
@@ -129,6 +141,47 @@ assert.match(indexSource, /id="copyAppDiagnostics"/);
 assert.match(indexSource, /id="appDiagnosticsReport"/);
 assert.match(mainSource, /copyAppDiagnosticsButton\.addEventListener\("click"/);
 assert.match(mainSource, /renderFrameError:[\s\S]*?getDocumentInconsistentDiagnostic\(\)/);
+assert.match(
+  mainSource,
+  /import type \{ MixedVectorTextController \}[\s\S]*?await import\("\.\/mixed-vector-text-controller"\)/,
+  "font e controller vettoriale devono restare fuori dal percorso JS iniziale",
+);
+assert.match(
+  mainSource,
+  /function refreshRuntimeStats\(\)[\s\S]*?if \(!engineInitialized \|\| document\.hidden\) return;/,
+  "le statistiche non devono leggere History prima dello startup o in background",
+);
+assert.match(mainSource, /setInterval\(refreshRuntimeStats, 1_000\)/);
+assert(!mainSource.includes("setInterval(() => updateStats(engine.getStats()), 500)"));
+assert.match(
+  mainSource,
+  /scheduleDeferredStartupTask\([\s\S]*?"deferred-brush-restore"[\s\S]*?"deferred-vector-text"/,
+  "pennello persistito e font devono caricarsi dopo che il renderer e' utilizzabile",
+);
+assert.match(mainSource, /"deferred-canonical-stroke"[\s\S]*?loadCanonicalHumanStroke/);
+assert(!mainSource.includes("void loadCanonicalHumanStroke();"));
+assert.match(
+  mainSource,
+  /mobileBrushLibrarySheet\.contains\(document\.activeElement\)[\s\S]*?mobilePaintButton\.focus[\s\S]*?setAttribute\("inert", ""\)/,
+  "la sheet pennelli deve trasferire il focus prima di diventare inerte",
+);
+assert.match(brushEngineSource, /android \|\| MOBILE_DEVICE_CLASS[\s\S]*?powerPreference: "high-performance"/);
+assert.match(brushEngineSource, /featureLevel: "compatibility"/);
+assert.match(
+  brushEngineSource,
+  /Adapter trovato\. Creo il device WebGPU[\s\S]*?Device pronto\. Preparo il renderer[\s\S]*?Creo il documento iniziale/,
+  "lo stato startup deve distinguere adapter, device, renderer e documento",
+);
+assert.match(
+  gpuUtilsSource,
+  /import\.meta\.env\.DEV[\s\S]*?validateShaders[\s\S]*?if \(!explicitShaderValidationRequested\(\)\) return;/,
+  "la build pubblicata non deve attendere due volte la compilazione di ogni shader",
+);
+assert.match(
+  adaptivePreviewSource,
+  /source\.getContext\("2d", \{ willReadFrequently: true \}\)/,
+  "la palette adattiva legge frequentemente il canvas sorgente",
+);
 assert.match(
   reportsSource,
   /vectorTextRunTextureCount[\s\S]*?fallbackTexture !== null/,

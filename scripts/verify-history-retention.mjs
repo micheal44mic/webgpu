@@ -34,9 +34,15 @@ import {
   adaptiveHistoryStorageKeepHotActions,
   canonicalHistoryJson,
   historyDiskBudget,
+  historyStorageHotPayloadHardBytes,
+  historyStorageMaximumHotActions,
   planHistoryStorageSegment,
+  HISTORY_STORAGE_DESKTOP_HOT_PAYLOAD_HARD_BYTES,
+  HISTORY_STORAGE_DESKTOP_MAXIMUM_HOT_ACTIONS,
   HISTORY_STORAGE_KEEP_HOT_ACTIONS,
   HISTORY_STORAGE_MAXIMUM_DESCRIPTOR_BYTES,
+  HISTORY_STORAGE_MOBILE_HOT_PAYLOAD_HARD_BYTES,
+  HISTORY_STORAGE_MOBILE_MAXIMUM_HOT_ACTIONS,
   HISTORY_STORAGE_SPILL_HIGH_WATER_BYTES,
 } from "../src/history-storage-core.ts";
 
@@ -119,6 +125,7 @@ const checkpointBytesFor = (documentSize, format) =>
     targetSegmentBytes: 64 * MiB,
     maximumSegmentBytes: 128 * MiB,
     journalLength: 1,
+    keepHotActions: 0,
     actions: [{
       actionId: 52,
       cursor: 0,
@@ -150,51 +157,112 @@ const checkpointBytesFor = (documentSize, format) =>
   );
   assert.equal(afterOversizeBudgetRejection.oversize, false);
 
-  const recentLargeActions = Array.from({ length: 7 }, (_, cursor) => ({
+  assert.equal(HISTORY_STORAGE_MOBILE_MAXIMUM_HOT_ACTIONS, 2);
+  assert.equal(HISTORY_STORAGE_DESKTOP_MAXIMUM_HOT_ACTIONS, 4);
+  assert.equal(HISTORY_STORAGE_MOBILE_HOT_PAYLOAD_HARD_BYTES, 48 * MiB);
+  assert.equal(HISTORY_STORAGE_DESKTOP_HOT_PAYLOAD_HARD_BYTES, 160 * MiB);
+  assert.equal(historyStorageMaximumHotActions(true), 2);
+  assert.equal(historyStorageMaximumHotActions(false), 4);
+  assert.equal(historyStorageHotPayloadHardBytes(true), 48 * MiB);
+  assert.equal(historyStorageHotPayloadHardBytes(false), 160 * MiB);
+  assert.equal(HISTORY_STORAGE_KEEP_HOT_ACTIONS, 4);
+  assert.equal(HISTORY_STORAGE_SPILL_HIGH_WATER_BYTES, 160 * MiB);
+
+  const smallActions = Array.from({ length: 7 }, (_, cursor) => ({
     cursor,
-    payloadBytes: 32 * MiB,
+    payloadBytes: 8 * MiB,
   }));
-  assert.equal(HISTORY_STORAGE_KEEP_HOT_ACTIONS, 0);
-  assert.equal(
-    HISTORY_STORAGE_SPILL_HIGH_WATER_BYTES,
-    0,
-    "il primo byte residente deve rendere il payload spillabile",
-  );
   assert.equal(
     adaptiveHistoryStorageKeepHotActions({
-      currentResidentBytes: 224 * MiB,
-      highWaterBytes: 180 * MiB,
-      hotPayloadBudgetBytes: 50 * MiB,
+      currentResidentBytes: 16 * MiB,
+      highWaterBytes: 48 * MiB,
+      hotPayloadBudgetBytes: 48 * MiB,
       journalLength: 7,
-      actions: recentLargeActions,
+      maximumHotActions: 2,
+      actions: smallActions,
     }),
-    0,
-    "nessuna azione recente deve restare protetta in RAM/GPU",
+    2,
+    "sotto il cap mobile i due comandi più recenti devono restare caldi",
   );
   assert.equal(
     adaptiveHistoryStorageKeepHotActions({
-      currentResidentBytes: 160 * MiB,
-      highWaterBytes: 180 * MiB,
-      hotPayloadBudgetBytes: 50 * MiB,
-      journalLength: 40,
-      maximumHotActions: 16,
-      actions: recentLargeActions,
+      currentResidentBytes: 32 * MiB,
+      highWaterBytes: 160 * MiB,
+      hotPayloadBudgetBytes: 160 * MiB,
+      journalLength: 7,
+      maximumHotActions: 4,
+      actions: smallActions,
+    }),
+    4,
+    "sotto il cap desktop i quattro comandi più recenti devono restare caldi",
+  );
+  const mobileLargeActions = [
+    { cursor: 0, payloadBytes: 8 * MiB },
+    { cursor: 1, payloadBytes: 32 * MiB },
+    { cursor: 2, payloadBytes: 32 * MiB },
+  ];
+  const pressuredMobileKeep = adaptiveHistoryStorageKeepHotActions({
+    currentResidentBytes: 72 * MiB,
+    highWaterBytes: 48 * MiB,
+    hotPayloadBudgetBytes: 48 * MiB,
+    journalLength: 3,
+    maximumHotActions: 2,
+    actions: mobileLargeActions,
+  });
+  assert.equal(
+    pressuredMobileKeep,
+    1,
+    "il cap byte deve restringere la finestra mobile anche sotto il massimo azioni",
+  );
+  assert.equal(
+    adaptiveHistoryStorageKeepHotActions({
+      currentResidentBytes: 64 * MiB,
+      highWaterBytes: 48 * MiB,
+      hotPayloadBudgetBytes: 48 * MiB,
+      journalLength: 1,
+      maximumHotActions: 2,
+      actions: [{ cursor: 0, payloadBytes: 64 * MiB }],
     }),
     0,
-    "nemmeno un override legacy deve riaprire la finestra calda",
+    "una singola azione oversize non deve essere protetta dalla hot window",
   );
-  const immediate = planHistoryStorageSegment({
-    currentResidentBytes: 1,
-    highWaterBytes: HISTORY_STORAGE_SPILL_HIGH_WATER_BYTES,
-    targetSegmentBytes: 64 * MiB,
-    maximumSegmentBytes: 128 * MiB,
-    journalLength: 1,
+  const countPressureBelowByteCap = planHistoryStorageSegment({
+    currentResidentBytes: 3 * MiB,
+    highWaterBytes: 48 * MiB,
+    targetSegmentBytes: 32 * MiB,
+    maximumSegmentBytes: 64 * MiB,
+    journalLength: 3,
+    keepHotActions: 2,
     actions: [
-      { actionId: 1, cursor: 0, payloadBytes: 1, payloadCount: 1, alreadyStored: false, pinned: false },
+      { actionId: 1, cursor: 0, payloadBytes: MiB, payloadCount: 1, alreadyStored: false, pinned: false },
+      { actionId: 2, cursor: 1, payloadBytes: MiB, payloadCount: 1, alreadyStored: false, pinned: false },
+      { actionId: 3, cursor: 2, payloadBytes: MiB, payloadCount: 1, alreadyStored: false, pinned: false },
     ],
   });
-  assert.equal(immediate.required, true);
-  assert.deepEqual(immediate.actionIds, [1]);
+  assert.equal(countPressureBelowByteCap.required, true);
+  assert.deepEqual(
+    countPressureBelowByteCap.actionIds,
+    [1],
+    "il terzo comando mobile deve spillare il più vecchio anche sotto il cap byte",
+  );
+  const bytePressurePlan = planHistoryStorageSegment({
+    currentResidentBytes: 72 * MiB,
+    highWaterBytes: 48 * MiB,
+    targetSegmentBytes: 32 * MiB,
+    maximumSegmentBytes: 64 * MiB,
+    journalLength: 3,
+    keepHotActions: pressuredMobileKeep,
+    actions: mobileLargeActions.map((action, index) => ({
+      actionId: index + 1,
+      cursor: action.cursor,
+      payloadBytes: action.payloadBytes,
+      payloadCount: 1,
+      alreadyStored: false,
+      pinned: false,
+    })),
+  });
+  assert.deepEqual(bytePressurePlan.actionIds, [1, 2]);
+  assert.equal(bytePressurePlan.rawBytes, 40 * MiB);
 
   const budget = historyDiskBudget({
     quota: 10 * 1024 * MiB,
@@ -1577,8 +1645,8 @@ console.log("History rapid-input queue and retention-floor feedback verified.");
   );
   assert.match(
     maintenance,
-    /function historySpillHighWaterBytes\([^)]*\): number \{\s*return HISTORY_STORAGE_SPILL_HIGH_WATER_BYTES;\s*\}/,
-    "la manutenzione deve usare la soglia disk-first esplicita di zero byte",
+    /function historySpillHighWaterBytes\([^)]*\): number \{\s*return historyStorageHotPayloadHardBytes\(MOBILE_DEVICE_CLASS\);\s*\}/,
+    "la manutenzione deve usare il hard cap payload del profilo dispositivo",
   );
   assert(!maintenance.includes("historySpillMiB"),
     "un override diagnostico non deve poter riaprire una finestra residente");
@@ -1591,6 +1659,16 @@ console.log("History rapid-input queue and retention-floor feedback verified.");
     coordinator,
     /for \(let segmentCount = 0; segmentCount < 4; segmentCount \+= 1\)/,
     "ogni passata di spill deve restare limitata a quattro segmenti",
+  );
+  assert(
+    coordinator.includes("maximumHotActions: historyStorageMaximumHotActions(MOBILE_DEVICE_CLASS)")
+      && coordinator.includes("hotPayloadBudgetBytes: highWaterBytes")
+      && coordinator.includes("if (!this.residentPayloadSegmentPlan(options).plan.required) break;"),
+    "count cap e byte cap devono convergere tramite lo stesso planner bounded",
+  );
+  assert(
+    coordinator.includes('engineBuildId: "history-local-bounded-hot-streaming-v3"'),
+    "il fingerprint locale deve distinguere la nuova ownership policy",
   );
   const maintenanceScheduler = maintenance.slice(
     maintenance.indexOf("export function scheduleHistoryMaintenance"),
@@ -1608,6 +1686,16 @@ console.log("History rapid-input queue and retention-floor feedback verified.");
   );
   assert(!maintenanceScheduler.includes("while ("),
     "il drain non deve trasformarsi in un loop sincrono");
+  assert(
+    maintenance.includes("if (!engine.initialized || !engine.historyLocalStorage) return false;")
+      && maintenance.includes(
+        "state.storageMetadataBytes = engine.historyLocalStorage?.metadataResidentBytes() ?? 0;",
+      )
+      && maintenanceScheduler.includes(
+        "if (!engine.initialized || !engine.historyLocalStorage) return;",
+      ),
+    "telemetria e maintenance non devono dereferenziare History durante il pre-init",
+  );
 
   const move = historyRuntime.slice(
     historyRuntime.indexOf("export async function moveHistoryCursor"),
@@ -1638,7 +1726,7 @@ console.log("History rapid-input queue and retention-floor feedback verified.");
       < prepare.indexOf("await this.flushUnstoredPayloadsBeforeNavigation();")
       && prepare.indexOf("await this.flushUnstoredPayloadsBeforeNavigation();")
       < prepare.indexOf("this.payloadsRequiredForStep(delta)"),
-    "Undo rapido deve validare metadata e rendere durable il tail prima di lasciare il journal end",
+    "Undo rapido deve validare metadata e rendere durable solo l'overflow prima del journal end",
   );
   const navigationFlush = coordinator.slice(
     coordinator.indexOf("private async flushUnstoredPayloadsBeforeNavigation"),
@@ -1647,9 +1735,11 @@ console.log("History rapid-input queue and retention-floor feedback verified.");
   assert(
     navigationFlush.includes("await this.spillIfNeeded(options);")
       && navigationFlush.includes("enforceHistoryMetadataLimit(this.engine)")
+      && navigationFlush.includes("this.unstoredResidentPayloadPressureBytes()")
+      && navigationFlush.includes("this.totalResidentPayloadBytes()")
       && navigationFlush.includes("this.engine.resetHistoryState();")
       && navigationFlush.includes("Payload History non persistibili prima di Undo/Redo"),
-    "il flush foreground deve committare a chunk o fallire chiuso prima della mutazione",
+    "Undo deve spillare solo l'overflow e fallire chiuso se non diventa durable",
   );
   assert(
     prepare.includes('crossed?.kind === "layer-delete" && delta > 0')
@@ -1807,15 +1897,17 @@ console.log("History rapid-input queue and retention-floor feedback verified.");
     coordinator.indexOf("private async initializeSession"),
   );
   assert(!trimHydrated.includes("protectedPayloadIds"),
-    "la V2 disk-first non deve conservare una cache calda del passo adiacente");
+    "la cache di idratazione profonda non deve crescere oltre la hot tail autorevole");
   assert(trimHydrated.includes("trimEmptyPages(false)"));
   assert(!brushEngine.includes("this.historyGpuStorage.prewarm();"),
     "un documento vuoto non deve preallocare pagine GPU History");
   assert(
     coordinator.includes("unstoredResidentPayloadBytes()")
+      && coordinator.includes("unstoredResidentPayloadPressureBytes()")
+      && coordinator.includes("totalResidentPayloadBytes(): number")
       && coordinator.includes("residentPayloadBytes(): number")
       && maintenance.includes("Undo svuotato senza modificare il disegno"),
-    "quota/backend failure deve fallire chiuso, mai diventare memory-only",
+    "quota/backend failure deve tollerare solo il tail bounded e fallire chiuso sull'overflow",
   );
   assert(
     coordinator.includes("metadataResidentBytes(): number")
@@ -1846,7 +1938,7 @@ console.log("History rapid-input queue and retention-floor feedback verified.");
   assert(
     maintenance.includes("const HISTORY_MAINTENANCE_DELAY_MS = 0;")
       && brushEngine.includes("scheduleHistoryMaintenance(this, 0);"),
-    "pointer-up e retry devono avviare subito lo spill disk-first",
+    "pointer-up e retry devono avviare subito lo spill asincrono del tail eccedente",
   );
   const spillPrelude = coordinator.slice(
     coordinator.indexOf("async spillIfNeeded"),

@@ -19,12 +19,21 @@ export const HISTORY_STORAGE_DESKTOP_MAXIMUM_SEGMENT_BYTES = 128 * 1024 * 1024;
 export const HISTORY_STORAGE_MOBILE_CHUNK_BYTES = 1024 * 1024;
 export const HISTORY_STORAGE_DESKTOP_CHUNK_BYTES = 2 * 1024 * 1024;
 /**
- * Disk-first means no completed action owns a deliberately resident payload.
- * Undo depth is preserved by the durable copy, not by a GPU hot window.
+ * The hot tail is bounded twice: by action count and by logical payload bytes.
+ * Count keeps ordinary recent Undo predictable; the byte ceiling prevents one
+ * import/transform/merge from turning that convenience window into an
+ * unbounded GPU fallback.
  */
-export const HISTORY_STORAGE_KEEP_HOT_ACTIONS = 0;
-/** Any positive resident History payload starts spill at the next fenced idle pass. */
-export const HISTORY_STORAGE_SPILL_HIGH_WATER_BYTES = 0;
+export const HISTORY_STORAGE_MOBILE_MAXIMUM_HOT_ACTIONS = 2;
+export const HISTORY_STORAGE_DESKTOP_MAXIMUM_HOT_ACTIONS = 4;
+export const HISTORY_STORAGE_MOBILE_HOT_PAYLOAD_HARD_BYTES = 48 * 1024 * 1024;
+export const HISTORY_STORAGE_DESKTOP_HOT_PAYLOAD_HARD_BYTES = 160 * 1024 * 1024;
+/** Compatibility default for pure callers that do not provide a device cap. */
+export const HISTORY_STORAGE_KEEP_HOT_ACTIONS =
+  HISTORY_STORAGE_DESKTOP_MAXIMUM_HOT_ACTIONS;
+/** Compatibility default; runtime policy selects the device-specific ceiling. */
+export const HISTORY_STORAGE_SPILL_HIGH_WATER_BYTES =
+  HISTORY_STORAGE_DESKTOP_HOT_PAYLOAD_HARD_BYTES;
 
 const MEBIBYTE_BYTES = 1024 * 1024;
 const GIBIBYTE_BYTES = 1024 * MEBIBYTE_BYTES;
@@ -161,12 +170,11 @@ export interface HistorySegmentPlan {
 }
 
 /**
- * Compatibility seam for the segment coordinator. Disk-first storage has no
- * adaptive hot window: every completed action is eligible, including the most
- * recent one. Keeping the function makes the policy directly testable without
- * duplicating it in the browser-storage runtime.
+ * Converts a byte-bounded hot payload set into the cursor suffix expected by
+ * the segment planner. A large recent action may shrink the suffix below the
+ * ordinary count, including to zero, so the byte ceiling always wins.
  */
-export function adaptiveHistoryStorageKeepHotActions(_options: {
+export function adaptiveHistoryStorageKeepHotActions(options: {
   readonly currentResidentBytes: number;
   readonly highWaterBytes: number;
   readonly hotPayloadBudgetBytes: number;
@@ -177,7 +185,33 @@ export function adaptiveHistoryStorageKeepHotActions(_options: {
     "cursor" | "payloadBytes"
   >[];
 }): number {
-  return HISTORY_STORAGE_KEEP_HOT_ACTIONS;
+  const journalLength = Math.max(0, Math.trunc(options.journalLength));
+  const maximum = Math.min(
+    journalLength,
+    Math.max(0, Math.trunc(options.maximumHotActions ?? HISTORY_STORAGE_KEEP_HOT_ACTIONS)),
+  );
+  if (finiteNonNegative(options.currentResidentBytes) <= finiteNonNegative(options.highWaterBytes)) {
+    return maximum;
+  }
+  const hotBudget = finiteNonNegative(options.hotPayloadBudgetBytes);
+  const minimumCursor = Math.max(0, journalLength - maximum);
+  const recent = [...options.actions]
+    .filter((action) => (
+      action.cursor >= minimumCursor
+      && action.cursor < journalLength
+      && action.payloadBytes > 0
+    ))
+    .sort((left, right) => right.cursor - left.cursor);
+  let bytes = 0;
+  let oldestProtectedCursor: number | null = null;
+  for (const action of recent) {
+    if (bytes + action.payloadBytes > hotBudget) break;
+    bytes += action.payloadBytes;
+    oldestProtectedCursor = action.cursor;
+  }
+  return oldestProtectedCursor === null
+    ? 0
+    : Math.min(maximum, journalLength - oldestProtectedCursor);
 }
 
 /**
@@ -197,9 +231,6 @@ export function planHistoryStorageSegment(options: {
 }): HistorySegmentPlan {
   const current = finiteNonNegative(options.currentResidentBytes);
   const highWater = finiteNonNegative(options.highWaterBytes);
-  if (current <= highWater) {
-    return emptySegmentPlan("below-high-water");
-  }
   const target = positiveInteger(options.targetSegmentBytes, "targetSegmentBytes");
   const maximum = positiveInteger(options.maximumSegmentBytes, "maximumSegmentBytes");
   if (target > maximum) {
@@ -217,7 +248,9 @@ export function planHistoryStorageSegment(options: {
       && !action.pinned
     )
     .sort((left, right) => left.cursor - right.cursor || left.actionId - right.actionId);
-  if (eligible.length === 0) return emptySegmentPlan("no-eligible-payload");
+  if (eligible.length === 0) {
+    return emptySegmentPlan(current <= highWater ? "below-high-water" : "no-eligible-payload");
+  }
 
   const selected: HistorySegmentPlanningAction[] = [];
   let rawBytes = 0;
@@ -315,6 +348,18 @@ export function historyStorageMaximumSegmentBytes(mobile: boolean): number {
 
 export function historyStorageChunkBytes(mobile: boolean): number {
   return mobile ? HISTORY_STORAGE_MOBILE_CHUNK_BYTES : HISTORY_STORAGE_DESKTOP_CHUNK_BYTES;
+}
+
+export function historyStorageMaximumHotActions(mobile: boolean): number {
+  return mobile
+    ? HISTORY_STORAGE_MOBILE_MAXIMUM_HOT_ACTIONS
+    : HISTORY_STORAGE_DESKTOP_MAXIMUM_HOT_ACTIONS;
+}
+
+export function historyStorageHotPayloadHardBytes(mobile: boolean): number {
+  return mobile
+    ? HISTORY_STORAGE_MOBILE_HOT_PAYLOAD_HARD_BYTES
+    : HISTORY_STORAGE_DESKTOP_HOT_PAYLOAD_HARD_BYTES;
 }
 
 export function historyHash32(bytes: Uint8Array): number {

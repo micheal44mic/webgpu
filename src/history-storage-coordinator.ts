@@ -27,6 +27,8 @@ import {
   historyDiskBudget,
   historyHash32,
   historyStorageChunkBytes,
+  historyStorageHotPayloadHardBytes,
+  historyStorageMaximumHotActions,
   historyStorageMaximumSegmentBytes,
   historyStorageTargetSegmentBytes,
   planHistoryStorageSegment,
@@ -279,11 +281,7 @@ export class HistoryStorageCoordinator {
     return Math.ceil(bytes);
   }
 
-  /**
-   * Payload bytes that still have no durable authority. A disk-first runtime
-   * may keep these only while the current spill transaction is making
-   * progress; quota/backend failure must never turn them into a RAM fallback.
-   */
+  /** Payload bytes that still have no durable authority, hot tail included. */
   unstoredResidentPayloadBytes(): number {
     if (this.destroyed) return 0;
     this.wrapAllHistorySeeds();
@@ -297,19 +295,36 @@ export class HistoryStorageCoordinator {
   }
 
   /**
-   * Every resident History payload, including a durable cache whose CAS
-   * committed just before an interrupted demotion. Admission uses this wider
-   * value so repeated interruption cannot accumulate stored-but-hot copies.
+   * Unstored bytes outside the bounded hot suffix. These are the bytes that a
+   * failed spill must treat as stranded; the authorised 2/4-action suffix is a
+   * bounded working set, not an accidental memory-only fallback.
+   */
+  unstoredResidentPayloadPressureBytes(): number {
+    if (this.destroyed) return 0;
+    this.wrapAllHistorySeeds();
+    const candidates = this.collectPayloadCandidates();
+    const policy = this.residentHotWindowPolicy(candidates);
+    return policy.unprotected.reduce((total, candidate) => (
+      total + (this.storedPayloads.has(candidate.payloadId) ? 0 : candidate.rawBytes)
+    ), 0);
+  }
+
+  /** Every physically resident History payload, including durable hot caches. */
+  totalResidentPayloadBytes(): number {
+    if (this.destroyed) return 0;
+    this.wrapAllHistorySeeds();
+    return this.residentHotWindowPolicy(this.collectPayloadCandidates()).residentBytes;
+  }
+
+  /**
+   * Bytes that must drain before another payload-producing mutation is safe.
+   * The historical method name is retained for BrushEngine's admission seam;
+   * zero now means "inside the bounded hot policy", not "nothing resident".
    */
   residentPayloadBytes(): number {
     if (this.destroyed) return 0;
     this.wrapAllHistorySeeds();
-    return this.collectPayloadCandidates().reduce((total, candidate) => {
-      const resident = candidate.storage === "gpu"
-        ? this.engine.historyGpuStorage.isResident(candidate.slice)
-        : candidate.handle.resident;
-      return total + (resident ? candidate.rawBytes : 0);
-    }, 0);
+    return this.residentHotWindowPolicy(this.collectPayloadCandidates()).unprotectedBytes;
   }
 
   /** A document reset starts a new disposable storage namespace immediately. */
@@ -413,12 +428,10 @@ export class HistoryStorageCoordinator {
     // after quota/backend failures have disabled further writes.
     if (!this.writable) return changed;
     for (let segmentCount = 0; segmentCount < 4; segmentCount += 1) {
-      if (
-        options.currentResidentBytes() <= options.highWaterBytes
-        || !options.shouldContinue()
-      ) {
-        break;
-      }
+      if (!options.shouldContinue()) break;
+      // Count pressure can require spilling an old action even while the hot
+      // suffix is below its byte ceiling, so bytes alone cannot stop the pass.
+      if (!this.residentPayloadSegmentPlan(options).plan.required) break;
       const beforeBackend = this.backend;
       // Publish the exclusion state before spillOneSegment reaches its first
       // await (quota estimate included), so Undo cannot observe a resident
@@ -448,8 +461,7 @@ export class HistoryStorageCoordinator {
 
   shouldDeferJournalEviction(options: HistoryStorageSpillOptions): boolean {
     if (
-      options.currentResidentBytes() <= options.highWaterBytes
-      || this.destroyed
+      this.destroyed
       || !this.ready
       || !this.writable
     ) {
@@ -520,9 +532,9 @@ export class HistoryStorageCoordinator {
 
   /**
    * Pointer-up schedules idle maintenance on the next browser turn. An
-   * immediate Undo can still beat that pass; crossing the cursor with payloads
-   * resident would strand an unbounded Redo tail because background spill only
-   * owns the journal end. Commit the stable end-of-journal snapshot here first.
+   * immediate Undo may keep the bounded hot suffix resident in the Redo tail;
+   * only bytes outside that suffix must become durable before leaving the
+   * journal end, where background spill can no longer reach them.
    */
   private async flushUnstoredPayloadsBeforeNavigation(): Promise<void> {
     const token = this.captureToken();
@@ -532,22 +544,22 @@ export class HistoryStorageCoordinator {
       && !this.engine.deviceLostError
     );
     const options: HistoryStorageSpillOptions = {
-      highWaterBytes: 0,
+      highWaterBytes: historyStorageHotPayloadHardBytes(MOBILE_DEVICE_CLASS),
       logicalFloorCursor: historyFloorCursor(this.engine),
-      currentResidentBytes: () => this.unstoredResidentPayloadBytes(),
+      currentResidentBytes: () => this.totalResidentPayloadBytes(),
       shouldContinue,
       afterResidenceChange: () => this.engine.historyStorageResidenceChanged(),
     };
     for (;;) {
       this.assertToken(token);
-      const before = this.unstoredResidentPayloadBytes();
+      const before = this.unstoredResidentPayloadPressureBytes();
       if (before === 0) return;
       await this.spillIfNeeded(options);
       if (!enforceHistoryMetadataLimit(this.engine)) {
         throw new Error("Metadata History oltre il limite durante lo spill Undo/Redo.");
       }
       this.assertToken(token);
-      const after = this.unstoredResidentPayloadBytes();
+      const after = this.unstoredResidentPayloadPressureBytes();
       if (after === 0) return;
       if (after >= before || !this.writable) break;
       await yieldBrowserTurn();
@@ -1169,25 +1181,68 @@ export class HistoryStorageCoordinator {
     }
   }
 
+  private residentHotWindowPolicy(
+    candidates: readonly HistoryPayloadCandidate[],
+    highWaterBytes = historyStorageHotPayloadHardBytes(MOBILE_DEVICE_CLASS),
+  ): {
+    readonly resident: readonly HistoryPayloadCandidate[];
+    readonly unprotected: readonly HistoryPayloadCandidate[];
+    readonly residentBytes: number;
+    readonly unprotectedBytes: number;
+    readonly keepHotActions: number;
+    readonly coldCeiling: number;
+  } {
+    const resident = candidates.filter((candidate) => candidate.storage === "gpu"
+      ? this.engine.historyGpuStorage.isResident(candidate.slice)
+      : candidate.handle.resident
+    );
+    const byAction = new Map<number, { cursor: number; payloadBytes: number }>();
+    for (const candidate of resident) {
+      const current = byAction.get(candidate.ownerActionId) ?? {
+        cursor: candidate.ownerCursor,
+        payloadBytes: 0,
+      };
+      current.cursor = Math.max(current.cursor, candidate.ownerCursor);
+      current.payloadBytes += candidate.rawBytes;
+      byAction.set(candidate.ownerActionId, current);
+    }
+    const residentBytes = resident.reduce((total, candidate) => total + candidate.rawBytes, 0);
+    const keepHotActions = adaptiveHistoryStorageKeepHotActions({
+      currentResidentBytes: residentBytes,
+      highWaterBytes,
+      hotPayloadBudgetBytes: highWaterBytes,
+      journalLength: this.engine.historyActions.length,
+      maximumHotActions: historyStorageMaximumHotActions(MOBILE_DEVICE_CLASS),
+      actions: [...byAction.values()],
+    });
+    const coldCeiling = Math.max(
+      0,
+      this.engine.historyActions.length - keepHotActions,
+    );
+    const unprotected = resident.filter((candidate) => candidate.ownerCursor < coldCeiling);
+    return {
+      resident,
+      unprotected,
+      residentBytes,
+      unprotectedBytes: unprotected.reduce((total, candidate) => total + candidate.rawBytes, 0),
+      keepHotActions,
+      coldCeiling,
+    };
+  }
+
   private residentPayloadSegmentPlan(options: HistoryStorageSpillOptions): {
     candidates: HistoryPayloadCandidate[];
     plan: HistorySegmentPlan;
   } {
     const candidates = this.collectPayloadCandidates();
+    const policy = this.residentHotWindowPolicy(candidates, options.highWaterBytes);
     const byAction = new Map<number, {
       cursor: number;
       bytes: number;
       count: number;
     }>();
-    for (const candidate of candidates) {
-      if (
-        this.storedPayloads.has(candidate.payloadId)
-        || (candidate.storage === "gpu"
-          ? !this.engine.historyGpuStorage.isResident(candidate.slice)
-          : !candidate.handle.resident)
-      ) {
-        continue;
-      }
+    for (const candidate of policy.resident) {
+      if (this.storedPayloads.has(candidate.payloadId)) continue;
       const current = byAction.get(candidate.ownerActionId) ?? {
         cursor: candidate.ownerCursor,
         bytes: 0,
@@ -1207,25 +1262,18 @@ export class HistoryStorageCoordinator {
       pinned: this.diskBudgetBlockedActionIds.has(actionId),
     }));
     const maximumSegmentBytes = historyStorageMaximumSegmentBytes(MOBILE_DEVICE_CLASS);
-    const keepHotActions = adaptiveHistoryStorageKeepHotActions({
-      currentResidentBytes: options.currentResidentBytes(),
-      highWaterBytes: options.highWaterBytes,
-      hotPayloadBudgetBytes: Math.min(
-        maximumSegmentBytes,
-        Math.floor(options.highWaterBytes * 0.25),
-      ),
-      journalLength: this.engine.historyActions.length,
-      actions: planningActions,
-    });
     return {
       candidates,
       plan: planHistoryStorageSegment({
-        currentResidentBytes: options.currentResidentBytes(),
+        currentResidentBytes: Math.max(
+          policy.residentBytes,
+          options.currentResidentBytes(),
+        ),
         highWaterBytes: options.highWaterBytes,
         targetSegmentBytes: historyStorageTargetSegmentBytes(MOBILE_DEVICE_CLASS),
         maximumSegmentBytes,
         journalLength: this.engine.historyActions.length,
-        keepHotActions,
+        keepHotActions: policy.keepHotActions,
         actions: planningActions,
       }),
     };
@@ -1741,7 +1789,7 @@ export class HistoryStorageCoordinator {
       retentionStrategy: HISTORY_RETENTION_STRATEGY,
       segmentSchemaVersion: 1,
       codecVersion: 1,
-      engineBuildId: "history-local-disk-first-streaming-v2",
+      engineBuildId: "history-local-bounded-hot-streaming-v3",
     };
   }
 
@@ -1816,39 +1864,12 @@ export class HistoryStorageCoordinator {
     if (!options.shouldContinue() || this.engine.historyCursor !== this.engine.historyActions.length) {
       return false;
     }
-    const residentStored = this.collectPayloadCandidates().filter((candidate) =>
+    const policy = this.residentHotWindowPolicy(
+      this.collectPayloadCandidates(),
+      options.highWaterBytes,
+    );
+    const candidates = policy.unprotected.filter((candidate) =>
       this.storedPayloads.has(candidate.payloadId)
-      && (candidate.storage === "gpu"
-        ? this.engine.historyGpuStorage.isResident(candidate.slice)
-        : candidate.handle.resident)
-    );
-    const byAction = new Map<number, { cursor: number; payloadBytes: number }>();
-    for (const candidate of residentStored) {
-      const current = byAction.get(candidate.ownerActionId) ?? {
-        cursor: candidate.ownerCursor,
-        payloadBytes: 0,
-      };
-      current.cursor = Math.max(current.cursor, candidate.ownerCursor);
-      current.payloadBytes += candidate.rawBytes;
-      byAction.set(candidate.ownerActionId, current);
-    }
-    const maximumSegmentBytes = historyStorageMaximumSegmentBytes(MOBILE_DEVICE_CLASS);
-    const keepHotActions = adaptiveHistoryStorageKeepHotActions({
-      currentResidentBytes: options.currentResidentBytes(),
-      highWaterBytes: options.highWaterBytes,
-      hotPayloadBudgetBytes: Math.min(
-        maximumSegmentBytes,
-        Math.floor(options.highWaterBytes * 0.25),
-      ),
-      journalLength: this.engine.historyActions.length,
-      actions: [...byAction.values()],
-    });
-    const coldCeiling = Math.max(
-      0,
-      this.engine.historyActions.length - keepHotActions,
-    );
-    const candidates = residentStored.filter((candidate) =>
-      candidate.ownerCursor < coldCeiling
     );
     if (candidates.length === 0) return false;
     const gpuSlices = candidates.flatMap((candidate) =>

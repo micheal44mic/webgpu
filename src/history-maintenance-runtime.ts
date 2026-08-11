@@ -33,12 +33,12 @@ import {
   selectCheckpointRepresentation,
   type HistoryMemoryLedger,
 } from "./history-retention-core";
-import { HISTORY_STORAGE_SPILL_HIGH_WATER_BYTES } from "./history-storage-core";
+import { historyStorageHotPayloadHardBytes } from "./history-storage-core";
 
 const HISTORY_FULL_CHECKPOINT_PERIOD = 8;
-// Disk-first means pointer-up must hand ownership to durable storage on the
-// next browser turn. Backpressure at the next mutation keeps fast input from
-// building an unbounded queue while this pass is still in flight.
+// Pointer-up starts the bounded hot-tail maintenance on the next browser turn.
+// Older/oversize actions spill asynchronously while the recent suffix remains
+// available for immediate Undo.
 const HISTORY_MAINTENANCE_DELAY_MS = 0;
 /** A continuation yields to a new browser turn instead of looping synchronously. */
 const HISTORY_STORAGE_DRAIN_CONTINUATION_DELAY_MS = 0;
@@ -244,9 +244,9 @@ function historyMaintenanceEngineIdle(
   engine: BrushEngine,
   allowCurrentStorageOperation = false,
 ): boolean {
+  if (!engine.initialized || !engine.historyLocalStorage) return false;
   const storageBusy = engine.historyLocalStorage.telemetry().busy;
-  return engine.initialized
-    && !engine.activeStroke
+  return !engine.activeStroke
     && !engine.historyBusy
     && !engine.historyStateInconsistent
     && !engine.layerSwitchBusy
@@ -582,7 +582,7 @@ function refreshGpuAndAssetAccounting(
     0,
     state.accounting.cpuVectorBytes - state.storageMetadataBytes,
   );
-  state.storageMetadataBytes = engine.historyLocalStorage.metadataResidentBytes();
+  state.storageMetadataBytes = engine.historyLocalStorage?.metadataResidentBytes() ?? 0;
   state.accounting.cpuVectorBytes += state.storageMetadataBytes;
   const gpuStorage = engine.historyGpuStorage?.stats() ?? {
     allocatedBytes: 0,
@@ -858,7 +858,7 @@ function historyBudgetForEngine(engine: BrushEngine) {
 }
 
 function historySpillHighWaterBytes(_engine: BrushEngine): number {
-  return HISTORY_STORAGE_SPILL_HIGH_WATER_BYTES;
+  return historyStorageHotPayloadHardBytes(MOBILE_DEVICE_CLASS);
 }
 
 function replayTailMetrics(engine: BrushEngine, layerId: number): HistoryReplayTailAccounting {
@@ -1463,10 +1463,10 @@ function failClosedStrandedHistory(
   let stranded = knownStranded;
   if (!knownStranded) {
     try {
-      stranded = engine.historyLocalStorage.unstoredResidentPayloadBytes() > 0;
+      stranded = engine.historyLocalStorage.unstoredResidentPayloadPressureBytes() > 0;
     } catch {
       // If ownership/accounting itself is no longer readable, retaining the
-      // journal would make the claimed zero-resident invariant unverifiable.
+      // journal would make the bounded-residency invariant unverifiable.
       stranded = true;
     }
   }
@@ -1489,9 +1489,9 @@ export function scheduleHistoryMaintenance(
   engine: BrushEngine,
   delayMs = HISTORY_MAINTENANCE_DELAY_MS,
 ): void {
+  if (!engine.initialized || !engine.historyLocalStorage) return;
   if (
-    engine.initialized
-    && historyMaintenanceEngineIdle(engine, true)
+    historyMaintenanceEngineIdle(engine, true)
     && !enforceHistoryMetadataLimit(engine)
   ) {
     return;
@@ -1560,7 +1560,7 @@ export function scheduleHistoryMaintenance(
       const spillOptions = {
         highWaterBytes: spillHighWaterBytes,
         logicalFloorCursor: state.floorCursor,
-        currentResidentBytes: () => historyMemoryTotalBytes(historyMemoryLedger(engine)),
+        currentResidentBytes: () => engine.historyLocalStorage.totalResidentPayloadBytes(),
         shouldContinue: () => (
           expectedGeneration === state.generation
           // spillIfNeeded publishes busy="spilling" before its first await.
@@ -1577,12 +1577,13 @@ export function scheduleHistoryMaintenance(
       const deferJournalEviction = engine.historyLocalStorage.shouldDeferJournalEviction(
         spillOptions,
       );
-      const strandedPayloadBytes = engine.historyLocalStorage.unstoredResidentPayloadBytes();
+      const strandedPayloadBytes =
+        engine.historyLocalStorage.unstoredResidentPayloadPressureBytes();
       if (!deferJournalEviction && strandedPayloadBytes > 0) {
-        // Strict disk-first failure policy. Keeping an unpersistable payload on
-        // GPU would silently recreate the memory-only fallback this runtime is
-        // designed to remove. The current document pixels are independent of
-        // History ownership, so discard Undo while preserving the artwork.
+        // The bounded hot suffix is intentional. Only an unpersistable action
+        // outside its count/byte policy is stranded and must fail closed. The
+        // current document pixels are independent of History ownership, so
+        // discard Undo while preserving the artwork.
         failClosedStrandedHistory(engine, null, true);
         return;
       }

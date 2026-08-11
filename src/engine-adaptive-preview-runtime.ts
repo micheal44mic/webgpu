@@ -104,7 +104,7 @@ export function prepareAdaptivePreviewShapePalette(engine: BrushEngine, settings
   coverageSource.width = source.width;
   coverageSource.height = source.height;
   const coverageContext = coverageSource.getContext("2d");
-  const sourceContext = source.getContext("2d");
+  const sourceContext = source.getContext("2d", { willReadFrequently: true });
   if (!coverageContext || !sourceContext) {
     engine.adaptivePreviewShapePalette = [];
     engine.adaptivePreviewShapePaletteKey = key;

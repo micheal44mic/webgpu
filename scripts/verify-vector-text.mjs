@@ -2044,7 +2044,12 @@ assert.match(mainSource, /if \(vectorTextEditorEnabled\)/);
 assert.doesNotMatch(mainSource, /pageSearchParams\.get\("vectorTextTest"\)/);
 assert.doesNotMatch(mainSource, /innerShadowTest/);
 assert.doesNotMatch(htmlSource, /id="vectorTextZoomMode"/);
-assert.match(mainSource, /__vectorTextPrototype = vectorTextPrototype/);
+assert.match(
+  mainSource,
+  /await import\("\.\/mixed-vector-text-controller"\)[\s\S]*?await controller\.initialize\(\)[\s\S]*?vectorTextPrototype = controller/,
+  "il controller testo deve essere caricato in differita e pubblicato solo dopo initialize",
+);
+assert.match(mainSource, /__vectorTextPrototype = controller/);
 assert.equal(packageJson.scripts["vector-text:verify"], "node scripts/verify-vector-text.mjs");
 
 console.log(
