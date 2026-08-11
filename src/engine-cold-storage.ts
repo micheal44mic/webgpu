@@ -409,15 +409,54 @@ export async function restoreColdStorageResources(
   compressed: LayerCompressedColdStorageResources,
   label: string,
 ): Promise<LayerColdStorageResources> {
-  const tileByteLength = coldCodecTileBytes(compressed.format);
+  return await restoreColdStorageResourcesFromChunkStream(
+    engine,
+    compressed,
+    compressed.chunks,
+    label,
+  );
+}
+
+/**
+ * Restores a cold seed while consuming one compressed chunk at a time.
+ *
+ * Session-local History uses this path directly from OPFS/IndexedDB. Keeping
+ * the chunk source iterable is the important ownership boundary: a 128 MiB
+ * checkpoint never becomes a 128 MiB `LayerCompressedColdStorageResources`
+ * object on the JS heap merely to be uploaded to the GPU.
+ */
+export async function restoreColdStorageResourcesFromChunkStream(
+  engine: BrushEngine,
+  descriptor: Pick<
+    LayerCompressedColdStorageResources,
+    "tileIndices" | "rawBytes" | "sourceHash" | "generation" | "format"
+  >,
+  chunks: AsyncIterable<LayerColdCompressedChunk> | Iterable<LayerColdCompressedChunk>,
+  label: string,
+): Promise<LayerColdStorageResources> {
+  if (descriptor.format !== engine.layerFormat) {
+    throw new Error(
+      `${label}: cold ${descriptor.format} incompatibile con documento ${engine.layerFormat}.`,
+    );
+  }
+  if (descriptor.tileIndices.length === 0) {
+    throw new Error(`${label}: seed cold privo di tile.`);
+  }
+  const tileByteLength = coldCodecTileBytes(descriptor.format);
+  const expectedRawBytes = descriptor.tileIndices.length * tileByteLength;
+  if (descriptor.rawBytes !== expectedRawBytes) {
+    throw new Error(
+      `${label}: seed cold dichiara ${descriptor.rawBytes} byte, attesi ${expectedRawBytes}.`,
+    );
+  }
   const texture = engine.device.createTexture({
     label,
     size: {
       width: LAYER_STORAGE_TILE_SIZE,
       height: LAYER_STORAGE_TILE_SIZE,
-      depthOrArrayLayers: compressed.tileIndices.length,
+      depthOrArrayLayers: descriptor.tileIndices.length,
     },
-    format: compressed.format,
+    format: descriptor.format,
     usage:
       GPUTextureUsage.COPY_SRC
       | GPUTextureUsage.COPY_DST
@@ -427,17 +466,23 @@ export async function restoreColdStorageResources(
     let firstArrayLayer = 0;
     let restoredBytes = 0;
     let restoredHash = 0x811c9dc5;
-    for (const chunk of compressed.chunks) {
+    for await (const chunk of chunks) {
       const restored = await decompressLayerColdChunk(engine, chunk);
       if (restored.byteLength % tileByteLength !== 0) {
         throw new Error(`${label}: chunk non allineato ai tile.`);
       }
       const chunkTileCount = restored.byteLength / tileByteLength;
+      if (
+        chunkTileCount <= 0
+        || firstArrayLayer + chunkTileCount > descriptor.tileIndices.length
+      ) {
+        throw new Error(`${label}: chunk oltre il numero di tile dichiarato.`);
+      }
       engine.device.queue.writeTexture(
         { texture, origin: { x: 0, y: 0, z: firstArrayLayer } },
         restored,
         {
-          bytesPerRow: coldCodecBytesPerRow(compressed.format),
+          bytesPerRow: coldCodecBytesPerRow(descriptor.format),
           rowsPerImage: LAYER_STORAGE_TILE_SIZE,
         },
         {
@@ -453,25 +498,128 @@ export async function restoreColdStorageResources(
         chunk.sourceHash,
         restored.byteLength,
       );
+      // `writeTexture` may retain an internal copy of its BufferSource until
+      // consumed. Fence each compression chunk so driver staging cannot grow
+      // with a full 64/128 MiB checkpoint despite the JS iterator being lazy.
+      await engine.waitForGpuCapped(`${label} · chunk ${firstArrayLayer}`);
     }
     if (
-      firstArrayLayer !== compressed.tileIndices.length
-      || restoredBytes !== compressed.rawBytes
-      || restoredHash !== compressed.sourceHash
+      firstArrayLayer !== descriptor.tileIndices.length
+      || restoredBytes !== descriptor.rawBytes
+      || restoredHash !== descriptor.sourceHash
     ) {
       throw new Error(`${label}: integrità aggregata non valida.`);
     }
-    await engine.waitForGpuCapped(label);
     return {
       texture,
-      tileIndices: compressed.tileIndices,
-      memoryBytes: compressed.rawBytes,
-      generation: compressed.generation,
-      format: compressed.format,
+      tileIndices: descriptor.tileIndices,
+      memoryBytes: descriptor.rawBytes,
+      generation: descriptor.generation,
+      format: descriptor.format,
     };
   } catch (error) {
     texture.destroy();
     throw error;
+  }
+}
+
+/**
+ * Applies a stored History seed straight into the live document texture.
+ * Unlike `restoreColdStorageResourcesFromChunkStream`, this allocates no
+ * intermediate tile-array texture: one decompressed chunk is copied into its
+ * document tile positions and then becomes collectible.
+ */
+export async function uploadColdStorageChunkStreamIntoHot(
+  engine: BrushEngine,
+  descriptor: Pick<
+    LayerCompressedColdStorageResources,
+    "tileIndices" | "rawBytes" | "sourceHash" | "format"
+  >,
+  chunks: AsyncIterable<LayerColdCompressedChunk> | Iterable<LayerColdCompressedChunk>,
+  hot: LayerTextureResources,
+  label: string,
+  assertCurrent: () => void,
+): Promise<void> {
+  if (descriptor.format !== engine.layerFormat || hot.format !== descriptor.format) {
+    throw new Error(`${label}: formato del checkpoint incompatibile con la texture attiva.`);
+  }
+  const tileByteLength = coldCodecTileBytes(descriptor.format);
+  if (
+    descriptor.tileIndices.length === 0
+    || descriptor.rawBytes !== descriptor.tileIndices.length * tileByteLength
+  ) {
+    throw new Error(`${label}: layout tiled del checkpoint non valido.`);
+  }
+  let firstArrayLayer = 0;
+  let restoredBytes = 0;
+  let restoredHash = 0x811c9dc5;
+  for await (const chunk of chunks) {
+    assertCurrent();
+    const restored = await decompressLayerColdChunk(engine, chunk);
+    // Decompression crosses a worker await. A reset in that interval must be
+    // observed before this function writes into the live document texture.
+    assertCurrent();
+    if (restored.byteLength % tileByteLength !== 0) {
+      throw new Error(`${label}: chunk non allineato ai tile.`);
+    }
+    const chunkTileCount = restored.byteLength / tileByteLength;
+    if (
+      chunkTileCount <= 0
+      || firstArrayLayer + chunkTileCount > descriptor.tileIndices.length
+    ) {
+      throw new Error(`${label}: chunk oltre il numero di tile dichiarato.`);
+    }
+    for (let localTile = 0; localTile < chunkTileCount; localTile += 1) {
+      const tileIndex = descriptor.tileIndices[firstArrayLayer + localTile];
+      if (
+        !Number.isInteger(tileIndex)
+        || tileIndex < 0
+        || tileIndex >= LAYER_STORAGE_GRID_SIZE * LAYER_STORAGE_GRID_SIZE
+      ) {
+        throw new Error(`${label}: indice tile ${tileIndex} non valido.`);
+      }
+      const tileX = tileIndex % LAYER_STORAGE_GRID_SIZE;
+      const tileY = Math.floor(tileIndex / LAYER_STORAGE_GRID_SIZE);
+      const byteOffset = localTile * tileByteLength;
+      engine.device.queue.writeTexture(
+        {
+          texture: hot.texture,
+          origin: {
+            x: tileX * LAYER_STORAGE_TILE_SIZE,
+            y: tileY * LAYER_STORAGE_TILE_SIZE,
+            z: 0,
+          },
+        },
+        restored.subarray(byteOffset, byteOffset + tileByteLength),
+        {
+          bytesPerRow: coldCodecBytesPerRow(descriptor.format),
+          rowsPerImage: LAYER_STORAGE_TILE_SIZE,
+        },
+        {
+          width: LAYER_STORAGE_TILE_SIZE,
+          height: LAYER_STORAGE_TILE_SIZE,
+          depthOrArrayLayers: 1,
+        },
+      );
+    }
+    firstArrayLayer += chunkTileCount;
+    restoredBytes += restored.byteLength;
+    restoredHash = combineCompressionHashes(
+      restoredHash,
+      chunk.sourceHash,
+      restored.byteLength,
+    );
+    // Bound browser/driver staging as well as the visible JS heap. Without this
+    // fence a queue is allowed to retain every writeTexture source in the seed.
+    await engine.waitForGpuCapped(`${label} · chunk ${firstArrayLayer}`);
+    assertCurrent();
+  }
+  if (
+    firstArrayLayer !== descriptor.tileIndices.length
+    || restoredBytes !== descriptor.rawBytes
+    || restoredHash !== descriptor.sourceHash
+  ) {
+    throw new Error(`${label}: integrità aggregata non valida.`);
   }
 }
 

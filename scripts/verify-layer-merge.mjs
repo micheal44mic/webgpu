@@ -222,17 +222,24 @@ assert.match(
   "l'overflow privato del rimpiazzo deve essere limitato a un solo record",
 );
 
-// Empty restored inputs never allocate one full texture each. Painted inputs
-// are cloned cold-to-cold and durable stored-only sources are streamed one at a
-// time; only the active raster (plus the explicit Fill Reference exception) is
-// hot after Undo.
+// Empty restored inputs never allocate one full texture each. A durable source
+// is restored directly as the final live cold authority; only an unstored
+// resident source needs the cold-to-cold clone fallback.
 assert.match(layerStructure, /gpu = createColdLayerGpuResources\(\)/);
 assert.match(coldStorage, /export async function cloneLayerColdStorageResources/);
-assert.match(runtime, /await engine\.historyLocalStorage\.ensureLayerMergeSeedResident\(seed\)/);
-assert.match(runtime, /cloneLayerColdStorageResources\([\s\S]*?demoteStoredLayerMergeSeed\(seed\)/);
+assert.match(
+  runtime,
+  /restoreStoredColdSeedForDetachedReplay\(seed\)[\s\S]*?if \(restored\) \{[\s\S]*?cold: restored/,
+);
+assert.match(runtime, /ensureLayerMergeSeedResident\(seed\)[\s\S]*?cloneLayerColdStorageResources\(/);
 assert.match(
   storageCoordinator,
-  /crossed\?\.kind === "layer-merge"[\s\S]*?assertRequiredPayloadsAvailable\(required\)/,
+  /await this\.assertRequiredPayloadsAvailable\(required\)/,
+);
+assert.match(
+  storageCoordinator,
+  /crossed\.kind === "layer-merge"[\s\S]*?if \(delta < 0\)[\s\S]*?addSeed\(crossed\.output\.seed\)/,
+  "il preflight merge deve richiedere input per Undo e output per Redo",
 );
 assert.match(runtime, /const reservation = reserveLayerMergeHistoryMemory/);
 assert.match(
@@ -242,58 +249,50 @@ assert.match(
 
 const undoReservationModel = (
   seedBytes,
-  storedOnly,
   fullTextureBytes,
   referenceDistinct = false,
 ) => {
   const clonedColdBytes = seedBytes.reduce((total, bytes) => total + bytes, 0);
-  const maximumMissingSeedBytes = storedOnly ? Math.max(0, ...seedBytes) : 0;
   const hotDestinations = 1 + Number(referenceDistinct);
   const steadyBytes = clonedColdBytes + fullTextureBytes * hotDestinations;
   return {
     steadyBytes,
-    peakBytes: steadyBytes + maximumMissingSeedBytes + fullTextureBytes,
+    peakBytes: steadyBytes + fullTextureBytes,
   };
 };
 for (const documentSize of [2048, 4096]) {
   const fullTextureBytes = documentSize * documentSize * 8;
   for (const count of [2, 16]) {
-    const empty = undoReservationModel(Array(count).fill(0), true, fullTextureBytes);
+    const empty = undoReservationModel(Array(count).fill(0), fullTextureBytes);
     assert.equal(empty.steadyBytes, fullTextureBytes);
     assert.equal(empty.peakBytes, fullTextureBytes * 2);
 
     const tileSparseBytes = fullTextureBytes / 16;
     const painted = undoReservationModel(
       Array(count).fill(tileSparseBytes),
-      true,
       fullTextureBytes,
     );
     assert.equal(painted.steadyBytes, count * tileSparseBytes + fullTextureBytes);
     assert.equal(
       painted.peakBytes,
-      count * tileSparseBytes + tileSparseBytes + fullTextureBytes * 2,
+      count * tileSparseBytes + fullTextureBytes * 2,
     );
     const fullCanvasPainted = undoReservationModel(
       Array(count).fill(fullTextureBytes),
-      true,
       fullTextureBytes,
     );
     assert.equal(fullCanvasPainted.steadyBytes, (count + 1) * fullTextureBytes);
-    assert.equal(fullCanvasPainted.peakBytes, (count + 3) * fullTextureBytes);
+    assert.equal(fullCanvasPainted.peakBytes, (count + 2) * fullTextureBytes);
 
     let residentStoredSourceBytes = 0;
     let maximumResidentStoredSourceBytes = 0;
     let independentLiveColdBytes = 0;
     for (let index = 0; index < count; index += 1) {
-      residentStoredSourceBytes += tileSparseBytes;
-      maximumResidentStoredSourceBytes = Math.max(
-        maximumResidentStoredSourceBytes,
-        residentStoredSourceBytes,
-      );
+      // Stored-only bytes become this final authority directly; there is no
+      // separate resident History source during the restore.
       independentLiveColdBytes += tileSparseBytes;
-      residentStoredSourceBytes -= tileSparseBytes;
     }
-    assert.equal(maximumResidentStoredSourceBytes, tileSparseBytes);
+    assert.equal(maximumResidentStoredSourceBytes, 0);
     assert.equal(independentLiveColdBytes, count * tileSparseBytes);
     assert.equal(residentStoredSourceBytes, 0);
     const finalResidency = Array.from({ length: count }, (_, index) => ({

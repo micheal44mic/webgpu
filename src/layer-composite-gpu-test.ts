@@ -365,7 +365,9 @@ async function drawLine(
   timeMs: number,
 ): Promise<void> {
   engine.setBrushSettings({ color });
-  engine.beginStrokeAtLayer({ x, y, pressure: 1, timeMs });
+  if (!await engine.beginStrokeAtLayerAfterHistoryDrain({ x, y, pressure: 1, timeMs })) {
+    throw new Error("Tratto compositing rifiutato dal gate History.");
+  }
   engine.extendStrokeAtLayer([{ x: x + 48, y, pressure: 1, timeMs: timeMs + 16 }]);
   engine.endStroke(timeMs + 16);
   await engine.waitForIdle();

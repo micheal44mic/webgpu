@@ -80,7 +80,6 @@ import {
   type MemoryRequest,
 } from "./memory-governor-core";
 import { planLayerMergeCreateMemory } from "./layer-memory-admission-core";
-import { isHistoryColdSeedHandle } from "./history-cold-seed";
 
 export interface LayerMergeResult {
   readonly layerId: number;
@@ -641,32 +640,21 @@ function layerMergeHistoryRequest(
 ): MemoryRequest {
   const full = layerMergeFullTextureBytes(engine);
   if (delta > 0) {
-    const missingOutputSeed = action.output.seed
-      && isHistoryColdSeedHandle(action.output.seed)
-      && !action.output.seed.resident
-      ? action.output.seed.memoryBytes
-      : 0;
     return {
       category: "layer-merge-redo",
       // Output hot remains; staged inputs are already in the committed ledger.
       steadyBytes: full,
-      // One streamed seed, output hot and one outgoing freeze/hydration overlap.
-      peakBytes: full * 2 + missingOutputSeed,
+      // Stored pixels stream directly into output hot; only one outgoing
+      // freeze/hydration may overlap it.
+      peakBytes: full * 2,
       priority: "normal",
     };
   }
 
   let clonedColdBytes = 0;
-  let maximumMissingSeedBytes = 0;
   for (const input of action.inputs) {
     if (input.kind !== "raster" || !input.entry.seed) continue;
     clonedColdBytes += input.entry.seed.memoryBytes;
-    if (isHistoryColdSeedHandle(input.entry.seed) && !input.entry.seed.resident) {
-      maximumMissingSeedBytes = Math.max(
-        maximumMissingSeedBytes,
-        input.entry.seed.memoryBytes,
-      );
-    }
   }
   const referenceNeedsHot = action.referenceRasterLayerIdBefore !== null
     && action.referenceRasterLayerIdBefore !== action.activeRasterLayerIdBefore
@@ -677,9 +665,9 @@ function layerMergeHistoryRequest(
   return {
     category: "layer-merge-undo",
     steadyBytes,
-    // All independent live cold authorities plus at most one streamed source,
-    // active/reference hot targets and one bounded switch overlap.
-    peakBytes: steadyBytes + maximumMissingSeedBytes + full,
+    // Each stored seed becomes its final live cold authority directly; only
+    // the bounded active/reference switch overlap is additional.
+    peakBytes: steadyBytes + full,
     priority: "normal",
   };
 }
@@ -719,6 +707,14 @@ async function prepareMergeInputGpu(
   const seed = entry.seed;
   if (!seed) {
     return { gpu: createColdLayerGpuResources(), historyResidenceChanged: false };
+  }
+  const restored = await engine.historyLocalStorage
+    .restoreStoredColdSeedForDetachedReplay(seed);
+  if (restored) {
+    return {
+      gpu: { hot: null, cold: restored, compressed: null, bake: null, bakeValid: false },
+      historyResidenceChanged: false,
+    };
   }
   await engine.historyLocalStorage.ensureLayerMergeSeedResident(seed);
   const cold = await cloneLayerColdStorageResources(
@@ -871,7 +867,6 @@ async function applyMergedState(
   const stagedInputs: StagedMergeRaster[] = [];
   let outputGpu: LayerGpuResources | null = null;
   let outputAttached = false;
-  let historyResidenceChanged = false;
   if (manageLayerSwitchBusy) engine.layerSwitchBusy = true;
   try {
     engine.persistActiveLayerState();
@@ -880,16 +875,8 @@ async function applyMergedState(
     // workbench is retargeted. Keeping it invisible makes that drain render
     // the exact pre-merge stack instead of a double-composited frame.
     action.output.layerRecord.visible = false;
-    if (!preparedGpu) {
-      await engine.historyLocalStorage.ensureLayerMergeSeedResident(action.output.seed);
-    }
     outputGpu = await attachOutput(engine, action, preparedGpu);
     outputAttached = true;
-    if (!preparedGpu) {
-      historyResidenceChanged = engine.historyLocalStorage.demoteStoredLayerMergeSeed(
-        action.output.seed,
-      );
-    }
     const outgoingIndex = engine.layerStack.indexOfId(originalActiveId);
     if (outgoingIndex < 0) throw new Error("Raster attivo perso prima del merge.");
     await engine.activateLayer(outgoingIndex, "structural-history");
@@ -974,7 +961,6 @@ async function applyMergedState(
     engine.displayDirty = true;
     engine.requestRender();
     engine.scheduleLayerColdCompression();
-    if (historyResidenceChanged) engine.historyStorageResidenceChanged();
     publishMixedScene(engine);
     engine.publishStats();
   }
@@ -1138,6 +1124,9 @@ export async function prepareAndApplyLayerMerge(
 ): Promise<PreparedLayerMerge> {
   if (!engine.initialized) throw new Error("Il motore non è inizializzato.");
   engine.assertLayerSwitchAllowed();
+  if (!engine.admitHistoryPayloadMutation()) {
+    throw new Error("Merge rinviato durante il salvataggio della cronologia locale.");
+  }
   engine.cancelLayerColdCompressionIdle();
   engine.layerSwitchBusy = true;
   const scene = requireMixedSceneStack(engine);

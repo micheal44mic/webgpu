@@ -1,11 +1,13 @@
 import type { BrushEngine } from "./brush-engine";
 import {
+  decompressLayerColdChunk,
   destroyLayerColdStorage,
-  restoreColdStorageResources,
+  restoreColdStorageResourcesFromChunkStream,
+  uploadColdStorageChunkStreamIntoHot,
 } from "./engine-cold-storage";
 import type {
   LayerColdStorageResources,
-  LayerCompressedColdStorageResources,
+  LayerTextureResources,
 } from "./engine-layer-resources";
 import type {
   HistoryAction,
@@ -31,6 +33,7 @@ import {
   HISTORY_LOCAL_STORAGE_COMMIT_MAGIC,
   HISTORY_LOCAL_STORAGE_SCHEMA_VERSION,
   HISTORY_LOCAL_STORAGE_SEGMENT_MAGIC,
+  HISTORY_STORAGE_MAXIMUM_DESCRIPTOR_BYTES,
   type HistoryDocumentFingerprintV1,
   type HistoryManifestV1,
   type HistorySegmentPlan,
@@ -43,7 +46,10 @@ import {
 } from "./history-storage-core";
 import { HistoryStorageCatalog } from "./history-storage-idb";
 import { HistoryOpfsClient } from "./history-storage-opfs-client";
-import type { GpuHistorySlice } from "./gpu-history-storage";
+import {
+  GPU_HISTORY_HYDRATION_CHUNK_BYTES,
+  type GpuHistorySlice,
+} from "./gpu-history-storage";
 import {
   HISTORY_RETENTION_STRATEGY,
 } from "./history-retention-core";
@@ -55,6 +61,8 @@ import {
 import { combineCompressionHashes } from "./engine-math";
 import type { LayerColdCompressedChunk } from "./layer-cold-compression-client";
 import {
+  enforceHistoryMetadataLimit,
+  historyFloorCursor,
   periodicCheckpointChainForReplay,
   periodicHistoryCheckpoints,
 } from "./history-maintenance-runtime";
@@ -65,7 +73,6 @@ const SESSION_HEARTBEAT_MS = 60_000;
 const PERSIST_REQUEST_THRESHOLD_BYTES = 32 * 1024 * 1024;
 const MAX_DESCRIPTOR_PAYLOADS = 16_384;
 const MAX_DESCRIPTOR_CHUNKS = 131_072;
-const MAX_DESCRIPTOR_BYTES = 2 * 1024 * 1024 * 1024;
 const HISTORY_DEV_FORCE_IDB = import.meta.env.DEV
   && typeof location !== "undefined"
   && new URLSearchParams(location.search).get("historyStorageBackend") === "idb";
@@ -234,6 +241,77 @@ export class HistoryStorageCoordinator {
     };
   }
 
+  /**
+   * Conservative JS-heap allowance for the live storage index. Payload bytes
+   * are excluded: this counts descriptors, chunk records, strings and map
+   * entries that remain resident while their data lives on disk.
+   */
+  metadataResidentBytes(): number {
+    const stringBytes = (value: string): number => 16 + value.length * 2;
+    let bytes = 512
+      + this.storedPayloads.size * 64
+      + this.segments.size * 80
+      + this.garbageSegmentIds.size * 40
+      + this.opfsGarbageCandidates.size * 96
+      + this.gpuStableOwnerActionIds.size * 32
+      + this.coldHandles.size * 128
+      + this.diskBudgetBlockedActionIds.size * 24;
+    for (const descriptor of this.segments.values()) {
+      bytes += 640
+        + stringBytes(descriptor.sessionId)
+        + stringBytes(descriptor.instanceId)
+        + stringBytes(descriptor.branchIdAtCreation)
+        + stringBytes(descriptor.segmentId)
+        + stringBytes(descriptor.commitNonce)
+        + stringBytes(descriptor.descriptorSha256);
+      for (const payload of descriptor.payloads) {
+        bytes += 384
+          + stringBytes(payload.payloadId)
+          + stringBytes(payload.serializerId)
+          + stringBytes(payload.kind);
+        if (payload.gpu) bytes += 128 + stringBytes(payload.gpu.label);
+        if (payload.coldSeed) bytes += 160 + payload.coldSeed.tileIndices.length * 8;
+        for (const chunk of payload.chunks) {
+          bytes += 224 + stringBytes(chunk.codec) + stringBytes(chunk.storedSha256);
+        }
+      }
+    }
+    return Math.ceil(bytes);
+  }
+
+  /**
+   * Payload bytes that still have no durable authority. A disk-first runtime
+   * may keep these only while the current spill transaction is making
+   * progress; quota/backend failure must never turn them into a RAM fallback.
+   */
+  unstoredResidentPayloadBytes(): number {
+    if (this.destroyed) return 0;
+    this.wrapAllHistorySeeds();
+    return this.collectPayloadCandidates().reduce((total, candidate) => {
+      if (this.storedPayloads.has(candidate.payloadId)) return total;
+      const resident = candidate.storage === "gpu"
+        ? this.engine.historyGpuStorage.isResident(candidate.slice)
+        : candidate.handle.resident;
+      return total + (resident ? candidate.rawBytes : 0);
+    }, 0);
+  }
+
+  /**
+   * Every resident History payload, including a durable cache whose CAS
+   * committed just before an interrupted demotion. Admission uses this wider
+   * value so repeated interruption cannot accumulate stored-but-hot copies.
+   */
+  residentPayloadBytes(): number {
+    if (this.destroyed) return 0;
+    this.wrapAllHistorySeeds();
+    return this.collectPayloadCandidates().reduce((total, candidate) => {
+      const resident = candidate.storage === "gpu"
+        ? this.engine.historyGpuStorage.isResident(candidate.slice)
+        : candidate.handle.resident;
+      return total + (resident ? candidate.rawBytes : 0);
+    }, 0);
+  }
+
   /** A document reset starts a new disposable storage namespace immediately. */
   resetSession(): void {
     if (this.destroyed) return;
@@ -309,6 +387,12 @@ export class HistoryStorageCoordinator {
     ) {
       return false;
     }
+    this.wrapAllHistorySeeds();
+    let changed = this.demoteStoredResidentCaches(options);
+    if (changed) {
+      options.afterResidenceChange();
+      this.engine.historyGpuStorage.trimEmptyPages(false);
+    }
     if (this.opfsGarbageCandidates.size > 0) {
       this.storageBusy = "spilling";
       try {
@@ -325,13 +409,9 @@ export class HistoryStorageCoordinator {
         this.storageBusy = "idle";
       }
     }
-    if (!this.writable) return false;
-    this.wrapAllHistorySeeds();
-    let changed = this.demoteStoredResidentCaches(options);
-    if (changed) {
-      options.afterResidenceChange();
-      this.engine.historyGpuStorage.trimEmptyPages(true);
-    }
+    // Existing durable authority can always release its resident cache even
+    // after quota/backend failures have disabled further writes.
+    if (!this.writable) return changed;
     for (let segmentCount = 0; segmentCount < 4; segmentCount += 1) {
       if (
         options.currentResidentBytes() <= options.highWaterBytes
@@ -353,7 +433,7 @@ export class HistoryStorageCoordinator {
       if (result === "committed") {
         changed = true;
         options.afterResidenceChange();
-        this.engine.historyGpuStorage.trimEmptyPages(true);
+        this.engine.historyGpuStorage.trimEmptyPages(false);
         continue;
       }
       if (result === "budget-skip") continue;
@@ -381,7 +461,12 @@ export class HistoryStorageCoordinator {
     return this.residentPayloadSegmentPlan(options).plan.required;
   }
 
-  /** Hydrates target and rollback dependencies before moveHistoryCursor mutates the cursor. */
+  /**
+   * Preflights target and rollback dependencies before moveHistoryCursor mutates
+   * the cursor. Heavy replay payloads stay on disk and are consumed just in
+   * time; only the two compare-and-swap selection masks of a transform are
+   * hydrated eagerly because the transaction may need either one for rollback.
+   */
   async prepareHistoryStep(delta: -1 | 1): Promise<void> {
     // A user gesture invalidates background maintenance synchronously. Give a
     // running spill the chance to publish or abort. Dependencies must be
@@ -389,19 +474,98 @@ export class HistoryStorageCoordinator {
     // have become stored-only at the durable commit boundary.
     await this.waitForForegroundStorageAccess();
     this.wrapAllHistorySeeds();
+    if (!enforceHistoryMetadataLimit(this.engine)) {
+      throw new Error("Metadata History oltre il limite prima di Undo/Redo.");
+    }
+    await this.flushUnstoredPayloadsBeforeNavigation();
     const required = this.payloadsRequiredForStep(delta);
     const previousCursor = this.engine.historyCursor;
     const crossed = delta < 0
       ? this.engine.historyActions[previousCursor - 1]
       : this.engine.historyActions[previousCursor];
-    if (crossed?.kind === "layer-merge") {
-      // The merge runtime streams one seed at a time and retains detached live
-      // GPU resources as its rollback closure. Hydrating N+1 seeds here would
-      // recreate the old unbounded peak before the transaction even starts.
-      await this.assertRequiredPayloadsAvailable(required);
-      return;
+    await this.assertRequiredPayloadsAvailable(required);
+    if (
+      (crossed?.kind === "layer-delete" && delta > 0)
+      || (crossed?.kind === "layer-add" && delta < 0)
+    ) {
+      // These two directions detach and destroy live layer resources before a
+      // later structural step may fail. Their seeds are rollback authority and
+      // must be read and verified before the first detach. The opposite attach
+      // directions already keep each attached layer live for compensation.
+      await this.verifyRequiredPayloadsForRollback(required);
     }
-    await this.hydrateRequiredPayloads(required);
+    if (
+      crossed
+      && (
+        crossed.kind === "stroke"
+        || crossed.kind === "fill"
+        || crossed.kind === "clear"
+        || crossed.kind === "raster-transform"
+        || crossed.kind === "raster-filter"
+      )
+    ) {
+      // Only the current state is a rollback dependency. Reading target bytes
+      // twice would slow every deep step without improving failure atomicity.
+      await this.verifyRequiredPayloadsForRollback(
+        this.payloadsRequiredForRasterReplay(crossed.layerId, [previousCursor]),
+      );
+    }
+    if (crossed?.kind === "raster-transform") {
+      const selectionMasks = this.createPayloadRequirementCollector();
+      selectionMasks.addSnapshot(crossed.selectionBefore);
+      selectionMasks.addSnapshot(crossed.selectionAfter);
+      await this.hydrateRequiredPayloads([...selectionMasks.required.values()]);
+    }
+  }
+
+  /**
+   * Pointer-up schedules idle maintenance on the next browser turn. An
+   * immediate Undo can still beat that pass; crossing the cursor with payloads
+   * resident would strand an unbounded Redo tail because background spill only
+   * owns the journal end. Commit the stable end-of-journal snapshot here first.
+   */
+  private async flushUnstoredPayloadsBeforeNavigation(): Promise<void> {
+    const token = this.captureToken();
+    const shouldContinue = (): boolean => (
+      this.tokenIsCurrent(token)
+      && this.engine.historyBusy
+      && !this.engine.deviceLostError
+    );
+    const options: HistoryStorageSpillOptions = {
+      highWaterBytes: 0,
+      logicalFloorCursor: historyFloorCursor(this.engine),
+      currentResidentBytes: () => this.unstoredResidentPayloadBytes(),
+      shouldContinue,
+      afterResidenceChange: () => this.engine.historyStorageResidenceChanged(),
+    };
+    for (;;) {
+      this.assertToken(token);
+      const before = this.unstoredResidentPayloadBytes();
+      if (before === 0) return;
+      await this.spillIfNeeded(options);
+      if (!enforceHistoryMetadataLimit(this.engine)) {
+        throw new Error("Metadata History oltre il limite durante lo spill Undo/Redo.");
+      }
+      this.assertToken(token);
+      const after = this.unstoredResidentPayloadBytes();
+      if (after === 0) return;
+      if (after >= before || !this.writable) break;
+      await yieldBrowserTurn();
+    }
+
+    const storage = this.telemetry();
+    const reason = storage.lastError ?? "quota/backend non scrivibile";
+    // Artwork lives in document textures, independently from History. Retire
+    // the non-durable journal before moveHistoryCursor can mutate anything.
+    this.engine.resetHistoryState();
+    this.engine.publishStatus(
+      `Cronologia locale non disponibile (${reason}); `
+      + "Undo svuotato senza modificare il disegno.",
+      "error",
+    );
+    this.engine.publishHistoryState();
+    this.engine.publishStats();
+    throw new Error("Payload History non persistibili prima di Undo/Redo.");
   }
 
   /** Hydrates exactly one merge seed immediately before its bounded GPU copy. */
@@ -417,6 +581,217 @@ export class HistoryStorageCoordinator {
       throw new Error("Seed merge locale non più raggiungibile nello storage History.");
     }
     await this.hydrateRequiredPayloads(required);
+  }
+
+  /**
+   * Makes one render batch available immediately before it is submitted.
+   * Returns true when the slice has durable authority and may therefore be
+   * demoted after the caller's GPU fence.
+   */
+  async ensureGpuSliceResidentForReplay(slice: GpuHistorySlice): Promise<boolean> {
+    return (await this.ensureGpuSlicesResidentForReplay([slice])).has(slice.id);
+  }
+
+  /** Hydrates one batch and its optional selection mask in the same queue turn. */
+  async ensureGpuSlicesResidentForReplay(
+    slices: readonly GpuHistorySlice[],
+  ): Promise<ReadonlySet<number>> {
+    await this.waitForForegroundStorageAccess();
+    this.wrapAllHistorySeeds();
+    const candidatesBySliceId = new Map(
+      this.collectPayloadCandidates().flatMap((item) => item.storage === "gpu"
+        ? [[item.slice.id, item] as const]
+        : []),
+    );
+    const candidates: GpuPayloadCandidate[] = [];
+    const durableSliceIds = new Set<number>();
+    const seenSliceIds = new Set<number>();
+    for (const slice of slices) {
+      const candidate = candidatesBySliceId.get(slice.id);
+      if (!candidate || candidate.slice !== slice) {
+        throw new Error("Slice del replay History non più raggiungibile.");
+      }
+      if (seenSliceIds.has(slice.id)) continue;
+      seenSliceIds.add(slice.id);
+      candidates.push(candidate);
+      if (this.storedPayloads.has(candidate.payloadId)) durableSliceIds.add(slice.id);
+    }
+    const missing = candidates.filter((candidate) =>
+      !this.engine.historyGpuStorage.isResident(candidate.slice)
+    );
+    for (const candidate of missing) {
+      if (!durableSliceIds.has(candidate.slice.id)) {
+        throw new Error(
+          "La slice del replay non è residente e non possiede una copia locale.",
+        );
+      }
+    }
+    if (missing.length > 0) {
+      // Queue.writeBuffer and the following replay submit share one ordered
+      // GPUQueue. The replay fence is also the hydration fence, saving two
+      // round-trips for Paint+selection while preserving the same byte bound.
+      await this.hydrateRequiredPayloads(missing, false);
+    }
+    return durableSliceIds;
+  }
+
+  /** Caller must fence every GPU use before releasing these bindings. */
+  demoteStoredGpuSlicesAfterReplay(
+    slices: readonly GpuHistorySlice[],
+    trimEmptyPages = true,
+  ): number {
+    if (this.destroyed || this.storageBusy !== "idle") return 0;
+    const demotable: GpuHistorySlice[] = [];
+    const seenSliceIds = new Set<number>();
+    for (const slice of slices) {
+      if (seenSliceIds.has(slice.id)) continue;
+      seenSliceIds.add(slice.id);
+      if (
+        this.storedPayloads.has(gpuPayloadId(slice.id))
+        && this.engine.historyGpuStorage.contains(slice)
+        && this.engine.historyGpuStorage.isResident(slice)
+      ) {
+        demotable.push(slice);
+      }
+    }
+    if (demotable.length === 0) return 0;
+    const demoted = this.engine.historyGpuStorage
+      .prepareDemoteMany(demotable)
+      .commitNoThrow();
+    if (demoted === 0) return 0;
+    for (const slice of demotable) {
+      this.engine.selectionHistoryClipBindGroups.delete(slice.id);
+    }
+    if (trimEmptyPages) this.engine.historyGpuStorage.trimEmptyPages(false);
+    this.ownershipEpoch += 1;
+    this.engine.historyStorageResidenceChanged();
+    return demoted;
+  }
+
+  demoteStoredGpuSliceAfterReplay(
+    slice: GpuHistorySlice,
+    trimEmptyPages = true,
+  ): boolean {
+    return this.demoteStoredGpuSlicesAfterReplay([slice], trimEmptyPages) > 0;
+  }
+
+  /**
+   * Streams a stored-only tiled checkpoint straight into the live hot texture.
+   * No History texture is allocated: the only CPU object is the current bounded
+   * compression chunk, and the destination is document state rather than cache.
+   */
+  async streamStoredColdSeedIntoHot(
+    seed: LayerColdStorageResources | null,
+    hot: LayerTextureResources,
+  ): Promise<boolean> {
+    if (!seed || !isHistoryColdSeedHandle(seed) || seed.resident) return false;
+    await this.waitForForegroundStorageAccess();
+    this.wrapAllHistorySeeds();
+    const candidate = this.collectPayloadCandidates().find((item) =>
+      item.storage === "cold" && item.handle === seed
+    );
+    if (!candidate) {
+      throw new Error("Checkpoint raster History non più raggiungibile.");
+    }
+    await this.initializePromise;
+    if (!this.ready || this.storageBusy !== "idle") {
+      throw new Error("La cronologia locale non è disponibile in questo momento.");
+    }
+    const location = this.storedPayloads.get(candidate.payloadId);
+    if (!location) {
+      throw new Error("Checkpoint raster History assente dallo storage locale.");
+    }
+    assertStoredPayloadCompatible(location.payload, candidate);
+    const metadata = this.coldSeedMetadata(location);
+    const token = this.captureToken();
+    this.storageBusy = "hydrating";
+    this.engine.publishStatus(
+      `Streaming checkpoint locale… ${formatMiB(candidate.rawBytes)} MiB`,
+      "working",
+    );
+    try {
+      this.assertToken(token);
+      await uploadColdStorageChunkStreamIntoHot(
+        this.engine,
+        {
+          tileIndices: [...metadata.tileIndices],
+          rawBytes: metadata.rawBytes,
+          sourceHash: metadata.sourceHash,
+          format: metadata.format,
+        },
+        this.readColdSeedChunksFromStorage(
+          location,
+          () => this.assertToken(token),
+        ),
+        hot,
+        `Replay checkpoint locale · azione ${candidate.ownerActionId}`,
+        () => this.assertToken(token),
+      );
+      this.assertToken(token);
+      this.hydrationsCompleted += 1;
+      this.hydratedBytes += candidate.rawBytes;
+      return true;
+    } catch (error) {
+      this.hydrationFailures += 1;
+      this.lastError = errorMessage(error);
+      throw error;
+    } finally {
+      this.storageBusy = "idle";
+    }
+  }
+
+  /**
+   * Restores one stored-only seed as a detached live cold authority. Merge Undo
+   * uses this to avoid the old restore-then-clone pair of History textures.
+   */
+  async restoreStoredColdSeedForDetachedReplay(
+    seed: LayerColdStorageResources | null,
+  ): Promise<LayerColdStorageResources | null> {
+    if (!seed || !isHistoryColdSeedHandle(seed) || seed.resident) return null;
+    await this.waitForForegroundStorageAccess();
+    this.wrapAllHistorySeeds();
+    const candidate = this.collectPayloadCandidates().find((item) =>
+      item.storage === "cold" && item.handle === seed
+    );
+    if (!candidate) {
+      throw new Error("Seed detached History non più raggiungibile.");
+    }
+    await this.initializePromise;
+    if (!this.ready || this.storageBusy !== "idle") {
+      throw new Error("La cronologia locale non è disponibile in questo momento.");
+    }
+    const location = this.storedPayloads.get(candidate.payloadId);
+    if (!location) {
+      throw new Error("Seed detached History assente dallo storage locale.");
+    }
+    assertStoredPayloadCompatible(location.payload, candidate);
+    const token = this.captureToken();
+    let restored: LayerColdStorageResources | null = null;
+    this.storageBusy = "hydrating";
+    this.engine.publishStatus(
+      `Streaming seed locale… ${formatMiB(candidate.rawBytes)} MiB`,
+      "working",
+    );
+    try {
+      restored = await this.restoreColdSeedFromStorage(
+        location,
+        candidate.ownerActionId,
+        () => this.assertToken(token),
+      );
+      this.assertToken(token);
+      this.hydrationsCompleted += 1;
+      this.hydratedBytes += candidate.rawBytes;
+      const result = restored;
+      restored = null;
+      return result;
+    } catch (error) {
+      if (restored) destroyLayerColdStorage(restored);
+      this.hydrationFailures += 1;
+      this.lastError = errorMessage(error);
+      throw error;
+    } finally {
+      this.storageBusy = "idle";
+    }
   }
 
   /** Demotes durable caches before admission and after each streamed copy. */
@@ -462,9 +837,9 @@ export class HistoryStorageCoordinator {
     }
     await this.waitForForegroundStorageAccess();
     this.wrapAllHistorySeeds();
-    await this.hydrateRequiredPayloads(
-      this.payloadsRequiredForRasterReplay(layerId, [cursor]),
-    );
+    const required = this.payloadsRequiredForRasterReplay(layerId, [cursor]);
+    await this.assertRequiredPayloadsAvailable(required);
+    await this.verifyRequiredPayloadsForRollback(required);
   }
 
   private async waitForForegroundStorageAccess(): Promise<void> {
@@ -479,6 +854,7 @@ export class HistoryStorageCoordinator {
 
   private async hydrateRequiredPayloads(
     required: readonly HistoryPayloadCandidate[],
+    fenceAfterHydration = true,
   ): Promise<void> {
     const missing = required.filter((candidate) => candidate.storage === "gpu"
       ? !this.engine.historyGpuStorage.isResident(candidate.slice)
@@ -502,6 +878,7 @@ export class HistoryStorageCoordinator {
     const totalBytes = missing.reduce((total, candidate) => total + candidate.rawBytes, 0);
     let loadedBytes = 0;
     let residenceChanged = false;
+    const newlyHydrated: HistoryPayloadCandidate[] = [];
     this.storageBusy = "hydrating";
     this.engine.publishStatus(
       `Caricamento cronologia locale… 0,0 / ${formatMiB(totalBytes)} MiB`,
@@ -513,22 +890,24 @@ export class HistoryStorageCoordinator {
         const location = this.storedPayloads.get(candidate.payloadId)!;
         assertStoredPayloadCompatible(location.payload, candidate);
         if (candidate.storage === "gpu") {
-          const bytes = await this.readPayloadBytes(location);
-          this.assertToken(token);
-          this.engine.historyGpuStorage.hydrate(candidate.slice, bytes);
+          await this.hydrateGpuPayloadFromStorage(
+            location,
+            candidate.slice,
+            () => this.assertToken(token),
+          );
           residenceChanged = true;
+          newlyHydrated.push(candidate);
         } else {
-          const compressed = await this.readColdSeed(location);
-          this.assertToken(token);
-          const restored = await restoreColdStorageResources(
-            this.engine,
-            compressed,
-            `Hydrate History locale · azione ${candidate.ownerActionId}`,
+          const restored = await this.restoreColdSeedFromStorage(
+            location,
+            candidate.ownerActionId,
+            () => this.assertToken(token),
           );
           try {
             this.assertToken(token);
             candidate.handle.attachResident(restored);
             residenceChanged = true;
+            newlyHydrated.push(candidate);
           } catch (error) {
             destroyLayerColdStorage(restored);
             throw error;
@@ -543,7 +922,9 @@ export class HistoryStorageCoordinator {
         );
         await yieldBrowserTurn();
       }
-      await this.engine.waitForGpuCapped("Hydrate cronologia locale", 60_000);
+      if (fenceAfterHydration) {
+        await this.engine.waitForGpuCapped("Hydrate cronologia locale", 60_000);
+      }
       this.assertToken(token);
       this.hydrationsCompleted += 1;
       this.ownershipEpoch += 1;
@@ -552,8 +933,51 @@ export class HistoryStorageCoordinator {
       this.hydrationFailures += 1;
       this.lastError = errorMessage(error);
       if (residenceChanged) {
-        this.ownershipEpoch += 1;
-        this.engine.historyStorageResidenceChanged();
+        // A multi-payload preflight is all-or-nothing as a cache operation.
+        // Earlier candidates are reconstructible from their durable copy; do
+        // not strand them resident merely because a later chunk failed.
+        let fenceCompleted = false;
+        try {
+          await this.engine.waitForGpuCapped(
+            "Rollback idratazione History locale",
+            60_000,
+          );
+          fenceCompleted = true;
+        } catch {
+          // Never free a binding or texture whose last GPU use is unknown.
+          // A later successful fenced trim may reclaim the quarantined cache.
+        }
+        if (fenceCompleted) {
+          const gpuSlices = newlyHydrated.flatMap((candidate) => (
+            candidate.storage === "gpu"
+            && this.engine.historyGpuStorage.contains(candidate.slice)
+            && this.engine.historyGpuStorage.isResident(candidate.slice)
+              ? [candidate.slice]
+              : []
+          ));
+          try {
+            this.engine.historyGpuStorage.prepareDemoteMany(gpuSlices).commitNoThrow();
+          } catch {
+            // reset/destroy may already have retired the same handles.
+          }
+          for (const candidate of newlyHydrated) {
+            if (candidate.storage !== "cold" || !candidate.handle.resident) continue;
+            const resident = candidate.handle.demoteResidentNoThrow();
+            try {
+              resident?.texture.destroy();
+            } catch {
+              // The stored payload remains authoritative.
+            }
+          }
+          this.engine.selectionHistoryClipBindGroups.clear();
+          try {
+            this.engine.historyGpuStorage.trimEmptyPages(false);
+          } catch {
+            // Engine destruction already reclaimed allocator ownership.
+          }
+          this.ownershipEpoch += 1;
+          this.engine.historyStorageResidenceChanged();
+        }
       }
       throw error;
     } finally {
@@ -583,33 +1007,87 @@ export class HistoryStorageCoordinator {
     }
   }
 
+  /** Reads durable rollback authority without materialising the full payload. */
+  private async verifyRequiredPayloadsForRollback(
+    required: readonly HistoryPayloadCandidate[],
+  ): Promise<void> {
+    const pending = required.filter((candidate) =>
+      this.storedPayloads.has(candidate.payloadId)
+    );
+    if (pending.length === 0) return;
+    await this.initializePromise;
+    if (!this.ready || this.storageBusy !== "idle") {
+      throw new Error("La cronologia locale non è disponibile per il rollback.");
+    }
+    const token = this.captureToken();
+    const totalBytes = pending.reduce((total, candidate) => total + candidate.rawBytes, 0);
+    let verifiedBytes = 0;
+    this.storageBusy = "hydrating";
+    this.engine.publishStatus(
+      `Verifica rollback locale… 0,0 / ${formatMiB(totalBytes)} MiB`,
+      "working",
+    );
+    try {
+      for (const candidate of pending) {
+        this.assertToken(token);
+        const location = this.storedPayloads.get(candidate.payloadId);
+        if (!location) throw new Error("Payload rollback locale non più disponibile.");
+        assertStoredPayloadCompatible(location.payload, candidate);
+        for (const chunk of [...location.payload.chunks].sort(
+          (left, right) => left.payloadChunkIndex - right.payloadChunkIndex,
+        )) {
+          this.assertToken(token);
+          const bytes = new Uint8Array(await this.readStoredChunk(location.segment, chunk));
+          this.assertToken(token);
+          await verifyStoredChunk(bytes, chunk);
+          if (candidate.storage === "gpu") {
+            if (chunk.codec !== "raw" || historyHash32(bytes) !== chunk.rawHash32) {
+              throw new Error("Hash raw del payload rollback locale non valido.");
+            }
+          } else {
+            // Stored SHA alone cannot prove that a cold checkpoint remains
+            // decompressible. Exercise the exact decompressor and raw hash now,
+            // before a destructive operation can need this seed for rollback.
+            await decompressLayerColdChunk(this.engine, {
+              storage: chunk.codec,
+              bytes: exactArrayBuffer(bytes),
+              rawBytes: chunk.rawBytes,
+              storedBytes: chunk.storedBytes,
+              sourceHash: chunk.rawHash32,
+            });
+          }
+          this.assertToken(token);
+          await yieldBrowserTurn();
+        }
+        this.assertToken(token);
+        verifiedBytes += candidate.rawBytes;
+        this.engine.publishStatus(
+          `Verifica rollback locale… ${formatMiB(verifiedBytes)} / `
+          + `${formatMiB(totalBytes)} MiB`,
+          "working",
+        );
+      }
+    } catch (error) {
+      this.lastError = errorMessage(error);
+      throw error;
+    } finally {
+      this.storageBusy = "idle";
+    }
+  }
+
   /**
    * Keeps deep navigation byte-bounded. Rehydrated payloads are replay inputs,
    * not live document state, so after the caller's GPU fence every durable
-   * resident copy outside a small adjacent-step working set can be demoted.
+   * resident copy can be demoted immediately; there is no adjacent hot cache.
    */
-  trimHydratedWorkingSetAfterStep(preferredDelta: -1 | 1): boolean {
+  trimHydratedWorkingSetAfterStep(_preferredDelta: -1 | 1): boolean {
     if (this.storageBusy !== "idle" || this.destroyed) return false;
     this.wrapAllHistorySeeds();
-    const protectedPayloadIds = new Set<string>();
-    const workingSetBudget = historyStorageMaximumSegmentBytes(MOBILE_DEVICE_CLASS);
-    let protectedBytes = 0;
-    for (const delta of [preferredDelta, preferredDelta === -1 ? 1 : -1] as const) {
-      for (const candidate of this.payloadsRequiredForStep(delta)) {
-        if (
-          protectedPayloadIds.has(candidate.payloadId)
-          || !this.storedPayloads.has(candidate.payloadId)
-          || protectedBytes + candidate.rawBytes > workingSetBudget
-        ) {
-          continue;
-        }
-        protectedPayloadIds.add(candidate.payloadId);
-        protectedBytes += candidate.rawBytes;
-      }
-    }
+    // History V2 deliberately has no adjacent-step hot cache. OPFS remains
+    // authoritative and every reconstructible hydration is released after the
+    // replay fence, including the payload just crossed by Undo/Redo.
     const candidates = this.collectPayloadCandidates().filter((candidate) =>
       this.storedPayloads.has(candidate.payloadId)
-      && !protectedPayloadIds.has(candidate.payloadId)
       && (candidate.storage === "gpu"
         ? this.engine.historyGpuStorage.isResident(candidate.slice)
         : candidate.handle.resident)
@@ -630,7 +1108,7 @@ export class HistoryStorageCoordinator {
       }
     }
     this.engine.selectionHistoryClipBindGroups.clear();
-    this.engine.historyGpuStorage.trimEmptyPages(true);
+    this.engine.historyGpuStorage.trimEmptyPages(false);
     this.ownershipEpoch += 1;
     this.engine.historyStorageResidenceChanged();
     return true;
@@ -931,12 +1409,10 @@ export class HistoryStorageCoordinator {
           plan.actionIds.join(","),
           failureName,
         ].join(":");
-        if (failureSignature === this.lastSpillFailureSignature) {
-          this.consecutiveSpillFailures += 1;
-        } else {
-          this.lastSpillFailureSignature = failureSignature;
-          this.consecutiveSpillFailures = 1;
-        }
+        this.lastSpillFailureSignature = failureSignature;
+        // Bound retries per backend, not per error name. Browsers may alternate
+        // AbortError/UnknownError for the same broken storage authority.
+        this.consecutiveSpillFailures += 1;
         this.lastError = errorMessage(error);
       }
       if (!manifestCommitted) {
@@ -959,9 +1435,9 @@ export class HistoryStorageCoordinator {
         return "backend-fallback";
       }
       if (!interrupted && (isQuotaError(error) || this.consecutiveSpillFailures >= 3)) {
-        // Do not livelock idle maintenance above the hard RAM budget. Once the
-        // durable path has failed repeatedly, retention may fall back to its
-        // byte-bounded in-memory policy for this disposable session.
+        // Do not livelock idle maintenance with non-durable resident payloads.
+        // The maintenance owner observes writable=false and fails closed by
+        // retiring History while preserving the live document artwork.
         this.writable = false;
       }
       return "none";
@@ -1265,7 +1741,7 @@ export class HistoryStorageCoordinator {
       retentionStrategy: HISTORY_RETENTION_STRATEGY,
       segmentSchemaVersion: 1,
       codecVersion: 1,
-      engineBuildId: "history-local-spill-v1",
+      engineBuildId: "history-local-disk-first-streaming-v2",
     };
   }
 
@@ -1469,20 +1945,25 @@ export class HistoryStorageCoordinator {
     if (!crossed) return [];
 
     if (
-      crossed.kind === "vector-rasterize"
-      || crossed.kind === "raster-import"
-      || crossed.kind === "layer-add"
-      || crossed.kind === "raster-transform"
+      crossed.kind === "raster-transform"
       || crossed.kind === "raster-filter"
+      || crossed.kind === "layer-add"
+      || (delta > 0 && (
+        crossed.kind === "vector-rasterize"
+        || crossed.kind === "raster-import"
+      ))
     ) {
       addSeed(crossed.seed);
     } else if (crossed.kind === "layer-delete") {
       for (const entry of crossed.entries) addSeed(entry.seed);
     } else if (crossed.kind === "layer-merge") {
-      for (const input of crossed.inputs) {
-        if (input.kind === "raster") addSeed(input.entry.seed);
+      if (delta < 0) {
+        for (const input of crossed.inputs) {
+          if (input.kind === "raster") addSeed(input.entry.seed);
+        }
+      } else {
+        addSeed(crossed.output.seed);
       }
-      addSeed(crossed.output.seed);
     }
     if (crossed.kind === "raster-transform") {
       addSnapshot(crossed.selectionBefore);
@@ -1576,66 +2057,119 @@ export class HistoryStorageCoordinator {
     return handle;
   }
 
-  private async readPayloadBytes(location: StoredPayloadLocation): Promise<Uint8Array> {
+  private async hydrateGpuPayloadFromStorage(
+    location: StoredPayloadLocation,
+    slice: GpuHistorySlice,
+    assertCurrent: () => void,
+  ): Promise<void> {
     const payload = location.payload;
-    if (payload.rawBytes > MAX_DESCRIPTOR_BYTES) throw new Error("Payload History troppo grande.");
-    const output = new Uint8Array(payload.rawBytes);
-    let offset = 0;
-    for (const chunk of [...payload.chunks].sort(
-      (left, right) => left.payloadChunkIndex - right.payloadChunkIndex,
-    )) {
-      if (chunk.codec !== "raw") {
-        throw new Error("Codec compresso inatteso per una slice GPU History.");
-      }
-      const bytes = new Uint8Array(await this.readStoredChunk(location.segment, chunk));
-      await verifyStoredChunk(bytes, chunk);
-      if (historyHash32(bytes) !== chunk.rawHash32) {
-        throw new Error("Hash raw della slice History non valido.");
-      }
-      if (offset + bytes.byteLength > output.byteLength) {
-        throw new Error("Chunk slice History oltre la lunghezza dichiarata.");
-      }
-      output.set(bytes, offset);
-      offset += bytes.byteLength;
+    if (payload.rawBytes > HISTORY_STORAGE_MAXIMUM_DESCRIPTOR_BYTES) {
+      throw new Error("Payload History troppo grande.");
     }
-    if (offset !== output.byteLength) throw new Error("Payload slice History incompleto.");
-    return output;
+    if (payload.rawBytes !== slice.logicalBytes) {
+      throw new Error("Payload History GPU incompatibile con la slice destinazione.");
+    }
+    const hydration = this.engine.historyGpuStorage.beginHydration(slice);
+    let payloadOffset = 0;
+    try {
+      for (const chunk of [...payload.chunks].sort(
+        (left, right) => left.payloadChunkIndex - right.payloadChunkIndex,
+      )) {
+        assertCurrent();
+        if (chunk.codec !== "raw") {
+          throw new Error("Codec compresso inatteso per una slice GPU History.");
+        }
+        const bytes = new Uint8Array(await this.readStoredChunk(location.segment, chunk));
+        assertCurrent();
+        await verifyStoredChunk(bytes, chunk);
+        assertCurrent();
+        if (historyHash32(bytes) !== chunk.rawHash32) {
+          throw new Error("Hash raw della slice History non valido.");
+        }
+        if (payloadOffset + bytes.byteLength > payload.rawBytes) {
+          throw new Error("Chunk slice History oltre la lunghezza dichiarata.");
+        }
+        for (let sourceOffset = 0; sourceOffset < bytes.byteLength;) {
+          const length = Math.min(
+            GPU_HISTORY_HYDRATION_CHUNK_BYTES,
+            bytes.byteLength - sourceOffset,
+          );
+          hydration.writeChunk(payloadOffset, bytes, sourceOffset, length);
+          sourceOffset += length;
+          payloadOffset += length;
+        }
+      }
+      if (payloadOffset !== payload.rawBytes) {
+        throw new Error("Payload slice History incompleto.");
+      }
+      assertCurrent();
+      hydration.commit();
+    } catch (error) {
+      hydration.rollbackNoThrow();
+      throw error;
+    }
   }
 
-  private async readColdSeed(
+  private async restoreColdSeedFromStorage(
     location: StoredPayloadLocation,
-  ): Promise<LayerCompressedColdStorageResources> {
+    ownerActionId: number,
+    assertCurrent: () => void,
+  ): Promise<LayerColdStorageResources> {
+    const metadata = this.coldSeedMetadata(location);
+    return await restoreColdStorageResourcesFromChunkStream(this.engine, {
+      tileIndices: [...metadata.tileIndices],
+      rawBytes: metadata.rawBytes,
+      sourceHash: metadata.sourceHash,
+      generation: metadata.generation,
+      format: metadata.format,
+    }, this.readColdSeedChunksFromStorage(
+      location,
+      assertCurrent,
+    ), `Hydrate History locale · azione ${ownerActionId}`);
+  }
+
+  private coldSeedMetadata(location: StoredPayloadLocation) {
     const metadata = location.payload.coldSeed;
     if (!metadata) throw new Error("Metadata cold seed History assenti.");
-    const chunks: LayerColdCompressedChunk[] = [];
-    let storedBytes = 0;
-    for (const descriptor of [...location.payload.chunks].sort(
+    if (
+      metadata.rawBytes !== location.payload.rawBytes
+      || location.payload.rawBytes > HISTORY_STORAGE_MAXIMUM_DESCRIPTOR_BYTES
+    ) {
+      throw new Error("Dimensione cold seed History non valida.");
+    }
+    return metadata;
+  }
+
+  private async *readColdSeedChunksFromStorage(
+    location: StoredPayloadLocation,
+    assertCurrent: () => void,
+  ): AsyncGenerator<LayerColdCompressedChunk> {
+    const descriptors = [...location.payload.chunks].sort(
       (left, right) => left.payloadChunkIndex - right.payloadChunkIndex,
-    )) {
-      const bytes = new Uint8Array(await this.readStoredChunk(location.segment, descriptor));
+    );
+    let storedBytes = 0;
+    for (const descriptor of descriptors) {
+      assertCurrent();
+      const bytes = new Uint8Array(
+        await this.readStoredChunk(location.segment, descriptor),
+      );
+      assertCurrent();
       await verifyStoredChunk(bytes, descriptor);
-      chunks.push({
+      assertCurrent();
+      storedBytes += descriptor.storedBytes;
+      // The ArrayBuffer is owned by this one-shot stream. The decompressor may
+      // release it as soon as the corresponding GPU upload is queued.
+      yield {
         storage: descriptor.codec,
         bytes: exactArrayBuffer(bytes),
         rawBytes: descriptor.rawBytes,
         storedBytes: descriptor.storedBytes,
         sourceHash: descriptor.rawHash32,
-      });
-      storedBytes += descriptor.storedBytes;
+      };
     }
     if (storedBytes !== location.payload.storedBytes) {
       throw new Error("Cold seed History incompleto.");
     }
-    return {
-      tileIndices: [...metadata.tileIndices],
-      chunks,
-      rawBytes: metadata.rawBytes,
-      storedBytes,
-      sourceHash: metadata.sourceHash,
-      generation: metadata.generation,
-      encodeMs: 0,
-      format: metadata.format,
-    };
   }
 
   private async readStoredChunk(
@@ -1993,9 +2527,9 @@ function assertSegmentDescriptor(
     descriptor.payloads.length > MAX_DESCRIPTOR_PAYLOADS
     || descriptor.chunkCount > MAX_DESCRIPTOR_CHUNKS
     || descriptor.rawBytes < 0
-    || descriptor.rawBytes > MAX_DESCRIPTOR_BYTES
+    || descriptor.rawBytes > HISTORY_STORAGE_MAXIMUM_DESCRIPTOR_BYTES
     || descriptor.storedBytes < 0
-    || descriptor.storedBytes > MAX_DESCRIPTOR_BYTES
+    || descriptor.storedBytes > HISTORY_STORAGE_MAXIMUM_DESCRIPTOR_BYTES
   ) {
     throw new Error("Descriptor History locale oltre i limiti ammessi.");
   }
@@ -2048,6 +2582,10 @@ function assertStoredPayloadCompatible(
     payload.serializerId !== "cold-seed-v1"
     || payload.coldSeed?.format !== candidate.handle.format
     || payload.coldSeed.generation !== candidate.handle.generation
+    || payload.coldSeed.tileIndices.length !== candidate.handle.tileIndices.length
+    || payload.coldSeed.tileIndices.some(
+      (tile, index) => tile !== candidate.handle.tileIndices[index],
+    )
   ) {
     throw new Error("ABI del seed History locale incompatibile.");
   }

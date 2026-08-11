@@ -6369,7 +6369,14 @@ async function prepareBlendBenchmarkBackground(replaySettings: BrushSettings): P
       const y = engine.layerSize * index / (palette.length - 1);
       const timeMs = index * 10;
       engine.setBrushSettings({ ...backgroundSettings, color: palette[index] });
-      engine.beginStrokeAtLayer({ x: 0, y, pressure: 1, timeMs });
+      if (!await engine.beginStrokeAtLayerAfterHistoryDrain({
+        x: 0,
+        y,
+        pressure: 1,
+        timeMs,
+      })) {
+        throw new Error("Impossibile iniziare il tratto dello sfondo benchmark.");
+      }
       engine.extendStrokeAtLayer([
         { x: engine.layerSize, y, pressure: 1, timeMs: timeMs + 1 },
       ]);
@@ -13838,7 +13845,9 @@ async function replayHumanStroke(
 
     engine.startStrokePerformanceProfile();
     const initialDispatchStart = performance.now();
-    engine.beginStrokeAtLayer(benchmark.points[0]);
+    if (!await engine.beginStrokeAtLayerAfterHistoryDrain(benchmark.points[0])) {
+      throw new Error("Impossibile iniziare la riproduzione del tratto benchmark.");
+    }
     layerInputDispatchMs.push(performance.now() - initialDispatchStart);
 
     await new Promise<void>((resolve) => {

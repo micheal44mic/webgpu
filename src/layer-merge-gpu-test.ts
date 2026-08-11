@@ -232,7 +232,9 @@ async function drawTap(
     positionJitterLateral: 0,
     positionJitterLinear: 0,
   });
-  engine.beginStrokeAtLayer({ x, y, pressure: 1, timeMs });
+  if (!await engine.beginStrokeAtLayerAfterHistoryDrain({ x, y, pressure: 1, timeMs })) {
+    throw new Error("Tratto merge GPU rifiutato dal gate History.");
+  }
   engine.extendStrokeAtLayer([{ x: x + 1, y, pressure: 1, timeMs: timeMs + 16 }]);
   engine.endStroke(timeMs + 16);
   await engine.waitForIdle();

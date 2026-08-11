@@ -14,6 +14,10 @@ import {
   visibleRasterBatchActionIdsAfterCheckpoint,
   visibleStrokeIds,
 } from "../src/history-journal.ts";
+import {
+  ACTIVE_STROKE_HISTORY_PAYLOAD_LIMIT_BYTES,
+  reserveActiveStrokeHistoryPayload,
+} from "../src/engine-stroke-types.ts";
 
 assert.equal(
   HISTORY_JOURNAL_STRATEGY,
@@ -72,6 +76,42 @@ const layerMerge = (
   },
   payloadsRetiredBelowFloor,
 });
+
+// Un gesto interattivo non può aspettare lo spill idle: il suo payload deve
+// avere un limite locale applicato prima di qualsiasi mutazione dei pixel.
+{
+  assert.equal(ACTIVE_STROKE_HISTORY_PAYLOAD_LIMIT_BYTES, 2 * 1024 * 1024);
+  const exact = {
+    historyPayloadBytes: ACTIVE_STROKE_HISTORY_PAYLOAD_LIMIT_BYTES - 32,
+    historyCaptureLimitReached: false,
+  };
+  assert.equal(reserveActiveStrokeHistoryPayload(exact, 32), "accepted-at-limit");
+  assert.deepEqual(exact, {
+    historyPayloadBytes: ACTIVE_STROKE_HISTORY_PAYLOAD_LIMIT_BYTES,
+    historyCaptureLimitReached: true,
+  });
+  assert.equal(reserveActiveStrokeHistoryPayload(exact, 32), "rejected");
+  assert.equal(
+    exact.historyPayloadBytes,
+    ACTIVE_STROKE_HISTORY_PAYLOAD_LIMIT_BYTES,
+    "un elemento Paint successivo al limite non deve ottenere byte né pixel",
+  );
+
+  const overflow = {
+    historyPayloadBytes: ACTIVE_STROKE_HISTORY_PAYLOAD_LIMIT_BYTES - 128,
+    historyCaptureLimitReached: false,
+  };
+  assert.equal(reserveActiveStrokeHistoryPayload(overflow, 256), "rejected-at-limit");
+  assert.deepEqual(overflow, {
+    historyPayloadBytes: ACTIVE_STROKE_HISTORY_PAYLOAD_LIMIT_BYTES - 128,
+    historyCaptureLimitReached: true,
+  }, "una geometry Blend deve essere accettata per intero oppure non renderizzata");
+  assert.equal(reserveActiveStrokeHistoryPayload(overflow, 64), "rejected");
+  assert.throws(() => reserveActiveStrokeHistoryPayload({
+    historyPayloadBytes: 0,
+    historyCaptureLimitReached: false,
+  }, 0), /positivo/);
+}
 
 // With one layer the module must reproduce the engine's current behaviour
 // exactly: scan back to the most recent clear, everything after it is visible.
@@ -492,14 +532,34 @@ const layerMerge = (
 // restano soltanto metadati piccoli per l'ordine globale e il replay.
 {
   globalThis.GPUBufferUsage ??= { COPY_SRC: 1, COPY_DST: 2, STORAGE: 4 };
-  const { GPU_HISTORY_PAGE_BYTES, GpuHistoryStorage } = await import(
+  const {
+    GPU_HISTORY_HYDRATION_CHUNK_BYTES,
+    GPU_HISTORY_PAGE_BYTES,
+    GpuHistoryStorage,
+  } = await import(
     "../src/gpu-history-storage.ts"
   );
   const buffers = [];
+  const writeCalls = [];
+  let failNextWrite = false;
   const device = {
+    queue: {
+      writeBuffer(buffer, bufferOffset, data, dataOffset = 0, size) {
+        if (failNextWrite) {
+          failNextWrite = false;
+          throw new Error("simulated queue write failure");
+        }
+        const source = data instanceof Uint8Array ? data : new Uint8Array(data);
+        const copyBytes = size ?? (source.byteLength - dataOffset);
+        const snapshot = source.slice(dataOffset, dataOffset + copyBytes);
+        buffer.contents.set(snapshot, bufferOffset);
+        writeCalls.push({ buffer, bufferOffset, bytes: snapshot });
+      },
+    },
     createBuffer(descriptor) {
       const buffer = {
         descriptor,
+        contents: new Uint8Array(descriptor.size),
         destroyed: false,
         destroy() {
           this.destroyed = true;
@@ -559,7 +619,7 @@ const layerMerge = (
   );
   assert.equal(storage.releaseMany([atomicFirst, atomicLast]), 2);
 
-  const demoted = storage.allocate(20, "stored-only-handle");
+  const demoted = storage.allocate(11, "stored-only-handle");
   const preparedDemotion = storage.prepareDemoteMany([demoted]);
   assert.equal(preparedDemotion.sliceCount, 1);
   assert.equal(preparedDemotion.commitNoThrow(), 1);
@@ -569,6 +629,114 @@ const layerMerge = (
     /non reidratata/,
     "un replay senza preflight hydrate deve fallire prima di leggere un buffer morto",
   );
+
+  const storedOnlyStats = storage.stats();
+  const incompleteHydration = storage.beginHydration(demoted);
+  assert.equal(incompleteHydration.logicalBytes, 11);
+  assert.equal(incompleteHydration.writtenBytes, 0);
+  assert.equal(incompleteHydration.remainingBytes, 11);
+  assert.equal(storage.isResident(demoted), false);
+  assert.deepEqual(storage.stats(), {
+    ...storedOnlyStats,
+    usedLogicalBytes: storedOnlyStats.usedLogicalBytes + 11,
+    usedReservedBytes: storedOnlyStats.usedReservedBytes + 12,
+    freeBytes: storedOnlyStats.freeBytes - 12,
+  }, "una binding pending conta fisicamente ma non incrementa sliceCount");
+  const oneBindingStats = storage.stats();
+  assert.throws(
+    () => storage.beginHydration(demoted),
+    /già in corso/,
+    "una slice stored-only può riservare una sola binding di hydration",
+  );
+  assert.deepEqual(storage.stats(), oneBindingStats);
+
+  incompleteHydration.writeChunk(0, new Uint8Array([99, 1, 2, 3, 99]), 1, 3);
+  assert.equal(incompleteHydration.writtenBytes, 3);
+  assert.equal(incompleteHydration.remainingBytes, 8);
+  assert.throws(
+    () => incompleteHydration.writeChunk(2, new Uint8Array([4])),
+    /gap o overlap/,
+    "un overlap deve essere rifiutato prima dell'upload",
+  );
+  assert.throws(
+    () => incompleteHydration.writeChunk(4, new Uint8Array([4])),
+    /gap o overlap/,
+    "un gap deve essere rifiutato prima dell'upload",
+  );
+  assert.throws(
+    () => incompleteHydration.commit(),
+    /copertura 3 B, attesi 11 B/,
+    "una copertura parziale non deve mai pubblicare la binding",
+  );
+  assert.equal(storage.isResident(demoted), false);
+  assert.throws(
+    () => storage.release(demoted),
+    /idratazione in corso/,
+    "la ownership non può cambiare sotto una hydration attiva",
+  );
+  assert.equal(incompleteHydration.rollbackNoThrow(), true);
+  assert.equal(incompleteHydration.rollbackNoThrow(), false, "rollback è no-throw e idempotente");
+  assert.deepEqual(storage.stats(), storedOnlyStats, "rollback deve restituire tutta la binding");
+
+  const successfulHydration = storage.beginHydration(demoted);
+  const hydrationWriteStart = writeCalls.length;
+  successfulHydration.writeChunk(0, new Uint8Array([99, 1, 2, 3, 99]), 1, 3);
+  successfulHydration.writeChunk(3, new Uint8Array([4, 5, 6, 7, 8]), 0, 5);
+  successfulHydration.writeChunk(8, new Uint8Array([9, 10, 11, 99]), 0, 3);
+  assert.equal(successfulHydration.writtenBytes, 11);
+  assert.equal(successfulHydration.remainingBytes, 0);
+  assert.equal(storage.isResident(demoted), false, "payload completo ma non committato resta privato");
+  assert.throws(() => demoted.buffer, /non reidratata/);
+  const hydrationWrites = writeCalls.slice(hydrationWriteStart);
+  assert.deepEqual(
+    hydrationWrites.map((write) => write.bytes.byteLength),
+    [4, 4, 4],
+    "confini non allineati usano soltanto write WebGPU da quattro byte",
+  );
+  assert.deepEqual(
+    [...hydrationWrites.at(-1).bytes],
+    [9, 10, 11, 0],
+    "il chunk finale aggiunge al massimo i tre byte di padding necessari",
+  );
+  const preCommitStats = storage.stats();
+  successfulHydration.commit();
+  assert.equal(storage.isResident(demoted), true);
+  assert.equal(storage.stats().sliceCount, storedOnlyStats.sliceCount + 1);
+  assert.equal(storage.stats().usedLogicalBytes, preCommitStats.usedLogicalBytes);
+  assert.equal(storage.stats().usedReservedBytes, preCommitStats.usedReservedBytes);
+  assert.deepEqual(
+    [...demoted.buffer.contents.slice(demoted.offsetBytes, demoted.offsetBytes + 12)],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0],
+  );
+  assert.equal(successfulHydration.rollbackNoThrow(), false);
+
+  assert.equal(storage.prepareDemoteMany([demoted]).commitNoThrow(), 1);
+  assert.deepEqual(storage.stats(), storedOnlyStats);
+  const failedHydration = storage.beginHydration(demoted);
+  failNextWrite = true;
+  assert.throws(
+    () => failedHydration.writeChunk(0, new Uint8Array([1, 2, 3, 4])),
+    /simulated queue write failure/,
+  );
+  assert.throws(
+    () => failedHydration.writeChunk(0, new Uint8Array([1, 2, 3, 4])),
+    /rollback richiesto/,
+    "una write parzialmente fallita non è ritentabile sulla stessa binding",
+  );
+  assert.equal(failedHydration.rollbackNoThrow(), true);
+  assert.deepEqual(storage.stats(), storedOnlyStats);
+  assert.equal(GPU_HISTORY_HYDRATION_CHUNK_BYTES, 1024 * 1024);
+  const boundedHydration = storage.beginHydration(demoted);
+  assert.throws(
+    () => boundedHydration.writeChunk(
+      0,
+      new Uint8Array(GPU_HISTORY_HYDRATION_CHUNK_BYTES + 1),
+    ),
+    /oltre il limite/,
+    "la transazione deve imporre un limite CPU indipendente dal payload totale",
+  );
+  assert.equal(boundedHydration.rollbackNoThrow(), true);
+  assert.deepEqual(storage.stats(), storedOnlyStats);
   assert.equal(storage.release(demoted), true, "un handle stored-only resta ritirabile");
   assert.throws(
     () => storage.allocate(4, "bad-alignment", 24),
@@ -616,6 +784,10 @@ const layerMerge = (
     new URL("../src/engine-raster-transform-runtime.ts", import.meta.url),
     "utf8",
   );
+  const strokeRuntime = readFileSync(
+    new URL("../src/engine-runtime-misc.ts", import.meta.url),
+    "utf8",
+  );
   const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
   const effectsSheet = readFileSync(
@@ -651,6 +823,102 @@ const layerMerge = (
   );
   assert(engine.includes("historyGpuMiB,"));
   assert(engine.includes("historyGpuUsedMiB,"));
+  const activeStrokeInitialization = brushEngine.slice(
+    brushEngine.indexOf("    this.activeStroke = {"),
+    brushEngine.indexOf("    if (stabilizer && this.activeStrokeProfile)"),
+  );
+  assert(activeStrokeInitialization.includes("historyPayloadBytes: 0"));
+  assert(activeStrokeInitialization.includes("historyCaptureLimitReached: false"));
+  assert.match(
+    brushEngine.slice(
+      brushEngine.indexOf("  extendStrokeAtLayer("),
+      brushEngine.indexOf("  endStroke("),
+    ),
+    /historyCaptureLimitReached[\s\S]*?return;[\s\S]*?for \(const point of points\)[\s\S]*?historyCaptureLimitReached[\s\S]*?break;/,
+    "il cap deve fermare anche il resto dello stesso evento coalesced",
+  );
+
+  const paintEmit = strokeRuntime.slice(
+    strokeRuntime.indexOf("export function emitStamp("),
+    strokeRuntime.indexOf("export async function waitForRenderPump("),
+  );
+  const heldReserve = paintEmit.indexOf("reserveRenderableActiveStrokeHistoryPayload(");
+  assert(heldReserve >= 0, "la coda thickness deve prenotare il proprio Stamp");
+  assert(
+    heldReserve < paintEmit.indexOf("stroke.heldThicknessStamps.push(")
+      && heldReserve < paintEmit.indexOf("engine.requestRender()"),
+    "la preview thickness non può vedere uno Stamp non prenotato",
+  );
+  assert.match(
+    paintEmit,
+    /historyCaptureLimitReached[\s\S]*?return;[\s\S]*?historyPayloadReserved = true;[\s\S]*?heldThicknessStamps\.push/,
+  );
+
+  const paintCommit = strokeRuntime.slice(
+    strokeRuntime.indexOf("export function commitThicknessStamp("),
+    strokeRuntime.indexOf("export function applyViewRotation("),
+  );
+  const paintReserve = paintCommit.indexOf("reserveRenderableActiveStrokeHistoryPayload(");
+  assert(paintReserve >= 0, "Paint deve prenotare il payload del gesto");
+  assert(
+    paintReserve < paintCommit.indexOf("engine.historyActions.push(")
+      && paintReserve < paintCommit.indexOf("engine.pendingStamps.push(stamp)"),
+    "Paint deve rifiutare lo Stamp prima di pubblicare azione o pixel",
+  );
+  assert(paintCommit.includes("STAMP_STRIDE_BYTES"));
+  assert.match(
+    paintCommit,
+    /!stamp\.historyPayloadReserved[\s\S]*?reserveRenderableActiveStrokeHistoryPayload/,
+    "il rilascio thickness non deve contare due volte uno Stamp già prenotato",
+  );
+
+  const stabilizationTail = brushEngine.slice(
+    brushEngine.indexOf("  private prepareStabilizationTailFrame("),
+    brushEngine.indexOf("  thicknessTailPreviewEligible("),
+  );
+  assert.match(
+    stabilizationTail,
+    /historyCaptureLimitReached[\s\S]*?return null;/,
+    "la coda stabilizzata non prenotata deve essere ripristinata, non ridisegnata, dopo il cap",
+  );
+
+  const blendDrain = strokeRuntime.slice(
+    strokeRuntime.indexOf("export function drainBlendPlanner("),
+    strokeRuntime.indexOf("export function applyRasterStrokeStyle("),
+  );
+  const blendReserve = blendDrain.indexOf("reserveRenderableActiveStrokeHistoryPayload(");
+  assert(blendReserve >= 0, "Blend deve prenotare la geometry completa");
+  assert(
+    blendReserve < blendDrain.indexOf("engine.historyActions.push(")
+      && blendReserve < blendDrain.indexOf("engine.pendingBlendBatches.push("),
+    "Blend deve rifiutare la geometry prima di pubblicare azione o pixel",
+  );
+  assert.match(
+    blendDrain,
+    /historyUniformBytes\(\[batch\]\)[\s\S]*?planner\.discardPending\(\);[\s\S]*?break;/,
+  );
+  const blendLift = brushEngine.slice(
+    brushEngine.indexOf("  endStroke("),
+    brushEngine.indexOf("  cancelStrokeBeforeRender("),
+  );
+  assert.match(
+    blendLift,
+    /tool === "blend"[\s\S]*?if \(!endingStroke\.historyCaptureLimitReached\)[\s\S]*?blendPlanner\?\.finish\(\);[\s\S]*?drainBlendPlanner/,
+    "il lift non deve rifinire un planner Blend già scartato dal cap",
+  );
+  const limitNotification = strokeRuntime.slice(
+    strokeRuntime.indexOf("function reserveRenderableActiveStrokeHistoryPayload("),
+    strokeRuntime.indexOf("export async function finishStaticResourceCreation("),
+  );
+  assert.equal(
+    limitNotification.match(/publishStatus\(/g)?.length,
+    1,
+    "il passaggio al cap deve pubblicare una sola notifica",
+  );
+  assert.match(
+    limitNotification,
+    /accepted-at-limit[\s\S]*rejected-at-limit[\s\S]*Limite sicuro cronologia/,
+  );
   assert(engine.includes("historyGpuPageCount: historyGpu.pageCount"));
   assert(engine.includes("selectionRevisionsToRelease"));
   assert(engine.includes("releaseSlicePhase("));
@@ -665,6 +933,34 @@ const layerMerge = (
   );
   assert(beginStroke.includes("return false;"));
   assert(beginStroke.includes("return true;"));
+  const storageBackpressure = beginStroke.indexOf(
+    "this.admitHistoryPayloadMutation()",
+  );
+  assert(
+    storageBackpressure >= 0
+      && storageBackpressure < beginStroke.indexOf("capturePaintSelectionHistoryMask("),
+    "un nuovo gesto deve attendere lo spill precedente prima di acquisire payload o pixel",
+  );
+  const mutationAdmission = brushEngine.slice(
+    brushEngine.indexOf("  admitHistoryPayloadMutation(): boolean"),
+    brushEngine.indexOf("  /**\n   * Cancella un livello", brushEngine.indexOf("  admitHistoryPayloadMutation(): boolean")),
+  );
+  assert(
+    mutationAdmission.indexOf("flushPendingWorkBeforeSettingsChange(this)")
+      < mutationAdmission.indexOf("this.historyLocalStorage.residentPayloadBytes()"),
+    "il debito pending deve diventare visibile prima del controllo di residenza",
+  );
+  assert(
+    mutationAdmission.indexOf('storage.busy !== "idle"')
+      < mutationAdmission.indexOf("this.historyLocalStorage.residentPayloadBytes()"),
+    "uno spill attivo deve bloccare senza attraversare ownership mutabile",
+  );
+  assert(mutationAdmission.includes("if (residentBytes === 0) return true;"));
+  assert.match(
+    mutationAdmission,
+    /if \(residentBytes === 0\) return true;[\s\S]*?this\.resumeHistoryStorageMaintenance\(\);/,
+    "solo un payload idle ma residente deve ripianificare la demotion",
+  );
   assert(
     beginStroke.indexOf("capturePaintSelectionHistoryMask(this, historyActionId)") >= 0
       && beginStroke.indexOf("capturePaintSelectionHistoryMask(this, historyActionId)")

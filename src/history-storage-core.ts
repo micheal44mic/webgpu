@@ -18,10 +18,18 @@ export const HISTORY_STORAGE_MOBILE_MAXIMUM_SEGMENT_BYTES = 64 * 1024 * 1024;
 export const HISTORY_STORAGE_DESKTOP_MAXIMUM_SEGMENT_BYTES = 128 * 1024 * 1024;
 export const HISTORY_STORAGE_MOBILE_CHUNK_BYTES = 1024 * 1024;
 export const HISTORY_STORAGE_DESKTOP_CHUNK_BYTES = 2 * 1024 * 1024;
-export const HISTORY_STORAGE_KEEP_HOT_ACTIONS = 16;
+/**
+ * Disk-first means no completed action owns a deliberately resident payload.
+ * Undo depth is preserved by the durable copy, not by a GPU hot window.
+ */
+export const HISTORY_STORAGE_KEEP_HOT_ACTIONS = 0;
+/** Any positive resident History payload starts spill at the next fenced idle pass. */
+export const HISTORY_STORAGE_SPILL_HIGH_WATER_BYTES = 0;
 
 const MEBIBYTE_BYTES = 1024 * 1024;
 const GIBIBYTE_BYTES = 1024 * MEBIBYTE_BYTES;
+/** Aggregate descriptor bound; payload I/O remains independently chunked. */
+export const HISTORY_STORAGE_MAXIMUM_DESCRIPTOR_BYTES = 8 * GIBIBYTE_BYTES;
 
 export type HistoryStorageBackendKind =
   | "opfs-worker"
@@ -153,12 +161,12 @@ export interface HistorySegmentPlan {
 }
 
 /**
- * Converts a byte-bounded hot payload set into the cursor window expected by
- * the segment planner. The ordinary maximum preserves quick recent Undo, but
- * large import/transform actions can shrink the window to zero under pressure
- * instead of forcing destructive journal eviction.
+ * Compatibility seam for the segment coordinator. Disk-first storage has no
+ * adaptive hot window: every completed action is eligible, including the most
+ * recent one. Keeping the function makes the policy directly testable without
+ * duplicating it in the browser-storage runtime.
  */
-export function adaptiveHistoryStorageKeepHotActions(options: {
+export function adaptiveHistoryStorageKeepHotActions(_options: {
   readonly currentResidentBytes: number;
   readonly highWaterBytes: number;
   readonly hotPayloadBudgetBytes: number;
@@ -169,33 +177,7 @@ export function adaptiveHistoryStorageKeepHotActions(options: {
     "cursor" | "payloadBytes"
   >[];
 }): number {
-  const journalLength = Math.max(0, Math.trunc(options.journalLength));
-  const maximum = Math.min(
-    journalLength,
-    Math.max(0, Math.trunc(options.maximumHotActions ?? HISTORY_STORAGE_KEEP_HOT_ACTIONS)),
-  );
-  if (finiteNonNegative(options.currentResidentBytes) <= finiteNonNegative(options.highWaterBytes)) {
-    return maximum;
-  }
-  const hotBudget = finiteNonNegative(options.hotPayloadBudgetBytes);
-  const minimumCursor = Math.max(0, journalLength - maximum);
-  const recent = [...options.actions]
-    .filter((action) => (
-      action.cursor >= minimumCursor
-      && action.cursor < journalLength
-      && action.payloadBytes > 0
-    ))
-    .sort((left, right) => right.cursor - left.cursor);
-  let bytes = 0;
-  let oldestProtectedCursor: number | null = null;
-  for (const action of recent) {
-    if (bytes + action.payloadBytes > hotBudget) break;
-    bytes += action.payloadBytes;
-    oldestProtectedCursor = action.cursor;
-  }
-  return oldestProtectedCursor === null
-    ? 0
-    : Math.min(maximum, journalLength - oldestProtectedCursor);
+  return HISTORY_STORAGE_KEEP_HOT_ACTIONS;
 }
 
 /**

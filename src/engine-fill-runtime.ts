@@ -130,6 +130,7 @@ export async function fillAtClientPoint(
     || engine.selectionBusy
     || engine.activeStroke
     || engine.activeVectorHistoryEdit
+    || engine.activeDestructiveRasterEditKind() !== null
   ) {
     return null;
   }
@@ -146,6 +147,7 @@ export async function fillAtClientPoint(
   if (seedX < 0 || seedY < 0 || seedX >= engine.layerSize || seedY >= engine.layerSize) {
     return null;
   }
+  if (!engine.admitHistoryPayloadMutation()) return null;
 
   engine.cancelLayerColdCompressionIdle();
   engine.invalidateAdaptivePreview();

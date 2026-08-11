@@ -707,15 +707,22 @@ async function hydrateHistorySeed(
     throw new Error("Texture hot del raster vettoriale storico mancante.");
   }
   try {
-    const encoder = engine.device.createCommandEncoder({
-      label: `Copia seed tiled raster vettoriale livello ${action.layerId}`,
-    });
-    encodeLayerColdHydration(encoder, action.seed, hot);
-    engine.device.queue.submit([encoder.finish()]);
-    await engine.waitForGpuCapped(
-      `Reidratazione raster vettoriale livello ${action.layerId}`,
-      60_000,
-    );
+    const streamed = await engine.historyLocalStorage
+      .streamStoredColdSeedIntoHot(action.seed, hot);
+    if (!streamed) {
+      const encoder = engine.device.createCommandEncoder({
+        label: `Copia seed tiled raster vettoriale livello ${action.layerId}`,
+      });
+      encodeLayerColdHydration(encoder, action.seed, hot);
+      engine.device.queue.submit([encoder.finish()]);
+      await engine.waitForGpuCapped(
+        `Reidratazione raster vettoriale livello ${action.layerId}`,
+        60_000,
+      );
+      if (engine.historyLocalStorage.demoteStoredLayerMergeSeed(action.seed)) {
+        engine.historyStorageResidenceChanged();
+      }
+    }
     return gpu;
   } catch (error) {
     destroyLayerGpuResources(engine, gpu);
@@ -765,6 +772,9 @@ export async function rasterizeVectorNodeToLayer(
         ? "Seleziona il testo da rasterizzare."
         : "Seleziona l’SVG da rasterizzare.",
     );
+  }
+  if (!engine.admitHistoryPayloadMutation()) {
+    throw new Error("Rasterizzazione rinviata durante il salvataggio della cronologia locale.");
   }
 
   const vectorKey = (sourceKind + ":" + sourceId) as MixedSceneVectorKey;
