@@ -8,11 +8,249 @@
     />
     <meta name="theme-color" content="#111318" />
     <link rel="icon" href="data:," />
+    <style id="startup-diagnostic-styles">
+      #startupDiagnostic[hidden] { display: none; }
+      #startupDiagnostic {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        display: flex;
+        box-sizing: border-box;
+        align-items: center;
+        justify-content: center;
+        overflow: auto;
+        padding: max(20px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right))
+          max(20px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
+        background: #0b0e14;
+        color: #f5f7fb;
+        font: 15px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      .startup-diagnostic-card {
+        width: min(100%, 620px);
+        box-sizing: border-box;
+        border: 1px solid #343b49;
+        border-radius: 18px;
+        padding: clamp(20px, 5vw, 32px);
+        background: #151a23;
+        box-shadow: 0 24px 80px rgb(0 0 0 / 45%);
+      }
+      .startup-diagnostic-eyebrow {
+        margin: 0 0 8px;
+        color: #ffb86b;
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: .12em;
+      }
+      .startup-diagnostic-card h1 { margin: 0 0 10px; font-size: clamp(24px, 7vw, 34px); }
+      .startup-diagnostic-card > p { margin: 0 0 18px; color: #c3cad7; }
+      .startup-diagnostic-grid { display: grid; gap: 8px; margin: 0 0 16px; }
+      .startup-diagnostic-grid div {
+        display: grid;
+        grid-template-columns: minmax(92px, .42fr) minmax(0, 1fr);
+        gap: 12px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: #0f131b;
+      }
+      .startup-diagnostic-grid dt { color: #8f9bad; }
+      .startup-diagnostic-grid dd { margin: 0; overflow-wrap: anywhere; font-weight: 700; }
+      .startup-diagnostic-error {
+        padding: 12px;
+        border: 1px solid #9f4d55;
+        border-radius: 10px;
+        background: #321c22;
+        color: #ffd7db;
+        overflow-wrap: anywhere;
+      }
+      .startup-diagnostic-error[hidden] { display: none; }
+      .startup-diagnostic-card details { margin: 16px 0; }
+      .startup-diagnostic-card summary { cursor: pointer; color: #c3cad7; }
+      .startup-diagnostic-card pre {
+        max-height: 210px;
+        overflow: auto;
+        margin: 10px 0 0;
+        padding: 12px;
+        border-radius: 10px;
+        background: #090c11;
+        color: #cbd3df;
+        font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .startup-diagnostic-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+      .startup-diagnostic-actions button {
+        min-height: 44px;
+        padding: 0 18px;
+        border: 0;
+        border-radius: 10px;
+        background: #f5f7fb;
+        color: #11151d;
+        font: inherit;
+        font-weight: 800;
+      }
+      .startup-diagnostic-actions span { color: #9da8b8; font-size: 13px; }
+    </style>
+    <script>
+      (function () {
+        var startedAt = Date.now();
+        var timeoutId = 0;
+        var refreshId = 0;
+        var shown = false;
+        var completed = false;
+        var state = {
+          phase: "Caricamento del modulo principale",
+          detail: "Il documento HTML è arrivato; attendo l'esecuzione dell'app.",
+          error: "",
+          marks: []
+        };
+
+        function elapsedSeconds() {
+          return Math.max(0, (Date.now() - startedAt) / 1000);
+        }
+
+        function setText(id, value) {
+          var node = document.getElementById(id);
+          if (node) node.textContent = value;
+        }
+
+        function describeError(value) {
+          if (value == null) return "Errore sconosciuto";
+          if (typeof value === "string") return value;
+          if (value.message) return String(value.message);
+          try { return JSON.stringify(value); } catch (_) { return String(value); }
+        }
+
+        function recordMark(phase, detail) {
+          state.phase = String(phase || "Fase non indicata");
+          state.detail = detail ? String(detail) : "";
+          state.marks.push({ at: elapsedSeconds(), phase: state.phase, detail: state.detail });
+          if (state.marks.length > 12) state.marks.shift();
+          if (shown) updatePanel();
+        }
+
+        function environmentReport() {
+          var memory = typeof navigator.deviceMemory === "number"
+            ? navigator.deviceMemory + " GiB indicati dal browser"
+            : "non disponibile";
+          var cores = typeof navigator.hardwareConcurrency === "number"
+            ? String(navigator.hardwareConcurrency)
+            : "non disponibile";
+          return [
+            "WebGPU API: " + (navigator.gpu ? "presente" : "assente"),
+            "Contesto HTTPS sicuro: " + (window.isSecureContext ? "sì" : "no"),
+            "Pagina online: " + (navigator.onLine ? "sì" : "no"),
+            "Stato documento: " + document.readyState + " / " + document.visibilityState,
+            "Memoria dispositivo: " + memory,
+            "Core logici: " + cores,
+            "Browser: " + navigator.userAgent
+          ].join("\n");
+        }
+
+        function updatePanel() {
+          if (!shown || completed) return;
+          setText("startupDiagnosticElapsed", elapsedSeconds().toFixed(1) + " s");
+          setText("startupDiagnosticPhase", state.phase);
+          var detailRow = document.getElementById("startupDiagnosticDetailRow");
+          if (detailRow) detailRow.hidden = !state.detail;
+          setText("startupDiagnosticDetail", state.detail || "—");
+          var errorNode = document.getElementById("startupDiagnosticError");
+          if (errorNode) errorNode.hidden = !state.error;
+          setText("startupDiagnosticErrorText", state.error || "—");
+          var timeline = [];
+          for (var index = 0; index < state.marks.length; index += 1) {
+            var mark = state.marks[index];
+            timeline.push(mark.at.toFixed(1) + " s · " + mark.phase
+              + (mark.detail ? " — " + mark.detail : ""));
+          }
+          setText("startupDiagnosticTimeline", timeline.join("\n") || "Nessuna fase registrata.");
+          setText("startupDiagnosticEnvironment", environmentReport());
+        }
+
+        function showPanel() {
+          if (completed) return;
+          shown = true;
+          var panel = document.getElementById("startupDiagnostic");
+          if (!panel) return;
+          panel.hidden = false;
+          updatePanel();
+          var retry = document.getElementById("startupDiagnosticRetry");
+          if (retry && !retry.getAttribute("data-bound")) {
+            retry.setAttribute("data-bound", "true");
+            retry.addEventListener("click", function () { window.location.reload(); });
+          }
+          refreshId = window.setInterval(updatePanel, 1000);
+        }
+
+        function recordFailure(error) {
+          state.error = describeError(error);
+          if (shown) updatePanel();
+        }
+
+        recordMark(state.phase, state.detail);
+        timeoutId = window.setTimeout(showPanel, 10000);
+
+        window.__WEBGPU_BRUSH_STARTUP__ = {
+          mark: recordMark,
+          fail: recordFailure,
+          ready: function () {
+            completed = true;
+            window.clearTimeout(timeoutId);
+            window.clearInterval(refreshId);
+            var panel = document.getElementById("startupDiagnostic");
+            if (panel) panel.hidden = true;
+          }
+        };
+
+        window.addEventListener("error", function (event) {
+          var target = event.target;
+          if (target && target !== window) {
+            var source = target.src || target.href || target.currentSrc || target.tagName;
+            recordFailure("Risorsa non caricata: " + source);
+            return;
+          }
+          var locationHint = event.filename
+            ? " (" + event.filename + ":" + event.lineno + ":" + event.colno + ")"
+            : "";
+          recordFailure((event.message || "Errore JavaScript") + locationHint);
+        }, true);
+
+        window.addEventListener("unhandledrejection", function (event) {
+          recordFailure(event.reason);
+        });
+      })();
+    </script>
     <!-- Titolo e taglia documento sono riscritti al boot da main.ts: la
          dimensione la decide `LAYER_SIZE`, non questo file. -->
     <title>WebGPU Brush Engine</title>
   </head>
   <body>
+    <div id="startupDiagnostic" role="alert" aria-live="assertive" hidden>
+      <section class="startup-diagnostic-card" aria-labelledby="startupDiagnosticTitle">
+        <p class="startup-diagnostic-eyebrow">DIAGNOSTICA AVVIO</p>
+        <h1 id="startupDiagnosticTitle">Avvio più lento del previsto</h1>
+        <p>L’app non ha completato l’avvio entro 10 secondi. Questa schermata indica dove si è fermata.</p>
+        <dl class="startup-diagnostic-grid">
+          <div><dt>Tempo</dt><dd id="startupDiagnosticElapsed">10,0 s</dd></div>
+          <div><dt>Fase attuale</dt><dd id="startupDiagnosticPhase">Caricamento…</dd></div>
+          <div id="startupDiagnosticDetailRow"><dt>Dettaglio</dt><dd id="startupDiagnosticDetail">—</dd></div>
+        </dl>
+        <p id="startupDiagnosticError" class="startup-diagnostic-error" hidden>
+          <strong>Errore rilevato:</strong> <span id="startupDiagnosticErrorText">—</span>
+        </p>
+        <details open>
+          <summary>Fasi attraversate</summary>
+          <pre id="startupDiagnosticTimeline">Caricamento…</pre>
+        </details>
+        <details>
+          <summary>Dati browser e WebGPU</summary>
+          <pre id="startupDiagnosticEnvironment">Raccolta dati…</pre>
+        </details>
+        <div class="startup-diagnostic-actions">
+          <button id="startupDiagnosticRetry" type="button">Riprova</button>
+          <span>Fai uno screenshot di questa schermata e inviamelo.</span>
+        </div>
+      </section>
+    </div>
     <div id="app">
       <header class="topbar">
         <div class="desktop-brand">

@@ -121,13 +121,32 @@ assert.deepEqual(
 
 const indexSource = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const brushEngineSource = readFileSync(
+  new URL("../src/brush-engine.ts", import.meta.url),
+  "utf8",
+);
+const startupDiagnosticsSource = readFileSync(
+  new URL("../src/startup-diagnostics.ts", import.meta.url),
+  "utf8",
+);
 const reportsSource = readFileSync(
   new URL("../src/engine-reports.ts", import.meta.url),
   "utf8",
 );
 assert.match(indexSource, /id="copyAppDiagnostics"/);
 assert.match(indexSource, /id="appDiagnosticsReport"/);
+assert.match(indexSource, /id="startupDiagnostic"/);
+assert.match(indexSource, /window\.setTimeout\(showPanel, 10000\)/);
+assert.match(indexSource, /window\.__WEBGPU_BRUSH_STARTUP__/);
+assert.match(indexSource, /WebGPU API:/);
 assert.match(mainSource, /copyAppDiagnosticsButton\.addEventListener\("click"/);
+assert.match(mainSource, /completeStartupDiagnostics\(\)/);
+assert.match(mainSource, /reportStartupFailure\(error\)/);
+assert.match(brushEngineSource, /"Richiesta adattatore WebGPU"/);
+assert.match(brushEngineSource, /"Creazione dispositivo WebGPU"/);
+assert.match(brushEngineSource, /"Creazione risorse GPU"/);
+assert.match(brushEngineSource, /"Preparazione cronologia"/);
+assert.match(startupDiagnosticsSource, /__WEBGPU_BRUSH_STARTUP__/);
 assert.match(mainSource, /renderFrameError:[\s\S]*?getDocumentInconsistentDiagnostic\(\)/);
 assert.match(
   reportsSource,
