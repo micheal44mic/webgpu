@@ -22,8 +22,6 @@ export interface Stamp {
   directionX: number;
   directionY: number;
   historyActionId: number;
-  /** Set only while an end-thickness stamp is held after reserving History. */
-  historyPayloadReserved?: boolean;
 }
 
 export interface HeldThicknessStamp {
@@ -48,10 +46,6 @@ export interface ActiveStroke {
   historyActionId: number;
   historyCommitted: boolean;
   submitted: boolean;
-  /** Logical GPU payload accepted for this gesture; selection is accounted separately. */
-  historyPayloadBytes: number;
-  /** Once true, no later sample from this pointer gesture may mutate pixels. */
-  historyCaptureLimitReached: boolean;
   seedSequenceBeforeStroke: number;
   historyCursorBeforeStroke: number;
   redoActionsBeforeStroke: HistoryAction[] | null;
@@ -63,52 +57,6 @@ export interface ActiveStroke {
   stabilizer: CausalFadedStrokeStabilizer | null;
   stabilizationUpdate: Readonly<StrokeStabilizationUpdate> | null;
   stabilizationCommittedInput: LayerPoint;
-}
-
-/**
- * One active gesture may own at most one ordinary History GPU page. Completed
- * gestures are drained to durable storage by idle maintenance.
- */
-export const ACTIVE_STROKE_HISTORY_PAYLOAD_LIMIT_BYTES = 2 * 1024 * 1024;
-
-export type ActiveStrokeHistoryPayloadReservation =
-  | "accepted"
-  | "accepted-at-limit"
-  | "rejected-at-limit"
-  | "rejected";
-
-/**
- * Reserves logical payload before its corresponding Paint/Blend mutation is
- * enqueued. A rejected reservation must never be rendered.
- */
-export function reserveActiveStrokeHistoryPayload(
-  stroke: Pick<
-    ActiveStroke,
-    "historyPayloadBytes" | "historyCaptureLimitReached"
-  >,
-  payloadBytes: number,
-): ActiveStrokeHistoryPayloadReservation {
-  if (!Number.isInteger(payloadBytes) || payloadBytes <= 0) {
-    throw new RangeError("La prenotazione History del tratto deve essere un numero di byte positivo.");
-  }
-  if (
-    !Number.isInteger(stroke.historyPayloadBytes)
-    || stroke.historyPayloadBytes < 0
-    || stroke.historyPayloadBytes > ACTIVE_STROKE_HISTORY_PAYLOAD_LIMIT_BYTES
-  ) {
-    throw new Error("Contatore payload History del tratto non valido.");
-  }
-  if (stroke.historyCaptureLimitReached) return "rejected";
-  if (payloadBytes > ACTIVE_STROKE_HISTORY_PAYLOAD_LIMIT_BYTES - stroke.historyPayloadBytes) {
-    stroke.historyCaptureLimitReached = true;
-    return "rejected-at-limit";
-  }
-  stroke.historyPayloadBytes += payloadBytes;
-  if (stroke.historyPayloadBytes === ACTIVE_STROKE_HISTORY_PAYLOAD_LIMIT_BYTES) {
-    stroke.historyCaptureLimitReached = true;
-    return "accepted-at-limit";
-  }
-  return "accepted";
 }
 
 export interface DirtyRect {

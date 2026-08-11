@@ -18,27 +18,10 @@ export const HISTORY_STORAGE_MOBILE_MAXIMUM_SEGMENT_BYTES = 64 * 1024 * 1024;
 export const HISTORY_STORAGE_DESKTOP_MAXIMUM_SEGMENT_BYTES = 128 * 1024 * 1024;
 export const HISTORY_STORAGE_MOBILE_CHUNK_BYTES = 1024 * 1024;
 export const HISTORY_STORAGE_DESKTOP_CHUNK_BYTES = 2 * 1024 * 1024;
-/**
- * The hot tail is bounded twice: by action count and by logical payload bytes.
- * Count keeps ordinary recent Undo predictable; the byte ceiling prevents one
- * import/transform/merge from turning that convenience window into an
- * unbounded GPU fallback.
- */
-export const HISTORY_STORAGE_MOBILE_MAXIMUM_HOT_ACTIONS = 2;
-export const HISTORY_STORAGE_DESKTOP_MAXIMUM_HOT_ACTIONS = 4;
-export const HISTORY_STORAGE_MOBILE_HOT_PAYLOAD_HARD_BYTES = 48 * 1024 * 1024;
-export const HISTORY_STORAGE_DESKTOP_HOT_PAYLOAD_HARD_BYTES = 160 * 1024 * 1024;
-/** Compatibility default for pure callers that do not provide a device cap. */
-export const HISTORY_STORAGE_KEEP_HOT_ACTIONS =
-  HISTORY_STORAGE_DESKTOP_MAXIMUM_HOT_ACTIONS;
-/** Compatibility default; runtime policy selects the device-specific ceiling. */
-export const HISTORY_STORAGE_SPILL_HIGH_WATER_BYTES =
-  HISTORY_STORAGE_DESKTOP_HOT_PAYLOAD_HARD_BYTES;
+export const HISTORY_STORAGE_KEEP_HOT_ACTIONS = 16;
 
 const MEBIBYTE_BYTES = 1024 * 1024;
 const GIBIBYTE_BYTES = 1024 * MEBIBYTE_BYTES;
-/** Aggregate descriptor bound; payload I/O remains independently chunked. */
-export const HISTORY_STORAGE_MAXIMUM_DESCRIPTOR_BYTES = 8 * GIBIBYTE_BYTES;
 
 export type HistoryStorageBackendKind =
   | "opfs-worker"
@@ -170,9 +153,10 @@ export interface HistorySegmentPlan {
 }
 
 /**
- * Converts a byte-bounded hot payload set into the cursor suffix expected by
- * the segment planner. A large recent action may shrink the suffix below the
- * ordinary count, including to zero, so the byte ceiling always wins.
+ * Converts a byte-bounded hot payload set into the cursor window expected by
+ * the segment planner. The ordinary maximum preserves quick recent Undo, but
+ * large import/transform actions can shrink the window to zero under pressure
+ * instead of forcing destructive journal eviction.
  */
 export function adaptiveHistoryStorageKeepHotActions(options: {
   readonly currentResidentBytes: number;
@@ -231,6 +215,9 @@ export function planHistoryStorageSegment(options: {
 }): HistorySegmentPlan {
   const current = finiteNonNegative(options.currentResidentBytes);
   const highWater = finiteNonNegative(options.highWaterBytes);
+  if (current <= highWater) {
+    return emptySegmentPlan("below-high-water");
+  }
   const target = positiveInteger(options.targetSegmentBytes, "targetSegmentBytes");
   const maximum = positiveInteger(options.maximumSegmentBytes, "maximumSegmentBytes");
   if (target > maximum) {
@@ -248,9 +235,7 @@ export function planHistoryStorageSegment(options: {
       && !action.pinned
     )
     .sort((left, right) => left.cursor - right.cursor || left.actionId - right.actionId);
-  if (eligible.length === 0) {
-    return emptySegmentPlan(current <= highWater ? "below-high-water" : "no-eligible-payload");
-  }
+  if (eligible.length === 0) return emptySegmentPlan("no-eligible-payload");
 
   const selected: HistorySegmentPlanningAction[] = [];
   let rawBytes = 0;
@@ -348,18 +333,6 @@ export function historyStorageMaximumSegmentBytes(mobile: boolean): number {
 
 export function historyStorageChunkBytes(mobile: boolean): number {
   return mobile ? HISTORY_STORAGE_MOBILE_CHUNK_BYTES : HISTORY_STORAGE_DESKTOP_CHUNK_BYTES;
-}
-
-export function historyStorageMaximumHotActions(mobile: boolean): number {
-  return mobile
-    ? HISTORY_STORAGE_MOBILE_MAXIMUM_HOT_ACTIONS
-    : HISTORY_STORAGE_DESKTOP_MAXIMUM_HOT_ACTIONS;
-}
-
-export function historyStorageHotPayloadHardBytes(mobile: boolean): number {
-  return mobile
-    ? HISTORY_STORAGE_MOBILE_HOT_PAYLOAD_HARD_BYTES
-    : HISTORY_STORAGE_DESKTOP_HOT_PAYLOAD_HARD_BYTES;
 }
 
 export function historyHash32(bytes: Uint8Array): number {

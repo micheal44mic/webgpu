@@ -286,7 +286,7 @@ assert.doesNotMatch(mathSource, /CanvasRenderingContext|ImageBitmap/);
 assert.match(runtimeSource, /RASTER_TRANSFORM_TRANSPARENT_GUARD_PX = 2/);
 assert.match(
   runtimeSource,
-  /engine\.assertLayerSwitchAllowed\(\);\s*if \(!engine\.admitHistoryPayloadMutation\(\)\) return null;\s*engine\.persistActiveLayerState\(\);\s*if \(!record\.hasContent \|\| !record\.contentBounds\)/,
+  /engine\.assertLayerSwitchAllowed\(\);\s*engine\.persistActiveLayerState\(\);\s*if \(!record\.hasContent \|\| !record\.contentBounds\)/,
   "l'apertura GPU deve sincronizzare il raster attivo appena dipinto prima del controllo contenuto",
 );
 assert.match(runtimeSource, /origin: \{[\s\S]{0,120}RASTER_TRANSFORM_TRANSPARENT_GUARD_PX/);

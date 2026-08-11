@@ -56,56 +56,6 @@ assert.match(engine, /const memoryReservation = this\.reserveLayerSwitchMemory\(
 assert.match(controller, /async mergeSceneItems\(/);
 assert.match(controller, /this\.host\.mergeMixedSceneItems\(\{ keys: \[\.\.\.keys\], vectorDraws \}\)/);
 
-// A merge is not foreground-complete until every payload it published has
-// drained from GPU-resident History. The generic drain must remain separate
-// from waitForIdle because storage spill itself waits on that render fence.
-const historyDrainSource = engine.slice(
-  engine.indexOf("  async waitForHistoryPayloadDrain("),
-  engine.indexOf("  /** Programmatic callers can preserve"),
-);
-assert.match(historyDrainSource, /await this\.waitForIdle\(\)/);
-assert.match(historyDrainSource, /while \(!this\.admitHistoryPayloadMutation\(\)\)/);
-assert.match(historyDrainSource, /timeoutMs !== null/);
-assert.match(historyDrainSource, /window\.setTimeout\(resolve, 16\)/);
-const programmaticStrokeSource = engine.slice(
-  engine.indexOf("  async beginStrokeAtLayerAfterHistoryDrain("),
-  engine.indexOf("  beginStrokeAtLayer(point:"),
-);
-assert.match(
-  programmaticStrokeSource,
-  /await this\.waitForHistoryPayloadDrain\(timeoutMs\)/,
-);
-assert.doesNotMatch(programmaticStrokeSource, /while \(/);
-
-const mergeCommitSource = engine.slice(
-  engine.indexOf("  async mergeMixedSceneItems("),
-  engine.indexOf("  async setVectorTextNodeVisibility("),
-);
-const mergeCommitIndex = mergeCommitSource.indexOf("commitHistoryActionAtomically");
-const mergePublishIndex = mergeCommitSource.indexOf("this.publishHistoryState()");
-const mergeDrainIndex = mergeCommitSource.indexOf("await this.waitForHistoryPayloadDrain(null)");
-const mergeReturnIndex = mergeCommitSource.indexOf("return prepared.result");
-assert.ok(mergeCommitIndex >= 0, "il merge deve pubblicare una sola azione History");
-assert.ok(
-  mergeCommitIndex < mergePublishIndex
-    && mergePublishIndex < mergeDrainIndex
-    && mergeDrainIndex < mergeReturnIndex,
-  "il merge deve attendere il drain dopo commit/pubblicazione e prima del risultato",
-);
-const mergePreparationSource = runtime.slice(
-  runtime.indexOf("export async function prepareAndApplyLayerMerge("),
-);
-assert.ok(
-  mergePreparationSource.indexOf("const scene = requireMixedSceneStack(engine)")
-    < mergePreparationSource.indexOf("engine.layerSwitchBusy = true"),
-  "la validazione della scena deve precedere l'acquisizione del lock merge",
-);
-assert.doesNotMatch(
-  mergePreparationSource,
-  /waitForHistoryPayloadDrain/,
-  "attendere mentre layerSwitchBusy e' attivo bloccherebbe lo spill",
-);
-
 // Vectors are drawn into a transient cropped surface. They must never take the
 // old per-node conversion path, which would publish N layers and N actions.
 assert.match(runtime, /renderVectorDrawsToTexture/);
@@ -272,24 +222,17 @@ assert.match(
   "l'overflow privato del rimpiazzo deve essere limitato a un solo record",
 );
 
-// Empty restored inputs never allocate one full texture each. A durable source
-// is restored directly as the final live cold authority; only an unstored
-// resident source needs the cold-to-cold clone fallback.
+// Empty restored inputs never allocate one full texture each. Painted inputs
+// are cloned cold-to-cold and durable stored-only sources are streamed one at a
+// time; only the active raster (plus the explicit Fill Reference exception) is
+// hot after Undo.
 assert.match(layerStructure, /gpu = createColdLayerGpuResources\(\)/);
 assert.match(coldStorage, /export async function cloneLayerColdStorageResources/);
-assert.match(
-  runtime,
-  /restoreStoredColdSeedForDetachedReplay\(seed\)[\s\S]*?if \(restored\) \{[\s\S]*?cold: restored/,
-);
-assert.match(runtime, /ensureLayerMergeSeedResident\(seed\)[\s\S]*?cloneLayerColdStorageResources\(/);
+assert.match(runtime, /await engine\.historyLocalStorage\.ensureLayerMergeSeedResident\(seed\)/);
+assert.match(runtime, /cloneLayerColdStorageResources\([\s\S]*?demoteStoredLayerMergeSeed\(seed\)/);
 assert.match(
   storageCoordinator,
-  /await this\.assertRequiredPayloadsAvailable\(required\)/,
-);
-assert.match(
-  storageCoordinator,
-  /crossed\.kind === "layer-merge"[\s\S]*?if \(delta < 0\)[\s\S]*?addSeed\(crossed\.output\.seed\)/,
-  "il preflight merge deve richiedere input per Undo e output per Redo",
+  /crossed\?\.kind === "layer-merge"[\s\S]*?assertRequiredPayloadsAvailable\(required\)/,
 );
 assert.match(runtime, /const reservation = reserveLayerMergeHistoryMemory/);
 assert.match(
@@ -299,50 +242,58 @@ assert.match(
 
 const undoReservationModel = (
   seedBytes,
+  storedOnly,
   fullTextureBytes,
   referenceDistinct = false,
 ) => {
   const clonedColdBytes = seedBytes.reduce((total, bytes) => total + bytes, 0);
+  const maximumMissingSeedBytes = storedOnly ? Math.max(0, ...seedBytes) : 0;
   const hotDestinations = 1 + Number(referenceDistinct);
   const steadyBytes = clonedColdBytes + fullTextureBytes * hotDestinations;
   return {
     steadyBytes,
-    peakBytes: steadyBytes + fullTextureBytes,
+    peakBytes: steadyBytes + maximumMissingSeedBytes + fullTextureBytes,
   };
 };
 for (const documentSize of [2048, 4096]) {
   const fullTextureBytes = documentSize * documentSize * 8;
   for (const count of [2, 16]) {
-    const empty = undoReservationModel(Array(count).fill(0), fullTextureBytes);
+    const empty = undoReservationModel(Array(count).fill(0), true, fullTextureBytes);
     assert.equal(empty.steadyBytes, fullTextureBytes);
     assert.equal(empty.peakBytes, fullTextureBytes * 2);
 
     const tileSparseBytes = fullTextureBytes / 16;
     const painted = undoReservationModel(
       Array(count).fill(tileSparseBytes),
+      true,
       fullTextureBytes,
     );
     assert.equal(painted.steadyBytes, count * tileSparseBytes + fullTextureBytes);
     assert.equal(
       painted.peakBytes,
-      count * tileSparseBytes + fullTextureBytes * 2,
+      count * tileSparseBytes + tileSparseBytes + fullTextureBytes * 2,
     );
     const fullCanvasPainted = undoReservationModel(
       Array(count).fill(fullTextureBytes),
+      true,
       fullTextureBytes,
     );
     assert.equal(fullCanvasPainted.steadyBytes, (count + 1) * fullTextureBytes);
-    assert.equal(fullCanvasPainted.peakBytes, (count + 2) * fullTextureBytes);
+    assert.equal(fullCanvasPainted.peakBytes, (count + 3) * fullTextureBytes);
 
     let residentStoredSourceBytes = 0;
     let maximumResidentStoredSourceBytes = 0;
     let independentLiveColdBytes = 0;
     for (let index = 0; index < count; index += 1) {
-      // Stored-only bytes become this final authority directly; there is no
-      // separate resident History source during the restore.
+      residentStoredSourceBytes += tileSparseBytes;
+      maximumResidentStoredSourceBytes = Math.max(
+        maximumResidentStoredSourceBytes,
+        residentStoredSourceBytes,
+      );
       independentLiveColdBytes += tileSparseBytes;
+      residentStoredSourceBytes -= tileSparseBytes;
     }
-    assert.equal(maximumResidentStoredSourceBytes, 0);
+    assert.equal(maximumResidentStoredSourceBytes, tileSparseBytes);
     assert.equal(independentLiveColdBytes, count * tileSparseBytes);
     assert.equal(residentStoredSourceBytes, 0);
     const finalResidency = Array.from({ length: count }, (_, index) => ({

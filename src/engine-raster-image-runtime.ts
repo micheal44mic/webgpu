@@ -506,9 +506,6 @@ async function importRasterImageFileUnlocked(
     throw new Error(`Massimo ${LAYER_STACK_MAXIMUM} livelli raggiunto.`);
   }
   engine.assertLayerSwitchAllowed();
-  if (!engine.admitHistoryPayloadMutation()) {
-    throw new Error("Importazione rinviata durante il salvataggio della cronologia locale.");
-  }
   engine.cancelLayerColdCompressionIdle();
   engine.layerSwitchBusy = true;
   let decoded: Awaited<ReturnType<typeof decodeRasterImage>> | null = null;
@@ -822,19 +819,12 @@ export async function hydrateLayerFromSeed(
     throw new Error("Texture hot della cronologia import raster mancante.");
   }
   try {
-    const streamed = await engine.historyLocalStorage
-      .streamStoredColdSeedIntoHot(seed, hot);
-    if (!streamed) {
-      const encoder = engine.device.createCommandEncoder({
-        label: `Reidratazione seed livello ${layerId}`,
-      });
-      encodeLayerColdHydration(encoder, seed, hot);
-      engine.device.queue.submit([encoder.finish()]);
-      await engine.waitForGpuCapped("Reidratazione livello da seed", 60_000);
-      if (engine.historyLocalStorage.demoteStoredLayerMergeSeed(seed)) {
-        engine.historyStorageResidenceChanged();
-      }
-    }
+    const encoder = engine.device.createCommandEncoder({
+      label: `Reidratazione seed livello ${layerId}`,
+    });
+    encodeLayerColdHydration(encoder, seed, hot);
+    engine.device.queue.submit([encoder.finish()]);
+    await engine.waitForGpuCapped("Reidratazione livello da seed", 60_000);
     return gpu;
   } catch (error) {
     destroyLayerGpuResources(engine, gpu);

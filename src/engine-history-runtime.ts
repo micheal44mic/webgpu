@@ -1,8 +1,5 @@
 import type { BrushEngine } from "./brush-engine";
-import type {
-  EffectsRetargetCaller,
-  LayerColdStorageResources,
-} from "./engine-layer-resources";
+import type { EffectsRetargetCaller } from "./engine-layer-resources";
 import {
   destroyLayerColdStorage,
   encodeLayerColdHydration,
@@ -417,8 +414,8 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
   }
 
   // A deep step may cross payloads whose authoritative copy is now in local
-  // storage. Cancel fenced maintenance, verify rollback authority, then let the
-  // replay acquire each heavy target payload only immediately before use.
+  // storage. Cancel fenced maintenance and hydrate both the target replay and
+  // its rollback closure before the cursor or any pixels can change.
   cancelHistoryMaintenance(engine);
   engine.historyBusy = true;
   engine.publishHistoryState();
@@ -601,7 +598,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
       await engine.prepareActiveLayerForSwitch();
     }
     let replayAttempted = false;
-    let selectionRestoreAttempted = false;
+    let selectionRestored = false;
     const selectionTransform = crossedAction.kind === "raster-transform"
       && crossedAction.scope === "selection"
       ? crossedAction
@@ -630,19 +627,17 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
       replayAttempted = true;
       await rebuildActiveLayerFromHistory(engine);
       if (selectionCompareAndSwap && targetSelection) {
-        // The restore may throw after queueing its GPU copy. Mark intent before
-        // the await so rollback always reapplies the expected mask.
-        selectionRestoreAttempted = true;
         await restorePixelSelectionHistoryMask(engine, targetSelection);
+        selectionRestored = true;
       }
     } catch (operationError) {
       engine.historyCursor = previousCursor;
       const rollbackErrors: unknown[] = [];
 
-      if (selectionRestoreAttempted && expectedSelection) {
+      if (selectionRestored && expectedSelection) {
         try {
           await restorePixelSelectionHistoryMask(engine, expectedSelection);
-          selectionRestoreAttempted = false;
+          selectionRestored = false;
         } catch (restoreSelectionError) {
           rollbackErrors.push(restoreSelectionError);
         }
@@ -723,13 +718,15 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
     );
     return true;
   } finally {
-    if (!engine.historyStateInconsistent) {
+    const stepCommitted = !engine.historyStateInconsistent
+      && engine.historyCursor === nextCursor;
+    if (stepCommitted) {
       try {
         await engine.waitForGpuCapped("Working set Undo/Redo", 60_000);
         engine.historyLocalStorage.trimHydratedWorkingSetAfterStep(delta);
       } catch {
-        // A committed step or a successfully rolled-back step is already safe.
-        // Cache demotion is an optimisation and may be retried later.
+        // The document transition already committed. Cache demotion is a
+        // bounded-memory optimisation and may be retried after the next step.
       }
     }
     // A failed rollback is a terminal document state. Keeping historyBusy high
@@ -840,77 +837,6 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
     }
   }
 
-  // A stored render payload is a short-lived replay lease. Track every lease
-  // until its submission fence so an exception between hydration and submit
-  // cannot silently turn it back into a resident cache.
-  const durableReplaySlices = new Map<number, GpuHistorySlice>();
-  const durableReplayColdSeeds = new Set<LayerColdStorageResources>();
-  const prepareReplayBatchInputs = async (
-    batch: HistoryRenderBatch,
-  ): Promise<void> => {
-    const selectionSlice = batch.kind === "paint"
-      ? batch.selectionMask?.gpuSlice ?? null
-      : null;
-    const selectionWasResident = selectionSlice
-      ? engine.historyGpuStorage.isResident(selectionSlice)
-      : false;
-    const durableIds = await engine.historyLocalStorage
-      .ensureGpuSlicesResidentForReplay(
-        selectionSlice ? [batch.gpuSlice, selectionSlice] : [batch.gpuSlice],
-      );
-    if (durableIds.has(batch.gpuSlice.id)) {
-      durableReplaySlices.set(batch.gpuSlice.id, batch.gpuSlice);
-    }
-    if (
-      selectionSlice
-      && durableIds.has(selectionSlice.id)
-      && !selectionWasResident
-    ) {
-      durableReplaySlices.set(selectionSlice.id, selectionSlice);
-    }
-  };
-  const finishReplayBatch = async (
-    batch: HistoryRenderBatch,
-    index: number,
-  ): Promise<void> => {
-    observeReplaySubmit();
-    const selectionSlice = batch.kind === "paint"
-      ? batch.selectionMask?.gpuSlice ?? null
-      : null;
-    let nextVisibleBatch: HistoryRenderBatch | null = null;
-    for (let nextIndex = index + 1; nextIndex <= lastVisibleBatchIndex; nextIndex += 1) {
-      const candidate = layerBatches[nextIndex];
-      if (!visibleIds.has(candidate.actionId)) continue;
-      nextVisibleBatch = candidate;
-      break;
-    }
-    const nextSelectionSlice = nextVisibleBatch?.kind === "paint"
-      ? nextVisibleBatch.selectionMask?.gpuSlice ?? null
-      : null;
-    const releaseSelection = Boolean(
-      selectionSlice
-      && durableReplaySlices.has(selectionSlice.id)
-      && nextSelectionSlice?.id !== selectionSlice.id,
-    );
-    if (durableReplaySlices.has(batch.gpuSlice.id) || releaseSelection) {
-      await engine.waitForGpuCapped("Rilascio payload replay History", 60_000);
-      const demote: GpuHistorySlice[] = [];
-      if (durableReplaySlices.has(batch.gpuSlice.id)) {
-        demote.push(batch.gpuSlice);
-        durableReplaySlices.delete(batch.gpuSlice.id);
-      }
-      if (selectionSlice && releaseSelection) {
-        demote.push(selectionSlice);
-        durableReplaySlices.delete(selectionSlice.id);
-      }
-      // Keep one empty allocator page for the next batch in this replay run;
-      // the function-level finally destroys it. This avoids reallocation while
-      // retaining the same 2 MiB transient bound.
-      engine.historyLocalStorage.demoteStoredGpuSlicesAfterReplay(demote, false);
-    }
-    await yieldReplaySubmit();
-  };
-
   try {
     if (hasReplaySeed) {
       // Structural seeds and periodic full+delta tile chains are authoritative
@@ -930,24 +856,14 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
       if (replaySeeds.length > 0) {
         const hot = engine.requireLayerGpu(layerId).hot;
         if (!hot) throw new Error("Texture hot mancante per il checkpoint raster.");
+        const encoder = engine.device.createCommandEncoder({
+          label: `Replay checkpoint tiled raster livello ${layerId}`,
+        });
         for (const replaySeed of replaySeeds) {
-          const streamed = await engine.historyLocalStorage
-            .streamStoredColdSeedIntoHot(replaySeed, hot);
-          if (!streamed) {
-            durableReplayColdSeeds.add(replaySeed);
-            const encoder = engine.device.createCommandEncoder({
-              label: `Replay checkpoint tiled raster livello ${layerId}`,
-            });
-            encodeLayerColdHydration(encoder, replaySeed, hot);
-            engine.device.queue.submit([encoder.finish()]);
-            await engine.waitForGpuCapped("Replay checkpoint raster", 60_000);
-            if (engine.historyLocalStorage.demoteStoredLayerMergeSeed(replaySeed)) {
-              engine.historyStorageResidenceChanged();
-            }
-            durableReplayColdSeeds.delete(replaySeed);
-          }
-          await yieldReplaySubmit();
+          encodeLayerColdHydration(encoder, replaySeed, hot);
         }
+        engine.device.queue.submit([encoder.finish()]);
+        await yieldReplaySubmit();
       }
 
       if (lastVisibleBatchIndex < 0) {
@@ -994,9 +910,9 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
           if (!visibleIds.has(batch.actionId)) {
             continue;
           }
-          await prepareReplayBatchInputs(batch);
           await engine.submitFillHistoryBatch(batch, index === lastVisibleBatchIndex);
-          await finishReplayBatch(batch, index);
+          observeReplaySubmit();
+          await yieldReplaySubmit();
           continue;
         }
         if (batch.kind === "blend") {
@@ -1004,7 +920,6 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
             continue;
           }
           await ensureReplayBrushAssets(batch.settings);
-          await prepareReplayBatchInputs(batch);
           engine.submitBlendImmediate(
             batch.batches,
             hasReplaySeed ? false : batch.clearLayer,
@@ -1013,7 +928,8 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
             index === lastVisibleBatchIndex,
             batch,
           );
-          await finishReplayBatch(batch, index);
+          observeReplaySubmit();
+          await yieldReplaySubmit();
           continue;
         }
         if (!visibleIds.has(batch.actionId)) {
@@ -1040,7 +956,6 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
           replaySession.commitRequested = !hasLaterBatchForAction;
         }
 
-        await prepareReplayBatchInputs(batch);
         engine.writeBrushUniforms(batch.settings);
         engine.submitImmediate(
           [],
@@ -1049,7 +964,8 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
           index === lastVisibleBatchIndex,
           batch,
         );
-        await finishReplayBatch(batch, index);
+        observeReplaySubmit();
+        await yieldReplaySubmit();
       }
       if (engine.lightGlazeSession) {
         throw new Error("La ricostruzione storica ha lasciato un tratto Light Glaze aperto.");
@@ -1058,30 +974,6 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
   } finally {
     if (engine.lightGlazeSession) {
       engine.abandonLightGlazeSession();
-    }
-    if (durableReplaySlices.size > 0 || durableReplayColdSeeds.size > 0) {
-      try {
-        await engine.waitForGpuCapped("Cleanup payload replay History", 60_000);
-        engine.historyLocalStorage.demoteStoredGpuSlicesAfterReplay(
-          [...durableReplaySlices.values()],
-          false,
-        );
-        durableReplaySlices.clear();
-        for (const seed of durableReplayColdSeeds) {
-          if (engine.historyLocalStorage.demoteStoredLayerMergeSeed(seed)) {
-            engine.historyStorageResidenceChanged();
-          }
-        }
-        durableReplayColdSeeds.clear();
-      } catch {
-        // A failed fence must not free a binding the GPU could still read. The
-        // outer transaction retains it and the next fenced trim can retry.
-      }
-    }
-    try {
-      engine.historyGpuStorage.trimEmptyPages(false);
-    } catch {
-      // Engine teardown owns allocator destruction.
     }
     // Ogni writeBuffer è ordinata sulla stessa GPUQueue: il ripristino arriva
     // dopo tutti i batch storici e prima di un eventuale tratto successivo.
@@ -1566,9 +1458,7 @@ export async function compactDiscardedHistoryIncrementally(
   engine.discardedLayerMergeHistoryActions = [];
   engine.discardedRasterTransformHistoryActions = [];
   engine.historyCompactionPending = false;
-  // History V2 owns no warm page: once the last resident payload is released,
-  // idle GPU history must return to exactly zero bytes.
-  engine.historyGpuStorage.trimEmptyPages(false);
+  engine.historyGpuStorage.trimEmptyPages(true);
   return {
     completed: true,
     chunks,
@@ -1774,7 +1664,7 @@ export function scheduleHistoryGpuTrim(engine: BrushEngine): void {
     ) {
       return;
     }
-    engine.historyGpuStorage.trimEmptyPages(false);
+    engine.historyGpuStorage.trimEmptyPages(true);
     engine.publishStats();
   }).catch(() => {
     // device.lost è già gestito dal gate globale del motore.

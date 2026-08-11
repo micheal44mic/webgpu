@@ -171,9 +171,7 @@ assert.match(blendRendererSource, /private depositPipelines!:/);
 assert.match(blendRendererSource, /blendCustomShape: shape === "shape" \? 1 : 0/);
 assert.match(blendRendererSource, /blendGrainEnabled: grain === "on" \? 1 : 0/);
 assert.match(blendRendererSource, /encode\(\s*encoder: GPUCommandEncoder,/);
-const blendEncodeStart = blendRendererSource.search(
-  /  encode\(\r?\n    encoder: GPUCommandEncoder/,
-);
+const blendEncodeStart = blendRendererSource.indexOf("  encode(\n    encoder: GPUCommandEncoder");
 const blendEncodeEnd = blendRendererSource.indexOf("\n  memoryMiB(): number", blendEncodeStart);
 assert(blendEncodeStart >= 0 && blendEncodeEnd > blendEncodeStart);
 assert.doesNotMatch(

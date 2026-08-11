@@ -591,9 +591,7 @@ async function drawTap(
   hardness: number,
 ): Promise<void> {
   engine.setBrushSettings({ color, size, hardness });
-  if (!await engine.beginStrokeAtLayerAfterHistoryDrain({ x, y, pressure: 1, timeMs })) {
-    throw new Error("Tratto layer-blend rifiutato dal gate History.");
-  }
+  engine.beginStrokeAtLayer({ x, y, pressure: 1, timeMs });
   engine.extendStrokeAtLayer([{ x: x + 1, y, pressure: 1, timeMs: timeMs + 16 }]);
   engine.endStroke(timeMs + 16);
   await engine.waitForIdle();

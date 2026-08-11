@@ -17,12 +17,7 @@ import {
   selectionBrushShader,
   selectionTexturizedGrainShader,
 } from "./selection-clip-shaders";
-import {
-  LAYER_SIZE,
-  MAX_STAMPS_PER_BATCH,
-  STAMP_STRIDE_BYTES,
-  VECTOR_TEXT_GPU_MAXIMUM_DRAWS,
-} from "./engine-limits";
+import { LAYER_SIZE, MAX_STAMPS_PER_BATCH, VECTOR_TEXT_GPU_MAXIMUM_DRAWS } from "./engine-limits";
 import {
   MIXED_SCENE_LINEAR_FORMAT,
   mixedSceneClearShader,
@@ -38,13 +33,7 @@ import { assertShaderCompiled } from "./engine-gpu-utils";
 import { vectorTextDisplayShader } from "./vector-text-shader";
 import { initializeVectorTextGpuRenderer } from "./engine-vector-text-runtime";
 import { VECTOR_TEXT_GPU_UNIFORM_STRIDE } from "./vector-text-gpu-shader";
-import {
-  ACTIVE_STROKE_HISTORY_PAYLOAD_LIMIT_BYTES,
-  reserveActiveStrokeHistoryPayload,
-  type ActiveStroke,
-  type DirtyRect,
-  type Stamp,
-} from "./engine-stroke-types";
+import { type ActiveStroke, type DirtyRect, type Stamp } from "./engine-stroke-types";
 import { paintMipDimensions } from "./engine-geometry";
 import { type BrushSettings, type LayerPoint } from "./engine-types";
 import { nextPaintStampSeed } from "./paint-stamp-generation-core";
@@ -90,23 +79,6 @@ import {
   type RasterOuterShadowStyle,
   type RasterShadowRect,
 } from "./shadow-core";
-
-function reserveRenderableActiveStrokeHistoryPayload(
-  engine: BrushEngine,
-  stroke: ActiveStroke,
-  payloadBytes: number,
-): boolean {
-  const reservation = reserveActiveStrokeHistoryPayload(stroke, payloadBytes);
-  if (reservation === "accepted-at-limit" || reservation === "rejected-at-limit") {
-    engine.publishStatus(
-      `Limite sicuro cronologia raggiunto `
-      + `(${ACTIVE_STROKE_HISTORY_PAYLOAD_LIMIT_BYTES / (1024 * 1024)} MiB): `
-      + "gli ulteriori elementi del tratto vengono ignorati fino al rilascio del puntatore.",
-      "error",
-    );
-  }
-  return reservation === "accepted" || reservation === "accepted-at-limit";
-}
 
 export async function finishStaticResourceCreation(engine: BrushEngine): Promise<void> {
   engine.brushShaderModule = engine.device.createShaderModule({ label: "Brush WGSL", code: brushShader });
@@ -874,7 +846,7 @@ export function encodeRasterStrokeDisplayPyramid(engine: BrushEngine,
 
 export function emitStamp(engine: BrushEngine, point: LayerPoint, directionX: number, directionY: number): void {
   const stroke = engine.activeStroke;
-  if (!stroke || stroke.historyCaptureLimitReached) {
+  if (!stroke) {
     return;
   }
   const generationSettings = stroke.lightGlazeSettings ?? engine.settings;
@@ -902,13 +874,6 @@ export function emitStamp(engine: BrushEngine, point: LayerPoint, directionX: nu
   };
 
   if (stroke.thicknessTailHoldback) {
-    // Held stamps can be drawn by either predictive-tail path before their
-    // final radius is known. Reserve them before making that preview visible;
-    // commitThicknessStamp recognizes the reservation when they are released.
-    if (!reserveRenderableActiveStrokeHistoryPayload(engine, stroke, STAMP_STRIDE_BYTES)) {
-      return;
-    }
-    stamp.historyPayloadReserved = true;
     stroke.heldThicknessStamps.push({
       stamp,
       timeMs: point.timeMs,
@@ -1037,15 +1002,6 @@ export function commitThicknessStamp(engine: BrushEngine, stamp: Stamp, stroke: 
     return;
   }
 
-  // Reserve History before publishing the action or queueing a pixel
-  // mutation. Rejection therefore preserves exact pixel/Undo parity.
-  if (
-    !stamp.historyPayloadReserved
-    && !reserveRenderableActiveStrokeHistoryPayload(engine, stroke, STAMP_STRIDE_BYTES)
-  ) {
-    return;
-  }
-
   if (!stroke.historyCommitted) {
     truncateRedoHistory(engine);
     engine.historyActions.push({ id: stroke.historyActionId, kind: "stroke", layerId: engine.layerStack.active.id });
@@ -1108,16 +1064,6 @@ export function drainBlendPlanner(engine: BrushEngine, stroke: ActiveStroke): vo
   let batch = planner.buildNextBatch();
   while (batch) {
     if (!batch.empty) {
-      const historyBytes = engine.blendRenderer?.historyUniformBytes([batch]) ?? 0;
-      if (historyBytes <= 0) {
-        throw new Error("Renderer Blend assente durante la prenotazione History del tratto.");
-      }
-      // A rejected geometry is discarded before pendingBlendBatches can make
-      // it visible to either the renderer or History.
-      if (!reserveRenderableActiveStrokeHistoryPayload(engine, stroke, historyBytes)) {
-        planner.discardPending();
-        break;
-      }
       if (!stroke.historyCommitted) {
         truncateRedoHistory(engine);
         engine.historyActions.push({ id: stroke.historyActionId, kind: "stroke", layerId: engine.layerStack.active.id });

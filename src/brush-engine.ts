@@ -444,7 +444,6 @@ import {
   LIGHT_GLAZE_UNIFORM_BYTES,
   MAX_STAMPS_PER_BATCH,
   MEBIBYTE_BYTES,
-  MOBILE_DEVICE_CLASS,
   PAINT_DISPLAY_MIP_LEVEL_COUNT,
   SHAPE_MASK_SIZE,
   SHAPE_OCCUPANCY_GRID_SIZE,
@@ -598,7 +597,6 @@ import {
   type LayerSwitchResult,
   type MixedSceneSnapshot,
   type PointerSample,
-  type VectorRasterFaultPoint,
 } from "./engine-types";
 import {
   CustomBrushAssetRegistry,
@@ -785,7 +783,6 @@ import {
   applyVectorRasterizeHistory,
   destroyVectorRasterHistorySeed,
   rasterizeVectorNodeToLayer,
-  rollbackUnpublishedVectorRasterization,
 } from "./engine-vector-raster-runtime";
 import {
   applyLightGlazeResourceSet,
@@ -1120,7 +1117,6 @@ export class BrushEngine {
   layerBakeFaultQueue: LayerBakeFaultPoint[] = [];
   layerCompositeFaultQueue: LayerCompositeFaultPoint[] = [];
   layerColdStorageFaultQueue: LayerColdStorageFaultPoint[] = [];
-  vectorRasterFaultQueue: VectorRasterFaultPoint[] = [];
   readonly liveLayerBakeTextures = new Map<GPUTexture, number>();
   readonly liveMergedSurfaceTextures = new Map<GPUTexture, MergedSurfaceResources>();
   readonly liveLayerHydrationTextures = new Map<GPUTexture, number>();
@@ -1762,58 +1758,12 @@ export class BrushEngine {
       throw new Error("WebGPU non è disponibile in questo browser o in questo contesto.");
     }
 
-    const android = /\bAndroid\b/i.test(navigator.userAgent);
-    // Su Android la preferenza high-performance puo' eliminare l'unico
-    // adapter disponibile. Il profilo mobile parte quindi dalla selezione
-    // neutra; sugli altri sistemi non-Windows manteniamo la preferenza ma
-    // riproviamo senza vincoli prima di dichiarare il device incompatibile.
     const adapterOptions: GPURequestAdapterOptions | undefined =
-      /\bWindows\b/i.test(navigator.userAgent) || android || MOBILE_DEVICE_CLASS
+      /\bWindows\b/i.test(navigator.userAgent)
         ? undefined
         : { powerPreference: "high-performance" };
-    const adapterWaitTimer = window.setTimeout(() => {
-      this.callbacks.onStatus?.(
-        "Ricerca della GPU ancora in corso… Android puo' impiegare qualche secondo.",
-        "working",
-      );
-    }, 6_000);
-    let adapter: GPUAdapter | null = null;
-    let primaryAdapterError: unknown = null;
-    try {
-      try {
-        adapter = await navigator.gpu.requestAdapter(adapterOptions);
-      } catch (error) {
-        primaryAdapterError = error;
-      }
-      if (!adapter && adapterOptions !== undefined) {
-        this.callbacks.onStatus?.(
-          "Riprovo la selezione WebGPU senza preferenze energetiche…",
-          "working",
-        );
-        adapter = await navigator.gpu.requestAdapter();
-      }
-      if (!adapter && android) {
-        this.callbacks.onStatus?.(
-          "Provo la modalità WebGPU compatibile per Android…",
-          "working",
-        );
-        try {
-          adapter = await navigator.gpu.requestAdapter({
-            featureLevel: "compatibility",
-          } as GPURequestAdapterOptions & { featureLevel: "compatibility" });
-        } catch {
-          // I browser precedenti alla modalità compatibility possono rifiutare
-          // l'opzione invece di ignorarla. L'errore finale resta quello chiaro
-          // e comune riportato subito sotto.
-        }
-      }
-    } finally {
-      window.clearTimeout(adapterWaitTimer);
-    }
+    const adapter = await navigator.gpu.requestAdapter(adapterOptions);
     if (!adapter) {
-      if (primaryAdapterError && adapterOptions === undefined) {
-        throw primaryAdapterError;
-      }
       throw new Error("Nessun adapter WebGPU compatibile trovato.");
     }
     this.adapter = adapter;
@@ -1824,21 +1774,10 @@ export class BrushEngine {
       );
     }
 
-    this.callbacks.onStatus?.("Adapter trovato. Creo il device WebGPU…", "working");
-    const deviceWaitTimer = window.setTimeout(() => {
-      this.callbacks.onStatus?.("Creazione del device WebGPU ancora in corso…", "working");
-    }, 6_000);
-    let rawDevice: GPUDevice;
-    try {
-      rawDevice = await adapter.requestDevice();
-    } finally {
-      window.clearTimeout(deviceWaitTimer);
-    }
-
     // Unico punto da cui il motore ottiene il device: strumentarlo qui rende
     // contabilizzata ogni allocazione, presente e futura, senza toccare i 125
     // siti che creano texture e buffer.
-    const instrumented = instrumentGpuDevice(rawDevice);
+    const instrumented = instrumentGpuDevice(await adapter.requestDevice());
     this.device = instrumented.device;
     this.gpuResourceRegistry = instrumented.registry;
     this.deviceLostSignal = this.device.lost.then((info) => {
@@ -1873,18 +1812,9 @@ export class BrushEngine {
     });
 
     this.gpuLabel = describeAdapter(adapter);
-    this.callbacks.onStatus?.(
-      `Device pronto. Preparo il renderer ${LAYER_SIZE}×${LAYER_SIZE}…`,
-      "working",
-    );
-    // Concede al browser un turno per mostrare la fase corretta prima della
-    // creazione delle pipeline; evita una schermata apparentemente ferma su
-    // "adapter" durante il lavoro GPU piu' costoso.
-    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
     try {
       await createStaticResources(this);
       prepareAdaptivePreviewShapePalette(this, this.settings);
-      this.callbacks.onStatus?.("Creo il documento iniziale…", "working");
       await recreateLayerResources(this, this.layerFormat);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1895,6 +1825,7 @@ export class BrushEngine {
     }
 
     this.historyGpuStorage = new GpuHistoryStorage(this.device);
+    this.historyGpuStorage.prewarm();
     this.historyLocalStorage = new HistoryStorageCoordinator(this);
     this.historyGpuStorage.setReleaseListener((slice) => {
       this.historyLocalStorage.onGpuSliceReleased(slice);
@@ -3853,33 +3784,6 @@ export class BrushEngine {
     return this.beginStrokeAtLayer(this.toLayerPoint(sample));
   }
 
-  /**
-   * Waits until History owns no resident payload and no storage transaction is
-   * active. Keep this separate from waitForIdle(): spill transactions use that
-   * render fence themselves, so making the general fence storage-aware would
-   * deadlock foreground drains.
-   */
-  async waitForHistoryPayloadDrain(timeoutMs: number | null = 60_000): Promise<void> {
-    await this.waitForIdle();
-    const startedAt = performance.now();
-    while (!this.admitHistoryPayloadMutation()) {
-      if (this.deviceLostError) throw this.deviceLostError;
-      if (timeoutMs !== null && performance.now() - startedAt >= timeoutMs) {
-        throw new Error("Timeout durante il salvataggio della cronologia locale.");
-      }
-      await new Promise<void>((resolve) => window.setTimeout(resolve, 16));
-    }
-  }
-
-  /** Programmatic callers can preserve the strict admission contract without polling it. */
-  async beginStrokeAtLayerAfterHistoryDrain(
-    point: LayerPoint,
-    timeoutMs = 60_000,
-  ): Promise<boolean> {
-    await this.waitForHistoryPayloadDrain(timeoutMs);
-    return this.beginStrokeAtLayer(point);
-  }
-
   beginStrokeAtLayer(point: LayerPoint): boolean {
     // layerSwitchBusy is held across the switch's awaits, so a pointerdown
     // landing mid-switch cannot start a stroke on a half-swapped layer.
@@ -3965,12 +3869,13 @@ export class BrushEngine {
       );
       return false;
     }
-    if (!this.admitHistoryPayloadMutation()) return false;
     pauseLayerColdCompressionIdle(this);
     const normalizedPoint: LayerPoint = {
       ...point,
       timeMs: Number.isFinite(point.timeMs) ? point.timeMs : performance.now(),
     };
+    flushPendingWorkBeforeSettingsChange(this);
+    flushClosingLightGlazeSessionBeforeNewStroke(this);
     cancelEffectsScratchShrink(this);
     cancelBevelFieldShrink(this);
     if (rasterBevelActive(this)) {
@@ -4077,8 +3982,6 @@ export class BrushEngine {
       historyActionId,
       historyCommitted: false,
       submitted: false,
-      historyPayloadBytes: 0,
-      historyCaptureLimitReached: false,
       seedSequenceBeforeStroke: this.seedSequence,
       historyCursorBeforeStroke: this.historyCursor,
       redoActionsBeforeStroke: this.historyCursor < this.historyActions.length
@@ -4120,14 +4023,11 @@ export class BrushEngine {
   }
 
   extendStrokeAtLayer(points: readonly LayerPoint[]): void {
-    if (!this.activeStroke || this.activeStroke.historyCaptureLimitReached) {
+    if (!this.activeStroke) {
       return;
     }
 
     for (const point of points) {
-      if (this.activeStroke?.historyCaptureLimitReached) {
-        break;
-      }
       this.appendPoint(point);
     }
   }
@@ -4135,13 +4035,8 @@ export class BrushEngine {
   endStroke(timeMs?: number): void {
     const endingStroke = this.activeStroke;
     if (endingStroke?.tool === "blend") {
-      // A capped drain discards the planner and marks it uninitialized. The
-      // rest of that gesture, including lift geometry, is intentionally
-      // ignored; calling finish() after discardPending() would throw.
-      if (!endingStroke.historyCaptureLimitReached) {
-        endingStroke.blendPlanner?.finish();
-        drainBlendPlanner(this, endingStroke);
-      }
+      endingStroke.blendPlanner?.finish();
+      drainBlendPlanner(this, endingStroke);
       const historyChanged = endingStroke.historyCommitted;
       this.activeStroke = null;
       if (this.pendingBlendBatches.length > 0) {
@@ -4441,11 +4336,11 @@ export class BrushEngine {
     // Ogni pointer-down interrompe anche checkpoint e spill locale, non solo
     // la compattazione del ramo Redo. Ripianificare l'intera manutenzione al
     // pointer-up evita che aprire un pannello lasci seed History residenti.
-    scheduleHistoryMaintenance(this, 0);
+    scheduleHistoryMaintenance(this);
   }
 
   resumeHistoryStorageMaintenance(): void {
-    scheduleHistoryMaintenance(this, 0);
+    scheduleHistoryMaintenance(this);
   }
 
   async runBenchmark(baseStampCount: number): Promise<BenchmarkResult> {
@@ -4872,50 +4767,6 @@ export class BrushEngine {
   }
 
   /**
-   * Makes the previous render batch visible to History, then admits a new
-   * payload-producing mutation while resident data remains inside the bounded
-   * hot-tail policy and no spill/hydration transaction is active. Bytes beyond
-   * the 2/4-action device window keep synchronous backpressure: callers reject
-   * before setting busy flags, awaiting resources or mutating pixels.
-   */
-  admitHistoryPayloadMutation(): boolean {
-    flushPendingWorkBeforeSettingsChange(this);
-    flushClosingLightGlazeSessionBeforeNewStroke(this);
-    try {
-      const storage = this.historyLocalStorage.telemetry();
-      if (storage.busy !== "idle") {
-        this.publishStatus(
-          "Salvataggio cronologia locale in corso: riprova tra un istante…",
-          "working",
-        );
-        return false;
-      }
-      const residentBytes = this.historyLocalStorage.residentPayloadBytes();
-      if (residentBytes === 0) return true;
-      this.resumeHistoryStorageMaintenance();
-      this.publishStatus(
-        "Salvataggio cronologia locale in corso: riprova tra un istante…",
-        "working",
-      );
-      return false;
-    } catch (error) {
-      // If ownership cannot even be inspected, keeping the old journal would
-      // turn the next mutation into an unbounded memory fallback. Artwork is
-      // independent from History resources, so retire only Undo/Redo.
-      const message = error instanceof Error ? error.message : String(error);
-      this.resetHistoryState();
-      this.publishStatus(
-        `Cronologia locale non verificabile (${message}); `
-        + "Undo svuotato senza modificare il disegno.",
-        "error",
-      );
-      this.publishHistoryState();
-      this.publishStats();
-      return false;
-    }
-  }
-
-  /**
    * Cancella un livello, in modo annullabile. Se il livello e' parent di un
    * gruppo di ritaglio si porta via **l'intera unita'**: una maschera senza il
    * suo parent verrebbe disegnata come livello normale e cambierebbe l'immagine.
@@ -4945,114 +4796,100 @@ export class BrushEngine {
       );
     }
     this.assertLayerSwitchAllowed();
-    if (!this.admitHistoryPayloadMutation()) {
-      throw new Error("Eliminazione rinviata durante il salvataggio della cronologia locale.");
-    }
     this.cancelLayerColdCompressionIdle();
+    await this.waitForIdle();
+
+    const scene = this.mixedSceneStack;
+    if (!scene) throw new Error("Scena mista non disponibile per l'eliminazione.");
+    // L'elenco e' dal basso verso l'alto: il ripristino reinserisce in avanti e
+    // gli indici restano validi mentre la pila ricresce.
+    const ordered = [...unit].sort(
+      (left, right) => this.layerStack.indexOfId(left.id) - this.layerStack.indexOfId(right.id),
+    );
     const entries: DeletedLayerEntry[] = [];
-    let journalOwnsSeeds = false;
-    let preserveSeedsAfterFailure = false;
-    this.historyBusy = true;
-    this.publishHistoryState();
+    for (const record of ordered) {
+      const gpu = this.layerGpu.get(record.id);
+      const hot = gpu?.hot ?? null;
+      const seed = record.hasContent && hot
+        ? await createLayerColdStorageCandidate(
+          this,
+          record,
+          hot,
+          coldStorageMaskForRecord(record),
+          this.nextHistoryActionId,
+          "history",
+        )
+        : null;
+      entries.push({
+        layerRecord: record,
+        rasterLayerIndex: this.layerStack.indexOfId(record.id),
+        sceneIndex: scene.indexOfKey(`raster:${record.id}`),
+        clippingParentId: record.clippingParentId,
+        seed,
+        baseBounds: record.contentBounds ? { ...record.contentBounds } : null,
+      });
+    }
+
+    // La cattura dei seed sottomette copie GPU. Senza drenarle, la transazione
+    // strutturale trova la presentazione congelata con lavoro pendente e si
+    // interrompe: il guard e' giusto, mancava l'attesa.
+    await this.waitForIdle();
+
+    const selectedKeyBefore = scene.selected.key;
+    const selectedKeyAfter = scene.selected.kind === "raster"
+        && doomed.has(scene.selected.rasterLayerId)
+      ? `raster:${survivor.id}` as const
+      : selectedKeyBefore;
+    const referenceRasterLayerIdBefore = this.layerStack.referenceLayerId;
+    const referenceRasterLayerIdAfter = referenceRasterLayerIdBefore !== null
+        && doomed.has(referenceRasterLayerIdBefore)
+      ? null
+      : referenceRasterLayerIdBefore;
+    const action: LayerDeleteHistoryAction = {
+      id: this.nextHistoryActionId,
+      kind: "layer-delete",
+      entries,
+      selectedKeyBefore,
+      selectedKeyAfter,
+      activeRasterLayerIdBefore: this.layerStack.active.id,
+      activeRasterLayerIdAfter: survivor.id,
+      referenceRasterLayerIdBefore,
+      referenceRasterLayerIdAfter,
+    };
+    let deletionApplied = false;
     try {
-      await this.waitForIdle();
-
-      const scene = this.mixedSceneStack;
-      if (!scene) throw new Error("Scena mista non disponibile per l'eliminazione.");
-      // L'elenco e' dal basso verso l'alto: il ripristino reinserisce in avanti e
-      // gli indici restano validi mentre la pila ricresce.
-      const ordered = [...unit].sort(
-        (left, right) => this.layerStack.indexOfId(left.id) - this.layerStack.indexOfId(right.id),
-      );
-      for (const record of ordered) {
-        const gpu = this.layerGpu.get(record.id);
-        const hot = gpu?.hot ?? null;
-        const seed = record.hasContent && hot
-          ? await createLayerColdStorageCandidate(
-            this,
-            record,
-            hot,
-            coldStorageMaskForRecord(record),
-            this.nextHistoryActionId,
-            "history",
-          )
-          : null;
-        entries.push({
-          layerRecord: record,
-          rasterLayerIndex: this.layerStack.indexOfId(record.id),
-          sceneIndex: scene.indexOfKey(`raster:${record.id}`),
-          clippingParentId: record.clippingParentId,
-          seed,
-          baseBounds: record.contentBounds ? { ...record.contentBounds } : null,
-        });
-      }
-
-      // La cattura dei seed sottomette copie GPU. Senza drenarle, la transazione
-      // strutturale trova la presentazione congelata con lavoro pendente e si
-      // interrompe: il guard e' giusto, mancava l'attesa.
-      await this.waitForIdle();
-
-      const selectedKeyBefore = scene.selected.key;
-      const selectedKeyAfter = scene.selected.kind === "raster"
-          && doomed.has(scene.selected.rasterLayerId)
-        ? `raster:${survivor.id}` as const
-        : selectedKeyBefore;
-      const referenceRasterLayerIdBefore = this.layerStack.referenceLayerId;
-      const referenceRasterLayerIdAfter = referenceRasterLayerIdBefore !== null
-          && doomed.has(referenceRasterLayerIdBefore)
-        ? null
-        : referenceRasterLayerIdBefore;
-      const action: LayerDeleteHistoryAction = {
-        id: this.nextHistoryActionId,
-        kind: "layer-delete",
-        entries,
-        selectedKeyBefore,
-        selectedKeyAfter,
-        activeRasterLayerIdBefore: this.layerStack.active.id,
-        activeRasterLayerIdAfter: survivor.id,
-        referenceRasterLayerIdBefore,
-        referenceRasterLayerIdAfter,
-      };
-      let deletionApplied = false;
-      try {
-        await applyLayerDeleteHistory(this, action, 1);
-        deletionApplied = true;
-        commitHistoryActionAtomically(this, action);
-        journalOwnsSeeds = true;
-      } catch (error) {
-        let rollbackError: unknown = null;
-        if (deletionApplied) {
-          try {
-            await applyLayerDeleteHistory(this, action, -1);
-          } catch (restoreError) {
-            rollbackError = restoreError;
-            preserveSeedsAfterFailure = true;
-            this.latchDocumentStateInconsistent(
-              "Pubblicazione della cancellazione fallita e rollback incompleto: ricarica la pagina.",
-            );
-          }
-        }
-        if (this.historyStateInconsistent) preserveSeedsAfterFailure = true;
-        if (rollbackError) {
-          const operationMessage = error instanceof Error ? error.message : String(error);
-          const rollbackMessage = rollbackError instanceof Error
-            ? rollbackError.message
-            : String(rollbackError);
-          throw new Error(
-            `Cancellazione non pubblicata: ${operationMessage}; rollback fallito: ${rollbackMessage}`,
+      await applyLayerDeleteHistory(this, action, 1);
+      deletionApplied = true;
+      commitHistoryActionAtomically(this, action);
+    } catch (error) {
+      let rollbackError: unknown = null;
+      if (deletionApplied) {
+        try {
+          await applyLayerDeleteHistory(this, action, -1);
+        } catch (restoreError) {
+          rollbackError = restoreError;
+          this.latchDocumentStateInconsistent(
+            "Pubblicazione della cancellazione fallita e rollback incompleto: ricarica la pagina.",
           );
         }
-        throw error;
       }
-      this.publishStats();
-    } finally {
-      if (!journalOwnsSeeds && !preserveSeedsAfterFailure) {
+      if (!rollbackError) {
         for (const entry of entries) destroyLayerColdStorage(entry.seed);
       }
-      this.historyBusy = this.historyStateInconsistent;
-      this.publishHistoryState();
-      this.scheduleLayerColdCompression();
+      if (rollbackError) {
+        const operationMessage = error instanceof Error ? error.message : String(error);
+        const rollbackMessage = rollbackError instanceof Error
+          ? rollbackError.message
+          : String(rollbackError);
+        throw new Error(
+          `Cancellazione non pubblicata: ${operationMessage}; rollback fallito: ${rollbackMessage}`,
+        );
+      }
+      throw error;
     }
+    this.publishHistoryState();
+    this.publishStats();
+    scheduleHistoryMaintenance(this);
   }
 
   /**
@@ -6332,22 +6169,6 @@ export class BrushEngine {
     this.layerCompositeFaultQueue = [...faultPoints];
   }
 
-  injectVectorRasterFault(...faultPoints: VectorRasterFaultPoint[]): void {
-    if (!import.meta.env.DEV) {
-      throw new Error("Iniezione guasti rasterizzazione vettoriale disponibile solo in modalità dev.");
-    }
-    if (faultPoints.length === 0) {
-      throw new Error("Specifica almeno un punto di guasto della rasterizzazione vettoriale.");
-    }
-    this.vectorRasterFaultQueue = [...faultPoints];
-  }
-
-  maybeInjectVectorRasterFault(point: VectorRasterFaultPoint): void {
-    if (!import.meta.env.DEV || this.vectorRasterFaultQueue[0] !== point) return;
-    this.vectorRasterFaultQueue.shift();
-    throw new Error(`Guasto iniettato nella rasterizzazione vettoriale: ${point}.`);
-  }
-
   destroyMergedSurface(surface: MergedSurfaceResources | null | undefined): void {
     if (surface) {
       destroyMergedSurfaceTexture(this, surface.texture);
@@ -7107,20 +6928,19 @@ export class BrushEngine {
       commitHistoryActionAtomically(this, action);
     } catch (error) {
       try {
-        await rollbackUnpublishedVectorRasterization(this, action);
+        await applyVectorRasterizeHistory(this, action, -1);
+        destroyVectorRasterHistorySeed(action);
       } catch (restoreError) {
+        this.latchDocumentStateInconsistent(
+          "Pubblicazione della rasterizzazione fallita e rollback incompleto: ricarica la pagina.",
+        );
         const operationMessage = error instanceof Error ? error.message : String(error);
         const rollbackMessage = restoreError instanceof Error
           ? restoreError.message
           : String(restoreError);
-        const combined = new Error(
+        throw new Error(
           `Rasterizzazione non pubblicata: ${operationMessage}; rollback fallito: ${rollbackMessage}`,
         );
-        this.latchDocumentStateInconsistent(
-          "Pubblicazione della rasterizzazione fallita e rollback incompleto: ricarica la pagina.",
-          combined,
-        );
-        throw combined;
       }
       throw error;
     }
@@ -7196,13 +7016,6 @@ export class BrushEngine {
     if (this.activeStrokeProfile) this.activeStrokeProfile.historyCommittedActions += 1;
     this.publishHistoryState();
     this.publishStats();
-    // prepareAndApplyLayerMerge has already released layerSwitchBusy here, so
-    // foreground storage maintenance can progress. Keep the controller/UI busy
-    // until both the merge inputs and output have left GPU-resident History.
-    // The action is already committed and visible. A slow durable write must
-    // not turn that successful merge into an apparent failure at an arbitrary
-    // timeout; storage failures have their own fail-closed History path.
-    await this.waitForHistoryPayloadDrain(null);
     return prepared.result;
   }
 
@@ -7323,9 +7136,6 @@ export class BrushEngine {
     }
     const source = this.layerStack.at(sourceIndex);
     this.assertLayerSwitchAllowed();
-    if (!this.admitHistoryPayloadMutation()) {
-      throw new Error("Duplicazione rinviata durante il salvataggio della cronologia locale.");
-    }
     const startedAt = performance.now();
     let reservation: MemoryReservation | null = null;
     let seed: LayerColdStorageResources | null = null;
@@ -9187,7 +8997,6 @@ export class BrushEngine {
       !stroke
       || !stroke.stabilizer
       || !stroke.lightGlazeSettings
-      || stroke.historyCaptureLimitReached
       || update.bypassed
       || update.tailCount < 2
     ) {

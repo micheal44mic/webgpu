@@ -626,7 +626,6 @@ export async function beginRasterMotionBlur(
     );
   }
   engine.assertLayerSwitchAllowed();
-  if (!engine.admitHistoryPayloadMutation()) return null;
   engine.persistActiveLayerState();
   if (!record.hasContent || !record.contentBounds) {
     throw new Error("Il livello raster selezionato è vuoto.");

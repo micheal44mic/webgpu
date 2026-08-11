@@ -34,16 +34,7 @@ import {
   adaptiveHistoryStorageKeepHotActions,
   canonicalHistoryJson,
   historyDiskBudget,
-  historyStorageHotPayloadHardBytes,
-  historyStorageMaximumHotActions,
   planHistoryStorageSegment,
-  HISTORY_STORAGE_DESKTOP_HOT_PAYLOAD_HARD_BYTES,
-  HISTORY_STORAGE_DESKTOP_MAXIMUM_HOT_ACTIONS,
-  HISTORY_STORAGE_KEEP_HOT_ACTIONS,
-  HISTORY_STORAGE_MAXIMUM_DESCRIPTOR_BYTES,
-  HISTORY_STORAGE_MOBILE_HOT_PAYLOAD_HARD_BYTES,
-  HISTORY_STORAGE_MOBILE_MAXIMUM_HOT_ACTIONS,
-  HISTORY_STORAGE_SPILL_HIGH_WATER_BYTES,
 } from "../src/history-storage-core.ts";
 
 assert.equal(
@@ -113,31 +104,6 @@ const checkpointBytesFor = (documentSize, format) =>
   });
   assert.deepEqual(oversize.actionIds, [50], "un'azione oversize non va spezzata");
   assert.equal(oversize.oversize, true);
-  const maximumFullMergeBytes = 17 * checkpointBytesFor(4096, "rgba16float");
-  assert.equal(maximumFullMergeBytes, 2176 * MiB);
-  assert(
-    maximumFullMergeBytes <= HISTORY_STORAGE_MAXIMUM_DESCRIPTOR_BYTES,
-    "una Merge valida di 16 raster pieni più output deve essere descrivibile a chunk",
-  );
-  const maximumMergePlan = planHistoryStorageSegment({
-    currentResidentBytes: maximumFullMergeBytes,
-    highWaterBytes: 0,
-    targetSegmentBytes: 64 * MiB,
-    maximumSegmentBytes: 128 * MiB,
-    journalLength: 1,
-    keepHotActions: 0,
-    actions: [{
-      actionId: 52,
-      cursor: 0,
-      payloadBytes: maximumFullMergeBytes,
-      payloadCount: 17,
-      alreadyStored: false,
-      pinned: false,
-    }],
-  });
-  assert.deepEqual(maximumMergePlan.actionIds, [52]);
-  assert.equal(maximumMergePlan.rawBytes, maximumFullMergeBytes);
-  assert.equal(maximumMergePlan.oversize, true);
   const afterOversizeBudgetRejection = planHistoryStorageSegment({
     currentResidentBytes: 300 * MiB,
     highWaterBytes: 140 * MiB,
@@ -157,112 +123,32 @@ const checkpointBytesFor = (documentSize, format) =>
   );
   assert.equal(afterOversizeBudgetRejection.oversize, false);
 
-  assert.equal(HISTORY_STORAGE_MOBILE_MAXIMUM_HOT_ACTIONS, 2);
-  assert.equal(HISTORY_STORAGE_DESKTOP_MAXIMUM_HOT_ACTIONS, 4);
-  assert.equal(HISTORY_STORAGE_MOBILE_HOT_PAYLOAD_HARD_BYTES, 48 * MiB);
-  assert.equal(HISTORY_STORAGE_DESKTOP_HOT_PAYLOAD_HARD_BYTES, 160 * MiB);
-  assert.equal(historyStorageMaximumHotActions(true), 2);
-  assert.equal(historyStorageMaximumHotActions(false), 4);
-  assert.equal(historyStorageHotPayloadHardBytes(true), 48 * MiB);
-  assert.equal(historyStorageHotPayloadHardBytes(false), 160 * MiB);
-  assert.equal(HISTORY_STORAGE_KEEP_HOT_ACTIONS, 4);
-  assert.equal(HISTORY_STORAGE_SPILL_HIGH_WATER_BYTES, 160 * MiB);
-
-  const smallActions = Array.from({ length: 7 }, (_, cursor) => ({
+  const recentLargeActions = Array.from({ length: 7 }, (_, cursor) => ({
     cursor,
-    payloadBytes: 8 * MiB,
+    payloadBytes: 32 * MiB,
   }));
   assert.equal(
     adaptiveHistoryStorageKeepHotActions({
-      currentResidentBytes: 16 * MiB,
-      highWaterBytes: 48 * MiB,
-      hotPayloadBudgetBytes: 48 * MiB,
+      currentResidentBytes: 224 * MiB,
+      highWaterBytes: 180 * MiB,
+      hotPayloadBudgetBytes: 50 * MiB,
       journalLength: 7,
-      maximumHotActions: 2,
-      actions: smallActions,
+      actions: recentLargeActions,
     }),
-    2,
-    "sotto il cap mobile i due comandi più recenti devono restare caldi",
-  );
-  assert.equal(
-    adaptiveHistoryStorageKeepHotActions({
-      currentResidentBytes: 32 * MiB,
-      highWaterBytes: 160 * MiB,
-      hotPayloadBudgetBytes: 160 * MiB,
-      journalLength: 7,
-      maximumHotActions: 4,
-      actions: smallActions,
-    }),
-    4,
-    "sotto il cap desktop i quattro comandi più recenti devono restare caldi",
-  );
-  const mobileLargeActions = [
-    { cursor: 0, payloadBytes: 8 * MiB },
-    { cursor: 1, payloadBytes: 32 * MiB },
-    { cursor: 2, payloadBytes: 32 * MiB },
-  ];
-  const pressuredMobileKeep = adaptiveHistoryStorageKeepHotActions({
-    currentResidentBytes: 72 * MiB,
-    highWaterBytes: 48 * MiB,
-    hotPayloadBudgetBytes: 48 * MiB,
-    journalLength: 3,
-    maximumHotActions: 2,
-    actions: mobileLargeActions,
-  });
-  assert.equal(
-    pressuredMobileKeep,
     1,
-    "il cap byte deve restringere la finestra mobile anche sotto il massimo azioni",
+    "sette checkpoint grandi non devono essere tutti protetti dalla finestra fissa di 16 azioni",
   );
   assert.equal(
     adaptiveHistoryStorageKeepHotActions({
-      currentResidentBytes: 64 * MiB,
-      highWaterBytes: 48 * MiB,
-      hotPayloadBudgetBytes: 48 * MiB,
-      journalLength: 1,
-      maximumHotActions: 2,
-      actions: [{ cursor: 0, payloadBytes: 64 * MiB }],
+      currentResidentBytes: 160 * MiB,
+      highWaterBytes: 180 * MiB,
+      hotPayloadBudgetBytes: 50 * MiB,
+      journalLength: 40,
+      actions: recentLargeActions,
     }),
-    0,
-    "una singola azione oversize non deve essere protetta dalla hot window",
+    16,
+    "sotto pressione nulla resta valida la normale finestra calda di 16 azioni",
   );
-  const countPressureBelowByteCap = planHistoryStorageSegment({
-    currentResidentBytes: 3 * MiB,
-    highWaterBytes: 48 * MiB,
-    targetSegmentBytes: 32 * MiB,
-    maximumSegmentBytes: 64 * MiB,
-    journalLength: 3,
-    keepHotActions: 2,
-    actions: [
-      { actionId: 1, cursor: 0, payloadBytes: MiB, payloadCount: 1, alreadyStored: false, pinned: false },
-      { actionId: 2, cursor: 1, payloadBytes: MiB, payloadCount: 1, alreadyStored: false, pinned: false },
-      { actionId: 3, cursor: 2, payloadBytes: MiB, payloadCount: 1, alreadyStored: false, pinned: false },
-    ],
-  });
-  assert.equal(countPressureBelowByteCap.required, true);
-  assert.deepEqual(
-    countPressureBelowByteCap.actionIds,
-    [1],
-    "il terzo comando mobile deve spillare il più vecchio anche sotto il cap byte",
-  );
-  const bytePressurePlan = planHistoryStorageSegment({
-    currentResidentBytes: 72 * MiB,
-    highWaterBytes: 48 * MiB,
-    targetSegmentBytes: 32 * MiB,
-    maximumSegmentBytes: 64 * MiB,
-    journalLength: 3,
-    keepHotActions: pressuredMobileKeep,
-    actions: mobileLargeActions.map((action, index) => ({
-      actionId: index + 1,
-      cursor: action.cursor,
-      payloadBytes: action.payloadBytes,
-      payloadCount: 1,
-      alreadyStored: false,
-      pinned: false,
-    })),
-  });
-  assert.deepEqual(bytePressurePlan.actionIds, [1, 2]);
-  assert.equal(bytePressurePlan.rawBytes, 40 * MiB);
 
   const budget = historyDiskBudget({
     quota: 10 * 1024 * MiB,
@@ -872,8 +758,7 @@ for (const actionCount of [10, 100, 500, 1000]) {
   assert(!runtime.includes("JSON.stringify"));
   assert.match(
     historyRuntime,
-    /for \(const replaySeed of replaySeeds\) \{[\s\S]{0,300}streamStoredColdSeedIntoHot\(replaySeed, hot\)/,
-    "i checkpoint del replay devono essere consumati uno alla volta dal disco",
+    /for \(const replaySeed of replaySeeds\) \{\s*encodeLayerColdHydration\(encoder, replaySeed, hot\);/,
   );
 }
 
@@ -1583,35 +1468,12 @@ console.log("History rapid-input queue and retention-floor feedback verified.");
     new URL("../src/engine-raster-image-runtime.ts", import.meta.url),
     "utf8",
   );
-  const vectorRasterRuntime = readFileSync(
-    new URL("../src/engine-vector-raster-runtime.ts", import.meta.url),
-    "utf8",
-  );
-  const mergeRuntime = readFileSync(
-    new URL("../src/engine-layer-merge-runtime.ts", import.meta.url),
-    "utf8",
-  );
   const fillRuntime = readFileSync(
     new URL("../src/engine-fill-runtime.ts", import.meta.url),
     "utf8",
   );
-  const destructiveRuntimes = [
-    "engine-raster-transform-runtime.ts",
-    "engine-gaussian-blur-runtime.ts",
-    "engine-motion-blur-runtime.ts",
-    "engine-noise-runtime.ts",
-    "engine-liquify-runtime.ts",
-  ].map((name) => readFileSync(new URL(`../src/${name}`, import.meta.url), "utf8"));
   const gpuStorage = readFileSync(
     new URL("../src/gpu-history-storage.ts", import.meta.url),
-    "utf8",
-  );
-  const coldStorage = readFileSync(
-    new URL("../src/engine-cold-storage.ts", import.meta.url),
-    "utf8",
-  );
-  const brushEngine = readFileSync(
-    new URL("../src/brush-engine.ts", import.meta.url),
     "utf8",
   );
 
@@ -1643,59 +1505,6 @@ console.log("History rapid-input queue and retention-floor feedback verified.");
     maintenance.includes("historyMaintenanceEngineIdle(engine, true)"),
     "lo spill non deve auto-annullarsi quando pubblica busy=spilling",
   );
-  assert.match(
-    maintenance,
-    /function historySpillHighWaterBytes\([^)]*\): number \{\s*return historyStorageHotPayloadHardBytes\(MOBILE_DEVICE_CLASS\);\s*\}/,
-    "la manutenzione deve usare il hard cap payload del profilo dispositivo",
-  );
-  assert(!maintenance.includes("historySpillMiB"),
-    "un override diagnostico non deve poter riaprire una finestra residente");
-  assert.match(
-    maintenance,
-    /const HISTORY_STORAGE_DRAIN_CONTINUATION_DELAY_MS = 0;/,
-    "il drain successivo deve essere immediato ma asincrono",
-  );
-  assert.match(
-    coordinator,
-    /for \(let segmentCount = 0; segmentCount < 4; segmentCount \+= 1\)/,
-    "ogni passata di spill deve restare limitata a quattro segmenti",
-  );
-  assert(
-    coordinator.includes("maximumHotActions: historyStorageMaximumHotActions(MOBILE_DEVICE_CLASS)")
-      && coordinator.includes("hotPayloadBudgetBytes: highWaterBytes")
-      && coordinator.includes("if (!this.residentPayloadSegmentPlan(options).plan.required) break;"),
-    "count cap e byte cap devono convergere tramite lo stesso planner bounded",
-  );
-  assert(
-    coordinator.includes('engineBuildId: "history-local-bounded-hot-streaming-v3"'),
-    "il fingerprint locale deve distinguere la nuova ownership policy",
-  );
-  const maintenanceScheduler = maintenance.slice(
-    maintenance.indexOf("export function scheduleHistoryMaintenance"),
-    maintenance.indexOf("export function cancelHistoryMaintenance"),
-  );
-  assert.match(
-    maintenanceScheduler,
-    /if \(deferJournalEviction\) \{[\s\S]*?scheduleHistoryMaintenance\(engine, HISTORY_STORAGE_DRAIN_CONTINUATION_DELAY_MS\);/,
-    "finche' esistono payload residenti drenabili deve essere accodata un'altra passata",
-  );
-  assert.match(
-    maintenanceScheduler,
-    /window\.setTimeout\([\s\S]*?, delayMs\);/,
-    "la continuazione deve sempre attraversare un nuovo turno del browser",
-  );
-  assert(!maintenanceScheduler.includes("while ("),
-    "il drain non deve trasformarsi in un loop sincrono");
-  assert(
-    maintenance.includes("if (!engine.initialized || !engine.historyLocalStorage) return false;")
-      && maintenance.includes(
-        "state.storageMetadataBytes = engine.historyLocalStorage?.metadataResidentBytes() ?? 0;",
-      )
-      && maintenanceScheduler.includes(
-        "if (!engine.initialized || !engine.historyLocalStorage) return;",
-      ),
-    "telemetria e maintenance non devono dereferenziare History durante il pre-init",
-  );
 
   const move = historyRuntime.slice(
     historyRuntime.indexOf("export async function moveHistoryCursor"),
@@ -1704,7 +1513,7 @@ console.log("History rapid-input queue and retention-floor feedback verified.");
   assert(
     move.indexOf("await engine.historyLocalStorage.prepareHistoryStep(delta);")
       < move.indexOf("engine.historyCursor = nextCursor;"),
-    "target e rollback devono essere preflightati prima che il cursore cambi",
+    "target e rollback devono essere residenti prima che il cursore cambi",
   );
   assert(move.includes("cancelHistoryMaintenance(engine);"));
   assert(coordinator.includes("planRasterHistoryReplay({"));
@@ -1722,38 +1531,12 @@ console.log("History rapid-input queue and retention-floor feedback verified.");
     "Undo deve attendere lo spill e ricalcolare poi le dipendenze residenti",
   );
   assert(
-    prepare.indexOf("enforceHistoryMetadataLimit(this.engine)")
-      < prepare.indexOf("await this.flushUnstoredPayloadsBeforeNavigation();")
-      && prepare.indexOf("await this.flushUnstoredPayloadsBeforeNavigation();")
-      < prepare.indexOf("this.payloadsRequiredForStep(delta)"),
-    "Undo rapido deve validare metadata e rendere durable solo l'overflow prima del journal end",
-  );
-  const navigationFlush = coordinator.slice(
-    coordinator.indexOf("private async flushUnstoredPayloadsBeforeNavigation"),
-    coordinator.indexOf("ensureLayerMergeSeedResident", coordinator.indexOf("private async flushUnstoredPayloadsBeforeNavigation")),
-  );
-  assert(
-    navigationFlush.includes("await this.spillIfNeeded(options);")
-      && navigationFlush.includes("enforceHistoryMetadataLimit(this.engine)")
-      && navigationFlush.includes("this.unstoredResidentPayloadPressureBytes()")
-      && navigationFlush.includes("this.totalResidentPayloadBytes()")
-      && navigationFlush.includes("this.engine.resetHistoryState();")
-      && navigationFlush.includes("Payload History non persistibili prima di Undo/Redo"),
-    "Undo deve spillare solo l'overflow e fallire chiuso se non diventa durable",
-  );
-  assert(
-    prepare.includes('crossed?.kind === "layer-delete" && delta > 0')
-      && prepare.includes('crossed?.kind === "layer-add" && delta < 0')
-      && prepare.includes("await this.verifyRequiredPayloadsForRollback(required);"),
-    "Delete Redo e Add Undo devono verificare i seed necessari al rollback distruttivo",
-  );
-  assert(
     coordinator.includes("periodicHistoryCheckpoints(this.engine)")
       && coordinator.includes("prepareRasterReplayAtCursor")
       && maintenance.includes("historyColdSeedResidentBytes(checkpoint.seed)")
       && maintenance.includes("rebaseRequiredForReplayBudget")
       && maintenance.includes("currentReplayChainBytes + bytesOf(deltaMask)"),
-    "i checkpoint periodici devono poter essere spillati con accounting residente",
+    "i checkpoint periodici devono poter essere spillati e preidratati con accounting residente",
   );
   const fill = fillRuntime.slice(
     fillRuntime.indexOf("export async function fillAtClientPoint"),
@@ -1762,36 +1545,7 @@ console.log("History rapid-input queue and retention-floor feedback verified.");
   assert(
     fill.indexOf("await engine.historyLocalStorage.prepareRasterReplayAtCursor(")
       < fill.indexOf("renderer.encodeLiveCommit("),
-    "il Fill deve preflightare il piano di rollback prima di mutare i pixel",
-  );
-  assert(
-    fill.includes("engine.activeDestructiveRasterEditKind() !== null")
-      && fill.indexOf("engine.admitHistoryPayloadMutation()")
-        < fill.indexOf("engine.historyBusy = true"),
-    "Fill deve rispettare sessioni distruttive e backpressure prima di acquisire il gate",
-  );
-  for (const runtime of destructiveRuntimes) {
-    assert(
-      runtime.indexOf("engine.admitHistoryPayloadMutation()")
-        < runtime.indexOf("engine.persistActiveLayerState()"),
-      "ogni sessione distruttiva deve drenare History prima di congelare la maintenance",
-    );
-  }
-  assert(
-    rasterImageRuntime.indexOf("engine.admitHistoryPayloadMutation()")
-      < rasterImageRuntime.indexOf("engine.layerSwitchBusy = true"),
-  );
-  assert(
-    vectorRasterRuntime.indexOf("engine.admitHistoryPayloadMutation()")
-      < vectorRasterRuntime.indexOf("engine.layerSwitchBusy = true"),
-  );
-  const mergePreparation = mergeRuntime.slice(
-    mergeRuntime.indexOf("export async function prepareAndApplyLayerMerge"),
-    mergeRuntime.indexOf("export async function applyLayerMergeHistory"),
-  );
-  assert(
-    mergePreparation.indexOf("engine.admitHistoryPayloadMutation()")
-      < mergePreparation.indexOf("engine.layerSwitchBusy = true"),
+    "il Fill deve preidratare il piano di rollback prima di mutare i pixel",
   );
   assert(coordinator.includes("this.engine.selectionHistoryClipBindGroups.clear();"));
   assert(coordinator.includes("Azione History troppo grande per il budget locale"));
@@ -1807,148 +1561,10 @@ console.log("History rapid-input queue and retention-floor feedback verified.");
     "un singolo merge oversize non deve disabilitare globalmente gli spill successivi",
   );
   assert(coordinator.includes("this.consecutiveSpillFailures >= 3"));
-  assert(
-    coordinator.includes("this.consecutiveSpillFailures += 1")
-      && !coordinator.includes("failureSignature === this.lastSpillFailureSignature"),
-    "i retry devono essere limitati per backend anche se il nome dell'errore alterna",
-  );
+  assert(coordinator.includes("failureSignature === this.lastSpillFailureSignature"));
   assert(coordinator.includes("trimHydratedWorkingSetAfterStep"));
   assert(historyRuntime.includes("trimHydratedWorkingSetAfterStep(delta)"));
   assert(!coordinator.includes("localStorage."), "i payload History non vanno in localStorage");
-  const hydrateGpu = coordinator.slice(
-    coordinator.indexOf("private async hydrateGpuPayloadFromStorage"),
-    coordinator.indexOf("private async restoreColdSeedFromStorage"),
-  );
-  assert(
-    hydrateGpu.includes("beginHydration(slice)")
-      && hydrateGpu.includes("hydration.writeChunk(")
-      && hydrateGpu.includes("hydration.rollbackNoThrow()"),
-    "una slice GPU stored-only deve essere idratata transazionalmente a chunk",
-  );
-  assert(
-    !coordinator.includes("new Uint8Array(payload.rawBytes)"),
-    "l'idratazione non deve materializzare l'intero payload History sullo heap",
-  );
-  const hydrateRequired = coordinator.slice(
-    coordinator.indexOf("private async hydrateRequiredPayloads"),
-    coordinator.indexOf("private async assertRequiredPayloadsAvailable"),
-  );
-  assert(
-    hydrateRequired.includes("const newlyHydrated:")
-      && hydrateRequired.includes("prepareDemoteMany(gpuSlices).commitNoThrow()")
-      && hydrateRequired.includes("candidate.handle.demoteResidentNoThrow()"),
-    "un preflight parziale fallito deve ritirare tutti i candidati già idratati",
-  );
-  const hydrateCold = coordinator.slice(
-    coordinator.indexOf("private async restoreColdSeedFromStorage"),
-    coordinator.indexOf("private async readStoredChunk"),
-  );
-  assert(
-    hydrateCold.includes("private async *readColdSeedChunksFromStorage(")
-      && hydrateCold.includes("restoreColdStorageResourcesFromChunkStream"),
-    "i checkpoint cold devono fluire storage→decompressione→GPU un chunk alla volta",
-  );
-  assert(!hydrateCold.includes("chunks.push("),
-    "il percorso cold locale non deve accumulare tutti i chunk in RAM");
-  assert(coldStorage.includes("export async function restoreColdStorageResourcesFromChunkStream"));
-  assert(coldStorage.includes("export async function uploadColdStorageChunkStreamIntoHot"));
-  assert(
-    coordinator.includes("ensureGpuSlicesResidentForReplay(")
-      && coordinator.includes("demoteStoredGpuSlicesAfterReplay(")
-      && historyRuntime.includes("await prepareReplayBatchInputs(batch);")
-      && historyRuntime.includes("await finishReplayBatch(batch, index);"),
-    "ogni batch deve ottenere e rilasciare una lease GPU just-in-time",
-  );
-  assert(
-    coordinator.includes("streamStoredColdSeedIntoHot(")
-      && historyRuntime.includes(".streamStoredColdSeedIntoHot(replaySeed, hot)")
-      && rasterImageRuntime.includes(".streamStoredColdSeedIntoHot(seed, hot)")
-      && vectorRasterRuntime.includes(".streamStoredColdSeedIntoHot(action.seed, hot)"),
-    "replay, import/struttura e rasterizzazione devono evitare texture History intermedie",
-  );
-  assert(
-    coordinator.includes("restoreStoredColdSeedForDetachedReplay(")
-      && mergeRuntime.includes(".restoreStoredColdSeedForDetachedReplay(seed)"),
-    "Undo merge deve creare direttamente l'autorità cold viva, senza restore+clone",
-  );
-  const rollbackVerification = coordinator.slice(
-    coordinator.indexOf("private async verifyRequiredPayloadsForRollback"),
-    coordinator.indexOf("trimHydratedWorkingSetAfterStep"),
-  );
-  assert(
-    rollbackVerification.includes("await verifyStoredChunk(bytes, chunk)")
-      && rollbackVerification.includes("historyHash32(bytes) !== chunk.rawHash32")
-      && rollbackVerification.includes("await decompressLayerColdChunk(this.engine")
-      && !coordinator.includes("verifiedStoredPayloadIds"),
-    "il preflight rollback deve rileggere e verificare hash/decompressione a ogni uso distruttivo",
-  );
-  assert(
-    historyRuntime.includes("selectionRestoreAttempted = true;")
-      && historyRuntime.includes("if (selectionRestoreAttempted && expectedSelection)"),
-    "un restore selection che lancia dopo il submit deve comunque essere compensato",
-  );
-  assert.equal(
-    (coldStorage.match(/waitForGpuCapped\(`\$\{label\} · chunk \$\{firstArrayLayer\}`\)/g) ?? []).length,
-    2,
-    "restore cold e direct-hot devono entrambi limitare lo staging interno della GPUQueue",
-  );
-  const trimHydrated = coordinator.slice(
-    coordinator.indexOf("trimHydratedWorkingSetAfterStep"),
-    coordinator.indexOf("private async initializeSession"),
-  );
-  assert(!trimHydrated.includes("protectedPayloadIds"),
-    "la cache di idratazione profonda non deve crescere oltre la hot tail autorevole");
-  assert(trimHydrated.includes("trimEmptyPages(false)"));
-  assert(!brushEngine.includes("this.historyGpuStorage.prewarm();"),
-    "un documento vuoto non deve preallocare pagine GPU History");
-  assert(
-    coordinator.includes("unstoredResidentPayloadBytes()")
-      && coordinator.includes("unstoredResidentPayloadPressureBytes()")
-      && coordinator.includes("totalResidentPayloadBytes(): number")
-      && coordinator.includes("residentPayloadBytes(): number")
-      && maintenance.includes("Undo svuotato senza modificare il disegno"),
-    "quota/backend failure deve tollerare solo il tail bounded e fallire chiuso sull'overflow",
-  );
-  assert(
-    coordinator.includes("metadataResidentBytes(): number")
-      && maintenance.includes("[[batch]]")
-      && maintenance.includes("HISTORY_CPU_METADATA_MAXIMUM_BYTES")
-      && maintenance.includes("seedLiveSceneOwnedHistoryObjects(")
-      && maintenance.includes("sameObjectSet(state.observedLiveSceneDocuments, liveSceneDocuments)")
-      && maintenance.includes("Metadata cronologia oltre il limite"),
-    "batch e indice storage devono essere contabilizzati e avere un cap JS esplicito",
-  );
-  assert(
-    maintenance.includes("HISTORY_PERIODIC_CHECKPOINT_MAX_RESIDENT_BYTES")
-      && maintenance.includes("candidateBytes <= HISTORY_PERIODIC_CHECKPOINT_MAX_RESIDENT_BYTES"),
-    "un checkpoint periodico denso non deve allocare 64/128 MiB di History",
-  );
-  assert(
-    maintenance.includes("function failClosedStrandedHistory(")
-      && maintenanceScheduler.includes("}).catch((error) => {")
-      && maintenanceScheduler.includes("expectedGeneration !== state.generation")
-      && maintenanceScheduler.includes("failClosedStrandedHistory(engine, error);"),
-    "una rejection inattesa della maintenance non deve lasciare payload stranded senza timer",
-  );
-  assert(
-    maintenanceScheduler.includes("enforceHistoryMetadataLimit(engine)")
-      && maintenance.includes("export function enforceHistoryMetadataLimit"),
-    "il cap metadata deve essere applicato sincronicamente anche durante raffiche di azioni",
-  );
-  assert(
-    maintenance.includes("const HISTORY_MAINTENANCE_DELAY_MS = 0;")
-      && brushEngine.includes("scheduleHistoryMaintenance(this, 0);"),
-    "pointer-up e retry devono avviare subito lo spill asincrono del tail eccedente",
-  );
-  const spillPrelude = coordinator.slice(
-    coordinator.indexOf("async spillIfNeeded"),
-    coordinator.indexOf("for (let segmentCount", coordinator.indexOf("async spillIfNeeded")),
-  );
-  assert(
-    spillPrelude.indexOf("this.demoteStoredResidentCaches(options)")
-      < spillPrelude.indexOf("if (!this.writable) return changed;"),
-    "le copie già durable vanno demote anche se nuove scritture sono disabilitate",
-  );
 
   const floorRetirement = maintenance.slice(
     maintenance.indexOf("// The global floor makes structural Undo below it unreachable."),

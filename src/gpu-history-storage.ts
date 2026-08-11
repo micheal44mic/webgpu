@@ -1,9 +1,7 @@
 export const GPU_HISTORY_STORAGE_STRATEGY =
-  "disk-first-zero-idle-streaming-jit-replay-v3" as const;
+  "gpu-resident-paged-packed-payload-copy-replay-local-spill-v2" as const;
 export const GPU_HISTORY_PAGE_BYTES = 2 * 1024 * 1024;
 export const GPU_HISTORY_COPY_ALIGNMENT_BYTES = 4;
-/** Hard upper bound for one CPU chunk submitted by a streaming hydration. */
-export const GPU_HISTORY_HYDRATION_CHUNK_BYTES = 1024 * 1024;
 
 export interface GpuHistorySlice {
   readonly id: number;
@@ -39,29 +37,6 @@ export interface PreparedGpuHistoryDemotion {
   commitNoThrow(): number;
 }
 
-/**
- * One unpublished GPU binding populated incrementally from durable storage.
- *
- * `writtenBytes` counts validated logical payload coverage, including the at
- * most three bytes temporarily retained for WebGPU's four-byte write
- * alignment. The binding becomes observable through the slice only after a
- * complete `commit()`.
- */
-export interface GpuHistoryHydrationTransaction {
-  readonly slice: GpuHistorySlice;
-  readonly logicalBytes: number;
-  readonly writtenBytes: number;
-  readonly remainingBytes: number;
-  writeChunk(
-    payloadOffsetBytes: number,
-    bytes: Uint8Array,
-    sourceOffsetBytes?: number,
-    lengthBytes?: number,
-  ): void;
-  commit(): void;
-  rollbackNoThrow(): boolean;
-}
-
 interface FreeRange {
   offsetBytes: number;
   sizeBytes: number;
@@ -85,17 +60,6 @@ interface ManagedGpuHistorySlice extends GpuHistorySlice {
   readonly alignmentBytes: number;
   binding: SliceBinding | null;
   released: boolean;
-}
-
-interface PendingGpuHistoryHydration {
-  readonly handle: ManagedGpuHistorySlice;
-  readonly binding: SliceBinding;
-  readonly alignmentTail: Uint8Array;
-  writtenBytes: number;
-  uploadedBytes: number;
-  alignmentTailBytes: number;
-  failed: boolean;
-  state: "active" | "committed" | "rolled-back";
 }
 
 function alignBytes(value: number, alignment: number): number {
@@ -122,8 +86,6 @@ export class GpuHistoryStorage {
   private readonly handles = new Map<number, ManagedGpuHistorySlice>();
   /** Physical bindings only. */
   private readonly resident = new Map<number, SliceBinding>();
-  /** Reserved but deliberately unpublished bindings owned by hydrations. */
-  private readonly pendingHydrations = new Map<number, PendingGpuHistoryHydration>();
   private releaseListener: ((slice: GpuHistorySlice) => void) | null = null;
   private nextPageId = 1;
   private nextSliceId = 1;
@@ -295,72 +257,6 @@ export class GpuHistoryStorage {
     };
   }
 
-  /**
-   * Reserves exactly one binding for a stored-only handle and exposes a
-   * bounded-memory writer for sequential durable-storage chunks.
-   */
-  beginHydration(slice: GpuHistorySlice): GpuHistoryHydrationTransaction {
-    this.assertAlive();
-    const handle = this.requireOwnedHandle(slice);
-    if (handle.binding) {
-      throw new Error(`Slice History ${slice.id} già residente.`);
-    }
-    if (this.pendingHydrations.has(handle.id)) {
-      throw new Error(`Slice History ${slice.id}: idratazione già in corso.`);
-    }
-
-    // Allocate the only CPU staging object before touching allocator stats.
-    const alignmentTail = new Uint8Array(GPU_HISTORY_COPY_ALIGNMENT_BYTES);
-    const binding = this.reserveBinding(handle.logicalBytes, handle.alignmentBytes);
-    let pending: PendingGpuHistoryHydration | null = null;
-    try {
-      pending = {
-        handle,
-        binding,
-        alignmentTail,
-        writtenBytes: 0,
-        uploadedBytes: 0,
-        alignmentTailBytes: 0,
-        failed: false,
-        state: "active",
-      };
-      const transaction: GpuHistoryHydrationTransaction = {
-        slice,
-        logicalBytes: handle.logicalBytes,
-        get writtenBytes() {
-          return pending!.writtenBytes;
-        },
-        get remainingBytes() {
-          return handle.logicalBytes - pending!.writtenBytes;
-        },
-        writeChunk: (
-          payloadOffsetBytes: number,
-          bytes: Uint8Array,
-          sourceOffsetBytes = 0,
-          lengthBytes = bytes.byteLength - sourceOffsetBytes,
-        ) => {
-          this.writeHydrationChunk(
-            pending!,
-            payloadOffsetBytes,
-            bytes,
-            sourceOffsetBytes,
-            lengthBytes,
-          );
-        },
-        commit: () => this.commitHydration(pending!),
-        rollbackNoThrow: () => this.rollbackHydrationNoThrow(pending!),
-      };
-      this.pendingHydrations.set(handle.id, pending);
-      return transaction;
-    } catch (error) {
-      if (this.pendingHydrations.get(handle.id) === pending) {
-        this.pendingHydrations.delete(handle.id);
-      }
-      this.releaseBindingNoThrow(handle.logicalBytes, binding);
-      throw error;
-    }
-  }
-
   /** Restores a stored-only handle as a reconstructible resident cache. */
   hydrate(slice: GpuHistorySlice, bytes: Uint8Array): void {
     this.assertAlive();
@@ -371,31 +267,47 @@ export class GpuHistoryStorage {
         `Hydrate slice ${slice.id}: ${bytes.byteLength} B, attesi ${handle.logicalBytes} B.`,
       );
     }
-    const hydration = this.beginHydration(slice);
+    const binding = this.reserveBinding(handle.logicalBytes, handle.alignmentBytes);
     try {
+      const maximumWriteBytes = 16 * 1024 * 1024;
       let offset = 0;
       while (offset < bytes.byteLength) {
         const remaining = bytes.byteLength - offset;
-        const logicalChunkBytes = Math.min(GPU_HISTORY_HYDRATION_CHUNK_BYTES, remaining);
-        hydration.writeChunk(offset, bytes, offset, logicalChunkBytes);
+        const logicalChunkBytes = Math.min(maximumWriteBytes, remaining);
+        const alignedChunkBytes = alignBytes(logicalChunkBytes, GPU_HISTORY_COPY_ALIGNMENT_BYTES);
+        if (alignedChunkBytes === logicalChunkBytes) {
+          this.device.queue.writeBuffer(
+            binding.page.buffer,
+            binding.offsetBytes + offset,
+            bytes,
+            offset,
+            logicalChunkBytes,
+          );
+        } else {
+          const padded = new Uint8Array(alignedChunkBytes);
+          padded.set(bytes.subarray(offset, offset + logicalChunkBytes));
+          this.device.queue.writeBuffer(
+            binding.page.buffer,
+            binding.offsetBytes + offset,
+            padded,
+          );
+        }
         offset += logicalChunkBytes;
       }
-      hydration.commit();
+      handle.binding = binding;
+      this.resident.set(handle.id, binding);
     } catch (error) {
-      hydration.rollbackNoThrow();
+      this.releaseBindingNoThrow(handle.logicalBytes, binding);
       throw error;
     }
   }
 
   releaseAll(): void {
     this.assertAlive();
-    for (const pending of [...this.pendingHydrations.values()]) {
-      this.rollbackHydrationNoThrow(pending);
-    }
     this.prepareReleaseMany([...this.handles.values()]).commitNoThrow();
   }
 
-  trimEmptyPages(keepWarmPage = false): void {
+  trimEmptyPages(keepWarmPage = true): void {
     this.assertAlive();
     let warmPageKept = false;
     for (let index = this.pages.length - 1; index >= 0; index -= 1) {
@@ -435,7 +347,6 @@ export class GpuHistoryStorage {
     this.pages.length = 0;
     this.handles.clear();
     this.resident.clear();
-    this.pendingHydrations.clear();
     this.allocatedBytes = 0;
     this.usedLogicalBytes = 0;
     this.usedReservedBytes = 0;
@@ -451,9 +362,6 @@ export class GpuHistoryStorage {
       if (seen.has(slice.id)) throw new Error(`Slice History duplicata ${slice.id}.`);
       seen.add(slice.id);
       const handle = this.requireOwnedHandle(slice);
-      if (this.pendingHydrations.has(handle.id)) {
-        throw new Error(`Slice History ${slice.id}: idratazione in corso.`);
-      }
       if (requireResident && !handle.binding) {
         throw new Error(`Slice History ${slice.id} non residente.`);
       }
@@ -468,174 +376,6 @@ export class GpuHistoryStorage {
       throw new Error(`Slice History ${slice.id} non appartenente all'allocatore.`);
     }
     return handle;
-  }
-
-  private writeHydrationChunk(
-    pending: PendingGpuHistoryHydration,
-    payloadOffsetBytes: number,
-    bytes: Uint8Array,
-    sourceOffsetBytes: number,
-    lengthBytes: number,
-  ): void {
-    this.requireActiveHydration(pending);
-    if (pending.failed) {
-      throw new Error(
-        `Hydrate slice ${pending.handle.id}: transazione fallita; rollback richiesto.`,
-      );
-    }
-    if (!(bytes instanceof Uint8Array)) {
-      throw new TypeError("Un chunk History GPU deve essere Uint8Array.");
-    }
-    if (!Number.isInteger(payloadOffsetBytes) || payloadOffsetBytes < 0) {
-      throw new RangeError("L'offset payload del chunk History GPU non è valido.");
-    }
-    if (payloadOffsetBytes !== pending.writtenBytes) {
-      throw new Error(
-        `Hydrate slice ${pending.handle.id}: chunk a ${payloadOffsetBytes} B, `
-        + `atteso ${pending.writtenBytes} B (gap o overlap).`,
-      );
-    }
-    if (
-      !Number.isInteger(sourceOffsetBytes)
-      || sourceOffsetBytes < 0
-      || sourceOffsetBytes > bytes.byteLength
-    ) {
-      throw new RangeError("L'offset sorgente del chunk History GPU non è valido.");
-    }
-    if (!Number.isInteger(lengthBytes) || lengthBytes <= 0) {
-      throw new RangeError("La lunghezza del chunk History GPU deve essere positiva.");
-    }
-    if (lengthBytes > GPU_HISTORY_HYDRATION_CHUNK_BYTES) {
-      throw new RangeError(
-        `Chunk History GPU da ${lengthBytes} B oltre il limite `
-        + `${GPU_HISTORY_HYDRATION_CHUNK_BYTES} B.`,
-      );
-    }
-    if (sourceOffsetBytes + lengthBytes > bytes.byteLength) {
-      throw new RangeError("Il chunk History GPU eccede i byte sorgente disponibili.");
-    }
-    if (payloadOffsetBytes + lengthBytes > pending.handle.logicalBytes) {
-      throw new RangeError("Il chunk History GPU eccede il payload logico della slice.");
-    }
-
-    let sourceCursor = sourceOffsetBytes;
-    let remainingBytes = lengthBytes;
-    try {
-      if (pending.alignmentTailBytes > 0) {
-        const tailCapacity = GPU_HISTORY_COPY_ALIGNMENT_BYTES - pending.alignmentTailBytes;
-        const consumedBytes = Math.min(tailCapacity, remainingBytes);
-        pending.alignmentTail.set(
-          bytes.subarray(sourceCursor, sourceCursor + consumedBytes),
-          pending.alignmentTailBytes,
-        );
-        sourceCursor += consumedBytes;
-        remainingBytes -= consumedBytes;
-        if (pending.alignmentTailBytes + consumedBytes === GPU_HISTORY_COPY_ALIGNMENT_BYTES) {
-          this.device.queue.writeBuffer(
-            pending.binding.page.buffer,
-            pending.binding.offsetBytes + pending.uploadedBytes,
-            pending.alignmentTail,
-          );
-          pending.uploadedBytes += GPU_HISTORY_COPY_ALIGNMENT_BYTES;
-          pending.alignmentTailBytes = 0;
-        } else {
-          pending.alignmentTailBytes += consumedBytes;
-        }
-      }
-
-      const alignedWriteBytes = remainingBytes
-        - (remainingBytes % GPU_HISTORY_COPY_ALIGNMENT_BYTES);
-      if (alignedWriteBytes > 0) {
-        this.device.queue.writeBuffer(
-          pending.binding.page.buffer,
-          pending.binding.offsetBytes + pending.uploadedBytes,
-          bytes,
-          sourceCursor,
-          alignedWriteBytes,
-        );
-        pending.uploadedBytes += alignedWriteBytes;
-        sourceCursor += alignedWriteBytes;
-        remainingBytes -= alignedWriteBytes;
-      }
-
-      if (remainingBytes > 0) {
-        pending.alignmentTail.fill(0);
-        pending.alignmentTail.set(
-          bytes.subarray(sourceCursor, sourceCursor + remainingBytes),
-        );
-        pending.alignmentTailBytes = remainingBytes;
-      }
-
-      const nextWrittenBytes = pending.writtenBytes + lengthBytes;
-      if (
-        nextWrittenBytes === pending.handle.logicalBytes
-        && pending.alignmentTailBytes > 0
-      ) {
-        this.device.queue.writeBuffer(
-          pending.binding.page.buffer,
-          pending.binding.offsetBytes + pending.uploadedBytes,
-          pending.alignmentTail,
-        );
-        pending.uploadedBytes += GPU_HISTORY_COPY_ALIGNMENT_BYTES;
-        pending.alignmentTailBytes = 0;
-      }
-      pending.writtenBytes = nextWrittenBytes;
-    } catch (error) {
-      // A prior write from this same chunk may already be queued. The binding
-      // cannot be retried safely and must be rolled back by the caller.
-      pending.failed = true;
-      throw error;
-    }
-  }
-
-  private commitHydration(pending: PendingGpuHistoryHydration): void {
-    this.requireActiveHydration(pending);
-    if (pending.failed) {
-      throw new Error(
-        `Hydrate slice ${pending.handle.id}: transazione fallita; rollback richiesto.`,
-      );
-    }
-    if (pending.writtenBytes !== pending.handle.logicalBytes) {
-      throw new Error(
-        `Hydrate slice ${pending.handle.id}: copertura ${pending.writtenBytes} B, `
-        + `attesi ${pending.handle.logicalBytes} B.`,
-      );
-    }
-    if (
-      pending.alignmentTailBytes !== 0
-      || pending.uploadedBytes !== pending.binding.reservedBytes
-    ) {
-      throw new Error(`Hydrate slice ${pending.handle.id}: upload GPU incompleto.`);
-    }
-
-    // Map publication is the only potentially allocating operation. Publish
-    // it before attaching the getter-visible binding so a failure stays fully
-    // rollbackable and invisible to replay.
-    this.resident.set(pending.handle.id, pending.binding);
-    pending.handle.binding = pending.binding;
-    this.pendingHydrations.delete(pending.handle.id);
-    pending.state = "committed";
-  }
-
-  private rollbackHydrationNoThrow(pending: PendingGpuHistoryHydration): boolean {
-    if (pending.state !== "active") return false;
-    pending.state = "rolled-back";
-    if (this.pendingHydrations.get(pending.handle.id) === pending) {
-      this.pendingHydrations.delete(pending.handle.id);
-    }
-    this.releaseBindingNoThrow(pending.handle.logicalBytes, pending.binding);
-    return true;
-  }
-
-  private requireActiveHydration(pending: PendingGpuHistoryHydration): void {
-    this.assertAlive();
-    if (
-      pending.state !== "active"
-      || this.pendingHydrations.get(pending.handle.id) !== pending
-    ) {
-      throw new Error(`Hydrate slice ${pending.handle.id}: transazione non attiva.`);
-    }
-    this.requireOwnedHandle(pending.handle);
   }
 
   private commitBindingsNoThrow(

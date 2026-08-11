@@ -27,25 +27,27 @@ import {
   historyAccountingIsAppendOnly,
   historyBudgetPressure,
   historyMemoryTotalBytes,
+  HISTORY_SPILL_BUDGET_FRACTION,
+  HISTORY_SPILL_HIGH_WATER_BYTES,
   nearestHistoryCheckpoint,
   planHistoryCheckpoint,
   planHistoryBudgetRecovery,
   selectCheckpointRepresentation,
   type HistoryMemoryLedger,
 } from "./history-retention-core";
-import { historyStorageHotPayloadHardBytes } from "./history-storage-core";
 
+const MEBIBYTE_BYTES = 1024 * 1024;
 const HISTORY_FULL_CHECKPOINT_PERIOD = 8;
-// Pointer-up starts the bounded hot-tail maintenance on the next browser turn.
-// Older/oversize actions spill asynchronously while the recent suffix remains
-// available for immediate Undo.
-const HISTORY_MAINTENANCE_DELAY_MS = 0;
-/** A continuation yields to a new browser turn instead of looping synchronously. */
-const HISTORY_STORAGE_DRAIN_CONTINUATION_DELAY_MS = 0;
-/** Dense accelerators are skipped; replay remains correct but reads more batches. */
-const HISTORY_PERIODIC_CHECKPOINT_MAX_RESIDENT_BYTES = 16 * 1024 * 1024;
-/** Actions, batches and descriptors are small but must not form an unbounded JS tail. */
-export const HISTORY_CPU_METADATA_MAXIMUM_BYTES = 16 * 1024 * 1024;
+const HISTORY_MAINTENANCE_DELAY_MS = 140;
+const HISTORY_DEV_SPILL_HIGH_WATER_BYTES = (() => {
+  if (!import.meta.env.DEV || typeof location === "undefined") return null;
+  const raw = new URLSearchParams(location.search).get("historySpillMiB");
+  if (raw === null) return null;
+  const mib = Number(raw);
+  return Number.isFinite(mib) && mib > 0
+    ? Math.max(64 * 1024, Math.floor(mib * MEBIBYTE_BYTES))
+    : null;
+})();
 
 export interface PeriodicRasterHistoryCheckpoint {
   readonly id: number;
@@ -155,11 +157,9 @@ interface HistoryMaintenanceState {
   observedDiscardedStructuralTail: object | null;
   observedSelectionRevisionSize: number;
   observedSelectionActionSize: number;
-  observedLiveSceneDocuments: object[];
   observedRasterAssetSize: number;
   rasterAssetBytes: number;
   customAssetBytes: number;
-  storageMetadataBytes: number;
   actionIndexById: Map<number, number>;
   latestCheckpointByLayer: Map<number, LatestCheckpointAccounting>;
   checkpointCountByLayer: Map<number, number>;
@@ -221,11 +221,9 @@ function stateFor(engine: BrushEngine): HistoryMaintenanceState {
       observedDiscardedStructuralTail: null,
       observedSelectionRevisionSize: 0,
       observedSelectionActionSize: 0,
-      observedLiveSceneDocuments: [],
       observedRasterAssetSize: 0,
       rasterAssetBytes: 0,
       customAssetBytes: 0,
-      storageMetadataBytes: 0,
       actionIndexById: new Map<number, number>(),
       latestCheckpointByLayer: new Map<number, LatestCheckpointAccounting>(),
       checkpointCountByLayer: new Map<number, number>(),
@@ -244,9 +242,9 @@ function historyMaintenanceEngineIdle(
   engine: BrushEngine,
   allowCurrentStorageOperation = false,
 ): boolean {
-  if (!engine.initialized || !engine.historyLocalStorage) return false;
   const storageBusy = engine.historyLocalStorage.telemetry().busy;
-  return !engine.activeStroke
+  return engine.initialized
+    && !engine.activeStroke
     && !engine.historyBusy
     && !engine.historyStateInconsistent
     && !engine.layerSwitchBusy
@@ -405,39 +403,6 @@ function estimateStructuralBytes(
   return bytes;
 }
 
-/**
- * Immutable semantic documents are shared by live scene nodes and History
- * snapshots. Seed them as externally owned so History is charged only when a
- * delete/rasterize leaves the journal as their sole owner.
- */
-function liveSceneOwnedHistoryObjects(engine: BrushEngine): object[] {
-  const scene = engine.mixedSceneStack;
-  if (!scene) return [];
-  const documents = new Set<object>();
-  for (const item of scene.items) {
-    if (item.kind === "svg") {
-      documents.add(scene.svgById(item.svgNodeId).document);
-    } else if (item.kind === "image") {
-      documents.add(scene.imageById(item.imageNodeId).document);
-    }
-  }
-  return [...documents];
-}
-
-function sameObjectSet(left: readonly object[], right: readonly object[]): boolean {
-  const expected = new Set(left);
-  const observed = new Set(right);
-  if (expected.size !== observed.size) return false;
-  return [...observed].every((value) => expected.has(value));
-}
-
-function seedLiveSceneOwnedHistoryObjects(
-  documents: readonly object[],
-  seen: WeakSet<object>,
-): void {
-  for (const documentValue of documents) seen.add(documentValue);
-}
-
 function tailObject(values: readonly object[]): object | null {
   return values.length > 0 ? values[values.length - 1] : null;
 }
@@ -467,11 +432,6 @@ function accountSelectionSnapshot(
 ): void {
   if (!snapshot || state.accountingSelectionSliceIds.has(snapshot.gpuSlice.id)) return;
   state.accountingSelectionSliceIds.add(snapshot.gpuSlice.id);
-  state.accounting.cpuVectorBytes += estimateStructuralBytes(
-    engine,
-    [[snapshot]],
-    state.accountingCpuSeen,
-  );
   if (engine.historyGpuStorage.isResident(snapshot.gpuSlice)) {
     state.accounting.selectionFillMaskBytes += snapshot.gpuSlice.logicalBytes;
   }
@@ -555,11 +515,6 @@ function accountHistoryBatch(
   state: HistoryMaintenanceState,
   batch: HistoryRenderBatch,
 ): void {
-  state.accounting.cpuVectorBytes += estimateStructuralBytes(
-    engine,
-    [[batch]],
-    state.accountingCpuSeen,
-  );
   if (batch.kind === "paint") accountSelectionSnapshot(engine, state, batch.selectionMask);
   if (batch.kind === "fill" && engine.historyGpuStorage.isResident(batch.gpuSlice)) {
     state.accounting.selectionFillMaskBytes += batch.gpuSlice.logicalBytes;
@@ -578,12 +533,6 @@ function refreshGpuAndAssetAccounting(
   engine: BrushEngine,
   state: HistoryMaintenanceState,
 ): void {
-  state.accounting.cpuVectorBytes = Math.max(
-    0,
-    state.accounting.cpuVectorBytes - state.storageMetadataBytes,
-  );
-  state.storageMetadataBytes = engine.historyLocalStorage?.metadataResidentBytes() ?? 0;
-  state.accounting.cpuVectorBytes += state.storageMetadataBytes;
   const gpuStorage = engine.historyGpuStorage?.stats() ?? {
     allocatedBytes: 0,
     usedLogicalBytes: 0,
@@ -611,10 +560,8 @@ function refreshGpuAndAssetAccounting(
 function rebuildHistoryAccounting(engine: BrushEngine): void {
   const state = stateFor(engine);
   const discardedStructural = discardedStructuralHistoryActions(engine);
-  const liveSceneDocuments = liveSceneOwnedHistoryObjects(engine);
   state.accounting = emptyHistoryMemoryLedger();
   state.accountingCpuSeen = new WeakSet<object>();
-  seedLiveSceneOwnedHistoryObjects(liveSceneDocuments, state.accountingCpuSeen);
   state.accountingSelectionSliceIds = new Set<number>();
   state.accountingCheckpointSeeds = new Set<LayerColdStorageResources>();
   state.actionIndexById.clear();
@@ -626,7 +573,6 @@ function rebuildHistoryAccounting(engine: BrushEngine): void {
   state.actionCheckpointBytes = 0;
   state.fullCheckpointCount = 0;
   state.deltaCheckpointCount = 0;
-  state.storageMetadataBytes = 0;
 
   for (let index = 0; index < engine.historyCursor; index += 1) {
     state.actionIndexById.set(engine.historyActions[index].id, index);
@@ -670,10 +616,6 @@ function rebuildHistoryAccounting(engine: BrushEngine): void {
   for (const snapshot of engine.selectionHistoryMasksByAction.values()) {
     accountSelectionSnapshot(engine, state, snapshot);
   }
-  state.accounting.cpuVectorBytes += (
-    engine.selectionHistoryMasksByRevision.size
-    + engine.selectionHistoryMasksByAction.size
-  ) * 32;
   for (const batch of engine.historyBatches) accountHistoryBatch(engine, state, batch);
 
   state.observedCursor = engine.historyCursor;
@@ -691,7 +633,6 @@ function rebuildHistoryAccounting(engine: BrushEngine): void {
   state.observedDiscardedStructuralTail = tailObject(discardedStructural);
   state.observedSelectionRevisionSize = engine.selectionHistoryMasksByRevision.size;
   state.observedSelectionActionSize = engine.selectionHistoryMasksByAction.size;
-  state.observedLiveSceneDocuments = liveSceneDocuments;
   state.observedRasterAssetSize = -1;
   state.rasterAssetBytes = 0;
   state.customAssetBytes = 0;
@@ -708,7 +649,6 @@ function rebuildHistoryAccounting(engine: BrushEngine): void {
 function synchronizeHistoryAccounting(engine: BrushEngine): boolean {
   const state = stateFor(engine);
   const discardedStructural = discardedStructuralHistoryActions(engine);
-  const liveSceneDocuments = liveSceneOwnedHistoryObjects(engine);
   // La decisione vive in `history-retention-core`, che non importa il motore e
   // quindi si puo' esercitare nella suite senza GPU. Qui resta solo il compito
   // di dire cosa si vede: e' il punto in cui il difetto del cursore si era
@@ -744,10 +684,7 @@ function synchronizeHistoryAccounting(engine: BrushEngine): boolean {
       selectionActionSize: engine.selectionHistoryMasksByAction.size,
     },
   );
-  if (
-    !appendOnly
-    || !sameObjectSet(state.observedLiveSceneDocuments, liveSceneDocuments)
-  ) {
+  if (!appendOnly) {
     rebuildHistoryAccounting(engine);
     return true;
   }
@@ -784,16 +721,6 @@ function synchronizeHistoryAccounting(engine: BrushEngine): boolean {
     accountHistoryBatch(engine, state, engine.historyBatches[index]);
     state.accountingIncrementalBatches += 1;
   }
-  for (const snapshot of engine.selectionHistoryMasksByRevision.values()) {
-    accountSelectionSnapshot(engine, state, snapshot);
-  }
-  for (const snapshot of engine.selectionHistoryMasksByAction.values()) {
-    accountSelectionSnapshot(engine, state, snapshot);
-  }
-  state.accounting.cpuVectorBytes += (
-    Math.max(0, engine.selectionHistoryMasksByRevision.size - state.observedSelectionRevisionSize)
-    + Math.max(0, engine.selectionHistoryMasksByAction.size - state.observedSelectionActionSize)
-  ) * 32;
   state.observedCursor = engine.historyCursor;
   state.observedActionsLength = engine.historyActions.length;
   state.observedActionsTail = tailObject(engine.historyActions);
@@ -809,7 +736,6 @@ function synchronizeHistoryAccounting(engine: BrushEngine): boolean {
   state.observedDiscardedStructuralTail = tailObject(discardedStructural);
   state.observedSelectionRevisionSize = engine.selectionHistoryMasksByRevision.size;
   state.observedSelectionActionSize = engine.selectionHistoryMasksByAction.size;
-  state.observedLiveSceneDocuments = liveSceneDocuments;
   refreshGpuAndAssetAccounting(engine, state);
   return false;
 }
@@ -857,8 +783,13 @@ function historyBudgetForEngine(engine: BrushEngine) {
   };
 }
 
-function historySpillHighWaterBytes(_engine: BrushEngine): number {
-  return historyStorageHotPayloadHardBytes(MOBILE_DEVICE_CLASS);
+function historySpillHighWaterBytes(engine: BrushEngine): number {
+  const { budget } = historyBudgetForEngine(engine);
+  return Math.min(
+    HISTORY_SPILL_HIGH_WATER_BYTES,
+    Math.floor(budget.hardBytes * HISTORY_SPILL_BUDGET_FRACTION),
+    HISTORY_DEV_SPILL_HIGH_WATER_BYTES ?? Number.POSITIVE_INFINITY,
+  );
 }
 
 function replayTailMetrics(engine: BrushEngine, layerId: number): HistoryReplayTailAccounting {
@@ -1005,21 +936,15 @@ async function capturePeriodicCheckpoint(
   );
   const currentBytes = historyMemoryTotalBytes(historyMemoryLedger(engine));
   const budget = historyBudgetForEngine(engine).budget;
-  const valuta = (candidate: Uint32Array, mandatory: boolean) => {
-    const candidateBytes = bytesOf(candidate);
-    return {
-      valid: blank || (
-        countLayerStorageTiles(candidate) > 0
-        && candidateBytes <= HISTORY_PERIODIC_CHECKPOINT_MAX_RESIDENT_BYTES
-      ),
-      admitted: admitHistoryCheckpoint({
-        currentBytes,
-        candidateBytes,
-        budget,
-        mandatory,
-      }).admitted,
-    };
-  };
+  const valuta = (candidate: Uint32Array, mandatory: boolean) => ({
+    valid: blank || countLayerStorageTiles(candidate) > 0,
+    admitted: admitHistoryCheckpoint({
+      currentBytes,
+      candidateBytes: bytesOf(candidate),
+      budget,
+      mandatory,
+    }).admitted,
+  });
   const fullEsito = valuta(fullMask, fullRequired);
   const deltaEsito = valuta(deltaMask, false);
   const scelta = selectCheckpointRepresentation({
@@ -1342,7 +1267,7 @@ function evictHistoryBelowBaselines(
   }
   state.floorCursor = candidateFloor;
   state.evictedPayloadBytes += evictedPayloadBytes;
-  engine.historyGpuStorage.trimEmptyPages(false);
+  engine.historyGpuStorage.trimEmptyPages(true);
   rebuildHistoryAccounting(engine);
   // Le azioni sotto il nuovo pavimento restano come metadata diagnostici, ma
   // non sono piu' attraversabili: non devono continuare a trattenere renderer
@@ -1353,24 +1278,8 @@ function evictHistoryBelowBaselines(
   return true;
 }
 
-export function enforceHistoryMetadataLimit(engine: BrushEngine): boolean {
-  const ledger = historyMemoryLedger(engine);
-  if (ledger.cpuVectorBytes <= HISTORY_CPU_METADATA_MAXIMUM_BYTES) return true;
-  const metadataMiB = (ledger.cpuVectorBytes / 1024 / 1024).toFixed(1);
-  engine.resetHistoryState();
-  engine.publishStatus(
-    `Metadata cronologia oltre il limite (${metadataMiB} MiB); `
-    + "Undo svuotato senza modificare il disegno.",
-    "error",
-  );
-  engine.publishHistoryState();
-  engine.publishStats();
-  return false;
-}
-
 function enforceHistoryBudget(engine: BrushEngine, allowJournalEviction = true): void {
   const state = stateFor(engine);
-  if (!enforceHistoryMetadataLimit(engine)) return;
   const ledger = historyMemoryLedger(engine);
   const { budget } = historyBudgetForEngine(engine);
   if (historyMemoryTotalBytes(ledger) <= budget.hardBytes) {
@@ -1455,47 +1364,7 @@ export function historyCursorWithinRetainedRange(
   return nextCursor >= stateFor(engine).floorCursor;
 }
 
-function failClosedStrandedHistory(
-  engine: BrushEngine,
-  error: unknown = null,
-  knownStranded = false,
-): boolean {
-  let stranded = knownStranded;
-  if (!knownStranded) {
-    try {
-      stranded = engine.historyLocalStorage.unstoredResidentPayloadPressureBytes() > 0;
-    } catch {
-      // If ownership/accounting itself is no longer readable, retaining the
-      // journal would make the bounded-residency invariant unverifiable.
-      stranded = true;
-    }
-  }
-  if (!stranded) return false;
-  const storage = engine.historyLocalStorage.telemetry();
-  const fallback = error instanceof Error ? error.message : String(error ?? "quota/backend");
-  const reason = storage.lastError ?? fallback;
-  engine.resetHistoryState();
-  engine.publishStatus(
-    `Cronologia locale non disponibile (${reason}); `
-    + "Undo svuotato senza modificare il disegno.",
-    "error",
-  );
-  engine.publishHistoryState();
-  engine.publishStats();
-  return true;
-}
-
-export function scheduleHistoryMaintenance(
-  engine: BrushEngine,
-  delayMs = HISTORY_MAINTENANCE_DELAY_MS,
-): void {
-  if (!engine.initialized || !engine.historyLocalStorage) return;
-  if (
-    historyMaintenanceEngineIdle(engine, true)
-    && !enforceHistoryMetadataLimit(engine)
-  ) {
-    return;
-  }
+export function scheduleHistoryMaintenance(engine: BrushEngine): void {
   const state = stateFor(engine);
   state.generation += 1;
   if (engine.historyCompactionPending) state.redoCompactionsScheduled += 1;
@@ -1560,7 +1429,7 @@ export function scheduleHistoryMaintenance(
       const spillOptions = {
         highWaterBytes: spillHighWaterBytes,
         logicalFloorCursor: state.floorCursor,
-        currentResidentBytes: () => engine.historyLocalStorage.totalResidentPayloadBytes(),
+        currentResidentBytes: () => historyMemoryTotalBytes(historyMemoryLedger(engine)),
         shouldContinue: () => (
           expectedGeneration === state.generation
           // spillIfNeeded publishes busy="spilling" before its first await.
@@ -1577,37 +1446,12 @@ export function scheduleHistoryMaintenance(
       const deferJournalEviction = engine.historyLocalStorage.shouldDeferJournalEviction(
         spillOptions,
       );
-      const strandedPayloadBytes =
-        engine.historyLocalStorage.unstoredResidentPayloadPressureBytes();
-      if (!deferJournalEviction && strandedPayloadBytes > 0) {
-        // The bounded hot suffix is intentional. Only an unpersistable action
-        // outside its count/byte policy is stranded and must fail closed. The
-        // current document pixels are independent of History ownership, so
-        // discard Undo while preserving the artwork.
-        failClosedStrandedHistory(engine, null, true);
-        return;
-      }
       enforceHistoryBudget(engine, !deferJournalEviction);
-      if (deferJournalEviction) {
-        // spillIfNeeded writes at most four segments. Continue in another
-        // timer turn until its planner sees no drainable resident payload;
-        // this bounds each pass without leaving a permanent hot tail.
-        scheduleHistoryMaintenance(engine, HISTORY_STORAGE_DRAIN_CONTINUATION_DELAY_MS);
-      }
-    }).catch((error) => {
-      if (engine.deviceLostError) return;
-      if (
-        expectedGeneration !== state.generation
-        || !historyMaintenanceEngineIdle(engine, true)
-      ) {
-        // A foreground transaction won the race. Let its normal completion
-        // schedule a fresh fenced pass instead of resetting History mid-use.
-        scheduleHistoryMaintenance(engine, HISTORY_STORAGE_DRAIN_CONTINUATION_DELAY_MS);
-        return;
-      }
-      failClosedStrandedHistory(engine, error);
+      if (deferJournalEviction) engine.resumeHistoryStorageMaintenance();
+    }).catch(() => {
+      // device.lost is surfaced by the engine-wide gate.
     });
-  }, delayMs);
+  }, HISTORY_MAINTENANCE_DELAY_MS);
 }
 
 export function cancelHistoryMaintenance(engine: BrushEngine): void {

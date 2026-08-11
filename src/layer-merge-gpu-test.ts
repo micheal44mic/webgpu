@@ -232,9 +232,7 @@ async function drawTap(
     positionJitterLateral: 0,
     positionJitterLinear: 0,
   });
-  if (!await engine.beginStrokeAtLayerAfterHistoryDrain({ x, y, pressure: 1, timeMs })) {
-    throw new Error("Tratto merge GPU rifiutato dal gate History.");
-  }
+  engine.beginStrokeAtLayer({ x, y, pressure: 1, timeMs });
   engine.extendStrokeAtLayer([{ x: x + 1, y, pressure: 1, timeMs: timeMs + 16 }]);
   engine.endStroke(timeMs + 16);
   await engine.waitForIdle();
@@ -613,8 +611,6 @@ async function runMemoryCase(
   const keys = engine.getMixedSceneSnapshot()!.items.map((item) => item.key);
   const result = await controller.mergeSceneItems(keys);
   const afterMerge = engine.getStats();
-  const storageAfterMerge = engine.getHistoryMaintenanceTelemetry().localStorage;
-  const residentHistoryBytesAfterMerge = engine.historyLocalStorage.residentPayloadBytes();
   const undoReturned = await engine.undo();
   await settlePresentation(engine);
   const afterUndo = engine.getStats();
@@ -634,8 +630,6 @@ async function runMemoryCase(
     sixteenInputsMerged: result.rasterInputCount === 16
       && afterMerge.layers.length === 1
       && (!sparse || result.tileCount > 0),
-    historyDrainedBeforeReturn: storageAfterMerge.busy === "idle"
-      && residentHistoryBytesAfterMerge === 0,
     undoReturned,
     undoRestoresSixteen: afterUndo.layers.length === 16,
     noInactiveHotLeak: hotAfterUndo <= expectedHotMaximum
@@ -665,10 +659,6 @@ async function runMemoryCase(
       memoryEnvelopeMiB,
       before: memory(before),
       afterMerge: memory(afterMerge),
-      historyAfterMerge: {
-        busy: storageAfterMerge.busy,
-        residentBytes: residentHistoryBytesAfterMerge,
-      },
       afterUndo: memory(afterUndo),
       afterSettle: memory(afterSettle),
       afterRedo: memory(afterRedo),

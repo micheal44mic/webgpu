@@ -266,9 +266,7 @@ export async function runLayerHistoryGpuTest(
     timeMs: number,
   ): Promise<void> => {
     engine.setBrushSettings({ color });
-    if (!await engine.beginStrokeAtLayerAfterHistoryDrain({ x, y, pressure: 1, timeMs })) {
-      throw new Error("Tratto History GPU rifiutato dal gate storage.");
-    }
+    engine.beginStrokeAtLayer({ x, y, pressure: 1, timeMs });
     engine.extendStrokeAtLayer([
       { x: x + 48, y, pressure: 1, timeMs: timeMs + 16 },
     ]);

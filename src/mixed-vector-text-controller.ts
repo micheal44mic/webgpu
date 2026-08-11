@@ -1,10 +1,8 @@
 import type {
-  LayerCompositeFaultPoint,
   LayerFormat,
   MixedSceneSnapshot,
   PointerSample,
   RasterTransformSnapshot,
-  VectorRasterFaultPoint,
 } from "./engine-types";
 import type { PixelSelectionState } from "./selection-core";
 import type { MergeMixedSceneItemsRequest } from "./layer-merge-core";
@@ -109,29 +107,14 @@ export interface VectorRasterHistoryGpuProbe {
 
 export interface VectorRasterHistoryGpuTestReport {
   passed: boolean;
-  rollbackFaults: readonly VectorRasterRollbackGpuProbe[];
   probes: readonly VectorRasterHistoryGpuProbe[];
-}
-
-export interface VectorRasterRollbackGpuProbe {
-  faultPoint: LayerCompositeFaultPoint | VectorRasterFaultPoint;
-  rejected: boolean;
-  sceneRestoredExactly: boolean;
-  historyRestoredExactly: boolean;
-  activeRasterRestored: boolean;
-  backgroundRestoredExactly: boolean;
-  presentationUnfrozen: boolean;
-  historyConsistent: boolean;
 }
 
 export interface MixedVectorTextHost {
   readonly layerSize: number;
-  readonly layerPresentationFrozen: boolean;
   getVectorTextViewState(): VectorTextViewState;
   getMixedSceneSnapshot(): MixedSceneSnapshot | null;
-  getHistoryState(): { actionCount: number; cursor: number; inconsistent: boolean };
-  injectLayerCompositeFault(...faultPoints: LayerCompositeFaultPoint[]): void;
-  injectVectorRasterFault(...faultPoints: VectorRasterFaultPoint[]): void;
+  getHistoryState(): { actionCount: number; cursor: number };
   readLayerPixels(
     rect?: { x: number; y: number; width: number; height: number },
     layerIndex?: number,
@@ -1491,8 +1474,6 @@ export class MixedVectorTextController {
       }
       return result;
     };
-    const sceneSignature = (snapshot: MixedSceneSnapshot): string => JSON.stringify(snapshot);
-    const rollbackFaults: VectorRasterRollbackGpuProbe[] = [];
 
     const runProbe = async (
       sourceKind: "text" | "svg",
@@ -1521,69 +1502,6 @@ export class MixedVectorTextController {
           "Test RGBA16F SVG",
         );
         vectorKey = `svg:${node.id}`;
-      }
-
-      if (sourceKind === "text" && rollbackFaults.length === 0) {
-        const faultCases: readonly {
-          faultPoint: LayerCompositeFaultPoint | VectorRasterFaultPoint;
-          inject: () => void;
-        }[] = [
-          {
-            faultPoint: "after-candidate-submit",
-            inject: () => this.host.injectLayerCompositeFault("after-candidate-submit"),
-          },
-          {
-            faultPoint: "after-history-seed-capture",
-            inject: () => this.host.injectVectorRasterFault("after-history-seed-capture"),
-          },
-        ];
-        for (const { faultPoint, inject } of faultCases) {
-          const beforeFaultScene = refreshScene();
-          const beforeFaultSignature = sceneSignature(beforeFaultScene);
-          const beforeFaultHistory = this.host.getHistoryState();
-          const beforeFaultBackground = await readBackground(beforeFaultScene);
-          inject();
-          const rejectedResult = await this.rasterizeSelectedText();
-          await this.host.waitForIdle();
-          const afterFaultScene = refreshScene();
-          const afterFaultHistory = this.host.getHistoryState();
-          let backgroundRestoredExactly = true;
-          for (const [layerId, before] of beforeFaultBackground) {
-            const item = afterFaultScene.items.find(
-              (candidate) => candidate.kind === "raster" && candidate.rasterLayerId === layerId,
-            );
-            if (!item || item.kind !== "raster") {
-              backgroundRestoredExactly = false;
-              break;
-            }
-            const after = await this.host.readLayerPixels(auditRect, item.rasterLayerIndex);
-            if (!uint8ArraysEqual(before, after)) {
-              backgroundRestoredExactly = false;
-              break;
-            }
-          }
-          const rollbackFault: VectorRasterRollbackGpuProbe = {
-            faultPoint,
-            rejected: rejectedResult === null,
-            sceneRestoredExactly: sceneSignature(afterFaultScene) === beforeFaultSignature,
-            historyRestoredExactly:
-              afterFaultHistory.actionCount === beforeFaultHistory.actionCount
-              && afterFaultHistory.cursor === beforeFaultHistory.cursor,
-            activeRasterRestored:
-              afterFaultScene.activeRasterLayerId === beforeFaultScene.activeRasterLayerId,
-            backgroundRestoredExactly,
-            presentationUnfrozen: !this.host.layerPresentationFrozen,
-            historyConsistent: !afterFaultHistory.inconsistent,
-          };
-          rollbackFaults.push(rollbackFault);
-          if (!Object.entries(rollbackFault).every(
-            ([key, value]) => key === "faultPoint" || value === true,
-          )) {
-            throw new Error(
-              `Rollback raster vettoriale ${faultPoint} incompleto: ${JSON.stringify(rollbackFault)}`,
-            );
-          }
-        }
       }
 
       const beforeRasterization = refreshScene();
@@ -1661,30 +1579,21 @@ export class MixedVectorTextController {
     };
 
     const probes = [await runProbe("text"), await runProbe("svg")];
-    if (rollbackFaults.length !== 2) {
-      throw new Error("Fault probe del rollback raster vettoriale incompleti.");
-    }
     return {
-      rollbackFaults,
       probes,
-      passed:
-        rollbackFaults.every((rollbackFault) =>
-          Object.entries(rollbackFault).every(
-            ([key, value]) => key === "faultPoint" || value === true,
-          ))
-        && probes.every((probe) =>
-          probe.format === "rgba16float"
-          && probe.seedFormat === "rgba16float"
-          && probe.rawByteLength > 0
-          && probe.rawBytesPerPixel === 8
-          && probe.nonZeroAlphaPixels > 0
-          && probe.undoReturned
-          && probe.undoRestoredVector
-          && probe.undoPreservedBackgroundBytes
-          && probe.redoReturned
-          && probe.redoRestoredRaster
-          && probe.redoRestoredRawBytesExactly
-        ),
+      passed: probes.every((probe) =>
+        probe.format === "rgba16float"
+        && probe.seedFormat === "rgba16float"
+        && probe.rawByteLength > 0
+        && probe.rawBytesPerPixel === 8
+        && probe.nonZeroAlphaPixels > 0
+        && probe.undoReturned
+        && probe.undoRestoredVector
+        && probe.undoPreservedBackgroundBytes
+        && probe.redoReturned
+        && probe.redoRestoredRaster
+        && probe.redoRestoredRawBytesExactly
+      ),
     };
   }
 

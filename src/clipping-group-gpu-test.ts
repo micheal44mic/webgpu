@@ -41,9 +41,7 @@ const drawTap = async (
   y: number,
   timeMs: number,
 ): Promise<void> => {
-  if (!await engine.beginStrokeAtLayerAfterHistoryDrain({ x, y, pressure: 1, timeMs })) {
-    throw new Error("Tratto clipping rifiutato dal gate History.");
-  }
+  engine.beginStrokeAtLayer({ x, y, pressure: 1, timeMs });
   engine.extendStrokeAtLayer([{ x: x + 1, y, pressure: 1, timeMs: timeMs + 16 }]);
   engine.endStroke(timeMs + 16);
   await engine.waitForIdle();
@@ -153,14 +151,7 @@ export async function runClippingGroupGpuTest(
   await engine.ensureLightGlazeResources("light-glaze");
 
   const before = rgba(await engine.readPresentationPixelAtLayer(2048, 1600));
-  if (!await engine.beginStrokeAtLayerAfterHistoryDrain({
-    x: 2048,
-    y: 1600,
-    pressure: 1,
-    timeMs: 3_000,
-  })) {
-    throw new Error("Tratto live clipping rifiutato dal gate History.");
-  }
+  engine.beginStrokeAtLayer({ x: 2048, y: 1600, pressure: 1, timeMs: 3_000 });
   engine.extendStrokeAtLayer([{
     x: 2049,
     y: 1600,
