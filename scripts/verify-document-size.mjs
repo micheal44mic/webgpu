@@ -46,7 +46,9 @@ const {
   FILL_BLOCK_SIZE,
   FILL_BLOCKS_PER_TILE,
   FILL_HISTORY_MASK_BYTES,
+  FILL_LABEL_BUFFER_BYTES,
   FILL_LAYER_SIZE,
+  FILL_RENDER_MASK_BYTES,
   FILL_TILE_GRID_SIZE,
   FILL_TILE_MASK_WORDS,
   FILL_TILE_SIZE,
@@ -306,6 +308,15 @@ assert.equal(
   FILL_HISTORY_MASK_BYTES,
   LAYER_SIZE * LAYER_SIZE / 8,
   at("La maschera 1-bit del Riempimento deve coprire il documento"),
+);
+assert.equal(
+  FILL_RENDER_MASK_BYTES,
+  LAYER_SIZE * LAYER_SIZE / 2,
+  at("La mask render low-8-bit deve coprire ogni pixel senza usare bit 31"),
+);
+assert.ok(
+  FILL_RENDER_MASK_BYTES <= FILL_LABEL_BUFFER_BYTES,
+  at("La mask render deve entrare nel buffer label riutilizzato"),
 );
 assert.equal(
   SELECTION_WORDS_PER_ROW,

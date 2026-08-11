@@ -238,7 +238,7 @@ assert(fillRenderer.includes("if (!selectionMask) {"));
 assert(fillRenderer.includes("this.selectionIntersectionPipeline"));
 assert(fillRenderer.includes("Il Riempimento non interseca la Selezione pixel attiva."));
 assert(fillRuntime.includes("engine.selectionRenderer?.maskBuffer ?? null"));
-assert(fillRuntime.includes("linearColor,\n      selectionMask,"));
+assert.match(fillRuntime, /linearColor,\s+selectionMask,/);
 assert(runtime.includes("fillRenderer.getAnalyzedSelectionMaskBuffer()"));
 assert(runtime.includes("fillRenderer.setSourceSamplingView(engine.layerSamplingView)"));
 assert(runtime.includes("renderer.setSourceSamplingView(engine.layerSamplingView)"));
@@ -276,7 +276,10 @@ assert.equal(
   "Glaze e Paint ordinario devono restringere dirty rect e scissor.",
 );
 assert(brushEngine.includes("&& this.pixelSelectionState.selectedPixels === 0"));
-assert(brushEngine.includes("if (this.pixelSelectionState.selectedPixels > 0) {\n      this.adaptivePreviewCandidates.length = 0"));
+assert.match(
+  brushEngine,
+  /if \(this\.pixelSelectionState\.selectedPixels > 0\) \{\s+this\.adaptivePreviewCandidates\.length = 0/,
+);
 assert(brushEngine.includes("Blend non modifica una Selezione pixel"));
 assert(brushEngine.includes("Pulisci agisce sul livello intero: deseleziona prima"));
 assert(reports.includes("Deseleziona i pixel prima del benchmark Paint canonico."));

@@ -12,7 +12,10 @@ import {
 import type { DirtyRect } from "./engine-stroke-types";
 
 export const GPU_FILL_STRATEGY =
-  "webgpu-hierarchical-ccl-4-connected-straight-srgb-alpha-bitmask-v2" as const;
+  "webgpu-hierarchical-ccl-4-connected-straight-srgb-alpha-history1-render8-v3" as const;
+
+export const FILL_RENDER_MASK_STRATEGY =
+  "history-1bit-compute-expanded-low8-reused-label-buffer-v1" as const;
 
 export const FILL_REFERENCE_LAYER_STRATEGY =
   "single-raster-reference-full-resident-gpu-source-separate-active-target-no-fallback-v1" as const;
@@ -30,6 +33,17 @@ export const FILL_PARENT_BUFFER_BYTES = FILL_PARENT_COUNT * 4;
 export const FILL_ACTIVE_NODE_BUFFER_BYTES = FILL_BLOCK_COUNT * 4;
 export const FILL_ACTIVE_BLOCK_BUFFER_BYTES = FILL_BLOCK_COUNT * 4;
 export const FILL_HISTORY_MASK_BYTES = FILL_LAYER_SIZE * FILL_LAYER_SIZE / 8;
+export const FILL_HISTORY_MASK_WORDS = FILL_HISTORY_MASK_BYTES / 4;
+/**
+ * The authoritative/History mask remains 1 bit per pixel. For the render pass
+ * it is expanded after CCL to four low-byte u32 words per source word. This
+ * avoids bit 31 in fragment shaders on affected ARM Valhall drivers while
+ * reusing packedLabels, whose classification data is dead after selection.
+ */
+export const FILL_RENDER_MASK_PIXELS_PER_WORD = 8;
+export const FILL_RENDER_MASK_WORDS =
+  FILL_LAYER_SIZE * FILL_LAYER_SIZE / FILL_RENDER_MASK_PIXELS_PER_WORD;
+export const FILL_RENDER_MASK_BYTES = FILL_RENDER_MASK_WORDS * 4;
 export const FILL_UNIFORM_BYTES = 48;
 export const FILL_UNIFORM_BUFFER_BYTES = 256;
 export const FILL_METADATA_WORDS = 16;

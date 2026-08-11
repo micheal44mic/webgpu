@@ -5,9 +5,15 @@ import {
   FILL_BLOCK_GRID_SIZE,
   FILL_BLOCK_SIZE,
   FILL_HISTORY_MASK_BYTES,
+  FILL_HISTORY_MASK_WORDS,
+  FILL_LABEL_BUFFER_BYTES,
   FILL_LAYER_SIZE,
   FILL_MAX_COMPONENTS_PER_BLOCK,
   FILL_REFERENCE_LAYER_STRATEGY,
+  FILL_RENDER_MASK_STRATEGY,
+  FILL_RENDER_MASK_BYTES,
+  FILL_RENDER_MASK_PIXELS_PER_WORD,
+  FILL_RENDER_MASK_WORDS,
   FILL_RESIDENT_SCRATCH_BYTES,
   FILL_TILE_MASK_WORDS,
   FILL_WORKGROUP_STORAGE_BYTES,
@@ -27,11 +33,15 @@ import { readEngineSource } from "./engine-source.mjs";
 
 assert.equal(
   GPU_FILL_STRATEGY,
-  "webgpu-hierarchical-ccl-4-connected-straight-srgb-alpha-bitmask-v2",
+  "webgpu-hierarchical-ccl-4-connected-straight-srgb-alpha-history1-render8-v3",
 );
 assert.equal(
   FILL_REFERENCE_LAYER_STRATEGY,
   "single-raster-reference-full-resident-gpu-source-separate-active-target-no-fallback-v1",
+);
+assert.equal(
+  FILL_RENDER_MASK_STRATEGY,
+  "history-1bit-compute-expanded-low8-reused-label-buffer-v1",
 );
 assert.equal(FILL_BLOCK_SIZE, 16);
 assert.equal(FILL_LAYER_SIZE, LAYER_SIZE);
@@ -40,6 +50,11 @@ assert.equal(FILL_BLOCK_COUNT, 65_536);
 assert.equal(FILL_MAX_COMPONENTS_PER_BLOCK, 128);
 assert.equal(FILL_HISTORY_MASK_BYTES, LAYER_SIZE * LAYER_SIZE / 8);
 assert.equal(FILL_HISTORY_MASK_BYTES, 2 * 1024 * 1024);
+assert.equal(FILL_HISTORY_MASK_WORDS, FILL_HISTORY_MASK_BYTES / 4);
+assert.equal(FILL_RENDER_MASK_PIXELS_PER_WORD, 8);
+assert.equal(FILL_RENDER_MASK_WORDS, LAYER_SIZE * LAYER_SIZE / 8);
+assert.equal(FILL_RENDER_MASK_BYTES, FILL_HISTORY_MASK_BYTES * 4);
+assert(FILL_RENDER_MASK_BYTES <= FILL_LABEL_BUFFER_BYTES);
 assert.equal(FILL_TILE_MASK_WORDS, 8);
 assert.equal(FILL_WORKGROUP_STORAGE_BYTES, 9_232);
 assert(FILL_RESIDENT_SCRATCH_BYTES > 50 * 1024 * 1024);
@@ -61,6 +76,22 @@ assert.equal(fillBitMasks[0], 0x00000001);
 assert.equal(fillBitMasks[30], 0x40000000);
 assert.equal(fillBitMasks[31], 0x80000000);
 assert.equal(fillBitMasks.reduce((word, mask) => (word | mask) >>> 0, 0), 0xffffffff);
+
+// Workaround render: ogni word History viene divisa in quattro byte bassi.
+// Anche il pixel 31 diventa il bit 7 (0x80) e il fragment non vede mai bit 31.
+for (const source of [0x80000000, 0xffffffff, 0xa55a3cc3]) {
+  const renderWords = [
+    source & 0xff,
+    (source >>> 8) & 0xff,
+    (source >>> 16) & 0xff,
+    (source >>> 24) & 0xff,
+  ];
+  for (let bit = 0; bit < 32; bit += 1) {
+    const historySelected = (source & (2 ** bit)) !== 0;
+    const renderSelected = (renderWords[Math.floor(bit / 8)] & (2 ** (bit % 8))) !== 0;
+    assert.equal(renderSelected, historySelected, `bit ${bit} perso nell'espansione render`);
+  }
+}
 
 // La diagnosi deve separare una mask che perde davvero il bit alto da una
 // mask corretta il cui colore non arriva al target nel commit render.
@@ -156,6 +187,7 @@ for (const entryPoint of [
   "compressComponents",
   "selectSeedComponent",
   "rebuildSelection",
+  "expandRenderMask",
 ]) {
   assert(shader.includes(`fn ${entryPoint}`), `entry point WGSL mancante: ${entryPoint}`);
 }
@@ -168,7 +200,10 @@ assert(shader.includes("fn probeBit31()"));
 assert(shader.includes("atomicOr(&results[1], 0x80000000u)"));
 assert(shader.includes("atomicOr(&selectedMask[word], fillBitMask(pixel.x))"));
 assert(shader.includes("fillMaskContains(atomicLoad(&selectedMask[word]), pixel.x)"));
-assert(shader.includes("fillMaskContains(selectedMask[word], pixel.x)"));
+assert(shader.includes("packedLabels[target + 3u] = (source >> 24u) & 0xffu"));
+assert(shader.includes("fillRenderMaskContains(renderMask[word], pixel.x)"));
+assert(shader.includes("pixel.x / 8u"));
+assert(!shader.includes("fillMaskContains(selectedMask[word], pixel.x)"));
 assert(!shader.includes("1u << (pixel.x & 31u)"));
 assert(!shader.includes("1u << (coldTile & 31u)"));
 assert(shader.includes("fn fragmentMain(@builtin(position) position: vec4<f32>)"));
@@ -176,6 +211,13 @@ assert(!shader.includes("@location(0) pixel: vec2<f32>"));
 assert(!renderer.includes("dispatchWorkgroupsIndirect"));
 assert(renderer.includes("selectionPass.dispatchWorkgroups(FILL_BLOCK_GRID_SIZE)"));
 assert(renderer.includes("pass.drawIndirect"));
+assert(renderer.includes("this.expandRenderMaskPipeline"));
+assert(renderer.includes("buffer: packedLabels, size: FILL_RENDER_MASK_BYTES"));
+assert.equal(
+  renderer.match(/dispatchWorkgroups\(Math\.ceil\(FILL_HISTORY_MASK_WORDS \/ 256\)\)/g)?.length,
+  2,
+  "commit live (anche con Selezione) e replay devono espandere la mask render",
+);
 assert(renderer.includes("async captureDiagnostics()"));
 assert(renderer.includes("Diagnosi Fill: timeout readback mask dopo 10 s."));
 assert(renderer.includes("allHighBitPathsCorrect"));
@@ -190,6 +232,7 @@ assert(runtime.includes("engine.canPaintSelectedSceneItem()"));
 assert(runtime.includes("export async function captureFillDiagnostics"));
 assert(runtime.includes("summarizeFillMaskWords"));
 assert(runtime.includes("summarizeFillRenderedRow"));
+assert(runtime.includes("renderMaskStrategy: FILL_RENDER_MASK_STRATEGY"));
 assert(runtime.includes("renderer.encodeLiveCommit"));
 assert(runtime.includes("renderer.encodeLiveCommit(encoder, engine.layerView, historySlice)"));
 assert(runtime.includes("kind: \"fill\""));

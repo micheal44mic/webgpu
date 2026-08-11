@@ -6,6 +6,7 @@ import type { BrushEngine } from "./brush-engine";
 import {
   FILL_HISTORY_MASK_BYTES,
   FILL_LAYER_SIZE,
+  FILL_RENDER_MASK_STRATEGY,
   hexToLinearFillColor,
   normalizeFillTolerance,
   type FillAnalysis,
@@ -71,6 +72,7 @@ export type FillDiagnosticReport = {
   readonly schema: typeof FILL_DIAGNOSTIC_SCHEMA;
   readonly available: true;
   readonly rendererResident: true;
+  readonly renderMaskStrategy: typeof FILL_RENDER_MASK_STRATEGY;
   readonly lastOperation: LastFillDiagnosticOperation;
   readonly currentHistory: {
     readonly cursor: number;
@@ -153,6 +155,7 @@ export async function captureFillDiagnostics(
     schema: FILL_DIAGNOSTIC_SCHEMA,
     available: true,
     rendererResident: true,
+    renderMaskStrategy: FILL_RENDER_MASK_STRATEGY,
     lastOperation: { ...operation, bounds: { ...operation.bounds } },
     currentHistory: {
       cursor: history.cursor,

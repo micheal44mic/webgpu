@@ -42,6 +42,19 @@ fn fillMaskContains(word: u32, bitIndex: u32) -> bool {
 }
 `;
 
+// Fragment-stage workaround for ARM Valhall: the authoritative mask is
+// expanded by compute into low bytes, so render never evaluates bit 31. The
+// original 1-bit mask remains untouched for History and diagnostics.
+const fillRenderBitMaskHelpers = /* wgsl */ `
+const FILL_RENDER_BIT_MASKS: array<u32, 8> = array<u32, 8>(
+  0x01u, 0x02u, 0x04u, 0x08u, 0x10u, 0x20u, 0x40u, 0x80u,
+);
+
+fn fillRenderMaskContains(word: u32, bitIndex: u32) -> bool {
+  return (word & FILL_RENDER_BIT_MASKS[bitIndex & 7u]) != 0u;
+}
+`;
+
 export const fillComputeShader = /* wgsl */ `
 const LAYER_EXTENT: u32 = ${LAYER_SIZE}u;
 const BLOCK_EXTENT: u32 = ${FILL_BLOCK_SIZE}u;
@@ -373,6 +386,20 @@ fn rebuildSelection(
   let selected = fillMaskContains(atomicLoad(&selectedMask[word]), pixel.x);
   reduceAndRecord(pixel, selected, workgroup.xy, localIndex);
 }
+
+@compute @workgroup_size(256, 1, 1)
+fn expandRenderMask(@builtin(global_invocation_id) global: vec3<u32>) {
+  const SOURCE_WORDS: u32 = ${LAYER_SIZE * LAYER_SIZE / 32}u;
+  if (global.x >= SOURCE_WORDS) { return; }
+  let source = atomicLoad(&selectedMask[global.x]);
+  let target = global.x * 4u;
+  // packedLabels is no longer needed once selectedMask has been produced. Its
+  // capacity is twice this expanded mask even at the maximum document size.
+  packedLabels[target] = source & 0xffu;
+  packedLabels[target + 1u] = (source >> 8u) & 0xffu;
+  packedLabels[target + 2u] = (source >> 16u) & 0xffu;
+  packedLabels[target + 3u] = (source >> 24u) & 0xffu;
+}
 `;
 
 export const fillSelectionIntersectionShader = /* wgsl */ `
@@ -424,7 +451,7 @@ const LAYER_EXTENT: f32 = ${LAYER_SIZE}.0;
 const BLOCK_EXTENT: u32 = ${FILL_BLOCK_SIZE}u;
 const BLOCK_GRID: u32 = ${FILL_BLOCK_GRID_SIZE}u;
 
-${fillBitMaskHelpers}
+${fillRenderBitMaskHelpers}
 
 struct FillUniforms {
   seed: vec2<u32>,
@@ -437,7 +464,7 @@ struct FillUniforms {
 };
 
 @group(0) @binding(0) var<uniform> uniforms: FillUniforms;
-@group(0) @binding(1) var<storage, read> selectedMask: array<u32>;
+@group(0) @binding(1) var<storage, read> renderMask: array<u32>;
 @group(0) @binding(2) var<storage, read> activeBlocks: array<u32>;
 
 struct VertexOutput {
@@ -474,8 +501,8 @@ fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
   // varying interpolato elimina anche le differenze di precisione ai bordi dei
   // quad istanziati sui driver mobile.
   let pixel = vec2<u32>(position.xy);
-  let word = pixel.y * (${LAYER_SIZE}u / 32u) + pixel.x / 32u;
-  if (!fillMaskContains(selectedMask[word], pixel.x)) {
+  let word = pixel.y * (${LAYER_SIZE}u / 8u) + pixel.x / 8u;
+  if (!fillRenderMaskContains(renderMask[word], pixel.x)) {
     discard;
   }
   return uniforms.fillColor;

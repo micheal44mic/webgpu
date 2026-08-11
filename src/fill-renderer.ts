@@ -3,6 +3,7 @@ import {
   FILL_ACTIVE_NODE_BUFFER_BYTES,
   FILL_BLOCK_GRID_SIZE,
   FILL_HISTORY_MASK_BYTES,
+  FILL_HISTORY_MASK_WORDS,
   FILL_INDIRECT_BUFFER_BYTES,
   FILL_LABEL_BUFFER_BYTES,
   FILL_META_ACTIVE_BLOCKS,
@@ -18,6 +19,7 @@ import {
   FILL_METADATA_BYTES,
   FILL_METADATA_WORDS,
   FILL_PARENT_BUFFER_BYTES,
+  FILL_RENDER_MASK_BYTES,
   FILL_RESIDENT_SCRATCH_BYTES,
   FILL_TILE_MASK_WORDS,
   FILL_UNIFORM_BUFFER_BYTES,
@@ -132,6 +134,7 @@ export class FillRenderer {
   private compressPipeline!: GPUComputePipeline;
   private selectPipeline!: GPUComputePipeline;
   private rebuildPipeline!: GPUComputePipeline;
+  private expandRenderMaskPipeline!: GPUComputePipeline;
   private selectionIntersectionPipeline!: GPUComputePipeline;
   private renderPipeline!: GPURenderPipeline;
   private bitProbePipelinePromise: Promise<GPUComputePipeline> | null = null;
@@ -236,6 +239,7 @@ export class FillRenderer {
       "compressComponents",
       "selectSeedComponent",
       "rebuildSelection",
+      "expandRenderMask",
     ].map((entryPoint) => this.device.createComputePipelineAsync({
       label: `Riempimento · ${entryPoint}`,
       layout: computeLayout,
@@ -247,6 +251,7 @@ export class FillRenderer {
       this.compressPipeline,
       this.selectPipeline,
       this.rebuildPipeline,
+      this.expandRenderMaskPipeline,
     ] = computePipelines;
     this.selectionIntersectionPipeline = await this.device.createComputePipelineAsync({
       label: "Riempimento · candidato ∩ Selezione pixel",
@@ -284,6 +289,9 @@ export class FillRenderer {
           FILL_LABEL_BUFFER_BYTES,
           GPUBufferUsage.STORAGE,
         );
+        if (FILL_RENDER_MASK_BYTES > FILL_LABEL_BUFFER_BYTES) {
+          throw new Error("La mask render Fill non entra nello scratch label riutilizzato.");
+        }
         const globalParents = create(
           "Riempimento · parent componenti globali",
           FILL_PARENT_BUFFER_BYTES,
@@ -336,7 +344,9 @@ export class FillRenderer {
           layout: this.renderBindGroupLayout,
           entries: [
             { binding: 0, resource: { buffer: this.uniformBuffer, size: FILL_UNIFORM_BYTES } },
-            { binding: 1, resource: { buffer: selectedMask } },
+            // Dopo la CCL, packedLabels viene riutilizzato come mask render a
+            // word low-8-bit. selectedMask resta autorevole per History.
+            { binding: 1, resource: { buffer: packedLabels, size: FILL_RENDER_MASK_BYTES } },
             { binding: 2, resource: { buffer: activeBlocks } },
           ],
         });
@@ -744,6 +754,13 @@ export class FillRenderer {
   ): void {
     const scratch = this.requireScratch();
     this.assertHistorySlice(historySlice);
+    const pass = encoder.beginComputePass({
+      label: "Riempimento · espansione mask low-8-bit per commit live",
+    });
+    pass.setPipeline(this.expandRenderMaskPipeline);
+    pass.setBindGroup(0, scratch.computeBindGroup);
+    pass.dispatchWorkgroups(Math.ceil(FILL_HISTORY_MASK_WORDS / 256));
+    pass.end();
     encoder.copyBufferToBuffer(
       scratch.selectedMask,
       0,
@@ -784,6 +801,8 @@ export class FillRenderer {
     pass.setPipeline(this.rebuildPipeline);
     pass.setBindGroup(0, scratch.computeBindGroup);
     pass.dispatchWorkgroups(FILL_BLOCK_GRID_SIZE, FILL_BLOCK_GRID_SIZE);
+    pass.setPipeline(this.expandRenderMaskPipeline);
+    pass.dispatchWorkgroups(Math.ceil(FILL_HISTORY_MASK_WORDS / 256));
     pass.end();
     this.encodeRender(encoder, targetView, scratch);
   }
