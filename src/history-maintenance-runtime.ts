@@ -299,6 +299,7 @@ function rasterActionAffectsPixels(kind: string): boolean {
     || kind === "clear"
     || kind === "vector-rasterize"
     || kind === "raster-import"
+    || kind === "layer-add"
     || kind === "raster-transform"
     || kind === "raster-filter"
     || kind === "layer-merge";
@@ -407,10 +408,14 @@ function tailObject(values: readonly object[]): object | null {
 }
 
 function discardedStructuralHistoryActions(engine: BrushEngine): readonly HistoryAction[] {
-  if (engine.discardedLayerMergeHistoryActions.length === 0) {
+  if (
+    engine.discardedLayerAddHistoryActions.length === 0
+    && engine.discardedLayerMergeHistoryActions.length === 0
+  ) {
     return engine.discardedLayerDeleteHistoryActions;
   }
   return [
+    ...engine.discardedLayerAddHistoryActions,
     ...engine.discardedLayerDeleteHistoryActions,
     ...engine.discardedLayerMergeHistoryActions,
   ];
@@ -457,6 +462,7 @@ function accountCheckpointSeed(
   if (
     action.kind !== "vector-rasterize"
     && action.kind !== "raster-import"
+    && action.kind !== "layer-add"
     && action.kind !== "raster-transform"
     && action.kind !== "raster-filter"
   ) {
@@ -812,6 +818,7 @@ function changedTileMask(
     } else if (
       action.kind === "vector-rasterize"
       || action.kind === "raster-import"
+      || action.kind === "layer-add"
       || action.kind === "raster-transform"
       || action.kind === "raster-filter"
     ) {

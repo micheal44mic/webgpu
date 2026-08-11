@@ -2473,7 +2473,10 @@ assert.match(mainSource, /window\.clearTimeout\(timeoutId\)/,
 assert.match(mainSource, /layerHistoryTestRunning = timedOut/,
   "dopo timeout la pagina deve restare bloccata perché Promise.race non cancella il test");
 assert.match(mainSource, /const failure = \{ version: 11, passed: false/);
-assert.match(layerHistoryGpuTestSource, /LAYER_HISTORY_GPU_TEST_VERSION = 11 as const/);
+assert.match(layerHistoryGpuTestSource, /LAYER_HISTORY_GPU_TEST_VERSION = 12 as const/);
+assert.match(layerHistoryGpuTestSource, /await engine\.duplicateSelectedLayer\(\)/);
+assert.match(layerHistoryGpuTestSource, /duplicatePaintUndoUsedSeedByteExactly/);
+assert.match(layerHistoryGpuTestSource, /duplicateStructuralUndoRedoWasByteExact/);
 assert.match(layerHistoryGpuTestSource, /initialStats\.layerFormat !== "rgba16float"/);
 assert.match(layerHistoryGpuTestSource, /const rawBytesPerPixel = 8 as const/);
 assert.match(layerHistoryGpuTestSource, /storageStudyUsesRgba16fBytes/);

@@ -1471,6 +1471,7 @@ export class HistoryStorageCoordinator {
     if (
       crossed.kind === "vector-rasterize"
       || crossed.kind === "raster-import"
+      || crossed.kind === "layer-add"
       || crossed.kind === "raster-transform"
       || crossed.kind === "raster-filter"
     ) {
@@ -1509,6 +1510,7 @@ export class HistoryStorageCoordinator {
       if (
         action.kind === "vector-rasterize"
         || action.kind === "raster-import"
+        || action.kind === "layer-add"
         || action.kind === "raster-transform"
         || action.kind === "raster-filter"
       ) {

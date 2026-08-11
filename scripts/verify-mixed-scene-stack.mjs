@@ -8,6 +8,7 @@ import {
   VECTOR_SVG_NODE_MAXIMUM,
   VECTOR_TEXT_NODE_MAXIMUM,
   reusableMixedSceneRasterRunKeys,
+  uniqueLayerDuplicateName,
 } from "../src/mixed-scene-stack.ts";
 import {
   MIXED_MEMORY_BENCHMARK_INTERLEAVED_TEXT_RUNS,
@@ -139,6 +140,62 @@ assert.equal(
   "heterogeneous-bottom-up-raster-vector-image-segmented-composition-vector-raster-replacement-v7",
 );
 assert.equal(RASTER_IMAGE_NODE_MAXIMUM, 64);
+
+assert.equal(uniqueLayerDuplicateName("Logo", ["Logo"]), "Logo copia");
+assert.equal(
+  uniqueLayerDuplicateName("Logo copia", ["Logo", "Logo copia", "Logo copia 2"]),
+  "Logo copia 3",
+);
+
+// Semantic Duplicate keeps mutable presentation independent while sharing only
+// immutable, potentially large document payloads.
+{
+  const stack = new MixedSceneStack([1]);
+  const sourceText = stack.addTextAboveSelection(seed("COPY TEXT"), "Titolo");
+  stack.setTextVisibility(sourceText.id, false);
+  stack.setTextOpacity(sourceText.id, 0.42);
+  stack.updateText(sourceText.id, {
+    transformType: "distort",
+    distortPoints: Array.from({ length: 10 }, (_, index) => ({ x: index * 10, y: index * -5 })),
+  });
+  const duplicateText = stack.duplicateSelectedSemanticAboveSelection();
+  assert.equal(duplicateText.kind, "text");
+  assert.equal(duplicateText.name, "Titolo copia");
+  assert.equal(duplicateText.visible, false);
+  assert.equal(duplicateText.opacity, 0.42);
+  assert.notEqual(duplicateText.id, sourceText.id);
+  assert.notEqual(duplicateText.distortPoints, sourceText.distortPoints);
+  stack.updateText(duplicateText.id, { text: "ONLY COPY" });
+  assert.equal(stack.textById(sourceText.id).text, "COPY TEXT");
+
+  stack.select("raster:1");
+  const sourceSvg = stack.addSvgAboveSelection(svgSeed("shared.svg"), "Marchio");
+  const duplicateSvg = stack.duplicateSelectedSemanticAboveSelection();
+  assert.equal(duplicateSvg.kind, "svg");
+  assert.equal(duplicateSvg.document, sourceSvg.document);
+  assert.notEqual(duplicateSvg.paintColors, sourceSvg.paintColors);
+  duplicateSvg.paintColors[0] = "#000000";
+  assert.notEqual(sourceSvg.paintColors[0], duplicateSvg.paintColors[0]);
+
+  stack.select("raster:1");
+  const sourceImage = stack.addImageAboveSelection(imageSeed("shared-image"), "Foto");
+  const duplicateImage = stack.duplicateSelectedSemanticAboveSelection();
+  assert.equal(duplicateImage.kind, "image");
+  assert.equal(duplicateImage.document, sourceImage.document);
+  assert.equal(stack.selected.key, `image:${duplicateImage.id}`);
+  assert.deepEqual(
+    stack.items.map((item) => item.key),
+    [
+      "raster:1",
+      `image:${sourceImage.id}`,
+      `image:${duplicateImage.id}`,
+      `svg:${sourceSvg.id}`,
+      `svg:${duplicateSvg.id}`,
+      `text:${sourceText.id}`,
+      `text:${duplicateText.id}`,
+    ],
+  );
+}
 
 // A vector-only edit must keep exact raster runs resident. Crossing a raster
 // invalidates only the groups whose membership changed, never an unrelated run.

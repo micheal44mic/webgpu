@@ -72,6 +72,7 @@ export interface NoiseMipHistoryActionLike {
   readonly layerId?: number;
   readonly filter?: string;
   readonly baseBounds?: unknown;
+  readonly baseNoiseMipSmoothing?: boolean;
 }
 
 /**
@@ -90,6 +91,10 @@ export function noiseMipSmoothingAfterHistory(
   for (let index = 0; index < end; index += 1) {
     const action = actions[index];
     if (action.layerId !== layerId) continue;
+    if (action.kind === "layer-add") {
+      enabled = action.baseNoiseMipSmoothing === true;
+      continue;
+    }
     if (
       action.kind === "clear"
       || action.kind === "vector-rasterize"

@@ -435,8 +435,9 @@ export async function applyLayerDeleteHistory(
 
 /**
  * Applica o annulla una creazione. E' la cancellazione al contrario, con un
- * solo livello e senza seed: quando l'Undo attraversa la creazione ogni azione
- * successiva e' gia' stata annullata, quindi il livello e' vuoto.
+ * solo livello. Un Add normale conserva un checkpoint vuoto; Duplicate porta
+ * invece il seed tiled byte-exact che diventa anche la baseline del replay per
+ * le modifiche raster successive.
  */
 export async function applyLayerAddHistory(
   engine: BrushEngine,
@@ -448,8 +449,8 @@ export async function applyLayerAddHistory(
     rasterLayerIndex: action.rasterLayerIndex,
     sceneIndex: action.sceneIndex,
     clippingParentId: action.clippingParentId,
-    seed: null,
-    baseBounds: null,
+    seed: action.seed,
+    baseBounds: action.baseBounds,
   };
   const addedKey = `raster:${action.layerRecord.id}` as const;
   await applyLayerDeleteHistory(

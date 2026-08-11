@@ -1,5 +1,5 @@
 export const HISTORY_JOURNAL_STRATEGY =
-  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-metadata-scene-reorder-merge-v10" as const;
+  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-metadata-scene-reorder-merge-seeded-add-v11" as const;
 
 /**
  * One entry of the global journal. `layerId` is what makes a single stack usable
@@ -48,10 +48,10 @@ export type JournalAction =
     id: number;
     kind: "scene-reorder";
   }
-  // Mutazioni strutturali: cambiano **quali** livelli esistono. Non hanno un
-  // `layerId` singolo perche' una cancellazione puo' portarsi via un'intera
-  // unita' di ritaglio, e non sono checkpoint: non ricostruiscono i pixel di
-  // un livello vivo, spostano il livello dentro o fuori dal documento.
+  // Mutazioni strutturali: cambiano **quali** livelli esistono. Delete non ha
+  // un `layerId` singolo perche' puo' portarsi via un'intera unita' di ritaglio.
+  // Add ne ha uno ed e' anche un checkpoint: blank per un livello normale,
+  // seeded per Duplicate.
   //
   // Due membri distinti e non uno con discriminante `"layer-add" | "layer-delete"`:
   // escludendo entrambi i kind, TypeScript riduce quel discriminante a `never`
@@ -60,6 +60,9 @@ export type JournalAction =
   | {
     id: number;
     kind: "layer-add";
+    layerId: number;
+    /** Null for a blank Add, non-null for a duplicated raster checkpoint. */
+    baseBounds: unknown | null;
   }
   | {
     id: number;
@@ -100,6 +103,7 @@ export type JournalCheckpointAction<TAction extends JournalAction = JournalActio
       | "raster-import"
       | "raster-transform"
       | "raster-filter"
+      | "layer-add"
       | "layer-merge";
   }
 >;
@@ -109,7 +113,6 @@ function journalActionLayerId(action: JournalAction): number | null {
   if (
     action.kind === "vector"
     || action.kind === "scene-reorder"
-    || action.kind === "layer-add"
     || action.kind === "layer-delete"
   ) return null;
   return action.layerId;
@@ -200,9 +203,9 @@ export function hasVisibleContent(
       || action.kind === "layer-blend-mode"
       || action.kind === "layer-metadata"
       || action.kind === "scene-reorder"
-      // Le mutazioni strutturali non hanno un livello singolo: una
-      // cancellazione puo` portarsi via un`intera unita` di ritaglio.
-      || action.kind === "layer-add"
+      // La cancellazione puo` portarsi via un`intera unita` di ritaglio e non
+      // rappresenta un checkpoint di contenuto. Layer Add invece possiede un
+      // layerId: Duplicate usa proprio quel checkpoint come baseline raster.
       || action.kind === "layer-delete"
     ) continue;
     if (action.kind === "layer-merge") {
@@ -220,7 +223,11 @@ export function hasVisibleContent(
     if (layerId !== undefined && action.layerId !== layerId) continue;
     if (action.kind === "clear") {
       contentByLayer.set(action.layerId, false);
-    } else if (action.kind === "raster-transform" || action.kind === "raster-filter") {
+    } else if (
+      action.kind === "raster-transform"
+      || action.kind === "raster-filter"
+      || action.kind === "layer-add"
+    ) {
       contentByLayer.set(action.layerId, action.baseBounds !== null);
     } else {
       contentByLayer.set(action.layerId, true);
@@ -245,7 +252,6 @@ export function latestLayerReplayCheckpoint<TAction extends JournalAction>(
     if (
       action.kind !== "vector"
       && action.kind !== "scene-reorder"
-      && action.kind !== "layer-add"
       && action.kind !== "layer-delete"
       && journalActionLayerId(action) === layerId
       && (
@@ -253,6 +259,7 @@ export function latestLayerReplayCheckpoint<TAction extends JournalAction>(
         || action.kind === "raster-import"
         || action.kind === "raster-transform"
         || action.kind === "raster-filter"
+        || action.kind === "layer-add"
         || (action.kind === "layer-merge" && !action.payloadsRetiredBelowFloor)
       )
     ) {
@@ -286,7 +293,6 @@ export function visibleRasterBatchActionIdsAfterCheckpoint<TAction extends Journ
     if (
       action.kind !== "vector"
       && action.kind !== "scene-reorder"
-      && action.kind !== "layer-add"
       && action.kind !== "layer-delete"
       && action.kind !== "layer-merge"
       && action.layerId === layerId
@@ -379,7 +385,6 @@ export function historyStepTargetsMissingLayer(
     !action
     || action.kind === "vector"
     || action.kind === "scene-reorder"
-    || action.kind === "layer-add"
     || action.kind === "layer-delete"
   ) return false;
   if (action.kind === "layer-merge") {
@@ -391,7 +396,11 @@ export function historyStepTargetsMissingLayer(
       ? !outputIsLive || anyRasterInputIsLive
       : outputIsLive || !allRasterInputsAreLive;
   }
-  if (action.kind === "vector-rasterize" || action.kind === "raster-import") {
+  if (
+    action.kind === "vector-rasterize"
+    || action.kind === "raster-import"
+    || action.kind === "layer-add"
+  ) {
     return delta < 0
       ? !liveLayerIds.has(action.layerId)
       : liveLayerIds.has(action.layerId);
@@ -411,6 +420,7 @@ export function layersWithVisibleContent(
       || action.kind === "fill"
       || action.kind === "vector-rasterize"
       || action.kind === "raster-import"
+      || action.kind === "layer-add"
       || action.kind === "raster-transform"
       || action.kind === "raster-filter"
     ) {

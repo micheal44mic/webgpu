@@ -61,6 +61,7 @@ import {
   cloneVectorSvgNode,
   cloneVectorTextNode,
   reusableMixedSceneRasterRunKeys,
+  uniqueLayerDuplicateName,
   type MixedSceneCompositionSegment,
   type MixedSceneItem,
   type MixedSceneRasterRunKey,
@@ -79,6 +80,7 @@ import type {
   RasterImageGpuResource,
 } from "./engine-raster-image-runtime";
 import {
+  applyLayerAddHistory,
   applyLayerDeleteHistory,
   destroyLayerDeleteHistorySeeds,
 } from "./engine-layer-structure-runtime";
@@ -750,7 +752,10 @@ import {
   type MemoryReservation,
 } from "./memory-governor-core";
 import { memoryGovernorLimitsForDeviceClass } from "./memory-governor-limits";
-import { planLayerSwitchMemory } from "./layer-memory-admission-core";
+import {
+  planLayerDuplicateMemory,
+  planLayerSwitchMemory,
+} from "./layer-memory-admission-core";
 import {
   ensureFillRenderer,
   fillAtClientPoint,
@@ -940,6 +945,16 @@ export type DestructiveRasterEditKind =
   | "motion-blur"
   | "noise"
   | "liquify";
+
+export interface LayerDuplicateResult {
+  readonly kind: MixedSceneItem["kind"];
+  readonly sourceKey: MixedSceneItem["key"];
+  readonly duplicateKey: MixedSceneItem["key"];
+  readonly name: string;
+  readonly sourceRasterLayerId: number | null;
+  readonly duplicateRasterLayerId: number | null;
+  readonly totalMs: number;
+}
 
 /**
  * Il motore. La classe conserva lo stato e il percorso caldo del tratto; il
@@ -1601,6 +1616,8 @@ export class BrushEngine {
   nextHistoryActionId = 1;
   discardedVectorRasterHistoryActions: VectorRasterizeHistoryAction[] = [];
   discardedRasterImportHistoryActions: RasterImportHistoryAction[] = [];
+  /** Add/Duplicate abbandonati dal Redo; Duplicate può possedere un seed tiled. */
+  discardedLayerAddHistoryActions: LayerAddHistoryAction[] = [];
 
   /** Cancellazioni abbandonate dal Redo: i loro seed vanno liberati. */
   discardedLayerDeleteHistoryActions: LayerDeleteHistoryAction[] = [];
@@ -7030,6 +7047,254 @@ export class BrushEngine {
     await seedActiveLayerMemoryStress(this, markerIndex, storageTileCount);
   }
 
+  private createDuplicatedRasterRecord(
+    source: LayerRecord,
+    storageMask: Uint32Array,
+  ): LayerRecord {
+    const record = this.layerStack.createDetachedRecord(
+      uniqueLayerDuplicateName(
+        source.name,
+        this.layerStack.layers.map((layer) => layer.name),
+      ),
+    );
+    record.visible = source.visible;
+    record.opacity = source.opacity;
+    record.blendMode = source.blendMode;
+    record.clippingParentId = source.clippingParentId;
+    record.contentBounds = source.contentBounds ? { ...source.contentBounds } : null;
+    record.storageTileMask.set(storageMask);
+    record.hasContent = source.hasContent;
+    record.noiseMipSmoothing = source.noiseMipSmoothing;
+    record.strokeStyle = copyRasterStrokeStyle(source.strokeStyle);
+    record.bevelStyle = copyRasterBevelStyle(source.bevelStyle);
+    record.outerShadowStyle = copyRasterOuterShadowStyle(source.outerShadowStyle);
+    record.innerShadowStyle = copyRasterInnerShadowStyle(source.innerShadowStyle);
+    record.colorOverlayStyle = copyRasterColorOverlayStyle(source.colorOverlayStyle);
+    return record;
+  }
+
+  private reserveLayerDuplicateMemory(source: LayerRecord): MemoryReservation {
+    const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
+    const fullLayerBytes = this.layerSize * this.layerSize * bytesPerPixel;
+    const tiledBytes = this.layerColdBytesForMemoryAdmission(source);
+    const sourceIsReference = source.id === this.layerStack.referenceLayerId;
+    const request = planLayerDuplicateMemory({
+      historySeedBytes: tiledBytes,
+      sourceColdBytes: sourceIsReference ? 0 : tiledBytes,
+      additionalHotBytes: sourceIsReference ? fullLayerBytes : 0,
+      fullMergedSurfaceBytes: mergedSurfaceMemoryBytes(
+        { width: this.layerSize, height: this.layerSize },
+        bytesPerPixel,
+      ).totalBytes,
+      foldTransientBytes: fullLayerBytes * 2,
+    });
+    const decision = planMemoryAdmission(
+      {
+        committedBytes: this.gpuResourceRegistry.snapshot().currentBytes,
+        reservedBytes: this.memoryReservations.pendingBytes,
+        reclaimableBytes: 0,
+        inFlightBytes: this.layerSwitchCompressedCpuBytes(),
+      },
+      this.memoryGovernorLimits,
+      request,
+    );
+    if (decision.outcome !== "admit") {
+      const requiredMiB = request.peakBytes / MEBIBYTE_BYTES;
+      const headroomMiB = Math.max(0, decision.ceilingBytes - decision.usedBytes)
+        / MEBIBYTE_BYTES;
+      throw new Error(
+        "Memoria insufficiente per duplicare il livello: "
+        + `${requiredMiB.toFixed(1)} MiB richiesti, ${headroomMiB.toFixed(1)} MiB disponibili. `
+        + "Riduci la cronologia o attendi la compressione dei livelli inattivi.",
+      );
+    }
+    return this.memoryReservations.reserve(request);
+  }
+
+  private async duplicateRasterLayer(
+    sourceLayerId: number,
+  ): Promise<LayerDuplicateResult> {
+    if (this.layerStack.count >= LAYER_STACK_MAXIMUM) {
+      throw new Error(`Massimo ${LAYER_STACK_MAXIMUM} livelli raggiunto.`);
+    }
+    const scene = requireMixedSceneStack(this);
+    const sourceIndex = this.layerStack.indexOfId(sourceLayerId);
+    if (sourceIndex < 0) throw new Error(`Livello sorgente ${sourceLayerId} assente.`);
+    if (sourceIndex !== this.layerStack.activeIndex) {
+      throw new Error("Il livello raster da duplicare deve essere quello attivo.");
+    }
+    const source = this.layerStack.at(sourceIndex);
+    this.assertLayerSwitchAllowed();
+    const startedAt = performance.now();
+    let reservation: MemoryReservation | null = null;
+    let seed: LayerColdStorageResources | null = null;
+    let action: LayerAddHistoryAction | null = null;
+    let applied = false;
+    let committed = false;
+    let rollbackFailed = false;
+    this.cancelLayerColdCompressionIdle();
+
+    try {
+      // Persist bounds/tile metadata before deriving both the sparse seed and
+      // the detached record. Holding the switch gate across the GPU fence keeps
+      // pointer input from mutating the source halfway through the snapshot.
+      this.layerSwitchBusy = true;
+      try {
+        await this.waitForIdle();
+        this.persistActiveLayerState();
+        // The active record is authoritative only after persistence: a layer
+        // painted from empty can otherwise still report zero sparse tiles here.
+        // Reserve from the final mask, but still before the first GPU seed.
+        reservation = this.reserveLayerDuplicateMemory(source);
+        const storageMask = source.hasContent
+          ? coldStorageMaskForRecord(source)
+          : new Uint32Array(source.storageTileMask.length);
+        const sourceGpu = this.requireLayerGpu(source.id);
+        const sourceHot = sourceGpu.hot;
+        if (!sourceHot) {
+          throw new Error(`Texture hot del livello ${source.id} non residente.`);
+        }
+        if (source.hasContent) {
+          seed = await createLayerColdStorageCandidate(
+            this,
+            source,
+            sourceHot,
+            storageMask,
+            this.nextHistoryActionId,
+            "history",
+          );
+        }
+
+        const anchor = source.clippingParentId === null
+          ? this.layerStack.clippingUnit(source.id).at(-1) ?? source
+          : source;
+        const anchorRasterIndex = this.layerStack.indexOfId(anchor.id);
+        const anchorSceneIndex = scene.indexOfKey(`raster:${anchor.id}`);
+        if (anchorRasterIndex < 0 || anchorSceneIndex < 0) {
+          throw new Error("Posizione del livello sorgente non coerente nella scena.");
+        }
+        const record = this.createDuplicatedRasterRecord(source, storageMask);
+        action = {
+          id: this.nextHistoryActionId,
+          kind: "layer-add",
+          creation: "duplicate",
+          sourceLayerId: source.id,
+          layerId: record.id,
+          seed,
+          baseBounds: source.contentBounds ? { ...source.contentBounds } : null,
+          baseTileMask: storageMask.slice(),
+          layerRecord: record,
+          rasterLayerIndex: anchorRasterIndex + 1,
+          sceneIndex: anchorSceneIndex + 1,
+          clippingParentId: source.clippingParentId,
+          selectedKeyBefore: scene.selected.key,
+          activeRasterLayerIdBefore: source.id,
+          baseNoiseMipSmoothing: source.noiseMipSmoothing,
+          referenceRasterLayerIdBefore: this.layerStack.referenceLayerId,
+        };
+      } finally {
+        this.layerSwitchBusy = false;
+      }
+
+      await applyLayerAddHistory(this, action, 1);
+      applied = true;
+      try {
+        commitHistoryActionAtomically(this, action);
+      } catch (error) {
+        try {
+          await applyLayerAddHistory(this, action, -1);
+          applied = false;
+        } catch (restoreError) {
+          rollbackFailed = true;
+          this.latchDocumentStateInconsistent(
+            "Duplicazione non pubblicata e rollback incompleto: ricarica la pagina.",
+          );
+          const originalMessage = error instanceof Error ? error.message : String(error);
+          const restoreMessage = restoreError instanceof Error
+            ? restoreError.message
+            : String(restoreError);
+          throw new Error(
+            `Duplicazione non pubblicata: ${originalMessage}; rollback fallito: ${restoreMessage}`,
+          );
+        }
+        throw error;
+      }
+      committed = true;
+      this.memoryReservations.settle(reservation);
+      this.publishHistoryState();
+      this.publishStats();
+      scheduleHistoryMaintenance(this);
+      return {
+        kind: "raster",
+        sourceKey: `raster:${source.id}`,
+        duplicateKey: `raster:${action.layerRecord.id}`,
+        name: action.layerRecord.name,
+        sourceRasterLayerId: source.id,
+        duplicateRasterLayerId: action.layerRecord.id,
+        totalMs: performance.now() - startedAt,
+      };
+    } catch (error) {
+      if (applied && action && !committed && !rollbackFailed) {
+        try {
+          await applyLayerAddHistory(this, action, -1);
+          applied = false;
+        } catch (restoreError) {
+          rollbackFailed = true;
+          this.latchDocumentStateInconsistent(
+            "Duplicazione fallita e rollback incompleto: ricarica la pagina.",
+          );
+          const originalMessage = error instanceof Error ? error.message : String(error);
+          const restoreMessage = restoreError instanceof Error
+            ? restoreError.message
+            : String(restoreError);
+          throw new Error(
+            `Duplicazione fallita: ${originalMessage}; rollback fallito: ${restoreMessage}`,
+          );
+        }
+      }
+      if (!committed && !rollbackFailed) destroyLayerColdStorage(seed);
+      throw error;
+    } finally {
+      if (!committed && reservation) this.memoryReservations.release(reservation);
+      this.layerSwitchBusy = false;
+      this.scheduleLayerColdCompression();
+      if (import.meta.env.DEV) this.layerColdStorageFaultQueue = [];
+      this.publishHistoryState();
+      this.publishStats();
+      publishMixedScene(this);
+    }
+  }
+
+  /** Duplicates the selected raster or semantic layer directly above it. */
+  async duplicateSelectedLayer(): Promise<LayerDuplicateResult> {
+    if (!this.initialized) throw new Error("Il motore non è ancora inizializzato.");
+    const scene = requireMixedSceneStack(this);
+    const selected = scene.selected;
+    if (selected.kind === "raster") {
+      return this.duplicateRasterLayer(selected.rasterLayerId);
+    }
+
+    const startedAt = performance.now();
+    const sourceKey = selected.key;
+    const duplicate = await mutateMixedScenePresentation(
+      this,
+      (mutableScene) => mutableScene.duplicateSelectedSemanticAboveSelection(),
+      {
+        addedKey: (node) => `${node.kind}:${node.id}` as MixedSceneVectorKey,
+        shareImmutableDocuments: true,
+      },
+    );
+    return {
+      kind: duplicate.kind,
+      sourceKey,
+      duplicateKey: `${duplicate.kind}:${duplicate.id}` as MixedSceneVectorKey,
+      name: duplicate.name,
+      sourceRasterLayerId: null,
+      duplicateRasterLayerId: null,
+      totalMs: performance.now() - startedAt,
+    };
+  }
+
   /**
    * Adds a layer above the active one and selects it.
    *
@@ -7149,12 +7414,19 @@ export class BrushEngine {
           const action = {
             id: this.nextHistoryActionId,
             kind: "layer-add",
+            creation: "blank",
+            sourceLayerId: null,
+            layerId: record.id,
+            seed: null,
+            baseBounds: null,
+            baseTileMask: record.storageTileMask.slice(),
             layerRecord: record,
             rasterLayerIndex: this.layerStack.indexOfId(record.id),
             sceneIndex: this.mixedSceneStack.indexOfKey(`raster:${record.id}`),
             clippingParentId: clippingParentId,
             selectedKeyBefore,
             activeRasterLayerIdBefore,
+            baseNoiseMipSmoothing: false,
             referenceRasterLayerIdBefore,
           } satisfies LayerAddHistoryAction;
           commitHistoryActionAtomically(this, action);
@@ -9442,6 +9714,7 @@ export class BrushEngine {
       ...this.discardedVectorRasterHistoryActions,
       ...this.discardedRasterImportHistoryActions,
       ...this.discardedRasterTransformHistoryActions,
+      ...this.discardedLayerAddHistoryActions,
       ...this.discardedLayerDeleteHistoryActions,
       ...this.discardedLayerMergeHistoryActions,
     ]);
@@ -9451,6 +9724,8 @@ export class BrushEngine {
       } else if (action.kind === "raster-import") {
         destroyRasterImportHistorySeed(action);
       } else if (action.kind === "raster-transform" || action.kind === "raster-filter") {
+        destroyLayerColdStorage(action.seed);
+      } else if (action.kind === "layer-add") {
         destroyLayerColdStorage(action.seed);
       } else if (action.kind === "layer-delete") {
         destroyLayerDeleteHistorySeeds(action);
@@ -9464,6 +9739,7 @@ export class BrushEngine {
     this.discardedVectorRasterHistoryActions = [];
     this.discardedRasterImportHistoryActions = [];
     this.discardedRasterTransformHistoryActions = [];
+    this.discardedLayerAddHistoryActions = [];
     this.discardedLayerDeleteHistoryActions = [];
     this.discardedLayerMergeHistoryActions = [];
     if (this.historyGpuStorage) {

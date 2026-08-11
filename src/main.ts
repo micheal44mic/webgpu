@@ -180,6 +180,7 @@ import {
 import { layerBaseMemoryMiB } from "./engine-memory-model";
 import { GPU_MEMORY_AUDIT_TOLERANCE_BYTES } from "./gpu-memory-audit";
 import { GPU_MEMORY_CATEGORY_ORDER } from "./gpu-resource-registry";
+import { LAYER_STACK_MAXIMUM } from "./layer-stack";
 import { LAYER_THUMBNAIL_SIZE } from "./layer-thumbnail-renderer";
 import { BoundedMobileRasterThumbnailCache } from "./mobile-raster-thumbnail-cache";
 import {
@@ -196,7 +197,12 @@ import type {
 } from "./iphone-memory-limit-test";
 import type { LayerCompressionStudyReport } from "./layer-compression-study";
 import { MixedVectorTextController } from "./mixed-vector-text-controller";
-import type { MixedSceneItem } from "./mixed-scene-stack";
+import {
+  RASTER_IMAGE_NODE_MAXIMUM,
+  VECTOR_SVG_NODE_MAXIMUM,
+  VECTOR_TEXT_NODE_MAXIMUM,
+  type MixedSceneItem,
+} from "./mixed-scene-stack";
 import type { MixedMemoryBenchmarkReport } from "./mixed-memory-benchmark";
 import {
   VECTOR_TEXT_ZOOM_AB_IDLE_FRAME_COUNT,
@@ -7583,12 +7589,20 @@ mobileAddLayerButton.addEventListener("click", () => {
   if (!mobileAddLayerButton.disabled) addLayerButton.click();
 });
 
+mobileCopyLayerButton.addEventListener("click", () => {
+  if (!mobileCopyLayerButton.disabled) void duplicateMobileSelectedLayer();
+});
+
 mobileAddMaskButton.addEventListener("click", () => {
   if (!mobileAddMaskButton.disabled) void addMobileClippingMaskLayer();
 });
 
 mobileLayerMultiSelectButton.addEventListener("click", () => {
-  if (mobileLayerMultiSelectButton.disabled) return;
+  if (
+    mobileLayerMultiSelectButton.disabled
+    || layerSwitching
+    || interactionLocked()
+  ) return;
   setMobileLayerMultiSelectEnabled(!mobileLayerMultiSelectEnabled);
 });
 
@@ -11794,8 +11808,55 @@ function updateMobileLayerThumbnail(
   content.style.height = `${((bottom - top) * 100).toFixed(2)}%`;
 }
 
+function syncMobileLayerToolbarState(
+  stats: EngineStats,
+  locked: boolean,
+): void {
+  const scene = stats.mixedScene;
+  const selectedSceneItem = scene?.items.find((item) => item.key === scene.selectedKey);
+  const fallbackRaster = scene === null ? stats.layers[stats.activeLayerIndex] : undefined;
+  const selectedKind = selectedSceneItem?.kind ?? (fallbackRaster ? "raster" : undefined);
+  const selectedRasterReferenceAvailable = selectedSceneItem?.kind === "raster"
+    ? selectedSceneItem.rasterLayerId === scene?.activeRasterLayerId
+    : fallbackRaster !== undefined;
+  mobileAddLayerButton.disabled = mobileLayerMultiSelectEnabled
+    || locked
+    || stats.layers.length >= LAYER_STACK_MAXIMUM;
+  const selectedKindCount = selectedKind === "raster"
+    ? stats.layers.length
+    : selectedKind && scene
+      ? scene.items.reduce(
+        (count, item) => count + (item.kind === selectedKind ? 1 : 0),
+        0,
+      )
+      : Number.POSITIVE_INFINITY;
+  const selectedKindMaximum = selectedKind === "raster"
+    ? LAYER_STACK_MAXIMUM
+    : selectedKind === "text"
+      ? VECTOR_TEXT_NODE_MAXIMUM
+      : selectedKind === "svg"
+        ? VECTOR_SVG_NODE_MAXIMUM
+        : RASTER_IMAGE_NODE_MAXIMUM;
+  mobileCopyLayerButton.disabled = mobileLayerMultiSelectEnabled
+    || locked
+    || selectedKind === undefined
+    || selectedKindCount >= selectedKindMaximum;
+  mobileAddMaskButton.disabled = mobileLayerMultiSelectEnabled
+    || locked
+    || stats.layers.length >= LAYER_STACK_MAXIMUM
+    || selectedKind !== "raster"
+    || !selectedRasterReferenceAvailable;
+  const layerCount = scene?.items.length ?? stats.layers.length;
+  mobileLayerMultiSelectButton.disabled = locked
+    || (!mobileLayerMultiSelectEnabled && layerCount < 2);
+}
+
 function renderMobileLayerList(stats: EngineStats): void {
   if (!mobileLayersPanelOpen || !mobileLayersRefreshRequested) return;
+  const locked = interactionLocked() || layerSwitching;
+  // Keep the cheap toolbar state authoritative even while row reconciliation,
+  // thumbnail work, or history rendering is intentionally deferred.
+  syncMobileLayerToolbarState(stats, locked);
   if (
     mobileLayerReorderGesture !== null
     || activePointerId !== null
@@ -11805,12 +11866,11 @@ function renderMobileLayerList(stats: EngineStats): void {
   ) {
     return;
   }
+  const views = mobileLayerViews(stats);
   reconcileMobileLayerMultiSelection(stats);
   // Structural history detaches the source records during Merge and reattaches
   // those same monotonic ids on Undo. Their previews therefore remain in the
   // bounded LRU until history restores them or newer previews evict them.
-  const locked = interactionLocked() || layerSwitching;
-  const views = mobileLayerViews(stats);
   mobileLayerMultiActions.hidden = !mobileLayerMultiSelectEnabled;
   if (mobileLayerMultiSelectEnabled) {
     const mergePlan = currentMobileLayerMergePlan(stats);
@@ -11906,18 +11966,6 @@ function renderMobileLayerList(stats: EngineStats): void {
     visibility.replaceChildren(createMobileLucideIconStack(view.visible ? Eye : EyeOff));
   });
 
-  const selectedView = views.find((view) => view.selected);
-  mobileAddLayerButton.disabled = mobileLayerMultiSelectEnabled
-    || locked
-    || stats.layers.length >= 16;
-  mobileCopyLayerButton.disabled = true;
-  mobileAddMaskButton.disabled = mobileLayerMultiSelectEnabled
-    || locked
-    || stats.layers.length >= 16
-    || selectedView?.kind !== "raster"
-    || !selectedView.referenceAvailable;
-  mobileLayerMultiSelectButton.disabled = !mobileLayerMultiSelectEnabled
-    && (locked || views.length < 2);
   mobileLayersRenderSignature = signature;
   mobileLayersRefreshRequested = false;
 }
@@ -12974,6 +13022,109 @@ async function addMobileClippingMaskLayer(): Promise<void> {
     mobileLayersRenderSignature = "";
     requestMobileLayersRefresh();
     updateStats(engine.getStats());
+  }
+}
+
+async function duplicateMobileSelectedLayer(): Promise<void> {
+  if (
+    mobileCopyLayerButton.disabled
+    || mobileLayerMultiSelectEnabled
+    || layerSwitching
+    || interactionLocked()
+  ) {
+    return;
+  }
+
+  const beforeStats = engine.getStats();
+  const sourceView = mobileLayerViews(beforeStats).find((view) => view.selected);
+  if (!sourceView) {
+    const message = "Nessun livello selezionato da duplicare.";
+    layerSwitchResult.textContent = message;
+    announceMobileLayerReorder(message);
+    return;
+  }
+  const sourceThumbnail = sourceView.rasterLayerId === null
+    ? null
+    : mobileRasterThumbnailCache.get(sourceView.rasterLayerId) ?? null;
+  let duplicatedRaster = false;
+  const restoreToolbarFocus = document.activeElement === mobileCopyLayerButton;
+
+  setMobileLayerMergeStatus(null);
+  layerSwitching = true;
+  updateHistoryControls();
+  mobileLayersRenderSignature = "";
+  requestMobileLayersRefresh();
+  renderMobileLayerList(beforeStats);
+  try {
+    await showLayerLoading("Duplicazione livello…");
+    const result = await engine.duplicateSelectedLayer();
+    duplicatedRaster = result.kind === "raster";
+    await engine.waitForIdle();
+    historyState = engine.getHistoryState();
+
+    if (result.kind === "raster") {
+      syncActiveLayerControls();
+      const afterStats = engine.getStats();
+      const sourceLayer = result.sourceRasterLayerId === null
+        ? undefined
+        : afterStats.layers.find((layer) => layer.id === result.sourceRasterLayerId);
+      const duplicateLayer = result.duplicateRasterLayerId === null
+        ? undefined
+        : afterStats.layers.find((layer) => layer.id === result.duplicateRasterLayerId);
+      const selectedKey = afterStats.mixedScene?.selectedKey
+        ?? (afterStats.layers[afterStats.activeLayerIndex]
+          ? `raster:${afterStats.layers[afterStats.activeLayerIndex].id}`
+          : null);
+      if (
+        sourceThumbnail
+        && sourceView.key === result.sourceKey
+        && sourceView.rasterLayerId === result.sourceRasterLayerId
+        && sourceLayer
+        && duplicateLayer
+        && sourceLayer.hasContent === duplicateLayer.hasContent
+        && selectedKey === result.duplicateKey
+        && result.duplicateRasterLayerId !== null
+      ) {
+        // Captures replace cache entries and canvas rendering only reads ImageData,
+        // so both identical layers can share these pixels without another 64² copy.
+        mobileRasterThumbnailCache.set(result.duplicateRasterLayerId, sourceThumbnail);
+      }
+    }
+
+    const message = `${mobileLayerDisplayName(result.name)} duplicato in `
+      + `${result.totalMs.toFixed(0)} ms.`;
+    layerSwitchResult.textContent = message;
+    setMobileLayerMergeStatus(message);
+    announceMobileLayerReorder(message);
+  } catch (error) {
+    const message = error instanceof Error
+      ? error.message
+      : "Duplicazione del livello non riuscita.";
+    layerSwitchResult.textContent = message;
+    setMobileLayerMergeStatus(message, true);
+    announceMobileLayerReorder(message);
+  } finally {
+    hideLayerLoading();
+    layerSwitching = false;
+    historyState = engine.getHistoryState();
+    mobileLayersRenderSignature = "";
+    requestMobileLayersRefresh();
+    updateHistoryControls();
+    const finalStats = engine.getStats();
+    updateStats(finalStats);
+    renderMobileLayerList(finalStats);
+    if (duplicatedRaster) requestMobileLayerThumbnailCapture(0);
+    if (restoreToolbarFocus) {
+      requestAnimationFrame(() => {
+        if (!mobileLayersPanelOpen) return;
+        const target = !mobileCopyLayerButton.disabled
+          ? mobileCopyLayerButton
+          : mobileLayerList.querySelector<HTMLButtonElement>(
+            ".mobile-layer-row.is-active-layer .mobile-layer-select",
+          );
+        target?.focus({ preventScroll: true });
+      });
+    }
   }
 }
 

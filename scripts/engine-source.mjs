@@ -59,7 +59,9 @@ export const ENGINE_SOURCE_FILES = Object.freeze([
 ]);
 
 function readModule(file) {
-  const text = readFileSync(new URL(file, SRC), "utf8");
+  // Static source contracts use exact multiline snippets. Normalize host line
+  // endings so the same verification behaves identically on Windows and CI.
+  const text = readFileSync(new URL(file, SRC), "utf8").replace(/\r\n?/g, "\n");
   if (text.trim().length === 0) {
     throw new Error(`src/${file} e' vuoto: la lista ENGINE_SOURCE_FILES e' disallineata`);
   }

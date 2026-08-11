@@ -9,7 +9,7 @@ import type { MemoryRequest } from "./memory-governor-core";
  * una parte inevitabile del percorso WebGPU e sono incluse esplicitamente.
  */
 export const LAYER_MEMORY_ADMISSION_STRATEGY =
-  "tile-aware-merge-create-and-layer-switch-peak-reservations-v1" as const;
+  "tile-aware-merge-create-duplicate-and-layer-switch-peak-reservations-v2" as const;
 
 function assertNonNegativeFinite(value: number, label: string): void {
   if (!Number.isFinite(value) || value < 0) {
@@ -91,6 +91,47 @@ export function planLayerSwitchMemory(
     peakBytes: input.outgoingColdBytes
       + input.incomingHotBytes
       + input.adjacentPrefetchBytes
+      + input.fullMergedSurfaceBytes * 2
+      + input.foldTransientBytes,
+    priority: "normal",
+  };
+}
+
+export interface LayerDuplicateMemoryInput {
+  /** Checkpoint History tiled che resta autorevole per Undo/Redo e replay. */
+  readonly historySeedBytes: number;
+  /** Cold tiled dell'originale creato prima di evacuarne la texture hot. */
+  readonly sourceColdBytes: number;
+  /**
+   * Hot addizionale a regime: zero quando sostituisce quella dell'originale,
+   * una texture piena quando l'originale Reference deve restare residente.
+   */
+  readonly additionalHotBytes: number;
+  /** Una superficie merged full-document completa di mip. */
+  readonly fullMergedSurfaceBytes: number;
+  /** Una sorgente reidratata e un bake transitorio durante la piega. */
+  readonly foldTransientBytes: number;
+}
+
+/**
+ * Riserva il Duplicate prima della cattura del checkpoint. I pixel restano
+ * sempre GPU→GPU: un seed tiled per History, un cold tiled per l'originale e
+ * una sola nuova texture hot. Il caso Reference dichiara esplicitamente la
+ * seconda hot residente, invece di nasconderla in una stima media.
+ */
+export function planLayerDuplicateMemory(
+  input: LayerDuplicateMemoryInput,
+): MemoryRequest {
+  for (const [label, value] of Object.entries(input)) {
+    assertNonNegativeFinite(value, label);
+  }
+  const steadyBytes = input.historySeedBytes
+    + input.sourceColdBytes
+    + input.additionalHotBytes;
+  return {
+    category: "layer-duplicate",
+    steadyBytes,
+    peakBytes: steadyBytes
       + input.fullMergedSurfaceBytes * 2
       + input.foldTransientBytes,
     priority: "normal",

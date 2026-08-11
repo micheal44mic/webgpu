@@ -535,6 +535,25 @@ export type MixedSceneVectorKey =
   | Extract<MixedSceneItem, { readonly kind: "svg" }>["key"]
   | Extract<MixedSceneItem, { readonly kind: "image" }>["key"];
 
+/** Deterministic copy naming shared by raster and semantic layer duplication. */
+export function uniqueLayerDuplicateName(
+  sourceName: string,
+  existingNames: Iterable<string>,
+): string {
+  const normalizedSource = sourceName.trim() || "Livello";
+  const root = normalizedSource.replace(/ copia(?: \d+)?$/iu, "").trim() || "Livello";
+  const occupied = new Set(
+    [...existingNames].map((name) => name.trim().toLocaleLowerCase()),
+  );
+  const first = `${root} copia`;
+  if (!occupied.has(first.toLocaleLowerCase())) return first;
+  for (let ordinal = 2; ordinal < Number.MAX_SAFE_INTEGER; ordinal += 1) {
+    const candidate = `${first} ${ordinal}`;
+    if (!occupied.has(candidate.toLocaleLowerCase())) return candidate;
+  }
+  throw new Error("Impossibile generare un nome univoco per la copia.");
+}
+
 /**
  * Compact, single-node state used by the global Undo/Redo journal.
  *
@@ -851,6 +870,78 @@ export class MixedSceneStack {
     }
     this.selectedKey = key;
     return true;
+  }
+
+  /**
+   * Duplicates the selected semantic node directly above it.
+   *
+   * Mutable arrays are copied, while immutable SVG/image documents are shared:
+   * duplicating a layer must not duplicate a potentially large geometry or
+   * bitmap asset merely to give the new node an independent presentation state.
+   */
+  duplicateSelectedSemanticAboveSelection():
+    | VectorTextNode
+    | VectorSvgNode
+    | RasterImageNode {
+    const selected = this.selected;
+    if (selected.kind === "raster") {
+      throw new Error("Il livello raster richiede il percorso di duplicazione GPU.");
+    }
+    const existingNames = [
+      ...this.textNodes.values(),
+      ...this.svgNodes.values(),
+      ...this.imageNodes.values(),
+    ].map((node) => node.name);
+    const selectedIndex = this.indexOfKey(selected.key);
+
+    if (selected.kind === "text") {
+      if (this.textNodes.size >= VECTOR_TEXT_NODE_MAXIMUM) {
+        throw new Error(`Massimo ${VECTOR_TEXT_NODE_MAXIMUM} testi raggiunto.`);
+      }
+      const source = this.textById(selected.textNodeId);
+      const id = this.nextTextNodeId++;
+      const duplicate: VectorTextNode = {
+        ...cloneVectorTextNode(source),
+        id,
+        name: uniqueLayerDuplicateName(source.name, existingNames),
+      };
+      this.textNodes.set(id, duplicate);
+      this.orderedItems.splice(selectedIndex + 1, 0, textItem(id));
+      this.selectedKey = `text:${id}`;
+      return duplicate;
+    }
+
+    if (selected.kind === "svg") {
+      if (this.svgNodes.size >= VECTOR_SVG_NODE_MAXIMUM) {
+        throw new Error(`Massimo ${VECTOR_SVG_NODE_MAXIMUM} SVG raggiunto.`);
+      }
+      const source = this.svgById(selected.svgNodeId);
+      const id = this.nextSvgNodeId++;
+      const duplicate: VectorSvgNode = {
+        ...cloneVectorSvgNodeForHistory(source),
+        id,
+        name: uniqueLayerDuplicateName(source.name, existingNames),
+      };
+      this.svgNodes.set(id, duplicate);
+      this.orderedItems.splice(selectedIndex + 1, 0, svgItem(id));
+      this.selectedKey = `svg:${id}`;
+      return duplicate;
+    }
+
+    if (this.imageNodes.size >= RASTER_IMAGE_NODE_MAXIMUM) {
+      throw new Error(`Massimo ${RASTER_IMAGE_NODE_MAXIMUM} immagini raggiunto.`);
+    }
+    const source = this.imageById(selected.imageNodeId);
+    const id = this.nextImageNodeId++;
+    const duplicate: RasterImageNode = {
+      ...cloneRasterImageNodeForHistory(source),
+      id,
+      name: uniqueLayerDuplicateName(source.name, existingNames),
+    };
+    this.imageNodes.set(id, duplicate);
+    this.orderedItems.splice(selectedIndex + 1, 0, imageItem(id));
+    this.selectedKey = `image:${id}`;
+    return duplicate;
   }
 
   addTextAboveSelection(seed: VectorTextNodeSeed, name?: string): VectorTextNode {

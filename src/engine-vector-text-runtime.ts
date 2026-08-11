@@ -1869,6 +1869,8 @@ export async function mutateMixedScenePresentation<Result>(engine: BrushEngine,
   history?: {
     targetKey?: MixedSceneVectorKey;
     addedKey?: (result: Result) => MixedSceneVectorKey;
+    /** Share only readonly SVG/image documents in the rollback snapshot. */
+    shareImmutableDocuments?: boolean;
   },
 ): Promise<Result> {
   if (!engine.initialized) {
@@ -1878,7 +1880,8 @@ export async function mutateMixedScenePresentation<Result>(engine: BrushEngine,
   engine.assertLayerSwitchAllowed();
   engine.cancelLayerColdCompressionIdle();
   engine.layerSwitchBusy = true;
-  const previousState = scene.captureState();
+  const shareImmutableDocuments = history?.shareImmutableDocuments === true;
+  const previousState = scene.captureState(shareImmutableDocuments);
   const historyBefore = history?.targetKey
     ? scene.captureVectorHistoryState(history.targetKey)
     : null;
@@ -1920,7 +1923,7 @@ export async function mutateMixedScenePresentation<Result>(engine: BrushEngine,
     engine.requestRender();
     return result;
   } catch (error) {
-    scene.restoreState(previousState);
+    scene.restoreState(previousState, shareImmutableDocuments);
     engine.vectorTextPreviewExcludedNodeId = previousExcludedNodeId;
     clearVectorTextPresentationForTransaction(engine);
     try {

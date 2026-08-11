@@ -34,6 +34,7 @@ import {
   vectorHistoryStatesEqual,
   type HistoryAction,
   type HistoryRenderBatch,
+  type LayerAddHistoryAction,
   type LayerDeleteHistoryAction,
   type LayerMergeHistoryAction,
   type MixedSceneReorderHistoryAction,
@@ -440,7 +441,9 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
       : crossedAction.kind === "layer-delete"
       ? delta < 0 ? "Undo: ripristino livello…" : "Redo: eliminazione livello…"
       : crossedAction.kind === "layer-add"
-      ? delta < 0 ? "Undo: rimozione livello…" : "Redo: creazione livello…"
+      ? crossedAction.creation === "duplicate"
+        ? delta < 0 ? "Undo: rimozione duplicato…" : "Redo: duplicazione livello…"
+        : delta < 0 ? "Undo: rimozione livello…" : "Redo: creazione livello…"
       : crossedAction.kind === "layer-merge"
       ? delta < 0 ? "Undo: ripristino elementi uniti…" : "Redo: unione elementi…"
       : crossedAction.kind === "vector-rasterize"
@@ -1175,6 +1178,7 @@ export async function compactDiscardedHistoryIncrementally(
   const retainedVectorRasterIds = new Set<number>();
   const retainedImportIds = new Set<number>();
   const retainedTransformIds = new Set<number>();
+  const retainedLayerAddIds = new Set<number>();
   const retainedLayerDeleteIds = new Set<number>();
   const retainedLayerMergeIds = new Set<number>();
   const retainedBatches: HistoryRenderBatch[] = [];
@@ -1193,6 +1197,7 @@ export async function compactDiscardedHistoryIncrementally(
   const transformActionsToDestroy: Array<
     RasterTransformHistoryAction | RasterFilterHistoryAction
   > = [];
+  const layerAddActionsToDestroy: LayerAddHistoryAction[] = [];
   const layerDeleteActionsToDestroy: LayerDeleteHistoryAction[] = [];
   const layerMergeActionsToDestroy: LayerMergeHistoryAction[] = [];
   const releasedTransformSelectionSlices = new Set<number>();
@@ -1300,6 +1305,8 @@ export async function compactDiscardedHistoryIncrementally(
       retainedImportIds.add(action.id);
     } else if (action.kind === "raster-transform" || action.kind === "raster-filter") {
       retainedTransformIds.add(action.id);
+    } else if (action.kind === "layer-add") {
+      retainedLayerAddIds.add(action.id);
     } else if (action.kind === "layer-delete") {
       retainedLayerDeleteIds.add(action.id);
     } else if (action.kind === "layer-merge") {
@@ -1371,6 +1378,9 @@ export async function compactDiscardedHistoryIncrementally(
       }
     }
   })) return abortResult();
+  if (!await processArrayPhase(engine.discardedLayerAddHistoryActions, (action) => {
+    if (!retainedLayerAddIds.has(action.id)) layerAddActionsToDestroy.push(action);
+  })) return abortResult();
   if (!await processArrayPhase(engine.discardedLayerDeleteHistoryActions, (action) => {
     if (!retainedLayerDeleteIds.has(action.id)) layerDeleteActionsToDestroy.push(action);
   })) return abortResult();
@@ -1416,6 +1426,9 @@ export async function compactDiscardedHistoryIncrementally(
   if (!await processArrayPhase(transformActionsToDestroy, (action) => {
     destroyLayerColdStorage(action.seed);
   })) return abortResult();
+  if (!await processArrayPhase(layerAddActionsToDestroy, (action) => {
+    destroyLayerColdStorage(action.seed);
+  })) return abortResult();
   if (!await processArrayPhase(layerDeleteActionsToDestroy, (action) => {
     destroyLayerDeleteHistorySeeds(action);
   })) return abortResult();
@@ -1434,6 +1447,7 @@ export async function compactDiscardedHistoryIncrementally(
   engine.historyStoredBaseStamps = retainedStampCount;
   engine.discardedVectorRasterHistoryActions = [];
   engine.discardedRasterImportHistoryActions = [];
+  engine.discardedLayerAddHistoryActions = [];
   engine.discardedLayerDeleteHistoryActions = [];
   engine.discardedLayerMergeHistoryActions = [];
   engine.discardedRasterTransformHistoryActions = [];
@@ -1690,6 +1704,7 @@ export function commitHistoryActionAtomically(
   const discardedVectorLength = engine.discardedVectorRasterHistoryActions.length;
   const discardedImportLength = engine.discardedRasterImportHistoryActions.length;
   const discardedTransformLength = engine.discardedRasterTransformHistoryActions.length;
+  const discardedLayerAddLength = engine.discardedLayerAddHistoryActions.length;
   const discardedLayerDeleteLength = engine.discardedLayerDeleteHistoryActions.length;
   const discardedLayerMergeLength = engine.discardedLayerMergeHistoryActions.length;
   const compactionPendingBefore = engine.historyCompactionPending;
@@ -1710,6 +1725,7 @@ export function commitHistoryActionAtomically(
     engine.discardedVectorRasterHistoryActions.length = discardedVectorLength;
     engine.discardedRasterImportHistoryActions.length = discardedImportLength;
     engine.discardedRasterTransformHistoryActions.length = discardedTransformLength;
+    engine.discardedLayerAddHistoryActions.length = discardedLayerAddLength;
     engine.discardedLayerDeleteHistoryActions.length = discardedLayerDeleteLength;
     engine.discardedLayerMergeHistoryActions.length = discardedLayerMergeLength;
     engine.historyCompactionPending = compactionPendingBefore;
@@ -1728,6 +1744,8 @@ export function truncateRedoHistory(engine: BrushEngine): void {
       engine.discardedRasterImportHistoryActions.push(action);
     } else if (action.kind === "raster-transform" || action.kind === "raster-filter") {
       engine.discardedRasterTransformHistoryActions.push(action);
+    } else if (action.kind === "layer-add") {
+      engine.discardedLayerAddHistoryActions.push(action);
     } else if (action.kind === "layer-delete") {
       // Senza questo ogni cancellazione superata dal Redo perde il suo seed:
       // 16 MiB a 2048²/rgba8, che nessuno liberera` mai.

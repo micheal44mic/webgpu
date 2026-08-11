@@ -17,7 +17,7 @@ import {
 
 assert.equal(
   HISTORY_JOURNAL_STRATEGY,
-  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-metadata-scene-reorder-merge-v10",
+  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-metadata-scene-reorder-merge-seeded-add-v11",
 );
 
 const stroke = (id, layerId) => ({ id, kind: "stroke", layerId });
@@ -35,6 +35,12 @@ const layerBlendMode = (id, layerId) => ({
 const layerMetadata = (id, layerId) => ({ id, kind: "layer-metadata", layerId });
 const vectorRasterize = (id, layerId) => ({ id, kind: "vector-rasterize", layerId });
 const rasterImport = (id, layerId) => ({ id, kind: "raster-import", layerId });
+const layerAdd = (id, layerId, hasContent = false) => ({
+  id,
+  kind: "layer-add",
+  layerId,
+  baseBounds: hasContent ? { x: 0, y: 0, width: 1, height: 1 } : null,
+});
 const rasterTransform = (id, layerId, hasContent = true) => ({
   id,
   kind: "raster-transform",
@@ -77,6 +83,32 @@ const layerMerge = (
   assert.equal(firstVisibleActionIndex(actions, 2), 0);
   assert.deepEqual([...visibleStrokeIds(actions, 2)], [1, 2]);
   assert.equal(hasVisibleContent(actions, 0), false);
+}
+
+// Add is both structural and a raster checkpoint. Duplicate carries content;
+// a normal Add is the explicit empty baseline for later paint replay.
+{
+  const duplicate = layerAdd(1, 21, true);
+  const actions = [duplicate, stroke(2, 21)];
+  assert.equal(latestLayerReplayCheckpoint(actions, 1, 21)?.action.id, 1);
+  assert.equal(hasVisibleContent(actions, 1, 21), true);
+  assert.deepEqual([...layersWithVisibleContent(actions, 1)], [21]);
+  const replay = selectLayerReplayAfterCheckpoint(
+    actions,
+    2,
+    [{ actionId: 2, layerId: 21 }],
+    21,
+  );
+  assert.equal(replay.checkpoint?.action.id, 1);
+  assert.deepEqual(replay.batches.map((batch) => batch.actionId), [2]);
+  assert.equal(historyStepTargetsMissingLayer([duplicate], 1, -1, new Set([21])), false);
+  assert.equal(historyStepTargetsMissingLayer([duplicate], 1, -1, new Set()), true);
+  assert.equal(historyStepTargetsMissingLayer([duplicate], 0, 1, new Set()), false);
+  assert.equal(historyStepTargetsMissingLayer([duplicate], 0, 1, new Set([21])), true);
+
+  const blank = layerAdd(3, 22, false);
+  assert.equal(latestLayerReplayCheckpoint([blank], 1, 22)?.action.id, 3);
+  assert.equal(hasVisibleContent([blank], 1, 22), false);
 }
 
 // A destructive filter is also a post-action checkpoint. Undo reveals the

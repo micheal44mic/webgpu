@@ -48,13 +48,33 @@ assert.match(
 // un errore: e' costato una compilazione rossa, non deve tornare.
 assert.match(
   journal,
-  /\|\s*\{\s*id: number;\s*kind: "layer-add";\s*\}/,
+  /\|\s*\{\s*id: number;\s*kind: "layer-add";[\s\S]*?layerId: number;[\s\S]*?baseBounds: unknown \| null;\s*\}/,
   "`layer-add` deve essere un membro con literal singolo",
 );
 assert.match(
   journal,
   /\|\s*\{\s*id: number;\s*kind: "layer-delete";\s*\}/,
   "`layer-delete` deve essere un membro con literal singolo",
+);
+assert.match(
+  types,
+  /interface LayerAddHistoryAction extends RasterHistoryCheckpoint/,
+  "Layer Add deve essere anche il checkpoint raster usato da Duplicate",
+);
+assert.match(
+  structure,
+  /seed: action\.seed,[\s\S]*?baseBounds: action\.baseBounds/,
+  "Undo/Redo Add deve riusare il seed tiled del duplicato",
+);
+assert.match(
+  journal,
+  /action\.kind === "layer-add"[\s\S]*?action\.baseBounds !== null/,
+  "il journal deve riconoscere il contenuto iniziale di Duplicate",
+);
+assert.match(
+  journal,
+  /action\.kind === "layer-add"[\s\S]*?checkpoint =/,
+  "Layer Add deve partecipare alla selezione del checkpoint di replay",
 );
 
 // --- Ordine di stacco e riattacco ---------------------------------------------

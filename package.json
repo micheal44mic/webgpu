@@ -11,6 +11,7 @@
     "document:verify": "node scripts/verify-document-size.mjs",
     "precision:verify": "node scripts/verify-high-precision-formats.mjs",
     "layer-structure:verify": "node scripts/verify-layer-structure.mjs",
+    "layer-duplicate:verify": "node scripts/verify-layer-duplicate.mjs",
     "layer-merge:verify": "node scripts/verify-layer-merge.mjs && node scripts/verify-layer-merge-vector-runs.mjs",
     "blend:verify": "node scripts/verify-blend-core.mjs",
     "light:verify": "node scripts/verify-light-glaze.mjs",

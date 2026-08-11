@@ -8,6 +8,7 @@ import {
   transferBorrowedLayerMergeColdSeedForDetach,
 } from "../src/layer-merge-seed-ownership.ts";
 import {
+  planLayerDuplicateMemory,
   planLayerMergeCreateMemory,
   planLayerSwitchMemory,
 } from "../src/layer-memory-admission-core.ts";
@@ -349,6 +350,29 @@ assert.equal(
     + fullMergedSurfaceBytes * 2
     + fullLayerBytes * 2,
 );
+
+const sparseDuplicate = planLayerDuplicateMemory({
+  historySeedBytes: 512 * 1024,
+  sourceColdBytes: 512 * 1024,
+  additionalHotBytes: 0,
+  fullMergedSurfaceBytes,
+  foldTransientBytes: fullLayerBytes * 2,
+});
+assert.equal(sparseDuplicate.category, "layer-duplicate");
+assert.equal(sparseDuplicate.steadyBytes, 1024 * 1024);
+assert.equal(
+  sparseDuplicate.peakBytes,
+  1024 * 1024 + fullMergedSurfaceBytes * 2 + fullLayerBytes * 2,
+);
+const referenceDuplicate = planLayerDuplicateMemory({
+  historySeedBytes: 512 * 1024,
+  sourceColdBytes: 0,
+  additionalHotBytes: fullLayerBytes,
+  fullMergedSurfaceBytes,
+  foldTransientBytes: fullLayerBytes * 2,
+});
+assert.equal(referenceDuplicate.steadyBytes, fullLayerBytes + 512 * 1024);
+assert.ok(referenceDuplicate.peakBytes > sparseDuplicate.peakBytes);
 
 // Every fallible attach/detach happens before staged GPU destruction. Output
 // attach compensates stack/map/scene partial success locally; the outer

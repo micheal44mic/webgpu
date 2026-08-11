@@ -243,18 +243,25 @@ export interface LayerMergeHistoryAction {
  * registrata le rendeva inapplicabili. Registrandola, lo stato a qualsiasi
  * cursore si ottiene applicando le azioni in ordine e la coda resta coerente.
  *
- * Non serve un `seed`: quando l'Undo attraversa la creazione, tutte le azioni
- * successive sono gia' state annullate, quindi il livello e' vuoto.
+ * Un Add normale conserva un checkpoint vuoto. Duplicate usa lo stesso evento
+ * strutturale ma porta un seed tiled: e' sia il payload del Redo sia la baseline
+ * dalla quale ricostruire le pennellate successive sul nuovo livello.
  */
-export interface LayerAddHistoryAction {
+export interface LayerAddHistoryAction extends RasterHistoryCheckpoint {
   id: number;
   kind: "layer-add";
+  /** Distinguishes a cheap blank layer from a byte-exact duplicated baseline. */
+  creation: "blank" | "duplicate";
+  /** Source identity is diagnostic only: replay is authoritative from `seed`. */
+  sourceLayerId: number | null;
   layerRecord: LayerRecord;
   rasterLayerIndex: number;
   sceneIndex: number;
   clippingParentId: number | null;
   selectedKeyBefore: MixedSceneItem["key"];
   activeRasterLayerIdBefore: number;
+  /** Baseline presentation policy copied with the duplicated raster. */
+  baseNoiseMipSmoothing: boolean;
   /** Aggiungere un livello non cambia il riferimento Fill. */
   referenceRasterLayerIdBefore: number | null;
 }
@@ -369,7 +376,8 @@ export type RasterHistoryCheckpointAction =
   | VectorRasterizeHistoryAction
   | RasterImportHistoryAction
   | RasterTransformHistoryAction
-  | RasterFilterHistoryAction;
+  | RasterFilterHistoryAction
+  | LayerAddHistoryAction;
 
 export type HistoryAction =
   | RasterHistoryAction
@@ -404,7 +412,8 @@ export function isRasterHistoryCheckpointAction(
   return action.kind === "vector-rasterize"
     || action.kind === "raster-import"
     || action.kind === "raster-transform"
-    || action.kind === "raster-filter";
+    || action.kind === "raster-filter"
+    || action.kind === "layer-add";
 }
 
 export interface ActiveVectorHistoryEdit {

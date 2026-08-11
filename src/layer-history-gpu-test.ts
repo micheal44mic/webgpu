@@ -6,7 +6,7 @@ import {
   type LayerMemorySnapshot,
 } from "./layer-composite-gpu-test";
 
-export const LAYER_HISTORY_GPU_TEST_VERSION = 11 as const;
+export const LAYER_HISTORY_GPU_TEST_VERSION = 12 as const;
 
 interface PixelRect {
   x: number;
@@ -49,6 +49,29 @@ interface ColdStorageRollbackProbe {
   layerHydrationMiB: number;
   layerBakeMiB: number;
 }
+
+interface LayerDuplicateHistoryProbe {
+  sourceLayerId: number | null;
+  duplicateLayerId: number | null;
+  initialDifferingBytes: number;
+  sourceAfterPaintDifferingBytes: number;
+  duplicatePaintDifferingBytes: number;
+  paintUndoDifferingBytes: number;
+  paintRedoDifferingBytes: number;
+  structuralRedoDifferingBytes: number;
+  paintUndoReturned: boolean;
+  paintRedoReturned: boolean;
+  cleanupPaintUndoReturned: boolean;
+  structuralUndoReturned: boolean;
+  structuralRedoReturned: boolean;
+  finalStructuralUndoReturned: boolean;
+  layerCountAfterCleanup: number;
+  workingSetMatchesActiveLayer: boolean;
+  layerColdMiBAfterCleanup: number;
+  layerHydrationMiBAfterCleanup: number;
+  layerBakeMiBAfterCleanup: number;
+}
+
 export interface LayerHistoryGpuTestReport {
   version: typeof LAYER_HISTORY_GPU_TEST_VERSION;
   passed: boolean;
@@ -76,6 +99,7 @@ export interface LayerHistoryGpuTestReport {
     pack: ColdStorageRollbackProbe;
     hydrate: ColdStorageRollbackProbe;
   };
+  duplicate: LayerDuplicateHistoryProbe;
   storageStudy: Awaited<ReturnType<BrushEngine["measureExactLayerStorageStudy"]>>;
   memory: {
     oneLayer: LayerMemorySnapshot;
@@ -258,6 +282,69 @@ export async function runLayerHistoryGpuTest(
   await engine.waitForIdle();
   const oneLayerMemory = snapshotMemory(engine);
 
+  // Duplicate is both a structural action and the first authoritative raster
+  // checkpoint of the new layer. Exercise the real GPU path before the broader
+  // history harness so Paint -> Undo cannot silently rebuild an empty copy.
+  const duplicateResult = await engine.duplicateSelectedLayer();
+  await engine.waitForIdle();
+  const duplicateInitial = await engine.readLayerPixels(auditRect, 1);
+  await draw(1024, 512, "#35c66b", 200);
+  const duplicateAfterPaint = await engine.readLayerPixels(auditRect, 1);
+  const sourceAfterDuplicatePaint = await engine.readLayerPixels(auditRect, 0);
+
+  const duplicatePaintUndoReturned = await engine.undo();
+  await engine.waitForIdle();
+  const duplicateAfterPaintUndo = await engine.readLayerPixels(auditRect, 1);
+  const duplicatePaintRedoReturned = await engine.redo();
+  await engine.waitForIdle();
+  const duplicateAfterPaintRedo = await engine.readLayerPixels(auditRect, 1);
+
+  const duplicateCleanupPaintUndoReturned = await engine.undo();
+  const duplicateStructuralUndoReturned = await engine.undo();
+  await engine.waitForIdle();
+  const duplicateStructuralRedoReturned = await engine.redo();
+  await engine.waitForIdle();
+  const duplicateAfterStructuralRedo = await engine.readLayerPixels(auditRect, 1);
+  const duplicateFinalStructuralUndoReturned = await engine.undo();
+  await engine.waitForIdle();
+  const statsAfterDuplicateCleanup = engine.getStats();
+  const duplicate: LayerDuplicateHistoryProbe = {
+    sourceLayerId: duplicateResult.sourceRasterLayerId,
+    duplicateLayerId: duplicateResult.duplicateRasterLayerId,
+    initialDifferingBytes: countDifferingBytes(layerABaseline, duplicateInitial),
+    sourceAfterPaintDifferingBytes: countDifferingBytes(
+      layerABaseline,
+      sourceAfterDuplicatePaint,
+    ),
+    duplicatePaintDifferingBytes: countDifferingBytes(
+      duplicateInitial,
+      duplicateAfterPaint,
+    ),
+    paintUndoDifferingBytes: countDifferingBytes(
+      duplicateInitial,
+      duplicateAfterPaintUndo,
+    ),
+    paintRedoDifferingBytes: countDifferingBytes(
+      duplicateAfterPaint,
+      duplicateAfterPaintRedo,
+    ),
+    structuralRedoDifferingBytes: countDifferingBytes(
+      duplicateInitial,
+      duplicateAfterStructuralRedo,
+    ),
+    paintUndoReturned: duplicatePaintUndoReturned,
+    paintRedoReturned: duplicatePaintRedoReturned,
+    cleanupPaintUndoReturned: duplicateCleanupPaintUndoReturned,
+    structuralUndoReturned: duplicateStructuralUndoReturned,
+    structuralRedoReturned: duplicateStructuralRedoReturned,
+    finalStructuralUndoReturned: duplicateFinalStructuralUndoReturned,
+    layerCountAfterCleanup: statsAfterDuplicateCleanup.layerCount,
+    workingSetMatchesActiveLayer: engine.effectsWorkingSetMatchesActiveLayer(),
+    layerColdMiBAfterCleanup: statsAfterDuplicateCleanup.gpuMemory.layerColdMiB,
+    layerHydrationMiBAfterCleanup: statsAfterDuplicateCleanup.gpuMemory.layerHydrationMiB,
+    layerBakeMiBAfterCleanup: statsAfterDuplicateCleanup.gpuMemory.layerBakeMiB,
+  };
+
   const bakeMemoryBeforeMiB = engine.getStats().gpuMemory.layerBakeMiB;
   engine.injectLayerBakeFault("after-candidate-submit");
   let bakeFailureWasReported = false;
@@ -339,7 +426,7 @@ export async function runLayerHistoryGpuTest(
   const releasedBakeAfterFusion = engine.getLayerBakeState(0);
   const compositeAfterFirstFusion = engine.getLayerCompositeState();
 
-  await draw(1024, 512, "#35c66b", 200);
+  await draw(1024, 512, "#35c66b", 400);
   const beforeUndo = engine.getHistoryState();
   const layerAAfterPaintingB = await engine.readLayerPixels(auditRect, 0);
   const layerBBeforeUndo = await engine.readLayerPixels(auditRect, 1);
@@ -534,6 +621,30 @@ export async function runLayerHistoryGpuTest(
       && fwidthBakeGap.comparedBytes === pRect.width * pRect.height * 4
       && Number.isFinite(fwidthBakeGap.maxDelta),
     fwidthProbeReleasedItsTransientBake: oneLayerMemory.layerBakeMiB < 0.01,
+    duplicateCreatedDistinctRasterIds:
+      duplicate.sourceLayerId !== null
+      && duplicate.duplicateLayerId !== null
+      && duplicate.sourceLayerId !== duplicate.duplicateLayerId,
+    duplicateWasInitiallyByteExact: duplicate.initialDifferingBytes === 0,
+    paintingDuplicateChangedItsPixels: duplicate.duplicatePaintDifferingBytes > 0,
+    paintingDuplicateDidNotChangeSource: duplicate.sourceAfterPaintDifferingBytes === 0,
+    duplicatePaintUndoUsedSeedByteExactly:
+      duplicate.paintUndoReturned && duplicate.paintUndoDifferingBytes === 0,
+    duplicatePaintRedoWasByteExact:
+      duplicate.paintRedoReturned && duplicate.paintRedoDifferingBytes === 0,
+    duplicateStructuralUndoRedoWasByteExact:
+      duplicate.cleanupPaintUndoReturned
+      && duplicate.structuralUndoReturned
+      && duplicate.structuralRedoReturned
+      && duplicate.structuralRedoDifferingBytes === 0
+      && duplicate.finalStructuralUndoReturned,
+    duplicateCleanupRestoredOneHealthyLayer:
+      duplicate.layerCountAfterCleanup === 1
+      && duplicate.workingSetMatchesActiveLayer,
+    duplicateCleanupReleasedTransientLayerMemory:
+      duplicate.layerColdMiBAfterCleanup < 0.01
+      && duplicate.layerHydrationMiBAfterCleanup < 0.01
+      && duplicate.layerBakeMiBAfterCleanup < 0.01,
     injectedBakeFailureWasReported: bakeRollback.threw,
     injectedBakeFailureKeptOneLayer: bakeRollback.layerCountRestored,
     injectedBakeFailureKeptActiveLayer: bakeRollback.activeLayerRestored,
@@ -662,6 +773,7 @@ export async function runLayerHistoryGpuTest(
       pack: coldPackRollback,
       hydrate: coldHydrateRollback,
     },
+    duplicate,
     compositing,
     storageStudy,
     memory: {
