@@ -38,6 +38,13 @@ export interface MixedSceneOrderState {
   readonly rasterLayerIds: readonly number[];
 }
 
+export interface MixedSceneRasterInsertionPlan {
+  /** Heterogeneous bottom-up insertion index. */
+  readonly sceneIndex: number;
+  /** Matching insertion index in the raster-only LayerStack. */
+  readonly rasterLayerIndex: number;
+}
+
 /**
  * Checks whether a compact history order is still applicable to the live
  * document. Clipping membership is deliberately read from the current raster
@@ -187,6 +194,72 @@ export function assertValidMixedSceneOrder(
     bottomUpKeys,
     new Map(rasterLayers.map((entry) => [entry.id, entry])),
   );
+}
+
+/**
+ * Plans Add from one authoritative heterogeneous slot. Deriving the two
+ * indices independently can put the same raster on opposite sides of a vector
+ * in MixedSceneStack and LayerStack, after which reorder and History cannot
+ * validate either model.
+ */
+export function planMixedSceneRasterInsertion(
+  bottomUpKeys: readonly MixedSceneItem["key"][],
+  rasterLayers: readonly MixedSceneRasterOrderEntry[],
+  selectedKey: MixedSceneItem["key"],
+  clippingParentId: number | null,
+): MixedSceneRasterInsertionPlan {
+  assertValidMixedSceneOrder(bottomUpKeys, rasterLayers);
+  const selectedSceneIndex = bottomUpKeys.indexOf(selectedKey);
+  if (selectedSceneIndex < 0) {
+    throw new Error(`Elemento scena ${selectedKey} inesistente.`);
+  }
+  const rasterById = new Map(rasterLayers.map((entry) => [entry.id, entry]));
+  const selectedRasterId = rasterIdForKey(selectedKey);
+  let sceneIndex = selectedSceneIndex + 1;
+
+  if (clippingParentId !== null || selectedRasterId !== null) {
+    const anchorId = clippingParentId ?? selectedRasterId;
+    if (anchorId === null) {
+      throw new Error("Ancora raster dell'inserimento mancante.");
+    }
+    const anchor = rasterById.get(anchorId);
+    if (!anchor) throw new Error(`Raster ${anchorId} assente dal LayerStack.`);
+    const parentId = clippingParentId ?? anchor.clippingParentId ?? anchor.id;
+    const parent = rasterById.get(parentId);
+    if (!parent || parent.clippingParentId !== null) {
+      throw new Error(`Parent raster ${parentId} non valido.`);
+    }
+    const unitIds = [
+      parent.id,
+      ...rasterLayers
+        .filter((entry) => entry.clippingParentId === parent.id)
+        .map((entry) => entry.id),
+    ];
+    const lastKey = `raster:${unitIds[unitIds.length - 1]}` as const;
+    const lastSceneIndex = bottomUpKeys.indexOf(lastKey);
+    if (lastSceneIndex < 0) {
+      throw new Error(`Gruppo raster ${parent.id} assente dalla scena.`);
+    }
+    sceneIndex = lastSceneIndex + 1;
+  }
+
+  const rasterLayerIndex = bottomUpKeys
+    .slice(0, sceneIndex)
+    .reduce((count, key) => count + Number(rasterIdForKey(key) !== null), 0);
+  const maximumRasterId = Math.max(0, ...rasterLayers.map((entry) => entry.id));
+  if (maximumRasterId >= Number.MAX_SAFE_INTEGER) {
+    throw new Error("Nessun id raster diagnostico disponibile per validare l'inserimento.");
+  }
+  const candidateId = maximumRasterId + 1;
+  const candidateKeys = [...bottomUpKeys];
+  candidateKeys.splice(sceneIndex, 0, `raster:${candidateId}` as const);
+  const candidateRasterLayers = [...rasterLayers];
+  candidateRasterLayers.splice(rasterLayerIndex, 0, {
+    id: candidateId,
+    clippingParentId,
+  });
+  assertValidMixedSceneOrder(candidateKeys, candidateRasterLayers);
+  return { sceneIndex, rasterLayerIndex };
 }
 
 function movingBottomUpKeys(

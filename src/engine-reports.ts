@@ -890,9 +890,14 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     : 0;
   const layerThumbnailMiB =
     (engine.layerThumbnailRenderer?.residentBytes ?? 0) / MEBIBYTE_BYTES;
+  const vectorTextRunTextureCount = [...engine.vectorTextRunTextures.values()]
+    .reduce(
+      (count, resources) => count + 1 + Number(resources.fallbackTexture !== null),
+      0,
+    );
   const vectorTextTextureCount = Number(Boolean(engine.vectorTextBelowTexture))
     + Number(Boolean(engine.vectorTextAboveTexture))
-    + engine.vectorTextRunTextures.size;
+    + vectorTextRunTextureCount;
   const vectorTextViewportMiB = vectorTextTextureCount > 0
     ? vectorTextTextureCount * engine.vectorTextTextureWidth
       * engine.vectorTextTextureHeight * VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL / MEBIBYTE_BYTES

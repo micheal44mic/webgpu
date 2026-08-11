@@ -1422,7 +1422,12 @@ assert.match(engineSource, /let activeWorkbenchRestored = false;/);
 assert.match(engineSource, /if \(!activeWorkbenchRestored\) \{[\s\S]*?restoreEffectsWorkbenchToActiveLayer\(this, caller, true\)/,
   "un errore durante la fusione deve forzare il retarget inverso del banco");
 assert.match(engineSource, /Stato incoerente dopo il compositing: ricarica prima di continuare/);
-assert.match(engineSource, /latchDocumentStateInconsistent\(message: string\): void/);
+assert.match(
+  engineSource,
+  /latchDocumentStateInconsistent\(message: string, trigger\?: unknown\): void/,
+  "il latch documentale deve poter conservare l'errore originale e il suo stack",
+);
+assert.match(engineSource, /firstDocumentInconsistentDiagnostic/);
 assert.match(engineSource, /this\.historyStateInconsistent = true;[\s\S]*?this\.historyBusy = true;/,
   "il latch documentale deve bloccare ogni mutazione successiva");
 assert.match(engineSource, /releaseFusedLayerBakes\(this\)/);
@@ -2587,24 +2592,24 @@ const addMethodEnd = engineSource.indexOf("async setActiveLayer(", addMethodStar
 assertSection("add layer", addMethodStart, addMethodEnd);
 const addMethodBody = engineSource.slice(addMethodStart, addMethodEnd);
 const addPrepare = addMethodBody.indexOf("await this.prepareActiveLayerForSwitch();");
-const addRecord = addMethodBody.indexOf("this.layerStack.add(name)");
+const addRecord = addMethodBody.indexOf("this.layerStack.insertAt(layerInsertIndex, name)");
 assert.ok(
   addPrepare >= 0 && addRecord > addPrepare,
   "addLayer deve congelare e impacchettare l'uscente prima del nuovo record",
 );
 assert.match(
   addMethodBody,
-  /this\.mixedSceneStack\.addRasterAboveSelection\(record\.id\)/,
-  "nella scena mista il nuovo raster deve seguire la selezione, incluso un testo",
+  /planMixedSceneRasterInsertion\([\s\S]*?scene\.selected\.key,[\s\S]*?clippingParentId/,
+  "stack raster e scena mista devono derivare entrambi da un solo slot autorevole",
 );
 assert.match(
   addMethodBody,
-  /this\.mixedSceneStack\.insertRasterAt\(record\.id, clippingSceneInsertIndex\)/,
-  "una nuova maschera deve essere inserita sopra l'intero gruppo di ritaglio",
+  /scene\.insertRasterAt\(record\.id, sceneInsertIndex\)/,
+  "l'inserimento eterogeneo pianificato deve pubblicare lo stesso raster nella scena",
 );
 assert.match(addMethodBody, /await allocateLayerGpuResources\(this,/);
 const addActivation = addMethodBody.indexOf(
-  "const result = await this.activateLayer(fromIndex);",
+  "const result = await this.activateLayer(outgoingIndexAfterInsertion);",
 );
 const addLiveTextClear = addMethodBody.indexOf("this.clearVectorTextPresentation();");
 assert.ok(
@@ -2612,14 +2617,19 @@ assert.ok(
   "addLayer deve liberare la preview testo soltanto dopo che activateLayer ha "
     + "sbloccato la presentazione, altrimenti waitForIdle resta su displayDirty",
 );
-assert.match(addMethodBody, /Stato incoerente dopo la creazione del livello:[\s\S]*?Ricarica la pagina/,
+assert.match(addMethodBody, /Stato incoerente dopo la creazione del livello: ricarica prima di continuare/,
   "un doppio fallimento di addLayer deve alzare il latch fatale");
-assert.match(addMethodBody, /this\.layerStack\.remove\(index\);[\s\S]*?this\.layerStack\.setActiveIndex\(fromIndex\);[\s\S]*?await this\.activateLayer\(fromIndex\);/,
+assert.match(
+  addMethodBody,
+  /const combined = new Error\([\s\S]*?Ricarica la pagina prima di continuare[\s\S]*?latchDocumentStateInconsistent\([\s\S]*?combined/,
+  "la diagnosi fatale di Add deve conservare insieme errore iniziale e rollback",
+);
+assert.match(addMethodBody, /const insertedIndex = this\.layerStack\.indexOfId\(record\.id\);[\s\S]*?this\.layerStack\.remove\(insertedIndex\);[\s\S]*?const restoredIndex = this\.layerStack\.indexOfId\(activeRasterLayerIdBefore\);[\s\S]*?await this\.activateLayer\(restoredIndex\);/,
   "un OOM del nuovo mip 0 deve reidratare l'uscente già evacuato");
-assert.match(addMethodBody, /evictReconstructibleLayerResources\(this, record\);[\s\S]*?this\.layerStack\.setActiveIndex\(fromIndex\);[\s\S]*?await this\.activateLayer\(index\);/,
+assert.match(addMethodBody, /evictReconstructibleLayerResources\(this, record\);[\s\S]*?const candidateIndex = this\.layerStack\.indexOfId\(record\.id\);[\s\S]*?this\.layerStack\.remove\(candidateIndex\);[\s\S]*?const restoredIndex = this\.layerStack\.indexOfId\(activeRasterLayerIdBefore\);[\s\S]*?await this\.activateLayer\(restoredIndex\);/,
   "il rollback di addLayer deve evacuare il nuovo hot prima di reidratare l'origine");
-assert.match(addMethodBody, /await this\.activateLayer\(index\);[\s\S]*?this\.layerGpu\.delete\(record\.id\);[\s\S]*?destroyLayerGpuResources\(this, gpu\)/,
-  "un livello fallito va distrutto solo dopo il ripristino completo");
+assert.match(addMethodBody, /this\.layerGpu\.delete\(record\.id\);[\s\S]*?destroyLayerGpuResources\(this, gpu\);[\s\S]*?await this\.activateLayer\(restoredIndex\);/,
+  "il candidato fallito deve essere rimosso prima di ricostruire la scena originaria");
 
 // Measurement setups reset the GLOBAL journal but clear only the active layer.
 assert.match(engineSource, /get documentWideResetBlockedByLayers\(\): boolean/);

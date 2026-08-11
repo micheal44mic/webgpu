@@ -129,6 +129,14 @@ import type {
   EngineStats,
   StrokePerformanceProfile,
 } from "./engine-stats";
+import {
+  APP_DIAGNOSTIC_SCHEMA,
+  BoundedAppDiagnosticLog,
+  captureAppDiagnosticState,
+  describeAppDiagnosticError,
+  inspectAppDiagnosticInvariants,
+  summarizeAppDiagnosticHistoryWindow,
+} from "./app-diagnostics";
 import type {
   FragmentCoverageStrategy,
   ShapeMaskDecodeStrategy,
@@ -865,6 +873,12 @@ const benchmarkStampsInput = element<HTMLInputElement>("benchmarkStamps");
 const gpuMemoryPanel = element<HTMLElement>("gpuMemoryPanel");
 const gpuMemoryToggle = element<HTMLButtonElement>("gpuMemoryToggle");
 const gpuMemoryClose = element<HTMLButtonElement>("gpuMemoryClose");
+const copyAppDiagnosticsButton = element<HTMLButtonElement>("copyAppDiagnostics");
+const appDiagnosticsCopyStatus = element<HTMLOutputElement>(
+  "appDiagnosticsCopyStatus",
+);
+const appDiagnosticsDetails = element<HTMLDetailsElement>("appDiagnosticsDetails");
+const appDiagnosticsReport = element<HTMLElement>("appDiagnosticsReport");
 const gpuMemoryChevron = element<HTMLElement>("gpuMemoryChevron");
 const gpuMemoryDelta = element<HTMLElement>("gpuMemoryDelta");
 
@@ -1422,10 +1436,21 @@ let rasterNoisePreviewFault = false;
 let rasterNoiseCancelPending = false;
 let rasterNoiseSurface: RasterNoiseSurface | null = null;
 let rasterNoiseReturnFocus: HTMLElement | null = null;
+const appDiagnosticLog = new BoundedAppDiagnosticLog();
+let appDiagnosticHistorySignature = "";
+let appDiagnosticSceneSignature = "";
+let appDiagnosticsCopyBusy = false;
 const engine = new BrushEngine(canvas, {
   onStatus(message, kind) {
     statusElement.textContent = message;
     statusElement.className = `status ${kind === "working" ? "" : kind}`;
+    if (kind === "error") {
+      appDiagnosticLog.record({
+        category: "status",
+        name: "engine-status-error",
+        detail: message,
+      });
+    }
     if (rasterGaussianBlurSessionOpen && message.includes("Gaussian Blur")) {
       setRasterGaussianBlurStatus(message);
       if (kind === "error") rasterGaussianBlurPreviewFault = true;
@@ -1453,6 +1478,28 @@ const engine = new BrushEngine(canvas, {
     mobileBrushStudio?.notifyEngineUpdate();
   },
   onHistoryChange(state) {
+    const diagnosticSignature = [
+      state.cursor,
+      state.actionCount,
+      state.inconsistent,
+      state.openEdit ?? "none",
+    ].join("|");
+    if (diagnosticSignature !== appDiagnosticHistorySignature) {
+      appDiagnosticHistorySignature = diagnosticSignature;
+      appDiagnosticLog.record({
+        category: "history",
+        name: state.inconsistent ? "history-inconsistent" : "history-state",
+        detail: JSON.stringify({
+          cursor: state.cursor,
+          actionCount: state.actionCount,
+          busy: state.busy,
+          inconsistent: state.inconsistent,
+          openEdit: state.openEdit,
+          undoBlockedReason: state.undoBlockedReason,
+          redoBlockedReason: state.redoBlockedReason,
+        }),
+      });
+    }
     if (state.busy || state.openEdit !== null || state.inconsistent) {
       cancelMobileLayerReorderGesture();
     }
@@ -1476,6 +1523,20 @@ const engine = new BrushEngine(canvas, {
     mobileToolSettingsSheet?.syncOpenState();
   },
   onMixedSceneChange(snapshot) {
+    const diagnosticSignature = `${snapshot.selectedKey}|`
+      + snapshot.items.map((item) => item.key).join(",");
+    if (diagnosticSignature !== appDiagnosticSceneSignature) {
+      appDiagnosticSceneSignature = diagnosticSignature;
+      appDiagnosticLog.record({
+        category: "scene",
+        name: "mixed-scene-state",
+        detail: JSON.stringify({
+          selectedKey: snapshot.selectedKey,
+          activeRasterLayerId: snapshot.activeRasterLayerId,
+          bottomUpKeys: snapshot.items.map((item) => item.key),
+        }),
+      });
+    }
     requestMobileLayersRefresh();
     vectorTextPrototype?.syncScene(snapshot);
     mobileToolSettingsSheet?.syncOpenState();
@@ -1520,6 +1581,23 @@ const engine = new BrushEngine(canvas, {
   layerColdDirectHotHydrationEnabled,
   layerColdAdjacentPrefetchEnabled,
 }, rasterSelectionOverlayCanvas);
+window.addEventListener("error", (event) => {
+  appDiagnosticLog.record({
+    category: "error",
+    name: "window-error",
+    detail: event.filename
+      ? `${event.filename}:${event.lineno}:${event.colno}`
+      : null,
+    error: event.error ?? new Error(event.message || "Errore globale senza messaggio."),
+  });
+});
+window.addEventListener("unhandledrejection", (event) => {
+  appDiagnosticLog.record({
+    category: "error",
+    name: "unhandled-promise-rejection",
+    error: event.reason,
+  });
+});
 // BrushEngine possiede il default autorevole RGBA16F. La UI si limita a
 // rifletterlo: nessun override locale (mobile o desktop) puo' divergere dal
 // formato realmente usato per creare livelli, storia e compositori.
@@ -4135,6 +4213,11 @@ async function commitMobileLayerReorder(
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : "Layer move failed.";
+    recordAppDiagnosticOperation(
+      "mixed-scene-reorder-failed",
+      JSON.stringify({ key, targetTopFirstSlot }),
+      error,
+    );
     layerSwitchResult.textContent = message;
     announceMobileLayerReorder(message);
   } finally {
@@ -7135,6 +7218,16 @@ async function runHistoryOperation(operation: "undo" | "redo"): Promise<boolean>
         : fresco.redoBlockedReason)
         ?? "Passo di cronologia non eseguibile in questo momento.";
       statusElement.className = "status";
+      recordAppDiagnosticOperation(
+        "history-step-refused",
+        JSON.stringify({
+          operation,
+          cursor: fresco.cursor,
+          reason: operation === "undo"
+            ? fresco.undoBlockedReason
+            : fresco.redoBlockedReason,
+        }),
+      );
     }
   } catch (error) {
     const messaggio = error instanceof Error ? error.message : String(error);
@@ -7150,6 +7243,11 @@ async function runHistoryOperation(operation: "undo" | "redo"): Promise<boolean>
       cursore,
       messaggio,
     };
+    recordAppDiagnosticOperation(
+      "history-step-failed",
+      JSON.stringify({ operation, action: attraversata?.kind ?? null, cursore }),
+      error,
+    );
     statusElement.textContent = messaggio;
     statusElement.className = "status error";
   } finally {
@@ -7703,6 +7801,11 @@ async function requestMobileLayerMerge(): Promise<void> {
     const message = error instanceof Error
       ? error.message
       : "Unione dei livelli non riuscita.";
+    recordAppDiagnosticOperation(
+      "mixed-scene-merge-failed",
+      JSON.stringify({ selectedKeys: plan.orderedKeys }),
+      error,
+    );
     layerSwitchResult.textContent = message;
     setMobileLayerMergeStatus(message, true);
     announceMobileLayerReorder(message);
@@ -7746,6 +7849,11 @@ mobileLayerDeleteButton.addEventListener("click", () => {
   closeMobileLayerContextMenu(false);
   void engine.deleteLayer(index).catch((error) => {
     console.error("Eliminazione livello non riuscita", error);
+    recordAppDiagnosticOperation(
+      "raster-layer-delete-failed",
+      JSON.stringify({ index }),
+      error,
+    );
     statusElement.textContent = error instanceof Error ? error.message : String(error);
     statusElement.className = "status error";
   });
@@ -8420,6 +8528,9 @@ gpuMemoryToggle.addEventListener("click", () => {
 gpuMemoryClose.addEventListener("click", () => {
   setGpuMemoryPanelOpen(false);
   gpuMemoryToggle.focus();
+});
+copyAppDiagnosticsButton.addEventListener("click", () => {
+  void copyAppDiagnosticReport();
 });
 layerMemoryStressButton.addEventListener("click", () => {
   if (mixedMemoryBenchmarkRequested) {
@@ -11022,6 +11133,248 @@ function updateHistoryDiagnostics(): void {
       : "");
 }
 
+function captureCurrentAppDiagnosticState() {
+  try {
+    return captureAppDiagnosticState(engine.getStats(), engine.getHistoryState());
+  } catch {
+    return null;
+  }
+}
+
+function recordAppDiagnosticOperation(
+  name: string,
+  detail: string | null = null,
+  error?: unknown,
+): void {
+  appDiagnosticLog.record({
+    category: error === undefined ? "operation" : "error",
+    name,
+    detail,
+    error,
+    state: captureCurrentAppDiagnosticState(),
+  });
+}
+
+function appDiagnosticSection<Value>(read: () => Value):
+  | { readonly ok: true; readonly value: Value }
+  | { readonly ok: false; readonly error: ReturnType<typeof describeAppDiagnosticError> } {
+  try {
+    return { ok: true, value: read() };
+  } catch (error) {
+    return { ok: false, error: describeAppDiagnosticError(error) };
+  }
+}
+
+/**
+ * Builds the report only when requested. No text/SVG document or pixel payload
+ * is serialized: the useful evidence is stable ids, ordering, locks, History
+ * kinds and resource totals. This keeps Copy cheap during normal drawing.
+ */
+function buildAppDiagnosticReport(): string {
+  const statsResult = appDiagnosticSection(() => engine.getStats());
+  const historyResult = appDiagnosticSection(() => engine.getHistoryState());
+  const stats = statsResult.ok ? statsResult.value : null;
+  const currentHistory = historyResult.ok ? historyResult.value : historyState;
+  const measuredResult = appDiagnosticSection(() => engine.measuredGpuMemory());
+  const maintenanceResult = appDiagnosticSection(
+    () => engine.getHistoryMaintenanceTelemetry(),
+  );
+  const vectorDiagnosticsResult = appDiagnosticSection(
+    () => vectorTextPrototype?.getDiagnostics() ?? null,
+  );
+  const currentState = stats
+    ? captureAppDiagnosticState(stats, currentHistory)
+    : null;
+  const invariants = stats
+    ? inspectAppDiagnosticInvariants(stats, currentHistory)
+    : { ok: false, issues: ["Stats motore non leggibili durante la cattura."] };
+  const measured = measuredResult.ok ? measuredResult.value : null;
+  const declaredBytes = (stats?.gpuMemory.countedTotalMiB ?? 0) * 1024 * 1024;
+  const measuredBytes = measured?.currentBytes ?? 0;
+  const memoryDeltaBytes = measuredBytes - declaredBytes;
+  const historyWindowResult = appDiagnosticSection(() =>
+    summarizeAppDiagnosticHistoryWindow(
+      engine.historyActions,
+      engine.historyCursor,
+    )
+  );
+  const report = {
+    schema: APP_DIAGNOSTIC_SCHEMA,
+    capturedAt: new Date().toISOString(),
+    privacy: "Nessun pixel, contenuto testuale o sorgente SVG incluso.",
+    app: {
+      mode: import.meta.env.MODE,
+      documentSize: LAYER_SIZE,
+      path: `${window.location.pathname}${window.location.search}`,
+      visibility: document.visibilityState,
+    },
+    environment: {
+      userAgent: navigator.userAgent,
+      platform: navigator.platform,
+      maxTouchPoints: navigator.maxTouchPoints,
+      language: navigator.language,
+      viewportCss: { width: window.innerWidth, height: window.innerHeight },
+      screenCss: { width: window.screen.width, height: window.screen.height },
+      canvasPixels: { width: canvas.width, height: canvas.height },
+      devicePixelRatio: window.devicePixelRatio,
+      gpuLabel: stats?.gpuLabel ?? null,
+    },
+    uiLocks: {
+      engineInitialized,
+      layerSwitching,
+      historyUiBusy,
+      historyQueueDraining,
+      queuedHistoryOperations: historyOperationQueue.length,
+      activePointer: activePointerId !== null,
+      rasterGaussianBlurUiBusy,
+      rasterMotionBlurUiBusy,
+      rasterNoiseUiBusy,
+      rasterLiquifyUiBusy,
+    },
+    engineLocks: {
+      initialized: engine.initialized,
+      layerSwitchBusy: engine.layerSwitchBusy,
+      selectionBusy: engine.selectionBusy,
+      historyBusy: engine.historyBusy,
+      historyStateInconsistent: engine.historyStateInconsistent,
+      activeStroke: engine.activeStroke !== null,
+      deviceLost: engine.deviceLostError
+        ? describeAppDiagnosticError(engine.deviceLostError)
+        : null,
+      renderFrameError: engine.renderFrameError
+        ? describeAppDiagnosticError(engine.renderFrameError)
+        : null,
+      firstInconsistentLatch: engine.getDocumentInconsistentDiagnostic(),
+    },
+    renderWork: {
+      layerPresentationFrozen: engine.layerPresentationFrozen,
+      displayDirty: engine.displayDirty,
+      presentationCacheNeedsFullRebuild: engine.presentationCacheNeedsFullRebuild,
+      frameRequestPending: engine.frameRequest !== null,
+      pendingStamps: engine.pendingStamps.length,
+      pendingBlendBatches: engine.pendingBlendBatches.length,
+    },
+    layerResidency: (() => {
+      const stackIds = engine.layerStack.layers.map((layer) => layer.id);
+      const gpuIds = [...engine.layerGpu.keys()];
+      const stackIdSet = new Set(stackIds);
+      const gpuIdSet = new Set(gpuIds);
+      return {
+        stackIds,
+        gpuIds,
+        missingGpuIds: stackIds.filter((id) => !gpuIdSet.has(id)),
+        orphanGpuIds: gpuIds.filter((id) => !stackIdSet.has(id)),
+        resources: gpuIds.map((id) => {
+          const gpu = engine.layerGpu.get(id);
+          return {
+            id,
+            hot: Boolean(gpu?.hot),
+            cold: Boolean(gpu?.cold),
+            compressed: Boolean(gpu?.compressed),
+          };
+        }),
+      };
+    })(),
+    visibleMessages: {
+      status: statusElement.textContent,
+      layer: layerSwitchResult.textContent,
+      lastHistoryFailure: ultimoGuastoCronologia,
+    },
+    currentState,
+    invariants,
+    statsReadError: statsResult.ok ? null : statsResult.error,
+    historyReadError: historyResult.ok ? null : historyResult.error,
+    gpuMemoryAudit: measured
+      ? {
+        declaredMiB: declaredBytes / (1024 * 1024),
+        registeredMiB: measuredBytes / (1024 * 1024),
+        deltaMiB: memoryDeltaBytes / (1024 * 1024),
+        warning: Math.abs(memoryDeltaBytes) > GPU_MEMORY_AUDIT_TOLERANCE_BYTES,
+        textureCount: measured.textureCount,
+        bufferCount: measured.bufferCount,
+        unmeasurableCount: measured.unmeasurableCount,
+        categories: measured.categories.map((category) => ({
+          category: category.category,
+          currentMiB: category.bytes / (1024 * 1024),
+          peakMiB: category.peakBytes / (1024 * 1024),
+          count: category.count,
+        })),
+      }
+      : measuredResult,
+    historyMaintenance: maintenanceResult,
+    vectorDiagnostics: vectorDiagnosticsResult,
+    historyWindow: historyWindowResult,
+    recentEvents: appDiagnosticLog.snapshot(),
+  };
+  return JSON.stringify(report, null, 2);
+}
+
+function copyTextWithLegacySelection(text: string): boolean {
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.readOnly = true;
+  textarea.setAttribute("aria-hidden", "true");
+  textarea.style.position = "fixed";
+  textarea.style.inset = "0 auto auto 0";
+  textarea.style.width = "1px";
+  textarea.style.height = "1px";
+  textarea.style.opacity = "0";
+  textarea.style.fontSize = "16px";
+  document.body.append(textarea);
+  textarea.focus({ preventScroll: true });
+  textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } finally {
+    textarea.remove();
+  }
+  return copied;
+}
+
+async function copyAppDiagnosticReport(): Promise<void> {
+  if (appDiagnosticsCopyBusy) return;
+  appDiagnosticsCopyBusy = true;
+  copyAppDiagnosticsButton.disabled = true;
+  copyAppDiagnosticsButton.setAttribute("aria-busy", "true");
+  appDiagnosticsCopyStatus.hidden = false;
+  appDiagnosticsCopyStatus.textContent = "Preparazione rapporto…";
+  try {
+    const serialized = buildAppDiagnosticReport();
+    appDiagnosticsReport.textContent = serialized;
+    appDiagnosticsDetails.hidden = false;
+    (
+      window as Window & { __appDiagnosticReport?: string }
+    ).__appDiagnosticReport = serialized;
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(serialized);
+      copied = true;
+    } catch {
+      copied = copyTextWithLegacySelection(serialized);
+    }
+    appDiagnosticsDetails.open = !copied;
+    appDiagnosticsCopyStatus.textContent = copied
+      ? "Diagnosi copiata: incollala nella chat senza ricaricare la pagina."
+      : "Copia automatica non consentita: il rapporto è aperto qui sotto per la selezione manuale.";
+  } catch (error) {
+    const diagnosticError = describeAppDiagnosticError(error);
+    appDiagnosticsCopyStatus.textContent =
+      `Rapporto non creato: ${diagnosticError.message}`;
+    appDiagnosticsDetails.hidden = true;
+    appDiagnosticLog.record({
+      category: "error",
+      name: "diagnostic-report-failed",
+      error,
+    });
+  } finally {
+    appDiagnosticsCopyBusy = false;
+    copyAppDiagnosticsButton.disabled = false;
+    copyAppDiagnosticsButton.setAttribute("aria-busy", "false");
+  }
+}
+
 /**
  * Dichiarato contro reale. Il pannello e' un modello e puo' derivare: qui il
  * confronto e' automatico, cosi' una taglia di documento nuova o una risorsa
@@ -11052,7 +11405,9 @@ function updateGpuMemoryAudit(
     + `Il modello diagnostico non sommato dichiara `
     + `${formatMemoryMiB(declaredMiB)}: scarto `
     + `${scartoMiB >= 0 ? "+" : "−"}${formatMemoryMiB(Math.abs(scartoMiB))}`
-    + (oltreTolleranza ? " · ATTENZIONE: il modello è disallineato." : ".");
+    + (oltreTolleranza
+      ? " · ATTENZIONE: è disallineata solo la stima memoria, non l’ordine dei layer."
+      : ".");
   output.classList.toggle(
     "memory-audit-warning",
     oltreTolleranza || misura.unmeasurableCount > 0,
@@ -12921,6 +13276,11 @@ async function selectMixedSceneItem(
             ? `Raster ${result.toIndex + 1} attivo in ${result.totalMs.toFixed(0)} ms.`
             : "Raster selezionato: pennello attivo.";
   } catch (error) {
+    recordAppDiagnosticOperation(
+      "mixed-scene-selection-failed",
+      JSON.stringify({ key, kind: item.kind }),
+      error,
+    );
     layerSwitchResult.textContent = error instanceof Error
       ? error.message
       : "Selezione del livello non riuscita.";
@@ -12970,6 +13330,11 @@ async function selectLayer(index: number): Promise<void> {
         + ` in ${result.totalMs.toFixed(0)} ms`
       : "Livello già attivo";
   } catch (error) {
+    recordAppDiagnosticOperation(
+      "raster-layer-selection-failed",
+      JSON.stringify({ index }),
+      error,
+    );
     layerSwitchResult.textContent = error instanceof Error
       ? error.message
       : "Cambio livello non riuscito.";
@@ -13012,6 +13377,11 @@ async function addMobileClippingMaskLayer(): Promise<void> {
       `Clipping Mask ${result.toIndex + 1} creata e selezionata in `
       + `${result.totalMs.toFixed(0)} ms.`;
   } catch (error) {
+    recordAppDiagnosticOperation(
+      "raster-clipping-mask-add-failed",
+      null,
+      error,
+    );
     layerSwitchResult.textContent = error instanceof Error
       ? error.message
       : "Creazione della maschera non riuscita.";
@@ -13100,6 +13470,11 @@ async function duplicateMobileSelectedLayer(): Promise<void> {
     const message = error instanceof Error
       ? error.message
       : "Duplicazione del livello non riuscita.";
+    recordAppDiagnosticOperation(
+      "mixed-scene-duplicate-failed",
+      JSON.stringify({ sourceKey: sourceView.key, kind: sourceView.kind }),
+      error,
+    );
     layerSwitchResult.textContent = message;
     setMobileLayerMergeStatus(message, true);
     announceMobileLayerReorder(message);
@@ -13142,6 +13517,11 @@ addLayerButton.addEventListener("click", async () => {
     layerSwitchResult.textContent =
       `Livello ${result.toIndex + 1} creato e attivo in ${result.totalMs.toFixed(0)} ms.`;
   } catch (error) {
+    recordAppDiagnosticOperation(
+      "raster-layer-add-failed",
+      null,
+      error,
+    );
     layerSwitchResult.textContent = error instanceof Error
       ? error.message
       : "Creazione livello non riuscita.";

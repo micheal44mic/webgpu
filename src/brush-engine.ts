@@ -74,6 +74,7 @@ import {
   type VectorTextNode,
   type VectorTextNodeSeed,
 } from "./mixed-scene-stack";
+import { planMixedSceneRasterInsertion } from "./mixed-scene-reorder-core";
 import type {
   NativeRasterImageImportResult,
   NativeRasterImageHistorySeed,
@@ -956,6 +957,15 @@ export interface LayerDuplicateResult {
   readonly totalMs: number;
 }
 
+export interface DocumentInconsistentDiagnostic {
+  readonly capturedAt: string;
+  readonly message: string;
+  readonly triggerName: string;
+  readonly triggerMessage: string;
+  /** Triggering error stack, or the first latch call site when none was supplied. */
+  readonly stack: string | null;
+}
+
 /**
  * Il motore. La classe conserva lo stato e il percorso caldo del tratto; il
  * resto vive nei moduli `engine-*`, che ricevono l'istanza come primo
@@ -1643,6 +1653,7 @@ export class BrushEngine {
   historyCompactionPending = false;
   historyBusy = false;
   historyStateInconsistent = false;
+  private firstDocumentInconsistentDiagnostic: DocumentInconsistentDiagnostic | null = null;
   activeVectorHistoryEdit: ActiveVectorHistoryEdit | null = null;
   activeRasterLayerMetadataHistoryEdit: (
     ActiveRasterLayerMetadataHistoryEdit & { readonly token: number }
@@ -7296,7 +7307,8 @@ export class BrushEngine {
   }
 
   /**
-   * Adds a layer above the active one and selects it.
+   * Adds a raster above the selected scene item and selects it. Raster
+   * clipping units remain atomic, so "above" means above the whole unit.
    *
    * Deliberately not routed through recreateLayerResources: that function's tail
    * destroys the outgoing texture, the blend renderer and the effects workbench,
@@ -7318,56 +7330,60 @@ export class BrushEngine {
     this.layerSwitchBusy = true;
     try {
       await this.waitForIdle();
-      const mixedSceneState = this.mixedSceneStack?.captureState() ?? null;
+      const scene = this.mixedSceneStack;
+      const mixedSceneState = scene?.captureState() ?? null;
       const previousExcludedNodeId = this.vectorTextPreviewExcludedNodeId;
-      let clippingLayerInsertIndex: number | null = null;
-      let clippingSceneInsertIndex: number | null = null;
-      if (clippingParentId !== null) {
+      let layerInsertIndex: number;
+      let sceneInsertIndex: number | null = null;
+      if (scene) {
+        const insertion = planMixedSceneRasterInsertion(
+          scene.items.map((item) => item.key),
+          this.layerStack.layers.map((record) => ({
+            id: record.id,
+            clippingParentId: record.clippingParentId,
+          })),
+          scene.selected.key,
+          clippingParentId,
+        );
+        layerInsertIndex = insertion.rasterLayerIndex;
+        sceneInsertIndex = insertion.sceneIndex;
+      } else if (clippingParentId !== null) {
         const parent = this.layerStack.byId(clippingParentId);
         if (!parent || parent.clippingParentId !== null) {
           throw new Error("Parent raster della maschera non valido.");
         }
         const unit = this.layerStack.clippingUnit(parent.id);
-        clippingLayerInsertIndex = this.layerStack.indexOfId(unit[unit.length - 1].id) + 1;
-        if (this.mixedSceneStack) {
-          const sceneIndices = unit.map((member) =>
-            this.mixedSceneStack!.indexOfKey(`raster:${member.id}` as const));
-          if (
-            sceneIndices.some((sceneIndex) => sceneIndex < 0)
-            || sceneIndices.some((sceneIndex, offset) =>
-              sceneIndex !== sceneIndices[0] + offset)
-          ) {
-            throw new Error(
-              `Il gruppo di ritaglio ${parent.id} non è consecutivo nella scena mista.`,
-            );
-          }
-          clippingSceneInsertIndex = sceneIndices[sceneIndices.length - 1] + 1;
-        }
+        layerInsertIndex = this.layerStack.indexOfId(unit[unit.length - 1].id) + 1;
+      } else {
+        const unit = this.layerStack.clippingUnit(this.layerStack.active.id);
+        layerInsertIndex = this.layerStack.indexOfId(unit[unit.length - 1].id) + 1;
       }
-      const fromIndex = this.layerStack.activeIndex;
       // Catturati **prima** dell'inserimento: sono lo stato a cui l'Undo torna.
       const selectedKeyBefore = this.mixedSceneStack?.selected.key ?? null;
       const activeRasterLayerIdBefore = this.layerStack.active.id;
       const referenceRasterLayerIdBefore = this.layerStack.referenceLayerId;
       this.persistActiveLayerState();
       await this.prepareActiveLayerForSwitch();
-      const index = clippingLayerInsertIndex === null
-        ? this.layerStack.add(name)
-        : this.layerStack.insertAt(clippingLayerInsertIndex, name);
-      const record = this.layerStack.at(index);
-      if (clippingParentId !== null) {
-        this.layerStack.setClippingParent(index, clippingParentId);
-      }
-      if (this.mixedSceneStack) {
-        if (clippingSceneInsertIndex === null) {
-          this.mixedSceneStack.addRasterAboveSelection(record.id);
-        } else {
-          this.mixedSceneStack.insertRasterAt(record.id, clippingSceneInsertIndex);
-        }
-        this.vectorTextPreviewExcludedNodeId = null;
-      }
-      let gpu: LayerGpuResources;
+      let index = -1;
+      let outgoingIndexAfterInsertion = -1;
+      let record: LayerRecord | null = null;
+      let gpu: LayerGpuResources | null = null;
       try {
+        index = this.layerStack.insertAt(layerInsertIndex, name);
+        record = this.layerStack.at(index);
+        if (clippingParentId !== null) {
+          this.layerStack.setClippingParent(index, clippingParentId);
+        }
+        if (scene && sceneInsertIndex !== null) {
+          scene.insertRasterAt(record.id, sceneInsertIndex);
+          this.vectorTextPreviewExcludedNodeId = null;
+        }
+        outgoingIndexAfterInsertion = this.layerStack.indexOfId(activeRasterLayerIdBefore);
+        if (outgoingIndexAfterInsertion < 0) {
+          throw new Error(
+            `Raster uscente ${activeRasterLayerIdBefore} perso durante l'inserimento.`,
+          );
+        }
         gpu = await allocateLayerGpuResources(this, 
           this.layerFormat,
           `Allocazione livello ${record.id}`,
@@ -7376,34 +7392,50 @@ export class BrushEngine {
       } catch (error) {
         // Leave the stack exactly as it was rather than holding a record with no
         // GPU resources, which every later switch would trip over.
-        this.layerStack.remove(index);
-        this.layerStack.setActiveIndex(fromIndex);
-        if (this.mixedSceneStack && mixedSceneState) {
-          this.mixedSceneStack.restoreState(mixedSceneState);
-          this.vectorTextPreviewExcludedNodeId = previousExcludedNodeId;
-        }
         try {
+          if (scene && mixedSceneState) {
+            scene.restoreState(mixedSceneState);
+            this.vectorTextPreviewExcludedNodeId = previousExcludedNodeId;
+          }
+          if (record) {
+            const insertedIndex = this.layerStack.indexOfId(record.id);
+            if (insertedIndex >= 0) this.layerStack.remove(insertedIndex);
+            if (this.layerGpu.get(record.id) === gpu) this.layerGpu.delete(record.id);
+            if (gpu) destroyLayerGpuResources(this, gpu);
+          }
+          const restoredIndex = this.layerStack.indexOfId(activeRasterLayerIdBefore);
+          if (restoredIndex < 0) {
+            throw new Error(
+              `Raster uscente ${activeRasterLayerIdBefore} assente durante il rollback Add.`,
+            );
+          }
+          this.layerStack.setActiveIndex(restoredIndex);
           // The outgoing full texture was deliberately evicted after its exact
           // cold copy completed. Rehydrate it and rebuild derived caches before
           // reporting the allocation failure.
-          await this.activateLayer(fromIndex);
+          await this.activateLayer(restoredIndex);
         } catch (restoreError) {
           const originalMessage = error instanceof Error ? error.message : String(error);
           const restoreMessage = restoreError instanceof Error
             ? restoreError.message
             : String(restoreError);
-          this.latchDocumentStateInconsistent(
-            "Stato incoerente dopo l'allocazione del livello: ricarica prima di continuare.",
-          );
-          throw new Error(
+          const combined = new Error(
             `Creazione livello fallita: ${originalMessage}; ripristino fallito: ${restoreMessage}. `
             + "Ricarica la pagina prima di continuare.",
           );
+          this.latchDocumentStateInconsistent(
+            "Stato incoerente dopo l'allocazione del livello: ricarica prima di continuare.",
+            combined,
+          );
+          throw combined;
         }
         throw error;
       }
+      if (!record || !gpu || index < 0 || outgoingIndexAfterInsertion < 0) {
+        throw new Error("Inserimento livello completato senza risorse pubblicabili.");
+      }
       try {
-        const result = await this.activateLayer(fromIndex);
+        const result = await this.activateLayer(outgoingIndexAfterInsertion);
         // La creazione e' journaled. Prima troncava il Redo perche' le azioni
         // `scene-reorder` conservano un ordine assoluto e un'inserzione non
         // registrata le rendeva inapplicabili; registrandola, lo stato a
@@ -7447,28 +7479,38 @@ export class BrushEngine {
         // before rehydrating the outgoing layer and keep one hot mip 0 at a time.
         try {
           evictReconstructibleLayerResources(this, record);
-          if (this.mixedSceneStack && mixedSceneState) {
-            this.mixedSceneStack.restoreState(mixedSceneState);
+          if (scene && mixedSceneState) {
+            scene.restoreState(mixedSceneState);
             this.vectorTextPreviewExcludedNodeId = previousExcludedNodeId;
           }
-          this.layerStack.setActiveIndex(fromIndex);
-          await this.activateLayer(index);
+          const candidateIndex = this.layerStack.indexOfId(record.id);
+          if (candidateIndex < 0) {
+            throw new Error("Indici stabili mancanti durante il rollback Add.");
+          }
+          this.layerStack.remove(candidateIndex);
+          this.layerGpu.delete(record.id);
+          destroyLayerGpuResources(this, gpu);
+          const restoredIndex = this.layerStack.indexOfId(activeRasterLayerIdBefore);
+          if (restoredIndex < 0) {
+            throw new Error("Raster uscente mancante durante il rollback Add.");
+          }
+          this.layerStack.setActiveIndex(restoredIndex);
+          await this.activateLayer(restoredIndex);
         } catch (restoreError) {
           const originalMessage = error instanceof Error ? error.message : String(error);
           const restoreMessage = restoreError instanceof Error
             ? restoreError.message
             : String(restoreError);
-          this.latchDocumentStateInconsistent(
-            "Stato incoerente dopo la creazione del livello: ricarica prima di continuare.",
-          );
-          throw new Error(
+          const combined = new Error(
             `Creazione livello fallita: ${originalMessage}; ripristino fallito: ${restoreMessage}. `
             + "Ricarica la pagina prima di continuare.",
           );
+          this.latchDocumentStateInconsistent(
+            "Stato incoerente dopo la creazione del livello: ricarica prima di continuare.",
+            combined,
+          );
+          throw combined;
         }
-        this.layerGpu.delete(record.id);
-        this.layerStack.remove(index);
-        destroyLayerGpuResources(this, gpu);
         throw error;
       }
     } finally {
@@ -7696,11 +7738,27 @@ export class BrushEngine {
     return setLayerReference(this, index, Boolean(enabled));
   }
 
-  latchDocumentStateInconsistent(message: string): void {
+  latchDocumentStateInconsistent(message: string, trigger?: unknown): void {
+    if (this.firstDocumentInconsistentDiagnostic === null) {
+      const marker = trigger instanceof Error ? trigger : new Error(message);
+      this.firstDocumentInconsistentDiagnostic = {
+        capturedAt: new Date().toISOString(),
+        message,
+        triggerName: marker.name || "Error",
+        triggerMessage: marker.message || message,
+        stack: marker.stack ?? null,
+      };
+    }
     this.historyStateInconsistent = true;
     this.historyBusy = true;
     this.publishHistoryState();
     this.callbacks.onStatus?.(message, "error");
+  }
+
+  getDocumentInconsistentDiagnostic(): DocumentInconsistentDiagnostic | null {
+    return this.firstDocumentInconsistentDiagnostic
+      ? { ...this.firstDocumentInconsistentDiagnostic }
+      : null;
   }
 
   assertLayerSwitchAllowed(): void {

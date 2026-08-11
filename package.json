@@ -32,6 +32,7 @@
     "touch-intent:verify": "node scripts/verify-touch-paint-intent.mjs",
     "layer-reorder-ui:verify": "node scripts/verify-mobile-layer-reorder.mjs",
     "layer-multi-select-ui:verify": "node scripts/verify-mobile-layer-multi-selection.mjs",
+    "diagnostics:verify": "node scripts/verify-app-diagnostics.mjs",
     "text-selection-ui:verify": "node scripts/verify-text-selection-lock.mjs",
     "scene-reorder:verify": "node scripts/verify-mixed-scene-reorder.mjs",
     "thickness:verify": "node scripts/verify-thickness-dynamics.mjs",

@@ -3971,9 +3971,28 @@
                 <strong id="gpuMemoryTotal">—</strong>
                 <small id="gpuMemoryPeak">picco —</small>
               </div>
-              <button id="gpuMemoryClose" type="button" aria-label="Chiudi dettaglio memoria" title="Chiudi">×</button>
+              <div class="gpu-memory-header-actions">
+                <button
+                  id="copyAppDiagnostics"
+                  class="gpu-memory-copy-diagnostics"
+                  type="button"
+                  title="Copia errori, ultimi 30 eventi e stato layer"
+                >Copia diagnosi</button>
+                <button id="gpuMemoryClose" type="button" aria-label="Chiudi dettaglio memoria" title="Chiudi">×</button>
+              </div>
             </header>
             <p class="gpu-memory-subtitle">Allocazioni WebGPU logiche registrate dal motore</p>
+            <output
+              id="appDiagnosticsCopyStatus"
+              class="gpu-memory-diagnostic-status"
+              role="status"
+              aria-live="polite"
+              hidden
+            ></output>
+            <details id="appDiagnosticsDetails" class="gpu-memory-diagnostic-details" hidden>
+              <summary>Rapporto diagnostico copiabile</summary>
+              <pre id="appDiagnosticsReport" class="app-diagnostics-report" tabindex="0"></pre>
+            </details>
             <p id="gpuMemoryGovernor" class="gpu-memory-note">—</p>
             <p class="gpu-memory-measured-heading">
               Ripartizione esatta

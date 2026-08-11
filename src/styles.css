@@ -569,10 +569,63 @@ select {
   font-size: 1rem;
 }
 
+.gpu-memory-header > .gpu-memory-header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.gpu-memory-header .gpu-memory-copy-diagnostics {
+  width: auto;
+  padding: 0 8px;
+  color: #c8ceff;
+  font-size: 0.68rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.gpu-memory-copy-diagnostics[aria-busy="true"] {
+  opacity: 0.68;
+}
+
 .gpu-memory-subtitle {
   margin: 7px 0 10px;
   color: #858d9b;
   font-size: 0.7rem;
+}
+
+.gpu-memory-diagnostic-status {
+  display: block;
+  margin: 0 0 8px;
+  color: #9edeb4;
+  font-size: 0.68rem;
+  line-height: 1.4;
+}
+
+.gpu-memory-diagnostic-details {
+  margin: 0 0 10px;
+  color: #aeb5c2;
+  font-size: 0.68rem;
+}
+
+.gpu-memory-diagnostic-details summary {
+  cursor: pointer;
+}
+
+.app-diagnostics-report {
+  max-height: 15rem;
+  margin: 7px 0 0;
+  overflow: auto;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(5, 7, 11, 0.78);
+  color: #d8dce5;
+  font-size: 0.62rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
 }
 
 .gpu-memory-list {

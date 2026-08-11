@@ -6,6 +6,7 @@ import {
   MIXED_SCENE_REORDER_STRATEGY,
   isMixedSceneOrderStateApplicable,
   mixedSceneReorderTargets,
+  planMixedSceneRasterInsertion,
   planMixedSceneReorder,
 } from "../src/mixed-scene-reorder-core.ts";
 
@@ -154,6 +155,112 @@ const createStyles = () => ({
   innerShadowStyle: {},
   colorOverlayStyle: {},
 });
+
+const textSeed = (text = "INSERT") => ({
+  text,
+  fontFamily: "sans-serif",
+  fontSize: 32,
+  color: "#ffffff",
+  outlineWidth: 0,
+  outlineColor: "#000000",
+  outlineJoin: "round",
+  blockShadowEnabled: false,
+  blockShadowColor: "#000000",
+  blockShadowOpacity: 1,
+  blockShadowOffset: 0,
+  blockShadowAngle: 0,
+  blockShadowOutlineWidth: 0,
+  singleShadowEnabled: false,
+  singleShadowColor: "#000000",
+  singleShadowOpacity: 1,
+  singleShadowOffset: 0,
+  singleShadowAngle: 0,
+  singleShadowBlur: 0,
+  innerShadowEnabled: false,
+  innerShadowColor: "#000000",
+  innerShadowOpacity: 1,
+  innerShadowOffset: 0,
+  innerShadowAngle: 0,
+  innerShadowBlur: 0,
+  x: 0,
+  y: 0,
+  scale: 1,
+  rotation: 0,
+});
+
+// Add uses one heterogeneous slot for both models. This is the exact former
+// failure: raster 2 stays active while a text between 1 and 2 is selected.
+{
+  const stack = new LayerStack(createStyles);
+  stack.add("Raster 2");
+  const scene = new MixedSceneStack([1, 2]);
+  scene.select("raster:1");
+  const text = scene.addTextAboveSelection(textSeed());
+  scene.select(`text:${text.id}`);
+  assert.equal(stack.active.id, 2);
+
+  const plan = planMixedSceneRasterInsertion(
+    scene.items.map((item) => item.key),
+    stack.layers.map(({ id, clippingParentId }) => ({ id, clippingParentId })),
+    scene.selected.key,
+    null,
+  );
+  assert.deepEqual(plan, { sceneIndex: 2, rasterLayerIndex: 1 });
+  const insertedIndex = stack.insertAt(plan.rasterLayerIndex, "Raster 3");
+  const inserted = stack.at(insertedIndex);
+  scene.insertRasterAt(inserted.id, plan.sceneIndex);
+  assert.deepEqual(stack.layers.map((record) => record.id), [1, 3, 2]);
+  assert.deepEqual(
+    scene.items.filter((item) => item.kind === "raster").map((item) => item.rasterLayerId),
+    [1, 3, 2],
+  );
+
+  // The recorded exact indices remain reversible for structural Undo/Redo.
+  scene.removeRaster(inserted.id, 2);
+  const detached = stack.remove(stack.indexOfId(inserted.id));
+  assert.deepEqual(stack.layers.map((record) => record.id), [1, 2]);
+  stack.attach(detached, plan.rasterLayerIndex);
+  scene.insertRasterAt(detached.id, plan.sceneIndex);
+  assert.deepEqual(stack.layers.map((record) => record.id), [1, 3, 2]);
+  assert.deepEqual(
+    scene.items.filter((item) => item.kind === "raster").map((item) => item.rasterLayerId),
+    [1, 3, 2],
+  );
+}
+
+// Semantic positions below, between and above raster rows all derive the
+// matching raster-only insertion index without consulting the active raster.
+{
+  const raster = [
+    { id: 1, clippingParentId: null },
+    { id: 2, clippingParentId: null },
+  ];
+  assert.deepEqual(
+    planMixedSceneRasterInsertion(["text:1", "raster:1", "raster:2"], raster, "text:1", null),
+    { sceneIndex: 1, rasterLayerIndex: 0 },
+  );
+  assert.deepEqual(
+    planMixedSceneRasterInsertion(["raster:1", "text:1", "raster:2"], raster, "text:1", null),
+    { sceneIndex: 2, rasterLayerIndex: 1 },
+  );
+  assert.deepEqual(
+    planMixedSceneRasterInsertion(["raster:1", "raster:2", "text:1"], raster, "text:1", null),
+    { sceneIndex: 3, rasterLayerIndex: 2 },
+  );
+}
+
+// A normal Add over a clipping base and an explicit new clipping mask both go
+// above the entire base+children unit; neither can split it with a new raster.
+{
+  assert.deepEqual(
+    planMixedSceneRasterInsertion(clippedBottomUp, clippedRaster, "raster:1", null),
+    { sceneIndex: 3, rasterLayerIndex: 3 },
+  );
+  assert.deepEqual(
+    planMixedSceneRasterInsertion(clippedBottomUp, clippedRaster, "raster:1", 1),
+    { sceneIndex: 3, rasterLayerIndex: 3 },
+  );
+}
 
 // The exact-order primitives preserve identity-based active/reference/selection
 // and reject partial or duplicate permutations.

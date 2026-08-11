@@ -1132,13 +1132,10 @@ export function handleRenderFrameError(engine: BrushEngine, error: unknown): voi
   }
   if (!engine.renderFrameError) {
     engine.renderFrameError = normalized;
-    engine.historyStateInconsistent = true;
-    engine.historyBusy = true;
     engine.invalidateAdaptivePreview();
-    engine.publishHistoryState();
-    engine.callbacks.onStatus?.(
+    engine.latchDocumentStateInconsistent(
       `Rendering WebGPU interrotto: ${normalized.message}. Ricarica la pagina.`,
-      "error",
+      normalized,
     );
   }
 }
