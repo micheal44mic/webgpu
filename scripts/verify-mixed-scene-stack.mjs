@@ -587,12 +587,70 @@ assert.equal(
   assert.equal(stack.textById(text.id).text, "EDITED");
   assert.equal(stack.textById(text.id).x, 321);
 
+  const textBeforeDistort = stack.captureVectorHistoryState("text:1");
+  const fontFamilyBeforeDistort = stack.textById(text.id).fontFamily;
+  const fontSizeBeforeDistort = stack.textById(text.id).fontSize;
+  const distortPoints = Array.from({ length: 10 }, (_, index) => ({
+    x: index * 17,
+    y: index * -9,
+  }));
+  stack.updateText(text.id, { transformType: "distort", distortPoints });
+  const textAfterDistort = stack.captureVectorHistoryState("text:1");
+  assert.equal(stack.textById(text.id).fontFamily, fontFamilyBeforeDistort);
+  assert.equal(stack.textById(text.id).fontSize, fontSizeBeforeDistort);
+  stack.restoreVectorHistoryState(textBeforeDistort);
+  assert.equal(stack.textById(text.id).transformType, "none");
+  assert.equal(stack.textById(text.id).fontFamily, fontFamilyBeforeDistort);
+  assert.equal(stack.textById(text.id).fontSize, fontSizeBeforeDistort);
+  stack.restoreVectorHistoryState(textAfterDistort);
+  assert.equal(stack.textById(text.id).transformType, "distort");
+  assert.deepEqual(stack.textById(text.id).distortPoints, distortPoints);
+  assert.equal(stack.textById(text.id).fontFamily, fontFamilyBeforeDistort);
+  assert.equal(stack.textById(text.id).fontSize, fontSizeBeforeDistort);
+
   stack.select("raster:1");
   const svgBeforeAdd = stack.captureVectorHistoryState("svg:1");
   const svg = stack.addSvgAboveSelection(svgSeed("history.svg"));
   const svgAfterAdd = stack.captureVectorHistoryState("svg:1");
   assert.equal(svgBeforeAdd.node, null);
   assert.equal(svgAfterAdd.node?.document, stack.svgById(svg.id).document);
+  stack.updateSvg(svg.id, {
+    outlineWidth: 18,
+    outlineColor: "#102030",
+    outlineJoin: "bevel",
+    blockShadowEnabled: true,
+    blockShadowColor: "#405060",
+    blockShadowOpacity: 0.7,
+    blockShadowOffset: 34,
+    blockShadowAngle: -72,
+    blockShadowOutlineWidth: 6,
+    singleShadowEnabled: true,
+    singleShadowColor: "#708090",
+    singleShadowOpacity: 0.6,
+    singleShadowOffset: 28,
+    singleShadowAngle: 41,
+    singleShadowBlur: 13,
+    innerShadowEnabled: true,
+    innerShadowColor: "#90a0b0",
+    innerShadowOpacity: 0.5,
+    innerShadowOffset: 9,
+    innerShadowAngle: -33,
+    innerShadowBlur: 7,
+  });
+  const svgAfterEffects = stack.captureVectorHistoryState("svg:1");
+  assert.equal(svgAfterEffects.node?.document, svgAfterAdd.node?.document);
+  stack.restoreVectorHistoryState(svgAfterAdd);
+  assert.equal(stack.svgById(svg.id).outlineWidth, 0);
+  assert.equal(stack.svgById(svg.id).blockShadowEnabled, false);
+  assert.equal(stack.svgById(svg.id).singleShadowEnabled, false);
+  assert.equal(stack.svgById(svg.id).innerShadowEnabled, false);
+  stack.restoreVectorHistoryState(svgAfterEffects);
+  assert.equal(stack.svgById(svg.id).outlineWidth, 18);
+  assert.equal(stack.svgById(svg.id).outlineColor, "#102030");
+  assert.equal(stack.svgById(svg.id).blockShadowEnabled, true);
+  assert.equal(stack.svgById(svg.id).singleShadowBlur, 13);
+  assert.equal(stack.svgById(svg.id).innerShadowBlur, 7);
+  assert.equal(stack.svgById(svg.id).document, svgAfterAdd.node?.document);
   stack.updateSvg(svg.id, { paintColors: ["#abcdef"], x: 777 });
   stack.restoreVectorHistoryState(svgAfterAdd);
   assert.equal(stack.svgById(svg.id).paintColors[0], "#ff5500");

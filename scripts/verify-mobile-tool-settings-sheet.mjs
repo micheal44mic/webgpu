@@ -230,6 +230,8 @@ for (const action of [
   "setTextWarpMode",
   "resetTextDistort",
   "toggleTextDistortEditing",
+  "hasSelectedVectorEffectTarget",
+  "onClose",
 ]) {
   assert.match(
     controller,
@@ -244,8 +246,13 @@ assert.doesNotMatch(
 );
 assert.match(
   main,
-  /toggleMobileTextDistortEditing\(\): boolean \{[\s\S]*?toggleSelectedTextDistortEditing\(\)[\s\S]*?selectMobileCanvasTool\("transform", true\)/,
-  "Distort Edit must enter the authoritative Transform canvas while preserving its bottom sheet",
+  /startMobileTextDistortEditing\(\): boolean \{[\s\S]*?startSelectedTextDistortEditing\(\)[\s\S]*?selectMobileCanvasTool\("transform", true\)/,
+  "choosing Distort must immediately enter the authoritative Transform canvas",
+);
+assert.match(
+  main,
+  /setMobileTextWarpMode\(mode: MobileTextWarpMode\): boolean \{[\s\S]*?mode === "distort"\) return startMobileTextDistortEditing\(\)/,
+  "the Distort mode button must start editing without a second Edit click",
 );
 assert.match(
   controller,
@@ -256,6 +263,11 @@ assert.match(
   mixedController,
   /toggleSelectedTextDistortEditing\(\): boolean \{[\s\S]*?return this\.isSelectedTextDistortEditing\(\);/,
   "mobile Distort must call the text controller directly",
+);
+assert.match(
+  mixedController,
+  /startSelectedTextDistortEditing\(\): boolean \{[\s\S]*?this\.activateTransform\("distort"\)[\s\S]*?this\.distortEditingNodeId = node\.id/,
+  "Distort activation and edit mode must be idempotent and preserve the selected node",
 );
 assert.match(
   main,
@@ -326,17 +338,27 @@ assert.match(
 assert.match(
   controller,
   /TEXT_SELECTION_REQUIRED_KINDS[\s\S]*?this\.options\.hasSelectedText\(\)/,
-  "text effects must refuse stale SVG or raster selections",
+  "Warp must remain text-only",
+);
+assert.match(
+  controller,
+  /VECTOR_EFFECT_SELECTION_REQUIRED_KINDS[\s\S]*?this\.options\.hasSelectedVectorEffectTarget\(\)/,
+  "Outline and the three shadows must accept selected text or SVG nodes",
 );
 assert.match(
   main,
-  /selectedText\?\.transformType[\s\S]*?selectedText\?\.outlineWidth[\s\S]*?singleShadowEnabled[\s\S]*?innerShadowEnabled[\s\S]*?blockShadowEnabled/,
-  "text tool cards must derive their ivory/gray state from the selected authoritative text node",
+  /selectedEffectNode = selectedText \?\? selectedSvg[\s\S]*?selectedEffectNode\?\.outlineWidth[\s\S]*?singleShadowEnabled[\s\S]*?innerShadowEnabled[\s\S]*?blockShadowEnabled/,
+  "vector effect cards must derive their state from the selected authoritative text or SVG node",
 );
 assert.match(
   main,
-  /hasSelectedText:\s*\(\) => selectedMobileTextNode\(\) !== null/,
-  "the shared sheet must gate text-only editors with the mixed-scene selection",
+  /hasSelectedText:\s*\(\) => selectedMobileTextNode\(\) !== null[\s\S]*?hasSelectedVectorEffectTarget:\s*\(\) => selectedMobileVectorItem\(\) !== null/,
+  "the shared sheet must use distinct text-only and vector-effect selection gates",
+);
+assert.match(
+  main,
+  /finishMobileTransformToolOnSheetClose[\s\S]*?await controller\.applyTransform\(\)[\s\S]*?stopSelectedTextDistortEditing\(\)[\s\S]*?activeCanvasTool === "transform" \? "paint" : activeCanvasTool[\s\S]*?selectMobileCanvasTool\(targetTool, true\)/,
+  "closing Transform or Distort must commit safely, remove edit handles and return to Paint",
 );
 assert.match(
   controller,

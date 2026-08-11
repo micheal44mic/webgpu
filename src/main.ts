@@ -1545,7 +1545,7 @@ const engine = new BrushEngine(canvas, {
     requestMobileLayersRefresh();
     vectorTextPrototype?.syncScene(snapshot);
     mobileToolSettingsSheet?.syncOpenState();
-    syncMobileToolsMenuState();
+    syncMobileToolsMenuState(snapshot);
     updateRasterColorOverlayControlAvailability();
     const selectedItem = snapshot.items.find(
       (item) => item.key === snapshot.selectedKey,
@@ -2764,17 +2764,20 @@ function filterMobileTools(): void {
   mobileToolsEmpty.hidden = visibleToolCount !== 0;
 }
 
-function selectedMobileTextNode() {
-  if (!engineInitialized) return null;
-  const snapshot = engine.getMixedSceneSnapshot();
+function selectedMobileVectorItem(
+  snapshot = engineInitialized ? engine.getMixedSceneSnapshot() : null,
+) {
   const selected = snapshot?.items.find((item) => item.key === snapshot.selectedKey);
+  return selected?.kind === "text" || selected?.kind === "svg" ? selected : null;
+}
+
+function selectedMobileTextNode() {
+  const selected = selectedMobileVectorItem();
   return selected?.kind === "text" ? selected.textNode : null;
 }
 
 function selectedMobileSvgNode() {
-  if (!engineInitialized) return null;
-  const snapshot = engine.getMixedSceneSnapshot();
-  const selected = snapshot?.items.find((item) => item.key === snapshot.selectedKey);
+  const selected = selectedMobileVectorItem();
   return selected?.kind === "svg" ? selected.svgNode : null;
 }
 
@@ -3094,9 +3097,13 @@ function openMobileLayerContextMenu(
   return true;
 }
 
-function syncMobileToolsMenuState(): void {
-  const selectedText = selectedMobileTextNode();
-  const selectedSvg = selectedMobileSvgNode();
+function syncMobileToolsMenuState(
+  sceneSnapshot = engineInitialized ? engine.getMixedSceneSnapshot() : null,
+): void {
+  const selectedItem = selectedMobileVectorItem(sceneSnapshot);
+  const selectedText = selectedItem?.kind === "text" ? selectedItem.textNode : null;
+  const selectedSvg = selectedItem?.kind === "svg" ? selectedItem.svgNode : null;
+  const selectedEffectNode = selectedText ?? selectedSvg;
   for (const button of mobileToolsCanvasButtons) {
     button.setAttribute(
       "aria-pressed",
@@ -3113,34 +3120,33 @@ function syncMobileToolsMenuState(): void {
   for (const button of mobileToolSettingsButtons) {
     const kind = button.dataset.mobileToolSheet;
     const svgEditor = kind === "svg-style";
-    const textEditor = kind === "text"
-      || kind === "text-warp"
-      || kind === "text-outline"
+    const textEditor = kind === "text" || kind === "text-warp";
+    const vectorEffectEditor = kind === "text-outline"
       || kind === "text-drop-shadow"
       || kind === "text-inner-shadow"
       || kind === "text-block-shadow";
-    const textEffect = textEditor && kind !== "text";
     button.disabled = !engineInitialized
       || interactionLocked()
-      || (textEditor && vectorTextPrototype === null)
-      || (textEffect && selectedText === null)
+      || ((textEditor || vectorEffectEditor) && vectorTextPrototype === null)
+      || (kind === "text-warp" && selectedText === null)
+      || (vectorEffectEditor && selectedEffectNode === null)
       || (svgEditor && (vectorTextPrototype === null || selectedSvg === null));
     if (svgEditor) {
       button.setAttribute("aria-pressed", String(selectedSvg !== null));
       continue;
     }
-    if (!textEditor) continue;
+    if (!textEditor && !vectorEffectEditor) continue;
     const pressed = kind === "text"
       ? selectedText !== null
       : kind === "text-warp"
         ? selectedText?.transformType !== undefined && selectedText.transformType !== "none"
         : kind === "text-outline"
-          ? (selectedText?.outlineWidth ?? 0) > 0
+          ? (selectedEffectNode?.outlineWidth ?? 0) > 0
           : kind === "text-drop-shadow"
-            ? selectedText?.singleShadowEnabled === true
+            ? selectedEffectNode?.singleShadowEnabled === true
             : kind === "text-inner-shadow"
-              ? selectedText?.innerShadowEnabled === true
-              : selectedText?.blockShadowEnabled === true;
+              ? selectedEffectNode?.innerShadowEnabled === true
+              : selectedEffectNode?.blockShadowEnabled === true;
     button.setAttribute("aria-pressed", String(pressed));
   }
   for (const button of mobileToolsEffectButtons) {
@@ -6070,6 +6076,7 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
   mobileMediaQuery: mobileUiMediaQuery,
   selectCanvasTool: selectMobileCanvasTool,
   hasSelectedText: () => selectedMobileTextNode() !== null,
+  hasSelectedVectorEffectTarget: () => selectedMobileVectorItem() !== null,
   setSelectionCombineMode,
   applySelectionColor: applySelectionColorRange,
   clearSelection: clearPixelSelection,
@@ -6159,6 +6166,9 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
   onOpenChange: () => {
     syncMobileToolsMenuState();
     syncMobileBrushControlsVisibility();
+  },
+  onClose: (kind) => {
+    void finishMobileTransformToolOnSheetClose(kind);
   },
 });
 
@@ -8588,37 +8598,63 @@ function restoreMobileTextDistortTool(): void {
 function stopMobileTextDistortEditing(): void {
   const controller = vectorTextPrototype;
   if (!controller?.isSelectedTextDistortEditing()) return;
-  controller.toggleSelectedTextDistortEditing();
+  controller.stopSelectedTextDistortEditing();
   restoreMobileTextDistortTool();
+}
+
+function startMobileTextDistortEditing(): boolean {
+  const controller = vectorTextPrototype;
+  if (!controller) return false;
+  if (mobileTextDistortReturnTool === null) {
+    mobileTextDistortReturnTool = activeCanvasTool === "transform"
+      ? activeBrushTool
+      : activeCanvasTool;
+  }
+  if (!controller.startSelectedTextDistortEditing()) {
+    mobileTextDistortReturnTool = null;
+    return false;
+  }
+  if (selectMobileCanvasTool("transform", true)) return true;
+  controller.stopSelectedTextDistortEditing();
+  mobileTextDistortReturnTool = null;
+  return false;
 }
 
 function toggleMobileTextDistortEditing(): boolean {
   const controller = vectorTextPrototype;
   if (!controller) return false;
-  if (controller.isSelectedTextDistortEditing()) {
-    controller.toggleSelectedTextDistortEditing();
-    restoreMobileTextDistortTool();
-    return false;
-  }
-  mobileTextDistortReturnTool = activeCanvasTool === "transform"
-    ? activeBrushTool
-    : activeCanvasTool;
-  if (!controller.toggleSelectedTextDistortEditing()) {
-    mobileTextDistortReturnTool = null;
-    return false;
-  }
-  if (selectMobileCanvasTool("transform", true)) return true;
-  controller.toggleSelectedTextDistortEditing();
-  mobileTextDistortReturnTool = null;
+  if (!controller.isSelectedTextDistortEditing()) return startMobileTextDistortEditing();
+  controller.stopSelectedTextDistortEditing();
+  restoreMobileTextDistortTool();
   return false;
 }
 
-function setMobileTextWarpMode(mode: MobileTextWarpMode): void {
+function setMobileTextWarpMode(mode: MobileTextWarpMode): boolean {
   const controller = vectorTextPrototype;
-  if (!controller) return;
+  if (!controller) return false;
   const wasDistortEditing = controller.isSelectedTextDistortEditing();
   controller.setSelectedTextTransform(mode);
-  if (wasDistortEditing && mode !== "distort") restoreMobileTextDistortTool();
+  if (mode === "distort") return startMobileTextDistortEditing();
+  if (wasDistortEditing) restoreMobileTextDistortTool();
+  return false;
+}
+
+async function finishMobileTransformToolOnSheetClose(
+  kind: MobileToolSettingsKind,
+): Promise<void> {
+  if (kind !== "transform" && kind !== "text-warp") return;
+  const controller = vectorTextPrototype;
+  if (controller && !await controller.applyTransform()) return;
+  if (kind === "text-warp") controller?.stopSelectedTextDistortEditing();
+  mobileTextDistortReturnTool = null;
+  const nextKind = mobileToolSettingsSheet?.isOpen
+    ? mobileToolSettingsSheet.toolKind
+    : null;
+  const nextKeepsTransform = nextKind === "transform" || nextKind === "text-warp";
+  if (!nextKeepsTransform) {
+    const targetTool = activeCanvasTool === "transform" ? "paint" : activeCanvasTool;
+    selectMobileCanvasTool(targetTool, true);
+  }
 }
 
 function resetMobileText(): void {

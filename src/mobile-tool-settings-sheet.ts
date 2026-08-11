@@ -44,6 +44,7 @@ export interface MobileToolSettingsSheetOptions {
   readonly selectCanvasTool: (tool: MobileCanvasSettingsTool) => boolean;
   readonly getSelectionStatus: () => string;
   readonly hasSelectedText: () => boolean;
+  readonly hasSelectedVectorEffectTarget: () => boolean;
   readonly setSelectionCombineMode: (mode: MobileSelectionCombineMode) => void;
   readonly applySelectionColor: () => void;
   readonly clearSelection: () => void;
@@ -62,11 +63,12 @@ export interface MobileToolSettingsSheetOptions {
   readonly resetText: () => void;
   readonly deleteText: () => void;
   readonly rasterizeText: () => void;
-  readonly setTextWarpMode: (mode: MobileTextWarpMode) => void;
+  readonly setTextWarpMode: (mode: MobileTextWarpMode) => boolean;
   readonly resetTextDistort: () => void;
   readonly toggleTextDistortEditing: () => boolean;
   readonly beforeOpen: () => void;
   readonly onOpenChange: (open: boolean) => void;
+  readonly onClose: (kind: MobileToolSettingsKind) => void;
 }
 
 const MOBILE_TOOL_MIN_PEEK_PX = 160;
@@ -90,6 +92,9 @@ const MOBILE_TOOL_TITLES: Readonly<Record<MobileToolSettingsKind, string>> = {
 
 const TEXT_SELECTION_REQUIRED_KINDS: ReadonlySet<MobileToolSettingsKind> = new Set([
   "text-warp",
+]);
+
+const VECTOR_EFFECT_SELECTION_REQUIRED_KINDS: ReadonlySet<MobileToolSettingsKind> = new Set([
   "text-outline",
   "text-drop-shadow",
   "text-inner-shadow",
@@ -499,6 +504,10 @@ export class MobileToolSettingsSheetController {
     if (!this.options.mobileMediaQuery.matches) return;
     if (isMobileCanvasSettingsTool(kind) && !this.options.selectCanvasTool(kind)) return;
     if (TEXT_SELECTION_REQUIRED_KINDS.has(kind) && !this.options.hasSelectedText()) return;
+    if (
+      VECTOR_EFFECT_SELECTION_REQUIRED_KINDS.has(kind)
+      && !this.options.hasSelectedVectorEffectTarget()
+    ) return;
     if (SELECTED_ITEM_REQUIRED_KINDS.has(kind)) {
       const available = kind === "layer-options"
         ? this.options.getSelectedLayerOptions() !== null
@@ -538,6 +547,7 @@ export class MobileToolSettingsSheetController {
 
   close(restoreFocus = false): void {
     if (!this.openState) return;
+    const closedKind = this.activeKind;
     this.finishSvgPaintEdit();
     this.openState = false;
     this.releaseDragCapture();
@@ -557,6 +567,7 @@ export class MobileToolSettingsSheetController {
     this.setOffset(this.closedOffset());
     this.options.onOpenChange(false);
     this.opener = null;
+    if (closedKind) this.options.onClose(closedKind);
   }
 
   syncOpenState(): void {
@@ -564,6 +575,13 @@ export class MobileToolSettingsSheetController {
     if (
       TEXT_SELECTION_REQUIRED_KINDS.has(this.activeKind)
       && !this.options.hasSelectedText()
+    ) {
+      this.close(false);
+      return;
+    }
+    if (
+      VECTOR_EFFECT_SELECTION_REQUIRED_KINDS.has(this.activeKind)
+      && !this.options.hasSelectedVectorEffectTarget()
     ) {
       this.close(false);
       return;
@@ -697,7 +715,9 @@ export class MobileToolSettingsSheetController {
 
     for (const { mobile, mode } of this.textWarpButtonControls) {
       mobile.addEventListener("click", () => {
-        this.runAction(() => this.options.setTextWarpMode(mode));
+        const editing = this.options.setTextWarpMode(mode);
+        this.syncAfterAction();
+        this.snapTo(editing ? "minimized" : "peek");
       });
     }
     this.textDistortReset.addEventListener("click", () => {

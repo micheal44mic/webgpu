@@ -906,14 +906,15 @@ export class MixedVectorTextController {
     return selected?.kind === "raster" && selected.rasterTransform !== null;
   }
 
-  private async applyTransformSession(): Promise<void> {
+  private async applyTransformSession(): Promise<boolean> {
     if (
       !this.transformSessionOpen
       || this.transformCommitBusy
       || this.activeInteraction
       || this.rasterTransformRecoveryOnly
-    ) return;
+    ) return false;
     const rasterSession = this.transformSessionKind === "raster";
+    let applied = false;
     this.transformCommitBusy = true;
     this.updateTransformCommitUi();
     try {
@@ -925,6 +926,7 @@ export class MixedVectorTextController {
       this.transformSessionOpen = false;
       this.transformSessionKind = null;
       this.rasterTransformRecoveryOnly = false;
+      applied = true;
     } catch (error) {
       // A successful rollback closes the GPU transaction; a failed rollback
       // deliberately retains the immutable scratch for a recovery-only Cancel.
@@ -943,11 +945,15 @@ export class MixedVectorTextController {
       this.syncControlsFromSelection(this.selectedVectorNode());
       this.scheduleRender();
     }
+    return applied;
   }
 
-  private async cancelTransformSession(): Promise<void> {
-    if (!this.transformSessionOpen || this.transformCommitBusy || this.activeInteraction) return;
+  private async cancelTransformSession(): Promise<boolean> {
+    if (!this.transformSessionOpen || this.transformCommitBusy || this.activeInteraction) {
+      return false;
+    }
     const rasterSession = this.transformSessionKind === "raster";
+    let cancelledSuccessfully = false;
     this.transformCommitBusy = true;
     this.updateTransformCommitUi();
     try {
@@ -960,6 +966,7 @@ export class MixedVectorTextController {
       this.transformSessionOpen = false;
       this.transformSessionKind = null;
       this.rasterTransformRecoveryOnly = false;
+      cancelledSuccessfully = true;
     } catch (error) {
       if (rasterSession) {
         const retained = this.rasterTransformSessionStillOpen();
@@ -976,6 +983,7 @@ export class MixedVectorTextController {
       this.syncControlsFromSelection(this.selectedVectorNode());
       this.scheduleRender();
     }
+    return cancelledSuccessfully;
   }
 
   private abortActiveTransformInteraction(): void {
@@ -1356,12 +1364,14 @@ export class MixedVectorTextController {
     this.imageFileInput.click();
   }
 
-  applyTransform(): void {
-    void this.applyTransformSession();
+  applyTransform(): Promise<boolean> {
+    if (!this.transformSessionOpen) return Promise.resolve(true);
+    return this.applyTransformSession();
   }
 
-  cancelTransform(): void {
-    void this.cancelTransformSession();
+  cancelTransform(): Promise<boolean> {
+    if (!this.transformSessionOpen) return Promise.resolve(true);
+    return this.cancelTransformSession();
   }
 
   createText(color?: string): void {
@@ -1610,6 +1620,35 @@ export class MixedVectorTextController {
     if (this.distortEditButton.disabled) return this.isSelectedTextDistortEditing();
     this.toggleDistortEditing();
     return this.isSelectedTextDistortEditing();
+  }
+
+  startSelectedTextDistortEditing(): boolean {
+    if (this.transformDistortButton.disabled || this.distortEditButton.disabled) {
+      return this.isSelectedTextDistortEditing();
+    }
+    let node = this.selectedTextNode();
+    if (!node) return false;
+    if (node.transformType !== "distort" || !node.distortPoints) {
+      this.activateTransform("distort");
+      node = this.selectedTextNode();
+    }
+    if (!node || node.transformType !== "distort" || !node.distortPoints) return false;
+    if (this.distortEditingNodeId !== node.id) {
+      this.distortEditingNodeId = node.id;
+      this.syncControlsFromSelection(node);
+      this.interactionCanvas.classList.add("is-distort-editing");
+      this.scheduleRender();
+    }
+    return true;
+  }
+
+  stopSelectedTextDistortEditing(): boolean {
+    if (!this.isSelectedTextDistortEditing()) return false;
+    this.distortEditingNodeId = null;
+    this.syncControlsFromSelection(this.selectedTextNode());
+    this.interactionCanvas.classList.remove("is-distort-editing");
+    this.scheduleRender();
+    return true;
   }
 
   isSelectedTextDistortEditing(): boolean {
