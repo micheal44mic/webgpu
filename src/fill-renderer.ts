@@ -31,6 +31,7 @@ import type { LayerFormat } from "./engine-types";
 import type { GpuHistorySlice } from "./gpu-history-storage";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import {
+  fillBitProbeShader,
   fillComputeShader,
   fillRenderShader,
   fillSelectionIntersectionShader,
@@ -53,6 +54,43 @@ interface FillScratchResources {
   readonly readback: GPUBuffer;
   computeBindGroup: GPUBindGroup;
   readonly renderBindGroup: GPUBindGroup;
+}
+
+export interface FillBitProbeDiagnostic {
+  readonly ok: boolean;
+  readonly directStoreHex?: string;
+  readonly atomicOrHex?: string;
+  readonly dynamicLookupHex?: string;
+  readonly dynamicShiftHex?: string;
+  readonly highBitTest?: number;
+  readonly allHighBitPathsCorrect?: boolean;
+  readonly error?: string;
+}
+
+export interface FillRendererDiagnosticReadback {
+  readonly sequence: number;
+  readonly seedX: number;
+  readonly seedY: number;
+  readonly tolerance: number;
+  readonly fillColor: readonly [number, number, number, number];
+  readonly analysis: FillAnalysis;
+  readonly maskWords: Uint32Array;
+  readonly drawIndirect: readonly number[];
+  readonly readbackMs: number;
+  readonly bitProbe: FillBitProbeDiagnostic;
+}
+
+interface LastFillDiagnosticInput {
+  readonly sequence: number;
+  readonly seedX: number;
+  readonly seedY: number;
+  readonly tolerance: number;
+  readonly fillColor: readonly [number, number, number, number];
+  readonly analysis: FillAnalysis;
+}
+
+function diagnosticHex(value: number): string {
+  return `0x${(value >>> 0).toString(16).padStart(8, "0")}`;
 }
 
 async function assertShaderModules(
@@ -96,8 +134,11 @@ export class FillRenderer {
   private rebuildPipeline!: GPUComputePipeline;
   private selectionIntersectionPipeline!: GPUComputePipeline;
   private renderPipeline!: GPURenderPipeline;
+  private bitProbePipelinePromise: Promise<GPUComputePipeline> | null = null;
   private scratch: FillScratchResources | null = null;
   private prewarmPromise: Promise<void> | null = null;
+  private lastDiagnosticInput: LastFillDiagnosticInput | null = null;
+  private diagnosticSequence = 0;
   private destroyed = false;
 
   private constructor(options: FillRendererOptions) {
@@ -271,7 +312,10 @@ export class FillRenderer {
         const drawIndirect = create(
           "Riempimento · draw indiretto blocchi",
           FILL_INDIRECT_BUFFER_BYTES,
-          GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST,
+          GPUBufferUsage.STORAGE
+            | GPUBufferUsage.INDIRECT
+            | GPUBufferUsage.COPY_SRC
+            | GPUBufferUsage.COPY_DST,
         );
         const readback = create(
           "Riempimento · readback metadati",
@@ -464,7 +508,7 @@ export class FillRenderer {
       FILL_META_TILE_MASK_START,
       FILL_META_TILE_MASK_START + FILL_TILE_MASK_WORDS,
     );
-    return {
+    const analysis: FillAnalysis = {
       selectedPixels,
       activeComponents: metadata[FILL_META_ACTIVE_COMPONENTS],
       activeBlocks: metadata[FILL_META_ACTIVE_BLOCKS],
@@ -478,6 +522,210 @@ export class FillRenderer {
       tileMask,
       queueCompletionMs: performance.now() - startedAt,
     };
+    this.diagnosticSequence += 1;
+    this.lastDiagnosticInput = {
+      sequence: this.diagnosticSequence,
+      seedX: x,
+      seedY: y,
+      tolerance,
+      fillColor: [...fillColor],
+      analysis: {
+        ...analysis,
+        bounds: { ...analysis.bounds },
+        tileMask: analysis.tileMask.slice(),
+      },
+    };
+    return analysis;
+  }
+
+  /**
+   * User-triggered probe for the Copy report. The raw 2 MiB mask is returned to
+   * the runtime only long enough to reduce it to counters; it is never retained
+   * or serialized. No diagnostic allocation exists during ordinary Fill use.
+   */
+  async captureDiagnostics(): Promise<FillRendererDiagnosticReadback> {
+    this.assertAlive();
+    const scratch = this.requireScratch();
+    const input = this.lastDiagnosticInput;
+    if (!input) {
+      throw new Error("Nessuna analisi Fill corrente disponibile per la diagnosi.");
+    }
+    const readbackBytes = FILL_HISTORY_MASK_BYTES + FILL_INDIRECT_BUFFER_BYTES;
+    const readback = this.device.createBuffer({
+      label: "Riempimento · diagnosi mask e draw indiretto",
+      size: readbackBytes,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    const startedAt = performance.now();
+    let mapped = false;
+    try {
+      const encoder = this.device.createCommandEncoder({
+        label: "Riempimento · cattura diagnostica",
+      });
+      encoder.copyBufferToBuffer(
+        scratch.selectedMask,
+        0,
+        readback,
+        0,
+        FILL_HISTORY_MASK_BYTES,
+      );
+      encoder.copyBufferToBuffer(
+        scratch.drawIndirect,
+        0,
+        readback,
+        FILL_HISTORY_MASK_BYTES,
+        FILL_INDIRECT_BUFFER_BYTES,
+      );
+      this.device.queue.submit([encoder.finish()]);
+      let timer = 0;
+      try {
+        await Promise.race([
+          readback.mapAsync(GPUMapMode.READ),
+          new Promise<never>((_, reject) => {
+            timer = window.setTimeout(
+              () => reject(new Error("Diagnosi Fill: timeout readback mask dopo 10 s.")),
+              10_000,
+            );
+          }),
+        ]);
+      } finally {
+        if (timer !== 0) window.clearTimeout(timer);
+      }
+      mapped = true;
+      const bytes = new Uint8Array(readback.getMappedRange());
+      const maskWords = new Uint32Array(
+        bytes.slice(0, FILL_HISTORY_MASK_BYTES).buffer,
+      );
+      const drawIndirect = [...new Uint32Array(
+        bytes.slice(FILL_HISTORY_MASK_BYTES, readbackBytes).buffer,
+      )];
+      const readbackMs = performance.now() - startedAt;
+      const bitProbe = await this.captureBitProbe().catch((error): FillBitProbeDiagnostic => ({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+      return {
+        sequence: input.sequence,
+        seedX: input.seedX,
+        seedY: input.seedY,
+        tolerance: input.tolerance,
+        fillColor: [...input.fillColor],
+        analysis: {
+          ...input.analysis,
+          bounds: { ...input.analysis.bounds },
+          tileMask: input.analysis.tileMask.slice(),
+        },
+        maskWords,
+        drawIndirect,
+        readbackMs,
+        bitProbe,
+      };
+    } finally {
+      if (mapped) readback.unmap();
+      readback.destroy();
+    }
+  }
+
+  private async captureBitProbe(): Promise<FillBitProbeDiagnostic> {
+    if (!this.bitProbePipelinePromise) {
+      const module = this.device.createShaderModule({
+        label: "Riempimento · shader diagnosi bit 31",
+        code: fillBitProbeShader,
+      });
+      this.bitProbePipelinePromise = this.device.createComputePipelineAsync({
+        label: "Riempimento · pipeline diagnosi bit 31",
+        layout: "auto",
+        compute: { module, entryPoint: "probeBit31" },
+      }).catch((error) => {
+        this.bitProbePipelinePromise = null;
+        throw error;
+      });
+    }
+    let pipelineTimer = 0;
+    const pipeline = await Promise.race([
+      this.bitProbePipelinePromise,
+      new Promise<never>((_, reject) => {
+        pipelineTimer = window.setTimeout(
+          () => reject(new Error("Diagnosi Fill: timeout compilazione microtest dopo 10 s.")),
+          10_000,
+        );
+      }),
+    ]).finally(() => {
+      if (pipelineTimer !== 0) window.clearTimeout(pipelineTimer);
+    });
+    const uniform = this.device.createBuffer({
+      label: "Riempimento · uniforme diagnosi bit 31",
+      size: 256,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    const results = this.device.createBuffer({
+      label: "Riempimento · risultati diagnosi bit 31",
+      size: 256,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+    });
+    const readback = this.device.createBuffer({
+      label: "Riempimento · readback diagnosi bit 31",
+      size: 256,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    let mapped = false;
+    try {
+      this.device.queue.writeBuffer(uniform, 0, new Uint32Array([31, 0, 0, 0]));
+      const bindGroup = this.device.createBindGroup({
+        label: "Riempimento · bind diagnosi bit 31",
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: uniform } },
+          { binding: 1, resource: { buffer: results } },
+        ],
+      });
+      const encoder = this.device.createCommandEncoder({
+        label: "Riempimento · esegui diagnosi bit 31",
+      });
+      encoder.clearBuffer(results);
+      const pass = encoder.beginComputePass({ label: "Riempimento · probe bit 31" });
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bindGroup);
+      pass.dispatchWorkgroups(1);
+      pass.end();
+      encoder.copyBufferToBuffer(results, 0, readback, 0, 20);
+      this.device.queue.submit([encoder.finish()]);
+      let timer = 0;
+      try {
+        await Promise.race([
+          readback.mapAsync(GPUMapMode.READ, 0, 20),
+          new Promise<never>((_, reject) => {
+            timer = window.setTimeout(
+              () => reject(new Error("Diagnosi Fill: timeout microtest bit 31 dopo 10 s.")),
+              10_000,
+            );
+          }),
+        ]);
+      } finally {
+        if (timer !== 0) window.clearTimeout(timer);
+      }
+      mapped = true;
+      const values = new Uint32Array(readback.getMappedRange(0, 20).slice(0));
+      const correct = values[0] === 0x80000000
+        && values[1] === 0x80000000
+        && values[2] === 0x80000000
+        && values[3] === 0x80000000
+        && values[4] === 1;
+      return {
+        ok: true,
+        directStoreHex: diagnosticHex(values[0]),
+        atomicOrHex: diagnosticHex(values[1]),
+        dynamicLookupHex: diagnosticHex(values[2]),
+        dynamicShiftHex: diagnosticHex(values[3]),
+        highBitTest: values[4],
+        allHighBitPathsCorrect: correct,
+      };
+    } finally {
+      if (mapped) readback.unmap();
+      uniform.destroy();
+      results.destroy();
+      readback.destroy();
+    }
   }
 
   /**
@@ -513,6 +761,9 @@ export class FillRenderer {
     fillColor: readonly [number, number, number, number],
   ): void {
     const scratch = this.requireScratch();
+    // Replay replaces selectedMask with a historical payload. Do not associate
+    // a later Copy report with the seed/metadata of the previous live analyze.
+    this.lastDiagnosticInput = null;
     this.assertHistorySlice(historySlice);
     const upload = new Float32Array(FILL_UNIFORM_BYTES / 4);
     const unsigned = new Uint32Array(upload.buffer);
@@ -540,6 +791,7 @@ export class FillRenderer {
   releaseScratch(): void {
     const scratch = this.scratch;
     this.scratch = null;
+    this.lastDiagnosticInput = null;
     if (!scratch) return;
     this.destroyScratchResources(scratch);
   }

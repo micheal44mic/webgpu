@@ -17,6 +17,11 @@ import {
   hexToLinearFillColor,
   normalizeFillTolerance,
 } from "../src/fill-core.ts";
+import {
+  classifyFillDiagnostic,
+  summarizeFillMaskWords,
+  summarizeFillRenderedRow,
+} from "../src/fill-diagnostics.ts";
 import { LAYER_SIZE } from "../src/engine-limits.ts";
 import { readEngineSource } from "./engine-source.mjs";
 
@@ -56,6 +61,37 @@ assert.equal(fillBitMasks[0], 0x00000001);
 assert.equal(fillBitMasks[30], 0x40000000);
 assert.equal(fillBitMasks[31], 0x80000000);
 assert.equal(fillBitMasks.reduce((word, mask) => (word | mask) >>> 0, 0), 0xffffffff);
+
+// La diagnosi deve separare una mask che perde davvero il bit alto da una
+// mask corretta il cui colore non arriva al target nel commit render.
+{
+  const words = Uint32Array.from({ length: 16 }, () => 0x7fffffff);
+  const summary = summarizeFillMaskWords(words, 16 * 32, 0, 0, 32);
+  assert.equal(summary.readbackSelectedPixels, 16 * 31);
+  assert.equal(summary.selectedPixelDelta, -16);
+  assert.equal(summary.low31FullHighBitClearWords, 16);
+  assert.equal(summary.bit31LikelyMissing, true);
+}
+{
+  const words = Uint32Array.of(0xffffffff);
+  const mask = summarizeFillMaskWords(words, 32, 0, 0, 32);
+  const row = new Uint8Array(32 * 4);
+  for (let x = 0; x < 32; x += 1) {
+    row.set([255, 0, 0, 255], x * 4);
+  }
+  row.set([0, 0, 0, 0], 31 * 4);
+  const rendered = summarizeFillRenderedRow(
+    row,
+    "rgba8unorm",
+    words,
+    [1, 0, 0, 1],
+    0,
+    32,
+  );
+  assert.equal(rendered.selectedButDifferentPixels, 1);
+  assert.equal(rendered.selectedButDifferentByXModulo32[31], 1);
+  assert.equal(classifyFillDiagnostic(mask, rendered), "render-commit-loss");
+}
 
 // Il confronto avviene dopo l'unpremultiply: lo stesso rosso straight con due
 // alpha diverse differisce soltanto nel canale alpha, non nei canali colore.
@@ -128,6 +164,8 @@ assert(shader.includes("@compute @workgroup_size(16, 1, 1)\nfn unionBoundaries")
 assert(shader.includes("0x40000000u, 0x80000000u"));
 assert(shader.includes("fn fillBitMask(bitIndex: u32) -> u32"));
 assert(shader.includes("fn fillMaskContains(word: u32, bitIndex: u32) -> bool"));
+assert(shader.includes("fn probeBit31()"));
+assert(shader.includes("atomicOr(&results[1], 0x80000000u)"));
 assert(shader.includes("atomicOr(&selectedMask[word], fillBitMask(pixel.x))"));
 assert(shader.includes("fillMaskContains(atomicLoad(&selectedMask[word]), pixel.x)"));
 assert(shader.includes("fillMaskContains(selectedMask[word], pixel.x)"));
@@ -138,6 +176,9 @@ assert(!shader.includes("@location(0) pixel: vec2<f32>"));
 assert(!renderer.includes("dispatchWorkgroupsIndirect"));
 assert(renderer.includes("selectionPass.dispatchWorkgroups(FILL_BLOCK_GRID_SIZE)"));
 assert(renderer.includes("pass.drawIndirect"));
+assert(renderer.includes("async captureDiagnostics()"));
+assert(renderer.includes("Diagnosi Fill: timeout readback mask dopo 10 s."));
+assert(renderer.includes("allHighBitPathsCorrect"));
 assert(renderer.includes("encoder.copyBufferToBuffer(\n      scratch.selectedMask"));
 assert(renderer.includes("historySlice.buffer"));
 assert(renderer.includes("private sourceSamplingView: GPUTextureView"));
@@ -146,6 +187,9 @@ assert(renderer.includes("if (view === this.sourceSamplingView)"));
 assert(renderer.includes("{ binding: 1, resource: this.sourceSamplingView }"));
 assert(!renderer.includes("copyTextureToTexture"));
 assert(runtime.includes("engine.canPaintSelectedSceneItem()"));
+assert(runtime.includes("export async function captureFillDiagnostics"));
+assert(runtime.includes("summarizeFillMaskWords"));
+assert(runtime.includes("summarizeFillRenderedRow"));
 assert(runtime.includes("renderer.encodeLiveCommit"));
 assert(runtime.includes("renderer.encodeLiveCommit(encoder, engine.layerView, historySlice)"));
 assert(runtime.includes("kind: \"fill\""));

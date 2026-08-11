@@ -388,6 +388,37 @@ fn intersectFillWithSelection(@builtin(global_invocation_id) global: vec3<u32>) 
 }
 `;
 
+/**
+ * Lazy diagnostic shader. It runs only from the Copy report and distinguishes
+ * four operations that old Android compilers/drivers have historically handled
+ * differently: a literal high bit, atomicOr, a dynamic constant lookup and a
+ * dynamic shift. Keeping it outside the normal Fill modules avoids adding any
+ * pipeline cost to startup or to the tool hot path.
+ */
+export const fillBitProbeShader = /* wgsl */ `
+${fillBitMaskHelpers}
+
+struct ProbeUniforms {
+  bitIndex: u32,
+  _padding0: u32,
+  _padding1: u32,
+  _padding2: u32,
+};
+
+@group(0) @binding(0) var<uniform> probe: ProbeUniforms;
+@group(0) @binding(1) var<storage, read_write> results: array<atomic<u32>>;
+
+@compute @workgroup_size(1, 1, 1)
+fn probeBit31() {
+  let bit = probe.bitIndex & 31u;
+  atomicStore(&results[0], 0x80000000u);
+  atomicOr(&results[1], 0x80000000u);
+  atomicStore(&results[2], fillBitMask(bit));
+  atomicStore(&results[3], 1u << bit);
+  atomicStore(&results[4], select(0u, 1u, fillMaskContains(0x80000000u, bit)));
+}
+`;
+
 export const fillRenderShader = /* wgsl */ `
 const LAYER_EXTENT: f32 = ${LAYER_SIZE}.0;
 const BLOCK_EXTENT: u32 = ${FILL_BLOCK_SIZE}u;

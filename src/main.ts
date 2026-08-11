@@ -11226,12 +11226,55 @@ function appDiagnosticSection<Value>(read: () => Value):
   }
 }
 
+async function appDiagnosticAsyncSection<Value>(read: () => Promise<Value>): Promise<
+  | { readonly ok: true; readonly value: Value }
+  | { readonly ok: false; readonly error: ReturnType<typeof describeAppDiagnosticError> }
+> {
+  try {
+    return { ok: true, value: await read() };
+  } catch (error) {
+    return { ok: false, error: describeAppDiagnosticError(error) };
+  }
+}
+
+interface DiagnosticNavigatorUAData {
+  readonly brands?: readonly { readonly brand: string; readonly version: string }[];
+  readonly mobile?: boolean;
+  readonly platform?: string;
+  getHighEntropyValues?(hints: readonly string[]): Promise<Record<string, unknown>>;
+}
+
+async function captureDiagnosticUserAgentData(): Promise<Record<string, unknown> | null> {
+  const userAgentData = (
+    navigator as Navigator & { readonly userAgentData?: DiagnosticNavigatorUAData }
+  ).userAgentData;
+  if (!userAgentData) return null;
+  const lowEntropy = {
+    brands: userAgentData.brands ?? null,
+    mobile: userAgentData.mobile ?? null,
+    platform: userAgentData.platform ?? null,
+  };
+  if (!userAgentData.getHighEntropyValues) return lowEntropy;
+  const highEntropy = await userAgentData.getHighEntropyValues([
+    "platformVersion",
+    "model",
+    "architecture",
+    "bitness",
+    "fullVersionList",
+  ]);
+  return { ...lowEntropy, ...highEntropy };
+}
+
 /**
- * Builds the report only when requested. No text/SVG document or pixel payload
- * is serialized: the useful evidence is stable ids, ordering, locks, History
- * kinds and resource totals. This keeps Copy cheap during normal drawing.
+ * Builds the report only when requested. Fill adds a user-triggered GPU
+ * readback, but serializes only aggregate counts and at most five 32-bit words
+ * around the seed—not the mask, layer pixels, text or SVG source.
  */
-function buildAppDiagnosticReport(): string {
+async function buildAppDiagnosticReport(): Promise<string> {
+  const [userAgentDataResult, fillDiagnosticsResult] = await Promise.all([
+    appDiagnosticAsyncSection(captureDiagnosticUserAgentData),
+    appDiagnosticAsyncSection(() => engine.captureFillDiagnostics()),
+  ]);
   const statsResult = appDiagnosticSection(() => engine.getStats());
   const historyResult = appDiagnosticSection(() => engine.getHistoryState());
   const stats = statsResult.ok ? statsResult.value : null;
@@ -11242,6 +11285,9 @@ function buildAppDiagnosticReport(): string {
   );
   const vectorDiagnosticsResult = appDiagnosticSection(
     () => vectorTextPrototype?.getDiagnostics() ?? null,
+  );
+  const webGpuDiagnosticsResult = appDiagnosticSection(
+    () => engine.getWebGpuDiagnosticInfo(),
   );
   const currentState = stats
     ? captureAppDiagnosticState(stats, currentHistory)
@@ -11262,12 +11308,24 @@ function buildAppDiagnosticReport(): string {
   const report = {
     schema: APP_DIAGNOSTIC_SCHEMA,
     capturedAt: new Date().toISOString(),
-    privacy: "Nessun pixel, contenuto testuale o sorgente SVG incluso.",
+    privacy:
+      "Nessun pixel, contenuto testuale, sorgente SVG o maschera completa incluso; "
+      + "solo contatori Fill e cinque word attorno al seed.",
     app: {
       mode: import.meta.env.MODE,
       documentSize: LAYER_SIZE,
       path: `${window.location.pathname}${window.location.search}`,
       visibility: document.visibilityState,
+      entryScripts: [...document.scripts]
+        .map((script) => script.src)
+        .filter(Boolean)
+        .map((source) => {
+          try {
+            return new URL(source, window.location.href).pathname.split("/").at(-1) ?? source;
+          } catch {
+            return source;
+          }
+        }),
     },
     environment: {
       userAgent: navigator.userAgent,
@@ -11279,6 +11337,8 @@ function buildAppDiagnosticReport(): string {
       canvasPixels: { width: canvas.width, height: canvas.height },
       devicePixelRatio: window.devicePixelRatio,
       gpuLabel: stats?.gpuLabel ?? null,
+      userAgentData: userAgentDataResult,
+      webGpu: webGpuDiagnosticsResult,
     },
     uiLocks: {
       engineInitialized,
@@ -11364,6 +11424,7 @@ function buildAppDiagnosticReport(): string {
       : measuredResult,
     historyMaintenance: maintenanceResult,
     vectorDiagnostics: vectorDiagnosticsResult,
+    fillDiagnostics: fillDiagnosticsResult,
     historyWindow: historyWindowResult,
     recentEvents: appDiagnosticLog.snapshot(),
   };
@@ -11402,7 +11463,7 @@ async function copyAppDiagnosticReport(): Promise<void> {
   appDiagnosticsCopyStatus.hidden = false;
   appDiagnosticsCopyStatus.textContent = "Preparazione rapporto…";
   try {
-    const serialized = buildAppDiagnosticReport();
+    const serialized = await buildAppDiagnosticReport();
     appDiagnosticsReport.textContent = serialized;
     appDiagnosticsDetails.hidden = false;
     (

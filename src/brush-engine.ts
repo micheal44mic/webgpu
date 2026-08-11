@@ -757,11 +757,14 @@ import {
   planLayerSwitchMemory,
 } from "./layer-memory-admission-core";
 import {
+  captureFillDiagnostics,
   ensureFillRenderer,
   fillAtClientPoint,
   setFillToolSelected,
   submitFillHistoryBatch,
+  type FillDiagnosticReport,
   type FillOperationResult,
+  type LastFillDiagnosticOperation,
 } from "./engine-fill-runtime";
 import {
   clearPixelSelection,
@@ -1039,6 +1042,12 @@ export class BrushEngine {
   fillRendererLoadingPromise: Promise<FillRenderer> | null = null;
   fillToolSelected = false;
   fillScratchReleaseTimer: number | null = null;
+  lastFillDiagnosticOperation: LastFillDiagnosticOperation | null = null;
+  readonly gpuUncapturedErrors: {
+    capturedAt: string;
+    constructorName: string;
+    message: string;
+  }[] = [];
   selectionRenderer: SelectionRenderer | null = null;
   selectionRendererLoadingPromise: Promise<SelectionRenderer> | null = null;
   selectionRendererReleaseTimer: number | null = null;
@@ -1850,6 +1859,15 @@ export class BrushEngine {
     const instrumented = instrumentGpuDevice(rawDevice);
     this.device = instrumented.device;
     this.gpuResourceRegistry = instrumented.registry;
+    this.device.addEventListener("uncapturederror", (event) => {
+      const error = event.error;
+      if (this.gpuUncapturedErrors.length === 8) this.gpuUncapturedErrors.shift();
+      this.gpuUncapturedErrors.push({
+        capturedAt: new Date().toISOString(),
+        constructorName: error.constructor.name,
+        message: error.message,
+      });
+    });
     markStartupPhase(
       "Dispositivo WebGPU creato",
       "Configurazione del canvas e delle risorse grafiche.",
@@ -3312,6 +3330,34 @@ export class BrushEngine {
     color: string,
   ): Promise<FillOperationResult | null> {
     return fillAtClientPoint(this, clientX, clientY, tolerancePercent, color);
+  }
+
+  captureFillDiagnostics(): Promise<FillDiagnosticReport> {
+    return captureFillDiagnostics(this);
+  }
+
+  getWebGpuDiagnosticInfo() {
+    const info = this.adapter.info;
+    const limits = this.device.limits;
+    return {
+      adapter: {
+        vendor: info.vendor || null,
+        architecture: info.architecture || null,
+        device: info.device || null,
+        description: info.description || null,
+      },
+      features: [...this.device.features].sort(),
+      limits: {
+        maxTextureDimension2D: limits.maxTextureDimension2D,
+        maxStorageBufferBindingSize: limits.maxStorageBufferBindingSize,
+        maxStorageBuffersPerShaderStage: limits.maxStorageBuffersPerShaderStage,
+        maxComputeInvocationsPerWorkgroup: limits.maxComputeInvocationsPerWorkgroup,
+        maxComputeWorkgroupStorageSize: limits.maxComputeWorkgroupStorageSize,
+      },
+      canvasFormat: this.canvasFormat,
+      layerFormat: this.layerFormat,
+      uncapturedErrors: this.gpuUncapturedErrors.map((error) => ({ ...error })),
+    };
   }
 
   submitFillHistoryBatch(

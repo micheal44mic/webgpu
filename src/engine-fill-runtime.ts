@@ -10,6 +10,15 @@ import {
   normalizeFillTolerance,
   type FillAnalysis,
 } from "./fill-core";
+import {
+  FILL_DIAGNOSTIC_SCHEMA,
+  classifyFillDiagnostic,
+  summarizeFillMaskWords,
+  summarizeFillRenderedRow,
+  type FillDiagnosticClassification,
+  type FillMaskDiagnosticSummary,
+  type FillRenderedRowDiagnosticSummary,
+} from "./fill-diagnostics";
 import { FillRenderer } from "./fill-renderer";
 import type { FillHistoryRenderBatch } from "./engine-history-types";
 import type { GpuHistorySlice } from "./gpu-history-storage";
@@ -34,6 +43,140 @@ export interface FillOperationResult extends FillAnalysis {
   readonly sourceLayerId: number;
   readonly targetLayerId: number;
   readonly totalMs: number;
+}
+
+export interface LastFillDiagnosticOperation {
+  readonly actionId: number;
+  readonly capturedAt: string;
+  readonly sourceLayerId: number;
+  readonly targetLayerId: number;
+  readonly seedX: number;
+  readonly seedY: number;
+  readonly color: string;
+  readonly linearColor: readonly [number, number, number, number];
+  readonly tolerancePercent: number;
+  readonly selectedPixels: number;
+  readonly activeBlocks: number;
+  readonly activeTiles: number;
+  readonly bounds: FillAnalysis["bounds"];
+}
+
+export type FillDiagnosticReport = {
+  readonly schema: typeof FILL_DIAGNOSTIC_SCHEMA;
+  readonly available: false;
+  readonly reason: string;
+  readonly rendererResident: boolean;
+  readonly lastOperation: LastFillDiagnosticOperation | null;
+} | {
+  readonly schema: typeof FILL_DIAGNOSTIC_SCHEMA;
+  readonly available: true;
+  readonly rendererResident: true;
+  readonly lastOperation: LastFillDiagnosticOperation;
+  readonly currentHistory: {
+    readonly cursor: number;
+    readonly actionCount: number;
+    readonly operationIsLatestAppliedAction: boolean;
+    readonly targetLayerStillExists: boolean;
+    readonly targetLayerStillActive: boolean;
+  };
+  readonly analysisSequence: number;
+  readonly maskReadbackMs: number;
+  readonly drawIndirect: readonly number[];
+  readonly drawIndirectMatchesMetadata: boolean;
+  readonly bitProbe: Awaited<ReturnType<FillRenderer["captureDiagnostics"]>>["bitProbe"];
+  readonly mask: FillMaskDiagnosticSummary;
+  readonly renderedSeedRow: FillRenderedRowDiagnosticSummary | null;
+  readonly renderedSeedRowError: string | null;
+  readonly classification: FillDiagnosticClassification | "target-row-unavailable";
+};
+
+export async function captureFillDiagnostics(
+  engine: BrushEngine,
+): Promise<FillDiagnosticReport> {
+  const operation = engine.lastFillDiagnosticOperation;
+  const renderer = engine.fillRenderer;
+  if (!operation || !renderer || !renderer.resident) {
+    return {
+      schema: FILL_DIAGNOSTIC_SCHEMA,
+      available: false,
+      reason: !operation
+        ? "Nessun Fill completato in questa sessione."
+        : !renderer
+          ? "Renderer Fill non creato."
+          : "Scratch Fill già rilasciato: seleziona Fill, ripeti e premi subito Copy.",
+      rendererResident: Boolean(renderer?.resident),
+      lastOperation: operation ? { ...operation, bounds: { ...operation.bounds } } : null,
+    };
+  }
+
+  await engine.waitForIdle();
+  const readback = await renderer.captureDiagnostics();
+  const mask = summarizeFillMaskWords(
+    readback.maskWords,
+    readback.analysis.selectedPixels,
+    readback.seedX,
+    readback.seedY,
+    FILL_LAYER_SIZE,
+  );
+  const targetRecord = engine.layerStack.layers.find(
+    (layer) => layer.id === operation.targetLayerId,
+  );
+  const targetGpu = engine.layerGpu.get(operation.targetLayerId);
+  let renderedSeedRow: FillRenderedRowDiagnosticSummary | null = null;
+  let renderedSeedRowError: string | null = null;
+  if (!targetRecord) {
+    renderedSeedRowError = "Il livello target non esiste più.";
+  } else if (!targetGpu?.hot) {
+    renderedSeedRowError = "Il livello target non è più residente hot sulla GPU.";
+  } else {
+    try {
+      const rowPixels = await engine.readTexturePixels(
+        targetGpu.hot.texture,
+        { x: 0, y: readback.seedY, width: FILL_LAYER_SIZE, height: 1 },
+        "diagnosi Fill riga seed",
+      );
+      renderedSeedRow = summarizeFillRenderedRow(
+        rowPixels,
+        engine.layerFormat,
+        readback.maskWords,
+        readback.fillColor,
+        readback.seedY,
+        FILL_LAYER_SIZE,
+      );
+    } catch (error) {
+      renderedSeedRowError = error instanceof Error ? error.message : String(error);
+    }
+  }
+  const history = engine.getHistoryState();
+  const latestApplied = engine.historyActions[engine.historyCursor - 1];
+  return {
+    schema: FILL_DIAGNOSTIC_SCHEMA,
+    available: true,
+    rendererResident: true,
+    lastOperation: { ...operation, bounds: { ...operation.bounds } },
+    currentHistory: {
+      cursor: history.cursor,
+      actionCount: history.actionCount,
+      operationIsLatestAppliedAction: latestApplied?.id === operation.actionId,
+      targetLayerStillExists: Boolean(targetRecord),
+      targetLayerStillActive: engine.layerStack.active.id === operation.targetLayerId,
+    },
+    analysisSequence: readback.sequence,
+    maskReadbackMs: readback.readbackMs,
+    drawIndirect: readback.drawIndirect,
+    drawIndirectMatchesMetadata: readback.drawIndirect.length === 4
+      && readback.drawIndirect[0] === 4
+      && readback.drawIndirect[1] === readback.analysis.activeBlocks
+      && readback.drawIndirect[2] === 0
+      && readback.drawIndirect[3] === 0,
+    bitProbe: readback.bitProbe,
+    mask,
+    renderedSeedRow,
+    renderedSeedRowError,
+    classification: renderedSeedRow
+      ? classifyFillDiagnostic(mask, renderedSeedRow)
+      : "target-row-unavailable",
+  };
 }
 
 export async function ensureFillRenderer(engine: BrushEngine): Promise<FillRenderer> {
@@ -237,6 +380,21 @@ export async function fillAtClientPoint(
       tileMask: analysis.tileMask.slice(),
     };
     engine.historyBatches.push(batch);
+    engine.lastFillDiagnosticOperation = {
+      actionId,
+      capturedAt: new Date().toISOString(),
+      sourceLayerId: source.record.id,
+      targetLayerId: target.id,
+      seedX,
+      seedY,
+      color,
+      linearColor: [...linearColor],
+      tolerancePercent,
+      selectedPixels: analysis.selectedPixels,
+      activeBlocks: analysis.activeBlocks,
+      activeTiles: analysis.activeTiles,
+      bounds: { ...analysis.bounds },
+    };
     historySlice = null;
     engine.historyCursor = engine.historyActions.length;
     engine.callbacks.onStatus?.(
