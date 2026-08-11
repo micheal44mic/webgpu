@@ -5824,7 +5824,7 @@ function applySettingsToControls(settings: BrushSettings): void {
       ? settings.grainMode
       : "off",
   );
-  setBrushAssetControlValue("grainSource", settings.grainAssetId, "legacy-grain");
+  setBrushAssetControlValue("grainSource", settings.grainAssetId, "pencil-grain");
   setControlValue("grainScale", (settings.grainScale ?? 1.4) * 100);
   setControlValue("grainMovement", (settings.grainMovement ?? 0) * 100);
   setControlValue("grainDepth", (settings.grainDepth ?? 1) * 100);
@@ -6200,7 +6200,7 @@ function applyHumanStrokePreset(): BrushSettings {
   setControlValue("shapeRotation", "fixed");
   setControlValue("shapeScatter", 0);
   setControlValue("grainMode", "off");
-  setControlValue("grainSource", "legacy-grain");
+  setControlValue("grainSource", "pencil-grain");
   setControlValue("grainScale", 140);
   setControlValue("grainMovement", 0);
   setControlValue("grainDepth", 100);
@@ -6341,7 +6341,7 @@ function humanStrokeTestLabel(
     : blendMode === "intense-blending"
       ? "Intense Blending"
       : "Light Glaze";
-  const grainLabel = grainMode === "texturized" ? "Grain Fixed M1" : "Grain Off";
+  const grainLabel = grainMode === "texturized" ? "Grain Fixed" : "Grain Off";
   return `${variantLabel} · ${blendLabel} · ${grainLabel}`;
 }
 

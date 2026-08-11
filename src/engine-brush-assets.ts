@@ -38,7 +38,7 @@ export function normalizeShapeAssetId(value: unknown): BrushShapeAssetId {
 }
 
 export function normalizeGrainAssetId(value: unknown): BrushGrainAssetId {
-  return value === "pencil-grain" || isCustomGrainAssetId(value) ? value : "legacy-grain";
+  return value === "pencil-grain" || isCustomGrainAssetId(value) ? value : "pencil-grain";
 }
 
 export function shapeInvertForSettings(
@@ -79,15 +79,9 @@ export function grainAssetDescriptor(id: BrushGrainAssetId): GrainAssetDescripto
   if (isCustomGrainAssetId(id)) {
     throw new Error(`L'asset ${id} deve essere risolto dal registro custom del motore.`);
   }
-  if (id === "pencil-grain") {
-    return {
-      ...BRUSH_ASSET_REGISTRY["pencil-grain"],
-      url: new URL("../Grainpencil.png", import.meta.url),
-    };
-  }
   return {
-    ...BRUSH_ASSET_REGISTRY["legacy-grain"],
-    url: new URL("../graincottonfleece.PNG", import.meta.url),
+    ...BRUSH_ASSET_REGISTRY["pencil-grain"],
+    url: new URL("../Grainpencil.png", import.meta.url),
   };
 }
 

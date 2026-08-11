@@ -64,7 +64,6 @@ export interface MobileBrushStudioOptions {
 const BUILTIN_BRUSH_SOURCE_URLS: Readonly<Record<string, string>> = {
   "legacy-shape": new URL("../Shape.png", import.meta.url).href,
   "pencil-shape": new URL("../Shapepencil.png", import.meta.url).href,
-  "legacy-grain": new URL("../graincottonfleece.PNG", import.meta.url).href,
   "pencil-grain": new URL("../Grainpencil.png", import.meta.url).href,
 };
 
@@ -841,7 +840,7 @@ export class MobileBrushStudioController {
       requiredElement<HTMLInputElement>("mobileBrushStudioShapeInvert").checked = false;
     } else {
       this.draftSettings.grainMode = "off";
-      this.draftSettings.grainAssetId = "legacy-grain";
+      this.draftSettings.grainAssetId = "pencil-grain";
       this.draftSettings.grainInvert = false;
       requiredElement<HTMLInputElement>("mobileBrushStudioGrainInvert").checked = false;
       this.syncRadioButtons(this.grainModeButtons, "mobileBrushGrainMode", "off");

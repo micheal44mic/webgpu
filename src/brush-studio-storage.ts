@@ -1,3 +1,4 @@
+import { isCustomGrainAssetId } from "./brush-asset-registry.ts";
 import type { BrushSettings } from "./engine-types";
 
 const BRUSH_STUDIO_SETTINGS_KEY = "m1m4.brush-studio.settings.v1";
@@ -63,7 +64,18 @@ function readSavedBrushMap(): BrushStudioSavedBrushMap {
 export function loadBrushStudioSavedBrush(brushId: string): BrushStudioSavedBrush | null {
   const saved = readSavedBrushMap()[brushId];
   if (!saved || saved.version !== 1 || !saved.settings) return null;
-  return saved;
+  return {
+    ...saved,
+    settings: {
+      ...saved.settings,
+      // Migrates the removed Cotton Fleece id and settings authored before a
+      // grain source id existed. No network request for that asset can recur.
+      grainAssetId: saved.settings.grainAssetId === "pencil-grain"
+        || isCustomGrainAssetId(saved.settings.grainAssetId)
+        ? saved.settings.grainAssetId
+        : "pencil-grain",
+    },
+  };
 }
 
 export function saveBrushStudioSavedBrush(
@@ -198,7 +210,7 @@ export function createBrushStudioBaseSettings(
     shapeRotation: "fixed",
     shapeScatter: 0,
     grainMode: "off",
-    grainAssetId: "legacy-grain",
+    grainAssetId: "pencil-grain",
     grainScale: 1.4,
     grainMovement: 0,
     grainDepth: 1,

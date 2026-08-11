@@ -38,7 +38,7 @@ function persistedSettings(overrides = {}) {
     shapeRotation: "fixed",
     shapeScatter: 0,
     grainMode: "off",
-    grainAssetId: "legacy-grain",
+    grainAssetId: "pencil-grain",
     grainScale: 1.4,
     grainMovement: 0,
     grainDepth: 1,
@@ -151,6 +151,7 @@ assert.equal(maximumSpacing.settings.spacingPercent, 99);
 
 const legacyPlainParts = await unpackTransfer(plainBlob);
 delete legacyPlainParts.manifest.settings.blendBlur;
+legacyPlainParts.manifest.settings.grainAssetId = "legacy-grain";
 const legacyPlain = await transfer.parseBrushStudioTransferBlob(packTransfer(
   legacyPlainParts.manifest,
   null,
@@ -160,6 +161,11 @@ assert.equal(
   legacyPlain.settings.blendBlur,
   0,
   "version 1 brushes authored before Blend Blur must import with the inert default",
+);
+assert.equal(
+  legacyPlain.settings.grainAssetId,
+  "pencil-grain",
+  "brushes referencing the removed Cotton Fleece source must migrate to Pencil Grain",
 );
 
 const customSettings = persistedSettings({

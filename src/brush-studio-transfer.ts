@@ -41,7 +41,7 @@ const defaultBrushSettings: BrushStudioPersistedSettings = {
   shapeRotation: "fixed",
   shapeScatter: 0,
   grainMode: "off",
-  grainAssetId: "legacy-grain",
+  grainAssetId: "pencil-grain",
   grainScale: 1.4,
   grainMovement: 0,
   grainDepth: 1,
@@ -201,9 +201,11 @@ function grainAssetIdValue(
   strict: boolean,
 ): BrushStudioPersistedSettings["grainAssetId"] {
   const value = record.grainAssetId;
+  // Cotton Fleece was removed from the product. Old exported brushes remain
+  // importable and migrate to the only built-in grain instead of failing.
+  if (value === "legacy-grain") return "pencil-grain";
   if (
-    value === "legacy-grain"
-    || value === "pencil-grain"
+    value === "pencil-grain"
     || isCustomGrainAssetId(value)
   ) {
     return value;

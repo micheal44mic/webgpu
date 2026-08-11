@@ -453,7 +453,7 @@ fn adjustedGrainCoverage(
       grainUvDy
     );
   }
-  // La luma RGB dell'asset M1 originale e' gia' stata calcolata al carico, con
+  // La luma RGB dell'asset Grain e' gia' stata calcolata al carico, con
   // gli stessi pesi 0.299/0.587/0.114, e conservata su un canale scalare. Il
   // valore campionato qui e' quello che prima veniva ricavato a ogni fragment
   // dal dot(rgb): identico, ma senza portarsi dietro tre canali inutilizzati.
@@ -655,10 +655,10 @@ fn shapeOccupancyCoverageFragmentMain(input: FragmentInput) -> @location(0) vec4
 }
 `;
 
-// Runtime mip generation for the original M1 RGBA grain. Each pass samples the
+// Runtime mip generation for the scalar Grain texture. Each pass samples the
 // immediately preceding mip with a linear clamp sampler and writes the next
 // level. This keeps asset preparation on WebGPU/WGSL and handles the native
-// non-power-of-two 2500² dimensions without a 2K resample.
+// source dimensions directly without an intermediate resample.
 /**
  * Conversione della sorgente RGBA in campo scalare, una sola volta al carico.
  *

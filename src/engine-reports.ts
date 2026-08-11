@@ -1978,11 +1978,11 @@ export async function runBenchmark(engine: BrushEngine, baseStampCount: number):
     "riuso copySeed per jitter colore per copia",
     "dirty rect direzionale conservativo",
     isTexturizedGrainActive(benchmarkSettings)
-      ? `grain Cotton Fleece M1 2500 ${benchmarkSettings.grainMode} `
+      ? `grain ${engine.grainTextureWidth}×${engine.grainTextureHeight} ${benchmarkSettings.grainMode} `
         + `${benchmarkSettings.grainFiltering}, `
         + `scale ${(benchmarkSettings.grainScale * 100).toFixed(0)}%, `
         + `depth ${(benchmarkSettings.grainDepth * 100).toFixed(0)}%`
-      : "grain Off, pipeline legacy",
+      : "grain Off, pipeline standard",
   ].join(" · ");
 
   return {

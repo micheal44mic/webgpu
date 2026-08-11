@@ -17,6 +17,31 @@ import {
 } from "./fill-core.ts";
 import { LAYER_SIZE } from "./engine-limits.ts";
 
+// Alcuni backend Vulkan/GLSL usati da Chrome Android compilano in modo errato
+// lo shift dinamico `1u << 31u`: il bit alto sparisce e il risultato visibile è
+// una riga non riempita ogni 32 pixel. Una lookup di costanti u32 conserva
+// esattamente la rappresentazione 1-bit senza affidarsi a quello shift.
+const fillBitMaskHelpers = /* wgsl */ `
+const FILL_BIT_MASKS: array<u32, 32> = array<u32, 32>(
+  0x00000001u, 0x00000002u, 0x00000004u, 0x00000008u,
+  0x00000010u, 0x00000020u, 0x00000040u, 0x00000080u,
+  0x00000100u, 0x00000200u, 0x00000400u, 0x00000800u,
+  0x00001000u, 0x00002000u, 0x00004000u, 0x00008000u,
+  0x00010000u, 0x00020000u, 0x00040000u, 0x00080000u,
+  0x00100000u, 0x00200000u, 0x00400000u, 0x00800000u,
+  0x01000000u, 0x02000000u, 0x04000000u, 0x08000000u,
+  0x10000000u, 0x20000000u, 0x40000000u, 0x80000000u,
+);
+
+fn fillBitMask(bitIndex: u32) -> u32 {
+  return FILL_BIT_MASKS[bitIndex & 31u];
+}
+
+fn fillMaskContains(word: u32, bitIndex: u32) -> bool {
+  return (word & fillBitMask(bitIndex)) != 0u;
+}
+`;
+
 export const fillComputeShader = /* wgsl */ `
 const LAYER_EXTENT: u32 = ${LAYER_SIZE}u;
 const BLOCK_EXTENT: u32 = ${FILL_BLOCK_SIZE}u;
@@ -26,6 +51,8 @@ const COMPONENTS_PER_BLOCK: u32 = ${FILL_MAX_COMPONENTS_PER_BLOCK}u;
 const LABEL_WORDS_PER_BLOCK: u32 = ${FILL_LABEL_WORDS_PER_BLOCK}u;
 const INVALID_LABEL: u32 = 255u;
 const INVALID_U32: u32 = 0xffffffffu;
+
+${fillBitMaskHelpers}
 
 struct FillUniforms {
   seed: vec2<u32>,
@@ -309,7 +336,10 @@ fn reduceAndRecord(
     atomicAdd(&metadata[${FILL_META_ACTIVE_BLOCKS}u], 1u);
     let coldTile = (block.y / ${FILL_BLOCKS_PER_TILE}u) * ${FILL_TILE_GRID_SIZE}u
       + block.x / ${FILL_BLOCKS_PER_TILE}u;
-    atomicOr(&metadata[${FILL_META_TILE_MASK_START}u + coldTile / 32u], 1u << (coldTile & 31u));
+    atomicOr(
+      &metadata[${FILL_META_TILE_MASK_START}u + coldTile / 32u],
+      fillBitMask(coldTile),
+    );
   }
 }
 
@@ -327,7 +357,7 @@ fn selectSeedComponent(
     && findGlobalRoot(nodeForPixel(pixel, label)) == seedRoot;
   if (selected) {
     let word = pixel.y * (LAYER_EXTENT / 32u) + pixel.x / 32u;
-    atomicOr(&selectedMask[word], 1u << (pixel.x & 31u));
+    atomicOr(&selectedMask[word], fillBitMask(pixel.x));
   }
   reduceAndRecord(pixel, selected, workgroup.xy, localIndex);
 }
@@ -340,7 +370,7 @@ fn rebuildSelection(
 ) {
   let pixel = workgroup.xy * BLOCK_EXTENT + local.xy;
   let word = pixel.y * (LAYER_EXTENT / 32u) + pixel.x / 32u;
-  let selected = (atomicLoad(&selectedMask[word]) & (1u << (pixel.x & 31u))) != 0u;
+  let selected = fillMaskContains(atomicLoad(&selectedMask[word]), pixel.x);
   reduceAndRecord(pixel, selected, workgroup.xy, localIndex);
 }
 `;
@@ -363,6 +393,8 @@ const LAYER_EXTENT: f32 = ${LAYER_SIZE}.0;
 const BLOCK_EXTENT: u32 = ${FILL_BLOCK_SIZE}u;
 const BLOCK_GRID: u32 = ${FILL_BLOCK_GRID_SIZE}u;
 
+${fillBitMaskHelpers}
+
 struct FillUniforms {
   seed: vec2<u32>,
   size: vec2<u32>,
@@ -379,7 +411,6 @@ struct FillUniforms {
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
-  @location(0) pixel: vec2<f32>,
 };
 
 @vertex
@@ -403,15 +434,17 @@ fn vertexMain(
     0.0,
     1.0,
   );
-  output.pixel = pixel;
   return output;
 }
 
 @fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-  let pixel = vec2<u32>(floor(input.pixel));
+fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+  // La posizione framebuffer è già il texel autorevole del target. Evitare un
+  // varying interpolato elimina anche le differenze di precisione ai bordi dei
+  // quad istanziati sui driver mobile.
+  let pixel = vec2<u32>(position.xy);
   let word = pixel.y * (${LAYER_SIZE}u / 32u) + pixel.x / 32u;
-  if ((selectedMask[word] & (1u << (pixel.x & 31u))) == 0u) {
+  if (!fillMaskContains(selectedMask[word], pixel.x)) {
     discard;
   }
   return uniforms.fillColor;

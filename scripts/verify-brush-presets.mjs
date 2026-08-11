@@ -12,7 +12,8 @@ const registryModulePath = path.join(projectRoot, "src", "brush-asset-registry.t
 const { CustomBrushAssetRegistry } = await import(pathToFileURL(registryModulePath).href);
 
 assert.equal(presets.BRUSH_PRESET_CONTRACT_VERSION, "m1m4-brush-preset-v1");
-assert.equal(Object.keys(presets.BRUSH_ASSET_REGISTRY).length, 4);
+assert.equal(Object.keys(presets.BRUSH_ASSET_REGISTRY).length, 3);
+assert.equal("legacy-grain" in presets.BRUSH_ASSET_REGISTRY, false);
 assert.equal(Object.keys(presets.BRUSH_PRESET_REGISTRY).length, 1);
 
 function pngDimensions(bytes) {
@@ -170,9 +171,9 @@ assert(engine.includes("shapeAssetId: BrushShapeAssetId")
 assert(engine.includes('shapeAssetId: "legacy-shape"')
   && engine.includes("shapeInvert: false")
   && engine.includes('shapeRotation: "fixed"')
-  && engine.includes('grainAssetId: "legacy-grain"')
+  && engine.includes('grainAssetId: "pencil-grain"')
   && engine.includes("grainMovement: 0"),
-  "I default legacy non preservano il percorso precedente.");
+  "I default built-in non usano gli asset Pencil attesi.");
 assert(engine.includes("grainMovement: clamp(next.grainMovement ?? this.settings.grainMovement, 0, 1)")
   && engine.includes('settings.shapeRotation === "follow-stroke" ? 1 : 0'),
   "Movement e Follow Stroke non sono parametri runtime generici normalizzati.");

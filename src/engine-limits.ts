@@ -109,7 +109,7 @@ export const THICKNESS_TAIL_MAXIMUM_TEXTURE_DIMENSION = LAYER_SIZE;
 
 export const SHAPE_MASK_SIZE = 2048;
 
-export const GRAIN_TEXTURE_SIZE = 2500;
+export const GRAIN_TEXTURE_SIZE = 800;
 
 export const GRAIN_TEXTURE_MIP_LEVEL_COUNT = Math.floor(Math.log2(GRAIN_TEXTURE_SIZE)) + 1;
 

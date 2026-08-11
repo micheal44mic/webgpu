@@ -161,7 +161,7 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
     addressMode: GPUAddressMode,
   ): Record<GrainFiltering, GPUSampler> => ({
     no: engine.device.createSampler({
-      label: `Cotton Fleece M1 ${mode} no filtering`,
+      label: `Grain ${mode} no filtering`,
       magFilter: "nearest",
       minFilter: "nearest",
       // A linear mip declaration makes this sampler valid for the common
@@ -172,7 +172,7 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
       addressModeV: addressMode,
     }),
     classic: engine.device.createSampler({
-      label: `Cotton Fleece M1 ${mode} classic filtering`,
+      label: `Grain ${mode} classic filtering`,
       magFilter: "linear",
       minFilter: "linear",
       mipmapFilter: "nearest",
@@ -180,7 +180,7 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
       addressModeV: addressMode,
     }),
     improved: engine.device.createSampler({
-      label: `Cotton Fleece M1 ${mode} improved filtering`,
+      label: `Grain ${mode} improved filtering`,
       magFilter: "linear",
       minFilter: "linear",
       mipmapFilter: "linear",
@@ -192,7 +192,7 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
     fixed: createGrainSamplerSet("fixed", "repeat"),
     moving: createGrainSamplerSet("moving", "clamp-to-edge"),
   };
-  // Il Grain M1 non viene più caricato allo startup: la texture vera arriva
+  // Il Grain non viene caricato allo startup: la texture vera arriva
   // con ensureGrainResources alla selezione di un grain mode. Il placeholder
   // bianco (identità del multiply) mantiene validi tutti i bind group.
   engine.grainPlaceholderTexture = engine.device.createTexture({
@@ -643,7 +643,7 @@ export async function createGrainTextureResources(
     }
     const source = await response.arrayBuffer();
     const decodeStart = performance.now();
-    // Match the M1 path: let the browser decode the original RGBA PNG,
+    // Let the browser decode the original RGBA PNG,
     // including its embedded color profile, without premultiplying alpha.
     const bitmap = await createImageBitmap(new Blob([source], { type: "image/png" }), {
       colorSpaceConversion: "default",
@@ -791,12 +791,12 @@ export async function createGrainTextureResources(
 
   const mipBuildStart = performance.now();
   const mipShaderModule = engine.device.createShaderModule({
-    label: "Cotton Fleece M1 mip generation WGSL",
+    label: "Grain mip generation WGSL",
     code: grainMipShader,
   });
-  await assertShaderCompiled(mipShaderModule, "Cotton Fleece M1 mip generation");
+  await assertShaderCompiled(mipShaderModule, "Grain mip generation");
   const mipBindGroupLayout = engine.device.createBindGroupLayout({
-    label: "Cotton Fleece M1 mip generation bind group layout",
+    label: "Grain mip generation bind group layout",
     entries: [
       {
         binding: 0,
@@ -811,9 +811,9 @@ export async function createGrainTextureResources(
     ],
   });
   const mipPipeline = engine.device.createRenderPipeline({
-    label: "Cotton Fleece M1 mip generation pipeline",
+    label: "Grain mip generation pipeline",
     layout: engine.device.createPipelineLayout({
-      label: "Cotton Fleece M1 mip generation pipeline layout",
+      label: "Grain mip generation pipeline layout",
       bindGroupLayouts: [mipBindGroupLayout],
     }),
     vertex: { module: mipShaderModule, entryPoint: "vertexMain" },
@@ -825,7 +825,7 @@ export async function createGrainTextureResources(
     primitive: { topology: "triangle-list" },
   });
   const mipSampler = engine.device.createSampler({
-    label: "Cotton Fleece M1 mip generation linear sampler",
+    label: "Grain mip generation linear sampler",
     magFilter: "linear",
     minFilter: "linear",
     mipmapFilter: "nearest",
@@ -833,21 +833,21 @@ export async function createGrainTextureResources(
     addressModeV: "clamp-to-edge",
   });
   const encoder = engine.device.createCommandEncoder({
-    label: "Cotton Fleece M1 full mip chain encoder",
+    label: "Grain full mip chain encoder",
   });
   for (let mipLevel = 1; mipLevel < mipLevelCount; mipLevel += 1) {
     const sourceView = texture.createView({
-      label: `Cotton Fleece M1 mip ${mipLevel - 1} source`,
+      label: `Grain mip ${mipLevel - 1} source`,
       baseMipLevel: mipLevel - 1,
       mipLevelCount: 1,
     });
     const targetView = texture.createView({
-      label: `Cotton Fleece M1 mip ${mipLevel} target`,
+      label: `Grain mip ${mipLevel} target`,
       baseMipLevel: mipLevel,
       mipLevelCount: 1,
     });
     const bindGroup = engine.device.createBindGroup({
-      label: `Cotton Fleece M1 mip ${mipLevel} bind group`,
+      label: `Grain mip ${mipLevel} bind group`,
       layout: mipBindGroupLayout,
       entries: [
         { binding: 0, resource: sourceView },
@@ -855,7 +855,7 @@ export async function createGrainTextureResources(
       ],
     });
     const pass = encoder.beginRenderPass({
-      label: `Cotton Fleece M1 build mip ${mipLevel}`,
+      label: `Grain build mip ${mipLevel}`,
       colorAttachments: [
         {
           view: targetView,
@@ -1163,7 +1163,7 @@ export function rebuildGrainBrushBindGroups(engine: BrushEngine): void {
         grainFilteringModes.map((filtering) => [
           filtering,
           engine.device.createBindGroup({
-            label: `Texturized M1 ${mode} brush bind group ${filtering}`,
+            label: `Texturized grain ${mode} brush bind group ${filtering}`,
             layout: engine.grainBrushBindGroupLayout,
             entries: [
               { binding: 0, resource: { buffer: engine.brushUniformBuffer } },
@@ -1186,7 +1186,7 @@ export function rebuildGrainBrushBindGroups(engine: BrushEngine): void {
         grainFilteringModes.map((filtering) => [
           filtering,
           engine.shapeOccupancyUniformBuffers.map((buffer, mipLevel) => engine.device.createBindGroup({
-            label: `Texturized M1 ${mode} occupancy bind group ${filtering} mip ${mipLevel}`,
+            label: `Texturized grain ${mode} occupancy bind group ${filtering} mip ${mipLevel}`,
             layout: engine.grainBrushOccupancyBindGroupLayout,
             entries: [
               { binding: 0, resource: { buffer: engine.brushUniformBuffer } },

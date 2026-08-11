@@ -246,7 +246,7 @@ for (const [field, value] of [
   ["shapeRotation", "fixed"],
   ["shapeScatter", 0.2],
   ["grainMode", "texturized"],
-  ["grainAssetId", "legacy-grain"],
+  ["grainAssetId", "custom-grain:alternate"],
   ["grainScale", 0.8],
   ["grainMovement", 0.4],
   ["grainDepth", 0.5],

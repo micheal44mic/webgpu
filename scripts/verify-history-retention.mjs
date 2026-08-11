@@ -1551,8 +1551,12 @@ console.log("History rapid-input queue and retention-floor feedback verified.");
   assert(coordinator.includes("Azione History troppo grande per il budget locale"));
   assert(coordinator.includes("diskBudgetBlockedActionIds"));
   assert(coordinator.includes('if (result === "budget-skip") continue;'));
+  const diskBudgetGateStart = spill.indexOf(
+    "diskBudget.hardBytes <= this.committedBytes",
+  );
+  assert(diskBudgetGateStart >= 0, "gate budget History non individuato");
   const diskBudgetGate = spill.slice(
-    spill.indexOf("if (\n      diskBudget.hardBytes"),
+    diskBudgetGateStart,
     spill.indexOf("const segmentId = makeId"),
   );
   assert(diskBudgetGate.includes("this.diskBudgetBlockedActionIds.add(actionId)"));

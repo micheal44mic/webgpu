@@ -524,8 +524,6 @@ import {
   GRAIN_MOVING_STRATEGY,
   GRAIN_PIPELINE_STRATEGY,
   GRAIN_STORAGE_LIFECYCLE_STRATEGY,
-  PENCIL_GRAIN_FIXED_STRATEGY,
-  PENCIL_GRAIN_MOVING_STRATEGY,
   type GrainAdaptivePreviewStrategy,
   grainCoordinateMode,
   type GrainCoordinateStrategy,
@@ -784,6 +782,7 @@ import {
   applyVectorRasterizeHistory,
   destroyVectorRasterHistorySeed,
   rasterizeVectorNodeToLayer,
+  rollbackUnpublishedVectorRasterization,
 } from "./engine-vector-raster-runtime";
 import {
   applyLightGlazeResourceSet,
@@ -1409,7 +1408,7 @@ export class BrushEngine {
   grainPlaceholderView!: GPUTextureView;
   grainResident = false;
   grainLoadingPromise: Promise<void> | null = null;
-  grainDesiredAssetId: BrushGrainAssetId = "legacy-grain";
+  grainDesiredAssetId: BrushGrainAssetId = "pencil-grain";
   grainLoadingAssetId: BrushGrainAssetId | null = null;
   grainLoadedAssetId: BrushGrainAssetId | null = null;
   grainSamplers!: Record<"fixed" | "moving", Record<GrainFiltering, GPUSampler>>;
@@ -4561,7 +4560,7 @@ export class BrushEngine {
       return Promise.resolve();
     }
 
-    const label = assetId === "pencil-grain" ? "Grain Pencil" : "Grain M1";
+    const label = assetId === "pencil-grain" ? "Grain Pencil" : "Grain personalizzato";
     this.callbacks.onStatus?.(`Carico ${label}…`, "working");
     const loading = (async () => {
       let resources: GrainTextureResources;
@@ -7101,19 +7100,20 @@ export class BrushEngine {
       commitHistoryActionAtomically(this, action);
     } catch (error) {
       try {
-        await applyVectorRasterizeHistory(this, action, -1);
-        destroyVectorRasterHistorySeed(action);
+        await rollbackUnpublishedVectorRasterization(this, action);
       } catch (restoreError) {
-        this.latchDocumentStateInconsistent(
-          "Pubblicazione della rasterizzazione fallita e rollback incompleto: ricarica la pagina.",
-        );
         const operationMessage = error instanceof Error ? error.message : String(error);
         const rollbackMessage = restoreError instanceof Error
           ? restoreError.message
           : String(restoreError);
-        throw new Error(
+        const combined = new Error(
           `Rasterizzazione non pubblicata: ${operationMessage}; rollback fallito: ${rollbackMessage}`,
         );
+        this.latchDocumentStateInconsistent(
+          "Pubblicazione della rasterizzazione fallita e rollback incompleto: ricarica la pagina.",
+          combined,
+        );
+        throw combined;
       }
       throw error;
     }
@@ -8602,11 +8602,6 @@ export class BrushEngine {
   grainStrategy(settings: BrushSettings): GrainStrategy {
     if (!isTexturizedGrainActive(settings)) {
       return GRAIN_DISABLED_STRATEGY;
-    }
-    if (grainAssetIdForSettings(settings) === "pencil-grain") {
-      return settings.grainMode === "moving"
-        ? PENCIL_GRAIN_MOVING_STRATEGY
-        : PENCIL_GRAIN_FIXED_STRATEGY;
     }
     return settings.grainMode === "moving" ? GRAIN_MOVING_STRATEGY : GRAIN_FIXED_STRATEGY;
   }

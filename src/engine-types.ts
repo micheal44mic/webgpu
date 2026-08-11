@@ -48,7 +48,7 @@ export type GrainMode = "off" | "texturized" | "moving";
 
 export type CustomBrushGrainAssetId = `custom-grain:${string}`;
 
-export type BrushGrainAssetId = "legacy-grain" | "pencil-grain" | CustomBrushGrainAssetId;
+export type BrushGrainAssetId = "pencil-grain" | CustomBrushGrainAssetId;
 
 export type GrainFiltering = "no" | "classic" | "improved";
 
@@ -66,7 +66,7 @@ export interface BrushSettings {
   shapeRotation: BrushShapeRotation;
   shapeScatter: number;
   grainMode: GrainMode;
-  /** Stable source identity; old settings without it normalize to legacy-grain. */
+  /** Stable source identity; old or removed sources normalize to pencil-grain. */
   grainAssetId: BrushGrainAssetId;
   grainScale: number;
   /** Moving-grain roller amount: 0 drags with the stamp, 1 approaches Texturized. */
@@ -321,7 +321,7 @@ export const defaultBrushSettings: BrushSettings = {
   shapeRotation: "fixed",
   shapeScatter: 0,
   grainMode: "off",
-  grainAssetId: "legacy-grain",
+  grainAssetId: "pencil-grain",
   grainScale: 1.4,
   grainMovement: 0,
   grainDepth: 1,

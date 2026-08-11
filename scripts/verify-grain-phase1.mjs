@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { readEngineSource } from "./engine-source.mjs";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const assetPath = path.join(projectRoot, "graincottonfleece.PNG");
+const assetPath = path.join(projectRoot, "Grainpencil.png");
 const shaderPath = path.join(projectRoot, "src", "shaders.ts");
 const blendShaderPath = path.join(projectRoot, "src", "blend-shaders.ts");
 const blendRendererPath = path.join(projectRoot, "src", "blend-renderer.ts");
@@ -18,8 +18,8 @@ const brushStrokePreviewPath = path.join(
 const stampUploadPath = path.join(projectRoot, "src", "engine-stamp-upload.ts");
 const mainPath = path.join(projectRoot, "src", "main.ts");
 const htmlPath = path.join(projectRoot, "index.html");
-const expectedSize = 2500;
-const expectedSha256 = "9AA1CE073885B83EA223AF0941EF74604548A85F54442228EC15522ACE3EF2D7";
+const expectedSize = 800;
+const expectedSha256 = "2AF322275A8A1EBC9E410C123115EEF2CBB3AB8F4EE5823BBB6CF3F495D07528";
 
 function assert(condition, message) {
   if (!condition) {
@@ -167,22 +167,20 @@ assert(movingUv(120, 100, 40, 0.5) === 2, "Movement non interpola drag e roller.
 
 const decoded = readPngHeader(assetPath);
 assert(decoded.width === expectedSize && decoded.height === expectedSize,
-  `Asset ${decoded.width}×${decoded.height}, atteso 2500² nativo.`);
+  `Asset ${decoded.width}×${decoded.height}, atteso 800² nativo.`);
 assert(decoded.bitDepth === 8, `Bit depth ${decoded.bitDepth}, atteso 8.`);
-assert(decoded.colorType === 6, `Color type ${decoded.colorType}, atteso RGBA (6).`);
+assert(decoded.colorType === 0, `Color type ${decoded.colorType}, atteso grayscale (0).`);
 assert(
   decoded.compressionMethod === 0
     && decoded.filterMethod === 0
     && decoded.interlaceMethod === 0,
   "PNG deve usare compressione/filtro standard e non essere interlacciato.",
 );
-assert(decoded.chunks.includes("iCCP"), "Il profilo colore ICC originale è stato rimosso.");
-
 const assetSha256 = crypto.createHash("sha256").update(decoded.bytes).digest("hex").toUpperCase();
 assert(assetSha256 === expectedSha256,
   `SHA-256 asset ${assetSha256}, atteso ${expectedSha256}.`);
-const mip = nativeMipSummary(expectedSize, 4);
-assert(mip.levels === 12, `Catena mip ${mip.levels}, attesi 12 livelli.`);
+const mip = nativeMipSummary(expectedSize, 2);
+assert(mip.levels === 10, `Catena mip ${mip.levels}, attesi 10 livelli.`);
 
 const shaders = fs.readFileSync(shaderPath, "utf8");
 const legacyEnd = shaders.indexOf("export const texturizedGrainShader");
@@ -211,15 +209,13 @@ assert(!selectedGrainUv.includes("input.localPosition * 0.5"),
   "Moving usa ancora UV stamp 0..1 che ignorano Scale.");
 assert(grainShader.includes("max(1u, grain.mipLevelCount) - 1u"),
   "Il numero di mip Grain non è più dinamico nell'uniform.");
-// La luma dell'asset M1 originale non e' sparita: si e' spostata al carico.
-// Il campo scalare conserva gli stessi pesi, quindi il valore campionato in
-// pittura e' quello di prima; qui si verifica che entrambe le meta' del patto
-// reggano ancora, cosi' nessuna delle due puo' derivare da sola.
+// La sorgente Pencil viene convertita una volta nel campo scalare R16F usato
+// dalla pittura. Il percorso resta valido anche per Grain custom RGB/RGBA.
 assert(shaders.includes("export const grainLumaShader")
   && shaders.match(
     /grainLumaShader[\s\S]*?dot\(texel\.rgb, vec3<f32>\(0\.299, 0\.587, 0\.114\)\)/,
   ),
-  "Luma RGB dell'asset M1 originale non trovata nella conversione al carico.");
+  "Conversione luma RGB della grana non trovata nel caricamento.");
 assert(shaders.match(/grainLumaShader[\s\S]*?textureLoad\(sourceTexture/),
   "La conversione luma deve leggere texel a texel, non campionare filtrato.");
 assert(grainShader.includes("let source = sourceSample.r;"),
@@ -228,7 +224,7 @@ assert(!grainShader.includes("dot(sourceSample.rgb"),
   "La luma non deve essere ricalcolata a ogni campionamento.");
 assert(grainShader.includes("shapeOccupancyCoverageFragmentMain")
   && grainShader.includes("coverageFragmentMain"),
-  "Entry point coverage M1 mancanti nel Grain WGSL.");
+  "Entry point coverage mancanti nel Grain WGSL.");
 assert(shaders.includes("export const grainMipShader")
   && shaders.includes("textureSampleLevel(sourceTexture, sourceSampler"),
   "Generazione mip WebGPU/WGSL assente.");
@@ -238,11 +234,11 @@ assert(grainUniformLayout.offsets.coordinateMode === 20,
   `Offset coordinateMode ${grainUniformLayout.offsets.coordinateMode}, atteso 20.`);
 
 const engine = readEngineSource();
-assert(engine.includes('url: new URL("../graincottonfleece.PNG", import.meta.url)')
+assert(!engine.includes("graincottonfleece.PNG")
   && engine.includes('url: new URL("../Grainpencil.png", import.meta.url)')
   && engine.includes("fetch(asset.url)"),
-  "Il runtime non instrada gli asset Grain legacy e Pencil espliciti.");
-assert(engine.includes('const GRAIN_TEXTURE_SIZE = 2500;')
+  "Il runtime non instrada il Grain Pencil senza il Cotton Fleece rimosso.");
+assert(engine.includes('const GRAIN_TEXTURE_SIZE = 800;')
   && engine.includes('format: "r16float"')
   && engine.includes("mipLevelCountForSize(width, height)"),
   "Dimensione/formato nativi del Grain non configurati.");
@@ -252,9 +248,9 @@ assert(engine.includes("stagingTexture.destroy()"),
   "Lo staging RGBA della grana non viene distrutto dopo la conversione.");
 assert(engine.includes("r16MipChainBytes(width, height)"),
   "La contabilita' della grana non segue il formato scalare.");
-assert(engine.includes('"rgba8-native-2500-fixed-coverage-multiply"')
-  && engine.includes('"rgba8-native-2500-moving-scaled-drag-to-roller-coverage-multiply"'),
-  "Marker Fixed/Moving nativi assenti.");
+assert(engine.includes('"r16float-dynamic-fixed-coverage-multiply"')
+  && engine.includes('"r16float-dynamic-moving-scaled-drag-to-roller-coverage-multiply"'),
+  "Marker Fixed/Moving dinamici assenti.");
 const samplerRouting = engine.match(
   /export function grainCoordinateMode\([\s\S]*?\n}/,
 )?.[0] ?? "";
@@ -312,7 +308,7 @@ assert(engine.includes('"allocate-on-grain-select-release-when-idle-unused"')
   && engine.includes("maybeReleaseIdleGrainResources")
   && engine.includes("rebuildGrainBrushBindGroups")
   && engine.includes("Grain placeholder 1×1 while released"),
-  "Grain M1 lifecycle (lazy alla selezione, rilascio quando inutilizzato) mancante");
+  "Grain lifecycle (lazy alla selezione, rilascio quando inutilizzato) mancante");
 assert(engine.includes('"allocate-on-shape-select-release-when-idle-unused"')
   && engine.includes("maybeReleaseIdleShapeResources")
   && engine.includes("rebuildShapeBrushBindGroups")
@@ -373,9 +369,9 @@ assert(main.includes('type HumanStrokeTestGrainMode = Extract<GrainMode, "off" |
   && main.includes('humanStrokeTestGrainModeSelect.value === "texturized" ? "texturized" : "off"')
   && main.includes('canonical-human-stroke-base-spacing-1-three-renderings-one-tap-v4'),
   "Il replay iPhone non espone i tre rendering e la suite Base/Grain Off one-tap rev4.");
-assert(html.includes('value="texturized">Texturized — Fixed M1')
-  && html.includes('value="moving">Texturized — Moving M1'),
-  "Le due impostazioni Grain M1 non sono esposte nella UI.");
+assert(html.includes('value="texturized">Texturized — Fixed')
+  && html.includes('value="moving">Texturized — Moving'),
+  "Le due impostazioni Grain non sono esposte nella UI.");
 assert(html.includes('id="grainInvert" type="checkbox"')
   && main.includes('grainInvert: element<HTMLInputElement>("grainInvert").checked')
   && main.includes('element<HTMLInputElement>("grainInvert").checked = false'),
@@ -386,7 +382,7 @@ assert(html.includes('value="light-glaze">Light Glaze')
   "I tre rendering finali non sono esposti nella UI.");
 assert(html.includes('id="runRenderingModeSuite"')
   && html.includes('value="off">Off — senza texture')
-  && html.includes('value="texturized">Texturized — Fixed M1 (fisso)'),
+  && html.includes('value="texturized">Texturized — Fixed (fisso)'),
   "La suite iPhone one-tap con Grain Off/Fixed non è esposta correttamente.");
 assert(main.includes("performanceTelemetryRevision: 64"),
   "Revisione telemetria compositing livelli attesa assente.");
@@ -396,7 +392,7 @@ console.log(JSON.stringify({
   sha256: assetSha256,
   width: decoded.width,
   height: decoded.height,
-  format: "rgba8-original-with-icc",
+  format: "gray8-original",
   sourceBytes: decoded.bytes.length,
   mipDimensions: mip.dimensions,
   mipLevels: mip.levels,
@@ -404,7 +400,7 @@ console.log(JSON.stringify({
   gpuMipMiB: mip.bytes / (1024 * 1024),
   grainUniformAbiBytes: grainUniformLayout.size,
   invariants: {
-    originalM1AssetUnmodified: true,
+    pencilAssetUnmodified: true,
     webGpuWgslOnlyRenderingPath: true,
     fixedUsesLayerCoordinates: true,
     movingUsesScaledStampLocalCoordinates: true,

@@ -49,6 +49,14 @@ assert.deepEqual(hexToLinearFillColor("#000000"), [0, 0, 0, 1]);
 assert.deepEqual(hexToLinearFillColor("ffffff"), [1, 1, 1, 1]);
 assert.throws(() => hexToLinearFillColor("#fff"));
 
+// Regressione Android: il bit 31 deve restare u32 e una word piena non deve
+// lasciare la sottile striscia verticale osservata ogni 32 pixel.
+const fillBitMasks = Array.from({ length: 32 }, (_, bit) => (2 ** bit) >>> 0);
+assert.equal(fillBitMasks[0], 0x00000001);
+assert.equal(fillBitMasks[30], 0x40000000);
+assert.equal(fillBitMasks[31], 0x80000000);
+assert.equal(fillBitMasks.reduce((word, mask) => (word | mask) >>> 0, 0), 0xffffffff);
+
 // Il confronto avviene dopo l'unpremultiply: lo stesso rosso straight con due
 // alpha diverse differisce soltanto nel canale alpha, non nei canali colore.
 assert.equal(
@@ -117,6 +125,16 @@ for (const entryPoint of [
 }
 assert(shader.includes("atomicCompareExchangeWeak"));
 assert(shader.includes("@compute @workgroup_size(16, 1, 1)\nfn unionBoundaries"));
+assert(shader.includes("0x40000000u, 0x80000000u"));
+assert(shader.includes("fn fillBitMask(bitIndex: u32) -> u32"));
+assert(shader.includes("fn fillMaskContains(word: u32, bitIndex: u32) -> bool"));
+assert(shader.includes("atomicOr(&selectedMask[word], fillBitMask(pixel.x))"));
+assert(shader.includes("fillMaskContains(atomicLoad(&selectedMask[word]), pixel.x)"));
+assert(shader.includes("fillMaskContains(selectedMask[word], pixel.x)"));
+assert(!shader.includes("1u << (pixel.x & 31u)"));
+assert(!shader.includes("1u << (coldTile & 31u)"));
+assert(shader.includes("fn fragmentMain(@builtin(position) position: vec4<f32>)"));
+assert(!shader.includes("@location(0) pixel: vec2<f32>"));
 assert(!renderer.includes("dispatchWorkgroupsIndirect"));
 assert(renderer.includes("selectionPass.dispatchWorkgroups(FILL_BLOCK_GRID_SIZE)"));
 assert(renderer.includes("pass.drawIndirect"));

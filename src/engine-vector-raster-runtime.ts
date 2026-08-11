@@ -723,22 +723,70 @@ async function hydrateHistorySeed(
   }
 }
 
-async function restoreOriginalActiveAfterCandidateFailure(
+async function discardVectorRasterCandidateAndRestoreOriginalActive(
   engine: BrushEngine,
   originalActiveId: number,
-  candidateLayerId: number,
+  candidateLayerId: number | null,
+  candidateGpu: LayerGpuResources | null,
   caller: EffectsRetargetCaller = "layer-switch",
 ): Promise<void> {
-  const candidateIndex = engine.layerStack.indexOfId(candidateLayerId);
-  const originalIndex = engine.layerStack.indexOfId(originalActiveId);
-  if (originalIndex < 0) {
+  // A late activation/seed failure can leave the candidate bound to live engine
+  // fields while presentation is otherwise valid. Freeze first: the structural
+  // rollback below deliberately destroys those bindings before activateLayer()
+  // publishes replacements for the original raster.
+  engine.layerPresentationFrozen = true;
+  const originalIndexBeforeDetach = engine.layerStack.indexOfId(originalActiveId);
+  if (originalIndexBeforeDetach < 0) {
     throw new Error("Livello attivo originale perso durante il rollback vettoriale.");
   }
+  engine.layerStack.setActiveIndex(originalIndexBeforeDetach);
+
+  if (candidateLayerId !== null) {
+    const candidateIndex = engine.layerStack.indexOfId(candidateLayerId);
+    if (candidateIndex >= 0) {
+      const detached = engine.layerStack.remove(candidateIndex);
+      if (detached.id !== candidateLayerId) {
+        throw new Error("Record candidato sostituito durante il rollback vettoriale.");
+      }
+    }
+    if (engine.layerStack.indexOfId(candidateLayerId) >= 0) {
+      throw new Error(`Livello candidato ${candidateLayerId} non staccabile durante il rollback.`);
+    }
+
+    const registeredGpu = engine.layerGpu.get(candidateLayerId) ?? null;
+    if (registeredGpu) engine.layerGpu.delete(candidateLayerId);
+    // Every vector render, cold pack and composite candidate crosses an awaited
+    // GPU fence before it can reach this rollback boundary. Destruction is thus
+    // safe here and, crucially, happens before rehydrating the original raster.
+    if (registeredGpu) destroyLayerGpuResources(engine, registeredGpu);
+    if (candidateGpu && candidateGpu !== registeredGpu) {
+      destroyLayerGpuResources(engine, candidateGpu);
+    }
+  } else if (candidateGpu) {
+    destroyLayerGpuResources(engine, candidateGpu);
+  }
+
+  const originalIndex = engine.layerStack.indexOfId(originalActiveId);
+  if (originalIndex < 0) {
+    throw new Error("Livello attivo originale perso dopo lo stacco del candidato vettoriale.");
+  }
   engine.layerStack.setActiveIndex(originalIndex);
-  await engine.activateLayer(
-    candidateIndex >= 0 ? candidateIndex : originalIndex,
-    caller,
-  );
+  // The candidate no longer belongs to the stack. Passing its stale index would
+  // make commitActiveLayerResidency dereference the raster now occupying it.
+  await engine.activateLayer(originalIndex, caller);
+}
+
+async function freezeVectorRasterPresentationForRollback(engine: BrushEngine): Promise<void> {
+  if (engine.layerPresentationFrozen) return;
+  try {
+    // A completed activation requests one valid frame. Drain it while scene,
+    // stack and GPU ownership still agree, then freeze before mutating them.
+    await engine.waitForIdle();
+  } finally {
+    // Even a failed drain must stop further presentation: the caller will either
+    // rebuild a coherent original state or latch the document inconsistent.
+    engine.layerPresentationFrozen = true;
+  }
 }
 
 export async function rasterizeVectorNodeToLayer(
@@ -821,15 +869,6 @@ export async function rasterizeVectorNodeToLayer(
     record.hasContent = true;
     record.storageTileMask.fill(0);
     markLayerStorageRect(record.storageTileMask, rendered.bounds);
-    seed = await createLayerColdStorageCandidate(
-      engine,
-      record,
-      hot,
-      record.storageTileMask.slice(),
-      1,
-      "history",
-    );
-
     scene.replaceVectorWithRaster(vectorKey, record.id);
     engine.vectorTextPreviewExcludedNodeId = null;
     clearVectorTextPresentationForTransaction(engine);
@@ -839,6 +878,17 @@ export async function rasterizeVectorNodeToLayer(
     }
     await engine.activateLayer(previousIndexAfterInsertion, "layer-switch");
     engine.clearVectorTextPresentation();
+    // Capture the immutable Undo authority only after activation has retired its
+    // transient composite resources. Holding both peaks at once can exhaust an
+    // older mobile GPU and was the source of the apparent permanent lock.
+    seed = await createLayerColdStorageCandidate(
+      engine,
+      record,
+      hot,
+      record.storageTileMask.slice(),
+      1,
+      "history",
+    );
     engine.publishActiveLayerChange();
     return {
       history: {
@@ -858,64 +908,51 @@ export async function rasterizeVectorNodeToLayer(
     };
   } catch (error) {
     const rollbackErrors: unknown[] = [];
+    let rollbackPrepared = false;
     try {
-      scene.restoreState(originalSceneState);
-      engine.vectorTextPreviewExcludedNodeId = originalExcludedNodeId;
-      clearVectorTextPresentationForTransaction(engine);
-    } catch (restoreSceneError) {
-      rollbackErrors.push(restoreSceneError);
+      await freezeVectorRasterPresentationForRollback(engine);
+      rollbackPrepared = true;
+    } catch (drainError) {
+      rollbackErrors.push(drainError);
     }
-    if (recordId !== null) {
-      const candidateIndex = engine.layerStack.indexOfId(recordId);
-      if (candidateIndex >= 0) {
-        try {
-          if (gpu) {
-            await restoreOriginalActiveAfterCandidateFailure(
-              engine,
-              originalActiveId,
-              recordId,
-            );
-          } else {
-            engine.layerStack.remove(candidateIndex);
-            const originalIndex = engine.layerStack.indexOfId(originalActiveId);
-            engine.layerStack.setActiveIndex(originalIndex);
-            await engine.activateLayer(originalIndex, "layer-switch");
-          }
-        } catch (restoreLayerError) {
-          rollbackErrors.push(restoreLayerError);
-        }
-        const stillAttached = engine.layerStack.indexOfId(recordId);
-        if (stillAttached >= 0 && engine.layerStack.active.id !== recordId) {
-          engine.layerStack.remove(stillAttached);
-        }
+    if (rollbackPrepared) {
+      try {
+        scene.restoreState(originalSceneState);
+        engine.vectorTextPreviewExcludedNodeId = originalExcludedNodeId;
+        clearVectorTextPresentationForTransaction(engine);
+      } catch (restoreSceneError) {
+        rollbackErrors.push(restoreSceneError);
       }
-      // Le risorse si liberano **solo** se il record e' davvero uscito dallo
-      // stack. Lo stacco sopra e' condizionato (non si puo' rimuovere il
-      // livello attivo), la liberazione no: se il candidato resta attaccato —
-      // e per giunta attivo — restava nello stack con le risorse GPU
-      // distrutte, e ogni lookup successiva ci inciampava. Un record senza GPU
-      // e' peggio del leak che si voleva evitare, e va dichiarato.
-      if (engine.layerStack.indexOfId(recordId) >= 0) {
-        rollbackErrors.push(
-          new Error(`Livello candidato ${recordId} non staccabile durante il rollback.`),
+      try {
+        destroyLayerColdStorage(seed);
+        seed = null;
+      } catch (releaseSeedError) {
+        rollbackErrors.push(releaseSeedError);
+      }
+      try {
+        await discardVectorRasterCandidateAndRestoreOriginalActive(
+          engine,
+          originalActiveId,
+          recordId,
+          gpu,
         );
-      } else {
-        const candidateGpu = engine.layerGpu.get(recordId);
-        if (candidateGpu) {
-          engine.layerGpu.delete(recordId);
-          destroyLayerGpuResources(engine, candidateGpu);
-        }
+      } catch (restoreLayerError) {
+        rollbackErrors.push(restoreLayerError);
       }
     }
-    destroyLayerColdStorage(seed);
     if (rollbackErrors.length > 0) {
-      engine.latchDocumentStateInconsistent(
-        "Rasterizzazione vettoriale fallita e rollback incompleto: ricarica la pagina.",
-      );
+      const operationMessage = error instanceof Error ? error.message : String(error);
       const details = rollbackErrors.map((failure) =>
         failure instanceof Error ? failure.message : String(failure)
       ).join("; ");
-      throw new Error(`Rasterizzazione vettoriale fallita; rollback fallito: ${details}`);
+      const combined = new Error(
+        `Rasterizzazione vettoriale fallita (${operationMessage}); rollback fallito: ${details}`,
+      );
+      engine.latchDocumentStateInconsistent(
+        "Rasterizzazione vettoriale fallita e rollback incompleto: ricarica la pagina.",
+        combined,
+      );
+      throw combined;
     }
     throw error;
   } finally {
@@ -924,6 +961,49 @@ export async function rasterizeVectorNodeToLayer(
     engine.publishHistoryState();
     engine.publishStats();
     publishMixedScene(engine);
+  }
+}
+
+/**
+ * A successful conversion is visible before its journal action is appended. If
+ * that CPU-only publication fails, retire the unpublished candidate and seed
+ * before rehydrating the original raster, keeping the rollback below the same
+ * mobile memory peak as the forward operation.
+ */
+export async function rollbackUnpublishedVectorRasterization(
+  engine: BrushEngine,
+  action: VectorRasterizeHistoryAction,
+): Promise<void> {
+  const scene = requireMixedSceneStack(engine);
+  const candidateGpu = engine.layerGpu.get(action.layerId) ?? null;
+  engine.cancelLayerColdCompressionIdle();
+  engine.layerSwitchBusy = true;
+  try {
+    await freezeVectorRasterPresentationForRollback(engine);
+    scene.replaceRasterWithVector(action.layerId, action.vectorState);
+    const restoredSelection = scene.selected;
+    engine.vectorTextPreviewExcludedNodeId = restoredSelection.kind === "text"
+      ? restoredSelection.textNodeId
+      : null;
+    clearVectorTextPresentationForTransaction(engine);
+    destroyLayerColdStorage(action.seed);
+    await discardVectorRasterCandidateAndRestoreOriginalActive(
+      engine,
+      action.activeRasterLayerIdBefore,
+      action.layerId,
+      candidateGpu,
+      "structural-history",
+    );
+    engine.clearVectorTextPresentation();
+    engine.publishActiveLayerChange();
+    engine.presentationCacheNeedsFullRebuild = true;
+    engine.displayDirty = true;
+    engine.requestRender();
+    engine.publishStats();
+    publishMixedScene(engine);
+  } finally {
+    engine.layerSwitchBusy = false;
+    engine.scheduleLayerColdCompression();
   }
 }
 
@@ -943,14 +1023,16 @@ async function switchActiveForStructuralHistory(
     try {
       await engine.activateLayer(targetIndex, "structural-history");
     } catch (restoreError) {
-      engine.latchDocumentStateInconsistent(
-        "Cambio livello fallito durante Undo/Redo della rasterizzazione vettoriale.",
-      );
       const first = error instanceof Error ? error.message : String(error);
       const second = restoreError instanceof Error
         ? restoreError.message
         : String(restoreError);
-      throw new Error(`${first}; rollback cambio livello fallito: ${second}`);
+      const combined = new Error(`${first}; rollback cambio livello fallito: ${second}`);
+      engine.latchDocumentStateInconsistent(
+        "Cambio livello fallito durante Undo/Redo della rasterizzazione vettoriale.",
+        combined,
+      );
+      throw combined;
     }
     throw error;
   }
@@ -1003,9 +1085,18 @@ async function undoVectorRasterization(
       rollbackErrors.push(restoreError);
     }
     if (rollbackErrors.length > 0) {
+      const originalMessage = error instanceof Error ? error.message : String(error);
+      const rollbackMessage = rollbackErrors.map((failure) =>
+        failure instanceof Error ? failure.message : String(failure)
+      ).join("; ");
+      const combined = new Error(
+        `Undo rasterizzazione fallito (${originalMessage}); rollback fallito: ${rollbackMessage}`,
+      );
       engine.latchDocumentStateInconsistent(
         "Undo della rasterizzazione vettoriale fallito e rollback incompleto.",
+        combined,
       );
+      throw combined;
     }
     throw error;
   }
@@ -1030,20 +1121,19 @@ async function redoVectorRasterization(
   const scene = requireMixedSceneStack(engine);
   const sceneState = scene.captureState();
   const originalActiveId = engine.layerStack.active.id;
+  const originalExcludedNodeId = engine.vectorTextPreviewExcludedNodeId;
   if (engine.layerStack.indexOfId(action.layerId) >= 0) {
     throw new Error("Raster vettoriale già presente durante Redo.");
   }
   engine.persistActiveLayerState();
   await engine.prepareActiveLayerForSwitch();
   let gpu: LayerGpuResources | null = null;
-  let attached = false;
   try {
     gpu = await hydrateHistorySeed(engine, action);
     action.layerRecord.contentBounds = { ...action.baseBounds };
     action.layerRecord.hasContent = true;
     action.layerRecord.storageTileMask.set(action.baseTileMask);
     engine.layerStack.attach(action.layerRecord, action.rasterLayerIndex);
-    attached = true;
     engine.layerGpu.set(action.layerId, gpu);
     scene.replaceVectorWithRaster(action.vectorState.key, action.layerId);
     engine.vectorTextPreviewExcludedNodeId = null;
@@ -1054,44 +1144,46 @@ async function redoVectorRasterization(
     engine.publishActiveLayerChange();
   } catch (error) {
     const rollbackErrors: unknown[] = [];
+    let rollbackPrepared = false;
     try {
-      scene.restoreState(sceneState);
-      clearVectorTextPresentationForTransaction(engine);
-      if (attached) {
-        await restoreOriginalActiveAfterCandidateFailure(
+      await freezeVectorRasterPresentationForRollback(engine);
+      rollbackPrepared = true;
+    } catch (drainError) {
+      rollbackErrors.push(drainError);
+    }
+    if (rollbackPrepared) {
+      try {
+        scene.restoreState(sceneState);
+        engine.vectorTextPreviewExcludedNodeId = originalExcludedNodeId;
+        clearVectorTextPresentationForTransaction(engine);
+      } catch (restoreError) {
+        rollbackErrors.push(restoreError);
+      }
+      try {
+        await discardVectorRasterCandidateAndRestoreOriginalActive(
           engine,
           originalActiveId,
           action.layerId,
+          gpu,
           "structural-history",
         );
-        const index = engine.layerStack.indexOfId(action.layerId);
-        if (index >= 0 && engine.layerStack.active.id !== action.layerId) {
-          engine.layerStack.remove(index);
-        }
-      } else {
-        const originalIndex = engine.layerStack.indexOfId(originalActiveId);
-        engine.layerStack.setActiveIndex(originalIndex);
-        await engine.activateLayer(originalIndex, "structural-history");
+      } catch (restoreError) {
+        rollbackErrors.push(restoreError);
       }
-    } catch (restoreError) {
-      rollbackErrors.push(restoreError);
-    }
-    // Come nel percorso di rasterizzazione: si libera solo se il record e'
-    // uscito davvero dallo stack. Lo stacco sopra e' condizionato, questa
-    // liberazione era incondizionata, e la combinazione lasciava un livello
-    // attivo con le risorse GPU distrutte.
-    if (engine.layerStack.indexOfId(action.layerId) >= 0) {
-      rollbackErrors.push(
-        new Error(`Livello ${action.layerId} non staccabile durante il rollback del Redo.`),
-      );
-    } else {
-      engine.layerGpu.delete(action.layerId);
-      if (gpu) destroyLayerGpuResources(engine, gpu);
     }
     if (rollbackErrors.length > 0) {
+      const originalMessage = error instanceof Error ? error.message : String(error);
+      const rollbackMessage = rollbackErrors.map((failure) =>
+        failure instanceof Error ? failure.message : String(failure)
+      ).join("; ");
+      const combined = new Error(
+        `Redo rasterizzazione fallito (${originalMessage}); rollback fallito: ${rollbackMessage}`,
+      );
       engine.latchDocumentStateInconsistent(
         "Redo della rasterizzazione vettoriale fallito e rollback incompleto.",
+        combined,
       );
+      throw combined;
     }
     throw error;
   }

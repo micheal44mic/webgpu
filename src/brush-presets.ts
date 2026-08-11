@@ -47,8 +47,8 @@ export interface GrainBrushAsset extends BrushAssetBase {
 export type BrushAsset = ShapeBrushAsset | GrainBrushAsset;
 
 /**
- * Both the existing singleton assets and the new Pencil assets have stable
- * identities. The registry is declarative: the resource loader remains free
+ * Built-in brush assets have stable identities. The registry is declarative:
+ * the resource loader remains free
  * to resolve each sourceFile with a static `new URL(...)` for Vite.
  */
 export const BRUSH_ASSET_REGISTRY = {
@@ -62,19 +62,6 @@ export const BRUSH_ASSET_REGISTRY = {
     sourceSha256: "39b2d76527629e3c0726de1405ee5d80538722c948056486df4c44657380494f",
     decode: {
       strategy: "luminance-times-alpha",
-      invertLuminance: false,
-    },
-  },
-  "legacy-grain": {
-    id: "legacy-grain",
-    kind: "grain",
-    sourceFile: "graincottonfleece.PNG",
-    mimeType: "image/png",
-    width: 2500,
-    height: 2500,
-    sourceSha256: "9aa1ce073885b83ea223af0941ef74604548a85f54442228ec15522ace3ef2d7",
-    decode: {
-      strategy: "bt601-rgb-luminance",
       invertLuminance: false,
     },
   },

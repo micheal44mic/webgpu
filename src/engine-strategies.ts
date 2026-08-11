@@ -49,11 +49,9 @@ export type AdaptiveSpacingStrategy = "queue-lag-step-up-per-stroke";
 export type BrushOpacityStrategy = "per-stamp-uniform-alpha-multiplier";
 
 export type GrainStrategy =
-  | "disabled-legacy-pipeline"
-  | "rgba8-native-2500-fixed-coverage-multiply"
-  | "rgba8-native-2500-moving-scaled-drag-to-roller-coverage-multiply"
-  | "rgba8-native-800-fixed-coverage-multiply"
-  | "rgba8-native-800-moving-scaled-drag-to-roller-coverage-multiply";
+  | "disabled-standard-pipeline"
+  | "r16float-dynamic-fixed-coverage-multiply"
+  | "r16float-dynamic-moving-scaled-drag-to-roller-coverage-multiply";
 
 export type GrainCoordinateStrategy =
   | "none"
@@ -132,18 +130,12 @@ export const PAINT_DISPLAY_LOD_SELECTION_STRATEGY =
 
 export const BRUSH_OPACITY_STRATEGY = "per-stamp-uniform-alpha-multiplier" as const;
 
-export const GRAIN_DISABLED_STRATEGY = "disabled-legacy-pipeline" as const;
+export const GRAIN_DISABLED_STRATEGY = "disabled-standard-pipeline" as const;
 
-export const GRAIN_FIXED_STRATEGY = "rgba8-native-2500-fixed-coverage-multiply" as const;
+export const GRAIN_FIXED_STRATEGY = "r16float-dynamic-fixed-coverage-multiply" as const;
 
 export const GRAIN_MOVING_STRATEGY =
-  "rgba8-native-2500-moving-scaled-drag-to-roller-coverage-multiply" as const;
-
-export const PENCIL_GRAIN_FIXED_STRATEGY =
-  "rgba8-native-800-fixed-coverage-multiply" as const;
-
-export const PENCIL_GRAIN_MOVING_STRATEGY =
-  "rgba8-native-800-moving-scaled-drag-to-roller-coverage-multiply" as const;
+  "r16float-dynamic-moving-scaled-drag-to-roller-coverage-multiply" as const;
 
 export const GRAIN_FIXED_COORDINATE_STRATEGY = "authoritative-layer-position" as const;
 

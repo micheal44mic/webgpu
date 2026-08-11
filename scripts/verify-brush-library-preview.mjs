@@ -69,7 +69,7 @@ assert.notEqual(
 assert.notEqual(
   core.brushLibraryPreviewFingerprint("m1m4-pencil-v1", {
     ...settings,
-    grainAssetId: "legacy-grain",
+    grainAssetId: "custom-grain:alternate",
   }),
   fingerprintA,
   "asset identity must invalidate the preview",

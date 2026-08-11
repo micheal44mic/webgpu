@@ -143,7 +143,7 @@ assert.deepEqual(
     shapeRotation: "fixed",
     shapeScatter: 0,
     grainMode: "off",
-    grainAssetId: "legacy-grain",
+    grainAssetId: "pencil-grain",
     size: 50,
     spacingPercent: 3,
     stabilization: 0,
@@ -191,6 +191,22 @@ assert.deepEqual(
     grainAssetKey: `${firstId}:grain:custom-grain:paper`,
   },
   "Shape and Grain identities must remain attached to their custom brush",
+);
+storage.saveBrushStudioSavedBrush(firstId, {
+  version: 1,
+  settings: {
+    shape: "circle",
+    shapeAssetId: "legacy-shape",
+    grainMode: "moving",
+    grainAssetId: "legacy-grain",
+  },
+  shapeAssetKey: null,
+  grainAssetKey: null,
+});
+assert.equal(
+  storage.loadBrushStudioSavedBrush(firstId)?.settings.grainAssetId,
+  "pencil-grain",
+  "saved brushes must migrate the removed Cotton Fleece source",
 );
 storage.deleteBrushStudioSavedBrush(firstId);
 assert.equal(

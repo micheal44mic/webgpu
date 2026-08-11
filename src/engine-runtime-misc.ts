@@ -1271,7 +1271,7 @@ export function requestGrainLoad(engine: BrushEngine): void {
   }
   void engine.ensureGrainResources(assetId).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
-    engine.callbacks.onStatus?.(`Grain M1 non disponibile: ${message}`, "error");
+    engine.callbacks.onStatus?.(`Grain non disponibile: ${message}`, "error");
   });
 }
 

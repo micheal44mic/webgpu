@@ -1060,7 +1060,7 @@ export class DryBlendRenderer {
     return depositBindGroups;
   }
 
-  // Il ciclo di vita del Grain scambia la texture (placeholder ↔ M1): i
+  // Il ciclo di vita del Grain scambia la texture (placeholder ↔ sorgente): i
   // deposit bind group residenti vanno ricostruiti sulla view nuova.
   setGrainTextureView(
     view: GPUTextureView,
