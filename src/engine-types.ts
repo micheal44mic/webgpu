@@ -290,6 +290,8 @@ export type LayerBakeFaultPoint = "after-candidate-submit";
 
 export type LayerCompositeFaultPoint = "after-candidate-submit";
 
+export type VectorRasterFaultPoint = "after-history-seed-capture";
+
 export type LayerColdStorageFaultPoint =
   | "after-pack-submit"
   | "after-hydrate-submit";

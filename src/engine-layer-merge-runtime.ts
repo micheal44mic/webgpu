@@ -1124,12 +1124,12 @@ export async function prepareAndApplyLayerMerge(
 ): Promise<PreparedLayerMerge> {
   if (!engine.initialized) throw new Error("Il motore non è inizializzato.");
   engine.assertLayerSwitchAllowed();
+  const scene = requireMixedSceneStack(engine);
   if (!engine.admitHistoryPayloadMutation()) {
     throw new Error("Merge rinviato durante il salvataggio della cronologia locale.");
   }
   engine.cancelLayerColdCompressionIdle();
   engine.layerSwitchBusy = true;
-  const scene = requireMixedSceneStack(engine);
   const actionId = engine.nextHistoryActionId;
   let rendered: Awaited<ReturnType<typeof renderMergeOutput>> | null = null;
   const inputs: LayerMergeHistoryInput[] = [];

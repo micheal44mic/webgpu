@@ -56,6 +56,56 @@ assert.match(engine, /const memoryReservation = this\.reserveLayerSwitchMemory\(
 assert.match(controller, /async mergeSceneItems\(/);
 assert.match(controller, /this\.host\.mergeMixedSceneItems\(\{ keys: \[\.\.\.keys\], vectorDraws \}\)/);
 
+// A merge is not foreground-complete until every payload it published has
+// drained from GPU-resident History. The generic drain must remain separate
+// from waitForIdle because storage spill itself waits on that render fence.
+const historyDrainSource = engine.slice(
+  engine.indexOf("  async waitForHistoryPayloadDrain("),
+  engine.indexOf("  /** Programmatic callers can preserve"),
+);
+assert.match(historyDrainSource, /await this\.waitForIdle\(\)/);
+assert.match(historyDrainSource, /while \(!this\.admitHistoryPayloadMutation\(\)\)/);
+assert.match(historyDrainSource, /timeoutMs !== null/);
+assert.match(historyDrainSource, /window\.setTimeout\(resolve, 16\)/);
+const programmaticStrokeSource = engine.slice(
+  engine.indexOf("  async beginStrokeAtLayerAfterHistoryDrain("),
+  engine.indexOf("  beginStrokeAtLayer(point:"),
+);
+assert.match(
+  programmaticStrokeSource,
+  /await this\.waitForHistoryPayloadDrain\(timeoutMs\)/,
+);
+assert.doesNotMatch(programmaticStrokeSource, /while \(/);
+
+const mergeCommitSource = engine.slice(
+  engine.indexOf("  async mergeMixedSceneItems("),
+  engine.indexOf("  async setVectorTextNodeVisibility("),
+);
+const mergeCommitIndex = mergeCommitSource.indexOf("commitHistoryActionAtomically");
+const mergePublishIndex = mergeCommitSource.indexOf("this.publishHistoryState()");
+const mergeDrainIndex = mergeCommitSource.indexOf("await this.waitForHistoryPayloadDrain(null)");
+const mergeReturnIndex = mergeCommitSource.indexOf("return prepared.result");
+assert.ok(mergeCommitIndex >= 0, "il merge deve pubblicare una sola azione History");
+assert.ok(
+  mergeCommitIndex < mergePublishIndex
+    && mergePublishIndex < mergeDrainIndex
+    && mergeDrainIndex < mergeReturnIndex,
+  "il merge deve attendere il drain dopo commit/pubblicazione e prima del risultato",
+);
+const mergePreparationSource = runtime.slice(
+  runtime.indexOf("export async function prepareAndApplyLayerMerge("),
+);
+assert.ok(
+  mergePreparationSource.indexOf("const scene = requireMixedSceneStack(engine)")
+    < mergePreparationSource.indexOf("engine.layerSwitchBusy = true"),
+  "la validazione della scena deve precedere l'acquisizione del lock merge",
+);
+assert.doesNotMatch(
+  mergePreparationSource,
+  /waitForHistoryPayloadDrain/,
+  "attendere mentre layerSwitchBusy e' attivo bloccherebbe lo spill",
+);
+
 // Vectors are drawn into a transient cropped surface. They must never take the
 // old per-node conversion path, which would publish N layers and N actions.
 assert.match(runtime, /renderVectorDrawsToTexture/);

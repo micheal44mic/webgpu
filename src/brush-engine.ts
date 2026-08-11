@@ -597,6 +597,7 @@ import {
   type LayerSwitchResult,
   type MixedSceneSnapshot,
   type PointerSample,
+  type VectorRasterFaultPoint,
 } from "./engine-types";
 import {
   CustomBrushAssetRegistry,
@@ -783,6 +784,7 @@ import {
   applyVectorRasterizeHistory,
   destroyVectorRasterHistorySeed,
   rasterizeVectorNodeToLayer,
+  rollbackUnpublishedVectorRasterization,
 } from "./engine-vector-raster-runtime";
 import {
   applyLightGlazeResourceSet,
@@ -1117,6 +1119,7 @@ export class BrushEngine {
   layerBakeFaultQueue: LayerBakeFaultPoint[] = [];
   layerCompositeFaultQueue: LayerCompositeFaultPoint[] = [];
   layerColdStorageFaultQueue: LayerColdStorageFaultPoint[] = [];
+  vectorRasterFaultQueue: VectorRasterFaultPoint[] = [];
   readonly liveLayerBakeTextures = new Map<GPUTexture, number>();
   readonly liveMergedSurfaceTextures = new Map<GPUTexture, MergedSurfaceResources>();
   readonly liveLayerHydrationTextures = new Map<GPUTexture, number>();
@@ -3783,20 +3786,30 @@ export class BrushEngine {
     return this.beginStrokeAtLayer(this.toLayerPoint(sample));
   }
 
+  /**
+   * Waits until History owns no resident payload and no storage transaction is
+   * active. Keep this separate from waitForIdle(): spill transactions use that
+   * render fence themselves, so making the general fence storage-aware would
+   * deadlock foreground drains.
+   */
+  async waitForHistoryPayloadDrain(timeoutMs: number | null = 60_000): Promise<void> {
+    await this.waitForIdle();
+    const startedAt = performance.now();
+    while (!this.admitHistoryPayloadMutation()) {
+      if (this.deviceLostError) throw this.deviceLostError;
+      if (timeoutMs !== null && performance.now() - startedAt >= timeoutMs) {
+        throw new Error("Timeout durante il salvataggio della cronologia locale.");
+      }
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 16));
+    }
+  }
+
   /** Programmatic callers can preserve the strict admission contract without polling it. */
   async beginStrokeAtLayerAfterHistoryDrain(
     point: LayerPoint,
     timeoutMs = 60_000,
   ): Promise<boolean> {
-    await this.waitForIdle();
-    const startedAt = performance.now();
-    while (!this.admitHistoryPayloadMutation()) {
-      if (this.deviceLostError) throw this.deviceLostError;
-      if (performance.now() - startedAt >= timeoutMs) {
-        throw new Error("Timeout durante il salvataggio della cronologia locale.");
-      }
-      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-    }
+    await this.waitForHistoryPayloadDrain(timeoutMs);
     return this.beginStrokeAtLayer(point);
   }
 
@@ -6252,6 +6265,22 @@ export class BrushEngine {
     this.layerCompositeFaultQueue = [...faultPoints];
   }
 
+  injectVectorRasterFault(...faultPoints: VectorRasterFaultPoint[]): void {
+    if (!import.meta.env.DEV) {
+      throw new Error("Iniezione guasti rasterizzazione vettoriale disponibile solo in modalità dev.");
+    }
+    if (faultPoints.length === 0) {
+      throw new Error("Specifica almeno un punto di guasto della rasterizzazione vettoriale.");
+    }
+    this.vectorRasterFaultQueue = [...faultPoints];
+  }
+
+  maybeInjectVectorRasterFault(point: VectorRasterFaultPoint): void {
+    if (!import.meta.env.DEV || this.vectorRasterFaultQueue[0] !== point) return;
+    this.vectorRasterFaultQueue.shift();
+    throw new Error(`Guasto iniettato nella rasterizzazione vettoriale: ${point}.`);
+  }
+
   destroyMergedSurface(surface: MergedSurfaceResources | null | undefined): void {
     if (surface) {
       destroyMergedSurfaceTexture(this, surface.texture);
@@ -7011,19 +7040,20 @@ export class BrushEngine {
       commitHistoryActionAtomically(this, action);
     } catch (error) {
       try {
-        await applyVectorRasterizeHistory(this, action, -1);
-        destroyVectorRasterHistorySeed(action);
+        await rollbackUnpublishedVectorRasterization(this, action);
       } catch (restoreError) {
-        this.latchDocumentStateInconsistent(
-          "Pubblicazione della rasterizzazione fallita e rollback incompleto: ricarica la pagina.",
-        );
         const operationMessage = error instanceof Error ? error.message : String(error);
         const rollbackMessage = restoreError instanceof Error
           ? restoreError.message
           : String(restoreError);
-        throw new Error(
+        const combined = new Error(
           `Rasterizzazione non pubblicata: ${operationMessage}; rollback fallito: ${rollbackMessage}`,
         );
+        this.latchDocumentStateInconsistent(
+          "Pubblicazione della rasterizzazione fallita e rollback incompleto: ricarica la pagina.",
+          combined,
+        );
+        throw combined;
       }
       throw error;
     }
@@ -7099,6 +7129,13 @@ export class BrushEngine {
     if (this.activeStrokeProfile) this.activeStrokeProfile.historyCommittedActions += 1;
     this.publishHistoryState();
     this.publishStats();
+    // prepareAndApplyLayerMerge has already released layerSwitchBusy here, so
+    // foreground storage maintenance can progress. Keep the controller/UI busy
+    // until both the merge inputs and output have left GPU-resident History.
+    // The action is already committed and visible. A slow durable write must
+    // not turn that successful merge into an apparent failure at an arbitrary
+    // timeout; storage failures have their own fail-closed History path.
+    await this.waitForHistoryPayloadDrain(null);
     return prepared.result;
   }
 

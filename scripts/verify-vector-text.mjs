@@ -1941,14 +1941,19 @@ assert.ok(
 );
 assert.match(
   redoVectorBody,
-  /if \(gpu\) destroyLayerGpuResources\(engine, gpu\)/,
-  "il rollback Redo deve accettare una candidata fallita prima dell'allocazione",
+  /discardVectorRasterCandidateAndRestoreOriginalActive\([\s\S]{0,180}action\.layerId,[\s\S]{0,80}gpu/,
+  "il rollback Redo deve ritirare anche una candidata fallita prima dell'attach",
 );
 
 // Harness WebGPU reale: su una pagina dev nuova crea entrambe le sorgenti,
 // legge i byte RGBA16F, attraversa Undo/Redo e richiede identità Uint8Array.
 assert.match(controllerSource, /async runVectorRasterHistoryGpuTest\(\)/);
 assert.match(controllerSource, /await runProbe\("text"\), await runProbe\("svg"\)/);
+assert.match(controllerSource, /injectLayerCompositeFault\("after-candidate-submit"\)/);
+assert.match(controllerSource, /injectVectorRasterFault\("after-history-seed-capture"\)/);
+assert.match(controllerSource, /rollbackFaults\.length !== 2/);
+assert.match(controllerSource, /presentationUnfrozen: !this\.host\.layerPresentationFrozen/);
+assert.match(controllerSource, /historyConsistent: !afterFaultHistory\.inconsistent/);
 assert.match(controllerSource, /parseVectorSvg\([\s\S]{0,500}regression-rgba16f\.svg/);
 assert.match(controllerSource, /rawBeforeUndo = await this\.host\.readLayerPixels/);
 assert.match(controllerSource, /undoReturned = await this\.host\.undo\(\)/);
@@ -2047,39 +2052,106 @@ console.log(
   + "Block Shadow canonica, SVG semantici sanitizzati con palette/effetti GPU, blur Gaussian R16F GPU, raster testo/SVG RGBA16F byte-exact, swap di nodo atomici, coda latest-only e nessun fallback bitmap.",
 );
 
-// --- Rollback: mai un record senza risorse GPU --------------------------------
-// Lo stacco nel rollback e' condizionato — non si puo' rimuovere il livello
-// attivo — mentre la liberazione delle risorse era incondizionata. Se il
-// ripristino dell'attivo falliva, il candidato restava nello stack (e attivo)
-// con le risorse GPU gia' distrutte: ogni lookup successiva ci inciampava. Un
-// record senza GPU e' peggio del leak che si voleva evitare, e va dichiarato
-// invece che lasciato in giro.
+// --- Rollback: ownership candidata ritirata prima della reidratazione ----------
+// Un fault compositing tardivo lascia il candidato hot e i cache transienti
+// ancora vivi. Provare prima ad attivare l'originale ricrea il picco che ha
+// causato il fault. Il rollback deve congelare, staccare e distruggere il
+// candidato, quindi riattivare l'originale usando il suo indice ricalcolato.
 {
   const vectorRaster = fs.readFileSync(
     new URL("../src/engine-vector-raster-runtime.ts", import.meta.url),
     "utf8",
   );
-  // I due siti di rollback, non le liberazioni legittime di `hydrateHistorySeed`.
-  for (const [identificatore, contesto] of [
-    ["recordId", "rasterizzazione"],
-    ["action.layerId", "Redo della rasterizzazione"],
-  ]) {
-    const atteso = new RegExp(
-      "if \\(engine\\.layerStack\\.indexOfId\\("
-      + identificatore.replace(".", "\\.")
-      + "\\) >= 0\\) \\{[\\s\\S]{0,400}rollbackErrors\\.push\\("
-      + "[\\s\\S]{0,400}\\} else \\{[\\s\\S]{0,400}destroyLayerGpuResources\\(",
-    );
-    assert.match(
-      vectorRaster,
-      atteso,
-      `nel rollback della ${contesto} le risorse si liberano solo se il record e' `
-        + "davvero uscito dallo stack, altrimenti il rollback va dichiarato fallito",
-    );
-  }
+  const helper = vectorRaster.slice(
+    vectorRaster.indexOf("async function discardVectorRasterCandidateAndRestoreOriginalActive("),
+    vectorRaster.indexOf("export async function rasterizeVectorNodeToLayer("),
+  );
+  const freeze = helper.indexOf("engine.layerPresentationFrozen = true;");
+  const selectOriginal = helper.indexOf("engine.layerStack.setActiveIndex(originalIndexBeforeDetach);");
+  const detach = helper.indexOf("engine.layerStack.remove(candidateIndex);");
+  const unregister = helper.indexOf("engine.layerGpu.delete(candidateLayerId)");
+  const destroy = helper.indexOf("destroyLayerGpuResources(engine, registeredGpu)");
+  const reactivate = helper.indexOf("await engine.activateLayer(originalIndex, caller);");
+  assert.ok(
+    freeze >= 0
+      && selectOriginal > freeze
+      && detach > selectOriginal
+      && unregister > detach
+      && destroy > unregister
+      && reactivate > destroy,
+    "freeze/stacco/destroy devono precedere la riattivazione dell'originale",
+  );
+  assert.doesNotMatch(
+    helper,
+    /activateLayer\([\s\S]{0,80}candidateIndex/,
+    "un indice candidato rimosso non deve raggiungere commitActiveLayerResidency",
+  );
+  const freezeHelper = helper.slice(
+    helper.indexOf("async function freezeVectorRasterPresentationForRollback("),
+  );
+  assert.match(
+    freezeHelper,
+    /try \{[\s\S]{0,500}await engine\.waitForIdle\(\);[\s\S]{0,120}\} finally \{[\s\S]{0,500}engine\.layerPresentationFrozen = true;/,
+    "anche un drain fallito deve congelare la presentazione in fail-closed",
+  );
+
+  const conversion = vectorRaster.slice(
+    vectorRaster.indexOf("export async function rasterizeVectorNodeToLayer("),
+    vectorRaster.indexOf("export async function rollbackUnpublishedVectorRasterization("),
+  );
+  const conversionActivation = conversion.indexOf(
+    'await engine.activateLayer(previousIndexAfterInsertion, "layer-switch");',
+  );
+  const conversionSeed = conversion.indexOf("seed = await createLayerColdStorageCandidate(");
+  const seedFault = conversion.indexOf(
+    'engine.maybeInjectVectorRasterFault("after-history-seed-capture");',
+  );
+  assert.ok(
+    conversionActivation >= 0
+      && conversionSeed > conversionActivation
+      && seedFault > conversionSeed,
+    "il seed Undo va catturato dopo il picco transitorio dell'activation",
+  );
+  assert.ok(
+    conversion.indexOf("await freezeVectorRasterPresentationForRollback(engine);") >= 0
+      && conversion.indexOf("await freezeVectorRasterPresentationForRollback(engine);")
+        < conversion.indexOf("scene.restoreState(originalSceneState);"),
+    "un fault post-activation deve drenare il frame valido prima di mutare la scena",
+  );
+  assert.ok(
+    conversion.indexOf("destroyLayerColdStorage(seed);")
+      < conversion.indexOf("await discardVectorRasterCandidateAndRestoreOriginalActive("),
+    "il seed fallito va liberato prima di reidratare l'originale",
+  );
+
+  const unpublished = vectorRaster.slice(
+    vectorRaster.indexOf("export async function rollbackUnpublishedVectorRasterization("),
+    vectorRaster.indexOf("async function switchActiveForStructuralHistory("),
+  );
+  assert.ok(
+    unpublished.indexOf("await freezeVectorRasterPresentationForRollback(engine);") >= 0
+      && unpublished.indexOf("await freezeVectorRasterPresentationForRollback(engine);")
+        < unpublished.indexOf("scene.replaceRasterWithVector(action.layerId, action.vectorState);"),
+    "un commit History rifiutato deve drenare il frame candidato prima del rollback",
+  );
+  assert.ok(
+    unpublished.indexOf("destroyLayerColdStorage(action.seed);")
+      < unpublished.indexOf("await discardVectorRasterCandidateAndRestoreOriginalActive("),
+    "un commit History rifiutato deve ritirare il seed prima del rebuild",
+  );
+  const wrapper = engineSource.slice(
+    engineSource.indexOf("  private async rasterizeVectorNode("),
+    engineSource.indexOf("  async rasterizeVectorTextNode("),
+  );
+  assert.match(wrapper, /await rollbackUnpublishedVectorRasterization\(this, action\)/);
+  assert.match(
+    wrapper,
+    /const combined = new Error\([\s\S]{0,300}latchDocumentStateInconsistent\([\s\S]{0,180}combined/,
+    "il diagnostico fatale deve conservare errore iniziale e causa del rollback",
+  );
 }
 
-console.log("Vector rasterize rollback resource ownership verified.");
+console.log("Vector rasterize candidate-first rollback and fault injection verified.");
 
 // --- Nessun frame fra mutazione della scena e ricostruzione -------------------
 // `mutateMixedScenePresentation` e' il percorso di **ogni** aggiunta, rimozione
