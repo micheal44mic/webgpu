@@ -345,7 +345,24 @@ const textSeed = (text = "INSERT") => ({
     "utf8",
   );
   assert.match(typesSource, /kind: "scene-reorder";[\s\S]*?before: MixedSceneOrderState;[\s\S]*?after: MixedSceneOrderState;/);
-  assert.match(historySource, /crossedAction\.kind === "scene-reorder"[\s\S]*?applyMixedSceneOrderState/);
+  assert.match(
+    historySource,
+    /crossedAction\.kind === "scene-reorder"[\s\S]{0,500}applyMixedSceneOrderState\([\s\S]{0,240}"history-replay"/,
+    "Undo/Redo del riordino deve dichiarare il contesto History",
+  );
+  const applyStart = historySource.indexOf("export async function applyMixedSceneOrderState(");
+  const applyEnd = historySource.indexOf(
+    "function recordMixedSceneReorderHistoryAction(",
+    applyStart,
+  );
+  assert.ok(applyStart >= 0 && applyEnd > applyStart);
+  const applyBody = historySource.slice(applyStart, applyEnd);
+  assert.match(applyBody, /caller: EffectsRetargetCaller = "layer-switch"/);
+  assert.equal(
+    (applyBody.match(/rebuildMergedLayerSurfaces\(\s*caller,/g) ?? []).length,
+    2,
+    "commit e rollback del riordino devono propagare lo stesso caller",
+  );
   const moveStart = historySource.indexOf("export async function moveMixedSceneItem(");
   const moveEnd = historySource.indexOf("export function scheduleHistoryGpuTrim", moveStart);
   assert.ok(moveStart >= 0 && moveEnd > moveStart);

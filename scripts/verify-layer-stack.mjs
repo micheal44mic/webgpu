@@ -22,6 +22,7 @@ import {
   LayerStack,
   layerEffectRendererRequirements,
 } from "../src/layer-stack.ts";
+import { effectsRetargetCallerForHistoryReplay } from "../src/engine-layer-resources.ts";
 import { runGpuAllocationTransaction } from "../src/gpu-allocation-transaction.ts";
 import {
   MOBILE_TOOLS_SHEET_CLOSE_FLICK_MIN_DISTANCE_PX,
@@ -1185,6 +1186,8 @@ const layerBlendEnd = engineSource.indexOf(
 );
 assertSection("fusione livello raster", layerBlendStart, layerBlendEnd);
 const layerBlendBody = engineSource.slice(layerBlendStart, layerBlendEnd);
+assert.equal(effectsRetargetCallerForHistoryReplay(false), "layer-switch");
+assert.equal(effectsRetargetCallerForHistoryReplay(true), "history-replay");
 assert.match(layerBlendBody, /isLayerBlendMode\(blendMode\)/,
   "l'API non deve accettare codici WGSL o stringhe arbitrarie");
 assert.match(layerBlendBody, /const previousBlendMode = record\.blendMode/);
@@ -1199,12 +1202,25 @@ assert.match(
   /const visibleSemantics = Boolean\(engine\.mixedSceneStack\?\.visibleSemanticCount\)[\s\S]*?candidateNeedsTile = candidateAdvanced && !visibleSemantics[\s\S]*?candidateNeedsViewportBlend = candidateAdvanced && visibleSemantics/,
   "il prewarm deve allocare soltanto la famiglia realmente usata dalla scena candidata",
 );
-assert.match(layerBlendBody, /await engine\.rebuildMergedLayerSurfaces\(\)/,
-  "il cambio deve diventare visibile tramite il compositing WebGPU");
 assert.match(
   layerBlendBody,
-  /record\.blendMode = previousBlendMode;[\s\S]*?await engine\.rebuildMergedLayerSurfaces\("layer-switch"\)/,
+  /const rebuildCaller = effectsRetargetCallerForHistoryReplay\(historyReplay\)/,
+  "Undo/Redo della fusione deve propagare l'esenzione della transazione History",
+);
+assert.equal(
+  (layerBlendBody.match(/rebuildMergedLayerSurfaces\(rebuildCaller\)/g) ?? []).length,
+  2,
+  "sia il compositing sia il rollback della fusione devono usare lo stesso caller",
+);
+assert.match(
+  layerBlendBody,
+  /record\.blendMode = previousBlendMode;[\s\S]*?await engine\.rebuildMergedLayerSurfaces\(rebuildCaller\)/,
   "un errore GPU deve ripristinare metadata e superfici precedenti",
+);
+assert.match(
+  layerBlendBody,
+  /const combined = new Error\([\s\S]*?latchDocumentStateInconsistent\([\s\S]*?combined/,
+  "un doppio fallimento deve conservare l'errore completo nel rapporto diagnostico",
 );
 assert.match(
   engineSource,
@@ -2450,6 +2466,33 @@ assert.match(replayBody, /maybeInjectHistoryReplayFault\(engine, "after-first-re
 assert.ok(
   [...replayBody.matchAll(/observeReplaySubmit\(\);/g)].length >= 4,
   "ogni variante del primo submit Paint/Blend/clear deve raggiungere il fault point",
+);
+const vectorHistoryStart = replayEnd;
+const vectorHistoryEnd = engineSource.indexOf(
+  "export function recordBlendHistoryBatch(",
+  vectorHistoryStart,
+);
+assertSection("applyVectorHistoryState", vectorHistoryStart, vectorHistoryEnd);
+const vectorHistoryBody = engineSource.slice(vectorHistoryStart, vectorHistoryEnd);
+assert.match(
+  vectorHistoryBody,
+  /caller: EffectsRetargetCaller = "layer-switch"/,
+  "il ripristino diretto vettoriale conserva il gate di layer switch",
+);
+assert.equal(
+  (vectorHistoryBody.match(/rebuildMergedLayerSurfaces\(\s*caller,/g) ?? []).length,
+  2,
+  "commit e rollback vettoriali devono propagare lo stesso caller",
+);
+assert.match(
+  engineSource,
+  /crossedAction\.kind === "vector"[\s\S]{0,500}applyVectorHistoryState\([\s\S]{0,240}"history-replay"/,
+  "Undo/Redo vettoriale deve dichiarare il contesto History al banco effetti",
+);
+assert.match(
+  vectorHistoryBody,
+  /const combined = new Error\([\s\S]*?latchDocumentStateInconsistent\([\s\S]*?combined/,
+  "il doppio fallimento vettoriale deve restare diagnosticabile",
 );
 
 // The GPU regression is persistent, destructive on a fresh page and capped.

@@ -157,6 +157,16 @@ export type EffectsRetargetCaller =
   | "history-replay"
   | "structural-history";
 
+/**
+ * A blend-mode change uses the layer-switch gate during a direct edit, but an
+ * Undo/Redo already owns the History gate and must identify itself explicitly.
+ */
+export function effectsRetargetCallerForHistoryReplay(
+  historyReplay: boolean,
+): Extract<EffectsRetargetCaller, "layer-switch" | "history-replay"> {
+  return historyReplay ? "history-replay" : "layer-switch";
+}
+
 export type LayerGpuCompletionPolicy =
   | "await-immediately"
   | "defer-to-fold-fence";

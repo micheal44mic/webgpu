@@ -7,6 +7,7 @@ import {
 } from "./engine-types";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import {
+  effectsRetargetCallerForHistoryReplay,
   type ActiveClippingGroupResources,
   type ActiveClippingSuffixStepResources,
   type DisplayPyramidResources,
@@ -3085,6 +3086,7 @@ export async function setLayerBlendMode(
   engine.cancelLayerColdCompressionIdle();
   engine.layerSwitchBusy = true;
   const previousBlendMode = record.blendMode;
+  const rebuildCaller = effectsRetargetCallerForHistoryReplay(historyReplay);
   const hadTileCompositor = engine.layerBlendTileCompositor !== null;
   try {
     await engine.waitForIdle();
@@ -3113,7 +3115,7 @@ export async function setLayerBlendMode(
     }
     record.blendMode = blendMode;
     engine.paintDisplayMipValidThroughLevel = 0;
-    await engine.rebuildMergedLayerSurfaces();
+    await engine.rebuildMergedLayerSurfaces(rebuildCaller);
     if (engine.layerStack.layers.every((candidate) => candidate.blendMode === "normal")) {
       releaseLayerBlendTilePresentationResources(engine);
     }
@@ -3135,7 +3137,7 @@ export async function setLayerBlendMode(
       releaseLayerBlendTilePresentationResources(engine);
     }
     try {
-      await engine.rebuildMergedLayerSurfaces("layer-switch");
+      await engine.rebuildMergedLayerSurfaces(rebuildCaller);
       ensureMixedSceneLinearTexture(
         engine,
         Math.max(1, engine.canvas.width),
@@ -3146,17 +3148,19 @@ export async function setLayerBlendMode(
       engine.displayDirty = true;
       engine.requestRender();
     } catch (restoreError) {
-      engine.latchDocumentStateInconsistent(
-        "Stato incoerente dopo la fusione livello: ricarica prima di continuare.",
-      );
       const originalMessage = error instanceof Error ? error.message : String(error);
       const restoreMessage = restoreError instanceof Error
         ? restoreError.message
         : String(restoreError);
-      throw new Error(
+      const combined = new Error(
         `Fusione livello non aggiornata (${originalMessage}) e ripristino fallito `
         + `(${restoreMessage}). Ricarica la pagina prima di continuare.`,
       );
+      engine.latchDocumentStateInconsistent(
+        "Stato incoerente dopo la fusione livello: ricarica prima di continuare.",
+        combined,
+      );
+      throw combined;
     }
     throw error;
   } finally {

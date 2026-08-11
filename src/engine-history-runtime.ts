@@ -1,4 +1,5 @@
 import type { BrushEngine } from "./brush-engine";
+import type { EffectsRetargetCaller } from "./engine-layer-resources";
 import {
   destroyLayerColdStorage,
   encodeLayerColdHydration,
@@ -558,6 +559,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
       await applyMixedSceneOrderState(
         engine,
         delta < 0 ? crossedAction.before : crossedAction.after,
+        "history-replay",
       );
       engine.historyCursor = nextCursor;
       if (engine.activeStrokeProfile) {
@@ -572,6 +574,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
     if (crossedAction.kind === "vector") {
       await applyVectorHistoryState(engine, 
         delta < 0 ? crossedAction.delta.before : crossedAction.delta.after,
+        "history-replay",
       );
       engine.historyCursor = nextCursor;
       if (engine.activeStrokeProfile) {
@@ -1036,6 +1039,7 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
 
 export async function applyVectorHistoryState(engine: BrushEngine, 
   target: MixedSceneVectorHistoryState,
+  caller: EffectsRetargetCaller = "layer-switch",
 ): Promise<void> {
   const scene = requireMixedSceneStack(engine);
   const previousState = scene.captureVectorHistoryState(target.key);
@@ -1055,7 +1059,7 @@ export async function applyVectorHistoryState(engine: BrushEngine,
       : null;
     clearVectorTextPresentationForTransaction(engine);
     await engine.rebuildMergedLayerSurfaces(
-      "layer-switch",
+      caller,
       engine.getVectorTextViewState(),
       { reuseUnchangedRasterRuns: true },
     );
@@ -1068,7 +1072,7 @@ export async function applyVectorHistoryState(engine: BrushEngine,
     clearVectorTextPresentationForTransaction(engine);
     try {
       await engine.rebuildMergedLayerSurfaces(
-        "layer-switch",
+        caller,
         engine.getVectorTextViewState(),
         { reuseUnchangedRasterRuns: true },
       );
@@ -1076,17 +1080,19 @@ export async function applyVectorHistoryState(engine: BrushEngine,
       engine.displayDirty = true;
       engine.requestRender();
     } catch (restoreError) {
-      engine.latchDocumentStateInconsistent(
-        "Stato incoerente dopo Undo/Redo vettoriale: ricarica la pagina.",
-      );
       const originalMessage = error instanceof Error ? error.message : String(error);
       const restoreMessage = restoreError instanceof Error
         ? restoreError.message
         : String(restoreError);
-      throw new Error(
+      const combined = new Error(
         `Undo/Redo vettoriale fallito (${originalMessage}) e ripristino fallito `
         + `(${restoreMessage}). Ricarica la pagina.`,
       );
+      engine.latchDocumentStateInconsistent(
+        "Stato incoerente dopo Undo/Redo vettoriale: ricarica la pagina.",
+        combined,
+      );
+      throw combined;
     }
     throw error;
   } finally {
@@ -1517,6 +1523,7 @@ export function getMixedSceneReorderTargets(
 export async function applyMixedSceneOrderState(
   engine: BrushEngine,
   target: MixedSceneOrderState,
+  caller: EffectsRetargetCaller = "layer-switch",
 ): Promise<void> {
   const scene = requireMixedSceneStack(engine);
   const previous = captureMixedSceneOrderState(engine);
@@ -1546,7 +1553,7 @@ export async function applyMixedSceneOrderState(
     }
     clearVectorTextPresentationForTransaction(engine);
     await engine.rebuildMergedLayerSurfaces(
-      "layer-switch",
+      caller,
       engine.getVectorTextViewState(),
       { reuseUnchangedRasterRuns: true },
     );
@@ -1560,7 +1567,7 @@ export async function applyMixedSceneOrderState(
       scene.reorderByKeys(previous.bottomUpKeys);
       clearVectorTextPresentationForTransaction(engine);
       await engine.rebuildMergedLayerSurfaces(
-        "layer-switch",
+        caller,
         engine.getVectorTextViewState(),
         { reuseUnchangedRasterRuns: true },
       );
@@ -1571,16 +1578,18 @@ export async function applyMixedSceneOrderState(
       rollbackErrors.push(rollbackError);
     }
     if (rollbackErrors.length > 0) {
-      engine.latchDocumentStateInconsistent(
-        "Stato incoerente dopo il riordino livelli: ricarica la pagina.",
-      );
       const originalMessage = error instanceof Error ? error.message : String(error);
       const rollbackMessage = rollbackErrors.map((rollbackError) =>
         rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
       ).join("; ");
-      throw new Error(
+      const combined = new Error(
         `Riordino fallito (${originalMessage}) e ripristino fallito (${rollbackMessage}).`,
       );
+      engine.latchDocumentStateInconsistent(
+        "Stato incoerente dopo il riordino livelli: ricarica la pagina.",
+        combined,
+      );
+      throw combined;
     }
     throw error;
   } finally {
