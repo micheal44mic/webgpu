@@ -762,7 +762,12 @@ const rasterNoiseApplyButtons = [desktopNoiseApplyButton, mobileNoiseApplyButton
 const mobileToolSettingsButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>("[data-mobile-tool-sheet]"),
 );
-const mobileUiMediaQuery = window.matchMedia("(max-width: 699px)");
+// La superficie editor moderna e' unica su telefono, tablet e desktop. Il
+// nome `mobileUiMediaQuery` resta temporaneamente per non duplicare i controller
+// dei fogli esistenti, ma la query e' intenzionalmente sempre vera: solo il CSS
+// decide se gli stessi controlli entrano dal basso o dal lato. La classe del
+// dispositivo e la taglia 2K/4K restano invece autorevoli in `engine-limits`.
+const mobileUiMediaQuery = window.matchMedia("(min-width: 0px)");
 const MOBILE_DOUBLE_TAP_ZOOM_INTERVAL_MS = 350;
 const MOBILE_DOUBLE_TAP_ZOOM_DISTANCE_PX = 32;
 for (const input of rasterGaussianBlurRadiusInputs) {

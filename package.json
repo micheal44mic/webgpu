@@ -29,6 +29,7 @@
     "stroke-ui:verify": "node scripts/verify-mobile-stroke-sheet.mjs",
     "effects-ui:verify": "node scripts/verify-mobile-raster-effects-sheet.mjs",
     "tool-sheet:verify": "node scripts/verify-mobile-tool-settings-sheet.mjs",
+    "ui-parity:verify": "node scripts/verify-unified-editor-ui.mjs",
     "touch-intent:verify": "node scripts/verify-touch-paint-intent.mjs",
     "layer-reorder-ui:verify": "node scripts/verify-mobile-layer-reorder.mjs",
     "layer-multi-select-ui:verify": "node scripts/verify-mobile-layer-multi-selection.mjs",
