@@ -297,6 +297,17 @@ export interface EngineStats {
   layerColdCompressionEnabled: boolean;
   layerColdCompressionStatusEnabled: boolean;
   layerColdDirectHotHydrationEnabled: boolean;
+  layerColdTileCompositeEnabled: boolean;
+  layerColdTileComposite: {
+    foldCount: number;
+    residentFoldCount: number;
+    compressedFoldCount: number;
+    tileCount: number;
+    submissionCount: number;
+    scratchActiveMiB: number;
+    scratchPeakMiB: number;
+    avoidedHydrationMiB: number;
+  };
   layerColdAdjacentPrefetchEnabled: boolean;
   layerColdCompressionDistantGpuMiB: number;
   layerColdCompressionRuntimeBuild: string | null;

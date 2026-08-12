@@ -158,6 +158,11 @@ assert.match(mainSource, /captureDiagnosticUserAgentData/);
 assert.match(mainSource, /"platformVersion"/);
 assert.match(mainSource, /engine\.captureFillDiagnostics\(\)/);
 assert.match(mainSource, /fillDiagnostics: fillDiagnosticsResult/);
+assert.match(
+  mainSource,
+  /layerColdTileComposite:[\s\S]*?enabled: stats\.layerColdTileCompositeEnabled,[\s\S]*?\.\.\.stats\.layerColdTileComposite/,
+  "il rapporto deve rendere misurabile il fast path cold tile sul dispositivo reale",
+);
 assert.match(mainSource, /entryScripts:/);
 assert.match(mainSource, /completeStartupDiagnostics\(\)/);
 assert.match(mainSource, /reportStartupFailure\(error\)/);
@@ -181,6 +186,18 @@ assert.match(
   historyMaintenanceSource,
   /export function scheduleHistoryMaintenance[\s\S]*?if \(!engine\.initialized \|\| !engine\.historyLocalStorage\) return/,
 );
+assert.match(historyMaintenanceSource, /readonly capturesRefusedForBudget: number;/);
+assert.match(historyMaintenanceSource, /readonly checkpointCacheEvictions: number;/);
+assert.match(
+  historyMaintenanceSource,
+  /capturesRefusedForBudget: state\.capturesRefusedForBudget/,
+);
+assert.match(
+  historyMaintenanceSource,
+  /checkpointCacheEvictions: state\.checkpointCacheEvictions/,
+);
+assert.match(mainSource, /telemetry\.capturesRefusedForBudget/);
+assert.match(mainSource, /telemetry\.checkpointCacheEvictions/);
 assert.match(startupDiagnosticsSource, /__WEBGPU_BRUSH_STARTUP__/);
 assert.match(mainSource, /renderFrameError:[\s\S]*?getDocumentInconsistentDiagnostic\(\)/);
 assert.match(

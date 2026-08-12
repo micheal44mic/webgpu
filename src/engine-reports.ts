@@ -676,6 +676,20 @@ export function getStats(engine: BrushEngine): EngineStats {
       engine.layerColdCompressionStatusEnabled,
     layerColdDirectHotHydrationEnabled:
       engine.layerColdDirectHotHydrationEnabled,
+    layerColdTileCompositeEnabled: engine.layerColdTileCompositeEnabled,
+    layerColdTileComposite: {
+      foldCount: engine.layerColdTileCompositeFoldCount,
+      residentFoldCount: engine.layerColdTileCompositeResidentFoldCount,
+      compressedFoldCount: engine.layerColdTileCompositeCompressedFoldCount,
+      tileCount: engine.layerColdTileCompositeTileCount,
+      submissionCount: engine.layerColdTileCompositeSubmissionCount,
+      scratchActiveMiB:
+        engine.layerColdTileCompositeScratchActiveBytes / MEBIBYTE_BYTES,
+      scratchPeakMiB:
+        engine.layerColdTileCompositeScratchPeakBytes / MEBIBYTE_BYTES,
+      avoidedHydrationMiB:
+        engine.layerColdTileCompositeAvoidedHydrationBytes / MEBIBYTE_BYTES,
+    },
     layerColdAdjacentPrefetchEnabled: engine.layerColdAdjacentPrefetchEnabled,
     layerColdCompressionDistantGpuMiB: engine.layerColdCompressionEnabled
       ? engine.layerColdCompressionDistantGpuBytes() / MEBIBYTE_BYTES
@@ -844,6 +858,7 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
       (total, bytes) => total + bytes,
       0,
     ) + engine.layerColdRestoreActiveBytes
+      + engine.layerColdTileCompositeScratchActiveBytes
   ) / MEBIBYTE_BYTES;
   // Exactly one full raw-layer pyramid follows the active layer. Mixed-scene
   // merged sides report their real cropped mip bytes instead of charging a

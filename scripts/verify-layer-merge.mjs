@@ -338,6 +338,7 @@ const layerSwitch = planLayerSwitchMemory({
   incomingHotBytes: fullLayerBytes,
   adjacentPrefetchBytes: 256 * 1024,
   fullMergedSurfaceBytes,
+  reclaimableCompositeBytes: fullMergedSurfaceBytes,
   foldTransientBytes: fullLayerBytes * 2,
 });
 assert.equal(layerSwitch.category, "layer-switch");
@@ -347,8 +348,20 @@ assert.equal(
   512 * 1024
     + fullLayerBytes
     + 256 * 1024
-    + fullMergedSurfaceBytes * 2
+    + fullMergedSurfaceBytes
     + fullLayerBytes * 2,
+);
+const tileNativeLayerSwitch = planLayerSwitchMemory({
+  outgoingColdBytes: fullLayerBytes,
+  incomingHotBytes: fullLayerBytes,
+  adjacentPrefetchBytes: 0,
+  fullMergedSurfaceBytes,
+  reclaimableCompositeBytes: fullMergedSurfaceBytes * 2,
+  foldTransientBytes: 512 * 1024,
+});
+assert.equal(
+  tileNativeLayerSwitch.peakBytes,
+  fullLayerBytes * 2 + 512 * 1024,
 );
 
 const sparseDuplicate = planLayerDuplicateMemory({

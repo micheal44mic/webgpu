@@ -769,7 +769,7 @@ const newStack = () => new LayerStack(createStyles);
 // layer remains a deterministic 256² tile array.
 assert.equal(
   LAYER_STORAGE_STRATEGY,
-  "single-active-plus-optional-reference-full-inactive-256-array-tiles-rehydrate-fold",
+  "single-active-plus-optional-reference-full-inactive-256-array-tiles-direct-native-fold-fallback-rehydrate",
 );
 assert.equal(LAYER_STORAGE_GRID_SIZE, 16);
 assert.equal(LAYER_STORAGE_TILE_COUNT, 256);
@@ -1151,7 +1151,7 @@ assert.match(destroyReadbackBody, /engine\.devReadbackActiveBytes -= size/,
 assert.match(engineSource, /LAYER_BAKE_STRATEGY =\s*\n\s*"transient-analytic-bounded-visual-rect-no-handoff-residency-mip0-fused-into-two-merged-surfaces"/);
 assert.match(
   engineSource,
-  /LAYER_COMPOSITE_STRATEGY =\s*\n\s*"merged-above-over-isolated-active-clipping-group-over-merged-below-source-atop-live-prefix-suffix-compose-before-filter-parent-opacity-once-deferred-to-fold-fence-bounded-visual-rect"/,
+  /LAYER_COMPOSITE_STRATEGY =\s*\n\s*"merged-above-over-isolated-active-clipping-group-over-merged-below-source-atop-live-prefix-suffix-compose-before-filter-parent-opacity-once-direct-authoritative-cold-tiles-normal-no-effects-deferred-to-fold-fence-bounded-visual-rect"/,
 );
 assert.ok(
   (engineSource.match(/layerBakeStrategy: LAYER_BAKE_STRATEGY/g) ?? []).length >= 2,
@@ -1264,8 +1264,11 @@ assert.match(retargetBody, /completionPolicy: LayerGpuCompletionPolicy = "await-
 assert.match(retargetBody, /rebuildDomain: LayerEffectsRebuildDomain = "full-document"/);
 assert.match(retargetBody, /styleStackRetargetBounds = rebuildDomain === "content-bounds"/,
   "solo il fold inattivo può restringere il dominio del rebuild analitico");
-assert.match(retargetBody, /if \(completionPolicy === "await-immediately"\) \{\s*await engine\.waitForIdle\(\);/,
-  "il retarget pubblico deve conservare il fence iniziale");
+assert.match(
+  retargetBody,
+  /if \(completionPolicy === "await-immediately"\) \{\s*await engine\.waitForIdle\(\{\s*allowFrozenDerivedPresentation: caller !== "public",\s*\}\);/,
+  "il retarget pubblico deve conservare il fence iniziale e solo i caller strutturali possono coalescere un frame congelato",
+);
 assert.match(retargetBody, /if \(completionPolicy === "await-immediately"\) \{\s*await engine\.waitForGpuCapped\(`Retarget banco effetti #\$\{generation\}`\);/,
   "solo la catena fold può rinviare il timeout GPU al fence del record");
 const bakeCandidateStart = engineSource.indexOf("async createLayerBakeCandidate(");
@@ -2739,7 +2742,7 @@ const layerStorageStudySource = readFileSync(
 );
 assert.match(
   layerStorageStudySource,
-  /single-active-plus-optional-reference-full-inactive-256-array-tiles-rehydrate-fold/,
+  /single-active-plus-optional-reference-full-inactive-256-array-tiles-direct-native-fold-fallback-rehydrate/,
 );
 assert.match(layerStorageStudySource, /"Occupied" deliberately means ANY non-zero byte/);
 assert.doesNotMatch(

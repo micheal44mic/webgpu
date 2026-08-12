@@ -693,6 +693,34 @@ for (const actionCount of [10, 100, 500, 1000]) {
     runtime,
     /device\.queue\.onSubmittedWorkDone\(\)[\s\S]*?await engine\.waitForIdle\(\)[\s\S]*?await engine\.compactDiscardedHistoryIncrementally\([\s\S]*?capturePeriodicCheckpoint\(engine, expectedGeneration\)/,
   );
+  const scheduleStart = runtime.indexOf("export function scheduleHistoryMaintenance");
+  const scheduleEnd = runtime.indexOf("export function cancelHistoryMaintenance");
+  assert.ok(scheduleStart >= 0 && scheduleEnd > scheduleStart);
+  const scheduleBody = runtime.slice(scheduleStart, scheduleEnd);
+  const recoveryBeforeCapture = scheduleBody.indexOf("enforceHistoryBudget(engine, false);");
+  const capture = scheduleBody.indexOf("await capturePeriodicCheckpoint(engine, expectedGeneration);");
+  const recoveryAfterCapture = scheduleBody.indexOf(
+    "enforceHistoryBudget(engine, false);",
+    recoveryBeforeCapture + 1,
+  );
+  const spill = scheduleBody.indexOf("await engine.historyLocalStorage.spillIfNeeded(spillOptions);");
+  const journalRecovery = scheduleBody.indexOf(
+    "enforceHistoryBudget(engine, !deferJournalEviction);",
+  );
+  assert.ok(
+    recoveryBeforeCapture >= 0
+      && recoveryBeforeCapture < capture
+      && capture < recoveryAfterCapture
+      && recoveryAfterCapture < spill
+      && spill < journalRecovery,
+    "la cache va recuperata prima e dopo la cattura, sempre prima dello spill; "
+      + "il journal si valuta solo dopo",
+  );
+  assert.equal(
+    scheduleBody.match(/enforceHistoryBudget\(engine, false\);/g)?.length,
+    2,
+    "servono esattamente i due gate cache attorno alla cattura",
+  );
   assert(runtime.includes("latestFullCheckpointByLayer(engine)"));
   assert(runtime.includes("state.floorCursor = candidateFloor"));
   assert(runtime.includes("historyMemoryTotalBytes(ledger) <= budget.hardBytes"));
@@ -1197,6 +1225,36 @@ console.log("History accounting append-only decision verified.");
     });
     assert.equal(insufficiente.reason, "cache-insufficient");
     assert.equal(insufficiente.reachedTarget, false);
+  }
+
+  // Regressione del diagnostico dell'11/08/2026: 366,073 MiB totali, di cui
+  // 204 MiB di checkpoint periodici, contro un hard limit di 162,215 MiB.
+  // La cache da sola non raggiunge il target di isteresi, ma deve essere
+  // liberata immediatamente per rientrare sotto il limite senza toccare Undo.
+  {
+    const totalBytes = 383_855_512;
+    const checkpointBytes = 213_909_504;
+    const hardBytes = 170_094_452;
+    const diagnostico = planHistoryBudgetRecovery({
+      currentBytes: totalBytes,
+      budget: createHistoryBudget(hardBytes),
+      checkpoints: [{
+        id: 1,
+        layerId: 1,
+        parentId: null,
+        kind: "full",
+        actionIndex: 54,
+        bytes: checkpointBytes,
+      }],
+    });
+    assert.deepEqual(diagnostico.checkpointIdsToDrop, [1]);
+    assert.equal(diagnostico.projectedBytes, totalBytes - checkpointBytes);
+    assert.equal(diagnostico.reason, "cache-insufficient");
+    assert.equal(diagnostico.reachedTarget, false);
+    assert.ok(
+      diagnostico.projectedBytes <= hardBytes,
+      "nel caso reale la cache basta comunque a richiudere il tetto hard",
+    );
   }
 }
 

@@ -24,6 +24,11 @@ import {
   LAYER_BLEND_FOLD_UNIFORM_BYTES,
   LAYER_BLEND_FOLD_WGSL,
 } from "../src/layer-blend-fold-shader.ts";
+import {
+  LAYER_COLD_TILE_COMPOSITE_BATCH_TILES,
+  LAYER_COLD_TILE_COMPOSITE_UNIFORM_BYTES,
+  LAYER_COLD_TILE_COMPOSITE_WGSL,
+} from "../src/layer-cold-tile-composite-shader.ts";
 const tileShaderSource = readFileSync(
   new URL("../src/layer-blend-tile-shader.ts", import.meta.url),
   "utf8",
@@ -35,6 +40,26 @@ const tileCompositorSource = readFileSync(
 const tileRuntimeSource = readFileSync(
   new URL("../src/engine-layer-blend-tile-runtime.ts", import.meta.url),
   "utf8",
+);
+const layerRuntimeSource = readFileSync(
+  new URL("../src/engine-layer-runtime.ts", import.meta.url),
+  "utf8",
+);
+
+assert.equal(LAYER_COLD_TILE_COMPOSITE_UNIFORM_BYTES, 32);
+assert.equal(LAYER_COLD_TILE_COMPOSITE_BATCH_TILES, 16);
+assert.match(LAYER_COLD_TILE_COMPOSITE_WGSL, /texture_2d_array<f32>/);
+assert.match(LAYER_COLD_TILE_COMPOSITE_WGSL, /textureLoad\(/);
+assert.match(LAYER_COLD_TILE_COMPOSITE_WGSL, /@builtin\(instance_index\)/);
+assert.doesNotMatch(LAYER_COLD_TILE_COMPOSITE_WGSL, /textureSample/);
+assert.match(layerRuntimeSource, /pass\.draw\(6, tileIndices\.length, 0, 0\)/);
+assert.match(layerRuntimeSource, /await engine\.waitForGpuCapped\(label\)/);
+assert.match(layerRuntimeSource, /destination\.resolutionScale !== 1/);
+assert.match(layerRuntimeSource, /requirements\.needsStrokeRenderer/);
+assert.match(
+  layerRuntimeSource,
+  /chunk\.rawBytes <= LAYER_COLD_TILE_COMPOSITE_BATCH_TILES \* tileBytes/,
+  "un chunk futuro troppo grande deve ricadere sul fallback senza superare lo scratch dichiarato",
 );
 
 assert.equal(

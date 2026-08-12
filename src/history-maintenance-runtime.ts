@@ -81,6 +81,8 @@ export interface HistoryMaintenanceTelemetry {
   readonly capturesCommitted: number;
   readonly capturesDiscardedStale: number;
   readonly capturesFailed: number;
+  readonly capturesRefusedForBudget: number;
+  readonly checkpointCacheEvictions: number;
   readonly redoCompactionsScheduled: number;
   readonly redoCompactionsCompleted: number;
   readonly redoCompactionsAborted: number;
@@ -1320,6 +1322,9 @@ function enforceHistoryBudget(engine: BrushEngine, allowJournalEviction = true):
     // basta lascerebbe il rifacimento a un momento che non controlliamo, ed e'
     // esattamente da li' che e' passato il difetto del ledger.
     rebuildHistoryAccounting(engine);
+    // La cache e' memoria fisica appena distrutta: pubblicare qui rende il
+    // recupero visibile subito anche quando il journal non verra' evacuato.
+    engine.publishStats();
   }
   if (recovery.reachedTarget) {
     // La cache e' bastata: il journal non si tocca e la profondita' di Undo
@@ -1423,7 +1428,17 @@ export function scheduleHistoryMaintenance(engine: BrushEngine): void {
       const accountingRebuilt = synchronizeHistoryAccounting(engine);
       if (accountingRebuilt) discardStalePeriodicCheckpoints(engine);
       if (expectedGeneration !== state.generation) return;
+      // I checkpoint periodici sono cache ricostruibile. Recuperarli prima
+      // evita di serializzare il journal verso OPFS mentre centinaia di MiB di
+      // cache gia' sacrificabile restano residenti.
+      enforceHistoryBudget(engine, false);
+      if (expectedGeneration !== state.generation) return;
       await capturePeriodicCheckpoint(engine, expectedGeneration);
+      if (expectedGeneration !== state.generation) return;
+      // Un full necessario alla catena puo' oltrepassare il target durante la
+      // cattura. Richiudiamo subito il budget, prima dello spill, invece di
+      // lasciare il picco vivo fino alla fine della manutenzione asincrona.
+      enforceHistoryBudget(engine, false);
       if (expectedGeneration !== state.generation) return;
       // Local spill runs only at the journal end and publishes storage before
       // releasing a resident payload. Residence changes rebuild the ledger in
@@ -1504,6 +1519,8 @@ export function historyMaintenanceTelemetry(
     capturesCommitted: state.capturesCommitted,
     capturesDiscardedStale: state.capturesDiscardedStale,
     capturesFailed: state.capturesFailed,
+    capturesRefusedForBudget: state.capturesRefusedForBudget,
+    checkpointCacheEvictions: state.checkpointCacheEvictions,
     redoCompactionsScheduled: state.redoCompactionsScheduled,
     redoCompactionsCompleted: state.redoCompactionsCompleted,
     redoCompactionsAborted: state.redoCompactionsAborted,

@@ -13,6 +13,7 @@ import {
   thicknessTailDisplayShader,
 } from "./shaders";
 import { rasterStrokeDisplayShader } from "./stroke-renderer";
+import { LAYER_COLD_TILE_COMPOSITE_WGSL } from "./layer-cold-tile-composite-shader";
 import {
   selectionBrushShader,
   selectionTexturizedGrainShader,
@@ -148,6 +149,10 @@ export async function finishStaticResourceCreation(
     label: "Layer source-over fold WGSL",
     code: layerCompositeShader,
   });
+  engine.layerColdTileCompositeShaderModule = engine.device.createShaderModule({
+    label: "Direct authoritative cold tile fold WGSL",
+    code: LAYER_COLD_TILE_COMPOSITE_WGSL,
+  });
   engine.layerBlendFoldShaderModule = engine.device.createShaderModule({
     label: "Advanced document-space layer blend fold WGSL",
     code: LAYER_BLEND_FOLD_WGSL,
@@ -186,6 +191,10 @@ export async function finishStaticResourceCreation(
       "final raster stack composited mip 1",
     ),
     assertShaderCompiled(engine.layerCompositeShaderModule, "layer source-over fold"),
+    assertShaderCompiled(
+      engine.layerColdTileCompositeShaderModule,
+      "direct authoritative cold tile fold",
+    ),
     assertShaderCompiled(
       engine.layerBlendFoldShaderModule,
       "advanced document-space layer blend fold",

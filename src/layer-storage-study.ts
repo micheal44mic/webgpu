@@ -4,7 +4,7 @@ import {
 } from "./engine-limits.ts";
 
 export const LAYER_STORAGE_STRATEGY =
-  "single-active-plus-optional-reference-full-inactive-256-array-tiles-rehydrate-fold" as const;
+  "single-active-plus-optional-reference-full-inactive-256-array-tiles-direct-native-fold-fallback-rehydrate" as const;
 
 // I tile restano 256 per documento: e' il loro lato a scalare con la taglia del
 // documento, cosi' l'array texture del cold storage e la maschera da 8 word

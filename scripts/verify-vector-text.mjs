@@ -2143,6 +2143,74 @@ console.log(
 
 console.log("Vector rasterize candidate-first rollback verified.");
 
+// --- Race freeze + invalidazione derivata ------------------------------------
+// Il completamento asincrono del preview vettoriale puo' accodare un RAF dopo
+// prepareActiveLayerForSwitch(). Il drain strutturale puo' coalescere soltanto
+// quel ridisegno derivato; qualunque mutazione raster reale resta fail-closed.
+{
+  const discardStart = engineSource.indexOf(
+    "  private discardFrozenDerivedPresentationWork(): boolean {",
+  );
+  const idleStart = engineSource.indexOf("  async waitForIdle(", discardStart);
+  const idleEnd = engineSource.indexOf("\n  resetStrokeRandomSeed()", idleStart);
+  assert.ok(
+    discardStart >= 0 && idleStart > discardStart && idleEnd > idleStart,
+    "drain freeze-aware non delimitabile",
+  );
+  const discard = engineSource.slice(discardStart, idleStart);
+  const idle = engineSource.slice(idleStart, idleEnd);
+  for (const authoritativeWork of [
+    "pendingStamps.length > 0",
+    "pendingBlendBatches.length > 0",
+    "clearRequested",
+    "lightGlazeSession?.commitRequested",
+    "lightGlazeSession?.endRequested",
+    "thicknessTailPreviewEligible()",
+    "thicknessTailPresentedRect !== null",
+  ]) {
+    assert.ok(
+      discard.includes(authoritativeWork),
+      `il drain congelato non protegge ${authoritativeWork}`,
+    );
+  }
+  assert.match(
+    discard,
+    /cancelAnimationFrame\(this\.frameRequest\);[\s\S]*this\.frameRequest = null;[\s\S]*this\.displayDirty = false;[\s\S]*this\.presentationCacheNeedsFullRebuild = true;/,
+    "il solo frame derivato va coalesciuto nella ricostruzione finale",
+  );
+  assert.match(
+    idle,
+    /options\.allowFrozenDerivedPresentation === true[\s\S]*discardFrozenDerivedPresentationWork\(\)[\s\S]*continue;[\s\S]*Presentazione congelata con lavoro render pendente/,
+    "l'opt-in deve precedere senza sostituire il fail-closed standard",
+  );
+  const retargetStart = engineSource.indexOf(
+    "export async function retargetEffectsWorkingSetInternal(",
+  );
+  const retargetEnd = engineSource.indexOf(
+    "export async function benchmarkEffectsWorkingSet(",
+    retargetStart,
+  );
+  const retarget = engineSource.slice(retargetStart, retargetEnd);
+  assert.match(
+    retarget,
+    /retargetEffectsWorkingSetInternal[\s\S]*allowFrozenDerivedPresentation: caller !== "public"/,
+    "il retarget strutturale deve drenare le invalidazioni tardive e quello pubblico no",
+  );
+  const rebuildStart = engineSource.indexOf("  async rebuildMergedLayerSurfaces(");
+  const rebuildEnd = engineSource.indexOf(
+    "\n  recordVectorHistoryAction(",
+    rebuildStart,
+  );
+  const rebuild = engineSource.slice(rebuildStart, rebuildEnd);
+  assert.match(
+    rebuild,
+    /rebuildMergedLayerSurfaces\([\s\S]{0,900}layerPresentationFrozen[\s\S]{0,200}caller !== "public"[\s\S]{0,200}waitForIdle\(\{ allowFrozenDerivedPresentation: true \}\)/,
+    "anche il gate del compositing deve ricontrollare la race dopo il retarget GPU",
+  );
+}
+
+console.log("Vector rasterize frozen derived-frame drain verified.");
+
 // --- Nessun frame fra mutazione della scena e ricostruzione -------------------
 // `mutateMixedScenePresentation` e' il percorso di **ogni** aggiunta, rimozione
 // e modifica vettoriale (testo, SVG, immagine). Muta la scena a presentazione

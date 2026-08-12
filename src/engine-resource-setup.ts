@@ -68,6 +68,8 @@ import {
   setRasterStrokeGeometryEnabled,
 } from "./engine-runtime-misc";
 import { prepareAdaptivePreviewShapePalette } from "./engine-adaptive-preview-runtime";
+import { LAYER_COLD_TILE_COMPOSITE_UNIFORM_BYTES } from "./layer-cold-tile-composite-shader";
+import { LAYER_STORAGE_TILE_COUNT } from "./layer-storage-study";
 
 export async function createStaticResources(engine: BrushEngine): Promise<void> {
   engine.brushUniformBuffer = engine.device.createBuffer({
@@ -108,6 +110,16 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
     label: "Layer composite opacity",
     size: LAYER_COMPOSITE_UNIFORM_BYTES,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  engine.layerColdTileCompositeUniformBuffer = engine.device.createBuffer({
+    label: "Direct cold tile composite uniforms",
+    size: LAYER_COLD_TILE_COMPOSITE_UNIFORM_BYTES,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  engine.layerColdTileCompositeIndicesBuffer = engine.device.createBuffer({
+    label: "Direct cold tile composite indices",
+    size: LAYER_STORAGE_TILE_COUNT * Uint32Array.BYTES_PER_ELEMENT,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
 
   engine.thicknessTailDisplayUniformBuffer = engine.device.createBuffer({
@@ -572,6 +584,26 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
     entries: [
       { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
       { binding: 1, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+    ],
+  });
+  engine.layerColdTileCompositeBindGroupLayout = engine.device.createBindGroupLayout({
+    label: "Direct cold tile fold bind group layout",
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "unfilterable-float", viewDimension: "2d-array" },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.VERTEX,
+        buffer: { type: "read-only-storage" },
+      },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+        buffer: { type: "uniform" },
+      },
     ],
   });
   engine.layerBlendFoldBindGroupLayout = engine.device.createBindGroupLayout({

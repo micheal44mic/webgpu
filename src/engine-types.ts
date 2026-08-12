@@ -262,6 +262,11 @@ export interface BrushEngineOptions {
    */
   layerColdDirectHotHydrationEnabled?: boolean;
   /**
+   * Folds exact inactive cold tiles directly into merged mip 0 when the layer
+   * has no raster effects. Disable only for same-build A/B measurements.
+   */
+  layerColdTileCompositeEnabled?: boolean;
+  /**
    * Restores compressed neighbours to GPU cold tiles after a layer switch.
    * Desktop keeps this latency-oriented prefetch by default; memory-constrained
    * callers can disable it because activation can hydrate compressed bytes

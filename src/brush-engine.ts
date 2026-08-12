@@ -315,6 +315,8 @@ import {
 } from "./layer-stack";
 import { LAYER_BLEND_MODE_CODES, type LayerBlendMode } from "./layer-blend-modes";
 import type { LayerBlendTileCompositor } from "./layer-blend-tile-compositor";
+import { LAYER_BLEND_FOLD_TILE_EXTENT } from "./layer-blend-fold-shader";
+import { LAYER_COLD_TILE_COMPOSITE_BATCH_TILES } from "./layer-cold-tile-composite-shader";
 import {
   encodeLayerBlendTilePresentation,
   layerBlendTilePresentationRequired,
@@ -1000,6 +1002,7 @@ export class BrushEngine {
   readonly layerColdCompressionEnabled: boolean;
   readonly layerColdCompressionStatusEnabled: boolean;
   readonly layerColdDirectHotHydrationEnabled: boolean;
+  readonly layerColdTileCompositeEnabled: boolean;
   readonly layerColdAdjacentPrefetchEnabled: boolean;
   readonly vectorTextPrototypeEnabled: boolean;
   readonly selectionOverlayCanvas: HTMLCanvasElement | null;
@@ -1132,6 +1135,14 @@ export class BrushEngine {
   readonly liveLayerBakeTextures = new Map<GPUTexture, number>();
   readonly liveMergedSurfaceTextures = new Map<GPUTexture, MergedSurfaceResources>();
   readonly liveLayerHydrationTextures = new Map<GPUTexture, number>();
+  layerColdTileCompositeScratchActiveBytes = 0;
+  layerColdTileCompositeScratchPeakBytes = 0;
+  layerColdTileCompositeFoldCount = 0;
+  layerColdTileCompositeResidentFoldCount = 0;
+  layerColdTileCompositeCompressedFoldCount = 0;
+  layerColdTileCompositeTileCount = 0;
+  layerColdTileCompositeSubmissionCount = 0;
+  layerColdTileCompositeAvoidedHydrationBytes = 0;
   /** Dev probe buffers are excluded from counted GPU memory, so track them separately. */
   devReadbackActiveBytes = 0;
   devReadbackPeakBytes = 0;
@@ -1392,6 +1403,8 @@ export class BrushEngine {
   thicknessTailDisplayUniformBuffer!: GPUBuffer;
   lightGlazeUniformBuffer!: GPUBuffer;
   lightGlazeCommitTileUniformBuffer!: GPUBuffer;
+  layerColdTileCompositeUniformBuffer!: GPUBuffer;
+  layerColdTileCompositeIndicesBuffer!: GPUBuffer;
   instanceBuffer!: GPUBuffer;
   thicknessTailInstanceBuffer!: GPUBuffer;
   shapeOccupancyUniformBuffers: GPUBuffer[] = [];
@@ -1464,6 +1477,7 @@ export class BrushEngine {
   paintMipDownsampleBindGroupLayout!: GPUBindGroupLayout;
   paintStackCompositeMipBindGroupLayout!: GPUBindGroupLayout;
   layerCompositeBindGroupLayout!: GPUBindGroupLayout;
+  layerColdTileCompositeBindGroupLayout!: GPUBindGroupLayout;
   layerBlendFoldBindGroupLayout!: GPUBindGroupLayout;
   brushBindGroup!: GPUBindGroup;
   thicknessTailBrushBindGroup!: GPUBindGroup;
@@ -1516,6 +1530,7 @@ export class BrushEngine {
   paintMipDownsampleShaderModule!: GPUShaderModule;
   paintStackCompositeMipShaderModule!: GPUShaderModule;
   layerCompositeShaderModule!: GPUShaderModule;
+  layerColdTileCompositeShaderModule!: GPUShaderModule;
   layerBlendFoldShaderModule!: GPUShaderModule;
   normalPipeline!: GPURenderPipeline;
   additivePipeline!: GPURenderPipeline;
@@ -1594,6 +1609,8 @@ export class BrushEngine {
   activeClippingGroupMipPipeline!: GPURenderPipeline;
   layerCompositePipeline!: GPURenderPipeline;
   layerSourceAtopPipeline!: GPURenderPipeline;
+  layerColdTileCompositePipeline!: GPURenderPipeline;
+  layerColdTileSourceAtopPipeline!: GPURenderPipeline;
   layerBlendFoldPipeline!: GPURenderPipeline;
 
   private readonly instanceUpload = new ArrayBuffer(MAX_STAMPS_PER_BATCH * STAMP_STRIDE_BYTES);
@@ -1734,6 +1751,8 @@ export class BrushEngine {
       options.layerColdCompressionStatusEnabled === true;
     this.layerColdDirectHotHydrationEnabled =
       options.layerColdDirectHotHydrationEnabled !== false;
+    this.layerColdTileCompositeEnabled =
+      options.layerColdTileCompositeEnabled !== false;
     this.layerColdAdjacentPrefetchEnabled =
       options.layerColdAdjacentPrefetchEnabled !== false;
     this.vectorTextPrototypeEnabled = options.vectorTextPrototypeEnabled === true;
@@ -5709,7 +5728,43 @@ export class BrushEngine {
     ].join(":");
   }
 
-  async waitForIdle(): Promise<void> {
+  /**
+   * A structural layer transaction keeps the last valid screen presentation
+   * frozen while authoritative textures and derived composites are replaced.
+   * A late vector/zoom completion may still request a frame in that interval.
+   * The frame cannot render against the frozen bindings and carries no pixel
+   * mutation of its own, so the structural rebuild may coalesce it into the
+   * final frame. Real queued paint, Blend, Clear, Glaze or tail work must still
+   * fail closed: discarding any of those would lose an authoritative mutation.
+   */
+  private discardFrozenDerivedPresentationWork(): boolean {
+    if (
+      !this.layerPresentationFrozen
+      || this.pendingStamps.length > 0
+      || this.pendingBlendBatches.length > 0
+      || this.clearRequested
+      || Boolean(this.lightGlazeSession?.commitRequested)
+      || Boolean(this.lightGlazeSession?.endRequested)
+      || this.thicknessTailPreviewEligible()
+      || this.thicknessTailPresentedRect !== null
+    ) {
+      return false;
+    }
+    if (this.frameRequest === null && !this.displayDirty) {
+      return false;
+    }
+    if (this.frameRequest !== null) {
+      cancelAnimationFrame(this.frameRequest);
+      this.frameRequest = null;
+    }
+    this.displayDirty = false;
+    this.presentationCacheNeedsFullRebuild = true;
+    return true;
+  }
+
+  async waitForIdle(
+    options: Readonly<{ allowFrozenDerivedPresentation?: boolean }> = {},
+  ): Promise<void> {
     if (!this.initialized) {
       throw new Error("Il motore non è ancora inizializzato.");
     }
@@ -5729,6 +5784,14 @@ export class BrushEngine {
       let lastProgressAt = performance.now();
       while (hasPendingRenderWork(this)) {
         if (this.layerPresentationFrozen) {
+          if (
+            options.allowFrozenDerivedPresentation === true
+            && this.discardFrozenDerivedPresentationWork()
+          ) {
+            progressSignature = this.renderProgressSignature();
+            lastProgressAt = performance.now();
+            continue;
+          }
           throw new Error(
             "Presentazione congelata con lavoro render pendente: transazione interrotta in sicurezza.",
           );
@@ -6404,6 +6467,13 @@ export class BrushEngine {
     view: VectorTextViewState = this.getVectorTextViewState(),
     options: RebuildMergedLayerSurfacesOptions = {},
   ): Promise<void> {
+    if (
+      hasPendingRenderWork(this)
+      && this.layerPresentationFrozen
+      && caller !== "public"
+    ) {
+      await this.waitForIdle({ allowFrozenDerivedPresentation: true });
+    }
     if (hasPendingRenderWork(this)) {
       throw new Error(
         "Ricostruzione livelli rifiutata: il render deve essere fermo prima del freeze.",
@@ -7744,8 +7814,11 @@ export class BrushEngine {
     }
   }
 
-  private layerColdBytesForMemoryAdmission(record: LayerRecord): number {
-    if (!record.hasContent) return 0;
+  private layerColdBytesForMemoryAdmission(
+    record: LayerRecord,
+    hasContent = record.hasContent,
+  ): number {
+    if (!hasContent) return 0;
     const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
     return countLayerStorageTiles(coldStorageMaskForRecord(record))
       * LAYER_STORAGE_TILE_SIZE
@@ -7759,6 +7832,79 @@ export class BrushEngine {
       bytes += gpu.compressed?.storedBytes ?? 0;
     }
     return bytes;
+  }
+
+  /** Maximum source-side working set alive during one sequential composite fold. */
+  private layerSwitchFoldTransientBytes(targetIndex: number, fullLayerBytes: number): number {
+    const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
+    const advancedScratchBytes = 2
+      * Math.min(LAYER_BLEND_FOLD_TILE_EXTENT, this.layerSize) ** 2
+      * bytesPerPixel;
+    let maximum = 0;
+    this.layerStack.layers.forEach((record, index) => {
+      const outgoingActive = index === this.layerStack.activeIndex;
+      const hasContent = outgoingActive ? this.layerHasContent : record.hasContent;
+      if (
+        index === targetIndex
+        || !record.visible
+        || record.opacity <= 0
+        || !hasContent
+      ) {
+        return;
+      }
+      const gpu = this.requireLayerGpu(record.id);
+      if (gpu.bake && gpu.bakeValid) {
+        return;
+      }
+      const requirements = layerEffectRendererRequirements(
+        record.strokeStyle,
+        normalizeRasterBevelStyle(record.bevelStyle),
+        normalizeRasterOuterShadowStyle(record.outerShadowStyle),
+        normalizeRasterInnerShadowStyle(record.innerShadowStyle),
+        normalizeRasterColorOverlayStyle(record.colorOverlayStyle),
+      );
+      const outgoingWillBecomeCold = outgoingActive
+        && record.id !== this.layerStack.referenceLayerId;
+      const sourceWillBeHot = Boolean(gpu.hot) && !outgoingWillBecomeCold;
+      const coldSourceWillExist = outgoingWillBecomeCold
+        || Boolean(gpu.cold) !== Boolean(gpu.compressed);
+      const tileBytes = LAYER_STORAGE_TILE_SIZE * LAYER_STORAGE_TILE_SIZE * bytesPerPixel;
+      const compressedFitsBoundedScratch = !gpu.compressed
+        || (
+          gpu.compressed.tileIndices.length > 0
+          && gpu.compressed.chunks.length > 0
+          && gpu.compressed.chunks.every((chunk) => (
+            chunk.rawBytes > 0
+            && chunk.rawBytes % tileBytes === 0
+            && chunk.rawBytes <= LAYER_COLD_TILE_COMPOSITE_BATCH_TILES * tileBytes
+          ))
+        );
+      if (
+        this.layerColdTileCompositeEnabled
+        && record.blendMode === "normal"
+        && !requirements.needsStrokeRenderer
+        && !sourceWillBeHot
+        && coldSourceWillExist
+        && compressedFitsBoundedScratch
+      ) {
+        const tileScratchBytes = gpu.compressed
+          ? Math.min(
+            LAYER_COLD_TILE_COMPOSITE_BATCH_TILES,
+            gpu.compressed.tileIndices.length,
+          ) * tileBytes
+          : 0;
+        maximum = Math.max(maximum, tileScratchBytes);
+        return;
+      }
+      const hydrationBytes = sourceWillBeHot ? 0 : fullLayerBytes;
+      const bakeBytes = requirements.needsStrokeRenderer ? fullLayerBytes : 0;
+      const blendScratchBytes = record.blendMode === "normal" ? 0 : advancedScratchBytes;
+      maximum = Math.max(
+        maximum,
+        hydrationBytes + bakeBytes + blendScratchBytes,
+      );
+    });
+    return maximum;
   }
 
   /**
@@ -7784,14 +7930,18 @@ export class BrushEngine {
     const request = planLayerSwitchMemory({
       outgoingColdBytes: outgoing.id === this.layerStack.referenceLayerId
         ? 0
-        : this.layerColdBytesForMemoryAdmission(outgoing),
+        : this.layerColdBytesForMemoryAdmission(outgoing, this.layerHasContent),
       incomingHotBytes: incomingGpu.hot ? 0 : fullLayerBytes,
       adjacentPrefetchBytes,
       fullMergedSurfaceBytes: mergedSurfaceMemoryBytes(
         { width: this.layerSize, height: this.layerSize },
         bytesPerPixel,
       ).totalBytes,
-      foldTransientBytes: fullLayerBytes * 2,
+      reclaimableCompositeBytes: [...this.liveMergedSurfaceTextures.values()].reduce(
+        (total, surface) => total + surface.mip0MemoryBytes + surface.mipChainMemoryBytes,
+        0,
+      ),
+      foldTransientBytes: this.layerSwitchFoldTransientBytes(targetIndex, fullLayerBytes),
     });
     const decision = planMemoryAdmission(
       {

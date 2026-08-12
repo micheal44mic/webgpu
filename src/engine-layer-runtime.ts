@@ -14,6 +14,8 @@ import {
   type DisplayPyramidResources,
   type EffectsRetargetCaller,
   type LayerBakeResources,
+  type LayerColdStorageResources,
+  type LayerCompressedColdStorageResources,
   type LayerEffectsRebuildDomain,
   type LayerGpuCompletionPolicy,
   type LayerGpuResources,
@@ -27,6 +29,7 @@ import {
   createColdLayerGpuResources,
   createHydratedLayerTexture,
   createLayerColdStorageCandidate,
+  decompressLayerColdChunk,
   destroyLayerColdStorage,
   destroyLayerHot,
   destroyTransientLayerHydration,
@@ -37,7 +40,11 @@ import {
   PAINT_DISPLAY_MIP_LEVEL_COUNT,
 } from "./engine-limits";
 import { destroyLightGlazeResources } from "./engine-glaze-runtime";
-import { clearLayerStorageTileMask } from "./layer-storage-study";
+import {
+  clearLayerStorageTileMask,
+  LAYER_STORAGE_TILE_COUNT,
+  LAYER_STORAGE_TILE_SIZE,
+} from "./layer-storage-study";
 import {
   createMixedSceneRasterSegmentResources,
   destroyMixedSceneRasterSegment,
@@ -108,6 +115,8 @@ import {
   rasterOuterShadowEffectRect,
   rasterStrokeEffectRect,
 } from "./engine-runtime-misc";
+import { combineCompressionHashes } from "./engine-math";
+import { LAYER_COLD_TILE_COMPOSITE_BATCH_TILES } from "./layer-cold-tile-composite-shader";
 
 export interface RecreateLayerResourcesOptions {
   /** Compile pixel-selection paint variants after the initial canvas is visible. */
@@ -165,6 +174,8 @@ export async function recreateLayerResources(
     activeClippingGroupMipPipeline,
     layerCompositePipeline,
     layerSourceAtopPipeline,
+    layerColdTileCompositePipeline,
+    layerColdTileSourceAtopPipeline,
     layerBlendFoldPipeline,
     warmSelectionPipelines,
   } = await runGpuAllocationTransaction(
@@ -217,6 +228,10 @@ export async function recreateLayerResources(
   const layerCompositePipelineLayout = engine.device.createPipelineLayout({
     label: `Layer source-over fold pipeline layout ${format}`,
     bindGroupLayouts: [engine.layerCompositeBindGroupLayout],
+  });
+  const layerColdTileCompositePipelineLayout = engine.device.createPipelineLayout({
+    label: `Direct cold tile fold pipeline layout ${format}`,
+    bindGroupLayouts: [engine.layerColdTileCompositeBindGroupLayout],
   });
   const lightGlazeCompositeMipPipelineLayout = engine.device.createPipelineLayout({
     label: `Light Glaze composited mip 1 pipeline layout ${format}`,
@@ -1133,6 +1148,50 @@ export async function recreateLayerResources(
     },
     primitive: { topology: "triangle-list" },
   });
+  const layerColdTileCompositePipeline = engine.device.createRenderPipeline({
+    label: `Direct cold tile source-over fold ${format}`,
+    layout: layerColdTileCompositePipelineLayout,
+    vertex: {
+      module: engine.layerColdTileCompositeShaderModule,
+      entryPoint: "vertexMain",
+    },
+    fragment: {
+      module: engine.layerColdTileCompositeShaderModule,
+      entryPoint: "fragmentMain",
+      targets: [{
+        format,
+        blend: {
+          color: { operation: "add", srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+          alpha: { operation: "add", srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+        },
+      }],
+    },
+    primitive: { topology: "triangle-list" },
+  });
+  const layerColdTileSourceAtopPipeline = engine.device.createRenderPipeline({
+    label: `Direct cold tile source-atop fold ${format}`,
+    layout: layerColdTileCompositePipelineLayout,
+    vertex: {
+      module: engine.layerColdTileCompositeShaderModule,
+      entryPoint: "vertexMain",
+    },
+    fragment: {
+      module: engine.layerColdTileCompositeShaderModule,
+      entryPoint: "fragmentMain",
+      targets: [{
+        format,
+        blend: {
+          color: {
+            operation: "add",
+            srcFactor: "dst-alpha",
+            dstFactor: "one-minus-src-alpha",
+          },
+          alpha: { operation: "add", srcFactor: "zero", dstFactor: "one" },
+        },
+      }],
+    },
+    primitive: { topology: "triangle-list" },
+  });
   const layerBlendFoldPipeline = engine.device.createRenderPipeline({
     label: `Advanced document-space layer blend fold ${format}`,
     layout: layerBlendFoldPipelineLayout,
@@ -1188,6 +1247,8 @@ export async function recreateLayerResources(
         activeClippingGroupMipPipeline,
         layerCompositePipeline,
         layerSourceAtopPipeline,
+        layerColdTileCompositePipeline,
+        layerColdTileSourceAtopPipeline,
         layerBlendFoldPipeline,
         warmSelectionPipelines,
       };
@@ -1436,6 +1497,8 @@ export async function recreateLayerResources(
   engine.activeClippingGroupMipPipeline = activeClippingGroupMipPipeline;
   engine.layerCompositePipeline = layerCompositePipeline;
   engine.layerSourceAtopPipeline = layerSourceAtopPipeline;
+  engine.layerColdTileCompositePipeline = layerColdTileCompositePipeline;
+  engine.layerColdTileSourceAtopPipeline = layerColdTileSourceAtopPipeline;
   engine.layerBlendFoldPipeline = layerBlendFoldPipeline;
   engine.layerFormat = format;
   rebuildActiveLayerPyramidBindings(engine);
@@ -1519,7 +1582,9 @@ export async function retargetEffectsWorkingSetInternal(engine: BrushEngine,
   }
 
   if (completionPolicy === "await-immediately") {
-    await engine.waitForIdle();
+    await engine.waitForIdle({
+      allowFrozenDerivedPresentation: caller !== "public",
+    });
   }
   const strokeStyle = styles?.strokeStyle ?? engine.rasterStrokeStyle;
   const bevelStyle = styles?.bevelStyle ?? engine.rasterBevelStyle;
@@ -1797,6 +1862,372 @@ export function releaseLayerBlendFoldScratch(destination: MergedSurfaceResources
   destination.blendFoldTileHeight = 0;
 }
 
+type AuthoritativeColdTileCompositeSource = {
+  recordId: number;
+  gpu: LayerGpuResources;
+  cold: LayerColdStorageResources | null;
+  compressed: LayerCompressedColdStorageResources | null;
+  nonTransparentBounds: DirtyRect;
+};
+
+function authoritativeColdTileCompositeSource(
+  engine: BrushEngine,
+  record: LayerRecord,
+  blendMode: LayerBlendMode,
+): AuthoritativeColdTileCompositeSource | null {
+  if (!engine.layerColdTileCompositeEnabled || blendMode !== "normal") {
+    return null;
+  }
+  const gpu = engine.requireLayerGpu(record.id);
+  if (gpu.hot || (gpu.bake && gpu.bakeValid)) {
+    return null;
+  }
+  const cold = gpu.cold;
+  const compressed = gpu.compressed;
+  if (Boolean(cold) === Boolean(compressed)) {
+    return null;
+  }
+  const requirements = layerEffectRendererRequirements(
+    record.strokeStyle,
+    normalizeRasterBevelStyle(record.bevelStyle),
+    normalizeRasterOuterShadowStyle(record.outerShadowStyle),
+    normalizeRasterInnerShadowStyle(record.innerShadowStyle),
+    normalizeRasterColorOverlayStyle(record.colorOverlayStyle),
+  );
+  if (requirements.needsStrokeRenderer) {
+    return null;
+  }
+  const format = cold?.format ?? compressed?.format;
+  if (format !== engine.layerFormat) {
+    throw new Error(
+      `Fold tile livello ${record.id}: formato ${format ?? "assente"} incompatibile con `
+      + `${engine.layerFormat}.`,
+    );
+  }
+  if (compressed) {
+    const bytesPerPixel = compressed.format === "rgba16float" ? 8 : 4;
+    const tileBytes = LAYER_STORAGE_TILE_SIZE * LAYER_STORAGE_TILE_SIZE * bytesPerPixel;
+    const chunksFitBoundedScratch = compressed.tileIndices.length > 0
+      && compressed.chunks.length > 0
+      && compressed.chunks.every((chunk) => (
+        chunk.rawBytes > 0
+        && chunk.rawBytes % tileBytes === 0
+        && chunk.rawBytes <= LAYER_COLD_TILE_COMPOSITE_BATCH_TILES * tileBytes
+      ));
+    if (!chunksFitBoundedScratch) {
+      return null;
+    }
+  }
+  return {
+    recordId: record.id,
+    gpu,
+    cold,
+    compressed,
+    nonTransparentBounds: normalizeLayerRect(record.contentBounds) ?? {
+      x: 0,
+      y: 0,
+      width: LAYER_SIZE,
+      height: LAYER_SIZE,
+    },
+  };
+}
+
+function coldTileCompositeSourceIsCurrent(
+  source: AuthoritativeColdTileCompositeSource,
+): boolean {
+  return source.gpu.hot === null
+    && source.gpu.cold === source.cold
+    && source.gpu.compressed === source.compressed;
+}
+
+function writeColdTileCompositeUniforms(
+  engine: BrushEngine,
+  destination: MergedSurfaceResources,
+  opacity: number,
+): void {
+  if (
+    destination.resolutionScale !== 1
+    || destination.textureWidth !== destination.bounds.width
+    || destination.textureHeight !== destination.bounds.height
+    || !Number.isInteger(destination.bounds.x)
+    || !Number.isInteger(destination.bounds.y)
+  ) {
+    throw new Error("Il fold cold tile richiede una superficie mip0 1:1 intera.");
+  }
+  const upload = new ArrayBuffer(32);
+  const i32 = new Int32Array(upload);
+  const u32 = new Uint32Array(upload);
+  const f32 = new Float32Array(upload);
+  i32[0] = destination.bounds.x;
+  i32[1] = destination.bounds.y;
+  u32[2] = destination.textureWidth;
+  u32[3] = destination.textureHeight;
+  f32[4] = Math.min(1, Math.max(0, opacity));
+  engine.device.queue.writeBuffer(engine.layerColdTileCompositeUniformBuffer, 0, upload);
+}
+
+async function foldAuthoritativeColdTilesIntoMergedSurface(
+  engine: BrushEngine,
+  destination: MergedSurfaceResources,
+  source: AuthoritativeColdTileCompositeSource,
+  opacity: number,
+  operator: LayerFoldCompositeOperator,
+  clearDestination: boolean,
+  documentRect: DirtyRect,
+  label: string,
+): Promise<void> {
+  writeColdTileCompositeUniforms(engine, destination, opacity);
+  if (!coldTileCompositeSourceIsCurrent(source)) {
+    throw new Error(`Fold tile livello ${source.recordId}: sorgente diventata stale.`);
+  }
+
+  let submitted = false;
+  let completed = false;
+  let submissionCount = 0;
+  const submitBatch = (
+    sourceView: GPUTextureView,
+    tileIndices: readonly number[],
+    clear: boolean,
+    batchLabel: string,
+  ): void => {
+    if (tileIndices.length < 1 || tileIndices.length > LAYER_STORAGE_TILE_COUNT) {
+      throw new RangeError(`${batchLabel}: conteggio tile ${tileIndices.length} non valido.`);
+    }
+    engine.device.queue.writeBuffer(
+      engine.layerColdTileCompositeIndicesBuffer,
+      0,
+      new Uint32Array(tileIndices),
+    );
+    const bindGroup = engine.device.createBindGroup({
+      label: batchLabel,
+      layout: engine.layerColdTileCompositeBindGroupLayout,
+      entries: [
+        { binding: 0, resource: sourceView },
+        { binding: 1, resource: { buffer: engine.layerColdTileCompositeIndicesBuffer } },
+        { binding: 2, resource: { buffer: engine.layerColdTileCompositeUniformBuffer } },
+      ],
+    });
+    const encoder = engine.device.createCommandEncoder({ label: batchLabel });
+    const pass = encoder.beginRenderPass({
+      label: batchLabel,
+      colorAttachments: [{
+        view: destination.mipViews[0],
+        loadOp: clear ? "clear" : "load",
+        storeOp: "store",
+        clearValue: { r: 0, g: 0, b: 0, a: 0 },
+      }],
+    });
+    pass.setPipeline(
+      operator === "source-atop"
+        ? engine.layerColdTileSourceAtopPipeline
+        : engine.layerColdTileCompositePipeline,
+    );
+    pass.setBindGroup(0, bindGroup);
+    pass.draw(6, tileIndices.length, 0, 0);
+    pass.end();
+    engine.device.queue.submit([encoder.finish()]);
+    submitted = true;
+    submissionCount += 1;
+  };
+
+  let scratchTexture: GPUTexture | null = null;
+  let scratchBytes = 0;
+  let foldedTileCount = 0;
+  try {
+    if (source.cold) {
+      const cold = source.cold;
+      submitBatch(
+        cold.texture.createView({
+          label: `${label} · cold array view`,
+          dimension: "2d-array",
+          baseArrayLayer: 0,
+          arrayLayerCount: cold.tileIndices.length,
+        }),
+        cold.tileIndices,
+        clearDestination,
+        label,
+      );
+      foldedTileCount = cold.tileIndices.length;
+    } else {
+      const compressed = source.compressed!;
+      const bytesPerPixel = compressed.format === "rgba16float" ? 8 : 4;
+      const tileBytes = LAYER_STORAGE_TILE_SIZE * LAYER_STORAGE_TILE_SIZE * bytesPerPixel;
+      const chunkTileCounts = compressed.chunks.map((chunk, index) => {
+        if (
+          chunk.rawBytes <= 0
+          || chunk.rawBytes % tileBytes !== 0
+          || chunk.rawBytes / tileBytes > LAYER_STORAGE_TILE_COUNT
+        ) {
+          throw new Error(`Fold tile livello ${source.recordId}: chunk ${index} non valido.`);
+        }
+        return chunk.rawBytes / tileBytes;
+      });
+      const scratchLayerCount = Math.min(
+        compressed.tileIndices.length,
+        Math.max(LAYER_COLD_TILE_COMPOSITE_BATCH_TILES, ...chunkTileCounts),
+      );
+      scratchBytes = scratchLayerCount * tileBytes;
+      scratchTexture = engine.device.createTexture({
+        label: `Scratch direct cold tile composite livello ${source.recordId}`,
+        size: {
+          width: LAYER_STORAGE_TILE_SIZE,
+          height: LAYER_STORAGE_TILE_SIZE,
+          depthOrArrayLayers: scratchLayerCount,
+        },
+        format: compressed.format,
+        usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
+      });
+      engine.layerColdTileCompositeScratchActiveBytes += scratchBytes;
+      engine.layerColdTileCompositeScratchPeakBytes = Math.max(
+        engine.layerColdTileCompositeScratchPeakBytes,
+        engine.layerColdTileCompositeScratchActiveBytes,
+      );
+      const scratchView = scratchTexture.createView({
+        label: `${label} · scratch array view`,
+        dimension: "2d-array",
+        baseArrayLayer: 0,
+        arrayLayerCount: scratchLayerCount,
+      });
+      let chunkIndex = 0;
+      let firstTile = 0;
+      let restoredBytes = 0;
+      let restoredHash = 0x811c9dc5;
+      let clear = clearDestination;
+      while (chunkIndex < compressed.chunks.length) {
+        const batchIndices: number[] = [];
+        const uploads: Array<{ bytes: Uint8Array; arrayLayer: number; tileCount: number }> = [];
+        while (chunkIndex < compressed.chunks.length) {
+          const chunk = compressed.chunks[chunkIndex];
+          const chunkTileCount = chunkTileCounts[chunkIndex];
+          if (batchIndices.length > 0 && batchIndices.length + chunkTileCount > scratchLayerCount) {
+            break;
+          }
+          const restored = await decompressLayerColdChunk(engine, chunk);
+          if (
+            !coldTileCompositeSourceIsCurrent(source)
+            || restored.byteLength !== chunk.rawBytes
+            || firstTile + chunkTileCount > compressed.tileIndices.length
+          ) {
+            throw new Error(`Fold tile livello ${source.recordId}: chunk diventato stale.`);
+          }
+          uploads.push({
+            bytes: restored,
+            arrayLayer: batchIndices.length,
+            tileCount: chunkTileCount,
+          });
+          batchIndices.push(
+            ...compressed.tileIndices.slice(firstTile, firstTile + chunkTileCount),
+          );
+          firstTile += chunkTileCount;
+          restoredBytes += restored.byteLength;
+          restoredHash = combineCompressionHashes(
+            restoredHash,
+            chunk.sourceHash,
+            restored.byteLength,
+          );
+          chunkIndex += 1;
+        }
+        for (const upload of uploads) {
+          engine.device.queue.writeTexture(
+            { texture: scratchTexture, origin: { x: 0, y: 0, z: upload.arrayLayer } },
+            upload.bytes,
+            {
+              bytesPerRow: LAYER_STORAGE_TILE_SIZE * bytesPerPixel,
+              rowsPerImage: LAYER_STORAGE_TILE_SIZE,
+            },
+            {
+              width: LAYER_STORAGE_TILE_SIZE,
+              height: LAYER_STORAGE_TILE_SIZE,
+              depthOrArrayLayers: upload.tileCount,
+            },
+          );
+        }
+        submitBatch(
+          scratchView,
+          batchIndices,
+          clear,
+          `${label} · batch ${submissionCount + 1}`,
+        );
+        clear = false;
+      }
+      if (
+        !coldTileCompositeSourceIsCurrent(source)
+        || firstTile !== compressed.tileIndices.length
+        || restoredBytes !== compressed.rawBytes
+        || restoredHash !== compressed.sourceHash
+      ) {
+        throw new Error(`Fold tile livello ${source.recordId}: integrità aggregata non valida.`);
+      }
+      foldedTileCount = firstTile;
+    }
+    await engine.waitForGpuCapped(label);
+    completed = true;
+    if (!coldTileCompositeSourceIsCurrent(source)) {
+      throw new Error(`Fold tile livello ${source.recordId}: autorità cambiata dopo il submit.`);
+    }
+    destination.foldedPixels += documentRect.width * documentRect.height;
+    engine.layerColdTileCompositeFoldCount += 1;
+    engine.layerColdTileCompositeResidentFoldCount += source.cold ? 1 : 0;
+    engine.layerColdTileCompositeCompressedFoldCount += source.compressed ? 1 : 0;
+    engine.layerColdTileCompositeTileCount += foldedTileCount;
+    engine.layerColdTileCompositeSubmissionCount += submissionCount;
+    engine.layerColdTileCompositeAvoidedHydrationBytes += LAYER_SIZE * LAYER_SIZE
+      * (engine.layerFormat === "rgba16float" ? 8 : 4);
+  } finally {
+    if (submitted && !completed) {
+      try {
+        await engine.waitForGpuCapped(`${label} · drain rollback`);
+      } catch {
+        // Device-loss/timeout already makes the render path unusable. Resource
+        // destruction below is still the only safe local cleanup available.
+      }
+    }
+    scratchTexture?.destroy();
+    engine.layerColdTileCompositeScratchActiveBytes = Math.max(
+      0,
+      engine.layerColdTileCompositeScratchActiveBytes - scratchBytes,
+    );
+  }
+}
+
+async function tryFoldAuthoritativeColdTilesIntoMergedSurface(
+  engine: BrushEngine,
+  destination: MergedSurfaceResources,
+  record: LayerRecord,
+  opacity: number,
+  blendMode: LayerBlendMode,
+  operator: LayerFoldCompositeOperator,
+  clearDestination: boolean,
+  label: string,
+): Promise<boolean | null> {
+  if (destination.resolutionScale !== 1) {
+    return null;
+  }
+  const source = authoritativeColdTileCompositeSource(engine, record, blendMode);
+  if (!source) {
+    return null;
+  }
+  const rect = intersectMergedSurfaceRects(
+    source.nonTransparentBounds,
+    destination.bounds,
+    LAYER_SIZE,
+  );
+  if (!rect) {
+    return false;
+  }
+  await foldAuthoritativeColdTilesIntoMergedSurface(
+    engine,
+    destination,
+    source,
+    opacity,
+    operator,
+    clearDestination,
+    rect,
+    label,
+  );
+  return true;
+}
+
 export async function foldViewIntoMergedSurface(
   engine: BrushEngine,
   destination: MergedSurfaceResources,
@@ -2069,6 +2500,20 @@ async function buildClippingOverlaySurface(
   let first = true;
   try {
     for (const record of visible) {
+      const directTileFold = await tryFoldAuthoritativeColdTilesIntoMergedSurface(
+        engine,
+        surface,
+        record,
+        record.opacity,
+        "normal",
+        "source-over",
+        first,
+        `${label} · layer ${record.id} direct cold tiles`,
+      );
+      if (directTileFold !== null) {
+        first = first && !directTileFold;
+        continue;
+      }
       const source = await materializeLayerCompositeSource(engine, record, caller);
       try {
         const rect = intersectMergedSurfaceRects(
@@ -2136,11 +2581,14 @@ async function buildClippingSuffixStepSurface(
   requestedBounds: DirtyRect,
   label: string,
 ): Promise<MergedSurfaceResources | null> {
-  const source = await materializeLayerCompositeSource(engine, record, caller);
+  const directSource = authoritativeColdTileCompositeSource(engine, record, "normal");
+  const source = directSource
+    ? null
+    : await materializeLayerCompositeSource(engine, record, caller);
   let surface: MergedSurfaceResources | null = null;
   try {
     const bounded = intersectMergedSurfaceRects(
-      source.nonTransparentBounds,
+      directSource?.nonTransparentBounds ?? source!.nonTransparentBounds,
       requestedBounds,
       LAYER_SIZE,
     );
@@ -2164,29 +2612,42 @@ async function buildClippingSuffixStepSurface(
         return candidate;
       },
     );
-    await foldViewIntoMergedSurface(
-      engine,
-      surface,
-      source.view,
-      { x: 0, y: 0 },
-      1,
-      LAYER_SIZE,
-      LAYER_SIZE,
-      1,
-      bounded,
-      "normal",
-      "source-over",
-      true,
-      label,
-    );
-    surface.analyticBakePixels += source.analyticBakePixels;
+    if (directSource) {
+      await foldAuthoritativeColdTilesIntoMergedSurface(
+        engine,
+        surface,
+        directSource,
+        1,
+        "source-over",
+        true,
+        bounded,
+        `${label} · direct cold tiles`,
+      );
+    } else {
+      await foldViewIntoMergedSurface(
+        engine,
+        surface,
+        source!.view,
+        { x: 0, y: 0 },
+        1,
+        LAYER_SIZE,
+        LAYER_SIZE,
+        1,
+        bounded,
+        "normal",
+        "source-over",
+        true,
+        label,
+      );
+      surface.analyticBakePixels += source!.analyticBakePixels;
+    }
     return await finalizeClippingAuxiliarySurface(engine, surface, false, label);
   } catch (error) {
     engine.destroyMergedSurface(surface);
     throw error;
   } finally {
-    engine.destroyLayerBake(source.transientBake);
-    destroyTransientLayerHydration(engine, source.transientHydration);
+    engine.destroyLayerBake(source?.transientBake);
+    destroyTransientLayerHydration(engine, source?.transientHydration);
   }
 }
 
@@ -2280,11 +2741,16 @@ export async function buildClippingPrefixSurface(
   if (!recordHasLiveContent(engine, parent)) {
     return null;
   }
-  const parentSource = await materializeLayerCompositeSource(engine, parent, caller);
-  const parentBounds = normalizeLayerRect(parentSource.nonTransparentBounds);
+  const directParentSource = authoritativeColdTileCompositeSource(engine, parent, "normal");
+  const parentSource = directParentSource
+    ? null
+    : await materializeLayerCompositeSource(engine, parent, caller);
+  const parentBounds = normalizeLayerRect(
+    directParentSource?.nonTransparentBounds ?? parentSource!.nonTransparentBounds,
+  );
   if (!parentBounds) {
-    engine.destroyLayerBake(parentSource.transientBake);
-    destroyTransientLayerHydration(engine, parentSource.transientHydration);
+    engine.destroyLayerBake(parentSource?.transientBake);
+    destroyTransientLayerHydration(engine, parentSource?.transientHydration);
     return null;
   }
   let surface: MergedSurfaceResources | null = null;
@@ -2298,25 +2764,51 @@ export async function buildClippingPrefixSurface(
       1,
       maintainMips,
     );
-    await foldViewIntoMergedSurface(
-      engine,
-      surface,
-      parentSource.view,
-      { x: 0, y: 0 },
-      1,
-      LAYER_SIZE,
-      LAYER_SIZE,
-      1,
-      parentBounds,
-      "normal",
-      "source-over",
-      true,
-      `${label} · styled parent ${parent.id}`,
-    );
-    surface.analyticBakePixels += parentSource.analyticBakePixels;
+    if (directParentSource) {
+      await foldAuthoritativeColdTilesIntoMergedSurface(
+        engine,
+        surface,
+        directParentSource,
+        1,
+        "source-over",
+        true,
+        parentBounds,
+        `${label} · parent ${parent.id} direct cold tiles`,
+      );
+    } else {
+      await foldViewIntoMergedSurface(
+        engine,
+        surface,
+        parentSource!.view,
+        { x: 0, y: 0 },
+        1,
+        LAYER_SIZE,
+        LAYER_SIZE,
+        1,
+        parentBounds,
+        "normal",
+        "source-over",
+        true,
+        `${label} · styled parent ${parent.id}`,
+      );
+      surface.analyticBakePixels += parentSource!.analyticBakePixels;
+    }
 
     for (const child of children) {
       if (!child.visible || child.opacity <= 0 || !recordHasLiveContent(engine, child)) {
+        continue;
+      }
+      const directTileFold = await tryFoldAuthoritativeColdTilesIntoMergedSurface(
+        engine,
+        surface,
+        child,
+        child.opacity,
+        child.blendMode,
+        "source-atop",
+        false,
+        `${label} · child ${child.id} direct cold tiles`,
+      );
+      if (directTileFold !== null) {
         continue;
       }
       const source = await materializeLayerCompositeSource(engine, child, caller);
@@ -2360,8 +2852,8 @@ export async function buildClippingPrefixSurface(
     engine.destroyMergedSurface(surface);
     throw error;
   } finally {
-    engine.destroyLayerBake(parentSource.transientBake);
-    destroyTransientLayerHydration(engine, parentSource.transientHydration);
+    engine.destroyLayerBake(parentSource?.transientBake);
+    destroyTransientLayerHydration(engine, parentSource?.transientHydration);
   }
 }
 
@@ -2508,6 +3000,19 @@ export async function foldRasterRecordIntoMergedSurface(engine: BrushEngine,
 ): Promise<boolean> {
   if (record.clippingParentId !== null) {
     throw new Error(`Il child ${record.id} deve essere foldato con il proprio gruppo.`);
+  }
+  const directTileFold = await tryFoldAuthoritativeColdTilesIntoMergedSurface(
+    engine,
+    surface,
+    record,
+    record.opacity,
+    externalBlendMode,
+    "source-over",
+    first,
+    `Fold tile cold livello ${record.id} into merged ${side}`,
+  );
+  if (directTileFold !== null) {
+    return directTileFold;
   }
   const source = await materializeLayerCompositeSource(engine, record, caller);
   const sourceRect = intersectMergedSurfaceRects(

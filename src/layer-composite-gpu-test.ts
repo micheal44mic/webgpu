@@ -711,7 +711,7 @@ export async function runLayerCompositeGpuTest(
         === "transient-analytic-bounded-visual-rect-no-handoff-residency-mip0-fused-into-two-merged-surfaces",
     compositeSchedulingAndBoundsSignatureMatches:
       LAYER_COMPOSITE_STRATEGY
-      === "merged-above-over-isolated-active-clipping-group-over-merged-below-source-atop-live-prefix-suffix-compose-before-filter-parent-opacity-once-deferred-to-fold-fence-bounded-visual-rect",
+      === "merged-above-over-isolated-active-clipping-group-over-merged-below-source-atop-live-prefix-suffix-compose-before-filter-parent-opacity-once-direct-authoritative-cold-tiles-normal-no-effects-deferred-to-fold-fence-bounded-visual-rect",
     belowOnlyHasOnlyLayerA:
       alpha(rawSamples.belowOnly.layerA) > 0
       && alpha(rawSamples.belowOnly.layerB) === 0

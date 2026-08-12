@@ -1292,6 +1292,8 @@ const pageSearchParams = new URLSearchParams(window.location.search);
 const bevelBoundingFieldEnabled = pageSearchParams.get("bevelField") === "bbox";
 const layerHistoryTestRequested = import.meta.env.DEV
   && pageSearchParams.get("layerHistoryTest") === "1";
+const layerColdTileCompositeTestRequested = import.meta.env.DEV
+  && pageSearchParams.get("layerColdTileCompositeTest") === "1";
 const clippingGroupTestRequested = import.meta.env.DEV
   && pageSearchParams.get("clippingGroupTest") === "1";
 const layerBlendTestRequested = import.meta.env.DEV
@@ -1354,6 +1356,8 @@ const layerColdCompressionMode = pageSearchParams.get("layerCompressionRuntime")
 const layerColdCompressionRequested = layerColdCompressionMode !== "0";
 const layerColdDirectHotHydrationEnabled =
   pageSearchParams.get("layerDirectHotHydration") !== "0";
+const layerColdTileCompositeEnabled =
+  pageSearchParams.get("layerColdTileComposite") !== "0";
 const layerColdAdjacentPrefetchMode =
   pageSearchParams.get("layerAdjacentPrefetch");
 const layerColdAdjacentPrefetchEnabled =
@@ -1602,6 +1606,7 @@ const engine = new BrushEngine(canvas, {
   // Il pannello memoria mostra comunque lo stato di ogni livello in tempo reale.
   layerColdCompressionStatusEnabled: layerColdCompressionMode === "1",
   layerColdDirectHotHydrationEnabled,
+  layerColdTileCompositeEnabled,
   layerColdAdjacentPrefetchEnabled,
 }, rasterSelectionOverlayCanvas);
 window.addEventListener("error", (event) => {
@@ -11173,7 +11178,9 @@ function updateHistoryDiagnostics(): void {
     + `${telemetry.deltaCheckpointCount} delta) per `
     + `${formatMemoryMiB(telemetry.checkpointBytes / (1024 * 1024))}; catture `
     + `${telemetry.capturesCommitted}/${telemetry.capturesStarted} committed, `
-    + `${telemetry.capturesFailed} fallite, ${telemetry.capturesDiscardedStale} stale. `
+    + `${telemetry.capturesFailed} fallite, ${telemetry.capturesDiscardedStale} stale, `
+    + `${telemetry.capturesRefusedForBudget} rifiutate per budget; `
+    + `${telemetry.checkpointCacheEvictions} checkpoint cache liberati. `
     + `Eviction ${telemetry.budgetEvictions} esclusivamente da budget; pavimento `
     + `${telemetry.floorCursor}, azioni ${state.actionCount}, profondità Undo ${depth}. `
     + `Locale ${formatMemoryMiB(locale.committedBytes / (1024 * 1024))} · `
@@ -11224,6 +11231,38 @@ function appDiagnosticSection<Value>(read: () => Value):
   } catch (error) {
     return { ok: false, error: describeAppDiagnosticError(error) };
   }
+}
+
+async function runRequestedLayerColdTileCompositeTest(): Promise<void> {
+  layerHistoryTestSection.hidden = false;
+  layerHistoryTestDetails.hidden = true;
+  layerHistoryTestResult.className = "result";
+  layerHistoryTestResult.textContent = "Test GPU compositing diretto dai cold tile…";
+  try {
+    const { runLayerColdTileCompositeGpuTest } = await import(
+      "./layer-cold-tile-composite-gpu-test"
+    );
+    const report = await runLayerColdTileCompositeGpuTest(engine);
+    layerHistoryTestReport.textContent = JSON.stringify(report, null, 2);
+    layerHistoryTestDetails.hidden = false;
+    layerHistoryTestDetails.open = true;
+    (
+      window as Window & { __layerColdTileCompositeGpuTestReport?: typeof report }
+    ).__layerColdTileCompositeGpuTestReport = report;
+    layerHistoryTestResult.className = report.passed ? "result ok" : "result error";
+    layerHistoryTestResult.textContent = report.passed
+      ? "Cold tile GPU OK · seam byte-identica e hydration full evitata."
+      : "Cold tile GPU ERRORE · consulta il report JSON.";
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const failure = { version: 1, passed: false, error: message } as const;
+    layerHistoryTestReport.textContent = JSON.stringify(failure, null, 2);
+    layerHistoryTestDetails.hidden = false;
+    layerHistoryTestDetails.open = true;
+    layerHistoryTestResult.className = "result error";
+    layerHistoryTestResult.textContent = `Cold tile GPU ERRORE · ${message}`;
+  }
+  updateStats(engine.getStats());
 }
 
 async function appDiagnosticAsyncSection<Value>(read: () => Promise<Value>): Promise<
@@ -11422,6 +11461,12 @@ async function buildAppDiagnosticReport(): Promise<string> {
         })),
       }
       : measuredResult,
+    layerColdTileComposite: stats
+      ? {
+        enabled: stats.layerColdTileCompositeEnabled,
+        ...stats.layerColdTileComposite,
+      }
+      : null,
     historyMaintenance: maintenanceResult,
     vectorDiagnostics: vectorDiagnosticsResult,
     fillDiagnostics: fillDiagnosticsResult,
@@ -15521,17 +15566,23 @@ void engine.initialize()
     completeStartupDiagnostics();
     startRuntimeStatsPolling();
 
-    scheduleDeferredStartupTask(
-      "deferred-gpu-pipelines",
-      () => engine.ensureOptionalEditorResources(),
-      500,
-    );
-    scheduleDeferredStartupTask(
-      "deferred-canonical-stroke",
-      loadCanonicalHumanStroke,
-      2_000,
-    );
-    if (mobileBrushStudio && mobileUiMediaQuery.matches) {
+    if (!layerColdTileCompositeTestRequested) {
+      scheduleDeferredStartupTask(
+        "deferred-gpu-pipelines",
+        () => engine.ensureOptionalEditorResources(),
+        500,
+      );
+      scheduleDeferredStartupTask(
+        "deferred-canonical-stroke",
+        loadCanonicalHumanStroke,
+        2_000,
+      );
+    }
+    if (
+      mobileBrushStudio
+      && mobileUiMediaQuery.matches
+      && !layerColdTileCompositeTestRequested
+    ) {
       scheduleDeferredStartupTask(
         "deferred-brush-restore",
         restoreActiveMobileBrushLibraryBrush,
@@ -15542,7 +15593,8 @@ void engine.initialize()
     const vectorTextRequiredByStartupProbe = vectorZoomCoverageRequested
       || vectorZoomAbRequested
       || vectorZoomStressRequested
-      || layerMergeTestRequested !== null;
+      || layerMergeTestRequested !== null
+      || layerColdTileCompositeTestRequested;
     if (vectorTextEditorEnabled && vectorTextRequiredByStartupProbe) {
       await initializeVectorTextPrototype();
     } else if (vectorTextEditorEnabled) {
@@ -15553,6 +15605,16 @@ void engine.initialize()
         },
         1_500,
       );
+    }
+    if (layerColdTileCompositeTestRequested) {
+      await Promise.all([
+        engine.ensureOptionalEditorResources(),
+        loadCanonicalHumanStroke(),
+        ...(mobileBrushStudio && mobileUiMediaQuery.matches
+          ? [restoreActiveMobileBrushLibraryBrush()]
+          : []),
+      ]);
+      await engine.waitForIdle();
     }
 
     if (vectorZoomCoverageRequested) {
@@ -15575,6 +15637,8 @@ void engine.initialize()
     } else if (clippingGroupTestRequested) {
       layerHistoryTestRunning = true;
       await runRequestedClippingGroupTest();
+    } else if (layerColdTileCompositeTestRequested) {
+      await runRequestedLayerColdTileCompositeTest();
     } else if (layerHistoryTestRequested) {
       await runRequestedLayerHistoryTest();
     }
