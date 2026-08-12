@@ -1429,6 +1429,11 @@ export async function recreateLayerResources(
         candidate.destroy();
         return;
       }
+      // A deferred compile can overlap a layer activation. DryBlendRenderer
+      // captured the views that were current when create() started; retarget to
+      // the authoritative views again at publication so its very first stroke
+      // cannot sample or write the outgoing layer.
+      candidate.retarget(engine.layerView, engine.layerSamplingView);
       candidate.setShapeMaskView(engine.shapeMaskView);
       candidate.setGrainTextureView(
         engine.grainTextureView,

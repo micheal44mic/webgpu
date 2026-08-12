@@ -804,6 +804,7 @@ import {
   flushClosingLightGlazeSessionBeforeNewStroke,
   lightGlazeResourcesMatch,
   maybeReleaseIdleLightGlazeResources,
+  retargetLightGlazeBindGroups,
   requestLightGlazeResources,
 } from "./engine-glaze-runtime";
 import {
@@ -6167,6 +6168,82 @@ export class BrushEngine {
   }
 
   /**
+   * True only when the currently selected brush can accept a pointer-down
+   * without using a placeholder or turning that gesture into lazy warm-up.
+   */
+  currentBrushResourcesReady(): boolean {
+    if (!this.initialized) return false;
+    const settings = this.settings;
+    const grainReady = settings.grainMode === "off" || (
+      this.grainLoadingPromise === null
+      && this.grainResident
+      && this.grainLoadedAssetId === grainAssetIdForSettings(settings)
+    );
+    const shapeReady = settings.shape !== "shape" || (
+      this.shapeLoadingPromise === null
+      && this.shapeResident
+      && this.shapeLoadedAssetId === shapeAssetIdForSettings(settings)
+      && this.shapeLoadedInvert === shapeInvertForSettings(settings)
+    );
+    const glazeReady = !usesStrokeGlazeRenderer(settings) || (
+      this.lightGlazeLoadingPromise === null
+      && lightGlazeResourcesMatch(this, lightGlazeStorageModeFor(settings.blendMode))
+    );
+    const blendReady = settings.tool !== "blend" || this.blendRenderer !== null;
+    const selectionReady = this.pixelSelectionState.selectedPixels === 0
+      || this.selectionPipelinesReady;
+    return grainReady && shapeReady && glazeReady && blendReady && selectionReady;
+  }
+
+  /**
+   * Completes every lazy dependency of the selected brush. The settings object
+   * is replaced atomically by setBrushSettings(), so a change that lands while
+   * an asset is decoding simply restarts the loop for the latest selection.
+   */
+  async ensureCurrentBrushResources(): Promise<void> {
+    if (!this.initialized) {
+      throw new Error("Il motore non è ancora inizializzato.");
+    }
+
+    for (;;) {
+      const settings = this.settings;
+      if (
+        (settings.tool === "blend" && !this.blendRenderer)
+        || (this.pixelSelectionState.selectedPixels > 0 && !this.selectionPipelinesReady)
+      ) {
+        await this.ensureOptionalEditorResources();
+      }
+      if (settings !== this.settings) continue;
+      if (settings.tool === "blend" && !this.blendRenderer) {
+        throw new Error("Renderer Blend non disponibile per la prima pennellata.");
+      }
+      if (this.pixelSelectionState.selectedPixels > 0 && !this.selectionPipelinesReady) {
+        throw new Error("Pipeline Selezione pixel non disponibile per la prima pennellata.");
+      }
+
+      if (settings.grainMode !== "off") {
+        await this.ensureGrainResources(grainAssetIdForSettings(settings));
+      }
+      if (settings !== this.settings) continue;
+      if (settings.shape === "shape") {
+        await this.ensureShapeResources(
+          shapeAssetIdForSettings(settings),
+          shapeInvertForSettings(settings),
+        );
+      }
+      if (settings !== this.settings) continue;
+      if (usesStrokeGlazeRenderer(settings)) {
+        await this.ensureLightGlazeResources(settings.blendMode);
+      }
+      if (settings !== this.settings) continue;
+      if (!this.currentBrushResourcesReady()) {
+        throw new Error("Risorse del pennello incomplete dopo la preparazione.");
+      }
+      return;
+    }
+  }
+
+  /**
    * Completes GPU resources used only by text, SVG and raster-image layers.
    * The promise is shared so idle startup, tests and an early user action can
    * safely request the same initialization without compiling pipelines twice.
@@ -6786,6 +6863,7 @@ export class BrushEngine {
       this.mixedSceneRasterSegments = candidateMixedSegments;
       this.mixedSceneCompositionSegments = candidateCompositionSegments;
       rebuildLayerDisplayBindGroups(this);
+      retargetLightGlazeBindGroups(this);
       releaseFusedLayerBakes(this);
       this.presentationCacheNeedsFullRebuild = true;
       this.layerPresentationFrozen = false;
@@ -8407,7 +8485,6 @@ export class BrushEngine {
       // does: this is the half-switched state the transaction must recover from.
       maybeInjectHistoryReplayFault(this, "during-switch-activation");
     }
-    destroyLightGlazeResources(this);
     destroyThicknessTailOverlayResources(this);
     await ensureEffectRenderersForRecord(this, record);
 
@@ -8425,6 +8502,10 @@ export class BrushEngine {
     const compositeStartedAt = performance.now();
     await this.rebuildMergedLayerSurfaces(caller);
     const compositeMs = performance.now() - compositeStartedAt;
+    // Do not expose a fully switched layer whose first pointer-down would only
+    // start lazy texture/renderer creation. The UI keeps layerSwitchBusy held
+    // until this barrier has made the selected brush genuinely paint-ready.
+    await this.ensureCurrentBrushResources();
     commitActiveLayerResidency(this, fromIndex);
 
     this.presentationCacheNeedsFullRebuild = true;

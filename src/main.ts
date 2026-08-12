@@ -6252,7 +6252,7 @@ mobileBrushStudio = new MobileBrushStudioController({
     syncMobileBrushLibraryButtonState();
     syncMobileBrushControlsVisibility();
   },
-  onCommit: (brushId, brushName, _settings) => {
+  onCommit: async (brushId, brushName, _settings) => {
     const latestCustomBrushes = [
       ...(loadBrushStudioLibraryState()?.customBrushes ?? []),
     ];
@@ -6291,6 +6291,9 @@ mobileBrushStudio = new MobileBrushStudioController({
         : "current";
     saveBrushStudioLibraryState(committedBrushId, nextCustomBrushes);
     mobileCustomBrushes = nextCustomBrushes;
+    // Keep the sheet busy until Shape, Grain and the selected rendering mode
+    // can consume the first pointer-down after it closes.
+    await engine.ensureCurrentBrushResources();
   },
   onCommitted: (brushId, _brushName, _settings) => {
     const committedBrushId: MobileBrushLibraryBrushId =
@@ -8656,6 +8659,8 @@ async function selectMobileBrushLibraryBrush(
     const settings = await studio.resolveBrushSettings(brushId, fallback);
     if (revision !== mobileBrushLibrarySelectionRevision) return;
     applySettingsToControls(settings);
+    await engine.ensureCurrentBrushResources();
+    if (revision !== mobileBrushLibrarySelectionRevision) return;
     activeMobileBrushLibraryBrushId = brushId;
     setMobileBrushLibraryCategory(mobileBrushLibraryCategoryForBrush(brushId));
     persistActiveMobileBrushLibraryBrush();
@@ -8826,6 +8831,13 @@ async function restoreActiveMobileBrushLibraryBrush(): Promise<void> {
       return;
     }
     applySettingsToControls(restored);
+    await engine.ensureCurrentBrushResources();
+    if (
+      revision !== mobileBrushLibrarySelectionRevision
+      || !mobileUiMediaQuery.matches
+    ) {
+      return;
+    }
     setMobileBrushLibraryCategory(
       mobileBrushLibraryCategoryForBrush(activeMobileBrushLibraryBrushId),
     );
@@ -8837,6 +8849,7 @@ async function restoreActiveMobileBrushLibraryBrush(): Promise<void> {
     const message = error instanceof Error ? error.message : String(error);
     activeMobileBrushLibraryBrushId = "current";
     applySettingsToControls(mobileCurrentBrushFallback(currentSettings));
+    await engine.ensureCurrentBrushResources();
     setMobileBrushLibraryCategory("painting");
     persistActiveMobileBrushLibraryBrush();
     syncMobileBrushLibrarySelection();

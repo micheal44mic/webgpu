@@ -312,6 +312,77 @@ export function currentLightGlazeResourceSet(engine: BrushEngine): LightGlazeRes
   };
 }
 
+/**
+ * Rebuilds only the Glaze bindings whose sources follow the active layer.
+ *
+ * The accumulator, its mip chain and the commit tile are gesture scratch and
+ * do not belong to a raster layer. Keeping those textures resident across a
+ * layer switch avoids turning the user's first pointer-down into an allocation
+ * request. The three bind groups below are the only Glaze resources that bake
+ * active-layer, merged-surface or clipping views into their entries.
+ */
+export function retargetLightGlazeBindGroups(engine: BrushEngine): void {
+  if (
+    !engine.lightGlazeStorageAllocated
+    || !engine.lightGlazeView
+    || !engine.lightGlazeSamplingView
+  ) {
+    return;
+  }
+
+  engine.lightGlazeCompositeMipBindGroup = engine.device.createBindGroup({
+    label: "Light Glaze permanent + stroke to composited logical mip 1",
+    layout: engine.lightGlazeCompositeMipBindGroupLayout,
+    entries: [
+      { binding: 0, resource: engine.layerView },
+      { binding: 1, resource: engine.lightGlazeView },
+      { binding: 2, resource: { buffer: engine.lightGlazeUniformBuffer } },
+      { binding: 3, resource: { buffer: engine.displayUniformBuffer } },
+      { binding: 4, resource: engine.activeClippingPrefixView() },
+      { binding: 5, resource: engine.activeClippingSuffixView() },
+      { binding: 6, resource: engine.mergedBelowView() },
+      { binding: 7, resource: engine.mergedAboveView() },
+    ],
+  });
+  engine.lightGlazeDisplayBindGroup = engine.device.createBindGroup({
+    label: "Light Glaze live display bind group",
+    layout: engine.lightGlazeDisplayBindGroupLayout,
+    entries: [
+      { binding: 0, resource: { buffer: engine.displayUniformBuffer } },
+      { binding: 1, resource: engine.layerSamplingView },
+      { binding: 2, resource: engine.lightGlazeView },
+      { binding: 3, resource: engine.sampler },
+      { binding: 4, resource: { buffer: engine.lightGlazeUniformBuffer } },
+      { binding: 5, resource: engine.lightGlazeSamplingView },
+      { binding: 6, resource: engine.mergedBelowView() },
+      { binding: 7, resource: engine.mergedAboveView() },
+      { binding: 8, resource: engine.vectorTextBelowView ?? engine.transparentLayerView },
+      { binding: 9, resource: engine.vectorTextAboveView ?? engine.transparentLayerView },
+      { binding: 10, resource: engine.activeClippingPrefixView() },
+      { binding: 11, resource: engine.activeClippingSuffixView() },
+    ],
+  });
+  engine.lightGlazeCommitTileBindGroup = engine.lightGlazeCommitTileView
+    ? engine.device.createBindGroup({
+      label: "High precision glaze exact commit tile bind group",
+      layout: engine.lightGlazeCommitTileBindGroupLayout,
+      entries: [
+        { binding: 0, resource: engine.layerView },
+        { binding: 1, resource: engine.lightGlazeView },
+        { binding: 2, resource: { buffer: engine.lightGlazeUniformBuffer } },
+        {
+          binding: 3,
+          resource: {
+            buffer: engine.lightGlazeCommitTileUniformBuffer,
+            offset: 0,
+            size: LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BYTES,
+          },
+        },
+      ],
+    })
+    : null;
+}
+
 export function destroyLightGlazeResources(engine: BrushEngine): void {
   engine.rasterStrokeRenderer?.setLightGlazeView(null);
   engine.rasterBevelRenderer?.setLightGlazeView(null);

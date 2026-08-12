@@ -156,6 +156,79 @@ const beginStroke = section(engine, "beginStrokeAtLayer", "extendStroke(");
 assert.match(beginStroke, /this\.startLightGlazeSession\(historyActionId, lightGlazeSettings\)/);
 const endStroke = section(engine, "endStroke(timeMs?", "cancelStrokeBeforeRender");
 assert.match(endStroke, /this\.lightGlazeSession\.endRequested = true/);
+
+const activateLayer = section(
+  engine,
+  "  async activateLayer(",
+  "  destroyThicknessTailOverlayResources(): void",
+);
+assert.doesNotMatch(
+  activateLayer,
+  /destroyLightGlazeResources\(this\)/,
+  "Il cambio livello non deve distruggere lo scratch Glaze e sacrificare la prima pennellata.",
+);
+assert.match(
+  activateLayer,
+  /await this\.rebuildMergedLayerSurfaces\(caller\);[\s\S]*await this\.ensureCurrentBrushResources\(\);[\s\S]*commitActiveLayerResidency/,
+  "Il livello viene pubblicato prima che le risorse del pennello corrente siano pronte.",
+);
+
+const brushReadiness = section(
+  engine,
+  "  currentBrushResourcesReady(): boolean",
+  "  /**\n   * Completes GPU resources used only by text",
+);
+for (const requirement of [
+  "this.grainLoadingPromise === null",
+  "this.shapeLoadingPromise === null",
+  "this.lightGlazeLoadingPromise === null",
+  "this.blendRenderer !== null",
+  "this.selectionPipelinesReady",
+  "await this.ensureGrainResources",
+  "await this.ensureShapeResources",
+  "await this.ensureLightGlazeResources",
+]) {
+  assert(
+    brushReadiness.includes(requirement),
+    `Barriera prima pennellata incompleta: ${requirement}`,
+  );
+}
+
+const glazeRetarget = section(
+  engine,
+  "export function retargetLightGlazeBindGroups",
+  "export function destroyLightGlazeResources",
+);
+for (const binding of [
+  "resource: engine.layerView",
+  "resource: engine.layerSamplingView",
+  "resource: engine.mergedBelowView()",
+  "resource: engine.mergedAboveView()",
+  "resource: engine.activeClippingPrefixView()",
+  "resource: engine.activeClippingSuffixView()",
+]) {
+  assert(glazeRetarget.includes(binding), `Retarget Glaze incompleto: ${binding}`);
+}
+const mergedRebuild = section(
+  engine,
+  "  async rebuildMergedLayerSurfaces(",
+  "  recordVectorHistoryAction(",
+);
+assert.match(
+  mergedRebuild,
+  /this\.mergedBelow = candidateBelow;[\s\S]*rebuildLayerDisplayBindGroups\(this\);[\s\S]*retargetLightGlazeBindGroups\(this\);[\s\S]*this\.layerPresentationFrozen = false;/,
+  "I bind group Glaze devono seguire le nuove superfici prima di sbloccare la presentazione.",
+);
+const deferredBlendWarmup = section(
+  engine,
+  "engine.blendRendererWarmup = options.deferBlendRenderer",
+  "engine.activeLayerDisplayPyramid = nextDisplayPyramid",
+);
+assert.match(
+  deferredBlendWarmup,
+  /candidate\.retarget\(engine\.layerView, engine\.layerSamplingView\);[\s\S]*engine\.blendRenderer = candidate;/,
+  "Un renderer Blend compilato durante lo switch può ancora pubblicare le view del livello uscente.",
+);
 // Ancorato alla firma del metodo: il solo nome atterrerebbe in un commento
 // JSDoc migliaia di righe prima, allargando la sezione a mezzo motore.
 const renderFrame = section(engine, "  renderFrame(timestamp: number): void", "recordRenderedFrame(");
