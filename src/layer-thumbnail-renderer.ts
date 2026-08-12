@@ -1,17 +1,38 @@
-export const LAYER_THUMBNAIL_SIZE = 64 as const;
+import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits.ts";
+import {
+  LAYER_THUMBNAIL_SIZE,
+  layerThumbnailDimensions,
+} from "./layer-thumbnail-geometry";
+
+export {
+  LAYER_THUMBNAIL_SIZE,
+  layerThumbnailDimensions,
+  type LayerThumbnailDimensions,
+} from "./layer-thumbnail-geometry";
+
 export const LAYER_THUMBNAIL_SAMPLE_GRID = 8 as const;
 export const LAYER_THUMBNAIL_STRATEGY =
-  "lazy-idle-gpu-area-sample-64-readback-cache-v1" as const;
+  "lazy-idle-gpu-area-sample-document-aspect-64-readback-cache-v2" as const;
+
+export const {
+  width: LAYER_THUMBNAIL_WIDTH,
+  height: LAYER_THUMBNAIL_HEIGHT,
+} = layerThumbnailDimensions(DOCUMENT_WIDTH, DOCUMENT_HEIGHT);
 
 const LAYER_THUMBNAIL_BYTES_PER_PIXEL = 4;
-const LAYER_THUMBNAIL_BYTES_PER_ROW =
-  LAYER_THUMBNAIL_SIZE * LAYER_THUMBNAIL_BYTES_PER_PIXEL;
+const LAYER_THUMBNAIL_TIGHT_BYTES_PER_ROW =
+  LAYER_THUMBNAIL_WIDTH * LAYER_THUMBNAIL_BYTES_PER_PIXEL;
+const LAYER_THUMBNAIL_BYTES_PER_ROW = Math.ceil(
+  LAYER_THUMBNAIL_TIGHT_BYTES_PER_ROW / 256,
+) * 256;
 const LAYER_THUMBNAIL_BYTE_LENGTH =
-  LAYER_THUMBNAIL_BYTES_PER_ROW * LAYER_THUMBNAIL_SIZE;
+  LAYER_THUMBNAIL_BYTES_PER_ROW * LAYER_THUMBNAIL_HEIGHT;
+const LAYER_THUMBNAIL_TEXTURE_BYTES =
+  LAYER_THUMBNAIL_TIGHT_BYTES_PER_ROW * LAYER_THUMBNAIL_HEIGHT;
 
 export interface LayerThumbnailPixels {
-  readonly width: typeof LAYER_THUMBNAIL_SIZE;
-  readonly height: typeof LAYER_THUMBNAIL_SIZE;
+  readonly width: number;
+  readonly height: number;
   readonly rgba: Uint8ClampedArray;
 }
 
@@ -56,7 +77,10 @@ fn fragmentMain(
   @builtin(position) fragmentPosition: vec4<f32>
 ) -> @location(0) vec4<f32> {
   let sourceSize = vec2<i32>(textureDimensions(sourceTexture));
-  let destinationSize = vec2<i32>(${LAYER_THUMBNAIL_SIZE});
+  let destinationSize = vec2<i32>(
+    ${LAYER_THUMBNAIL_WIDTH},
+    ${LAYER_THUMBNAIL_HEIGHT},
+  );
   let destination = min(
     vec2<i32>(fragmentPosition.xy),
     destinationSize - vec2<i32>(1)
@@ -102,7 +126,7 @@ export class LayerThumbnailRenderer {
       }],
     });
     const shaderModule = device.createShaderModule({
-      label: "Layer thumbnail 64x64 area sampler WGSL",
+      label: `Layer thumbnail ${LAYER_THUMBNAIL_WIDTH}x${LAYER_THUMBNAIL_HEIGHT} area sampler WGSL`,
       code: layerThumbnailShader,
     });
     const compilation = await shaderModule.getCompilationInfo();
@@ -116,7 +140,7 @@ export class LayerThumbnailRenderer {
       );
     }
     const pipeline = await device.createRenderPipelineAsync({
-      label: "Layer thumbnail 64x64 area sampler",
+      label: `Layer thumbnail ${LAYER_THUMBNAIL_WIDTH}x${LAYER_THUMBNAIL_HEIGHT} area sampler`,
       layout: device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] }),
       vertex: { module: shaderModule, entryPoint: "vertexMain" },
       fragment: {
@@ -129,7 +153,7 @@ export class LayerThumbnailRenderer {
     return new LayerThumbnailRenderer(device, bindGroupLayout, pipeline);
   }
 
-  readonly residentBytes = LAYER_THUMBNAIL_BYTE_LENGTH * 2;
+  readonly residentBytes = LAYER_THUMBNAIL_BYTE_LENGTH + LAYER_THUMBNAIL_TEXTURE_BYTES;
 
   private readonly targetTexture: GPUTexture;
   private readonly targetView: GPUTextureView;
@@ -142,20 +166,20 @@ export class LayerThumbnailRenderer {
     private readonly pipeline: GPURenderPipeline,
   ) {
     this.targetTexture = device.createTexture({
-      label: "Layer thumbnail 64x64 target",
+      label: `Layer thumbnail ${LAYER_THUMBNAIL_WIDTH}x${LAYER_THUMBNAIL_HEIGHT} target`,
       size: {
-        width: LAYER_THUMBNAIL_SIZE,
-        height: LAYER_THUMBNAIL_SIZE,
+        width: LAYER_THUMBNAIL_WIDTH,
+        height: LAYER_THUMBNAIL_HEIGHT,
         depthOrArrayLayers: 1,
       },
       format: "rgba8unorm",
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
     });
     this.targetView = this.targetTexture.createView({
-      label: "Layer thumbnail 64x64 target view",
+      label: `Layer thumbnail ${LAYER_THUMBNAIL_WIDTH}x${LAYER_THUMBNAIL_HEIGHT} target view`,
     });
     this.readbackBuffer = device.createBuffer({
-      label: "Layer thumbnail 16 KiB readback",
+      label: `Layer thumbnail ${LAYER_THUMBNAIL_BYTE_LENGTH} B aligned readback`,
       size: LAYER_THUMBNAIL_BYTE_LENGTH,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     });
@@ -194,23 +218,31 @@ export class LayerThumbnailRenderer {
         {
           buffer: this.readbackBuffer,
           bytesPerRow: LAYER_THUMBNAIL_BYTES_PER_ROW,
-          rowsPerImage: LAYER_THUMBNAIL_SIZE,
+          rowsPerImage: LAYER_THUMBNAIL_HEIGHT,
         },
         {
-          width: LAYER_THUMBNAIL_SIZE,
-          height: LAYER_THUMBNAIL_SIZE,
+          width: LAYER_THUMBNAIL_WIDTH,
+          height: LAYER_THUMBNAIL_HEIGHT,
           depthOrArrayLayers: 1,
         },
       );
       this.device.queue.submit([encoder.finish()]);
       await this.readbackBuffer.mapAsync(GPUMapMode.READ);
       mapped = true;
-      const rgba = new Uint8ClampedArray(
-        new Uint8Array(this.readbackBuffer.getMappedRange()),
-      );
+      const mappedBytes = new Uint8Array(this.readbackBuffer.getMappedRange());
+      const rgba = new Uint8ClampedArray(LAYER_THUMBNAIL_TEXTURE_BYTES);
+      for (let row = 0; row < LAYER_THUMBNAIL_HEIGHT; row += 1) {
+        rgba.set(
+          mappedBytes.subarray(
+            row * LAYER_THUMBNAIL_BYTES_PER_ROW,
+            row * LAYER_THUMBNAIL_BYTES_PER_ROW + LAYER_THUMBNAIL_TIGHT_BYTES_PER_ROW,
+          ),
+          row * LAYER_THUMBNAIL_TIGHT_BYTES_PER_ROW,
+        );
+      }
       return {
-        width: LAYER_THUMBNAIL_SIZE,
-        height: LAYER_THUMBNAIL_SIZE,
+        width: LAYER_THUMBNAIL_WIDTH,
+        height: LAYER_THUMBNAIL_HEIGHT,
         rgba,
       };
     } finally {

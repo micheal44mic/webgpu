@@ -193,7 +193,11 @@ import { layerBaseMemoryMiB } from "./engine-memory-model";
 import { GPU_MEMORY_AUDIT_TOLERANCE_BYTES } from "./gpu-memory-audit";
 import { GPU_MEMORY_CATEGORY_ORDER } from "./gpu-resource-registry";
 import { LAYER_STACK_MAXIMUM } from "./layer-stack";
-import { LAYER_THUMBNAIL_SIZE } from "./layer-thumbnail-renderer";
+import {
+  LAYER_THUMBNAIL_HEIGHT,
+  LAYER_THUMBNAIL_SIZE,
+  LAYER_THUMBNAIL_WIDTH,
+} from "./layer-thumbnail-renderer";
 import { BoundedMobileRasterThumbnailCache } from "./mobile-raster-thumbnail-cache";
 import {
   mobileSemanticLayerThumbnailSignature,
@@ -12430,10 +12434,18 @@ function createMobileLayerRow(key: string): HTMLDivElement {
   const thumbnail = document.createElement("span");
   thumbnail.className = "mobile-layer-thumbnail";
   thumbnail.setAttribute("aria-hidden", "true");
+  thumbnail.style.setProperty(
+    "--mobile-layer-thumbnail-width",
+    `${52 * LAYER_THUMBNAIL_WIDTH / LAYER_THUMBNAIL_SIZE}px`,
+  );
+  thumbnail.style.setProperty(
+    "--mobile-layer-thumbnail-height",
+    `${52 * LAYER_THUMBNAIL_HEIGHT / LAYER_THUMBNAIL_SIZE}px`,
+  );
   const thumbnailCanvas = document.createElement("canvas");
   thumbnailCanvas.className = "mobile-layer-thumbnail-canvas";
-  thumbnailCanvas.width = LAYER_THUMBNAIL_SIZE;
-  thumbnailCanvas.height = LAYER_THUMBNAIL_SIZE;
+  thumbnailCanvas.width = LAYER_THUMBNAIL_WIDTH;
+  thumbnailCanvas.height = LAYER_THUMBNAIL_HEIGHT;
   thumbnailCanvas.hidden = true;
   const thumbnailContent = document.createElement("span");
   thumbnailContent.className = "mobile-layer-thumbnail-content";

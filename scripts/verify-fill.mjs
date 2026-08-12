@@ -27,6 +27,7 @@ import {
   FILL_WORKGROUP_STORAGE_BYTES,
   GPU_FILL_STRATEGY,
   countFillTiles,
+  fillRenderMaskTargetWord,
   fillColorsMatch,
   hexToLinearFillColor,
   normalizeFillTolerance,
@@ -55,7 +56,7 @@ assert.equal(
 );
 assert.equal(
   FILL_RENDER_MASK_STRATEGY,
-  "history-1bit-compute-expanded-low8-reused-label-buffer-v1",
+  "history-1bit-compute-expanded-row-stride-low8-reused-label-buffer-v2",
 );
 assert.equal(FILL_BLOCK_SIZE, 16);
 assert.equal(FILL_LAYER_SIZE, LAYER_SIZE);
@@ -83,6 +84,20 @@ assert.equal(FILL_RENDER_MASK_WORDS, FILL_RENDER_MASK_WORDS_PER_ROW * FILL_LAYER
 assert.equal(FILL_RENDER_MASK_BYTES, FILL_RENDER_MASK_WORDS * 4);
 assert.equal(FILL_RENDER_MASK_BYTES, FILL_HISTORY_MASK_BYTES * 4);
 assert(FILL_RENDER_MASK_BYTES <= FILL_LABEL_BUFFER_BYTES);
+const lastHistoryWordInFirstRow = FILL_HISTORY_WORDS_PER_ROW - 1;
+assert.deepEqual(
+  [0, 1, 2, 3].map((byte) => fillRenderMaskTargetWord(lastHistoryWordInFirstRow, byte)),
+  [
+    FILL_RENDER_MASK_WORDS_PER_ROW - 4,
+    FILL_RENDER_MASK_WORDS_PER_ROW - 3,
+    FILL_RENDER_MASK_WORDS_PER_ROW - 2,
+    FILL_RENDER_MASK_WORDS_PER_ROW - 1,
+  ],
+);
+assert.equal(
+  fillRenderMaskTargetWord(FILL_HISTORY_WORDS_PER_ROW, 0),
+  FILL_RENDER_MASK_WORDS_PER_ROW,
+);
 assert.equal(FILL_TILE_MASK_WORDS, 8);
 assert.equal(FILL_TILE_WIDTH, DOCUMENT_TILE_WIDTH);
 assert.equal(FILL_TILE_HEIGHT, DOCUMENT_TILE_HEIGHT);
@@ -230,6 +245,7 @@ assert(shader.includes("fn probeBit31()"));
 assert(shader.includes("atomicOr(&results[1], 0x80000000u)"));
 assert(shader.includes("atomicOr(&selectedMask[word], fillBitMask(pixel.x))"));
 assert(shader.includes("fillMaskContains(atomicLoad(&selectedMask[word]), safePixel.x)"));
+assert(shader.includes("if (targetWordX + 3u < TARGET_WORDS_PER_ROW)"));
 assert(shader.includes("packedLabels[targetWord + 3u] = (source >> 24u) & 0xffu"));
 assert(shader.includes("fillRenderMaskContains(renderMask[word], pixel.x)"));
 assert(shader.includes("pixel.x / 8u"));
@@ -238,7 +254,9 @@ assert(!shader.includes("1u << (pixel.x & 31u)"));
 assert(!shader.includes("1u << (coldTile & 31u)"));
 assert(shader.includes("fn fragmentMain(@builtin(position) position: vec4<f32>)"));
 assert(!shader.includes("@location(0) pixel: vec2<f32>"));
-assert(shader.includes("let targetWord = global.x * 4u;"));
+assert(shader.includes("let sourceRow = global.x / SOURCE_WORDS_PER_ROW;"));
+assert(shader.includes("let targetWord = sourceRow * TARGET_WORDS_PER_ROW + targetWordX;"));
+assert(!shader.includes("let targetWord = global.x * 4u;"));
 assert(!shader.includes("let target = global.x * 4u;"), "target e' riservata in WGSL");
 assert(!renderer.includes("dispatchWorkgroupsIndirect"));
 assert.equal(

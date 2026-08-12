@@ -430,15 +430,28 @@ fn rebuildSelection(
 @compute @workgroup_size(256, 1, 1)
 fn expandRenderMask(@builtin(global_invocation_id) global: vec3<u32>) {
   const SOURCE_WORDS: u32 = ${FILL_HISTORY_MASK_WORDS}u;
+  const SOURCE_WORDS_PER_ROW: u32 = ${FILL_HISTORY_WORDS_PER_ROW}u;
+  const TARGET_WORDS_PER_ROW: u32 = ${FILL_RENDER_MASK_WORDS_PER_ROW}u;
   if (global.x >= SOURCE_WORDS) { return; }
   let source = atomicLoad(&selectedMask[global.x]);
-  let targetWord = global.x * 4u;
+  let sourceRow = global.x / SOURCE_WORDS_PER_ROW;
+  let sourceWordX = global.x % SOURCE_WORDS_PER_ROW;
+  let targetWordX = sourceWordX * 4u;
+  let targetWord = sourceRow * TARGET_WORDS_PER_ROW + targetWordX;
   // packedLabels is no longer needed once selectedMask has been produced. Its
   // capacity is twice this expanded mask even at the maximum document size.
-  packedLabels[targetWord] = source & 0xffu;
-  packedLabels[targetWord + 1u] = (source >> 8u) & 0xffu;
-  packedLabels[targetWord + 2u] = (source >> 16u) & 0xffu;
-  packedLabels[targetWord + 3u] = (source >> 24u) & 0xffu;
+  if (targetWordX < TARGET_WORDS_PER_ROW) {
+    packedLabels[targetWord] = source & 0xffu;
+  }
+  if (targetWordX + 1u < TARGET_WORDS_PER_ROW) {
+    packedLabels[targetWord + 1u] = (source >> 8u) & 0xffu;
+  }
+  if (targetWordX + 2u < TARGET_WORDS_PER_ROW) {
+    packedLabels[targetWord + 2u] = (source >> 16u) & 0xffu;
+  }
+  if (targetWordX + 3u < TARGET_WORDS_PER_ROW) {
+    packedLabels[targetWord + 3u] = (source >> 24u) & 0xffu;
+  }
 }
 `;
 

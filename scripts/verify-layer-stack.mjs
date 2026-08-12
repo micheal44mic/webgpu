@@ -38,6 +38,9 @@ import {
   mobileSemanticLayerThumbnailSignature,
 } from "../src/mobile-semantic-layer-thumbnail.ts";
 import {
+  layerThumbnailDimensions,
+} from "../src/layer-thumbnail-geometry.ts";
+import {
   BoundedMobileRasterThumbnailCache,
   MOBILE_RASTER_THUMBNAIL_CACHE_GENERATIONS,
   MOBILE_RASTER_THUMBNAIL_CACHE_MAXIMUM,
@@ -1047,6 +1050,10 @@ const layerThumbnailSource = readFileSync(
   new URL("../src/layer-thumbnail-renderer.ts", import.meta.url),
   "utf8",
 );
+const layerThumbnailGeometrySource = readFileSync(
+  new URL("../src/layer-thumbnail-geometry.ts", import.meta.url),
+  "utf8",
+);
 const mobileSemanticThumbnailSource = readFileSync(
   new URL("../src/mobile-semantic-layer-thumbnail.ts", import.meta.url),
   "utf8",
@@ -1778,15 +1785,26 @@ const stylesSource = readFileSync(
   new URL("../src/styles.css", import.meta.url),
   "utf8",
 );
-assert.match(layerThumbnailSource, /export const LAYER_THUMBNAIL_SIZE = 64 as const/);
+assert.match(layerThumbnailGeometrySource, /export const LAYER_THUMBNAIL_SIZE = 64 as const/);
 assert.match(layerThumbnailSource, /export const LAYER_THUMBNAIL_SAMPLE_GRID = 8 as const/);
 assert.match(
   layerThumbnailSource,
-  /"lazy-idle-gpu-area-sample-64-readback-cache-v1" as const/,
+  /"lazy-idle-gpu-area-sample-document-aspect-64-readback-cache-v2" as const/,
 );
+assert.deepEqual(layerThumbnailDimensions(1080, 1920), { width: 36, height: 64 });
+assert.deepEqual(layerThumbnailDimensions(1920, 1080), { width: 64, height: 36 });
 assert.match(layerThumbnailSource, /copyTextureToBuffer\(/);
 assert.match(layerThumbnailSource, /GPUBufferUsage\.COPY_DST \| GPUBufferUsage\.MAP_READ/);
-assert.match(layerThumbnailSource, /readonly residentBytes = LAYER_THUMBNAIL_BYTE_LENGTH \* 2/);
+assert.match(
+  layerThumbnailSource,
+  /readonly residentBytes = LAYER_THUMBNAIL_BYTE_LENGTH \+ LAYER_THUMBNAIL_TEXTURE_BYTES/,
+);
+assert.match(
+  layerThumbnailSource,
+  /Math\.ceil\(\s*LAYER_THUMBNAIL_TIGHT_BYTES_PER_ROW \/ 256,?\s*\) \* 256/,
+);
+assert.match(layerThumbnailSource, /mappedBytes\.subarray\(/);
+assert.match(layerThumbnailSource, /rowsPerImage: LAYER_THUMBNAIL_HEIGHT/);
 assert.match(
   layerThumbnailSource,
   /for \(var sampleY = 0; sampleY < \$\{LAYER_THUMBNAIL_SAMPLE_GRID\}/,
@@ -1811,6 +1829,10 @@ assert.doesNotMatch(
 assert.match(mainSource, /activePointerId !== null[\s\S]*?historyState\.busy/);
 assert.match(mainSource, /function requestMobileLayerThumbnailCapture\(delayMs = 120\)/);
 assert.match(mainSource, /new ImageData\(imageBytes, capture\.width, capture\.height\)/);
+assert.match(mainSource, /thumbnailCanvas\.width = LAYER_THUMBNAIL_WIDTH/);
+assert.match(mainSource, /thumbnailCanvas\.height = LAYER_THUMBNAIL_HEIGHT/);
+assert.match(mainSource, /--mobile-layer-thumbnail-width/);
+assert.match(mainSource, /--mobile-layer-thumbnail-height/);
 assert.equal(MOBILE_RASTER_THUMBNAIL_EDGE_PX, 64);
 assert.equal(MOBILE_RASTER_THUMBNAIL_RGBA_BYTES, 64 * 64 * 4);
 assert.equal(MOBILE_RASTER_THUMBNAIL_CACHE_GENERATIONS, 4);
@@ -1837,7 +1859,7 @@ assert.equal(
 assert.equal(rasterThumbnailCache.get(3), "newer-preview");
 assert.equal(
   MOBILE_SEMANTIC_LAYER_THUMBNAIL_STRATEGY,
-  "lazy-canvas2d-semantic-text-svg-64-signature-cache-v1",
+  "lazy-canvas2d-semantic-text-svg-document-aspect-64-signature-cache-v2",
 );
 assert.equal(MOBILE_SEMANTIC_LAYER_THUMBNAIL_SIZE, 64);
 assert.equal(MOBILE_SEMANTIC_THUMBNAIL_MAXIMUM_COMMANDS, 25_000);
@@ -1864,6 +1886,8 @@ assert.notEqual(
   "the SVG thumbnail signature must follow its editable authoritative palette",
 );
 assert.match(mobileSemanticThumbnailSource, /context\.fillText\(/);
+assert.match(mobileSemanticThumbnailSource, /const width = context\.canvas\.width/);
+assert.match(mobileSemanticThumbnailSource, /const canvasHeight = context\.canvas\.height/);
 assert.match(mobileSemanticThumbnailSource, /paint\.path\.verbs/);
 assert.match(mobileSemanticThumbnailSource, /context\.bezierCurveTo\(/);
 assert.match(mobileSemanticThumbnailSource, /paint\.fillRule === 1 \? "evenodd" : "nonzero"/);

@@ -3,7 +3,7 @@ import type { Shadow3dPathData } from "./vector-shadow-3d.js";
 import type { VectorSvgGradient } from "./vector-svg-import.ts";
 
 export const MOBILE_SEMANTIC_LAYER_THUMBNAIL_STRATEGY =
-  "lazy-canvas2d-semantic-text-svg-64-signature-cache-v1" as const;
+  "lazy-canvas2d-semantic-text-svg-document-aspect-64-signature-cache-v2" as const;
 export const MOBILE_SEMANTIC_LAYER_THUMBNAIL_SIZE = 64 as const;
 
 /** Keep an imported SVG from monopolising the UI thread merely to draw 64 px. */
@@ -115,21 +115,23 @@ export function mobileSemanticLayerThumbnailSignature(
 }
 
 function resetThumbnailCanvas(context: CanvasRenderingContext2D): void {
+  const width = context.canvas.width;
+  const height = context.canvas.height;
   context.setTransform(1, 0, 0, 1, 0, 0);
   context.globalAlpha = 1;
   context.globalCompositeOperation = "source-over";
   context.clearRect(
     0,
     0,
-    MOBILE_SEMANTIC_LAYER_THUMBNAIL_SIZE,
-    MOBILE_SEMANTIC_LAYER_THUMBNAIL_SIZE,
+    width,
+    height,
   );
   context.fillStyle = "#ffffff";
   context.fillRect(
     0,
     0,
-    MOBILE_SEMANTIC_LAYER_THUMBNAIL_SIZE,
-    MOBILE_SEMANTIC_LAYER_THUMBNAIL_SIZE,
+    width,
+    height,
   );
 }
 
@@ -140,24 +142,27 @@ function renderTextThumbnail(
   const text = node.text.replace(/\s+/g, " ").trim();
   if (!text) return false;
   resetThumbnailCanvas(context);
+  const width = context.canvas.width;
+  const height = context.canvas.height;
+  const padding = Math.max(1, Math.min(width, height) * 0.08);
   context.save();
   context.beginPath();
   context.rect(
-    5,
-    5,
-    MOBILE_SEMANTIC_LAYER_THUMBNAIL_SIZE - 10,
-    MOBILE_SEMANTIC_LAYER_THUMBNAIL_SIZE - 10,
+    padding,
+    padding,
+    Math.max(1, width - padding * 2),
+    Math.max(1, height - padding * 2),
   );
   context.clip();
   context.fillStyle = /^#[0-9a-f]{6}$/i.test(node.color) ? node.color : "#2d3036";
-  context.font = `400 38px "${node.fontFamily}", sans-serif`;
+  context.font = `400 ${Math.max(1, height * 0.6)}px "${node.fontFamily}", sans-serif`;
   context.textAlign = "center";
   context.textBaseline = "middle";
   context.fillText(
     text,
-    MOBILE_SEMANTIC_LAYER_THUMBNAIL_SIZE * 0.5,
-    MOBILE_SEMANTIC_LAYER_THUMBNAIL_SIZE * 0.53,
-    MOBILE_SEMANTIC_LAYER_THUMBNAIL_SIZE - 10,
+    width * 0.5,
+    height * 0.53,
+    Math.max(1, width - padding * 2),
   );
   context.restore();
   return true;
@@ -228,13 +233,17 @@ function renderSvgThumbnail(
   if (!(width > 0) || !(height > 0)) return false;
 
   resetThumbnailCanvas(context);
-  const available = MOBILE_SEMANTIC_LAYER_THUMBNAIL_SIZE - 10;
-  const scale = Math.min(available / width, available / height);
+  const canvasWidth = context.canvas.width;
+  const canvasHeight = context.canvas.height;
+  const padding = Math.max(1, Math.min(canvasWidth, canvasHeight) * 0.08);
+  const availableWidth = Math.max(1, canvasWidth - padding * 2);
+  const availableHeight = Math.max(1, canvasHeight - padding * 2);
+  const scale = Math.min(availableWidth / width, availableHeight / height);
   const translateX = (
-    MOBILE_SEMANTIC_LAYER_THUMBNAIL_SIZE - width * scale
+    canvasWidth - width * scale
   ) * 0.5 - left * scale;
   const translateY = (
-    MOBILE_SEMANTIC_LAYER_THUMBNAIL_SIZE - height * scale
+    canvasHeight - height * scale
   ) * 0.5 - top * scale;
   context.save();
   context.setTransform(scale, 0, 0, scale, translateX, translateY);

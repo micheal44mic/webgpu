@@ -644,7 +644,18 @@ function assertLayerPixels(
     tileIndices.length !== maskIndices.length
     || tileIndices.some((tileIndex, index) => tileIndex !== maskIndices[index])
   ) {
-    fail(`${path}.tileIndices`, "must exactly match storageTileMask");
+    const differingIndex = tileIndices.findIndex(
+      (tileIndex, index) => tileIndex !== maskIndices[index],
+    );
+    const firstMismatch = differingIndex >= 0
+      ? differingIndex
+      : Math.min(tileIndices.length, maskIndices.length);
+    fail(
+      `${path}.tileIndices`,
+      "must exactly match storageTileMask "
+        + `(pixels=${tileIndices.length}, mask=${maskIndices.length}, `
+        + `first=${String(tileIndices[firstMismatch])}/${String(maskIndices[firstMismatch])})`,
+    );
   }
 
   if (!Array.isArray(value.chunks)) fail(`${path}.chunks`, "must be an array");

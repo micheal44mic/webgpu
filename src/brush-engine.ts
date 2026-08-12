@@ -18,7 +18,8 @@ import type { FillRenderer } from "./fill-renderer";
 import { FILL_REFERENCE_LAYER_STRATEGY } from "./fill-core";
 import type { SelectionRenderer } from "./selection-renderer";
 import {
-  LAYER_THUMBNAIL_SIZE,
+  LAYER_THUMBNAIL_HEIGHT,
+  LAYER_THUMBNAIL_WIDTH,
   LayerThumbnailRenderer,
   type LayerThumbnailPixels,
 } from "./layer-thumbnail-renderer";
@@ -5249,9 +5250,9 @@ export class BrushEngine {
     if (!record.hasContent) {
       return {
         layerId,
-        width: LAYER_THUMBNAIL_SIZE,
-        height: LAYER_THUMBNAIL_SIZE,
-        rgba: new Uint8ClampedArray(LAYER_THUMBNAIL_SIZE * LAYER_THUMBNAIL_SIZE * 4),
+        width: LAYER_THUMBNAIL_WIDTH,
+        height: LAYER_THUMBNAIL_HEIGHT,
+        rgba: new Uint8ClampedArray(LAYER_THUMBNAIL_WIDTH * LAYER_THUMBNAIL_HEIGHT * 4),
       };
     }
 

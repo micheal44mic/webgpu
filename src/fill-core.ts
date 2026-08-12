@@ -17,7 +17,7 @@ export const GPU_FILL_STRATEGY =
   "webgpu-hierarchical-ccl-4-connected-straight-srgb-alpha-history1-render8-v3" as const;
 
 export const FILL_RENDER_MASK_STRATEGY =
-  "history-1bit-compute-expanded-low8-reused-label-buffer-v1" as const;
+  "history-1bit-compute-expanded-row-stride-low8-reused-label-buffer-v2" as const;
 
 export const FILL_REFERENCE_LAYER_STRATEGY =
   "single-raster-reference-full-resident-gpu-source-separate-active-target-no-fallback-v1" as const;
@@ -56,6 +56,33 @@ export const FILL_RENDER_MASK_WORDS_PER_ROW = Math.ceil(
 export const FILL_RENDER_MASK_WORDS =
   FILL_RENDER_MASK_WORDS_PER_ROW * FILL_LAYER_HEIGHT;
 export const FILL_RENDER_MASK_BYTES = FILL_RENDER_MASK_WORDS * 4;
+
+/**
+ * Maps one byte from the authoritative 32-pixel history word into the tightly
+ * row-packed 8-pixel render mask. The final history word of a row may contain
+ * padding (for example 1080 px uses 34 history words but only 135 render
+ * words), so its fourth byte must never spill into the following row.
+ */
+export function fillRenderMaskTargetWord(
+  sourceWordIndex: number,
+  byteIndex: number,
+): number | null {
+  if (
+    !Number.isSafeInteger(sourceWordIndex)
+    || sourceWordIndex < 0
+    || sourceWordIndex >= FILL_HISTORY_MASK_WORDS
+    || !Number.isSafeInteger(byteIndex)
+    || byteIndex < 0
+    || byteIndex > 3
+  ) {
+    throw new RangeError("Indice di espansione maschera Fill non valido.");
+  }
+  const row = Math.floor(sourceWordIndex / FILL_HISTORY_WORDS_PER_ROW);
+  const sourceWordX = sourceWordIndex % FILL_HISTORY_WORDS_PER_ROW;
+  const targetWordX = sourceWordX * 4 + byteIndex;
+  if (targetWordX >= FILL_RENDER_MASK_WORDS_PER_ROW) return null;
+  return row * FILL_RENDER_MASK_WORDS_PER_ROW + targetWordX;
+}
 export const FILL_UNIFORM_BYTES = 48;
 export const FILL_UNIFORM_BUFFER_BYTES = 256;
 export const FILL_METADATA_WORDS = 16;

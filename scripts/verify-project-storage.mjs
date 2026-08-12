@@ -297,6 +297,16 @@ assert.doesNotMatch(source, /JSON\.(?:parse|stringify)/,
   "project DTOs need structured clone so typed arrays and ArrayBuffers survive");
 assert.doesNotMatch(source, /GPU(?:Texture|Buffer|Device|Queue|CommandEncoder)/,
   "the storage layer must stay independent of WebGPU objects");
+assert.match(
+  runtimeSource,
+  /storageTileMask: pixels\s*\? projectStorageMaskForTileIndices\(pixels\.tileIndices\)/,
+  "saved layer masks must exactly describe the conservative compressed tile payload",
+);
+assert.match(
+  runtimeSource,
+  /mask\[tileIndex >>> 5\] \|= \(1 << \(tileIndex & 31\)\) >>> 0/,
+  "project capture must rebuild every persisted tile bit, including tile 255",
+);
 const semanticResourcesPosition = runtimeSource.indexOf(
   "await engine.ensureOptionalEditorResources()",
 );

@@ -43,6 +43,7 @@ async function verifyEngineDimensionProbe() {
   const limits = await import("../src/engine-limits.ts");
   const storageTiles = await import("../src/layer-storage-study.ts");
   const fill = await import("../src/fill-core.ts");
+  const layerThumbnail = await import("../src/layer-thumbnail-geometry.ts");
   const selection = await import("../src/selection-core.ts");
   const rasterTransform = await import("../src/raster-transform-math.ts");
   const expectedWidth = Number(
@@ -128,6 +129,50 @@ async function verifyEngineDimensionProbe() {
   assert.equal(fill.FILL_RENDER_MASK_WORDS_PER_ROW, Math.ceil(expectedWidth / 8));
   assert.equal(fill.FILL_TILE_WIDTH, tileWidth);
   assert.equal(fill.FILL_TILE_HEIGHT, tileHeight);
+
+  const lastHistoryWordInFirstRow = fill.FILL_HISTORY_WORDS_PER_ROW - 1;
+  const validFinalRenderWords = fill.FILL_RENDER_MASK_WORDS_PER_ROW
+    - lastHistoryWordInFirstRow * 4;
+  for (let byteIndex = 0; byteIndex < 4; byteIndex += 1) {
+    assert.equal(
+      fill.fillRenderMaskTargetWord(lastHistoryWordInFirstRow, byteIndex),
+      byteIndex < validFinalRenderWords
+        ? lastHistoryWordInFirstRow * 4 + byteIndex
+        : null,
+      `${label}: padded history bytes must not spill into the next render-mask row`,
+    );
+  }
+  assert.equal(
+    fill.fillRenderMaskTargetWord(fill.FILL_HISTORY_WORDS_PER_ROW, 0),
+    fill.FILL_RENDER_MASK_WORDS_PER_ROW,
+    `${label}: render-mask row two must begin at its exact packed stride`,
+  );
+
+  const sourceWords = new Uint32Array(fill.FILL_HISTORY_WORDS_PER_ROW * 2);
+  sourceWords.fill(0xffff_ffff);
+  const expandedWords = new Uint32Array(fill.FILL_RENDER_MASK_WORDS_PER_ROW * 2);
+  for (let sourceWord = 0; sourceWord < sourceWords.length; sourceWord += 1) {
+    for (let byteIndex = 0; byteIndex < 4; byteIndex += 1) {
+      const targetWord = fill.fillRenderMaskTargetWord(sourceWord, byteIndex);
+      if (targetWord !== null) {
+        expandedWords[targetWord] = (sourceWords[sourceWord] >>> (byteIndex * 8)) & 0xff;
+      }
+    }
+  }
+  assert.ok(
+    expandedWords.every((word) => word === 0xff),
+    `${label}: two full rows must expand without diagonal gaps or row drift`,
+  );
+
+  const thumbnailScale = 64 / Math.max(expectedWidth, expectedHeight);
+  assert.deepEqual(
+    layerThumbnail.layerThumbnailDimensions(expectedWidth, expectedHeight),
+    {
+      width: Math.max(1, Math.round(expectedWidth * thumbnailScale)),
+      height: Math.max(1, Math.round(expectedHeight * thumbnailScale)),
+    },
+    `${label}: layer previews must retain the document aspect ratio`,
+  );
 
   assert.equal(selection.SELECTION_LAYER_WIDTH, expectedWidth);
   assert.equal(selection.SELECTION_LAYER_HEIGHT, expectedHeight);

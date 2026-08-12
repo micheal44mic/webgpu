@@ -4499,9 +4499,10 @@ select {
   .mobile-layer-thumbnail {
     position: relative;
     display: grid;
-    width: 52px;
-    height: 52px;
+    width: var(--mobile-layer-thumbnail-width, 52px);
+    height: var(--mobile-layer-thumbnail-height, 52px);
     place-items: center;
+    justify-self: center;
     overflow: hidden;
     border: 1px solid #4a4f59;
     border-radius: 5px;

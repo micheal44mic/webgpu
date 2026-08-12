@@ -28,6 +28,7 @@ import type { LayerColdCompressedChunk } from "./layer-cold-compression-client";
 import {
   PROJECT_DOCUMENT_SCHEMA_VERSION,
   PROJECT_STORAGE_TILE_GRID_SIZE,
+  PROJECT_STORAGE_TILE_MASK_WORDS,
   type ProjectChunkWriteV1,
   type ProjectLayerPixelsV1,
   type ProjectLayerV1,
@@ -114,6 +115,20 @@ function projectPixelsFromCompressed(
   };
 }
 
+function projectStorageMaskForTileIndices(
+  tileIndices: readonly number[],
+): Uint32Array {
+  const mask = new Uint32Array(PROJECT_STORAGE_TILE_MASK_WORDS);
+  const tileCount = PROJECT_STORAGE_TILE_GRID_SIZE ** 2;
+  for (const tileIndex of tileIndices) {
+    if (!Number.isInteger(tileIndex) || tileIndex < 0 || tileIndex >= tileCount) {
+      throw new Error(`Project pixel tile ${tileIndex} is outside the storage grid.`);
+    }
+    mask[tileIndex >>> 5] |= (1 << (tileIndex & 31)) >>> 0;
+  }
+  return mask;
+}
+
 async function captureLayerCompressed(
   engine: BrushEngine,
   record: LayerRecord,
@@ -165,7 +180,13 @@ function projectLayerMetadata(
     blendMode: record.blendMode,
     clippingParentId: record.clippingParentId,
     contentBounds: record.contentBounds ? { ...record.contentBounds } : null,
-    storageTileMask: record.storageTileMask.slice(),
+    // Cold capture may conservatively add tiles covered by contentBounds even
+    // when the live mutation mask is sparser (common for rasterized outlines).
+    // Persist the exact compressed payload mask so manifest metadata and chunk
+    // tileIndices remain a single coherent source of truth on save and reload.
+    storageTileMask: pixels
+      ? projectStorageMaskForTileIndices(pixels.tileIndices)
+      : record.storageTileMask.slice(),
     hasContent: record.hasContent,
     noiseMipSmoothing: record.noiseMipSmoothing,
     strokeStyle: structuredClone(record.strokeStyle),
