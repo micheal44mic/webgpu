@@ -258,21 +258,12 @@ import type {
   SelectionPoint,
 } from "./selection-core";
 import {
-  completeStartupDiagnostics,
-  markStartupPhase,
-  reportStartupFailure,
-} from "./startup-diagnostics";
-import {
   PROJECT_DOCUMENT_SCHEMA_VERSION,
   createProjectStorage,
   normalizeProjectTitle,
   type ProjectStorage,
 } from "./project-storage";
 
-markStartupPhase(
-  "Preparazione dell’interfaccia",
-  "Il modulo principale è stato caricato e sta collegando i controlli.",
-);
 createIcons({
   icons: {
     Blend,
@@ -387,10 +378,6 @@ const saveProjectButton = element<HTMLButtonElement>("saveProjectButton");
 const controlsPanel = element<HTMLElement>("controlsPanel");
 const toggleControlsButton = element<HTMLButtonElement>("toggleControls");
 const statusElement = element<HTMLParagraphElement>("status");
-markStartupPhase(
-  "Interfaccia HTML collegata",
-  "Canvas e controlli principali sono disponibili.",
-);
 const benchmarkButton = element<HTMLButtonElement>("runBenchmark");
 const benchmarkResult = element<HTMLParagraphElement>("benchmarkResult");
 const layerList = element<HTMLElement>("layerList");
@@ -1525,10 +1512,6 @@ const appDiagnosticLog = new BoundedAppDiagnosticLog();
 let appDiagnosticHistorySignature = "";
 let appDiagnosticSceneSignature = "";
 let appDiagnosticsCopyBusy = false;
-markStartupPhase(
-  "Creazione del motore",
-  "Preparazione dello stato dell’editor prima di aprire WebGPU.",
-);
 const engine = new BrushEngine(canvas, {
   onStatus(message, kind) {
     statusElement.textContent = message;
@@ -15952,24 +15935,12 @@ async function initializeVectorTextPrototype(): Promise<MixedVectorTextControlle
   }
 }
 
-markStartupPhase(
-  "Avvio del motore WebGPU",
-  "Inizio della negoziazione con Chrome e con la GPU.",
-);
 void engine.initialize()
   .then(async () => {
-    markStartupPhase(
-      "Motore WebGPU inizializzato",
-      "La GPU essenziale è pronta; l’editor può essere mostrato.",
-    );
     engineInitialized = true;
     await initializeCurrentProject();
     projectHomeButton.disabled = false;
     syncProjectSaveControl();
-    markStartupPhase(
-      "Finalizzazione dell’interfaccia",
-      "Sincronizzazione dei controlli essenziali.",
-    );
     syncMobileToolsMenuState();
     historyState = engine.getHistoryState();
     requestMobileLayerThumbnailCapture(0);
@@ -15979,7 +15950,6 @@ void engine.initialize()
     layerMemoryStressTestRunning = iphoneMemoryLimitTestRequested;
     updateHistoryControls();
     updateHumanStrokeControls();
-    completeStartupDiagnostics();
     startRuntimeStatsPolling();
 
     if (!layerColdTileCompositeTestRequested) {
@@ -16060,7 +16030,6 @@ void engine.initialize()
     }
   })
   .catch((error) => {
-    reportStartupFailure(error);
     const message = error instanceof Error ? error.message : String(error);
     const secureContextHint = !window.isSecureContext
       ? " WebGPU richiede HTTPS oppure localhost; un indirizzo LAN in HTTP non è sufficiente."

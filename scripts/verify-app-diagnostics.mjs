@@ -125,10 +125,6 @@ const brushEngineSource = readFileSync(
   new URL("../src/brush-engine.ts", import.meta.url),
   "utf8",
 );
-const startupDiagnosticsSource = readFileSync(
-  new URL("../src/startup-diagnostics.ts", import.meta.url),
-  "utf8",
-);
 const gpuUtilsSource = readFileSync(
   new URL("../src/engine-gpu-utils.ts", import.meta.url),
   "utf8",
@@ -147,10 +143,9 @@ const reportsSource = readFileSync(
 );
 assert.match(indexSource, /id="copyAppDiagnostics"/);
 assert.match(indexSource, /id="appDiagnosticsReport"/);
-assert.match(indexSource, /id="startupDiagnostic"/);
-assert.match(indexSource, /window\.setTimeout\(showPanel, 10000\)/);
-assert.match(indexSource, /window\.__WEBGPU_BRUSH_STARTUP__/);
-assert.match(indexSource, /WebGPU API:/);
+assert.doesNotMatch(indexSource, /id="startupDiagnostic"/);
+assert.doesNotMatch(indexSource, /window\.setTimeout\(showPanel, 10000\)/);
+assert.doesNotMatch(indexSource, /window\.__WEBGPU_BRUSH_STARTUP__/);
 assert.match(mainSource, /copyAppDiagnosticsButton\.addEventListener\("click"/);
 assert.match(mainSource, /async function buildAppDiagnosticReport\(\): Promise<string>/);
 assert.match(mainSource, /await buildAppDiagnosticReport\(\)/);
@@ -164,12 +159,8 @@ assert.match(
   "il rapporto deve rendere misurabile il fast path cold tile sul dispositivo reale",
 );
 assert.match(mainSource, /entryScripts:/);
-assert.match(mainSource, /completeStartupDiagnostics\(\)/);
-assert.match(mainSource, /reportStartupFailure\(error\)/);
-assert.match(brushEngineSource, /"Richiesta adattatore WebGPU"/);
-assert.match(brushEngineSource, /"Creazione dispositivo WebGPU"/);
-assert.match(brushEngineSource, /"Creazione risorse GPU"/);
-assert.match(brushEngineSource, /"Preparazione cronologia"/);
+assert.doesNotMatch(mainSource, /startup-diagnostics/);
+assert.doesNotMatch(brushEngineSource, /startup-diagnostics/);
 assert.match(brushEngineSource, /deferBlendRenderer: true/);
 assert.match(brushEngineSource, /deferSelectionPipelines: true/);
 assert.match(brushEngineSource, /ensureOptionalEditorResources\(\)/);
@@ -198,7 +189,6 @@ assert.match(
 );
 assert.match(mainSource, /telemetry\.capturesRefusedForBudget/);
 assert.match(mainSource, /telemetry\.checkpointCacheEvictions/);
-assert.match(startupDiagnosticsSource, /__WEBGPU_BRUSH_STARTUP__/);
 assert.match(mainSource, /renderFrameError:[\s\S]*?getDocumentInconsistentDiagnostic\(\)/);
 assert.match(
   reportsSource,

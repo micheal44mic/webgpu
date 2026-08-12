@@ -1,5 +1,4 @@
 import { clamp, hexToHsl } from "./color";
-import { markStartupPhase } from "./startup-diagnostics";
 import { decodeGrayscalePng8 } from "./png-mask";
 import {
   createDryBlendPlanner,
@@ -1800,10 +1799,6 @@ export class BrushEngine {
 
   async initialize(): Promise<void> {
     this.callbacks.onStatus?.("Richiesta adapter WebGPU…", "working");
-    markStartupPhase(
-      "Richiesta adattatore WebGPU",
-      "Chrome sta cercando una GPU compatibile per il documento.",
-    );
 
     if (!navigator.gpu) {
       throw new Error("WebGPU non è disponibile in questo browser o in questo contesto.");
@@ -1861,10 +1856,6 @@ export class BrushEngine {
       throw new Error("Nessun adapter WebGPU compatibile trovato.");
     }
     this.adapter = adapter;
-    markStartupPhase(
-      "Adattatore WebGPU trovato",
-      "Verifica dei limiti della GPU prima di aprire il dispositivo.",
-    );
 
     if (adapter.limits.maxTextureDimension2D < DOCUMENT_MAX_EDGE) {
       throw new Error(
@@ -1876,10 +1867,6 @@ export class BrushEngine {
     // Unico punto da cui il motore ottiene il device: strumentarlo qui rende
     // contabilizzata ogni allocazione, presente e futura, senza toccare i 125
     // siti che creano texture e buffer.
-    markStartupPhase(
-      "Creazione dispositivo WebGPU",
-      "Chrome sta aprendo il collegamento operativo con la GPU.",
-    );
     this.callbacks.onStatus?.("Adapter trovato. Creo il device WebGPU…", "working");
     const deviceWaitTimer = window.setTimeout(() => {
       this.callbacks.onStatus?.("Creazione del device WebGPU ancora in corso…", "working");
@@ -1902,10 +1889,6 @@ export class BrushEngine {
         message: error.message,
       });
     });
-    markStartupPhase(
-      "Dispositivo WebGPU creato",
-      "Configurazione del canvas e delle risorse grafiche.",
-    );
     this.deviceLostSignal = this.device.lost.then((info) => {
       this.invalidateAdaptivePreview();
       abandonRasterNoiseSession(this);
@@ -1942,12 +1925,8 @@ export class BrushEngine {
       `Device pronto. Preparo il renderer ${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT}…`,
       "working",
     );
-    markStartupPhase(
-      "Creazione risorse GPU",
-      "Compilazione delle pipeline essenziali e delle texture del documento.",
-    );
-    // Give Chrome one rendering turn before the expensive GPU setup so the
-    // diagnostic phase remains visible even on slow drivers.
+    // Give Chrome one rendering turn before the expensive GPU setup so status
+    // updates can be presented even on slow drivers.
     await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
     try {
       await createStaticResources(this);
@@ -1965,10 +1944,6 @@ export class BrushEngine {
       );
     }
 
-    markStartupPhase(
-      "Preparazione cronologia",
-      "Creazione della memoria History GPU e dello storage locale.",
-    );
     this.historyGpuStorage = new GpuHistoryStorage(this.device);
     this.historyLocalStorage = new HistoryStorageCoordinator(this);
     this.historyGpuStorage.setReleaseListener((slice) => {
@@ -1979,10 +1954,6 @@ export class BrushEngine {
     this.writeBrushUniforms();
 
     this.initialized = true;
-    markStartupPhase(
-      "Finalizzazione motore",
-      "Prima visualizzazione e moduli opzionali del pennello.",
-    );
     if (usesBlendRenderer(this.settings)) {
       this.blendRenderer?.prewarmScratch();
     }

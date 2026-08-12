@@ -19,11 +19,6 @@ import {
   type ProjectStorage,
   type ProjectSummaryV1,
 } from "./project-storage";
-import {
-  completeStartupDiagnostics,
-  markStartupPhase,
-  reportStartupFailure,
-} from "./startup-diagnostics";
 
 const HOME_ICONS: Readonly<Record<string, IconNode>> = {
   "arrow-up-right": ArrowUpRight,
@@ -152,7 +147,6 @@ async function launchEditor(): Promise<void> {
   home.inert = true;
   app.hidden = false;
   app.inert = false;
-  markStartupPhase("Opening editor", "Loading the WebGPU drawing workspace.");
   await import("./main");
 }
 
@@ -457,8 +451,6 @@ async function boot(): Promise<void> {
       home.hidden = false;
       home.inert = false;
       document.title = "M1M4.COM — Invalid canvas size";
-      markStartupPhase("Invalid canvas size", "Choose dimensions from 64 to 4000 px.");
-      completeStartupDiagnostics();
       const controller = new ProjectHomeController(createProjectStorage());
       await controller.initialize();
       controller.showStatus("Canvas dimensions must be whole pixels from 64 to 4000.", true);
@@ -474,13 +466,10 @@ async function boot(): Promise<void> {
   app.inert = true;
   home.hidden = false;
   home.inert = false;
-  markStartupPhase("Project library ready", "Choose an artwork or create a canvas.");
-  completeStartupDiagnostics();
   const controller = new ProjectHomeController(createProjectStorage());
   await controller.initialize();
 }
 
 void boot().catch((error) => {
-  reportStartupFailure(error);
   console.error("M1M4 startup failed:", error);
 });
