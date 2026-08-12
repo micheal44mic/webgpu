@@ -24,7 +24,10 @@ export const PROJECT_STORAGE_TILE_GRID_SIZE = 16 as const;
 export const PROJECT_STORAGE_TILE_COUNT =
   PROJECT_STORAGE_TILE_GRID_SIZE * PROJECT_STORAGE_TILE_GRID_SIZE;
 export const PROJECT_STORAGE_TILE_MASK_WORDS = PROJECT_STORAGE_TILE_COUNT / 32;
-export const PROJECT_STORAGE_SUPPORTED_SIZES = [2048, 4096] as const;
+export const PROJECT_STORAGE_MIN_DOCUMENT_DIMENSION = 64 as const;
+export const PROJECT_STORAGE_MAX_DOCUMENT_DIMENSION = 4000 as const;
+/** Existing 4096² documents remain readable even though new canvases cap at 4000 px. */
+export const PROJECT_STORAGE_LEGACY_DOCUMENT_DIMENSION = 4096 as const;
 export const PROJECT_STORAGE_MAX_LAYERS = 16 as const;
 export const PROJECT_STORAGE_MAX_TITLE_LENGTH = 80 as const;
 export const PROJECT_STORAGE_MAX_THUMBNAIL_BYTES = 4 * 1024 * 1024;
@@ -592,6 +595,18 @@ function tileMaskIndices(mask: Uint32Array): number[] {
   return indices;
 }
 
+function tileOriginIsInsideDocument(
+  tileIndex: number,
+  document: ProjectDocumentDescriptorV1,
+): boolean {
+  const tileWidth = Math.ceil(document.width / document.tileGridSize);
+  const tileHeight = Math.ceil(document.height / document.tileGridSize);
+  const tileX = tileIndex % document.tileGridSize;
+  const tileY = Math.floor(tileIndex / document.tileGridSize);
+  return tileX * tileWidth < document.width
+    && tileY * tileHeight < document.height;
+}
+
 function assertLayerPixels(
   value: unknown,
   document: ProjectDocumentDescriptorV1,
@@ -612,6 +627,13 @@ function assertLayerPixels(
     assertNonNegativeInteger(tileIndex, `${path}.tileIndices[${index}]`);
     if (tileIndex >= PROJECT_STORAGE_TILE_COUNT) {
       fail(`${path}.tileIndices[${index}]`, "is outside the document tile grid");
+    }
+    const tileWidth = Math.ceil(document.width / document.tileGridSize);
+    const tileHeight = Math.ceil(document.height / document.tileGridSize);
+    const tileX = (tileIndex as number) % document.tileGridSize;
+    const tileY = Math.floor((tileIndex as number) / document.tileGridSize);
+    if (tileX * tileWidth >= document.width || tileY * tileHeight >= document.height) {
+      fail(`${path}.tileIndices[${index}]`, "starts outside the document extent");
     }
     if (tileIndex <= previousTile) {
       fail(`${path}.tileIndices`, "must be strictly increasing and unique");
@@ -634,9 +656,13 @@ function assertLayerPixels(
   }
   assertNonNegativeInteger(value.generation, `${path}.generation`);
 
-  const tileSide = document.width / document.tileGridSize;
+  // The logical mask always has 16 × 16 slots. Non-divisible and rectangular
+  // documents store each slot in a normalized, zero-padded rectangular tile;
+  // edge clipping is an engine concern and does not change the payload stride.
+  const tileWidth = Math.ceil(document.width / document.tileGridSize);
+  const tileHeight = Math.ceil(document.height / document.tileGridSize);
   const bytesPerPixel = document.layerFormat === "rgba16float" ? 8 : 4;
-  const tileBytes = tileSide * tileSide * bytesPerPixel;
+  const tileBytes = tileWidth * tileHeight * bytesPerPixel;
   const expectedRawBytes = tileIndices.length * tileBytes;
   if (value.rawBytes !== expectedRawBytes) {
     fail(`${path}.rawBytes`, `must equal ${expectedRawBytes} bytes for its tiles`);
@@ -689,13 +715,7 @@ function assertDocument(
 ): asserts value is ProjectDocumentDescriptorV1 {
   if (!isRecord(value)) fail(path, "must be an object");
   assertSchemaVersion(value.schemaVersion, `${path}.schemaVersion`);
-  if (
-    !Number.isInteger(value.width)
-    || !(PROJECT_STORAGE_SUPPORTED_SIZES as readonly number[]).includes(value.width as number)
-  ) {
-    fail(`${path}.width`, "is not a supported document size");
-  }
-  if (value.height !== value.width) fail(`${path}.height`, "must equal width");
+  assertDocumentDimensions(value.width, value.height, path);
   if (value.layerFormat !== "rgba8unorm" && value.layerFormat !== "rgba16float") {
     fail(`${path}.layerFormat`, "is unsupported");
   }
@@ -704,6 +724,41 @@ function assertDocument(
   }
   if (value.colorSpace !== "linear-premultiplied") {
     fail(`${path}.colorSpace`, "is unsupported");
+  }
+}
+
+function assertDocumentDimensions(
+  width: unknown,
+  height: unknown,
+  path: string,
+): asserts width is number {
+  if (!Number.isInteger(width)) fail(`${path}.width`, "must be a whole number of pixels");
+  if (!Number.isInteger(height)) fail(`${path}.height`, "must be a whole number of pixels");
+  if (
+    width === PROJECT_STORAGE_LEGACY_DOCUMENT_DIMENSION
+    && height === PROJECT_STORAGE_LEGACY_DOCUMENT_DIMENSION
+  ) {
+    return;
+  }
+  if (
+    (width as number) < PROJECT_STORAGE_MIN_DOCUMENT_DIMENSION
+    || (width as number) > PROJECT_STORAGE_MAX_DOCUMENT_DIMENSION
+  ) {
+    fail(
+      `${path}.width`,
+      `must be between ${PROJECT_STORAGE_MIN_DOCUMENT_DIMENSION} and `
+        + `${PROJECT_STORAGE_MAX_DOCUMENT_DIMENSION} pixels`,
+    );
+  }
+  if (
+    (height as number) < PROJECT_STORAGE_MIN_DOCUMENT_DIMENSION
+    || (height as number) > PROJECT_STORAGE_MAX_DOCUMENT_DIMENSION
+  ) {
+    fail(
+      `${path}.height`,
+      `must be between ${PROJECT_STORAGE_MIN_DOCUMENT_DIMENSION} and `
+        + `${PROJECT_STORAGE_MAX_DOCUMENT_DIMENSION} pixels`,
+    );
   }
 }
 
@@ -739,6 +794,14 @@ function assertLayer(
     assertRect(value.contentBounds, document, `${path}.contentBounds`);
   }
   const maskIndices = tileMaskIndices(value.storageTileMask);
+  maskIndices.forEach((tileIndex) => {
+    if (!tileOriginIsInsideDocument(tileIndex, document)) {
+      fail(
+        `${path}.storageTileMask`,
+        `contains tile ${tileIndex}, whose origin lies outside the document`,
+      );
+    }
+  });
   if (value.hasContent) {
     if (value.contentBounds === null) fail(`${path}.contentBounds`, "is required for content");
     if (maskIndices.length === 0) fail(`${path}.storageTileMask`, "must retain content tiles");
@@ -1072,15 +1135,11 @@ function assertSummary(
     fail(`${path}.updatedAt`, "must not precede createdAt");
   }
   assertGenerationId(value.headGenerationId, `${path}.headGenerationId`);
-  if (
-    !Number.isInteger(value.documentWidth)
-    || !(PROJECT_STORAGE_SUPPORTED_SIZES as readonly number[]).includes(value.documentWidth as number)
-  ) {
-    fail(`${path}.documentWidth`, "is unsupported");
-  }
-  if (value.documentHeight !== value.documentWidth) {
-    fail(`${path}.documentHeight`, "must equal documentWidth");
-  }
+  assertDocumentDimensions(
+    value.documentWidth,
+    value.documentHeight,
+    `${path}.document`,
+  );
   assertPositiveInteger(value.layerCount, `${path}.layerCount`);
   if (value.layerCount > PROJECT_STORAGE_MAX_LAYERS) {
     fail(`${path}.layerCount`, "exceeds the layer limit");

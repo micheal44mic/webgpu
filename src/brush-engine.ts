@@ -338,7 +338,8 @@ import {
   LAYER_STORAGE_GRID_SIZE,
   LAYER_STORAGE_STRATEGY,
   LAYER_STORAGE_TILE_COUNT,
-  LAYER_STORAGE_TILE_SIZE,
+  LAYER_STORAGE_TILE_HEIGHT,
+  LAYER_STORAGE_TILE_WIDTH,
   alignedBoundsTileCount,
   clearLayerStorageTileMask,
   compareLayerStorageMasks,
@@ -431,6 +432,9 @@ import type {
 import {
   BRUSH_UNIFORM_BYTES,
   DISPLAY_UNIFORM_BYTES,
+  DOCUMENT_HEIGHT,
+  DOCUMENT_MAX_EDGE,
+  DOCUMENT_WIDTH,
   DRY_BLEND_FRAME_PIXEL_BUDGET,
   DRY_BLEND_MAX_BATCHES_PER_FRAME,
   GRAIN_TEXTURE_MIP_LEVEL_COUNT,
@@ -438,7 +442,6 @@ import {
   GRAIN_TEXTURE_SIZE,
   GRAIN_UNIFORM_BYTES,
   LAYER_COMPOSITE_UNIFORM_BYTES,
-  LAYER_SIZE,
   LIGHT_GLAZE_COMMIT_TILE_EXTENT,
   LIGHT_GLAZE_COMMIT_TILE_SLOT_COUNT,
   LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BUFFER_BYTES,
@@ -998,7 +1001,10 @@ export interface DocumentInconsistentDiagnostic {
  * deliberatamente qui: non va spostato per ridurre le righe.
  */
 export class BrushEngine {
-  readonly layerSize = LAYER_SIZE;
+  readonly documentWidth = DOCUMENT_WIDTH;
+  readonly documentHeight = DOCUMENT_HEIGHT;
+  /** @deprecated Use documentWidth/documentHeight for document geometry. */
+  readonly layerSize = DOCUMENT_MAX_EDGE;
 
   readonly canvas: HTMLCanvasElement;
   readonly callbacks: EngineCallbacks;
@@ -1712,8 +1718,8 @@ export class BrushEngine {
   semanticPresentationDirtyRect: DirtyRect | null = null;
   initialized = false;
 
-  viewCenterX = LAYER_SIZE * 0.5;
-  viewCenterY = LAYER_SIZE * 0.5;
+  viewCenterX = DOCUMENT_WIDTH * 0.5;
+  viewCenterY = DOCUMENT_HEIGHT * 0.5;
   zoom = 1;
   viewRotation = 0;
   viewRotationCos = 1;
@@ -1858,9 +1864,10 @@ export class BrushEngine {
       "Verifica dei limiti della GPU prima di aprire il dispositivo.",
     );
 
-    if (adapter.limits.maxTextureDimension2D < LAYER_SIZE) {
+    if (adapter.limits.maxTextureDimension2D < DOCUMENT_MAX_EDGE) {
       throw new Error(
-        `La GPU supporta texture fino a ${adapter.limits.maxTextureDimension2D}px, meno dei ${LAYER_SIZE}px richiesti.`,
+        `La GPU supporta texture fino a ${adapter.limits.maxTextureDimension2D}px, meno dei `
+        + `${DOCUMENT_MAX_EDGE}px richiesti.`,
       );
     }
 
@@ -1930,7 +1937,7 @@ export class BrushEngine {
 
     this.gpuLabel = describeAdapter(adapter);
     this.callbacks.onStatus?.(
-      `Device pronto. Preparo il renderer ${LAYER_SIZE}×${LAYER_SIZE}…`,
+      `Device pronto. Preparo il renderer ${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT}…`,
       "working",
     );
     markStartupPhase(
@@ -2449,7 +2456,7 @@ export class BrushEngine {
     const styleDirtyRect = previousActive || normalizedActive
       ? this.layerContentBounds
         ?? (this.layerHasContent
-          ? { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE }
+          ? { x: 0, y: 0, width: DOCUMENT_WIDTH, height: DOCUMENT_HEIGHT }
           : null)
       : null;
     this.rasterStrokeBusy = true;
@@ -2749,8 +2756,8 @@ export class BrushEngine {
     const previousRect = rasterBevelVisualBounds(
       this.layerContentBounds,
       previous,
-      LAYER_SIZE,
-      LAYER_SIZE,
+      DOCUMENT_WIDTH,
+      DOCUMENT_HEIGHT,
     );
     this.rasterBevelBusy = true;
     try {
@@ -2782,8 +2789,8 @@ export class BrushEngine {
         const nextRect = rasterBevelVisualBounds(
           this.layerContentBounds,
           normalized,
-          LAYER_SIZE,
-          LAYER_SIZE,
+          DOCUMENT_WIDTH,
+          DOCUMENT_HEIGHT,
         );
         this.rasterBevelPendingComposeRect = mergeDirtyRects(
           previousRect,
@@ -2881,8 +2888,8 @@ export class BrushEngine {
     const previousRect = rasterOuterShadowVisualBounds(
       this.layerContentBounds,
       previous,
-      LAYER_SIZE,
-      LAYER_SIZE,
+      DOCUMENT_WIDTH,
+      DOCUMENT_HEIGHT,
     );
     this.rasterOuterShadowBusy = true;
     try {
@@ -2910,8 +2917,8 @@ export class BrushEngine {
         const nextRect = rasterOuterShadowVisualBounds(
           this.layerContentBounds,
           normalized,
-          LAYER_SIZE,
-          LAYER_SIZE,
+          DOCUMENT_WIDTH,
+          DOCUMENT_HEIGHT,
         );
         this.rasterOuterShadowPendingComposeRect = mergeDirtyRects(
           previousRect,
@@ -3000,8 +3007,8 @@ export class BrushEngine {
     const previousRect = rasterInnerShadowVisualBounds(
       this.layerContentBounds,
       previous,
-      LAYER_SIZE,
-      LAYER_SIZE,
+      DOCUMENT_WIDTH,
+      DOCUMENT_HEIGHT,
     );
     this.rasterInnerShadowBusy = true;
     try {
@@ -3029,8 +3036,8 @@ export class BrushEngine {
         const nextRect = rasterInnerShadowVisualBounds(
           this.layerContentBounds,
           normalized,
-          LAYER_SIZE,
-          LAYER_SIZE,
+          DOCUMENT_WIDTH,
+          DOCUMENT_HEIGHT,
         );
         this.rasterInnerShadowPendingComposeRect = mergeDirtyRects(
           previousRect,
@@ -3832,12 +3839,16 @@ export class BrushEngine {
     this.invalidateAdaptivePreview();
     const width = Math.max(1, this.canvas.width);
     const height = Math.max(1, this.canvas.height);
-    this.viewCenterX = LAYER_SIZE * 0.5;
-    this.viewCenterY = LAYER_SIZE * 0.5;
-    const rotatedLayerSpan = LAYER_SIZE
-      * (Math.abs(this.viewRotationCos) + Math.abs(this.viewRotationSin));
+    this.viewCenterX = DOCUMENT_WIDTH * 0.5;
+    this.viewCenterY = DOCUMENT_HEIGHT * 0.5;
+    const rotatedWidth = Math.abs(this.viewRotationCos) * DOCUMENT_WIDTH
+      + Math.abs(this.viewRotationSin) * DOCUMENT_HEIGHT;
+    const rotatedHeight = Math.abs(this.viewRotationSin) * DOCUMENT_WIDTH
+      + Math.abs(this.viewRotationCos) * DOCUMENT_HEIGHT;
     this.zoom = Math.max(
-      0.01, Math.min(width / rotatedLayerSpan, height / rotatedLayerSpan) * 0.94);
+      0.01,
+      Math.min(width / Math.max(1, rotatedWidth), height / Math.max(1, rotatedHeight)) * 0.94,
+    );
     this.hasFittedView = true;
     this.displayDirty = true;
     this.presentationCacheNeedsFullRebuild = true;
@@ -4132,8 +4143,8 @@ export class BrushEngine {
       : null;
     const blendPlanner = blendControls
       ? this.reusableBlendPlanner ??= createDryBlendPlanner({}, {
-        documentWidth: LAYER_SIZE,
-        documentHeight: LAYER_SIZE,
+        documentWidth: DOCUMENT_WIDTH,
+        documentHeight: DOCUMENT_HEIGHT,
       })
       : null;
     if (blendPlanner && blendControls) {
@@ -4964,7 +4975,7 @@ export class BrushEngine {
    * suo parent verrebbe disegnata come livello normale e cambierebbe l'immagine.
    *
    * I pixel di ogni livello con contenuto vengono conservati in un seed di cold
-   * storage, che e' il costo dichiarato della reversibilita': `LAYER_SIZE² ×
+   * storage, che e' il costo dichiarato della reversibilita': `width × height ×
    * byte per pixel` per livello, dentro il budget History.
    */
   async deleteLayer(index: number): Promise<void> {
@@ -5140,7 +5151,7 @@ export class BrushEngine {
   /**
    * Reads the final presentation cache rather than the active raster texture,
    * so recent-project cards include every raster/vector layer and live style.
-   * The square crop follows the editor's fitted artboard viewport and is only a
+   * The centered crop follows the document aspect ratio and is only a
    * preview; authoritative project pixels remain the compressed layer tiles.
    */
   async captureProjectThumbnailPixels(): Promise<{
@@ -5155,22 +5166,29 @@ export class BrushEngine {
     if (!texture || width <= 0 || height <= 0) {
       throw new Error("The project preview is not ready yet.");
     }
-    const side = Math.min(width, height);
-    const originX = Math.floor((width - side) * 0.5);
-    const originY = Math.floor((height - side) * 0.5);
-    const unpaddedBytesPerRow = side * 4;
+    const documentAspect = DOCUMENT_WIDTH / DOCUMENT_HEIGHT;
+    const cacheAspect = width / height;
+    const captureWidth = cacheAspect > documentAspect
+      ? Math.max(1, Math.min(width, Math.round(height * documentAspect)))
+      : width;
+    const captureHeight = cacheAspect > documentAspect
+      ? height
+      : Math.max(1, Math.min(height, Math.round(width / documentAspect)));
+    const originX = Math.floor((width - captureWidth) * 0.5);
+    const originY = Math.floor((height - captureHeight) * 0.5);
+    const unpaddedBytesPerRow = captureWidth * 4;
     const bytesPerRow = Math.ceil(unpaddedBytesPerRow / 256) * 256;
     const buffer = this.device.createBuffer({
-      label: `Project thumbnail ${side}×${side}`,
-      size: bytesPerRow * side,
+      label: `Project thumbnail ${captureWidth}×${captureHeight}`,
+      size: bytesPerRow * captureHeight,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     });
     try {
       const encoder = this.device.createCommandEncoder({ label: "Project thumbnail readback" });
       encoder.copyTextureToBuffer(
         { texture, origin: { x: originX, y: originY, z: 0 } },
-        { buffer, bytesPerRow, rowsPerImage: side },
-        { width: side, height: side, depthOrArrayLayers: 1 },
+        { buffer, bytesPerRow, rowsPerImage: captureHeight },
+        { width: captureWidth, height: captureHeight, depthOrArrayLayers: 1 },
       );
       this.device.queue.submit([encoder.finish()]);
       let timer = 0;
@@ -5188,10 +5206,10 @@ export class BrushEngine {
         if (timer !== 0) window.clearTimeout(timer);
       }
       const mapped = new Uint8Array(buffer.getMappedRange());
-      const rgba = new Uint8ClampedArray(unpaddedBytesPerRow * side);
+      const rgba = new Uint8ClampedArray(unpaddedBytesPerRow * captureHeight);
       const bgra = this.canvasFormat.startsWith("bgra");
-      for (let row = 0; row < side; row += 1) {
-        for (let column = 0; column < side; column += 1) {
+      for (let row = 0; row < captureHeight; row += 1) {
+        for (let column = 0; column < captureWidth; column += 1) {
           const source = row * bytesPerRow + column * 4;
           const target = row * unpaddedBytesPerRow + column * 4;
           rgba[target] = mapped[source + (bgra ? 2 : 0)];
@@ -5201,17 +5219,20 @@ export class BrushEngine {
         }
       }
       buffer.unmap();
-      return { width: side, height: side, rgba };
+      return { width: captureWidth, height: captureHeight, rgba };
     } finally {
       buffer.destroy();
     }
   }
 
-  async captureActiveLayerThumbnail(): Promise<LayerThumbnailPixels & {
+  async captureRasterLayerThumbnail(layerId: number): Promise<LayerThumbnailPixels & {
     readonly layerId: number;
   }> {
     if (!this.initialized) {
       throw new Error("Il motore non è ancora inizializzato.");
+    }
+    if (!Number.isSafeInteger(layerId)) {
+      throw new Error(`Identificatore livello raster non valido: ${layerId}.`);
     }
     if (this.activeStroke || this.layerSwitchBusy || this.historyBusy) {
       throw new Error("Miniatura rimandata finché il motore non torna inattivo.");
@@ -5221,8 +5242,11 @@ export class BrushEngine {
       throw new Error("Miniatura rimandata: è iniziata una nuova operazione.");
     }
 
-    const layerId = this.layerStack.active.id;
-    if (!this.layerHasContent) {
+    const record = this.layerStack.byId(layerId);
+    if (!record) {
+      throw new Error(`Livello raster ${layerId} non trovato.`);
+    }
+    if (!record.hasContent) {
       return {
         layerId,
         width: LAYER_THUMBNAIL_SIZE,
@@ -5230,19 +5254,51 @@ export class BrushEngine {
         rgba: new Uint8ClampedArray(LAYER_THUMBNAIL_SIZE * LAYER_THUMBNAIL_SIZE * 4),
       };
     }
-    if (!this.layerThumbnailRenderer) {
-      this.layerThumbnailRenderer = await LayerThumbnailRenderer.create(this.device);
+
+    const gpu = this.requireLayerGpu(layerId);
+    let transientHydration: LayerTextureResources | null = null;
+    try {
+      const sourceView = gpu.hot
+        ? gpu.hot.samplingView
+        : (transientHydration = await createHydratedLayerTexture(
+          this,
+          record,
+          gpu,
+          `Miniatura reidratazione livello ${layerId}`,
+          false,
+          "defer-to-fold-fence",
+        )).samplingView;
+      if (!this.layerThumbnailRenderer) {
+        this.layerThumbnailRenderer = await LayerThumbnailRenderer.create(this.device);
+      }
+      if (
+        this.layerStack.byId(layerId) !== record
+        || this.layerGpu.get(layerId) !== gpu
+        || this.activeStroke
+        || this.layerSwitchBusy
+        || this.historyBusy
+      ) {
+        throw new Error("Miniatura rimandata: il livello raster è cambiato.");
+      }
+      const pixels = await this.layerThumbnailRenderer.capture(sourceView);
+      return { layerId, ...pixels };
+    } finally {
+      destroyTransientLayerHydration(this, transientHydration);
     }
-    if (
-      layerId !== this.layerStack.active.id
-      || this.activeStroke
-      || this.layerSwitchBusy
-      || this.historyBusy
-    ) {
+  }
+
+  async captureActiveLayerThumbnail(): Promise<LayerThumbnailPixels & {
+    readonly layerId: number;
+  }> {
+    if (!this.initialized) {
+      throw new Error("Il motore non è ancora inizializzato.");
+    }
+    const layerId = this.layerStack.active.id;
+    const capture = await this.captureRasterLayerThumbnail(layerId);
+    if (layerId !== this.layerStack.active.id) {
       throw new Error("Miniatura rimandata: il livello attivo è cambiato.");
     }
-    const pixels = await this.layerThumbnailRenderer.capture(this.layerSamplingView);
-    return { layerId, ...pixels };
+    return capture;
   }
 
   async retargetEffectsWorkingSet(
@@ -5471,7 +5527,7 @@ export class BrushEngine {
     const height = Math.floor(rect.height);
     if (
       x < 0 || y < 0 || width <= 0 || height <= 0
-      || x + width > LAYER_SIZE || y + height > LAYER_SIZE
+      || x + width > DOCUMENT_WIDTH || y + height > DOCUMENT_HEIGHT
     ) {
       throw new Error("Rettangolo della sonda presentazione non valido.");
     }
@@ -5647,8 +5703,9 @@ export class BrushEngine {
       );
     }
     const bytesPerPixel = cold.format === "rgba16float" ? 8 : 4;
-    const bytesPerRow = LAYER_STORAGE_TILE_SIZE * bytesPerPixel;
-    const rowsPerImage = LAYER_STORAGE_TILE_SIZE;
+    const unpaddedBytesPerRow = LAYER_STORAGE_TILE_WIDTH * bytesPerPixel;
+    const bytesPerRow = Math.ceil(unpaddedBytesPerRow / 256) * 256;
+    const rowsPerImage = LAYER_STORAGE_TILE_HEIGHT;
     const readbackBytes = bytesPerRow * rowsPerImage * arrayLayerCount;
     const readbackBuffer = this.device.createBuffer({
       label: `Sonda ${label} tile ${firstArrayLayer}+${arrayLayerCount}`,
@@ -5672,8 +5729,8 @@ export class BrushEngine {
         },
         { buffer: readbackBuffer, bytesPerRow, rowsPerImage },
         {
-          width: LAYER_STORAGE_TILE_SIZE,
-          height: LAYER_STORAGE_TILE_SIZE,
+          width: LAYER_STORAGE_TILE_WIDTH,
+          height: LAYER_STORAGE_TILE_HEIGHT,
           depthOrArrayLayers: arrayLayerCount,
         },
       );
@@ -5695,7 +5752,21 @@ export class BrushEngine {
         }
       }
       mapped = true;
-      return new Uint8Array(readbackBuffer.getMappedRange()).slice();
+      const mappedBytes = new Uint8Array(readbackBuffer.getMappedRange());
+      const packed = new Uint8Array(
+        unpaddedBytesPerRow * rowsPerImage * arrayLayerCount,
+      );
+      for (let layer = 0; layer < arrayLayerCount; layer += 1) {
+        for (let row = 0; row < rowsPerImage; row += 1) {
+          const sourceOffset = (layer * rowsPerImage + row) * bytesPerRow;
+          const targetOffset = (layer * rowsPerImage + row) * unpaddedBytesPerRow;
+          packed.set(
+            mappedBytes.subarray(sourceOffset, sourceOffset + unpaddedBytesPerRow),
+            targetOffset,
+          );
+        }
+      }
+      return packed;
     } finally {
       if (mapped) {
         readbackBuffer.unmap();
@@ -5710,12 +5781,18 @@ export class BrushEngine {
     label: string,
     mipLevel = 0,
   ): Promise<Uint8Array> {
-    const dimension = Math.max(1, LAYER_SIZE >> mipLevel);
-    const requested = rect ?? { x: 0, y: 0, width: dimension, height: dimension };
-    const x = clamp(Math.floor(requested.x), 0, dimension);
-    const y = clamp(Math.floor(requested.y), 0, dimension);
-    const width = clamp(Math.ceil(requested.width), 0, dimension - x);
-    const height = clamp(Math.ceil(requested.height), 0, dimension - y);
+    const dimensionWidth = Math.max(1, DOCUMENT_WIDTH >> mipLevel);
+    const dimensionHeight = Math.max(1, DOCUMENT_HEIGHT >> mipLevel);
+    const requested = rect ?? {
+      x: 0,
+      y: 0,
+      width: dimensionWidth,
+      height: dimensionHeight,
+    };
+    const x = clamp(Math.floor(requested.x), 0, dimensionWidth);
+    const y = clamp(Math.floor(requested.y), 0, dimensionHeight);
+    const width = clamp(Math.ceil(requested.width), 0, dimensionWidth - x);
+    const height = clamp(Math.ceil(requested.height), 0, dimensionHeight - y);
     if (width <= 0 || height <= 0) {
       return new Uint8Array();
     }
@@ -6140,14 +6217,18 @@ export class BrushEngine {
   }
 
   /**
-   * One authoritative layer is exactly one `LAYER_SIZE²` mip-0 texture. Display
+   * One authoritative layer is exactly one document-sized mip-0 texture. Display
    * mips live in one reusable active-layer pyramid instead of every layer
    * texture.
    */
   allocateLayerTexture(format: LayerFormat): LayerTextureResources {
     const texture = this.device.createTexture({
-      label: `${LAYER_SIZE}² authoritative paint layer ${format}`,
-      size: { width: LAYER_SIZE, height: LAYER_SIZE, depthOrArrayLayers: 1 },
+      label: `${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT} authoritative paint layer ${format}`,
+      size: {
+        width: DOCUMENT_WIDTH,
+        height: DOCUMENT_HEIGHT,
+        depthOrArrayLayers: 1,
+      },
       mipLevelCount: 1,
       format,
       usage:
@@ -6223,7 +6304,7 @@ export class BrushEngine {
       this.memoryGovernorLimits,
     );
     if (zone !== "green") return true;
-    const layerBytes = LAYER_SIZE * LAYER_SIZE
+    const layerBytes = DOCUMENT_WIDTH * DOCUMENT_HEIGHT
       * (this.layerFormat === "rgba16float" ? 8 : 4);
     return this.layerColdCompressionDistantGpuBytes()
       >= layerBytes * LAYER_COLD_COMPRESSION_IDLE_THRESHOLD_RATIO;
@@ -6414,7 +6495,7 @@ export class BrushEngine {
       throw new Error("Bake impossibile: compositore effetti non disponibile.");
     }
     const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
-    const memoryBytes = LAYER_SIZE * LAYER_SIZE * bytesPerPixel;
+    const memoryBytes = DOCUMENT_WIDTH * DOCUMENT_HEIGHT * bytesPerPixel;
     const nonTransparentBounds = layerCompositeVisualBounds(this, record);
     return runGpuAllocationTransaction(
       this.device,
@@ -6422,7 +6503,11 @@ export class BrushEngine {
       async (transaction) => {
         const texture = this.device.createTexture({
           label: `Bake analitico livello ${record.id} #${generation}`,
-          size: { width: LAYER_SIZE, height: LAYER_SIZE, depthOrArrayLayers: 1 },
+          size: {
+            width: DOCUMENT_WIDTH,
+            height: DOCUMENT_HEIGHT,
+            depthOrArrayLayers: 1,
+          },
           format: this.layerFormat,
           usage:
             GPUTextureUsage.STORAGE_BINDING
@@ -7459,7 +7544,7 @@ export class BrushEngine {
 
   private reserveLayerDuplicateMemory(source: LayerRecord): MemoryReservation {
     const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
-    const fullLayerBytes = this.layerSize * this.layerSize * bytesPerPixel;
+    const fullLayerBytes = this.documentWidth * this.documentHeight * bytesPerPixel;
     const tiledBytes = this.layerColdBytesForMemoryAdmission(source);
     const sourceIsReference = source.id === this.layerStack.referenceLayerId;
     const request = planLayerDuplicateMemory({
@@ -7467,7 +7552,7 @@ export class BrushEngine {
       sourceColdBytes: sourceIsReference ? 0 : tiledBytes,
       additionalHotBytes: sourceIsReference ? fullLayerBytes : 0,
       fullMergedSurfaceBytes: mergedSurfaceMemoryBytes(
-        { width: this.layerSize, height: this.layerSize },
+        { width: this.documentWidth, height: this.documentHeight },
         bytesPerPixel,
       ).totalBytes,
       foldTransientBytes: fullLayerBytes * 2,
@@ -7905,8 +7990,8 @@ export class BrushEngine {
     if (!hasContent) return 0;
     const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
     return countLayerStorageTiles(coldStorageMaskForRecord(record))
-      * LAYER_STORAGE_TILE_SIZE
-      * LAYER_STORAGE_TILE_SIZE
+      * LAYER_STORAGE_TILE_WIDTH
+      * LAYER_STORAGE_TILE_HEIGHT
       * bytesPerPixel;
   }
 
@@ -7952,7 +8037,7 @@ export class BrushEngine {
       const sourceWillBeHot = Boolean(gpu.hot) && !outgoingWillBecomeCold;
       const coldSourceWillExist = outgoingWillBecomeCold
         || Boolean(gpu.cold) !== Boolean(gpu.compressed);
-      const tileBytes = LAYER_STORAGE_TILE_SIZE * LAYER_STORAGE_TILE_SIZE * bytesPerPixel;
+      const tileBytes = LAYER_STORAGE_TILE_WIDTH * LAYER_STORAGE_TILE_HEIGHT * bytesPerPixel;
       const compressedFitsBoundedScratch = !gpu.compressed
         || (
           gpu.compressed.tileIndices.length > 0
@@ -8001,7 +8086,7 @@ export class BrushEngine {
     const incoming = this.layerStack.at(targetIndex);
     const incomingGpu = this.requireLayerGpu(incoming.id);
     const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
-    const fullLayerBytes = this.layerSize * this.layerSize * bytesPerPixel;
+    const fullLayerBytes = this.documentWidth * this.documentHeight * bytesPerPixel;
     let adjacentPrefetchBytes = 0;
     if (this.layerColdAdjacentPrefetchEnabled) {
       for (const adjacentIndex of [targetIndex - 1, targetIndex + 1]) {
@@ -8018,7 +8103,7 @@ export class BrushEngine {
       incomingHotBytes: incomingGpu.hot ? 0 : fullLayerBytes,
       adjacentPrefetchBytes,
       fullMergedSurfaceBytes: mergedSurfaceMemoryBytes(
-        { width: this.layerSize, height: this.layerSize },
+        { width: this.documentWidth, height: this.documentHeight },
         bytesPerPixel,
       ).totalBytes,
       reclaimableCompositeBytes: [...this.liveMergedSurfaceTextures.values()].reduce(
@@ -8869,7 +8954,7 @@ export class BrushEngine {
 
     return {
       dirtyRect: clearStyled
-        ? { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE }
+        ? { x: 0, y: 0, width: DOCUMENT_WIDTH, height: DOCUMENT_HEIGHT }
         : mergeDirtyRects(composeRect, conditionalComposeRect),
       timing,
     };
@@ -8923,8 +9008,8 @@ export class BrushEngine {
     populateBrushUniformUpload(
       this.brushUniformUpload,
       settings,
-      LAYER_SIZE,
-      LAYER_SIZE,
+      DOCUMENT_WIDTH,
+      DOCUMENT_HEIGHT,
       0,
       0,
     );
@@ -9539,8 +9624,8 @@ export class BrushEngine {
       if (
         pointX + radius + jitterReach < 0
         || pointY + radius + jitterReach < 0
-        || pointX - radius - jitterReach >= LAYER_SIZE
-        || pointY - radius - jitterReach >= LAYER_SIZE
+        || pointX - radius - jitterReach >= DOCUMENT_WIDTH
+        || pointY - radius - jitterReach >= DOCUMENT_HEIGHT
       ) {
         return;
       }
@@ -9639,7 +9724,7 @@ export class BrushEngine {
       ...settings,
       opacity: intenseBlending ? settings.opacity : 1,
       blendMode: "normal",
-    }, LAYER_SIZE, LAYER_SIZE, 0, 0);
+    }, DOCUMENT_WIDTH, DOCUMENT_HEIGHT, 0, 0);
     this.device.queue.writeBuffer(
       this.thicknessTailInstanceBuffer,
       0,
@@ -11733,7 +11818,9 @@ export class BrushEngine {
         } else if (!tileBlendOwnsPyramid) {
           const mainPyramid = this.encodePaintDisplayPyramid(
             encoder,
-            clearLayer ? { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE } : null,
+            clearLayer
+              ? { x: 0, y: 0, width: DOCUMENT_WIDTH, height: DOCUMENT_HEIGHT }
+              : null,
             displayRequiredMipLevel,
           );
           paintDisplayPyramidMaintenanceFrames += mainPyramid.maintenanceFrames;
@@ -12008,7 +12095,7 @@ export class BrushEngine {
           && !this.usesOrderedScenePresentation()
           && !this.usesLayerBlendTilePresentation();
         const canonicalLayerDirtyRect = clearLayer
-          ? { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE }
+          ? { x: 0, y: 0, width: DOCUMENT_WIDTH, height: DOCUMENT_HEIGHT }
           : authoritativeDirtyRect;
         if (rasterStrokeActive && !tileBlendOwnsPyramid) {
           this.paintDisplayMipValidThroughLevel = 0;
@@ -12545,7 +12632,7 @@ export class BrushEngine {
 
       const brushEncodingStart = performance.now();
       const brushPass = encoder.beginRenderPass({
-        label: `Paint into ${LAYER_SIZE}² layer`,
+        label: `Paint into ${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT} layer`,
         colorAttachments: [
           {
             view: this.layerView,
@@ -12682,7 +12769,7 @@ export class BrushEngine {
         && this.usesLayerBlendTilePresentation();
 
       const baseDirtyRect = layerCleared
-        ? { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE }
+        ? { x: 0, y: 0, width: DOCUMENT_WIDTH, height: DOCUMENT_HEIGHT }
         : submittedDirtyRect;
       if (layerCleared || (rasterStrokeActive && submittedDirtyRect)) {
         this.paintDisplayMipValidThroughLevel = 0;

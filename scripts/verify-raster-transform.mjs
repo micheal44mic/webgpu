@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+  RASTER_TRANSFORM_DOCUMENT_HEIGHT,
   RASTER_TRANSFORM_DOCUMENT_SIZE,
+  RASTER_TRANSFORM_DOCUMENT_WIDTH,
   RASTER_TRANSFORM_MATH_STRATEGY,
+  RASTER_TRANSFORM_TILE_GRID_SIZE,
+  RASTER_TRANSFORM_TILE_HEIGHT,
   RASTER_TRANSFORM_TILE_SIZE,
+  RASTER_TRANSFORM_TILE_WIDTH,
   RASTER_TRANSFORM_UNIFORM_BYTES,
   clipRasterTransformRect,
   packRasterTransformUniforms,
@@ -38,6 +43,22 @@ assert.equal(
 assert.equal(
   RASTER_SELECTION_TRANSLATE_SHADER_STRATEGY,
   "integer-cut-selection-mask-immutable-source-over-destination-v1",
+);
+assert.equal(
+  RASTER_TRANSFORM_DOCUMENT_SIZE,
+  Math.max(RASTER_TRANSFORM_DOCUMENT_WIDTH, RASTER_TRANSFORM_DOCUMENT_HEIGHT),
+);
+assert.equal(
+  RASTER_TRANSFORM_TILE_SIZE,
+  Math.max(RASTER_TRANSFORM_TILE_WIDTH, RASTER_TRANSFORM_TILE_HEIGHT),
+);
+assert.equal(
+  Math.ceil(RASTER_TRANSFORM_DOCUMENT_WIDTH / RASTER_TRANSFORM_TILE_WIDTH),
+  RASTER_TRANSFORM_TILE_GRID_SIZE,
+);
+assert.equal(
+  Math.ceil(RASTER_TRANSFORM_DOCUMENT_HEIGHT / RASTER_TRANSFORM_TILE_HEIGHT),
+  RASTER_TRANSFORM_TILE_GRID_SIZE,
 );
 
 const identity = { translationX: 0, translationY: 0, scale: 1, rotation: 0 };
@@ -117,8 +138,9 @@ assert.deepEqual(
   rasterTransformDirtyRect(
     { x: 5, y: 7, width: 10, height: 12 },
     { x: 13, y: 3, width: 11, height: 9 },
-    RASTER_TRANSFORM_DOCUMENT_SIZE,
+    RASTER_TRANSFORM_DOCUMENT_WIDTH,
     0,
+    RASTER_TRANSFORM_DOCUMENT_HEIGHT,
   ),
   { x: 5, y: 3, width: 19, height: 16 },
 );
@@ -150,7 +172,8 @@ assert.deepEqual(
     { x: 500, y: 500, width: 10, height: 10 },
     { x: 505, y: 505 },
     { ...identity, scale: 20 },
-    4096,
+    RASTER_TRANSFORM_DOCUMENT_WIDTH,
+    RASTER_TRANSFORM_DOCUMENT_HEIGHT,
   ),
   { x: 394, y: 394, width: 222, height: 222 },
 );
@@ -159,15 +182,16 @@ assert.deepEqual(
   { x: 0, y: 4094, width: 7, height: 2 },
 );
 
-const gridSize = RASTER_TRANSFORM_DOCUMENT_SIZE / RASTER_TRANSFORM_TILE_SIZE;
+const gridWidth = Math.ceil(RASTER_TRANSFORM_DOCUMENT_WIDTH / RASTER_TRANSFORM_TILE_WIDTH);
+const gridHeight = Math.ceil(RASTER_TRANSFORM_DOCUMENT_HEIGHT / RASTER_TRANSFORM_TILE_HEIGHT);
 const tileMask = (...indices) => {
-  const mask = new Uint32Array(Math.ceil(gridSize * gridSize / 32));
+  const mask = new Uint32Array(Math.ceil(gridWidth * gridHeight / 32));
   for (const index of indices) {
     mask[index >>> 5] = (mask[index >>> 5] | (1 << (index & 31))) >>> 0;
   }
   return mask;
 };
-const tileIndex = (x, y) => y * gridSize + x;
+const tileIndex = (x, y) => y * gridWidth + x;
 
 const sparseSource = tileMask(tileIndex(0, 0), tileIndex(2, 2));
 assert.deepEqual(rasterTransformTileIndices(sparseSource), [
@@ -177,15 +201,26 @@ assert.deepEqual(rasterTransformTileIndices(sparseSource), [
 assert.deepEqual(rasterTransformScratchRect(sparseSource), {
   x: 0,
   y: 0,
-  width: RASTER_TRANSFORM_TILE_SIZE * 3,
-  height: RASTER_TRANSFORM_TILE_SIZE * 3,
+  width: RASTER_TRANSFORM_TILE_WIDTH * 3,
+  height: RASTER_TRANSFORM_TILE_HEIGHT * 3,
 });
 const sparseIdentity = rasterTransformTileMask(
   sparseSource,
-  { x: 0, y: 0, width: RASTER_TRANSFORM_TILE_SIZE * 3, height: RASTER_TRANSFORM_TILE_SIZE * 3 },
+  {
+    x: 0,
+    y: 0,
+    width: RASTER_TRANSFORM_TILE_WIDTH * 3,
+    height: RASTER_TRANSFORM_TILE_HEIGHT * 3,
+  },
   { x: 0, y: 0 },
   identity,
-  { padding: 0 },
+  {
+    documentWidth: RASTER_TRANSFORM_DOCUMENT_WIDTH,
+    documentHeight: RASTER_TRANSFORM_DOCUMENT_HEIGHT,
+    tileWidth: RASTER_TRANSFORM_TILE_WIDTH,
+    tileHeight: RASTER_TRANSFORM_TILE_HEIGHT,
+    padding: 0,
+  },
 );
 assert.deepEqual(
   rasterTransformTileIndices(sparseIdentity),
@@ -214,6 +249,34 @@ assert.throws(
   () => rasterTransformTileIndices(new Uint32Array(1)),
   /Maschera tile non valida/,
 );
+
+// Fixture rettangolare: il tile 255 deve rappresentare il vero angolo in basso
+// a destra con bordi X/Y ritagliati indipendentemente.
+{
+  const documentWidth = 1080;
+  const documentHeight = 1920;
+  const tileWidth = Math.ceil(documentWidth / RASTER_TRANSFORM_TILE_GRID_SIZE);
+  const tileHeight = Math.ceil(documentHeight / RASTER_TRANSFORM_TILE_GRID_SIZE);
+  const mask = new Uint32Array(RASTER_TRANSFORM_TILE_GRID_SIZE ** 2 / 32);
+  mask[7] = 0x80000000;
+  assert.deepEqual(
+    rasterTransformTileIndices(mask, documentWidth, tileWidth, documentHeight, tileHeight),
+    [255],
+  );
+  assert.deepEqual(
+    rasterTransformScratchRect(mask, documentWidth, tileWidth, documentHeight, tileHeight),
+    { x: 1020, y: 1800, width: 60, height: 120 },
+  );
+  const covered = tileMaskCoveringRect(
+    new Uint32Array(mask.length),
+    { x: documentWidth - 1, y: documentHeight - 1, width: 1, height: 1 },
+    documentWidth,
+    tileWidth,
+    documentHeight,
+    tileHeight,
+  );
+  assert.equal(covered[7] >>> 0, 0x80000000);
+}
 
 const uniforms = packRasterTransformUniforms({
   sourceScratchRect: { x: 256, y: 512, width: 768, height: 512 },
@@ -283,7 +346,16 @@ const brushEngineSource = readFileSync(
 );
 assert.doesNotMatch(mathSource, /GPU(?:Device|Texture|Buffer|Queue)/);
 assert.doesNotMatch(mathSource, /CanvasRenderingContext|ImageBitmap/);
+assert.match(mathSource, /RASTER_TRANSFORM_DOCUMENT_WIDTH = DOCUMENT_WIDTH/);
+assert.match(mathSource, /RASTER_TRANSFORM_DOCUMENT_HEIGHT = DOCUMENT_HEIGHT/);
+assert.match(mathSource, /RASTER_TRANSFORM_TILE_WIDTH = DOCUMENT_TILE_WIDTH/);
+assert.match(mathSource, /RASTER_TRANSFORM_TILE_HEIGHT = DOCUMENT_TILE_HEIGHT/);
 assert.match(runtimeSource, /RASTER_TRANSFORM_TRANSPARENT_GUARD_PX = 2/);
+assert.doesNotMatch(
+  runtimeSource,
+  /engine\.layerSize|\bLAYER_SIZE\b|\bRASTER_TRANSFORM_DOCUMENT_SIZE\b|\bRASTER_TRANSFORM_TILE_SIZE\b|documentSize:|tileSize:/,
+  "Il runtime Trasforma non deve ripiegare sui vecchi lati quadrati.",
+);
 assert.match(
   runtimeSource,
   /engine\.assertLayerSwitchAllowed\(\);\s*engine\.persistActiveLayerState\(\);\s*if \(!record\.hasContent \|\| !record\.contentBounds\)/,
@@ -354,12 +426,15 @@ console.log("Raster transform math/shader verification passed.");
 // Applica: contenuto `0,0 903x490` contro maschera `0,0 896x512`, sette pixel
 // fuori a destra. Da li' Trasforma non si riapriva piu' su quel livello.
 {
-  const size = RASTER_TRANSFORM_DOCUMENT_SIZE;
-  const tile = RASTER_TRANSFORM_TILE_SIZE;
-  const grid = size / tile;
-  const parole = Math.ceil((grid * grid) / 32);
+  const documentWidth = RASTER_TRANSFORM_DOCUMENT_WIDTH;
+  const documentHeight = RASTER_TRANSFORM_DOCUMENT_HEIGHT;
+  const tileWidth = RASTER_TRANSFORM_TILE_WIDTH;
+  const tileHeight = RASTER_TRANSFORM_TILE_HEIGHT;
+  const gridWidth = Math.ceil(documentWidth / tileWidth);
+  const gridHeight = Math.ceil(documentHeight / tileHeight);
+  const parole = Math.ceil((gridWidth * gridHeight) / 32);
   const accendi = (mask, tileX, tileY) => {
-    const indice = tileY * grid + tileX;
+    const indice = tileY * gridWidth + tileX;
     mask[indice >>> 5] |= 1 << (indice & 31);
   };
   const identita = { translationX: 0, translationY: 0, scale: 1, rotation: 0 };
@@ -368,11 +443,22 @@ console.log("Raster transform math/shader verification passed.");
   for (let tileY = 0; tileY < 4; tileY += 1) {
     for (let tileX = 0; tileX < 7; tileX += 1) accendi(maschera, tileX, tileY);
   }
-  const scratchPrima = rasterTransformScratchRect(maschera, size, tile);
-  assert.equal(scratchPrima.width, 7 * tile, "scratch di partenza inatteso");
+  const scratchPrima = rasterTransformScratchRect(
+    maschera,
+    documentWidth,
+    tileWidth,
+    documentHeight,
+    tileHeight,
+  );
+  assert.equal(scratchPrima.width, 7 * tileWidth, "scratch di partenza inatteso");
 
   // Il caso reale: il contenuto sfora la maschera di 7 px a destra.
-  const contenuto = { x: 0, y: 0, width: 7 * tile + 7, height: 4 * tile - 22 };
+  const contenuto = {
+    x: 0,
+    y: 0,
+    width: 7 * tileWidth + 7,
+    height: 4 * tileHeight - 22,
+  };
   assert.throws(
     () => packRasterTransformUniforms({
       sourceScratchRect: scratchPrima,
@@ -384,9 +470,22 @@ console.log("Raster transform math/shader verification passed.");
     "senza copertura il caso misurato deve ancora fallire: e' la regressione",
   );
 
-  const coperta = tileMaskCoveringRect(maschera, contenuto, size, tile);
-  const scratchDopo = rasterTransformScratchRect(coperta, size, tile);
-  assert.equal(scratchDopo.width, 8 * tile, "la copertura deve accendere la colonna mancante");
+  const coperta = tileMaskCoveringRect(
+    maschera,
+    contenuto,
+    documentWidth,
+    tileWidth,
+    documentHeight,
+    tileHeight,
+  );
+  const scratchDopo = rasterTransformScratchRect(
+    coperta,
+    documentWidth,
+    tileWidth,
+    documentHeight,
+    tileHeight,
+  );
+  assert.equal(scratchDopo.width, 8 * tileWidth, "la copertura deve accendere la colonna mancante");
   packRasterTransformUniforms({
     sourceScratchRect: scratchDopo,
     sourceContentBounds: contenuto,
@@ -395,19 +494,43 @@ console.log("Raster transform math/shader verification passed.");
   });
 
   // Non deve mutare l'ingresso: la maschera del record e' condivisa.
-  assert.equal(rasterTransformScratchRect(maschera, size, tile).width, 7 * tile,
+  assert.equal(rasterTransformScratchRect(
+    maschera,
+    documentWidth,
+    tileWidth,
+    documentHeight,
+    tileHeight,
+  ).width, 7 * tileWidth,
     "tileMaskCoveringRect non deve mutare la maschera ricevuta");
 
   // Bordo esatto: `right` e' esclusivo, quindi un rettangolo che finisce sul
   // confine non deve accendere la colonna successiva.
   const esatto = tileMaskCoveringRect(
-    maschera, { x: 0, y: 0, width: 7 * tile, height: 4 * tile }, size, tile,
+    maschera,
+    { x: 0, y: 0, width: 7 * tileWidth, height: 4 * tileHeight },
+    documentWidth,
+    tileWidth,
+    documentHeight,
+    tileHeight,
   );
-  assert.equal(rasterTransformScratchRect(esatto, size, tile).width, 7 * tile,
+  assert.equal(rasterTransformScratchRect(
+    esatto,
+    documentWidth,
+    tileWidth,
+    documentHeight,
+    tileHeight,
+  ).width, 7 * tileWidth,
     "un rettangolo allineato al tile non deve accendere una colonna vuota");
 
   // La maschera puo' solo crescere, e un rettangolo nullo la lascia com'e'.
-  const nulla = tileMaskCoveringRect(maschera, null, size, tile);
+  const nulla = tileMaskCoveringRect(
+    maschera,
+    null,
+    documentWidth,
+    tileWidth,
+    documentHeight,
+    tileHeight,
+  );
   assert.deepEqual([...nulla], [...maschera], "rect nullo deve lasciare la maschera invariata");
   for (let parola = 0; parola < parole; parola += 1) {
     assert.equal(coperta[parola] & maschera[parola], maschera[parola],
@@ -445,7 +568,7 @@ console.log("Raster transform math/shader verification passed.");
   );
   assert.match(
     metadati,
-    /record\.storageTileMask\.set\(\s*\n?\s*tileMaskCoveringRect\(tileMask, bounds, engine\.layerSize\),?\s*\n?\s*\)/,
+    /record\.storageTileMask\.set\(\s*\n?\s*tileMaskCoveringRect\(tileMask, bounds\),?\s*\n?\s*\)/,
     "bounds e maschera vanno scritti insieme rispettando l'invariante",
   );
   assert.match(

@@ -49,7 +49,8 @@ import { renderVectorDrawsToTexture } from "./engine-vector-raster-runtime";
 import { mergeDirtyRects } from "./engine-geometry";
 import type { DirtyRect } from "./engine-stroke-types";
 import {
-  LAYER_STORAGE_TILE_SIZE,
+  LAYER_STORAGE_TILE_HEIGHT,
+  LAYER_STORAGE_TILE_WIDTH,
   countLayerStorageTiles,
   markLayerStorageRect,
 } from "./layer-storage-study";
@@ -98,12 +99,12 @@ export interface PreparedLayerMerge {
 
 function fullDocumentView(engine: BrushEngine): VectorTextViewState {
   return {
-    canvasWidth: engine.layerSize,
-    canvasHeight: engine.layerSize,
-    cssWidth: engine.layerSize,
-    cssHeight: engine.layerSize,
-    centerX: engine.layerSize * 0.5,
-    centerY: engine.layerSize * 0.5,
+    canvasWidth: engine.documentWidth,
+    canvasHeight: engine.documentHeight,
+    cssWidth: engine.documentWidth,
+    cssHeight: engine.documentHeight,
+    centerX: engine.documentWidth * 0.5,
+    centerY: engine.documentHeight * 0.5,
     zoom: 1,
     rotationRadians: 0,
     rotationCos: 1,
@@ -131,11 +132,16 @@ function outputFoldSurface(
     blendFoldUniformStride: 0,
     blendFoldTileWidth: 0,
     blendFoldTileHeight: 0,
-    bounds: { x: 0, y: 0, width: engine.layerSize, height: engine.layerSize },
+    bounds: {
+      x: 0,
+      y: 0,
+      width: engine.documentWidth,
+      height: engine.documentHeight,
+    },
     resolutionScale: 1,
-    textureWidth: engine.layerSize,
-    textureHeight: engine.layerSize,
-    mip0MemoryBytes: engine.layerSize * engine.layerSize * bytesPerPixel,
+    textureWidth: engine.documentWidth,
+    textureHeight: engine.documentHeight,
+    mip0MemoryBytes: engine.documentWidth * engine.documentHeight * bytesPerPixel,
     mipChainMemoryBytes: 0,
     validThroughLevel: 0,
     layerCount: 0,
@@ -214,7 +220,13 @@ async function renderVectorRunInput(
   }
   if (draws.length === 0) return null;
   const runBounds = vectorTextGpuRunBounds(draws, view);
-  const allocationBounds = alignedMergedSurfaceBounds(runBounds, engine.layerSize);
+  const allocationBounds = alignedMergedSurfaceBounds(
+    runBounds,
+    engine.documentWidth,
+    64,
+    64,
+    engine.documentHeight,
+  );
   const vectorSurface = allocateMergedSurface(
     engine,
     engine.layerFormat,
@@ -301,8 +313,8 @@ async function renderSingleRasterUnitPreservingParent(
       source.view,
       { x: 0, y: 0 },
       1,
-      engine.layerSize,
-      engine.layerSize,
+      engine.documentWidth,
+      engine.documentHeight,
       1,
       source.nonTransparentBounds,
       "normal",
@@ -555,7 +567,8 @@ interface StagedMergeRaster {
 }
 
 function layerMergeFullTextureBytes(engine: BrushEngine): number {
-  return engine.layerSize * engine.layerSize * (engine.layerFormat === "rgba16float" ? 8 : 4);
+  return engine.documentWidth * engine.documentHeight
+    * (engine.layerFormat === "rgba16float" ? 8 : 4);
 }
 
 function layerMergeCompressedCpuBytes(engine: BrushEngine): number {
@@ -569,8 +582,8 @@ function layerMergeColdBytesForRecord(engine: BrushEngine, layerId: number): num
   if (!record || !record.hasContent) return 0;
   const bytesPerPixel = engine.layerFormat === "rgba16float" ? 8 : 4;
   return countLayerStorageTiles(coldStorageMaskForRecord(record))
-    * LAYER_STORAGE_TILE_SIZE
-    * LAYER_STORAGE_TILE_SIZE
+    * LAYER_STORAGE_TILE_WIDTH
+    * LAYER_STORAGE_TILE_HEIGHT
     * bytesPerPixel;
 }
 
@@ -594,7 +607,7 @@ function layerMergeCreateRequest(
     return full;
   });
   const mergedFullBytes = mergedSurfaceMemoryBytes(
-    { width: engine.layerSize, height: engine.layerSize },
+    { width: engine.documentWidth, height: engine.documentHeight },
     engine.layerFormat === "rgba16float" ? 8 : 4,
   ).totalBytes;
   return planLayerMergeCreateMemory({

@@ -5,6 +5,7 @@ import {
   destroyLayerColdStorage,
 } from "./engine-cold-storage";
 import { assertShaderCompiled } from "./engine-gpu-utils";
+import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits";
 import type { LayerFormat, RasterTransformSnapshot } from "./engine-types";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import { commitHistoryActionAtomically } from "./engine-history-runtime";
@@ -323,7 +324,7 @@ function setAuthoritativeMetadata(
   // l'invariante "contenuto dentro i tile" va imposta, non nei quattro
   // chiamanti. Vedi `tileMaskCoveringRect`.
   record.storageTileMask.set(
-    tileMaskCoveringRect(tileMask, bounds, engine.layerSize),
+    tileMaskCoveringRect(tileMask, bounds),
   );
 }
 
@@ -368,8 +369,9 @@ function renderRequestedPreview(
   const dirtyRect = rasterTransformDirtyRect(
     session.presentedSamplingBounds,
     session.mutationBounds,
-    engine.layerSize,
+    DOCUMENT_WIDTH,
     0,
+    DOCUMENT_HEIGHT,
   ) as DirtyRect | null;
   if (dirtyRect) {
     writeSessionUniforms(engine, session);
@@ -494,14 +496,12 @@ export async function beginRasterLayerTransform(
     const sourceTileMask = tileMaskCoveringRect(
       record.storageTileMask,
       sourceBounds,
-      engine.layerSize,
     );
     const sourceSelectionTileMask = selectionScope
       ? engine.pixelSelectionTileMask.slice()
       : null;
     const sourceScratchRect = rasterTransformScratchRect(
       sourceTileMask,
-      engine.layerSize,
     ) as DirtyRect | null;
     if (!sourceScratchRect) {
       throw new Error("Il livello raster non contiene tile trasformabili.");
@@ -607,7 +607,8 @@ export async function beginRasterLayerTransform(
               sourceRasterBounds,
               sourcePivot,
               transform,
-              engine.layerSize,
+              DOCUMENT_WIDTH,
+              DOCUMENT_HEIGHT,
             ) as DirtyRect | null,
           mutationBounds: selectionScope ? { ...sourceBounds } : { ...sourceRasterBounds },
           resultTileMask: sourceTileMask.slice(),
@@ -753,7 +754,7 @@ export function updateRasterLayerTransform(
     // Content metadata describes actual transformed pixels. Filtering safety
     // belongs only to the transient dirty/scissor rect; persisting it here
     // would grow bounds and shift the pivot after every successive Apply.
-    { documentSize: engine.layerSize, padding: 0 },
+    { documentWidth: DOCUMENT_WIDTH, documentHeight: DOCUMENT_HEIGHT, padding: 0 },
   ) as DirtyRect | null;
   if (session.scope === "selection") {
     session.mutationBounds = copyRect(session.resultBounds);
@@ -764,7 +765,11 @@ export function updateRasterLayerTransform(
         session.sourceBounds,
         session.sourcePivot,
         transform,
-        { documentSize: engine.layerSize, padding: 0 },
+        {
+          documentWidth: DOCUMENT_WIDTH,
+          documentHeight: DOCUMENT_HEIGHT,
+          padding: 0,
+        },
       )
       : new Uint32Array(session.sourceTileMask.length);
     session.resultTileMask = session.sourceTileMask.slice();
@@ -777,7 +782,8 @@ export function updateRasterLayerTransform(
       session.sourceRasterBounds,
       session.sourcePivot,
       transform,
-      engine.layerSize,
+      DOCUMENT_WIDTH,
+      DOCUMENT_HEIGHT,
     ) as DirtyRect | null;
     session.mutationBounds = copyRect(session.samplingBounds);
     session.resultTileMask = session.samplingBounds
@@ -786,7 +792,11 @@ export function updateRasterLayerTransform(
         session.sourceRasterBounds,
         session.sourcePivot,
         transform,
-        { documentSize: engine.layerSize, padding: samplingPadding },
+        {
+          documentWidth: DOCUMENT_WIDTH,
+          documentHeight: DOCUMENT_HEIGHT,
+          padding: samplingPadding,
+        },
       )
       : new Uint32Array(session.sourceTileMask.length);
   }
@@ -856,7 +866,8 @@ async function restoreOriginalPixels(
     session.sourceRasterBounds,
     session.sourcePivot,
     identity,
-    engine.layerSize,
+    DOCUMENT_WIDTH,
+    DOCUMENT_HEIGHT,
   ) as DirtyRect | null;
   const identityMutationBounds = session.scope === "selection"
     ? session.sourceBounds
@@ -864,8 +875,9 @@ async function restoreOriginalPixels(
   const dirtyRect = rasterTransformDirtyRect(
     session.presentedSamplingBounds,
     identityMutationBounds,
-    engine.layerSize,
+    DOCUMENT_WIDTH,
     0,
+    DOCUMENT_HEIGHT,
   ) as DirtyRect | null;
   if (dirtyRect) {
     writeSessionUniforms(engine, session, identity);

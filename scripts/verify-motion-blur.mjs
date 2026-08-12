@@ -72,6 +72,22 @@ assert.deepEqual(
     height: 50,
   },
 );
+assert.deepEqual(
+  destructiveMotionBlurBounds(
+    { x: 90, y: 50, width: 10, height: 10 },
+    20,
+    90,
+    100,
+    60,
+  ),
+  {
+    x: 90,
+    y: 50 - vertical.supportY,
+    width: 10,
+    height: 10 + vertical.supportY,
+  },
+  "La scia verticale deve essere ritagliata dall'altezza indipendente del documento.",
+);
 const maximumBounds = destructiveMotionBlurMaximumBounds(
   { x: 300, y: 300, width: 100, height: 100 },
   1000,
@@ -177,8 +193,24 @@ assert.match(runtime, /previewInFlight/);
 assert.match(runtime, /session\.previewFault/);
 assert.match(runtime, /transparent-content-clamp-document-edge/);
 assert.match(runtime, /clampedDocumentPixel\s*=\s*clamp\(/);
-assert.match(runtime, /parameterUploadI32\[word \+ 10\]\s*=\s*documentSize/);
-assert.match(runtime, /parameterUploadI32\[word \+ 11\]\s*=\s*documentSize/);
+assert.match(runtime, /import \{ DOCUMENT_HEIGHT, DOCUMENT_WIDTH \} from "\.\/engine-limits"/);
+assert.match(
+  runtime,
+  /function writePassParameters\([\s\S]{0,260}documentWidth: number,\s*documentHeight: number,/,
+);
+assert.match(runtime, /parameterUploadI32\[word \+ 10\]\s*=\s*documentWidth/);
+assert.match(runtime, /parameterUploadI32\[word \+ 11\]\s*=\s*documentHeight/);
+assert.match(runtime, /\}, DOCUMENT_WIDTH, DOCUMENT_HEIGHT\);/);
+assert.match(
+  runtime,
+  /destructiveMotionBlurBounds\([\s\S]{0,180}DOCUMENT_WIDTH,\s*DOCUMENT_HEIGHT,/,
+  "Motion Blur deve ritagliare la scia sui due assi reali.",
+);
+assert.doesNotMatch(
+  runtime,
+  /engine\.layerSize|\bLAYER_SIZE\b|word \+ 11\]\s*=\s*documentWidth/,
+  "Motion Blur non deve duplicare la larghezza come altezza.",
+);
 assert.doesNotMatch(runtime, /rgba8|unorm8|pack4x8|unpack4x8/i);
 
 const restore = runtime.slice(

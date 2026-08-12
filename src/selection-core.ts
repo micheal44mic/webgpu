@@ -1,8 +1,10 @@
 import {
   DOCUMENT_TILE_GRID_SIZE,
+  DOCUMENT_TILE_HEIGHT,
   DOCUMENT_TILE_MASK_WORDS,
-  DOCUMENT_TILE_SIZE,
-  LAYER_SIZE,
+  DOCUMENT_TILE_WIDTH,
+  DOCUMENT_HEIGHT,
+  DOCUMENT_WIDTH,
 } from "./engine-limits.ts";
 import type { DirtyRect } from "./engine-stroke-types.ts";
 
@@ -48,13 +50,19 @@ export interface LassoSpanRaster {
   readonly bounds: DirtyRect | null;
 }
 
-export const SELECTION_LAYER_SIZE = LAYER_SIZE;
-export const SELECTION_WORDS_PER_ROW = SELECTION_LAYER_SIZE / 32;
-export const SELECTION_MASK_WORDS = SELECTION_WORDS_PER_ROW * SELECTION_LAYER_SIZE;
+/** @deprecated Compatibility maximum edge. */
+export const SELECTION_LAYER_SIZE = Math.max(DOCUMENT_WIDTH, DOCUMENT_HEIGHT);
+export const SELECTION_LAYER_WIDTH = DOCUMENT_WIDTH;
+export const SELECTION_LAYER_HEIGHT = DOCUMENT_HEIGHT;
+export const SELECTION_WORDS_PER_ROW = Math.ceil(SELECTION_LAYER_WIDTH / 32);
+export const SELECTION_MASK_WORDS = SELECTION_WORDS_PER_ROW * SELECTION_LAYER_HEIGHT;
 export const SELECTION_MASK_BYTES = SELECTION_MASK_WORDS * 4;
 export const SELECTION_TILE_MASK_WORDS = DOCUMENT_TILE_MASK_WORDS;
 export const SELECTION_TILE_GRID_SIZE = DOCUMENT_TILE_GRID_SIZE;
-export const SELECTION_TILE_SIZE = DOCUMENT_TILE_SIZE;
+/** @deprecated Compatibility maximum tile edge. */
+export const SELECTION_TILE_SIZE = Math.max(DOCUMENT_TILE_WIDTH, DOCUMENT_TILE_HEIGHT);
+export const SELECTION_TILE_WIDTH = DOCUMENT_TILE_WIDTH;
+export const SELECTION_TILE_HEIGHT = DOCUMENT_TILE_HEIGHT;
 export const SELECTION_METADATA_WORDS = 16;
 export const SELECTION_METADATA_BYTES = SELECTION_METADATA_WORDS * 4;
 export const SELECTION_METADATA_BUFFER_BYTES = 256;
@@ -181,10 +189,12 @@ function finiteLassoPoints(points: readonly SelectionPoint[]): SelectionPoint[] 
  */
 export function buildLassoSpans(
   sourcePoints: readonly SelectionPoint[],
-  layerSize = SELECTION_LAYER_SIZE,
+  layerWidth = SELECTION_LAYER_WIDTH,
+  layerHeight = SELECTION_LAYER_HEIGHT,
 ): LassoSpanRaster {
-  if (!Number.isInteger(layerSize) || layerSize <= 0) {
-    throw new RangeError("La dimensione raster del lazo deve essere un intero positivo.");
+  if (!Number.isInteger(layerWidth) || layerWidth <= 0
+    || !Number.isInteger(layerHeight) || layerHeight <= 0) {
+    throw new RangeError("Le dimensioni raster del lazo devono essere interi positivi.");
   }
   const points = finiteLassoPoints(sourcePoints);
   if (points.length < 3) {
@@ -200,7 +210,7 @@ export function buildLassoSpans(
     const low = first.y < second.y ? first : second;
     const high = first.y < second.y ? second : first;
     const startY = Math.max(0, Math.ceil(low.y - 0.5));
-    const endY = Math.min(layerSize, Math.ceil(high.y - 0.5));
+    const endY = Math.min(layerHeight, Math.ceil(high.y - 0.5));
     const inverseDy = 1 / (second.y - first.y);
     for (let y = startY; y < endY; y += 1) {
       const sampleY = y + 0.5;
@@ -218,8 +228,8 @@ export function buildLassoSpans(
   }
 
   const packed: number[] = [];
-  let minX = layerSize;
-  let minY = layerSize;
+  let minX = layerWidth;
+  let minY = layerHeight;
   let maxX = 0;
   let maxY = 0;
   const rows = [...intersectionsByRow.keys()].sort((left, right) => left - right);
@@ -229,8 +239,8 @@ export function buildLassoSpans(
     for (let index = 0; index + 1 < intersections.length; index += 2) {
       const left = intersections[index];
       const right = intersections[index + 1];
-      const startX = Math.max(0, Math.min(layerSize, Math.ceil(left - 0.5)));
-      const endX = Math.max(0, Math.min(layerSize, Math.ceil(right - 0.5)));
+      const startX = Math.max(0, Math.min(layerWidth, Math.ceil(left - 0.5)));
+      const endX = Math.max(0, Math.min(layerWidth, Math.ceil(right - 0.5)));
       if (endX <= startX) continue;
       if (packed.length / SELECTION_LASSO_SPAN_WORDS >= SELECTION_MAX_LASSO_SPANS) {
         throw new RangeError(

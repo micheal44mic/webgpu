@@ -3,7 +3,8 @@
  *
  * Il decoder vive sul CPU soltanto fino all'ImageBitmap. Da quel momento la
  * conversione colore, il premultiply, l'eventuale riduzione e la scrittura nel
- * livello `LAYER_SIZE²` avvengono in WebGPU. Non viene creato alcun RasterImageNode:
+ * livello delle dimensioni del documento avvengono in WebGPU. Non viene creato
+ * alcun RasterImageNode:
  * dopo la Promise l'immagine è un normale LayerRecord, immediatamente
  * modificabile da Paint, Blend, Fill ed effetti raster.
  */
@@ -47,10 +48,11 @@ import type { LayerRecord } from "./layer-stack";
 import { LAYER_STACK_MAXIMUM } from "./layer-stack";
 import {
   countLayerStorageTiles,
-  LAYER_STORAGE_TILE_SIZE,
+  LAYER_STORAGE_TILE_HEIGHT,
+  LAYER_STORAGE_TILE_WIDTH,
   markLayerStorageRect,
 } from "./layer-storage-study";
-import { LAYER_SIZE, MEBIBYTE_BYTES } from "./engine-limits";
+import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH, MEBIBYTE_BYTES } from "./engine-limits";
 import type { DirtyRect } from "./engine-stroke-types";
 import type { LayerFormat } from "./engine-types";
 import type {
@@ -141,13 +143,12 @@ interface TransientImageTextures {
 const pipelineCache = new WeakMap<GPUDevice, Map<LayerFormat, NativeImportPipelines>>();
 
 function outputBoundsForImage(width: number, height: number): DirtyRect {
-  const longestSide = Math.max(width, height);
-  const scale = Math.min(1, LAYER_SIZE / longestSide);
-  const outputWidth = Math.max(1, Math.min(LAYER_SIZE, Math.round(width * scale)));
-  const outputHeight = Math.max(1, Math.min(LAYER_SIZE, Math.round(height * scale)));
+  const scale = Math.min(1, DOCUMENT_WIDTH / width, DOCUMENT_HEIGHT / height);
+  const outputWidth = Math.max(1, Math.min(DOCUMENT_WIDTH, Math.round(width * scale)));
+  const outputHeight = Math.max(1, Math.min(DOCUMENT_HEIGHT, Math.round(height * scale)));
   return {
-    x: Math.floor((LAYER_SIZE - outputWidth) * 0.5),
-    y: Math.floor((LAYER_SIZE - outputHeight) * 0.5),
+    x: Math.floor((DOCUMENT_WIDTH - outputWidth) * 0.5),
+    y: Math.floor((DOCUMENT_HEIGHT - outputHeight) * 0.5),
     width: outputWidth,
     height: outputHeight,
   };
@@ -190,7 +191,7 @@ function nativeRasterImportResidentBytes(engine: BrushEngine): number {
   for (const layerId of importedLayerIds) {
     const gpu = engine.layerGpu.get(layerId);
     if (!gpu) continue;
-    if (gpu.hot) bytes += LAYER_SIZE * LAYER_SIZE * bytesPerPixel;
+    if (gpu.hot) bytes += DOCUMENT_WIDTH * DOCUMENT_HEIGHT * bytesPerPixel;
     bytes += gpu.cold?.memoryBytes ?? 0;
   }
   return bytes;
@@ -201,10 +202,10 @@ function assertNativeRasterImportResidentBudget(
   bounds: DirtyRect,
 ): void {
   const bytesPerPixel = engine.layerFormat === "rgba16float" ? 8 : 4;
-  const newPersistentBytes = LAYER_SIZE * LAYER_SIZE * bytesPerPixel
+  const newPersistentBytes = DOCUMENT_WIDTH * DOCUMENT_HEIGHT * bytesPerPixel
     + tileCountForBounds(bounds)
-      * LAYER_STORAGE_TILE_SIZE
-      * LAYER_STORAGE_TILE_SIZE
+      * LAYER_STORAGE_TILE_WIDTH
+      * LAYER_STORAGE_TILE_HEIGHT
       * bytesPerPixel;
   const resultingImportResidentBytes = nativeRasterImportResidentBytes(engine)
     + newPersistentBytes;

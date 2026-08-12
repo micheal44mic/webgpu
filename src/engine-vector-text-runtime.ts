@@ -2909,7 +2909,8 @@ export function writeVectorTextCaptureUniforms(engine: BrushEngine): void {
       engine.vectorTextCaptureView,
       currentView,
       completeFallback,
-      engine.layerSize,
+      engine.documentWidth,
+      engine.documentHeight,
     )
     : "precise";
   engine.vectorTextFastPresentationMode = presentationMode;

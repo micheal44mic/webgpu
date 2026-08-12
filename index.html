@@ -325,7 +325,7 @@
               <div>
                 <p class="project-eyebrow">START FRESH</p>
                 <h1>New canvas</h1>
-                <p>Choose the working resolution before opening the editor.</p>
+                <p>Choose a preset or enter any width and height up to 4000 px.</p>
               </div>
             </div>
 
@@ -346,23 +346,45 @@
                 <legend>Canvas size</legend>
                 <div class="canvas-preset-grid">
                   <button
-                    class="canvas-preset-card"
-                    type="button"
-                    data-canvas-size="2048"
-                    aria-pressed="false"
-                  >
-                    <span class="canvas-preset-preview canvas-preset-preview-compact" aria-hidden="true"></span>
-                    <span><strong>Compact</strong><small>2048 × 2048 px</small></span>
-                  </button>
-                  <button
                     class="canvas-preset-card is-selected"
                     type="button"
-                    data-canvas-size="4096"
+                    data-canvas-width="2048"
+                    data-canvas-height="2048"
                     aria-pressed="true"
                   >
-                    <span class="canvas-preset-preview" aria-hidden="true"></span>
-                    <span><strong>Studio</strong><small>4096 × 4096 px</small></span>
+                    <span class="canvas-preset-preview canvas-preset-preview-square" aria-hidden="true"></span>
+                    <span><strong>Square</strong><small>2048 × 2048 px</small></span>
                     <em>Recommended</em>
+                  </button>
+                  <button
+                    class="canvas-preset-card"
+                    type="button"
+                    data-canvas-width="4000"
+                    data-canvas-height="4000"
+                    aria-pressed="false"
+                  >
+                    <span class="canvas-preset-preview canvas-preset-preview-large" aria-hidden="true"></span>
+                    <span><strong>Large</strong><small>4000 × 4000 px</small></span>
+                  </button>
+                  <button
+                    class="canvas-preset-card"
+                    type="button"
+                    data-canvas-width="1080"
+                    data-canvas-height="1920"
+                    aria-pressed="false"
+                  >
+                    <span class="canvas-preset-preview canvas-preset-preview-portrait" aria-hidden="true"></span>
+                    <span><strong>Portrait</strong><small>1080 × 1920 px</small></span>
+                  </button>
+                  <button
+                    class="canvas-preset-card"
+                    type="button"
+                    data-canvas-width="1920"
+                    data-canvas-height="1080"
+                    aria-pressed="false"
+                  >
+                    <span class="canvas-preset-preview canvas-preset-preview-landscape" aria-hidden="true"></span>
+                    <span><strong>Landscape</strong><small>1920 × 1080 px</small></span>
                   </button>
                 </div>
               </fieldset>
@@ -370,24 +392,53 @@
               <div class="canvas-dimension-row" aria-label="Canvas dimensions">
                 <label>
                   <span>Width</span>
-                  <select id="newCanvasWidth" name="width">
-                    <option value="2048">2048 px</option>
-                    <option value="4096" selected>4096 px</option>
-                  </select>
+                  <span class="canvas-dimension-input">
+                    <input
+                      id="newCanvasWidth"
+                      name="width"
+                      type="number"
+                      inputmode="numeric"
+                      min="64"
+                      max="4000"
+                      step="1"
+                      value="2048"
+                      required
+                      aria-describedby="canvasDimensionHelp"
+                    />
+                    <span aria-hidden="true">px</span>
+                  </span>
                 </label>
-                <span class="canvas-dimension-lock" aria-label="Square canvas, dimensions linked">
-                  <i data-lucide="lock-keyhole" aria-hidden="true"></i>
-                </span>
+                <button
+                  id="canvasDimensionLink"
+                  class="canvas-dimension-lock is-linked"
+                  type="button"
+                  aria-label="Keep width and height equal"
+                  aria-pressed="true"
+                  title="Keep width and height equal"
+                >
+                  <i data-lucide="link-2" aria-hidden="true"></i>
+                </button>
                 <label>
                   <span>Height</span>
-                  <select id="newCanvasHeight" name="height">
-                    <option value="2048">2048 px</option>
-                    <option value="4096" selected>4096 px</option>
-                  </select>
+                  <span class="canvas-dimension-input">
+                    <input
+                      id="newCanvasHeight"
+                      name="height"
+                      type="number"
+                      inputmode="numeric"
+                      min="64"
+                      max="4000"
+                      step="1"
+                      value="2048"
+                      required
+                      aria-describedby="canvasDimensionHelp"
+                    />
+                    <span aria-hidden="true">px</span>
+                  </span>
                 </label>
               </div>
-              <p class="canvas-format-note">
-                The current high-precision WebGPU format uses a square artboard. Width and height stay linked.
+              <p id="canvasDimensionHelp" class="canvas-format-note">
+                Enter independent whole-pixel dimensions from 64 to 4000 px. Link the sides when you want a square canvas.
               </p>
 
               <button id="createCanvasButton" class="project-primary-action create-canvas-action" type="submit">

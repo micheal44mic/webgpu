@@ -3,14 +3,15 @@
  * E' la fonte dei numeri riportati nei pannelli memoria e nei benchmark.
  *
  * Ogni funzione e' **pura rispetto alle dimensioni del documento**: le riceve
- * come parametri e usa `LAYER_SIZE` solo come default. Un documento di taglia
+ * come parametri e usa le dimensioni risolte al boot come default. Un documento di taglia
  * arbitraria (canvas personalizzato, non quadrato, non potenza di due) si
  * misura passando la sua taglia, senza toccare questo file. E' la ragione per
  * cui non si legge piu' la costante globale dentro il corpo delle funzioni: un
  * numero cablato qui e' un pannello che mente, ed e' gia' successo.
  */
 import {
-  LAYER_SIZE,
+  DOCUMENT_HEIGHT,
+  DOCUMENT_WIDTH,
   LIGHT_GLAZE_COMMIT_TILE_EXTENT,
   MEBIBYTE_BYTES,
   SHAPE_MASK_PIXEL_COUNT,
@@ -28,8 +29,8 @@ function resolvedExtent(extent: DocumentExtent | undefined): {
   width: number;
   height: number;
 } {
-  const width = Math.max(1, Math.trunc(extent?.width ?? LAYER_SIZE));
-  const height = Math.max(1, Math.trunc(extent?.height ?? LAYER_SIZE));
+  const width = Math.max(1, Math.trunc(extent?.width ?? DOCUMENT_WIDTH));
+  const height = Math.max(1, Math.trunc(extent?.height ?? DOCUMENT_HEIGHT));
   if (!Number.isFinite(width) || !Number.isFinite(height)) {
     throw new RangeError("Le dimensioni del documento devono essere finite.");
   }

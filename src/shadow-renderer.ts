@@ -466,6 +466,7 @@ function resolveShader(
   documentWidth: number,
   documentHeight: number,
 ): string {
+  const coverageWordsPerRow = Math.ceil(documentWidth / COVERAGE_WORD_PIXELS);
   return `${sourceShaderCommon(documentWidth, documentHeight)}
 @compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
@@ -488,9 +489,9 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
     let value = clamp(loadFloat(parameters.inputOffsetWords, local), 0.0, 1.0);
     matte[lane] = value;
   }
-  let linearIndex = firstDocumentPosition.y * ${documentWidth}u
-    + firstDocumentPosition.x;
-  shadowMatte[linearIndex >> 1u] = pack2x16float(matte);
+  let wordIndex = firstDocumentPosition.y * ${coverageWordsPerRow}u
+    + (firstDocumentPosition.x >> 1u);
+  shadowMatte[wordIndex] = pack2x16float(matte);
 }
 `;
 }
@@ -577,9 +578,6 @@ export class RasterShadowRenderer {
     this.effectId = this.kind === "outer" ? "outer-shadow" : "inner-shadow";
     this.documentWidth = options.documentWidth;
     this.documentHeight = options.documentHeight;
-    if (this.documentWidth % COVERAGE_WORD_PIXELS !== 0) {
-      throw new Error("La larghezza documento Ombra deve essere divisibile per 2.");
-    }
     this.layerView = options.layerView;
     this.lightGlazeUniformBuffer = options.lightGlazeUniformBuffer;
     this.thicknessTailUniformBuffer = options.thicknessTailUniformBuffer;
@@ -589,8 +587,8 @@ export class RasterShadowRenderer {
       2: this.layerView,
     };
     const coverageWords = Math.ceil(
-      this.documentWidth * this.documentHeight / COVERAGE_WORD_PIXELS,
-    );
+      this.documentWidth / COVERAGE_WORD_PIXELS,
+    ) * this.documentHeight;
     this.coverageMemoryBytes = coverageWords * 4;
     this.coverageBuffer = this.device.createBuffer({
       label: `${this.label} persistent packed f16 matte`,

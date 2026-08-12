@@ -2,20 +2,28 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   FILL_BLOCK_COUNT,
+  FILL_BLOCK_GRID_HEIGHT,
   FILL_BLOCK_GRID_SIZE,
+  FILL_BLOCK_GRID_WIDTH,
   FILL_BLOCK_SIZE,
   FILL_HISTORY_MASK_BYTES,
   FILL_HISTORY_MASK_WORDS,
+  FILL_HISTORY_WORDS_PER_ROW,
   FILL_LABEL_BUFFER_BYTES,
+  FILL_LAYER_HEIGHT,
   FILL_LAYER_SIZE,
+  FILL_LAYER_WIDTH,
   FILL_MAX_COMPONENTS_PER_BLOCK,
   FILL_REFERENCE_LAYER_STRATEGY,
   FILL_RENDER_MASK_STRATEGY,
   FILL_RENDER_MASK_BYTES,
   FILL_RENDER_MASK_PIXELS_PER_WORD,
   FILL_RENDER_MASK_WORDS,
+  FILL_RENDER_MASK_WORDS_PER_ROW,
   FILL_RESIDENT_SCRATCH_BYTES,
+  FILL_TILE_HEIGHT,
   FILL_TILE_MASK_WORDS,
+  FILL_TILE_WIDTH,
   FILL_WORKGROUP_STORAGE_BYTES,
   GPU_FILL_STRATEGY,
   countFillTiles,
@@ -28,7 +36,13 @@ import {
   summarizeFillMaskWords,
   summarizeFillRenderedRow,
 } from "../src/fill-diagnostics.ts";
-import { LAYER_SIZE } from "../src/engine-limits.ts";
+import {
+  DOCUMENT_HEIGHT,
+  DOCUMENT_TILE_HEIGHT,
+  DOCUMENT_TILE_WIDTH,
+  DOCUMENT_WIDTH,
+  LAYER_SIZE,
+} from "../src/engine-limits.ts";
 import { readEngineSource } from "./engine-source.mjs";
 
 assert.equal(
@@ -45,17 +59,33 @@ assert.equal(
 );
 assert.equal(FILL_BLOCK_SIZE, 16);
 assert.equal(FILL_LAYER_SIZE, LAYER_SIZE);
+assert.equal(FILL_LAYER_WIDTH, DOCUMENT_WIDTH);
+assert.equal(FILL_LAYER_HEIGHT, DOCUMENT_HEIGHT);
+assert.equal(FILL_LAYER_SIZE, Math.max(FILL_LAYER_WIDTH, FILL_LAYER_HEIGHT));
+assert.equal(FILL_BLOCK_GRID_WIDTH, Math.ceil(FILL_LAYER_WIDTH / FILL_BLOCK_SIZE));
+assert.equal(FILL_BLOCK_GRID_HEIGHT, Math.ceil(FILL_LAYER_HEIGHT / FILL_BLOCK_SIZE));
+assert.equal(FILL_BLOCK_GRID_SIZE, Math.max(FILL_BLOCK_GRID_WIDTH, FILL_BLOCK_GRID_HEIGHT));
 assert.equal(FILL_BLOCK_GRID_SIZE, 256);
+assert.equal(FILL_BLOCK_COUNT, FILL_BLOCK_GRID_WIDTH * FILL_BLOCK_GRID_HEIGHT);
 assert.equal(FILL_BLOCK_COUNT, 65_536);
 assert.equal(FILL_MAX_COMPONENTS_PER_BLOCK, 128);
-assert.equal(FILL_HISTORY_MASK_BYTES, LAYER_SIZE * LAYER_SIZE / 8);
+assert.equal(FILL_HISTORY_WORDS_PER_ROW, Math.ceil(FILL_LAYER_WIDTH / 32));
+assert.equal(FILL_HISTORY_MASK_WORDS, FILL_HISTORY_WORDS_PER_ROW * FILL_LAYER_HEIGHT);
+assert.equal(FILL_HISTORY_MASK_BYTES, FILL_HISTORY_MASK_WORDS * 4);
 assert.equal(FILL_HISTORY_MASK_BYTES, 2 * 1024 * 1024);
 assert.equal(FILL_HISTORY_MASK_WORDS, FILL_HISTORY_MASK_BYTES / 4);
 assert.equal(FILL_RENDER_MASK_PIXELS_PER_WORD, 8);
-assert.equal(FILL_RENDER_MASK_WORDS, LAYER_SIZE * LAYER_SIZE / 8);
+assert.equal(
+  FILL_RENDER_MASK_WORDS_PER_ROW,
+  Math.ceil(FILL_LAYER_WIDTH / FILL_RENDER_MASK_PIXELS_PER_WORD),
+);
+assert.equal(FILL_RENDER_MASK_WORDS, FILL_RENDER_MASK_WORDS_PER_ROW * FILL_LAYER_HEIGHT);
+assert.equal(FILL_RENDER_MASK_BYTES, FILL_RENDER_MASK_WORDS * 4);
 assert.equal(FILL_RENDER_MASK_BYTES, FILL_HISTORY_MASK_BYTES * 4);
 assert(FILL_RENDER_MASK_BYTES <= FILL_LABEL_BUFFER_BYTES);
 assert.equal(FILL_TILE_MASK_WORDS, 8);
+assert.equal(FILL_TILE_WIDTH, DOCUMENT_TILE_WIDTH);
+assert.equal(FILL_TILE_HEIGHT, DOCUMENT_TILE_HEIGHT);
 assert.equal(FILL_WORKGROUP_STORAGE_BYTES, 9_232);
 assert(FILL_RESIDENT_SCRATCH_BYTES > 50 * 1024 * 1024);
 assert(FILL_RESIDENT_SCRATCH_BYTES < 51 * 1024 * 1024);
@@ -199,7 +229,7 @@ assert(shader.includes("fn fillMaskContains(word: u32, bitIndex: u32) -> bool"))
 assert(shader.includes("fn probeBit31()"));
 assert(shader.includes("atomicOr(&results[1], 0x80000000u)"));
 assert(shader.includes("atomicOr(&selectedMask[word], fillBitMask(pixel.x))"));
-assert(shader.includes("fillMaskContains(atomicLoad(&selectedMask[word]), pixel.x)"));
+assert(shader.includes("fillMaskContains(atomicLoad(&selectedMask[word]), safePixel.x)"));
 assert(shader.includes("packedLabels[targetWord + 3u] = (source >> 24u) & 0xffu"));
 assert(shader.includes("fillRenderMaskContains(renderMask[word], pixel.x)"));
 assert(shader.includes("pixel.x / 8u"));
@@ -211,14 +241,19 @@ assert(!shader.includes("@location(0) pixel: vec2<f32>"));
 assert(shader.includes("let targetWord = global.x * 4u;"));
 assert(!shader.includes("let target = global.x * 4u;"), "target e' riservata in WGSL");
 assert(!renderer.includes("dispatchWorkgroupsIndirect"));
-assert(renderer.includes("selectionPass.dispatchWorkgroups(FILL_BLOCK_GRID_SIZE)"));
+assert.equal(
+  renderer.match(/dispatchWorkgroups\(FILL_BLOCK_GRID_WIDTH, FILL_BLOCK_GRID_HEIGHT\)/g)?.length,
+  5,
+  "classify, boundary, select e i due rebuild devono dispatchare entrambi gli assi della griglia",
+);
+assert.doesNotMatch(renderer, /\bFILL_BLOCK_GRID_SIZE\b/);
 assert(renderer.includes("pass.drawIndirect"));
 assert(renderer.includes("this.expandRenderMaskPipeline"));
 assert(renderer.includes("buffer: packedLabels, size: FILL_RENDER_MASK_BYTES"));
 assert.equal(
   renderer.match(/dispatchWorkgroups\(Math\.ceil\(FILL_HISTORY_MASK_WORDS \/ 256\)\)/g)?.length,
-  2,
-  "commit live (anche con Selezione) e replay devono espandere la mask render",
+  3,
+  "intersezione Selezione e commit live/replay devono coprire tutte le word della mask",
 );
 assert(renderer.includes("async captureDiagnostics()"));
 assert(renderer.includes("Diagnosi Fill: timeout readback mask dopo 10 s."));
@@ -241,6 +276,21 @@ assert(runtime.includes("kind: \"fill\""));
 assert(runtime.includes("const source = resolveFillSource(engine)"));
 assert(runtime.includes("sourceLayerId: source.record.id"));
 assert(runtime.includes("record.storageTileMask[index] |= analysis.tileMask[index]"));
+assert(runtime.includes("seedX >= engine.documentWidth"));
+assert(runtime.includes("seedY >= engine.documentHeight"));
+assert.doesNotMatch(runtime, /engine\.layerSize|\bFILL_LAYER_SIZE\b|\bFILL_TILE_SIZE\b/);
+assert.match(shader, /const LAYER_EXTENT: vec2<u32> = vec2<u32>\(\$\{FILL_LAYER_WIDTH\}u, \$\{FILL_LAYER_HEIGHT\}u\);/);
+assert.match(shader, /const BLOCK_GRID: vec2<u32> = vec2<u32>\(\$\{FILL_BLOCK_GRID_WIDTH\}u, \$\{FILL_BLOCK_GRID_HEIGHT\}u\);/);
+assert.match(
+  shader,
+  /reduceMinX\[0\] \/ \$\{FILL_TILE_WIDTH\}u, reduceMinY\[0\] \/ \$\{FILL_TILE_HEIGHT\}u/,
+);
+assert.match(
+  shader,
+  /\(reduceMaxX\[0\] - 1u\) \/ \$\{FILL_TILE_WIDTH\}u,[\s\S]*?\(reduceMaxY\[0\] - 1u\) \/ \$\{FILL_TILE_HEIGHT\}u/,
+  "Un blocco CCL deve accendere tutte le tile rettangolari toccate dai pixel selezionati.",
+);
+assert.doesNotMatch(shader, /\bFILL_LAYER_SIZE\b|\bFILL_BLOCK_GRID_SIZE\b|\bFILL_TILE_SIZE\b/);
 assert(layerRuntime.includes(
   "const record = reference === null ? engine.layerStack.active : reference",
 ));

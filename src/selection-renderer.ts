@@ -3,7 +3,8 @@ import { runGpuAllocationTransaction, type GpuAllocationTransaction } from "./gp
 import {
   SELECTION_LASSO_SPAN_BUFFER_BYTES,
   SELECTION_LASSO_SPAN_BYTES,
-  SELECTION_LAYER_SIZE,
+  SELECTION_LAYER_HEIGHT,
+  SELECTION_LAYER_WIDTH,
   SELECTION_MASK_BYTES,
   SELECTION_MASK_WORDS,
   SELECTION_METADATA_BUFFER_BYTES,
@@ -431,7 +432,7 @@ export class SelectionRenderer {
     floats[4] = view.rotationCos;
     floats[5] = view.rotationSin;
     floats[6] = view.zoom;
-    floats[7] = SELECTION_LAYER_SIZE;
+    floats[7] = 0;
     unsigned[8] = state.selectedPixels;
     floats[10] = offset.x;
     floats[11] = offset.y;
@@ -492,8 +493,8 @@ export class SelectionRenderer {
     const upload = new ArrayBuffer(SELECTION_OPERATION_UNIFORM_BYTES);
     const unsigned = new Uint32Array(upload);
     const floats = new Float32Array(upload);
-    unsigned[0] = SELECTION_LAYER_SIZE;
-    unsigned[1] = SELECTION_LAYER_SIZE;
+    unsigned[0] = SELECTION_LAYER_WIDTH;
+    unsigned[1] = SELECTION_LAYER_HEIGHT;
     unsigned[2] = selectionCombineModeCode(combineMode);
     unsigned[3] = spanCount;
     floats[4] = tolerance;

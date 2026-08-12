@@ -3,6 +3,9 @@ import { readFileSync } from "node:fs";
 import {
   PROJECT_DOCUMENT_SCHEMA_VERSION,
   PROJECT_MANIFEST_MAGIC,
+  PROJECT_STORAGE_LEGACY_DOCUMENT_DIMENSION,
+  PROJECT_STORAGE_MAX_DOCUMENT_DIMENSION,
+  PROJECT_STORAGE_MIN_DOCUMENT_DIMENSION,
   PROJECT_STORAGE_TILE_GRID_SIZE,
   ProjectStorage,
   ProjectStorageValidationError,
@@ -14,9 +17,15 @@ import {
 } from "../src/project-storage.ts";
 
 const VERSION = PROJECT_DOCUMENT_SCHEMA_VERSION;
-const tileBytes = (2048 / PROJECT_STORAGE_TILE_GRID_SIZE) ** 2 * 8;
 
-function projectRequest(name = "  First\nArtwork  ") {
+function projectRequest(
+  name = "  First\nArtwork  ",
+  width = 1081,
+  height = 1919,
+) {
+  const tileWidth = Math.ceil(width / PROJECT_STORAGE_TILE_GRID_SIZE);
+  const tileHeight = Math.ceil(height / PROJECT_STORAGE_TILE_GRID_SIZE);
+  const tileBytes = tileWidth * tileHeight * 8;
   const storageTileMask = new Uint32Array(8);
   storageTileMask[0] = 1;
   const bytes = new ArrayBuffer(tileBytes);
@@ -40,8 +49,8 @@ function projectRequest(name = "  First\nArtwork  ") {
         schemaVersion: VERSION,
         document: {
           schemaVersion: VERSION,
-          width: 2048,
-          height: 2048,
+          width,
+          height,
           layerFormat: "rgba16float",
           tileGridSize: PROJECT_STORAGE_TILE_GRID_SIZE,
           colorSpace: "linear-premultiplied",
@@ -54,7 +63,12 @@ function projectRequest(name = "  First\nArtwork  ") {
           opacity: 1,
           blendMode: "normal",
           clippingParentId: null,
-          contentBounds: { x: 0, y: 0, width: 128, height: 128 },
+          contentBounds: {
+            x: 0,
+            y: 0,
+            width: Math.min(128, width),
+            height: Math.min(128, height),
+          },
           storageTileMask,
           hasContent: true,
           noiseMipSmoothing: false,
@@ -115,8 +129,8 @@ function projectRequest(name = "  First\nArtwork  ") {
         },
         view: {
           schemaVersion: VERSION,
-          centerX: 1024,
-          centerY: 1024,
+          centerX: width / 2,
+          centerY: height / 2,
           zoom: 1,
           rotationRadians: 0,
         },
@@ -134,15 +148,60 @@ function projectRequest(name = "  First\nArtwork  ") {
       }],
     },
     bytes,
+    tileBytes,
   };
 }
 
 assert.equal(normalizeProjectTitle("  Alpha\n  Beta  "), "Alpha Beta");
 assert.equal(normalizeProjectTitle("\n\t"), "Untitled Artwork");
 
-const { request, bytes } = projectRequest();
+const { request, bytes, tileBytes } = projectRequest();
 validateProjectSaveRequest(request);
 assert.equal(estimateProjectSaveBytes(request), tileBytes + 4);
+
+// Independent, non-divisible dimensions use ceil(width / 16) × ceil(height / 16)
+// normalized tile slots, while exact legacy 4096² documents remain loadable.
+assert.equal(request.snapshot.document.width, 1081);
+assert.equal(request.snapshot.document.height, 1919);
+validateProjectSaveRequest(projectRequest(
+  "Maximum custom canvas",
+  PROJECT_STORAGE_MAX_DOCUMENT_DIMENSION,
+  PROJECT_STORAGE_MAX_DOCUMENT_DIMENSION - 1,
+).request);
+validateProjectSaveRequest(projectRequest(
+  "Minimum custom canvas",
+  PROJECT_STORAGE_MIN_DOCUMENT_DIMENSION,
+  PROJECT_STORAGE_MIN_DOCUMENT_DIMENSION,
+).request);
+validateProjectSaveRequest(projectRequest(
+  "Legacy canvas",
+  PROJECT_STORAGE_LEGACY_DOCUMENT_DIMENSION,
+  PROJECT_STORAGE_LEGACY_DOCUMENT_DIMENSION,
+).request);
+assert.throws(
+  () => validateProjectSaveRequest(projectRequest(
+    "Too small",
+    PROJECT_STORAGE_MIN_DOCUMENT_DIMENSION - 1,
+    1000,
+  ).request),
+  ProjectStorageValidationError,
+);
+assert.throws(
+  () => validateProjectSaveRequest(projectRequest(
+    "Too wide",
+    PROJECT_STORAGE_MAX_DOCUMENT_DIMENSION + 1,
+    1000,
+  ).request),
+  ProjectStorageValidationError,
+);
+assert.throws(
+  () => validateProjectSaveRequest(projectRequest(
+    "Unsupported legacy rectangle",
+    PROJECT_STORAGE_LEGACY_DOCUMENT_DIMENSION,
+    2048,
+  ).request),
+  ProjectStorageValidationError,
+);
 
 const databaseName = `m1m4-project-storage-verify-${Date.now()}`;
 const storage = new ProjectStorage({ databaseName, forceMemory: true });
@@ -152,6 +211,8 @@ assert.equal(storage.backend, "memory");
 const first = await storage.saveProject(request);
 assert.equal(first.name, "First Artwork");
 assert.equal(first.storedBytes, tileBytes + 4);
+assert.equal(first.documentWidth, 1081);
+assert.equal(first.documentHeight, 1919);
 assert.match(first.id, /^project-/);
 assert.match(first.headGenerationId, /^generation-/);
 

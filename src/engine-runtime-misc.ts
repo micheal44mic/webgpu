@@ -18,7 +18,12 @@ import {
   selectionBrushShader,
   selectionTexturizedGrainShader,
 } from "./selection-clip-shaders";
-import { LAYER_SIZE, MAX_STAMPS_PER_BATCH, VECTOR_TEXT_GPU_MAXIMUM_DRAWS } from "./engine-limits";
+import {
+  DOCUMENT_HEIGHT,
+  DOCUMENT_WIDTH,
+  MAX_STAMPS_PER_BATCH,
+  VECTOR_TEXT_GPU_MAXIMUM_DRAWS,
+} from "./engine-limits";
 import {
   MIXED_SCENE_LINEAR_FORMAT,
   mixedSceneClearShader,
@@ -108,8 +113,8 @@ export async function finishStaticResourceCreation(
   engine.rasterStrokeDisplayShaderModule = engine.device.createShaderModule({
     label: "Traccia direct LOD 0 and coarse mip display WGSL",
     code: rasterStrokeDisplayShader(
-      LAYER_SIZE,
-      LAYER_SIZE,
+      DOCUMENT_WIDTH,
+      DOCUMENT_HEIGHT,
       engine.bevelBoundingFieldEnabled,
     ),
   });
@@ -1024,8 +1029,8 @@ export function commitThicknessStamp(engine: BrushEngine, stamp: Stamp, stroke: 
   if (
     stamp.x + stamp.radius + jitterReach < 0 ||
     stamp.y + stamp.radius + jitterReach < 0 ||
-    stamp.x - stamp.radius - jitterReach >= LAYER_SIZE ||
-    stamp.y - stamp.radius - jitterReach >= LAYER_SIZE
+    stamp.x - stamp.radius - jitterReach >= DOCUMENT_WIDTH ||
+    stamp.y - stamp.radius - jitterReach >= DOCUMENT_HEIGHT
   ) {
     return;
   }
@@ -1178,8 +1183,8 @@ export function rasterStrokeEffectRect(engine: BrushEngine,
   const margin = Math.ceil(Math.max(0, width) + 1.5);
   const x = Math.max(0, Math.floor(rect.x) - margin);
   const y = Math.max(0, Math.floor(rect.y) - margin);
-  const right = Math.min(LAYER_SIZE, Math.ceil(rect.x + rect.width) + margin);
-  const bottom = Math.min(LAYER_SIZE, Math.ceil(rect.y + rect.height) + margin);
+  const right = Math.min(DOCUMENT_WIDTH, Math.ceil(rect.x + rect.width) + margin);
+  const bottom = Math.min(DOCUMENT_HEIGHT, Math.ceil(rect.y + rect.height) + margin);
   return right > x && bottom > y
     ? { x, y, width: right - x, height: bottom - y }
     : null;
@@ -1399,42 +1404,42 @@ export function rasterBevelEffectRect(engine: BrushEngine,
   rect: DirtyRect | RasterBevelRect | null,
   style: RasterBevelStyle = engine.rasterBevelStyle,
 ): DirtyRect | null {
-  return rasterBevelVisualBounds(rect, style, LAYER_SIZE, LAYER_SIZE);
+  return rasterBevelVisualBounds(rect, style, DOCUMENT_WIDTH, DOCUMENT_HEIGHT);
 }
 
 export function rasterBevelInfluenceRect(engine: BrushEngine, 
   rect: DirtyRect | RasterBevelRect | null,
   style: RasterBevelStyle = engine.rasterBevelStyle,
 ): DirtyRect | null {
-  return rasterBevelInfluenceBounds(rect, style, LAYER_SIZE, LAYER_SIZE);
+  return rasterBevelInfluenceBounds(rect, style, DOCUMENT_WIDTH, DOCUMENT_HEIGHT);
 }
 
 export function rasterOuterShadowEffectRect(engine: BrushEngine, 
   rect: DirtyRect | RasterShadowRect | null,
   style: RasterOuterShadowStyle = engine.rasterOuterShadowStyle,
 ): DirtyRect | null {
-  return rasterOuterShadowVisualBounds(rect, style, LAYER_SIZE, LAYER_SIZE);
+  return rasterOuterShadowVisualBounds(rect, style, DOCUMENT_WIDTH, DOCUMENT_HEIGHT);
 }
 
 export function rasterOuterShadowInfluenceRect(engine: BrushEngine, 
   rect: DirtyRect | RasterShadowRect | null,
   style: RasterOuterShadowStyle = engine.rasterOuterShadowStyle,
 ): DirtyRect | null {
-  return rasterOuterShadowInfluenceBounds(rect, style, LAYER_SIZE, LAYER_SIZE);
+  return rasterOuterShadowInfluenceBounds(rect, style, DOCUMENT_WIDTH, DOCUMENT_HEIGHT);
 }
 
 export function rasterInnerShadowEffectRect(engine: BrushEngine, 
   rect: DirtyRect | RasterShadowRect | null,
   style: RasterInnerShadowStyle = engine.rasterInnerShadowStyle,
 ): DirtyRect | null {
-  return rasterInnerShadowVisualBounds(rect, style, LAYER_SIZE, LAYER_SIZE);
+  return rasterInnerShadowVisualBounds(rect, style, DOCUMENT_WIDTH, DOCUMENT_HEIGHT);
 }
 
 export function rasterInnerShadowInfluenceRect(engine: BrushEngine, 
   rect: DirtyRect | RasterShadowRect | null,
   style: RasterInnerShadowStyle = engine.rasterInnerShadowStyle,
 ): DirtyRect | null {
-  return rasterInnerShadowInfluenceBounds(rect, style, LAYER_SIZE, LAYER_SIZE);
+  return rasterInnerShadowInfluenceBounds(rect, style, DOCUMENT_WIDTH, DOCUMENT_HEIGHT);
 }
 
 export function recordStampGenerationTime(engine: BrushEngine, startTime: number): void {

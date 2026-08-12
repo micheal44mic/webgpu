@@ -2,7 +2,10 @@ import type { BrushEngine } from "./brush-engine";
 import type { EngineStats } from "./engine-stats";
 import type { LayerSwitchResult } from "./engine-types";
 import { LAYER_STACK_MAXIMUM } from "./layer-stack";
-import { LAYER_STORAGE_TILE_SIZE } from "./layer-storage-study";
+import {
+  LAYER_STORAGE_TILE_HEIGHT,
+  LAYER_STORAGE_TILE_WIDTH,
+} from "./layer-storage-study";
 
 export const IPHONE_MEMORY_LIMIT_TEST_VERSION = 1 as const;
 export const IPHONE_MEMORY_LIMIT_TEST_BUILD =
@@ -19,7 +22,8 @@ const HASH_PARAMETER = "memoryRun";
 const RGBA16F_BYTES_PER_PIXEL = 8;
 const MEBIBYTE_BYTES = 1024 * 1024;
 const TILE_MEMORY_MIB_RGBA16F =
-  LAYER_STORAGE_TILE_SIZE ** 2 * RGBA16F_BYTES_PER_PIXEL / MEBIBYTE_BYTES;
+  LAYER_STORAGE_TILE_WIDTH * LAYER_STORAGE_TILE_HEIGHT
+    * RGBA16F_BYTES_PER_PIXEL / MEBIBYTE_BYTES;
 const CHECKPOINT_RETRY_DELAYS_MS = [0, 450, 1_200] as const;
 const SETTLE_BETWEEN_STEPS_MS = 900;
 

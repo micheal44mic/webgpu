@@ -68,8 +68,8 @@ export function summarizeFillMaskWords(
   seedY: number,
   layerWidth: number,
 ): FillMaskDiagnosticSummary {
-  if (layerWidth <= 0 || layerWidth % 32 !== 0) {
-    throw new Error("La larghezza della maschera Fill deve essere divisibile per 32.");
+  if (!Number.isInteger(layerWidth) || layerWidth <= 0) {
+    throw new Error("La larghezza della maschera Fill deve essere un intero positivo.");
   }
   const selectedByXModulo32 = Array.from({ length: 32 }, () => 0);
   let readbackSelectedPixels = 0;
@@ -109,7 +109,7 @@ export function summarizeFillMaskWords(
     && neighborPopulation >= 8
     && (bit31ToNeighborRatio ?? 1) < 0.25;
 
-  const wordsPerRow = layerWidth / 32;
+  const wordsPerRow = Math.ceil(layerWidth / 32);
   const seedWord = Math.max(
     0,
     Math.min(words.length - 1, seedY * wordsPerRow + Math.floor(seedX / 32)),
@@ -176,7 +176,7 @@ export function summarizeFillRenderedRow(
       `Readback riga Fill ${pixels.byteLength} B, attesi ${layerWidth * bytesPerPixel} B.`,
     );
   }
-  const wordsPerRow = layerWidth / 32;
+  const wordsPerRow = Math.ceil(layerWidth / 32);
   const rowWordOffset = y * wordsPerRow;
   const selectedButDifferentByXModulo32 = Array.from({ length: 32 }, () => 0);
   const firstDifferentX: number[] = [];

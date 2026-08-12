@@ -7,6 +7,7 @@ import {
 import { assertShaderCompiled } from "./engine-gpu-utils";
 import { commitHistoryActionAtomically } from "./engine-history-runtime";
 import { invalidateActiveLayerBake } from "./engine-layer-runtime";
+import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits";
 import type { RasterFilterHistoryAction } from "./engine-history-types";
 import type { DirtyRect } from "./engine-stroke-types";
 import { publishMixedScene } from "./engine-vector-text-runtime";
@@ -422,8 +423,8 @@ function writeParameters(
   u32[11] = session.randomSeedLow;
   u32[12] = session.randomSeedHigh;
   u32[13] = DESTRUCTIVE_RASTER_NOISE_ALGORITHM_VERSION;
-  u32[14] = engine.layerSize;
-  u32[15] = engine.layerSize;
+  u32[14] = DOCUMENT_WIDTH;
+  u32[15] = DOCUMENT_HEIGHT;
   engine.device.queue.writeBuffer(
     session.parameterBuffer,
     0,

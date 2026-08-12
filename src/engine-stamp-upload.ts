@@ -2,7 +2,7 @@
 import { type BrushSettings, type LayerFormat } from "./engine-types";
 import { clamp, hexToHsl } from "./color";
 import { type PackedStampUpload, type Stamp } from "./engine-stroke-types";
-import { LAYER_SIZE, STAMP_STRIDE_BYTES } from "./engine-limits";/**
+import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH, STAMP_STRIDE_BYTES } from "./engine-limits";/**
  * Impacchettamento degli stamp e degli uniform del pennello nei buffer di
  * upload. Formato binario condiviso con gli shader: le taglie vivono in
  * `engine-limits`, qui c'e' solo la scrittura.
@@ -120,8 +120,8 @@ export function packStampsIntoUpload(
   uploadU32: Uint32Array,
   stampCount = stamps.length,
 ): PackedStampUpload {
-  let minimumX = LAYER_SIZE;
-  let minimumY = LAYER_SIZE;
+  let minimumX = DOCUMENT_WIDTH;
+  let minimumY = DOCUMENT_HEIGHT;
   let maximumX = 0;
   let maximumY = 0;
   let minimumRadius = Number.POSITIVE_INFINITY;
@@ -180,10 +180,10 @@ export function packStampsIntoUpload(
     maximumY = Math.max(maximumY, packedY + reachY);
   }
 
-  const x = clamp(Math.floor(minimumX), 0, LAYER_SIZE - 1);
-  const y = clamp(Math.floor(minimumY), 0, LAYER_SIZE - 1);
-  const right = clamp(Math.ceil(maximumX), 1, LAYER_SIZE);
-  const bottom = clamp(Math.ceil(maximumY), 1, LAYER_SIZE);
+  const x = clamp(Math.floor(minimumX), 0, DOCUMENT_WIDTH - 1);
+  const y = clamp(Math.floor(minimumY), 0, DOCUMENT_HEIGHT - 1);
+  const right = clamp(Math.ceil(maximumX), 1, DOCUMENT_WIDTH);
+  const bottom = clamp(Math.ceil(maximumY), 1, DOCUMENT_HEIGHT);
   const width = Math.max(0, right - x);
   const height = Math.max(0, bottom - y);
 

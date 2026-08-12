@@ -54,8 +54,23 @@ assert.match(
 );
 assert.match(
   limits,
+  /const width = validDocumentEdge\(queryOverride\("documentWidth", "BRUSH_DOCUMENT_WIDTH"\)\);[\s\S]*?const height = validDocumentEdge\(queryOverride\("documentHeight", "BRUSH_DOCUMENT_HEIGHT"\)\);[\s\S]*?if \(width !== null && height !== null\) return \[width, height\];/,
+  "La UI condivisa deve inoltrare larghezza e altezza personalizzate come assi indipendenti.",
+);
+assert.match(
+  limits,
+  /const fallback = MOBILE_DEVICE_CLASS \? 2048 : LEGACY_DOCUMENT_EDGE;\s*return \[fallback, fallback\];/,
+  "Senza dimensioni esplicite devono restare i profili quadrati 2K telefono / 4K legacy desktop.",
+);
+assert.match(
+  limits,
+  /export const DOCUMENT_WIDTH = DOCUMENT_DIMENSIONS\[0\];[\s\S]*?export const DOCUMENT_HEIGHT = DOCUMENT_DIMENSIONS\[1\];/,
+  "Il contratto pubblico del documento deve esporre entrambi gli assi.",
+);
+assert.doesNotMatch(
+  limits,
   /return MOBILE_DEVICE_CLASS \? 2048 : 4096;/,
-  "L'unificazione della UI non deve cambiare il documento 2K telefono / 4K desktop.",
+  "Il resolver non deve tornare a un unico lato scalare.",
 );
 
 console.log("ui-parity:verify ok");

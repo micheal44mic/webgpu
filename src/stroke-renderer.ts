@@ -570,6 +570,7 @@ function resolveShader(
   documentWidth: number,
   documentHeight: number,
 ): string {
+  const coverageWordsPerRow = Math.ceil(documentWidth / COVERAGE_WORD_PIXELS);
   return `${shaderSourceCommon(documentWidth, documentHeight)}
 @group(0) @binding(5) var<storage, read> propagatedSeeds: array<vec2<u32>>;
 @group(0) @binding(6) var<storage, read_write> coverageField: array<u32>;
@@ -639,9 +640,9 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
       parameters.localTargetOrigin + offset
     );
   }
-  let linearIndex = firstDocumentPosition.y * ${documentWidth}u
-    + firstDocumentPosition.x;
-  coverageField[linearIndex >> 1u] = pack2x16float(coveragePair);
+  let wordIndex = firstDocumentPosition.y * ${coverageWordsPerRow}u
+    + (firstDocumentPosition.x >> 1u);
+  coverageField[wordIndex] = pack2x16float(coveragePair);
 }
 `;
 }
@@ -662,6 +663,7 @@ function strokeCompositionShaderSource(
   boundingFieldEnabled = false,
   boundingFieldTestMutation: RasterBevelBoundingFieldTestMutation = "none",
 ): string {
+  const coverageWordsPerRow = Math.ceil(documentWidth / COVERAGE_WORD_PIXELS);
   const contourAA = derivativeMode === "fragment"
     ? /* wgsl */ `
     if (bevel.flags.z == 1u) {
@@ -759,27 +761,27 @@ var<storage, read> innerShadowField: array<u32>;
 var<uniform> innerShadow: ShadowUniforms;
 
 fn loadCoverage(position: vec2<i32>) -> f32 {
-  let linearIndex = u32(position.y) * ${documentWidth}u + u32(position.x);
-  let pair = unpack2x16float(coverageField[linearIndex >> 1u]);
-  return select(pair.x, pair.y, (linearIndex & 1u) == 1u);
+  let x = u32(position.x);
+  let pair = unpack2x16float(coverageField[u32(position.y) * ${coverageWordsPerRow}u + (x >> 1u)]);
+  return select(pair.x, pair.y, (x & 1u) == 1u);
 }
 
 fn loadOuterShadow(position: vec2<i32>) -> f32 {
   if (any(position < vec2<i32>(0)) || any(position >= DOCUMENT_SIZE)) {
     return 0.0;
   }
-  let linearIndex = u32(position.y) * ${documentWidth}u + u32(position.x);
-  let pair = unpack2x16float(outerShadowField[linearIndex >> 1u]);
-  return select(pair.x, pair.y, (linearIndex & 1u) == 1u);
+  let x = u32(position.x);
+  let pair = unpack2x16float(outerShadowField[u32(position.y) * ${coverageWordsPerRow}u + (x >> 1u)]);
+  return select(pair.x, pair.y, (x & 1u) == 1u);
 }
 
 fn loadInnerShadow(position: vec2<i32>) -> f32 {
   if (any(position < vec2<i32>(0)) || any(position >= DOCUMENT_SIZE)) {
     return 0.0;
   }
-  let linearIndex = u32(position.y) * ${documentWidth}u + u32(position.x);
-  let pair = unpack2x16float(innerShadowField[linearIndex >> 1u]);
-  return select(pair.x, pair.y, (linearIndex & 1u) == 1u);
+  let x = u32(position.x);
+  let pair = unpack2x16float(innerShadowField[u32(position.y) * ${coverageWordsPerRow}u + (x >> 1u)]);
+  return select(pair.x, pair.y, (x & 1u) == 1u);
 }
 
 fn sampleOuterShadow(position: vec2<f32>) -> f32 {
@@ -1774,9 +1776,6 @@ export class RasterStrokeRenderer {
     this.scratchPool = options.scratchPool;
     this.documentWidth = options.documentWidth;
     this.documentHeight = options.documentHeight;
-    if (this.documentWidth % COVERAGE_WORD_PIXELS !== 0) {
-      throw new Error("La larghezza documento Traccia deve essere divisibile per 2.");
-    }
     this.layerFormat = options.layerFormat;
     this.layerView = options.layerView;
     this.lightGlazeUniformBuffer = options.lightGlazeUniformBuffer;
@@ -1848,8 +1847,8 @@ export class RasterStrokeRenderer {
     });
     this.updateBevelParameters(DEFAULT_RASTER_BEVEL_STYLE);
     const coverageWordCount = Math.ceil(
-      this.documentWidth * this.documentHeight / COVERAGE_WORD_PIXELS,
-    );
+      this.documentWidth / COVERAGE_WORD_PIXELS,
+    ) * this.documentHeight;
     const thresholdMaskWordCount = Math.ceil(
       this.documentWidth / THRESHOLD_MASK_WORD_BITS,
     ) * this.documentHeight;

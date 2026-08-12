@@ -78,7 +78,8 @@ function vectorTextZoomStressUnit(index: number, salt: number): number {
 
 export function vectorTextZoomStressSeed(
   index: number,
-  layerSize: number,
+  documentWidth: number,
+  documentHeight: number = documentWidth,
 ): { profile: VectorTextZoomStressProfile; seed: VectorTextNodeSeed } {
   if (!Number.isInteger(index) || index < 0 || index >= VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT) {
     throw new RangeError(`Indice testo stress zoom fuori range: ${index}.`);
@@ -128,8 +129,10 @@ export function vectorTextZoomStressSeed(
       innerShadowBlur: 5 + Math.round(vectorTextZoomStressUnit(index, 9) * 9),
       // All ten nodes deliberately overlap the zoom anchor. At 64× each one
       // still contributes real vector work instead of leaving the viewport.
-      x: layerSize * 0.5 + (vectorTextZoomStressUnit(index, 10) - 0.5) * centerJitter,
-      y: layerSize * 0.5 + (vectorTextZoomStressUnit(index, 11) - 0.5) * centerJitter,
+      x: documentWidth * 0.5
+        + (vectorTextZoomStressUnit(index, 10) - 0.5) * centerJitter,
+      y: documentHeight * 0.5
+        + (vectorTextZoomStressUnit(index, 11) - 0.5) * centerJitter,
       scale: 0.92 + vectorTextZoomStressUnit(index, 12) * 0.16,
       rotation: (vectorTextZoomStressUnit(index, 13) - 0.5) * Math.PI / 45,
     },
@@ -156,36 +159,47 @@ const VECTOR_TEXT_ZOOM_C_POSITIONS = [
  */
 export function vectorTextZoomCoverageSeed(
   index: number,
-  layerSize: number,
-  viewport: {
+  documentWidth: number,
+  documentHeightOrViewport: number | {
     canvasWidth: number;
     canvasHeight: number;
     targetZoom: number;
-  } = {
-    canvasWidth: layerSize,
-    canvasHeight: layerSize,
-    targetZoom: 1,
+  } = documentWidth,
+  viewportOverride?: {
+    canvasWidth: number;
+    canvasHeight: number;
+    targetZoom: number;
   },
 ): { profile: VectorTextZoomStressProfile; seed: VectorTextNodeSeed } {
-  const fixture = vectorTextZoomStressSeed(index, layerSize);
+  const documentHeight = typeof documentHeightOrViewport === "number"
+    ? documentHeightOrViewport
+    : documentWidth;
+  const viewport = typeof documentHeightOrViewport === "number"
+    ? viewportOverride ?? {
+      canvasWidth: documentWidth,
+      canvasHeight: documentHeight,
+      targetZoom: 1,
+    }
+    : documentHeightOrViewport;
+  const fixture = vectorTextZoomStressSeed(index, documentWidth, documentHeight);
   const position = VECTOR_TEXT_ZOOM_C_POSITIONS[index];
   const targetZoom = Number.isFinite(viewport.targetZoom) && viewport.targetZoom > 0
     ? viewport.targetZoom
     : 1;
   const horizontalReach = Math.min(
-    layerSize * 0.42,
+    documentWidth * 0.42,
     Math.max(0, viewport.canvasWidth) / (2 * targetZoom) * 0.88,
   );
   const verticalReach = Math.min(
-    layerSize * 0.42,
+    documentHeight * 0.42,
     Math.max(0, viewport.canvasHeight) / (2 * targetZoom) * 0.88,
   );
   return {
     profile: fixture.profile,
     seed: {
       ...fixture.seed,
-      x: layerSize * 0.5 + horizontalReach * position[0],
-      y: layerSize * 0.5 + verticalReach * position[1],
+      x: documentWidth * 0.5 + horizontalReach * position[0],
+      y: documentHeight * 0.5 + verticalReach * position[1],
       rotation: 0,
     },
   };
@@ -324,9 +338,17 @@ function layerPointInCapture(
  */
 export function vectorTextCaptureCoversDocument(
   capture: Readonly<VectorTextViewState> | null,
-  layerSize: number,
+  documentWidth: number,
+  documentHeight: number = documentWidth,
 ): boolean {
-  if (!capture || !finiteView(capture) || !Number.isFinite(layerSize) || layerSize <= 0) {
+  if (
+    !capture
+    || !finiteView(capture)
+    || !Number.isFinite(documentWidth)
+    || !Number.isFinite(documentHeight)
+    || documentWidth <= 0
+    || documentHeight <= 0
+  ) {
     return false;
   }
   const guard = VECTOR_TEXT_FAST_PRESENTATION_FILTER_GUARD_PX;
@@ -335,9 +357,9 @@ export function vectorTextCaptureCoversDocument(
   const epsilon = 1e-4;
   for (const [x, y] of [
     [0, 0],
-    [layerSize, 0],
-    [layerSize, layerSize],
-    [0, layerSize],
+    [documentWidth, 0],
+    [documentWidth, documentHeight],
+    [0, documentHeight],
   ] as const) {
     const [captureX, captureY] = layerPointInCapture(x, y, capture);
     if (
@@ -359,18 +381,26 @@ export function vectorTextCaptureCoversDocument(
  */
 export function vectorTextWideFallbackView(
   current: Readonly<VectorTextViewState>,
-  layerSize: number,
+  documentWidth: number,
+  documentHeight: number = documentWidth,
 ): VectorTextViewState {
-  if (!finiteView(current) || !Number.isFinite(layerSize) || layerSize <= 0) {
+  if (
+    !finiteView(current)
+    || !Number.isFinite(documentWidth)
+    || !Number.isFinite(documentHeight)
+    || documentWidth <= 0
+    || documentHeight <= 0
+  ) {
     throw new RangeError("Vista o dimensione documento non valida per la cache vettoriale larga.");
   }
-  const fitZoom = Math.min(current.canvasWidth, current.canvasHeight)
-    / layerSize
-    * VECTOR_TEXT_WIDE_FALLBACK_DOCUMENT_MARGIN;
+  const fitZoom = Math.min(
+    current.canvasWidth / documentWidth,
+    current.canvasHeight / documentHeight,
+  ) * VECTOR_TEXT_WIDE_FALLBACK_DOCUMENT_MARGIN;
   return {
     ...current,
-    centerX: layerSize * 0.5,
-    centerY: layerSize * 0.5,
+    centerX: documentWidth * 0.5,
+    centerY: documentHeight * 0.5,
     zoom: Math.min(VECTOR_TEXT_WIDE_FALLBACK_MAX_ZOOM, fitZoom),
     rotationRadians: 0,
     rotationCos: 1,
@@ -382,14 +412,15 @@ export function vectorTextFastPresentationMode(
   capture: Readonly<VectorTextViewState> | null,
   current: Readonly<VectorTextViewState>,
   fallbackCapture: Readonly<VectorTextViewState> | null = null,
-  layerSize?: number,
+  documentWidth?: number,
+  documentHeight: number = documentWidth ?? Number.NaN,
 ): VectorTextFastPresentationMode {
   if (vectorTextCaptureCoversView(capture, current)) {
     return "reproject";
   }
-  const fallbackCovers = layerSize === undefined
+  const fallbackCovers = documentWidth === undefined
     ? vectorTextCaptureCoversView(fallbackCapture, current)
-    : vectorTextCaptureCoversDocument(fallbackCapture, layerSize);
+    : vectorTextCaptureCoversDocument(fallbackCapture, documentWidth, documentHeight);
   if (fallbackCovers) {
     return "reproject-fallback";
   }

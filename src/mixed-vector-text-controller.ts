@@ -111,6 +111,9 @@ export interface VectorRasterHistoryGpuTestReport {
 }
 
 export interface MixedVectorTextHost {
+  readonly documentWidth: number;
+  readonly documentHeight: number;
+  /** Compatibility maximum edge for legacy callers and scalar stress limits. */
   readonly layerSize: number;
   getVectorTextViewState(): VectorTextViewState;
   getMixedSceneSnapshot(): MixedSceneSnapshot | null;
@@ -1447,11 +1450,11 @@ export class MixedVectorTextController {
       );
     }
 
-    const auditWidth = Math.min(1536, this.host.layerSize);
-    const auditHeight = Math.min(1024, this.host.layerSize);
+    const auditWidth = Math.min(1536, this.host.documentWidth);
+    const auditHeight = Math.min(1024, this.host.documentHeight);
     const auditRect = {
-      x: Math.floor((this.host.layerSize - auditWidth) * 0.5),
-      y: Math.floor((this.host.layerSize - auditHeight) * 0.5),
+      x: Math.floor((this.host.documentWidth - auditWidth) * 0.5),
+      y: Math.floor((this.host.documentHeight - auditHeight) * 0.5),
       width: auditWidth,
       height: auditHeight,
     };
@@ -1484,8 +1487,8 @@ export class MixedVectorTextController {
           ...this.defaultSeed(0, "#334455"),
           text: "RGBA16F",
           fontSize: 280,
-          x: this.host.layerSize * 0.5,
-          y: this.host.layerSize * 0.5,
+          x: this.host.documentWidth * 0.5,
+          y: this.host.documentHeight * 0.5,
         };
         const node = await this.host.addVectorTextNode(seed, "Test RGBA16F testo");
         vectorKey = `text:${node.id}`;
@@ -1780,8 +1783,8 @@ export class MixedVectorTextController {
       innerShadowOffset: 12,
       innerShadowAngle: -135,
       innerShadowBlur: 12,
-      x: this.host.layerSize * 0.5 + index * 90,
-      y: this.host.layerSize * 0.5 + index * 110,
+      x: this.host.documentWidth * 0.5 + index * 90,
+      y: this.host.documentHeight * 0.5 + index * 110,
       scale: 1,
       rotation: 0,
     };
@@ -1813,8 +1816,8 @@ export class MixedVectorTextController {
       innerShadowOffset: 12,
       innerShadowAngle: -135,
       innerShadowBlur: 12,
-      x: this.host.layerSize * 0.5,
-      y: this.host.layerSize * 0.5,
+      x: this.host.documentWidth * 0.5,
+      y: this.host.documentHeight * 0.5,
       scale: Math.min(2, 1200 / longestSide),
       rotation: 0,
     };
@@ -2151,12 +2154,12 @@ export class MixedVectorTextController {
 
   private vectorRasterView(): VectorTextViewState {
     return {
-      canvasWidth: this.host.layerSize,
-      canvasHeight: this.host.layerSize,
-      cssWidth: this.host.layerSize,
-      cssHeight: this.host.layerSize,
-      centerX: this.host.layerSize * 0.5,
-      centerY: this.host.layerSize * 0.5,
+      canvasWidth: this.host.documentWidth,
+      canvasHeight: this.host.documentHeight,
+      cssWidth: this.host.documentWidth,
+      cssHeight: this.host.documentHeight,
+      centerX: this.host.documentWidth * 0.5,
+      centerY: this.host.documentHeight * 0.5,
       zoom: 1,
       rotationRadians: 0,
       rotationCos: 1,
@@ -2750,12 +2753,12 @@ export class MixedVectorTextController {
       } else {
         const fitScale = Math.min(
           1,
-          this.host.layerSize * 0.8
+          Math.min(this.host.documentWidth, this.host.documentHeight) * 0.8
             / Math.max(node.document.width, node.document.height),
         );
         this.updateSelectedNode({
-          x: this.host.layerSize * 0.5,
-          y: this.host.layerSize * 0.5,
+          x: this.host.documentWidth * 0.5,
+          y: this.host.documentHeight * 0.5,
           scale: fitScale,
           rotation: 0,
         });
@@ -3997,7 +4000,11 @@ export class MixedVectorTextController {
       && fallbackRuns.length > 0
     ) {
       const fallback = this.host.rebuildVectorTextGpuFallbackPresentation(
-        vectorTextWideFallbackView(view, this.host.layerSize),
+        vectorTextWideFallbackView(
+          view,
+          this.host.documentWidth,
+          this.host.documentHeight,
+        ),
         fallbackRuns,
       );
       this.fallbackPresentationGpuMemoryMiB = fallback.gpuMemoryMiB;

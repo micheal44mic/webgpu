@@ -1,8 +1,6 @@
-// La taglia del documento non e' piu' una costante letterale: `LAYER_SIZE` la
-// decide al boot (2048 sui telefoni, 4096 altrove). Questa suite gira gli
-// invarianti derivati a ENTRAMBE le taglie rilanciando se' stessa con
-// `BRUSH_DOCUMENT_SIZE`, e asserisce in forma relativa a `LAYER_SIZE`: un
-// numero assoluto qui tornerebbe a cablare 4096 dalla porta di servizio.
+// Il documento espone larghezza e altezza indipendenti. Questa suite conserva
+// i due profili quadrati storici (2048 telefono, 4096 desktop/legacy), mentre
+// `verify-custom-document-dimensions.mjs` esercita la matrice rettangolare.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -31,9 +29,14 @@ if (!process.env.BRUSH_DOCUMENT_SIZE) {
 
 const { readFileSync } = await import("node:fs");
 const {
+  DOCUMENT_HEIGHT,
+  DOCUMENT_MAX_EDGE,
   DOCUMENT_TILE_GRID_SIZE,
+  DOCUMENT_TILE_HEIGHT,
   DOCUMENT_TILE_MASK_WORDS,
   DOCUMENT_TILE_SIZE,
+  DOCUMENT_TILE_WIDTH,
+  DOCUMENT_WIDTH,
   LAYER_SIZE,
   LIGHT_GLAZE_COMMIT_TILE_EXTENT,
   LIGHT_GLAZE_COMMIT_TILE_SLOT_COUNT,
@@ -42,31 +45,46 @@ const {
 } = await import("../src/engine-limits.ts");
 const {
   FILL_BLOCK_COUNT,
+  FILL_BLOCK_GRID_HEIGHT,
   FILL_BLOCK_GRID_SIZE,
+  FILL_BLOCK_GRID_WIDTH,
   FILL_BLOCK_SIZE,
-  FILL_BLOCKS_PER_TILE,
   FILL_HISTORY_MASK_BYTES,
+  FILL_HISTORY_WORDS_PER_ROW,
   FILL_LABEL_BUFFER_BYTES,
+  FILL_LAYER_HEIGHT,
   FILL_LAYER_SIZE,
+  FILL_LAYER_WIDTH,
   FILL_RENDER_MASK_BYTES,
+  FILL_RENDER_MASK_WORDS_PER_ROW,
   FILL_TILE_GRID_SIZE,
+  FILL_TILE_HEIGHT,
   FILL_TILE_MASK_WORDS,
   FILL_TILE_SIZE,
+  FILL_TILE_WIDTH,
 } = await import("../src/fill-core.ts");
 const {
+  SELECTION_LAYER_HEIGHT,
   SELECTION_LAYER_SIZE,
+  SELECTION_LAYER_WIDTH,
   SELECTION_MASK_BYTES,
   SELECTION_TILE_GRID_SIZE,
+  SELECTION_TILE_HEIGHT,
   SELECTION_TILE_MASK_WORDS,
   SELECTION_TILE_SIZE,
+  SELECTION_TILE_WIDTH,
   SELECTION_WORDS_PER_ROW,
 } = await import("../src/selection-core.ts");
 const {
+  LAYER_STORAGE_DOCUMENT_HEIGHT,
   LAYER_STORAGE_DOCUMENT_SIZE,
+  LAYER_STORAGE_DOCUMENT_WIDTH,
   LAYER_STORAGE_GRID_SIZE,
   LAYER_STORAGE_MASK_WORD_COUNT,
   LAYER_STORAGE_TILE_COUNT,
+  LAYER_STORAGE_TILE_HEIGHT,
   LAYER_STORAGE_TILE_SIZE,
+  LAYER_STORAGE_TILE_WIDTH,
 } = await import("../src/layer-storage-study.ts");
 const {
   RASTER_TRANSFORM_DOCUMENT_SIZE,
@@ -86,12 +104,15 @@ const MEBIBYTE = 1024 * 1024;
 
 const expected = Number(process.env.BRUSH_DOCUMENT_SIZE);
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
-const at = (label) => `${label} @ documento ${LAYER_SIZE}²`;
+const at = (label) => `${label} @ documento ${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT}`;
 
 // --- L'override deve davvero cambiare la taglia -----------------------------
 // Senza questa asserzione l'intera suite girerebbe due volte a 4096 e passerebbe
 // senza aver mai esercitato la configurazione mobile.
 assert.equal(LAYER_SIZE, expected, at("BRUSH_DOCUMENT_SIZE non ha avuto effetto"));
+assert.equal(DOCUMENT_WIDTH, expected, at("Il profilo storico deve impostare la larghezza"));
+assert.equal(DOCUMENT_HEIGHT, expected, at("Il profilo storico deve impostare l'altezza"));
+assert.equal(DOCUMENT_MAX_EDGE, expected, at("Il massimo bordo del profilo e' errato"));
 assert.ok(
   DOCUMENT_SIZES.includes(LAYER_SIZE),
   at("La taglia del documento deve restare una delle due previste"),
@@ -150,8 +171,13 @@ assert.ok(
   const reportsSource = read("../src/engine-reports.ts");
   assert.match(
     iphoneSource,
-    /TILE_MEMORY_MIB_RGBA16F\s*=\s*\n?\s*LAYER_STORAGE_TILE_SIZE \*\* 2 \* RGBA16F_BYTES_PER_PIXEL \/ MEBIBYTE_BYTES;/,
+    /TILE_MEMORY_MIB_RGBA16F\s*=\s*\n?\s*LAYER_STORAGE_TILE_WIDTH \* LAYER_STORAGE_TILE_HEIGHT\s*\* RGBA16F_BYTES_PER_PIXEL \/ MEBIBYTE_BYTES;/,
     at("il fixture iPhone deve derivare il costo tile RGBA16F da 8 Bpp"),
+  );
+  assert.doesNotMatch(
+    iphoneSource,
+    /LAYER_STORAGE_TILE_SIZE \*\* 2/,
+    at("il fixture iPhone non deve trasformare un tile rettangolare in un quadrato"),
   );
   assert.match(
     iphoneSource,
@@ -185,8 +211,8 @@ assert.ok(
   );
   assert.match(
     reportsSource,
-    /const markerCellSize = LAYER_SIZE \/ 4;/,
-    at("il marker stress deve restare nei documenti sia 2048 sia 4096"),
+    /const markerCellWidth = DOCUMENT_WIDTH \/ 4;\s*const markerCellHeight = DOCUMENT_HEIGHT \/ 4;/,
+    at("il marker stress deve distribuire le celle su entrambi gli assi"),
   );
   assert.match(
     reportsSource,
@@ -198,7 +224,7 @@ assert.ok(
 // --- Piramide display -------------------------------------------------------
 assert.equal(
   PAINT_DISPLAY_MIP_LEVEL_COUNT,
-  Math.log2(LAYER_SIZE) + 1,
+  Math.floor(Math.log2(DOCUMENT_MAX_EDGE)) + 1,
   at("La catena mip deve scendere fino a 1×1"),
 );
 assert.equal(
@@ -208,7 +234,8 @@ assert.equal(
 );
 assert.equal(
   LIGHT_GLAZE_COMMIT_TILE_SLOT_COUNT,
-  (LAYER_SIZE / LIGHT_GLAZE_COMMIT_TILE_EXTENT) ** 2,
+  Math.ceil(DOCUMENT_WIDTH / LIGHT_GLAZE_COMMIT_TILE_EXTENT)
+    * Math.ceil(DOCUMENT_HEIGHT / LIGHT_GLAZE_COMMIT_TILE_EXTENT),
   at("Gli slot di commit Light Glaze devono coprire il documento"),
 );
 
@@ -218,9 +245,19 @@ assert.equal(
 // sottosistema restano leggibili dagli altri.
 assert.equal(DOCUMENT_TILE_GRID_SIZE, 16, at("La griglia tile deve restare 16×16"));
 assert.equal(
-  DOCUMENT_TILE_SIZE * DOCUMENT_TILE_GRID_SIZE,
-  LAYER_SIZE,
-  at("I tile devono ricoprire esattamente il documento"),
+  DOCUMENT_TILE_WIDTH,
+  Math.ceil(DOCUMENT_WIDTH / DOCUMENT_TILE_GRID_SIZE),
+  at("La larghezza tile deve coprire il documento"),
+);
+assert.equal(
+  DOCUMENT_TILE_HEIGHT,
+  Math.ceil(DOCUMENT_HEIGHT / DOCUMENT_TILE_GRID_SIZE),
+  at("L'altezza tile deve coprire il documento"),
+);
+assert.equal(
+  DOCUMENT_TILE_SIZE,
+  Math.max(DOCUMENT_TILE_WIDTH, DOCUMENT_TILE_HEIGHT),
+  at("Il lato tile compatibile deve essere il massimo dei due assi"),
 );
 assert.equal(
   DOCUMENT_TILE_MASK_WORDS,
@@ -229,12 +266,28 @@ assert.equal(
 );
 
 for (
-  const [label, gridSize, tileSize, maskWords] of [
-    ["Selezione", SELECTION_TILE_GRID_SIZE, SELECTION_TILE_SIZE, SELECTION_TILE_MASK_WORDS],
-    ["Riempimento", FILL_TILE_GRID_SIZE, FILL_TILE_SIZE, FILL_TILE_MASK_WORDS],
+  const [label, gridSize, tileWidth, tileHeight, tileSize, maskWords] of [
+    [
+      "Selezione",
+      SELECTION_TILE_GRID_SIZE,
+      SELECTION_TILE_WIDTH,
+      SELECTION_TILE_HEIGHT,
+      SELECTION_TILE_SIZE,
+      SELECTION_TILE_MASK_WORDS,
+    ],
+    [
+      "Riempimento",
+      FILL_TILE_GRID_SIZE,
+      FILL_TILE_WIDTH,
+      FILL_TILE_HEIGHT,
+      FILL_TILE_SIZE,
+      FILL_TILE_MASK_WORDS,
+    ],
     [
       "cold storage",
       LAYER_STORAGE_GRID_SIZE,
+      LAYER_STORAGE_TILE_WIDTH,
+      LAYER_STORAGE_TILE_HEIGHT,
       LAYER_STORAGE_TILE_SIZE,
       LAYER_STORAGE_MASK_WORD_COUNT,
     ],
@@ -242,11 +295,15 @@ for (
       "transform",
       RASTER_TRANSFORM_TILE_GRID_SIZE,
       RASTER_TRANSFORM_TILE_SIZE,
+      RASTER_TRANSFORM_TILE_SIZE,
+      RASTER_TRANSFORM_TILE_SIZE,
       DOCUMENT_TILE_MASK_WORDS,
     ],
   ]
 ) {
   assert.equal(gridSize, DOCUMENT_TILE_GRID_SIZE, at(`Griglia tile ${label} disallineata`));
+  assert.equal(tileWidth, DOCUMENT_TILE_WIDTH, at(`Larghezza tile ${label} disallineata`));
+  assert.equal(tileHeight, DOCUMENT_TILE_HEIGHT, at(`Altezza tile ${label} disallineata`));
   assert.equal(tileSize, DOCUMENT_TILE_SIZE, at(`Lato tile ${label} disallineato`));
   assert.equal(maskWords, DOCUMENT_TILE_MASK_WORDS, at(`Maschera tile ${label} disallineata`));
 }
@@ -257,9 +314,19 @@ assert.equal(
   at("Il cold storage deve restare a 256 tile per livello"),
 );
 assert.equal(
+  LAYER_STORAGE_DOCUMENT_WIDTH,
+  DOCUMENT_WIDTH,
+  at("La larghezza del cold storage deve coincidere col documento"),
+);
+assert.equal(
+  LAYER_STORAGE_DOCUMENT_HEIGHT,
+  DOCUMENT_HEIGHT,
+  at("L'altezza del cold storage deve coincidere col documento"),
+);
+assert.equal(
   LAYER_STORAGE_DOCUMENT_SIZE,
-  LAYER_SIZE,
-  at("Il documento del cold storage deve coincidere col documento"),
+  DOCUMENT_MAX_EDGE,
+  at("Il lato compatibile del cold storage deve essere il massimo bordo"),
 );
 
 // Le maschere tile del motore attraversano davvero i sottosistemi: la maschera
@@ -274,11 +341,15 @@ assert.deepEqual(
 
 // --- Taglie derivate dei sottosistemi ---------------------------------------
 assert.equal(FILL_LAYER_SIZE, LAYER_SIZE, at("Il Riempimento deve seguire il documento"));
+assert.equal(FILL_LAYER_WIDTH, DOCUMENT_WIDTH, at("Larghezza Riempimento disallineata"));
+assert.equal(FILL_LAYER_HEIGHT, DOCUMENT_HEIGHT, at("Altezza Riempimento disallineata"));
 assert.equal(
   SELECTION_LAYER_SIZE,
   LAYER_SIZE,
   at("La Selezione deve seguire il documento"),
 );
+assert.equal(SELECTION_LAYER_WIDTH, DOCUMENT_WIDTH, at("Larghezza Selezione disallineata"));
+assert.equal(SELECTION_LAYER_HEIGHT, DOCUMENT_HEIGHT, at("Altezza Selezione disallineata"));
 assert.equal(
   RASTER_TRANSFORM_DOCUMENT_SIZE,
   LAYER_SIZE,
@@ -290,28 +361,43 @@ assert.equal(
   at("Il Blend dry deve seguire il documento"),
 );
 assert.equal(
+  FILL_BLOCK_GRID_WIDTH,
+  Math.ceil(DOCUMENT_WIDTH / FILL_BLOCK_SIZE),
+  at("La griglia blocchi X del Riempimento deve coprire il documento"),
+);
+assert.equal(
+  FILL_BLOCK_GRID_HEIGHT,
+  Math.ceil(DOCUMENT_HEIGHT / FILL_BLOCK_SIZE),
+  at("La griglia blocchi Y del Riempimento deve coprire il documento"),
+);
+assert.equal(
   FILL_BLOCK_GRID_SIZE,
-  LAYER_SIZE / FILL_BLOCK_SIZE,
-  at("La griglia blocchi del Riempimento deve coprire il documento"),
+  Math.max(FILL_BLOCK_GRID_WIDTH, FILL_BLOCK_GRID_HEIGHT),
+  at("La griglia blocchi compatibile deve essere il massimo asse"),
 );
 assert.equal(
   FILL_BLOCK_COUNT,
-  FILL_BLOCK_GRID_SIZE ** 2,
+  FILL_BLOCK_GRID_WIDTH * FILL_BLOCK_GRID_HEIGHT,
   at("Il conteggio blocchi deve derivare dalla griglia"),
 );
 assert.equal(
-  FILL_BLOCKS_PER_TILE,
-  FILL_TILE_SIZE / FILL_BLOCK_SIZE,
-  at("I blocchi per tile del Riempimento devono derivare dal lato del tile"),
+  FILL_HISTORY_WORDS_PER_ROW,
+  Math.ceil(DOCUMENT_WIDTH / 32),
+  at("La riga History del Riempimento deve coprire la larghezza"),
 );
 assert.equal(
   FILL_HISTORY_MASK_BYTES,
-  LAYER_SIZE * LAYER_SIZE / 8,
+  Math.ceil(DOCUMENT_WIDTH / 32) * DOCUMENT_HEIGHT * 4,
   at("La maschera 1-bit del Riempimento deve coprire il documento"),
 );
 assert.equal(
+  FILL_RENDER_MASK_WORDS_PER_ROW,
+  Math.ceil(DOCUMENT_WIDTH / 8),
+  at("La riga render del Riempimento deve coprire la larghezza"),
+);
+assert.equal(
   FILL_RENDER_MASK_BYTES,
-  LAYER_SIZE * LAYER_SIZE / 2,
+  Math.ceil(DOCUMENT_WIDTH / 8) * DOCUMENT_HEIGHT * 4,
   at("La mask render low-8-bit deve coprire ogni pixel senza usare bit 31"),
 );
 assert.ok(
@@ -320,12 +406,12 @@ assert.ok(
 );
 assert.equal(
   SELECTION_WORDS_PER_ROW,
-  LAYER_SIZE / 32,
+  Math.ceil(DOCUMENT_WIDTH / 32),
   at("La riga della bitmask Selezione deve coprire il documento"),
 );
 assert.equal(
   SELECTION_MASK_BYTES,
-  LAYER_SIZE * LAYER_SIZE / 8,
+  Math.ceil(DOCUMENT_WIDTH / 32) * DOCUMENT_HEIGHT * 4,
   at("La bitmask Selezione deve coprire il documento"),
 );
 
@@ -335,7 +421,7 @@ assert.equal(
 for (const [format, bytesPerPixel] of [["rgba8unorm", 4], ["rgba16float", 8]]) {
   assert.equal(
     layerBaseMemoryMiB(format),
-    LAYER_SIZE * LAYER_SIZE * bytesPerPixel / MEBIBYTE,
+    DOCUMENT_WIDTH * DOCUMENT_HEIGHT * bytesPerPixel / MEBIBYTE,
     at(`La memoria dichiarata del livello ${format} deve derivare dal documento`),
   );
   // Taglie arbitrarie: non quadrate, non potenze di due, piu' grandi e piu'
@@ -823,22 +909,22 @@ for (
   const [path, pattern, message] of [
     [
       "../src/mixed-scene-compositor-shader.ts",
-      /all\(layerPosition < vec2<f32>\(\$\{LAYER_SIZE\}\.0\)\)/,
-      "il compositore mixed-scene deve interpolare LAYER_SIZE",
+      /all\(layerPosition < vec2<f32>\(\$\{DOCUMENT_WIDTH\}\.0, \$\{DOCUMENT_HEIGHT\}\.0\)\)/,
+      "il compositore mixed-scene deve interpolare entrambi gli assi",
     ],
     [
       "../src/layer-blend-tile-compositor.ts",
-      /this\.mipUniformU32\[word \+ 2\] = LAYER_SIZE;\n\s*this\.mipUniformU32\[word \+ 3\] = LAYER_SIZE;/,
-      "l'uniforme mip della fusione a tile deve usare LAYER_SIZE",
+      /this\.mipUniformU32\[word \+ 2\] = DOCUMENT_WIDTH;\n\s*this\.mipUniformU32\[word \+ 3\] = DOCUMENT_HEIGHT;/,
+      "l'uniforme mip della fusione a tile deve usare entrambi gli assi",
     ],
     [
       "../src/fill-shaders.ts",
-      /let coldTile = \(block\.y \/ \$\{FILL_BLOCKS_PER_TILE\}u\)/,
-      "il tile freddo del Riempimento deve derivare dai blocchi per tile",
+      /reduceMinX\[0\] \/ \$\{FILL_TILE_WIDTH\}u, reduceMinY\[0\] \/ \$\{FILL_TILE_HEIGHT\}u[\s\S]*?\(reduceMaxX\[0\] - 1u\) \/ \$\{FILL_TILE_WIDTH\}u,[\s\S]*?\(reduceMaxY\[0\] - 1u\) \/ \$\{FILL_TILE_HEIGHT\}u/,
+      "il Riempimento deve marcare ogni tile rettangolare toccata dai pixel selezionati",
     ],
   ]
 ) {
   assert.match(read(path), pattern, at(message));
 }
 
-console.log(`  documento ${LAYER_SIZE}²: invarianti ok`);
+console.log(`  documento ${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT}: invarianti ok`);

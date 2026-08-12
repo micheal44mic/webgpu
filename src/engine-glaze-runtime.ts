@@ -2,7 +2,8 @@ import type { BrushEngine } from "./brush-engine";
 import { usesStrokeGlazeRenderer, type LightGlazeStorageMode } from "./engine-strategies";
 import { type LightGlazeResourceSet, type LightGlazeSession } from "./engine-paint-resources";
 import {
-  LAYER_SIZE,
+  DOCUMENT_HEIGHT,
+  DOCUMENT_WIDTH,
   LIGHT_GLAZE_COMMIT_TILE_EXTENT,
   LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BYTES,
   LIGHT_GLAZE_COMMIT_TILE_UNIFORM_STRIDE_BYTES,
@@ -42,7 +43,11 @@ export function createLightGlazeResourceSet(engine: BrushEngine,
         : "rgba16float";
       texture = engine.device.createTexture({
         label: `Lazy Light Glaze stroke accumulator ${accumulatorFormat}`,
-        size: { width: LAYER_SIZE, height: LAYER_SIZE, depthOrArrayLayers: 1 },
+        size: {
+          width: DOCUMENT_WIDTH,
+          height: DOCUMENT_HEIGHT,
+          depthOrArrayLayers: 1,
+        },
         format: accumulatorFormat,
         usage: GPUTextureUsage.RENDER_ATTACHMENT
           | GPUTextureUsage.TEXTURE_BINDING
@@ -52,8 +57,8 @@ export function createLightGlazeResourceSet(engine: BrushEngine,
       compositeMipTexture = engine.device.createTexture({
         label: `Lazy Light Glaze composited logical mip 1+ ${engine.layerFormat}`,
         size: {
-          width: Math.max(1, LAYER_SIZE >> 1),
-          height: Math.max(1, LAYER_SIZE >> 1),
+          width: Math.max(1, DOCUMENT_WIDTH >> 1),
+          height: Math.max(1, DOCUMENT_HEIGHT >> 1),
           depthOrArrayLayers: 1,
         },
         mipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT - 1,
@@ -356,7 +361,7 @@ export function ensureStrokeStabilizationSnapshot(
   minimumHeight: number,
 ): GPUTexture | null {
   const roundedWidth = Math.min(
-    LAYER_SIZE,
+    DOCUMENT_WIDTH,
     Math.max(
       STABILIZATION_TAIL_TEXTURE_QUANTUM,
       Math.ceil(Math.max(1, minimumWidth) / STABILIZATION_TAIL_TEXTURE_QUANTUM)
@@ -364,7 +369,7 @@ export function ensureStrokeStabilizationSnapshot(
     ),
   );
   const roundedHeight = Math.min(
-    LAYER_SIZE,
+    DOCUMENT_HEIGHT,
     Math.max(
       STABILIZATION_TAIL_TEXTURE_QUANTUM,
       Math.ceil(Math.max(1, minimumHeight) / STABILIZATION_TAIL_TEXTURE_QUANTUM)
@@ -387,7 +392,7 @@ export function ensureStrokeStabilizationSnapshot(
   const width = sameStorage && engine.stabilizationSnapshotWidth > 0
     ? roundedWidth > engine.stabilizationSnapshotWidth
       ? Math.min(
-        LAYER_SIZE,
+        DOCUMENT_WIDTH,
         Math.max(roundedWidth, engine.stabilizationSnapshotWidth * 2),
       )
       : engine.stabilizationSnapshotWidth
@@ -395,7 +400,7 @@ export function ensureStrokeStabilizationSnapshot(
   const height = sameStorage && engine.stabilizationSnapshotHeight > 0
     ? roundedHeight > engine.stabilizationSnapshotHeight
       ? Math.min(
-        LAYER_SIZE,
+        DOCUMENT_HEIGHT,
         Math.max(roundedHeight, engine.stabilizationSnapshotHeight * 2),
       )
       : engine.stabilizationSnapshotHeight

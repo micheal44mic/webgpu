@@ -7,6 +7,7 @@ import {
 import { assertShaderCompiled } from "./engine-gpu-utils";
 import { commitHistoryActionAtomically } from "./engine-history-runtime";
 import { invalidateActiveLayerBake } from "./engine-layer-runtime";
+import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits";
 import type { RasterFilterHistoryAction } from "./engine-history-types";
 import type { DirtyRect } from "./engine-stroke-types";
 import { publishMixedScene } from "./engine-vector-text-runtime";
@@ -140,6 +141,8 @@ fn unpackFilterTexel(value: vec2<u32>) -> vec4<f32> {
 
 function horizontalShader(): string {
   return `${commonShaderSource()}
+const DOCUMENT_EXTENT = vec2<i32>(${DOCUMENT_WIDTH}, ${DOCUMENT_HEIGHT});
+
 @group(0) @binding(1) var sourceTexture: texture_2d<f32>;
 @group(0) @binding(2) var intermediateOutput:
   texture_storage_2d<rgba16float, write>;
@@ -150,8 +153,7 @@ fn sourceTexel(documentPosition: vec2<i32>) -> vec4<f32> {
   // Il contenuto resta trasparente dentro il documento, ma i campioni che
   // oltrepassano il vero bordo del canvas replicano il texel di bordo. Cosi'
   // un livello pieno e uniforme non perde alpha verso l'interno.
-  let documentSize = i32(parameters.kernelAndIntermediate.w);
-  let documentMaximum = vec2<i32>(max(documentSize - 1, 0));
+  let documentMaximum = max(DOCUMENT_EXTENT - vec2<i32>(1), vec2<i32>(0));
   let clampedDocumentPosition = clamp(
     documentPosition,
     vec2<i32>(0),
@@ -399,7 +401,7 @@ function setAuthoritativeMetadata(
   engine.layerHasContent = true;
   record.contentBounds = { ...bounds };
   record.hasContent = true;
-  record.storageTileMask.set(tileMaskCoveringRect(tileMask, bounds, engine.layerSize));
+  record.storageTileMask.set(tileMaskCoveringRect(tileMask, bounds));
   invalidateActiveLayerBake(engine);
 }
 
@@ -432,7 +434,6 @@ function writeJobParameters(
   index: number,
   job: GaussianBlurJob,
   kernel: GaussianBlurKernel,
-  documentSize: number,
 ): number {
   if (index >= PARAMETER_CAPACITY) {
     throw new Error("Gaussian Blur: capacità strip superata.");
@@ -455,7 +456,7 @@ function writeJobParameters(
   session.parameterUploadU32[word + 12] = kernel.radius;
   session.parameterUploadU32[word + 13] = job.targetWidth;
   session.parameterUploadU32[word + 14] = job.buildHeight;
-  session.parameterUploadU32[word + 15] = documentSize;
+  session.parameterUploadU32[word + 15] = 0;
   session.parameterUploadF32.fill(0, word + 16, word + PARAMETER_WORDS);
   for (let offset = 0; offset < kernel.weights.length; offset += 1) {
     session.parameterUploadF32[word + 16 + offset] = kernel.weights[offset];
@@ -491,8 +492,8 @@ function encodeRequestedPreview(
   const resultBounds = destructiveGaussianBlurBounds(
     session.sourceBounds,
     radius,
-    engine.layerSize,
-    engine.layerSize,
+    DOCUMENT_WIDTH,
+    DOCUMENT_HEIGHT,
   ) as DirtyRect | null;
   if (!resultBounds) {
     throw new Error("Gaussian Blur: bounds risultato mancanti.");
@@ -510,7 +511,6 @@ function encodeRequestedPreview(
     index,
     job,
     kernel,
-    engine.layerSize,
   ));
   if (jobs.length > 0) {
     engine.device.queue.writeBuffer(
@@ -584,7 +584,6 @@ function encodeRequestedPreview(
   session.resultTileMask = tileMaskCoveringRect(
     session.sourceTileMask,
     resultBounds,
-    engine.layerSize,
   );
   setAuthoritativeMetadata(engine, resultBounds, session.resultTileMask);
   engine.submitImmediate([], false, engine.settings, true, null, dirtyRect, false);
@@ -758,16 +757,16 @@ export async function beginRasterGaussianBlur(
     const scratchBounds = destructiveGaussianBlurBounds(
       sourceBounds,
       DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS,
-      engine.layerSize,
-      engine.layerSize,
+      DOCUMENT_WIDTH,
+      DOCUMENT_HEIGHT,
     ) as DirtyRect | null;
     if (!scratchBounds) throw new Error("Il raster non contiene pixel sfocabili.");
     const radius = normalizeDestructiveGaussianBlurRadius(initialRadius);
     const initialResultBounds = destructiveGaussianBlurBounds(
       sourceBounds,
       radius,
-      engine.layerSize,
-      engine.layerSize,
+      DOCUMENT_WIDTH,
+      DOCUMENT_HEIGHT,
     ) as DirtyRect;
     const sourceTileMask = record.storageTileMask.slice();
     const shared = await requireSharedResources(engine.device);
@@ -775,9 +774,9 @@ export async function beginRasterGaussianBlur(
     const parameterStride = Math.ceil(PARAMETER_BYTES / uniformAlignment) * uniformAlignment;
     const intermediateHeight = Math.min(
       DESTRUCTIVE_GAUSSIAN_BLUR_STRIP_HEIGHT,
-      engine.layerSize,
+      DOCUMENT_HEIGHT,
     ) + DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS * 2;
-    const outputHeight = Math.min(DESTRUCTIVE_GAUSSIAN_BLUR_STRIP_HEIGHT, engine.layerSize);
+    const outputHeight = Math.min(DESTRUCTIVE_GAUSSIAN_BLUR_STRIP_HEIGHT, DOCUMENT_HEIGHT);
     const maximumJobs = Math.ceil(scratchBounds.height / DESTRUCTIVE_GAUSSIAN_BLUR_STRIP_HEIGHT);
     if (maximumJobs > PARAMETER_CAPACITY) {
       throw new Error("Gaussian Blur: documento troppo alto per il piano strip.");
@@ -902,7 +901,6 @@ export async function beginRasterGaussianBlur(
           resultTileMask: tileMaskCoveringRect(
             sourceTileMask,
             initialResultBounds,
-            engine.layerSize,
           ),
           presentedBounds: null,
           requestedSerial: 1,
@@ -997,14 +995,13 @@ export function updateRasterGaussianBlur(
   const result = destructiveGaussianBlurBounds(
     session.sourceBounds,
     normalized,
-    engine.layerSize,
-    engine.layerSize,
+    DOCUMENT_WIDTH,
+    DOCUMENT_HEIGHT,
   ) as DirtyRect;
   session.resultBounds = result;
   session.resultTileMask = tileMaskCoveringRect(
     session.sourceTileMask,
     result,
-    engine.layerSize,
   );
   session.requestedSerial += 1;
   schedulePreview(engine, session);

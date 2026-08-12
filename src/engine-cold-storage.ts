@@ -10,7 +10,8 @@ import { type LayerRecord } from "./layer-stack";
 import {
   countLayerStorageTiles,
   LAYER_STORAGE_GRID_SIZE,
-  LAYER_STORAGE_TILE_SIZE,
+  LAYER_STORAGE_TILE_HEIGHT,
+  LAYER_STORAGE_TILE_WIDTH,
   layerStorageTileIndices,
   markLayerStorageRect,
 } from "./layer-storage-study";
@@ -21,7 +22,7 @@ import {
   LAYER_COLD_COMPRESSION_MINIMUM_DISTANCE,
   type LayerColdCompressedChunk,
 } from "./layer-cold-compression-client";
-import { LAYER_SIZE, MEBIBYTE_BYTES } from "./engine-limits";
+import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH, MEBIBYTE_BYTES } from "./engine-limits";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import { isHistoryColdSeedHandle } from "./history-cold-seed";
 
@@ -45,12 +46,30 @@ function layerFormatBytesPerPixel(format: LayerFormat): number {
  * shuffle. Un livello lontano da 32 MiB scende a circa 11,6.
  */
 function coldCodecTileBytes(format: LayerFormat): number {
-  return LAYER_STORAGE_TILE_SIZE * LAYER_STORAGE_TILE_SIZE
+  return LAYER_STORAGE_TILE_WIDTH * LAYER_STORAGE_TILE_HEIGHT
     * layerFormatBytesPerPixel(format);
 }
 
 function coldCodecBytesPerRow(format: LayerFormat): number {
-  return LAYER_STORAGE_TILE_SIZE * layerFormatBytesPerPixel(format);
+  return LAYER_STORAGE_TILE_WIDTH * layerFormatBytesPerPixel(format);
+}
+
+function tileDocumentCopyExtent(tileIndex: number): {
+  originX: number;
+  originY: number;
+  width: number;
+  height: number;
+} {
+  const tileX = tileIndex % LAYER_STORAGE_GRID_SIZE;
+  const tileY = Math.floor(tileIndex / LAYER_STORAGE_GRID_SIZE);
+  const originX = tileX * LAYER_STORAGE_TILE_WIDTH;
+  const originY = tileY * LAYER_STORAGE_TILE_HEIGHT;
+  return {
+    originX,
+    originY,
+    width: Math.max(0, Math.min(LAYER_STORAGE_TILE_WIDTH, DOCUMENT_WIDTH - originX)),
+    height: Math.max(0, Math.min(LAYER_STORAGE_TILE_HEIGHT, DOCUMENT_HEIGHT - originY)),
+  };
 }
 
 function assertColdMatchesHot(
@@ -114,9 +133,14 @@ export function coldStorageMaskForRecord(record: LayerRecord): Uint32Array {
     markLayerStorageRect(mask, record.contentBounds);
   }
   if (record.hasContent && countLayerStorageTiles(mask) === 0) {
-    // Last-resort safety for inconsistent metadata: keep the whole layer.
-    // This loses the memory win, never the user pixels.
-    mask.fill(0xffffffff);
+    // Last-resort safety for inconsistent metadata: keep every valid slot,
+    // never cells whose origin lies outside a very small document.
+    for (let tileIndex = 0; tileIndex < LAYER_STORAGE_GRID_SIZE ** 2; tileIndex += 1) {
+      const extent = tileDocumentCopyExtent(tileIndex);
+      if (extent.width > 0 && extent.height > 0) {
+        mask[tileIndex >>> 5] |= (1 << (tileIndex & 31)) >>> 0;
+      }
+    }
   }
   return mask;
 }
@@ -128,21 +152,21 @@ export function encodeLayerColdHydration(
 ): void {
   assertColdMatchesHot(cold, hot);
   cold.tileIndices.forEach((tileIndex, arrayLayer) => {
-    const tileX = tileIndex % LAYER_STORAGE_GRID_SIZE;
-    const tileY = Math.floor(tileIndex / LAYER_STORAGE_GRID_SIZE);
+    const extent = tileDocumentCopyExtent(tileIndex);
+    if (extent.width <= 0 || extent.height <= 0) return;
     encoder.copyTextureToTexture(
       { texture: cold.texture, origin: { x: 0, y: 0, z: arrayLayer } },
       {
         texture: hot.texture,
         origin: {
-          x: tileX * LAYER_STORAGE_TILE_SIZE,
-          y: tileY * LAYER_STORAGE_TILE_SIZE,
+          x: extent.originX,
+          y: extent.originY,
           z: 0,
         },
       },
       {
-        width: LAYER_STORAGE_TILE_SIZE,
-        height: LAYER_STORAGE_TILE_SIZE,
+        width: extent.width,
+        height: extent.height,
         depthOrArrayLayers: 1,
       },
     );
@@ -413,8 +437,8 @@ export async function restoreColdStorageResources(
   const texture = engine.device.createTexture({
     label,
     size: {
-      width: LAYER_STORAGE_TILE_SIZE,
-      height: LAYER_STORAGE_TILE_SIZE,
+      width: LAYER_STORAGE_TILE_WIDTH,
+      height: LAYER_STORAGE_TILE_HEIGHT,
       depthOrArrayLayers: compressed.tileIndices.length,
     },
     format: compressed.format,
@@ -438,11 +462,11 @@ export async function restoreColdStorageResources(
         restored,
         {
           bytesPerRow: coldCodecBytesPerRow(compressed.format),
-          rowsPerImage: LAYER_STORAGE_TILE_SIZE,
+          rowsPerImage: LAYER_STORAGE_TILE_HEIGHT,
         },
         {
-          width: LAYER_STORAGE_TILE_SIZE,
-          height: LAYER_STORAGE_TILE_SIZE,
+          width: LAYER_STORAGE_TILE_WIDTH,
+          height: LAYER_STORAGE_TILE_HEIGHT,
           depthOrArrayLayers: chunkTileCount,
         },
       );
@@ -491,8 +515,8 @@ export async function ensureLayerColdStorageResident(engine: BrushEngine,
   const texture = engine.device.createTexture({
     label: `Cold ripristinato livello ${record.id} #${compressed.generation}`,
     size: {
-      width: LAYER_STORAGE_TILE_SIZE,
-      height: LAYER_STORAGE_TILE_SIZE,
+      width: LAYER_STORAGE_TILE_WIDTH,
+      height: LAYER_STORAGE_TILE_HEIGHT,
       depthOrArrayLayers: compressed.tileIndices.length,
     },
     format: compressed.format,
@@ -518,11 +542,11 @@ export async function ensureLayerColdStorageResident(engine: BrushEngine,
         restored,
         {
           bytesPerRow: coldCodecBytesPerRow(compressed.format),
-          rowsPerImage: LAYER_STORAGE_TILE_SIZE,
+          rowsPerImage: LAYER_STORAGE_TILE_HEIGHT,
         },
         {
-          width: LAYER_STORAGE_TILE_SIZE,
-          height: LAYER_STORAGE_TILE_SIZE,
+          width: LAYER_STORAGE_TILE_WIDTH,
+          height: LAYER_STORAGE_TILE_HEIGHT,
           depthOrArrayLayers: chunkTileCount,
         },
       );
@@ -592,8 +616,8 @@ export async function createLayerColdStorageCandidate(engine: BrushEngine,
   }
   const bytesPerPixel = layerFormatBytesPerPixel(format);
   const memoryBytes = tileIndices.length
-    * LAYER_STORAGE_TILE_SIZE
-    * LAYER_STORAGE_TILE_SIZE
+    * LAYER_STORAGE_TILE_WIDTH
+    * LAYER_STORAGE_TILE_HEIGHT
     * bytesPerPixel;
   const historyQualifier = purpose === "history" ? " History" : "";
   return runGpuAllocationTransaction(
@@ -603,8 +627,8 @@ export async function createLayerColdStorageCandidate(engine: BrushEngine,
       const texture = engine.device.createTexture({
         label: `Cold tile${historyQualifier} livello ${record.id} #${generation}`,
         size: {
-          width: LAYER_STORAGE_TILE_SIZE,
-          height: LAYER_STORAGE_TILE_SIZE,
+          width: LAYER_STORAGE_TILE_WIDTH,
+          height: LAYER_STORAGE_TILE_HEIGHT,
           depthOrArrayLayers: tileIndices.length,
         },
         format,
@@ -618,21 +642,21 @@ export async function createLayerColdStorageCandidate(engine: BrushEngine,
         label: `Pack cold${historyQualifier} livello ${record.id} #${generation}`,
       });
       tileIndices.forEach((tileIndex, arrayLayer) => {
-        const tileX = tileIndex % LAYER_STORAGE_GRID_SIZE;
-        const tileY = Math.floor(tileIndex / LAYER_STORAGE_GRID_SIZE);
+        const extent = tileDocumentCopyExtent(tileIndex);
+        if (extent.width <= 0 || extent.height <= 0) return;
         encoder.copyTextureToTexture(
           {
             texture: hot.texture,
             origin: {
-              x: tileX * LAYER_STORAGE_TILE_SIZE,
-              y: tileY * LAYER_STORAGE_TILE_SIZE,
+              x: extent.originX,
+              y: extent.originY,
               z: 0,
             },
           },
           { texture, origin: { x: 0, y: 0, z: arrayLayer } },
           {
-            width: LAYER_STORAGE_TILE_SIZE,
-            height: LAYER_STORAGE_TILE_SIZE,
+            width: extent.width,
+            height: extent.height,
             depthOrArrayLayers: 1,
           },
         );
@@ -666,8 +690,8 @@ export async function cloneLayerColdStorageResources(
     throw new Error(`${label}: seed cold privo di tile.`);
   }
   const expectedBytes = source.tileIndices.length
-    * LAYER_STORAGE_TILE_SIZE
-    * LAYER_STORAGE_TILE_SIZE
+    * LAYER_STORAGE_TILE_WIDTH
+    * LAYER_STORAGE_TILE_HEIGHT
     * layerFormatBytesPerPixel(source.format);
   if (source.memoryBytes !== expectedBytes) {
     throw new Error(
@@ -678,8 +702,8 @@ export async function cloneLayerColdStorageResources(
     const texture = engine.device.createTexture({
       label,
       size: {
-        width: LAYER_STORAGE_TILE_SIZE,
-        height: LAYER_STORAGE_TILE_SIZE,
+        width: LAYER_STORAGE_TILE_WIDTH,
+        height: LAYER_STORAGE_TILE_HEIGHT,
         depthOrArrayLayers: source.tileIndices.length,
       },
       format: source.format,
@@ -695,8 +719,8 @@ export async function cloneLayerColdStorageResources(
         { texture: source.texture, origin: { x: 0, y: 0, z: arrayLayer } },
         { texture, origin: { x: 0, y: 0, z: arrayLayer } },
         {
-          width: LAYER_STORAGE_TILE_SIZE,
-          height: LAYER_STORAGE_TILE_SIZE,
+          width: LAYER_STORAGE_TILE_WIDTH,
+          height: LAYER_STORAGE_TILE_HEIGHT,
           depthOrArrayLayers: 1,
         },
       );
@@ -765,8 +789,8 @@ export async function createLayerColdStorageCandidateIncrementally(
   }
   const bytesPerPixel = layerFormatBytesPerPixel(format);
   const memoryBytes = tileIndices.length
-    * LAYER_STORAGE_TILE_SIZE
-    * LAYER_STORAGE_TILE_SIZE
+    * LAYER_STORAGE_TILE_WIDTH
+    * LAYER_STORAGE_TILE_HEIGHT
     * bytesPerPixel;
   return runGpuAllocationTransaction(
     engine.device,
@@ -776,8 +800,8 @@ export async function createLayerColdStorageCandidateIncrementally(
       const texture = engine.device.createTexture({
         label: `Cold tile History livello ${record.id} #${generation}`,
         size: {
-          width: LAYER_STORAGE_TILE_SIZE,
-          height: LAYER_STORAGE_TILE_SIZE,
+          width: LAYER_STORAGE_TILE_WIDTH,
+          height: LAYER_STORAGE_TILE_HEIGHT,
           depthOrArrayLayers: tileIndices.length,
         },
         format,
@@ -808,21 +832,21 @@ export async function createLayerColdStorageCandidateIncrementally(
         });
         for (let arrayLayer = firstTile; arrayLayer < endTile; arrayLayer += 1) {
           const tileIndex = tileIndices[arrayLayer];
-          const tileX = tileIndex % LAYER_STORAGE_GRID_SIZE;
-          const tileY = Math.floor(tileIndex / LAYER_STORAGE_GRID_SIZE);
+          const extent = tileDocumentCopyExtent(tileIndex);
+          if (extent.width <= 0 || extent.height <= 0) continue;
           encoder.copyTextureToTexture(
             {
               texture: hot.texture,
               origin: {
-                x: tileX * LAYER_STORAGE_TILE_SIZE,
-                y: tileY * LAYER_STORAGE_TILE_SIZE,
+                x: extent.originX,
+                y: extent.originY,
                 z: 0,
               },
             },
             { texture, origin: { x: 0, y: 0, z: arrayLayer } },
             {
-              width: LAYER_STORAGE_TILE_SIZE,
-              height: LAYER_STORAGE_TILE_SIZE,
+              width: extent.width,
+              height: extent.height,
               depthOrArrayLayers: 1,
             },
           );
@@ -881,26 +905,28 @@ export async function uploadCompressedLayerIntoHot(engine: BrushEngine,
     }
     for (let chunkTile = 0; chunkTile < chunkTileCount; chunkTile += 1) {
       const tileIndex = compressed.tileIndices[firstTile + chunkTile];
-      const tileX = tileIndex % LAYER_STORAGE_GRID_SIZE;
-      const tileY = Math.floor(tileIndex / LAYER_STORAGE_GRID_SIZE);
+      const extent = tileDocumentCopyExtent(tileIndex);
+      if (extent.width <= 0 || extent.height <= 0) {
+        throw new Error(`Tile ${tileIndex} fuori dal documento.`);
+      }
       const byteOffset = chunkTile * tileByteLength;
       engine.device.queue.writeTexture(
         {
           texture: hot.texture,
           origin: {
-            x: tileX * LAYER_STORAGE_TILE_SIZE,
-            y: tileY * LAYER_STORAGE_TILE_SIZE,
+            x: extent.originX,
+            y: extent.originY,
             z: 0,
           },
         },
         restored.subarray(byteOffset, byteOffset + tileByteLength),
         {
           bytesPerRow: coldCodecBytesPerRow(compressed.format),
-          rowsPerImage: LAYER_STORAGE_TILE_SIZE,
+          rowsPerImage: LAYER_STORAGE_TILE_HEIGHT,
         },
         {
-          width: LAYER_STORAGE_TILE_SIZE,
-          height: LAYER_STORAGE_TILE_SIZE,
+          width: extent.width,
+          height: extent.height,
           depthOrArrayLayers: 1,
         },
       );
@@ -952,7 +978,7 @@ export async function createHydratedLayerTexture(engine: BrushEngine,
   if (record.hasContent && !cold && !compressedSource) {
     throw new Error(`Reidratazione livello ${record.id}: cold store mancante.`);
   }
-  const memoryBytes = LAYER_SIZE * LAYER_SIZE
+  const memoryBytes = DOCUMENT_WIDTH * DOCUMENT_HEIGHT
     * (engine.layerFormat === "rgba16float" ? 8 : 4);
   return runGpuAllocationTransaction(
     engine.device,

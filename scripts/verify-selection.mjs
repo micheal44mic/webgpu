@@ -6,14 +6,20 @@ import {
   MAGIC_WAND_SELECTION_STRATEGY,
   PIXEL_SELECTION_MASK_STRATEGY,
   SELECTION_LASSO_SPAN_BUFFER_BYTES,
+  SELECTION_LAYER_HEIGHT,
   SELECTION_LAYER_SIZE,
+  SELECTION_LAYER_WIDTH,
   SELECTION_MASK_BYTES,
+  SELECTION_MASK_WORDS,
   SELECTION_MAX_LASSO_POINTS,
   SELECTION_MAX_LASSO_SPANS,
   SELECTION_OVERLAY_STRATEGY,
   SELECTION_RESIDENT_BUFFER_BYTES,
   SELECTION_TILE_GRID_SIZE,
+  SELECTION_TILE_HEIGHT,
   SELECTION_TILE_SIZE,
+  SELECTION_TILE_WIDTH,
+  SELECTION_WORDS_PER_ROW,
   buildLassoSpans,
   countSelectionTiles,
   emptyPixelSelectionState,
@@ -23,7 +29,13 @@ import {
   selectionCombineModeCode,
   selectionHexToStraightSrgb,
 } from "../src/selection-core.ts";
-import { LAYER_SIZE } from "../src/engine-limits.ts";
+import {
+  DOCUMENT_HEIGHT,
+  DOCUMENT_TILE_HEIGHT,
+  DOCUMENT_TILE_WIDTH,
+  DOCUMENT_WIDTH,
+  LAYER_SIZE,
+} from "../src/engine-limits.ts";
 import { readEngineSource } from "./engine-source.mjs";
 
 assert.equal(
@@ -41,8 +53,17 @@ assert.equal(
 assert.equal(LASSO_SELECTION_STRATEGY, "cpu-even-odd-pixel-center-spans-gpu-bitmask-v1");
 assert.equal(SELECTION_OVERLAY_STRATEGY, "separate-transparent-webgpu-mask-overlay-v1");
 assert.equal(SELECTION_LAYER_SIZE, LAYER_SIZE);
+assert.equal(SELECTION_LAYER_WIDTH, DOCUMENT_WIDTH);
+assert.equal(SELECTION_LAYER_HEIGHT, DOCUMENT_HEIGHT);
+assert.equal(SELECTION_LAYER_SIZE, Math.max(SELECTION_LAYER_WIDTH, SELECTION_LAYER_HEIGHT));
+assert.equal(SELECTION_WORDS_PER_ROW, Math.ceil(SELECTION_LAYER_WIDTH / 32));
+assert.equal(SELECTION_MASK_WORDS, SELECTION_WORDS_PER_ROW * SELECTION_LAYER_HEIGHT);
+assert.equal(SELECTION_MASK_BYTES, SELECTION_MASK_WORDS * 4);
 assert.equal(SELECTION_TILE_GRID_SIZE, 16);
 assert.equal(SELECTION_TILE_SIZE, 256);
+assert.equal(SELECTION_TILE_WIDTH, DOCUMENT_TILE_WIDTH);
+assert.equal(SELECTION_TILE_HEIGHT, DOCUMENT_TILE_HEIGHT);
+assert.equal(SELECTION_TILE_SIZE, Math.max(SELECTION_TILE_WIDTH, SELECTION_TILE_HEIGHT));
 assert.equal(SELECTION_MASK_BYTES, 2 * 1024 * 1024);
 assert.equal(SELECTION_LASSO_SPAN_BUFFER_BYTES, 1024 * 1024);
 assert.equal(SELECTION_MAX_LASSO_POINTS, 8_192);
@@ -119,6 +140,16 @@ assert.deepEqual(
   ["0,0", "0,1", "1,0", "1,1"],
   "Gli span devono essere ritagliati ai limiti del layer.",
 );
+assert.deepEqual(
+  unpackSpans(buildLassoSpans([
+    { x: -2, y: -2 },
+    { x: 6, y: -2 },
+    { x: 6, y: 4 },
+    { x: -2, y: 4 },
+  ], 4, 2)),
+  ["0,0", "0,1", "1,0", "1,1", "2,0", "2,1", "3,0", "3,1"],
+  "Il ritaglio del lazo deve rispettare larghezza 4 e altezza 2 indipendenti.",
+);
 assert.equal(buildLassoSpans([{ x: 1, y: 1 }, { x: 2, y: 2 }], 8).spanCount, 0);
 assert.throws(() => buildLassoSpans([{ x: Number.NaN, y: 0 }], 8));
 assert.throws(() => buildLassoSpans(rectangle, 0));
@@ -168,6 +199,10 @@ assert(shader.includes("overlay.viewCenter + layerOffset - overlay.selectionOffs
 assert(shader.includes("activeTileFound"));
 assert(shader.includes("anySelectedInLayerBounds(minimum, maximum)"));
 assert(shader.includes("return vec4<f32>(vec3<f32>(0.16, 0.48, 1.0) * alpha, alpha)"));
+assert.match(shader, /const LAYER_EXTENT: vec2<u32> = vec2<u32>\(\$\{SELECTION_LAYER_WIDTH\}u, \$\{SELECTION_LAYER_HEIGHT\}u\);/);
+assert.match(shader, /y \/ \$\{SELECTION_TILE_HEIGHT\}u/);
+assert.match(shader, /minX \/ \$\{SELECTION_TILE_WIDTH\}u/);
+assert.doesNotMatch(shader, /\bSELECTION_LAYER_SIZE\b|\bSELECTION_TILE_SIZE\b/);
 
 assert(renderer.includes("encoder.copyBufferToBuffer(this.frontMask, 0, this.backMask"));
 assert(renderer.includes("encoder.clearBuffer(this.backMask)"));
@@ -230,6 +265,14 @@ assert(runtime.includes("engine.selectionPipelineByBase.get(basePipeline)"));
 assert(runtime.includes("historySnapshot?.gpuSlice.buffer ?? engine.selectionRenderer?.maskBuffer"));
 assert(runtime.includes("engine.selectionHistoryMasksByRevision.get(revision)"));
 assert(runtime.includes("engine.selectionHistoryMasksByRevision.set(revision, snapshot)"));
+assert(runtime.includes("Math.floor(left / SELECTION_TILE_WIDTH)"));
+assert(runtime.includes("Math.floor(top / SELECTION_TILE_HEIGHT)"));
+assert(runtime.includes("tileX * SELECTION_TILE_WIDTH"));
+assert(runtime.includes("tileY * SELECTION_TILE_HEIGHT"));
+assert.doesNotMatch(runtime, /engine\.layerSize|\bSELECTION_TILE_SIZE\b|\bSELECTION_LAYER_SIZE\b/);
+assert(renderer.includes("unsigned[0] = SELECTION_LAYER_WIDTH"));
+assert(renderer.includes("unsigned[1] = SELECTION_LAYER_HEIGHT"));
+assert.doesNotMatch(renderer, /\bSELECTION_LAYER_SIZE\b|\bSELECTION_TILE_SIZE\b/);
 
 assert(fillRenderer.includes("getAnalyzedSelectionMaskBuffer(): GPUBuffer"));
 assert(fillShader.includes("export const fillSelectionIntersectionShader"));
@@ -243,7 +286,10 @@ assert(runtime.includes("fillRenderer.getAnalyzedSelectionMaskBuffer()"));
 assert(runtime.includes("fillRenderer.setSourceSamplingView(engine.layerSamplingView)"));
 assert(runtime.includes("renderer.setSourceSamplingView(engine.layerSamplingView)"));
 assert(!runtime.includes("resolveFillSource"));
-assert(runtime.includes("buildLassoSpans(layerPoints, engine.layerSize)"));
+assert.match(
+  runtime,
+  /buildLassoSpans\(\s*layerPoints,\s*engine\.documentWidth,\s*engine\.documentHeight,?\s*\)/,
+);
 assert(runtime.includes("selectionBusy = true"));
 assert(runtime.includes("SELECTION_RENDERER_IDLE_RELEASE_MS = 1_500"));
 assert(runtime.includes("engine.selectionRenderer?.destroy()"));

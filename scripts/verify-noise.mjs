@@ -188,6 +188,14 @@ assert.match(runtime, /export function abandonRasterNoiseSession/);
 assert.match(engine, /device\.lost[\s\S]{0,220}abandonRasterNoiseSession\(this\)/);
 assert.match(runtime, /source\.rgb \+ source\.a \* amount/);
 assert.match(runtime, /clamp\(resultRgb, vec3<f32>\(-HALF_MAX\)/);
+assert.match(runtime, /import \{ DOCUMENT_HEIGHT, DOCUMENT_WIDTH \} from "\.\/engine-limits"/);
+assert.match(runtime, /u32\[14\] = DOCUMENT_WIDTH/);
+assert.match(runtime, /u32\[15\] = DOCUMENT_HEIGHT/);
+assert.doesNotMatch(
+  runtime,
+  /engine\.layerSize|\bLAYER_SIZE\b|u32\[15\] = DOCUMENT_WIDTH/,
+  "Noise deve firmare larghezza e altezza indipendenti nel proprio ABI.",
+);
 assert.doesNotMatch(runtime, /rgba32float|r32float|rgba8|unorm8|pack4x8|unpack4x8/i);
 assert.doesNotMatch(runtime, /intermediateTexture|outputTexture/);
 

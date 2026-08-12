@@ -1,5 +1,5 @@
 import type { BrushEngine } from "./brush-engine";
-import { LAYER_SIZE } from "./engine-limits";
+import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits";
 import type { DirtyRect } from "./engine-stroke-types";
 import type { MixedSceneActivePresentation } from "./engine-vector-text-resources";
 import {
@@ -27,8 +27,8 @@ const TILE_INDEX_SOURCE = 2 as const;
 const clampDocumentRect = (rect: DirtyRect): DirtyRect | null => {
   const x = Math.max(0, Math.floor(rect.x));
   const y = Math.max(0, Math.floor(rect.y));
-  const right = Math.min(LAYER_SIZE, Math.ceil(rect.x + rect.width));
-  const bottom = Math.min(LAYER_SIZE, Math.ceil(rect.y + rect.height));
+  const right = Math.min(DOCUMENT_WIDTH, Math.ceil(rect.x + rect.width));
+  const bottom = Math.min(DOCUMENT_HEIGHT, Math.ceil(rect.y + rect.height));
   return right > x && bottom > y
     ? { x, y, width: right - x, height: bottom - y }
     : null;
@@ -176,10 +176,15 @@ function activeSourceMode(
 }
 
 function alignedMipRect(rect: DirtyRect): DirtyRect | null {
+  // WebGPU mip dimensions use floor(base / 2). An odd final document column or
+  // row has no texel in mip 1, so it must not produce a fractional scissor or
+  // fail the even-core invariant below.
+  const mipSourceWidth = DOCUMENT_WIDTH - (DOCUMENT_WIDTH % 2);
+  const mipSourceHeight = DOCUMENT_HEIGHT - (DOCUMENT_HEIGHT % 2);
   const x = Math.max(0, Math.floor(rect.x / 2) * 2);
   const y = Math.max(0, Math.floor(rect.y / 2) * 2);
-  const right = Math.min(LAYER_SIZE, Math.ceil((rect.x + rect.width) / 2) * 2);
-  const bottom = Math.min(LAYER_SIZE, Math.ceil((rect.y + rect.height) / 2) * 2);
+  const right = Math.min(mipSourceWidth, Math.ceil((rect.x + rect.width) / 2) * 2);
+  const bottom = Math.min(mipSourceHeight, Math.ceil((rect.y + rect.height) / 2) * 2);
   return right > x && bottom > y
     ? { x, y, width: right - x, height: bottom - y }
     : null;
@@ -195,7 +200,7 @@ function alignedTileCores(rect: DirtyRect, coreExtent: number): DirtyRect[] {
     for (let x = startX; x < right; x += coreExtent) {
       const core = intersectRects(
         { x, y, width: coreExtent, height: coreExtent },
-        { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE },
+        { x: 0, y: 0, width: DOCUMENT_WIDTH, height: DOCUMENT_HEIGHT },
       );
       if (core && intersectRects(core, rect)) {
         result.push(core);
@@ -314,8 +319,8 @@ function encodeHigherFinalMips(
       - Math.floor(documentRect.y / 2),
   };
   for (let mipLevel = 2; mipLevel <= selectedMipLevel; mipLevel += 1) {
-    const width = Math.max(1, LAYER_SIZE >> mipLevel);
-    const height = Math.max(1, LAYER_SIZE >> mipLevel);
+    const width = Math.max(1, DOCUMENT_WIDTH >> mipLevel);
+    const height = Math.max(1, DOCUMENT_HEIGHT >> mipLevel);
     const targetRect = {
       x: Math.max(0, Math.floor(sourceRect.x / 2)),
       y: Math.max(0, Math.floor(sourceRect.y / 2)),
@@ -394,7 +399,12 @@ export function encodeLayerBlendTilePresentation(
   // them; only visible semantic content selects the viewport compatibility path.
 
   const selectedMipLevel = engine.paintDisplaySelectedMipLevel;
-  const fullDocumentRect = { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE };
+  const fullDocumentRect = {
+    x: 0,
+    y: 0,
+    width: DOCUMENT_WIDTH,
+    height: DOCUMENT_HEIGHT,
+  };
   const reuseFinalPyramid = requiresFullRebuild
     && selectedMipLevel > 0
     && layerDirtyRect === null
@@ -480,8 +490,8 @@ export function encodeLayerBlendTilePresentation(
         view: engine.layerView,
         origin: { x: 0, y: 0 },
         scale: 1,
-        width: LAYER_SIZE,
-        height: LAYER_SIZE,
+        width: DOCUMENT_WIDTH,
+        height: DOCUMENT_HEIGHT,
       };
 
     const activeRecord = engine.layerStack.active;

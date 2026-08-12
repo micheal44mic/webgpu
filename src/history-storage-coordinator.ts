@@ -48,7 +48,9 @@ import {
   HISTORY_RETENTION_STRATEGY,
 } from "./history-retention-core";
 import {
-  LAYER_SIZE,
+  DOCUMENT_HEIGHT,
+  DOCUMENT_MAX_EDGE,
+  DOCUMENT_WIDTH,
   MOBILE_DEVICE_CLASS,
   STAMP_STRIDE_BYTES,
 } from "./engine-limits";
@@ -1258,14 +1260,16 @@ export class HistoryStorageCoordinator {
 
   private fingerprint(): HistoryDocumentFingerprintV1 {
     return {
-      layerSize: LAYER_SIZE,
+      documentWidth: DOCUMENT_WIDTH,
+      documentHeight: DOCUMENT_HEIGHT,
+      layerSize: DOCUMENT_MAX_EDGE,
       layerFormat: this.engine.layerFormat,
       stampStrideBytes: STAMP_STRIDE_BYTES,
       journalStrategy: HISTORY_JOURNAL_STRATEGY,
       retentionStrategy: HISTORY_RETENTION_STRATEGY,
       segmentSchemaVersion: 1,
       codecVersion: 1,
-      engineBuildId: "history-local-spill-v1",
+      engineBuildId: "history-local-spill-rect-v2",
     };
   }
 

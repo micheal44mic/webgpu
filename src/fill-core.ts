@@ -5,9 +5,11 @@
  */
 import {
   DOCUMENT_TILE_GRID_SIZE,
+  DOCUMENT_TILE_HEIGHT,
   DOCUMENT_TILE_MASK_WORDS,
-  DOCUMENT_TILE_SIZE,
-  LAYER_SIZE,
+  DOCUMENT_TILE_WIDTH,
+  DOCUMENT_HEIGHT,
+  DOCUMENT_WIDTH,
 } from "./engine-limits.ts";
 import type { DirtyRect } from "./engine-stroke-types";
 
@@ -20,10 +22,16 @@ export const FILL_RENDER_MASK_STRATEGY =
 export const FILL_REFERENCE_LAYER_STRATEGY =
   "single-raster-reference-full-resident-gpu-source-separate-active-target-no-fallback-v1" as const;
 
-export const FILL_LAYER_SIZE = LAYER_SIZE;
+/** @deprecated Compatibility maximum edge. */
+export const FILL_LAYER_SIZE = Math.max(DOCUMENT_WIDTH, DOCUMENT_HEIGHT);
+export const FILL_LAYER_WIDTH = DOCUMENT_WIDTH;
+export const FILL_LAYER_HEIGHT = DOCUMENT_HEIGHT;
 export const FILL_BLOCK_SIZE = 16;
-export const FILL_BLOCK_GRID_SIZE = FILL_LAYER_SIZE / FILL_BLOCK_SIZE;
-export const FILL_BLOCK_COUNT = FILL_BLOCK_GRID_SIZE * FILL_BLOCK_GRID_SIZE;
+export const FILL_BLOCK_GRID_WIDTH = Math.ceil(FILL_LAYER_WIDTH / FILL_BLOCK_SIZE);
+export const FILL_BLOCK_GRID_HEIGHT = Math.ceil(FILL_LAYER_HEIGHT / FILL_BLOCK_SIZE);
+/** @deprecated Compatibility maximum grid edge. */
+export const FILL_BLOCK_GRID_SIZE = Math.max(FILL_BLOCK_GRID_WIDTH, FILL_BLOCK_GRID_HEIGHT);
+export const FILL_BLOCK_COUNT = FILL_BLOCK_GRID_WIDTH * FILL_BLOCK_GRID_HEIGHT;
 export const FILL_PIXELS_PER_BLOCK = FILL_BLOCK_SIZE * FILL_BLOCK_SIZE;
 export const FILL_MAX_COMPONENTS_PER_BLOCK = FILL_PIXELS_PER_BLOCK / 2;
 export const FILL_LABEL_WORDS_PER_BLOCK = FILL_PIXELS_PER_BLOCK / 4;
@@ -32,8 +40,9 @@ export const FILL_PARENT_COUNT = FILL_BLOCK_COUNT * FILL_MAX_COMPONENTS_PER_BLOC
 export const FILL_PARENT_BUFFER_BYTES = FILL_PARENT_COUNT * 4;
 export const FILL_ACTIVE_NODE_BUFFER_BYTES = FILL_BLOCK_COUNT * 4;
 export const FILL_ACTIVE_BLOCK_BUFFER_BYTES = FILL_BLOCK_COUNT * 4;
-export const FILL_HISTORY_MASK_BYTES = FILL_LAYER_SIZE * FILL_LAYER_SIZE / 8;
-export const FILL_HISTORY_MASK_WORDS = FILL_HISTORY_MASK_BYTES / 4;
+export const FILL_HISTORY_WORDS_PER_ROW = Math.ceil(FILL_LAYER_WIDTH / 32);
+export const FILL_HISTORY_MASK_WORDS = FILL_HISTORY_WORDS_PER_ROW * FILL_LAYER_HEIGHT;
+export const FILL_HISTORY_MASK_BYTES = FILL_HISTORY_MASK_WORDS * 4;
 /**
  * The authoritative/History mask remains 1 bit per pixel. For the render pass
  * it is expanded after CCL to four low-byte u32 words per source word. This
@@ -41,8 +50,11 @@ export const FILL_HISTORY_MASK_WORDS = FILL_HISTORY_MASK_BYTES / 4;
  * reusing packedLabels, whose classification data is dead after selection.
  */
 export const FILL_RENDER_MASK_PIXELS_PER_WORD = 8;
+export const FILL_RENDER_MASK_WORDS_PER_ROW = Math.ceil(
+  FILL_LAYER_WIDTH / FILL_RENDER_MASK_PIXELS_PER_WORD,
+);
 export const FILL_RENDER_MASK_WORDS =
-  FILL_LAYER_SIZE * FILL_LAYER_SIZE / FILL_RENDER_MASK_PIXELS_PER_WORD;
+  FILL_RENDER_MASK_WORDS_PER_ROW * FILL_LAYER_HEIGHT;
 export const FILL_RENDER_MASK_BYTES = FILL_RENDER_MASK_WORDS * 4;
 export const FILL_UNIFORM_BYTES = 48;
 export const FILL_UNIFORM_BUFFER_BYTES = 256;
@@ -66,8 +78,10 @@ export const FILL_TILE_MASK_WORDS = DOCUMENT_TILE_MASK_WORDS;
 // La maschera tile prodotta dal Riempimento e' la stessa griglia 16×16 del cold
 // storage e della Selezione: a 2048² il tile e' 128 px e vale 8 blocchi, non 16.
 export const FILL_TILE_GRID_SIZE = DOCUMENT_TILE_GRID_SIZE;
-export const FILL_TILE_SIZE = DOCUMENT_TILE_SIZE;
-export const FILL_BLOCKS_PER_TILE = FILL_TILE_SIZE / FILL_BLOCK_SIZE;
+/** @deprecated Compatibility maximum tile edge. */
+export const FILL_TILE_SIZE = Math.max(DOCUMENT_TILE_WIDTH, DOCUMENT_TILE_HEIGHT);
+export const FILL_TILE_WIDTH = DOCUMENT_TILE_WIDTH;
+export const FILL_TILE_HEIGHT = DOCUMENT_TILE_HEIGHT;
 
 /** Procreate salva 100% come soglia effettiva 97,6%; manteniamo lo stesso cap. */
 export const FILL_MAX_TOLERANCE_PERCENT = 97.6;

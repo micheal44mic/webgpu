@@ -14,10 +14,11 @@ import {
 import {
   countLayerStorageTiles,
   createLayerStorageTileMask,
-  LAYER_STORAGE_TILE_SIZE,
+  LAYER_STORAGE_TILE_HEIGHT,
+  LAYER_STORAGE_TILE_WIDTH,
   markLayerStorageRect,
 } from "./layer-storage-study";
-import { LAYER_SIZE, MOBILE_DEVICE_CLASS } from "./engine-limits";
+import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH, MOBILE_DEVICE_CLASS } from "./engine-limits";
 import {
   HISTORY_MINIMUM_BUDGET_BYTES,
   createHistoryBudget,
@@ -275,7 +276,8 @@ function yieldHistoryMaintenanceTurn(): Promise<void> {
 // ruotare il telefono in landscape (`844 px`) portava il budget da 192 a 512
 // MiB a meta' sessione, sullo stesso dispositivo.
 function historyDeviceCheckpointBytes(engine: BrushEngine): number {
-  return LAYER_SIZE * LAYER_SIZE * (engine.layerFormat === "rgba16float" ? 8 : 4);
+  return DOCUMENT_WIDTH * DOCUMENT_HEIGHT
+    * (engine.layerFormat === "rgba16float" ? 8 : 4);
 }
 
 function latestCheckpoint(
@@ -909,8 +911,8 @@ async function capturePeriodicCheckpoint(
     blank
       ? 0
       : countLayerStorageTiles(candidate)
-        * LAYER_STORAGE_TILE_SIZE
-        * LAYER_STORAGE_TILE_SIZE
+        * LAYER_STORAGE_TILE_WIDTH
+        * LAYER_STORAGE_TILE_HEIGHT
         * bytesPerPixel;
 
   // Entrambi i candidati vengono costruiti e misurati, e solo dopo si sceglie.

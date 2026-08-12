@@ -381,6 +381,9 @@ assert.equal(stressSeedsA.filter(({ seed }) => seed.singleShadowEnabled).length,
 assert.equal(stressSeedsA.filter(({ seed }) => seed.blockShadowEnabled).length, 2);
 assert.equal(stressSeedsA.filter(({ seed }) => seed.innerShadowEnabled).length, 2);
 assert.throws(() => vectorTextZoomStressSeed(10, 4096), /fuori range/);
+const portraitStressSeed = vectorTextZoomStressSeed(0, 1080, 1920).seed;
+assert.ok(Math.abs(portraitStressSeed.x - 540) < 0.04);
+assert.ok(Math.abs(portraitStressSeed.y - 960) < 0.04);
 const coverageSeeds = Array.from(
   { length: VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT },
   (_, index) => vectorTextZoomCoverageSeed(index, 4096, {
@@ -399,6 +402,19 @@ assert.deepEqual(
   [...VECTOR_TEXT_ZOOM_STRESS_PROFILE_ORDER],
   "C deve cambiare soltanto la distribuzione, non il mix deterministico degli effetti",
 );
+const portraitCoverageSeeds = Array.from(
+  { length: VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT },
+  (_, index) => vectorTextZoomCoverageSeed(index, 1080, 1920, {
+    canvasWidth: 390,
+    canvasHeight: 844,
+    targetZoom: VECTOR_TEXT_ZOOM_C_TARGET_ZOOM,
+  }),
+);
+assert.ok(portraitCoverageSeeds.every(({ seed }) => (
+  seed.x >= 0 && seed.x <= 1080 && seed.y >= 0 && seed.y <= 1920
+)));
+assert.equal(portraitCoverageSeeds[0].seed.x, 540);
+assert.equal(portraitCoverageSeeds[0].seed.y, 960);
 let plannedZoom = 0.2;
 let plannedZoomSteps = 0;
 while (plannedZoom < VECTOR_TEXT_ZOOM_STRESS_TARGET_ZOOM && plannedZoomSteps < 64) {
@@ -476,6 +492,42 @@ assert.equal(
   vectorTextCaptureCoversDocument({ ...automaticWideCapture, zoom: 0.5 }, 2048),
   false,
   "una cache larga che non contiene l'intero documento non deve essere pubblicabile",
+);
+const rectangularViewport = {
+  ...capturedView,
+  canvasWidth: 300,
+  canvasHeight: 100,
+  cssWidth: 300,
+  cssHeight: 100,
+  centerX: 12,
+  centerY: 34,
+};
+const portraitWideCapture = vectorTextWideFallbackView(
+  rectangularViewport,
+  1080,
+  1920,
+);
+assert.equal(portraitWideCapture.centerX, 540);
+assert.equal(portraitWideCapture.centerY, 960);
+assert.equal(
+  portraitWideCapture.zoom,
+  Math.min(300 / 1080, 100 / 1920) * 0.94,
+);
+assert.equal(vectorTextCaptureCoversDocument(portraitWideCapture, 1080, 1920), true);
+assert.equal(
+  vectorTextCaptureCoversDocument(portraitWideCapture, 1080, 3000),
+  false,
+  "la copertura deve verificare l'altezza reale, non il solo asse massimo",
+);
+assert.equal(
+  vectorTextFastPresentationMode(
+    { ...rectangularViewport, zoom: 8 },
+    { ...rectangularViewport, zoom: 0.02 },
+    portraitWideCapture,
+    1080,
+    1920,
+  ),
+  "reproject-fallback",
 );
 
 function simulateFastPresentationWindow(capacity, frameCount) {
@@ -1721,7 +1773,20 @@ assert.match(
   "invalidare la fallback deve riclassificare subito il fast mode prima del frame successivo",
 );
 assert.match(controllerSource, /zoomFallbackReprojectionCount/);
-assert.match(controllerSource, /vectorTextWideFallbackView\(view, this\.host\.layerSize\)/);
+assert.match(controllerSource, /readonly documentWidth: number;/);
+assert.match(controllerSource, /readonly documentHeight: number;/);
+assert.match(
+  controllerSource,
+  /vectorTextWideFallbackView\(\s*view,\s*this\.host\.documentWidth,\s*this\.host\.documentHeight,\s*\)/,
+);
+assert.match(
+  controllerSource,
+  /canvasWidth: this\.host\.documentWidth,[\s\S]{0,180}canvasHeight: this\.host\.documentHeight/,
+);
+assert.match(
+  vectorRasterSource,
+  /canvasWidth: engine\.documentWidth,[\s\S]{0,180}canvasHeight: engine\.documentHeight/,
+);
 assert.match(controllerSource, /fallbackPresentationDirty/);
 assert.match(mainSource, /VECTOR_TEXT_ZOOM_C_START_ZOOM/);
 assert.match(mainSource, /VECTOR_TEXT_ZOOM_C_TARGET_ZOOM/);

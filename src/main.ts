@@ -152,7 +152,11 @@ import {
   type LayerPoint,
   type PointerSample,
 } from "./engine-types";
-import { LAYER_SIZE } from "./engine-limits";
+import {
+  DOCUMENT_HEIGHT,
+  DOCUMENT_MAX_EDGE,
+  DOCUMENT_WIDTH,
+} from "./engine-limits";
 import {
   DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS,
   DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS,
@@ -339,15 +343,15 @@ function formatMemoryMiB(value: number): string {
   return `${memoryNumberFormatter.format(value)} MiB`;
 }
 
-// La taglia del documento la decide `LAYER_SIZE` al boot, quindi titolo,
+// Le dimensioni del documento vengono risolte al boot, quindi titolo,
 // intestazione e ogni etichetta che cita documento o costo di un livello non
 // possono essere statiche in `index.html`. Deve stare dopo `formatMemoryMiB`:
 // piu' in alto finirebbe nella TDZ di `memoryNumberFormatter` e l'intero modulo
 // non verrebbe eseguito.
-document.title = `WebGPU Brush Engine ${LAYER_SIZE}²`;
-element("document-size-label").textContent = `${LAYER_SIZE} × ${LAYER_SIZE}`;
+document.title = `WebGPU Brush Engine ${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT}`;
+element("document-size-label").textContent = `${DOCUMENT_WIDTH} × ${DOCUMENT_HEIGHT}`;
 for (const node of document.querySelectorAll<HTMLElement>("[data-document-size-square]")) {
-  node.textContent = `${LAYER_SIZE}²`;
+  node.textContent = `${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT}`;
 }
 for (
   const option of document.querySelectorAll<HTMLOptionElement>("[data-layer-format-label]")
@@ -1313,6 +1317,7 @@ let projectSaveBusy = false;
 let projectSavePromise: Promise<void> | null = null;
 let projectHistoryMutationSignature = "";
 let projectSceneMutationSignature = "";
+let projectMutationRevision = 0;
 
 function syncProjectSaveControl(): void {
   saveProjectButton.disabled = projectSaveBusy;
@@ -1335,7 +1340,9 @@ function syncProjectSaveControl(): void {
 }
 
 function markCurrentProjectDirty(): void {
-  if (!projectTrackingReady || projectSaveBusy || projectDirty) return;
+  if (!projectTrackingReady) return;
+  projectMutationRevision += 1;
+  if (projectDirty) return;
   projectDirty = true;
   syncProjectSaveControl();
 }
@@ -1760,8 +1767,10 @@ async function captureProjectThumbnailBlob(): Promise<Blob | null> {
   image.data.set(pixels.rgba);
   sourceContext.putImageData(image, 0, 0);
   const preview = document.createElement("canvas");
-  preview.width = 384;
-  preview.height = 384;
+  const maximumEdge = 384;
+  const scale = Math.min(maximumEdge / pixels.width, maximumEdge / pixels.height, 1);
+  preview.width = Math.max(1, Math.round(pixels.width * scale));
+  preview.height = Math.max(1, Math.round(pixels.height * scale));
   const context = preview.getContext("2d", { alpha: false });
   if (!context) return null;
   context.fillStyle = "#0d0f13";
@@ -1774,7 +1783,13 @@ async function captureProjectThumbnailBlob(): Promise<Blob | null> {
 function updateProjectUrl(projectId: string): void {
   const url = new URL(window.location.href);
   url.searchParams.set("project", projectId);
-  url.searchParams.set("documentSize", String(LAYER_SIZE));
+  url.searchParams.set("documentWidth", String(DOCUMENT_WIDTH));
+  url.searchParams.set("documentHeight", String(DOCUMENT_HEIGHT));
+  if (DOCUMENT_WIDTH === DOCUMENT_HEIGHT) {
+    url.searchParams.set("documentSize", String(DOCUMENT_WIDTH));
+  } else {
+    url.searchParams.delete("documentSize");
+  }
   url.searchParams.delete("newProject");
   url.searchParams.delete("projectName");
   window.history.replaceState(null, "", url);
@@ -1790,35 +1805,50 @@ async function saveCurrentProject(): Promise<void> {
     statusElement.className = "status";
     try {
       await projectStorage.initialize();
+      // Edits can land while GPU readback, compression, thumbnail capture, and
+      // IndexedDB are still in progress. Record the boundary so a successful
+      // save cannot accidentally clear a newer unsaved mutation.
+      const capturedMutationRevision = projectMutationRevision;
       const captured = await engine.captureProjectDocument();
       let thumbnail: Blob | null = null;
-      try {
-        thumbnail = await captureProjectThumbnailBlob();
-      } catch (error) {
-        // A preview is useful but never authoritative. A transient readback
-        // failure must not prevent the lossless layer payload from committing.
-        console.warn("Project thumbnail skipped:", error);
+      // Only attach a thumbnail that represents the same mutation boundary as
+      // the authoritative document payload. Otherwise preserve the last good
+      // card preview rather than publishing a newer image with older layers.
+      if (projectMutationRevision === capturedMutationRevision) {
+        try {
+          thumbnail = await captureProjectThumbnailBlob();
+        } catch (error) {
+          // A preview is useful but never authoritative. A transient readback
+          // failure must not prevent the lossless layer payload from committing.
+          console.warn("Project thumbnail skipped:", error);
+        }
       }
       const summary = await projectStorage.saveProject({
         schemaVersion: PROJECT_DOCUMENT_SCHEMA_VERSION,
         ...(currentProjectId ? { projectId: currentProjectId } : {}),
         name: currentProjectName,
-        ...(thumbnail ? { thumbnail } : {}),
+        ...(thumbnail
+          ? { thumbnail }
+          : currentProjectId
+            ? {}
+            : { thumbnail: null }),
         snapshot: captured.snapshot,
         chunks: captured.chunks,
       });
       currentProjectId = summary.id;
       updateProjectIdentity(summary.name);
       updateProjectUrl(summary.id);
-      projectDirty = false;
+      projectDirty = projectMutationRevision !== capturedMutationRevision;
       projectHistoryMutationSignature = `${historyState.cursor}|${historyState.actionCount}`;
       projectSceneMutationSignature = JSON.stringify(engine.getMixedSceneSnapshot());
       const savedTime = new Intl.DateTimeFormat("en", {
         hour: "2-digit",
         minute: "2-digit",
       }).format(new Date(summary.updatedAt));
-      statusElement.textContent = `Project saved locally at ${savedTime}.`;
-      statusElement.className = "status ok";
+      statusElement.textContent = projectDirty
+        ? `Project saved locally at ${savedTime}; newer changes still need saving.`
+        : `Project saved locally at ${savedTime}.`;
+      statusElement.className = projectDirty ? "status" : "status ok";
     } catch (error) {
       statusElement.textContent = error instanceof Error
         ? `Save failed: ${error.message}`
@@ -2038,7 +2068,7 @@ const mobileRasterThumbnailCache =
 let mobileLayerThumbnailRevision = 0;
 let mobileSemanticThumbnailFontRevision = 0;
 let mobileLayerThumbnailCaptureTimer: number | null = null;
-let mobileLayerThumbnailCaptureRequested = false;
+const mobileLayerThumbnailPendingIds = new Set<number>();
 let mobileLayerThumbnailCaptureInFlight = false;
 let mobileLayerThumbnailCaptureUnavailable = false;
 let gpuMemoryPanelOpen = false;
@@ -4175,16 +4205,16 @@ function cancelMobileLayerThumbnailCaptureTimer(): void {
   mobileLayerThumbnailCaptureTimer = null;
 }
 
-function requestMobileLayerThumbnailCapture(delayMs = 120): void {
+function scheduleMobileLayerThumbnailCapture(delayMs = 120): void {
   if (
     !mobileLayersPanelOpen
     || !engineInitialized
     || mobileLayerReorderGesture !== null
     || mobileLayerThumbnailCaptureUnavailable
+    || mobileLayerThumbnailPendingIds.size === 0
   ) {
     return;
   }
-  mobileLayerThumbnailCaptureRequested = true;
   if (
     mobileLayerThumbnailCaptureInFlight
     || mobileLayerThumbnailCaptureTimer !== null
@@ -4197,13 +4227,64 @@ function requestMobileLayerThumbnailCapture(delayMs = 120): void {
   }, Math.max(0, delayMs));
 }
 
-async function captureRequestedMobileLayerThumbnail(): Promise<void> {
+function requestMobileLayerThumbnailCapture(delayMs = 120): void {
   if (
-    !mobileLayerThumbnailCaptureRequested
-    || !mobileLayersPanelOpen
+    !mobileLayersPanelOpen
     || !engineInitialized
     || mobileLayerReorderGesture !== null
     || mobileLayerThumbnailCaptureUnavailable
+  ) {
+    return;
+  }
+  const stats = engine.getStats();
+  const activeLayer = stats.layers[stats.activeLayerIndex];
+  if (!activeLayer) return;
+  mobileLayerThumbnailPendingIds.add(activeLayer.id);
+  scheduleMobileLayerThumbnailCapture(delayMs);
+}
+
+function queueMissingMobileLayerThumbnails(delayMs = 0): void {
+  if (
+    !mobileLayersPanelOpen
+    || !engineInitialized
+    || mobileLayerThumbnailCaptureUnavailable
+  ) {
+    return;
+  }
+  const stats = engine.getStats();
+  const activeLayer = stats.layers[stats.activeLayerIndex];
+  if (!activeLayer) return;
+  const liveIds = new Set(stats.layers.map((layer) => layer.id));
+  for (const layerId of mobileLayerThumbnailPendingIds) {
+    if (!liveIds.has(layerId)) mobileLayerThumbnailPendingIds.delete(layerId);
+  }
+  const activeFirst = [
+    activeLayer,
+    ...stats.layers.filter((layer) => layer.id !== activeLayer.id),
+  ];
+  let cacheChanged = false;
+  for (const layer of activeFirst) {
+    if (!layer.hasContent) {
+      mobileLayerThumbnailPendingIds.delete(layer.id);
+      cacheChanged = mobileRasterThumbnailCache.delete(layer.id) || cacheChanged;
+    } else if (mobileRasterThumbnailCache.get(layer.id) === undefined) {
+      mobileLayerThumbnailPendingIds.add(layer.id);
+    }
+  }
+  if (cacheChanged) {
+    mobileLayersRenderSignature = "";
+    scheduleMobileLayersRefresh();
+  }
+  scheduleMobileLayerThumbnailCapture(delayMs);
+}
+
+async function captureRequestedMobileLayerThumbnail(): Promise<void> {
+  if (
+    !mobileLayersPanelOpen
+    || !engineInitialized
+    || mobileLayerReorderGesture !== null
+    || mobileLayerThumbnailCaptureUnavailable
+    || mobileLayerThumbnailPendingIds.size === 0
   ) {
     return;
   }
@@ -4213,16 +4294,34 @@ async function captureRequestedMobileLayerThumbnail(): Promise<void> {
     || historyState.openEdit !== null
     || historyState.busy
   ) {
-    requestMobileLayerThumbnailCapture(160);
+    scheduleMobileLayerThumbnailCapture(160);
     return;
   }
 
   const stats = engine.getStats();
   const activeLayer = stats.layers[stats.activeLayerIndex];
   if (!activeLayer) return;
-  mobileLayerThumbnailCaptureRequested = false;
-  if (!activeLayer.hasContent) {
-    if (mobileRasterThumbnailCache.delete(activeLayer.id)) {
+  const liveLayers = new Map(stats.layers.map((layer) => [layer.id, layer]));
+  let cacheChanged = false;
+  for (const layerId of mobileLayerThumbnailPendingIds) {
+    const layer = liveLayers.get(layerId);
+    if (!layer || !layer.hasContent) {
+      mobileLayerThumbnailPendingIds.delete(layerId);
+      cacheChanged = mobileRasterThumbnailCache.delete(layerId) || cacheChanged;
+    }
+  }
+  if (cacheChanged) {
+    mobileLayersRenderSignature = "";
+    scheduleMobileLayersRefresh();
+  }
+  const layerId = mobileLayerThumbnailPendingIds.has(activeLayer.id)
+    ? activeLayer.id
+    : mobileLayerThumbnailPendingIds.values().next().value;
+  if (layerId === undefined) return;
+  mobileLayerThumbnailPendingIds.delete(layerId);
+  const requestedLayer = liveLayers.get(layerId);
+  if (!requestedLayer?.hasContent) {
+    if (mobileRasterThumbnailCache.delete(layerId)) {
       mobileLayersRenderSignature = "";
       scheduleMobileLayersRefresh();
     }
@@ -4231,8 +4330,13 @@ async function captureRequestedMobileLayerThumbnail(): Promise<void> {
 
   mobileLayerThumbnailCaptureInFlight = true;
   try {
-    const capture = await engine.captureActiveLayerThumbnail();
-    if (!engine.getStats().layers.some((layer) => layer.id === capture.layerId)) {
+    const capture = await engine.captureRasterLayerThumbnail(layerId);
+    const liveLayer = engine.getStats().layers.find((layer) => layer.id === capture.layerId);
+    if (!liveLayer?.hasContent) {
+      if (mobileRasterThumbnailCache.delete(capture.layerId)) {
+        mobileLayersRenderSignature = "";
+        scheduleMobileLayersRefresh();
+      }
       return;
     }
     mobileLayerThumbnailRevision += 1;
@@ -4247,16 +4351,17 @@ async function captureRequestedMobileLayerThumbnail(): Promise<void> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message.includes("rimandata") && mobileLayersPanelOpen) {
-      mobileLayerThumbnailCaptureRequested = true;
+      mobileLayerThumbnailPendingIds.add(layerId);
+    } else if (!engine.getStats().layers.some((layer) => layer.id === layerId)) {
+      mobileRasterThumbnailCache.delete(layerId);
     } else {
       mobileLayerThumbnailCaptureUnavailable = true;
+      mobileLayerThumbnailPendingIds.clear();
       console.warn("Miniature raster GPU non disponibili; resta il fallback strutturale.", error);
     }
   } finally {
     mobileLayerThumbnailCaptureInFlight = false;
-    if (mobileLayerThumbnailCaptureRequested) {
-      requestMobileLayerThumbnailCapture(160);
-    }
+    scheduleMobileLayerThumbnailCapture(160);
   }
 }
 
@@ -4795,12 +4900,12 @@ function setMobileLayersPanelOpen(open: boolean): void {
     }
     void mobileLayersPanel.offsetWidth;
     mobileLayersPanel.classList.add("is-open");
-    requestMobileLayerThumbnailCapture(0);
+    queueMissingMobileLayerThumbnails(0);
     syncMobileBrushControlsVisibility();
     return;
   }
   mobileLayersPanel.classList.remove("is-open");
-  mobileLayerThumbnailCaptureRequested = false;
+  mobileLayerThumbnailPendingIds.clear();
   cancelMobileLayerThumbnailCaptureTimer();
   if (mobileLayersRefreshFrame !== null) {
     cancelAnimationFrame(mobileLayersRefreshFrame);
@@ -6650,12 +6755,12 @@ async function prepareBlendBenchmarkBackground(replaySettings: BrushSettings): P
 
   try {
     for (let index = 0; index < palette.length; index += 1) {
-      const y = engine.layerSize * index / (palette.length - 1);
+      const y = engine.documentHeight * index / (palette.length - 1);
       const timeMs = index * 10;
       engine.setBrushSettings({ ...backgroundSettings, color: palette[index] });
       engine.beginStrokeAtLayer({ x: 0, y, pressure: 1, timeMs });
       engine.extendStrokeAtLayer([
-        { x: engine.layerSize, y, pressure: 1, timeMs: timeMs + 1 },
+        { x: engine.documentWidth, y, pressure: 1, timeMs: timeMs + 1 },
       ]);
       engine.endStroke(timeMs + 1);
       await engine.waitForIdle();
@@ -9488,7 +9593,8 @@ if (import.meta.env.DEV) {
     effectsWorkbenchBenchmarkRunning = true;
     effectsWorkbenchBenchmarkDetails.hidden = true;
     effectsWorkbenchBenchmarkResult.textContent =
-      `Misuro retarget e destroy+recreate sul documento ${LAYER_SIZE}²…`;
+      `Misuro retarget e destroy+recreate sul documento `
+      + `${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT}…`;
     updateHistoryControls();
     updateHumanStrokeControls();
     try {
@@ -10013,11 +10119,16 @@ async function runRequestedVectorZoomCoverage(): Promise<void> {
   statusElement.className = "status";
   const fixtures = Array.from(
     { length: VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT },
-    (_, index) => vectorTextZoomCoverageSeed(index, engine.layerSize, {
+    (_, index) => vectorTextZoomCoverageSeed(
+      index,
+      engine.documentWidth,
+      engine.documentHeight,
+      {
       canvasWidth: canvas.width,
       canvasHeight: canvas.height,
       targetZoom: VECTOR_TEXT_ZOOM_C_TARGET_ZOOM,
-    }),
+      },
+    ),
   );
   const beforeInsert = controller.getDiagnostics();
   await engine.addVectorTextNodesBatch(fixtures.map((fixture, index) => ({
@@ -10493,7 +10604,11 @@ async function runRequestedVectorZoomAb(): Promise<void> {
   const entries = Array.from(
     { length: VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT },
     (_, index) => {
-      const fixture = vectorTextZoomStressSeed(index, engine.layerSize);
+      const fixture = vectorTextZoomStressSeed(
+        index,
+        engine.documentWidth,
+        engine.documentHeight,
+      );
       return {
         seed: fixture.seed,
         name: `A/B ${fixture.profile} ${String(index + 1).padStart(2, "0")}`,
@@ -10750,7 +10865,11 @@ async function runRequestedVectorZoomStress(): Promise<void> {
   const entries = Array.from(
     { length: VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT },
     (_, index) => {
-      const fixture = vectorTextZoomStressSeed(index, engine.layerSize);
+      const fixture = vectorTextZoomStressSeed(
+        index,
+        engine.documentWidth,
+        engine.documentHeight,
+      );
       return {
         seed: fixture.seed,
         name: `Zoom ${fixture.profile} ${String(index + 1).padStart(2, "0")}`,
@@ -11611,7 +11730,9 @@ async function buildAppDiagnosticReport(): Promise<string> {
       + "solo contatori Fill e cinque word attorno al seed.",
     app: {
       mode: import.meta.env.MODE,
-      documentSize: LAYER_SIZE,
+      documentSize: DOCUMENT_MAX_EDGE,
+      documentWidth: DOCUMENT_WIDTH,
+      documentHeight: DOCUMENT_HEIGHT,
       path: `${window.location.pathname}${window.location.search}`,
       visibility: document.visibilityState,
       entryScripts: [...document.scripts]
@@ -12075,7 +12196,7 @@ function updateGpuMemoryPanel(stats: EngineStats): void {
   const allocation = stats.gpuMemory.rasterBevelFieldAllocationBounds;
   const valid = stats.gpuMemory.rasterBevelFieldValidBounds;
   let bevelHeightLabel =
-    `Smusso · heightfield R32F · documento ${LAYER_SIZE}×${LAYER_SIZE}`;
+    `Smusso · heightfield R32F · documento ${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT}`;
   if (stats.gpuMemory.rasterBevelFieldBounded) {
     if (!valid) {
       bevelHeightLabel = allocation
@@ -12579,10 +12700,16 @@ function updateMobileLayerThumbnail(
     content.style.height = "36%";
     return;
   }
-  const left = Math.max(0, Math.min(1, bounds.x / LAYER_SIZE));
-  const top = Math.max(0, Math.min(1, bounds.y / LAYER_SIZE));
-  const right = Math.max(left, Math.min(1, (bounds.x + bounds.width) / LAYER_SIZE));
-  const bottom = Math.max(top, Math.min(1, (bounds.y + bounds.height) / LAYER_SIZE));
+  const left = Math.max(0, Math.min(1, bounds.x / DOCUMENT_WIDTH));
+  const top = Math.max(0, Math.min(1, bounds.y / DOCUMENT_HEIGHT));
+  const right = Math.max(
+    left,
+    Math.min(1, (bounds.x + bounds.width) / DOCUMENT_WIDTH),
+  );
+  const bottom = Math.max(
+    top,
+    Math.min(1, (bounds.y + bounds.height) / DOCUMENT_HEIGHT),
+  );
   content.style.left = `${(left * 100).toFixed(2)}%`;
   content.style.top = `${(top * 100).toFixed(2)}%`;
   content.style.width = `${((right - left) * 100).toFixed(2)}%`;
@@ -13431,9 +13558,11 @@ function renderLayerList(stats: EngineStats): void {
       : `↳ ritaglio su Livello ${layer.clippingParentId} · `;
     hint.textContent = `${clippingHint}${layer.reference ? "riferimento · " : ""}${residencyHint}`;
     select.title = isActive
-      ? `Livello attivo: texture full-canvas ${LAYER_SIZE}² pronta per disegnare senza paging.`
+      ? `Livello attivo: texture full-canvas ${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT} pronta `
+        + "per disegnare senza paging."
       : layer.reference && layer.hotAllocated
-        ? `Livello Riferimento: texture full-canvas ${LAYER_SIZE}² sempre residente; il `
+        ? `Livello Riferimento: texture full-canvas ${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT} `
+          + "sempre residente; il "
           + "Riempimento legge qui i confini senza reidratazione o copie."
       : layer.hotAllocated
         ? "Livello inattivo trattenuto full-canvas per preservare i pixel dopo un errore; "

@@ -9,7 +9,8 @@ import { clientToLayer } from "./engine-layer-runtime";
 import {
   SELECTION_MASK_BYTES,
   SELECTION_TILE_GRID_SIZE,
-  SELECTION_TILE_SIZE,
+  SELECTION_TILE_HEIGHT,
+  SELECTION_TILE_WIDTH,
   buildLassoSpans,
   emptyPixelSelectionState,
   normalizeSelectionCombineMode,
@@ -66,15 +67,15 @@ export function clipPaintDirtyRectToPixelSelection(
   );
   if (right <= left || bottom <= top) return null;
 
-  const firstTileX = Math.max(0, Math.floor(left / SELECTION_TILE_SIZE));
-  const firstTileY = Math.max(0, Math.floor(top / SELECTION_TILE_SIZE));
+  const firstTileX = Math.max(0, Math.floor(left / SELECTION_TILE_WIDTH));
+  const firstTileY = Math.max(0, Math.floor(top / SELECTION_TILE_HEIGHT));
   const lastTileX = Math.min(
     SELECTION_TILE_GRID_SIZE - 1,
-    Math.floor((right - 1) / SELECTION_TILE_SIZE),
+    Math.floor((right - 1) / SELECTION_TILE_WIDTH),
   );
   const lastTileY = Math.min(
     SELECTION_TILE_GRID_SIZE - 1,
-    Math.floor((bottom - 1) / SELECTION_TILE_SIZE),
+    Math.floor((bottom - 1) / SELECTION_TILE_HEIGHT),
   );
   let clippedLeft = Number.POSITIVE_INFINITY;
   let clippedTop = Number.POSITIVE_INFINITY;
@@ -84,15 +85,15 @@ export function clipPaintDirtyRectToPixelSelection(
     for (let tileX = firstTileX; tileX <= lastTileX; tileX += 1) {
       const tileIndex = tileY * SELECTION_TILE_GRID_SIZE + tileX;
       if ((tileMask[tileIndex >>> 5] & (1 << (tileIndex & 31))) === 0) continue;
-      clippedLeft = Math.min(clippedLeft, Math.max(left, tileX * SELECTION_TILE_SIZE));
-      clippedTop = Math.min(clippedTop, Math.max(top, tileY * SELECTION_TILE_SIZE));
+      clippedLeft = Math.min(clippedLeft, Math.max(left, tileX * SELECTION_TILE_WIDTH));
+      clippedTop = Math.min(clippedTop, Math.max(top, tileY * SELECTION_TILE_HEIGHT));
       clippedRight = Math.max(
         clippedRight,
-        Math.min(right, (tileX + 1) * SELECTION_TILE_SIZE),
+        Math.min(right, (tileX + 1) * SELECTION_TILE_WIDTH),
       );
       clippedBottom = Math.max(
         clippedBottom,
-        Math.min(bottom, (tileY + 1) * SELECTION_TILE_SIZE),
+        Math.min(bottom, (tileY + 1) * SELECTION_TILE_HEIGHT),
       );
     }
   }
@@ -509,7 +510,12 @@ export async function selectConnectedAtClientPoint(
   const point = clientToLayer(engine, clientX, clientY);
   const seedX = Math.floor(point.x);
   const seedY = Math.floor(point.y);
-  if (seedX < 0 || seedY < 0 || seedX >= engine.layerSize || seedY >= engine.layerSize) {
+  if (
+    seedX < 0
+    || seedY < 0
+    || seedX >= engine.documentWidth
+    || seedY >= engine.documentHeight
+  ) {
     return null;
   }
   const combineMode = normalizeSelectionCombineMode(requestedCombineMode);
@@ -604,7 +610,11 @@ export async function selectPixelsByClientLasso(
   try {
     await engine.waitForIdle();
     const layerPoints = clientPoints.map((point) => clientToLayer(engine, point.x, point.y));
-    const raster = buildLassoSpans(layerPoints, engine.layerSize);
+    const raster = buildLassoSpans(
+      layerPoints,
+      engine.documentWidth,
+      engine.documentHeight,
+    );
     if (raster.pointCount < 3) {
       engine.callbacks.onStatus?.("Lazo annullato: servono almeno tre punti.", "working");
       return null;

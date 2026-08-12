@@ -17,7 +17,12 @@ import {
   allocateLayerGpuResources,
   destroyLayerGpuResources,
 } from "./engine-layer-runtime";
-import { LAYER_SIZE } from "./engine-limits";
+import {
+  DOCUMENT_HEIGHT,
+  DOCUMENT_TILE_HEIGHT,
+  DOCUMENT_TILE_WIDTH,
+  DOCUMENT_WIDTH,
+} from "./engine-limits";
 import type { LayerRecord, LayerStackState } from "./layer-stack";
 import type { LayerColdCompressedChunk } from "./layer-cold-compression-client";
 import {
@@ -29,8 +34,6 @@ import {
   type ProjectLoadResultV1,
   type ProjectSnapshotV1,
 } from "./project-storage";
-
-const TILE_SIZE = LAYER_SIZE / PROJECT_STORAGE_TILE_GRID_SIZE;
 
 export interface CapturedProjectDocumentV1 {
   readonly snapshot: ProjectSnapshotV1;
@@ -59,7 +62,7 @@ function projectPixelsFromCompressed(
   compressed: LayerCompressedColdStorageResources,
 ): { pixels: ProjectLayerPixelsV1; writes: ProjectChunkWriteV1[] } {
   const bytesPerPixel = compressed.format === "rgba16float" ? 8 : 4;
-  const tileBytes = TILE_SIZE * TILE_SIZE * bytesPerPixel;
+  const tileBytes = DOCUMENT_TILE_WIDTH * DOCUMENT_TILE_HEIGHT * bytesPerPixel;
   let firstTileOffset = 0;
   const writes: ProjectChunkWriteV1[] = [];
   const chunks = compressed.chunks.map((chunk, chunkIndex) => {
@@ -217,8 +220,8 @@ export async function captureProjectDocument(
         schemaVersion: PROJECT_DOCUMENT_SCHEMA_VERSION,
         document: {
           schemaVersion: PROJECT_DOCUMENT_SCHEMA_VERSION,
-          width: LAYER_SIZE,
-          height: LAYER_SIZE,
+          width: DOCUMENT_WIDTH,
+          height: DOCUMENT_HEIGHT,
           layerFormat: engine.layerFormat,
           tileGridSize: PROJECT_STORAGE_TILE_GRID_SIZE,
           colorSpace: "linear-premultiplied",
@@ -356,8 +359,8 @@ export async function restoreProjectDocument(
 ): Promise<void> {
   const snapshot = project.manifest.snapshot;
   if (
-    snapshot.document.width !== LAYER_SIZE
-    || snapshot.document.height !== LAYER_SIZE
+    snapshot.document.width !== DOCUMENT_WIDTH
+    || snapshot.document.height !== DOCUMENT_HEIGHT
   ) {
     throw new Error(
       `This project is ${snapshot.document.width} × ${snapshot.document.height}; `

@@ -2,7 +2,11 @@
  * Format-agnostic WGSL for transforming a premultiplied linear raster layer.
  * The render pipeline may target either `rgba8unorm` or `rgba16float`.
  */
-import { SELECTION_LAYER_SIZE, SELECTION_WORDS_PER_ROW } from "./selection-core.ts";
+import {
+  SELECTION_LAYER_HEIGHT,
+  SELECTION_LAYER_WIDTH,
+  SELECTION_WORDS_PER_ROW,
+} from "./selection-core.ts";
 
 export const RASTER_TRANSFORM_SHADER_STRATEGY =
   "premultiplied-linear-transparent-border-inverse-affine-manual-trilinear-v3" as const;
@@ -133,7 +137,7 @@ export const RASTER_SELECTION_TRANSLATE_SHADER_STRATEGY =
  * complete original layer, so overlapping moves never read pixels already
  * written by an earlier preview frame. */
 export const rasterSelectionTranslateShader = /* wgsl */ `
-const DOCUMENT_EXTENT: i32 = ${SELECTION_LAYER_SIZE};
+const DOCUMENT_EXTENT: vec2<i32> = vec2<i32>(${SELECTION_LAYER_WIDTH}, ${SELECTION_LAYER_HEIGHT});
 const WORDS_PER_ROW: u32 = ${SELECTION_WORDS_PER_ROW}u;
 
 struct RasterTransformUniforms {
@@ -169,7 +173,7 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 }
 
 fn selectedAt(pixel: vec2<i32>) -> bool {
-  if (any(pixel < vec2<i32>(0)) || any(pixel >= vec2<i32>(DOCUMENT_EXTENT))) {
+  if (any(pixel < vec2<i32>(0)) || any(pixel >= DOCUMENT_EXTENT)) {
     return false;
   }
   let unsignedPixel = vec2<u32>(pixel);

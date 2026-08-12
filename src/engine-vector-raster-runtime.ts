@@ -853,12 +853,12 @@ export async function rasterizeVectorNodeToLayer(
     if (!hot) throw new Error(`Texture ${format} del raster vettoriale mancante.`);
 
     const view: VectorTextViewState = {
-      canvasWidth: engine.layerSize,
-      canvasHeight: engine.layerSize,
-      cssWidth: engine.layerSize,
-      cssHeight: engine.layerSize,
-      centerX: engine.layerSize * 0.5,
-      centerY: engine.layerSize * 0.5,
+      canvasWidth: engine.documentWidth,
+      canvasHeight: engine.documentHeight,
+      cssWidth: engine.documentWidth,
+      cssHeight: engine.documentHeight,
+      centerX: engine.documentWidth * 0.5,
+      centerY: engine.documentHeight * 0.5,
       zoom: 1,
       rotationRadians: 0,
       rotationCos: 1,

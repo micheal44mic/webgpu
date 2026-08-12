@@ -17,27 +17,30 @@ export const MIXED_MERGED_SURFACE_TRANSPARENT_GUARD = 64;
 export const MIXED_MERGED_SURFACE_MAX_DISPLAY_MIP = 5;
 function normalizedRect(
   rect: Readonly<MergedSurfaceRect>,
-  documentSize: number,
+  documentWidth: number,
+  documentHeight = documentWidth,
 ): MergedSurfaceRect | null {
   if (
     !Number.isFinite(rect.x)
     || !Number.isFinite(rect.y)
     || !Number.isFinite(rect.width)
     || !Number.isFinite(rect.height)
-    || !Number.isFinite(documentSize)
-    || documentSize < 1
+    || !Number.isFinite(documentWidth)
+    || !Number.isFinite(documentHeight)
+    || documentWidth < 1
+    || documentHeight < 1
   ) {
     return null;
   }
-  const left = Math.max(0, Math.min(documentSize, Math.floor(rect.x)));
-  const top = Math.max(0, Math.min(documentSize, Math.floor(rect.y)));
+  const left = Math.max(0, Math.min(documentWidth, Math.floor(rect.x)));
+  const top = Math.max(0, Math.min(documentHeight, Math.floor(rect.y)));
   const right = Math.max(
     left,
-    Math.min(documentSize, Math.ceil(rect.x + rect.width)),
+    Math.min(documentWidth, Math.ceil(rect.x + rect.width)),
   );
   const bottom = Math.max(
     top,
-    Math.min(documentSize, Math.ceil(rect.y + rect.height)),
+    Math.min(documentHeight, Math.ceil(rect.y + rect.height)),
   );
   if (right <= left || bottom <= top) {
     return null;
@@ -52,15 +55,16 @@ function normalizedRect(
 
 export function unionMergedSurfaceRects(
   rects: readonly Readonly<MergedSurfaceRect>[],
-  documentSize: number,
+  documentWidth: number,
+  documentHeight = documentWidth,
 ): MergedSurfaceRect | null {
-  let left = documentSize;
-  let top = documentSize;
+  let left = documentWidth;
+  let top = documentHeight;
   let right = 0;
   let bottom = 0;
   let found = false;
   for (const rect of rects) {
-    const normalized = normalizedRect(rect, documentSize);
+    const normalized = normalizedRect(rect, documentWidth, documentHeight);
     if (!normalized) {
       continue;
     }
@@ -77,11 +81,12 @@ export function unionMergedSurfaceRects(
 
 export function alignedMergedSurfaceBounds(
   contentBounds: Readonly<MergedSurfaceRect>,
-  documentSize: number,
+  documentWidth: number,
   alignment = MIXED_MERGED_SURFACE_ALIGNMENT,
   transparentGuard = MIXED_MERGED_SURFACE_TRANSPARENT_GUARD,
+  documentHeight = documentWidth,
 ): MergedSurfaceRect {
-  const normalized = normalizedRect(contentBounds, documentSize);
+  const normalized = normalizedRect(contentBounds, documentWidth, documentHeight);
   if (!normalized) {
     throw new Error("Bounds merged privi di pixel validi.");
   }
@@ -102,13 +107,13 @@ export function alignedMergedSurfaceBounds(
     Math.floor((normalized.y - transparentGuard) / alignment) * alignment,
   );
   const right = Math.min(
-    documentSize,
+    documentWidth,
     Math.ceil(
       (normalized.x + normalized.width + transparentGuard) / alignment,
     ) * alignment,
   );
   const bottom = Math.min(
-    documentSize,
+    documentHeight,
     Math.ceil(
       (normalized.y + normalized.height + transparentGuard) / alignment,
     ) * alignment,
@@ -124,10 +129,11 @@ export function alignedMergedSurfaceBounds(
 export function intersectMergedSurfaceRects(
   first: Readonly<MergedSurfaceRect>,
   second: Readonly<MergedSurfaceRect>,
-  documentSize: number,
+  documentWidth: number,
+  documentHeight = documentWidth,
 ): MergedSurfaceRect | null {
-  const a = normalizedRect(first, documentSize);
-  const b = normalizedRect(second, documentSize);
+  const a = normalizedRect(first, documentWidth, documentHeight);
+  const b = normalizedRect(second, documentWidth, documentHeight);
   if (!a || !b) {
     return null;
   }

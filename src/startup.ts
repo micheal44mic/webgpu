@@ -5,7 +5,7 @@ import {
   HardDrive,
   Image as ImageIcon,
   Images,
-  LockKeyhole,
+  Link2,
   Pencil,
   Plus,
   SquarePlus,
@@ -31,7 +31,7 @@ const HOME_ICONS: Readonly<Record<string, IconNode>> = {
   "hard-drive": HardDrive,
   image: ImageIcon,
   images: Images,
-  "lock-keyhole": LockKeyhole,
+  "link-2": Link2,
   pencil: Pencil,
   plus: Plus,
   "square-plus": SquarePlus,
@@ -71,7 +71,9 @@ function shouldOpenEditor(search: URLSearchParams): boolean {
   if (search.get("home") === "1") return false;
   // Existing diagnostics and GPU fixtures are query-driven. Treat every query
   // except the explicit home route as an editor deep link for compatibility.
-  return search.size > 0;
+  // `URLSearchParams.size` is missing on older iPhone Safari releases that
+  // otherwise support this app, while serialization is universally available.
+  return search.toString().length > 0;
 }
 
 function projectEditorUrl(summary: ProjectSummaryV1): URL {
@@ -79,8 +81,50 @@ function projectEditorUrl(summary: ProjectSummaryV1): URL {
   url.search = "";
   url.hash = "";
   url.searchParams.set("project", summary.id);
-  url.searchParams.set("documentSize", String(summary.documentWidth));
+  url.searchParams.set("documentWidth", String(summary.documentWidth));
+  url.searchParams.set("documentHeight", String(summary.documentHeight));
+  if (summary.documentWidth === summary.documentHeight) {
+    url.searchParams.set("documentSize", String(summary.documentWidth));
+  }
   return url;
+}
+
+const MIN_CANVAS_DIMENSION = 64;
+const MAX_CANVAS_DIMENSION = 4000;
+const LEGACY_CANVAS_DIMENSION = 4096;
+
+function parsedEditorDimension(raw: string | null): number | null {
+  if (raw === null || raw.trim() === "") return null;
+  const value = Number(raw);
+  return Number.isInteger(value)
+    && value >= MIN_CANVAS_DIMENSION
+    && value <= MAX_CANVAS_DIMENSION
+    ? value
+    : null;
+}
+
+function editorDimensionsAreValid(search: URLSearchParams): boolean {
+  const widthRaw = search.get("documentWidth");
+  const heightRaw = search.get("documentHeight");
+  if (widthRaw !== null || heightRaw !== null) {
+    if (
+      search.get("newProject") !== "1"
+      &&
+      Number(widthRaw) === LEGACY_CANVAS_DIMENSION
+      && Number(heightRaw) === LEGACY_CANVAS_DIMENSION
+    ) {
+      return true;
+    }
+    return parsedEditorDimension(widthRaw) !== null
+      && parsedEditorDimension(heightRaw) !== null;
+  }
+  const legacyRaw = search.get("documentSize");
+  if (legacyRaw === null) return true;
+  return parsedEditorDimension(legacyRaw) !== null
+    || (
+      search.get("newProject") !== "1"
+      && Number(legacyRaw) === LEGACY_CANVAS_DIMENSION
+    );
 }
 
 function freshProjectId(): string {
@@ -127,10 +171,11 @@ class ProjectHomeController {
   private readonly status = element<HTMLParagraphElement>("projectHomeStatus");
   private readonly storageSummary = element<HTMLElement>("projectStorageSummary");
   private readonly nameInput = element<HTMLInputElement>("newCanvasName");
-  private readonly widthSelect = element<HTMLSelectElement>("newCanvasWidth");
-  private readonly heightSelect = element<HTMLSelectElement>("newCanvasHeight");
+  private readonly widthInput = element<HTMLInputElement>("newCanvasWidth");
+  private readonly heightInput = element<HTMLInputElement>("newCanvasHeight");
+  private readonly dimensionLink = element<HTMLButtonElement>("canvasDimensionLink");
   private readonly presetButtons = Array.from(
-    document.querySelectorAll<HTMLButtonElement>("[data-canvas-size]"),
+    document.querySelectorAll<HTMLButtonElement>("[data-canvas-width][data-canvas-height]"),
   );
   private readonly objectUrls = new Set<string>();
   private statusTimer: number | null = null;
@@ -189,25 +234,70 @@ class ProjectHomeController {
   }
 
   private bindCanvasForm(): void {
-    const syncSize = (size: string) => {
-      this.widthSelect.value = size;
-      this.heightSelect.value = size;
+    let dimensionsLinked = true;
+    const updateLinkedState = (linked: boolean) => {
+      dimensionsLinked = linked;
+      this.dimensionLink.classList.toggle("is-linked", linked);
+      this.dimensionLink.setAttribute("aria-pressed", String(linked));
+      this.dimensionLink.setAttribute(
+        "aria-label",
+        linked ? "Width and height are linked; allow independent dimensions"
+          : "Width and height are independent; make them equal",
+      );
+      this.dimensionLink.title = linked
+        ? "Width and height are linked"
+        : "Make width and height equal";
+    };
+    const updatePresetSelection = () => {
+      const width = this.widthInput.value;
+      const height = this.heightInput.value;
       this.presetButtons.forEach((button) => {
-        const selected = button.dataset.canvasSize === size;
+        const selected = button.dataset.canvasWidth === width
+          && button.dataset.canvasHeight === height;
         button.classList.toggle("is-selected", selected);
         button.setAttribute("aria-pressed", String(selected));
       });
     };
     this.presetButtons.forEach((button) => {
-      button.addEventListener("click", () => syncSize(button.dataset.canvasSize ?? "4096"));
+      button.addEventListener("click", () => {
+        const width = button.dataset.canvasWidth ?? "2048";
+        const height = button.dataset.canvasHeight ?? "2048";
+        this.widthInput.value = width;
+        this.heightInput.value = height;
+        updateLinkedState(width === height);
+        updatePresetSelection();
+      });
     });
-    this.widthSelect.addEventListener("change", () => syncSize(this.widthSelect.value));
-    this.heightSelect.addEventListener("change", () => syncSize(this.heightSelect.value));
-    element<HTMLFormElement>("newCanvasForm").addEventListener("submit", (event) => {
+    const handleDimensionInput = (source: HTMLInputElement, target: HTMLInputElement) => {
+      if (dimensionsLinked) target.value = source.value;
+      updatePresetSelection();
+    };
+    this.widthInput.addEventListener("input", () => {
+      handleDimensionInput(this.widthInput, this.heightInput);
+    });
+    this.heightInput.addEventListener("input", () => {
+      handleDimensionInput(this.heightInput, this.widthInput);
+    });
+    this.dimensionLink.addEventListener("click", () => {
+      const nextLinked = !dimensionsLinked;
+      if (nextLinked) this.heightInput.value = this.widthInput.value;
+      updateLinkedState(nextLinked);
+      updatePresetSelection();
+    });
+    const form = element<HTMLFormElement>("newCanvasForm");
+    form.addEventListener("submit", (event) => {
       event.preventDefault();
-      const size = Number(this.widthSelect.value);
-      if (size !== 2048 && size !== 4096) {
-        this.showStatus("Choose a supported canvas size.", true);
+      if (!form.reportValidity()) return;
+      const width = Number(this.widthInput.value);
+      const height = Number(this.heightInput.value);
+      const dimensionsValid = Number.isInteger(width)
+        && Number.isInteger(height)
+        && width >= MIN_CANVAS_DIMENSION
+        && height >= MIN_CANVAS_DIMENSION
+        && width <= MAX_CANVAS_DIMENSION
+        && height <= MAX_CANVAS_DIMENSION;
+      if (!dimensionsValid) {
+        this.showStatus("Enter whole-pixel dimensions from 64 to 4000 px.", true);
         return;
       }
       const url = new URL(window.location.href);
@@ -216,7 +306,9 @@ class ProjectHomeController {
       url.searchParams.set("project", freshProjectId());
       url.searchParams.set("newProject", "1");
       url.searchParams.set("projectName", normalizeProjectTitle(this.nameInput.value));
-      url.searchParams.set("documentSize", String(size));
+      url.searchParams.set("documentWidth", String(width));
+      url.searchParams.set("documentHeight", String(height));
+      if (width === height) url.searchParams.set("documentSize", String(width));
       this.setBusy(true);
       window.location.assign(url);
     });
@@ -252,6 +344,7 @@ class ProjectHomeController {
 
     const thumbnail = document.createElement("span");
     thumbnail.className = "project-card-thumbnail";
+    thumbnail.style.aspectRatio = `${project.documentWidth} / ${project.documentHeight}`;
     if (project.thumbnail) {
       const url = URL.createObjectURL(project.thumbnail);
       this.objectUrls.add(url);
@@ -264,7 +357,7 @@ class ProjectHomeController {
     }
     const resolution = document.createElement("span");
     resolution.className = "project-card-resolution";
-    resolution.textContent = `${project.documentWidth}²`;
+    resolution.textContent = `${project.documentWidth} × ${project.documentHeight}`;
     thumbnail.append(resolution);
 
     const copy = document.createElement("span");
@@ -340,7 +433,7 @@ class ProjectHomeController {
     this.home.setAttribute("aria-busy", String(busy));
   }
 
-  private showStatus(message: string, error = false): void {
+  showStatus(message: string, error = false): void {
     if (this.statusTimer !== null) window.clearTimeout(this.statusTimer);
     this.status.hidden = false;
     this.status.textContent = message;
@@ -357,6 +450,20 @@ async function boot(): Promise<void> {
   hydrateHomeIcons(home);
   const search = new URLSearchParams(window.location.search);
   if (shouldOpenEditor(search)) {
+    if (!editorDimensionsAreValid(search)) {
+      const app = element<HTMLElement>("app");
+      app.hidden = true;
+      app.inert = true;
+      home.hidden = false;
+      home.inert = false;
+      document.title = "M1M4.COM — Invalid canvas size";
+      markStartupPhase("Invalid canvas size", "Choose dimensions from 64 to 4000 px.");
+      completeStartupDiagnostics();
+      const controller = new ProjectHomeController(createProjectStorage());
+      await controller.initialize();
+      controller.showStatus("Canvas dimensions must be whole pixels from 64 to 4000.", true);
+      return;
+    }
     await launchEditor();
     return;
   }

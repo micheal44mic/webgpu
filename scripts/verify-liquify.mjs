@@ -105,6 +105,10 @@ for (const [name, offset] of Object.entries(offsets)) {
 }
 requireText(core, "LIQUIFY_UNIFORM_BYTES = 256", "256-byte dynamic-uniform stride");
 requireText(core, "LIQUIFY_UNIFORM_USED_BYTES = 128", "128-byte WGSL structure size");
+requireText(core, "documentWidth: number", "independent document width input");
+requireText(core, "documentHeight: number", "independent document height input");
+requireText(core, "u32(112, input.documentWidth)", "document width packing");
+requireText(core, "u32(116, input.documentHeight)", "document height packing");
 requireText(core, "f32(120, finiteOr(input.strokeDirectionX, input.deltaX))", "stroke direction X packing");
 requireText(core, "f32(124, finiteOr(input.strokeDirectionY, input.deltaY))", "stroke direction Y packing");
 
@@ -218,6 +222,20 @@ assert.equal(
 requireText(runtime, "session.nextSeed = 1", "deterministic Reset pattern sequence");
 requireText(runtime, "sourceScratchBounds", "cropped immutable source");
 requireText(runtime, "displacementScratchTexture", "reused dirty scratch texture");
+requireText(runtime, "fieldWidth: DOCUMENT_WIDTH", "rectangular displacement field width");
+requireText(runtime, "fieldHeight: DOCUMENT_HEIGHT", "rectangular displacement field height");
+requireText(runtime, "documentWidth: DOCUMENT_WIDTH", "rectangular document width uniform");
+requireText(runtime, "documentHeight: DOCUMENT_HEIGHT", "rectangular document height uniform");
+requireText(
+  runtime,
+  "maximumDisplacement: DOCUMENT_MAX_EDGE * MAXIMUM_DISPLACEMENT_DOCUMENTS",
+  "maximum-edge displacement bound",
+);
+assert.doesNotMatch(
+  runtime,
+  /engine\.layerSize|\bLAYER_SIZE\b|fieldHeight: DOCUMENT_WIDTH|documentHeight: DOCUMENT_WIDTH/,
+  "Liquify non deve duplicare la larghezza nei campi verticali.",
+);
 requireText(runtime, "memoryReservations.reserve", "memory governor reservation");
 requireText(runtime, "commitHistoryActionAtomically", "atomic history commit");
 requireText(runtime, 'filter: "liquify"', "Liquify history action");

@@ -38,6 +38,9 @@ export type StoredHistoryPayloadKind =
 export type StoredHistoryChunkCodec = "raw" | "gzip" | "gzip-shuffle16";
 
 export interface HistoryDocumentFingerprintV1 {
+  readonly documentWidth: number;
+  readonly documentHeight: number;
+  /** Compatibility maximum edge; width/height are the authoritative identity. */
   readonly layerSize: number;
   readonly layerFormat: "rgba8unorm" | "rgba16float";
   readonly stampStrideBytes: number;

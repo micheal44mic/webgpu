@@ -3,7 +3,7 @@ import { type VectorTextGpuDraw, type VectorTextViewState } from "./vector-text-
 import { type DirtyRect } from "./engine-stroke-types";
 import { vectorTextGpuDrawUsesBlur, vectorTextGpuDrawUsesMesh } from "./engine-vector-text-resources";
 import { clamp } from "./color";
-import { LAYER_SIZE } from "./engine-limits";/**
+import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits";/**
  * Geometria di supporto del motore: rettangoli sporchi, normalizzazione dei
  * rect di livello, dimensioni dei mip e bounding box dei run di testo. Funzioni
  * pure: nessuno stato, nessuna risorsa GPU.
@@ -90,10 +90,10 @@ export function normalizeLayerRect(rect: DirtyRect | null): DirtyRect | null {
   if (!rect) {
     return null;
   }
-  const x = clamp(Math.floor(rect.x), 0, LAYER_SIZE);
-  const y = clamp(Math.floor(rect.y), 0, LAYER_SIZE);
-  const right = clamp(Math.ceil(rect.x + rect.width), 0, LAYER_SIZE);
-  const bottom = clamp(Math.ceil(rect.y + rect.height), 0, LAYER_SIZE);
+  const x = clamp(Math.floor(rect.x), 0, DOCUMENT_WIDTH);
+  const y = clamp(Math.floor(rect.y), 0, DOCUMENT_HEIGHT);
+  const right = clamp(Math.ceil(rect.x + rect.width), 0, DOCUMENT_WIDTH);
+  const bottom = clamp(Math.ceil(rect.y + rect.height), 0, DOCUMENT_HEIGHT);
   return right > x && bottom > y
     ? { x, y, width: right - x, height: bottom - y }
     : null;
@@ -114,6 +114,8 @@ export function mergeDirtyRects(left: DirtyRect | null, right: DirtyRect | null)
 }
 
 export function paintMipDimensions(mipLevel: number): { width: number; height: number } {
-  const dimension = Math.max(1, LAYER_SIZE >> mipLevel);
-  return { width: dimension, height: dimension };
+  return {
+    width: Math.max(1, DOCUMENT_WIDTH >> mipLevel),
+    height: Math.max(1, DOCUMENT_HEIGHT >> mipLevel),
+  };
 }

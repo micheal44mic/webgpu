@@ -8,6 +8,11 @@ import { assertShaderCompiled } from "./engine-gpu-utils";
 import { commitHistoryActionAtomically } from "./engine-history-runtime";
 import type { RasterFilterHistoryAction } from "./engine-history-types";
 import { invalidateActiveLayerBake } from "./engine-layer-runtime";
+import {
+  DOCUMENT_HEIGHT,
+  DOCUMENT_MAX_EDGE,
+  DOCUMENT_WIDTH,
+} from "./engine-limits";
 import type { DirtyRect } from "./engine-stroke-types";
 import type { LayerPoint } from "./engine-types";
 import { publishMixedScene } from "./engine-vector-text-runtime";
@@ -209,7 +214,11 @@ function normalizedPoint(point: Readonly<LayerPoint>): LiquifyPoint {
   };
 }
 
-function expandedSourceBounds(bounds: DirtyRect, documentSize: number): DirtyRect {
+function expandedSourceBounds(
+  bounds: DirtyRect,
+  documentWidth: number,
+  documentHeight: number,
+): DirtyRect {
   const guard = LIQUIFY_LIMITS.bilinearGuardPixels;
   return clipLiquifyRect(
     {
@@ -218,8 +227,8 @@ function expandedSourceBounds(bounds: DirtyRect, documentSize: number): DirtyRec
       width: bounds.width + guard * 2,
       height: bounds.height + guard * 2,
     },
-    documentSize,
-    documentSize,
+    documentWidth,
+    documentHeight,
   ) as DirtyRect;
 }
 
@@ -424,8 +433,8 @@ function uniformInput(
     dispatchHeight: rect.height,
     fieldOriginX: 0,
     fieldOriginY: 0,
-    fieldWidth: engine.layerSize,
-    fieldHeight: engine.layerSize,
+    fieldWidth: DOCUMENT_WIDTH,
+    fieldHeight: DOCUMENT_HEIGHT,
     centerX: center.x,
     centerY: center.y,
     previousCenterX: previous.x,
@@ -437,13 +446,13 @@ function uniformInput(
     elapsedSeconds: options.elapsedSeconds ?? 0,
     seed: options.seed ?? 0,
     strength: options.strength ?? 1,
-    maximumDisplacement: engine.layerSize * MAXIMUM_DISPLACEMENT_DOCUMENTS,
+    maximumDisplacement: DOCUMENT_MAX_EDGE * MAXIMUM_DISPLACEMENT_DOCUMENTS,
     sourceOriginX: session.sourceScratchBounds.x,
     sourceOriginY: session.sourceScratchBounds.y,
     sourceWidth: session.sourceScratchBounds.width,
     sourceHeight: session.sourceScratchBounds.height,
-    documentWidth: engine.layerSize,
-    documentHeight: engine.layerSize,
+    documentWidth: DOCUMENT_WIDTH,
+    documentHeight: DOCUMENT_HEIGHT,
     strokeDirectionX: options.directionX ?? options.deltaX ?? 0,
     strokeDirectionY: options.directionY ?? options.deltaY ?? 0,
   };
@@ -471,7 +480,6 @@ function updateResultMetadata(
   session.resultTileMask = tileMaskCoveringRect(
     session.sourceTileMask,
     session.resultBounds,
-    engine.layerSize,
   );
   setAuthoritativeMetadata(engine, session.resultBounds, session.resultTileMask);
 }
@@ -684,14 +692,14 @@ function enqueueDab(
         previousCenter,
         center,
         normalized,
-        engine.layerSize,
-        engine.layerSize,
+        DOCUMENT_WIDTH,
+        DOCUMENT_HEIGHT,
       )
       : liquifyDabDirtyBounds(
         center,
         normalized,
-        engine.layerSize,
-        engine.layerSize,
+        DOCUMENT_WIDTH,
+        DOCUMENT_HEIGHT,
       )
   ) as DirtyRect | null;
   if (!dirtyRect) return false;
@@ -986,7 +994,11 @@ export async function beginRasterLiquify(
     const hot = engine.requireLayerGpu(record.id).hot;
     if (!hot) throw new Error("Texture hot del raster per Liquify mancante.");
     const sourceBounds = { ...record.contentBounds };
-    const sourceScratchBounds = expandedSourceBounds(sourceBounds, engine.layerSize);
+    const sourceScratchBounds = expandedSourceBounds(
+      sourceBounds,
+      DOCUMENT_WIDTH,
+      DOCUMENT_HEIGHT,
+    );
     const sourceTileMask = record.storageTileMask.slice();
     const settings = normalizeLiquifySettings(initial);
     const shared = await requireSharedResources(engine.device);
@@ -994,7 +1006,7 @@ export async function beginRasterLiquify(
     const uniformStride = Math.ceil(LIQUIFY_UNIFORM_BYTES / uniformAlignment)
       * uniformAlignment;
     const scratchExtent = Math.min(
-      engine.layerSize,
+      DOCUMENT_MAX_EDGE,
       Math.ceil(
         LIQUIFY_LIMITS.maximumSize
         + LIQUIFY_LIMITS.maximumSpacing
@@ -1008,7 +1020,7 @@ export async function beginRasterLiquify(
     }
     const memoryBytes = (
       sourceScratchBounds.width * sourceScratchBounds.height
-      + engine.layerSize * engine.layerSize
+      + DOCUMENT_WIDTH * DOCUMENT_HEIGHT
       + scratchExtent * scratchExtent
     ) * BYTES_PER_RGBA16F_PIXEL + uniformStride * UNIFORM_SLOT_COUNT;
     reservation = reserveSessionMemory(engine, memoryBytes);
@@ -1035,10 +1047,10 @@ export async function beginRasterLiquify(
           label: "Native raster Liquify immutable source view",
         });
         const displacementTexture = engine.device.createTexture({
-          label: `Native raster Liquify displacement field ${engine.layerSize}x${engine.layerSize}`,
+          label: `Native raster Liquify displacement field ${DOCUMENT_WIDTH}x${DOCUMENT_HEIGHT}`,
           size: {
-            width: engine.layerSize,
-            height: engine.layerSize,
+            width: DOCUMENT_WIDTH,
+            height: DOCUMENT_HEIGHT,
             depthOrArrayLayers: 1,
           },
           format: LIQUIFY_DISPLACEMENT_FORMAT,

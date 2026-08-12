@@ -1,21 +1,32 @@
 import {
+  DOCUMENT_HEIGHT,
   DOCUMENT_TILE_GRID_SIZE,
-  DOCUMENT_TILE_SIZE,
+  DOCUMENT_TILE_HEIGHT,
+  DOCUMENT_TILE_WIDTH,
+  DOCUMENT_WIDTH,
 } from "./engine-limits.ts";
 
 export const LAYER_STORAGE_STRATEGY =
   "single-active-plus-optional-reference-full-inactive-256-array-tiles-direct-native-fold-fallback-rehydrate" as const;
 
-// I tile restano 256 per documento: e' il loro lato a scalare con la taglia del
-// documento, cosi' l'array texture del cold storage e la maschera da 8 word
-// hanno la stessa forma a 4096² e a 2048².
-export const LAYER_STORAGE_TILE_SIZE = DOCUMENT_TILE_SIZE;
+// I tile restano 256 per documento. Su documenti rettangolari ogni slot usa
+// ceil(width/16) × ceil(height/16); l'ultima riga/colonna viene ritagliata
+// durante le copie GPU e il padding del cold storage resta zero.
+export const LAYER_STORAGE_TILE_WIDTH = DOCUMENT_TILE_WIDTH;
+export const LAYER_STORAGE_TILE_HEIGHT = DOCUMENT_TILE_HEIGHT;
+/** @deprecated Prefer the independent width / height constants. */
+export const LAYER_STORAGE_TILE_SIZE = Math.max(
+  LAYER_STORAGE_TILE_WIDTH,
+  LAYER_STORAGE_TILE_HEIGHT,
+);
 export const LAYER_STORAGE_GRID_SIZE = DOCUMENT_TILE_GRID_SIZE;
 export const LAYER_STORAGE_TILE_COUNT =
   LAYER_STORAGE_GRID_SIZE * LAYER_STORAGE_GRID_SIZE;
 export const LAYER_STORAGE_MASK_WORD_COUNT = LAYER_STORAGE_TILE_COUNT / 32;
-export const LAYER_STORAGE_DOCUMENT_SIZE =
-  LAYER_STORAGE_TILE_SIZE * LAYER_STORAGE_GRID_SIZE;
+export const LAYER_STORAGE_DOCUMENT_WIDTH = DOCUMENT_WIDTH;
+export const LAYER_STORAGE_DOCUMENT_HEIGHT = DOCUMENT_HEIGHT;
+/** @deprecated Compatibility maximum, not the document's two-dimensional extent. */
+export const LAYER_STORAGE_DOCUMENT_SIZE = Math.max(DOCUMENT_WIDTH, DOCUMENT_HEIGHT);
 
 const MEBIBYTE_BYTES = 1024 * 1024;
 
@@ -76,27 +87,27 @@ function normalizedTileRange(rect: LayerStorageRect): {
     return null;
   }
 
-  const pixelLeft = clamp(Math.floor(rect.x), 0, LAYER_STORAGE_DOCUMENT_SIZE);
-  const pixelTop = clamp(Math.floor(rect.y), 0, LAYER_STORAGE_DOCUMENT_SIZE);
+  const pixelLeft = clamp(Math.floor(rect.x), 0, LAYER_STORAGE_DOCUMENT_WIDTH);
+  const pixelTop = clamp(Math.floor(rect.y), 0, LAYER_STORAGE_DOCUMENT_HEIGHT);
   const pixelRight = clamp(
     Math.ceil(rect.x + rect.width),
     0,
-    LAYER_STORAGE_DOCUMENT_SIZE,
+    LAYER_STORAGE_DOCUMENT_WIDTH,
   );
   const pixelBottom = clamp(
     Math.ceil(rect.y + rect.height),
     0,
-    LAYER_STORAGE_DOCUMENT_SIZE,
+    LAYER_STORAGE_DOCUMENT_HEIGHT,
   );
   if (pixelRight <= pixelLeft || pixelBottom <= pixelTop) {
     return null;
   }
 
   return {
-    left: Math.floor(pixelLeft / LAYER_STORAGE_TILE_SIZE),
-    top: Math.floor(pixelTop / LAYER_STORAGE_TILE_SIZE),
-    right: Math.ceil(pixelRight / LAYER_STORAGE_TILE_SIZE),
-    bottom: Math.ceil(pixelBottom / LAYER_STORAGE_TILE_SIZE),
+    left: Math.floor(pixelLeft / LAYER_STORAGE_TILE_WIDTH),
+    top: Math.floor(pixelTop / LAYER_STORAGE_TILE_HEIGHT),
+    right: Math.ceil(pixelRight / LAYER_STORAGE_TILE_WIDTH),
+    bottom: Math.ceil(pixelBottom / LAYER_STORAGE_TILE_HEIGHT),
   };
 }
 
@@ -174,8 +185,8 @@ export function layerStorageTileMemoryMiB(
     LAYER_STORAGE_TILE_COUNT,
   );
   return clampedCount
-    * LAYER_STORAGE_TILE_SIZE
-    * LAYER_STORAGE_TILE_SIZE
+    * LAYER_STORAGE_TILE_WIDTH
+    * LAYER_STORAGE_TILE_HEIGHT
     * bytesPerPixel
     / MEBIBYTE_BYTES;
 }
@@ -198,8 +209,8 @@ export function exactLayerStorageTileMask(
     || !Number.isInteger(height)
     || width < 0
     || height < 0
-    || width > LAYER_STORAGE_DOCUMENT_SIZE
-    || height > LAYER_STORAGE_DOCUMENT_SIZE
+    || width > LAYER_STORAGE_DOCUMENT_WIDTH
+    || height > LAYER_STORAGE_DOCUMENT_HEIGHT
   ) {
     throw new Error(`Dimensioni readback non valide: ${width}×${height}.`);
   }
@@ -216,14 +227,14 @@ export function exactLayerStorageTileMask(
     ? new Uint32Array(pixels.buffer, pixels.byteOffset, pixels.byteLength / 4)
     : null;
 
-  const tileColumns = Math.ceil(width / LAYER_STORAGE_TILE_SIZE);
-  const tileRows = Math.ceil(height / LAYER_STORAGE_TILE_SIZE);
+  const tileColumns = Math.ceil(width / LAYER_STORAGE_TILE_WIDTH);
+  const tileRows = Math.ceil(height / LAYER_STORAGE_TILE_HEIGHT);
   for (let tileY = 0; tileY < tileRows; tileY += 1) {
-    const firstY = tileY * LAYER_STORAGE_TILE_SIZE;
-    const lastY = Math.min(height, firstY + LAYER_STORAGE_TILE_SIZE);
+    const firstY = tileY * LAYER_STORAGE_TILE_HEIGHT;
+    const lastY = Math.min(height, firstY + LAYER_STORAGE_TILE_HEIGHT);
     for (let tileX = 0; tileX < tileColumns; tileX += 1) {
-      const firstX = tileX * LAYER_STORAGE_TILE_SIZE;
-      const lastX = Math.min(width, firstX + LAYER_STORAGE_TILE_SIZE);
+      const firstX = tileX * LAYER_STORAGE_TILE_WIDTH;
+      const lastX = Math.min(width, firstX + LAYER_STORAGE_TILE_WIDTH);
       let occupied = false;
       for (let y = firstY; y < lastY && !occupied; y += 1) {
         const firstByte = (y * width + firstX) * bytesPerPixel;

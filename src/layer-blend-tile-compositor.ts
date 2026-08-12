@@ -1,6 +1,10 @@
 import type { BrushEngine } from "./brush-engine";
 import type { DirtyRect } from "./engine-stroke-types";
-import { LAYER_COMPOSITE_UNIFORM_BYTES, LAYER_SIZE } from "./engine-limits";
+import {
+  DOCUMENT_HEIGHT,
+  DOCUMENT_WIDTH,
+  LAYER_COMPOSITE_UNIFORM_BYTES,
+} from "./engine-limits";
 import { assertShaderCompiled } from "./engine-gpu-utils";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import {
@@ -680,8 +684,8 @@ export class LayerBlendTileCompositor {
     const word = record * (this.mipUniformStride / 4);
     this.mipUniformU32[word] = options.textureOrigin.x;
     this.mipUniformU32[word + 1] = options.textureOrigin.y;
-    this.mipUniformU32[word + 2] = LAYER_SIZE;
-    this.mipUniformU32[word + 3] = LAYER_SIZE;
+    this.mipUniformU32[word + 2] = DOCUMENT_WIDTH;
+    this.mipUniformU32[word + 3] = DOCUMENT_HEIGHT;
     const bindGroup = this.mipBindGroup(options.sourceTile);
     const pass = options.encoder.beginRenderPass({
       label: "Layer blend tile exact mip 1",

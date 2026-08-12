@@ -1,11 +1,15 @@
 import { brushShader, texturizedGrainShader } from "./shaders";
-import { SELECTION_LAYER_SIZE, SELECTION_WORDS_PER_ROW } from "./selection-core";
+import {
+  SELECTION_LAYER_HEIGHT,
+  SELECTION_LAYER_WIDTH,
+  SELECTION_WORDS_PER_ROW,
+} from "./selection-core";
 
 export const PIXEL_SELECTION_PAINT_CLIP_STRATEGY =
   "separate-fragment-storage-mask-pipelines-history-snapshot-v1" as const;
 
 const selectionBindingAndGuard = /* wgsl */ `
-const PIXEL_SELECTION_LAYER_EXTENT: i32 = ${SELECTION_LAYER_SIZE};
+const PIXEL_SELECTION_LAYER_EXTENT: vec2<i32> = vec2<i32>(${SELECTION_LAYER_WIDTH}, ${SELECTION_LAYER_HEIGHT});
 const PIXEL_SELECTION_WORDS_PER_ROW: u32 = ${SELECTION_WORDS_PER_ROW}u;
 
 @group(1) @binding(0) var<storage, read> pixelSelectionMask: array<u32>;
@@ -14,8 +18,8 @@ fn pixelSelectionContains(fragmentPosition: vec4<f32>) -> bool {
   let pixel = vec2<i32>(floor(fragmentPosition.xy + brush.renderTargetOrigin));
   if (
     pixel.x < 0 || pixel.y < 0
-    || pixel.x >= PIXEL_SELECTION_LAYER_EXTENT
-    || pixel.y >= PIXEL_SELECTION_LAYER_EXTENT
+    || pixel.x >= PIXEL_SELECTION_LAYER_EXTENT.x
+    || pixel.y >= PIXEL_SELECTION_LAYER_EXTENT.y
   ) {
     return false;
   }

@@ -106,6 +106,16 @@ assert.deepEqual(
   { x: 0, y: 0, width: 16, height: 19 },
 );
 assert.deepEqual(
+  destructiveGaussianBlurBounds(
+    { x: 90, y: 50, width: 10, height: 10 },
+    5,
+    100,
+    60,
+  ),
+  { x: 85, y: 45, width: 15, height: 15 },
+  "Il bordo inferiore di un documento rettangolare deve usare l'altezza, non la larghezza.",
+);
+assert.deepEqual(
   unionGaussianBlurRects(
     { x: 4, y: 8, width: 10, height: 12 },
     { x: 1, y: 9, width: 8, height: 20 },
@@ -137,7 +147,22 @@ assert.match(runtime, /previewInFlight/);
 assert.match(runtime, /session\.previewFault/);
 assert.match(runtime, /transparent-content-clamp-document-edge/);
 assert.match(runtime, /clampedDocumentPosition\s*=\s*clamp\(/);
-assert.match(runtime, /parameterUploadU32\[word \+ 15\]\s*=\s*documentSize/);
+assert.match(runtime, /import \{ DOCUMENT_HEIGHT, DOCUMENT_WIDTH \} from "\.\/engine-limits"/);
+assert.match(
+  runtime,
+  /const DOCUMENT_EXTENT = vec2<i32>\(\$\{DOCUMENT_WIDTH\}, \$\{DOCUMENT_HEIGHT\}\);/,
+);
+assert.match(runtime, /parameterUploadU32\[word \+ 15\]\s*=\s*0/);
+assert.match(
+  runtime,
+  /destructiveGaussianBlurBounds\([\s\S]{0,180}DOCUMENT_WIDTH,\s*DOCUMENT_HEIGHT,/,
+  "Gaussian Blur deve ritagliare il supporto con entrambi gli assi documento.",
+);
+assert.doesNotMatch(
+  runtime,
+  /engine\.layerSize|\bLAYER_SIZE\b|parameterUploadU32\[word \+ 15\]\s*=\s*documentSize/,
+  "Gaussian Blur non deve ricostruire un canvas quadrato da un unico lato.",
+);
 
 const restore = runtime.slice(
   runtime.indexOf("async function restoreOriginalPixels("),

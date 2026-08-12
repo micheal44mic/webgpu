@@ -1,7 +1,9 @@
 import {
-  FILL_BLOCK_GRID_SIZE,
+  FILL_BLOCK_GRID_HEIGHT,
+  FILL_BLOCK_GRID_WIDTH,
   FILL_BLOCK_SIZE,
-  FILL_BLOCKS_PER_TILE,
+  FILL_HISTORY_MASK_WORDS,
+  FILL_HISTORY_WORDS_PER_ROW,
   FILL_LABEL_WORDS_PER_BLOCK,
   FILL_MAX_COMPONENTS_PER_BLOCK,
   FILL_META_ACTIVE_BLOCKS,
@@ -14,8 +16,12 @@ import {
   FILL_META_SELECTED_PIXELS,
   FILL_META_TILE_MASK_START,
   FILL_TILE_GRID_SIZE,
+  FILL_TILE_HEIGHT,
+  FILL_TILE_WIDTH,
+  FILL_LAYER_HEIGHT,
+  FILL_LAYER_WIDTH,
+  FILL_RENDER_MASK_WORDS_PER_ROW,
 } from "./fill-core.ts";
-import { LAYER_SIZE } from "./engine-limits.ts";
 
 // Alcuni backend Vulkan/GLSL usati da Chrome Android compilano in modo errato
 // lo shift dinamico `1u << 31u`: il bit alto sparisce e il risultato visibile è
@@ -56,10 +62,10 @@ fn fillRenderMaskContains(word: u32, bitIndex: u32) -> bool {
 `;
 
 export const fillComputeShader = /* wgsl */ `
-const LAYER_EXTENT: u32 = ${LAYER_SIZE}u;
+const LAYER_EXTENT: vec2<u32> = vec2<u32>(${FILL_LAYER_WIDTH}u, ${FILL_LAYER_HEIGHT}u);
 const BLOCK_EXTENT: u32 = ${FILL_BLOCK_SIZE}u;
-const BLOCK_GRID: u32 = ${FILL_BLOCK_GRID_SIZE}u;
-const ACTIVE_NODE_CAPACITY: u32 = ${FILL_BLOCK_GRID_SIZE * FILL_BLOCK_GRID_SIZE}u;
+const BLOCK_GRID: vec2<u32> = vec2<u32>(${FILL_BLOCK_GRID_WIDTH}u, ${FILL_BLOCK_GRID_HEIGHT}u);
+const ACTIVE_NODE_CAPACITY: u32 = ${FILL_BLOCK_GRID_WIDTH * FILL_BLOCK_GRID_HEIGHT}u;
 const COMPONENTS_PER_BLOCK: u32 = ${FILL_MAX_COMPONENTS_PER_BLOCK}u;
 const LABEL_WORDS_PER_BLOCK: u32 = ${FILL_LABEL_WORDS_PER_BLOCK}u;
 const INVALID_LABEL: u32 = 255u;
@@ -171,7 +177,7 @@ fn unionGlobal(left: u32, right: u32) {
 }
 
 fn blockIndex(block: vec2<u32>) -> u32 {
-  return block.y * BLOCK_GRID + block.x;
+  return block.y * BLOCK_GRID.x + block.x;
 }
 
 fn labelAt(pixel: vec2<u32>) -> u32 {
@@ -199,7 +205,11 @@ fn classifyLocal(
   workgroupBarrier();
 
   let inside = all(pixel < uniforms.size);
-  let matches = matchesSeed(textureLoad(sourceLayer, vec2<i32>(pixel), 0));
+  let matches = inside && matchesSeed(textureLoad(
+    sourceLayer,
+    vec2<i32>(min(pixel, uniforms.size - vec2<u32>(1u))),
+    0,
+  ));
   let eligible = inside && matches;
   if (all(workgroup.xy == vec2<u32>(0u)) && localIndex == 0u) {
     atomicStore(
@@ -347,12 +357,37 @@ fn reduceAndRecord(
     atomicMax(&metadata[${FILL_META_MAX_X}u], reduceMaxX[0]);
     atomicMax(&metadata[${FILL_META_MAX_Y}u], reduceMaxY[0]);
     atomicAdd(&metadata[${FILL_META_ACTIVE_BLOCKS}u], 1u);
-    let coldTile = (block.y / ${FILL_BLOCKS_PER_TILE}u) * ${FILL_TILE_GRID_SIZE}u
-      + block.x / ${FILL_BLOCKS_PER_TILE}u;
-    atomicOr(
-      &metadata[${FILL_META_TILE_MASK_START}u + coldTile / 32u],
-      fillBitMask(coldTile),
+    // Custom document dimensions make cold-storage tile edges independent of
+    // the 16 px CCL block grid. One fill block can therefore overlap several
+    // cold tiles; marking only the tile containing the block origin would lose
+    // pixels after eviction/save. Use the reduced bounds of the pixels that
+    // were actually selected in this block and mark every overlapping tile.
+    let firstTile = min(
+      vec2<u32>(reduceMinX[0] / ${FILL_TILE_WIDTH}u, reduceMinY[0] / ${FILL_TILE_HEIGHT}u),
+      vec2<u32>(${FILL_TILE_GRID_SIZE - 1}u),
     );
+    let lastTile = min(
+      vec2<u32>(
+        (reduceMaxX[0] - 1u) / ${FILL_TILE_WIDTH}u,
+        (reduceMaxY[0] - 1u) / ${FILL_TILE_HEIGHT}u,
+      ),
+      vec2<u32>(${FILL_TILE_GRID_SIZE - 1}u),
+    );
+    var tileY = firstTile.y;
+    loop {
+      var tileX = firstTile.x;
+      loop {
+        let coldTile = tileY * ${FILL_TILE_GRID_SIZE}u + tileX;
+        atomicOr(
+          &metadata[${FILL_META_TILE_MASK_START}u + coldTile / 32u],
+          fillBitMask(coldTile),
+        );
+        if (tileX == lastTile.x) { break; }
+        tileX += 1u;
+      }
+      if (tileY == lastTile.y) { break; }
+      tileY += 1u;
+    }
   }
 }
 
@@ -363,13 +398,15 @@ fn selectSeedComponent(
   @builtin(local_invocation_index) localIndex: u32,
 ) {
   let pixel = workgroup.xy * BLOCK_EXTENT + local.xy;
+  let inside = all(pixel < uniforms.size);
   let seedLabel = labelAt(uniforms.seed);
   let seedRoot = findGlobalRoot(nodeForPixel(uniforms.seed, seedLabel));
-  let label = labelAt(pixel);
-  let selected = label != INVALID_LABEL
-    && findGlobalRoot(nodeForPixel(pixel, label)) == seedRoot;
+  let safePixel = min(pixel, uniforms.size - vec2<u32>(1u));
+  let label = labelAt(safePixel);
+  let selected = inside && label != INVALID_LABEL
+    && findGlobalRoot(nodeForPixel(safePixel, label)) == seedRoot;
   if (selected) {
-    let word = pixel.y * (LAYER_EXTENT / 32u) + pixel.x / 32u;
+    let word = pixel.y * ${FILL_HISTORY_WORDS_PER_ROW}u + pixel.x / 32u;
     atomicOr(&selectedMask[word], fillBitMask(pixel.x));
   }
   reduceAndRecord(pixel, selected, workgroup.xy, localIndex);
@@ -382,14 +419,17 @@ fn rebuildSelection(
   @builtin(local_invocation_index) localIndex: u32,
 ) {
   let pixel = workgroup.xy * BLOCK_EXTENT + local.xy;
-  let word = pixel.y * (LAYER_EXTENT / 32u) + pixel.x / 32u;
-  let selected = fillMaskContains(atomicLoad(&selectedMask[word]), pixel.x);
+  let inside = all(pixel < uniforms.size);
+  let safePixel = min(pixel, uniforms.size - vec2<u32>(1u));
+  let word = safePixel.y * ${FILL_HISTORY_WORDS_PER_ROW}u + safePixel.x / 32u;
+  let selected = inside
+    && fillMaskContains(atomicLoad(&selectedMask[word]), safePixel.x);
   reduceAndRecord(pixel, selected, workgroup.xy, localIndex);
 }
 
 @compute @workgroup_size(256, 1, 1)
 fn expandRenderMask(@builtin(global_invocation_id) global: vec3<u32>) {
-  const SOURCE_WORDS: u32 = ${LAYER_SIZE * LAYER_SIZE / 32}u;
+  const SOURCE_WORDS: u32 = ${FILL_HISTORY_MASK_WORDS}u;
   if (global.x >= SOURCE_WORDS) { return; }
   let source = atomicLoad(&selectedMask[global.x]);
   let targetWord = global.x * 4u;
@@ -403,7 +443,7 @@ fn expandRenderMask(@builtin(global_invocation_id) global: vec3<u32>) {
 `;
 
 export const fillSelectionIntersectionShader = /* wgsl */ `
-const FILL_MASK_WORDS: u32 = ${LAYER_SIZE * LAYER_SIZE / 32}u;
+const FILL_MASK_WORDS: u32 = ${FILL_HISTORY_MASK_WORDS}u;
 
 @group(0) @binding(0) var<storage, read_write> fillMask: array<u32>;
 @group(0) @binding(1) var<storage, read> selectionMask: array<u32>;
@@ -447,9 +487,9 @@ fn probeBit31() {
 `;
 
 export const fillRenderShader = /* wgsl */ `
-const LAYER_EXTENT: f32 = ${LAYER_SIZE}.0;
+const LAYER_EXTENT: vec2<f32> = vec2<f32>(${FILL_LAYER_WIDTH}.0, ${FILL_LAYER_HEIGHT}.0);
 const BLOCK_EXTENT: u32 = ${FILL_BLOCK_SIZE}u;
-const BLOCK_GRID: u32 = ${FILL_BLOCK_GRID_SIZE}u;
+const BLOCK_GRID: vec2<u32> = vec2<u32>(${FILL_BLOCK_GRID_WIDTH}u, ${FILL_BLOCK_GRID_HEIGHT}u);
 
 ${fillRenderBitMaskHelpers}
 
@@ -483,12 +523,12 @@ fn vertexMain(
     vec2<u32>(1u, 1u),
   );
   let blockIndex = activeBlocks[instanceIndex];
-  let block = vec2<u32>(blockIndex % BLOCK_GRID, blockIndex / BLOCK_GRID);
+  let block = vec2<u32>(blockIndex % BLOCK_GRID.x, blockIndex / BLOCK_GRID.x);
   let pixel = vec2<f32>((block + corners[vertexIndex]) * BLOCK_EXTENT);
   var output: VertexOutput;
   output.position = vec4<f32>(
-    pixel.x / LAYER_EXTENT * 2.0 - 1.0,
-    1.0 - pixel.y / LAYER_EXTENT * 2.0,
+    pixel.x / LAYER_EXTENT.x * 2.0 - 1.0,
+    1.0 - pixel.y / LAYER_EXTENT.y * 2.0,
     0.0,
     1.0,
   );
@@ -501,7 +541,8 @@ fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
   // varying interpolato elimina anche le differenze di precisione ai bordi dei
   // quad istanziati sui driver mobile.
   let pixel = vec2<u32>(position.xy);
-  let word = pixel.y * (${LAYER_SIZE}u / 8u) + pixel.x / 8u;
+  if (pixel.x >= ${FILL_LAYER_WIDTH}u || pixel.y >= ${FILL_LAYER_HEIGHT}u) { discard; }
+  let word = pixel.y * ${FILL_RENDER_MASK_WORDS_PER_ROW}u + pixel.x / 8u;
   if (!fillRenderMaskContains(renderMask[word], pixel.x)) {
     discard;
   }

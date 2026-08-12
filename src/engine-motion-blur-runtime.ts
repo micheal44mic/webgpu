@@ -7,6 +7,7 @@ import {
 import { assertShaderCompiled } from "./engine-gpu-utils";
 import { commitHistoryActionAtomically } from "./engine-history-runtime";
 import { invalidateActiveLayerBake } from "./engine-layer-runtime";
+import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits";
 import type { RasterFilterHistoryAction } from "./engine-history-types";
 import type { DirtyRect } from "./engine-stroke-types";
 import { publishMixedScene } from "./engine-vector-text-runtime";
@@ -259,7 +260,7 @@ function setAuthoritativeMetadata(
   engine.layerHasContent = true;
   record.contentBounds = { ...bounds };
   record.hasContent = true;
-  record.storageTileMask.set(tileMaskCoveringRect(tileMask, bounds, engine.layerSize));
+  record.storageTileMask.set(tileMaskCoveringRect(tileMask, bounds));
   invalidateActiveLayerBake(engine);
 }
 
@@ -276,7 +277,8 @@ function writePassParameters(
   session: ActiveRasterMotionBlurSession,
   index: number,
   parameters: PassParameters,
-  documentSize: number,
+  documentWidth: number,
+  documentHeight: number,
 ): number {
   if (index >= PARAMETER_CAPACITY) {
     throw new Error("Motion Blur: capacità passaggi superata.");
@@ -295,8 +297,8 @@ function writePassParameters(
   session.parameterUploadI32[word + 7] = valid.height;
   session.parameterUploadI32[word + 8] = parameters.attachmentOriginX;
   session.parameterUploadI32[word + 9] = parameters.attachmentOriginY;
-  session.parameterUploadI32[word + 10] = documentSize;
-  session.parameterUploadI32[word + 11] = documentSize;
+  session.parameterUploadI32[word + 10] = documentWidth;
+  session.parameterUploadI32[word + 11] = documentHeight;
   session.parameterUploadF32[word + 12] = parameters.shiftX;
   session.parameterUploadF32[word + 13] = parameters.shiftY;
   session.parameterUploadF32[word + 14] = 0;
@@ -333,8 +335,8 @@ function encodeRequestedPreview(
     session.sourceBounds,
     distance,
     angle,
-    engine.layerSize,
-    engine.layerSize,
+    DOCUMENT_WIDTH,
+    DOCUMENT_HEIGHT,
   ) as DirtyRect | null;
   if (!resultBounds) throw new Error("Motion Blur: bounds risultato mancanti.");
   const dirtyRect = unionMotionBlurRects(
@@ -348,8 +350,8 @@ function encodeRequestedPreview(
   const fullLayerBounds: DirtyRect = {
     x: 0,
     y: 0,
-    width: engine.layerSize,
-    height: engine.layerSize,
+    width: DOCUMENT_WIDTH,
+    height: DOCUMENT_HEIGHT,
   };
   const offsets = kernel.shifts.map((shift, pass) => {
     const inputTextureBounds = pass === 0
@@ -366,7 +368,7 @@ function encodeRequestedPreview(
       attachmentOriginY: writesIntermediate ? session.scratchBounds.y : 0,
       shiftX: shift.x,
       shiftY: shift.y,
-    }, engine.layerSize);
+    }, DOCUMENT_WIDTH, DOCUMENT_HEIGHT);
   });
   if (offsets.length > 0) {
     engine.device.queue.writeBuffer(
@@ -467,7 +469,6 @@ function encodeRequestedPreview(
   session.resultTileMask = tileMaskCoveringRect(
     session.sourceTileMask,
     resultBounds,
-    engine.layerSize,
   );
   setAuthoritativeMetadata(engine, resultBounds, session.resultTileMask);
   engine.submitImmediate([], false, engine.settings, true, null, dirtyRect, false);
@@ -645,8 +646,8 @@ export async function beginRasterMotionBlur(
     const sourceBounds = { ...record.contentBounds };
     const scratchBounds = destructiveMotionBlurMaximumBounds(
       sourceBounds,
-      engine.layerSize,
-      engine.layerSize,
+      DOCUMENT_WIDTH,
+      DOCUMENT_HEIGHT,
     ) as DirtyRect | null;
     if (!scratchBounds) throw new Error("Il raster non contiene pixel sfocabili.");
     const distance = normalizeDestructiveMotionBlurDistance(initialDistance);
@@ -655,8 +656,8 @@ export async function beginRasterMotionBlur(
       sourceBounds,
       distance,
       angle,
-      engine.layerSize,
-      engine.layerSize,
+      DOCUMENT_WIDTH,
+      DOCUMENT_HEIGHT,
     ) as DirtyRect;
     const maximumKernel = destructiveMotionBlurKernel(
       DESTRUCTIVE_MOTION_BLUR_MAX_DISTANCE,
@@ -764,7 +765,6 @@ export async function beginRasterMotionBlur(
           resultTileMask: tileMaskCoveringRect(
             sourceTileMask,
             initialResultBounds,
-            engine.layerSize,
           ),
           presentedBounds: null,
           requestedSerial: 1,
@@ -862,14 +862,13 @@ export function updateRasterMotionBlur(
     session.sourceBounds,
     distance,
     angle,
-    engine.layerSize,
-    engine.layerSize,
+    DOCUMENT_WIDTH,
+    DOCUMENT_HEIGHT,
   ) as DirtyRect;
   session.resultBounds = result;
   session.resultTileMask = tileMaskCoveringRect(
     session.sourceTileMask,
     result,
-    engine.layerSize,
   );
   session.requestedSerial += 1;
   schedulePreview(engine, session);

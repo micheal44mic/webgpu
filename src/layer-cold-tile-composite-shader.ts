@@ -1,6 +1,7 @@
 import {
   DOCUMENT_TILE_GRID_SIZE,
-  DOCUMENT_TILE_SIZE,
+  DOCUMENT_TILE_HEIGHT,
+  DOCUMENT_TILE_WIDTH,
 } from "./engine-limits.ts";
 
 /**
@@ -15,7 +16,7 @@ export const LAYER_COLD_TILE_COMPOSITE_UNIFORM_BYTES = 32 as const;
 export const LAYER_COLD_TILE_COMPOSITE_BATCH_TILES = 16 as const;
 
 export const LAYER_COLD_TILE_COMPOSITE_WGSL = /* wgsl */ `
-const TILE_SIZE: i32 = ${DOCUMENT_TILE_SIZE};
+const TILE_SIZE: vec2<i32> = vec2<i32>(${DOCUMENT_TILE_WIDTH}, ${DOCUMENT_TILE_HEIGHT});
 const TILE_GRID_SIZE: u32 = ${DOCUMENT_TILE_GRID_SIZE}u;
 
 struct ColdTileCompositeUniforms {
@@ -56,10 +57,10 @@ fn vertexMain(
   );
   let tileIndex = tileIndices.values[instanceIndex];
   let tileOrigin = vec2<i32>(
-    i32(tileIndex % TILE_GRID_SIZE) * TILE_SIZE,
-    i32(tileIndex / TILE_GRID_SIZE) * TILE_SIZE
+    i32(tileIndex % TILE_GRID_SIZE) * TILE_SIZE.x,
+    i32(tileIndex / TILE_GRID_SIZE) * TILE_SIZE.y
   );
-  let tileEnd = tileOrigin + vec2<i32>(TILE_SIZE);
+  let tileEnd = tileOrigin + TILE_SIZE;
   let destinationEnd = fold.destinationOrigin + vec2<i32>(fold.destinationDimensions);
   let clippedOrigin = max(tileOrigin, fold.destinationOrigin);
   let clippedEnd = min(tileEnd, destinationEnd);

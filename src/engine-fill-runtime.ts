@@ -5,7 +5,8 @@
 import type { BrushEngine } from "./brush-engine";
 import {
   FILL_HISTORY_MASK_BYTES,
-  FILL_LAYER_SIZE,
+  FILL_LAYER_HEIGHT,
+  FILL_LAYER_WIDTH,
   FILL_RENDER_MASK_STRATEGY,
   hexToLinearFillColor,
   normalizeFillTolerance,
@@ -118,7 +119,7 @@ export async function captureFillDiagnostics(
     readback.analysis.selectedPixels,
     readback.seedX,
     readback.seedY,
-    FILL_LAYER_SIZE,
+    FILL_LAYER_WIDTH,
   );
   const targetRecord = engine.layerStack.layers.find(
     (layer) => layer.id === operation.targetLayerId,
@@ -134,7 +135,7 @@ export async function captureFillDiagnostics(
     try {
       const rowPixels = await engine.readTexturePixels(
         targetGpu.hot.texture,
-        { x: 0, y: readback.seedY, width: FILL_LAYER_SIZE, height: 1 },
+        { x: 0, y: readback.seedY, width: FILL_LAYER_WIDTH, height: 1 },
         "diagnosi Fill riga seed",
       );
       renderedSeedRow = summarizeFillRenderedRow(
@@ -143,7 +144,7 @@ export async function captureFillDiagnostics(
         readback.maskWords,
         readback.fillColor,
         readback.seedY,
-        FILL_LAYER_SIZE,
+        FILL_LAYER_WIDTH,
       );
     } catch (error) {
       renderedSeedRowError = error instanceof Error ? error.message : String(error);
@@ -289,7 +290,12 @@ export async function fillAtClientPoint(
   const point = clientToLayer(engine, clientX, clientY);
   const seedX = Math.floor(point.x);
   const seedY = Math.floor(point.y);
-  if (seedX < 0 || seedY < 0 || seedX >= engine.layerSize || seedY >= engine.layerSize) {
+  if (
+    seedX < 0
+    || seedY < 0
+    || seedX >= engine.documentWidth
+    || seedY >= engine.documentHeight
+  ) {
     return null;
   }
 
@@ -329,7 +335,7 @@ export async function fillAtClientPoint(
     const actionId = engine.nextHistoryActionId;
     historySlice = engine.historyGpuStorage.allocate(
       FILL_HISTORY_MASK_BYTES,
-      `Fill ${actionId} · mask ${FILL_LAYER_SIZE}² 1-bit`,
+      `Fill ${actionId} · mask ${FILL_LAYER_WIDTH}×${FILL_LAYER_HEIGHT} 1-bit`,
     );
 
     const storageMaskBefore = engine.layerStack.active.storageTileMask.slice();

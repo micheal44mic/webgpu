@@ -353,8 +353,30 @@ assert.match(runtimeSource, /RASTER_IMAGE_MAXIMUM_TOTAL_GPU_BYTES/);
 assert.match(runtimeSource, /nativeRasterImportResidentBytes\(engine\)/);
 assert.doesNotMatch(runtimeSource, /RASTER_IMAGE_MAXIMUM_IMPORT_PEAK_BYTES/);
 assert.doesNotMatch(runtimeSource, /picco aggregato previsto|engine\.getStats\(\)\.gpuMemory\.countedTotalMiB/);
-assert.match(runtimeSource, /const scale = Math\.min\(1, LAYER_SIZE \/ longestSide\)/);
-assert.doesNotMatch(runtimeSource, /LAYER_SIZE \* 0\.8/);
+assert.match(
+  runtimeSource,
+  /const scale = Math\.min\(1, DOCUMENT_WIDTH \/ width, DOCUMENT_HEIGHT \/ height\)/,
+);
+assert.match(
+  runtimeSource,
+  /const outputWidth = Math\.max\(1, Math\.min\(DOCUMENT_WIDTH, Math\.round\(width \* scale\)\)\)/,
+);
+assert.match(
+  runtimeSource,
+  /const outputHeight = Math\.max\(1, Math\.min\(DOCUMENT_HEIGHT, Math\.round\(height \* scale\)\)\)/,
+);
+assert.match(runtimeSource, /x: Math\.floor\(\(DOCUMENT_WIDTH - outputWidth\) \* 0\.5\)/);
+assert.match(runtimeSource, /y: Math\.floor\(\(DOCUMENT_HEIGHT - outputHeight\) \* 0\.5\)/);
+assert.match(
+  runtimeSource,
+  /DOCUMENT_WIDTH \* DOCUMENT_HEIGHT \* bytesPerPixel[\s\S]{0,180}LAYER_STORAGE_TILE_WIDTH[\s\S]{0,80}LAYER_STORAGE_TILE_HEIGHT/,
+  "Il budget import deve usare area documento e area tile rettangolari.",
+);
+assert.doesNotMatch(
+  runtimeSource,
+  /engine\.layerSize|\bLAYER_SIZE\b|LAYER_STORAGE_TILE_SIZE \*\* 2/,
+  "L'import raster non deve ridurre il documento a un lato quadrato.",
+);
 assert.match(runtimeSource, /assertNativeRasterImportResidentBudget\(engine, bounds\)/);
 assert.match(
   runtimeSource,

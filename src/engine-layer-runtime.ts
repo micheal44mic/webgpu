@@ -35,15 +35,17 @@ import {
   destroyTransientLayerHydration,
 } from "./engine-cold-storage";
 import {
+  DOCUMENT_HEIGHT,
+  DOCUMENT_WIDTH,
   LAYER_COMPOSITE_UNIFORM_BYTES,
-  LAYER_SIZE,
   PAINT_DISPLAY_MIP_LEVEL_COUNT,
 } from "./engine-limits";
 import { destroyLightGlazeResources } from "./engine-glaze-runtime";
 import {
   clearLayerStorageTileMask,
   LAYER_STORAGE_TILE_COUNT,
-  LAYER_STORAGE_TILE_SIZE,
+  LAYER_STORAGE_TILE_HEIGHT,
+  LAYER_STORAGE_TILE_WIDTH,
 } from "./layer-storage-study";
 import {
   createMixedSceneRasterSegmentResources,
@@ -1315,8 +1317,8 @@ export async function recreateLayerResources(
         async (transaction) => {
           const candidate = await DryBlendRenderer.create({
             device: engine.device,
-            documentWidth: LAYER_SIZE,
-            documentHeight: LAYER_SIZE,
+            documentWidth: DOCUMENT_WIDTH,
+            documentHeight: DOCUMENT_HEIGHT,
             layerFormat: format,
             layerView: activeHot.view,
             layerSamplingView: activeHot.samplingView,
@@ -1407,8 +1409,8 @@ export async function recreateLayerResources(
         async (transaction) => {
           const renderer = await DryBlendRenderer.create({
             device: engine.device,
-            documentWidth: LAYER_SIZE,
-            documentHeight: LAYER_SIZE,
+            documentWidth: DOCUMENT_WIDTH,
+            documentHeight: DOCUMENT_HEIGHT,
             layerFormat: engine.layerFormat,
             layerView: engine.layerView,
             layerSamplingView: engine.layerSamplingView,
@@ -1595,8 +1597,8 @@ export async function retargetEffectsWorkingSetInternal(engine: BrushEngine,
   const fullDocumentRect: DirtyRect = {
     x: 0,
     y: 0,
-    width: LAYER_SIZE,
-    height: LAYER_SIZE,
+    width: DOCUMENT_WIDTH,
+    height: DOCUMENT_HEIGHT,
   };
   // Omitted preserves the pre-PR3 contract; explicit null means an empty source.
   const normalizedContentBounds = contentBounds === undefined
@@ -1679,7 +1681,7 @@ export async function retargetEffectsWorkingSetInternal(engine: BrushEngine,
       contentPixels: normalizedContentBounds
         ? normalizedContentBounds.width * normalizedContentBounds.height
         : 0,
-      fullDocumentPixels: LAYER_SIZE * LAYER_SIZE,
+      fullDocumentPixels: DOCUMENT_WIDTH * DOCUMENT_HEIGHT,
       cpuRetargetAndEncodeMs: submittedAt - startedAt,
       queueCompletionMs: completedAt - submittedAt,
       totalMs: completedAt - startedAt,
@@ -1698,7 +1700,7 @@ export async function retargetEffectsWorkingSetInternal(engine: BrushEngine,
       console.info(
         engine.bevelBoundingFieldEnabled
           ? "[EffectsWorkbench] retarget con campo Smusso bbox completato"
-          : `[EffectsWorkbench] retarget ${LAYER_SIZE}² completato`,
+          : `[EffectsWorkbench] retarget ${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT} completato`,
         result,
       );
     }
@@ -1906,7 +1908,7 @@ function authoritativeColdTileCompositeSource(
   }
   if (compressed) {
     const bytesPerPixel = compressed.format === "rgba16float" ? 8 : 4;
-    const tileBytes = LAYER_STORAGE_TILE_SIZE * LAYER_STORAGE_TILE_SIZE * bytesPerPixel;
+    const tileBytes = LAYER_STORAGE_TILE_WIDTH * LAYER_STORAGE_TILE_HEIGHT * bytesPerPixel;
     const chunksFitBoundedScratch = compressed.tileIndices.length > 0
       && compressed.chunks.length > 0
       && compressed.chunks.every((chunk) => (
@@ -1926,8 +1928,8 @@ function authoritativeColdTileCompositeSource(
     nonTransparentBounds: normalizeLayerRect(record.contentBounds) ?? {
       x: 0,
       y: 0,
-      width: LAYER_SIZE,
-      height: LAYER_SIZE,
+      width: DOCUMENT_WIDTH,
+      height: DOCUMENT_HEIGHT,
     },
   };
 }
@@ -2051,7 +2053,7 @@ async function foldAuthoritativeColdTilesIntoMergedSurface(
     } else {
       const compressed = source.compressed!;
       const bytesPerPixel = compressed.format === "rgba16float" ? 8 : 4;
-      const tileBytes = LAYER_STORAGE_TILE_SIZE * LAYER_STORAGE_TILE_SIZE * bytesPerPixel;
+      const tileBytes = LAYER_STORAGE_TILE_WIDTH * LAYER_STORAGE_TILE_HEIGHT * bytesPerPixel;
       const chunkTileCounts = compressed.chunks.map((chunk, index) => {
         if (
           chunk.rawBytes <= 0
@@ -2070,8 +2072,8 @@ async function foldAuthoritativeColdTilesIntoMergedSurface(
       scratchTexture = engine.device.createTexture({
         label: `Scratch direct cold tile composite livello ${source.recordId}`,
         size: {
-          width: LAYER_STORAGE_TILE_SIZE,
-          height: LAYER_STORAGE_TILE_SIZE,
+          width: LAYER_STORAGE_TILE_WIDTH,
+          height: LAYER_STORAGE_TILE_HEIGHT,
           depthOrArrayLayers: scratchLayerCount,
         },
         format: compressed.format,
@@ -2132,12 +2134,12 @@ async function foldAuthoritativeColdTilesIntoMergedSurface(
             { texture: scratchTexture, origin: { x: 0, y: 0, z: upload.arrayLayer } },
             upload.bytes,
             {
-              bytesPerRow: LAYER_STORAGE_TILE_SIZE * bytesPerPixel,
-              rowsPerImage: LAYER_STORAGE_TILE_SIZE,
+              bytesPerRow: LAYER_STORAGE_TILE_WIDTH * bytesPerPixel,
+              rowsPerImage: LAYER_STORAGE_TILE_HEIGHT,
             },
             {
-              width: LAYER_STORAGE_TILE_SIZE,
-              height: LAYER_STORAGE_TILE_SIZE,
+              width: LAYER_STORAGE_TILE_WIDTH,
+              height: LAYER_STORAGE_TILE_HEIGHT,
               depthOrArrayLayers: upload.tileCount,
             },
           );
@@ -2171,7 +2173,7 @@ async function foldAuthoritativeColdTilesIntoMergedSurface(
     engine.layerColdTileCompositeCompressedFoldCount += source.compressed ? 1 : 0;
     engine.layerColdTileCompositeTileCount += foldedTileCount;
     engine.layerColdTileCompositeSubmissionCount += submissionCount;
-    engine.layerColdTileCompositeAvoidedHydrationBytes += LAYER_SIZE * LAYER_SIZE
+    engine.layerColdTileCompositeAvoidedHydrationBytes += DOCUMENT_WIDTH * DOCUMENT_HEIGHT
       * (engine.layerFormat === "rgba16float" ? 8 : 4);
   } finally {
     if (submitted && !completed) {
@@ -2210,7 +2212,8 @@ async function tryFoldAuthoritativeColdTilesIntoMergedSurface(
   const rect = intersectMergedSurfaceRects(
     source.nonTransparentBounds,
     destination.bounds,
-    LAYER_SIZE,
+    DOCUMENT_WIDTH,
+    DOCUMENT_HEIGHT,
   );
   if (!rect) {
     return false;
@@ -2246,7 +2249,8 @@ export async function foldViewIntoMergedSurface(
   const clipped = intersectMergedSurfaceRects(
     documentRect,
     destination.bounds,
-    LAYER_SIZE,
+    DOCUMENT_WIDTH,
+    DOCUMENT_HEIGHT,
   );
   if (!clipped) {
     return;
@@ -2481,10 +2485,16 @@ async function buildClippingOverlaySurface(
   }
   const visualBounds = unionMergedSurfaceRects(
     visible.map((record) => layerCompositeVisualBounds(engine, record)),
-    LAYER_SIZE,
+    DOCUMENT_WIDTH,
+    DOCUMENT_HEIGHT,
   );
   const bounded = requestedBounds
-    ? visualBounds && intersectMergedSurfaceRects(visualBounds, requestedBounds, LAYER_SIZE)
+    ? visualBounds && intersectMergedSurfaceRects(
+      visualBounds,
+      requestedBounds,
+      DOCUMENT_WIDTH,
+      DOCUMENT_HEIGHT,
+    )
     : visualBounds;
   if (!bounded) {
     return null;
@@ -2494,7 +2504,7 @@ async function buildClippingOverlaySurface(
     engine.layerFormat,
     "above",
     visible.length,
-    alignedMergedSurfaceBounds(bounded, LAYER_SIZE),
+    alignedMergedSurfaceBounds(bounded, DOCUMENT_WIDTH, 64, 64, DOCUMENT_HEIGHT),
     1,
   );
   let first = true;
@@ -2519,7 +2529,8 @@ async function buildClippingOverlaySurface(
         const rect = intersectMergedSurfaceRects(
           source.nonTransparentBounds,
           surface.bounds,
-          LAYER_SIZE,
+          DOCUMENT_WIDTH,
+          DOCUMENT_HEIGHT,
         );
         if (!rect) {
           continue;
@@ -2530,8 +2541,8 @@ async function buildClippingOverlaySurface(
           source.view,
           { x: 0, y: 0 },
           1,
-          LAYER_SIZE,
-          LAYER_SIZE,
+          DOCUMENT_WIDTH,
+          DOCUMENT_HEIGHT,
           record.opacity,
           rect,
           "normal",
@@ -2590,7 +2601,8 @@ async function buildClippingSuffixStepSurface(
     const bounded = intersectMergedSurfaceRects(
       directSource?.nonTransparentBounds ?? source!.nonTransparentBounds,
       requestedBounds,
-      LAYER_SIZE,
+      DOCUMENT_WIDTH,
+      DOCUMENT_HEIGHT,
     );
     if (!bounded) {
       return null;
@@ -2604,7 +2616,7 @@ async function buildClippingSuffixStepSurface(
           engine.layerFormat,
           "above",
           1,
-          alignedMergedSurfaceBounds(bounded, LAYER_SIZE),
+          alignedMergedSurfaceBounds(bounded, DOCUMENT_WIDTH, 64, 64, DOCUMENT_HEIGHT),
           1,
           false,
         );
@@ -2630,8 +2642,8 @@ async function buildClippingSuffixStepSurface(
         source!.view,
         { x: 0, y: 0 },
         1,
-        LAYER_SIZE,
-        LAYER_SIZE,
+        DOCUMENT_WIDTH,
+        DOCUMENT_HEIGHT,
         1,
         bounded,
         "normal",
@@ -2760,7 +2772,7 @@ export async function buildClippingPrefixSurface(
       engine.layerFormat,
       "below",
       1 + children.length,
-      alignedMergedSurfaceBounds(parentBounds, LAYER_SIZE),
+      alignedMergedSurfaceBounds(parentBounds, DOCUMENT_WIDTH, 64, 64, DOCUMENT_HEIGHT),
       1,
       maintainMips,
     );
@@ -2782,8 +2794,8 @@ export async function buildClippingPrefixSurface(
         parentSource!.view,
         { x: 0, y: 0 },
         1,
-        LAYER_SIZE,
-        LAYER_SIZE,
+        DOCUMENT_WIDTH,
+        DOCUMENT_HEIGHT,
         1,
         parentBounds,
         "normal",
@@ -2816,7 +2828,8 @@ export async function buildClippingPrefixSurface(
         const rect = intersectMergedSurfaceRects(
           source.nonTransparentBounds,
           surface.bounds,
-          LAYER_SIZE,
+          DOCUMENT_WIDTH,
+          DOCUMENT_HEIGHT,
         );
         if (!rect) {
           continue;
@@ -2827,8 +2840,8 @@ export async function buildClippingPrefixSurface(
           source.view,
           { x: 0, y: 0 },
           1,
-          LAYER_SIZE,
-          LAYER_SIZE,
+          DOCUMENT_WIDTH,
+          DOCUMENT_HEIGHT,
           child.opacity,
           rect,
           child.blendMode,
@@ -2964,7 +2977,12 @@ export async function foldClippingGroupIntoMergedSurface(
     return false;
   }
   try {
-    const rect = intersectMergedSurfaceRects(group.bounds, surface.bounds, LAYER_SIZE);
+    const rect = intersectMergedSurfaceRects(
+      group.bounds,
+      surface.bounds,
+      DOCUMENT_WIDTH,
+      DOCUMENT_HEIGHT,
+    );
     if (!rect) {
       return false;
     }
@@ -3018,7 +3036,8 @@ export async function foldRasterRecordIntoMergedSurface(engine: BrushEngine,
   const sourceRect = intersectMergedSurfaceRects(
     source.nonTransparentBounds,
     surface.bounds,
-    LAYER_SIZE,
+    DOCUMENT_WIDTH,
+    DOCUMENT_HEIGHT,
   );
   if (!sourceRect) {
     engine.destroyLayerBake(source.transientBake);
@@ -3033,8 +3052,8 @@ export async function foldRasterRecordIntoMergedSurface(engine: BrushEngine,
       source.view,
       { x: 0, y: 0 },
       1,
-      LAYER_SIZE,
-      LAYER_SIZE,
+      DOCUMENT_WIDTH,
+      DOCUMENT_HEIGHT,
       record.opacity,
       sourceRect,
       externalBlendMode,
@@ -3077,17 +3096,29 @@ export async function buildMixedMergedSurfaceCandidate(engine: BrushEngine,
 
   const contentBounds = unionMergedSurfaceRects(
     boundedItems.map((entry) => entry.bounds as MergedSurfaceRect),
-    LAYER_SIZE,
+    DOCUMENT_WIDTH,
+    DOCUMENT_HEIGHT,
   );
   if (!contentBounds) {
     return null;
   }
   const allocation = {
-    bounds: alignedMergedSurfaceBounds(contentBounds, LAYER_SIZE),
+    bounds: alignedMergedSurfaceBounds(
+      contentBounds,
+      DOCUMENT_WIDTH,
+      64,
+      64,
+      DOCUMENT_HEIGHT,
+    ),
     resolutionScale: 1,
   } as const;
   const visibleItems = boundedItems.filter((entry) =>
-    intersectMergedSurfaceRects(entry.bounds, allocation.bounds, LAYER_SIZE) !== null
+    intersectMergedSurfaceRects(
+      entry.bounds,
+      allocation.bounds,
+      DOCUMENT_WIDTH,
+      DOCUMENT_HEIGHT,
+    ) !== null
   );
   if (visibleItems.length === 0) {
     return null;
@@ -3225,8 +3256,8 @@ export async function materializeLayerCompositeSource(engine: BrushEngine,
       nonTransparentBounds: normalizeLayerRect(record.contentBounds) ?? {
         x: 0,
         y: 0,
-        width: LAYER_SIZE,
-        height: LAYER_SIZE,
+        width: DOCUMENT_WIDTH,
+        height: DOCUMENT_HEIGHT,
       },
       analyticBakePixels: 0,
     };
@@ -3364,7 +3395,7 @@ export function allocateMergedSurface(engine: BrushEngine,
   format: LayerFormat,
   side: "below" | "above",
   layerCount: number,
-  bounds: DirtyRect = { x: 0, y: 0, width: LAYER_SIZE, height: LAYER_SIZE },
+  bounds: DirtyRect = { x: 0, y: 0, width: DOCUMENT_WIDTH, height: DOCUMENT_HEIGHT },
   resolutionScale = 1,
   maintainMipChain = true,
 ): MergedSurfaceResources {
@@ -4091,8 +4122,8 @@ export function layerCompositeVisualBounds(engine: BrushEngine, record: LayerRec
   const fullDocumentRect: DirtyRect = {
     x: 0,
     y: 0,
-    width: LAYER_SIZE,
-    height: LAYER_SIZE,
+    width: DOCUMENT_WIDTH,
+    height: DOCUMENT_HEIGHT,
   };
   const contentBounds = normalizeLayerRect(record.contentBounds);
   if (!contentBounds) {
@@ -4151,12 +4182,19 @@ export async function buildMergedSurfaceCandidate(engine: BrushEngine,
     visibleRecords.map(
       (record) => layerCompositeVisualBounds(engine, record) as MergedSurfaceRect,
     ),
-    LAYER_SIZE,
+    DOCUMENT_WIDTH,
+    DOCUMENT_HEIGHT,
   );
   if (!contentBounds) {
     return null;
   }
-  const allocationBounds = alignedMergedSurfaceBounds(contentBounds, LAYER_SIZE);
+  const allocationBounds = alignedMergedSurfaceBounds(
+    contentBounds,
+    DOCUMENT_WIDTH,
+    64,
+    64,
+    DOCUMENT_HEIGHT,
+  );
 
   return runGpuAllocationTransaction(
     engine.device,
@@ -4406,7 +4444,11 @@ export async function freezeActiveLayerToCold(engine: BrushEngine): Promise<void
 export function allocateActiveLayerDisplayPyramid(engine: BrushEngine, format: LayerFormat): DisplayPyramidResources {
   const texture = engine.device.createTexture({
     label: `Single active-layer display pyramid ${format}`,
-    size: { width: LAYER_SIZE >> 1, height: LAYER_SIZE >> 1, depthOrArrayLayers: 1 },
+    size: {
+      width: Math.max(1, DOCUMENT_WIDTH >> 1),
+      height: Math.max(1, DOCUMENT_HEIGHT >> 1),
+      depthOrArrayLayers: 1,
+    },
     mipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT - 1,
     format,
     usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,

@@ -1,11 +1,15 @@
 import {
   FILL_ACTIVE_BLOCK_BUFFER_BYTES,
   FILL_ACTIVE_NODE_BUFFER_BYTES,
-  FILL_BLOCK_GRID_SIZE,
+  FILL_BLOCK_COUNT,
+  FILL_BLOCK_GRID_HEIGHT,
+  FILL_BLOCK_GRID_WIDTH,
   FILL_HISTORY_MASK_BYTES,
   FILL_HISTORY_MASK_WORDS,
   FILL_INDIRECT_BUFFER_BYTES,
   FILL_LABEL_BUFFER_BYTES,
+  FILL_LAYER_HEIGHT,
+  FILL_LAYER_WIDTH,
   FILL_META_ACTIVE_BLOCKS,
   FILL_META_ACTIVE_COMPONENTS,
   FILL_META_DIAGNOSTIC,
@@ -28,7 +32,6 @@ import {
   countFillTiles,
   type FillAnalysis,
 } from "./fill-core";
-import { LAYER_SIZE } from "./engine-limits";
 import type { LayerFormat } from "./engine-types";
 import type { GpuHistorySlice } from "./gpu-history-storage";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
@@ -156,7 +159,8 @@ export class FillRenderer {
       || limits.maxStorageBufferBindingSize < FILL_PARENT_BUFFER_BYTES
     ) {
       throw new Error(
-        `I limiti compute della GPU non supportano il Riempimento ${LAYER_SIZE}².`,
+        `I limiti compute della GPU non supportano il Riempimento `
+        + `${FILL_LAYER_WIDTH}×${FILL_LAYER_HEIGHT}.`,
       );
     }
     this.layerFormat = options.layerFormat;
@@ -406,7 +410,7 @@ export class FillRenderer {
     const scratch = this.requireScratch();
     const x = Math.floor(seedX);
     const y = Math.floor(seedY);
-    if (x < 0 || y < 0 || x >= LAYER_SIZE || y >= LAYER_SIZE) {
+    if (x < 0 || y < 0 || x >= FILL_LAYER_WIDTH || y >= FILL_LAYER_HEIGHT) {
       throw new RangeError("Il punto di riempimento è fuori dal livello.");
     }
     const upload = new ArrayBuffer(FILL_UNIFORM_BYTES);
@@ -414,8 +418,8 @@ export class FillRenderer {
     const floats = new Float32Array(upload);
     unsigned[0] = x;
     unsigned[1] = y;
-    unsigned[2] = LAYER_SIZE;
-    unsigned[3] = LAYER_SIZE;
+    unsigned[2] = FILL_LAYER_WIDTH;
+    unsigned[3] = FILL_LAYER_HEIGHT;
     floats[4] = tolerance;
     floats.set(fillColor, 8);
     this.device.queue.writeBuffer(this.uniformBuffer, 0, upload);
@@ -434,9 +438,9 @@ export class FillRenderer {
     });
     labelPass.setBindGroup(0, scratch.computeBindGroup);
     labelPass.setPipeline(this.classifyPipeline);
-    labelPass.dispatchWorkgroups(FILL_BLOCK_GRID_SIZE, FILL_BLOCK_GRID_SIZE);
+    labelPass.dispatchWorkgroups(FILL_BLOCK_GRID_WIDTH, FILL_BLOCK_GRID_HEIGHT);
     labelPass.setPipeline(this.boundaryPipeline);
-    labelPass.dispatchWorkgroups(FILL_BLOCK_GRID_SIZE, FILL_BLOCK_GRID_SIZE);
+    labelPass.dispatchWorkgroups(FILL_BLOCK_GRID_WIDTH, FILL_BLOCK_GRID_HEIGHT);
     labelPass.end();
 
     const selectionPass = encoder.beginComputePass({
@@ -444,9 +448,9 @@ export class FillRenderer {
     });
     selectionPass.setBindGroup(0, scratch.computeBindGroup);
     selectionPass.setPipeline(this.compressPipeline);
-    selectionPass.dispatchWorkgroups(FILL_BLOCK_GRID_SIZE);
+    selectionPass.dispatchWorkgroups(Math.ceil(FILL_BLOCK_COUNT / 256));
     selectionPass.setPipeline(this.selectPipeline);
-    selectionPass.dispatchWorkgroups(FILL_BLOCK_GRID_SIZE, FILL_BLOCK_GRID_SIZE);
+    selectionPass.dispatchWorkgroups(FILL_BLOCK_GRID_WIDTH, FILL_BLOCK_GRID_HEIGHT);
     selectionPass.end();
     if (!selectionMask) {
       encoder.copyBufferToBuffer(
@@ -481,10 +485,10 @@ export class FillRenderer {
       });
       clipPass.setPipeline(this.selectionIntersectionPipeline);
       clipPass.setBindGroup(0, clipBindGroup);
-      clipPass.dispatchWorkgroups(Math.ceil((LAYER_SIZE * LAYER_SIZE / 32) / 256));
+      clipPass.dispatchWorkgroups(Math.ceil(FILL_HISTORY_MASK_WORDS / 256));
       clipPass.setPipeline(this.rebuildPipeline);
       clipPass.setBindGroup(0, scratch.computeBindGroup);
-      clipPass.dispatchWorkgroups(FILL_BLOCK_GRID_SIZE, FILL_BLOCK_GRID_SIZE);
+      clipPass.dispatchWorkgroups(FILL_BLOCK_GRID_WIDTH, FILL_BLOCK_GRID_HEIGHT);
       clipPass.end();
       clipEncoder.copyBufferToBuffer(
         scratch.metadata,
@@ -784,8 +788,8 @@ export class FillRenderer {
     this.assertHistorySlice(historySlice);
     const upload = new Float32Array(FILL_UNIFORM_BYTES / 4);
     const unsigned = new Uint32Array(upload.buffer);
-    unsigned[2] = LAYER_SIZE;
-    unsigned[3] = LAYER_SIZE;
+    unsigned[2] = FILL_LAYER_WIDTH;
+    unsigned[3] = FILL_LAYER_HEIGHT;
     upload.set(fillColor, 8);
     this.device.queue.writeBuffer(this.uniformBuffer, 0, upload);
     this.device.queue.writeBuffer(scratch.drawIndirect, 0, new Uint32Array([4, 0, 0, 0]));
@@ -800,7 +804,7 @@ export class FillRenderer {
     const pass = encoder.beginComputePass({ label: "Riempimento · ricostruzione lista blocchi" });
     pass.setPipeline(this.rebuildPipeline);
     pass.setBindGroup(0, scratch.computeBindGroup);
-    pass.dispatchWorkgroups(FILL_BLOCK_GRID_SIZE, FILL_BLOCK_GRID_SIZE);
+    pass.dispatchWorkgroups(FILL_BLOCK_GRID_WIDTH, FILL_BLOCK_GRID_HEIGHT);
     pass.setPipeline(this.expandRenderMaskPipeline);
     pass.dispatchWorkgroups(Math.ceil(FILL_HISTORY_MASK_WORDS / 256));
     pass.end();

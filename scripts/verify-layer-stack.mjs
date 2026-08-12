@@ -1312,8 +1312,13 @@ assert.match(
 );
 assert.match(
   mergedBody,
-  /const allocationBounds = alignedMergedSurfaceBounds\(contentBounds, LAYER_SIZE\)[\s\S]*?visibleRecords\.length,[\s\S]*?allocationBounds/,
+  /const allocationBounds = alignedMergedSurfaceBounds\(\s*contentBounds,\s*DOCUMENT_WIDTH,\s*64,\s*64,\s*DOCUMENT_HEIGHT,?\s*\)[\s\S]*?visibleRecords\.length,[\s\S]*?allocationBounds/,
   "la merged raster legacy non deve tornare a una texture full-document",
+);
+assert.doesNotMatch(
+  mergedBody,
+  /alignedMergedSurfaceBounds\(contentBounds, LAYER_SIZE\)/,
+  "i bounds merged non devono ricostruire un documento quadrato dal lato massimo",
 );
 assert.match(
   engineSource,
@@ -1504,7 +1509,7 @@ assert.match(
 );
 assert.match(
   engineSource,
-  /buildClippingSuffixStepSurface\([\s\S]*?alignedMergedSurfaceBounds\(bounded, LAYER_SIZE\),[\s\S]*?1,[\s\S]*?false,[\s\S]*?foldViewIntoMergedSurface\([\s\S]*?\n\s*1,[\s\S]*?\n\s*bounded,[\s\S]*?"normal",[\s\S]*?"source-over"/,
+  /buildClippingSuffixStepSurface\([\s\S]*?alignedMergedSurfaceBounds\(bounded, DOCUMENT_WIDTH, 64, 64, DOCUMENT_HEIGHT\),[\s\S]*?1,[\s\S]*?false,[\s\S]*?foldViewIntoMergedSurface\([\s\S]*?\n\s*1,[\s\S]*?\n\s*DOCUMENT_WIDTH,[\s\S]*?\n\s*DOCUMENT_HEIGHT,[\s\S]*?\n\s*1,[\s\S]*?\n\s*bounded,[\s\S]*?"normal",[\s\S]*?"source-over"/,
   "l'operando child deve essere mip0-only e non deve incorporare l'opacità",
 );
 assert.match(
@@ -1629,7 +1634,7 @@ assert.match(
 );
 assert.equal(
   (engineSource.match(
-    /label: `\$\{LAYER_SIZE\}² authoritative paint layer \$\{format\}`/g,
+    /label: `\$\{DOCUMENT_WIDTH\}×\$\{DOCUMENT_HEIGHT\} authoritative paint layer \$\{format\}`/g,
   ) ?? []).length,
   1,
   "la creazione della texture autorevole deve esistere in un solo punto",
@@ -2744,6 +2749,15 @@ assert.match(
   layerStorageStudySource,
   /single-active-plus-optional-reference-full-inactive-256-array-tiles-direct-native-fold-fallback-rehydrate/,
 );
+assert.match(layerStorageStudySource, /LAYER_STORAGE_TILE_WIDTH = DOCUMENT_TILE_WIDTH/);
+assert.match(layerStorageStudySource, /LAYER_STORAGE_TILE_HEIGHT = DOCUMENT_TILE_HEIGHT/);
+assert.match(layerStorageStudySource, /LAYER_STORAGE_DOCUMENT_WIDTH = DOCUMENT_WIDTH/);
+assert.match(layerStorageStudySource, /LAYER_STORAGE_DOCUMENT_HEIGHT = DOCUMENT_HEIGHT/);
+assert.match(
+  layerStorageStudySource,
+  /Math\.floor\(pixelLeft \/ LAYER_STORAGE_TILE_WIDTH\)[\s\S]*?Math\.floor\(pixelTop \/ LAYER_STORAGE_TILE_HEIGHT\)/,
+  "la griglia cold deve mappare X e Y con estensioni tile indipendenti",
+);
 assert.match(layerStorageStudySource, /"Occupied" deliberately means ANY non-zero byte/);
 assert.doesNotMatch(
   layerStorageStudySource,
@@ -2932,7 +2946,12 @@ assert.match(iphoneMemoryLimitSource,
 assert.match(sitesBuildSource, /iphone-rgba16f-gpu-plus-compressed-cpu-peaks-v3/);
 assert.match(
   iphoneMemoryLimitSource,
-  /TILE_MEMORY_MIB_RGBA16F\s*=\s*\n?\s*LAYER_STORAGE_TILE_SIZE \*\* 2 \* RGBA16F_BYTES_PER_PIXEL \/ MEBIBYTE_BYTES;/,
+  /TILE_MEMORY_MIB_RGBA16F\s*=\s*\n?\s*LAYER_STORAGE_TILE_WIDTH \* LAYER_STORAGE_TILE_HEIGHT\s*\* RGBA16F_BYTES_PER_PIXEL \/ MEBIBYTE_BYTES;/,
+);
+assert.doesNotMatch(
+  iphoneMemoryLimitSource,
+  /LAYER_STORAGE_TILE_SIZE \*\* 2/,
+  "il piano memoria iPhone non deve sovrastimare i tile rettangolari come quadrati",
 );
 assert.match(iphoneMemoryLimitSource, /initialStats\.layerFormat !== "rgba16float"/);
 assert.match(iphoneMemoryLimitSource, /countedGpuPlusCompressedCpuMiB/);

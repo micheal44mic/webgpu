@@ -6,9 +6,11 @@
  * dirty bounds, sparse tile projection and shader ABI independently testable.
  */
 import {
+  DOCUMENT_HEIGHT,
   DOCUMENT_TILE_GRID_SIZE,
-  DOCUMENT_TILE_SIZE,
-  LAYER_SIZE,
+  DOCUMENT_TILE_HEIGHT,
+  DOCUMENT_TILE_WIDTH,
+  DOCUMENT_WIDTH,
 } from "./engine-limits.ts";
 
 export const RASTER_TRANSFORM_MATH_STRATEGY =
@@ -18,9 +20,15 @@ export const RASTER_TRANSFORM_MATH_STRATEGY =
 // storage: griglia 16×16 sul documento, quindi il lato del tile scala con la
 // taglia. Se questo restasse 256 fisso, a 2048² la maschera da 8 word verrebbe
 // rifiutata da `requireTileMask` come lunga il quadruplo del previsto.
-export const RASTER_TRANSFORM_DOCUMENT_SIZE = LAYER_SIZE;
+export const RASTER_TRANSFORM_DOCUMENT_WIDTH = DOCUMENT_WIDTH;
+export const RASTER_TRANSFORM_DOCUMENT_HEIGHT = DOCUMENT_HEIGHT;
+/** @deprecated Prefer the independent document width and height constants. */
+export const RASTER_TRANSFORM_DOCUMENT_SIZE = Math.max(DOCUMENT_WIDTH, DOCUMENT_HEIGHT);
 export const RASTER_TRANSFORM_TILE_GRID_SIZE = DOCUMENT_TILE_GRID_SIZE;
-export const RASTER_TRANSFORM_TILE_SIZE = DOCUMENT_TILE_SIZE;
+export const RASTER_TRANSFORM_TILE_WIDTH = DOCUMENT_TILE_WIDTH;
+export const RASTER_TRANSFORM_TILE_HEIGHT = DOCUMENT_TILE_HEIGHT;
+/** @deprecated Prefer the independent tile width and height constants. */
+export const RASTER_TRANSFORM_TILE_SIZE = Math.max(DOCUMENT_TILE_WIDTH, DOCUMENT_TILE_HEIGHT);
 export const RASTER_TRANSFORM_FILTER_PADDING_PX = 2;
 export const RASTER_TRANSFORM_MINIMUM_ABS_SCALE = 0.01;
 export const RASTER_TRANSFORM_MAXIMUM_ABS_SCALE = 64;
@@ -173,15 +181,19 @@ export function rasterInverseTransformPoint(
 
 export function clipRasterTransformRect(
   rect: RasterTransformRect | null,
-  documentSize = RASTER_TRANSFORM_DOCUMENT_SIZE,
+  documentWidth = RASTER_TRANSFORM_DOCUMENT_WIDTH,
+  documentHeight = arguments.length < 2
+    ? RASTER_TRANSFORM_DOCUMENT_HEIGHT
+    : documentWidth,
 ): RasterTransformRect | null {
   if (!rect) return null;
-  const size = requirePositiveInteger(documentSize, "documentSize");
+  const width = requirePositiveInteger(documentWidth, "documentWidth");
+  const height = requirePositiveInteger(documentHeight, "documentHeight");
   const candidate = validatedRect(rect, "rect");
   const x = Math.max(0, Math.floor(candidate.x));
   const y = Math.max(0, Math.floor(candidate.y));
-  const right = Math.min(size, Math.ceil(rectRight(candidate)));
-  const bottom = Math.min(size, Math.ceil(rectBottom(candidate)));
+  const right = Math.min(width, Math.ceil(rectRight(candidate)));
+  const bottom = Math.min(height, Math.ceil(rectBottom(candidate)));
   return right > x && bottom > y
     ? { x, y, width: right - x, height: bottom - y }
     : null;
@@ -205,10 +217,13 @@ export function intersectRasterTransformRects(
 export function mergeRasterTransformRects(
   first: RasterTransformRect | null,
   second: RasterTransformRect | null,
-  documentSize = RASTER_TRANSFORM_DOCUMENT_SIZE,
+  documentWidth = RASTER_TRANSFORM_DOCUMENT_WIDTH,
+  documentHeight = arguments.length < 3
+    ? RASTER_TRANSFORM_DOCUMENT_HEIGHT
+    : documentWidth,
 ): RasterTransformRect | null {
-  const left = clipRasterTransformRect(first, documentSize);
-  const right = clipRasterTransformRect(second, documentSize);
+  const left = clipRasterTransformRect(first, documentWidth, documentHeight);
+  const right = clipRasterTransformRect(second, documentWidth, documentHeight);
   if (!left) return right;
   if (!right) return left;
   const x = Math.min(left.x, right.x);
@@ -230,13 +245,21 @@ export function rasterTransformBounds(
   transform: RasterTransformAffine,
   options: {
     documentSize?: number;
+    documentWidth?: number;
+    documentHeight?: number;
     padding?: number;
   } = {},
 ): RasterTransformRect | null {
   if (!sourceBounds) return null;
   const source = validatedRect(sourceBounds, "sourceBounds");
-  const documentSize = options.documentSize ?? RASTER_TRANSFORM_DOCUMENT_SIZE;
-  requirePositiveInteger(documentSize, "documentSize");
+  const documentWidth = options.documentWidth
+    ?? options.documentSize
+    ?? RASTER_TRANSFORM_DOCUMENT_WIDTH;
+  const documentHeight = options.documentHeight
+    ?? options.documentSize
+    ?? RASTER_TRANSFORM_DOCUMENT_HEIGHT;
+  requirePositiveInteger(documentWidth, "documentWidth");
+  requirePositiveInteger(documentHeight, "documentHeight");
   const padding = requireFinite(
     options.padding ?? RASTER_TRANSFORM_FILTER_PADDING_PX,
     "padding",
@@ -257,16 +280,20 @@ export function rasterTransformBounds(
     y: Math.floor(minimumY - padding),
     width: Math.ceil(maximumX + padding) - Math.floor(minimumX - padding),
     height: Math.ceil(maximumY + padding) - Math.floor(minimumY - padding),
-  }, documentSize);
+  }, documentWidth, documentHeight);
 }
 
 export function rasterTransformDirtyRect(
   previousBounds: RasterTransformRect | null,
   nextBounds: RasterTransformRect | null,
-  documentSize = RASTER_TRANSFORM_DOCUMENT_SIZE,
+  documentWidth = RASTER_TRANSFORM_DOCUMENT_WIDTH,
   padding = RASTER_TRANSFORM_FILTER_PADDING_PX,
+  documentHeight = arguments.length < 3
+    ? RASTER_TRANSFORM_DOCUMENT_HEIGHT
+    : documentWidth,
 ): RasterTransformRect | null {
-  requirePositiveInteger(documentSize, "documentSize");
+  requirePositiveInteger(documentWidth, "documentWidth");
+  requirePositiveInteger(documentHeight, "documentHeight");
   const safePadding = requireFinite(padding, "padding");
   if (safePadding < 0) throw new Error("padding non può essere negativo.");
   const padded = (rect: RasterTransformRect | null): RasterTransformRect | null => rect
@@ -280,7 +307,8 @@ export function rasterTransformDirtyRect(
   return mergeRasterTransformRects(
     padded(previousBounds),
     padded(nextBounds),
-    documentSize,
+    documentWidth,
+    documentHeight,
   );
 }
 
@@ -321,38 +349,61 @@ export function rasterTransformSamplingBounds(
   sourceBounds: RasterTransformRect | null,
   sourcePivot: RasterTransformPoint,
   transform: RasterTransformAffine,
-  documentSize = RASTER_TRANSFORM_DOCUMENT_SIZE,
+  documentWidth = RASTER_TRANSFORM_DOCUMENT_WIDTH,
+  documentHeight = arguments.length < 4
+    ? RASTER_TRANSFORM_DOCUMENT_HEIGHT
+    : documentWidth,
 ): RasterTransformRect | null {
   return rasterTransformBounds(sourceBounds, sourcePivot, transform, {
-    documentSize,
+    documentWidth,
+    documentHeight,
     padding: rasterTransformSamplingPadding(transform),
   });
 }
 
-function tileGridSize(documentSize: number, tileSize: number): number {
-  const size = requirePositiveInteger(documentSize, "documentSize");
-  const tile = requirePositiveInteger(tileSize, "tileSize");
-  if (size % tile !== 0) {
-    throw new Error("documentSize deve essere divisibile esattamente per tileSize.");
-  }
-  return size / tile;
+interface TileGridDimensions {
+  readonly width: number;
+  readonly height: number;
 }
 
-function expectedTileMaskWords(gridSize: number): number {
-  return Math.ceil(gridSize * gridSize / 32);
+function tileGridDimensions(
+  documentWidth: number,
+  documentHeight: number,
+  tileWidth: number,
+  tileHeight: number,
+): TileGridDimensions {
+  const width = requirePositiveInteger(documentWidth, "documentWidth");
+  const height = requirePositiveInteger(documentHeight, "documentHeight");
+  const horizontalExtent = requirePositiveInteger(tileWidth, "tileWidth");
+  const verticalExtent = requirePositiveInteger(tileHeight, "tileHeight");
+  return {
+    width: Math.ceil(width / horizontalExtent),
+    height: Math.ceil(height / verticalExtent),
+  };
+}
+
+function expectedTileMaskWords(grid: TileGridDimensions): number {
+  return Math.ceil(grid.width * grid.height / 32);
 }
 
 function requireTileMask(
   mask: Uint32Array,
-  documentSize: number,
-  tileSize: number,
-): number {
-  const gridSize = tileGridSize(documentSize, tileSize);
-  const expectedWords = expectedTileMaskWords(gridSize);
+  documentWidth: number,
+  documentHeight: number,
+  tileWidth: number,
+  tileHeight: number,
+): TileGridDimensions {
+  const grid = tileGridDimensions(
+    documentWidth,
+    documentHeight,
+    tileWidth,
+    tileHeight,
+  );
+  const expectedWords = expectedTileMaskWords(grid);
   if (mask.length !== expectedWords) {
     throw new Error(`Maschera tile non valida: ${mask.length} word, attese ${expectedWords}.`);
   }
-  return gridSize;
+  return grid;
 }
 
 function tileIsSet(mask: Uint32Array, tileIndex: number): boolean {
@@ -367,28 +418,41 @@ function setTile(mask: Uint32Array, tileIndex: number): void {
 function markRectTiles(
   mask: Uint32Array,
   rect: RasterTransformRect,
-  gridSize: number,
-  tileSize: number,
+  grid: TileGridDimensions,
+  tileWidth: number,
+  tileHeight: number,
 ): void {
-  const firstTileX = Math.max(0, Math.floor(rect.x / tileSize));
-  const firstTileY = Math.max(0, Math.floor(rect.y / tileSize));
-  const lastTileX = Math.min(gridSize, Math.ceil(rectRight(rect) / tileSize));
-  const lastTileY = Math.min(gridSize, Math.ceil(rectBottom(rect) / tileSize));
+  const firstTileX = Math.max(0, Math.floor(rect.x / tileWidth));
+  const firstTileY = Math.max(0, Math.floor(rect.y / tileHeight));
+  const lastTileX = Math.min(grid.width, Math.ceil(rectRight(rect) / tileWidth));
+  const lastTileY = Math.min(grid.height, Math.ceil(rectBottom(rect) / tileHeight));
   for (let tileY = firstTileY; tileY < lastTileY; tileY += 1) {
     for (let tileX = firstTileX; tileX < lastTileX; tileX += 1) {
-      setTile(mask, tileY * gridSize + tileX);
+      setTile(mask, tileY * grid.width + tileX);
     }
   }
 }
 
 export function rasterTransformTileIndices(
   mask: Uint32Array,
-  documentSize = RASTER_TRANSFORM_DOCUMENT_SIZE,
-  tileSize = RASTER_TRANSFORM_TILE_SIZE,
+  documentWidth = RASTER_TRANSFORM_DOCUMENT_WIDTH,
+  tileWidth = RASTER_TRANSFORM_TILE_WIDTH,
+  documentHeight = arguments.length < 2
+    ? RASTER_TRANSFORM_DOCUMENT_HEIGHT
+    : documentWidth,
+  tileHeight = arguments.length < 3
+    ? RASTER_TRANSFORM_TILE_HEIGHT
+    : tileWidth,
 ): number[] {
-  const gridSize = requireTileMask(mask, documentSize, tileSize);
+  const grid = requireTileMask(
+    mask,
+    documentWidth,
+    documentHeight,
+    tileWidth,
+    tileHeight,
+  );
   const indices: number[] = [];
-  for (let tileIndex = 0; tileIndex < gridSize * gridSize; tileIndex += 1) {
+  for (let tileIndex = 0; tileIndex < grid.width * grid.height; tileIndex += 1) {
     if (tileIsSet(mask, tileIndex)) indices.push(tileIndex);
   }
   return indices;
@@ -400,17 +464,35 @@ export function rasterTransformTileIndices(
  */
 export function rasterTransformScratchRect(
   sourceMask: Uint32Array,
-  documentSize = RASTER_TRANSFORM_DOCUMENT_SIZE,
-  tileSize = RASTER_TRANSFORM_TILE_SIZE,
+  documentWidth = RASTER_TRANSFORM_DOCUMENT_WIDTH,
+  tileWidth = RASTER_TRANSFORM_TILE_WIDTH,
+  documentHeight = arguments.length < 2
+    ? RASTER_TRANSFORM_DOCUMENT_HEIGHT
+    : documentWidth,
+  tileHeight = arguments.length < 3
+    ? RASTER_TRANSFORM_TILE_HEIGHT
+    : tileWidth,
 ): RasterTransformRect | null {
-  const gridSize = requireTileMask(sourceMask, documentSize, tileSize);
-  let minimumTileX = gridSize;
-  let minimumTileY = gridSize;
+  const grid = requireTileMask(
+    sourceMask,
+    documentWidth,
+    documentHeight,
+    tileWidth,
+    tileHeight,
+  );
+  let minimumTileX = grid.width;
+  let minimumTileY = grid.height;
   let maximumTileX = -1;
   let maximumTileY = -1;
-  for (const tileIndex of rasterTransformTileIndices(sourceMask, documentSize, tileSize)) {
-    const tileX = tileIndex % gridSize;
-    const tileY = Math.floor(tileIndex / gridSize);
+  for (const tileIndex of rasterTransformTileIndices(
+    sourceMask,
+    documentWidth,
+    tileWidth,
+    documentHeight,
+    tileHeight,
+  )) {
+    const tileX = tileIndex % grid.width;
+    const tileY = Math.floor(tileIndex / grid.width);
     minimumTileX = Math.min(minimumTileX, tileX);
     minimumTileY = Math.min(minimumTileY, tileY);
     maximumTileX = Math.max(maximumTileX, tileX);
@@ -418,10 +500,12 @@ export function rasterTransformScratchRect(
   }
   return maximumTileX >= minimumTileX && maximumTileY >= minimumTileY
     ? {
-      x: minimumTileX * tileSize,
-      y: minimumTileY * tileSize,
-      width: (maximumTileX - minimumTileX + 1) * tileSize,
-      height: (maximumTileY - minimumTileY + 1) * tileSize,
+      x: minimumTileX * tileWidth,
+      y: minimumTileY * tileHeight,
+      width: Math.min(documentWidth, (maximumTileX + 1) * tileWidth)
+        - minimumTileX * tileWidth,
+      height: Math.min(documentHeight, (maximumTileY + 1) * tileHeight)
+        - minimumTileY * tileHeight,
     }
     : null;
 }
@@ -444,23 +528,35 @@ export function rasterTransformScratchRect(
 export function tileMaskCoveringRect(
   mask: Uint32Array,
   rect: RasterTransformRect | null,
-  documentSize = RASTER_TRANSFORM_DOCUMENT_SIZE,
-  tileSize = RASTER_TRANSFORM_TILE_SIZE,
+  documentWidth = RASTER_TRANSFORM_DOCUMENT_WIDTH,
+  tileWidth = RASTER_TRANSFORM_TILE_WIDTH,
+  documentHeight = arguments.length < 3
+    ? RASTER_TRANSFORM_DOCUMENT_HEIGHT
+    : documentWidth,
+  tileHeight = arguments.length < 4
+    ? RASTER_TRANSFORM_TILE_HEIGHT
+    : tileWidth,
 ): Uint32Array {
-  const gridSize = requireTileMask(mask, documentSize, tileSize);
+  const grid = requireTileMask(
+    mask,
+    documentWidth,
+    documentHeight,
+    tileWidth,
+    tileHeight,
+  );
   const covering = mask.slice();
   if (!rect) return covering;
-  const clipped = clipRasterTransformRect(rect, documentSize);
+  const clipped = clipRasterTransformRect(rect, documentWidth, documentHeight);
   if (!clipped) return covering;
-  const firstTileX = Math.floor(clipped.x / tileSize);
-  const firstTileY = Math.floor(clipped.y / tileSize);
+  const firstTileX = Math.floor(clipped.x / tileWidth);
+  const firstTileY = Math.floor(clipped.y / tileHeight);
   // `rectRight` e' esclusivo: l'ultimo pixel e' `right - 1`, e prendere il tile
   // di `right` accenderebbe una colonna vuota su un bordo allineato.
-  const lastTileX = Math.floor((rectRight(clipped) - 1) / tileSize);
-  const lastTileY = Math.floor((rectBottom(clipped) - 1) / tileSize);
+  const lastTileX = Math.floor((rectRight(clipped) - 1) / tileWidth);
+  const lastTileY = Math.floor((rectBottom(clipped) - 1) / tileHeight);
   for (let tileY = firstTileY; tileY <= lastTileY; tileY += 1) {
     for (let tileX = firstTileX; tileX <= lastTileX; tileX += 1) {
-      const tileIndex = tileY * gridSize + tileX;
+      const tileIndex = tileY * grid.width + tileX;
       covering[tileIndex >>> 5] |= 1 << (tileIndex & 31);
     }
   }
@@ -478,26 +574,58 @@ export function rasterTransformTileMask(
   transform: RasterTransformAffine,
   options: {
     documentSize?: number;
+    documentWidth?: number;
+    documentHeight?: number;
     tileSize?: number;
+    tileWidth?: number;
+    tileHeight?: number;
     padding?: number;
   } = {},
 ): Uint32Array {
-  const documentSize = options.documentSize ?? RASTER_TRANSFORM_DOCUMENT_SIZE;
-  const tileSize = options.tileSize ?? RASTER_TRANSFORM_TILE_SIZE;
-  const gridSize = requireTileMask(sourceMask, documentSize, tileSize);
-  const result = new Uint32Array(expectedTileMaskWords(gridSize));
-  const clippedSourceBounds = clipRasterTransformRect(sourceBounds, documentSize);
+  const documentWidth = options.documentWidth
+    ?? options.documentSize
+    ?? RASTER_TRANSFORM_DOCUMENT_WIDTH;
+  const documentHeight = options.documentHeight
+    ?? options.documentSize
+    ?? RASTER_TRANSFORM_DOCUMENT_HEIGHT;
+  const tileWidth = options.tileWidth
+    ?? options.tileSize
+    ?? RASTER_TRANSFORM_TILE_WIDTH;
+  const tileHeight = options.tileHeight
+    ?? options.tileSize
+    ?? RASTER_TRANSFORM_TILE_HEIGHT;
+  const grid = requireTileMask(
+    sourceMask,
+    documentWidth,
+    documentHeight,
+    tileWidth,
+    tileHeight,
+  );
+  const result = new Uint32Array(expectedTileMaskWords(grid));
+  const clippedSourceBounds = clipRasterTransformRect(
+    sourceBounds,
+    documentWidth,
+    documentHeight,
+  );
   if (!clippedSourceBounds) return result;
 
-  for (const tileIndex of rasterTransformTileIndices(sourceMask, documentSize, tileSize)) {
-    const tileX = tileIndex % gridSize;
-    const tileY = Math.floor(tileIndex / gridSize);
+  for (const tileIndex of rasterTransformTileIndices(
+    sourceMask,
+    documentWidth,
+    tileWidth,
+    documentHeight,
+    tileHeight,
+  )) {
+    const tileX = tileIndex % grid.width;
+    const tileY = Math.floor(tileIndex / grid.width);
+    const tileOriginX = tileX * tileWidth;
+    const tileOriginY = tileY * tileHeight;
     const occupiedPart = intersectRasterTransformRects(
       {
-        x: tileX * tileSize,
-        y: tileY * tileSize,
-        width: tileSize,
-        height: tileSize,
+        x: tileOriginX,
+        y: tileOriginY,
+        width: Math.min(tileWidth, documentWidth - tileOriginX),
+        height: Math.min(tileHeight, documentHeight - tileOriginY),
       },
       clippedSourceBounds,
     );
@@ -507,11 +635,14 @@ export function rasterTransformTileMask(
       sourcePivot,
       transform,
       {
-        documentSize,
+        documentWidth,
+        documentHeight,
         padding: options.padding ?? RASTER_TRANSFORM_FILTER_PADDING_PX,
       },
     );
-    if (transformed) markRectTiles(result, transformed, gridSize, tileSize);
+    if (transformed) {
+      markRectTiles(result, transformed, grid, tileWidth, tileHeight);
+    }
   }
   return result;
 }

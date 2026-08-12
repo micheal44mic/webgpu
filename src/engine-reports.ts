@@ -108,7 +108,9 @@ import {
   GRAIN_TEXTURE_MIP_LEVEL_COUNT,
   GRAIN_TEXTURE_PIXEL_COUNT,
   GRAIN_TEXTURE_SIZE,
-  LAYER_SIZE,
+  DOCUMENT_HEIGHT,
+  DOCUMENT_MAX_EDGE,
+  DOCUMENT_WIDTH,
   MAX_STAMPS_PER_BATCH,
   MEBIBYTE_BYTES,
   PAINT_DISPLAY_MIP_LEVEL_COUNT,
@@ -157,7 +159,9 @@ import {
   LAYER_STORAGE_GRID_SIZE,
   LAYER_STORAGE_STRATEGY,
   LAYER_STORAGE_TILE_COUNT,
+  LAYER_STORAGE_TILE_HEIGHT,
   LAYER_STORAGE_TILE_SIZE,
+  LAYER_STORAGE_TILE_WIDTH,
   alignedBoundsTileCount,
   clearLayerStorageTileMask,
   compareLayerStorageMasks,
@@ -399,7 +403,7 @@ export function getBenchmarkEnvironment(engine: BrushEngine): {
   return {
     canvasWidth: engine.canvas.width,
     canvasHeight: engine.canvas.height,
-    layerSize: LAYER_SIZE,
+    layerSize: DOCUMENT_MAX_EDGE,
     layerFormat: engine.layerFormat,
     layerMemoryMiB: layerStorageStudy.actualRawMiB,
     layerCount: engine.layerStack.count,
@@ -1720,8 +1724,8 @@ export async function measureExactLayerStorageStudy(engine: BrushEngine): Promis
     const pixels = await engine.readLayerPixels(undefined, index);
     const exactMask = exactLayerStorageTileMask(
       pixels,
-      LAYER_SIZE,
-      LAYER_SIZE,
+      DOCUMENT_WIDTH,
+      DOCUMENT_HEIGHT,
       bytesPerPixel,
     );
     const comparison = compareLayerStorageMasks(exactMask, record.storageTileMask);
@@ -2012,8 +2016,9 @@ export async function runBenchmark(engine: BrushEngine, baseStampCount: number):
 
 export function generateBenchmarkStamps(engine: BrushEngine, count: number, settings: BrushSettings): Stamp[] {
   const stamps = new Array<Stamp>(count);
-  const center = LAYER_SIZE * 0.5;
-  const maximumPathRadius = LAYER_SIZE * 0.39;
+  const centerX = DOCUMENT_WIDTH * 0.5;
+  const centerY = DOCUMENT_HEIGHT * 0.5;
+  const maximumPathRadius = Math.min(DOCUMENT_WIDTH, DOCUMENT_HEIGHT) * 0.39;
 
   for (let index = 0; index < count; index += 1) {
     const progress = count <= 1 ? 0 : index / (count - 1);
@@ -2023,8 +2028,8 @@ export function generateBenchmarkStamps(engine: BrushEngine, count: number, sett
     const radius = Math.max(0.5, settings.size * 0.5);
 
     stamps[index] = {
-      x: center + Math.cos(angle) * pathRadius,
-      y: center + Math.sin(angle * 1.037) * pathRadius,
+      x: centerX + Math.cos(angle) * pathRadius,
+      y: centerY + Math.sin(angle * 1.037) * pathRadius,
       radius,
       pressure,
       seed: (Math.imul(engine.seedSequence++, 0x9e3779b1) ^ 0xa511e9b3) >>> 0,
@@ -2074,7 +2079,10 @@ export async function benchmarkEffectsWorkingSet(engine: BrushEngine,
   engine.rasterBevelBusy = true;
   engine.rasterOuterShadowBusy = true;
   engine.rasterInnerShadowBusy = true;
-  engine.callbacks.onStatus?.(`Benchmark banco effetti ${LAYER_SIZE}² in corso…`, "working");
+  engine.callbacks.onStatus?.(
+    `Benchmark banco effetti ${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT} in corso…`,
+    "working",
+  );
   try {
     const { benchmarkEffectsWorkbench } = await import("./effects-benchmark");
     const report = await benchmarkEffectsWorkbench({
@@ -2083,8 +2091,8 @@ export async function benchmarkEffectsWorkingSet(engine: BrushEngine,
       layerFormat: engine.layerFormat,
       lightGlazeUniformBuffer: engine.lightGlazeUniformBuffer,
       thicknessTailUniformBuffer: engine.thicknessTailDisplayUniformBuffer,
-      documentWidth: LAYER_SIZE,
-      documentHeight: LAYER_SIZE,
+      documentWidth: DOCUMENT_WIDTH,
+      documentHeight: DOCUMENT_HEIGHT,
       gpuLabel: engine.gpuLabel,
       timestampQueriesSupported: engine.device.features.has("timestamp-query"),
       samples,
@@ -2094,7 +2102,10 @@ export async function benchmarkEffectsWorkingSet(engine: BrushEngine,
       },
       onMemoryChanged: () => engine.publishStats(),
     });
-    console.info(`[EffectsWorkbench] benchmark ${LAYER_SIZE}²`, report);
+    console.info(
+      `[EffectsWorkbench] benchmark ${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT}`,
+      report,
+    );
     console.table(Object.fromEntries(report.scenarios.map((scenario) => [
       scenario.id,
       {
@@ -2177,7 +2188,7 @@ export async function measureLayerColdCompressionStudy(engine: BrushEngine,
   const countedGpuMiBBefore = getGpuMemoryStats(engine).countedTotalMiB;
   const studyBytesPerPixel = engine.layerFormat === "rgba16float" ? 8 : 4;
   const tileByteLength =
-    LAYER_STORAGE_TILE_SIZE * LAYER_STORAGE_TILE_SIZE * studyBytesPerPixel;
+    LAYER_STORAGE_TILE_WIDTH * LAYER_STORAGE_TILE_HEIGHT * studyBytesPerPixel;
   const totalTiles = sources.reduce(
     (total, source) => total + source.cold.tileIndices.length,
     0,
@@ -2598,9 +2609,10 @@ export async function seedActiveLayerMemoryStress(engine: BrushEngine,
   const markerSize = 64;
   const gridColumn = markerIndex % 4;
   const gridRow = Math.floor(markerIndex / 4) % 4;
-  const markerCellSize = LAYER_SIZE / 4;
-  const x = Math.floor(gridColumn * markerCellSize + (markerCellSize - markerSize) * 0.5);
-  const y = Math.floor(gridRow * markerCellSize + (markerCellSize - markerSize) * 0.5);
+  const markerCellWidth = DOCUMENT_WIDTH / 4;
+  const markerCellHeight = DOCUMENT_HEIGHT / 4;
+  const x = Math.floor(gridColumn * markerCellWidth + (markerCellWidth - markerSize) * 0.5);
+  const y = Math.floor(gridRow * markerCellHeight + (markerCellHeight - markerSize) * 0.5);
   const red = 72 + (markerIndex * 73) % 176;
   const green = 72 + (markerIndex * 109) % 176;
   const blue = 72 + (markerIndex * 151) % 176;
@@ -2632,8 +2644,8 @@ export async function seedActiveLayerMemoryStress(engine: BrushEngine,
   const storageTileMask = engine.layerStack.active.storageTileMask;
   storageTileMask.fill(0);
   const markerTileIndex =
-    Math.floor(y / LAYER_STORAGE_TILE_SIZE) * LAYER_STORAGE_GRID_SIZE
-    + Math.floor(x / LAYER_STORAGE_TILE_SIZE);
+    Math.floor(y / LAYER_STORAGE_TILE_HEIGHT) * LAYER_STORAGE_GRID_SIZE
+    + Math.floor(x / LAYER_STORAGE_TILE_WIDTH);
   const markStorageTile = (tileIndex: number): void => {
     const wordIndex = tileIndex >>> 5;
     storageTileMask[wordIndex] |= 1 << (tileIndex & 31);
