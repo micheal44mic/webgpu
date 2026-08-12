@@ -36,6 +36,23 @@ export interface VectorTextGpuPresentationStats {
   blurCacheEntries: number;
 }
 
+export interface VectorTextGpuGradientStop {
+  readonly offset: number;
+  /** Unpremultiplied sRGB channels; interpolation follows SVG's default sRGB space. */
+  readonly color: readonly [number, number, number];
+  readonly opacity: number;
+}
+
+export interface VectorTextGpuGradient {
+  readonly kind: "linear" | "radial";
+  readonly spread: "pad" | "reflect" | "repeat";
+  /** Forward affine map from gradient coordinates to centered local coordinates. */
+  readonly transform: readonly [number, number, number, number, number, number];
+  readonly geometry: readonly [number, number, number, number];
+  readonly focal: readonly [number, number];
+  readonly stops: readonly VectorTextGpuGradientStop[];
+}
+
 interface VectorTextGpuDrawBase {
   readonly meshKey: string;
   readonly x: number;
@@ -46,6 +63,7 @@ interface VectorTextGpuDrawBase {
   readonly localOffsetY: number;
   readonly color: readonly [number, number, number];
   readonly opacity: number;
+  readonly gradient?: VectorTextGpuGradient;
 }
 
 export interface VectorTextGpuMeshDraw extends VectorTextGpuDrawBase {
@@ -132,4 +150,3 @@ export type VectorTextGpuDraw =
   | VectorTextGpuSlugBlurDraw
   | VectorTextGpuSlugInnerShadowDirectDraw
   | VectorTextGpuSlugInnerShadowBlurDraw;
-

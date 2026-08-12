@@ -73,6 +73,8 @@ import {
   VECTOR_TEXT_GPU_SAMPLE_COUNT,
   VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL,
   VECTOR_TEXT_GPU_TARGET_FORMAT,
+  VECTOR_TEXT_GPU_UNIFORM_BYTES,
+  VECTOR_TEXT_GPU_UNIFORM_FLOATS,
 } from "../src/vector-text-gpu-shader.ts";
 import {
   VECTOR_TEXT_SLUG_GPU_RENDER_STRATEGY,
@@ -113,6 +115,7 @@ import {
 import {
   VECTOR_SVG_IMPORT_STRATEGY,
   VECTOR_SVG_MAXIMUM_COMMANDS,
+  VECTOR_SVG_MAXIMUM_GRADIENT_STOPS,
   VECTOR_SVG_MAXIMUM_SOURCE_BYTES,
 } from "../src/vector-svg-import.ts";
 import {
@@ -158,6 +161,7 @@ const transformSource = read("src/vector-text-transform.ts");
 const adaptiveSource = read("src/vector-text-adaptive-zoom.ts");
 const mixedCompositorSource = read("src/mixed-scene-compositor-shader.ts");
 const svgSource = read("src/vector-svg-import.ts");
+const svgGradientStrokeFixture = read("scripts/fixtures/svg-gradient-stroke.svg");
 const vectorRasterSource = read("src/engine-vector-raster-runtime.ts");
 const mainSource = read("src/main.ts");
 const sitesBuildSource = read("scripts/prepare-sites-build.mjs");
@@ -668,8 +672,10 @@ assert.equal(
 );
 assert.equal(
   VECTOR_TEXT_GPU_RENDER_STRATEGY,
-  "webgpu-indexed-vector-linear-rgba16float-msaa4-exact-camera-redraw-v2",
+  "webgpu-indexed-vector-linear-rgba16float-msaa4-svg-gradients-v3",
 );
+assert.equal(VECTOR_TEXT_GPU_UNIFORM_FLOATS, 60);
+assert.equal(VECTOR_TEXT_GPU_UNIFORM_BYTES, 240);
 assert.equal(VECTOR_TEXT_GPU_TARGET_FORMAT, "rgba16float");
 assert.equal(VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL, 8);
 assert.equal(VECTOR_TEXT_GPU_SAMPLE_COUNT, 4);
@@ -1912,14 +1918,32 @@ assert.doesNotMatch(controllerSource, /document\.createElement\("canvas"\)/);
 assert.doesNotMatch(controllerSource, /strokeText\(|fillText\(|canvasPath/);
 
 // SVG: parser semantico sicuro, palette modificabile e gli stessi effetti mesh GPU.
-assert.equal(VECTOR_SVG_IMPORT_STRATEGY, "sanitized-semantic-svg-solid-paints-worker-lod-mesh-webgpu-v1");
+assert.equal(VECTOR_SVG_IMPORT_STRATEGY, "sanitized-semantic-svg-gradients-retained-strokes-worker-lod-mesh-webgpu-v2");
 assert.equal(VECTOR_SVG_MAXIMUM_SOURCE_BYTES, 5 * 1024 * 1024);
 assert.equal(VECTOR_SVG_MAXIMUM_COMMANDS, 500_000);
+assert.equal(VECTOR_SVG_MAXIMUM_GRADIENT_STOPS, 4);
 assert.match(svgSource, /const SAFE_ELEMENTS = new Set/);
 assert.match(svgSource, /"path", "rect", "circle", "ellipse", "line", "polyline", "polygon"/);
 assert.match(svgSource, /Elemento SVG non supportato o non sicuro/);
 assert.match(svgSource, /Handler evento SVG non consentito/);
-assert.match(svgSource, /Riferimenti href non consentiti/);
+assert.match(svgSource, /riferimenti href locali fra gradienti SVG/);
+assert.match(svgSource, /hasOnlyLocalPaintUrls/);
+assert.match(svgSource, /parseGradientDefinitions/);
+assert.match(svgSource, /expandedStrokePath/);
+assert.match(svgSource, /sourcePath: clonePath\(localPath\)/);
+assert.match(svgSource, /strokePercentageReference/);
+assert.match(svgSource, /normalized\.endsWith\("%"\)\) return fallback/);
+assert.match(svgGradientStrokeFixture, /<linearGradient id="base-colors"/);
+assert.match(svgGradientStrokeFixture, /<radialGradient id="glow"/);
+assert.match(svgGradientStrokeFixture, /href="#base-colors"/);
+assert.match(svgGradientStrokeFixture, /stroke-dasharray="36 14"/);
+assert.match(svgGradientStrokeFixture, /<line x1="455" y1="285" x2="455" y2="285"/);
+assert.match(gpuShaderSource, /gradientMeta: vec4<u32>/);
+assert.match(gpuShaderSource, /fn linearGradientParameter/);
+assert.match(gpuShaderSource, /fn radialGradientParameter/);
+assert.match(gpuShaderSource, /fn unpackGradientStop/);
+assert.match(engineSource, /unsigned\[base \+ 32\] = gradient\.kind === "linear" \? 1 : 2/);
+assert.match(controllerSource, /svgGradientGpuData\(paint\.gradient\)/);
 assert.doesNotMatch(svgSource, /innerHTML|insertAdjacentHTML|eval\(/);
 assert.match(controllerSource, /parseVectorSvg\(source, sourceName\)/);
 assert.match(controllerSource, /this\.svgFileInput\.files\?\.\[0\]/);

@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 320">
+  <defs>
+    <linearGradient id="unused" />
+    <linearGradient id="base-colors">
+      <stop offset="0" stop-color="#ff3b30" />
+      <stop offset="0.5" stop-color="#ffd60a" stop-opacity="0.85" />
+      <stop offset="1" stop-color="#0a84ff" />
+    </linearGradient>
+    <linearGradient id="sweep" href="#base-colors" x1="0%" y1="0%" x2="100%" y2="30%" />
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%" fx="38%" fy="35%">
+      <stop offset="0" stop-color="#ffffff" />
+      <stop offset="0.45" stop-color="#bf5af2" />
+      <stop offset="1" stop-color="#30105f" />
+    </radialGradient>
+  </defs>
+  <rect x="20px" y="20px" width="440px" height="150px" rx="28px" fill="url(#sweep)" />
+  <circle cx="130" cy="245" r="58" fill="url(#glow)" />
+  <path
+    d="M220 250 C275 175 350 315 440 220"
+    fill="none"
+    stroke="url(#sweep)"
+    stroke-width="18"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-dasharray="36 14"
+  />
+  <line x1="455" y1="285" x2="455" y2="285" stroke="#ffffff" stroke-width="18" stroke-linecap="round" />
+</svg>

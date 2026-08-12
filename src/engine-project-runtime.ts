@@ -373,6 +373,14 @@ export async function restoreProjectDocument(
     );
   }
   if (!engine.initialized) throw new Error("The editor is not ready yet.");
+  // A restored semantic item can schedule a presentation frame as soon as the
+  // mixed-scene state is published below. Its layouts/pipelines must therefore
+  // exist before restoreState/activateLayer make that scene visible; deferring
+  // them until the controller starts would let the first frame latch the
+  // document inconsistent with an uninitialized mixed-scene layout.
+  if (snapshot.mixedScene.items.some((item) => item.kind !== "raster")) {
+    await engine.ensureOptionalEditorResources();
+  }
   engine.persistActiveLayerState();
   if (
     engine.layerStack.count !== 1

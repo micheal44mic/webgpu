@@ -2146,6 +2146,44 @@ export function writeVectorTextGpuDrawUniform(engine: BrushEngine,
   upload[base + 22] = targetWidth;
   upload[base + 23] = targetHeight;
 
+  if (draw.gradient) {
+    const gradient = draw.gradient;
+    const unsigned = engine.vectorTextGpuUniformUploadUnsigned;
+    unsigned[base + 32] = gradient.kind === "linear" ? 1 : 2;
+    unsigned[base + 33] = gradient.spread === "reflect"
+      ? 1
+      : gradient.spread === "repeat"
+        ? 2
+        : 0;
+    unsigned[base + 34] = Math.min(4, gradient.stops.length);
+    upload[base + 36] = gradient.transform[0];
+    upload[base + 37] = gradient.transform[1];
+    upload[base + 38] = gradient.transform[2];
+    upload[base + 39] = gradient.transform[3];
+    upload[base + 40] = gradient.transform[4];
+    upload[base + 41] = gradient.transform[5];
+    upload[base + 44] = gradient.geometry[0];
+    upload[base + 45] = gradient.geometry[1];
+    upload[base + 46] = gradient.geometry[2];
+    upload[base + 47] = gradient.geometry[3];
+    upload[base + 48] = gradient.focal[0];
+    upload[base + 49] = gradient.focal[1];
+    for (let index = 0; index < Math.min(4, gradient.stops.length); index += 1) {
+      const stop = gradient.stops[index];
+      upload[base + 52 + index] = Math.min(1, Math.max(0, stop.offset));
+      const red = Math.round(Math.min(1, Math.max(0, stop.color[0])) * 255);
+      const green = Math.round(Math.min(1, Math.max(0, stop.color[1])) * 255);
+      const blue = Math.round(Math.min(1, Math.max(0, stop.color[2])) * 255);
+      const alpha = Math.round(Math.min(1, Math.max(0, stop.opacity)) * 255);
+      unsigned[base + 56 + index] = (
+        red
+        | (green << 8)
+        | (blue << 16)
+        | (alpha << 24)
+      ) >>> 0;
+    }
+  }
+
   if (vectorTextGpuDrawUsesMesh(draw)) {
     if (vectorTextGpuDrawUsesBlur(draw)) {
       upload[base + 24] = draw.blurBounds[0];

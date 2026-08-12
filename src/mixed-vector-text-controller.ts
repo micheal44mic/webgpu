@@ -32,6 +32,7 @@ import {
 } from "./vector-text-shader";
 import type {
   VectorTextGpuDraw,
+  VectorTextGpuGradient,
   VectorTextGpuPresentationStats,
   VectorTextPlacement,
   VectorTextViewState,
@@ -73,6 +74,7 @@ import {
 import {
   VECTOR_SVG_IMPORT_STRATEGY,
   parseVectorSvg,
+  type VectorSvgGradient,
 } from "./vector-svg-import.ts";
 import {
   VECTOR_TEXT_TRANSFORM_STRATEGY,
@@ -452,6 +454,30 @@ function gpuLinearColor(color: string): readonly [number, number, number] {
     srgbChannelToLinear(Number.parseInt(normalized.slice(2, 4), 16) / 255),
     srgbChannelToLinear(Number.parseInt(normalized.slice(4, 6), 16) / 255),
   ];
+}
+
+function gpuSrgbColor(color: string): readonly [number, number, number] {
+  const normalized = /^#[0-9a-f]{6}$/i.test(color) ? color.slice(1) : "000000";
+  return [
+    Number.parseInt(normalized.slice(0, 2), 16) / 255,
+    Number.parseInt(normalized.slice(2, 4), 16) / 255,
+    Number.parseInt(normalized.slice(4, 6), 16) / 255,
+  ];
+}
+
+function svgGradientGpuData(gradient: VectorSvgGradient): VectorTextGpuGradient {
+  return {
+    kind: gradient.kind,
+    spread: gradient.spread,
+    transform: [...gradient.transform] as [number, number, number, number, number, number],
+    geometry: [...gradient.geometry] as [number, number, number, number],
+    focal: [...gradient.focal] as [number, number],
+    stops: gradient.stops.map((stop) => ({
+      offset: stop.offset,
+      color: gpuSrgbColor(stop.color),
+      opacity: stop.opacity,
+    })),
+  };
 }
 
 function sameGpuLinearColor(first: string, second: string): boolean {
@@ -3383,8 +3409,14 @@ export class MixedVectorTextController {
 
     const oneOpaquePaint = node.document.paints.length === 1
       && node.document.paints[0].opacity >= 1;
+    const firstPaintUsesGradient = Boolean(
+      node.document.paints[0]?.gradient
+      && (node.paintColors[0] ?? node.document.paints[0].color).toLowerCase()
+        === node.document.paints[0].color.toLowerCase()
+    );
     const fuseOutlineAndFill = node.outlineWidth > 0
       && oneOpaquePaint
+      && !firstPaintUsesGradient
       && sameGpuLinearColor(node.paintColors[0], node.outlineColor);
     if (node.outlineWidth > 0) {
       const slot = fuseOutlineAndFill ? "outline-fill" : "outline";
@@ -3430,12 +3462,19 @@ export class MixedVectorTextController {
         );
         allEffectsReady = allEffectsReady && effectIsReady(result);
         if (result.mesh) {
+          const color = node.paintColors[index] ?? paint.color;
+          const gradient = paint.gradient && color.toLowerCase() === paint.color.toLowerCase()
+            ? svgGradientGpuData(paint.gradient)
+            : undefined;
           draws.push(this.meshDraw(
             node,
             `svg:${node.id}:paint:${index}:fill`,
             result.mesh,
-            node.paintColors[index] ?? paint.color,
+            color,
             node.opacity * paint.opacity,
+            0,
+            0,
+            gradient,
           ));
         }
       }
@@ -3478,6 +3517,7 @@ export class MixedVectorTextController {
     opacity: number,
     visualOffsetX = 0,
     visualOffsetY = 0,
+    gradient?: VectorTextGpuGradient,
   ): VectorTextGpuDraw {
     return {
       mode: "mesh-direct",
@@ -3491,6 +3531,7 @@ export class MixedVectorTextController {
       localOffsetY: mesh.originY + visualOffsetY,
       color: gpuLinearColor(color),
       opacity: Math.min(1, Math.max(0, opacity)),
+      gradient,
     };
   }
 

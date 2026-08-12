@@ -1,5 +1,6 @@
 import type { VectorSvgNode, VectorTextNode } from "./mixed-scene-stack.ts";
 import type { Shadow3dPathData } from "./vector-shadow-3d.js";
+import type { VectorSvgGradient } from "./vector-svg-import.ts";
 
 export const MOBILE_SEMANTIC_LAYER_THUMBNAIL_STRATEGY =
   "lazy-canvas2d-semantic-text-svg-64-signature-cache-v1" as const;
@@ -14,6 +15,35 @@ type MobileTextThumbnailNode = Pick<
 >;
 
 type MobileSvgThumbnailNode = Pick<VectorSvgNode, "document" | "paintColors">;
+
+function thumbnailGradient(
+  context: CanvasRenderingContext2D,
+  source: VectorSvgGradient,
+): CanvasGradient {
+  context.save();
+  context.transform(...source.transform);
+  const gradient = source.kind === "linear"
+    ? context.createLinearGradient(...source.geometry)
+    : context.createRadialGradient(
+      source.focal[0],
+      source.focal[1],
+      Math.max(0, source.geometry[3]),
+      source.geometry[0],
+      source.geometry[1],
+      Math.max(0.000001, source.geometry[2]),
+    );
+  context.restore();
+  for (const stop of source.stops) {
+    const red = Number.parseInt(stop.color.slice(1, 3), 16);
+    const green = Number.parseInt(stop.color.slice(3, 5), 16);
+    const blue = Number.parseInt(stop.color.slice(5, 7), 16);
+    gradient.addColorStop(
+      Math.min(1, Math.max(0, stop.offset)),
+      `rgba(${red}, ${green}, ${blue}, ${Math.min(1, Math.max(0, stop.opacity))})`,
+    );
+  }
+  return gradient;
+}
 
 export type MobileSemanticLayerThumbnailSource =
   | {
@@ -214,7 +244,12 @@ function renderSvgThumbnail(
       return false;
     }
     const color = node.paintColors[index] ?? paint.color;
-    context.fillStyle = /^#[0-9a-f]{6}$/i.test(color) ? color : paint.color;
+    const preservesImportedGradient = Boolean(
+      paint.gradient && color.toLowerCase() === paint.color.toLowerCase()
+    );
+    context.fillStyle = preservesImportedGradient
+      ? thumbnailGradient(context, paint.gradient!)
+      : /^#[0-9a-f]{6}$/i.test(color) ? color : paint.color;
     context.globalAlpha = Math.min(1, Math.max(0, paint.opacity));
     context.fill(paint.fillRule === 1 ? "evenodd" : "nonzero");
   }

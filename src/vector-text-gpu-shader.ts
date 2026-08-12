@@ -1,10 +1,10 @@
 export const VECTOR_TEXT_GPU_RENDER_STRATEGY =
-  "webgpu-indexed-vector-linear-rgba16float-msaa4-exact-camera-redraw-v2" as const;
+  "webgpu-indexed-vector-linear-rgba16float-msaa4-svg-gradients-v3" as const;
 
 export const VECTOR_TEXT_GPU_TARGET_FORMAT: GPUTextureFormat = "rgba16float";
 export const VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL = 8;
 export const VECTOR_TEXT_GPU_SAMPLE_COUNT = 4;
-export const VECTOR_TEXT_GPU_UNIFORM_FLOATS = 32;
+export const VECTOR_TEXT_GPU_UNIFORM_FLOATS = 60;
 export const VECTOR_TEXT_GPU_UNIFORM_BYTES = VECTOR_TEXT_GPU_UNIFORM_FLOATS * 4;
 export const VECTOR_TEXT_GPU_UNIFORM_STRIDE = 256;
 export const VECTOR_TEXT_GPU_BLUR_FORMAT: GPUTextureFormat = "r16float";
@@ -22,6 +22,13 @@ struct TextUniforms {
   targetOriginAndSize: vec4<f32>,
   shapeBounds: vec4<f32>,
   effectSampleOffset: vec4<f32>,
+  gradientMeta: vec4<u32>,
+  gradientTransform0: vec4<f32>,
+  gradientTransform1: vec4<f32>,
+  gradientGeometry: vec4<f32>,
+  gradientFocal: vec4<f32>,
+  gradientStopOffsets: vec4<f32>,
+  gradientStopColors: vec4<u32>,
 };
 
 struct VertexInput {
@@ -30,6 +37,7 @@ struct VertexInput {
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
+  @location(0) absoluteLocalPosition: vec2<f32>,
 };
 
 @group(0) @binding(0) var<uniform> text: TextUniforms;
@@ -63,11 +71,124 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   );
   var output: VertexOutput;
   output.position = vec4<f32>(clip, 0.0, 1.0);
+  output.absoluteLocalPosition = input.localPosition + text.scaleAndLocalOffset.yz;
   return output;
 }
 
+fn srgbChannelToLinear(value: f32) -> f32 {
+  if (value <= 0.04045) {
+    return value / 12.92;
+  }
+  return pow((value + 0.055) / 1.055, 2.4);
+}
+
+fn unpackGradientStop(packed: u32) -> vec4<f32> {
+  return vec4<f32>(
+    f32(packed & 255u),
+    f32((packed >> 8u) & 255u),
+    f32((packed >> 16u) & 255u),
+    f32((packed >> 24u) & 255u)
+  ) / 255.0;
+}
+
+fn spreadGradientParameter(value: f32, spread: u32) -> f32 {
+  if (spread == 1u) {
+    let repeated = value - floor(value * 0.5) * 2.0;
+    return select(2.0 - repeated, repeated, repeated <= 1.0);
+  }
+  if (spread == 2u) {
+    return value - floor(value);
+  }
+  return clamp(value, 0.0, 1.0);
+}
+
+fn gradientCoordinate(localPosition: vec2<f32>) -> vec2<f32> {
+  let affine = text.gradientTransform0;
+  let translation = text.gradientTransform1.xy;
+  let determinant = affine.x * affine.w - affine.y * affine.z;
+  if (abs(determinant) <= 1.0e-12) {
+    return vec2<f32>(0.0);
+  }
+  let delta = localPosition - translation;
+  return vec2<f32>(
+    affine.w * delta.x - affine.z * delta.y,
+    -affine.y * delta.x + affine.x * delta.y
+  ) / determinant;
+}
+
+fn linearGradientParameter(position: vec2<f32>) -> f32 {
+  let start = text.gradientGeometry.xy;
+  let direction = text.gradientGeometry.zw - start;
+  return dot(position - start, direction) / max(dot(direction, direction), 1.0e-12);
+}
+
+fn radialGradientParameter(position: vec2<f32>) -> f32 {
+  let center = text.gradientGeometry.xy;
+  let radius = max(text.gradientGeometry.z, 1.0e-8);
+  let focalRadius = clamp(text.gradientGeometry.w, 0.0, radius);
+  let focal = text.gradientFocal.xy;
+  let ray = position - focal;
+  let focalFromCenter = focal - center;
+  let a = max(dot(ray, ray), 1.0e-12);
+  let b = 2.0 * dot(focalFromCenter, ray);
+  let c = dot(focalFromCenter, focalFromCenter) - radius * radius;
+  let discriminant = max(0.0, b * b - 4.0 * a * c);
+  let intersection = max((-b + sqrt(discriminant)) / (2.0 * a), 1.0e-8);
+  let outerParameter = 1.0 / intersection;
+  return (outerParameter * radius - focalRadius) / max(radius - focalRadius, 1.0e-8);
+}
+
+fn gradientColor(localPosition: vec2<f32>) -> vec4<f32> {
+  let gradientPosition = gradientCoordinate(localPosition);
+  let rawParameter = select(
+    radialGradientParameter(gradientPosition),
+    linearGradientParameter(gradientPosition),
+    text.gradientMeta.x == 1u
+  );
+  let parameter = spreadGradientParameter(rawParameter, text.gradientMeta.y);
+  let stopCount = clamp(text.gradientMeta.z, 1u, 4u);
+  var leftIndex = 0u;
+  var rightIndex = stopCount - 1u;
+  for (var index = 1u; index < 4u; index += 1u) {
+    if (index >= stopCount) {
+      break;
+    }
+    if (parameter >= text.gradientStopOffsets[index]) {
+      leftIndex = index;
+    }
+    if (parameter <= text.gradientStopOffsets[index]) {
+      rightIndex = index;
+      break;
+    }
+  }
+  if (rightIndex < leftIndex) {
+    rightIndex = leftIndex;
+  }
+  let leftOffset = text.gradientStopOffsets[leftIndex];
+  let rightOffset = text.gradientStopOffsets[rightIndex];
+  let ratio = select(
+    clamp((parameter - leftOffset) / (rightOffset - leftOffset), 0.0, 1.0),
+    0.0,
+    abs(rightOffset - leftOffset) <= 1.0e-8
+  );
+  let left = unpackGradientStop(text.gradientStopColors[leftIndex]);
+  let right = unpackGradientStop(text.gradientStopColors[rightIndex]);
+  let srgb = mix(left.rgb, right.rgb, ratio);
+  return vec4<f32>(
+    srgbChannelToLinear(srgb.r),
+    srgbChannelToLinear(srgb.g),
+    srgbChannelToLinear(srgb.b),
+    mix(left.a, right.a, ratio)
+  );
+}
+
 @fragment
-fn fragmentMain() -> @location(0) vec4<f32> {
+fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  if (text.gradientMeta.x != 0u) {
+    let gradient = gradientColor(input.absoluteLocalPosition);
+    let alpha = gradient.a * text.color.a;
+    return vec4<f32>(gradient.rgb * alpha, alpha);
+  }
   return vec4<f32>(text.color.rgb * text.color.a, text.color.a);
 }
 
@@ -78,6 +199,7 @@ fn blurMaskVertexMain(input: VertexInput) -> VertexOutput {
   let uv = (absoluteLocal - text.shapeBounds.xy) / span;
   var output: VertexOutput;
   output.position = vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0);
+  output.absoluteLocalPosition = absoluteLocal;
   return output;
 }
 

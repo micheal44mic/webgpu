@@ -60,8 +60,14 @@ const svgDocument = (sourceName = "fixture.svg") => {
     contourOffsets: new Uint32Array([0]),
     fillRule: 0,
   };
+  const strokeSource = {
+    verbs: new Uint8Array([0, 1]),
+    coords: new Float64Array([0, 5, 10, 5]),
+    contourOffsets: new Uint32Array([0]),
+    fillRule: 0,
+  };
   return {
-    strategy: "sanitized-semantic-svg-solid-paints-worker-lod-mesh-webgpu-v1",
+    strategy: "sanitized-semantic-svg-gradients-retained-strokes-worker-lod-mesh-webgpu-v2",
     sourceName,
     sourceBytes: 128,
     sourceHash: `hash:${sourceName}`,
@@ -76,6 +82,27 @@ const svgDocument = (sourceName = "fixture.svg") => {
       opacity: 1,
       fillRule: 0,
       path,
+      gradient: {
+        kind: "linear",
+        spread: "pad",
+        transform: [10, 0, 0, 10, 0, 0],
+        geometry: [0, 0, 1, 0],
+        focal: [0, 0],
+        stops: [
+          { offset: 0, color: "#ff5500", opacity: 1 },
+          { offset: 1, color: "#0055ff", opacity: 1 },
+        ],
+      },
+      strokes: [{
+        sourcePath: strokeSource,
+        transform: [1, 0, 0, 1, 0, 0],
+        width: 2,
+        linecap: "round",
+        linejoin: "round",
+        miterLimit: 4,
+        dashArray: [4, 2],
+        dashOffset: 0,
+      }],
       revision: `paint:${sourceName}`,
     }],
     silhouettePath: path,
@@ -539,6 +566,22 @@ assert.equal(
   assert.equal(stack.svgById(1).paintColors[0], "#123456");
   assert.equal(stack.svgById(1).x, 2048);
   assert.notEqual(stack.svgById(1).document, captured.svgNodes[0].document);
+  assert.notEqual(
+    stack.svgById(1).document.paints[0].gradient,
+    captured.svgNodes[0].document.paints[0].gradient,
+  );
+  assert.notEqual(
+    stack.svgById(1).document.paints[0].gradient.transform,
+    captured.svgNodes[0].document.paints[0].gradient.transform,
+  );
+  assert.notEqual(
+    stack.svgById(1).document.paints[0].strokes[0].sourcePath.coords,
+    captured.svgNodes[0].document.paints[0].strokes[0].sourcePath.coords,
+  );
+  assert.notEqual(
+    stack.svgById(1).document.paints[0].strokes[0].dashArray,
+    captured.svgNodes[0].document.paints[0].strokes[0].dashArray,
+  );
 
   stack.addTextAboveSelection(seed("ABOVE SVG"));
   assert.equal(stack.vectorCount, 2);

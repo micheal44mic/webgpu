@@ -283,6 +283,10 @@ assert.equal(await storage.loadProject(first.id), null);
 assert.equal((await secondInstance.listProjects()).length, 0);
 
 const source = readFileSync(new URL("../src/project-storage.ts", import.meta.url), "utf8");
+const runtimeSource = readFileSync(
+  new URL("../src/engine-project-runtime.ts", import.meta.url),
+  "utf8",
+);
 const stagePosition = source.indexOf("await this.writeStagedGeneration(generation)");
 const headPosition = source.indexOf("await this.commitProjectHead(generation.summary");
 assert.ok(stagePosition >= 0 && headPosition > stagePosition,
@@ -293,6 +297,16 @@ assert.doesNotMatch(source, /JSON\.(?:parse|stringify)/,
   "project DTOs need structured clone so typed arrays and ArrayBuffers survive");
 assert.doesNotMatch(source, /GPU(?:Texture|Buffer|Device|Queue|CommandEncoder)/,
   "the storage layer must stay independent of WebGPU objects");
+const semanticResourcesPosition = runtimeSource.indexOf(
+  "await engine.ensureOptionalEditorResources()",
+);
+const semanticRestorePosition = runtimeSource.indexOf(
+  "engine.mixedSceneStack?.restoreState(snapshot.mixedScene)",
+);
+assert.ok(
+  semanticResourcesPosition >= 0 && semanticResourcesPosition < semanticRestorePosition,
+  "semantic GPU layouts must exist before a restored vector scene can schedule its first frame",
+);
 
 storage.close();
 secondInstance.close();
