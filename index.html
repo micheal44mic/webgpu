@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="it">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta
@@ -251,19 +251,174 @@
         </div>
       </section>
     </div>
-    <div id="app">
+    <section id="projectHome" class="project-home" aria-label="M1M4 project library">
+      <header class="project-home-brand" aria-label="M1M4.COM">
+        <span>M1M4.COM</span>
+      </header>
+
+      <div class="project-home-shell">
+        <nav class="project-home-tabs" role="tablist" aria-label="Start menu">
+          <button
+            id="projectsTab"
+            class="project-home-tab is-active"
+            type="button"
+            role="tab"
+            aria-selected="true"
+            aria-controls="projectsPanel"
+          >
+            <i data-lucide="folder-kanban" aria-hidden="true"></i>
+            <span>Projects</span>
+          </button>
+          <button
+            id="newCanvasTab"
+            class="project-home-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="newCanvasPanel"
+          >
+            <i data-lucide="square-plus" aria-hidden="true"></i>
+            <span>New Canvas</span>
+          </button>
+        </nav>
+
+        <main class="project-home-content">
+          <section
+            id="projectsPanel"
+            class="project-home-panel projects-panel"
+            role="tabpanel"
+            aria-labelledby="projectsTab"
+          >
+            <div class="project-panel-heading">
+              <div>
+                <p class="project-eyebrow">YOUR WORKSPACE</p>
+                <h1>Artwork</h1>
+                <p>Pick up where you left off. Projects stay on this device.</p>
+              </div>
+              <button id="projectsCreateButton" class="project-compact-action" type="button">
+                <i data-lucide="plus" aria-hidden="true"></i>
+                <span>New canvas</span>
+              </button>
+            </div>
+
+            <div id="projectGrid" class="project-grid" aria-live="polite"></div>
+            <div id="projectEmptyState" class="project-empty-state" hidden>
+              <span class="project-empty-icon" aria-hidden="true">
+                <i data-lucide="images" aria-hidden="true"></i>
+              </span>
+              <h2>Your first canvas starts here</h2>
+              <p>Create an artwork and it will appear here automatically after you save.</p>
+              <button id="emptyCreateButton" class="project-primary-action" type="button">
+                Create canvas
+              </button>
+            </div>
+          </section>
+
+          <section
+            id="newCanvasPanel"
+            class="project-home-panel new-canvas-panel"
+            role="tabpanel"
+            aria-labelledby="newCanvasTab"
+            hidden
+          >
+            <div class="project-panel-heading">
+              <div>
+                <p class="project-eyebrow">START FRESH</p>
+                <h1>New canvas</h1>
+                <p>Choose the working resolution before opening the editor.</p>
+              </div>
+            </div>
+
+            <form id="newCanvasForm" class="new-canvas-form">
+              <label class="new-canvas-name">
+                <span>Project name</span>
+                <input
+                  id="newCanvasName"
+                  name="name"
+                  type="text"
+                  maxlength="80"
+                  autocomplete="off"
+                  placeholder="Untitled artwork"
+                />
+              </label>
+
+              <fieldset class="canvas-preset-fieldset">
+                <legend>Canvas size</legend>
+                <div class="canvas-preset-grid">
+                  <button
+                    class="canvas-preset-card"
+                    type="button"
+                    data-canvas-size="2048"
+                    aria-pressed="false"
+                  >
+                    <span class="canvas-preset-preview canvas-preset-preview-compact" aria-hidden="true"></span>
+                    <span><strong>Compact</strong><small>2048 × 2048 px</small></span>
+                  </button>
+                  <button
+                    class="canvas-preset-card is-selected"
+                    type="button"
+                    data-canvas-size="4096"
+                    aria-pressed="true"
+                  >
+                    <span class="canvas-preset-preview" aria-hidden="true"></span>
+                    <span><strong>Studio</strong><small>4096 × 4096 px</small></span>
+                    <em>Recommended</em>
+                  </button>
+                </div>
+              </fieldset>
+
+              <div class="canvas-dimension-row" aria-label="Canvas dimensions">
+                <label>
+                  <span>Width</span>
+                  <select id="newCanvasWidth" name="width">
+                    <option value="2048">2048 px</option>
+                    <option value="4096" selected>4096 px</option>
+                  </select>
+                </label>
+                <span class="canvas-dimension-lock" aria-label="Square canvas, dimensions linked">
+                  <i data-lucide="lock-keyhole" aria-hidden="true"></i>
+                </span>
+                <label>
+                  <span>Height</span>
+                  <select id="newCanvasHeight" name="height">
+                    <option value="2048">2048 px</option>
+                    <option value="4096" selected>4096 px</option>
+                  </select>
+                </label>
+              </div>
+              <p class="canvas-format-note">
+                The current high-precision WebGPU format uses a square artboard. Width and height stay linked.
+              </p>
+
+              <button id="createCanvasButton" class="project-primary-action create-canvas-action" type="submit">
+                <i data-lucide="arrow-up-right" aria-hidden="true"></i>
+                <span>Create canvas</span>
+              </button>
+            </form>
+          </section>
+        </main>
+      </div>
+
+      <footer class="project-home-footer">
+        <span><i data-lucide="hard-drive" aria-hidden="true"></i> Local project library</span>
+        <span id="projectStorageSummary">Checking storage…</span>
+      </footer>
+      <p id="projectHomeStatus" class="project-home-status" role="status" aria-live="polite" hidden></p>
+    </section>
+
+    <div id="app" hidden>
       <header class="topbar">
         <div class="desktop-brand">
-          <strong>WebGPU Brush Engine</strong>
+          <strong id="editorProjectName">Untitled Artwork</strong>
           <span class="muted" id="document-size-label"></span>
         </div>
-        <nav class="mobile-header" aria-label="Navigazione editor">
+        <nav class="mobile-header" aria-label="Editor navigation">
           <button
+            id="projectHomeButton"
             class="mobile-header-action"
             type="button"
-            aria-label="Home, non ancora disponibile"
+            aria-label="Back to projects"
             title="Home"
-            disabled
           >
             <span class="mobile-icon-stack" aria-hidden="true">
               <i data-lucide="house" class="mobile-icon-layer mobile-icon-outline"></i>
@@ -301,11 +456,12 @@
               </span>
             </button>
             <button
+              id="saveProjectButton"
               class="mobile-header-action"
               type="button"
-              aria-label="Salva, non ancora disponibile"
-              title="Save"
-              disabled
+              aria-label="Save project"
+              aria-keyshortcuts="Control+S Meta+S"
+              title="Save project (Ctrl/⌘+S)"
             >
               <span class="mobile-icon-stack" aria-hidden="true">
                 <i data-lucide="save" class="mobile-icon-layer mobile-icon-outline"></i>
@@ -4319,6 +4475,6 @@
       </div>
     </div>
 
-    <script type="module" src="/src/main.ts"></script>
+    <script type="module" src="/src/startup.ts"></script>
   </body>
 </html>

@@ -39,7 +39,7 @@ assert.match(
 );
 assert.match(
   html,
-  /<nav class="mobile-header" aria-label="Navigazione editor">/,
+  /<nav class="mobile-header" aria-label="Editor navigation">/,
   "La navigazione condivisa non deve dichiararsi esclusiva del mobile.",
 );
 assert.match(
@@ -49,7 +49,7 @@ assert.match(
 );
 assert.match(
   main,
-  /if \(mobileBrushStudio && mobileUiMediaQuery\.matches\) \{[\s\S]*?restoreActiveMobileBrushLibraryBrush/,
+  /if \(\s*mobileBrushStudio\s*&& mobileUiMediaQuery\.matches[\s\S]*?\) \{[\s\S]*?restoreActiveMobileBrushLibraryBrush/,
   "Telefono e desktop devono ripristinare la stessa libreria pennelli.",
 );
 assert.match(

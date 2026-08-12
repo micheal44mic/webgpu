@@ -254,6 +254,12 @@ import {
   markStartupPhase,
   reportStartupFailure,
 } from "./startup-diagnostics";
+import {
+  PROJECT_DOCUMENT_SCHEMA_VERSION,
+  createProjectStorage,
+  normalizeProjectTitle,
+  type ProjectStorage,
+} from "./project-storage";
 
 markStartupPhase(
   "Preparazione dell’interfaccia",
@@ -367,6 +373,9 @@ if (!rasterSelectionGestureContextCandidate) {
 const rasterSelectionGestureContext: CanvasRenderingContext2D =
   rasterSelectionGestureContextCandidate;
 const appElement = element<HTMLElement>("app");
+const editorProjectName = element<HTMLElement>("editorProjectName");
+const projectHomeButton = element<HTMLButtonElement>("projectHomeButton");
+const saveProjectButton = element<HTMLButtonElement>("saveProjectButton");
 const controlsPanel = element<HTMLElement>("controlsPanel");
 const toggleControlsButton = element<HTMLButtonElement>("toggleControls");
 const statusElement = element<HTMLParagraphElement>("status");
@@ -1289,6 +1298,48 @@ let historyState: HistoryState = {
 };
 
 const pageSearchParams = new URLSearchParams(window.location.search);
+const requestedProjectId = pageSearchParams.get("project")?.trim() || null;
+const newProjectRequested = requestedProjectId !== null
+  && pageSearchParams.get("newProject") === "1";
+const requestedProjectName = normalizeProjectTitle(
+  pageSearchParams.get("projectName") ?? "Untitled Artwork",
+);
+const projectStorage: ProjectStorage = createProjectStorage();
+let currentProjectId: string | null = requestedProjectId;
+let currentProjectName = requestedProjectName;
+let projectTrackingReady = false;
+let projectDirty = newProjectRequested;
+let projectSaveBusy = false;
+let projectSavePromise: Promise<void> | null = null;
+let projectHistoryMutationSignature = "";
+let projectSceneMutationSignature = "";
+
+function syncProjectSaveControl(): void {
+  saveProjectButton.disabled = projectSaveBusy;
+  saveProjectButton.classList.toggle("is-saving", projectSaveBusy);
+  saveProjectButton.classList.toggle("is-dirty", projectDirty && !projectSaveBusy);
+  saveProjectButton.setAttribute("aria-busy", String(projectSaveBusy));
+  saveProjectButton.setAttribute(
+    "aria-label",
+    projectSaveBusy
+      ? "Saving project"
+      : projectDirty
+        ? "Save project — unsaved changes"
+        : "Project saved",
+  );
+  saveProjectButton.title = projectSaveBusy
+    ? "Saving project…"
+    : projectDirty
+      ? "Save project (Ctrl/⌘+S)"
+      : "Project saved";
+}
+
+function markCurrentProjectDirty(): void {
+  if (!projectTrackingReady || projectSaveBusy || projectDirty) return;
+  projectDirty = true;
+  syncProjectSaveControl();
+}
+
 const bevelBoundingFieldEnabled = pageSearchParams.get("bevelField") === "bbox";
 const layerHistoryTestRequested = import.meta.env.DEV
   && pageSearchParams.get("layerHistoryTest") === "1";
@@ -1505,6 +1556,15 @@ const engine = new BrushEngine(canvas, {
     mobileBrushStudio?.notifyEngineUpdate();
   },
   onHistoryChange(state) {
+    const projectMutationSignature = `${state.cursor}|${state.actionCount}`;
+    if (
+      projectTrackingReady
+      && projectHistoryMutationSignature !== ""
+      && projectMutationSignature !== projectHistoryMutationSignature
+    ) {
+      markCurrentProjectDirty();
+    }
+    projectHistoryMutationSignature = projectMutationSignature;
     const diagnosticSignature = [
       state.cursor,
       state.actionCount,
@@ -1544,12 +1604,22 @@ const engine = new BrushEngine(canvas, {
   },
   onViewChange() {
     vectorTextPrototype?.scheduleViewSync();
+    markCurrentProjectDirty();
   },
   onPixelSelectionChange(state) {
     updatePixelSelectionResult(state);
     mobileToolSettingsSheet?.syncOpenState();
   },
   onMixedSceneChange(snapshot) {
+    const projectMutationSignature = JSON.stringify(snapshot);
+    if (
+      projectTrackingReady
+      && projectSceneMutationSignature !== ""
+      && projectMutationSignature !== projectSceneMutationSignature
+    ) {
+      markCurrentProjectDirty();
+    }
+    projectSceneMutationSignature = projectMutationSignature;
     const diagnosticSignature = `${snapshot.selectedKey}|`
       + snapshot.items.map((item) => item.key).join(",");
     if (diagnosticSignature !== appDiagnosticSceneSignature) {
@@ -1594,6 +1664,7 @@ const engine = new BrushEngine(canvas, {
     }
     layerSwitchResult.textContent =
       `Undo/Redo ha selezionato il livello ${activeIndex + 1}.`;
+    markCurrentProjectDirty();
   },
 }, tipPreviewCanvas, {
   bevelBoundingFieldEnabled,
@@ -1663,6 +1734,194 @@ let engineInitialized = false;
 let statsPollingTimer: number | null = null;
 let statsPollingFaultReported = false;
 let selectionUiBusy = false;
+
+function updateProjectIdentity(name: string): void {
+  currentProjectName = normalizeProjectTitle(name);
+  editorProjectName.textContent = currentProjectName;
+  document.title = `${currentProjectName} — M1M4.COM`;
+}
+
+function canvasBlob(
+  source: HTMLCanvasElement,
+  type: string,
+  quality?: number,
+): Promise<Blob | null> {
+  return new Promise((resolve) => source.toBlob(resolve, type, quality));
+}
+
+async function captureProjectThumbnailBlob(): Promise<Blob | null> {
+  const pixels = await engine.captureProjectThumbnailPixels();
+  const source = document.createElement("canvas");
+  source.width = pixels.width;
+  source.height = pixels.height;
+  const sourceContext = source.getContext("2d", { alpha: false });
+  if (!sourceContext) return null;
+  const image = new ImageData(pixels.width, pixels.height);
+  image.data.set(pixels.rgba);
+  sourceContext.putImageData(image, 0, 0);
+  const preview = document.createElement("canvas");
+  preview.width = 384;
+  preview.height = 384;
+  const context = preview.getContext("2d", { alpha: false });
+  if (!context) return null;
+  context.fillStyle = "#0d0f13";
+  context.fillRect(0, 0, preview.width, preview.height);
+  context.drawImage(source, 0, 0, preview.width, preview.height);
+  return (await canvasBlob(preview, "image/webp", 0.82))
+    ?? await canvasBlob(preview, "image/png");
+}
+
+function updateProjectUrl(projectId: string): void {
+  const url = new URL(window.location.href);
+  url.searchParams.set("project", projectId);
+  url.searchParams.set("documentSize", String(LAYER_SIZE));
+  url.searchParams.delete("newProject");
+  url.searchParams.delete("projectName");
+  window.history.replaceState(null, "", url);
+}
+
+async function saveCurrentProject(): Promise<void> {
+  if (projectSavePromise) return projectSavePromise;
+  const operation = (async () => {
+    if (!engineInitialized) throw new Error("The editor is still starting.");
+    projectSaveBusy = true;
+    syncProjectSaveControl();
+    statusElement.textContent = "Saving the complete project…";
+    statusElement.className = "status";
+    try {
+      await projectStorage.initialize();
+      const captured = await engine.captureProjectDocument();
+      let thumbnail: Blob | null = null;
+      try {
+        thumbnail = await captureProjectThumbnailBlob();
+      } catch (error) {
+        // A preview is useful but never authoritative. A transient readback
+        // failure must not prevent the lossless layer payload from committing.
+        console.warn("Project thumbnail skipped:", error);
+      }
+      const summary = await projectStorage.saveProject({
+        schemaVersion: PROJECT_DOCUMENT_SCHEMA_VERSION,
+        ...(currentProjectId ? { projectId: currentProjectId } : {}),
+        name: currentProjectName,
+        ...(thumbnail ? { thumbnail } : {}),
+        snapshot: captured.snapshot,
+        chunks: captured.chunks,
+      });
+      currentProjectId = summary.id;
+      updateProjectIdentity(summary.name);
+      updateProjectUrl(summary.id);
+      projectDirty = false;
+      projectHistoryMutationSignature = `${historyState.cursor}|${historyState.actionCount}`;
+      projectSceneMutationSignature = JSON.stringify(engine.getMixedSceneSnapshot());
+      const savedTime = new Intl.DateTimeFormat("en", {
+        hour: "2-digit",
+        minute: "2-digit",
+      }).format(new Date(summary.updatedAt));
+      statusElement.textContent = `Project saved locally at ${savedTime}.`;
+      statusElement.className = "status ok";
+    } catch (error) {
+      statusElement.textContent = error instanceof Error
+        ? `Save failed: ${error.message}`
+        : "The project could not be saved.";
+      statusElement.className = "status error";
+      throw error;
+    } finally {
+      projectSaveBusy = false;
+      syncProjectSaveControl();
+    }
+  })();
+  projectSavePromise = operation;
+  try {
+    await operation;
+  } finally {
+    if (projectSavePromise === operation) projectSavePromise = null;
+  }
+}
+
+async function initializeCurrentProject(): Promise<void> {
+  await projectStorage.initialize();
+  if (currentProjectId && !newProjectRequested) {
+    statusElement.textContent = "Opening project…";
+    statusElement.className = "status";
+    const saved = await projectStorage.loadProject(currentProjectId);
+    if (!saved) throw new Error("This project is no longer available on this device.");
+    updateProjectIdentity(saved.summary.name);
+    await engine.restoreProjectDocument(saved);
+    projectDirty = false;
+  } else if (newProjectRequested) {
+    updateProjectIdentity(requestedProjectName);
+    engine.layerStack.active.name = "Layer 1";
+    // The URL token only selects the editor route. Durable storage owns the
+    // canonical id and generates it when the first head is committed.
+    currentProjectId = null;
+    // Publish the blank head immediately so Home can always return to a real
+    // recent-project card, even before the first brush stroke.
+    await saveCurrentProject();
+  } else {
+    updateProjectIdentity("Untitled Artwork");
+    projectDirty = true;
+  }
+  historyState = engine.getHistoryState();
+  projectHistoryMutationSignature = `${historyState.cursor}|${historyState.actionCount}`;
+  projectSceneMutationSignature = JSON.stringify(engine.getMixedSceneSnapshot());
+  projectTrackingReady = true;
+  syncProjectSaveControl();
+}
+
+async function returnToProjectHome(): Promise<void> {
+  if (projectSavePromise) {
+    try {
+      await projectSavePromise;
+    } catch {
+      // The explicit retry/leave decision below handles the failed state.
+    }
+  }
+  if (projectDirty) {
+    try {
+      await saveCurrentProject();
+    } catch {
+      if (!window.confirm("This project could not be saved. Leave the editor anyway?")) {
+        return;
+      }
+    }
+  }
+  const url = new URL(window.location.href);
+  url.search = "";
+  url.hash = "";
+  window.location.assign(url);
+}
+
+saveProjectButton.disabled = true;
+projectHomeButton.disabled = true;
+saveProjectButton.addEventListener("click", () => {
+  void saveCurrentProject().catch((error) => {
+    console.error("Project save failed:", error);
+  });
+});
+projectHomeButton.addEventListener("click", () => {
+  void returnToProjectHome();
+});
+window.addEventListener("keydown", (event) => {
+  if (
+    event.defaultPrevented
+    || event.isComposing
+    || event.altKey
+    || (!event.ctrlKey && !event.metaKey)
+    || event.key.toLowerCase() !== "s"
+  ) {
+    return;
+  }
+  event.preventDefault();
+  void saveCurrentProject().catch((error) => {
+    console.error("Project save shortcut failed:", error);
+  });
+});
+window.addEventListener("beforeunload", (event) => {
+  if (!projectDirty && !projectSaveBusy) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
+
 let controlsPanelOpen = true;
 // Statistiche arrivate mentre il pannello era chiuso: il ridisegno si recupera
 // alla riapertura invece di pagarlo ad ogni frame.
@@ -15550,6 +15809,9 @@ void engine.initialize()
       "La GPU essenziale è pronta; l’editor può essere mostrato.",
     );
     engineInitialized = true;
+    await initializeCurrentProject();
+    projectHomeButton.disabled = false;
+    syncProjectSaveControl();
     markStartupPhase(
       "Finalizzazione dell’interfaccia",
       "Sincronizzazione dei controlli essenziali.",

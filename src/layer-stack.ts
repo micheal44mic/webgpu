@@ -66,6 +66,17 @@ export interface LayerRecord {
   colorOverlayStyle: RasterColorOverlayStyle;
 }
 
+/**
+ * Complete, GPU-free document state used by durable project persistence.
+ * Undo/Redo intentionally has a different, incremental representation; this
+ * snapshot is the authoritative layer catalogue needed after a page reload.
+ */
+export interface LayerStackState {
+  readonly layers: readonly LayerRecord[];
+  readonly activeLayerId: number;
+  readonly referenceLayerId: number | null;
+}
+
 export interface LayerClippingHistoryEntry {
   readonly layerId: number;
   readonly parentId: number | null;
@@ -297,6 +308,72 @@ export class LayerStack {
 
   byId(id: number): LayerRecord | null {
     return this.records.find((record) => record.id === id) ?? null;
+  }
+
+  captureState(): LayerStackState {
+    return {
+      layers: this.records.map((record) => ({
+        ...record,
+        contentBounds: record.contentBounds ? { ...record.contentBounds } : null,
+        storageTileMask: record.storageTileMask.slice(),
+        strokeStyle: structuredClone(record.strokeStyle),
+        bevelStyle: structuredClone(record.bevelStyle),
+        outerShadowStyle: structuredClone(record.outerShadowStyle),
+        innerShadowStyle: structuredClone(record.innerShadowStyle),
+        colorOverlayStyle: structuredClone(record.colorOverlayStyle),
+      })),
+      activeLayerId: this.active.id,
+      referenceLayerId: this._referenceLayerId,
+    };
+  }
+
+  /**
+   * Atomically replaces the complete CPU-side stack after a persisted project
+   * has passed schema, identity and chunk-integrity validation. GPU resources
+   * are installed by the engine transaction that calls this method.
+   */
+  restoreState(state: LayerStackState): void {
+    if (
+      state.layers.length === 0
+      || state.layers.length > LAYER_STACK_MAXIMUM
+    ) {
+      throw new Error(
+        `Lo snapshot progetto deve contenere da 1 a ${LAYER_STACK_MAXIMUM} livelli.`,
+      );
+    }
+    const candidate = state.layers.map((record) => {
+      if (!Number.isInteger(record.id) || record.id <= 0) {
+        throw new Error(`Id livello progetto non valido: ${record.id}.`);
+      }
+      return {
+        ...record,
+        contentBounds: record.contentBounds ? { ...record.contentBounds } : null,
+        storageTileMask: record.storageTileMask.slice(),
+        strokeStyle: structuredClone(record.strokeStyle),
+        bevelStyle: structuredClone(record.bevelStyle),
+        outerShadowStyle: structuredClone(record.outerShadowStyle),
+        innerShadowStyle: structuredClone(record.innerShadowStyle),
+        colorOverlayStyle: structuredClone(record.colorOverlayStyle),
+      } satisfies LayerRecord;
+    });
+    this.assertClippingInvariants(candidate);
+    const activeIndex = candidate.findIndex((record) => record.id === state.activeLayerId);
+    if (activeIndex < 0) {
+      throw new Error(`Livello attivo ${state.activeLayerId} assente dallo snapshot progetto.`);
+    }
+    if (
+      state.referenceLayerId !== null
+      && !candidate.some((record) => record.id === state.referenceLayerId)
+    ) {
+      throw new Error(
+        `Livello riferimento ${state.referenceLayerId} assente dallo snapshot progetto.`,
+      );
+    }
+
+    this.records.splice(0, this.records.length, ...candidate);
+    this._activeIndex = activeIndex;
+    this._referenceLayerId = state.referenceLayerId;
+    this.nextId = Math.max(...candidate.map((record) => record.id)) + 1;
   }
 
   setClippingParent(index: number, parentId: number | null): boolean {

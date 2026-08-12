@@ -56,6 +56,7 @@ export const ENGINE_SOURCE_FILES = Object.freeze([
   "engine-layer-blend-tile-runtime.ts",
   "engine-resource-setup.ts",
   "engine-runtime-misc.ts",
+  "engine-project-runtime.ts",
 ]);
 
 function readModule(file) {

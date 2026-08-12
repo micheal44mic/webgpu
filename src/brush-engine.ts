@@ -923,6 +923,12 @@ import {
   throwIfRenderUnavailable,
   waitForRenderPump,
 } from "./engine-runtime-misc";
+import {
+  captureProjectDocument,
+  restoreProjectDocument,
+  type CapturedProjectDocumentV1,
+} from "./engine-project-runtime";
+import type { ProjectLoadResultV1 } from "./project-storage";
 
 export type {
   RasterStrokePosition,
@@ -5121,6 +5127,84 @@ export class BrushEngine {
       throw new Error("Il motore non è ancora inizializzato.");
     }
     await this.device.queue.onSubmittedWorkDone();
+  }
+
+  captureProjectDocument(): Promise<CapturedProjectDocumentV1> {
+    return captureProjectDocument(this);
+  }
+
+  restoreProjectDocument(project: ProjectLoadResultV1): Promise<void> {
+    return restoreProjectDocument(this, project);
+  }
+
+  /**
+   * Reads the final presentation cache rather than the active raster texture,
+   * so recent-project cards include every raster/vector layer and live style.
+   * The square crop follows the editor's fitted artboard viewport and is only a
+   * preview; authoritative project pixels remain the compressed layer tiles.
+   */
+  async captureProjectThumbnailPixels(): Promise<{
+    readonly width: number;
+    readonly height: number;
+    readonly rgba: Uint8ClampedArray;
+  }> {
+    await this.waitForIdle();
+    const texture = this.presentationCacheTexture;
+    const width = this.presentationCacheWidth;
+    const height = this.presentationCacheHeight;
+    if (!texture || width <= 0 || height <= 0) {
+      throw new Error("The project preview is not ready yet.");
+    }
+    const side = Math.min(width, height);
+    const originX = Math.floor((width - side) * 0.5);
+    const originY = Math.floor((height - side) * 0.5);
+    const unpaddedBytesPerRow = side * 4;
+    const bytesPerRow = Math.ceil(unpaddedBytesPerRow / 256) * 256;
+    const buffer = this.device.createBuffer({
+      label: `Project thumbnail ${side}×${side}`,
+      size: bytesPerRow * side,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    try {
+      const encoder = this.device.createCommandEncoder({ label: "Project thumbnail readback" });
+      encoder.copyTextureToBuffer(
+        { texture, origin: { x: originX, y: originY, z: 0 } },
+        { buffer, bytesPerRow, rowsPerImage: side },
+        { width: side, height: side, depthOrArrayLayers: 1 },
+      );
+      this.device.queue.submit([encoder.finish()]);
+      let timer = 0;
+      try {
+        await Promise.race([
+          buffer.mapAsync(GPUMapMode.READ),
+          new Promise<never>((_, reject) => {
+            timer = window.setTimeout(
+              () => reject(new Error("Project thumbnail readback timed out.")),
+              10_000,
+            );
+          }),
+        ]);
+      } finally {
+        if (timer !== 0) window.clearTimeout(timer);
+      }
+      const mapped = new Uint8Array(buffer.getMappedRange());
+      const rgba = new Uint8ClampedArray(unpaddedBytesPerRow * side);
+      const bgra = this.canvasFormat.startsWith("bgra");
+      for (let row = 0; row < side; row += 1) {
+        for (let column = 0; column < side; column += 1) {
+          const source = row * bytesPerRow + column * 4;
+          const target = row * unpaddedBytesPerRow + column * 4;
+          rgba[target] = mapped[source + (bgra ? 2 : 0)];
+          rgba[target + 1] = mapped[source + 1];
+          rgba[target + 2] = mapped[source + (bgra ? 0 : 2)];
+          rgba[target + 3] = mapped[source + 3];
+        }
+      }
+      buffer.unmap();
+      return { width: side, height: side, rgba };
+    } finally {
+      buffer.destroy();
+    }
   }
 
   async captureActiveLayerThumbnail(): Promise<LayerThumbnailPixels & {
