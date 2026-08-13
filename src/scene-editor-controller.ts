@@ -6,7 +6,7 @@ import {
   type LayerBlendMode,
 } from "./layer-blend-modes";
 import { mobileLayerMergeCompletionMatches } from "./mobile-layer-multi-selection";
-import type { MixedVectorTextController } from "./mixed-vector-text-controller";
+import type { MixedSceneController } from "./mixed-scene-controller";
 import {
   rasterIndexForSceneLayerKey,
   selectedSceneLayerProperties,
@@ -44,7 +44,7 @@ export type SceneEditorEnginePort = Pick<
 >;
 
 export type SceneEditorVectorPort = Pick<
-  MixedVectorTextController,
+  MixedSceneController,
   "mergeSceneItems" | "syncScene"
 >;
 

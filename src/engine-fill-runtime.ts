@@ -27,7 +27,6 @@ import type { GpuHistorySlice } from "./gpu-history-storage";
 import { clientToLayer, resolveFillSource } from "./engine-layer-runtime";
 import {
   rebuildActiveLayerFromHistory,
-  truncateRedoHistory,
 } from "./engine-history-runtime";
 
 export const FILL_SCRATCH_LIFECYCLE_STRATEGY =
@@ -307,6 +306,7 @@ export async function fillAtClientPoint(
   const startedAt = performance.now();
   let historySlice: GpuHistorySlice | null = null;
   let pixelsMutated = false;
+  let historyPublished = false;
   try {
     await engine.waitForIdle();
     await engine.historyLocalStorage.prepareRasterReplayAtCursor(
@@ -367,14 +367,7 @@ export async function fillAtClientPoint(
     record.contentBounds = engine.layerContentBounds;
     await engine.waitForGpuCapped("Completamento Riempimento", 60_000);
 
-    truncateRedoHistory(engine);
-    engine.nextHistoryActionId += 1;
-    engine.historyActions.push({
-      id: actionId,
-      kind: "fill",
-      layerId: record.id,
-    });
-    engine.sweepRasterImageGpuResources();
+    const capturedHistorySlice = historySlice;
     const batch: FillHistoryRenderBatch = {
       kind: "fill",
       actionId,
@@ -383,12 +376,28 @@ export async function fillAtClientPoint(
       color,
       linearColor: [...linearColor],
       tolerancePercent,
-      gpuSlice: historySlice,
+      gpuSlice: capturedHistorySlice,
       clearLayer: false,
       dirtyRect: { ...analysis.bounds },
       tileMask: analysis.tileMask.slice(),
     };
-    engine.historyBatches.push(batch);
+    engine.history.commitAction(
+      {
+        id: actionId,
+        kind: "fill",
+        layerId: record.id,
+      },
+      {
+        batches: [batch],
+        releasePayloadOnCancel: () => {
+          engine.historyGpuStorage.release(capturedHistorySlice);
+          historySlice = null;
+        },
+      },
+    );
+    historySlice = null;
+    historyPublished = true;
+    engine.sweepRasterImageGpuResources();
     engine.lastFillDiagnosticOperation = {
       actionId,
       capturedAt: new Date().toISOString(),
@@ -404,9 +413,7 @@ export async function fillAtClientPoint(
       activeTiles: analysis.activeTiles,
       bounds: { ...analysis.bounds },
     };
-    historySlice = null;
-    engine.historyCursor = engine.historyActions.length;
-    engine.callbacks.onStatus?.(
+    engine.publishStatus(
       `Riempiti ${analysis.selectedPixels.toLocaleString("it-IT")} pixel su `
       + `${analysis.activeTiles} tile in `
       + `${(performance.now() - startedAt).toFixed(1)} ms.`,
@@ -421,6 +428,7 @@ export async function fillAtClientPoint(
       totalMs: performance.now() - startedAt,
     };
   } catch (error) {
+    if (historyPublished) throw error;
     if (historySlice) engine.historyGpuStorage.release(historySlice);
     if (pixelsMutated) {
       try {
@@ -439,7 +447,7 @@ export async function fillAtClientPoint(
       }
     }
     const message = error instanceof Error ? error.message : String(error);
-    engine.callbacks.onStatus?.(`Riempimento fallito: ${message}`, "error");
+    engine.publishStatus(`Riempimento fallito: ${message}`, "error");
     throw error;
   } finally {
     engine.historyBusy = engine.historyStateInconsistent;

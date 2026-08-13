@@ -1,7 +1,7 @@
 import type { BrushEngine } from "../../brush-engine";
 import { setLayerCompositeTestView } from "../engine-lab-operations";
 import type { DirtyRect } from "../../engine-stroke-types";
-import type { MixedVectorTextController } from "../../mixed-vector-text-controller";
+import type { MixedSceneController } from "../../mixed-scene-controller";
 import { parseVectorSvg } from "../../vector-svg-import";
 
 export type LayerMergeGpuTestCase = "raster" | "clipping" | "mixed" | "memory" | "reject";
@@ -160,7 +160,7 @@ function captureRect(engine: BrushEngine, centerX: number, centerY: number): Dir
 
 async function settlePresentation(
   engine: BrushEngine,
-  controller?: MixedVectorTextController,
+  controller?: MixedSceneController,
 ): Promise<void> {
   const deadline = performance.now() + 15_000;
   for (;;) {
@@ -189,7 +189,7 @@ async function settlePresentation(
 async function readStablePresentation(
   engine: BrushEngine,
   rect: DirtyRect,
-  controller?: MixedVectorTextController,
+  controller?: MixedSceneController,
 ): Promise<Uint8Array> {
   await settlePresentation(engine, controller);
   let previous = await engine.readPresentationLayerRect(rect);
@@ -257,7 +257,7 @@ function requireFreshDocument(engine: BrushEngine): void {
 
 async function runRasterCase(
   engine: BrushEngine,
-  controller: MixedVectorTextController,
+  controller: MixedSceneController,
 ): Promise<LayerMergeGpuTestReport> {
   const center = { x: 2048, y: 2048 };
   setLayerCompositeTestView(engine, center.x, center.y, 1);
@@ -309,7 +309,7 @@ async function runRasterCase(
 
 async function runClippingCase(
   engine: BrushEngine,
-  controller: MixedVectorTextController,
+  controller: MixedSceneController,
 ): Promise<LayerMergeGpuTestReport> {
   const variant = new URLSearchParams(window.location.search).get("layerMergeVariant")
     ?? "single";
@@ -415,7 +415,7 @@ async function runClippingCase(
 
 async function runMixedCase(
   engine: BrushEngine,
-  controller: MixedVectorTextController,
+  controller: MixedSceneController,
 ): Promise<LayerMergeGpuTestReport> {
   const variant = new URLSearchParams(window.location.search).get("layerMergeVariant")
     ?? "extreme";
@@ -582,7 +582,7 @@ async function runMixedCase(
 
 async function runMemoryCase(
   engine: BrushEngine,
-  controller: MixedVectorTextController,
+  controller: MixedSceneController,
 ): Promise<LayerMergeGpuTestReport> {
   const variant = new URLSearchParams(window.location.search).get("layerMergeVariant")
     ?? "empty";
@@ -670,7 +670,7 @@ async function runMemoryCase(
 
 async function runRejectCase(
   engine: BrushEngine,
-  controller: MixedVectorTextController,
+  controller: MixedSceneController,
 ): Promise<LayerMergeGpuTestReport> {
   const center = { x: 2048, y: 2048 };
   setLayerCompositeTestView(engine, center.x, center.y, 1);
@@ -754,7 +754,7 @@ async function runRejectCase(
 
 export async function runLayerMergeGpuTest(
   engine: BrushEngine,
-  controller: MixedVectorTextController,
+  controller: MixedSceneController,
   testCase: LayerMergeGpuTestCase,
 ): Promise<LayerMergeGpuTestReport> {
   requireFreshDocument(engine);

@@ -48,10 +48,22 @@ const indexHtml = readFileSync(resolve(root, "index.html"), "utf8");
 const labsHtml = readFileSync(resolve(root, "labs.html"), "utf8");
 const labsStartup = readFileSync(resolve(sourceRoot, "labs/startup.ts"), "utf8");
 const editorLabs = readFileSync(resolve(sourceRoot, "labs/editor-labs.ts"), "utf8");
+const mainSource = readFileSync(resolve(sourceRoot, "main.ts"), "utf8");
+const extensionContract = readFileSync(
+  resolve(sourceRoot, "editor-extension-contract.ts"),
+  "utf8",
+);
 assert.match(indexHtml, /src="\/src\/startup\.ts"/);
 assert.doesNotMatch(indexHtml, /src\/labs|Editor Labs/);
 assert.match(labsHtml, /src="\/src\/labs\/startup\.ts"/);
 assert.match(labsStartup, /import \{ createEditorLabController \} from "\.\/editor-labs"/);
 assert.match(editorLabs, /export function createEditorLabController/);
+assert.match(extensionContract, /restorePersistedBrushOnStartup\?: boolean/);
+assert.match(labsStartup, /restorePersistedBrushOnStartup: false/);
+assert.match(
+  mainSource,
+  /editorExtensionBootstrap\?\.restorePersistedBrushOnStartup \?\? true/,
+  "la produzione deve conservare il restore pennello, mentre Labs puo disattivarlo",
+);
 
 console.log("Confini sorgente verificati: produzione -> labs vietato, entry Labs esplicito.");

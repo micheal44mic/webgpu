@@ -13,6 +13,19 @@ export const MOBILE_BOTTOM_SHEET_STEP_DISTANCE_PX = 36;
 export const MOBILE_BOTTOM_SHEET_DIRECT_CLOSE_FLICK_DISTANCE_PX = 28;
 export const MOBILE_BOTTOM_SHEET_DIRECT_CLOSE_FLICK_VELOCITY_PX_PER_MS = 0.9;
 export const MOBILE_BOTTOM_SHEET_UPWARD_FLICK_VELOCITY_PX_PER_MS = -0.45;
+export const MOBILE_BOTTOM_SHEET_MIN_PEEK_PX = 160;
+export const MOBILE_BOTTOM_SHEET_MAX_PEEK_PX = 240;
+export const MOBILE_BOTTOM_SHEET_PEEK_VIEWPORT_RATIO = 0.26;
+
+export function mobileBottomSheetPeekHeight(viewportHeight: number): number {
+  return Math.min(
+    MOBILE_BOTTOM_SHEET_MAX_PEEK_PX,
+    Math.max(
+      MOBILE_BOTTOM_SHEET_MIN_PEEK_PX,
+      viewportHeight * MOBILE_BOTTOM_SHEET_PEEK_VIEWPORT_RATIO,
+    ),
+  );
+}
 
 /**
  * Shared three-detent gesture used by persistent mobile tool/effect sheets.

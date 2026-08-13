@@ -27,15 +27,9 @@ export const EDITOR_VECTOR_COMMANDS = ["import-svg", "import-image"] as const;
 
 export type EditorVectorCommand = (typeof EDITOR_VECTOR_COMMANDS)[number];
 
-export const EDITOR_RASTER_EFFECT_KINDS = [
-  "color-overlay",
-  "stroke",
-  "outer-shadow",
-  "inner-shadow",
-  "bevel",
-] as const;
+export const EDITOR_RASTER_EFFECT_KINDS = NON_DESTRUCTIVE_RASTER_EFFECT_KINDS;
 
-export type EditorRasterEffectKind = (typeof EDITOR_RASTER_EFFECT_KINDS)[number];
+export type EditorRasterEffectKind = NonDestructiveRasterEffectKind;
 
 function includesValue<T extends string>(
   values: readonly T[],
@@ -65,5 +59,10 @@ export function isEditorVectorCommand(
 export function isEditorRasterEffectKind(
   value: string | undefined,
 ): value is EditorRasterEffectKind {
-  return includesValue(EDITOR_RASTER_EFFECT_KINDS, value);
+  return isNonDestructiveRasterEffectKind(value);
 }
+import {
+  NON_DESTRUCTIVE_RASTER_EFFECT_KINDS,
+  isNonDestructiveRasterEffectKind,
+  type NonDestructiveRasterEffectKind,
+} from "./raster-effects-contract.ts";

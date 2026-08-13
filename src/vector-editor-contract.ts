@@ -1,7 +1,5 @@
-import type {
-  VectorTextNode,
-  VectorTextOutlineJoin,
-} from "./mixed-scene-stack";
+import type { VectorTextNode } from "./scene-text-model";
+import type { VectorTextOutlineJoin } from "./scene-vector-effects";
 import type { VectorTextTransformType } from "./vector-text-transform";
 
 export type VectorShadowKind = "single" | "inner" | "block";

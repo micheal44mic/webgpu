@@ -236,8 +236,12 @@ assert(grainUniformLayout.offsets.coordinateMode === 20,
   `Offset coordinateMode ${grainUniformLayout.offsets.coordinateMode}, atteso 20.`);
 
 const engine = readEngineSource();
-assert(!engine.includes("graincottonfleece.PNG")
-  && engine.includes('url: new URL("../Grainpencil.png", import.meta.url)')
+const builtinBrushAssets = fs.readFileSync(
+  new URL("../src/brush-builtin-assets.ts", import.meta.url),
+  "utf8",
+);
+assert(!builtinBrushAssets.includes("graincottonfleece.PNG")
+  && builtinBrushAssets.includes('url: new URL("../Grainpencil.png", import.meta.url)')
   && engine.includes("fetch(asset.url)"),
   "Il runtime non instrada il Grain Pencil senza il Cotton Fleece rimosso.");
 assert(engine.includes('const GRAIN_TEXTURE_SIZE = 800;')

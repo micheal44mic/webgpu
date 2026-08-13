@@ -28,7 +28,7 @@ const shaderSource = readFileSync(
   "utf8",
 );
 const controllerSource = readFileSync(
-  new URL("../src/mixed-vector-text-controller.ts", import.meta.url),
+  new URL("../src/mixed-scene-controller.ts", import.meta.url),
   "utf8",
 );
 const engineSource = readFileSync(

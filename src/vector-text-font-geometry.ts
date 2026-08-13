@@ -1,5 +1,5 @@
 import opentype from "opentype.js";
-import type { Shadow3dPathData } from "./vector-shadow-3d";
+import type { Shadow3dPathData } from "./vector-shadow-3d.ts";
 import {
   buildVectorTextCurveGuide,
   mergeVectorTextPaths,

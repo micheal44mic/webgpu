@@ -33,9 +33,6 @@ import {
 import {
   MIXED_SCENE_STACK_STRATEGY,
   MixedSceneStack,
-  cloneRasterImageNode,
-  cloneVectorSvgNode,
-  cloneVectorTextNode,
   reusableMixedSceneRasterRunKeys,
   uniqueLayerDuplicateName,
   type MixedSceneCompositionSegment,
@@ -43,12 +40,21 @@ import {
   type MixedSceneRasterRunKey,
   type MixedSceneVectorHistoryState,
   type MixedSceneVectorKey,
-  type RasterImageNode,
-  type VectorSvgNode,
-  type VectorSvgNodeSeed,
+} from "./mixed-scene-stack";
+import {
+  cloneVectorTextNode,
   type VectorTextNode,
   type VectorTextNodeSeed,
-} from "./mixed-scene-stack";
+} from "./scene-text-model";
+import {
+  cloneVectorSvgNode,
+  type VectorSvgNode,
+  type VectorSvgNodeSeed,
+} from "./scene-svg-model";
+import {
+  cloneRasterImageNode,
+  type RasterImageNode,
+} from "./scene-image-model";
 import { planMixedSceneRasterInsertion } from "./mixed-scene-reorder-core";
 import type {
   NativeRasterImageImportResult,
@@ -315,6 +321,8 @@ import {
   type PaintHistoryRenderBatch,
   resolvePaintHistoryStampCount,
 } from "./engine-history-types";
+import { HistoryService } from "./history-service";
+import { createEngineHistoryHost } from "./engine-history-storage-host";
 import type {
   ActiveClippingGroupResources,
   DisplayPyramidResources,
@@ -471,6 +479,7 @@ import {
   type MixedSceneSnapshot,
   type PointerSample,
 } from "./engine-types";
+import { resolveMixedSceneEnabled } from "./compat/mixed-scene-options";
 import {
   CustomBrushAssetRegistry,
   type CustomBrushAssetSnapshot,
@@ -582,8 +591,9 @@ import {
   recordBlendHistoryBatch,
   recordRasterLayerMetadataHistoryAction,
   recordVectorHistoryAction,
+  rebuildActiveLayerFromHistory,
+  restoreRasterLayerMetadataHistorySnapshot,
   scheduleHistoryGpuTrim,
-  truncateRedoHistory,
 } from "./engine-history-runtime";
 import {
   cancelHistoryMaintenance,
@@ -844,7 +854,7 @@ export class BrushEngine {
   readonly layerColdDirectHotHydrationEnabled: boolean;
   readonly layerColdTileCompositeEnabled: boolean;
   readonly layerColdAdjacentPrefetchEnabled: boolean;
-  readonly vectorTextPrototypeEnabled: boolean;
+  readonly mixedSceneEnabled: boolean;
   readonly selectionOverlayCanvas: HTMLCanvasElement | null;
 
   private adapter!: GPUAdapter;
@@ -1491,26 +1501,64 @@ export class BrushEngine {
   activeStroke: ActiveStroke | null = null;
   seedSequence = 1;
 
-  historyActions: HistoryAction[] = [];
-  historyCursor = 0;
-  nextHistoryActionId = 1;
-  discardedVectorRasterHistoryActions: VectorRasterizeHistoryAction[] = [];
-  discardedRasterImportHistoryActions: RasterImportHistoryAction[] = [];
+  readonly history = new HistoryService();
+
+  get historyActions(): HistoryAction[] {
+    return this.history.actions;
+  }
+
+  get historyCursor(): number {
+    return this.history.cursor;
+  }
+
+  get nextHistoryActionId(): number {
+    return this.history.nextActionId;
+  }
+
+  get discardedVectorRasterHistoryActions(): VectorRasterizeHistoryAction[] {
+    return this.history.discardedVectorRasterActions;
+  }
+
+  get discardedRasterImportHistoryActions(): RasterImportHistoryAction[] {
+    return this.history.discardedRasterImportActions;
+  }
+
   /** Add/Duplicate abbandonati dal Redo; Duplicate può possedere un seed tiled. */
-  discardedLayerAddHistoryActions: LayerAddHistoryAction[] = [];
+  get discardedLayerAddHistoryActions(): LayerAddHistoryAction[] {
+    return this.history.discardedLayerAddActions;
+  }
 
   /** Cancellazioni abbandonate dal Redo: i loro seed vanno liberati. */
-  discardedLayerDeleteHistoryActions: LayerDeleteHistoryAction[] = [];
+  get discardedLayerDeleteHistoryActions(): LayerDeleteHistoryAction[] {
+    return this.history.discardedLayerDeleteActions;
+  }
+
   /** Merge abbandonati dal Redo: input e output restano vivi fino alla compaction. */
-  discardedLayerMergeHistoryActions: LayerMergeHistoryAction[] = [];
+  get discardedLayerMergeHistoryActions(): LayerMergeHistoryAction[] {
+    return this.history.discardedLayerMergeActions;
+  }
+
   /** Post-action raster checkpoints abandoned with Redo (Transform + filters). */
-  discardedRasterTransformHistoryActions: Array<
+  get discardedRasterTransformHistoryActions(): Array<
     RasterTransformHistoryAction | RasterFilterHistoryAction
-  > = [];
-  historyBatches: HistoryRenderBatch[] = [];
-  selectionHistoryMasksByAction = new Map<number, SelectionHistoryMaskSnapshot>();
-  selectionHistoryMasksByRevision = new Map<number, SelectionHistoryMaskSnapshot>();
-  selectionHistoryClipBindGroups = new Map<number, GPUBindGroup>();
+  > {
+    return this.history.discardedRasterTransformActions;
+  }
+
+  get historyBatches(): HistoryRenderBatch[] {
+    return this.history.batches;
+  }
+
+  get selectionHistoryMasksByAction(): Map<number, SelectionHistoryMaskSnapshot> {
+    return this.history.selectionMasksByAction;
+  }
+
+  get selectionHistoryMasksByRevision(): Map<number, SelectionHistoryMaskSnapshot> {
+    return this.history.selectionMasksByRevision;
+  }
+  get selectionHistoryClipBindGroups(): Map<number, GPUBindGroup> {
+    return this.history.selectionClipBindGroups;
+  }
   selectionLiveClipBindGroup: {
     revision: number;
     buffer: GPUBuffer;
@@ -1519,10 +1567,29 @@ export class BrushEngine {
   selectionOverlaySuppressed = false;
   selectionOverlayOffsetX = 0;
   selectionOverlayOffsetY = 0;
-  historyStoredBaseStamps = 0;
-  historyCompactionPending = false;
-  historyBusy = false;
-  historyStateInconsistent = false;
+  get historyStoredBaseStamps(): number {
+    return this.history.storedBaseStamps;
+  }
+
+  get historyCompactionPending(): boolean {
+    return this.history.compactionPending;
+  }
+
+  get historyBusy(): boolean {
+    return this.history.busy;
+  }
+
+  set historyBusy(busy: boolean) {
+    this.history.busy = busy;
+  }
+
+  get historyStateInconsistent(): boolean {
+    return this.history.inconsistent;
+  }
+
+  set historyStateInconsistent(inconsistent: boolean) {
+    this.history.inconsistent = inconsistent;
+  }
   private firstDocumentInconsistentDiagnostic: DocumentInconsistentDiagnostic | null = null;
   activeVectorHistoryEdit: ActiveVectorHistoryEdit | null = null;
   activeRasterLayerMetadataHistoryEdit: (
@@ -1594,9 +1661,9 @@ export class BrushEngine {
       options.layerColdTileCompositeEnabled !== false;
     this.layerColdAdjacentPrefetchEnabled =
       options.layerColdAdjacentPrefetchEnabled !== false;
-    this.vectorTextPrototypeEnabled = options.vectorTextPrototypeEnabled === true;
+    this.mixedSceneEnabled = resolveMixedSceneEnabled(options);
     this.selectionOverlayCanvas = selectionOverlayCanvas;
-    this.mixedSceneStack = this.vectorTextPrototypeEnabled
+    this.mixedSceneStack = this.mixedSceneEnabled
       ? new MixedSceneStack(this.layerStack.layers.map((record) => record.id))
       : null;
     this.adaptivePreviewCanvas = adaptivePreviewCanvas;
@@ -1771,7 +1838,16 @@ export class BrushEngine {
     }
 
     this.historyGpuStorage = new GpuHistoryStorage(this.device);
-    this.historyLocalStorage = new HistoryStorageCoordinator(this);
+    const historyHost = createEngineHistoryHost(this);
+    this.historyLocalStorage = new HistoryStorageCoordinator(historyHost.storage);
+    this.history.configureHooks({
+      prepareBranchCut: () => this.historyLocalStorage.prepareBranchCut(),
+      scheduleDiscardedCleanup: () => this.scheduleEffectsScratchShrink(),
+    });
+    this.history.configureCommands({
+      undo: () => moveHistoryCursor(this, -1),
+      redo: () => moveHistoryCursor(this, 1),
+    });
     this.historyGpuStorage.setReleaseListener((slice) => {
       this.historyLocalStorage.onGpuSliceReleased(slice);
     });
@@ -3125,7 +3201,7 @@ export class BrushEngine {
   }
 
   setVectorTextFastPresentationEnabled(enabled: boolean): void {
-    if (!this.vectorTextPrototypeEnabled || !this.initialized) {
+    if (!this.mixedSceneEnabled || !this.initialized) {
       return;
     }
     const next = enabled && this.vectorTextCaptureView !== null;
@@ -3210,21 +3286,21 @@ export class BrushEngine {
     textureCount: number;
     gpuMemoryMiB: number;
   } {
-    if (!this.vectorTextPrototypeEnabled || !this.initialized) {
+    if (!this.mixedSceneEnabled || !this.initialized) {
       throw new Error("Renderer testo vettoriale GPU non abilitato.");
     }
     return captureVectorTextFallbackPresentation(this);
   }
 
   clearVectorTextFallbackPresentation(): void {
-    if (!this.vectorTextPrototypeEnabled || !this.initialized) return;
+    if (!this.mixedSceneEnabled || !this.initialized) return;
     clearVectorTextFallbackPresentation(this);
   }
 
   probeVectorTextFallbackAlpha(
     layerPoints: readonly { x: number; y: number }[],
   ): Promise<{ runCount: number; alphaPixelCounts: number[] }> {
-    if (!this.vectorTextPrototypeEnabled || !this.initialized) {
+    if (!this.mixedSceneEnabled || !this.initialized) {
       throw new Error("Renderer testo vettoriale GPU non abilitato.");
     }
     return probeVectorTextFallbackAlpha(this, layerPoints);
@@ -3233,7 +3309,7 @@ export class BrushEngine {
   probeVectorTextFastCompositeAlpha(
     layerPoints: readonly { x: number; y: number }[],
   ): Promise<{ alphaPixelCounts: number[] }> {
-    if (!this.vectorTextPrototypeEnabled || !this.initialized) {
+    if (!this.mixedSceneEnabled || !this.initialized) {
       throw new Error("Renderer testo vettoriale GPU non abilitato.");
     }
     return probeVectorTextFastCompositeAlpha(this, layerPoints);
@@ -3242,7 +3318,7 @@ export class BrushEngine {
     source: HTMLCanvasElement,
     placement: VectorTextPlacement,
   ): VectorTextGpuPresentationStats {
-    if (!this.vectorTextPrototypeEnabled || !this.initialized) {
+    if (!this.mixedSceneEnabled || !this.initialized) {
       throw new Error("Prototipo testo vettoriale non abilitato per questa pagina.");
     }
     const width = Math.max(1, this.canvas.width);
@@ -3293,7 +3369,7 @@ export class BrushEngine {
     placement: VectorTextPlacement,
     draws: readonly VectorTextGpuDraw[],
   ): VectorTextGpuPresentationStats {
-    if (!this.vectorTextPrototypeEnabled || !this.initialized) {
+    if (!this.mixedSceneEnabled || !this.initialized) {
       throw new Error("Renderer testo vettoriale GPU non abilitato.");
     }
     if (!placement.startsWith("text-run:")) {
@@ -3367,7 +3443,7 @@ export class BrushEngine {
       draws: readonly VectorTextGpuDraw[];
     }[],
   ): { textureCount: number; gpuMemoryMiB: number } {
-    if (!this.vectorTextPrototypeEnabled || !this.initialized) {
+    if (!this.mixedSceneEnabled || !this.initialized) {
       throw new Error("Renderer testo vettoriale GPU non abilitato.");
     }
     return rebuildVectorTextGpuFallbackPresentation(this, view, runs);
@@ -3783,7 +3859,7 @@ export class BrushEngine {
         return false;
       }
     }
-    this.nextHistoryActionId += 1;
+    this.history.reserveActionId();
     const thicknessSource = lightGlazeSettings ?? this.settings;
     const thicknessSettings = {
       startThickness: thicknessSource.startThickness,
@@ -3849,11 +3925,6 @@ export class BrushEngine {
       historyCommitted: false,
       submitted: false,
       seedSequenceBeforeStroke: this.seedSequence,
-      historyCursorBeforeStroke: this.historyCursor,
-      redoActionsBeforeStroke: this.historyCursor < this.historyActions.length
-        ? this.historyActions.slice(this.historyCursor)
-        : null,
-      historyCompactionPendingBeforeStroke: this.historyCompactionPending,
       lightGlazeSettings,
       blendSettings: tool === "blend" ? { ...this.settings } : null,
       blendPlanner,
@@ -4000,23 +4071,11 @@ export class BrushEngine {
     releasePaintSelectionHistoryMask(this, stroke.historyActionId);
     this.seedSequence = stroke.seedSequenceBeforeStroke;
 
-    if (stroke.historyCommitted) {
-      this.historyActions.length = stroke.historyCursorBeforeStroke;
-      if (stroke.redoActionsBeforeStroke) {
-        this.historyActions.push(...stroke.redoActionsBeforeStroke);
-      }
-      this.historyCursor = stroke.historyCursorBeforeStroke;
-      this.historyCompactionPending = stroke.historyCompactionPendingBeforeStroke;
-      if (this.activeStrokeProfile) {
-        this.activeStrokeProfile.baseStamps = Math.max(
-          0,
-          this.activeStrokeProfile.baseStamps - removedStampCount,
-        );
-        this.activeStrokeProfile.historyCommittedActions = Math.max(
-          0,
-          this.activeStrokeProfile.historyCommittedActions - 1,
-        );
-      }
+    if (this.activeStrokeProfile) {
+      this.activeStrokeProfile.baseStamps = Math.max(
+        0,
+        this.activeStrokeProfile.baseStamps - removedStampCount,
+      );
     }
 
     this.activeStroke = null;
@@ -4027,9 +4086,6 @@ export class BrushEngine {
     if (this.thicknessTailPresentedRect) {
       this.displayDirty = true;
       this.requestRender();
-    }
-    if (stroke.historyCommitted) {
-      this.publishHistoryState();
     }
     this.scheduleLayerColdCompression();
     return true;
@@ -4066,6 +4122,8 @@ export class BrushEngine {
     this.publishHistoryState();
     this.callbacks.onStatus?.("Pulizia del layer…", "working");
 
+    let pixelsCleared = false;
+    let historyPublicationSettled = false;
     try {
       await this.waitForIdle();
       if (!this.layerHasContent) {
@@ -4078,6 +4136,7 @@ export class BrushEngine {
       this.displayDirty = false;
       await this.device.queue.onSubmittedWorkDone();
       this.layerHasContent = false;
+      pixelsCleared = true;
 
       // La mutazione della cronologia viene committata soltanto dopo che il
       // clear GPU è terminato: un errore di submission non può perdere il Redo.
@@ -4086,13 +4145,11 @@ export class BrushEngine {
       // whole journal is only legitimate when nothing is left anywhere:
       // otherwise clearing an empty layer would throw away another layer's undo.
       if (hasVisibleHistoryContent(this, this.layerStack.active.id)) {
-        truncateRedoHistory(this);
-        this.historyActions.push({
-          id: this.nextHistoryActionId++,
+        commitHistoryActionAtomically(this, {
+          id: this.nextHistoryActionId,
           kind: "clear",
           layerId: this.layerStack.active.id,
         });
-        this.historyCursor = this.historyActions.length;
         this.sweepRasterImageGpuResources();
         if (this.activeStrokeProfile) {
           this.activeStrokeProfile.historyCommittedActions += 1;
@@ -4107,9 +4164,30 @@ export class BrushEngine {
       ) {
         this.resetHistoryState();
       }
+      historyPublicationSettled = true;
 
-      this.callbacks.onStatus?.("Layer pulito.", "ok");
+      this.publishStatus("Layer pulito.", "ok");
       return true;
+    } catch (error) {
+      if (pixelsCleared && !historyPublicationSettled) {
+        try {
+          await rebuildActiveLayerFromHistory(this);
+        } catch (rollbackError) {
+          const original = error instanceof Error ? error.message : String(error);
+          const rollback = rollbackError instanceof Error
+            ? rollbackError.message
+            : String(rollbackError);
+          const combined = new Error(
+            `Clear fallito (${original}) e ripristino fallito (${rollback}).`,
+          );
+          this.latchDocumentStateInconsistent(
+            "Stato incoerente dopo Clear: ricarica prima di continuare.",
+            combined,
+          );
+          throw combined;
+        }
+      }
+      throw error;
     } finally {
       this.historyBusy = false;
       this.publishHistoryState();
@@ -4177,11 +4255,11 @@ export class BrushEngine {
    * unchanged.
    */
   async undo(): Promise<boolean> {
-    return moveHistoryCursor(this, -1);
+    return this.history.undo();
   }
 
   async redo(): Promise<boolean> {
-    return moveHistoryCursor(this, 1);
+    return this.history.redo();
   }
 
   async compactDiscardedHistoryIncrementally(
@@ -4662,33 +4740,38 @@ export class BrushEngine {
       (left, right) => this.layerStack.indexOfId(left.id) - this.layerStack.indexOfId(right.id),
     );
     const entries: DeletedLayerEntry[] = [];
-    for (const record of ordered) {
-      const gpu = this.layerGpu.get(record.id);
-      const hot = gpu?.hot ?? null;
-      const seed = record.hasContent && hot
-        ? await createLayerColdStorageCandidate(
-          this,
-          record,
-          hot,
-          coldStorageMaskForRecord(record),
-          this.nextHistoryActionId,
-          "history",
-        )
-        : null;
-      entries.push({
-        layerRecord: record,
-        rasterLayerIndex: this.layerStack.indexOfId(record.id),
-        sceneIndex: scene.indexOfKey(`raster:${record.id}`),
-        clippingParentId: record.clippingParentId,
-        seed,
-        baseBounds: record.contentBounds ? { ...record.contentBounds } : null,
-      });
-    }
+    try {
+      for (const record of ordered) {
+        const gpu = this.layerGpu.get(record.id);
+        const hot = gpu?.hot ?? null;
+        const seed = record.hasContent && hot
+          ? await createLayerColdStorageCandidate(
+            this,
+            record,
+            hot,
+            coldStorageMaskForRecord(record),
+            this.nextHistoryActionId,
+            "history",
+          )
+          : null;
+        entries.push({
+          layerRecord: record,
+          rasterLayerIndex: this.layerStack.indexOfId(record.id),
+          sceneIndex: scene.indexOfKey(`raster:${record.id}`),
+          clippingParentId: record.clippingParentId,
+          seed,
+          baseBounds: record.contentBounds ? { ...record.contentBounds } : null,
+        });
+      }
 
-    // La cattura dei seed sottomette copie GPU. Senza drenarle, la transazione
-    // strutturale trova la presentazione congelata con lavoro pendente e si
-    // interrompe: il guard e' giusto, mancava l'attesa.
-    await this.waitForIdle();
+      // La cattura dei seed sottomette copie GPU. Senza drenarle, la transazione
+      // strutturale trova la presentazione congelata con lavoro pendente e si
+      // interrompe: il guard e' giusto, mancava l'attesa.
+      await this.waitForIdle();
+    } catch (error) {
+      for (const entry of entries) destroyLayerColdStorage(entry.seed);
+      throw error;
+    }
 
     const selectedKeyBefore = scene.selected.key;
     const selectedKeyAfter = scene.selected.kind === "raster"
@@ -5822,7 +5905,7 @@ export class BrushEngine {
    * safely request the same initialization without compiling pipelines twice.
    */
   async ensureOptionalEditorResources(): Promise<void> {
-    const vectorResourcesPending = this.vectorTextPrototypeEnabled
+    const vectorResourcesPending = this.mixedSceneEnabled
       && !this.optionalEditorResourcesReady;
     const selectionResourcesPending = !this.selectionPipelinesReady
       && this.selectionPipelineWarmup !== null;
@@ -6538,12 +6621,37 @@ export class BrushEngine {
       edit.layerId,
       edit.property,
     );
-    recordRasterLayerMetadataHistoryAction(
-      this,
-      edit.property,
-      edit,
-      after,
-    );
+    try {
+      recordRasterLayerMetadataHistoryAction(
+        this,
+        edit.property,
+        edit,
+        after,
+      );
+    } catch (error) {
+      try {
+        restoreRasterLayerMetadataHistorySnapshot(this, edit);
+      } catch (rollbackError) {
+        const original = error instanceof Error ? error.message : String(error);
+        const rollback = rollbackError instanceof Error
+          ? rollbackError.message
+          : String(rollbackError);
+        const combined = new Error(
+          `Commit proprietà raster fallito (${original}); rollback fallito (${rollback}).`,
+        );
+        this.latchDocumentStateInconsistent(
+          "Stato incoerente dopo il commit della proprietà raster: ricarica la pagina.",
+          combined,
+        );
+        throw combined;
+      }
+      this.activeRasterLayerMetadataHistoryEdit = null;
+      this.latchDocumentStateInconsistent(
+        "Commit della proprietà raster non pubblicato: ricarica la pagina.",
+        error,
+      );
+      throw error;
+    }
     this.activeRasterLayerMetadataHistoryEdit = null;
     this.publishHistoryState();
     return true;
@@ -6637,11 +6745,53 @@ export class BrushEngine {
       return false;
     }
     const scene = requireMixedSceneStack(this);
-    this.activeVectorHistoryEdit = null;
     const after = scene.captureVectorHistoryState(edit.key);
-    const changed = recordVectorHistoryAction(this, edit.before, after);
+    let changed: boolean;
+    try {
+      changed = recordVectorHistoryAction(this, edit.before, after);
+    } catch (error) {
+      this.rollbackUnpublishedVectorHistoryMutation(edit.before, error);
+    }
+    this.activeVectorHistoryEdit = null;
     this.publishHistoryState();
     return changed;
+  }
+
+  private rollbackUnpublishedVectorHistoryMutation(
+    before: MixedSceneVectorHistoryState,
+    cause: unknown,
+  ): never {
+    const scene = requireMixedSceneStack(this);
+    try {
+      scene.restoreVectorHistoryState(before);
+      const selected = scene.selected;
+      this.vectorTextPreviewExcludedNodeId = selected.kind === "text"
+        ? selected.textNodeId
+        : null;
+      clearVectorTextPresentationForTransaction(this);
+      this.presentationCacheNeedsFullRebuild = true;
+      this.displayDirty = true;
+    } catch (rollbackError) {
+      const original = cause instanceof Error ? cause.message : String(cause);
+      const rollback = rollbackError instanceof Error
+        ? rollbackError.message
+        : String(rollbackError);
+      const combined = new Error(
+        `Commit vettoriale fallito (${original}); rollback fallito (${rollback}).`,
+      );
+      this.activeVectorHistoryEdit = null;
+      this.latchDocumentStateInconsistent(
+        "Stato incoerente dopo il commit vettoriale: ricarica la pagina.",
+        combined,
+      );
+      throw combined;
+    }
+    this.activeVectorHistoryEdit = null;
+    this.latchDocumentStateInconsistent(
+      "Commit vettoriale non pubblicato: ricarica la pagina.",
+      cause,
+    );
+    throw cause;
   }
 
   async cancelVectorHistoryEdit(): Promise<boolean> {
@@ -6776,7 +6926,11 @@ export class BrushEngine {
       : scene.captureVectorHistoryState(key);
     const node = scene.updateText(id, update);
     if (before) {
-      recordVectorHistoryAction(this, before, scene.captureVectorHistoryState(key));
+      try {
+        recordVectorHistoryAction(this, before, scene.captureVectorHistoryState(key));
+      } catch (error) {
+        this.rollbackUnpublishedVectorHistoryMutation(before, error);
+      }
       this.publishHistoryState();
     }
     publishMixedScene(this);
@@ -6813,7 +6967,11 @@ export class BrushEngine {
       : scene.captureVectorHistoryState(key);
     const node = scene.updateSvg(id, update);
     if (before) {
-      recordVectorHistoryAction(this, before, scene.captureVectorHistoryState(key));
+      try {
+        recordVectorHistoryAction(this, before, scene.captureVectorHistoryState(key));
+      } catch (error) {
+        this.rollbackUnpublishedVectorHistoryMutation(before, error);
+      }
       this.publishHistoryState();
     }
     publishMixedScene(this);
@@ -7540,6 +7698,7 @@ export class BrushEngine {
       if (!record || !gpu || index < 0 || outgoingIndexAfterInsertion < 0) {
         throw new Error("Inserimento livello completato senza risorse pubblicabili.");
       }
+      let addHistoryPublished = false;
       try {
         const result = await this.activateLayer(outgoingIndexAfterInsertion);
         // La creazione e' journaled. Prima troncava il Redo perche' le azioni
@@ -7568,6 +7727,7 @@ export class BrushEngine {
             referenceRasterLayerIdBefore,
           } satisfies LayerAddHistoryAction;
           commitHistoryActionAtomically(this, action);
+          addHistoryPublished = true;
           this.publishHistoryState();
         }
         // prepareActiveLayerForSwitch freezes presentation. Clearing the live
@@ -7578,6 +7738,13 @@ export class BrushEngine {
         this.clearVectorTextPresentation();
         return result;
       } catch (error) {
+        if (addHistoryPublished) {
+          this.latchDocumentStateInconsistent(
+            "Livello creato ma presentazione finale interrotta: ricarica prima di continuare.",
+            error,
+          );
+          throw error;
+        }
         // activateLayer mutates more than the selected index: it binds texture
         // fields, retargets Blend and the effect workbench, and loads content
         // metadata. Restore through the same complete path before discarding the
@@ -7871,15 +8038,33 @@ export class BrushEngine {
     if (!changed) {
       return false;
     }
-    truncateRedoHistory(this);
-    this.historyActions.push({
-      id: this.nextHistoryActionId++,
-      kind: "layer-blend-mode",
-      layerId: record.id,
-      before,
-      after: blendMode,
-    });
-    this.historyCursor = this.historyActions.length;
+    try {
+      commitHistoryActionAtomically(this, {
+        id: this.nextHistoryActionId,
+        kind: "layer-blend-mode",
+        layerId: record.id,
+        before,
+        after: blendMode,
+      });
+    } catch (error) {
+      try {
+        await setLayerBlendMode(this, index, before);
+      } catch (rollbackError) {
+        const original = error instanceof Error ? error.message : String(error);
+        const rollback = rollbackError instanceof Error
+          ? rollbackError.message
+          : String(rollbackError);
+        const combined = new Error(
+          `Blend mode non pubblicato (${original}) e rollback fallito (${rollback}).`,
+        );
+        this.latchDocumentStateInconsistent(
+          "Stato incoerente dopo il Blend mode: ricarica prima di continuare.",
+          combined,
+        );
+        throw combined;
+      }
+      throw error;
+    }
     if (this.activeStrokeProfile) {
       this.activeStrokeProfile.historyCommittedActions += 1;
     }
@@ -9905,20 +10090,13 @@ export class BrushEngine {
       );
     }
 
-    if (
-      this.activeStroke
-      && actionId === this.activeStroke.historyActionId
-    ) {
-      this.activeStroke.submitted = true;
-    }
-
     const selectionMask = this.selectionHistoryMasksByAction.get(actionId) ?? null;
     if (this.pixelSelectionState.selectedPixels > 0 && !selectionMask) {
       this.historyGpuStorage.release(capturedSlice);
       throw new Error("Maschera storica Paint non acquisita prima del rendering.");
     }
 
-    this.historyBatches.push({
+    const historyBatch = {
       kind: "paint",
       actionId,
       // Safe to read the active layer here because switching is refused while a
@@ -9937,8 +10115,39 @@ export class BrushEngine {
         ? this.grainTextureIdentity
         : null,
       selectionMask,
-    });
-    this.historyStoredBaseStamps += batch.length;
+    } satisfies HistoryRenderBatch;
+    const actionAlreadyPublished = this.historyActions.some((action) => action.id === actionId);
+    const releasePayloadOnCancel = () => this.historyGpuStorage.release(capturedSlice);
+    if (actionAlreadyPublished) {
+      this.history.appendBatch(historyBatch, {
+        storedBaseStamps: batch.length,
+        releasePayloadOnCancel,
+      });
+    } else {
+      this.history.commitAction(
+        {
+          id: actionId,
+          kind: "stroke",
+          layerId: this.layerStack.active.id,
+        },
+        {
+          reservedActionId: true,
+          batches: [historyBatch],
+          storedBaseStamps: batch.length,
+          releasePayloadOnCancel,
+        },
+      );
+      this.sweepRasterImageGpuResources();
+      this.publishHistoryState();
+      if (this.activeStrokeProfile) {
+        this.activeStrokeProfile.historyCommittedActions += 1;
+      }
+    }
+
+    if (this.activeStroke?.historyActionId === actionId) {
+      this.activeStroke.historyCommitted = true;
+      this.activeStroke.submitted = true;
+    }
 
     if (this.activeStrokeProfile) {
       this.activeStrokeProfile.historyCapturedBaseStamps += batch.length;
@@ -9976,26 +10185,13 @@ export class BrushEngine {
         destroyLayerColdStorage(action.output.seed);
       }
     }
-    this.discardedVectorRasterHistoryActions = [];
-    this.discardedRasterImportHistoryActions = [];
-    this.discardedRasterTransformHistoryActions = [];
-    this.discardedLayerAddHistoryActions = [];
-    this.discardedLayerDeleteHistoryActions = [];
-    this.discardedLayerMergeHistoryActions = [];
     if (this.historyGpuStorage) {
       this.historyGpuStorage.releaseAll();
-      this.selectionHistoryMasksByAction.clear();
-      this.selectionHistoryMasksByRevision.clear();
       this.selectionHistoryClipBindGroups.clear();
       this.selectionLiveClipBindGroup = null;
       scheduleHistoryGpuTrim(this);
     }
-    this.historyActions = [];
-    this.historyCursor = 0;
-    this.nextHistoryActionId = 1;
-    this.historyBatches = [];
-    this.historyStoredBaseStamps = 0;
-    this.historyCompactionPending = false;
+    this.history.reset();
     this.activeVectorHistoryEdit = null;
     this.activeRasterLayerMetadataHistoryEdit = null;
     this.sweepRasterImageGpuResources();
@@ -10040,18 +10236,6 @@ export class BrushEngine {
     for (const action of this.discardedLayerMergeHistoryActions) {
       for (const input of action.inputs) {
         if (input.kind === "vector" && input.state) retainNode(input.state.node);
-      }
-    }
-    for (const action of this.activeStroke?.redoActionsBeforeStroke ?? []) {
-      if (action.kind === "vector") {
-        retainNode(action.delta.before.node);
-        retainNode(action.delta.after.node);
-      } else if (action.kind === "vector-rasterize") {
-        retainNode(action.vectorState.node);
-      } else if (action.kind === "layer-merge") {
-        for (const input of action.inputs) {
-          if (input.kind === "vector" && input.state) retainNode(input.state.node);
-        }
       }
     }
     retainNode(this.activeVectorHistoryEdit?.before.node ?? null);

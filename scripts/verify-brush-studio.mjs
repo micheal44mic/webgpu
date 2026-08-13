@@ -9,6 +9,8 @@ const main = readFileSync(`${root}/src/main.ts`, "utf8");
 const studio = readFileSync(`${root}/src/mobile-brush-studio.ts`, "utf8");
 const library = readFileSync(`${root}/src/brush-library-controller.ts`, "utf8");
 const storage = readFileSync(`${root}/src/brush-studio-storage.ts`, "utf8");
+const catalog = readFileSync(`${root}/src/brush-catalog.ts`, "utf8");
+const definition = readFileSync(`${root}/src/brush-definition.ts`, "utf8");
 const transfer = readFileSync(`${root}/src/brush-studio-transfer.ts`, "utf8");
 const engine = readFileSync(`${root}/src/brush-engine.ts`, "utf8");
 const previewRenderer = readFileSync(`${root}/src/brush-stroke-preview-renderer.ts`, "utf8");
@@ -65,7 +67,7 @@ assert.match(
 assert.match(storage, /m1m4\.brush-studio\.library-state\.v1/);
 assert.match(storage, /export function loadBrushStudioLibraryState/);
 assert.match(storage, /export function saveBrushStudioLibraryState/);
-assert.match(storage, /BRUSH_STUDIO_MAX_CUSTOM_BRUSHES = 8/);
+assert.match(catalog, /BRUSH_STUDIO_MAX_CUSTOM_BRUSHES = 8/);
 assert.match(storage, /readonly customBrushes: readonly BrushStudioCustomBrush\[\]/);
 assert.match(storage, /candidate\.version !== 1 && candidate\.version !== 2/);
 assert.match(storage, /transaction\.addEventListener\("complete"/);
@@ -84,8 +86,9 @@ assert.match(brushSettingsController, /selectTool\(tool: BrushTool, restoreSnaps
 assert.match(engine, /tool === "blend" \? 400 : 99/);
 assert.match(
   transfer,
-  /"spacingPercent",\s*defaultBrushSettings\.spacingPercent,\s*0\.25,\s*99,/,
+  /normalizeBrushDefinitionSettings\(value, \{ strict \}\)/,
 );
+assert.match(definition, /"spacingPercent"[\s\S]*?0\.25,[\s\S]*?99,/);
 assert.match(html, /id="mobileBrushLibraryAdd"[\s\S]*?data-lucide="plus"/);
 assert.match(html, /id="mobileBrushLibraryImport"[\s\S]*?aria-label="Import brush"/);
 assert.match(html, /id="mobileBrushLibraryExport"[\s\S]*?aria-label="Export selected brush"/);
@@ -140,7 +143,7 @@ assert.match(
 );
 assert.match(transfer, /BRUSH_STUDIO_TRANSFER_MAX_FILE_BYTES = 42 \* 1024 \* 1024/);
 assert.match(transfer, /validateAssetPairing/);
-assert.match(transfer, /settings must not contain color or tool/);
+assert.match(definition, /"color" in record \|\| "tool" in record/);
 const portableImportStart = library.indexOf("private async importBrush(");
 const portableImportEnd = library.indexOf(
   "private async selectBrush(",
@@ -171,7 +174,7 @@ assert.match(library, /rollbackImport[\s\S]*?forgetSettings\(brushId\)/);
 assert.match(library, /this\.elements\.list\.inert = busy/);
 assert.match(
   main,
-  /if \(mobileBrushStudio\) \{[\s\S]*?"deferred-brush-restore"[\s\S]*?brushLibraryController\.restoreActiveBrush\(\)/,
+  /if \(\s*mobileBrushStudio\s*&& \(editorExtensionBootstrap\?\.restorePersistedBrushOnStartup \?\? true\)\s*\) \{[\s\S]*?"deferred-brush-restore"[\s\S]*?brushLibraryController\.restoreActiveBrush\(\)/,
   "the shared editor startup must hydrate the active custom brush on every layout",
 );
 assert.doesNotMatch(main, /mobileUiMediaQuery|mobileMediaQuery/);
@@ -288,7 +291,9 @@ assert.doesNotMatch(
   "landscape bootstrap must not shadow the persisted Default Brush before portrait restore",
 );
 assert.match(studio, /readonly previewRenderer: MobileBrushStudioPreviewPort/);
-assert.match(studio, /readonly engine: MobileBrushStudioEnginePort/);
+assert.match(studio, /readonly settings: MobileBrushStudioSettingsPort/);
+assert.match(studio, /readonly assets: MobileBrushStudioAssetPort/);
+assert.match(studio, /readonly runtime: MobileBrushStudioRuntimePort/);
 assert.match(studio, /readonly root: HTMLElement/);
 assert.doesNotMatch(studio, /import type \{ BrushEngine \}/);
 assert.doesNotMatch(studio, /AuthoritativeBrushStrokePreviewRenderer/);
@@ -322,8 +327,8 @@ assert.match(
 );
 assert.match(
   main,
-  /new MobileBrushStudioController\(\{[\s\S]*?engine: \{[\s\S]*?getSettings:[\s\S]*?registerCustomShapeAsset:[\s\S]*?removeCustomBrushAsset:[\s\S]*?waitForIdle:/,
-  "the composition root must adapt BrushEngine to the narrow Studio port",
+  /new MobileBrushStudioController\(\{[\s\S]*?settings: \{ getSettings:[\s\S]*?assets: \{[\s\S]*?registerCustomShapeAsset:[\s\S]*?removeCustomBrushAsset:[\s\S]*?runtime: \{ waitForIdle:/,
+  "the composition root must adapt BrushEngine to separate Studio ports",
 );
 assert.match(
   main,
@@ -491,12 +496,16 @@ try {
       sourceCanvases: new Map([["custom-shape:retry", {}]]),
       resolvedSources: new Map([["custom-shape:retry", {}]]),
       options: {
-        engine: {
+        runtime: {
           waitForIdle: async () => {},
+        },
+        settings: {
           getSettings: () => ({
             shapeAssetId: "legacy-shape",
             grainAssetId: "pencil-grain",
           }),
+        },
+        assets: {
           removeCustomBrushAsset: () => {
             attempts += 1;
             if (attempts === 1) throw new Error("retained by History");

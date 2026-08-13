@@ -5,17 +5,26 @@ import {
   type DecodedCustomBrushImage,
 } from "./brush-asset-registry";
 import {
+  builtinBrushAssetUrl,
+  isBuiltinBrushAssetId,
+} from "./brush-builtin-assets.ts";
+import {
+  isBrushStudioCustomBrushId,
+  normalizeBrushStudioCustomBrushName,
+} from "./brush-catalog.ts";
+import {
+  brushDefinitionSettingsFromRuntime,
+  type BrushDefinitionSettings,
+} from "./brush-definition.ts";
+import {
   brushStudioAssetStorageKey,
   deleteBrushStudioAsset,
   deleteBrushStudioSavedBrush,
-  isBrushStudioCustomBrushId,
   loadBrushStudioAsset,
   loadBrushStudioSavedBrush,
-  normalizeBrushStudioCustomBrushName,
   saveBrushStudioAsset,
   saveBrushStudioSavedBrush,
   type BrushStudioAssetKind,
-  type BrushStudioPersistedSettings,
 } from "./brush-studio-storage";
 import {
   brushSourceDimensionsFromBytes,
@@ -42,7 +51,9 @@ interface ImportedBrushStudioAsset {
 }
 
 export interface MobileBrushStudioOptions {
-  readonly engine: MobileBrushStudioEnginePort;
+  readonly settings: MobileBrushStudioSettingsPort;
+  readonly assets: MobileBrushStudioAssetPort;
+  readonly runtime: MobileBrushStudioRuntimePort;
   readonly previewRenderer: MobileBrushStudioPreviewPort;
   readonly root: HTMLElement;
   readonly appRoot: HTMLElement;
@@ -69,8 +80,11 @@ export interface MobileBrushStudioBrowser extends Window {
   readonly URL: typeof URL;
 }
 
-export interface MobileBrushStudioEnginePort {
+export interface MobileBrushStudioSettingsPort {
   getSettings(): BrushSettings;
+}
+
+export interface MobileBrushStudioAssetPort {
   registerCustomShapeAsset(
     source: DecodedCustomBrushImage,
     requestedId?: CustomBrushShapeAssetId,
@@ -84,6 +98,9 @@ export interface MobileBrushStudioEnginePort {
   ): CustomBrushAssetSnapshot | null;
   hasCustomBrushAsset(id: BrushShapeAssetId | BrushGrainAssetId): boolean;
   removeCustomBrushAsset(id: BrushShapeAssetId | BrushGrainAssetId): boolean;
+}
+
+export interface MobileBrushStudioRuntimePort {
   waitForIdle(): Promise<void>;
 }
 
@@ -91,12 +108,6 @@ export interface MobileBrushStudioPreviewPort {
   render(canvas: HTMLCanvasElement, settings: Readonly<BrushSettings>): Promise<unknown>;
   invalidate(canvas: HTMLCanvasElement): void;
 }
-
-const BUILTIN_BRUSH_SOURCE_URLS: Readonly<Record<string, string>> = {
-  "legacy-shape": new URL("../Shape.png", import.meta.url).href,
-  "pencil-shape": new URL("../Shapepencil.png", import.meta.url).href,
-  "pencil-grain": new URL("../Grainpencil.png", import.meta.url).href,
-};
 
 const MAX_IMPORTED_SOURCE_BYTES = 64 * 1024 * 1024;
 const BRUSH_SOURCE_HEADER_BYTES = 4 * 1024 * 1024;
@@ -129,9 +140,8 @@ function copySettings(settings: Readonly<BrushSettings>): BrushSettings {
   return { ...settings };
 }
 
-function settingsForPersistence(settings: BrushSettings): BrushStudioPersistedSettings {
-  const { color: _color, tool: _tool, ...persisted } = settings;
-  return persisted;
+function settingsForPersistence(settings: BrushSettings): BrushDefinitionSettings {
+  return brushDefinitionSettingsFromRuntime(settings);
 }
 
 function loadImage(browser: MobileBrushStudioBrowser, url: string): Promise<HTMLImageElement> {
@@ -460,19 +470,19 @@ export class MobileBrushStudioController {
     const candidates = new Set<CustomBrushShapeAssetId | CustomBrushGrainAssetId>();
     if (
       isCustomShapeAssetId(settings.shapeAssetId)
-      && this.options.engine.hasCustomBrushAsset(settings.shapeAssetId)
+      && this.options.assets.hasCustomBrushAsset(settings.shapeAssetId)
     ) {
       candidates.add(settings.shapeAssetId);
     }
     if (
       isCustomGrainAssetId(settings.grainAssetId)
-      && this.options.engine.hasCustomBrushAsset(settings.grainAssetId)
+      && this.options.assets.hasCustomBrushAsset(settings.grainAssetId)
     ) {
       candidates.add(settings.grainAssetId);
     }
     if (candidates.size === 0) return;
 
-    const activeSettings = this.options.engine.getSettings();
+    const activeSettings = this.options.settings.getSettings();
     if (isCustomShapeAssetId(activeSettings.shapeAssetId)) {
       candidates.delete(activeSettings.shapeAssetId);
     }
@@ -483,7 +493,7 @@ export class MobileBrushStudioController {
     for (const assetId of candidates) this.transientAssetIds.add(assetId);
     await this.requestTransientAssetRelease();
     const allReleased = [...candidates].every(
-      (assetId) => !this.options.engine.hasCustomBrushAsset(assetId),
+      (assetId) => !this.options.assets.hasCustomBrushAsset(assetId),
     );
     if (allReleased) this.settingsCache.delete(brushId);
   }
@@ -931,7 +941,7 @@ export class MobileBrushStudioController {
         mimeType: "image/png",
       };
       if (kind === "shape") {
-        const id = this.options.engine.registerCustomShapeAsset(normalizedDecoded);
+        const id = this.options.assets.registerCustomShapeAsset(normalizedDecoded);
         this.importedAssets.set(id, { kind, blob: normalizedBlob, name: file.name });
         this.transientAssetIds.add(id);
         this.draftSettings.shape = "shape";
@@ -939,7 +949,7 @@ export class MobileBrushStudioController {
         this.draftSettings.shapeInvert = false;
         this.element<HTMLInputElement>("mobileBrushStudioShapeInvert").checked = false;
       } else {
-        const id = this.options.engine.registerCustomGrainAsset(normalizedDecoded);
+        const id = this.options.assets.registerCustomGrainAsset(normalizedDecoded);
         this.importedAssets.set(id, { kind, blob: normalizedBlob, name: file.name });
         this.transientAssetIds.add(id);
         this.draftSettings.grainAssetId = id;
@@ -1045,7 +1055,7 @@ export class MobileBrushStudioController {
   ): BrushStudioCanvasSource | null {
     const cached = this.resolvedSources.get(assetId);
     if (cached) return cached;
-    const custom = this.options.engine.getCustomBrushAsset(assetId);
+    const custom = this.options.assets.getCustomBrushAsset(assetId);
     if (custom) {
       let canvas = this.sourceCanvases.get(assetId);
       if (!canvas) {
@@ -1063,8 +1073,8 @@ export class MobileBrushStudioController {
   ): Promise<BrushStudioCanvasSource | null> {
     const cached = this.cachedSourceForAsset(assetId);
     if (cached) return cached;
-    const url = BUILTIN_BRUSH_SOURCE_URLS[assetId];
-    if (!url) return null;
+    if (!isBuiltinBrushAssetId(assetId)) return null;
+    const url = builtinBrushAssetUrl(assetId);
     let promise = this.imagePromises.get(url);
     if (!promise) {
       promise = loadImage(this.browser, url);
@@ -1313,9 +1323,9 @@ export class MobileBrushStudioController {
       );
       this.assertUsable();
       if (kind === "shape") {
-        this.options.engine.registerCustomShapeAsset(decoded, assetId as CustomBrushShapeAssetId);
+        this.options.assets.registerCustomShapeAsset(decoded, assetId as CustomBrushShapeAssetId);
       } else {
-        this.options.engine.registerCustomGrainAsset(decoded, assetId as CustomBrushGrainAssetId);
+        this.options.assets.registerCustomGrainAsset(decoded, assetId as CustomBrushGrainAssetId);
       }
       this.importedAssets.set(assetId, {
         kind,
@@ -1352,11 +1362,11 @@ export class MobileBrushStudioController {
     }
     if (candidates.size === 0) return;
     try {
-      await this.options.engine.waitForIdle();
+      await this.options.runtime.waitForIdle();
     } catch {
       return;
     }
-    const activeSettings = this.options.engine.getSettings();
+    const activeSettings = this.options.settings.getSettings();
     if (isCustomShapeAssetId(activeSettings.shapeAssetId)) {
       candidates.delete(activeSettings.shapeAssetId);
     }
@@ -1365,7 +1375,7 @@ export class MobileBrushStudioController {
     }
     for (const id of candidates) {
       try {
-        if (this.options.engine.removeCustomBrushAsset(id)) {
+        if (this.options.assets.removeCustomBrushAsset(id)) {
           this.transientAssetIds.delete(id);
           this.importedAssets.delete(id);
           this.sourceCanvases.delete(id);

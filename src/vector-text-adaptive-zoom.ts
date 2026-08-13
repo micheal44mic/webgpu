@@ -1,5 +1,5 @@
 import type { VectorTextViewState } from "./vector-text-types";
-import type { VectorTextNodeSeed } from "./mixed-scene-stack";
+import type { VectorTextNodeSeed } from "./scene-text-model";
 
 /**
  * During a view gesture the last exact vector viewport is only presented, not

@@ -9,14 +9,15 @@ import type { DirtyRect } from "./engine-stroke-types";
 import {
   MIXED_SCENE_STACK_STRATEGY,
   type MixedSceneItem,
-  type RasterImageNode,
-  type VectorSvgNode,
-  type VectorTextNode,
 } from "./mixed-scene-stack";
+import type { VectorTextNode } from "./scene-text-model";
+import type { VectorSvgNode } from "./scene-svg-model";
+import type { RasterImageNode } from "./scene-image-model";
 import type { RasterShadowEncodeResult } from "./shadow-renderer";
 import type { RasterStrokeEncodeResult } from "./stroke-renderer";
 import type { PixelSelectionState } from "./selection-core";
 import type { VectorTextViewState } from "./vector-text-types";
+import { DEFAULT_BRUSH_DEFINITION_SETTINGS } from "./brush-definition.ts";
 
 /**
  * The UI exposes only the three measured rendering modes. The legacy values
@@ -273,9 +274,11 @@ export interface BrushEngineOptions {
    * directly into the authoritative hot texture.
    */
   layerColdAdjacentPrefetchEnabled?: boolean;
+  /** Enables the integrated raster/vector/image scene and its viewport pipelines. */
+  mixedSceneEnabled?: boolean;
   /**
-   * Enables the integrated mixed raster/vector text editor and its viewport
-   * pipelines. Callers may still disable it in isolated engine tests.
+   * @deprecated Compatibility-only alias for integrations created before the
+   * mixed scene graduated from its prototype name. Use `mixedSceneEnabled`.
    */
   vectorTextPrototypeEnabled?: boolean;
 }
@@ -320,42 +323,6 @@ export interface LayerSwitchResult {
 
 export const defaultBrushSettings: BrushSettings = {
   tool: "paint",
-  shape: "circle",
-  shapeAssetId: "legacy-shape",
-  shapeInvert: false,
-  shapeRotation: "fixed",
-  shapeScatter: 0,
-  grainMode: "off",
-  grainAssetId: "pencil-grain",
-  grainScale: 1.4,
-  grainMovement: 0,
-  grainDepth: 1,
-  grainBrightness: 0,
-  grainContrast: 0,
-  grainInvert: false,
-  grainFiltering: "improved",
-  grainBlendMode: "multiply",
   color: "#ff5b35",
-  size: 96,
-  spacingPercent: 1,
-  stabilization: 0,
-  startThickness: 1,
-  endThickness: 1,
-  count: 24,
-  flow: 0.07,
-  opacity: 1,
-  hardness: 1,
-  blendIntensity: 1,
-  blendMode: "light-glaze",
-  blendStretch: 0.18,
-  blendPaint: 0.14,
-  blendBlur: 0,
-  jitterMaster: 1,
-  hueJitterDegrees: 12,
-  saturationJitter: 0.18,
-  lightnessJitter: 0.12,
-  darknessJitter: 0.18,
-  jitterPerCopy: false,
-  positionJitterLateral: 1,
-  positionJitterLinear: 1,
+  ...DEFAULT_BRUSH_DEFINITION_SETTINGS,
 };

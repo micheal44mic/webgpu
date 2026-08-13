@@ -1,4 +1,4 @@
-import type { Shadow3dPathData } from "./vector-shadow-3d.js";
+import type { Shadow3dPathData } from "./vector-shadow-3d.ts";
 
 export const VECTOR_TEXT_TRANSFORM_STRATEGY =
   "kittl-compatible-centered-arch-wave-distort-six-vertex-four-handle-cubic-distance-warp-circle-rigid-glyph-v3" as const;

@@ -11,8 +11,8 @@
 import type { BrushEngine } from "./brush-engine";
 import type {
   MixedSceneItem,
-  RasterImageNode,
 } from "./mixed-scene-stack";
+import type { RasterImageNode } from "./scene-image-model";
 import {
   decodeRasterImage,
   releaseDecodedRasterImage,

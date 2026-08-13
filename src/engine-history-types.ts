@@ -11,9 +11,9 @@ import type {
   MixedSceneVectorHistoryState,
   MixedSceneVectorKey,
   MixedSceneItem,
-  RasterImageNode,
-  VectorSvgNode,
 } from "./mixed-scene-stack";
+import type { VectorSvgNode } from "./scene-svg-model";
+import type { RasterImageNode } from "./scene-image-model";
 import type { ShapeOccupancySelection } from "./shape-occupancy";
 import { MAX_STAMPS_PER_BATCH, STAMP_STRIDE_BYTES } from "./engine-limits";
 import type { LayerColdStorageResources } from "./engine-layer-resources";

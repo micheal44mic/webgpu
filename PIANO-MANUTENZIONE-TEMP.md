@@ -5,7 +5,7 @@
 
 ## Stato generale
 
-- Stato: **Fase 5 completata - pronta la Fase 6**
+- Stato: **Fase 7 completata - pronta la Fase 8**
 - Data di creazione: 12 agosto 2026
 - Modalita di lavoro: massimo un agente secondario, come richiesto dall'utente
 - Obiettivo: rendere il progetto piu semplice da capire, modificare e ottimizzare,
@@ -25,10 +25,11 @@ Legenda:
 - [x] Fase 3 - Pulizia meccanica e codice obsoleto dimostrato
 - [x] Fase 4 - Stato UI esplicito e rimozione della UI legacy
 - [x] Fase 5 - `main.ts` come composition root
-- [ ] Fase 6 - Confini di pennelli, effetti e scena
-- [ ] Fase 7 - Isolamento di cronologia, undo/redo e memoria
-- [ ] Fase 8 - Ottimizzazione misurata della memoria
-- [ ] Fase 9 - Rifinitura, documentazione corrente e chiusura
+- [x] Fase 6 - Confini di pennelli, effetti e scena
+- [x] Fase 7 - Isolamento di cronologia, undo/redo e memoria
+- [ ] Fase 8 - Snellimento strutturale e rimozione del rumore certo
+- [ ] Fase 9 - Ottimizzazione misurata della memoria
+- [ ] Fase 10 - Documentazione corrente e chiusura
 
 ## Regole non negoziabili
 
@@ -43,8 +44,10 @@ Legenda:
   progetti esistenti.
 - Lavorare per piccoli gruppi coerenti di modifiche, ognuno verificabile e
   annullabile indipendentemente.
-- Aggiornare questo file dopo ogni gruppo di lavoro, includendo verifiche ed
-  eventuali decisioni.
+- Dopo questa revisione del piano, durante l'esecuzione aggiornare questo file
+  soltanto sostituendo `[ ]` con `[x]` per attivita realmente completate e
+  verificate; non riscrivere il testo e non aggiungere registri senza una nuova
+  richiesta esplicita dell'utente.
 - Non eseguire commit, push o pubblicazioni senza una richiesta esplicita.
 - Non modificare `artifacts/first-stroke-runtime.png`, che era gia non tracciato
   prima dell'inizio del piano.
@@ -279,35 +282,35 @@ Gate Fase 5:
 
 ### Pennelli e Brush Studio
 
-- [ ] Definire una sola `BrushDefinition` versionata.
-- [ ] Tenere colore attivo e tool attivo fuori dalla definizione del pennello.
-- [ ] Aggiungere normalizzazione e migrazioni delle versioni persistite.
-- [ ] Creare un registro unico per metadati e URL degli asset builtin.
-- [ ] Separare catalogo, storage, preview e transfer codec.
-- [ ] Collegare Brush Studio tramite porte ristrette, non tramite l'intero engine.
-- [ ] Conservare gli ID persistiti storici dietro un livello `compat/`.
+- [x] Definire una sola `BrushDefinition` versionata.
+- [x] Tenere colore attivo e tool attivo fuori dalla definizione del pennello.
+- [x] Aggiungere normalizzazione e migrazioni delle versioni persistite.
+- [x] Creare un registro unico per metadati e URL degli asset builtin.
+- [x] Separare catalogo, storage, preview e transfer codec.
+- [x] Collegare Brush Studio tramite porte ristrette, non tramite l'intero engine.
+- [x] Conservare gli ID persistiti storici dietro un livello `compat/`.
 
 ### Effetti
 
-- [ ] Separare chiaramente effetti distruttivi e non distruttivi.
-- [ ] Estrarre il comportamento comune dei bottom sheet in un controller condiviso.
-- [ ] Conservare gli attuali moduli core/renderer/runtime che hanno responsabilita
+- [x] Separare chiaramente effetti distruttivi e non distruttivi.
+- [x] Estrarre il comportamento comune dei bottom sheet in un controller condiviso.
+- [x] Conservare gli attuali moduli core/renderer/runtime che hanno responsabilita
   gia chiare.
 
 ### Scena, vettori e immagini
 
-- [ ] Rinominare il sottosistema `prototype` quando non rappresenta piu un flag.
-- [ ] Separare modello scena, testo, SVG, immagini e trasformazioni.
-- [ ] Dividere `mixed-vector-text-controller.ts` per responsabilita.
-- [ ] Convertire `vector-shadow-3d.js` in TypeScript.
-- [ ] Rimuovere soltanto gli export pubblici dimostrati inutilizzati.
+- [x] Rinominare il sottosistema `prototype` quando non rappresenta piu un flag.
+- [x] Separare modello scena, testo, SVG, immagini e trasformazioni.
+- [x] Dividere `mixed-vector-text-controller.ts` per responsabilita.
+- [x] Convertire `vector-shadow-3d.js` in TypeScript.
+- [x] Rimuovere soltanto gli export pubblici dimostrati inutilizzati.
 
 Gate Fase 6:
 
-- [ ] Ogni dominio ha un proprietario chiaro dello stato.
-- [ ] Nessun formato persistito viene cambiato senza migrazione.
-- [ ] `npm run check` passa.
-- [ ] Parita visiva di pennelli, effetti e scena verificata.
+- [x] Ogni dominio ha un proprietario chiaro dello stato.
+- [x] Nessun formato persistito viene cambiato senza migrazione.
+- [x] `npm run check` passa.
+- [x] Parita visiva di pennelli, effetti e scena verificata.
 
 ---
 
@@ -316,37 +319,117 @@ Gate Fase 6:
 Obiettivo: rendere la cronologia modificabile in futuro senza coinvolgere l'intero
 `BrushEngine`. In questa fase non si ottimizzano ancora gli algoritmi.
 
-- [ ] Completare una matrice di caratterizzazione per tutte le azioni registrabili:
-  - [ ] Paint e Blend;
-  - [ ] Fill, filtri e trasformazioni raster;
-  - [ ] proprieta dei livelli ed effetti;
-  - [ ] aggiunta, eliminazione, duplicazione, riordino e merge;
-  - [ ] selezione;
-  - [ ] testo, SVG, immagini e rasterizzazione vettoriale.
-- [ ] Verificare commit, cancel, undo, redo e troncamento redo.
-- [ ] Verificare rollback e rilascio risorse tramite fault injection.
-- [ ] Definire un'interfaccia `HistoryHost` con le sole dipendenze necessarie.
-- [ ] Rimuovere la dipendenza diretta dei moduli History dall'intero `BrushEngine`.
-- [ ] Riunire azioni, cursore, batch, checkpoint e accounting sotto un proprietario
+- [x] Completare una matrice di caratterizzazione per tutte le azioni registrabili:
+  - [x] Paint e Blend;
+  - [x] Fill, filtri e trasformazioni raster;
+  - [x] proprieta dei livelli ed effetti;
+  - [x] aggiunta, eliminazione, duplicazione, riordino e merge;
+  - [x] selezione;
+  - [x] testo, SVG, immagini e rasterizzazione vettoriale.
+- [x] Verificare commit, cancel, undo, redo e troncamento redo.
+- [x] Verificare rollback e rilascio risorse tramite fault injection.
+- [x] Definire un'interfaccia `HistoryHost` con le sole dipendenze necessarie.
+- [x] Rimuovere la dipendenza diretta dei moduli History dall'intero `BrushEngine`.
+- [x] Riunire azioni, cursore, batch, checkpoint e accounting sotto un proprietario
   esplicito dello stato.
-- [ ] Esporre un'API ristretta: begin, commit, cancel, undo, redo, reset, stato e
+- [x] Esporre un'API ristretta: begin, commit, cancel, undo, redo, reset, stato e
   telemetria.
-- [ ] Conservare invariati GPU history storage, retention, checkpoint full/delta,
+- [x] Conservare invariati GPU history storage, retention, checkpoint full/delta,
   memory governor e spill IDB/OPFS.
-- [ ] Mantenere il salvataggio progetto separato dalla cache evictable di History.
-- [ ] Trasformare progressivamente `BrushEngine` in una facade dei sottosistemi.
+- [x] Mantenere il salvataggio progetto separato dalla cache evictable di History.
+- [x] Trasformare progressivamente `BrushEngine` in una facade dei sottosistemi.
 
 Gate Fase 7:
 
-- [ ] Stessa profondita e semantica di undo/redo.
-- [ ] Stesso risultato visivo dopo replay.
-- [ ] Nessuna perdita di risorse dopo errori o cancellazioni.
-- [ ] Accounting della memoria coerente con la baseline.
-- [ ] `npm run check` passa.
+- [x] Stessa profondita e semantica di undo/redo.
+- [x] Stesso risultato visivo dopo replay.
+- [x] Nessuna perdita di risorse dopo errori o cancellazioni.
+- [x] Accounting della memoria coerente con la baseline.
+- [x] `npm run check` passa.
 
 ---
 
-## Fase 8 - Ottimizzazione misurata della memoria
+## Fase 8 - Snellimento strutturale e rimozione del rumore certo
+
+Obiettivo: ridurre la superficie che puo confondere manutentori e futuri LLM,
+senza modificare funzionalita, risultato visivo, semantica di Undo/Redo o
+algoritmi di gestione della memoria. Ogni estrazione deve essere piccola,
+verificabile e separata dalle future ottimizzazioni della memoria.
+
+### Rete di sicurezza e criteri di rimozione
+
+- [ ] Verificare la baseline corrente con `npm run check` e smoke test reale prima
+  di iniziare gli spostamenti.
+- [ ] Ricontrollare il worktree e preservare tutte le modifiche gia presenti,
+  senza reset, checkout distruttivi, commit, push o pubblicazioni non richieste.
+- [ ] Dimostrare ogni eliminazione controllando import statici e dinamici, Worker,
+  HTML, CSS, test, script, build, deployment e utilizzi persistiti o manuali
+  documentati.
+- [ ] Lavorare per slice indipendenti, eseguendo verifiche mirate dopo ogni slice
+  e `npm run check` prima di marcarla completata.
+
+### Codice grande che puo confondere modifiche future
+
+- [ ] Dividere `verify-layer-stack.mjs`, `verify-vector-text.mjs` e gli altri
+  verifier monolitici per contratto comportamentale, riducendo i controlli sulla
+  posizione o sulla forma testuale del sorgente senza perdere copertura.
+- [ ] Snellire `brush-engine.ts` mantenendo `BrushEngine` come facade pubblica e
+  conservando nel file soltanto lo stato centrale e il percorso caldo del tratto;
+  estrarre le responsabilita non calde tramite porte ristrette.
+- [ ] Dividere `engine-layer-runtime.ts` in proprietari distinti per ricreazione
+  risorse, compositing, clipping e residency hot/cold, trasformando
+  `recreateLayerResources()` in un orchestratore breve e leggibile.
+- [ ] Dividere `mixed-scene-controller.ts` in interazione/trasformazioni, comandi e
+  lifecycle History, pianificazione del rendering/effetti e coordinamento DOM.
+- [ ] Dividere `engine-vector-text-runtime.ts` in setup e cache GPU, presentazione
+  fast/fallback e compositing segmentato della scena.
+- [ ] Dividere `project-storage.ts` in schema e tipi persistiti, codec/validazione,
+  quota, backend IndexedDB/memoria e repository transazionale.
+- [ ] Dividere `index.html` e `styles.css` per componenti dell'interfaccia,
+  preservando ID, accessibilita, ordine della cascata e rendering, senza introdurre
+  un framework o duplicare lo stato UI.
+- [ ] Confermare che `main.ts` resti una composition root e non dividere renderer,
+  shader o moduli GPU gia coesi soltanto per ridurre il numero di righe.
+- [ ] Aggiungere o aggiornare i verifier dei confini affinche impediscano il ritorno
+  di dipendenze larghe dall'intero `BrushEngine`, cicli e bus DOM impliciti.
+
+### File, immagini e directory
+
+- [ ] Eliminare gli output locali certamente rigenerabili e ignorati: `dist/`,
+  `dist-labs/` e i log temporanei in radice, senza interrompere server in uso.
+- [ ] Eliminare le directory vuote `audit/` e `docs/` se risultano ancora prive di
+  file, lasciando che la documentazione finale ricrei soltanto cio che serve.
+- [ ] Ricontrollare e rimuovere `assets/vector-svg-example.svg` soltanto se resta
+  privo di qualunque uso automatico o manuale documentato.
+- [ ] Rinominare e spostare `.tmp-canonical-human-stroke.json` tra le fixture Labs,
+  aggiornando Vite e i verifier: e una fixture autorevole, non un file temporaneo.
+- [ ] Classificare `artifacts/` e `design-qa-assets/`: eliminare soltanto catture
+  dimostrate obsolete e senza valore di baseline; organizzare quelle conservate
+  sotto una directory QA esplicita. Non eliminare
+  `artifacts/first-stroke-runtime.png` prima della chiusura del piano.
+- [ ] Spostare `procreate-audit/` sotto una directory di ricerca chiaramente
+  separata oppure prepararlo per un archivio esterno; eliminare soltanto output
+  rigenerabili, senza perdere input, script o conoscenza ancora utile.
+- [ ] Conservare `benchmarks/results.json` come baseline candidata fino alla fine
+  della Fase 9 e rendere esplicito che non e un asset dell'applicazione.
+- [ ] Verificare e conservare gli asset produttivi e le fixture reali, inclusi
+  `Shape.png`, `Shapepencil.png`, `Grainpencil.png`, font, golden, fixture SVG,
+  `.openai/` e `db/`.
+
+Gate Fase 8:
+
+- [ ] Ogni grande file trattato ha un proprietario leggibile e dipendenze
+  ristrette; nessuna semplice redistribuzione crea nuovi moduli monolitici.
+- [ ] Nessun file eliminato e richiesto da prodotto, Labs, test, build, deployment
+  o formati persistiti.
+- [ ] Nessuna regressione funzionale, visiva, di accessibilita o Undo/Redo nei
+  layout stretti e larghi.
+- [ ] Bundle di produzione e Labs conservano gli stessi confini della baseline.
+- [ ] `npm run check` e `git diff --check` passano.
+
+---
+
+## Fase 9 - Ottimizzazione misurata della memoria
 
 Obiettivo: migliorare RAM, VRAM e latenza della cronologia soltanto dopo il suo
 isolamento architetturale.
@@ -367,7 +450,7 @@ isolamento architetturale.
   risultato visivo.
 - [ ] Promuovere soltanto ottimizzazioni misurate e documentate.
 
-Gate Fase 8:
+Gate Fase 9:
 
 - [ ] Nessuna regressione funzionale o visiva.
 - [ ] Miglioramento misurabile rispetto alla baseline concordata.
@@ -376,13 +459,8 @@ Gate Fase 8:
 
 ---
 
-## Fase 9 - Rifinitura, documentazione corrente e chiusura
+## Fase 10 - Documentazione corrente e chiusura
 
-- [ ] Dividere `project-storage.ts` in schema, validazione, backend e repository se
-  ancora necessario dopo le fasi precedenti.
-- [ ] Dividere `styles.css` per componenti senza cambiare il rendering.
-- [ ] Riordinare fixture, golden, benchmark e materiale di ricerca nelle rispettive
-  directory.
 - [ ] Scrivere `README.md` basato esclusivamente sul progetto corrente.
 - [ ] Scrivere `ARCHITECTURE.md` con i confini effettivamente implementati.
 - [ ] Scrivere un `AGENTS.md` breve contenente soltanto regole stabili e comandi
@@ -391,7 +469,7 @@ Gate Fase 8:
 - [ ] Ottenere l'approvazione finale dell'utente.
 - [ ] Cancellare `PIANO-MANUTENZIONE-TEMP.md`.
 
-Gate Fase 9:
+Gate Fase 10:
 
 - [ ] App, build e test completi verdi.
 - [ ] Architettura documentata e coerente con il codice reale.

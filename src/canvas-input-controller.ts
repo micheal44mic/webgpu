@@ -1,7 +1,7 @@
 import type { BrushEngine } from "./brush-engine";
 import type { EditorExtension } from "./editor-extension-contract";
 import type { BrushSettings, HistoryState, PointerSample } from "./engine-types";
-import type { MixedVectorTextController } from "./mixed-vector-text-controller";
+import type { MixedSceneController } from "./mixed-scene-controller";
 import type { SelectionCombineMode, SelectionMethod, SelectionPoint } from "./selection-core";
 import {
   TOUCH_PAINT_INTENT_HOLD_MS,
@@ -41,7 +41,7 @@ export type CanvasInputEnginePort = Pick<
 >;
 
 export type CanvasInputVectorPort = Pick<
-  MixedVectorTextController,
+  MixedSceneController,
   "beginViewGesture" | "endViewGesture"
 >;
 

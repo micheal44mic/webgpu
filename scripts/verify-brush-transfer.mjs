@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 
 const transfer = await import("../src/brush-studio-transfer.ts");
 const storage = await import("../src/brush-studio-storage.ts");
+const catalog = await import("../src/brush-catalog.ts");
 const pngMask = await import("../src/png-mask.ts");
 
 const encoder = new TextEncoder();
@@ -333,8 +334,8 @@ assert.equal(
   "Cloud-Paper-.m1m4brush",
 );
 
-const firstImportId = storage.createBrushStudioCustomBrushId("first-import");
-const secondImportId = storage.createBrushStudioCustomBrushId("second-import");
+const firstImportId = catalog.createBrushStudioCustomBrushId("first-import");
+const secondImportId = catalog.createBrushStudioCustomBrushId("second-import");
 assert.notEqual(
   transfer.createBrushStudioImportedAssetId(firstImportId, "shape"),
   transfer.createBrushStudioImportedAssetId(secondImportId, "shape"),

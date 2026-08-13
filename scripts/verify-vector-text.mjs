@@ -144,7 +144,9 @@ const read = (relativePath) =>
   fs.readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
 
 const engineSource = readEngineSource();
-const controllerSource = read("src/mixed-vector-text-controller.ts");
+const controllerSource = read("src/mixed-scene-controller.ts");
+const controllerContractSource = read("src/mixed-scene-controller-contract.ts");
+const interactionOverlaySource = read("src/scene-interaction-overlay.ts");
 const mobileToolSettingsSource = read("src/mobile-tool-settings-sheet.ts");
 const clientSource = read("src/vector-text-effect-client.ts");
 const workerSource = read("src/vector-text-effect-worker.ts");
@@ -1609,12 +1611,12 @@ assert.equal((controllerSource.match(/getContext\("2d"/g) ?? []).length, 1);
 assert.match(controllerSource, /this\.interactionCanvas\.getContext\("2d"/);
 assert.match(controllerSource, /this\.presentationCanvas\.width = 1/);
 assert.match(controllerSource, /this\.presentationCanvas\.hidden = true/);
-assert.match(controllerSource, /root: ParentNode;[\s\S]*?browser: Window;/);
+assert.match(controllerContractSource, /root: ParentNode;[\s\S]*?browser: Window;/);
 assert.match(controllerSource, /root\.querySelector<HTMLElement>\(`/);
 assert.doesNotMatch(controllerSource, /document\.getElementById|\bwindow\./);
 assert.match(
   mainSource,
-  /new MixedVectorTextController\(engine, \{[\s\S]*?root: appElement,[\s\S]*?browser: window,/,
+  /new MixedSceneController\(engine, \{[\s\S]*?root: appElement,[\s\S]*?browser: window,/,
   "il controller vettoriale deve ricevere root e runtime browser dal bootstrap",
 );
 const controllerInitializeStart = controllerSource.indexOf("  async initialize(): Promise<void> {");
@@ -1695,7 +1697,7 @@ assert.match(controllerSource, /requestUnsafeExactRefresh\(revision: number\): v
 assert.match(controllerSource, /this\.unsafeExactRefreshInFlight[\s\S]*zoomUnsafeExactCoalescedCount/);
 assert.match(controllerSource, /waitForVectorTextPresentationCompletion\(\)\.then/);
 assert.match(
-  controllerSource,
+  controllerContractSource,
   /export type VectorTextClippedRefreshPolicy = "during-gesture" \| "on-release"/,
 );
 assert.match(
@@ -1798,8 +1800,8 @@ assert.match(
   "invalidare la fallback deve riclassificare subito il fast mode prima del frame successivo",
 );
 assert.match(controllerSource, /zoomFallbackReprojectionCount/);
-assert.match(controllerSource, /readonly documentWidth: number;/);
-assert.match(controllerSource, /readonly documentHeight: number;/);
+assert.match(controllerContractSource, /readonly documentWidth: number;/);
+assert.match(controllerContractSource, /readonly documentHeight: number;/);
 assert.match(
   controllerSource,
   /vectorTextWideFallbackView\(\s*view,\s*this\.host\.documentWidth,\s*this\.host\.documentHeight,\s*\)/,
@@ -1916,10 +1918,13 @@ assert.match(geometrySource, /overlapPieces/);
 assert.match(geometrySource, /triangulationDeviation > 1e-8/);
 assert.match(geometrySource, /if \(quantized\.length >= 3\)/);
 
-const textCornersStart = controllerSource.indexOf("  private textCorners(");
-const textCornersEnd = controllerSource.indexOf("  private rotationHandle(", textCornersStart);
+const textCornersStart = interactionOverlaySource.indexOf("export function sceneOverlayCorners(");
+const textCornersEnd = interactionOverlaySource.indexOf(
+  "export function sceneOverlayRotationHandle(",
+  textCornersStart,
+);
 assert.ok(textCornersStart >= 0 && textCornersEnd > textCornersStart);
-const textCornersSource = controllerSource.slice(textCornersStart, textCornersEnd);
+const textCornersSource = interactionOverlaySource.slice(textCornersStart, textCornersEnd);
 assert.doesNotMatch(textCornersSource, /blockShadow|singleShadow|outlineWidth|blur/);
 assert.match(controllerSource, /effectLodForNode[\s\S]*Math\.abs\(node\.scale \* view\.zoom\)/);
 assert.match(controllerSource, /!this\.host\.isPaintStrokeActive\(\)/);
@@ -2115,13 +2120,14 @@ assert.doesNotMatch(htmlSource, /id="vectorTextPrototypeSection"/);
 assert.doesNotMatch(mainSource, /vectorTextEditorEnabled/);
 assert.match(
   mainSource,
-  /vectorTextPrototypeEnabled:\s*editorExtensionEngineOptions\.vectorTextPrototypeEnabled \?\? true/,
+  /mixedSceneEnabled:\s*resolveMixedSceneEnabled\(editorExtensionEngineOptions, true\)/,
 );
-assert.match(mainSource, /if \(engine\.vectorTextPrototypeEnabled\)[\s\S]*?"deferred-vector-text"/);
+assert.match(mainSource, /if \(engine\.mixedSceneEnabled\)[\s\S]*?"deferred-mixed-scene"/);
 assert.doesNotMatch(mainSource, /pageSearchParams\.get\("vectorTextTest"\)/);
 assert.doesNotMatch(mainSource, /innerShadowTest/);
 assert.doesNotMatch(htmlSource, /id="vectorTextZoomMode"/);
-assert.match(mainSource, /__vectorTextPrototype = vectorTextPrototype/);
+assert.match(mainSource, /__mixedSceneController = mixedSceneController/);
+assert.doesNotMatch(mainSource, /vectorTextPrototype|MixedVectorText/);
 assert.equal(packageJson.scripts["vector-text:verify"], "node scripts/verify-vector-text.mjs");
 
 console.log(

@@ -1,5 +1,5 @@
 import type { BrushEngine } from "../../brush-engine";
-import type { MixedVectorTextController } from "../../mixed-vector-text-controller";
+import type { MixedSceneController } from "../../mixed-scene-controller";
 import {
   VECTOR_TEXT_ZOOM_AB_IDLE_FRAME_COUNT,
   VECTOR_TEXT_ZOOM_AB_SAMPLE_COUNT,
@@ -264,9 +264,9 @@ function percentile(values: readonly number[], ratio: number): number {
 }
 
 async function waitForVectorTextRenderAfter(
-  controller: MixedVectorTextController,
+  controller: MixedSceneController,
   previousRenderCount: number,
-): Promise<ReturnType<MixedVectorTextController["getDiagnostics"]>> {
+): Promise<ReturnType<MixedSceneController["getDiagnostics"]>> {
   for (let frame = 0; frame < 24; frame += 1) {
     await nextFrame();
     const diagnostics = controller.getDiagnostics();
@@ -277,9 +277,9 @@ async function waitForVectorTextRenderAfter(
 
 async function waitForVectorTextStable(
   engine: BrushEngine,
-  controller: MixedVectorTextController,
+  controller: MixedSceneController,
   minimumRecoveryCount = 0,
-): Promise<ReturnType<MixedVectorTextController["getDiagnostics"]>> {
+): Promise<ReturnType<MixedSceneController["getDiagnostics"]>> {
   let consecutiveStableFrames = 0;
   for (let frame = 0; frame < 360; frame += 1) {
     await nextFrame();
@@ -359,7 +359,7 @@ async function saveVectorZoomCoverageReport(
 
 async function insertZoomFixtures(
   engine: BrushEngine,
-  controller: MixedVectorTextController,
+  controller: MixedSceneController,
   canvas: HTMLCanvasElement,
   coverage: boolean,
 ): Promise<ReturnType<typeof vectorTextZoomCoverageSeed>[]> {
@@ -389,7 +389,7 @@ async function insertZoomFixtures(
 
 async function runVectorZoomCoverage(
   engine: BrushEngine,
-  controller: MixedVectorTextController,
+  controller: MixedSceneController,
   canvas: HTMLCanvasElement,
 ): Promise<{ report: VectorZoomCoverageReport; persistence: { saved: boolean; message: string } }> {
   const initialScene = engine.getMixedSceneSnapshot();
@@ -839,7 +839,7 @@ async function runVectorZoomCoverage(
 
 async function runVectorZoomAb(
   engine: BrushEngine,
-  controller: MixedVectorTextController,
+  controller: MixedSceneController,
   canvas: HTMLCanvasElement,
   refreshMode: "during" | "release",
 ): Promise<VectorZoomAbReport> {
@@ -1073,7 +1073,7 @@ async function runVectorZoomAb(
 
 async function runVectorZoomStress(
   engine: BrushEngine,
-  controller: MixedVectorTextController,
+  controller: MixedSceneController,
   canvas: HTMLCanvasElement,
 ): Promise<VectorZoomStressReport> {
   const initialScene = engine.getMixedSceneSnapshot();
@@ -1204,7 +1204,7 @@ async function runVectorZoomStress(
 
 export async function runVectorZoomLab(
   engine: BrushEngine,
-  controller: MixedVectorTextController,
+  controller: MixedSceneController,
   canvas: HTMLCanvasElement,
   kind: VectorZoomLabKind,
 ): Promise<unknown> {

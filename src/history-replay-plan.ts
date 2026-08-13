@@ -4,7 +4,7 @@ import type {
   RasterHistoryCheckpoint,
 } from "./engine-history-types";
 import { selectLayerReplayAfterCheckpoint } from "./history-journal";
-import type { PeriodicRasterHistoryCheckpoint } from "./history-maintenance-runtime";
+import type { PeriodicRasterHistoryCheckpoint } from "./history-checkpoint-types.ts";
 
 export interface PeriodicHistoryReplaySelection {
   readonly checkpoints: readonly PeriodicRasterHistoryCheckpoint[];

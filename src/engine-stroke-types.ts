@@ -4,7 +4,6 @@
  */
 import type { DryBlendPlanner } from "./blend-core";
 import type { DryBlendRenderBatch } from "./blend-renderer";
-import type { HistoryAction } from "./engine-history-types";
 import type { BrushSettings, BrushTool, LayerPoint } from "./engine-types";
 import type { ShapeOccupancySelection } from "./shape-occupancy";
 import type { CausalStrokeCurvePlanner } from "./stroke-curve-core";
@@ -47,9 +46,6 @@ export interface ActiveStroke {
   historyCommitted: boolean;
   submitted: boolean;
   seedSequenceBeforeStroke: number;
-  historyCursorBeforeStroke: number;
-  redoActionsBeforeStroke: HistoryAction[] | null;
-  historyCompactionPendingBeforeStroke: boolean;
   lightGlazeSettings: BrushSettings | null;
   blendSettings: BrushSettings | null;
   blendPlanner: DryBlendPlanner | null;

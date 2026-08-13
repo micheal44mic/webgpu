@@ -382,15 +382,10 @@ const textSeed = (text = "INSERT") => ({
   const recordEnd = historySource.indexOf("export async function moveMixedSceneItem(", recordStart);
   assert.ok(recordStart >= 0 && recordEnd > recordStart);
   const recordBody = historySource.slice(recordStart, recordEnd);
-  const truncateIndex = recordBody.indexOf("truncateRedoHistory(engine);");
-  const pushIndex = recordBody.indexOf("engine.historyActions.push(action);");
-  const cursorIndex = recordBody.indexOf("engine.historyCursor = engine.historyActions.length;");
+  const commitIndex = recordBody.indexOf("commitHistoryActionAtomically(engine, action);");
   const sweepIndex = recordBody.indexOf("engine.sweepRasterImageGpuResources();");
   assert.ok(
-    truncateIndex >= 0
-      && truncateIndex < pushIndex
-      && pushIndex < cursorIndex
-      && cursorIndex < sweepIndex,
+    commitIndex >= 0 && commitIndex < sweepIndex,
     "il recorder reorder deve spazzare le immagini solo dopo troncamento e commit",
   );
   assert.equal(

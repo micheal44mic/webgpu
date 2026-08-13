@@ -1,5 +1,11 @@
-import { isCustomGrainAssetId } from "./brush-asset-registry.ts";
-import type { BrushSettings } from "./engine-types";
+import {
+  normalizeCustomBrushCatalog,
+  type BrushStudioCustomBrush,
+} from "./brush-catalog.ts";
+import {
+  normalizeBrushDefinition,
+  type BrushDefinition,
+} from "./brush-definition.ts";
 
 const BRUSH_STUDIO_SETTINGS_KEY = "m1m4.brush-studio.settings.v1";
 const BRUSH_STUDIO_LIBRARY_STATE_KEY = "m1m4.brush-studio.library-state.v1";
@@ -7,20 +13,9 @@ const BRUSH_STUDIO_ASSET_DATABASE = "m1m4-brush-studio";
 const BRUSH_STUDIO_ASSET_STORE = "assets";
 const BRUSH_STUDIO_ASSET_DATABASE_VERSION = 1;
 
-export const BRUSH_STUDIO_CUSTOM_BRUSH_ID_PREFIX = "custom-brush:";
-export const BRUSH_STUDIO_MAX_CUSTOM_BRUSHES = 8;
-export const BRUSH_STUDIO_CUSTOM_BRUSH_NAME_MAX_LENGTH = 48;
-
 export type BrushStudioAssetKind = "shape" | "grain";
 
-export type BrushStudioPersistedSettings = Omit<BrushSettings, "color" | "tool">;
-
-export interface BrushStudioSavedBrush {
-  readonly version: 1;
-  readonly settings: BrushStudioPersistedSettings;
-  readonly shapeAssetKey: string | null;
-  readonly grainAssetKey: string | null;
-}
+export type BrushStudioSavedBrush = BrushDefinition;
 
 export interface BrushStudioStoredAsset {
   readonly key: string;
@@ -37,17 +32,7 @@ export interface BrushStudioLibraryState {
   readonly customBrushes: readonly BrushStudioCustomBrush[];
 }
 
-export type BrushStudioCustomBrushId =
-  `${typeof BRUSH_STUDIO_CUSTOM_BRUSH_ID_PREFIX}${string}`;
-
-export interface BrushStudioCustomBrush {
-  readonly id: BrushStudioCustomBrushId;
-  readonly name: string;
-  readonly createdAt: number;
-  readonly updatedAt: number;
-}
-
-type BrushStudioSavedBrushMap = Record<string, BrushStudioSavedBrush>;
+type BrushStudioSavedBrushMap = Record<string, unknown>;
 
 function readSavedBrushMap(): BrushStudioSavedBrushMap {
   try {
@@ -63,19 +48,12 @@ function readSavedBrushMap(): BrushStudioSavedBrushMap {
 
 export function loadBrushStudioSavedBrush(brushId: string): BrushStudioSavedBrush | null {
   const saved = readSavedBrushMap()[brushId];
-  if (!saved || saved.version !== 1 || !saved.settings) return null;
-  return {
-    ...saved,
-    settings: {
-      ...saved.settings,
-      // Migrates the removed Cotton Fleece id and settings authored before a
-      // grain source id existed. No network request for that asset can recur.
-      grainAssetId: saved.settings.grainAssetId === "pencil-grain"
-        || isCustomGrainAssetId(saved.settings.grainAssetId)
-        ? saved.settings.grainAssetId
-        : "pencil-grain",
-    },
-  };
+  if (!saved) return null;
+  try {
+    return normalizeBrushDefinition(saved);
+  } catch {
+    return null;
+  }
 }
 
 export function saveBrushStudioSavedBrush(
@@ -83,7 +61,7 @@ export function saveBrushStudioSavedBrush(
   brush: BrushStudioSavedBrush,
 ): void {
   const saved = readSavedBrushMap();
-  saved[brushId] = brush;
+  saved[brushId] = normalizeBrushDefinition(brush);
   window.localStorage.setItem(BRUSH_STUDIO_SETTINGS_KEY, JSON.stringify(saved));
 }
 
@@ -133,151 +111,6 @@ export function saveBrushStudioLibraryState(
     customBrushes: normalizeCustomBrushCatalog(customBrushes),
   };
   window.localStorage.setItem(BRUSH_STUDIO_LIBRARY_STATE_KEY, JSON.stringify(state));
-}
-
-export function isBrushStudioCustomBrushId(
-  value: string,
-): value is BrushStudioCustomBrushId {
-  return value.startsWith(BRUSH_STUDIO_CUSTOM_BRUSH_ID_PREFIX)
-    && value.length > BRUSH_STUDIO_CUSTOM_BRUSH_ID_PREFIX.length
-    && value.length <= 160;
-}
-
-let fallbackBrushIdSequence = 0;
-
-export function createBrushStudioCustomBrushId(
-  suppliedToken?: string,
-): BrushStudioCustomBrushId {
-  const token = suppliedToken
-    ?? globalThis.crypto?.randomUUID?.()
-    ?? `${Date.now().toString(36)}-${(++fallbackBrushIdSequence).toString(36)}`;
-  const safeToken = token.trim().replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 120)
-    || `${Date.now().toString(36)}-${(++fallbackBrushIdSequence).toString(36)}`;
-  return `${BRUSH_STUDIO_CUSTOM_BRUSH_ID_PREFIX}${safeToken}`;
-}
-
-export function normalizeBrushStudioCustomBrushName(name: string): string {
-  const normalized = name.replace(/\s+/g, " ").trim()
-    .slice(0, BRUSH_STUDIO_CUSTOM_BRUSH_NAME_MAX_LENGTH);
-  return normalized || "New Brush";
-}
-
-export function nextBrushStudioCustomBrushName(
-  brushes: readonly Pick<BrushStudioCustomBrush, "name">[],
-): string {
-  const usedNames = new Set(brushes.map((brush) => (
-    normalizeBrushStudioCustomBrushName(brush.name).toLocaleLowerCase()
-  )));
-  if (!usedNames.has("new brush")) return "New Brush";
-  for (let suffix = 2; suffix <= BRUSH_STUDIO_MAX_CUSTOM_BRUSHES + 1; suffix += 1) {
-    const candidate = `New Brush ${suffix}`;
-    if (!usedNames.has(candidate.toLocaleLowerCase())) return candidate;
-  }
-  return `New Brush ${brushes.length + 1}`;
-}
-
-export function uniqueBrushStudioCustomBrushName(
-  requestedName: string,
-  brushes: readonly Pick<BrushStudioCustomBrush, "name">[],
-): string {
-  const base = normalizeBrushStudioCustomBrushName(requestedName);
-  const usedNames = new Set(brushes.map((brush) => (
-    normalizeBrushStudioCustomBrushName(brush.name).toLocaleLowerCase()
-  )));
-  if (!usedNames.has(base.toLocaleLowerCase())) return base;
-  for (let suffix = 2; suffix <= BRUSH_STUDIO_MAX_CUSTOM_BRUSHES + 1; suffix += 1) {
-    const ending = ` ${suffix}`;
-    const candidate = `${base.slice(
-      0,
-      BRUSH_STUDIO_CUSTOM_BRUSH_NAME_MAX_LENGTH - ending.length,
-    )}${ending}`;
-    if (!usedNames.has(candidate.toLocaleLowerCase())) return candidate;
-  }
-  return base;
-}
-
-export function createBrushStudioBaseSettings(
-  defaults: Readonly<BrushSettings>,
-  color: BrushSettings["color"],
-): BrushSettings {
-  return {
-    ...defaults,
-    color,
-    tool: "paint",
-    shape: "circle",
-    shapeAssetId: "legacy-shape",
-    shapeInvert: false,
-    shapeRotation: "fixed",
-    shapeScatter: 0,
-    grainMode: "off",
-    grainAssetId: "pencil-grain",
-    grainScale: 1.4,
-    grainMovement: 0,
-    grainDepth: 1,
-    grainBrightness: 0,
-    grainContrast: 0,
-    grainInvert: false,
-    grainFiltering: "improved",
-    grainBlendMode: "multiply",
-    size: 50,
-    spacingPercent: 3,
-    stabilization: 0,
-    startThickness: 1,
-    endThickness: 1,
-    count: 1,
-    flow: 1,
-    opacity: 1,
-    hardness: 1,
-    blendIntensity: 1,
-    blendMode: "light-glaze",
-    blendStretch: 0.18,
-    blendPaint: 0.14,
-    blendBlur: 0,
-    jitterMaster: 1,
-    hueJitterDegrees: 0,
-    saturationJitter: 0,
-    lightnessJitter: 0,
-    darknessJitter: 0,
-    jitterPerCopy: false,
-    positionJitterLateral: 0,
-    positionJitterLinear: 0,
-  };
-}
-
-function normalizeCustomBrushCatalog(value: unknown): BrushStudioCustomBrush[] {
-  if (!Array.isArray(value)) return [];
-  const normalized: BrushStudioCustomBrush[] = [];
-  const seen = new Set<string>();
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-    const candidate = entry as Partial<BrushStudioCustomBrush>;
-    if (
-      typeof candidate.id !== "string"
-      || !isBrushStudioCustomBrushId(candidate.id)
-      || seen.has(candidate.id)
-    ) {
-      continue;
-    }
-    const createdAt = typeof candidate.createdAt === "number"
-      && Number.isFinite(candidate.createdAt)
-      ? candidate.createdAt
-      : 0;
-    const updatedAt = typeof candidate.updatedAt === "number"
-      && Number.isFinite(candidate.updatedAt)
-      ? candidate.updatedAt
-      : createdAt;
-    normalized.push({
-      id: candidate.id,
-      name: normalizeBrushStudioCustomBrushName(
-        typeof candidate.name === "string" ? candidate.name : "New Brush",
-      ),
-      createdAt,
-      updatedAt,
-    });
-    seen.add(candidate.id);
-    if (normalized.length >= BRUSH_STUDIO_MAX_CUSTOM_BRUSHES) break;
-  }
-  return normalized;
 }
 
 export function brushStudioAssetStorageKey(

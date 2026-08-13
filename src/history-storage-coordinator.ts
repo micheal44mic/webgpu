@@ -1,7 +1,5 @@
-import type { BrushEngine } from "./brush-engine";
 import {
   destroyLayerColdStorage,
-  restoreColdStorageResources,
 } from "./engine-cold-storage";
 import type {
   LayerColdStorageResources,
@@ -54,11 +52,8 @@ import {
 } from "./engine-limits";
 import { combineCompressionHashes } from "./engine-math";
 import type { LayerColdCompressedChunk } from "./layer-cold-compression-client";
-import {
-  periodicCheckpointChainForReplay,
-  periodicHistoryCheckpoints,
-} from "./history-maintenance-runtime";
 import { planRasterHistoryReplay } from "./history-replay-plan";
+import type { HistoryStorageHost } from "./history-host";
 
 const SESSION_LEASE_MS = 24 * 60 * 60_000;
 const SESSION_HEARTBEAT_MS = 60_000;
@@ -151,7 +146,7 @@ export interface HistoryStorageSpillOptions {
 }
 
 export class HistoryStorageCoordinator {
-  private readonly engine: BrushEngine;
+  private readonly host: HistoryStorageHost;
   private readonly catalog = new HistoryStorageCatalog();
   private opfs: HistoryOpfsClient | null = null;
   private backend: HistoryStorageBackendKind = "memory-only";
@@ -195,8 +190,8 @@ export class HistoryStorageCoordinator {
   private lastError: string | null = null;
   private destroyed = false;
 
-  constructor(engine: BrushEngine) {
-    this.engine = engine;
+  constructor(host: HistoryStorageHost) {
+    this.host = host;
     this.initializePromise = this.initializeSession();
   }
 
@@ -204,8 +199,8 @@ export class HistoryStorageCoordinator {
     const storedOnlyPayloads = [...this.storedPayloads.keys()].filter((payloadId) => {
       const gpuId = gpuSliceIdFromPayloadId(payloadId);
       if (gpuId !== null) {
-        const slice = this.engine.historyGpuStorage.sliceById(gpuId);
-        return !slice || !this.engine.historyGpuStorage.isResident(slice);
+        const slice = this.host.gpuStorage.sliceById(gpuId);
+        return !slice || !this.host.gpuStorage.isResident(slice);
       }
       const handle = this.coldHandles.get(payloadId);
       return Boolean(handle && !handle.resident);
@@ -288,11 +283,23 @@ export class HistoryStorageCoordinator {
   }
 
   noteBranchCut(): void {
-    this.operationEpoch += 1;
-    this.journalEpoch += 1;
-    this.branchId = makeId("b");
-    this.diskBudgetBlockedActionIds.clear();
-    this.resetSpillFailureCircuit();
+    this.prepareBranchCut()();
+  }
+
+  /**
+   * Prepares the only fallible part (the fresh UUID) before a journal
+   * transaction mutates CPU state. The returned closure performs synchronous,
+   * non-allocating publication after action and payload insertion succeeded.
+   */
+  prepareBranchCut(): () => void {
+    const nextBranchId = makeId("b");
+    return () => {
+      this.operationEpoch += 1;
+      this.journalEpoch += 1;
+      this.branchId = nextBranchId;
+      this.diskBudgetBlockedActionIds.clear();
+      this.resetSpillFailureCircuit();
+    };
   }
 
   /**
@@ -330,7 +337,7 @@ export class HistoryStorageCoordinator {
     let changed = this.demoteStoredResidentCaches(options);
     if (changed) {
       options.afterResidenceChange();
-      this.engine.historyGpuStorage.trimEmptyPages(true);
+      this.host.gpuStorage.trimEmptyPages(true);
     }
     for (let segmentCount = 0; segmentCount < 4; segmentCount += 1) {
       if (
@@ -353,7 +360,7 @@ export class HistoryStorageCoordinator {
       if (result === "committed") {
         changed = true;
         options.afterResidenceChange();
-        this.engine.historyGpuStorage.trimEmptyPages(true);
+        this.host.gpuStorage.trimEmptyPages(true);
         continue;
       }
       if (result === "budget-skip") continue;
@@ -362,7 +369,7 @@ export class HistoryStorageCoordinator {
       if (result === "backend-fallback" && beforeBackend !== this.backend) continue;
       break;
     }
-    if (!options.shouldContinue()) this.engine.resumeHistoryStorageMaintenance();
+    if (!options.shouldContinue()) this.host.resumeMaintenance();
     return changed;
   }
 
@@ -390,10 +397,10 @@ export class HistoryStorageCoordinator {
     await this.waitForForegroundStorageAccess();
     this.wrapAllHistorySeeds();
     const required = this.payloadsRequiredForStep(delta);
-    const previousCursor = this.engine.historyCursor;
+    const previousCursor = this.host.store.cursor;
     const crossed = delta < 0
-      ? this.engine.historyActions[previousCursor - 1]
-      : this.engine.historyActions[previousCursor];
+      ? this.host.store.actions[previousCursor - 1]
+      : this.host.store.actions[previousCursor];
     if (crossed?.kind === "layer-merge") {
       // The merge runtime streams one seed at a time and retains detached live
       // GPU resources as its rollback closure. Hydrating N+1 seeds here would
@@ -457,7 +464,7 @@ export class HistoryStorageCoordinator {
    * checkpoint can never make an error path unable to restore the document.
    */
   async prepareRasterReplayAtCursor(layerId: number, cursor: number): Promise<void> {
-    if (cursor < 0 || cursor > this.engine.historyActions.length) {
+    if (cursor < 0 || cursor > this.host.store.actions.length) {
       throw new Error("Cursore History non valido per il preflight raster.");
     }
     await this.waitForForegroundStorageAccess();
@@ -481,7 +488,7 @@ export class HistoryStorageCoordinator {
     required: readonly HistoryPayloadCandidate[],
   ): Promise<void> {
     const missing = required.filter((candidate) => candidate.storage === "gpu"
-      ? !this.engine.historyGpuStorage.isResident(candidate.slice)
+      ? !this.host.gpuStorage.isResident(candidate.slice)
       : !candidate.handle.resident
     );
     if (missing.length === 0) return;
@@ -503,7 +510,7 @@ export class HistoryStorageCoordinator {
     let loadedBytes = 0;
     let residenceChanged = false;
     this.storageBusy = "hydrating";
-    this.engine.publishStatus(
+    this.host.publishStatus(
       `Caricamento cronologia locale… 0,0 / ${formatMiB(totalBytes)} MiB`,
       "working",
     );
@@ -515,13 +522,12 @@ export class HistoryStorageCoordinator {
         if (candidate.storage === "gpu") {
           const bytes = await this.readPayloadBytes(location);
           this.assertToken(token);
-          this.engine.historyGpuStorage.hydrate(candidate.slice, bytes);
+          this.host.gpuStorage.hydrate(candidate.slice, bytes);
           residenceChanged = true;
         } else {
           const compressed = await this.readColdSeed(location);
           this.assertToken(token);
-          const restored = await restoreColdStorageResources(
-            this.engine,
+          const restored = await this.host.restoreColdStorage(
             compressed,
             `Hydrate History locale · azione ${candidate.ownerActionId}`,
           );
@@ -536,24 +542,24 @@ export class HistoryStorageCoordinator {
         }
         loadedBytes += candidate.rawBytes;
         this.hydratedBytes += candidate.rawBytes;
-        this.engine.publishStatus(
+        this.host.publishStatus(
           `Caricamento cronologia locale… ${formatMiB(loadedBytes)} / `
           + `${formatMiB(totalBytes)} MiB`,
           "working",
         );
         await yieldBrowserTurn();
       }
-      await this.engine.waitForGpuCapped("Hydrate cronologia locale", 60_000);
+      await this.host.waitForGpu("Hydrate cronologia locale", 60_000);
       this.assertToken(token);
       this.hydrationsCompleted += 1;
       this.ownershipEpoch += 1;
-      this.engine.historyStorageResidenceChanged();
+      this.host.onResidenceChanged();
     } catch (error) {
       this.hydrationFailures += 1;
       this.lastError = errorMessage(error);
       if (residenceChanged) {
         this.ownershipEpoch += 1;
-        this.engine.historyStorageResidenceChanged();
+        this.host.onResidenceChanged();
       }
       throw error;
     } finally {
@@ -565,7 +571,7 @@ export class HistoryStorageCoordinator {
     required: readonly HistoryPayloadCandidate[],
   ): Promise<void> {
     const missing = required.filter((candidate) => candidate.storage === "gpu"
-      ? !this.engine.historyGpuStorage.isResident(candidate.slice)
+      ? !this.host.gpuStorage.isResident(candidate.slice)
       : !candidate.handle.resident
     );
     if (missing.length === 0) return;
@@ -611,14 +617,14 @@ export class HistoryStorageCoordinator {
       this.storedPayloads.has(candidate.payloadId)
       && !protectedPayloadIds.has(candidate.payloadId)
       && (candidate.storage === "gpu"
-        ? this.engine.historyGpuStorage.isResident(candidate.slice)
+        ? this.host.gpuStorage.isResident(candidate.slice)
         : candidate.handle.resident)
     );
     if (candidates.length === 0) return false;
     const gpuSlices = candidates.flatMap((candidate) =>
       candidate.storage === "gpu" ? [candidate.slice] : []
     );
-    const prepared = this.engine.historyGpuStorage.prepareDemoteMany(gpuSlices);
+    const prepared = this.host.gpuStorage.prepareDemoteMany(gpuSlices);
     prepared.commitNoThrow();
     for (const candidate of candidates) {
       if (candidate.storage !== "cold") continue;
@@ -629,10 +635,10 @@ export class HistoryStorageCoordinator {
         // The durable payload remains authoritative.
       }
     }
-    this.engine.selectionHistoryClipBindGroups.clear();
-    this.engine.historyGpuStorage.trimEmptyPages(true);
+    this.host.store.selectionClipBindGroups.clear();
+    this.host.gpuStorage.trimEmptyPages(true);
     this.ownershipEpoch += 1;
-    this.engine.historyStorageResidenceChanged();
+    this.host.onResidenceChanged();
     return true;
   }
 
@@ -705,7 +711,7 @@ export class HistoryStorageCoordinator {
       if (
         this.storedPayloads.has(candidate.payloadId)
         || (candidate.storage === "gpu"
-          ? !this.engine.historyGpuStorage.isResident(candidate.slice)
+          ? !this.host.gpuStorage.isResident(candidate.slice)
           : !candidate.handle.resident)
       ) {
         continue;
@@ -736,7 +742,7 @@ export class HistoryStorageCoordinator {
         maximumSegmentBytes,
         Math.floor(options.highWaterBytes * 0.25),
       ),
-      journalLength: this.engine.historyActions.length,
+      journalLength: this.host.store.actions.length,
       actions: planningActions,
     });
     return {
@@ -746,7 +752,7 @@ export class HistoryStorageCoordinator {
         highWaterBytes: options.highWaterBytes,
         targetSegmentBytes: historyStorageTargetSegmentBytes(MOBILE_DEVICE_CLASS),
         maximumSegmentBytes,
-        journalLength: this.engine.historyActions.length,
+        journalLength: this.host.store.actions.length,
         keepHotActions,
         actions: planningActions,
       }),
@@ -795,8 +801,8 @@ export class HistoryStorageCoordinator {
     let manifestCommitted = false;
     this.storageBusy = "spilling";
     try {
-      await this.engine.waitForIdle();
-      await this.engine.device.queue.onSubmittedWorkDone();
+      await this.host.waitForIdle();
+      await this.host.device.queue.onSubmittedWorkDone();
       this.assertToken(token);
       if (!options.shouldContinue()) throw new Error("Spill History interrotto dall'utente.");
       writer = await this.beginCandidate(segmentId);
@@ -858,7 +864,7 @@ export class HistoryStorageCoordinator {
       const gpuSlices = selected.flatMap((candidate) =>
         candidate.storage === "gpu" ? [candidate.slice] : []
       );
-      const gpuDemotion = this.engine.historyGpuStorage.prepareDemoteMany(gpuSlices);
+      const gpuDemotion = this.host.gpuStorage.prepareDemoteMany(gpuSlices);
       const coldHandles = selected.flatMap((candidate) =>
         candidate.storage === "cold" ? [candidate.handle] : []
       );
@@ -886,7 +892,7 @@ export class HistoryStorageCoordinator {
       const demotionStillSafe = this.tokenIsCurrent(token) && options.shouldContinue();
       const livePayloadIds = new Set(selected.flatMap((candidate) => {
         if (candidate.storage === "gpu") {
-          return this.engine.historyGpuStorage.contains(candidate.slice)
+          return this.host.gpuStorage.contains(candidate.slice)
             ? [candidate.payloadId]
             : [];
         }
@@ -913,7 +919,7 @@ export class HistoryStorageCoordinator {
             // Durable storage is authoritative; a failed destroy is only a leak.
           }
         }
-        this.engine.selectionHistoryClipBindGroups.clear();
+        this.host.store.selectionClipBindGroups.clear();
       }
       this.spillsCommitted += 1;
       this.resetSpillFailureCircuit();
@@ -981,7 +987,7 @@ export class HistoryStorageCoordinator {
     let payloadChunkIndex = 0;
     let storedBytes = 0;
     for await (const raw of readGpuHistorySliceChunks(
-      this.engine,
+      this.host,
       candidate.slice,
       historyStorageChunkBytes(MOBILE_DEVICE_CLASS),
     )) {
@@ -1023,7 +1029,7 @@ export class HistoryStorageCoordinator {
         gpu: {
           logicalBytes: candidate.slice.logicalBytes,
           label: candidate.slice.label,
-          alignmentBytes: this.engine.historyGpuStorage.alignmentBytes(candidate.slice),
+          alignmentBytes: this.host.gpuStorage.alignmentBytes(candidate.slice),
         },
         coldSeed: null,
       },
@@ -1048,9 +1054,9 @@ export class HistoryStorageCoordinator {
     if (!Number.isInteger(tileByteLength) || tileByteLength <= 0) {
       throw new Error("Layout tile del seed History non valido.");
     }
-    let compressionClient: Awaited<ReturnType<BrushEngine["requireLayerColdCompressionClient"]>> | null = null;
+    let compressionClient: Awaited<ReturnType<HistoryStorageHost["compressionClient"]>> | null = null;
     try {
-      compressionClient = await this.engine.requireLayerColdCompressionClient();
+      compressionClient = await this.host.compressionClient();
     } catch {
       // Raw is a complete, lossless backend and does not need CompressionStream.
     }
@@ -1058,7 +1064,7 @@ export class HistoryStorageCoordinator {
     for (let firstTile = 0; firstTile < resident.tileIndices.length; firstTile += 4) {
       if (!options.shouldContinue()) throw new Error("Compressione seed History interrotta.");
       const tileCount = Math.min(4, resident.tileIndices.length - firstTile);
-      const raw = await this.engine.readLayerColdStorageTiles(
+      const raw = await this.host.readColdStorageTiles(
         resident,
         firstTile,
         tileCount,
@@ -1221,10 +1227,10 @@ export class HistoryStorageCoordinator {
       parentGeneration: this.manifestGeneration === 0 ? null : this.manifestGeneration,
       journalEpoch: this.journalEpoch,
       ownershipEpoch: this.ownershipEpoch + 1,
-      journalLength: this.engine.historyActions.length,
-      headActionId: this.engine.historyActions.at(-1)?.id ?? null,
+      journalLength: this.host.store.actions.length,
+      headActionId: this.host.store.actions.at(-1)?.id ?? null,
       logicalFloorCursor: Math.max(0, Math.trunc(logicalFloorCursor)),
-      logicalCeilingCursor: this.engine.historyActions.length,
+      logicalCeilingCursor: this.host.store.actions.length,
       segmentIds: [...this.segments.keys(), segment.segmentId],
       committedBytes: this.committedBytes + segment.storedBytes,
       documentFingerprint: this.fingerprint(),
@@ -1245,10 +1251,10 @@ export class HistoryStorageCoordinator {
       parentGeneration: this.manifestGeneration === 0 ? null : this.manifestGeneration,
       journalEpoch: this.journalEpoch,
       ownershipEpoch: this.ownershipEpoch + 1,
-      journalLength: this.engine.historyActions.length,
-      headActionId: this.engine.historyActions.at(-1)?.id ?? null,
+      journalLength: this.host.store.actions.length,
+      headActionId: this.host.store.actions.at(-1)?.id ?? null,
       logicalFloorCursor: this.manifestLogicalFloorCursor,
-      logicalCeilingCursor: this.engine.historyActions.length,
+      logicalCeilingCursor: this.host.store.actions.length,
       segmentIds: [...this.segments.keys()].filter((id) => id !== segment.segmentId),
       committedBytes: Math.max(0, this.committedBytes - segment.storedBytes),
       documentFingerprint: this.fingerprint(),
@@ -1261,7 +1267,7 @@ export class HistoryStorageCoordinator {
       documentWidth: DOCUMENT_WIDTH,
       documentHeight: DOCUMENT_HEIGHT,
       layerSize: DOCUMENT_MAX_EDGE,
-      layerFormat: this.engine.layerFormat,
+      layerFormat: this.host.layerFormat,
       stampStrideBytes: STAMP_STRIDE_BYTES,
       journalStrategy: HISTORY_JOURNAL_STRATEGY,
       retentionStrategy: HISTORY_RETENTION_STRATEGY,
@@ -1274,7 +1280,7 @@ export class HistoryStorageCoordinator {
   private collectPayloadCandidates(): HistoryPayloadCandidate[] {
     this.wrapAllHistorySeeds();
     const actionIndexById = new Map(
-      this.engine.historyActions.map((action, index) => [action.id, index]),
+      this.host.store.actions.map((action, index) => [action.id, index]),
     );
     const gpuById = new Map<number, GpuPayloadCandidate>();
     const addGpu = (
@@ -1284,7 +1290,7 @@ export class HistoryStorageCoordinator {
       layerId: number | null,
     ): void => {
       const cursor = actionIndexById.get(ownerActionId);
-      if (cursor === undefined || !this.engine.historyGpuStorage.contains(slice)) return;
+      if (cursor === undefined || !this.host.gpuStorage.contains(slice)) return;
       const stableOwnerActionId = this.gpuStableOwnerActionIds.get(slice.id) ?? ownerActionId;
       this.gpuStableOwnerActionIds.set(slice.id, stableOwnerActionId);
       const existing = gpuById.get(slice.id);
@@ -1300,7 +1306,7 @@ export class HistoryStorageCoordinator {
         slice,
       });
     };
-    for (const batch of this.engine.historyBatches) {
+    for (const batch of this.host.store.batches) {
       addGpu(
         batch.gpuSlice,
         batch.kind === "paint" ? "paint-gpu" : batch.kind === "blend" ? "blend-gpu" : "fill-gpu",
@@ -1311,10 +1317,10 @@ export class HistoryStorageCoordinator {
         addGpu(batch.selectionMask.gpuSlice, "selection-mask-gpu", batch.actionId, null);
       }
     }
-    for (const [actionId, snapshot] of this.engine.selectionHistoryMasksByAction) {
+    for (const [actionId, snapshot] of this.host.store.selectionMasksByAction) {
       addGpu(snapshot.gpuSlice, "selection-mask-gpu", actionId, null);
     }
-    for (const action of this.engine.historyActions) {
+    for (const action of this.host.store.actions) {
       if (action.kind !== "raster-transform") continue;
       for (const snapshot of [action.selectionBefore, action.selectionAfter]) {
         if (snapshot) addGpu(snapshot.gpuSlice, "selection-mask-gpu", action.id, null);
@@ -1339,13 +1345,13 @@ export class HistoryStorageCoordinator {
   }
 
   private demoteStoredResidentCaches(options: HistoryStorageSpillOptions): boolean {
-    if (!options.shouldContinue() || this.engine.historyCursor !== this.engine.historyActions.length) {
+    if (!options.shouldContinue() || this.host.store.cursor !== this.host.store.actions.length) {
       return false;
     }
     const residentStored = this.collectPayloadCandidates().filter((candidate) =>
       this.storedPayloads.has(candidate.payloadId)
       && (candidate.storage === "gpu"
-        ? this.engine.historyGpuStorage.isResident(candidate.slice)
+        ? this.host.gpuStorage.isResident(candidate.slice)
         : candidate.handle.resident)
     );
     const byAction = new Map<number, { cursor: number; payloadBytes: number }>();
@@ -1366,12 +1372,12 @@ export class HistoryStorageCoordinator {
         maximumSegmentBytes,
         Math.floor(options.highWaterBytes * 0.25),
       ),
-      journalLength: this.engine.historyActions.length,
+      journalLength: this.host.store.actions.length,
       actions: [...byAction.values()],
     });
     const coldCeiling = Math.max(
       0,
-      this.engine.historyActions.length - keepHotActions,
+      this.host.store.actions.length - keepHotActions,
     );
     const candidates = residentStored.filter((candidate) =>
       candidate.ownerCursor < coldCeiling
@@ -1380,7 +1386,7 @@ export class HistoryStorageCoordinator {
     const gpuSlices = candidates.flatMap((candidate) =>
       candidate.storage === "gpu" ? [candidate.slice] : []
     );
-    const prepared = this.engine.historyGpuStorage.prepareDemoteMany(gpuSlices);
+    const prepared = this.host.gpuStorage.prepareDemoteMany(gpuSlices);
     prepared.commitNoThrow();
     for (const candidate of candidates) {
       if (candidate.storage !== "cold") continue;
@@ -1391,7 +1397,7 @@ export class HistoryStorageCoordinator {
         // Stored authority remains valid.
       }
     }
-    this.engine.selectionHistoryClipBindGroups.clear();
+    this.host.store.selectionClipBindGroups.clear();
     this.ownershipEpoch += 1;
     return true;
   }
@@ -1430,15 +1436,11 @@ export class HistoryStorageCoordinator {
     cursors: readonly number[],
   ): void {
     for (const cursor of cursors) {
-      const periodicSelection = periodicCheckpointChainForReplay(
-        this.engine,
-        layerId,
-        cursor,
-      );
+      const periodicSelection = this.host.periodicCheckpointChain(layerId, cursor);
       const replay = planRasterHistoryReplay({
-        actions: this.engine.historyActions,
+        actions: this.host.store.actions,
         cursor,
-        batches: this.engine.historyBatches,
+        batches: this.host.store.batches,
         layerId,
         periodicSelection,
       });
@@ -1463,11 +1465,11 @@ export class HistoryStorageCoordinator {
   private payloadsRequiredForStep(delta: -1 | 1): HistoryPayloadCandidate[] {
     const collector = this.createPayloadRequirementCollector();
     const { required, addSnapshot, addSeed } = collector;
-    const previousCursor = this.engine.historyCursor;
+    const previousCursor = this.host.store.cursor;
     const nextCursor = previousCursor + delta;
     const crossed = delta < 0
-      ? this.engine.historyActions[previousCursor - 1]
-      : this.engine.historyActions[previousCursor];
+      ? this.host.store.actions[previousCursor - 1]
+      : this.host.store.actions[previousCursor];
     if (!crossed) return [];
 
     if (
@@ -1508,7 +1510,7 @@ export class HistoryStorageCoordinator {
   }
 
   private wrapAllHistorySeeds(): void {
-    for (const action of this.engine.historyActions) {
+    for (const action of this.host.store.actions) {
       if (
         action.kind === "vector-rasterize"
         || action.kind === "raster-import"
@@ -1543,7 +1545,7 @@ export class HistoryStorageCoordinator {
         }
       }
     }
-    for (const checkpoint of periodicHistoryCheckpoints(this.engine)) {
+    for (const checkpoint of this.host.periodicCheckpoints()) {
       if (checkpoint.seed) {
         checkpoint.seed = this.wrapSeed(
           checkpoint.seed,
@@ -1689,9 +1691,9 @@ export class HistoryStorageCoordinator {
       sessionId: this.sessionId,
       branchId: this.branchId,
       operationEpoch: this.operationEpoch,
-      cursor: this.engine.historyCursor,
-      actionsLength: this.engine.historyActions.length,
-      actionsTail: this.engine.historyActions.at(-1) ?? null,
+      cursor: this.host.store.cursor,
+      actionsLength: this.host.store.actions.length,
+      actionsTail: this.host.store.actions.at(-1) ?? null,
     };
   }
 
@@ -1706,9 +1708,9 @@ export class HistoryStorageCoordinator {
       token.sessionId !== this.sessionId
       || token.branchId !== this.branchId
       || token.operationEpoch !== this.operationEpoch
-      || token.cursor !== this.engine.historyCursor
-      || token.actionsLength !== this.engine.historyActions.length
-      || token.actionsTail !== (this.engine.historyActions.at(-1) ?? null)
+      || token.cursor !== this.host.store.cursor
+      || token.actionsLength !== this.host.store.actions.length
+      || token.actionsTail !== (this.host.store.actions.at(-1) ?? null)
     );
   }
 
@@ -1932,11 +1934,11 @@ export class HistoryStorageCoordinator {
 }
 
 async function* readGpuHistorySliceChunks(
-  engine: BrushEngine,
+  host: HistoryStorageHost,
   slice: GpuHistorySlice,
   maximumLogicalChunkBytes: number,
 ): AsyncGenerator<Uint8Array> {
-  if (!engine.historyGpuStorage.isResident(slice)) {
+  if (!host.gpuStorage.isResident(slice)) {
     throw new Error(`Slice History ${slice.id} non residente per il readback.`);
   }
   let logicalOffset = 0;
@@ -1949,13 +1951,13 @@ async function* readGpuHistorySliceChunks(
     if (logicalOffset + copyBytes > slice.reservedBytes) {
       throw new Error("Readback History oltre i byte riservati della slice.");
     }
-    const staging = engine.device.createBuffer({
+    const staging = host.device.createBuffer({
       label: `Readback History slice ${slice.id} @${logicalOffset}`,
       size: copyBytes,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     });
     try {
-      const encoder = engine.device.createCommandEncoder({
+      const encoder = host.device.createCommandEncoder({
         label: `Readback History slice ${slice.id}`,
       });
       encoder.copyBufferToBuffer(
@@ -1965,7 +1967,7 @@ async function* readGpuHistorySliceChunks(
         0,
         copyBytes,
       );
-      engine.device.queue.submit([encoder.finish()]);
+      host.device.queue.submit([encoder.finish()]);
       await Promise.race([
         staging.mapAsync(GPUMapMode.READ),
         timeoutReject(60_000, "Timeout readback slice History."),

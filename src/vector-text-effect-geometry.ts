@@ -15,8 +15,8 @@ import {
   type PolyPath64,
 } from "clipper2-ts";
 
-import type { VectorTextOutlineJoin } from "./mixed-scene-stack.ts";
-import type { Shadow3dPathData } from "./vector-shadow-3d.js";
+import type { VectorTextOutlineJoin } from "./scene-vector-effects.ts";
+import type { Shadow3dPathData } from "./vector-shadow-3d.ts";
 import {
   vectorPathToQuadraticContours,
   type VectorTextPointD,

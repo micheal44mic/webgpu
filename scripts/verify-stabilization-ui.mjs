@@ -6,6 +6,7 @@ const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 
 const engineSource = readEngineSource();
 const engineTypesSource = read("../src/engine-types.ts");
+const brushDefinitionSource = read("../src/brush-definition.ts");
 const historyTypesSource = read("../src/engine-history-types.ts");
 const historyRuntimeSource = read("../src/engine-history-runtime.ts");
 const mainSource = read("../src/main.ts");
@@ -18,7 +19,7 @@ const brushStudioSource = read("../src/mobile-brush-studio.ts");
 
 // Settings ABI: normalized 0..1 and bit-for-bit legacy behavior at the default.
 assert.match(engineTypesSource, /stabilization: number;/);
-assert.match(engineTypesSource, /spacingPercent: 1,\s*stabilization: 0,/);
+assert.match(brushDefinitionSource, /spacingPercent: 1,\s*stabilization: 0,/);
 assert.match(
   engineSource,
   /stabilization: clamp\(next\.stabilization \?\? this\.settings\.stabilization, 0, 1\),/,

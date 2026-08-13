@@ -6,13 +6,7 @@ import type {
   RasterStrokeStyle,
 } from "./brush-engine";
 import type { RasterColorOverlayStyle } from "./raster-color-overlay-core";
-
-export type RasterStyleKind =
-  | "color-overlay"
-  | "stroke"
-  | "outer-shadow"
-  | "inner-shadow"
-  | "bevel";
+import type { NonDestructiveRasterEffectKind } from "./raster-effects-contract.ts";
 
 export type RasterStyleEnginePort = Pick<
   BrushEngine,
@@ -40,7 +34,7 @@ export interface RasterStyleControllerOptions {
 /** Owns guarded, asynchronous mutations of non-destructive raster metadata. */
 export class RasterStyleController {
   private readonly options: RasterStyleControllerOptions;
-  private readonly busyKinds = new Set<RasterStyleKind>();
+  private readonly busyKinds = new Set<NonDestructiveRasterEffectKind>();
 
   constructor(options: RasterStyleControllerOptions) {
     this.options = options;
@@ -55,7 +49,7 @@ export class RasterStyleController {
       || this.options.engine.canPaintSelectedSceneItem();
   }
 
-  effectEnabled(kind: RasterStyleKind): boolean {
+  effectEnabled(kind: NonDestructiveRasterEffectKind): boolean {
     if (kind === "color-overlay") return this.getColorOverlayStyle().enabled;
     if (kind === "stroke") return this.getStrokeStyle().enabled;
     if (kind === "outer-shadow") return this.getOuterShadowStyle().enabled;
@@ -114,7 +108,7 @@ export class RasterStyleController {
   }
 
   private async apply(
-    kind: RasterStyleKind,
+    kind: NonDestructiveRasterEffectKind,
     mutation: () => Promise<boolean>,
     requiresSelectedTarget = false,
   ): Promise<boolean> {

@@ -1,4 +1,14 @@
 import {
+  BRUSH_STUDIO_CUSTOM_BRUSH_NAME_MAX_LENGTH,
+  normalizeBrushStudioCustomBrushName,
+  type BrushStudioCustomBrushId,
+} from "./brush-catalog.ts";
+import {
+  BrushDefinitionValidationError,
+  normalizeBrushDefinitionSettings,
+  type BrushDefinitionSettings,
+} from "./brush-definition.ts";
+import {
   isCustomGrainAssetId,
   isCustomShapeAssetId,
 } from "./brush-asset-registry.ts";
@@ -7,15 +17,11 @@ import {
   brushSourceDimensionsFromBytes,
 } from "./brush-source-image.ts";
 import {
-  BRUSH_STUDIO_CUSTOM_BRUSH_ID_PREFIX,
-  normalizeBrushStudioCustomBrushName,
-  BRUSH_STUDIO_CUSTOM_BRUSH_NAME_MAX_LENGTH,
   type BrushStudioAssetKind,
-  type BrushStudioCustomBrushId,
-  type BrushStudioPersistedSettings,
   type BrushStudioSavedBrush,
   type BrushStudioStoredAsset,
 } from "./brush-studio-storage.ts";
+import { CUSTOM_BRUSH_PERSISTED_ID_PREFIX } from "./compat/brush-persistence.ts";
 import type {
   CustomBrushGrainAssetId,
   CustomBrushShapeAssetId,
@@ -33,46 +39,6 @@ const TRANSFER_ASSET_NAME_MAX_LENGTH = 160;
 const TRANSFER_MANIFEST_MAX_BYTES = 64 * 1024;
 const TRANSFER_MAGIC_BYTES = new TextEncoder().encode(BRUSH_STUDIO_TRANSFER_MAGIC);
 const TRANSFER_FIXED_HEADER_BYTES = TRANSFER_MAGIC_BYTES.byteLength + 4;
-
-const defaultBrushSettings: BrushStudioPersistedSettings = {
-  shape: "circle",
-  shapeAssetId: "legacy-shape",
-  shapeInvert: false,
-  shapeRotation: "fixed",
-  shapeScatter: 0,
-  grainMode: "off",
-  grainAssetId: "pencil-grain",
-  grainScale: 1.4,
-  grainMovement: 0,
-  grainDepth: 1,
-  grainBrightness: 0,
-  grainContrast: 0,
-  grainInvert: false,
-  grainFiltering: "improved",
-  grainBlendMode: "multiply",
-  size: 96,
-  spacingPercent: 1,
-  stabilization: 0,
-  startThickness: 1,
-  endThickness: 1,
-  count: 24,
-  flow: 0.07,
-  opacity: 1,
-  hardness: 1,
-  blendIntensity: 1,
-  blendMode: "light-glaze",
-  blendStretch: 0.18,
-  blendPaint: 0.14,
-  blendBlur: 0,
-  jitterMaster: 1,
-  hueJitterDegrees: 12,
-  saturationJitter: 0.18,
-  lightnessJitter: 0.12,
-  darknessJitter: 0.18,
-  jitterPerCopy: false,
-  positionJitterLateral: 1,
-  positionJitterLinear: 1,
-};
 
 type JsonRecord = Record<string, unknown>;
 
@@ -92,7 +58,7 @@ export interface BrushStudioTransferAsset {
 
 export interface BrushStudioTransferBrush {
   readonly name: string;
-  readonly settings: BrushStudioPersistedSettings;
+  readonly settings: BrushDefinitionSettings;
   readonly shapeAsset: BrushStudioTransferAsset | null;
   readonly grainAsset: BrushStudioTransferAsset | null;
 }
@@ -109,7 +75,7 @@ export function createBrushStudioImportedAssetId(
   brushId: BrushStudioCustomBrushId,
   kind: BrushStudioAssetKind,
 ): CustomBrushShapeAssetId | CustomBrushGrainAssetId {
-  const token = brushId.slice(BRUSH_STUDIO_CUSTOM_BRUSH_ID_PREFIX.length);
+  const token = brushId.slice(CUSTOM_BRUSH_PERSISTED_ID_PREFIX.length);
   return kind === "shape"
     ? `custom-shape:${token}`
     : `custom-grain:${token}`;
@@ -132,223 +98,18 @@ function asRecord(value: unknown, label: string): JsonRecord {
   return value as JsonRecord;
 }
 
-function finiteNumber(
-  record: JsonRecord,
-  key: string,
-  fallback: number,
-  minimum: number,
-  maximum: number,
-  strict: boolean,
-  integer = false,
-): number {
-  const value = record[key];
-  if (
-    typeof value === "number"
-    && Number.isFinite(value)
-    && value >= minimum
-    && value <= maximum
-    && (!integer || Number.isInteger(value))
-  ) {
-    return value;
-  }
-  if (strict) return invalidBrushFile(`settings.${key}`);
-  return fallback;
-}
-
-function booleanValue(
-  record: JsonRecord,
-  key: string,
-  fallback: boolean,
-  strict: boolean,
-): boolean {
-  const value = record[key];
-  if (typeof value === "boolean") return value;
-  if (strict) return invalidBrushFile(`settings.${key}`);
-  return fallback;
-}
-
-function enumValue<const T extends readonly string[]>(
-  record: JsonRecord,
-  key: string,
-  values: T,
-  fallback: T[number],
-  strict: boolean,
-): T[number] {
-  const value = record[key];
-  if (typeof value === "string" && values.includes(value)) return value as T[number];
-  if (strict) return invalidBrushFile(`settings.${key}`);
-  return fallback;
-}
-
-function shapeAssetIdValue(
-  record: JsonRecord,
-  strict: boolean,
-): BrushStudioPersistedSettings["shapeAssetId"] {
-  const value = record.shapeAssetId;
-  if (
-    value === "legacy-shape"
-    || value === "pencil-shape"
-    || isCustomShapeAssetId(value)
-  ) {
-    return value;
-  }
-  if (strict) return invalidBrushFile("settings.shapeAssetId");
-  return defaultBrushSettings.shapeAssetId;
-}
-
-function grainAssetIdValue(
-  record: JsonRecord,
-  strict: boolean,
-): BrushStudioPersistedSettings["grainAssetId"] {
-  const value = record.grainAssetId;
-  // Cotton Fleece was removed from the product. Old exported brushes remain
-  // importable and migrate to the only built-in grain instead of failing.
-  if (value === "legacy-grain") return "pencil-grain";
-  if (
-    value === "pencil-grain"
-    || isCustomGrainAssetId(value)
-  ) {
-    return value;
-  }
-  if (strict) return invalidBrushFile("settings.grainAssetId");
-  return defaultBrushSettings.grainAssetId;
-}
-
 function transferSettings(
   value: unknown,
   strict: boolean,
-): BrushStudioPersistedSettings {
-  const record = asRecord(value, "settings");
-  if (strict && ("color" in record || "tool" in record)) {
-    return invalidBrushFile("settings must not contain color or tool");
+): BrushDefinitionSettings {
+  try {
+    return normalizeBrushDefinitionSettings(value, { strict });
+  } catch (error) {
+    if (error instanceof BrushDefinitionValidationError) {
+      return invalidBrushFile(error.field);
+    }
+    throw error;
   }
-  return {
-    shape: enumValue(record, "shape", ["circle", "shape"] as const, defaultBrushSettings.shape, strict),
-    shapeAssetId: shapeAssetIdValue(record, strict),
-    shapeInvert: booleanValue(record, "shapeInvert", defaultBrushSettings.shapeInvert, strict),
-    shapeRotation: enumValue(
-      record,
-      "shapeRotation",
-      ["fixed", "follow-stroke"] as const,
-      defaultBrushSettings.shapeRotation,
-      strict,
-    ),
-    shapeScatter: finiteNumber(record, "shapeScatter", defaultBrushSettings.shapeScatter, 0, 1, strict),
-    grainMode: enumValue(
-      record,
-      "grainMode",
-      ["off", "texturized", "moving"] as const,
-      defaultBrushSettings.grainMode,
-      strict,
-    ),
-    grainAssetId: grainAssetIdValue(record, strict),
-    grainScale: finiteNumber(record, "grainScale", defaultBrushSettings.grainScale, 0.1, 4, strict),
-    grainMovement: finiteNumber(record, "grainMovement", defaultBrushSettings.grainMovement, 0, 1, strict),
-    grainDepth: finiteNumber(record, "grainDepth", defaultBrushSettings.grainDepth, 0, 1, strict),
-    grainBrightness: finiteNumber(record, "grainBrightness", defaultBrushSettings.grainBrightness, -1, 1, strict),
-    grainContrast: finiteNumber(record, "grainContrast", defaultBrushSettings.grainContrast, -1, 1, strict),
-    grainInvert: booleanValue(record, "grainInvert", defaultBrushSettings.grainInvert, strict),
-    grainFiltering: enumValue(
-      record,
-      "grainFiltering",
-      ["no", "classic", "improved"] as const,
-      defaultBrushSettings.grainFiltering,
-      strict,
-    ),
-    grainBlendMode: enumValue(
-      record,
-      "grainBlendMode",
-      ["multiply"] as const,
-      defaultBrushSettings.grainBlendMode,
-      strict,
-    ),
-    size: finiteNumber(record, "size", defaultBrushSettings.size, 1, 1500, strict),
-    spacingPercent: finiteNumber(
-      record,
-      "spacingPercent",
-      defaultBrushSettings.spacingPercent,
-      0.25,
-      99,
-      strict,
-    ),
-    stabilization: finiteNumber(record, "stabilization", defaultBrushSettings.stabilization, 0, 1, strict),
-    startThickness: finiteNumber(record, "startThickness", defaultBrushSettings.startThickness, 0, 2, strict),
-    endThickness: finiteNumber(record, "endThickness", defaultBrushSettings.endThickness, 0, 2, strict),
-    count: finiteNumber(record, "count", defaultBrushSettings.count, 1, 24, strict, true),
-    flow: finiteNumber(record, "flow", defaultBrushSettings.flow, 0.001, 1, strict),
-    opacity: finiteNumber(record, "opacity", defaultBrushSettings.opacity, 0, 1, strict),
-    hardness: finiteNumber(record, "hardness", 1, 1, 1, strict),
-    blendIntensity: finiteNumber(record, "blendIntensity", 1, 1, 1, strict),
-    blendMode: enumValue(
-      record,
-      "blendMode",
-      ["light-glaze", "uniformed-glaze", "intense-blending"] as const,
-      "light-glaze",
-      strict,
-    ),
-    blendStretch: finiteNumber(record, "blendStretch", defaultBrushSettings.blendStretch, 0, 1, strict),
-    blendPaint: finiteNumber(record, "blendPaint", defaultBrushSettings.blendPaint, 0, 1, strict),
-    // Version 1 files created before Blend Blur remain valid; malformed values
-    // are still rejected whenever the optional field is present.
-    blendBlur: finiteNumber(
-      record,
-      "blendBlur",
-      defaultBrushSettings.blendBlur,
-      0,
-      1,
-      strict && "blendBlur" in record,
-    ),
-    jitterMaster: finiteNumber(record, "jitterMaster", 1, 1, 1, strict),
-    hueJitterDegrees: finiteNumber(
-      record,
-      "hueJitterDegrees",
-      defaultBrushSettings.hueJitterDegrees,
-      0,
-      180,
-      strict,
-    ),
-    saturationJitter: finiteNumber(
-      record,
-      "saturationJitter",
-      defaultBrushSettings.saturationJitter,
-      0,
-      1,
-      strict,
-    ),
-    lightnessJitter: finiteNumber(
-      record,
-      "lightnessJitter",
-      defaultBrushSettings.lightnessJitter,
-      0,
-      1,
-      strict,
-    ),
-    darknessJitter: finiteNumber(
-      record,
-      "darknessJitter",
-      defaultBrushSettings.darknessJitter,
-      0,
-      1,
-      strict,
-    ),
-    jitterPerCopy: booleanValue(record, "jitterPerCopy", defaultBrushSettings.jitterPerCopy, strict),
-    positionJitterLateral: finiteNumber(
-      record,
-      "positionJitterLateral",
-      defaultBrushSettings.positionJitterLateral,
-      0,
-      1,
-      strict,
-    ),
-    positionJitterLinear: finiteNumber(
-      record,
-      "positionJitterLinear",
-      defaultBrushSettings.positionJitterLinear,
-      0,
-      1,
-      strict,
-    ),
-  };
 }
 
 function validatePng(bytes: Uint8Array): void {
@@ -445,7 +206,7 @@ function hasTransferMagic(header: Uint8Array): boolean {
 }
 
 function validateAssetPairing(
-  settings: BrushStudioPersistedSettings,
+  settings: BrushDefinitionSettings,
   shapePresent: boolean,
   grainPresent: boolean,
 ): void {

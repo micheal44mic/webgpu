@@ -12,6 +12,10 @@ const controller = readFileSync(
   new URL("../src/mobile-stroke-sheet.ts", import.meta.url),
   "utf8",
 );
+const sharedSheetController = readFileSync(
+  new URL("../src/mobile-bottom-sheet-controller.ts", import.meta.url),
+  "utf8",
+);
 const rasterStyleController = readFileSync(
   new URL("../src/raster-style-controller.ts", import.meta.url),
   "utf8",
@@ -240,23 +244,23 @@ assert.match(
   "Le mutazioni live devono essere serializzate latest-only durante una submission asincrona.",
 );
 assert.match(
-  controller,
+  sharedSheetController,
   /const maximumOffset = this\.dragStartSnap === "minimized"[\s\S]*?this\.setOffset\(Math\.min\(maximumOffset, this\.dragStartOffsetPx \+ deltaY\)\)/,
   "La maniglia Stroke deve seguire il dito anche verso lo snap expanded.",
 );
 assert.match(
-  controller,
+  sharedSheetController,
   /this\.snapTo\(nextMobileBottomSheetTapSnap\(this\.snap\)\)/,
   "Il tap sulla maniglia deve usare il ciclo condiviso fra minimized, peek ed expanded.",
 );
 assert.match(
-  controller,
-  /this\.controlsRegion\.toggleAttribute\("inert", minimized\);[\s\S]*?this\.controlsRegion\.setAttribute\("aria-hidden", String\(minimized\)\);/,
+  sharedSheetController,
+  /for \(const region of this\.options\.accessibilityRegions\)[\s\S]*?region\.toggleAttribute\("inert", minimized\);[\s\S]*?region\.setAttribute\("aria-hidden", String\(minimized\)\);/,
   "Nello snap minimized i controlli nascosti devono essere inerti anche per tecnologie assistive.",
 );
 assert.match(
-  controller,
-  /if \(activeElement instanceof HTMLElement && this\.sheet\.contains\(activeElement\)\)[\s\S]*?activeElement\.blur\(\);[\s\S]*?this\.sheet\.setAttribute\("aria-hidden", "true"\)/,
+  sharedSheetController,
+  /if \(activeElement instanceof HTMLElement && this\.options\.sheet\.contains\(activeElement\)\)[\s\S]*?activeElement\.blur\(\);[\s\S]*?this\.options\.sheet\.setAttribute\("aria-hidden", "true"\)/,
   "Il focus deve uscire dal foglio prima di impostare aria-hidden.",
 );
 assert.doesNotMatch(
@@ -265,5 +269,6 @@ assert.doesNotMatch(
   "Il picker nativo deve essere aperto dal label reale, senza un secondo click sintetico.",
 );
 assert.doesNotMatch(controller, /setInterval\(/, "Il controller Stroke non deve introdurre polling.");
+assert.match(controller, /accessibilityRegions: \[this\.controlsRegion\]/);
 
 console.log("Mobile Stroke sheet: markup, runtime autorevole, snap e accessibilità verificati.");

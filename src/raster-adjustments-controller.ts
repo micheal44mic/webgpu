@@ -36,6 +36,7 @@ import {
   type RasterNoiseStyle,
 } from "./noise-core";
 import type { CanvasInputTool } from "./canvas-input-controller";
+import type { DestructiveRasterAdjustmentKind } from "./raster-effects-contract.ts";
 
 export type RasterAdjustmentsEnginePort = Pick<
   BrushEngine,
@@ -178,7 +179,6 @@ export interface RasterAdjustmentsDiagnostics {
   readonly rasterLiquifyUiBusy: boolean;
 }
 
-type AdjustmentKind = "liquify" | "gaussian-blur" | "motion-blur" | "noise";
 type AdjustmentResult = "apply" | "cancel" | "error";
 
 interface AdjustmentTransactionState {
@@ -310,7 +310,7 @@ export class RasterAdjustmentsController {
       || this.noiseSheet.isOpen;
   }
 
-  isOpen(kind: AdjustmentKind): boolean {
+  isOpen(kind: DestructiveRasterAdjustmentKind): boolean {
     return this.state(kind).surfaceOpen;
   }
 
@@ -419,7 +419,7 @@ export class RasterAdjustmentsController {
     return [this.liquify, this.gaussianBlur, this.motionBlur, this.noise];
   }
 
-  private state(kind: AdjustmentKind): AdjustmentTransactionState {
+  private state(kind: DestructiveRasterAdjustmentKind): AdjustmentTransactionState {
     if (kind === "liquify") return this.liquify;
     if (kind === "gaussian-blur") return this.gaussianBlur;
     if (kind === "motion-blur") return this.motionBlur;
@@ -630,7 +630,7 @@ export class RasterAdjustmentsController {
     this.options.elements.appStatus.className = "status error";
   }
 
-  private adjustmentEligibilityError(kind: AdjustmentKind): string | null {
+  private adjustmentEligibilityError(kind: DestructiveRasterAdjustmentKind): string | null {
     const label = kind === "gaussian-blur"
       ? "Gaussian Blur"
       : kind === "motion-blur"

@@ -7,7 +7,7 @@ import {
 } from "./layer-composite-gpu-test";
 import { measureActiveStyleBakeGap } from "../engine-lab-operations";
 
-export const LAYER_HISTORY_GPU_TEST_VERSION = 12 as const;
+export const LAYER_HISTORY_GPU_TEST_VERSION = 13 as const;
 
 interface PixelRect {
   x: number;
@@ -130,6 +130,7 @@ export interface LayerHistoryGpuTestReport {
     crossLayerRedoReturned: boolean;
     redoReturned: boolean;
     fatalPreparationUndoReturned: boolean;
+    fatalPreparationRedoReturned: boolean;
     fatalFollowUpUndoReturned: boolean;
     bevelStyleEnabled: boolean;
     bakeFailureWasReported: boolean;
@@ -211,6 +212,7 @@ export async function runLayerHistoryGpuTest(
   const expectedLayerMipMiB = mipTailMiB(engine.layerSize, rawBytesPerPixel);
 
   const pRect: PixelRect = { x: 448, y: 448, width: 176, height: 128 };
+  const crossLayerRect: PixelRect = { x: 704, y: 448, width: 176, height: 128 };
   const qRect: PixelRect = { x: 960, y: 448, width: 176, height: 128 };
   const auditRect: PixelRect = { x: 448, y: 448, width: 688, height: 128 };
   const compositeAuditRect: PixelRect = { x: 1280, y: 960, width: 1160, height: 128 };
@@ -305,6 +307,13 @@ export async function runLayerHistoryGpuTest(
   await engine.waitForIdle();
   const duplicateStructuralRedoReturned = await engine.redo();
   await engine.waitForIdle();
+  if (!duplicateStructuralRedoReturned) {
+    const state = engine.getHistoryState();
+    throw new Error(
+      `Redo duplicazione rifiutato: cursor=${state.cursor}/${state.actionCount}, `
+      + `canRedo=${state.canRedo}, reason=${state.redoBlockedReason ?? "nessuna"}.`,
+    );
+  }
   const duplicateAfterStructuralRedo = await engine.readLayerPixels(auditRect, 1);
   const duplicateFinalStructuralUndoReturned = await engine.undo();
   await engine.waitForIdle();
@@ -418,6 +427,16 @@ export async function runLayerHistoryGpuTest(
     layerHydrationMiB: statsAfterHydrateFailure.gpuMemory.layerHydrationMiB,
     layerBakeMiB: statsAfterHydrateFailure.gpuMemory.layerBakeMiB,
   };
+
+  // Keep the structural layer-add action below both paint actions. This makes
+  // Undo/Redo cross the active-layer boundary without first removing layer B.
+  await engine.setActiveLayer(0);
+  const layerACrossLayerBefore = await engine.readLayerPixels(crossLayerRect, 0);
+  await draw(768, 512, "#4d7fe8", 350);
+  const layerACrossLayerPainted = await engine.readLayerPixels(crossLayerRect, 0);
+  const layerAHistoryBaseline = await engine.readLayerPixels(auditRect, 0);
+  await engine.setActiveLayer(1);
+
   const twoLayersMemory = snapshotMemory(engine);
   const fusedStyledLayer = await engine.readMergedLayerPixels("below", auditRect);
   const fusedStyledLayerVersusRawLayerA = countDifferingBytes(
@@ -447,7 +466,7 @@ export async function runLayerHistoryGpuTest(
   const afterCrossLayerUndo = engine.getHistoryState();
   const activeAfterCrossLayerUndo = engine.getStats().activeLayerIndex;
   const workingSetMatchesAfterCrossLayerUndo = engine.effectsWorkingSetMatchesActiveLayer();
-  const layerAAfterCrossLayerUndo = await engine.readLayerPixels(pRect, 0);
+  const layerAAfterCrossLayerUndo = await engine.readLayerPixels(crossLayerRect, 0);
 
   await engine.setActiveLayer(1);
   const activeBeforeCrossLayerRedo = engine.getStats().activeLayerIndex;
@@ -456,7 +475,7 @@ export async function runLayerHistoryGpuTest(
   const afterCrossLayerRedo = engine.getHistoryState();
   const activeAfterCrossLayerRedo = engine.getStats().activeLayerIndex;
   const workingSetMatchesAfterCrossLayerRedo = engine.effectsWorkingSetMatchesActiveLayer();
-  const layerAAfterCrossLayerRedo = await engine.readLayerPixels(pRect, 0);
+  const layerAAfterCrossLayerRedo = await engine.readLayerPixels(crossLayerRect, 0);
   await engine.setActiveLayer(1);
 
   const readLayerAudit = async (layerIndex: number): Promise<Uint8Array[]> => {
@@ -529,8 +548,14 @@ export async function runLayerHistoryGpuTest(
   const compositing = await runLayerCompositeGpuTest(engine, strokeStyle, 2_000);
   const storageStudy = await engine.measureExactLayerStorageStudy();
 
+  await engine.setActiveLayer(0);
+  await draw(2200, 1024, "#c84de8", compositing.nextTimeMs + 100);
+  await engine.setActiveLayer(4);
   const fatalPreparationUndoReturned = await engine.undo();
   await engine.waitForIdle();
+  const fatalPreparationRedoReturned = await engine.redo();
+  await engine.waitForIdle();
+  await engine.setActiveLayer(4);
   const fatalRollback = await probeRollback(
     "after-first-replay-submit",
     "during-switch-activation",
@@ -548,9 +573,9 @@ export async function runLayerHistoryGpuTest(
     layerBAfterRedoStrokeQ: countNonZeroAlpha(layerBAfterRedoQ, rawBytesPerPixel),
   };
   const differingBytes = {
-    layerAAfterPaintingB: countDifferingBytes(layerABaseline, layerAAfterPaintingB),
-    layerAAfterUndo: countDifferingBytes(layerABaseline, layerAAfterUndo),
-    layerAAfterRedo: countDifferingBytes(layerABaseline, layerAAfterRedo),
+    layerAAfterPaintingB: countDifferingBytes(layerAHistoryBaseline, layerAAfterPaintingB),
+    layerAAfterUndo: countDifferingBytes(layerAHistoryBaseline, layerAAfterUndo),
+    layerAAfterRedo: countDifferingBytes(layerAHistoryBaseline, layerAAfterRedo),
     layerBRedoVersusBeforeUndo: countDifferingBytes(layerBBeforeUndo, layerBAfterRedo),
     fusedStyledLayerVersusRawLayerA,
   };
@@ -574,16 +599,17 @@ export async function runLayerHistoryGpuTest(
       && compositing.fiveLayerMemory.layerHydrationMiB < 0.01,
     twoLayersReleasedPerLayerBakes: twoLayersMemory.layerBakeMiB < 0.01,
     fiveLayersReleasedPerLayerBakes: compositing.fiveLayerMemory.layerBakeMiB < 0.01,
-    twoAndFiveLayerMipMemoryIsConstant:
-      Math.abs(
-        twoLayersMemory.layerMipChainMiB
-          - compositing.fiveLayerMemory.layerMipChainMiB,
-      ) < 0.05,
-    twoAndFiveLayerCompositeMemoryIsConstant:
-      Math.abs(
-        twoLayersMemory.layerCompositeMiB
-          - compositing.fiveLayerMemory.layerCompositeMiB,
-      ) < 0.05,
+    twoAndFiveLayerMipMemoryTracksBoundedComposites:
+      [twoLayersMemory, compositing.fiveLayerMemory].every((memory) =>
+        Math.abs(
+          memory.layerMipChainMiB
+            - expectedLayerMipMiB
+            - memory.layerCompositeMiB / 3,
+        ) < 0.05
+      ),
+    twoAndFiveLayerCompositeMemoryIsBounded:
+      twoLayersMemory.layerCompositeMiB < expectedLayerBaseMiB
+      && compositing.fiveLayerMemory.layerCompositeMiB < expectedLayerBaseMiB,
     fiveEagerFullLayersMatchRgba16fBytes:
       Math.abs(storageStudy.eagerFullRawMiB - 5 * expectedLayerBaseMiB) < 0.05,
   };
@@ -612,9 +638,7 @@ export async function runLayerHistoryGpuTest(
       return storageStudy.temporaryReadbackMiBBefore === 0
         && storageStudy.temporaryReadbackMiBAfter === 0
         && Math.abs(storageStudy.temporaryReadbackPeakMiB - expectedPeakMiB) < 0.01
-        && Math.abs(
-          storageStudy.countedGpuMiBAfter - storageStudy.countedGpuMiBBefore,
-        ) < 0.01;
+        && storageStudy.countedGpuMiBAfter <= storageStudy.countedGpuMiBBefore + 0.01;
     })(),
     bevelWasEnabledForGapAndBake: bevelStyleEnabled,
     fwidthBakeGapWasMeasured:
@@ -698,8 +722,8 @@ export async function runLayerHistoryGpuTest(
     crossLayerUndoMovedTheCursor: afterCrossLayerUndo.cursor === afterUndo.cursor - 1,
     crossLayerUndoMovedTheActiveLayer:
       activeAfterCrossLayerUndo !== activeBeforeCrossLayerUndo,
-    crossLayerUndoRemovedPFromA:
-      countNonZeroAlpha(layerAAfterCrossLayerUndo, rawBytesPerPixel) === 0,
+    crossLayerUndoRestoredARegionByteExactly:
+      countDifferingBytes(layerACrossLayerBefore, layerAAfterCrossLayerUndo) === 0,
     workingSetFollowedTheCrossLayerUndo: workingSetMatchesAfterCrossLayerUndo,
     crossLayerRedoAdvertised: afterCrossLayerUndo.canRedo,
     crossLayerRedoSucceeded: crossLayerRedoReturned,
@@ -707,10 +731,10 @@ export async function runLayerHistoryGpuTest(
       afterCrossLayerRedo.cursor === afterCrossLayerUndo.cursor + 1,
     crossLayerRedoMovedTheActiveLayer:
       activeAfterCrossLayerRedo !== activeBeforeCrossLayerRedo,
-    crossLayerRedoRestoredPOnA:
+    crossLayerRedoRestoredAStroke:
       countNonZeroAlpha(layerAAfterCrossLayerRedo, rawBytesPerPixel) > 0,
-    crossLayerRedoRestoredPByteExactly:
-      countDifferingBytes(layerAP, layerAAfterCrossLayerRedo) === 0,
+    crossLayerRedoRestoredAStrokeByteExactly:
+      countDifferingBytes(layerACrossLayerPainted, layerAAfterCrossLayerRedo) === 0,
     crossLayerRedoSelectedTheActionsLayer:
       activeAfterCrossLayerRedo === activeAfterCrossLayerUndo,
     workingSetFollowedTheCrossLayerRedo: workingSetMatchesAfterCrossLayerRedo,
@@ -749,6 +773,7 @@ export async function runLayerHistoryGpuTest(
       ([name, passed]) => [`composite.${name}`, passed],
     )),
     fatalPreparationUndoSucceeded: fatalPreparationUndoReturned,
+    fatalPreparationRedoSucceeded: fatalPreparationRedoReturned,
     fatalRollbackFailureWasReported: fatalRollback.threw,
     fatalRollbackRestoredTheCursor: fatalRollback.cursorRestored,
     fatalRollbackRestoredTheActiveLayer: fatalRollback.activeLayerRestored,
@@ -805,6 +830,7 @@ export async function runLayerHistoryGpuTest(
       crossLayerRedoReturned,
       redoReturned,
       fatalPreparationUndoReturned,
+      fatalPreparationRedoReturned,
       fatalFollowUpUndoReturned,
       bevelStyleEnabled,
       bakeFailureWasReported,

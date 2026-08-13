@@ -3,10 +3,17 @@
  * URLs stay explicit so Vite includes every source without a dynamic glob.
  */
 import {
-  BRUSH_ASSET_REGISTRY,
-  type GrainBrushAsset,
-  type ShapeBrushAsset,
-} from "./brush-presets";
+  builtinGrainAsset,
+  builtinShapeAsset,
+  type BuiltinGrainBrushAsset,
+  type BuiltinShapeBrushAsset,
+} from "./brush-builtin-assets.ts";
+import {
+  LEGACY_SHAPE_ASSET_ID,
+  migratePersistedGrainAssetId,
+  PENCIL_GRAIN_ASSET_ID,
+  PENCIL_SHAPE_ASSET_ID,
+} from "./compat/brush-persistence.ts";
 import type {
   BrushGrainAssetId,
   BrushSettings,
@@ -25,20 +32,20 @@ export type {
 
 import { isCustomGrainAssetId, isCustomShapeAssetId } from "./brush-asset-registry";
 
-export interface ShapeAssetDescriptor extends ShapeBrushAsset {
-  readonly url: URL;
-}
-
-export interface GrainAssetDescriptor extends GrainBrushAsset {
-  readonly url: URL;
-}
+export type ShapeAssetDescriptor = BuiltinShapeBrushAsset;
+export type GrainAssetDescriptor = BuiltinGrainBrushAsset;
 
 export function normalizeShapeAssetId(value: unknown): BrushShapeAssetId {
-  return value === "pencil-shape" || isCustomShapeAssetId(value) ? value : "legacy-shape";
+  return value === PENCIL_SHAPE_ASSET_ID || isCustomShapeAssetId(value)
+    ? value
+    : LEGACY_SHAPE_ASSET_ID;
 }
 
 export function normalizeGrainAssetId(value: unknown): BrushGrainAssetId {
-  return value === "pencil-grain" || isCustomGrainAssetId(value) ? value : "pencil-grain";
+  const migrated = migratePersistedGrainAssetId(value);
+  return migrated === PENCIL_GRAIN_ASSET_ID || isCustomGrainAssetId(migrated)
+    ? migrated
+    : PENCIL_GRAIN_ASSET_ID;
 }
 
 export function shapeInvertForSettings(
@@ -60,29 +67,19 @@ export function grainAssetIdForSettings(
 }
 
 export function shapeAssetDescriptor(id: BrushShapeAssetId): ShapeAssetDescriptor {
-  if (isCustomShapeAssetId(id)) {
+  const descriptor = builtinShapeAsset(id);
+  if (!descriptor) {
     throw new Error(`L'asset ${id} deve essere risolto dal registro custom del motore.`);
   }
-  if (id === "pencil-shape") {
-    return {
-      ...BRUSH_ASSET_REGISTRY["pencil-shape"],
-      url: new URL("../Shapepencil.png", import.meta.url),
-    };
-  }
-  return {
-    ...BRUSH_ASSET_REGISTRY["legacy-shape"],
-    url: new URL("../Shape.png", import.meta.url),
-  };
+  return descriptor;
 }
 
 export function grainAssetDescriptor(id: BrushGrainAssetId): GrainAssetDescriptor {
-  if (isCustomGrainAssetId(id)) {
+  const descriptor = builtinGrainAsset(id);
+  if (!descriptor) {
     throw new Error(`L'asset ${id} deve essere risolto dal registro custom del motore.`);
   }
-  return {
-    ...BRUSH_ASSET_REGISTRY["pencil-grain"],
-    url: new URL("../Grainpencil.png", import.meta.url),
-  };
+  return descriptor;
 }
 
 export function mipLevelCountForSize(width: number, height: number): number {

@@ -1,5 +1,6 @@
-import type { VectorSvgNode, VectorTextNode } from "./mixed-scene-stack.ts";
-import type { Shadow3dPathData } from "./vector-shadow-3d.js";
+import type { VectorTextNode } from "./scene-text-model.ts";
+import type { VectorSvgNode } from "./scene-svg-model.ts";
+import type { Shadow3dPathData } from "./vector-shadow-3d.ts";
 import type { VectorSvgGradient } from "./vector-svg-import.ts";
 
 export const MOBILE_SEMANTIC_LAYER_THUMBNAIL_STRATEGY =

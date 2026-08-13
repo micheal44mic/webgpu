@@ -192,7 +192,14 @@ class EditorLabController implements EditorExtension {
       this.#host.setStatus(`Laboratorio ${id} completato.`, "ok");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const failure = { lab: id, passed: false, error: message };
+      const failure = {
+        lab: id,
+        passed: false,
+        error: message,
+        ...(import.meta.env.DEV && error instanceof Error && error.stack
+          ? { stack: error.stack }
+          : {}),
+      };
       window.__editorLabReport = failure;
       this.#report.textContent = serialize(failure);
       this.#report.hidden = false;
@@ -266,7 +273,7 @@ class EditorLabController implements EditorExtension {
       case "layer-merge-mixed":
       case "layer-merge-memory":
       case "layer-merge-reject": {
-        const controller = await this.#host.ensureVectorTextController();
+        const controller = await this.#host.ensureMixedSceneController();
         const { runLayerMergeGpuTest } = await import("./gpu/layer-merge-gpu-test");
         return runLayerMergeGpuTest(
           engine,
@@ -279,7 +286,7 @@ class EditorLabController implements EditorExtension {
         return runLayerMemoryStressTest(engine);
       }
       case "mixed-memory": {
-        const controller = await this.#host.ensureVectorTextController();
+        const controller = await this.#host.ensureMixedSceneController();
         const { runMixedMemoryBenchmarkStudy } = await import("./memory/mixed-memory-benchmark");
         const target = new URLSearchParams(window.location.search).get("targetMiB") === "600"
           ? 600
@@ -329,7 +336,7 @@ class EditorLabController implements EditorExtension {
       case "vector-zoom-during":
       case "vector-zoom-release":
       case "vector-zoom-coverage": {
-        const controller = await this.#host.ensureVectorTextController();
+        const controller = await this.#host.ensureMixedSceneController();
         const { runVectorZoomLab } = await import("./vector/vector-zoom-labs");
         const kind = id.slice("vector-zoom-".length) as
           | "stress" | "during" | "release" | "coverage";

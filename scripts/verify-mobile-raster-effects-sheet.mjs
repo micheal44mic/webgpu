@@ -13,6 +13,10 @@ const controllerSource = readFileSync(
   new URL("src/mobile-raster-effects-sheet.ts", root),
   "utf8",
 );
+const sharedSheetControllerSource = readFileSync(
+  new URL("src/mobile-bottom-sheet-controller.ts", root),
+  "utf8",
+);
 const rasterStyleSource = readFileSync(
   new URL("src/raster-style-controller.ts", root),
   "utf8",
@@ -313,14 +317,19 @@ assert.match(
   "vertical touch scrolling must remain native inside the settings area",
 );
 assert.match(
-  controllerSource,
-  /this\.handle\.addEventListener\("pointerdown"[\s\S]*?this\.handle\.addEventListener\("pointermove"[\s\S]*?this\.handle\.addEventListener\("pointerup"/,
+  sharedSheetControllerSource,
+  /handle\.addEventListener\("pointerdown"[\s\S]*?handle\.addEventListener\("pointermove"[\s\S]*?handle\.addEventListener\("pointerup"/,
   "only the grabber must own sheet dragging",
 );
 assert.doesNotMatch(
   controllerSource,
   /this\.scroll\.addEventListener\("pointer(?:down|move|up)"/,
   "scroll gestures must never be stolen by the sheet drag controller",
+);
+assert.match(
+  controllerSource,
+  /accessibilityRegions: \[this\.scroll, this\.enabledControl\]/,
+  "the effect sheet must delegate only its declared regions to the shared controller",
 );
 
 assert.match(
@@ -404,7 +413,7 @@ assert.match(
 );
 assert.match(
   main,
-  /beginHistoryEdit:\s*\(kind: MobileRasterEffectKind\)[\s\S]*?return engine\.beginRasterLayerMetadataHistoryEdit\(property\);[\s\S]*?commitHistoryEdit:\s*\(token\) => engine\.commitRasterLayerMetadataHistoryEdit\(token\)[\s\S]*?cancelHistoryEdit:\s*\(token\) => engine\.cancelRasterLayerMetadataHistoryEdit\(token\)/,
+  /beginHistoryEdit:\s*\(kind: MobileRasterEffectKind\)[\s\S]*?return engine\.beginRasterLayerMetadataHistoryEdit\(kind\);[\s\S]*?commitHistoryEdit:\s*\(token\) => engine\.commitRasterLayerMetadataHistoryEdit\(token\)[\s\S]*?cancelHistoryEdit:\s*\(token\) => engine\.cancelRasterLayerMetadataHistoryEdit\(token\)/,
   "all four effects must forward the engine's atomic begin/commit/cancel token",
 );
 
@@ -428,13 +437,13 @@ assert.match(
   "the composition root must provide the effect sheet DOM and browser dependencies",
 );
 assert.match(
-  controllerSource,
-  /for \(const region of \[this\.scroll, this\.enabledControl\]\)[\s\S]*?toggleAttribute\("inert", minimized\)[\s\S]*?setAttribute\("aria-hidden", String\(minimized\)\)/,
+  sharedSheetControllerSource,
+  /for \(const region of this\.options\.accessibilityRegions\)[\s\S]*?toggleAttribute\("inert", minimized\)[\s\S]*?setAttribute\("aria-hidden", String\(minimized\)\)/,
   "minimized effects must expose only their grabber and title",
 );
 assert.match(
-  controllerSource,
-  /if \(activeElement instanceof HTMLElement && this\.sheet\.contains\(activeElement\)\)[\s\S]*?activeElement\.blur\(\);[\s\S]*?this\.sheet\.setAttribute\("aria-hidden", "true"\)/,
+  sharedSheetControllerSource,
+  /if \(activeElement instanceof HTMLElement && this\.options\.sheet\.contains\(activeElement\)\)[\s\S]*?activeElement\.blur\(\);[\s\S]*?this\.options\.sheet\.setAttribute\("aria-hidden", "true"\)/,
   "focus must leave the effect sheet before its ancestor becomes aria-hidden",
 );
 

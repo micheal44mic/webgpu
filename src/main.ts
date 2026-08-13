@@ -83,9 +83,10 @@ import {
 import { SceneEditorController } from "./scene-editor-controller";
 import { DocumentInteractionController } from "./document-interaction-controller";
 
-import type { MixedVectorTextController } from "./mixed-vector-text-controller";
+import type { MixedSceneController } from "./mixed-scene-controller";
 import { createProjectStorage } from "./project-storage";
 import { ProjectSessionController } from "./project-session-controller";
+import { resolveMixedSceneEnabled } from "./compat/mixed-scene-options";
 
 createIcons({
   icons: {
@@ -384,14 +385,14 @@ const layerColdAdjacentPrefetchEnabled =
   || (!appleMobileMemoryLifecycle && layerColdAdjacentPrefetchMode !== "0");
 element<HTMLElement>("gpuMemoryVectorTextRow").hidden = false;
 element<HTMLElement>("gpuMemoryRasterImageRow").hidden = false;
-let vectorTextPrototype: MixedVectorTextController | null = null;
+let mixedSceneController: MixedSceneController | null = null;
 let layerPanelController: LayerPanelController | null = null;
 let sceneEditorController: SceneEditorController | null = null;
 let canvasInputController: CanvasInputController | null = null;
 let documentInteractionController: DocumentInteractionController | null = null;
 let brushQuickControlsController: BrushQuickControlsController | null = null;
 let canvasToolController: CanvasToolController | null = null;
-let vectorTextInitializationPromise: Promise<MixedVectorTextController> | null = null;
+let mixedSceneInitializationPromise: Promise<MixedSceneController> | null = null;
 let editorToolsController: EditorToolsController;
 let mobileBrushStudio: MobileBrushStudioController | null = null;
 let mobileStrokeSheet: MobileStrokeSheetController | null = null;
@@ -436,7 +437,7 @@ const engine = new BrushEngine(canvas, {
     updateHistoryControls();
   },
   onViewChange() {
-    vectorTextPrototype?.scheduleViewSync();
+    mixedSceneController?.scheduleViewSync();
     projectSessionController?.markDirty();
   },
   onPixelSelectionChange() {
@@ -446,7 +447,7 @@ const engine = new BrushEngine(canvas, {
     projectSessionController?.noteSceneSnapshot(snapshot);
     appDiagnosticsController?.recordSceneSnapshot(snapshot);
     requestMobileLayersRefresh();
-    vectorTextPrototype?.syncScene(snapshot);
+    mixedSceneController?.syncScene(snapshot);
     mobileToolSettingsSheet?.syncOpenState();
     syncMobileToolsMenuState(snapshot);
     const selectedItem = snapshot.items.find(
@@ -470,7 +471,7 @@ const engine = new BrushEngine(canvas, {
     layerPanelController?.ensureActiveThumbnail();
     const mixedSnapshot = engine.getMixedSceneSnapshot();
     if (mixedSnapshot) {
-      vectorTextPrototype?.syncScene(mixedSnapshot);
+      mixedSceneController?.syncScene(mixedSnapshot);
     }
     layerSwitchResult.textContent =
       `Undo/Redo ha selezionato il livello ${activeIndex + 1}.`;
@@ -483,8 +484,7 @@ const engine = new BrushEngine(canvas, {
     editorExtensionEngineOptions.layerMemoryStressTestEnabled ?? false,
   layerCompressionTestEnabled:
     editorExtensionEngineOptions.layerCompressionTestEnabled ?? false,
-  vectorTextPrototypeEnabled:
-    editorExtensionEngineOptions.vectorTextPrototypeEnabled ?? true,
+  mixedSceneEnabled: resolveMixedSceneEnabled(editorExtensionEngineOptions, true),
   layerColdCompressionEnabled: layerColdCompressionRequested,
   // Le notifiche restano su richiesta esplicita: ora che la compressione gira
   // sempre, annunciare ogni livello compresso sarebbe rumore, non informazione.
@@ -551,7 +551,7 @@ appDiagnosticsController = new AppDiagnosticsController({
       rasterLiquifyUiBusy: false,
     },
   }),
-  getVectorDiagnostics: () => vectorTextPrototype?.getDiagnostics() ?? null,
+  getVectorDiagnostics: () => mixedSceneController?.getDiagnostics() ?? null,
 });
 const historyControlsController = new HistoryControlsController({
   engine: {
@@ -636,7 +636,7 @@ if (editorExtensionBootstrap) {
   const host: EditorExtensionHost = {
     engine,
     canvas,
-    ensureVectorTextController: initializeVectorTextPrototype,
+    ensureMixedSceneController: initializeMixedSceneController,
     applyBrushSettings,
     collectInputDiagnostics() {
       const inputDiagnostics = canvasInputController?.diagnostics()
@@ -706,7 +706,7 @@ sceneEditorController = new SceneEditorController({
     loadingLabel: layerLoadingLabel,
     result: layerSwitchResult,
   },
-  getVectorController: () => vectorTextPrototype,
+  getVectorController: () => mixedSceneController,
   isInteractionLocked: interactionLocked,
   onBusyChange: () => {
     updateHistoryControls();
@@ -856,7 +856,7 @@ canvasToolController = new CanvasToolController({
   cancelKeyboardSelectionGesture: (hideCursor) => {
     canvasInputController?.cancelKeyboardSelectionGesture(hideCursor);
   },
-  getVectorController: () => vectorTextPrototype,
+  getVectorController: () => mixedSceneController,
   getOpenToolSettingsKind: () => mobileToolSettingsSheet?.isOpen
     ? mobileToolSettingsSheet.toolKind
     : null,
@@ -941,8 +941,8 @@ function syncMobileToolsMenuState(
     activeCanvasTool: canvasToolController?.activeTool ?? "paint",
     engineReady: engineInitialized,
     interactionLocked: interactionLocked(),
-    vectorEditorReady: vectorTextPrototype !== null,
-    vectorEditorLocked: vectorTextPrototype?.getTextEditorSnapshot().locked ?? true,
+    vectorEditorReady: mixedSceneController !== null,
+    vectorEditorLocked: mixedSceneController?.getTextEditorSnapshot().locked ?? true,
     textSelected: selectedText !== null,
     svgSelected: selectedSvg !== null,
     textTransformActive: selectedText?.transformType !== undefined
@@ -989,8 +989,8 @@ function applyBrushSettings(settings: Readonly<BrushSettings>): void {
 
 const brushStudioIntegration = brushLibraryController.studioIntegration();
 mobileBrushStudio = new MobileBrushStudioController({
-  engine: {
-    getSettings: () => engine.getSettings(),
+  settings: { getSettings: () => engine.getSettings() },
+  assets: {
     registerCustomShapeAsset: (source, requestedId) =>
       engine.registerCustomShapeAsset(source, requestedId),
     registerCustomGrainAsset: (source, requestedId) =>
@@ -998,8 +998,8 @@ mobileBrushStudio = new MobileBrushStudioController({
     getCustomBrushAsset: (id) => engine.getCustomBrushAsset(id),
     hasCustomBrushAsset: (id) => engine.hasCustomBrushAsset(id),
     removeCustomBrushAsset: (id) => engine.removeCustomBrushAsset(id),
-    waitForIdle: () => engine.waitForIdle(),
   },
+  runtime: { waitForIdle: () => engine.waitForIdle() },
   previewRenderer: authoritativeBrushStrokePreviewRenderer,
   root: element<HTMLElement>("mobileBrushStudioSheet"),
   appRoot: appElement,
@@ -1045,14 +1045,7 @@ mobileRasterEffectsSheet = new MobileRasterEffectsSheetController({
   getBevelStyle: () => rasterStyleController.getBevelStyle(),
   applyBevelStyle: (style) => rasterStyleController.applyBevelStyle(style),
   beginHistoryEdit: (kind: MobileRasterEffectKind) => {
-    const property = kind === "color-overlay"
-      ? "color-overlay"
-      : kind === "outer-shadow"
-        ? "outer-shadow"
-        : kind === "inner-shadow"
-          ? "inner-shadow"
-          : "bevel";
-    return engine.beginRasterLayerMetadataHistoryEdit(property);
+    return engine.beginRasterLayerMetadataHistoryEdit(kind);
   },
   commitHistoryEdit: (token) => engine.commitRasterLayerMetadataHistoryEdit(token),
   cancelHistoryEdit: (token) => engine.cancelRasterLayerMetadataHistoryEdit(token),
@@ -1221,8 +1214,8 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
   setSelectionCombineMode: (mode) => canvasToolController?.setSelectionCombineMode(mode),
   applySelectionColor: () => { void pixelSelectionController?.applyColorRange(); },
   clearSelection: () => { void pixelSelectionController?.clear(); },
-  applyTransform: () => vectorTextPrototype?.applyTransform(),
-  cancelTransform: () => vectorTextPrototype?.cancelTransform(),
+  applyTransform: () => mixedSceneController?.applyTransform(),
+  cancelTransform: () => mixedSceneController?.cancelTransform(),
   getSelectedLayerOptions: () => {
     const properties = selectedMobileLayerProperties();
     return properties && {
@@ -1259,7 +1252,7 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
     };
   },
   setSelectedSvgPaintColor: (index, color) => {
-    vectorTextPrototype?.setSelectedSvgPaintColor(index, color);
+    mixedSceneController?.setSelectedSvgPaintColor(index, color);
   },
   beginSvgPaintEdit: () => {
     return engine.beginVectorHistoryEdit();
@@ -1267,10 +1260,10 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
   commitSvgPaintEdit: () => {
     return engine.commitVectorHistoryEdit();
   },
-  rasterizeSelectedSvg: () => vectorTextPrototype?.rasterizeSelectedSvgNode(),
+  rasterizeSelectedSvg: () => mixedSceneController?.rasterizeSelectedSvgNode(),
   getTextCreationColor: () => brushSettingsController.snapshot().color,
   getTextEditorSnapshot: () => {
-    const controller = vectorTextPrototype;
+    const controller = mixedSceneController;
     if (controller) return controller.getTextEditorSnapshot();
     const node = selectedMobileTextNode();
     const locked = interactionLocked();
@@ -1293,7 +1286,7 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
     };
   },
   getVectorEffectEditorSnapshot: () => {
-    const controller = vectorTextPrototype;
+    const controller = mixedSceneController;
     if (controller) return controller.getVectorEffectEditorSnapshot();
     const selected = selectedMobileVectorItem();
     if (!selected) return null;
@@ -1323,27 +1316,27 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
       blockShadowOutlineWidth: node.blockShadowOutlineWidth,
     };
   },
-  getTransformActionSnapshot: () => vectorTextPrototype?.getTransformActionSnapshot() ?? {
+  getTransformActionSnapshot: () => mixedSceneController?.getTransformActionSnapshot() ?? {
     active: false,
     canApply: false,
     canCancel: false,
   },
   updateSelectedTextProperties: (patch) =>
-    vectorTextPrototype?.updateSelectedTextProperties(patch) ?? false,
+    mixedSceneController?.updateSelectedTextProperties(patch) ?? false,
   updateSelectedVectorEffectProperties: (patch) =>
-    vectorTextPrototype?.updateSelectedVectorEffectProperties(patch) ?? false,
+    mixedSceneController?.updateSelectedVectorEffectProperties(patch) ?? false,
   setSelectedVectorShadowEnabled: (kind, enabled) =>
-    vectorTextPrototype?.setSelectedVectorShadowEnabled(kind, enabled) ?? false,
+    mixedSceneController?.setSelectedVectorShadowEnabled(kind, enabled) ?? false,
   beginSelectedVectorPropertyEdit: () =>
-    vectorTextPrototype?.beginSelectedVectorPropertyEdit() ?? false,
+    mixedSceneController?.beginSelectedVectorPropertyEdit() ?? false,
   commitSelectedVectorPropertyEdit: () =>
-    vectorTextPrototype?.commitSelectedVectorPropertyEdit() ?? false,
-  createText: (color) => vectorTextPrototype?.createText(color),
+    mixedSceneController?.commitSelectedVectorPropertyEdit() ?? false,
+  createText: (color) => mixedSceneController?.createText(color),
   resetText: () => canvasToolController?.resetSelectedText(),
   deleteText: () => canvasToolController?.deleteSelectedText(),
   rasterizeText: () => canvasToolController?.rasterizeSelectedText(),
   setTextWarpMode: (mode) => canvasToolController?.setTextWarpMode(mode) ?? false,
-  resetTextDistort: () => vectorTextPrototype?.resetSelectedTextDistort(),
+  resetTextDistort: () => mixedSceneController?.resetSelectedTextDistort(),
   toggleTextDistortEditing: () => canvasToolController?.toggleTextDistortEditing() ?? false,
   beforeOpen: () => {
     editorToolsController?.setOpen(false);
@@ -1396,7 +1389,7 @@ editorToolsController = new EditorToolsController({
   },
   runVectorCommand: (command) => {
     if (interactionLocked()) return;
-    const controller = vectorTextPrototype;
+    const controller = mixedSceneController;
     if (!controller) return;
     if (command === "import-svg") controller.requestSvgImport();
     else controller.requestRasterImageImport();
@@ -1505,7 +1498,7 @@ canvasInputController = new CanvasInputController({
     rasterAdjustmentsController?.isLiquifyEditActive(historyState) === true,
   isDestructivePreviewNavigationActive: () =>
     rasterAdjustmentsController?.isDestructivePreviewNavigationActive(historyState) === true,
-  getVectorController: () => vectorTextPrototype,
+  getVectorController: () => mixedSceneController,
   getEditorExtension: () => editorExtension,
   updateHistoryControls,
   runPixelSelectionOperation: (operation) => {
@@ -1669,14 +1662,14 @@ function scheduleDeferredStartupTask(
   window.setTimeout(run, 0);
 }
 
-async function initializeVectorTextPrototype(): Promise<MixedVectorTextController> {
-  if (vectorTextPrototype) return vectorTextPrototype;
-  if (vectorTextInitializationPromise) return vectorTextInitializationPromise;
+async function initializeMixedSceneController(): Promise<MixedSceneController> {
+  if (mixedSceneController) return mixedSceneController;
+  if (mixedSceneInitializationPromise) return mixedSceneInitializationPromise;
 
-  const initialization = (async (): Promise<MixedVectorTextController> => {
+  const initialization = (async (): Promise<MixedSceneController> => {
     await engine.ensureOptionalEditorResources();
-    const { MixedVectorTextController } = await import("./mixed-vector-text-controller");
-    const controller = new MixedVectorTextController(engine, {
+    const { MixedSceneController } = await import("./mixed-scene-controller");
+    const controller = new MixedSceneController(engine, {
       root: appElement,
       browser: window,
       clippedRefreshPolicy:
@@ -1684,7 +1677,7 @@ async function initializeVectorTextPrototype(): Promise<MixedVectorTextControlle
       onEditorStateChange: () => mobileToolSettingsSheet?.syncOpenState(),
     });
     await controller.initialize();
-    vectorTextPrototype = controller;
+    mixedSceneController = controller;
     const snapshot = engine.getMixedSceneSnapshot();
     if (snapshot) controller.syncScene(snapshot);
     syncMobileToolsMenuState(snapshot);
@@ -1692,17 +1685,17 @@ async function initializeVectorTextPrototype(): Promise<MixedVectorTextControlle
     mobileToolSettingsSheet?.syncOpenState();
     if (import.meta.env.DEV) {
       (window as Window & {
-        __vectorTextPrototype?: MixedVectorTextController;
-      }).__vectorTextPrototype = vectorTextPrototype;
+        __mixedSceneController?: MixedSceneController;
+      }).__mixedSceneController = mixedSceneController;
     }
     return controller;
   })();
-  vectorTextInitializationPromise = initialization;
+  mixedSceneInitializationPromise = initialization;
   try {
     return await initialization;
   } catch (error) {
-    if (vectorTextInitializationPromise === initialization) {
-      vectorTextInitializationPromise = null;
+    if (mixedSceneInitializationPromise === initialization) {
+      mixedSceneInitializationPromise = null;
     }
     throw error;
   }
@@ -1727,7 +1720,10 @@ void engine.initialize()
       () => engine.ensureOptionalEditorResources(),
       500,
     );
-    if (mobileBrushStudio) {
+    if (
+      mobileBrushStudio
+      && (editorExtensionBootstrap?.restorePersistedBrushOnStartup ?? true)
+    ) {
       scheduleDeferredStartupTask(
         "deferred-brush-restore",
         () => brushLibraryController.restoreActiveBrush(),
@@ -1735,11 +1731,11 @@ void engine.initialize()
       );
     }
 
-    if (engine.vectorTextPrototypeEnabled) {
+    if (engine.mixedSceneEnabled) {
       scheduleDeferredStartupTask(
-        "deferred-vector-text",
+        "deferred-mixed-scene",
         async () => {
-          await initializeVectorTextPrototype();
+          await initializeMixedSceneController();
         },
         1_500,
       );

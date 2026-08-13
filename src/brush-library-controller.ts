@@ -1,27 +1,30 @@
 import {
+  BRUSH_STUDIO_MAX_CUSTOM_BRUSHES,
+  createBrushStudioBaseSettings,
+  createBrushStudioCustomBrushId,
+  isBrushStudioCustomBrushId,
+  nextBrushStudioCustomBrushName,
+  PENCIL_BRUSH_PRESET,
+  resolveBrushPresetSettings,
+  uniqueBrushStudioCustomBrushName,
+  type BrushStudioCustomBrush,
+  type BrushStudioCustomBrushId,
+} from "./brush-catalog.ts";
+import {
   Check,
   createElement as createLucideElement,
 } from "lucide";
 import type { BrushLibraryPreviewResult } from "./brush-library-preview";
-import { PENCIL_BRUSH_PRESET, resolveBrushPresetSettings } from "./brush-presets";
 import {
-  BRUSH_STUDIO_MAX_CUSTOM_BRUSHES,
   brushStudioAssetStorageKey,
-  createBrushStudioBaseSettings,
-  createBrushStudioCustomBrushId,
   deleteBrushStudioAsset,
   deleteBrushStudioSavedBrush,
-  isBrushStudioCustomBrushId,
   loadBrushStudioAsset,
   loadBrushStudioLibraryState,
   loadBrushStudioSavedBrush,
-  nextBrushStudioCustomBrushName,
   saveBrushStudioAsset,
   saveBrushStudioLibraryState,
   saveBrushStudioSavedBrush,
-  uniqueBrushStudioCustomBrushName,
-  type BrushStudioCustomBrush,
-  type BrushStudioCustomBrushId,
 } from "./brush-studio-storage";
 import {
   BRUSH_STUDIO_TRANSFER_MAX_FILE_BYTES,

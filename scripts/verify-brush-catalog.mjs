@@ -11,6 +11,7 @@ globalThis.window = {
 };
 
 const storage = await import("../src/brush-studio-storage.ts");
+const catalogContract = await import("../src/brush-catalog.ts");
 const libraryKey = "m1m4.brush-studio.library-state.v1";
 
 values.set(libraryKey, JSON.stringify({ version: 1, activeBrushId: "current" }));
@@ -20,11 +21,11 @@ assert.deepEqual(
   "the former two-slot state must migrate without losing the active brush",
 );
 
-const firstId = storage.createBrushStudioCustomBrushId("first / brush");
-const secondId = storage.createBrushStudioCustomBrushId("second-brush");
+const firstId = catalogContract.createBrushStudioCustomBrushId("first / brush");
+const secondId = catalogContract.createBrushStudioCustomBrushId("second-brush");
 assert.equal(firstId, "custom-brush:first-brush");
-assert.equal(storage.isBrushStudioCustomBrushId(firstId), true);
-assert.equal(storage.isBrushStudioCustomBrushId("current"), false);
+assert.equal(catalogContract.isBrushStudioCustomBrushId(firstId), true);
+assert.equal(catalogContract.isBrushStudioCustomBrushId("current"), false);
 
 const catalog = [
   { id: firstId, name: "  Soft   Cloud  ", createdAt: 10, updatedAt: 11 },
@@ -44,21 +45,24 @@ assert.deepEqual(
   "custom card order, names and active identity must survive a cold reload",
 );
 
-assert.equal(storage.nextBrushStudioCustomBrushName([]), "New Brush");
+assert.equal(catalogContract.nextBrushStudioCustomBrushName([]), "New Brush");
 assert.equal(
-  storage.nextBrushStudioCustomBrushName([
+  catalogContract.nextBrushStudioCustomBrushName([
     { name: "New Brush" },
     { name: "new brush 2" },
   ]),
   "New Brush 3",
 );
 assert.equal(
-  storage.uniqueBrushStudioCustomBrushName("Soft Cloud", [{ name: "soft cloud" }]),
+  catalogContract.uniqueBrushStudioCustomBrushName("Soft Cloud", [{ name: "soft cloud" }]),
   "Soft Cloud 2",
   "an imported brush must keep its name without overwriting an existing card",
 );
 assert.equal(
-  storage.uniqueBrushStudioCustomBrushName("A".repeat(48), [{ name: "A".repeat(48) }]).length,
+  catalogContract.uniqueBrushStudioCustomBrushName(
+    "A".repeat(48),
+    [{ name: "A".repeat(48) }],
+  ).length,
   48,
   "an imported duplicate suffix must remain inside the catalog name limit",
 );
@@ -104,7 +108,7 @@ const defaults = {
   positionJitterLateral: 1,
   positionJitterLinear: 1,
 };
-const base = storage.createBrushStudioBaseSettings(defaults, "#ff8844");
+const base = catalogContract.createBrushStudioBaseSettings(defaults, "#ff8844");
 assert.deepEqual(
   {
     tool: base.tool,
@@ -177,20 +181,20 @@ storage.saveBrushStudioSavedBrush(firstId, {
   shapeAssetKey: `${firstId}:shape:custom-shape:cloud`,
   grainAssetKey: `${firstId}:grain:custom-grain:paper`,
 });
-assert.deepEqual(
-  storage.loadBrushStudioSavedBrush(firstId),
-  {
-    version: 1,
-    settings: {
-      shape: "shape",
-      shapeAssetId: "custom-shape:cloud",
-      grainMode: "moving",
-      grainAssetId: "custom-grain:paper",
-    },
-    shapeAssetKey: `${firstId}:shape:custom-shape:cloud`,
-    grainAssetKey: `${firstId}:grain:custom-grain:paper`,
-  },
-  "Shape and Grain identities must remain attached to their custom brush",
+const restoredDefinition = storage.loadBrushStudioSavedBrush(firstId);
+assert.equal(restoredDefinition?.version, 1);
+assert.equal(restoredDefinition?.settings.shape, "shape");
+assert.equal(restoredDefinition?.settings.shapeAssetId, "custom-shape:cloud");
+assert.equal(restoredDefinition?.settings.grainMode, "moving");
+assert.equal(restoredDefinition?.settings.grainAssetId, "custom-grain:paper");
+assert.equal(restoredDefinition?.shapeAssetKey, `${firstId}:shape:custom-shape:cloud`);
+assert.equal(restoredDefinition?.grainAssetKey, `${firstId}:grain:custom-grain:paper`);
+assert.equal("color" in restoredDefinition.settings, false);
+assert.equal("tool" in restoredDefinition.settings, false);
+assert.equal(
+  typeof restoredDefinition.settings.blendBlur,
+  "number",
+  "old partial definitions must migrate through the single normalized ABI",
 );
 storage.saveBrushStudioSavedBrush(firstId, {
   version: 1,

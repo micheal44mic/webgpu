@@ -12,6 +12,7 @@ const strokePath = path.join(root, "src", "stroke-renderer.ts");
 const shadowPath = path.join(root, "src", "shadow-renderer.ts");
 const lifecyclePath = path.join(root, "src", "effects-resource-lifecycle.ts");
 const historyMaintenancePath = path.join(root, "src", "history-maintenance-runtime.ts");
+const historyServicePath = path.join(root, "src", "history-service.ts");
 const poolSource = fs.readFileSync(poolPath, "utf8");
 const engineSource = readEngineSource();
 const bevelSource = fs.readFileSync(bevelPath, "utf8");
@@ -19,6 +20,7 @@ const strokeSource = fs.readFileSync(strokePath, "utf8");
 const shadowSource = fs.readFileSync(shadowPath, "utf8");
 const lifecycleSource = fs.readFileSync(lifecyclePath, "utf8");
 const historyMaintenanceSource = fs.readFileSync(historyMaintenancePath, "utf8");
+const historyServiceSource = fs.readFileSync(historyServicePath, "utf8");
 
 const runtimeSource = stripTypeScriptTypes(poolSource, {
   mode: "transform",
@@ -347,9 +349,14 @@ assert.match(
   "unreachable persistent effect owners must be destroyed before shrinking the pool",
 );
 assert.match(
-  engineSource,
-  /engine\.historyCompactionPending = true;[\s\S]{0,300}engine\.scheduleEffectsScratchShrink\(\);/,
+  historyServiceSource,
+  /this\.compactionPending = true;[\s\S]*?finishCommittedTransaction\([\s\S]*?this\.hooks\.scheduleDiscardedCleanup\(\)/,
   "cutting Redo must schedule effect reachability reclamation",
+);
+assert.match(
+  engineSource,
+  /scheduleDiscardedCleanup: \(\) => this\.scheduleEffectsScratchShrink\(\)/,
+  "the engine adapter must route discarded History cleanup to effect reclamation",
 );
 assert.match(
   historyMaintenanceSource,

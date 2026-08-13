@@ -324,7 +324,7 @@ assert(engine.includes("selectionRendererMiB"));
 assert(engine.includes("capturePaintSelectionHistoryMask(this, historyActionId)"));
 assert(
   engine.indexOf("capturePaintSelectionHistoryMask(this, historyActionId)")
-    < engine.indexOf("this.nextHistoryActionId += 1", engine.indexOf("capturePaintSelectionHistoryMask")),
+    < engine.indexOf("this.history.reserveActionId()", engine.indexOf("capturePaintSelectionHistoryMask")),
   "La mask Paint deve essere archiviata prima che l'azione possa sottomettere pixel.",
 );
 assert.equal(

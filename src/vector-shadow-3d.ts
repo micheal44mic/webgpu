@@ -1,37 +1,113 @@
 export const SHADOW_3D_VERSION = 2;
-export const SHADOW_3D_NAME = 'Shadow';
 export const SHADOW_MODE_3D = '3d';
 export const SHADOW_MODE_SINGLE = 'single';
 
-const DEFAULT_COLOR = Object.freeze([0.04, 0.055, 0.07, 1]);
+export interface Shadow3dPathData {
+  verbs: Uint8Array;
+  coords: Float64Array;
+  contourOffsets: Uint32Array;
+  fillRule: number;
+}
+
+export interface Shadow3dValue {
+  readonly version?: number;
+  readonly enabled?: boolean;
+  readonly mode?: typeof SHADOW_MODE_3D | typeof SHADOW_MODE_SINGLE;
+  readonly color?: ArrayLike<number>;
+  readonly offset?: number;
+  readonly angle?: number;
+  readonly blur?: number;
+  readonly outlineWidth?: number;
+  readonly outlineJoin?: number;
+}
+
+export interface NormalizedShadow3dValue {
+  readonly version: typeof SHADOW_3D_VERSION;
+  readonly enabled: boolean;
+  readonly mode: typeof SHADOW_MODE_3D | typeof SHADOW_MODE_SINGLE;
+  readonly color: readonly [number, number, number, number];
+  readonly offset: number;
+  readonly angle: number;
+  readonly blur: number;
+  readonly outlineWidth: number;
+  readonly outlineJoin: 0 | 1;
+}
+
+interface ShadowPoint {
+  readonly x: number;
+  readonly y: number;
+}
+
+interface LineSegment {
+  readonly kind: 'line';
+  readonly p0: ShadowPoint;
+  readonly p1: ShadowPoint;
+}
+
+interface QuadraticSegment {
+  readonly kind: 'quadratic';
+  readonly p0: ShadowPoint;
+  readonly c: ShadowPoint;
+  readonly p1: ShadowPoint;
+}
+
+interface CubicSegment {
+  readonly kind: 'cubic';
+  readonly p0: ShadowPoint;
+  readonly c1: ShadowPoint;
+  readonly c2: ShadowPoint;
+  readonly p1: ShadowPoint;
+}
+
+type ShadowSegment = LineSegment | QuadraticSegment | CubicSegment;
+
+interface ShadowContour {
+  readonly start: ShadowPoint;
+  readonly segments: ShadowSegment[];
+}
+
+interface PreparedContour {
+  readonly contour: ShadowContour;
+  readonly polygon: ShadowPoint[];
+  readonly area: number;
+}
+
+const DEFAULT_COLOR = Object.freeze([0.04, 0.055, 0.07, 1] as const);
 const COORDS_PER_VERB = Object.freeze([2, 2, 4, 6, 0]);
 const EPSILON = 1e-10;
 
-function finite(value, fallback, minimum = -Infinity, maximum = Infinity) {
+function finite(value: unknown, fallback: number, minimum = -Infinity, maximum = Infinity): number {
   const number = Number(value);
   return Number.isFinite(number)
     ? Math.max(minimum, Math.min(maximum, number))
     : fallback;
 }
 
-function normalizedAngle(value) {
+function normalizedAngle(value: unknown): number {
   const angle = finite(value, 45);
   const wrapped = ((angle + 180) % 360 + 360) % 360 - 180;
   return Object.is(wrapped, -0) ? 0 : wrapped;
 }
 
-function normalizedColor(value) {
-  const source = value && typeof value.length === 'number' ? value : DEFAULT_COLOR;
+function normalizedColor(value: unknown): readonly [number, number, number, number] {
+  const source: ArrayLike<number> = value !== null
+    && typeof value === 'object'
+    && 'length' in value
+    && typeof value.length === 'number'
+    ? value as ArrayLike<number>
+    : DEFAULT_COLOR;
   return Object.freeze([0, 1, 2, 3].map(index => (
     finite(source[index], DEFAULT_COLOR[index], 0, 1)
-  )));
+  ))) as unknown as readonly [number, number, number, number];
 }
 
-function normalizedOutlineJoin(value) {
+function normalizedOutlineJoin(value: unknown): 0 | 1 {
   return Number(value) === 1 ? 1 : 0;
 }
 
-function normalizedMode(value) {
+function normalizedMode(
+  value: unknown,
+): typeof SHADOW_MODE_3D | typeof SHADOW_MODE_SINGLE {
   return value === SHADOW_MODE_SINGLE ? SHADOW_MODE_SINGLE : SHADOW_MODE_3D;
 }
 
@@ -39,8 +115,10 @@ function normalizedMode(value) {
  * Stato serializzabile dell'effetto. Il colore resta parte del paint e non
  * invalida la geometria; i controlli pubblici includono outlineWidth e outlineJoin.
  */
-export function normalizeShadow3d(value = null) {
-  const source = value && typeof value === 'object' ? value : {};
+export function normalizeShadow3d(
+  value: Readonly<Shadow3dValue> | null = null,
+): Readonly<NormalizedShadow3dValue> {
+  const source: Readonly<Shadow3dValue> = value ?? {};
   const version = source.version === undefined ? SHADOW_3D_VERSION : Number(source.version);
   if (version !== 1 && version !== SHADOW_3D_VERSION) {
     throw new RangeError(`versione 3D Shadow non supportata: ${source.version}`);
@@ -58,7 +136,9 @@ export function normalizeShadow3d(value = null) {
   });
 }
 
-export function serializeShadow3d(value) {
+export function serializeShadow3d(
+  value: Readonly<Shadow3dValue> | null,
+): Shadow3dValue {
   const shadow = normalizeShadow3d(value);
   return {
     version: shadow.version,
@@ -73,18 +153,23 @@ export function serializeShadow3d(value) {
   };
 }
 
-export function updateShadow3d(value, patch = {}) {
+export function updateShadow3d(
+  value: Readonly<Shadow3dValue> | null,
+  patch: Readonly<Partial<Shadow3dValue>> = {},
+): Readonly<NormalizedShadow3dValue> {
   const current = serializeShadow3d(value);
   return normalizeShadow3d({ ...current, ...patch });
 }
 
-export function shadow3dGeometryKey(value) {
+export function shadow3dGeometryKey(value: Readonly<Shadow3dValue> | null): string {
   const shadow = normalizeShadow3d(value);
   if (shadow.mode === SHADOW_MODE_SINGLE) return `shadow3d-v${shadow.version}:single`;
   return `shadow3d-v${shadow.version}:3d:${shadow.offset}:${shadow.angle}:${shadow.outlineWidth}:${shadow.outlineJoin}`;
 }
 
-export function shadow3dVector(value) {
+export function shadow3dVector(
+  value: Readonly<Shadow3dValue> | null,
+): ShadowPoint {
   const shadow = normalizeShadow3d(value);
   const radians = shadow.angle * Math.PI / 180;
   return {
@@ -93,8 +178,13 @@ export function shadow3dVector(value) {
   };
 }
 
-export function shadow3dBounds(bounds, value) {
-  const source = bounds && typeof bounds.length === 'number' ? bounds : [0, 0, 0, 0];
+export function shadow3dBounds(
+  bounds: ArrayLike<number> | null,
+  value: Readonly<Shadow3dValue> | null,
+): Float64Array {
+  const source: ArrayLike<number> = bounds && typeof bounds.length === 'number'
+    ? bounds
+    : [0, 0, 0, 0];
   const shadow = normalizeShadow3d(value);
   if (!shadow.enabled) return new Float64Array(source);
   const vector = shadow3dVector(shadow);
@@ -116,34 +206,37 @@ export function shadow3dBounds(bounds, value) {
   ]);
 }
 
-function point(x, y) {
+function point(x: unknown, y: unknown): ShadowPoint {
   return { x:Number(x), y:Number(y) };
 }
 
-function samePoint(left, right) {
+function samePoint(left: ShadowPoint, right: ShadowPoint): boolean {
   const scale = Math.max(1, Math.abs(left.x), Math.abs(left.y), Math.abs(right.x), Math.abs(right.y));
   return Math.hypot(left.x - right.x, left.y - right.y) <= scale * 1e-12;
 }
 
-function line(p0, p1) {
+function line(p0: ShadowPoint, p1: ShadowPoint): LineSegment {
   return { kind:'line', p0, p1 };
 }
 
-function readContours(path) {
-  if (!path?.verbs || !path?.coords) throw new TypeError('PathData obbligatorio per 3D Shadow');
+function readContours(path: Readonly<Shadow3dPathData>): ShadowContour[] {
+  if (!path.verbs || !path.coords) throw new TypeError('PathData obbligatorio per 3D Shadow');
   const verbs = path.verbs;
   const coords = path.coords;
-  const contours = [];
+  const contours: ShadowContour[] = [];
   let coordOffset = 0;
-  let contour = null;
-  let current = null;
+  let contour: ShadowContour | null = null;
+  let current: ShadowPoint | null = null;
 
-  const finish = () => {
-    if (!contour) return;
-    if (contour.segments.length && !samePoint(current, contour.start)) {
-      contour.segments.push(line(current, contour.start));
+  const finish = (): void => {
+    const activeContour = contour;
+    const activeCurrent = current;
+    if (!activeContour) return;
+    if (activeCurrent && activeContour.segments.length
+      && !samePoint(activeCurrent, activeContour.start)) {
+      activeContour.segments.push(line(activeCurrent, activeContour.start));
     }
-    if (contour.segments.length >= 2) contours.push(contour);
+    if (activeContour.segments.length >= 2) contours.push(activeContour);
     contour = null;
     current = null;
   };
@@ -185,11 +278,14 @@ function readContours(path) {
   return contours;
 }
 
-function lerpPoint(a, b, t) {
+function lerpPoint(a: ShadowPoint, b: ShadowPoint, t: number): ShadowPoint {
   return point(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
 }
 
-function splitSegment(segment, t) {
+function splitSegment(
+  segment: ShadowSegment,
+  t: number,
+): readonly [ShadowSegment, ShadowSegment] {
   if (segment.kind === 'line') {
     const middle = lerpPoint(segment.p0, segment.p1, t);
     return [line(segment.p0, middle), line(middle, segment.p1)];
@@ -215,7 +311,7 @@ function splitSegment(segment, t) {
   ];
 }
 
-function reverseSegment(segment) {
+function reverseSegment(segment: ShadowSegment): ShadowSegment {
   if (segment.kind === 'line') return line(segment.p1, segment.p0);
   if (segment.kind === 'quadratic') {
     return { kind:'quadratic', p0:segment.p1, c:segment.c, p1:segment.p0 };
@@ -223,11 +319,15 @@ function reverseSegment(segment) {
   return { kind:'cubic', p0:segment.p1, c1:segment.c2, c2:segment.c1, p1:segment.p0 };
 }
 
-function reverseSegments(segments) {
+function reverseSegments(segments: readonly ShadowSegment[]): ShadowSegment[] {
   return [...segments].reverse().map(reverseSegment);
 }
 
-function distanceToLine(value, start, end) {
+function distanceToLine(
+  value: ShadowPoint,
+  start: ShadowPoint,
+  end: ShadowPoint,
+): number {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
   const length = Math.hypot(dx, dy);
@@ -235,7 +335,12 @@ function distanceToLine(value, start, end) {
   return Math.abs(dx * (start.y - value.y) - (start.x - value.x) * dy) / length;
 }
 
-function flattenSegment(segment, tolerance, output, depth = 0) {
+function flattenSegment(
+  segment: ShadowSegment,
+  tolerance: number,
+  output: ShadowPoint[],
+  depth = 0,
+): void {
   if (segment.kind === 'line') {
     output.push(segment.p1);
     return;
@@ -255,14 +360,17 @@ function flattenSegment(segment, tolerance, output, depth = 0) {
   flattenSegment(right, tolerance, output, depth + 1);
 }
 
-function flattenedContour(segments, tolerance) {
+function flattenedContour(
+  segments: readonly ShadowSegment[],
+  tolerance: number,
+): ShadowPoint[] {
   const values = [segments[0].p0];
   for (const segment of segments) flattenSegment(segment, tolerance, values);
-  if (values.length > 1 && samePoint(values[0], values.at(-1))) values.pop();
+  if (values.length > 1 && samePoint(values[0], values[values.length - 1])) values.pop();
   return values;
 }
 
-function signedArea(points) {
+function signedArea(points: readonly ShadowPoint[]): number {
   let area = 0;
   for (let index = 0; index < points.length; index++) {
     const current = points[index];
@@ -272,7 +380,7 @@ function signedArea(points) {
   return area / 2;
 }
 
-function windingAt(points, value) {
+function windingAt(points: readonly ShadowPoint[], value: ShadowPoint): number {
   let winding = 0;
   for (let index = 0; index < points.length; index++) {
     const a = points[index];
@@ -285,7 +393,11 @@ function windingAt(points, value) {
   return winding;
 }
 
-function pointInFill(polygons, value, fillRule) {
+function pointInFill(
+  polygons: readonly (readonly ShadowPoint[])[],
+  value: ShadowPoint,
+  fillRule: 0 | 1,
+): boolean {
   if (fillRule === 1) {
     let crossings = 0;
     for (const polygon of polygons) if (windingAt(polygon, value) !== 0) crossings++;
@@ -296,12 +408,17 @@ function pointInFill(polygons, value, fillRule) {
   return winding !== 0;
 }
 
-function boundaryType(index, prepared, fillRule, tolerance) {
+function boundaryType(
+  index: number,
+  prepared: readonly PreparedContour[],
+  fillRule: 0 | 1,
+  tolerance: number,
+): 'outer' | 'hole' | null {
   const entry = prepared[index];
   const polygon = entry.polygon;
   const area = entry.area;
   if (polygon.length < 3 || Math.abs(area) <= EPSILON) return null;
-  let best = null;
+  let best: { a: ShadowPoint; b: ShadowPoint; length: number } | null = null;
   for (let edge = 0; edge < polygon.length; edge++) {
     const a = polygon[edge];
     const b = polygon[(edge + 1) % polygon.length];
@@ -328,13 +445,16 @@ function boundaryType(index, prepared, fillRule, tolerance) {
   return insideFilled ? 'outer' : 'hole';
 }
 
-function canonicalContours(path, tolerance) {
+function canonicalContours(
+  path: Readonly<Shadow3dPathData>,
+  tolerance: number,
+): ShadowSegment[][] {
   const contours = readContours(path);
-  const prepared = contours.map(contour => {
+  const prepared: PreparedContour[] = contours.map(contour => {
     const polygon = flattenedContour(contour.segments, tolerance);
     return { contour, polygon, area:signedArea(polygon) };
   });
-  const values = [];
+  const values: ShadowSegment[][] = [];
   for (let index = 0; index < prepared.length; index++) {
     const type = boundaryType(index, prepared, Number(path.fillRule) === 1 ? 1 : 0, tolerance);
     if (!type) continue;
@@ -347,7 +467,7 @@ function canonicalContours(path, tolerance) {
   return values;
 }
 
-function derivative(segment, t) {
+function derivative(segment: ShadowSegment, t: number): ShadowPoint {
   if (segment.kind === 'line') {
     return point(segment.p1.x - segment.p0.x, segment.p1.y - segment.p0.y);
   }
@@ -368,11 +488,11 @@ function derivative(segment, t) {
   );
 }
 
-function cross(left, right) {
+function cross(left: ShadowPoint, right: ShadowPoint): number {
   return left.x * right.y - left.y * right.x;
 }
 
-function quadraticRoots(a, b, c) {
+function quadraticRoots(a: number, b: number, c: number): number[] {
   if (Math.abs(a) <= EPSILON) {
     if (Math.abs(b) <= EPSILON) return [];
     return [-c / b];
@@ -384,9 +504,9 @@ function quadraticRoots(a, b, c) {
   return [(-b - root) / (2 * a), (-b + root) / (2 * a)];
 }
 
-function directionRoots(segment, vector) {
+function directionRoots(segment: ShadowSegment, vector: ShadowPoint): number[] {
   if (segment.kind === 'line') return [];
-  const projected = value => cross(vector, value);
+  const projected = (value: ShadowPoint): number => cross(vector, value);
   if (segment.kind === 'quadratic') {
     const a = projected(point(segment.c.x - segment.p0.x, segment.c.y - segment.p0.y));
     const b = projected(point(segment.p1.x - segment.c.x, segment.p1.y - segment.c.y));
@@ -399,13 +519,13 @@ function directionRoots(segment, vector) {
   return quadraticRoots(a - 2 * b + c, -2 * a + 2 * b, a);
 }
 
-function splitAtRoots(segment, roots) {
+function splitAtRoots(segment: ShadowSegment, roots: readonly number[]): ShadowSegment[] {
   const sorted = [...new Set(roots
     .filter(value => Number.isFinite(value) && value > 1e-6 && value < 1 - 1e-6)
     .map(value => Math.round(value * 1e12) / 1e12))].sort((a, b) => a - b);
   if (!sorted.length) return [segment];
-  const pieces = [];
-  let current = segment;
+  const pieces: ShadowSegment[] = [];
+  let current: ShadowSegment = segment;
   let previous = 0;
   for (const root of sorted) {
     const local = (root - previous) / (1 - previous);
@@ -419,24 +539,22 @@ function splitAtRoots(segment, roots) {
 }
 
 class PathWriter {
-  constructor() {
-    this.verbs = [];
-    this.coords = [];
-    this.contourOffsets = [];
-  }
+  private readonly verbs: number[] = [];
+  private readonly coords: number[] = [];
+  private readonly contourOffsets: number[] = [];
 
-  move(value) {
+  move(value: ShadowPoint): void {
     this.contourOffsets.push(this.verbs.length);
     this.verbs.push(0);
     this.coords.push(value.x, value.y);
   }
 
-  line(value) {
+  line(value: ShadowPoint): void {
     this.verbs.push(1);
     this.coords.push(value.x, value.y);
   }
 
-  segment(segment, delta = null) {
+  segment(segment: ShadowSegment, delta: ShadowPoint | null = null): void {
     const dx = delta?.x ?? 0;
     const dy = delta?.y ?? 0;
     if (segment.kind === 'line') {
@@ -454,11 +572,11 @@ class PathWriter {
     }
   }
 
-  close() {
+  close(): void {
     this.verbs.push(4);
   }
 
-  result() {
+  result(): Shadow3dPathData {
     return {
       verbs:new Uint8Array(this.verbs),
       coords:new Float64Array(this.coords),
@@ -468,14 +586,18 @@ class PathWriter {
   }
 }
 
-function appendContour(writer, segments) {
+function appendContour(writer: PathWriter, segments: readonly ShadowSegment[]): void {
   if (!segments.length) return;
   writer.move(segments[0].p0);
   for (const segment of segments) writer.segment(segment);
   writer.close();
 }
 
-function appendSide(writer, segment, vector) {
+function appendSide(
+  writer: PathWriter,
+  segment: ShadowSegment,
+  vector: ShadowPoint,
+): void {
   writer.move(segment.p0);
   writer.line(point(segment.p0.x + vector.x, segment.p0.y + vector.y));
   writer.segment(segment, vector);
@@ -489,7 +611,11 @@ function appendSide(writer, segment, vector) {
  * (esterni/buchi), invertiti come nel renderer di riferimento e le curve sono
  * spezzate solo nei punti in cui cambia il lato esposto alla direzione d'ombra.
  */
-export function buildShadow3dPath(path, value, { tolerance = 0.3 } = {}) {
+export function buildShadow3dPath(
+  path: Readonly<Shadow3dPathData>,
+  value: Readonly<Shadow3dValue>,
+  { tolerance = 0.3 }: { readonly tolerance?: number } = {},
+): Shadow3dPathData {
   const shadow = normalizeShadow3d(value);
   if (!shadow.enabled || shadow.mode === SHADOW_MODE_SINGLE) return path;
   const safeTolerance = finite(tolerance, 0.3, 0.01, 1000);

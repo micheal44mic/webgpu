@@ -1,31 +1,35 @@
 import type {
   LayerFormat,
   MixedSceneSnapshot,
-  PointerSample,
   RasterTransformSnapshot,
 } from "./engine-types";
-import type { PixelSelectionState } from "./selection-core";
 import type { MergeMixedSceneItemsRequest } from "./layer-merge-core";
 import type { LayerMergeResult } from "./engine-layer-merge-runtime";
 import {
   MIXED_SCENE_STACK_STRATEGY,
+  type MixedSceneItem,
+} from "./mixed-scene-stack";
+import {
   VECTOR_TEXT_BLOCK_SHADOW_STRATEGY,
   VECTOR_TEXT_INNER_SHADOW_STRATEGY,
   VECTOR_TEXT_OUTLINE_STRATEGY,
   VECTOR_TEXT_SINGLE_SHADOW_STRATEGY,
-  cloneVectorSvgNode,
-  cloneVectorTextNode,
   vectorTextBlockShadowLocalVector,
   vectorTextInnerShadowLocalVector,
   vectorTextSingleShadowLocalVector,
-  type MixedSceneItem,
-  type RasterImageNode,
-  type VectorSvgNode,
-  type VectorSvgNodeSeed,
+  type VectorTextOutlineJoin,
+} from "./scene-vector-effects";
+import {
+  cloneVectorTextNode,
   type VectorTextNode,
   type VectorTextNodeSeed,
-  type VectorTextOutlineJoin,
-} from "./mixed-scene-stack";
+} from "./scene-text-model";
+import {
+  cloneVectorSvgNode,
+  type VectorSvgNode,
+  type VectorSvgNodeSeed,
+} from "./scene-svg-model";
+import type { RasterImageNode } from "./scene-image-model";
 
 import {
   VECTOR_TEXT_PRESENTATION_STRATEGY,
@@ -33,7 +37,6 @@ import {
 import type {
   VectorTextGpuDraw,
   VectorTextGpuGradient,
-  VectorTextGpuPresentationStats,
   VectorTextPlacement,
   VectorTextViewState,
 } from "./vector-text-types";
@@ -69,12 +72,10 @@ import {
   VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
   vectorTextExactRecoveryIsCurrent,
   vectorTextWideFallbackView,
-  type VectorTextFastPresentationMode,
 } from "./vector-text-adaptive-zoom";
 import {
   VECTOR_SVG_IMPORT_STRATEGY,
   parseVectorSvg,
-  type VectorSvgGradient,
 } from "./vector-svg-import.ts";
 import {
   VECTOR_TEXT_TRANSFORM_STRATEGY,
@@ -91,221 +92,60 @@ import type {
   VectorTextEditorSnapshot,
   VectorTransformActionSnapshot,
 } from "./vector-editor-contract";
+import {
+  closestSceneControlPoint,
+  hitSceneTransformHandle,
+  hitsSceneTransformBody,
+  sceneLayerToLocal,
+  scenePointDistance,
+  type ScenePoint,
+  type SceneTransformHandle,
+} from "./scene-transform-geometry";
+import {
+  gpuLinearColor,
+  sameGpuLinearColor,
+  svgGradientGpuData,
+} from "./scene-gpu-paint";
+import {
+  copyTransformNode,
+  isImageNode,
+  isRasterLayerTransformNode,
+  isSvgNode,
+  isTextNode,
+  transformNodeKey,
+  vectorNodeKey,
+  type TransformSceneNode,
+  type VectorDrawableNode,
+  type VectorSceneNode,
+  type VectorSceneNodeUpdate,
+} from "./mixed-scene-node";
+import {
+  clearSceneInteractionOverlay,
+  renderSceneInteractionOverlay,
+  sceneDistortCanvasPoints,
+  sceneOverlayCorners,
+  sceneOverlayRotationHandle,
+  SCENE_TRANSFORM_HIT_RADIUS_CSS_PX,
+} from "./scene-interaction-overlay";
+import type {
+  MixedSceneControllerOptions,
+  MixedSceneDiagnostics,
+  MixedSceneHost,
+  VectorRasterHistoryGpuProbe,
+  VectorRasterHistoryGpuTestReport,
+  VectorRasterizationResult,
+  VectorTextClippedRefreshPolicy,
+} from "./mixed-scene-controller-contract";
 
-interface VectorRasterizationResult {
-  layerId: number;
-  chunkCount: number;
-  tileCount: number;
-  format: LayerFormat;
-  seedFormat: LayerFormat;
-}
-
-export interface VectorRasterHistoryGpuProbe {
-  sourceKind: "text" | "svg";
-  format: LayerFormat;
-  seedFormat: LayerFormat;
-  rawByteLength: number;
-  rawBytesPerPixel: number;
-  nonZeroAlphaPixels: number;
-  undoReturned: boolean;
-  undoRestoredVector: boolean;
-  undoPreservedBackgroundBytes: boolean;
-  redoReturned: boolean;
-  redoRestoredRaster: boolean;
-  redoRestoredRawBytesExactly: boolean;
-}
-
-export interface VectorRasterHistoryGpuTestReport {
-  passed: boolean;
-  probes: readonly VectorRasterHistoryGpuProbe[];
-}
-
-export interface MixedVectorTextHost {
-  readonly documentWidth: number;
-  readonly documentHeight: number;
-  /** Compatibility maximum edge for legacy callers and scalar stress limits. */
-  readonly layerSize: number;
-  getVectorTextViewState(): VectorTextViewState;
-  getMixedSceneSnapshot(): MixedSceneSnapshot | null;
-  getHistoryState(): { actionCount: number; cursor: number };
-  readLayerPixels(
-    rect?: { x: number; y: number; width: number; height: number },
-    layerIndex?: number,
-  ): Promise<Uint8Array>;
-  undo(): Promise<boolean>;
-  redo(): Promise<boolean>;
-  waitForIdle(): Promise<void>;
-  getPixelSelectionState(): PixelSelectionState;
-  toLayerPoint(sample: PointerSample): { x: number; y: number };
-  updateVectorTextGpuPresentation(
-    placement: VectorTextPlacement,
-    draws: readonly VectorTextGpuDraw[],
-  ): VectorTextGpuPresentationStats;
-  rebuildVectorTextGpuFallbackPresentation(
-    view: Readonly<VectorTextViewState>,
-    runs: readonly {
-      placement: VectorTextPlacement;
-      draws: readonly VectorTextGpuDraw[];
-    }[],
-  ): { textureCount: number; gpuMemoryMiB: number };
-  isPaintStrokeActive(): boolean;
-  clearVectorTextPresentation(placement?: VectorTextPlacement): void;
-  clearVectorTextFallbackPresentation(): void;
-  setVectorTextFastPresentationEnabled(enabled: boolean): void;
-  getVectorTextFastPresentationMode(): VectorTextFastPresentationMode;
-  getVectorTextFastPresentationBackpressureStats(): {
-    submissionCount: number;
-    coalescedRequestCount: number;
-  };
-  waitForVectorTextPresentationCompletion(): Promise<void>;
-  pruneVectorTextGpuMeshes(activeMeshKeys: ReadonlySet<string>): void;
-  beginVectorHistoryEdit(scope?: "property" | "transform"): boolean;
-  commitVectorHistoryEdit(): boolean;
-  cancelVectorHistoryEdit(): Promise<boolean>;
-  addVectorTextNode(
-    seed: VectorTextNodeSeed,
-    name?: string,
-  ): Promise<Readonly<VectorTextNode>>;
-  updateVectorTextNode(
-    id: number,
-    update: Partial<Omit<VectorTextNode, "id" | "visible" | "opacity">>,
-  ): Readonly<VectorTextNode>;
-  moveVectorTextNode(id: number, delta: -1 | 1): Promise<boolean>;
-  deleteVectorTextNode(id: number): Promise<Readonly<VectorTextNode>>;
-  rasterizeVectorTextNode(
-    id: number,
-    draws: readonly VectorTextGpuDraw[],
-  ): Promise<VectorRasterizationResult>;
-  addVectorSvgNode(
-    seed: VectorSvgNodeSeed,
-    name?: string,
-  ): Promise<Readonly<VectorSvgNode>>;
-  updateVectorSvgNode(
-    id: number,
-    update: Partial<Omit<VectorSvgNode, "id" | "document" | "visible" | "opacity">>,
-  ): Readonly<VectorSvgNode>;
-  moveVectorSvgNode(id: number, delta: -1 | 1): Promise<boolean>;
-  deleteVectorSvgNode(id: number): Promise<Readonly<VectorSvgNode>>;
-  rasterizeVectorSvgNode(
-    id: number,
-    draws: readonly VectorTextGpuDraw[],
-  ): Promise<VectorRasterizationResult>;
-  mergeMixedSceneItems(request: MergeMixedSceneItemsRequest): Promise<LayerMergeResult>;
-  importRasterImageFile(file: File): Promise<{
-    layerId: number;
-    name: string;
-    sourceName: string;
-    mimeType: string;
-    sourceWidth: number;
-    sourceHeight: number;
-    sourceBytes: number;
-    tileCount: number;
-  }>;
-  updateRasterImageNode(
-    id: number,
-    update: Partial<Omit<RasterImageNode, "id" | "kind" | "document" | "visible" | "opacity">>,
-  ): Readonly<RasterImageNode>;
-  moveRasterImageNode(id: number, delta: -1 | 1): Promise<boolean>;
-  deleteRasterImageNode(id: number): Promise<Readonly<RasterImageNode>>;
-  beginRasterLayerTransform(): Promise<RasterTransformSnapshot | null>;
-  updateRasterLayerTransform(
-    update: Partial<Pick<RasterTransformSnapshot, "x" | "y" | "scale" | "rotation">>,
-  ): RasterTransformSnapshot;
-  nudgeRasterLayerTransform(deltaX: number, deltaY: number): RasterTransformSnapshot;
-  commitRasterLayerTransform(): Promise<boolean>;
-  cancelRasterLayerTransform(): Promise<boolean>;
-  zoomBy(factor: number, clientX?: number, clientY?: number): void;
-  panByClientDelta(deltaClientX: number, deltaClientY: number): void;
-  beginViewRotationGesture(): void;
-  rotateViewBy(deltaRadians: number, clientX?: number, clientY?: number): void;
-  endViewRotationGesture(): void;
-}
-
-export interface MixedVectorTextDiagnostics {
-  sceneStrategy: typeof MIXED_SCENE_STACK_STRATEGY;
-  livePresentationStrategy: typeof VECTOR_TEXT_PRESENTATION_STRATEGY;
-  outlineStrategy: typeof VECTOR_TEXT_OUTLINE_STRATEGY;
-  blockShadowStrategy: typeof VECTOR_TEXT_BLOCK_SHADOW_STRATEGY;
-  singleShadowStrategy: typeof VECTOR_TEXT_SINGLE_SHADOW_STRATEGY;
-  innerShadowStrategy: typeof VECTOR_TEXT_INNER_SHADOW_STRATEGY;
-  singleShadowBlurStrategy: typeof VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY;
-  adaptiveZoomStrategy: typeof VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY;
-  transformStrategy: typeof VECTOR_TEXT_TRANSFORM_STRATEGY;
-  adaptiveZoomEnabled: boolean;
-  zoomRenderMode: "precise" | "fast";
-  zoomFastPresentationMode: VectorTextFastPresentationMode;
-  zoomFastModeArmed: boolean;
-  zoomClippedRefreshPolicy: VectorTextClippedRefreshPolicy;
-  zoomSlowFrameStreak: number;
-  zoomFastActivationCount: number;
-  zoomExactRecoveryCount: number;
-  lastViewRenderEndToEndMs: number;
-  lastAdaptiveZoomTriggerRenderMs: number;
-  lastAdaptiveZoomTriggerEndToEndMs: number;
-  zoomViewRevision: number;
-  zoomViewEventCount: number;
-  zoomSafeReprojectionCount: number;
-  zoomFallbackReprojectionCount: number;
-  zoomClippedReprojectionCount: number;
-  zoomUnsafeExactRefreshCount: number;
-  zoomUnsafeExactRefreshCompletedCount: number;
-  zoomUnsafeExactCoalescedCount: number;
-  zoomUnsafeExactRefreshInFlight: boolean;
-  zoomUnsafeExactRefreshRequestPending: boolean;
-  zoomFastPresentationSubmissionCount: number;
-  zoomFastPresentationCoalescedRequestCount: number;
-  fallbackPresentationReady: boolean;
-  fallbackPresentationRebuildCount: number;
-  selectedKey: MixedSceneItem["key"] | null;
-  textNodeCount: number;
-  renderCount: number;
-  lastRenderMs: number;
-  renderP95Ms: number;
-  liveGpuMemoryMiB: number;
-  viewportTextureCount: number;
-  viewportCanvasLogicalMiB: number;
-  vectorFontLogicalMiB: number;
-  blockShadowPathLogicalMiB: number;
-  singleShadowBrowserLogicalMiB: number;
-  singleShadowCacheLogicalMiB: number;
-  singleShadowScratchLogicalMiB: number;
-  singleShadowGpuLogicalMiB: number;
-  singleShadowCacheEntries: number;
-  gpuGeometryStrategy: typeof VECTOR_TEXT_GPU_GEOMETRY_STRATEGY;
-  gpuRenderStrategy: typeof VECTOR_TEXT_SLUG_GPU_RENDER_STRATEGY;
-  effectWorkerPendingJobs: number;
-  effectWorkerFailedJobs: number;
-  effectWorkerLastError: string | null;
-  atomicEffectHoldCount: number;
-  atomicEffectPendingNodes: number;
-}
-
-interface Point {
-  x: number;
-  y: number;
-}
-
-type VectorDrawableNode = VectorTextNode | VectorSvgNode;
-type VectorSceneNode = VectorDrawableNode | RasterImageNode;
-interface RasterLayerTransformNode extends RasterTransformSnapshot {
-  kind: "raster-layer";
-  id: number;
-  name: string;
-}
-
-export type VectorTextClippedRefreshPolicy = "during-gesture" | "on-release";
-
-export interface MixedVectorTextControllerOptions {
-  root: ParentNode;
-  browser: Window;
-  clippedRefreshPolicy?: VectorTextClippedRefreshPolicy;
-  onEditorStateChange?: () => void;
-}
-type TransformSceneNode = VectorSceneNode | RasterLayerTransformNode;
-type VectorSceneNodeUpdate =
-  | Partial<Omit<VectorTextNode, "id" | "visible" | "opacity">>
-  | Partial<Omit<VectorSvgNode, "id" | "document" | "visible" | "opacity">>
-  | Partial<Omit<RasterImageNode, "id" | "kind" | "document" | "visible" | "opacity">>;
+export type {
+  MixedSceneControllerOptions,
+  MixedSceneDiagnostics,
+  MixedSceneHost,
+  VectorRasterHistoryGpuProbe,
+  VectorRasterHistoryGpuTestReport,
+  VectorRasterizationResult,
+  VectorTextClippedRefreshPolicy,
+} from "./mixed-scene-controller-contract";
 
 interface TextMetricsBox {
   left: number;
@@ -322,14 +162,13 @@ interface CachedTextGeometry {
   slug: VectorTextSlugData;
 }
 
-type TransformHandle = "north-west" | "north-east" | "south-east" | "south-west";
 type InteractionMode = "move" | "scale" | "rotate" | "pan" | "distort";
 
 interface ActiveInteraction {
   pointerId: number;
   mode: InteractionMode;
-  startClient: Point;
-  startLayer: Point;
+  startClient: ScenePoint;
+  startLayer: ScenePoint;
   startModel: TransformSceneNode;
   startDistance: number;
   startAngle: number;
@@ -345,9 +184,6 @@ interface TouchNavigationGesture {
 }
 
 const MEBIBYTE_BYTES = 1024 * 1024;
-const HANDLE_RADIUS_CSS_PX = 7;
-const HANDLE_HIT_RADIUS_CSS_PX = 13;
-const ROTATION_HANDLE_OFFSET_CSS_PX = 38;
 const MINIMUM_SCALE = 0.05;
 const MAXIMUM_SCALE = 20;
 const FRAME_SAMPLE_LIMIT = 180;
@@ -369,10 +205,6 @@ function requiredElement<ElementType extends HTMLElement>(
     throw new Error(`Elemento #${id} mancante per la scena testo/raster.`);
   }
   return found as ElementType;
-}
-
-function isTextNode(node: Readonly<TransformSceneNode>): node is Readonly<VectorTextNode> {
-  return node.kind === "text";
 }
 
 function vectorRasterFormatLabel(format: LayerFormat): string {
@@ -397,54 +229,6 @@ function countNonZeroRgba16fAlpha(pixels: Uint8Array): number {
   return count;
 }
 
-function isSvgNode(node: Readonly<TransformSceneNode>): node is Readonly<VectorSvgNode> {
-  return node.kind === "svg";
-}
-
-function isImageNode(node: Readonly<TransformSceneNode>): node is Readonly<RasterImageNode> {
-  return node.kind === "image";
-}
-
-function isRasterLayerTransformNode(
-  node: Readonly<TransformSceneNode>,
-): node is Readonly<RasterLayerTransformNode> {
-  return node.kind === "raster-layer";
-}
-
-function vectorNodeKey(
-  node: Readonly<VectorSceneNode>,
-): `text:${number}` | `svg:${number}` | `image:${number}` {
-  return node.kind === "text"
-    ? `text:${node.id}`
-    : node.kind === "svg"
-      ? `svg:${node.id}`
-      : `image:${node.id}`;
-}
-
-function copyNode(node: Readonly<VectorSceneNode>): VectorSceneNode {
-  return isTextNode(node)
-    ? cloneVectorTextNode(node)
-    : isSvgNode(node)
-      ? cloneVectorSvgNode(node)
-      : { ...node, document: { ...node.document } };
-}
-
-function transformNodeKey(node: Readonly<TransformSceneNode>): MixedSceneSnapshot["selectedKey"] {
-  return isRasterLayerTransformNode(node)
-    ? `raster:${node.layerId}`
-    : vectorNodeKey(node);
-}
-
-function copyTransformNode(node: Readonly<TransformSceneNode>): TransformSceneNode {
-  return isRasterLayerTransformNode(node)
-    ? {
-      ...node,
-      sourceBounds: { ...node.sourceBounds },
-      resultBounds: node.resultBounds ? { ...node.resultBounds } : null,
-    }
-    : copyNode(node);
-}
-
 function percentile(values: readonly number[], ratio: number): number {
   if (values.length === 0) {
     return 0;
@@ -453,93 +237,8 @@ function percentile(values: readonly number[], ratio: number): number {
   return ordered[Math.min(ordered.length - 1, Math.floor((ordered.length - 1) * ratio))];
 }
 
-function srgbChannelToLinear(value: number): number {
-  const normalized = Math.min(1, Math.max(0, value));
-  return normalized <= 0.04045
-    ? normalized / 12.92
-    : ((normalized + 0.055) / 1.055) ** 2.4;
-}
-
-function gpuLinearColor(color: string): readonly [number, number, number] {
-  const normalized = /^#[0-9a-f]{6}$/i.test(color) ? color.slice(1) : "000000";
-  return [
-    srgbChannelToLinear(Number.parseInt(normalized.slice(0, 2), 16) / 255),
-    srgbChannelToLinear(Number.parseInt(normalized.slice(2, 4), 16) / 255),
-    srgbChannelToLinear(Number.parseInt(normalized.slice(4, 6), 16) / 255),
-  ];
-}
-
-function gpuSrgbColor(color: string): readonly [number, number, number] {
-  const normalized = /^#[0-9a-f]{6}$/i.test(color) ? color.slice(1) : "000000";
-  return [
-    Number.parseInt(normalized.slice(0, 2), 16) / 255,
-    Number.parseInt(normalized.slice(2, 4), 16) / 255,
-    Number.parseInt(normalized.slice(4, 6), 16) / 255,
-  ];
-}
-
-function svgGradientGpuData(gradient: VectorSvgGradient): VectorTextGpuGradient {
-  return {
-    kind: gradient.kind,
-    spread: gradient.spread,
-    transform: [...gradient.transform] as [number, number, number, number, number, number],
-    geometry: [...gradient.geometry] as [number, number, number, number],
-    focal: [...gradient.focal] as [number, number],
-    stops: gradient.stops.map((stop) => ({
-      offset: stop.offset,
-      color: gpuSrgbColor(stop.color),
-      opacity: stop.opacity,
-    })),
-  };
-}
-
-function sameGpuLinearColor(first: string, second: string): boolean {
-  const firstLinear = gpuLinearColor(first);
-  const secondLinear = gpuLinearColor(second);
-  return firstLinear[0] === secondLinear[0]
-    && firstLinear[1] === secondLinear[1]
-    && firstLinear[2] === secondLinear[2];
-}
-
-function pointDistance(first: Point, second: Point): number {
-  return Math.hypot(first.x - second.x, first.y - second.y);
-}
-
-function pointInConvexPolygon(point: Point, polygon: readonly Point[]): boolean {
-  let sign = 0;
-  for (let index = 0; index < polygon.length; index += 1) {
-    const current = polygon[index];
-    const next = polygon[(index + 1) % polygon.length];
-    const cross = (next.x - current.x) * (point.y - current.y)
-      - (next.y - current.y) * (point.x - current.x);
-    if (Math.abs(cross) < 1e-6) {
-      continue;
-    }
-    const nextSign = Math.sign(cross);
-    if (sign !== 0 && nextSign !== sign) {
-      return false;
-    }
-    sign = nextSign;
-  }
-  return true;
-}
-
-function pointToSegmentDistance(point: Point, start: Point, end: Point): number {
-  const deltaX = end.x - start.x;
-  const deltaY = end.y - start.y;
-  const squaredLength = deltaX * deltaX + deltaY * deltaY;
-  if (squaredLength <= 1e-12) return pointDistance(point, start);
-  const parameter = Math.min(1, Math.max(0,
-    ((point.x - start.x) * deltaX + (point.y - start.y) * deltaY) / squaredLength,
-  ));
-  return pointDistance(point, {
-    x: start.x + deltaX * parameter,
-    y: start.y + deltaY * parameter,
-  });
-}
-
-export class MixedVectorTextController {
-  private readonly host: MixedVectorTextHost;
+export class MixedSceneController {
+  private readonly host: MixedSceneHost;
   private readonly browser: Window;
   private readonly presentationCanvas: HTMLCanvasElement;
   private readonly interactionCanvas: HTMLCanvasElement;
@@ -626,13 +325,13 @@ export class MixedVectorTextController {
   private rasterTransformPreparing = false;
   private rasterTransformRecoveryOnly = false;
   private transformCommitBusy = false;
-  private readonly touchContacts = new Map<number, Point>();
+  private readonly touchContacts = new Map<number, ScenePoint>();
   private touchNavigationGesture: TouchNavigationGesture | null = null;
   private touchNavigationActive = false;
 
   constructor(
-    host: MixedVectorTextHost,
-    options: MixedVectorTextControllerOptions,
+    host: MixedSceneHost,
+    options: MixedSceneControllerOptions,
   ) {
     this.host = host;
     this.browser = options.browser;
@@ -946,7 +645,7 @@ export class MixedVectorTextController {
         baseline: 0,
       };
       if (this.transformToolActive) this.renderInteractionOverlay(view, node);
-      else this.clearInteractionOverlay(view);
+      else clearSceneInteractionOverlay(this.interactionContext, view);
       this.updateStatus(view, node);
     } else {
       this.scheduleRender();
@@ -1192,7 +891,7 @@ export class MixedVectorTextController {
         }
         if (this.transformToolActive) this.renderInteractionOverlay(view, selectedNode);
       } else {
-        this.clearInteractionOverlay(view);
+        clearSceneInteractionOverlay(this.interactionContext, view);
       }
     });
   }
@@ -1275,7 +974,7 @@ export class MixedVectorTextController {
    * Destructive dev-only WebGPU regression for a fresh document. It exercises
    * both semantic source kinds through their real mesh compiler, tiled RGBA16F
    * History seed, Undo removal and Redo hydration. Call from the dev console as
-   * `await __vectorTextPrototype.runVectorRasterHistoryGpuTest()`.
+   * `await __mixedSceneController.runVectorRasterHistoryGpuTest()`.
    */
   async runVectorRasterHistoryGpuTest(): Promise<VectorRasterHistoryGpuTestReport> {
     if (this.sceneOperationBusy || this.transformSessionOpen) {
@@ -1642,7 +1341,7 @@ export class MixedVectorTextController {
     }
   }
 
-  getDiagnostics(): MixedVectorTextDiagnostics {
+  getDiagnostics(): MixedSceneDiagnostics {
     const view = this.host.getVectorTextViewState();
     const effectDiagnostics = this.effectCompiler.diagnostics();
     const backpressure = this.host.getVectorTextFastPresentationBackpressureStats();
@@ -3476,10 +3175,10 @@ export class MixedVectorTextController {
       if (this.transformToolActive) {
         this.renderInteractionOverlay(view, selectedTransformNode);
       } else {
-        this.clearInteractionOverlay(view);
+        clearSceneInteractionOverlay(this.interactionContext, view);
       }
     } else {
-      this.clearInteractionOverlay(view);
+      clearSceneInteractionOverlay(this.interactionContext, view);
     }
 
     const finishedAt = this.browser.performance.now();
@@ -3591,300 +3290,23 @@ export class MixedVectorTextController {
       + `${vectorFontLogicalMiB.toFixed(2)} MiB · ${transformLabel} · ${outline} · `
       + `${blockShadow} · ${singleShadow} · ${innerShadow} · ${effectLabel} · ${timing}.`;
   }
-  private layerToCanvas(point: Point, view: VectorTextViewState): Point {
-    const deltaX = point.x - view.centerX;
-    const deltaY = point.y - view.centerY;
-    return {
-      x: view.canvasWidth * 0.5
-        + (view.rotationCos * deltaX - view.rotationSin * deltaY) * view.zoom,
-      y: view.canvasHeight * 0.5
-        + (view.rotationSin * deltaX + view.rotationCos * deltaY) * view.zoom,
-    };
-  }
-
-  private localToLayer(point: Point, node: Readonly<TransformSceneNode>): Point {
-    const scaledX = point.x * node.scale;
-    const scaledY = point.y * node.scale;
-    const cosine = Math.cos(node.rotation);
-    const sine = Math.sin(node.rotation);
-    return {
-      x: node.x + cosine * scaledX - sine * scaledY,
-      y: node.y + sine * scaledX + cosine * scaledY,
-    };
-  }
-
-  private layerToLocal(point: Point, node: Readonly<TransformSceneNode>): Point {
-    const deltaX = point.x - node.x;
-    const deltaY = point.y - node.y;
-    const cosine = Math.cos(node.rotation);
-    const sine = Math.sin(node.rotation);
-    const safeScale = Math.max(Number.EPSILON, Math.abs(node.scale));
-    return {
-      x: (cosine * deltaX + sine * deltaY) / safeScale,
-      y: (-sine * deltaX + cosine * deltaY) / safeScale,
-    };
-  }
-
-  private textCorners(
-    view: VectorTextViewState,
-    node: Readonly<TransformSceneNode>,
-  ): readonly Point[] {
-    const localCorners: readonly Point[] = [
-      { x: this.metrics.left, y: this.metrics.top },
-      { x: this.metrics.right, y: this.metrics.top },
-      { x: this.metrics.right, y: this.metrics.bottom },
-      { x: this.metrics.left, y: this.metrics.bottom },
-    ];
-    return localCorners.map(
-      (point) => this.layerToCanvas(this.localToLayer(point, node), view),
-    );
-  }
-
-  private rotationHandle(
-    corners: readonly Point[],
-    view: VectorTextViewState,
-    node: Readonly<TransformSceneNode>,
-  ): Point {
-    const topCenter = {
-      x: (corners[0].x + corners[1].x) * 0.5,
-      y: (corners[0].y + corners[1].y) * 0.5,
-    };
-    const center = this.layerToCanvas({ x: node.x, y: node.y }, view);
-    const directionX = topCenter.x - center.x;
-    const directionY = topCenter.y - center.y;
-    const length = Math.max(1, Math.hypot(directionX, directionY));
-    const backingPerCssPixel = view.canvasWidth / Math.max(1, view.cssWidth);
-    const offset = ROTATION_HANDLE_OFFSET_CSS_PX * backingPerCssPixel;
-    return {
-      x: topCenter.x + directionX / length * offset,
-      y: topCenter.y + directionY / length * offset,
-    };
-  }
-
-  private clearInteractionOverlay(view: VectorTextViewState): void {
-    const context = this.interactionContext;
-    context.save();
-    context.setTransform(1, 0, 0, 1, 0, 0);
-    context.clearRect(0, 0, view.canvasWidth, view.canvasHeight);
-    context.restore();
-  }
-
-  private renderTransformGuide(
-    context: CanvasRenderingContext2D,
-    view: VectorTextViewState,
-    node: Readonly<VectorTextNode>,
-  ): void {
-    const guide = this.geometryForNode(node).outline.guide;
-    if (!guide) {
-      return;
-    }
-    const backingPerCssPixel = view.canvasWidth / Math.max(1, view.cssWidth);
-    const lineWidth = Math.max(1, 1.25 * backingPerCssPixel);
-    const markerRadius = Math.max(2, 3 * backingPerCssPixel);
-    context.save();
-    context.strokeStyle = "rgba(103, 126, 255, 0.92)";
-    context.fillStyle = "#6f83ff";
-    context.lineWidth = lineWidth;
-    context.setLineDash([5 * backingPerCssPixel, 4 * backingPerCssPixel]);
-    if (guide.kind === "curve") {
-      const points = guide.points.map((point) =>
-        this.layerToCanvas(this.localToLayer(point, node), view));
-      context.beginPath();
-      context.moveTo(points[0].x, points[0].y);
-      for (let index = 1; index < points.length; index += 1) {
-        context.lineTo(points[index].x, points[index].y);
-      }
-      context.stroke();
-      context.setLineDash([]);
-      for (const index of [0, 16, 32, 48, 64]) {
-        const point = points[index];
-        context.beginPath();
-        context.arc(point.x, point.y, markerRadius, 0, Math.PI * 2);
-        context.fill();
-      }
-    } else {
-      const center = this.layerToCanvas(
-        this.localToLayer({ x: guide.centerX, y: guide.centerY }, node),
-        view,
-      );
-      const edge = this.layerToCanvas(
-        this.localToLayer({
-          x: guide.centerX + guide.radius,
-          y: guide.centerY,
-        }, node),
-        view,
-      );
-      const radius = pointDistance(center, edge);
-      context.beginPath();
-      context.arc(center.x, center.y, radius, 0, Math.PI * 2);
-      context.stroke();
-      context.setLineDash([]);
-      context.beginPath();
-      context.arc(center.x, center.y, markerRadius, 0, Math.PI * 2);
-      context.fill();
-    }
-    context.restore();
-  }
-
-  private distortCanvasPoints(
-    view: VectorTextViewState,
-    node: Readonly<VectorTextNode>,
-  ): readonly Point[] {
-    if (!node.distortPoints) {
-      return [];
-    }
-    return node.distortPoints.map((point) =>
-      this.layerToCanvas(this.localToLayer(point, node), view));
-  }
-
-  private renderDistortEditingOverlay(
-    context: CanvasRenderingContext2D,
-    view: VectorTextViewState,
-    node: Readonly<VectorTextNode>,
-  ): void {
-    const points = this.distortCanvasPoints(view, node);
-    if (points.length !== 10) {
-      return;
-    }
-    const backingPerCssPixel = view.canvasWidth / Math.max(1, view.cssWidth);
-    const lineWidth = Math.max(1, 1.25 * backingPerCssPixel);
-    const anchorRadius = HANDLE_RADIUS_CSS_PX * backingPerCssPixel;
-    const bezierRadius = Math.max(3, 5 * backingPerCssPixel);
-    context.save();
-    context.lineWidth = lineWidth;
-    context.setLineDash([]);
-
-    context.strokeStyle = "rgba(141, 154, 255, 0.7)";
-    context.beginPath();
-    context.moveTo(points[1].x, points[1].y);
-    context.lineTo(points[6].x, points[6].y);
-    context.moveTo(points[1].x, points[1].y);
-    context.lineTo(points[7].x, points[7].y);
-    context.moveTo(points[4].x, points[4].y);
-    context.lineTo(points[8].x, points[8].y);
-    context.moveTo(points[4].x, points[4].y);
-    context.lineTo(points[9].x, points[9].y);
-    context.stroke();
-
-    context.strokeStyle = "#8d9aff";
-    context.beginPath();
-    context.moveTo(points[0].x, points[0].y);
-    context.bezierCurveTo(
-      points[0].x,
-      points[0].y,
-      points[6].x,
-      points[6].y,
-      points[1].x,
-      points[1].y,
-    );
-    context.bezierCurveTo(
-      points[7].x,
-      points[7].y,
-      points[2].x,
-      points[2].y,
-      points[2].x,
-      points[2].y,
-    );
-    context.lineTo(points[3].x, points[3].y);
-    context.bezierCurveTo(
-      points[3].x,
-      points[3].y,
-      points[9].x,
-      points[9].y,
-      points[4].x,
-      points[4].y,
-    );
-    context.bezierCurveTo(
-      points[8].x,
-      points[8].y,
-      points[5].x,
-      points[5].y,
-      points[5].x,
-      points[5].y,
-    );
-    context.closePath();
-    context.stroke();
-
-    for (let index = 0; index < points.length; index += 1) {
-      const point = points[index];
-      const radius = index < 6 ? anchorRadius : bezierRadius;
-      context.fillStyle = index < 6 ? "#f7f8ff" : "#9aa6ff";
-      context.beginPath();
-      context.arc(point.x, point.y, radius, 0, Math.PI * 2);
-      context.fill();
-      context.stroke();
-    }
-    context.restore();
-  }
-
   private renderInteractionOverlay(
     view: VectorTextViewState,
     node: Readonly<TransformSceneNode>,
   ): void {
-    this.clearInteractionOverlay(view);
-    const context = this.interactionContext;
-    if (
-      isTextNode(node)
-      && node.transformType === "distort"
-      && node.distortPoints
-      && this.distortEditingNodeId === node.id
-    ) {
-      this.renderDistortEditingOverlay(context, view, node);
-      return;
-    }
-    const corners = this.textCorners(view, node);
-    const rotationHandle = this.rotationHandle(corners, view, node);
-    const topCenter = {
-      x: (corners[0].x + corners[1].x) * 0.5,
-      y: (corners[0].y + corners[1].y) * 0.5,
-    };
-    const backingPerCssPixel = view.canvasWidth / Math.max(1, view.cssWidth);
-    const lineWidth = Math.max(1, 1.25 * backingPerCssPixel);
-    const handleRadius = HANDLE_RADIUS_CSS_PX * backingPerCssPixel;
-
-    if (isTextNode(node)) this.renderTransformGuide(context, view, node);
-    context.save();
-    context.strokeStyle = "#8d9aff";
-    context.fillStyle = "#f7f8ff";
-    context.lineWidth = lineWidth;
-    context.setLineDash([]);
-    context.beginPath();
-    context.moveTo(corners[0].x, corners[0].y);
-    for (let index = 1; index < corners.length; index += 1) {
-      context.lineTo(corners[index].x, corners[index].y);
-    }
-    context.closePath();
-    context.stroke();
-
-    if (isRasterLayerTransformNode(node) && node.scope === "selection") {
-      context.restore();
-      return;
-    }
-
-    context.beginPath();
-    context.moveTo(topCenter.x, topCenter.y);
-    context.lineTo(rotationHandle.x, rotationHandle.y);
-    context.stroke();
-
-    for (const corner of corners) {
-      context.beginPath();
-      context.rect(
-        corner.x - handleRadius,
-        corner.y - handleRadius,
-        handleRadius * 2,
-        handleRadius * 2,
-      );
-      context.fill();
-      context.stroke();
-    }
-    context.beginPath();
-    context.arc(rotationHandle.x, rotationHandle.y, handleRadius, 0, Math.PI * 2);
-    context.fill();
-    context.stroke();
-    context.restore();
+    renderSceneInteractionOverlay({
+      context: this.interactionContext,
+      view,
+      node,
+      bounds: this.metrics,
+      distortEditingNodeId: this.distortEditingNodeId,
+      transformGuide: isTextNode(node)
+        ? this.geometryForNode(node).outline.guide
+        : null,
+    });
   }
 
-  private eventCanvasPoint(event: PointerEvent): Point {
+  private eventCanvasPoint(event: PointerEvent): ScenePoint {
     const rectangle = this.interactionCanvas.getBoundingClientRect();
     return {
       x: (event.clientX - rectangle.left)
@@ -3894,7 +3316,7 @@ export class MixedVectorTextController {
     };
   }
 
-  private eventLayerPoint(event: PointerEvent): Point {
+  private eventLayerPoint(event: PointerEvent): ScenePoint {
     return this.host.toLayerPoint({
       clientX: event.clientX,
       clientY: event.clientY,
@@ -3904,68 +3326,46 @@ export class MixedVectorTextController {
   }
 
   private hitHandle(
-    point: Point,
-    corners: readonly Point[],
+    point: ScenePoint,
+    corners: readonly ScenePoint[],
     view: VectorTextViewState,
     node: Readonly<TransformSceneNode>,
-  ): TransformHandle | "rotate" | null {
+  ): SceneTransformHandle | "rotate" | null {
     if (isRasterLayerTransformNode(node) && node.scope === "selection") return null;
     const backingPerCssPixel = view.canvasWidth / Math.max(1, view.cssWidth);
-    const hitRadius = HANDLE_HIT_RADIUS_CSS_PX * backingPerCssPixel;
-    const rotationHandle = this.rotationHandle(corners, view, node);
-    if (pointDistance(point, rotationHandle) <= hitRadius) {
-      return "rotate";
-    }
-    const handles: readonly TransformHandle[] = [
-      "north-west",
-      "north-east",
-      "south-east",
-      "south-west",
-    ];
-    const index = corners.findIndex((corner) => pointDistance(point, corner) <= hitRadius);
-    return index >= 0 ? handles[index] : null;
+    const hitRadius = SCENE_TRANSFORM_HIT_RADIUS_CSS_PX * backingPerCssPixel;
+    const rotationHandle = sceneOverlayRotationHandle(corners, node, view);
+    return hitSceneTransformHandle(point, corners, rotationHandle, hitRadius);
   }
 
   private hitsTransformBody(
-    point: Point,
-    corners: readonly Point[],
+    point: ScenePoint,
+    corners: readonly ScenePoint[],
     view: VectorTextViewState,
     node: Readonly<TransformSceneNode>,
   ): boolean {
-    if (pointInConvexPolygon(point, corners)) return true;
-    if (!isRasterLayerTransformNode(node) || node.scope !== "selection") return false;
+    const includeSelectionEdgeReach = isRasterLayerTransformNode(node)
+      && node.scope === "selection";
     const backingPerCssPixel = view.canvasWidth / Math.max(1, view.cssWidth);
-    const minimumTouchReach = 22 * backingPerCssPixel;
-    for (let index = 0; index < corners.length; index += 1) {
-      if (
-        pointToSegmentDistance(
-          point,
-          corners[index],
-          corners[(index + 1) % corners.length],
-        ) <= minimumTouchReach
-      ) return true;
-    }
-    return false;
+    return hitsSceneTransformBody(
+      point,
+      corners,
+      includeSelectionEdgeReach ? 22 * backingPerCssPixel : 0,
+    );
   }
 
   private hitDistortPoint(
-    point: Point,
+    point: ScenePoint,
     view: VectorTextViewState,
     node: Readonly<VectorTextNode>,
   ): number | null {
     const backingPerCssPixel = view.canvasWidth / Math.max(1, view.cssWidth);
-    const hitRadius = HANDLE_HIT_RADIUS_CSS_PX * backingPerCssPixel;
-    const controls = this.distortCanvasPoints(view, node);
-    let closestIndex: number | null = null;
-    let closestDistance = Number.POSITIVE_INFINITY;
-    for (let index = 0; index < controls.length; index += 1) {
-      const distance = pointDistance(point, controls[index]);
-      if (distance <= hitRadius && distance < closestDistance) {
-        closestIndex = index;
-        closestDistance = distance;
-      }
-    }
-    return closestIndex;
+    const hitRadius = SCENE_TRANSFORM_HIT_RADIUS_CSS_PX * backingPerCssPixel;
+    return closestSceneControlPoint(
+      point,
+      sceneDistortCanvasPoints(view, node),
+      hitRadius,
+    );
   }
 
   private currentTouchNavigationGesture(): TouchNavigationGesture | null {
@@ -4091,7 +3491,9 @@ export class MixedVectorTextController {
       && textNode.distortPoints !== null
       && this.distortEditingNodeId === textNode.id,
     );
-    const corners = isDistortEditing ? [] : this.textCorners(view, node);
+    const corners = isDistortEditing
+      ? []
+      : sceneOverlayCorners(this.metrics, node, view);
     const handle = isDistortEditing
       ? null
       : this.hitHandle(canvasPoint, corners, view, node);
@@ -4146,7 +3548,7 @@ export class MixedVectorTextController {
       startClient: { x: event.clientX, y: event.clientY },
       startLayer: layerPoint,
       startModel: copyTransformNode(node),
-      startDistance: Math.max(1e-6, pointDistance(layerPoint, center)),
+      startDistance: Math.max(1e-6, scenePointDistance(layerPoint, center)),
       startAngle: Math.atan2(layerPoint.y - center.y, layerPoint.x - center.x),
       distortPointIndex,
       openedTransformSession,
@@ -4156,7 +3558,7 @@ export class MixedVectorTextController {
   }
   private movedDistortPoints(
     interaction: ActiveInteraction,
-    layerPoint: Point,
+    layerPoint: ScenePoint,
     lockAxis: boolean,
   ): VectorTextDistortPoints | null {
     if (!isTextNode(interaction.startModel)) return null;
@@ -4165,11 +3567,11 @@ export class MixedVectorTextController {
     if (!startPoints || pointIndex === null) {
       return null;
     }
-    const startLocal = this.layerToLocal(
+    const startLocal = sceneLayerToLocal(
       interaction.startLayer,
       interaction.startModel,
     );
-    const currentLocal = this.layerToLocal(layerPoint, interaction.startModel);
+    const currentLocal = sceneLayerToLocal(layerPoint, interaction.startModel);
     let deltaX = currentLocal.x - startLocal.x;
     let deltaY = currentLocal.y - startLocal.y;
     if (lockAxis) {
@@ -4211,7 +3613,7 @@ export class MixedVectorTextController {
         const point = this.eventCanvasPoint(event);
         this.interactionCanvas.style.cursor = this.hitsTransformBody(
           point,
-          this.textCorners(view, node),
+          sceneOverlayCorners(this.metrics, node, view),
           view,
           node,
         ) ? "move" : "default";
@@ -4245,7 +3647,7 @@ export class MixedVectorTextController {
         y: interaction.startModel.y + layerPoint.y - interaction.startLayer.y,
       });
     } else if (interaction.mode === "scale") {
-      const distance = pointDistance(layerPoint, {
+      const distance = scenePointDistance(layerPoint, {
         x: interaction.startModel.x,
         y: interaction.startModel.y,
       });

@@ -105,12 +105,10 @@ export async function runBenchmark(engine: BrushEngine, baseStampCount: number):
     `Benchmark Paint · ${stamps.length} stamp`,
   );
   await engine.device.queue.onSubmittedWorkDone();
-  const historyActionId = engine.nextHistoryActionId++;
+  const historyActionId = engine.history.reserveActionId();
   for (const stamp of stamps) {
     stamp.historyActionId = historyActionId;
   }
-  engine.historyActions.push({ id: historyActionId, kind: "stroke", layerId: engine.layerStack.active.id });
-  engine.historyCursor = engine.historyActions.length;
   engine.recordHistoryBatch(stamps, benchmarkSettings, timing, true, benchmarkHistorySlice);
 
   engine.totalBaseStamps += stamps.length;

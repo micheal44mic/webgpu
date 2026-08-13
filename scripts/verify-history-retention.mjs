@@ -1581,12 +1581,12 @@ console.log("History rapid-input queue and retention-floor feedback verified.");
   );
   assert(
     move.indexOf("await engine.historyLocalStorage.prepareHistoryStep(delta);")
-      < move.indexOf("engine.historyCursor = nextCursor;"),
+      < move.indexOf("engine.history.setCursor(nextCursor);"),
     "target e rollback devono essere residenti prima che il cursore cambi",
   );
   assert(move.includes("cancelHistoryMaintenance(engine);"));
   assert(coordinator.includes("planRasterHistoryReplay({"));
-  assert(coordinator.includes("periodicCheckpointChainForReplay("));
+  assert(coordinator.includes("this.host.periodicCheckpointChain("));
   assert(replayPlanner.includes("selectLayerReplayAfterCheckpoint("));
   assert(coordinator.includes("addRasterReplayRequirements("));
   assert(coordinator.includes("[previousCursor, nextCursor]"));
@@ -1600,7 +1600,7 @@ console.log("History rapid-input queue and retention-floor feedback verified.");
     "Undo deve attendere lo spill e ricalcolare poi le dipendenze residenti",
   );
   assert(
-    coordinator.includes("periodicHistoryCheckpoints(this.engine)")
+    coordinator.includes("this.host.periodicCheckpoints()")
       && coordinator.includes("prepareRasterReplayAtCursor")
       && maintenance.includes("historyColdSeedResidentBytes(checkpoint.seed)")
       && maintenance.includes("rebaseRequiredForReplayBudget")
@@ -1616,7 +1616,7 @@ console.log("History rapid-input queue and retention-floor feedback verified.");
       < fill.indexOf("renderer.encodeLiveCommit("),
     "il Fill deve preidratare il piano di rollback prima di mutare i pixel",
   );
-  assert(coordinator.includes("this.engine.selectionHistoryClipBindGroups.clear();"));
+  assert(coordinator.includes("this.host.store.selectionClipBindGroups.clear();"));
   assert(coordinator.includes("Azione History troppo grande per il budget locale"));
   assert(coordinator.includes("diskBudgetBlockedActionIds"));
   assert(coordinator.includes('if (result === "budget-skip") continue;'));

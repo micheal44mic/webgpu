@@ -1,4 +1,4 @@
-import type { Shadow3dPathData } from "./vector-shadow-3d.js";
+import type { Shadow3dPathData } from "./vector-shadow-3d.ts";
 
 export interface VectorTextPointD {
   readonly x: number;

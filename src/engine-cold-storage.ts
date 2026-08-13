@@ -16,7 +16,7 @@ import {
   markLayerStorageRect,
 } from "./layer-storage-study";
 import type { BrushEngine } from "./brush-engine";
-import type { LayerFormat } from "./engine-types";
+import type { LayerColdStorageFaultPoint, LayerFormat } from "./engine-types";
 import { combineCompressionHashes, hashBytes } from "./engine-math";
 import {
   LAYER_COLD_COMPRESSION_MINIMUM_DISTANCE,
@@ -759,7 +759,12 @@ export interface IncrementalColdStorageCaptureHooks {
  * submission function above, so its established transaction is unchanged.
  */
 export async function createLayerColdStorageCandidateIncrementally(
-  engine: BrushEngine,
+  engine: {
+    readonly device: GPUDevice;
+    readonly layerFormat: LayerFormat;
+    waitForGpuCapped(label: string, timeoutMs?: number): Promise<void>;
+    maybeInjectLayerColdStorageFault(point: LayerColdStorageFaultPoint): void;
+  },
   record: LayerRecord,
   hot: LayerTextureResources,
   mask: Uint32Array,

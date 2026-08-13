@@ -1,7 +1,7 @@
 import type { BrushEngine } from "./brush-engine";
 import type { BrushEngineOptions, BrushSettings } from "./engine-types";
 import type { EngineStats } from "./engine-stats";
-import type { MixedVectorTextController } from "./mixed-vector-text-controller";
+import type { MixedSceneController } from "./mixed-scene-controller";
 import type { PointerSample } from "./engine-types";
 
 /**
@@ -14,7 +14,7 @@ import type { PointerSample } from "./engine-types";
 export interface EditorExtensionHost {
   readonly engine: BrushEngine;
   readonly canvas: HTMLCanvasElement;
-  ensureVectorTextController(): Promise<MixedVectorTextController>;
+  ensureMixedSceneController(): Promise<MixedSceneController>;
   applyBrushSettings(settings: BrushSettings): void;
   collectInputDiagnostics(): Readonly<Record<string, unknown>>;
   refreshControls(): void;
@@ -40,6 +40,7 @@ export interface EditorExtension {
 export interface EditorExtensionBootstrap {
   readonly engineOptions?: Partial<BrushEngineOptions>;
   readonly vectorTextClippedRefreshPolicy?: "during-gesture" | "on-release";
+  readonly restorePersistedBrushOnStartup?: boolean;
   readonly create: (host: EditorExtensionHost) => EditorExtension;
 }
 

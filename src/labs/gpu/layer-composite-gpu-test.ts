@@ -4,6 +4,7 @@ import type { EngineGpuMemoryStats } from "../../engine-stats";
 import { LAYER_BAKE_STRATEGY, LAYER_COMPOSITE_STRATEGY } from "../../engine-strategies";
 import type { LayerSwitchResult } from "../../engine-types";
 import type { RasterStrokeStyle } from "../../stroke-core";
+import { decodeFloat16 } from "../../float16";
 
 interface PixelRect {
   x: number;
@@ -86,7 +87,10 @@ export interface LayerCompositeGpuTestReport {
   };
   zoom: {
     selectedMipLevel: number;
-    aboveValidThroughLevel: number;
+    displayPyramidContent: BrushEngine["paintDisplayPyramidContent"];
+    displayPyramidValidThroughLevel: number;
+    mergedAboveValidBeforeExplicitRead: number;
+    mergedAboveValidAfterExplicitRead: number;
     actualMip2: Rgba;
     expectedMip2: Rgba;
     maxDelta: number;
@@ -148,9 +152,28 @@ function linearToSrgb(value: number): number {
     : 1.055 * Math.max(value, 0) ** (1 / 2.4) - 0.055;
 }
 
-function rgbaAt(pixels: Uint8Array, offsetPixels: number): Rgba {
+function rgba16FloatAt(pixels: Uint8Array, offsetPixels: number): Rgba {
+  const offset = offsetPixels * 8;
+  const channel = (channelOffset: number): number => quantizeUnorm(decodeFloat16(
+    pixels[offset + channelOffset] | (pixels[offset + channelOffset + 1] << 8),
+  ));
+  return [channel(0), channel(2), channel(4), channel(6)];
+}
+
+function rgba8At(pixels: Uint8Array, offsetPixels: number): Rgba {
   const offset = offsetPixels * 4;
   return [pixels[offset], pixels[offset + 1], pixels[offset + 2], pixels[offset + 3]];
+}
+
+function rgba16FloatToRgba8(pixels: Uint8Array): Uint8Array {
+  if (pixels.byteLength % 8 !== 0) {
+    throw new Error(`Readback RGBA16F incompleto: ${pixels.byteLength} byte.`);
+  }
+  const result = new Uint8Array(pixels.byteLength / 2);
+  for (let pixel = 0; pixel < pixels.byteLength / 8; pixel += 1) {
+    result.set(rgba16FloatAt(pixels, pixel), pixel * 4);
+  }
+  return result;
 }
 
 function unit(bytes: Rgba): [number, number, number, number] {
@@ -372,6 +395,13 @@ async function drawLine(
   await engine.waitForIdle();
 }
 
+async function waitForRenderedFrame(engine: BrushEngine): Promise<void> {
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
+  await engine.waitForIdle();
+}
+
 async function disableActiveEffects(engine: BrushEngine): Promise<void> {
   await engine.setRasterStrokeStyle({ ...engine.getRasterStrokeStyle(), enabled: false });
   await engine.setRasterBevelStyle({ ...engine.getRasterBevelStyle(), enabled: false });
@@ -387,6 +417,11 @@ export async function runLayerCompositeGpuTest(
   if (initial.layerCount !== 2 || initial.activeLayerIndex !== 1) {
     throw new Error("Il test compositing richiede due livelli e B attivo.");
   }
+  if (initial.layerFormat !== "rgba16float") {
+    throw new Error("Il test compositing richiede livelli RGBA16F.");
+  }
+  const fullLayerMiB = engine.layerSize * engine.layerSize * 8 / (1024 * 1024);
+  const fullMipTailMiB = fullLayerMiB / 3;
 
   const y = 1024;
   const coordinates: Record<SampleKey, number> = {
@@ -401,6 +436,18 @@ export async function runLayerCompositeGpuTest(
     width: coordinates.checker - coordinates.belowOnly + 1,
     height: 1,
   };
+  const opaqueRect: PixelRect = {
+    x: coordinates.belowOnly,
+    y,
+    width: coordinates.overlap - coordinates.belowOnly + 1,
+    height: 1,
+  };
+  const aboveAuditRect: PixelRect = {
+    x: coordinates.overlap,
+    y,
+    width: coordinates.aboveOnly - coordinates.overlap + 1,
+    height: 1,
+  };
   let timeMs = startingTimeMs;
 
   await engine.setActiveLayer(0);
@@ -409,8 +456,8 @@ export async function runLayerCompositeGpuTest(
   await drawLine(engine, coordinates.overlap - 24, y, "#ef3636", timeMs += 100);
 
   await engine.setActiveLayer(1);
-  const opaqueRawBelow = await engine.readLayerPixels(stripRect, 0);
-  const opaqueMergedBelow = await engine.readMergedLayerPixels("below", stripRect);
+  const opaqueRawBelow = await engine.readLayerPixels(opaqueRect, 0);
+  const opaqueMergedBelow = await engine.readMergedLayerPixels("below", opaqueRect);
   const opaqueCopy = {
     comparedBytes: opaqueRawBelow.byteLength,
     differingBytes: countDifferingBytes(opaqueRawBelow, opaqueMergedBelow),
@@ -431,7 +478,7 @@ export async function runLayerCompositeGpuTest(
     y,
     1,
   );
-  await engine.waitForIdle();
+  await waitForRenderedFrame(engine);
 
   const rawStrips = await Promise.all([0, 1, 2].map((index) =>
     engine.readLayerPixels(stripRect, index)
@@ -439,9 +486,9 @@ export async function runLayerCompositeGpuTest(
   const rawSamples = Object.fromEntries(SAMPLE_KEYS.map((key) => {
     const offset = coordinates[key] - stripRect.x;
     return [key, {
-      layerA: rgbaAt(rawStrips[0], offset),
-      layerB: rgbaAt(rawStrips[1], offset),
-      layerC: rgbaAt(rawStrips[2], offset),
+      layerA: rgba16FloatAt(rawStrips[0], offset),
+      layerB: rgba16FloatAt(rawStrips[1], offset),
+      layerC: rgba16FloatAt(rawStrips[2], offset),
     }];
   })) as Record<SampleKey, { layerA: Rgba; layerB: Rgba; layerC: Rgba }>;
 
@@ -460,19 +507,38 @@ export async function runLayerCompositeGpuTest(
     }];
   })) as LayerCompositeGpuTestReport["samples"];
 
-  const mergedBelowPixels = await engine.readMergedLayerPixels("below", stripRect);
-  const mergedAbovePixels = await engine.readMergedLayerPixels("above", stripRect);
+  const compositeStateForSamples = engine.getLayerCompositeState();
+  const readMergedSample = async (side: "below" | "above", key: SampleKey) => {
+    const bounds = compositeStateForSamples[side].bounds;
+    const x = coordinates[key];
+    if (
+      !bounds
+      || x < bounds.x
+      || x >= bounds.x + bounds.width
+      || y < bounds.y
+      || y >= bounds.y + bounds.height
+    ) {
+      return new Uint8Array(8);
+    }
+    return engine.readMergedLayerPixels(side, { x, y, width: 1, height: 1 });
+  };
+  const mergedBelowPixels = Object.fromEntries(await Promise.all(SAMPLE_KEYS.map(async (key) => [
+    key,
+    await readMergedSample("below", key),
+  ]))) as Record<SampleKey, Uint8Array>;
+  const mergedAbovePixels = Object.fromEntries(await Promise.all(SAMPLE_KEYS.map(async (key) => [
+    key,
+    await readMergedSample("above", key),
+  ]))) as Record<SampleKey, Uint8Array>;
   const mergedBelow = Object.fromEntries(SAMPLE_KEYS.map((key) => {
-    const offset = coordinates[key] - stripRect.x;
     return [key, compare(
-      rgbaAt(mergedBelowPixels, offset),
+      rgba16FloatAt(mergedBelowPixels[key], 0),
       scaleLayer(rawSamples[key].layerA, 0.6, true) as Rgba,
     )];
   })) as Record<SampleKey, PixelComparison>;
   const mergedAbove = Object.fromEntries(SAMPLE_KEYS.map((key) => {
-    const offset = coordinates[key] - stripRect.x;
     return [key, compare(
-      rgbaAt(mergedAbovePixels, offset),
+      rgba16FloatAt(mergedAbovePixels[key], 0),
       scaleLayer(rawSamples[key].layerC, 0.7, true) as Rgba,
     )];
   })) as Record<SampleKey, PixelComparison>;
@@ -486,7 +552,7 @@ export async function runLayerCompositeGpuTest(
   );
   const overlapCorrect = samples.overlap.presentation.expected;
 
-  const rollbackBefore = await engine.readMergedLayerPixels("above", stripRect);
+  const rollbackBefore = await engine.readMergedLayerPixels("above", aboveAuditRect);
   const rollbackMemoryBefore = engine.getStats().gpuMemory.layerCompositeMiB;
   engine.injectLayerCompositeFault("after-candidate-submit");
   let compositeRollbackThrew = false;
@@ -496,7 +562,7 @@ export async function runLayerCompositeGpuTest(
     compositeRollbackThrew = true;
   }
   await engine.waitForIdle();
-  const rollbackAfter = await engine.readMergedLayerPixels("above", stripRect);
+  const rollbackAfter = await engine.readMergedLayerPixels("above", aboveAuditRect);
   const rollbackStats = engine.getStats();
   const rollback = {
     threw: compositeRollbackThrew,
@@ -559,24 +625,27 @@ export async function runLayerCompositeGpuTest(
     width: 4,
     height: 4,
   });
-  const mip1Reference = downsample2x2(mergedBaseBlock, 4, 4);
+  const mip1Reference = downsample2x2(rgba16FloatToRgba8(mergedBaseBlock), 4, 4);
   const mip2Reference = downsample2x2(mip1Reference, 2, 2);
-  const expectedMip2 = rgbaAt(mip2Reference, 0);
+  const expectedMip2 = rgba8At(mip2Reference, 0);
 
   setLayerCompositeTestView(engine,
     (coordinates.belowOnly + coordinates.checker) * 0.5,
     y,
     0.25,
   );
-  await engine.waitForIdle();
+  await waitForRenderedFrame(engine);
   const compositeStateAtZoom = engine.getLayerCompositeState();
+  const displayPyramidContentAtZoom = engine.paintDisplayPyramidContent;
+  const displayPyramidValidThroughLevelAtZoom = engine.paintDisplayMipValidThroughLevel;
   const actualMip2Bytes = await engine.readMergedLayerPixels(
     "above",
-    { x: mipX, y: mipY, width: 1, height: 1 },
+    { x: mipX * 4, y: mipY * 4, width: 4, height: 4 },
     2,
-    false,
+    true,
   );
-  const mipComparison = compare(actualMip2Bytes, expectedMip2);
+  const compositeStateAfterExplicitMipRead = engine.getLayerCompositeState();
+  const mipComparison = compare(rgba16FloatAt(actualMip2Bytes, 0), expectedMip2);
   const presentationAtZoom = await engine.readPresentationPixelAtLayer(
     coordinates.aboveOnly,
     y,
@@ -589,7 +658,11 @@ export async function runLayerCompositeGpuTest(
   ] as Rgba;
   const zoom = {
     selectedMipLevel: compositeStateAtZoom.selectedMipLevel,
-    aboveValidThroughLevel: compositeStateAtZoom.above.validThroughLevel,
+    displayPyramidContent: displayPyramidContentAtZoom,
+    displayPyramidValidThroughLevel: displayPyramidValidThroughLevelAtZoom,
+    mergedAboveValidBeforeExplicitRead: compositeStateAtZoom.above.validThroughLevel,
+    mergedAboveValidAfterExplicitRead:
+      compositeStateAfterExplicitMipRead.above.validThroughLevel,
     actualMip2: mipComparison.actual,
     expectedMip2: mipComparison.expected,
     maxDelta: mipComparison.maxDelta,
@@ -603,7 +676,7 @@ export async function runLayerCompositeGpuTest(
     y,
     1,
   );
-  await engine.waitForIdle();
+  await waitForRenderedFrame(engine);
 
   await engine.setRasterStrokeStyle(strokeStyle);
   await engine.setActiveLayer(0);
@@ -689,23 +762,23 @@ export async function runLayerCompositeGpuTest(
     ...fiveLayerSwitchMemoryPeaks,
   ];
   const edgePeakResourcesAreBounded = edgeMemoryPeaks.every((entry) =>
-    entry.maxima.layerBaseMiB <= 64.01
-    && entry.maxima.layerHydrationMiB <= 64.01
-    && entry.maxima.layerMipChainMiB <= 42.68
-    && entry.maxima.layerBakeMiB <= 64.01
-    && entry.maxima.layerCompositeMiB <= 64.01
-    && entry.peakDeltaMiB <= 140.01
+    entry.maxima.layerBaseMiB <= fullLayerMiB + 0.01
+    && entry.maxima.layerHydrationMiB <= fullLayerMiB + 0.01
+    && entry.maxima.layerMipChainMiB <= fullMipTailMiB * 2 + 0.02
+    && entry.maxima.layerBakeMiB <= fullLayerMiB + 0.01
+    && entry.maxima.layerCompositeMiB <= fullLayerMiB + 0.01
+    && entry.peakDeltaMiB <= fullLayerMiB * 2.2
   );
   const middlePeakResourcesAreBounded =
     fiveLayerMiddleSwitchMemoryPeaks.every((entry) =>
-      entry.maxima.layerBaseMiB <= 64.01
-      && entry.maxima.layerHydrationMiB <= 64.01
-      && entry.maxima.layerMipChainMiB <= 64.01
-      && entry.maxima.layerBakeMiB <= 64.01
-      && entry.maxima.layerCompositeMiB <= 128.01
+      entry.maxima.layerBaseMiB <= fullLayerMiB + 0.01
+      && entry.maxima.layerHydrationMiB <= fullLayerMiB + 0.01
+      && entry.maxima.layerMipChainMiB <= fullLayerMiB + 0.01
+      && entry.maxima.layerBakeMiB <= fullLayerMiB + 0.01
+      && entry.maxima.layerCompositeMiB <= fullLayerMiB * 2 + 0.01
     )
-    && toMiddleMeasured.memory.peakDeltaMiB <= 220.01
-    && middleToTopMeasured.memory.peakDeltaMiB <= 140.01;
+    && toMiddleMeasured.memory.peakDeltaMiB <= fullLayerMiB * 3.5
+    && middleToTopMeasured.memory.peakDeltaMiB <= fullLayerMiB * 2.2;
   const checks = {
     boundedBakeSignatureMatches:
       LAYER_BAKE_STRATEGY
@@ -752,16 +825,21 @@ export async function runLayerCompositeGpuTest(
       invalidation.opacityDelta <= 1 && invalidation.changedFromBaseline,
     inactiveVisibilityInvalidatedMergedAbove: invalidation.hiddenDelta <= 1,
     zoomSelectedLogicalMip2: zoom.selectedMipLevel === 2,
-    zoomBuiltMergedAboveMip2: zoom.aboveValidThroughLevel >= 2,
+    zoomBuiltFinalRasterStackMip2:
+      zoom.displayPyramidContent === "final-raster-stack"
+      && zoom.displayPyramidValidThroughLevel >= 2,
+    zoomExplicitReadbackCompletedMergedAboveMip2:
+      zoom.mergedAboveValidBeforeExplicitRead === 0
+      && zoom.mergedAboveValidAfterExplicitRead >= 2,
     zoomMip2MatchesIndependentBoxFilter: zoom.maxDelta <= 1,
     zoomPresentationDidNotFallBackToChecker:
       zoom.presentationAtZoom.some((value, index) => value !== zoom.checkerAtZoom[index]),
     fiveLayersAllocated: fiveLayerMemory.layerCount === 5,
     fiveLayersKeepOnlyOneHotFullCanvas:
-      Math.abs(fiveLayerMemory.layerBaseMiB - 64) < 0.01,
+      Math.abs(fiveLayerMemory.layerBaseMiB - fullLayerMiB) < 0.01,
     fiveLayerColdStoreIsSparse:
       fiveLayerMemory.layerColdMiB > 0
-      && fiveLayerMemory.layerColdMiB < 4 * 64,
+      && fiveLayerMemory.layerColdMiB < 4 * fullLayerMiB,
     fiveLayerHydrationsWereReleased:
       fiveLayerMemory.layerHydrationMiB < 0.01,
     fiveLayerBakesWereReleased:

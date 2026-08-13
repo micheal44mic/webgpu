@@ -11,7 +11,10 @@ assert.doesNotMatch(
   main,
   /rasterColorOverlayChanging|rasterStrokeChanging|rasterOuterShadowChanging|rasterInnerShadowChanging|rasterBevelChanging/,
 );
-assert.match(source, /private readonly busyKinds = new Set<RasterStyleKind>\(\)/);
+assert.match(
+  source,
+  /private readonly busyKinds = new Set<NonDestructiveRasterEffectKind>\(\)/,
+);
 
 const styles = {
   colorOverlay: { enabled: true, color: "#ff0000", opacity: 1 },

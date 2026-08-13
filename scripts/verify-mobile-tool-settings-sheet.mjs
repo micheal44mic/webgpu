@@ -14,7 +14,11 @@ const controller = readFileSync(
   "utf8",
 );
 const mixedController = readFileSync(
-  new URL("src/mixed-vector-text-controller.ts", root),
+  new URL("src/mixed-scene-controller.ts", root),
+  "utf8",
+);
+const mixedControllerContract = readFileSync(
+  new URL("src/mixed-scene-controller-contract.ts", root),
   "utf8",
 );
 const canvasToolSettingsController = readFileSync(
@@ -390,7 +394,7 @@ assert.match(
 );
 assert.match(
   main,
-  /rasterizeSelectedSvg:\s*\(\) => vectorTextPrototype\?\.rasterizeSelectedSvgNode\(\)/,
+  /rasterizeSelectedSvg:\s*\(\) => mixedSceneController\?\.rasterizeSelectedSvgNode\(\)/,
   "mobile SVG rasterization must call the controller API directly",
 );
 assert.match(
@@ -424,8 +428,13 @@ assert.match(
   "focus must leave the panel before its ancestor becomes aria-hidden",
 );
 assert.match(
+  mixedControllerContract,
+  /readonly onEditorStateChange\?: \(\) => void/,
+  "the mixed-scene contract must expose explicit editor state changes",
+);
+assert.match(
   mixedController,
-  /onEditorStateChange\?: \(\) => void[\s\S]*?updateTransformCommitUi\(\)[\s\S]*?this\.onEditorStateChange\?\.\(\)/,
+  /private updateTransformCommitUi\(\): void[\s\S]*?this\.onEditorStateChange\?\.\(\)/,
   "Transform Apply and Cancel must publish explicit state changes",
 );
 assert.match(controller, /this\.options\.getTransformActionSnapshot\(\)/);

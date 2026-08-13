@@ -612,6 +612,10 @@ const layerMerge = (
     new URL("../src/engine-history-runtime.ts", import.meta.url),
     "utf8",
   );
+  const historyService = readFileSync(
+    new URL("../src/history-service.ts", import.meta.url),
+    "utf8",
+  );
   const transformRuntime = readFileSync(
     new URL("../src/engine-raster-transform-runtime.ts", import.meta.url),
     "utf8",
@@ -684,7 +688,7 @@ const layerMerge = (
   assert(
     beginStroke.indexOf("capturePaintSelectionHistoryMask(this, historyActionId)") >= 0
       && beginStroke.indexOf("capturePaintSelectionHistoryMask(this, historyActionId)")
-        < beginStroke.indexOf("this.nextHistoryActionId += 1"),
+        < beginStroke.indexOf("this.history.reserveActionId()"),
     "Paint deve congelare la selezione storica prima di avanzare o renderizzare l'azione.",
   );
   const rasterPropertyHandshake = brushEngine.slice(
@@ -859,31 +863,42 @@ const layerMerge = (
     "l'azione di creazione deve pubblicare journal e troncamento Redo atomicamente",
   );
 
-  // Ogni lista che `truncateRedoHistory` puo' allungare appartiene allo stesso
-  // commit. Dimenticarne una lascia un'azione contemporaneamente viva nel Redo
-  // e candidata alla distruzione idle.
+  // Ogni lista allungata dal piano di branch appartiene alla stessa transazione
+  // del nuovo proprietario History. Un fault deve ripristinare journal, batch,
+  // accounting e tutte le liste senza riusare push.
   const atomicCommit = historyRuntime.slice(
     historyRuntime.indexOf("export function commitHistoryActionAtomically("),
-    historyRuntime.indexOf("export function truncateRedoHistory("),
+    historyRuntime.indexOf("export function historyStepBlockedByLayer("),
   );
   assert.ok(atomicCommit.length > 0, "helper di commit history atomico non individuato");
-  for (const field of [
-    "discardedVectorRasterHistoryActions",
-    "discardedRasterImportHistoryActions",
-    "discardedRasterTransformHistoryActions",
-    "discardedLayerDeleteHistoryActions",
-    "discardedLayerMergeHistoryActions",
+  assert.match(
+    atomicCommit,
+    /engine\.history\.commitAction\(action, options\)/,
+    "il runtime deve delegare la pubblicazione all'unico proprietario History",
+  );
+  for (const [field, snapshot] of [
+    ["discardedVectorRasterActions", "discardedVectorLength"],
+    ["discardedRasterImportActions", "discardedImportLength"],
+    ["discardedRasterTransformActions", "discardedTransformLength"],
+    ["discardedLayerAddActions", "discardedLayerAddLength"],
+    ["discardedLayerDeleteActions", "discardedLayerDeleteLength"],
+    ["discardedLayerMergeActions", "discardedLayerMergeLength"],
   ]) {
     assert.match(
-      atomicCommit,
-      new RegExp(`${field}\\.length = discarded`),
+      historyService,
+      new RegExp(`this\\.${field}\\.length = snapshot\\.${snapshot}`),
       `${field} deve tornare alla propria lunghezza se la pubblicazione fallisce`,
     );
   }
   assert.match(
-    atomicCommit,
-    /engine\.historyActions\[cursorBefore \+ index\] = redoActions\[index\]/,
+    historyService,
+    /target\[prefixLength \+ index\] = tail\[index\]/,
     "il ramo Redo va ricostruito senza riusare il push eventualmente guastato",
+  );
+  assert.match(
+    historyService,
+    /const preparedBranchCut = snapshot\.redoActions\.length > 0[\s\S]*?this\.hooks\.prepareBranchCut\(\)/,
+    "il branch storage deve essere preparato prima di mutare il journal",
   );
   assert.match(
     brushEngine.slice(

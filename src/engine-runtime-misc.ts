@@ -46,7 +46,6 @@ import { nextPaintStampSeed } from "./paint-stamp-generation-core";
 import { clamp } from "./color";
 import { startThicknessFactor } from "./thickness-dynamics";
 import { flushClosingLightGlazeSessionBeforeNewStroke } from "./engine-glaze-runtime";
-import { truncateRedoHistory } from "./engine-history-runtime";
 import { normalizeViewRotation } from "./engine-math";
 import {
   canvasOffsetToLayerOffset,
@@ -93,7 +92,7 @@ export async function finishStaticResourceCreation(
   phase: StaticResourceCreationPhase = "all",
 ): Promise<void> {
   const createCore = phase !== "optional";
-  const createOptional = phase !== "core" && engine.vectorTextPrototypeEnabled;
+  const createOptional = phase !== "core" && engine.mixedSceneEnabled;
 
   if (createCore) {
   engine.brushShaderModule = engine.device.createShaderModule({ label: "Brush WGSL", code: brushShader });
@@ -1035,16 +1034,6 @@ export function commitThicknessStamp(engine: BrushEngine, stamp: Stamp, stroke: 
     return;
   }
 
-  if (!stroke.historyCommitted) {
-    truncateRedoHistory(engine);
-    engine.historyActions.push({ id: stroke.historyActionId, kind: "stroke", layerId: engine.layerStack.active.id });
-    engine.historyCursor = engine.historyActions.length;
-    stroke.historyCommitted = true;
-    if (engine.activeStrokeProfile) {
-      engine.activeStrokeProfile.historyCommittedActions += 1;
-    }
-  }
-
   engine.pendingStamps.push(stamp);
   if (engine.activeStrokeProfile) {
     engine.activeStrokeProfile.baseStamps += 1;
@@ -1097,15 +1086,6 @@ export function drainBlendPlanner(engine: BrushEngine, stroke: ActiveStroke): vo
   let batch = planner.buildNextBatch();
   while (batch) {
     if (!batch.empty) {
-      if (!stroke.historyCommitted) {
-        truncateRedoHistory(engine);
-        engine.historyActions.push({ id: stroke.historyActionId, kind: "stroke", layerId: engine.layerStack.active.id });
-        engine.historyCursor = engine.historyActions.length;
-        stroke.historyCommitted = true;
-        if (engine.activeStrokeProfile) {
-          engine.activeStrokeProfile.historyCommittedActions += 1;
-        }
-      }
       engine.pendingBlendBatches.push({
         actionId: stroke.historyActionId,
         settings,

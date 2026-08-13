@@ -18,8 +18,9 @@ const core = read("../src/layer-merge-core.ts");
 const runtime = read("../src/engine-layer-merge-runtime.ts");
 const history = read("../src/engine-history-types.ts");
 const historyRuntime = read("../src/engine-history-runtime.ts");
+const historyService = read("../src/history-service.ts");
 const engine = read("../src/brush-engine.ts");
-const controller = read("../src/mixed-vector-text-controller.ts");
+const controller = read("../src/mixed-scene-controller.ts");
 const layerStack = read("../src/layer-stack.ts");
 const coldStorage = read("../src/engine-cold-storage.ts");
 const layerStructure = read("../src/engine-layer-structure-runtime.ts");
@@ -47,9 +48,13 @@ assert.match(
   /bakesParentBlendModesFromTransparentBackdrop\s*=\s*!onlyOneCompleteRasterUnit\s*&& sceneIndex === 0/,
 );
 assert.match(historyRuntime, /await applyLayerMergeHistory\(engine, crossedAction, delta\)/);
-assert.match(historyRuntime, /engine\.discardedLayerMergeHistoryActions\.push\(action\)/);
+assert.match(
+  historyService,
+  /appendWithoutPush\(this\.discardedLayerMergeActions, action\)/,
+  "il proprietario History deve raccogliere i merge abbandonati dal Redo",
+);
 assert.match(historyRuntime, /destroyLayerMergeHistorySeeds\(action\)/);
-assert.match(engine, /discardedLayerMergeHistoryActions: LayerMergeHistoryAction\[\]/);
+assert.match(engine, /get discardedLayerMergeHistoryActions\(\): LayerMergeHistoryAction\[\]/);
 assert.match(engine, /async mergeMixedSceneItems\(/);
 assert.match(engine, /private reserveLayerSwitchMemory\(/);
 assert.match(engine, /const memoryReservation = this\.reserveLayerSwitchMemory\(index\)/);

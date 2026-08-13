@@ -1,11 +1,11 @@
 import type { BrushEngine } from "../../brush-engine";
 import type { EngineGpuMemoryStats } from "../../engine-stats";
 import type { LayerSwitchResult } from "../../engine-types";
-import type { MixedVectorTextController } from "../../mixed-vector-text-controller";
+import type { MixedSceneController } from "../../mixed-scene-controller";
 import {
   VECTOR_TEXT_NODE_MAXIMUM,
-  type VectorTextNode,
 } from "../../mixed-scene-stack";
+import type { VectorTextNode } from "../../scene-text-model";
 import { LAYER_STACK_MAXIMUM } from "../../layer-stack";
 import {
   LAYER_STORAGE_TILE_COUNT,
@@ -113,9 +113,9 @@ function percentile(values: readonly number[], ratio: number): number {
 }
 
 async function waitForVectorRender(
-  controller: MixedVectorTextController,
+  controller: MixedSceneController,
   previousRenderCount: number,
-): Promise<ReturnType<MixedVectorTextController["getDiagnostics"]>> {
+): Promise<ReturnType<MixedSceneController["getDiagnostics"]>> {
   for (let frame = 0; frame < 24; frame += 1) {
     await nextVisibleFrame();
     const diagnostics = controller.getDiagnostics();
@@ -126,7 +126,7 @@ async function waitForVectorRender(
 
 async function measureZoomProbe(
   engine: BrushEngine,
-  controller: MixedVectorTextController,
+  controller: MixedSceneController,
 ): Promise<MixedMemoryZoomProbe> {
   controller.setAdaptiveZoomEnabled(false);
   try {
@@ -165,7 +165,7 @@ async function measureZoomProbe(
 
 export async function runMixedMemoryBenchmarkStudy(
   engine: BrushEngine,
-  controller: MixedVectorTextController,
+  controller: MixedSceneController,
   targetMiB = MIXED_MEMORY_BENCHMARK_TARGET_MIB,
   onProgress?: (progress: MixedMemoryBenchmarkProgress) => void,
 ): Promise<MixedMemoryBenchmarkStudyReport> {

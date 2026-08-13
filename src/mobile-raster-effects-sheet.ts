@@ -9,13 +9,14 @@ import type {
   RasterOuterShadowStyle,
 } from "./shadow-core.ts";
 import {
-  nextMobileBottomSheetTapSnap,
+  mobileBottomSheetPeekHeight,
   resolveMobileBottomSheetDrag,
   type MobileBottomSheetSnap,
 } from "./mobile-bottom-sheet-gesture.ts";
-import type { EditorRasterEffectKind } from "./editor-tools-contract";
+import { MobileBottomSheetController } from "./mobile-bottom-sheet-controller.ts";
+import type { NonDestructiveRasterEffectKind } from "./raster-effects-contract.ts";
 
-export type MobileRasterEffectKind = Exclude<EditorRasterEffectKind, "stroke">;
+export type MobileRasterEffectKind = Exclude<NonDestructiveRasterEffectKind, "stroke">;
 
 export type MobileRasterEffectSnap = MobileBottomSheetSnap;
 
@@ -291,14 +292,8 @@ export interface MobileRasterEffectDragDecisionOptions {
   readonly minimizedOffsetPx: number;
 }
 
-const MOBILE_EFFECT_MIN_PEEK_PX = 160;
-const MOBILE_EFFECT_MAX_PEEK_PX = 240;
-const MOBILE_EFFECT_PEEK_VIEWPORT_RATIO = 0.26;
 export function mobileRasterEffectPeekHeight(viewportHeight: number): number {
-  return Math.min(
-    MOBILE_EFFECT_MAX_PEEK_PX,
-    Math.max(MOBILE_EFFECT_MIN_PEEK_PX, viewportHeight * MOBILE_EFFECT_PEEK_VIEWPORT_RATIO),
-  );
+  return mobileBottomSheetPeekHeight(viewportHeight);
 }
 
 export function resolveMobileRasterEffectDrag(
@@ -394,19 +389,8 @@ export class MobileRasterEffectsSheetController {
   readonly scroll: HTMLElement;
   readonly content: HTMLElement;
 
-  private openState = false;
+  private readonly sheetState: MobileBottomSheetController;
   private activeKind: MobileRasterEffectKind | null = null;
-  private snap: MobileRasterEffectSnap = "peek";
-  private offsetPx = 0;
-  private dragPointerId: number | null = null;
-  private dragStartY = 0;
-  private dragStartOffsetPx = 0;
-  private dragStartSnap: MobileRasterEffectSnap = "peek";
-  private dragLastY = 0;
-  private dragLastTime = 0;
-  private dragVelocityY = 0;
-  private dragMoved = false;
-  private opener: HTMLElement | null = null;
   private applyFrame: number | null = null;
   private draft: (
     {
@@ -447,9 +431,20 @@ export class MobileRasterEffectsSheetController {
     this.enabledInput = requiredElement<HTMLInputElement>(options.root, "mobileRasterEffectEnabled");
     this.scroll = requiredElement<HTMLElement>(options.root, "mobileRasterEffectScroll");
     this.content = requiredElement<HTMLElement>(options.root, "mobileRasterEffectContent");
-    this.sheet.setAttribute("aria-hidden", "true");
-    this.sheet.dataset.state = "closed";
-    this.sheet.setAttribute("inert", "");
+    this.sheetState = new MobileBottomSheetController({
+      browser: options.browser,
+      document: options.document,
+      sheet: this.sheet,
+      handle: this.handle,
+      header: this.header,
+      accessibilityRegions: [this.scroll, this.enabledControl],
+      peekHeight: mobileRasterEffectPeekHeight,
+      label: () => this.activeKind
+        ? MOBILE_RASTER_EFFECT_SPECS[this.activeKind].title
+        : "Effect",
+      onCloseRequest: () => this.close(false),
+      visibleHeightCssProperty: "--mobile-raster-effect-visible-height",
+    });
     this.bindEvents();
     this.options.document.addEventListener("visibilitychange", () => {
       if (this.options.document.visibilityState !== "visible") this.requestHistoryEditFinish();
@@ -459,7 +454,7 @@ export class MobileRasterEffectsSheetController {
   }
 
   get isOpen(): boolean {
-    return this.openState;
+    return this.sheetState.isOpen;
   }
 
   get effectKind(): MobileRasterEffectKind | null {
@@ -467,20 +462,13 @@ export class MobileRasterEffectsSheetController {
   }
 
   open(kind: MobileRasterEffectKind, opener: HTMLElement | null = null): void {
-    if (this.openState && this.activeKind === kind) return;
-    if (this.openState) this.close(false);
+    if (this.isOpen && this.activeKind === kind) return;
+    if (this.isOpen) this.close(false);
     this.flushDraft();
     this.options.beforeOpen();
 
     this.activeKind = kind;
-    this.opener = opener;
-    this.openState = true;
-    this.snap = "peek";
     this.sheet.dataset.effect = kind;
-    this.sheet.dataset.state = "open";
-    this.sheet.hidden = false;
-    this.sheet.setAttribute("aria-hidden", "false");
-    this.sheet.removeAttribute("inert");
     this.sheet.setAttribute("aria-label", `${MOBILE_RASTER_EFFECT_SPECS[kind].title} effect`);
     this.title.textContent = MOBILE_RASTER_EFFECT_SPECS[kind].title;
     this.renderControls(kind);
@@ -491,9 +479,7 @@ export class MobileRasterEffectsSheetController {
       : this.withProperty(kind, current, "enabled", true);
     this.sync(openingStyle);
     this.scroll.scrollTop = 0;
-    this.snapTo("peek");
-    void this.sheet.offsetHeight;
-    this.sheet.classList.add("is-open");
+    this.sheetState.open(opener);
     this.options.onOpenChange(true);
 
     if (!current.enabled) {
@@ -507,53 +493,23 @@ export class MobileRasterEffectsSheetController {
   }
 
   close(restoreFocus = false): void {
-    if (!this.openState) return;
+    if (!this.isOpen) return;
     this.flushDraft();
     this.requestHistoryEditFinish();
-    this.openState = false;
-    this.releaseDragCapture();
-    const activeElement = this.options.document.activeElement;
-    if (activeElement instanceof HTMLElement && this.sheet.contains(activeElement)) {
-      if (restoreFocus && this.opener?.isConnected) {
-        this.opener.focus({ preventScroll: true });
-      } else {
-        activeElement.blur();
-      }
-    }
-    this.sheet.classList.remove("is-open", "is-dragging");
-    this.sheet.dataset.state = "closed";
-    this.sheet.setAttribute("aria-hidden", "true");
-    this.sheet.setAttribute("inert", "");
-    this.handle.setAttribute("aria-expanded", "false");
-    this.setOffset(this.closedOffset());
+    this.sheetState.close(restoreFocus);
     this.options.onOpenChange(false);
-    this.opener = null;
   }
 
   syncOpenStyle(): void {
-    if (!this.openState || !this.activeKind) return;
+    if (!this.isOpen || !this.activeKind) return;
     this.sync(this.currentDraftOrStyle(this.activeKind));
   }
 
   handleResize(): void {
-    if (!this.openState || this.dragPointerId !== null) return;
-    this.snapTo(this.snap);
+    this.sheetState.handleResize();
   }
 
   private bindEvents(): void {
-    this.handle.addEventListener("pointerdown", (event) => this.startDrag(event));
-    this.handle.addEventListener("pointermove", (event) => this.moveDrag(event));
-    this.handle.addEventListener("pointerup", (event) => this.finishDrag(event));
-    this.handle.addEventListener("pointercancel", (event) => this.finishDrag(event, true));
-    this.handle.addEventListener("click", () => {
-      if (!this.openState || !this.activeKind) return;
-      if (this.dragMoved) {
-        this.dragMoved = false;
-        return;
-      }
-      this.snapTo(nextMobileBottomSheetTapSnap(this.snap));
-    });
-
     this.enabledInput.addEventListener("pointerdown", () => this.beginHistoryEdit());
     this.enabledInput.addEventListener("focus", () => this.beginHistoryEdit());
     this.enabledInput.addEventListener("blur", () => this.requestHistoryEditFinish());
@@ -626,7 +582,7 @@ export class MobileRasterEffectsSheetController {
     });
 
     this.options.document.addEventListener("keydown", (event) => {
-      if (event.key !== "Escape" || !this.openState) return;
+      if (event.key !== "Escape" || !this.isOpen) return;
       event.preventDefault();
       this.close(true);
     });
@@ -910,7 +866,7 @@ export class MobileRasterEffectsSheetController {
         const newerQueued = this.pendingByKind.get(kind);
         if (latest?.version === pending.version && !newerQueued) {
           this.optimisticByKind.delete(kind);
-          if (!accepted && this.openState && this.activeKind === kind) {
+          if (!accepted && this.isOpen && this.activeKind === kind) {
             this.sync(this.readStyle(kind));
           }
         }
@@ -985,147 +941,4 @@ export class MobileRasterEffectsSheetController {
     return this.options.applyBevelStyle(style as RasterBevelStyle);
   }
 
-  private peekHeight(): number {
-    return mobileRasterEffectPeekHeight(this.options.browser.innerHeight);
-  }
-
-  private peekOffset(): number {
-    return Math.max(0, Math.round(this.closedOffset() - this.peekHeight()));
-  }
-
-  private closedOffset(): number {
-    return Math.max(0, Math.round(this.sheet.offsetHeight));
-  }
-
-  private minimizedHeight(): number {
-    return Math.max(0, Math.round(this.handle.offsetHeight + this.header.offsetHeight));
-  }
-
-  private minimizedOffset(): number {
-    return Math.max(0, this.closedOffset() - this.minimizedHeight());
-  }
-
-  private setOffset(offsetPx: number): void {
-    const closed = this.closedOffset();
-    this.offsetPx = Math.min(closed, Math.max(0, offsetPx));
-    this.sheet.style.setProperty(
-      "--mobile-tools-sheet-offset",
-      `${Math.round(this.offsetPx)}px`,
-    );
-    this.sheet.style.setProperty(
-      "--mobile-raster-effect-visible-height",
-      `${Math.max(0, Math.round(closed - this.offsetPx))}px`,
-    );
-  }
-
-  private snapTo(snap: MobileRasterEffectSnap): void {
-    if (!this.activeKind) return;
-    this.snap = snap;
-    this.sheet.dataset.snap = this.snap;
-    const expanded = this.snap === "expanded";
-    const minimized = this.snap === "minimized";
-    this.setMinimizedAccessibility(minimized);
-    this.handle.setAttribute("aria-expanded", String(expanded));
-    this.handle.setAttribute(
-      "aria-label",
-      `${minimized ? "Restore" : expanded ? "Collapse" : "Expand"} ${MOBILE_RASTER_EFFECT_SPECS[this.activeKind].title} settings`,
-    );
-    this.setOffset(
-      expanded ? 0 : minimized ? this.minimizedOffset() : this.peekOffset(),
-    );
-  }
-
-  private setMinimizedAccessibility(minimized: boolean): void {
-    const activeElement = this.options.document.activeElement;
-    if (
-      minimized
-      && activeElement instanceof HTMLElement
-      && (this.scroll.contains(activeElement) || this.enabledControl.contains(activeElement))
-    ) {
-      this.handle.focus({ preventScroll: true });
-    }
-    for (const region of [this.scroll, this.enabledControl]) {
-      region.toggleAttribute("inert", minimized);
-      region.setAttribute("aria-hidden", String(minimized));
-    }
-  }
-
-  private startDrag(event: PointerEvent): void {
-    if (!this.openState || event.button !== 0) return;
-    this.dragPointerId = event.pointerId;
-    this.dragStartY = event.clientY;
-    this.dragStartOffsetPx = this.offsetPx;
-    this.dragStartSnap = this.snap;
-    this.dragLastY = event.clientY;
-    this.dragLastTime = this.options.browser.performance.now();
-    this.dragVelocityY = 0;
-    this.dragMoved = false;
-    this.sheet.classList.add("is-dragging");
-    this.handle.setPointerCapture(event.pointerId);
-  }
-
-  private moveDrag(event: PointerEvent): void {
-    if (event.pointerId !== this.dragPointerId || !this.activeKind) return;
-    const now = this.options.browser.performance.now();
-    const elapsed = now - this.dragLastTime;
-    if (elapsed > 0 && elapsed <= 120) {
-      const immediate = (event.clientY - this.dragLastY) / elapsed;
-      this.dragVelocityY = this.dragVelocityY === 0
-        ? immediate
-        : this.dragVelocityY * 0.35 + immediate * 0.65;
-    } else if (elapsed > 120) {
-      this.dragVelocityY = 0;
-    }
-    this.dragLastY = event.clientY;
-    this.dragLastTime = now;
-    const deltaY = event.clientY - this.dragStartY;
-    if (Math.abs(deltaY) >= 4) this.dragMoved = true;
-    const maximumOffset = this.dragStartSnap === "minimized"
-      ? this.closedOffset()
-      : this.minimizedOffset();
-    this.setOffset(Math.min(maximumOffset, this.dragStartOffsetPx + deltaY));
-  }
-
-  private finishDrag(event: PointerEvent, cancelled = false): void {
-    if (event.pointerId !== this.dragPointerId || !this.activeKind) return;
-    if (this.handle.hasPointerCapture(event.pointerId)) {
-      this.handle.releasePointerCapture(event.pointerId);
-    }
-    this.sheet.classList.remove("is-dragging");
-    const deltaY = event.clientY - this.dragStartY;
-    const velocityAge = this.options.browser.performance.now() - this.dragLastTime;
-    const releaseVelocityY = velocityAge <= 100 ? this.dragVelocityY : 0;
-    this.dragPointerId = null;
-    if (cancelled) {
-      this.snapTo(this.dragStartSnap);
-      this.dragMoved = false;
-      return;
-    }
-    const decision = resolveMobileRasterEffectDrag({
-      effectKind: this.activeKind,
-      startSnap: this.dragStartSnap,
-      deltaY,
-      releaseVelocityY,
-      offsetPx: this.offsetPx,
-      peekOffsetPx: this.peekOffset(),
-      minimizedOffsetPx: this.minimizedOffset(),
-    });
-    if (this.dragMoved && decision === "closed") {
-      this.close(false);
-      this.dragMoved = false;
-      return;
-    }
-    if (this.dragMoved && decision !== "closed") this.snapTo(decision);
-  }
-
-  private releaseDragCapture(): void {
-    if (
-      this.dragPointerId !== null
-      && this.handle.hasPointerCapture(this.dragPointerId)
-    ) {
-      this.handle.releasePointerCapture(this.dragPointerId);
-    }
-    this.dragPointerId = null;
-    this.dragMoved = false;
-  }
 }

@@ -3,181 +3,62 @@ import {
   normalizeVectorTextDistortPoints,
   normalizeVectorTextTransformCurve,
   normalizeVectorTextTransformType,
-  type VectorTextDistortPoints,
-  type VectorTextTransformType,
 } from "./vector-text-transform.ts";
 import {
   cloneVectorSvgDocument,
-  type VectorSvgDocument,
 } from "./vector-svg-import.ts";
+import {
+  cloneVectorTextNode,
+  type VectorTextNode,
+  type VectorTextNodeSeed,
+} from "./scene-text-model.ts";
+import {
+  cloneVectorSvgNode,
+  cloneVectorSvgNodeForHistory,
+  type VectorSvgNode,
+  type VectorSvgNodeSeed,
+} from "./scene-svg-model.ts";
+import {
+  cloneRasterImageDocument,
+  cloneRasterImageNode,
+  cloneRasterImageNodeForHistory,
+  type RasterImageNode,
+  type RasterImageNodeSeed,
+} from "./scene-image-model.ts";
+import {
+  normalizeVectorTextBlockShadowAngle,
+  normalizeVectorTextBlockShadowOffset,
+  normalizeVectorTextBlockShadowOpacity,
+  normalizeVectorTextInnerShadowAngle,
+  normalizeVectorTextInnerShadowBlur,
+  normalizeVectorTextInnerShadowOffset,
+  normalizeVectorTextInnerShadowOpacity,
+  normalizeVectorTextOutlineJoin,
+  normalizeVectorTextOutlineWidth,
+  normalizeVectorTextSingleShadowAngle,
+  normalizeVectorTextSingleShadowBlur,
+  normalizeVectorTextSingleShadowOffset,
+  normalizeVectorTextSingleShadowOpacity,
+} from "./scene-vector-effects.ts";
 
-export const VECTOR_TEXT_OUTLINE_STRATEGY =
-  "webgpu-clipper64-worker-outside-offset-aa-overlap1px-same-color-fused-round-bevel-miter4-v6" as const;
-
-export const VECTOR_TEXT_OUTLINE_WIDTH_MINIMUM = 0;
-export const VECTOR_TEXT_OUTLINE_WIDTH_MAXIMUM = 100;
-export const VECTOR_TEXT_OUTLINE_MITER_LIMIT = 4;
-
-export type VectorTextOutlineJoin = "bevel" | "miter" | "round";
-
-export const VECTOR_TEXT_BLOCK_SHADOW_STRATEGY =
-  "webgpu-clipper64-worker-visible-swept-union-separate-clipped-overlap2px-mesh-v8" as const;
-export const VECTOR_TEXT_BLOCK_SHADOW_OFFSET_MINIMUM = 0;
-export const VECTOR_TEXT_BLOCK_SHADOW_OFFSET_MAXIMUM = 100;
-export const VECTOR_TEXT_BLOCK_SHADOW_ANGLE_MINIMUM = -180;
-export const VECTOR_TEXT_BLOCK_SHADOW_ANGLE_MAXIMUM = 180;
-
-export const VECTOR_TEXT_SINGLE_SHADOW_STRATEGY =
-  "webgpu-slug-zero-blur-or-r16float-separable-gaussian-v3" as const;
-export const VECTOR_TEXT_SINGLE_SHADOW_OFFSET_MINIMUM = 0;
-export const VECTOR_TEXT_SINGLE_SHADOW_OFFSET_MAXIMUM = 100;
-export const VECTOR_TEXT_SINGLE_SHADOW_ANGLE_MINIMUM = -180;
-export const VECTOR_TEXT_SINGLE_SHADOW_ANGLE_MAXIMUM = 180;
-export const VECTOR_TEXT_SINGLE_SHADOW_BLUR_MINIMUM = 0;
-export const VECTOR_TEXT_SINGLE_SHADOW_BLUR_MAXIMUM = 300;
-
-export const VECTOR_TEXT_INNER_SHADOW_STRATEGY =
-  "webgpu-slug-analytic-fill-clip-zero-blur-or-r16float-separable-gaussian-v2" as const;
-
-export function normalizeVectorTextOutlineWidth(width: number): number {
-  const finite = Number.isFinite(width) ? width : VECTOR_TEXT_OUTLINE_WIDTH_MINIMUM;
-  return Math.min(
-    VECTOR_TEXT_OUTLINE_WIDTH_MAXIMUM,
-    Math.max(VECTOR_TEXT_OUTLINE_WIDTH_MINIMUM, finite),
-  );
-}
-
-export function normalizeVectorTextOutlineJoin(
-  join: VectorTextOutlineJoin,
-): VectorTextOutlineJoin {
-  return join === "bevel" || join === "miter" || join === "round"
-    ? join
-    : "round";
-}
-
-export function vectorTextOutlineLocalReach(
-  width: number,
-  join: VectorTextOutlineJoin,
-): number {
-  const outsideWidth = normalizeVectorTextOutlineWidth(width);
-  return normalizeVectorTextOutlineJoin(join) === "miter"
-    ? outsideWidth * VECTOR_TEXT_OUTLINE_MITER_LIMIT
-    : outsideWidth;
-}
-
-export function normalizeVectorTextBlockShadowOpacity(opacity: number): number {
-  const finite = Number.isFinite(opacity) ? opacity : 1;
-  return Math.min(1, Math.max(0, finite));
-}
-
-export function normalizeVectorTextBlockShadowOffset(offset: number): number {
-  const finite = Number.isFinite(offset)
-    ? offset
-    : VECTOR_TEXT_BLOCK_SHADOW_OFFSET_MINIMUM;
-  return Math.min(
-    VECTOR_TEXT_BLOCK_SHADOW_OFFSET_MAXIMUM,
-    Math.max(VECTOR_TEXT_BLOCK_SHADOW_OFFSET_MINIMUM, finite),
-  );
-}
-
-export function normalizeVectorTextBlockShadowAngle(angle: number): number {
-  const finite = Number.isFinite(angle) ? angle : 0;
-  return Math.min(
-    VECTOR_TEXT_BLOCK_SHADOW_ANGLE_MAXIMUM,
-    Math.max(VECTOR_TEXT_BLOCK_SHADOW_ANGLE_MINIMUM, finite),
-  );
-}
-
-export function vectorTextBlockShadowLocalReach(
-  _fontSize: number,
-  offset: number,
-): number {
-  return normalizeVectorTextBlockShadowOffset(offset);
-}
-
-export function vectorTextBlockShadowLocalVector(
-  fontSize: number,
-  offset: number,
-  angleDegrees: number,
-): { x: number; y: number } {
-  const reach = vectorTextBlockShadowLocalReach(fontSize, offset);
-  const angleRadians = normalizeVectorTextBlockShadowAngle(angleDegrees)
-    * Math.PI / 180;
-  return {
-    x: Math.cos(angleRadians) * reach,
-    // Kittl espone l'angolo in coordinate cartesiane: gli angoli negativi
-    // puntano verso il basso nel canvas, il cui asse Y cresce verso il basso.
-    y: -Math.sin(angleRadians) * reach,
-  };
-}
-
-export function normalizeVectorTextSingleShadowOpacity(opacity: number): number {
-  return normalizeVectorTextBlockShadowOpacity(opacity);
-}
-
-export function normalizeVectorTextSingleShadowOffset(offset: number): number {
-  const finite = Number.isFinite(offset)
-    ? offset
-    : VECTOR_TEXT_SINGLE_SHADOW_OFFSET_MINIMUM;
-  return Math.min(
-    VECTOR_TEXT_SINGLE_SHADOW_OFFSET_MAXIMUM,
-    Math.max(VECTOR_TEXT_SINGLE_SHADOW_OFFSET_MINIMUM, finite),
-  );
-}
-
-export function normalizeVectorTextSingleShadowAngle(angle: number): number {
-  const finite = Number.isFinite(angle) ? angle : 0;
-  return Math.min(
-    VECTOR_TEXT_SINGLE_SHADOW_ANGLE_MAXIMUM,
-    Math.max(VECTOR_TEXT_SINGLE_SHADOW_ANGLE_MINIMUM, finite),
-  );
-}
-
-export function normalizeVectorTextSingleShadowBlur(blur: number): number {
-  const finite = Number.isFinite(blur)
-    ? blur
-    : VECTOR_TEXT_SINGLE_SHADOW_BLUR_MINIMUM;
-  return Math.min(
-    VECTOR_TEXT_SINGLE_SHADOW_BLUR_MAXIMUM,
-    Math.max(VECTOR_TEXT_SINGLE_SHADOW_BLUR_MINIMUM, finite),
-  );
-}
-
-export function vectorTextSingleShadowLocalVector(
-  offset: number,
-  angleDegrees: number,
-): { x: number; y: number } {
-  const reach = normalizeVectorTextSingleShadowOffset(offset);
-  const angleRadians = normalizeVectorTextSingleShadowAngle(angleDegrees)
-    * Math.PI / 180;
-  return {
-    x: Math.cos(angleRadians) * reach,
-    y: -Math.sin(angleRadians) * reach,
-  };
-}
-
-export function normalizeVectorTextInnerShadowOpacity(opacity: number): number {
-  return normalizeVectorTextSingleShadowOpacity(opacity);
-}
-
-export function normalizeVectorTextInnerShadowOffset(offset: number): number {
-  return normalizeVectorTextSingleShadowOffset(offset);
-}
-
-export function normalizeVectorTextInnerShadowAngle(angle: number): number {
-  return normalizeVectorTextSingleShadowAngle(angle);
-}
-
-export function normalizeVectorTextInnerShadowBlur(blur: number): number {
-  return normalizeVectorTextSingleShadowBlur(blur);
-}
-
-export function vectorTextInnerShadowLocalVector(
-  offset: number,
-  angleDegrees: number,
-): { x: number; y: number } {
-  return vectorTextSingleShadowLocalVector(offset, angleDegrees);
-}
+export {
+  cloneVectorTextNode,
+  type VectorTextNode,
+  type VectorTextNodeSeed,
+} from "./scene-text-model.ts";
+export {
+  cloneVectorSvgNode,
+  type VectorSvgNode,
+  type VectorSvgNodeSeed,
+} from "./scene-svg-model.ts";
+export {
+  cloneRasterImageDocument,
+  cloneRasterImageNode,
+  type RasterImageDocument,
+  type RasterImageNode,
+  type RasterImageNodeSeed,
+} from "./scene-image-model.ts";
+export * from "./scene-vector-effects.ts";
 
 export const MIXED_SCENE_STACK_STRATEGY =
   "heterogeneous-bottom-up-raster-vector-image-segmented-composition-vector-raster-replacement-v7" as const;
@@ -210,237 +91,6 @@ export type MixedSceneItem =
 
 export type MixedSceneVectorItem = Extract<MixedSceneItem, { readonly kind: "text" | "svg" }>;
 export type MixedSceneSemanticItem = Exclude<MixedSceneItem, { readonly kind: "raster" }>;
-
-export interface VectorTextNode {
-  readonly id: number;
-  readonly kind: "text";
-  name: string;
-  visible: boolean;
-  opacity: number;
-  text: string;
-  fontFamily: string;
-  fontSize: number;
-  color: string;
-  transformType: VectorTextTransformType;
-  transformCurve: number;
-  circleRadiusPercent: number;
-  circleInverted: boolean;
-  distortPoints: VectorTextDistortPoints | null;
-  outlineWidth: number;
-  outlineColor: string;
-  outlineJoin: VectorTextOutlineJoin;
-  blockShadowEnabled: boolean;
-  blockShadowColor: string;
-  blockShadowOpacity: number;
-  blockShadowOffset: number;
-  blockShadowAngle: number;
-  blockShadowOutlineWidth: number;
-  singleShadowEnabled: boolean;
-  singleShadowColor: string;
-  singleShadowOpacity: number;
-  singleShadowOffset: number;
-  singleShadowAngle: number;
-  singleShadowBlur: number;
-  innerShadowEnabled: boolean;
-  innerShadowColor: string;
-  innerShadowOpacity: number;
-  innerShadowOffset: number;
-  innerShadowAngle: number;
-  innerShadowBlur: number;
-  x: number;
-  y: number;
-  scale: number;
-  rotation: number;
-}
-
-export interface VectorTextNodeSeed {
-  text: string;
-  fontFamily: string;
-  fontSize: number;
-  color: string;
-  transformType?: VectorTextTransformType;
-  transformCurve?: number;
-  circleRadiusPercent?: number;
-  circleInverted?: boolean;
-  distortPoints?: VectorTextDistortPoints | null;
-  outlineWidth: number;
-  outlineColor: string;
-  outlineJoin: VectorTextOutlineJoin;
-  blockShadowEnabled: boolean;
-  blockShadowColor: string;
-  blockShadowOpacity: number;
-  blockShadowOffset: number;
-  blockShadowAngle: number;
-  blockShadowOutlineWidth: number;
-  singleShadowEnabled: boolean;
-  singleShadowColor: string;
-  singleShadowOpacity: number;
-  singleShadowOffset: number;
-  singleShadowAngle: number;
-  singleShadowBlur: number;
-  innerShadowEnabled: boolean;
-  innerShadowColor: string;
-  innerShadowOpacity: number;
-  innerShadowOffset: number;
-  innerShadowAngle: number;
-  innerShadowBlur: number;
-  x: number;
-  y: number;
-  scale: number;
-  rotation: number;
-}
-
-export interface VectorSvgNode {
-  readonly id: number;
-  readonly kind: "svg";
-  name: string;
-  visible: boolean;
-  opacity: number;
-  document: VectorSvgDocument;
-  paintColors: string[];
-  outlineWidth: number;
-  outlineColor: string;
-  outlineJoin: VectorTextOutlineJoin;
-  blockShadowEnabled: boolean;
-  blockShadowColor: string;
-  blockShadowOpacity: number;
-  blockShadowOffset: number;
-  blockShadowAngle: number;
-  blockShadowOutlineWidth: number;
-  singleShadowEnabled: boolean;
-  singleShadowColor: string;
-  singleShadowOpacity: number;
-  singleShadowOffset: number;
-  singleShadowAngle: number;
-  singleShadowBlur: number;
-  innerShadowEnabled: boolean;
-  innerShadowColor: string;
-  innerShadowOpacity: number;
-  innerShadowOffset: number;
-  innerShadowAngle: number;
-  innerShadowBlur: number;
-  x: number;
-  y: number;
-  scale: number;
-  rotation: number;
-}
-
-export interface VectorSvgNodeSeed {
-  document: VectorSvgDocument;
-  paintColors?: readonly string[];
-  outlineWidth?: number;
-  outlineColor?: string;
-  outlineJoin?: VectorTextOutlineJoin;
-  blockShadowEnabled?: boolean;
-  blockShadowColor?: string;
-  blockShadowOpacity?: number;
-  blockShadowOffset?: number;
-  blockShadowAngle?: number;
-  blockShadowOutlineWidth?: number;
-  singleShadowEnabled?: boolean;
-  singleShadowColor?: string;
-  singleShadowOpacity?: number;
-  singleShadowOffset?: number;
-  singleShadowAngle?: number;
-  singleShadowBlur?: number;
-  innerShadowEnabled?: boolean;
-  innerShadowColor?: string;
-  innerShadowOpacity?: number;
-  innerShadowOffset?: number;
-  innerShadowAngle?: number;
-  innerShadowBlur?: number;
-  x: number;
-  y: number;
-  scale: number;
-  rotation: number;
-}
-
-/**
- * Immutable metadata for a decoded raster asset. The Blob, ImageBitmap and
- * GPUTexture deliberately live in the engine asset registry, so scene
- * snapshots and Undo/Redo can share this tiny record without retaining or
- * cloning pixel payloads.
- */
-export interface RasterImageDocument {
-  readonly assetId: string;
-  readonly sourceName: string;
-  readonly mimeType: string;
-  readonly sourceBytes: number;
-  readonly width: number;
-  readonly height: number;
-}
-
-export interface RasterImageNode {
-  readonly id: number;
-  readonly kind: "image";
-  name: string;
-  visible: boolean;
-  opacity: number;
-  document: RasterImageDocument;
-  x: number;
-  y: number;
-  scale: number;
-  rotation: number;
-}
-
-export interface RasterImageNodeSeed {
-  document: RasterImageDocument;
-  x: number;
-  y: number;
-  scale: number;
-  rotation: number;
-}
-
-export function cloneRasterImageDocument(
-  documentValue: Readonly<RasterImageDocument>,
-): RasterImageDocument {
-  return { ...documentValue };
-}
-
-export function cloneRasterImageNode(
-  node: Readonly<RasterImageNode>,
-): RasterImageNode {
-  return {
-    ...node,
-    document: cloneRasterImageDocument(node.document),
-  };
-}
-
-function cloneRasterImageNodeForHistory(
-  node: Readonly<RasterImageNode>,
-): RasterImageNode {
-  return {
-    ...node,
-    document: node.document,
-  };
-}
-
-export function cloneVectorSvgNode(node: Readonly<VectorSvgNode>): VectorSvgNode {
-  return {
-    ...node,
-    document: cloneVectorSvgDocument(node.document),
-    paintColors: [...node.paintColors],
-  };
-}
-
-function cloneVectorSvgNodeForHistory(
-  node: Readonly<VectorSvgNode>,
-): VectorSvgNode {
-  return {
-    ...node,
-    document: node.document,
-    paintColors: [...node.paintColors],
-  };
-}
-
-export function cloneVectorTextNode(
-  node: Readonly<VectorTextNode>,
-): VectorTextNode {
-  return {
-    ...node,
-    distortPoints: normalizeVectorTextDistortPoints(node.distortPoints),
-  };
-}
 
 export interface MixedScenePartition {
   below: readonly MixedSceneItem[];

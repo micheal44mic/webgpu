@@ -15,11 +15,12 @@ document.documentElement.dataset.editorEntry = "labs";
 document.title = "WebGPU Brush Engine Labs";
 
 const bootstrap: EditorExtensionBootstrap = {
+  restorePersistedBrushOnStartup: false,
   engineOptions: {
     bevelBoundingFieldEnabled: search.get("bevelField") === "bbox",
     layerMemoryStressTestEnabled: true,
     layerCompressionTestEnabled: true,
-    vectorTextPrototypeEnabled: true,
+    mixedSceneEnabled: true,
   },
   vectorTextClippedRefreshPolicy:
     search.get("lab") === "vector-zoom-release" ? "on-release" : "during-gesture",

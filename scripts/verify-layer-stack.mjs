@@ -1269,7 +1269,7 @@ assert.match(
 );
 assert.match(
   engineSource,
-  /if \(crossedAction\.kind === "layer-blend-mode"\)[\s\S]{0,900}await setLayerBlendMode\([\s\S]{0,220}true,[\s\S]{0,180}engine\.historyCursor = nextCursor/,
+  /if \(crossedAction\.kind === "layer-blend-mode"\)[\s\S]{0,900}await setLayerBlendMode\([\s\S]{0,220}true,[\s\S]{0,180}engine\.history\.setCursor\(nextCursor\)/,
   "Undo/Redo deve cambiare solo compositing e avanzare il cursore dopo il successo",
 );
 const retargetStart = engineSource.indexOf("export async function retargetEffectsWorkingSetInternal(");
@@ -2506,7 +2506,10 @@ assert.ok(
   "Undo/Redo cross-layer deve preparare il cold ed evacuare l'uscente prima del target",
 );
 const operationCatch = cursorBody.indexOf("catch (operationError)");
-const cursorRestore = cursorBody.indexOf("engine.historyCursor = previousCursor;", operationCatch);
+const cursorRestore = cursorBody.indexOf(
+  "engine.history.setCursor(previousCursor);",
+  operationCatch,
+);
 const targetRestore = cursorBody.indexOf(
   "await rebuildActiveLayerFromHistory(engine);",
   operationCatch,
@@ -2637,14 +2640,14 @@ assert.match(editorLabsSource, /window\.clearTimeout\(timeoutId\)/,
   "il timer dell'harness deve essere disarmato dopo successo o errore");
 assert.match(editorLabsSource, /this\.#latchedBusy = true/,
   "dopo timeout la pagina Labs deve restare bloccata perché Promise.race non cancella il test");
-assert.match(layerHistoryGpuTestSource, /LAYER_HISTORY_GPU_TEST_VERSION = 12 as const/);
+assert.match(layerHistoryGpuTestSource, /LAYER_HISTORY_GPU_TEST_VERSION = 13 as const/);
 assert.match(layerHistoryGpuTestSource, /await engine\.duplicateSelectedLayer\(\)/);
 assert.match(layerHistoryGpuTestSource, /duplicatePaintUndoUsedSeedByteExactly/);
 assert.match(layerHistoryGpuTestSource, /duplicateStructuralUndoRedoWasByteExact/);
 assert.match(layerHistoryGpuTestSource, /initialStats\.layerFormat !== "rgba16float"/);
 assert.match(layerHistoryGpuTestSource, /const rawBytesPerPixel = 8 as const/);
 assert.match(layerHistoryGpuTestSource, /storageStudyUsesRgba16fBytes/);
-assert.match(layerHistoryGpuTestSource, /crossLayerRedoRestoredPByteExactly/);
+assert.match(layerHistoryGpuTestSource, /crossLayerRedoRestoredAStrokeByteExactly/);
 assert.match(layerHistoryGpuTestSource, /redoRestoredBByteExactly/);
 assert.match(layerCompositeGpuTestSource, /fiveLayerSwitchMemoryPeaks/);
 assert.match(layerCompositeGpuTestSource, /fiveLayerMiddleSwitchMemoryPeaks/);
@@ -2661,6 +2664,11 @@ assert.match(
   /await engine\.setActiveLayer\(1\);\s*const activeBeforeCrossLayerRedo[\s\S]*?const crossLayerRedoReturned = await engine\.redo\(\)/,
   "il redo cross-layer deve partire deliberatamente dal livello sbagliato",
 );
+assert.match(
+  layerHistoryGpuTestSource,
+  /await engine\.setActiveLayer\(0\);[\s\S]{0,500}await draw\(768, 512,[\s\S]{0,500}const layerAHistoryBaseline[\s\S]{0,250}await engine\.setActiveLayer\(1\)/,
+  "il probe cross-layer deve registrare un Paint su A dopo layer-add e tornare su B",
+);
 assert.match(layerHistoryGpuTestSource, /probeRollback\("after-first-replay-submit"\)/);
 assert.match(layerHistoryGpuTestSource, /probeRollback\("during-switch-activation"\)/);
 assert.match(
@@ -2670,8 +2678,13 @@ assert.match(
 );
 assert.match(layerHistoryGpuTestSource, /fatalRollbackLatchedInconsistent: fatalRollback\.historyInconsistent/);
 assert.match(layerHistoryGpuTestSource, /fatalLatchRefusedAnotherUndo: !fatalFollowUpUndoReturned/);
-assert.match(layerHistoryGpuTestSource, /twoAndFiveLayerMipMemoryIsConstant/);
-assert.match(layerHistoryGpuTestSource, /twoAndFiveLayerCompositeMemoryIsConstant/);
+assert.match(layerHistoryGpuTestSource, /twoAndFiveLayerMipMemoryTracksBoundedComposites/);
+assert.match(layerHistoryGpuTestSource, /twoAndFiveLayerCompositeMemoryIsBounded/);
+assert.match(layerCompositeGpuTestSource, /decodeFloat16/);
+assert.match(
+  layerCompositeGpuTestSource,
+  /const fullLayerMiB = engine\.layerSize \* engine\.layerSize \* 8/,
+);
 
 assert.match(layerCompositeGpuTestSource, /expectedPresentation\(/);
 assert.match(layerCompositeGpuTestSource, /sourceOver\(above, sourceOver\(active, below\)\)/,
@@ -2681,8 +2694,11 @@ assert.match(layerCompositeGpuTestSource, /wrongSrgbSpacePresentation\(/,
 assert.match(layerCompositeGpuTestSource, /engine\.injectLayerCompositeFault\("after-candidate-submit"\)/);
 assert.match(layerCompositeGpuTestSource, /setLayerOpacity\(2, 0\.25\)/);
 assert.match(layerCompositeGpuTestSource, /setLayerVisibility\(2, false\)/);
-assert.match(layerCompositeGpuTestSource, /readMergedLayerPixels\(\s*"above",[\s\S]*?2,\s*false,/,
-  "il test zoom non deve riparare la piramide prima di leggerla");
+assert.match(layerCompositeGpuTestSource, /readMergedLayerPixels\(\s*"above",[\s\S]*?2,\s*true,/,
+  "la sonda matematica zoom deve completare esplicitamente la piramide merged");
+assert.match(layerCompositeGpuTestSource, /zoomBuiltFinalRasterStackMip2/,
+  "il test visuale zoom deve verificare il percorso final-raster-stack corrente");
+assert.match(layerCompositeGpuTestSource, /zoomExplicitReadbackCompletedMergedAboveMip2/);
 assert.match(layerCompositeGpuTestSource, /zoomMip2MatchesIndependentBoxFilter/);
 assert.match(layerCompositeGpuTestSource, /fiveLayerBakesWereReleased/);
 assert.match(layerCompositeGpuTestSource, /opaqueRawFastPathIsByteExact/);

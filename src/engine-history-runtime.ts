@@ -102,6 +102,7 @@ import {
 import { processHistoryMaintenanceChunks } from "./history-retention-core";
 import { planRasterHistoryReplay } from "./history-replay-plan";
 import { noiseMipSmoothingAfterHistory } from "./noise-mip-smoothing-core";
+import type { HistoryCommitOptions } from "./history-service.ts";
 
 export function captureRasterLayerMetadataHistoryState(
   engine: BrushEngine,
@@ -193,16 +194,14 @@ export function recordRasterLayerMetadataHistoryAction(
     throw new Error("Una modifica metadata non può cambiare livello o proprietà durante il gesto.");
   }
   if (rasterLayerMetadataHistoryStatesEqual(before, after)) return false;
-  truncateRedoHistory(engine);
-  engine.historyActions.push({
-    id: engine.nextHistoryActionId++,
+  commitHistoryActionAtomically(engine, {
+    id: engine.nextHistoryActionId,
     kind: "layer-metadata",
     layerId: before.layerId,
     property,
     before: before.value,
     after: after.value,
   } as RasterLayerMetadataHistoryAction);
-  engine.historyCursor = engine.historyActions.length;
   if (engine.activeStrokeProfile) {
     engine.activeStrokeProfile.historyCommittedActions += 1;
   }
@@ -211,7 +210,7 @@ export function recordRasterLayerMetadataHistoryAction(
 
 function assignRasterLayerMetadataHistoryValue(
   engine: BrushEngine,
-  action: RasterLayerMetadataHistoryAction,
+  action: Pick<RasterLayerMetadataHistoryAction, "layerId" | "property">,
   target: RasterLayerMetadataHistoryAction["before"],
 ): void {
   const record = engine.layerStack.byId(action.layerId);
@@ -246,6 +245,17 @@ function assignRasterLayerMetadataHistoryValue(
   }
   const gpu = engine.layerGpu.get(record.id);
   if (gpu) gpu.bakeValid = false;
+}
+
+export function restoreRasterLayerMetadataHistorySnapshot(
+  engine: BrushEngine,
+  snapshot: RasterLayerMetadataHistoryState,
+): void {
+  assignRasterLayerMetadataHistoryValue(
+    engine,
+    snapshot,
+    snapshot.value,
+  );
 }
 
 async function refreshRasterLayerMetadataPresentation(
@@ -467,7 +477,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
     await engine.waitForIdle();
     if (crossedAction.kind === "vector-rasterize") {
       await applyVectorRasterizeHistory(engine, crossedAction, delta);
-      engine.historyCursor = nextCursor;
+      engine.history.setCursor(nextCursor);
       if (engine.activeStrokeProfile) {
         engine.activeStrokeProfile.historyReplayOperations += 1;
       }
@@ -479,7 +489,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
     }
     if (crossedAction.kind === "layer-merge") {
       await applyLayerMergeHistory(engine, crossedAction, delta);
-      engine.historyCursor = nextCursor;
+      engine.history.setCursor(nextCursor);
       if (engine.activeStrokeProfile) {
         engine.activeStrokeProfile.historyReplayOperations += 1;
       }
@@ -491,7 +501,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
     }
     if (crossedAction.kind === "raster-import") {
       await applyRasterImportHistory(engine, crossedAction, delta);
-      engine.historyCursor = nextCursor;
+      engine.history.setCursor(nextCursor);
       if (engine.activeStrokeProfile) {
         engine.activeStrokeProfile.historyReplayOperations += 1;
       }
@@ -507,7 +517,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
       } else {
         await applyLayerAddHistory(engine, crossedAction, delta);
       }
-      engine.historyCursor = nextCursor;
+      engine.history.setCursor(nextCursor);
       if (engine.activeStrokeProfile) {
         engine.activeStrokeProfile.historyReplayOperations += 1;
       }
@@ -529,7 +539,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
         delta < 0 ? crossedAction.before : crossedAction.after,
         true,
       );
-      engine.historyCursor = nextCursor;
+      engine.history.setCursor(nextCursor);
       if (engine.activeStrokeProfile) {
         engine.activeStrokeProfile.historyReplayOperations += 1;
       }
@@ -545,7 +555,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
         crossedAction,
         delta < 0 ? crossedAction.before : crossedAction.after,
       );
-      engine.historyCursor = nextCursor;
+      engine.history.setCursor(nextCursor);
       if (engine.activeStrokeProfile) {
         engine.activeStrokeProfile.historyReplayOperations += 1;
       }
@@ -561,7 +571,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
         delta < 0 ? crossedAction.before : crossedAction.after,
         "history-replay",
       );
-      engine.historyCursor = nextCursor;
+      engine.history.setCursor(nextCursor);
       if (engine.activeStrokeProfile) {
         engine.activeStrokeProfile.historyReplayOperations += 1;
       }
@@ -576,7 +586,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
         delta < 0 ? crossedAction.delta.before : crossedAction.delta.after,
         "history-replay",
       );
-      engine.historyCursor = nextCursor;
+      engine.history.setCursor(nextCursor);
       if (engine.activeStrokeProfile) {
         engine.activeStrokeProfile.historyReplayOperations += 1;
       }
@@ -623,7 +633,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
         engine.layerStack.setActiveIndex(targetIndex);
         await engine.activateLayer(previousActiveIndex, "history-replay");
       }
-      engine.historyCursor = nextCursor;
+      engine.history.setCursor(nextCursor);
       replayAttempted = true;
       await rebuildActiveLayerFromHistory(engine);
       if (selectionCompareAndSwap && targetSelection) {
@@ -631,7 +641,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
         selectionRestored = true;
       }
     } catch (operationError) {
-      engine.historyCursor = previousCursor;
+      engine.history.setCursor(previousCursor);
       const rollbackErrors: unknown[] = [];
 
       if (selectionRestored && expectedSelection) {
@@ -1129,11 +1139,8 @@ export function recordBlendHistoryBatch(engine: BrushEngine,
       `Payload GPU Blend ${capturedSlice.logicalBytes} B, attesi ${expectedBytes} B.`,
     );
   }
-  if (engine.activeStroke?.historyActionId === actionId) {
-    engine.activeStroke.submitted = true;
-  }
   const settings = pending[0].settings;
-  engine.historyBatches.push({
+  const historyBatch = {
     kind: "blend",
     actionId,
     layerId: engine.layerStack.active.id,
@@ -1146,8 +1153,38 @@ export function recordBlendHistoryBatch(engine: BrushEngine,
     grainTextureIdentity: isTexturizedGrainActive(settings)
       ? engine.grainTextureIdentity
       : null,
-  });
-  engine.historyStoredBaseStamps += pending.length;
+  } satisfies HistoryRenderBatch;
+  const actionAlreadyPublished = engine.historyActions.some((action) => action.id === actionId);
+  const releasePayloadOnCancel = () => engine.historyGpuStorage.release(capturedSlice);
+  if (actionAlreadyPublished) {
+    engine.history.appendBatch(historyBatch, {
+      storedBaseStamps: pending.length,
+      releasePayloadOnCancel,
+    });
+  } else {
+    engine.history.commitAction(
+      {
+        id: actionId,
+        kind: "stroke",
+        layerId: engine.layerStack.active.id,
+      },
+      {
+        reservedActionId: true,
+        batches: [historyBatch],
+        storedBaseStamps: pending.length,
+        releasePayloadOnCancel,
+      },
+    );
+    engine.sweepRasterImageGpuResources();
+    engine.publishHistoryState();
+    if (engine.activeStrokeProfile) {
+      engine.activeStrokeProfile.historyCommittedActions += 1;
+    }
+  }
+  if (engine.activeStroke?.historyActionId === actionId) {
+    engine.activeStroke.historyCommitted = true;
+    engine.activeStroke.submitted = true;
+  }
   if (engine.activeStrokeProfile) {
     engine.activeStrokeProfile.historyCapturedBaseStamps += pending.length;
     engine.activeStrokeProfile.historyCapturedBatches += 1;
@@ -1448,15 +1485,7 @@ export async function compactDiscardedHistoryIncrementally(
     engine.rasterImageGpuResources.delete(assetId);
   })) return abortResult();
   if (!hooks.shouldContinue()) return abortResult();
-  engine.historyBatches = retainedBatches;
-  engine.historyStoredBaseStamps = retainedStampCount;
-  engine.discardedVectorRasterHistoryActions = [];
-  engine.discardedRasterImportHistoryActions = [];
-  engine.discardedLayerAddHistoryActions = [];
-  engine.discardedLayerDeleteHistoryActions = [];
-  engine.discardedLayerMergeHistoryActions = [];
-  engine.discardedRasterTransformHistoryActions = [];
-  engine.historyCompactionPending = false;
+  engine.history.completeRedoCompaction(retainedBatches, retainedStampCount);
   engine.historyGpuStorage.trimEmptyPages(true);
   return {
     completed: true,
@@ -1473,13 +1502,11 @@ export function recordVectorHistoryAction(engine: BrushEngine,
   if (vectorHistoryStatesEqual(before, after)) {
     return false;
   }
-  truncateRedoHistory(engine);
-  engine.historyActions.push({
-    id: engine.nextHistoryActionId++,
+  commitHistoryActionAtomically(engine, {
+    id: engine.nextHistoryActionId,
     kind: "vector",
     delta: { before, after },
   });
-  engine.historyCursor = engine.historyActions.length;
   engine.sweepRasterImageGpuResources();
   if (engine.activeStrokeProfile) {
     engine.activeStrokeProfile.historyCommittedActions += 1;
@@ -1610,10 +1637,7 @@ function recordMixedSceneReorderHistoryAction(
     before,
     after,
   };
-  truncateRedoHistory(engine);
-  engine.historyActions.push(action);
-  engine.nextHistoryActionId += 1;
-  engine.historyCursor = engine.historyActions.length;
+  commitHistoryActionAtomically(engine, action);
   // truncateRedoHistory may have dropped the last vector action retaining an
   // imported image asset. Match the vector recorder and release it immediately.
   engine.sweepRasterImageGpuResources();
@@ -1700,78 +1724,9 @@ export function historyStepTargetLayerIndex(engine: BrushEngine, delta: -1 | 1):
 export function commitHistoryActionAtomically(
   engine: BrushEngine,
   action: HistoryAction,
+  options: HistoryCommitOptions = {},
 ): void {
-  const actionIdBefore = engine.nextHistoryActionId;
-  if (action.id !== actionIdBefore) {
-    throw new Error(
-      `ID azione history ${action.id} inatteso; prossimo ID ${actionIdBefore}.`,
-    );
-  }
-  const cursorBefore = engine.historyCursor;
-  const redoActions = engine.historyActions.slice(cursorBefore);
-  const discardedVectorLength = engine.discardedVectorRasterHistoryActions.length;
-  const discardedImportLength = engine.discardedRasterImportHistoryActions.length;
-  const discardedTransformLength = engine.discardedRasterTransformHistoryActions.length;
-  const discardedLayerAddLength = engine.discardedLayerAddHistoryActions.length;
-  const discardedLayerDeleteLength = engine.discardedLayerDeleteHistoryActions.length;
-  const discardedLayerMergeLength = engine.discardedLayerMergeHistoryActions.length;
-  const compactionPendingBefore = engine.historyCompactionPending;
-  try {
-    truncateRedoHistory(engine);
-    engine.historyActions.push(action);
-    engine.nextHistoryActionId = actionIdBefore + 1;
-    engine.historyCursor = engine.historyActions.length;
-  } catch (error) {
-    // Non usare l'eventuale `push` sovrascritto dal fault test anche per il
-    // ripristino: assegnare per indice ricostruisce esattamente il ramo.
-    engine.historyActions.length = cursorBefore;
-    for (let index = 0; index < redoActions.length; index += 1) {
-      engine.historyActions[cursorBefore + index] = redoActions[index];
-    }
-    engine.historyCursor = cursorBefore;
-    engine.nextHistoryActionId = actionIdBefore;
-    engine.discardedVectorRasterHistoryActions.length = discardedVectorLength;
-    engine.discardedRasterImportHistoryActions.length = discardedImportLength;
-    engine.discardedRasterTransformHistoryActions.length = discardedTransformLength;
-    engine.discardedLayerAddHistoryActions.length = discardedLayerAddLength;
-    engine.discardedLayerDeleteHistoryActions.length = discardedLayerDeleteLength;
-    engine.discardedLayerMergeHistoryActions.length = discardedLayerMergeLength;
-    engine.historyCompactionPending = compactionPendingBefore;
-    throw error;
-  }
-}
-
-export function truncateRedoHistory(engine: BrushEngine): void {
-  if (engine.historyCursor >= engine.historyActions.length) {
-    return;
-  }
-  for (const action of engine.historyActions.slice(engine.historyCursor)) {
-    if (action.kind === "vector-rasterize") {
-      engine.discardedVectorRasterHistoryActions.push(action);
-    } else if (action.kind === "raster-import") {
-      engine.discardedRasterImportHistoryActions.push(action);
-    } else if (action.kind === "raster-transform" || action.kind === "raster-filter") {
-      engine.discardedRasterTransformHistoryActions.push(action);
-    } else if (action.kind === "layer-add") {
-      engine.discardedLayerAddHistoryActions.push(action);
-    } else if (action.kind === "layer-delete") {
-      // Senza questo ogni cancellazione superata dal Redo perde il suo seed:
-      // 16 MiB a 2048²/rgba8, che nessuno liberera` mai.
-      engine.discardedLayerDeleteHistoryActions.push(action);
-    } else if (action.kind === "layer-merge") {
-      engine.discardedLayerMergeHistoryActions.push(action);
-    }
-  }
-  engine.historyActions.length = engine.historyCursor;
-  engine.historyLocalStorage.noteBranchCut();
-
-  // Il primo stamp dopo un Undo deve restare O(1): i payload abbandonati
-  // vengono esclusi subito e liberati dalla manutenzione idle dopo una fence.
-  engine.historyCompactionPending = true;
-  // Il ramo appena escluso puo' essere l'ultimo proprietario logico di un
-  // effetto annullato. La reclamazione e' differita e rifara' il controllo di
-  // raggiungibilita' dopo che tratto, frame e fence GPU sono terminati.
-  engine.scheduleEffectsScratchShrink();
+  engine.history.commitAction(action, options);
 }
 
 export function historyStepBlockedByLayer(engine: BrushEngine, delta: -1 | 1): boolean {

@@ -6,15 +6,22 @@ import { pathToFileURL } from "node:url";
 import { readEngineSource } from "./engine-source.mjs";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
-const modulePath = path.join(projectRoot, "src", "brush-presets.ts");
+const modulePath = path.join(projectRoot, "src", "brush-catalog.ts");
 const presets = await import(pathToFileURL(modulePath).href);
+const builtinAssets = await import(pathToFileURL(
+  path.join(projectRoot, "src", "brush-builtin-assets.ts"),
+).href);
+const brushDefinition = await import(pathToFileURL(
+  path.join(projectRoot, "src", "brush-definition.ts"),
+).href);
 const registryModulePath = path.join(projectRoot, "src", "brush-asset-registry.ts");
 const { CustomBrushAssetRegistry } = await import(pathToFileURL(registryModulePath).href);
 
-assert.equal(presets.BRUSH_PRESET_CONTRACT_VERSION, "m1m4-brush-preset-v1");
-assert.equal(Object.keys(presets.BRUSH_ASSET_REGISTRY).length, 3);
-assert.equal("legacy-grain" in presets.BRUSH_ASSET_REGISTRY, false);
-assert.equal(Object.keys(presets.BRUSH_PRESET_REGISTRY).length, 1);
+assert.equal(presets.BRUSH_CATALOG_VERSION, 1);
+assert.equal(brushDefinition.BRUSH_DEFINITION_VERSION, 1);
+assert.equal(Object.keys(builtinAssets.BUILTIN_BRUSH_ASSETS).length, 3);
+assert.equal("legacy-grain" in builtinAssets.BUILTIN_BRUSH_ASSETS, false);
+assert.equal(Object.keys(presets.BUILTIN_BRUSH_CATALOG).length, 1);
 
 function pngDimensions(bytes) {
   assert.deepEqual(
@@ -28,7 +35,7 @@ function pngDimensions(bytes) {
   };
 }
 
-for (const asset of Object.values(presets.BRUSH_ASSET_REGISTRY)) {
+for (const asset of Object.values(builtinAssets.BUILTIN_BRUSH_ASSETS)) {
   const bytes = readFileSync(path.join(projectRoot, asset.sourceFile));
   assert.equal(
     createHash("sha256").update(bytes).digest("hex"),
@@ -38,46 +45,51 @@ for (const asset of Object.values(presets.BRUSH_ASSET_REGISTRY)) {
   assert.deepEqual(pngDimensions(bytes), { width: asset.width, height: asset.height }, `${asset.id}: dimensioni`);
 }
 
-assert.equal(presets.BRUSH_ASSET_REGISTRY["legacy-shape"].decode.invertLuminance, false);
-assert.equal(presets.BRUSH_ASSET_REGISTRY["pencil-shape"].decode.invertLuminance, true);
+assert.equal(builtinAssets.BUILTIN_BRUSH_ASSETS["legacy-shape"].decode.invertLuminance, false);
+assert.equal(builtinAssets.BUILTIN_BRUSH_ASSETS["pencil-shape"].decode.invertLuminance, true);
 
 const pencil = presets.PENCIL_BRUSH_PRESET;
+const pencilSettings = pencil.definition.settings;
 assert.equal(pencil.id, "m1m4-pencil-v1");
 assert.equal(pencil.categoryId, "pencil");
-assert.equal(pencil.settings.shapeAssetId, "pencil-shape");
-assert.equal(pencil.settings.shapeInvert, false);
-assert.equal(pencil.settings.shapeRotation, "follow-stroke");
-assert.equal(pencil.settings.grainAssetId, "pencil-grain");
-assert.equal(pencil.settings.grainMovement, 0.99);
-assert.equal(pencil.settings.shapeScatter, 0.51);
-assert.equal(pencil.settings.count, 1);
-assert.equal(pencil.settings.grainMode, "moving");
-assert.equal(pencil.settings.grainScale, 0.43);
-assert.equal(pencil.settings.blendMode, "intense-blending");
-assert.equal(pencil.settings.flow, 1);
-assert.equal(pencil.settings.spacingPercent, 2);
-assert.equal(pencil.settings.positionJitterLinear, 0.1);
-assert.equal(pencil.settings.positionJitterLateral, 0.1);
-assert.equal(pencil.settings.startThickness, 1);
-assert.equal(pencil.settings.endThickness, 0.6);
-assert.equal(pencil.settings.size, 30);
-assert.equal(pencil.settings.opacity, 1);
+assert.equal(pencilSettings.shapeAssetId, "pencil-shape");
+assert.equal(pencilSettings.shapeInvert, false);
+assert.equal(pencilSettings.shapeRotation, "follow-stroke");
+assert.equal(pencilSettings.grainAssetId, "pencil-grain");
+assert.equal(pencilSettings.grainMovement, 0.99);
+assert.equal(pencilSettings.shapeScatter, 0.51);
+assert.equal(pencilSettings.count, 1);
+assert.equal(pencilSettings.grainMode, "moving");
+assert.equal(pencilSettings.grainScale, 0.43);
+assert.equal(pencilSettings.blendMode, "intense-blending");
+assert.equal(pencilSettings.flow, 1);
+assert.equal(pencilSettings.spacingPercent, 2);
+assert.equal(pencilSettings.positionJitterLinear, 0.1);
+assert.equal(pencilSettings.positionJitterLateral, 0.1);
+assert.equal(pencilSettings.startThickness, 1);
+assert.equal(pencilSettings.endThickness, 0.6);
+assert.equal(pencilSettings.size, 30);
+assert.equal(pencilSettings.opacity, 1);
+assert.equal("color" in pencilSettings, false);
+assert.equal("tool" in pencilSettings, false);
 assert.deepEqual(
   [
-    pencil.settings.hueJitterDegrees,
-    pencil.settings.saturationJitter,
-    pencil.settings.lightnessJitter,
-    pencil.settings.darknessJitter,
+    pencilSettings.hueJitterDegrees,
+    pencilSettings.saturationJitter,
+    pencilSettings.lightnessJitter,
+    pencilSettings.darknessJitter,
   ],
   [0, 0, 0, 0],
 );
 
 const current = {
+  tool: "blend",
   color: "#123456",
   sentinel: "must-not-survive",
 };
 const resolved = presets.resolveBrushPresetSettings(pencil, current);
 assert.equal(resolved.color, current.color, "il preset deve conservare il colore attivo");
+assert.equal(resolved.tool, current.tool, "il preset deve conservare il tool attivo");
 assert.equal(resolved.size, 30);
 assert.equal(resolved.opacity, 1);
 assert.equal(resolved.shapeAssetId, "pencil-shape");
@@ -148,6 +160,10 @@ assert.throws(
 );
 
 const engine = readEngineSource();
+const definitionSource = readFileSync(
+  path.join(projectRoot, "src", "brush-definition.ts"),
+  "utf8",
+);
 const shaders = readFileSync(path.join(projectRoot, "src", "shaders.ts"), "utf8");
 const main = readFileSync(path.join(projectRoot, "src", "main.ts"), "utf8");
 const brushLibraryController = readFileSync(
@@ -172,11 +188,11 @@ assert(engine.includes("shapeAssetId: BrushShapeAssetId")
   && engine.includes("grainAssetId: BrushGrainAssetId")
   && engine.includes("grainMovement: number"),
   "Le nuove capacità devono appartenere al contratto BrushSettings generale.");
-assert(engine.includes('shapeAssetId: "legacy-shape"')
-  && engine.includes("shapeInvert: false")
-  && engine.includes('shapeRotation: "fixed"')
-  && engine.includes('grainAssetId: "pencil-grain"')
-  && engine.includes("grainMovement: 0"),
+assert(definitionSource.includes('shapeAssetId: "legacy-shape"')
+  && definitionSource.includes("shapeInvert: false")
+  && definitionSource.includes('shapeRotation: "fixed"')
+  && definitionSource.includes('grainAssetId: "pencil-grain"')
+  && definitionSource.includes("grainMovement: 0"),
   "I default built-in non usano gli asset Pencil attesi.");
 assert(engine.includes("grainMovement: clamp(next.grainMovement ?? this.settings.grainMovement, 0, 1)")
   && engine.includes('settings.shapeRotation === "follow-stroke" ? 1 : 0'),
@@ -202,7 +218,7 @@ assert(engine.includes("shapeDesiredInvert")
   && engine.includes("createShapeMaskResources(this, assetId, invert)"),
   "Il retarget Shape asset+invert non conserva latest-only e transazione GPU.");
 assert(engine.includes('hardness: tool === "paint" ? 1')
-  && engine.includes("hardness: 1"),
+  && definitionSource.includes("hardness: 1"),
   "Hardness deve essere normalizzata al 100% per ogni Paint setting.");
 
 assert(shaders.includes("let followAngle = select(0.0, atan2(direction.y, direction.x)")
